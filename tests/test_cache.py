@@ -446,3 +446,44 @@ def test_cache_key_greedy_era_component():
     k_off = cache.cache_key(t, "slug", max_iter=10)
     k_on = cache.cache_key(t, "slug", max_iter=10, greedy=True)
     assert k_off != k_on and ".greedy." in k_on and ".greedy" not in k_off
+
+
+def test_every_signal_death_is_uncacheable_even_when_the_model_spoke():
+    """`exit < 0`, not `exit == -1`. The three tests above send 0 completion
+    tokens, which the zero-token rule refuses on its own, so `== -1` passed
+    them all: the 2026-08-22 interrupt banked SIGTERM'd units exactly so."""
+    for code in (-15, -9, -2, -1):
+        row = _row(passed=False, agent_exit_code=code, tokens_completion=5)
+        assert not run_eval.cacheable_result(row), code
+        assert not run_eval.cacheable_result(dict(row, passed=True)), code
+    # control: the same row with a clean exit is a genuine, bankable FAIL
+    assert run_eval.cacheable_result(_row(passed=False, agent_exit_code=0, tokens_completion=5))
+    assert run_eval.cacheable_result(_row(passed=False, agent_exit_code=1, tokens_completion=5))
+
+
+def test_task_hash_ignores_runtime_underscore_keys(cache_dir):
+    """`_path` embeds the checkout's absolute location: hashed, every cached
+    result would miss after a repo move or in a second worktree."""
+    cache = fresh_cache_module(cache_dir)
+    t = {"id": "t_a", "task": "x", "setup": "s", "validation": {}, "cleanup": "c"}
+    assert cache.task_hash({**t, "_path": "/a/t.yaml"}) == cache.task_hash({**t, "_path": "/b/t.yaml"})
+    assert cache.task_hash({**t, "_path": "/a/t.yaml", "_loaded": 1}) == cache.task_hash(t)
+    # control: a real field still changes it
+    assert cache.task_hash({**t, "task": "y"}) != cache.task_hash(t)
+
+
+def test_context_hash_separates_its_files(cache_dir, tmp_path, monkeypatch):
+    """The same bytes split differently across two context files are two
+    different contexts (a line moved from one prompt file to the other)."""
+    cache = fresh_cache_module(cache_dir)
+    a, b = tmp_path / "a.md", tmp_path / "b.md"
+    monkeypatch.setattr(cache, "CONTEXT_FILES", [a, b])
+
+    def h(x, y):
+        a.write_text(x)
+        b.write_text(y)
+        cache._context_cache.clear()
+        return cache.context_hash()
+
+    assert h("ab", "c") != h("a", "bc")
+    assert h("ab", "c") == h("ab", "c")

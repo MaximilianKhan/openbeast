@@ -67,6 +67,23 @@ def test_update_leaderboard_refuses_ineligible(tmp_path):
     assert [e["tasks_passed"] for e in entries] == [290]
 
 
+def test_update_leaderboard_refuses_a_partial_v4_run(tmp_path):
+    """A v4 row must cover all 291 units: an aborted or smoke run scores its
+    accuracy over the few it reached and would outrank every real row."""
+    lb = str(tmp_path / "leaderboard.json")
+    full = scoring.score_run(_results("2026-09-01T00:00:00", passed=255))
+    assert full["suite_version"] == "v4" and full["tasks_total"] == 291
+    scoring.update_leaderboard(full, path=lb)
+    partial = dict(scoring.score_run(_results("2026-09-02T00:00:00", passed=290)),
+                   tasks_total=106, tasks_passed=106)
+    assert not partial.get("ineligible_reasons")      # only the unit count is wrong
+    entries = scoring.update_leaderboard(partial, path=lb)
+    assert [(e["tasks_total"], e["tasks_passed"]) for e in entries] == [(291, 255)]
+    # force=True is the deliberate override.
+    entries = scoring.update_leaderboard(partial, path=lb, force=True)
+    assert [(e["tasks_total"], e["tasks_passed"]) for e in entries] == [(106, 106)]
+
+
 def test_update_leaderboard_refuses_cache_only_misses(tmp_path):
     lb = str(tmp_path / "leaderboard.json")
     empty = scoring.score_run(_results("t", passed=0, reason="skipped_cache_miss"))
