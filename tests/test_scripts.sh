@@ -621,6 +621,52 @@ fi
 
 rm -rf "$SV"
 
+# --- 8c. systemd units: a path with a space, and the start timeout ---
+# Rendered with the sed line the unit files document, into a checkout path
+# that contains a space, then split the way systemd splits a command line
+# (whitespace, double quotes): the first word must be the whole script path.
+echo ""
+echo "systemd unit templates (ops F13, F14):"
+_UD="$(mktemp -d)"; _UREPO="$_UD/my rig/openbeast"; mkdir -p "$_UREPO"
+_unit_argv0() { # _unit_argv0 <unit-file> <Key> -> first word of that command line
+  sed "s|@REPO@|$_UREPO|" "$REPO_DIR/scripts/$1" | python3 -c '
+import shlex, sys
+key = sys.argv[1] + "="
+for line in sys.stdin:
+    if line.startswith(key):
+        print(shlex.split(line[len(key):])[0]); break
+' "$2"
+}
+if [[ "$(_unit_argv0 openbeast.service ExecStart)" == "$_UREPO/start.sh" \
+      && "$(_unit_argv0 openbeast.service ExecStop)" == "$_UREPO/stop.sh" ]]; then
+  pass "openbeast.service: ExecStart/ExecStop survive a checkout path with a space"
+else
+  fail "openbeast.service splits a path with a space: ExecStart -> '$(_unit_argv0 openbeast.service ExecStart)', ExecStop -> '$(_unit_argv0 openbeast.service ExecStop)'"
+fi
+if [[ "$(_unit_argv0 openbeast-watchdog.service ExecStart)" == "$_UREPO/scripts/healthcheck.sh" ]]; then
+  pass "openbeast-watchdog.service: ExecStart survives a checkout path with a space"
+else
+  fail "openbeast-watchdog.service splits a path with a space: '$(_unit_argv0 openbeast-watchdog.service ExecStart)'"
+fi
+if sed "s|@REPO@|$_UREPO|" "$REPO_DIR/scripts/openbeast.service" | grep -qx 'ExecStart=".*/start.sh" -d' \
+   && sed "s|@REPO@|$_UREPO|" "$REPO_DIR/scripts/openbeast-watchdog.service" | grep -qx 'ExecStart=".*/healthcheck.sh" --restart'; then
+  pass "…and the arguments (-d, --restart) are still passed (control)"
+else
+  fail "a unit lost its argument when the path was quoted"
+fi
+rm -rf "$_UD"
+# The unit must outlast the launcher it runs: start.sh -d gives up at
+# LLAMA_LOAD_GRACE + 300 s. Both numbers are read from start.sh.
+_GRACE="$(sed -n 's/^LLAMA_LOAD_GRACE="\${OPENBEAST_LLAMA_LOAD_GRACE:-\([0-9]*\)}"$/\1/p' "$REPO_DIR/start.sh")"
+_EXTRA="$(sed -n 's/.*_ready_deadline=\$(( SECONDS + LLAMA_LOAD_GRACE + \([0-9]*\) )).*/\1/p' "$REPO_DIR/start.sh")"
+_UTMO="$(sed -n 's/^TimeoutStartSec=//p' "$REPO_DIR/scripts/openbeast.service")"
+if [[ "$_GRACE" =~ ^[0-9]+$ && "$_EXTRA" =~ ^[0-9]+$ ]] \
+   && { [[ "$_UTMO" == "infinity" ]] || { [[ "$_UTMO" =~ ^[0-9]+$ ]] && (( _UTMO > _GRACE + _EXTRA )); }; }; then
+  pass "openbeast.service TimeoutStartSec ($_UTMO) outlasts start.sh -d's own deadline ($((_GRACE + _EXTRA))s)"
+else
+  fail "openbeast.service TimeoutStartSec='$_UTMO' is not above the launcher's deadline (grace '$_GRACE' + '$_EXTRA')"
+fi
+
 # --- 9. Entry-point shell syntax ---
 echo ""
 echo "Shell syntax:"
