@@ -131,26 +131,37 @@ if base:
 models = dict(models)
 if live:
     alias, n_ctx = live
-    row = {"name": "%s  [live on rig]" % alias}
+    # Keyed by the id the rig SERVES, never an invented one: opencode sends
+    # this key as the request's "model". llama-server ignores it, but vLLM
+    # and hydra (unknown_model = "404") reject an id they do not serve — the
+    # old "rig-live" key made every request from such a rig's clients a 404.
+    row = dict(models.get(alias) or {})
+    row["name"] = "%s  [live on rig]" % alias
     if n_ctx:
         row["limit"] = {"context": n_ctx, "output": 32768}
-    models["rig-live"] = row
+    models[alias] = row
 prov["models"] = models
 
 # Keep the default pointed at something that exists. Prefer the live row.
-want = "openbeast-rig/rig-live" if live else None
+want = ("openbeast-rig/" + live[0]) if live else None
 cur = cfg.get("model", "")
 if want and (cur.startswith("openbeast-rig/") or not cur):
     cfg["model"] = want
     cfg.setdefault("small_model", want)
 elif cur.startswith("openbeast-rig/") and cur.split("/", 1)[1] not in models:
     cfg["model"] = "openbeast-rig/" + next(iter(models))
+# small_model too: an install made before the live row carried the served id
+# has "openbeast-rig/rig-live" here, a row that no longer exists.
+small = str(cfg.get("small_model", ""))
+if small.startswith("openbeast-rig/") and small.split("/", 1)[1] not in models:
+    cfg["small_model"] = want or ("openbeast-rig/" + next(iter(models)))
 
 mode = stat.S_IMODE(os.stat(oc_path).st_mode)
 json.dump(cfg, open(oc_path, "w"), indent=2); open(oc_path, "a").write("\n")
 os.chmod(oc_path, mode)   # keyed installs are 0600 — never widen it
 
-added, gone = sorted(after - before), sorted(before - after - {"rig-live"})
+added = sorted(after - before)
+gone = sorted(before - after - {"rig-live"} - ({live[0]} if live else set()))
 print("  ok opencode catalog refreshed: %d models%s%s" % (
     len(models),
     (" (+%s)" % ", ".join(added)) if added else "",

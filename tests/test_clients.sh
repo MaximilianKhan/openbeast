@@ -741,6 +741,80 @@ else
   fail "lock file mode is $(_mode "$L/.run/clients.json.lock")"
 fi
 
+echo ""
+echo "client.sh live model row (ops F8):"
+# The live row's KEY is what opencode sends as "model". It must be the id the
+# rig serves — vLLM and hydra 404 an id they do not serve — not an invented
+# one. A stub rig on an ephemeral loopback port serves a known id.
+LIVE_DIR="$TMPROOT/live"; mkdir -p "$LIVE_DIR"
+python3 - "$LIVE_DIR/port" <<'PY' &
+import http.server, json, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/v1/models":
+            body = {"data": [{"id": "qwen38-27b-nvfp4"}]}
+        elif self.path == "/props":
+            body = {"default_generation_settings": {"n_ctx": 131072}}
+        else:
+            self.send_error(404); return
+        raw = json.dumps(body).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers(); self.wfile.write(raw)
+    def log_message(self, *a):
+        pass
+srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+open(sys.argv[1] + ".tmp", "w").write(str(srv.server_address[1]))
+import os; os.replace(sys.argv[1] + ".tmp", sys.argv[1])
+srv.serve_forever()
+PY
+LIVE_PID=$!
+for _ in $(seq 1 100); do [[ -s "$LIVE_DIR/port" ]] && break; sleep 0.05; done
+LIVE_PORT="$(cat "$LIVE_DIR/port")"
+LCFG="$LIVE_DIR/opencode.json"
+# An install made by the previous client: default and small_model on rig-live.
+python3 -c "
+import json, sys
+json.dump({'model': 'openbeast-rig/rig-live', 'small_model': 'openbeast-rig/rig-live',
+           'provider': {'openbeast-rig': {'options': {'baseURL': 'http://127.0.0.1:%s/v1' % sys.argv[2], 'apiKey': 'not-needed'},
+                                          'models': {'rig-live': {'name': 'old  [live on rig]'}}}}},
+          open(sys.argv[1], 'w'), indent=2)" "$LCFG" "$LIVE_PORT"
+LIVE_OUT="$(bash -c "OC_CONFIG='$LCFG'; REPO='$REPO_DIR'; PY_BIN=python3
+$RF
+_refresh_oc_catalog" 2>&1)" || true
+kill "$LIVE_PID" 2>/dev/null || true
+wait "$LIVE_PID" 2>/dev/null || true
+_lq() { python3 -c "
+import json,sys
+c=json.load(open('$LCFG')); m=c['provider']['openbeast-rig']['models']; print(eval(sys.argv[1]))" "$1"; }
+if [[ "$(_lq "c['model']")" == "openbeast-rig/qwen38-27b-nvfp4" \
+   && "$(_lq "'qwen38-27b-nvfp4' in m")" == "True" ]]; then
+  pass "the live row and the default model carry the id the rig serves"
+else
+  fail "default is '$(_lq "c['model']")' — want openbeast-rig/qwen38-27b-nvfp4 :: $LIVE_OUT"
+fi
+if [[ "$(_lq "'rig-live' in m")" == "False" \
+   && "$(_lq "c['small_model']")" == "openbeast-rig/qwen38-27b-nvfp4" ]]; then
+  pass "no invented 'rig-live' id survives — not as a row, not in small_model"
+else
+  fail "rig-live survived: row=$(_lq "'rig-live' in m") small_model=$(_lq "c['small_model']")"
+fi
+if [[ "$(_lq "m['qwen38-27b-nvfp4']['limit']['context']")" == "131072" ]] \
+   && _has "$LIVE_OUT" "rig is serving 'qwen38-27b-nvfp4'"; then
+  pass "the live row still carries the rig's real n_ctx"
+else
+  fail "live row lost its context limit :: $LIVE_OUT"
+fi
+# Negative control: the dead-rig run above (section 9) must not have invented
+# a live row either — every key is a catalog id.
+if [[ "$(_ocq "'rig-live' in c['provider']['openbeast-rig']['models']")" == "False" ]]; then
+  pass "control: an unreachable rig adds no live row at all"
+else
+  fail "a dead rig still produced a rig-live row"
+fi
+
+echo ""
 # --- Summary ---
 echo ""
 echo "================================"
