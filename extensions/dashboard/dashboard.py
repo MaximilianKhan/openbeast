@@ -12,6 +12,8 @@ optional extension (extensions/dashboard) — the core stack does not depend on 
 import json
 import os
 import subprocess
+import threading
+import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -120,8 +122,8 @@ def gpu_status():
         return None
 
 
-def model_status():
-    ok = _get(f"{_INFER}/health")[0] == 200
+def model_status(health=None):
+    ok = (health or _get(f"{_INFER}/health"))[0] == 200
     served = ""
     try:
         served = open(os.path.join(REPO_DIR, ".run", "serve-script")).read().strip()
@@ -137,21 +139,26 @@ def model_status():
     return {"healthy": ok, "serve_script": served, "alias": alias}
 
 
-def services_status():
+def services_status(health=None):
+    """Up/down per service. `health` is the model server's /health answer,
+    (status, body), when the caller already has it — one status document then
+    costs the inference server one /health, not one per section."""
+    if health is None:
+        health = _get(f"{_INFER}/health")
     svc = [
-        ("model", f"{_INFER}/health", "ok"),
-        ("tools", f"http://{H}:8080".replace("8080", "3001") + "/health", "ok"),
+        ("model", None, "ok"),
+        ("tools", f"http://{H}:3001/health", "ok"),
         ("webui", f"http://{H}:3000/api/version", "version"),
         ("search", f"http://{H}:8888/", ""),
     ]
     out = {}
     for name, url, needle in svc:
-        st, body = _get(url)
+        st, body = health if url is None else _get(url)
         out[name] = bool(st and st < 500 and (needle in body if needle else True))
     if _BACKEND != "llama":
         # vLLM's /health is an EMPTY 200 and TensorFold's {"ok": true}: for
         # them the status code is the answer (a 404 is a wrong URL, not up).
-        out["model"] = _get(f"{_INFER}/health")[0] == 200
+        out["model"] = health[0] == 200
     if _INSTINCT:
         # beast-instinct (INSTINCT=true): a plain bool like its siblings — the
         # /health route is open and says nothing else. Absent when instinct is
@@ -180,8 +187,9 @@ def tool_metrics():
 
 
 def status():
-    return {"gpu": gpu_status(), "model": model_status(),
-            "services": services_status(), "metrics": tool_metrics()}
+    health = _get(f"{_INFER}/health")
+    return {"gpu": gpu_status(), "model": model_status(health),
+            "services": services_status(health), "metrics": tool_metrics()}
 
 
 # The beast-slot contract version this rig publishes, and the oldest client
@@ -286,7 +294,8 @@ def slot_status():
     """
     if _BACKEND != "llama":
         return _slot_status_remote()
-    ok = _get(f"{_INFER}/health")[0] == 200
+    health = _get(f"{_INFER}/health")
+    ok = health[0] == 200
     model = {"id": None, "ctx": None}
     slots = {"total": None, "busy": None}
     st, body = _get(f"{_INFER}/v1/models", auth=True)
@@ -351,7 +360,7 @@ def slot_status():
             "queue_deferred": _queue_deferred(),
             "serving_profile": profile,
         },
-        "services": services_status(),
+        "services": services_status(health),
         "auth": _auth_mode(),
     }
 
@@ -419,7 +428,8 @@ def _slot_status_remote():
     ctx_total stays null (never a guessed budget, as for llama).
     TensorFold: /health and /v1/models only, so capacity is null.
     """
-    ok = _get(f"{_INFER}/health")[0] == 200
+    health = _get(f"{_INFER}/health")
+    ok = health[0] == 200
     model = {"id": None, "ctx": None}
     slots = {"total": _conf_slots(), "busy": None}
     capacity = {"ctx_shared": None, "ctx_total": None, "queue_deferred": None,
@@ -451,7 +461,7 @@ def _slot_status_remote():
         "model": model,
         "slots": slots,
         "capacity": capacity,
-        "services": services_status(),
+        "services": services_status(health),
         "auth": _auth_mode(),
     }
 
@@ -501,17 +511,59 @@ tick();setInterval(tick,3000);
 </script></body></html>"""
 
 
+# /api/slot is published to the tailnet unauthenticated (--publish-slot) and
+# one uncached answer costs eight upstream requests (plus an nvidia-smi for
+# /api/status). Left as it was, a peer polling in a loop multiplied its own
+# rate by that against llama-server, WebUI and SearXNG, on one thread per
+# request. So: one gather per CACHE_S however many callers ask, and a hard cap
+# on handler threads. Clients poll in seconds; a second of staleness is noise.
+CACHE_S = 1.5
+MAX_HANDLERS = 16
+# A client that connects and then says nothing gives its thread back.
+SOCKET_TIMEOUT_S = 10
+
+
+class _Cached:
+    """fn()'s answer, recomputed at most once per `ttl` seconds.
+
+    The lock is held across the gather on purpose: callers that arrive during
+    one wait for it and share its answer instead of starting their own.
+    """
+
+    def __init__(self, fn, ttl=CACHE_S):
+        self._fn, self._ttl = fn, ttl
+        self._lock = threading.Lock()
+        self._at = None
+        self._val = None
+
+    def get(self):
+        with self._lock:
+            now = time.monotonic()
+            if self._at is None or now - self._at >= self._ttl:
+                self._val = self._fn()
+                self._at = time.monotonic()
+            return self._val
+
+
+# Late-bound, so the functions stay the uncached source of truth (and a test
+# that swaps one is seen).
+_slot_cached = _Cached(lambda: slot_status())
+_status_cached = _Cached(lambda: status())
+
+
 class Handler(BaseHTTPRequestHandler):
+    timeout = SOCKET_TIMEOUT_S
+
     def log_message(self, *a):  # quiet
         pass
 
     def do_GET(self):
         if self.path.startswith("/api/slot"):
-            body = json.dumps(slot_status()).encode()
+            body = json.dumps(_slot_cached.get()).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
         elif self.path.startswith("/api/status"):
-            body = json.dumps(status()).encode()
+            body = json.dumps(_status_cached.get()).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
         elif self.path in ("/", "/index.html"):
@@ -527,6 +579,43 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
+_BUSY = (b"HTTP/1.0 503 Service Unavailable\r\nRetry-After: 1\r\n"
+         b"Content-Type: text/plain\r\nContent-Length: 5\r\nConnection: close\r\n\r\nbusy\n")
+
+
+class BoundedServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer with at most MAX_HANDLERS handler threads.
+
+    A connection beyond the cap is answered 503 from the accept loop and
+    closed: no thread is started for it, so a flood cannot grow the process.
+    """
+
+    def __init__(self, *a, max_handlers=MAX_HANDLERS, **kw):
+        super().__init__(*a, **kw)
+        self._free = threading.BoundedSemaphore(max_handlers)
+
+    def process_request(self, request, client_address):
+        if not self._free.acquire(blocking=False):
+            try:
+                request.settimeout(1)
+                request.sendall(_BUSY)
+            except OSError:
+                pass
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._free.release()        # the thread never started
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._free.release()
+
+
 if __name__ == "__main__":
     print(f"OpenBeast dashboard on http://{BIND}:{PORT}", flush=True)
-    ThreadingHTTPServer((BIND, PORT), Handler).serve_forever()
+    BoundedServer((BIND, PORT), Handler).serve_forever()
