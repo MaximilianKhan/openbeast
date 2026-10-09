@@ -447,6 +447,17 @@ elif CMD == "remove":
     print("Its audit row is GONE — past `last_seen` and enrollment history for")
     print("this device are unrecoverable. `revoke` keeps that trail; `remove`")
     print("does not. A future enroll of the same id starts a fresh history.")
+    # An empty registry is "not configured" to the gate, and with
+    # EDGE_ALLOW_ANON=true that means anonymous mode: removing the last
+    # device re-admits it, along with everyone else on the tailnet.
+    if not doc["devices"] and os.environ.get("OB_ALLOW_ANON") == "true":
+        sys.stderr.write(
+            "\nWARNING: the registry is now EMPTY and EDGE_ALLOW_ANON=true —\n"
+            "         beast-gate admits EVERY tailnet caller without a key,\n"
+            "         including the device you just removed ('%s').\n"
+            "         Close it: set EDGE_ALLOW_ANON=false in openbeast.conf and\n"
+            "         restart (./stop.sh && ./start.sh -d), or enroll a device:\n"
+            "         ./scripts/clients.sh enroll <id>\n" % dev_id)
 
 else:
     die("internal: unknown OB_CMD '%s'" % CMD)
@@ -631,7 +642,7 @@ print(int(any(d.get("id") == os.environ["OB_ID"]
       echo "  Really delete the row:                    ./scripts/clients.sh remove $dev_id --yes" >&2
       exit 2
     fi
-    OB_CMD=remove OB_ID="$dev_id" _registry_op
+    OB_CMD=remove OB_ID="$dev_id" OB_ALLOW_ANON="$(_conf_bool EDGE_ALLOW_ANON)" _registry_op
     ;;
 
   -h|--help|help) _usage ;;

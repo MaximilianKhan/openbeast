@@ -664,6 +664,37 @@ else
   fail "clients.sh mutated openbeast.conf or list warned"
 fi
 
+echo ""
+echo "remove that empties the registry (netsec S7):"
+# An empty registry is "not configured" to beast-gate; with
+# EDGE_ALLOW_ANON=true that is anonymous mode, so deleting the last device
+# re-admits it. `remove` must say so — and only then.
+A="$(_fresh_repo anon)"
+AW="registry is now EMPTY and EDGE_ALLOW_ANON=true"
+printf 'EDGE_GATE=true\nEDGE_ALLOW_ANON=true\n' > "$A/openbeast.conf"
+"$A/scripts/clients.sh" enroll one >/dev/null 2>&1
+"$A/scripts/clients.sh" enroll two >/dev/null 2>&1
+out="$("$A/scripts/clients.sh" remove one --yes 2>&1)" || true
+if ! _has "$out" "$AW" && _has "$out" "Removed 'one'"; then
+  pass "removing one of two devices does not warn (the registry is not empty)"
+else
+  fail "warned although a device is still enrolled"
+fi
+out="$("$A/scripts/clients.sh" remove two --yes 2>&1)" || true
+if _has "$out" "$AW" && _has "$out" "EDGE_ALLOW_ANON=false" && _has "$out" "'two'"; then
+  pass "removing the LAST device under EDGE_ALLOW_ANON=true warns and names the fix"
+else
+  fail "emptied the registry under EDGE_ALLOW_ANON=true without a warning"
+fi
+printf 'EDGE_GATE=true\nEDGE_ALLOW_ANON=false\n' > "$A/openbeast.conf"
+"$A/scripts/clients.sh" enroll three >/dev/null 2>&1
+out="$("$A/scripts/clients.sh" remove three --yes 2>&1)" || true
+if ! _has "$out" "$AW" && _has "$out" "Removed 'three'"; then
+  pass "the fail-closed default (EDGE_ALLOW_ANON=false) empties without the warning"
+else
+  fail "warned although EDGE_ALLOW_ANON=false"
+fi
+
 # --- Summary ---
 echo ""
 echo "================================"
