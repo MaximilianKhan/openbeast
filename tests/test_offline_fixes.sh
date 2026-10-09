@@ -833,6 +833,26 @@ if [[ $_rc -eq 0 && -f "$SB/llama.cpp/GOOD.txt" ]] && has "$_out" "extracted lla
 else
   fail "honest source bundle (rc=$_rc): $_out"
 fi
+# The bundle's commit against THIS checkout's pin (scripts/llama.cpp.ref): the
+# build box may have had its clone somewhere else, and install said nothing.
+rm -rf "$SB/llama.cpp"; mk_srcbundle
+echo "LLAMA_CPP_REF=$(printf 'cd%.0s' {1..20})" > "$SB/scripts/llama.cpp.ref"
+install_bundle "$SRCB"
+if [[ $_rc -eq 0 && -f "$SB/llama.cpp/GOOD.txt" ]] && has "$_out" "the bundle's llama.cpp is ${_commit:0:12}; this checkout pins" \
+   && has "$_out" "cdcdcdcdcdcd"; then
+  pass "install says when the bundle's llama.cpp is not the commit this checkout pins (and still extracts)"
+else
+  fail "bundle commit != pin (rc=$_rc): $_out"
+fi
+rm -rf "$SB/llama.cpp"; mk_srcbundle
+echo "LLAMA_CPP_REF=$_commit" > "$SB/scripts/llama.cpp.ref"
+install_bundle "$SRCB"
+if [[ $_rc -eq 0 && -f "$SB/llama.cpp/GOOD.txt" ]] && ! has "$_out" "this checkout pins"; then
+  pass "…and says nothing when they match (control)"
+else
+  fail "bundle commit == pin (rc=$_rc): $_out"
+fi
+rm -f "$SB/scripts/llama.cpp.ref"
 rm -rf "$SB/llama.cpp" "$SRCB"
 
 # CROSS-STORE: built on containerd, installed on classic. The daemon gives the
@@ -987,6 +1007,39 @@ for _k in containerd classic; do
     fail "build on a $_k store (rc=$_rc, recorded '$(store_in "$T/usb/out-$_k")'): $_out"
   fi
 done
+
+# Build side, source: the bundle ships whatever the clone has checked out. It
+# records the pin (scripts/llama.cpp.ref) beside the commit and says so when
+# the two differ. A real local git repo — one commit, no network.
+_g() { git -C "$SBB/llama.cpp" -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false "$@"; }
+mkdir -p "$SBB/llama.cpp"; git -c init.defaultBranch=master init -q "$SBB/llama.cpp"
+echo "cmake_minimum_required(VERSION 3.14)" > "$SBB/llama.cpp/CMakeLists.txt"
+_g add CMakeLists.txt; _g commit -q -m "fixture"
+_head="$(_g rev-parse HEAD)"; _other="$(printf 'ef%.0s' {1..20})"
+src_meta() { "$REAL_PY" -c 'import json,sys; d=json.load(open(sys.argv[1])); c=[c for c in d["components"] if c["kind"]=="source"][0]; print(c.get("commit"), c.get("pinned"))' "$1/MANIFEST.json" 2>&1; }
+echo "LLAMA_CPP_REF=$_other" > "$SBB/scripts/llama.cpp.ref"
+_out="$(cd "$T/usb" && PATH="$T/bin:$PATH" OPENBEAST_PYTHON="$REAL_PY" "$SBB/scripts/bundle.sh" build "$T/usb/out-pin" --no-images 2>&1)"; _rc=$?
+if [[ $_rc -eq 0 && "$(src_meta "$T/usb/out-pin")" == "$_head $_other" ]] \
+   && has "$_out" "llama.cpp/ is at ${_head:0:12}, not the pinned ${_other:0:12}"; then
+  pass "build warns when the clone is not at the pinned commit, and records both in the manifest"
+else
+  fail "build, clone != pin (rc=$_rc, manifest '$(src_meta "$T/usb/out-pin")'): $_out"
+fi
+echo "LLAMA_CPP_REF=$_head" > "$SBB/scripts/llama.cpp.ref"
+_out="$(cd "$T/usb" && PATH="$T/bin:$PATH" OPENBEAST_PYTHON="$REAL_PY" "$SBB/scripts/bundle.sh" build "$T/usb/out-pin2" --no-images 2>&1)"; _rc=$?
+if [[ $_rc -eq 0 && "$(src_meta "$T/usb/out-pin2")" == "$_head $_head" ]] && ! has "$_out" "not the pinned"; then
+  pass "…a clone AT the pin builds without the warning (control)"
+else
+  fail "build, clone == pin (rc=$_rc, manifest '$(src_meta "$T/usb/out-pin2")'): $_out"
+fi
+rm -f "$SBB/scripts/llama.cpp.ref"
+_out="$(cd "$T/usb" && PATH="$T/bin:$PATH" OPENBEAST_PYTHON="$REAL_PY" "$SBB/scripts/bundle.sh" build "$T/usb/out-pin3" --no-images 2>&1)"; _rc=$?
+if [[ $_rc -eq 0 && "$(src_meta "$T/usb/out-pin3")" == "$_head None" ]] && ! has "$_out" "not the pinned"; then
+  pass "…and with no pin file the commit alone is recorded, as before (control)"
+else
+  fail "build, no pin (rc=$_rc, manifest '$(src_meta "$T/usb/out-pin3")'): $_out"
+fi
+rm -rf "$SBB/llama.cpp" "$T/usb/out-pin" "$T/usb/out-pin2" "$T/usb/out-pin3"
 
 # EXTENSION FRAGMENTS (extensions/*/compose.yaml — the ntfy push server):
 # pinned by digest like the core, and the bundle used to read the core file

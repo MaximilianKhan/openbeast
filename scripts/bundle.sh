@@ -132,6 +132,12 @@ c_grn=$'\e[32m'; c_ylw=$'\e[33m'; c_red=$'\e[31m'; c_rst=$'\e[0m'
 ok()   { echo "  ${c_grn}✓${c_rst} $*"; }
 warn() { echo "  ${c_ylw}!${c_rst} $*"; }
 die()  { echo "  ${c_red}✗${c_rst} $*" >&2; exit 1; }
+# The llama.cpp commit this checkout pins (scripts/llama.cpp.ref — the one
+# bootstrap.sh fetches on a connected box), or nothing. Same parse as there.
+_llama_pin() {
+  sed -nE 's/^LLAMA_CPP_REF=([0-9a-f]{40})[[:space:]]*$/\1/p' \
+    "$REPO_DIR/scripts/llama.cpp.ref" 2>/dev/null | tail -n1 || true
+}
 step() { echo; echo "==> $*"; }
 
 # _from_caller <path>: a relative path means relative to where the operator
@@ -462,7 +468,17 @@ case "$CMD" in
           | gzip -n > "$DIR/source/llama.cpp-${_sha:0:12}.tar.gz"
         ok "source/llama.cpp-${_sha:0:12}.tar.gz (commit $_sha)"
         COMPONENTS+=(--component "source:source")
-        METAS+=(--meta "source:$(printf '{"commit": "%s"}' "$_sha")")
+        # The bundle ships whatever THIS clone has checked out, which is not
+        # necessarily the engine a connected ./bootstrap.sh would build. Say
+        # so here, and record the pin next to the commit so the target can
+        # say it too (the manifest is what the signature covers).
+        _pin="$(_llama_pin)"
+        if [[ -n "$_pin" && "$_pin" != "$_sha" ]]; then
+          warn "llama.cpp/ is at ${_sha:0:12}, not the pinned ${_pin:0:12}
+      (scripts/llama.cpp.ref). The bundle carries ${_sha:0:12}: a rig installed
+      from it builds that, not the engine a connected ./bootstrap.sh fetches."
+        fi
+        METAS+=(--meta "source:$(printf '{"commit": "%s"%s}' "$_sha" "${_pin:+, \"pinned\": \"$_pin\"}")")
       else
         warn "no llama.cpp/.git here — skipping the source component"
         SKIPPED+=(--skipped "llama.cpp source (no git clone on the build box)")
@@ -817,6 +833,15 @@ $(sed 's/^/         /' <<< "$_links")
         fi
         [[ -z "$_stage" ]] || rm -rf "$_stage"
         ok "extracted $(basename "$_tar") into llama.cpp/"
+        # Which engine that is, against THIS checkout's pin: the build box may
+        # have been somewhere else, and nothing here would otherwise say so.
+        _pin="$(_llama_pin)"
+        if [[ -n "$_want_commit" && -n "$_pin" && "$_want_commit" != "$_pin" ]]; then
+          warn "the bundle's llama.cpp is ${_want_commit:0:12}; this checkout pins
+      ${_pin:0:12} (scripts/llama.cpp.ref). ./bootstrap.sh builds what was
+      extracted — for the pinned engine, rebuild the bundle from a clone at
+      that commit."
+        fi
         warn "this is a SOURCE snapshot, not a git clone: scripts/update.sh
       wants a .git to pull into, so it will refuse until one exists. The
       build path (./bootstrap.sh) does not care."
