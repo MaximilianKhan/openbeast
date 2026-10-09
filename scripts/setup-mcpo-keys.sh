@@ -22,6 +22,7 @@
 #   ./scripts/setup-mcpo-keys.sh              # generate profile keys if absent
 #   ./scripts/setup-mcpo-keys.sh --with-jwt   # also enable signed identity
 #   ./scripts/setup-mcpo-keys.sh --rotate     # replace existing keys
+#   ./scripts/setup-mcpo-keys.sh --help       # this text; changes nothing
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -30,10 +31,17 @@ CONF="$REPO_DIR/openbeast.conf"
 
 ROTATE=false
 WITH_JWT=false
+# Every argument is checked BEFORE anything is written: this script turns on
+# keyed RBAC at the next restart, so `--help` or a typo must not run it.
 for _arg in "$@"; do
   case "$_arg" in
     --rotate)   ROTATE=true ;;
     --with-jwt) WITH_JWT=true ;;
+    -h|--help)
+      # shellcheck source=scripts/lib/usage.sh
+      source "$SCRIPT_DIR/lib/usage.sh"
+      ob_usage "$0"; exit 0 ;;
+    *) echo "Unknown option: $_arg (see --help)" >&2; exit 2 ;;
   esac
 done
 
