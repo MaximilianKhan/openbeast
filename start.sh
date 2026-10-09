@@ -216,7 +216,9 @@ _port_holder() {
   local p cmd out=""
   while read -r p; do
     [[ "$p" =~ ^[0-9]+$ ]] || continue
-    cmd="$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null || ps -o command= -p "$p" 2>/dev/null || true)"
+    # (braces: a failed `<` is reported by the shell itself, before a
+    # trailing 2>/dev/null on the same command would apply)
+    cmd="$({ tr '\0' ' ' < "/proc/$p/cmdline"; } 2>/dev/null || ps -o command= -p "$p" 2>/dev/null || true)"
     cmd="${cmd% }"; [[ ${#cmd} -gt 90 ]] && cmd="${cmd:0:87}..."
     out+="${out:+, }pid $p${cmd:+ ($cmd)}"
   done < <(ob_port_pids "$1" 2>/dev/null || true)
