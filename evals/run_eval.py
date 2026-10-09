@@ -1201,9 +1201,15 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
     except subprocess.TimeoutExpired:
         _kill_agent_tree(proc.pid)
         proc.kill()
+        # What the runner had flushed before the kill. It prints its TOKENS
+        # line only on a normal exit, so today this is almost always
+        # without one and the row keeps tokens 0 (scoring counts such rows
+        # per board row). Parsed anyway: a recorded 0 for a unit that spent
+        # 20 minutes of decode understates TOKENS, and any count beats none.
+        partial = ""
         try:
-            proc.communicate(timeout=5)
-        except subprocess.TimeoutExpired:
+            partial = proc.communicate(timeout=5)[0] or ""
+        except (subprocess.TimeoutExpired, OSError, ValueError):
             pass
         elapsed = time.time() - start_time
         return {
@@ -1211,7 +1217,7 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
             "elapsed_seconds": round(elapsed, 1),
             "stdout": "(timed out)",
             "stderr": "",
-            "tokens": {"prompt": 0, "completion": 0, "total": 0},
+            "tokens": _parse_tokens(partial),
             "iterations": None,
         }
     finally:

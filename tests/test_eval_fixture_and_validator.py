@@ -177,3 +177,41 @@ def test_a_solution_that_always_hangs_banks_as_a_fail(tmp_path, monkeypatch):
     assert "reason" not in row and row["validator_timeout_repeats"] == 3
     assert len(list(cache.CACHE_DIR.glob("*.json"))) == 1
     assert not list(cache.STRIKES_DIR.glob("*.json"))
+
+
+# --- F12: a wall timeout keeps whatever token count the runner reported ----
+
+def _fake_runner(tmp_path: Path, body: str) -> str:
+    p = tmp_path / "fake_runner.py"
+    p.write_text(textwrap.dedent(body))
+    return str(p)
+
+
+def test_wall_timeout_records_tokens_from_partial_stdout(tmp_path):
+    run_eval, _ = _fresh(tmp_path)
+    run_eval.RUNNER_PATH = _fake_runner(tmp_path, '''
+        import time
+        print("[iter 1/1]")
+        print("TOKENS: prompt=1200 completion=340 total=1540", flush=True)
+        time.sleep(30)
+    ''')
+    # max_iter 1 x 60 s x (1.5/60) -> a 1 s wall budget.
+    res = run_eval.run_agent({"task": "t", "max_iter": 1}, "http://127.0.0.1:9/v1",
+                             timeout_scale=1.5 / 60)
+    assert res["exit_code"] == -1
+    assert res["tokens"] == {"prompt": 1200, "completion": 340, "total": 1540}
+
+
+def test_wall_timeout_without_a_token_line_stays_zero(tmp_path):
+    """Negative control — and today's real runner: it prints TOKENS only on
+    a normal exit, so a killed one has none to read."""
+    run_eval, _ = _fresh(tmp_path)
+    run_eval.RUNNER_PATH = _fake_runner(tmp_path, '''
+        import time
+        print("[iter 1/1]", flush=True)
+        time.sleep(30)
+    ''')
+    res = run_eval.run_agent({"task": "t", "max_iter": 1}, "http://127.0.0.1:9/v1",
+                             timeout_scale=1.5 / 60)
+    assert res["exit_code"] == -1
+    assert res["tokens"] == {"prompt": 0, "completion": 0, "total": 0}

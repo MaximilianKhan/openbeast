@@ -501,6 +501,18 @@ def ineligibility_reasons(results: dict) -> list[str]:
     return reasons
 
 
+def killed_units(tasks: list[dict]) -> int:
+    """Units whose agent did not exit on its own: the harness wall timeout
+    (agent_exit_code -1) or a signal (-9, -15). They are the one non-verdict
+    class that seats on the board: pass/fail is whatever the files left
+    behind validate to, run_eval records their tokens as 0 (so TOKENS and
+    the tok/s averages understate), and they are never cached, so every
+    relaunch re-rolls exactly these units while banked FAILs stay fixed.
+    The 9 seated v4 rows held 16 of them on 2026-10-09 (15 wall timeouts,
+    one SIGKILL)."""
+    return sum(1 for t in tasks if (t.get("agent_exit_code") or 0) < 0)
+
+
 def score_run(results: dict) -> dict:
     """Compute scores for a single eval run. Returns dict suitable for the
     leaderboard."""
@@ -564,6 +576,8 @@ def score_run(results: dict) -> dict:
         "tokens_total": tokens_total,
         "tokens_prompt": tokens_prompt,
         "tokens_completion": tokens_completion,
+        # T/O column: units whose agent was killed (see killed_units).
+        "killed_units": killed_units(tasks),
         "breakdown": breakdown,
         "by_category": by_category,
         "by_language": by_language,
@@ -681,12 +695,13 @@ def format_leaderboard(entries: list[dict], show_host: bool = False) -> str:
     # SCORE (capability = 0.75*SOLVE + 0.25*LANG, the ranking key) -> SPD
     # (sustained decode tok/s — server-log measured, or ~estimated for pre-log
     # runs) -> TOKENS (total prompt+completion) -> WALL (total wall-clock) ->
-    # PASS. SOLVE/LANG/SCORE are percentages (shown with %). The legacy v1
-    # accuracy and per-tier pass rates stay in each entry's JSON.
+    # PASS -> T/O (units whose agent was killed; see killed_units). SOLVE/
+    # LANG/SCORE are percentages (shown with %). The legacy v1 accuracy and
+    # per-tier pass rates stay in each entry's JSON.
     if show_host:
-        header = f"{'#':>2}  {'HOST':<18}  {'MODEL':<28}  {'SU':>4}  {'SOLVE':>7}  {'LANG':>7}  {'SCORE':>7}  {'SPD':>6}  {'TOKENS':>7}  {'WALL':>7}  {'PASS':>7}"
+        header = f"{'#':>2}  {'HOST':<18}  {'MODEL':<28}  {'SU':>4}  {'SOLVE':>7}  {'LANG':>7}  {'SCORE':>7}  {'SPD':>6}  {'TOKENS':>7}  {'WALL':>7}  {'PASS':>7}  {'T/O':>3}"
     else:
-        header = f"{'#':>2}  {'MODEL':<28}  {'SU':>4}  {'SOLVE':>7}  {'LANG':>7}  {'SCORE':>7}  {'SPD':>6}  {'TOKENS':>7}  {'WALL':>7}  {'PASS':>7}"
+        header = f"{'#':>2}  {'MODEL':<28}  {'SU':>4}  {'SOLVE':>7}  {'LANG':>7}  {'SCORE':>7}  {'SPD':>6}  {'TOKENS':>7}  {'WALL':>7}  {'PASS':>7}  {'T/O':>3}"
     sep = "-" * len(header)
 
     def _f(v):  # format a possibly-missing 0-100 percentage metric (with %)
@@ -715,10 +730,11 @@ def format_leaderboard(entries: list[dict], show_host: bool = False) -> str:
         toks = _fmt_tokens(e.get("tokens_total", 0))  # total tokens consumed
         wall = _wall(e)                          # total wall-clock
         passed = f"{e.get('tasks_passed','?')}/{e.get('tasks_total','?')}"
+        killed = e.get("killed_units", "?")      # "?": entry predates the field
         if show_host:
             host = entry_host_id(e)[:18]
-            return f"{i:>2}  {host:<18}  {model:<28}  {suite:>4}  {solve:>7}  {lang:>7}  {score:>7}  {spd:>6}  {toks:>7}  {wall:>7}  {passed:>7}"
-        return f"{i:>2}  {model:<28}  {suite:>4}  {solve:>7}  {lang:>7}  {score:>7}  {spd:>6}  {toks:>7}  {wall:>7}  {passed:>7}"
+            return f"{i:>2}  {host:<18}  {model:<28}  {suite:>4}  {solve:>7}  {lang:>7}  {score:>7}  {spd:>6}  {toks:>7}  {wall:>7}  {passed:>7}  {killed:>3}"
+        return f"{i:>2}  {model:<28}  {suite:>4}  {solve:>7}  {lang:>7}  {score:>7}  {spd:>6}  {toks:>7}  {wall:>7}  {passed:>7}  {killed:>3}"
 
     cur = current_suite_version()
     current_rows = sorted((e for e in entries if str(e.get("suite_version")) == cur), key=rank_key)
@@ -740,6 +756,9 @@ def format_leaderboard(entries: list[dict], show_host: bool = False) -> str:
     lines.append("SCORE = capability = 0.75*SOLVE + 0.25*LANG (ranking key).  "
                  "SPD = sustained decode tok/s (server-measured; ~ = isolated-benchmark estimate, "
                  "pre-2026-07-08 runs had no decode log).  TOKENS = total prompt+completion.  WALL = total run time.")
+    lines.append("T/O = units whose agent was killed at the wall timeout or by a signal: pass/fail still "
+                 "counts, their tokens are recorded as 0 (TOKENS understates), and they are never cached, "
+                 "so a relaunch re-rolls them.")
     return "\n".join(lines)
 
 
@@ -770,7 +789,7 @@ def format_leaderboard_html(entries: list[dict], title: str = "OpenBeast leaderb
         return f"{h}h{m:02d}m" if h else f"{m}m"
 
     cols = ("#", "Host", "Model", "Suite", "Solve", "Lang", "Score",
-            "tok/s", "Tokens", "Wall", "Pass")
+            "tok/s", "Tokens", "Wall", "Pass", "T/O")
 
     def row(i, e):
         cells = (str(i), entry_host_id(e), str(e.get("model", "?")),
@@ -778,7 +797,8 @@ def format_leaderboard_html(entries: list[dict], title: str = "OpenBeast leaderb
                  pct(e.get("problem_solving")), pct(e.get("language_breadth")),
                  pct(e.get("capability")), decode(e),
                  _fmt_tokens(e.get("tokens_total", 0)), wall(e),
-                 f"{e.get('tasks_passed', '?')}/{e.get('tasks_total', '?')}")
+                 f"{e.get('tasks_passed', '?')}/{e.get('tasks_total', '?')}",
+                 str(e.get("killed_units", "?")))
         return "<tr>" + "".join(
             f'<td class="{"t" if j in (1, 2) else "n"}">{escape(c)}</td>'
             for j, c in enumerate(cells)) + "</tr>"
@@ -822,7 +842,9 @@ td.n{{text-align:right}}
 <p>Generated {stamp} by evals/scoring.py --html. Ranked by Score (capability = 0.75·Solve + 0.25·Lang).</p>
 {"".join(parts)}
 <p>Solve = % of base problems solved in ≥1 language. Lang = % of language ports passed among
-solved problems. tok/s = sustained decode (~ = isolated-benchmark estimate).</p>
+solved problems. tok/s = sustained decode (~ = isolated-benchmark estimate). T/O = units whose
+agent was killed at the wall timeout or by a signal: pass/fail still counts, their tokens are
+recorded as 0, and they are never cached.</p>
 </body></html>
 """
 
