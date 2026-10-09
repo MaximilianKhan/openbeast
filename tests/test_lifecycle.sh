@@ -344,6 +344,25 @@ if [[ "$_R" == "RC=0 SERVING=serve-ok.sh LASTGOOD=serve-ok.sh "* ]] && grep -q "
 else
   fail "the relaunch path did not fall back from a vanished weight: $_R :: $(tr '\n' ' ' < "$_L/out")"
 fi
+# serve.sh exits 3 for a WEIGHT_ENFORCE=strict refusal. With a healthy
+# last-good on record and MODEL_ROLLBACK on, the start must still fail: a
+# rollback here serves a model the operator did not configure, which is what
+# strict exists to stop. (test_scripts.sh only grepped start.sh for the words.)
+printf '#!/bin/bash\necho "weight rejected by the registry" >&2\nexit 3\n' > "$_L/scripts/serve-refused.sh"
+chmod +x "$_L/scripts/serve-refused.sh"
+_R="$(_launch_case serve-refused.sh serve-ok.sh)"
+if [[ "$_R" == "RC=1 SERVING=serve-refused.sh LASTGOOD=serve-ok.sh FAIL=refused "* ]] \
+   && grep -q "Refusing to roll back: 'serve-refused.sh' was rejected by the weight registry" "$_L/out"; then
+  pass "a strict weight refusal (serve.sh exit 3) is NOT rolled back past, even with a last-good and MODEL_ROLLBACK=true"
+else
+  fail "a weight-registry refusal was rolled back past: $_R :: $(tr '\n' ' ' < "$_L/out")"
+fi
+# control: the same last-good IS used when the model merely crashes (exit 1)
+printf '#!/bin/bash\nexit 1\n' > "$_L/scripts/serve-crash.sh"; chmod +x "$_L/scripts/serve-crash.sh"
+_R="$(_launch_case serve-crash.sh serve-ok.sh)"
+[[ "$_R" == "RC=0 SERVING=serve-ok.sh LASTGOOD=serve-ok.sh "* ]] \
+  && pass "…while an ordinary crash (exit 1) does roll back to it (control)" \
+  || fail "an ordinary crash did not roll back: $_R :: $(tr '\n' ' ' < "$_L/out")"
 _R="$(_launch_case serve-sleeper.sh "" 900 late)"
 if [[ "$_R" == "RC=1 SERVING=serve-sleeper.sh LASTGOOD= "* ]] && grep -q "not the one this stack launched" "$_L/out"; then
   pass "a foreign server that wins the bind race is not ours either: our child must HOLD the listener"

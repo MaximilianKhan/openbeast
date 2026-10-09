@@ -1042,12 +1042,10 @@ else
 fi
 rm -rf "$WE_SCRATCH"
 # start.sh must refuse to roll back on that exit code, or strict mode would
-# silently serve a DIFFERENT model than the operator configured.
-if grep -q 'Refusing to roll back' "$REPO_DIR/start.sh"; then
-  pass "start.sh refuses MODEL_ROLLBACK on a supply-chain refusal"
-else
-  fail "start.sh would roll back past a WEIGHT_ENFORCE=strict refusal"
-fi
+# silently serve a DIFFERENT model than the operator configured. That is
+# proven by behaviour in tests/test_lifecycle.sh (serve-refused.sh, exit 3,
+# with a last-good on record), which this suite runs below; the grep that
+# stood here passed for any start.sh that still contained the words.
 # A DEFAULT is what conf.sh resolves with no openbeast.conf, so REPO_DIR is an
 # empty scratch dir, not the checkout: there, this read the rig's own conf
 # (WEIGHT_ENFORCE=strict on the rig turned the check red), and `env -i` drops
