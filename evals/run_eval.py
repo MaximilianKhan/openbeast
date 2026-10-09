@@ -1685,6 +1685,13 @@ def run_eval(
                             "tokens_prompt": 0, "tokens_completion": 0, "tokens_total": 0,
                         })
 
+        # Cleanup BEFORE setup: every task's setup is `mkdir -p`, so whatever
+        # a killed run left in the fixture dir (the signal handler exits
+        # without cleaning up) was inherited by the next unit to use it —
+        # another model, or the other arm of an A/B. If that agent then wrote
+        # nothing, the leftover solution validated and a PASS was banked.
+        run_cleanup(task, log=log)
+
         # Setup
         if not run_setup(task, log=log):
             log("  FAIL (setup failed)")
