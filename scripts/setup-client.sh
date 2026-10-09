@@ -305,16 +305,63 @@ if [ $LOCAL_SEARCH -eq 1 ]; then
 fi
 
 if [ -z "$HOST_FQDN" ] && [ $fail -eq 0 ]; then
-  HOST_FQDN="$("$TS" status --json 2>/dev/null | "$PY" -c '
+  # Only a peer under OUR OWN MagicDNS suffix can be the rig. A node named
+  # `beast` that someone shared in from another tailnet has a different
+  # suffix; picking it by first label alone would send it the key (the
+  # health probe below presents the bearer) and then every prompt.
+  # One line per peer: "rig <fqdn>" (ours, named beast), "own <fqdn>",
+  # "foreign <fqdn>".
+  _peers="$("$TS" status --json 2>/dev/null | "$PY" -c '
 import json, sys
 d = json.load(sys.stdin)
+me = ((d.get("Self") or {}).get("DNSName") or "").rstrip(".")
+suffix = me.partition(".")[2] or (d.get("MagicDNSSuffix") or "").strip(".")
 for p in (d.get("Peer") or {}).values():
     dns = (p.get("DNSName") or "").rstrip(".")
-    if dns.split(".")[0] == "beast":
-        print(dns); break
+    if not dns:
+        continue
+    name, _, rest = dns.partition(".")
+    ours = bool(suffix) and rest == suffix
+    kind = "foreign" if not ours else ("rig" if name == "beast" else "own")
+    print(kind, dns)
 ' || true)"
-  [ -n "$HOST_FQDN" ] && echo "  ✓ rig auto-detected: $HOST_FQDN" \
-    || { echo "  ✗ no tailnet peer named 'beast' — pass --host <rig-fqdn>"; fail=1; }
+  HOST_FQDN="$(printf '%s\n' "$_peers" | sed -n 's/^rig //p' | sed -n '1p')"
+  if [ -n "$HOST_FQDN" ]; then
+    echo "  ✓ rig auto-detected: $HOST_FQDN"
+    # A key is about to be presented to a host nobody typed. Have a human
+    # confirm it, or refuse when there is no terminal to ask on.
+    if [ -n "$API_KEY" ]; then
+      if [ -t 0 ]; then
+        printf '    Send the rig API key to %s? [y/N] ' "$HOST_FQDN" >&2
+        IFS= read -r _yn || _yn=""
+        case "$_yn" in
+          y|Y|yes|YES) : ;;
+          *) echo "  ✗ not confirmed — name the rig yourself: --host <rig-fqdn>"; fail=1 ;;
+        esac
+      else
+        echo "  ✗ refusing to send the rig API key to an AUTO-DETECTED host with no"
+        echo "    terminal to confirm on. Name the rig explicitly:"
+        echo "      $0 --host $HOST_FQDN --api-key-stdin"
+        fail=1
+      fi
+    fi
+  else
+    echo "  ✗ no peer named 'beast' on your tailnet — pass --host <rig-fqdn>"
+    _own="$(printf '%s\n' "$_peers" | sed -n 's/^own //p')"
+    if [ -n "$_own" ]; then
+      echo "    peers on your tailnet (is the rig one of these?):"
+      printf '%s\n' "$_own" | sed 's/^/      /'
+    else
+      echo "    (no other device on your tailnet is visible from here — is the rig signed in?)"
+    fi
+    _foreign="$(printf '%s\n' "$_peers" | sed -n 's/^foreign \(beast\..*\)$/\1/p')"
+    if [ -n "$_foreign" ]; then
+      echo "    ignored — named 'beast' but shared in from ANOTHER tailnet:"
+      printf '%s\n' "$_foreign" | sed 's/^/      /'
+      echo "    (pass --host to use one of those deliberately)"
+    fi
+    fail=1
+  fi
 fi
 [ $fail -eq 0 ] || { echo "Preflight failed — nothing was changed."; exit 1; }
 

@@ -175,6 +175,54 @@ fi
 
 # ---------------------------------------------------------------------------
 echo ""
+echo "4. rig auto-detection (supply S12, UX-29):"
+# A `beast` shared in from ANOTHER tailnet, and one unrelated peer of our own.
+cat > "$S/ts.json" <<'EOF'
+{"Self":{"DNSName":"lap.tail1.ts.net."},
+ "Peer":{"a":{"DNSName":"beast.othernet.ts.net."},
+         "b":{"DNSName":"desk.tail1.ts.net."}}}
+EOF
+run hauto1 200 200 -- --no-search
+if [[ $RC -eq 1 ]] && has "$OUT" "no peer named 'beast' on your tailnet" \
+   && has "$OUT" "Preflight failed" && ! grep -q "othernet" "$S/curl.argv"; then
+  pass "a 'beast' under a different MagicDNS suffix is NOT picked, and is never probed"
+else
+  fail "foreign beast (rc=$RC, curl=$(tr '\n' ' ' < "$S/curl.argv")): $OUT"
+fi
+if has "$OUT" "desk.tail1.ts.net" && has "$OUT" "ANOTHER tailnet" && has "$OUT" "beast.othernet.ts.net"; then
+  pass "the miss lists the peers that do exist, and says which one it ignored"
+else
+  fail "miss did not list peers: $OUT"
+fi
+cat > "$S/ts.json" <<'EOF'
+{"Self":{"DNSName":"lap.tail1.ts.net."},
+ "Peer":{"a":{"DNSName":"beast.othernet.ts.net."},
+         "b":{"DNSName":"desk.tail1.ts.net."},
+         "c":{"DNSName":"beast.tail1.ts.net."}}}
+EOF
+run hauto2 200 200 -- --no-search
+if [[ $RC -eq 0 ]] && has "$OUT" "rig auto-detected: beast.tail1.ts.net" \
+   && grep -q "https://beast.tail1.ts.net:8443/health" "$S/curl.argv" && ! grep -q "othernet" "$S/curl.argv"; then
+  pass "control: our own tailnet's 'beast' is auto-detected (no key involved → no prompt)"
+else
+  fail "own beast, keyless (rc=$RC): $OUT"
+fi
+run hauto3 200 200 OPENBEAST_API_KEY=sekrit-key -- --no-search
+if [[ $RC -eq 1 ]] && has "$OUT" "refusing to send the rig API key to an AUTO-DETECTED host" \
+   && has "$OUT" "--host beast.tail1.ts.net" && [[ ! -s "$S/curl.argv" ]] \
+   && [[ ! -e "$H/.openbeast-client.env" ]]; then
+  pass "with a key and no terminal, an auto-detected host is refused before anything is sent"
+else
+  fail "keyed auto-detect (rc=$RC, curl=$(tr '\n' ' ' < "$S/curl.argv")): $OUT"
+fi
+run hauto4 200 200 OPENBEAST_API_KEY=sekrit-key -- --host beast.tail1.ts.net --no-search
+if [[ $RC -eq 0 ]] && has "$OUT" "Client mode ready" && ! has "$OUT" "AUTO-DETECTED"; then
+  pass "control: the same key with an explicit --host installs without asking"
+else
+  fail "keyed explicit host (rc=$RC): $OUT"
+fi
+
+echo ""
 echo "================================"
 echo "Results: $PASS passed, $FAIL failed"
 echo "================================"
