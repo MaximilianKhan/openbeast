@@ -1,0 +1,280 @@
+# T1.10 capture-vs-width fit — dvar=d_in, boot=1000
+rows=138200 primary rows=34380 scales=['0.6B', '0.8B', '27B-Qwen3.8', '27B-heretic']
+  0.6B: 196 tensors, d_in ∈ [1024, 2048, 3072]
+  0.8B: 150 tensors, d_in ∈ [1024, 2048, 3584]
+  27B-Qwen3.8: 400 tensors, d_in ∈ [5120, 6144, 17408]
+  27B-heretic: 400 tensors, d_in ∈ [5120, 6144, 17408]
+NOTE: width leverage: 0.6B/0.8B (d_model 1024) vs the two 27B models (d_model 5120 — SAME d, so they test architecture/base, not width). Within a model, d varies by tensor kind (ffn_down / attn_o / ssm_out inputs are wider), which adds d-leverage but is confounded with kind.
+
+## whitener=diag: n=11460 points, 1146 tensors
+  a_linear_r/d         params={"k": 3.7567} rmse_c=0.1410 rmse_logc=0.938 AIC=31057 BIC=31064
+  b_power_(r/d)^b      params={"a": 1.7409, "b": 0.6359} rmse_c=0.1085 rmse_logc=0.556 AIC=19092 BIC=19107
+  c_sat_r/(r+kd)       params={"k": 0.1112} rmse_c=0.1055 rmse_logc=0.608 AIC=21111 BIC=21119
+  c2_sat_intercept     params={"alpha": 1.0492, "k": 0.1075} rmse_c=0.1054 rmse_logc=0.604 AIC=20989 BIC=21004
+  d_two_exponent       params={"alpha": 0.9474, "b_r": 0.6065, "b_d": -0.6673} rmse_c=0.1076 rmse_logc=0.555 AIC=19044 BIC=19066  <-- best AIC
+  e_head+bulk          params={"h": 0.0, "b": 0.5034} rmse_c=0.1304 rmse_logc=0.581 AIC=20091 BIC=20106
+  bootstrap 95% CI (cluster=tensor, stratified by model): k_lin=[3.665,3.848], b_pow=[0.622,0.650], a_pow=[1.672,1.815], b_r=[0.598,0.614], b_d=[-0.696,-0.643], h=[0.000,0.000], b_hb=[0.497,0.511], k_sat=[0.107,0.115]
+  r/d test: b_r=0.606 b_d=-0.667; b_r+b_d=-0.061 CI=[-0.088,-0.037] (0 ⇔ capture depends on r and d only through r/d)
+  held-out scale (fit on the others, predict this one) — mean obs/pred and RMSE(log c):
+    hold 0.6B        : a: 1.22×/0.60  b: 1.39×/0.40  c: 1.21×/0.34  c2: 1.24×/0.34  d: 1.46×/0.44  e: 1.67×/0.52
+    hold 0.8B        : a: 1.09×/0.57  b: 1.19×/0.32  c: 1.06×/0.28  c2: 1.05×/0.29  d: 1.17×/0.31  e: 1.51×/0.43
+    hold 27B-Qwen3.8 : a: 2.23×/0.98  b: 1.32×/0.50  c: 1.15×/0.54  c2: 1.14×/0.54  d: 1.43×/0.52  e: 1.37×/0.45
+    hold 27B-heretic : a: 1.47×/0.62  b: 0.67×/0.68  c: 0.70×/0.61  c2: 0.64×/0.65  d: 0.69×/0.67  e: 0.68×/0.71
+
+## whitener=fc: n=11460 points, 1146 tensors
+  a_linear_r/d         params={"k": 5.3987} rmse_c=0.2390 rmse_logc=1.171 AIC=36150 BIC=36158
+  b_power_(r/d)^b      params={"a": 2.1325, "b": 0.5124} rmse_c=0.1287 rmse_logc=0.415 AIC=12380 BIC=12394
+  c_sat_r/(r+kd)       params={"k": 0.0439} rmse_c=0.1236 rmse_logc=0.463 AIC=14860 BIC=14867
+  c2_sat_intercept     params={"alpha": 1.0371, "k": 0.0422} rmse_c=0.1234 rmse_logc=0.457 AIC=14585 BIC=14600
+  d_two_exponent       params={"alpha": 1.7108, "b_r": 0.4409, "b_d": -0.5886} rmse_c=0.1281 rmse_logc=0.406 AIC=11842 BIC=11864  <-- best AIC
+  e_head+bulk          params={"h": 0.0, "b": 0.3313} rmse_c=0.1644 rmse_logc=0.474 AIC=15431 BIC=15446
+  bootstrap 95% CI (cluster=tensor, stratified by model): k_lin=[5.291,5.505], b_pow=[0.503,0.522], a_pow=[2.075,2.195], b_r=[0.436,0.446], b_d=[-0.605,-0.572], h=[0.000,0.000], b_hb=[0.327,0.336], k_sat=[0.043,0.045]
+  r/d test: b_r=0.441 b_d=-0.589; b_r+b_d=-0.148 CI=[-0.163,-0.133] (0 ⇔ capture depends on r and d only through r/d)
+  held-out scale (fit on the others, predict this one) — mean obs/pred and RMSE(log c):
+    hold 0.6B        : a: 1.12×/0.68  b: 1.14×/0.27  c: 1.15×/0.22  c2: 1.18×/0.23  d: 1.07×/0.24  e: 1.60×/0.48
+    hold 0.8B        : a: 1.18×/0.73  b: 1.13×/0.29  c: 1.14×/0.23  c2: 1.15×/0.22  d: 1.05×/0.26  e: 1.58×/0.47
+    hold 27B-Qwen3.8 : a: 1.82×/0.81  b: 0.58×/0.64  c: 0.58×/0.59  c2: 0.55×/0.64  d: 0.62×/0.61  e: 0.58×/0.69
+    hold 27B-heretic : a: 3.28×/1.44  b: 1.44×/0.40  c: 1.29×/0.39  c2: 1.31×/0.42  d: 1.60×/0.46  e: 1.47×/0.40
+
+## whitener=none: n=11460 points, 1146 tensors
+  a_linear_r/d         params={"k": 2.7865} rmse_c=0.0840 rmse_logc=0.656 AIC=22868 BIC=22875
+  b_power_(r/d)^b      params={"a": 1.771, "b": 0.7804} rmse_c=0.0727 rmse_logc=0.464 AIC=14924 BIC=14939
+  c_sat_r/(r+kd)       params={"k": 0.1993} rmse_c=0.0701 rmse_logc=0.486 AIC=15988 BIC=15995
+  c2_sat_intercept     params={"alpha": 1.003, "k": 0.199} rmse_c=0.0701 rmse_logc=0.486 AIC=15989 BIC=16004
+  d_two_exponent       params={"alpha": -0.3313, "b_r": 0.8481, "b_d": -0.7083} rmse_c=0.0724 rmse_logc=0.456 AIC=14541 BIC=14563  <-- best AIC
+  e_head+bulk          params={"h": 0.0, "b": 0.6438} rmse_c=0.0902 rmse_logc=0.495 AIC=16417 BIC=16432
+  bootstrap 95% CI (cluster=tensor, stratified by model): k_lin=[2.718,2.864], b_pow=[0.769,0.792], a_pow=[1.703,1.848], b_r=[0.843,0.853], b_d=[-0.729,-0.688], h=[0.000,0.000], b_hb=[0.638,0.650], k_sat=[0.193,0.206]
+  r/d test: b_r=0.848 b_d=-0.708; b_r+b_d=0.140 CI=[0.118,0.161] (0 ⇔ capture depends on r and d only through r/d)
+  held-out scale (fit on the others, predict this one) — mean obs/pred and RMSE(log c):
+    hold 0.6B        : a: 1.14×/0.40  b: 1.22×/0.32  c: 1.12×/0.28  c2: 1.14×/0.28  d: 1.43×/0.40  e: 1.53×/0.42
+    hold 0.8B        : a: 1.03×/0.46  b: 1.08×/0.37  c: 1.01×/0.37  c2: 1.00×/0.38  d: 1.18×/0.35  e: 1.43×/0.40
+    hold 27B-Qwen3.8 : a: 1.62×/0.57  b: 1.15×/0.39  c: 1.01×/0.43  c2: 1.00×/0.43  d: 1.09×/0.38  e: 1.19×/0.37
+    hold 27B-heretic : a: 1.40×/0.49  b: 0.90×/0.48  c: 0.86×/0.51  c2: 0.83×/0.52  d: 0.83×/0.48  e: 0.93×/0.49
+
+## implied c = capture·d/r (the §4.2 'constant'), mean over tensors, r=64 and r=128; d=d_in
+  0.6B         IQ2_M        diag  r= 64: c=  8.29 [7.80,8.89] (capture 0.396, n=196)
+  0.6B         IQ2_M        diag  r=128: c=  5.66 [5.35,6.08] (capture 0.526, n=196)
+  0.6B         IQ2_M        fc    r= 64: c= 13.30 [12.48,14.22] (capture 0.609, n=196)
+  0.6B         IQ2_M        fc    r=128: c=  8.05 [7.62,8.56] (capture 0.729, n=196)
+  0.6B         IQ2_M        none  r= 64: c=  4.62 [4.38,4.90] (capture 0.215, n=196)
+  0.6B         IQ2_M        none  r=128: c=  3.94 [3.73,4.16] (capture 0.361, n=196)
+  0.6B         Q2_K-imat    diag  r= 64: c=  8.00 [7.36,8.67] (capture 0.372, n=196)
+  0.6B         Q2_K-imat    diag  r=128: c=  5.56 [5.20,5.94] (capture 0.509, n=196)
+  0.6B         Q2_K-imat    fc    r= 64: c= 13.13 [12.34,14.11] (capture 0.596, n=196)
+  0.6B         Q2_K-imat    fc    r=128: c=  7.99 [7.54,8.51] (capture 0.719, n=196)
+  0.6B         Q2_K-imat    none  r= 64: c=  4.38 [4.16,4.63] (capture 0.204, n=196)
+  0.6B         Q2_K-imat    none  r=128: c=  3.81 [3.62,4.02] (capture 0.350, n=196)
+  0.6B         Q2_K-imat    diag  r= 64: c=  7.93 [7.34,8.59] (capture 0.371, n=196)
+  0.6B         Q2_K-imat    diag  r=128: c=  5.53 [5.18,5.91] (capture 0.507, n=196)
+  0.6B         Q2_K-imat    none  r= 64: c=  4.38 [4.16,4.60] (capture 0.204, n=196)
+  0.6B         Q2_K-imat    none  r=128: c=  3.81 [3.61,4.00] (capture 0.350, n=196)
+  0.6B         Q2_K         diag  r= 64: c= 11.15 [10.61,11.72] (capture 0.549, n=196)
+  0.6B         Q2_K         diag  r=128: c=  6.88 [6.55,7.24] (capture 0.652, n=196)
+  0.6B         Q2_K         fc    r= 64: c= 15.19 [14.47,15.99] (capture 0.709, n=196)
+  0.6B         Q2_K         fc    r=128: c=  8.74 [8.28,9.30] (capture 0.800, n=196)
+  0.6B         Q2_K         none  r= 64: c=  4.31 [4.10,4.54] (capture 0.200, n=196)
+  0.6B         Q2_K         none  r=128: c=  3.75 [3.54,3.96] (capture 0.345, n=196)
+  0.6B         Q3_K_M       diag  r= 64: c=  8.59 [8.11,9.19] (capture 0.419, n=196)
+  0.6B         Q3_K_M       diag  r=128: c=  5.79 [5.49,6.11] (capture 0.547, n=196)
+  0.6B         Q3_K_M       fc    r= 64: c= 13.39 [12.72,14.10] (capture 0.622, n=196)
+  0.6B         Q3_K_M       fc    r=128: c=  8.07 [7.66,8.52] (capture 0.738, n=196)
+  0.6B         Q3_K_M       none  r= 64: c=  4.42 [4.18,4.67] (capture 0.204, n=196)
+  0.6B         Q3_K_M       none  r=128: c=  3.82 [3.61,4.03] (capture 0.350, n=196)
+  0.6B         Q4_K_M       diag  r= 64: c=  8.27 [7.72,8.93] (capture 0.394, n=196)
+  0.6B         Q4_K_M       diag  r=128: c=  5.67 [5.31,6.03] (capture 0.526, n=196)
+  0.6B         Q4_K_M       fc    r= 64: c= 13.22 [12.50,14.04] (capture 0.604, n=196)
+  0.6B         Q4_K_M       fc    r=128: c=  8.02 [7.55,8.52] (capture 0.725, n=196)
+  0.6B         Q4_K_M       none  r= 64: c=  4.49 [4.19,4.86] (capture 0.206, n=196)
+  0.6B         Q4_K_M       none  r=128: c=  3.85 [3.62,4.13] (capture 0.351, n=196)
+  0.6B         Q2_K-fcalt2  diag  r= 64: c= 10.72 [10.04,11.54] (capture 0.485, n=196)
+  0.6B         Q2_K-fcalt2  diag  r=128: c=  6.75 [6.34,7.18] (capture 0.608, n=196)
+  0.6B         Q2_K-fcalt2  fc    r= 64: c= 18.25 [17.14,19.45] (capture 0.810, n=196)
+  0.6B         Q2_K-fcalt2  fc    r=128: c=  9.80 [9.19,10.39] (capture 0.868, n=196)
+  0.6B         Q2_K-fcalt2  none  r= 64: c=  7.43 [7.01,7.99] (capture 0.335, n=196)
+  0.6B         Q2_K-fcalt2  none  r=128: c=  5.15 [4.84,5.48] (capture 0.465, n=196)
+  0.8B         IQ3_XXS      diag  r= 64: c=  7.38 [6.91,7.93] (capture 0.319, n=150)
+  0.8B         IQ3_XXS      diag  r=128: c=  5.34 [4.94,5.76] (capture 0.452, n=150)
+  0.8B         IQ3_XXS      fc    r= 64: c= 13.85 [12.67,14.99] (capture 0.579, n=150)
+  0.8B         IQ3_XXS      fc    r=128: c=  8.46 [7.82,9.23] (capture 0.700, n=150)
+  0.8B         IQ3_XXS      none  r= 64: c=  4.59 [4.20,5.00] (capture 0.189, n=150)
+  0.8B         IQ3_XXS      none  r=128: c=  3.99 [3.66,4.37] (capture 0.327, n=150)
+  0.8B         NVFP4        diag  r= 64: c=  8.89 [8.23,9.64] (capture 0.380, n=150)
+  0.8B         NVFP4        diag  r=128: c=  6.03 [5.59,6.50] (capture 0.505, n=150)
+  0.8B         NVFP4        fc    r= 64: c= 14.96 [13.84,16.13] (capture 0.627, n=150)
+  0.8B         NVFP4        fc    r=128: c=  8.90 [8.20,9.64] (capture 0.736, n=150)
+  0.8B         NVFP4        none  r= 64: c=  4.25 [3.85,4.64] (capture 0.174, n=150)
+  0.8B         NVFP4        none  r=128: c=  3.76 [3.46,4.09] (capture 0.308, n=150)
+  0.8B         Q2_K         diag  r= 64: c=  7.56 [6.87,8.27] (capture 0.322, n=150)
+  0.8B         Q2_K         diag  r=128: c=  5.46 [5.02,5.96] (capture 0.457, n=150)
+  0.8B         Q2_K         fc    r= 64: c= 14.01 [12.93,15.29] (capture 0.583, n=150)
+  0.8B         Q2_K         fc    r=128: c=  8.54 [7.91,9.25] (capture 0.704, n=150)
+  0.8B         Q2_K         none  r= 64: c=  4.40 [4.05,4.77] (capture 0.183, n=150)
+  0.8B         Q2_K         none  r=128: c=  3.87 [3.57,4.18] (capture 0.320, n=150)
+  0.8B         Q2_K-rr      diag  r= 64: c=  7.67 [7.03,8.43] (capture 0.324, n=150)
+  0.8B         Q2_K-rr      diag  r=128: c=  5.60 [5.14,6.11] (capture 0.469, n=150)
+  0.8B         Q2_K-rr      fc    r= 64: c=  9.70 [8.35,11.14] (capture 0.347, n=150)
+  0.8B         Q2_K-rr      fc    r=128: c=  6.56 [5.78,7.39] (capture 0.487, n=150)
+  0.8B         Q2_K-rr      none  r= 64: c=  4.93 [4.60,5.25] (capture 0.212, n=150)
+  0.8B         Q2_K-rr      none  r=128: c=  4.25 [3.91,4.55] (capture 0.363, n=150)
+  0.8B         Q3_K_M       diag  r= 64: c=  8.39 [7.70,9.11] (capture 0.363, n=150)
+  0.8B         Q3_K_M       diag  r=128: c=  5.81 [5.35,6.22] (capture 0.492, n=150)
+  0.8B         Q3_K_M       fc    r= 64: c= 14.51 [13.35,15.68] (capture 0.606, n=150)
+  0.8B         Q3_K_M       fc    r=128: c=  8.72 [8.09,9.33] (capture 0.722, n=150)
+  0.8B         Q3_K_M       none  r= 64: c=  4.35 [3.98,4.67] (capture 0.181, n=150)
+  0.8B         Q3_K_M       none  r=128: c=  3.84 [3.55,4.18] (capture 0.317, n=150)
+  0.8B         Q4_K_M       diag  r= 64: c=  7.60 [6.99,8.23] (capture 0.327, n=150)
+  0.8B         Q4_K_M       diag  r=128: c=  5.49 [5.07,5.97] (capture 0.463, n=150)
+  0.8B         Q4_K_M       fc    r= 64: c= 14.02 [12.93,15.21] (capture 0.583, n=150)
+  0.8B         Q4_K_M       fc    r=128: c=  8.55 [7.85,9.24] (capture 0.705, n=150)
+  0.8B         Q4_K_M       none  r= 64: c=  4.33 [3.94,4.71] (capture 0.180, n=150)
+  0.8B         Q4_K_M       none  r=128: c=  3.83 [3.53,4.17] (capture 0.316, n=150)
+  27B-Qwen3.8  UD-IQ2_S     diag  r= 64: c= 13.41 [12.58,14.37] (capture 0.130, n=400)
+  27B-Qwen3.8  UD-IQ2_S     diag  r=128: c=  9.61 [9.03,10.21] (capture 0.184, n=400)
+  27B-Qwen3.8  UD-IQ2_S     fc    r= 64: c= 15.90 [14.83,16.90] (capture 0.144, n=400)
+  27B-Qwen3.8  UD-IQ2_S     fc    r=128: c= 11.83 [11.15,12.54] (capture 0.218, n=400)
+  27B-Qwen3.8  UD-IQ2_S     none  r= 64: c=  5.68 [5.38,5.95] (capture 0.055, n=400)
+  27B-Qwen3.8  UD-IQ2_S     none  r=128: c=  5.04 [4.77,5.28] (capture 0.098, n=400)
+  27B-Qwen3.8  UD-IQ3_S     diag  r= 64: c= 13.47 [12.72,14.24] (capture 0.131, n=400)
+  27B-Qwen3.8  UD-IQ3_S     diag  r=128: c=  9.67 [9.12,10.21] (capture 0.185, n=400)
+  27B-Qwen3.8  UD-IQ3_S     fc    r= 64: c= 15.80 [14.82,16.56] (capture 0.143, n=400)
+  27B-Qwen3.8  UD-IQ3_S     fc    r=128: c= 11.80 [11.21,12.52] (capture 0.217, n=400)
+  27B-Qwen3.8  UD-IQ3_S     none  r= 64: c=  5.63 [5.35,5.95] (capture 0.055, n=400)
+  27B-Qwen3.8  UD-IQ3_S     none  r=128: c=  5.00 [4.75,5.24] (capture 0.097, n=400)
+  27B-Qwen3.8  UD-Q2_K_XL   diag  r= 64: c= 13.01 [12.26,13.87] (capture 0.125, n=400)
+  27B-Qwen3.8  UD-Q2_K_XL   diag  r=128: c=  9.40 [8.92,9.93] (capture 0.179, n=400)
+  27B-Qwen3.8  UD-Q2_K_XL   fc    r= 64: c= 15.81 [14.80,16.87] (capture 0.143, n=400)
+  27B-Qwen3.8  UD-Q2_K_XL   fc    r=128: c= 11.78 [11.17,12.44] (capture 0.216, n=400)
+  27B-Qwen3.8  UD-Q2_K_XL   none  r= 64: c=  5.65 [5.38,5.92] (capture 0.055, n=400)
+  27B-Qwen3.8  UD-Q2_K_XL   none  r=128: c=  5.02 [4.77,5.29] (capture 0.097, n=400)
+  27B-heretic  IQ3_XS       diag  r= 64: c= 11.08 [10.32,11.77] (capture 0.112, n=400)
+  27B-heretic  IQ3_XS       diag  r=128: c=  7.97 [7.51,8.51] (capture 0.159, n=400)
+  27B-heretic  IQ3_XS       fc    r= 64: c= 30.32 [29.37,31.34] (capture 0.326, n=400)
+  27B-heretic  IQ3_XS       fc    r=128: c= 19.13 [18.64,19.65] (capture 0.404, n=400)
+  27B-heretic  IQ3_XS       none  r= 64: c=  5.01 [4.70,5.34] (capture 0.048, n=400)
+  27B-heretic  IQ3_XS       none  r=128: c=  4.57 [4.29,4.86] (capture 0.088, n=400)
+  27B-heretic  MIXED        diag  r= 64: c= 10.05 [9.33,10.74] (capture 0.096, n=400)
+  27B-heretic  MIXED        diag  r=128: c=  7.62 [7.15,8.09] (capture 0.145, n=400)
+  27B-heretic  MIXED        fc    r= 64: c= 28.45 [27.51,29.46] (capture 0.300, n=400)
+  27B-heretic  MIXED        fc    r=128: c= 18.41 [17.93,18.99] (capture 0.383, n=400)
+  27B-heretic  MIXED        none  r= 64: c=  4.78 [4.49,5.05] (capture 0.046, n=400)
+  27B-heretic  MIXED        none  r=128: c=  4.41 [4.14,4.67] (capture 0.085, n=400)
+  27B-heretic  Q2_K         diag  r= 64: c=  8.26 [7.48,9.21] (capture 0.074, n=400)
+  27B-heretic  Q2_K         diag  r=128: c=  6.66 [6.15,7.26] (capture 0.121, n=400)
+  27B-heretic  Q2_K         fc    r= 64: c= 27.13 [26.27,28.09] (capture 0.284, n=400)
+  27B-heretic  Q2_K         fc    r=128: c= 17.79 [17.28,18.33] (capture 0.368, n=400)
+  27B-heretic  Q2_K         none  r= 64: c=  4.78 [4.48,5.06] (capture 0.046, n=400)
+  27B-heretic  Q2_K         none  r=128: c=  4.41 [4.15,4.66] (capture 0.085, n=400)
+
+## per tensor-kind power-law exponent b in capture=a(r/d)^b (primary lanes, pooled across models)
+  diag attn_gate n=1140 d∈[1024, 5120] a=1.64 b=0.62 | b_r=0.53[0.5199264532847396, 0.5518069036727636] b_d=-0.80[-0.8434120764297158, -0.7572477914816104]
+  diag attn_k    n= 660 d∈[1024, 5120] a=1.90 b=0.49 | b_r=0.52[0.500195782615492, 0.5415853090123107] b_d=-0.45[-0.4871165065441019, -0.4087124354433128]
+  diag attn_o    n= 660 d∈[2048, 6144] a=2.56 b=0.63 | b_r=0.59[0.5597401862602043, 0.6146236908634636] b_d=-0.74[-0.8476705007346503, -0.6453877308707417]
+  diag attn_q    n= 660 d∈[1024, 5120] a=2.29 b=0.71 | b_r=0.53[0.5030591928375362, 0.5471787214400764] b_d=-0.93[-1.0019160154353024, -0.8675497211075377]
+  diag attn_qkv  n=1140 d∈[1024, 5120] a=1.40 b=0.61 | b_r=0.55[0.5365464012414881, 0.562934911442159] b_d=-0.74[-0.7749131481703901, -0.6953391064990156]
+  diag attn_v    n= 660 d∈[1024, 5120] a=2.10 b=0.57 | b_r=0.59[0.5832446180729584, 0.6020485197920749] b_d=-0.54[-0.5552766562447504, -0.5132216155181137]
+  diag ffn_down  n=1800 d∈[3072, 3584, 17408] a=3.61 b=0.71 | b_r=0.65[0.6264659440492365, 0.668360053856696] b_d=-0.79[-0.8534979049238556, -0.7236436611583921]
+  diag ffn_gate  n=1800 d∈[1024, 5120] a=2.15 b=0.83 | b_r=0.65[0.6379079729596242, 0.659695370505944] b_d=-1.08[-1.112156079115927, -1.0418624563693706]
+  diag ffn_up    n=1800 d∈[1024, 5120] a=1.71 b=0.78 | b_r=0.67[0.6650332961359866, 0.6855597442498021] b_d=-0.93[-0.969038185542717, -0.9022820677452963]
+  diag ssm_out   n=1140 d∈[2048, 6144] a=2.22 b=0.63 | b_r=0.61[0.5945637991343619, 0.6293736408713547] b_d=-0.69[-0.764807049674282, -0.6210042262844676]
+  fc   attn_gate n=1140 d∈[1024, 5120] a=2.03 b=0.52 | b_r=0.46[0.4523774411937872, 0.4654860424789014] b_d=-0.65[-0.6702637402733554, -0.6335253762145134]
+  fc   attn_k    n= 660 d∈[1024, 5120] a=1.98 b=0.42 | b_r=0.39[0.38463238116043863, 0.404331455817353] b_d=-0.45[-0.4721042993204668, -0.43352509733253786]
+  fc   attn_o    n= 660 d∈[2048, 6144] a=2.19 b=0.39 | b_r=0.31[0.2954961237807902, 0.33198618104508526] b_d=-0.60[-0.6666192077922314, -0.5245512045476779]
+  fc   attn_q    n= 660 d∈[1024, 5120] a=2.08 b=0.51 | b_r=0.37[0.36611234911859386, 0.38092251222070017] b_d=-0.67[-0.6948670438946606, -0.64323375477535]
+  fc   attn_qkv  n=1140 d∈[1024, 5120] a=1.89 b=0.51 | b_r=0.46[0.4568366301618308, 0.4686440207999026] b_d=-0.62[-0.6427994996993364, -0.6041202647172574]
+  fc   attn_v    n= 660 d∈[1024, 5120] a=2.01 b=0.44 | b_r=0.42[0.41259823502695564, 0.429740178664892] b_d=-0.47[-0.4901047464485425, -0.4513544731482935]
+  fc   ffn_down  n=1800 d∈[3072, 3584, 17408] a=4.18 b=0.64 | b_r=0.50[0.48827039329005195, 0.5162879740543587] b_d=-0.81[-0.8568665289965552, -0.7694128589458443]
+  fc   ffn_gate  n=1800 d∈[1024, 5120] a=1.97 b=0.53 | b_r=0.44[0.4356637633464815, 0.44652542068561246] b_d=-0.67[-0.6854128159468896, -0.6498824996826796]
+  fc   ffn_up    n=1800 d∈[1024, 5120] a=1.85 b=0.52 | b_r=0.45[0.44425223829140126, 0.457001715274783] b_d=-0.62[-0.642192666444202, -0.6076006841816831]
+  fc   ssm_out   n=1140 d∈[2048, 6144] a=2.25 b=0.49 | b_r=0.44[0.4205007312088376, 0.4503706955129197] b_d=-0.75[-0.809513737479065, -0.6923235519149499]
+
+## same-width test: heretic-27B vs Qwen3.8-27B (both qwen35, d_model 5120), primary Q2 lanes, per kind, r=128
+  diag attn_gate: heretic 0.112 (n=48)  Qwen3.8 0.221 (n=48)  Δ=[+0.093,+0.125]
+  diag attn_k   : heretic 0.291 (n=16)  Qwen3.8 0.408 (n=16)  Δ=[+0.082,+0.156]
+  diag attn_o   : heretic 0.215 (n=16)  Qwen3.8 0.217 (n=16)  Δ=[-0.051,+0.057]
+  diag attn_q   : heretic 0.109 (n=16)  Qwen3.8 0.177 (n=16)  Δ=[+0.036,+0.102]
+  diag attn_qkv : heretic 0.111 (n=48)  Qwen3.8 0.180 (n=48)  Δ=[+0.058,+0.078]
+  diag attn_v   : heretic 0.286 (n=16)  Qwen3.8 0.299 (n=16)  Δ=[-0.002,+0.027]
+  diag ffn_down : heretic 0.103 (n=64)  Qwen3.8 0.126 (n=64)  Δ=[+0.003,+0.040]
+  diag ffn_gate : heretic 0.072 (n=64)  Qwen3.8 0.111 (n=64)  Δ=[+0.032,+0.046]
+  diag ffn_up   : heretic 0.072 (n=64)  Qwen3.8 0.111 (n=64)  Δ=[+0.032,+0.045]
+  diag ssm_out  : heretic 0.159 (n=48)  Qwen3.8 0.256 (n=48)  Δ=[+0.072,+0.132]
+  fc   attn_gate: heretic 0.395 (n=48)  Qwen3.8 0.209 (n=48)  Δ=[-0.196,-0.175]
+  fc   attn_k   : heretic 0.502 (n=16)  Qwen3.8 0.371 (n=16)  Δ=[-0.150,-0.111]
+  fc   attn_o   : heretic 0.604 (n=16)  Qwen3.8 0.311 (n=16)  Δ=[-0.345,-0.242]
+  fc   attn_q   : heretic 0.394 (n=16)  Qwen3.8 0.196 (n=16)  Δ=[-0.220,-0.181]
+  fc   attn_qkv : heretic 0.393 (n=48)  Qwen3.8 0.199 (n=48)  Δ=[-0.205,-0.183]
+  fc   attn_v   : heretic 0.500 (n=16)  Qwen3.8 0.335 (n=16)  Δ=[-0.188,-0.143]
+  fc   ffn_down : heretic 0.164 (n=64)  Qwen3.8 0.180 (n=64)  Δ=[-0.005,+0.040]
+  fc   ffn_gate : heretic 0.379 (n=64)  Qwen3.8 0.177 (n=64)  Δ=[-0.214,-0.193]
+  fc   ffn_up   : heretic 0.377 (n=64)  Qwen3.8 0.178 (n=64)  Δ=[-0.211,-0.190]
+  fc   ssm_out  : heretic 0.383 (n=48)  Qwen3.8 0.277 (n=48)  Δ=[-0.135,-0.077]
+
+## which width? AIC of the power law (fc/diag, primary) under d_in / d_out / d_min / d_geo
+  diag: d_in: AIC=19092 b=0.64 (2exp b_d=-0.67)  d_out: AIC=16931 b=0.60 (2exp b_d=-0.60)  d_min: AIC=15813 b=0.70 (2exp b_d=-0.81)  d_geo: AIC=12530 b=0.73 (2exp b_d=-0.88)
+  fc: d_in: AIC=12380 b=0.51 (2exp b_d=-0.59)  d_out: AIC=17673 b=0.40 (2exp b_d=-0.37)  d_min: AIC=13717 b=0.51 (2exp b_d=-0.60)  d_geo: AIC=12239 b=0.53 (2exp b_d=-0.64)
+
+## §4.2 numbers re-derived (primary Q2-class lanes): mean capture over tensors, and the ratio to 0.6B
+  diag r= 64: 0.6B=0.372 (×1.00)  0.8B=0.322 (×0.86)  27B-Qwen3.8=0.125 (×0.34)  27B-heretic=0.074 (×0.20)
+  diag r=128: 0.6B=0.509 (×1.00)  0.8B=0.457 (×0.90)  27B-Qwen3.8=0.179 (×0.35)  27B-heretic=0.121 (×0.24)
+  fc   r= 64: 0.6B=0.596 (×1.00)  0.8B=0.583 (×0.98)  27B-Qwen3.8=0.143 (×0.24)  27B-heretic=0.284 (×0.48)
+  fc   r=128: 0.6B=0.719 (×1.00)  0.8B=0.704 (×0.98)  27B-Qwen3.8=0.216 (×0.30)  27B-heretic=0.368 (×0.51)
+  (§4.2: diag r64 0.37 @0.6B vs 0.07 @27B legacy Q6-ref pair — fivefold fall for fivefold d_model)
+  c_model = mean capture · d_model / r  (the exact §4.2 arithmetic; §4.2 quotes c≈5.9):
+    diag r= 64: 0.6B: c=6.0  0.8B: c=5.1  27B-Qwen3.8: c=10.0  27B-heretic: c=5.9
+    diag r=128: 0.6B: c=4.1  0.8B: c=3.7  27B-Qwen3.8: c=7.1  27B-heretic: c=4.9
+    fc   r= 64: 0.6B: c=9.5  0.8B: c=9.3  27B-Qwen3.8: c=11.5  27B-heretic: c=22.7
+    fc   r=128: 0.6B: c=5.8  0.8B: c=5.6  27B-Qwen3.8: c=8.7  27B-heretic: c=14.7
+
+## width slope at FIXED kind and rank: b_d = dlog(mean capture)/dlog(d_in) across models (r/d ⇒ −1)
+   (d-leverage here is ONLY the model widths: 1024 → 5120 at d_model kinds; ffn_down 3072/3584 → 17408)
+  diag attn_gate r= 64: b_d=-0.84 [-0.89,-0.80]  0.8B:0.415  27B-Qwen3.8:0.172  27B-heretic:0.066
+  diag attn_gate r=128: b_d=-0.77 [-0.81,-0.74]  0.8B:0.546  27B-Qwen3.8:0.221  27B-heretic:0.112
+  diag attn_k    r= 64: b_d=-0.50 [-0.55,-0.44]  0.6B:0.514  0.8B:0.478  27B-Qwen3.8:0.292  27B-heretic:0.170
+  diag attn_k    r=128: b_d=-0.41 [-0.45,-0.38]  0.6B:0.660  0.8B:0.681  27B-Qwen3.8:0.408  27B-heretic:0.291
+  diag attn_o    r= 64: b_d=-0.81 [-1.01,-0.61]  0.6B:0.304  0.8B:0.431  27B-Qwen3.8:0.146  27B-heretic:0.151
+  diag attn_o    r=128: b_d=-0.78 [-0.91,-0.66]  0.6B:0.460  0.8B:0.567  27B-Qwen3.8:0.217  27B-heretic:0.215
+  diag attn_q    r= 64: b_d=-0.90 [-0.98,-0.81]  0.6B:0.448  0.8B:0.339  27B-Qwen3.8:0.128  27B-heretic:0.065
+  diag attn_q    r=128: b_d=-0.82 [-0.90,-0.76]  0.6B:0.589  0.8B:0.466  27B-Qwen3.8:0.177  27B-heretic:0.109
+  diag attn_qkv  r= 64: b_d=-0.77 [-0.81,-0.73]  0.8B:0.330  27B-Qwen3.8:0.132  27B-heretic:0.068
+  diag attn_qkv  r=128: b_d=-0.72 [-0.75,-0.68]  0.8B:0.449  27B-Qwen3.8:0.180  27B-heretic:0.111
+  diag attn_v    r= 64: b_d=-0.58 [-0.60,-0.55]  0.6B:0.458  0.8B:0.407  27B-Qwen3.8:0.175  27B-heretic:0.165
+  diag attn_v    r=128: b_d=-0.45 [-0.47,-0.44]  0.6B:0.601  0.8B:0.616  27B-Qwen3.8:0.299  27B-heretic:0.286
+  diag ffn_down  r= 64: b_d=-0.78 [-0.89,-0.68]  0.6B:0.295  0.8B:0.253  27B-Qwen3.8:0.083  27B-heretic:0.068
+  diag ffn_down  r=128: b_d=-0.76 [-0.83,-0.68]  0.6B:0.424  0.8B:0.379  27B-Qwen3.8:0.126  27B-heretic:0.103
+  diag ffn_gate  r= 64: b_d=-1.13 [-1.17,-1.09]  0.6B:0.326  0.8B:0.337  27B-Qwen3.8:0.072  27B-heretic:0.040
+  diag ffn_gate  r=128: b_d=-1.01 [-1.03,-0.98]  0.6B:0.446  0.8B:0.459  27B-Qwen3.8:0.111  27B-heretic:0.072
+  diag ffn_up    r= 64: b_d=-0.95 [-0.99,-0.92]  0.6B:0.261  0.8B:0.244  27B-Qwen3.8:0.073  27B-heretic:0.040
+  diag ffn_up    r=128: b_d=-0.89 [-0.92,-0.86]  0.6B:0.380  0.8B:0.363  27B-Qwen3.8:0.111  27B-heretic:0.072
+  diag ssm_out   r= 64: b_d=-0.64 [-0.74,-0.54]  0.8B:0.273  27B-Qwen3.8:0.185  27B-heretic:0.098
+  diag ssm_out   r=128: b_d=-0.69 [-0.76,-0.63]  0.8B:0.432  27B-Qwen3.8:0.256  27B-heretic:0.159
+  fc   attn_gate r= 64: b_d=-0.71 [-0.73,-0.69]  0.8B:0.639  27B-Qwen3.8:0.137  27B-heretic:0.304
+  fc   attn_gate r=128: b_d=-0.60 [-0.61,-0.58]  0.8B:0.753  27B-Qwen3.8:0.209  27B-heretic:0.395
+  fc   attn_k    r= 64: b_d=-0.52 [-0.55,-0.50]  0.6B:0.685  0.8B:0.684  27B-Qwen3.8:0.234  27B-heretic:0.370
+  fc   attn_k    r=128: b_d=-0.40 [-0.41,-0.38]  0.6B:0.803  0.8B:0.829  27B-Qwen3.8:0.371  27B-heretic:0.502
+  fc   attn_o    r= 64: b_d=-0.69 [-0.76,-0.62]  0.6B:0.645  0.8B:0.794  27B-Qwen3.8:0.219  27B-heretic:0.513
+  fc   attn_o    r=128: b_d=-0.57 [-0.63,-0.52]  0.6B:0.765  0.8B:0.868  27B-Qwen3.8:0.311  27B-heretic:0.604
+  fc   attn_q    r= 64: b_d=-0.72 [-0.75,-0.69]  0.6B:0.636  0.8B:0.620  27B-Qwen3.8:0.127  27B-heretic:0.308
+  fc   attn_q    r=128: b_d=-0.61 [-0.63,-0.59]  0.6B:0.758  0.8B:0.733  27B-Qwen3.8:0.196  27B-heretic:0.394
+  fc   attn_qkv  r= 64: b_d=-0.67 [-0.69,-0.65]  0.8B:0.584  27B-Qwen3.8:0.130  27B-heretic:0.304
+  fc   attn_qkv  r=128: b_d=-0.57 [-0.59,-0.56]  0.8B:0.701  27B-Qwen3.8:0.199  27B-heretic:0.393
+  fc   attn_v    r= 64: b_d=-0.53 [-0.56,-0.51]  0.6B:0.648  0.8B:0.639  27B-Qwen3.8:0.201  27B-heretic:0.370
+  fc   attn_v    r=128: b_d=-0.40 [-0.42,-0.39]  0.6B:0.771  0.8B:0.796  27B-Qwen3.8:0.335  27B-heretic:0.500
+  fc   ffn_down  r= 64: b_d=-0.82 [-0.88,-0.77]  0.6B:0.465  0.8B:0.486  27B-Qwen3.8:0.125  27B-heretic:0.115
+  fc   ffn_down  r=128: b_d=-0.76 [-0.80,-0.71]  0.6B:0.597  0.8B:0.616  27B-Qwen3.8:0.180  27B-heretic:0.164
+  fc   ffn_gate  r= 64: b_d=-0.71 [-0.74,-0.69]  0.6B:0.563  0.8B:0.594  27B-Qwen3.8:0.114  27B-heretic:0.295
+  fc   ffn_gate  r=128: b_d=-0.62 [-0.63,-0.60]  0.6B:0.685  0.8B:0.710  27B-Qwen3.8:0.177  27B-heretic:0.379
+  fc   ffn_up    r= 64: b_d=-0.66 [-0.68,-0.64]  0.6B:0.528  0.8B:0.539  27B-Qwen3.8:0.115  27B-heretic:0.294
+  fc   ffn_up    r=128: b_d=-0.58 [-0.60,-0.57]  0.6B:0.654  0.8B:0.663  27B-Qwen3.8:0.178  27B-heretic:0.377
+  fc   ssm_out   r= 64: b_d=-0.78 [-0.84,-0.70]  0.8B:0.561  27B-Qwen3.8:0.193  27B-heretic:0.296
+  fc   ssm_out   r=128: b_d=-0.68 [-0.73,-0.63]  0.8B:0.687  27B-Qwen3.8:0.277  27B-heretic:0.383
+
+## rank exponent within each model (all kinds pooled; log capture vs log r per tensor, averaged): capture ∝ r^b_r
+  diag 0.6B        : b_r = 0.48 ± 0.13 (per-tensor slopes, n=196, r∈[32,256])
+  diag 0.8B        : b_r = 0.52 ± 0.12 (per-tensor slopes, n=150, r∈[32,256])
+  diag 27B-Qwen3.8 : b_r = 0.57 ± 0.15 (per-tensor slopes, n=400, r∈[32,256])
+  diag 27B-heretic : b_r = 0.75 ± 0.11 (per-tensor slopes, n=400, r∈[32,256])
+  fc   0.6B        : b_r = 0.28 ± 0.07 (per-tensor slopes, n=196, r∈[32,256])
+  fc   0.8B        : b_r = 0.28 ± 0.07 (per-tensor slopes, n=150, r∈[32,256])
+  fc   27B-Qwen3.8 : b_r = 0.60 ± 0.07 (per-tensor slopes, n=400, r∈[32,256])
+  fc   27B-heretic : b_r = 0.40 ± 0.10 (per-tensor slopes, n=400, r∈[32,256])
+wrote fig_capture_vs_rd.png fig_capture_vs_r.png fig_c_by_lane.png

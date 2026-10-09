@@ -987,3 +987,428 @@ VERDICT: the KLD silent zone is now a measured resolution floor
 where tasks resolve at all they corroborate KLD — the KLD-first
 methodology survives its own audit. §6.1's "zero task evaluations"
 sentence dies today (ABLATION-PLAN promise kept).
+
+## 2026-09-08 — DOCTRINE (Max): zig is the loss-leader, not the loss
+
+Zig is where our leaderboard bleeds (the entire 3.6→3.8 gap, 13–0
+paired; 8+ of every run's legit fails) — and we keep it on the board
+deliberately, because it is the most discriminating language we have
+(29/31 units) and the leading indicator of the failure class that will
+eventually hit every language: stdlib drift past training cutoffs.
+
+The models are NOT incapable — solve is tied at 99.1 and every
+zig-failed problem is solved in another language. They are suffocating
+on stale API surface with no feedback. The strategy is to let them
+BREATHE the way they were intended: LSP-equivalent harness improvements
+(push-diagnostics Tier 1, shipped default-off pending A/B; awareness
+packs Tier 3) that convert invisible staleness into visible, fixable
+signal inside the agent loop. Zig losses today buy us the measurement
+ground to prove the stack can hand capability back — the OpenBeast
+thesis in miniature.
+
+(Also fold this framing into the results PR docs + paper positioning.)
+
+## 2026-09-09 ~01:00 — kernels rebased b10434 → b10865 (b10866 local)
+Six hunks (see kernels/README.md in the main tree); the trap was
+upstream's halve_iters template param shifting our lora instantiation
+positions. Serving now = PRISTINE b10865 (kernel gate closed by
+construction); research kernels isolated in build-research/.
+
+### L6 DELIVERED 2026-09-09 — family subsumption note + draft integration
+paper/theory-L6-family-subsumption.md: master objective Q(Delta; L_g,
+L_x, F); ReQuant's dL score PROVEN exact coordinate descent on our
+whitened quadratic (Claim 1, derivation); GSQ = same feasible set,
+outcome objective, ours its Gauss-Newton surrogate — T1.17 measures the
+gap (Claim 2); SchurQuant's Schur-complement machinery DERIVED as the
+exact scale-block minimization of the same quadratic (Claim 3) — their
+feasible set strictly contains ours, B1 narrowing applied with the
+CODES-ONLY wording (recon's "scale+code" wording rejected: §2.3 freezes
+grid bytes; the in-format scale-refit extension is derived and queued
+as an option, not a claim); OBD-LLM L_g=I scoping + three-tier
+one-sidedness defense (Claim 4: backprop-free workflow, E24 diagonal
+no-op theorem, no evidence transfer from W-decomposition@8B); family
+table + RCO complementarity anchor (Claim 5). DRAFT EDITS: §2.3
+ReQuant/SchurQuant placement sentence; §2.2 OBD-LLM scoping; intro
+claim (1) re-narrowed ("first one-shot whitened code re-optimization
+on the shipped superblock hierarchy", class named); NEW §4.3b
+equivalence-class section (E28/E29 into the draft at last, with AWSRC
+scope sentence + RCO anchor). references.md +SchurQuant/AWSRC/RCO.
+[EYEBALL] flags mark every agent-read fact needing PDF verification
+before freeze: ReQuant H diag-vs-full + 1/2 factor + Alg schedule; GSQ
+scale relaxation + exact loss; SchurQuant metric G + format; their
+reconstruction-vs-metrics quote.
+
+### L6 VERIFICATION PASS 2026-09-09 — PDFs pulled, three recon errors caught
+All 7 load-bearing PDFs downloaded to prior-art/pdfs/. Page-level reads:
+ReQuant (pp.3-6), SchurQuant (pp.3-6+grep), GSQ (pp.3-9+App.E/F),
+OBD-LLM + AWSRC targeted greps. CORRECTIONS to the agent-read recon:
+(1) SchurQuant's metric IS a full token-weighted Gram XΩXᵀ+λI — "not
+whitened" was wrong; their Schur eliminates the CONTINUOUS SUFFIX
+(chunk-block Babai generalization), not scales — scale refit is a
+separate closed-form alternation over CONTINUOUS per-row-group scales.
+(2) GSQ's objective is block-staged output RECONSTRUCTION (20 GPU
+epochs, FineWeb-Edu, local-shift ±2 moves, group scales trained) — not
+task loss; at layer granularity it IS our quadratic → T1.17 framing
+corrected to search-and-granularity. (3) AWSRC's low-rank baseline is
+ACTIVATION-WEIGHTED (rank-34 INT8, LQER-style) — not unwhitened.
+CONFIRMED: ReQuant identity exact (full Gram, rank-one g refresh, no
+½-factor issue; GPTAQ-asymmetric term = adoptable nuance); SchurQuant
++11.88pp optimizer-only; OBD-LLM 10%-mean-diag dampening verbatim +
+bonus Fig.4 X-G correlation ≤0.1 (K-FAC support for E24/T1.12); GSQ
+Q2_K 50.03→56.28 + token-reduction side effect (replicate in v5-fast
+rows). Note, references, and draft sentences updated to verified
+wording. Remaining eyeball: GSQ released code (sub-block scale-code
+emission).
+
+### RELATED WORK ASSEMBLED 2026-09-09 — draft/07-related-work.md
+Nine-paragraph narrative from the curated bibliography + L6 placements +
+claim ledger: correction lineage (what we add: same-pipeline ablations
+on deployed formats + interpolation controls), rank-scales-with-width
+(3 published legs + our honest two-point framing), frozen-grid
+refinement family (GPTQ/ReQuant/SchurQuant/GSQ with L6's proven
+placements + T1.17 hook), whitening ladder + one-sidedness defense,
+equivalence class with E31 floor + RCO escape ("allocation is the only
+lever that moves at equal bytes, and it can be optimized exactly"),
+MoE, serving-as-claim (unfused-field evidence), upstream #8831 answer,
+KLD-first measurement stance. Organization borrows 2507.17417's
+taxonomy (credited in the header). All quotes are from the 09-09
+PDF-verified set; E31 cited via its PREREG. OUTLINE note: draft now has
+a §7; wire into any future section renumbering.
+
+### E32/T1.17 OPENING ROWS 2026-09-10 ~12:50 — reference + GSQ-RCO measured
+bf16ref38-40.logits generated (40ch, PPL 5.9246±0.141, 8s/pass partial
+offload). First table rows (results-40ch.txt): GSQ-RCO IQ2_XS KLD
+0.2028±0.0044 top-1 81.4% PPL 6.68 @8.4GB; GSQ-RCO IQ3_S KLD
+0.0525±0.0012 top-1 90.1% PPL 6.03 @11.8GB. Next: (b) Gram capture on
+3.8 (build-research), (c) shipped-baseline downloads from their card +
+gguf-refine our arm, (d) paired per-chunk stats vs both.
+
+### E32 STEP (b) COMPLETE 2026-09-10 ~14:20 — Qwen3.8 BF16 Grams banked
+capture_gram38.sh: 257 Gram files, 31GB, data/gram38-bf16/ + grams.json
+manifest + imatrix-38-bf16.gguf. 48 chunks wikitext-train, 110s/pass
+partial offload. VALIDATION (manifest-driven): 5120-dim tensors exact
+symmetry + PSD; ffn_down = 8×2176 blocks (17408-dim, blocked per the
+>8192 convention), all blocks sym_rel=0, PSD; counts 24576 = 48×512.
+First 3.8-family capture — includes ssm_out (GDN) tensors. NEXT (c):
+pull ISTA card's named Unsloth baselines → gguf-refine our arm with
+these Grams → (d) paired table.
+
+### E32 BASELINE ROWS 2026-09-10 14:35 — SHIPPED BASELINES BEAT GSQ-RCO
+### ON KLD (surrogate-vs-outcome, their side of the ledger)
+
+All five rows measured vs bf16ref38-40 (results-40ch.txt): at BOTH byte
+classes the PLAIN Unsloth baseline has lower KLD and higher top-1 than
+the GSQ-RCO trained refinement (IQ2-class: UD-IQ2_S 0.1313/85.1% vs
+GSQ-RCO 0.2028/81.4%; IQ3-class: UD-IQ3_S 0.0373/91.7% vs GSQ-RCO
+0.0525/90.1%). Their card claims +10pt AIME over UD at the IQ2 rung —
+so their refinement improves TASK metrics while DEGRADING
+distribution-level fidelity on wikitext-KLD. Candidate explanations,
+pre-registered before our arm runs: (a) calibration-distribution
+mismatch (they train on FineWeb-Edu block-reconstruction; our
+truth/eval is wikitext — their artifact may simply be tuned AWAY from
+wikitext), (b) genuine task-overfit at the cost of general fidelity.
+(a) is testable: measure their artifacts vs a FineWeb-Edu-chunk KLD
+later. EITHER WAY: the head-to-head's KLD half now has a low bar —
+our whitened wikitext-Gram refine starts from baselines that already
+beat their arm — and the CAPABILITY half (v5-fast rows, step e)
+becomes the decisive half, where their card's task wins live. Byte
+caveat: UD files differ from GSQ-RCO by ±2-3% bytes; paired per-chunk
+stats + byte columns required in the final table (PROTOCOL #4).
+
+### E32/T1.17 KLD TABLE COMPLETE 2026-09-10 15:20 — THE HEAD-TO-HEAD
+### VERDICT (paired per-chunk, 40 chunks, all contrasts 40/40)
+
+FULL TABLE (results-40ch.txt; our rows +900,813,120 adapter bytes):
+  IQ2 rung: GSQ-RCO 0.2028/81.4% · UD-IQ2_S bare 0.1313/85.1% ·
+            OURS(+fc128) 0.1191/85.8% @9.27GB total
+  Q2K rung: UD-Q2_K_XL bare 0.0854/87.3% · OURS 0.0800/88.0% @10.73GB
+  IQ3 rung: GSQ-RCO 0.0525/90.1% · UD-IQ3_S bare 0.0373/91.7% ·
+            OURS 0.0353/91.7% @12.94GB total
+
+PAIRED VERDICTS (per-chunk t, shared eval tokens + reference):
+1. **OURS BEATS GSQ-RCO AT EVERY RUNG, 40/40 chunks**: IQ2 t=−73.0
+   (dKLD −0.0785), IQ3 t=−107.5 (−0.0180). One exact whitened CPU
+   pass (~13 min/model) > 20 GPU-epochs of Gumbel-Softmax training —
+   on wikitext-KLD. (Calibration-mismatch hypothesis for their arm
+   stands as pre-registered; capability rows are their home turf.)
+2. **The correction increment is real at every rung** vs its own bare
+   baseline: t=−60.7 / −42.4 / −45.9, all 40/40 (dKLD −9%/−6%/−5.6%
+   relative). Third architecture family (qwen35/3.8), same law.
+3. **THE LADDER REMAINS UNBEATEN (E27's ghost, now cross-family)**:
+   byte-fair check — bare UD-Q2_K_XL @9.83GB beats ours-IQ2S+adapter
+   @9.27GB, t=−48.7, 40/40. Correction wins WITHIN a rung; pure-quant
+   interpolation wins ACROSS rungs at equal bytes. Both refinement
+   schools (theirs trained, ours closed-form) sit below the ladder
+   line on this instrument; GSQ-RCO sits below its own unrefined
+   baseline.
+Positioning sentence for the paper: the head-to-head's KLD half is
+won decisively AND the equal-byte doctrine survives a third family —
+one-shot whitened correction is the best per-rung repair measured,
+and repair itself remains dominated by allocation. NEXT: step (e)
+capability rows (their card's task-win claims); FineWeb-KLD control
+for the mismatch hypothesis; JOURNAL→MASTER-TABLE + paper §4.3
+integration.
+
+### E32 CAPABILITY ROW 1 2026-09-10 17:15 — GSQ-RCO IQ3_S CRATERS
+36/112 passed, imputed 94.68 WITH 14 TRIPWIRE FAILURES (count_vowels
+c/d/e, sigmoid b/c, unionfind d/e, det b/c, gemm_d, aes_c, priority_c,
+race_condition, miller_rabin_f) — harness's own imputation-untrust
+warning fired; true full-suite score materially below 94.68. Easy-unit
+failures ≠ calibration-shift signature — weakens the pre-registered
+charitable hypothesis (a). Reference frame: 3.8 Q5-class rows 82-84/112,
+imputed 97.6-97.7. 14 tripwires >> churn floor (±1-2 tripwire flips).
+"Task-lossless at IQ3_S" does not survive agentic-coding deployment on
+this stack. Row 2 (UD-IQ3_S bare, same bits/base — their claimed +10
+AIME victim) running since 17:16 → the paired verdict.
+
+### E32 CAPABILITY ROWS 1-2 RETRACTED 2026-09-10 19:55 — ENVIRONMENTAL
+### (CUDA launch-timeout crashes), chain halted
+
+SANITY AUDIT after row 2's implausible 15/112: 84-87% of BOTH rows'
+failures are ZERO-TOKEN (agents talking to a dead socket) and the
+server log carries repeated crashes — `ggml-cuda.cu:108: CUDA error:
+the launch timed out and was terminated` (watchdog kill mid-serve,
+~98 min in, -np 6). Row-1 "GSQ craters 36/112" and row-2 "UD worse
+15/112" are BOTH INVALID as capability measurements — retracted in
+full. What survives: (1) the KLD table is UNAFFECTED (llama-perplexity
+single-stream, zero incidents, sane PPLs); (2) a REAL finding of a
+different kind: these IQ3-class artifacts (both GSQ-RCO and Unsloth
+UD) are UNSTABLE under multi-slot serving on stock b10865 + RTX 5090
+where our Q5-class models ran 14+ crash-free hours — an IQ-kernel/
+GDN-arch stability issue worth a minimal repro + upstream report.
+Cache: PR #35's zero-token guard prevented poisoning (nothing cached).
+NEXT: (a) minimal stability repro (serve UD-IQ3_S, parallel load,
+catch the timeout; vary -np 1, graph-opt off); (b) rerun capability
+rows only under verified-stable serving; (c) never compare crashed
+rows. Lesson re-learned at higher stakes: sanity-audit failure MODES
+before believing failure COUNTS — the 0-token signature was one grep
+away all along.
+
+### 2026-09-11 10:19 — CAMPAIGN RELAUNCHED (Max: "go, launch the E32 chain
+### and all our remaining tasks to complete in order")
+Box rebooted overnight (/tmp logs gone). v2 capability chain relaunched
+10:19 (np1, capped 20480, pure b10865): row 1 runs FULLY LIVE — the #56
+pull rolled the harness context hash (a4bf66d1 → 1f3f60c1), orphaning
+the 13 units banked 09-10 night. Cleaner: one era per row, no pooled
+passes; cost ~40 min. Orchestrator scratch/post_e32.sh chains, in order:
+FineWeb-KLD control → IQ3 capability verdict → IQ2 capability pair →
+IQ2 verdict → IQ-instability repro (A: UD-IQ3_S np6; B: +GGML_CUDA_
+DISABLE_GRAPHS=1; C: UD-Q5_K_XL np6 negative control) → greedy churn-
+floor pair (langaware) → PPL@2048 sign check (stage B). Verdict script
+e32_cap_verdict.py self-tested on the retracted 09-10 rows: flags both
+INVALID by the zero-token audit (64/76, 85/97 zero-token fails) — the
+sanity audit is now code, not a grep we might forget.
+
+### 2026-09-11 10:50 — CORRECTION: the 09-10 15:20 paired t-statistics
+### were INFLATED; verdicts stand, magnitudes and chunk-win counts repaired
+Recomputed every pre-registered contrast with the campaign's canonical
+tool (experiments/24-yaqa-lite/paired_stats.py, the R1-repaired per-chunk
+differencing used for E27). The 15:20 entry's t values (−73.0, −107.5,
+−60.7/−42.4/−45.9, −48.7) and "40/40 on every contrast" do not reproduce;
+they appear to have divided per-chunk deltas by a per-TOKEN sem. Honest
+numbers (KLD nats/tok, n=40, A−B, sem of per-chunk difference):
+  ours-IQ2S+fc128 vs GSQ-RCO IQ2_XS: −0.0837 ± 0.0073, t=−11.5, 40/40;
+    top-1 +4.44 pt, t=+10.9 (38/40)
+  ours-IQ3S+fc128 vs GSQ-RCO IQ3_S:  −0.0173 ± 0.0018, t=−9.5, 38/40;
+    top-1 +1.61 pt, t=+4.7 (30/40)
+  GSQ-RCO IQ2_XS vs UD-IQ2_S bare:   +0.0715 ± 0.0061, t=+11.7, 0/40
+  GSQ-RCO IQ3_S  vs UD-IQ3_S bare:   +0.0152 ± 0.0018, t=+8.6, 1/40
+  increment IQ2S: −0.0122 ± 0.0019, t=−6.5, 39/40 (top-1 +0.74, t=+3.7)
+  increment Q2KXL: −0.0055 ± 0.0008, t=−7.0, 34/40 (top-1 +0.71, t=+3.9)
+  increment IQ3S: −0.0021 ± 0.0004, t=−5.9, 36/40 (top-1 +0.09, t=+0.5 TIE)
+  ladder: ours-IQ2S+adapter (9.27 GB) vs bare UD-Q2_K_XL (9.83 GB):
+    +0.0337 ± 0.0029, t=+11.6, 0/40 — ladder unbeaten, as before.
+The dKLD for the IQ2 headline was also misquoted (−0.0785 → −0.0837).
+WHAT STANDS: every direction, every verdict, all |t| ≥ 4.7 on KLD,
+top-1 increment at IQ3 is a tie (was implied real). WHAT CHANGES: the
+paper cites these numbers, not the 15:20 ones; the "40/40 every rung"
+sentence becomes "40/40, 38/40". Filed under honor-the-fallen: the
+inflated stats were one paired_stats.py call away — the same lesson as
+the zero-token audit, and now both are scripts. paired-wikitext-40ch.txt
+in the E32 dir is the canonical table from here on.
+
+### 2026-09-11 11:00 — PRE-REGISTERED: FineWeb-KLD control + PPL@2048 sign check
+(1) FineWeb-Edu control (hypothesis (a), calibration mismatch): 40 chunks
+of FineWeb-Edu sample-10BT (first 400 docs, HF datasets-server pull, staged
+as fineweb-edu-control.txt), fresh BF16 reference on the same text, full
+8-row table + the 8 paired contrasts above. PREDICTIONS: if (a), GSQ-RCO's
+deficit vs bare UD SHRINKS materially or FLIPS on FineWeb (t toward 0 or
+negative) while our increments (wikitext-Gram-whitened) shrink too — the
+mismatch cuts both ways; if (b) task-overfit, GSQ-RCO stays below bare UD
+on FineWeb with t ≳ +4. Their own card shows fw-PPL GSQ-RCO IQ2_XS 9.19 vs
+UD-IQ2_S 9.08 (UD better on FineWeb!) and IQ3_S 8.34 vs 8.34 (tie) — so
+even on their calibration corpus their card does not claim a distribution-
+level win; (a) would have to explain a KLD gap the card's PPL doesn't show.
+(2) PPL SIGN DISCREPANCY: card wikitext PPL GSQ-RCO < UD (7.69<8.02,
+7.07<7.16); our c=512 rows UD < GSQ-RCO (6.56<6.68, 6.006<6.027). Check at
+-c 2048 (ppl2048_check.sh). If the sign flips with context, the head-to-
+head must report both contexts; if not, the discrepancy is theirs to
+explain (tokenizer/split/build) and we say so plainly.
+
+### 2026-09-11 11:10 — GSQ RELEASED-CODE CHECK CLOSED: the public repo has
+### NO GGUF path; sub-block scale emission is UNVERIFIABLE from released code
+Delegated code review of github.com/IST-DASLab/GSQ @ 03fc164 (2026-07-05),
+load-bearing claims re-verified by hand: (1) zero hits for gguf/ggml/
+llama.cpp/llama-quantize in any .py/.yaml/.sh/.toml — only README.md
+advertises the "Qwen3-8B GGUF K-Quant … projects the result back into the
+same K-Quant format" workflow; no GGUF reader, writer, or scale-code
+projector exists in the tree. (2) The quantizers TRAIN the scales as a
+free fp32 nn.Parameter with its own optimizer group (src/trainer.py:69-75,
+lr2) and emit them verbatim as float `weight_scale` (compressed-tensors
+safetensors / Humming-MARLIN pack) — freely-trained scales cannot be
+represented in K-/IQ-quant sub-block scale codes without a re-projection
+the repo does not contain. (3) Every production config (qwen35/*, qwen3/*,
+kimi-*) fails the repo's own loader (unknown keys masks_lr/signs_lr/
+scales_lr vs lr1/lr2) — only configs/local/* load. (4) No 27B config; the
+qwen35 configs calibrate on OpenThoughts-114k (4096 × 4096-token chunks),
+not FineWeb-Edu. CONSEQUENCE FOR THE PAPER: the released GGUF artifacts we
+measure were produced by an unreleased pipeline; L6 Claim 2's "codes
+refined, format projection, scales frozen" reading of their K-quant path
+is the README's word, not code we can cite. We scope accordingly:
+"GSQ-RCO (as released)" is an artifact-level comparison; the mechanism
+attribution (codes-only vs codes+scales) is UNKNOWN for the shipped
+files. The 09-10 "they train on FineWeb-Edu block-reconstruction"
+sentence is likewise unsupported by code — the card lists FineWeb-Edu as
+an EVALUATION perplexity corpus; the calibration set of the 27B GGUF run
+is undocumented (checking the card text now; imatrix on the card =
+1000 × 4096-token chunks, corpus unstated). Hypothesis (a) is therefore
+re-worded from "FineWeb-Edu mismatch" to "calibration-corpus mismatch
+(corpus unknown; FineWeb-Edu is the control we can run because it is the
+one non-wikitext corpus their card reports on)".
+
+### 2026-09-11 15:10 — E33 / T1.10 CAPTURE-vs-WIDTH REGRESSION DONE (CPU):
+### the r/d "rule" is killed as a form; the direction is upgraded to a fit
+Delegated build, reviewed: pipeline validation is the load-bearing part —
+recomputed spectra reproduce §4.2's 0.37 (0.3706) and 0.07 (0.074 on the
+BF16-provenance E27 pair; the original legacy pair is pruned and the cache
+lacks totals, so 0.07 itself is unrecoverable), and 1,620 logged captures
+(E24/E32/E34) match per tensor to ≤0.01 — which also PROVES the E32
+extraction logs are full-Gram whitened. Findings: linear c·(r/d) worst of
+six forms everywhere; best two-exponent power law (diag r^0.61·d^−0.67,
+fc r^0.44·d^−0.59; r and d not only via r/d); full-Gram whitening halves
+the width penalty; no width-invariant head (h=0) — the constant-
+cardinality-head mechanism cited in §4.2 is not supported here; prefactor
+is per-(whitener, base, model) and two same-width same-arch 27B models sit
+on different curves (base provenance confounded; a from-BF16 Q2_K of 3.8
+with our imatrix would separate it — CPU-feasible, queued as an option).
+HONEST SCOPE: one-step width leverage (1024→5120), tensor-bootstrap CIs,
+held-out 27B off 0.6–1.6×; a third width is required before any exponent
+is a law. Paper §4.2 rewritten to the fitted statement + scope; T1.10
+closed in ABLATION-PLAN; Block 6 bullet. Bulk data (91 MB spectra with
+exact totals + 26 MB points.csv) parked at data/spectra-e33/ outside git.
+Operational: the batch contended with the live eval (decode 94→77 tok/s)
+until reniced to 19 and capped at 8 threads — rule for future CPU-lane
+jobs during sweeps: nice 19, ≤8 threads, from launch.
+
+### 2026-09-11 17:40 — E33 ADDENDUM: the same-width "third model off the
+### curve" finding is RETRACTED — it was the base recipe
+Qwen3.8-27B re-quantized from BF16 with heretic's exact E27 recipe (one
+Q2_K step, imatrix-38-bf16, blk.64 NextN pinned q5_k, 11.00 GB — same byte
+class): 400 tensors, diag r64 0.074 vs heretic 0.074, fc r64 0.290 vs
+0.284; 0 of 40 per-kind contrasts exclude zero; rank exponents identical
+(0.75/0.40). The Unsloth UD lane (diag c 10.0, fc 11.5) was the outlier —
+dynamic allocation + its own calibration imatrix inflate diag-visible
+residual structure ~70% and halve fc-visible structure. §4.2 corrected
+(commit follows): prefactor = f(whitener, base recipe, width); pooled fit
+with the fixed-recipe lane primary: diag r^0.68·d^−0.76, fc r^0.37·d^−0.52;
+held-out 27B 0.9–1.1×. Lesson (twice today): a same-day confound check
+that costs 15 CPU-minutes is cheaper than a wrong sentence in the paper.
+Artifact: weights/research-staging/e33/q38-27b-bf16-Q2_K.gguf (also a
+clean from-BF16 3.8 base for future 3.8-lane work).
+
+### 2026-09-14 11:00 — E16 RUNG 1 (E34, 0.8B) READ: the increment is real,
+### the equal-byte law holds, and NVFP4 is the WORST 4-bit carrier here
+Measured 09-11 14:02 (stage C, the only orchestrator that survived the
+setsid fiasco); read three days later after the second unlogged box death.
+40-chunk BF16-truth KLD, pure b10865, every base one quantize step from
+the 0.8B BF16 with gram08b imatrix, blk.24 pinned q5_k, paired per-chunk
+stats. Against the four pre-registered readings:
+1. **Increment REAL:** NVFP4-all + fc-r128q8 vs NVFP4-all bare — KLD
+   0.2073 → 0.1038 (dmean −0.1035, t=−32.0, 40/40), top-1 77.0 → 83.2 %
+   (+6.2 pt, 40/40). Recovery fraction 50 %. The mechanism has still
+   never failed to improve its own base — eleventh base format.
+2. **Equal-byte law HOLDS (no first win):** composite 603 MB (516+87)
+   at KLD 0.1038 loses to EVERY ladder rung at or below its bytes:
+   Q5_K_S 578 MB 0.0155 (6.7× better), Q4_K_M 543 MB 0.0394 (t=+26.3,
+   0/40), Q4_K_S 519 MB 0.0473 (t=+22.8, 0/40), IQ4_XS 518 MB 0.0503,
+   even Q4_0 516 MB 0.0877. Same law as E27/E32, fourth time, fourth
+   base family.
+3. **NVFP4 under llama.cpp's quantizer is the worst 4-bit carrier on
+   this GDN arch:** bare 0.2073 vs Q4_0 0.0877 / IQ4_XS 0.0503 / Q4_K_S
+   0.0473 at 516-519 MB — 2.4× worse than the naive Q4_0, 5.3× worse
+   than Q4_K_M, and worse than Q3_K_M (0.1663) at 36 MB FEWER bytes.
+   The community #23853 ledger's 2× NVFP4-vs-Q4_K_M gap is a 5× gap at
+   0.8B. Scope clause (pre-registered): llama-quantize has no
+   NVFP4-specific imatrix path; this measures the shipped quantizer's
+   NVFP4, not the format's ceiling (QAD-style retraining is NVIDIA's
+   own recovery route, 2601.20088).
+4. **Capture edge did NOT translate — surrogate-vs-outcome #7:** capture
+   0.736 (NVFP4) vs 0.721 (Q3_K_M) predicted a larger NVFP4 increment;
+   the Q3_K_M increment is larger both absolutely (−0.1169 vs −0.1035)
+   and relatively (70 % vs 50 % recovery): q3km-fc128 0.0494 / 88.4 %
+   vs nvfp4all-fc128 0.1038 / 83.2 %. Capture measures how much of the
+   residual the factors see, not how much damage is left — a worse
+   base with a marginally more structured residual still lands worse.
+VERDICT: the flag ("first whitened low-rank correction on a frozen
+NVFP4 LLM base") is claimed in the narrow sense — the datapoint exists,
+ground-up provenance, increment 40/40 — and it is a LOSING datapoint
+by the campaign's own law, exactly as the legacy 27B row already said
+(E16-27B: NVFP4+fc 16.69 GB 0.0625 vs Q4_K_M 16.84 GB 0.0211,
+Q6-referenced). E16 rung 2 (27B, heretic BF16 lane) is CLOSED without
+running: it would re-measure a dominated composition at 100× the GPU
+cost with a predictable outcome. Paper: one sentence in §4.3 (0.8B
+paragraph); the §6 NVFP4 re-rounder CODEC sentence is a different
+claim (free lever, zero bytes) and stands; the rollup's "best-correcting
+base" label gets the 0.8B counter-reading. Files: experiments/34-e16-
+nvfp4-08b/{results,paired}-e16-08b.txt (+ bytes.txt); logs in the
+main-tree twin.
+
+## 2026-10-09 — WRITE-UP: paper/final/ built; three E32 results journaled late
+
+Max: button the research up and publish with the state of things as they
+are. No new measurement was run. What changed in the record:
+
+**E32 controls, landed 09-11..09-14, read today for the first time in this
+journal** (files in experiments/32-t117-gsq-head-to-head/ of the main tree):
+- FineWeb-Edu KLD control (paired-fineweb-40ch.txt). Pre-registered
+  11:00 09-11: mismatch reading predicts GSQ-RCO's deficit vs bare UD
+  shrinks toward 0; task-overfit reading predicts t ≳ +4. MEASURED: IQ2
+  +0.0073 ± 0.0044 (t=+1.66, was +0.0715 t=+11.7 on wikitext); IQ3 +0.0033
+  ± 0.0016 (t=+2.07, was +0.0152 t=+8.6). → the mismatch reading holds for
+  their arm. The same registration predicted OUR increments would shrink
+  too. They did not: IQ2_S −0.0103 (t=−9.40, 38/40), Q2_K_XL −0.0052
+  (t=−9.20, 38/40), IQ3_S −0.0022 (t=−8.65, 36/40) — prediction wrong in
+  our favor; a wikitext-Gram-whitened correction holds on FineWeb-Edu at
+  27B. Ours vs GSQ-RCO: −0.0175 (t=−3.94, 35/40), −0.0055 (t=−3.39, 31/40).
+  Ladder: bare UD-Q2_K_XL beats ours-IQ2S+adapter +0.0471 (t=+10.72, 1/40).
+- PPL@2048 sign check (results-ppl2048.txt): the sign FLIPS with context.
+  GSQ-RCO IQ2_XS 6.834 ± 0.043 vs UD-IQ2_S 7.119 ± 0.047; IQ3_S 6.306 ±
+  0.039 vs 6.417 ± 0.041. The card's ordering reproduces at c=2048; ours at
+  c=512 is the other way. Per the registration, both contexts are reported.
+- IQ3 capability pair (capability-verdict-iq3-final.txt; re-audited clean
+  09-29): GSQ-RCO IQ3_S 88/112, UD-IQ3_S 76/112, paired 16/4, net +12,
+  p=0.012. The trained artifact beats its untrained baseline on the task
+  suite and sits inside the Q5-class band (82-91).
+- IQ2 capability pair: started 09-17 (stage F row A), campaign paused by
+  Max the same evening, never completed. Our own arm: never run on the suite.
+
+**Reading.** KLD@512 said GSQ-RCO < its own baseline; PPL@2048 and the
+coding suite say the opposite. Surrogate-vs-outcome again, and this time
+the surrogate is the instrument the whole campaign leans on. Within one
+refinement family KLD agreed with HellaSwag where HellaSwag could see
+anything (T1.8); across two families it did not rank. The paper says so in
+the abstract, §4.3c, §4.6 (ledger row 7) and §6.1, and makes no capability
+claim for our arm.
+
+**Draft → final.** paper/draft/ is kept as the revision history (dated
+editorial notes and all). paper/final/sections/ is the clean text; it also
+absorbs results the draft had not: T1.3/T1.5 n=100 finals (§3.1, §4.3 —
+"parity, not victory" is now "the rung is beaten, the interpolation line
+is not"), T1.8 HellaSwag (§4.3), T1.11/T1.14 held-out (§3.1), T1.12
+clean-Gram kron (§3.2), R8 kernel pair (§5.2). build.py turns [source: …]
+into artifact tags (Appendix A) and arXiv ids into a numbered list, and
+compiles paper.pdf with Typst. Two figures (figures.py), numbers copied
+from results files.
+
+**Not done, by decision:** the six open T1 rows and the items in TODO's
+top block. The write-up states each beside the claim it limits.

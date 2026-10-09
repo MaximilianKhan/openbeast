@@ -1,0 +1,126 @@
+=== nvfp4all-fc128 vs nvfp4all-bare (A-B) ===
+paired per-chunk stats: A = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-nvfp4all-fc128.log
+                        B = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-nvfp4all-bare.log
+  final: A KLD 0.10378 top 83.245%  |  B KLD 0.20728 top 77.049%
+  KLD (nats/tok)           paired dmean = -0.103500 ± 0.003237  (t = -31.98, n = 40, A better on 40/40 chunks)
+  mean NLL (nats/tok)      paired dmean = -0.074135 ± 0.010854  (t = -6.83, n = 40, A better on 36/40 chunks)
+  same-top fraction        paired dmean = +0.061960 ± 0.003588  (t = +17.27, n = 40, A better on 40/40 chunks)
+=== q3km-fc128 vs q3_k_m (A-B) ===
+paired per-chunk stats: A = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-q3km-fc128.log
+                        B = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-q3_k_m.log
+  final: A KLD 0.04942 top 88.363%  |  B KLD 0.16633 top 78.971%
+  KLD (nats/tok)           paired dmean = -0.116910 ± 0.003032  (t = -38.56, n = 40, A better on 40/40 chunks)
+  mean NLL (nats/tok)      paired dmean = -0.160238 ± 0.007151  (t = -22.41, n = 40, A better on 40/40 chunks)
+  same-top fraction        paired dmean = +0.093920 ± 0.004692  (t = +20.02, n = 40, A better on 40/40 chunks)
+=== nvfp4all-fc128 vs q4_k_s (A-B) ===
+paired per-chunk stats: A = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-nvfp4all-fc128.log
+                        B = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-q4_k_s.log
+  final: A KLD 0.10378 top 83.245%  |  B KLD 0.04727 top 88.431%
+  KLD (nats/tok)           paired dmean = +0.056510 ± 0.002476  (t = +22.82, n = 40, A better on 0/40 chunks)
+  mean NLL (nats/tok)      paired dmean = +0.057119 ± 0.008718  (t = +6.55, n = 40, A better on 7/40 chunks)
+  same-top fraction        paired dmean = -0.051860 ± 0.003880  (t = -13.37, n = 40, A better on 2/40 chunks)
+=== nvfp4all-bare vs q4_k_s (A-B) ===
+paired per-chunk stats: A = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-nvfp4all-bare.log
+                        B = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-q4_k_s.log
+  final: A KLD 0.20728 top 77.049%  |  B KLD 0.04727 top 88.431%
+  KLD (nats/tok)           paired dmean = +0.160010 ± 0.004483  (t = +35.69, n = 40, A better on 0/40 chunks)
+  mean NLL (nats/tok)      paired dmean = +0.131254 ± 0.010478  (t = +12.53, n = 40, A better on 0/40 chunks)
+  same-top fraction        paired dmean = -0.113820 ± 0.005083  (t = -22.39, n = 40, A better on 0/40 chunks)
+=== nvfp4all-fc128 vs q4_k_m (A-B) ===
+paired per-chunk stats: A = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-nvfp4all-fc128.log
+                        B = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-q4_k_m.log
+  final: A KLD 0.10378 top 83.245%  |  B KLD 0.03943 top 89.373%
+  KLD (nats/tok)           paired dmean = +0.064350 ± 0.002451  (t = +26.26, n = 40, A better on 0/40 chunks)
+  mean NLL (nats/tok)      paired dmean = +0.058019 ± 0.008159  (t = +7.11, n = 40, A better on 4/40 chunks)
+  same-top fraction        paired dmean = -0.061280 ± 0.003526  (t = -17.38, n = 40, A better on 0/40 chunks)
+=== nvfp4all-bare vs q4_k_m (A-B) ===
+paired per-chunk stats: A = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-nvfp4all-bare.log
+                        B = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-q4_k_m.log
+  final: A KLD 0.20728 top 77.049%  |  B KLD 0.03943 top 89.373%
+  KLD (nats/tok)           paired dmean = +0.167850 ± 0.004569  (t = +36.73, n = 40, A better on 0/40 chunks)
+  mean NLL (nats/tok)      paired dmean = +0.132154 ± 0.010509  (t = +12.57, n = 40, A better on 0/40 chunks)
+  same-top fraction        paired dmean = -0.123240 ± 0.005094  (t = -24.20, n = 40, A better on 0/40 chunks)
+=== nvfp4all-fc128 vs iq4_xs (A-B) ===
+paired per-chunk stats: A = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-nvfp4all-fc128.log
+                        B = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-iq4_xs.log
+  final: A KLD 0.10378 top 83.245%  |  B KLD 0.05030 top 88.539%
+  KLD (nats/tok)           paired dmean = +0.053480 ± 0.002375  (t = +22.52, n = 40, A better on 0/40 chunks)
+  mean NLL (nats/tok)      paired dmean = +0.058247 ± 0.007713  (t = +7.55, n = 40, A better on 3/40 chunks)
+  same-top fraction        paired dmean = -0.052940 ± 0.003615  (t = -14.64, n = 40, A better on 0/40 chunks)
+=== nvfp4all-bare vs iq4_xs (A-B) ===
+paired per-chunk stats: A = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-nvfp4all-bare.log
+                        B = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-iq4_xs.log
+  final: A KLD 0.20728 top 77.049%  |  B KLD 0.05030 top 88.539%
+  KLD (nats/tok)           paired dmean = +0.156980 ± 0.004406  (t = +35.63, n = 40, A better on 0/40 chunks)
+  mean NLL (nats/tok)      paired dmean = +0.132382 ± 0.013396  (t = +9.88, n = 40, A better on 2/40 chunks)
+  same-top fraction        paired dmean = -0.114900 ± 0.004935  (t = -23.28, n = 40, A better on 0/40 chunks)
+=== nvfp4all-fc128 vs q4_0 (A-B) ===
+paired per-chunk stats: A = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-nvfp4all-fc128.log
+                        B = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-q4_0.log
+  final: A KLD 0.10378 top 83.245%  |  B KLD 0.08769 top 84.431%
+  KLD (nats/tok)           paired dmean = +0.016090 ± 0.002274  (t = +7.08, n = 40, A better on 4/40 chunks)
+  mean NLL (nats/tok)      paired dmean = -0.036964 ± 0.008774  (t = -4.21, n = 40, A better on 30/40 chunks)
+  same-top fraction        paired dmean = -0.011860 ± 0.004001  (t = -2.96, n = 40, A better on 13/40 chunks)
+=== nvfp4all-bare vs q4_0 (A-B) ===
+paired per-chunk stats: A = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-nvfp4all-bare.log
+                        B = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-q4_0.log
+  final: A KLD 0.20728 top 77.049%  |  B KLD 0.08769 top 84.431%
+  KLD (nats/tok)           paired dmean = +0.119590 ± 0.004256  (t = +28.10, n = 40, A better on 0/40 chunks)
+  mean NLL (nats/tok)      paired dmean = +0.037171 ± 0.013303  (t = +2.79, n = 40, A better on 15/40 chunks)
+  same-top fraction        paired dmean = -0.073820 ± 0.004474  (t = -16.50, n = 40, A better on 0/40 chunks)
+=== nvfp4all-fc128 vs q5_k_s (A-B) ===
+paired per-chunk stats: A = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-nvfp4all-fc128.log
+                        B = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-q5_k_s.log
+  final: A KLD 0.10378 top 83.245%  |  B KLD 0.01547 top 92.814%
+  KLD (nats/tok)           paired dmean = +0.088310 ± 0.002745  (t = +32.17, n = 40, A better on 0/40 chunks)
+  mean NLL (nats/tok)      paired dmean = +0.111851 ± 0.007500  (t = +14.91, n = 40, A better on 0/40 chunks)
+  same-top fraction        paired dmean = -0.095690 ± 0.003746  (t = -25.55, n = 40, A better on 0/40 chunks)
+=== nvfp4all-bare vs q5_k_s (A-B) ===
+paired per-chunk stats: A = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-nvfp4all-bare.log
+                        B = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-q5_k_s.log
+  final: A KLD 0.20728 top 77.049%  |  B KLD 0.01547 top 92.814%
+  KLD (nats/tok)           paired dmean = +0.191810 ± 0.004911  (t = +39.06, n = 40, A better on 0/40 chunks)
+  mean NLL (nats/tok)      paired dmean = +0.185986 ± 0.011831  (t = +15.72, n = 40, A better on 0/40 chunks)
+  same-top fraction        paired dmean = -0.157650 ± 0.004693  (t = -33.59, n = 40, A better on 0/40 chunks)
+=== nvfp4all-fc128 vs q5_k_m (A-B) ===
+paired per-chunk stats: A = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-nvfp4all-fc128.log
+                        B = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-q5_k_m.log
+  final: A KLD 0.10378 top 83.245%  |  B KLD 0.01350 top 93.255%
+  KLD (nats/tok)           paired dmean = +0.090280 ± 0.002764  (t = +32.66, n = 40, A better on 0/40 chunks)
+  mean NLL (nats/tok)      paired dmean = +0.111394 ± 0.007216  (t = +15.44, n = 40, A better on 0/40 chunks)
+  same-top fraction        paired dmean = -0.100100 ± 0.004101  (t = -24.41, n = 40, A better on 0/40 chunks)
+=== nvfp4all-bare vs q5_k_m (A-B) ===
+paired per-chunk stats: A = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-nvfp4all-bare.log
+                        B = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-q5_k_m.log
+  final: A KLD 0.20728 top 77.049%  |  B KLD 0.01350 top 93.255%
+  KLD (nats/tok)           paired dmean = +0.193780 ± 0.004923  (t = +39.37, n = 40, A better on 0/40 chunks)
+  mean NLL (nats/tok)      paired dmean = +0.185529 ± 0.012099  (t = +15.33, n = 40, A better on 0/40 chunks)
+  same-top fraction        paired dmean = -0.162060 ± 0.004841  (t = -33.48, n = 40, A better on 0/40 chunks)
+=== nvfp4all-fc128 vs q6_k (A-B) ===
+paired per-chunk stats: A = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-nvfp4all-fc128.log
+                        B = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-q6_k.log
+  final: A KLD 0.10378 top 83.245%  |  B KLD 0.00483 top 96.029%
+  KLD (nats/tok)           paired dmean = +0.098950 ± 0.002906  (t = +34.05, n = 40, A better on 0/40 chunks)
+  mean NLL (nats/tok)      paired dmean = +0.100085 ± 0.007023  (t = +14.25, n = 40, A better on 0/40 chunks)
+  same-top fraction        paired dmean = -0.127840 ± 0.004126  (t = -30.98, n = 40, A better on 0/40 chunks)
+=== nvfp4all-bare vs q6_k (A-B) ===
+paired per-chunk stats: A = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-nvfp4all-bare.log
+                        B = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-q6_k.log
+  final: A KLD 0.20728 top 77.049%  |  B KLD 0.00483 top 96.029%
+  KLD (nats/tok)           paired dmean = +0.202450 ± 0.005075  (t = +39.89, n = 40, A better on 0/40 chunks)
+  mean NLL (nats/tok)      paired dmean = +0.174220 ± 0.011880  (t = +14.67, n = 40, A better on 0/40 chunks)
+  same-top fraction        paired dmean = -0.189800 ± 0.005205  (t = -36.46, n = 40, A better on 0/40 chunks)
+=== nvfp4all-fc128 vs iq3_s (A-B) ===
+paired per-chunk stats: A = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-nvfp4all-fc128.log
+                        B = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-iq3_s.log
+  final: A KLD 0.10378 top 83.245%  |  B KLD 0.15604 top 79.569%
+  KLD (nats/tok)           paired dmean = -0.052260 ± 0.003203  (t = -16.32, n = 40, A better on 40/40 chunks)
+  mean NLL (nats/tok)      paired dmean = +0.053570 ± 0.010386  (t = +5.16, n = 40, A better on 7/40 chunks)
+  same-top fraction        paired dmean = +0.036760 ± 0.004410  (t = +8.34, n = 40, A better on 38/40 chunks)
+=== nvfp4all-bare vs iq3_s (A-B) ===
+paired per-chunk stats: A = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-nvfp4all-bare.log
+                        B = /home/max/Documents/openbeast/research/lowrank/experiments/34-e16-nvfp4-08b/kld40-iq3_s.log
+  final: A KLD 0.20728 top 77.049%  |  B KLD 0.15604 top 79.569%
+  KLD (nats/tok)           paired dmean = +0.051240 ± 0.004422  (t = +11.59, n = 40, A better on 1/40 chunks)
+  mean NLL (nats/tok)      paired dmean = +0.127706 ± 0.011038  (t = +11.57, n = 40, A better on 0/40 chunks)
+  same-top fraction        paired dmean = -0.025200 ± 0.004524  (t = -5.57, n = 40, A better on 7/40 chunks)

@@ -1,0 +1,131 @@
+From 0125c2690ea89b19772fe1c4506c1267af6de7a6 Mon Sep 17 00:00:00 2001
+From: Max <maxjkh@gmail.com>
+Date: Fri, 11 Sep 2026 10:58:10 -0700
+Subject: [PATCH 2/2] imatrix : warn about tensors that received no activations
+
+At the end of the run, compare the weight tensors in the model file with
+the collected statistics and list the ones that have no data, grouped per
+block. The names are read from the GGUF file because the loaded model
+drops tensors that the graph does not use.
+
+Assisted-by: Claude Fable 5.1
+---
+ tools/imatrix/imatrix.cpp | 88 +++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 88 insertions(+)
+
+diff --git a/tools/imatrix/imatrix.cpp b/tools/imatrix/imatrix.cpp
+index f5fee62..3442163 100644
+--- a/tools/imatrix/imatrix.cpp
++++ b/tools/imatrix/imatrix.cpp
+@@ -63,6 +63,7 @@ public:
+     void save_imatrix_legacy(int32_t ncall = -1) const;
+     void save_imatrix(int32_t n_chunk = -1) const;
+     bool load_imatrix(const char * file_name);
++    void check_coverage(const std::string & fname_model) const;
+     const std::unordered_map<std::string, Stats> & get_mstats() const { return m_stats; }
+ private:
+     std::unordered_map<std::string, Stats> m_stats;
+@@ -639,6 +640,92 @@ void IMatrixCollector::save_imatrix(int32_t n_chunk) const {
+     ggml_free(ctx);
+ }
+ 
++// warn about weight tensors that the graph never ran, e.g. NextN/MTP layers
++// the loaded model drops unused tensors, so read the names from the model file(s) instead
++void IMatrixCollector::check_coverage(const std::string & fname_model) const {
++    std::vector<std::string> fnames = { fname_model };
++
++    struct block_count {
++        int n_tensors = 0;
++        int n_missing = 0;
++    };
++    std::map<int, block_count> blocks;
++    std::vector<std::string>  missing;
++
++    for (size_t i = 0; i < fnames.size(); ++i) {
++        ggml_context * ctx = nullptr;
++        gguf_init_params gguf_params = {
++            /* .no_alloc = */ true,
++            /* .ctx      = */ &ctx,
++        };
++        gguf_context * ctx_gguf = gguf_init_from_file(fnames[i].c_str(), gguf_params);
++        if (!ctx_gguf) {
++            LOG_WRN("%s: failed to read tensor names from %s, skipping coverage check\n", __func__, fnames[i].c_str());
++            return;
++        }
++
++        if (i == 0) {
++            const int64_t kid = gguf_find_key(ctx_gguf, LLM_KV_SPLIT_COUNT);
++            const int n_split = kid >= 0 ? gguf_get_val_u16(ctx_gguf, kid) : 1;
++            if (n_split > 1) {
++                std::vector<char> buf(fname_model.size() + 32, 0);
++                if (llama_split_prefix(buf.data(), buf.size(), fname_model.c_str(), 0, n_split) > 0) {
++                    const std::string split_prefix = buf.data();
++                    for (int i_split = 1; i_split < n_split; ++i_split) {
++                        llama_split_path(buf.data(), buf.size(), split_prefix.c_str(), i_split, n_split);
++                        fnames.push_back(buf.data());
++                    }
++                }
++            }
++        }
++
++        for (ggml_tensor * cur = ggml_get_first_tensor(ctx); cur; cur = ggml_get_next_tensor(ctx, cur)) {
++            const std::string name = ggml_get_name(cur);
++
++            // same tensors as collect_imatrix, minus the conv weights that are not mul_mat inputs
++            if (ggml_n_dims(cur) < 2 || !string_ends_with(name, ".weight")) continue;
++            if (!(name.substr(0, 4) == "blk." || (m_params.process_output && name == "output.weight"))) continue;
++            if (name.find("ssm_conv1d") != std::string::npos || name.find("shortconv.conv") != std::string::npos) continue;
++
++            int i_layer = -1;
++            sscanf(name.c_str(), "blk.%d.", &i_layer);
++
++            blocks[i_layer].n_tensors++;
++            if (m_stats.find(name) == m_stats.end()) {
++                blocks[i_layer].n_missing++;
++                missing.push_back(name);
++            }
++        }
++
++        gguf_free(ctx_gguf);
++        ggml_free(ctx);
++    }
++
++    if (missing.empty()) {
++        return;
++    }
++
++    LOG_INF("\n");
++    LOG_WRN("%s: %zu weight tensor(s) received no activation data:\n", __func__, missing.size());
++
++    // blocks with no data at all are printed as one line
++    for (const auto & kv : blocks) {
++        if (kv.first >= 0 && kv.second.n_missing == kv.second.n_tensors) {
++            LOG_WRN("%s:   blk.%d.* (%d tensors)\n", __func__, kv.first, kv.second.n_tensors);
++        }
++    }
++    for (const auto & name : missing) {
++        int i_layer = -1;
++        sscanf(name.c_str(), "blk.%d.", &i_layer);
++        const block_count & b = blocks[i_layer];
++        if (i_layer >= 0 && b.n_missing == b.n_tensors) {
++            continue;
++        }
++        LOG_WRN("%s:   %s\n", __func__, name.c_str());
++    }
++    LOG_WRN("%s: quantization of these tensors will not use imatrix data\n", __func__);
++}
++
+ bool IMatrixCollector::load_imatrix(const char * file_name) {
+     common_imatrix loaded;
+     if (!common_imatrix_load(file_name, loaded)) {
+@@ -1183,6 +1270,7 @@ int main(int argc, char ** argv) {
+     }
+ 
+     g_collector.save_imatrix();
++    g_collector.check_coverage(params.model.path);
+ 
+     LOG("\n");
+     llama_perf_context_print(ctx);
+-- 
+2.55.0
+

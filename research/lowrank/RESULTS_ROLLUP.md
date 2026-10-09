@@ -198,6 +198,101 @@ arch (262k ctx fits corrected builds in ~20 GiB total).
 - **beastrank.py: the method as one command** — smoke-proven end-to-end
   (0.6B → 1.81x vs Q8 ref in ~6 min, capture 0.77).
 
+## Block 5b (2026-09-08, CPU-only pre-registered rows, same-day verdicts)
+
+- **E30 Muon-provenance spectrum flatness — NULL, both metrics.** Paired
+  per-tensor comparison Qwen3.8-27B vs Qwen3.6-27B (identical qwen35
+  arch/tensor names, matched UD-Q5_K_XL): stable-rank treatment log-ratio
+  +0.0015 ± 0.0035 (z=+0.4, n=256 2-D tensors); top-64 head entropy delta
+  +0.00045 ± 0.00073 (n=9 ffn_down pairs). No flattening in the 2-D
+  linear maps Muon would have touched; control class uninformative (n=2)
+  and moot. L8 keeps Moonlight as the only Muon capture point; the
+  T1.10 "Muon-provenance axis" rider is closed — optimizer geometry is
+  NOT a supported covariate for capture-vs-width on this pair.
+  [experiments/30-muon-spectrum/PREREG.md, e30-stage{1,2}.json]
+- **E31 seeded-basis duel (AWSRC-class vs learned, whitened, 27B) —
+  P1 CONFIRMED, P2 decisively unmet.** 18 pre-registered tensors × 3
+  seeds, r=128: learned truncated SVD captures **0.983** of the cached
+  dominant-192 whitened energy; seeded ±1/Hadamard bases capture
+  **0.0349** at strict byte parity (Q8 coeffs) and **0.0698** with 2×
+  vectors + 4-bit coeffs — both exactly **1.00×** the random-subspace
+  expectation k/m. Seeded repair is indistinguishable from random
+  subspaces in whitened geometry: ~28× (parity) / ~14× (low-bit lever)
+  below learned on head capture; ties only on the isotropic tail (E03).
+  Folded into paper §4.3b + related work (AWSRC paragraph); their 3B
+  unwhitened PPL win stays a registered hypothesis (low-bit coefficient
+  packing + unwhitened baseline), testable post-BF16-restore.
+  [experiments/31-seeded-basis-duel/PREREG.md, e31.json]
+
+## Block 6 (2026-09-10/11, E32 / T1.17 — GSQ-RCO head-to-head, Qwen3.8-27B, third family)
+
+KLD half FINAL (BF16 truth logits, 40 chunks wikitext-2 test, c=512, pure
+b10865; stats = paired_stats.py per-chunk differencing — the 09-10 journal
+t values were inflated and are superseded by the 09-11 correction entry):
+
+| row | GB (file+adapter) | PPL | KLD | top-1 |
+|---|---|---|---|---|
+| GSQ-RCO IQ2_XS (theirs, trained) | 8.42 | 6.679 | 0.2028 ± 0.0044 | 81.39 % |
+| UD-IQ2_S bare (Unsloth) | 8.37 | 6.564 | 0.1313 ± 0.0031 | 85.10 % |
+| **ours** UD-IQ2_S + fc-r128q8 | 8.37 + 0.90 | 6.453 | **0.1191 ± 0.0027** | 85.83 % |
+| UD-Q2_K_XL bare | 9.83 | 6.259 | 0.0854 ± 0.0021 | 87.34 % |
+| **ours** UD-Q2_K_XL + fc-r128q8 | 9.83 + 0.90 | 6.239 | **0.0800 ± 0.0019** | 88.05 % |
+| GSQ-RCO IQ3_S (theirs, "task-lossless") | 11.77 | 6.027 | 0.0525 ± 0.0012 | 90.14 % |
+| UD-IQ3_S bare | 12.04 | 6.006 | 0.0373 ± 0.0011 | 91.66 % |
+| **ours** UD-IQ3_S + fc-r128q8 | 12.04 + 0.90 | 6.004 | **0.0353 ± 0.0011** | 91.75 % |
+
+- **One exact whitened CPU pass beats 20 GPU-epochs of Gumbel-Softmax
+  refinement on wikitext-KLD at both rungs:** IQ2 ΔKLD −0.0837 (t=−11.5,
+  40/40 chunks), IQ3 −0.0173 (t=−9.5, 38/40). GSQ-RCO sits BELOW its own
+  untrained Unsloth baseline on this instrument (IQ2 +0.0715, t=+11.7,
+  0/40; IQ3 +0.0152, t=+8.6, 1/40).
+- **Correction increment real on the third architecture family (qwen35
+  hybrid GDN):** −0.0122 / −0.0055 / −0.0021 KLD at IQ2_S / Q2_K_XL /
+  IQ3_S (t=−6.5/−7.0/−5.9; 39/34/36 of 40); top-1 +0.7/+0.7 pt real,
+  IQ3 top-1 tied.
+- **Ladder unbeaten, cross-family (E27's law):** bare UD-Q2_K_XL @9.83 GB
+  beats ours-IQ2_S+adapter @9.27 GB by 0.0337 KLD (t=+11.6, 0/40).
+- Pre-registered caveats carried: calibration mismatch (FineWeb-Edu vs
+  wikitext) — control RUNNING 09-11; capability rows (v5-fast, their
+  task-win home turf) — RUNNING 09-11 under single-slot serving after the
+  09-10 multi-slot CUDA-timeout retraction; ±2-3 % byte skew between UD
+  and GSQ files; adapter decode tax (§5) applies to every "ours" row.
+- **E33 / T1.10 capture-vs-width regression (CPU, 2026-09-11) — form
+  killed, direction upgraded.** 1,146 tensors × 10 ranks × 3 whiteners on
+  four models (d_model 1024 ×2, 5120 ×2), spectra recomputed with exact
+  totals (pipeline reproduces §4.2's 0.37/0.07 and 1,620 logged captures
+  to ≤0.01). Linear c·(r/d) is the WORST of six forms (ΔAIC +12k diag /
+  +24k fc); best: capture ≈ a·r^b_r·d^b_d, diag b_r 0.61 [0.60,0.61] /
+  b_d −0.67 [−0.70,−0.64], fc 0.44 / −0.59; per-kind width slope diag
+  −0.8…−1.1, fc −0.5…−0.8 (full-Gram halves the penalty); head+bulk fits
+  h=0 (no width-invariant head). Prefactor is per-(whitener, base, model):
+  diag-r64 c = 5.9/5.2/5.9 (0.6B/0.8B/heretic from-BF16 Q2_K) vs 10.0 on
+  Unsloth's shipped UD quant of Qwen3.8 — ADDENDUM (same day): Qwen3.8
+  re-quantized with heretic's exact recipe is INDISTINGUISHABLE from
+  heretic at every kind/rank/whitener (0/40 contrasts exclude 0; diag r64
+  0.074 vs 0.073, fc 0.284 vs 0.290) → the prefactor is a property of
+  (whitener, BASE RECIPE, width); model/architecture drop out at this
+  width; held-out 27B now 0.9–1.1×. Scope: one-step width leverage,
+  tensor-resampling CIs — a third width is required before quoting a law.
+  [experiments/33-t110-capture-width/REPORT.md; bulk data in
+  data/spectra-e33/ outside git]
+- **E16 rung 1 / E34 (0.8B, self-quantized NVFP4, ground-up provenance,
+  read 2026-09-14):** increment real (NVFP4-all bare 0.2073 → +fc-r128q8
+  0.1038, t=−32, 40/40; top-1 +6.2 pt) but the composite (603 MB) loses to
+  every rung at or below its bytes (Q4_K_S 519 MB 0.0473, t=+22.8, 0/40;
+  Q5_K_S 578 MB 0.0155) — equal-byte law, fourth base family. NVFP4 from
+  llama-quantize is the WORST 4-bit carrier on this GDN arch (bare 0.2073
+  vs Q4_0 0.0877 / IQ4_XS 0.0503 at equal bytes; worse than Q3_K_M at fewer
+  bytes) — the "best-correcting base" label above (Block 4, 27B) is a
+  capture statement, not a quality one, and the 0.8B rung refutes even
+  that: Q3_K_M's increment is larger (−0.1169 / 70 % vs −0.1035 / 50 %)
+  despite lower capture (0.721 vs 0.736) — surrogate-vs-outcome #7.
+  Rung 2 (27B) closed unrun. [experiments/34-e16-nvfp4-08b/]
+- Byproduct finding: IQ3-class artifacts of BOTH families crash stock
+  b10865 under -np 6 on the 5090 (CUDA launch timeout inside
+  ggml_backend_cuda_synchronize, coredump 2404908) where Q5 K-quants ran
+  14 h clean — minimal repro queued for an upstream report.
+
 ## The laws and observations the campaign measured
 ## (retitled 2026-08-04 — item 1 was retracted to an observation by
 ## this file's own correction 5; coherence-audit P1.3)
