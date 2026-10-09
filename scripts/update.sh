@@ -1,5 +1,6 @@
 #!/bin/bash
 # OpenBeast — update every pulled-in open source component to latest.
+# It does NOT update OpenBeast itself: that is `git pull` in this checkout.
 #
 #   ./scripts/update.sh              # update everything (asks nothing)
 #   ./scripts/update.sh --llama      # only llama.cpp (pull + rebuild)
@@ -57,12 +58,40 @@ for arg in "$@"; do
     --check)    CHECK_ONLY=1 ;;
     --force)    FORCE_REBUILD=1 ;;
     --ignore-lease) IGNORE_LEASE=1 ;;
-    -h|--help)  sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)  sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Unknown option: $arg (see --help)" >&2; exit 2 ;;
   esac
 done
 # No component flags → all components.
 if [[ $ANY -eq 0 ]]; then DO_LLAMA=1; DO_IMAGES=1; DO_PYTHON=1; DO_OPENCODE=1; fi
+
+# SAY WHAT THIS IS ABOUT TO DO, before it does it. The name reads as "update
+# OpenBeast", and it does not: it moves the upstream COMPONENTS to their
+# newest versions (llama.cpp to upstream master, images to their moving tags)
+# and never pulls this repo. Someone who wanted the first and got the second,
+# unprompted, found out from a changed docker-compose.yml.
+_plan=()
+[[ $DO_LLAMA -eq 1 ]]    && _plan+=("llama.cpp (pull upstream master + rebuild)")
+[[ $DO_IMAGES -eq 1 ]]   && _plan+=("container images (pull newest + re-pin digests)")
+[[ $DO_PYTHON -eq 1 ]]   && _plan+=("Python packages (upgrade + re-pin)")
+[[ $DO_OPENCODE -eq 1 ]] && _plan+=("OpenCode (upgrade)")
+_plan_txt="$(printf '%s, ' "${_plan[@]}")"; _plan_txt="${_plan_txt%, }"
+if [[ $CHECK_ONLY -eq 1 ]]; then
+  echo "Checking, changing nothing: $_plan_txt. OpenBeast itself is not part of this: 'git pull' updates it."
+else
+  echo "About to move upstream components to their LATEST: $_plan_txt. This does NOT update OpenBeast itself: that is 'git pull' in $REPO_DIR."
+fi
+
+# A bump rewrites files git tracks. Who should commit that depends on who is
+# running this, and the script cannot know: the old wording told everyone to
+# "commit the digest bump", which is right for a maintainer and sets up a
+# conflict on the next `git pull` for everybody else.
+note_tracked() { # note_tracked <what changed> [<extra for whoever commits it>]
+  warn "$1 changed, and git tracks ${3:-them}.
+       Maintaining OpenBeast: review the diff and commit after verifying the stack${2:+ — $2}.
+       Just running it: nothing to commit, this box now runs what they say. Before
+       your next 'git pull', set the change aside (git stash) so the pull cannot conflict."
+}
 
 # ---- llama.cpp: git pull + CUDA rebuild ------------------------------------
 update_llama() {
@@ -101,8 +130,7 @@ update_llama() {
       echo "LLAMA_CPP_REF=$head" >> "$pin_file"
     fi
     ok "pinned llama.cpp -> ${head:0:12} (was ${pin:0:12}${pin:+, }scripts/llama.cpp.ref)"
-    warn "scripts/llama.cpp.ref changed: it is what a fresh ./bootstrap.sh builds.
-       Smoke-test the stack on this engine before that change goes anywhere."
+    note_tracked "scripts/llama.cpp.ref (the engine a fresh ./bootstrap.sh builds)" "" "it"
   }
 
   local before after
@@ -444,7 +472,7 @@ PYPIN
       fi
     done < <(grep -E '^[[:space:]]*image:[[:space:]]*[^[:space:]]' "$_cf" || true)
   done
-  [[ $bumped -eq 1 ]] && warn "commit the digest bump (docker-compose.yml, extensions/*/compose.yaml, scripts/client-searxng.compose.yml) after verifying the stack"
+  [[ $bumped -eq 1 ]] && note_tracked "image digest pins (docker-compose.yml, extensions/*/compose.yaml, scripts/client-searxng.compose.yml)"
   # Recreate only containers actually running; a stopped stack stays stopped.
   # With the ENABLED extension fragments, the way start.sh composes the stack
   # — or a bumped extension image would never be recreated.
@@ -634,15 +662,15 @@ PY
   else
     warn "could NOT regenerate agents/requirements.lock (pypi.org unreachable?).
        It is now STALE against the pins above: bootstrap will say so and use
-       requirements.txt, and CI will fail 'pydeps.sh verify'. Before committing:
+       requirements.txt, and CI will fail 'pydeps.sh verify'. Regenerate it:
            ./scripts/pydeps.sh lock"
   fi
-  (( majors > 0 )) && warn "$majors major bump(s) above — smoke-test the stack before committing"
+  (( majors > 0 )) && warn "$majors major bump(s) above — smoke-test the stack before relying on it"
   warn "a running MCPO/mcp_server keeps old code until restarted"
   if [[ $lock_ok -eq 1 ]]; then
-    warn "commit agents/requirements.txt AND agents/requirements.lock together after verifying the stack"
+    note_tracked "agents/requirements.txt AND agents/requirements.lock" "the two TOGETHER"
   else
-    warn "commit the requirements.txt pin bump only TOGETHER with a regenerated lock (see above)"
+    note_tracked "agents/requirements.txt" "only TOGETHER with a regenerated lock (see above)" "it"
   fi
   return 0
 }
