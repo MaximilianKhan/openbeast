@@ -101,3 +101,46 @@ class TestRegistryFileClosesAnon:
             assert c.post(CHAT, json={"messages": []}).status_code == 200
             assert c.get("/gate/health",
                          headers=_local_headers(e)).json()["auth"] == "anon"
+
+
+class TestIntrospectionIsPerDevice:
+    """S6: a device key reads its own series. Only the rig-local token sees
+    every device, the denial counters and the roster."""
+
+    def _traffic(self, c):
+        for key in (DEVICE_KEY, REVOKED_KEY):       # "laptop" and "stolen"
+            assert c.post(CHAT, json={"messages": []}, headers={
+                "Authorization": f"Bearer {key}"}).status_code == 200
+        c.post(CHAT, json={"messages": []},
+               headers={"Authorization": "Bearer nope"})
+
+    def test_device_key_sees_only_its_own_series(self, edge, tmp_path):
+        _registry(tmp_path)
+        _stub_upstream(edge, {})
+        with TestClient(edge.app) as c:
+            self._traffic(c)
+            body = c.get("/gate/metrics", headers=HDR).text
+        assert 'openbeast_edge_requests_total{device="laptop"' in body
+        assert 'openbeast_edge_prompt_tokens_total{device="laptop"} 10' in body
+        assert "stolen" not in body
+        assert "openbeast_edge_denied_total" not in body
+
+    def test_local_token_keeps_the_full_view(self, edge, tmp_path):
+        # Negative control: rig tooling loses nothing.
+        _registry(tmp_path)
+        _stub_upstream(edge, {})
+        with TestClient(edge.app) as c:
+            self._traffic(c)
+            body = c.get("/gate/metrics", headers=_local_headers(edge)).text
+        for dev in ("laptop", "stolen"):
+            assert f'openbeast_edge_prompt_tokens_total{{device="{dev}"}}' in body
+        assert 'openbeast_edge_denied_total{reason="bad_key"} 1' in body
+
+    def test_device_key_gets_no_roster_from_health(self, edge, tmp_path):
+        _registry(tmp_path)
+        _stub_upstream(edge, {})
+        with TestClient(edge.app) as c:
+            remote = c.get("/gate/health", headers=HDR).json()
+            local = c.get("/gate/health", headers=_local_headers(edge)).json()
+        assert remote == {"status": "ok", "service": "beast-gate"}
+        assert local["devices"] == 2 and "upstream" in local

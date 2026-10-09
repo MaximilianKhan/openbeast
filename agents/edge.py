@@ -1129,45 +1129,60 @@ async def gate(request: Request):
                              headers=hdrs, background=BackgroundTask(_sweep))
 
 
-def _introspection_allowed(request: Request) -> bool:
-    """Gate the /gate/* routes.
+def _introspection_scope(request: Request) -> str | None:
+    """Who is asking a /gate/* route: "*" (the rig), a device id, or None.
 
     These expose the device roster size and per-device usage counters. The
     gate is published at the tailnet ROOT (`tailscale serve :8443 -> :8090`
     mounts `/`), so leaving them open would hand every tailnet peer — including
     one whose key was just revoked — the device list and usage telemetry.
 
-    Two ways in: the local-token header (rig tooling, which can read
-    .run/edge-local.token) or a valid enrolled device key. Deliberately NOT
-    the peer address — tailscale serve proxies from 127.0.0.1, so a peer
-    check would treat the entire tailnet as local. See _local_token.
+    Two ways in, and they do NOT see the same thing. The local-token header
+    (rig tooling, which can read .run/edge-local.token) gets the full view.
+    A valid enrolled device key gets its OWN series and nothing else: an
+    enrolled device is a tenant, not an operator, and any key used to read
+    every other device's name and token counts. Deliberately NOT the peer
+    address — tailscale serve proxies from 127.0.0.1, so a peer check would
+    treat the entire tailnet as local. See _local_token.
     """
     if _is_local(request):
-        return True
+        return "*"
     reg: Registry = request.app.state.registry
     key = _bearer(request)
-    return bool(key) and reg.lookup(key) is not None
+    dev = reg.lookup(key) if key else None
+    return None if dev is None else str(dev.get("id", "anon"))
 
 
 async def metrics(request: Request):
-    if not _introspection_allowed(request):
+    scope = _introspection_scope(request)
+    if scope is None:
         _bump("denied_total", "introspection_unauthorized")
         return JSONResponse(
             {"error": {"message": "not found", "type": "invalid_request_error"}},
             status_code=404)
+
+    def mine(dev) -> bool:
+        return scope == "*" or dev == scope
+
     lines = [
         "# HELP openbeast_edge_requests_total Requests through beast-gate.",
         "# TYPE openbeast_edge_requests_total counter",
     ]
     for (dev, path, outcome), n in sorted(
             _METRICS["requests_total"].items(), key=lambda kv: str(kv[0])):
+        if not mine(dev):
+            continue
         lines.append(f'openbeast_edge_requests_total{{device="{_esc(dev)}",'
                      f'path="{_esc(path)}",outcome="{_esc(outcome)}"}} {n}')
-    lines += ["# HELP openbeast_edge_denied_total Refused requests by reason.",
-              "# TYPE openbeast_edge_denied_total counter"]
-    for reason, n in sorted(_METRICS["denied_total"].items()):
-        lines.append(
-            f'openbeast_edge_denied_total{{reason="{_esc(reason)}"}} {n}')
+    if scope == "*":
+        # Rig-wide and unattributed (most rows are callers with no identity
+        # at all), so it has no per-device slice to hand a tenant.
+        lines += [
+            "# HELP openbeast_edge_denied_total Refused requests by reason.",
+            "# TYPE openbeast_edge_denied_total counter"]
+        for reason, n in sorted(_METRICS["denied_total"].items()):
+            lines.append(
+                f'openbeast_edge_denied_total{{reason="{_esc(reason)}"}} {n}')
     for metric, name, helptext in (
             ("prompt_tokens", "openbeast_edge_prompt_tokens_total",
              "Prompt tokens billed per device."),
@@ -1177,7 +1192,8 @@ async def metrics(request: Request):
              "Cumulative upstream latency per device.")):
         lines += [f"# HELP {name} {helptext}", f"# TYPE {name} counter"]
         for dev, n in sorted(_METRICS[metric].items()):
-            lines.append(f'{name}{{device="{_esc(dev)}"}} {n}')
+            if mine(dev):
+                lines.append(f'{name}{{device="{_esc(dev)}"}} {n}')
     return StreamingResponse(iter(["\n".join(lines) + "\n"]),
                              media_type="text/plain; version=0.0.4")
 
@@ -1185,8 +1201,10 @@ async def metrics(request: Request):
 async def health(request: Request):
     reg: Registry = request.app.state.registry
     reg.reload()
-    if not _introspection_allowed(request):
+    if _introspection_scope(request) != "*":
         # Remote callers get liveness only — no roster size, no upstream URL.
+        # That includes an enrolled device: its key proves which tenant it
+        # is, not that it may read the rig's roster.
         return JSONResponse({"status": "ok", "service": "beast-gate"})
     return JSONResponse({
         "status": "ok",
