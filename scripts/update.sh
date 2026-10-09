@@ -1,5 +1,6 @@
 #!/bin/bash
 # OpenBeast — update every pulled-in open source component to latest.
+# It does NOT update OpenBeast itself: that is `git pull` in this checkout.
 #
 #   ./scripts/update.sh              # update everything (asks nothing)
 #   ./scripts/update.sh --llama      # only llama.cpp (pull + rebuild)
@@ -57,12 +58,40 @@ for arg in "$@"; do
     --check)    CHECK_ONLY=1 ;;
     --force)    FORCE_REBUILD=1 ;;
     --ignore-lease) IGNORE_LEASE=1 ;;
-    -h|--help)  sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)  sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Unknown option: $arg (see --help)" >&2; exit 2 ;;
   esac
 done
 # No component flags → all components.
 if [[ $ANY -eq 0 ]]; then DO_LLAMA=1; DO_IMAGES=1; DO_PYTHON=1; DO_OPENCODE=1; fi
+
+# SAY WHAT THIS IS ABOUT TO DO, before it does it. The name reads as "update
+# OpenBeast", and it does not: it moves the upstream COMPONENTS to their
+# newest versions (llama.cpp to upstream master, images to their moving tags)
+# and never pulls this repo. Someone who wanted the first and got the second,
+# unprompted, found out from a changed docker-compose.yml.
+_plan=()
+[[ $DO_LLAMA -eq 1 ]]    && _plan+=("llama.cpp (pull upstream master + rebuild)")
+[[ $DO_IMAGES -eq 1 ]]   && _plan+=("container images (pull newest + re-pin digests)")
+[[ $DO_PYTHON -eq 1 ]]   && _plan+=("Python packages (upgrade + re-pin)")
+[[ $DO_OPENCODE -eq 1 ]] && _plan+=("OpenCode (upgrade)")
+_plan_txt="$(printf '%s, ' "${_plan[@]}")"; _plan_txt="${_plan_txt%, }"
+if [[ $CHECK_ONLY -eq 1 ]]; then
+  echo "Checking, changing nothing: $_plan_txt. OpenBeast itself is not part of this: 'git pull' updates it."
+else
+  echo "About to move upstream components to their LATEST: $_plan_txt. This does NOT update OpenBeast itself: that is 'git pull' in $REPO_DIR."
+fi
+
+# A bump rewrites files git tracks. Who should commit that depends on who is
+# running this, and the script cannot know: the old wording told everyone to
+# "commit the digest bump", which is right for a maintainer and sets up a
+# conflict on the next `git pull` for everybody else.
+note_tracked() { # note_tracked <what changed> [<extra for whoever commits it>]
+  warn "$1 changed, and git tracks ${3:-them}.
+       Maintaining OpenBeast: review the diff and commit after verifying the stack${2:+ — $2}.
+       Just running it: nothing to commit, this box now runs what they say. Before
+       your next 'git pull', set the change aside (git stash) so the pull cannot conflict."
+}
 
 # ---- llama.cpp: git pull + CUDA rebuild ------------------------------------
 update_llama() {
@@ -70,9 +99,47 @@ update_llama() {
   local src="$REPO_DIR/llama.cpp" build="$REPO_DIR/llama.cpp/build"
   [[ -d "$src/.git" ]] || die "llama.cpp/ is not a git clone — run ./bootstrap.sh first"
 
+  # scripts/llama.cpp.ref pins the commit bootstrap.sh checks out (its header
+  # says why). --llama is the SANCTIONED bump, the same shape as --images:
+  # follow the moving ref (upstream master), then rewrite the pin to what is
+  # now built. Only ever to a commit that (a) was just pulled from upstream —
+  # never a local commit, and never the revision a hand-pinned detached HEAD
+  # or an unreachable remote left in place — and (b) produced a llama-server.
+  local pin_file="$REPO_DIR/scripts/llama.cpp.ref" pulled=0
+  _move_llama_pin() {
+    [[ $pulled -eq 1 ]] || return 0
+    local head tip pin
+    head="$(git -C "$src" rev-parse HEAD 2>/dev/null || true)"
+    tip="$(git -C "$src" rev-parse FETCH_HEAD 2>/dev/null || true)"
+    if [[ ! -f "$pin_file" ]]; then
+      warn "scripts/llama.cpp.ref is missing, so there is no pin to move and
+       ./bootstrap.sh will clone unpinned upstream master. Restore it:
+       git checkout -- scripts/llama.cpp.ref"
+      return 0
+    fi
+    if ! [[ "$head" =~ ^[0-9a-f]{40}$ ]] || [[ "$head" != "$tip" ]]; then
+      warn "llama.cpp/ is not at the commit just pulled from upstream (local
+       commits?), so the pin in scripts/llama.cpp.ref was NOT moved."
+      return 0
+    fi
+    pin="$(sed -nE 's/^LLAMA_CPP_REF=([0-9a-f]{40})[[:space:]]*$/\1/p' "$pin_file" | tail -n1 || true)"
+    [[ "$pin" != "$head" ]] || return 0
+    if grep -qE '^LLAMA_CPP_REF=' "$pin_file"; then
+      sed -i -E "s|^LLAMA_CPP_REF=.*|LLAMA_CPP_REF=$head|" "$pin_file"
+    else
+      echo "LLAMA_CPP_REF=$head" >> "$pin_file"
+    fi
+    ok "pinned llama.cpp -> ${head:0:12} (was ${pin:0:12}${pin:+, }scripts/llama.cpp.ref)"
+    note_tracked "scripts/llama.cpp.ref (the engine a fresh ./bootstrap.sh builds)" "" "it"
+  }
+
   local before after
   before=$(git -C "$src" rev-parse --short HEAD)
   if [[ $CHECK_ONLY -eq 1 ]]; then
+    local pinned
+    pinned="$(sed -nE 's/^LLAMA_CPP_REF=([0-9a-f]{40})[[:space:]]*$/\1/p' "$pin_file" 2>/dev/null | tail -n1 || true)"
+    pinned="${pinned:0:12}"
+    ok "pinned for fresh installs: ${pinned:-none — scripts/llama.cpp.ref is missing or unreadable}"
     # OFFLINE: --check compares against a remote. Report what is on disk and
     # say why there is nothing to compare to, rather than burning a connect
     # timeout to print "?" commits behind.
@@ -149,6 +216,7 @@ update_llama() {
     local pull_out rc=0
     pull_out="$(git -C "$src" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 \
                     pull --ff-only origin master 2>&1)" || rc=$?
+    [[ $rc -eq 0 ]] && pulled=1
     if [[ $rc -ne 0 ]]; then
       if grep -qiE 'could not resolve host|unable to access|connection (timed out|refused|reset)|network is unreachable|failed to connect|no route to host|operation timed out|operation too slow|rpc failed|early eof|remote end hung up|unexpected disconnect|temporary failure in name resolution' <<< "$pull_out"; then
         warn "cannot reach the llama.cpp remote — NOT a local problem"
@@ -173,6 +241,7 @@ update_llama() {
   if [[ "$before" == "$after" && -x "$build/bin/llama-server" \
         && ${FORCE_REBUILD:-0} -eq 0 ]]; then
     ok "already up to date ($before) and built — skipping rebuild"
+    _move_llama_pin
     return 0
   fi
   ok "updated $before → $after"
@@ -227,6 +296,7 @@ update_llama() {
   fi
   rm -rf -- "$snap"
   ok "rebuilt llama-server ($after)"
+  _move_llama_pin
   warn "a running llama-server keeps the OLD binary until restarted"
 }
 
@@ -402,7 +472,7 @@ PYPIN
       fi
     done < <(grep -E '^[[:space:]]*image:[[:space:]]*[^[:space:]]' "$_cf" || true)
   done
-  [[ $bumped -eq 1 ]] && warn "commit the digest bump (docker-compose.yml, extensions/*/compose.yaml, scripts/client-searxng.compose.yml) after verifying the stack"
+  [[ $bumped -eq 1 ]] && note_tracked "image digest pins (docker-compose.yml, extensions/*/compose.yaml, scripts/client-searxng.compose.yml)"
   # Recreate only containers actually running; a stopped stack stays stopped.
   # With the ENABLED extension fragments, the way start.sh composes the stack
   # — or a bumped extension image would never be recreated.
@@ -592,15 +662,15 @@ PY
   else
     warn "could NOT regenerate agents/requirements.lock (pypi.org unreachable?).
        It is now STALE against the pins above: bootstrap will say so and use
-       requirements.txt, and CI will fail 'pydeps.sh verify'. Before committing:
+       requirements.txt, and CI will fail 'pydeps.sh verify'. Regenerate it:
            ./scripts/pydeps.sh lock"
   fi
-  (( majors > 0 )) && warn "$majors major bump(s) above — smoke-test the stack before committing"
+  (( majors > 0 )) && warn "$majors major bump(s) above — smoke-test the stack before relying on it"
   warn "a running MCPO/mcp_server keeps old code until restarted"
   if [[ $lock_ok -eq 1 ]]; then
-    warn "commit agents/requirements.txt AND agents/requirements.lock together after verifying the stack"
+    note_tracked "agents/requirements.txt AND agents/requirements.lock" "the two TOGETHER"
   else
-    warn "commit the requirements.txt pin bump only TOGETHER with a regenerated lock (see above)"
+    note_tracked "agents/requirements.txt" "only TOGETHER with a regenerated lock (see above)" "it"
   fi
   return 0
 }

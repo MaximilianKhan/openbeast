@@ -542,6 +542,39 @@ if ! grep -q 'open-webui' "$SBU/scripts/client-searxng.compose.yml"; then
 else
   fail "the client compose picked up a non-searxng image"
 fi
+# What update.sh SAYS (2026-10-09 review, UX-05). Its name reads as "update
+# OpenBeast" and it never pulls this repo; and it told every user to "commit
+# the digest bump", which for anyone but a maintainer sets up a conflict on
+# the next git pull.
+_plan_line="$(grep -n 'About to move upstream components' <<< "$_O" | head -n1 | cut -d: -f1 || true)"
+_step_line="$(grep -n '==> Container images' <<< "$_O" | head -n1 | cut -d: -f1 || true)"
+if [[ -n "$_plan_line" && -n "$_step_line" && "$_plan_line" -lt "$_step_line" ]] \
+   && has "$(sed -n "${_plan_line}p" <<< "$_O")" "container images" \
+   && has "$(sed -n "${_plan_line}p" <<< "$_O")" "'git pull'" \
+   && ! has "$(sed -n "${_plan_line}p" <<< "$_O")" "llama.cpp"; then
+  pass "before acting, one line says what is about to move (only what was asked) and that OpenBeast itself is 'git pull'"
+else
+  fail "no plan line before the first step (plan=$_plan_line step=$_step_line): $_O"
+fi
+if has "$_O" "git tracks" && has "$_O" "Maintaining OpenBeast" && has "$_O" "git stash" && ! has "$_O" "commit the digest bump"; then
+  pass "a digest bump no longer tells every user to commit it: maintainers commit, everyone else is told how to keep 'git pull' clean"
+else
+  fail "tracked-file guidance after a bump: $_O"
+fi
+# NEGATIVE CONTROL: nothing moved, so there is nothing to say about tracked files.
+_O2="$(env -i HOME="$T/h" PATH="$T/binu:/usr/bin:/bin" bash "$SBU/scripts/update.sh" --images 2>&1)"
+if has "$_O2" "already at latest digest" && ! has "$_O2" "git tracks"; then
+  pass "negative control: a run that bumps nothing prints no tracked-file note"
+else
+  fail "tracked-file note on a no-op run: $_O2"
+fi
+_O2="$(env -i HOME="$T/h" PATH="$T/binu:/usr/bin:/bin" bash "$SBU/scripts/update.sh" --images --check 2>&1)"
+if has "$_O2" "Checking, changing nothing" && has "$_O2" "'git pull'" && ! has "$_O2" "About to move"; then
+  pass "--check announces itself as changing nothing"
+else
+  fail "--check plan line: $_O2"
+fi
+
 # Already-drifted client pin while the rig is current: re-synced too.
 printf 'services:\n  searxng:\n    image: %s\n' "$OLD_SX" > "$SBU/scripts/client-searxng.compose.yml"
 _O="$(env -i HOME="$T/h" PATH="$T/binu:/usr/bin:/bin" bash "$SBU/scripts/update.sh" --images 2>&1)"

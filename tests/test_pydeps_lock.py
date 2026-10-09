@@ -469,3 +469,109 @@ def test_audit_names_the_packages_a_short_wheelhouse_is_missing(tmp_path):
     assert matched == ["a-1.0-py3-none-any.whl"]
     assert any("1 of 2 locked package(s) have NO file" in p for p in problems), \
         problems
+
+
+# --------------------------------------------------------------------------
+# 2026-10-09 review, supply S1: what `verify` waved through
+# --------------------------------------------------------------------------
+
+def test_a_hash_on_the_pin_line_is_refused(tmp_path):
+    """`openai==3.9.0 --hash=sha256:<theirs> \\` parsed as a clean pin: the
+    extra hash was invisible to verify and accepted by pip."""
+    bad = GOOD.replace("openai==3.9.0 \\", f"openai==3.9.0 --hash=sha256:{H3} \\")
+    assert bad != GOOD
+    p = _write(tmp_path / "l.lock", bad)
+    with pytest.raises(L.LockError, match="neither a pin nor a hash"):
+        L.parse(p)
+    req = _write(tmp_path / "requirements.txt", "openai==3.9.0\nhttpx==0.28.1\n")
+    assert L.verify(p, [req], []), "verify accepted a hash smuggled onto the pin line"
+    assert L.main(["verify", "--lock", p, "--req", req]) == 1
+
+
+def test_negative_control_the_rendered_shapes_still_parse(tmp_path):
+    # with the continuation, with trailing blanks, and bare (no hash follows)
+    for line in ("openai==3.9.0 \\", "openai==3.9.0   \\  ", "openai==3.9.0"):
+        assert L.LOCK_LINE.match(line), line
+    assert set(L.parse(_write(tmp_path / "l.lock", GOOD))) == {"openai", "httpx"}
+
+
+class _Dist:
+    def __init__(self, version, requires):
+        self.version, self.requires = version, requires
+
+
+def _installed(monkeypatch, table):
+    """Stand in for the installed closure: {name: (version, [Requires-Dist])}."""
+    import importlib.metadata as md
+
+    def distribution(name):
+        try:
+            return _Dist(*table[L._norm(name)])
+        except KeyError:
+            raise md.PackageNotFoundError(name) from None
+    monkeypatch.setattr(md, "distribution", distribution)
+
+
+EXTRA_PKG = GOOD + f"evil-pkg==6.6.6 \\\n    --hash=sha256:{H1}\n"
+
+
+def test_a_locked_package_nothing_requires_fails_verify(tmp_path, monkeypatch):
+    """pip installs every line of the lock, so a well-formed extra entry is a
+    package on the box that no requirement asked for."""
+    _installed(monkeypatch, {
+        "openai": ("3.9.0", ['httpx<1,>=0.23 ; extra == "x"']),
+        "httpx": ("0.28.1", []),
+        "evil-pkg": ("6.6.6", []),
+    })
+    p = _write(tmp_path / "l.lock", EXTRA_PKG)
+    req = _write(tmp_path / "requirements.txt", "openai==3.9.0\n")
+    problems = L.verify(p, [req], [])
+    assert any("evil-pkg==6.6.6" in x and "nothing" in x for x in problems), problems
+    assert not any("httpx" in x for x in problems), problems
+    assert L.main(["verify", "--lock", p, "--req", req]) == 1
+
+
+def test_negative_control_a_fully_required_closure_passes(tmp_path, monkeypatch, capsys):
+    _installed(monkeypatch, {
+        "openai": ("3.9.0", ["httpx<1,>=0.23"]),
+        "httpx": ("0.28.1", []),
+    })
+    p = _write(tmp_path / "l.lock", GOOD)
+    req = _write(tmp_path / "requirements.txt", "openai==3.9.0\n")
+    assert L.verify(p, [req], []) == []
+    assert L.main(["verify", "--lock", p, "--req", req]) == 0
+    assert "every locked package is required" in capsys.readouterr().out
+
+
+def test_extras_cannot_be_decided_without_the_installed_closure(tmp_path, monkeypatch, capsys):
+    """Absent, or present at another version: the edges are unknown, and the
+    answer is 'not checked' out loud — neither a false alarm nor a pass."""
+    p = _write(tmp_path / "l.lock", EXTRA_PKG)
+    req = _write(tmp_path / "requirements.txt", "openai==3.9.0\n")
+    for table in ({"openai": ("3.9.0", []), "httpx": ("0.28.1", [])},      # one absent
+                  {"openai": ("3.8.0", []), "httpx": ("0.28.1", []),
+                   "evil-pkg": ("6.6.6", [])}):                           # one drifted
+        _installed(monkeypatch, table)
+        assert L.unreachable(L.parse(p), ["openai"]) == (False, [])
+        assert L.verify(p, [req], []) == []
+        assert L.main(["verify", "--lock", p, "--req", req]) == 0
+        assert "not checked" in capsys.readouterr().out
+
+
+def test_the_resolver_never_builds_an_sdist(tmp_path, monkeypatch):
+    """Resolving from an sdist runs its build backend inside the job that
+    writes the lock."""
+    seen = {}
+
+    def run(argv, **kw):
+        seen["argv"] = list(argv)
+        report = argv[argv.index("--report") + 1]
+        _write(report, '{"install": [{"metadata": {"name": "foo", "version": "1.0"}}]}')
+
+        class P:
+            returncode, stdout, stderr = 0, "", ""
+        return P()
+    monkeypatch.setattr(L.subprocess, "run", run)
+    assert L.resolve([str(tmp_path / "r.txt")], [], ["pip"])[0]["name"] == "foo"
+    i = seen["argv"].index("--only-binary")
+    assert seen["argv"][i + 1] == ":all:"

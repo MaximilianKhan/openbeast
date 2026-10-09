@@ -149,11 +149,31 @@ if [[ $_rc -ne 0 && "$(n_txt)" == "0" ]] && has "$_out" "HASH MISMATCH" && ! has
 else
   fail "agent.sh hash mismatch (rc=$_rc txt=$(n_txt)): $_out"
 fi
+# A NON-hash failure (an index that omits one locked file says "No matching
+# distribution") used to fall back to the unpinned install by default.
 run_agent 1
-if [[ $_rc -eq 0 && "$(n_txt)" == "1" ]] && has "$_out" "falling back" && has "$_out" "RUNNER-STARTED"; then
-  pass "negative control: agent.sh degrades to requirements.txt on a non-hash failure, loudly"
+if [[ $_rc -ne 0 && "$(n_txt)" == "0" ]] && has "$_out" "OPENBEAST_PIP_STRICT=0" && ! has "$_out" "RUNNER-STARTED"; then
+  pass "agent.sh: a non-hash failure of the locked install STOPS by default (no unpinned install, no agent run)"
 else
-  fail "agent.sh fallback (rc=$_rc txt=$(n_txt)): $_out"
+  fail "agent.sh fell back without being asked (rc=$_rc txt=$(n_txt)): $_out"
+fi
+run_agent 1 OPENBEAST_PIP_STRICT=1
+if [[ $_rc -ne 0 && "$(n_txt)" == "0" ]]; then
+  pass "agent.sh: OPENBEAST_PIP_STRICT=1 is the same as the default"
+else
+  fail "agent.sh STRICT=1 (rc=$_rc txt=$(n_txt)): $_out"
+fi
+run_agent 1 OPENBEAST_PIP_STRICT=0
+if [[ $_rc -eq 0 && "$(n_txt)" == "1" ]] && has "$_out" "falling back" && has "$_out" "RUNNER-STARTED"; then
+  pass "negative control: OPENBEAST_PIP_STRICT=0 opts in to the requirements.txt fallback, loudly"
+else
+  fail "agent.sh opt-in fallback (rc=$_rc txt=$(n_txt)): $_out"
+fi
+run_agent 3 OPENBEAST_PIP_STRICT=0
+if [[ $_rc -ne 0 && "$(n_txt)" == "0" ]] && has "$_out" "HASH MISMATCH"; then
+  pass "agent.sh: the opt-in never covers a HASH MISMATCH"
+else
+  fail "agent.sh hash mismatch under STRICT=0 (rc=$_rc txt=$(n_txt)): $_out"
 fi
 
 # ===========================================================================
