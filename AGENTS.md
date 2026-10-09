@@ -2,7 +2,7 @@
 
 You're working in **OpenBeast**, a fully local AI workstation — llama.cpp
 serving Qwen and Gemma models, MCP-based tool server, OpenCode + Open WebUI as frontends,
-a 137-task eval suite (v4 — 291 effective units with multi-language variants,
+a 137-task eval suite (v4.1 — 291 effective units with multi-language variants,
 across 12 categories), and 15 curated skills for specialized work.
 
 This file is auto-loaded as project-wide instructions. Read it once at the
@@ -114,8 +114,10 @@ Each is one arg away, e.g. `./start.sh serve-qwen-27b-q5.sh`. Board:
 
 ### Eval suite
 
-- 137 base tasks (v4); 31 of them have multi-language variants (291
-  effective test units across Python / Go / C / C++ / Rust / Zig)
+- 137 base tasks (v4.1); 31 of them have multi-language variants (291
+  effective test units across Python / Go / C / C++ / Rust / Zig). Every
+  board row to date was measured on v4; v4 and v4.1 scores are not
+  comparable (`evals/CHANGELOG.md`)
 - Run a single model: `python3 evals/benchmark_all.py --models <slug>`
 - Full sweep: bare `python3 evals/benchmark_all.py` runs **every** configured
   model — 20 today (`--list` to see them), several days of GPU on the 5090.

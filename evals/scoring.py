@@ -432,7 +432,26 @@ def current_suite_version() -> str:
 
 # Expected effective-unit counts per suite version. Entries whose suite has
 # no expected count here (legacy runs) are treated as full.
-SUITE_EXPECTED_UNITS = {"v4": 291, "v3.5": 323}
+# v4.1 (2026-10) is the same 137 tasks / 291 units as v4 with two validators,
+# 132 fixtures and the eval harness corrected; its scores are NOT comparable
+# to v4's, so it is a suite of its own everywhere below.
+SUITE_EXPECTED_UNITS = {"v4.1": 291, "v4": 291, "v3.5": 323}
+
+# Suites whose rows share ONE board line per (host, model): a newer run of
+# the same model replaces the older row, v4 over v3.5 included. That is how
+# the board has always worked and these keep it. Every later suite gets a
+# line of its own (see entry_dedup_key), so seating a v4.1 run never removes
+# the model's v4 row.
+_REPLACING_SUITES = frozenset({"v4", "v3.5", "legacy", "unknown"})
+
+
+def suite_order(sv) -> tuple:
+    """Sort key: newest suite first ('v4.1' < 'v4' < 'v3.5' < unparseable)."""
+    m = re.fullmatch(r"v(\d+(?:\.\d+)*)", str(sv or ""))
+    if not m:
+        return (1, (), str(sv))
+    parts = [-int(x) for x in m.group(1).split(".")]
+    return (0, tuple(parts + [0] * (4 - len(parts))), str(sv))
 
 
 def _suite_version(results: dict) -> str:
@@ -705,9 +724,13 @@ def entry_host_id(entry: dict) -> str:
 
 
 def entry_dedup_key(entry: dict) -> tuple:
-    """The (host_id, model_slug) pair used to deduplicate leaderboard entries.
-    Allows the same model to appear once per host."""
-    return (entry_host_id(entry), entry.get("model_slug", "unknown"))
+    """The key leaderboard entries are deduplicated on: (host_id, model_slug)
+    for the suites up to v4, which lets the same model appear once per host,
+    and (host_id, model_slug, suite) for every later suite, so a model's
+    v4.1 row and its v4 row are two entries and neither replaces the other."""
+    key = (entry_host_id(entry), entry.get("model_slug", "unknown"))
+    sv = str(entry.get("suite_version") or "unknown")
+    return key if sv in _REPLACING_SUITES else key + (sv,)
 
 
 def load_leaderboard(path: str | None = None) -> list[dict]:
@@ -739,8 +762,8 @@ def update_leaderboard(score_entry: dict, path: str = LEADERBOARD_PATH,
     """Insert or replace the entry for this (host_id, model_slug). Returns sorted list.
     Multi-host: results from different machines coexist in the same leaderboard.
 
-    Partial-run guard: a v4 entry that doesn't cover the full 291 effective
-    units is REFUSED (aborted/smoke runs would otherwise enter with accuracy
+    Partial-run guard: a v4 or later entry that doesn't cover its suite's
+    full unit count (291) is REFUSED (aborted/smoke runs would otherwise enter with accuracy
     computed over the subset that happened to complete). So is an entry with
     `ineligible_reasons` (experiment arms, infrastructure rows — see
     ineligibility_reasons). Pass force=True to override deliberately."""
@@ -749,10 +772,11 @@ def update_leaderboard(score_entry: dict, path: str = LEADERBOARD_PATH,
               f"leaderboard-ineligible run ({'; '.join(score_entry['ineligible_reasons'])}). "
               f"Existing leaderboard unchanged.")
         return load_leaderboard(path)
-    if (not force and score_entry.get("suite_version") == "v4"
-            and score_entry.get("tasks_total") not in (291,)):
+    sv = score_entry.get("suite_version")
+    expected = SUITE_EXPECTED_UNITS.get(sv) if sv != "v3.5" else None
+    if not force and expected and score_entry.get("tasks_total") != expected:
         print(f"REFUSED leaderboard update for {score_entry.get('model', '?')}: "
-              f"v4 entry covers {score_entry.get('tasks_total')} tasks, expected 291. "
+              f"{sv} entry covers {score_entry.get('tasks_total')} tasks, expected {expected}. "
               f"Partial/aborted runs must not enter the leaderboard "
               f"(use force=True to override). Existing leaderboard unchanged.")
         return load_leaderboard(path)
@@ -774,6 +798,38 @@ def _fmt_tokens(n: int) -> str:
     if n < 1_000_000:
         return f"{n/1000:.0f}K"
     return f"{n/1_000_000:.1f}M"
+
+
+def board_sections(entries: list[dict]) -> list[tuple[str, list[dict], list]]:
+    """The board as (suite, ranked rows, provenance notes) sections: the
+    CURRENT suite first (even when it has no rows yet), then each older suite
+    that has rows, newest first. Rows are ranked within their own suite only.
+    Rows of different suites are never ranked against each other, so bumping
+    the suite does not re-rank or drop a single existing row.
+
+    Provenance footnotes go on every suite from v4 on; v3.5 and older rows
+    predate the fields and their section is already labelled not comparable."""
+    cur = current_suite_version()
+    by_suite: dict[str, list[dict]] = defaultdict(list)
+    for e in entries:
+        by_suite[str(e.get("suite_version"))].append(e)
+    by_suite.setdefault(cur, [])
+    out = []
+    for sv in sorted(by_suite, key=lambda s: (s != cur, suite_order(s))):
+        rows = sorted(by_suite[sv], key=rank_key)
+        annotate = sv == cur or sv not in ("v3.5", "legacy", "unknown", "None")
+        out.append((sv, rows, provenance_notes(rows) if annotate else []))
+    return out
+
+
+def older_suite_heading(sv: str, cur: str) -> str:
+    return (f"SUITE {sv} (older suite: tasks, validators or harness differ, "
+            f"so these scores are not comparable to {cur} rows)")
+
+
+def no_current_rows_note(cur: str) -> str:
+    return (f"(no {cur} rows yet: nothing has been run on suite {cur} since it "
+            f"replaced the previous one)")
 
 
 def format_leaderboard(entries: list[dict], show_host: bool = False) -> str:
@@ -833,28 +889,23 @@ def format_leaderboard(entries: list[dict], show_host: bool = False) -> str:
         return f"{i:>2}  {model:<28}  {suite:>4}  {solve:>7}  {lang:>7}  {score:>7}  {spd:>6}  {toks:>7}  {wall:>7}  {passed:>7}  {killed:>3}  {marks}".rstrip()
 
     cur = current_suite_version()
-    current_rows = sorted((e for e in entries if str(e.get("suite_version")) == cur), key=rank_key)
-    legacy_rows = sorted((e for e in entries if str(e.get("suite_version")) != cur), key=rank_key)
-
-    # Provenance footnotes, current suite only (the legacy section is
-    # already labelled not comparable). A readout: order and rows unchanged.
-    notes = provenance_notes(current_rows)
-    marks = {i: m for i, m, _ in notes}
     lines = [header, sep]
-    for i, e in enumerate(current_rows, 1):
-        lines.append(_row(i, e, marks.get(i, "")))
-    if notes:
-        lines.append("")
-        lines.append(PROVENANCE_LEGEND)
-        for i, m, text in notes:
-            lines.append(f"  {i:>2} {m:<2} {text}")
-    if legacy_rows:
-        if current_rows:
+    for n, (sv, rows, notes) in enumerate(board_sections(entries)):
+        if sv != cur:
+            if n:
+                lines.append("")
+            lines.append(older_suite_heading(sv, cur))
+            lines.append(sep)
+        elif not rows:
+            lines.append(no_current_rows_note(cur))
+        marks = {i: m for i, m, _ in notes}
+        for i, e in enumerate(rows, 1):
+            lines.append(_row(i, e, marks.get(i, "")))
+        if notes:
             lines.append("")
-        lines.append(f"LEGACY SUITES (task sets differ — not comparable to {cur} rows above)")
-        lines.append(sep)
-        for i, e in enumerate(legacy_rows, 1):
-            lines.append(_row(i, e))
+            lines.append(PROVENANCE_LEGEND)
+            for i, m, text in notes:
+                lines.append(f"  {i:>2} {m:<2} {text}")
     lines.append("")
     lines.append("SOLVE = % of base problems solved in >=1 language.  "
                  "LANG = % of language ports passed among solved problems.")
@@ -862,8 +913,8 @@ def format_leaderboard(entries: list[dict], show_host: bool = False) -> str:
                  "SPD = sustained decode tok/s (server-measured; ~ = isolated-benchmark estimate, "
                  "pre-2026-07-08 runs had no decode log).  TOKENS = total prompt+completion.  WALL = total run time.")
     lines.append("T/O = units whose agent was killed at the wall timeout or by a signal: pass/fail still "
-                 "counts, their tokens are recorded as 0 (TOKENS understates), and they are never cached, "
-                 "so a relaunch re-rolls them.")
+                 "counts, before suite v4.1 their tokens were recorded as 0 (TOKENS understates), and "
+                 "they are never cached, so a relaunch re-rolls them.")
     return "\n".join(lines)
 
 
@@ -918,17 +969,17 @@ def format_leaderboard_html(entries: list[dict], title: str = "OpenBeast leaderb
                 + (f"<p>{escape(PROVENANCE_LEGEND)}</p>{foot}" if notes else ""))
 
     cur = current_suite_version()
-    current_rows = sorted((e for e in entries if str(e.get("suite_version")) == cur), key=rank_key)
-    legacy_rows = sorted((e for e in entries if str(e.get("suite_version")) != cur), key=rank_key)
     parts = []
     if not entries:
         parts.append("<p>The leaderboard is empty.</p>")
-    if current_rows:
-        parts.append(f"<h2>Suite {escape(cur)}</h2>"
-                     + table(current_rows, provenance_notes(current_rows)))
-    if legacy_rows:
-        parts.append(f"<h2>Legacy suites</h2><p>Task sets differ — not comparable "
-                     f"to suite {escape(cur)} rows.</p>" + table(legacy_rows))
+    for sv, rows, notes in (board_sections(entries) if entries else []):
+        if sv == cur:
+            parts.append(f"<h2>Suite {escape(cur)}</h2>"
+                         + (table(rows, notes) if rows
+                            else f"<p>{escape(no_current_rows_note(cur))}</p>"))
+        else:
+            parts.append(f"<h2>Suite {escape(sv)}</h2>"
+                         f"<p>{escape(older_suite_heading(sv, cur))}</p>" + table(rows, notes))
     stamp = escape(datetime.now().strftime("%Y-%m-%d %H:%M"))
     t = escape(title)
     return f"""<!doctype html>
@@ -952,8 +1003,8 @@ td.n{{text-align:right}}
 {"".join(parts)}
 <p>Solve = % of base problems solved in ≥1 language. Lang = % of language ports passed among
 solved problems. tok/s = sustained decode (~ = isolated-benchmark estimate). T/O = units whose
-agent was killed at the wall timeout or by a signal: pass/fail still counts, their tokens are
-recorded as 0, and they are never cached.</p>
+agent was killed at the wall timeout or by a signal: pass/fail still counts, before suite v4.1
+their tokens were recorded as 0, and they are never cached.</p>
 </body></html>
 """
 

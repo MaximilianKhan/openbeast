@@ -10,7 +10,9 @@ Decisions the 2026-10-09 review deferred to the owner. Each is open.
 - [ ] Write a global OpenCode config on the rig, so `opencode` works outside the checkout.
 - [ ] Unify flag conventions across scripts (`--dry-run` / `--yes`).
 - [ ] Generate tool-server keys by default.
-- [ ] Roll the eval era once, carrying: the `23_sql_injection` and `21_race_condition` validator fixes, the runner request-timeout fix, hiding `expected.txt` from variant units, and removing `fetch`/`web_search` under eval.
+- [x] Roll the eval era once, carrying: the `23_sql_injection` and `21_race_condition` validator fixes, the runner request-timeout fix, hiding `expected.txt` from variant units, and removing `fetch`/`web_search` under eval. Done as suite **v4.1** (`evals/CHANGELOG.md`); era `b5596c660b5ab819` → `c21335b8e331f734`.
+- [ ] After the v4.1 roll: rerun the champion (Qwen3.6 27B Q5_K_XL) and the default model on v4.1 (no v4.1 board row exists yet), then re-pin v5-fast from full v4.1 runs (`python3 evals/make_fast_suite.py --generate`; the pin is marked `repin_required`).
+- [ ] After the v4.1 roll: the default model served by `./start.sh` (Qwen3.8 27B Uncensored **MTP** Q5_K_M) has never had a board row on any suite.
 - [ ] Trim prompt tokens in the era-hashed prompts (`system-prompt.md`, `system-prompt-tools.md`), in the same era roll.
 - [ ] Rerun the champion row (Qwen3.6 27B Q5_K_XL) in the current era.
 - [ ] Agent router residual: in header mode with tool keys and no `LLAMA_API_KEY`, a local process can still type `X-OpenWebUI-User-Role: admin`. Fix is a router key minted by the launcher, or `--with-jwt` by default.

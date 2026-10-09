@@ -1036,6 +1036,14 @@ def load_suite(name: str) -> dict:
     return suite
 
 
+def _stale_pin(suite_pin: dict) -> str | None:
+    """Why a fast-suite pin's imputation is not valid on the suite this
+    checkout runs (it was built from another version's reference runs), or
+    None. See make_fast_suite.pin_is_stale."""
+    import make_fast_suite
+    return make_fast_suite.pin_is_stale(suite_pin)
+
+
 def _run_reaped(cmd, timeout: int, shell: bool = False) -> tuple[int, str]:
     """Thin wrapper around tools.run_reaped for eval-harness callers.
 
@@ -1604,7 +1612,11 @@ def run_eval(
         c = suite_pin["counts"]
         print(f"Suite:  {suite} ({c['units']} pinned units = {c['discriminating']} discriminating "
               f"+ {c['tripwires']} tripwires; {c['assumed_passed'] + c['assumed_failed']} imputed; "
-              f"leaderboard-ineligible partial of v4)")
+              f"leaderboard-ineligible partial of {suite_pin.get('base_suite_version', 'v4')})")
+        if _stale_pin(suite_pin):
+            print(f"Suite:  STALE PIN — {_stale_pin(suite_pin)}")
+            print("        Paired comparisons on the measured units are valid; the imputed "
+                  "absolute score is not.")
     print(f"Results: {results_path}")
     print("=" * 60)
 
@@ -1975,8 +1987,10 @@ def run_eval(
                        if not t.get("passed") and t["id"] in set(suite_pin["tripwires"])]
         imputed = scoring.impute_suite_tasks(results["tasks"], suite_pin)
         solve, lang, cap = scoring.compute_solve_breadth(imputed)
+        stale_pin = _stale_pin(suite_pin)
         results["fast_suite"] = {
             "suite": suite,
+            **({"pin_stale": stale_pin} if stale_pin else {}),
             "capability_imputed": cap,
             "problem_solving_imputed": solve,
             "language_breadth_imputed": lang,
@@ -1984,9 +1998,11 @@ def run_eval(
             "tripwire_failures": trip_failed,
         }
         _write_results(results_path, results)
-        print(f"Imputed capability (v4-leaderboard scale): {cap:.2f} "
+        print(f"Imputed capability ({suite_pin.get('base_suite_version', 'v4')}-leaderboard scale): {cap:.2f} "
               f"(solve {solve:.2f} / breadth {lang:.2f}; "
               f"{results['fast_suite']['imputed_units']} saturated units imputed)")
+        if stale_pin:
+            print(f"STALE PIN — the imputed score above is NOT valid: {stale_pin}")
         if trip_failed:
             print(f"TRIPWIRE FAILURES ({len(trip_failed)}): {', '.join(trip_failed)}")
             print("  This model breaks the suite's saturation assumption — the imputed "

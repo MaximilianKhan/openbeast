@@ -1,9 +1,11 @@
 # Eval suite
 
-> **Suite version: v4 (current).** 137 base tasks / 291 effective units,
-> hardened against the cheats documented in the 2026-07 review. That
-> hardening is incomplete: see [Known validator defects (v4)](#known-validator-defects-v4)
-> below. History: [`CHANGELOG.md`](CHANGELOG.md),
+> **Suite version: v4.1 (current).** 137 base tasks / 291 effective units:
+> the v4 suite, hardened against the cheats documented in the 2026-07 review,
+> with the validator and harness defects the 2026-10 review found corrected
+> (see [Known validator defects (v4)](#known-validator-defects-v4) below for
+> what v4.1 fixes and what it does not). **v4.1 scores are not comparable to
+> v4 scores**, and every board row to date is a v4 row. History: [`CHANGELOG.md`](CHANGELOG.md),
 > [`../docs/archive/EVAL_V4_PLAN.md`](../docs/archive/EVAL_V4_PLAN.md), and the review that
 > drove it, [`../docs/archive/EVAL_REVIEW_2026-07-07.md`](../docs/archive/EVAL_REVIEW_2026-07-07.md).
 > The distribution tables below describe **v4**. For the model **leaderboard**
@@ -17,36 +19,67 @@ validation script that returns exit 0 on success, non-zero on
 failure. The harness runs the agent against every task, scores the result, and
 ranks models in a leaderboard keyed by (host_id, model_slug).
 
-The tasks ship their own fixtures and need no network, but a run is not
-sealed: eval agents have live `fetch` and `web_search`, and `web_search`
-succeeds or fails depending on whether SearXNG is up, which is not recorded.
-See the next section.
+The tasks ship their own fixtures and need no network. From v4.1 an eval
+agent is not offered `fetch` or `web_search`. A run is still not sealed: the
+`bash` tool can reach the network (`curl`, `pip`). See the next section.
 
 ## Known validator defects (v4)
 
-These are known and held for the next suite version, because fixing a
-validator or the harness changes the era and invalidates every cached result.
+The 2026-10 review found these in v4. Fixing a validator or the harness
+changes the era and invalidates every cached result, so they were fixed
+together, once, as **suite v4.1** ([`CHANGELOG.md`](CHANGELOG.md)). Every v4
+board row was measured with them present; the rows are kept, in their own
+section of the board, and are not comparable to v4.1 rows.
 
-- **`23_sql_injection` rejects the canonical fix.** The validator flags any
-  `+` or f-string inside the `execute(...)` call, including in the parameter
-  tuple. `cur.execute("... LIKE ?", ('%' + q + '%',))` fails; the same fix
-  with the pattern assigned on the previous line passes, and so does SQL
-  concatenated into a variable outside the call. Every v4 board row fails
-  this task. It is a hard singleton, so each row carries about −0.68 SCORE
-  from it.
-- **`21_race_condition` can pass without synchronisation.** The validator
-  checks only the final count of 10 threads × 2000 increments. Deleting the
-  fixture's `time.sleep(0)` yield, with no lock added, passed 20 of 20
-  validations.
-- **Variant units expose their expected output.** 132 of the 185 variant
-  units write `expected.txt` into the agent's working directory at setup and
-  validate with a `diff` against it. A solution that prints the file's
-  contents passed 21 of 22 sampled Python variants. Whether any banked
-  solution does this has not been audited.
-- **Eval agents have live `fetch` and `web_search`.** Agent logs show
-  successful fetches of Wikipedia, GitHub and ziglang.org during eval units,
-  and `web_search` availability differs between runs with the stack up and
-  down. Neither is in the cache key or the result provenance.
+**Fixed in v4.1**
+
+- **`23_sql_injection` rejected the canonical fix.** The v4 validator flagged
+  any `+` or f-string inside the `execute(...)` call, including in the
+  parameter tuple, so `cur.execute("... LIKE ?", ('%' + q + '%',))` failed
+  while SQL concatenated into a variable outside the call passed. Every v4
+  board row fails this task: about −0.68 SCORE each. v4.1 judges only the SQL
+  argument (followed to its assignments) and adds injection tests for
+  `/search` and `/user`.
+- **`21_race_condition` passed without synchronisation.** The v4 validator
+  checked only the final count of 10 threads × 2000 increments; deleting the
+  fixture's `time.sleep(0)` yield, with no lock, passed 20 of 20. v4.1 forces
+  a thread switch after every bytecode instruction in `counter.py`.
+- **Variant units exposed their expected output.** 132 of the 185 variant
+  units wrote `expected.txt` into the agent's working directory at setup and
+  validated with a `diff` against it on one input; a program that prints the
+  file passed 21 of 22 Python variants. In v4.1 setup writes the sample input
+  only, and the sample plus hidden cases and their expected output are
+  installed after the agent exits (`scripts/hide_expected.py`).
+- **A model turn longer than 600 s was discarded and re-sent.** The runner's
+  client timeout was not scaled by `--jobs`; the turn was generated twice and
+  the unit then failed at the wall with 0 tokens, or was relabelled
+  `server_error`. In v4.1 a request gets the unit's remaining wall budget, is
+  never re-sent, and a timeout is recorded as `request_timeouts` on a plain
+  model FAIL.
+- **The path guard's refusal never reached the model**, and its path list
+  held files that cannot exist. In v4.1 the model reads the refusal, the list
+  comes from the task text, and the guard gives way after two refusals.
+- **Eval agents had live `fetch` and `web_search`**, with `web_search`
+  working or not depending on whether the stack was up. v4.1 does not offer
+  either tool to an eval unit.
+
+**Still open in v4.1**
+
+- **The network is not sealed.** `bash` can still run `curl` or `pip`
+  (26 and 11 uses across 3,144 agent logs). Closing that needs a network
+  namespace around the unit.
+- **Validators, hidden cases and reference solutions are readable.** They
+  live in `evals/tasks/*.json` and `evals/refs/`, which an agent with `bash`
+  can open. One agent log of 3,144 shows it happening: on 2026-09-10 a
+  `128_rsa` unit (a diagnostics-arm run of Qwen3.8 27B Uncensored, recorded
+  PASS) found the task spec and `evals/refs/rsa.py` in the repo and copied
+  the reference over its own solution. Nothing prevents it; closing it needs
+  the unit sandboxed away from the repo.
+- **The other 53 variant units and the 106 single-language tasks were not
+  re-audited** for this release. The review sampled about 10 of 137 base
+  tasks in depth.
+- **Whether any banked v4 solution special-cased `expected.txt`** has not
+  been audited (520 logs reference the file).
 
 ```bash
 python3 evals/run_eval.py --list                     # list every task
@@ -89,6 +122,18 @@ the reference card — set `off` for a sweep whose rows must be thermally
 identical to older ones.
 
 ## v5-fast — the pinned fast suite (imputation-scored)
+
+> **The pin is stale on v4.1 and has not been re-guessed.** It was built from
+> nine **v4** reference runs. v4.1 changed 134 unit specs: 65 of the pinned
+> measured units, 68 of the units the pin assumes passed, and
+> `23_sql_injection`, which it assumes failed only because the v4 validator
+> rejected the correct fix. `evals/suites/v5-fast.json` carries a
+> `repin_required` block saying so, `--suite v5-fast` prints `STALE PIN`, and
+> `make_fast_suite.py` exits 1. Until it is regenerated from full v4.1 runs
+> (`python3 evals/make_fast_suite.py --generate`, which now reads only runs
+> of the current suite), **an imputed absolute score is not valid**; paired
+> comparisons on the measured units are. The numbers below describe the pin
+> against the v4 runs it was built from.
 
 `evals/suites/v5-fast.json` pins the 112 units that carry the suite's signal:
 the **92 discriminating units** (passed by some but not all of the 9 reference
@@ -150,7 +195,10 @@ default), (d) the eval **suite version** bumps (`evals/SUITE_VERSION`), or
 `system-prompt-tools.md`, `opencode.json`, or the agent runtime itself
 (`agents/runner.py`, `agents/tools.py`: a change to the loop or a tool's
 behavior changes what a "cached result" means). Timeouts (`agent_exit_code
-== -1`) are NOT cached: those are environmental, not deterministic. Neither
+== -1`) are NOT cached: those are environmental, not deterministic. Nor is a
+FAIL whose runner stopped because a model turn outlasted the unit's wall
+budget (`request_timeouts` ≥ 1, from v4.1): it is a model verdict and seats
+on the board, but it depends on the wall clock like the exit −1 row. Neither
 are FAILs caused by infrastructure (`cacheable_result` in `run_eval.py`):
 a unit whose runner reported `API_ERRORS: n` ≥ 1, or whose server failed
 the health check right after the agent finished, is recorded with
@@ -560,7 +608,7 @@ legacy v1 accuracy and per-tier pass rates live in each entry's JSON
 
 **Why the `~` estimates (fallback, currently unused):** decode is matched to each run's tee'd server log by timestamp (`decode_from_server_log`), which finds a real log for **every** v4 run — so all current rows are server-measured. If a run ever has no decode log, its SPD falls back to an isolated-benchmark estimate shown with a leading `~` (or `—` if none is defined). Re-running with logging always replaces it with a measured value.
 
-**T/O** is the number of units whose agent was killed — at the wall timeout or by a signal (agent exit < 0). Their pass/fail still counts exactly as before; the column is there because a row with several kills measured the clock as much as the model. A killed unit's tokens read 0 until the runner reports them on the way down.
+**T/O** is the number of units whose agent was killed — at the wall timeout or by a signal (agent exit < 0). Their pass/fail still counts exactly as before; the column is there because a row with several kills measured the clock as much as the model. A killed unit's tokens read 0 in every row measured before suite v4.1; from v4.1 the runner prints a running total after each model turn, so the row keeps the tokens of its completed turns (the turn in flight at the kill is not counted). From v4.1 the column also counts units whose runner stopped itself because a model turn outlasted the wall budget (`request_timeouts`).
 
 **† and ‡ after a row are provenance marks, printed by `scoring.py --show` with one footnote line per marked row.** Each entry carries `provenance`: the repo commit and dirty flag, the engine build, the reasoning budget and `--jobs`. **†** = the row is missing at least one of those (it predates the stamp), so nothing can be said about its regime. **‡** = everything is recorded and something differs from row 1 — the footnote names what (for example `engine build 10254 (row 1: 9690); jobs 4 (row 1: unrecorded)`). No row is re-ranked or dropped for either mark; they say which rows are not like-for-like. On today's board rows 2 and 3 (Qwen3.8) are ‡ and the rest †.
 
