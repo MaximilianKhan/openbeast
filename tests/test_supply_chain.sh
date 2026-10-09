@@ -218,7 +218,22 @@ case "$*" in
   "pr view 7 --json commits"*)    echo '{"commits": [{"messageHeadline": "deps: regenerate agents/requirements.lock"}]}' | out ;;
   "pr view 7 --json headRefOid"*) echo "{\"headRefOid\": \"$HEAD\"}" | out ;;
   "pr view 7 --json state"*)      echo '{"state": "MERGED"}' | out ;;
-  "pr comment"*|"pr checks"*|"pr merge"*) echo ok ;;
+  "pr comment"*) echo ok ;;
+  "pr merge"*)  echo "$*" >> "$S/merge.log"; echo ok ;;
+  "pr checks"*)
+      # $S/no_checks = how many more calls answer like a PR whose checks do
+      # not exist yet (gh prints this and exits 1, --watch or not).
+      n="$(cat "$S/no_checks" 2>/dev/null || echo 0)"
+      echo x >> "$S/checks.calls"
+      if [[ "$n" -gt 0 ]]; then
+        echo $((n - 1)) > "$S/no_checks"
+        echo "no checks reported on the 'dependabot/pip/agents/openai-9' branch"; exit 1
+      fi
+      echo "All checks were successful" ;;
+  "pr list"*)
+      # 7 bumps a pip requirement; 8 is a github-actions bump (never relocks).
+      echo '[{"number": 8, "files": [{"path": ".github/workflows/ci.yml"}]},
+             {"number": 7, "files": [{"path": "agents/requirements.txt"}]}]' | out ;;
   "api repos/me/openbeast/commits/main"*)  echo '{"sha": "m"}' | out ;;
   "api repos/me/openbeast/compare/"*)      echo '{"behind_by": 0}' | out ;;
   "api -X POST repos/me/openbeast/actions/runs/"*"/approve")
@@ -235,8 +250,16 @@ case "$*" in
 esac
 STUB
   chmod +x "$LB/gh" "$LB/sleep"
-  : > "$T/state/gh.log"; : > "$T/state/approved"
-  _out="$(env PATH="$LB:$PATH" TMPDIR="$T" bash "$REPO_DIR/scripts/land-dependabot.sh" 7 2>&1)"; _rc=$?
+  # A sandbox copy: the script keeps its lock in <checkout>/.run, and the
+  # real checkout's .run is not this test's to write.
+  LR="$T/land_repo"; mkdir -p "$LR/scripts"
+  install -m 755 "$REPO_DIR/scripts/land-dependabot.sh" "$LR/scripts/"
+  land() { # land [args…] — sets _out/_rc; fresh logs each run
+    : > "$T/state/gh.log"; : > "$T/state/approved"; : > "$T/state/merge.log"; : > "$T/state/checks.calls"
+    _out="$(env PATH="$LB:$PATH" TMPDIR="$T/land_tmp" bash "$LR/scripts/land-dependabot.sh" "$@" 2>&1)"; _rc=$?
+  }
+  mkdir -p "$T/land_tmp"; echo 0 > "$T/state/no_checks"
+  land 7
   _appr="$(sort -n "$T/state/approved" | tr '\n' ' ')"
   if [[ "$_appr" == "101 " ]]; then
     pass "only run 101 (this repo, the PR's head commit, not the relock) was approved"
@@ -257,6 +280,60 @@ STUB
   else
     fail "land-dependabot run (rc=$_rc): $_out"
   fi
+
+  # --- 2026-10-09 review, supply S10 -------------------------------------
+  HEAD7=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  if grep -q -- "pr merge 7 .*--match-head-commit $HEAD7" "$T/state/merge.log"; then
+    pass "the merge is pinned to the head commit that was watched (--match-head-commit)"
+  else
+    fail "merge was not pinned to the watched commit: $(cat "$T/state/merge.log")"
+  fi
+  if [[ -f "$LR/.run/land-dependabot.lock" ]] && [[ -z "$(ls -A "$T/land_tmp")" ]]; then
+    pass "the lock lives in the checkout's .run/, nothing is created under TMPDIR"
+  else
+    fail "lock placement: .run=$(ls "$LR/.run" 2>/dev/null | tr '\n' ' ') tmp=$(ls -A "$T/land_tmp" | tr '\n' ' ')"
+  fi
+  # Opened for append: whatever the lock path leads to is never truncated.
+  # Planted at the new path AND at the old world-writable one.
+  echo "precious" > "$T/state/victim"; echo "precious" > "$T/state/victim_tmp"
+  mkdir -p "$LR/.run"; rm -f "$LR/.run/land-dependabot.lock"
+  ln -s "$T/state/victim" "$LR/.run/land-dependabot.lock"
+  ln -s "$T/state/victim_tmp" "$T/land_tmp/openbeast-land-dependabot.lock"
+  land 7
+  if [[ $_rc -eq 0 && "$(cat "$T/state/victim")" == "precious" && "$(cat "$T/state/victim_tmp")" == "precious" ]]; then
+    pass "a symlink planted at the lock path (new or old) does not get its target truncated"
+  else
+    fail "lock open truncated its target (rc=$_rc): '$(cat "$T/state/victim")' / '$(cat "$T/state/victim_tmp")'"
+  fi
+  rm -f "$LR/.run/land-dependabot.lock" "$T/land_tmp/openbeast-land-dependabot.lock"
+  # No arguments: only the PRs this chain can land.
+  land
+  if [[ $_rc -eq 0 ]] && has "$_out" "=== PR 7" && ! has "$_out" "=== PR 8" \
+     && ! grep -q "pr comment 8\|pr merge 8" "$T/state/gh.log" && has "$_out" "Skipping 1 Dependabot PR"; then
+    pass "no-arg mode lands PR 7 (agents/requirements.txt) and skips PR 8 (a workflow bump), saying so"
+  else
+    fail "no-arg selection (rc=$_rc): $_out"
+  fi
+  # Checks that have not appeared yet are waited for, not treated as done.
+  echo 3 > "$T/state/no_checks"
+  land 7
+  if [[ $_rc -eq 0 ]] && has "$_out" "no checks reported yet" && has "$_out" "PR 7 -> MERGED" \
+     && [[ "$(wc -l < "$T/state/checks.calls")" -eq 4 ]]; then
+    pass "'no checks reported' is retried until the checks exist, then the PR lands"
+  else
+    fail "late-appearing checks (rc=$_rc, $(wc -l < "$T/state/checks.calls") checks calls): $_out"
+  fi
+  # NEGATIVE CONTROL: checks that never appear stop the run — bounded, and
+  # WITHOUT attempting a merge.
+  echo 1000 > "$T/state/no_checks"
+  land 7
+  if [[ $_rc -ne 0 ]] && has "$_out" "no checks appeared" && [[ ! -s "$T/state/merge.log" ]] \
+     && [[ "$(wc -l < "$T/state/checks.calls")" -eq 30 ]]; then
+    pass "control: checks that never appear give up after a bounded wait, with no merge"
+  else
+    fail "never-appearing checks (rc=$_rc, $(wc -l < "$T/state/checks.calls") calls, merge=$(cat "$T/state/merge.log")): $_out"
+  fi
+  echo 0 > "$T/state/no_checks"
 fi
 
 # ===========================================================================
