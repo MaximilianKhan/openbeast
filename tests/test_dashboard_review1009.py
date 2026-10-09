@@ -193,3 +193,28 @@ def test_handler_threads_are_capped_and_given_back(monkeypatch):
         live.close()
 
 
+# ───────────────────────── F6: probes follow OPENBEAST_PROBE_HOST ─────────────────────────
+
+@pytest.mark.parametrize("env,host", [({}, "127.0.0.1"),
+                                      ({"OPENBEAST_PROBE_HOST": "192.168.1.50"}, "192.168.1.50"),
+                                      ({"OPENBEAST_PROBE_HOST": "[::1]"}, "[::1]"),
+                                      ({"OPENBEAST_PROBE_HOST": "  "}, "127.0.0.1")])
+def test_probes_dial_the_probe_host(monkeypatch, env, host):
+    d = load(monkeypatch, OPENBEAST_INSTINCT="true", **env)
+    seen = []
+    d._get = recorder(seen)
+    d.slot_status()
+    d.tool_metrics()
+    want = {f"http://{host}:8080/health", f"http://{host}:8080/v1/models", f"http://{host}:8080/props",
+            f"http://{host}:8080/slots", f"http://{host}:8080/metrics", f"http://{host}:3001/health",
+            f"http://{host}:3000/api/version", f"http://{host}:8888/", f"http://{host}:3001/metrics",
+            # beast-instinct binds loopback whatever BIND_HOST says
+            "http://127.0.0.1:8094/health"}
+    assert set(seen) == want
+
+
+def test_an_explicit_inference_url_still_wins(monkeypatch):
+    d = load(monkeypatch, OPENBEAST_PROBE_HOST="192.168.1.50", OPENBEAST_INFERENCE_URL="http://10.0.0.5:8000/")
+    assert d._INFER == "http://10.0.0.5:8000"
+
+

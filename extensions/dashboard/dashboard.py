@@ -20,9 +20,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 REPO_DIR = os.environ.get("OPENBEAST_REPO_DIR", ".")
 BIND = os.environ.get("OPENBEAST_BIND", "127.0.0.1").strip() or "127.0.0.1"
 PORT = int(os.environ.get("DASHBOARD_PORT", "3002"))
-# Probes always target loopback — the dashboard runs on the same box as the
-# stack; BIND only controls who can reach the dashboard itself.
-H = "127.0.0.1"
+# Probes target the stack on this box; BIND only controls who can reach the
+# dashboard itself. The stack binds BIND_HOST, and a socket bound to a specific
+# LAN or tailnet address refuses loopback — so dial what conf.sh worked out
+# (OPENBEAST_PROBE_HOST, URL-ready: IPv6 comes bracketed), which start.sh's
+# extension launcher passes down. Unset — a standalone run.sh — is loopback.
+_LOOP = "127.0.0.1"
+H = os.environ.get("OPENBEAST_PROBE_HOST", "").strip() or _LOOP
 
 # The inference server (lib/conf.sh INFERENCE_*; docs/DGX_SPARK_PLAN.md).
 # Unset — every rig before multi-backend support — is exactly the old
@@ -164,7 +168,8 @@ def services_status(health=None):
         # /health route is open and says nothing else. Absent when instinct is
         # off, so a default rig's /api/slot is byte-identical (v2 is additive:
         # a new key inside `services`, never a new top-level key).
-        out["instinct"] = _get(f"http://{H}:{_INSTINCT_PORT}/health")[0] == 200
+        # Always loopback: instinct never follows BIND_HOST (start.sh).
+        out["instinct"] = _get(f"http://{_LOOP}:{_INSTINCT_PORT}/health")[0] == 200
     return out
 
 
