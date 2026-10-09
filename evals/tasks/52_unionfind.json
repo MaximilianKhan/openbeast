@@ -9,74 +9,74 @@
     {
       "id": "a",
       "language": "python",
-      "setup": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_uf/expected.txt",
-      "task": "Create /tmp/eval_uf/uf.py — reads from stdin: line 1 is 'N Q' (N elements 0..N-1, Q operations). Each next line is either 'u a b' (union of a and b) or 'c a b' (connected: output 'true' or 'false' on its own line indicating whether a and b are in the same set). Implement Union-Find with path compression in find() and union by size or rank. Do NOT print anything for 'u' operations — only for 'c'.",
+      "setup": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt",
+      "task": "Create /tmp/eval_uf/uf.py — reads from stdin: line 1 is 'N Q' (N elements 0..N-1, Q operations). Each next line is either 'u a b' (union of a and b) or 'c a b' (connected: output 'true' or 'false' on its own line indicating whether a and b are in the same set). Implement Union-Find with path compression in find() and union by size or rank. Do NOT print anything for 'u' operations — only for 'c'. A sample input is provided at /tmp/eval_uf/input.txt; no expected-output file is provided. Validation runs your program on that sample plus additional hidden cases in the same format and compares the output, so implement the general algorithm rather than printing fixed answers.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_uf && python3 uf.py < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
       "cleanup": "rm -rf /tmp/eval_uf",
-      "pre_validate": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_uf/expected.txt"
+      "pre_validate": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt\n# --- validation-time cases (never in the agent's working directory) ---\ncat > /tmp/eval_uf/input.txt <<'OB_HIDDEN_EOF'\n12 22\nu 1 2\nu 3 4\nu 2 4\nc 1 4\nc 3 1\nc 0 1\nu 5 6\nu 6 7\nu 7 8\nu 8 9\nc 5 9\nc 0 9\nc 1 5\nc 2 9\nc 9 5\nu 0 10\nc 10 0\nc 11 0\nu 4 9\nc 1 9\nc 3 5\nc 10 5\nOB_HIDDEN_EOF\ncat > /tmp/eval_uf/expected.txt <<'OB_HIDDEN_EOF'\ntrue\ntrue\nfalse\ntrue\nfalse\nfalse\nfalse\ntrue\ntrue\nfalse\ntrue\ntrue\nfalse\nOB_HIDDEN_EOF\n"
     },
     {
       "id": "b",
       "language": "go",
-      "setup": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_uf/expected.txt",
-      "task": "Create /tmp/eval_uf/uf.go (package main). Reads stdin: line 1 'N Q', then Q ops 'u a b' or 'c a b'. Print 'true' or 'false' per 'c' query. Path compression + union by size/rank. Compile with `go build -o uf uf.go`.",
+      "setup": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt",
+      "task": "Create /tmp/eval_uf/uf.go (package main). Reads stdin: line 1 'N Q', then Q ops 'u a b' or 'c a b'. Print 'true' or 'false' per 'c' query. Path compression + union by size/rank. Compile with `go build -o uf uf.go`. A sample input is provided at /tmp/eval_uf/input.txt; no expected-output file is provided. Validation runs your program on that sample plus additional hidden cases in the same format and compares the output, so implement the general algorithm rather than printing fixed answers.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_uf && go build -o uf uf.go && ./uf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
       "cleanup": "rm -rf /tmp/eval_uf",
-      "pre_validate": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_uf/expected.txt"
+      "pre_validate": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt\n# --- validation-time cases (never in the agent's working directory) ---\ncat > /tmp/eval_uf/input.txt <<'OB_HIDDEN_EOF'\n12 22\nu 1 2\nu 3 4\nu 2 4\nc 1 4\nc 3 1\nc 0 1\nu 5 6\nu 6 7\nu 7 8\nu 8 9\nc 5 9\nc 0 9\nc 1 5\nc 2 9\nc 9 5\nu 0 10\nc 10 0\nc 11 0\nu 4 9\nc 1 9\nc 3 5\nc 10 5\nOB_HIDDEN_EOF\ncat > /tmp/eval_uf/expected.txt <<'OB_HIDDEN_EOF'\ntrue\ntrue\nfalse\ntrue\nfalse\nfalse\nfalse\ntrue\ntrue\nfalse\ntrue\ntrue\nfalse\nOB_HIDDEN_EOF\n"
     },
     {
       "id": "c",
       "language": "c",
-      "setup": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_uf/expected.txt",
-      "task": "Create /tmp/eval_uf/uf.c — reads stdin: 'N Q' then Q ops 'u a b' or 'c a b'. Print 'true' or 'false' per 'c'. Path compression + union by size/rank. Must compile cleanly with `gcc -O2 -std=c11 -Wall -Wextra -o uf uf.c`.",
+      "setup": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt",
+      "task": "Create /tmp/eval_uf/uf.c — reads stdin: 'N Q' then Q ops 'u a b' or 'c a b'. Print 'true' or 'false' per 'c'. Path compression + union by size/rank. Must compile cleanly with `gcc -O2 -std=c11 -Wall -Wextra -o uf uf.c`. A sample input is provided at /tmp/eval_uf/input.txt; no expected-output file is provided. Validation runs your program on that sample plus additional hidden cases in the same format and compares the output, so implement the general algorithm rather than printing fixed answers.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_uf && gcc -O2 -std=c11 -Wall -Wextra -o uf uf.c && ./uf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
       "cleanup": "rm -rf /tmp/eval_uf",
-      "pre_validate": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_uf/expected.txt"
+      "pre_validate": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt\n# --- validation-time cases (never in the agent's working directory) ---\ncat > /tmp/eval_uf/input.txt <<'OB_HIDDEN_EOF'\n12 22\nu 1 2\nu 3 4\nu 2 4\nc 1 4\nc 3 1\nc 0 1\nu 5 6\nu 6 7\nu 7 8\nu 8 9\nc 5 9\nc 0 9\nc 1 5\nc 2 9\nc 9 5\nu 0 10\nc 10 0\nc 11 0\nu 4 9\nc 1 9\nc 3 5\nc 10 5\nOB_HIDDEN_EOF\ncat > /tmp/eval_uf/expected.txt <<'OB_HIDDEN_EOF'\ntrue\ntrue\nfalse\ntrue\nfalse\nfalse\nfalse\ntrue\ntrue\nfalse\ntrue\ntrue\nfalse\nOB_HIDDEN_EOF\n"
     },
     {
       "id": "d",
       "language": "cpp",
-      "setup": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_uf/expected.txt",
-      "task": "Create /tmp/eval_uf/uf.cpp — reads stdin: 'N Q' then Q ops 'u a b' or 'c a b'. Print 'true' or 'false' per 'c'. Path compression + union by size/rank. Must compile cleanly with `g++ -O2 -std=c++17 -Wall -Wextra -o uf uf.cpp`.",
+      "setup": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt",
+      "task": "Create /tmp/eval_uf/uf.cpp — reads stdin: 'N Q' then Q ops 'u a b' or 'c a b'. Print 'true' or 'false' per 'c'. Path compression + union by size/rank. Must compile cleanly with `g++ -O2 -std=c++17 -Wall -Wextra -o uf uf.cpp`. A sample input is provided at /tmp/eval_uf/input.txt; no expected-output file is provided. Validation runs your program on that sample plus additional hidden cases in the same format and compares the output, so implement the general algorithm rather than printing fixed answers.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_uf && g++ -O2 -std=c++17 -Wall -Wextra -o uf uf.cpp && ./uf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
       "cleanup": "rm -rf /tmp/eval_uf",
-      "pre_validate": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_uf/expected.txt"
+      "pre_validate": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt\n# --- validation-time cases (never in the agent's working directory) ---\ncat > /tmp/eval_uf/input.txt <<'OB_HIDDEN_EOF'\n12 22\nu 1 2\nu 3 4\nu 2 4\nc 1 4\nc 3 1\nc 0 1\nu 5 6\nu 6 7\nu 7 8\nu 8 9\nc 5 9\nc 0 9\nc 1 5\nc 2 9\nc 9 5\nu 0 10\nc 10 0\nc 11 0\nu 4 9\nc 1 9\nc 3 5\nc 10 5\nOB_HIDDEN_EOF\ncat > /tmp/eval_uf/expected.txt <<'OB_HIDDEN_EOF'\ntrue\ntrue\nfalse\ntrue\nfalse\nfalse\nfalse\ntrue\ntrue\nfalse\ntrue\ntrue\nfalse\nOB_HIDDEN_EOF\n"
     },
     {
       "id": "e",
       "language": "rust",
-      "setup": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_uf/expected.txt",
-      "task": "Create /tmp/eval_uf/uf.rs — reads from stdin: line 1 is 'N Q' (N elements 0..N-1, Q operations). Each next line is either 'u a b' (union of a and b) or 'c a b' (connected: output 'true' or 'false' on its own line indicating whether a and b are in the same set). Implement Union-Find with path compression in find() and union by size or rank. Do NOT print anything for 'u' operations — only for 'c'. Idiomatic Rust 2021+; compile with `rustc -O uf.rs -o uf`; the program is fed `input.txt` on stdin and its stdout is diffed against `expected.txt`.",
+      "setup": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt",
+      "task": "Create /tmp/eval_uf/uf.rs — reads from stdin: line 1 is 'N Q' (N elements 0..N-1, Q operations). Each next line is either 'u a b' (union of a and b) or 'c a b' (connected: output 'true' or 'false' on its own line indicating whether a and b are in the same set). Implement Union-Find with path compression in find() and union by size or rank. Do NOT print anything for 'u' operations — only for 'c'. Idiomatic Rust 2021+; compile with `rustc -O uf.rs -o uf`; the program is fed `input.txt` on stdin and its stdout is diffed against `expected.txt`. A sample input is provided at /tmp/eval_uf/input.txt; no expected-output file is provided. Validation runs your program on that sample plus additional hidden cases in the same format and compares the output, so implement the general algorithm rather than printing fixed answers.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_uf && rustc -O uf.rs -o uf && ./uf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
       "cleanup": "rm -rf /tmp/eval_uf",
-      "pre_validate": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_uf/expected.txt"
+      "pre_validate": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt\n# --- validation-time cases (never in the agent's working directory) ---\ncat > /tmp/eval_uf/input.txt <<'OB_HIDDEN_EOF'\n12 22\nu 1 2\nu 3 4\nu 2 4\nc 1 4\nc 3 1\nc 0 1\nu 5 6\nu 6 7\nu 7 8\nu 8 9\nc 5 9\nc 0 9\nc 1 5\nc 2 9\nc 9 5\nu 0 10\nc 10 0\nc 11 0\nu 4 9\nc 1 9\nc 3 5\nc 10 5\nOB_HIDDEN_EOF\ncat > /tmp/eval_uf/expected.txt <<'OB_HIDDEN_EOF'\ntrue\ntrue\nfalse\ntrue\nfalse\nfalse\nfalse\ntrue\ntrue\nfalse\ntrue\ntrue\nfalse\nOB_HIDDEN_EOF\n"
     },
     {
       "id": "f",
       "language": "zig",
-      "setup": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_uf/expected.txt",
-      "task": "Create /tmp/eval_uf/uf.zig — reads from stdin: line 1 is 'N Q' (N elements 0..N-1, Q operations). Each next line is either 'u a b' (union of a and b) or 'c a b' (connected: output 'true' or 'false' on its own line indicating whether a and b are in the same set). Implement Union-Find with path compression in find() and union by size or rank. Do NOT print anything for 'u' operations — only for 'c'. Use Zig 0.16+ idioms. Entrypoint: `pub fn main(init: std.process.Init) !void`. For stdio, the rich API (`takeDelimiter`, `appendRemainingUnlimited`, `print`, `writeAll`, `flush`) lives on the `std.Io.Reader`/`Writer` *interface*, NOT on the concrete `std.Io.File.Reader`/`Writer`. Reach the interface via `&fr.interface`. Canonical setup: `var in_buf: [4096]u8 = undefined; var fr = std.Io.File.stdin().reader(init.io, &in_buf); const r = &fr.interface;` and the symmetric writer. Then `try r.takeDelimiter('\\n')` (returns `?[]u8`, null at EOF) for line-by-line, or `try r.appendRemainingUnlimited(init.arena.allocator(), &list)` to slurp. Always `try w.flush()` before return — output is buffered. Strict-default footguns (errors, not warnings, in 0.16): rename unused params to `_`, discard unused locals with `_ = x;`, prefer `const` over `var` when not mutated. Use `std.Io` (capital I), not `std.io`. Compile with `zig build-exe -O ReleaseFast uf.zig`; the program is fed `input.txt` on stdin and its stdout is diffed against `expected.txt`.",
+      "setup": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt",
+      "task": "Create /tmp/eval_uf/uf.zig — reads from stdin: line 1 is 'N Q' (N elements 0..N-1, Q operations). Each next line is either 'u a b' (union of a and b) or 'c a b' (connected: output 'true' or 'false' on its own line indicating whether a and b are in the same set). Implement Union-Find with path compression in find() and union by size or rank. Do NOT print anything for 'u' operations — only for 'c'. Use Zig 0.16+ idioms. Entrypoint: `pub fn main(init: std.process.Init) !void`. For stdio, the rich API (`takeDelimiter`, `appendRemainingUnlimited`, `print`, `writeAll`, `flush`) lives on the `std.Io.Reader`/`Writer` *interface*, NOT on the concrete `std.Io.File.Reader`/`Writer`. Reach the interface via `&fr.interface`. Canonical setup: `var in_buf: [4096]u8 = undefined; var fr = std.Io.File.stdin().reader(init.io, &in_buf); const r = &fr.interface;` and the symmetric writer. Then `try r.takeDelimiter('\\n')` (returns `?[]u8`, null at EOF) for line-by-line, or `try r.appendRemainingUnlimited(init.arena.allocator(), &list)` to slurp. Always `try w.flush()` before return — output is buffered. Strict-default footguns (errors, not warnings, in 0.16): rename unused params to `_`, discard unused locals with `_ = x;`, prefer `const` over `var` when not mutated. Use `std.Io` (capital I), not `std.io`. Compile with `zig build-exe -O ReleaseFast uf.zig`; the program is fed `input.txt` on stdin and its stdout is diffed against `expected.txt`. A sample input is provided at /tmp/eval_uf/input.txt; no expected-output file is provided. Validation runs your program on that sample plus additional hidden cases in the same format and compares the output, so implement the general algorithm rather than printing fixed answers.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_uf && zig build-exe -O ReleaseFast uf.zig && ./uf < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
       "cleanup": "rm -rf /tmp/eval_uf",
-      "pre_validate": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt && printf 'true\\ntrue\\nfalse\\ntrue\\nfalse\\nfalse\\nfalse\\n' > /tmp/eval_uf/expected.txt"
+      "pre_validate": "mkdir -p /tmp/eval_uf && printf '10 14\\nu 1 2\\nu 3 4\\nu 2 4\\nc 1 4\\nc 3 1\\nc 0 1\\nu 5 6\\nu 6 7\\nu 7 8\\nu 8 9\\nc 5 9\\nc 0 9\\nc 1 5\\nc 2 9\\n' > /tmp/eval_uf/input.txt\n# --- validation-time cases (never in the agent's working directory) ---\ncat > /tmp/eval_uf/input.txt <<'OB_HIDDEN_EOF'\n12 22\nu 1 2\nu 3 4\nu 2 4\nc 1 4\nc 3 1\nc 0 1\nu 5 6\nu 6 7\nu 7 8\nu 8 9\nc 5 9\nc 0 9\nc 1 5\nc 2 9\nc 9 5\nu 0 10\nc 10 0\nc 11 0\nu 4 9\nc 1 9\nc 3 5\nc 10 5\nOB_HIDDEN_EOF\ncat > /tmp/eval_uf/expected.txt <<'OB_HIDDEN_EOF'\ntrue\ntrue\nfalse\ntrue\nfalse\nfalse\nfalse\ntrue\ntrue\nfalse\ntrue\ntrue\nfalse\nOB_HIDDEN_EOF\n"
     }
   ]
 }

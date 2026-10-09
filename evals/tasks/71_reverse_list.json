@@ -9,73 +9,73 @@
     {
       "id": "a",
       "language": "python",
-      "setup": "mkdir -p /tmp/eval_rev && printf '5\\n5\\n1 2 3 4 5\\n0\\n\\n1\\n42\\n3\\n-1 0 1\\n7\\n10 20 30 40 50 60 70\\n' > /tmp/eval_rev/input.txt && printf '5 4 3 2 1\\n\\n42\\n1 0 -1\\n70 60 50 40 30 20 10\\n' > /tmp/eval_rev/expected.txt",
-      "task": "Create /tmp/eval_rev/rev.py — Reads from stdin: line 1 is T. Each case: line A is N (>= 0). Line B is N space-separated integers (or empty if N=0). For each case, output the integers in REVERSED order, space-separated on one line (or empty line for N=0). Implement the reversal yourself — do NOT call any stdlib reverse helper. Pure Python; no numpy.",
+      "setup": "mkdir -p /tmp/eval_rev && printf '5\\n5\\n1 2 3 4 5\\n0\\n\\n1\\n42\\n3\\n-1 0 1\\n7\\n10 20 30 40 50 60 70\\n' > /tmp/eval_rev/input.txt",
+      "task": "Create /tmp/eval_rev/rev.py — Reads from stdin: line 1 is T. Each case: line A is N (>= 0). Line B is N space-separated integers (or empty if N=0). For each case, output the integers in REVERSED order, space-separated on one line (or empty line for N=0). Implement the reversal yourself — do NOT call any stdlib reverse helper. Pure Python; no numpy. A sample input is provided at /tmp/eval_rev/input.txt; no expected-output file is provided. Validation runs your program on that sample plus additional hidden cases in the same format and compares the output, so implement the general algorithm rather than printing fixed answers.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_rev; sed 's/#.*//' rev.py | grep -qE \"\\\\.reverse[[:space:]]*\\\\(|(^|[^A-Za-z0-9_.])reversed[[:space:]]*\\\\(|\\\\[[[:space:]]*::[[:space:]]*-1[[:space:]]*\\\\]\" && { echo 'forbidden api'; exit 1; }; python3 rev.py < input.txt > out.txt; diff -u expected.txt out.txt && echo OK"
       },
-      "pre_validate": "mkdir -p /tmp/eval_rev && printf '5\\n5\\n1 2 3 4 5\\n0\\n\\n1\\n42\\n3\\n-1 0 1\\n7\\n10 20 30 40 50 60 70\\n' > /tmp/eval_rev/input.txt && printf '5 4 3 2 1\\n\\n42\\n1 0 -1\\n70 60 50 40 30 20 10\\n' > /tmp/eval_rev/expected.txt",
+      "pre_validate": "mkdir -p /tmp/eval_rev && printf '5\\n5\\n1 2 3 4 5\\n0\\n\\n1\\n42\\n3\\n-1 0 1\\n7\\n10 20 30 40 50 60 70\\n' > /tmp/eval_rev/input.txt\n# --- validation-time cases (never in the agent's working directory) ---\ncat > /tmp/eval_rev/input.txt <<'OB_HIDDEN_EOF'\n9\n5\n1 2 3 4 5\n0\n\n1\n42\n3\n-1 0 1\n7\n10 20 30 40 50 60 70\n2\n7 -7\n6\n0 0 1 0 0 2\n1\n-5\n4\n8 6 7 5\nOB_HIDDEN_EOF\ncat > /tmp/eval_rev/expected.txt <<'OB_HIDDEN_EOF'\n5 4 3 2 1\n\n42\n1 0 -1\n70 60 50 40 30 20 10\n-7 7\n2 0 0 1 0 0\n-5\n5 7 6 8\nOB_HIDDEN_EOF\n",
       "cleanup": "rm -rf /tmp/eval_rev"
     },
     {
       "id": "b",
       "language": "go",
-      "setup": "mkdir -p /tmp/eval_rev && printf '5\\n5\\n1 2 3 4 5\\n0\\n\\n1\\n42\\n3\\n-1 0 1\\n7\\n10 20 30 40 50 60 70\\n' > /tmp/eval_rev/input.txt && printf '5 4 3 2 1\\n\\n42\\n1 0 -1\\n70 60 50 40 30 20 10\\n' > /tmp/eval_rev/expected.txt",
-      "task": "Create /tmp/eval_rev/rev.go (package main). Reads from stdin: line 1 is T. Each case: line A is N (>= 0). Line B is N space-separated integers (or empty if N=0). For each case, output the integers in REVERSED order, space-separated on one line (or empty line for N=0). Implement the reversal yourself — do NOT call any stdlib reverse helper. Compile with `go build -o rev rev.go`.",
+      "setup": "mkdir -p /tmp/eval_rev && printf '5\\n5\\n1 2 3 4 5\\n0\\n\\n1\\n42\\n3\\n-1 0 1\\n7\\n10 20 30 40 50 60 70\\n' > /tmp/eval_rev/input.txt",
+      "task": "Create /tmp/eval_rev/rev.go (package main). Reads from stdin: line 1 is T. Each case: line A is N (>= 0). Line B is N space-separated integers (or empty if N=0). For each case, output the integers in REVERSED order, space-separated on one line (or empty line for N=0). Implement the reversal yourself — do NOT call any stdlib reverse helper. Compile with `go build -o rev rev.go`. A sample input is provided at /tmp/eval_rev/input.txt; no expected-output file is provided. Validation runs your program on that sample plus additional hidden cases in the same format and compares the output, so implement the general algorithm rather than printing fixed answers.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_rev; sed 's#//.*##' rev.go | grep -qE \"slices\\\\.Reverse|sort\\\\.Reverse\" && { echo 'forbidden api'; exit 1; }; go build -o rev rev.go && ./rev < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "pre_validate": "mkdir -p /tmp/eval_rev && printf '5\\n5\\n1 2 3 4 5\\n0\\n\\n1\\n42\\n3\\n-1 0 1\\n7\\n10 20 30 40 50 60 70\\n' > /tmp/eval_rev/input.txt && printf '5 4 3 2 1\\n\\n42\\n1 0 -1\\n70 60 50 40 30 20 10\\n' > /tmp/eval_rev/expected.txt",
+      "pre_validate": "mkdir -p /tmp/eval_rev && printf '5\\n5\\n1 2 3 4 5\\n0\\n\\n1\\n42\\n3\\n-1 0 1\\n7\\n10 20 30 40 50 60 70\\n' > /tmp/eval_rev/input.txt\n# --- validation-time cases (never in the agent's working directory) ---\ncat > /tmp/eval_rev/input.txt <<'OB_HIDDEN_EOF'\n9\n5\n1 2 3 4 5\n0\n\n1\n42\n3\n-1 0 1\n7\n10 20 30 40 50 60 70\n2\n7 -7\n6\n0 0 1 0 0 2\n1\n-5\n4\n8 6 7 5\nOB_HIDDEN_EOF\ncat > /tmp/eval_rev/expected.txt <<'OB_HIDDEN_EOF'\n5 4 3 2 1\n\n42\n1 0 -1\n70 60 50 40 30 20 10\n-7 7\n2 0 0 1 0 0\n-5\n5 7 6 8\nOB_HIDDEN_EOF\n",
       "cleanup": "rm -rf /tmp/eval_rev"
     },
     {
       "id": "c",
       "language": "c",
-      "setup": "mkdir -p /tmp/eval_rev && printf '5\\n5\\n1 2 3 4 5\\n0\\n\\n1\\n42\\n3\\n-1 0 1\\n7\\n10 20 30 40 50 60 70\\n' > /tmp/eval_rev/input.txt && printf '5 4 3 2 1\\n\\n42\\n1 0 -1\\n70 60 50 40 30 20 10\\n' > /tmp/eval_rev/expected.txt",
-      "task": "Create /tmp/eval_rev/rev.c — Reads from stdin: line 1 is T. Each case: line A is N (>= 0). Line B is N space-separated integers (or empty if N=0). For each case, output the integers in REVERSED order, space-separated on one line (or empty line for N=0). Implement the reversal yourself — do NOT call any stdlib reverse helper. Compile with `gcc -O2 -std=c11 -Wall -Wextra -o rev rev.c -lm`.",
+      "setup": "mkdir -p /tmp/eval_rev && printf '5\\n5\\n1 2 3 4 5\\n0\\n\\n1\\n42\\n3\\n-1 0 1\\n7\\n10 20 30 40 50 60 70\\n' > /tmp/eval_rev/input.txt",
+      "task": "Create /tmp/eval_rev/rev.c — Reads from stdin: line 1 is T. Each case: line A is N (>= 0). Line B is N space-separated integers (or empty if N=0). For each case, output the integers in REVERSED order, space-separated on one line (or empty line for N=0). Implement the reversal yourself — do NOT call any stdlib reverse helper. Compile with `gcc -O2 -std=c11 -Wall -Wextra -o rev rev.c -lm`. A sample input is provided at /tmp/eval_rev/input.txt; no expected-output file is provided. Validation runs your program on that sample plus additional hidden cases in the same format and compares the output, so implement the general algorithm rather than printing fixed answers.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_rev; gcc -O2 -std=c11 -Wall -Wextra -o rev rev.c -lm && ./rev < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "pre_validate": "mkdir -p /tmp/eval_rev && printf '5\\n5\\n1 2 3 4 5\\n0\\n\\n1\\n42\\n3\\n-1 0 1\\n7\\n10 20 30 40 50 60 70\\n' > /tmp/eval_rev/input.txt && printf '5 4 3 2 1\\n\\n42\\n1 0 -1\\n70 60 50 40 30 20 10\\n' > /tmp/eval_rev/expected.txt",
+      "pre_validate": "mkdir -p /tmp/eval_rev && printf '5\\n5\\n1 2 3 4 5\\n0\\n\\n1\\n42\\n3\\n-1 0 1\\n7\\n10 20 30 40 50 60 70\\n' > /tmp/eval_rev/input.txt\n# --- validation-time cases (never in the agent's working directory) ---\ncat > /tmp/eval_rev/input.txt <<'OB_HIDDEN_EOF'\n9\n5\n1 2 3 4 5\n0\n\n1\n42\n3\n-1 0 1\n7\n10 20 30 40 50 60 70\n2\n7 -7\n6\n0 0 1 0 0 2\n1\n-5\n4\n8 6 7 5\nOB_HIDDEN_EOF\ncat > /tmp/eval_rev/expected.txt <<'OB_HIDDEN_EOF'\n5 4 3 2 1\n\n42\n1 0 -1\n70 60 50 40 30 20 10\n-7 7\n2 0 0 1 0 0\n-5\n5 7 6 8\nOB_HIDDEN_EOF\n",
       "cleanup": "rm -rf /tmp/eval_rev"
     },
     {
       "id": "d",
       "language": "cpp",
-      "setup": "mkdir -p /tmp/eval_rev && printf '5\\n5\\n1 2 3 4 5\\n0\\n\\n1\\n42\\n3\\n-1 0 1\\n7\\n10 20 30 40 50 60 70\\n' > /tmp/eval_rev/input.txt && printf '5 4 3 2 1\\n\\n42\\n1 0 -1\\n70 60 50 40 30 20 10\\n' > /tmp/eval_rev/expected.txt",
-      "task": "Create /tmp/eval_rev/rev.cpp — Reads from stdin: line 1 is T. Each case: line A is N (>= 0). Line B is N space-separated integers (or empty if N=0). For each case, output the integers in REVERSED order, space-separated on one line (or empty line for N=0). Implement the reversal yourself — do NOT call any stdlib reverse helper. Compile with `g++ -O2 -std=c++17 -Wall -Wextra -o rev rev.cpp`.",
+      "setup": "mkdir -p /tmp/eval_rev && printf '5\\n5\\n1 2 3 4 5\\n0\\n\\n1\\n42\\n3\\n-1 0 1\\n7\\n10 20 30 40 50 60 70\\n' > /tmp/eval_rev/input.txt",
+      "task": "Create /tmp/eval_rev/rev.cpp — Reads from stdin: line 1 is T. Each case: line A is N (>= 0). Line B is N space-separated integers (or empty if N=0). For each case, output the integers in REVERSED order, space-separated on one line (or empty line for N=0). Implement the reversal yourself — do NOT call any stdlib reverse helper. Compile with `g++ -O2 -std=c++17 -Wall -Wextra -o rev rev.cpp`. A sample input is provided at /tmp/eval_rev/input.txt; no expected-output file is provided. Validation runs your program on that sample plus additional hidden cases in the same format and compares the output, so implement the general algorithm rather than printing fixed answers.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_rev; sed 's#//.*##' rev.cpp | grep -qE \"std::reverse|reverse_iterator\" && { echo 'forbidden api'; exit 1; }; g++ -O2 -std=c++17 -Wall -Wextra -o rev rev.cpp && ./rev < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "pre_validate": "mkdir -p /tmp/eval_rev && printf '5\\n5\\n1 2 3 4 5\\n0\\n\\n1\\n42\\n3\\n-1 0 1\\n7\\n10 20 30 40 50 60 70\\n' > /tmp/eval_rev/input.txt && printf '5 4 3 2 1\\n\\n42\\n1 0 -1\\n70 60 50 40 30 20 10\\n' > /tmp/eval_rev/expected.txt",
+      "pre_validate": "mkdir -p /tmp/eval_rev && printf '5\\n5\\n1 2 3 4 5\\n0\\n\\n1\\n42\\n3\\n-1 0 1\\n7\\n10 20 30 40 50 60 70\\n' > /tmp/eval_rev/input.txt\n# --- validation-time cases (never in the agent's working directory) ---\ncat > /tmp/eval_rev/input.txt <<'OB_HIDDEN_EOF'\n9\n5\n1 2 3 4 5\n0\n\n1\n42\n3\n-1 0 1\n7\n10 20 30 40 50 60 70\n2\n7 -7\n6\n0 0 1 0 0 2\n1\n-5\n4\n8 6 7 5\nOB_HIDDEN_EOF\ncat > /tmp/eval_rev/expected.txt <<'OB_HIDDEN_EOF'\n5 4 3 2 1\n\n42\n1 0 -1\n70 60 50 40 30 20 10\n-7 7\n2 0 0 1 0 0\n-5\n5 7 6 8\nOB_HIDDEN_EOF\n",
       "cleanup": "rm -rf /tmp/eval_rev"
     },
     {
       "id": "e",
       "language": "rust",
-      "setup": "mkdir -p /tmp/eval_rev && printf '5\\n5\\n1 2 3 4 5\\n0\\n\\n1\\n42\\n3\\n-1 0 1\\n7\\n10 20 30 40 50 60 70\\n' > /tmp/eval_rev/input.txt && printf '5 4 3 2 1\\n\\n42\\n1 0 -1\\n70 60 50 40 30 20 10\\n' > /tmp/eval_rev/expected.txt",
-      "task": "Create /tmp/eval_rev/rev.rs — Reads from stdin: line 1 is T. Each case: line A is N (>= 0). Line B is N space-separated integers (or empty if N=0). For each case, output the integers in REVERSED order, space-separated on one line (or empty line for N=0). Implement the reversal yourself — do NOT call any stdlib reverse helper. Idiomatic Rust 2021+; compile with `rustc -O rev.rs -o rev`.",
+      "setup": "mkdir -p /tmp/eval_rev && printf '5\\n5\\n1 2 3 4 5\\n0\\n\\n1\\n42\\n3\\n-1 0 1\\n7\\n10 20 30 40 50 60 70\\n' > /tmp/eval_rev/input.txt",
+      "task": "Create /tmp/eval_rev/rev.rs — Reads from stdin: line 1 is T. Each case: line A is N (>= 0). Line B is N space-separated integers (or empty if N=0). For each case, output the integers in REVERSED order, space-separated on one line (or empty line for N=0). Implement the reversal yourself — do NOT call any stdlib reverse helper. Idiomatic Rust 2021+; compile with `rustc -O rev.rs -o rev`. A sample input is provided at /tmp/eval_rev/input.txt; no expected-output file is provided. Validation runs your program on that sample plus additional hidden cases in the same format and compares the output, so implement the general algorithm rather than printing fixed answers.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_rev; sed 's#//.*##' rev.rs | grep -qE \"\\\\.reverse[[:space:]]*\\\\(|\\\\.rev[[:space:]]*\\\\(\" && { echo 'forbidden api'; exit 1; }; rustc -O rev.rs -o rev && ./rev < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "pre_validate": "mkdir -p /tmp/eval_rev && printf '5\\n5\\n1 2 3 4 5\\n0\\n\\n1\\n42\\n3\\n-1 0 1\\n7\\n10 20 30 40 50 60 70\\n' > /tmp/eval_rev/input.txt && printf '5 4 3 2 1\\n\\n42\\n1 0 -1\\n70 60 50 40 30 20 10\\n' > /tmp/eval_rev/expected.txt",
+      "pre_validate": "mkdir -p /tmp/eval_rev && printf '5\\n5\\n1 2 3 4 5\\n0\\n\\n1\\n42\\n3\\n-1 0 1\\n7\\n10 20 30 40 50 60 70\\n' > /tmp/eval_rev/input.txt\n# --- validation-time cases (never in the agent's working directory) ---\ncat > /tmp/eval_rev/input.txt <<'OB_HIDDEN_EOF'\n9\n5\n1 2 3 4 5\n0\n\n1\n42\n3\n-1 0 1\n7\n10 20 30 40 50 60 70\n2\n7 -7\n6\n0 0 1 0 0 2\n1\n-5\n4\n8 6 7 5\nOB_HIDDEN_EOF\ncat > /tmp/eval_rev/expected.txt <<'OB_HIDDEN_EOF'\n5 4 3 2 1\n\n42\n1 0 -1\n70 60 50 40 30 20 10\n-7 7\n2 0 0 1 0 0\n-5\n5 7 6 8\nOB_HIDDEN_EOF\n",
       "cleanup": "rm -rf /tmp/eval_rev"
     },
     {
       "id": "f",
       "language": "zig",
-      "setup": "mkdir -p /tmp/eval_rev && printf '5\\n5\\n1 2 3 4 5\\n0\\n\\n1\\n42\\n3\\n-1 0 1\\n7\\n10 20 30 40 50 60 70\\n' > /tmp/eval_rev/input.txt && printf '5 4 3 2 1\\n\\n42\\n1 0 -1\\n70 60 50 40 30 20 10\\n' > /tmp/eval_rev/expected.txt",
-      "task": "Create /tmp/eval_rev/rev.zig — Reads from stdin: line 1 is T. Each case: line A is N (>= 0). Line B is N space-separated integers (or empty if N=0). For each case, output the integers in REVERSED order, space-separated on one line (or empty line for N=0). Implement the reversal yourself — do NOT call any stdlib reverse helper. Use Zig 0.16+ idioms. Entrypoint: `pub fn main(init: std.process.Init) !void`. For stdio, the rich API (`takeDelimiter`, `appendRemainingUnlimited`, `print`, `writeAll`, `flush`) lives on the `std.Io.Reader`/`Writer` *interface*, NOT on the concrete `std.Io.File.Reader`/`Writer`. Reach the interface via `&fr.interface`. Canonical setup: `var in_buf: [4096]u8 = undefined; var fr = std.Io.File.stdin().reader(init.io, &in_buf); const r = &fr.interface;` and the symmetric writer. Then `try r.takeDelimiter('\\n')` (returns `?[]u8`, null at EOF) for line-by-line, or `try r.appendRemainingUnlimited(init.arena.allocator(), &list)` to slurp. Always `try w.flush()` before return — output is buffered. Strict-default footguns (errors, not warnings, in 0.16): rename unused params to `_`, discard unused locals with `_ = x;`, prefer `const` over `var` when not mutated. Use `std.Io` (capital I), not `std.io`. Compile with `zig build-exe -O ReleaseFast rev.zig`.",
+      "setup": "mkdir -p /tmp/eval_rev && printf '5\\n5\\n1 2 3 4 5\\n0\\n\\n1\\n42\\n3\\n-1 0 1\\n7\\n10 20 30 40 50 60 70\\n' > /tmp/eval_rev/input.txt",
+      "task": "Create /tmp/eval_rev/rev.zig — Reads from stdin: line 1 is T. Each case: line A is N (>= 0). Line B is N space-separated integers (or empty if N=0). For each case, output the integers in REVERSED order, space-separated on one line (or empty line for N=0). Implement the reversal yourself — do NOT call any stdlib reverse helper. Use Zig 0.16+ idioms. Entrypoint: `pub fn main(init: std.process.Init) !void`. For stdio, the rich API (`takeDelimiter`, `appendRemainingUnlimited`, `print`, `writeAll`, `flush`) lives on the `std.Io.Reader`/`Writer` *interface*, NOT on the concrete `std.Io.File.Reader`/`Writer`. Reach the interface via `&fr.interface`. Canonical setup: `var in_buf: [4096]u8 = undefined; var fr = std.Io.File.stdin().reader(init.io, &in_buf); const r = &fr.interface;` and the symmetric writer. Then `try r.takeDelimiter('\\n')` (returns `?[]u8`, null at EOF) for line-by-line, or `try r.appendRemainingUnlimited(init.arena.allocator(), &list)` to slurp. Always `try w.flush()` before return — output is buffered. Strict-default footguns (errors, not warnings, in 0.16): rename unused params to `_`, discard unused locals with `_ = x;`, prefer `const` over `var` when not mutated. Use `std.Io` (capital I), not `std.io`. Compile with `zig build-exe -O ReleaseFast rev.zig`. A sample input is provided at /tmp/eval_rev/input.txt; no expected-output file is provided. Validation runs your program on that sample plus additional hidden cases in the same format and compares the output, so implement the general algorithm rather than printing fixed answers.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_rev; sed 's#//.*##' rev.zig | grep -qE \"std\\\\.mem\\\\.reverse\" && { echo 'forbidden api'; exit 1; }; zig build-exe -O ReleaseFast rev.zig && ./rev < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "pre_validate": "mkdir -p /tmp/eval_rev && printf '5\\n5\\n1 2 3 4 5\\n0\\n\\n1\\n42\\n3\\n-1 0 1\\n7\\n10 20 30 40 50 60 70\\n' > /tmp/eval_rev/input.txt && printf '5 4 3 2 1\\n\\n42\\n1 0 -1\\n70 60 50 40 30 20 10\\n' > /tmp/eval_rev/expected.txt",
+      "pre_validate": "mkdir -p /tmp/eval_rev && printf '5\\n5\\n1 2 3 4 5\\n0\\n\\n1\\n42\\n3\\n-1 0 1\\n7\\n10 20 30 40 50 60 70\\n' > /tmp/eval_rev/input.txt\n# --- validation-time cases (never in the agent's working directory) ---\ncat > /tmp/eval_rev/input.txt <<'OB_HIDDEN_EOF'\n9\n5\n1 2 3 4 5\n0\n\n1\n42\n3\n-1 0 1\n7\n10 20 30 40 50 60 70\n2\n7 -7\n6\n0 0 1 0 0 2\n1\n-5\n4\n8 6 7 5\nOB_HIDDEN_EOF\ncat > /tmp/eval_rev/expected.txt <<'OB_HIDDEN_EOF'\n5 4 3 2 1\n\n42\n1 0 -1\n70 60 50 40 30 20 10\n-7 7\n2 0 0 1 0 0\n-5\n5 7 6 8\nOB_HIDDEN_EOF\n",
       "cleanup": "rm -rf /tmp/eval_rev"
     }
   ]

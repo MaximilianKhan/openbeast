@@ -9,73 +9,73 @@
     {
       "id": "a",
       "language": "python",
-      "setup": "mkdir -p /tmp/eval_vowels && printf 'Hello World\\nAEIOU\\nxyz\\n\\nProgramming is fun\\n' > /tmp/eval_vowels/input.txt && printf '3\\n5\\n0\\n0\\n5\\n' > /tmp/eval_vowels/expected.txt",
-      "task": "Create /tmp/eval_vowels/vowels.py — a Python program that reads lines from stdin and for each line writes the number of vowels (a, e, i, o, u — both cases) on its own line to stdout. Empty lines yield 0.",
+      "setup": "mkdir -p /tmp/eval_vowels && printf 'Hello World\\nAEIOU\\nxyz\\n\\nProgramming is fun\\n' > /tmp/eval_vowels/input.txt",
+      "task": "Create /tmp/eval_vowels/vowels.py — a Python program that reads lines from stdin and for each line writes the number of vowels (a, e, i, o, u — both cases) on its own line to stdout. Empty lines yield 0. A sample input is provided at /tmp/eval_vowels/input.txt; no expected-output file is provided. Validation runs your program on that sample plus additional hidden cases in the same format and compares the output, so implement the general algorithm rather than printing fixed answers.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_vowels && python3 vowels.py < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "pre_validate": "mkdir -p /tmp/eval_vowels && printf 'Hello World\\nAEIOU\\nxyz\\n\\nProgramming is fun\\n' > /tmp/eval_vowels/input.txt && printf '3\\n5\\n0\\n0\\n5\\n' > /tmp/eval_vowels/expected.txt",
+      "pre_validate": "mkdir -p /tmp/eval_vowels && printf 'Hello World\\nAEIOU\\nxyz\\n\\nProgramming is fun\\n' > /tmp/eval_vowels/input.txt\n# --- validation-time cases (never in the agent's working directory) ---\ncat > /tmp/eval_vowels/input.txt <<'OB_HIDDEN_EOF'\nHello World\nAEIOU\nxyz\n\nProgramming is fun\nThe quick brown fox\nrhythm\nQUEUE\naEiOu aEiOu\n12345 !?\nSky\nOB_HIDDEN_EOF\ncat > /tmp/eval_vowels/expected.txt <<'OB_HIDDEN_EOF'\n3\n5\n0\n0\n5\n5\n0\n4\n10\n0\n0\nOB_HIDDEN_EOF\n",
       "cleanup": "rm -rf /tmp/eval_vowels"
     },
     {
       "id": "b",
       "language": "go",
-      "setup": "mkdir -p /tmp/eval_vowels && printf 'Hello World\\nAEIOU\\nxyz\\n\\nProgramming is fun\\n' > /tmp/eval_vowels/input.txt && printf '3\\n5\\n0\\n0\\n5\\n' > /tmp/eval_vowels/expected.txt",
-      "task": "Create /tmp/eval_vowels/vowels.go (package main) that reads lines from stdin and for each line writes the number of vowels (a, e, i, o, u — both cases) on its own line to stdout. Empty lines yield 0. Compile with `go build -o vowels vowels.go`.",
+      "setup": "mkdir -p /tmp/eval_vowels && printf 'Hello World\\nAEIOU\\nxyz\\n\\nProgramming is fun\\n' > /tmp/eval_vowels/input.txt",
+      "task": "Create /tmp/eval_vowels/vowels.go (package main) that reads lines from stdin and for each line writes the number of vowels (a, e, i, o, u — both cases) on its own line to stdout. Empty lines yield 0. Compile with `go build -o vowels vowels.go`. A sample input is provided at /tmp/eval_vowels/input.txt; no expected-output file is provided. Validation runs your program on that sample plus additional hidden cases in the same format and compares the output, so implement the general algorithm rather than printing fixed answers.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_vowels && go build -o vowels vowels.go && ./vowels < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "pre_validate": "mkdir -p /tmp/eval_vowels && printf 'Hello World\\nAEIOU\\nxyz\\n\\nProgramming is fun\\n' > /tmp/eval_vowels/input.txt && printf '3\\n5\\n0\\n0\\n5\\n' > /tmp/eval_vowels/expected.txt",
+      "pre_validate": "mkdir -p /tmp/eval_vowels && printf 'Hello World\\nAEIOU\\nxyz\\n\\nProgramming is fun\\n' > /tmp/eval_vowels/input.txt\n# --- validation-time cases (never in the agent's working directory) ---\ncat > /tmp/eval_vowels/input.txt <<'OB_HIDDEN_EOF'\nHello World\nAEIOU\nxyz\n\nProgramming is fun\nThe quick brown fox\nrhythm\nQUEUE\naEiOu aEiOu\n12345 !?\nSky\nOB_HIDDEN_EOF\ncat > /tmp/eval_vowels/expected.txt <<'OB_HIDDEN_EOF'\n3\n5\n0\n0\n5\n5\n0\n4\n10\n0\n0\nOB_HIDDEN_EOF\n",
       "cleanup": "rm -rf /tmp/eval_vowels"
     },
     {
       "id": "c",
       "language": "c",
-      "setup": "mkdir -p /tmp/eval_vowels && printf 'Hello World\\nAEIOU\\nxyz\\n\\nProgramming is fun\\n' > /tmp/eval_vowels/input.txt && printf '3\\n5\\n0\\n0\\n5\\n' > /tmp/eval_vowels/expected.txt",
-      "task": "Create /tmp/eval_vowels/vowels.c — a C program that reads lines from stdin and for each line writes the number of vowels (a, e, i, o, u — both cases) on its own line to stdout. Empty lines yield 0. Must compile cleanly with `gcc -O2 -std=c11 -Wall -Wextra -o vowels vowels.c`.",
+      "setup": "mkdir -p /tmp/eval_vowels && printf 'Hello World\\nAEIOU\\nxyz\\n\\nProgramming is fun\\n' > /tmp/eval_vowels/input.txt",
+      "task": "Create /tmp/eval_vowels/vowels.c — a C program that reads lines from stdin and for each line writes the number of vowels (a, e, i, o, u — both cases) on its own line to stdout. Empty lines yield 0. Must compile cleanly with `gcc -O2 -std=c11 -Wall -Wextra -o vowels vowels.c`. A sample input is provided at /tmp/eval_vowels/input.txt; no expected-output file is provided. Validation runs your program on that sample plus additional hidden cases in the same format and compares the output, so implement the general algorithm rather than printing fixed answers.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_vowels && gcc -O2 -std=c11 -Wall -Wextra -o vowels vowels.c && ./vowels < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "pre_validate": "mkdir -p /tmp/eval_vowels && printf 'Hello World\\nAEIOU\\nxyz\\n\\nProgramming is fun\\n' > /tmp/eval_vowels/input.txt && printf '3\\n5\\n0\\n0\\n5\\n' > /tmp/eval_vowels/expected.txt",
+      "pre_validate": "mkdir -p /tmp/eval_vowels && printf 'Hello World\\nAEIOU\\nxyz\\n\\nProgramming is fun\\n' > /tmp/eval_vowels/input.txt\n# --- validation-time cases (never in the agent's working directory) ---\ncat > /tmp/eval_vowels/input.txt <<'OB_HIDDEN_EOF'\nHello World\nAEIOU\nxyz\n\nProgramming is fun\nThe quick brown fox\nrhythm\nQUEUE\naEiOu aEiOu\n12345 !?\nSky\nOB_HIDDEN_EOF\ncat > /tmp/eval_vowels/expected.txt <<'OB_HIDDEN_EOF'\n3\n5\n0\n0\n5\n5\n0\n4\n10\n0\n0\nOB_HIDDEN_EOF\n",
       "cleanup": "rm -rf /tmp/eval_vowels"
     },
     {
       "id": "d",
       "language": "cpp",
-      "setup": "mkdir -p /tmp/eval_vowels && printf 'Hello World\\nAEIOU\\nxyz\\n\\nProgramming is fun\\n' > /tmp/eval_vowels/input.txt && printf '3\\n5\\n0\\n0\\n5\\n' > /tmp/eval_vowels/expected.txt",
-      "task": "Create /tmp/eval_vowels/vowels.cpp — a C++ program that reads lines from stdin and for each line writes the number of vowels (a, e, i, o, u — both cases) on its own line to stdout. Empty lines yield 0. Must compile cleanly with `g++ -O2 -std=c++17 -Wall -Wextra -o vowels vowels.cpp`.",
+      "setup": "mkdir -p /tmp/eval_vowels && printf 'Hello World\\nAEIOU\\nxyz\\n\\nProgramming is fun\\n' > /tmp/eval_vowels/input.txt",
+      "task": "Create /tmp/eval_vowels/vowels.cpp — a C++ program that reads lines from stdin and for each line writes the number of vowels (a, e, i, o, u — both cases) on its own line to stdout. Empty lines yield 0. Must compile cleanly with `g++ -O2 -std=c++17 -Wall -Wextra -o vowels vowels.cpp`. A sample input is provided at /tmp/eval_vowels/input.txt; no expected-output file is provided. Validation runs your program on that sample plus additional hidden cases in the same format and compares the output, so implement the general algorithm rather than printing fixed answers.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_vowels && g++ -O2 -std=c++17 -Wall -Wextra -o vowels vowels.cpp && ./vowels < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "pre_validate": "mkdir -p /tmp/eval_vowels && printf 'Hello World\\nAEIOU\\nxyz\\n\\nProgramming is fun\\n' > /tmp/eval_vowels/input.txt && printf '3\\n5\\n0\\n0\\n5\\n' > /tmp/eval_vowels/expected.txt",
+      "pre_validate": "mkdir -p /tmp/eval_vowels && printf 'Hello World\\nAEIOU\\nxyz\\n\\nProgramming is fun\\n' > /tmp/eval_vowels/input.txt\n# --- validation-time cases (never in the agent's working directory) ---\ncat > /tmp/eval_vowels/input.txt <<'OB_HIDDEN_EOF'\nHello World\nAEIOU\nxyz\n\nProgramming is fun\nThe quick brown fox\nrhythm\nQUEUE\naEiOu aEiOu\n12345 !?\nSky\nOB_HIDDEN_EOF\ncat > /tmp/eval_vowels/expected.txt <<'OB_HIDDEN_EOF'\n3\n5\n0\n0\n5\n5\n0\n4\n10\n0\n0\nOB_HIDDEN_EOF\n",
       "cleanup": "rm -rf /tmp/eval_vowels"
     },
     {
       "id": "e",
       "language": "rust",
-      "setup": "mkdir -p /tmp/eval_vowels && printf 'Hello World\\nAEIOU\\nxyz\\n\\nProgramming is fun\\n' > /tmp/eval_vowels/input.txt && printf '3\\n5\\n0\\n0\\n5\\n' > /tmp/eval_vowels/expected.txt",
-      "task": "Create /tmp/eval_vowels/vowels.rs — reads lines from stdin and for each line writes the number of vowels (a, e, i, o, u — both cases) on its own line to stdout. Empty lines yield 0. Idiomatic Rust 2021+. Compiled with `rustc -O vowels.rs -o vowels`; run with input.txt on stdin, output diffed against the expected results.",
+      "setup": "mkdir -p /tmp/eval_vowels && printf 'Hello World\\nAEIOU\\nxyz\\n\\nProgramming is fun\\n' > /tmp/eval_vowels/input.txt",
+      "task": "Create /tmp/eval_vowels/vowels.rs — reads lines from stdin and for each line writes the number of vowels (a, e, i, o, u — both cases) on its own line to stdout. Empty lines yield 0. Idiomatic Rust 2021+. Compiled with `rustc -O vowels.rs -o vowels`; run with input.txt on stdin, output diffed against the expected results. A sample input is provided at /tmp/eval_vowels/input.txt; no expected-output file is provided. Validation runs your program on that sample plus additional hidden cases in the same format and compares the output, so implement the general algorithm rather than printing fixed answers.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_vowels && rustc -O vowels.rs -o vowels && ./vowels < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "pre_validate": "mkdir -p /tmp/eval_vowels && printf 'Hello World\\nAEIOU\\nxyz\\n\\nProgramming is fun\\n' > /tmp/eval_vowels/input.txt && printf '3\\n5\\n0\\n0\\n5\\n' > /tmp/eval_vowels/expected.txt",
+      "pre_validate": "mkdir -p /tmp/eval_vowels && printf 'Hello World\\nAEIOU\\nxyz\\n\\nProgramming is fun\\n' > /tmp/eval_vowels/input.txt\n# --- validation-time cases (never in the agent's working directory) ---\ncat > /tmp/eval_vowels/input.txt <<'OB_HIDDEN_EOF'\nHello World\nAEIOU\nxyz\n\nProgramming is fun\nThe quick brown fox\nrhythm\nQUEUE\naEiOu aEiOu\n12345 !?\nSky\nOB_HIDDEN_EOF\ncat > /tmp/eval_vowels/expected.txt <<'OB_HIDDEN_EOF'\n3\n5\n0\n0\n5\n5\n0\n4\n10\n0\n0\nOB_HIDDEN_EOF\n",
       "cleanup": "rm -rf /tmp/eval_vowels"
     },
     {
       "id": "f",
       "language": "zig",
-      "setup": "mkdir -p /tmp/eval_vowels && printf 'Hello World\\nAEIOU\\nxyz\\n\\nProgramming is fun\\n' > /tmp/eval_vowels/input.txt && printf '3\\n5\\n0\\n0\\n5\\n' > /tmp/eval_vowels/expected.txt",
-      "task": "Create /tmp/eval_vowels/vowels.zig — reads lines from stdin and for each line writes the number of vowels (a, e, i, o, u — both cases) on its own line to stdout. Empty lines yield 0. Use Zig 0.16+ idioms. Entrypoint: `pub fn main(init: std.process.Init) !void`. For stdio, the rich API (`takeDelimiter`, `appendRemainingUnlimited`, `print`, `writeAll`, `flush`) lives on the `std.Io.Reader`/`Writer` *interface*, NOT on the concrete `std.Io.File.Reader`/`Writer`. Reach the interface via `&fr.interface`. Canonical setup: `var in_buf: [4096]u8 = undefined; var fr = std.Io.File.stdin().reader(init.io, &in_buf); const r = &fr.interface;` and the symmetric writer. Then `try r.takeDelimiter('\\n')` (returns `?[]u8`, null at EOF) for line-by-line, or `try r.appendRemainingUnlimited(init.arena.allocator(), &list)` to slurp. Always `try w.flush()` before return — output is buffered. Strict-default footguns (errors, not warnings, in 0.16): rename unused params to `_`, discard unused locals with `_ = x;`, prefer `const` over `var` when not mutated. Use `std.Io` (capital I), not `std.io`. Compiled with `zig build-exe -O ReleaseFast vowels.zig`; run with input.txt on stdin, output diffed against the expected results.",
+      "setup": "mkdir -p /tmp/eval_vowels && printf 'Hello World\\nAEIOU\\nxyz\\n\\nProgramming is fun\\n' > /tmp/eval_vowels/input.txt",
+      "task": "Create /tmp/eval_vowels/vowels.zig — reads lines from stdin and for each line writes the number of vowels (a, e, i, o, u — both cases) on its own line to stdout. Empty lines yield 0. Use Zig 0.16+ idioms. Entrypoint: `pub fn main(init: std.process.Init) !void`. For stdio, the rich API (`takeDelimiter`, `appendRemainingUnlimited`, `print`, `writeAll`, `flush`) lives on the `std.Io.Reader`/`Writer` *interface*, NOT on the concrete `std.Io.File.Reader`/`Writer`. Reach the interface via `&fr.interface`. Canonical setup: `var in_buf: [4096]u8 = undefined; var fr = std.Io.File.stdin().reader(init.io, &in_buf); const r = &fr.interface;` and the symmetric writer. Then `try r.takeDelimiter('\\n')` (returns `?[]u8`, null at EOF) for line-by-line, or `try r.appendRemainingUnlimited(init.arena.allocator(), &list)` to slurp. Always `try w.flush()` before return — output is buffered. Strict-default footguns (errors, not warnings, in 0.16): rename unused params to `_`, discard unused locals with `_ = x;`, prefer `const` over `var` when not mutated. Use `std.Io` (capital I), not `std.io`. Compiled with `zig build-exe -O ReleaseFast vowels.zig`; run with input.txt on stdin, output diffed against the expected results. A sample input is provided at /tmp/eval_vowels/input.txt; no expected-output file is provided. Validation runs your program on that sample plus additional hidden cases in the same format and compares the output, so implement the general algorithm rather than printing fixed answers.",
       "validation": {
         "type": "bash",
         "script": "set -e; cd /tmp/eval_vowels && zig build-exe -O ReleaseFast vowels.zig && ./vowels < input.txt > out.txt && diff -u expected.txt out.txt && echo OK"
       },
-      "pre_validate": "mkdir -p /tmp/eval_vowels && printf 'Hello World\\nAEIOU\\nxyz\\n\\nProgramming is fun\\n' > /tmp/eval_vowels/input.txt && printf '3\\n5\\n0\\n0\\n5\\n' > /tmp/eval_vowels/expected.txt",
+      "pre_validate": "mkdir -p /tmp/eval_vowels && printf 'Hello World\\nAEIOU\\nxyz\\n\\nProgramming is fun\\n' > /tmp/eval_vowels/input.txt\n# --- validation-time cases (never in the agent's working directory) ---\ncat > /tmp/eval_vowels/input.txt <<'OB_HIDDEN_EOF'\nHello World\nAEIOU\nxyz\n\nProgramming is fun\nThe quick brown fox\nrhythm\nQUEUE\naEiOu aEiOu\n12345 !?\nSky\nOB_HIDDEN_EOF\ncat > /tmp/eval_vowels/expected.txt <<'OB_HIDDEN_EOF'\n3\n5\n0\n0\n5\n5\n0\n4\n10\n0\n0\nOB_HIDDEN_EOF\n",
       "cleanup": "rm -rf /tmp/eval_vowels"
     }
   ]

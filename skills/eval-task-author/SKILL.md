@@ -122,9 +122,18 @@ calls functions directly. Test setup is `import` + assertions. Most legacy
 tasks use this.
 
 **Stdio** (language-agnostic): agent writes a program that reads stdin and
-writes stdout. Validation is `setup writes input.txt + expected.txt → run
-program → diff`. Required for multi-language variants. Use for any new task
+writes stdout. Validation is `run program on input.txt → diff against
+expected.txt`. Required for multi-language variants. Use for any new task
 that might get variants.
+
+**Never write `expected.txt` in `setup`** (suite v4.1): setup runs before the
+agent, so the answer would sit in its working directory, and a program that
+prints the file passes. `setup` writes the SAMPLE input only; `pre_validate`
+(run after the agent exits) installs the sample plus hidden cases and the
+matching `expected.txt`. Don't hand-write that: add the task's hidden cases
+to `HIDDEN` in `evals/scripts/hide_expected.py` and run it. It computes the
+expected output from `evals/refs/<stem>.py` and rewrites setup, pre_validate
+and the task text.
 
 For stdio, generate fixtures via heredoc when the data is non-trivial:
 
