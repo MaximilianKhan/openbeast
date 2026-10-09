@@ -552,6 +552,73 @@ _serve OPENBEAST_VRAM_MIB=24564 -- -m "$SV/weights/listed.gguf" -c 262144
   || fail "OPENBEAST_VRAM_MIB ignored on a multi-GPU host: -c '$(_sv_arg -c)'"
 : > "$SV/gpus"
 
+# perf F1: the host prompt cache. llama-server's default (8192 MiB) holds no
+# real agent session, so serve.sh sizes --cache-ram to the host's RAM.
+_pcm() { ( source "$REPO_DIR/scripts/lib/hardware.sh"; ob_prompt_cache_mb "$@" ); }
+#   128 GB -> 35%;  512 GB -> the 48 GiB cap;  16 GB -> 0 (not above the
+#   server default: pass nothing);  unknown -> 0.
+if [[ "$(_pcm 128834392)" == "44034" && "$(_pcm 536870912)" == "49152" && "$(_pcm 16384000)" == "0" \
+      && "$(_pcm "")" == "0" && "$(_pcm 33554432)" == "11468" ]]; then
+  pass "ob_prompt_cache_mb: 35% of RAM, capped at 48 GiB, and 0 (server default) when that is not above 8192"
+else
+  fail "ob_prompt_cache_mb: 128G->$(_pcm 128834392) (44034) 512G->$(_pcm 536870912) (49152) 16G->$(_pcm 16384000) (0) 32G->$(_pcm 33554432) (11468)"
+fi
+_serve PROMPT_CACHE_RAM_MB=32768 -- -m "$SV/weights/listed.gguf" -c 8192
+if [[ "$(_sv_arg --cache-ram)" == "32768" && "$SV_OUT" == *"Prompt cache: 32768 MiB"* ]]; then
+  pass "serve.sh: PROMPT_CACHE_RAM_MB=32768 reaches llama-server as --cache-ram 32768, and is announced"
+else
+  fail "serve.sh PROMPT_CACHE_RAM_MB=32768: --cache-ram '$(_sv_arg --cache-ram)' :: $(grep -i 'prompt cache' <<< "$SV_OUT" | tr '\n' ' ')"
+fi
+_serve PROMPT_CACHE_RAM_MB=32768 OPENBEAST_PROMPT_CACHE_RAM_MB=16384 -- -m "$SV/weights/listed.gguf" -c 8192
+[[ "$(_sv_arg --cache-ram)" == "16384" ]] && pass "…the OPENBEAST_ env override wins" \
+  || fail "OPENBEAST_PROMPT_CACHE_RAM_MB did not win: '$(_sv_arg --cache-ram)'"
+printf 'SEARXNG_SECRET=x\nPROMPT_CACHE_RAM_MB=24576   # two big sessions\n' > "$SV/openbeast.conf"
+_serve -- -m "$SV/weights/listed.gguf" -c 8192
+[[ "$(_sv_arg --cache-ram)" == "24576" ]] && pass "…and the key is read from openbeast.conf (trailing comment dropped)" \
+  || fail "PROMPT_CACHE_RAM_MB in openbeast.conf was not applied: '$(_sv_arg --cache-ram)'"
+printf 'SEARXNG_SECRET=x\n' > "$SV/openbeast.conf"
+_serve PROMPT_CACHE_RAM_MB=0 -- -m "$SV/weights/listed.gguf" -c 8192
+if [[ $SV_RC -eq 0 && -s "$SV/argv" ]] && ! grep -qx -- '--cache-ram' "$SV/argv"; then
+  pass "PROMPT_CACHE_RAM_MB=0 passes no --cache-ram: the server default stands (control)"
+else
+  fail "PROMPT_CACHE_RAM_MB=0 still passed the flag: $(tr '\n' ' ' < "$SV/argv" 2>/dev/null)"
+fi
+# Auto (nothing set): whatever this host has, the flag is either absent or
+# strictly above the server default and at most the cap. (The arithmetic
+# itself is pinned above, on numbers this test chose.)
+_serve -- -m "$SV/weights/listed.gguf" -c 8192
+_PCA="$(_sv_arg --cache-ram)"
+if [[ -z "$_PCA" ]] || [[ "$_PCA" =~ ^[0-9]+$ && "$_PCA" -gt 8192 && "$_PCA" -le 49152 ]]; then
+  pass "auto never goes below the server default or above 48 GiB (this host: ${_PCA:-flag not passed})"
+else
+  fail "auto --cache-ram out of range: '$_PCA'"
+fi
+# A llama-server that does not know the flag would exit on it.
+printf 'usage: llama-server\n-c, --ctx-size N\n' > "$SV/help.txt"
+_serve PROMPT_CACHE_RAM_MB=32768 -- -m "$SV/weights/listed.gguf" -c 8192
+if [[ $SV_RC -eq 0 && -s "$SV/argv" && "$SV_OUT" == *"no --cache-ram"* ]] && ! grep -qx -- '--cache-ram' "$SV/argv"; then
+  pass "a llama-server build without --cache-ram is launched without it, with a note"
+else
+  fail "--cache-ram passed to a binary that does not list it: $(tr '\n' ' ' < "$SV/argv" 2>/dev/null)"
+fi
+printf 'usage: llama-server\n-cram, --cache-ram N   set the maximum cache size in MiB (default: 8192)\n' > "$SV/help.txt"
+# A model script that sets its own --cache-ram keeps it.
+_serve PROMPT_CACHE_RAM_MB=32768 -- -m "$SV/weights/listed.gguf" -c 8192 --cache-ram 4096
+if [[ "$(grep -cx -- '--cache-ram' "$SV/argv")" == "1" && "$(_sv_arg --cache-ram)" == "4096" ]]; then
+  pass "a serve script's own --cache-ram is left alone"
+else
+  fail "serve.sh overrode a model script's --cache-ram: $(tr '\n' ' ' < "$SV/argv" 2>/dev/null)"
+fi
+_serve PROMPT_CACHE_RAM_MB=lots -- -m "$SV/weights/listed.gguf" -c 8192
+[[ $SV_RC -eq 0 && "$SV_OUT" == *"PROMPT_CACHE_RAM_MB='lots' is not a number"* ]] \
+  && pass "a non-numeric PROMPT_CACHE_RAM_MB warns and falls back to auto instead of failing the launch" \
+  || fail "PROMPT_CACHE_RAM_MB=lots (rc=$SV_RC): $(tr '\n' ' ' <<< "$SV_OUT")"
+if grep -qE '^#?PROMPT_CACHE_RAM_MB=' "$REPO_DIR/openbeast.conf.example"; then
+  pass "openbeast.conf.example documents PROMPT_CACHE_RAM_MB"
+else
+  fail "openbeast.conf.example does not document PROMPT_CACHE_RAM_MB"
+fi
+
 rm -rf "$SV"
 
 # --- 9. Entry-point shell syntax ---

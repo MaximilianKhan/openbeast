@@ -177,6 +177,27 @@ ob_context_vram_mb() {
   fi
 }
 
+# Size for llama-server's host-RAM prompt cache (--cache-ram, MiB) on a host
+# with <mem_total_kb> of RAM: 35% of it, at most 48 GiB. Echoes 0 — "pass
+# nothing, the server's own default stands" — when that would not be MORE
+# than the default (8192 MiB), or when the RAM is unknown.
+# Why: with one slot, a second conversation taking it makes the server stash
+# the first one's state in host RAM. 27B agent sessions at 100K+ tokens are
+# 16–36 GiB each; 8 GiB holds none of them, so every return to a conversation
+# reprocessed its whole prompt (555 "exceeds cache size limit" lines and
+# ~20% of all GPU-busy time in this rig's log, 2026-07 to 10). 48 GiB covers
+# every state seen; 35% keeps it well inside start.sh's MEM_LIMIT_PCT scope.
+# Pure integer math, no I/O.
+OB_PROMPT_CACHE_DEFAULT_MB=8192
+ob_prompt_cache_mb() {
+  local kb="${1:-}" mb
+  [[ "$kb" =~ ^[0-9]+$ ]] || { echo 0; return 0; }
+  mb=$(( kb / 1024 * 35 / 100 ))
+  [[ $mb -gt 49152 ]] && mb=49152
+  [[ $mb -le $OB_PROMPT_CACHE_DEFAULT_MB ]] && mb=0
+  echo "$mb"
+}
+
 ob_vram_floor_check() {
   [[ "${OPENBEAST_FORCE_VRAM:-0}" == "1" ]] && return 0
   [[ "$OB_GPU_VENDOR" == "none" ]] && return 0

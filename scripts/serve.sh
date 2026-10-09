@@ -230,6 +230,61 @@ if [[ -n "${REASONING_BUDGET:-}" ]]; then
   echo "Reasoning budget: $REASONING_BUDGET thinking tokens (global override)"
 fi
 
+# Host prompt cache (--cache-ram N, MiB; llama-server's default is 8192).
+# The single-slot default swaps conversations through this cache, and 8 GiB
+# holds no real agent session (lib/hardware.sh ob_prompt_cache_mb has the
+# numbers), so size it to this host's RAM.
+#   PROMPT_CACHE_RAM_MB   (env OPENBEAST_PROMPT_CACHE_RAM_MB; openbeast.conf)
+#       unset / auto   35% of host RAM, at most 48 GiB, never below 8192
+#       0              pass nothing: llama-server's own default
+#       <n>            exactly n MiB (-1 = no limit)
+# Placed BEFORE EXTRA_ARGS, and skipped altogether when the model script
+# passes --cache-ram itself. Only passed to a llama-server that knows the
+# flag (it arrived in llama.cpp PR #16391; an older build would exit on it).
+PROMPT_CACHE_ARGS=()
+_pc="${OPENBEAST_PROMPT_CACHE_RAM_MB:-${PROMPT_CACHE_RAM_MB:-}}"
+if [[ -z "$_pc" ]] && declare -F _ob_conf_value >/dev/null 2>&1; then
+  _pc="$(_ob_conf_value PROMPT_CACHE_RAM_MB || true)"
+fi
+read -r _pc _ <<< "$_pc" || true          # first token: `32768  # comment`
+_pc_own=0
+for _a in "${EXTRA_ARGS[@]}"; do
+  [[ "$_a" == "--cache-ram" || "$_a" == "-cram" ]] && _pc_own=1
+done
+if [[ -n "$_pc" && "$_pc" != "auto" && ! "$_pc" =~ ^(-1|[0-9]+)$ ]]; then
+  echo "WARNING: PROMPT_CACHE_RAM_MB='$_pc' is not a number of MiB (or auto, 0, -1) — using auto" >&2
+  _pc="auto"
+fi
+if [[ $_pc_own -eq 0 && "$_pc" != "0" ]]; then
+  _pc_how="PROMPT_CACHE_RAM_MB"
+  if [[ -z "$_pc" || "$_pc" == "auto" ]]; then
+    declare -F ob_prompt_cache_mb >/dev/null 2>&1 || source "$SCRIPT_DIR/lib/hardware.sh" 2>/dev/null || true
+    _pc=0
+    if declare -F ob_prompt_cache_mb >/dev/null 2>&1; then
+      _pc="$(ob_prompt_cache_mb "$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null || true)")"
+    fi
+    _pc_how="auto: 35% of host RAM, max 48 GiB"
+  fi
+  if [[ "$_pc" != "0" ]]; then
+    # Captured, not piped into grep -q: under pipefail an early-exiting grep
+    # SIGPIPEs the writer and the test reads "unsupported" at random.
+    # Bounded: --help prints and exits, but nothing here should be able to
+    # hold up a model launch.
+    if command -v timeout >/dev/null 2>&1; then
+      _pc_help="$(timeout 10 "$LLAMA_SERVER" --help 2>&1 || true)"
+    else
+      _pc_help="$("$LLAMA_SERVER" --help 2>&1 || true)"
+    fi
+    if [[ "$_pc_help" == *"--cache-ram"* ]]; then
+      PROMPT_CACHE_ARGS=(--cache-ram "$_pc")
+      echo "Prompt cache: $_pc MiB of host RAM ($_pc_how; PROMPT_CACHE_RAM_MB=<MiB> to change, 0 = llama-server's default)"
+    else
+      echo "Prompt cache: this llama-server has no --cache-ram — its built-in default stands (rebuild: ./scripts/update.sh)."
+    fi
+    unset _pc_help
+  fi
+fi
+
 exec "$LLAMA_SERVER" \
   -m "$MODEL" \
   "${ALIAS_ARGS[@]}" \
@@ -242,5 +297,6 @@ exec "$LLAMA_SERVER" \
   --metrics \
   --host "$HOST" \
   --port "$PORT" \
+  ${PROMPT_CACHE_ARGS[@]+"${PROMPT_CACHE_ARGS[@]}"} \
   "${EXTRA_ARGS[@]}" \
   ${REASONING_ARGS[@]+"${REASONING_ARGS[@]}"}

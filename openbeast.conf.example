@@ -74,6 +74,20 @@
 # The $OPENBEAST_MEM_LIMIT_PCT env var overrides this per-shell.
 #MEM_LIMIT_PCT=75
 
+# Host RAM llama-server may use to keep the state of conversations that are
+# not on a slot right now (its --cache-ram, in MiB). With the one-slot
+# default, a second chat or agent takes the slot and the first one's state is
+# parked here; when it does not fit, coming back to that conversation
+# reprocesses its whole prompt (tens of seconds at 100K tokens). A 27B
+# session at 100K+ tokens is 16-36 GiB, and llama-server's own default is 8.
+#   unset / auto   35% of this machine's RAM, at most 48 GiB (49152), and
+#                  never below llama-server's default
+#   0              leave llama-server's default (8192)
+#   <MiB>          exactly this much (-1 = no limit)
+# A serve script that passes --cache-ram itself keeps its own value.
+# Env override: $OPENBEAST_PROMPT_CACHE_RAM_MB.
+#PROMPT_CACHE_RAM_MB=
+
 # Log rotation: every ./start.sh makes sure the daily openbeast-logrotate
 # timer (systemd --user; scripts/logrotate.sh) is installed and enabled, so
 # stack.log and the audit trails stay bounded. No-op without a systemd user
