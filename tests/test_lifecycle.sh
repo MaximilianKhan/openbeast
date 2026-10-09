@@ -789,7 +789,9 @@ s.bind((sys.argv[1], int(sys.argv[2]))); s.listen(4)
 time.sleep(60)
 PY
 _listen() { # _listen <port> -> sets _LP (pid), returns once it accepts
-  python3 "$_PP/listen.py" $_LO "$1" & _LP=$!; _PIDS="$_PIDS $!"
+  # By RELATIVE name: start.sh clips the holder's command line, and under a
+  # long TMPDIR the absolute path lost the "listen.py" the checks look for.
+  (cd "$_PP" && exec python3 listen.py $_LO "$1") & _LP=$!; _PIDS="$_PIDS $!"
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     (exec 3<>"/dev/tcp/$_LO/$1") 2>/dev/null && return 0; sleep 0.2
   done
