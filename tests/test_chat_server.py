@@ -1318,7 +1318,10 @@ def test_agent_spawn_leaves_the_record_to_the_runner_and_annotates_it(
     assert rec["meta"]["cursor"] == 4242, "the runner's cursor was wiped"
     # ...and our provenance was MERGED in
     assert rec["meta"]["started_by"] == "local"
-    assert "--session-id" in rec["meta"]["command"]
+    # The record keeps the command CLIPPED to 500 characters, so whether a
+    # given flag is still in it depends on how long this tmp path is. The
+    # flags are asserted on the argv above; here, that it was recorded.
+    assert 0 < len(rec["meta"]["command"]) <= 500
 
 
 def test_agent_spawn_that_dies_before_registering_is_filed_failed(

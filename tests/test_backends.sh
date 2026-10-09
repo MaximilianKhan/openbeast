@@ -841,12 +841,16 @@ cat > "$_P/vinject.env" <<EOF
 BACKEND=vllm
 SOURCE=acme/Brand-New-Model-FP8
 REVISION=$_REV
-SERVED_MODEL_NAME=\$(touch $_K/PWNED); \`touch $_K/PWNED2\`
+SERVED_MODEL_NAME=\$(touch PWNED); \`touch PWNED2\`
 TOOL_CALL_PARSER=hermes
 EOF
 cp "$_P/vtest.lock" "$_P/vinject.lock"
 mkdir -p "$_K/models/vinject"; cp -r "$_K/models/vtest/." "$_K/models/vinject/"
+# RELATIVE canaries, and run from $_K: a value is capped at 200 characters, so
+# an absolute path under a long TMPDIR made the profile invalid instead.
+cd "$_K"
 _sp "$_VN" -- --profile "$_P/vinject.env" --rank 0 --env "$_K/spark.env" --print
+cd "$REPO_DIR"
 if [[ $SPRC -eq 0 ]] && [[ ! -e "$_K/PWNED" && ! -e "$_K/PWNED2" ]] && _has "$_O" "--served-model-name \\\$\\(touch"; then
   pass "shell syntax in a profile value is carried as data (one argv element), never executed"
 else
