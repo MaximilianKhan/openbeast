@@ -12,6 +12,11 @@
 set -euo pipefail
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 export REPO_DIR  # the embedded Python heredocs read it from the environment
+# Many checks below source the checkout's own lib/conf.sh, or run doctor.sh,
+# to read a derived value. None of them may WRITE to the checkout: without
+# this, the first one minted a SearXNG secret and left an openbeast.conf
+# behind in the working tree (conf.sh honours it; see its header).
+export OB_CONF_READONLY=1
 
 PASS=0
 FAIL=0
