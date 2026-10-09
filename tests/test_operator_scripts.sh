@@ -201,6 +201,36 @@ else
   fail "ob_usage fixture: [$_got]"
 fi
 
+# ---------------------------------------------------------------------------
+echo ""
+echo "4. setup-sandlock.sh --help and unknown options start no build (UX-22):"
+# Anything but --check used to fall through to the clone + cargo build. The
+# stubs from section 2 record a clone or a build; neither may happen here,
+# and both answers come before the kernel check (so they hold on any kernel).
+for _a in --help -h; do
+  rm -f "$T/git.log" "$T/cargo.log"
+  run env -i HOME="$T/slhome" TMPDIR="$T/sltmp" PATH="$T/slbin:/usr/bin:/bin" bash "$SL/scripts/setup-sandlock.sh" "$_a"
+  if [[ $RC -eq 0 ]] && has "$OUT" "setup-sandlock.sh --check" && has "$OUT" "Road to default" \
+     && ! has "$OUT" "set -euo pipefail" && ! has "$OUT" "[setup-sandlock]" \
+     && [[ ! -e "$T/git.log" && ! -e "$T/cargo.log" ]]; then
+    pass "setup-sandlock.sh $_a prints its header and exits 0: no check, no clone, no build"
+  else
+    fail "setup-sandlock.sh $_a (rc=$RC, clone=$([[ -e "$T/git.log" ]] && echo yes || echo no)): $(head -n 3 <<< "$OUT")"
+  fi
+done
+for _a in "--chekc" "build" "--check extra"; do
+  rm -f "$T/git.log" "$T/cargo.log"
+  # shellcheck disable=SC2086
+  run env -i HOME="$T/slhome" TMPDIR="$T/sltmp" PATH="$T/slbin:/usr/bin:/bin" bash "$SL/scripts/setup-sandlock.sh" $_a
+  if [[ $RC -eq 2 ]] && has "$OUT" "Unknown option: " && has "$OUT" "--help" \
+     && [[ ! -e "$T/git.log" && ! -e "$T/cargo.log" ]]; then
+    pass "setup-sandlock.sh '$_a' is refused (exit 2) before anything is cloned or built"
+  else
+    fail "setup-sandlock.sh '$_a' (rc=$RC, clone=$([[ -e "$T/git.log" ]] && echo yes || echo no)): $OUT"
+  fi
+done
+# (Control: the no-argument run in section 2 still clones and builds.)
+
 echo ""
 echo "================================"
 echo "Results: $PASS passed, $FAIL failed"

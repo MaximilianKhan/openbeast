@@ -4,6 +4,7 @@
 #
 #   ./scripts/setup-sandlock.sh          # check, build, install, verify
 #   ./scripts/setup-sandlock.sh --check  # only report kernel/toolchain support
+#   ./scripts/setup-sandlock.sh --help   # this text; nothing is checked or built
 #
 # What it does (idempotent, safe to re-run):
 #   1. Verifies Landlock is active in the kernel LSM list and the kernel is
@@ -21,6 +22,19 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Arguments are judged before anything else: every argument but --check used
+# to fall through to the clone + cargo build below, `--help` included.
+case "${1:-}" in
+  -h|--help)
+    # shellcheck source=scripts/lib/usage.sh
+    source "$REPO_DIR/scripts/lib/usage.sh"
+    ob_usage "$0"; exit 0 ;;
+  ""|--check) ;;
+  *) echo "Unknown option: $1 (see --help)" >&2
+     echo "Usage: $0 [--check]" >&2; exit 2 ;;
+esac
+[[ $# -le 1 ]] || { echo "Unknown option: $2 (see --help) — at most one argument: --check." >&2; exit 2; }
 
 # Pinned commit: security-reviewed + empirically validated 2026-07-08
 # (v0.8.4). Bump ONLY after re-running the review + validation matrix in
