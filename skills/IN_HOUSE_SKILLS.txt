@@ -1,0 +1,35 @@
+# Skills written in this repository — one directory name per line.
+#
+# `./scripts/skill-import.sh verify` (run by doctor and the test suite) fails
+# for any skills/<dir> that is neither named here nor pinned by a row in
+# REMOTE_PROVENANCE.md. Without this list, "no ledger row" meant "in-house":
+# deleting an imported skill's row, or adding a brand-new directory, left
+# verify green while its SKILL.md went into sub-agent system prompts unpinned.
+#
+# Adding a skill you wrote here: add its directory name below, in the same
+# commit. A skill that came from anywhere else does NOT go in this file — it
+# goes through the import gate (README.md, "Importing a skill") and gets a
+# ledger row instead. A name may be in one place or the other, never both.
+
+# Universal-applicability (Tier 1)
+codebase-onboarding
+spec-extraction
+git-discipline
+long-context-synthesis
+
+# Specialized work (Tier 2)
+test-driven-development
+architecture-proposal
+performance-optimization
+api-design
+
+# Review and analysis
+code-review
+security-audit
+debugging-methodology
+deep-counsel
+
+# Project-specific
+eval-task-author
+eval-variant-porter
+beast-lang

@@ -31,7 +31,8 @@ SANDLOCK_COMMIT="1cd6ba6518f614bf4db469f1b2d0416bc2f1cd54"
 BIN_DIR="$HOME/.local/bin"
 PROFILE_DIR="$HOME/.config/sandlock/profiles"
 PROFILE_SRC="$REPO_DIR/scripts/sandlock-profile-openbeast.toml"
-BUILD_DIR="${TMPDIR:-/tmp}/sandlock-build-$$"
+# Created with `mktemp -d` at build time (below) — never a predictable name.
+BUILD_DIR=""
 
 info()  { echo "[setup-sandlock] $*"; }
 fail()  { echo "[setup-sandlock] ERROR: $*" >&2; exit 1; }
@@ -79,18 +80,29 @@ if installed_ok; then
   info "sandlock at pinned commit already installed: $BIN_DIR/sandlock ($($BIN_DIR/sandlock --version))"
 else
   info "cloning $SANDLOCK_REPO @ ${SANDLOCK_COMMIT:0:12}"
-  rm -rf "$BUILD_DIR"
+  # The binary built here IS the sandbox, so nobody else may own the build
+  # directory. `/tmp/sandlock-build-$$` followed by `rm -rf; git clone` was a
+  # guessable name with a window in between: on a shared box another user
+  # could pre-create it, keep ownership, and swap the binary before the
+  # `install` below. mktemp -d creates a fresh 0700 directory atomically.
+  BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/sandlock-build.XXXXXXXX")" \
+    || fail "could not create a private build directory under ${TMPDIR:-/tmp}"
+  trap 'rm -rf "$BUILD_DIR"' EXIT
   git clone --quiet "$SANDLOCK_REPO" "$BUILD_DIR"
   git -C "$BUILD_DIR" checkout --quiet "$SANDLOCK_COMMIT" \
-    || { rm -rf "$BUILD_DIR"; fail "pinned commit $SANDLOCK_COMMIT not found upstream — do NOT blindly bump; re-run the security review first."; }
+    || fail "pinned commit $SANDLOCK_COMMIT not found upstream — do NOT blindly bump; re-run the security review first."
 
-  info "building sandlock-cli (release)..."
-  (cd "$BUILD_DIR" && cargo build --release -p sandlock-cli --quiet)
+  # --locked: build exactly the crate versions in the reviewed commit's
+  # Cargo.lock. Without it cargo may re-resolve, and the pinned commit no
+  # longer pins what gets compiled into the sandbox.
+  info "building sandlock-cli (release, --locked)..."
+  (cd "$BUILD_DIR" && cargo build --release --locked -p sandlock-cli --quiet)
 
   mkdir -p "$BIN_DIR"
   install -m755 "$BUILD_DIR/target/release/sandlock" "$BIN_DIR/sandlock"
   echo "$SANDLOCK_COMMIT" > "$BIN_DIR/.sandlock-commit"
   rm -rf "$BUILD_DIR"
+  trap - EXIT
   info "installed $BIN_DIR/sandlock ($($BIN_DIR/sandlock --version))"
 fi
 

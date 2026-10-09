@@ -232,15 +232,38 @@ if [[ $ANY_OK -eq 0 && $ANY_DENIED -eq 1 ]]; then
   done
   say "  → run it once as root:      sudo ./scripts/ssd-wear.sh"
   say "  → or permit just this read, so doctor/snapshots work unattended:"
+  # ONE EXACT RULE PER DEVICE, never a wildcard. In sudoers `*` matches across
+  # word boundaries, so a rule ending in "/dev/*" also permits anything
+  # appended after the device — switching SMART off, starting a self-test,
+  # loading a drive database from a file — as root, to every process under
+  # this uid, the model's bash tool included. A rule with its arguments
+  # spelled out matches that exact command line and no other.
   _sc_path="$(command -v smartctl 2>/dev/null || echo /usr/sbin/smartctl)"
-  say "        echo \"$(id -un) ALL=(root) NOPASSWD: ${_sc_path} -j -a /dev/*\" | sudo tee /etc/sudoers.d/openbeast-smartctl"
+  _sc_user="$(id -un)"
+  _sc_skipped=0
+  say "        sudo tee /etc/sudoers.d/openbeast-smartctl >/dev/null <<'EOF'"
+  for i in "${!DEV_LIST[@]}"; do
+    # Only plain device paths go into a root-parsed file (sudoers gives
+    # , : = \ and whitespace a meaning of their own).
+    if [[ "${DEV_LIST[$i]}" =~ ^/dev/[A-Za-z0-9_/-]+$ ]]; then
+      say "${_sc_user} ALL=(root) NOPASSWD: ${_sc_path} -j -a ${DEV_LIST[$i]}"
+    else
+      _sc_skipped=1
+    fi
+  done
+  say "EOF"
   say "        sudo chmod 440 /etc/sudoers.d/openbeast-smartctl"
-  say "  (this script only ever runs 'smartctl -j -a' — read-only, no self-tests)"
+  say "        sudo visudo -cf /etc/sudoers.d/openbeast-smartctl   # must print 'parsed OK'"
+  if [[ $_sc_skipped -eq 1 ]]; then
+    say "  (a device with an unusual name was left out of the rule — read it with: sudo ./scripts/ssd-wear.sh)"
+  fi
+  say "  (each rule permits exactly 'smartctl -j -a <that device>' — read-only, no"
+  say "   self-tests, no other flags. A new drive needs its own line: re-run this.)"
   if [[ "$MODE" == "json" ]]; then
     printf '{"schema":1,"status":"unknown","reason":"permission_denied","devices":[]}\n'
   fi
   doctor_unknown "drive wear unreadable — smartctl needs root" \
-                 "./scripts/ssd-wear.sh prints the one-line sudoers rule to permit the read"
+                 "./scripts/ssd-wear.sh prints the exact per-device sudoers rule to permit the read"
   exit 0
 fi
 

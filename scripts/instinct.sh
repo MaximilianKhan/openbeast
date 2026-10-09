@@ -245,7 +245,12 @@ main() {
     label) "$PY" -m instinct.cli label "$@" ;;
     stats) "$PY" -m instinct.cli stats "$@" ;;
     report) echo "instinct: report is NEXT (a private beast-artifact page per decision)"; return 2 ;;
-    ""|-h|--help|help) sed -n '2,25p' "$0" ;;
+    # The header block above, whole and without the comment markers
+    # (lib/usage.sh) — it used to print raw '#' lines plus `set -euo pipefail`.
+    ""|-h|--help|help)
+      # shellcheck source=scripts/lib/usage.sh
+      source "$SCRIPT_DIR/lib/usage.sh"
+      ob_usage "$0" ;;
     *) die "unknown command '$cmd' (try --help)" ;;
   esac
 }

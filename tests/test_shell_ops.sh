@@ -490,18 +490,33 @@ if [[ $_rc -ne 0 ]] && has "$_O" "HASH MISMATCH" && ! grep -q requirements.txt "
 else
   fail "client update hash mismatch (rc=$_rc): $(tr '\n' '|' < "$T/client.log") :: $_O"
 fi
+# 2026-10-09 review, supply S2: a non-hash failure (a mirror withholding a
+# locked file exits 1, not 3) must not fall back unless explicitly opted out.
 cupdate PYDEPS_RC=1
-if [[ $_rc -eq 0 ]] && grep -q "venv-pip install -q -r $CR/agents/requirements.txt" "$T/client.log" \
-   && has "$_O" "falling back"; then
-  pass "…any other failure falls back to requirements.txt, loudly (control)"
+if [[ $_rc -ne 0 ]] && ! grep -q requirements.txt "$T/client.log" \
+   && has "$_O" "Refusing to fall back" && has "$_O" "OPENBEAST_PIP_STRICT=0"; then
+  pass "…any other failure is fatal by default too, and names the explicit opt-out"
 else
-  fail "client update fallback (rc=$_rc): $(tr '\n' '|' < "$T/client.log") :: $_O"
+  fail "client update default-strict (rc=$_rc): $(tr '\n' '|' < "$T/client.log") :: $_O"
 fi
 cupdate PYDEPS_RC=1 OPENBEAST_PIP_STRICT=1
 if [[ $_rc -ne 0 ]] && ! grep -q requirements.txt "$T/client.log"; then
-  pass "…and OPENBEAST_PIP_STRICT=1 forbids that fallback"
+  pass "…OPENBEAST_PIP_STRICT=1 stays fatal"
 else
   fail "client update strict (rc=$_rc): $(tr '\n' '|' < "$T/client.log")"
+fi
+cupdate PYDEPS_RC=1 OPENBEAST_PIP_STRICT=0
+if [[ $_rc -eq 0 ]] && grep -q "venv-pip install -q -r $CR/agents/requirements.txt" "$T/client.log" \
+   && has "$_O" "falling back"; then
+  pass "…and only OPENBEAST_PIP_STRICT=0 falls back to requirements.txt, loudly (control)"
+else
+  fail "client update fallback (rc=$_rc): $(tr '\n' '|' < "$T/client.log") :: $_O"
+fi
+cupdate PYDEPS_RC=3 OPENBEAST_PIP_STRICT=0
+if [[ $_rc -ne 0 ]] && has "$_O" "HASH MISMATCH" && ! grep -q requirements.txt "$T/client.log"; then
+  pass "…the opt-out never turns a HASH MISMATCH into a fallback"
+else
+  fail "client update hash mismatch under opt-out (rc=$_rc): $(tr '\n' '|' < "$T/client.log") :: $_O"
 fi
 
 # ---------------------------------------------------------------------------

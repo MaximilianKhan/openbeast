@@ -369,6 +369,12 @@ case "${1:-}" in
   acquire) shift; cmd_acquire "$@" ;;
   release) cmd_release ;;
   run)     shift; cmd_run "$@" ;;
-  -h|--help|"") sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//' ;;
+  # The header block above, whole (lib/usage.sh) — lines 2-9 stopped after
+  # the synopsis, before the exit codes and the rules a caller relies on.
+  # (SCRIPT_DIR is the repo root in this file.)
+  -h|--help|"")
+    # shellcheck source=scripts/lib/usage.sh
+    source "$SCRIPT_DIR/scripts/lib/usage.sh"
+    ob_usage "${BASH_SOURCE[0]}" ;;
   *) die "unknown command: $1 (status | check | acquire | release | run)" ;;
 esac

@@ -14,11 +14,26 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONF="$REPO_DIR/openbeast.conf"
+# --help is answered BEFORE lib/conf.sh is sourced: that file writes a
+# generated secret into openbeast.conf, and asking for help on a fresh
+# checkout must not create one.
+case "${1:-}" in
+  -h|--help|help)
+    # shellcheck source=scripts/lib/usage.sh
+    source "$SCRIPT_DIR/lib/usage.sh"
+    ob_usage "$0"; exit 0 ;;
+esac
 source "$SCRIPT_DIR/lib/conf.sh"
 source "$SCRIPT_DIR/lib/extensions.sh"
 source "$SCRIPT_DIR/lib/proc.sh"      # ob_recorded_pid_ours, _ob_ere
 
-_usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; }
+# The header block above, whole (lib/usage.sh) — a fixed line range leaked
+# `set -euo pipefail` and the SCRIPT_DIR assignment into the help.
+_usage() {
+  # shellcheck source=scripts/lib/usage.sh
+  source "$SCRIPT_DIR/lib/usage.sh"
+  ob_usage "$0"
+}
 
 # An extension name is a directory name and nothing else. It becomes a path
 # (extensions/<name>/), a pidfile name (.run/ext-<name>.pid) and a word in a

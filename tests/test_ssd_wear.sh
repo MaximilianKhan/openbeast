@@ -546,6 +546,35 @@ if echo "$denied" | grep -q 'sudo -n\|NOPASSWD'; then
 else
   fail "permission denied gives no unattended fix"
 fi
+# 2026-10-09 review, supply S6: the suggested rule used "/dev/*". A sudoers
+# wildcard matches across words, so it also allowed `-s off`, `-t long`,
+# `-B <file>` as root. The rule must be one EXACT command line per device.
+RULES="$(printf '%s\n' "$denied" | grep 'NOPASSWD:' || true)"
+if [[ -n "$RULES" ]] && ! printf '%s\n' "$RULES" | grep -q '[*?]'; then
+  pass "the suggested sudoers rule has no wildcard"
+else
+  fail "sudoers suggestion still contains a wildcard (or is missing): $RULES"
+fi
+FOUND="$(printf '%s\n' "$denied" | sed -n 's/^  found: \(\/dev\/[^ ]*\) .*/\1/p')"
+_rules_ok=1
+[[ -n "$FOUND" ]] || _rules_ok=0
+while IFS= read -r _d; do
+  [[ -n "$_d" ]] || continue
+  # The whole line: user, runas, the stub's path, exactly "-j -a <device>".
+  printf '%s\n' "$RULES" | grep -qxE "[^ ]+ ALL=\(root\) NOPASSWD: $BIN/smartctl -j -a $_d" || _rules_ok=0
+done <<< "$FOUND"
+if [[ $_rules_ok -eq 1 && "$(printf '%s\n' "$RULES" | wc -l)" -eq "$(printf '%s\n' "$FOUND" | wc -l)" ]]; then
+  pass "one exact rule per detected device: '<smartctl> -j -a <device>' and nothing after it"
+else
+  fail "rules do not match the detected devices one-to-one: found=[$FOUND] rules=[$RULES]"
+fi
+# Negative control: a readable drive must not be told to edit sudoers at all
+# (asserted on the healthy fixture run further up — $out has no NOPASSWD).
+if printf '%s\n' "$denied" | grep -q "visudo -cf /etc/sudoers.d/openbeast-smartctl"; then
+  pass "the hint ends with a visudo syntax check of the new file"
+else
+  fail "no visudo check suggested for a root-parsed file"
+fi
 
 # An unsupported device (valid smartctl, no SMART data) must not stop the run.
 cat > "$BIN/smartctl" <<'STUB'
