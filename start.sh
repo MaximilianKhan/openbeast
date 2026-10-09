@@ -755,7 +755,21 @@ cleanup() {
   return 0
 }
 trap cleanup EXIT
-trap 'STOPPING=1; cleanup; exit 143' INT TERM
+# A FOREGROUND stack told to stop was stopped on purpose, exactly like
+# ./stop.sh — and must say so the same way. Without the marker the banner's
+# own advice ("Press Ctrl+C to stop the servers") was undone by
+# openbeast-watchdog.timer within five minutes: no supervisor, no marker, so
+# healthcheck.sh --restart reloaded the model, unsupervised and outside the
+# memory-capped scope. Not for the detached supervisor: stop.sh is how that
+# one is stopped and it writes the marker first, and a TERM at logout or
+# shutdown is not the operator's decision. A marker already there (stop.sh
+# got in first) keeps its reason.
+_mark_stopped() { # _mark_stopped <reason>
+  [[ $DAEMONIZED -eq 0 && ! -e "$RUN_DIR/stopped" ]] || return 0
+  printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$1" > "$RUN_DIR/stopped" 2>/dev/null || true
+}
+trap 'STOPPING=1; _mark_stopped "Ctrl+C on a foreground ./start.sh"; cleanup; exit 143' INT
+trap 'STOPPING=1; _mark_stopped "SIGTERM to a foreground ./start.sh"; cleanup; exit 143' TERM
 
 # Returns 2, launching nothing, when the port is already held: our server
 # would die on the bind while the holder answered /health in its place — a

@@ -850,6 +850,66 @@ fi
 kill "$_REPL" 2>/dev/null || true
 
 echo ""
+echo "Ctrl+C on a foreground start is a stop on purpose (ops F4):"
+_IN="$_T/intr"; _sandbox "$_IN"
+printf '#!/bin/bash\nexec sleep 60\n' > "$_IN/scripts/serve-sleep.sh"       # never healthy, never dies
+printf '#!/bin/bash\nexit 1\n' > "$_IN/scripts/serve-dies.sh"
+chmod +x "$_IN/scripts/serve-sleep.sh" "$_IN/scripts/serve-dies.sh"
+# A foreground start.sh, parked in its model wait, then signalled. Background
+# jobs of a script inherit SIGINT ignored, and bash cannot trap a signal it
+# was born ignoring — `env --default-signal` hands start.sh a normal one.
+_signal_case() { # _signal_case <INT|TERM> -> sets _SRC, leaves $_IN/.run to inspect
+  local sig="$1" p i
+  rm -rf "$_IN/.run"; mkdir -p "$_IN/.run"
+  env -i --default-signal=INT HOME="$_IN/home" PATH="$_IN/bin:/usr/bin:/bin" OPENBEAST_SEARXNG_SECRET=x \
+    OPENBEAST_BIND=127.0.0.2 OPENBEAST_LOGROTATE_AUTOINSTALL=false OPENBEAST_SERVE_SCRIPT=serve-sleep.sh \
+    "OPENBEAST_INFERENCE_URL=http://127.0.0.2:$(_free_port)" \
+    bash "$_IN/start.sh" > "$_IN/out" 2>&1 & p=$!; _PIDS="$_PIDS $p"
+  for i in $(seq 1 100); do [[ -s "$_IN/.run/llama.pid" ]] && break; sleep 0.1; done
+  _SLEEPER="$(cat "$_IN/.run/llama.pid" 2>/dev/null || true)"
+  [[ "$_SLEEPER" =~ ^[0-9]+$ ]] && _PIDS="$_PIDS $_SLEEPER"
+  kill "-$sig" "$p" 2>/dev/null || true
+  _SRC=0; wait "$p" 2>/dev/null || _SRC=$?
+}
+if env --default-signal=INT true 2>/dev/null; then
+  _signal_case INT
+  if [[ $_SRC -eq 143 ]] && grep -q "Ctrl+C on a foreground" "$_IN/.run/stopped" 2>/dev/null; then
+    pass "SIGINT writes .run/stopped (reason: Ctrl+C) — the watchdog will not resurrect the stack"
+  else
+    fail "Ctrl+C left no stopped-on-purpose marker (rc=$_SRC): $(ls "$_IN/.run" | tr '\n' ' ') :: $(tail -n 3 "$_IN/out" | tr '\n' ' ')"
+  fi
+  if [[ "$_SLEEPER" =~ ^[0-9]+$ ]] && ! kill -0 "$_SLEEPER" 2>/dev/null && [[ ! -e "$_IN/.run/supervisor.pid" ]]; then
+    pass "…and the shutdown itself is unchanged: the model is stopped, the pidfiles are gone"
+  else
+    fail "the INT trap no longer cleans up: sleeper=$_SLEEPER $(ls "$_IN/.run" | tr '\n' ' ')"
+  fi
+else
+  echo "  SKIP: this env(1) has no --default-signal; SIGINT cannot be delivered to a background start.sh"
+fi
+_signal_case TERM
+if [[ $_SRC -eq 143 ]] && grep -q "SIGTERM to a foreground" "$_IN/.run/stopped" 2>/dev/null; then
+  pass "SIGTERM to a foreground start writes the marker too"
+else
+  fail "SIGTERM left no marker (rc=$_SRC): $(ls "$_IN/.run" | tr '\n' ' ')"
+fi
+# A start that FAILS was not stopped on purpose: no marker.
+RUN_ENV=(OPENBEAST_SERVE_SCRIPT=serve-dies.sh "OPENBEAST_INFERENCE_URL=http://127.0.0.2:$(_free_port)")
+rm -rf "$_IN/.run"; mkdir -p "$_IN/.run"
+_start_rc "$_IN" 40
+RUN_ENV=()
+if [[ $_SRC -eq 1 && ! -e "$_IN/.run/stopped" ]]; then
+  pass "a start that fails on its own leaves no marker (control)"
+else
+  fail "a failed start wrote a stopped-on-purpose marker (rc=$_SRC): $(cat "$_IN/.run/stopped" 2>/dev/null)"
+fi
+# The detached supervisor must not write it: stop.sh does, with its own reason.
+if grep -q '\[\[ \$DAEMONIZED -eq 0 && ! -e "\$RUN_DIR/stopped" \]\] || return 0' "$REPO_DIR/start.sh"; then
+  pass "the marker is written by a foreground start only, and never over stop.sh's"
+else
+  fail "_mark_stopped lost its foreground-only / do-not-overwrite guard"
+fi
+
+echo ""
 echo "stop.sh parses its arguments before it stops anything (UX-01):"
 _SA="$_T/stopargs"; _sandbox "$_SA"
 printf '#!/bin/bash\necho "$*" >> "%s/docker.log"\nexit 0\n' "$_SA" > "$_SA/bin/docker"
