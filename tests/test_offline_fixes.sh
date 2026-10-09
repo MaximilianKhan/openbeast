@@ -180,6 +180,68 @@ else
   fail "retry: rc=$_rc stage1=$_stage1 stage2=$_stage2: $_out"
 fi
 
+# FREE SPACE is checked against the registry's byte size BEFORE the download
+# (2026-10-09 review, UX-03): a box 5 GB short used to find out 15 GB in, from
+# hf's raw "No space left on device". df is a stub that reports whatever the
+# case says (and is the real df when the case says nothing).
+REAL_DF="$(command -v df)"; export REAL_DF
+cat > "$T/bin/df" <<'STUB'
+#!/bin/bash
+if [[ -f "$OB_STUB_STATE/df_free_kb" ]]; then
+  echo "df $*" >> "$OB_STUB_STATE/df.log"
+  printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\nstub 99 0 %s 0%% /stub\n' "$(cat "$OB_STUB_STATE/df_free_kb")"
+  exit 0
+fi
+exec "$REAL_DF" "$@"
+STUB
+chmod +x "$T/bin/df"
+{
+  printf '%s\t%s\t%s\t%s\t%s\n' "$_pln_sha" "20000000000"   "big.gguf"   "org/plain-GGUF" "-"
+  printf '%s\t%s\t%s\t%s\t%s\n' "$_pln_sha" "${#_pln_body}" "roomy.gguf" "org/plain-GGUF" "-"
+} >> "$SB/scripts/weights.registry"
+: > "$T/state/hf.log"; : > "$T/state/df.log"; echo 15000000 > "$T/state/df_free_kb"     # ~15 GB free
+_out="$(PATH="$T/bin:$PATH" "$SB/scripts/fetch-weight.sh" big.gguf 2>&1)"; _rc=$?
+if [[ $_rc -ne 0 && ! -s "$T/state/hf.log" && ! -e "$W/.fetch.big.gguf" ]] \
+   && has "$_out" "need 20.0 GB in $W, have 15.4 GB free" && has "$_out" "WEIGHTS_DIR" && has "$_out" "openbeast.conf"; then
+  pass "a 20 GB weight on a disk with 15 GB free is refused BEFORE the download, naming the directory and WEIGHTS_DIR"
+else
+  fail "disk check (rc=$_rc, hf called: $(cat "$T/state/hf.log")): $_out"
+fi
+if has "$(cat "$T/state/df.log")" "$W"; then
+  pass "…and the free space measured is the weights directory's own filesystem"
+else
+  fail "df was not asked about $W: $(cat "$T/state/df.log")"
+fi
+# A resumed download does not need what its stage already holds: 20 GB wanted,
+# ~15 GB free, but ~6 GB of it is already on disk in the stage.
+mkdir -p "$W/.fetch.big.gguf"
+printf '#!/bin/bash\nif [[ "$1" == "-sk" ]]; then printf "6000000\\t%%s\\n" "$2"; exit 0; fi\nexec /usr/bin/du "$@"\n' > "$T/bin/du"; chmod +x "$T/bin/du"
+: > "$T/state/hf.log"
+_out="$(PATH="$T/bin:$PATH" "$SB/scripts/fetch-weight.sh" big.gguf 2>&1)"; _rc=$?
+if [[ -s "$T/state/hf.log" ]] && ! has "$_out" "not enough disk"; then
+  pass "a partial already in the stage counts toward the need (a resume is not refused for space it already used)"
+else
+  fail "resume vs disk check (rc=$_rc): $_out"
+fi
+rm -f "$T/bin/du"; rm -rf "$W/.fetch.big.gguf" "$W/big.gguf"
+# NEGATIVE CONTROL: enough room -> downloaded and verified as before.
+echo 1000 > "$T/state/df_free_kb"; : > "$T/state/hf.log"
+_out="$(PATH="$T/bin:$PATH" "$SB/scripts/fetch-weight.sh" roomy.gguf 2>&1)"; _rc=$?
+if [[ $_rc -eq 0 && -f "$W/roomy.gguf" ]] && ! has "$_out" "not enough disk"; then
+  pass "negative control: with room for it the weight is downloaded and verified"
+else
+  fail "disk check refused a weight that fits (rc=$_rc): $_out"
+fi
+# ...and a df that cannot answer never blocks a download.
+printf '#!/bin/bash\nexit 1\n' > "$T/bin/df"; rm -f "$W/roomy.gguf"
+_out="$(PATH="$T/bin:$PATH" "$SB/scripts/fetch-weight.sh" roomy.gguf 2>&1)"; _rc=$?
+if [[ $_rc -eq 0 && -f "$W/roomy.gguf" ]]; then
+  pass "negative control: an unmeasurable disk does not block the download"
+else
+  fail "unmeasurable disk (rc=$_rc): $_out"
+fi
+rm -f "$T/bin/df" "$T/state/df_free_kb" "$W/roomy.gguf"
+
 # ===========================================================================
 echo ""
 echo "12. verify-weights.sh --file NAME: a name with no registry row is a FAILURE:"
