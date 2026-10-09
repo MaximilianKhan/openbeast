@@ -389,27 +389,44 @@ else
   fail "pip's stderr was swallowed: $_out"
 fi
 
-# NEGATIVE CONTROL: a COMPAT failure still falls back, loudly.
+# A NON-hash failure STOPS too, by default (2026-10-09 review, supply S2). "No
+# matching distribution" is what a mirror that OMITS one locked file produces,
+# and the old default answered it with the unpinned install from that mirror.
 run_step compatfail
+if [[ $_rc -ne 0 && "$(n_locked)" == "1" && "$(n_unpinned)" == "0" ]] && has "$_out" "OPENBEAST_PIP_STRICT=0" \
+   && has "$_out" "No matching distribution" && ! has "$_out" "HARNESS-REACHED-END" && ! has "$_out" "HASH MISMATCH"; then
+  pass "'No matching distribution' stops by default: no unpinned install, pip's report shown, the opt-out named"
+else
+  fail "non-hash failure fell back without being asked (rc=$_rc locked=$(n_locked) unpinned=$(n_unpinned)): $_out"
+fi
+run_step compatfail OPENBEAST_PIP_STRICT=1
+if [[ $_rc -ne 0 && "$(n_unpinned)" == "0" ]]; then
+  pass "OPENBEAST_PIP_STRICT=1 is the same as the default"
+else
+  fail "STRICT=1 semantics changed (rc=$_rc unpinned=$(n_unpinned)): $_out"
+fi
+# NEGATIVE CONTROL: the fallback still exists, behind an explicit opt-in.
+run_step compatfail OPENBEAST_PIP_STRICT=0
 if [[ $_rc -eq 0 && "$(n_locked)" == "1" && "$(n_unpinned)" == "1" ]] && has "$_out" "falling back" \
    && has "$_out" "HARNESS-REACHED-END" && ! has "$_out" "HASH MISMATCH"; then
-  pass "negative control: 'No matching distribution' falls back to requirements.txt"
+  pass "negative control: OPENBEAST_PIP_STRICT=0 falls back to requirements.txt, loudly"
 else
-  fail "compat fallback (rc=$_rc locked=$(n_locked) unpinned=$(n_unpinned)): $_out"
+  fail "opt-in fallback (rc=$_rc locked=$(n_locked) unpinned=$(n_unpinned)): $_out"
 fi
 # ...and so does an INCOMPLETE closure, which pip words with "hashes"/"pinned"
 # but which compares no bytes at all — it must not be mistaken for tampering.
-run_step unpinnedfail
+run_step unpinnedfail OPENBEAST_PIP_STRICT=0
 if [[ $_rc -eq 0 && "$(n_unpinned)" == "1" ]] && ! has "$_out" "HASH MISMATCH"; then
   pass "negative control: an incomplete closure ('must have their versions pinned') is not called tampering"
 else
   fail "incomplete-closure case (rc=$_rc): $_out"
 fi
-run_step compatfail OPENBEAST_PIP_STRICT=1
-if [[ $_rc -ne 0 && "$(n_unpinned)" == "0" ]] && has "$_out" "OPENBEAST_PIP_STRICT=1 forbids"; then
-  pass "OPENBEAST_PIP_STRICT=1 still makes ANY locked-install failure fatal"
+# The opt-in never covers the one failure the lock exists to catch.
+run_step hashfail OPENBEAST_PIP_STRICT=0
+if [[ $_rc -ne 0 && "$(n_unpinned)" == "0" ]] && has "$_out" "HASH MISMATCH"; then
+  pass "a HASH MISMATCH is fatal even under OPENBEAST_PIP_STRICT=0"
 else
-  fail "STRICT semantics changed (rc=$_rc unpinned=$(n_unpinned)): $_out"
+  fail "hash mismatch under STRICT=0 (rc=$_rc unpinned=$(n_unpinned)): $_out"
 fi
 
 # NEGATIVE CONTROL for the stale-lock case: a CURRENT lock is installed from.
@@ -421,19 +438,29 @@ else
 fi
 # STALE: requirements.txt moved (a merged Dependabot bump), the lock did not.
 echo 'foo==2.0' > "$SB/agents/requirements.txt"
-run_step ok
+run_step ok OPENBEAST_PIP_STRICT=0
 if [[ $_rc -eq 0 && "$(n_locked)" == "0" && "$(n_unpinned)" == "1" ]] && has "$_out" "STALE" \
    && has "$_out" "pins 2.0, the lock pins 1.0"; then
-  pass "a STALE lock is never installed from: warned (with pydeps' reason), requirements.txt used"
+  pass "a STALE lock is never installed from: warned (with pydeps' reason); requirements.txt used under the opt-in"
 else
   fail "stale lock (rc=$_rc locked=$(n_locked) unpinned=$(n_unpinned)): $_out"
 fi
-run_step ok OPENBEAST_PIP_STRICT=1
-if [[ $_rc -ne 0 && "$(n_locked)" == "0" && "$(n_unpinned)" == "0" ]] && has "$_out" "does not match"; then
-  pass "a stale lock under OPENBEAST_PIP_STRICT=1 dies before pip is run at all"
+run_step ok
+if [[ $_rc -ne 0 && "$(n_locked)" == "0" && "$(n_unpinned)" == "0" ]] && has "$_out" "does not match" \
+   && has "$_out" "pins 2.0, the lock pins 1.0" && has "$_out" "OPENBEAST_PIP_STRICT=0"; then
+  pass "a stale lock dies by default, before pip is run at all, with pydeps' reason and the opt-out"
 else
-  fail "stale+strict (rc=$_rc locked=$(n_locked) unpinned=$(n_unpinned)): $_out"
+  fail "stale, default (rc=$_rc locked=$(n_locked) unpinned=$(n_unpinned)): $_out"
 fi
+# A checkout with NO lock was the one road to the unpinned install left open.
+mv "$SB/agents/requirements.lock" "$T/lock.aside"
+run_step ok
+if [[ $_rc -ne 0 && "$(n_unpinned)" == "0" ]] && has "$_out" "requirements.lock is missing"; then
+  pass "a missing lock stops by default too, naming the file to restore"
+else
+  fail "missing lock (rc=$_rc unpinned=$(n_unpinned)): $_out"
+fi
+mv "$T/lock.aside" "$SB/agents/requirements.lock"
 # pip "succeeds" but the pins are still not installed: no green check.
 echo 'foo==1.0' > "$SB/agents/requirements.txt"
 run_step noeffect

@@ -23,8 +23,11 @@ source "$REPO_DIR/scripts/lib/conf.sh"
 # PEP-668 flag itself), the same closure bootstrap installs: requirements.txt
 # pins 6 versions and no content. pydeps exit 3 is a HASH MISMATCH — fatal,
 # never answered with an unpinned install of the same names from the same
-# index. Any other failure (stale lock, a python the lock does not cover)
-# falls back to requirements.txt, loudly, unless OPENBEAST_PIP_STRICT=1.
+# index. Any other failure (stale lock, a python the lock does not cover, an
+# index that omits a locked file) STOPS too: falling back to requirements.txt
+# is opt-in, OPENBEAST_PIP_STRICT=0. It was the default, and "omit one file"
+# is all a hostile mirror needed to turn a hash-pinned install into an
+# unverified one.
 if ! python3 -c "import openai" 2>/dev/null; then
   echo "Installing agent dependencies..."
   _pd_rc=0
@@ -35,11 +38,15 @@ if ! python3 -c "import openai" 2>/dev/null; then
     echo "packages unverified from the same source. Suspect a mirror/proxy (PIP_INDEX_URL) first." >&2
     exit 1
   elif [[ $_pd_rc -ne 0 ]]; then
-    [[ "${OPENBEAST_PIP_STRICT:-0}" != "1" ]] || {
-      echo "the hash-pinned install failed and OPENBEAST_PIP_STRICT=1 forbids the unpinned fallback" >&2
+    [[ "${OPENBEAST_PIP_STRICT:-1}" == "0" ]] || {
+      echo "The hash-pinned install from agents/requirements.lock failed (see above), NOT on a hash." >&2
+      echo "Stopping rather than installing the same packages unverified from the same index." >&2
+      echo "  - check the lock and the index:  ./scripts/pydeps.sh verify ; pip config list" >&2
+      echo "  - or install with versions pinned but content NOT verified:" >&2
+      echo "      OPENBEAST_PIP_STRICT=0 ./agent.sh ..." >&2
       exit 1; }
-    echo "warning: the hash-pinned install failed, NOT on a hash (see above) — falling back to" >&2
-    echo "         agents/requirements.txt, which pins VERSIONS but not content." >&2
+    echo "warning: the hash-pinned install failed, NOT on a hash (see above) — OPENBEAST_PIP_STRICT=0," >&2
+    echo "         so falling back to agents/requirements.txt, which pins VERSIONS but not content." >&2
     PIP_FLAGS=""
     if python3 -c 'import sysconfig,os;p=sysconfig.get_path("stdlib");exit(0 if os.path.exists(os.path.join(p,"EXTERNALLY-MANAGED")) else 1)' 2>/dev/null; then
       PIP_FLAGS="--break-system-packages"

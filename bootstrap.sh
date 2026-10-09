@@ -502,12 +502,18 @@ else
   # nor about their CONTENT. agents/requirements.lock pins the whole closure
   # by sha256, so pip refuses substituted bytes.
   #
-  # It is a PREFERENCE, not a requirement, because the lock is resolved on one
-  # python and an installer's job is to make the box work: a python the
-  # closure cannot satisfy must degrade to the looser file rather than refuse
-  # to install at all. The fallback is loud, and OPENBEAST_PIP_STRICT=1 makes
-  # it fatal for a deployment that mandates hash pinning.
+  # THE UNPINNED FALLBACK IS OPT-IN (OPENBEAST_PIP_STRICT=0). It used to be the
+  # default for every failure that was not a hash mismatch, on the reasoning
+  # that an installer's job is to make the box work. But the adversary the
+  # lock exists for does not have to serve WRONG bytes: a mirror or proxy that
+  # simply omits one locked file gets "No matching distribution", and the old
+  # answer to that was to install the same names, unverified, from that same
+  # index. So a locked install that cannot complete now STOPS, with pip's
+  # report and the way out; a python the closure genuinely cannot satisfy
+  # says so with OPENBEAST_PIP_STRICT=0 and gets the old, loud fallback.
   _ob_lock="$REPO_DIR/agents/requirements.lock"
+  _ob_fallback_ok=0
+  [[ "${OPENBEAST_PIP_STRICT:-1}" == "0" ]] && _ob_fallback_ok=1
   _ob_locked_ok=0
   # OFFLINE: a wheelhouse is the only way this can work, so look for one and
   # say exactly how to make one if it is absent. Reaching for the index here
@@ -538,22 +544,26 @@ else
   # that could not regenerate it — and this step then installed the OLD
   # versions from the lock, printed a green check, and did it again on every
   # later run, because the satisfaction check above (which reads
-  # requirements.txt) could never pass. A stale lock is not a hash failure: it
-  # is an out-of-date file, so it takes the loud fallback, not the fatal path.
+  # requirements.txt) could never pass. A stale lock is never installed from;
+  # whether requirements.txt may be used instead is the same opt-in as below.
   _ob_lock_usable=0
   if [[ $_ob_locked_ok -eq 0 && -f "$_ob_lock" ]]; then
     if _ob_stale="$("$REPO_DIR/scripts/pydeps.sh" verify 2>&1)"; then
       _ob_lock_usable=1
-    elif [[ "${OPENBEAST_PIP_STRICT:-0}" == "1" ]]; then
-      die "agents/requirements.lock does not match agents/requirements.txt, and
-       OPENBEAST_PIP_STRICT=1 forbids installing without hash pinning:
+    elif [[ $_ob_fallback_ok -eq 0 ]]; then
+      die "agents/requirements.lock does not match agents/requirements.txt, so
+       there is nothing hash-pinned to install from:
 $(sed 's/^/         /' <<< "$_ob_stale")
-       Regenerate it on a connected box:  ./scripts/pydeps.sh lock"
+       Regenerate it on a connected box:  ./scripts/pydeps.sh lock
+       (after a 'git pull', check that both files came from the same commit:
+       git status agents/). To install from requirements.txt anyway — versions
+       pinned, content NOT verified — re-run with OPENBEAST_PIP_STRICT=0."
     else
       warn "agents/requirements.lock is STALE against agents/requirements.txt —
        NOT installing from it (that would put the OLD versions on this box):
 $(sed 's/^/         /' <<< "$_ob_stale")
-       Using agents/requirements.txt, which pins VERSIONS but not content.
+       OPENBEAST_PIP_STRICT=0, so using agents/requirements.txt, which pins
+       VERSIONS but not content.
        Regenerate the lock:  ./scripts/pydeps.sh lock"
     fi
   fi
@@ -589,20 +599,34 @@ $(sed 's/^/         /' <<< "$_ob_stale")
        ./scripts/pydeps.sh lock and try again."
       fi
       rm -f "$_ob_pip_err"
-      if [[ "${OPENBEAST_PIP_STRICT:-0}" == "1" ]]; then
-        die "the hash-pinned install failed and OPENBEAST_PIP_STRICT=1 forbids
-       falling back to the unpinned closure. Regenerate the lock on this
-       python (./scripts/pydeps.sh lock), or pre-stage a wheelhouse:
-         connected box:  ./scripts/pydeps.sh wheelhouse wheels
-         this box:       ./scripts/pydeps.sh install --from wheels"
+      if [[ $_ob_fallback_ok -eq 0 ]]; then
+        die "the hash-pinned install from agents/requirements.lock failed (pip's
+       report is above), and NOT on a hash. Stopping here rather than
+       installing the same packages unverified from the same index.
+         - network or index trouble (\"No matching distribution\", a timeout):
+           check the index (pip config list, PIP_INDEX_URL) and re-run, or
+           pre-stage a wheelhouse:
+             connected box:  ./scripts/pydeps.sh wheelhouse wheels
+             this box:       ./scripts/pydeps.sh install --from wheels
+         - this python needs a package the lock does not name: regenerate
+           the lock for it (./scripts/pydeps.sh lock)
+         - or accept an install with versions pinned but content NOT
+           verified:  OPENBEAST_PIP_STRICT=0 ./bootstrap.sh"
       fi
       warn "the hash-pinned install failed on this python, and NOT on a hash
-       (pip's report is above) — falling back to agents/requirements.txt,
-       which pins VERSIONS but not content.
+       (pip's report is above) — OPENBEAST_PIP_STRICT=0, so falling back to
+       agents/requirements.txt, which pins VERSIONS but not content.
        ./scripts/pydeps.sh lock regenerates the lock for this interpreter."
     fi
   fi
   if [[ $_ob_locked_ok -eq 0 ]]; then
+    # Every road to this unpinned install is behind the opt-in. The one not
+    # refused above is a checkout with no lock at all.
+    [[ $_ob_fallback_ok -eq 1 ]] || die "agents/requirements.lock is missing, so
+       there is nothing hash-pinned to install from. Restore it:
+         git checkout -- agents/requirements.lock
+       or accept versions pinned but content NOT verified:
+         OPENBEAST_PIP_STRICT=0 ./bootstrap.sh"
     python3 -m pip install --user $PIP_FLAGS -q -U "huggingface_hub" -r "$REPO_DIR/agents/requirements.txt" \
       || die "pip install failed. On a closed network, pre-stage the wheels:
        on a connected box:  ./scripts/pydeps.sh wheelhouse wheels
@@ -614,7 +638,8 @@ $(sed 's/^/         /' <<< "$_ob_stale")
   # claims, and only the second one is what this step is for: every green
   # check above was printed by the stale-lock bug too.
   #
-  # A WARNING, not a die (fatal only under OPENBEAST_PIP_STRICT=1). pip just
+  # A WARNING, not a die (fatal only under an EXPLICIT OPENBEAST_PIP_STRICT=1;
+  # this is not the fallback question, which is strict by default). pip just
   # succeeded, so what is on the box is at worst a near-miss of the pins — and
   # a checker false-negative (a marker-gated pin, a distro package shadowing
   # --user) would otherwise turn every fresh install into a dead one. A stack
