@@ -41,7 +41,7 @@ line in `openbeast.conf`.
 
 | | What it is | Since |
 |---|---|---|
-| **The rig** | llama.cpp serving the biggest model your GPU holds, MTP speculative decoding, Open WebUI, private SearXNG, the identity tool server (RBAC, per-user shards, audit), health-monitored daemon with fast boot and model-load rollback | v1.0 |
+| **The rig** | llama.cpp serving the biggest model your GPU holds, MTP speculative decoding, Open WebUI, private SearXNG, the identity tool server (RBAC, per-user shards, audit; added in v1.1), health-monitored daemon with fast boot and model-load rollback | v1.0 |
 | **beast-slot** 🎰 | Client mode: any Mac/Linux laptop runs OpenCode + the full 18-tool arsenal on *its own* files; only inference crosses the tailnet. `/api/slot` publishes what the rig is really serving | v1.1 |
 | **beast-gate** 🛡️ *opt-in* | Identity-aware inference edge: per-device keys, OpenAI-route allowlist, rate + in-flight caps, an inference audit trail | v1.1 |
 | **beast-assist** 🔧 *opt-in* | The compiler joins the agent loop: every source-file write gets the language's real checker verdict pushed back into the tool result | v1.2 |
@@ -53,8 +53,11 @@ line in `openbeast.conf`.
 | **Multi-engine inference** 🟩 *opt-in* | `INFERENCE_BACKEND=vllm\|tensorfold`: the whole stack (WebUI, tools, agents, gate, `/api/slot`) talks to a vLLM or TensorFold server, e.g. tensor-parallel across two DGX Sparks. Any new checkpoint is inspected, pinned by commit, sha256-locked and conformance-tested before OpenBeast uses it | v1.6 |
 | **beast-hydra** 🐉 + **beast-instinct** 🧿 *opt-in* | `HYDRA=true`: one router on `:8095` in front of the rig's engine and any tailnet engines, choosing per request by the `model` field, with health checks and failover before the first byte; every consumer (WebUI, gate, agents) goes through it. `INSTINCT=true`: a calibrated decision service on `:8094` that hydra and the router can consult, shadow-only until a decision passes its gate, and deciding on a full 27B (the rig's own now, Open-Jev-27B on its own GPU next). The fleet is uncensored-only, enforced: hydra never answers from a stock model; the Sparks serve GLM-5.3-Flash uncensored on TensorFold. Tested against simulated fleets, not yet on the Sparks | v1.7 |
 
-Hands-on walkthrough for each → [docs/TUTORIALS.md](docs/TUTORIALS.md). Full
-capability breakdown → [docs/FEATURES.md](docs/FEATURES.md).
+Walkthroughs for the v1.1–v1.5 features → [docs/TUTORIALS.md](docs/TUTORIALS.md).
+Capability breakdown through v1.5 → [docs/FEATURES.md](docs/FEATURES.md).
+v1.6–v1.7 → [BEAST_HYDRA.md](docs/BEAST_HYDRA.md),
+[BEAST_INSTINCT.md](docs/BEAST_INSTINCT.md),
+[DGX_SPARK_PLAN.md](docs/DGX_SPARK_PLAN.md).
 
 ## Install
 
@@ -78,6 +81,11 @@ git clone https://github.com/MaximilianKhan/openbeast && cd openbeast
 ./bootstrap.sh
 ```
 
+Needs Linux, an NVIDIA GPU with at least 24 GB VRAM, Docker, and ~25 GB of
+disk. The shipped contexts are measured on a 32 GB RTX 5090; on a 24 GB card
+`serve.sh` scales the default model's context from 262K down to about 57K
+(computed from the scaling formula, not measured on a 24 GB card).
+
 `bootstrap.sh` detects your GPU, builds llama.cpp, installs the hash-pinned
 Python closure, downloads the default model, and launches the full stack with
 **all tools wired and no login wall** — the complete demo, out of the box. It
@@ -93,8 +101,10 @@ exactly what to install if anything's missing.
   over — see [Air-gap](#air-gap--the-rig-that-never-sees-the-internet-).
 - **On your phone, securely?** `./scripts/setup-tailscale.sh` puts the stack on
   your private tailnet with automatic HTTPS in ~5 minutes ([below](#remote-access-tailscale)).
-- **Already installed?** `./scripts/update.sh` pulls the latest llama.cpp,
-  images, and Python deps in one shot ([`docs/UPDATING.md`](docs/UPDATING.md)).
+- **Already installed?** `git pull --ff-only` updates OpenBeast itself.
+  `./scripts/update.sh` is a different thing: it moves the upstream pins
+  (llama.cpp, container images, Python deps) and rewrites tracked files
+  ([`docs/UPDATING.md`](docs/UPDATING.md)).
 - **Something off?** `./start.sh doctor` diagnoses config, security posture,
   supply-chain pins, drive wear and every service in one pass.
 - **Leaving it running?** `./start.sh` installs a daily user timer
@@ -153,7 +163,7 @@ settings, your checkout, and agent transcripts survive).
 
 ```bash
 xdg-open http://localhost:3000      # browser chat (Open WebUI)
-opencode                            # terminal coding agent (from any project)
+opencode                            # terminal coding agent (run from this checkout; its config is project-local)
 ./agent.sh "add tests for auth.py"  # autonomous background agent
 ./scripts/job.sh run --title "nightly sweep" -- bash my-campaign.sh
                                     # a long job, tracked, stoppable from your phone
@@ -442,7 +452,7 @@ flowchart TB
         direction TB
         idsrv["🔑 <b>tool server</b> · :3001<br/>RBAC · user shards · audit<br/><i>authenticates the HUMAN</i>"]
         mcp["🔌 <b>MCP surface — 18 tools</b><br/>skill · agent ctl · publish_artifact<br/>language_reference"]
-        prim["⚙️ <b>primitives — 9</b><br/>bash · r/w/edit/ls · grep · fetch · search<br/>+ <b>beast-assist</b>: checker verdict on every write"]
+        prim["⚙️ <b>primitives — 8</b><br/>bash · r/w/edit/ls · grep · fetch · search<br/>+ <b>beast-assist</b>: checker verdict on every write"]
         idsrv --> mcp
         mcp --> prim
       end
@@ -472,7 +482,7 @@ flowchart TB
       subgraph ASSETS["💾 ON DISK — yours, never uploaded"]
         direction LR
         weights["💾 <b>weights/</b><br/>GGUF · sha256-pinned"]
-        skills["📚 <b>skills/</b> · 15"]
+        skills["📚 <b>skills/</b> · 24"]
         evals["📊 <b>evals/</b><br/>leaderboard · era hash"]
         store["🗂️ <b>artifacts/</b> · <b>sessions/</b>"]
       end
@@ -726,7 +736,8 @@ on the reference 5090 — dense 27B, fast 35B-A3B MoE, uncensored fine-tunes,
 Blackwell NVFP4, community MTP builds, and a **177B Qwen3.8-Flash-Next MoE**
 that runs with its experts in system RAM. The default is **Qwen3.8 27B
 Uncensored MTP Q5_K_M** at the full native 262K context — 140 tok/s (2.0× its
-own no-MTP baseline), the fastest thing we ship. The dense **Qwen3.6-27B
+own no-MTP baseline), the fastest uncensored config we ship and the roomiest
+default (4.76 GB free). The dense **Qwen3.6-27B
 Q5_K_XL** still tops the capability board. `./scripts/fetch-weight.sh <name>`
 downloads any of them, staged and sha256-verified before it lands.
 
@@ -736,8 +747,10 @@ downloads any of them, staged and sha256-verified before it lands.
 
 A reproducible suite of **291 test units** (137 base tasks, 31 with variants
 across 6 languages) spanning 12 domains — software engineering, math, physics,
-ML/LLM internals, distributed systems, security, and more. Every task is
-self-contained with deterministic checks, and the multi-model runner produces a
+ML/LLM internals, distributed systems, security, and more. Every task ships
+its own fixtures and a scripted check (the suite's known gaps, including live
+`fetch`/`web_search` under eval and two defective validators, are listed in
+[evals/README.md](evals/README.md#known-validator-defects-v4)), and the multi-model runner produces a
 **capability-ranked** leaderboard (`SCORE = 0.75·problem-solving + 0.25·language-breadth`).
 
 **v4 leaderboard** (RTX 5090 ×1 — methodology in [`docs/RESULTS.md`](docs/RESULTS.md)):
@@ -758,9 +771,17 @@ Ctx = served context. 1-stream t/s = measured single-stream decode (serve-script
 config). Harness = eval concurrency (`seq` = sequential; `jobs 4` = 4-way
 parallel with contention-scaled timeouts — Σ unit time is inflated by shared-GPU
 contention in those rows). Tokens = prompt+completion for the full 291-unit run;
-avg compl/unit measures how verbosely the model reasons. Rows from different
-dates are score-comparable — the v4 suite is frozen and CI-guarded — and every
-row carries the era hash of the harness code that produced it.
+avg compl/unit measures how verbosely the model reasons.
+
+The v4 task set is frozen and CI-guarded, but the rows were not produced under
+identical conditions. The seven July rows ran sequentially on an earlier
+harness era and engine build, with no recorded reasoning budget; the two
+Qwen3.8 rows (2026-09) ran on a later harness era and engine build, with
+uncapped reasoning and `jobs 4`. Gaps of about a point between those two
+groups are not evidence of a model difference. Rows since 2026-09 record the
+OpenBeast commit that produced them; the era hash (`scripts/eval-era.sh`) keys
+the result cache, so a row is never replayed across harness changes, but it
+is not stored on the board.
 
 **Takeaway:** the dense Qwen3.6 27B is the strongest problem-solver; MTP is a
 free, lossless speed-up (always ship it); abliteration (Qwen3.8 Uncensored, the
@@ -858,7 +879,7 @@ scoring, per-category/per-language breakdowns, and the eval CLI:
 
 | Version | Headline | Notes |
 |---|---|---|
-| `main` (next) | — | — |
+| `main` (next) | remote-skill import gate (`scripts/skill-import.sh`) + nine imported skills, off the always-on menu | [EXTERNAL_SKILLS_PLAN.md](docs/EXTERNAL_SKILLS_PLAN.md) |
 | v1.7.0 | beast-hydra 🐉 (route across rig + DGX Sparks + 3090 Ti, uncensored-only fleet, GLM-5.3-Flash on TensorFold) · beast-instinct 🧿 (typed decisions on a full 27B; Open-Jev-27B target) · the zig awareness pack in production (Tier-3 FRESH SHIP, net +24; record corrected) · beast-artifact + beast-chat upgrades (rig owner + admins, phone lifecycle, new-session sheet, PWA, ntfy, export) · the 09-30 double pass (75 findings) · upgrade notes: [UPDATING.md](docs/UPDATING.md#upgrading-past-v160-beast-artifact-and-beast-chat) | [RELEASE_NOTES_v1.7.0.md](docs/RELEASE_NOTES_v1.7.0.md) |
 | v1.6.0 | the review 🔬 (118 findings fixed, a research verdict re-audited) · multi-engine inference 🟩 (vLLM / TensorFold, DGX Spark, model onboarding) · beast-lang escalation wired · opencode session tooling | [RELEASE_NOTES_v1.6.0.md](docs/RELEASE_NOTES_v1.6.0.md) |
 | v1.5.0 | beast-lang 📚 · air-gap 🔌 · beast-campaign 🧪 · the review | [RELEASE_NOTES_v1.5.0.md](docs/RELEASE_NOTES_v1.5.0.md) |

@@ -102,7 +102,8 @@ an `--unpublish-*` twin that reads no config, keyed by the published port):
 | `:8443` | llama-server `:8080`, or beast-gate `:8090` when `EDGE_GATE=true` | (always) | any tailnet device, or an enrolled device key behind the gate |
 | `:8444/api/slot` | dashboard `:3002`, that one path only | `--publish-slot` | any tailnet device (read-only JSON) |
 | `:8445` | beast-chat `:3003` (`CHAT_PORT`) | `--publish-chat` | reads: a tailnet login on `CHAT_OPERATORS`; writes: a device key with the `chat` scope |
-| `:8446` | beast-artifact `:3004` (`ARTIFACT_PORT`) | `--publish-artifact` | reads: a tailnet login on `ARTIFACT_OPERATORS` (falls back to `CHAT_OPERATORS`); writes never leave loopback |
+| `:8446` | beast-artifact `:3004` (`ARTIFACT_PORT`) | `--publish-artifact` | reads: a tailnet login on `ARTIFACT_OPERATORS` (falls back to `CHAT_OPERATORS`); publishing never leaves loopback; lifecycle writes (pin, tags, visibility, rollback, delete) also accept a device key with the `artifact` scope |
+| `:8447` | ntfy extension `:3005` (`NTFY_PORT`) | `--publish-ntfy` | whatever `NTFY_DEFAULT_ACCESS` says: open to the tailnet by default |
 | `:8889` | SearXNG `:8888` | `--publish-searxng` | any tailnet device, unauthenticated |
 
 `:8445` and `:8446` are the two surfaces that are *not* inference-shaped and
@@ -130,11 +131,11 @@ and `/api/status` stay rig-local:
   "beast_slot": 2,
   "min_client": 1,
   "healthy": true,
-  "model": {"id": "heretic-v2-27b-mtp-q6", "ctx": 212992},
+  "model": {"id": "heretic-v2-27b-mtp-q5", "ctx": 262144},
   "slots": {"total": 1, "busy": 0},
   "capacity": {
     "ctx_shared": true,
-    "ctx_total": 212992,
+    "ctx_total": 262144,
     "queue_deferred": 0,
     "serving_profile": "mtp-single-slot"
   },
@@ -291,9 +292,11 @@ Three more things that surprise owners:
 
 - **`:443` publishes Open WebUI — with your entire chat history — to every
   peer.** `setup-tailscale.sh` sets `WEBUI_AUTH=true` only if the key is
-  *absent* from `openbeast.conf`; an explicit `WEBUI_AUTH=false` is left alone
-  and you publish an unauthenticated admin panel. Check with
-  `grep WEBUI_AUTH openbeast.conf` before inviting anyone.
+  *absent* from `openbeast.conf`. An explicit `WEBUI_AUTH=false` blocks `:443`
+  unless you pass `--i-accept-open-webui`, which is persisted as
+  `ALLOW_OPEN_WEBUI=true`; with that line present you are publishing an
+  unauthenticated admin panel. Check with
+  `grep -E 'WEBUI_AUTH|ALLOW_OPEN_WEBUI' openbeast.conf` before inviting anyone.
 - **`--publish-searxng` is unauthenticated and unmetered, and beast-gate does
   not front it.** Every search a guest runs exits from *your* IP and is
   attributed to you upstream. Skip the flag and have them install with
@@ -350,10 +353,12 @@ touch their SearXNG.
 >   nothing in its `$HOME` you'd mind losing.
 > - Force confirmation in `~/.config/opencode/opencode.json` —
 >   `{"permission": {"*": "ask"}}` at minimum — and actually *read* each
->   `local-tools_bash` call before approving.
-> - Enable the kernel sandbox: `./scripts/setup-sandlock.sh`, then
->   `OPENBEAST_BASH_WRAPPER="sandlock --profile openbeast --"` in
->   `~/.openbeast-client.env`.
+>   `openbeast-tools_bash` call before approving.
+> - Enable the kernel sandbox (Linux clients only): `./scripts/setup-sandlock.sh`,
+>   then `OPENBEAST_BASH_WRAPPER='sandlock run -p openbeast -w "$PWD" --'` in
+>   `~/.openbeast-client.env` **and** in the `environment` block of
+>   `mcp["openbeast-tools"]` in `~/.config/opencode/opencode.json`
+>   ([`SANDBOXING.md`](SANDBOXING.md) § On an OpenBeast client).
 > - Use `--local-search` or `--no-search`, and don't run the client from a
 >   directory holding credentials or a repo you'd mind being uploaded.
 > - Watch the tool lines. A rig that answers "summarize this file" with a
@@ -576,7 +581,8 @@ Then repeat chat + agent + OpenCode with keyed mode (checklist above).
 
 - **Multi-slot serving profile:** a non-MTP high-`-np` config serves parallel
   clients; `/api/slot` reports the real slot pool. No client change.
-- **Fleet router ("Mark of the Beast"):** a least-loaded router across worker
-  boxes answers the same discovery shape. No client change.
+- **Fleet router:** shipped in v1.7.0 as beast-hydra (`HYDRA=true`, opt-in,
+  tested against simulated fleets and not yet on real hardware) — see
+  [`BEAST_HYDRA.md`](BEAST_HYDRA.md).
 - **Slot fairness:** per-user concurrency caps when slots are contended
   (docs/TODO.md).

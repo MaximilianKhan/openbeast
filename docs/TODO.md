@@ -1,5 +1,19 @@
 # TODO
 
+## 🔎 REVIEW 2026-10-09
+
+Decisions the 2026-10-09 review deferred to the owner. Each is open.
+
+- [ ] `scripts/update.sh`: make the default `git pull` + sync to the pins that commit ships; move upstream-chasing behind `--bump`.
+- [ ] Add `./start.sh models` and `./start.sh use <model>`.
+- [ ] Move maintainer-only scripts to `scripts/dev/`.
+- [ ] Write a global OpenCode config on the rig, so `opencode` works outside the checkout.
+- [ ] Unify flag conventions across scripts (`--dry-run` / `--yes`).
+- [ ] Generate tool-server keys by default.
+- [ ] Roll the eval era once, carrying: the `23_sql_injection` and `21_race_condition` validator fixes, the runner request-timeout fix, hiding `expected.txt` from variant units, and removing `fetch`/`web_search` under eval.
+- [ ] Trim prompt tokens in the era-hashed prompts (`system-prompt.md`, `system-prompt-tools.md`), in the same era roll.
+- [ ] Rerun the champion row (Qwen3.6 27B Q5_K_XL) in the current era.
+
 ## 🧩 EXTERNAL SKILLS — gate BUILT 2026-10-01, 9 skills IMPORTED 2026-10-02 (agent-read)
 
 - **What:** 15 popular agent-skill repos reviewed against the mission; verdicts,
@@ -1238,12 +1252,16 @@ pinned; an analogous one could assert every serve script has an opencode
 entry), or whether the client should read `ctx` from `/api/slot` at runtime and
 stop duplicating it. (b) is the real fix; (a) stops the bleeding.
 
-## 🆕 BENCHMARK Qwen3.8-27B — staged 2026-08-14, sweep not yet run
+## ✅ DONE 2026-09-08 — BENCHMARK Qwen3.8-27B (staged 2026-08-14)
+
+*Done: the Q5_K_XL and Uncensored Q5_K_M rows are on the v4 board (#2 and #3,
+2026-09-07/08). The MTP and Q6 rows remain unbenchmarked. Text below is the
+original plan.*
 
 Four configs are integrated, VRAM/speed-measured, and registered in
 `evals/benchmark_all.py` with **deliberately empty leaderboard entries**.
 Weights are pinned in `scripts/weights.registry`. Full profile + architecture
-notes: [`MODELS.md`](MODELS.md#qwen38-27b-qwen--unsloth--added--profiled-2026-08-14--not-yet-benchmarked).
+notes: [`MODELS.md`](MODELS.md#qwen38-27b-qwen--unsloth--added-2026-08-14-benchmarked-2026-08-21).
 
 Run the sweep (~3 h at ~45 min/model):
 
@@ -1344,7 +1362,10 @@ sentences in `README.md`, `docs/MODELS.md`, and `docs/FEATURES.md`, which still
 name Qwen3.6-27B Uncensored Q5_K_P and are already stale against the current Q6
 default.
 
-## 🐍 MIGRATE agents/ TO mcp 2.0 — deferred 2026-08-14
+## ✅ DONE 2026-09-08 — MIGRATE agents/ TO mcp 2.0 (deferred 2026-08-14)
+
+*Done in d611521 (#34): `agents/mcp_server.py` uses `MCPServer`; the pin is
+`mcp==2.2.0`. Text below is the original note.*
 
 `mcp 2.0.0` removes the `FastMCP` class that `agents/mcp_server.py:65` is built
 on (it is `MCPServer` in `mcp.server.mcpserver` now). `update.sh --python`
@@ -1714,7 +1735,12 @@ the choke point where identity, quotas, audit, and metering all attach.
   (and today does — the 6 community models added 2026-07-17, including the
   current default, have never been benchmarked here).
 
-## 🔴 REGRESSION RISK — FAST_BOOT re-creates the WebUI toolless-model bug (2026-07-31)
+## ✅ DONE 2026-07-31 — FAST_BOOT re-creates the WebUI toolless-model bug
+
+*Done in 6e20630: `start.sh` calls `reconfigure_webui_for_model` after the
+fast-boot swap and after a rollback, and `configure-webui.sh` deactivates
+rows for models no longer served. Read from the code on 2026-10-09; not
+re-verified on a live stack. Text below is the original report.*
 
 `e85536d` fixed WebUI tool calls by making `configure-webui.sh` create the
 served model's WebUI row (with `meta.toolIds`). **That fix is defeated by
@@ -1740,7 +1766,10 @@ served (they accumulate — 11 active rows on the dev rig, 10 of them dead, and
 llama.cpp ignores the `model` field so selecting one silently answers with the
 loaded model under the wrong name and context).
 
-## 🔴 LAUNCH GAP — bootstrap.sh has no client-mode off-ramp (2026-07-31)
+## ✅ DONE 2026-07-31 — LAUNCH GAP: bootstrap.sh has no client-mode off-ramp
+
+*Done in 6e20630: `bootstrap.sh` has the wrong-machine off-ramp (macOS exits 2
+with the `setup-client.sh` command). Text below is the original report.*
 
 The README now invites macOS and GPU-less users ("macOS or Linux. No GPU"), but
 `bootstrap.sh` has **zero** `Darwin`/`uname -s` branches and never mentions
@@ -1943,7 +1972,10 @@ equity diligence conversations.
     registration allowlist lives on in mcp_server.py,
     tests/test_mcp_allowlist.py. History: docs/RBAC_PLAN.md Phase 2.)
 
-## ⏳ READY TO BUILD — per-user/per-chat file isolation (investigated 2026-07-09)
+## ✅ DONE (v1.1) — per-user/per-chat file isolation (investigated 2026-07-09)
+
+*Done: the identity tool server (`agents/openapi_tools.py`) and
+`FILES_SHARDING` shipped in v1.1. Text below is the original investigation.*
 
 **Investigation DONE — see docs/archive/IDENTITY_TOOLS_PLAN.md.** WebUI forwards
 X-OpenWebUI-User-* AND chat_id headers to tool servers; mcpo (0.0.20) drops
@@ -1996,7 +2028,10 @@ per-conversation scoping (2) until we confirm WebUI can pass a chat id.
 
 </details>
 
-## ⏳ BENCHMARK QUEUE (Max, 2026-07-10) — NVFP4 MTP models
+## ✅ DONE 2026-07-10 — BENCHMARK QUEUE: NVFP4 MTP models
+
+*Done: both rows are on the v4 board (#7 and #8). Text below is the original
+queue entry.*
 
 Two Blackwell-native NVFP4+MTP GGUFs (neko-legends conversions of unsloth's
 NVFP4 checkpoints) downloaded, profiled for throughput, and deployed this
@@ -2024,18 +2059,18 @@ systemd-run --user --scope --unit=openbeast-sweep -p MemoryMax=92G -p MemorySwap
 and `qwen-35b-a3b-mtp` (`python3 evals/scoring.py --show`). Promotion-by-evidence
 per the eval-quality-gate principle.
 
-## ⏳ LATER (Max, 2026-07-08) — rerun the v3.5-pinned models on v4
+## ⏳ LATER (Max, 2026-07-08) — rerun the v3.5-pinned models on v4 (only Gemma remains)
 
-5 leaderboard rows are still v3.5 (Qwen 27B Q5_K_XL, Qwen 27B Uncensored,
-Qwen 35B-A3B MoE, Qwen 35B-A3B Uncensored, Gemma 4 31B-it). Rerun them on the
-v4 suite so the WHOLE leaderboard is v4-comparable (currently only the 3 MTP
-models are v4). Same command shape as the MTP sweep, memory-capped scope:
+*Status 2026-10-09: Qwen 27B Q5_K_XL and Qwen 35B-A3B MoE have v4 rows. The
+two HauhauCS uncensored models were pruned on 2026-08-20 and their slugs no
+longer exist; their v3.5 rows are kept for history. Only Gemma 4 31B-it is
+still v3.5-only.*
+
     systemd-run --user --scope --unit=openbeast-sweep -p MemoryMax=92G \
       -p MemorySwapMax=8G -- python3 evals/benchmark_all.py \
-      --models qwen-27b-q5,qwen-27b-uncensored-q5,qwen-35b-a3b,qwen-35b-a3b-uncensored-q4,gemma-4-31b-q5
-Rows now carry suite_version so old v3.5 + new v4 coexist cleanly; the new v4
-rows will replace the v3.5 ones for those slugs (leaderboard keyed by
-host+slug). ~another ~13-17h sweep. Not urgent; Max-triggered.
+      --models gemma-4-31b-q5
+The new v4 row will replace the v3.5 one for that slug (leaderboard keyed by
+host+slug). Not urgent; Max-triggered.
 
 ## ✅ POST-SWEEP STEP 1 — leaderboard provenance (DONE 2026-07-08)
 
@@ -2314,7 +2349,10 @@ shows 0 tokens with all-iteration connection errors, suspect the
 environment, not the model — and consider pointing the harness at
 `127.0.0.1` instead of `localhost` to dodge resolver reconfigurations.
 
-## ⏳ READY — only the sweep remains
+## SUPERSEDED 2026-07-08 — READY, only the sweep remains (v3.5)
+
+*Superseded: this refers to the v3.5 suite. v4 replaced it on 2026-07-08 and
+the v4 board is populated. Text below is the original note.*
 
 All v3.5 build work is **landed, audited, committed, and pushed**. The
 single remaining step is to run the sweep against the upgraded suite.

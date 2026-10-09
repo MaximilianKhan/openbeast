@@ -274,7 +274,9 @@ MTP heads), so its optimum stays at n4.
 `#22673` and follow-ups through `#23461`):**
 - `-np > 1` is not supported with MTP — serve scripts pin `-np 1`. Concurrent
   requests serialize.
-- `--mmproj` is not supported with MTP — no vision input on these builds.
+- `--mmproj` with MTP was an upstream limit in 2026-05. It was disproven for
+  Qwen3.8 on 2026-08-14 (`serve-qwen38-27b-vision-mtp-q5.sh` ships; see
+  `docs/MODELS.md`) and is untested on the Qwen3.6-era MTP builds.
 
 **VRAM (measured 2026-07-07 via `scripts/measure-vram.sh`):** both GGUFs are
 ~0.7–1.4 GB heavier than the non-MTP builds because the MTP head tensors are
@@ -372,7 +374,9 @@ Model: [`llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GGUF`](
 Qwen3.6-27B (arch qwen35, 64 layers, hybrid Gated DeltaNet + Attention),
 reasoning ON. Uncensored via Heretic v1.3.0 + Magnitude-Preserving Orthogonal
 Ablation (MPOA): 94% fewer refusals (6/100 vs 92/100). Native context 262144;
-YaRN to ~1M. Two MTP variants (Q5_K_M, Q6_K).
+YaRN to ~1M. One MTP variant ships (Q5_K_M). The Q6_K twin was measured here
+and then pruned on 2026-08-20 (`docs/MODELS.md`): no serve script, registry
+pin or catalog row remains. Its numbers are kept below as a record.
 
 **NATIVE MTP PRESERVED** — all 15 original Qwen3.6 MTP heads kept intact (KL
 0.0021 from base, not retrained). **Measured on the 5090** (2026-07-17, q4_0 KV,
@@ -381,9 +385,9 @@ greedy temp 0 / seed 42; card total 32,607 MiB):
 | Variant | Weights (disk) | Context (shipped) | Slots | VRAM used / free | Decode tok/s | MTP n-max / acceptance |
 |---|---|---|---|---|---|---|
 | Q5_K_M MTP | 19.75 GB | 262144 (native) | 1 | 29,633 / 2,974 MiB | 135.8 | **n8** / 0.39 (len 4.13) |
-| Q6_K MTP | 22.80 GB | 212992 | 1 | 30,360 / 2,247 MiB | 139.3 | **n4** / 0.60 (len 3.41) |
+| Q6_K MTP (pruned 2026-08-20) | 22.80 GB | 212992 | 1 | 30,360 / 2,247 MiB | 139.3 | **n4** / 0.60 (len 3.41) |
 
-**Fastest MTP builds in the lineup** (136–139 tok/s vs the NEO models' 103–108).
+**The fastest Qwen3.6-era community MTP builds** (136–139 tok/s vs the NEO models' 103–108).
 The native-preserved heads accept drafts much better at depth than DavidAU's
 modified NEO head — e.g. Q6 accepts 0.60 at n4 vs the NEO Q6's 0.44. This
 **confirmed the native-MTP hypothesis**: the optimum sits deep (base unsloth 27B
@@ -400,7 +404,7 @@ n8 124 / n10 119. Re-profile per model.
 2 GB rule (229376 = 1,781 free, 245760 = 1,315, 262144 = 847). Both beat the NEO
 Q6 MTP's 176K ceiling (lighter quants). MTP rules: temperature ≤ 1.0,
 repetition_penalty = 1.0; <50% acceptance → non-MTP quant. Samplers as for the
-other Qwen3.6 tunes. Not yet on the eval leaderboard.
+other Qwen3.6 tunes. Not on the eval leaderboard.
 
 ## 1. System packages
 
@@ -487,7 +491,12 @@ Configured via `opencode.json`. Connects to the llama.cpp server on port 8080.
 MCP tools (bash, read/write files, grep) are available via stdio transport —
 OpenCode launches the MCP server automatically.
 
-Run `opencode` in any project directory while the server is running.
+Run `opencode` from the OpenBeast checkout while the server is running. The
+config is project-local and its MCP command is the relative path
+`agents/mcp_server.py`; nothing on the rig writes a global OpenCode config. To
+use it from other projects, copy the `provider` and `mcp` blocks into
+`~/.config/opencode/opencode.json` and change the MCP command to the absolute
+path of `agents/mcp_server.py`.
 
 **Where sessions live, and clearing them.** opencode stores sessions in one
 SQLite database under the XDG base directories on *every* OS: there is no
@@ -536,13 +545,12 @@ On a fresh install, the first `./start.sh` handles everything.
 - Web search (configurable)
 - Tool use via the identity tool server (bash, file I/O, edit, grep, fetch, agent management)
 
-**Enabling tools in a chat:** tool access is per-conversation by design —
-click the **＋ (integrations) icon in the message input** and toggle on the
-**local-mcp / Local Tools** tool server, then ask something that
-needs a tool ("search the web for…"). Without the toggle the model chats
-bare, which is why a fresh conversation can't search the web even though
-the server is configured. Native function calling + the soul-file system
-prompt are already set per model by `configure-webui.sh`; if a model ever
+**Tools in a chat:** `configure-webui.sh` attaches both tool-server
+connections to every model row (`meta.toolIds`), so a new conversation has
+tools without a per-chat toggle; ask something that needs one ("search the
+web for…"). The integrations control in the message input can switch them
+off for one conversation. Native function calling + the soul-file system
+prompt are also set per model by `configure-webui.sh`; if a model ever
 shows up without them (e.g. a brand-new alias), re-run
 `./scripts/configure-webui.sh` — it's idempotent.
 
@@ -626,7 +634,7 @@ The system prompt is split into two files:
 | Frontend | Soul | Tool Guidance | Mechanism |
 |----------|------|---------------|-----------|
 | **Open WebUI** | `system-prompt.md` | `system-prompt-tools.md` | `configure-webui.sh` concatenates both into the model's DB entry |
-| **OpenCode** | `system-prompt.md` | OpenCode's own built-in schemas | OpenCode injects its own tool descriptions — no overlap |
+| **OpenCode** | (not wired; auto-loads `AGENTS.md`) | OpenCode's own built-in schemas | Add `"instructions": ["system-prompt.md"]` to your OpenCode config for the persona |
 | **agent.sh / runner.py** | `system-prompt.md` | Inline `_AGENT_INSTRUCTIONS` | Runner builds its own prompt with soul + agent-specific guidance |
 | **Interactive chat** | (not injected) | — | Pass manually with `--system-prompt-file system-prompt.md` |
 
@@ -753,13 +761,28 @@ model to invoke `skill(name)` for non-trivial work.
 
 The default model is **Qwen3.8 27B Uncensored MTP Q5_K_M** (JonathanColetti
 abliteration, `serve-qwen38-27b-uncensored-mtp-q5.sh`) — chosen for uncensored
-behavior and measured speed, not for a leaderboard position: it has **no v4
-score yet** (see `docs/TODO.md`). It runs 140 tok/s at the full native 262K
+behavior and measured speed, not for a leaderboard position: its non-MTP
+twin (same weight file) scores 97.6 % (#3 on v4); the MTP row itself is
+unbenchmarked. It runs 140 tok/s at the full native 262K
 context and leaves 4.76 GB of VRAM free, the roomiest default we have shipped.
 On the current **v4 capability board** (`SCORE = 0.75·problem-solving +
 0.25·language-breadth`) the dense Qwen3.6-27B Q5_K_XL leads at **98.7 %**, and
 the 35B-A3B MoEs are faster per token — each is one `./start.sh <serve-script>`
 away. Full board: `docs/RESULTS.md`.
+
+**Speed falls with context depth.** The 140 tok/s figure is a short-prompt
+number. Measured on the default model from the server log:
+
+| Prompt depth | Generation tok/s | Incremental prompt eval tok/s |
+|---|---:|---:|
+| under 40K | 133 | 2,102 |
+| 80K+ | 111 | 1,049 |
+| 160K+ | 91 | 670 |
+| 200K+ | 84 | 585 |
+
+80% of logged requests (17,886 of 22,399) had prompts of 60K tokens or more,
+so long agent sessions run nearer the lower rows. Compacting or starting a new
+session earlier trades detail for speed.
 
 Note the MTP trade: the default pins `-np 1` (upstream constraint — speculative
 decoding does not support multiple slots), so concurrent requests serialize.

@@ -1,20 +1,52 @@
 # Eval suite
 
 > **Suite version: v4 (current).** 137 base tasks / 291 effective units,
-> hardened so a correct solution passes and every documented cheat is
-> empirically rejected — see [`CHANGELOG.md`](CHANGELOG.md),
+> hardened against the cheats documented in the 2026-07 review. That
+> hardening is incomplete: see [Known validator defects (v4)](#known-validator-defects-v4)
+> below. History: [`CHANGELOG.md`](CHANGELOG.md),
 > [`../docs/archive/EVAL_V4_PLAN.md`](../docs/archive/EVAL_V4_PLAN.md), and the review that
 > drove it, [`../docs/archive/EVAL_REVIEW_2026-07-07.md`](../docs/archive/EVAL_REVIEW_2026-07-07.md).
 > The distribution tables below describe **v4**. For the model **leaderboard**
-> (four models on v4 — three MTP builds + the dense Qwen 27B Q5_K_XL — and four
-> non-MTP models still on legacy v3.5, pending the in-progress re-run), see the
+> (nine models on v4; three legacy v3.5 rows kept for history, two of them for
+> pruned models), see the
 > [main README](../README.md) and [`../docs/RESULTS.md`](../docs/RESULTS.md);
 > v3.5 and v4 scores are **not directly comparable** (different task sets).
 
-137 self-contained coding tasks (291 effective units with multi-language variants) for benchmarking local LLMs. Each task has a
-deterministic validation script that returns exit 0 on success, non-zero on
+137 coding tasks (291 effective units with multi-language variants) for benchmarking local LLMs. Each task has a
+validation script that returns exit 0 on success, non-zero on
 failure. The harness runs the agent against every task, scores the result, and
 ranks models in a leaderboard keyed by (host_id, model_slug).
+
+The tasks ship their own fixtures and need no network, but a run is not
+sealed: eval agents have live `fetch` and `web_search`, and `web_search`
+succeeds or fails depending on whether SearXNG is up, which is not recorded.
+See the next section.
+
+## Known validator defects (v4)
+
+These are known and held for the next suite version, because fixing a
+validator or the harness changes the era and invalidates every cached result.
+
+- **`23_sql_injection` rejects the canonical fix.** The validator flags any
+  `+` or f-string inside the `execute(...)` call, including in the parameter
+  tuple. `cur.execute("... LIKE ?", ('%' + q + '%',))` fails; the same fix
+  with the pattern assigned on the previous line passes, and so does SQL
+  concatenated into a variable outside the call. Every v4 board row fails
+  this task. It is a hard singleton, so each row carries about −0.68 SCORE
+  from it.
+- **`21_race_condition` can pass without synchronisation.** The validator
+  checks only the final count of 10 threads × 2000 increments. Deleting the
+  fixture's `time.sleep(0)` yield, with no lock added, passed 20 of 20
+  validations.
+- **Variant units expose their expected output.** 132 of the 185 variant
+  units write `expected.txt` into the agent's working directory at setup and
+  validate with a `diff` against it. A solution that prints the file's
+  contents passed 21 of 22 sampled Python variants. Whether any banked
+  solution does this has not been audited.
+- **Eval agents have live `fetch` and `web_search`.** Agent logs show
+  successful fetches of Wikipedia, GitHub and ziglang.org during eval units,
+  and `web_search` availability differs between runs with the stack up and
+  down. Neither is in the cache key or the result provenance.
 
 ```bash
 python3 evals/run_eval.py --list                     # list every task
@@ -49,18 +81,26 @@ lease. Every model (re)start asks again.
 
 ## v5-fast — the pinned fast suite (imputation-scored)
 
-`evals/suites/v5-fast.json` pins the 106 units that carry the suite's signal:
-the **86 discriminating units** (passed by some but not all of the reference
+`evals/suites/v5-fast.json` pins the 112 units that carry the suite's signal:
+the **92 discriminating units** (passed by some but not all of the 9 reference
 models) plus **20 cheap all-pass "tripwire" units** kept as regression
-canaries. The other 185 units are saturated — every reference model passes
-182 of them and none passes 3 — so a fast run doesn't run them, it **imputes**
+canaries. The other 179 units are saturated — every reference model passes
+177 of them and none passes 2 — so a fast run doesn't run them, it **imputes**
 them: scoring reconstructs the full 291-unit task list with the assumed
 outcomes and computes the standard v2 capability metric on it.
 
 **Fidelity contract:** for any model whose real outcomes match the
 assumptions, the imputed score EQUALS the full-suite capability score
 exactly — same number, same leaderboard scale. This is verified as an
-identity on every reference run by `make_fast_suite.py` (raw subset scoring
+identity on every reference run by `make_fast_suite.py`, which are the runs
+the pin was built from, so the check holds by construction and says nothing
+about other models. On the two non-reference full runs on disk, 2 units and
+1 unit violated `assumed_passed` with no tripwire failing, and the imputed
+score read high (98.48 against a true 98.43, and 98.42 against 98.38).
+**Treat an imputed score as an upper bound outside the reference family**
+(Qwen 27B–35B); for IQ3/IQ2 quants and other model classes no full run exists
+to bound the error. Paired comparisons on the pinned units are unaffected.
+(Raw subset scoring
 was measured at τ = +0.810 against the full metric and rejected — it flips
 near-tie ranks; see `docs/EVAL_FAST_SUITE_PROPOSAL.md`).
 
@@ -142,9 +182,9 @@ refuse any results file whose `harness` records one of those arms (or an
 escalation component), a fast suite, or infrastructure rows
 (`skipped_cache_miss`, `server_unhealthy`, `setup_failed`, `server_error`,
 `env_error`, `low_disk`) — see `scoring.ineligibility_reasons`. A `--escalate` arm (beast-lang's
-confirmed-fix card riding on beast-assist's diagnostic) is **pending**: its
-wiring touches two of the six era files and is a held draft PR (#90), not in
-`main`.
+confirmed-fix card riding on beast-assist's diagnostic) is wired and opt-in
+(`BEAST_ESCALATE=1` with `BEAST_ASSIST=1`), runs under its own `esc1-<sha8>`
+era and is leaderboard-ineligible; its A/B has not run.
 
 **What the key does not see, and the opt-in env era.** The model is keyed by
 its alias, not its bytes; the llama.cpp build, the KV/context serve flags and
@@ -504,30 +544,46 @@ We still benchmark NVFP4 to (a) confirm it's capability-equivalent (so the fleet
 
 **v4 per-language accuracy** (difficulty-weighted % over the 31 variant tasks +
 the Python-bucketed single-language tasks; same methodology as the v3.5 table
-below, so the two are comparable. Bold = top, italic = floor per column):
+below. Bold = top, italic = floor per column):
 
-| Model | Python | C | C++ | Go | Rust | Zig | Best at |
-|---|---:|---:|---:|---:|---:|---:|---|
-| Qwen 27B Q5_K_XL | **98.6** | 92.7 | _87.7_ | **97.9** | **100.0** | 60.5 | Python, Go, Rust |
-| Qwen 27B MTP Q5_K_XL | 96.7 | **96.9** | **96.9** | 96.9 | 96.9 | **66.6** | C, C++, Zig |
-| Qwen 35B-A3B MTP MoE Q4_K_M | 97.3 | _85.4_ | _87.7_ | _85.4_ | _95.8_ | _34.5_ | — |
-| Qwopus 27B v2 MTP Q5_K_M | _95.2_ | _84.5_ | 91.9 | 96.9 | 96.9 | 44.7 | — |
+| Model | Python | C | C++ | Go | Rust | Zig |
+|---|---:|---:|---:|---:|---:|---:|
+| Qwen 27B Q5_K_XL | **98.6** | 92.7 | 87.7 | **97.9** | **100.0** | 60.5 |
+| Qwen3.8 27B Q5_K_XL | 97.6 | 87.7 | 92.7 | 95.8 | 92.7 | 30.3 |
+| Qwen3.8 27B Uncensored Q5_K_M | 97.7 | 91.7 | 96.9 | 89.6 | 89.6 | _25.1_ |
+| Qwen 27B MTP Q5_K_XL | 96.7 | **96.9** | 96.9 | 96.9 | 96.9 | 66.6 |
+| Qwen 35B-A3B MTP MoE Q4_K_M | 97.3 | 85.4 | 87.7 | 85.4 | 95.8 | 34.5 |
+| Qwopus 27B v2 MTP Q5_K_M | 95.2 | 84.5 | 91.9 | 96.9 | 96.9 | 44.7 |
+| Qwen 35B-A3B NVFP4 MTP | 95.3 | 87.7 | 92.7 | _80.2_ | **100.0** | 32.4 |
+| Qwen 27B NVFP4 MTP | 93.7 | 89.6 | **100.0** | 90.6 | 96.9 | **76.0** |
+| Qwen 35B-A3B MoE Q4_K_M | _93.5_ | _83.5_ | 88.7 | _80.2_ | 97.9 | 38.6 |
 
 Raw pass counts (difficulty-blind, `passed/count`) tell the plainer story:
 
 | Model | Python | C | C++ | Go | Rust | Zig |
 |---|---:|---:|---:|---:|---:|---:|
-| Qwen 27B Q5_K_XL | 133/136 | 29/31 | 28/31 | 30/31 | **31/31** | 20/31 |
+| Qwen 27B Q5_K_XL | 133/136 | 29/31 | 28/31 | 30/31 | 31/31 | 20/31 |
+| Qwen3.8 27B Q5_K_XL | 133/136 | 28/31 | 29/31 | 30/31 | 29/31 | 9/31 |
+| Qwen3.8 27B Uncensored Q5_K_M | 133/136 | 29/31 | 30/31 | 28/31 | 28/31 | 7/31 |
 | Qwen 27B MTP Q5_K_XL | 133/136 | 30/31 | 30/31 | 30/31 | 30/31 | 20/31 |
 | Qwen 35B-A3B MTP MoE Q4_K_M | 131/136 | 27/31 | 28/31 | 27/31 | 30/31 | 11/31 |
 | Qwopus 27B v2 MTP Q5_K_M | 130/136 | 27/31 | 29/31 | 30/31 | 30/31 | 14/31 |
+| Qwen 35B-A3B NVFP4 MTP | 128/136 | 28/31 | 29/31 | 25/31 | 31/31 | 11/31 |
+| Qwen 27B NVFP4 MTP | 130/136 | 28/31 | 31/31 | 28/31 | 30/31 | 24/31 |
+| Qwen 35B-A3B MoE Q4_K_M | 129/136 | 27/31 | 28/31 | 25/31 | 30/31 | 12/31 |
 
-Three things fall out. **(1) Base ≈ MTP is a per-language dead heat** — identical
+Both tables are regenerated from `python3 evals/scoring.py --by-language`
+(2026-10-09) and cover all nine v4 rows. The Qwen3.8 rows come from a later
+harness era with `--jobs 4`, so read their columns against each other, not
+against the July rows.
+
+Three things fall out. **(1) Base ≈ MTP is a per-language dead heat** — Qwen
+27B Q5_K_XL and its MTP twin are identical
 on Python (133/136) and Zig (20/31), never more than 2 units apart anywhere —
-confirming MTP is lossless; the weighted table's cpp/rust swings are single-task
+consistent with MTP being lossless; the weighted table's cpp/rust swings are single-task
 noise amplified by difficulty weighting. **(2) Zig is the discriminator.** Every
-model clears 84–100 % on the five mainstream languages, so those columns barely
-separate the field — but Zig fans out from **34.5 % to 66.6 %**.
+model clears 80–100 % on the five mainstream languages, so those columns barely
+separate the field — but Zig fans out from **25.1 % to 76.0 %**.
 
 **(3) ⚠️ The headline Acc is ~82 % a Python contest — mind the aggregation.** The
 Python bucket (106 single-language tasks at full weight + Python's 1/6 share of

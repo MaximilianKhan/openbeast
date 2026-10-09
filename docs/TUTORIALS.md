@@ -348,7 +348,7 @@ openbeast-client status
 
 ```
 === OpenBeast client status ===
-  ✓ env file (~/.openbeast-client/env)
+  ✓ env file (~/.openbeast-client.env)
   ✓ venv imports mcp + openai
   ✓ tailscale up
   ✓ rig model API reachable (https://beast.tail1234.ts.net:8443/v1)
@@ -441,7 +441,8 @@ llama-server, so a measurement is never relaunched into or reaped by the
 stack. A build agent that consults it does not compile inside a measurement's
 window — the 2026-09-14 contamination is why this exists.
 
-`eval-era.sh` names the era every result row carries. Rows from different eras
+`eval-era.sh` names the era that keys the result cache (the hash is in the
+cache filenames, not on the leaderboard rows). Rows from different eras
 are never paired; a campaign runs `--check` before it spends a GPU-minute. The
 shape of a campaign that uses both is `scratch/campaign_master3.sh`, and the
 plan is [BEAST_CAMPAIGN_PLAN.md](BEAST_CAMPAIGN_PLAN.md).

@@ -3,8 +3,8 @@
 OpenBeast runs local LLMs via llama.cpp on NVIDIA GPUs, with OpenCode (terminal
 agent), Open WebUI (browser chat), an autonomous agent runner, and an MCP tool
 server providing 18 tools for file I/O, shell, web search, agent management,
-and a curated skills system (15 specialized expertise packages loaded on
-demand).
+and a skills system (24 skills loaded on demand: 15 in-house plus 9 imported;
+14 are on the always-on menu).
 
 The inference engine, model weights, and Docker volumes are not checked in —
 follow the steps below to set them up. Everything else (configs, scripts,
@@ -232,7 +232,7 @@ slower on every axis (31 vs 38 tok/s decode, 586 vs 714 tok/s prompt, 28 vs
 bandwidth on the expert gather, so bytes per token decide speed and the
 smallest 4-bit quant wins. Full numbers in [MODELS.md](MODELS.md).
 
-### Qwen3.6-27B (standard) -- Q5_K_XL (~19GB) — top accuracy (97.85%)
+### Qwen3.6-27B (standard) -- Q5_K_XL (~19GB) — top v4 SCORE (98.7%)
 
 ```bash
 hf download unsloth/Qwen3.6-27B-GGUF Qwen3.6-27B-UD-Q5_K_XL.gguf --local-dir weights/
@@ -283,7 +283,9 @@ rm -rf weights/.mtp-staging-35b   # hf leaves a .cache/ subdir behind
 **MTP launch constraints (upstream llama.cpp limitations as of 2026-05-22):**
 - `-np 1` is forced — MTP doesn't yet support more than one parallel slot.
   The MTP serve scripts pin this; concurrent requests serialize.
-- `--mmproj` is not yet supported with MTP — no vision input on these builds.
+- `--mmproj` with MTP was an upstream limit in 2026-05. It was disproven for
+  Qwen3.8 on 2026-08-14 (`serve-qwen38-27b-vision-mtp-q5.sh` ships; see
+  [MODELS.md](MODELS.md)) and is untested on the Qwen3.6-era MTP builds.
 
 ### Qwopus3.6-27B-v2 (Jackrong SFT) -- Q5_K_M (~19.2GB)
 
@@ -343,26 +345,26 @@ context with `./scripts/measure-vram.sh`. DavidAU's MTP rules: keep temperature
 ≤ 1.0 and repetition_penalty = 1.0, or switch to the non-MTP quant if draft
 acceptance stays under ~50%.
 
-### Heretic v2 (llmfan46) -- Q5_K_M / Q6_K, both MTP (~19.7 / 22.8GB)
+### Heretic v2 (llmfan46) -- Q5_K_M MTP (~19.7GB)
 
 Community fine-tune: [llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GGUF](https://huggingface.co/llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GGUF)
 — Qwen3.6-27B, uncensored (Heretic v1.3.0 + MPOA), with the native MTP heads
-preserved. Two MTP variants prepared; the serve scripts expect the exact
-upstream filenames:
+preserved. One MTP variant ships; the serve script expects the exact
+upstream filename:
 
 ```bash
 hf download llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GGUF \
    Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-Q5_K_M.gguf \
-   Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-Q6_K.gguf \
    --local-dir weights/
 rm -rf weights/.cache   # hf leaves a cache subdir behind
 ```
 
-Serve with `serve-heretic-v2-27b-mtp-q5.sh` / `-q6`. **Measured on the 5090**
+Serve with `serve-heretic-v2-27b-mtp-q5.sh`. **Measured on the 5090**
 (2026-07-17 — see `docs/REFERENCE.md`): Q5 holds native 262K at n-max 8
-(~136 tok/s), Q6 ships at 208K at n-max 4 (~139 tok/s) — the fastest MTP builds
-in the lineup. To re-profile on different hardware: draft depth with
-`./scripts/profile-heretic-v2-mtp.sh {q5,q6}`, context ceiling with
+(~136 tok/s). The Q6_K twin was pruned 2026-08-20 ([MODELS.md](MODELS.md)): its
+serve script, registry pin and catalog row are gone, so do not download it.
+To re-profile on different hardware: draft depth with
+`./scripts/profile-heretic-v2-mtp.sh q5`, context ceiling with
 `./scripts/measure-vram.sh`. MTP rules: temp ≤ 1.0, repetition_penalty = 1.0;
 use a non-MTP quant if draft acceptance stays under ~50%.
 
@@ -427,11 +429,16 @@ curl -fsSL https://opencode.ai/install | bash
 OpenCode reads `opencode.json` from the directory you launch it in. Our
 `opencode.json` (committed in the repo root) wires up:
 - The local llama.cpp server as an OpenAI-compatible provider on `localhost:8080`
-- All 15 configured models with their tuned context limits
+- The 16 catalogued models with their tuned context limits (models whose
+  weights are absent from the reference rig are excluded — see
+  [MODELS.md](MODELS.md) § What the opencode picker shows)
 - The MCP tool server via stdio (auto-launched as a subprocess by OpenCode)
 
-Run `opencode` from the repo root, or copy `opencode.json` to any project
-where you want to use the local stack.
+Run `opencode` from the repo root: the config is project-local, and its MCP
+command is the relative path `agents/mcp_server.py`. Nothing on the rig writes
+a global OpenCode config. To use the stack from other projects, copy the
+`provider` and `mcp` blocks into `~/.config/opencode/opencode.json` and change
+the MCP command to the absolute path of `agents/mcp_server.py`.
 
 ### Open WebUI (browser chat interface)
 
@@ -473,8 +480,8 @@ No other manual config needed — the mounted file handles the rest.
 ## 5. Start the stack
 
 The default model is **Qwen3.8 27B Uncensored MTP Q5_K_M** (JonathanColetti
-abliteration) — 140 tok/s at the full native 262K context, the fastest config
-we ship. It pins `-np 1` (an upstream MTP constraint: concurrent requests
+abliteration) — 140 tok/s at the full native 262K context, the fastest
+uncensored config we ship and the roomiest default (4.76 GB free). It pins `-np 1` (an upstream MTP constraint: concurrent requests
 serialize), so a multi-user rig wants `serve-qwen38-27b-uncensored-q5.sh`
 instead — same weight file, MTP off, 6 slots back. Swap in any other model with
 a single arg (below): the dense Qwen3.6-27B Q5 for top benchmarked accuracy, or
@@ -482,7 +489,7 @@ a 35B-A3B MoE when interactive speed matters more.
 
 ```bash
 ./start.sh                                       # default model (Qwen3.8 27B Uncensored MTP Q5) + identity tool server + Open WebUI + SearXNG
-./start.sh serve-qwen-27b-q5.sh                  # dense 27B Q5 — top accuracy (97.85%)
+./start.sh serve-qwen-27b-q5.sh                  # dense 27B Q5 — top v4 SCORE (98.7%)
 ./start.sh serve-qwen-35b-a3b.sh                 # standard 35B-A3B MoE (30–50% faster tokens)
 ./start.sh serve-gemma-4-31b-q5.sh               # Gemma 4 31B
 ```
@@ -540,8 +547,8 @@ To stop everything:
 - **beast-slot discovery** (only with the dashboard extension enabled —
   `./scripts/ext.sh enable dashboard`): `curl http://127.0.0.1:3002/api/slot`
   — read-only JSON: loaded model, slots busy/total, context, service health
-- **OpenCode:** run `opencode` in a project directory, select a `qwen-*` or `gemma-*` model
-- **Tool use:** in Open WebUI, click the wrench icon in the chat input and toggle on "Local Tools (privileged)"
+- **OpenCode:** run `opencode` from the OpenBeast checkout and select the `qwen*`/`heretic*` entry matching the model the rig is serving
+- **Tool use:** `configure-webui.sh` attaches the tool servers to every model row, so a new chat in Open WebUI has tools without a per-chat toggle; ask something that needs one ("search the web for…")
 - **Long-running agents:** ask the model to use `start_agent` to spawn a background agent, then `check_agent` to monitor
 - **Health check:** `./scripts/healthcheck.sh` (services + GPU VRAM + slot usage; `--restart` to auto-recover)
 - **Smoke test:** `./tests/test_smoke.sh` (end-to-end stack validation)
@@ -597,6 +604,7 @@ opt-in publish flag:
 | `https://beast.<tailnet>.ts.net:8444/api/slot` | beast-slot discovery (what the rig is actually serving) | `--publish-slot` |
 | `https://beast.<tailnet>.ts.net:8445` | beast-chat — the console for the rig's own agents and jobs | `--publish-chat` |
 | `https://beast.<tailnet>.ts.net:8446` | beast-artifact — the gallery and every page the model publishes | `--publish-artifact` |
+| `https://beast.<tailnet>.ts.net:8447` | ntfy push notifications for beast-chat (needs `./scripts/ext.sh enable ntfy`) | `--publish-ntfy` |
 
 The opt-in ones are for client devices (§8) and for a phone: watching and
 steering the rig's sessions, and reading published pages. `--publish-chat`
@@ -622,7 +630,7 @@ dashboard extension (`./scripts/ext.sh enable dashboard` + a restart) or it
 serves 502s; it mounts *only* `/api/slot`, so the dashboard page and
 `/api/status` stay rig-local. Every `--publish-*` has an `--unpublish-*`
 twin (`--unpublish-searxng`, `--unpublish-slot`, `--unpublish-chat`,
-`--unpublish-artifact`), and the script ends by printing the full mount table
+`--unpublish-artifact`, `--unpublish-ntfy`), and the script ends by printing the full mount table
 (port, surface, published or not) so the whole published footprint is visible
 at a glance.
 
@@ -782,9 +790,9 @@ What lands on the client:
   that project config shadow a same-id global one (an instant "Unable to
   connect"). Your existing config is preserved; `--uninstall` removes only our
   entries. (Chmod'd 600 when it holds a key.)
-- `~/.local/bin/openbeast-client` — a symlink to `scripts/client.sh`, created
-  only if that directory already exists (otherwise call
-  `~/.openbeast-client/repo/scripts/client.sh` directly).
+- `~/.local/bin/openbeast-client` — a symlink to `scripts/client.sh`. The
+  directory is created if missing; when it isn't on `PATH` (the macOS default)
+  the installer prints the exact line to add.
 
 Then `cd <any project> && opencode` and pick an `openbeast-rig` model — the
 model you pick must be the one the rig is actually serving.
@@ -1001,8 +1009,9 @@ How each frontend uses them:
 
 - **Open WebUI:** `configure-webui.sh` concatenates both files and writes the
   result into each model's database entry. Every new chat inherits it.
-- **OpenCode:** Reads `system-prompt.md` only (via global config). OpenCode
-  injects its own tool schemas separately.
+- **OpenCode:** not wired by the repo. It auto-loads `AGENTS.md` and injects
+  its own tool schemas; add `"instructions": ["system-prompt.md"]` to your
+  OpenCode config if you want the persona there.
 - **agent.sh / runner.py:** Reads `system-prompt.md` and appends its own
   inline agent instructions with tool guidance.
 - **Interactive chat:** Not injected automatically — pass it manually with
@@ -1080,8 +1089,11 @@ network mode, so it reaches llama.cpp via `localhost:8080`.
    `http://localhost:3001`.
 3. Is native function calling enabled? Admin Settings > Models > [your model] >
    Advanced > Function Calling should be set to "Native."
-4. Did you enable tools in the chat? Click the wrench icon in the chat input
-   area and toggle on the Local Tools.
+4. Are the tools attached to the model? `configure-webui.sh` sets them on
+   every model row by default, so no per-chat toggle is needed. If the
+   model's entry under Admin Settings > Models shows no tools, re-run
+   `./scripts/configure-webui.sh`; if they were switched off in this chat's
+   integrations menu, turn them back on there.
 
 If all else fails, re-run `./scripts/configure-webui.sh` and restart Open WebUI
 (`docker restart open-webui`).
@@ -1097,9 +1109,12 @@ patched in our `docker-compose.yml` and `searxng/settings.yml`:
 If you ever upgrade the SearXNG image and these break again, see
 `searxng/settings.yml` and the `searxng` service in `docker-compose.yml`.
 
-**OpenCode shows no local models** — make sure you're running `opencode` from a
-directory that can find the `opencode.json` config (the repo root), or copy
-`opencode.json` to your project. The llama.cpp server must be running on port 8080.
+**OpenCode shows no local models** — run `opencode` from the repo root, where
+the project-local `opencode.json` lives. For other projects, copy its
+`provider` and `mcp` blocks into `~/.config/opencode/opencode.json` with the
+MCP command changed to the absolute path of `agents/mcp_server.py` (a copied
+`opencode.json` keeps the relative path and the tool server will not start).
+The llama.cpp server must be running on port 8080.
 
 **Docker permission denied** — your user isn't in the `docker` group. Run
 `sudo usermod -aG docker "$USER"` and either log out/in or run `newgrp docker`.

@@ -264,7 +264,8 @@ flowchart TB
   listens on a port or runs at start. It is consulted from two places: the
   `language_reference` tool (MCP/WebUI surface only, never the runner's
   10-tool registry) answers from claims the installed toolchain verified; and,
-  once its A/B lands, beast-assist's checker verdict carries the confirmed fix
+  when `BEAST_ESCALATE=1` is set alongside `BEAST_ASSIST=1` (wired, opt-in, its
+  A/B not yet run), beast-assist's checker verdict carries the confirmed fix
   for an error whose shape the escalation index knows. Model-drafted claims
   (`lang-synthesize.sh`) reach nothing until the same verifier accepts them.
   Every entry point is a no-raise facade that is silent under `OPENBEAST_EVAL`.
@@ -383,8 +384,8 @@ evals/                       # Eval harness — 137 tasks / 291 units + multi-mo
   cache.py                   # Durable result cache, keyed on the era hash of the harness code
   suites/ · tasks/ · results/ · leaderboard.json
 
-docs/                        # 34 documents — see README.md § Documentation
-skills/                      # 15 curated expertise packages (skills/README.md)
+docs/                        # 44 top-level documents — see README.md § Documentation
+skills/                      # 24 skills: 15 in-house + 9 imported (skills/README.md)
 system-prompt.md             # Soul file (persona, applied to all frontends)    [era-hashed]
 system-prompt-tools.md       # Tool guidance (Open WebUI only)                    [era-hashed]
 opencode.json                # OpenCode project config (MCP wiring + model list) [era-hashed]
