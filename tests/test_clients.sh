@@ -602,6 +602,68 @@ else
   fail "client.sh update does not call _refresh_oc_catalog (the original bug)"
 fi
 
+# --- 2026-10-09 review fixes ---
+# Each case gets its OWN throwaway repo, so the conf file under test is the
+# only thing that differs and the sections above keep their fixtures.
+_fresh_repo() { # _fresh_repo <name> -> prints the repo path
+  local r="$TMPROOT/$1"
+  mkdir -p "$r/scripts/lib"
+  cp "$REPO_DIR/scripts/clients.sh" "$r/scripts/"
+  cp "$REPO_DIR"/scripts/lib/*.sh "$r/scripts/lib/"
+  printf '%s\n' "$r"
+}
+_has() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
+
+echo ""
+echo "gate-off warning (UX-07):"
+# Device keys are enforced by beast-gate only. With EDGE_GATE off, enroll,
+# rotate and revoke must say that the key/revocation does nothing.
+G="$(_fresh_repo gateoff)"
+unset OPENBEAST_EDGE_GATE OPENBEAST_EDGE_ALLOW_ANON
+GW="EDGE_GATE is not true"
+out="$("$G/scripts/clients.sh" enroll lap 2>&1)" || true
+if _has "$out" "$GW" && _has "$out" "NOT enforced" && _has "$out" "setup-tailscale.sh"; then
+  pass "enroll with no EDGE_GATE in conf warns that keys are not enforced"
+else
+  fail "enroll printed no gate-off warning"
+fi
+out="$("$G/scripts/clients.sh" rotate lap 2>&1)" || true
+if _has "$out" "$GW"; then pass "rotate warns too"; else fail "rotate printed no gate-off warning"; fi
+out="$("$G/scripts/clients.sh" revoke lap 2>&1)" || true
+if _has "$out" "$GW" && _has "$out" "Revoked 'lap'"; then
+  pass "revoke warns that the revocation is not enforced (and still records it)"
+else
+  fail "revoke printed no gate-off warning"
+fi
+echo 'EDGE_GATE=false' > "$G/openbeast.conf"
+out="$("$G/scripts/clients.sh" rotate lap 2>&1)" || true
+if _has "$out" "$GW"; then pass "explicit EDGE_GATE=false warns"; else fail "EDGE_GATE=false did not warn"; fi
+# Negative controls: a gate that IS on must not cry wolf — in each spelling
+# conf.sh accepts, and through the env override.
+printf 'EDGE_GATE=false\nEDGE_GATE="true"   # per-device keys\n' > "$G/openbeast.conf"
+out="$("$G/scripts/clients.sh" rotate lap 2>&1)" || true
+out2="$("$G/scripts/clients.sh" revoke lap 2>&1)" || true
+if ! _has "$out" "$GW" && ! _has "$out2" "$GW" && _has "$out" "Rotated the key"; then
+  pass "EDGE_GATE=true (quoted, with a trailing comment, last line wins) is silent"
+else
+  fail "warned although EDGE_GATE=true"
+fi
+echo 'EDGE_GATE=false' > "$G/openbeast.conf"
+out="$(OPENBEAST_EDGE_GATE=yes "$G/scripts/clients.sh" rotate lap 2>&1)" || true
+if ! _has "$out" "$GW"; then
+  pass "env OPENBEAST_EDGE_GATE overrides the conf file"
+else
+  fail "env override ignored"
+fi
+before="$(cat "$G/openbeast.conf")"
+"$G/scripts/clients.sh" list >/dev/null 2>&1 || true
+out="$("$G/scripts/clients.sh" list 2>&1)" || true
+if [[ "$(cat "$G/openbeast.conf")" == "$before" ]] && ! _has "$out" "$GW"; then
+  pass "reading the setting never writes openbeast.conf; list stays quiet"
+else
+  fail "clients.sh mutated openbeast.conf or list warned"
+fi
+
 # --- Summary ---
 echo ""
 echo "================================"

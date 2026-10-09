@@ -50,16 +50,53 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="${REPO_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-# Deliberately does NOT source lib/conf.sh. Nothing here needs a conf value,
-# and sourcing it has a SIDE EFFECT: the SearXNG-secret bootstrap creates and
-# appends to openbeast.conf. A read-only command like `clients.sh list` must
-# not mutate the rig's config.
+# Deliberately does NOT source lib/conf.sh: sourcing it has a SIDE EFFECT (the
+# SearXNG-secret bootstrap creates and appends to openbeast.conf), and a
+# read-only command like `clients.sh list` must not mutate the rig's config.
+# The two booleans needed here are read directly by _conf_bool below.
 
 RUN_DIR="$REPO_DIR/.run"
 REGISTRY="$RUN_DIR/clients.json"
 
 _usage() { sed -n '10,17p' "$0" | sed 's/^# \{0,1\}//'; }
 _die() { echo "ERROR: $*" >&2; exit 2; }
+
+# _conf_bool KEY — "true" or "false" for a boolean setting, default false,
+# with conf.sh's precedence (env OPENBEAST_<KEY>, then openbeast.conf, last
+# assignment wins) and its _ob_bool reading (first token, `#comment` and
+# quotes dropped, true|yes|1|on) — but without sourcing it.
+_conf_bool() {
+  local key="$1" ev="OPENBEAST_$1" conf="$REPO_DIR/openbeast.conf" raw="" tok rest
+  raw="${!ev:-}"
+  if [[ -z "$raw" && -f "$conf" ]]; then
+    raw="$(grep -E "^[[:space:]]*${key}[[:space:]]*=" "$conf" 2>/dev/null | tail -n1 || true)"
+    raw="${raw#*=}"
+  fi
+  read -r tok rest <<< "$raw" || true
+  tok="${tok%%#*}"
+  tok="${tok//[\"\']/}"
+  case "$(printf '%s' "$tok" | tr 'A-Z' 'a-z')" in
+    true|yes|1|on) echo true ;;
+    *)             echo false ;;
+  esac
+}
+
+# Device keys are checked by beast-gate and by nothing else: with the gate off,
+# :8443 is raw llama-server, which ignores a bearer it was not started with. An
+# enroll then hands out a key that gates nothing and a revoke "succeeds" while
+# the laptop keeps working — so say so, on every command an operator runs
+# believing it changes who may use the rig.
+_warn_gate_off() {
+  [[ "$(_conf_bool EDGE_GATE)" == "true" ]] && return 0
+  {
+    echo "WARNING: EDGE_GATE is not true — device keys are NOT enforced."
+    echo "         :8443 points at llama-server itself, which never checks them:"
+    echo "         a revoked or never-enrolled device still gets served."
+    echo "         Set EDGE_GATE=true in openbeast.conf, restart"
+    echo "         (./stop.sh && ./start.sh -d), then re-run ./scripts/setup-tailscale.sh."
+    echo ""
+  } >&2
+}
 
 # 32 random bytes, hex. Same idiom as scripts/setup-mcpo-keys.sh / lib/conf.sh:
 # openssl when present, /dev/urandom via od otherwise (no openssl dependency).
@@ -514,6 +551,7 @@ print(int(any(d.get("id") == os.environ["OB_ID"]
     echo "  On the client device, run (and paste the key above when prompted):"
     echo "    ./scripts/setup-client.sh --host $(_rig_host) --api-key-stdin"
     echo ""
+    _warn_gate_off
     ;;
 
   list)
@@ -570,6 +608,7 @@ print(int(any(d.get("id") == os.environ["OB_ID"]
     [[ $# -eq 0 ]] || _die "unknown option for $cmd: $1"
     if [[ ! -f "$REGISTRY" ]]; then _no_registry; exit 1; fi
     OB_CMD="$cmd" OB_ID="$dev_id" _registry_op
+    if [[ "$cmd" == "revoke" ]]; then echo ""; _warn_gate_off; fi
     ;;
 
   remove)
