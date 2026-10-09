@@ -1,0 +1,2 @@
+# The Ruff job's tool (.github/workflows/pr-quality.yml).
+ruff==0.15.21

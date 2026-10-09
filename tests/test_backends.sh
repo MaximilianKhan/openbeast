@@ -6,8 +6,11 @@
 #
 # Same rules as tests/test_lifecycle.sh: no GPU, no docker, no real stack.
 # The only network is a throwaway HTTP stub on an ephemeral 127.0.0.1 port;
-# the stack's own probes are pointed at 127.0.0.2 (BIND_HOST), where nothing
-# of the real stack listens. pkill/pgrep/docker are stubs that RECORD their
+# the stack's own probes are pointed at $_LO (BIND_HOST), a 127.x.y.z address
+# picked at random for THIS run, where nothing of the real stack listens (and
+# no second copy of this suite does either: start.sh's port preflight made two
+# concurrent runs on a fixed 127.0.0.2:3001 refuse each other).
+# pkill/pgrep/docker are stubs that RECORD their
 # calls and never touch the host process table. Every process started here
 # is reaped by the EXIT trap. Tests that touch hardware detection pin
 # OPENBEAST_GPU_BACKEND=cpu.
@@ -232,9 +235,10 @@ _c="$(_conf 'INFERENCE_MODEL=my-model' 'echo "$INFERENCE_MODEL|${OPENBEAST_INFER
 
 # ---------------------------------------------------------------------------
 # Sandbox rigs for the lifecycle scripts. Real curl (probes go to the stub on
-# 127.0.0.1 or to 127.0.0.2, where nothing listens); every other host tool is
+# 127.0.0.1 or to $_LO, where nothing listens); every other host tool is
 # a stub. pkill/pgrep/docker RECORD their argv to calls.log and fail.
 # ---------------------------------------------------------------------------
+_LO="127.$((20 + RANDOM % 200)).$((RANDOM % 250)).$((2 + RANDOM % 250))"
 _rig() { # _rig <dir>
   local d="$1" c
   mkdir -p "$d/scripts/lib" "$d/.run" "$d/bin" "$d/home" "$d/extensions"
@@ -255,7 +259,7 @@ _rig() { # _rig <dir>
 _run() { # _run <dir> <timeout-s> <script> [args...]   (extra env via RUN_ENV)
   local d="$1" t="$2"; shift 2
   env -i HOME="$d/home" PATH="$d/bin:/usr/bin:/bin" OPENBEAST_SEARXNG_SECRET=x \
-    OPENBEAST_BIND=127.0.0.2 OPENBEAST_GPU_BACKEND=cpu OPENBEAST_LOGROTATE_AUTOINSTALL=false \
+    OPENBEAST_BIND=$_LO OPENBEAST_GPU_BACKEND=cpu OPENBEAST_LOGROTATE_AUTOINSTALL=false \
     OPENBEAST_SERVE_SCRIPT=serve-marker.sh \
     ${RUN_ENV[@]+"${RUN_ENV[@]}"} timeout "$t" bash "$@" 2>&1 || true
 }
@@ -312,7 +316,7 @@ grep -q serve-marker "$_R/calls.log" && fail "serve script executed on the ready
 
 # start.sh -d against a DOWN remote backend: the launcher must report the
 # stack up with inference NOT ready (exit 0), never claim readiness. The
-# sandbox's "tool server" is a stub that answers /health on 127.0.0.2:3001
+# sandbox's "tool server" is a stub that answers /health on $_LO:3001
 # (where nothing of the real stack binds); the detached supervisor is
 # stopped afterwards through its own recorded pid.
 _R="$_T/start-daemon"; _rig "$_R"; mkdir -p "$_R/agents"
@@ -324,10 +328,11 @@ class H(http.server.BaseHTTPRequestHandler):
         b = b'{"status":"ok"}'
         self.send_response(200); self.send_header("Content-Length", str(len(b)))
         self.end_headers(); self.wfile.write(b)
-srv = http.server.HTTPServer(("127.0.0.2", 3001), H)
+srv = http.server.HTTPServer(("@LO@", 3001), H)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
 time.sleep(60); os._exit(0)
 PY
+sed -i "s/@LO@/$_LO/" "$_R/agents/openapi_tools.py"
 # start.sh checks `import fastapi, uvicorn` first; HOME is the sandbox's, so
 # the user site-packages are invisible — empty stand-ins satisfy the check.
 mkdir -p "$_R/pylib"; : > "$_R/pylib/fastapi.py"; : > "$_R/pylib/uvicorn.py"
@@ -335,7 +340,7 @@ RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=vllm "OPENBEAST_INFERENCE_URL=$_DEAD" OPENB
   "PYTHONPATH=$_R/pylib")
 _rc=0
 _O="$(env -i HOME="$_R/home" PATH="$_R/bin:/usr/bin:/bin" OPENBEAST_SEARXNG_SECRET=x \
-  OPENBEAST_BIND=127.0.0.2 OPENBEAST_GPU_BACKEND=cpu OPENBEAST_LOGROTATE_AUTOINSTALL=false \
+  OPENBEAST_BIND=$_LO OPENBEAST_GPU_BACKEND=cpu OPENBEAST_LOGROTATE_AUTOINSTALL=false \
   "${RUN_ENV[@]}" timeout 60 bash "$_R/start.sh" -d 2>&1)" || _rc=$?
 _sup="$(cat "$_R/.run/supervisor.pid" 2>/dev/null || true)"
 _tool="$(cat "$_R/.run/mcpo.pid" 2>/dev/null || true)"
@@ -836,12 +841,16 @@ cat > "$_P/vinject.env" <<EOF
 BACKEND=vllm
 SOURCE=acme/Brand-New-Model-FP8
 REVISION=$_REV
-SERVED_MODEL_NAME=\$(touch $_K/PWNED); \`touch $_K/PWNED2\`
+SERVED_MODEL_NAME=\$(touch PWNED); \`touch PWNED2\`
 TOOL_CALL_PARSER=hermes
 EOF
 cp "$_P/vtest.lock" "$_P/vinject.lock"
 mkdir -p "$_K/models/vinject"; cp -r "$_K/models/vtest/." "$_K/models/vinject/"
+# RELATIVE canaries, and run from $_K: a value is capped at 200 characters, so
+# an absolute path under a long TMPDIR made the profile invalid instead.
+cd "$_K"
 _sp "$_VN" -- --profile "$_P/vinject.env" --rank 0 --env "$_K/spark.env" --print
+cd "$REPO_DIR"
 if [[ $SPRC -eq 0 ]] && [[ ! -e "$_K/PWNED" && ! -e "$_K/PWNED2" ]] && _has "$_O" "--served-model-name \\\$\\(touch"; then
   pass "shell syntax in a profile value is carried as data (one argv element), never executed"
 else

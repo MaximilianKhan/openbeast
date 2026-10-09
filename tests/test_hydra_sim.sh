@@ -10,11 +10,15 @@ PASS=0; FAIL=0
 ok()  { PASS=$((PASS + 1)); echo "  ok: $*"; }
 bad() { FAIL=$((FAIL + 1)); echo "  FAIL: $*"; }
 
+# A skip is a green exit on a developer's box and a FAILURE under CI=true: CI
+# installs everything this suite needs, so a skip there means it stopped
+# running and nobody was told.
+_skip() { echo "SKIP: $*"; [[ "${CI:-}" == "true" ]] || exit 0; echo "FAIL: skipped under CI=true" >&2; exit 1; }
 if ! python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); s.close()' 2>/dev/null; then
-  echo "SKIP: cannot bind a loopback port"; exit 0
+  _skip "cannot bind a loopback port"
 fi
 if ! python3 -c 'import httpx, uvicorn, starlette' 2>/dev/null; then
-  echo "SKIP: httpx/uvicorn/starlette not importable"; exit 0
+  _skip "httpx/uvicorn/starlette not importable"
 fi
 unset http_proxy HTTP_PROXY https_proxy HTTPS_PROXY all_proxy ALL_PROXY
 export OPENBEAST_HYDRA_NO_CONF=1        # never read this box's openbeast.conf

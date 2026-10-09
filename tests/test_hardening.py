@@ -118,11 +118,18 @@ def test_guard_blocks_git_hooks(tmp_path):
     assert out.startswith("Error:") and "hook" in out
 
 
-def test_guard_blocks_local_bin(monkeypatch):
-    target = os.path.expanduser("~/.local/bin/definitely-a-test-shim")
-    out = tools.write_file(target, "#!/bin/sh\n")
-    assert out.startswith("Error:") and "persistence" in out
-    assert not os.path.exists(target)
+def test_read_file_refuses_a_fifo_and_a_directory(tmp_path):
+    """Only regular files are read. A FIFO has no size to cap and no end to
+    wait for; nothing else exercised the check (publish_artifact has its own)."""
+    fifo = tmp_path / "pipe"
+    os.mkfifo(fifo)
+    out = tools.read_file(str(fifo))
+    assert out.startswith("Error:") and "not a regular file" in out, out
+    out = tools.read_file(str(tmp_path))
+    assert out.startswith("Error:") and "not a regular file" in out, out
+    # control: the file next to them reads
+    (tmp_path / "ok.txt").write_text("hello\n")
+    assert "hello" in tools.read_file(str(tmp_path / "ok.txt"))
 
 
 @pytest.fixture
@@ -136,6 +143,18 @@ def fake_home(tmp_path, monkeypatch):
         '. "$HOME/.config/shell/extra.sh"\n'
         "source ${HOME}/dots/aliases # trailing comment\n")
     return home
+
+
+def test_guard_blocks_local_bin(fake_home):
+    # In a HOME this test owns. Against the real one, a build with the guard
+    # broken WROTE ~/.local/bin/definitely-a-test-shim onto the operator's
+    # PATH, and the assertion below then failed in every checkout until
+    # someone deleted the file by hand.
+    target = os.path.expanduser("~/.local/bin/definitely-a-test-shim")
+    assert target.startswith(str(fake_home))
+    out = tools.write_file(target, "#!/bin/sh\n")
+    assert out.startswith("Error:") and "persistence" in out
+    assert not os.path.exists(target)
 
 
 @pytest.mark.parametrize("rel", [

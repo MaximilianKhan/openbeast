@@ -138,7 +138,9 @@ def test_fetch_shell_wrapper_reads_spark_env(tmp_path, remote):
     prof = hf_profile(tmp_path)
     env_file = tmp_path / "spark.env"
     env_file.write_text(f"MODELS_DIR={tmp_path}/m2   # comment\nHF_ENDPOINT={remote.url}\n")
-    env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path)}
+    # OPENBEAST_OFFLINE: the wrapper also reads the checkout's openbeast.conf,
+    # and OFFLINE=true in the rig's own conf refused this (loopback) fetch.
+    env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path), "OPENBEAST_OFFLINE": "false"}
     r = subprocess.run(["bash", str(REPO / "scripts/backends/model-fetch.sh"), "--profile", str(prof),
                         "--env", str(env_file)], capture_output=True, text=True, timeout=60, env=env)
     assert r.returncode == 0, r.stderr

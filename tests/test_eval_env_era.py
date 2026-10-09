@@ -24,6 +24,7 @@ def _fresh(tmp_path: Path, monkeypatch):
         sys.modules.pop(mod, None)
     cache = importlib.import_module("cache")
     cache.CACHE_DIR = tmp_path / "cache"
+    cache.STRIKES_DIR = cache.CACHE_DIR / "env-strikes"
     cache._context_cache.clear()
     run_eval = importlib.import_module("run_eval")
     monkeypatch.setattr(run_eval, "_TOOLCHAINS", {"zig": "0.16.0"})
