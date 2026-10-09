@@ -118,6 +118,20 @@ def test_guard_blocks_git_hooks(tmp_path):
     assert out.startswith("Error:") and "hook" in out
 
 
+def test_read_file_refuses_a_fifo_and_a_directory(tmp_path):
+    """Only regular files are read. A FIFO has no size to cap and no end to
+    wait for; nothing else exercised the check (publish_artifact has its own)."""
+    fifo = tmp_path / "pipe"
+    os.mkfifo(fifo)
+    out = tools.read_file(str(fifo))
+    assert out.startswith("Error:") and "not a regular file" in out, out
+    out = tools.read_file(str(tmp_path))
+    assert out.startswith("Error:") and "not a regular file" in out, out
+    # control: the file next to them reads
+    (tmp_path / "ok.txt").write_text("hello\n")
+    assert "hello" in tools.read_file(str(tmp_path / "ok.txt"))
+
+
 @pytest.fixture
 def fake_home(tmp_path, monkeypatch):
     home = tmp_path / "home"

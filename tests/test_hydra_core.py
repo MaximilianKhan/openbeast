@@ -598,7 +598,9 @@ def test_device_and_role_need_a_trusted_caller():
     cfg, st = _rules({"name": "phone", "when": {"device": "max-phone"}, "then": {"route": "beast:fast"}},
                      {"name": "guest", "when": {"role": "user"}, "then": {"ignore_nodes": ["rig"]}})
     spoof = core.Caller(False, "max-phone", "user")
-    assert decide(cfg, st, caller=spoof).route == "beast"
+    d = decide(cfg, st, caller=spoof)
+    assert d.route == "beast"                       # the device rule did not fire
+    assert "unc@rig" in ids(d) and "unc@rig" not in d.trace.excluded   # nor the role rule
     ok = core.Caller(True, "max-phone", None)
     assert decide(cfg, st, caller=ok).route == "beast:fast"
     d = decide(cfg, st, caller=core.Caller(True, None, "user"))

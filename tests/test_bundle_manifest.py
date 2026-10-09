@@ -352,6 +352,17 @@ def test_a_symlinked_FILE_is_not_silently_accepted(tmp_path):
     assert any("symlink" in p for p in problems), problems
 
 
+def test_a_RECORDED_path_replaced_by_a_symlink_is_reported(tmp_path):
+    """The link stays inside the bundle and points at identical bytes, so
+    neither containment nor the hash can see it: only the check itself."""
+    root = _bundle(tmp_path, {"wheels/a.whl": b"AAA", "wheels/b.whl": b"AAA"})
+    assert B.verify(root)[1] == []                  # control: clean before
+    os.unlink(os.path.join(root, "wheels", "b.whl"))
+    os.symlink("a.whl", os.path.join(root, "wheels", "b.whl"))
+    _ok, problems = B.verify(root)
+    assert "wheels/b.whl: is a symlink, not a file" in problems, problems
+
+
 # --------------------------------------------------------------------------
 # Finder droppings: a stick that was BROWSED on a Mac is not a tampered bundle
 # --------------------------------------------------------------------------
