@@ -138,17 +138,21 @@ main tree.)
    prompt works.** Fresh rerun of 2026-09-30, six cells, no cache:
    Qwen3.8-27B-Uncensored passes 10 and 11 of 30 without the pack and 24
    and 21 with it. Pooled over the two replicates: 26 units rescued, 2
-   regressed, net +24, exact McNemar p < 0.0001. Dropping one rescue that
-   hit the wall-clock timeout after its solution had already validated
-   gives net +23. The champion model (Qwen3.6-27B) goes from 23 to 28 of
+   regressed, net +24, exact McNemar p < 0.0001. Counted once per unit
+   rather than once per replicate, 18 units improve, 1 worsens and 11 do
+   not change (sign test p = 7.6e-5). Dropping one rescue that hit the
+   wall-clock timeout after its solution had already validated gives net
+   +23. The champion model (Qwen3.6-27B) goes from 23 to 28 of
    30 (7 rescued, 2 regressed, p = 0.18).
 2. **The effect is idiom adoption, not copying.** The longest verbatim
    overlap between pack and solution is 46 characters with or without the
    pack; the visible change is the model using the current API forms.
-3. **It is an in-sample result.** The pack's curated section was written
-   against failures on these same 30 units. A held-out Zig set was
-   designed and has not been run. Treat the size of the effect as an upper
-   bound until it is.
+3. **It is an in-sample result, measured under greedy decoding.** The
+   pack's curated section was written against failures on these same 30
+   units, every cell decoded greedily at four concurrent jobs while
+   production samples at temperature 0.6, and the cells ran from a tree
+   with uncommitted changes. A held-out Zig set was designed and has not
+   been run. Treat the size of the effect as an upper bound until it is.
 4. **Same-configuration churn is about 30%** on these units at four
    concurrent jobs against a shared-context server (9 of 30 units flip
    between identical runs). Any single-run comparison on this suite is
