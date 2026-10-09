@@ -928,6 +928,11 @@ async def _upstream_health(app, client) -> tuple[int, dict]:
 
 # How often the wait for upstream headers looks at the client socket.
 _DISCONNECT_POLL_S = 0.25
+# How often an ADMITTED request re-proves its device is still enrolled.
+# Revocation is hot-reloaded for new requests, but a generation already open
+# on a stolen laptop used to run to its end, holding the slot. The cost per
+# check is one os.stat (Registry.reload) and a hash.
+_REAUTH_INTERVAL_S = 5.0
 
 
 async def _abandon(task) -> None:
@@ -941,7 +946,7 @@ async def _abandon(task) -> None:
         await task.result().aclose()
 
 
-async def _send_watched(request: Request, coro) -> tuple:
+async def _send_watched(request: Request, coro, still_enrolled) -> tuple:
     """Await the upstream's response headers, unless nobody wants them.
 
     Returns (response, None), or (None, reason) after cancelling the send.
@@ -953,9 +958,10 @@ async def _send_watched(request: Request, coro) -> tuple:
     generated for nobody ahead of the operator's own turn, and the abandoned
     work was audited "200 ok". Cancelling closes the upstream connection,
     which is what makes llama-server (or hydra) stop. Same shape as hydra's
-    _until_disconnect.
+    _until_disconnect. The same wait re-checks enrollment (reason "revoked").
     """
     task = asyncio.ensure_future(coro)
+    checked = _clock()
     try:
         while True:
             done, _ = await asyncio.wait({task}, timeout=_DISCONNECT_POLL_S)
@@ -964,6 +970,11 @@ async def _send_watched(request: Request, coro) -> tuple:
             if await request.is_disconnected():
                 await _abandon(task)
                 return None, "client_disconnect"
+            if _clock() - checked >= _REAUTH_INTERVAL_S:
+                checked = _clock()
+                if not still_enrolled():
+                    await _abandon(task)
+                    return None, "revoked"
     except BaseException:
         if not task.done():
             await _abandon(task)
@@ -1129,11 +1140,32 @@ async def gate(request: Request):
         headers = _upstream_headers(request, device, request_id)
         registry.touch(device_id)
 
+        def _still_enrolled() -> bool:
+            # The SAME enrollment, not merely a key that resolves: a device
+            # removed and re-enrolled mid-request is a different device.
+            dev, _ = _identify(request, registry)
+            return dev is not None and device_uid(dev) == uid
+
         req = client.build_request(request.method, f"{UPSTREAM}{path}",
                                    content=body, headers=headers)
         try:
             resp, gone = await _send_watched(
-                request, client.send(req, stream=True))
+                request, client.send(req, stream=True), _still_enrolled)
+            if gone == "revoked":
+                _release()
+                _bump("denied_total", "revoked")
+                _audit(device_id, user, path, 401, None,
+                       int((time.monotonic() - started) * 1000), model,
+                       "revoked", request_id, uid)
+                _log(f"device revoked mid-request device={device_id} "
+                     f"path={path} request_id={request_id} — upstream "
+                     "request cancelled")
+                return JSONResponse(
+                    {"error": {"message": "unauthorized (revoked): this "
+                               "device's key is no longer enrolled",
+                               "type": "invalid_request_error"}},
+                    status_code=401,
+                    headers={"X-OpenBeast-Request-Id": request_id})
             if gone:
                 _release()
                 _audit(device_id, user, path, 499, None,
@@ -1213,8 +1245,23 @@ async def gate(request: Request):
         timed_out = False
         upstream_failed = False
         completed = False
+        revoked = False
+        checked = _clock()
         try:
             async for chunk in resp.aiter_raw():
+                # Checked as chunks arrive, BEFORE relaying: a revoked device
+                # gets nothing further, and leaving the loop closes the
+                # upstream below, which frees the slot. (A stream that has
+                # gone silent is not re-checked until its next chunk.)
+                if _clock() - checked >= _REAUTH_INTERVAL_S:
+                    checked = _clock()
+                    if not _still_enrolled():
+                        revoked = True
+                        _bump("denied_total", "revoked")
+                        _log(f"device revoked mid-stream device={device_id} "
+                             f"path={path} request_id={request_id} — "
+                             "stream closed")
+                        break
                 # Bounded tail (usage rides the last SSE chunks) plus, for
                 # small non-streaming replies, the whole body.
                 state["tail"] = (state["tail"] + chunk)[-16384:]
@@ -1223,7 +1270,8 @@ async def gate(request: Request):
                 else:
                     state["oversize"] = True
                 yield chunk
-            completed = True
+            else:
+                completed = True
         except httpx.TimeoutException:
             # A read timeout AFTER headers lands HERE, not at client.send().
             # Without this the audit ledger would record the request as a
@@ -1266,6 +1314,8 @@ async def gate(request: Request):
                 _audit_reply(usage, ("upstream_timeout", 504))
             elif upstream_failed:
                 _audit_reply(usage, ("upstream_error", 502))
+            elif revoked:
+                _audit_reply(usage, ("revoked", resp.status_code))
             elif not completed:
                 # The client went away mid-body (CancelledError/GeneratorExit
                 # lands here). Recorded as "ok" before, an abort — whose

@@ -491,3 +491,122 @@ class TestDisconnectBeforeUpstreamHeaders:
 
         asyncio.run(run())
         assert closed == [1]
+
+
+def _revoke(path, device_id="laptop"):
+    """What `clients.sh revoke <id>` writes."""
+    data = json.loads(path.read_text())
+    for d in data["devices"]:
+        if d["id"] == device_id:
+            d["revoked_at"] = "2026-10-09T00:00:00Z"
+    path.write_text(json.dumps(data))
+
+
+class _Stream(_FakeResponse):
+    """SSE upstream that runs `hook(i)` before chunk i and records aclose."""
+
+    def __init__(self, n=6, hook=None):
+        super().__init__()
+        self.n, self.hook, self.closed = n, hook, 0
+
+    async def aiter_raw(self):
+        for i in range(self.n):
+            if self.hook:
+                self.hook(i)
+            yield b'data: {"choices":[{"delta":{"content":"t"}}]}\n\n'
+
+    async def aclose(self):
+        self.closed += 1
+
+
+STREAM = json.dumps({"messages": [], "stream": True}).encode()
+
+
+class TestRevocationReachesOpenRequests:
+    """S9: `clients.sh revoke` ends a generation that is already running,
+    instead of only refusing the device's next request."""
+
+    def _run(self, edge, app, payload=STREAM):
+        async def run():
+            resp = await asyncio.wait_for(
+                edge.gate(Request(_scope(app), _receive(payload))), 5)
+            chunks = []
+            if hasattr(resp, "body_iterator"):
+                async for c in resp.body_iterator:
+                    chunks.append(c)
+                await resp.background()
+            return resp, chunks
+        return asyncio.run(run())
+
+    def test_revoke_mid_stream_closes_the_upstream(self, edge, tmp_path,
+                                                   monkeypatch):
+        monkeypatch.setattr(edge, "_REAUTH_INTERVAL_S", 0)
+        path = _registry(tmp_path)
+        stream = _Stream(hook=lambda i: i == 2 and _revoke(path))
+        app = _direct_app(edge, _SlowUpstream(delay=0, response=stream))
+        resp, chunks = self._run(edge, app)
+        assert resp.status_code == 200          # headers were already sent
+        assert len(chunks) == 2                 # nothing after the revoke
+        assert stream.closed >= 1
+        assert _laptop_bucket_app(edge, app).inflight == 0
+        row = _last_audit(tmp_path)
+        assert (row["outcome"], row["device"]) == ("revoked", "laptop")
+
+    def test_enrolled_device_streams_to_the_end(self, edge, tmp_path,
+                                                monkeypatch):
+        # Negative control: re-checked on every chunk, never cut. Revoking
+        # a DIFFERENT device mid-stream must not touch this one either.
+        monkeypatch.setattr(edge, "_REAUTH_INTERVAL_S", 0)
+        path = _registry(tmp_path)
+        stream = _Stream(hook=lambda i: i == 2 and _revoke(path, "stolen"))
+        app = _direct_app(edge, _SlowUpstream(delay=0, response=stream))
+        _, chunks = self._run(edge, app)
+        assert len(chunks) == 6
+        assert _last_audit(tmp_path)["outcome"] == "ok"
+
+    def test_check_is_throttled_to_the_interval(self, edge, tmp_path,
+                                                monkeypatch):
+        # At the shipped 5 s interval a fast stream is not re-checked per
+        # chunk; the clock crossing the interval is what triggers it.
+        now = [1000.0]
+        monkeypatch.setattr(edge, "_clock", lambda: now[0])
+        path = _registry(tmp_path)
+
+        def hook(i):
+            if i == 1:
+                _revoke(path)
+            if i == 4:
+                now[0] += edge._REAUTH_INTERVAL_S
+        stream = _Stream(hook=hook)
+        app = _direct_app(edge, _SlowUpstream(delay=0, response=stream))
+        _, chunks = self._run(edge, app)
+        assert len(chunks) == 4
+        assert _last_audit(tmp_path)["outcome"] == "revoked"
+
+    def test_revoke_while_waiting_for_headers(self, edge, tmp_path,
+                                              monkeypatch):
+        # A non-streaming generation has no chunks to check on.
+        monkeypatch.setattr(edge, "_REAUTH_INTERVAL_S", 0)
+        monkeypatch.setattr(edge, "_DISCONNECT_POLL_S", 0.01)
+        path = _registry(tmp_path)
+        _revoked = []
+        up = _SlowUpstream()                    # never answers
+        app = _direct_app(edge, up)
+        real = edge._identify
+
+        def identify(request, registry):
+            # Admit the request, then revoke before the first re-check.
+            if _revoked:
+                return real(request, registry)
+            _revoked.append(1)
+            out = real(request, registry)
+            _revoke(path)
+            return out
+
+        monkeypatch.setattr(edge, "_identify", identify)
+        resp, _ = self._run(edge, app, PAYLOAD)
+        assert resp.status_code == 401 and b"revoked" in resp.body
+        assert (up.sent, up.cancelled) == (1, 1)
+        assert _laptop_bucket_app(edge, app).inflight == 0
+        row = _last_audit(tmp_path)
+        assert (row["outcome"], row["status"]) == ("revoked", 401)
