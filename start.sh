@@ -174,6 +174,21 @@ if [[ $STATUS -eq 1 ]]; then
   exit 0
 fi
 
+# The secret overrides the CALLER exported (ENV:CONF-KEY pairs), noted before
+# conf.sh runs — it exports its own OPENBEAST_API_KEY & co. from the conf
+# file, after which "who set this" can no longer be told. Used by the -d
+# launcher, which cannot forward them. Every secret conf.sh takes from the
+# environment belongs in this list.
+_CALLER_SECRET_ENV=""
+for _v in OPENBEAST_API_KEY:LLAMA_API_KEY OPENBEAST_MCPO_ADMIN_KEY:MCPO_ADMIN_KEY \
+          OPENBEAST_MCPO_GUEST_KEY:MCPO_GUEST_KEY OPENBEAST_IDENTITY_JWT_SECRET:IDENTITY_JWT_SECRET \
+          OPENBEAST_SEARXNG_SECRET:SEARXNG_SECRET OPENBEAST_CHAT_NOTIFY_URL:CHAT_NOTIFY_URL \
+          WEBUI_ADMIN_PASSWORD:WEBUI_ADMIN_PASSWORD; do
+  _e="${_v%%:*}"
+  [[ -n "${!_e:-}" ]] && _CALLER_SECRET_ENV+=" $_v"
+done
+unset _v _e
+
 # BIND_HOST (default 127.0.0.1 — loopback-only; remote devices come in via
 # Tailscale Serve, see scripts/setup-tailscale.sh). lib/conf.sh also exports
 # OPENBEAST_BIND / OPENBEAST_API_KEY for docker-compose interpolation, and
@@ -471,6 +486,27 @@ if [[ $DAEMON -eq 1 ]]; then
     # therefore belong in openbeast.conf, not per-shell env, when using -d.
     # *NOTIFY_URL* too: an ntfy topic URL is a bearer secret with an innocent
     # name (conf.sh already unexported it; this is the second lock).
+    #
+    # ...which must not be SILENT. `OPENBEAST_API_KEY=… OPENBEAST_BIND=0.0.0.0
+    # ./start.sh -d` forwarded the bind and dropped the key: the daemon found
+    # no key in the conf and served the model on the LAN unauthenticated.
+    # A secret the caller exported that the conf file has no value for is
+    # refused here, before anything is spawned.
+    _lost=""
+    for _v in $_CALLER_SECRET_ENV; do
+      [[ -n "$(_ob_conf_value "${_v#*:}" || true)" ]] || _lost+="    ${_v%%:*}  ->  ${_v#*:}="$'\n'
+    done
+    if [[ -n "$_lost" ]]; then
+      echo "Error: ./start.sh -d cannot take these secrets from your environment:" >&2
+      printf '%s' "$_lost" >&2
+      echo "  The daemon runs in a systemd unit whose environment anyone on this account" >&2
+      echo "  can read (systemctl --user show), so secrets are never forwarded to it — and" >&2
+      echo "  openbeast.conf has no value for the keys on the right, so the stack would" >&2
+      echo "  come up WITHOUT them (a dropped API key is an unauthenticated model server)." >&2
+      echo "  Set them in openbeast.conf (mode 600), then run ./start.sh -d again." >&2
+      echo "  Nothing was started." >&2
+      exit 1
+    fi
     SETENV_ARGS=()
     while IFS= read -r _var; do
       if [[ -n "$_var" && "$_var" != *KEY* && "$_var" != *PASSWORD* && "$_var" != *SECRET* \

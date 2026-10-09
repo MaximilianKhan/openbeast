@@ -580,14 +580,18 @@ else
   pass "runtime banners say 'Tool server', not MCPO"
 fi
 
-# Run the sandbox's start.sh for real. 127.0.0.2 is where nothing of a live
-# stack on this box binds, so every probe start.sh makes is against an address
-# this test owns. Sets _SO (output) and _SRC (exit code).
+# Run the sandbox's start.sh for real, bound to a loopback address picked at
+# random for THIS run ($_LO): nothing of a live stack binds there, and neither
+# does another suite or a second copy of this one running beside it (the core
+# port numbers are fixed, so the address is the only thing that can differ).
+# Every probe start.sh makes is therefore against an address this test owns.
+# Sets _SO (output) and _SRC (exit code).
+_LO="127.$((20 + RANDOM % 200)).$((RANDOM % 250)).$((2 + RANDOM % 250))"
 _start_rc() { # _start_rc <dir> <timeout-s> [args...]   (extra env via RUN_ENV)
   local d="$1" t="$2"; shift 2
   _SRC=0
   _SO="$(env -i HOME="$d/home" PATH="$d/bin:/usr/bin:/bin" OPENBEAST_SEARXNG_SECRET=x \
-    OPENBEAST_BIND=127.0.0.2 OPENBEAST_LOGROTATE_AUTOINSTALL=false \
+    OPENBEAST_BIND=$_LO OPENBEAST_LOGROTATE_AUTOINSTALL=false \
     ${RUN_ENV[@]+"${RUN_ENV[@]}"} timeout "$t" bash "$d/start.sh" "$@" 2>&1)" || _SRC=$?
 }
 
@@ -673,11 +677,11 @@ cp "$REPO_DIR/scripts/gpu-lease.sh" "$_PF/scripts/"
 printf '#!/bin/bash\necho launched >> "%s/launched.log"\nexit 1\n' "$_PF" > "$_PF/scripts/serve-mark.sh"
 chmod +x "$_PF/scripts/serve-mark.sh"
 _PFPORT="$(_free_port)"
-_pf_env() { RUN_ENV=(OPENBEAST_SERVE_SCRIPT=serve-mark.sh "OPENBEAST_INFERENCE_URL=http://127.0.0.2:$_PFPORT" "$@"); }
+_pf_env() { RUN_ENV=(OPENBEAST_SERVE_SCRIPT=serve-mark.sh "OPENBEAST_INFERENCE_URL=http://$_LO:$_PFPORT" "$@"); }
 # Somebody else's healthy llama-server on the address+port ours would bind.
-STUB_HOST=127.0.0.2 python3 "$_L/scripts/stub_llama.py" ok "$_PFPORT" >/dev/null 2>&1 & _FOREIGN=$!; _PIDS="$_PIDS $!"
+STUB_HOST=$_LO python3 "$_L/scripts/stub_llama.py" ok "$_PFPORT" >/dev/null 2>&1 & _FOREIGN=$!; _PIDS="$_PIDS $!"
 for _ in 1 2 3 4 5 6 7 8 9 10; do
-  (exec 3<>"/dev/tcp/127.0.0.2/$_PFPORT") 2>/dev/null && break; sleep 0.2
+  (exec 3<>"/dev/tcp/$_LO/$_PFPORT") 2>/dev/null && break; sleep 0.2
 done
 for _mode in "" -d; do
   rm -f "$_PF/launched.log"; rm -rf "$_PF/.run"; mkdir -p "$_PF/.run"
@@ -718,7 +722,7 @@ fi
 # Unmanaged backend: no local model, so neither the lease nor the port is ours
 # to ask about. The start goes on to wait for the remote server.
 rm -f "$_PF/launched.log"
-_pf_env OPENBEAST_INFERENCE_BACKEND=vllm "OPENBEAST_INFERENCE_URL=http://127.0.0.2:$_PFPORT" OPENBEAST_LLAMA_LOAD_GRACE=1
+_pf_env OPENBEAST_INFERENCE_BACKEND=vllm "OPENBEAST_INFERENCE_URL=http://$_LO:$_PFPORT" OPENBEAST_LLAMA_LOAD_GRACE=1
 _start_rc "$_PF" 40
 if [[ "$_SO" != *"GPU is leased"* && "$_SO" != *"already in use"* && "$_SO" == *"Waiting for the vLLM server"* \
       && ! -e "$_PF/launched.log" ]]; then
@@ -740,8 +744,8 @@ fi
 
 echo ""
 echo "start.sh preflight: the fixed core ports (UX-04):"
-# On 127.0.0.3 — an address no stack, and no other suite, binds. The port
-# NUMBERS are the real ones (they are not configurable); the address is ours.
+# The port NUMBERS are the real ones (they are not configurable); the address
+# ($_LO) is this run's own.
 _PP="$_T/ports"; _sandbox "$_PP"
 cat > "$_PP/listen.py" <<'PY'
 import socket, sys, time
@@ -750,16 +754,16 @@ s.bind((sys.argv[1], int(sys.argv[2]))); s.listen(4)
 time.sleep(60)
 PY
 _listen() { # _listen <port> -> sets _LP (pid), returns once it accepts
-  python3 "$_PP/listen.py" 127.0.0.3 "$1" & _LP=$!; _PIDS="$_PIDS $!"
+  python3 "$_PP/listen.py" $_LO "$1" & _LP=$!; _PIDS="$_PIDS $!"
   for _ in 1 2 3 4 5 6 7 8 9 10; do
-    (exec 3<>"/dev/tcp/127.0.0.3/$1") 2>/dev/null && return 0; sleep 0.2
+    (exec 3<>"/dev/tcp/$_LO/$1") 2>/dev/null && return 0; sleep 0.2
   done
 }
 _unlisten() { kill "$_LP" 2>/dev/null || true; wait "$_LP" 2>/dev/null || true; }
 # Unmanaged, so the only thing between the preflight and the (stubbed-out)
 # tool server is a one-second wait for a backend that is not there.
-_pp_env() { RUN_ENV=(OPENBEAST_BIND=127.0.0.3 OPENBEAST_INFERENCE_BACKEND=vllm
-                     OPENBEAST_INFERENCE_URL=http://127.0.0.3:9 OPENBEAST_LLAMA_LOAD_GRACE=1 "$@"); }
+_pp_env() { RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=vllm
+                     OPENBEAST_INFERENCE_URL=http://$_LO:9 OPENBEAST_LLAMA_LOAD_GRACE=1 "$@"); }
 _listen 3001
 _pp_env; _start_rc "$_PP" 40
 if [[ $_SRC -eq 1 && "$_SO" == *"port 3001 (the tool server) is already in use by pid $_LP ("*"listen.py"* \
@@ -862,8 +866,8 @@ _signal_case() { # _signal_case <INT|TERM> -> sets _SRC, leaves $_IN/.run to ins
   local sig="$1" p i
   rm -rf "$_IN/.run"; mkdir -p "$_IN/.run"
   env -i --default-signal=INT HOME="$_IN/home" PATH="$_IN/bin:/usr/bin:/bin" OPENBEAST_SEARXNG_SECRET=x \
-    OPENBEAST_BIND=127.0.0.2 OPENBEAST_LOGROTATE_AUTOINSTALL=false OPENBEAST_SERVE_SCRIPT=serve-sleep.sh \
-    "OPENBEAST_INFERENCE_URL=http://127.0.0.2:$(_free_port)" \
+    OPENBEAST_BIND=$_LO OPENBEAST_LOGROTATE_AUTOINSTALL=false OPENBEAST_SERVE_SCRIPT=serve-sleep.sh \
+    "OPENBEAST_INFERENCE_URL=http://$_LO:$(_free_port)" \
     bash "$_IN/start.sh" > "$_IN/out" 2>&1 & p=$!; _PIDS="$_PIDS $p"
   for i in $(seq 1 100); do [[ -s "$_IN/.run/llama.pid" ]] && break; sleep 0.1; done
   _SLEEPER="$(cat "$_IN/.run/llama.pid" 2>/dev/null || true)"
@@ -893,7 +897,7 @@ else
   fail "SIGTERM left no marker (rc=$_SRC): $(ls "$_IN/.run" | tr '\n' ' ')"
 fi
 # A start that FAILS was not stopped on purpose: no marker.
-RUN_ENV=(OPENBEAST_SERVE_SCRIPT=serve-dies.sh "OPENBEAST_INFERENCE_URL=http://127.0.0.2:$(_free_port)")
+RUN_ENV=(OPENBEAST_SERVE_SCRIPT=serve-dies.sh "OPENBEAST_INFERENCE_URL=http://$_LO:$(_free_port)")
 rm -rf "$_IN/.run"; mkdir -p "$_IN/.run"
 _start_rc "$_IN" 40
 RUN_ENV=()
@@ -907,6 +911,53 @@ if grep -q '\[\[ \$DAEMONIZED -eq 0 && ! -e "\$RUN_DIR/stopped" \]\] || return 0
   pass "the marker is written by a foreground start only, and never over stop.sh's"
 else
   fail "_mark_stopped lost its foreground-only / do-not-overwrite guard"
+fi
+
+echo ""
+echo "start.sh -d does not silently drop a secret from the environment (supply S5):"
+_SE="$_T/secretenv"; _sandbox "$_SE"
+# systemd-run "works" here: the capability probe passes, and the real launch
+# is RECORDED, not run — then the stub ends the launcher instead of letting
+# it wait for a stack that was never spawned.
+cat > "$_SE/bin/systemd-run" <<SH
+#!/bin/bash
+[[ "\$*" == *"--scope"* ]] && exit 0
+printf '%s\n' "\$*" >> "$_SE/systemd-run.log"
+kill "\$PPID"
+SH
+_se_env() { RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=vllm OPENBEAST_INFERENCE_URL=http://$_LO:9 "$@"); }
+: > "$_SE/openbeast.conf"; rm -f "$_SE/systemd-run.log"
+_se_env OPENBEAST_API_KEY=sekrit-from-env
+_start_rc "$_SE" 30 -d
+if [[ $_SRC -eq 1 && "$_SO" == *"cannot take these secrets from your environment"* \
+      && "$_SO" == *"OPENBEAST_API_KEY  ->  LLAMA_API_KEY="* && "$_SO" == *"openbeast.conf"* \
+      && "$_SO" != *sekrit-from-env* && ! -e "$_SE/systemd-run.log" ]]; then
+  pass "-d with OPENBEAST_API_KEY in the env and no LLAMA_API_KEY in the conf: refused, nothing spawned, value not echoed"
+else
+  fail "-d dropped a secret env override silently (rc=$_SRC): $(tail -n 5 <<< "$_SO" | tr '\n' ' ') :: $(cat "$_SE/systemd-run.log" 2>/dev/null)"
+fi
+# The conf carries the key: the daemon will read it from there, so go ahead —
+# and still never put it in the unit's environment.
+# (SEARXNG_SECRET too: _start_rc exports OPENBEAST_SEARXNG_SECRET for every run.)
+printf 'LLAMA_API_KEY=sekrit-from-conf\nSEARXNG_SECRET=x\n' > "$_SE/openbeast.conf"; rm -f "$_SE/systemd-run.log"
+_se_env OPENBEAST_API_KEY=sekrit-from-env OPENBEAST_MEM_LIMIT_PCT=50
+_start_rc "$_SE" 30 -d
+if [[ "$_SO" != *"cannot take these secrets"* ]] && grep -q -- "--unit=openbeast-stack" "$_SE/systemd-run.log" 2>/dev/null \
+   && grep -q -- "--setenv=OPENBEAST_MEM_LIMIT_PCT=50" "$_SE/systemd-run.log" \
+   && ! grep -q "sekrit\|API_KEY" "$_SE/systemd-run.log"; then
+  pass "…with the key in openbeast.conf the daemon is launched, non-secret overrides forwarded, the key is not (control)"
+else
+  fail "-d with the key in the conf (rc=$_SRC): $(tail -n 4 <<< "$_SO" | tr '\n' ' ') :: $(cat "$_SE/systemd-run.log" 2>/dev/null)"
+fi
+: > "$_SE/openbeast.conf"; rm -f "$_SE/systemd-run.log"
+_se_env
+_start_rc "$_SE" 30 -d
+RUN_ENV=()
+# (_start_rc itself exports OPENBEAST_SEARXNG_SECRET=x with an empty conf.)
+if [[ $_SRC -eq 1 && "$_SO" == *"OPENBEAST_SEARXNG_SECRET  ->  SEARXNG_SECRET="* && "$_SO" != *"API_KEY"* ]]; then
+  pass "…and only the secrets actually exported are named"
+else
+  fail "-d secret check named the wrong variables (rc=$_SRC): $(tail -n 8 <<< "$_SO" | tr '\n' ' ')"
 fi
 
 echo ""
