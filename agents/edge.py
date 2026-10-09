@@ -47,7 +47,7 @@ Env (resolved from openbeast.conf by scripts/lib/conf.sh):
   OPENBEAST_EDGE_ALLOW_MEDIA_URLS  "true" = forward image/audio/video parts
                                that name a URL for llama-server to fetch
                                (default false = inline media only — see
-                               _remote_media)
+                               agents/mediapolicy.py)
   OPENBEAST_EDGE_ALLOW_ANON    "true" = while there is NO registry file, serve
                                every caller as the "anon" device (default
                                false = fail closed). Ignored once
@@ -81,6 +81,7 @@ from starlette.routing import Route
 
 from hydra_caller import HEADER as _HYDRA_CALLER_HEADER
 from hydra_caller import CallerToken
+from mediapolicy import remote_media
 
 REPO_DIR = os.environ.get("OPENBEAST_REPO_DIR") or os.path.dirname(
     os.path.dirname(os.path.abspath(__file__)))
@@ -699,52 +700,12 @@ def _generations(body: dict, path: str) -> int:
     return inputs * n
 
 
-# Chat content parts that carry media, and the keys llama-server reads the
-# reference from (server-common.cpp: image_url.url; input_audio/input_video
-# take `data`, falling back to `url`).
-_MEDIA_PARTS = {
-    "image_url": ("url",),
-    "input_audio": ("data", "url"),
-    "input_video": ("data", "url"),
-}
-
-
-def _remote_media(body: dict) -> str | None:
-    """Type of the first content part whose media is a REFERENCE, else None.
-
-    With an mmproj loaded (the shipped vision serve scripts), llama-server
-    downloads whatever such a part names: anything starting "http" is fetched
-    from the rig's own loopback, and "file://" is opened under --media-path.
-    For a remote device that is SSRF — `http://127.0.0.1:3000/…` or a LAN /
-    metadata address, with success vs "Failed to download image" as the
-    oracle and the model describing whatever decodes. tools.fetch's SSRF
-    guard is not on this path. So the gate forwards inline media only: a
-    `data:` URI, or the bare base64 the OpenAI audio shape uses (no ":" in
-    its alphabet). The "http" prefix is checked on its own because that is
-    llama-server's whole test — "httpd" with no scheme would be fetched too.
-    """
-    messages = body.get("messages")
-    if not isinstance(messages, list):
-        return None
-    for msg in messages:
-        content = msg.get("content") if isinstance(msg, dict) else None
-        if not isinstance(content, list):
-            continue
-        for part in content:
-            ptype = part.get("type") if isinstance(part, dict) else None
-            keys = _MEDIA_PARTS.get(ptype) if isinstance(ptype, str) else None
-            if not keys:
-                continue
-            media = part.get(ptype)
-            refs = ([media] if isinstance(media, str) else
-                    [media.get(k) for k in keys] if isinstance(media, dict)
-                    else [])
-            for ref in refs:
-                if not isinstance(ref, str) or ref.startswith("data:"):
-                    continue
-                if ":" in ref or ref[:4].lower() == "http":
-                    return ptype
-    return None
+# Which media parts name a URL for llama-server to fetch (SSRF for a remote
+# device — it would be fetched from the rig's own loopback): the rule lives in
+# agents/mediapolicy.py, shared with the agent router so the two proxies
+# cannot drift. The gate forwards inline media only — a `data:` URI or the
+# bare base64 the OpenAI audio shape uses.
+_remote_media = remote_media
 
 
 def _sanitize_body(raw: bytes, device: dict,

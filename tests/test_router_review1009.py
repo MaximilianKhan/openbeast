@@ -263,6 +263,10 @@ REMOTE_PARTS = [
     {"type": "input_audio", "input_audio": {"data": "http://10.0.0.1/a.wav", "format": "wav"}},
     {"type": "input_video", "input_video": {"url": "http://10.0.0.1/a.mp4"}},
     {"type": "input_video", "input_video": {"data": "file://clip.mp4"}},
+    # The rule shared with beast-gate (agents/mediapolicy.py): a bare string
+    # under input_audio is judged, and " data:" is not a data: URI.
+    {"type": "input_audio", "input_audio": "http://10.0.0.1/a.wav"},
+    {"type": "image_url", "image_url": {"url": " data:image/png;base64,iVBORw0KGgo="}},
 ]
 INLINE_PARTS = [
     {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}},

@@ -137,6 +137,7 @@ from starlette.routing import Route
 from hydra_caller import HEADER as _HYDRA_CALLER_HEADER
 from hydra_caller import CallerToken
 from hostpolicy import PinnedHostMiddleware, host_allowed, trusted_hosts
+from mediapolicy import fetchable, remote_media
 from instinct.routerhook import RouterInstinct
 
 # Defaults match the WIRED stack topology (router 8088 in front of llama-server
@@ -368,59 +369,13 @@ def _parse_json_body(raw):
         raise BadBody(f"request body is not valid JSON ({type(e).__name__})")
 
 
-def _fetchable(value):
-    """True when llama-server would go and GET (or open) this media value.
-
-    Its handle_media() downloads anything that starts with "http", reads
-    file:// from --media-path, and otherwise decodes the value in place (a
-    data: URL or raw base64 — which is how OpenAI's input_audio.data
-    arrives). Allowlisted rather than mirrored: inline data never contains a
-    colon, so anything with a scheme that is not data: is refused, and so is
-    a scheme-less "httpbin.org/x", which curl would fetch as http://.
-    """
-    if not isinstance(value, str):
-        return False
-    v = value.lstrip()
-    if v[:5].lower() == "data:":
-        return False
-    return ":" in v or v[:4].lower() == "http"
-
-
-def _remote_media(body):
-    """The first media part that names a URL instead of carrying its data.
-
-    Returns the part's key ("image_url", ...) or None. Walks the whole body,
-    not just messages[].content[]: /v1/responses puts the same parts under
-    `input`, /v1/messages nests Anthropic image blocks inside tool results,
-    and all of them (and their /input_tokens, /apply-template siblings) end
-    in the same download. Shapes, from llama.cpp tools/server:
-      image_url: {"url": ...}   or, on /v1/responses, image_url: "..."
-      input_audio / input_video: {"data": ... | "url": ...}
-      {"type": "image", "source": {"type": "url", "url": ...}}   (Anthropic)
-    Iterative: the body's depth is the caller's to choose.
-    """
-    stack = [body]
-    while stack:
-        node = stack.pop()
-        if isinstance(node, list):
-            stack.extend(node)
-            continue
-        if not isinstance(node, dict):
-            continue
-        for key, val in node.items():
-            if key == "image_url":
-                found = [val.get("url")] if isinstance(val, dict) else [val]
-            elif key in ("input_audio", "input_video") and isinstance(val, dict):
-                found = [val.get("data"), val.get("url")]
-            elif (key == "source" and isinstance(val, dict)
-                  and node.get("type") == "image"):
-                found = [val.get("url")]
-            else:
-                found = ()
-            if any(_fetchable(f) for f in found):
-                return key
-            stack.append(val)
-    return None
+# What counts as a media part that names a URL: agents/mediapolicy.py, the one
+# rule this router and beast-gate (agents/edge.py) share. Every POST body is
+# walked, not just /v1/chat/completions: llama-server reaches the same
+# download from /chat/completions, /v1/responses, /v1/messages,
+# /apply-template and the input_tokens routes.
+_fetchable = fetchable
+_remote_media = remote_media
 
 
 def _vetted_body(raw, must_parse=True):

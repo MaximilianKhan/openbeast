@@ -240,6 +240,17 @@ class TestMediaUrlsStayInline:
         _part("input_video", data="AAAA", url="http://127.0.0.1:3001/"),
         {"messages": [{"role": "user", "content": [
             {"type": "image_url", "image_url": "http://127.0.0.1:3000/"}]}]},
+        # The rule shared with the router (agents/mediapolicy.py): media is
+        # found by key wherever it sits, a bare string under input_audio is
+        # judged, and " data:" with leading whitespace is not a data: URI.
+        {"messages": [{"role": "user", "content": "hi"}], "input": [
+            {"role": "user", "content": [
+                {"type": "input_image", "image_url": "http://127.0.0.1:3000/"}]}]},
+        {"messages": [{"role": "user", "content": [
+            {"type": "input_audio", "input_audio": "http://127.0.0.1:8888/"}]}]},
+        {"messages": [{"role": "user", "content": [
+            {"type": "text", "image_url": {"url": "http://127.0.0.1:3000/"}}]}]},
+        _part("image_url", url=" " + PNG),
     ])
     def test_media_references_never_reach_upstream(self, edge, tmp_path, body):
         _registry(tmp_path)
@@ -256,6 +267,7 @@ class TestMediaUrlsStayInline:
         _part("image_url", url=PNG),
         _part("input_audio", data="UklGRiQAAABXQVZF", format="wav"),
         _part("input_video", data="data:video/mp4;base64,AAAA"),
+        _part("image_url", url="DATA:image/png;base64,iVBORw0KGgo="),  # as the router
         # A URL in TEXT is just text, and odd shapes are llama-server's to
         # refuse — the gate must not 500 on them.
         {"messages": [{"role": "user", "content": "see http://127.0.0.1/"}]},
