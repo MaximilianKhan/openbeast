@@ -11,7 +11,8 @@
 #   ./scripts/setup-tailscale.sh  --status    # read-only: print the mount table
 #
 # What it does:
-#   1. Installs tailscale (pacman) and enables tailscaled
+#   1. Installs tailscale (pacman; on apt/dnf systems it prints the steps
+#      for Tailscale's signed repo and stops) and enables tailscaled
 #   2. Joins your tailnet (prints a login URL on first run)
 #   3. Publishes, tailnet-only, with automatic HTTPS:
 #        https://<host>.<tailnet>.ts.net       → Open WebUI (:3000)
@@ -204,13 +205,37 @@ if ! command -v tailscale >/dev/null 2>&1; then
   echo "[1/4] Installing tailscale..."
   if command -v pacman >/dev/null 2>&1; then
     sudo pacman -S --needed --noconfirm tailscale
-  elif command -v apt-get >/dev/null 2>&1 || command -v dnf >/dev/null 2>&1; then
-    # Tailscale's official installer handles Debian/Ubuntu/Fedora repos.
-    curl -fsSL https://tailscale.com/install.sh | sh
   else
-    echo "Error: no supported package manager found." >&2
-    echo "       Install tailscale manually (https://tailscale.com/download)" >&2
-    echo "       and re-run this script." >&2
+    # NOT `curl https://tailscale.com/install.sh | sh`: that runs an
+    # unverified remote script, which sudo's internally, as root on the rig.
+    # Tailscale's packages come from its own signed apt/dnf repository —
+    # adding that repo is a decision for the operator to see and make, so
+    # print the steps and stop. (pacman above installs from the distro's
+    # signed repo, which is why that branch may act.)
+    {
+      echo "Error: tailscale is not installed, and this script does not pipe a"
+      echo "       remote installer into a root shell. Install it from Tailscale's"
+      echo "       signed package repository, then re-run this script:"
+      if command -v apt-get >/dev/null 2>&1; then
+        echo ""
+        echo "       Debian / Ubuntu — follow the steps for your release at"
+        echo "         https://tailscale.com/download/linux"
+        echo "       (they add pkgs.tailscale.com's signing key and apt source), then:"
+        echo "         sudo apt-get update && sudo apt-get install tailscale"
+      elif command -v dnf >/dev/null 2>&1; then
+        echo ""
+        echo "       Fedora / RHEL — follow the steps for your release at"
+        echo "         https://tailscale.com/download/linux"
+        echo "       (they add the pkgs.tailscale.com repo, gpgcheck on), then:"
+        echo "         sudo dnf install tailscale"
+      else
+        echo ""
+        echo "       No supported package manager found here — see"
+        echo "         https://tailscale.com/download"
+      fi
+      echo ""
+      echo "       Afterwards:  ./scripts/setup-tailscale.sh   (it is idempotent)"
+    } >&2
     exit 1
   fi
 else

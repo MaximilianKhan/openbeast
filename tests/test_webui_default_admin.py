@@ -425,6 +425,32 @@ def test_tailscale_does_not_persist_inference_ack_when_gated(ts_rig):
     assert "ALLOW_OPEN_INFERENCE" not in ts_rig.conf.read_text()
 
 
+@pytest.mark.parametrize("pm,hint", [("apt-get", "sudo apt-get install tailscale"),
+                                     ("dnf", "sudo dnf install tailscale"),
+                                     (None, "https://tailscale.com/download")])
+def test_tailscale_missing_prints_steps_and_never_pipes_an_installer(rig, pm, hint):
+    """2026-10-09 review, supply S9: on apt/dnf systems the script ran
+    `curl https://tailscale.com/install.sh | sh` — an unverified remote
+    script, as root. It now prints the signed-repo steps and stops.
+
+    PATH holds ONLY stubs (no /usr/bin): this box may have a real tailscale
+    or pacman, and neither may be reached. Everything the script does before
+    the install step is a bash builtin."""
+    only = rig.tmp / "onlybin"
+    only.mkdir()
+    rec = rig.tmp / "ran.log"
+    stub = f'#!/bin/bash\necho "$(basename "$0") $*" >> "{rec}"\nexit 0\n'
+    for name in ("curl", "sudo", "sh", "systemctl") + ((pm,) if pm else ()):
+        _write_exec(only / name, stub)
+    p = subprocess.run(["/bin/bash", str(rig.root / "scripts" / "setup-tailscale.sh")],
+                       env={"PATH": str(only), "HOME": str(rig.tmp)},
+                       capture_output=True, text=True, timeout=60)
+    assert p.returncode == 1, p.stdout + p.stderr
+    assert "does not pipe a" in p.stderr and hint in p.stderr
+    assert "re-run this script" in p.stderr
+    assert not rec.exists(), f"something was executed: {rec.read_text()}"
+
+
 def test_tailscale_help_prints_the_whole_header(ts_rig):
     p = ts_rig.run("setup-tailscale.sh", "--help")
     assert p.returncode == 0
