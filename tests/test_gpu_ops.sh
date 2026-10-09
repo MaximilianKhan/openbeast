@@ -475,6 +475,97 @@ fi
 
 # ===========================================================================
 echo ""
+echo "update.sh --llama — moves the llama.cpp pin, and only to a built upstream commit:"
+# ===========================================================================
+# scripts/llama.cpp.ref is what bootstrap.sh checks out. --llama is the bump:
+# it may rewrite the pin only to a commit that was just pulled from upstream
+# AND produced a llama-server. The git stub keeps HEAD / FETCH_HEAD in files;
+# a successful pull fast-forwards HEAD to "upstream".
+_OLD="$(printf '1%.0s' {1..40})"; _NEW="$(printf '2%.0s' {1..40})"; _LOCAL="$(printf '3%.0s' {1..40})"
+cat > "$T/binu/git" <<'STUB'
+#!/bin/bash
+S="$OB_STUB_STATE"
+echo "git $*" >> "$S/git.log"
+case " $* " in
+  *" rev-parse --short HEAD "*) head -c 7 "$S/llama_head"; echo ;;
+  *" rev-parse FETCH_HEAD "*)   cat "$S/llama_fetch_head" ;;
+  *" rev-parse HEAD "*)         cat "$S/llama_head" ;;
+  *" symbolic-ref "*)           [[ ! -f "$S/llama_detached" ]] || exit 1 ;;
+  *" pull "*)
+    if [[ -f "$S/llama_pull_fails" ]]; then echo "fatal: unable to access 'https://x/': Could not resolve host: x" >&2; exit 1; fi
+    cp "$S/llama_upstream" "$S/llama_fetch_head"
+    [[ -f "$S/llama_local_commit" ]] || cp "$S/llama_upstream" "$S/llama_head" ;;
+esac
+exit 0
+STUB
+chmod +x "$T/binu/git"
+pin_now() { sed -n 's/^LLAMA_CPP_REF=//p' "$SBU/scripts/llama.cpp.ref"; }
+pin_case() {             # pin_case [state-flag...] : reset to "pin + HEAD at OLD, upstream at NEW"
+  rm -f "$T/state"/llama_*; local f
+  echo "$_OLD" > "$T/state/llama_head"; echo "$_OLD" > "$T/state/llama_fetch_head"; echo "$_NEW" > "$T/state/llama_upstream"
+  for f in "$@"; do : > "$T/state/$f"; done
+  printf '# the pin\nLLAMA_CPP_REF=%s\n' "$_OLD" > "$SBU/scripts/llama.cpp.ref"
+  printf '#!/bin/bash\n' > "$SBU/llama.cpp/build/bin/llama-server"; chmod +x "$SBU/llama.cpp/build/bin/llama-server"
+}
+# (the cmake stub in force is the last one above: every build SUCCEEDS)
+pin_case; UPDB --llama
+if [[ $_rc -eq 0 && "$(pin_now)" == "$_NEW" ]] && has "$_out" "pinned llama.cpp -> ${_NEW:0:12}" \
+   && has "$(cat "$SBU/scripts/llama.cpp.ref")" "# the pin"; then
+  pass "a pull that moved upstream AND rebuilt rewrites LLAMA_CPP_REF in place (the file's comments survive)"
+else
+  fail "pin not moved after a good update (rc=$_rc pin=$(pin_now)): $_out"
+fi
+UPDB --llama
+if [[ $_rc -eq 0 && "$(pin_now)" == "$_NEW" ]] && ! has "$_out" "pinned llama.cpp ->"; then
+  pass "negative control: already at the pin — nothing is rewritten or announced"
+else
+  fail "second run (rc=$_rc pin=$(pin_now)): $_out"
+fi
+# The rebuild fails: the engine rolls back, and the pin must not name a commit
+# that never produced a llama-server.
+cat > "$T/binu/cmake" <<STUB
+#!/bin/bash
+[[ " \$* " == *" --build "* ]] && exit 2
+exit 0
+STUB
+pin_case; UPDB --llama
+if [[ $_rc -ne 0 && "$(pin_now)" == "$_OLD" ]]; then
+  pass "a failed rebuild leaves the pin where it was"
+else
+  fail "pin after a failed rebuild (rc=$_rc pin=$(pin_now)): $_out"
+fi
+cat > "$T/binu/cmake" <<STUB
+#!/bin/bash
+if [[ " \$* " == *" --build "* ]]; then
+  printf '#!/bin/bash\n# new-bin\n' > "$SBU/llama.cpp/build/bin/llama-server"; chmod +x "$SBU/llama.cpp/build/bin/llama-server"
+fi
+exit 0
+STUB
+# A hand-pinned (detached) checkout is rebuilt as-is and is not upstream's tip.
+pin_case llama_detached; UPDB --llama --force
+if [[ $_rc -eq 0 && "$(pin_now)" == "$_OLD" && "$(pulls)" == 0 ]]; then
+  pass "a detached HEAD (the user's own pin) is built as-is and never written into the pin file"
+else
+  fail "detached HEAD (rc=$_rc pin=$(pin_now) pulls=$(pulls)): $_out"
+fi
+# The remote is unreachable: what gets rebuilt is whatever was checked out.
+pin_case llama_pull_fails; echo "$_LOCAL" > "$T/state/llama_head"; UPDB --llama --force
+if [[ $_rc -eq 0 && "$(pin_now)" == "$_OLD" ]] && has "$_out" "NOT a local problem"; then
+  pass "an unreachable remote rebuilds the checked-out revision and does not pin it"
+else
+  fail "unreachable remote (rc=$_rc pin=$(pin_now)): $_out"
+fi
+# Local commits on top of upstream: `pull --ff-only` says "up to date" (rc 0).
+pin_case llama_local_commit; echo "$_LOCAL" > "$T/state/llama_head"; UPDB --llama --force
+if [[ $_rc -eq 0 && "$(pin_now)" == "$_OLD" ]] && has "$_out" "was NOT moved"; then
+  pass "a HEAD that is not the commit just pulled (local commits) is never pinned, and it says so"
+else
+  fail "local commit (rc=$_rc pin=$(pin_now)): $_out"
+fi
+rm -f "$T/state"/llama_*
+
+# ===========================================================================
+echo ""
 echo "update.sh --images — a bundle-installed compose is re-pinned, never silently skipped:"
 # ===========================================================================
 D_OW="sha256:$(printf 'a%.0s' $(seq 1 64))"

@@ -1334,6 +1334,118 @@ else
   fi
 fi
 
+# ===========================================================================
+echo ""
+echo "15. bootstrap.sh — llama.cpp is fetched at the PINNED commit:"
+# ===========================================================================
+# The engine was the one artifact taken as "whatever upstream master is
+# today". bootstrap's build step is lifted out between its section markers and
+# run against a git stub that records every call and keeps "HEAD" in a file,
+# and a cmake stub that "builds" llama-server. Nothing is cloned or compiled.
+_lsec="$(sed -n '/^# ---- 2\. build llama\.cpp/,/^# Persist the resolved backend/p' "$REPO_DIR/bootstrap.sh" | sed '$d')"
+if has "$_lsec" "llama.cpp.ref" && has "$_lsec" "cmake --build"; then
+  pass "extracted bootstrap's llama.cpp step ($(wc -l <<< "$_lsec") lines)"
+else
+  fail "could not extract bootstrap's llama.cpp step — its section markers moved"
+fi
+LR="$T/repo_llama"; mkdir -p "$LR/scripts" "$T/binl"
+{
+  echo 'set -euo pipefail'
+  echo 'step() { echo "==> $*"; }; ok() { echo "OK: $*"; }; warn() { echo "WARN: $*"; }'
+  echo 'die() { echo "DIE: $*" >&2; exit 1; }; ob_offline() { return 1; }'
+  echo 'OB_BACKEND=cpu; GPU_BACKEND=cpu; ob_cmake_flags() { echo ""; }'
+  echo "$_lsec"
+  echo 'echo HARNESS-REACHED-END'
+} > "$T/bootstrap_llama_step.sh"
+cat > "$T/binl/git" <<'STUB'
+#!/bin/bash
+S="$OB_STUB_STATE"; D="$OB_LLAMA_DIR"
+echo "git $*" >> "$S/gitl.log"
+case " $* " in
+  *" init "*)            mkdir -p "$D/.git" ;;
+  *" remote get-url "*)  [[ -f "$D/.git/origin" ]] || exit 1 ;;
+  *" remote add "*)      : > "$D/.git/origin" ;;
+  *" fetch "*)           [[ ! -f "$S/l_fetch_fails" ]] || { echo "fatal: unable to access: Could not resolve host" >&2; exit 128; }
+                         echo "${@: -1}" > "$D/.git/FETCHED" ;;
+  *" checkout "*)        # what the remote handed over becomes HEAD (a lying remote hands over l_served)
+                         if [[ -f "$S/l_served" ]]; then cp "$S/l_served" "$D/.git/HEADSHA"; else cp "$D/.git/FETCHED" "$D/.git/HEADSHA"; fi
+                         : > "$D/CMakeLists.txt" ;;
+  *" rev-parse "*)       [[ -f "$D/.git/HEADSHA" ]] || exit 1; cat "$D/.git/HEADSHA" ;;
+  *" clone "*)           mkdir -p "$D/.git"; echo "$(printf 'f%.0s' {1..40})" > "$D/.git/HEADSHA"; : > "$D/CMakeLists.txt" ;;
+esac
+exit 0
+STUB
+cat > "$T/binl/cmake" <<'STUB'
+#!/bin/bash
+echo "cmake $*" >> "$OB_STUB_STATE/gitl.log"
+if [[ " $* " == *" --build "* ]]; then
+  mkdir -p "$OB_LLAMA_DIR/build/bin"; printf '#!/bin/bash\n' > "$OB_LLAMA_DIR/build/bin/llama-server"; chmod +x "$OB_LLAMA_DIR/build/bin/llama-server"
+fi
+exit 0
+STUB
+chmod +x "$T/binl/git" "$T/binl/cmake"
+_PIN="$(printf '7%.0s' {1..40})"; _OTHER="$(printf '8%.0s' {1..40})"
+llama_fresh() { rm -rf "$LR/llama.cpp" "$T/state"/l_*; printf '# why\nLLAMA_CPP_REF=%s\n' "$_PIN" > "$LR/scripts/llama.cpp.ref"; }
+run_lstep() { : > "$T/state/gitl.log"; _out="$(env PATH="$T/binl:$PATH" REPO_DIR="$LR" OB_LLAMA_DIR="$LR/llama.cpp" bash "$T/bootstrap_llama_step.sh" 2>&1)"; _rc=$?; }
+n_git() { count_lines "$T/state/gitl.log" "$1"; }
+
+llama_fresh; run_lstep
+if [[ $_rc -eq 0 && "$(n_git " fetch -q --depth 1 origin $_PIN")" == "1" && "$(n_git " clone ")" == "0" ]] \
+   && [[ "$(cat "$LR/llama.cpp/.git/HEADSHA")" == "$_PIN" ]] && has "$_out" "pinned commit ${_PIN:0:12}" \
+   && has "$_out" "HARNESS-REACHED-END"; then
+  pass "a fresh install fetches exactly the commit in scripts/llama.cpp.ref — never a clone of master"
+else
+  fail "pinned fetch (rc=$_rc fetch=$(n_git ' fetch ') clone=$(n_git ' clone ')): $_out :: $(cat "$T/state/gitl.log")"
+fi
+if [[ "$(n_git " checkout -q -B master FETCH_HEAD")" == "1" ]]; then
+  pass "…onto a branch named master, so update.sh --llama can pull it (a detached HEAD means 'hand-pinned' there)"
+else
+  fail "pinned checkout is not on a master branch: $(cat "$T/state/gitl.log")"
+fi
+# A remote that hands over a DIFFERENT commit than the one asked for.
+llama_fresh; echo "$_OTHER" > "$T/state/l_served"; run_lstep
+if [[ $_rc -ne 0 && "$(n_git "cmake ")" == "0" ]] && has "$_out" "could not fetch llama.cpp at the pinned commit"; then
+  pass "a checkout that is not the pinned commit is fatal BEFORE anything is compiled"
+else
+  fail "wrong commit served (rc=$_rc cmake=$(n_git 'cmake ')): $_out"
+fi
+# An interrupted fetch leaves a .git with no commit; the re-run must finish it.
+llama_fresh; : > "$T/state/l_fetch_fails"; run_lstep
+if [[ $_rc -ne 0 && -d "$LR/llama.cpp/.git" && "$(n_git "cmake ")" == "0" ]] && has "$_out" "Could not resolve host"; then
+  pass "a failed fetch dies with git's own message and compiles nothing"
+else
+  fail "failed fetch (rc=$_rc): $_out"
+fi
+rm -f "$T/state/l_fetch_fails"; run_lstep
+if [[ $_rc -eq 0 && "$(n_git " fetch -q --depth 1 origin $_PIN")" == "1" && "$(n_git " init ")" == "0" ]] \
+   && [[ "$(cat "$LR/llama.cpp/.git/HEADSHA")" == "$_PIN" ]]; then
+  pass "re-running after that failure finishes the pinned fetch (a commit-less .git is not mistaken for a clone)"
+else
+  fail "resume after a failed fetch (rc=$_rc): $_out :: $(cat "$T/state/gitl.log")"
+fi
+# An EXISTING clone somewhere else is somebody's tree: built as it stands.
+llama_fresh; mkdir -p "$LR/llama.cpp/.git"; echo "$_OTHER" > "$LR/llama.cpp/.git/HEADSHA"; : > "$LR/llama.cpp/CMakeLists.txt"; run_lstep
+if [[ $_rc -eq 0 && "$(n_git " fetch ")" == "0" && "$(n_git " checkout ")" == "0" ]] \
+   && has "$_out" "not the pinned ${_PIN:0:12}" && [[ "$(cat "$LR/llama.cpp/.git/HEADSHA")" == "$_OTHER" ]]; then
+  pass "an existing clone at another commit is never moved: built as-is, with a warning naming both commits"
+else
+  fail "existing clone (rc=$_rc): $_out :: $(cat "$T/state/gitl.log")"
+fi
+# NEGATIVE CONTROL: no usable pin = the old behaviour, and it must be LOUD.
+llama_fresh; echo 'LLAMA_CPP_REF=master' > "$LR/scripts/llama.cpp.ref"; run_lstep
+if [[ $_rc -eq 0 && "$(n_git " clone --depth 1 ")" == "1" && "$(n_git " fetch ")" == "0" ]] && has "$_out" "NO llama.cpp PIN"; then
+  pass "negative control: a pin that is not a 40-hex commit (a branch name) is not used — unpinned clone, loud warning"
+else
+  fail "unusable pin (rc=$_rc): $_out :: $(cat "$T/state/gitl.log")"
+fi
+# The committed pin itself: one full commit id, nothing movable.
+if [[ "$(grep -cE '^LLAMA_CPP_REF=[0-9a-f]{40}$' "$REPO_DIR/scripts/llama.cpp.ref")" == "1" \
+      && "$(grep -c '^LLAMA_CPP_REF=' "$REPO_DIR/scripts/llama.cpp.ref")" == "1" ]]; then
+  pass "scripts/llama.cpp.ref commits exactly one 40-hex LLAMA_CPP_REF"
+else
+  fail "scripts/llama.cpp.ref does not hold exactly one 40-hex LLAMA_CPP_REF"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

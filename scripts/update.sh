@@ -70,9 +70,48 @@ update_llama() {
   local src="$REPO_DIR/llama.cpp" build="$REPO_DIR/llama.cpp/build"
   [[ -d "$src/.git" ]] || die "llama.cpp/ is not a git clone — run ./bootstrap.sh first"
 
+  # scripts/llama.cpp.ref pins the commit bootstrap.sh checks out (its header
+  # says why). --llama is the SANCTIONED bump, the same shape as --images:
+  # follow the moving ref (upstream master), then rewrite the pin to what is
+  # now built. Only ever to a commit that (a) was just pulled from upstream —
+  # never a local commit, and never the revision a hand-pinned detached HEAD
+  # or an unreachable remote left in place — and (b) produced a llama-server.
+  local pin_file="$REPO_DIR/scripts/llama.cpp.ref" pulled=0
+  _move_llama_pin() {
+    [[ $pulled -eq 1 ]] || return 0
+    local head tip pin
+    head="$(git -C "$src" rev-parse HEAD 2>/dev/null || true)"
+    tip="$(git -C "$src" rev-parse FETCH_HEAD 2>/dev/null || true)"
+    if [[ ! -f "$pin_file" ]]; then
+      warn "scripts/llama.cpp.ref is missing, so there is no pin to move and
+       ./bootstrap.sh will clone unpinned upstream master. Restore it:
+       git checkout -- scripts/llama.cpp.ref"
+      return 0
+    fi
+    if ! [[ "$head" =~ ^[0-9a-f]{40}$ ]] || [[ "$head" != "$tip" ]]; then
+      warn "llama.cpp/ is not at the commit just pulled from upstream (local
+       commits?), so the pin in scripts/llama.cpp.ref was NOT moved."
+      return 0
+    fi
+    pin="$(sed -nE 's/^LLAMA_CPP_REF=([0-9a-f]{40})[[:space:]]*$/\1/p' "$pin_file" | tail -n1 || true)"
+    [[ "$pin" != "$head" ]] || return 0
+    if grep -qE '^LLAMA_CPP_REF=' "$pin_file"; then
+      sed -i -E "s|^LLAMA_CPP_REF=.*|LLAMA_CPP_REF=$head|" "$pin_file"
+    else
+      echo "LLAMA_CPP_REF=$head" >> "$pin_file"
+    fi
+    ok "pinned llama.cpp -> ${head:0:12} (was ${pin:0:12}${pin:+, }scripts/llama.cpp.ref)"
+    warn "scripts/llama.cpp.ref changed: it is what a fresh ./bootstrap.sh builds.
+       Smoke-test the stack on this engine before that change goes anywhere."
+  }
+
   local before after
   before=$(git -C "$src" rev-parse --short HEAD)
   if [[ $CHECK_ONLY -eq 1 ]]; then
+    local pinned
+    pinned="$(sed -nE 's/^LLAMA_CPP_REF=([0-9a-f]{40})[[:space:]]*$/\1/p' "$pin_file" 2>/dev/null | tail -n1 || true)"
+    pinned="${pinned:0:12}"
+    ok "pinned for fresh installs: ${pinned:-none — scripts/llama.cpp.ref is missing or unreadable}"
     # OFFLINE: --check compares against a remote. Report what is on disk and
     # say why there is nothing to compare to, rather than burning a connect
     # timeout to print "?" commits behind.
@@ -149,6 +188,7 @@ update_llama() {
     local pull_out rc=0
     pull_out="$(git -C "$src" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 \
                     pull --ff-only origin master 2>&1)" || rc=$?
+    [[ $rc -eq 0 ]] && pulled=1
     if [[ $rc -ne 0 ]]; then
       if grep -qiE 'could not resolve host|unable to access|connection (timed out|refused|reset)|network is unreachable|failed to connect|no route to host|operation timed out|operation too slow|rpc failed|early eof|remote end hung up|unexpected disconnect|temporary failure in name resolution' <<< "$pull_out"; then
         warn "cannot reach the llama.cpp remote — NOT a local problem"
@@ -173,6 +213,7 @@ update_llama() {
   if [[ "$before" == "$after" && -x "$build/bin/llama-server" \
         && ${FORCE_REBUILD:-0} -eq 0 ]]; then
     ok "already up to date ($before) and built — skipping rebuild"
+    _move_llama_pin
     return 0
   fi
   ok "updated $before → $after"
@@ -227,6 +268,7 @@ update_llama() {
   fi
   rm -rf -- "$snap"
   ok "rebuilt llama-server ($after)"
+  _move_llama_pin
   warn "a running llama-server keeps the OLD binary until restarted"
 }
 

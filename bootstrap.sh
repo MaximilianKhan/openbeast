@@ -395,8 +395,44 @@ else
   # install, set OFFLINE=true, ./bootstrap.sh — died on "there is no
   # llama.cpp/ tree to build" with the tree sitting right there. Two features
   # of mine that were each tested alone and never together.
-  if [[ -d "$REPO_DIR/llama.cpp/.git" ]]; then
-    :                                   # a clone: the normal case
+  #
+  # WHICH llama.cpp. scripts/llama.cpp.ref pins the commit (its header says
+  # why); a fresh install fetches exactly that one. An EXISTING clone is never
+  # moved from here — it may be a tree someone is working in — so one that is
+  # somewhere else is built as it stands, and says so.
+  LLAMA_CPP_URL="https://github.com/ggml-org/llama.cpp.git"
+  LLAMA_CPP_REF="$(sed -nE 's/^LLAMA_CPP_REF=([0-9a-f]{40})[[:space:]]*$/\1/p' \
+                     "$REPO_DIR/scripts/llama.cpp.ref" 2>/dev/null | tail -n1 || true)"
+  ob_fetch_llama_pin() {
+    local d="$REPO_DIR/llama.cpp"
+    # Built up step by step (a clone cannot be asked for a commit), and every
+    # step is safe to repeat: an interrupted fetch leaves a .git with no
+    # commit, which the next run must finish rather than mistake for a clone.
+    [[ -d "$d/.git" ]] || git -c init.defaultBranch=master init -q "$d" || return 1
+    git -C "$d" remote get-url origin >/dev/null 2>&1 \
+      || git -C "$d" remote add -t master origin "$LLAMA_CPP_URL" || return 1
+    git -C "$d" fetch -q --depth 1 origin "$LLAMA_CPP_REF" || return 1
+    # On a branch named master that tracks origin's, exactly what the old
+    # `clone --depth 1` left: scripts/update.sh --llama pulls into a branch and
+    # reads a DETACHED head as "the user pinned this by hand, leave it".
+    git -C "$d" checkout -q -B master FETCH_HEAD || return 1
+    git -C "$d" config branch.master.remote origin
+    git -C "$d" config branch.master.merge refs/heads/master
+    [[ "$(git -C "$d" rev-parse HEAD 2>/dev/null)" == "$LLAMA_CPP_REF" ]]
+  }
+  _ob_llama_head=""
+  [[ -d "$REPO_DIR/llama.cpp/.git" ]] \
+    && _ob_llama_head="$(git -C "$REPO_DIR/llama.cpp" rev-parse -q --verify 'HEAD^{commit}' 2>/dev/null || true)"
+  if [[ -n "$_ob_llama_head" ]]; then
+    # a clone with a commit checked out: the normal re-run
+    if [[ -z "$LLAMA_CPP_REF" || "$_ob_llama_head" == "$LLAMA_CPP_REF" ]]; then
+      :
+    else
+      warn "llama.cpp/ is at ${_ob_llama_head:0:12}, not the pinned ${LLAMA_CPP_REF:0:12}
+      (scripts/llama.cpp.ref) — building what is checked out; an existing
+      clone is never moved from here. For the pinned engine instead:
+        rm -rf llama.cpp && ./bootstrap.sh"
+    fi
   elif [[ -f "$REPO_DIR/llama.cpp/CMakeLists.txt" ]]; then
     ok "llama.cpp SOURCE tree present without git history (a bundle install
       or a tarball) — building it as-is. NOTE: scripts/update.sh --llama wants
@@ -410,8 +446,21 @@ else
        or by hand: git clone --depth 1 https://github.com/ggml-org/llama.cpp.git
        into $REPO_DIR/llama.cpp (a source tarball is enough — this build
        needs the SOURCE, not the history). Then re-run."
+  elif [[ -n "$LLAMA_CPP_REF" ]]; then
+    ob_fetch_llama_pin || die "could not fetch llama.cpp at the pinned commit
+       $LLAMA_CPP_REF (scripts/llama.cpp.ref) from
+       $LLAMA_CPP_URL — git's message is above.
+       Usually the network: check it and re-run ./bootstrap.sh. If
+       upstream no longer has that commit, the pin needs moving:
+       ./scripts/update.sh --llama on a box that builds, then commit the file."
+    ok "llama.cpp at the pinned commit ${LLAMA_CPP_REF:0:12} (scripts/llama.cpp.ref)"
   else
-    git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$REPO_DIR/llama.cpp"
+    warn "NO llama.cpp PIN: scripts/llama.cpp.ref is missing or does not hold a
+      40-hex LLAMA_CPP_REF, so this clones whatever upstream master is right
+      now — unreviewed code, compiled and run as you. Restore the file
+      (git checkout -- scripts/llama.cpp.ref) to build the engine OpenBeast
+      was tested with."
+    git clone --depth 1 "$LLAMA_CPP_URL" "$REPO_DIR/llama.cpp"
   fi
   # $CMAKE_FLAGS is deliberately unquoted — it's a flag list.
   cmake -S "$REPO_DIR/llama.cpp" -B "$REPO_DIR/llama.cpp/build" \
