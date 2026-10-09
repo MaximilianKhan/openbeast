@@ -301,7 +301,10 @@ if grep -q "vLLM ready at $_S/vllm" <<< "$_O"; then
 else
   fail "vLLM readiness in start.sh: $(tail -n 5 <<< "$_O")"
 fi
-grep -q "KV-cache warming: not applicable" <<< "$_O" && pass "KV warming prints 'not applicable'" || fail "no KV warming n/a line"
+# (The KV warm-up is gone for every backend — perf F5, 2026-10-09 — and its
+# "not applicable" line with it.)
+grep -qi "KV.cache warm" <<< "$_O" && fail "start.sh still talks about KV-cache warming" \
+  || pass "no KV warm-up is attempted or announced against a server this stack does not run"
 grep -q "identity tool server" <<< "$_O" && pass "…and goes on to bring up the tool server" || fail "stopped before the tool server"
 grep -q serve-marker "$_R/calls.log" && fail "serve script executed on the ready path" \
   || pass "still nothing launched on the ready path"

@@ -1,26 +1,34 @@
 #!/bin/bash
 # Start the full OpenBeast stack:
-#   1. llama.cpp server (Qwen3.6-27B Uncensored Q5_K_P by default — uncensored fine-tune, 96.16%)
-#   2. MCPO proxy (wraps MCP tools as OpenAPI on http://localhost:3001)
-#   3. Open WebUI (http://localhost:3000)
+#   1. llama.cpp server on http://localhost:8080 — by default the Qwen3.8 27B
+#      Uncensored MTP Q5_K_M (serve-qwen38-27b-uncensored-mtp-q5.sh; set
+#      SERVE_SCRIPT in openbeast.conf, or name a serve script, for another)
+#   2. Tool server on http://localhost:3001 (agents/openapi_tools.py: the
+#      model's tools as OpenAPI for Open WebUI, per-user identity + audit)
+#   3. Open WebUI on http://localhost:3000 and SearXNG (web search) on :8888
 #
 # Usage:
 #   ./start.sh                     # foreground (Ctrl+C stops the stack)
 #   ./start.sh -d                  # background daemon: returns when ready,
 #                                  #   stack keeps running; stop with ./stop.sh
-#   ./start.sh --status            # what's running (pids); health details via
-#                                  #   ./scripts/healthcheck.sh
+#   ./start.sh status              # what's running (pids); health details via
+#                                  #   ./scripts/healthcheck.sh (also --status)
+#   ./start.sh stop                # stop the stack (same as ./stop.sh)
+#   ./start.sh restart             # ./stop.sh, then start in the background
 #   ./start.sh doctor              # diagnose config/security/service health
 #                                  #   (fix-list; also ./scripts/doctor.sh)
-#   ./start.sh serve-qwen-27b-q5.sh    # specific model (combines with -d)
+#   ./start.sh help                # this text (also -h, --help)
+#   ./start.sh serve-qwen-27b-q5.sh    # specific model (combines with -d);
+#                                  #   the choices: ls scripts/serve-*.sh
 #
 # Daemon mode runs inside a memory-capped systemd scope when available
-# (MemoryMax=96G, swap 8G) so a runaway process can only take down the
-# stack — never the box. On OOM the supervisor shuts down what remains
-# gracefully. Logs: .run/stack.log; pidfiles: .run/*.pid.
+# (MEM_LIMIT_PCT of this machine's RAM — default 75% — plus 8G swap) so a
+# runaway process can only take down the stack — never the box. On OOM the
+# supervisor shuts down what remains gracefully. Logs: .run/stack.log;
+# pidfiles: .run/*.pid.
 #
 # OpenCode connects to the MCP server via stdio (configured in opencode.json),
-# so it doesn't need MCPO — just run `opencode` in any project.
+# so it doesn't need the tool server — just run `opencode` in this checkout.
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -28,18 +36,70 @@ REPO_DIR="$SCRIPT_DIR"
 RUN_DIR="$REPO_DIR/.run"
 SUP_PID_FILE="$RUN_DIR/supervisor.pid"
 
-DAEMON=0; STATUS=0; DAEMONIZED=0; SERVE_SCRIPT=""
+# The header above IS the help text: everything up to the first non-comment
+# line (a fixed line range went stale every time the header grew).
+usage() { awk 'NR > 1 && !/^#/ {exit} NR > 1 {sub(/^# ?/, ""); print}' "$0"; }
+
+# A bare word is a command or a serve script. It used to be a serve script
+# whatever it said, so `./start.sh status` answered "scripts/status not found
+# or not executable" and `./start.sh stop` did the same instead of stopping.
+_unknown_command() {
+  local w="$1" c hint=""
+  case "$w" in
+    start|up|run) hint=" — starting is the default: ./start.sh (foreground) or ./start.sh -d" ;;
+    down|kill)    hint=" — did you mean: ./start.sh stop" ;;
+    *)
+      # Nearest command: the same first three letters (stat, sto, restrat…).
+      for c in status stop restart doctor help; do
+        [[ ${#w} -ge 3 && "${c:0:3}" == "${w:0:3}" ]] && { hint=" — did you mean: ./start.sh $c"; break; }
+      done ;;
+  esac
+  echo "Unknown command '$w'$hint" >&2
+  echo "  Commands: status | stop | restart | doctor | help   (flags: -d, --status, --help)" >&2
+  echo "  A model is named by its serve script: ls scripts/serve-*.sh" >&2
+  exit 2
+}
+
+DAEMON=0; STATUS=0; DAEMONIZED=0; RESTART=0; SERVE_SCRIPT=""
 for arg in "$@"; do
   case "$arg" in
     -d|--daemon)   DAEMON=1 ;;
-    --status)      STATUS=1 ;;
+    --status|status) STATUS=1 ;;
     doctor)        exec "$SCRIPT_DIR/scripts/doctor.sh" ;;   # health/consistency report
+    stop)          exec "$SCRIPT_DIR/stop.sh" ;;
+    restart)       RESTART=1; DAEMON=1 ;;
     --_daemonized) DAEMONIZED=1 ;;   # internal: this process IS the detached supervisor
-    -h|--help)     sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help|help) usage; exit 0 ;;
     -*)            echo "Unknown option: $arg (see --help)" >&2; exit 2 ;;
-    *)             SERVE_SCRIPT="$arg" ;;
+    *)
+      # A serve script: an executable in scripts/, or anything spelled like a
+      # script (so a mistyped name still gets the "not found" error below).
+      if [[ "$arg" == *.sh || ( -f "$SCRIPT_DIR/scripts/$arg" && -x "$SCRIPT_DIR/scripts/$arg" ) ]]; then
+        SERVE_SCRIPT="$arg"
+      else
+        _unknown_command "$arg"
+      fi ;;
   esac
 done
+# Not as root — and before conf.sh is sourced, because sourcing it can already
+# create openbeast.conf. A newcomer blocked by docker permissions reaches for
+# sudo; the start then leaves a root-owned conf (mode 600), .run/ and files
+# dir behind, and the next ./start.sh as the user cannot read its own config.
+# `id -u`, not $EUID: bash makes EUID read-only, so a test could not set it.
+if [[ "$(id -u)" -eq 0 ]]; then
+  echo "Error: do not run ./start.sh as root (or with sudo)." >&2
+  echo "  OpenBeast lives in your user account: openbeast.conf, .run/, the Python" >&2
+  echo "  packages and the weights. A root start leaves root-owned copies behind that" >&2
+  echo "  a later ./start.sh as you cannot read. Run it again as your normal user." >&2
+  echo "  If sudo was for docker: sudo usermod -aG docker <your-user>, then log out and in." >&2
+  exit 1
+fi
+if [[ $RESTART -eq 1 && $STATUS -eq 0 ]]; then
+  # stop.sh marks the stop as on purpose; the start below clears the marker.
+  OPENBEAST_STOP_REASON="./start.sh restart" "$SCRIPT_DIR/stop.sh" \
+    || { echo "Error: ./stop.sh failed — not starting on top of a half-stopped stack." >&2; exit 1; }
+  echo ""
+fi
 source "$SCRIPT_DIR/scripts/lib/proc.sh"   # ob_recorded_pid_ours, ob_pid_record, ob_ext_reap
 _pid_alive() { # _pid_alive <pidfile> [cmdline-pattern]
   # Alive AND identity-checked: a stale pidfile whose PID was recycled by an
@@ -81,6 +141,9 @@ if [[ $STATUS -eq 1 ]]; then
   [[ "${HYDRA:-false}" == "true" ]] && _st_names+=(hydra)
   [[ "${INSTINCT_SCORER:-false}" == "true" ]] && _st_names+=(instinct-scorer)
   [[ "${INSTINCT:-false}" == "true" ]] && _st_names+=(instinct)
+  # The row label; the tool server's pidfile kept the name of the proxy it
+  # replaced (mcpo.pid), which is not something to show a user.
+  _st_label() { if [[ "$1" == mcpo ]]; then echo "tool server"; else echo "$1"; fi; }
   for name in "${_st_names[@]}"; do
     if [[ $name == llama && $_st_managed -eq 0 ]]; then
       if ob_backend_ready "$INFERENCE_URL"; then
@@ -92,9 +155,9 @@ if [[ $STATUS -eq 1 ]]; then
     fi
     f="$RUN_DIR/$name.pid"
     if _pid_alive "$f" "$(_pid_pattern "$name")"; then
-      echo "  $name: running (pid $(cat "$f"))"
+      echo "  $(_st_label "$name"): running (pid $(cat "$f"))"
     else
-      echo "  $name: not running"
+      echo "  $(_st_label "$name"): not running"
     fi
   done
   if [[ "${HYDRA:-false}" == "true" ]] && declare -F ob_hydra_ready >/dev/null 2>&1; then
@@ -111,6 +174,21 @@ if [[ $STATUS -eq 1 ]]; then
   exit 0
 fi
 
+# The secret overrides the CALLER exported (ENV:CONF-KEY pairs), noted before
+# conf.sh runs — it exports its own OPENBEAST_API_KEY & co. from the conf
+# file, after which "who set this" can no longer be told. Used by the -d
+# launcher, which cannot forward them. Every secret conf.sh takes from the
+# environment belongs in this list.
+_CALLER_SECRET_ENV=""
+for _v in OPENBEAST_API_KEY:LLAMA_API_KEY OPENBEAST_MCPO_ADMIN_KEY:MCPO_ADMIN_KEY \
+          OPENBEAST_MCPO_GUEST_KEY:MCPO_GUEST_KEY OPENBEAST_IDENTITY_JWT_SECRET:IDENTITY_JWT_SECRET \
+          OPENBEAST_SEARXNG_SECRET:SEARXNG_SECRET OPENBEAST_CHAT_NOTIFY_URL:CHAT_NOTIFY_URL \
+          WEBUI_ADMIN_PASSWORD:WEBUI_ADMIN_PASSWORD; do
+  _e="${_v%%:*}"
+  [[ -n "${!_e:-}" ]] && _CALLER_SECRET_ENV+=" $_v"
+done
+unset _v _e
+
 # BIND_HOST (default 127.0.0.1 — loopback-only; remote devices come in via
 # Tailscale Serve, see scripts/setup-tailscale.sh). lib/conf.sh also exports
 # OPENBEAST_BIND / OPENBEAST_API_KEY for docker-compose interpolation, and
@@ -122,6 +200,38 @@ source "$SCRIPT_DIR/scripts/lib/backend.sh"      # ob_backend_ready, ob_inferenc
 source "$SCRIPT_DIR/scripts/lib/curl_auth.sh"    # ob_curl_hdr: tokens never on argv
 source "$SCRIPT_DIR/scripts/lib/portown.sh"      # ob_port_listening, ob_pid_owns_port
 SERVE_SCRIPT="${SERVE_SCRIPT:-$DEFAULT_SERVE_SCRIPT}"
+
+# _port_busy <host> <port> — 0 when something accepts a TCP connection there,
+# i.e. a server of ours told to bind that address would lose the bind. A
+# connect, not `ss`: it asks about the ADDRESS this stack binds (a sibling on
+# another loopback address is no conflict) and sees a holder of any user.
+_port_busy() {
+  local h="${1#[}"; h="${h%]}"
+  timeout 2 bash -c 'exec 3<>"/dev/tcp/$0/$1"' "$h" "$2" 2>/dev/null
+}
+# _port_holder <port> — "pid N (command line)" of whoever listens on <port>,
+# for an error message. Empty when it cannot be named (another user's
+# process, or no ss / lsof / /proc on this box).
+_port_holder() {
+  local p cmd out=""
+  while read -r p; do
+    [[ "$p" =~ ^[0-9]+$ ]] || continue
+    # (braces: a failed `<` is reported by the shell itself, before a
+    # trailing 2>/dev/null on the same command would apply)
+    cmd="$({ tr '\0' ' ' < "/proc/$p/cmdline"; } 2>/dev/null || ps -o command= -p "$p" 2>/dev/null || true)"
+    cmd="${cmd% }"; [[ ${#cmd} -gt 90 ]] && cmd="${cmd:0:87}..."
+    out+="${out:+, }pid $p${cmd:+ ($cmd)}"
+  done < <(ob_port_pids "$1" 2>/dev/null || true)
+  printf '%s' "$out"
+}
+# _port_refuse <port> <service> — the one message for "that port is taken".
+_port_refuse() {
+  local holder; holder="$(_port_holder "$1")"
+  echo "Error: port $1 ($2) is already in use${holder:+ by $holder}." >&2
+  echo "  A leftover of this stack: ./stop.sh, then ./start.sh again." >&2
+  echo "  Anything else (a benchmark's server, another project): stop that process" >&2
+  echo "  first — find it with: ss -ltnp 'sport = :$1'" >&2
+}
 
 # _spawn_ready <label> <pidname> <port> <health-url> <cmd…>
 # Start one loopback helper server (beast-chat, beast-artifact) and wait for
@@ -135,7 +245,7 @@ SERVE_SCRIPT="${SERVE_SCRIPT:-$DEFAULT_SERVE_SCRIPT}"
 #      (and its pidfile is removed)
 #   2  the port was already held — nothing spawned, no pidfile written
 _spawn_ready() {
-  local label="$1" pidname="$2" port="$3" url="$4" holder _i _h own
+  local label="$1" pidname="$2" port="$3" url="$4" holder _t0 _h own
   shift 4
   SPAWN_PID=""
   if ob_port_listening "$port"; then
@@ -149,7 +259,11 @@ _spawn_ready() {
   "$@" &
   SPAWN_PID=$!
   echo "$SPAWN_PID" > "$RUN_DIR/$pidname.pid"
-  for _i in $(seq 1 20); do
+  # Poll every 0.2 s against a 20 s deadline. These loops used to probe once
+  # and then sleep a full second, so a server that is up in 0.4 s (the tool
+  # server) cost every boot a second per service for nothing.
+  _t0=$SECONDS
+  while (( SECONDS - _t0 < 20 )); do
     kill -0 "$SPAWN_PID" 2>/dev/null || break
     # -f plus a body match: a 400 used to count as "ready" (curl -s exits 0
     # on any HTTP status).
@@ -166,7 +280,7 @@ _spawn_ready() {
       # Something answered, but it is not the process we started: ours is
       # losing (or has lost) the bind. Keep looking; kill -0 ends the loop.
     fi
-    sleep 1
+    sleep 0.2
   done
   if ! kill -0 "$SPAWN_PID" 2>/dev/null; then
     if [[ -n "${_h:-}" ]]; then
@@ -188,6 +302,7 @@ ob_inference_managed || MANAGED=0
 
 if [[ $MANAGED -eq 1 && ! -x "$SCRIPT_DIR/scripts/$SERVE_SCRIPT" ]]; then
   echo "Error: scripts/$SERVE_SCRIPT not found or not executable" >&2
+  echo "  The serve scripts that ship: ls scripts/serve-*.sh" >&2
   exit 1
 fi
 
@@ -198,9 +313,12 @@ fi
 HEALTH_HOST="$(ob_probe_host "$BIND_HOST")"
 # INFERENCE_URL defaults to exactly http://$HEALTH_HOST:8080 (lib/conf.sh).
 LLAMA_BASE="$INFERENCE_URL"
+# The port our llama-server is probed on (and so must bind): from that URL.
+LLAMA_PORT="${LLAMA_BASE##*:}"; LLAMA_PORT="${LLAMA_PORT%%/*}"
+[[ "$LLAMA_PORT" =~ ^[0-9]+$ ]] || LLAMA_PORT=8080
 # Where the stack's own consumers (router, beast-gate) send inference:
 # beast-hydra when HYDRA=true, else exactly LLAMA_BASE. LLAMA_BASE keeps
-# meaning the local engine (readiness, KV warm-up, rollback).
+# meaning the local engine (readiness, rollback).
 # From THIS start's conf (HYDRA/HYDRA_URL), never an inherited export.
 CONSUMER_BASE="$LLAMA_BASE"
 [[ "${HYDRA:-false}" == "true" ]] && CONSUMER_BASE="$HYDRA_URL"
@@ -260,6 +378,97 @@ ensure_logrotate_timer() {
 }
 [[ $DAEMONIZED -eq 1 ]] || ensure_logrotate_timer
 
+# ---- preflight: refuse BEFORE the multi-minute model load, not after it ----
+# Run by the process the operator is looking at (the foreground start, or the
+# -d launcher), once it knows no stack of ours is already up. Not by the
+# detached supervisor: it is not a descendant of a lease holder that wrapped
+# the launcher, and its answer would land in stack.log, not on a terminal.
+preflight() {
+  _preflight_model
+  _preflight_ports
+}
+_preflight_model() {
+  [[ $MANAGED -eq 1 ]] || return 0     # no local model: no card, no port, of ours
+  # The GPU lease (scripts/gpu-lease.sh): a campaign that claimed the card is
+  # mid-measurement, and its llama-server sits on the very port ours needs.
+  # check: 0 = the lease wraps this caller, 3 = free, 4 = somebody else's.
+  local _lease _rc=0
+  if [[ -x "$SCRIPT_DIR/scripts/gpu-lease.sh" ]]; then
+    _lease="$("$SCRIPT_DIR/scripts/gpu-lease.sh" check 2>/dev/null)" || _rc=$?
+    if [[ $_rc -eq 4 ]]; then
+      echo "Error: the GPU is leased — $_lease" >&2
+      echo "  Loading a model now would take the card from a job that claimed it." >&2
+      echo "  Nothing was started. Wait for that job, or see it: ./scripts/gpu-lease.sh status" >&2
+      echo "  (to start as part of it: ./scripts/gpu-lease.sh run <label> -- ./start.sh)" >&2
+      exit 1
+    fi
+  fi
+  if _port_busy "$HEALTH_HOST" "$LLAMA_PORT"; then
+    _port_refuse "$LLAMA_PORT" "the model server"
+    echo "  Nothing was started." >&2
+    exit 1
+  fi
+}
+# The other core ports are fixed (3001 tool server, 3000 Open WebUI, 8888
+# SearXNG), and 3000 in particular is where half the world's dev servers
+# live. Unchecked, a held 3001 surfaced as "tool server exited during
+# startup" AFTER the model load, and a held 3000 still got its URL printed.
+_preflight_ports() {
+  local _spec _name _port _label
+  if _port_busy "$HEALTH_HOST" 3001; then
+    _port_refuse 3001 "the tool server"
+    echo "  Nothing was started." >&2
+    exit 1
+  fi
+  # The opt-in servers on the same fatal path (router hard-binds loopback).
+  if [[ "${AGENT_ROUTER:-false}" == "true" ]] && _port_busy 127.0.0.1 "$ROUTER_PORT"; then
+    _port_refuse "$ROUTER_PORT" "the agent router, ROUTER_PORT"
+    echo "  Nothing was started." >&2
+    exit 1
+  fi
+  if [[ "${EDGE_GATE:-false}" == "true" ]] && _port_busy "$HEALTH_HOST" "${EDGE_PORT:-8090}"; then
+    _port_refuse "${EDGE_PORT:-8090}" "beast-gate, EDGE_PORT"
+    echo "  Nothing was started." >&2
+    exit 1
+  fi
+  for _spec in "open-webui:3000:Open WebUI" "searxng:8888:SearXNG"; do
+    IFS=: read -r _name _port _label <<< "$_spec"
+    _port_busy "$HEALTH_HOST" "$_port" || continue
+    # Our own container, still up from the last run (Ctrl+C on a foreground
+    # start leaves the containers running on purpose): not a conflict.
+    [[ "$(docker inspect -f '{{.State.Running}}' "$_name" 2>/dev/null || true)" == "true" ]] && continue
+    if [[ -n "$(_port_holder "$_port")" ]]; then
+      _port_refuse "$_port" "$_label"
+      echo "  Nothing was started." >&2
+      exit 1
+    fi
+    # Held, but by a process this user cannot name — typically our own
+    # container behind a docker daemon $(id -un) cannot reach. Not ours to
+    # call: say so and let the frontend step report what it finds.
+    echo "Warning: port $_port ($_label) is already in use, and docker reports no running" >&2
+    echo "         '$_name' container to $(id -un). If it is not OpenBeast's, $_label will not" >&2
+    echo "         come up: sudo ss -ltnp 'sport = :$_port' shows the holder." >&2
+  done
+}
+
+# _webui_line [compose-failed] — the banner's "Open WebUI:" row, for the -d
+# launcher and the foreground start alike, claiming only what can be told
+# from here. The foreground banner used to print the URL unconditionally,
+# also right under "frontend containers failed to start".
+_webui_line() {
+  if curl -s -m 2 -o /dev/null "http://$HEALTH_HOST:3000/health" 2>/dev/null; then
+    echo "  Open WebUI:    http://localhost:3000"
+  elif [[ "${1:-0}" -eq 1 ]]; then
+    echo "  Open WebUI:    NOT UP — docker compose failed (the warning above has the reason)."
+    echo "                 Fix docker, then: ./scripts/healthcheck.sh --restart"
+  elif ! docker info >/dev/null 2>&1; then
+    echo "  Open WebUI:    NOT STARTING — the docker daemon is not reachable by $(id -un)"
+    echo "                 (is docker running? is $(id -un) in the docker group?)"
+  else
+    echo "  Open WebUI:    http://localhost:3000 (container still starting — ./start.sh --status)"
+  fi
+}
+
 # ---- daemon launcher: spawn the detached supervisor, wait for readiness ----
 if [[ $DAEMON -eq 1 ]]; then
   mkdir -p "$RUN_DIR"
@@ -268,6 +477,7 @@ if [[ $DAEMON -eq 1 ]]; then
     echo "Check ./start.sh --status, or ./stop.sh first." >&2
     exit 1
   fi
+  preflight
   if [[ $MANAGED -eq 1 ]]; then
     echo "Starting OpenBeast in the background ($SERVE_SCRIPT)..."
   else
@@ -300,6 +510,27 @@ if [[ $DAEMON -eq 1 ]]; then
     # therefore belong in openbeast.conf, not per-shell env, when using -d.
     # *NOTIFY_URL* too: an ntfy topic URL is a bearer secret with an innocent
     # name (conf.sh already unexported it; this is the second lock).
+    #
+    # ...which must not be SILENT. `OPENBEAST_API_KEY=… OPENBEAST_BIND=<LAN>
+    # ./start.sh -d` forwarded the bind and dropped the key: the daemon found
+    # no key in the conf and served the model on the LAN unauthenticated.
+    # A secret the caller exported that the conf file has no value for is
+    # refused here, before anything is spawned.
+    _lost=""
+    for _v in $_CALLER_SECRET_ENV; do
+      [[ -n "$(_ob_conf_value "${_v#*:}" || true)" ]] || _lost+="    ${_v%%:*}  ->  ${_v#*:}="$'\n'
+    done
+    if [[ -n "$_lost" ]]; then
+      echo "Error: ./start.sh -d cannot take these secrets from your environment:" >&2
+      printf '%s' "$_lost" >&2
+      echo "  The daemon runs in a systemd unit whose environment anyone on this account" >&2
+      echo "  can read (systemctl --user show), so secrets are never forwarded to it — and" >&2
+      echo "  openbeast.conf has no value for the keys on the right, so the stack would" >&2
+      echo "  come up WITHOUT them (a dropped API key is an unauthenticated model server)." >&2
+      echo "  Set them in openbeast.conf (mode 600), then run ./start.sh -d again." >&2
+      echo "  Nothing was started." >&2
+      exit 1
+    fi
     SETENV_ARGS=()
     while IFS= read -r _var; do
       if [[ -n "$_var" && "$_var" != *KEY* && "$_var" != *PASSWORD* && "$_var" != *SECRET* \
@@ -332,7 +563,7 @@ if [[ $DAEMON -eq 1 ]]; then
   _ready_deadline=$(( SECONDS + LLAMA_LOAD_GRACE + 300 ))
   _launched_at=$SECONDS
   while (( SECONDS < _ready_deadline )); do
-    # Readiness = llama + MCPO (+ router when enabled; it hard-binds
+    # Readiness = llama + the tool server (+ router when enabled; it hard-binds
     # 127.0.0.1 — see agents/router.py — so probe it there like the
     # supervisor does). Without the router term "Stack is up" would print
     # before the supervisor's router gate has passed.
@@ -384,19 +615,12 @@ if [[ $DAEMON -eq 1 ]]; then
         echo "                 start it where it runs (docs/DGX_SPARK_PLAN.md); .run/stack.log"
         echo "                 logs the moment it becomes ready. Chat fails until then."
       fi
-      echo "  MCPO tools:    http://localhost:3001 (OpenAPI docs at /docs)"
+      echo "  Tool server:   http://localhost:3001 (OpenAPI docs at /docs)"
       # The WebUI container starts AFTER this readiness point (the
       # supervisor brings the frontend up once the model is serving), so
       # this line cannot claim it is up. Say what we can actually tell:
       # an unreachable docker daemon means it will not come up at all.
-      if curl -s -m 2 -o /dev/null "http://$HEALTH_HOST:3000/health" 2>/dev/null; then
-        echo "  Open WebUI:    http://localhost:3000"
-      elif ! docker info >/dev/null 2>&1; then
-        echo "  Open WebUI:    NOT STARTING — the docker daemon is not reachable by $(id -un)"
-        echo "                 (is docker running? is $(id -un) in the docker group?)"
-      else
-        echo "  Open WebUI:    http://localhost:3000 (container still starting — ./start.sh --status)"
-      fi
+      _webui_line
       if [[ "${AGENT_ROUTER:-false}" == "true" ]]; then
         echo "  Agent router:  http://localhost:${ROUTER_PORT} (frontends route through it)"
       fi
@@ -441,12 +665,13 @@ if [[ $DAEMONIZED -eq 0 ]] && _pid_alive "$SUP_PID_FILE" "$(_pid_pattern supervi
   echo "Check ./start.sh --status, or ./stop.sh first." >&2
   exit 1
 fi
+[[ $DAEMONIZED -eq 1 ]] || preflight
 if [[ $DAEMONIZED -eq 1 ]]; then
   exec >>"$RUN_DIR/stack.log" 2>&1
   echo "=== OpenBeast supervisor start: $(date '+%Y-%m-%d %H:%M:%S') ($SERVE_SCRIPT) ==="
 fi
 # Transient systemd units (daemon mode) start with a minimal PATH that lacks
-# ~/.local/bin, where pip --user puts mcpo. Harmless everywhere else.
+# ~/.local/bin, where pip --user puts console scripts. Harmless everywhere else.
 export PATH="$HOME/.local/bin:$PATH"
 # With its start time: 'start\.sh' in a command line is not an identity (any
 # project's ./start.sh matches), and stop.sh SIGKILLs what this record names.
@@ -487,7 +712,7 @@ for cname in open-webui searxng; do
   fi
 done
 
-# Cleanup on exit: stop MCPO and llama.cpp, drop pidfiles. Runs on Ctrl+C,
+# Cleanup on exit: stop the tool server and llama.cpp, drop pidfiles. Runs on Ctrl+C,
 # ./stop.sh (SIGTERM), and after an OOM kill takes out llama-server.
 # Idempotent: the TERM path exits, which fires the EXIT trap a second time.
 CLEANED=0
@@ -544,7 +769,7 @@ cleanup() {
     kill "$ARTIFACT_PID" 2>/dev/null && echo "beast-artifact stopped."
   fi
   if [[ -n "${MCPO_PID:-}" ]]; then
-    kill "$MCPO_PID" 2>/dev/null && echo "MCPO proxy stopped."
+    kill "$MCPO_PID" 2>/dev/null && echo "Tool server stopped."
   fi
   if [[ -n "${LLAMA_PID:-}" ]]; then
     kill "$LLAMA_PID" 2>/dev/null && echo "llama.cpp server stopped."
@@ -560,8 +785,17 @@ cleanup() {
     _n="$(basename "$_pf" .pid)"
     ob_ext_reap "$_pf" "$REPO_DIR/extensions/${_n#ext-}"
   done
-  rm -f "$RUN_DIR/supervisor.pid" "$RUN_DIR/supervisor.start" "$RUN_DIR/llama.pid" "$RUN_DIR/mcpo.pid" \
-        "$RUN_DIR/router.pid" "$RUN_DIR/edge.pid"
+  rm -f "$RUN_DIR/supervisor.pid" "$RUN_DIR/supervisor.start"
+  # The tool server, router, gate and model: only while the file still names
+  # the child WE spawned, like chat/artifact/hydra. healthcheck.sh --restart
+  # replaces a crashed tool server (router, gate, model) and records the
+  # replacement in the same file; an unconditional rm here erased that record
+  # when the supervisor later exited, leaving an orphan on the port that
+  # nothing could find by pid.
+  _rm_own_pidfile "$RUN_DIR/llama.pid" "${LLAMA_PID:-}"
+  _rm_own_pidfile "$RUN_DIR/mcpo.pid" "${MCPO_PID:-}"
+  _rm_own_pidfile "$RUN_DIR/router.pid" "${ROUTER_PID:-}"
+  _rm_own_pidfile "$RUN_DIR/edge.pid" "${EDGE_PID:-}"
   # ...but only the pidfiles of servers WE started. Removing a live server's
   # recorded pid is what makes an orphan unreapable, which is the whole point
   # of the [17] guard above.
@@ -574,13 +808,60 @@ cleanup() {
   return 0
 }
 trap cleanup EXIT
-trap 'STOPPING=1; cleanup; exit 143' INT TERM
+# A FOREGROUND stack told to stop was stopped on purpose, exactly like
+# ./stop.sh — and must say so the same way. Without the marker the banner's
+# own advice ("Press Ctrl+C to stop the servers") was undone by
+# openbeast-watchdog.timer within five minutes: no supervisor, no marker, so
+# healthcheck.sh --restart reloaded the model, unsupervised and outside the
+# memory-capped scope. Not for the detached supervisor: stop.sh is how that
+# one is stopped and it writes the marker first, and a TERM at logout or
+# shutdown is not the operator's decision. A marker already there (stop.sh
+# got in first) keeps its reason.
+_mark_stopped() { # _mark_stopped <reason>
+  [[ $DAEMONIZED -eq 0 && ! -e "$RUN_DIR/stopped" ]] || return 0
+  printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$1" > "$RUN_DIR/stopped" 2>/dev/null || true
+}
+trap 'STOPPING=1; _mark_stopped "Ctrl+C on a foreground ./start.sh"; cleanup; exit 143' INT
+trap 'STOPPING=1; _mark_stopped "SIGTERM to a foreground ./start.sh"; cleanup; exit 143' TERM
 
+# Returns 2, launching nothing, when the port is already held: our server
+# would die on the bind while the holder answered /health in its place — a
+# campaign's llama-server under a GPU lease, or one the watchdog relaunched.
 launch_llama() {
+  if _port_busy "$HEALTH_HOST" "$LLAMA_PORT"; then
+    _port_refuse "$LLAMA_PORT" "the model server"
+    echo "  Not launching llama-server: it could not bind." >&2
+    return 2
+  fi
   echo "Starting llama.cpp server ($SERVE_SCRIPT)..."
   "$SCRIPT_DIR/scripts/$SERVE_SCRIPT" &
   LLAMA_PID=$!
   echo "$LLAMA_PID" > "$RUN_DIR/llama.pid"
+}
+
+# _llama_port_ours — the listener on LLAMA_PORT is the server WE launched:
+# $LLAMA_PID (every shipped serve script execs llama-server), or a child of
+# it for a hand-written one that does not.
+_llama_port_ours() {
+  local pids rc=0 p hops
+  pids="$(ob_port_pids "$LLAMA_PORT")" || rc=$?
+  if [[ $rc -eq 2 || -z "$pids" ]]; then
+    # The holder cannot be named here (no ss / lsof / /proc). The rule
+    # _spawn_ready uses: outlive the bind-failure window, then require that
+    # our process is still there.
+    sleep 1
+    kill -0 "$LLAMA_PID" 2>/dev/null
+    return
+  fi
+  for p in $pids; do
+    hops=0
+    while [[ "$p" =~ ^[0-9]+$ && "$p" -gt 1 && $hops -lt 8 ]]; do
+      [[ "$p" == "$LLAMA_PID" ]] && return 0
+      p="$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ' || true)"
+      hops=$((hops + 1))
+    done
+  done
+  return 1
 }
 
 # Returns 0 once llama-server is READY, 1 if the process dies first or the
@@ -591,18 +872,34 @@ launch_llama() {
 # the model, answering 503 "Loading model" throughout — which curl -s calls
 # success. So the model counted as healthy the moment the port bound:
 # launch_and_wait recorded a model that then OOMed mid-load as LAST-GOOD
-# (overwriting the real one, so MODEL_ROLLBACK could never fire), the KV
-# warmer fired into the 503, and fast boot announced "Full model live"
-# during the load.
+# (overwriting the real one, so MODEL_ROLLBACK could never fire), and fast
+# boot announced "Full model live" during the load.
 #
 # The deadline covers the other direction: a load wedged in CUDA or on a
 # stalled read says "Loading model" forever and never dies, and this loop
 # waited on it forever. Past the grace the load has FAILED: stop the process
 # (it still holds the port and VRAM) so a rollback can have them.
+#
+# READY also means OURS. The loop used to ask /health first and "is our child
+# alive" only when that failed, so any server already on the port — a
+# campaign's, mid-measurement — made a start whose own llama-server had died
+# on the bind print "ready", record the script as last-good and carry on; the
+# supervisor then burned its three relaunches against it and tore the stack
+# down. Our child must be alive AND hold the listener.
 wait_llama_health() {
   local t0=$SECONDS _i
-  until ob_llama_ready "$LLAMA_BASE"; do
-    kill -0 "$LLAMA_PID" 2>/dev/null || return 1
+  while true; do
+    if ! kill -0 "$LLAMA_PID" 2>/dev/null; then
+      if ob_llama_ready "$LLAMA_BASE"; then
+        _i="$(_port_holder "$LLAMA_PORT")"
+        echo "llama-server (pid $LLAMA_PID) exited, yet a server answers on port $LLAMA_PORT${_i:+: $_i}." >&2
+        echo "  It is not the one this stack launched, so it is not reported as ready." >&2
+      fi
+      return 1
+    fi
+    if ob_llama_ready "$LLAMA_BASE" && _llama_port_ours; then
+      return 0
+    fi
     if (( SECONDS - t0 >= LLAMA_LOAD_GRACE )); then
       echo "llama-server not healthy after ${LLAMA_LOAD_GRACE}s (OPENBEAST_LLAMA_LOAD_GRACE) — stopping it; the load has failed." >&2
       kill "$LLAMA_PID" 2>/dev/null || true
@@ -611,7 +908,7 @@ wait_llama_health() {
       for _i in $(seq 1 5); do kill -0 "$LLAMA_PID" 2>/dev/null || break; sleep 1; done
       return 1
     fi
-    sleep 1
+    sleep 0.2
   done
 }
 
@@ -640,8 +937,13 @@ reconfigure_webui_for_model() {
 # is enabled and a different last-known-good exists, launch THAT instead and
 # update $SERVE_SCRIPT + the restart record. Returns 0 if some model is serving
 # (original or rollback), 1 if everything failed. Records last-good on success.
+# LLAMA_FAIL says why, for the caller's message: "port" (held by someone
+# else — nothing was launched, and a rollback could not bind either),
+# "refused" (weight registry), "weight" (its file is not on disk), or empty
+# (the server died or never got ready).
 launch_and_wait() {
-  launch_llama
+  LLAMA_FAIL=""
+  launch_llama || { LLAMA_FAIL=port; return 1; }
   if wait_llama_health; then record_last_good "$SERVE_SCRIPT"; return 0; fi
   local failed="$SERVE_SCRIPT" lastgood
   # serve.sh exits 3 for a WEIGHT_ENFORCE=strict supply-chain refusal. Rolling
@@ -654,7 +956,22 @@ launch_and_wait() {
       echo "Refusing to roll back: '$failed' was rejected by the weight registry" >&2
       echo "  (WEIGHT_ENFORCE=strict). Serving a different model would defeat the check." >&2
       echo "  Fix the weight, re-pin it, or set WEIGHT_ENFORCE=warn in openbeast.conf." >&2
+      LLAMA_FAIL=refused
       return 1
+    fi
+    # serve.sh exits 4 when the weight file is not there, having said which
+    # file and how to fetch it. At a start the operator asked for THIS model:
+    # spending a minute loading a different one would bury that message and
+    # answer a question nobody asked. Only the supervisor's unattended
+    # relaunch (LLAMA_RELAUNCH=1: a weight that vanished under a running
+    # stack) still falls back to the last-known-good, and says why.
+    if [[ $_rc -eq 4 ]]; then
+      LLAMA_FAIL=weight
+      if [[ ${LLAMA_RELAUNCH:-0} -ne 1 ]]; then
+        echo "Not rolling back to another model: the weight for '$failed' is not downloaded." >&2
+        echo "  The command to fetch it is in the message above." >&2
+        return 1
+      fi
     fi
   fi
   if [[ "${MODEL_ROLLBACK:-true}" == "true" && -f "$RUN_DIR/last-good-serve-script" ]]; then
@@ -663,47 +980,20 @@ launch_and_wait() {
       echo "Rollback: '$failed' failed to load — reverting to last-known-good '$lastgood'." >&2
       SERVE_SCRIPT="$lastgood"
       echo "$SERVE_SCRIPT" > "$RUN_DIR/serve-script"
-      launch_llama
+      launch_llama || { LLAMA_FAIL=port; return 1; }
       if wait_llama_health; then
         record_last_good "$SERVE_SCRIPT"
-        echo "Rolled back to '$SERVE_SCRIPT'. Your configured model needs attention (VRAM? corrupt weight? run ./scripts/verify-weights.sh --deep)." >&2
+        if [[ "$LLAMA_FAIL" == weight ]]; then
+          echo "Rolled back to '$SERVE_SCRIPT': the weight for '$failed' is no longer on disk (see the message above for the file and the fetch command)." >&2
+        else
+          echo "Rolled back to '$SERVE_SCRIPT'. Your configured model needs attention (VRAM? corrupt weight? run ./scripts/verify-weights.sh --deep)." >&2
+        fi
         reconfigure_webui_for_model
         return 0
       fi
     fi
   fi
   return 1
-}
-
-warm_kv_cache() {
-  # Warm the KV cache with the WebUI system prompt so the user's FIRST chat
-  # doesn't pay the ~1s cold prompt-processing (a ~3000-token system prefix
-  # processed from scratch). Best-effort; never blocks startup. The primed
-  # prefix is reused by every subsequent same-prompt turn.
-  [[ -f "$REPO_DIR/system-prompt.md" ]] || return 0
-  # Build SYS byte-for-byte the way configure-webui.sh stores WebUI's system
-  # prompt: $(cat) strips each file's trailing newline, joined by ONE blank
-  # line, then .strip() below mirrors configure-webui's storage. This must
-  # match token-for-token — a raw `cat f1 f2` gives a single '\n' at the file
-  # boundary vs WebUI's '\n\n', so the primed prefix would diverge mid-prompt
-  # and the first real chat still pays a partial reprocess (~57ms).
-  ( SYS="$(cat "$REPO_DIR/system-prompt.md")"
-    if [[ -f "$REPO_DIR/system-prompt-tools.md" ]]; then
-      SYS="$SYS"$'\n\n'"$(cat "$REPO_DIR/system-prompt-tools.md")"
-    fi
-    python3 - "$SYS" "$LLAMA_BASE" <<'WARM' >/dev/null 2>&1 || true
-import json, sys, urllib.request
-body=json.dumps({"messages":[{"role":"system","content":sys.argv[1].strip()},
-    {"role":"user","content":"hi"}],"max_tokens":1,"temperature":0,
-    "chat_template_kwargs":{"enable_thinking":False}}).encode()
-try:
-    urllib.request.urlopen(urllib.request.Request(
-        sys.argv[2] + "/v1/chat/completions", data=body,
-        headers={"Content-Type":"application/json"}), timeout=60).read()
-except Exception:
-    pass
-WARM
-    echo "  (KV cache warmed with the system prompt)" ) &
 }
 
 # Unmanaged: wait for someone else's server, bounded like a load. It is not
@@ -780,7 +1070,7 @@ wait_hydra_routable() {
       echo "         Chat through it fails until it does. Inspect: scripts/hydra.sh status" >&2
       return 1
     fi
-    sleep 1
+    sleep 0.2
   done
   echo "beast-hydra routing on $HYDRA_URL"
 }
@@ -859,7 +1149,7 @@ if [[ $MANAGED -eq 0 ]]; then
 elif [[ $FAST_BOOT_ACTIVE -eq 1 ]]; then
   echo "Waiting for llama.cpp server to be ready..."
   # Phase 1 is the tiny bridge — it IS the fallback, so no rollback/record here.
-  launch_llama
+  launch_llama || exit 1
   if ! wait_llama_health; then
     echo "Error: bootstrap model failed to load — see output above" >&2
     exit 1
@@ -868,8 +1158,15 @@ else
   echo "Waiting for llama.cpp server to be ready..."
   # Real model, with load-failure rollback to the last-known-good.
   if ! launch_and_wait; then
-    echo "Error: llama-server exited during startup — see its output above" >&2
-    echo "       (missing weight file or VRAM OOM; no healthy model to roll back to)" >&2
+    case "$LLAMA_FAIL" in
+      port)    echo "Error: no model server was started — the port is held (see above)." >&2 ;;
+      refused) echo "Error: the configured model was refused (see above); nothing is serving." >&2 ;;
+      weight)  echo "Error: $SERVE_SCRIPT cannot start — its weight file is not downloaded." >&2
+               echo "       Fetch it with the command above, then ./start.sh again. Nothing is serving." >&2 ;;
+      *)       echo "Error: llama-server did not come up — see its output above. Usual causes:" >&2
+               echo "       not enough free VRAM (nvidia-smi), or a damaged weight" >&2
+               echo "       (./scripts/verify-weights.sh --deep). No healthy model to roll back to." >&2 ;;
+    esac
     exit 1
   fi
 fi
@@ -878,23 +1175,27 @@ if [[ $MANAGED -eq 1 ]]; then
   wait_hydra_routable || true
 fi
 
-# Regenerate the skill menu BEFORE warming: configure-webui.sh (backgrounded
-# later) regenerates it too, and warming against the pre-regen text would
-# prime a prefix that diverges from the prompt WebUI actually stores.
-# Non-fatal — a broken generator must not block startup.
+# Regenerate the skill menu (configure-webui.sh, backgrounded later, does it
+# again before it stores the prompt). Non-fatal — a broken generator must not
+# block startup.
 python3 "$SCRIPT_DIR/scripts/generate-skill-index.py" >/dev/null 2>&1 || true
 
-# Normal boot warms here; fast boot warms after the swap (below) so the primed
-# prefix belongs to the REAL model, not the throwaway bridge.
-if [[ $MANAGED -eq 0 ]]; then
-  echo "  $(ob_backend_na "KV-cache warming")"
-elif [[ $FAST_BOOT_ACTIVE -eq 0 ]]; then
-  warm_kv_cache
-fi
+# No KV "warm-up" request here any more. It sent system prompt + "hi" with no
+# tools and thinking off, to prime the prefix of the first real chat — but
+# the chat template renders the reasoning line and the whole # Tools block
+# BEFORE the system text, so a real WebUI request shares 3 tokens with it
+# (measured 2026-10-09: 3,254 tokens warmed, 8,731 in the real first prompt,
+# common prefix 3). It cost a second of GPU per boot, printed "KV cache
+# warmed", and warmed nothing.
 
 echo "Starting identity tool server (WebUI OpenAPI tools) on http://localhost:3001..."
 python3 -c 'import fastapi, uvicorn' 2>/dev/null \
-  || { echo "Error: fastapi/uvicorn missing (pip install --user -r agents/requirements.txt)" >&2; exit 1; }
+  || { echo "Error: the tool server's Python packages are missing (fastapi / uvicorn do not import)." >&2
+       # Not `pip install --user -r …`: that fails with externally-managed-
+       # environment on Arch, Debian 12+ and Ubuntu 24.04, and skips the
+       # hash-pinned lock. pydeps.sh handles both.
+       echo "  Install the pinned set: ./scripts/pydeps.sh install   — then ./start.sh again." >&2
+       exit 1; }
 # Private, persistent workspace for files the chat model writes via the direct
 # tools (conf.sh exports OPENBEAST_FILES_DIR; the tool server shards it per
 # user when identity headers are present). Created 0700 so generated
@@ -923,13 +1224,14 @@ MCPO_PID=$!
 echo "$MCPO_PID" > "$RUN_DIR/mcpo.pid"
 # Verify it actually serves — a blind sleep once masked a dead tool server.
 MCPO_UP=0
-for _i in $(seq 1 30); do
+_t0=$SECONDS
+while (( SECONDS - _t0 < 30 )); do
   if ! kill -0 "$MCPO_PID" 2>/dev/null; then
     echo "Error: tool server exited during startup — see output above" >&2
     exit 1
   fi
   curl -s -m 2 "http://$HEALTH_HOST:3001/health" >/dev/null 2>&1 && { MCPO_UP=1; break; }
-  sleep 1
+  sleep 0.2
 done
 [[ $MCPO_UP -eq 1 ]] || { echo "Error: tool server not serving after 30s" >&2; exit 1; }
 echo "Tool server ready on http://localhost:3001"
@@ -953,10 +1255,11 @@ if [[ "${INSTINCT_SCORER:-false}" == "true" ]]; then
     INSTINCT_SCORER_PID=$!
     ob_pid_record "$RUN_DIR/instinct-scorer.pid" "$INSTINCT_SCORER_PID"
     _isc_up=0
-    for _i in $(seq 1 60); do
+    _t0=$SECONDS
+    while (( SECONDS - _t0 < 60 )); do
       kill -0 "$INSTINCT_SCORER_PID" 2>/dev/null || break
       ob_llama_ready "http://127.0.0.1:${_isc_port}" && { _isc_up=1; break; }
-      sleep 1
+      sleep 0.2
     done
     if [[ $_isc_up -eq 1 ]]; then
       echo "beast-instinct scorer ready on http://127.0.0.1:${_isc_port} (pid $INSTINCT_SCORER_PID)"
@@ -988,7 +1291,7 @@ fi
 
 # Agent-spawn router (opt-in, AGENT_ROUTER=true). Sits on ROUTER_PORT in front
 # of llama-server (8080); frontends point at it via OPENBEAST_MODEL_URL. Needs
-# MCPO up (it spawns via MCPO). llama-server stays direct on 8080 so evals and
+# the tool server up (it spawns through it). llama-server stays direct on 8080 so evals and
 # spawned agents are never routed. See docs/RESEARCH_FINDINGS §8-11.
 if [[ "${AGENT_ROUTER:-false}" == "true" ]]; then
   echo "Starting agent-spawn router on http://localhost:${ROUTER_PORT}..."
@@ -1033,12 +1336,13 @@ if [[ "${AGENT_ROUTER:-false}" == "true" ]]; then
   ROUTER_PID=$!
   echo "$ROUTER_PID" > "$RUN_DIR/router.pid"
   ROUTER_UP=0
-  for _i in $(seq 1 20); do
+  _t0=$SECONDS
+  while (( SECONDS - _t0 < 20 )); do
     if ! kill -0 "$ROUTER_PID" 2>/dev/null; then
       echo "Error: agent router exited during startup — see output above" >&2; exit 1
     fi
     curl -s -m 2 "http://127.0.0.1:${ROUTER_PORT}/health" >/dev/null 2>&1 && { ROUTER_UP=1; break; }
-    sleep 1
+    sleep 0.2
   done
   [[ $ROUTER_UP -eq 1 ]] || { echo "Error: agent router not serving after 20s" >&2; exit 1; }
   echo "Agent router ready on http://localhost:${ROUTER_PORT} (frontends route through it)"
@@ -1059,12 +1363,13 @@ if [[ "${EDGE_GATE:-false}" == "true" ]]; then
   EDGE_PID=$!
   echo "$EDGE_PID" > "$RUN_DIR/edge.pid"
   EDGE_UP=0
-  for _i in $(seq 1 20); do
+  _t0=$SECONDS
+  while (( SECONDS - _t0 < 20 )); do
     if ! kill -0 "$EDGE_PID" 2>/dev/null; then
       echo "Error: beast-gate exited during startup — see output above" >&2; exit 1
     fi
     curl -s -m 2 "http://$HEALTH_HOST:${EDGE_PORT}/gate/health" >/dev/null 2>&1 && { EDGE_UP=1; break; }
-    sleep 1
+    sleep 0.2
   done
   [[ $EDGE_UP -eq 1 ]] || { echo "Error: beast-gate not serving after 20s" >&2; exit 1; }
   # `|| true`: under set -e a non-matching grep here would abort start.sh
@@ -1208,8 +1513,12 @@ COMPOSE_UP=(up -d)
 if ob_offline; then
   COMPOSE_UP+=(--pull never)
 fi
+COMPOSE_FAILED=0
 if ! docker compose "${COMPOSE_FILES[@]}" "${COMPOSE_UP[@]}"; then
-  echo "Warning: frontend containers failed to start — model API (:8080) and tools (:3001) are still up. Retry with: docker compose up -d" >&2
+  COMPOSE_FAILED=1
+  # Not a bare `docker compose up -d`: compose needs the environment conf.sh
+  # exports (the SearXNG secret is required), which healthcheck.sh sources.
+  echo "Warning: frontend containers failed to start — model API (:8080) and tools (:3001) are still up. Retry with: ./scripts/healthcheck.sh --restart" >&2
   if ob_offline; then
     echo "         OFFLINE=true, so nothing was pulled. Images are the fourth of" >&2
     echo "         the four fetches a closed network cannot do. Move them with" >&2
@@ -1256,8 +1565,8 @@ elif [[ ${INFER_UP:-0} -eq 1 ]]; then
 else
   echo "  Model server:  NOT READY at $LLAMA_BASE ($(ob_backend_label), not managed here)"
 fi
-echo "  MCPO tools:    http://localhost:3001 (OpenAPI docs at /docs)"
-echo "  Open WebUI:    http://localhost:3000"
+echo "  Tool server:   http://localhost:3001 (OpenAPI docs at /docs)"
+_webui_line "$COMPOSE_FAILED"
 echo "  OpenCode:      run 'opencode' in any project directory"
 if [[ "${HYDRA:-false}" == "true" ]]; then
   echo "  beast-hydra:   $HYDRA_URL (${HYDRA_CHECK_SUMMARY:-?}) — scripts/hydra.sh status"
@@ -1303,7 +1612,6 @@ if [[ $FAST_BOOT_ACTIVE -eq 1 ]]; then
   echo "Full model live: $SERVE_SCRIPT on http://localhost:8080."
   # The bridge, not this model, is what configure-webui.sh saw. Fix the rows.
   reconfigure_webui_for_model
-  warm_kv_cache
   FAST_BOOT_ACTIVE=0
 fi
 
@@ -1350,6 +1658,7 @@ while true; do
   sleep 5
   # launch_and_wait rolls back to the last-known-good model if the current one
   # won't come back (e.g. a weight went missing under it) rather than dying.
+  LLAMA_RELAUNCH=1
   if ! launch_and_wait; then
     echo "Relaunched llama-server died before becoming healthy — stopping the stack." >&2
     _mark_gave_up "relaunched llama-server never became healthy"

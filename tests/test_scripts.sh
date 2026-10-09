@@ -443,6 +443,235 @@ else
   fail "serve.sh doesn't call ob_scale_context"
 fi
 
+# --- 8b. serve.sh, run for real (2026-10-09 review) ---
+# A throwaway copy of serve.sh + its libs. llama-server is a stub that
+# records its argv (and prints $SV/help.txt for --help); nvidia-smi is a stub
+# that reports the cards listed in $SV/gpus. Nothing here reads this box's
+# GPU, RAM or weights.
+echo ""
+echo "serve.sh end to end (stub llama-server, stub nvidia-smi):"
+SV="$(mktemp -d)"
+mkdir -p "$SV/scripts/lib" "$SV/llama.cpp/build/bin" "$SV/weights" "$SV/bin" "$SV/home"
+cp "$REPO_DIR/scripts/serve.sh" "$SV/scripts/"
+cp "$REPO_DIR"/scripts/lib/*.sh "$SV/scripts/lib/"
+printf 'SEARXNG_SECRET=x\n' > "$SV/openbeast.conf"
+printf 'aaaa\t0\tlisted.gguf\torg/repo\tlisted.gguf\n' > "$SV/scripts/weights.registry"
+cat > "$SV/llama.cpp/build/bin/llama-server" <<SH
+#!/bin/bash
+if [[ " \$* " == *" --help "* ]]; then cat "$SV/help.txt" 2>/dev/null; exit 0; fi
+printf '%s\n' "\$@" > "$SV/argv"
+SH
+cat > "$SV/bin/nvidia-smi" <<SH
+#!/bin/bash
+[[ -s "$SV/gpus" ]] || exit 1
+case "\$*" in
+  *memory.total*) cat "$SV/gpus" ;;
+  *name*)         sed 's/.*/Stub GPU/' "$SV/gpus" ;;
+esac
+exit 0
+SH
+chmod +x "$SV/llama.cpp/build/bin/llama-server" "$SV/bin/nvidia-smi"
+printf 'usage: llama-server\n-cram, --cache-ram N   set the maximum cache size in MiB (default: 8192)\n' > "$SV/help.txt"
+: > "$SV/gpus"                       # no GPU unless a case lists one
+head -c 4096 /dev/zero > "$SV/weights/listed.gguf"
+# _serve [ENV=val...] -- <serve.sh args>   -> SV_OUT (stdout+stderr), SV_RC
+_serve() {
+  local envs=()
+  while [[ "$1" != "--" ]]; do envs+=("$1"); shift; done; shift
+  rm -f "$SV/argv"; SV_RC=0
+  SV_OUT="$(env -i HOME="$SV/home" PATH="$SV/bin:/usr/bin:/bin" ${envs[@]+"${envs[@]}"} \
+    bash "$SV/scripts/serve.sh" "$@" 2>&1)" || SV_RC=$?
+}
+# The value llama-server was given for a flag ("" when the flag is absent).
+_sv_arg() { awk -v f="$1" 'p {print; exit} $0 == f {p = 1}' "$SV/argv" 2>/dev/null || true; }
+
+# ux UX-08: a weight that is not on disk.
+_serve -- -m "$SV/weights/missing.gguf" -c 8192
+if [[ $SV_RC -eq 4 && "$SV_OUT" == *"weight not downloaded: $SV/weights/missing.gguf"* && ! -e "$SV/argv" ]]; then
+  pass "serve.sh: a missing weight exits 4 with the path, and llama-server is never launched"
+else
+  fail "serve.sh with a missing weight (rc=$SV_RC, launched=$([[ -e "$SV/argv" ]] && echo yes || echo no)): $(tr '\n' ' ' <<< "$SV_OUT")"
+fi
+[[ "$SV_OUT" == *"cannot download it"* && "$SV_OUT" == *"WEIGHTS_DIR in openbeast.conf"* ]] \
+  && pass "…an unlisted weight is told fetch-weight.sh cannot get it, and where WEIGHTS_DIR is set" \
+  || fail "serve.sh missing+unlisted weight message: $(tr '\n' ' ' <<< "$SV_OUT")"
+mv "$SV/weights/listed.gguf" "$SV/weights/listed.gguf.away"
+_serve -- -m "$SV/weights/listed.gguf" -c 8192
+[[ $SV_RC -eq 4 && "$SV_OUT" == *"./scripts/fetch-weight.sh listed.gguf"* ]] \
+  && pass "…a registry-listed one gets the exact fetch command" \
+  || fail "serve.sh missing+listed weight (rc=$SV_RC): $(tr '\n' ' ' <<< "$SV_OUT")"
+mv "$SV/weights/listed.gguf.away" "$SV/weights/listed.gguf"
+_serve -- -m "$SV/weights/listed.gguf" -c 8192
+if [[ $SV_RC -eq 0 && "$(_sv_arg -m)" == "$SV/weights/listed.gguf" && "$SV_OUT" != *"not downloaded"* ]]; then
+  pass "…and a weight that is there launches llama-server with it (control)"
+else
+  fail "serve.sh with a present weight (rc=$SV_RC): $(tr '\n' ' ' <<< "$SV_OUT")"
+fi
+if grep -q '_rc -eq 4' "$REPO_DIR/start.sh" && ! grep -q 'missing weight file or VRAM OOM' "$REPO_DIR/start.sh"; then
+  pass "start.sh acts on exit 4 and no longer guesses \"missing weight file or VRAM OOM\""
+else
+  fail "start.sh still guesses at the cause of a failed load"
+fi
+
+# ops F7: on a multi-GPU host the KV budget is the sum of the cards, not the
+# largest one. The cards are built here ($SV/gpus), never read from this box.
+_ctxv() { ( source "$REPO_DIR/scripts/lib/hardware.sh"; ob_context_vram_mb "$@" ); }
+if [[ "$(_ctxv 24564 49128 2)" == "47080" && "$(_ctxv 24564 24564 1)" == "24564" \
+      && "$(_ctxv 0 0 0)" == "0" && "$(_ctxv 32607 44895 2)" == "42847" ]]; then
+  pass "ob_context_vram_mb: several cards = their sum less 2 GB per extra card; one card (or none) unchanged"
+else
+  fail "ob_context_vram_mb: 2x24564 -> $(_ctxv 24564 49128 2) (want 47080), 1x -> $(_ctxv 24564 24564 1), none -> $(_ctxv 0 0 0)"
+fi
+printf '24564\n' > "$SV/gpus"
+_serve -- -m "$SV/weights/listed.gguf" -c 262144
+_C1="$(_sv_arg -c)"
+printf '24564\n24564\n' > "$SV/gpus"
+_serve -- -m "$SV/weights/listed.gguf" -c 262144
+_C2="$(_sv_arg -c)"
+if [[ "$_C1" =~ ^[0-9]+$ && "$_C1" -lt 262144 && "$_C2" == "262144" ]]; then
+  pass "serve.sh: 2x 24 GB keeps the shipped -c 262144 (one 24 GB card scales it to $_C1)"
+else
+  fail "serve.sh multi-GPU context: one card -c '$_C1' (want < 262144), two cards -c '$_C2' (want 262144)"
+fi
+printf '12288\n12288\n' > "$SV/gpus"
+_serve -- -m "$SV/weights/listed.gguf" -c 262144
+_C3="$(_sv_arg -c)"
+if [[ "$_C3" =~ ^[0-9]+$ && "$_C3" -lt "$_C1" && "$_C3" -gt 8192 && "$SV_OUT" == *"2 GPUs (24576 MiB total, 22528 MiB budgeted)"* ]]; then
+  pass "…and two small cards are still scaled DOWN, for their summed budget (-c $_C3), with the numbers shown"
+else
+  fail "serve.sh 2x 12 GB: -c '$_C3' (one 24 GB card: $_C1) :: $(grep Context <<< "$SV_OUT" | tr '\n' ' ')"
+fi
+# A launch pinned to a subset cannot use the sum: conservative single card.
+printf '24564\n24564\n' > "$SV/gpus"
+_serve CUDA_VISIBLE_DEVICES=0 -- -m "$SV/weights/listed.gguf" -c 262144
+_C4="$(_sv_arg -c)"
+_serve -- -m "$SV/weights/listed.gguf" -c 262144 --split-mode none
+_C5="$(_sv_arg -c)"
+if [[ "$_C4" == "$_C1" && "$_C5" == "$_C1" && "$SV_OUT" == *"pinned (--split-mode none)"* ]]; then
+  pass "…a launch pinned to one card (CUDA_VISIBLE_DEVICES, --split-mode none) keeps the single-card budget"
+else
+  fail "serve.sh pinned multi-GPU: CUDA_VISIBLE_DEVICES -c '$_C4', --split-mode none -c '$_C5' (want $_C1 for both)"
+fi
+_serve OPENBEAST_VRAM_MIB=24564 -- -m "$SV/weights/listed.gguf" -c 262144
+[[ "$(_sv_arg -c)" == "$_C1" ]] && pass "…and OPENBEAST_VRAM_MIB still overrides detection outright" \
+  || fail "OPENBEAST_VRAM_MIB ignored on a multi-GPU host: -c '$(_sv_arg -c)'"
+: > "$SV/gpus"
+
+# perf F1: the host prompt cache. llama-server's default (8192 MiB) holds no
+# real agent session, so serve.sh sizes --cache-ram to the host's RAM.
+_pcm() { ( source "$REPO_DIR/scripts/lib/hardware.sh"; ob_prompt_cache_mb "$@" ); }
+#   128 GB -> 35%;  512 GB -> the 48 GiB cap;  16 GB -> 0 (not above the
+#   server default: pass nothing);  unknown -> 0.
+if [[ "$(_pcm 128834392)" == "44034" && "$(_pcm 536870912)" == "49152" && "$(_pcm 16384000)" == "0" \
+      && "$(_pcm "")" == "0" && "$(_pcm 33554432)" == "11468" ]]; then
+  pass "ob_prompt_cache_mb: 35% of RAM, capped at 48 GiB, and 0 (server default) when that is not above 8192"
+else
+  fail "ob_prompt_cache_mb: 128G->$(_pcm 128834392) (44034) 512G->$(_pcm 536870912) (49152) 16G->$(_pcm 16384000) (0) 32G->$(_pcm 33554432) (11468)"
+fi
+_serve PROMPT_CACHE_RAM_MB=32768 -- -m "$SV/weights/listed.gguf" -c 8192
+if [[ "$(_sv_arg --cache-ram)" == "32768" && "$SV_OUT" == *"Prompt cache: 32768 MiB"* ]]; then
+  pass "serve.sh: PROMPT_CACHE_RAM_MB=32768 reaches llama-server as --cache-ram 32768, and is announced"
+else
+  fail "serve.sh PROMPT_CACHE_RAM_MB=32768: --cache-ram '$(_sv_arg --cache-ram)' :: $(grep -i 'prompt cache' <<< "$SV_OUT" | tr '\n' ' ')"
+fi
+_serve PROMPT_CACHE_RAM_MB=32768 OPENBEAST_PROMPT_CACHE_RAM_MB=16384 -- -m "$SV/weights/listed.gguf" -c 8192
+[[ "$(_sv_arg --cache-ram)" == "16384" ]] && pass "…the OPENBEAST_ env override wins" \
+  || fail "OPENBEAST_PROMPT_CACHE_RAM_MB did not win: '$(_sv_arg --cache-ram)'"
+printf 'SEARXNG_SECRET=x\nPROMPT_CACHE_RAM_MB=24576   # two big sessions\n' > "$SV/openbeast.conf"
+_serve -- -m "$SV/weights/listed.gguf" -c 8192
+[[ "$(_sv_arg --cache-ram)" == "24576" ]] && pass "…and the key is read from openbeast.conf (trailing comment dropped)" \
+  || fail "PROMPT_CACHE_RAM_MB in openbeast.conf was not applied: '$(_sv_arg --cache-ram)'"
+printf 'SEARXNG_SECRET=x\n' > "$SV/openbeast.conf"
+_serve PROMPT_CACHE_RAM_MB=0 -- -m "$SV/weights/listed.gguf" -c 8192
+if [[ $SV_RC -eq 0 && -s "$SV/argv" ]] && ! grep -qx -- '--cache-ram' "$SV/argv"; then
+  pass "PROMPT_CACHE_RAM_MB=0 passes no --cache-ram: the server default stands (control)"
+else
+  fail "PROMPT_CACHE_RAM_MB=0 still passed the flag: $(tr '\n' ' ' < "$SV/argv" 2>/dev/null)"
+fi
+# Auto (nothing set): whatever this host has, the flag is either absent or
+# strictly above the server default and at most the cap. (The arithmetic
+# itself is pinned above, on numbers this test chose.)
+_serve -- -m "$SV/weights/listed.gguf" -c 8192
+_PCA="$(_sv_arg --cache-ram)"
+if [[ -z "$_PCA" ]] || [[ "$_PCA" =~ ^[0-9]+$ && "$_PCA" -gt 8192 && "$_PCA" -le 49152 ]]; then
+  pass "auto never goes below the server default or above 48 GiB (this host: ${_PCA:-flag not passed})"
+else
+  fail "auto --cache-ram out of range: '$_PCA'"
+fi
+# A llama-server that does not know the flag would exit on it.
+printf 'usage: llama-server\n-c, --ctx-size N\n' > "$SV/help.txt"
+_serve PROMPT_CACHE_RAM_MB=32768 -- -m "$SV/weights/listed.gguf" -c 8192
+if [[ $SV_RC -eq 0 && -s "$SV/argv" && "$SV_OUT" == *"no --cache-ram"* ]] && ! grep -qx -- '--cache-ram' "$SV/argv"; then
+  pass "a llama-server build without --cache-ram is launched without it, with a note"
+else
+  fail "--cache-ram passed to a binary that does not list it: $(tr '\n' ' ' < "$SV/argv" 2>/dev/null)"
+fi
+printf 'usage: llama-server\n-cram, --cache-ram N   set the maximum cache size in MiB (default: 8192)\n' > "$SV/help.txt"
+# A model script that sets its own --cache-ram keeps it.
+_serve PROMPT_CACHE_RAM_MB=32768 -- -m "$SV/weights/listed.gguf" -c 8192 --cache-ram 4096
+if [[ "$(grep -cx -- '--cache-ram' "$SV/argv")" == "1" && "$(_sv_arg --cache-ram)" == "4096" ]]; then
+  pass "a serve script's own --cache-ram is left alone"
+else
+  fail "serve.sh overrode a model script's --cache-ram: $(tr '\n' ' ' < "$SV/argv" 2>/dev/null)"
+fi
+_serve PROMPT_CACHE_RAM_MB=lots -- -m "$SV/weights/listed.gguf" -c 8192
+[[ $SV_RC -eq 0 && "$SV_OUT" == *"PROMPT_CACHE_RAM_MB='lots' is not a number"* ]] \
+  && pass "a non-numeric PROMPT_CACHE_RAM_MB warns and falls back to auto instead of failing the launch" \
+  || fail "PROMPT_CACHE_RAM_MB=lots (rc=$SV_RC): $(tr '\n' ' ' <<< "$SV_OUT")"
+if grep -qE '^#?PROMPT_CACHE_RAM_MB=' "$REPO_DIR/openbeast.conf.example"; then
+  pass "openbeast.conf.example documents PROMPT_CACHE_RAM_MB"
+else
+  fail "openbeast.conf.example does not document PROMPT_CACHE_RAM_MB"
+fi
+
+rm -rf "$SV"
+
+# --- 8c. systemd units: a path with a space, and the start timeout ---
+# Rendered with the sed line the unit files document, into a checkout path
+# that contains a space, then split the way systemd splits a command line
+# (whitespace, double quotes): the first word must be the whole script path.
+echo ""
+echo "systemd unit templates (ops F13, F14):"
+_UD="$(mktemp -d)"; _UREPO="$_UD/my rig/openbeast"; mkdir -p "$_UREPO"
+_unit_argv0() { # _unit_argv0 <unit-file> <Key> -> first word of that command line
+  sed "s|@REPO@|$_UREPO|" "$REPO_DIR/scripts/$1" | python3 -c '
+import shlex, sys
+key = sys.argv[1] + "="
+for line in sys.stdin:
+    if line.startswith(key):
+        print(shlex.split(line[len(key):])[0]); break
+' "$2"
+}
+if [[ "$(_unit_argv0 openbeast.service ExecStart)" == "$_UREPO/start.sh" \
+      && "$(_unit_argv0 openbeast.service ExecStop)" == "$_UREPO/stop.sh" ]]; then
+  pass "openbeast.service: ExecStart/ExecStop survive a checkout path with a space"
+else
+  fail "openbeast.service splits a path with a space: ExecStart -> '$(_unit_argv0 openbeast.service ExecStart)', ExecStop -> '$(_unit_argv0 openbeast.service ExecStop)'"
+fi
+if [[ "$(_unit_argv0 openbeast-watchdog.service ExecStart)" == "$_UREPO/scripts/healthcheck.sh" ]]; then
+  pass "openbeast-watchdog.service: ExecStart survives a checkout path with a space"
+else
+  fail "openbeast-watchdog.service splits a path with a space: '$(_unit_argv0 openbeast-watchdog.service ExecStart)'"
+fi
+if sed "s|@REPO@|$_UREPO|" "$REPO_DIR/scripts/openbeast.service" | grep -qx 'ExecStart=".*/start.sh" -d' \
+   && sed "s|@REPO@|$_UREPO|" "$REPO_DIR/scripts/openbeast-watchdog.service" | grep -qx 'ExecStart=".*/healthcheck.sh" --restart'; then
+  pass "…and the arguments (-d, --restart) are still passed (control)"
+else
+  fail "a unit lost its argument when the path was quoted"
+fi
+rm -rf "$_UD"
+# The unit must outlast the launcher it runs: start.sh -d gives up at
+# LLAMA_LOAD_GRACE + 300 s. Both numbers are read from start.sh.
+_GRACE="$(sed -n 's/^LLAMA_LOAD_GRACE="\${OPENBEAST_LLAMA_LOAD_GRACE:-\([0-9]*\)}"$/\1/p' "$REPO_DIR/start.sh")"
+_EXTRA="$(sed -n 's/.*_ready_deadline=\$(( SECONDS + LLAMA_LOAD_GRACE + \([0-9]*\) )).*/\1/p' "$REPO_DIR/start.sh")"
+_UTMO="$(sed -n 's/^TimeoutStartSec=//p' "$REPO_DIR/scripts/openbeast.service")"
+if [[ "$_GRACE" =~ ^[0-9]+$ && "$_EXTRA" =~ ^[0-9]+$ ]] \
+   && { [[ "$_UTMO" == "infinity" ]] || { [[ "$_UTMO" =~ ^[0-9]+$ ]] && (( _UTMO > _GRACE + _EXTRA )); }; }; then
+  pass "openbeast.service TimeoutStartSec ($_UTMO) outlasts start.sh -d's own deadline ($((_GRACE + _EXTRA))s)"
+else
+  fail "openbeast.service TimeoutStartSec='$_UTMO' is not above the launcher's deadline (grace '$_GRACE' + '$_EXTRA')"
+fi
+
 # --- 9. Entry-point shell syntax ---
 echo ""
 echo "Shell syntax:"
