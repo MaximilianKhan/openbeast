@@ -162,6 +162,19 @@ fi
 
 # ---------------------------------------------------------------------------
 echo ""
+echo "3. the opencode.json merge uses the vetted interpreter (UX-28):"
+OC="$T/h200/.config/opencode/opencode.json"
+run h200 200 200 -- --host rig.example --no-search
+if [[ $RC -eq 0 ]] && ! grep -q bare "$S/py.calls" && grep -q vetted "$S/py.calls" \
+   && "$REAL_PY" -c 'import json,sys; c=json.load(open(sys.argv[1])); sys.exit(0 if "openbeast-rig" in c["provider"] and "openbeast-tools" in c["mcp"] else 1)' "$OC" \
+   && has "$(cat "$S/client.calls")" "refresh-config" && [[ -L "$T/h200/.local/bin/openbeast-client" ]]; then
+  pass "with a broken python3 on PATH the install still merges the config and links the CLI"
+else
+  fail "merge with a bad PATH python3 (rc=$RC, calls=$(tr '\n' ' ' < "$S/py.calls")): $OUT"
+fi
+
+# ---------------------------------------------------------------------------
+echo ""
 echo "================================"
 echo "Results: $PASS passed, $FAIL failed"
 echo "================================"

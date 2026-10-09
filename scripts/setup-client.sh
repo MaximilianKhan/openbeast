@@ -546,8 +546,11 @@ fi
 # ---- 5. merge opencode.json (never clobber user config) ---------------------
 mkdir -p "$OC_CONFIG_DIR"
 [ -f "$OC_CONFIG" ] || echo '{}' > "$OC_CONFIG"
+# "$PY", the interpreter preflight vetted — never bare python3: on a Mac that
+# is the Xcode shim (3.9, or an install prompt), and dying here under set -e
+# leaves the env file and venv written but no config and no CLI symlink.
 NO_SEARCH="$NO_SEARCH" API_KEY="$API_KEY" \
-  python3 - "$OC_CONFIG" "$CLIENT_REPO" "$VENV" "$API_URL" "$SEARCH_URL" "$HOST_FQDN" <<'PYEOF'
+  "$PY" - "$OC_CONFIG" "$CLIENT_REPO" "$VENV" "$API_URL" "$SEARCH_URL" "$HOST_FQDN" <<'PYEOF'
 import json, os, sys
 oc_path, repo, venv, api_url, search_url, host = sys.argv[1:7]
 no_search = os.environ.get("NO_SEARCH") == "1"
