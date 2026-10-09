@@ -254,3 +254,57 @@ def test_unparseable_nvidia_smi_is_still_no_gpu(monkeypatch, out):
     assert d.gpu_status() is None
 
 
+# ───────────────────────── S13: upstream strings never reach innerHTML raw ─────────────────────────
+
+def _script(d):
+    return re.search(r"<script>(.*)</script>", d.PAGE, re.S).group(1)
+
+
+def test_every_interpolation_is_escaped_or_local(monkeypatch):
+    """Static pin: an interpolation is either wrapped in esc()/num(), a
+    two-literal ternary, or one of the fragments built just above it."""
+    d = load(monkeypatch)
+    exprs = re.findall(r"\$\{([^}]*)\}", _script(d))
+    assert len(exprs) >= 15
+    ok = re.compile(r"""^(?:esc\(.*\)|num\([\w.]+\)|\(num\([\w.]+\)/1024\)\.toFixed\(\d\)
+                         |[\w.]+\?'[^'<]*':'[^'<]*'|gpu|svc)$""", re.X)
+    bad = [e for e in exprs if not ok.match(e)]
+    assert not bad, bad
+    # the control: the pre-fix spellings are exactly what this refuses
+    for raw in ("m.alias||m.serve_script||'—'", "g.name", "k", "g.used_pct"):
+        assert not ok.match(raw)
+
+
+_XSS = "<img src=x onerror=alert(1)>"
+_HARNESS = r"""
+const els = {grid: {innerHTML: ''}, ts: {textContent: ''}};
+globalThis.document = {getElementById: id => els[id]};
+globalThis.setInterval = () => 0;
+globalThis.fetch = async () => ({json: async () => JSON.parse(process.env.STATUS)});
+%s
+setTimeout(() => process.stdout.write(els.grid.innerHTML), 50);
+"""
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_a_hostile_model_id_renders_as_text(monkeypatch, tmp_path):
+    d = load(monkeypatch)
+    status = {"gpu": {"name": _XSS, "used_mib": 1024, "total_mib": 2048, "free_mib": 1024,
+                      "util_pct": _XSS, "temp_c": 50, "used_pct": "1 onmouseover=alert(1)"},
+              "model": {"healthy": True, "alias": _XSS, "serve_script": _XSS},
+              "services": {_XSS: True, "tools": False},
+              "metrics": {"tool_calls": _XSS, "tool_errors": 0}}
+    js = tmp_path / "page.js"
+    js.write_text(_HARNESS % _script(d))
+    r = subprocess.run(["node", str(js)], capture_output=True, text=True, timeout=30,
+                       env={"PATH": os.environ["PATH"], "STATUS": json.dumps(status)})
+    assert r.returncode == 0, r.stderr
+    html = r.stdout
+    assert "<h2>Model</h2>" in html, html                 # the page did render
+    assert "<img" not in html and "onmouseover" not in html, html
+    assert "&#60;img src=x onerror=alert(1)&#62;" in html
+    # the control: honest values still show
+    status["model"]["alias"] = "qwen38-27b"
+    r = subprocess.run(["node", str(js)], capture_output=True, text=True, timeout=30,
+                       env={"PATH": os.environ["PATH"], "STATUS": json.dumps(status)})
+    assert ">qwen38-27b</div>" in r.stdout

@@ -517,23 +517,27 @@ PAGE = """<!doctype html><html><head><meta charset=utf-8>
 async function tick(){
  let s; try{s=await (await fetch('/api/status')).json()}catch(e){return}
  const g=s.gpu,m=s.model,sv=s.services,mt=s.metrics||{};
- const svc=Object.entries(sv).map(([k,v])=>`<div class=row><span><span class="dot ${v?'up':'down'}"></span>${k}</span><span class=k>${v?'up':'down'}</span></div>`).join('');
- const gpu=g?`<div class=big>${g.used_pct}% <span class=k style=font-size:14px>${(g.used_mib/1024).toFixed(1)}/${(g.total_mib/1024).toFixed(0)} GB</span></div>
-   <div class=bar><i style=width:${g.used_pct}%></i></div>
-   <div class=row><span class=k>free</span><span>${(g.free_mib/1024).toFixed(1)} GB</span></div>
-   <div class=row><span class=k>GPU util</span><span>${g.util_pct}%</span></div>
-   <div class=row><span class=k>temp</span><span>${g.temp_c}°C</span></div>
-   <div class=row><span class=k>card</span><span>${g.name}</span></div>`:'<div class=k>no GPU detected</div>';
+ // Every value below came from another server (the model id is whatever the
+ // inference server says it is): escape it before it meets innerHTML.
+ const esc=v=>String(v??'').replace(/[&<>"'`]/g,c=>'&#'+c.charCodeAt(0)+';');
+ const num=v=>Number(v)||0;
+ const svc=Object.entries(sv).map(([k,v])=>`<div class=row><span><span class="dot ${v?'up':'down'}"></span>${esc(k)}</span><span class=k>${v?'up':'down'}</span></div>`).join('');
+ const gpu=g?`<div class=big>${num(g.used_pct)}% <span class=k style=font-size:14px>${(num(g.used_mib)/1024).toFixed(1)}/${(num(g.total_mib)/1024).toFixed(0)} GB</span></div>
+   <div class=bar><i style=width:${num(g.used_pct)}%></i></div>
+   <div class=row><span class=k>free</span><span>${(num(g.free_mib)/1024).toFixed(1)} GB</span></div>
+   <div class=row><span class=k>GPU util</span><span>${num(g.util_pct)}%</span></div>
+   <div class=row><span class=k>temp</span><span>${num(g.temp_c)}°C</span></div>
+   <div class=row><span class=k>card</span><span>${esc(g.name)}</span></div>`:'<div class=k>no GPU detected</div>';
  document.getElementById('grid').innerHTML=`
   <div class=card><h2>GPU / VRAM</h2>${gpu}</div>
   <div class=card><h2>Model</h2>
-    <div class=big style=font-size:18px><span class="dot ${m.healthy?'up':'down'}"></span>${m.alias||m.serve_script||'—'}</div>
-    <div class=row><span class=k>serve script</span><span>${m.serve_script||'—'}</span></div>
+    <div class=big style=font-size:18px><span class="dot ${m.healthy?'up':'down'}"></span>${esc(m.alias||m.serve_script||'—')}</div>
+    <div class=row><span class=k>serve script</span><span>${esc(m.serve_script||'—')}</span></div>
     <div class=row><span class=k>API</span><span>${m.healthy?':8080 healthy':'down'}</span></div></div>
   <div class=card><h2>Services</h2>${svc}</div>
   <div class=card><h2>Tool activity</h2>
-    <div class=big>${mt.tool_calls??'—'}</div><div class=k>total tool calls</div>
-    <div class=row><span class=k>errors</span><span>${mt.tool_errors??'—'}</span></div>
+    <div class=big>${esc(mt.tool_calls??'—')}</div><div class=k>total tool calls</div>
+    <div class=row><span class=k>errors</span><span>${esc(mt.tool_errors??'—')}</span></div>
     <div class=row><span class=k>raw</span><span><a href=http://localhost:3001/metrics>:3001/metrics</a></span></div></div>`;
  document.getElementById('ts').textContent='updated '+new Date().toLocaleTimeString();
 }
