@@ -5,8 +5,9 @@
 #
 # Nothing here needs smartmontools, root, or a real drive: a STUB smartctl is
 # put on PATH returning canned smartctl -j -a fixtures, and the state file is
-# redirected into a throwaway dir. The real .run/ssd-wear.json is never touched
-# and no device is opened.
+# redirected into a throwaway dir. df and lsblk are stubs too, so the drive
+# layout is this suite's own. The real .run/ssd-wear.json is never touched and
+# no device is opened.
 #
 # The load-bearing properties under test:
 #   • the NVMe data-unit constant is 512,000 bytes, not 512 (a 1000x error in
@@ -96,6 +97,25 @@ trap cleanup EXIT
 BIN="$TMPROOT/bin"
 mkdir -p "$BIN" "$TMPROOT/state"
 STATE="$TMPROOT/state/ssd-wear.json"
+
+# Which disk holds the checkout is the HOST's business, and the script asks
+# df + lsblk for it. Un-stubbed, every check below depended on where the repo
+# was cloned: on a tmpfs (or NFS, or overlayfs) checkout there is no /dev
+# source, no drive is reported, and the suite died half-way with a traceback.
+# So the layout is fixed here: an encrypted root on one NVMe disk.
+mkdir -p "$TMPROOT/host"
+cat > "$TMPROOT/host/df" <<'STUB'
+#!/bin/bash
+echo "Filesystem 1024-blocks Used Available Capacity Mounted on"
+echo "/dev/mapper/root 1000 10 990 1% /"
+STUB
+cat > "$TMPROOT/host/lsblk" <<'STUB'
+#!/bin/bash
+printf '/dev/mapper/root crypt\n/dev/nvme0n1p2 part\n/dev/nvme0n1 disk\n'
+STUB
+chmod +x "$TMPROOT/host/df" "$TMPROOT/host/lsblk"
+# For every run below, including the ones that do not put $BIN on PATH.
+export PATH="$TMPROOT/host:$PATH"
 
 # Fixture: an NVMe drive with EXACTLY 1,000,000 data units written.
 #   1,000,000 units * 512,000 bytes = 512,000,000,000 bytes = 512.0 GB
