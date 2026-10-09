@@ -120,7 +120,10 @@ report = {
     "risk_assessment": {"score": 54 if issues else 0, "severity": "HIGH" if issues else "LOW",
                         "recommendation": "DO_NOT_INSTALL" if issues else "CAUTION"},
     "issues": issues,
-    "metadata": {"skillspector_version": "2.12.0", "llm_requested": False},
+    # "otherversion": a clean-looking report from a scanner the gate is not
+    # pinned to (anything named `skillspector` on PATH, or a stub).
+    "metadata": {"skillspector_version": "2.11.0" if mode == "otherversion" else "2.12.0",
+                 "llm_requested": False},
     "execution_successful": mode != "incomplete",
     "analysis_completeness": {
         "status": "partial", "execution_successful": mode != "incomplete",
@@ -291,6 +294,24 @@ for mode in crash crashclean garbage unknown incomplete; do
     fail "scanner '$mode': promote went through or left something behind"
   fi
 done
+# 2026-10-09 review, supply S14: a scanner of another version used to print a
+# "!" line and promote anyway. Its report is CLEAN — only the version differs
+# — so nothing but the pin can refuse it. (The clean 2.12.0 report promoting
+# is the control, asserted a few cases below.)
+echo otherversion > "$SCAN_MODE"
+run promote demo --reviewed-by MK >"$TMPROOT/out" 2>&1; rc=$?
+if [[ $rc -eq 1 ]] && blocked && grep -q "pinned to SkillSpector 2.12.0" "$TMPROOT/out" \
+   && grep -q "install-scanner" "$TMPROOT/out"; then
+  pass "a clean report from a different scanner version refuses promote (exit 1), naming the pinned install"
+else
+  fail "a scanner version mismatch did not refuse promote (rc=$rc): $(tail -2 "$TMPROOT/out")"
+fi
+run scan "$STAGE/demo" >"$TMPROOT/out" 2>&1; rc=$?
+if [[ $rc -eq 1 ]] && grep -q "pinned to SkillSpector 2.12.0" "$TMPROOT/out"; then
+  pass "…and scan refuses to print a verdict for it"
+else
+  fail "scan judged another version's report (rc=$rc)"
+fi
 echo findings > "$SCAN_MODE"
 run promote demo --reviewed-by MK >"$TMPROOT/out" 2>&1; rc=$?
 if [[ $rc -eq 3 ]] && blocked && grep -q "TM1" "$TMPROOT/out"; then

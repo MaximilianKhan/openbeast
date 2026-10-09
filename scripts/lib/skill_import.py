@@ -342,9 +342,21 @@ def judge(report: dict, accept: set[str],
     if rec not in RECOMMENDATIONS or not isinstance(issues, list):
         raise GateError(f"unrecognised scanner report (recommendation={rec!r})")
 
-    lines: list[str] = []
+    # A different scanner is a refusal, not a footnote. This gate's reading of
+    # the report (which fields mean "did not look") was measured against ONE
+    # version, and the ledger row it writes says that version passed the
+    # skill. A "!" line here left `allowed` untouched: any `skillspector` on
+    # PATH, or a stub that prints clean JSON, could promote a skill under
+    # 2.12.0's name.
     if version != SCANNER_VERSION:
-        lines.append(f"  ! scanner is {version}; this gate was written against {SCANNER_VERSION}")
+        raise GateError(
+            f"the scanner reports version {version!r}; this gate is pinned to "
+            f"SkillSpector {SCANNER_VERSION} and will not judge another version's report.\n"
+            "  install the pinned one:  ./scripts/skill-import.sh install-scanner\n"
+            "  see which one ran:       ./scripts/skill-import.sh scanner\n"
+            "  (SKILL_SCANNER, when set, overrides the managed install)")
+
+    lines: list[str] = []
 
     incomplete: list[str] = []
     if not ran:
