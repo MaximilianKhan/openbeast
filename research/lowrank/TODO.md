@@ -5,7 +5,8 @@
 The campaign is written up with what was measured by 2026-09-14 plus the
 E32 controls that landed 09-11..09-14 and had never been journaled (FineWeb
 KLD, PPL@2048, the IQ3 capability pair). Nothing below this block was run
-for the write-up. Still open, and stated as open in the paper's §6:
+for the write-up. Still open, and stated as open in the paper's §7
+(§6 before the 2026-10-09 revision renumbered the sections):
 - [ ] T1.1 calibration-mix grid · T1.6 small-scale interpolation controls ·
   T1.7 held-out pass over the ladder comparisons · T1.9 recovery curve,
   recipe fixed · T1.13 equalization ablations · T1.15 sampling bound
@@ -17,6 +18,35 @@ for the write-up. Still open, and stated as open in the paper's §6:
   reference list is now full entries from arXiv metadata (all 50 ids resolve
   and match the text, `paper/final/refs.json`, 2026-10-09); left there: confirm
   the three withheld venues (LoftQ, LQ-LoRA, Punica — `refs/review.json`)
+
+### Experiments the 2026-10-09 referee review asks for (none run; GPU needed)
+
+CPU reanalysis of the existing logs is done (`experiments/35-final-reanalysis/`);
+these are the items the logs cannot supply. Each is named in the paper's §7.2.
+- [ ] **Re-rounder on the ladder, paired (referee 1, 6).** Re-rounded Q2_K vs
+  IQ2_M / IQ3_XXS at 27B under single-step BF16 provenance, same chunks and
+  reference (needs the single-step 27B re-round pair, also open above). At
+  0.8B the paired answer already exists from logs: IQ3_XXS at 412 MB beats
+  re-rounded Q2_K at 436 MB by 0.0657 KLD, t = +10.8 (E35 A3). Add IQ2_M at
+  0.8B to bracket the byte point from below.
+- [ ] **Capability replication (referee 4).** Three more single-slot runs
+  per IQ3 arm (GSQ-RCO IQ3_S, UD-IQ3_S) plus a run of OUR corrected arm, so
+  the +12 can be read against a same-file run-to-run spread; confirm whether
+  the Q5 band runs were single-slot.
+- [ ] **KLD at a 2048-token context (referee 4)** for the four E32 artifacts,
+  to separate context length from metric. Paired PPL@2048 is done from logs
+  (t = −3.33, −4.15, n = 145; E35 A5).
+- [ ] **MoE rescoring (referee 9): NOT warranted in the form raised.** E35 A4
+  read the reference's tensor types: `ffn_down_exps` is Q5_K ×37 / Q6_K ×3 in
+  UD-Q4_K_M, not Q4_K, so the control is not near-lossless by construction.
+  What stays open is a BF16-referenced MoE table at n ≥ 40, if a BF16 of the
+  35B-A3B is ever obtained.
+- [ ] **Baselines for the re-rounder (referee 13):** free-grid GPTQ at equal
+  bits; a learned-rounding method; (stretch) a vector/lattice 2-bit quantizer.
+- [ ] **A non-Qwen model (referee 13)**, and the third width E33 needs.
+- [ ] **Held-out / replicated 27B ladder pair (referee 5).** The n = 100
+  margin over Q3_K_S sits entirely in chunks 41–100 (E35 A1.3); repeat the
+  corrected-vs-Q3_K_S-vs-control triple on a second corpus (this is T1.7).
 
 ## DONE 2026-08-03
 - [x] **E01 — SVD spectrum census**: H1 confirmed, W is energy-full-rank,

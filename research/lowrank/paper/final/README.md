@@ -1,8 +1,7 @@
 # The paper
 
-`paper.pdf` — *The Free Lever and the Measured Walls: Re-Rounding, Whitened
-Low-Rank Correction, and the Limits of Post-Training Quantization Repair in
-llama.cpp.*
+`paper.pdf` — *Frozen-Grid Re-Rounding and the Limits of Low-Rank Correction for
+llama.cpp Quantization: A Paired Audit.*
 
 | file | what it is |
 |---|---|

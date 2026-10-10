@@ -10,7 +10,7 @@ paper-latex.pdf when Tectonic is found: $TECTONIC, `tectonic` on PATH, or
 ~/.local/share/openbeast/tectonic/tectonic. See README.md.
 
 The Markdown sections are the source of truth. This script only re-shapes
-them: `[source: path]` markers become short artifact tags (Appendix A maps
+them: `[source: path]` markers become short artifact tags (Appendix B maps
 tags back to paths), `arXiv:NNNN.NNNNN` becomes a numbered reference, and the
 Markdown subset the sections use is translated to Typst.
 """
@@ -20,8 +20,8 @@ import latex
 
 HERE = pathlib.Path(__file__).parent
 ROOT = HERE.parent.parent          # research/lowrank
-TITLE = ("The Free Lever and the Measured Walls: Re-Rounding, Whitened Low-Rank "
-         "Correction, and the Limits of Post-Training Quantization Repair in llama.cpp")
+TITLE = ("Frozen-Grid Re-Rounding and the Limits of Low-Rank Correction for "
+         "llama.cpp Quantization: A Paired Audit")
 AUTHOR = "Maximilian Khan"
 AFFIL = "OpenBeast project · github.com/MaximilianKhan/openbeast"
 DATE = "October 2026"
@@ -228,7 +228,7 @@ def main():
     md = numbered(marked)
     names = load_refs()
     names.update({k: v for k, v in EXTRA_NAMES.items() if k not in names})
-    appendix = ["# Appendix A. Artifact index", "",
+    appendix = ["# Appendix B. Artifact index", "",
                 "Bracketed tags in the text name the place in the project repository where the "
                 "measurement, its raw logs and its scripts live.", "",
                 "| tag | path |", "|---|---|"]
