@@ -1,5 +1,9 @@
 # beast-rank TODO — ranked
 
+> **Parked 2026-10-09.** No GPU run is in progress or half-banked. The ordered
+> list of what to run when the card is free, with times and the reason for
+> each, is the "GPU BACKLOG" section at the top of `docs/TODO.md`.
+
 ## 📄 WRITTEN UP 2026-10-09 — paper/final/paper.pdf + ../FINDINGS.md
 
 The campaign is written up with what was measured by 2026-09-14 plus the
