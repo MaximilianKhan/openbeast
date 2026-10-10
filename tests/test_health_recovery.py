@@ -47,6 +47,7 @@ def _fresh_run_eval(cache_dir: Path, results_dir: Path):
         sys.modules.pop(mod, None)
     cache = importlib.import_module("cache")
     cache.CACHE_DIR = cache_dir
+    cache.STRIKES_DIR = cache.CACHE_DIR / "env-strikes"
     cache._context_cache.clear()
     run_eval = importlib.import_module("run_eval")
     run_eval.RESULTS_DIR = str(results_dir)

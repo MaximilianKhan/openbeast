@@ -91,8 +91,9 @@ your main conversation stays responsive while the sub-agent grinds.
 `Qwen3.8 27B Uncensored MTP Q5_K_M` (JonathanColetti abliterated Qwen3.8,
 `serve-qwen38-27b-uncensored-mtp-q5.sh`), launched by `./start.sh` with no
 args — picked for uncensored behavior plus speed/headroom (140 tok/s, 262K
-native, 4.76 GB free). Benchmarked 2026-08-21: capability 98.4 (#3 on v4),
-statistically identical to stock Qwen3.8 — abliteration cost ≈ zero.
+native, 4.76 GB free). Benchmarked 2026-09-08 (non-MTP row): SCORE 97.6
+(#3 on v4), a tie with stock Qwen3.8 (97.7) — abliteration cost ≈ zero. The
+MTP row itself is unbenchmarked.
 
 Ranking is by the **v4 SCORE** metric (`SCORE = 0.75·problem-solving +
 0.25·language-breadth`), not raw accuracy. The dense `Qwen3.6-27B Q5_K_XL`

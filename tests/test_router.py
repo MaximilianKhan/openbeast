@@ -489,7 +489,7 @@ class TestHydraWiring(unittest.TestCase):
     def _proxy(self, headers):
         from starlette.testclient import TestClient
         rec = _Recorder()
-        with TestClient(router.app) as c:
+        with TestClient(router.app, base_url="http://127.0.0.1:8088") as c:
             router.app.state.client = rec
             r = c.post("/v1/models-probe", content=b'{"a":1}', headers=headers)
         self.assertEqual(r.status_code, 200)

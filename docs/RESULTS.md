@@ -48,7 +48,7 @@ token cost are reported as separate columns.
 > continuity. Implementation: `scoring.compute_solve_breadth`,
 > `scoring_version="v2-solve-breadth"`; tests in `tests/test_scoring.py`.
 >
-> **v1 → v2 ranking shift on the RTX 5090 (v4 suite):**
+> **v1 → v2 ranking shift on the RTX 5090 (v4 suite, the five rows that existed on 2026-07-10):**
 >
 > | # | Model | **SCORE** | Solve | Lang | Acc (v1) | v1 rank |
 > |---:|---|---:|---:|---:|---:|---:|
@@ -65,7 +65,7 @@ token cost are reported as separate columns.
 > weakest polyglot (98.2 / 95.5); NVFP4 is the mirror (94.8 / 98.2). v1's single
 > number couldn't tell them apart.
 
-## v4 leaderboard — RTX 5090 ×1, 291 units (2026-07-08→09)
+## v4 leaderboard — RTX 5090 ×1, 291 units (2026-07-08 → 2026-09-08)
 
 **Ranked by capability** — `SCORE = 0.75·SOLVE + 0.25·LANG`:
 
@@ -75,25 +75,38 @@ token cost are reported as separate columns.
 
 Single RTX 5090 runs, board keyed by `(host, model)`; sub-~1-pt Score gaps are run-to-run noise. Full methodology → [`evals/README.md`](../evals/README.md).
 
-| # | Model | Solve | Lang | **Score** | Spd t/s | Tokens | Wall |
-|---:|---|---:|---:|---:|---:|---:|---:|
-| 1 | **Qwen 27B Q5_K_XL** | **99.1%** | 97.5% | **98.7%** | 60 | 14.0M | 8h14m† |
-| 2 | Qwen 27B MTP Q5_K_XL | 97.3% | **98.3%** | **97.5%** | 164 | 13.3M | 3h49m |
-| 3 | Qwen 35B-A3B MTP MoE Q4_K_M | 98.2% | 95.5% | **97.5%** | **359** | 20.6M | 4h16m |
-| 4 | Qwopus 27B v2 MTP Q5_K_M | 96.4% | 96.5% | **96.4%** | 152 | 15.4M | 4h36m |
-| 5 | Qwen 35B-A3B NVFP4 MTP | 96.6% | 95.5% | **96.3%** | 302 | 17.8M | 6h35m |
-| 6 | Qwen 27B NVFP4 MTP | 94.8% | 98.2% | **95.7%** | 128 | 16.1M | 5h24m |
-| 7 | Qwen 35B-A3B MoE Q4_K_M (non-MTP) | 94.8% | 95.7% | **95.0%** | 200 | 19.0M | 6h07m |
+| # | Model | Solve | Lang | **Score** | Spd t/s | Tokens | Wall | Pass |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|
+| 1 | **Qwen 27B Q5_K_XL** | **99.1%** | 97.5% | **98.7%** | 60 | 14.0M | 8h14m† | 271/291 |
+| 2 | Qwen3.8 27B Q5_K_XL | 98.2% | 96.1% | **97.7%** | 36‡ | 28.3M | 36h33m‡ | 258/291 |
+| 3 | Qwen3.8 27B Uncensored Q5_K_M | 98.2% | 95.9% | **97.6%** | 39‡ | 28.1M | 31h09m‡ | 255/291 |
+| 4 | Qwen 27B MTP Q5_K_XL | 97.3% | **98.3%** | **97.5%** | 164 | 13.3M | 3h49m | 273/291 |
+| 5 | Qwen 35B-A3B MTP MoE Q4_K_M | 98.2% | 95.5% | **97.5%** | **359** | 20.6M | 4h16m | 254/291 |
+| 6 | Qwopus 27B v2 MTP Q5_K_M | 96.4% | 96.5% | **96.4%** | 152 | 15.4M | 4h36m | 260/291 |
+| 7 | Qwen 35B-A3B NVFP4 MTP | 96.6% | 95.5% | **96.3%** | 302 | 17.8M | 6h35m | 252/291 |
+| 8 | Qwen 27B NVFP4 MTP | 94.8% | 98.2% | **95.7%** | 128 | 16.1M | 5h24m | 271/291 |
+| 9 | Qwen 35B-A3B MoE Q4_K_M (non-MTP) | 94.8% | 95.7% | **95.0%** | 200 | 19.0M | 6h07m | 251/291 |
+
+Regenerated from `python3 evals/scoring.py --show` on 2026-10-09.
+
+**The rows are not from one harness.** The task set is frozen, but rows 2 and
+3 (2026-09-07/08) ran on a later harness era and engine build than the seven
+July rows, with uncapped reasoning and `--jobs 4`; the July rows predate
+`--jobs` and record no reasoning budget or OpenBeast commit. Gaps of
+about a point between the two groups are not evidence of a model difference.
+The champion row has not been rerun in the current era
+([`TODO.md`](TODO.md)). Known validator defects that affect every row are
+listed in [`evals/README.md`](../evals/README.md#known-validator-defects-v4).
 
 **Takeaways.**
 
 - **Qwen 27B Q5_K_XL leads (98.7)** — the strongest problem-solver on the suite.
 - **MTP is a free speed-up** — same weights, lossless: the 35B-A3B Q4_K_M decodes **359 tok/s with MTP vs 200 without** (measured, 1.8×), and any Score gap (97.5 vs 95.0) is single-run variance → **always ship MTP**.
-- **Both NVFP4 rows sit at the bottom** — capability-equivalent but weaker problem-solvers than their K-quant siblings, and slower single-stream (302/128 vs 359/164); NVFP4 wins *only* on batched `-np 8` serving (see the NVFP4 section below).
+- **Both NVFP4 rows sit near the bottom** — capability-equivalent but weaker problem-solvers than their K-quant siblings, and slower single-stream (302/128 vs 359/164); NVFP4 wins *only* on batched `-np 8` serving (see the NVFP4 section below).
 
-> **Reading the board:** **SPD** = *sustained decode* tok/s — the model's real generation speed, server‑measured (all 7 v4 rows have measured decode; a **~** would flag an isolated‑benchmark estimate). **†** *Qwen 27B Q5_K_XL ran `-np 6` with cache-resumed units, so its Wall isn't comparable to the serial `-np 1` MTP rows.* Detailed column notes, NVFP4's real use case, and per-language breakdowns are in [`evals/README.md`](../evals/README.md).
+> **Reading the board:** **SPD** = *sustained decode* tok/s — the model's real generation speed, server‑measured (all 9 v4 rows have measured decode; a **~** would flag an isolated‑benchmark estimate). **†** *Qwen 27B Q5_K_XL ran `-np 6` with cache-resumed units, so its Wall isn't comparable to the serial `-np 1` MTP rows.* **‡** *The Qwen3.8 rows ran `--jobs 4`: Spd and Wall are depressed and inflated by four units sharing the GPU, and are not comparable to the sequential rows.* Detailed column notes, NVFP4's real use case, and per-language breakdowns are in [`evals/README.md`](../evals/README.md).
 
-> **Not yet benchmarked:** the six community models (Fable-Fusion 711 ×4, Heretic v2 ×2, see [`MODELS.md`](MODELS.md)) are VRAM/speed-measured but not capability-ranked — pending a v4 sweep.
+> **Not yet benchmarked:** the five community models (Fable-Fusion 711 ×4, Heretic v2 Q5; the Heretic Q6 twin was pruned 2026-08-20, see [`MODELS.md`](MODELS.md)) are VRAM/speed-measured but not capability-ranked — pending a v4 sweep.
 
 > **Suite version.** The results below are the **legacy v3.5 record — 323
 > effective test units** (159 base tasks · 33 variant'd across 6 languages ·
@@ -101,8 +114,7 @@ Single RTX 5090 runs, board keyed by `(host, model)`; sub-~1-pt Score gaps are r
 > 80 easy · 123 medium · 120 hard. Token tracking on every task; result
 > cache at `evals/cache/` for retryable sweeps.
 > **The current suite is v4** (137 base tasks / 291 units) — distribution in
-> [`evals/README.md`](../evals/README.md); the first v4 results (the three
-> MTP models, 2026-07-08) live in `evals/leaderboard.json` and
+> [`evals/README.md`](../evals/README.md); the v4 results live in `evals/leaderboard.json` and
 > [`RESEARCH_FINDINGS.md`](RESEARCH_FINDINGS.md) §3. v3.5 and v4 numbers are
 > not comparable.
 
@@ -114,7 +126,7 @@ python3 evals/scoring.py --by-category                     # per-category drilld
 
 ---
 
-## Eval suite distribution
+## Eval suite distribution (legacy v3.5)
 
 **159 base tasks** across **12 categories** with deterministic validation per
 task. Difficulty split: **40 easy · 53 medium · 66 hard**. Difficulty weights

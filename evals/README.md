@@ -1,20 +1,52 @@
 # Eval suite
 
 > **Suite version: v4 (current).** 137 base tasks / 291 effective units,
-> hardened so a correct solution passes and every documented cheat is
-> empirically rejected — see [`CHANGELOG.md`](CHANGELOG.md),
+> hardened against the cheats documented in the 2026-07 review. That
+> hardening is incomplete: see [Known validator defects (v4)](#known-validator-defects-v4)
+> below. History: [`CHANGELOG.md`](CHANGELOG.md),
 > [`../docs/archive/EVAL_V4_PLAN.md`](../docs/archive/EVAL_V4_PLAN.md), and the review that
 > drove it, [`../docs/archive/EVAL_REVIEW_2026-07-07.md`](../docs/archive/EVAL_REVIEW_2026-07-07.md).
 > The distribution tables below describe **v4**. For the model **leaderboard**
-> (four models on v4 — three MTP builds + the dense Qwen 27B Q5_K_XL — and four
-> non-MTP models still on legacy v3.5, pending the in-progress re-run), see the
+> (nine models on v4; three legacy v3.5 rows kept for history, two of them for
+> pruned models), see the
 > [main README](../README.md) and [`../docs/RESULTS.md`](../docs/RESULTS.md);
 > v3.5 and v4 scores are **not directly comparable** (different task sets).
 
-137 self-contained coding tasks (291 effective units with multi-language variants) for benchmarking local LLMs. Each task has a
-deterministic validation script that returns exit 0 on success, non-zero on
+137 coding tasks (291 effective units with multi-language variants) for benchmarking local LLMs. Each task has a
+validation script that returns exit 0 on success, non-zero on
 failure. The harness runs the agent against every task, scores the result, and
 ranks models in a leaderboard keyed by (host_id, model_slug).
+
+The tasks ship their own fixtures and need no network, but a run is not
+sealed: eval agents have live `fetch` and `web_search`, and `web_search`
+succeeds or fails depending on whether SearXNG is up, which is not recorded.
+See the next section.
+
+## Known validator defects (v4)
+
+These are known and held for the next suite version, because fixing a
+validator or the harness changes the era and invalidates every cached result.
+
+- **`23_sql_injection` rejects the canonical fix.** The validator flags any
+  `+` or f-string inside the `execute(...)` call, including in the parameter
+  tuple. `cur.execute("... LIKE ?", ('%' + q + '%',))` fails; the same fix
+  with the pattern assigned on the previous line passes, and so does SQL
+  concatenated into a variable outside the call. Every v4 board row fails
+  this task. It is a hard singleton, so each row carries about −0.68 SCORE
+  from it.
+- **`21_race_condition` can pass without synchronisation.** The validator
+  checks only the final count of 10 threads × 2000 increments. Deleting the
+  fixture's `time.sleep(0)` yield, with no lock added, passed 20 of 20
+  validations.
+- **Variant units expose their expected output.** 132 of the 185 variant
+  units write `expected.txt` into the agent's working directory at setup and
+  validate with a `diff` against it. A solution that prints the file's
+  contents passed 21 of 22 sampled Python variants. Whether any banked
+  solution does this has not been audited.
+- **Eval agents have live `fetch` and `web_search`.** Agent logs show
+  successful fetches of Wikipedia, GitHub and ziglang.org during eval units,
+  and `web_search` availability differs between runs with the stack up and
+  down. Neither is in the cache key or the result provenance.
 
 ```bash
 python3 evals/run_eval.py --list                     # list every task
@@ -47,20 +79,45 @@ whole sweep holds the card; under a `run` that already wraps it (a
 campaign), it proceeds. A sweep in a git worktree asks the main tree's
 lease. Every model (re)start asks again.
 
+**Between models the sweep waits for the card to cool, not for a fixed ten
+minutes.** The cool-off ends when the hottest GPU reads 50 °C or lower, with
+a 60 s floor and the old 600 s as the ceiling; when the temperature cannot
+be read it is the fixed 600 s. `OPENBEAST_BENCH_COOLOFF_TEMP_C=<°C>` moves
+the threshold and `off` (or `0`) restores the fixed wait. The 50 °C / 60 s
+defaults are a judgement, not yet checked against a measured cool-down on
+the reference card — set `off` for a sweep whose rows must be thermally
+identical to older ones.
+
 ## v5-fast — the pinned fast suite (imputation-scored)
 
-`evals/suites/v5-fast.json` pins the 106 units that carry the suite's signal:
-the **86 discriminating units** (passed by some but not all of the reference
+`evals/suites/v5-fast.json` pins the 112 units that carry the suite's signal:
+the **92 discriminating units** (passed by some but not all of the 9 reference
 models) plus **20 cheap all-pass "tripwire" units** kept as regression
-canaries. The other 185 units are saturated — every reference model passes
-182 of them and none passes 3 — so a fast run doesn't run them, it **imputes**
+canaries. The other 179 units are saturated — every reference model passes
+177 of them and none passes 2 — so a fast run doesn't run them, it **imputes**
 them: scoring reconstructs the full 291-unit task list with the assumed
 outcomes and computes the standard v2 capability metric on it.
 
 **Fidelity contract:** for any model whose real outcomes match the
 assumptions, the imputed score EQUALS the full-suite capability score
 exactly — same number, same leaderboard scale. This is verified as an
-identity on every reference run by `make_fast_suite.py` (raw subset scoring
+identity on every reference run by `make_fast_suite.py`, which are the runs
+the pin was built from, so the check holds by construction and says nothing
+about other models. `make_fast_suite.py` (verify mode) therefore also prints
+a **leave-one-model-out** table — re-derive the pin from eight reference
+runs, impute the ninth — which is the honest estimate of the error on a
+model the pin has not seen. On the nine reference runs only 1 of 9 comes
+out exact; the mean error is **+0.87** points and the worst **+2.04** (the
+35B-A3B MoE: 97.05 imputed against 95.01 real), always reading high, and 5
+of the 8 misses fail **no** tripwire, so the guard below does not catch
+them. The table is reported, not gated: the exit code and the pinned file
+are unchanged. On the two non-reference full runs on disk, 2 units and
+1 unit violated `assumed_passed` with no tripwire failing, and the imputed
+score read high (98.48 against a true 98.43, and 98.42 against 98.38).
+**Treat an imputed score as an upper bound outside the reference family**
+(Qwen 27B–35B); for IQ3/IQ2 quants and other model classes no full run exists
+to bound the error. Paired comparisons on the pinned units are unaffected.
+(Raw subset scoring
 was measured at τ = +0.810 against the full metric and rejected — it flips
 near-tie ranks; see `docs/EVAL_FAST_SUITE_PROPOSAL.md`).
 
@@ -100,12 +157,27 @@ the health check right after the agent finished, is recorded with
 `reason: server_error`; a unit whose validation output shows fork/thread
 exhaustion (`Resource temporarily unavailable`, `SystemResources`,
 `thread constructor failed`) or a full disk (`No space left on device`,
-`NoSpaceLeft`) is recorded with `reason: env_error`. Both retry live on the
-next run, and a run containing either can't enter the leaderboard until
-that rerun is done. An `env_error` that repeats for the same cache key
-(`OPENBEAST_EVAL_ENV_ERROR_BANK_AFTER`, default 3) is the model's own
-program exhausting the machine, so it banks as a plain FAIL
-(`env_error_repeats: N`) instead of rerunning forever. Before each live
+`NoSpaceLeft`) is recorded with `reason: env_error`; and a unit whose
+**validator** ran out of its own time budget is recorded with
+`reason: validator_timeout` — on a contended host that happens to a correct
+solution, whose compile is most of the budget. (The validator's budget now
+takes the same `timeout_scale` as the agent's wall budget, so a `--jobs N`
+run no longer times validators out at the serial figure.) All three retry
+live on the next run. A run containing `server_error` or `env_error` can't
+enter the leaderboard until that rerun is done; a `validator_timeout` row is
+**not** an infrastructure row for that purpose today — it still seats, and
+still counts as a FAIL in paired verdicts (an open decision, `docs/TODO.md`).
+An `env_error` or `validator_timeout` that repeats for the same cache key
+(one shared strike counter, `OPENBEAST_EVAL_ENV_ERROR_BANK_AFTER`, default
+3) is the model's own program exhausting the machine or hanging, so it
+banks as a plain FAIL (`env_error_repeats: N` /
+`validator_timeout_repeats: N`) instead of rerunning forever. Cache entries
+banked before 2026-10-09 are untouched: 17 of them hold a "Validation timed
+out" FAIL and still replay as one until cleared with `cache_cli.py`.
+
+**Each unit starts clean.** The harness runs a task's `cleanup` *before* its
+`setup` as well as after validation, so a solution file left behind by a
+killed run cannot validate for the next unit. Before each live
 unit the harness also checks free space on the filesystems it writes to (the evals tree, `$HOME` for compiler caches,
 `/tmp`). Below `OPENBEAST_EVAL_MIN_FREE_GB` (default 5; `0` disables) it records
 that unit as `reason: low_disk` and stops starting units, so a disk filled
@@ -117,7 +189,10 @@ server start, no live calls, cache misses are recorded as
 `skipped_cache_miss` for visibility. It has no live host (`gpu`/`server`
 are null, `cache_only: true`), so the leaderboard refuses it: seated, it
 was a second `unknown-host` row for the model. To rescore banked runs
-after a scoring change, use `scoring.py --rebuild`. With no server to read the
+after a scoring change, use `scoring.py --rebuild` — which refuses (exit 1,
+`leaderboard.json` untouched) when it finds no readable `eval-*.json` at
+all, instead of rebuilding to an empty board; results files that exist but
+are all ineligible still rebuild to an empty one. With no server to read the
 reasoning budget from, it replays the `.rbN` era of the model's newest
 live results file (it prints which); `--reasoning-budget N` picks one
 explicitly (`-1` = the uncapped legacy era). A replay with any cache miss
@@ -142,9 +217,9 @@ refuse any results file whose `harness` records one of those arms (or an
 escalation component), a fast suite, or infrastructure rows
 (`skipped_cache_miss`, `server_unhealthy`, `setup_failed`, `server_error`,
 `env_error`, `low_disk`) — see `scoring.ineligibility_reasons`. A `--escalate` arm (beast-lang's
-confirmed-fix card riding on beast-assist's diagnostic) is **pending**: its
-wiring touches two of the six era files and is a held draft PR (#90), not in
-`main`.
+confirmed-fix card riding on beast-assist's diagnostic) is wired and opt-in
+(`BEAST_ESCALATE=1` with `BEAST_ASSIST=1`), runs under its own `esc1-<sha8>`
+era and is leaderboard-ineligible; its A/B has not run.
 
 **What the key does not see, and the opt-in env era.** The model is keyed by
 its alias, not its bytes; the llama.cpp build, the KV/context serve flags and
@@ -154,7 +229,9 @@ old verdicts. Every live run now computes an `env1-<sha8>` fingerprint over
 exactly those (`run_eval.env_fingerprint`: a weight pinned in
 `scripts/weights.registry` counts as its sha256, an unpinned one as its size +
 mtime, so the file is never hashed). The fingerprint is stamped in
-`harness.env` / `harness.env_component` and on every live row (`env_fp`), and a
+`harness.env` / `harness.env_component` and on every live row (`env_fp`)
+(the run's era hash is stamped beside it as `harness.era`, so rows compare
+on the era rather than on the repo commit), and a
 replayed row banked under a different or unrecorded environment is counted
 (`summary.env_drift_replays`, printed as `ENV DRIFT`). It enters the cache
 key only with **`OPENBEAST_EVAL_ENV_ERA=1`**, because turning that on starts
@@ -471,7 +548,7 @@ narrated in [`docs/RESULTS.md`](../docs/RESULTS.md) "Scoring v2".
 Ranking is by **capability** first, then problem_solving, then hard pass count,
 then speed. Tokens and API-equivalent cost are tracked separately (not part of
 the rank). Leaderboard readout columns: SOLVE / LANG / SCORE (all shown as %)
-→ SPD (sustained decode tok/s; ~ = estimate) → TOKENS (total prompt+completion) → WALL → PASS. (The
+→ SPD (sustained decode tok/s; ~ = estimate) → TOKENS (total prompt+completion) → WALL → PASS → T/O. (The
 legacy v1 accuracy and per-tier pass rates live in each entry's JSON
 `accuracy`/`breakdown` + `scoring.py --by-category`, not the at-a-glance readout.)
 
@@ -483,7 +560,11 @@ legacy v1 accuracy and per-tier pass rates live in each entry's JSON
 
 **Why the `~` estimates (fallback, currently unused):** decode is matched to each run's tee'd server log by timestamp (`decode_from_server_log`), which finds a real log for **every** v4 run — so all current rows are server-measured. If a run ever has no decode log, its SPD falls back to an isolated-benchmark estimate shown with a leading `~` (or `—` if none is defined). Re-running with logging always replaces it with a measured value.
 
-**†** *Qwen 27B Q5_K_XL ran `-np 6` with 100/291 units cache-resumed, so its Wall isn't comparable to the serial `-np 1` MTP rows.*
+**T/O** is the number of units whose agent was killed — at the wall timeout or by a signal (agent exit < 0). Their pass/fail still counts exactly as before; the column is there because a row with several kills measured the clock as much as the model. A killed unit's tokens read 0 until the runner reports them on the way down.
+
+**† and ‡ after a row are provenance marks, printed by `scoring.py --show` with one footnote line per marked row.** Each entry carries `provenance`: the repo commit and dirty flag, the engine build, the reasoning budget and `--jobs`. **†** = the row is missing at least one of those (it predates the stamp), so nothing can be said about its regime. **‡** = everything is recorded and something differs from row 1 — the footnote names what (for example `engine build 10254 (row 1: 9690); jobs 4 (row 1: unrecorded)`). No row is re-ranked or dropped for either mark; they say which rows are not like-for-like. On today's board rows 2 and 3 (Qwen3.8) are ‡ and the rest †.
+
+*Qwen 27B Q5_K_XL ran `-np 6` with 100/291 units cache-resumed, so its Wall isn't comparable to the serial `-np 1` MTP rows.*
 
 ### NVFP4 — real target use case (why it ranks low but is NOT useless to benchmark)
 
@@ -504,30 +585,46 @@ We still benchmark NVFP4 to (a) confirm it's capability-equivalent (so the fleet
 
 **v4 per-language accuracy** (difficulty-weighted % over the 31 variant tasks +
 the Python-bucketed single-language tasks; same methodology as the v3.5 table
-below, so the two are comparable. Bold = top, italic = floor per column):
+below. Bold = top, italic = floor per column):
 
-| Model | Python | C | C++ | Go | Rust | Zig | Best at |
-|---|---:|---:|---:|---:|---:|---:|---|
-| Qwen 27B Q5_K_XL | **98.6** | 92.7 | _87.7_ | **97.9** | **100.0** | 60.5 | Python, Go, Rust |
-| Qwen 27B MTP Q5_K_XL | 96.7 | **96.9** | **96.9** | 96.9 | 96.9 | **66.6** | C, C++, Zig |
-| Qwen 35B-A3B MTP MoE Q4_K_M | 97.3 | _85.4_ | _87.7_ | _85.4_ | _95.8_ | _34.5_ | — |
-| Qwopus 27B v2 MTP Q5_K_M | _95.2_ | _84.5_ | 91.9 | 96.9 | 96.9 | 44.7 | — |
+| Model | Python | C | C++ | Go | Rust | Zig |
+|---|---:|---:|---:|---:|---:|---:|
+| Qwen 27B Q5_K_XL | **98.6** | 92.7 | 87.7 | **97.9** | **100.0** | 60.5 |
+| Qwen3.8 27B Q5_K_XL | 97.6 | 87.7 | 92.7 | 95.8 | 92.7 | 30.3 |
+| Qwen3.8 27B Uncensored Q5_K_M | 97.7 | 91.7 | 96.9 | 89.6 | 89.6 | _25.1_ |
+| Qwen 27B MTP Q5_K_XL | 96.7 | **96.9** | 96.9 | 96.9 | 96.9 | 66.6 |
+| Qwen 35B-A3B MTP MoE Q4_K_M | 97.3 | 85.4 | 87.7 | 85.4 | 95.8 | 34.5 |
+| Qwopus 27B v2 MTP Q5_K_M | 95.2 | 84.5 | 91.9 | 96.9 | 96.9 | 44.7 |
+| Qwen 35B-A3B NVFP4 MTP | 95.3 | 87.7 | 92.7 | _80.2_ | **100.0** | 32.4 |
+| Qwen 27B NVFP4 MTP | 93.7 | 89.6 | **100.0** | 90.6 | 96.9 | **76.0** |
+| Qwen 35B-A3B MoE Q4_K_M | _93.5_ | _83.5_ | 88.7 | _80.2_ | 97.9 | 38.6 |
 
 Raw pass counts (difficulty-blind, `passed/count`) tell the plainer story:
 
 | Model | Python | C | C++ | Go | Rust | Zig |
 |---|---:|---:|---:|---:|---:|---:|
-| Qwen 27B Q5_K_XL | 133/136 | 29/31 | 28/31 | 30/31 | **31/31** | 20/31 |
+| Qwen 27B Q5_K_XL | 133/136 | 29/31 | 28/31 | 30/31 | 31/31 | 20/31 |
+| Qwen3.8 27B Q5_K_XL | 133/136 | 28/31 | 29/31 | 30/31 | 29/31 | 9/31 |
+| Qwen3.8 27B Uncensored Q5_K_M | 133/136 | 29/31 | 30/31 | 28/31 | 28/31 | 7/31 |
 | Qwen 27B MTP Q5_K_XL | 133/136 | 30/31 | 30/31 | 30/31 | 30/31 | 20/31 |
 | Qwen 35B-A3B MTP MoE Q4_K_M | 131/136 | 27/31 | 28/31 | 27/31 | 30/31 | 11/31 |
 | Qwopus 27B v2 MTP Q5_K_M | 130/136 | 27/31 | 29/31 | 30/31 | 30/31 | 14/31 |
+| Qwen 35B-A3B NVFP4 MTP | 128/136 | 28/31 | 29/31 | 25/31 | 31/31 | 11/31 |
+| Qwen 27B NVFP4 MTP | 130/136 | 28/31 | 31/31 | 28/31 | 30/31 | 24/31 |
+| Qwen 35B-A3B MoE Q4_K_M | 129/136 | 27/31 | 28/31 | 25/31 | 30/31 | 12/31 |
 
-Three things fall out. **(1) Base ≈ MTP is a per-language dead heat** — identical
+Both tables are regenerated from `python3 evals/scoring.py --by-language`
+(2026-10-09) and cover all nine v4 rows. The Qwen3.8 rows come from a later
+harness era with `--jobs 4`, so read their columns against each other, not
+against the July rows.
+
+Three things fall out. **(1) Base ≈ MTP is a per-language dead heat** — Qwen
+27B Q5_K_XL and its MTP twin are identical
 on Python (133/136) and Zig (20/31), never more than 2 units apart anywhere —
-confirming MTP is lossless; the weighted table's cpp/rust swings are single-task
+consistent with MTP being lossless; the weighted table's cpp/rust swings are single-task
 noise amplified by difficulty weighting. **(2) Zig is the discriminator.** Every
-model clears 84–100 % on the five mainstream languages, so those columns barely
-separate the field — but Zig fans out from **34.5 % to 66.6 %**.
+model clears 80–100 % on the five mainstream languages, so those columns barely
+separate the field — but Zig fans out from **25.1 % to 76.0 %**.
 
 **(3) ⚠️ The headline Acc is ~82 % a Python contest — mind the aggregation.** The
 Python bucket (106 single-language tasks at full weight + Python's 1/6 share of

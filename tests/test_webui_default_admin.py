@@ -326,6 +326,140 @@ def _mounted_443(rig):
                and "serve" in a for k, a in _events(rig))
 
 
+def _mounts_8443(rig):
+    """Upstreams `tailscale serve` was asked to mount on :8443, in order."""
+    return [a[-1] for k, a in _events(rig)
+            if k == "ts" and "serve" in a and "--https=8443" in a and "off" not in a]
+
+
+def _mounted_8443(rig):
+    return bool(_mounts_8443(rig))
+
+
+def _unmounted_8443(rig):
+    return any(k == "ts" and "--https=8443" in a and "off" in a
+               for k, a in _events(rig))
+
+
+# --- inference (:8443): never publish a keyless, ungated llama-server --------
+# 2026-10-09 review, netsec S11. The WebUI needed --i-accept-open-webui to go
+# out open; raw llama-server needed nothing and was the default path.
+
+def test_tailscale_refuses_keyless_ungated_inference(ts_rig):
+    ts_rig.set_state(auth=True, admin_pw="rotated-already")
+    p = ts_rig.run("setup-tailscale.sh")
+    assert p.returncode == 0, p.stderr
+    assert not _mounted_8443(ts_rig)
+    assert _unmounted_8443(ts_rig), "an earlier raw mount must be taken down"
+    assert "NOT publishing inference (:8443)" in p.stderr
+    # All three ways forward are named.
+    for way in ("EDGE_GATE=true", "LLAMA_API_KEY=", "--i-accept-open-inference"):
+        assert way in p.stderr, way
+    assert "https://beast.example.ts.net:8443/v1" not in p.stdout
+    assert "API (OpenAI-compat): NOT published" in p.stdout
+    assert "ALLOW_OPEN_INFERENCE" not in ts_rig.conf.read_text()
+    # Negative control for over-blocking: the WebUI still goes out.
+    assert _mounted_443(ts_rig)
+
+
+def test_tailscale_publishes_inference_behind_the_gate(ts_rig):
+    ts_rig.set_state(auth=True, admin_pw="rotated-already")
+    ts_rig.conf.write_text("SEARXNG_SECRET=stub\nEDGE_GATE=true\n")
+    p = ts_rig.run("setup-tailscale.sh")
+    assert p.returncode == 0, p.stderr
+    assert _mounts_8443(ts_rig) == ["http://127.0.0.1:8090"]
+    assert "NOT publishing inference" not in p.stderr
+    assert "ALLOW_OPEN_INFERENCE" not in ts_rig.conf.read_text()
+
+
+def test_tailscale_publishes_inference_behind_a_shared_key(ts_rig):
+    ts_rig.set_state(auth=True, admin_pw="rotated-already")
+    ts_rig.conf.write_text("SEARXNG_SECRET=stub\nLLAMA_API_KEY=sekrit\n")
+    p = ts_rig.run("setup-tailscale.sh")
+    assert p.returncode == 0, p.stderr
+    assert _mounts_8443(ts_rig) == ["http://127.0.0.1:8080"]
+    assert "NOT publishing inference" not in p.stderr
+    assert "sekrit" not in p.stdout + p.stderr
+
+
+def test_tailscale_empty_key_is_not_a_key(ts_rig):
+    ts_rig.set_state(auth=True, admin_pw="rotated-already")
+    ts_rig.conf.write_text("SEARXNG_SECRET=stub\nLLAMA_API_KEY=\nEDGE_GATE=false\n")
+    p = ts_rig.run("setup-tailscale.sh")
+    assert p.returncode == 0, p.stderr
+    assert not _mounted_8443(ts_rig)
+    assert "NOT publishing inference" in p.stderr
+
+
+def test_tailscale_open_inference_flag_publishes_and_is_persisted(ts_rig):
+    """Mirrors --i-accept-open-webui / ALLOW_OPEN_WEBUI: the flag publishes,
+    records one assignment in a 0600 conf, and a re-run without it honours
+    the record."""
+    ts_rig.set_state(auth=True, admin_pw="rotated-already")
+    ts_rig.conf.write_text("SEARXNG_SECRET=stub\nALLOW_OPEN_INFERENCE=false\n")
+    ts_rig.conf.chmod(0o600)
+    p = ts_rig.run("setup-tailscale.sh", "--i-accept-open-inference")
+    assert p.returncode == 0, p.stderr
+    assert _mounts_8443(ts_rig) == ["http://127.0.0.1:8080"]
+    assert "NO key" in p.stdout
+    text = ts_rig.conf.read_text()
+    assert ts_rig.conf_values()["ALLOW_OPEN_INFERENCE"] == "true"
+    assert text.count("ALLOW_OPEN_INFERENCE=") == 1, text
+    assert "SEARXNG_SECRET=stub" in text
+    assert (ts_rig.conf.stat().st_mode & 0o777) == 0o600
+    assert not list(ts_rig.conf.parent.glob(ts_rig.conf.name + ".*")), "temp file left"
+    p = ts_rig.run("setup-tailscale.sh")
+    assert p.returncode == 0, p.stderr
+    assert "NOT publishing inference" not in p.stderr
+    assert len(_mounts_8443(ts_rig)) == 2
+    assert ts_rig.conf.read_text().count("ALLOW_OPEN_INFERENCE=") == 1
+
+
+def test_tailscale_does_not_persist_inference_ack_when_gated(ts_rig):
+    """Control: with the gate on the flag is moot — nothing is recorded."""
+    ts_rig.set_state(auth=True, admin_pw="rotated-already")
+    ts_rig.conf.write_text("SEARXNG_SECRET=stub\nEDGE_GATE=true\n")
+    p = ts_rig.run("setup-tailscale.sh", "--i-accept-open-inference")
+    assert p.returncode == 0, p.stderr
+    assert _mounts_8443(ts_rig) == ["http://127.0.0.1:8090"]
+    assert "ALLOW_OPEN_INFERENCE" not in ts_rig.conf.read_text()
+
+
+@pytest.mark.parametrize("pm,hint", [("apt-get", "sudo apt-get install tailscale"),
+                                     ("dnf", "sudo dnf install tailscale"),
+                                     (None, "https://tailscale.com/download")])
+def test_tailscale_missing_prints_steps_and_never_pipes_an_installer(rig, pm, hint):
+    """2026-10-09 review, supply S9: on apt/dnf systems the script ran
+    `curl https://tailscale.com/install.sh | sh` — an unverified remote
+    script, as root. It now prints the signed-repo steps and stops.
+
+    PATH holds ONLY stubs (no /usr/bin): this box may have a real tailscale
+    or pacman, and neither may be reached. Everything the script does before
+    the install step is a bash builtin."""
+    only = rig.tmp / "onlybin"
+    only.mkdir()
+    rec = rig.tmp / "ran.log"
+    stub = f'#!/bin/bash\necho "$(basename "$0") $*" >> "{rec}"\nexit 0\n'
+    for name in ("curl", "sudo", "sh", "systemctl") + ((pm,) if pm else ()):
+        _write_exec(only / name, stub)
+    p = subprocess.run(["/bin/bash", str(rig.root / "scripts" / "setup-tailscale.sh")],
+                       env={"PATH": str(only), "HOME": str(rig.tmp)},
+                       capture_output=True, text=True, timeout=60)
+    assert p.returncode == 1, p.stdout + p.stderr
+    assert "does not pipe a" in p.stderr and hint in p.stderr
+    assert "re-run this script" in p.stderr
+    assert not rec.exists(), f"something was executed: {rec.read_text()}"
+
+
+def test_tailscale_help_prints_the_whole_header(ts_rig):
+    p = ts_rig.run("setup-tailscale.sh", "--help")
+    assert p.returncode == 0
+    assert "--i-accept-open-inference" in p.stdout
+    assert "docs/REMOTE_ACCESS_PLAN.md" in p.stdout      # the header's last line
+    assert "set -euo pipefail" not in p.stdout
+    assert _events(ts_rig) == []
+
+
 def test_tailscale_rotates_default_admin_before_publishing(ts_rig):
     ts_rig.set_state(auth=True, admin_pw="admin")
     p = ts_rig.run("setup-tailscale.sh")
@@ -343,13 +477,14 @@ def test_tailscale_refuses_443_while_running_webui_has_auth_off(ts_rig):
     """The container predates this run: conf says auth on, the live WebUI does
     not. Publishing now = every tailnet device is admin until a restart."""
     ts_rig.set_state(auth=False, admin_pw="admin")
-    p = ts_rig.run("setup-tailscale.sh")
+    # Gated, so inference is publishable — it is the control below.
+    p = ts_rig.run("setup-tailscale.sh", env_extra={"OPENBEAST_EDGE_GATE": "true"})
     assert p.returncode == 0, p.stderr
     assert not _mounted_443(ts_rig)
     assert "NOT publishing the WebUI" in p.stderr and "Restart the stack" in p.stderr
     assert ts_rig.conf_values()["WEBUI_AUTH"] == "true"      # persisted for the restart
     # Everything else still publishes (negative control for over-blocking).
-    assert any(k == "ts" and "--https=8443" in a for k, a in _events(ts_rig))
+    assert _mounted_8443(ts_rig)
     assert ts_rig.get_state()["accounts"]["admin@localhost"] == "admin"
 
 
@@ -595,8 +730,9 @@ def test_tailscale_mounts_follow_the_bind_host(ts_rig, bind, host):
     specific address :443/:8443/:8446 were 502s. Mounts now dial where the
     service binds; the chat mount follows OPENBEAST_CHAT_BIND (loopback)."""
     ts_rig.set_state(auth=True, admin_pw="operator-chose-this")
+    # A shared key, so the raw :8443 -> :8080 mount under test is allowed.
     p = ts_rig.run("setup-tailscale.sh", "--publish-artifact", "--publish-chat",
-                   env_extra={"OPENBEAST_BIND": bind})
+                   env_extra={"OPENBEAST_BIND": bind, "OPENBEAST_API_KEY": "k"})
     assert p.returncode == 0, p.stderr
     mounts = {}
     for k, a in _events(ts_rig):
@@ -725,9 +861,147 @@ def test_tailscale_publishes_the_gate_under_hydra(ts_rig):
 
 
 def test_tailscale_without_hydra_still_publishes_raw(ts_rig):
-    """HYDRA off: the raw :8443 -> :8080 path is exactly what it was."""
+    """HYDRA off: the raw :8443 -> :8080 path is still there (behind the
+    shared key it now needs — see the keyless-inference tests above)."""
     ts_rig.set_state(auth=True, admin_pw="admin")
-    p = ts_rig.run("setup-tailscale.sh")
+    p = ts_rig.run("setup-tailscale.sh", env_extra={"OPENBEAST_API_KEY": "k"})
     assert p.returncode == 0, p.stderr
     m = _mounts(ts_rig, 8443)
     assert m and m[-1][-1].endswith(":8080"), m
+
+
+# --- configure-webui.sh: background generation tasks (perf F4, 2026-10-09) ---
+#
+# After every answer Open WebUI asks the model for a title, tags and follow-up
+# suggestions; tags + follow-ups cost more GPU than the chats they decorate.
+# configure-webui.sh turns those two off in WebUI's DB (the env vars only seed
+# a first boot) and leaves titles alone; WEBUI_BACKGROUND_TASKS=true opts out.
+#
+# The docker stub below RUNS the script's embedded `docker exec open-webui
+# python3 -c …` code against a real sqlite file with WebUI's config/model
+# table shapes, so these tests exercise the actual SQL, not a grep for it.
+
+DOCKER_DB_STUB = textwrap.dedent(r'''
+    #!/usr/bin/env python3
+    """Stub docker: `exec [-i] [-e K=V]… open-webui python3 -c CODE` runs CODE
+    here, with WebUI's DB path pointed at $STUB_DB. Everything else fails."""
+    import os, subprocess, sys
+    a = sys.argv[1:]
+    if not a or a[0] != "exec":
+        sys.exit(1)
+    a, env = a[1:], dict(os.environ)
+    while a and a[0].startswith("-"):
+        if a[0] == "-e":
+            k, _, v = a[1].partition("="); env[k] = v; a = a[2:]
+        else:
+            a = a[1:]
+    if a[:3] != ["open-webui", "python3", "-c"]:
+        sys.exit(1)
+    code = a[3].replace("/app/backend/data/webui.db", os.environ["STUB_DB"])
+    sys.exit(subprocess.run([sys.executable, "-c", code], env=env).returncode)
+''').lstrip()
+
+
+@pytest.fixture()
+def db_rig(rig):
+    import sqlite3
+    rig.db = rig.tmp / "webui.db"
+    con = sqlite3.connect(rig.db)
+    con.execute("CREATE TABLE config (key TEXT PRIMARY KEY, value JSON NOT NULL, updated_at BIGINT)")
+    con.execute("CREATE TABLE model (id TEXT PRIMARY KEY, user_id TEXT, name TEXT, meta TEXT, "
+                "params TEXT, created_at BIGINT, updated_at BIGINT, is_active INTEGER)")
+    con.commit()
+    con.close()
+    _write_exec(rig.bin / "docker", DOCKER_DB_STUB)
+    rig.set_state(auth=False, admin_pw="admin")
+
+    def seed(rows):
+        con = sqlite3.connect(rig.db)
+        for k, v in rows.items():
+            con.execute("INSERT OR REPLACE INTO config (key, value, updated_at) VALUES (?, ?, 1)",
+                        (k, json.dumps(v)))
+        con.commit()
+        con.close()
+    rig.seed = seed
+
+    def tasks():
+        con = sqlite3.connect(rig.db)
+        got = {k: json.loads(v) for k, v in
+               con.execute("SELECT key, value FROM config WHERE key LIKE 'task.%'")}
+        con.close()
+        return got
+    rig.tasks = tasks
+
+    def configure(env_extra=None):
+        env = {"STUB_DB": str(rig.db)}
+        env.update(env_extra or {})
+        return rig.run("configure-webui.sh", env_extra=env)
+    rig.configure = configure
+    return rig
+
+
+def test_tags_and_followups_are_turned_off_titles_kept(db_rig):
+    """Default: both switches end up False whether the row was missing (the
+    upstream default, ON) or explicitly True; the title switch is not ours."""
+    db_rig.seed({"task.title.enable": True, "task.tags.enable": True})   # follow_up: no row
+    p = db_rig.configure()
+    assert p.returncode == 0, p.stderr
+    assert db_rig.tasks() == {"task.title.enable": True,
+                              "task.tags.enable": False,
+                              "task.follow_up.enable": False}
+    assert "Turning off tag + follow-up generation" in p.stdout
+    # the operator is told how to keep them
+    assert "WEBUI_BACKGROUND_TASKS=true" in p.stdout
+
+
+def test_background_tasks_second_run_changes_nothing(db_rig):
+    import sqlite3
+    assert db_rig.configure().returncode == 0
+    con = sqlite3.connect(db_rig.db)
+    con.execute("UPDATE config SET updated_at = 7 WHERE key LIKE 'task.%'")
+    con.commit()
+    con.close()
+    p = db_rig.configure()
+    assert p.returncode == 0, p.stderr
+    assert "already off" in p.stdout
+    con = sqlite3.connect(db_rig.db)
+    stamps = {r[0] for r in con.execute("SELECT updated_at FROM config WHERE key LIKE 'task.%'")}
+    con.close()
+    assert stamps == {7}, "an idempotent run rewrote rows that were already off"
+
+
+@pytest.mark.parametrize("how", ["conf", "env"])
+def test_background_tasks_opt_out_leaves_webui_alone(db_rig, how):
+    """WEBUI_BACKGROUND_TASKS=true (conf, or the env override): nothing is
+    written — an explicit True stays True and a missing row stays missing."""
+    db_rig.seed({"task.tags.enable": True})
+    env = {}
+    if how == "conf":
+        with open(db_rig.conf, "a") as f:
+            f.write("WEBUI_BACKGROUND_TASKS=true   # keep tags + follow-ups\n")
+    else:
+        env["OPENBEAST_WEBUI_BACKGROUND_TASKS"] = "yes"
+    p = db_rig.configure(env_extra=env)
+    assert p.returncode == 0, p.stderr
+    assert db_rig.tasks() == {"task.tags.enable": True}
+    assert "left as WebUI has them" in p.stdout
+    assert "Turning off" not in p.stdout
+
+
+def test_background_tasks_opt_out_does_not_switch_them_on(db_rig):
+    """The opt-out means "hands off", not "enable": a False row stays False."""
+    db_rig.seed({"task.tags.enable": False, "task.follow_up.enable": False})
+    with open(db_rig.conf, "a") as f:
+        f.write("WEBUI_BACKGROUND_TASKS=true\n")
+    assert db_rig.configure().returncode == 0
+    assert db_rig.tasks() == {"task.tags.enable": False, "task.follow_up.enable": False}
+
+
+def test_background_tasks_survive_an_unreachable_container(rig):
+    """No container (docker exec fails): say so and carry on — the rest of the
+    configuration must still run and the script must still exit 0."""
+    rig.set_state(auth=False, admin_pw="admin")
+    p = rig.run("configure-webui.sh")
+    assert p.returncode == 0, p.stderr
+    assert "could not set them" in p.stdout
+    assert "Open WebUI configured." in p.stdout

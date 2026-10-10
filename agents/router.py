@@ -9,6 +9,22 @@ DIRECTLY — then tells the user. Everything else passes through untouched, with
 the model's normal thinking-on behavior.
 
 Flow for POST /v1/chat/completions:
+  -1. Is this a request a frontend could have sent? The router holds the
+     admin tool key and spends it on the caller's say-so, so it is a deputy
+     any web page the operator visits would like to borrow. Three checks,
+     before identity is even read:
+       - Host is pinned (agents/hostpolicy.py): a DNS name re-pointed at
+         127.0.0.1 is refused with a 400 before a route runs.
+       - A cross-site browser request (Sec-Fetch-Site: cross-site, or an
+         Origin that is not one of our own hosts) is refused with a 403 on
+         every POST. WebUI's backend and OpenCode send neither header.
+       - The spawn path needs Content-Type: application/json. A page can
+         send text/plain cross-site WITHOUT a preflight; it cannot send
+         JSON. Anything else is proxied, never classified, never spawned.
+     And when the inference server is keyed (LLAMA_API_KEY), the spawn path
+     needs that key as the caller's Bearer: every configured frontend already
+     sends it, and without it a typed role header (or no identity at all, on
+     a single-user rig) is just a local process asking for the admin key.
   0. Identity gate (docs/RBAC_PLAN.md Phase 2). Open WebUI forwards the
      caller's role when ENABLE_FORWARD_USER_INFO_HEADERS=true (set in
      docker-compose.yml) — as the plain X-OpenWebUI-User-Role header, or, in
@@ -49,10 +65,27 @@ All other paths (/v1/models, /health, GET, non-chat POST) forward transparently.
 All forwarded X-OpenWebUI-User-* headers also travel UPSTREAM on proxied
 requests (they're ordinary non-hop-by-hop headers, relayed by _proxy_through).
 
+Media URLs (every POST): with an mmproj loaded, llama-server DOWNLOADS any
+http(s) URL a request names as an image/audio/video part — from loopback,
+with none of tools.fetch's SSRF guards. A part may carry its media inline
+(a data: URL or raw base64) and nothing else; a request naming a URL is
+refused with a 400 here, and so is a POST body that is not JSON, because a
+body this proxy cannot read is a body it cannot vet.
+
+Header trust, stated once: in header mode the plain role header is believed
+as sent, exactly as the tool server believes it (agents/openapi_tools.py
+trust note) — the checks above keep browsers out, the inference key keeps
+out a local process that lacks it, and on a rig with tool keys but NO
+inference key a local process can still type the header. Signed identity
+(scripts/setup-mcpo-keys.sh --with-jwt) is what closes that, here and there.
+
 Env:
   OPENBEAST_ROUTER_PORT      listen port (default 8088)
   OPENBEAST_LLAMA_UPSTREAM   real llama-server (default http://127.0.0.1:8080)
   OPENBEAST_MCPO_URL         MCPO base for start_agent (default http://127.0.0.1:3001)
+  OPENBEAST_ROUTER_ALLOWED_HOSTS  extra Host / Origin names to answer to,
+                             comma-separated (default: loopback, this
+                             machine's name, *.ts.net — agents/hostpolicy.py)
   OPENBEAST_ROUTER_REQUIRE_IDENTITY  "true" = no identity, no spawn. Any
                              other value = automatic: fail-open only when
                              neither of the two below is on.
@@ -84,22 +117,27 @@ generative classify, unchanged.
 """
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import os
 import re
 import uuid
 from contextlib import asynccontextmanager
+from urllib.parse import urlsplit
 
 import httpx
 import jwt as pyjwt
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from hydra_caller import HEADER as _HYDRA_CALLER_HEADER
 from hydra_caller import CallerToken
+from hostpolicy import PinnedHostMiddleware, host_allowed, trusted_hosts
+from mediapolicy import fetchable, remote_media
 from instinct.routerhook import RouterInstinct
 
 # Defaults match the WIRED stack topology (router 8088 in front of llama-server
@@ -141,6 +179,9 @@ REQUIRE_IDENTITY = (
     os.environ.get("OPENBEAST_ROUTER_REQUIRE_IDENTITY", "").strip().lower() == "true"
     or _WEBUI_AUTH or bool(JWT_SECRET)
 )
+
+# The names this router answers to, and the only Origins it takes a POST from.
+ALLOWED_HOSTS = trusted_hosts(os.environ.get("OPENBEAST_ROUTER_ALLOWED_HOSTS", ""))
 
 # Role header Open WebUI forwards when ENABLE_FORWARD_USER_INFO_HEADERS=true
 # (verified in open-webui 0.10.2: env.py FORWARD_USER_INFO_HEADER_USER_ROLE
@@ -244,6 +285,124 @@ def _spawn_allowed(headers, require_identity=None, jwt_secret=None):
     if role is None:
         return not require_identity
     return role.strip().lower() == "admin"
+
+
+def _cross_site(headers, allowed=None):
+    """True when a browser says this request came from somebody else's page.
+
+    Sec-Fetch-Site is the browser's own verdict; Origin covers the browsers
+    that do not send it. An Origin is ours when its host is on the Host
+    allowlist (WebUI on localhost:3000 calling localhost:8088 is cross-ORIGIN
+    and perfectly fine); `null` — a sandboxed frame, a file — is nobody's.
+    No such header at all is a non-browser caller: WebUI's backend, OpenCode,
+    curl. Those are the frontends, and they are not what this stops.
+    """
+    if allowed is None:
+        allowed = ALLOWED_HOSTS
+    if (_header(headers, "sec-fetch-site") or "").strip().lower() == "cross-site":
+        return True
+    origin = _header(headers, "origin")
+    if origin is None:
+        return False
+    return not host_allowed(urlsplit(origin.strip()).netloc, allowed)
+
+
+def _cross_site_refusal():
+    return JSONResponse(
+        {"error": {"message": "cross-site request refused: the OpenBeast "
+                   "router takes requests from its own frontends, not from "
+                   "another site's page. If this page is yours, serve it from "
+                   "a host named in OPENBEAST_ROUTER_ALLOWED_HOSTS.",
+                   "type": "cross_site_refused"}}, status_code=403)
+
+
+def _content_type(headers):
+    return (_header(headers, "content-type") or "").split(";")[0].strip().lower()
+
+
+def _is_json_request(headers):
+    """Content-Type: application/json, parameters aside. The one body type a
+    cross-site page cannot send without a preflight this router never grants."""
+    return _content_type(headers) == "application/json"
+
+
+def _presents_inference_key(headers, key=None):
+    """True when the caller's Bearer is the inference key, or none is set.
+
+    On a keyed rig every frontend is configured with LLAMA_API_KEY (the proxy
+    path forwards it; llama-server and hydra refuse a turn without it), so it
+    doubles as proof the caller IS a configured frontend — no second secret
+    for the launcher to hand out. Unset = nothing to check, as before.
+    Compared as bytes: Starlette decodes headers as latin-1 and
+    compare_digest on a non-ASCII str raises.
+    """
+    if key is None:
+        key = _LLAMA_KEY
+    if not key:
+        return True
+    auth = _header(headers, "authorization") or ""
+    token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+    return hmac.compare_digest(token.encode("utf-8", "surrogateescape"),
+                               key.encode("utf-8", "surrogateescape"))
+
+
+class BadBody(ValueError):
+    """A POST body the router refuses to forward (-> 400)."""
+
+
+def _parse_json_body(raw):
+    """The body as parsed JSON, or BadBody. FAIL CLOSED, like beast-gate's
+    _sanitize_body: llama-server's parser has no depth limit and no digit
+    limit, so a body Python cannot parse can still be one it accepts — and
+    forwarding it verbatim would carry a media URL straight past the check
+    below. Strict UTF-8 for the same reason (llama-server takes nothing else).
+    """
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise BadBody("request body is not UTF-8")
+    if text.startswith("\ufeff"):
+        text = text[1:]
+    try:
+        return json.loads(text)
+    except (ValueError, RecursionError) as e:
+        raise BadBody(f"request body is not valid JSON ({type(e).__name__})")
+
+
+# What counts as a media part that names a URL: agents/mediapolicy.py, the one
+# rule this router and beast-gate (agents/edge.py) share. Every POST body is
+# walked, not just /v1/chat/completions: llama-server reaches the same
+# download from /chat/completions, /v1/responses, /v1/messages,
+# /apply-template and the input_tokens routes.
+_fetchable = fetchable
+_remote_media = remote_media
+
+
+def _vetted_body(raw, must_parse=True):
+    """Parse a POST body and refuse what must not reach llama-server.
+
+    Returns (body, None), or (None, a 400 response). must_parse=False lets a
+    body that is not JSON through unread as (None, None) — a multipart
+    upload, which no chat route can read as JSON either.
+    """
+    try:
+        body = _parse_json_body(raw)
+    except BadBody as e:
+        if not must_parse:
+            return None, None
+        return None, JSONResponse(
+            {"error": {"message": f"{e}. The OpenBeast router forwards JSON "
+                       "request bodies only.", "type": "invalid_request_error"}},
+            status_code=400)
+    key = _remote_media(body)
+    if key:
+        return None, JSONResponse(
+            {"error": {"message": f"remote media URL refused in `{key}`: the "
+                       "model server would download it from inside the rig. "
+                       "Send the media inline as a data: URL "
+                       "(data:image/png;base64,...) instead.",
+                       "type": "invalid_request_error"}}, status_code=400)
+    return body, None
 
 
 def _identity_headers(headers, jwt_secret=None):
@@ -415,11 +574,20 @@ class _Closer:
 
 async def chat_completions(request: Request):
     client: httpx.AsyncClient = request.app.state.client
+    if _cross_site(request.headers):
+        return _cross_site_refusal()
     raw = await request.body()
-    try:
-        body = json.loads(raw)
-    except Exception:
-        return await _proxy_through(request, client, raw)  # not JSON we understand
+    body, refusal = _vetted_body(raw)
+    if refusal is not None:
+        return refusal
+    if not isinstance(body, dict):
+        return await _proxy_through(request, client, raw)  # upstream's 400 to give
+    # The spawn path is for a request a configured frontend sent: JSON by
+    # Content-Type (what a cross-site page cannot send unasked) and, on a
+    # keyed rig, carrying the inference key. Anything else is still a chat
+    # turn — proxied, never classified, never spawned.
+    frontend = (_is_json_request(request.headers)
+                and _presents_inference_key(request.headers))
 
     messages = body.get("messages", [])
     stream = bool(body.get("stream", False))
@@ -435,7 +603,7 @@ async def chat_completions(request: Request):
     # generative classify.
     hinted = False
     turn = None
-    if user_text and _spawn_allowed(request.headers):
+    if user_text and frontend and _spawn_allowed(request.headers):
         hinted = bool(_HINTS.search(user_text))
         # Hinted turns only (routerhook): the decision's engine is this
         # primary, and its one slot belongs to the user's turn.
@@ -481,7 +649,19 @@ async def root(request: Request):
 
 async def passthrough(request: Request):
     client: httpx.AsyncClient = request.app.state.client
-    return await _proxy_through(request, client, await request.body())
+    raw = await request.body()
+    if request.method == "POST":
+        # Same two refusals as the chat route: llama-server answers chat
+        # under other names too (/chat/completions, /v1/responses,
+        # /v1/messages, ...), so vetting one path would vet nothing.
+        if _cross_site(request.headers):
+            return _cross_site_refusal()
+        if raw.strip():
+            multipart = _content_type(request.headers).startswith("multipart/")
+            _, refusal = _vetted_body(raw, must_parse=not multipart)
+            if refusal is not None:
+                return refusal
+    return await _proxy_through(request, client, raw)
 
 
 @asynccontextmanager
@@ -500,12 +680,27 @@ app = Starlette(
         Route("/{path:path}", passthrough, methods=["GET", "POST", "PUT", "DELETE", "PATCH"]),
     ],
     lifespan=_lifespan,
+    # First, before any route: a DNS name re-pointed at 127.0.0.1 makes a
+    # hostile page same-origin with this port, and same-origin may send JSON
+    # and type any header — the role header included.
+    middleware=[Middleware(PinnedHostMiddleware, allowed_hosts=ALLOWED_HOSTS,
+                           allow_env="OPENBEAST_ROUTER_ALLOWED_HOSTS")],
 )
 
 
 if __name__ == "__main__":
+    import sys
+
     import uvicorn
     print(f"OpenBeast router on :{PORT}  ->  upstream {UPSTREAM}  (spawn via {MCPO})")
+    if _MCPO_KEY and not JWT_SECRET and not _LLAMA_KEY:
+        # The one case the checks at the top of this file leave open.
+        print("  Note: the tool server is keyed, but the router cannot tell a "
+              "frontend from any other local process:\n"
+              "        a typed X-OpenWebUI-User-Role header is believed. Run "
+              "scripts/setup-mcpo-keys.sh --with-jwt\n"
+              "        (signed identity) or set LLAMA_API_KEY in openbeast.conf "
+              "to close that.", file=sys.stderr)
     # Loopback ALWAYS, deliberately unlike the sibling servers: the spawn path
     # is fail-open on a single-user rig (see REQUIRE_IDENTITY), so honoring a
     # BIND_HOST=0.0.0.0 here would hand agent-spawn to the whole LAN. WebUI

@@ -1187,5 +1187,69 @@ class TestHydraCaller:
         assert "x-hydra-caller" in edge._CLIENT_SPOOFABLE
 
 
+class TestMutationSurvivors1009:
+    """Guards a 2026-10-09 mutation pass deleted with this suite still green."""
+
+    @pytest.mark.parametrize("chunked", [False, True], ids=["content-length", "chunked"])
+    def test_body_cap_holds_on_each_path_and_frees_the_slot(self, edge, tmp_path,
+                                                            monkeypatch, chunked):
+        # Two checks, one per way a body can arrive: the declared length, and
+        # the running total of a chunked body that declares none. Each was
+        # deletable alone because only the first kind was ever sent.
+        monkeypatch.setattr(edge, "MAX_BODY_BYTES", 1000)
+        _registry(tmp_path)
+        cap = {}
+        _stub_upstream(edge, cap)
+        big = b'{"messages":[],"pad":"' + b"x" * 5000 + b'"}'
+        hdr = {"Authorization": f"Bearer {DEVICE_KEY}", "Content-Type": "application/json"}
+        with TestClient(edge.app) as c:
+            body = iter([big[:2500], big[2500:]]) if chunked else big
+            r = c.post("/v1/chat/completions", content=body, headers=hdr)
+            assert ("content-length" in r.request.headers) is (not chunked)
+            assert r.status_code == 413 and "too large" in r.text
+            assert not cap, "an over-cap body reached upstream"
+            assert _laptop_bucket(edge, c).inflight == 0
+            # control: under the cap, the same two paths go through
+            small = b'{"messages":[]}'
+            r = c.post("/v1/chat/completions", headers=hdr,
+                       content=iter([small]) if chunked else small)
+            assert r.status_code == 200
+
+    def test_the_same_conversation_id_differs_between_devices(self, edge, tmp_path):
+        # "sent != the id" also passes for a hash of the id ALONE, which
+        # every device would share: the namespace is the device.
+        _registry(tmp_path)
+        sent = []
+        for key in (DEVICE_KEY, REVOKED_KEY):          # "stolen" is not revoked here
+            cap = {}
+            _stub_upstream(edge, cap)
+            with TestClient(edge.app) as c:
+                r = c.post("/v1/chat/completions", json={"messages": []},
+                           headers={"Authorization": f"Bearer {key}",
+                                    "X-Conversation-Id": "shared-guessable-id"})
+            assert r.status_code == 200
+            sent.append(cap["headers"].get("X-Conversation-Id"))
+        assert all(sent) and sent[0] != sent[1]
+        # ...and stable for one device (control: it is a namespace, not noise)
+        cap = {}
+        _stub_upstream(edge, cap)
+        with TestClient(edge.app) as c:
+            c.post("/v1/chat/completions", json={"messages": []},
+                   headers={"Authorization": f"Bearer {DEVICE_KEY}",
+                            "X-Conversation-Id": "shared-guessable-id"})
+        assert cap["headers"].get("X-Conversation-Id") == sent[0]
+
+    def test_a_token_file_left_world_readable_is_tightened(self, edge, tmp_path):
+        # O_CREAT's mode applies to a NEW file only; a 0644 leftover keeps its
+        # mode through O_TRUNC unless it is fchmod'ed.
+        p = tmp_path / ".run" / "edge-local.token"
+        p.parent.mkdir(exist_ok=True)
+        p.write_text("stale")
+        p.chmod(0o644)
+        tok = edge._local_token()
+        assert p.read_text() == tok != "stale"
+        assert oct(p.stat().st_mode)[-3:] == "600"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))

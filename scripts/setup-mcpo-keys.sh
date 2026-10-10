@@ -16,12 +16,15 @@
 # FORWARD_USER_INFO_HEADER_JWT_SECRET in docker-compose) and the tool server
 # verifies it — identity headers can no longer be forged (enterprise).
 #
-# Idempotent: existing keys are left untouched (use --rotate to replace).
+# Idempotent: existing keys are left untouched (use --rotate to replace). A
+# key line that is present but EMPTY (`MCPO_ADMIN_KEY=`) counts as absent —
+# that is how the stack reads it — and gets a generated value in place.
 #
 # Usage:
 #   ./scripts/setup-mcpo-keys.sh              # generate profile keys if absent
 #   ./scripts/setup-mcpo-keys.sh --with-jwt   # also enable signed identity
 #   ./scripts/setup-mcpo-keys.sh --rotate     # replace existing keys
+#   ./scripts/setup-mcpo-keys.sh --help       # this text; changes nothing
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -30,10 +33,17 @@ CONF="$REPO_DIR/openbeast.conf"
 
 ROTATE=false
 WITH_JWT=false
+# Every argument is checked BEFORE anything is written: this script turns on
+# keyed RBAC at the next restart, so `--help` or a typo must not run it.
 for _arg in "$@"; do
   case "$_arg" in
     --rotate)   ROTATE=true ;;
     --with-jwt) WITH_JWT=true ;;
+    -h|--help)
+      # shellcheck source=scripts/lib/usage.sh
+      source "$SCRIPT_DIR/lib/usage.sh"
+      ob_usage "$0"; exit 0 ;;
+    *) echo "Unknown option: $_arg (see --help)" >&2; exit 2 ;;
   esac
 done
 
@@ -46,37 +56,61 @@ umask 077
 touch "$CONF"
 chmod 600 "$CONF"
 
+# True when NAME has a non-empty value, read the way lib/conf.sh reads it
+# (_ob_conf_value: last assignment wins, whitespace and one pair of quotes
+# trimmed). `NAME=` and `NAME=""` are NOT set: the stack resolves them to
+# empty and the tool server stays keyless.
+_key_has_value() { # _key_has_value <NAME>
+  local line
+  line="$(grep -E "^[[:space:]]*${1}[[:space:]]*=" "$CONF" | tail -n1)" || return 1
+  line="${line#*=}"
+  line="${line#"${line%%[![:space:]]*}"}"
+  line="${line%"${line##*[![:space:]]}"}"
+  line="${line#\"}"; line="${line%\"}"
+  line="${line#\'}"; line="${line%\'}"
+  [[ -n "$line" ]]
+}
+
+# Replace every NAME= line with a freshly generated value, in place.
+_write_key() { # _write_key <NAME>
+  local name="$1" newval tmp
+  newval="$(genkey)"
+  # The new key reaches awk through its ENVIRONMENT, never argv: `sed -i
+  # "s|…|NAME=<key>|"` put the fresh secret in /proc/<pid>/cmdline, which
+  # every local uid can read. /proc/<pid>/environ is owner-only. The temp
+  # file is created under umask 077 (above) in the conf's own directory,
+  # so the rename is atomic and the result stays 0600.
+  tmp="$(mktemp "$CONF.XXXXXX")"
+  if OB_KEY_NAME="$name" OB_KEY_VAL="$newval" awk '
+      BEGIN { n = ENVIRON["OB_KEY_NAME"]; v = ENVIRON["OB_KEY_VAL"] }
+      {
+        line = $0; sub(/^[[:space:]]+/, "", line)
+        if (index(line, n) == 1) {
+          rest = substr(line, length(n) + 1); sub(/^[[:space:]]+/, "", rest)
+          if (substr(rest, 1, 1) == "=") { print n "=" v; next }
+        }
+        print
+      }' "$CONF" > "$tmp"; then
+    chmod 600 "$tmp"
+    mv -f "$tmp" "$CONF"
+  else
+    rm -f "$tmp"
+    echo "  ${name}: rewrite FAILED — openbeast.conf left unchanged." >&2
+    return 1
+  fi
+}
+
 set_key() { # set_key <NAME>
   local name="$1"
   if grep -qE "^[[:space:]]*${name}[[:space:]]*=" "$CONF"; then
-    if $ROTATE; then
-      local newval
-      newval="$(genkey)"
-      # The new key reaches awk through its ENVIRONMENT, never argv: `sed -i
-      # "s|…|NAME=<key>|"` put the fresh secret in /proc/<pid>/cmdline, which
-      # every local uid can read. /proc/<pid>/environ is owner-only. The temp
-      # file is created under umask 077 (above) in the conf's own directory,
-      # so the rename is atomic and the result stays 0600.
-      local tmp
-      tmp="$(mktemp "$CONF.XXXXXX")"
-      if OB_KEY_NAME="$name" OB_KEY_VAL="$newval" awk '
-          BEGIN { n = ENVIRON["OB_KEY_NAME"]; v = ENVIRON["OB_KEY_VAL"] }
-          {
-            line = $0; sub(/^[[:space:]]+/, "", line)
-            if (index(line, n) == 1) {
-              rest = substr(line, length(n) + 1); sub(/^[[:space:]]+/, "", rest)
-              if (substr(rest, 1, 1) == "=") { print n "=" v; next }
-            }
-            print
-          }' "$CONF" > "$tmp"; then
-        chmod 600 "$tmp"
-        mv -f "$tmp" "$CONF"
-      else
-        rm -f "$tmp"
-        echo "  ${name}: rotation FAILED — openbeast.conf left unchanged." >&2
-        return 1
-      fi
-      unset newval
+    if ! _key_has_value "$name"; then
+      # Present but empty — e.g. `#MCPO_ADMIN_KEY=` uncommented from
+      # openbeast.conf.example. Reporting that as "already set" left the
+      # tool server keyless behind a "Done … expect 401".
+      _write_key "$name"
+      echo "  ${name}: was present but EMPTY (the stack reads that as unset) — generated."
+    elif $ROTATE; then
+      _write_key "$name"
       echo "  ${name}: rotated."
     else
       echo "  ${name}: already set — leaving as-is (use --rotate to replace)."

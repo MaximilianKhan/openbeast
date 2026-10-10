@@ -963,6 +963,12 @@ def cacheable_result(result: dict) -> bool:
         model's code (see _ENV_ERROR_RE).
         Unless it repeated env_error_bank_after() times for the key
         (env_error_repeats): then the model's own program is the cause.
+      failed + reason validator_timeout / run_validation's timeout message
+        — the validator ran out of time, which a contended host does to a
+        correct solution (its own compile is most of the budget). 17 such
+        rows were banked by 2026-10-09 and replayed as model regressions.
+        Unless it repeated for the key (validator_timeout_repeats): then the
+        solution itself hangs.
     A PASS is always a genuine verdict: infrastructure trouble can only
     make a unit fail, never make it pass."""
     if (result.get("agent_exit_code") or 0) < 0:
@@ -971,12 +977,15 @@ def cacheable_result(result: dict) -> bool:
         return True
     if not result.get("tokens_completion"):
         return False
-    if result.get("reason") in ("server_error", "env_error"):
+    if result.get("reason") in ("server_error", "env_error", "validator_timeout"):
         return False
     if (result.get("api_errors") or 0) > 0:
         return False
     if (env_error_signature(result.get("validation_output"))
             and not result.get("env_error_repeats")):
+        return False
+    if (validator_timed_out(result.get("validation_output"))
+            and not result.get("validator_timeout_repeats")):
         return False
     return True
 
@@ -1192,9 +1201,15 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
     except subprocess.TimeoutExpired:
         _kill_agent_tree(proc.pid)
         proc.kill()
+        # What the runner had flushed before the kill. It prints its TOKENS
+        # line only on a normal exit, so today this is almost always
+        # without one and the row keeps tokens 0 (scoring counts such rows
+        # per board row). Parsed anyway: a recorded 0 for a unit that spent
+        # 20 minutes of decode understates TOKENS, and any count beats none.
+        partial = ""
         try:
-            proc.communicate(timeout=5)
-        except subprocess.TimeoutExpired:
+            partial = proc.communicate(timeout=5)[0] or ""
+        except (subprocess.TimeoutExpired, OSError, ValueError):
             pass
         elapsed = time.time() - start_time
         return {
@@ -1202,7 +1217,7 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
             "elapsed_seconds": round(elapsed, 1),
             "stdout": "(timed out)",
             "stderr": "",
-            "tokens": {"prompt": 0, "completion": 0, "total": 0},
+            "tokens": _parse_tokens(partial),
             "iterations": None,
         }
     finally:
@@ -1231,8 +1246,24 @@ def run_pre_validate(task: dict, log=print):
         log(f"  (pre_validate error: {e} — continuing to validation)")
 
 
-def run_validation(task: dict) -> tuple[bool, str]:
-    """Run validation. Returns (passed, output)."""
+VALIDATION_TIMEOUT_S = 30
+# What run_validation returns when the VALIDATOR ran out of time. process()
+# and cacheable_result match on it: a validator timeout is not a verdict.
+VALIDATION_TIMED_OUT = "Validation timed out"
+
+
+def validator_timed_out(text: str | None) -> bool:
+    """Whether a validation_output is run_validation's own timeout message."""
+    return bool(text) and text.startswith(VALIDATION_TIMED_OUT)
+
+
+def run_validation(task: dict, timeout_scale: float = 1.0) -> tuple[bool, str]:
+    """Run validation. Returns (passed, output).
+
+    timeout_scale: the same contention multiplier run_agent's wall budget
+    gets. The validator compiles the solution itself (`zig build-exe -O
+    ReleaseFast` is 7-12 s warm on an idle host), so under --jobs the fixed
+    30 s was mostly the compiler's, and a correct solution timed out."""
     validation = task.get("validation", {})
     vtype = validation.get("type", "bash")
     script = validation.get("script", "")
@@ -1240,13 +1271,14 @@ def run_validation(task: dict) -> tuple[bool, str]:
     if not script:
         return False, "No validation script defined"
 
+    timeout = max(1, int(VALIDATION_TIMEOUT_S * timeout_scale))
     try:
         if vtype == "python":
             returncode, output = _run_reaped(
-                [sys.executable, "-c", script], timeout=30,
+                [sys.executable, "-c", script], timeout=timeout,
             )
         else:
-            returncode, output = _run_reaped(script, timeout=30, shell=True)
+            returncode, output = _run_reaped(script, timeout=timeout, shell=True)
         passed = returncode == 0
         kept = output.strip()[:500]
         # The 500-char cut must never drop the evidence that the VALIDATOR
@@ -1257,7 +1289,7 @@ def run_validation(task: dict) -> tuple[bool, str]:
             kept = kept[:480] + "\n[...] " + sig
         return passed, kept
     except subprocess.TimeoutExpired:
-        return False, "Validation timed out"
+        return False, f"{VALIDATION_TIMED_OUT} ({timeout}s)"
     except Exception as e:
         return False, f"Validation error: {e}"
 
@@ -1550,6 +1582,10 @@ def run_eval(
         "suite_selection": suite,
         "cache_only": cache_only,
         "harness": {"diagnostics": diag_on,
+                    # The eval era (scripts/eval-era.sh): rows either side of
+                    # a change to it are not comparable, and until this was
+                    # stamped the board could only infer it from cache keys.
+                    "era": cache.context_hash(),
                     "greedy": greedy_mode,
                     "packs": dict(packs_meta.get("sha", {})) if packs_on else {},
                     **({"packs_component": packs_component} if packs_on else {}),
@@ -1685,6 +1721,13 @@ def run_eval(
                             "tokens_prompt": 0, "tokens_completion": 0, "tokens_total": 0,
                         })
 
+        # Cleanup BEFORE setup: every task's setup is `mkdir -p`, so whatever
+        # a killed run left in the fixture dir (the signal handler exits
+        # without cleaning up) was inherited by the next unit to use it —
+        # another model, or the other arm of an A/B. If that agent then wrote
+        # nothing, the leftover solution validated and a PASS was banked.
+        run_cleanup(task, log=log)
+
         # Setup
         if not run_setup(task, log=log):
             log("  FAIL (setup failed)")
@@ -1704,16 +1747,18 @@ def run_eval(
         run_pre_validate(task, log=log)
 
         # Validate
-        passed, validation_output = run_validation(task)
+        passed, validation_output = run_validation(task, timeout_scale=timeout_scale)
 
         # Infrastructure verdicts (not model verdicts) for a FAILED unit.
         # server_error: the runner saw failed model calls, or the server is
         # gone right after the agent finished — the health check above only
         # runs BEFORE a task, so a server that died mid-task was invisible.
         # env_error: the validator died to fork/thread EAGAIN or a full disk.
+        # validator_timeout: the validator ran out of its own time budget.
         api_errors = agent_result.get("api_errors", 0) or 0
         infra_reason = None
         env_strikes = 0
+        vt_strikes = 0
         if not passed:
             if api_errors > 0:
                 infra_reason = "server_error"
@@ -1735,6 +1780,20 @@ def run_eval(
                     if strikes >= env_error_bank_after():
                         infra_reason = None
                         env_strikes = strikes
+            elif validator_timed_out(validation_output):
+                infra_reason = "validator_timeout"
+                # A solution that really hangs times out every run, and
+                # would rerun live forever. Same strike counter and
+                # threshold as env_error: repeated for the same key, it is
+                # the model's program, and banks as a plain FAIL.
+                if ck is not None:
+                    try:
+                        strikes = cache.env_error_strike(ck)
+                    except OSError:
+                        strikes = 0
+                    if strikes >= env_error_bank_after():
+                        infra_reason = None
+                        vt_strikes = strikes
 
         # Record result
         tokens = agent_result.get("tokens") or {"prompt": 0, "completion": 0, "total": 0}
@@ -1755,6 +1814,7 @@ def run_eval(
             "api_errors": api_errors,
             **({"reason": infra_reason} if infra_reason else {}),
             **({"env_error_repeats": env_strikes} if env_strikes else {}),
+            **({"validator_timeout_repeats": vt_strikes} if vt_strikes else {}),
             **({"env_fp": env_component} if env_component else {}),
         })
 
@@ -1777,8 +1837,8 @@ def run_eval(
         #   0 completion tokens + failed: the model never produced anything
         #     (server crash/restart window, dead endpoint) — a capability
         #     verdict needs the model to have actually spoken.
-        #   server_error / env_error: see the infra_reason block above and
-        #     cacheable_result.
+        #   server_error / env_error / validator_timeout: see the
+        #     infra_reason block above and cacheable_result.
         if use_cache and cacheable_result(result):
             try:
                 cache.cache_put(ck, result)

@@ -7,7 +7,9 @@ Description=OpenBeast healthcheck --restart
 [Service]
 Type=oneshot
 WorkingDirectory=@REPO@
-ExecStart=@REPO@/scripts/healthcheck.sh --restart
+# Quoted: a checkout path with a space must stay one argument (see
+# openbeast.service for the characters the install sed does not escape).
+ExecStart="@REPO@/scripts/healthcheck.sh" --restart
 # healthcheck --restart launches replacement services as plain background
 # children. Default KillMode=control-group would reap them the moment the
 # oneshot exits — the watchdog would "restart" a service and then kill it

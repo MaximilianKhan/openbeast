@@ -1,4 +1,42 @@
-# Updating OpenBeast's pulled-in components
+# Updating
+
+## Updating OpenBeast itself
+
+`scripts/update.sh` does not update OpenBeast. It has no `git pull` of this
+repo. To move to a newer OpenBeast:
+
+```bash
+./stop.sh
+git pull --ff-only
+./scripts/pydeps.sh install   # Python deps at the lock this commit ships
+./start.sh -d                 # compose pulls the image digests this commit pins
+./start.sh doctor
+```
+
+llama.cpp is a separate clone under `llama.cpp/` and is not moved by the pull.
+The commit OpenBeast builds is pinned in `scripts/llama.cpp.ref`, which the
+pull *does* move: a fresh `./bootstrap.sh` fetches exactly that commit, while
+an existing clone at another commit is built as it stands, with a warning
+(`rm -rf llama.cpp && ./bootstrap.sh` for the pinned engine).
+`./scripts/update.sh --llama` is the other direction — it moves the clone to
+upstream `master`, see below.
+`./bootstrap.sh --no-start` is idempotent and re-runs every setup step if you
+would rather not pick. Clients update separately (below).
+
+If `git pull` reports conflicts in `docker-compose.yml`,
+`agents/requirements.txt`, `agents/requirements.lock`,
+`scripts/client-searxng.compose.yml` or `scripts/llama.cpp.ref`, an earlier
+`update.sh` run rewrote them.
+`git status` shows which; `git checkout -- <file>` returns each to the shipped
+pin before you pull.
+
+## Updating the pulled-in components (`update.sh`)
+
+`scripts/update.sh` moves the upstream pins forward: llama.cpp to upstream
+`master`, the container images to their newest digests, the Python layer to
+newer releases. It rewrites tracked files and asks nothing. That is a
+maintainer action; on an installed rig it leaves the checkout ahead of what
+OpenBeast was tested with.
 
 OpenBeast orchestrates several upstream open source projects (full list and
 credits: [`NOTICE`](../NOTICE) and the README credits section). Upstreams
@@ -11,7 +49,7 @@ fresh is worth doing periodically.
 ./scripts/update.sh
 ```
 
-That updates everything: llama.cpp (git pull + CUDA rebuild), the Open WebUI
+That updates every upstream component: llama.cpp (git pull + CUDA rebuild), the Open WebUI
 and SearXNG container images, the Python layer (MCP SDK, openai, fastapi,
 uvicorn, huggingface_hub), and OpenCode. Then restart to pick it all up:
 
@@ -112,8 +150,9 @@ openbeast-client update      # = scripts/client.sh update
 ```
 
 Two steps: `git pull --ff-only` in `~/.openbeast-client/repo` (the slim
-checkout of `agents/ scripts/ skills/ searxng/`), then re-install the pinned
-`agents/requirements.txt` into the client's venv. A client installed from a
+checkout of `agents/ scripts/ skills/ searxng/`), then re-install the
+hash-pinned closure (`agents/requirements.lock`, via `pydeps.sh`) into the
+client's venv. A client installed from a
 full clone is told to pull that clone itself.
 
 Worth doing after any rig-side change under `agents/` — the client runs its
@@ -125,7 +164,7 @@ compares the client's understood contract version against the rig's
 
 | Component | Mechanism | Notes |
 |---|---|---|
-| **llama.cpp** | `git pull --ff-only` in `llama.cpp/`, then a rebuild of `llama-server` with the same backend bootstrap used — `GPU_BACKEND` from `openbeast.conf` (cuda / hip / sycl / cpu, auto-detected flags via `scripts/lib/hardware.sh`; see `docs/HARDWARE_PROFILES.md`) | Skips the rebuild when already at HEAD and built. **Refuses while another job holds the GPU lease** (`scripts/gpu-lease.sh status`): the binary is the one every campaign cell execs and the eval era does not hash the engine, so a mid-campaign rebuild would split paired cells across two builds — wait, or pass `--ignore-lease`. A running server keeps the old binary until restarted. If the repo directory was ever moved/renamed, the stale CMake cache is detected and the build dir wiped automatically |
+| **llama.cpp** | `git pull --ff-only` in `llama.cpp/`, then a rebuild of `llama-server`; **after `llama-server` has built**, `scripts/llama.cpp.ref` (a tracked file) is rewritten to the commit just pulled, so the pin follows only an engine that compiled — smoke-test, then commit it. The rebuild uses the same backend bootstrap used — `GPU_BACKEND` from `openbeast.conf` (cuda / hip / sycl / cpu, auto-detected flags via `scripts/lib/hardware.sh`; see `docs/HARDWARE_PROFILES.md`) | Skips the rebuild when already at HEAD and built. **Refuses while another job holds the GPU lease** (`scripts/gpu-lease.sh status`): the binary is the one every campaign cell execs and the eval era does not hash the engine, so a mid-campaign rebuild would split paired cells across two builds — wait, or pass `--ignore-lease`. A running server keeps the old binary until restarted. If the repo directory was ever moved/renamed, the stale CMake cache is detected and the build dir wiped automatically |
 | **Open WebUI** | Pull the moving `:main` tag, read its new digest, rewrite the `@sha256:` pin in `docker-compose.yml`, recreate. On a box installed from an offline bundle (`image: sha256:<content id>` lines), the service is found in `docker-compose.yml.pre-bundle` and re-pinned to the new registry digest; an image line it cannot pin is warned about, never reported as updated | Images are **digest-pinned** for supply-chain safety — a plain `compose pull` would just re-fetch the pin, so `--images` is the sanctioned bump. Commit the compose digest change after verifying. Your data lives in the `open-webui-data` volume and survives. A stopped stack is left stopped |
 | **SearXNG** | Same digest-bump for `searxng/searxng:latest` — **in `docker-compose.yml` only** | Our `searxng/settings.yml` override is bind-mounted, so local settings survive image updates. See the manual second bump below |
 | **Extension images** (`extensions/*/compose.yaml`, e.g. ntfy) | Each fragment's pinned `<repo>:<tag>` is re-pulled and its `@sha256:` rewritten on the `image:` line — the tag is a deliberate version, so a new version stays a reviewed edit to the fragment. Every fragment on disk is checked, enabled or not; an unpinned or bundle-content-ID line is warned about. Running containers are recreated with the ENABLED fragments merged, as `start.sh` composes them | Commit the fragment's digest change with the core's |
@@ -175,7 +214,13 @@ lock is stale") and stays red. Two pieces close that:
   approve them (measured 2026-09-17: `workflow_dispatch` runs do *not*
   satisfy the PR's required checks; approval does).
 - **`./scripts/land-dependabot.sh [PR …]`** does the whole chain from a
-  maintainer's shell, one PR at a time, each step waiting on GitHub:
+  maintainer's shell, one PR at a time, each step waiting on GitHub. With no
+  PR numbers it takes only the open Dependabot PRs that touch
+  `agents/requirements.txt` — a github-actions or docker bump never triggers
+  the relock, so it is skipped (and counted in the output) rather than waited
+  on; name such a PR explicitly to land it. Checks that have not appeared
+  are waited on for up to 10 minutes, then the run stops without merging.
+  The chain:
   `@dependabot rebase` (main moved when the previous PR merged, and branch
   protection wants an up-to-date branch) → wait for the relock push → approve
   the held runs (only this repo's, for the PR's head commit — never a fork's run
@@ -195,7 +240,7 @@ lock is stale") and stays red. Two pieces close that:
 - **Model weights** — GGUF files are versionless snapshots, not something
   you "update." Re-download only when a model repo publishes improved
   quants: `hf download <repo> <file> --local-dir "$WEIGHTS_DIR"` (see
-  "Model weights location" in the README).
+  [INSTALL.md § Where weights live](INSTALL.md#where-weights-live)).
 - **NVIDIA driver / CUDA / Docker** — system-level; distro package manager
   territory, same reasoning as bootstrap: nothing should touch your GPU
   driver behind your back.

@@ -50,16 +50,60 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="${REPO_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-# Deliberately does NOT source lib/conf.sh. Nothing here needs a conf value,
-# and sourcing it has a SIDE EFFECT: the SearXNG-secret bootstrap creates and
-# appends to openbeast.conf. A read-only command like `clients.sh list` must
-# not mutate the rig's config.
+# Deliberately does NOT source lib/conf.sh: sourcing it has a SIDE EFFECT (the
+# SearXNG-secret bootstrap creates and appends to openbeast.conf), and a
+# read-only command like `clients.sh list` must not mutate the rig's config.
+# The two booleans needed here are read directly by _conf_bool below.
 
 RUN_DIR="$REPO_DIR/.run"
 REGISTRY="$RUN_DIR/clients.json"
 
-_usage() { sed -n '10,17p' "$0" | sed 's/^# \{0,1\}//'; }
+# The whole header block above IS the help text (lib/usage.sh): the synopsis
+# alone said nothing about what a key, a scope or a revocation means. Sourced
+# only here, so nothing but --help depends on the helper being present.
+_usage() {
+  # shellcheck source=scripts/lib/usage.sh
+  source "$SCRIPT_DIR/lib/usage.sh"
+  ob_usage "$0"
+}
 _die() { echo "ERROR: $*" >&2; exit 2; }
+
+# _conf_bool KEY — "true" or "false" for a boolean setting, default false,
+# with conf.sh's precedence (env OPENBEAST_<KEY>, then openbeast.conf, last
+# assignment wins) and its _ob_bool reading (first token, `#comment` and
+# quotes dropped, true|yes|1|on) — but without sourcing it.
+_conf_bool() {
+  local key="$1" ev="OPENBEAST_$1" conf="$REPO_DIR/openbeast.conf" raw="" tok rest
+  raw="${!ev:-}"
+  if [[ -z "$raw" && -f "$conf" ]]; then
+    raw="$(grep -E "^[[:space:]]*${key}[[:space:]]*=" "$conf" 2>/dev/null | tail -n1 || true)"
+    raw="${raw#*=}"
+  fi
+  read -r tok rest <<< "$raw" || true
+  tok="${tok%%#*}"
+  tok="${tok//[\"\']/}"
+  case "$(printf '%s' "$tok" | tr 'A-Z' 'a-z')" in
+    true|yes|1|on) echo true ;;
+    *)             echo false ;;
+  esac
+}
+
+# Device keys are checked by beast-gate and by nothing else: with the gate off,
+# :8443 is raw llama-server, which ignores a bearer it was not started with. An
+# enroll then hands out a key that gates nothing and a revoke "succeeds" while
+# the laptop keeps working — so say so, on every command an operator runs
+# believing it changes who may use the rig.
+_warn_gate_off() {
+  [[ "$(_conf_bool EDGE_GATE)" == "true" ]] && return 0
+  {
+    echo "WARNING: EDGE_GATE is not true — device keys are NOT enforced."
+    echo "         :8443 points at llama-server itself, which never checks them:"
+    echo "         a revoked or never-enrolled device still gets served."
+    echo "         Set EDGE_GATE=true in openbeast.conf, restart"
+    echo "         (./stop.sh && ./start.sh -d), then re-run ./scripts/setup-tailscale.sh."
+    echo ""
+  } >&2
+}
 
 # 32 random bytes, hex. Same idiom as scripts/setup-mcpo-keys.sh / lib/conf.sh:
 # openssl when present, /dev/urandom via od otherwise (no openssl dependency).
@@ -120,6 +164,7 @@ _int_or_die() { # _int_or_die <value> <flag> <min>
 _registry_op() {
   OB_REG="$REGISTRY" python3 - <<'PY'
 import datetime
+import fcntl
 import json
 import os
 import sys
@@ -172,6 +217,24 @@ def load():
             "       Refusing to touch it." % REG, 4)
     doc.setdefault("version", 1)
     return doc
+
+def lock():
+    """Serialize every read-modify-write of the registry.
+
+    load -> modify -> save is three steps, and the atomic replace only
+    protects READERS. Two writers that overlap (a cron `revoke laptop` and a
+    human `enroll phone`) each load the same document, and the later save
+    puts its stale copy back — silently un-revoking the laptop. An exclusive
+    flock on a sidecar (not on clients.json: save() replaces that inode)
+    makes the second writer wait, then load the first one's result. Held
+    until this process exits.
+    """
+    d = os.path.dirname(REG) or "."
+    if not os.path.isdir(d):
+        os.makedirs(d, 0o700)
+    fd = os.open(REG + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    return fd
 
 def save(doc):
     d = os.path.dirname(REG) or "."
@@ -249,6 +312,9 @@ def redact(dev):
     return out
 
 # --- commands -----------------------------------------------------------
+if CMD in ("enroll", "scope", "revoke", "unrevoke", "remove"):
+    _lock_fd = lock()
+
 if CMD == "enroll":
     dev_id = os.environ["OB_ID"]
     doc = load()
@@ -310,7 +376,10 @@ elif CMD == "list":
         print("  Enroll one:  ./scripts/clients.sh enroll <id> --label \"My laptop\"")
         sys.exit(0)
     fmt = "%-20s  %-22s  %-4s  %-14s  %-16s  %-16s  %s"
-    print(fmt % ("ID", "LABEL", "SLOT", "SCOPES", "ENROLLED", "LAST-SEEN", "STATUS"))
+    # The stamps are stored and shown in UTC; say so, or a 16:40 read at
+    # 09:40 local looks like a device from the future.
+    print(fmt % ("ID", "LABEL", "SLOT", "SCOPES", "ENROLLED (UTC)",
+                 "LAST-SEEN (UTC)", "STATUS"))
     print(fmt % ("-" * 20, "-" * 22, "----", "-" * 14, "-" * 16, "-" * 16, "------"))
     for dev in devices:
         print(fmt % (short(dev.get("id"), 20), short(dev.get("label"), 22),
@@ -410,6 +479,17 @@ elif CMD == "remove":
     print("Its audit row is GONE — past `last_seen` and enrollment history for")
     print("this device are unrecoverable. `revoke` keeps that trail; `remove`")
     print("does not. A future enroll of the same id starts a fresh history.")
+    # An empty registry is "not configured" to the gate, and with
+    # EDGE_ALLOW_ANON=true that means anonymous mode: removing the last
+    # device re-admits it, along with everyone else on the tailnet.
+    if not doc["devices"] and os.environ.get("OB_ALLOW_ANON") == "true":
+        sys.stderr.write(
+            "\nWARNING: the registry is now EMPTY and EDGE_ALLOW_ANON=true —\n"
+            "         beast-gate admits EVERY tailnet caller without a key,\n"
+            "         including the device you just removed ('%s').\n"
+            "         Close it: set EDGE_ALLOW_ANON=false in openbeast.conf and\n"
+            "         restart (./stop.sh && ./start.sh -d), or enroll a device:\n"
+            "         ./scripts/clients.sh enroll <id>\n" % dev_id)
 
 else:
     die("internal: unknown OB_CMD '%s'" % CMD)
@@ -514,6 +594,7 @@ print(int(any(d.get("id") == os.environ["OB_ID"]
     echo "  On the client device, run (and paste the key above when prompted):"
     echo "    ./scripts/setup-client.sh --host $(_rig_host) --api-key-stdin"
     echo ""
+    _warn_gate_off
     ;;
 
   list)
@@ -570,6 +651,7 @@ print(int(any(d.get("id") == os.environ["OB_ID"]
     [[ $# -eq 0 ]] || _die "unknown option for $cmd: $1"
     if [[ ! -f "$REGISTRY" ]]; then _no_registry; exit 1; fi
     OB_CMD="$cmd" OB_ID="$dev_id" _registry_op
+    if [[ "$cmd" == "revoke" ]]; then echo ""; _warn_gate_off; fi
     ;;
 
   remove)
@@ -592,7 +674,7 @@ print(int(any(d.get("id") == os.environ["OB_ID"]
       echo "  Really delete the row:                    ./scripts/clients.sh remove $dev_id --yes" >&2
       exit 2
     fi
-    OB_CMD=remove OB_ID="$dev_id" _registry_op
+    OB_CMD=remove OB_ID="$dev_id" OB_ALLOW_ANON="$(_conf_bool EDGE_ALLOW_ANON)" _registry_op
     ;;
 
   -h|--help|help) _usage ;;

@@ -4,13 +4,15 @@
 #   ./scripts/setup-tailscale.sh [--publish-searxng] [--publish-slot]
 #                                [--publish-chat] [--publish-artifact]
 #                                [--publish-ntfy] [--i-accept-open-webui]
+#                                [--i-accept-open-inference]
 #   ./scripts/setup-tailscale.sh  --unpublish-searxng | --unpublish-slot
 #                               | --unpublish-chat | --unpublish-artifact
 #                               | --unpublish-ntfy
 #   ./scripts/setup-tailscale.sh  --status    # read-only: print the mount table
 #
 # What it does:
-#   1. Installs tailscale (pacman) and enables tailscaled
+#   1. Installs tailscale (pacman; on apt/dnf systems it prints the steps
+#      for Tailscale's signed repo and stops) and enables tailscaled
 #   2. Joins your tailnet (prints a login URL on first run)
 #   3. Publishes, tailnet-only, with automatic HTTPS:
 #        https://<host>.<tailnet>.ts.net       → Open WebUI (:3000)
@@ -68,6 +70,13 @@
 # re-runs keep honouring it and doctor.sh reports the open :443 as a WARN
 # (acknowledged) instead of a FAIL. Delete that line to take it back.
 #
+# Inference (:8443) is published ONLY behind something that knows who is
+# calling: beast-gate (EDGE_GATE=true, per-device keys) or a shared
+# LLAMA_API_KEY. With neither, llama-server would be open to every tailnet
+# device, so :8443 is left unpublished unless --i-accept-open-inference says a
+# keyless endpoint is intended. That acknowledgement is persisted as
+# ALLOW_OPEN_INFERENCE=true in openbeast.conf; delete the line to take it back.
+#
 # --status prints which OpenBeast surface sits on which tailnet port and
 # changes nothing: no sudo, no openbeast.conf write, no serve reconfiguring.
 #
@@ -87,6 +96,7 @@ PUBLISH_CHAT=0
 PUBLISH_ARTIFACT=0
 PUBLISH_NTFY=0
 ACCEPT_OPEN_WEBUI=0
+ACCEPT_OPEN_INFERENCE=0
 for _arg in "$@"; do
   case "$_arg" in
     --publish-searxng)   PUBLISH_SEARXNG=1 ;;
@@ -119,8 +129,11 @@ for _arg in "$@"; do
       echo "ntfy unpublished from the tailnet (:8447 off)."
       exit 0 ;;
     --i-accept-open-webui) ACCEPT_OPEN_WEBUI=1 ;;
-    --status)            STATUS_ONLY=1 ;;
-    -h|--help) sed -n '2,80p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --i-accept-open-inference) ACCEPT_OPEN_INFERENCE=1 ;;
+    --status)           STATUS_ONLY=1 ;;
+    # The whole header block, however long it grows (a fixed line range cut
+    # it short the moment a paragraph was added).
+    -h|--help) awk 'NR > 1 && !/^#/ {exit} NR > 1 {sub(/^# ?/, ""); print}' "$0"; exit 0 ;;
     *) echo "Unknown option: $_arg (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -192,13 +205,37 @@ if ! command -v tailscale >/dev/null 2>&1; then
   echo "[1/4] Installing tailscale..."
   if command -v pacman >/dev/null 2>&1; then
     sudo pacman -S --needed --noconfirm tailscale
-  elif command -v apt-get >/dev/null 2>&1 || command -v dnf >/dev/null 2>&1; then
-    # Tailscale's official installer handles Debian/Ubuntu/Fedora repos.
-    curl -fsSL https://tailscale.com/install.sh | sh
   else
-    echo "Error: no supported package manager found." >&2
-    echo "       Install tailscale manually (https://tailscale.com/download)" >&2
-    echo "       and re-run this script." >&2
+    # NOT `curl https://tailscale.com/install.sh | sh`: that runs an
+    # unverified remote script, which sudo's internally, as root on the rig.
+    # Tailscale's packages come from its own signed apt/dnf repository —
+    # adding that repo is a decision for the operator to see and make, so
+    # print the steps and stop. (pacman above installs from the distro's
+    # signed repo, which is why that branch may act.)
+    {
+      echo "Error: tailscale is not installed, and this script does not pipe a"
+      echo "       remote installer into a root shell. Install it from Tailscale's"
+      echo "       signed package repository, then re-run this script:"
+      if command -v apt-get >/dev/null 2>&1; then
+        echo ""
+        echo "       Debian / Ubuntu — follow the steps for your release at"
+        echo "         https://tailscale.com/download/linux"
+        echo "       (they add pkgs.tailscale.com's signing key and apt source), then:"
+        echo "         sudo apt-get update && sudo apt-get install tailscale"
+      elif command -v dnf >/dev/null 2>&1; then
+        echo ""
+        echo "       Fedora / RHEL — follow the steps for your release at"
+        echo "         https://tailscale.com/download/linux"
+        echo "       (they add the pkgs.tailscale.com repo, gpgcheck on), then:"
+        echo "         sudo dnf install tailscale"
+      else
+        echo ""
+        echo "       No supported package manager found here — see"
+        echo "         https://tailscale.com/download"
+      fi
+      echo ""
+      echo "       Afterwards:  ./scripts/setup-tailscale.sh   (it is idempotent)"
+    } >&2
     exit 1
   fi
 else
@@ -437,17 +474,68 @@ fi
 # adds per-device keys, a path allowlist (no /lora-adapters, /slots,
 # /v1/stream for remote callers), rate limits, and an inference audit. Raw
 # llama-server stays on loopback for the local command center either way.
+#
+# A raw mount with NO key is the one case that needs a yes: every tailnet
+# node — shared-in users included — would get the GPU plus llama-server's
+# whole route table (/lora-adapters, /slots, /props, /v1/stream/<id>). The
+# WebUI on :443 has needed --i-accept-open-webui for that; inference needed
+# nothing. Same mechanism now: the gate, a shared key, or an explicit
+# --i-accept-open-inference, which is persisted as ALLOW_OPEN_INFERENCE=true
+# exactly as ALLOW_OPEN_WEBUI is (conf.sh resolves both, env over conf).
 _EDGE_GATE="${EDGE_GATE:-false}"
 _EDGE_PORT="${EDGE_PORT:-8090}"
+INFERENCE_PUBLISHED=0
+ALLOW_OPEN_INFERENCE="${ALLOW_OPEN_INFERENCE:-false}"
+# The flag given on an earlier run, persisted (see below), counts as given.
+ACCEPT_INFERENCE_FROM_FLAG=$ACCEPT_OPEN_INFERENCE
+[[ "$ALLOW_OPEN_INFERENCE" == "true" ]] && ACCEPT_OPEN_INFERENCE=1
 if [[ "$_EDGE_GATE" == "true" ]]; then
   sudo tailscale serve --bg --https=8443 "http://$UP_HOST:${_EDGE_PORT:-8090}"
+  INFERENCE_PUBLISHED=1
   echo "      Inference published via beast-gate (:8443 → :${_EDGE_PORT:-8090} → llama-server)."
   echo "      Remote devices need an enrolled key: ./scripts/clients.sh enroll <id>"
-else
+elif [[ -n "${LLAMA_API_KEY:-}" ]]; then
   sudo tailscale serve --bg --https=8443 "http://$UP_HOST:8080"
-  echo "      Inference published RAW (:8443 → :8080) — the whole llama-server"
-  echo "      route table is tailnet-visible. For per-device keys + audit, set"
-  echo "      EDGE_GATE=true in openbeast.conf and re-run (docs/BEAST_SLOT.md)."
+  INFERENCE_PUBLISHED=1
+  echo "      Inference published RAW (:8443 → :8080) behind the shared LLAMA_API_KEY."
+  echo "      (If the stack was started before that key was set, restart it — the"
+  echo "      running llama-server is keyless until then.) For per-device keys +"
+  echo "      audit, set EDGE_GATE=true in openbeast.conf and re-run (docs/BEAST_SLOT.md)."
+elif [[ $ACCEPT_OPEN_INFERENCE -eq 1 ]]; then
+  echo "      WARNING: no EDGE_GATE, no LLAMA_API_KEY and --i-accept-open-inference given —"
+  echo "               publishing llama-server with NO key. Every tailnet device can use"
+  echo "               the GPU and reach its whole route table."
+  sudo tailscale serve --bg --https=8443 "http://$UP_HOST:8080"
+  INFERENCE_PUBLISHED=1
+  # Persist the acknowledgement the way --i-accept-open-webui is persisted:
+  # replace any earlier assignment, keep the conf 0600, temp file + mv.
+  if [[ $ACCEPT_INFERENCE_FROM_FLAG -eq 1 && "$ALLOW_OPEN_INFERENCE" != "true" ]]; then
+    _conf_tmp="$(umask 077; mktemp "$CONF.XXXXXX")"
+    { grep -vE '^[[:space:]]*ALLOW_OPEN_INFERENCE[[:space:]]*=' "$CONF" || true
+      printf '\n# --i-accept-open-inference: llama-server is published on :8443 with NO key and NO gate, on purpose.\nALLOW_OPEN_INFERENCE=true\n'
+    } > "$_conf_tmp"
+    chmod 600 "$_conf_tmp" && mv -f "$_conf_tmp" "$CONF"
+    ALLOW_OPEN_INFERENCE=true
+    echo "      Recorded ALLOW_OPEN_INFERENCE=true in openbeast.conf (delete it to take the"
+    echo "      acknowledgement back)."
+  fi
+else
+  {
+    echo "      NOT publishing inference (:8443): llama-server has no key and beast-gate is"
+    echo "               off, so EVERY tailnet device (shared-in users included) could use"
+    echo "               the GPU and reach /lora-adapters, /slots and /props. Choose one,"
+    echo "               then re-run this script:"
+    echo "                 1. Per-device keys (recommended): set EDGE_GATE=true in"
+    echo "                    openbeast.conf, ./stop.sh && ./start.sh -d, then enroll each"
+    echo "                    device with ./scripts/clients.sh enroll <id>"
+    echo "                 2. One shared key: set LLAMA_API_KEY=<secret> in openbeast.conf,"
+    echo "                    ./stop.sh && ./start.sh -d"
+    echo "                 3. Open on purpose: re-run with --i-accept-open-inference"
+    echo "                    (recorded as ALLOW_OPEN_INFERENCE=true in openbeast.conf)"
+  } >&2
+  # An earlier run may have mounted it — take it down rather than leave a
+  # keyless llama-server on the tailnet.
+  sudo tailscale serve --https=8443 off >/dev/null 2>&1 || true
 fi
 if [[ $PUBLISH_SEARXNG -eq 1 ]]; then
   # Client mode (docs/BEAST_SLOT.md): the laptop's local web_search
@@ -588,14 +676,20 @@ if [[ $WEBUI_PUBLISHED -eq 1 ]]; then
 else
   echo "  Chat (Open WebUI):   NOT published yet — see the message above, then re-run."
 fi
-echo "  API (OpenAI-compat): https://$FQDN:8443/v1"
+if [[ $INFERENCE_PUBLISHED -eq 1 ]]; then
+  echo "  API (OpenAI-compat): https://$FQDN:8443/v1"
+else
+  echo "  API (OpenAI-compat): NOT published — see the three options above, then re-run."
+fi
 echo ""
 echo "  Phone:  install the Tailscale app, sign in, open the chat URL,"
 echo "          then 'Add to Home Screen' — Open WebUI installs as an app."
 echo "  Laptop: install Tailscale (tailscale.com/download), sign in —"
 echo "          both URLs just work in any browser."
-echo "  Agents: point OpenCode/any OpenAI client at the API:"
-echo "          \"baseURL\": \"https://$FQDN:8443/v1\""
+if [[ $INFERENCE_PUBLISHED -eq 1 ]]; then
+  echo "  Agents: point OpenCode/any OpenAI client at the API:"
+  echo "          \"baseURL\": \"https://$FQDN:8443/v1\""
+fi
 if [[ $PUBLISH_SEARXNG -eq 1 ]]; then
   echo ""
   echo "  Thin clients (scripts/setup-client.sh on the laptop):"

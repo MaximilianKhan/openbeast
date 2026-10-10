@@ -50,7 +50,10 @@ srv.serve_forever()
 PYEOF
 SRV_PID=$!
 for _ in $(seq 1 100); do [[ -s "$WORK/port" ]] && break; sleep 0.05; done
-[[ -s "$WORK/port" ]] || { echo "SKIP: could not start the fixture server (port binding?)"; exit 0; }
+# A skip is a green exit on a developer's box and a FAILURE under CI=true.
+[[ -s "$WORK/port" ]] || { echo "SKIP: could not start the fixture server (port binding?)"
+                           [[ "${CI:-}" == "true" ]] || exit 0
+                           echo "FAIL: skipped under CI=true" >&2; exit 1; }
 BASE="http://127.0.0.1:$(cat "$WORK/port")"
 
 # Python's view, fetched over the same HTTP: name engine answer (one line each)

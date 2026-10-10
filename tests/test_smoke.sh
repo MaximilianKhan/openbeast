@@ -6,7 +6,7 @@
 # Tests:
 #   1. llama.cpp health + model loaded
 #   2. Parallel slots active
-#   3. MCPO proxy serving OpenAPI docs
+#   3. Identity tool server serving OpenAPI docs
 #   4. Open WebUI responding
 #   5. SearXNG responding
 #   6. Chat completion (model generates a response)
@@ -62,11 +62,11 @@ else
   fail "slots endpoint returned no slots (is --slots disabled?)"
 fi
 
-# --- 3. MCPO proxy ---
+# --- 3. Identity tool server (:3001; the mcpo proxy it replaced is gone) ---
 echo ""
-echo "3. MCPO proxy"
+echo "3. Identity tool server"
 if curl -s --max-time 5 "$MCPO_URL/openapi.json" | grep -q "openapi"; then
-  pass "MCPO serving OpenAPI docs"
+  pass "tool server serving OpenAPI docs"
   # Check that new tools are registered
   MCPO_TOOLS=$(curl -s --max-time 5 "$MCPO_URL/openapi.json" 2>/dev/null)
   for tool in edit_file fetch web_search start_agent check_agent tail_agent; do

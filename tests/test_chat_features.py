@@ -518,6 +518,17 @@ def test_a_failed_post_never_logs_the_token(rig, tmp_path, capsys):
     assert "failed" in err and "tk_do_not_print" not in err
 
 
+def test_the_first_failed_post_is_logged_on_a_freshly_booted_box(rig, monkeypatch, capsys):
+    # time.monotonic() starts near zero at boot; the once-per-300 s guard must
+    # not swallow the very first failure (it did on a CI runner 90 s old).
+    monkeypatch.setattr(chat_server.time, "monotonic", lambda: 42.0)
+    n = _notifier(rig, "http://127.0.0.1:9/t")
+    assert n.send(title="x", body="y") is False
+    assert "failed" in capsys.readouterr().err
+    assert n.send(title="x", body="y") is False
+    assert capsys.readouterr().err == ""      # control: still loud only once
+
+
 def test_notify_test_endpoint(rig, stub, monkeypatch):
     r = rig.client.post("/api/chat/notify/test", json={}, headers=rig.local)
     assert r.status_code == 409 and "CHAT_NOTIFY_URL" in r.json()["detail"]

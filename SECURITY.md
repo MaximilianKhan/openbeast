@@ -28,8 +28,9 @@ The interesting attack surfaces, in rough priority order:
    escape (one user reading/writing another user's workspace shard through
    the tool layer's *intended* paths).
 3. **SSRF / fetch-guard bypass** — `fetch()` reaching loopback, private
-   ranges, or metadata services (DNS rebinding is a *known, documented*
-   limitation — bypasses beyond it still qualify).
+   ranges, or metadata services (DNS rebinding is closed by pinning the
+   vetted IP for the connect; a proxied fetch is vetted by name only —
+   bypasses of either qualify).
 4. **Write-guard bypass** — `write_file`/`edit_file` reaching protected
    credential/persistence paths (`.ssh`, `.gnupg`, shell rc files, ...)
    through symlinks, races, or encoding tricks.
@@ -65,8 +66,10 @@ The interesting attack surfaces, in rough priority order:
    surface whose *content* is untrusted. Qualifying: a page escaping the
    opaque-origin `sandbox` iframe or the CSP on `/raw/` responses (storage,
    `fetch`, downloads, reaching the shell that frames it, a script from a
-   non-pinned origin); a write (publish, rollback, visibility, remove)
-   arriving from anywhere but loopback with the locality token; a login not
+   non-pinned origin); a publish arriving from anywhere but loopback with
+   the locality token; a lifecycle write (pin, tags, visibility, rollback,
+   delete) from off the rig with no device key, a revoked key, or a key
+   lacking the `artifact` scope; a login not
    on `ARTIFACT_OPERATORS` (or `CHAT_OPERATORS` as its fallback) reading a
    page, or a private page reaching a login other than its publisher; the
    supporting-file capability token (`/raw/<id>/v/<n>/~<token>/`, an HMAC
@@ -126,8 +129,10 @@ beast-gate (the gate is inference-shaped; teaching it a per-path upstream
 map for one consumer is more risk than a second port). Reads on both need a
 tailnet identity their operator list allows — an unlisted login gets 404,
 never 403. Anything that **changes state** needs more: on beast-artifact,
-writes never leave loopback (the CLI proves locality with a 0600 token no
-browser can read); on beast-chat, a write needs an enrolled device key
+publishing never leaves loopback (the CLI proves locality with a 0600 token no
+browser can read), and lifecycle writes (pin, tags, visibility, rollback,
+delete) additionally accept an identified tailnet reader presenting an
+enrolled device key with the `artifact` scope; on beast-chat, a write needs an enrolled device key
 carrying the `chat` scope, because a proxy-injected login header is forgeable
 by anything already on the box and starting an agent is a shell. Model-
 authored pages are treated as hostile and render in an opaque-origin sandbox

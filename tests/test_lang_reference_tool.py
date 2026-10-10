@@ -210,7 +210,7 @@ def test_it_is_on_the_webui_surface_for_admin_only(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENBEAST_RUN_DIR", str(tmp_path / "run"))
     monkeypatch.setenv("OPENBEAST_MCPO_ADMIN_KEY", "k-admin")
     monkeypatch.setenv("OPENBEAST_MCPO_GUEST_KEY", "k-guest")
-    c = TestClient(openapi_tools.create_app())
+    c = TestClient(openapi_tools.create_app(), base_url="http://127.0.0.1:3001")
     body = {"language": "zig", "topic": "ArrayList"}
     guest = c.post("/language_reference", json=body,
                    headers={"Authorization": "Bearer k-guest"})

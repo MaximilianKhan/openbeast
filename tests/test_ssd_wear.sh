@@ -5,8 +5,9 @@
 #
 # Nothing here needs smartmontools, root, or a real drive: a STUB smartctl is
 # put on PATH returning canned smartctl -j -a fixtures, and the state file is
-# redirected into a throwaway dir. The real .run/ssd-wear.json is never touched
-# and no device is opened.
+# redirected into a throwaway dir. df and lsblk are stubs too, so the drive
+# layout is this suite's own. The real .run/ssd-wear.json is never touched and
+# no device is opened.
 #
 # The load-bearing properties under test:
 #   • the NVMe data-unit constant is 512,000 bytes, not 512 (a 1000x error in
@@ -96,6 +97,25 @@ trap cleanup EXIT
 BIN="$TMPROOT/bin"
 mkdir -p "$BIN" "$TMPROOT/state"
 STATE="$TMPROOT/state/ssd-wear.json"
+
+# Which disk holds the checkout is the HOST's business, and the script asks
+# df + lsblk for it. Un-stubbed, every check below depended on where the repo
+# was cloned: on a tmpfs (or NFS, or overlayfs) checkout there is no /dev
+# source, no drive is reported, and the suite died half-way with a traceback.
+# So the layout is fixed here: an encrypted root on one NVMe disk.
+mkdir -p "$TMPROOT/host"
+cat > "$TMPROOT/host/df" <<'STUB'
+#!/bin/bash
+echo "Filesystem 1024-blocks Used Available Capacity Mounted on"
+echo "/dev/mapper/root 1000 10 990 1% /"
+STUB
+cat > "$TMPROOT/host/lsblk" <<'STUB'
+#!/bin/bash
+printf '/dev/mapper/root crypt\n/dev/nvme0n1p2 part\n/dev/nvme0n1 disk\n'
+STUB
+chmod +x "$TMPROOT/host/df" "$TMPROOT/host/lsblk"
+# For every run below, including the ones that do not put $BIN on PATH.
+export PATH="$TMPROOT/host:$PATH"
 
 # Fixture: an NVMe drive with EXACTLY 1,000,000 data units written.
 #   1,000,000 units * 512,000 bytes = 512,000,000,000 bytes = 512.0 GB
@@ -545,6 +565,35 @@ if echo "$denied" | grep -q 'sudo -n\|NOPASSWD'; then
   pass "permission denied suggests a non-interactive sudo route"
 else
   fail "permission denied gives no unattended fix"
+fi
+# 2026-10-09 review, supply S6: the suggested rule used "/dev/*". A sudoers
+# wildcard matches across words, so it also allowed `-s off`, `-t long`,
+# `-B <file>` as root. The rule must be one EXACT command line per device.
+RULES="$(printf '%s\n' "$denied" | grep 'NOPASSWD:' || true)"
+if [[ -n "$RULES" ]] && ! printf '%s\n' "$RULES" | grep -q '[*?]'; then
+  pass "the suggested sudoers rule has no wildcard"
+else
+  fail "sudoers suggestion still contains a wildcard (or is missing): $RULES"
+fi
+FOUND="$(printf '%s\n' "$denied" | sed -n 's/^  found: \(\/dev\/[^ ]*\) .*/\1/p')"
+_rules_ok=1
+[[ -n "$FOUND" ]] || _rules_ok=0
+while IFS= read -r _d; do
+  [[ -n "$_d" ]] || continue
+  # The whole line: user, runas, the stub's path, exactly "-j -a <device>".
+  printf '%s\n' "$RULES" | grep -qxE "[^ ]+ ALL=\(root\) NOPASSWD: $BIN/smartctl -j -a $_d" || _rules_ok=0
+done <<< "$FOUND"
+if [[ $_rules_ok -eq 1 && "$(printf '%s\n' "$RULES" | wc -l)" -eq "$(printf '%s\n' "$FOUND" | wc -l)" ]]; then
+  pass "one exact rule per detected device: '<smartctl> -j -a <device>' and nothing after it"
+else
+  fail "rules do not match the detected devices one-to-one: found=[$FOUND] rules=[$RULES]"
+fi
+# Negative control: a readable drive must not be told to edit sudoers at all
+# (asserted on the healthy fixture run further up — $out has no NOPASSWD).
+if printf '%s\n' "$denied" | grep -q "visudo -cf /etc/sudoers.d/openbeast-smartctl"; then
+  pass "the hint ends with a visudo syntax check of the new file"
+else
+  fail "no visudo check suggested for a root-parsed file"
 fi
 
 # An unsupported device (valid smartctl, no SMART data) must not stop the run.

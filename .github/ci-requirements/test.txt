@@ -1,0 +1,23 @@
+# GENERATED — do not edit. Regenerate: ./.github/ci-requirements/relock.sh test
+# The hash-pinned closure of .github/ci-requirements/test.in, resolved
+# on CI's python (3.12). Every file of each release is listed, so it installs on
+# any runner image; pip --require-hashes refuses any other content.
+#
+# Install AFTER agents/requirements.lock, with --no-deps: packages that lock
+# already pins are left out here (one pin per package): packaging==26.3
+
+iniconfig==2.3.1 \
+    --hash=sha256:9121e2c1fdb355232495be3194c8dfe87ccc2d5dee45947b78e68f499790d7a7 \
+    --hash=sha256:67f4b9c50da0dedf52af349e7749a80a9057a5031199791b906c3bb3ae878960
+pluggy==1.6.0 \
+    --hash=sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746 \
+    --hash=sha256:7dcc130b76258d33b90f61b658791dede3486c3e6bfb003ee5c9bfb396dd22f3
+Pygments==2.21.0 \
+    --hash=sha256:2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9 \
+    --hash=sha256:610ca751c9bc2492b38eb9a38a7fbc93edbbb2d7182edaf34e66ae493dee5c8c
+pytest==9.0.3 \
+    --hash=sha256:2c5efc453d45394fdd706ade797c0a81091eccd1d6e4bccfcd476e2b8e0ab5d9 \
+    --hash=sha256:b86ada508af81d19edeb213c681b1d48246c1a91d304c6c81a427674c17eb91c
+pytest-timeout==2.4.0 \
+    --hash=sha256:c42667e5cdadb151aeb5b26d114aff6bdf5a907f176a007a30b940d3d865b5c2 \
+    --hash=sha256:7e68e90b01f9eff71332b25001f85c75495fc4e3a836701876183c4bcfd0540a

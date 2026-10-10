@@ -27,9 +27,20 @@ Wants=network-online.target
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=@REPO@
-ExecStart=@REPO@/start.sh -d
-ExecStop=@REPO@/stop.sh
-TimeoutStartSec=900
+# Quoted: a checkout path with a space must stay one argument — unquoted,
+# systemd split it and refused the unit ("…/my is not executable"). The sed
+# line above substitutes the path as-is, so a path containing % $ \ or "
+# still needs those escaped by hand here (%% $$ \\ \").
+ExecStart="@REPO@/start.sh" -d
+ExecStop="@REPO@/stop.sh"
+# start.sh -d owns the deadline: it waits OPENBEAST_LLAMA_LOAD_GRACE + 300 s
+# for the stack (1200 s by default — a slow disk, or a failed load followed
+# by a rollback load, can use all of it) and then exits non-zero itself. A
+# unit timeout below that (this was 900) killed the launcher while the stack
+# was still coming up: the unit went "failed", `systemctl --user stop
+# openbeast` no longer ran ExecStop, and the next start said "already
+# running". No fixed number here can track a raised load grace either.
+TimeoutStartSec=infinity
 
 [Install]
 WantedBy=default.target

@@ -139,6 +139,7 @@ def test_run_eval_asks_about_its_own_base_url(re_, tmp_path, monkeypatch):
     import shutil
     cache = importlib.import_module("cache")
     cache.CACHE_DIR = tmp_path / "cache"
+    cache.STRIKES_DIR = cache.CACHE_DIR / "env-strikes"
     tasks = tmp_path / "tasks"
     tasks.mkdir()
     (tasks / "01_a.json").write_text(json.dumps({

@@ -34,6 +34,9 @@ _build() {
            "$H/openbeast-files/users/x" "$H/.config/systemd/user" "$T/bin"
   cp "$REPO_DIR/scripts/uninstall.sh" "$RIG/scripts/"
   cp "$REPO_DIR/scripts/lib/weights.sh" "$RIG/scripts/lib/"
+  # The fixture registry: m.gguf and listed.gguf are "weights OpenBeast
+  # downloaded" (--purge-weights removes only registry-listed files).
+  printf '# fixture\nPENDING\t0\tm.gguf\texample/repo\t-\nPENDING\t0\tlisted.gguf\texample/repo\t-\n' > "$RIG/scripts/weights.registry"
   printf '#!/bin/bash\necho stop >> "$UN_LOG"\n' > "$RIG/stop.sh"; chmod +x "$RIG/stop.sh"
   # llama.cpp: cloned from a bare "upstream", nothing local → disposable
   git init -q "$T/seed" && echo a > "$T/seed/f" && git -C "$T/seed" add f && git -C "$T/seed" commit -qm a
@@ -51,9 +54,22 @@ _build() {
   done
   : > "$LOG"
   for c in tailscale systemctl sudo; do
-    printf '#!/bin/bash\necho "%s $*" >> "$UN_LOG"\n[[ "$1 $2" == "serve status" ]] && echo "|-- / proxy http://127.0.0.1:3000"\nexit 0\n' "$c" > "$T/bin/$c"
+    printf '#!/bin/bash\necho "%s $*" >> "$UN_LOG"\n[[ "$1 $2" == "serve status" ]] && cat "$UN_SERVE"\nexit 0\n' "$c" > "$T/bin/$c"
     chmod +x "$T/bin/$c"
   done
+  # `tailscale serve status` as the real CLI prints it: OpenBeast's WebUI
+  # (:443, no port token) and inference (:8443) — plus a mount on :10443 that
+  # belongs to something else on this machine.
+  cat > "$T/serve.status" <<'EOF'
+https://rig.tail0.ts.net (tailnet only)
+|-- / proxy http://127.0.0.1:3000
+
+https://rig.tail0.ts.net:8443 (tailnet only)
+|-- / proxy http://127.0.0.1:8080
+
+https://rig.tail0.ts.net:10443 (tailnet only)
+|-- / proxy http://127.0.0.1:9000
+EOF
   # docker: ours is found only by its compose labels; the unfiltered listing
   # also holds a foreign project's volume and a bare one.
   cat > "$T/bin/docker" <<'EOF'
@@ -69,14 +85,15 @@ EOF
   chmod +x "$T/bin/docker"
 }
 _un() {   # _un [args…] — run from $UN_CWD (default: the rig)
-  (cd "${UN_CWD:-$RIG}" && HOME="$H" XDG_CONFIG_HOME="$H/.config" UN_LOG="$LOG" PATH="$T/bin:$PATH" \
+  (cd "${UN_CWD:-$RIG}" && HOME="$H" XDG_CONFIG_HOME="$H/.config" XDG_DATA_HOME="$H/.local/share" \
+     UN_LOG="$LOG" UN_SERVE="$T/serve.status" PATH="$T/bin:$PATH" \
      OPENBEAST_WEIGHTS_DIR='' OPENBEAST_FILES_DIR='' bash "$RIG/scripts/uninstall.sh" "$@")
 }
 
 _build
 OUT="$(_un 2>&1)"
 if [[ -d "$RIG/llama.cpp" && -f "$RIG/.run/llama.pid" && -f "$T/proj/weights/m.gguf" ]] \
-   && ! grep -qE "reset|stop$|disable|volume rm|^stop" "$LOG" \
+   && ! grep -qE "reset|serve --https|stop$|disable|volume rm|^stop" "$LOG" \
    && grep -q "DRY RUN" <<< "$OUT" && grep -q "would  ./stop.sh" <<< "$OUT"; then
   pass "dry run by default: lists every step, removes nothing, mutates nothing"
 else
@@ -86,7 +103,7 @@ fi
 OUT="$(_un --go 2>&1)" || true
 if [[ ! -e "$RIG/llama.cpp" && ! -e "$RIG/venv" ]] \
    && [[ -f "$T/proj/weights/m.gguf" && -f "$RIG/openbeast.conf" && -f "$H/openbeast-files/users/x/p.html" ]] \
-   && grep -q "^stop$" "$LOG" && grep -q "^sudo tailscale serve reset" "$LOG" \
+   && grep -q "^stop$" "$LOG" && grep -q "^sudo tailscale serve --https=443 off" "$LOG" \
    && grep -q "disable --now openbeast-watchdog.timer" "$LOG" \
    && [[ ! -e "$H/.config/systemd/user/openbeast-watchdog.timer" ]] \
    && ! grep -q "volume rm" "$LOG"; then
@@ -108,6 +125,60 @@ if grep -q "disable --now openbeast-logrotate.timer" "$LOG" && [[ ! -e "$H/.conf
 else
   fail "--go left the logrotate units: $(ls "$H/.config/systemd/user" | tr '\n' ' ')"
 fi
+
+# 2026-10-09 review, UX-18: unpublish OUR ports, not `tailscale serve reset`
+# (which drops every serve mount on the machine).
+if grep -q "^sudo tailscale serve --https=8443 off$" "$LOG" && ! grep -q "serve reset" "$LOG" \
+   && ! grep -q -- "--https=10443" "$LOG" && ! grep -qE -- "--https=(8444|8445|8446|8447|8889) off" "$LOG" \
+   && grep -q "keep.*https://rig.tail0.ts.net:10443.*left published" <<< "$OUT"; then
+  pass "--go: unpublishes only OpenBeast's mounted ports (:443, :8443); a foreign :10443 mount is kept and listed"
+else
+  fail "tailscale unpublish: log=$(grep tailscale "$LOG" | tr '\n' '|') :: $(grep -A6 '^== 2' <<< "$OUT")"
+fi
+# …and the accounting of what stays outside the checkout is printed, true to
+# what is actually there (the fixture HOME has sandlock; no client install).
+mkdir -p "$H/.local/bin" && : > "$H/.local/bin/sandlock"
+OUT="$(_un 2>&1)"
+if grep -q "left.*sandlock" <<< "$OUT" && grep -q "rm -f ~/.local/bin/sandlock" <<< "$OUT" \
+   && ! grep -q "left.*client mode" <<< "$OUT" && [[ -e "$H/.local/bin/sandlock" ]]; then
+  pass "what is left outside the checkout is listed with its removal command — only what exists, and never removed"
+else
+  fail "left-behind accounting: $(grep -A12 '^== 9' <<< "$OUT")"
+fi
+
+# UX-18: --purge-weights removes ONLY registry-listed files (+ .fetch.*
+# staging); a GGUF OpenBeast never downloaded is kept, listed, and so is the dir.
+_build
+echo mine > "$T/proj/weights/someone-elses.gguf"; echo n > "$T/proj/weights/notes.txt"
+echo w > "$T/proj/weights/listed.gguf"
+mkdir -p "$T/proj/weights/.fetch.listed.gguf/.cache"; echo part > "$T/proj/weights/.fetch.listed.gguf/x.incomplete"
+OUT="$(_un --purge-weights 2>&1)" || true
+if [[ -f "$T/proj/weights/m.gguf" && -d "$T/proj/weights/.fetch.listed.gguf" ]] \
+   && grep -q "would  rm m.gguf" <<< "$OUT" && grep -q "keep   someone-elses.gguf" <<< "$OUT"; then
+  pass "--purge-weights dry run: names each file it would remove and each it keeps, touches nothing"
+else
+  fail "purge-weights dry run: $(grep -A12 '^== 7' <<< "$OUT")"
+fi
+OUT="$(_un --go --purge-weights 2>&1)" || true
+if [[ ! -e "$T/proj/weights/m.gguf" && ! -e "$T/proj/weights/listed.gguf" && ! -e "$T/proj/weights/.fetch.listed.gguf" ]] \
+   && [[ "$(cat "$T/proj/weights/someone-elses.gguf")" == mine && -f "$T/proj/weights/notes.txt" ]] \
+   && grep -q "keep   someone-elses.gguf — not in scripts/weights.registry" <<< "$OUT" \
+   && grep -q "keep   notes.txt" <<< "$OUT" && ! grep -q "rm -rf $T/proj/weights " <<< "$OUT"; then
+  pass "--purge-weights: registry-listed weights and .fetch.* staging go; foreign files are KEPT and listed, the dir stays"
+else
+  fail "purge-weights: $(ls -a "$T/proj/weights" | tr '\n' ' ') :: $(grep -A12 '^== 7' <<< "$OUT")"
+fi
+# No registry = no list of what is ours = nothing is deleted.
+_build
+rm -f "$RIG/scripts/weights.registry"
+OUT="$(_un --go --purge-weights 2>&1)" || true
+if [[ -f "$T/proj/weights/m.gguf" ]] && grep -q "weights.registry is missing" <<< "$OUT"; then
+  pass "--purge-weights without a registry removes nothing and says why"
+else
+  fail "purge-weights without a registry: $(ls -a "$T/proj/weights" | tr '\n' ' ') :: $(grep -A6 '^== 7' <<< "$OUT")"
+fi
+# (Negative control: a weights dir holding ONLY registry-listed files is
+# emptied and removed — the --purge-all case just below.)
 
 # ci-tests-1 / lifecycle-8: the DEFAULT layout (no conf key, weights in ../weights)
 _build
@@ -211,7 +282,7 @@ fi
 
 _build
 OUT="$(_un --help 2>&1)" || true
-if grep -q "^Uninstall the RIG" <<< "$OUT" && grep -q "^anywhere else\.$" <<< "$OUT" \
+if grep -q "^Uninstall the RIG" <<< "$OUT" && grep -q "^tailscale itself\.$" <<< "$OUT" \
    && ! grep -qE "set -uo|SCRIPT_DIR" <<< "$OUT" && [[ ! -s "$LOG" ]]; then
   pass "--help prints the header comment and no code, and runs nothing"
 else

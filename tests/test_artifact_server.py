@@ -678,6 +678,29 @@ def test_the_body_cannot_name_an_owner(make_client):
                   headers=KID).status_code == 404
 
 
+def test_a_device_row_without_a_scopes_field_has_no_scope(make_client):
+    """Fail closed: a clients.json row written before scopes existed (or with
+    the field stripped) grants nothing here, it does not grant everything."""
+    c = make_client(operators="max@example.com")
+    a = publish(c, headers=local(c, MAX))
+    phone = enroll(c.tmp, "phone")
+    legacy = enroll(c.tmp, "legacy")
+    path = c.tmp / "run" / "clients.json"
+    doc = json.loads(path.read_text())
+    for d in doc["devices"]:
+        if d["id"] == "legacy":
+            del d["scopes"]
+    path.write_text(json.dumps(doc))
+    r = c.patch(f"/api/artifacts/{a['id']}", json={"visibility": "tailnet"},
+                headers={**MAX, **legacy})
+    assert r.status_code == 404 and r.json() == FLAT_404
+    assert store.get_meta(a["id"])["visibility"] != "tailnet"
+    # control: the row beside it, with the scope, is let through
+    r = c.patch(f"/api/artifacts/{a['id']}", json={"visibility": "tailnet"},
+                headers={**MAX, **phone})
+    assert r.status_code == 200, r.text
+
+
 def test_patch_is_attributed_to_the_caller_not_the_first_operator(make_client):
     """The store gates visibility changes on ownership (D5), so the server
     has to say WHO is asking instead of letting it guess."""

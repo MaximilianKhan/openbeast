@@ -602,6 +602,247 @@ else
   fail "client.sh update does not call _refresh_oc_catalog (the original bug)"
 fi
 
+# --- 2026-10-09 review fixes ---
+# Each case gets its OWN throwaway repo, so the conf file under test is the
+# only thing that differs and the sections above keep their fixtures.
+_fresh_repo() { # _fresh_repo <name> -> prints the repo path
+  local r="$TMPROOT/$1"
+  mkdir -p "$r/scripts/lib"
+  cp "$REPO_DIR/scripts/clients.sh" "$r/scripts/"
+  cp "$REPO_DIR"/scripts/lib/*.sh "$r/scripts/lib/"
+  printf '%s\n' "$r"
+}
+_has() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
+
+echo ""
+echo "gate-off warning (UX-07):"
+# Device keys are enforced by beast-gate only. With EDGE_GATE off, enroll,
+# rotate and revoke must say that the key/revocation does nothing.
+G="$(_fresh_repo gateoff)"
+unset OPENBEAST_EDGE_GATE OPENBEAST_EDGE_ALLOW_ANON
+GW="EDGE_GATE is not true"
+out="$("$G/scripts/clients.sh" enroll lap 2>&1)" || true
+if _has "$out" "$GW" && _has "$out" "NOT enforced" && _has "$out" "setup-tailscale.sh"; then
+  pass "enroll with no EDGE_GATE in conf warns that keys are not enforced"
+else
+  fail "enroll printed no gate-off warning"
+fi
+out="$("$G/scripts/clients.sh" rotate lap 2>&1)" || true
+if _has "$out" "$GW"; then pass "rotate warns too"; else fail "rotate printed no gate-off warning"; fi
+out="$("$G/scripts/clients.sh" revoke lap 2>&1)" || true
+if _has "$out" "$GW" && _has "$out" "Revoked 'lap'"; then
+  pass "revoke warns that the revocation is not enforced (and still records it)"
+else
+  fail "revoke printed no gate-off warning"
+fi
+echo 'EDGE_GATE=false' > "$G/openbeast.conf"
+out="$("$G/scripts/clients.sh" rotate lap 2>&1)" || true
+if _has "$out" "$GW"; then pass "explicit EDGE_GATE=false warns"; else fail "EDGE_GATE=false did not warn"; fi
+# Negative controls: a gate that IS on must not cry wolf — in each spelling
+# conf.sh accepts, and through the env override.
+printf 'EDGE_GATE=false\nEDGE_GATE="true"   # per-device keys\n' > "$G/openbeast.conf"
+out="$("$G/scripts/clients.sh" rotate lap 2>&1)" || true
+out2="$("$G/scripts/clients.sh" revoke lap 2>&1)" || true
+if ! _has "$out" "$GW" && ! _has "$out2" "$GW" && _has "$out" "Rotated the key"; then
+  pass "EDGE_GATE=true (quoted, with a trailing comment, last line wins) is silent"
+else
+  fail "warned although EDGE_GATE=true"
+fi
+echo 'EDGE_GATE=false' > "$G/openbeast.conf"
+out="$(OPENBEAST_EDGE_GATE=yes "$G/scripts/clients.sh" rotate lap 2>&1)" || true
+if ! _has "$out" "$GW"; then
+  pass "env OPENBEAST_EDGE_GATE overrides the conf file"
+else
+  fail "env override ignored"
+fi
+before="$(cat "$G/openbeast.conf")"
+"$G/scripts/clients.sh" list >/dev/null 2>&1 || true
+out="$("$G/scripts/clients.sh" list 2>&1)" || true
+if [[ "$(cat "$G/openbeast.conf")" == "$before" ]] && ! _has "$out" "$GW"; then
+  pass "reading the setting never writes openbeast.conf; list stays quiet"
+else
+  fail "clients.sh mutated openbeast.conf or list warned"
+fi
+
+echo ""
+echo "list timestamps (UX-29):"
+out="$("$G/scripts/clients.sh" list 2>&1)" || true
+if _has "$out" "ENROLLED (UTC)" && _has "$out" "LAST-SEEN (UTC)"; then
+  pass "list labels its stamps as UTC"
+else
+  fail "list shows unlabeled timestamps: $out"
+fi
+
+echo ""
+echo "remove that empties the registry (netsec S7):"
+# An empty registry is "not configured" to beast-gate; with
+# EDGE_ALLOW_ANON=true that is anonymous mode, so deleting the last device
+# re-admits it. `remove` must say so — and only then.
+A="$(_fresh_repo anon)"
+AW="registry is now EMPTY and EDGE_ALLOW_ANON=true"
+printf 'EDGE_GATE=true\nEDGE_ALLOW_ANON=true\n' > "$A/openbeast.conf"
+"$A/scripts/clients.sh" enroll one >/dev/null 2>&1
+"$A/scripts/clients.sh" enroll two >/dev/null 2>&1
+out="$("$A/scripts/clients.sh" remove one --yes 2>&1)" || true
+if ! _has "$out" "$AW" && _has "$out" "Removed 'one'"; then
+  pass "removing one of two devices does not warn (the registry is not empty)"
+else
+  fail "warned although a device is still enrolled"
+fi
+out="$("$A/scripts/clients.sh" remove two --yes 2>&1)" || true
+if _has "$out" "$AW" && _has "$out" "EDGE_ALLOW_ANON=false" && _has "$out" "'two'"; then
+  pass "removing the LAST device under EDGE_ALLOW_ANON=true warns and names the fix"
+else
+  fail "emptied the registry under EDGE_ALLOW_ANON=true without a warning"
+fi
+printf 'EDGE_GATE=true\nEDGE_ALLOW_ANON=false\n' > "$A/openbeast.conf"
+"$A/scripts/clients.sh" enroll three >/dev/null 2>&1
+out="$("$A/scripts/clients.sh" remove three --yes 2>&1)" || true
+if ! _has "$out" "$AW" && _has "$out" "Removed 'three'"; then
+  pass "the fail-closed default (EDGE_ALLOW_ANON=false) empties without the warning"
+else
+  fail "warned although EDGE_ALLOW_ANON=false"
+fi
+
+echo ""
+echo "registry write lock (supply S15):"
+# load -> modify -> save without a lock lets an overlapping writer put a stale
+# copy back (a revoke lost to a concurrent enroll). Hold the lock from here
+# and prove a writer waits for it, then finishes once it is released.
+L="$(_fresh_repo lock)"
+"$L/scripts/clients.sh" enroll lap >/dev/null 2>&1
+_revoked() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["devices"][0]["revoked_at"] is not None)' "$L/.run/clients.json"; }
+python3 -c '
+import fcntl, os, sys, time
+fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX)
+open(sys.argv[2], "w").close()
+deadline = time.time() + 30
+while not os.path.exists(sys.argv[3]) and time.time() < deadline:
+    time.sleep(0.05)
+' "$L/.run/clients.json.lock" "$TMPROOT/lock-held" "$TMPROOT/lock-release" &
+HOLDER=$!
+for _ in $(seq 1 100); do [[ -e "$TMPROOT/lock-held" ]] && break; sleep 0.05; done
+"$L/scripts/clients.sh" revoke lap >"$TMPROOT/lock-revoke.out" 2>&1 &
+WRITER=$!
+sleep 1
+if kill -0 "$WRITER" 2>/dev/null && [[ "$(_revoked)" == "False" ]]; then
+  pass "a writer waits while another process holds the registry lock"
+else
+  fail "revoke wrote the registry while the lock was held elsewhere"
+fi
+# Negative control: readers take no lock, so list must not hang behind it.
+if out="$(timeout 10 "$L/scripts/clients.sh" list 2>&1)" && _has "$out" "lap"; then
+  pass "list does not wait for the lock (reads stay lock-free)"
+else
+  fail "list blocked on (or failed under) the writer lock"
+fi
+: > "$TMPROOT/lock-release"
+wait "$HOLDER" 2>/dev/null || true
+if wait "$WRITER" && [[ "$(_revoked)" == "True" ]]; then
+  pass "the waiting writer completes once the lock is released"
+else
+  fail "the waiting revoke never landed after the lock was released"
+fi
+if [[ "$(_mode "$L/.run/clients.json.lock")" == "600" ]]; then
+  pass "the lock file is 0600"
+else
+  fail "lock file mode is $(_mode "$L/.run/clients.json.lock")"
+fi
+
+echo ""
+echo "client.sh live model row (ops F8):"
+# The live row's KEY is what opencode sends as "model". It must be the id the
+# rig serves — vLLM and hydra 404 an id they do not serve — not an invented
+# one. A stub rig on an ephemeral loopback port serves a known id.
+LIVE_DIR="$TMPROOT/live"; mkdir -p "$LIVE_DIR"
+python3 - "$LIVE_DIR/port" <<'PY' &
+import http.server, json, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/v1/models":
+            body = {"data": [{"id": "qwen38-27b-nvfp4"}]}
+        elif self.path == "/props":
+            body = {"default_generation_settings": {"n_ctx": 131072}}
+        else:
+            self.send_error(404); return
+        raw = json.dumps(body).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers(); self.wfile.write(raw)
+    def log_message(self, *a):
+        pass
+srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+open(sys.argv[1] + ".tmp", "w").write(str(srv.server_address[1]))
+import os; os.replace(sys.argv[1] + ".tmp", sys.argv[1])
+srv.serve_forever()
+PY
+LIVE_PID=$!
+for _ in $(seq 1 100); do [[ -s "$LIVE_DIR/port" ]] && break; sleep 0.05; done
+LIVE_PORT="$(cat "$LIVE_DIR/port")"
+LCFG="$LIVE_DIR/opencode.json"
+# An install made by the previous client: default and small_model on rig-live.
+python3 -c "
+import json, sys
+json.dump({'model': 'openbeast-rig/rig-live', 'small_model': 'openbeast-rig/rig-live',
+           'provider': {'openbeast-rig': {'options': {'baseURL': 'http://127.0.0.1:%s/v1' % sys.argv[2], 'apiKey': 'not-needed'},
+                                          'models': {'rig-live': {'name': 'old  [live on rig]'}}}}},
+          open(sys.argv[1], 'w'), indent=2)" "$LCFG" "$LIVE_PORT"
+LIVE_OUT="$(bash -c "OC_CONFIG='$LCFG'; REPO='$REPO_DIR'; PY_BIN=python3
+$RF
+_refresh_oc_catalog" 2>&1)" || true
+kill "$LIVE_PID" 2>/dev/null || true
+wait "$LIVE_PID" 2>/dev/null || true
+_lq() { python3 -c "
+import json,sys
+c=json.load(open('$LCFG')); m=c['provider']['openbeast-rig']['models']; print(eval(sys.argv[1]))" "$1"; }
+if [[ "$(_lq "c['model']")" == "openbeast-rig/qwen38-27b-nvfp4" \
+   && "$(_lq "'qwen38-27b-nvfp4' in m")" == "True" ]]; then
+  pass "the live row and the default model carry the id the rig serves"
+else
+  fail "default is '$(_lq "c['model']")' — want openbeast-rig/qwen38-27b-nvfp4 :: $LIVE_OUT"
+fi
+if [[ "$(_lq "'rig-live' in m")" == "False" \
+   && "$(_lq "c['small_model']")" == "openbeast-rig/qwen38-27b-nvfp4" ]]; then
+  pass "no invented 'rig-live' id survives — not as a row, not in small_model"
+else
+  fail "rig-live survived: row=$(_lq "'rig-live' in m") small_model=$(_lq "c['small_model']")"
+fi
+if [[ "$(_lq "m['qwen38-27b-nvfp4']['limit']['context']")" == "131072" ]] \
+   && _has "$LIVE_OUT" "rig is serving 'qwen38-27b-nvfp4'"; then
+  pass "the live row still carries the rig's real n_ctx"
+else
+  fail "live row lost its context limit :: $LIVE_OUT"
+fi
+# Negative control: the dead-rig run above (section 9) must not have invented
+# a live row either — every key is a catalog id.
+if [[ "$(_ocq "'rig-live' in c['provider']['openbeast-rig']['models']")" == "False" ]]; then
+  pass "control: an unreachable rig adds no live row at all"
+else
+  fail "a dead rig still produced a rig-live row"
+fi
+
+echo ""
+echo "client.sh status on a box that never installed (UX-29):"
+NH="$TMPROOT/never-home"; mkdir -p "$NH"
+out="$(env -i HOME="$NH" PATH="/usr/bin:/bin" bash "$REPO_DIR/scripts/client.sh" status 2>&1)" && rc=0 || rc=$?
+if [[ $rc -eq 1 ]] && _has "$out" "client mode is not installed" && _has "$out" "setup-client.sh --host" \
+   && ! _has "$out" "venv broken"; then
+  pass "never installed → 'not installed' + the install command, not 'venv broken'"
+else
+  fail "never-installed status (rc=$rc): $out"
+fi
+# Negative control: an install that LOST its venv is still diagnosed as such.
+IH="$TMPROOT/half-home"; mkdir -p "$IH/.openbeast-client" "$TMPROOT/nobin"
+echo "# no rig url" > "$IH/.openbeast-client.env"
+out="$(env -i HOME="$IH" PATH="$TMPROOT/nobin:/usr/bin:/bin" bash "$REPO_DIR/scripts/client.sh" status 2>&1)" && rc=0 || rc=$?
+if [[ $rc -eq 1 ]] && _has "$out" "no venv at" && ! _has "$out" "not installed"; then
+  pass "control: an existing install without a venv reports the missing venv"
+else
+  fail "half-installed status (rc=$rc): $out"
+fi
+
 # --- Summary ---
 echo ""
 echo "================================"

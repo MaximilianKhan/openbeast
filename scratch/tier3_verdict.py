@@ -43,6 +43,14 @@ build differs across cells, or the weights differ within P*/C* cells.
 --heldout UNITS reads held-out units on their own (one-sided sign test,
 LANG_AWARENESS_PLAN §5) and takes them out of R1-R4 instead of pooling.
 
+SECOND READS (added 2026-10-09, after the fact — review evals F13 / F14),
+printed beside the registered lines and never used by the VERDICT:
+R1 pools the replicates of the same units as independent pairs, so it also
+prints a per-unit sign test (each unit once, by its net over the replicates)
+and the net per replicate — the ">= 7" bar is a pooled count. R3's rule is
+failure to reject and cannot trip below 6 regressions with no rescue, so it
+also prints a non-inferiority read (net >= -GUARD_NI_MARGIN).
+
 Usage:
   python3 scratch/tier3_verdict.py --manifest scratch/tier3_cells-<stamp>.txt
   python3 scratch/tier3_verdict.py --p0 A.json B.json --p1 C.json D.json [--c0 X.json --c1 Y.json]
@@ -61,6 +69,10 @@ import row_validity  # noqa: E402  (the one row classifier; see its docstring)
 
 SHIP_MIN_NET = 7
 SHIP_ALPHA = 0.05
+# Non-inferiority margin for the champion guard's second read (R3): the pack
+# may cost the champion at most this many net units. Printed beside the
+# registered rule, never instead of it.
+GUARD_NI_MARGIN = 2
 
 
 def load_cell(path: str, language: str = "zig", log_idx=None) -> dict:
@@ -186,6 +198,35 @@ def paired(p0: dict, p1: dict) -> dict:
             # only both-pass pairs: R2's n is drawn from them, so a rescue or a
             # fail with an unrecorded side was never "excluded" from it
             "unrecorded": sum(1 for i in both if p0["rows"][i].get("unrecorded") or p1["rows"][i].get("unrecorded"))}
+
+
+def per_unit_sign(pairs: list[dict]) -> dict:
+    """R1 clustered by unit. Replicates rerun the SAME units, so pooling
+    their discordant pairs (2 replicates x 30 units = "60 pairs") treats two
+    looks at one unit as independent. Here each unit counts once: its net
+    over the replicates (+1 per rescue, -1 per regression), then an exact
+    two-sided sign test on the units whose net is not zero."""
+    net: dict[str, int] = {}
+    for pr in pairs:
+        for u in pr["ids"]:
+            net.setdefault(u, 0)
+        for u in pr["b"]:
+            net[u] += 1
+        for u in pr["c"]:
+            net[u] -= 1
+    pos = sum(1 for v in net.values() if v > 0)
+    neg = sum(1 for v in net.values() if v < 0)
+    return {"pos": pos, "neg": neg, "zero": len(net) - pos - neg, "units": len(net),
+            "p": mcnemar_exact(pos, neg)}
+
+
+def guard_trip_point(alpha: float = SHIP_ALPHA) -> int:
+    """Regressions, with no rescue at all, the registered guard needs before
+    it reads REGRESSION (clean = p > alpha or net >= 0)."""
+    c = 1
+    while mcnemar_exact(0, c) > alpha:
+        c += 1
+    return c
 
 
 def mean(xs):
@@ -340,8 +381,10 @@ def main() -> int:
     rescued_by_pair, regressed_by_pair = [], []
     d_tok, d_it, d_tok_all, d_prompt = [], [], [], []
     missing_iters = unrecorded = 0
+    pairs = []
     for k, (x0, x1) in enumerate(zip(P0, P1)):
         pr = paired(x0, x1)
+        pairs.append(pr)
         B += len(pr["b"]); C += len(pr["c"])
         rescued_by_pair.append(pr["b"]); regressed_by_pair.append(pr["c"])
         d_tok += pr["d_tok"]; d_it += pr["d_it"]; d_tok_all += pr["d_tok_all"]; d_prompt += pr["d_prompt"]
@@ -353,6 +396,16 @@ def main() -> int:
     net = B - C
     p = mcnemar_exact(B, C)
     print(f"\nR1 PRIMARY  pooled McNemar: rescues b={B} regressions c={C} net={net:+d} p={fmt_p(p)}")
+    # The pooled test counts every replicate of a unit as its own pair; the
+    # per-unit read is the one whose n is the number of units. And the ship
+    # bar is a POOLED net, so it scales with the replicate count.
+    pu = per_unit_sign(pairs)
+    print(f"    per-unit (clustered: each of {pu['units']} units counted once, by its net over "
+          f"{len(pairs)} replicate(s)): net-positive={pu['pos']} net-negative={pu['neg']} "
+          f"zero={pu['zero']} two-sided sign p={fmt_p(pu['p'])}")
+    print(f"    net per replicate: {net / len(pairs):+.1f} (pooled net {net:+d} over {len(pairs)}); "
+          f"the ship bar net>={SHIP_MIN_NET} is pooled = {SHIP_MIN_NET / len(pairs):.1f} per replicate "
+          f"at {len(pairs)} replicate(s)")
     if any(c["timeouts"] for c in P0 + P1):
         sb = sc = 0
         for x0, x1 in zip(P0, P1):
@@ -393,6 +446,15 @@ def main() -> int:
         print(f"R3 GUARD    champion {G1['model']}: units={len(g['ids'])} C0 pass={g['pass0']} C1 pass={g['pass1']} "
               f"rescues={len(g['b'])} regressions={len(g['c'])} net={gnet:+d} p={gp:.3f} → "
               f"{'CLEAN' if guard_clean else 'REGRESSION'}")
+        # The registered rule is "failure to reject": at this n it needs
+        # guard_trip_point() regressions with no rescue before it trips. A
+        # non-inferiority bound asks the question the guard is for.
+        trip = guard_trip_point()
+        print(f"    non-inferiority read (net >= -{GUARD_NI_MARGIN}): net={gnet:+d} → "
+              f"{'HOLDS' if gnet >= -GUARD_NI_MARGIN else 'FAILS'}  "
+              f"[the registered rule reads CLEAN until {trip} regressions with no rescue "
+              f"(0 rescues / {trip - 1} regressions is p={mcnemar_exact(0, trip - 1):.4f}); "
+              f"the VERDICT line uses the registered rule]")
         if G0["timeouts"] or G1["timeouts"]:
             s = paired(drop_timeouts(G0), drop_timeouts(G1))
             snet = len(s["b"]) - len(s["c"])

@@ -10,8 +10,10 @@ an OOM crash and a shrug.
 
 `scripts/lib/hardware.sh` detects vendor (NVIDIA / AMD / Intel / none), GPU
 count, and VRAM, and prints an *advisory* recommendation. `bootstrap.sh`
-shows it during preflight. Nothing changes launch behavior yet — the 5090
-profile remains the default assumption, exactly as before. Set
+shows it during preflight. Two things do change behavior: bootstrap blocks
+cards under the 24 GB floor, and `serve.sh` scales context down on cards
+smaller than the reference (Phase 2, below). Otherwise the 5090 profile
+remains the default assumption. Set
 `OPENBEAST_ASSUME_5090=1` to silence the advice (CI/headless).
 
 Current advisory tiers (single NVIDIA GPU):
@@ -27,7 +29,7 @@ Current advisory tiers (single NVIDIA GPU):
 by `ob_vram_floor_check` in `scripts/lib/hardware.sh`, called from bootstrap,
 and reported by `./start.sh doctor`):** OpenBeast is an opinionated
 distribution — "max intelligence, no compromise." The shipped default is
-~21 GB of weights; below the 3090 / 4090 class nothing we ship runs at a
+~19.5 GB of weights; below the 3090 / 4090 class nothing we ship runs at a
 context worth the name, and every configuration that would is a quant and a
 window so degraded that the result is not the product we test or stand
 behind. Running llama.cpp on less is *possible* — it just isn't OpenBeast,
@@ -93,7 +95,7 @@ version. The measured-profile refinement is still worth doing:
 ## Phase 3 — pick-your-model bootstrap
 
 `bootstrap.sh` currently downloads the 27B Q5 default unconditionally
-(~21 GB). With profiles in place it should offer the tier-appropriate
+(~19.5 GB). With profiles in place it should offer the tier-appropriate
 default (e.g. 24 GB → Q4_K_M) with the 5090 default as the ≥30 GB choice.
 Depends on Phase 2 measurements; guessing quants without measurements just
 moves the OOM.

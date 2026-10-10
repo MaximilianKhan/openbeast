@@ -45,6 +45,12 @@ def ba(tmp_path, monkeypatch):
     # never the rig's own .run/gpu.lease.
     monkeypatch.setenv("OPENBEAST_RUN_DIR", str(tmp_path / "run"))
     monkeypatch.delenv("OPENBEAST_BENCH_UNDER_LEASE", raising=False)
+    # The cool-off reads the card through this one function: unreadable by
+    # default, so no test here runs nvidia-smi (the cool-off tests below
+    # hand it their own readings).
+    monkeypatch.setattr(mod, "_real_gpu_temperature_c", mod.gpu_temperature_c, raising=False)
+    monkeypatch.setattr(mod, "gpu_temperature_c", lambda: None)
+    monkeypatch.delenv("OPENBEAST_BENCH_COOLOFF_TEMP_C", raising=False)
     calls = []
     real_run = subprocess.run
 
@@ -136,6 +142,110 @@ def test_cooloff_only_after_live_gpu_work(ba, monkeypatch):
     assert slept == [ba.COOLOFF_SECONDS, ba.COOLOFF_SECONDS]
 
 
+# --- the cool-off is gated on GPU temperature (review 2026-10-09, perf F8) ---
+# A flat 600 s between models cost a 20-model sweep 190 idle minutes. Every
+# reading here is handed in; `sleep` is recorded, never taken.
+
+def _cooloff(ba, monkeypatch, readings):
+    """Run cool_off() against a scripted thermometer. Returns (seconds the
+    function reports, the sleeps it asked for, readings it consumed)."""
+    slept, feed, used = [], iter(readings), []
+
+    def read():
+        used.append(next(feed))
+        return used[-1]
+
+    monkeypatch.setattr(ba.time, "sleep", lambda s: slept.append(s))
+    monkeypatch.setattr(ba, "gpu_temperature_c", read)
+    return ba.cool_off(), slept, used
+
+
+def test_cooloff_ends_when_the_gpu_has_cooled(ba, monkeypatch):
+    # 74°C at the stop, then falling; at or below 50°C on the 6th poll (90 s).
+    waited, slept, _ = _cooloff(ba, monkeypatch, [74, 70, 66, 61, 57, 53, 50, 48, 47])
+    assert waited == 90 == sum(slept)
+    assert set(slept) == {ba.COOLOFF_POLL_SECONDS}
+    assert waited < ba.COOLOFF_SECONDS
+
+
+def test_cooloff_never_shorter_than_the_floor(ba, monkeypatch):
+    """An already-cool reading does not skip the break: the core sensor
+    falls faster than what it does not report."""
+    waited, slept, _ = _cooloff(ba, monkeypatch, [40] * 50)
+    assert waited == ba.COOLOFF_MIN_SECONDS == sum(slept)
+
+
+def test_cooloff_is_capped_at_the_old_fixed_wait(ba, monkeypatch):
+    """Negative control for the gate: a card that never cools waits exactly
+    the ceiling, not forever."""
+    waited, slept, _ = _cooloff(ba, monkeypatch, [80] * 100)
+    assert waited == ba.COOLOFF_SECONDS == sum(slept) == 600
+
+
+def test_cooloff_keeps_the_fixed_wait_when_temperature_is_unreadable(ba, monkeypatch):
+    waited, slept, used = _cooloff(ba, monkeypatch, [None])
+    assert waited == 600 and slept == [600] and used == [None]
+
+
+def test_cooloff_waits_out_the_rest_when_the_reading_is_lost(ba, monkeypatch):
+    waited, slept, _ = _cooloff(ba, monkeypatch, [74, 70, None])
+    assert waited == 600 and sum(slept) == 600      # 15 + 15 + the remaining 570
+    assert slept == [15, 15, 570]
+
+
+def test_cooloff_threshold_is_configurable_and_can_be_turned_off(ba, monkeypatch):
+    monkeypatch.setenv("OPENBEAST_BENCH_COOLOFF_TEMP_C", "65")
+    waited, _, _ = _cooloff(ba, monkeypatch, [74, 70, 66, 64, 63, 62, 61])
+    assert waited == 60                              # cool at 45 s; the floor holds it to 60
+    for off in ("off", "0"):
+        monkeypatch.setenv("OPENBEAST_BENCH_COOLOFF_TEMP_C", off)
+        waited, slept, used = _cooloff(ba, monkeypatch, [30] * 5)
+        assert waited == 600 and slept == [600] and used == []   # the card is not even read
+    assert ba.cooloff_target_c({"OPENBEAST_BENCH_COOLOFF_TEMP_C": "junk"}) == ba.COOLOFF_TEMP_C
+    assert ba.cooloff_target_c({}) == ba.COOLOFF_TEMP_C
+
+
+def test_gpu_temperature_parses_nvidia_smi_without_running_it(ba, monkeypatch):
+    """The reader itself, against canned output: hottest card wins, and
+    anything it cannot parse is 'unreadable', never 0°C."""
+    real = ba._real_gpu_temperature_c      # the fixture stubbed the name on `ba`
+    seen = []
+
+    def fake(out="", rc=0, raises=None):
+        def run(cmd, *a, **k):
+            seen.append(cmd[0])
+            if raises:
+                raise raises
+            return subprocess.CompletedProcess(cmd, rc, out, "")
+        return run
+
+    for out, rc, raises, want in (("62\n", 0, None, 62.0), ("55\n71\n48\n", 0, None, 71.0),
+                                  ("[N/A]\n", 0, None, None), ("", 0, None, None),
+                                  ("62\n", 9, None, None),
+                                  ("", 0, FileNotFoundError("nvidia-smi"), None),
+                                  ("", 0, subprocess.TimeoutExpired("nvidia-smi", 5), None)):
+        monkeypatch.setattr(ba.subprocess, "run", fake(out, rc, raises))
+        assert real() == want, (out, rc, raises)
+    assert set(seen) == {"nvidia-smi"}
+
+
+def test_sweep_cools_off_through_the_gate(ba, monkeypatch):
+    """run_sweep must go through cool_off(): two live models, a cooled card,
+    and the break between them is the floor, not 600 s."""
+    slept = []
+    monkeypatch.setattr(ba.time, "sleep", lambda s: slept.append(s))
+    monkeypatch.setattr(ba, "gpu_temperature_c", lambda: 41.0)
+    monkeypatch.setattr(ba.scoring, "score_run", lambda r: {
+        "capability": 0, "problem_solving": 0, "language_breadth": 0,
+        "accuracy": 0, "speed": 0})
+    monkeypatch.setattr(ba, "benchmark_model", lambda m, *a, **k: {
+        "slug": m["slug"], "name": m["name"], "results": {"tasks": [{}], "summary": {
+            "total": 1, "live_units": 1, "cache_hits": 0}}})
+    models = [{"slug": s, "name": s.upper(), "serve": "x"} for s in "ab"]
+    ba.run_sweep(models, None, None, update_leaderboard=False)
+    assert sum(slept) == ba.COOLOFF_MIN_SECONDS     # one break, after `a` only
+
+
 def test_low_disk_stops_the_sweep_without_a_cooloff(ba, monkeypatch):
     """A disk-floor abort holds for every model: the sweep stops rather than
     loading each remaining model to abort on its first unit after 600 s."""
@@ -169,6 +279,7 @@ def test_live_units_exclude_rows_that_never_ran_the_agent(tmp_path, monkeypatch)
     import collections
     cache = importlib.import_module("cache")
     cache.CACHE_DIR = tmp_path / "cache"
+    cache.STRIKES_DIR = cache.CACHE_DIR / "env-strikes"
     run_eval = importlib.import_module("run_eval")
     tasks = tmp_path / "tasks"
     tasks.mkdir()

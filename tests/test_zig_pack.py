@@ -46,6 +46,32 @@ DELIM = "Language notes: zig 0.16"
 HAS_ZIG = shutil.which("zig") is not None
 
 
+# run_eval() and its CLI write the arm flags straight into os.environ
+# (`os.environ["OPENBEAST_PACKS"] = "1" if packs_on else "0"`), which
+# monkeypatch cannot undo for a variable it never set — so this file used to
+# leave them exported for every test collected after it (test_eval_env_era.py
+# found out). Each test now gets them back exactly as it found them.
+_HARNESS_ENV = ("BEAST_PACKS", "OPENBEAST_PACKS", "BEAST_ASSIST",
+                "OPENBEAST_DIAGNOSTICS", "OPENBEAST_DIAG_TIMING_LOG",
+                "BEAST_ESCALATE", "OPENBEAST_ESCALATE", "OPENBEAST_LANG_IN_EVAL")
+_ENV_AT_START: dict = {}
+
+
+@pytest.fixture(autouse=True)
+def _restore_harness_env():
+    before = {k: os.environ.get(k) for k in _HARNESS_ENV}
+    # What this file's FIRST test found — not what import found: collection
+    # imports every file before any test runs, so by the time these run an
+    # earlier file may have changed the environment, and that is not ours.
+    _ENV_AT_START.setdefault("env", dict(before))
+    yield
+    for k, v in before.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+
+
 def _gen():
     spec = importlib.util.spec_from_file_location("gen_zig_pack", GEN)
     mod = importlib.util.module_from_spec(spec)
@@ -326,3 +352,10 @@ def test_parse_iterations():
     assert run_eval._parse_iterations("[iter 1/15]\nx\n[iter 2/15]\nTask complete (iteration 2)\n") == 2
     assert run_eval._parse_iterations("[iter 1/15]\n[iter 7/15]\nMax iterations (15) reached") == 7
     assert run_eval._parse_iterations("(timed out)") is None
+
+
+def test_this_file_leaves_the_arm_flags_as_it_found_them():
+    """Last in the file on purpose: every test above that runs the harness
+    wrote the flags into os.environ. Without _restore_harness_env this fails
+    on OPENBEAST_PACKS (and the three flags written beside it)."""
+    assert {k: os.environ.get(k) for k in _HARNESS_ENV} == _ENV_AT_START["env"]

@@ -170,6 +170,78 @@ def test_check_run_flags_violated_assumed_failed(pin, tmp_path):
     assert rc == 1 and bad in out
 
 
+# --- leave-one-model-out (review 2026-10-09, evals F11) ----------------------
+# verify()'s identity is true by construction: the assumed lists ARE the
+# units every reference run agrees on. Only a model the pin was not built
+# from can contradict them. Reference runs are built here from the task
+# specs; evals/results is never read.
+
+def _ref(all_units, fails=(), slow=()):
+    rows = [{"id": t["id"], "base_id": t.get("base_id"),
+             "variant_count": t.get("variant_count", 1),
+             "difficulty": t.get("difficulty", "medium"),
+             "language": t.get("language", "python"),
+             "passed": t["id"] not in fails,
+             "elapsed_seconds": 999.0 if t["id"] in slow else 1.0}
+            for t in all_units]
+    return ("synthetic.json", {"tasks": rows})
+
+
+def _loo_refs(all_units):
+    """Five models: two pairs that each share a failure (so leaving one out
+    still shows that unit as discriminating), and `odd`, the only model to
+    fail u3 — a unit too slow to be picked as a cheap tripwire."""
+    singles = [t["id"] for t in all_units
+               if "base_id" not in t and t.get("difficulty") == "medium"]
+    u1, u2, u3 = singles[0], singles[1], singles[-1]
+    refs = {"a1": _ref(all_units, {u1}, {u3}), "a2": _ref(all_units, {u1}, {u3}),
+            "b1": _ref(all_units, {u2}, {u3}), "b2": _ref(all_units, {u2}, {u3}),
+            "odd": _ref(all_units, {u3}, {u3})}
+    return refs, u3
+
+
+def test_leave_one_out_finds_what_the_identity_cannot(all_units, capsys):
+    import make_fast_suite as mfs
+    refs, u3 = _loo_refs(all_units)
+    in_sample_pin = mfs.suite_from_refs(refs, set())
+    before = PIN_PATH.read_bytes()
+    assert mfs.verify(refs, in_sample_pin) is True     # the identity holds for all five
+    out = capsys.readouterr().out
+    assert "identity: HOLDS for all reference models" in out
+    assert "Leave-one-model-out" in out and "agreement: 4/5 exact" in out
+    assert "UNDETECTED" in out and "tripped NO tripwire" in out
+    assert PIN_PATH.read_bytes() == before, "verify must never rewrite the pinned suite"
+
+    rows = {r["slug"]: r for r in mfs.leave_one_out(refs)}
+    odd = rows["odd"]
+    assert odd["wrong_assumed"] == [u3] and odd["tripwires_failed"] == []
+    assert odd["imputed"] > odd["full"]                # the imputed score overstates
+    # Negative control: a model whose failures another reference model
+    # shares is reproduced exactly out of sample.
+    for slug in ("a1", "a2", "b1", "b2"):
+        assert rows[slug]["wrong_assumed"] == [] and abs(rows[slug]["delta"]) < 1e-9
+
+
+def test_leave_one_out_needs_three_reference_runs(all_units, capsys):
+    import make_fast_suite as mfs
+    refs, _ = _loo_refs(all_units)
+    two = {k: refs[k] for k in ("a1", "b1")}
+    assert mfs.leave_one_out(two) == []
+    mfs.print_leave_one_out([])
+    assert "skipped: needs >=3 reference runs" in capsys.readouterr().out
+
+
+def test_generate_is_unchanged_by_the_refactor(all_units, monkeypatch):
+    """generate() must build exactly the pin suite_from_refs builds from the
+    same runs (the verify-mode drift check regenerates through it)."""
+    import make_fast_suite as mfs
+    refs, _ = _loo_refs(all_units)
+    monkeypatch.setattr(mfs, "load_reference_runs", lambda exclude: refs)
+    a, b = mfs.generate(set()), mfs.suite_from_refs(refs, set())
+    a.pop("generated_at"), b.pop("generated_at")
+    assert a == b and a["counts"]["discriminating"] == 3
+
+
 def test_check_run_rejects_partial_run(pin, tmp_path):
     p = tmp_path / "partial.json"
     p.write_text(json.dumps({"model_slug": "fake",

@@ -4,6 +4,7 @@
 #
 #   ./scripts/setup-sandlock.sh          # check, build, install, verify
 #   ./scripts/setup-sandlock.sh --check  # only report kernel/toolchain support
+#   ./scripts/setup-sandlock.sh --help   # this text; nothing is checked or built
 #
 # What it does (idempotent, safe to re-run):
 #   1. Verifies Landlock is active in the kernel LSM list and the kernel is
@@ -22,6 +23,19 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
+# Arguments are judged before anything else: every argument but --check used
+# to fall through to the clone + cargo build below, `--help` included.
+case "${1:-}" in
+  -h|--help)
+    # shellcheck source=scripts/lib/usage.sh
+    source "$REPO_DIR/scripts/lib/usage.sh"
+    ob_usage "$0"; exit 0 ;;
+  ""|--check) ;;
+  *) echo "Unknown option: $1 (see --help)" >&2
+     echo "Usage: $0 [--check]" >&2; exit 2 ;;
+esac
+[[ $# -le 1 ]] || { echo "Unknown option: $2 (see --help) — at most one argument: --check." >&2; exit 2; }
+
 # Pinned commit: security-reviewed + empirically validated 2026-07-08
 # (v0.8.4). Bump ONLY after re-running the review + validation matrix in
 # docs/SANDBOXING.md against the new commit.
@@ -31,7 +45,8 @@ SANDLOCK_COMMIT="1cd6ba6518f614bf4db469f1b2d0416bc2f1cd54"
 BIN_DIR="$HOME/.local/bin"
 PROFILE_DIR="$HOME/.config/sandlock/profiles"
 PROFILE_SRC="$REPO_DIR/scripts/sandlock-profile-openbeast.toml"
-BUILD_DIR="${TMPDIR:-/tmp}/sandlock-build-$$"
+# Created with `mktemp -d` at build time (below) — never a predictable name.
+BUILD_DIR=""
 
 info()  { echo "[setup-sandlock] $*"; }
 fail()  { echo "[setup-sandlock] ERROR: $*" >&2; exit 1; }
@@ -79,18 +94,29 @@ if installed_ok; then
   info "sandlock at pinned commit already installed: $BIN_DIR/sandlock ($($BIN_DIR/sandlock --version))"
 else
   info "cloning $SANDLOCK_REPO @ ${SANDLOCK_COMMIT:0:12}"
-  rm -rf "$BUILD_DIR"
+  # The binary built here IS the sandbox, so nobody else may own the build
+  # directory. `/tmp/sandlock-build-$$` followed by `rm -rf; git clone` was a
+  # guessable name with a window in between: on a shared box another user
+  # could pre-create it, keep ownership, and swap the binary before the
+  # `install` below. mktemp -d creates a fresh 0700 directory atomically.
+  BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/sandlock-build.XXXXXXXX")" \
+    || fail "could not create a private build directory under ${TMPDIR:-/tmp}"
+  trap 'rm -rf "$BUILD_DIR"' EXIT
   git clone --quiet "$SANDLOCK_REPO" "$BUILD_DIR"
   git -C "$BUILD_DIR" checkout --quiet "$SANDLOCK_COMMIT" \
-    || { rm -rf "$BUILD_DIR"; fail "pinned commit $SANDLOCK_COMMIT not found upstream — do NOT blindly bump; re-run the security review first."; }
+    || fail "pinned commit $SANDLOCK_COMMIT not found upstream — do NOT blindly bump; re-run the security review first."
 
-  info "building sandlock-cli (release)..."
-  (cd "$BUILD_DIR" && cargo build --release -p sandlock-cli --quiet)
+  # --locked: build exactly the crate versions in the reviewed commit's
+  # Cargo.lock. Without it cargo may re-resolve, and the pinned commit no
+  # longer pins what gets compiled into the sandbox.
+  info "building sandlock-cli (release, --locked)..."
+  (cd "$BUILD_DIR" && cargo build --release --locked -p sandlock-cli --quiet)
 
   mkdir -p "$BIN_DIR"
   install -m755 "$BUILD_DIR/target/release/sandlock" "$BIN_DIR/sandlock"
   echo "$SANDLOCK_COMMIT" > "$BIN_DIR/.sandlock-commit"
   rm -rf "$BUILD_DIR"
+  trap - EXIT
   info "installed $BIN_DIR/sandlock ($($BIN_DIR/sandlock --version))"
 fi
 

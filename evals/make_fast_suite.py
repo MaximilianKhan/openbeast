@@ -163,13 +163,81 @@ def verify(refs: dict, pin: dict) -> bool:
         ok &= exact
         print(f"  {slug:<34} {full:>9.2f} {imp:>8.2f}  {'EXACT' if exact else 'MISMATCH'}")
     print(f"  identity: {'HOLDS for all reference models' if ok else 'BROKEN — do not ship this pin'}")
+    print_leave_one_out(leave_one_out(refs))
     return ok
+
+
+def leave_one_out(refs: dict) -> list[dict]:
+    """Out-of-sample agreement, one row per reference model: re-pin from the
+    OTHER models, score this one from the units that pin would measure plus
+    its imputed complement, and compare with its real full-291 capability.
+
+    The identity in verify() cannot fail: the pin's assumed lists are, by
+    construction, the units every reference run agrees on. A model the pin
+    was not built from is the case a fast-suite run actually is, and the
+    only place an assumption can be wrong. `wrong_assumed` are units this
+    model contradicts the others on; `tripwires_failed` says whether the
+    guard would have warned. [] with fewer than 3 reference runs (a pin
+    needs 2)."""
+    if len(refs) < 3:
+        return []
+    rows = []
+    for slug in sorted(refs):
+        pin = suite_from_refs({s: v for s, v in refs.items() if s != slug}, set())
+        tasks = refs[slug][1]["tasks"]
+        passed = {t["id"]: bool(t.get("passed")) for t in tasks}
+        _s, _l, full = scoring.compute_solve_breadth(tasks)
+        measured = [t for t in tasks if t["id"] in set(pin["units"])]
+        _s, _l, imp = scoring.compute_solve_breadth(scoring.impute_suite_tasks(measured, pin))
+        rows.append({
+            "slug": slug, "full": full, "imputed": imp, "delta": imp - full,
+            "wrong_assumed": sorted([u for u in pin["assumed_passed"] if not passed[u]]
+                                    + [u for u in pin["assumed_failed"] if passed[u]]),
+            "tripwires_failed": sorted(u for u in pin["tripwires"] if not passed[u]),
+        })
+    return rows
+
+
+def print_leave_one_out(rows: list[dict]) -> None:
+    """The leave-one-model-out table. Reported, not gated: it describes how
+    far an imputed score can sit from the truth for a model outside the
+    reference set, it does not say the pin has drifted."""
+    print("\nLeave-one-model-out — each model scored from a pin built WITHOUT it "
+          "(what a fast-suite run of a new model is):")
+    if not rows:
+        print("  skipped: needs >=3 reference runs")
+        return
+    print(f"  {'model':<34} {'full-291':>9} {'imputed':>8} {'delta':>7} {'wrong':>6} {'trips':>6}")
+    for r in rows:
+        flag = ("EXACT" if abs(r["delta"]) < 1e-9 and not r["wrong_assumed"]
+                else "caught by a tripwire" if r["tripwires_failed"] else "UNDETECTED")
+        print(f"  {r['slug']:<34} {r['full']:>9.2f} {r['imputed']:>8.2f} {r['delta']:>+7.2f} "
+              f"{len(r['wrong_assumed']):>6} {len(r['tripwires_failed']):>6}  {flag}")
+    off = [r for r in rows if r["wrong_assumed"]]
+    silent = [r for r in off if not r["tripwires_failed"]]
+    print(f"  agreement: {len(rows) - len(off)}/{len(rows)} exact; "
+          f"max |delta| {max(abs(r['delta']) for r in rows):.2f}, "
+          f"mean delta {sum(r['delta'] for r in rows) / len(rows):+.2f} "
+          f"(positive = the imputed score overstates)")
+    print("  wrong = saturated units this model contradicts the other models on; "
+          "trips = tripwires it fails.")
+    if silent:
+        print(f"  {len(silent)} of {len(off)} out-of-sample miss(es) tripped NO tripwire: an imputed "
+              f"score for a model outside the reference set is an estimate with about this "
+              f"error, not the full-suite number, and a clean tripwire readout does not show "
+              f"otherwise.")
 
 
 def generate(exclude_slugs: set[str]) -> dict:
     refs = load_reference_runs(exclude_slugs)
     if len(refs) < 2:
         raise SystemExit(f"need >=2 full v4 reference runs, found {len(refs)}")
+    return suite_from_refs(refs, exclude_slugs)
+
+
+def suite_from_refs(refs: dict, exclude_slugs: set[str]) -> dict:
+    """The pin a given set of reference runs produces (generate's body, so
+    leave_one_out can build one from a subset)."""
     order, passes, elapsed = unit_pass_matrix(refs)
     meta = unit_meta(refs)
     n = len(refs)

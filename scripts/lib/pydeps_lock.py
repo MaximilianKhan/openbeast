@@ -59,8 +59,14 @@ def resolve(req_files: list[str], extra: list[str], pip: list[str]) -> list[dict
     import tempfile
     with tempfile.TemporaryDirectory(prefix="ob-lock-") as tmp:
         report = os.path.join(tmp, "report.json")
+        # --only-binary :all: — resolving from an sdist RUNS its build backend
+        # to learn its dependencies: arbitrary code from the index, inside the
+        # job that writes the lock. Every package in the closure publishes a
+        # wheel for the pythons this is resolved on, so nothing is lost; a
+        # future sdist-only dependency fails HERE, by name, and is then a
+        # decision someone makes rather than code that quietly ran.
         argv = pip + ["install", "--dry-run", "--ignore-installed", "--quiet",
-                      "--report", report]
+                      "--only-binary", ":all:", "--report", report]
         for f in req_files:
             argv += ["-r", f]
         argv += list(extra)
@@ -223,7 +229,13 @@ def render(lock: dict) -> str:
     return "\n".join(out)
 
 
-LOCK_LINE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s\\]+)")
+#: ANCHORED. The pin line is `name==version \` and nothing else. Unanchored,
+#: `openai==3.22.0 --hash=sha256:<theirs> \` parsed as a clean pin: the hash
+#: riding on the pin line was never seen here, so it was never counted or
+#: checked for shape, while pip — which reads the whole line — accepted it as
+#: one more allowed artifact. render() never writes that shape, so refusing it
+#: costs nothing.
+LOCK_LINE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s\\]+)\s*\\?\s*$")
 HASH_LINE = re.compile(r"^\s*--hash=sha256:([0-9a-f]{64})\s*\\?\s*$")
 
 
@@ -354,7 +366,72 @@ def verify(lock_path: str, req_paths: list[str], extra: list[str]) -> list[str]:
         if _norm(name) not in pkgs:
             problems.append(f"{name} is installed by bootstrap but the lock "
                             f"does not pin it")
+    # EXTRA packages: in the lock, required by nothing. Decidable only where
+    # the locked closure is installed (see unreachable()).
+    for o in unreachable(pkgs, _roots(req_paths, extra))[1]:
+        problems.append(f"{o} is in the lock but nothing in "
+                        f"{', '.join(os.path.basename(r) for r in req_paths)} "
+                        f"requires it — pip would install it anyway")
     return problems
+
+
+def _roots(req_paths: list[str], extra: list[str]) -> list[str]:
+    """What the closure is resolved FROM: the direct pins plus the extras."""
+    roots = list(extra)
+    for req in req_paths:
+        roots.extend(direct_pins(req)[0])
+    return roots
+
+
+_DIST_NAME = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
+
+
+def unreachable(pkgs: dict, roots: list[str]) -> tuple[bool, list[str]]:
+    """(decided, [locked packages nothing requires]).
+
+    `verify` proved every direct pin is IN the lock and said nothing about what
+    ELSE is in it: `evil-pkg==6.6.6` with its real PyPI hash is a well-formed
+    entry, and pip installs every line of a requirements file. The lock records
+    no dependency edges, so the only offline source for them is the metadata of
+    the packages as installed — which exists exactly when this python holds the
+    locked closure (a box after `pydeps.sh install`, CI after its locked
+    install). Then every locked package must be reachable from the direct pins,
+    and one that is not is named.
+
+    Undecidable is reported as such (decided=False), never as "fine": if any
+    locked package is absent here, or present at another version, its edges are
+    unknown, and guessing them would either cry wolf or wave the extra through.
+    `pydeps.sh check` (online, a fresh resolve) is the gate that always decides.
+
+    Edges are every Requires-Dist name, markers and extras IGNORED: that can
+    only over-count what is reachable, so a legitimate package is never
+    reported, whatever platform the lock was resolved on.
+    """
+    import importlib.metadata as md
+    edges: dict = {}
+    for key, pkg in pkgs.items():
+        try:
+            dist = md.distribution(pkg["name"])
+        except md.PackageNotFoundError:
+            return False, []
+        if dist.version != pkg["version"]:
+            return False, []
+        deps = set()
+        for req in dist.requires or []:
+            m = _DIST_NAME.match(req)
+            if m:
+                deps.add(_norm(m.group(1)))
+        edges[key] = deps
+    seen: set = set()
+    todo = [_norm(r) for r in roots if _norm(r) in pkgs]
+    while todo:
+        key = todo.pop()
+        if key in seen:
+            continue
+        seen.add(key)
+        todo.extend(d for d in edges[key] if d in pkgs and d not in seen)
+    return True, sorted(f"{pkgs[k]['name']}=={pkgs[k]['version']}"
+                        for k in pkgs if k not in seen)
 
 
 def audit_dir(lock_path: str, directory: str) -> tuple[list[str], list[str]]:
@@ -497,6 +574,16 @@ def main(argv=None) -> int:
             # visible.
             print(f"{args.lock}: OK — {len(pkgs)} packages, {nh} file hashes, "
                   f"{nchecked} direct pin(s) version-checked")
+            # SAY WHICH. "OK" with the extra-package check skipped must not
+            # read the same as "OK" with it run.
+            if unreachable(pkgs, _roots(reqs, args.extra))[0]:
+                print("  every locked package is required by a direct pin "
+                      "(checked against the installed closure)")
+            else:
+                print("  not checked: packages in the lock that nothing "
+                      "requires. The locked closure is not installed on this "
+                      "python, so there is no offline record of who requires "
+                      "what — ./scripts/pydeps.sh check decides it (online).")
             return 0
 
         if args.action == "audit":

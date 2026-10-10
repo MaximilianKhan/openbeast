@@ -40,6 +40,10 @@ Env:
   OPENBEAST_MCPO_GUEST_KEY    guest profile key
   OPENBEAST_ALLOW_OPEN_TOOLS  true = serve keyless on a non-loopback bind
                               anyway (otherwise main() refuses to start)
+  OPENBEAST_TOOLS_ALLOWED_HOSTS  extra Host names to answer to, comma-
+                              separated (default: loopback, this machine's
+                              name, *.ts.net and any literal IP address —
+                              agents/hostpolicy.py)
   OPENBEAST_FILES_SHARDING    off | user | chat    (default user)
   OPENBEAST_FILES_DIR         workspace root (start.sh exports it)
   OPENBEAST_TOOL_AUDIT_PATH   audit log file (default: $OPENBEAST_RUN_DIR,
@@ -53,6 +57,12 @@ keyless non-loopback bind unless ALLOW_OPEN_TOOLS=true); a caller who can
 forge headers here can already reach every service directly. Signed-JWT
 identity (Open WebUI's FORWARD_USER_INFO_HEADER_JWT_SECRET) is the
 enterprise upgrade — see docs/TODO.md.
+
+Loopback is not the whole of that threat model: a web page the operator
+visits can reach a loopback port too, by pointing a DNS name it controls at
+127.0.0.1 (rebinding), and it is then same-origin with this server — JSON
+POSTs to /bash included. So the Host header is pinned (PinnedHostMiddleware,
+the allowlist every other OpenBeast server uses); a browser cannot forge it.
 """
 import hashlib
 import hmac
@@ -77,6 +87,7 @@ sys.path.insert(0, _HERE)
 
 import mcp_server as impl  # noqa: E402  (plain callables; FastMCP decor returns fn)
 import tools as _tools     # noqa: E402
+from hostpolicy import PinnedHostMiddleware, trusted_hosts  # noqa: E402
 
 REPO_DIR = os.path.dirname(_HERE)
 
@@ -309,6 +320,18 @@ def create_app() -> FastAPI:
         version="1.0",
         description="Identity-aware tool server (see agents/openapi_tools.py).",
     )
+    # Rebinding defence: a hostile DNS name pointed at 127.0.0.1 is refused
+    # here, before a route (or the key check) runs. This was the one server
+    # with /bash on it and the only one without the check. Literal addresses
+    # stay welcome: this server binds BIND_HOST, so WebUI, the router and the
+    # probes dial it as 127.0.0.1, [::1] or that one LAN/tailnet address
+    # (ob_probe_host) — and an address is not a name an attacker can re-point.
+    allowed_hosts = trusted_hosts(
+        os.environ.get("OPENBEAST_TOOLS_ALLOWED_HOSTS", ""))
+    app.add_middleware(PinnedHostMiddleware, allowed_hosts=allowed_hosts,
+                       allow_env="OPENBEAST_TOOLS_ALLOWED_HOSTS",
+                       allow_ip_literals=True)
+    app.state.allowed_hosts = allowed_hosts
 
     def check_auth(request: Request, tool: str) -> str:
         """Returns the caller's profile; raises 401/403 like keyed mcpo did."""

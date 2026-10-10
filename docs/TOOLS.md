@@ -210,7 +210,7 @@ Two WebUI connections to the one identity server are configured by `scripts/conf
 ## Why 18 and not more
 
 Deliberate, and the number has moved in both directions. The production review
-(`docs/archive/PRODUCTION_ROADMAP.md` §B) found the pain was *too much
+(`docs/archive/PRODUCTION_ROADMAP.md` §B, historical) found the pain was *too much
 always-on meta-machinery for a local model's context* — which is why the
 skill-discovery trio was collapsed into the single `skill` tool, taking the
 surface from 17 down to 15 (7 of those 15 still agent-mgmt/skills plumbing).
@@ -231,10 +231,11 @@ asking. (The same split is what keeps `agents/tools.py` unchanged, so the eval
 cache era doesn't roll; `evals/cache.py`.) On the MCP/WebUI side a human is in
 the loop and "publish this as a page" is an unambiguous ask.
 
-Further expansion is planned and researched — sandboxed execution (Sandlock),
+Further expansion was researched in 2026-07 — sandboxed execution (Sandlock),
 semantic code search (ChunkHound), and a Playwright browsing *skill* — in
-`docs/archive/TOOL_ARSENAL_RESEARCH.md`, gated behind Arsenal Phase 1
-so new power arrives together with stronger sandboxing.
+`docs/archive/TOOL_ARSENAL_RESEARCH.md` (historical). Of those, Sandlock
+shipped as an opt-in wrapper ([`SANDBOXING.md`](SANDBOXING.md)) and a
+Playwright skill was imported; the rest is not a current plan.
 
 ## Verifying the live surface
 

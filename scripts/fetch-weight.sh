@@ -107,6 +107,26 @@ cmd_fetch() {
   fi
 
   mkdir -p "$WEIGHTS_DIR" || die "cannot create $WEIGHTS_DIR"
+
+  # --- room for it? Asked BEFORE the download, from the registry's own size --
+  # The byte count has been sitting in the row all along, and nothing compared
+  # it to the disk: a box 5 GB short found out some 15 GB in, from hf's raw
+  # "No space left on device". What a resumed download already holds (the
+  # stage, below) is not needed twice. If df cannot say, the download is
+  # allowed to try — this is a courtesy, not a gate on an unknown.
+  if [[ "$bytes" =~ ^[0-9]+$ && "$bytes" -gt 0 ]]; then
+    local free_kb have_kb need_kb
+    free_kb="$(df -Pk "$WEIGHTS_DIR" 2>/dev/null | awk 'NR==2 {print $4}')" || free_kb=""
+    have_kb="$(du -sk "$WEIGHTS_DIR/.fetch.$name" 2>/dev/null | awk '{print $1}')" || have_kb=""
+    [[ "$have_kb" =~ ^[0-9]+$ ]] || have_kb=0
+    need_kb=$(( (bytes + 1023) / 1024 - have_kb ))
+    if [[ "$free_kb" =~ ^[0-9]+$ && "$need_kb" -gt "$free_kb" ]]; then
+      die "not enough disk for $name: need $(awk -v k="$need_kb" 'BEGIN{printf "%.1f", k*1024/1e9}') GB in $WEIGHTS_DIR, have $(awk -v k="$free_kb" 'BEGIN{printf "%.1f", k*1024/1e9}') GB free.
+       Nothing was downloaded. Free some space there, or point WEIGHTS_DIR at a
+       bigger disk (WEIGHTS_DIR=/path in openbeast.conf, or OPENBEAST_WEIGHTS_DIR=/path)."
+    fi
+  fi
+
   if ! online; then
     warn "offline"
     sideload_help "$name" "$repo" "$remote"
