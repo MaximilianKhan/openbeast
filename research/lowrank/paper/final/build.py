@@ -2,13 +2,21 @@
 """Assemble sections/*.md into paper.md and paper.typ, then compile paper.pdf.
 
     python3 build.py            # needs typst (e.g. `mise exec typst@0.15.1 -- python3 build.py`)
+    python3 build.py --no-latex # skip paper.tex / paper-latex.pdf
+    python3 build.py --keep-log # also leave the TeX log in paper-latex.log
+
+paper.tex is written by latex.py (the LaTeX backend) and compiled to
+paper-latex.pdf when Tectonic is found: $TECTONIC, `tectonic` on PATH, or
+~/.local/share/openbeast/tectonic/tectonic. See README.md.
 
 The Markdown sections are the source of truth. This script only re-shapes
 them: `[source: path]` markers become short artifact tags (Appendix A maps
 tags back to paths), `arXiv:NNNN.NNNNN` becomes a numbered reference, and the
 Markdown subset the sections use is translated to Typst.
 """
-import json, pathlib, re, shutil, subprocess, sys
+import json, os, pathlib, re, shutil, subprocess, sys, tempfile
+
+import latex
 
 HERE = pathlib.Path(__file__).parent
 ROOT = HERE.parent.parent          # research/lowrank
@@ -83,16 +91,17 @@ def md_plain(s):
     return s
 
 
-def ref_entry(n, i, bib, names):
-    """`[n] Authors. Title. Venue or "arXiv preprint", year. arXiv:ID.`
+def ref_parts(i, bib, names):
+    """(arXiv id, text before "arXiv:ID", text after it) - one reference, unformatted.
 
+    `Authors. Title. Venue or "arXiv preprint", year. arXiv:ID.`
     An id without a verified record keeps the old short-name form, marked
     (unverified), so a guess can never pass for a checked entry.
     """
     e = bib.get(i)
     if not e or not e.get("verified"):
         name = names.get(i, "").strip()
-        return f"[{n}] {md_plain(name) + '. ' if name else ''}arXiv:{i}. (unverified)"
+        return i, (md_plain(name) + ". " if name else ""), ". (unverified)"
     a = e["authors"]
     who = ", ".join(a) if len(a) <= 4 else ", ".join(a[:3]) + ", et al"
     if e.get("venue") and e.get("venue_year"):
@@ -101,7 +110,12 @@ def ref_entry(n, i, bib, names):
         where = e["venue"].rstrip(".")           # a journal reference carries its own date
     else:
         where = f"arXiv preprint, {e['year']}"
-    return f"[{n}] {md_plain(who)}. {md_plain(e['title'].rstrip('.'))}. {md_plain(where)}. arXiv:{i}."
+    return i, f"{md_plain(who)}. {md_plain(e['title'].rstrip('.'))}. {md_plain(where)}. ", "."
+
+
+def ref_entry(n, i, bib, names):
+    _, before, after = ref_parts(i, bib, names)
+    return f"[{n}] {before}arXiv:{i}{after}"
 
 
 refs = []
@@ -112,8 +126,13 @@ def cite(text):
         i = m.group(1)
         if i not in refs:
             refs.append(i)
-        return f"[{refs.index(i) + 1}]"
+        return latex.CITE0 + i + latex.CITE1
     return re.sub(r"arXiv:(\d{4}\.\d{4,5})", rep, text)
+
+
+def numbered(text):
+    """Citation markers -> "[n]", for the Markdown and Typst outputs (LaTeX uses \\cite)."""
+    return re.sub(latex.CITE0 + "(.*?)" + latex.CITE1, lambda m: f"[{refs.index(m.group(1)) + 1}]", text)
 
 
 # ---------------------------------------------------------------- md -> typst
@@ -205,7 +224,8 @@ PREAMBLE = r"""
 def main():
     parts = [p.read_text().strip() for p in sorted((HERE / "sections").glob("*.md"))]
     md = "\n\n".join(parts)
-    md = cite(sources(md))
+    marked = cite(sources(md))         # citations still as markers: latex.py turns them into \\cite
+    md = numbered(marked)
     names = load_refs()
     names.update({k: v for k, v in EXTRA_NAMES.items() if k not in names})
     appendix = ["# Appendix A. Artifact index", "",
@@ -232,11 +252,55 @@ def main():
     typ = PREAMBLE % dict(title=TITLE, author=AUTHOR, affil=AFFIL, date=DATE) + body
     (HERE / "paper.typ").write_text(typ)
     print(f"words: {len(md.split())}  refs: {len(refs)} ({len(unverified)} unverified)  tags: {len(tags)}")
+    do_latex = "--no-latex" not in sys.argv
+    if do_latex:
+        tex = latex.document(marked, "\n".join(appendix), "\n".join(reflist[:3]),
+                             [ref_parts(i, bib, names) for i in refs], TITLE, AUTHOR, AFFIL, DATE)
+        (HERE / "paper.tex").write_text(tex)
+    rc = 0
     if shutil.which("typst"):
         r = subprocess.run(["typst", "compile", "paper.typ", "paper.pdf"], cwd=HERE, capture_output=True, text=True)
         print(r.stderr[-3000:] or "paper.pdf written")
-        sys.exit(r.returncode)
-    print("typst not on PATH — wrote paper.md and paper.typ only")
+        rc = r.returncode
+    else:
+        print("typst not on PATH — wrote paper.md and paper.typ only")
+    if do_latex:
+        rc = compile_latex() or rc
+    sys.exit(rc)
+
+
+def find_tectonic():
+    for c in (os.environ.get("TECTONIC"), shutil.which("tectonic"),
+              pathlib.Path.home() / ".local/share/openbeast/tectonic/tectonic"):
+        if c and pathlib.Path(c).is_file():
+            return str(c)
+
+
+def compile_latex():
+    """paper.tex -> paper-latex.pdf. Tectonic names its output after the input,
+    which would overwrite the Typst paper.pdf, so it compiles into a temp dir."""
+    exe = find_tectonic()
+    if not exe:
+        print("tectonic not found — wrote paper.tex only (see README.md)")
+        return 0
+    with tempfile.TemporaryDirectory() as tmp:
+        r = subprocess.run([exe, "--keep-logs", "--outdir", tmp, "paper.tex"], cwd=HERE,
+                           capture_output=True, text=True)
+        log = pathlib.Path(tmp, "paper.log")
+        log = log.read_text(errors="replace") if log.exists() else ""
+        if r.returncode:
+            print(r.stderr[-3000:])
+            return r.returncode
+        missing, over = latex.check_log(log + r.stderr)
+        shutil.copy(pathlib.Path(tmp, "paper.pdf"), HERE / "paper-latex.pdf")
+        if "--keep-log" in sys.argv:
+            (HERE / "paper-latex.log").write_text(log)
+    print(f"paper-latex.pdf written ({len(over)} overfull boxes > 1pt"
+          + (": " + ", ".join(over) + " pt" if over else "") + ")")
+    if missing:
+        print("LaTeX: glyphs missing from the fonts — map them in latex.UNICODE:\n  " + "\n  ".join(missing))
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

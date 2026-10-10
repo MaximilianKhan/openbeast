@@ -15,6 +15,21 @@ plt.rcParams.update({"font.size": 8.5, "font.family": "DejaVu Sans", "axes.edgec
                      "axes.grid": True, "grid.color": GRID, "grid.linewidth": 0.6,
                      "axes.axisbelow": True, "svg.fonttype": "none"})
 
+def save(fig, name, ax=None, pdf_ylabel=None, rect=None):
+    """SVG for the Typst build, PDF for the LaTeX one (LaTeX cannot include SVG).
+
+    The SVG keeps its text as text and Typst sets it in the document font, where the long
+    y label fits the axis. The PDF embeds DejaVu Sans, in which the same label is longer
+    than the axis and gets cut at the figure edge, so the PDF breaks it over two lines
+    (`pdf_ylabel`, same words). The PDF carries no creation date, so an unchanged figure
+    is an unchanged file."""
+    fig.savefig(OUT / f"{name}.svg")
+    if pdf_ylabel:
+        ax.set_ylabel(pdf_ylabel)
+        fig.tight_layout(rect=rect)
+    fig.savefig(OUT / f"{name}.pdf", metadata={"CreationDate": None, "ModDate": None})
+    plt.close(fig)
+
 def fig_ladder():
     # experiments/27-bf16-rederivation/results-100ch.txt (GB = file bytes, adapter included)
     rungs = [("IQ3_XS", 12.26, 0.0767, 0.0021), ("Q3_K_S", 12.37, 0.0924, 0.0024),
@@ -40,7 +55,8 @@ def fig_ladder():
     ax.set_ylabel("KL divergence vs BF16 (nats/token), lower is better")
     ax.set_xlim(11.7, 14.0); ax.set_ylim(0.055, 0.103)
     ax.legend(frameon=False, loc="upper right", fontsize=7.5)
-    fig.tight_layout(); fig.savefig(OUT / "fig-ladder-27b.svg"); plt.close(fig)
+    fig.tight_layout()
+    save(fig, "fig-ladder-27b", ax, "KL divergence vs BF16 (nats/token),\nlower is better")
 
 def fig_gsq():
     # experiments/32-t117-gsq-head-to-head/results-40ch.txt and results-fineweb-40ch.txt
@@ -64,7 +80,8 @@ def fig_gsq():
     axes[0].set_ylabel("KL divergence vs BF16, 512-token context")
     h, l = axes[0].get_legend_handles_labels()
     fig.legend(h, l, frameon=False, loc="lower center", ncol=3, fontsize=7.5)
-    fig.tight_layout(rect=(0, 0.08, 1, 1)); fig.savefig(OUT / "fig-gsq-kld.svg"); plt.close(fig)
+    fig.tight_layout(rect=(0, 0.08, 1, 1))
+    save(fig, "fig-gsq-kld", axes[0], "KL divergence vs BF16,\n512-token context", rect=(0, 0.08, 1, 1))
 
 if __name__ == "__main__":
     OUT.mkdir(exist_ok=True); fig_ladder(); fig_gsq(); print("figures written")
