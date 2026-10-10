@@ -3,7 +3,7 @@
 #
 #   ./scripts/uninstall.sh                 # DRY RUN: prints every step, touches nothing
 #   ./scripts/uninstall.sh --go            # stop, unpublish, remove build/venv/runtime ephemera
-#   ./scripts/uninstall.sh --go --purge-weights   # ...and the model weights (WEIGHTS_DIR)
+#   ./scripts/uninstall.sh --go --purge-weights   # ...and the registry-listed model weights in WEIGHTS_DIR
 #   ./scripts/uninstall.sh --go --purge-data      # ...and Open WebUI's volume + the workspace
 #                                                 #    (chats, accounts, artifacts) + the session ledger
 #   ./scripts/uninstall.sh --go --purge-state     # ...and all of .run/ (device registry, audit logs,
@@ -21,10 +21,18 @@
 # it has local-only branches, stashes or uncommitted changes. The repo checkout
 # itself is never deleted — `rm -rf` the directory yourself when you are done.
 #
-# The footprint this undoes is exactly what README § Uninstall lists: the
-# running processes and containers, the tailscale serve mounts, the user
-# systemd units, and llama.cpp/ venv/ .run/. Nothing OpenBeast installs lives
-# anywhere else.
+# The footprint this undoes: the running processes and containers,
+# OpenBeast's own tailscale serve mounts (its ports only — other mounts on the
+# machine are left published), the user systemd units, and llama.cpp/ venv/
+# .run/. --purge-weights deletes only the files scripts/weights.registry names
+# (and unfinished fetch-weight.sh downloads); anything else in WEIGHTS_DIR is
+# listed and kept.
+#
+# NOT removed, because they live outside the checkout and may be shared with
+# other software — the last step lists the ones present, with the command to
+# remove each: pip --user packages in ~/.local, sandlock and its profile, the
+# skill scanner's venv, a client-mode install, container images, and
+# tailscale itself.
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -145,11 +153,28 @@ fi
 
 step "2. Unpublish from the tailnet"
 if command -v tailscale >/dev/null 2>&1; then
-  if tailscale serve status 2>/dev/null | grep -q 'proxy'; then
-    do_ "sudo tailscale serve reset  (every mount: :443 chat, :8443 inference, :8444/:8445/:8446/:8889)" -- sudo tailscale serve reset
-  else
-    say "  nothing is published — skipping"
-  fi
+  # ONLY the ports setup-tailscale.sh mounts, one `--https=<port> off` each.
+  # This used to be `tailscale serve reset`, which drops EVERY serve mount on
+  # the machine — including ones that have nothing to do with OpenBeast.
+  _serve="$(tailscale serve status 2>/dev/null || true)"
+  _ours=0
+  for _row in "443|Open WebUI" "8443|inference" "8444|beast-slot" "8445|beast-chat" \
+              "8446|beast-artifact" "8447|ntfy" "8889|SearXNG"; do
+    _port="${_row%%|*}"
+    # The default :443 entry prints WITHOUT a port token (as in
+    # setup-tailscale.sh's mount table).
+    if [[ "$_port" == 443 ]]; then _re='^https://[^ :]+(:443)?( |$)'; else _re="^https://[^ ]+:$_port( |\$)"; fi
+    if grep -qE "$_re" <<< "$_serve"; then
+      _ours=1
+      do_ "sudo tailscale serve --https=$_port off  (${_row#*|})" -- sudo tailscale serve --https="$_port" off
+    fi
+  done
+  [[ $_ours -eq 1 ]] || say "  nothing of OpenBeast's is published — skipping"
+  while IFS= read -r _m; do
+    [[ -n "$_m" ]] || continue
+    keep "serve mount ${_m%% *} — not one of OpenBeast's ports; left published"
+  done < <(grep -E '^[a-z+]+://' <<< "$_serve" \
+             | grep -vE '^https://[^ :]+(:(443|8443|8444|8445|8446|8447|8889))?( |$)' || true)
 else
   say "  tailscale not installed — skipping"
 fi
@@ -272,8 +297,59 @@ else
 fi
 
 step "7. Model weights — $WEIGHTS_DIR"
+# --purge-weights removes what OpenBeast put there and nothing else: the files
+# scripts/weights.registry names, plus fetch-weight.sh's .fetch.* staging
+# dirs. The default WEIGHTS_DIR is the SIBLING ../weights — clone into
+# ~/models/ and that is ~/models/weights, which may well hold GGUFs from
+# other tools. `rm -rf` on the directory took those too.
+purge_weights() {
+  local dir="$1" reg="$SCRIPT_DIR/weights.registry" name f n_listed=0 kept=()
+  if [[ ! -e "$dir" && ! -L "$dir" ]]; then
+    say "  not found at $dir — nothing to purge"; return 0
+  fi
+  if ! _rm_target_ok "$dir"; then
+    say "  REFUSE rm -rf $dir — resolves to $(realpath -m -- "$dir" 2>/dev/null), which is not a"
+    say "         data directory this script may delete (root, a system tree, \$HOME, the"
+    say "         checkout, or a parent of one). Nothing removed; remove it by hand."
+    return 0
+  fi
+  if [[ ! -f "$reg" ]]; then
+    say "  $reg is missing, so there is no list of the weights OpenBeast"
+    say "  downloaded — nothing removed. Delete what you no longer want by hand: ls \"$dir\""
+    return 0
+  fi
+  local -A listed=()
+  while IFS=$'\t' read -r _ _ name _; do
+    case "$name" in ""|.|..|*/*) continue ;; esac
+    listed["$name"]=1
+  done < <(grep -v '^[[:space:]]*#' "$reg")
+  shopt -s nullglob dotglob
+  for f in "$dir"/*; do
+    name="${f##*/}"
+    if [[ -n "${listed[$name]:-}" && ( -f "$f" || -L "$f" ) ]]; then
+      n_listed=$((n_listed + 1))
+      do_ "rm $name  ($(du -sh "$f" 2>/dev/null | cut -f1 || echo '?'))" -- rm -f -- "$f"
+    elif [[ "$name" == .fetch.* ]]; then
+      do_ "rm -rf $name  (an unfinished fetch-weight.sh download)" -- rm -rf -- "$f"
+    else
+      kept+=("$name")
+    fi
+  done
+  shopt -u nullglob dotglob
+  [[ $n_listed -gt 0 ]] || say "  none of the weights in scripts/weights.registry are here"
+  if [[ ${#kept[@]} -gt 0 ]]; then
+    for name in "${kept[@]}"; do
+      keep "$name — not in scripts/weights.registry (OpenBeast did not download it)"
+    done
+    say "  ${#kept[@]} entr(y/ies) kept, so $dir stays. Remove them yourself if they are yours to remove."
+  elif [[ -L "$dir" ]]; then
+    do_ "rm $dir  (the now-empty weights dir was a symlink — the link goes, its target stays)" -- rm -f -- "$dir"
+  else
+    do_ "rmdir $dir  (empty)" -- rmdir -- "$dir"
+  fi
+}
 if [[ $PW -eq 1 ]]; then
-  purge_dir "$WEIGHTS_DIR" "$(du -sh "$WEIGHTS_DIR" 2>/dev/null | cut -f1 || echo '?')"
+  purge_weights "$WEIGHTS_DIR"
 else
   keep "$WEIGHTS_DIR ($(du -sh "$WEIGHTS_DIR" 2>/dev/null | cut -f1 || echo '?') — the expensive part to re-download) — --purge-weights removes it"
 fi
@@ -288,6 +364,41 @@ if [[ $PC -eq 1 ]]; then
 else
   keep "openbeast.conf (a reinstall picks up where you left off) — --purge-conf removes it"
 fi
+
+step "9. Left on this machine, outside the checkout (never removed by this script)"
+# Honest accounting: these were put there by bootstrap.sh / setup-*.sh, are
+# shared with whatever else the user runs, and are theirs to remove. Only the
+# ones actually present are listed, each with the command that removes it.
+_left_any=0
+_left() { _left_any=1; printf '  %-6s %s\n' "left" "$1"; shift; for _l in "$@"; do say "           $_l"; done; }
+_usite="$(python3 -c 'import site; print(site.getusersitepackages())' 2>/dev/null || true)"
+if [[ -n "$_usite" && -d "$_usite" ]]; then
+  _left "python packages in $_usite (bootstrap.sh installs with pip --user)" \
+        "remove OpenBeast's: python3 -m pip uninstall -y -r \"$REPO_DIR/agents/requirements.txt\""
+fi
+if [[ -e "$HOME/.local/bin/sandlock" || -d "$HOME/.config/sandlock" ]]; then
+  _left "sandlock (scripts/setup-sandlock.sh): ~/.local/bin/sandlock, ~/.config/sandlock/" \
+        "remove: rm -f ~/.local/bin/sandlock ~/.local/bin/.sandlock-commit; rm -rf ~/.config/sandlock"
+fi
+_xdg_data="${XDG_DATA_HOME:-$HOME/.local/share}"
+if [[ -d "$_xdg_data/openbeast" ]]; then
+  _left "$_xdg_data/openbeast (the skill scanner's venv)" "remove: rm -rf \"$_xdg_data/openbeast\""
+fi
+if [[ -d "$_xdg_data/local-llm-skills" ]]; then
+  _left "$_xdg_data/local-llm-skills (your global skills — not OpenBeast's to delete)"
+fi
+if [[ -d "$HOME/.openbeast-client" || -f "$HOME/.openbeast-client.env" ]]; then
+  _left "client mode on this machine (~/.openbeast-client)" \
+        "remove: \"$REPO_DIR/scripts/setup-client.sh\" --uninstall"
+fi
+if command -v docker >/dev/null 2>&1; then
+  _left "container images (Open WebUI, SearXNG, extensions)" "remove: docker image prune -a"
+fi
+if command -v tailscale >/dev/null 2>&1; then
+  _left "tailscale itself, and this machine's place in your tailnet" \
+        "remove: sudo tailscale logout, then uninstall the package"
+fi
+[[ $_left_any -eq 1 ]] || say "  nothing found"
 
 say ""
 if [[ $GO -eq 1 ]]; then

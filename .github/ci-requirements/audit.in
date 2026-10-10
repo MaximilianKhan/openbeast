@@ -1,0 +1,2 @@
+# The dependency-audit job's tool (.github/workflows/pr-quality.yml).
+pip-audit==2.10.1

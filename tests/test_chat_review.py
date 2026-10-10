@@ -580,8 +580,13 @@ def _uds_get(path, url, headers):
 
 
 def test_real_server_takes_logins_only_on_its_unix_socket(tmp_path):
+    import shutil
     import stat as _st
-    sock_path = str(tmp_path / "sockdir" / "chat.sock")
+    import tempfile
+    # A unix socket path is at most 107 bytes: tmp_path under a long TMPDIR
+    # is longer than that, so the socket gets a short directory of its own.
+    sock_dir = tempfile.mkdtemp(prefix="ob-sock-", dir="/tmp")
+    sock_path = os.path.join(sock_dir, "s", "chat.sock")
     srv = _RealServer(tmp_path, {"OPENBEAST_CHAT_SOCKET": sock_path,
                                  "OPENBEAST_CHAT_LOGIN_FROM": "unix"})
     try:
@@ -603,6 +608,7 @@ def test_real_server_takes_logins_only_on_its_unix_socket(tmp_path):
             assert e.code == 404
     finally:
         srv.kill()
+        shutil.rmtree(sock_dir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------

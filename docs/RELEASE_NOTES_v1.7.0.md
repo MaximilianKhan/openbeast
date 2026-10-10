@@ -106,7 +106,7 @@ follows is new and opt-in, but a few defaults change.
    they no longer hold the turn. Under `enforce`, the extra call remains on
    every spawn, abstain or low-confidence verdict; only a confident "inline"
    actually saves the classify. See
-   [beast-instinct](#beast-instinct--a-decision-plane-on-a-full-27b).
+   [beast-instinct](#beast-instinct---a-decision-plane-on-a-full-27b-opt-in).
 9. **Conf re-sourcing is fixed.** A shell that had already sourced `conf.sh`
    used to keep its own `OPENBEAST_HYDRA=true` / `OPENBEAST_INSTINCT=true`
    exports, so later setting `HYDRA=false` in `openbeast.conf` did nothing
@@ -384,7 +384,7 @@ unique survivors (6 high, 22 medium, 47 low)**.
     `pipefail`.
 
 The full list, with the status of each finding, is in the
-[appendix](#appendix--the-0930-double-pass-75-findings).
+[appendix](#appendix--the-09-30-double-pass-75-findings).
 
 ---
 

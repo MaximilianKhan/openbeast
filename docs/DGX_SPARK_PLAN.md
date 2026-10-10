@@ -108,8 +108,10 @@ What follows from those four lines (all in `scripts/lib/conf.sh`):
   spawned agents' `AGENT_INFERENCE_URL` all become `INFERENCE_URL[/v1]`.
 - `healthcheck.sh --restart` (the 5-minute watchdog) reports the server and
   **never** restarts or kills it; `stop.sh` leaves it alone.
-- Fast boot, model rollback, KV warming, the weight-registry rows,
-  `measure-vram.sh` and the MTP profilers print "not applicable".
+- Fast boot, model rollback, the weight-registry rows,
+  `measure-vram.sh` and the MTP profilers print "not applicable". (KV
+  warming was in this list until 2026-10-09; `start.sh` no longer does it on
+  any backend.)
 
 ## 5. vLLM recipe
 

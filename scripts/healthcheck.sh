@@ -21,6 +21,11 @@ set -euo pipefail
 # a pattern — all four call sites, not just the new one.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# Report-only runs change nothing — including openbeast.conf, which sourcing
+# conf.sh would otherwise create (with a fresh SearXNG secret) on a checkout
+# that has none. --restart is the one mode that may `docker compose up`, and
+# compose needs that secret, so it keeps the normal behaviour.
+[[ "${1:-}" == "--restart" ]] || export OB_CONF_READONLY=1
 source "$SCRIPT_DIR/lib/conf.sh"
 source "$SCRIPT_DIR/lib/proc.sh"      # _ob_ere, ob_pid_matches, ob_pid_age
 source "$SCRIPT_DIR/lib/net.sh"       # ob_probe_host, ob_llama_ready
@@ -71,6 +76,13 @@ CHAT_HEALTH_HOST="$(ob_probe_host "${OPENBEAST_CHAT_BIND:-127.0.0.1}")"
 
 RESTART=false
 [[ "${1:-}" == "--restart" ]] && RESTART=true
+# A plain report ends on ONE next step (see the summary); a --restart run —
+# the watchdog — has already acted, so it gets none.
+REPORT_ONLY=true
+$RESTART && REPORT_ONLY=false
+# Set when the two core services this box runs do not answer (summary).
+CORE_LLAMA_DOWN=0
+CORE_TOOLS_DOWN=0
 
 # STOPPED ON PURPOSE. ./stop.sh (also ExecStop of openbeast.service, the
 # profile scripts and uninstall.sh) writes .run/stopped; ./start.sh clears
@@ -243,6 +255,7 @@ elif _llama_loading; then
   echo "  LOAD llama.cpp server (model still loading — left alone)"
   LOADING=1
 elif ! check "llama.cpp server" "$LLAMA_URL/health" "ok" "${LLAMA_API_KEY:-}"; then
+  CORE_LLAMA_DOWN=1
   if $RESTART && _gpu_leased; then
     echo "       → the GPU lease is held ($("$SCRIPT_DIR/gpu-lease.sh" status 2>/dev/null | head -n1 || true))"
     echo "         not restarting llama.cpp into someone else's measurement."
@@ -318,6 +331,7 @@ fi
 # Identity tool server (agents/openapi_tools.py — replaced mcpo 2026-07-09).
 # One process serves both RBAC profiles; /health is public, keys gate tools.
 if ! check "Tool server" "$MCPO_URL/health" "ok"; then
+  CORE_TOOLS_DOWN=1
   if $RESTART; then
     echo "       → restarting tool server..."
     pkill -f "$(_ob_ere "$REPO_DIR/agents/openapi_tools.py")" 2>/dev/null || true
@@ -477,6 +491,106 @@ if [[ "${INSTINCT:-false}" == "true" ]]; then
       else
         echo "       → restart FAILED"
         _restart_tail "$_in_log"
+      fi
+    fi
+  fi
+fi
+
+# Agent-spawn router (opt-in, AGENT_ROUTER=true). With it on, Open WebUI's
+# model endpoint IS the router (conf.sh MODEL_URL), so a dead router is dead
+# chat — and nothing watched it: the supervisor waits on llama-server only,
+# this script had no branch for it, the watchdog said "All N services healthy"
+# every five minutes, and doctor.sh prescribed `healthcheck.sh --restart`,
+# which did nothing (ops F5, 2026-10-09).
+# It hard-binds 127.0.0.1 (agents/router.py) and forwards /health upstream, so
+# ANY HTTP answer — 200, a 503 while the model loads, its own 502 with the
+# model down — is a live router; only silence is DOWN. Restarting it is safe
+# to automate: it holds no state, and a spawned agent belongs to the tool
+# server, not to it.
+if [[ "${AGENT_ROUTER:-false}" == "true" ]]; then
+  _rt_url="http://127.0.0.1:${ROUTER_PORT:-8088}"
+  _rt_code="$(curl -s -o /dev/null -m 3 -w '%{http_code}' "$_rt_url/health" 2>/dev/null || true)"
+  if [[ "$_rt_code" =~ ^[1-5][0-9][0-9]$ ]]; then
+    echo "  OK   Agent router ($_rt_url)"
+    HEALTHY=$((HEALTHY + 1))
+  else
+    echo "  DOWN Agent router ($_rt_url) — Open WebUI's model endpoint goes through it"
+    UNHEALTHY=$((UNHEALTHY + 1))
+    if $RESTART; then
+      echo "       → restarting the agent router..."
+      # By RECORDED PID, identity-checked; the path-anchored pattern is the
+      # fallback for one whose record is gone (never the bare name — that
+      # reaps a sibling worktree's router).
+      _rt_pid="$(cat "$REPO_DIR/.run/router.pid" 2>/dev/null || true)"
+      if ob_pid_matches "$_rt_pid" "$(_ob_ere "$REPO_DIR/agents/router.py")"; then
+        kill "$_rt_pid" 2>/dev/null || true
+      else
+        pkill -f "$(_ob_ere "$REPO_DIR/agents/router.py")" 2>/dev/null || true
+      fi
+      sleep 1
+      # The environment start.sh gives it, piece for piece (start.sh "Agent-
+      # spawn router"): the opt-in extras go to the ROUTER alone, never
+      # exported stack-wide.
+      #   ROUTER_INSTINCT (+ where the instinct service answers and the PATH
+      #     of its key file) only when the ceiling is not off;
+      #   ROUTER_CLASSIFY_MODEL under HYDRA=true: `classify` when hydra's
+      #     config has that route, else the default route — a model-less
+      #     classify body would 404 through hydra and fail every spawn.
+      _rt_env=()
+      if [[ "${ROUTER_INSTINCT:-off}" != "off" ]]; then
+        _rt_env+=(ROUTER_INSTINCT="$ROUTER_INSTINCT" INSTINCT_URL="http://127.0.0.1:${INSTINCT_PORT:-8094}")
+        _rt_ikf="$(PYTHONPATH="$REPO_DIR/agents" INSTINCT_CONFIG="${INSTINCT_CONFIG:-}" \
+                   python3 -m instinct.cli cfg 2>/dev/null | sed -n 's/^INSTINCT_KEY_FILE=//p' || true)"
+        [[ -n "$_rt_ikf" ]] && _rt_env+=(INSTINCT_KEY_FILE="$_rt_ikf")
+      fi
+      if [[ "${HYDRA:-false}" == "true" ]]; then
+        _rt_check=(--check)
+        [[ -f "${HYDRA_CONFIG:-}" ]] && _rt_check+=("$HYDRA_CONFIG")
+        _rt_classify="$(python3 "$REPO_DIR/agents/hydra.py" "${_rt_check[@]}" --json 2>/dev/null \
+                        | python3 -c 'import json, sys
+try: print("true" if json.load(sys.stdin).get("classify_route") else "false")
+except Exception: print("false")' 2>/dev/null || true)"
+        if [[ "$_rt_classify" == "true" ]]; then
+          _rt_env+=(ROUTER_CLASSIFY_MODEL=classify)
+        else
+          _rt_env+=(ROUTER_CLASSIFY_MODEL="${HYDRA_DEFAULT_MODEL:-beast}")
+        fi
+      fi
+      # Upstreams where the services answer (BIND_HOST), as start.sh does; the
+      # model upstream is hydra under HYDRA=true (conf.sh's CONSUMER_BASE).
+      _rt_log="$(_restart_log "agent router")"
+      OPENBEAST_ROUTER_PORT="${ROUTER_PORT:-8088}" \
+        OPENBEAST_LLAMA_UPSTREAM="${CONSUMER_BASE:-$INFERENCE_URL}" \
+        OPENBEAST_MCPO_URL="http://$HEALTH_HOST:3001" \
+        env ${_rt_env[@]+"${_rt_env[@]}"} python3 "$REPO_DIR/agents/router.py" >>"$_rt_log" 2>&1 &
+      ROUTER_NEW_PID=$!
+      # Recorded at once, like the tool server and the gate: ./start.sh
+      # --status and stop.sh read this file.
+      mkdir -p "$REPO_DIR/.run"
+      echo "$ROUTER_NEW_PID" > "$REPO_DIR/.run/router.pid"
+      ROUTER_OK=0
+      for _i in $(seq 1 15); do
+        _rt_code="$(curl -s -o /dev/null -m 2 -w '%{http_code}' "$_rt_url/health" 2>/dev/null || true)"
+        if [[ "$_rt_code" =~ ^[1-5][0-9][0-9]$ ]]; then
+          # Answering is not enough: an orphan still holding the port answers
+          # while our replacement dies on the bind.
+          _own=0; ob_pid_owns_port "$ROUTER_NEW_PID" "${ROUTER_PORT:-8088}" || _own=$?
+          if [[ $_own -eq 2 ]]; then sleep 1; kill -0 "$ROUTER_NEW_PID" 2>/dev/null || _own=1; fi
+          if [[ $_own -ne 1 ]]; then ROUTER_OK=1; break; fi
+        fi
+        kill -0 "$ROUTER_NEW_PID" 2>/dev/null || break
+        sleep 1
+      done
+      if [[ $ROUTER_OK -eq 1 ]]; then
+        echo "       → restarted (pid $ROUTER_NEW_PID)"
+      else
+        if kill -0 "$ROUTER_NEW_PID" 2>/dev/null; then
+          echo "       → restart FAILED: the agent router is not serving after 15s"
+        else
+          echo "       → restart FAILED: the relaunched agent router exited"
+          rm -f "$REPO_DIR/.run/router.pid"
+        fi
+        _restart_tail "$_rt_log"
       fi
     fi
   fi
@@ -747,6 +861,30 @@ elif [[ $UNHEALTHY -eq 0 ]]; then
   echo "All $TOTAL services healthy."
 else
   echo "$UNHEALTHY of $TOTAL services unhealthy."
+  # ...and what to do about it, in one line — the count alone left a reader
+  # with a list of DOWN rows and no next step. A stack that is simply not
+  # running (no live supervisor, neither core service of this box answering;
+  # an unmanaged backend is someone else's and does not count) wants
+  # ./start.sh, not a per-service restart — and so does one marked stopped,
+  # where --restart deliberately relaunches nothing.
+  if $REPORT_ONLY; then
+    _stopped="$(head -n1 "$STOPPED_FILE" 2>/dev/null || true)"
+    case "$_stopped" in
+      "")  _down_why="" ;;
+      *"gave up"*|*"watchdog:"*)
+           _down_why=" (it gave up ${_stopped%% *}: ${_stopped#* } — see .run/stack.log)" ;;
+      *)   _down_why=" (stopped on purpose ${_stopped%% *})" ;;
+    esac
+    _stack_down=0
+    if ! ob_recorded_pid_ours "$REPO_DIR/.run/supervisor.pid" 'start\.sh' && [[ $CORE_TOOLS_DOWN -eq 1 ]]; then
+      if ! ob_inference_managed || [[ $CORE_LLAMA_DOWN -eq 1 ]]; then _stack_down=1; fi
+    fi
+    if [[ $_stack_down -eq 1 || -n "$_stopped" ]]; then
+      echo "Stack is not running${_down_why} — start it: ./start.sh -d"
+    else
+      echo "Next: ./scripts/healthcheck.sh --restart   (restarts what is DOWN)"
+    fi
+  fi
 fi
 
 [[ $UNHEALTHY -eq 0 ]]

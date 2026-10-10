@@ -75,7 +75,7 @@ GitHub API reported them that day.
 | NVIDIA/SkillSpector | Apache-2.0 | **Adopted** (this change) | The probe step of the import gate |
 | OthmanAdi/planning-with-files | MIT | **Adopt the pattern** | On-disk plan, findings and progress for long-horizon runs |
 | Graphify-Labs/graphify | Apache-2.0 | **Adopt behind an A/B** | Local code graph for the "RAG for local codebases" item |
-| obra/superpowers | MIT | **Import four skills** | The ones we lack; not the plugin |
+| obra/superpowers | MIT | **Import five skills** | The ones we lack; not the plugin |
 | anthropics/skills | per skill | **Import selectively** | Artifact design, browser testing, skill authoring |
 | tt-a1i/archify | MIT | Optional skill | Validated diagrams into `publish_artifact` |
 | nextlevelbuilder/ui-ux-pro-max-skill | MIT | Optional skill | A local design database for artifact pages |

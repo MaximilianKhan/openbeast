@@ -70,7 +70,11 @@ ERROR_BODY_CAP = 1024 * 1024
 ROUTED_PATHS = ("/v1/chat/completions", "/v1/completions", "/v1/embeddings")
 _HOP = {"host", "content-length", "transfer-encoding", "connection", "keep-alive", "te", "trailer",
         "upgrade", "proxy-authorization", "proxy-authenticate", "proxy-connection"}
-_TRUST_ONLY = ("x-openbeast-device",)
+# Who is asking is hydra's business (rules, audit), never a node's: an engine
+# has no use for it, and a remote node would be handed the user's email and a
+# live identity JWT (X-OpenWebUI-User-Jwt) in plain HTTP on every turn.
+_IDENTITY = ("x-openbeast-device",)
+_IDENTITY_PREFIXES = ("x-openwebui-", "tailscale-")
 _REQ_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 ERR_STATUS = {"hydra_unavailable": 503, "hydra_pinned_unavailable": 503, "hydra_pin_incompatible": 422,
               "hydra_unknown_model": 404, "hydra_unknown_deployment": 404, "hydra_timeout": 504,
@@ -586,7 +590,14 @@ class Hydra:
         # UNKNOWN (boot, a new node) is probed every second, so up_after is
         # reached in seconds rather than up_after x probe_interval.
         fresh = any(x == core.UNKNOWN for x in states)
-        self.next_probe[n.id] = now + (s.probe_down_interval_s if bad else
+        # A DOWN node that just answered ready is coming back (a relaunched
+        # engine needs up_after good probes): confirm it at the normal cadence.
+        # Waiting out the down interval kept a healthy engine unroutable for
+        # another 30 s. AUTH_FAILED / MISMATCH stay on the slow cadence — a
+        # ready /health says nothing about those.
+        recovering = result == "ready" and any(x == core.DOWN for x in states)
+        self.next_probe[n.id] = now + (s.probe_interval_s if recovering else
+                                       s.probe_down_interval_s if bad else
                                        min(1.0, s.probe_interval_s) if fresh else s.probe_interval_s)
         stuck = any(self.state.health[d.id].h.state in (core.AUTH_FAILED, core.MISMATCH)
                     for d in deps if d.id in self.state.health)
@@ -785,7 +796,7 @@ def _upstream_headers(request: Request, caller: core.Caller, key: str | None, re
             continue
         if lk in ("accept-encoding", "x-openbeast-request-id"):
             continue
-        if not caller.trusted and (lk in _TRUST_ONLY or lk.startswith("x-openwebui-user-")):
+        if lk in _IDENTITY or lk.startswith(_IDENTITY_PREFIXES):
             continue
         h[k] = v
     h["content-type"] = "application/json"
@@ -1050,6 +1061,10 @@ async def proxy(request: Request, path: str, pin: str | None = None):
         # reload that tightened hydra.allowed_families while this request
         # waited on attempt 1 must not let a stale plan fail over off-policy.
         why = None if dec.strict else core.policy_reason(hy.cfg, c.d)
+        # Read before this request takes its own unit: was the only place this
+        # request could go already full? Then a first-byte timeout below is
+        # the engine's queue, not a failing node.
+        queued = len(dec.attempts) == 1 and hy.state.node_inflight(c.n.id) >= c.n.slots
         adm = None
         if why is None:
             adm, why = hy.state.try_admit(c.d.id, c.n.id, now)
@@ -1081,7 +1096,12 @@ async def proxy(request: Request, path: str, pin: str | None = None):
         if a.kind == "passthrough":
             break
         if a.kind == "timeout":
-            hs.record_failure(now)
+            if queued:
+                # Counting these opened the breaker on a rig that was merely
+                # busy, and every caller then got 503 for breaker.open_s.
+                rec["why"] = "queued behind a saturated single candidate: not a breaker failure"
+            else:
+                hs.record_failure(now)
             if not (route and route.retry_on_ttft_timeout):
                 break
         elif a.kind == "fail":

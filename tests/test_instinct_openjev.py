@@ -54,8 +54,14 @@ def env_for(tmp_path, **extra):
     for tool in ("docker", "pgrep"):       # nothing real is ever started or inspected
         (bindir / tool).write_text("#!/bin/bash\nexit 1\n")
         (bindir / tool).chmod(0o755)
+    # Its own (empty) weights dir: scripts/lib/weights.sh otherwise resolves
+    # the rig's conf or $REPO/../weights, and these tests passed only where
+    # that directory happened to exist (tests/test_scripts.sh used to make it).
+    weights = tmp_path / "weights"
+    weights.mkdir(exist_ok=True)
     e = {k: v for k, v in os.environ.items() if not k.startswith("OPENJEV")}
     e.update({"PATH": f"{bindir}:{os.environ['PATH']}",
+              "OPENBEAST_WEIGHTS_DIR": str(weights),
               "OPENJEV_IMAGE": f"openbeast-openjev@{PIN}",
               "OPENJEV_CHECKPOINT_DIR": str(ck), "OPENJEV_HF_CACHE": str(hf),
               "OPENJEV_RUN_DIR": str(tmp_path / "run"),
@@ -78,10 +84,12 @@ def free_port() -> int:
     return p
 
 
-def test_script_parses_and_documents_the_contract():
+def test_script_parses_and_documents_the_contract(tmp_path):
     assert subprocess.run(["bash", "-n", str(SH)]).returncode == 0
-    r = subprocess.run(["bash", str(SH), "--help"], capture_output=True, text=True)
-    assert r.returncode == 0
+    # On a box with NO weights directory: help must not need one.
+    r = subprocess.run(["bash", str(SH), "--help"], capture_output=True, text=True,
+                       env={**os.environ, "OPENBEAST_WEIGHTS_DIR": str(tmp_path / "absent")})
+    assert r.returncode == 0, r.stderr
     for needle in ("DEDICATED GPU host", "Never TypeSafe's hosted Jev API", "READ-ONLY",
                    "HF_HUB_OFFLINE=1", "UNCENSORED", "validation-only"):
         assert needle in r.stdout, needle

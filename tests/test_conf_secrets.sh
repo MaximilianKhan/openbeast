@@ -366,6 +366,144 @@ else
   fail "standalone unkeyed probe: argv=[$(tr '\n' ' ' < "$T/curl.argv")] cfg=[$(cat "$T/curl.cfg")]"
 fi
 
+# ---------------------------------------------------------------------------
+# UX-13 (2026-10-09): conf.sh never looked at a key it did not ask for, so
+# `EDGE_GTAE=true` left the gate off in silence, and `REASONING_BUDGET=lots`
+# reached llama-server as a flag value. ob_conf_lint warns — once per command,
+# never fatally — about unknown keys (with the nearest real key), integer keys
+# that are not integers, and a SERVE_SCRIPT that is not in scripts/.
+# ---------------------------------------------------------------------------
+echo ""
+echo "7. lib/conf.sh — unknown keys and bad values warn (once, never fatal):"
+LB="$T/lint"
+mkdir -p "$LB/scripts/lib"
+cp "$REPO_DIR"/scripts/lib/*.sh "$LB/scripts/lib/"
+cp "$REPO_DIR/openbeast.conf.example" "$LB/"
+: > "$LB/scripts/serve-real.sh"
+# lint_eval <conf body> [VAR=val…] -- <snippet>: like conf_eval, in the box
+# that also holds openbeast.conf.example. stdout = snippet, stderr → conf.err.
+lint_eval() {
+  local body="$1"; shift
+  local envs=()
+  while [[ $# -gt 0 && "$1" != "--" ]]; do envs+=("$1"); shift; done
+  shift
+  printf '%s\n' "$body" > "$LB/openbeast.conf"
+  env -i HOME="$T" PATH="/usr/bin:/bin" REPO_DIR="$LB" ${envs[@]+"${envs[@]}"} \
+    bash -c "set -euo pipefail; source '$LB/scripts/lib/conf.sh'; $1" 2>"$T/conf.err"
+}
+_err() { cat "$T/conf.err"; }
+_O="$(lint_eval $'SEARXNG_SECRET=s\nEDGE_GTAE=true' -- 'echo "gate=$EDGE_GATE rc=$?"')"
+if has "$(_err)" "WARNING: openbeast.conf: unknown key 'EDGE_GTAE' — did you mean EDGE_GATE?" \
+   && [[ "$_O" == "gate=false rc=0" ]]; then
+  pass "EDGE_GTAE=true warns 'did you mean EDGE_GATE?' and conf.sh still loads (set -e, gate off)"
+else
+  fail "typo'd key: out='$_O' err=$(_err | tr '\n' ' ')"
+fi
+lint_eval $'SEARXNG_SECRET=s\nedge_gate=true\nOPENBEAST_HYDRA=true\nZZ_NOT_A_THING=1' -- ':'
+if has "$(_err)" "unknown key 'edge_gate' — did you mean EDGE_GATE?" \
+   && has "$(_err)" "unknown key 'OPENBEAST_HYDRA' — did you mean HYDRA?" \
+   && has "$(_err)" "unknown key 'ZZ_NOT_A_THING' — nothing reads it" \
+   && ! grep -q "ZZ_NOT_A_THING.*did you mean" "$T/conf.err"; then
+  pass "a lower-cased key and an env-style OPENBEAST_ name get the real key; a stranger gets no guess"
+else
+  fail "did-you-mean: $(_err | tr '\n' ' ')"
+fi
+# Negative control, and the guard against the lint going stale: EVERY key any
+# script or module reads from openbeast.conf must count as known — the ones
+# the example lists, and the ones it does not (_OB_CONF_EXTRA_KEYS). The list
+# is harvested from the readers themselves.
+_READ_KEYS="$( { grep -rhoE '(_ob_conf_value|_conf_value|_conf_get|_conf_set) [A-Z][A-Z0-9_]+' \
+                   "$REPO_DIR/scripts" "$REPO_DIR/start.sh" "$REPO_DIR/stop.sh" "$REPO_DIR/bootstrap.sh" 2>/dev/null \
+                   | awk '{print $2}'
+                 grep -rhoE 'conf_value\("[A-Z][A-Z0-9_]+"' "$REPO_DIR/agents" "$REPO_DIR/scripts" 2>/dev/null \
+                   | sed -E 's/.*"([A-Z0-9_]+)"/\1/'
+                 # read by a bespoke grep/awk rather than a helper:
+                 printf '%s\n' WEIGHTS_DIR LANG_PACKS LANG_PACK_CONTEXT AGENT_LOG_RETENTION_DAYS
+               } | sort -u)"
+_ALL_BODY="$(for _k in $_READ_KEYS; do printf '%s=\n' "$_k"; done)"
+lint_eval "$_ALL_BODY" -- ':' || true
+_NK="$(wc -w <<< "$_READ_KEYS")"
+if [[ "$_NK" -ge 70 ]] && ! grep -q "unknown key" "$T/conf.err"; then
+  pass "none of the $_NK keys the repo actually reads is called unknown (example + _OB_CONF_EXTRA_KEYS)"
+else
+  fail "a key something reads is reported unknown ($_NK harvested) — add it to openbeast.conf.example or _OB_CONF_EXTRA_KEYS: $(grep 'unknown key' "$T/conf.err" | tr '\n' ' ')"
+fi
+for _k in BEAST_ASSIST CHAT_PUBLIC_URL WEBUI_DEFAULT_ADMIN_PASSWORD; do
+  grep -qx "$_k" <<< "$_READ_KEYS" || fail "control: the harvest lost $_k, a key the example does not list"
+done
+lint_eval $'SEARXNG_SECRET=s\nEDGE_GATE=true\n#NOT_A_KEY=1\n  # indented=comment' -- ':'
+[[ ! -s "$T/conf.err" ]] && pass "a clean conf (commented-out lines included) warns about nothing" \
+  || fail "clean conf warned: $(_err | tr '\n' ' ')"
+# Integers.
+_O="$(lint_eval $'SEARXNG_SECRET=s\nREASONING_BUDGET=lots\nCHAT_PORT=3003 # ui\nMEM_LIMIT_PCT=lots' -- 'echo "rb=[$REASONING_BUDGET]"')"
+if has "$(_err)" "REASONING_BUDGET='lots' is not an integer" && [[ "$_O" == "rb=[]" ]] \
+   && has "$(_err)" "CHAT_PORT='3003 # ui' is not a whole number" \
+   && has "$(_err)" "MEM_LIMIT_PCT='lots' is not a whole number"; then
+  pass "REASONING_BUDGET=lots is dropped with a warning (it used to kill llama-server); bad integer keys are named"
+else
+  fail "integers: out='$_O' err=$(_err | tr '\n' ' ')"
+fi
+_O="$(lint_eval $'SEARXNG_SECRET=s\nREASONING_BUDGET=-1   # unlimited\nCHAT_PORT=3003\nHYDRA_READY_GRACE=30 # s\nEDGE_RATE_LIMIT=120' -- 'echo "rb=[$REASONING_BUDGET]"')"
+[[ "$_O" == "rb=[-1]" && ! -s "$T/conf.err" ]] \
+  && pass "valid integers (-1, a commented REASONING_BUDGET / HYDRA_READY_GRACE) pass untouched (control)" \
+  || fail "valid integers warned or changed: out='$_O' err=$(_err | tr '\n' ' ')"
+_O="$(lint_eval 'SEARXNG_SECRET=s' OPENBEAST_REASONING_BUDGET=many -- 'echo "rb=[$REASONING_BUDGET]"')"
+has "$(_err)" "REASONING_BUDGET='many' is not an integer" && [[ "$_O" == "rb=[]" ]] \
+  && pass "…and a bad \$OPENBEAST_REASONING_BUDGET is caught the same way" \
+  || fail "env REASONING_BUDGET: out='$_O' err=$(_err | tr '\n' ' ')"
+# PROMPT_CACHE_RAM_MB (serve.sh's --cache-ram knob): integer MiB, empty =
+# automatic, 0 = the server default. Exported for serve.sh only when set.
+_pc() { lint_eval "$@" -- 'echo "v=[${PROMPT_CACHE_RAM_MB}] env=[$(env | grep -c "^PROMPT_CACHE_RAM_MB=" || true)]"'; }
+_A="$(_pc $'SEARXNG_SECRET=s\nPROMPT_CACHE_RAM_MB=49152   # 48 GiB')"
+_B="$(_pc $'SEARXNG_SECRET=s\nPROMPT_CACHE_RAM_MB=0')"
+_C="$(_pc 'SEARXNG_SECRET=s')"
+_D="$(_pc $'SEARXNG_SECRET=s\nPROMPT_CACHE_RAM_MB=49152' OPENBEAST_PROMPT_CACHE_RAM_MB=1024)"
+if [[ "$_A" == "v=[49152] env=[1]" && "$_B" == "v=[0] env=[1]" && "$_C" == "v=[] env=[0]" && "$_D" == "v=[1024] env=[1]" ]]; then
+  pass "PROMPT_CACHE_RAM_MB: N and 0 are exported, empty stays unset (= automatic), the env override wins"
+else
+  fail "PROMPT_CACHE_RAM_MB resolution: set='$_A' zero='$_B' unset='$_C' env='$_D'"
+fi
+_E="$(_pc $'SEARXNG_SECRET=s\nPROMPT_CACHE_RAM_MB=48G')"
+if [[ "$_E" == "v=[] env=[0]" ]] && has "$(_err)" "PROMPT_CACHE_RAM_MB='48G' is not a whole number of MiB"; then
+  pass "…a non-integer (48G) is ignored with a warning, never handed to llama-server"
+else
+  fail "PROMPT_CACHE_RAM_MB=48G: '$_E' err=$(_err | tr '\n' ' ')"
+fi
+# An inherited plain export must not outlive the key being removed.
+_F="$(_pc 'SEARXNG_SECRET=s' PROMPT_CACHE_RAM_MB=777)"
+[[ "$_F" == "v=[] env=[0]" ]] && pass "…and a stale inherited PROMPT_CACHE_RAM_MB does not stick once the key is gone" \
+  || fail "stale PROMPT_CACHE_RAM_MB survived: '$_F'"
+# The other two values serve.sh takes (and openbeast.conf.example documents).
+_G="$(_pc $'SEARXNG_SECRET=s\nPROMPT_CACHE_RAM_MB=-1')"; _Gerr="$(_err)"
+_H="$(_pc $'SEARXNG_SECRET=s\nPROMPT_CACHE_RAM_MB=auto')"
+if [[ "$_G" == "v=[-1] env=[1]" && "$_H" == "v=[auto] env=[1]" ]] && ! has "$_Gerr" "PROMPT_CACHE_RAM_MB" \
+   && ! has "$(_err)" "PROMPT_CACHE_RAM_MB"; then
+  pass "…-1 (no limit) and auto are passed through without a warning, as serve.sh takes them"
+else
+  fail "PROMPT_CACHE_RAM_MB -1/auto: '$_G' '$_H' err=$_Gerr $(_err | tr '\n' ' ')"
+fi
+# SERVE_SCRIPT.
+lint_eval $'SEARXNG_SECRET=s\nSERVE_SCRIPT=serve-nope.sh' -- ':'
+has "$(_err)" "SERVE_SCRIPT='serve-nope.sh' names no file in scripts/" \
+  && pass "a SERVE_SCRIPT that does not exist is named before anyone runs ./start.sh" \
+  || fail "missing SERVE_SCRIPT: $(_err | tr '\n' ' ')"
+lint_eval $'SEARXNG_SECRET=s\nSERVE_SCRIPT=serve-real.sh' -- ':'
+[[ ! -s "$T/conf.err" ]] && pass "…an existing one is not (control)" || fail "existing SERVE_SCRIPT warned: $(_err)"
+lint_eval $'SEARXNG_SECRET=s\nSERVE_SCRIPT=serve-nope.sh\nINFERENCE_BACKEND=vllm\nINFERENCE_URL=http://10.0.0.5:8000' -- ':'
+has "$(_err)" "SERVE_SCRIPT" && fail "SERVE_SCRIPT flagged on a backend this stack never launches" \
+  || pass "…nor on an unmanaged backend, which launches no serve script"
+# Once per command: a second source, and a child that sources it again, are quiet.
+lint_eval $'SEARXNG_SECRET=s\nEDGE_GTAE=true' -- \
+  "source '$LB/scripts/lib/conf.sh'; bash -c 'source \"\$REPO_DIR/scripts/lib/conf.sh\"'"
+_N1="$(grep -c "unknown key 'EDGE_GTAE'" "$T/conf.err" || true)"
+[[ "$_N1" == "1" ]] && pass "the warning is printed once per command (re-source and child stay quiet)" \
+  || fail "unknown-key warning printed $_N1 times"
+# Without openbeast.conf.example there is nothing to compare against: silent.
+printf 'SEARXNG_SECRET=s\nEDGE_GTAE=true\n' > "$SB/openbeast.conf"
+env -i HOME="$T" PATH="/usr/bin:/bin" REPO_DIR="$SB" bash -c "source '$SB/scripts/lib/conf.sh'" 2>"$T/conf.err"
+grep -q "unknown key" "$T/conf.err" && fail "unknown-key lint ran without an example to compare against" \
+  || pass "no openbeast.conf.example next to the conf → the unknown-key check is skipped"
+
 echo ""
 echo "=== $PASS passed, $FAIL failed ==="
 [[ $FAIL -eq 0 ]]

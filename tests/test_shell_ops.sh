@@ -292,6 +292,56 @@ if ! has "$_O" "log rotation"; then
 else
   fail "logrotate row without a user manager: $(grep -iE 'rotat' <<< "$_O" | tr '\n' ' ')"
 fi
+# 2026-10-09 review, netsec S11 (doctor half): setup-tailscale.sh no longer
+# publishes a keyless raw :8443 without --i-accept-open-inference, so doctor
+# FAILs one it finds unacknowledged and WARNs the acknowledged one — the :443
+# rule above, for inference.
+_RAW_8443='https://beast.example.ts.net:8443 (tailnet only)\n|-- / proxy http://127.0.0.1:8080\n'
+RUN_ENV=(TS_SERVE="$_RAW_8443" LIVE_AUTH=false)
+doctor WEBUI_AUTH=false
+if has "$_O" "✗ raw llama-server is published on :8443 with no API key and no beast-gate" \
+   && has "$_O" "--i-accept-open-inference"; then
+  pass "a keyless raw :8443 nobody acknowledged FAILs and names the three ways out"
+else
+  fail "unacknowledged raw :8443: $(grep -E '8443' <<< "$_O" | tr '\n' ' ')"
+fi
+doctor WEBUI_AUTH=false ALLOW_OPEN_INFERENCE=true
+if has "$_O" "! raw llama-server is published on :8443 with no API key (ALLOW_OPEN_INFERENCE=true acknowledges it)" \
+   && ! has "$_O" "✗ raw llama-server"; then
+  pass "…published open on purpose (ALLOW_OPEN_INFERENCE=true) WARNs, not FAILs"
+else
+  fail ":8443 + acknowledged open inference: $(grep -E '8443' <<< "$_O" | tr '\n' ' ')"
+fi
+doctor WEBUI_AUTH=false "LLAMA_API_KEY=$LK"
+if has "$_O" "! raw llama-server is published on :8443 (whole route table)" && ! has "$_O" "✗ raw llama-server"; then
+  pass "…behind the shared LLAMA_API_KEY it is the route-table WARN, as before (control)"
+else
+  fail ":8443 + LLAMA_API_KEY: $(grep -E '8443' <<< "$_O" | tr '\n' ' ')"
+fi
+# ux UX-07 (doctor half): keys in .run/clients.json gate nothing while
+# EDGE_GATE is off — llama-server never reads that file.
+RUN_ENV=()
+printf '%s' '{"version":1,"devices":[{"id":"laptop","key_sha256":"ab"},{"id":"phone","key_sha256":"cd","revoked_at":"2026-10-01T00:00:00Z"}]}' > "$SB/.run/clients.json"
+doctor
+if has "$_O" "✗ 2 device(s) enrolled but EDGE_GATE is not true" && has "$_O" "set EDGE_GATE=true in openbeast.conf"; then
+  pass "devices enrolled with EDGE_GATE off FAILs and names the fix"
+else
+  fail "enrolled-but-gate-off row: $(grep -iE 'enrolled|EDGE_GATE' <<< "$_O" | tr '\n' ' ')"
+fi
+doctor EDGE_GATE=true
+if ! has "$_O" "enrolled but EDGE_GATE is not true"; then
+  pass "…with EDGE_GATE=true the row is gone (control)"
+else
+  fail "gate on, still told it is off: $(grep -iE 'enrolled' <<< "$_O" | tr '\n' ' ')"
+fi
+printf '%s' '{"version":1,"devices":[]}' > "$SB/.run/clients.json"
+doctor
+if ! has "$_O" "enrolled but EDGE_GATE is not true"; then
+  pass "…an emptied registry with the gate off is not a failure (control)"
+else
+  fail "empty registry flagged: $(grep -iE 'enrolled' <<< "$_O" | tr '\n' ' ')"
+fi
+rm -f "$SB/.run/clients.json"
 RUN_ENV=()
 
 # ---------------------------------------------------------------------------
@@ -490,18 +540,33 @@ if [[ $_rc -ne 0 ]] && has "$_O" "HASH MISMATCH" && ! grep -q requirements.txt "
 else
   fail "client update hash mismatch (rc=$_rc): $(tr '\n' '|' < "$T/client.log") :: $_O"
 fi
+# 2026-10-09 review, supply S2: a non-hash failure (a mirror withholding a
+# locked file exits 1, not 3) must not fall back unless explicitly opted out.
 cupdate PYDEPS_RC=1
-if [[ $_rc -eq 0 ]] && grep -q "venv-pip install -q -r $CR/agents/requirements.txt" "$T/client.log" \
-   && has "$_O" "falling back"; then
-  pass "…any other failure falls back to requirements.txt, loudly (control)"
+if [[ $_rc -ne 0 ]] && ! grep -q requirements.txt "$T/client.log" \
+   && has "$_O" "Refusing to fall back" && has "$_O" "OPENBEAST_PIP_STRICT=0"; then
+  pass "…any other failure is fatal by default too, and names the explicit opt-out"
 else
-  fail "client update fallback (rc=$_rc): $(tr '\n' '|' < "$T/client.log") :: $_O"
+  fail "client update default-strict (rc=$_rc): $(tr '\n' '|' < "$T/client.log") :: $_O"
 fi
 cupdate PYDEPS_RC=1 OPENBEAST_PIP_STRICT=1
 if [[ $_rc -ne 0 ]] && ! grep -q requirements.txt "$T/client.log"; then
-  pass "…and OPENBEAST_PIP_STRICT=1 forbids that fallback"
+  pass "…OPENBEAST_PIP_STRICT=1 stays fatal"
 else
   fail "client update strict (rc=$_rc): $(tr '\n' '|' < "$T/client.log")"
+fi
+cupdate PYDEPS_RC=1 OPENBEAST_PIP_STRICT=0
+if [[ $_rc -eq 0 ]] && grep -q "venv-pip install -q -r $CR/agents/requirements.txt" "$T/client.log" \
+   && has "$_O" "falling back"; then
+  pass "…and only OPENBEAST_PIP_STRICT=0 falls back to requirements.txt, loudly (control)"
+else
+  fail "client update fallback (rc=$_rc): $(tr '\n' '|' < "$T/client.log") :: $_O"
+fi
+cupdate PYDEPS_RC=3 OPENBEAST_PIP_STRICT=0
+if [[ $_rc -ne 0 ]] && has "$_O" "HASH MISMATCH" && ! grep -q requirements.txt "$T/client.log"; then
+  pass "…the opt-out never turns a HASH MISMATCH into a fallback"
+else
+  fail "client update hash mismatch under opt-out (rc=$_rc): $(tr '\n' '|' < "$T/client.log") :: $_O"
 fi
 
 # ---------------------------------------------------------------------------
@@ -542,6 +607,39 @@ if ! grep -q 'open-webui' "$SBU/scripts/client-searxng.compose.yml"; then
 else
   fail "the client compose picked up a non-searxng image"
 fi
+# What update.sh SAYS (2026-10-09 review, UX-05). Its name reads as "update
+# OpenBeast" and it never pulls this repo; and it told every user to "commit
+# the digest bump", which for anyone but a maintainer sets up a conflict on
+# the next git pull.
+_plan_line="$(grep -n 'About to move upstream components' <<< "$_O" | head -n1 | cut -d: -f1 || true)"
+_step_line="$(grep -n '==> Container images' <<< "$_O" | head -n1 | cut -d: -f1 || true)"
+if [[ -n "$_plan_line" && -n "$_step_line" && "$_plan_line" -lt "$_step_line" ]] \
+   && has "$(sed -n "${_plan_line}p" <<< "$_O")" "container images" \
+   && has "$(sed -n "${_plan_line}p" <<< "$_O")" "'git pull'" \
+   && ! has "$(sed -n "${_plan_line}p" <<< "$_O")" "llama.cpp"; then
+  pass "before acting, one line says what is about to move (only what was asked) and that OpenBeast itself is 'git pull'"
+else
+  fail "no plan line before the first step (plan=$_plan_line step=$_step_line): $_O"
+fi
+if has "$_O" "git tracks" && has "$_O" "Maintaining OpenBeast" && has "$_O" "git stash" && ! has "$_O" "commit the digest bump"; then
+  pass "a digest bump no longer tells every user to commit it: maintainers commit, everyone else is told how to keep 'git pull' clean"
+else
+  fail "tracked-file guidance after a bump: $_O"
+fi
+# NEGATIVE CONTROL: nothing moved, so there is nothing to say about tracked files.
+_O2="$(env -i HOME="$T/h" PATH="$T/binu:/usr/bin:/bin" bash "$SBU/scripts/update.sh" --images 2>&1)"
+if has "$_O2" "already at latest digest" && ! has "$_O2" "git tracks"; then
+  pass "negative control: a run that bumps nothing prints no tracked-file note"
+else
+  fail "tracked-file note on a no-op run: $_O2"
+fi
+_O2="$(env -i HOME="$T/h" PATH="$T/binu:/usr/bin:/bin" bash "$SBU/scripts/update.sh" --images --check 2>&1)"
+if has "$_O2" "Checking, changing nothing" && has "$_O2" "'git pull'" && ! has "$_O2" "About to move"; then
+  pass "--check announces itself as changing nothing"
+else
+  fail "--check plan line: $_O2"
+fi
+
 # Already-drifted client pin while the rig is current: re-synced too.
 printf 'services:\n  searxng:\n    image: %s\n' "$OLD_SX" > "$SBU/scripts/client-searxng.compose.yml"
 _O="$(env -i HOME="$T/h" PATH="$T/binu:/usr/bin:/bin" bash "$SBU/scripts/update.sh" --images 2>&1)"

@@ -179,6 +179,23 @@ if grep -q "model endpoint (http://localhost:8088/v1)" <<< "$_O"; then
 else
   fail "doctor missed an unreachable frontend model URL: $(grep -iE 'model endpoint' <<< "$_O" | tr '\n' ' ')"
 fi
+# ops F5: with the router on, that endpoint IS the router — say so, and name
+# the repair healthcheck.sh now really has (it had no router branch, so the
+# old "check the router: healthcheck.sh --restart" did nothing). On a LAN
+# BIND_HOST the row used to blame the bind, which the router never follows.
+if grep -q "is the agent router, and it is not answering" <<< "$_O" \
+   && grep -A1 "is the agent router" <<< "$_O" | grep -qF "fix: ./scripts/healthcheck.sh --restart (relaunches the router)" \
+   && ! grep -q "refuses connections: services bind only" <<< "$_O"; then
+  pass "…named as a dead agent router, with the healthcheck --restart that now relaunches it"
+else
+  fail "doctor's router advice: $(grep -A1 -iE 'model endpoint' <<< "$_O" | tr '\n' ' ')"
+fi
+if grep -qE '^# Agent-spawn router' "$REPO_DIR/scripts/healthcheck.sh" \
+   && grep -q 'agents/router.py" >>"\$_rt_log"' "$REPO_DIR/scripts/healthcheck.sh"; then
+  pass "…and healthcheck.sh has the router branch that advice depends on (run in test_hydra_instinct_wiring.sh)"
+else
+  fail "doctor sends the operator to healthcheck.sh --restart, which has no router branch"
+fi
 _O="$(_doctor_out '^http://(127\.0\.0\.1|localhost):' 'BIND_HOST=127.0.0.1')"
 if grep -q "llama.cpp server (:8080)" <<< "$_O" && ! grep -q "model endpoint" <<< "$_O"; then
   pass "…and stays quiet on a loopback rig where the frontend reaches the model (control)"
@@ -204,6 +221,7 @@ _L="$_T/load"; mkdir -p "$_L/scripts" "$_L/.run"
 cat > "$_L/scripts/stub_llama.py" <<'PY'
 import http.server, json, sys, threading, time, os
 mode, port = sys.argv[1], int(sys.argv[2])
+host = os.environ.get("STUB_HOST", "127.0.0.1")
 t0 = time.time()
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -215,7 +233,7 @@ class H(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers(); self.wfile.write(body)
-srv = http.server.HTTPServer(("127.0.0.1", port), H)
+srv = http.server.HTTPServer((host, port), H)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
 # loading-then-die: the OOM-mid-load shape. Everything else has a hard
 # lifetime so nothing outlives the test even if the harness is killed.
@@ -232,22 +250,36 @@ done
 {
   echo 'set -euo pipefail'
   echo "source '$REPO_DIR/scripts/lib/net.sh'"
+  echo "source '$REPO_DIR/scripts/lib/portown.sh'"
   echo 'SCRIPT_DIR="$SANDBOX"; RUN_DIR="$SANDBOX/.run"'
-  echo 'HEALTH_HOST=127.0.0.1; LLAMA_BASE="http://127.0.0.1:$STUB_PORT"'
+  echo 'HEALTH_HOST=127.0.0.1; LLAMA_BASE="http://127.0.0.1:$STUB_PORT"; LLAMA_PORT="$STUB_PORT"'
   echo 'LLAMA_LOAD_GRACE="${OPENBEAST_LLAMA_LOAD_GRACE:-900}"'
   echo 'reconfigure_webui_for_model() { :; }'
-  for _fn in launch_llama wait_llama_health record_last_good launch_and_wait; do
+  echo 'LLAMA_PID=""'
+  # (_port_busy & co. arrived with the 2026-10-09 review; absent on an older
+  # start.sh, where sed simply prints nothing for them.)
+  for _fn in _port_busy _port_holder _port_refuse launch_llama _llama_port_ours \
+             wait_llama_health record_last_good launch_and_wait; do
     sed -n "/^${_fn}() {/,/^}/p" "$REPO_DIR/start.sh"
   done
   echo 'rc=0; launch_and_wait || rc=$?'
-  echo 'echo "RC=$rc SERVING=$SERVE_SCRIPT LASTGOOD=$(cat "$RUN_DIR/last-good-serve-script" 2>/dev/null) PID=$LLAMA_PID"'
+  echo 'echo "RC=$rc SERVING=$SERVE_SCRIPT LASTGOOD=$(cat "$RUN_DIR/last-good-serve-script" 2>/dev/null) FAIL=${LLAMA_FAIL:-} PID=$LLAMA_PID"'
 } > "$_L/harness.sh"
 _free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
-_launch_case() { # _launch_case <serve-script> <last-good or ""> [grace] -> result line
+# [foreign]: somebody ELSE's healthy server on the same port — "pre" is up
+# before the launch, "late" binds one second after it (the bind race).
+_launch_case() { # _launch_case <serve-script> <last-good or ""> [grace] [foreign] -> result line
   local port; port="$(_free_port)"
   rm -f "$_L/.run/last-good-serve-script"
   [[ -n "$2" ]] && echo "$2" > "$_L/.run/last-good-serve-script"
-  SANDBOX="$_L" STUB_PORT="$port" SERVE_SCRIPT="$1" MODEL_ROLLBACK=true \
+  case "${4:-}" in
+    pre)  python3 "$_L/scripts/stub_llama.py" ok "$port" >/dev/null 2>&1 & _PIDS="$_PIDS $!"
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null && break; sleep 0.2
+          done ;;
+    late) ( sleep 1; exec python3 "$_L/scripts/stub_llama.py" ok "$port" >/dev/null 2>&1 ) & _PIDS="$_PIDS $!" ;;
+  esac
+  SANDBOX="$_L" STUB_PORT="$port" SERVE_SCRIPT="$1" MODEL_ROLLBACK=true LLAMA_RELAUNCH="${_RELAUNCH:-0}" \
     OPENBEAST_LLAMA_LOAD_GRACE="${3:-900}" \
     timeout 40 bash "$_L/harness.sh" > "$_L/out" 2>&1 || true
   local line; line="$(grep '^RC=' "$_L/out" || echo "RC=hung $(tail -n 2 "$_L/out" | tr '\n' ' ')")"
@@ -279,6 +311,63 @@ if [[ "$_R" == "RC=0 SERVING=serve-ok.sh LASTGOOD=serve-ok.sh "* ]]; then
   pass "a model answering 200 {\"status\":\"ok\"} is healthy and recorded last-good (control)"
 else
   fail "a healthy stub was not accepted: $_R"
+fi
+# ops F1 (2026-10-09): READY also means OURS. A healthy server that is not
+# the one this start launched — a campaign's llama-server on the same port —
+# used to make a start whose own server died on the bind report "ready".
+printf '#!/bin/bash\necho launched >> "%s/launched.log"\nexit 1\n' "$_L" > "$_L/scripts/serve-die.sh"
+printf '#!/bin/bash\nexec sleep 5\n' > "$_L/scripts/serve-sleeper.sh"
+chmod +x "$_L/scripts/serve-die.sh" "$_L/scripts/serve-sleeper.sh"
+rm -f "$_L/launched.log"
+_R="$(_launch_case serve-die.sh "" 900 pre)"
+if [[ "$_R" == "RC=1 SERVING=serve-die.sh LASTGOOD= FAIL=port "* && ! -e "$_L/launched.log" ]] \
+   && grep -q "is already in use by pid" "$_L/out"; then
+  pass "a foreign server already on the port: nothing is launched, not 'ready', not last-good, and the holder is named"
+else
+  fail "a foreign llama-server was accepted as ours: $_R :: $(tr '\n' ' ' < "$_L/out")"
+fi
+# ux UX-08: serve.sh exits 4 for a weight that is not on disk, having named
+# the file and the fetch command. A start must show that, not load some
+# other model in its place.
+printf '#!/bin/bash\necho "Error: weight not downloaded: /w/x.gguf" >&2\nexit 4\n' > "$_L/scripts/serve-noweight.sh"
+chmod +x "$_L/scripts/serve-noweight.sh"
+_R="$(_launch_case serve-noweight.sh serve-ok.sh)"
+if [[ "$_R" == "RC=1 SERVING=serve-noweight.sh LASTGOOD=serve-ok.sh FAIL=weight "* ]] \
+   && grep -q "Not rolling back to another model" "$_L/out"; then
+  pass "a missing weight (serve.sh exit 4) is not answered by rolling back to a different model"
+else
+  fail "a missing weight was rolled back past: $_R :: $(tr '\n' ' ' < "$_L/out")"
+fi
+_R="$(_RELAUNCH=1 _launch_case serve-noweight.sh serve-ok.sh)"
+if [[ "$_R" == "RC=0 SERVING=serve-ok.sh LASTGOOD=serve-ok.sh "* ]] && grep -q "is no longer on disk" "$_L/out"; then
+  pass "…except in the supervisor's unattended relaunch, which falls back and says the weight is gone"
+else
+  fail "the relaunch path did not fall back from a vanished weight: $_R :: $(tr '\n' ' ' < "$_L/out")"
+fi
+# serve.sh exits 3 for a WEIGHT_ENFORCE=strict refusal. With a healthy
+# last-good on record and MODEL_ROLLBACK on, the start must still fail: a
+# rollback here serves a model the operator did not configure, which is what
+# strict exists to stop. (test_scripts.sh only grepped start.sh for the words.)
+printf '#!/bin/bash\necho "weight rejected by the registry" >&2\nexit 3\n' > "$_L/scripts/serve-refused.sh"
+chmod +x "$_L/scripts/serve-refused.sh"
+_R="$(_launch_case serve-refused.sh serve-ok.sh)"
+if [[ "$_R" == "RC=1 SERVING=serve-refused.sh LASTGOOD=serve-ok.sh FAIL=refused "* ]] \
+   && grep -q "Refusing to roll back: 'serve-refused.sh' was rejected by the weight registry" "$_L/out"; then
+  pass "a strict weight refusal (serve.sh exit 3) is NOT rolled back past, even with a last-good and MODEL_ROLLBACK=true"
+else
+  fail "a weight-registry refusal was rolled back past: $_R :: $(tr '\n' ' ' < "$_L/out")"
+fi
+# control: the same last-good IS used when the model merely crashes (exit 1)
+printf '#!/bin/bash\nexit 1\n' > "$_L/scripts/serve-crash.sh"; chmod +x "$_L/scripts/serve-crash.sh"
+_R="$(_launch_case serve-crash.sh serve-ok.sh)"
+[[ "$_R" == "RC=0 SERVING=serve-ok.sh LASTGOOD=serve-ok.sh "* ]] \
+  && pass "…while an ordinary crash (exit 1) does roll back to it (control)" \
+  || fail "an ordinary crash did not roll back: $_R :: $(tr '\n' ' ' < "$_L/out")"
+_R="$(_launch_case serve-sleeper.sh "" 900 late)"
+if [[ "$_R" == "RC=1 SERVING=serve-sleeper.sh LASTGOOD= "* ]] && grep -q "not the one this stack launched" "$_L/out"; then
+  pass "a foreign server that wins the bind race is not ours either: our child must HOLD the listener"
+else
+  fail "health from a server we did not launch counted as ready: $_R :: $(tr '\n' ' ' < "$_L/out")"
 fi
 for _p in $_PIDS; do kill "$_p" 2>/dev/null || true; done
 # The -d launcher's readiness probe uses the same helper, not `curl -s`.
@@ -514,6 +603,902 @@ if grep -q -- "-f $_C/docker-compose.yml" "$_C/docker.log"; then
   pass "…alongside the core compose file (control)"
 else
   fail "stop.sh no longer passes the core compose file: $(tr '\n' ' ' < "$_C/docker.log")"
+fi
+
+# ===========================================================================
+# 2026-10-09 review: the entry points themselves (start.sh / stop.sh).
+# ===========================================================================
+echo ""
+echo "start.sh --help describes the stack that ships (UX-19):"
+# --help exits inside the argument loop, before conf.sh or anything else runs.
+_H="$(bash "$REPO_DIR/start.sh" --help 2>&1)" && _HRC=0 || _HRC=$?
+_DEF="$(sed -n 's/^DEFAULT_SERVE_SCRIPT=.*|| echo \([A-Za-z0-9._-]*\)).*/\1/p' "$REPO_DIR/scripts/lib/conf.sh")"
+if [[ $_HRC -eq 0 && -n "$_DEF" && "$_H" == *"$_DEF"* ]]; then
+  pass "the help names the default serve script conf.sh resolves ($_DEF)"
+else
+  fail "start.sh --help (rc=$_HRC) does not name the default '$_DEF'"
+fi
+if [[ "$_H" != *MCPO* && "$_H" != *"MemoryMax=96G"* && "$_H" != *"Qwen3.6-27B Uncensored Q5_K_P"* ]]; then
+  pass "…and no longer describes the MCPO proxy, a 96G cap or the old default"
+else
+  fail "start.sh --help still carries stale facts: $(grep -E 'MCPO|96G|Q5_K_P' <<< "$_H" | tr '\n' ' ')"
+fi
+if [[ "$_H" == *"Usage:"* && "$_H" == *MEM_LIMIT_PCT* && "$_H" != *"set -euo"* && "$_H" != *'SCRIPT_DIR='* ]]; then
+  pass "…and prints the whole header, usage included, with no code leaking in (control)"
+else
+  fail "start.sh --help is cut short or leaks code: $(tail -n 3 <<< "$_H" | tr '\n' ' ')"
+fi
+if grep -qE 'echo .*MCPO (tools|proxy)' "$REPO_DIR/start.sh" "$REPO_DIR/stop.sh"; then
+  fail "a runtime banner still says MCPO: $(grep -nE 'echo .*MCPO (tools|proxy)' "$REPO_DIR/start.sh" "$REPO_DIR/stop.sh" | tr '\n' ' ')"
+else
+  pass "runtime banners say 'Tool server', not MCPO"
+fi
+
+# Run the sandbox's start.sh for real, bound to a loopback address picked at
+# random for THIS run ($_LO): nothing of a live stack binds there, and neither
+# does another suite or a second copy of this one running beside it (the core
+# port numbers are fixed, so the address is the only thing that can differ).
+# Every probe start.sh makes is therefore against an address this test owns.
+# Sets _SO (output) and _SRC (exit code).
+_LO="127.$((20 + RANDOM % 200)).$((RANDOM % 250)).$((2 + RANDOM % 250))"
+_start_rc() { # _start_rc <dir> <timeout-s> [args...]   (extra env via RUN_ENV)
+  local d="$1" t="$2"; shift 2
+  _SRC=0
+  _SO="$(env -i HOME="$d/home" PATH="$d/bin:/usr/bin:/bin" OPENBEAST_SEARXNG_SECRET=x \
+    OPENBEAST_BIND=$_LO OPENBEAST_LOGROTATE_AUTOINSTALL=false \
+    ${RUN_ENV[@]+"${RUN_ENV[@]}"} timeout "$t" bash "$d/start.sh" "$@" 2>&1)" || _SRC=$?
+}
+
+echo ""
+echo "start.sh takes commands as words (UX-20):"
+_CW="$_T/words"; _sandbox "$_CW"
+printf '#!/bin/bash\necho "$*" >> "%s/docker.log"\nexit 0\n' "$_CW" > "$_CW/bin/docker"
+_start_rc "$_CW" 30 status
+if [[ $_SRC -eq 0 && "$_SO" == *"OpenBeast stack status:"* && "$_SO" == *"tool server: not running"* ]]; then
+  pass "'./start.sh status' is --status (was: \"scripts/status not found or not executable\")"
+else
+  fail "start.sh status (rc=$_SRC): $(tr '\n' ' ' <<< "$_SO")"
+fi
+_start_rc "$_CW" 60 stop
+if [[ $_SRC -eq 0 && -s "$_CW/.run/stopped" ]] && grep -q -- "down" "$_CW/docker.log"; then
+  pass "'./start.sh stop' runs stop.sh"
+else
+  fail "start.sh stop (rc=$_SRC): $(tr '\n' ' ' <<< "$_SO")"
+fi
+rm -f "$_CW/.run/stopped" "$_CW/docker.log"
+_start_rc "$_CW" 30 help
+[[ $_SRC -eq 0 && "$_SO" == *"Usage:"* ]] && pass "'./start.sh help' prints the usage" \
+  || fail "start.sh help (rc=$_SRC): $(head -n 2 <<< "$_SO" | tr '\n' ' ')"
+_start_rc "$_CW" 30 frobnicate
+if [[ $_SRC -eq 2 && "$_SO" == *"Unknown command 'frobnicate'"* && "$_SO" == *"status | stop | restart | doctor | help"* \
+      && ! -e "$_CW/.run/supervisor.pid" ]]; then
+  pass "an unknown word exits 2 with the valid commands, and starts nothing"
+else
+  fail "start.sh frobnicate (rc=$_SRC): $(tr '\n' ' ' <<< "$_SO")"
+fi
+_start_rc "$_CW" 30 stat
+[[ $_SRC -eq 2 && "$_SO" == *"did you mean: ./start.sh status"* ]] \
+  && pass "…and a near miss names the nearest command ('stat' -> status)" \
+  || fail "start.sh stat (rc=$_SRC): $(tr '\n' ' ' <<< "$_SO")"
+_start_rc "$_CW" 30 serve-nope.sh
+if [[ $_SRC -eq 1 && "$_SO" == *"scripts/serve-nope.sh not found or not executable"* ]]; then
+  pass "a word spelled like a serve script is still a serve script (control)"
+else
+  fail "start.sh serve-nope.sh (rc=$_SRC): $(tr '\n' ' ' <<< "$_SO")"
+fi
+# restart = stop.sh, then a -d start. The start half is cut short on purpose
+# (a serve script that does not exist), so nothing is launched here.
+rm -f "$_CW/docker.log"
+_start_rc "$_CW" 60 restart serve-nope.sh
+if [[ $_SRC -eq 1 && "$_SO" == *"not found or not executable"* ]] && grep -q -- "down" "$_CW/docker.log"; then
+  pass "'./start.sh restart' stops the stack first, then goes on to start"
+else
+  fail "start.sh restart (rc=$_SRC): $(tr '\n' ' ' <<< "$_SO")"
+fi
+# A status report writes nothing (UX-12): on a fresh checkout — no conf, no
+# secret in the environment — conf.sh would mint SEARXNG_SECRET into a new
+# openbeast.conf. _start_rc hands the secret in, so this one runs without it.
+for _w in --status status; do
+  rm -f "$_CW/openbeast.conf"
+  _SO="$(env -i HOME="$_CW/home" PATH="$_CW/bin:/usr/bin:/bin" OPENBEAST_BIND=$_LO \
+    timeout 30 bash "$_CW/start.sh" "$_w" 2>&1)" && _SRC=0 || _SRC=$?
+  if [[ $_SRC -eq 0 && "$_SO" == *"OpenBeast stack status:"* && ! -e "$_CW/openbeast.conf" ]]; then
+    pass "'./start.sh $_w' on a fresh checkout creates no openbeast.conf"
+  else
+    fail "start.sh $_w wrote the conf (rc=$_SRC, conf=$([[ -e "$_CW/openbeast.conf" ]] && echo created || echo absent)): $(tr '\n' ' ' <<< "$_SO")"
+  fi
+done
+: > "$_CW/openbeast.conf"
+
+echo ""
+echo "start.sh refuses to run as root (UX-11):"
+_RT="$_T/root"; _sandbox "$_RT"
+rm -f "$_RT/openbeast.conf"
+# "root" is a stub `id` — the only thing the guard asks.
+printf '#!/bin/bash\n[[ "$1" == -u ]] && { echo "${FAKE_UID:-1000}"; exit 0; }\nexec /usr/bin/id "$@"\n' > "$_RT/bin/id"
+chmod +x "$_RT/bin/id"
+RUN_ENV=(FAKE_UID=0)
+_start_rc "$_RT" 30 serve-nope.sh
+if [[ $_SRC -eq 1 && "$_SO" == *"do not run ./start.sh as root"* && "$_SO" == *"usermod -aG docker"* \
+      && ! -e "$_RT/openbeast.conf" && ! -e "$_RT/.run/supervisor.pid" ]]; then
+  pass "as root: refused with the reason and the docker-group fix, before openbeast.conf is created"
+else
+  fail "start.sh as root (rc=$_SRC, conf=$([[ -e "$_RT/openbeast.conf" ]] && echo created || echo absent)): $(tr '\n' ' ' <<< "$_SO")"
+fi
+_start_rc "$_RT" 30 status
+[[ $_SRC -eq 1 && "$_SO" == *"as root"* ]] && pass "…for every command that reads the config ('status' too)" \
+  || fail "start.sh status as root (rc=$_SRC): $(tr '\n' ' ' <<< "$_SO")"
+RUN_ENV=(FAKE_UID=1000)
+_start_rc "$_RT" 30 serve-nope.sh
+RUN_ENV=()
+if [[ "$_SO" != *"as root"* && "$_SO" == *"scripts/serve-nope.sh not found"* ]]; then
+  pass "a normal user gets past the guard (control)"
+else
+  fail "the root guard fired for uid 1000: $(tr '\n' ' ' <<< "$_SO")"
+fi
+
+echo ""
+echo "start.sh preflight: the port and the GPU lease, before anything is launched (ops F1):"
+_PF="$_T/preflight"; _sandbox "$_PF"
+cp "$REPO_DIR/scripts/gpu-lease.sh" "$_PF/scripts/"
+# The serve script leaves a marker and dies: "was the model launched?"
+printf '#!/bin/bash\necho launched >> "%s/launched.log"\nexit 1\n' "$_PF" > "$_PF/scripts/serve-mark.sh"
+chmod +x "$_PF/scripts/serve-mark.sh"
+_PFPORT="$(_free_port)"
+_pf_env() { RUN_ENV=(OPENBEAST_SERVE_SCRIPT=serve-mark.sh "OPENBEAST_INFERENCE_URL=http://$_LO:$_PFPORT" "$@"); }
+# Somebody else's healthy llama-server on the address+port ours would bind.
+STUB_HOST=$_LO python3 "$_L/scripts/stub_llama.py" ok "$_PFPORT" >/dev/null 2>&1 & _FOREIGN=$!; _PIDS="$_PIDS $!"
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  (exec 3<>"/dev/tcp/$_LO/$_PFPORT") 2>/dev/null && break; sleep 0.2
+done
+for _mode in "" -d; do
+  rm -f "$_PF/launched.log"; rm -rf "$_PF/.run"; mkdir -p "$_PF/.run"
+  _pf_env
+  _start_rc "$_PF" 40 $_mode
+  if [[ $_SRC -eq 1 && "$_SO" == *"port $_PFPORT (the model server) is already in use by pid $_FOREIGN"* \
+        && "$_SO" == *"Nothing was started"* && ! -e "$_PF/launched.log" && ! -e "$_PF/.run/supervisor.pid" \
+        && ! -e "$_PF/.run/last-good-serve-script" ]]; then
+    pass "./start.sh ${_mode:-(foreground)}: a foreign server on the model port is refused up front, naming its pid"
+  else
+    fail "start.sh $_mode with the model port held (rc=$_SRC): $(tail -n 6 <<< "$_SO" | tr '\n' ' ')"
+  fi
+done
+kill "$_FOREIGN" 2>/dev/null || true; wait "$_FOREIGN" 2>/dev/null || true
+rm -f "$_PF/launched.log"; rm -rf "$_PF/.run"; mkdir -p "$_PF/.run"
+_pf_env
+_start_rc "$_PF" 40
+if [[ $_SRC -eq 1 && -s "$_PF/launched.log" && "$_SO" != *"already in use"* && "$_SO" == *"llama-server did not come up"* ]]; then
+  pass "…and with the port free the model IS launched (control)"
+else
+  fail "start.sh with the port free (rc=$_SRC): $(tail -n 6 <<< "$_SO" | tr '\n' ' ')"
+fi
+# The GPU lease, held by a live process that is not our ancestor.
+sleep 300 & _HOLDER=$!; _PIDS="$_PIDS $!"
+_lease_write() { # _lease_write <pid>
+  printf 'pid=%s\nstart=%s\nlabel=%s\nsince=%s\n' "$1" \
+    "$(_proc "ob_pid_start $1")" "T1.17 pair" "2026-10-09T10:00:00" > "$_PF/.run/gpu.lease"
+}
+rm -f "$_PF/launched.log"; rm -rf "$_PF/.run"; mkdir -p "$_PF/.run"; _lease_write "$_HOLDER"
+_pf_env
+_start_rc "$_PF" 40
+if [[ $_SRC -eq 1 && "$_SO" == *"the GPU is leased"* && "$_SO" == *"HELD by pid $_HOLDER"* && "$_SO" == *"T1.17 pair"* \
+      && "$_SO" == *"gpu-lease.sh status"* && ! -e "$_PF/launched.log" && ! -e "$_PF/.run/supervisor.pid" ]]; then
+  pass "a GPU lease held by someone else refuses the start (holder, label and the status command named)"
+else
+  fail "start.sh under a foreign GPU lease (rc=$_SRC): $(tail -n 6 <<< "$_SO" | tr '\n' ' ')"
+fi
+# Unmanaged backend: no local model, so neither the lease nor the port is ours
+# to ask about. The start goes on to wait for the remote server.
+rm -f "$_PF/launched.log"
+_pf_env OPENBEAST_INFERENCE_BACKEND=vllm "OPENBEAST_INFERENCE_URL=http://$_LO:$_PFPORT" OPENBEAST_LLAMA_LOAD_GRACE=1
+_start_rc "$_PF" 40
+if [[ "$_SO" != *"GPU is leased"* && "$_SO" != *"already in use"* && "$_SO" == *"Waiting for the vLLM server"* \
+      && ! -e "$_PF/launched.log" ]]; then
+  pass "an unmanaged backend (INFERENCE_MANAGED=false) is not held up by the lease or the port check"
+else
+  fail "the preflight fired on an unmanaged stack (rc=$_SRC): $(tail -n 6 <<< "$_SO" | tr '\n' ' ')"
+fi
+# A lease whose holder is gone is stale: free.
+kill "$_HOLDER" 2>/dev/null || true; wait "$_HOLDER" 2>/dev/null || true
+rm -f "$_PF/launched.log"; rm -rf "$_PF/.run"; mkdir -p "$_PF/.run"; _lease_write "$_HOLDER"
+_pf_env
+_start_rc "$_PF" 40
+RUN_ENV=()
+if [[ "$_SO" != *"GPU is leased"* && -s "$_PF/launched.log" ]]; then
+  pass "…and a stale lease (holder gone) does not block the start (control)"
+else
+  fail "a stale lease blocked the start (rc=$_SRC): $(tail -n 6 <<< "$_SO" | tr '\n' ' ')"
+fi
+
+echo ""
+echo "start.sh preflight: the fixed core ports (UX-04):"
+# The port NUMBERS are the real ones (they are not configurable); the address
+# ($_LO) is this run's own.
+_PP="$_T/ports"; _sandbox "$_PP"
+cat > "$_PP/listen.py" <<'PY'
+import socket, sys, time
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind((sys.argv[1], int(sys.argv[2]))); s.listen(4)
+time.sleep(60)
+PY
+_listen() { # _listen <port> -> sets _LP (pid), returns once it accepts
+  # By RELATIVE name: start.sh clips the holder's command line, and under a
+  # long TMPDIR the absolute path lost the "listen.py" the checks look for.
+  (cd "$_PP" && exec python3 listen.py $_LO "$1") & _LP=$!; _PIDS="$_PIDS $!"
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    (exec 3<>"/dev/tcp/$_LO/$1") 2>/dev/null && return 0; sleep 0.2
+  done
+}
+_unlisten() { kill "$_LP" 2>/dev/null || true; wait "$_LP" 2>/dev/null || true; }
+# Unmanaged, so the only thing between the preflight and the (stubbed-out)
+# tool server is a one-second wait for a backend that is not there.
+_pp_env() { RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=vllm
+                     OPENBEAST_INFERENCE_URL=http://$_LO:9 OPENBEAST_LLAMA_LOAD_GRACE=1 "$@"); }
+_listen 3001
+_pp_env; _start_rc "$_PP" 40
+if [[ $_SRC -eq 1 && "$_SO" == *"port 3001 (the tool server) is already in use by pid $_LP ("*"listen.py"* \
+      && "$_SO" == *"Nothing was started"* && "$_SO" != *"Waiting for"* && ! -e "$_PP/.run/supervisor.pid" ]]; then
+  pass "port 3001 held: refused before anything is waited for, naming the pid and its command"
+else
+  fail "start.sh with 3001 held (rc=$_SRC): $(tail -n 6 <<< "$_SO" | tr '\n' ' ')"
+fi
+_unlisten
+_listen 3000
+_pp_env; _start_rc "$_PP" 40
+if [[ $_SRC -eq 1 && "$_SO" == *"port 3000 (Open WebUI) is already in use by pid $_LP"* && "$_SO" != *"Waiting for"* ]]; then
+  pass "port 3000 held by a process that is not our container: refused, naming it"
+else
+  fail "start.sh with 3000 held (rc=$_SRC): $(tail -n 6 <<< "$_SO" | tr '\n' ' ')"
+fi
+# The same listener, but docker says our open-webui container is running
+# (left up by the last Ctrl+C, as designed): not a conflict.
+printf '#!/bin/bash\n[[ "$1" == inspect && "$*" == *State.Running* ]] && { echo true; exit 0; }\nexit 1\n' > "$_PP/bin/docker"
+_pp_env; _start_rc "$_PP" 40
+if [[ "$_SO" != *"already in use"* && "$_SO" == *"Waiting for the vLLM server"* ]]; then
+  pass "…but our own still-running container on 3000 is not a conflict"
+else
+  fail "the preflight refused our own WebUI container (rc=$_SRC): $(tail -n 6 <<< "$_SO" | tr '\n' ' ')"
+fi
+# A holder this user cannot name (ss shows no pid) and no container docker
+# will admit to: warn, do not refuse — it is most likely ours behind a docker
+# daemon this user cannot reach.
+printf '#!/bin/bash\nexit 1\n' > "$_PP/bin/docker"
+printf '#!/bin/bash\nexit 0\n' > "$_PP/bin/ss"; chmod +x "$_PP/bin/ss"
+_pp_env; _start_rc "$_PP" 40
+if [[ "$_SO" == *"Warning: port 3000 (Open WebUI) is already in use"* && "$_SO" == *"Waiting for the vLLM server"* ]]; then
+  pass "…and an unnameable holder is a warning, not a refusal"
+else
+  fail "unnameable 3000 holder (rc=$_SRC): $(tail -n 6 <<< "$_SO" | tr '\n' ' ')"
+fi
+rm -f "$_PP/bin/ss"
+_unlisten
+_listen 8888
+_pp_env; _start_rc "$_PP" 40
+[[ $_SRC -eq 1 && "$_SO" == *"port 8888 (SearXNG) is already in use by pid $_LP"* ]] \
+  && pass "port 8888 held: refused, naming it" \
+  || fail "start.sh with 8888 held (rc=$_SRC): $(tail -n 6 <<< "$_SO" | tr '\n' ' ')"
+_unlisten
+_pp_env; _start_rc "$_PP" 40
+RUN_ENV=()
+if [[ "$_SO" != *"already in use"* && "$_SO" == *"Waiting for the vLLM server"* ]]; then
+  pass "with all four free the start goes ahead (control)"
+else
+  fail "the preflight fired with every port free (rc=$_SRC): $(tail -n 6 <<< "$_SO" | tr '\n' ' ')"
+fi
+
+echo ""
+echo "start.sh cleanup keeps a replacement's pidfile (ops F9):"
+# cleanup(), lifted verbatim. "Ours" are pids above any kernel's pid_max (so
+# the kills in cleanup can never land on a real process); the "replacement"
+# is a live process healthcheck --restart recorded.
+_CU="$_T/cleanup"; mkdir -p "$_CU/.run"
+{
+  echo 'set -euo pipefail'
+  echo 'RUN_DIR="$SANDBOX/.run"; SCRIPT_DIR="$SANDBOX"; REPO_DIR="$SANDBOX"; CLEANED=0'
+  echo 'ob_ext_reap() { :; }'
+  sed -n '/^_rm_own_pidfile() {/,/^}/p' "$REPO_DIR/start.sh"
+  sed -n '/^cleanup() {/,/^}/p' "$REPO_DIR/start.sh"
+  echo 'LLAMA_PID="$1"; MCPO_PID="$2"; ROUTER_PID="$3"; EDGE_PID="$4"'
+  echo 'cleanup >/dev/null 2>&1'
+} > "$_CU/harness.sh"
+_OURS=(2147483001 2147483002 2147483003 2147483004)
+sleep 300 & _REPL=$!; _PIDS="$_PIDS $!"
+for _n in llama mcpo router edge; do echo "$_REPL" > "$_CU/.run/$_n.pid"; done
+echo x > "$_CU/.run/supervisor.pid"
+SANDBOX="$_CU" bash "$_CU/harness.sh" "${_OURS[@]}" || true
+_kept=""; for _n in llama mcpo router edge; do [[ "$(cat "$_CU/.run/$_n.pid" 2>/dev/null)" == "$_REPL" ]] && _kept+="$_n "; done
+if [[ "$_kept" == "llama mcpo router edge " ]] && kill -0 "$_REPL" 2>/dev/null; then
+  pass "pidfiles naming a watchdog replacement survive the supervisor's exit (tool server, router, gate, model)"
+else
+  fail "cleanup erased a replacement's record: kept only '$_kept' of llama mcpo router edge"
+fi
+[[ ! -e "$_CU/.run/supervisor.pid" ]] && pass "…the supervisor's own pidfile is always removed" \
+  || fail "cleanup left supervisor.pid behind"
+_i=0; for _n in llama mcpo router edge; do echo "${_OURS[$_i]}" > "$_CU/.run/$_n.pid"; _i=$((_i + 1)); done
+SANDBOX="$_CU" bash "$_CU/harness.sh" "${_OURS[@]}" || true
+if ! ls "$_CU/.run"/*.pid >/dev/null 2>&1; then
+  pass "…and pidfiles that still name OUR children are removed (control)"
+else
+  fail "cleanup left its own children's pidfiles: $(ls "$_CU/.run")"
+fi
+kill "$_REPL" 2>/dev/null || true
+
+echo ""
+echo "Ctrl+C on a foreground start is a stop on purpose (ops F4):"
+_IN="$_T/intr"; _sandbox "$_IN"
+printf '#!/bin/bash\nexec sleep 60\n' > "$_IN/scripts/serve-sleep.sh"       # never healthy, never dies
+printf '#!/bin/bash\nexit 1\n' > "$_IN/scripts/serve-dies.sh"
+chmod +x "$_IN/scripts/serve-sleep.sh" "$_IN/scripts/serve-dies.sh"
+# A foreground start.sh, parked in its model wait, then signalled. Background
+# jobs of a script inherit SIGINT ignored, and bash cannot trap a signal it
+# was born ignoring — `env --default-signal` hands start.sh a normal one.
+_signal_case() { # _signal_case <INT|TERM> -> sets _SRC, leaves $_IN/.run to inspect
+  local sig="$1" p i
+  rm -rf "$_IN/.run"; mkdir -p "$_IN/.run"
+  env -i --default-signal=INT HOME="$_IN/home" PATH="$_IN/bin:/usr/bin:/bin" OPENBEAST_SEARXNG_SECRET=x \
+    OPENBEAST_BIND=$_LO OPENBEAST_LOGROTATE_AUTOINSTALL=false OPENBEAST_SERVE_SCRIPT=serve-sleep.sh \
+    "OPENBEAST_INFERENCE_URL=http://$_LO:$(_free_port)" \
+    bash "$_IN/start.sh" > "$_IN/out" 2>&1 & p=$!; _PIDS="$_PIDS $p"
+  for i in $(seq 1 100); do [[ -s "$_IN/.run/llama.pid" ]] && break; sleep 0.1; done
+  _SLEEPER="$(cat "$_IN/.run/llama.pid" 2>/dev/null || true)"
+  [[ "$_SLEEPER" =~ ^[0-9]+$ ]] && _PIDS="$_PIDS $_SLEEPER"
+  kill "-$sig" "$p" 2>/dev/null || true
+  _SRC=0; wait "$p" 2>/dev/null || _SRC=$?
+}
+if env --default-signal=INT true 2>/dev/null; then
+  _signal_case INT
+  if [[ $_SRC -eq 143 ]] && grep -q "Ctrl+C on a foreground" "$_IN/.run/stopped" 2>/dev/null; then
+    pass "SIGINT writes .run/stopped (reason: Ctrl+C) — the watchdog will not resurrect the stack"
+  else
+    fail "Ctrl+C left no stopped-on-purpose marker (rc=$_SRC): $(ls "$_IN/.run" | tr '\n' ' ') :: $(tail -n 3 "$_IN/out" | tr '\n' ' ')"
+  fi
+  if [[ "$_SLEEPER" =~ ^[0-9]+$ ]] && ! kill -0 "$_SLEEPER" 2>/dev/null && [[ ! -e "$_IN/.run/supervisor.pid" ]]; then
+    pass "…and the shutdown itself is unchanged: the model is stopped, the pidfiles are gone"
+  else
+    fail "the INT trap no longer cleans up: sleeper=$_SLEEPER $(ls "$_IN/.run" | tr '\n' ' ')"
+  fi
+else
+  echo "  SKIP: this env(1) has no --default-signal; SIGINT cannot be delivered to a background start.sh"
+fi
+_signal_case TERM
+if [[ $_SRC -eq 143 ]] && grep -q "SIGTERM to a foreground" "$_IN/.run/stopped" 2>/dev/null; then
+  pass "SIGTERM to a foreground start writes the marker too"
+else
+  fail "SIGTERM left no marker (rc=$_SRC): $(ls "$_IN/.run" | tr '\n' ' ')"
+fi
+# A start that FAILS was not stopped on purpose: no marker.
+RUN_ENV=(OPENBEAST_SERVE_SCRIPT=serve-dies.sh "OPENBEAST_INFERENCE_URL=http://$_LO:$(_free_port)")
+rm -rf "$_IN/.run"; mkdir -p "$_IN/.run"
+_start_rc "$_IN" 40
+RUN_ENV=()
+if [[ $_SRC -eq 1 && ! -e "$_IN/.run/stopped" ]]; then
+  pass "a start that fails on its own leaves no marker (control)"
+else
+  fail "a failed start wrote a stopped-on-purpose marker (rc=$_SRC): $(cat "$_IN/.run/stopped" 2>/dev/null)"
+fi
+# The detached supervisor must not write it: stop.sh does, with its own reason.
+if grep -q '\[\[ \$DAEMONIZED -eq 0 && ! -e "\$RUN_DIR/stopped" \]\] || return 0' "$REPO_DIR/start.sh"; then
+  pass "the marker is written by a foreground start only, and never over stop.sh's"
+else
+  fail "_mark_stopped lost its foreground-only / do-not-overwrite guard"
+fi
+
+echo ""
+echo "start.sh -d does not silently drop a secret from the environment (supply S5):"
+_SE="$_T/secretenv"; _sandbox "$_SE"
+# systemd-run "works" here: the capability probe passes, and the real launch
+# is RECORDED, not run — then the stub ends the launcher instead of letting
+# it wait for a stack that was never spawned.
+cat > "$_SE/bin/systemd-run" <<SH
+#!/bin/bash
+[[ "\$*" == *"--scope"* ]] && exit 0
+printf '%s\n' "\$*" >> "$_SE/systemd-run.log"
+kill "\$PPID"
+SH
+_se_env() { RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=vllm OPENBEAST_INFERENCE_URL=http://$_LO:9 "$@"); }
+: > "$_SE/openbeast.conf"; rm -f "$_SE/systemd-run.log"
+_se_env OPENBEAST_API_KEY=sekrit-from-env
+_start_rc "$_SE" 30 -d
+if [[ $_SRC -eq 1 && "$_SO" == *"cannot take these secrets from your environment"* \
+      && "$_SO" == *"OPENBEAST_API_KEY  ->  LLAMA_API_KEY="* && "$_SO" == *"openbeast.conf"* \
+      && "$_SO" != *sekrit-from-env* && ! -e "$_SE/systemd-run.log" ]]; then
+  pass "-d with OPENBEAST_API_KEY in the env and no LLAMA_API_KEY in the conf: refused, nothing spawned, value not echoed"
+else
+  fail "-d dropped a secret env override silently (rc=$_SRC): $(tail -n 5 <<< "$_SO" | tr '\n' ' ') :: $(cat "$_SE/systemd-run.log" 2>/dev/null)"
+fi
+# The conf carries the key: the daemon will read it from there, so go ahead —
+# and still never put it in the unit's environment.
+# (SEARXNG_SECRET too: _start_rc exports OPENBEAST_SEARXNG_SECRET for every run.)
+printf 'LLAMA_API_KEY=sekrit-from-conf\nSEARXNG_SECRET=x\n' > "$_SE/openbeast.conf"; rm -f "$_SE/systemd-run.log"
+_se_env OPENBEAST_API_KEY=sekrit-from-env OPENBEAST_MEM_LIMIT_PCT=50
+_start_rc "$_SE" 30 -d
+if [[ "$_SO" != *"cannot take these secrets"* ]] && grep -q -- "--unit=openbeast-stack" "$_SE/systemd-run.log" 2>/dev/null \
+   && grep -q -- "--setenv=OPENBEAST_MEM_LIMIT_PCT=50" "$_SE/systemd-run.log" \
+   && ! grep -q "sekrit\|API_KEY" "$_SE/systemd-run.log"; then
+  pass "…with the key in openbeast.conf the daemon is launched, non-secret overrides forwarded, the key is not (control)"
+else
+  fail "-d with the key in the conf (rc=$_SRC): $(tail -n 4 <<< "$_SO" | tr '\n' ' ') :: $(cat "$_SE/systemd-run.log" 2>/dev/null)"
+fi
+: > "$_SE/openbeast.conf"; rm -f "$_SE/systemd-run.log"
+_se_env
+_start_rc "$_SE" 30 -d
+RUN_ENV=()
+# (_start_rc itself exports OPENBEAST_SEARXNG_SECRET=x with an empty conf.)
+if [[ $_SRC -eq 1 && "$_SO" == *"OPENBEAST_SEARXNG_SECRET  ->  SEARXNG_SECRET="* && "$_SO" != *"API_KEY"* ]]; then
+  pass "…and only the secrets actually exported are named"
+else
+  fail "-d secret check named the wrong variables (rc=$_SRC): $(tail -n 8 <<< "$_SO" | tr '\n' ' ')"
+fi
+
+echo ""
+echo "start.sh's missing-deps hint (UX-14):"
+_DP="$_T/deps"; _sandbox "$_DP"; mkdir -p "$_DP/nodeps" "$_DP/deps"
+# Whatever this box has installed, PYTHONPATH decides: one shim makes the
+# import fail, the other makes it succeed.
+echo 'raise ImportError("not installed (test shim)")' > "$_DP/nodeps/fastapi.py"
+: > "$_DP/deps/fastapi.py"; : > "$_DP/deps/uvicorn.py"
+_dp_env() { RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=vllm "OPENBEAST_INFERENCE_URL=http://$_LO:9" OPENBEAST_LLAMA_LOAD_GRACE=1 "$@"); }
+_dp_env "PYTHONPATH=$_DP/nodeps"; _start_rc "$_DP" 40
+if [[ $_SRC -eq 1 && "$_SO" == *"./scripts/pydeps.sh install"* && "$_SO" != *"pip install --user"* ]]; then
+  pass "missing fastapi/uvicorn points at ./scripts/pydeps.sh install (not a bare pip --user)"
+else
+  fail "missing-deps hint (rc=$_SRC): $(tail -n 3 <<< "$_SO" | tr '\n' ' ')"
+fi
+_dp_env "PYTHONPATH=$_DP/deps"; _start_rc "$_DP" 40
+RUN_ENV=()
+if [[ "$_SO" != *"pydeps.sh install"* && "$_SO" == *"tool server exited during startup"* ]]; then
+  pass "…and only when they are missing (control: with them, the start reaches the tool server)"
+else
+  fail "the deps hint fired with the packages importable (rc=$_SRC): $(tail -n 3 <<< "$_SO" | tr '\n' ' ')"
+fi
+
+echo ""
+echo "The foreground banner after a compose failure (UX-16):"
+# A foreground start taken all the way to its banner: unmanaged backend, a
+# stub tool server that answers /health on this run's address, real curl
+# (every URL start.sh probes is on $_LO), and a docker stub whose `compose`
+# either fails or succeeds.
+_BN="$_T/banner"; _sandbox "$_BN"; mkdir -p "$_BN/agents"; rm -f "$_BN/bin/curl"
+cat > "$_BN/agents/openapi_tools.py" <<'PY'
+import http.server, os, threading, time
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        b = b'{"status":"ok"}'
+        self.send_response(200); self.send_header("Content-Length", str(len(b)))
+        self.end_headers(); self.wfile.write(b)
+srv = http.server.HTTPServer((os.environ["STUB_HOST"], 3001), H)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+time.sleep(60); os._exit(0)
+PY
+printf '#!/bin/bash\nexit 0\n' > "$_BN/scripts/configure-webui.sh"; chmod +x "$_BN/scripts/configure-webui.sh"
+_banner_case() { # _banner_case <compose-rc> -> prints start.sh's output up to the banner
+  local p i tool
+  rm -rf "$_BN/.run"; mkdir -p "$_BN/.run"
+  printf '#!/bin/bash\n[[ "$1" == compose ]] && exit %s\n[[ "$1" == info ]] && exit 0\nexit 1\n' "$1" > "$_BN/bin/docker"
+  env -i HOME="$_BN/home" PATH="$_BN/bin:/usr/bin:/bin" OPENBEAST_SEARXNG_SECRET=x \
+    OPENBEAST_BIND="$_LO" STUB_HOST="$_LO" OPENBEAST_LOGROTATE_AUTOINSTALL=false "PYTHONPATH=$_DP/deps" \
+    OPENBEAST_INFERENCE_BACKEND=vllm "OPENBEAST_INFERENCE_URL=http://$_LO:9" OPENBEAST_LLAMA_LOAD_GRACE=1 \
+    bash "$_BN/start.sh" > "$_BN/out" 2>&1 & p=$!; _PIDS="$_PIDS $p"
+  for i in $(seq 1 300); do
+    grep -q "Press Ctrl+C" "$_BN/out" 2>/dev/null && break
+    kill -0 "$p" 2>/dev/null || break
+    sleep 0.1
+  done
+  tool="$(cat "$_BN/.run/mcpo.pid" 2>/dev/null || true)"; [[ "$tool" =~ ^[0-9]+$ ]] && _PIDS="$_PIDS $tool"
+  kill -TERM "$p" 2>/dev/null || true; wait "$p" 2>/dev/null || true
+  cat "$_BN/out"
+}
+_O="$(_banner_case 1)"
+if grep -q "Stack is running" <<< "$_O" && grep -q "Open WebUI:    NOT UP — docker compose failed" <<< "$_O" \
+   && ! grep -qE '^  Open WebUI: +http://localhost:3000' <<< "$_O"; then
+  pass "compose failed: the banner says Open WebUI is NOT UP and does not advertise its URL"
+else
+  fail "foreground banner after a compose failure: $(grep -E 'Stack is running|Open WebUI|Warning' <<< "$_O" | tr '\n' ' ') :: $(tail -n 3 <<< "$_O" | tr '\n' ' ')"
+fi
+grep -q "healthcheck.sh --restart" <<< "$_O" && pass "…and names the command that brings the frontend up" \
+  || fail "no recovery command after the compose failure"
+_O="$(_banner_case 0)"
+if grep -qE '^  Open WebUI: +http://localhost:3000 \(container still starting' <<< "$_O" && ! grep -q "NOT UP" <<< "$_O"; then
+  pass "compose succeeded: the URL is shown, as still starting (control)"
+else
+  fail "foreground banner after a good compose: $(grep -E 'Stack is running|Open WebUI|Warning' <<< "$_O" | tr '\n' ' ') :: $(tail -n 3 <<< "$_O" | tr '\n' ' ')"
+fi
+if [[ "$(grep -c '_webui_line' "$REPO_DIR/start.sh")" -ge 3 ]]; then
+  pass "the -d launcher and the foreground banner share one Open WebUI row"
+else
+  fail "the two banners no longer share _webui_line"
+fi
+
+echo ""
+echo "No KV warm-up request at boot (perf F5):"
+if grep -qE 'v1/chat/completions|warm_kv_cache|KV cache warmed' "$REPO_DIR/start.sh"; then
+  fail "start.sh still sends (or announces) a warm-up completion: $(grep -nE 'v1/chat/completions|warm_kv_cache|KV cache warmed' "$REPO_DIR/start.sh" | head -n 3 | tr '\n' ' ')"
+else
+  pass "start.sh sends no completion of its own at boot and prints no 'KV cache warmed'"
+fi
+grep -q 'generate-skill-index.py' "$REPO_DIR/start.sh" && pass "…the skill menu is still regenerated at start (control)" \
+  || fail "the skill-menu regeneration went out with the warm-up"
+
+echo ""
+echo "Readiness is polled at 0.2 s against the same deadlines (perf F13):"
+# The tool-server wait, lifted verbatim. `sleep` and `curl` are functions
+# here: sleep records its argument (and can move the clock), curl fails a set
+# number of times before it answers. Nothing is timed for real.
+_PL="$_T/poll"; mkdir -p "$_PL"
+python3 - "$REPO_DIR/start.sh" "$_PL/loop.sh" <<'PY'
+import sys
+src = open(sys.argv[1]).read()
+a = src.index("MCPO_UP=0\n")
+b = src.index('echo "Tool server ready on http://localhost:3001"', a)
+open(sys.argv[2], "w").write(
+    'set -euo pipefail\nHEALTH_HOST=127.0.0.1; MCPO_PID=$$; : > "$SLEEP_LOG"; _n=0\n'
+    'sleep() { echo "$1" >> "$SLEEP_LOG"; SECONDS=$((SECONDS + ${CLOCK_STEP:-0})); }\n'
+    'curl() { _n=$((_n + 1)); [[ $_n -gt ${CURL_FAILS:-0} ]]; }\n'
+    + src[a:b] + 'echo "UP after $_n probes"\n')
+PY
+_O="$(SLEEP_LOG="$_PL/sleeps" CURL_FAILS=3 bash "$_PL/loop.sh" 2>&1)" || true
+if [[ "$_O" == *"UP after 4 probes"* && "$(sort -u "$_PL/sleeps" | tr '\n' ' ')" == "0.2 " && "$(wc -l < "$_PL/sleeps")" -eq 3 ]]; then
+  pass "the tool-server wait sleeps 0.2 s between probes (was 1 s after every miss)"
+else
+  fail "tool-server polling: '$_O', sleeps: $(tr '\n' ' ' < "$_PL/sleeps")"
+fi
+_O="$(SLEEP_LOG="$_PL/sleeps" CURL_FAILS=999 CLOCK_STEP=10 bash "$_PL/loop.sh" 2>&1)" && _PRC=0 || _PRC=$?
+if [[ $_PRC -eq 1 && "$_O" == *"tool server not serving after 30s"* && "$(wc -l < "$_PL/sleeps")" -le 4 ]]; then
+  pass "…and still gives up at the 30 s deadline, by the clock, not by a probe count (control)"
+else
+  fail "tool-server deadline (rc=$_PRC): '$_O', $(wc -l < "$_PL/sleeps") sleeps"
+fi
+# The same shape for every other readiness loop on the start path.
+_slow="$(awk '/^(_spawn_ready|wait_llama_health|wait_hydra_routable)\(\) \{/,/^}/' "$REPO_DIR/start.sh" | grep -cE '^[[:space:]]*sleep 1$' || true)"
+_iter="$(grep -cE 'for _i in \$\(seq 1 (20|30|60)\); do$' "$REPO_DIR/start.sh" || true)"
+# (hydra's own 20 x 0.5 s launch wait and the docker-daemon wait are not
+# readiness polls of ours to speed up: one `seq 1 20` and one `seq 1 30` stay.)
+if [[ "$_slow" -eq 1 && "$_iter" -le 2 ]]; then
+  pass "the spawn, model, hydra, router and gate waits poll at 0.2 s too"
+else
+  fail "a readiness loop still probes then sleeps 1 s (sleep-1 lines in the wait functions: $_slow, fixed-count loops: $_iter)"
+fi
+
+echo ""
+echo "stop.sh parses its arguments before it stops anything (UX-01):"
+_SA="$_T/stopargs"; _sandbox "$_SA"
+printf '#!/bin/bash\necho "$*" >> "%s/docker.log"\nexit 0\n' "$_SA" > "$_SA/bin/docker"
+_stop_rc() { # _stop_rc <args...> -> sets _SO (output) and _SRC (exit code)
+  _SRC=0
+  _SO="$(env -i HOME="$_SA/home" PATH="$_SA/bin:/usr/bin:/bin" timeout 60 bash "$_SA/stop.sh" "$@" 2>&1)" || _SRC=$?
+}
+for _a in --help -h; do
+  rm -f "$_SA/.run/stopped" "$_SA/docker.log"
+  _stop_rc "$_a"
+  if [[ $_SRC -eq 0 && "$_SO" == *"Usage:"* && ! -e "$_SA/.run/stopped" && ! -e "$_SA/docker.log" ]]; then
+    pass "stop.sh $_a prints usage, exits 0 and stops nothing (no marker, no compose down)"
+  else
+    fail "stop.sh $_a (rc=$_SRC) acted: marker=$([[ -e "$_SA/.run/stopped" ]] && echo yes || echo no) docker=$(cat "$_SA/docker.log" 2>/dev/null | tr '\n' ' ')"
+  fi
+done
+rm -f "$_SA/.run/stopped" "$_SA/docker.log"
+_stop_rc --stauts
+if [[ $_SRC -eq 2 && "$_SO" == *"Unknown option: --stauts"* && ! -e "$_SA/.run/stopped" && ! -e "$_SA/docker.log" ]]; then
+  pass "an unknown option exits 2, names it, and stops nothing"
+else
+  fail "stop.sh --stauts (rc=$_SRC): $(tr '\n' ' ' <<< "$_SO")"
+fi
+_stop_rc
+if [[ $_SRC -eq 0 && -s "$_SA/.run/stopped" ]] && grep -q -- "down" "$_SA/docker.log"; then
+  pass "…and a bare ./stop.sh still stops the stack and writes the marker (control)"
+else
+  fail "bare stop.sh (rc=$_SRC) no longer stops: $(tr '\n' ' ' <<< "$_SO")"
+fi
+
+# ---------------------------------------------------------------------------
+# UX-12 / S13 (2026-10-09): a command that only READS must not create
+# openbeast.conf. conf.sh minted SEARXNG_SECRET for whoever sourced it first —
+# doctor.sh, a report-only healthcheck.sh and the --check-default-admin probe
+# included. OB_CONF_READONLY=1 is the caller's way to say "read only".
+# ---------------------------------------------------------------------------
+echo ""
+echo "read-only commands leave openbeast.conf alone (OB_CONF_READONLY):"
+_RO="$_T/ro"; _sandbox "$_RO"
+cp "$REPO_DIR/scripts/configure-webui.sh" "$_RO/scripts/"
+_ro_fresh() { rm -f "$_RO/openbeast.conf"; }
+_ro_fresh
+_run "$_RO" "$_RO/scripts/doctor.sh" >/dev/null
+[[ ! -e "$_RO/openbeast.conf" ]] && pass "doctor.sh on a fresh checkout creates no openbeast.conf" \
+  || fail "doctor.sh created openbeast.conf: $(tr '\n' ' ' < "$_RO/openbeast.conf")"
+_ro_fresh
+_run "$_RO" "$_RO/scripts/healthcheck.sh" >/dev/null
+[[ ! -e "$_RO/openbeast.conf" ]] && pass "a report-only healthcheck.sh creates no openbeast.conf" \
+  || fail "healthcheck.sh (no --restart) created openbeast.conf"
+_ro_fresh
+_run "$_RO" "$_RO/scripts/configure-webui.sh" --check-default-admin >/dev/null
+[[ ! -e "$_RO/openbeast.conf" ]] && pass "configure-webui.sh --check-default-admin creates no openbeast.conf" \
+  || fail "the read-only admin probe created openbeast.conf"
+_ro_src() { # _ro_src [VAR=val] — source the sandbox conf.sh, print the secret it resolved
+  env -i HOME="$_RO/home" PATH="$_RO/bin:/usr/bin:/bin" REPO_DIR="$_RO" "$@" \
+    bash -c 'source "$REPO_DIR/scripts/lib/conf.sh" 2>/dev/null; printf "%s" "$OPENBEAST_SEARXNG_SECRET"'
+}
+_ro_fresh
+_S="$(_ro_src OB_CONF_READONLY=1)"
+if [[ -z "$_S" && ! -e "$_RO/openbeast.conf" ]]; then
+  pass "OB_CONF_READONLY=1: no file, and no throwaway secret a compose call could run with"
+else
+  fail "OB_CONF_READONLY=1 still minted a secret ('${_S:0:8}…') or wrote the file"
+fi
+# Negative controls: without the flag (and with any other value) the secret
+# is still minted and persisted 0600 — daemon mode depends on that.
+for _v in "" "OB_CONF_READONLY=0" "OB_CONF_READONLY=true"; do
+  _ro_fresh
+  # shellcheck disable=SC2086  # an empty $_v must vanish, not become an argument
+  _S="$(_ro_src $_v)"
+  if [[ ${#_S} -eq 64 && "$(stat -c '%a' "$_RO/openbeast.conf" 2>/dev/null)" == "600" ]] \
+     && grep -q "^SEARXNG_SECRET=$_S\$" "$_RO/openbeast.conf"; then
+    pass "'${_v:-flag unset}': the secret is minted and saved 0600 (control)"
+  else
+    fail "'${_v:-flag unset}': conf.sh no longer persists SEARXNG_SECRET"
+  fi
+done
+# An existing secret is READ under the flag — read-only is not "blank".
+_S2="$(_ro_src OB_CONF_READONLY=1)"
+[[ -n "$_S" && "$_S2" == "$_S" ]] && pass "OB_CONF_READONLY=1 still reads a secret that is already there" \
+  || fail "OB_CONF_READONLY=1 dropped an existing SEARXNG_SECRET"
+# --restart may `docker compose up`, which needs the secret: not read-only.
+_ro_fresh
+_run "$_RO" "$_RO/scripts/healthcheck.sh" --restart >/dev/null
+grep -q '^SEARXNG_SECRET=' "$_RO/openbeast.conf" 2>/dev/null \
+  && pass "healthcheck.sh --restart keeps the writable behaviour (compose needs the secret)" \
+  || fail "healthcheck.sh --restart ran without a SearXNG secret"
+
+# ---------------------------------------------------------------------------
+# UX-17 (2026-10-09): on a stack that is simply not running, doctor printed a
+# "not responding" row per service, each with a different fix, and never the
+# one sentence that was true; healthcheck ended on a count and no next step.
+# ---------------------------------------------------------------------------
+echo ""
+echo "a stack that is not running is said once, with the one fix:"
+_N="$_T/down"; _sandbox "$_N"
+# Its own hardware: doctor's GPU rows must not depend on the card (or the lack
+# of one) in the box running this test.
+printf 'ob_detect_gpu() { OB_GPU_VENDOR=nvidia; OB_GPU_NAME="Stub 32G"; OB_VRAM_MB=32000; }\n' > "$_N/scripts/lib/hardware.sh"
+# _rc <dir> <script> [args] — like _run, but stdout+stderr in $_O and the
+# script's OWN exit code in $_RC (never `cmd | grep` on it under pipefail).
+_rc() {
+  local d="$1"; shift
+  _RC=0
+  _O="$(env -i HOME="$d/home" PATH="$d/bin:/usr/bin:/bin" ${RUN_ENV[@]+"${RUN_ENV[@]}"} bash "$@" 2>&1)" || _RC=$?
+}
+_per_service='llama.cpp server not responding|identity tool server not responding|Open WebUI not responding|beast-chat enabled but not responding|beast-gate not responding|beast-artifact not responding'
+printf '%s\n' BEAST_CHAT=true BEAST_ARTIFACT=true EDGE_GATE=true > "$_N/openbeast.conf"
+_rc "$_N" "$_N/scripts/doctor.sh"
+if [[ "$(grep -c 'Stack is not running' <<< "$_O")" == "1" ]] \
+   && grep -qxF "  ! Stack is not running — start it: ./start.sh -d" <<< "$_O" \
+   && ! grep -qE "$_per_service" <<< "$_O"; then
+  pass "doctor: one 'Stack is not running — start it: ./start.sh -d' line replaces six per-service rows"
+else
+  fail "doctor on a stopped stack: $(grep -E "Stack is not|$_per_service" <<< "$_O" | tr '\n' ' ')"
+fi
+if [[ "$(tail -n1 <<< "$_O")" == "Next: ./start.sh -d" && $_RC -eq 0 ]]; then
+  pass "…it ends on 'Next: ./start.sh -d', and a stopped stack is still exit 0 (warnings only)"
+else
+  fail "doctor's last line / exit on a stopped stack: '$(tail -n1 <<< "$_O")' rc=$_RC"
+fi
+echo "2026-10-09T08:00:00 ./stop.sh" > "$_N/.run/stopped"
+_rc "$_N" "$_N/scripts/doctor.sh"
+grep -qxF "  ! Stack is not running (stopped on purpose 2026-10-09T08:00:00) — start it: ./start.sh -d" <<< "$_O" \
+  && pass "…with ./stop.sh's marker it says when it was stopped on purpose" \
+  || fail "stopped-on-purpose line: $(grep 'Stack is' <<< "$_O")"
+echo "2026-10-09T08:05:00 supervisor gave up: llama-server exited 4 times (status 1)" > "$_N/.run/stopped"
+_rc "$_N" "$_N/scripts/doctor.sh"
+grep -qF "Stack is not running (it gave up 2026-10-09T08:05:00: supervisor gave up: llama-server exited 4 times (status 1) — see .run/stack.log) — start it: ./start.sh -d" <<< "$_O" \
+  && pass "…and a supervisor that GAVE UP is not called 'on purpose' (reason + .run/stack.log named)" \
+  || fail "gave-up line: $(grep 'Stack is' <<< "$_O")"
+rm -f "$_N/.run/stopped"
+# "Next:" names something to RUN. A failure whose second line only explains
+# (an 8 GB card: "OpenBeast targets 3090 / 4090 class and up") must not take
+# the line from the one command that applies.
+cp "$_N/scripts/lib/hardware.sh" "$_N/hardware.keep"
+printf 'ob_detect_gpu() { OB_GPU_VENDOR=nvidia; OB_GPU_NAME="Stub 8G"; OB_VRAM_MB=8000; }\n' > "$_N/scripts/lib/hardware.sh"
+_rc "$_N" "$_N/scripts/doctor.sh"
+if grep -q "below the 24 GB floor" <<< "$_O" && [[ $_RC -eq 1 && "$(tail -n1 <<< "$_O")" == "Next: ./start.sh -d" ]]; then
+  pass "a failure that only explains does not hijack 'Next:' (still ./start.sh -d; exit 1 for the failure)"
+else
+  fail "Next with an explanatory failure: rc=$_RC last='$(tail -n1 <<< "$_O")'"
+fi
+cp "$_N/hardware.keep" "$_N/scripts/lib/hardware.sh"
+# Negative control 1: a live supervisor whose services do not answer yet
+# (starting, or broken) is NOT "not running" — every row is shown.
+bash -c 'sleep 60; :' start.sh &   # `; :` keeps bash (and "start.sh") on the command line
+_SUP=$!; _PIDS="$_PIDS $_SUP"
+echo "$_SUP" > "$_N/.run/supervisor.pid"
+_rc "$_N" "$_N/scripts/doctor.sh"
+if ! grep -q "Stack is not running" <<< "$_O" && [[ "$(grep -cE "$_per_service" <<< "$_O")" == "6" ]]; then
+  pass "with a live supervisor the per-service rows are all shown (control)"
+else
+  fail "live supervisor: $(grep -cE "$_per_service" <<< "$_O") rows, headline: $(grep 'Stack is' <<< "$_O")"
+fi
+kill "$_SUP" 2>/dev/null || true
+rm -f "$_N/.run/supervisor.pid"
+# Negative control 2: no supervisor, but the core answers (the watchdog
+# relaunched it) — a row that is down is a real row.
+cat > "$_N/bin/curl" <<'SH'
+#!/bin/bash
+url=""; w=0
+for a in "$@"; do [[ "$a" == http* ]] && url="$a"; [[ "$a" == "%{http_code}" ]] && w=1; done
+case "$url" in
+  *:8080/*|*:3001/*) [[ $w -eq 1 ]] && { printf '200'; exit 0; }; printf '{"status":"ok"}'; exit 0 ;;
+esac
+[[ $w -eq 1 ]] && printf '000'
+exit 7
+SH
+_rc "$_N" "$_N/scripts/doctor.sh"
+if ! grep -q "Stack is not running" <<< "$_O" && grep -q "Open WebUI not responding (:3000)" <<< "$_O" \
+   && grep -q "beast-gate not responding" <<< "$_O"; then
+  pass "with the core answering, a dead WebUI / gate is still its own warning (control)"
+else
+  fail "core up: $(grep -E "Stack is not|$_per_service" <<< "$_O" | tr '\n' ' ')"
+fi
+if [[ "$(tail -n1 <<< "$_O")" == "Next: "* && "$(tail -n1 <<< "$_O")" != "Next: ./start.sh -d" ]]; then
+  pass "…and 'Next:' then names a warning's fix, not ./start.sh"
+else
+  fail "Next line with the core up: '$(tail -n1 <<< "$_O")'"
+fi
+# A published surface over a dead server stays a FAILURE on a stopped stack
+# (the mount is live and 502s; exit 1 is kept) — with the same one fix.
+printf '#!/bin/bash\nexit 1\n' > "$_N/bin/curl"
+cat > "$_N/bin/tailscale" <<'SH'
+#!/bin/bash
+if [[ "$1 $2" == "serve status" ]]; then
+  printf 'https://beast.example.ts.net:8446 (tailnet only)\n|-- / proxy http://127.0.0.1:3004\n'; exit 0
+fi
+exit 1
+SH
+_rc "$_N" "$_N/scripts/doctor.sh"
+if grep -qF "✗ :8446 is published but beast-artifact is NOT responding" <<< "$_O" && [[ $_RC -eq 1 ]] \
+   && grep -A1 -F ":8446 is published" <<< "$_O" | grep -qF "fix: ./start.sh -d (the stack is not running" \
+   && [[ "$(tail -n1 <<< "$_O")" == "Next: ./start.sh -d (the stack is not running"* ]]; then
+  pass "a published :8446 over a stopped stack still FAILs (exit 1), and its fix is ./start.sh -d too"
+else
+  fail "published surface on a stopped stack: rc=$_RC $(grep -A1 -F ':8446' <<< "$_O" | tr '\n' ' ') last='$(tail -n1 <<< "$_O")'"
+fi
+printf '#!/bin/bash\nexit 1\n' > "$_N/bin/tailscale"
+
+# The shipped default has no leaderboard row on a fresh install (results are
+# not checked in): that was a permanent warning nobody could clear.
+echo ""
+echo "doctor.sh: 'no leaderboard row' is information, not a warning:"
+mkdir -p "$_N/evals"
+: > "$_N/openbeast.conf"
+printf '#!/bin/bash\nexec true\n' > "$_N/scripts/serve-here.sh"
+cat > "$_N/evals/benchmark_all.py" <<'PY'
+MODELS = [
+    {"slug": "here-q5", "name": "Here 27B Q5", "serve": "scripts/serve-here.sh"},
+]
+PY
+echo '{"entries": []}' > "$_N/evals/leaderboard.json"
+RUN_ENV=(OPENBEAST_SERVE_SCRIPT=serve-here.sh)
+_rc "$_N" "$_N/scripts/doctor.sh"; _A="$_O"
+_rc "$_N" "$_N/scripts/doctor.sh" --quiet; _Q="$_O"
+if grep -qF "  - default model 'Here 27B Q5' has no leaderboard row on this host" <<< "$_A" \
+   && grep -qF "benchmark_all.py --models here-q5" <<< "$_A" \
+   && ! grep -qE '^  ! .*leaderboard' <<< "$_A" && ! grep -q "leaderboard" <<< "$_Q"; then
+  pass "an unbenchmarked default is an info row with the optional command (and silent under --quiet)"
+else
+  fail "leaderboard row: $(grep -i leaderboard <<< "$_A" | tr '\n' ' ') quiet=$(grep -ci leaderboard <<< "$_Q")"
+fi
+RUN_ENV=(OPENBEAST_SERVE_SCRIPT=serve-elsewhere.sh)
+_rc "$_N" "$_N/scripts/doctor.sh"
+RUN_ENV=()
+grep -qE "^  ! default serve script 'serve-elsewhere.sh' is not registered" <<< "$_O" \
+  && pass "…a serve script the eval registry does not know is still a warning (control)" \
+  || fail "unregistered serve script: $(grep -i 'registered' <<< "$_O")"
+
+echo ""
+echo "healthcheck.sh ends on a next step:"
+_K="$_T/hcnext"; _sandbox "$_K"
+_rc "$_K" "$_K/scripts/healthcheck.sh"
+if [[ "$(tail -n1 <<< "$_O")" == "Stack is not running — start it: ./start.sh -d" && $_RC -eq 1 ]] \
+   && grep -q "DOWN llama.cpp server" <<< "$_O" && grep -qE '^[0-9]+ of [0-9]+ services unhealthy\.$' <<< "$_O"; then
+  pass "nothing answering: the count is followed by 'Stack is not running — start it: ./start.sh -d' (exit 1 kept)"
+else
+  fail "healthcheck on a stopped stack: rc=$_RC last='$(tail -n1 <<< "$_O")'"
+fi
+echo "2026-10-09T08:00:00 ./stop.sh" > "$_K/.run/stopped"
+_rc "$_K" "$_K/scripts/healthcheck.sh"
+[[ "$(tail -n1 <<< "$_O")" == "Stack is not running (stopped on purpose 2026-10-09T08:00:00) — start it: ./start.sh -d" ]] \
+  && pass "…naming ./stop.sh's marker when there is one" || fail "healthcheck with a marker: '$(tail -n1 <<< "$_O")'"
+# The watchdog (--restart) has already acted: its output gets no extra line.
+_rc "$_K" "$_K/scripts/healthcheck.sh" --restart
+if ! grep -qE '^(Next:|Stack is not running)' <<< "$_O" && grep -qE 'services unhealthy\.$' <<< "$_O"; then
+  pass "--restart output is unchanged: no next-step line after the count"
+else
+  fail "--restart grew a next-step line: $(grep -E '^(Next:|Stack is not)' <<< "$_O" | tr '\n' ' ')"
+fi
+rm -f "$_K/.run/stopped"
+# The tool server answers, llama does not: not "stopped" — restart what is down.
+printf '#!/bin/bash\nfor a in "$@"; do [[ "$a" == http*:3001/* ]] && { printf "{\\"status\\":\\"ok\\"}"; exit 0; }; done\nexit 7\n' > "$_K/bin/curl"
+_rc "$_K" "$_K/scripts/healthcheck.sh"
+if [[ "$(tail -n1 <<< "$_O")" == "Next: ./scripts/healthcheck.sh --restart"* ]] && ! grep -q "Stack is not running" <<< "$_O"; then
+  pass "partly down (tool server up): 'Next: ./scripts/healthcheck.sh --restart' instead (control)"
+else
+  fail "partly-down next step: '$(tail -n1 <<< "$_O")'"
+fi
+# Everything answers: no next step at all.
+printf '#!/bin/bash\n[[ "$1" == status ]] && { echo "{\\"Self\\":{\\"Online\\":true}}"; exit 0; }\nexit 1\n' > "$_K/bin/tailscale"
+printf '#!/bin/bash\nprintf "{\\"status\\":\\"ok\\",\\"version\\":\\"x\\"} searx"\nexit 0\n' > "$_K/bin/curl"
+_rc "$_K" "$_K/scripts/healthcheck.sh"
+if [[ $_RC -eq 0 ]] && grep -qE '^All [0-9]+ services healthy\.$' <<< "$_O" && ! grep -qE '^(Next:|Stack is not)' <<< "$_O"; then
+  pass "all healthy: exit 0 and no next-step line (control)"
+else
+  fail "healthy stack: rc=$_RC $(tail -n2 <<< "$_O" | tr '\n' ' ')"
+fi
+
+# ---------------------------------------------------------------------------
+# UX-14 (2026-10-09): doctor's fix for a missing pinned package was a bare
+# `pip install --user -r agents/requirements.txt` — refused by PEP 668 on
+# Arch / Debian 12+ / Ubuntu 24.04, and outside the hash-pinned lock.
+# ---------------------------------------------------------------------------
+echo ""
+echo "doctor.sh's missing-dependency hint:"
+_P="$_T/pydeps"; _sandbox "$_P"
+mkdir -p "$_P/agents"
+printf 'obnotapackage==1.2.3\n' > "$_P/agents/requirements.txt"
+# python3 -m pip show: "not installed" for everything; any other python3 call
+# goes to the real interpreter.
+printf '#!/bin/bash\n[[ "$1 $2 $3" == "-m pip show" ]] && exit 1\nexec /usr/bin/python3 "$@"\n' > "$_P/bin/python3"
+chmod +x "$_P/bin/python3"
+_O="$(_run "$_P" "$_P/scripts/doctor.sh")"
+if grep -qF "✗ obnotapackage not installed (pinned 1.2.3)" <<< "$_O" \
+   && grep -A1 -F "obnotapackage not installed" <<< "$_O" | grep -qF "fix: ./scripts/pydeps.sh install"; then
+  pass "a missing pinned package points at ./scripts/pydeps.sh install"
+else
+  fail "missing-dep hint: $(grep -A1 -F 'obnotapackage' <<< "$_O" | tr '\n' ' ')"
+fi
+if grep -q 'pip install --user -r' <<< "$_O"; then
+  fail "doctor still recommends a bare 'pip install --user -r' (PEP 668 refuses it)"
+else
+  pass "…and no longer recommends a bare 'pip install --user -r'"
+fi
+
+# ---------------------------------------------------------------------------
+# UX-13 (2026-10-09): doctor shows conf.sh's lint findings as rows. The
+# parsing itself is pinned in tests/test_conf_secrets.sh §7; this is the
+# "surfaced in doctor, as a warning, once" half.
+# ---------------------------------------------------------------------------
+echo ""
+echo "doctor.sh surfaces openbeast.conf typos and bad values:"
+_L="$_T/lint"; _sandbox "$_L"
+cp "$REPO_DIR/openbeast.conf.example" "$_L/"
+printf 'SEARXNG_SECRET=s\nEDGE_GTAE=true\nREASONING_BUDGET=lots\nSERVE_SCRIPT=serve-nope.sh\n' > "$_L/openbeast.conf"
+chmod 600 "$_L/openbeast.conf"
+_O="$(_run "$_L" "$_L/scripts/doctor.sh")"
+if grep -qF "! openbeast.conf: unknown key 'EDGE_GTAE' — did you mean EDGE_GATE?" <<< "$_O" \
+   && grep -qF "! REASONING_BUDGET='lots' is not an integer" <<< "$_O" \
+   && grep -qF "! openbeast.conf: SERVE_SCRIPT='serve-nope.sh' names no file in scripts/" <<< "$_O"; then
+  pass "doctor rows: the typo'd key (with its suggestion), the non-integer budget, the missing serve script"
+else
+  fail "doctor did not surface the conf problems: $(grep -iE 'unknown|REASONING|SERVE_SCRIPT' <<< "$_O" | tr '\n' ' ')"
+fi
+if [[ "$(grep -c "EDGE_GTAE" <<< "$_O")" == "1" ]] && ! grep -q "^WARNING: openbeast.conf" <<< "$_O"; then
+  pass "…each said once, as a row (conf.sh's own stderr copy is switched off under doctor)"
+else
+  fail "doctor repeated the lint: $(grep -c EDGE_GTAE <<< "$_O") line(s) mention the typo"
+fi
+_verdict() { sed -n 's/^doctor: [0-9]* ok, \([0-9]*\) warning(s), \([0-9]*\) failure(s).*/\1 \2/p' <<< "$1"; }
+read -r _LW _LF <<< "$(_verdict "$_O")"
+printf 'SEARXNG_SECRET=s\nEDGE_GATE=false\n' > "$_L/openbeast.conf"
+_O="$(_run "$_L" "$_L/scripts/doctor.sh")"
+read -r _CW _CF <<< "$(_verdict "$_O")"
+if grep -qF "✓ openbeast.conf: no unknown keys" <<< "$_O" && ! grep -q "unknown key '" <<< "$_O"; then
+  pass "a clean conf gets one green row and no warning (control)"
+else
+  fail "clean conf: $(grep -iE 'unknown' <<< "$_O" | tr '\n' ' ')"
+fi
+# Same sandbox, same everything else: the three findings add exactly three
+# warnings and not one failure.
+if [[ -n "${_CW:-}" && "${_LW:-}" == "$((_CW + 3))" && "${_LF:-x}" == "$_CF" ]]; then
+  pass "…and they are WARNINGS: +3 warnings, the failure count does not move"
+else
+  fail "conf findings changed doctor's verdict wrongly: ${_LW:-?}w/${_LF:-?}f with them, ${_CW:-?}w/${_CF:-?}f without"
 fi
 
 # ---------------------------------------------------------------------------

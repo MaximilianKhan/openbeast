@@ -19,7 +19,9 @@ beast-gate :8090 ◀──── tailscale :8443 ◀─────────�
      ▲   per-device keys · path allowlist
      │   rate caps · inference audit
      └── (EDGE_GATE=false: :8443 maps straight at llama-server —
-          its WHOLE route table, see "What beast-slot access grants")
+          its WHOLE route table, see "What beast-slot access grants";
+          published only behind LLAMA_API_KEY or an explicit
+          --i-accept-open-inference)
 
 dashboard   :3002 ◀──── tailscale :8444 ◀───── client.sh status   (discovery)
 SearXNG     :8888 ◀──── tailscale :8889 ◀───── web_search          (default)
@@ -84,7 +86,7 @@ tenants.
 ## Server side (the rig)
 
 ```bash
-./scripts/setup-tailscale.sh                     # :443 WebUI, :8443 inference
+./scripts/setup-tailscale.sh                     # :443 WebUI, :8443 inference (see below)
 ./scripts/setup-tailscale.sh --publish-searxng   # + :8889 search for clients
 ./scripts/ext.sh enable dashboard                # slot API lives in the dashboard
                                                  # (must precede --publish-slot; see below)
@@ -99,10 +101,11 @@ an `--unpublish-*` twin that reads no config, keyed by the published port):
 | Tailnet port | Maps to | Flag | Who may reach it |
 |---|---|---|---|
 | `:443` | Open WebUI `:3000` | (always, with `setup-tailscale.sh`) | any tailnet device; WebUI login on top |
-| `:8443` | llama-server `:8080`, or beast-gate `:8090` when `EDGE_GATE=true` | (always) | any tailnet device, or an enrolled device key behind the gate |
+| `:8443` | beast-gate `:8090` when `EDGE_GATE=true`; else llama-server `:8080` behind `LLAMA_API_KEY`; else nothing, unless `--i-accept-open-inference` | (with `setup-tailscale.sh`, when one of those three holds) | an enrolled device key behind the gate; or whoever holds the shared key; or, acknowledged open, any tailnet device |
 | `:8444/api/slot` | dashboard `:3002`, that one path only | `--publish-slot` | any tailnet device (read-only JSON) |
 | `:8445` | beast-chat `:3003` (`CHAT_PORT`) | `--publish-chat` | reads: a tailnet login on `CHAT_OPERATORS`; writes: a device key with the `chat` scope |
-| `:8446` | beast-artifact `:3004` (`ARTIFACT_PORT`) | `--publish-artifact` | reads: a tailnet login on `ARTIFACT_OPERATORS` (falls back to `CHAT_OPERATORS`); writes never leave loopback |
+| `:8446` | beast-artifact `:3004` (`ARTIFACT_PORT`) | `--publish-artifact` | reads: a tailnet login on `ARTIFACT_OPERATORS` (falls back to `CHAT_OPERATORS`); publishing never leaves loopback; lifecycle writes (pin, tags, visibility, rollback, delete) also accept a device key with the `artifact` scope |
+| `:8447` | ntfy extension `:3005` (`NTFY_PORT`) | `--publish-ntfy` | whatever `NTFY_DEFAULT_ACCESS` says: open to the tailnet by default |
 | `:8889` | SearXNG `:8888` | `--publish-searxng` | any tailnet device, unauthenticated |
 
 `:8445` and `:8446` are the two surfaces that are *not* inference-shaped and
@@ -110,6 +113,22 @@ deliberately not behind beast-gate; each enforces its own read/write rule
 in-process ([`BEAST_CHAT.md`](BEAST_CHAT.md), [`BEAST_ARTIFACT.md`](BEAST_ARTIFACT.md)).
 The identity tool server (`:3001`), the agent router (`:8088`) and
 llama-server's own port are never published.
+
+**`:8443` is not published keyless by accident.** `setup-tailscale.sh`
+mounts it in exactly one of three states, checked in this order:
+
+1. `EDGE_GATE=true` → at beast-gate (per-device keys, the recommended one).
+2. `LLAMA_API_KEY` set → at llama-server, behind that one shared key.
+3. `--i-accept-open-inference` → at llama-server with **no** key. The flag is
+   recorded as `ALLOW_OPEN_INFERENCE=true` in `openbeast.conf`, so later
+   re-runs keep publishing; delete the line to take it back.
+
+With none of the three it prints the choices, leaves `:8443` unpublished
+and **takes down a raw `:8443` mount an earlier run left** — so re-running
+the script on an older keyless rig unpublishes inference until you pick one.
+`scripts/doctor.sh` matches: a keyless raw `:8443` is a FAIL, and a WARN
+once `ALLOW_OPEN_INFERENCE=true` acknowledges it. Before 2026-10-09 the
+script published raw llama-server to the whole tailnet with no question.
 
 **Order matters.** The slot API is served by the dashboard *extension*, and
 `EXTENSIONS` is empty by default. Publishing before enabling it (and
@@ -123,18 +142,22 @@ blind about what the rig is serving.
 
 `GET https://<rig>:8444/api/slot` — read-only JSON. `--publish-slot` mounts
 *only* this path (`tailscale serve --set-path`), so the dashboard's HTML page
-and `/api/status` stay rig-local:
+and `/api/status` stay rig-local. The answer is gathered at most once every
+1.5 s and shared by every caller in that window, so it can be up to 1.5 s
+old; do not poll faster than that. The dashboard serves at most 16
+connections at once and answers **503** with `Retry-After: 1` beyond that —
+retry, it is not an outage:
 
 ```json
 {
   "beast_slot": 2,
   "min_client": 1,
   "healthy": true,
-  "model": {"id": "heretic-v2-27b-mtp-q6", "ctx": 212992},
+  "model": {"id": "heretic-v2-27b-mtp-q5", "ctx": 262144},
   "slots": {"total": 1, "busy": 0},
   "capacity": {
     "ctx_shared": true,
-    "ctx_total": 212992,
+    "ctx_total": 262144,
     "queue_deferred": 0,
     "serving_profile": "mtp-single-slot"
   },
@@ -249,8 +272,10 @@ it.
 **The rig owner does three things, and the first one is not optional.**
 
 **1. Turn on beast-gate before anyone else's device can reach the endpoint.**
-`EDGE_GATE` is off by default, and with it off `:8443` is *raw llama-server* —
-every tailnet peer gets the whole route table. `POST /lora-adapters` swaps the
+`EDGE_GATE` is off by default, and with it off `:8443` is *raw llama-server*
+(published only behind `LLAMA_API_KEY`, or keyless after
+`--i-accept-open-inference`) — every peer who can use it gets the whole
+route table. `POST /lora-adapters` swaps the
 model for you and everyone else, `GET /slots` and `/props` leak your session
 metadata and on-disk model path, `DELETE /v1/stream/:id` cancels generations,
 and a client-chosen `id_slot` jumps the queue ahead of you. See
@@ -291,9 +316,11 @@ Three more things that surprise owners:
 
 - **`:443` publishes Open WebUI — with your entire chat history — to every
   peer.** `setup-tailscale.sh` sets `WEBUI_AUTH=true` only if the key is
-  *absent* from `openbeast.conf`; an explicit `WEBUI_AUTH=false` is left alone
-  and you publish an unauthenticated admin panel. Check with
-  `grep WEBUI_AUTH openbeast.conf` before inviting anyone.
+  *absent* from `openbeast.conf`. An explicit `WEBUI_AUTH=false` blocks `:443`
+  unless you pass `--i-accept-open-webui`, which is persisted as
+  `ALLOW_OPEN_WEBUI=true`; with that line present you are publishing an
+  unauthenticated admin panel. Check with
+  `grep -E 'WEBUI_AUTH|ALLOW_OPEN_WEBUI' openbeast.conf` before inviting anyone.
 - **`--publish-searxng` is unauthenticated and unmetered, and beast-gate does
   not front it.** Every search a guest runs exits from *your* IP and is
   attributed to you upstream. Skip the flag and have them install with
@@ -350,10 +377,12 @@ touch their SearXNG.
 >   nothing in its `$HOME` you'd mind losing.
 > - Force confirmation in `~/.config/opencode/opencode.json` —
 >   `{"permission": {"*": "ask"}}` at minimum — and actually *read* each
->   `local-tools_bash` call before approving.
-> - Enable the kernel sandbox: `./scripts/setup-sandlock.sh`, then
->   `OPENBEAST_BASH_WRAPPER="sandlock --profile openbeast --"` in
->   `~/.openbeast-client.env`.
+>   `openbeast-tools_bash` call before approving.
+> - Enable the kernel sandbox (Linux clients only): `./scripts/setup-sandlock.sh`,
+>   then `OPENBEAST_BASH_WRAPPER='sandlock run -p openbeast -w "$PWD" --'` in
+>   `~/.openbeast-client.env` **and** in the `environment` block of
+>   `mcp["openbeast-tools"]` in `~/.config/opencode/opencode.json`
+>   ([`SANDBOXING.md`](SANDBOXING.md) § On an OpenBeast client).
 > - Use `--local-search` or `--no-search`, and don't run the client from a
 >   directory holding credentials or a repo you'd mind being uploaded.
 > - Watch the tool lines. A rig that answers "summarize this file" with a
@@ -481,20 +510,25 @@ What each remote request now passes through:
 
 | Control | Behavior |
 |---|---|
-| **Per-device keys** | Bearer key per device, matched against sha256 in `.run/clients.json`. Hot-reloaded — `clients.sh revoke` blocks the **next** request from that device within seconds, with no llama-server restart (a restart would destroy your KV cache and every live stream). It does **not** kill a generation already streaming; that request runs to completion. To cut one off immediately, restart the gate with `./scripts/healthcheck.sh --restart` (it kills, relaunches, and rewrites `.run/edge.pid`; a bare `pkill` would leave a stale pidfile) — the local stack is unaffected |
+| **Per-device keys** | Bearer key per device, matched against sha256 in `.run/clients.json`. Hot-reloaded — `clients.sh revoke` blocks the **next** request from that device within seconds, with no llama-server restart (a restart would destroy your KV cache and every live stream). A generation already running is cut off too: the gate re-checks the caller's enrollment every 5 s, both while waiting for the first byte and as stream chunks arrive, cancels the upstream request and audits the row as `revoked`. One limit: a stream that has gone silent after its headers is not re-checked until its next chunk. `clients.sh` warns on enroll, rotate and revoke when `EDGE_GATE` is not `true` (the keys then gate nothing), and `doctor.sh` FAILs "devices enrolled but EDGE_GATE is not true" |
 | **Path allowlist** | Only `/health`, `/v1/models`, `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`. Everything else is **404** — not 403, so a remote caller learns nothing about what exists. `/lora-adapters`, `/slots`, `/props`, `/v1/stream`, `/infill` stop existing for remote callers |
-| **Tenancy knobs** | Client `id_slot` stripped unconditionally; re-injected only from the server-side device→slot map. On `/v1/chat/completions`, `/v1/completions` and `/v1/embeddings` a non-empty body that is not a UTF-8 JSON object, or that nests deeper than 64 levels, is refused with **400** and never forwarded — a body the gate cannot parse would otherwise reach llama-server with every tenancy knob intact |
+| **Tenancy knobs** | Client `id_slot` stripped unconditionally; re-injected only from the server-side device→slot map. On `/v1/chat/completions`, `/v1/completions` and `/v1/embeddings` a non-empty body that is not a UTF-8 JSON object, or that nests deeper than 64 levels, is refused with **400** and never forwarded — a body the gate cannot parse would otherwise reach llama-server with every tenancy knob intact. A body over **8 MiB** is refused with **413** (`EDGE_MAX_BODY`, bytes; it was 32 MiB) |
+| **Inline media only** | An `image_url`, `input_audio` or `input_video` part must carry its media inline — a `data:` URI, or the bare base64 OpenAI's audio shape uses. A part that names a URL (`http://…`, `file://…`, anything with a scheme, or a scheme-less value starting `http`) is refused with **400**: with a vision model loaded llama-server would fetch it from the rig's own loopback, which hands a remote device a way to read the rig's local services and LAN. `EDGE_ALLOW_MEDIA_URLS=true` forwards such parts again. The agent router applies the same rule to WebUI and loopback callers (one shared implementation, `agents/mediapolicy.py`), with no opt-out |
 | **Session isolation** | `X-Conversation-Id` namespaced per device, so two devices can neither collide on nor cancel each other's stream sessions |
 | **Admission control** | Token bucket (`EDGE_RATE_LIMIT`, default 120/min) plus an in-flight cap (`EDGE_MAX_INFLIGHT`, default 2) per device → 429 with `Retry-After`. Both count **generations**, not HTTP requests: a `prompt`/`input` array or `n` > 1 makes llama-server run prompts × `n` tasks, so such a request holds (and pays for) that many units, and one that fans out past `EDGE_MAX_INFLIGHT` is refused with 400 — split it, or raise the cap |
-| **Audit + metering** | One line per completion in `.run/inference-audit.jsonl`: `request_id`, `device`, `device_uid`, `user_claimed`, model, status, duration, prompt/completion tokens (the gate sets `stream_options.include_usage` so the streaming path meters too; a non-streaming reply too large to buffer is metered from its tail). A reply the client abandons mid-body is recorded as `outcome: client_disconnect`, not `ok` — its tokens may be null, since the usage chunk never arrived. A stream the model server breaks off mid-body is `upstream_error` (502), not blamed on the client. Never content, never key material. Prometheus at `/gate/metrics` (authenticated — see Introspection below). Rotated by `scripts/logrotate-openbeast.conf` |
+| **Audit + metering** | One line per completion in `.run/inference-audit.jsonl`: `request_id`, `device`, `device_uid`, `user_claimed`, model, status, duration, prompt/completion tokens (the gate sets `stream_options.include_usage` so the streaming path meters too; a non-streaming reply too large to buffer is metered from its tail). A request the client abandons is recorded as `outcome: client_disconnect`, not `ok`: while still waiting for the first byte the upstream request is cancelled, the in-flight unit released and the row carries status **499**; mid-body it keeps the upstream's status, and its tokens may be null, since the usage chunk never arrived. A request cut off because its device was revoked is `outcome: revoked` (401 before the first byte). A stream the model server breaks off mid-body is `upstream_error` (502), not blamed on the client. Never content, never key material. Prometheus at `/gate/metrics` (authenticated — see Introspection below). Rotated by `scripts/logrotate-openbeast.conf` |
 | **Attribution rules** | `device` is the **authenticated** identity. `device_uid` binds the *enrollment*, so a removed-and-re-enrolled `laptop-air` is a distinct device in the trail rather than inheriting its predecessor's history — **join on `device_uid`**, not `device`. `user_claimed` is a client-supplied header and is not proof of anything. `request_id` is echoed to the caller as `X-OpenBeast-Request-Id`, so "what happened to my 11:04 request" is answerable exactly. Unauthenticated rejects are counted in metrics and logged with a key fingerprint, but deliberately not written to the audit file — otherwise any tailnet peer could grow it without bound. For the same reason the log line is throttled: the first 10 per reason per minute, then one "suppressed N more" summary (the exact count stays in `/gate/metrics`) |
-| **Introspection** | `/gate/health` and `/gate/metrics` carry the device roster and per-device usage, so they require **either** an enrolled device key **or** the rig-local token (`.run/edge-local.token`, 0600, minted per gate start — start.sh/healthcheck/doctor read it). Peer address is deliberately NOT used: `tailscale serve` proxies from 127.0.0.1, so every tailnet caller looks local. Remote `/gate/health` returns liveness only; `/gate/metrics` 404s |
+| **Introspection** | `/gate/health` and `/gate/metrics` carry the device roster and per-device usage, so the full view needs the rig-local token (`.run/edge-local.token`, 0600, minted per gate start — start.sh/healthcheck/doctor read it). An enrolled device key gets **its own** series from `/gate/metrics` and nothing else (no other device's usage, no `denied_total`), and liveness only from `/gate/health` (no roster size, no upstream URL). Peer address is deliberately NOT used: `tailscale serve` proxies from 127.0.0.1, so every tailnet caller looks local. With no credential `/gate/health` returns liveness only and `/gate/metrics` 404s |
 
 **Fails closed.** With `EDGE_GATE=true` and no devices enrolled, remote callers
 get 401 — an empty registry never means "everyone is welcome". `EDGE_ALLOW_ANON=true`
-opts out, at the cost of attribution and revocation — but only until the first
-device is enrolled; from then on a missing or unknown key is a 401 again. A corrupt or half-written
-registry keeps the last good device map rather than opening up.
+opts out, at the cost of attribution and revocation — but only while
+`.run/clients.json` has never been written. Once the file exists the gate
+ignores `EDGE_ALLOW_ANON` for good: emptied again by `clients.sh remove`, a
+missing or unknown key is still a 401. A corrupt or half-written registry
+keeps the last good device map rather than opening up; one that cannot be
+read at the gate's first load refuses every caller (`registry_unreadable`)
+and logs the repair command once.
 
 **Your local command center is untouched.** Open WebUI and the agent router
 keep talking to llama-server on loopback exactly as before. Enabling the gate
@@ -576,7 +610,8 @@ Then repeat chat + agent + OpenCode with keyed mode (checklist above).
 
 - **Multi-slot serving profile:** a non-MTP high-`-np` config serves parallel
   clients; `/api/slot` reports the real slot pool. No client change.
-- **Fleet router ("Mark of the Beast"):** a least-loaded router across worker
-  boxes answers the same discovery shape. No client change.
+- **Fleet router:** shipped in v1.7.0 as beast-hydra (`HYDRA=true`, opt-in,
+  tested against simulated fleets and not yet on real hardware) — see
+  [`BEAST_HYDRA.md`](BEAST_HYDRA.md).
 - **Slot fairness:** per-user concurrency caps when slots are contended
   (docs/TODO.md).

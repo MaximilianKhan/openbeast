@@ -64,7 +64,7 @@ def workspace(tmp_path, monkeypatch):
 
 
 def client():
-    return TestClient(openapi_tools.create_app())
+    return TestClient(openapi_tools.create_app(), base_url="http://127.0.0.1:3001")
 
 
 def test_health_reports_jwt_mode(workspace):

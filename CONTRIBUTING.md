@@ -24,10 +24,14 @@ Found a security issue? Do **not** open a public issue — see
 
 ```bash
 git clone https://github.com/MaximilianKhan/openbeast && cd openbeast
-./bootstrap.sh --minimal     # build llama.cpp + Python deps (no Docker/weights needed for dev)
+./scripts/pydeps.sh install  # the hash-pinned Python deps
+pip install pytest           # the only extra the CPU-only test suite needs
 ```
 
 Most development doesn't need a GPU at all: the test suite is CPU-only.
+`./bootstrap.sh --minimal` is not a dev setup: it skips only Docker, still
+builds llama.cpp and downloads the ~20 GB default weight, refuses macOS and
+hard-fails under 24 GB VRAM. Use it only on a rig.
 
 ## Before you open a PR
 
@@ -37,12 +41,12 @@ Run what CI runs, so nothing surprises you in review:
 # Tests (the CI 'test' job)
 ./tests/run_tests.sh                 # the shell suites (scripts, clients, job.sh, artifact CLI,
                                      #   offline fixes, ssd-wear) + tool unit tests + full pytest
-python3 -m pytest tests/ -q          # full suite (~1,300 tests, CPU-only)
+python3 -m pytest tests/ -q          # full suite (~3,100 tests, CPU-only)
 
 # Quality gates (the CI 'PR quality' jobs) — install once:
 #   pip install --user ruff pip-audit shellcheck-py
-ruff check agents/*.py evals/*.py tests/*.py --select E9,F   # syntax + undefined names
-shellcheck -S error start.sh stop.sh bootstrap.sh agent.sh scripts/*.sh scripts/lib/*.sh tests/*.sh
+ruff check agents evals tests scripts extensions --select E9,F   # syntax + undefined names
+shellcheck -S error start.sh stop.sh bootstrap.sh agent.sh scripts/*.sh scripts/lib/*.sh tests/*.sh extensions/*/*.sh
 pip-audit -r agents/requirements.txt  --disable-pip --no-deps  # dependency CVEs — the direct pins
 pip-audit -r agents/requirements.lock --disable-pip --no-deps  # …and the whole hash-pinned closure
 ./scripts/pydeps.sh verify            # the lock is current against requirements.txt
@@ -62,7 +66,9 @@ A third, `dependabot-relock.yml`, runs only on Dependabot's PRs: it
 regenerates `agents/requirements.lock` for the bumped `requirements.txt`
 and pushes it to the PR branch, because Dependabot edits only the latter.
 Dependabot opens weekly PRs; `./scripts/land-dependabot.sh` lands them one
-at a time (rebase → relock → approve the held CI runs → merge) — see
+at a time (rebase → relock → approve the held CI runs → merge). With no
+arguments it takes only the PRs that touch `agents/requirements.txt`; pass a
+PR number to land any other — see
 [`docs/UPDATING.md`](docs/UPDATING.md). **Never bump `requirements.txt`
 without the lock**: `update.sh --python` regenerates it, and CI goes red on a
 commit that moves one without the other.
@@ -98,7 +104,9 @@ House rules the suite enforces (so you don't discover them in review):
   make that call in the PR description, not in a test edit. Same rule for
   `.run/clients.json`, the registry schema shared with `agents/edge.py`.
 - **Skills**: after editing any `skills/*/SKILL.md`, run
-  `python3 scripts/generate-skill-index.py` (CI fails on a stale index).
+  `python3 scripts/generate-skill-index.py` (CI fails on a stale index). A
+  new skill written here must also be named in `skills/IN_HOUSE_SKILLS.txt`,
+  or `skill-import.sh verify` fails (see `skills/README.md`).
 
 ## Adding an eval task
 

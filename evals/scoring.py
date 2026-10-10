@@ -501,6 +501,104 @@ def ineligibility_reasons(results: dict) -> list[str]:
     return reasons
 
 
+# What a board row must record for its number to be comparable with another
+# row's: (entry key, label). The task set is frozen and CI-guarded; the
+# harness, the engine and the serve regime are not.
+PROVENANCE_FIELDS = (("openbeast_commit", "repo commit"), ("engine_build", "engine build"),
+                     ("reasoning_budget", "reasoning budget"), ("jobs", "jobs"))
+
+
+def run_provenance(results: dict) -> dict:
+    """The regime a results file was measured under, as far as it recorded
+    one: the OpenBeast commit (the agent harness), the llama.cpp build, the
+    server's --reasoning-budget and the --jobs concurrency, plus the eval
+    era hash for runs new enough to stamp it. Absent fields are omitted —
+    the seven July 2026 v4 rows carry an engine build and nothing else."""
+    rt = results.get("runtime") or {}
+    eng = results.get("inference_engine") or {}
+    server = results.get("server") or {}
+    out: dict = {}
+    if rt.get("openbeast_commit"):
+        out["openbeast_commit"] = rt["openbeast_commit"]
+        if rt.get("openbeast_dirty") is not None:
+            out["openbeast_dirty"] = bool(rt["openbeast_dirty"])
+    if eng.get("build") not in (None, ""):
+        out["engine_build"] = str(eng["build"])
+    if server.get("reasoning_budget") not in (None, ""):
+        out["reasoning_budget"] = str(server["reasoning_budget"])
+    elif server.get("cmdline"):
+        # The server was read and carried no flag: llama-server's default.
+        out["reasoning_budget"] = "default"
+    if results.get("jobs") is not None:
+        out["jobs"] = results["jobs"]
+    era = (results.get("harness") or {}).get("era")
+    if era:
+        out["era"] = era
+    return out
+
+
+PROVENANCE_LEGEND = ("† = the row does not record its regime.  ‡ = it records one that differs "
+                     "from row 1's.  Either way the row was not shown to be measured "
+                     "like-for-like with row 1: read small SCORE gaps accordingly.")
+
+
+def provenance_notes(rows: list[dict]) -> list[tuple[int, str, str]]:
+    """Footnotes for a ranked partition: (rank, marks, text) per row that
+    needs one. `†` = the row does not record a PROVENANCE_FIELDS item, so
+    nothing can show it was measured like the others. `‡` = it records a
+    regime that differs from row 1's (engine build, reasoning budget, jobs,
+    and the harness: the era hash where both rows have it, else the repo
+    commit), including a field it records and row 1 does not — an
+    unrecorded regime cannot be assumed to be the same one.
+
+    Purely a readout: no row is re-ranked or dropped."""
+    if not rows:
+        return []
+    top = rows[0].get("provenance") or {}
+    notes = []
+    for i, e in enumerate(rows, 1):
+        if "provenance" not in e:
+            # Scored before entries carried it: unknown, not "unrecorded".
+            notes.append((i, "†", "entry predates the provenance field — "
+                                  "run `python3 evals/scoring.py --rebuild` where the runs are"))
+            continue
+        prov = e["provenance"] or {}
+        marks, parts = "", []
+        missing = [label for key, label in PROVENANCE_FIELDS if key not in prov]
+        if missing:
+            marks += "†"
+            parts.append("no " + ", ".join(missing) + " recorded")
+        if prov.get("openbeast_dirty"):
+            parts.append("uncommitted changes in the repo at run time")
+        diffs = []
+        if i > 1:
+            harness_key = ("era" if "era" in prov and "era" in top else "openbeast_commit")
+            for key, label in (("engine_build", "engine build"),
+                               ("reasoning_budget", "reasoning budget"), ("jobs", "jobs"),
+                               (harness_key, "era" if harness_key == "era" else "repo commit")):
+                if key in prov and prov[key] != top.get(key):
+                    diffs.append(f"{label} {str(prov[key])[:9]} "
+                                 f"(row 1: {str(top.get(key, 'unrecorded'))[:10]})")
+        if diffs:
+            marks += "‡"
+            parts.append("; ".join(diffs))
+        if parts:
+            notes.append((i, marks, "; ".join(parts)))
+    return notes
+
+
+def killed_units(tasks: list[dict]) -> int:
+    """Units whose agent did not exit on its own: the harness wall timeout
+    (agent_exit_code -1) or a signal (-9, -15). They are the one non-verdict
+    class that seats on the board: pass/fail is whatever the files left
+    behind validate to, run_eval records their tokens as 0 (so TOKENS and
+    the tok/s averages understate), and they are never cached, so every
+    relaunch re-rolls exactly these units while banked FAILs stay fixed.
+    The 9 seated v4 rows held 16 of them on 2026-10-09 (15 wall timeouts,
+    one SIGKILL)."""
+    return sum(1 for t in tasks if (t.get("agent_exit_code") or 0) < 0)
+
+
 def score_run(results: dict) -> dict:
     """Compute scores for a single eval run. Returns dict suitable for the
     leaderboard."""
@@ -541,6 +639,9 @@ def score_run(results: dict) -> dict:
         "gpu": results.get("gpu") or {},
         "inference_engine": results.get("inference_engine") or {},
         "runtime": results.get("runtime") or {},
+        # The regime the row was measured under; format_leaderboard
+        # footnotes rows that lack it or differ from row 1 (provenance_notes).
+        "provenance": run_provenance(results),
         "scoring_version": SCORING_VERSION,
         # v2 primary metric + its two axes
         "capability": capability,
@@ -564,6 +665,8 @@ def score_run(results: dict) -> dict:
         "tokens_total": tokens_total,
         "tokens_prompt": tokens_prompt,
         "tokens_completion": tokens_completion,
+        # T/O column: units whose agent was killed (see killed_units).
+        "killed_units": killed_units(tasks),
         "breakdown": breakdown,
         "by_category": by_category,
         "by_language": by_language,
@@ -681,12 +784,13 @@ def format_leaderboard(entries: list[dict], show_host: bool = False) -> str:
     # SCORE (capability = 0.75*SOLVE + 0.25*LANG, the ranking key) -> SPD
     # (sustained decode tok/s — server-log measured, or ~estimated for pre-log
     # runs) -> TOKENS (total prompt+completion) -> WALL (total wall-clock) ->
-    # PASS. SOLVE/LANG/SCORE are percentages (shown with %). The legacy v1
-    # accuracy and per-tier pass rates stay in each entry's JSON.
+    # PASS -> T/O (units whose agent was killed; see killed_units). SOLVE/
+    # LANG/SCORE are percentages (shown with %). The legacy v1 accuracy and
+    # per-tier pass rates stay in each entry's JSON.
     if show_host:
-        header = f"{'#':>2}  {'HOST':<18}  {'MODEL':<28}  {'SU':>4}  {'SOLVE':>7}  {'LANG':>7}  {'SCORE':>7}  {'SPD':>6}  {'TOKENS':>7}  {'WALL':>7}  {'PASS':>7}"
+        header = f"{'#':>2}  {'HOST':<18}  {'MODEL':<28}  {'SU':>4}  {'SOLVE':>7}  {'LANG':>7}  {'SCORE':>7}  {'SPD':>6}  {'TOKENS':>7}  {'WALL':>7}  {'PASS':>7}  {'T/O':>3}"
     else:
-        header = f"{'#':>2}  {'MODEL':<28}  {'SU':>4}  {'SOLVE':>7}  {'LANG':>7}  {'SCORE':>7}  {'SPD':>6}  {'TOKENS':>7}  {'WALL':>7}  {'PASS':>7}"
+        header = f"{'#':>2}  {'MODEL':<28}  {'SU':>4}  {'SOLVE':>7}  {'LANG':>7}  {'SCORE':>7}  {'SPD':>6}  {'TOKENS':>7}  {'WALL':>7}  {'PASS':>7}  {'T/O':>3}"
     sep = "-" * len(header)
 
     def _f(v):  # format a possibly-missing 0-100 percentage metric (with %)
@@ -705,7 +809,7 @@ def format_leaderboard(entries: list[dict], show_host: bool = False) -> str:
         h, m = divmod(int(s) // 60, 60)
         return f"{h}h{m:02d}m" if h else f"{m}m"
 
-    def _row(i: int, e: dict) -> str:
+    def _row(i: int, e: dict, marks: str = "") -> str:
         model = e.get("model", "?")[:28]
         suite = str(e.get("suite_version", "?"))[:4]
         solve = _f(e.get("problem_solving"))     # problem-solving
@@ -715,18 +819,28 @@ def format_leaderboard(entries: list[dict], show_host: bool = False) -> str:
         toks = _fmt_tokens(e.get("tokens_total", 0))  # total tokens consumed
         wall = _wall(e)                          # total wall-clock
         passed = f"{e.get('tasks_passed','?')}/{e.get('tasks_total','?')}"
+        killed = e.get("killed_units", "?")      # "?": entry predates the field
         if show_host:
             host = entry_host_id(e)[:18]
-            return f"{i:>2}  {host:<18}  {model:<28}  {suite:>4}  {solve:>7}  {lang:>7}  {score:>7}  {spd:>6}  {toks:>7}  {wall:>7}  {passed:>7}"
-        return f"{i:>2}  {model:<28}  {suite:>4}  {solve:>7}  {lang:>7}  {score:>7}  {spd:>6}  {toks:>7}  {wall:>7}  {passed:>7}"
+            return f"{i:>2}  {host:<18}  {model:<28}  {suite:>4}  {solve:>7}  {lang:>7}  {score:>7}  {spd:>6}  {toks:>7}  {wall:>7}  {passed:>7}  {killed:>3}  {marks}".rstrip()
+        return f"{i:>2}  {model:<28}  {suite:>4}  {solve:>7}  {lang:>7}  {score:>7}  {spd:>6}  {toks:>7}  {wall:>7}  {passed:>7}  {killed:>3}  {marks}".rstrip()
 
     cur = current_suite_version()
     current_rows = sorted((e for e in entries if str(e.get("suite_version")) == cur), key=rank_key)
     legacy_rows = sorted((e for e in entries if str(e.get("suite_version")) != cur), key=rank_key)
 
+    # Provenance footnotes, current suite only (the legacy section is
+    # already labelled not comparable). A readout: order and rows unchanged.
+    notes = provenance_notes(current_rows)
+    marks = {i: m for i, m, _ in notes}
     lines = [header, sep]
     for i, e in enumerate(current_rows, 1):
-        lines.append(_row(i, e))
+        lines.append(_row(i, e, marks.get(i, "")))
+    if notes:
+        lines.append("")
+        lines.append(PROVENANCE_LEGEND)
+        for i, m, text in notes:
+            lines.append(f"  {i:>2} {m:<2} {text}")
     if legacy_rows:
         if current_rows:
             lines.append("")
@@ -740,6 +854,9 @@ def format_leaderboard(entries: list[dict], show_host: bool = False) -> str:
     lines.append("SCORE = capability = 0.75*SOLVE + 0.25*LANG (ranking key).  "
                  "SPD = sustained decode tok/s (server-measured; ~ = isolated-benchmark estimate, "
                  "pre-2026-07-08 runs had no decode log).  TOKENS = total prompt+completion.  WALL = total run time.")
+    lines.append("T/O = units whose agent was killed at the wall timeout or by a signal: pass/fail still "
+                 "counts, their tokens are recorded as 0 (TOKENS understates), and they are never cached, "
+                 "so a relaunch re-rolls them.")
     return "\n".join(lines)
 
 
@@ -770,24 +887,28 @@ def format_leaderboard_html(entries: list[dict], title: str = "OpenBeast leaderb
         return f"{h}h{m:02d}m" if h else f"{m}m"
 
     cols = ("#", "Host", "Model", "Suite", "Solve", "Lang", "Score",
-            "tok/s", "Tokens", "Wall", "Pass")
+            "tok/s", "Tokens", "Wall", "Pass", "T/O")
 
-    def row(i, e):
-        cells = (str(i), entry_host_id(e), str(e.get("model", "?")),
+    def row(i, e, marks=""):
+        cells = (str(i), entry_host_id(e), str(e.get("model", "?")) + (f" {marks}" if marks else ""),
                  str(e.get("suite_version", "?")),
                  pct(e.get("problem_solving")), pct(e.get("language_breadth")),
                  pct(e.get("capability")), decode(e),
                  _fmt_tokens(e.get("tokens_total", 0)), wall(e),
-                 f"{e.get('tasks_passed', '?')}/{e.get('tasks_total', '?')}")
+                 f"{e.get('tasks_passed', '?')}/{e.get('tasks_total', '?')}",
+                 str(e.get("killed_units", "?")))
         return "<tr>" + "".join(
             f'<td class="{"t" if j in (1, 2) else "n"}">{escape(c)}</td>'
             for j, c in enumerate(cells)) + "</tr>"
 
-    def table(rows):
+    def table(rows, notes=()):
+        marks = {i: m for i, m, _ in notes}
         head = "".join(f"<th>{escape(c)}</th>" for c in cols)
-        body = "\n".join(row(i, e) for i, e in enumerate(rows, 1))
+        body = "\n".join(row(i, e, marks.get(i, "")) for i, e in enumerate(rows, 1))
+        foot = "".join(f"<p>{i} {escape(m)} {escape(text)}</p>" for i, m, text in notes)
         return (f'<div class="wrap"><table><thead><tr>{head}</tr></thead>'
-                f"<tbody>\n{body}\n</tbody></table></div>")
+                f"<tbody>\n{body}\n</tbody></table></div>"
+                + (f"<p>{escape(PROVENANCE_LEGEND)}</p>{foot}" if notes else ""))
 
     cur = current_suite_version()
     current_rows = sorted((e for e in entries if str(e.get("suite_version")) == cur), key=rank_key)
@@ -796,7 +917,8 @@ def format_leaderboard_html(entries: list[dict], title: str = "OpenBeast leaderb
     if not entries:
         parts.append("<p>The leaderboard is empty.</p>")
     if current_rows:
-        parts.append(f"<h2>Suite {escape(cur)}</h2>" + table(current_rows))
+        parts.append(f"<h2>Suite {escape(cur)}</h2>"
+                     + table(current_rows, provenance_notes(current_rows)))
     if legacy_rows:
         parts.append(f"<h2>Legacy suites</h2><p>Task sets differ — not comparable "
                      f"to suite {escape(cur)} rows.</p>" + table(legacy_rows))
@@ -822,7 +944,9 @@ td.n{{text-align:right}}
 <p>Generated {stamp} by evals/scoring.py --html. Ranked by Score (capability = 0.75·Solve + 0.25·Lang).</p>
 {"".join(parts)}
 <p>Solve = % of base problems solved in ≥1 language. Lang = % of language ports passed among
-solved problems. tok/s = sustained decode (~ = isolated-benchmark estimate).</p>
+solved problems. tok/s = sustained decode (~ = isolated-benchmark estimate). T/O = units whose
+agent was killed at the wall timeout or by a signal: pass/fail still counts, their tokens are
+recorded as 0, and they are never cached.</p>
 </body></html>
 """
 
@@ -956,6 +1080,7 @@ def main():
 
         by_key: dict[tuple, dict] = {}
         skipped_partial = 0
+        found = 0                # readable eval-*.json files, seatable or not
         for path in sorted(os.listdir(RESULTS_DIR)) if os.path.isdir(RESULTS_DIR) else []:
             if not path.startswith("eval-") or not path.endswith(".json"):
                 continue
@@ -974,6 +1099,7 @@ def main():
                     raw = json.load(fh)
             except (OSError, json.JSONDecodeError):
                 continue
+            found += 1
             if ineligibility_reasons(raw):
                 skipped_partial += 1
                 continue
@@ -985,6 +1111,15 @@ def main():
             existing = by_key.get(key)
             if not existing or _preference(entry) > _preference(existing):
                 by_key[key] = entry
+        # evals/results is gitignored: a fresh clone or a worktree has no
+        # result files, and a rebuild there used to write an EMPTY board
+        # over the committed one ("Rebuilt leaderboard from 0 entries").
+        if not found:
+            sys.exit(f"scoring.py: no eval-*.json result files in {RESULTS_DIR} — refusing to "
+                     f"rebuild; {LEADERBOARD_PATH} is unchanged. Result files are not in the "
+                     f"repo, so a fresh clone or worktree has none: run --rebuild in the "
+                     f"checkout that holds the runs. (To start an empty board on purpose, "
+                     f"delete leaderboard.json.)")
         entries = sorted(by_key.values(), key=rank_key)
         _atomic_write_json(LEADERBOARD_PATH,
                            {"updated_at": datetime.now().isoformat(), "entries": entries})

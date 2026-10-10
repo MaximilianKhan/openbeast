@@ -1,0 +1,16 @@
+# The llama.cpp commit OpenBeast builds: the inference engine's pin.
+#
+# Images are pinned by digest, python packages by hash, weights by sha256.
+# llama.cpp was the one artifact fetched as "whatever upstream master is
+# today", then compiled and run as you. bootstrap.sh checks out exactly this
+# commit; two installs a day apart get the same engine, and a bad commit
+# upstream reaches nobody until this line moves.
+#
+# Moving it is a reviewed change, like an image digest bump:
+#   ./scripts/update.sh --llama     pulls upstream, rebuilds, and rewrites this
+#                                   line only after llama-server built
+# then smoke-test the stack and commit this file.
+#
+# One line, a full 40-hex upstream commit (ggml-org/llama.cpp). Not a tag or a
+# branch: those can be moved to point at something else.
+LLAMA_CPP_REF=d4389a4dd920d24c9592f1dc3badbd69be23bd09

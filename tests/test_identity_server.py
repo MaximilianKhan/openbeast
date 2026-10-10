@@ -54,7 +54,7 @@ def client(monkeypatch=None, keyed=False, sharding=None):
         os.environ["OPENBEAST_MCPO_GUEST_KEY"] = "test-guest-key"
     if sharding:
         os.environ["OPENBEAST_FILES_SHARDING"] = sharding
-    return TestClient(openapi_tools.create_app())
+    return TestClient(openapi_tools.create_app(), base_url="http://127.0.0.1:3001")
 
 
 def manifest(root):
@@ -209,7 +209,7 @@ def test_spawn_workdir_anchored_to_shard(workspace, monkeypatch):
         return "agent stub"
 
     monkeypatch.setattr(openapi_tools.impl, "start_agent", stub)
-    c = TestClient(openapi_tools.create_app())   # endpoint closes over the stub
+    c = TestClient(openapi_tools.create_app(), base_url="http://127.0.0.1:3001")   # endpoint closes over the stub
     r = c.post("/start_agent", json={"task": "t", "workdir": "proj"},
                headers={"X-OpenWebUI-User-Id": "alice"})
     assert r.status_code == 200
@@ -225,7 +225,7 @@ def test_spawn_workdir_dotdot_escape_rejected(workspace, monkeypatch):
         return "agent stub"
 
     monkeypatch.setattr(openapi_tools.impl, "start_agent", stub)
-    c = TestClient(openapi_tools.create_app())
+    c = TestClient(openapi_tools.create_app(), base_url="http://127.0.0.1:3001")
     r = c.post("/start_agent",
                json={"task": "t", "workdir": "../../../../etc"},
                headers={"X-OpenWebUI-User-Id": "alice"})
@@ -239,7 +239,7 @@ def test_single_key_fails_closed(workspace):
     lock down — silently left every tool open."""
     os.environ["OPENBEAST_MCPO_ADMIN_KEY"] = "test-admin-key"
     os.environ.pop("OPENBEAST_MCPO_GUEST_KEY", None)
-    c = TestClient(openapi_tools.create_app())
+    c = TestClient(openapi_tools.create_app(), base_url="http://127.0.0.1:3001")
     body = {"directory": ".", "pattern": "*"}
     assert c.get("/health").json()["auth"] == "keyed"
     assert c.post("/list_files", json=body).status_code == 401          # no key
@@ -260,7 +260,7 @@ def _rows(path):
 def _keyed(monkeypatch, **kw):
     monkeypatch.setenv("OPENBEAST_MCPO_ADMIN_KEY", "test-admin-key")
     monkeypatch.setenv("OPENBEAST_MCPO_GUEST_KEY", "test-guest-key")
-    return TestClient(openapi_tools.create_app(), **kw)
+    return TestClient(openapi_tools.create_app(), base_url="http://127.0.0.1:3001", **kw)
 
 
 def test_audit_path_is_overridable_and_repo_trail_untouched(workspace, tmp_path,

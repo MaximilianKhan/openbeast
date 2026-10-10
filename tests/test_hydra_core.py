@@ -221,6 +221,46 @@ def test_implicit_ignores_route_id_in_openbeast_inference_model():
     assert cfg.deployments["local@rig"].upstream == "local"
 
 
+def test_implicit_node_waits_the_whole_budget_for_a_first_byte():
+    # Review 2026-10-09 ops F3: one target means nowhere to fail over to, so
+    # the 120 s per-node first-byte default only turned queueing into 504s.
+    cfg = core.implicit_config({})
+    n, budget = cfg.nodes["rig"], cfg.settings.pre_commit_budget_s
+    assert (n.ttft_timeout_s, n.nonstream_timeout_s) == (budget, budget)
+    assert core.effective_ttft(n, 0, budget) == budget
+    # an explicit hydra.toml that says nothing keeps the 120 s default
+    assert core.validate(base(), {}).nodes["rig"].ttft_timeout_s == 120.0
+
+
+def test_implicit_node_keeps_id_slot_when_the_slot_count_was_never_stated():
+    # Review 2026-10-09 ops F10: slots defaulted to 1, so the gate's id_slot=2
+    # on a -np 6 rig was stripped and per-device slot affinity vanished.
+    cfg = core.implicit_config({})
+    d, n = cfg.deployments["local@rig"], cfg.nodes["rig"]
+    assert n.slots == 1 and not n.slots_known
+    for v in (0, 2, 5):
+        assert core.forward_body({"model": "local", "id_slot": v}, d, n) == ({"model": "local", "id_slot": v}, [])
+    for bad in (-1, True, "2"):
+        assert "id_slot" not in core.forward_body({"model": "local", "id_slot": bad}, d, n)[0]
+    # stated in the conf: the range check is back
+    cfg = core.implicit_config({"INFERENCE_SLOTS": "2"})
+    d, n = cfg.deployments["local@rig"], cfg.nodes["rig"]
+    assert n.slots_known
+    assert core.forward_body({"model": "local", "id_slot": 1}, d, n)[1] == []
+    assert core.forward_body({"model": "local", "id_slot": 2}, d, n)[1] == ["id_slot"]
+    # an explicit hydra.toml that omits `slots` means 1, as before
+    raw = base()
+    del raw["nodes"]["rig"]["slots"]
+    cfg = core.validate(raw, {})
+    assert cfg.nodes["rig"].slots_known
+    assert core.forward_body({"model": "qwen-unc", "id_slot": 1}, cfg.deployments["unc@rig"],
+                             cfg.nodes["rig"])[1] == ["id_slot"]
+    # and an engine without the cap never sees one, known count or not
+    v = core.implicit_config({"INFERENCE_BACKEND": "vllm", "INFERENCE_URL": "http://10.0.0.5:8000"})
+    assert core.forward_body({"model": "local", "id_slot": 0}, v.deployments["local@rig"],
+                             v.nodes["rig"])[1] == ["id_slot"]
+
+
 def test_print_default_config_round_trips():
     raw = core.implicit_raw({"INFERENCE_SLOTS": "3"})
     text = core.to_toml(raw, header="# hi\n")
@@ -558,7 +598,9 @@ def test_device_and_role_need_a_trusted_caller():
     cfg, st = _rules({"name": "phone", "when": {"device": "max-phone"}, "then": {"route": "beast:fast"}},
                      {"name": "guest", "when": {"role": "user"}, "then": {"ignore_nodes": ["rig"]}})
     spoof = core.Caller(False, "max-phone", "user")
-    assert decide(cfg, st, caller=spoof).route == "beast"
+    d = decide(cfg, st, caller=spoof)
+    assert d.route == "beast"                       # the device rule did not fire
+    assert "unc@rig" in ids(d) and "unc@rig" not in d.trace.excluded   # nor the role rule
     ok = core.Caller(True, "max-phone", None)
     assert decide(cfg, st, caller=ok).route == "beast:fast"
     d = decide(cfg, st, caller=core.Caller(True, None, "user"))

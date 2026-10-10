@@ -128,18 +128,67 @@ def _cli(monkeypatch, tmp_path, *argv):
     scoring.main()
 
 
+def _one_run(tmp_path, model="FRESH-ROW"):
+    """A results dir holding one seatable run (a suite with no pinned size)."""
+    import json
+    (tmp_path / "results").mkdir()
+    (tmp_path / "results" / "eval-fresh-20261001-000000.json").write_text(json.dumps({
+        "timestamp": "2026-10-01T00:00:00", "model": model, "model_slug": "fresh",
+        "suite_version": "t1", "gpu": {"host_id": "rig"},
+        "tasks": [{"id": "a", "difficulty": "easy", "passed": True}]}))
+
+
 def test_rebuild_then_html_renders_the_rebuilt_board(monkeypatch, tmp_path, capsys):
     """`--rebuild --html` used to return before the rebuild and publish the
     stale leaderboard.json without a word."""
     import json
-    (tmp_path / "results").mkdir()
+    _one_run(tmp_path)
     (tmp_path / "leaderboard.json").write_text(json.dumps({"entries": [
         {"model": "STALE-ROW", "suite_version": "v4", "tasks_total": 291}]}))
     out = tmp_path / "board.html"
     _cli(monkeypatch, tmp_path, "--rebuild", "--html", str(out))
     said = capsys.readouterr().out
-    assert "Rebuilt leaderboard" in said and "(0 entries)" in said, said
-    assert "STALE-ROW" not in out.read_text()
+    assert "Rebuilt leaderboard" in said and "(1 entries)" in said, said
+    page = out.read_text()
+    assert "STALE-ROW" not in page and "FRESH-ROW" in page
+
+
+def test_rebuild_with_no_result_files_refuses_and_keeps_the_board(monkeypatch, tmp_path):
+    """evals/results is not in the repo, so a fresh clone or worktree has
+    none: `--rebuild` there printed "Rebuilt leaderboard from 0 entries" and
+    wrote an empty board over the committed one (review 2026-10-09, F9)."""
+    import json
+    import pytest
+    board = json.dumps({"entries": [
+        {"model": "SEATED-ROW", "suite_version": "v4", "tasks_total": 291}]})
+    for make_dir in (False, True):                 # no results dir; an empty one
+        if make_dir:
+            (tmp_path / "results").mkdir()
+            (tmp_path / "results" / "server-m-20261001.log").write_text("not a results file\n")
+        (tmp_path / "leaderboard.json").write_text(board)
+        with pytest.raises(SystemExit) as ex:
+            _cli(monkeypatch, tmp_path, "--rebuild")
+        msg = str(ex.value)
+        assert ex.value.code not in (0, None)
+        assert "no eval-*.json result files" in msg and str(tmp_path / "results") in msg
+        assert "unchanged" in msg
+        assert (tmp_path / "leaderboard.json").read_text() == board
+        assert not (tmp_path / "leaderboard.json.tmp").exists()
+
+
+def test_rebuild_with_only_ineligible_runs_still_writes(monkeypatch, tmp_path, capsys):
+    """Negative control: the refusal is for an ABSENT results set. Runs that
+    are all ineligible are a real, if empty, answer."""
+    import json
+    (tmp_path / "results").mkdir()
+    (tmp_path / "results" / "eval-x-20261001-000000.json").write_text(json.dumps({
+        "model": "X", "model_slug": "x", "suite_version": "t1", "gpu": {"host_id": "rig"},
+        "harness": {"greedy": True},
+        "tasks": [{"id": "a", "difficulty": "easy", "passed": True}]}))
+    (tmp_path / "leaderboard.json").write_text(json.dumps({"entries": [{"model": "OLD"}]}))
+    _cli(monkeypatch, tmp_path, "--rebuild")
+    assert "Rebuilt leaderboard from 0 entries" in capsys.readouterr().out
+    assert json.loads((tmp_path / "leaderboard.json").read_text())["entries"] == []
 
 
 def test_html_to_a_missing_directory_is_one_error_line(monkeypatch, tmp_path):
@@ -153,7 +202,7 @@ def test_html_to_a_missing_directory_is_one_error_line(monkeypatch, tmp_path):
 def test_rebuild_html_to_stdout_is_only_the_page(monkeypatch, tmp_path, capsys):
     """`--rebuild --html -` printed "Rebuilt leaderboard…" ahead of the page,
     so a piped board began with a line of text."""
-    (tmp_path / "results").mkdir()
+    _one_run(tmp_path)
     _cli(monkeypatch, tmp_path, "--rebuild", "--html", "-")
     got = capsys.readouterr()
     assert got.out.lstrip().lower().startswith("<!doctype html"), got.out[:80]

@@ -131,26 +131,37 @@ if base:
 models = dict(models)
 if live:
     alias, n_ctx = live
-    row = {"name": "%s  [live on rig]" % alias}
+    # Keyed by the id the rig SERVES, never an invented one: opencode sends
+    # this key as the request's "model". llama-server ignores it, but vLLM
+    # and hydra (unknown_model = "404") reject an id they do not serve — the
+    # old "rig-live" key made every request from such a rig's clients a 404.
+    row = dict(models.get(alias) or {})
+    row["name"] = "%s  [live on rig]" % alias
     if n_ctx:
         row["limit"] = {"context": n_ctx, "output": 32768}
-    models["rig-live"] = row
+    models[alias] = row
 prov["models"] = models
 
 # Keep the default pointed at something that exists. Prefer the live row.
-want = "openbeast-rig/rig-live" if live else None
+want = ("openbeast-rig/" + live[0]) if live else None
 cur = cfg.get("model", "")
 if want and (cur.startswith("openbeast-rig/") or not cur):
     cfg["model"] = want
     cfg.setdefault("small_model", want)
 elif cur.startswith("openbeast-rig/") and cur.split("/", 1)[1] not in models:
     cfg["model"] = "openbeast-rig/" + next(iter(models))
+# small_model too: an install made before the live row carried the served id
+# has "openbeast-rig/rig-live" here, a row that no longer exists.
+small = str(cfg.get("small_model", ""))
+if small.startswith("openbeast-rig/") and small.split("/", 1)[1] not in models:
+    cfg["small_model"] = want or ("openbeast-rig/" + next(iter(models)))
 
 mode = stat.S_IMODE(os.stat(oc_path).st_mode)
 json.dump(cfg, open(oc_path, "w"), indent=2); open(oc_path, "a").write("\n")
 os.chmod(oc_path, mode)   # keyed installs are 0600 — never widen it
 
-added, gone = sorted(after - before), sorted(before - after - {"rig-live"})
+added = sorted(after - before)
+gone = sorted(before - after - {"rig-live"} - ({live[0]} if live else set()))
 print("  ok opencode catalog refreshed: %d models%s%s" % (
     len(models),
     (" (+%s)" % ", ".join(added)) if added else "",
@@ -195,6 +206,15 @@ _http_code() {
 case "$CMD" in
   status)
     echo "=== OpenBeast client status ==="
+    # Never installed is not "broken": with neither the env file nor the
+    # client dir there is nothing to repair, and "venv broken — re-run" sent
+    # people looking for a run they never made.
+    if [ ! -f "$ENV_FILE" ] && [ ! -d "$CLIENT_DIR" ]; then
+      echo "  ✗ client mode is not installed on this machine"
+      echo "    (no $ENV_FILE, no $CLIENT_DIR)."
+      echo "    Install it:  $REPO/scripts/setup-client.sh --host <rig-fqdn>"
+      exit 1
+    fi
     ok=0; bad=0
     if [ -f "$ENV_FILE" ]; then
       echo "  ✓ env file ($ENV_FILE)"; ok=$((ok+1))
@@ -203,8 +223,10 @@ case "$CMD" in
     fi
     if [ -x "$VENV/bin/python3" ] && "$VENV/bin/python3" -c "import mcp, openai" 2>/dev/null; then
       echo "  ✓ venv imports mcp + openai"; ok=$((ok+1))
+    elif [ ! -x "$VENV/bin/python3" ]; then
+      echo "  ✗ no venv at $VENV — run scripts/setup-client.sh"; bad=$((bad+1))
     else
-      echo "  ✗ venv broken — re-run scripts/setup-client.sh"; bad=$((bad+1))
+      echo "  ✗ venv broken (mcp/openai do not import) — re-run scripts/setup-client.sh"; bad=$((bad+1))
     fi
     if [ -n "$TS_BIN" ] && "$TS_BIN" status >/dev/null 2>&1; then
       echo "  ✓ tailscale up"; ok=$((ok+1))
@@ -399,9 +421,13 @@ elif isinstance(rig_v, int) and rig_v > CLIENT_V:
     # requirements.txt` here re-resolved every transitive dependency, unpinned
     # and unverified, into the venv that runs bash and the file tools — on the
     # first update after a hash-pinned install. pydeps.sh exit 3 is a HASH
-    # MISMATCH: fatal, never a fallback. Any other failure (a python the
-    # closure does not cover) degrades loudly to requirements.txt, unless
-    # OPENBEAST_PIP_STRICT=1. (Bash 3.2-safe: this file runs on macOS.)
+    # MISMATCH: fatal, never a fallback. Any OTHER failure is fatal too unless
+    # OPENBEAST_PIP_STRICT=0 is set explicitly: a hostile mirror does not
+    # have to serve wrong bytes, it can just withhold one locked file ("No
+    # matching distribution", exit 1) — and an automatic fallback would then
+    # install the same names unverified, from that same mirror. The opt-out
+    # is for a python the closure does not cover. (Bash 3.2-safe: this file
+    # runs on macOS.)
     if [ -x "$VENV/bin/pip" ]; then
       _pd_rc=0
       if [ -x "$REPO/scripts/pydeps.sh" ]; then
@@ -416,12 +442,18 @@ elif isinstance(rig_v, int) and rig_v > CLIENT_V:
         echo "    If a mirror or proxy is configured (pip config list, PIP_INDEX_URL), suspect it first." >&2
         exit 1
       elif [ "$_pd_rc" -ne 0 ]; then
-        if [ "${OPENBEAST_PIP_STRICT:-0}" = "1" ]; then
-          echo "  x the hash-pinned install failed and OPENBEAST_PIP_STRICT=1 forbids the unpinned fallback" >&2
+        if [ "${OPENBEAST_PIP_STRICT:-1}" != "0" ]; then
+          echo "  x the hash-pinned install failed, and NOT on a hash (pip's report is above)." >&2
+          echo "    Refusing to fall back to agents/requirements.txt: that installs the same" >&2
+          echo "    packages UNVERIFIED, which is what an index that withholds a locked file wants." >&2
+          echo "    If a mirror or proxy is configured (pip config list, PIP_INDEX_URL), suspect it first." >&2
+          echo "    If this python is simply not covered by the lock, opt out explicitly:" >&2
+          echo "      OPENBEAST_PIP_STRICT=0 $0 update" >&2
           exit 1
         fi
         echo "  ! the hash-pinned install failed on this python, and NOT on a hash (see above) —" >&2
-        echo "    falling back to agents/requirements.txt, which pins VERSIONS but not content." >&2
+        echo "    OPENBEAST_PIP_STRICT=0: falling back to agents/requirements.txt, which pins" >&2
+        echo "    VERSIONS but not content." >&2
         if ! "$VENV/bin/pip" install -q -r "$REPO/agents/requirements.txt"; then
           echo "  x dependency install failed." >&2
           exit 1

@@ -16,6 +16,20 @@ echo ""
 
 OVERALL=0
 
+# pytest is not optional. Without it this script used to skip the hydra,
+# instinct and onboarding blocks without a word, run 252 of ~3,100 tests
+# through a unittest fallback, and print "ALL TESTS PASSED". The shell suites
+# below still run, so their results are not lost; the run as a whole fails.
+HAVE_PYTEST=1
+if ! python3 -c "import pytest" 2>/dev/null; then
+  HAVE_PYTEST=0
+  OVERALL=1
+  echo "ERROR: pytest is not installed for $(command -v python3) — the Python suites cannot run."
+  echo "       Install it:  python3 -m pip install pytest   (CI: .github/ci-requirements.txt)"
+  echo "       The shell suites run below; this run will end in SOME TESTS FAILED."
+  echo ""
+fi
+
 # --- Script structure tests ---
 echo "--- Script structure tests ---"
 echo ""
@@ -145,7 +159,9 @@ for _suite in \
   "test_tier3_harness.sh|Tier-3 campaign harness (manifest, stop file, drift)" \
   "test_hydra_ready_parity.sh|beast-hydra readiness parity (hydra_core vs backend.sh)" \
   "test_hydra_sim.sh|beast-hydra simulated fleet + scripts/hydra.sh" \
-  "test_hydra_instinct_wiring.sh|beast-hydra / beast-instinct stack wiring (conf, start, stop, healthcheck)"; do
+  "test_hydra_instinct_wiring.sh|beast-hydra / beast-instinct stack wiring (conf, start, stop, healthcheck)" \
+  "test_setup_client.sh|Client installer (scripts/setup-client.sh)" \
+  "test_operator_scripts.sh|Operator scripts (2026-10-09 review fixes)"; do
   _file="${_suite%%|*}"; _label="${_suite#*|}"
   echo "--- $_label tests (tests/$_file) ---"
   echo ""
@@ -165,7 +181,7 @@ done
 # Hermetic: fake engines, a stub scorer and uvicorn/TestClient on ephemeral
 # loopback ports. Also part of the full pytest run below; listed on its own
 # so a failure here is named, as in CI.
-if python3 -c "import pytest" 2>/dev/null; then
+if [[ $HAVE_PYTEST -eq 1 ]]; then
   echo "--- beast-hydra / beast-instinct tests (tests/test_hydra_*.py, test_instinct_*.py, test_router_instinct.py) ---"
   echo ""
   if python3 -m pytest "$REPO_DIR"/tests/test_hydra_*.py "$REPO_DIR"/tests/test_instinct_*.py \
@@ -185,7 +201,7 @@ fi
 # Hermetic: a stub Hugging Face Hub and stub OpenAI servers on ephemeral
 # loopback ports. Also part of the full pytest run below; listed on its own
 # so a failure here is named, as in CI.
-if python3 -c "import pytest" 2>/dev/null; then
+if [[ $HAVE_PYTEST -eq 1 ]]; then
   echo "--- Model onboarding tests (tests/test_model_{profiles,inspect,fetch}.py, test_conformance.py, test_use_model.py) ---"
   echo ""
   if python3 -m pytest "$REPO_DIR/tests/test_model_profiles.py" "$REPO_DIR/tests/test_model_inspect.py" \
@@ -216,7 +232,7 @@ if [[ -z "${OPENBEAST_TOOL_AUDIT_PATH:-}" ]]; then
   trap 'rm -rf "$_AUDIT_TMP"' EXIT
   export OPENBEAST_TOOL_AUDIT_PATH="$_AUDIT_TMP/tool-audit.jsonl"
 fi
-if python3 -c "import pytest" 2>/dev/null; then
+if [[ $HAVE_PYTEST -eq 1 ]]; then
   if python3 -m pytest "$REPO_DIR/tests/test_tools.py" -v --tb=short; then
     echo ""
     echo "Tool tests: ALL PASSED"
@@ -226,17 +242,7 @@ if python3 -c "import pytest" 2>/dev/null; then
     OVERALL=1
   fi
 else
-  # Fallback: run with unittest if pytest not installed
-  echo "(pytest not found, falling back to unittest)"
-  echo ""
-  if python3 -m unittest discover -s "$REPO_DIR/tests" -p "test_*.py" -v; then
-    echo ""
-    echo "Tool tests: ALL PASSED"
-  else
-    echo ""
-    echo "Tool tests: SOME FAILED"
-    OVERALL=1
-  fi
+  echo "Tool tests: NOT RUN (pytest is not installed)"
 fi
 
 # --- Full Python suite -----------------------------------------------------
@@ -246,7 +252,7 @@ fi
 # CI and never executed by this script. A local runner that reports "ALL TESTS
 # PASSED" while skipping most of the tests is worse than having no runner, so
 # it now runs what CI runs.
-if python3 -c "import pytest" 2>/dev/null; then
+if [[ $HAVE_PYTEST -eq 1 ]]; then
   echo ""
   echo "--- Full Python suite (everything CI runs) ---"
   echo ""
@@ -258,12 +264,17 @@ if python3 -c "import pytest" 2>/dev/null; then
     echo "Full Python suite: SOME FAILED"
     OVERALL=1
   fi
+else
+  echo ""
+  echo "Full Python suite: NOT RUN (pytest is not installed)"
 fi
 
 echo ""
 echo "========================================"
 if [[ $OVERALL -eq 0 ]]; then
   echo " ALL TESTS PASSED"
+elif [[ $HAVE_PYTEST -eq 0 ]]; then
+  echo " SOME TESTS FAILED — the Python suites did NOT RUN (pytest is not installed)"
 else
   echo " SOME TESTS FAILED"
 fi

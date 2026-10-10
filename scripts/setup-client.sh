@@ -305,16 +305,63 @@ if [ $LOCAL_SEARCH -eq 1 ]; then
 fi
 
 if [ -z "$HOST_FQDN" ] && [ $fail -eq 0 ]; then
-  HOST_FQDN="$("$TS" status --json 2>/dev/null | "$PY" -c '
+  # Only a peer under OUR OWN MagicDNS suffix can be the rig. A node named
+  # `beast` that someone shared in from another tailnet has a different
+  # suffix; picking it by first label alone would send it the key (the
+  # health probe below presents the bearer) and then every prompt.
+  # One line per peer: "rig <fqdn>" (ours, named beast), "own <fqdn>",
+  # "foreign <fqdn>".
+  _peers="$("$TS" status --json 2>/dev/null | "$PY" -c '
 import json, sys
 d = json.load(sys.stdin)
+me = ((d.get("Self") or {}).get("DNSName") or "").rstrip(".")
+suffix = me.partition(".")[2] or (d.get("MagicDNSSuffix") or "").strip(".")
 for p in (d.get("Peer") or {}).values():
     dns = (p.get("DNSName") or "").rstrip(".")
-    if dns.split(".")[0] == "beast":
-        print(dns); break
+    if not dns:
+        continue
+    name, _, rest = dns.partition(".")
+    ours = bool(suffix) and rest == suffix
+    kind = "foreign" if not ours else ("rig" if name == "beast" else "own")
+    print(kind, dns)
 ' || true)"
-  [ -n "$HOST_FQDN" ] && echo "  ✓ rig auto-detected: $HOST_FQDN" \
-    || { echo "  ✗ no tailnet peer named 'beast' — pass --host <rig-fqdn>"; fail=1; }
+  HOST_FQDN="$(printf '%s\n' "$_peers" | sed -n 's/^rig //p' | sed -n '1p')"
+  if [ -n "$HOST_FQDN" ]; then
+    echo "  ✓ rig auto-detected: $HOST_FQDN"
+    # A key is about to be presented to a host nobody typed. Have a human
+    # confirm it, or refuse when there is no terminal to ask on.
+    if [ -n "$API_KEY" ]; then
+      if [ -t 0 ]; then
+        printf '    Send the rig API key to %s? [y/N] ' "$HOST_FQDN" >&2
+        IFS= read -r _yn || _yn=""
+        case "$_yn" in
+          y|Y|yes|YES) : ;;
+          *) echo "  ✗ not confirmed — name the rig yourself: --host <rig-fqdn>"; fail=1 ;;
+        esac
+      else
+        echo "  ✗ refusing to send the rig API key to an AUTO-DETECTED host with no"
+        echo "    terminal to confirm on. Name the rig explicitly:"
+        echo "      $0 --host $HOST_FQDN --api-key-stdin"
+        fail=1
+      fi
+    fi
+  else
+    echo "  ✗ no peer named 'beast' on your tailnet — pass --host <rig-fqdn>"
+    _own="$(printf '%s\n' "$_peers" | sed -n 's/^own //p')"
+    if [ -n "$_own" ]; then
+      echo "    peers on your tailnet (is the rig one of these?):"
+      printf '%s\n' "$_own" | sed 's/^/      /'
+    else
+      echo "    (no other device on your tailnet is visible from here — is the rig signed in?)"
+    fi
+    _foreign="$(printf '%s\n' "$_peers" | sed -n 's/^foreign \(beast\..*\)$/\1/p')"
+    if [ -n "$_foreign" ]; then
+      echo "    ignored — named 'beast' but shared in from ANOTHER tailnet:"
+      printf '%s\n' "$_foreign" | sed 's/^/      /'
+      echo "    (pass --host to use one of those deliberately)"
+    fi
+    fail=1
+  fi
 fi
 [ $fail -eq 0 ] || { echo "Preflight failed — nothing was changed."; exit 1; }
 
@@ -326,8 +373,6 @@ else
   SEARCH_URL="https://$HOST_FQDN:8889"
 fi
 
-# -f (fail on 4xx/5xx) + a body match: without them a tailscale-serve 502
-# (published port, stack down) reports as "reachable".
 # The bearer goes through lib/curl_auth.sh (a curl --config on an fd), never
 # curl's argv. A copy of this script fetched on its own (the documented
 # no-clone path) has no lib/ yet — the slim checkout comes later — so the
@@ -348,9 +393,58 @@ header = "Authorization: Bearer $_k"
 EOF
   }
 fi
-probe_ok="$(ob_curl_bearer "$API_KEY" -fsS -m 5 "https://$HOST_FQDN:8443/health" 2>/dev/null | grep -qi 'ok' && echo yes || echo no)"
-[ "$probe_ok" = "yes" ] && echo "  ✓ rig model API reachable ($API_URL)" \
-  || echo "  ! rig model API not answering ($API_URL) — is the stack up? Wiring anyway."
+# Read the STATUS, not the body. `curl -f … | grep ok` collapsed a rig that
+# wants a key (401), one that never published :8443 (nothing answers) and a
+# published rig whose stack is down (502) into one "not answering — is the
+# stack up?", and the install then finished "ready" in all three. Each has a
+# different fix on a different machine, so say which. curl prints 000 AND
+# exits non-zero when nothing answers — capture, ignore the status.
+RIG_NOTE=""
+probe_code="$(ob_curl_bearer "$API_KEY" -sS -m 5 -o /dev/null -w '%{http_code}' \
+  "https://$HOST_FQDN:8443/health" 2>/dev/null)" || true
+if [ "$probe_code" = "200" ]; then
+  # /health is public on a raw llama-server even when LLAMA_API_KEY is set
+  # (beast-gate is what 401s it), so a 200 proves reachability, not that the
+  # key is accepted. Ask a protected endpoint; only a 401/403 changes the verdict.
+  _mc="$(ob_curl_bearer "$API_KEY" -sS -m 5 -o /dev/null -w '%{http_code}' \
+    "$API_URL/models" 2>/dev/null)" || true
+  case "$_mc" in 401|403) probe_code="$_mc" ;; esac
+fi
+case "${probe_code:-000}" in
+  200)
+    echo "  ✓ rig model API reachable ($API_URL)" ;;
+  401|403)
+    if [ -z "$API_KEY" ]; then
+      echo "  ✗ This rig requires a device key (HTTP $probe_code from $API_URL)."
+      echo "    Ask its owner to run ./scripts/clients.sh enroll <name>,"
+      echo "    then re-run with --api-key-stdin:"
+      echo "      $0 --host $HOST_FQDN --api-key-stdin"
+    else
+      echo "  ✗ The rig rejected this device key (HTTP $probe_code from $API_URL) —"
+      echo "    mistyped, rotated, or the device was revoked. Ask its owner to run"
+      echo "    ./scripts/clients.sh rotate <name> (or enroll), then re-run:"
+      echo "      $0 --host $HOST_FQDN --api-key-stdin"
+    fi
+    echo "Nothing was changed."
+    exit 1 ;;
+  000)
+    RIG_NOTE="nothing answers on $HOST_FQDN:8443"
+    echo "  ! Rig is not published on :8443 (nothing answers at $API_URL) —"
+    echo "    on the rig: ./scripts/setup-tailscale.sh"
+    echo "    (if it IS published: check the host name, and that both machines are"
+    echo "    on the tailnet — a full-tunnel VPN severs it). Wiring anyway." ;;
+  502|504)
+    RIG_NOTE="the rig's stack is down (HTTP $probe_code)"
+    echo "  ! Published, but the stack is down (HTTP $probe_code) —"
+    echo "    on the rig: ./start.sh -d      Wiring anyway." ;;
+  503)
+    RIG_NOTE="the rig is still loading its model (HTTP 503)"
+    echo "  ! rig is up but still loading the model (HTTP 503) — retry shortly. Wiring anyway." ;;
+  *)
+    RIG_NOTE="unexpected HTTP $probe_code from $HOST_FQDN:8443/health"
+    echo "  ! rig answered /health with HTTP $probe_code ($API_URL) — is :8443 this"
+    echo "    rig's model API? On the rig: ./scripts/doctor.sh      Wiring anyway." ;;
+esac
 # beast-slot discovery (informational — tells you what the rig has loaded).
 SLOT_INFO="$(curl -s -m 5 "$SLOT_URL" 2>/dev/null | "$PY" -c '
 import json, sys
@@ -414,9 +508,12 @@ mkdir -p "$CLIENT_DIR"
 # compromised transitive release would land here while the rig refused it.
 # pydeps.sh verifies the lock is current and installs with --require-hashes.
 # Its exit 3 is a HASH MISMATCH (the index served substituted bytes): fatal,
-# never a reason to fall back. Any other failure (a python the closure does
-# not cover — Intel macOS needs a compiler for cffi, see pydeps.sh) degrades
-# loudly to requirements.txt, unless OPENBEAST_PIP_STRICT=1.
+# never a reason to fall back. Any OTHER failure is fatal too, unless
+# OPENBEAST_PIP_STRICT=0 is set explicitly: a hostile mirror need not serve
+# wrong bytes, it can withhold one locked file ("No matching distribution",
+# exit 1), and an automatic fallback would then install the same names
+# unverified from that same mirror. The opt-out is for a python the closure
+# does not cover (Intel macOS needs a compiler for cffi, see pydeps.sh).
 _pd_rc=0
 OPENBEAST_PYTHON="$VENV/bin/python3" "$CLIENT_REPO/scripts/pydeps.sh" install -q || _pd_rc=$?
 if [ "$_pd_rc" -eq 0 ]; then
@@ -427,12 +524,18 @@ elif [ "$_pd_rc" -eq 3 ]; then
   echo "    Refusing, and NOT falling back to requirements.txt (same packages, unverified)."
   echo "    If a mirror or proxy is configured (pip config list, PIP_INDEX_URL), suspect it first."
   exit 1
-elif [ "${OPENBEAST_PIP_STRICT:-0}" = "1" ]; then
-  echo "  ✗ the hash-pinned install failed and OPENBEAST_PIP_STRICT=1 forbids the unpinned fallback"
+elif [ "${OPENBEAST_PIP_STRICT:-1}" != "0" ]; then
+  echo "  ✗ the hash-pinned install failed, and NOT on a hash (pip's report is above)."
+  echo "    Refusing to fall back to agents/requirements.txt: that installs the same"
+  echo "    packages UNVERIFIED, which is what an index that withholds a locked file wants."
+  echo "    If a mirror or proxy is configured (pip config list, PIP_INDEX_URL), suspect it first."
+  echo "    If this python is simply not covered by the lock, opt out explicitly:"
+  echo "      OPENBEAST_PIP_STRICT=0 $0 --host <rig-fqdn>"
   exit 1
 else
   echo "  ! the hash-pinned install failed on this python, and NOT on a hash (see above) —"
-  echo "    falling back to agents/requirements.txt, which pins VERSIONS but not content."
+  echo "    OPENBEAST_PIP_STRICT=0: falling back to agents/requirements.txt, which pins"
+  echo "    VERSIONS but not content."
   "$VENV/bin/pip" install -q -r "$CLIENT_REPO/agents/requirements.txt"
   _pins="pins from agents/requirements.txt — NOT hash-verified"
 fi
@@ -473,7 +576,11 @@ _q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
   fi
   [ -n "$SEARXNG_CLIENT_SECRET" ] && echo "OPENBEAST_SEARXNG_SECRET=$(_q "$SEARXNG_CLIENT_SECRET")"
 } > "$ENV_FILE"
-echo "  ✓ wrote $ENV_FILE"
+# umask only sets the mode of a file this run CREATES. A pre-existing env file
+# (hand-made, or restored by a dotfile manager at 0644) keeps its mode through
+# the redirect above — and it now holds the bearer key.
+chmod 600 "$ENV_FILE"
+echo "  ✓ wrote $ENV_FILE (0600)"
 
 # ---- 4b. local SearXNG (--local-search) -------------------------------------
 if [ $LOCAL_SEARCH -eq 1 ]; then
@@ -486,8 +593,11 @@ fi
 # ---- 5. merge opencode.json (never clobber user config) ---------------------
 mkdir -p "$OC_CONFIG_DIR"
 [ -f "$OC_CONFIG" ] || echo '{}' > "$OC_CONFIG"
+# "$PY", the interpreter preflight vetted — never bare python3: on a Mac that
+# is the Xcode shim (3.9, or an install prompt), and dying here under set -e
+# leaves the env file and venv written but no config and no CLI symlink.
 NO_SEARCH="$NO_SEARCH" API_KEY="$API_KEY" \
-  python3 - "$OC_CONFIG" "$CLIENT_REPO" "$VENV" "$API_URL" "$SEARCH_URL" "$HOST_FQDN" <<'PYEOF'
+  "$PY" - "$OC_CONFIG" "$CLIENT_REPO" "$VENV" "$API_URL" "$SEARCH_URL" "$HOST_FQDN" <<'PYEOF'
 import json, os, sys
 oc_path, repo, venv, api_url, search_url, host = sys.argv[1:7]
 no_search = os.environ.get("NO_SEARCH") == "1"
@@ -604,7 +714,15 @@ fi
 
 # ---- 6. report --------------------------------------------------------------
 echo ""
-echo "Client mode ready. Use it:"
+if [ -n "$RIG_NOTE" ]; then
+  # Installed is not the same as working: do not say "ready" over a rig that
+  # did not answer. The fix is on the rig and was named at the probe above.
+  echo "Client mode INSTALLED, but the rig is not usable yet: $RIG_NOTE."
+  echo "Fix that on the rig (see the '!' line above), then check: $CLIENT_REPO/scripts/client.sh status"
+  echo "Once it answers:"
+else
+  echo "Client mode ready. Use it:"
+fi
 echo "  cd <any project> && opencode     # pick an 'openbeast-rig' model"
 if [ "${CLI_LINKED:-0}" = "1" ]; then
   case ":$PATH:" in
