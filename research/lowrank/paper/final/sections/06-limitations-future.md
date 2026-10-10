@@ -1,58 +1,82 @@
-# 6. Limitations and open work
+# 7. Limitations and open work
 
-## 6.1 Limitations
+## 7.1 Limitations
 
-The campaign was reviewed adversarially twice — statistics, claims, code, and then the paper draft itself [source: research/lowrank/review/] — and the limitations that survive are the paper's boundary conditions.
+**Models and hardware.** Every model is Qwen-family: Qwen3-0.6B, Qwen3.5-0.8B, Qwen3.6-27B (as the heretic-v2 finetune), Qwen3.8-27B and Qwen3.6-35B-A3B. Every measurement comes from one GPU (an RTX 5090) on one workstation. Nothing here tests another model family.
 
-**Distribution.** Calibration and most evaluation share wikitext-2 (train/test split only). The corrected configurations carry far more calibration-fitted capacity than the rungs they compete with, and §4.7 measures 10-27% corpus sensitivity, larger than every contested ladder margin. What we have off-distribution is: the re-rounder at 0.8B on a code corpus (worse than bare when calibrated on wikitext alone; better when code is in the calibration mix) and on an unseen prose corpus (better in both variants) (§3.1); and the correction increment at 27B on FineWeb-Edu, where it holds at three rungs (§4.3c). The ladder comparisons of §4.3 — flagship versus rung versus control — have not been repeated on a held-out corpus, and neither has the 27B re-rounder.
+**Baselines not compared.** The re-rounder was compared against the file it starts from and, at 0.8B, against stock rungs. It was never compared against free-grid GPTQ at equal bits, against vector or lattice quantizers at 2 bits, or against learned-rounding methods. The type-allocation control was built by hand from measured sensitivities and was not compared against Hessian-aware mixed-precision allocation methods. These are named as classes of work; we did not run them and do not cite numbers for them.
 
-**The instrument.** Every KL-divergence number is measured at a 512-token context. §4.3c shows two artifacts of one model whose ordering under that instrument reverses on 2048-token perplexity and on an agentic coding suite. Within a single refinement family the instrument agreed with the one task evaluation that could resolve anything (HellaSwag, §4.3); across families it did not. Task-level evidence in this paper is thin: one multiple-choice benchmark at one byte point, and one coding suite, one run per arm, on the competitor's rung only. None of our own corrected or re-rounded artifacts was run on the coding suite.
+**Distribution.** Calibration and most evaluation share wikitext-2 (train and test splits). The corrected configurations carry more calibration-fitted capacity than the rungs they are compared with, and §4.8 measures 10-27% sensitivity to the corpus, larger than every contested ladder margin. Off-distribution we have: the re-rounder at 0.8B on a code corpus and on an unseen prose corpus (§3.1), and the correction increment at 27B on FineWeb-Edu (§5.3). The ladder comparisons of §4.3 have not been repeated on a held-out corpus, and neither has the 27B re-rounder.
 
-**Controls.** The mixed-quant interpolation control exists at 27B and for the MoE, and was never built at 0.6B or 0.8B. This is the reason §4.3 claims wins-from-below at small scale rather than wins.
+**Statistics.** The t statistics are conditional on one calibration sample and one evaluation corpus. No family-wise correction was applied. The two contested 27B margins are a third look at accumulating data, one of them is not uniform across the test set, and neither is replicated (§4.3). Blocks in the block bootstrap are runs of consecutive chunks and not articles.
 
-**Width.** The capture regression of §4.2 has one step on the width axis (1024 → 5120) and its confidence intervals resample tensors, not models.
+**The instrument.** Every KL-divergence number is at a 512-token context. In one pair of files it ordered them opposite to a coding suite (§5.5), and the only task evaluation inside our own comparisons tied the contested pair (§4.3). Task-level evidence in this paper is thin: one multiple-choice benchmark at one byte count, and one coding suite, one run per arm, on the competitor's files only. None of our corrected or re-rounded files was run on the coding suite.
 
-**References and precision.** Rows labeled legacy are referenced to a Q6_K or Q8_0 file rather than BF16 (measured contamination at 27B: 0.0032 KLD). The 27B endgame is single-step from BF16 and paired at 100 chunks; the remaining 27B lever comparisons (measured allocation versus uniform rank, alternation rounds) are inside unpaired error bars, the 27B VRAM columns were not measured, "full covariance" at 27B means block-diagonal for ffn_down (§2.2), and the 27B rank allocation used sensitivity priors transferred from 0.6B.
+**Controls.** The mixed-type control exists at 27B and for the mixture-of-experts model. It was not built at 0.6B or 0.8B, and it is a single designed point at each size where it exists.
 
-**Evidence grade on alternation.** The ordering claim of §4.8 (never stack re-rounding under a corrector) is paired-resolved (t = +17.6). The claim about alternation *rounds* is weaker: the 0.6B arc is unpaired, the 0.8B continuation has no recorded error bars, and the 27B increment from alternation is about 1σ.
+**Width.** The regression of §4.2 has one step on the width axis and its intervals resample tensors, not models.
 
-**Speed.** All speed numbers come from one GPU. Session-to-session drift reached 9%; kernel gates are tuned on two model sizes; nothing was re-measured after the patch set was rebased (§5.4).
+**References and precision.** Rows labeled legacy are scored against a Q6_K or Q8_0 file and not BF16 (measured contamination at 27B: 0.0032 KLD). The mixture-of-experts table is scored against a vendor Q4-class file at 20 chunks. At 27B, "full covariance" means block-diagonal for ffn_down (§2.2), the VRAM columns were not measured, and the rank allocation used sensitivity priors from 0.6B.
 
-**Code hazards, disclosed.** Cache directories originally carried no provenance fingerprint (silently wrong on resume; fixed for the re-rounder, open for the spectra caches and one extractor). Column selection under Gram whitening ranks the wrong columns (latent; the reported column runs predate full-covariance whitening). A naive MoE Gram accumulation would have been wrong and was caught before any reported capture [source: research/lowrank/review/adversarial-code.md].
+**Alternation.** The ordering claim of §3.3 is paired (t = +17.6). The claim about alternation rounds is weaker: the 0.6B sequence is unpaired, the 0.8B continuation has no recorded error bars, and the 27B gain from alternation is about one unpaired standard error.
 
-**How the work was done.** Experiments, analysis and drafting were carried out by AI research agents under the author's direction, on one workstation. That is why the review rounds and the pre-registration rule exist, and it did not prevent errors: this record contains a set of paired t-statistics that were inflated by dividing per-chunk differences by a per-token standard error (caught and recomputed with the canonical tool before any conclusion changed), two capability rows that were retracted when 85% of their failures turned out to be a crashed server, and a first "mixed-calibration" run that never reached its second corpus. Each is kept in the journal with its correction.
+**Speed.** One GPU, one host. Session-to-session drift reached 9%; only one speed result has raw output in the repository; nothing was re-measured after the patch set was rebased (§6.1).
 
-## 6.2 Status of the ablation program
+**Verification rests on the project's own records.** Statements that a derivation was verified numerically, that a capture passed its gates, or that an experiment was registered before it ran cite the project's review notes and journal. Those are our records and have not been checked by anyone outside the project.
 
-An audit of every lever-at-scale cell behind this paper's claims counted 51 cells: 17 clean, 15 confounded, 19 missing [source: research/lowrank/paper/ABLATION-PLAN.md]. The nulls are the cleanest cells (water-filling, shared basis, equalization, the Kronecker metric, MoE versus control — isolated, mostly paired, 2.7 to 60σ). The confounds concentrate in the positive multi-point curves: the recovery curve of §4.4 varies adapter budget and rank mix across its points, and the 27B allocation row varied three factors at once.
+**Code hazards.** Cache directories originally carried no provenance fingerprint (fixed for the re-rounder; open for the spectra caches and one extractor). Column selection under Gram whitening ranks the wrong columns (the reported column runs predate full-covariance whitening) [source: research/lowrank/review/adversarial-code.md].
 
-The audit priced a matrix of seventeen runs to close the gating cells. Eleven have been run and are reported above: the 100-chunk BF16 reference; the paired 27B re-round (§3.1); the single-step 27B rebuild with its control, at 20, 40 and 100 chunks (§4.3); the first task evaluation (§4.3); the capture-versus-width regression (§4.2); the third-corpus held-out test and the full-metric mixed-calibration run (§3.1); the clean-Gram Kronecker run (§3.2); and the GSQ-RCO head-to-head on two corpora with one capability pair (§4.3c). Six have not been run, and the corresponding claims are scoped accordingly in the text:
+**How the work was done.** Experiments, analysis and drafting were carried out by AI research agents under the author's direction, on one workstation. The author is responsible for the claims; errors found in the record and their corrections are listed in §7.6.
 
-- the calibration-sensitivity grid (mix ratio × method), which would turn §3.1's rescue demonstration into an ablation;
-- interpolation controls at the 0.6B and 0.8B byte points;
-- a held-out pass over the corrected configurations and their ladder rivals at all scales;
+## 7.2 Status of the ablation program
+
+An audit of every cell behind this paper's claims counted 51: 17 clean, 15 confounded, 19 missing [source: research/lowrank/paper/ABLATION-PLAN.md]. The negative results are the cleanest cells (water-filling, shared basis, equalization, the Kronecker metric, mixture-of-experts against control: isolated, mostly paired, with |t| between 2.7 and 60). The confounds concentrate in the positive multi-point curves: the recovery curve of §4.5 varies adapter budget and rank mix across its points, and the 27B allocation row varied three factors at once.
+
+The audit priced seventeen runs to close the gating cells. Eleven have been run and are reported above. Six have not, and the corresponding claims are scoped in the text:
+
+- the calibration-sensitivity grid (mix ratio × method);
+- mixed-type controls at the 0.6B and 0.8B byte counts;
+- a held-out pass over the corrected configurations and their ladder rivals;
 - the recovery curve with the correction recipe held fixed;
-- the equalization mechanism ablations (no imatrix; an alpha sweep);
+- the equalization ablations (no imatrix; a strength sweep);
 - a bound on calibration-sampling variance alone.
 
-Also open: the IQ2-rung capability pair and a capability run of our own arm (§4.3c); a single-slot run-to-run floor for the coding suite; a 27B re-round pair with single-step provenance; and a third model width.
+The review of this paper adds experiments that the existing logs cannot supply:
 
-## 6.3 Reproducibility and artifacts
+- re-rounded Q2_K against the IQ2 and IQ3 rungs, paired, at 27B under single-step provenance;
+- three more single-slot capability runs per IQ3-class arm, and a run of our corrected arm;
+- KL divergence at a 2048-token context for the four files of §5.4;
+- the mixture-of-experts table against a BF16 reference;
+- free-grid GPTQ and learned-rounding baselines for the re-rounder;
+- one model outside the Qwen family, and a third width.
 
-Method descriptions, scripts, raw logs, per-chunk outputs and result tables for every experiment are in the project repository under `research/lowrank/experiments/`, one directory per experiment, and Appendix A maps each tag used in this paper to its directory. Large binaries — reference logits, Gram captures, quantized models and adapters, about 160 GB — are not in the repository. They are rebuildable from the recorded recipes, and some early ones were deleted to reclaim disk, so a number resting on a deleted artifact is reproducible only by rebuilding it. Re-runnability was measured twice: one reproduction gate rebuilt the 0.8B base 335/335 tensors byte-identical from the recorded recipe and re-derived the re-rounded artifact byte-identical, and another reproduced the 0.8B published numbers exactly before any new comparison was run.
+## 7.3 Reproducibility and artifacts
 
-Three components are not stock llama.cpp: the Gram-capture extension to llama-imatrix (about 140 lines, environment-gated), the llama-gradmatrix tool, and the fused-kernel and allocator patch set (reported numbers at build 0ef6e55ed; vendored rebased onto b10865). The re-rounder and all extractors are standalone Python against gguf-py. The served artifacts need none of the patches: a re-rounded file is a standard GGUF, and a corrected model is a standard GGUF plus a standard LoRA-form adapter.
+Method descriptions, scripts, raw logs, per-chunk outputs and result tables are in the project repository under `research/lowrank/experiments/`, one directory per experiment; Appendix B maps each tag used in this paper to its directory. The statistics added in revision are produced by one script from existing logs [source: research/lowrank/experiments/35-final-reanalysis/README.md]. Large binaries (reference logits, Gram captures, quantized models and adapters, about 160 GB) are not in the repository. They can be rebuilt from the recorded recipes; some early ones were deleted to reclaim disk, so a number resting on a deleted artifact is reproducible only by rebuilding it. Two reproduction gates were run: one rebuilt the 0.8B base with 335/335 tensors byte-identical and re-derived the re-rounded file byte-identical, and one reproduced the published 0.8B numbers before any new comparison [source: research/lowrank/experiments/26-lloyd-gauge/results.txt].
 
-## 6.4 Open lanes
+Three components are not stock llama.cpp: the Gram-capture extension to llama-imatrix (about 140 lines, environment-gated), the llama-gradmatrix tool, and the fused-kernel and allocator patch set (numbers reported at build 0ef6e55ed; rebased onto b10865). The re-rounder and the extractors are standalone Python against gguf-py. Serving needs none of the patches: a re-rounded file is a standard GGUF, and a corrected model is a standard GGUF plus a standard LoRA-form adapter. Producing either needs the Gram-capture patch and the source weights.
 
-**Codec coverage for the free lever.** The re-rounder speaks only Q2_K. Q3_K and Q4_K codecs would reach the promoted tensors that mute the 27B result, I-quant codecs would allow a like-for-like head-to-head with GSQ, and an NVFP4 codec (nearest-of-8 E2M1 on frozen FP8 scales) targets a format whose residual is covariance-structured (arXiv:2509.23202). The intended tool is `gguf-refine model.gguf`, shipping with a mixed-calibration default and a held-out validation gate as requirements: §3.1's measurement makes an ungated version of this tool a quality hazard [source: research/lowrank/paper/DEPLOYABLE-WINS.md].
+## 7.4 Open work
 
-**Estimator repair for two-sided metrics.** The ranked follow-ups from §3.2: damping or shrinkage of the output-side factor toward the identity (does the harm vanish smoothly?), multi-pass gradient captures, and a delta-net adjoint to remove the gradient cut. More coverage of the same single-pass estimator is ruled out by the clean-Gram run.
+**Codec coverage for re-rounding.** The re-rounder implements only Q2_K. Q3_K and Q4_K codecs would reach the promoted tensors at 27B; I-quant codecs would allow re-rounding the rung that currently beats re-rounded Q2_K at 0.8B, and a like-for-like comparison with GSQ; an NVFP4 codec is a further target (arXiv:2509.23202). A packaged tool would take source weights and calibration text and would need a mixed-calibration default and a held-out check, since §3.1 shows a narrowly calibrated file can be worse than the original [source: research/lowrank/paper/DEPLOYABLE-WINS.md].
 
-**Geometry.** Of the differential-geometry candidates we surveyed [source: research/lowrank/prior-art/MANIFOLD-CANDIDATES.md], the survivors are ProjQ-style metric surgery (already positive: 25.94 PPL one-shot at 0.6B) with its Bregman-damped variant (arXiv:2507.09428), Riemannian refinement of the closed-form factors on fixed-rank manifolds, and the information-geometry reading of the whitening ladder. The Kronecker global metric is measured anti-helpful at current estimator quality, and closed-form Fisher allocation with one-sided proxies is a confirmed trap.
+**Estimators for two-sided metrics.** Following §3.2: damping the output-side factor toward the identity, multi-pass gradient captures, and an adjoint for the GDN layers to remove the gradient cut.
 
-**Product lanes.** Per-workload conditioned adapters (+10.3% on-task at equal bytes, selectable per request through the existing LoRA API); a sparse-A fused kernel (top correction directions live on 2-5% of input channels); the shared-A adapter (−16.6% adapter bytes at tied quality, §4.3b); correction of the dense tensors of an MoE and sub-2-bit expert carriers; and the upstream-shaped bundle — the re-rounder with its Gram-capture extension, the allocator fix, and the fused kernels — each useful on its own.
+**Other directions.** Riemannian refinement of the closed-form factors and the Bregman-damped metric-modification scheme of arXiv:2507.09428 [source: research/lowrank/prior-art/MANIFOLD-CANDIDATES.md]; per-workload conditioned adapters (§4.8); a loader that aliases shared factors (§4.4); correction of the dense tensors of a mixture-of-experts model.
 
-## 6.5 Closing statement
+## 7.5 Summary
 
-The ledger of this study: one lever that is free at fixed calibration breadth, paired-resolved at 0.8B and at 27B; a correction paradigm that is real, composable and convergence-certified, that beats the adjacent ladder rung at 27B and loses to a same-byte mixed-type control, and whose three low-rank forms are interchangeable at equal bytes; a kernel and allocator patch set that helps users who will never load an adapter; a head-to-head in which our instrument favored our arm and a task suite favored the competitor over its own baseline; and a protocol that would have prevented our first week of overclaims. The quantization ladder that ships in llama.cpp is close to its local optimum, and type allocation is the axis along which it can still be improved at equal bytes. The codes on its frozen grids are not at their optimum. That asymmetry — the walls around the corrections, the freedom inside the grids — is the finding.
+Re-rounding improves a Q2_K file at identical bytes, with paired resolution at 0.8B and at 27B, under broad calibration; at 0.8B a smaller stock file is better still. Low-rank correction improves its base at every size, is narrowly ahead of the adjacent stock type at 27B on a margin that is not uniform across the test set, and is behind a same-byte mixed-type control. Three placements of the low-rank bytes could not be distinguished within a stated bound. Against released trained checkpoints, the matched-byte untrained baseline has lower short-context KL divergence on one corpus and ties on another, and a single capability pair points the other way. The kernel and allocator patches reduce the adapter's decode cost at small scale and change little at 27B.
+
+## 7.6 Corrections made to the record
+
+The project record contains errors that were found and corrected before this paper, and they are listed here so that a reader of the repository can find them.
+
+- A first set of 27B comparisons, unpaired and against a requantized reference, showed a margin for the corrected configuration that reversed sign under single-step provenance (§4.3).
+- A set of paired t statistics for the head-to-head of §5 was inflated by dividing per-chunk differences by a per-token standard error. They were recomputed with the canonical tool before any conclusion changed; the corrected values are the ones in §5.2.
+- Two capability rows were retracted when 84-87% of their failures turned out to come from a crashed server.
+- A first "mixed-calibration" run never reached its second corpus, because the two corpora were concatenated and not interleaved.
+- An early statement that capture falls as r/d rested on two points; §4.2 replaces it with a fit in which r/d is the worst of six forms.
+- A journal entry asserted that the GSQ-RCO checkpoints were trained on FineWeb-Edu; the card and code do not say so (§5.3).
+
+Each is kept in the journal with its correction [source: research/lowrank/JOURNAL.md; review/adversarial-claims.md].
