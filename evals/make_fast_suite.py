@@ -49,8 +49,13 @@ import scoring  # noqa: E402
 TRIPWIRE_COUNT = 20
 
 
-def load_reference_runs(exclude_slugs: set[str]) -> dict[str, tuple[str, dict]]:
-    """Latest full-291 v4 results file per slug, minus exclusions."""
+def load_reference_runs(exclude_slugs: set[str],
+                        suite_version: str | None = None) -> dict[str, tuple[str, dict]]:
+    """Latest full-291 results file per slug for ONE suite version, minus
+    exclusions. Default: the suite this checkout runs (evals/SUITE_VERSION),
+    so --generate never mixes v4 and v4.1 reference runs; verify mode passes
+    the version the pin says it was built from."""
+    want = suite_version or scoring.current_suite_version()
     latest: dict[str, tuple[str, dict]] = {}
     for path in sorted(glob.glob(os.path.join(RESULTS_DIR, "eval-*.json"))):
         try:
@@ -62,7 +67,7 @@ def load_reference_runs(exclude_slugs: set[str]) -> dict[str, tuple[str, dict]]:
         if len(tasks) != 291:
             continue
         sv = d.get("suite_version") or ("v4" if (d.get("summary") or {}).get("total") == 291 else "?")
-        if sv != "v4":
+        if sv != want:
             continue
         slug = d.get("model_slug", "unknown")
         if slug in exclude_slugs:
@@ -228,14 +233,31 @@ def print_leave_one_out(rows: list[dict]) -> None:
               f"otherwise.")
 
 
-def generate(exclude_slugs: set[str]) -> dict:
-    refs = load_reference_runs(exclude_slugs)
+def generate(exclude_slugs: set[str], suite_version: str | None = None) -> dict:
+    want = suite_version or scoring.current_suite_version()
+    refs = (load_reference_runs(exclude_slugs) if suite_version is None
+            else load_reference_runs(exclude_slugs, suite_version=suite_version))
     if len(refs) < 2:
-        raise SystemExit(f"need >=2 full v4 reference runs, found {len(refs)}")
-    return suite_from_refs(refs, exclude_slugs)
+        raise SystemExit(f"need >=2 full {want} reference runs in {os.path.relpath(RESULTS_DIR)}, "
+                         f"found {len(refs)}")
+    return suite_from_refs(refs, exclude_slugs, base=want)
 
 
-def suite_from_refs(refs: dict, exclude_slugs: set[str]) -> dict:
+def pin_is_stale(pin: dict) -> str | None:
+    """Why the pin's imputation cannot be trusted on the suite this checkout
+    runs, or None. A pin is built from one suite version's reference runs;
+    on any other version its assumed lists are unverified."""
+    cur = scoring.current_suite_version()
+    base = pin.get("base_suite_version")
+    if base == cur and not pin.get("repin_required"):
+        return None
+    wrong = (pin.get("repin_required") or {}).get("assumed_failed_known_wrong") or []
+    return (f"pin built from suite {base} reference runs; this checkout runs {cur}"
+            + (f" (assumed_failed known wrong: {', '.join(wrong)})" if wrong else "")
+            + f". Re-pin from full {cur} runs: python3 evals/make_fast_suite.py --generate")
+
+
+def suite_from_refs(refs: dict, exclude_slugs: set[str], base: str | None = None) -> dict:
     """The pin a given set of reference runs produces (generate's body, so
     leave_one_out can build one from a subset)."""
     order, passes, elapsed = unit_pass_matrix(refs)
@@ -248,7 +270,7 @@ def suite_from_refs(refs: dict, exclude_slugs: set[str]) -> dict:
     units = sorted(set(disc) | set(trips))
     suite = {
         "suite": "v5-fast",
-        "base_suite_version": "v4",
+        "base_suite_version": base or scoring.current_suite_version(),
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "generator": "evals/make_fast_suite.py",
         "criteria": {
@@ -337,13 +359,16 @@ def main() -> int:
               f"{len(suite['criteria']['zero_pass_excluded'])} zero-pass excluded) "
               f"from {len(suite['source_runs'])} reference runs")
         refs = load_reference_runs(exclude)
-        return 0 if verify(refs, suite) else 1
+        return 0 if verify(refs, suite) else 1   # a regenerated pin carries no repin_required
 
-    # verify mode: pinned file must be reproducible from the runs it names
+    # verify mode: pinned file must be reproducible from the runs it names —
+    # runs of the suite version it was BUILT from, which after a suite bump
+    # is not the current one.
     with open(SUITE_PATH) as f:
         pinned = json.load(f)
     exclude = exclude or set(pinned.get("excluded_slugs", []))
-    regen = generate(exclude)
+    base = pinned.get("base_suite_version") or "v4"
+    regen = generate(exclude, suite_version=base)
     drift = []
     if regen["units"] != pinned["units"]:
         drift.append(f"units differ (pinned {len(pinned['units'])}, regenerated {len(regen['units'])})")
@@ -357,9 +382,14 @@ def main() -> int:
                      "re-run with --generate to re-pin (deliberate act, new PR)")
     for d in drift:
         print(f"DRIFT: {d}")
-    refs = load_reference_runs(exclude)
+    refs = load_reference_runs(exclude, suite_version=base)
     ok = verify(refs, pinned)
-    return 0 if (ok and not drift) else 1
+    stale = pin_is_stale(pinned)
+    if stale:
+        print(f"\nSTALE PIN: {stale}")
+        print("  The identity above holds for the runs the pin was built from and says "
+              "nothing about the current suite.")
+    return 0 if (ok and not drift and not stale) else 1
 
 
 if __name__ == "__main__":

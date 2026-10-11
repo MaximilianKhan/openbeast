@@ -18,13 +18,21 @@ preserved for two reasons:
 - `medium_setups.py` — 9 medium variant tasks. Imports `easy_setups`.
 - `hard_setups.py` — 6 hard variant tasks. Imports `easy_setups`. Includes
   inline Python verifiers for the BS / FFT / N-body / CRT expected values.
+- `hide_expected.py` — **live, not an archive** (suite v4.1). Keeps the
+  answer out of the agent's working directory for the 132 stdin/stdout
+  variant units: `setup` writes the sample input only, and `pre_validate`
+  installs the sample plus hidden cases and the matching `expected.txt`,
+  computed from `evals/refs/<stem>.py`. Idempotent; `--check` exits 1 if a
+  committed spec differs from what it would write
+  (`tests/test_eval_hidden_cases.py` runs that). Safe to re-run in the repo.
 - `patch_zig_tasks.py` — one-shot patch for the 13 existing Zig variant
   task fields in Phase A (replaces the broken pre-`&fr.interface` template
   with the corrected guidance). Already applied; preserved as a record.
 
 ## Re-running — DON'T (against the live tasks)
 
-> **⚠️ These generators are v3.5-era archives. The committed task JSONs have
+> **⚠️ The `*_setups.py` generators and `patch_zig_tasks.py` are v3.5-era archives
+> (`hide_expected.py` is not: it is idempotent on the committed tasks). The committed task JSONs have
 > since been v4-hardened, and two tasks the generators emit were pruned from
 > the suite entirely. Re-running them in the repo would REVERT that hardening
 > and resurrect the pruned tasks** (verified 2026-07-17: 19 of the generated
