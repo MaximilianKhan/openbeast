@@ -1,0 +1,5 @@
+size base 436408832 freegrid 436408832 equal True
+tensor list (name,type,shape,offset) identical: True 335
+metadata identical: True
+tensors changed 96 unchanged 239
+superblocks 1093632 with changed field: {'scales': '838635 (76.7%)', 'qs': '1093629 (100.0%)', 'd': '835476 (76.4%)', 'dmin': '835648 (76.4%)'}

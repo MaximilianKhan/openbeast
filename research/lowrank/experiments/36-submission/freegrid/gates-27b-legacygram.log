@@ -1,0 +1,13 @@
+covered Q2_K tensors: 256
+gate1a whole-row  bytes == base: 256/256
+gate1b per-superblock bytes == base: 256/256   (321s)
+
+gate1c (free-grid sweep, feedback off) and gate2 (tr(E S E^T))
+tensor                             shape   1c        bare  e13 frozen   free-grid e13/bare free/bare free/e13  t_e13 t_free
+blk.3.attn_k.weight           1024x5120    OK  1.1732e+01  5.7109e+00  4.5195e+00    0.487     0.385    0.791    1.3    1.5
+blk.3.attn_q.weight          12288x5120    OK  1.6019e+02  7.7726e+01  6.1247e+01    0.485     0.382    0.788   17.7   18.1
+blk.10.attn_gate.weight       6144x5120    OK  6.3325e+01  3.5164e+01  2.8496e+01    0.555     0.450    0.810    8.2    8.2
+blk.10.ssm_out.weight         5120x6144    OK  6.0911e-01  3.8337e-01  3.3468e-01    0.629     0.549    0.873    9.1    9.1
+blk.30.ffn_up.weight         17408x5120    OK  2.1017e+02  1.1958e+02  9.9515e+01    0.569     0.473    0.832   28.5   26.7
+
+sum over 5 tensors: bare 4.4602e+02  e13 2.3856e+02 (0.535)  free-grid 1.9411e+02 (0.435); free/e13 0.814; free <= e13 on 5/5

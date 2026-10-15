@@ -1,0 +1,16 @@
+covered Q2_K tensors: 96
+gate1a whole-row  bytes == base: 96/96
+gate1b per-superblock bytes == base: 96/96   (4s)
+
+gate1c (free-grid sweep, feedback off) and gate2 (tr(E S E^T))
+tensor                             shape   1c        bare  e13 frozen   free-grid e13/bare free/bare free/e13  t_e13 t_free
+blk.0.attn_gate.weight        2048x1024    OK  6.9518e+01  3.1308e+01  2.7709e+01    0.450     0.399    0.885    0.3    0.3
+blk.0.ffn_gate.weight         3584x1024    OK  2.6765e+01  1.4620e+01  1.2802e+01    0.546     0.478    0.876    0.6    0.6
+blk.0.ffn_up.weight           3584x1024    OK  1.2393e+01  7.2566e+00  6.3856e+00    0.586     0.515    0.880    0.6    0.6
+blk.0.ssm_out.weight          1024x2048    OK  8.0090e-02  3.3475e-02  2.6573e-02    0.418     0.332    0.794    0.3    0.4
+blk.3.attn_q.weight           4096x1024    OK  1.9544e+02  9.0796e+01  8.0250e+01    0.465     0.411    0.884    0.7    0.6
+blk.3.attn_k.weight            512x1024    OK  9.5258e+00  4.5752e+00  4.0286e+00    0.480     0.423    0.881    0.1    0.1
+blk.12.ffn_up.weight          3584x1024    OK  1.4471e+01  7.2578e+00  6.4206e+00    0.502     0.444    0.885    0.6    0.6
+blk.12.ssm_out.weight         1024x2048    OK  2.1732e-02  1.0005e-02  9.1721e-03    0.460     0.422    0.917    0.4    0.4
+blk.23.attn_k.weight           512x1024    OK  7.5378e+00  2.2905e+00  2.0073e+00    0.304     0.266    0.876    0.1    0.1
+blk.23.ffn_gate.weight        3584x1024    OK  1.1664e+02  4.4320e+01  3.9556e+01    0.380     0.339    0.893    0.6    0.6
