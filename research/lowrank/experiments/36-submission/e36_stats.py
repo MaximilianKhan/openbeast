@@ -26,7 +26,7 @@ def load(path):
 def main():
     if len(sys.argv) < 4:
         sys.exit(__doc__)
-    logdir, tag, pairs = sys.argv[1], sys.argv[2], sys.argv[3:]
+    logdir, tag, pairs = os.path.abspath(sys.argv[1]), sys.argv[2], sys.argv[3:]
     print(R.HEAD)
     extra = []
     for p in pairs:

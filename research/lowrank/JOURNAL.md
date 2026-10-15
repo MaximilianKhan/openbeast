@@ -1412,3 +1412,24 @@ from results files.
 
 **Not done, by decision:** the six open T1 rows and the items in TODO's
 top block. The write-up states each beside the claim it limits.
+
+## 2026-10-15 — E36 submission campaign opened; E36-A verdicts
+
+Max: take the GPU and finish what a formal submission needs. Plan and
+rules pre-registered in experiments/36-submission/PLAN.md (commit a2b4d25,
+pushed before any result). Every row re-scored on b10865 (post #28068 GDN
+fix); new BF16 references for heretic-27B on wiki/FineWeb-Edu/code-test,
+100 chunks each. BF16 wiki PPL 7.0031 vs 7.0030 pre-fix.
+
+E36-A (RESULTS-A.md), paired KLD t, n=100:
+- wiki (replication): C1 corrected < Q3_K_S t=−2.62 HOLDS; C2 control <
+  corrected t=+2.37 HOLDS. Both contested margins replicate on the fixed graph.
+- FineWeb-Edu (held out): C1 REVERSED t=+3.26 (Q3_K_S better, 60/100);
+  C2 t=+6.48.
+- code-test (held out): C1 not supported t=+1.86; C2 t=+7.11.
+- C3 (increment over own base) holds on all three (−10.4/−8.6/−6.5);
+  C4 IQ3_XS beats both everywhere.
+Reading: the narrow 27B margin over Q3_K_S is a calibration-distribution
+effect; off-distribution the stock rung wins. The mixed base loses to
+Q3_K_S by more off-distribution (t=+5.70 fw) and the correction recovers
+only part of it. The paper's §4.3 must say the margin does not transfer.
