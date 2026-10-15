@@ -214,3 +214,14 @@ same-byte CONTROL by the §D rule order (starting from Q3_K_S as at 27B),
 RR-wiki and RR-mixed on Q2_K, free-grid on Q2_K; all scored on wiki, fw,
 code, 100 chunks. The claims C1–C4 and B1–B4 are evaluated on this model
 with the same rules. Results are reported whatever they show.
+
+### Amendment 2026-10-15 17:30 (before any §G run): the 8B CONTROL
+
+At Llama-3.1-8B the corrected configuration (MIXED + 115.9 MB adapter,
+3,676,698,208 B) is only 12.2 MB above Q3_K_S, less than one whole kind
+(all of attn_k = 17.8 MB). The §D rule therefore stops inside its first
+step, with its own evenly-spaced layer subset: CONTROL = Q3_K_S + attn_k →
+q4_k at 21/32 layers, 500,928 B below the corrected file. Consequence,
+stated now: at 8B, C2 (corrected vs control) is close to a re-test of C1
+(corrected vs Q3_K_S), and is reported that way. The §E free-grid arm
+(mixed Grams, wiki imatrix) is added to the 8B pipeline as at 27B.

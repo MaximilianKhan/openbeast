@@ -1,0 +1,13 @@
+synthetic grams: ['blk.0.attn_k.weight', 'blk.0.attn_output.weight', 'blk.0.ffn_down.weight', 'blk.0.ffn_up.weight', 'blk.1.attn_k.weight', 'blk.1.attn_output.weight', 'blk.1.ffn_down.weight', 'blk.1.ffn_up.weight']
+token_embd.weight            kind=other    in=  4096 out=128256 imat=False target=False gram_src=token_embd.weight            e13_same=True whitener=None
+blk.0.ffn_down.weight        kind=ffn_down in= 14336 out=  4096 imat=True  target=False gram_src=blk.0.ffn_down.weight        e13_same=True whitener=(8, 1792)
+blk.0.ffn_gate.weight        kind=ffn_gate in=  4096 out= 14336 imat=True  target=False gram_src=blk.0.ffn_up.weight          e13_same=True whitener=(1, 4096)
+blk.0.ffn_up.weight          kind=ffn_up   in=  4096 out= 14336 imat=True  target=False gram_src=blk.0.ffn_up.weight          e13_same=True whitener=(1, 4096)
+blk.0.attn_k.weight          kind=attn_k   in=  4096 out=  1024 imat=True  target=True  gram_src=blk.0.attn_k.weight          e13_same=True whitener=(1, 4096)
+blk.0.attn_output.weight     kind=attn_o   in=  4096 out=  4096 imat=True  target=True  gram_src=blk.0.attn_output.weight     e13_same=True whitener=(1, 4096)
+blk.0.attn_q.weight          kind=attn_q   in=  4096 out=  4096 imat=True  target=True  gram_src=blk.0.attn_k.weight          e13_same=True whitener=(1, 4096)
+blk.0.attn_v.weight          kind=attn_v   in=  4096 out=  1024 imat=True  target=True  gram_src=blk.0.attn_k.weight          e13_same=True whitener=(1, 4096)
+output.weight                kind=other    in=  4096 out=128256 imat=False target=False gram_src=output.weight                e13_same=True whitener=None
+extractor targets by kind: {'attn_k': 32, 'attn_o': 32, 'attn_q': 32, 'attn_v': 32} total 128
+targets in gram layers WITHOUT a whitener: []
+Q2_K-coded kinds in gram layers WITHOUT a Gram (e13 would skip): []
