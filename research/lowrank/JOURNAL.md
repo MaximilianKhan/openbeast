@@ -1443,3 +1443,11 @@ partial output deleted, wait rule replaced by gram_ok.py (every Gram must
 carry the full 24,576-token count), restarted 17:40. No score was taken
 from the aborted run. The §B re-round sweeps were not affected: they start
 only after capture() returns.
+
+**E36-C verdict (RESULTS-C.md).** KLD at c=2048 (40 chunks, BF16 ref on
+b10865): GSQ-RCO − UD t=+8.03 (IQ2), +5.02 (IQ3) → registered reading
+"the disagreement is the metric". Same run, same tokens: GSQ-RCO NLL lower
+(t=−1.64, −2.49), top-1 agreement lower (t≈−9). The trained checkpoints
+trade fidelity to the BF16 distribution for likelihood of the text; KLD
+measures the first, PPL and the suite the second. Our correction's
+increment holds at 2048 on all three bases (t=−6.7, −6.8, −5.3).
