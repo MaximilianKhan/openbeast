@@ -37,9 +37,14 @@ TMLR_AUTHOR = "Max Khan"
 # First-page footnote of both TMLR builds (Markdown). TMLR's FAQ asks authors who
 # used an LLM writing tool to say so "as a footnote on the first page". The
 # wording is the author's; while it is None the build prints a reminder.
-TMLR_FIRST_PAGE_NOTE = None
+TMLR_FIRST_PAGE_NOTE = (
+    "Use of large language models: the experiments, their analysis and the drafting of "
+    "this paper were carried out by AI research agents (Anthropic Claude models) working "
+    "under the author's direction on a single workstation. Every run was configured and "
+    "pre-registered in the project record before it was scored, and every number in the "
+    "paper is copied from a named results file. The author is responsible for all claims.")
 TMLR_AUTHOR_BLOCK = (r"\name Max Khan \email maxjkh@gmail.com \\" "\n"
-                     r"      \addr OpenBeast project, \url{https://github.com/MaximilianKhan/openbeast}")
+                     r"      \addr Independent Researcher (post-master's research)")
 
 NAMED = {"RESULTS_ROLLUP.md": "rollup", "JOURNAL.md": "journal", "PROTOCOL.md": "protocol",
          "TODO.md": "todo", "DEPLOYABLE-WINS.md": "wins", "ABLATION-PLAN.md": "ablation",

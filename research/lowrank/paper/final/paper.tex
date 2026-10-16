@@ -725,6 +725,11 @@ Three neighbouring classes of work are not compared in this paper and are not ci
 
 \textbf{Measurement.} We score files by mean KL divergence against reference logits with paired per-chunk statistics, following the observation that KL divergence tracks answer flips (\cite{arxiv2407.09141}) and llama.cpp practice (\#4110), with perplexity secondary (\cite{arxiv2606.19558}). \hyperref[sec:5]{§5} contains one pair in which that measure and a task suite disagree, and we report it as a limit on the measure.
 
+\subsection*{\phantomsection Broader Impact Statement}
+\addcontentsline{toc}{subsection}{Broader Impact Statement}
+
+This work studies how to store large language models in less memory at a given quality, so that larger models run on consumer hardware. The direct effect is to lower the cost of running models locally, which widens access and keeps data on the user’s machine; it equally lowers the cost for any user, including one who intends misuse. The methods change only how existing weights are stored and do not add capability beyond the source model. One of the models we measure (heretic-v2) is a publicly released community finetune with safety refusals removed; we use it only as a quantization target, report distribution-level fidelity metrics and a coding benchmark, and release no new model weights. We see no risk specific to this work beyond those of model compression in general.
+
 \section*{\phantomsection Appendix A. Additional negative results}
 \addcontentsline{toc}{section}{Appendix A. Additional negative results}
 

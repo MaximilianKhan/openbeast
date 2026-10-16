@@ -15,9 +15,9 @@
 \setlength{\emergencystretch}{2em}
 \renewcommand{\arraystretch}{1.12}
 \newcommand{\src}[1]{{\footnotesize\color{black!57}\ [#1]}}
-\title{Frozen-Grid Re-Rounding and the Limits of Low-Rank Correction for llama.cpp Quantization: A Paired Audit}
+\title{Frozen-Grid Re-Rounding and the Limits of Low-Rank Correction for llama.cpp Quantization: A Paired Audit\thanks{Use of large language models: the experiments, their analysis and the drafting of this paper were carried out by AI research agents (Anthropic Claude models) working under the author's direction on a single workstation. Every run was configured and pre-registered in the project record before it was scored, and every number in the paper is copied from a named results file. The author is responsible for all claims.}}
 \author{\name Max Khan \email maxjkh@gmail.com \\
-      \addr OpenBeast project, \url{https://github.com/MaximilianKhan/openbeast}}
+      \addr Independent Researcher (post-master's research)}
 \begin{document}
 \maketitle
 \begin{abstract}
@@ -713,6 +713,11 @@ Three neighbouring classes of work are not compared in this paper and are not ci
 \textbf{The upstream discussion.} llama.cpp discussion \#8831 proposed an LQER-style correction in 2024 and was met with the prediction (ik\_llama.cpp \#15) that mature quantizers would not benefit. Our measurements agree with that prediction for correction against the ladder. Two observations made during this work, about the imatrix on multi-token-prediction layers and about backpropagation through the KV cache, had already been reported upstream (\#23476, \#23575; \#21037) and are not claimed as new.
 
 \textbf{Measurement.} We score files by mean KL divergence against reference logits with paired per-chunk statistics, following the observation that KL divergence tracks answer flips \citep{arxiv2407.09141} and llama.cpp practice (\#4110), with perplexity secondary \citep{arxiv2606.19558}. \hyperref[sec:5]{\S{}5} contains one pair in which that measure and a task suite disagree, and we report it as a limit on the measure.
+
+\subsection*{\phantomsection Broader Impact Statement}
+\addcontentsline{toc}{subsection}{Broader Impact Statement}
+
+This work studies how to store large language models in less memory at a given quality, so that larger models run on consumer hardware. The direct effect is to lower the cost of running models locally, which widens access and keeps data on the user's machine; it equally lowers the cost for any user, including one who intends misuse. The methods change only how existing weights are stored and do not add capability beyond the source model. One of the models we measure (heretic-v2) is a publicly released community finetune with safety refusals removed; we use it only as a quantization target, report distribution-level fidelity metrics and a coding benchmark, and release no new model weights. We see no risk specific to this work beyond those of model compression in general.
 
 \label{tmlr-main-end}
 \bibliography{refs}
