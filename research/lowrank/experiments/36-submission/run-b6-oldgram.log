@@ -1,0 +1,6 @@
+lease acquired by pid 4047097 — E36 b6-oldgram
+[2026-10-16 02:26:28] re-round with pre-fix Grams (CPU)
+[2026-10-16 03:26:34] wiki Q2Krr-oldgram bytes=11003736448 Mean PPL(Q) : 7.656720 ± 0.121873 Mean KLD: 0.150025 ± 0.003212 Same top p: 84.184 ± 0.229 %
+[2026-10-16 03:26:56] fw Q2Krr-oldgram bytes=11003736448 Mean PPL(Q) : 8.537620 ± 0.133005 Mean KLD: 0.138365 ± 0.002210 Same top p: 83.569 ± 0.232 %
+[2026-10-16 03:27:18] code Q2Krr-oldgram bytes=11003736448 Mean PPL(Q) : 1.709951 ± 0.016082 Mean KLD: 0.154212 ± 0.003242 Same top p: 91.961 ± 0.170 %
+[2026-10-16 03:27:18] B6 DONE

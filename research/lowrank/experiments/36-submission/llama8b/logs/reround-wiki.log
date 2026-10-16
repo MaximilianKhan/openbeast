@@ -1,0 +1,6 @@
+[reround] 25 tensors (25 new), 1216s
+[reround] 50 tensors (50 new), 2503s
+[reround] 75 tensors (75 new), 3817s
+[reround] 100 tensors (100 new), 5157s
+[reround] 125 tensors (125 new), 6405s
+wrote /home/max/Documents/openbeast/weights/research-staging/llama31-8b/llama8b-Q2K-rr-wiki.gguf.part: 128 tensors re-rounded, 6601s

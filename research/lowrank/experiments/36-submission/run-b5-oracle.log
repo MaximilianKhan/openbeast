@@ -1,0 +1,5 @@
+lease acquired by pid 4047097 — E36 b5-oracle
+[2026-10-16 02:25:47] wiki Q2K-oracleQ8swept bytes=22400446880 Mean PPL(Q) : 7.048072 ± 0.110074 Mean KLD: 0.034337 ± 0.001566 Same top p: 92.757 ± 0.162 %
+[2026-10-16 02:26:07] fw Q2K-oracleQ8swept bytes=22400446880 Mean PPL(Q) : 7.747024 ± 0.117200 Mean KLD: 0.023349 ± 0.000613 Same top p: 93.267 ± 0.157 %
+[2026-10-16 02:26:27] code Q2K-oracleQ8swept bytes=22400446880 Mean PPL(Q) : 1.541237 ± 0.012745 Mean KLD: 0.028980 ± 0.000863 Same top p: 96.788 ± 0.110 %
+[2026-10-16 02:26:27] B5 DONE

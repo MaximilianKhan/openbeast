@@ -64,3 +64,18 @@ Base `h27bf16-Q2_K.gguf` (11,003,736,448 B; E27). Re-round arms differ only in G
 - **B2: wiki-only calibration harms both held-out corpora** (fw +0.0177, t = +7.79; code +0.0328, t = +10.69).
 - **B3 FAILS.** rr-mixed − Q2_K: wiki +0.0090 (t = +3.21), fw +0.0283 (t = +13.25), code −0.0057 (t = −1.90). The fixed deployable recipe is worse than the file as written on two of three corpora.
 - **B4.** rr-mixed vs IQ2_M (0.71 GB smaller): wiki tie (t = −0.99), fw worse (+5.66), code better (−6.44); vs IQ3_XXS (0.47 GB larger): worse on all three (t = +16.6, +18.2, +8.1).
+
+## Diagnostics B5 and B6 (PLAN.md amendments 20:40, 20:55)
+
+| wiki: Q2K-oracleQ8swept vs Q2_K | 100 | -0.12373 ± 0.00574 | -21.57 | 3.4e-39 | [-0.13559, -0.11345] | 100/100 | 1.6e-30 | 3.9e-18 | [-0.13587, -0.11285] | -19.86 (df 9, p 9.7e-09) | +0.19 |
+| wiki: Q2Krr-oldgram vs Q2_K | 100 | -0.00804 ± 0.00280 | -2.87 | 0.0050 | [-0.01380, -0.00281] | 66/100 | 0.0018 | 0.0017 | [-0.01164, -0.00481] | -4.46 (df 9, p 0.0016) | -0.01 |
+| wiki: Q2Krr-oldgram vs Q2Krr-wiki | 100 | -0.00222 ± 0.00200 | -1.11 | 0.2705 | [-0.00582, +0.00206] | 58/100 | 0.1332 | 0.0151 | [-0.00616, +0.00218] | -0.99 (df 9, p 0.3473) | +0.06 |
+| fw: Q2K-oracleQ8swept vs Q2_K | 100 | -0.09487 ± 0.00675 | -14.05 | 2.7e-25 | [-0.10976, -0.08347] | 100/100 | 1.6e-30 | 3.9e-18 | [-0.10687, -0.08380] | -15.22 (df 9, p 9.9e-08) | +0.15 |
+| fw: Q2Krr-oldgram vs Q2_K | 100 | +0.02015 ± 0.00228 | +8.83 | 3.8e-14 | [+0.01584, +0.02484] | 11/100 | 2.5e-16 | 2.2e-15 | [+0.01605, +0.02419] | +9.11 (df 9, p 7.7e-06) | +0.13 |
+| fw: Q2Krr-oldgram vs Q2Krr-wiki | 100 | +0.00249 ± 0.00114 | +2.18 | 0.0318 | [+0.00034, +0.00479] | 39/100 | 0.0352 | 0.0360 | [+0.00055, +0.00446] | +2.37 (df 9, p 0.0422) | -0.07 |
+| code: Q2K-oracleQ8swept vs Q2_K | 100 | -0.08978 ± 0.00591 | -15.18 | 1.3e-27 | [-0.10183, -0.07841] | 100/100 | 1.6e-30 | 3.9e-18 | [-0.10487, -0.07318] | -10.49 (df 9, p 2.4e-06) | +0.37 |
+| code: Q2Krr-oldgram vs Q2_K | 100 | +0.03545 ± 0.00344 | +10.29 | 2.5e-17 | [+0.02904, +0.04268] | 8/100 | 3.2e-19 | 4.7e-16 | [+0.02698, +0.04298] | +8.19 (df 9, p 1.8e-05) | +0.01 |
+| code: Q2Krr-oldgram vs Q2Krr-wiki | 100 | +0.00266 ± 0.00221 | +1.20 | 0.2326 | [-0.00159, +0.00700] | 46/100 | 0.4841 | 0.2727 | [-0.00075, +0.00671] | +1.33 (df 9, p 0.2166) | +0.04 |
+
+- **B5 headroom.** With every kind the sweep covers at Q8_0 (22.4 GB, bytes not comparable), KLD falls from 0.158/0.118/0.119 to 0.034/0.023/0.029: the swept tensors carry 78%/80%/76% of the bare file's KLD. The wiki-calibrated re-round removed 0.0058 of that 0.124 on wiki (5%) while halving the swept tensors' whitened error (checks/rr27b-independent-dequant.txt).
+- **B6.** Pre-fix E27 Grams on the same single-step base: wiki −0.0080 (t = −2.87) vs bare, but not resolved against the post-fix-Gram arm (−0.0022, t = −1.11) → registered reading: the capture graph does not explain the gap to the legacy result; provenance does (legacy source and Grams were Q6_K-derived). Off-distribution it harms as the other arms do (fw +8.83, code +10.29).

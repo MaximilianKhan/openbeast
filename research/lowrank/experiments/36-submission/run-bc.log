@@ -1,0 +1,16 @@
+lease acquired by pid 202121 — E36-B/C rerounder 27B + KLD@2048
+[2026-10-15 16:26:28] capture gram27b-e36-wiki from /home/max/Documents/openbeast/research/lowrank/data/wikitext-2-raw/wiki.train.raw
+[2026-10-15 16:53:33] capture done: 258 files
+[2026-10-15 16:53:33] capture gram27b-e36-mixed from /home/max/Documents/openbeast/research/lowrank/data/mixed-calib2.txt
+[2026-10-15 17:17:02] capture done: 258 files
+[2026-10-15 17:17:02] gen ref /home/max/Documents/openbeast/research/lowrank/data/e36-bf16ref38-wiki-2048x40.logits (wiki, 40 chunks, ctx 2048)
+[2026-10-15 17:25:56] ref done: Final estimate: PPL = 5.8569 +/- 0.06892
+[2026-10-15 17:26:26] ctx2048 unsloth-ud-iq2s bytes=8371970048 Mean PPL(Q) : 6.455623 ± 0.077235 Mean KLD: 0.139892 ± 0.002379 Same top p: 85.369 ± 0.175 %
+[2026-10-15 17:26:56] ctx2048 gsq-rco-iq2xs bytes=8422841472 Mean PPL(Q) : 6.299139 ± 0.073995 Mean KLD: 0.196827 ± 0.002897 Same top p: 83.003 ± 0.186 %
+[2026-10-15 17:27:24] ctx2048 unsloth-ud-iq3s bytes=12040883104 Mean PPL(Q) : 5.938182 ± 0.069735 Mean KLD: 0.043451 ± 0.001584 Same top p: 92.182 ± 0.133 %
+[2026-10-15 17:27:53] ctx2048 gsq-rco-iq3s bytes=11771546784 Mean PPL(Q) : 5.832775 ± 0.067607 Mean KLD: 0.061246 ± 0.002052 Same top p: 90.655 ± 0.144 %
+[2026-10-15 17:28:23] ctx2048 unsloth-ud-q2kxl bytes=9828981664 Mean PPL(Q) : 6.125145 ± 0.071942 Mean KLD: 0.093100 ± 0.002012 Same top p: 87.857 ± 0.161 %
+[2026-10-15 17:28:57] ctx2048 ours-iq2s-fc128 bytes=8371970048 Mean PPL(Q) : 6.334153 ± 0.075112 Mean KLD: 0.128513 ± 0.002286 Same top p: 86.080 ± 0.171 %
+[2026-10-15 17:29:32] ctx2048 ours-iq3s-fc128 bytes=12040883104 Mean PPL(Q) : 5.936661 ± 0.069782 Mean KLD: 0.040822 ± 0.001560 Same top p: 92.434 ± 0.131 %
+[2026-10-15 17:30:06] ctx2048 ours-q2kxl-fc128 bytes=9828981664 Mean PPL(Q) : 6.078121 ± 0.071238 Mean KLD: 0.085015 ± 0.001967 Same top p: 88.451 ± 0.158 %
+[2026-10-15 17:30:06] E36-C DONE

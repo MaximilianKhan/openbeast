@@ -1519,3 +1519,22 @@ unweighted Frobenius error RISES 16–25%; 8.7–11.4% of codes change. No codec
 bug. Mechanism for the held-out damage, measured: the sweep buys error along
 the calibration covariance's dominant directions and pays it elsewhere, and
 text that excites other directions sees the larger unweighted error.
+
+**2026-10-16 morning — B5, B6, G landed overnight; F running.**
+- B5: the swept kinds carry 76–80% of bare Q2_K's KLD at 27B (oracle Q8);
+  the re-round removed 5% of that headroom on wiki while halving their
+  whitened error. Surrogate-vs-outcome at its starkest.
+- B6: pre-fix Grams do not rescue the 27B re-round (vs post-fix arm
+  t=−1.11): provenance, not capture graph, explains the legacy gap.
+- G (Llama-3.1-8B, RESULTS-G.md): the re-round fails exactly as at 27B
+  (B1 t=−1.97; harms held-out t=+10.2/+12.6; 2:1 worse on 2/3); free-grid
+  beats frozen everywhere but not the bare file. The correction is
+  STRONGER here: ahead of Q3_K_S on wiki (t=−17.4) AND FineWeb-Edu
+  (t=−3.8), tied on code; ahead of the (≈Q3_K_S) control on wiki/fw; IQ3_XS
+  at 4% fewer bytes beats it everywhere (t ≤ −12.5).
+- Reading: frozen-grid re-rounding is a small-model effect (0.8B) in this
+  data; at 8B and 27B it does not resolve on-distribution and harms
+  held-out text. Low-rank correction beats the adjacent K-quant at 8B
+  (both prose corpora) but never the I-quant rung below it in bytes.
+- F: row 1 (GSQ r1) at 51/112 after 5.5 h, 0 CUDA errors → ~12 h/row,
+  ~4.5 days for 9 rows.

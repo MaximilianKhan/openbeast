@@ -1,0 +1,55 @@
+lease acquired by pid 4047097 — E36 llama8b
+[2026-10-16 02:26:27] ref exists: /home/max/Documents/openbeast/research/lowrank/data/e36-llama8b-bf16ref-wiki-100.logits
+[2026-10-16 02:26:27] ref exists: /home/max/Documents/openbeast/research/lowrank/data/e36-llama8b-bf16ref-fw-100.logits
+[2026-10-16 02:26:27] ref exists: /home/max/Documents/openbeast/research/lowrank/data/e36-llama8b-bf16ref-code-100.logits
+[2026-10-16 02:26:27] gram exists: /home/max/Documents/openbeast/research/lowrank/data/e36-llama8b-gram-wiki
+[2026-10-16 02:26:27] gram exists: /home/max/Documents/openbeast/research/lowrank/data/e36-llama8b-gram-mixed
+[2026-10-16 02:26:27] exists /home/max/Documents/openbeast/weights/research-staging/llama31-8b/llama8b-Q2_K.gguf
+[2026-10-16 02:26:27] exists /home/max/Documents/openbeast/weights/research-staging/llama31-8b/llama8b-Q3_K_S.gguf
+[2026-10-16 02:26:27] exists /home/max/Documents/openbeast/weights/research-staging/llama31-8b/llama8b-Q3_K_M.gguf
+[2026-10-16 02:26:27] exists /home/max/Documents/openbeast/weights/research-staging/llama31-8b/llama8b-IQ3_XXS.gguf
+[2026-10-16 02:26:27] exists /home/max/Documents/openbeast/weights/research-staging/llama31-8b/llama8b-IQ3_XS.gguf
+[2026-10-16 02:26:27] exists /home/max/Documents/openbeast/weights/research-staging/llama31-8b/llama8b-IQ2_M.gguf
+[2026-10-16 02:26:27] exists /home/max/Documents/openbeast/weights/research-staging/llama31-8b/llama8b-Q4_K_M.gguf
+[2026-10-16 02:26:27] exists /home/max/Documents/openbeast/weights/research-staging/llama31-8b/llama8b-MIXED.gguf
+[2026-10-16 02:26:27] exists /home/max/Documents/openbeast/weights/research-staging/llama31-8b/llama8b-CONTROL.gguf
+[2026-10-16 02:26:27] SKIP wiki Q2_K
+[2026-10-16 02:26:27] SKIP wiki IQ2_M
+[2026-10-16 02:26:27] SKIP wiki IQ3_XXS
+[2026-10-16 02:26:27] SKIP wiki IQ3_XS
+[2026-10-16 02:26:27] SKIP wiki MIXEDbare
+[2026-10-16 02:26:27] SKIP wiki Q3_K_S
+[2026-10-16 02:26:27] SKIP wiki CONTROL
+[2026-10-16 02:26:27] SKIP wiki MIXEDfc
+[2026-10-16 02:26:27] SKIP wiki Q3_K_M
+[2026-10-16 02:26:27] SKIP wiki Q4_K_M
+[2026-10-16 02:26:27] SKIP fw Q2_K
+[2026-10-16 02:26:27] SKIP fw IQ2_M
+[2026-10-16 02:26:27] SKIP fw IQ3_XXS
+[2026-10-16 02:26:27] SKIP fw IQ3_XS
+[2026-10-16 02:26:27] SKIP fw MIXEDbare
+[2026-10-16 02:26:27] SKIP fw Q3_K_S
+[2026-10-16 02:26:27] SKIP fw CONTROL
+[2026-10-16 02:26:27] SKIP fw MIXEDfc
+[2026-10-16 02:26:27] SKIP fw Q3_K_M
+[2026-10-16 02:26:27] SKIP fw Q4_K_M
+[2026-10-16 02:26:27] SKIP code Q2_K
+[2026-10-16 02:26:27] SKIP code IQ2_M
+[2026-10-16 02:26:27] SKIP code IQ3_XXS
+[2026-10-16 02:26:27] SKIP code IQ3_XS
+[2026-10-16 02:26:27] SKIP code MIXEDbare
+[2026-10-16 02:26:27] SKIP code Q3_K_S
+[2026-10-16 02:26:27] SKIP code CONTROL
+[2026-10-16 02:26:27] SKIP code MIXEDfc
+[2026-10-16 02:26:27] SKIP code Q3_K_M
+[2026-10-16 02:26:27] SKIP code Q4_K_M
+[2026-10-16 02:26:27] SKIP wiki Q2Krr-wiki
+[2026-10-16 02:26:27] SKIP wiki Q2Krr-mixed
+[2026-10-16 02:26:27] SKIP wiki Q2Kfreegrid-mixed
+[2026-10-16 02:26:27] SKIP fw Q2Krr-wiki
+[2026-10-16 02:26:27] SKIP fw Q2Krr-mixed
+[2026-10-16 02:26:27] SKIP fw Q2Kfreegrid-mixed
+[2026-10-16 02:26:27] SKIP code Q2Krr-wiki
+[2026-10-16 02:26:27] SKIP code Q2Krr-mixed
+[2026-10-16 02:26:27] SKIP code Q2Kfreegrid-mixed
+[2026-10-16 02:26:28] E36-L DONE

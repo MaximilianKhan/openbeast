@@ -1,0 +1,7 @@
+[2026-10-15 20:58:24] re-round wiki
+[2026-10-15 22:48:32] re-round mixed
+[2026-10-16 00:43:36] free-grid mixed
+[2026-10-16 02:23:51] CPU lane done
+[2026-10-16 02:26:27] exists /home/max/Documents/openbeast/weights/research-staging/llama31-8b/llama8b-Q2K-rr-wiki.gguf
+[2026-10-16 02:26:27] exists /home/max/Documents/openbeast/weights/research-staging/llama31-8b/llama8b-Q2K-rr-mixed.gguf
+[2026-10-16 02:26:27] CPU lane done

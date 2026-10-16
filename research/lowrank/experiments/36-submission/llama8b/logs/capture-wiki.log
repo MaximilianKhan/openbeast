@@ -1,0 +1,15 @@
+0.01.412.802 I cmn          init: llama threadpool init, n_threads = 16
+0.01.412.839 I 
+0.01.412.917 I system_info: n_threads = 16 (n_threads_batch = 16) / 32 | CUDA : ARCHS = 1200 | USE_GRAPHS = 1 | BLACKWELL_NATIVE_FP4 = 1 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX_VNNI = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | AVX512 = 1 | AVX512_VBMI = 1 | AVX512_VNNI = 1 | AVX512_BF16 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+0.01.412.925 I compute_imatrix: tokenizing the input ..
+0.02.114.279 I compute_imatrix: tokenization took 701.345 ms
+0.02.114.860 I compute_imatrix: computing over 48 chunks, n_ctx=512, batch_size=2048, n_seq=4
+0.33.849.681 I compute_imatrix: 31.73 seconds per pass - ETA 6.33 minutes
+[1]6.8367,[2]9.6482,[3]10.2059,[4]9.1061,[5]9.5996,[6]9.4063,[7]9.9401,[8]9.9682,
+[9]9.1223,[10]8.7090,[11]8.6887,[12]8.7393,[13]8.7335,[14]8.7944,[15]8.8802,[16]9.0082,
+[17]8.8086,[18]8.5576,[19]8.5291,[20]8.5633,[21]8.6944,[22]8.7604,[23]8.7482,[24]8.4587,[25]8.3806,[26]8.2373,[27]8.2228,[28]7.9835,
+[29]7.9127,[30]7.6663,[31]7.6370,[32]7.5467,[33]7.4506,[34]7.3843,[35]7.3692,[36]7.3241,
+[37]7.2821,[38]7.1518,[39]7.0543,[40]7.0991,[41]7.1620,[42]7.2714,[43]7.3155,[44]7.3481,[45]7.2919,[46]7.1515,[47]7.0861,[48]7.1003,
+Final estimate: PPL = 7.1003 +/- 0.15468
+
+
