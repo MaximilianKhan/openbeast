@@ -1451,3 +1451,20 @@ b10865): GSQ-RCO − UD t=+8.03 (IQ2), +5.02 (IQ3) → registered reading
 trade fidelity to the BF16 distribution for likelihood of the text; KLD
 measures the first, PPL and the suite the second. Our correction's
 increment holds at 2048 on all three bases (t=−6.7, −6.8, −5.3).
+
+**17:5x — d08b-A started outside the lease, deliberately.** B/C holds the
+lease while it waits ~2.5 h on CPU re-round sweeps with the card idle. KLD
+values do not depend on CPU load, so the 0.8B block runs now on the idle
+card; the master queue's d08b-A block later resumes and skips completed
+steps. No two GPU jobs overlap: B's next GPU step starts only after its
+CPU lane ends, and d08b scoring is minutes.
+
+**E36-D verdicts (RESULTS-D.md).** 0.8B on b10865. D0 gate PASS (RR −0.163,
+t=−28.4). T1.6: CONTROL-A (517 MB, pure quant) beats the 523 MB crown by
+0.099/0.150/0.147 KLD (t=−26.7/−32.0/−21.0) — the crown is far below the
+stock-type interpolation line at small scale. T1.15 sampling floor ≤0.018
+KLD. T1.1: RR transfers only to its calibration domain (wiki/fw-calibrated
+RR harms code t=+13.6/+8.9; code-calibrated harms prose); code-containing
+mixes improve all three; fc improves all corpora under all calibrations.
+T1.13: equalization harms at every α, monotone, and without imatrix — no
+interior optimum, double-counting not supported.

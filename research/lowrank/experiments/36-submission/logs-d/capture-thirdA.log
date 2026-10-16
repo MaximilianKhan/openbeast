@@ -1,0 +1,30 @@
+0.01.130.744 W model has unused tensor blk.24.attn_norm.weight (size = 4096 bytes) -- ignoring
+0.01.130.760 W model has unused tensor blk.24.post_attention_norm.weight (size = 4096 bytes) -- ignoring
+0.01.130.766 W model has unused tensor blk.24.attn_q.weight (size = 8388608 bytes) -- ignoring
+0.01.130.768 W model has unused tensor blk.24.attn_k.weight (size = 1048576 bytes) -- ignoring
+0.01.130.770 W model has unused tensor blk.24.attn_v.weight (size = 1048576 bytes) -- ignoring
+0.01.130.777 W model has unused tensor blk.24.attn_output.weight (size = 4194304 bytes) -- ignoring
+0.01.130.779 W model has unused tensor blk.24.attn_q_norm.weight (size = 1024 bytes) -- ignoring
+0.01.130.781 W model has unused tensor blk.24.attn_k_norm.weight (size = 1024 bytes) -- ignoring
+0.01.130.783 W model has unused tensor blk.24.ffn_gate.weight (size = 7340032 bytes) -- ignoring
+0.01.130.785 W model has unused tensor blk.24.ffn_down.weight (size = 7340032 bytes) -- ignoring
+0.01.130.786 W model has unused tensor blk.24.ffn_up.weight (size = 7340032 bytes) -- ignoring
+0.01.130.791 W model has unused tensor blk.24.nextn.eh_proj.weight (size = 4194304 bytes) -- ignoring
+0.01.130.793 W model has unused tensor blk.24.nextn.enorm.weight (size = 4096 bytes) -- ignoring
+0.01.130.795 W model has unused tensor blk.24.nextn.hnorm.weight (size = 4096 bytes) -- ignoring
+0.01.130.801 W model has unused tensor blk.24.nextn.shared_head_norm.weight (size = 4096 bytes) -- ignoring
+0.01.327.104 I cmn          init: llama threadpool init, n_threads = 16
+0.01.327.160 I 
+0.01.327.254 I system_info: n_threads = 16 (n_threads_batch = 16) / 32 | CUDA : ARCHS = 1200 | USE_GRAPHS = 1 | BLACKWELL_NATIVE_FP4 = 1 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX_VNNI = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | AVX512 = 1 | AVX512_VBMI = 1 | AVX512_VNNI = 1 | AVX512_BF16 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+0.01.327.265 I compute_imatrix: tokenizing the input ..
+0.02.500.712 I compute_imatrix: tokenization took 1173.44 ms
+0.02.501.078 I compute_imatrix: computing over 40 chunks, n_ctx=512, batch_size=2048, n_seq=4
+0.13.342.231 I compute_imatrix: 10.84 seconds per pass - ETA 1.80 minutes
+[1]20.9025,[2]23.6654,[3]25.7812,[4]22.6871,[5]23.5840,[6]22.7022,[7]25.5447,[8]25.5349,
+[9]23.1088,[10]21.7122,[11]21.9492,[12]21.9488,[13]21.0444,[14]22.0512,[15]22.0741,[16]21.9138,
+[17]21.9622,[18]21.4613,[19]21.5647,[20]21.8086,[21]21.9927,[22]21.8849,[23]22.1217,[24]21.9790,[25]20.5769,[26]20.1850,[27]19.6538,[28]19.3347,
+[29]19.1864,[30]19.1787,[31]18.7905,[32]18.8539,[33]18.8629,[34]18.7951,[35]18.9458,[36]19.1095,
+[37]19.1542,[38]19.3228,[39]19.3396,[40]19.2703,
+Final estimate: PPL = 19.2703 +/- 0.59488
+
+

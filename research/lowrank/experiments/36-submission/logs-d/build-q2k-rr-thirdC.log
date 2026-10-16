@@ -1,0 +1,4 @@
+[reround] 25 tensors (25 new), 21s
+[reround] 50 tensors (50 new), 37s
+[reround] 75 tensors (75 new), 56s
+wrote /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/d08b/art/q2k-rr-thirdC.gguf.part: 96 tensors re-rounded, 74s

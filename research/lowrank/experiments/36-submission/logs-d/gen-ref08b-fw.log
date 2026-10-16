@@ -1,0 +1,26 @@
+0.00.976.549 W model has unused tensor blk.24.attn_norm.weight (size = 4096 bytes) -- ignoring
+0.00.976.557 W model has unused tensor blk.24.post_attention_norm.weight (size = 4096 bytes) -- ignoring
+0.00.976.561 W model has unused tensor blk.24.attn_q.weight (size = 8388608 bytes) -- ignoring
+0.00.976.563 W model has unused tensor blk.24.attn_k.weight (size = 1048576 bytes) -- ignoring
+0.00.976.564 W model has unused tensor blk.24.attn_v.weight (size = 1048576 bytes) -- ignoring
+0.00.976.571 W model has unused tensor blk.24.attn_output.weight (size = 4194304 bytes) -- ignoring
+0.00.976.574 W model has unused tensor blk.24.attn_q_norm.weight (size = 1024 bytes) -- ignoring
+0.00.976.576 W model has unused tensor blk.24.attn_k_norm.weight (size = 1024 bytes) -- ignoring
+0.00.976.577 W model has unused tensor blk.24.ffn_gate.weight (size = 7340032 bytes) -- ignoring
+0.00.976.578 W model has unused tensor blk.24.ffn_down.weight (size = 7340032 bytes) -- ignoring
+0.00.976.580 W model has unused tensor blk.24.ffn_up.weight (size = 7340032 bytes) -- ignoring
+0.00.976.584 W model has unused tensor blk.24.nextn.eh_proj.weight (size = 4194304 bytes) -- ignoring
+0.00.976.585 W model has unused tensor blk.24.nextn.enorm.weight (size = 4096 bytes) -- ignoring
+0.00.976.586 W model has unused tensor blk.24.nextn.hnorm.weight (size = 4096 bytes) -- ignoring
+0.00.976.590 W model has unused tensor blk.24.nextn.shared_head_norm.weight (size = 4096 bytes) -- ignoring
+0.01.143.094 I cmn          init: llama threadpool init, n_threads = 16
+0.01.143.140 I 
+0.01.143.227 I system_info: n_threads = 16 (n_threads_batch = 16) / 32 | CUDA : ARCHS = 1200 | USE_GRAPHS = 1 | BLACKWELL_NATIVE_FP4 = 1 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX_VNNI = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | AVX512 = 1 | AVX512_VBMI = 1 | AVX512_VNNI = 1 | AVX512_BF16 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+0.01.143.338 I perplexity: saving all logits to /home/max/Documents/openbeast/research/lowrank/data/e36-bf16ref08b-fw-40.logits
+0.01.143.344 I perplexity: tokenizing the input ..
+0.01.630.834 I perplexity: tokenization took 487.48 ms
+0.01.631.101 I perplexity: calculating perplexity over 40 chunks, n_ctx=512, batch_size=2048, n_seq=4
+0.01.934.378 I perplexity: 0.29 seconds per pass - ETA 0.03 minutes
+[1]35.6715,[2]33.9659,[3]36.3127,[4]31.7037,[5]24.9586,[6]22.8997,[7]21.9128,[8]19.3031,[9]18.4105,[10]17.2673,[11]17.5768,[12]16.8350,[13]16.9831,[14]18.0081,[15]18.1555,[16]17.5947,[17]17.2738,[18]16.6842,[19]17.0022,[20]16.7345,[21]16.8390,[22]17.1649,[23]16.8863,[24]16.1427,[25]15.6576,[26]15.8063,[27]15.8107,[28]16.0388,[29]16.3714,[30]16.5588,[31]16.6649,[32]16.5803,[33]16.2100,[34]16.0699,[35]15.8803,[36]15.8612,[37]15.5854,[38]15.6723,[39]15.4325,[40]15.5285,
+0.04.630.192 I Final estimate: PPL = 15.5285 +/- 0.44543
+

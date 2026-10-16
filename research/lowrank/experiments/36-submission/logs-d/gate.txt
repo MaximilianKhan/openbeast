@@ -1,0 +1,1 @@
+gate wiki: Q2K-rr-wiki - Q2_K: dKLD -0.163210, t -28.36, n 40, A better 40/40 -> PASS (rule t <= -2.0)

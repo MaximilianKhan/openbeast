@@ -1,0 +1,103 @@
+[2026-10-15 17:48:36] gen ref /home/max/Documents/openbeast/research/lowrank/data/e36-bf16ref08b-wiki-40.logits (wiki, 40 chunks, ctx 512)
+[2026-10-15 17:48:41] ref done: Final estimate: PPL = 16.6067 +/- 0.49380
+[2026-10-15 17:48:41] gen ref /home/max/Documents/openbeast/research/lowrank/data/e36-bf16ref08b-fw-40.logits (fw, 40 chunks, ctx 512)
+[2026-10-15 17:48:46] ref done: Final estimate: PPL = 15.5285 +/- 0.44543
+[2026-10-15 17:48:46] gen ref /home/max/Documents/openbeast/research/lowrank/data/e36-bf16ref08b-code-40.logits (code, 40 chunks, ctx 512)
+[2026-10-15 17:48:50] ref done: Final estimate: PPL = 3.0653 +/- 0.06573
+[2026-10-15 17:48:50] capture wiki from /home/max/Documents/openbeast/research/lowrank/data/wikitext-2-raw/wiki.train.raw
+/home/max/Documents/openbeast/research/lowrank/data/e36-gram08b-wiki: 96 Grams, count 20480, OK
+[2026-10-15 17:50:22] CPU lane pid 2617257 (log /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/logs-d/cpu-lane.log)
+[2026-10-15 17:50:23] capture code from /home/max/Documents/openbeast/research/lowrank/experiments/17-task-conditioned/code-train.txt
+/home/max/Documents/openbeast/research/lowrank/data/e36-gram08b-code: 96 Grams, count 20480, OK
+[2026-10-15 17:52:05] capture fw from /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/d08b/calib/fineweb-edu-calib.txt
+/home/max/Documents/openbeast/research/lowrank/data/e36-gram08b-fw: 96 Grams, count 20480, OK
+[2026-10-15 17:53:45] capture mix2 from /home/max/Documents/openbeast/research/lowrank/data/mixed-calib2.txt
+/home/max/Documents/openbeast/research/lowrank/data/e36-gram08b-mix2: 96 Grams, count 20480, OK
+[2026-10-15 17:55:43] capture m111 from /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/d08b/calib/mix111.txt
+/home/max/Documents/openbeast/research/lowrank/data/e36-gram08b-m111: 96 Grams, count 20480, OK
+[2026-10-15 17:57:30] capture thirdA from /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/d08b/calib/wiki-train-third-a.txt
+/home/max/Documents/openbeast/research/lowrank/data/e36-gram08b-thirdA: 96 Grams, count 20480, OK
+[2026-10-15 17:59:26] capture thirdB from /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/d08b/calib/wiki-train-third-b.txt
+/home/max/Documents/openbeast/research/lowrank/data/e36-gram08b-thirdB: 96 Grams, count 20480, OK
+[2026-10-15 18:00:57] capture thirdC from /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/d08b/calib/wiki-train-third-c.txt
+/home/max/Documents/openbeast/research/lowrank/data/e36-gram08b-thirdC: 96 Grams, count 20480, OK
+[2026-10-15 18:02:23] wiki Q2_K bytes=436408832 Mean PPL(Q) : 28.455562 ± 0.914541 Mean KLD: 0.490029 ± 0.005709 Same top p: 66.137 ± 0.469 %
+[2026-10-15 18:02:28] fw Q2_K bytes=436408832 Mean PPL(Q) : 27.944577 ± 0.876623 Mean KLD: 0.534668 ± 0.005799 Same top p: 65.412 ± 0.471 %
+[2026-10-15 18:02:32] code Q2_K bytes=436408832 Mean PPL(Q) : 4.554426 ± 0.113792 Mean KLD: 0.392569 ± 0.006044 Same top p: 79.333 ± 0.401 %
+[2026-10-15 18:02:36] wiki IQ3_XXS bytes=412082176 Mean PPL(Q) : 20.934755 ± 0.641238 Mean KLD: 0.257659 ± 0.003187 Same top p: 74.206 ± 0.433 %
+[2026-10-15 18:02:40] fw IQ3_XXS bytes=412082176 Mean PPL(Q) : 20.607252 ± 0.615514 Mean KLD: 0.257700 ± 0.003283 Same top p: 73.922 ± 0.435 %
+[2026-10-15 18:02:43] code IQ3_XXS bytes=412082176 Mean PPL(Q) : 3.816004 ± 0.087978 Mean KLD: 0.222509 ± 0.003425 Same top p: 83.333 ± 0.369 %
+[2026-10-15 18:02:47] wiki Q3_K_M bytes=480304128 Mean PPL(Q) : 20.680576 ± 0.633646 Mean KLD: 0.167701 ± 0.002420 Same top p: 78.853 ± 0.404 %
+[2026-10-15 18:02:51] fw Q3_K_M bytes=480304128 Mean PPL(Q) : 18.975394 ± 0.558509 Mean KLD: 0.167840 ± 0.002389 Same top p: 78.529 ± 0.407 %
+[2026-10-15 18:02:54] code Q3_K_M bytes=480304128 Mean PPL(Q) : 3.464831 ± 0.078291 Mean KLD: 0.120851 ± 0.001932 Same top p: 88.647 ± 0.314 %
+[2026-10-15 18:02:58] wiki Q4_K_M bytes=543378944 Mean PPL(Q) : 17.560122 ± 0.528886 Mean KLD: 0.039741 ± 0.000556 Same top p: 89.461 ± 0.304 %
+[2026-10-15 18:03:01] fw Q4_K_M bytes=543378944 Mean PPL(Q) : 16.167227 ± 0.466454 Mean KLD: 0.038004 ± 0.000539 Same top p: 89.265 ± 0.307 %
+[2026-10-15 18:03:05] code Q4_K_M bytes=543378944 Mean PPL(Q) : 3.146470 ± 0.068257 Mean KLD: 0.027882 ± 0.000478 Same top p: 94.412 ± 0.227 %
+[2026-10-15 18:03:08] wiki IQ2_M bytes=392015872 Mean PPL(Q) : 28.354393 ± 0.881698 Mean KLD: 0.547708 ± 0.005962 Same top p: 64.745 ± 0.473 %
+[2026-10-15 18:03:13] fw IQ2_M bytes=392015872 Mean PPL(Q) : 27.591396 ± 0.847029 Mean KLD: 0.539135 ± 0.005890 Same top p: 64.245 ± 0.475 %
+[2026-10-15 18:03:18] code IQ2_M bytes=392015872 Mean PPL(Q) : 4.923873 ± 0.121336 Mean KLD: 0.488095 ± 0.007005 Same top p: 76.980 ± 0.417 %
+[2026-10-15 18:03:22] wiki Q2K-rr-wiki bytes=436408832 Mean PPL(Q) : 24.078138 ± 0.747197 Mean KLD: 0.326820 ± 0.004786 Same top p: 72.608 ± 0.442 %
+[2026-10-15 18:03:26] fw Q2K-rr-wiki bytes=436408832 Mean PPL(Q) : 24.922163 ± 0.765409 Mean KLD: 0.425461 ± 0.005393 Same top p: 68.647 ± 0.459 %
+[2026-10-15 18:03:30] code Q2K-rr-wiki bytes=436408832 Mean PPL(Q) : 5.215395 ± 0.135899 Mean KLD: 0.543313 ± 0.008049 Same top p: 76.441 ± 0.420 %
+[2026-10-15 18:03:34] wiki Q2K+fc-wiki bytes=436408832 Mean PPL(Q) : 20.170929 ± 0.613583 Mean KLD: 0.167629 ± 0.002907 Same top p: 79.608 ± 0.399 %
+[2026-10-15 18:03:38] fw Q2K+fc-wiki bytes=436408832 Mean PPL(Q) : 19.963128 ± 0.589392 Mean KLD: 0.224966 ± 0.003561 Same top p: 75.873 ± 0.424 %
+[2026-10-15 18:03:41] code Q2K+fc-wiki bytes=436408832 Mean PPL(Q) : 3.735891 ± 0.086930 Mean KLD: 0.203894 ± 0.003397 Same top p: 84.843 ± 0.355 %
+[2026-10-15 18:03:46] wiki Q2Kalt1+fc-wiki bytes=436408832 Mean PPL(Q) : 19.871767 ± 0.601171 Mean KLD: 0.147438 ± 0.002722 Same top p: 80.490 ± 0.392 %
+[2026-10-15 18:03:51] fw Q2Kalt1+fc-wiki bytes=436408832 Mean PPL(Q) : 19.562728 ± 0.579369 Mean KLD: 0.196565 ± 0.003033 Same top p: 77.480 ± 0.414 %
+[2026-10-15 18:03:55] code Q2Kalt1+fc-wiki bytes=436408832 Mean PPL(Q) : 3.647546 ± 0.084714 Mean KLD: 0.180510 ± 0.002986 Same top p: 85.853 ± 0.345 %
+gate wiki: Q2K-rr-wiki - Q2_K: dKLD -0.163210, t -28.36, n 40, A better 40/40 -> PASS (rule t <= -2.0)
+[2026-10-15 18:04:00] wiki CONTROL-A bytes=517487616 Mean PPL(Q) : 17.580653 ± 0.530359 Mean KLD: 0.048877 ± 0.000711 Same top p: 88.265 ± 0.319 %
+[2026-10-15 18:04:04] fw CONTROL-A bytes=517487616 Mean PPL(Q) : 16.309397 ± 0.471455 Mean KLD: 0.047038 ± 0.000667 Same top p: 87.961 ± 0.322 %
+[2026-10-15 18:04:07] code CONTROL-A bytes=517487616 Mean PPL(Q) : 3.166669 ± 0.068931 Mean KLD: 0.033846 ± 0.000563 Same top p: 93.637 ± 0.242 %
+[2026-10-15 18:04:12] wiki Q2_K-noimx bytes=436408480 Mean PPL(Q) : 96.522040 ± 3.481066 Mean KLD: 1.700851 ± 0.014231 Same top p: 43.784 ± 0.491 %
+[2026-10-15 18:04:16] fw Q2_K-noimx bytes=436408480 Mean PPL(Q) : 95.492859 ± 3.306758 Mean KLD: 1.768202 ± 0.014184 Same top p: 41.794 ± 0.488 %
+[2026-10-15 18:04:20] code Q2_K-noimx bytes=436408480 Mean PPL(Q) : 14.926366 ± 0.446515 Mean KLD: 1.602558 ± 0.016077 Same top p: 57.186 ± 0.490 %
+[2026-10-15 18:04:24] wiki Q2K-eq-a1.00-noimx bytes=436408480 Mean PPL(Q) : 126.090198 ± 4.346227 Mean KLD: 2.006053 ± 0.014340 Same top p: 39.059 ± 0.483 %
+[2026-10-15 18:04:28] fw Q2K-eq-a1.00-noimx bytes=436408480 Mean PPL(Q) : 112.838090 ± 3.844709 Mean KLD: 1.954343 ± 0.014793 Same top p: 39.069 ± 0.483 %
+[2026-10-15 18:04:32] code Q2K-eq-a1.00-noimx bytes=436408480 Mean PPL(Q) : 27.388617 ± 0.898722 Mean KLD: 2.209676 ± 0.019711 Same top p: 49.206 ± 0.495 %
+[2026-10-15 18:04:37] wiki Q2K-eq-a0.25 bytes=436408832 Mean PPL(Q) : 29.256395 ± 0.945947 Mean KLD: 0.511551 ± 0.006101 Same top p: 66.529 ± 0.467 %
+[2026-10-15 18:04:41] fw Q2K-eq-a0.25 bytes=436408832 Mean PPL(Q) : 28.295497 ± 0.891677 Mean KLD: 0.544821 ± 0.005948 Same top p: 64.637 ± 0.473 %
+[2026-10-15 18:04:45] code Q2K-eq-a0.25 bytes=436408832 Mean PPL(Q) : 4.852172 ± 0.123968 Mean KLD: 0.444507 ± 0.006638 Same top p: 78.294 ± 0.408 %
+[2026-10-15 18:04:50] wiki Q2K-eq-a0.50 bytes=436408832 Mean PPL(Q) : 31.579062 ± 1.028497 Mean KLD: 0.558141 ± 0.006270 Same top p: 64.206 ± 0.475 %
+[2026-10-15 18:04:54] fw Q2K-eq-a0.50 bytes=436408832 Mean PPL(Q) : 29.164151 ± 0.926320 Mean KLD: 0.571523 ± 0.006416 Same top p: 64.451 ± 0.474 %
+[2026-10-15 18:04:57] code Q2K-eq-a0.50 bytes=436408832 Mean PPL(Q) : 5.219605 ± 0.137719 Mean KLD: 0.515900 ± 0.007638 Same top p: 76.667 ± 0.419 %
+[2026-10-15 18:05:01] wiki Q2K-eq-a0.75 bytes=436408832 Mean PPL(Q) : 31.151714 ± 1.026300 Mean KLD: 0.564864 ± 0.006486 Same top p: 64.833 ± 0.473 %
+[2026-10-15 18:05:04] fw Q2K-eq-a0.75 bytes=436408832 Mean PPL(Q) : 29.764810 ± 0.936791 Mean KLD: 0.585771 ± 0.006615 Same top p: 63.245 ± 0.477 %
+[2026-10-15 18:05:08] code Q2K-eq-a0.75 bytes=436408832 Mean PPL(Q) : 5.153131 ± 0.133524 Mean KLD: 0.513669 ± 0.007355 Same top p: 76.539 ± 0.420 %
+[2026-10-15 18:05:12] wiki Q2K-eq-a1.00 bytes=436408832 Mean PPL(Q) : 35.033963 ± 1.173076 Mean KLD: 0.688488 ± 0.007299 Same top p: 61.402 ± 0.482 %
+[2026-10-15 18:05:16] fw Q2K-eq-a1.00 bytes=436408832 Mean PPL(Q) : 33.951028 ± 1.094197 Mean KLD: 0.709870 ± 0.007579 Same top p: 60.794 ± 0.483 %
+[2026-10-15 18:05:20] code Q2K-eq-a1.00 bytes=436408832 Mean PPL(Q) : 5.724040 ± 0.150837 Mean KLD: 0.612285 ± 0.008345 Same top p: 74.627 ± 0.431 %
+[2026-10-15 18:05:24] wiki Q2K-rr-thirdA bytes=436408832 Mean PPL(Q) : 24.078138 ± 0.747197 Mean KLD: 0.326820 ± 0.004786 Same top p: 72.608 ± 0.442 %
+[2026-10-15 18:05:28] fw Q2K-rr-thirdA bytes=436408832 Mean PPL(Q) : 24.922163 ± 0.765409 Mean KLD: 0.425461 ± 0.005393 Same top p: 68.647 ± 0.459 %
+[2026-10-15 18:05:32] code Q2K-rr-thirdA bytes=436408832 Mean PPL(Q) : 5.215395 ± 0.135899 Mean KLD: 0.543313 ± 0.008049 Same top p: 76.441 ± 0.420 %
+[2026-10-15 18:05:51] wiki Q2K-rr-thirdB bytes=436408832 Mean PPL(Q) : 23.974502 ± 0.745328 Mean KLD: 0.326063 ± 0.004628 Same top p: 72.196 ± 0.444 %
+[2026-10-15 18:05:55] fw Q2K-rr-thirdB bytes=436408832 Mean PPL(Q) : 25.425448 ± 0.778139 Mean KLD: 0.439626 ± 0.005427 Same top p: 68.069 ± 0.462 %
+[2026-10-15 18:05:58] code Q2K-rr-thirdB bytes=436408832 Mean PPL(Q) : 5.311298 ± 0.140661 Mean KLD: 0.547525 ± 0.007836 Same top p: 76.000 ± 0.423 %
+[2026-10-15 18:07:17] wiki Q2K-rr-thirdC bytes=436408832 Mean PPL(Q) : 23.602858 ± 0.729083 Mean KLD: 0.322794 ± 0.004765 Same top p: 72.657 ± 0.441 %
+[2026-10-15 18:07:20] fw Q2K-rr-thirdC bytes=436408832 Mean PPL(Q) : 24.641950 ± 0.752102 Mean KLD: 0.422128 ± 0.005251 Same top p: 68.755 ± 0.459 %
+[2026-10-15 18:07:24] code Q2K-rr-thirdC bytes=436408832 Mean PPL(Q) : 5.159860 ± 0.135642 Mean KLD: 0.540559 ± 0.007906 Same top p: 76.216 ± 0.422 %
+[2026-10-15 18:08:44] wiki Q2K-rr-code bytes=436408832 Mean PPL(Q) : 37.631022 ± 1.255876 Mean KLD: 0.737204 ± 0.007929 Same top p: 60.010 ± 0.485 %
+[2026-10-15 18:08:47] fw Q2K-rr-code bytes=436408832 Mean PPL(Q) : 37.041755 ± 1.189111 Mean KLD: 0.809276 ± 0.008037 Same top p: 57.882 ± 0.489 %
+[2026-10-15 18:08:51] code Q2K-rr-code bytes=436408832 Mean PPL(Q) : 4.004545 ± 0.096144 Mean KLD: 0.260807 ± 0.004301 Same top p: 83.059 ± 0.371 %
+[2026-10-15 18:10:10] wiki Q2K-rr-fw bytes=436408832 Mean PPL(Q) : 24.713997 ± 0.774652 Mean KLD: 0.374817 ± 0.004776 Same top p: 69.902 ± 0.454 %
+[2026-10-15 18:10:14] fw Q2K-rr-fw bytes=436408832 Mean PPL(Q) : 23.490486 ± 0.713995 Mean KLD: 0.383885 ± 0.005015 Same top p: 69.549 ± 0.456 %
+[2026-10-15 18:10:19] code Q2K-rr-fw bytes=436408832 Mean PPL(Q) : 4.829147 ± 0.122591 Mean KLD: 0.480215 ± 0.007175 Same top p: 77.657 ± 0.412 %
+[2026-10-15 18:11:38] wiki Q2K-rr-mix2 bytes=436408832 Mean PPL(Q) : 25.283908 ± 0.792740 Mean KLD: 0.369001 ± 0.004981 Same top p: 71.010 ± 0.449 %
+[2026-10-15 18:11:42] fw Q2K-rr-mix2 bytes=436408832 Mean PPL(Q) : 25.920329 ± 0.793550 Mean KLD: 0.466005 ± 0.005653 Same top p: 66.471 ± 0.467 %
+[2026-10-15 18:11:46] code Q2K-rr-mix2 bytes=436408832 Mean PPL(Q) : 3.914016 ± 0.094267 Mean KLD: 0.259076 ± 0.004346 Same top p: 83.520 ± 0.367 %
+[2026-10-15 18:12:49] wiki Q2K-rr-m111 bytes=436408832 Mean PPL(Q) : 25.124684 ± 0.785982 Mean KLD: 0.373666 ± 0.004877 Same top p: 70.794 ± 0.450 %
+[2026-10-15 18:12:53] fw Q2K-rr-m111 bytes=436408832 Mean PPL(Q) : 25.549084 ± 0.789018 Mean KLD: 0.448110 ± 0.005853 Same top p: 67.353 ± 0.464 %
+[2026-10-15 18:12:57] code Q2K-rr-m111 bytes=436408832 Mean PPL(Q) : 3.924450 ± 0.094017 Mean KLD: 0.258083 ± 0.004063 Same top p: 82.961 ± 0.372 %
+[2026-10-15 18:15:02] wiki Q2K+fc-code bytes=436408832 Mean PPL(Q) : 23.285017 ± 0.725679 Mean KLD: 0.309717 ± 0.003958 Same top p: 72.745 ± 0.441 %
+[2026-10-15 18:15:07] fw Q2K+fc-code bytes=436408832 Mean PPL(Q) : 23.036273 ± 0.699497 Mean KLD: 0.342598 ± 0.004112 Same top p: 71.324 ± 0.448 %
+[2026-10-15 18:15:11] code Q2K+fc-code bytes=436408832 Mean PPL(Q) : 3.409375 ± 0.076373 Mean KLD: 0.109299 ± 0.001971 Same top p: 88.765 ± 0.313 %
+[2026-10-15 18:17:17] wiki Q2K+fc-fw bytes=436408832 Mean PPL(Q) : 20.215236 ± 0.613808 Mean KLD: 0.190010 ± 0.003100 Same top p: 78.520 ± 0.407 %
+[2026-10-15 18:17:22] fw Q2K+fc-fw bytes=436408832 Mean PPL(Q) : 19.654508 ± 0.579618 Mean KLD: 0.210653 ± 0.003251 Same top p: 76.843 ± 0.418 %
+[2026-10-15 18:17:26] code Q2K+fc-fw bytes=436408832 Mean PPL(Q) : 3.702866 ± 0.085129 Mean KLD: 0.198938 ± 0.003326 Same top p: 84.676 ± 0.357 %
+[2026-10-15 18:19:15] wiki Q2K+fc-mix2 bytes=436408832 Mean PPL(Q) : 20.932226 ± 0.638329 Mean KLD: 0.193806 ± 0.003130 Same top p: 78.137 ± 0.409 %
+[2026-10-15 18:19:18] fw Q2K+fc-mix2 bytes=436408832 Mean PPL(Q) : 20.483915 ± 0.609554 Mean KLD: 0.244126 ± 0.003626 Same top p: 75.294 ± 0.427 %
+[2026-10-15 18:19:24] code Q2K+fc-mix2 bytes=436408832 Mean PPL(Q) : 3.453236 ± 0.077953 Mean KLD: 0.117902 ± 0.002136 Same top p: 88.284 ± 0.318 %
+[2026-10-15 18:21:27] wiki Q2K+fc-m111 bytes=436408832 Mean PPL(Q) : 20.520193 ± 0.623451 Mean KLD: 0.194108 ± 0.003128 Same top p: 77.941 ± 0.411 %
+[2026-10-15 18:21:31] fw Q2K+fc-m111 bytes=436408832 Mean PPL(Q) : 20.115658 ± 0.595930 Mean KLD: 0.231907 ± 0.003593 Same top p: 75.451 ± 0.426 %
+[2026-10-15 18:21:36] code Q2K+fc-m111 bytes=436408832 Mean PPL(Q) : 3.440828 ± 0.077595 Mean KLD: 0.115388 ± 0.002145 Same top p: 88.333 ± 0.318 %
+[2026-10-15 18:21:39] E36-D 0.8B DONE -> /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/results-d.txt, /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/paired-d.txt
