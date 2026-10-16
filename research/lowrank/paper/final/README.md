@@ -8,6 +8,11 @@ llama.cpp Quantization: A Paired Audit.*
 | `paper.pdf` | the paper (Typst build) |
 | `paper.tex`, `paper-latex.pdf` | the same paper as one self-contained LaTeX file, and its compiled proof |
 | `paper.md` | the same text as one Markdown file |
+| `paper-tmlr.tex`, `paper-tmlr.pdf` | the **TMLR anonymous submission** (`\usepackage{tmlr}`), see below |
+| `paper-tmlr-preprint.tex`, `paper-tmlr-preprint.pdf` | the same with `\usepackage[preprint]{tmlr}` and the author named |
+| `refs.bib` | generated from `refs.json` for the TMLR builds (natbib, `tmlr.bst`) |
+| `latex_tmlr.py` | the TMLR backend `build.py` calls (ASCII output, natbib citations, anonymization) |
+| `tmlr/` | the vendored TMLR style (`tmlr.sty`, `tmlr.bst`, LICENSE) and `SUBMISSION.md`, the submission checklist with each item's status |
 | `sections/*.md` | the source of truth; edit these |
 | `figures.py`, `figures/` | the two figures, as `.svg` (Typst) and `.pdf` (LaTeX); every number is copied from a named results file |
 | `build.py` | assembles the sections, turns `[source: …]` markers into artifact tags and `arXiv:` ids into a numbered reference list (entries from `refs.json`), writes `paper.typ` and `paper.tex`, compiles both |
@@ -22,10 +27,12 @@ python3 figures.py                             # only when a figure changes
 mise exec typst@0.15.1 -- python3 build.py     # or any typst ≥ 0.13 on PATH
 ```
 
-That one command writes `paper.md`, `paper.typ`, `paper.pdf`, `paper.tex` and
-`paper-latex.pdf`. `--no-latex` skips the LaTeX half; `--keep-log` leaves the
-TeX log in `paper-latex.log`. Without Tectonic it still writes `paper.tex`
-and says so.
+That one command writes `paper.md`, `paper.typ`, `paper.pdf`, `paper.tex`,
+`paper-latex.pdf`, and the TMLR set (`refs.bib`, `paper-tmlr.tex/.pdf`,
+`paper-tmlr-preprint.tex/.pdf`). `--no-latex` skips both LaTeX halves;
+`--no-tmlr` skips only the TMLR set; `--keep-log` leaves the TeX logs in
+`paper-latex.log`, `paper-tmlr.log` and `paper-tmlr-preprint.log`. Without
+Tectonic it still writes the `.tex` files and says so.
 
 ### The LaTeX build
 
@@ -70,6 +77,52 @@ stops on one that has no heading; citations are `\cite` into a
 build's; figures float; the figure PDFs embed DejaVu Sans and break their y
 label over two lines (the SVGs are set by Typst in the document font).
 
+### The TMLR build
+
+Venue: TMLR. `tmlr/SUBMISSION.md` is the checklist against the current
+author guidelines, with what the build does and what the author still has to
+decide; read it before uploading.
+
+`latex_tmlr.py` reuses `latex.py`'s translation and changes five things:
+
+- **Style.** `tmlr.sty` from `tmlr/` (JmlrOrg/tmlr-style-file @ 7bf90efe3a0d,
+  unmodified) sets fonts, geometry, headings and natbib author-year
+  citations; the preamble adds no layout of its own. Appendix A and B follow
+  the references, as TMLR asks.
+- **Characters.** `tmlr.sty` is a pdfLaTeX style (T1, Latin Modern), so the
+  generated `.tex` is pure ASCII: every non-ASCII character (−, ×, ≈, σ, Δ,
+  →, ‖, H̃, ᵀ, ≳, curled quotes, accented author names …) is written as a
+  macro from `latex_tmlr.ASCII`. An unmapped character stops the build; a
+  "Missing character" in the log fails it, as in the article build. The same
+  file should compile with `pdflatex` + `bibtex` (not tried; no TeX Live here).
+- **Citations.** `refs.bib` is generated from `refs.json` (all 50 entries,
+  key `arxiv<id>`, `eprint`/`archivePrefix` kept; the three
+  `venue_withheld` entries print as arXiv preprints and are commented in the
+  file). Markers become `\citep` when a parenthesis holds only citations,
+  `\citet` when the id is used as a noun ("the convention of arXiv:X"), and
+  `\citealp` inside a parenthesis with other text.
+- **Anonymization** (`paper-tmlr` only). Artifact tags render as
+  `[Supp. E24]`; Appendix B maps them to paths inside the supplementary
+  archive (`research/lowrank/` stripped). `latex_tmlr.SCRUB` removes names,
+  GitHub URLs and local paths. After compiling, the build greps the PDF's text
+  and metadata for `latex_tmlr.FORBIDDEN` and fails on a hit, and it prints
+  the residue that only prose can fix (`latex_tmlr.RESIDUE`, with section
+  file and line).
+- **First-page note.** `TMLR_FIRST_PAGE_NOTE` in `build.py` becomes a
+  footnote on the title (TMLR wants the LLM-use disclosure there); unset, the
+  build prints a reminder. The preprint's author block is `TMLR_AUTHOR_BLOCK`.
+
+Compiling: `build.py` copies the `.tex`, `refs.bib`, `tmlr.sty`, `tmlr.bst`
+and `figures/*.pdf` into a temporary directory (exactly a source archive) and
+runs Tectonic there; Tectonic runs bibtex itself. It reports page numbers of
+the main text, references and appendix (from labels in the `.aux`), overfull
+boxes over 1 pt, undefined citations, and bibtex warnings. By hand:
+
+```sh
+d=$(mktemp -d); cp paper-tmlr.tex refs.bib tmlr/tmlr.sty tmlr/tmlr.bst $d; cp -r figures $d
+(cd $d && ~/.local/share/openbeast/tectonic/tectonic paper-tmlr.tex)
+```
+
 `../draft/` is the working draft with its dated revision notes; it is kept
 as history and is no longer the current text.
 
@@ -87,4 +140,4 @@ their only venue statement is soft (`refs/review.json`, `venue_withheld`:
 LoftQ, LQ-LoRA, Punica — confirm against the proceedings), the check above
 covers each work's identity, not the specific numbers the text attributes
 to it (`../references.md` §Verification flags still stands), and the author
-line and venue are the author's to settle.
+line is the author's to settle. The venue is TMLR (see "The TMLR build").

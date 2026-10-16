@@ -32,7 +32,7 @@ UNICODE = {
 }
 SPECIAL = {"\\": r"\textbackslash{}", "{": r"\{", "}": r"\}", "$": r"\$", "#": r"\#", "%": r"\%",
            "&": r"\&", "_": r"\_", "~": r"\textasciitilde{}", "^": r"\textasciicircum{}"}
-SRC0, SRC1, CITE0, CITE1 = "\x05", "\x06", "\x0e", "\x0f"
+SRC0, SRC1, CITE0, CITE1, CITESEP = "\x05", "\x06", "\x0e", "\x0f", "\x11"
 
 labels = set()          # heading numbers that exist ("4", "4.3b", …)
 dangling = []           # §-references with no heading
@@ -79,7 +79,7 @@ def inline(s, breakable=True):
     s = s.replace("\\|", "|")
     s = esc(quotes(s))
     s = re.sub(r"§(\d+(?:\.\d+[a-z]?)?)", secref, s)
-    s = re.sub(CITE0 + "([^" + CITE1 + "]*)" + CITE1, lambda m: r"\cite{%s}" % bibkey(m.group(1)), s)
+    s = re.sub(CITE0 + "([^" + CITE1 + "]*)" + CITE1, cite_cmd, s)
     for a, b in (("\x01", r"\textbf{"), ("\x02", "}"), ("\x03", r"\emph{"), ("\x04", "}"),
                  (SRC0, r"\src{"), (SRC1, "}"), ("\x08", r"\textsuperscript{"), ("\x09", "}")):
         s = s.replace(a, b)
@@ -91,6 +91,16 @@ def inline(s, breakable=True):
 
 def bibkey(arxiv_id):
     return "arxiv" + arxiv_id
+
+
+def cite_cmd(m):
+    """A citation marker holds one arXiv id (-> \\cite, the article build) or,
+    from latex_tmlr.natbib(), "<natbib command>CITESEP<id>,<id>…"."""
+    body = m.group(1)
+    if CITESEP in body:
+        cmd, ids = body.split(CITESEP)
+        return r"\%s{%s}" % (cmd, ",".join(bibkey(i) for i in ids.split(",")))
+    return r"\cite{%s}" % bibkey(body)
 
 
 def cells(row):

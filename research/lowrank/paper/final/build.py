@@ -3,11 +3,17 @@
 
     python3 build.py            # needs typst (e.g. `mise exec typst@0.15.1 -- python3 build.py`)
     python3 build.py --no-latex # skip paper.tex / paper-latex.pdf
-    python3 build.py --keep-log # also leave the TeX log in paper-latex.log
+    python3 build.py --keep-log # also leave the TeX logs in paper-latex.log / paper-tmlr*.log
+    python3 build.py --no-tmlr  # skip the TMLR outputs (refs.bib, paper-tmlr*.tex/.pdf)
 
 paper.tex is written by latex.py (the LaTeX backend) and compiled to
 paper-latex.pdf when Tectonic is found: $TECTONIC, `tectonic` on PATH, or
 ~/.local/share/openbeast/tectonic/tectonic. See README.md.
+
+Unless --no-latex or --no-tmlr is given it also writes the TMLR target
+(latex_tmlr.py): refs.bib, paper-tmlr.tex (anonymous submission) and
+paper-tmlr-preprint.tex (de-anonymized), compiled to the matching PDFs; the
+anonymous PDF's text is checked for identifying strings.
 
 The Markdown sections are the source of truth. This script only re-shapes
 them: `[source: path]` markers become short artifact tags (Appendix B maps
@@ -17,6 +23,7 @@ Markdown subset the sections use is translated to Typst.
 import json, os, pathlib, re, shutil, subprocess, sys, tempfile
 
 import latex
+import latex_tmlr
 
 HERE = pathlib.Path(__file__).parent
 ROOT = HERE.parent.parent          # research/lowrank
@@ -25,6 +32,14 @@ TITLE = ("Frozen-Grid Re-Rounding and the Limits of Low-Rank Correction for "
 AUTHOR = "Maximilian Khan"
 AFFIL = "OpenBeast project · github.com/MaximilianKhan/openbeast"
 DATE = "October 2026"
+# The TMLR preprint's author block (the anonymous build has none).
+TMLR_AUTHOR = "Max Khan"
+# First-page footnote of both TMLR builds (Markdown). TMLR's FAQ asks authors who
+# used an LLM writing tool to say so "as a footnote on the first page". The
+# wording is the author's; while it is None the build prints a reminder.
+TMLR_FIRST_PAGE_NOTE = None
+TMLR_AUTHOR_BLOCK = (r"\name Max Khan \email maxjkh@gmail.com \\" "\n"
+                     r"      \addr OpenBeast project, \url{https://github.com/MaximilianKhan/openbeast}")
 
 NAMED = {"RESULTS_ROLLUP.md": "rollup", "JOURNAL.md": "journal", "PROTOCOL.md": "protocol",
          "TODO.md": "todo", "DEPLOYABLE-WINS.md": "wins", "ABLATION-PLAN.md": "ablation",
@@ -257,6 +272,9 @@ def main():
         tex = latex.document(marked, "\n".join(appendix), "\n".join(reflist[:3]),
                              [ref_parts(i, bib, names) for i in refs], TITLE, AUTHOR, AFFIL, DATE)
         (HERE / "paper.tex").write_text(tex)
+    do_tmlr = do_latex and "--no-tmlr" not in sys.argv
+    if do_tmlr:
+        write_tmlr(marked, bib)
     rc = 0
     if shutil.which("typst"):
         r = subprocess.run(["typst", "compile", "paper.typ", "paper.pdf"], cwd=HERE, capture_output=True, text=True)
@@ -266,7 +284,104 @@ def main():
         print("typst not on PATH — wrote paper.md and paper.typ only")
     if do_latex:
         rc = compile_latex() or rc
+    if do_tmlr:
+        rc = compile_tmlr() or rc
     sys.exit(rc)
+
+
+TMLR_OUT = ("paper-tmlr", "paper-tmlr-preprint")
+
+
+def write_tmlr(marked, bib):
+    """refs.bib + the two TMLR .tex files; prints the anonymization residue."""
+    withheld = json.loads((HERE / "refs" / "review.json").read_text()).get("venue_withheld", {})
+    missing = [i for i in refs if i not in bib]
+    if missing:
+        sys.exit("build.py: cited ids missing from refs.json: " + ", ".join(missing))
+    (HERE / "refs.bib").write_text(latex_tmlr.bibtex(list(bib.values()), withheld))
+    for name, mode in zip(TMLR_OUT, ("anon", "preprint")):
+        (HERE / f"{name}.tex").write_text(latex_tmlr.document(
+            marked, tags, mode, TITLE, TMLR_AUTHOR, TMLR_AUTHOR_BLOCK, TMLR_FIRST_PAGE_NOTE))
+    if TMLR_FIRST_PAGE_NOTE is None:
+        print("TMLR: no first-page note (LLM-use disclosure) - set TMLR_FIRST_PAGE_NOTE in build.py; see tmlr/SUBMISSION.md")
+    hits = latex_tmlr.residue(sorted((HERE / "sections").glob("*.md")))
+    print(f"refs.bib ({len(bib)} entries), {TMLR_OUT[0]}.tex, {TMLR_OUT[1]}.tex written; "
+          f"anonymization residue for the author ({len(hits)}):")
+    for f, n, phrase, why in hits:
+        print(f"  sections/{f}:{n}: \"{phrase}\" - {why}")
+
+
+def page_of(aux, label):
+    m = re.search(r"\\newlabel\{%s\}\{\{[^}]*\}\{(\d+)\}" % re.escape(label), aux)
+    return int(m.group(1)) if m else None
+
+
+def compile_tmlr():
+    """paper-tmlr*.tex -> PDFs, in a temp dir holding exactly what a submission
+    source archive would: the .tex, refs.bib, tmlr.sty, tmlr.bst, figures/."""
+    exe = find_tectonic()
+    if not exe:
+        print("tectonic not found — wrote the TMLR .tex files only (see README.md)")
+        return 0
+    rc = 0
+    for name in TMLR_OUT:
+        with tempfile.TemporaryDirectory() as tmp:
+            t = pathlib.Path(tmp)
+            for f in (f"{name}.tex", "refs.bib", "tmlr/tmlr.sty", "tmlr/tmlr.bst"):
+                shutil.copy(HERE / f, t / pathlib.Path(f).name)
+            shutil.copytree(HERE / "figures", t / "figures", ignore=shutil.ignore_patterns("*.svg"))
+            r = subprocess.run([exe, "--keep-logs", "--keep-intermediates", f"{name}.tex"], cwd=tmp,
+                               capture_output=True, text=True)
+            log = (t / f"{name}.log").read_text(errors="replace") if (t / f"{name}.log").exists() else ""
+            blg = (t / f"{name}.blg").read_text(errors="replace") if (t / f"{name}.blg").exists() else ""
+            if r.returncode:
+                print(r.stderr[-3000:])
+                rc = rc or r.returncode
+                continue
+            missing, _ = latex.check_log(log + r.stderr)
+            _, over = latex.check_log(log)          # stderr repeats every pass's warnings
+            undefined = sorted(set(re.findall(r"(?:Citation|Reference) `[^']*' [^\n]*undefined", log + r.stderr)))
+            bibwarn = re.findall(r"^Warning--[^\n]*", blg, re.M)
+            shutil.copy(t / f"{name}.pdf", HERE / f"{name}.pdf")
+            if "--keep-log" in sys.argv:
+                (HERE / f"{name}.log").write_text(log)
+            aux = (t / f"{name}.aux").read_text(errors="replace")
+            end, appx = page_of(aux, "tmlr-main-end"), page_of(aux, "tmlr-appendix")
+            pages = subprocess.run(["pdfinfo", str(t / f"{name}.pdf")], capture_output=True, text=True).stdout \
+                if shutil.which("pdfinfo") else ""
+            total = re.search(r"Pages:\s+(\d+)", pages)
+            print(f"{name}.pdf written ({total.group(1) if total else '?'} pages: main text 1-{end}, "
+                  f"references to {appx - 1 if appx else '?'}, appendix {appx}-; "
+                  f"{len(over)} overfull boxes > 1pt" + (": " + ", ".join(over) + " pt" if over else "") + ")")
+            for w in bibwarn:
+                print("  bibtex: " + w)
+            if missing:
+                print("TMLR: missing characters - map them in latex_tmlr.ASCII:\n  " + "\n  ".join(missing))
+                rc = 1
+            if undefined:
+                print("TMLR: undefined citations/references:\n  " + "\n  ".join(undefined))
+                rc = 1
+            if name == TMLR_OUT[0]:
+                rc = check_anonymous(HERE / f"{name}.pdf", load_bib()) or rc
+    return rc
+
+
+def check_anonymous(pdf, bib):
+    """Grep the anonymous PDF's text and metadata for identifying strings.
+    Cited authors' names are removed first (a cited "Maximilian K." is not the author)."""
+    if not shutil.which("pdftotext"):
+        print("pdftotext not found — anonymous PDF NOT checked")
+        return 1
+    text = subprocess.run(["pdftotext", str(pdf), "-"], capture_output=True, text=True).stdout
+    meta = subprocess.run(["pdfinfo", str(pdf)], capture_output=True, text=True).stdout
+    for name in {a for e in bib.values() for a in e["authors"]}:
+        text = re.sub(r"\s+".join(map(re.escape, name.split())), "", text)
+    hits = sorted({m.group(0) for pat in latex_tmlr.FORBIDDEN for m in re.finditer(pat, text + "\n" + meta)})
+    if hits:
+        print("TMLR: identifying strings in the anonymous PDF: " + ", ".join(hits))
+        return 1
+    print("anonymous PDF: no identifying strings found (text and metadata)")
+    return 0
 
 
 def find_tectonic():
