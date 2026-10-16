@@ -1506,3 +1506,16 @@ cells (t −3.6..−7.5) and at 27B on wiki/fw (t −3.22/−2.64; code −1.83)
 Registered consequence: reframe as GPTQ on GGUF formats, frozen grid =
 zero-search special case. At 27B even free-grid is level with bare on wiki
 and worse on fw: the 27B failure is not the frozen grid.
+
+**20:47 — disk: deleted data/gram27b-e36-mixed (31 GB)** after both consumers
+(rr-mixed, freegrid-mixed) were built and scored; rebuild = capture() in
+bc_queue.sh (~25 min GPU). Free space had fallen to 73 GB with the 8B
+pipeline mid-run.
+
+**Independent check of the 27B re-round file (checks/rr27b-independent-dequant.txt).**
+gguf-py's own dequantizer, separate code: whitened error re-rounded/bare
+0.487/0.569/0.629 on three tensors (matches the sweep's own gate), while the
+unweighted Frobenius error RISES 16–25%; 8.7–11.4% of codes change. No codec
+bug. Mechanism for the held-out damage, measured: the sweep buys error along
+the calibration covariance's dominant directions and pays it elsewhere, and
+text that excites other directions sees the larger unweighted error.

@@ -1,0 +1,5 @@
+# Independent check (gguf-py dequantize, own code): BF16 vs h27bf16-Q2_K vs h27bf16-Q2K-rr-wiki, Grams gram27b-e36-wiki, 2026-10-15
+blk.3.attn_k.weight (1024, 5120) frob bare 9.865 rr 11.49 | whitened bare 11.73 rr 5.71 ratio 0.487 | codes changed 8.7%
+blk.30.ffn_up.weight (17408, 5120) frob bare 28.45 rr 34.23 | whitened bare 210.2 rr 119.6 ratio 0.569 | codes changed 9.6%
+blk.10.ssm_out.weight (5120, 6144) frob bare 24.39 rr 30.47 | whitened bare 0.6091 rr 0.3831 ratio 0.629 | codes changed 11.4%
+
