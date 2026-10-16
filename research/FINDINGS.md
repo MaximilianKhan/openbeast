@@ -49,7 +49,7 @@ distribution), FineWeb-Edu and a code corpus no calibration touched.
    format and bytes beats frozen-grid re-rounding in 11 of 12 cells
    (0.8B, 8B, 27B), and still does not beat the untouched file at 8B/27B.
    (`RESULTS-E.md`)
-4. **Low-rank correction improves its base everywhere, about half as much
+4. **Low-rank correction improves its base everywhere, by less (0.25–0.96×)
    off-distribution, and more the thinner the base** (recipe-fixed 27B
    recovery: 7% / 12% / 32% at Q2_K / IQ2_XS / IQ1_S on wikitext; 3% / 8% /
    16% on FineWeb-Edu). (`RESULTS-D.md` §T1.9)
