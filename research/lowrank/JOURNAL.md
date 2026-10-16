@@ -1538,3 +1538,14 @@ text that excites other directions sees the larger unweighted error.
   (both prose corpora) but never the I-quant rung below it in bytes.
 - F: row 1 (GSQ r1) at 51/112 after 5.5 h, 0 CUDA errors → ~12 h/row,
   ~4.5 days for 9 rows.
+
+## 2026-10-16 10:40 — E36 disk: scored 27B intermediates deleted (Max's go)
+
+Deleted ~109 GB of 27B files whose every number is already in RESULTS-A/B/D/E.md
+and the paper: the three re-rounded Q2_K files (wiki, mixed, oldgram), the B5
+oracle file, the free-grid mixed file, the T1.9 bases (IQ2_M, IQ2_XS, IQ1_S) and
+the codes27b-mixed npy cache. Sizes in `experiments/36-submission/deleted-2026-10-16.txt`.
+All regenerable from the scripts (hours of CPU/GPU each). Kept: 0.8B working set
+(d08b/), T1.9 adapters and fc caches, all logs. F was not touching any of them
+(lsof clean, master_queue4 references none). Free: 56 GB → 155 GB, which makes
+room for the full 580-chunk wiki rescoring (~70 GB refs) if Max wants it.

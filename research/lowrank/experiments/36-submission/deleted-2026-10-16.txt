@@ -1,0 +1,9 @@
+11003736448 freegrid/h27bf16-Q2K-freegrid-mixed.gguf
+7441895840 h27bf16-IQ1_S.gguf
+10296664480 h27bf16-IQ2_M.gguf
+9382662560 h27bf16-IQ2_XS.gguf
+22400446880 h27bf16-Q2K-oracleQ8swept.gguf
+11003736448 h27bf16-Q2K-rr-mixed.gguf
+11003736448 h27bf16-Q2K-rr-oldgram.gguf
+11003736448 h27bf16-Q2K-rr-wiki.gguf
+15518957568 codes27b-mixed/ (npy cache)
