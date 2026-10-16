@@ -31,32 +31,42 @@ def save(fig, name, ax=None, pdf_ylabel=None, rect=None):
     plt.close(fig)
 
 def fig_ladder():
-    # experiments/27-bf16-rederivation/results-100ch.txt (GB = file bytes, adapter included)
-    rungs = [("IQ3_XS", 12.26, 0.0767, 0.0021), ("Q3_K_S", 12.37, 0.0924, 0.0024),
-             ("Q3_K_M", 13.59, 0.0609, 0.0016)]
-    control = ("mixed-type control", 12.50, 0.0814, 0.0021)
-    ours = [("mixed base", 12.16, 0.0967, 0.0024), ("corrected configuration", 12.50, 0.0876, 0.0024)]
-    fig, ax = plt.subplots(figsize=(5.4, 3.3))
-    ax.errorbar([r[1] for r in rungs], [r[2] for r in rungs], yerr=[r[3] for r in rungs], fmt="o",
-                ms=6, color=C1, ecolor=C1, elinewidth=1, capsize=2, label="ladder rung (bare)")
-    ax.errorbar([control[1]], [control[2]], yerr=[control[3]], fmt="s", ms=6, color=C2, ecolor=C2,
-                elinewidth=1, capsize=2, label="same-byte mixed-type control (bare)")
-    ax.errorbar([o[1] for o in ours], [o[2] for o in ours], yerr=[o[3] for o in ours], fmt="^", ms=7,
-                color=C3, ecolor=C3, elinewidth=1, capsize=2, label="mixed base, without / with correction")
-    ax.annotate("", xy=(12.50, 0.0885), xytext=(12.18, 0.0962),
-                arrowprops=dict(arrowstyle="->", color=MUTED, lw=0.8))
-    for name, x, y, _ in rungs + [control] + ours:
-        dx, dy, ha = 0.035, 0.0, "left"
-        if name == "mixed base": dx, dy, ha = -0.045, 0.0012, "right"
-        if name == "corrected configuration": dx, dy = 0.05, 0.0022
-        if name == "mixed-type control": dx, dy = 0.05, -0.0018
-        ax.text(x + dx, y + dy, name, ha=ha, va="center", color=INK, fontsize=8)
-    ax.set_xlabel("total bytes, GB (base + adapter)")
-    ax.set_ylabel("KL divergence vs BF16 (nats/token), lower is better")
-    ax.set_xlim(11.7, 14.0); ax.set_ylim(0.055, 0.103)
-    ax.legend(frameon=False, loc="upper right", fontsize=7.5)
-    fig.tight_layout()
-    save(fig, "fig-ladder-27b", ax, "KL divergence vs BF16 (nats/token),\nlower is better")
+    # experiments/36-submission/results-a.txt (b10865; GB = file bytes, adapter included)
+    data = {  # corpus -> name -> (GB, KLD, sem)
+        "wikitext (calibration)": {"IQ3_XS": (12.26, 0.0766, 0.0022), "Q3_K_S": (12.37, 0.0910, 0.0022),
+            "Q3_K_M": (13.59, 0.0605, 0.0016), "control": (12.50, 0.0813, 0.0022),
+            "mixed base": (12.16, 0.0971, 0.0025), "corrected": (12.50, 0.0863, 0.0023)},
+        "FineWeb-Edu (held out)": {"IQ3_XS": (12.26, 0.0517, 0.0010), "Q3_K_S": (12.37, 0.0638, 0.0012),
+            "Q3_K_M": (13.59, 0.0410, 0.0008), "control": (12.50, 0.0577, 0.0011),
+            "mixed base": (12.16, 0.0731, 0.0014), "corrected": (12.50, 0.0686, 0.0014)},
+        "code (held out)": {"IQ3_XS": (12.26, 0.0632, 0.0016), "Q3_K_S": (12.37, 0.0746, 0.0020),
+            "Q3_K_M": (13.59, 0.0500, 0.0015), "control": (12.50, 0.0666, 0.0018),
+            "mixed base": (12.16, 0.0830, 0.0021), "corrected": (12.50, 0.0779, 0.0020)},
+    }
+    fig, axes = plt.subplots(1, 3, figsize=(7.4, 3.1), sharey=False)
+    for ax, (title, d) in zip(axes, data.items()):
+        rungs = [d[k] for k in ("IQ3_XS", "Q3_K_S", "Q3_K_M")]
+        ax.errorbar([r[0] for r in rungs], [r[1] for r in rungs], yerr=[r[2] for r in rungs], fmt="o",
+                    ms=5, color=C1, ecolor=C1, elinewidth=1, capsize=2, label="stock type (bare)")
+        c = d["control"]
+        ax.errorbar([c[0]], [c[1]], yerr=[c[2]], fmt="s", ms=5, color=C2, ecolor=C2, elinewidth=1,
+                    capsize=2, label="same-byte mixed-type control")
+        o = [d["mixed base"], d["corrected"]]
+        ax.errorbar([x[0] for x in o], [x[1] for x in o], yerr=[x[2] for x in o], fmt="^", ms=6,
+                    color=C3, ecolor=C3, elinewidth=1, capsize=2, label="mixed base, without / with correction")
+        ax.annotate("", xy=(o[1][0] - 0.01, o[1][1]), xytext=(o[0][0] + 0.02, o[0][1]),
+                    arrowprops=dict(arrowstyle="->", color=MUTED, lw=0.8))
+        for name in ("IQ3_XS", "Q3_K_S", "Q3_K_M"):
+            x, y, _ = d[name]
+            ax.text(x + 0.05, y, name, ha="left", va="center", color=INK, fontsize=7)
+        ax.set_title(title, fontsize=8, color=INK)
+        ax.set_xlim(11.9, 14.1)
+        ax.set_xlabel("total GB (base + adapter)")
+    axes[0].set_ylabel("KL divergence vs BF16 (nats/token)")
+    h, l = axes[0].get_legend_handles_labels()
+    fig.legend(h, l, frameon=False, loc="lower center", ncol=3, fontsize=7)
+    fig.tight_layout(rect=(0, 0.08, 1, 1))
+    save(fig, "fig-ladder-27b")
 
 def fig_gsq():
     # experiments/32-t117-gsq-head-to-head/results-40ch.txt and results-fineweb-40ch.txt

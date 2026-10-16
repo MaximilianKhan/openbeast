@@ -13,40 +13,40 @@ Re-rounding changes no file size, VRAM use or serving speed: it re-chooses which
 
 Perplexity falls by 18%. The two rows are 15.6 unpaired standard errors apart on perplexity and about 19 on KLD [source: research/lowrank/experiments/35-final-reanalysis/RESULTS.md]. No per-chunk logs exist for this pair, and no smaller stock rung was scored against it.
 
-**Qwen3.5-0.8B (Q2_K; BF16 reference; paired).** A second, hybrid-attention architecture [source: research/lowrank/experiments/24-yaqa-lite/README.md; experiments/22-qwen35-08b/results.txt]:
+**Qwen3.5-0.8B (Q2_K; BF16 reference; three corpora; current build).** A second, hybrid-attention architecture. Every file is one quantization step from BF16 with a 40-chunk wikitext-2-train imatrix and Gram capture; KLD is on 40 chunks of each corpus against BF16 logits generated on llama.cpp b10865 [source: research/lowrank/experiments/36-submission/RESULTS-D.md]:
 
-| file | MB | PPL | KLD | top-1 |
+| file | MB | KLD, wikitext | KLD, FineWeb-Edu | KLD, code |
 |---|---|---|---|---|
-| Q2_K, as written | 436 | 33.09 | 0.4902 | 66.4% |
-| Q2_K, re-rounded | 436 | 28.09 | 0.3234 | 72.7% |
-| IQ3_XXS, stock | 412 | 23.95 | 0.2573 | 74.3% |
-| Q3_K_M, stock | 480 | 23.28 | 0.1668 | 79.2% |
+| IQ2_M, stock | 392 | 0.5477 | 0.5391 | 0.4881 |
+| IQ3_XXS, stock | 412 | 0.2577 | 0.2577 | 0.2225 |
+| Q2_K, as written | 436 | 0.4900 | 0.5347 | 0.3926 |
+| Q2_K, re-rounded, wikitext calibration | 436 | 0.3268 | 0.4255 | 0.5433 |
+| Q2_K, re-rounded, 2:1 wikitext:code calibration | 436 | 0.3690 | 0.4660 | 0.2591 |
+| Q3_K_M, stock | 480 | 0.1677 | 0.1678 | 0.1209 |
 
-Re-rounded against the same file as written: ΔNLL −0.1637 ± 0.0036 nats/token (t = −44.9, n = 580, better on 557 chunks), ΔKLD −0.1668 ± 0.0055 (t = −30.3, n = 40, better on 40), Δtop-1 +6.26 ± 0.45 points (t = +14.1, n = 40). That is 15% lower perplexity and 34% lower KLD at identical bytes, and about half of the KLD distance to Q3_K_M (51.6%).
+Re-rounded with wikitext calibration against the same file as written: ΔKLD −0.1632 ± 0.0058 on wikitext (t = −28.4, better on 40/40 chunks), 33% lower at identical bytes; the paper's earlier measurement on a pre-fix build was −34% (t = −30.3). On FineWeb-Edu the gain is smaller (−0.1092, t = −12.6). On code the file is worse than the untouched one (+0.1507, t = +13.6).
 
-Re-rounded Q2_K against the stock IQ3_XXS file, which is 24 MB smaller: the stock file is better, by 0.0657 ± 0.0061 KLD (t = +10.8, n = 40, IQ3_XXS better on 39 chunks; Wilcoxon p < 1e-11), by 0.136 nats/token in NLL (t = +11.5) and by 1.6 points of top-1 (t = −3.1). The two logs come from different sessions and were scored against the same 40-chunk BF16 reference, which we verified by recovering the reference's per-chunk NLL from each log [source: research/lowrank/experiments/35-final-reanalysis/RESULTS.md]. At 0.8B, then, a user choosing a file near 430 MB should take the stock IQ3_XXS over a re-rounded Q2_K. Whether re-rounding would improve IQ3_XXS in turn is not known, because the re-rounder implements only the Q2_K codec.
+Against stock rungs: the re-rounded file is ahead of IQ2_M, 44 MB smaller, on wikitext and FineWeb-Edu (t = −25.9 and −15.7) and behind it on code (t = +4.1). The stock IQ3_XXS file, 24 MB smaller, is better than the re-rounded Q2_K on all three corpora (t = +11.7, +22.2, +16.2). A user choosing a file near 430 MB at this size should take IQ3_XXS. Whether re-rounding would improve IQ3_XXS in turn is not known, because the re-rounder implements only the Q2_K codec.
 
-**Qwen3.6-27B (Q2_K with imatrix; paired, n = 100; legacy-provenance pair).** On 100 chunks against BF16 reference logits [source: research/lowrank/experiments/27-bf16-rederivation/results-100ch-paired.txt; experiments/27-bf16-rederivation/results.txt]:
+**Calibration decides where the gain lands.** We re-rounded the same Q2_K file under five calibration texts, every one disjoint from every evaluation text: wikitext-2 train, a code corpus, a FineWeb-Edu slice taken from documents outside the evaluation slice, a 2:1 wikitext:code interleave and a 1:1:1 interleave of all three. Paired ΔKLD against the file as written, 40 chunks per cell (t in parentheses) [source: research/lowrank/experiments/36-submission/RESULTS-D.md; experiments/36-submission/paired-d.txt]:
 
-| file | GB | n | PPL | KLD | top-1 |
-|---|---|---|---|---|---|
-| Q2_K, as written (legacy provenance) | 10.86 | 100 | 7.735 ± 0.126 | 0.1603 ± 0.0032 | 83.48% |
-| Q2_K, re-rounded (legacy provenance) | 10.86 | 100 | 7.696 ± 0.124 | 0.1390 ± 0.0029 | 84.55% |
-| IQ3_XXS, stock (single step from BF16) | 11.48 | 20 | 7.562 ± 0.270 | 0.0983 ± 0.0041 | 87.29% |
+| calibration | wikitext | FineWeb-Edu | code |
+|---|---|---|---|
+| wikitext | −0.163 (−28.4) | −0.109 (−12.6) | **+0.151 (+13.6)** |
+| FineWeb-Edu | −0.115 (−16.3) | −0.151 (−16.8) | **+0.088 (+8.9)** |
+| code | **+0.247 (+20.3)** | **+0.275 (+21.1)** | −0.132 (−14.0) |
+| 2:1 wikitext:code | −0.121 (−21.4) | −0.069 (−8.2) | −0.133 (−14.6) |
+| 1:1:1 wikitext:code:FineWeb-Edu | −0.116 (−20.6) | −0.087 (−10.0) | −0.134 (−14.8) |
 
-Re-rounded against as written: ΔKLD −0.0213 ± 0.0030 (t = −7.02, better on 77/100 chunks; block-bootstrap 95% interval [−0.0285, −0.0138]; Wilcoxon p < 1e-10), Δtop-1 +1.07 points (t = +4.72), ΔNLL −0.005 ± 0.005 (t = −0.98). KL divergence falls by 13.3% and perplexity does not move.
+The pattern is consistent across the grid. Re-rounding transfers between the two prose corpora and does not transfer between prose and code in either direction: every calibration that lacks one of the two kinds of text damages it, by up to half the file's own KLD. Both calibrations that contain both kinds improve all three corpora, at a cost on each corpus against calibrating on that corpus alone (for wikitext, −0.121 against −0.163). The 2:1 interleave was fixed as the deployable recipe before this grid was run. Re-rounding fits the calibration covariance with nothing pulling the codes toward their original values in directions the calibration does not excite, which is a plausible reading of why uncovered text is damaged; we did not test it directly.
 
-Three labels travel with this pair wherever it is quoted. It is legacy provenance: both files are requantizations of a Q6_K file and not single steps from BF16, so the pair is not tabled beside the single-step rows of §4.3; the difference between the two is clean because both share that provenance. Perplexity is unchanged. And there is no held-out test of the re-rounder at 27B. In addition, the sweep covers part of the model: inside a nominal Q2_K file at 27B, llama-quantize writes ffn_down and attn_output as Q3_K and attn_qkv and attn_v as Q4_K, and only the Q2_K tensors are re-rounded.
+**The calibration sample is a small part of the variance.** Re-rounding on three disjoint thirds of wikitext-2 train, the same budget each, moves ΔKLD by at most 0.004 on wikitext, 0.018 on FineWeb-Edu and 0.007 on code (wikitext: −0.163, −0.164, −0.167). This bounds calibration-sampling variance alone at this size, and it is one to two orders of magnitude smaller than the effect of which kind of text is in the calibration set.
 
-The stock row is not at or below the pair's bytes: IQ3_XXS is 0.6 GB larger, and it was scored at 20 chunks under single-step provenance. On the 20 chunks both runs share (same text and reference, verified), IQ3_XXS is lower than re-rounded Q2_K by 0.0526 ± 0.0114 KLD (t = +4.6, 20/20 chunks). On those 20 chunks re-rounding lowers the legacy file by 0.0065 KLD. The comparison crosses provenance and is not byte-matched: it says that a stock file about 6% larger is much better than the re-rounded one, and nothing about equal bytes. No stock rung at or below 10.86 GB was scored against BF16 [source: research/lowrank/experiments/35-final-reanalysis/RESULTS.md].
+**Qwen3.6-27B (Q2_K; BF16 reference; three corpora; current build).** [PENDING:B — single-step re-round pair (wikitext and 2:1 calibration), IQ2_M and IQ3_XXS brackets, scored on wikitext / FineWeb-Edu / code; RESULTS-B.md.]
 
-**Calibration dependence.** The wikitext-calibrated 0.8B file was evaluated on a held-out code corpus and is worse than the untouched file: perplexity 3.470 against 3.083. The full-covariance correction, by contrast, improves on it (2.649). Re-rounding fits the calibration covariance with nothing pulling the solution toward the original codes off-distribution. A mixed 2:1 wikitext:code calibration improves both corpora (wikitext 33.09 → 29.84; code 3.083 → 2.785), at some cost on wikitext against wikitext-only calibration (−10% against −15%) [source: research/lowrank/paper/DEPLOYABLE-WINS.md; experiments/22-qwen35-08b/HELDOUT-METHOD.md].
+The paper's earlier 27B pair was legacy provenance (both files requantized from a Q6_K file) and wikitext-calibrated: on 100 chunks it lowered KLD by 13.3% (t = −7.02) with perplexity unchanged. On the current build and the new references that re-rounded file still has lower KLD than the single-step Q2_K on wikitext (0.1385 against 0.1581, with 0.14 GB fewer bytes) and higher on FineWeb-Edu (0.1345 against 0.1182) and code (0.1564 against 0.1188), the cross-domain pattern of the 0.8B grid; the two files differ in provenance as well as codes, so this is not a paired test of re-rounding [source: research/lowrank/experiments/36-submission/RESULTS-A.md].
 
-Two pre-registered follow-ups extend this. On a third corpus in neither calibration set (technical prose), both re-rounded files improve on the untouched one: 57.56 as written, 54.40 wikitext-calibrated, 55.32 mixed-calibrated. And the mixed-calibrated file improves KLD on both covered corpora (wikitext 0.490 → 0.372; code 0.318 → 0.219). Our reading is that re-rounding transfers to text near its calibration distribution and can damage text far from it unless that text is covered.
-
-Three caveats. The mixed-against-narrow comparison changed corpus composition, calibration budget (+20%) and chunk sampling together. An accidental control bounds calibration-sampling variance alone at 0.55 perplexity points (about 2%), which is larger than several 0.8B margins in this paper. And the third corpus was assembled from our own literature notes, which are machine-drafted prose; it is one sample of unseen text and not a benchmark. The mix-ratio grid has not been run.
-
-**What the tool requires.** The re-rounder is not a transformation of a GGUF alone. It needs the higher-precision source weights (BF16 here; a Q6_K file for the 27B legacy pair), a Gram capture made with our patched llama-imatrix, broad calibration text, and a held-out check. Its output is a standard GGUF.
+**What the tool requires.** The re-rounder is not a transformation of a GGUF alone. It needs the higher-precision source weights, a Gram capture made with our patched llama-imatrix, calibration text that covers every kind of text the file will serve, and a held-out check. Its output is a standard GGUF.
 
 ## 3.2 A richer metric made the result worse
 
@@ -66,3 +66,11 @@ A second surrogate result points the same way: alternating the code sweep with a
 ## 3.3 Ordering: re-round a bare file, alternate when a corrector will be attached
 
 Re-rounding helps a bare file and hurts under a corrector. At 0.8B, the bare base with a freshly extracted full-covariance correction beats the re-rounded base with one (ΔNLL t = +17.6, n = 580; the re-rounded stack is better on 133 chunks). The same ordering was seen at 0.6B, unpaired: re-round then correct 26.80 perplexity, a one-shot re-round under a ProjQ-style modified metric (arXiv:2606.00494) 25.94, alternation then correct 25.27 [source: research/lowrank/experiments/24-yaqa-lite/README.md; experiments/13-rerounder/README.md]. Re-rounding minimizes the standalone whitened error and spends grid resolution on directions the corrector would have absorbed. The guidance: re-round when shipping a bare file, alternate (§2.4) when a corrector will be attached, and do not stack re-rounding under a corrector.
+
+## 3.4 Freezing the grid against refitting it
+
+A referee asked whether keeping llama-quantize's grid is a constraint worth its cost, against GPTQ allowed to choose the grid as well. We built that baseline at identical format and bytes: the same sweep, Grams, damping and tensor coverage as §2.3, except that when the sweep enters each 256-column superblock it refits that superblock's grid from the error-updated weights with llama.cpp's own Q2_K quantizer and the same imatrix. With error feedback switched off the tool reproduces llama-quantize's file byte for byte (96/96 tensors at 0.8B, 256/256 at 27B), so the only difference between the two arms is whether the grid is frozen. On the whitened objective the refit grid is lower than the frozen one on all 96 tensors at 0.8B (by 12% in total) [source: research/lowrank/experiments/36-submission/freegrid/README.md].
+
+[PENDING:E — free-grid vs frozen-grid, paired ΔKLD on wikitext / FineWeb-Edu / code at 0.8B (wikitext and 2:1 Grams) and 27B (2:1 Grams); and at Llama-3.1-8B (§G).]
+
+This baseline does not cover learned rounding (AdaRound and its successors), which needs a block-reconstruction training loop, or vector and lattice quantizers at 2 bits, which are outside the GGUF formats; §7.1 lists both.

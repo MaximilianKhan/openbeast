@@ -25,7 +25,7 @@
 #v(0.6em)
 == Abstract
 
-We measure, on llama.cpp files of four Qwen-family models and one GPU, what post-training repair of low-bit quantization buys. (1) Frozen-grid re-rounding re-chooses only the codes on llama-quantize's grids. At identical bytes it lowers a Q2\_K file's KL divergence (KLD) by 34% at 0.8B and 13% at 27B (legacy-provenance pair; perplexity unchanged; no held-out test). Calibrated on one corpus it harms a distant one; mixed calibration repairs this. The smaller stock IQ3\_XXS file still beats re-rounded Q2\_K at 0.8B. (2) At 27B, whitened low-rank correction is ahead of the adjacent stock type by 0.0048 KLD (5%, t = −2.85) and behind a same-byte mixed-type control by 0.0063 (t = +2.62); both margins are small, on-distribution and unreplicated. (3) Against released GSQ-RCO checkpoints, the untrained baseline at matched bytes already has lower 512-token KLD on wikitext; our correction (+0.9 GB) lowers it further, and a stock file at near-equal bytes beats it. In one pair, one run per arm, KLD and a coding suite ordered the files oppositely. (4) Fused adapter kernels raise 0.6B decode by 79% (one pair, one GPU); an allocator fix adds 19.6% in the better of two sessions (11% in the other) and nothing at 27B#src[E35, E32, E25].
+We measure, on llama.cpp files of Qwen-family models \[PENDING:G — and Llama-3.1-8B\] on one GPU, what post-training repair of low-bit quantization buys, scoring every comparison against BF16 references on the calibration distribution and on two held-out corpora. (1) Frozen-grid re-rounding re-chooses only the codes on llama-quantize's grids. At identical bytes it lowers a Q2\_K file's KL divergence (KLD) by a third at 0.8B \[PENDING:B — and by X% at 27B\]. The gain lands only on the kinds of text the calibration covers: calibrated on prose it makes code worse, and the reverse; a calibration mixing both improves all three corpora. A smaller stock IQ3\_XXS file is still better at 0.8B. \[PENDING:E — free-grid GPTQ result.\] (2) Whitened low-rank correction improves its base on every corpus at 0.8B and 27B, by about half as much off the calibration distribution. Against the stock types it falls short: at 27B its 5% lead over the adjacent type holds only on the calibration distribution (reversed on one held-out corpus, unresolved on the other), and a same-byte file mixing stock types is better on every corpus, by a factor of three in KLD at 0.8B. (3) Against released GSQ-RCO checkpoints, KLD to the reference and likelihood of the text disagree within one run at a 2,048-token context: the trained files trade fidelity to BF16 for likelihood, so KLD ranks fidelity, not quality. \[PENDING:F — capability replication.\] (4) Fused adapter kernels raise 0.6B decode by 79% and 27B decode by 2.7%#src[E36].
 
 = 1. Introduction
 
@@ -33,27 +33,25 @@ We measure, on llama.cpp files of four Qwen-family models and one GPU, what post
 
 A consumer GPU such as the RTX 5090 pairs a fast processor with 32 GB of memory, and the models people want to run on it are several times larger than that at training precision. Single-stream decoding is limited by memory bandwidth, because every token reads the full weight set. We measured the consequence on one 27B model, Qwen3.6-27B (the checkpoint is heretic-v2, an uncensored community finetune of Qwen3.6-27B that keeps the base model's multi-token-prediction layers): the Q6\_K file occupies 23.6 GB of VRAM and decodes at 61 tok/s, and the Q2\_K file occupies 13.0 GB and decodes at 99.7 tok/s#src[rollup]. On this card, for these two files, the smaller one was also the faster one. We take that as the motivation for the study and not as a general result.
 
-The question is how much quality post-training processing can recover per byte, or at zero added bytes, on top of a mature quantization stack. We ask it on llama.cpp, whose family of imatrix-weighted block quantizers (the K-quant and I-quant types, nominally about 1.5 to 6.5 bits per weight; terms are defined in §2) is the strongest deployed baseline in this regime and a harder rival than round-to-nearest. All models are Qwen-family and all measurements come from one GPU.
+The question is how much quality post-training processing can recover per byte, or at zero added bytes, on top of a mature quantization stack. We ask it on llama.cpp, whose family of imatrix-weighted block quantizers (the K-quant and I-quant types, nominally about 1.5 to 6.5 bits per weight; terms are defined in §2) is the strongest deployed baseline in this regime and a harder rival than round-to-nearest. The models are Qwen-family \[PENDING:G — plus Llama-3.1-8B\], all measurements come from one GPU, and every comparison is scored on the calibration distribution and on two corpora that no calibration touched.
 
 == 1.2 What this paper does not claim
 
 It does not claim that low-rank factorization compresses these models. A singular-value census of every tensor in our smallest model finds that capturing 95% of unweighted Frobenius energy needs 50-80% of full rank on every projection type#src[E1]. The quantization residual R = W − dequant(Q), the object that the error-correction lineage corrects (ZeroQuant-V2/LoRC, \[1\]; LQER, \[2\]; QERA, \[3\]; EoRA, \[4\]; CALDERA, \[5\]), is less structured still: 90% of its energy needs about 62% of full rank#src[E3]. Both observations agree with the published account (LQER; RILQ, \[6\]).
 
-It does not claim a method that beats llama.cpp's stock quantization types. At 100 chunks (the pre-registered final sample, after ties at 20 and 40) the corrected configuration is ahead of Q3\_K\_S by 0.0048 KLD (5%, t = −2.85, 71/100 chunks) and behind a same-byte mixed-type control by 0.0063 (t = +2.62, 62/100; no difference in NLL). Both margins are small, on-distribution, and unreplicated. The registration fixed n = 100 as final and stated a rule for parity (|t| \< 2); it stated no rule for a win and no correction for the three looks. The I-quant type IQ3\_XS scores better than both at fewer bytes with no adapter (§4.3)#src[E27, E35].
+It does not claim a method that beats llama.cpp's stock quantization types. At 27B the corrected configuration is ahead of Q3\_K\_S by 0.0047 KLD (5%, t = −2.62) on the calibration distribution, behind it on FineWeb-Edu (t = +3.26) and unresolved on code; a same-byte file that mixes stock types and has no adapter is ahead of it on all three corpora, and the I-quant type IQ3\_XS is better than both at fewer bytes (§4.3). At 0.8B the same-byte mixed-type control has a third of the corrected configuration's KLD#src[E36].
 
 == 1.3 Contributions
 
-#strong[(1) Frozen-grid re-rounding, conditioned on calibration breadth.] llama-quantize chooses a grid per block and then rounds each element independently. We keep the grid bytes as shipped and re-choose only the codes under a captured activation-covariance metric, using the GPTQ sweep (\[7\]). The output is a standard GGUF of identical size. Against the same file before re-rounding, Qwen3.5-0.8B at Q2\_K improves by 15% in perplexity and 34% in KL divergence (paired NLL t = −44.9, n = 580; paired KLD t = −30.3, n = 40)#src[E24]. At 27B the same sweep lowers KL divergence by 13.3% (t = −7.0, n = 100; a legacy-provenance pair; perplexity unchanged; no held-out test at 27B).
+#strong[(1) Frozen-grid re-rounding, and the calibration it needs.] llama-quantize chooses a grid per block and then rounds each element independently. We keep the grid bytes as shipped and re-choose only the codes under a captured activation-covariance metric, using the GPTQ sweep (\[7\]). The output is a standard GGUF of identical size. On Qwen3.5-0.8B at Q2\_K it lowers KL divergence by 33% against the same file before re-rounding (t = −28.4, 40/40 chunks) \[PENDING:B — 27B single-step result\]#src[E36]. A grid of five calibration texts against three evaluation corpora shows where the gain lands: on the kinds of text the calibration covers. Calibrated on prose, the file is worse on code than before re-rounding, and the reverse; a calibration mixing prose and code improves all three corpora, and calibration-sampling variance is small against these effects (§3.1). Re-rounding improves a given file and does not make Q2\_K the best choice at its size: the smaller stock IQ3\_XXS file has lower KL divergence on all three corpora. \[PENDING:E — free-grid GPTQ baseline at identical format and bytes (§3.4).\] The tool needs the higher-precision source weights and a covariance capture made with a patched binary; it does not operate on a GGUF alone. Related methods are GSQ (\[8\]), ReQuant (\[9\]) and SchurQuant (\[10\]); the relation is stated in §8.
 
-Three limits belong with that result. Re-rounding improves a given file and does not make Q2\_K the best choice at its size: at 0.8B the stock IQ3\_XXS file is smaller and has lower KL divergence (§3.1). The gain depends on calibration: the wikitext-calibrated file is worse than the untouched one on a held-out code corpus, and a mixed calibration improves both corpora. And the tool needs the higher-precision source weights and a covariance capture made with a patched binary; it does not operate on a GGUF alone. Related methods are GSQ (\[8\]), ReQuant (\[9\]) and SchurQuant (\[10\]); the relation is stated in §8.
+#strong[(2) A paired audit of low-rank correction on llama.cpp's own formats, on and off the calibration distribution.] We measure whitened low-rank correction at three dense sizes and on one mixture-of-experts model, against the stock types and against mixed-type controls built at the same bytes at 0.8B, at 27B and on the mixture-of-experts model. The correction improves its own base everywhere we measured it, with a recovered fraction that grows as the base gets thinner (7%, 12% and 32% at Q2\_K, IQ2\_XS and IQ1\_S, with the recipe fixed) and halves off-distribution (§4.5). It loses to the control everywhere one was built. Three placements of the low-rank bytes cannot be told apart at 27B, within a bound we state (§4.4). Fixed-rank capture is sublinear in rank and, across a single width step, falls more slowly than r/d predicts (§4.2). Several of the audit's negative results are its best-resolved findings (§4.7, Appendix A).
 
-#strong[(2) A paired audit of low-rank correction on llama.cpp's own formats, with the reasons it falls short.] We measure whitened low-rank correction at three dense sizes and on one mixture-of-experts model, against the stock types and, at 27B and on the mixture-of-experts model, against a mixed-type control built at the same bytes. The correction improves its own base at every size and loses to the control where one was built. Three placements of the low-rank bytes cannot be told apart at 27B, within a bound we state (§4.4). Fixed-rank capture is sublinear in rank and, across a single width step, falls more slowly than r/d predicts (§4.2). Several of the audit's negative results are its best-resolved findings (§4.7, Appendix A)#src[review].
-
-#strong[(3) A head-to-head with released trained checkpoints.] Against the released GSQ-RCO checkpoints of Qwen3.8-27B, the untrained vendor baseline at matched bytes already has lower 512-token KLD on wikitext (not resolved on FineWeb-Edu); adding our correction (+0.9 GB, not byte-matched) lowers it further on both corpora. A stock file at near-equal total bytes beats the corrected arm. In one cross-family pair (one run per arm), 512-token KLD and a coding suite ordered the artifacts oppositely; we treat KLD as unvalidated across refinement families (§5).
+#strong[(3) A head-to-head with released trained checkpoints, and what KL divergence measures.] Against the released GSQ-RCO checkpoints of Qwen3.8-27B, the untrained vendor baseline at matched bytes is closer to the BF16 distribution, at 512 and at 2,048 tokens, while the trained checkpoints assign the text higher likelihood in the same 2,048-token run. KL divergence to a reference ranks fidelity to that reference; it is the right instrument for a method that only approximates the reference and the wrong one for ranking a trained artifact against an untrained one (§5.4). Our correction (+0.9 GB, not byte-matched) moves the baseline closer to the reference on every corpus and context we measured, and a stock file at near-equal total bytes beats it. \[PENDING:F — capability replication, three runs per arm.\]
 
 #strong[(4) Serving kernels.] llama.cpp's stock adapter path costs 20-40% of decode speed. A fused-kernel series removes most of that at 0.6B (+79%, one same-session pair) and gives +2.7% at 27B (N = 10, interleaved). A separate allocator fix raised base decode at 0.6B by 19.6% in the better of two sessions and 11% in the other, with no measurable change at 27B (§6)#src[E14, E25].
 
-The measurement protocol these results follow (single-step provenance, paired per-chunk statistics, a same-byte control, pre-registration) is part of the method and is stated in §2.5.
+The measurement protocol these results follow (single-step provenance, paired per-chunk statistics, held-out corpora, same-byte controls, pre-registration) is part of the method and is stated in §2.5.
 
 == 1.4 Relation to prior work
 
@@ -120,14 +118,16 @@ Correction quality depends on the base, and the base's grid choices depend on wh
 Results in §3-§6 follow these rules or are labeled legacy#src[protocol].
 
 - #strong[Reference and provenance.] The reference is BF16 where it exists. For the mixture-of-experts model of §4.6 we had no BF16 and used the vendor UD-Q4\_K\_M file, stated at the table. Every base and adapter derives from the reference in one quantization step; rows of other provenance are labeled legacy and are not tabled beside single-step rows without a provenance label.
-- #strong[Metrics.] Mean KL divergence (KLD) and top-1 agreement against reference logits at a 512-token context, on at least 40 chunks (100 for the 27B comparison of §4.3; 20 for the mixture-of-experts table and some legacy rows), with standard errors. KLD is used because it tracks answer flips (\[19\]) and is the measure llama.cpp's maintainers use (discussion \#4110). Full-corpus perplexity is secondary (\[20\]).
+- #strong[Build.] Every row of §3.1, §4.3, §4.5 and §5.4 is scored on llama.cpp b10865 against reference logits generated on that build. An earlier version of this paper scored the hybrid-architecture models on builds that predate llama.cpp's Gated-DeltaNet normalization fix (b10829), which changes their forward pass; rows from that build are paired only with each other and are named where quoted.
+- #strong[Corpora.] Calibration is wikitext-2 train unless stated. Evaluation uses three corpora: wikitext-2 test; FineWeb-Edu (the first 400 documents of the sample-10BT split); and a 400 KB code corpus disjoint from the code used in any calibration. A FineWeb-Edu calibration slice, where used, comes from documents outside the evaluation slice, and no calibration text shares a 200-byte window with an evaluation text.
+- #strong[Metrics.] Mean KL divergence (KLD) and top-1 agreement against reference logits at a 512-token context (and at 2,048 tokens in §5.4), on at least 40 chunks (100 for the 27B comparisons of §4.3 and §4.5; 20 for the mixture-of-experts table and some legacy rows), with standard errors. KLD is used because it tracks answer flips (\[19\]) and is the measure llama.cpp's maintainers use (discussion \#4110). Full-corpus perplexity is secondary (\[20\]).
 - #strong[Paired statistics.] Compared files share evaluation tokens and reference logits. A comparison is decided by the per-chunk difference: its mean, standard error and t. We write t for a paired statistic with n − 1 degrees of freedom, where n is the chunk count given with it, and we reserve "standard errors" for unpaired distances, labeled as such.
-- #strong[What the t statistics are conditional on.] All intervals are conditional on one calibration sample and one evaluation corpus; they quantify evaluation-chunk variance only. An accidental control put calibration-sampling variance at 0.55 perplexity points (about 2%) at 0.8B, which is larger than several small-scale margins (§3.1).
+- #strong[What the t statistics are conditional on.] All intervals are conditional on one calibration sample and one evaluation corpus; they quantify evaluation-chunk variance only. Calibration-sampling variance, measured with three disjoint calibration samples at 0.8B, moves the re-rounding gain by at most 0.018 KLD (§3.1).
 - #strong[Multiplicity.] No family-wise correction was applied across the paper's contrasts, so margins near |t| = 2-3 are suggestive and not confirmatory.
 - #strong[Dependence between chunks.] Adjacent 512-token chunks of one corpus are not independent. For the load-bearing pairs we report, in addition to t, an exact sign test, a Wilcoxon signed-rank test, and a bootstrap over contiguous blocks of 10 chunks#src[E35].
 - #strong[Byte-fair comparison.] Total bytes are base plus adapter. A comparison against the ladder includes K-quants, I-quants, and where built a mixed-type control at the matched byte count.
 - #strong[Speed.] Same-session A/B pairs only. Between-session drift on identical configurations reached 9%.
-- #strong[Pre-registration.] From the second round of review onward, each experiment's configuration, pairs and decision rules were written to a timestamped experiment log before the run. The log is our own record (it ships with the supplementary material) and has not been audited externally.
+- #strong[Pre-registration.] From the second round of review onward, each experiment's configuration, pairs and decision rules were written to a timestamped experiment log before the run. The log is our own record (it ships with the supplementary material) and has not been audited externally. The experiments added in this revision were registered in one plan, committed to version control before any of them ran; where a registered rule could not be applied as written, the amendment was recorded before the run and is stated beside the result.
 - #strong[Claims.] We call a relation a law only with at least three scale points and a stated functional form; otherwise it is an observation.
 
 = 3. Results I: re-rounding at zero added bytes
@@ -144,38 +144,38 @@ Re-rounding changes no file size, VRAM use or serving speed: it re-chooses which
 
 Perplexity falls by 18%. The two rows are 15.6 unpaired standard errors apart on perplexity and about 19 on KLD#src[E35]. No per-chunk logs exist for this pair, and no smaller stock rung was scored against it.
 
-#strong[Qwen3.5-0.8B (Q2\_K; BF16 reference; paired).] A second, hybrid-attention architecture#src[E24, E22]:
+#strong[Qwen3.5-0.8B (Q2\_K; BF16 reference; three corpora; current build).] A second, hybrid-attention architecture. Every file is one quantization step from BF16 with a 40-chunk wikitext-2-train imatrix and Gram capture; KLD is on 40 chunks of each corpus against BF16 logits generated on llama.cpp b10865#src[E36]:
 
-#tbl(5, [#strong[file]], [#strong[MB]], [#strong[PPL]], [#strong[KLD]], [#strong[top-1]],
-  [Q2\_K, as written], [436], [33.09], [0.4902], [66.4%],
-  [Q2\_K, re-rounded], [436], [28.09], [0.3234], [72.7%],
-  [IQ3\_XXS, stock], [412], [23.95], [0.2573], [74.3%],
-  [Q3\_K\_M, stock], [480], [23.28], [0.1668], [79.2%])
+#tbl(5, [#strong[file]], [#strong[MB]], [#strong[KLD, wikitext]], [#strong[KLD, FineWeb-Edu]], [#strong[KLD, code]],
+  [IQ2\_M, stock], [392], [0.5477], [0.5391], [0.4881],
+  [IQ3\_XXS, stock], [412], [0.2577], [0.2577], [0.2225],
+  [Q2\_K, as written], [436], [0.4900], [0.5347], [0.3926],
+  [Q2\_K, re-rounded, wikitext calibration], [436], [0.3268], [0.4255], [0.5433],
+  [Q2\_K, re-rounded, 2:1 wikitext:code calibration], [436], [0.3690], [0.4660], [0.2591],
+  [Q3\_K\_M, stock], [480], [0.1677], [0.1678], [0.1209])
 
-Re-rounded against the same file as written: ΔNLL −0.1637 ± 0.0036 nats/token (t = −44.9, n = 580, better on 557 chunks), ΔKLD −0.1668 ± 0.0055 (t = −30.3, n = 40, better on 40), Δtop-1 +6.26 ± 0.45 points (t = +14.1, n = 40). That is 15% lower perplexity and 34% lower KLD at identical bytes, and about half of the KLD distance to Q3\_K\_M (51.6%).
+Re-rounded with wikitext calibration against the same file as written: ΔKLD −0.1632 ± 0.0058 on wikitext (t = −28.4, better on 40/40 chunks), 33% lower at identical bytes; the paper's earlier measurement on a pre-fix build was −34% (t = −30.3). On FineWeb-Edu the gain is smaller (−0.1092, t = −12.6). On code the file is worse than the untouched one (+0.1507, t = +13.6).
 
-Re-rounded Q2\_K against the stock IQ3\_XXS file, which is 24 MB smaller: the stock file is better, by 0.0657 ± 0.0061 KLD (t = +10.8, n = 40, IQ3\_XXS better on 39 chunks; Wilcoxon p \< 1e-11), by 0.136 nats/token in NLL (t = +11.5) and by 1.6 points of top-1 (t = −3.1). The two logs come from different sessions and were scored against the same 40-chunk BF16 reference, which we verified by recovering the reference's per-chunk NLL from each log#src[E35]. At 0.8B, then, a user choosing a file near 430 MB should take the stock IQ3\_XXS over a re-rounded Q2\_K. Whether re-rounding would improve IQ3\_XXS in turn is not known, because the re-rounder implements only the Q2\_K codec.
+Against stock rungs: the re-rounded file is ahead of IQ2\_M, 44 MB smaller, on wikitext and FineWeb-Edu (t = −25.9 and −15.7) and behind it on code (t = +4.1). The stock IQ3\_XXS file, 24 MB smaller, is better than the re-rounded Q2\_K on all three corpora (t = +11.7, +22.2, +16.2). A user choosing a file near 430 MB at this size should take IQ3\_XXS. Whether re-rounding would improve IQ3\_XXS in turn is not known, because the re-rounder implements only the Q2\_K codec.
 
-#strong[Qwen3.6-27B (Q2\_K with imatrix; paired, n = 100; legacy-provenance pair).] On 100 chunks against BF16 reference logits#src[E27]:
+#strong[Calibration decides where the gain lands.] We re-rounded the same Q2\_K file under five calibration texts, every one disjoint from every evaluation text: wikitext-2 train, a code corpus, a FineWeb-Edu slice taken from documents outside the evaluation slice, a 2:1 wikitext:code interleave and a 1:1:1 interleave of all three. Paired ΔKLD against the file as written, 40 chunks per cell (t in parentheses)#src[E36]:
 
-#tbl(6, [#strong[file]], [#strong[GB]], [#strong[n]], [#strong[PPL]], [#strong[KLD]], [#strong[top-1]],
-  [Q2\_K, as written (legacy provenance)], [10.86], [100], [7.735 ± 0.126], [0.1603 ± 0.0032], [83.48%],
-  [Q2\_K, re-rounded (legacy provenance)], [10.86], [100], [7.696 ± 0.124], [0.1390 ± 0.0029], [84.55%],
-  [IQ3\_XXS, stock (single step from BF16)], [11.48], [20], [7.562 ± 0.270], [0.0983 ± 0.0041], [87.29%])
+#tbl(4, [#strong[calibration]], [#strong[wikitext]], [#strong[FineWeb-Edu]], [#strong[code]],
+  [wikitext], [−0.163 (−28.4)], [−0.109 (−12.6)], [#strong[+0.151 (+13.6)]],
+  [FineWeb-Edu], [−0.115 (−16.3)], [−0.151 (−16.8)], [#strong[+0.088 (+8.9)]],
+  [code], [#strong[+0.247 (+20.3)]], [#strong[+0.275 (+21.1)]], [−0.132 (−14.0)],
+  [2:1 wikitext:code], [−0.121 (−21.4)], [−0.069 (−8.2)], [−0.133 (−14.6)],
+  [1:1:1 wikitext:code:FineWeb-Edu], [−0.116 (−20.6)], [−0.087 (−10.0)], [−0.134 (−14.8)])
 
-Re-rounded against as written: ΔKLD −0.0213 ± 0.0030 (t = −7.02, better on 77/100 chunks; block-bootstrap 95% interval \[−0.0285, −0.0138\]; Wilcoxon p \< 1e-10), Δtop-1 +1.07 points (t = +4.72), ΔNLL −0.005 ± 0.005 (t = −0.98). KL divergence falls by 13.3% and perplexity does not move.
+The pattern is consistent across the grid. Re-rounding transfers between the two prose corpora and does not transfer between prose and code in either direction: every calibration that lacks one of the two kinds of text damages it, by up to half the file's own KLD. Both calibrations that contain both kinds improve all three corpora, at a cost on each corpus against calibrating on that corpus alone (for wikitext, −0.121 against −0.163). The 2:1 interleave was fixed as the deployable recipe before this grid was run. Re-rounding fits the calibration covariance with nothing pulling the codes toward their original values in directions the calibration does not excite, which is a plausible reading of why uncovered text is damaged; we did not test it directly.
 
-Three labels travel with this pair wherever it is quoted. It is legacy provenance: both files are requantizations of a Q6\_K file and not single steps from BF16, so the pair is not tabled beside the single-step rows of §4.3; the difference between the two is clean because both share that provenance. Perplexity is unchanged. And there is no held-out test of the re-rounder at 27B. In addition, the sweep covers part of the model: inside a nominal Q2\_K file at 27B, llama-quantize writes ffn\_down and attn\_output as Q3\_K and attn\_qkv and attn\_v as Q4\_K, and only the Q2\_K tensors are re-rounded.
+#strong[The calibration sample is a small part of the variance.] Re-rounding on three disjoint thirds of wikitext-2 train, the same budget each, moves ΔKLD by at most 0.004 on wikitext, 0.018 on FineWeb-Edu and 0.007 on code (wikitext: −0.163, −0.164, −0.167). This bounds calibration-sampling variance alone at this size, and it is one to two orders of magnitude smaller than the effect of which kind of text is in the calibration set.
 
-The stock row is not at or below the pair's bytes: IQ3\_XXS is 0.6 GB larger, and it was scored at 20 chunks under single-step provenance. On the 20 chunks both runs share (same text and reference, verified), IQ3\_XXS is lower than re-rounded Q2\_K by 0.0526 ± 0.0114 KLD (t = +4.6, 20/20 chunks). On those 20 chunks re-rounding lowers the legacy file by 0.0065 KLD. The comparison crosses provenance and is not byte-matched: it says that a stock file about 6% larger is much better than the re-rounded one, and nothing about equal bytes. No stock rung at or below 10.86 GB was scored against BF16#src[E35].
+#strong[Qwen3.6-27B (Q2\_K; BF16 reference; three corpora; current build).] \[PENDING:B — single-step re-round pair (wikitext and 2:1 calibration), IQ2\_M and IQ3\_XXS brackets, scored on wikitext / FineWeb-Edu / code; RESULTS-B.md.\]
 
-#strong[Calibration dependence.] The wikitext-calibrated 0.8B file was evaluated on a held-out code corpus and is worse than the untouched file: perplexity 3.470 against 3.083. The full-covariance correction, by contrast, improves on it (2.649). Re-rounding fits the calibration covariance with nothing pulling the solution toward the original codes off-distribution. A mixed 2:1 wikitext:code calibration improves both corpora (wikitext 33.09 → 29.84; code 3.083 → 2.785), at some cost on wikitext against wikitext-only calibration (−10% against −15%)#src[wins, E22].
+The paper's earlier 27B pair was legacy provenance (both files requantized from a Q6\_K file) and wikitext-calibrated: on 100 chunks it lowered KLD by 13.3% (t = −7.02) with perplexity unchanged. On the current build and the new references that re-rounded file still has lower KLD than the single-step Q2\_K on wikitext (0.1385 against 0.1581, with 0.14 GB fewer bytes) and higher on FineWeb-Edu (0.1345 against 0.1182) and code (0.1564 against 0.1188), the cross-domain pattern of the 0.8B grid; the two files differ in provenance as well as codes, so this is not a paired test of re-rounding#src[E36].
 
-Two pre-registered follow-ups extend this. On a third corpus in neither calibration set (technical prose), both re-rounded files improve on the untouched one: 57.56 as written, 54.40 wikitext-calibrated, 55.32 mixed-calibrated. And the mixed-calibrated file improves KLD on both covered corpora (wikitext 0.490 → 0.372; code 0.318 → 0.219). Our reading is that re-rounding transfers to text near its calibration distribution and can damage text far from it unless that text is covered.
-
-Three caveats. The mixed-against-narrow comparison changed corpus composition, calibration budget (+20%) and chunk sampling together. An accidental control bounds calibration-sampling variance alone at 0.55 perplexity points (about 2%), which is larger than several 0.8B margins in this paper. And the third corpus was assembled from our own literature notes, which are machine-drafted prose; it is one sample of unseen text and not a benchmark. The mix-ratio grid has not been run.
-
-#strong[What the tool requires.] The re-rounder is not a transformation of a GGUF alone. It needs the higher-precision source weights (BF16 here; a Q6\_K file for the 27B legacy pair), a Gram capture made with our patched llama-imatrix, broad calibration text, and a held-out check. Its output is a standard GGUF.
+#strong[What the tool requires.] The re-rounder is not a transformation of a GGUF alone. It needs the higher-precision source weights, a Gram capture made with our patched llama-imatrix, calibration text that covers every kind of text the file will serve, and a held-out check. Its output is a standard GGUF.
 
 == 3.2 A richer metric made the result worse
 
@@ -194,6 +194,14 @@ A second surrogate result points the same way: alternating the code sweep with a
 == 3.3 Ordering: re-round a bare file, alternate when a corrector will be attached
 
 Re-rounding helps a bare file and hurts under a corrector. At 0.8B, the bare base with a freshly extracted full-covariance correction beats the re-rounded base with one (ΔNLL t = +17.6, n = 580; the re-rounded stack is better on 133 chunks). The same ordering was seen at 0.6B, unpaired: re-round then correct 26.80 perplexity, a one-shot re-round under a ProjQ-style modified metric (\[22\]) 25.94, alternation then correct 25.27#src[E24, E13]. Re-rounding minimizes the standalone whitened error and spends grid resolution on directions the corrector would have absorbed. The guidance: re-round when shipping a bare file, alternate (§2.4) when a corrector will be attached, and do not stack re-rounding under a corrector.
+
+== 3.4 Freezing the grid against refitting it
+
+A referee asked whether keeping llama-quantize's grid is a constraint worth its cost, against GPTQ allowed to choose the grid as well. We built that baseline at identical format and bytes: the same sweep, Grams, damping and tensor coverage as §2.3, except that when the sweep enters each 256-column superblock it refits that superblock's grid from the error-updated weights with llama.cpp's own Q2\_K quantizer and the same imatrix. With error feedback switched off the tool reproduces llama-quantize's file byte for byte (96/96 tensors at 0.8B, 256/256 at 27B), so the only difference between the two arms is whether the grid is frozen. On the whitened objective the refit grid is lower than the frozen one on all 96 tensors at 0.8B (by 12% in total)#src[E36].
+
+\[PENDING:E — free-grid vs frozen-grid, paired ΔKLD on wikitext / FineWeb-Edu / code at 0.8B (wikitext and 2:1 Grams) and 27B (2:1 Grams); and at Llama-3.1-8B (§G).\]
+
+This baseline does not cover learned rounding (AdaRound and its successors), which needs a block-reconstruction training loop, or vector and lattice quantizers at 2 bits, which are outside the GGUF formats; §7.1 lists both.
 
 = 4. Results II: where low-rank correction falls short
 
@@ -219,48 +227,54 @@ Capture is sublinear in rank and, across a single width step, falls more slowly 
 
 Scope: the width axis is one step (1,024 → 5,120) and is confounded with model size, depth and family. The two 27B models share a width. The intervals resample tensors (1,000 cluster bootstraps), not models, and the fit treats ranks and whiteners of one tensor as separate points. A "constant outlier head plus isotropic bulk" form fits a head fraction of zero, so the outlier-head explanation (\[23\], \[24\], \[25\]) is not supported by this regression. A third width is required before any exponent is quoted as more than a fit#src[rollup, review]. What is established is the direction: at these widths a deployable rank is a small fraction of dimension, and fixed-rank capture falls as the model widens, consistent with the bounds of CALDERA (\[5\]) and \[17\].
 
-== 4.3 Correction against the stock types at three dense sizes
+== 4.3 Correction against the stock types, on and off the calibration distribution
 
-#strong[27B.] The 27B comparison was rebuilt under clean provenance: every base one quantization step from the BF16 reference, a fresh 48-chunk BF16 imatrix and Gram capture, BF16 reference logits, and paired statistics#src[E27]. The corrected configuration is the mixed base (FFN tensors at Q3\_K, the rest at Q2\_K) plus a rank-128 full-covariance correction with Q8\_0 factors on the non-FFN tensors (mean whitened capture 0.42). The control is a mixed-type file with no adapter, built once at the corrected configuration's byte count (Q3\_K\_S with attn\_k, attn\_v and attn\_output promoted to Q4\_K and a partial attn\_qkv promotion; −0.016% bytes), its bytes predicted in advance from measured per-kind sensitivities. Results on 100 chunks of wikitext-2 test:
+#strong[27B: files and protocol.] Every 27B file in this subsection is one quantization step from the BF16 reference, with a 48-chunk BF16 imatrix and Gram capture on wikitext-2 train#src[E27]. The corrected configuration is the mixed base (FFN tensors at Q3\_K, the rest at Q2\_K) plus a rank-128 full-covariance correction with Q8\_0 factors on the non-FFN tensors (336.5 MB; mean whitened capture 0.42). The control is a mixed-type file with no adapter, built once at the corrected configuration's byte count (Q3\_K\_S with attn\_k, attn\_v and attn\_output promoted to Q4\_K and a partial attn\_qkv promotion; −0.016% bytes), its bytes predicted in advance from measured per-kind sensitivities. All rows below were scored on llama.cpp b10865 against BF16 reference logits generated on that build, on 100 chunks of three corpora: wikitext-2 test (the calibration distribution), FineWeb-Edu and a code corpus disjoint from the code used anywhere in calibration (§2.5). The comparison and its decision rules were registered before the run#src[E36].
 
-#tbl(5, [#strong[file]], [#strong[GB]], [#strong[PPL]], [#strong[KLD]], [#strong[top-1 %]],
-  [mixed base, no adapter], [12.16], [7.235 ± 0.114], [0.0967 ± 0.0024], [87.2],
-  [IQ3\_XS], [12.26], [7.303 ± 0.114], [0.0767 ± 0.0021], [88.8],
-  [Q3\_K\_S], [12.37], [7.378 ± 0.118], [0.0924 ± 0.0024], [87.5],
-  [corrected configuration], [12.50], [7.204 ± 0.114], [0.0876 ± 0.0024], [87.9],
-  [mixed-type control], [12.50], [7.194 ± 0.114], [0.0814 ± 0.0021], [88.3],
-  [Q3\_K\_M], [13.59], [7.128 ± 0.113], [0.0609 ± 0.0016], [89.9])
+#tbl(5, [#strong[file]], [#strong[GB]], [#strong[KLD, wikitext]], [#strong[KLD, FineWeb-Edu]], [#strong[KLD, code]],
+  [mixed base, no adapter], [12.16], [0.0971 ± 0.0025], [0.0731 ± 0.0014], [0.0830 ± 0.0021],
+  [IQ3\_XS], [12.26], [0.0766 ± 0.0022], [0.0517 ± 0.0010], [0.0632 ± 0.0016],
+  [Q3\_K\_S], [12.37], [0.0910 ± 0.0022], [0.0638 ± 0.0012], [0.0746 ± 0.0020],
+  [corrected configuration], [12.50], [0.0863 ± 0.0023], [0.0686 ± 0.0014], [0.0779 ± 0.0020],
+  [mixed-type control], [12.50], [0.0813 ± 0.0022], [0.0577 ± 0.0011], [0.0666 ± 0.0018],
+  [Q3\_K\_M], [13.59], [0.0605 ± 0.0016], [0.0410 ± 0.0008], [0.0500 ± 0.0015])
 
-Paired per-chunk differences, n = 100#src[E27, E35]:
+Paired per-chunk KLD differences, n = 100 per corpus (t; A ahead on how many chunks):
 
-#tbl(8, [#strong[pair (A − B)]], [#strong[ΔKLD]], [#strong[t]], [#strong[A better on]], [#strong[Wilcoxon p]], [#strong[block-bootstrap 95% interval]], [#strong[ΔNLL t]], [#strong[Δtop-1 t]],
-  [corrected vs Q3\_K\_S], [−0.0048 ± 0.0017], [−2.85], [71/100], [8.5e-5], [\[−0.0073, −0.0019\]], [−5.75], [+2.04],
-  [corrected vs control], [+0.0063 ± 0.0024], [+2.62], [38/100], [0.0023], [\[+0.0032, +0.0100\]], [+0.41], [−2.14],
-  [control vs Q3\_K\_S], [−0.0110 ± 0.0015], [−7.23], [91/100], [1e-14], [\[−0.0133, −0.0081\]], [−7.35], [+5.55],
-  [corrected vs mixed base], [−0.0090 ± 0.0011], [−8.52], [92/100], [5e-13], [\[−0.0109, −0.0068\]], [−1.87], [+5.20],
-  [mixed base vs Q3\_K\_S], [+0.0043 ± 0.0018], [+2.38], [32/100], [0.0012], [\[+0.0006, +0.0077\]], [−3.90], [−1.61])
+#tbl(4, [#strong[pair (A − B)]], [#strong[wikitext]], [#strong[FineWeb-Edu]], [#strong[code]],
+  [corrected vs Q3\_K\_S], [−0.0047, t = −2.62 (71/100)], [+0.0048, t = +3.26 (40/100)], [+0.0032, t = +1.86 (39/100)],
+  [corrected vs control], [+0.0050, t = +2.37 (40/100)], [+0.0108, t = +6.48 (10/100)], [+0.0113, t = +7.11 (20/100)],
+  [control vs Q3\_K\_S], [−0.0097, t = −8.64 (91/100)], [−0.0060, t = −13.37 (98/100)], [−0.0080, t = −6.90 (81/100)],
+  [corrected vs mixed base], [−0.0108, t = −10.41 (96/100)], [−0.0045, t = −8.63 (91/100)], [−0.0051, t = −6.48 (81/100)],
+  [mixed base vs Q3\_K\_S], [+0.0061, t = +2.93 (31/100)], [+0.0093, t = +5.70 (23/100)], [+0.0083, t = +4.32 (30/100)],
+  [IQ3\_XS vs corrected], [−0.0097, t = −3.58 (83/100)], [−0.0169, t = −8.55 (97/100)], [−0.0147, t = −7.06 (81/100)])
 
-At 100 chunks the corrected configuration is ahead of Q3\_K\_S by 0.0048 KLD (5%, t = −2.85, 71/100 chunks) and behind the same-byte mixed-type control by 0.0063 (t = +2.62, 62/100; no difference in NLL). Both margins are small, on-distribution, and unreplicated. The correction's gain over its own base is larger and well resolved (−0.0090, 92/100 chunks). At this byte count the measured order is the mixed-type control, then the corrected configuration, then Q3\_K\_S, with IQ3\_XS below all three at fewer bytes and no adapter.
+#strong[On the calibration distribution] the corrected configuration is ahead of Q3\_K\_S by 0.0047 KLD (5%; t = −2.62; Wilcoxon p = 2e-5; block bootstrap over contiguous blocks of 10 chunks \[−0.0081, −0.0009\]) and behind the same-byte control by 0.0050 (t = +2.37; Wilcoxon p = 0.0014; block bootstrap \[+0.0017, +0.0091\]). In NLL it is ahead of Q3\_K\_S (t = −5.79) and level with the control (t = +0.21). This is a reproduction and not an independent sample: the same files and the same 100 chunks were first scored on a build that predates llama.cpp's Gated-DeltaNet normalization fix (b10829), where the two margins were −0.0048 (t = −2.85) and +0.0063 (t = +2.62); the per-chunk differences of the two runs correlate at 0.87. The margin over Q3\_K\_S is not uniform across the test set on either build: on chunks 1-40 it is +0.0004 (t = +0.13) and on chunks 41-100 −0.0081 (t = −3.99). The correction's increment over its base is the same in both blocks (−0.0106 and −0.0109); what changes is the base, which is behind Q3\_K\_S by 0.0110 on chunks 1-40 (t = +3.38) and by 0.0028 on chunks 41-100 (t = +1.07). That pre-fix 100-chunk sample was reached through looks at 20 and 40 chunks (each a prefix of the next) with a registered rule for parity and none for a win#src[E35].
 
-#strong[How the sample was reached.] The same files were scored at 20, 40 and 100 chunks, and each sample is a prefix of the next: the per-chunk values of the 40-chunk run equal the first 40 of the 100-chunk run to printed precision. At 20 chunks corrected-versus-Q3\_K\_S was a tie (t = +0.57) and the control led at t = +1.87. At 40 chunks the tie was exact (KLD 0.0831 against 0.0832, t = −0.04) and the control's lead was t = +2.26. The 100-chunk run was pre-registered as the final sample, with the rule that |t| \< 2 would certify parity. No rule for a win was registered, and no adjustment for three looks. The t = −2.85 is therefore the third look at accumulating data (p = 0.005 two-sided; 0.016 after a factor of three).
+#strong[Off the calibration distribution] the margin over Q3\_K\_S does not hold. On FineWeb-Edu it reverses: Q3\_K\_S is ahead of the corrected configuration by 0.0048 (t = +3.26, block bootstrap \[+0.0024, +0.0073\]). On code it is unresolved and leans the same way (+0.0032, t = +1.86). The control's lead over the corrected configuration roughly doubles off-distribution (t = +6.48 and +7.11; ahead on 90/100 and 80/100 chunks), and IQ3\_XS, which is smaller and needs no adapter, is ahead of every other file in the group on all three corpora. The reversal decomposes into its two parts. The mixed base is further behind Q3\_K\_S off-distribution (+0.0093 and +0.0083, against +0.0061), and the correction, whitened by wikitext Grams, recovers less than half as much there (−0.0045 and −0.0051, against −0.0108). It still improves its base on every corpus.
 
-#strong[Checks that do not assume independent chunks.] For corrected-versus-Q3\_K\_S the exact sign test gives p = 3e-5, the Wilcoxon test p = 8.5e-5, a bootstrap over contiguous blocks of 10 chunks gives \[−0.0073, −0.0019\], a t-test on the ten block means gives t = −3.19 (p = 0.011), and the lag-1 autocorrelation of the differences is 0.00. For corrected-versus-control the corresponding values are p = 0.021, p = 0.0023, \[+0.0032, +0.0100\], t = +3.37 (p = 0.008) and −0.06. The control's margin does not survive a Bonferroni factor of six on its t-test (p = 0.061) and has no counterpart in NLL (t = +0.41, with the corrected configuration ahead on 58/100 chunks).
+#strong[Reading.] The narrow 27B advantage of the corrected configuration over the adjacent stock type is a property of the calibration distribution. A stock mixed-type file at the same bytes is better on every corpus we measured, and IQ3\_XS is better at fewer bytes. What survives off-distribution is the correction's increment over its own base, at about half its on-distribution size; §4.5 measures the same halving along a recovery curve.
 
-#strong[The margin over Q3\_K\_S is not uniform across the corpus.] On chunks 1-40 the difference is −0.0001 (t = −0.04); on chunks 41-100 it is −0.0079 (t = −3.32); the two blocks differ at Welch t = 2.51 (p = 0.014). The correction's increment over its base is the same in both blocks (−0.0093 and −0.0089). What changes is the base: the mixed base is behind Q3\_K\_S by 0.0092 on chunks 1-40 (t = +4.3) and level with it on chunks 41-100 (+0.0010, t = +0.4). The corrected configuration is thus ahead of Q3\_K\_S on the part of the test set where its base is level with Q3\_K\_S, and level where its base is behind. The control's lead is larger in the first block (+0.0092, t = +2.26) than in the second (+0.0043, t = +1.47). Before the rebuild, the legacy tables had shown an unpaired margin of one standard error for the corrected configuration whose sign reversed under clean provenance#src[review].
+A task-level check was run before the held-out pass and does not resolve the contested pair either. On the HellaSwag validation set (10,042 items, identical per file) the corrected configuration, Q3\_K\_S and Q3\_K\_M score 82.25%, 82.39% and 82.85%; no gap reaches the pre-registered 1.4-point threshold. A post-hoc paired McNemar test finds the corrected configuration and Q3\_K\_S tied (z = −0.81, with the sign opposite to the wikitext KLD difference) and Q3\_K\_M ahead of both (z = +3.48 and +2.82) at a KLD difference of about 0.03#src[journal].
 
-#strong[Further facts.] IQ3\_XS has the lowest KL divergence near this byte count (0.0767 at 12.26 GB) and needs no adapter. Every rebuilt rung scores 0.002-0.003 KLD better than its legacy requantized sibling; the rebuild changed the imatrix along with the provenance, and the one rung that was already single-step (Q4\_K\_M) improved by the same amount, so the improvement cannot be attributed to provenance alone.
+#figure(image("figures/fig-ladder-27b.svg", width: 88%), caption: [Qwen3.6-27B near 12.5 GB on three corpora, 100 chunks each, every file one quantization step from BF16, scored on llama.cpp b10865; error bars are standard errors. On wikitext, the calibration distribution, the correction (arrow) moves the mixed base past the stock type Q3\_K\_S; on FineWeb-Edu and code it does not. A mixed-type control with no adapter at the same bytes is lower on every corpus, and IQ3\_XS is the lowest of the group at fewer bytes.])
 
-A task-level check does not resolve the contested pair. On the HellaSwag validation set (10,042 items, identical per file) the corrected configuration, Q3\_K\_S and Q3\_K\_M score 82.25%, 82.39% and 82.85%; no gap reaches the pre-registered 1.4-point threshold. A post-hoc paired McNemar test finds the corrected configuration and Q3\_K\_S tied (z = −0.81, with the sign opposite to the KLD difference) and Q3\_K\_M ahead of both (z = +3.48 and +2.82) at a KLD difference of about 0.03. The task resolves the larger KLD difference and not the smaller one; it does not validate KLD at the size of the contested margins#src[journal].
+#strong[0.8B: the control at small scale.] At 0.8B the paper's earlier comparison chose its rung from below and built no control. We built one by a rule fixed in advance: start from Q3\_K\_M and promote whole tensor kinds to Q4\_K in the order of the 27B sensitivities until the file reaches the corrected configuration's bytes from below. At 0.8B, Q3\_K\_M already holds four of the listed kinds at Q4\_K or wider, so the list ran out at 517.5 MB, 1.1% below the 523.3 MB corrected configuration (Q2\_K with one alternation round and a rank-128 full-covariance correction with Q8\_0 factors). A second control matched to the byte (523.0 MB, a further pass at Q5\_K) was designed after the registration and is reported as such. Both were built once and scored on 40 chunks of the three corpora against BF16 references on the current build#src[E36]:
 
-#figure(image("figures/fig-ladder-27b.svg", width: 88%), caption: [Qwen3.6-27B near 12.5 GB, 100 chunks, every file one quantization step from BF16; error bars are standard errors. The correction (arrow) moves the mixed base past the stock type Q3\_K\_S; a mixed-type control with no adapter at the same bytes is lower, and the I-quant type IQ3\_XS is the lowest of the group.])
+#tbl(5, [#strong[file (Qwen3.5-0.8B)]], [#strong[MB]], [#strong[KLD, wikitext]], [#strong[KLD, FineWeb-Edu]], [#strong[KLD, code]],
+  [Q2\_K], [436], [0.4900], [0.5347], [0.3926],
+  [IQ3\_XXS], [412], [0.2577], [0.2577], [0.2225],
+  [Q3\_K\_M], [480], [0.1677], [0.1678], [0.1209],
+  [corrected configuration], [523], [0.1474], [0.1966], [0.1805],
+  [control (registered rule)], [517], [0.0489], [0.0470], [0.0338],
+  [control (byte-matched, post-registration)], [523], [0.0432], [0.0426], [0.0285],
+  [Q4\_K\_M], [543], [0.0397], [0.0380], [0.0279])
 
-#strong[0.6B and 0.8B.] At 0.6B the corrected configuration (two alternation rounds, full-covariance correction, Q8\_0 factors; 382 MB) reaches perplexity 25.27 and KLD 0.209 against Q3\_K\_M at 347 MB (26.06 and 0.238); the KLD difference is about 5 unpaired standard errors, on-distribution#src[rollup, review]. At 0.8B, scored against BF16, a rank-128 full-covariance correction of Q2\_K ties Q3\_K\_M, and one alternation round is ahead of it at 9% more bytes (KLD 0.147 against 0.167; no error bars were logged for this row)#src[E22].
-
-At both sizes the comparison rung was chosen from below. Linear interpolation between the neighbouring rungs at the corrected configuration's byte count (about 0.118 at 382 MB and 0.080 at 523 MB) is better than the corrected configuration, and Q4\_K\_M at 4% more bytes is three to four times lower in KLD. A stock rung scored later against the same 0.8B reference, Q4\_K\_S at 519 MB, has KLD 0.047 against the 523 MB corrected configuration's 0.147 (unpaired)#src[E34]. No mixed-type control was built at these sizes. What the small-scale runs show is that the method transfers to a second architecture and lands between two discrete rungs; they do not show a result against the ladder.
+The registered control is ahead of the corrected configuration by 0.099 KLD on wikitext (t = −26.7), 0.150 on FineWeb-Edu (t = −32.0) and 0.147 on code (t = −21.0), on every chunk of every corpus, with fewer bytes; its KLD is a third of the corrected configuration's. The corrected configuration is ahead of Q3\_K\_M on wikitext (t = −5.75) and behind it on FineWeb-Edu (t = +7.77) and code (t = +14.48). At this size the corrected file is far below the line that stock types trace when they are mixed at its bytes. At 0.6B (legacy rows, scored against Q8\_0) the corrected configuration was compared only with Q3\_K\_M below it, and linear interpolation between the neighbouring rungs was already better; no control was built there#src[rollup, review].
 
 A correction on an NVFP4 base at 0.8B improves its base and loses to every stock rung at or below its bytes; the details are in Appendix A.1.
 
-#strong[Two qualifications on all of the above.] Every corrected configuration pays a decode cost of 20-40% on stock llama.cpp that the bare rungs do not (§6). And the tables in this subsection are on-distribution: calibration and evaluation share wikitext-2 (train and test splits), and §4.8 shows the method is sensitive to distribution. The held-out evidence for the correction increment at 27B is the FineWeb-Edu control of §5.3; the ladder comparisons themselves have not been repeated on a held-out corpus.
+#strong[A qualification on all of the above.] Every corrected configuration pays a decode cost of 20-40% on stock llama.cpp that the bare files do not (§6).
 
 == 4.4 Three placements of the low-rank bytes, and a bound on their difference
 
@@ -285,9 +299,16 @@ One by-product: the shared basis at rank 128 is within the bound above of the po
 
 == 4.5 Recovery grows as the base gets thinner, and factors do not replace base bits
 
-With the estimator held to full covariance, the fraction of the base's KLD damage that correction recovers rises as the base gets thinner: 20% at Q2\_K, 28% at IQ2\_XS, 41% at IQ1\_S (legacy 27B rows)#src[rollup, review]. The three points do not hold the recipe fixed: adapter budgets are 0.93, 0.93 and 0.80 GB and the rank mix varies, so the curve is confounded. Its direction agrees with the published claim that correction pays most at the lowest bit widths (\[30\]) and with EoRA's results.
+We held the correction recipe fixed and varied only the base: the same rank-128 full-covariance correction with Q8\_0 factors on the non-FFN tensors, whitened by one wikitext Gram capture, extracted on three 27B bases each one quantization step from BF16, and scored on 100 chunks of wikitext and of FineWeb-Edu on the current build. Recovery is the fraction of the base's KLD that the correction removes, with a 95% paired bootstrap interval#src[E36]:
 
-Pushing this to the thinnest base llama.cpp offers, IQ1\_S with 2.52 GB of factors, still loses to bare Q2\_K at near-equal total bytes by about a factor of three in KLD. Per gigabyte, added factor bytes bought about 0.06 KLD where base bits bought 0.22 to 0.32. The details are in Appendix A.2.
+#tbl(6, [#strong[base]], [#strong[GB]], [#strong[KLD wikitext, base → corrected]], [#strong[recovery, wikitext]], [#strong[KLD FineWeb-Edu, base → corrected]], [#strong[recovery, FineWeb-Edu]],
+  [Q2\_K], [11.00], [0.1581 → 0.1470], [7.0% \[5.2, 8.8\]], [0.1182 → 0.1143], [3.3% \[2.5, 4.1\]],
+  [IQ2\_XS], [9.38], [0.2507 → 0.2201], [12.2% \[10.2, 14.4\]], [0.1875 → 0.1732], [7.6% \[6.8, 8.5\]],
+  [IQ1\_S], [7.44], [0.9348 → 0.6356], [32.0% \[30.1, 33.9\]], [0.6588 → 0.5513], [16.3% \[15.3, 17.2\]])
+
+Every increment is resolved (t from −6.3 to −29.1; the corrected file is ahead on at least 86 of 100 chunks). Recovery rises monotonically as the base gets thinner, which agrees with the published claim that correction pays most at the lowest bit widths (\[30\]) and with EoRA's results. Off the calibration distribution it is about half as large at every base, the same halving as in §4.3. This curve replaces an earlier one (20%, 28%, 41%, legacy rows) whose points differed in adapter budget and rank mix as well as base.
+
+Recovery is not the same as competitiveness. The corrected IQ1\_S file (7.78 GB with its 0.34 GB adapter) has KLD 0.636 on wikitext, against 0.251 for the bare IQ2\_XS file at 9.38 GB. Pushing the idea further, IQ1\_S with 2.52 GB of factors still loses to bare Q2\_K at near-equal total bytes by about a factor of three in KLD; per gigabyte, added factor bytes bought about 0.06 KLD where base bits bought 0.22 to 0.32 (legacy rows, Appendix A.2).
 
 == 4.6 Mixture-of-experts: correction loses to a one-line promotion (n = 20, Q4-referenced)
 
@@ -315,16 +336,18 @@ The full list, with the cases reported in other sections:
   [1], [energy captured by greedy rank allocation], [perplexity worse than uniform (34.17 vs 31.29)], [this section],
   [2], [exact descent of a two-sided Kronecker metric with measured T], [+0.048 nats vs input-only (t = +15.5); worse than the untouched file with a cleaner T], [§3.2],
   [3], [a further 2.6% descent of the same whitened objective], [no change (|t| ≤ 1.32)], [Appendix A.4],
-  [4], [importance moved into column scales (equalization)], [perplexity 33.09 → 41.73 (t = +28 on KLD, +60 on NLL)], [Appendix A.3],
+  [4], [importance moved into column scales (equalization)], [KLD worse at every strength tested (α = 0.25 to 1; t = +5 to +29), with or without an imatrix], [Appendix A.3],
   [5], [whitened capture at equal bytes (shared basis, +12% on attention groups)], [KLD within the bound of §4.4 (t = −0.91)], [§4.4],
   [6], [residual capture of the base (NVFP4 0.736 vs Q3\_K\_M 0.721)], [smaller gain (50% vs 70% recovery)], [Appendix A.1],
-  [7], [512-token KL divergence, across refinement families], [opposite ordering on a coding suite; one pair, one run per arm, unreplicated], [§5.5])
+  [7], [KL divergence to the reference, across refinement families], [opposite ordering to NLL in the same run at 2,048 tokens, and to a coding suite], [§5.4, §5.5])
 
-Rows 1-6 are surrogates for KL divergence that did not predict KL divergence. Row 7 is of a different kind and weaker: KL divergence against a task outcome, in a single pair. We do not have evidence that KL divergence predicts task outcomes at the size of the contested margins within a family either: the one task evaluation we ran there (HellaSwag, §4.3) tied the contested pair.
+Rows 1-6 are surrogates for KL divergence that did not predict KL divergence. Row 7 is of a different kind: KL divergence measures distance to the reference model, and a file trained against data can move away from the reference while assigning the text higher likelihood (§5.4). Within one refinement family we have no evidence that KL divergence predicts task outcomes at the size of the contested margins either: the one task evaluation we ran there (HellaSwag, §4.3) tied the contested pair.
 
 == 4.8 Conditioning the correction on a task distribution
 
-Conditioning the correction's covariance on a code corpus gives 10.3% lower perplexity on code at identical bytes (2.746 against 3.061 for the wikitext-conditioned correction; about 8 unpaired standard errors) and costs 27% on wikitext (34.90 against 27.58). Broad calibration transfers to a narrow distribution better than the reverse#src[E17]. Per-workload adapters are possible through llama.cpp's per-request adapter API. The same measurement is a caution: the method's sensitivity to distribution (10-27%) is larger than every contested margin in §4.3, which is why §3.1 and §5.3 report held-out corpora and why the comparisons of §4.3 are labeled on-distribution.
+Conditioning the correction's covariance on a code corpus gives 10.3% lower perplexity on code at identical bytes (2.746 against 3.061 for the wikitext-conditioned correction; about 8 unpaired standard errors) and costs 27% on wikitext (34.90 against 27.58). Broad calibration transfers to a narrow distribution better than the reverse#src[E17]. Per-workload adapters are possible through llama.cpp's per-request adapter API.
+
+The calibration grid of §3.1 measures the same question at 0.8B on KL divergence: whichever of five calibration texts the correction is whitened with (wikitext, code, FineWeb-Edu, or a 2:1 or 1:1:1 interleave), it lowers its base on all three evaluation corpora (|t| ≥ 19 in every cell), with the largest gain on the calibrated distribution. Unlike re-rounding (§3.1), the correction does not damage text it was not calibrated on; it helps it less. The measurement is also a caution: the method's sensitivity to distribution (10-27% here; a halving of the increment at 27B, §4.3 and §4.5) is larger than every contested margin, which is why every comparison in §3-§5 now carries held-out corpora.
 
 == 4.9 Ordering of operations
 
@@ -390,36 +413,27 @@ The second half mostly did not hold. Our increments were predicted to shrink; th
 
 With the baseline and the trained checkpoint close on this corpus, the corrected arm's lead over GSQ-RCO (−0.0175 and −0.0055) is about the size of the correction increment, which is bought with 0.9 GB. The stock UD-Q2\_K\_XL file again beats the corrected IQ2\_S arm at near-equal bytes.
 
-== 5.4 Perplexity at two context lengths
+== 5.4 Context length against metric
 
-The card's wikitext perplexities order GSQ-RCO ahead of the Unsloth baseline at both classes. At our 512-token context the means order them the other way, and the paired difference is unresolved: ΔNLL (GSQ-RCO minus baseline) +0.017 ± 0.013 (t = +1.33) at the IQ2 class and +0.003 ± 0.006 (t = +0.58) at the IQ3 class, n = 40.
+The card's wikitext perplexities order GSQ-RCO ahead of the Unsloth baseline at both classes. At our 512-token context the paired NLL difference is unresolved: GSQ-RCO minus baseline +0.017 ± 0.013 (t = +1.33) at the IQ2 class and +0.003 ± 0.006 (t = +0.58) at the IQ3 class, n = 40. At a 2048-token context over the whole test set (145 chunks) the card's ordering reproduces: −0.041 ± 0.012 (t = −3.33) and −0.018 ± 0.004 (t = −4.15)#src[E32, E35].
 
-At a 2048-token context the card's ordering reproduces: GSQ-RCO IQ2\_XS 6.834 ± 0.043 against UD-IQ2\_S 7.119 ± 0.047, and GSQ-RCO IQ3\_S 6.306 ± 0.039 against UD-IQ3\_S 6.417 ± 0.041#src[E32]. Paired over the 145 chunks, the NLL difference is −0.041 ± 0.012 (t = −3.33) at the IQ2 class and −0.018 ± 0.004 (t = −4.15) at the IQ3 class. The IQ3 result is consistent across tests (GSQ-RCO ahead on 89/145 chunks, Wilcoxon p = 1e-4). The IQ2 result is carried by a minority of chunks: GSQ-RCO is ahead on 77/145 (sign test p = 0.51, Wilcoxon p = 0.035)#src[E35].
+That left two explanations for the disagreement between 512-token KLD and the card: context length, or the metric itself. A registered run separates them. We generated BF16 reference logits at a 2048-token context (40 windows; llama-perplexity scores the second half of each window, so every scored token has at least 1,024 tokens of context) and scored all eight files on them, recording KLD, NLL and top-1 agreement from the same run on the same tokens#src[E36]:
 
-So the 512-token perplexity ordering is unresolved and the 2048-token ordering is resolved in the checkpoint's favour. We did not measure KL divergence at 2048 tokens, so this experiment does not separate the effect of context length from the difference between perplexity and KL divergence. Every KL-divergence number in this paper is at 512 tokens.
+#tbl(4, [#strong[GSQ-RCO − Unsloth baseline, 2048-token context, n = 40]], [#strong[ΔKLD to BF16]], [#strong[Δtop-1 agreement]], [#strong[ΔNLL of the text]],
+  [IQ2 class (8.42 vs 8.37 GB)], [+0.0569 ± 0.0071 (t = +8.03, 0/40)], [−2.37 pt (t = −8.88)], [−0.025 ± 0.015 (t = −1.64)],
+  [IQ3 class (11.77 vs 12.04 GB)], [+0.0178 ± 0.0035 (t = +5.02, 1/40)], [−1.53 pt (t = −9.51)], [−0.018 ± 0.007 (t = −2.49)])
 
-== 5.5 One capability pair
+With long context the trained checkpoints are still further from the BF16 distribution than their untrained baselines, by about as much as at 512 tokens, and they agree less often with its top token; on the same tokens they assign the text higher likelihood (resolved at the IQ3 class, leaning the same way at IQ2). The registered rule reads this as a metric effect and not a context effect. KL divergence to the reference measures fidelity to the BF16 model. A file trained against data, as these are, can trade that fidelity for likelihood of the text, and KL divergence then ranks it below a file that is closer to the reference and worse on the text. Our correction, which only reduces distance to the reference, keeps its increment at 2048 tokens on all three bases (−0.0114, −0.0026 and −0.0081; t = −6.7, −6.8, −5.3).
 
-The card's claims are task-level. We ran the 112-unit fast subset of an agentic coding suite (multi-language tasks solved by an agent loop with a compiler and tests; single-slot serving, stock llama.cpp b10865, reasoning budget capped at 20,480 tokens) on the two IQ3-class files, once each#src[E32]:
+== 5.5 Capability
 
-#tbl(4, [#strong[file]], [#strong[passed (of 112)]], [#strong[of which Zig (of 30)]], [#strong[completion tokens]],
-  [GSQ-RCO IQ3\_S], [88], [9], [2.40 M],
-  [Unsloth UD-IQ3\_S], [76], [2], [2.75 M],
-  [for scale: a different finetune of the same model at Q5\_K\_M, four runs], [82, 84, 85, 91], [not tabulated], [not tabulated])
+The card's claims are task-level. Before this revision we had one run per arm of the 112-unit fast subset of an agentic coding suite (multi-language tasks solved by an agent loop with a compiler and tests; single-slot serving, stock llama.cpp b10865, reasoning budget 20,480 tokens) on the two IQ3-class files: GSQ-RCO 88 of 112, the Unsloth baseline 76, a paired net of +12 (exact McNemar p = 0.012), against a four-run band of 82-91 for one unchanged file of a different finetune#src[E32]. A 9-unit spread for an unchanged file means a +12 difference between two single runs has to be read as one draw. The suite samples at temperature 0.6 without a fixed seed, so repeated runs are independent draws.
 
-Paired by unit, 16 units pass only under GSQ-RCO and 4 only under the baseline, a net of +12 (exact McNemar p = 0.012). Five things limit what this supports.
-
-- It is one run per arm.
-- The four-run band is from a different finetune, so a file landing inside it is not evidence that the file is lossless. What the band does show is a 9-unit run-to-run spread for one unchanged file, against which a +12 difference between two single runs has to be read.
-- Seven of the twelve come from Zig, where both arms are near the floor (9/30 and 2/30); the direction is the same in Zig (+7, p = 0.065) and elsewhere (+5, p = 0.18), and neither part is resolved alone.
-- McNemar's test treats each unit's outcome as deterministic, which the band's spread contradicts.
-- The record does not state whether the band runs used the same single-slot serving configuration.
-
-A first attempt at these rows under six-slot serving was retracted after both IQ3-class files crashed the server. The IQ2 capability pair was started and not completed, and our corrected arm was not run on the suite.
+\[PENDING:F — three runs per arm in the current eval era: GSQ-RCO IQ3\_S, UD-IQ3\_S, and UD-IQ3\_S + our correction; per-unit pass rate paired over 112 units (Wilcoxon, sign test), run-level mean ± SD; registered rule in PLAN.md §F.\]
 
 == 5.6 What the head-to-head shows
 
-Against released GSQ-RCO checkpoints, the untrained vendor baseline at matched bytes already has lower 512-token KLD on wikitext (not resolved on FineWeb-Edu); adding our correction (+0.9 GB, not byte-matched) lowers it further on both corpora. A stock rung at near-equal total bytes beats the corrected arm. In one cross-family pair (one run per arm), 512-token KLD and a coding suite ordered the artifacts oppositely; we treat 512-token KLD as unvalidated across refinement families. On FineWeb-Edu the KLD difference in that pair is close to a tie, so there the disagreement is a tie against a single-run win. We have no task measurement of our own arm and make no claim that the corrected file is the more capable one.
+\[PENDING:F — final paragraph once the capability replication is in.\] Against released GSQ-RCO checkpoints, the untrained vendor baseline at matched bytes is closer to the BF16 distribution on wikitext at both 512 and 2,048 tokens and close to tied on FineWeb-Edu; the trained checkpoints assign the text higher likelihood at 2,048 tokens. Our correction (+0.9 GB, not byte-matched) moves its base closer to the reference on both corpora at 512 tokens and on wikitext at 2,048 tokens, and a stock file at near-equal total bytes beats the corrected arm. KL divergence to a reference is therefore the right instrument for a method that only approximates the reference, such as ours, and the wrong one for ranking a trained file against an untrained one.
 
 = 6. Serving: the adapter's decode cost and how much of it kernels remove
 
@@ -457,27 +471,27 @@ At 0.6B the adapter cost on the patched build is about 20%, down from 45%. At 27
 
 == 7.1 Limitations
 
-#strong[Models and hardware.] Every model is Qwen-family: Qwen3-0.6B, Qwen3.5-0.8B, Qwen3.6-27B (as the heretic-v2 finetune), Qwen3.8-27B and Qwen3.6-35B-A3B. Every measurement comes from one GPU (an RTX 5090) on one workstation. Nothing here tests another model family.
+#strong[Models and hardware.] Four of the five models are Qwen-family: Qwen3-0.6B, Qwen3.5-0.8B, Qwen3.6-27B (as the heretic-v2 finetune), Qwen3.8-27B and Qwen3.6-35B-A3B. \[PENDING:G — Llama-3.1-8B, the one model outside the family; which claims replicate there.\] Every measurement comes from one GPU (an RTX 5090) on one workstation.
 
-#strong[Baselines not compared.] The re-rounder was compared against the file it starts from and, at 0.8B, against stock rungs. It was never compared against free-grid GPTQ at equal bits, against vector or lattice quantizers at 2 bits, or against learned-rounding methods. The type-allocation control was built by hand from measured sensitivities and was not compared against Hessian-aware mixed-precision allocation methods. These are named as classes of work; we did not run them and do not cite numbers for them.
+#strong[Baselines not compared.] The re-rounder is compared with the file it starts from, with stock rungs above and below it, and with a free-grid GPTQ baseline at identical format and bytes (§3.4). It is not compared with learned-rounding methods, which need a training loop, or with vector and lattice quantizers at 2 bits, which are outside the GGUF formats. The type-allocation controls were built by a fixed promotion rule and were not compared with Hessian-aware mixed-precision allocation methods. These are named as classes of work; we did not run them and do not cite numbers for them.
 
-#strong[Distribution.] Calibration and most evaluation share wikitext-2 (train and test splits). The corrected configurations carry more calibration-fitted capacity than the rungs they are compared with, and §4.8 measures 10-27% sensitivity to the corpus, larger than every contested ladder margin. Off-distribution we have: the re-rounder at 0.8B on a code corpus and on an unseen prose corpus (§3.1), and the correction increment at 27B on FineWeb-Edu (§5.3). The ladder comparisons of §4.3 have not been repeated on a held-out corpus, and neither has the 27B re-rounder.
+#strong[Distribution.] Calibration is on wikitext-2 train unless stated. Every comparison in §3.1, §4.3, §4.5 and §5 is now also scored on FineWeb-Edu and a code corpus that no calibration touched, and that changed two conclusions: the 27B margin over Q3\_K\_S (§4.3) and the generality of re-rounding (§3.1). Two corpora are not a benchmark of distribution shift; both held-out corpora are English text or code from public sources, and the code corpus is small (400 KB).
 
-#strong[Statistics.] The t statistics are conditional on one calibration sample and one evaluation corpus. No family-wise correction was applied. The two contested 27B margins are a third look at accumulating data, one of them is not uniform across the test set, and neither is replicated (§4.3). Blocks in the block bootstrap are runs of consecutive chunks and not articles.
+#strong[Statistics.] The t statistics quantify evaluation-chunk variance on one corpus at a time. Calibration-sampling variance was measured once, at 0.8B, and is small against the effects reported (§3.1); it was not measured at 27B. No family-wise correction is applied; the paired tables carry enough contrasts that margins near |t| = 2-3 are suggestive. The wikitext 27B comparison is a reproduction on the same 100 chunks, not an independent sample; the held-out corpora are the independent samples. Blocks in the block bootstrap are runs of consecutive chunks and not articles.
 
-#strong[The instrument.] Every KL-divergence number is at a 512-token context. In one pair of files it ordered them opposite to a coding suite (§5.5), and the only task evaluation inside our own comparisons tied the contested pair (§4.3). Task-level evidence in this paper is thin: one multiple-choice benchmark at one byte count, and one coding suite, one run per arm, on the competitor's files only. None of our corrected or re-rounded files was run on the coding suite.
+#strong[The instrument.] KL divergence to the reference measures fidelity to it. That is the right measure for a method that only approximates the reference, and it does not rank a trained artifact against an untrained one (§5.4). Task-level evidence remains limited: one multiple-choice benchmark at one byte count (§4.3), and one coding suite on three IQ3-class files (§5.5). None of our re-rounded files was run on the coding suite.
 
-#strong[Controls.] The mixed-type control exists at 27B and for the mixture-of-experts model. It was not built at 0.6B or 0.8B, and it is a single designed point at each size where it exists.
+#strong[Controls.] Mixed-type controls now exist at 0.8B (one by the registered rule, one byte-matched after registration), at 27B and on the mixture-of-experts model; each is a single designed point, built by a rule and not optimized. None was built at 0.6B.
 
-#strong[Width.] The regression of §4.2 has one step on the width axis and its intervals resample tensors, not models.
+#strong[Width.] The regression of §4.2 has one step on the width axis and its intervals resample tensors, not models. \[PENDING:G — whether the Llama-3.1-8B point (d = 4,096) is added to the fit.\]
 
-#strong[References and precision.] Rows labeled legacy are scored against a Q6\_K or Q8\_0 file and not BF16 (measured contamination at 27B: 0.0032 KLD). The mixture-of-experts table is scored against a vendor Q4-class file at 20 chunks. At 27B, "full covariance" means block-diagonal for ffn\_down (§2.2), the VRAM columns were not measured, and the rank allocation used sensitivity priors from 0.6B.
+#strong[References and precision.] Rows labeled legacy are scored against a Q6\_K or Q8\_0 file and not BF16 (measured contamination at 27B: 0.0032 KLD). The mixture-of-experts table is scored against a vendor Q4-class file at 20 chunks. At 27B, "full covariance" means block-diagonal for ffn\_down (§2.2), the VRAM columns were not measured, and the rank allocation used sensitivity priors from 0.6B. Rows from before the Gated-DeltaNet normalization fix in llama.cpp (b10829) are paired within one build and never tabled beside current-build rows; every hybrid-architecture comparison in §3.1, §4.3, §4.5 and §5.4 was re-scored on the current build.
 
 #strong[Alternation.] The ordering claim of §3.3 is paired (t = +17.6). The claim about alternation rounds is weaker: the 0.6B sequence is unpaired, the 0.8B continuation has no recorded error bars, and the 27B gain from alternation is about one unpaired standard error.
 
 #strong[Speed.] One GPU, one host. Session-to-session drift reached 9%; only one speed result has raw output in the supplementary material; nothing was re-measured after the patch set was rebased (§6.1).
 
-#strong[Verification rests on our own records.] Statements that a derivation was verified numerically, that a capture passed its gates, or that an experiment was registered before it ran cite our review notes and experiment log. Those are our records and have not been checked by anyone else.
+#strong[Verification rests on our own records.] Statements that a derivation was verified numerically, that a capture passed its gates, or that an experiment was registered before it ran cite our review notes and experiment log. Those are our records and have not been checked by anyone else. The registration for the experiments added in this revision was committed to a public version-control history before the runs, which gives it an external timestamp.
 
 #strong[Code hazards.] Cache directories originally carried no provenance fingerprint (fixed for the re-rounder; open for the spectra caches and one extractor). Column selection under Gram whitening ranks the wrong columns (the reported column runs predate full-covariance whitening)#src[review].
 
@@ -485,25 +499,22 @@ At 0.6B the adapter cost on the patched build is about 20%, down from 45%. At 27
 
 == 7.2 Status of the ablation program
 
-An audit of every cell behind this paper's claims counted 51: 17 clean, 15 confounded, 19 missing#src[ablation]. The negative results are the cleanest cells (water-filling, shared basis, equalization, the Kronecker metric, mixture-of-experts against control: isolated, mostly paired, with |t| between 2.7 and 60). The confounds concentrate in the positive multi-point curves: the recovery curve of §4.5 varies adapter budget and rank mix across its points, and the 27B allocation row varied three factors at once.
+An audit of every cell behind this paper's claims counted 51: 17 clean, 15 confounded, 19 missing, and priced seventeen runs to close the gating cells#src[ablation]. All seventeen have now been run except the 0.6B half of the small-scale controls, and a referee's further requests have been run as well#src[E36]:
 
-The audit priced seventeen runs to close the gating cells. Eleven have been run and are reported above. Six have not, and the corresponding claims are scoped in the text:
+#tbl(2, [#strong[item]], [#strong[where]],
+  [calibration-sensitivity grid (five calibrations × two methods × three corpora)], [§3.1, §4.8],
+  [calibration-sampling bound], [§3.1],
+  [mixed-type controls at 0.8B], [§4.3],
+  [held-out pass over the 27B ladder comparisons], [§4.3],
+  [recovery curve with the recipe fixed], [§4.5],
+  [equalization without an imatrix, and a strength sweep], [Appendix A.3],
+  [27B re-rounder under single-step provenance, with IQ2\_M and IQ3\_XXS brackets], [§3.1 \[PENDING:B\]],
+  [KL divergence at a 2,048-token context for the head-to-head files], [§5.4],
+  [free-grid GPTQ baseline for the re-rounder], [§3.4 \[PENDING:E\]],
+  [one model outside the Qwen family], [\[PENDING:G\]],
+  [three capability runs per IQ3-class arm, and our corrected arm], [§5.5 \[PENDING:F\]])
 
-- the calibration-sensitivity grid (mix ratio × method);
-- mixed-type controls at the 0.6B and 0.8B byte counts;
-- a held-out pass over the corrected configurations and their ladder rivals;
-- the recovery curve with the correction recipe held fixed;
-- the equalization ablations (no imatrix; a strength sweep);
-- a bound on calibration-sampling variance alone.
-
-The review of this paper adds experiments that the existing logs cannot supply:
-
-- re-rounded Q2\_K against the IQ2 and IQ3 rungs, paired, at 27B under single-step provenance;
-- three more single-slot capability runs per IQ3-class arm, and a run of our corrected arm;
-- KL divergence at a 2048-token context for the four files of §5.4;
-- the mixture-of-experts table against a BF16 reference;
-- free-grid GPTQ and learned-rounding baselines for the re-rounder;
-- one model outside the Qwen family, and a third width.
+Not run: a mixed-type control at 0.6B (the 0.6B rows are legacy); the mixture-of-experts table against a BF16 reference (none is available to us); learned-rounding and vector-quantizer baselines; a third width inside one family.
 
 == 7.3 Reproducibility and artifacts
 
@@ -521,7 +532,7 @@ Three components are not stock llama.cpp: the Gram-capture extension to llama-im
 
 == 7.5 Summary
 
-Re-rounding improves a Q2\_K file at identical bytes, with paired resolution at 0.8B and at 27B, under broad calibration; at 0.8B a smaller stock file is better still. Low-rank correction improves its base at every size, is narrowly ahead of the adjacent stock type at 27B on a margin that is not uniform across the test set, and is behind a same-byte mixed-type control. Three placements of the low-rank bytes could not be distinguished within a stated bound. Against released trained checkpoints, the matched-byte untrained baseline has lower short-context KL divergence on one corpus and ties on another, and a single capability pair points the other way. The kernel and allocator patches reduce the adapter's decode cost at small scale and change little at 27B.
+Re-rounding improves a Q2\_K file at identical bytes, by a third in KL divergence at 0.8B \[PENDING:B — and by how much at 27B\], on the kinds of text its calibration covers; it damages kinds of text its calibration does not cover, and a calibration mixing prose and code improves all three corpora we measured. At 0.8B a smaller stock IQ3\_XXS file is better still. Low-rank correction improves its base on every corpus at every size, by about half as much off the calibration distribution, and by more the thinner the base. Against the stock types it falls short: at 27B its narrow lead over the adjacent type exists only on the calibration distribution, and a same-byte mixed-type control is better on every corpus, by a factor of three in KL divergence at 0.8B. Three placements of the low-rank bytes could not be distinguished within a stated bound. Against released trained checkpoints, KL divergence to the reference and likelihood of the text disagree in the same run, so the comparison measures what each file optimizes rather than which is better; \[PENDING:F — capability replication\]. The kernel and allocator patches reduce the adapter's decode cost at small scale and change little at 27B.
 
 == 7.6 Corrections made to the record
 
@@ -533,16 +544,18 @@ The project record contains errors that were found and corrected before this pap
 - A first "mixed-calibration" run never reached its second corpus, because the two corpora were concatenated and not interleaved.
 - An early statement that capture falls as r/d rested on two points; §4.2 replaces it with a fit in which r/d is the worst of six forms.
 - A journal entry asserted that the GSQ-RCO checkpoints were trained on FineWeb-Edu; the card and code do not say so (§5.3).
+- Every hybrid-architecture row in the previous version was scored on a llama.cpp build that predates its Gated-DeltaNet normalization fix. The paired comparisons were valid within that build; this version re-scores them on the current build and reports both where they differ (§4.3).
+- The previous version stated that at 0.6B and 0.8B "controls beat crowns" by inference from interpolation between rungs; §4.3 now measures it at 0.8B.
 
 Each is kept in the journal with its correction#src[journal, review].
 
 = 8. Related work
 
-#strong[Low-rank correction of quantized weights.] Adding a low-rank branch to a quantized base begins with LoRC in ZeroQuant-V2 (\[1\]), an unweighted rank-8 SVD. LQER (\[2\]) observes that the raw residual has a Marchenko-Pastur spectrum, so the value lies in a weighted decomposition. QERA (\[3\]) supplies the mathematics we use: its Theorem 1 is the full-covariance whitened closed form, and the diagonal special case in its Theorem 2 is the statistic llama.cpp's imatrix computes. EoRA (\[4\]) is the nearest industrial counterpart, and CALDERA (\[5\]) contributes the alternation with best-iterate tracking and reports, in its own tables, the fixed-rank benefit shrinking with model size. What this paper adds to that line is the setting: the same pipeline measured with diagonal and full whitening on llama.cpp's deployed K-quant and I-quant formats at 0.6B to 35B, compared against the format's own ladder and, at 27B and on a mixture-of-experts model, against a mixed-type control at matched bytes, which the correction loses to (§4.3, §4.6).
+#strong[Low-rank correction of quantized weights.] Adding a low-rank branch to a quantized base begins with LoRC in ZeroQuant-V2 (\[1\]), an unweighted rank-8 SVD. LQER (\[2\]) observes that the raw residual has a Marchenko-Pastur spectrum, so the value lies in a weighted decomposition. QERA (\[3\]) supplies the mathematics we use: its Theorem 1 is the full-covariance whitened closed form, and the diagonal special case in its Theorem 2 is the statistic llama.cpp's imatrix computes. EoRA (\[4\]) is the nearest industrial counterpart, and CALDERA (\[5\]) contributes the alternation with best-iterate tracking and reports, in its own tables, the fixed-rank benefit shrinking with model size. What this paper adds to that line is the setting: the same pipeline measured with diagonal and full whitening on llama.cpp's deployed K-quant and I-quant formats at 0.6B to 35B, compared against the format's own ladder and against mixed-type controls at matched bytes at 0.8B, at 27B and on a mixture-of-experts model, which the correction loses to (§4.3, §4.6), on and off the calibration distribution.
 
 #strong[Rank and width.] The decay we fit in §4.2 has published counterparts: CALDERA's Theorem 4.1; the lower bound of \[17\]; LRC (\[38\]), where rank at 10% of width halves the W4A4 gap; ResQ (\[39\]), which fixes rank at an eighth of width; FLRQ (\[40\]), whose allocated ranks beat a uniform rank at fewer bytes; and TwinQuant (\[41\]), which reports flat spectra beyond rank 256. RILQ (\[6\]) reports that 2-bit error is high-rank and that layer-local correction saturates.
 
-#strong[Re-selecting codes on a fixed grid.] GPTQ (\[7\]) is the source of our sweep. ReQuant (\[9\]) performs cyclic coordinate descent on the same quadratic for generic post-training quantization, not GGUF. SchurQuant (\[10\]) also refits the scales, and reports that layer-wise reconstruction is a loose surrogate for the final loss, which agrees with §4.7. GSQ (\[8\]) is the other method released as GGUF files: Gumbel-Softmax relaxation trained against block-staged reconstruction and projected back into the format. Our re-rounder is a one-shot, CPU-only member of this group that works on the K-quant block hierarchy. §5 compares released GSQ-RCO checkpoints with our correction, not with our re-rounder, whose codec does not cover I-quants. Our placement of these methods relative to one objective is argued in a project note#src[theory-L6].
+#strong[Re-selecting codes on a fixed grid.] GPTQ (\[7\]) is the source of our sweep. ReQuant (\[9\]) performs cyclic coordinate descent on the same quadratic for generic post-training quantization, not GGUF. SchurQuant (\[10\]) also refits the scales, and reports that layer-wise reconstruction is a loose surrogate for the final loss, which agrees with §4.7. GSQ (\[8\]) is the other method released as GGUF files: Gumbel-Softmax relaxation trained against block-staged reconstruction and projected back into the format. Our re-rounder is a one-shot, CPU-only member of this group that works on the K-quant block hierarchy; §3.4 compares it with GPTQ allowed to refit the grid inside the same format. §5 compares released GSQ-RCO checkpoints with our correction, not with our re-rounder, whose codec does not cover I-quants. Our placement of these methods relative to one objective is argued in a project note#src[theory-L6].
 
 Three neighbouring classes of work are not compared in this paper and are not cited with numbers: learned or adaptive rounding on a fixed grid, which is the older form of "re-choose only the codes"; vector and lattice quantizers at 2 bits, which are strong baselines outside the GGUF format; and Hessian-aware mixed-precision bit allocation, which is the systematic version of the type-allocation control we built by hand. §7.1 lists these as limitations.
 
@@ -584,7 +597,9 @@ The AWQ and SmoothQuant line of work moves importance into the weights by scalin
 
 Requantizing the equalized model with the same recipe at the same bytes is strongly harmful: perplexity 33.09 → 41.73, paired ΔKLD t = +28.3 (n = 40, equalized better on 0 chunks), ΔNLL t = +59.8 (n = 580). The quantizer's own weighted error rises 6-68% per folded tensor and is unchanged on the untouched control tensors#src[E26].
 
-The mechanism we can support is a format interaction: the fold puts up to 32× dynamic range into 16-element sub-blocks whose shared 4-bit sub-scales cannot span it. Whether there is a separate double-counting of importance is not tested by this run; the controls that would test it (equalization without an imatrix, and a strength sweep) have not been run. The result is scoped to full strength on one format, which is where that literature itself expects harm. This is row 4 of the table in §4.7.
+Two ablations registered for this revision separate the candidate mechanisms, on the current build against BF16 references, 40 chunks per corpus#src[E36]. Strength: scaling the fold by α (each power-of-two column scale's exponent multiplied by α and rounded, so the fold stays exact) gives ΔKLD against the file as written of +0.022, +0.068, +0.075 and +0.198 on wikitext at α = 0.25, 0.5, 0.75 and 1 (t = +5.1 to +29.2). On FineWeb-Edu the ordering is the same (+0.010 to +0.175); on code α = 0.5 and 0.75 are level (+0.123, +0.121) and the rest are ordered. There is no interior optimum: every strength tested harms, and the harm grows with strength. Imatrix: equalization at α = 1 without an imatrix, against the file quantized without one, still harms (+0.305 on wikitext, t = +16.5; +0.186 and +0.607 on the held-out corpora). If the harm came from counting importance twice, once in the scales and once in the quantizer's weights, it would vanish without the imatrix; it does not.
+
+The mechanism we can support is therefore a format interaction: the fold puts up to 32× dynamic range into 16-element sub-blocks whose shared 4-bit sub-scales cannot span it, and smaller strengths put in less of it. The result is scoped to one format and one architecture. This is row 4 of the table in §4.7.
 
 == A.4 Further descent of the same objective
 
@@ -596,7 +611,7 @@ No tensor reached a fixed point of the codes. Of 96 tensors, 92 ran to the cap a
 
 The alternation of §2.4 keeps the best iterate and stops when a round is worse. Our theory note makes three claims about it#src[theory-alt]. First, the quantizer's reachable output set is finite and the corrector step is an exact minimum, so the best-iterate value is non-increasing over a finite set and becomes constant after finitely many rounds. Second, the first round improves exactly when subtracting the corrector steers the quantizer to a grid point whose residual is more compressible at rank r in the whitened metric; this was observed at both small sizes (whitened capture 0.37 → 0.46 → 0.51 across rounds at 0.6B). Third, and informally, per-round gains decay as the composed map approaches a fixed point.
 
-The third claim needed an amendment. When a related alternation was pushed to its 8-iteration cap at 0.8B (B.4), no fixed point of the codes was reached; the iterates settle onto a small limit cycle. The best-iterate argument is unaffected. The quantizer's internal objective differs from the whitened one, which bounds what alternation can reach; schemes that modify the quantizer's metric address this (\[22\]; \[37\]). In practice we used two or three rounds, and changes after the second were below noise.
+The third claim needed an amendment. When a related alternation was pushed to its 8-iteration cap at 0.8B (A.4), no fixed point of the codes was reached; the iterates settle onto a small limit cycle. The best-iterate argument is unaffected. The quantizer's internal objective differs from the whitened one, which bounds what alternation can reach; schemes that modify the quantizer's metric address this (\[22\]; \[37\]). In practice we used two or three rounds, and changes after the second were below noise.
 
 = Appendix B. Artifact index
 
@@ -611,7 +626,6 @@ Bracketed tags in the text name the place in the project repository where the me
   [E15], [#raw("research/lowrank/experiments/15-iq1-carrier/")],
   [E17], [#raw("research/lowrank/experiments/17-task-conditioned/")],
   [E20], [#raw("research/lowrank/experiments/20-gradgram/")],
-  [E22], [#raw("research/lowrank/experiments/22-qwen35-08b/")],
   [E23], [#raw("research/lowrank/experiments/23-moe/")],
   [E24], [#raw("research/lowrank/experiments/24-yaqa-lite/")],
   [E25], [#raw("research/lowrank/experiments/25-alloc-concurrency/")],
@@ -624,6 +638,7 @@ Bracketed tags in the text name the place in the project repository where the me
   [E33], [#raw("research/lowrank/experiments/33-t110-capture-width/")],
   [E34], [#raw("research/lowrank/experiments/34-e16-nvfp4-08b/")],
   [E35], [#raw("research/lowrank/experiments/35-final-reanalysis/")],
+  [E36], [#raw("research/lowrank/experiments/36-submission/")],
   [ablation], [#raw("research/lowrank/paper/ABLATION-PLAN.md")],
   [journal], [#raw("research/lowrank/JOURNAL.md")],
   [manifolds], [#raw("research/lowrank/prior-art/MANIFOLD-CANDIDATES.md")],

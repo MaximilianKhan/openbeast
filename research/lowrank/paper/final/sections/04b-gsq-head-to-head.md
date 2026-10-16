@@ -61,34 +61,25 @@ The second half mostly did not hold. Our increments were predicted to shrink; th
 
 With the baseline and the trained checkpoint close on this corpus, the corrected arm's lead over GSQ-RCO (−0.0175 and −0.0055) is about the size of the correction increment, which is bought with 0.9 GB. The stock UD-Q2_K_XL file again beats the corrected IQ2_S arm at near-equal bytes.
 
-## 5.4 Perplexity at two context lengths
+## 5.4 Context length against metric
 
-The card's wikitext perplexities order GSQ-RCO ahead of the Unsloth baseline at both classes. At our 512-token context the means order them the other way, and the paired difference is unresolved: ΔNLL (GSQ-RCO minus baseline) +0.017 ± 0.013 (t = +1.33) at the IQ2 class and +0.003 ± 0.006 (t = +0.58) at the IQ3 class, n = 40.
+The card's wikitext perplexities order GSQ-RCO ahead of the Unsloth baseline at both classes. At our 512-token context the paired NLL difference is unresolved: GSQ-RCO minus baseline +0.017 ± 0.013 (t = +1.33) at the IQ2 class and +0.003 ± 0.006 (t = +0.58) at the IQ3 class, n = 40. At a 2048-token context over the whole test set (145 chunks) the card's ordering reproduces: −0.041 ± 0.012 (t = −3.33) and −0.018 ± 0.004 (t = −4.15) [source: research/lowrank/experiments/32-t117-gsq-head-to-head/results-ppl2048.txt; experiments/35-final-reanalysis/RESULTS.md].
 
-At a 2048-token context the card's ordering reproduces: GSQ-RCO IQ2_XS 6.834 ± 0.043 against UD-IQ2_S 7.119 ± 0.047, and GSQ-RCO IQ3_S 6.306 ± 0.039 against UD-IQ3_S 6.417 ± 0.041 [source: research/lowrank/experiments/32-t117-gsq-head-to-head/results-ppl2048.txt]. Paired over the 145 chunks, the NLL difference is −0.041 ± 0.012 (t = −3.33) at the IQ2 class and −0.018 ± 0.004 (t = −4.15) at the IQ3 class. The IQ3 result is consistent across tests (GSQ-RCO ahead on 89/145 chunks, Wilcoxon p = 1e-4). The IQ2 result is carried by a minority of chunks: GSQ-RCO is ahead on 77/145 (sign test p = 0.51, Wilcoxon p = 0.035) [source: research/lowrank/experiments/35-final-reanalysis/RESULTS.md].
+That left two explanations for the disagreement between 512-token KLD and the card: context length, or the metric itself. A registered run separates them. We generated BF16 reference logits at a 2048-token context (40 windows; llama-perplexity scores the second half of each window, so every scored token has at least 1,024 tokens of context) and scored all eight files on them, recording KLD, NLL and top-1 agreement from the same run on the same tokens [source: research/lowrank/experiments/36-submission/PLAN.md §C; experiments/36-submission/RESULTS-C.md]:
 
-So the 512-token perplexity ordering is unresolved and the 2048-token ordering is resolved in the checkpoint's favour. We did not measure KL divergence at 2048 tokens, so this experiment does not separate the effect of context length from the difference between perplexity and KL divergence. Every KL-divergence number in this paper is at 512 tokens.
-
-## 5.5 One capability pair
-
-The card's claims are task-level. We ran the 112-unit fast subset of an agentic coding suite (multi-language tasks solved by an agent loop with a compiler and tests; single-slot serving, stock llama.cpp b10865, reasoning budget capped at 20,480 tokens) on the two IQ3-class files, once each [source: research/lowrank/experiments/32-t117-gsq-head-to-head/capability-verdict-iq3-final.txt]:
-
-| file | passed (of 112) | of which Zig (of 30) | completion tokens |
+| GSQ-RCO − Unsloth baseline, 2048-token context, n = 40 | ΔKLD to BF16 | Δtop-1 agreement | ΔNLL of the text |
 |---|---|---|---|
-| GSQ-RCO IQ3_S | 88 | 9 | 2.40 M |
-| Unsloth UD-IQ3_S | 76 | 2 | 2.75 M |
-| for scale: a different finetune of the same model at Q5_K_M, four runs | 82, 84, 85, 91 | not tabulated | not tabulated |
+| IQ2 class (8.42 vs 8.37 GB) | +0.0569 ± 0.0071 (t = +8.03, 0/40) | −2.37 pt (t = −8.88) | −0.025 ± 0.015 (t = −1.64) |
+| IQ3 class (11.77 vs 12.04 GB) | +0.0178 ± 0.0035 (t = +5.02, 1/40) | −1.53 pt (t = −9.51) | −0.018 ± 0.007 (t = −2.49) |
 
-Paired by unit, 16 units pass only under GSQ-RCO and 4 only under the baseline, a net of +12 (exact McNemar p = 0.012). Five things limit what this supports.
+With long context the trained checkpoints are still further from the BF16 distribution than their untrained baselines, by about as much as at 512 tokens, and they agree less often with its top token; on the same tokens they assign the text higher likelihood (resolved at the IQ3 class, leaning the same way at IQ2). The registered rule reads this as a metric effect and not a context effect. KL divergence to the reference measures fidelity to the BF16 model. A file trained against data, as these are, can trade that fidelity for likelihood of the text, and KL divergence then ranks it below a file that is closer to the reference and worse on the text. Our correction, which only reduces distance to the reference, keeps its increment at 2048 tokens on all three bases (−0.0114, −0.0026 and −0.0081; t = −6.7, −6.8, −5.3).
 
-- It is one run per arm.
-- The four-run band is from a different finetune, so a file landing inside it is not evidence that the file is lossless. What the band does show is a 9-unit run-to-run spread for one unchanged file, against which a +12 difference between two single runs has to be read.
-- Seven of the twelve come from Zig, where both arms are near the floor (9/30 and 2/30); the direction is the same in Zig (+7, p = 0.065) and elsewhere (+5, p = 0.18), and neither part is resolved alone.
-- McNemar's test treats each unit's outcome as deterministic, which the band's spread contradicts.
-- The record does not state whether the band runs used the same single-slot serving configuration.
+## 5.5 Capability
 
-A first attempt at these rows under six-slot serving was retracted after both IQ3-class files crashed the server. The IQ2 capability pair was started and not completed, and our corrected arm was not run on the suite.
+The card's claims are task-level. Before this revision we had one run per arm of the 112-unit fast subset of an agentic coding suite (multi-language tasks solved by an agent loop with a compiler and tests; single-slot serving, stock llama.cpp b10865, reasoning budget 20,480 tokens) on the two IQ3-class files: GSQ-RCO 88 of 112, the Unsloth baseline 76, a paired net of +12 (exact McNemar p = 0.012), against a four-run band of 82-91 for one unchanged file of a different finetune [source: research/lowrank/experiments/32-t117-gsq-head-to-head/capability-verdict-iq3-final.txt]. A 9-unit spread for an unchanged file means a +12 difference between two single runs has to be read as one draw. The suite samples at temperature 0.6 without a fixed seed, so repeated runs are independent draws.
+
+[PENDING:F — three runs per arm in the current eval era: GSQ-RCO IQ3_S, UD-IQ3_S, and UD-IQ3_S + our correction; per-unit pass rate paired over 112 units (Wilcoxon, sign test), run-level mean ± SD; registered rule in PLAN.md §F.]
 
 ## 5.6 What the head-to-head shows
 
-Against released GSQ-RCO checkpoints, the untrained vendor baseline at matched bytes already has lower 512-token KLD on wikitext (not resolved on FineWeb-Edu); adding our correction (+0.9 GB, not byte-matched) lowers it further on both corpora. A stock rung at near-equal total bytes beats the corrected arm. In one cross-family pair (one run per arm), 512-token KLD and a coding suite ordered the artifacts oppositely; we treat 512-token KLD as unvalidated across refinement families. On FineWeb-Edu the KLD difference in that pair is close to a tie, so there the disagreement is a tie against a single-run win. We have no task measurement of our own arm and make no claim that the corrected file is the more capable one.
+[PENDING:F — final paragraph once the capability replication is in.] Against released GSQ-RCO checkpoints, the untrained vendor baseline at matched bytes is closer to the BF16 distribution on wikitext at both 512 and 2,048 tokens and close to tied on FineWeb-Edu; the trained checkpoints assign the text higher likelihood at 2,048 tokens. Our correction (+0.9 GB, not byte-matched) moves its base closer to the reference on both corpora at 512 tokens and on wikitext at 2,048 tokens, and a stock file at near-equal total bytes beats the corrected arm. KL divergence to a reference is therefore the right instrument for a method that only approximates the reference, such as ours, and the wrong one for ranking a trained file against an untrained one.
