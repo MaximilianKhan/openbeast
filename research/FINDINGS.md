@@ -54,8 +54,9 @@ distribution), FineWeb-Edu and a code corpus no calibration touched.
    recovery: 7% / 12% / 32% at Q2_K / IQ2_XS / IQ1_S on wikitext; 3% / 8% /
    16% on FineWeb-Edu). (`RESULTS-D.md` §T1.9)
 5. **Against the stock types the correction falls short.**
-   - Qwen3.6-27B: ahead of Q3_K_S by 5% on wikitext (t = −2.62, replicates
-     the pre-fix −2.85), **behind it on FineWeb-Edu (t = +3.26)**, level on
+   - Qwen3.6-27B: ahead of Q3_K_S by 4.5% on the whole wikitext test set
+     (580 chunks, t = −4.32; t = −3.68 on the 480 chunks outside the
+     original 100; the n = 100 −2.62 replicates the pre-fix −2.85), **behind it on FineWeb-Edu (t = +3.26)**, level on
      code; a same-byte mixed-type control beats it on all three corpora
      (t = +2.4, +6.5, +7.1). (`RESULTS-A.md`)
    - Qwen3.5-0.8B: a pure-quantization control 1.1% smaller has a third of

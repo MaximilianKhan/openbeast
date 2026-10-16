@@ -1,0 +1,7 @@
+[2026-10-16 10:35:16] waiting for row 1 of F (now 0 recorded)
+[2026-10-16 12:00:24] row recorded: e36f-GSQ-IQ3S-r1 rc=1 result=evals/results/eval-e36f-gsq-iq3s-r1-20261016-032722.json cuda_errors=0 sha=053ba2c ended=2026-10-16 12:00:23 — stopping F at the boundary
+[2026-10-16 12:00:25] card free; partial cap log of the interrupted row (will be rerun):
+/home/max/Documents/openbeast/research/lowrank/experiments/36-submission/logs-f/cap-e36f-GSQ-IQ3S-r1.log
+[2026-10-16 12:00:25] A-FULL START
+[2026-10-16 12:36:31] A-FULL END rc=0
+[2026-10-16 12:36:31] F RESUME

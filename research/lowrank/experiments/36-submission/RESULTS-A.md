@@ -73,3 +73,74 @@ Generated 2026-10-15 from logs-a/ by e36_stats.py. Raw rows: results-a.txt. Rule
 - code: IQ3_XS vs Q3_K_S: ΔNLL -0.01493 ± 0.00333 (t -4.49, A better 67/100); Δtop-1 +0.428 pt (t +2.72); max |Δ ref NLL| 0.00596
 - code: Q2Krr-legacy vs Q2_K: ΔNLL +0.02815 ± 0.00347 (t +8.10, A better 19/100); Δtop-1 -0.922 pt (t -5.78); max |Δ ref NLL| 0.00753
 - code: IQ3_XXS vs Q2_K: ΔNLL -0.02629 ± 0.00444 (t -5.93, A better 70/100); Δtop-1 +1.243 pt (t +7.38); max |Δ ref NLL| 0.00767
+
+
+## Whole test set (amendment A-full, run 2026-10-16 12:00–12:36)
+
+Registered in PLAN.md ("Amendment A-full") before the run. Same nine files,
+ctx 512, fresh BF16 reference over all 580 chunks of wiki.test.raw (73.5 GB,
+PPL 7.1964). Chunks 1–100 reproduce the n = 100 logs bit for bit (reference
+NLL and per-chunk KLD max |Δ| = 0 for Q3_K_S, MIXEDfc, CONTROL). Inserted at
+an F row boundary (after e36f-GSQ-IQ3S-r1); F resumed 12:36.
+
+**Verdicts (registered rules):** C1 MIXEDfc vs Q3_K_S **HOLDS** (t = −4.32,
+Bonferroni ×6 p = 1.1e-4); C2 CONTROL better than MIXEDfc **HOLDS**
+(t = −5.50, adjusted p = 3.4e-7). Out-of-prefix replication (chunks 101–580):
+both hold (t = −3.68, −4.96). Full-set and n = 100 verdicts agree.
+Not registered, reported: the legacy re-rounded file's wiki lead over
+single-step Q2_K is −0.0043 (t = −3.10) on 580 chunks and unresolved on
+101–580 (t = −0.73); its NLL is worse (t = +11.19).
+
+Rows (`results-afull.txt`):
+
+```
+wiki MIXEDfc bytes=12162412928 Mean PPL(Q) : 7.418640 ± 0.049554 Mean KLD: 0.090573 ± 0.000979 Same top p: 87.767 ± 0.085 %
+wiki MIXEDbare bytes=12162412928 Mean PPL(Q) : 7.477301 ± 0.050070 Mean KLD: 0.101373 ± 0.001057 Same top p: 87.135 ± 0.087 %
+wiki Q3_K_S bytes=12366025088 Mean PPL(Q) : 7.569533 ± 0.050944 Mean KLD: 0.094792 ± 0.001041 Same top p: 87.538 ± 0.086 %
+wiki CONTROL bytes=12496933248 Mean PPL(Q) : 7.388198 ± 0.049256 Mean KLD: 0.085452 ± 0.000990 Same top p: 88.165 ± 0.084 %
+wiki IQ3_XS bytes=12259201408 Mean PPL(Q) : 7.521864 ± 0.049664 Mean KLD: 0.079942 ± 0.000916 Same top p: 88.819 ± 0.082 %
+wiki IQ3_XXS bytes=11478442368 Mean PPL(Q) : 7.824701 ± 0.053173 Mean KLD: 0.112577 ± 0.001195 Same top p: 86.701 ± 0.088 %
+wiki Q3_K_M bytes=13593514368 Mean PPL(Q) : 7.321774 ± 0.048846 Mean KLD: 0.064954 ± 0.000882 Same top p: 89.757 ± 0.079 %
+wiki Q2_K bytes=11003736448 Mean PPL(Q) : 7.762491 ± 0.052526 Mean KLD: 0.162657 ± 0.001339 Same top p: 83.574 ± 0.096 %
+wiki Q2Krr-legacy bytes=10864595360 Mean PPL(Q) : 8.032175 ± 0.054954 Mean KLD: 0.158384 ± 0.001321 Same top p: 83.807 ± 0.096 %
+```
+
+### All 580 chunks
+
+| pair (A − B), KLD | n | mean ± sem | t | p(t) | 95% bootstrap CI | A better | sign p | Wilcoxon p | 95% block-bootstrap CI (blocks of 10) | t on block means | lag-1 r |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| wiki: MIXEDfc vs Q3_K_S | 580 | -0.00422 ± 0.00098 | -4.32 | 1.8e-05 | [-0.00615, -0.00236] | 363/580 | 1.4e-09 | 5.4e-10 | [-0.00618, -0.00217] | -4.09 (df 57, p 0.00014) | +0.12 |
+| wiki: CONTROL vs MIXEDfc | 580 | -0.00512 ± 0.00093 | -5.50 | 5.6e-08 | [-0.00689, -0.00330] | 371/580 | 1.7e-11 | 2e-17 | [-0.00693, -0.00327] | -5.46 (df 57, p 1.1e-06) | +0.07 |
+| wiki: CONTROL vs Q3_K_S | 580 | -0.00934 ± 0.00062 | -14.98 | 4.2e-43 | [-0.01059, -0.00812] | 513/580 | 4.3e-86 | 1.4e-67 | [-0.01045, -0.00813] | -15.66 (df 57, p 2.6e-22) | +0.02 |
+| wiki: IQ3_XS vs MIXEDfc | 580 | -0.01063 ± 0.00117 | -9.06 | 2.1e-18 | [-0.01295, -0.00835] | 447/580 | 1.2e-40 | 3.2e-39 | [-0.01283, -0.00844] | -9.48 (df 57, p 2.6e-13) | +0.02 |
+| wiki: MIXEDfc vs MIXEDbare | 580 | -0.01080 ± 0.00054 | -19.84 | 3.1e-67 | [-0.01190, -0.00976] | 541/580 | 4.3e-114 | 1.2e-82 | [-0.01186, -0.00984] | -20.55 (df 57, p 5e-28) | -0.01 |
+| wiki: MIXEDbare vs Q3_K_S | 580 | +0.00658 ± 0.00093 | +7.08 | 4.1e-12 | [+0.00479, +0.00832] | 171/580 | 1.8e-23 | 1.8e-22 | [+0.00476, +0.00845] | +6.97 (df 57, p 3.6e-09) | +0.13 |
+| wiki: Q2Krr-legacy vs Q2_K | 580 | -0.00428 ± 0.00138 | -3.10 | 0.0020 | [-0.00699, -0.00154] | 350/580 | 7.1e-07 | 9.2e-07 | [-0.00812, -0.00035] | -2.17 (df 57, p 0.0341) | +0.14 |
+
+- wiki: MIXEDfc vs Q3_K_S: ΔNLL -0.02014 ± 0.00184 (t -10.97, A better 406/580); Δtop-1 +0.229 pt (t +2.74); max |Δ ref NLL| 0.01544
+- wiki: CONTROL vs MIXEDfc: ΔNLL -0.00411 ± 0.00182 (t -2.26, A better 295/580); Δtop-1 +0.398 pt (t +4.92); max |Δ ref NLL| 0.01467
+- wiki: CONTROL vs Q3_K_S: ΔNLL -0.02424 ± 0.00124 (t -19.58, A better 505/580); Δtop-1 +0.627 pt (t +10.95); max |Δ ref NLL| 0.01447
+- wiki: IQ3_XS vs MIXEDfc: ΔNLL +0.01383 ± 0.00249 (t +5.54, A better 246/580); Δtop-1 +1.052 pt (t +10.36); max |Δ ref NLL| 0.01369
+- wiki: MIXEDfc vs MIXEDbare: ΔNLL -0.00788 ± 0.00094 (t -8.39, A better 413/580); Δtop-1 +0.632 pt (t +10.37); max |Δ ref NLL| 0.01210
+- wiki: MIXEDbare vs Q3_K_S: ΔNLL -0.01226 ± 0.00187 (t -6.55, A better 336/580); Δtop-1 -0.403 pt (t -4.75); max |Δ ref NLL| 0.01048
+- wiki: Q2Krr-legacy vs Q2_K: ΔNLL +0.03415 ± 0.00305 (t +11.19, A better 180/580); Δtop-1 +0.233 pt (t +2.35); max |Δ ref NLL| 0.01194
+
+### Chunks 101–580 (`E36_SLICE=100:`)
+
+| pair (A − B), KLD | n | mean ± sem | t | p(t) | 95% bootstrap CI | A better | sign p | Wilcoxon p | 95% block-bootstrap CI (blocks of 10) | t on block means | lag-1 r |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| wiki: MIXEDfc vs Q3_K_S | 480 | -0.00412 ± 0.00112 | -3.68 | 0.00026 | [-0.00630, -0.00198] | 292/480 | 2.4e-06 | 8.3e-07 | [-0.00639, -0.00178] | -3.48 (df 47, p 0.0011) | +0.13 |
+| wiki: CONTROL vs MIXEDfc | 480 | -0.00514 ± 0.00104 | -4.96 | 9.6e-07 | [-0.00713, -0.00308] | 311/480 | 9e-11 | 4.4e-15 | [-0.00710, -0.00305] | -4.84 (df 47, p 1.4e-05) | +0.09 |
+| wiki: CONTROL vs Q3_K_S | 480 | -0.00927 ± 0.00072 | -12.93 | 5.3e-33 | [-0.01067, -0.00789] | 422/480 | 2.8e-69 | 8.3e-55 | [-0.01051, -0.00788] | -13.55 (df 47, p 7.4e-18) | +0.02 |
+| wiki: IQ3_XS vs MIXEDfc | 480 | -0.01082 ± 0.00130 | -8.31 | 9.9e-16 | [-0.01336, -0.00830] | 364/480 | 7.5e-31 | 7.6e-32 | [-0.01311, -0.00856] | -9.08 (df 47, p 6.6e-12) | +0.02 |
+| wiki: MIXEDfc vs MIXEDbare | 480 | -0.01080 ± 0.00062 | -17.38 | 8.2e-53 | [-0.01204, -0.00961] | 445/480 | 1.3e-91 | 7.7e-69 | [-0.01200, -0.00971] | -18.05 (df 47, p 9e-23) | -0.01 |
+| wiki: MIXEDbare vs Q3_K_S | 480 | +0.00668 ± 0.00104 | +6.45 | 2.8e-10 | [+0.00465, +0.00869] | 140/480 | 3e-20 | 4e-19 | [+0.00471, +0.00876] | +6.40 (df 47, p 6.6e-08) | +0.15 |
+| wiki: Q2Krr-legacy vs Q2_K | 480 | -0.00109 ± 0.00148 | -0.73 | 0.4645 | [-0.00398, +0.00183] | 272/480 | 0.0040 | 0.0196 | [-0.00504, +0.00283] | -0.53 (df 47, p 0.5970) | +0.14 |
+
+- wiki: MIXEDfc vs Q3_K_S: ΔNLL -0.01938 ± 0.00205 (t -9.47, A better 329/480); Δtop-1 +0.179 pt (t +1.92); max |Δ ref NLL| 0.01544
+- wiki: CONTROL vs MIXEDfc: ΔNLL -0.00481 ± 0.00208 (t -2.32, A better 248/480); Δtop-1 +0.409 pt (t +4.62); max |Δ ref NLL| 0.01467
+- wiki: CONTROL vs Q3_K_S: ΔNLL -0.02419 ± 0.00137 (t -17.70, A better 414/480); Δtop-1 +0.588 pt (t +9.40); max |Δ ref NLL| 0.01447
+- wiki: IQ3_XS vs MIXEDfc: ΔNLL +0.01382 ± 0.00277 (t +4.99, A better 204/480); Δtop-1 +1.107 pt (t +9.76); max |Δ ref NLL| 0.01369
+- wiki: MIXEDfc vs MIXEDbare: ΔNLL -0.00843 ± 0.00104 (t -8.13, A better 349/480); Δtop-1 +0.597 pt (t +9.00); max |Δ ref NLL| 0.01210
+- wiki: MIXEDbare vs Q3_K_S: ΔNLL -0.01095 ± 0.00203 (t -5.40, A better 267/480); Δtop-1 -0.418 pt (t -4.39); max |Δ ref NLL| 0.01048
+- wiki: Q2Krr-legacy vs Q2_K: ΔNLL +0.03604 ± 0.00331 (t +10.90, A better 139/480); Δtop-1 +0.068 pt (t +0.63); max |Δ ref NLL| 0.01194

@@ -1559,3 +1559,17 @@ Max's go: score the nine A configs on the WHOLE wikitext-2 test set at 27B
 boundary, runs `a_fullwiki.sh` under its own lease (~45 min: ~20 min BF16
 reference, ~73 GB of logits; nine scores), then resumes F (resume-safe; the
 interrupted next row restarts from scratch). `e36_stats.py` gained E36_SLICE.
+
+## 2026-10-16 12:36 — E36 A-full VERDICT: the 27B wikitext margins hold on the whole test set
+
+580 chunks (fresh BF16 ref, 73.5 GB; chunks 1–100 bit-identical to the n = 100
+logs). Registered rules: C1 corrected vs Q3_K_S HOLDS, −0.0042 (4.5%),
+t = −4.32, Bonferroni p = 1.1e-4; C2 control better than corrected HOLDS,
+t = −5.50. Out-of-prefix (101–580): t = −3.68 / −4.96. So the referee's worry
+(lead confined to chunks 41–100) is answered: only chunks 1–40 lack it. The
+off-distribution reversal is untouched — the claim stays "real on the
+calibration distribution, does not carry off it". Side observation: the legacy
+re-round's wiki lead over single-step Q2_K is local to chunks 1–100
+(101–580: t = −0.73; NLL worse t = +11.2), which further undercuts the old
+−13.3%. F row 1 (GSQ-IQ3S-r1) recorded 88/112 (rc=1 = "some task failed",
+4 wall timeouts, 0 CUDA/API errors); F resumed 12:36 with UD-IQ3S-r1.

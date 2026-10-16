@@ -1,0 +1,13 @@
+lease acquired by pid 1050250 — E36 a-fullwiki
+[2026-10-16 12:00:25] gen ref /home/max/Documents/openbeast/research/lowrank/data/e36-bf16ref27b-wiki-full.logits (wiki, -1 chunks, ctx 512)
+[2026-10-16 12:19:29] ref done: Final estimate: PPL = 7.1964 +/- 0.04791
+[2026-10-16 12:21:33] wiki MIXEDfc bytes=12162412928 Mean PPL(Q) : 7.418640 ± 0.049554 Mean KLD: 0.090573 ± 0.000979 Same top p: 87.767 ± 0.085 %
+[2026-10-16 12:23:28] wiki MIXEDbare bytes=12162412928 Mean PPL(Q) : 7.477301 ± 0.050070 Mean KLD: 0.101373 ± 0.001057 Same top p: 87.135 ± 0.087 %
+[2026-10-16 12:25:22] wiki Q3_K_S bytes=12366025088 Mean PPL(Q) : 7.569533 ± 0.050944 Mean KLD: 0.094792 ± 0.001041 Same top p: 87.538 ± 0.086 %
+[2026-10-16 12:27:16] wiki CONTROL bytes=12496933248 Mean PPL(Q) : 7.388198 ± 0.049256 Mean KLD: 0.085452 ± 0.000990 Same top p: 88.165 ± 0.084 %
+[2026-10-16 12:28:58] wiki IQ3_XS bytes=12259201408 Mean PPL(Q) : 7.521864 ± 0.049664 Mean KLD: 0.079942 ± 0.000916 Same top p: 88.819 ± 0.082 %
+[2026-10-16 12:30:40] wiki IQ3_XXS bytes=11478442368 Mean PPL(Q) : 7.824701 ± 0.053173 Mean KLD: 0.112577 ± 0.001195 Same top p: 86.701 ± 0.088 %
+[2026-10-16 12:32:35] wiki Q3_K_M bytes=13593514368 Mean PPL(Q) : 7.321774 ± 0.048846 Mean KLD: 0.064954 ± 0.000882 Same top p: 89.757 ± 0.079 %
+[2026-10-16 12:34:33] wiki Q2_K bytes=11003736448 Mean PPL(Q) : 7.762491 ± 0.052526 Mean KLD: 0.162657 ± 0.001339 Same top p: 83.574 ± 0.096 %
+[2026-10-16 12:36:31] wiki Q2Krr-legacy bytes=10864595360 Mean PPL(Q) : 8.032175 ± 0.054954 Mean KLD: 0.158384 ± 0.001321 Same top p: 83.807 ± 0.096 %
+[2026-10-16 12:36:31] E36 A-full DONE

@@ -66,9 +66,9 @@ these are the items the logs cannot supply. Each is named in the paper's §7.2.
 - [ ] **Baselines for the re-rounder (referee 13):** free-grid GPTQ at equal
   bits; a learned-rounding method; (stretch) a vector/lattice 2-bit quantizer.
 - [ ] **A non-Qwen model (referee 13)**, and the third width E33 needs.
-- [ ] **Held-out / replicated 27B ladder pair (referee 5).** The n = 100
-  margin over Q3_K_S sits entirely in chunks 41–100 (E35 A1.3); repeat the
-  corrected-vs-Q3_K_S-vs-control triple on a second corpus (this is T1.7).
+- [x] **Held-out / replicated 27B ladder pair (referee 5).** DONE in E36:
+  A (FineWeb-Edu, code) and A-full (whole wikitext test set, 580 chunks:
+  corrected vs Q3_K_S t = −4.32, control vs corrected t = −5.50).
 
 ## DONE 2026-08-03
 - [x] **E01 — SVD spectrum census**: H1 confirmed, W is energy-full-rank,
