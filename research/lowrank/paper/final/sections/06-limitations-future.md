@@ -20,9 +20,9 @@
 
 **Alternation.** The ordering claim of §3.3 is paired (t = +17.6). The claim about alternation rounds is weaker: the 0.6B sequence is unpaired, the 0.8B continuation has no recorded error bars, and the 27B gain from alternation is about one unpaired standard error.
 
-**Speed.** One GPU, one host. Session-to-session drift reached 9%; only one speed result has raw output in the repository; nothing was re-measured after the patch set was rebased (§6.1).
+**Speed.** One GPU, one host. Session-to-session drift reached 9%; only one speed result has raw output in the supplementary material; nothing was re-measured after the patch set was rebased (§6.1).
 
-**Verification rests on the project's own records.** Statements that a derivation was verified numerically, that a capture passed its gates, or that an experiment was registered before it ran cite the project's review notes and journal. Those are our records and have not been checked by anyone outside the project.
+**Verification rests on our own records.** Statements that a derivation was verified numerically, that a capture passed its gates, or that an experiment was registered before it ran cite our review notes and experiment log. Those are our records and have not been checked by anyone else.
 
 **Code hazards.** Cache directories originally carried no provenance fingerprint (fixed for the re-rounder; open for the spectra caches and one extractor). Column selection under Gram whitening ranks the wrong columns (the reported column runs predate full-covariance whitening) [source: research/lowrank/review/adversarial-code.md].
 
@@ -52,9 +52,9 @@ The review of this paper adds experiments that the existing logs cannot supply:
 
 ## 7.3 Reproducibility and artifacts
 
-Method descriptions, scripts, raw logs, per-chunk outputs and result tables are in the project repository under `research/lowrank/experiments/`, one directory per experiment; Appendix B maps each tag used in this paper to its directory. The statistics added in revision are produced by one script from existing logs [source: research/lowrank/experiments/35-final-reanalysis/README.md]. Large binaries (reference logits, Gram captures, quantized models and adapters, about 160 GB) are not in the repository. They can be rebuilt from the recorded recipes; some early ones were deleted to reclaim disk, so a number resting on a deleted artifact is reproducible only by rebuilding it. Two reproduction gates were run: one rebuilt the 0.8B base with 335/335 tensors byte-identical and re-derived the re-rounded file byte-identical, and one reproduced the published 0.8B numbers before any new comparison [source: research/lowrank/experiments/26-lloyd-gauge/results.txt].
+Method descriptions, scripts, raw logs, per-chunk outputs and result tables are in the supplementary material, one directory per experiment; Appendix B maps each tag used in this paper to its directory. The statistics added in revision are produced by one script from existing logs [source: research/lowrank/experiments/35-final-reanalysis/README.md]. Large binaries (reference logits, Gram captures, quantized models and adapters, about 160 GB) are not included. They can be rebuilt from the recorded recipes; some early ones were deleted to reclaim disk, so a number resting on a deleted artifact is reproducible only by rebuilding it. Two reproduction gates were run: one rebuilt the 0.8B base with 335/335 tensors byte-identical and re-derived the re-rounded file byte-identical, and one reproduced the published 0.8B numbers before any new comparison [source: research/lowrank/experiments/26-lloyd-gauge/results.txt].
 
-Three components are not stock llama.cpp: the Gram-capture extension to llama-imatrix (about 140 lines, environment-gated), the llama-gradmatrix tool, and the fused-kernel and allocator patch set (numbers reported at build 0ef6e55ed; rebased onto b10865). The re-rounder and the extractors are standalone Python against gguf-py. Serving needs none of the patches: a re-rounded file is a standard GGUF, and a corrected model is a standard GGUF plus a standard LoRA-form adapter. Producing either needs the Gram-capture patch and the source weights.
+Three components are not stock llama.cpp: the Gram-capture extension to llama-imatrix (about 140 lines, environment-gated), the llama-gradmatrix tool, and the fused-kernel and allocator patch set (numbers reported at a build that predates b10865; since rebased onto b10865). The re-rounder and the extractors are standalone Python against gguf-py. Serving needs none of the patches: a re-rounded file is a standard GGUF, and a corrected model is a standard GGUF plus a standard LoRA-form adapter. Producing either needs the Gram-capture patch and the source weights.
 
 ## 7.4 Open work
 

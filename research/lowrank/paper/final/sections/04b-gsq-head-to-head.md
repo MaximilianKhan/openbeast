@@ -40,7 +40,7 @@ Against the ladder the result is that of §4.3. The stock UD-Q2_K_XL file at 9.8
 
 ## 5.3 A second corpus, and both halves of a registered prediction
 
-The wikitext result admits a calibration-mismatch reading: the released files may be tuned to text unlike wikitext. The calibration corpus of the released files is not documented. An earlier entry in our journal said they were trained on FineWeb-Edu; a check of the card and the released code the next day found no support for that, and the control was registered with the corrected wording: FineWeb-Edu is used because it is the one non-wikitext corpus the card reports on [source: research/lowrank/JOURNAL.md, 2026-09-11 11:00, 11:10].
+The wikitext result admits a calibration-mismatch reading: the released files may be tuned to text unlike wikitext. The calibration corpus of the released files is not documented. An earlier entry in our experiment log said they were trained on FineWeb-Edu; a check of the card and the released code the next day found no support for that, and the control was registered with the corrected wording: FineWeb-Edu is used because it is the one non-wikitext corpus the card reports on [source: research/lowrank/JOURNAL.md, 2026-09-11 11:00, 11:10].
 
 The registration made a two-part prediction for the mismatch reading: the GSQ-RCO deficit against its baseline would shrink materially or change sign on FineWeb-Edu, and our own increments, whitened by wikitext Grams, would shrink too. The alternative reading predicted a GSQ-RCO deficit of t ≳ +4. The same eight contrasts on 40 chunks of FineWeb-Edu, against a BF16 reference on that text [source: research/lowrank/experiments/32-t117-gsq-head-to-head/paired-fineweb-40ch.txt; experiments/35-final-reanalysis/RESULTS.md]:
 

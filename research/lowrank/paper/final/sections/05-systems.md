@@ -6,7 +6,7 @@ Every corrected configuration in §4 and §5 carries a decode cost that a bare q
 
 The kernels below remove most of that cost on local, unmerged patches. They leave perplexity digit-identical and each has a switch to disable it. All speed comparisons are same-session A/B pairs, because drift between sessions on identical configurations reached 9% and invalidated one number in our first tables (86.3 tok/s, 82.3 on re-measurement) [source: research/lowrank/review/adversarial-stats.md §F2-F3].
 
-**Evidence grade.** Only one speed result in this section has raw benchmark output in the repository: the N = 10 interleaved pair at 27B (§6.2). Every other speed number is transcribed from the per-phase reports, which record the measurements as prose tables. All of them come from one GPU and one host, at a pinned build (llama.cpp 0ef6e55ed). The patch set has since been rebased onto b10865 and no speed number was re-measured after the rebase.
+**Evidence grade.** Only one speed result in this section has raw benchmark output in the supplementary material: the N = 10 interleaved pair at 27B (§6.2). Every other speed number is transcribed from the per-phase reports, which record the measurements as prose tables. All of them come from one GPU and one host, at one pinned llama.cpp build that predates b10865. The patch set has since been rebased onto b10865 and no speed number was re-measured after the rebase.
 
 ## 6.2 Three phases of kernel fusion
 
