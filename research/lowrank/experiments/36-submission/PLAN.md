@@ -250,3 +250,14 @@ ffn_up) at q8_0 instead. Its KLD against bare Q2_K is the ceiling on the
 re-rounder's gain at this tensor coverage; the share of that ceiling the
 re-rounded file reaches is reported per corpus. Diagnostic only — no claim
 is tested by it, and it changes no B verdict.
+
+### Diagnostic B6 (registered 2026-10-15 20:55, before running): which input moved the 27B re-round
+
+The legacy re-round (Q6_K source, Q6-derived Grams, pre-fix build) is at
+0.1385 KLD on wiki under the new reference; the single-step re-round with
+fresh post-fix BF16 Grams is at 0.1523. Re-round the SAME single-step base
+(`h27bf16-Q2_K.gguf`) with the PRE-FIX BF16 Grams of E27 (`gram27b-bf16`,
+2026-08-04, 48 chunks wiki.train) and score on the three corpora. If it is
+resolved better than rr-wiki on wiki (t ≤ −2), the capture graph matters and
+the paper says the 27B re-round is sensitive to it; if not, the gap is
+provenance (Q6_K source and Grams) and the paper says so. Diagnostic only.
