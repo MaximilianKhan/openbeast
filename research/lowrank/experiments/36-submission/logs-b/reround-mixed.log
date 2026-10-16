@@ -1,0 +1,11 @@
+[reround] 25 tensors (25 new), 336s
+[reround] 50 tensors (50 new), 686s
+[reround] 75 tensors (75 new), 1043s
+[reround] 100 tensors (100 new), 1387s
+[reround] 125 tensors (125 new), 1718s
+[reround] 150 tensors (150 new), 2071s
+[reround] 175 tensors (175 new), 2410s
+[reround] 200 tensors (200 new), 2762s
+[reround] 225 tensors (225 new), 3116s
+[reround] 250 tensors (250 new), 3487s
+wrote /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/h27bf16-Q2K-rr-mixed.gguf.part: 256 tensors re-rounded, 3586s

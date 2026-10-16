@@ -239,3 +239,14 @@ registration. Both are built and scored once. Also fixed now: the 0.8B
 free-grid arms use the D0 wiki Grams and the T1.1 2:1 mixed Grams with the
 wiki imatrix (`e_score.sh`), paired against the frozen-grid RR on the same
 Grams.
+
+### Diagnostic B5 (registered 2026-10-15 20:40, after B's verdict, before running): re-rounding headroom at 27B
+
+B1 failed (t = −1.87) although the sweep halves its own whitened error on
+the swept tensors. To bound what re-rounding those tensors could buy at all,
+build an ORACLE: the same Q2_K recipe from BF16 (E27 imatrix, MTP pin) with
+every kind the sweep covers (attn_q, attn_k, attn_gate, ssm_out, ffn_gate,
+ffn_up) at q8_0 instead. Its KLD against bare Q2_K is the ceiling on the
+re-rounder's gain at this tensor coverage; the share of that ceiling the
+re-rounded file reaches is reported per corpus. Diagnostic only — no claim
+is tested by it, and it changes no B verdict.

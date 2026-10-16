@@ -1,0 +1,12 @@
+wiki IQ2_M bytes=10296664480 Mean PPL(Q) : 7.794119 ± 0.123401 Mean KLD: 0.171006 ± 0.002994 Same top p: 82.851 ± 0.236 %
+wiki Q2Krr-wiki bytes=11003736448 Mean PPL(Q) : 7.664868 ± 0.122247 Mean KLD: 0.152254 ± 0.003114 Same top p: 83.929 ± 0.230 %
+wiki Q2Krr-mixed bytes=11003736448 Mean PPL(Q) : 7.828333 ± 0.126695 Mean KLD: 0.167106 ± 0.003258 Same top p: 83.031 ± 0.235 %
+fw IQ2_M bytes=10296664480 Mean PPL(Q) : 8.452719 ± 0.128112 Mean KLD: 0.131439 ± 0.002047 Same top p: 83.643 ± 0.232 %
+fw Q2Krr-wiki bytes=11003736448 Mean PPL(Q) : 8.529640 ± 0.132805 Mean KLD: 0.135875 ± 0.002140 Same top p: 83.569 ± 0.232 %
+fw Q2Krr-mixed bytes=11003736448 Mean PPL(Q) : 8.598599 ± 0.134562 Mean KLD: 0.146503 ± 0.002278 Same top p: 83.114 ± 0.235 %
+code IQ2_M bytes=10296664480 Mean PPL(Q) : 1.679328 ± 0.015188 Mean KLD: 0.133973 ± 0.002861 Same top p: 92.427 ± 0.166 %
+code Q2Krr-wiki bytes=11003736448 Mean PPL(Q) : 1.705101 ± 0.015977 Mean KLD: 0.151545 ± 0.003226 Same top p: 91.925 ± 0.171 %
+code Q2Krr-mixed bytes=11003736448 Mean PPL(Q) : 1.652147 ± 0.015052 Mean KLD: 0.113031 ± 0.002600 Same top p: 93.129 ± 0.158 %
+wiki Q2Kfreegrid-mixed bytes=11003736448 Mean PPL(Q) : 7.823568 ± 0.126607 Mean KLD: 0.157639 ± 0.003319 Same top p: 83.808 ± 0.231 %
+fw Q2Kfreegrid-mixed bytes=11003736448 Mean PPL(Q) : 8.558069 ± 0.133000 Mean KLD: 0.140624 ± 0.002148 Same top p: 83.192 ± 0.234 %
+code Q2Kfreegrid-mixed bytes=11003736448 Mean PPL(Q) : 1.640422 ± 0.014643 Mean KLD: 0.108471 ± 0.002490 Same top p: 93.416 ± 0.155 %

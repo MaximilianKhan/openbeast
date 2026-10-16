@@ -1,0 +1,11 @@
+lease acquired by pid 3676171 — E36 e-score
+[2026-10-15 20:29:20] wiki Q2K-freegrid-wiki bytes=436408832 Mean PPL(Q) : 23.893363 ± 0.738351 Mean KLD: 0.309884 ± 0.004549 Same top p: 72.863 ± 0.440 %
+[2026-10-15 20:29:23] fw Q2K-freegrid-wiki bytes=436408832 Mean PPL(Q) : 23.860236 ± 0.721381 Mean KLD: 0.397569 ± 0.004965 Same top p: 69.196 ± 0.457 %
+[2026-10-15 20:29:26] code Q2K-freegrid-wiki bytes=436408832 Mean PPL(Q) : 4.857555 ± 0.122275 Mean KLD: 0.484903 ± 0.007026 Same top p: 77.755 ± 0.412 %
+[2026-10-15 20:30:30] wiki Q2K-freegrid-mix2 bytes=436408832 Mean PPL(Q) : 24.726217 ± 0.769793 Mean KLD: 0.352276 ± 0.004930 Same top p: 71.990 ± 0.445 %
+[2026-10-15 20:30:33] fw Q2K-freegrid-mix2 bytes=436408832 Mean PPL(Q) : 25.354280 ± 0.775949 Mean KLD: 0.444894 ± 0.005748 Same top p: 67.490 ± 0.464 %
+[2026-10-15 20:30:36] code Q2K-freegrid-mix2 bytes=436408832 Mean PPL(Q) : 3.860145 ± 0.092369 Mean KLD: 0.235919 ± 0.003902 Same top p: 83.882 ± 0.364 %
+[2026-10-15 20:31:01] wiki Q2Kfreegrid-mixed bytes=11003736448 Mean PPL(Q) : 7.823568 ± 0.126607 Mean KLD: 0.157639 ± 0.003319 Same top p: 83.808 ± 0.231 %
+[2026-10-15 20:31:23] fw Q2Kfreegrid-mixed bytes=11003736448 Mean PPL(Q) : 8.558069 ± 0.133000 Mean KLD: 0.140624 ± 0.002148 Same top p: 83.192 ± 0.234 %
+[2026-10-15 20:31:46] code Q2Kfreegrid-mixed bytes=11003736448 Mean PPL(Q) : 1.640422 ± 0.014643 Mean KLD: 0.108471 ± 0.002490 Same top p: 93.416 ± 0.155 %
+[2026-10-15 20:31:46] E36-E DONE

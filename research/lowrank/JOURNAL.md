@@ -1490,3 +1490,19 @@ queue runs blocks sequentially. B waits for Max's go to restart
 IQ2_XS 12.2%, IQ1_S 32.0% on wiki; 3.3/7.6/16.3% on FineWeb-Edu. Monotone
 in base damage; held-out recovery ≈ half. Replaces F7. 19:07 B resumed
 under the lease (Max's go).
+
+**E36-B verdicts (RESULTS-B.md) — the 27B re-round does not replicate.**
+Single-step, fresh post-fix Grams, 100 chunks × 3 corpora. B1 FAILS
+(rr-wiki −3.7% on wiki, t=−1.87); wiki-only RR harms fw (t=+7.79) and code
+(t=+10.69); B3 FAILS (2:1 RR worse on wiki t=+3.21 and fw t=+13.25, code
+t=−1.90). The sweep still halves its own whitened objective at 27B
+(0.535 of bare, 5 tensors), so this is surrogate-vs-outcome at scale.
+Pending before interpretation: an independent dequant check of the
+written file, and diagnostic B5 (oracle Q8 on the swept kinds) for the
+headroom.
+
+**E36-E (RESULTS-E.md).** Free-grid GPTQ beats frozen-grid at 0.8B on all
+cells (t −3.6..−7.5) and at 27B on wiki/fw (t −3.22/−2.64; code −1.83).
+Registered consequence: reframe as GPTQ on GGUF formats, frozen grid =
+zero-search special case. At 27B even free-grid is level with bare on wiki
+and worse on fw: the 27B failure is not the frozen grid.
