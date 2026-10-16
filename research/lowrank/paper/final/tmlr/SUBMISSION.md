@@ -110,7 +110,7 @@ this list with current line numbers after every rewrite.
 
 | item | status |
 |---|---|
-| `paper-tmlr-preprint.pdf`: `\usepackage[preprint]{tmlr}`, author Max Khan, max@passboards.com; artifact tags name the public repository (Appendix B links it) | **done** |
+| `paper-tmlr-preprint.pdf`: `\usepackage[preprint]{tmlr}`, author Max Khan, maximilian.khan@alumni.scu.edu; artifact tags name the public repository (Appendix B links it) | **done** |
 | Affiliation line ("OpenBeast project" + repository URL, `TMLR_AUTHOR_BLOCK` in build.py) | **AUTHOR** — confirm; "Independent researcher" is the usual alternative |
 | Posting the preprint during review is allowed; do not link it from the submission | note |
 

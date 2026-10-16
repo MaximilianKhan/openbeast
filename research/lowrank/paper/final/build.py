@@ -43,7 +43,7 @@ TMLR_FIRST_PAGE_NOTE = (
     "under the author's direction on a single workstation. Every run was configured and "
     "pre-registered in the project record before it was scored, and every number in the "
     "paper is copied from a named results file. The author is responsible for all claims.")
-TMLR_AUTHOR_BLOCK = (r"\name Max Khan \email max@passboards.com \\" "\n"
+TMLR_AUTHOR_BLOCK = (r"\name Max Khan \email maximilian.khan@alumni.scu.edu \\" "\n"
                      r"      \addr Independent Researcher (post-master's research)")
 
 NAMED = {"RESULTS_ROLLUP.md": "rollup", "JOURNAL.md": "journal", "PROTOCOL.md": "protocol",

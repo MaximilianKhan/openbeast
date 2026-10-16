@@ -212,7 +212,7 @@ SCRUB = [
 ]
 # Strings that must not survive into the anonymous PDF (checked on its text).
 FORBIDDEN = [r"(?i)openbeast", r"(?i)beast", r"(?i)maximilian", r"\bMax\b", r"(?i)\bkhan\b",
-             r"(?i)github\s*\.\s*com", r"research/lowrank", r"/home/", r"maxjkh", r"passboards"]
+             r"(?i)github\s*\.\s*com", r"research/lowrank", r"/home/", r"maxjkh", r"passboards", r"scu\.edu"]
 # Phrases that point at the author's own (unpublished, public) project by meaning.
 RESIDUE = [
     (r"(?i)\b(?:the |our )?project(?:'s)? (?:repository|journal|theory note|review notes|own|bibliography)",
