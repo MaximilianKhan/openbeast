@@ -1433,3 +1433,13 @@ Reading: the narrow 27B margin over Q3_K_S is a calibration-distribution
 effect; off-distribution the stock rung wins. The mixed base loses to
 Q3_K_S by more off-distribution (t=+5.70 fw) and the correction recovers
 only part of it. The paper's §4.3 must say the margin does not transfer.
+
+**17:40 — caught and discarded: free-grid 27B sweep on a partial capture.**
+`e_freegrid27_cpu.sh` waited for grams.json to exist, but llama-imatrix
+writes its outputs periodically during a run, so the sweep began at 16:59
+on an incomplete mixed capture (finished 17:17); ~58 tensors were swept
+with partial Grams and a stale manifest count. Killed, codes cache and
+partial output deleted, wait rule replaced by gram_ok.py (every Gram must
+carry the full 24,576-token count), restarted 17:40. No score was taken
+from the aborted run. The §B re-round sweeps were not affected: they start
+only after capture() returns.

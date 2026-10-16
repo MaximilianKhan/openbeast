@@ -5,7 +5,8 @@
 set -uo pipefail
 source "$(dirname "$0")/lib.sh"
 G=$D/gram27b-e36-mixed
-until [ -f "$G/grams.json" ] && [ -s "$G/diag.imatrix.gguf" ]; do sleep 60; done
+# complete capture only: every Gram must carry the full 48x512 token count
+until python3 "$E36/d08b/gram_ok.py" "$G" 24576 >/dev/null 2>&1; do sleep 60; done
 sleep 30
 export CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS=12 OPENBLAS_NUM_THREADS=12 MKL_NUM_THREADS=12
 cd "$E36/freegrid"
