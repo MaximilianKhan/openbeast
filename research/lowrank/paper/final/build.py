@@ -244,6 +244,11 @@ PREAMBLE = r"""
 def main():
     parts = [p.read_text().strip() for p in sorted((HERE / "sections").glob("*.md"))]
     md = "\n\n".join(parts)
+    pending = re.findall(r"\[PENDING:[^\]]*\]", md)
+    if pending:
+        print(f"WARNING: {len(pending)} [PENDING] marker(s) in sections/ — not a submission build")
+        if "--final" in sys.argv:
+            sys.exit("--final: refusing to build with [PENDING] markers")
     marked = cite(sources(md))         # citations still as markers: latex.py turns them into \\cite
     md = numbered(marked)
     names = load_refs()
