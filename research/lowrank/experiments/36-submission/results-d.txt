@@ -76,3 +76,6 @@ code Q2K+fc-mix2 bytes=436408832 Mean PPL(Q) : 3.453236 ± 0.077953 Mean KLD: 0.
 wiki Q2K+fc-m111 bytes=436408832 Mean PPL(Q) : 20.520193 ± 0.623451 Mean KLD: 0.194108 ± 0.003128 Same top p: 77.941 ± 0.411 %
 fw Q2K+fc-m111 bytes=436408832 Mean PPL(Q) : 20.115658 ± 0.595930 Mean KLD: 0.231907 ± 0.003593 Same top p: 75.451 ± 0.426 %
 code Q2K+fc-m111 bytes=436408832 Mean PPL(Q) : 3.440828 ± 0.077595 Mean KLD: 0.115388 ± 0.002145 Same top p: 88.333 ± 0.318 %
+wiki CONTROL-B bytes=522992640 Mean PPL(Q) : 17.494410 ± 0.526594 Mean KLD: 0.043177 ± 0.000640 Same top p: 88.873 ± 0.311 %
+fw CONTROL-B bytes=522992640 Mean PPL(Q) : 16.277090 ± 0.470349 Mean KLD: 0.042585 ± 0.000621 Same top p: 88.755 ± 0.313 %
+code CONTROL-B bytes=522992640 Mean PPL(Q) : 3.145013 ± 0.068168 Mean KLD: 0.028460 ± 0.000494 Same top p: 94.196 ± 0.232 %

@@ -1,48 +1,29 @@
-[2026-10-15 17:50:22] quantize q2k.gguf (Q2_K)
-[2026-10-15 17:50:27]   436408832 B
-[2026-10-15 17:50:27] quantize iq3xxs.gguf (IQ3_XXS)
-[2026-10-15 17:50:45]   412082176 B
-[2026-10-15 17:50:45] quantize q3km.gguf (Q3_K_M)
-[2026-10-15 17:50:50]   480304128 B
-[2026-10-15 17:50:50] quantize q4km.gguf (Q4_K_M)
-[2026-10-15 17:50:56]   543378944 B
-[2026-10-15 17:50:56] quantize iq2m.gguf (IQ2_M)
-[2026-10-15 17:51:06]   392015872 B
-[2026-10-15 17:51:06] re-round q2k-rr-wiki.gguf with e36-gram08b-wiki
-[2026-10-15 17:53:03] extract fc-wiki.gguf on q2k.gguf with e36-gram08b-wiki
-[2026-10-15 17:55:55] alternation: W' = W - C0
-[2026-10-15 17:56:07] quantize q2k-alt1.gguf (Q2_K)
-[2026-10-15 17:56:14]   436408832 B
-[2026-10-15 17:56:14] extract fc-alt1-wiki.gguf on q2k-alt1.gguf with e36-gram08b-wiki
-[2026-10-15 17:59:17] crown bytes 523330208 (predicted 523330208)
-[2026-10-15 17:59:17] quantize control-A.gguf (Q3_K_M)
-[2026-10-15 17:59:23]   517487616 B
-[2026-10-15 17:59:23] quantize q2k-noimx.gguf (Q2_K)
-[2026-10-15 17:59:26]   436408480 B
-[2026-10-15 17:59:26] equalize alpha=025
-[2026-10-15 17:59:35] quantize q2k-eq-a025.gguf (Q2_K)
-[2026-10-15 17:59:42]   436408832 B
-[2026-10-15 17:59:42] equalize alpha=050
-[2026-10-15 17:59:51] quantize q2k-eq-a050.gguf (Q2_K)
-[2026-10-15 17:59:57]   436408832 B
-[2026-10-15 17:59:57] equalize alpha=075
-[2026-10-15 18:00:06] quantize q2k-eq-a075.gguf (Q2_K)
-[2026-10-15 18:00:13]   436408832 B
-[2026-10-15 18:00:13] equalize alpha=100
-[2026-10-15 18:00:23] quantize q2k-eq-a100.gguf (Q2_K)
-[2026-10-15 18:00:29]   436408832 B
-[2026-10-15 18:00:29] quantize q2k-eq-a100-noimx.gguf (Q2_K)
-[2026-10-15 18:00:32]   436408480 B
-[2026-10-15 18:00:33] CPU lane: waiting for the remaining captures
-[2026-10-15 18:02:33] re-round q2k-rr-thirdA.gguf with e36-gram08b-thirdA
-[2026-10-15 18:04:05] re-round q2k-rr-thirdB.gguf with e36-gram08b-thirdB
-[2026-10-15 18:05:35] re-round q2k-rr-thirdC.gguf with e36-gram08b-thirdC
-[2026-10-15 18:07:01] re-round q2k-rr-code.gguf with e36-gram08b-code
-[2026-10-15 18:08:27] re-round q2k-rr-fw.gguf with e36-gram08b-fw
-[2026-10-15 18:09:54] re-round q2k-rr-mix2.gguf with e36-gram08b-mix2
-[2026-10-15 18:11:22] re-round q2k-rr-m111.gguf with e36-gram08b-m111
-[2026-10-15 18:12:45] extract fc-code.gguf on q2k.gguf with e36-gram08b-code
-[2026-10-15 18:14:53] extract fc-fw.gguf on q2k.gguf with e36-gram08b-fw
-[2026-10-15 18:17:10] extract fc-mix2.gguf on q2k.gguf with e36-gram08b-mix2
-[2026-10-15 18:19:10] extract fc-m111.gguf on q2k.gguf with e36-gram08b-m111
-[2026-10-15 18:21:23] CPU lane done
+[2026-10-15 18:37:02] exists /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/d08b/art/q2k.gguf
+[2026-10-15 18:37:02] exists /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/d08b/art/iq3xxs.gguf
+[2026-10-15 18:37:02] exists /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/d08b/art/q3km.gguf
+[2026-10-15 18:37:02] exists /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/d08b/art/q4km.gguf
+[2026-10-15 18:37:02] exists /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/d08b/art/iq2m.gguf
+[2026-10-15 18:37:02] exists /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/d08b/art/q2k-rr-wiki.gguf
+[2026-10-15 18:37:02] exists /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/d08b/art/fc-wiki.gguf
+[2026-10-15 18:37:02] exists /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/d08b/art/fc-alt1-wiki.gguf
+[2026-10-15 18:37:02] crown bytes 523330208 (predicted 523330208)
+[2026-10-15 18:37:02] exists /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/d08b/art/control-B.gguf
+[2026-10-15 18:37:02] exists /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/d08b/art/q2k-noimx.gguf
+[2026-10-15 18:37:02] exists /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/d08b/art/q2k-eq-a025.gguf
+[2026-10-15 18:37:02] exists /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/d08b/art/q2k-eq-a050.gguf
+[2026-10-15 18:37:02] exists /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/d08b/art/q2k-eq-a075.gguf
+[2026-10-15 18:37:02] exists /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/d08b/art/q2k-eq-a100.gguf
+[2026-10-15 18:37:02] exists /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/d08b/art/q2k-eq-a100-noimx.gguf
+[2026-10-15 18:37:02] CPU lane: waiting for the remaining captures
+[2026-10-15 18:37:22] exists /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/d08b/art/q2k-rr-thirdA.gguf
+[2026-10-15 18:37:22] exists /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/d08b/art/q2k-rr-thirdB.gguf
+[2026-10-15 18:37:22] exists /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/d08b/art/q2k-rr-thirdC.gguf
+[2026-10-15 18:37:22] exists /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/d08b/art/q2k-rr-code.gguf
+[2026-10-15 18:37:22] exists /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/d08b/art/q2k-rr-fw.gguf
+[2026-10-15 18:37:22] exists /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/d08b/art/q2k-rr-mix2.gguf
+[2026-10-15 18:37:22] exists /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/d08b/art/q2k-rr-m111.gguf
+[2026-10-15 18:37:22] exists /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/d08b/art/fc-code.gguf
+[2026-10-15 18:37:22] exists /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/d08b/art/fc-fw.gguf
+[2026-10-15 18:37:22] exists /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/d08b/art/fc-mix2.gguf
+[2026-10-15 18:37:22] exists /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/d08b/art/fc-m111.gguf
+[2026-10-15 18:37:22] CPU lane done
