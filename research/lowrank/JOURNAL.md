@@ -1485,3 +1485,8 @@ llama-perplexity run or absent. The 27B free-grid output finished
 (18:36) and is intact. Lesson: one 27B CPU sweep at a time; the master
 queue runs blocks sequentially. B waits for Max's go to restart
 (resume-safe from the cached codes).
+
+**E36 T1.9 (RESULTS-D.md §T1.9).** Recipe-fixed recovery at 27B: Q2_K 7.0%,
+IQ2_XS 12.2%, IQ1_S 32.0% on wiki; 3.3/7.6/16.3% on FineWeb-Edu. Monotone
+in base damage; held-out recovery ≈ half. Replaces F7. 19:07 B resumed
+under the lease (Max's go).

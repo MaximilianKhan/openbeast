@@ -1,0 +1,25 @@
+# E36-D T1.9 recovery at 27B 2026-10-15 19:06:58
+recovery wiki: T19-Q2K+fc over Q2_K: KLD 0.158070 -> 0.147000, fraction 0.0700 [95% paired bootstrap 0.0516, 0.0882], n 100
+recovery wiki: T19-IQ2XS+fc over T19-IQ2_XS: KLD 0.250690 -> 0.220080, fraction 0.1221 [95% paired bootstrap 0.1017, 0.1435], n 100
+recovery wiki: T19-IQ1S+fc over T19-IQ1_S: KLD 0.934770 -> 0.635620, fraction 0.3200 [95% paired bootstrap 0.3014, 0.3388], n 100
+| pair (A − B), KLD | n | mean ± sem | t | p(t) | 95% bootstrap CI | A better | sign p | Wilcoxon p | 95% block-bootstrap CI (blocks of 10) | t on block means | lag-1 r |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| wiki: T19-Q2K+fc vs Q2_K | 100 | -0.01107 ± 0.00175 | -6.31 | 7.9e-09 | [-0.01489, -0.00790] | 92/100 | 3.2e-19 | 7e-15 | [-0.01418, -0.00834] | -6.95 (df 9, p 6.7e-05) | +0.07 |
+| wiki: T19-IQ2XS+fc vs T19-IQ2_XS | 100 | -0.03061 ± 0.00358 | -8.54 | 1.6e-13 | [-0.03835, -0.02425] | 97/100 | 2.6e-25 | 1.7e-17 | [-0.03826, -0.02372] | -7.85 (df 9, p 2.6e-05) | -0.03 |
+| wiki: T19-IQ1S+fc vs T19-IQ1_S | 100 | -0.29915 ± 0.01497 | -19.98 | 1.6e-36 | [-0.32971, -0.27167] | 100/100 | 1.6e-30 | 3.9e-18 | [-0.32956, -0.27395] | -19.70 (df 9, p 1e-08) | +0.00 |
+
+- wiki: T19-Q2K+fc vs Q2_K: ΔNLL -0.00332 ± 0.00263 (t -1.27, A better 66/100); Δtop-1 +0.573 pt (t +4.70); max |Δ ref NLL| 0.00229
+- wiki: T19-IQ2XS+fc vs T19-IQ2_XS: ΔNLL -0.02284 ± 0.00502 (t -4.55, A better 72/100); Δtop-1 +0.898 pt (t +5.50); max |Δ ref NLL| 0.00167
+- wiki: T19-IQ1S+fc vs T19-IQ1_S: ΔNLL -0.33130 ± 0.01928 (t -17.19, A better 100/100); Δtop-1 +5.561 pt (t +19.56); max |Δ ref NLL| 0.00123
+recovery fw: T19-Q2K+fc over Q2_K: KLD 0.118220 -> 0.114290, fraction 0.0332 [95% paired bootstrap 0.0249, 0.0412], n 100
+recovery fw: T19-IQ2XS+fc over T19-IQ2_XS: KLD 0.187470 -> 0.173220, fraction 0.0760 [95% paired bootstrap 0.0677, 0.0847], n 100
+recovery fw: T19-IQ1S+fc over T19-IQ1_S: KLD 0.658760 -> 0.551260, fraction 0.1632 [95% paired bootstrap 0.1534, 0.1724], n 100
+| pair (A − B), KLD | n | mean ± sem | t | p(t) | 95% bootstrap CI | A better | sign p | Wilcoxon p | 95% block-bootstrap CI (blocks of 10) | t on block means | lag-1 r |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| fw: T19-Q2K+fc vs Q2_K | 100 | -0.00393 ± 0.00057 | -6.93 | 4.3e-10 | [-0.00506, -0.00286] | 86/100 | 8.3e-14 | 2.7e-12 | [-0.00496, -0.00298] | -7.40 (df 9, p 4.1e-05) | +0.14 |
+| fw: T19-IQ2XS+fc vs T19-IQ2_XS | 100 | -0.01425 ± 0.00095 | -15.07 | 2.2e-27 | [-0.01610, -0.01247] | 97/100 | 2.6e-25 | 5.4e-18 | [-0.01611, -0.01231] | -13.68 (df 9, p 2.5e-07) | +0.09 |
+| fw: T19-IQ1S+fc vs T19-IQ1_S | 100 | -0.10750 ± 0.00369 | -29.09 | 2.6e-50 | [-0.11480, -0.10038] | 100/100 | 1.6e-30 | 3.9e-18 | [-0.11914, -0.09575] | -17.00 (df 9, p 3.8e-08) | +0.31 |
+
+- fw: T19-Q2K+fc vs Q2_K: ΔNLL -0.00313 ± 0.00120 (t -2.60, A better 60/100); Δtop-1 +0.255 pt (t +1.97); max |Δ ref NLL| 0.00211
+- fw: T19-IQ2XS+fc vs T19-IQ2_XS: ΔNLL -0.01267 ± 0.00135 (t -9.38, A better 89/100); Δtop-1 +0.608 pt (t +3.98); max |Δ ref NLL| 0.00177
+- fw: T19-IQ1S+fc vs T19-IQ1_S: ΔNLL -0.10575 ± 0.00448 (t -23.63, A better 100/100); Δtop-1 +2.764 pt (t +12.64); max |Δ ref NLL| 0.00151

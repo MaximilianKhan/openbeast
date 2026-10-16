@@ -28,3 +28,15 @@ Q4_K_M 543,378,944.
 - **T1.13: equalization harms at every strength; no interior optimum; not double-counting.** α = 0.25/0.5/0.75/1 vs bare: +0.022/+0.068/+0.075/+0.198 wiki (all t ≥ +5); same ordering on fw and code. Without an imatrix α = 1 still harms (+0.305, t = +16.5), so the harm does not come from counting importance twice.
 - **Brackets.** RR-wiki beats IQ2_M (44 MB smaller) on wiki and fw (t = −25.9, −15.7) but not on code (+4.1); IQ3_XXS (24 MB smaller) beats RR-wiki on all three (t = +11.7, +22.2, +16.2).
 - **T1.6 secondary (CONTROL-B, byte-matched at 522,992,640 B, −0.065%; designed after registration).** KLD 0.0432 / 0.0426 / 0.0285; CONTROL-B − crown = −0.1043 (t = −28.4) wiki, −0.1540 (−32.2) fw, −0.1521 (−21.3) code. Same verdict as the registered recipe.
+
+## T1.9 — recovery curve at 27B, recipe held fixed (recovery-t19.txt, results-d27.txt)
+
+Same adapter recipe on every base (r128 Q8_0, E27 non-FFN target set, Grams `gram27b-e36-wiki`); bases one step from BF16; 100 chunks; recovery = (KLD_base − KLD_base+fc)/KLD_base, 95% paired bootstrap.
+
+| base | bytes | KLD wiki → +fc | recovery wiki | KLD fw → +fc | recovery fw |
+|---|---|---|---|---|---|
+| Q2_K | 11,003,736,448 | 0.1581 → 0.1470 | 7.0% [5.2, 8.8] | 0.1182 → 0.1143 | 3.3% [2.5, 4.1] |
+| IQ2_XS | 9,382,662,560 | 0.2507 → 0.2201 | 12.2% [10.2, 14.4] | 0.1875 → 0.1732 | 7.6% [6.8, 8.5] |
+| IQ1_S | 7,441,895,840 | 0.9348 → 0.6356 | 32.0% [30.1, 33.9] | 0.6588 → 0.5513 | 16.3% [15.3, 17.2] |
+
+Every increment is paired-resolved (t = −6.3 to −29.1, ≥ 86/100 chunks). Recovery rises monotonically as the base worsens, and on held-out FineWeb-Edu it is roughly half the on-distribution value. This replaces the confounded F7 curve (20/28/41%, budget and rank mix varying across points).

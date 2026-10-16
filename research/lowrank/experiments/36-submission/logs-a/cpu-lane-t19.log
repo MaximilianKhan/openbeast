@@ -1,0 +1,12 @@
+[2026-10-15 18:37:24] quantize IQ2_XS
+[2026-10-15 18:48:21]   9382662560 B
+[2026-10-15 18:48:21] quantize IQ1_S
+[2026-10-15 18:51:46]   7441895840 B
+[2026-10-15 18:51:46] waiting for Grams /home/max/Documents/openbeast/research/lowrank/data/gram27b-e36-wiki
+[2026-10-15 18:51:46] extract fc r128 Q8_0 non-FFN on Q2_K
+[2026-10-15 18:56:18]   adapter 336490560 B
+[2026-10-15 18:56:18] extract fc r128 Q8_0 non-FFN on IQ2_XS
+[2026-10-15 19:01:15]   adapter 336490560 B
+[2026-10-15 19:01:15] extract fc r128 Q8_0 non-FFN on IQ1_S
+[2026-10-15 19:05:58]   adapter 336490560 B
+[2026-10-15 19:05:58] CPU lane done
