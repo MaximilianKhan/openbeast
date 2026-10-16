@@ -1,5 +1,23 @@
 # beast-rank TODO — ranked
 
+> **2026-10-16: E36 submission campaign.** Every item in the old top block
+> below was run in `experiments/36-submission/` except those listed here as
+> still open; results are in its `RESULTS-*.md` and in the paper. Venue:
+> TMLR (double-blind); author Max Khan.
+
+## OPEN after E36
+- [ ] **F — capability replication** (running; `f_capability.sh`, ~12 h/row,
+  9 rows). Fill §5.5/§5.6 + abstract, then `build.py --final`.
+- [ ] After F: final numbers audit, rebuild supplementary
+  (`paper/final/supplementary/build_supp.py`), PR to main, Max submits
+  (OpenReview) and posts the preprint.
+- [ ] Why re-rounding fails at 8B/27B (paper §7.4): regularizer toward the
+  original codes off the calibration subspace; more calibration text; an
+  end-to-end objective. Only then more codecs.
+- [ ] Not run: 0.6B control; BF16-referenced MoE; learned-rounding and
+  vector-quantizer baselines; third width inside one family.
+
+
 > **Parked 2026-10-09.** No GPU run is in progress or half-banked. The ordered
 > list of what to run when the card is free, with times and the reason for
 > each, is the "GPU BACKLOG" section at the top of `docs/TODO.md`.

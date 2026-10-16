@@ -2,6 +2,16 @@
 
 ## ⏳ GPU BACKLOG — parked 2026-10-09 (Max: "kick that into the back, we come back to it later")
 
+> **Status 2026-10-16:** the research items of A, B and C below were run in the
+> E36 submission campaign (`research/lowrank/experiments/36-submission/`):
+> re-rounded Q2_K vs the IQ rungs at 27B, KLD@2048, T1.1, T1.6 (0.8B),
+> T1.7 (held-out), T1.9, T1.13, T1.15, plus a free-grid baseline and
+> Llama-3.1-8B. The IQ3 capability replication (C) is running as E36-F.
+> Still parked: item 0 (real-boot smoke test — the stack has not been
+> started), prompt-cache restore time, cool-off thresholds, the held-out Zig
+> set, the IQ2 capability pair, the era-roll board (#135), escalation A/B,
+> and the churn floor.
+
 Everything below needs the GPU and was deliberately NOT run on 2026-10-09.
 Nothing here is in progress; nothing is half-banked. Times are estimates
 from wall times recorded for the same kinds of runs. Run under

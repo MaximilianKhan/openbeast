@@ -1,6 +1,6 @@
 # OpenBeast research findings
 
-State of record as of 2026-10-09. Two research programs have run on this
+State of record as of 2026-10-16. Two research programs have run on this
 rig (one RTX 5090): **beast-rank**, on post-training repair of quantized
 models in llama.cpp, and **langaware**, on raising a local model's success
 rate in a language it was undertrained on. This page states what each
@@ -8,176 +8,94 @@ found, how sure we are, and what was not done. Every number has a file
 behind it; the paths are given.
 
 The formal write-up of beast-rank is
-[`lowrank/paper/final/paper.pdf`](lowrank/paper/final/paper.pdf)
-(source: `lowrank/paper/final/sections/`, built by `build.py`).
+[`lowrank/paper/final/paper.pdf`](lowrank/paper/final/paper.pdf) — *What
+Post-Training Repair Buys on llama.cpp Quantization: A Paired Audit on and
+off the Calibration Distribution* (Max Khan; TMLR submission build
+`paper-tmlr.pdf`, preprint `paper-tmlr-preprint.pdf`). The 2026-10-15/16
+submission campaign that produced its current numbers is
+`lowrank/experiments/36-submission/` (pre-registration `PLAN.md`, results
+`RESULTS-*.md`).
 
 ## beast-rank: what repair of an aggressively quantized model buys
 
-Models: Qwen3-0.6B, Qwen3.5-0.8B, Qwen3.6-27B (heretic-v2, an uncensored
-community finetune), Qwen3.8-27B, Qwen3.6-35B-A3B (MoE). All Qwen-family,
-all on one GPU. Instrument: KL divergence against BF16 reference logits at
-a 512-token context, with paired per-chunk statistics. The t values below
-are conditional on one calibration sample and one evaluation corpus, and no
-family-wise correction was applied, so margins near |t| = 2–3 are
-suggestive. Robust statistics (sign, Wilcoxon, block bootstrap) for the
-load-bearing pairs are in `lowrank/experiments/35-final-reanalysis/`.
+Models: Qwen3-0.6B, Qwen3.5-0.8B, Qwen3.6-27B (heretic-v2), Qwen3.8-27B,
+Qwen3.6-35B-A3B (MoE), and Llama-3.1-8B (the one non-Qwen model). One GPU.
+Instrument: KL divergence against BF16 reference logits with paired
+per-chunk statistics, scored on llama.cpp b10865 (every hybrid-architecture
+row was re-scored after llama.cpp's Gated-DeltaNet normalization fix,
+b10829), on **three corpora**: wikitext-2 test (the calibration
+distribution), FineWeb-Edu and a code corpus no calibration touched.
 
 ### Findings that hold
 
-1. **On this card, the smaller file decoded faster.** The 27B at Q6_K uses
-   23.6 GB and runs at 61 tok/s; at Q2_K it uses 13.0 GB and runs at 99.7
-   tok/s. Two points on one GPU: a motivation, not a general result.
-   (`lowrank/RESULTS_ROLLUP.md`)
+1. **Re-rounding a Q2_K file's codes helps small models and not large
+   ones.** (`36-submission/RESULTS-D.md`, `RESULTS-B.md`, `RESULTS-G.md`)
+   - 0.8B: −33% KLD on wikitext (t = −28.4, 40/40 chunks).
+   - Llama-3.1-8B and Qwen3.6-27B: −1.7% / −3.7% on wikitext, unresolved
+     (|t| < 2); worse on both held-out corpora (t = +7.8 to +12.6). The
+     project's earlier 27B "−13.3%" was a legacy Q6_K-derived pair and does
+     not reproduce under single-step provenance or with the earlier Grams.
+   - Mechanism at 27B (independent recomputation,
+     `36-submission/checks/`): the sweep halves the whitened error of the
+     tensors it covers while their unweighted error rises 16–25%. Those
+     tensors carry 76–80% of the file's KLD (oracle diagnostic B5); the
+     re-round removed ~5% of it.
+2. **Re-rounding transfers only to the kinds of text its calibration
+   covers.** 0.8B grid of five calibrations × three corpora: prose-only
+   calibration damages code (t = +13.6, +8.9), code-only damages prose
+   (t ≈ +20); calibrations containing both improve all three. Calibration
+   sampling alone moves the gain by ≤ 0.018 KLD.
+3. **Refitting the grid beats freezing it.** Free-grid GPTQ at identical
+   format and bytes beats frozen-grid re-rounding in 11 of 12 cells
+   (0.8B, 8B, 27B), and still does not beat the untouched file at 8B/27B.
+   (`RESULTS-E.md`)
+4. **Low-rank correction improves its base everywhere, about half as much
+   off-distribution, and more the thinner the base** (recipe-fixed 27B
+   recovery: 7% / 12% / 32% at Q2_K / IQ2_XS / IQ1_S on wikitext; 3% / 8% /
+   16% on FineWeb-Edu). (`RESULTS-D.md` §T1.9)
+5. **Against the stock types the correction falls short.**
+   - Qwen3.6-27B: ahead of Q3_K_S by 5% on wikitext (t = −2.62, replicates
+     the pre-fix −2.85), **behind it on FineWeb-Edu (t = +3.26)**, level on
+     code; a same-byte mixed-type control beats it on all three corpora
+     (t = +2.4, +6.5, +7.1). (`RESULTS-A.md`)
+   - Qwen3.5-0.8B: a pure-quantization control 1.1% smaller has a third of
+     the corrected crown's KLD on every corpus, 40/40 chunks each
+     (t = −21 to −32). (`RESULTS-D.md`)
+   - Llama-3.1-8B: ahead of Q3_K_S on wikitext (t = −17.4) and FineWeb-Edu
+     (t = −3.8), level on code. (`RESULTS-G.md`)
+   - IQ3_XS at fewer bytes beats the corrected file on every corpus at 8B
+     and 27B (t ≤ −3.58).
+6. **Three placements of the low-rank bytes could not be distinguished
+   within a stated bound** at 27B (largest 90% bound 0.0045 KLD).
+   (`35-final-reanalysis/RESULTS.md` A2)
+7. **KL divergence to the reference ranks fidelity, not quality.** At a
+   2,048-token context, released GSQ-RCO checkpoints are further from BF16
+   than their untrained baselines (t = +8.0, +5.0) while assigning the text
+   higher likelihood in the same run (t = −1.6, −2.5). (`RESULTS-C.md`)
+8. **Better surrogate, same or worse outcome — seven times** (§4.7 of the
+   paper), the largest being the 27B re-round.
+9. **Equalization before quantization harms at every strength and
+   without an imatrix** — no interior optimum; not double-counting.
+10. **Serving patches**: fused kernels +79% decode at 0.6B, +2.7% at 27B;
+    allocator fix +11–20% at 0.6B, nothing at 27B. One GPU; not
+    re-measured after the rebase.
+11. **MoE**: per-expert correction loses to a one-line promotion (n = 20,
+    Q4-referenced). Capture vs width: sublinear in rank, one width step.
 
-2. **Re-rounding improves a given K-quant file at zero bytes; it does not
-   make Q2_K the best choice at its byte point.** Keep llama-quantize's
-   grids byte-for-byte, re-choose only the codes under an
-   activation-covariance metric, and write a standard GGUF.
-   - 0.8B, Q2_K: perplexity −15%, KLD −34%, top-1 +6.3 points (paired NLL
-     t = −44.9, n = 580; KLD t = −30.3, n = 40). (`experiments/24-yaqa-lite/`)
-   - **A smaller stock rung beats it.** At 0.8B the stock IQ3_XXS file
-     (412 MB) has lower KLD than re-rounded Q2_K (436 MB) by 0.0657
-     (paired t = +10.8, 39/40 chunks; same reference and chunks, verified).
-     At 27B the only comparable rung scored, IQ3_XXS, is 0.6 GB larger and
-     lower by 0.0526 on the 20 shared chunks (t = +4.6; the two sides
-     differ in provenance). (`experiments/35-final-reanalysis/RESULTS.md` A3)
-   - 27B, Q2_K: KLD −13.3%, top-1 +1.07 points (t = −7.0, n = 100).
-     Legacy-provenance pair (a requantization of a Q6_K file); perplexity
-     does not move; no held-out test at 27B; only the Q2_K tensors are
-     swept. (`experiments/27-bf16-rederivation/results-100ch-paired.txt`)
-   - It depends on calibration. Calibrated on wikitext alone it improves
-     unseen prose (−5.5% PPL) and is **worse than the untouched model on
-     code** (3.470 vs 3.083 PPL). Calibrated on a wikitext/code mix it
-     improves both. (`paper/DEPLOYABLE-WINS.md`)
-   - The tool needs the higher-precision source weights and a Gram capture
-     on a patched llama-imatrix; it does not work from a GGUF alone.
+### In flight / not done
 
-3. **Low-rank correction works and is behind spending the same bytes on
-   quantization types.** At 27B, 100 chunks (the pre-registered final
-   sample, after ties at 20 and 40), every artifact one quantization step
-   from BF16:
-   - the corrected configuration is ahead of Q3_K_S by 0.0048 KLD (5%,
-     t = −2.85, 71/100 chunks; Wilcoxon p = 8.5e-5; block-bootstrap 95%
-     interval [−0.0073, −0.0019]);
-   - it is behind a same-byte mixed-type control by 0.0063 (t = +2.62,
-     62/100; no difference in NLL; p = 0.061 after a factor of six);
-   - both margins are small, on-distribution and unreplicated. The
-     registration fixed n = 100 and a parity rule; it registered no win
-     rule and no adjustment for three looks;
-   - **the margin over Q3_K_S is not uniform**: −0.0001 on chunks 1–40
-     (t = −0.04), −0.0079 on chunks 41–100 (t = −3.32); the 40-chunk run is
-     the exact prefix of the 100-chunk run. The correction's gain over its
-     own base is stable (−0.0090, t = −8.5; −0.0093 and −0.0089 in the two
-     blocks); what moves is the mixed base against Q3_K_S.
-   (`experiments/27-bf16-rederivation/`, `experiments/35-final-reanalysis/`)
-
-4. **Three placements of the low-rank bytes could not be distinguished,
-   within a bound.** Correcting after quantization, carving the low-rank
-   part out before quantization, and sharing a basis across tensors differ
-   at 27B by less than 0.0045 KLD (90% interval), under 50% of the
-   correction's own increment (0.0090); for the two shared-basis variants
-   the bound is 0.0018 (20%). This is a bound, not a demonstration of
-   equivalence, on one model, one byte point, one rank, one corpus. One
-   mixed-type control at the same bytes is better than all of them
-   (t = +2.4 to +5.2). The "−16.6% adapter bytes" for the shared basis
-   (280.8 vs 336.5 MB) is a computed size under a loader patch that was
-   not written; the evaluated file is 336.5 MB.
-   (`experiments/28-glowq-shared-a/`, `experiments/29-srr-split/`,
-   `experiments/35-final-reanalysis/RESULTS.md` A2)
-
-5. **Capture is sublinear in rank and, across a single width step, falls
-   more slowly than r/d predicts.** A regression over 1,146 tensors on four
-   models fits capture ≈ a·r^0.68·d^−0.76 (diagonal whitening) and
-   a·r^0.37·d^−0.52 (full Gram). The linear r/d rule is the worst of six
-   forms tried. The width axis has a single step (1024 → 5120), confounded
-   with model size, so this is a fit, not a law.
-   (`experiments/33-t110-capture-width/REPORT.md`)
-
-6. **On an MoE the correction loses to a one-line promotion (n = 20,
-   Q4-referenced).** Per-expert correction improves its base and loses to
-   promoting one tensor group to Q4_K (t = +6.85, 0/20 chunks). A basis
-   shared across experts captures barely more than a random one. The
-   reference is the vendor UD-Q4_K_M file; in it `ffn_down_exps` is Q5_K
-   (37 layers) and Q6_K (3), not Q4_K, so the control is not near-lossless
-   against the reference by construction. (`experiments/23-moe/`,
-   `experiments/35-final-reanalysis/RESULTS.md` A4)
-
-7. **NVFP4 from llama-quantize is a poor carrier on this architecture.**
-   At 0.8B it is the worst 4-bit option (KLD 0.207 against 0.047 to 0.088
-   for the K-quants at equal bytes); the correction halves that and still
-   loses. (`experiments/34-e16-nvfp4-08b/`)
-
-8. **Better surrogate, same or worse outcome — six times, plus one weaker
-   case.** Energy captured by rank allocation, a two-sided Kronecker
-   metric, further descent of the same objective, importance moved into
-   column scales, capture at equal bytes, and capture of the base each
-   improved while KL divergence did not. The seventh entry (512-token KLD
-   against a coding suite) is one pair, one run per arm, unreplicated. The
-   table is §4.7 of the paper.
-
-9. **Against released trained checkpoints (GSQ-RCO, Qwen3.8-27B), stated
-   byte-honestly.** (`experiments/32-t117-gsq-head-to-head/`)
-   - The arms are not byte-matched: GSQ-RCO 8.42 / 11.77 GB; untrained
-     Unsloth baseline 8.37 / 12.04 GB; baseline plus our correction
-     9.27 / 12.94 GB.
-   - At matched bytes the **untrained baseline already has lower 512-token
-     KLD than the trained checkpoint on wikitext** (+0.0715, t = +11.7;
-     +0.0152, t = +8.6). On FineWeb-Edu that difference is unresolved or
-     marginal (t = +1.66, +2.07).
-   - Our correction (+0.9 GB) lowers its base further on both corpora. Of
-     the wikitext gap between our arm and GSQ-RCO, 85–88% is the baseline's
-     lead and 12–15% is the correction.
-   - A stock file at near-equal total bytes (UD-Q2_K_XL, 9.83 GB) beats our
-     9.27 GB arm (t = +11.6 wikitext, +10.7 FineWeb-Edu).
-   - The registered prediction was half right: the competitor's deficit
-     shrank on FineWeb-Edu as predicted; our increments were predicted to
-     shrink too and mostly did not (IQ2_S 16% smaller, the other two
-     unchanged).
-   - Perplexity: at 512 tokens the ordering is unresolved (paired NLL
-     t = +1.33, +0.58); at 2048 tokens the trained checkpoint is ahead
-     (paired t = −3.33, −4.15, n = 145). KLD at 2048 was not measured.
-   - Capability: one run per arm on the 112-unit coding suite, 88 vs 76
-     (net +12, exact McNemar p = 0.012). Seven of the twelve are Zig, where
-     both arms are near the floor (9/30, 2/30); four runs of a different
-     finetune span 82–91, a 9-unit run-to-run spread.
-   - In one cross-family pair (one run per arm), 512-token KLD and a
-     coding suite ordered the artifacts oppositely; we treat 512-token KLD
-     as unvalidated across refinement families. We did not run our own
-     corrected artifact on the suite.
-   - Cost of our arm: about 12 CPU-minutes of extraction, excluding
-     obtaining the BF16 weights and the 48-chunk Gram capture on a patched
-     build.
-
-10. **Serving patches (one GPU; raw bench output exists only for the
-    N = 10 pair).** Fused kernels raise adapter decode by 79% at 0.6B (one
-    same-session pair) and 2.7% at 27B (interleaved, N = 10). A separate
-    allocator fix raised 0.6B base decode by 19.6% in the better of two
-    sessions and 11% in the other, on a loaded host, with no measurable
-    change at 27B. Not re-measured after the rebase to b10865.
-    (`experiments/14-fused-kernel/`, `experiments/25-alloc-concurrency/`)
-
-### What was not done
-
-Of the seventeen runs the ablation audit priced, six were not run: the
-calibration-mix grid, interpolation controls at 0.6B/0.8B, a held-out
-pass over the ladder comparisons, the recovery curve with the recipe held
-fixed, the equalization mechanism ablations, and a calibration-sampling
-bound. Also open: a third model width, a single-step 27B re-round pair,
-Q3_K/Q4_K/I-quant codecs for the re-rounder, and any capability run of our
-own artifacts. The review of the paper added: re-rounded Q2_K against the
-IQ rungs, paired, at 27B; three more capability runs per IQ3 arm plus our
-arm; KLD at a 2048-token context; free-grid GPTQ and learned-rounding
-baselines; a non-Qwen model. The paper's §7 lists these beside the claims
-they limit.
+- Capability replication (`36-submission/f_capability.sh`): three runs per
+  arm of GSQ-RCO IQ3_S, UD-IQ3_S and UD-IQ3_S + our correction on the
+  112-unit coding suite; ~12 h per run. The paper's §5.5 waits on it.
+- Not run: a 0.6B control; a BF16-referenced MoE table; learned-rounding
+  and vector-quantizer baselines; a third width inside one family.
 
 ### Corrections made along the way
 
-The record contains its own errors and their repairs: a first set of 27B
-"wins" that became a tie and then a narrow result under clean provenance;
-a "law" that was two points; a set of t-statistics inflated by a wrong
-standard error; two capability rows that were a crashed server. Each is in
-`lowrank/JOURNAL.md` with its correction, and `lowrank/review/` holds the
-two adversarial reviews that forced most of them.
+The record contains its own errors and their repairs, now including two
+from this campaign: the 27B re-rounding gain (legacy provenance; gone under
+single-step), and the 27B margin over Q3_K_S (on-distribution only). Each is
+in `lowrank/JOURNAL.md` and the paper's §7.6.
 
 ## langaware: environment feedback for an undertrained language
 
