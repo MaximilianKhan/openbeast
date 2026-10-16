@@ -261,3 +261,25 @@ fresh post-fix BF16 Grams is at 0.1523. Re-round the SAME single-step base
 resolved better than rr-wiki on wiki (t ≤ −2), the capture graph matters and
 the paper says the 27B re-round is sensitive to it; if not, the gap is
 provenance (Q6_K source and Grams) and the paper says so. Diagnostic only.
+
+### Amendment A-full (registered 2026-10-16 10:35, before running): the whole wikitext-2 test set at 27B
+
+Referee 2026-10-16 M6: the 27B wiki margins rest on the first 100 chunks,
+and the corrected file's lead over Q3_K_S sits in chunks 41–100. Score the
+same nine A configs (`a_ladder27.sh` configs, same files, ctx 512, ngl 99)
+against a fresh BF16 reference over EVERY 512-token chunk of wiki.test.raw
+(`a_fullwiki.sh`, logs-afull/, results-afull.txt). Inserted at an F row
+boundary; F resumes unchanged afterwards.
+
+Reported, all paired per chunk with the E35 set:
+- **Primary (full set, all chunks):** C1 MIXEDfc vs Q3_K_S holds if t ≤ −2;
+  C2 CONTROL vs MIXEDfc holds if CONTROL is better at t ≤ −2; plus
+  IQ3_XS vs MIXEDfc and MIXEDfc vs MIXEDbare. Bonferroni ×6 as in §2.5.
+- **Out-of-prefix replication (chunks 101–end only):** the same four pairs,
+  which share no chunk with the n = 100 tables.
+- Reference identity: chunks 1–100 of the new reference must match the
+  n = 100 reference (Q3_K_S per-chunk ref NLL, max |Δ| reported).
+Where the full set and the n = 100 rows disagree in verdict, the paper
+states the full-set verdict as the wikitext result and keeps the n = 100
+rows as the registered replication. No other config is added after seeing
+results.

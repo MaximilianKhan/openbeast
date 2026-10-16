@@ -1549,3 +1549,13 @@ All regenerable from the scripts (hours of CPU/GPU each). Kept: 0.8B working set
 (d08b/), T1.9 adapters and fc caches, all logs. F was not touching any of them
 (lsof clean, master_queue4 references none). Free: 56 GB → 155 GB, which makes
 room for the full 580-chunk wiki rescoring (~70 GB refs) if Max wants it.
+
+## 2026-10-16 10:35 — E36 A-full registered (referee M6), queued at F's next row boundary
+
+Max's go: score the nine A configs on the WHOLE wikitext-2 test set at 27B
+(PLAN.md "Amendment A-full", decision rules fixed before running; chunks
+101–end reported separately as an out-of-prefix replication).
+`handoff_afull.sh` waits for F's next row (GSQ-r1, ~15:00), stops F at that
+boundary, runs `a_fullwiki.sh` under its own lease (~45 min: ~20 min BF16
+reference, ~73 GB of logits; nine scores), then resumes F (resume-safe; the
+interrupted next row restarts from scratch). `e36_stats.py` gained E36_SLICE.
