@@ -1,0 +1,8 @@
+6707892fa3788b5ab9ed78ab5ff37d9fe825f6011a2ad4fcd6a6d467f0e7da57  data/wikitext-2-raw/wiki.train.raw
+3540bfaed4f8093fcde126ab92824186cd08b54f7ab87ab718c5ee1b3b4bb53a  experiments/17-task-conditioned/code-train.txt
+ec94657650ffb9b2601f0fe2055d1237ae0a5d81b332929cfacbd9605ef9581a  experiments/36-submission/d08b/calib/fineweb-edu-calib.txt
+28f156feec7a6688e7c242807cd151b834990809a7a61adf63f413b496e2bbe9  data/mixed-calib2.txt
+29eb09a7dbea6c1d4605e4570c73e50e9b99bf3255d9f13edeae958465916d81  experiments/36-submission/d08b/calib/mix111.txt
+9bb59bbf3f4731285932332b00b1a59b1446c6ae16c3822bc0c49113585d48a8  experiments/36-submission/d08b/calib/wiki-train-third-a.txt
+478b5f0b0eefe5bd451a1e452e8a61868e4717cf6a690481dd6a4c9be644584f  experiments/36-submission/d08b/calib/wiki-train-third-b.txt
+ac57980fb1e6eaea374e2c3f6bd6e36498ed52b6d359b750aaafbb369ff5355f  experiments/36-submission/d08b/calib/wiki-train-third-c.txt

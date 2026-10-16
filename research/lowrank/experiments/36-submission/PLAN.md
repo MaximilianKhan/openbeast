@@ -225,3 +225,17 @@ q4_k at 21/32 layers, 500,928 B below the corrected file. Consequence,
 stated now: at 8B, C2 (corrected vs control) is close to a re-test of C1
 (corrected vs Q3_K_S), and is reported that way. The §E free-grid arm
 (mixed Grams, wiki imatrix) is added to the 8B pipeline as at 27B.
+
+### Amendment 2026-10-15 18:10 (before any §D run): the 0.8B T1.6 control
+
+At 0.8B, Q3_K_M already holds attn_v, attn_output, attn_qkv and ffn_down at
+≥ q4_k, so the registered promotion list is exhausted at 517,487,616 B,
+1.12% below the crown (523,330,208 B) — outside the 0.5% band. Decided
+before any run: **primary = recipe A** (the registered rule carried to
+exhaustion; the byte shortfall is against the control, so a control win is
+conservative). **Secondary = recipe B** (A, then the same order again at
+q5_k: 522,992,640 B, −0.065%), labelled in the paper as designed after
+registration. Both are built and scored once. Also fixed now: the 0.8B
+free-grid arms use the D0 wiki Grams and the T1.1 2:1 mixed Grams with the
+wiki imatrix (`e_score.sh`), paired against the frozen-grid RR on the same
+Grams.
