@@ -2,7 +2,7 @@
 
 ## 7.1 Limitations
 
-**Models and hardware.** Four of the five models are Qwen-family: Qwen3-0.6B, Qwen3.5-0.8B, Qwen3.6-27B (as the heretic-v2 finetune), Qwen3.8-27B and Qwen3.6-35B-A3B. [PENDING:G — Llama-3.1-8B, the one model outside the family; which claims replicate there.] Every measurement comes from one GPU (an RTX 5090) on one workstation.
+**Models and hardware.** Five of the six models are Qwen-family: Qwen3-0.6B, Qwen3.5-0.8B, Qwen3.6-27B (as the heretic-v2 finetune), Qwen3.8-27B and Qwen3.6-35B-A3B. Llama-3.1-8B is the one model outside the family; on it the re-rounding result and the I-quant comparison replicate, and the correction does better against the adjacent K-quant than on Qwen (§3.1, §4.3). One non-Qwen model does not establish generality across families. Every measurement comes from one GPU (an RTX 5090) on one workstation.
 
 **Baselines not compared.** The re-rounder is compared with the file it starts from, with stock rungs above and below it, and with a free-grid GPTQ baseline at identical format and bytes (§3.4). It is not compared with learned-rounding methods, which need a training loop, or with vector and lattice quantizers at 2 bits, which are outside the GGUF formats. The type-allocation controls were built by a fixed promotion rule and were not compared with Hessian-aware mixed-precision allocation methods. These are named as classes of work; we did not run them and do not cite numbers for them.
 
@@ -14,7 +14,7 @@
 
 **Controls.** Mixed-type controls now exist at 0.8B (one by the registered rule, one byte-matched after registration), at 27B and on the mixture-of-experts model; each is a single designed point, built by a rule and not optimized. None was built at 0.6B.
 
-**Width.** The regression of §4.2 has one step on the width axis and its intervals resample tensors, not models. [PENDING:G — whether the Llama-3.1-8B point (d = 4,096) is added to the fit.]
+**Width.** The regression of §4.2 has one step on the width axis and its intervals resample tensors, not models. Llama-3.1-8B (d = 4,096) was not added to it, because it would change family and width at once.
 
 **References and precision.** Rows labeled legacy are scored against a Q6_K or Q8_0 file and not BF16 (measured contamination at 27B: 0.0032 KLD). The mixture-of-experts table is scored against a vendor Q4-class file at 20 chunks. At 27B, "full covariance" means block-diagonal for ffn_down (§2.2), the VRAM columns were not measured, and the rank allocation used sensitivity priors from 0.6B. Rows from before the Gated-DeltaNet normalization fix in llama.cpp (b10829) are paired within one build and never tabled beside current-build rows; every hybrid-architecture comparison in §3.1, §4.3, §4.5 and §5.4 was re-scored on the current build.
 
@@ -40,11 +40,13 @@ An audit of every cell behind this paper's claims counted 51: 17 clean, 15 confo
 | held-out pass over the 27B ladder comparisons | §4.3 |
 | recovery curve with the recipe fixed | §4.5 |
 | equalization without an imatrix, and a strength sweep | Appendix A.3 |
-| 27B re-rounder under single-step provenance, with IQ2_M and IQ3_XXS brackets | §3.1 [PENDING:B] |
+| 27B re-rounder under single-step provenance, with IQ2_M and IQ3_XXS brackets | §3.1 |
 | KL divergence at a 2,048-token context for the head-to-head files | §5.4 |
-| free-grid GPTQ baseline for the re-rounder | §3.4 [PENDING:E] |
-| one model outside the Qwen family | [PENDING:G] |
+| free-grid GPTQ baseline for the re-rounder | §3.4 |
+| one model outside the Qwen family (Llama-3.1-8B) | §3.1, §4.3 |
 | three capability runs per IQ3-class arm, and our corrected arm | §5.5 [PENDING:F] |
+
+Two diagnostics were added after the 27B re-round failed its registered test, each registered before it ran: the share of the file's KLD carried by the tensors the sweep covers, and the same sweep with the earlier Gram capture (§3.1).
 
 Not run: a mixed-type control at 0.6B (the 0.6B rows are legacy); the mixture-of-experts table against a BF16 reference (none is available to us); learned-rounding and vector-quantizer baselines; a third width inside one family.
 
@@ -56,7 +58,7 @@ Three components are not stock llama.cpp: the Gram-capture extension to llama-im
 
 ## 7.4 Open work
 
-**Codec coverage for re-rounding.** The re-rounder implements only Q2_K. Q3_K and Q4_K codecs would reach the promoted tensors at 27B; I-quant codecs would allow re-rounding the rung that currently beats re-rounded Q2_K at 0.8B, and a like-for-like comparison with GSQ; an NVFP4 codec is a further target (arXiv:2509.23202). A packaged tool would take source weights and calibration text and would need a mixed-calibration default and a held-out check, since §3.1 shows a narrowly calibrated file can be worse than the original [source: research/lowrank/paper/DEPLOYABLE-WINS.md].
+**Re-rounding at size.** Before more codecs (Q3_K, Q4_K, the I-quants, NVFP4; arXiv:2509.23202), the 8B and 27B failure needs an explanation: §3.1 shows the sweep optimizing its proxy while the outcome does not move. Candidate tests are a regularizer toward the original codes in directions the calibration does not excite, a metric estimated from far more calibration text, and an end-to-end objective in place of the layer-local one. Any packaged tool would need a held-out check before release, since a re-rounded file can be worse than the original on text its calibration missed [source: research/lowrank/paper/DEPLOYABLE-WINS.md].
 
 **Estimators for two-sided metrics.** Following §3.2: damping the output-side factor toward the identity, multi-pass gradient captures, and an adjoint for the GDN layers to remove the gradient cut.
 
@@ -64,7 +66,7 @@ Three components are not stock llama.cpp: the Gram-capture extension to llama-im
 
 ## 7.5 Summary
 
-Re-rounding improves a Q2_K file at identical bytes, by a third in KL divergence at 0.8B [PENDING:B — and by how much at 27B], on the kinds of text its calibration covers; it damages kinds of text its calibration does not cover, and a calibration mixing prose and code improves all three corpora we measured. At 0.8B a smaller stock IQ3_XXS file is better still. Low-rank correction improves its base on every corpus at every size, by about half as much off the calibration distribution, and by more the thinner the base. Against the stock types it falls short: at 27B its narrow lead over the adjacent type exists only on the calibration distribution, and a same-byte mixed-type control is better on every corpus, by a factor of three in KL divergence at 0.8B. Three placements of the low-rank bytes could not be distinguished within a stated bound. Against released trained checkpoints, KL divergence to the reference and likelihood of the text disagree in the same run, so the comparison measures what each file optimizes rather than which is better; [PENDING:F — capability replication]. The kernel and allocator patches reduce the adapter's decode cost at small scale and change little at 27B.
+Re-rounding a Q2_K file's codes under an activation-covariance metric lowers its KL divergence by a third at 0.8B and gives no resolved gain at 8B and 27B, where it halves its own objective on tensors that carry most of the file's divergence and still damages held-out text; at every size where we scored held-out text, it damages kinds of text its calibration does not cover. Refitting the grid beats freezing it, and does not change that verdict at size. Low-rank correction improves its base on every corpus, about half as much off the calibration distribution and more the thinner the base. Against the stock types it falls short: an I-quant type at fewer bytes beats it at 8B and 27B on every corpus, its lead over the adjacent K-quant at 27B exists only on the calibration distribution (on Llama-3.1-8B it holds on both prose corpora), and a same-byte mixed-type control beats it on every corpus at 27B and by a factor of three at 0.8B. Three placements of the low-rank bytes could not be distinguished within a stated bound. Against released trained checkpoints, KL divergence to the reference and likelihood of the text disagree in the same run, so the comparison measures what each file optimizes rather than which is better; [PENDING:F — capability replication]. The kernel and allocator patches reduce the adapter's decode cost at small scale and change little at 27B. The most transferable results are methodological: held-out corpora reversed the 27B ladder margin and exposed the cross-domain damage of re-rounding; single-step provenance erased the earlier 27B re-rounding gain; same-byte controls outranked every corrected configuration on Qwen; and a surrogate that improved failed to predict the outcome seven times (§4.7).
 
 ## 7.6 Corrections made to the record
 
@@ -78,5 +80,6 @@ The project record contains errors that were found and corrected before this pap
 - A journal entry asserted that the GSQ-RCO checkpoints were trained on FineWeb-Edu; the card and code do not say so (§5.3).
 - Every hybrid-architecture row in the previous version was scored on a llama.cpp build that predates its Gated-DeltaNet normalization fix. The paired comparisons were valid within that build; this version re-scores them on the current build and reports both where they differ (§4.3).
 - The previous version stated that at 0.6B and 0.8B "controls beat crowns" by inference from interpolation between rungs; §4.3 now measures it at 0.8B.
+- The previous version reported re-rounding at 27B as a 13.3% KL-divergence gain. That pair was legacy provenance; under single-step provenance the gain is 3.7% and unresolved, and held-out text is harmed (§3.1).
 
 Each is kept in the journal with its correction [source: research/lowrank/JOURNAL.md; review/adversarial-claims.md].

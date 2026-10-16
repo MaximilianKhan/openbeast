@@ -57,6 +57,19 @@ A task-level check was run before the held-out pass and does not resolve the con
 
 ![Figure 1. Qwen3.6-27B near 12.5 GB on three corpora, 100 chunks each, every file one quantization step from BF16, scored on llama.cpp b10865; error bars are standard errors. On wikitext, the calibration distribution, the correction (arrow) moves the mixed base past the stock type Q3_K_S; on FineWeb-Edu and code it does not. A mixed-type control with no adapter at the same bytes is lower on every corpus, and IQ3_XS is the lowest of the group at fewer bytes.](figures/fig-ladder-27b.svg)
 
+**Llama-3.1-8B: outside the Qwen family.** The same protocol on Llama-3.1-8B base (the plain transformer used across the quantization literature; d = 4,096): bases one step from BF16, a 48-chunk wikitext imatrix and Gram capture, the mixed base plus a rank-128 Q8_0 correction on the attention tensors (115.9 MB), and a control by the same promotion rule. Here the corrected configuration is only 12.2 MB above Q3_K_S, so the rule stopped inside its first step (attn_k at 21 of 32 layers); this control is Q3_K_S plus 11.7 MB, which was stated before the run [source: research/lowrank/experiments/36-submission/PLAN.md §G; experiments/36-submission/RESULTS-G.md].
+
+| file (Llama-3.1-8B) | GB | KLD, wikitext | KLD, FineWeb-Edu | KLD, code |
+|---|---|---|---|---|
+| IQ3_XS | 3.52 | 0.1240 | 0.1155 | 0.0435 |
+| mixed base, no adapter | 3.56 | 0.1919 | 0.1738 | 0.0726 |
+| Q3_K_S | 3.66 | 0.1914 | 0.1667 | 0.0653 |
+| control | 3.68 | 0.1884 | 0.1635 | 0.0639 |
+| corrected configuration | 3.68 | 0.1698 | 0.1585 | 0.0670 |
+| Q3_K_M | 4.02 | 0.0780 | 0.0724 | 0.0235 |
+
+On this model the correction does better than on Qwen. It is ahead of Q3_K_S on wikitext (−0.0216, t = −17.40) and on FineWeb-Edu (−0.0082, t = −3.81), and level on code (t = +1.44); against the near-Q3_K_S control it is ahead on the two prose corpora (t = −14.27, −2.18) and behind on code (t = +2.49). Its increment over its own base is resolved on all three (t = −19.3, −11.9, −11.0). IQ3_XS, 4% smaller and with no adapter, is ahead of it on every corpus (t = −18.7, −14.9, −12.5) and by more than the correction's whole increment. On Llama, then, a calibrated correction beats the adjacent K-quant type off-distribution as well as on it, and the I-quant type below it in bytes beats both.
+
 **0.8B: the control at small scale.** At 0.8B the paper's earlier comparison chose its rung from below and built no control. We built one by a rule fixed in advance: start from Q3_K_M and promote whole tensor kinds to Q4_K in the order of the 27B sensitivities until the file reaches the corrected configuration's bytes from below. At 0.8B, Q3_K_M already holds four of the listed kinds at Q4_K or wider, so the list ran out at 517.5 MB, 1.1% below the 523.3 MB corrected configuration (Q2_K with one alternation round and a rank-128 full-covariance correction with Q8_0 factors). A second control matched to the byte (523.0 MB, a further pass at Q5_K) was designed after the registration and is reported as such. Both were built once and scored on 40 chunks of the three corpora against BF16 references on the current build [source: research/lowrank/experiments/36-submission/RESULTS-D.md]:
 
 | file (Qwen3.5-0.8B) | MB | KLD, wikitext | KLD, FineWeb-Edu | KLD, code |
@@ -142,8 +155,9 @@ The full list, with the cases reported in other sections:
 | 5 | whitened capture at equal bytes (shared basis, +12% on attention groups) | KLD within the bound of §4.4 (t = −0.91) | §4.4 |
 | 6 | residual capture of the base (NVFP4 0.736 vs Q3_K_M 0.721) | smaller gain (50% vs 70% recovery) | Appendix A.1 |
 | 7 | KL divergence to the reference, across refinement families | opposite ordering to NLL in the same run at 2,048 tokens, and to a coding suite | §5.4, §5.5 |
+| 8 | whitened error of the swept tensors halved at 27B (Frobenius error +16-25%) | KLD −3.7% on wikitext, unresolved; worse on both held-out corpora; 5% of the available headroom | §3.1 |
 
-Rows 1-6 are surrogates for KL divergence that did not predict KL divergence. Row 7 is of a different kind: KL divergence measures distance to the reference model, and a file trained against data can move away from the reference while assigning the text higher likelihood (§5.4). Within one refinement family we have no evidence that KL divergence predicts task outcomes at the size of the contested margins either: the one task evaluation we ran there (HellaSwag, §4.3) tied the contested pair.
+Rows 1-6 and 8 are surrogates for KL divergence that did not predict KL divergence. Row 7 is of a different kind: KL divergence measures distance to the reference model, and a file trained against data can move away from the reference while assigning the text higher likelihood (§5.4). Within one refinement family we have no evidence that KL divergence predicts task outcomes at the size of the contested margins either: the one task evaluation we ran there (HellaSwag, §4.3) tied the contested pair.
 
 ## 4.8 Conditioning the correction on a task distribution
 

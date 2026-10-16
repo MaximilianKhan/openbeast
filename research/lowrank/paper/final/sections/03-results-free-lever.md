@@ -2,7 +2,7 @@
 
 ## 3.1 What re-rounding changes, and what it does not
 
-Re-rounding changes no file size, VRAM use or serving speed: it re-chooses which available code each weight gets, using one calibration pass and the model's higher-precision source weights. It improves a given K-quant file at zero bytes; it does not make Q2_K the best choice at its byte point. We report three sizes, and at each we add the stock rung nearest in size.
+Re-rounding changes no file size, VRAM use or serving speed: it re-chooses which available code each weight gets, using one calibration pass and the model's higher-precision source weights. We report it at four sizes and on two families. It improves the file at 0.6B and 0.8B; at 8B and 27B it does not, and at every size where we scored held-out text (0.8B, 8B, 27B) it damages text its calibration does not cover.
 
 **Qwen3-0.6B (Q2_K with imatrix; legacy scoring against a Q8_0 reference).** [source: research/lowrank/experiments/13-rerounder/README.md]
 
@@ -42,9 +42,28 @@ The pattern is consistent across the grid. Re-rounding transfers between the two
 
 **The calibration sample is a small part of the variance.** Re-rounding on three disjoint thirds of wikitext-2 train, the same budget each, moves ΔKLD by at most 0.004 on wikitext, 0.018 on FineWeb-Edu and 0.007 on code (wikitext: −0.163, −0.164, −0.167). This bounds calibration-sampling variance alone at this size, and it is one to two orders of magnitude smaller than the effect of which kind of text is in the calibration set.
 
-**Qwen3.6-27B (Q2_K; BF16 reference; three corpora; current build).** [PENDING:B — single-step re-round pair (wikitext and 2:1 calibration), IQ2_M and IQ3_XXS brackets, scored on wikitext / FineWeb-Edu / code; RESULTS-B.md.]
+**Qwen3.6-27B and Llama-3.1-8B (Q2_K; BF16 reference; three corpora; current build).** The same sweep at two larger sizes, one of them outside the Qwen family. Every base is one quantization step from BF16 with a 48-chunk wikitext imatrix; the re-round arms differ only in the calibration text of their Gram capture; 100 chunks per corpus; registered rules [source: research/lowrank/experiments/36-submission/RESULTS-B.md; experiments/36-submission/RESULTS-G.md]:
 
-The paper's earlier 27B pair was legacy provenance (both files requantized from a Q6_K file) and wikitext-calibrated: on 100 chunks it lowered KLD by 13.3% (t = −7.02) with perplexity unchanged. On the current build and the new references that re-rounded file still has lower KLD than the single-step Q2_K on wikitext (0.1385 against 0.1581, with 0.14 GB fewer bytes) and higher on FineWeb-Edu (0.1345 against 0.1182) and code (0.1564 against 0.1188), the cross-domain pattern of the 0.8B grid; the two files differ in provenance as well as codes, so this is not a paired test of re-rounding [source: research/lowrank/experiments/36-submission/RESULTS-A.md].
+| file | Qwen3.6-27B: KLD wikitext / FineWeb-Edu / code | Llama-3.1-8B: KLD wikitext / FineWeb-Edu / code |
+|---|---|---|
+| IQ2_M, stock | 0.1710 / 0.1314 / 0.1340 (10.30 GB) | 0.2891 / 0.2539 / 0.1130 (2.95 GB) |
+| Q2_K, as written | 0.1581 / 0.1182 / 0.1188 (11.00 GB) | 0.3064 / 0.2701 / 0.1124 (3.18 GB) |
+| Q2_K, re-rounded, wikitext calibration | 0.1523 / 0.1359 / 0.1515 | 0.3011 / 0.3080 / 0.1496 |
+| Q2_K, re-rounded, 2:1 wikitext:code calibration | 0.1671 / 0.1465 / 0.1130 | 0.3340 / 0.3299 / 0.1111 |
+| IQ3_XXS, stock | 0.1077 / 0.0710 / 0.0855 (11.48 GB) | 0.1658 / 0.1512 / 0.0620 (3.27 GB) |
+
+Paired against the file as written (t):
+
+| arm | Qwen3.6-27B: wikitext / FineWeb-Edu / code | Llama-3.1-8B: wikitext / FineWeb-Edu / code |
+|---|---|---|
+| wikitext calibration | −1.87 / **+7.79** / **+10.69** | −1.97 / **+10.22** / **+12.57** |
+| 2:1 calibration | **+3.21** / **+13.25** / −1.90 | **+8.70** / **+14.17** / −0.66 |
+
+At both sizes the sweep does not resolve a gain on the text it was calibrated on (−3.7% and −1.7% in KLD, |t| < 2), damages the held-out corpora, and with the mixed calibration that rescued the 0.8B file is worse than the untouched file on wikitext and FineWeb-Edu and level on code. The paper's earlier 27B result (−13.3%, t = −7.0) was a legacy pair whose source weights and Grams came from a Q6_K requantization; the same sweep on a single-step base does not reproduce it, and neither do the pre-fix BF16 Grams of that earlier capture (−0.0080 against the file as written, but level with the current-Gram arm, t = −1.11).
+
+**Why it fails at size: the sweep optimizes its proxy and not the outcome.** We dequantized the 27B files with gguf-py's own dequantizer and recomputed the error of three re-rounded tensors independently of the sweep's code. Their whitened error, under the calibration Gram, is 0.49, 0.57 and 0.63 of the untouched file's, as the sweep reports; their unweighted Frobenius error is 16-25% larger; 9-11% of their codes changed [source: research/lowrank/experiments/36-submission/checks/rr27b-independent-dequant.txt]. The sweep moves error out of the directions the calibration activations occupy and into the others, and text whose activations occupy other directions sees more error than before. The headroom was there: a file that stores every tensor the sweep covers at Q8_0 instead of Q2_K has KLD 0.034 / 0.023 / 0.029, so those tensors carry 76-80% of the Q2_K file's divergence, and halving their whitened error removed about 5% of it on wikitext. This is the largest surrogate-against-outcome gap in the paper (§4.7).
+
+What separates 0.8B from 8B and 27B is not established by this design. Candidates we did not test: the share of the model the Q2_K codec reaches (the larger files promote more of their most sensitive tensors to wider types), the conditioning of the Gram at larger width, and the larger KLD of the 0.8B Q2_K file, which leaves more to remove.
 
 **What the tool requires.** The re-rounder is not a transformation of a GGUF alone. It needs the higher-precision source weights, a Gram capture made with our patched llama-imatrix, calibration text that covers every kind of text the file will serve, and a held-out check. Its output is a standard GGUF.
 
@@ -65,12 +84,21 @@ A second surrogate result points the same way: alternating the code sweep with a
 
 ## 3.3 Ordering: re-round a bare file, alternate when a corrector will be attached
 
-Re-rounding helps a bare file and hurts under a corrector. At 0.8B, the bare base with a freshly extracted full-covariance correction beats the re-rounded base with one (ΔNLL t = +17.6, n = 580; the re-rounded stack is better on 133 chunks). The same ordering was seen at 0.6B, unpaired: re-round then correct 26.80 perplexity, a one-shot re-round under a ProjQ-style modified metric (arXiv:2606.00494) 25.94, alternation then correct 25.27 [source: research/lowrank/experiments/24-yaqa-lite/README.md; experiments/13-rerounder/README.md]. Re-rounding minimizes the standalone whitened error and spends grid resolution on directions the corrector would have absorbed. The guidance: re-round when shipping a bare file, alternate (§2.4) when a corrector will be attached, and do not stack re-rounding under a corrector.
+Re-rounding helps a bare file and hurts under a corrector. At 0.8B, the bare base with a freshly extracted full-covariance correction beats the re-rounded base with one (ΔNLL t = +17.6, n = 580; the re-rounded stack is better on 133 chunks). The same ordering was seen at 0.6B, unpaired: re-round then correct 26.80 perplexity, a one-shot re-round under a ProjQ-style modified metric (arXiv:2606.00494) 25.94, alternation then correct 25.27 [source: research/lowrank/experiments/24-yaqa-lite/README.md; experiments/13-rerounder/README.md]. Re-rounding minimizes the standalone whitened error and spends grid resolution on directions the corrector would have absorbed. The guidance, for the small models where re-rounding helps at all (§3.1): re-round a bare file only with a calibration that covers its intended text, alternate (§2.4) when a corrector will be attached, and do not stack re-rounding under a corrector.
 
 ## 3.4 Freezing the grid against refitting it
 
 A referee asked whether keeping llama-quantize's grid is a constraint worth its cost, against GPTQ allowed to choose the grid as well. We built that baseline at identical format and bytes: the same sweep, Grams, damping and tensor coverage as §2.3, except that when the sweep enters each 256-column superblock it refits that superblock's grid from the error-updated weights with llama.cpp's own Q2_K quantizer and the same imatrix. With error feedback switched off the tool reproduces llama-quantize's file byte for byte (96/96 tensors at 0.8B, 256/256 at 27B), so the only difference between the two arms is whether the grid is frozen. On the whitened objective the refit grid is lower than the frozen one on all 96 tensors at 0.8B (by 12% in total) [source: research/lowrank/experiments/36-submission/freegrid/README.md].
 
-[PENDING:E — free-grid vs frozen-grid, paired ΔKLD on wikitext / FineWeb-Edu / code at 0.8B (wikitext and 2:1 Grams) and 27B (2:1 Grams); and at Llama-3.1-8B (§G).]
+Paired ΔKLD, free-grid minus frozen-grid at identical bytes, same Grams (t) [source: research/lowrank/experiments/36-submission/RESULTS-E.md; experiments/36-submission/RESULTS-G.md]:
+
+| model, calibration | wikitext | FineWeb-Edu | code |
+|---|---|---|---|
+| Qwen3.5-0.8B, wikitext | −0.017 (−4.53) | −0.028 (−5.49) | −0.058 (−7.33) |
+| Qwen3.5-0.8B, 2:1 | −0.017 (−3.63) | −0.021 (−3.62) | −0.023 (−7.47) |
+| Llama-3.1-8B, 2:1 | −0.018 (−6.43) | −0.010 (−3.08) | −0.007 (−3.62) |
+| Qwen3.6-27B, 2:1 | −0.0095 (−3.22) | −0.0059 (−2.64) | −0.0046 (−1.83) |
+
+Refitting the grid is better than freezing it in eleven of twelve cells and level in the twelfth. Freezing llama-quantize's grid is therefore a restriction that costs quality and not a feature of the method, and the method is better described as GPTQ inside the GGUF formats, with the frozen grid as its zero-search special case. The refit does not change the verdict at size: at 8B and 27B the free-grid file is still worse than the untouched file on FineWeb-Edu (t = +8.29, +8.16) and not better on wikitext (+2.87, −0.19); it is better on code under the code-containing calibration (−3.85, −4.08).
 
 This baseline does not cover learned rounding (AdaRound and its successors), which needs a block-reconstruction training loop, or vector and lattice quantizers at 2 bits, which are outside the GGUF formats; §7.1 lists both.

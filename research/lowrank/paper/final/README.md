@@ -1,7 +1,7 @@
 # The paper
 
-`paper.pdf` — *Frozen-Grid Re-Rounding and the Limits of Low-Rank Correction for
-llama.cpp Quantization: A Paired Audit.*
+`paper.pdf` — *What Post-Training Repair Buys on llama.cpp Quantization: A Paired Audit on
+and off the Calibration Distribution.*
 
 | file | what it is |
 |---|---|

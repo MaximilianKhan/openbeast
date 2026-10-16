@@ -27,9 +27,9 @@ import latex_tmlr
 
 HERE = pathlib.Path(__file__).parent
 ROOT = HERE.parent.parent          # research/lowrank
-TITLE = ("Frozen-Grid Re-Rounding and the Limits of Low-Rank Correction for "
-         "llama.cpp Quantization: A Paired Audit")
-AUTHOR = "Maximilian Khan"
+TITLE = ("What Post-Training Repair Buys on llama.cpp Quantization: "
+         "A Paired Audit on and off the Calibration Distribution")
+AUTHOR = "Max Khan"
 AFFIL = "OpenBeast project · github.com/MaximilianKhan/openbeast"
 DATE = "October 2026"
 # The TMLR preprint's author block (the anonymous build has none).
