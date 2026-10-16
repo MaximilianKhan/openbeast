@@ -1468,3 +1468,20 @@ RR harms code t=+13.6/+8.9; code-calibrated harms prose); code-containing
 mixes improve all three; fc improves all corpora under all calibrations.
 T1.13: equalization harms at every α, monotone, and without imatrix — no
 interior optimum, double-counting not supported.
+
+**18:23 — d08b-B and T1.9 also started early, outside the lease**, same
+reason as d08b-A (B/C holds the lease idle on CPU sweeps). The master queue
+resumes past them.
+
+**~18:35 — memory pressure; two jobs stopped by the harness.** Claude Code
+reaped the B/C queue (C was already complete and committed; B's wiki
+re-round sweep had cached 200/256 tensors, the mixed sweep and B's scoring
+had not started) and the early d08b-B + T1.9 chain. Cause: my overlapping
+CPU lanes (27B re-round + 27B free-grid + 0.8B lane + T1.9 quantize) plus
+an orphaned 35 GB `python3 -` from a finished subagent's validation that
+had been spinning since 17:14 with no reader (killed 18:40; free RAM
+44 → 110 GB). Nothing scored was affected: every score is a complete
+llama-perplexity run or absent. The 27B free-grid output finished
+(18:36) and is intact. Lesson: one 27B CPU sweep at a time; the master
+queue runs blocks sequentially. B waits for Max's go to restart
+(resume-safe from the cached codes).
