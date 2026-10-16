@@ -38,7 +38,7 @@ them on every build).
 |---|---|---|
 | Author block | anonymous | **done** |
 | Artifact tags | must not reveal the project, user or repo | **done** — rendered `[Supp. E24]`; Appendix B ("Supplementary material index") lists locations relative to the supplementary archive, with the `research/lowrank/` prefix stripped |
-| Mechanical scrub | names, URLs, local paths | **done** — `latex_tmlr.SCRUB`; the build greps the anonymous PDF's text and metadata for `latex_tmlr.FORBIDDEN` (OpenBeast, beast, Maximilian, Max, Khan, github.com, research/lowrank, /home/, maxjkh) after removing cited authors' names (a cited "Maximilian Kleinegger" is not the author) and fails on a hit. Result 2026-10-15: clean |
+| Mechanical scrub | names, URLs, local paths | **done** — `latex_tmlr.SCRUB`; the build greps the anonymous PDF's text and metadata for `latex_tmlr.FORBIDDEN` (OpenBeast, beast, Maximilian, Max, Khan, github.com, research/lowrank, /home/, maxjkh, passboards) after removing cited authors' names (a cited "Maximilian Kleinegger" is not the author) and fails on a hit. Result 2026-10-15: clean |
 | Residue that only prose can fix | — | **AUTHOR** — the build prints the list (`latex_tmlr.RESIDUE`); see "Anonymization residue" below |
 | Self-citation | an unpublished own project must not be cited by name | **check** — none found by name; the residue phrases are the indirect ones |
 | Public copy of this paper | preprints are allowed ("You can still submit, even if a preprint of your work already is available online"); reviewers are asked not to search | **AUTHOR** — this paper's text, drafts and records are public on `main` of the author's GitHub repository (`research/lowrank/paper/final`, `research/lowrank/experiments`). That is permitted, but a distinctive sentence searched verbatim leads to the author. Decide whether that is acceptable; nothing to do if it is |
@@ -110,7 +110,7 @@ this list with current line numbers after every rewrite.
 
 | item | status |
 |---|---|
-| `paper-tmlr-preprint.pdf`: `\usepackage[preprint]{tmlr}`, author Max Khan, maxjkh@gmail.com; artifact tags name the public repository (Appendix B links it) | **done** |
+| `paper-tmlr-preprint.pdf`: `\usepackage[preprint]{tmlr}`, author Max Khan, max@passboards.com; artifact tags name the public repository (Appendix B links it) | **done** |
 | Affiliation line ("OpenBeast project" + repository URL, `TMLR_AUTHOR_BLOCK` in build.py) | **AUTHOR** — confirm; "Independent researcher" is the usual alternative |
 | Posting the preprint during review is allowed; do not link it from the submission | note |
 
