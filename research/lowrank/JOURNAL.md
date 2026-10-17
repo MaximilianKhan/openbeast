@@ -1573,3 +1573,16 @@ re-round's wiki lead over single-step Q2_K is local to chunks 1–100
 (101–580: t = −0.73; NLL worse t = +11.2), which further undercuts the old
 −13.3%. F row 1 (GSQ-IQ3S-r1) recorded 88/112 (rc=1 = "some task failed",
 4 wall timeouts, 0 CUDA/API errors); F resumed 12:36 with UD-IQ3S-r1.
+
+## 2026-10-17 ~12:40 — F paused for a machine shutdown (Max's request)
+
+Round 1 complete (GSQ 88, UD 79, OURS 79 of 112; 0 CUDA/API errors; OURS
+cmdline carries --lora, and llama-server aborts on a failed adapter load).
+Stopped F mid-row at GSQ-IQ3S-r2 (~35/112, ~3.5 h lost): f_capability killed
+before it could record the row, eval + server killed, lease released, card
+idle. Partial log kept as logs-f/cap-e36f-GSQ-IQ3S-r2.interrupted-20261017.log;
+the row reruns from scratch (unseeded runs, so nothing to splice).
+Added lora_probe.sh (read-only GET /lora-adapters for OURS r2/r3).
+RESUME (stack down, from repo root):
+  nohup ./scripts/gpu-lease.sh run "E36 f-cap" -- bash research/lowrank/experiments/36-submission/f_capability.sh > research/lowrank/experiments/36-submission/run-f-cap-resume2.log 2>&1 &
+  nohup bash research/lowrank/experiments/36-submission/lora_probe.sh > research/lowrank/experiments/36-submission/run-lora-probe.log 2>&1 &
