@@ -144,3 +144,31 @@ wiki Q2Krr-legacy bytes=10864595360 Mean PPL(Q) : 8.032175 ± 0.054954 Mean KLD:
 - wiki: MIXEDfc vs MIXEDbare: ΔNLL -0.00843 ± 0.00104 (t -8.13, A better 349/480); Δtop-1 +0.597 pt (t +9.00); max |Δ ref NLL| 0.01210
 - wiki: MIXEDbare vs Q3_K_S: ΔNLL -0.01095 ± 0.00203 (t -5.40, A better 267/480); Δtop-1 -0.418 pt (t -4.39); max |Δ ref NLL| 0.01048
 - wiki: Q2Krr-legacy vs Q2_K: ΔNLL +0.03604 ± 0.00331 (t +10.90, A better 139/480); Δtop-1 +0.068 pt (t +0.63); max |Δ ref NLL| 0.01194
+
+## Chunk splits and cross-build agreement (computed 2026-10-22; quoted in paper §4.3)
+
+Not a new run: the 100-chunk wiki logs of `logs-a/`, sliced. Commands:
+`E36_SLICE=0:40 python3 e36_stats.py logs-a wiki MIXEDfc:Q3_K_S MIXEDfc:MIXEDbare MIXEDbare:Q3_K_S` and the same with `E36_SLICE=40:100`.
+
+Chunks 1-40:
+
+```
+ wiki: MIXEDfc vs Q3_K_S | 40 | +0.00042 ± 0.00313 | +0.13 
+ wiki: MIXEDfc vs MIXEDbare | 40 | -0.01057 ± 0.00134 | -7.91 
+ wiki: MIXEDbare vs Q3_K_S | 40 | +0.01099 ± 0.00325 | +3.38 
+```
+
+Chunks 41-100:
+
+```
+ wiki: MIXEDfc vs Q3_K_S | 60 | -0.00808 ± 0.00202 | -3.99 
+ wiki: MIXEDfc vs MIXEDbare | 60 | -0.01092 ± 0.00149 | -7.34 
+ wiki: MIXEDbare vs Q3_K_S | 60 | +0.00284 ± 0.00266 | +1.07 
+```
+
+Per-chunk agreement of the pre-fix build (`../27-bf16-rederivation/kld100-*.log`) with b10865 (`logs-a/wiki-*.log`), first 100 chunks:
+
+```
+MIXEDfc - Q3_K_S: per-chunk ΔKLD, pre-fix (E27 logs) vs b10865 (logs-a), n=100: r = 0.870
+MIXEDfc - CONTROL: per-chunk ΔKLD, pre-fix (E27 logs) vs b10865 (logs-a), n=100: r = 0.945
+```
