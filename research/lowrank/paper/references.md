@@ -36,7 +36,7 @@ gguf=gguf-tooling · int=llamacpp-internals
 | 2501.18475 | CLoQ (2025) | Closed-form whitened init beats LoftQ's 5-round alternation at INT2; source of the damping recipe λ = 0.01·Tr(H)/d we adopted | qec, cod |
 | 2606.00494 | ProjQ (ICML 2026) | Quantizer/corrector co-adaptation: shape the noise onto the correctable subspace (attacks WHY the residual is incompressible); Prop 5.4 monotone convergence with a black-box quantizer → our projected-imatrix idea. Numbers conflict across extracts — pull PDF | qec, cod |
 | 2602.02001 | SRR "Preserve-Then-Quantize" (ICML 2026) | First principled per-matrix rank split (preserve top subspace vs reconstruct error); its random-matrix probe implicitly predicts capture ~ r/d — never measures it across widths (we do) | qec |
-| 2601.05684 | FLRQ (2026) | Strongest anti-uniform-rank evidence: allocated avg rank 39 (0.24 bpw) beats uniform r256 (1.60 bpw) at 2-bit — the published twin of our measured-alloc win / "870 MB mostly wasted" | qec, str, wa |
+| 2601.05684 | FLRQ (AAAI 2026) | Strongest anti-uniform-rank evidence: allocated avg rank 39 (0.24 bpw) beats uniform r256 (1.60 bpw) at 2-bit — the published twin of our measured-alloc win / "870 MB mostly wasted" | qec, str, wa |
 | 2603.08185 | SERQ (2026) | Row-structured single-matrix correction survives W4A4 where two-factor LR fails — sidesteps width collapse via row sparsity, not spectra. CC BY 4.0 | qec, wa, sur, ker, math |
 | 2412.07902 | LRC (Microsoft Research, 2024) | Strongest empirical rank-∝-d corroboration: r/d = 10% halves, 30% closes the W4A4 gap; verified at algorithm level it does NOT propagate between layers — the gap our SRP proposal names; "computational costs not studied" (no kernel) | qec, str, ker, cod, phy |
 | 2412.14363 | ResQ (Purdue/d-Matrix; ICML 2025) | r = d/8 high-precision PCA subspace — rank proportional to width, hard-coded in production print; also the "shrink the denominator" whitening mechanism for our o/down fix | qec, str, out |
@@ -48,11 +48,11 @@ gguf=gguf-tooling · int=llamacpp-internals
 | 2606.11244 | SPEAR (2026) | Quantization error is token-dependent; CKA layer-sensitivity = ready-made allocation signal | qec |
 | 2602.24059 | Quant Experts (CVPR 2026) | Routed mixture of low-rank compensators (VLMs) — the routing lane we reject (we are byte-bound, not FLOP-bound) | qec |
 | 2607.23047 | MixQuant (2026) | Per-layer sensitivity depends on upstream quantized config — caveat adopted for our allocation (FP-context scores misallocate) | qec |
-| 2603.25385 | GlowQ (2026) | Shared right factor per input-sharing group + restore-only-the-payers — evidence most layers don't repay their rank budget; mitigates rather than fuses correction overhead | qec, ker |
+| 2603.25385 | GlowQ (ICLR 2026) | Shared right factor per input-sharing group + restore-only-the-payers — evidence most layers don't repay their rank budget; mitigates rather than fuses correction overhead | qec, ker |
 | 2506.13771 | LittleBit (NeurIPS 2025) | Sub-1-bit fully-low-rank weights — brackets our regime from below (at extreme rates low-rank carries everything) | qec |
 | 2604.00821 | OBD-LLM (2026) | Input-only whitening provably suboptimal for decomposition — bi-directional (Kronecker-Hessian) whitening; our untested two-sided-residual gap | qec |
 | 2604.16940 | D-QRELO (2026) | Our exact recipe (1-bit base + LR correction of its quantization error) applied to SFT deltas | qec |
-| 2605.09281 | TileQ (2026) | MoE 2D-tiled structured low-rank quantization — relevant only if we target the 35B-A3B | qec, str |
+| 2605.09281 | TileQ (ICML 2026) | MoE 2D-tiled structured low-rank quantization — relevant only if we target the 35B-A3B | qec, str |
 | 2512.17073 | MoE low-rank compensators (2025) | Router-guided compensation of Top-n experts / streamed compensators for offloaded experts — MoE-side cousin | qec, str |
 | 2606.04238 | Recover-LoRA (AMD, 2026) | RILQ-family trained 2-bit recovery via logit distillation — the training route we don't take | qec |
 | 2501.16385 | FBQuant (IJCAI 2025) | Sub-branch correctors OVERFIT calibration; negative-feedback regularization — the cautionary result echoed by QEP's α-damping | qec |
@@ -71,7 +71,7 @@ gguf=gguf-tooling · int=llamacpp-internals
 | 2504.14569 | NoWag (2025) | Pruning/quant framework — periphery, ruled adjacent | qec |
 | 2602.00135 | LLaVA-FA (2026) | Frequency-domain joint decomposition — periphery | qec |
 | 2509.00404 | Metis (2025) | Residual-after-spectral-split is flat — independent flatness confirmation of our premise | qec |
-| 2504.02658 | MiLo (2025) | Our exact architecture on MoE: HQQ base + truncated-SVD compensators, INT3-quantized factors, kurtosis/traffic rank policy, zero-waste INT3 kernels — and the compensator is explicitly UNFUSED (field-is-empty evidence) | str, ker |
+| 2504.02658 | MiLo (MLSys 2025) | Our exact architecture on MoE: HQQ base + truncated-SVD compensators, INT3-quantized factors, kurtosis/traffic rank policy, zero-waste INT3 kernels — and the compensator is explicitly UNFUSED (field-is-empty evidence) | str, ker |
 | 2604.07955 | ResComp / "Rethinking Residual Errors" (2026) | Claims compensation impact scales inversely with bit-width — the qualitative version of our measured F7 recovery curve; **extract lossy, local PDF saved — verify before citing** | cod, phy |
 | 2507.17417 | Same-harness eval survey (2025) | Fair comparison taxonomy: activation-statistics-scaling vs iterative vs training-based — our related-work skeleton | qec |
 | 2505.05530 | Low-bit DNN survey (2025) | 24-subcategory map — positioning only | qec |
@@ -204,7 +204,7 @@ gguf=gguf-tooling · int=llamacpp-internals
 | 2510.00206 | LoRAFusion (2025) | Fuse LoRA's memory-bound pieces into neighbors, leave base GEMM alone — same principle as our Phase 1/2 split | ker |
 | 2603.22276 | Scaling DoRA (2026) | Fused Triton adapter chains, ~4× traffic cut — Triton prototype viability before hand-CUDA | ker |
 | 2007.01277 | HFuse (CGO 2022) | Source-level horizontal kernel fusion, 2.5–60.8% | ker |
-| 2512.22219 | Mirage MPK (2025) | Persistent-kernel compiler, 1–2 µs task transitions — the ceiling, not the first step | ker |
+| 2512.22219 | Mirage MPK (OSDI 2026) | Persistent-kernel compiler, 1–2 µs task transitions — the ceiling, not the first step | ker |
 | 2605.11581 | Ada-MK (2026) | Launch overhead ≈14.6% of decode even in TensorRT-LLM; consumer-Ada megakernel +23.6% | ker |
 | 2605.30571 | "Memory-Bound but Not Bandwidth-Limited" (2026) | Eager-vs-graph delta ≈20.6% of batch-1 step on H100 — quantifies what graphs alone recover | ker |
 | 2501.01005 | FlashInfer (2025) | Serving-kernel context — swept | ker |
@@ -266,8 +266,8 @@ gguf=gguf-tooling · int=llamacpp-internals
 | 2401.15024 | SliceGPT (2024) | 25%-sliced 70B → 99% zero-shot after tiny RFT; Alpaca-RFT ≫ WikiText-RFT — recovery is distribution-matching, feeds our task-conditioned-factorization escape route | frh |
 | 2305.11627 | LLM-Pruner (2023) | ~50k-sample LoRA heal → 95% on easy suites — tiny-heal ceiling datapoint | frh |
 | 2502.07864 | TransMLA (NeurIPS 2025) | GQA→MLA SVD conversion, 93% KV cut — the only ≥2×-adjacent factorization with a first-class serving story, but 6B-token recovery (outside home-rig budget) | frh, kv |
-| 2310.06694 | Sheared-LLaMA (2023) | ≥2× requires 50B continued-pretraining tokens — the honest price list | frh |
-| 2407.14679 | Minitron (NVIDIA, 2024) | ~94B distillation tokens for 15B→8B/4B — same price list | frh |
+| 2310.06694 | Sheared-LLaMA (ICLR 2024) | ≥2× requires 50B continued-pretraining tokens — the honest price list | frh |
+| 2407.14679 | Minitron (NVIDIA; NeurIPS 2024) | ~94B distillation tokens for 15B→8B/4B — same price list | frh |
 | 2411.19146 | NVIDIA Puzzle (2024) | ~45B distill tokens for Nemotron-51B — same | frh |
 | 2310.02277 | Junk-DNA hypothesis (2023) | Hard-task damage from pruning is monotonic and IRREVERSIBLE under fine-tuning — kills tiny-heal for our max-intelligence use case | frh |
 | 2606.03328 | Calibration-mix study (2026) | Single-source heals overfit the easy source — calibration-diversity requirement for our pipeline | frh |
@@ -454,3 +454,31 @@ load-bearing — pull before the section that cites them is frozen.
 - **Lab/vendor ground truth** · Kimi K3 2607.24653 (MXFP4-experts QAT; QAT→GGUF grid-mismatch use case); DeepSeek V4 2606.19348 (FP4-QAT experts, MXFP4 native; V4-expert Q2_K use case); GLM-5 2602.15763 + disclosed W8A8-attn/W4A8-expert recipe (per-stack TYPE allocation corroborated at 744B); AngelSlim ternary 2601.07892/2602.21233 (the ladder below IQ1_S exists); msModelSlim (Ascend — scale search only, citable deployed-practice baseline); MiniMax M3 2606.13392 (linear attention retreated at scale — deprioritize hybrid-linear quant beyond Qwen3.5).
 - **OSCAR 2605.17757 / STAR-KV 2606.08382 / RDKV 2605.08317** · KV lane successors; RDKV owns the unified rate-distortion framing — cite, don't claim; adopt reverse-water-filling vocabulary.
 - **Windowed-MTP — 2607.21535** · MTP work is runtime-only, zero calibration — dated evidence the MTP-calibration lane was unscooped as of late July.
+
+## Literature sweep 2026-10-22 additions (cited in the submission; reports in ../review/litsweep-2026-10-22/)
+
+| arXiv | short name | why it is cited | tags |
+|---|---|---|---|
+| 2309.05516 | AutoRound / SignRound (2023) | gradient-tuned rounding; exports K-quant GGUFs; gains inside q2_k_s at Llama-3.1-8B | rr |
+| 2401.06118 | AQLM (2024) | trained additive codebooks; uncompared class (§7.1) | vq |
+| 2406.15524 | Reconstruction pitfalls in pruning (2024) | reconstruction transfers small, overfits large; self-generated calibration narrows it | rr |
+| 2410.14649 | EvoPress (2024) | evolutionary per-layer allocation; systematic version of our control | alloc |
+| 2411.17525 | HIGGS linearity theorem (2024) | unweighted layer error predicts perplexity for near-isotropic error | rr, meas |
+| 2412.20185 | DecDEC (2024) | fused residual compensation at 1.7% decode cost | ker |
+| 2503.03592 | English K-quant imatrix (2025) | imatrix calibration language barely matters for K-quants | rr |
+| 2508.05257 | MoBE (2025) | shared weight basis across experts (contrast with our residual result) | moe |
+| 2601.18306 | Calibrating Beyond English (2026) | GPTQ far more calibration-language sensitive than AWQ | rr |
+| 2605.02404 | Statistically-Lossless Quantization (2026) | task-lossless vs distribution-lossless, from the GSQ/RCO group | meas |
+| 2605.05693 | SARQC (2026) | penalty on weight drift for reconstruction calibration | rr |
+| 2608.15046 | Certifying Compressed LMs (2026) | calibration draw reverses method order; churn | meas |
+| 2609.00049 | REAL-Q (2026) | post-trained reference is not at the perplexity optimum | meas |
+| 2609.01587 | Spend the next bit globally (2026) | global granularity beats local repair at a matched budget | alloc |
+| 2609.04748 | Cache-induced divergence (2026) | prefix-cache divergence amplified by quantization on llama.cpp | cap |
+| 2609.33923 | Spectrally flat quantization error (2026) | K-quant allocation on Qwen3.8-27B beats IQ3_M; RTN error is flat | alloc |
+| 2609.38599 | JARQ (2026) | refit grid beats codes-only and scale-only | rr |
+| 2609.39223 | QATFactory (2026) | distilled llama.cpp Q4_K closer to reference than PTQ | meas |
+| 2610.00694 | Divergence to decision flips (2026) | total variation tracks flips better than KL | meas |
+| 2610.07781 | Tool-failure recovery under quantization (2026) | agentic results move with prompts and scoring | cap |
+| 2610.08164 | Align, Then Correct (2026) | asymmetric output-Fisher two-stage compensator | qec |
+| 2610.11226 | DRQ (2026) | frozen-grid code refinement overfits calibration; worst-case repair | rr |
+| 2610.20826 | Routing-guided reallocation (2026) | MoE type reallocation can lose to uniform | alloc |

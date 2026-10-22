@@ -207,7 +207,7 @@ Ranked by expected payoff per GPU-day on one RTX 5090 with llama.cpp.
 1. **Rotate, then re-round, inside a stock type.** This is the direct follow-up to T1/T2 and tests whether C1's failure at size is a non-rotation artifact.
    - On Llama-3.1-8B, apply a random Hadamard to the input side of ffn_down. Exact folding is blocked by the norm gain, so this needs an online Hadamard. The activation-rotation code merged in PR #21038 is the template.
    - Then requantize to IQ2_XS/Q2_K with and without our frozen-grid GPTQ sweep. Score wikitext, FineWeb-Edu and code paired against the unrotated files.
-   - The coset-trellis study's code is public (github.com/Genrius-AI/pingala8-llm) and can serve as a reference baseline at IQ2_XXS bytes on the same model.
+   - The coset-trellis study's code is public (linked from the Zenodo record) and can serve as a reference baseline at IQ2_XXS bytes on the same model.
 2. **Asymmetric, output-Fisher correction (T3) against our same-byte controls.**
    - We already have llama-gradmatrix and the gradient captures. Implement Stage 1 (asymmetric target, Fisher-weighted) on Q2_K/IQ2_XS at 0.8B and 8B.
    - Compare against the mixed-type controls of §4.3. If it still loses at equal bytes, C2 becomes much stronger; if it wins, the paper needs that caveat.
