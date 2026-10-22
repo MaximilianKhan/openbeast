@@ -15,7 +15,7 @@ The three arms are not byte-matched, and every statement below should be read ag
 
 Our arm is a rank-128 full-covariance correction with Q8_0 factors on the Unsloth baseline. It is larger than the GSQ-RCO file by 0.85 GB in the IQ2 class and by 1.17 GB in the IQ3 class. The re-rounder was not used, because its codec does not cover the I-quant formats.
 
-The cost of our arm, end to end: the extraction takes about 12 CPU-minutes per model (724, 727 and 744 seconds). That figure excludes obtaining the BF16 weights (54.7 GB) and the 48-chunk Gram capture, which needs our patched build and which the capture log estimated at about 22 minutes. The released checkpoints come from a GPU training run whose cost we did not measure [source: research/lowrank/experiments/32-t117-gsq-head-to-head/capture-gram38.log, extract-UD-IQ2_S.log].
+The cost of our arm, end to end: the extraction takes about 12 minutes of wall time on the CPU per model (724, 727 and 744 seconds). That figure excludes obtaining the BF16 weights (54.7 GB) and the 48-chunk Gram capture, which needs our patched build and which the capture log estimated at about 22 minutes. The released checkpoints come from a GPU training run whose cost we did not measure [source: research/lowrank/experiments/32-t117-gsq-head-to-head/capture-gram38.log, extract-UD-IQ2_S.log].
 
 ## 5.2 512-token KL divergence on wikitext
 
@@ -74,7 +74,7 @@ That left two explanations for the disagreement between 512-token KLD and the ca
 
 With long context the trained checkpoints are still further from the BF16 distribution than their untrained baselines, by about as much as at 512 tokens, and they agree less often with its top token; on the same tokens they assign the text higher likelihood (resolved at the IQ3 class, t = −2.49; leaning the same way at IQ2, t = −1.64). The registered rule reads this as a metric effect and not a context effect. KL divergence to the reference measures fidelity to the BF16 model; a file trained against data, as these are, can give up some of that fidelity and still assign the text higher likelihood, and KL divergence then ranks it below a file that is closer to the reference. The evidence for this is one method (GSQ-RCO), one corpus at this context (wikitext), and one resolved class. On FineWeb-Edu at 512 tokens the trained files and their baselines are level in NLL (t = 0.00 and −0.91) as well as close in KLD (§5.3).
 
-The NLL record of our own arm is mixed, and we report it in full. At 2,048 tokens our correction moves every base closer to the reference (−0.0114, −0.0026 and −0.0081 in KLD; t = −6.7, −6.8, −5.3) and improves NLL at IQ2_S (t = −4.78) but not at IQ3_S (t = −0.22). In NLL at that context the GSQ-RCO IQ3_S file is ahead of our corrected IQ3_S arm (t = +2.43 for ours minus theirs), the reverse of the KLD ordering.
+The NLL record of our own arm is mixed, and we report it in full. At 2,048 tokens our correction moves every base closer to the reference (IQ2_S −0.0114, IQ3_S −0.0026 and Q2_K_XL −0.0081 in KLD; t = −6.7, −6.8, −5.3) and improves NLL at IQ2_S (t = −4.78) but not at IQ3_S (t = −0.22). In NLL at that context the GSQ-RCO IQ3_S file is ahead of our corrected IQ3_S arm (t = +2.43 for ours minus theirs), the reverse of the KLD ordering.
 
 ## 5.5 Capability
 
