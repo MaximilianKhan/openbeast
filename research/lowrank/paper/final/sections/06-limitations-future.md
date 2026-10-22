@@ -22,9 +22,9 @@
 
 **Speed.** One GPU, one host. Session-to-session drift reached 9%; only one speed result has raw output in the supplementary material; nothing was re-measured after the patch set was rebased (§6.1).
 
-**Verification rests on our own records.** Statements that a derivation was verified numerically, that a capture passed its gates, or that an experiment was registered before it ran cite our review notes and experiment log. Those are our records and have not been checked by anyone else. The registration for the experiments added in this revision was committed to a public version-control history before the runs, which gives it an external timestamp.
+**Verification rests on our own records.** Statements that a derivation was verified numerically, that a capture passed its gates, or that an experiment was registered before it ran cite our review notes and experiment log. Those are our records and have not been checked by anyone else. The registration for the experiments added in the final round was committed to version control, with timestamps, before the runs; the history will be linked in the de-anonymized version.
 
-**Code hazards.** The per-tensor caches of the re-rounder, the extractors and the spectra tools are keyed by tensor name only and carry no provenance fingerprint; in this revision every run used a fresh cache directory per arm, and the Llama-3.1-8B pipeline also stamped each cache with its inputs; the tools themselves are unchanged. Column selection under Gram whitening ranks the wrong columns (the reported column runs predate full-covariance whitening) [source: research/lowrank/review/adversarial-code.md].
+**Code hazards.** The per-tensor caches of the re-rounder, the extractors and the spectra tools are keyed by tensor name only and carry no provenance fingerprint; in the final round every run used a fresh cache directory per arm, and the Llama-3.1-8B pipeline also stamped each cache with its inputs; the tools themselves are unchanged. Column selection under Gram whitening ranks the wrong columns (the reported column runs predate full-covariance whitening) [source: research/lowrank/review/adversarial-code.md].
 
 **How the work was done.** Experiments, analysis and drafting were carried out by AI research agents under the author's direction, on one workstation. The author is responsible for the claims; errors found in the record and their corrections are listed in §7.6.
 
@@ -52,7 +52,7 @@ Not run: a mixed-type control at 0.6B (the 0.6B rows are legacy); the mixture-of
 
 ## 7.3 Reproducibility and artifacts
 
-Method descriptions, scripts, raw logs, per-chunk outputs and result tables are in the supplementary material, one directory per experiment; Appendix B maps each tag used in this paper to its directory. The statistics added in revision are produced by one script from existing logs [source: research/lowrank/experiments/35-final-reanalysis/README.md]. Large binaries (reference logits, Gram captures, quantized models and adapters, about 160 GB) are not included. They can be rebuilt from the recorded recipes; some early ones were deleted to reclaim disk, so a number resting on a deleted artifact is reproducible only by rebuilding it. Two reproduction gates were run: one rebuilt the 0.8B base with 335/335 tensors byte-identical and re-derived the re-rounded file byte-identical, and one reproduced the published 0.8B numbers before any new comparison [source: research/lowrank/experiments/26-lloyd-gauge/results.txt].
+Method descriptions, scripts, raw logs, per-chunk outputs and result tables are in the supplementary material, one directory per experiment; Appendix B maps each tag used in this paper to its directory. The statistics added in the final round are produced by one script from existing logs [source: research/lowrank/experiments/35-final-reanalysis/README.md]. Large binaries (reference logits, Gram captures, quantized models and adapters, about 160 GB) are not included. They can be rebuilt from the recorded recipes; some early ones were deleted to reclaim disk, so a number resting on a deleted artifact is reproducible only by rebuilding it. Two reproduction gates were run: one rebuilt the 0.8B base with 335/335 tensors byte-identical and re-derived the re-rounded file byte-identical, and one reproduced the published 0.8B numbers before any new comparison [source: research/lowrank/experiments/26-lloyd-gauge/results.txt].
 
 Three components are not stock llama.cpp: the Gram-capture extension to llama-imatrix (about 140 lines, environment-gated), the llama-gradmatrix tool, and the fused-kernel and allocator patch set (numbers reported at a build that predates b10865; since rebased onto b10865). The re-rounder and the extractors are standalone Python against gguf-py. Serving needs none of the patches: a re-rounded file is a standard GGUF, and a corrected model is a standard GGUF plus a standard LoRA-form adapter. Producing either needs the Gram-capture patch and the source weights.
 
@@ -70,7 +70,7 @@ Re-rounding a Q2_K file's codes under an activation-covariance metric lowers its
 
 ## 7.6 Corrections made to the record
 
-The project record contains errors that were found and corrected before this paper, and they are listed here so that a reader of the repository can find them.
+The project record contains errors that were found and corrected before this paper, and they are listed here so that a reader of the supplementary material can find them.
 
 - A first set of 27B comparisons, unpaired and against a requantized reference, showed a margin for the corrected configuration that reversed sign under single-step provenance (§4.3).
 - A set of paired t statistics for the head-to-head of §5 was inflated by dividing per-chunk differences by a per-token standard error. They were recomputed with the canonical tool before any conclusion changed; the corrected values are the ones in §5.2.
@@ -78,8 +78,8 @@ The project record contains errors that were found and corrected before this pap
 - A first "mixed-calibration" run never reached its second corpus, because the two corpora were concatenated and not interleaved.
 - An early statement that capture falls as r/d rested on two points; §4.2 replaces it with a fit in which r/d is the worst of six forms.
 - A journal entry asserted that the GSQ-RCO checkpoints were trained on FineWeb-Edu; the card and code do not say so (§5.3).
-- Every hybrid-architecture row in the previous version was scored on a llama.cpp build that predates its Gated-DeltaNet normalization fix. The paired comparisons were valid within that build; this version re-scores them on the current build and reports both where they differ (§4.3).
-- The previous version stated that at 0.6B and 0.8B "controls beat crowns" by inference from interpolation between rungs; §4.3 now measures it at 0.8B.
-- The previous version reported re-rounding at 27B as a 13.3% KL-divergence gain. That pair was legacy provenance; under single-step provenance the gain is 3.7% and unresolved, and held-out text is harmed (§3.1).
+- Every hybrid-architecture row in an earlier draft was scored on a llama.cpp build that predates its Gated-DeltaNet normalization fix. The paired comparisons were valid within that build; this paper re-scores them on the current build and reports both where they differ (§4.3).
+- An earlier draft stated that at 0.6B and 0.8B "controls beat crowns" by inference from interpolation between rungs; §4.3 now measures it at 0.8B.
+- An earlier draft reported re-rounding at 27B as a 13.3% KL-divergence gain. That pair was legacy provenance; under single-step provenance the gain is 3.7% and unresolved, and held-out text is harmed (§3.1).
 
 Each is kept in the journal with its correction [source: research/lowrank/JOURNAL.md; review/adversarial-claims.md].
