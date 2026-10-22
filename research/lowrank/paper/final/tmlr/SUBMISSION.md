@@ -100,8 +100,8 @@ this list with current line numbers after every rewrite.
 
 | item | status |
 |---|---|
-| All 50 cited arXiv ids in `refs.bib`, `eprint` + `archivePrefix` kept; venue where `refs.json` states one, else "arXiv preprint" | **done** |
-| Three venues withheld, printed as arXiv preprints, flagged in `refs.bib` comments: **LoftQ** (2310.08659; references.md says ICLR 2024), **LQ-LoRA** (2311.12023; ICLR 2024), **Punica** (2310.18547; MLSys 2024, possibly SOSP) — see `refs/review.json` | **AUTHOR** — confirm against the proceedings; then add the venue to `refs.json` (and drop it from `venue_withheld`) and rebuild |
+| All 78 cited arXiv ids in `refs.bib`, `eprint` + `archivePrefix` kept; venue where `refs.json` states one, else "arXiv preprint" | **done** |
+| Three venues once withheld — **LoftQ** (ICLR 2024, oral), **LQ-LoRA** (ICLR 2024, poster), **Punica** (MLSys 2024, not SOSP) — confirmed 2026-10-22 against OpenReview and proceedings.mlsys.org and released from `venue_withheld`; seven more venues found the same day (MiLo, GlowQ, Sheared-LLaMA, Minitron, MPK, FLRQ, TileQ; `../../review/litsweep-2026-10-22/R6-serving-refs.md`) | **done** |
 | Venue names expanded (`latex_tmlr.VENUES`); the three journal references (Gillis & Glineur 2011, Halko et al. 2011, CLoQ/TMLR 2025) written out in `latex_tmlr.JOURNALS`; the build stops if the arXiv record's text changes | **done** |
 | "ICLR Workshop" (EoRA, 2410.21271) printed without a workshop name | **check** |
 | Numbers attributed to cited works (`../references.md` §Verification flags) | **check** — unchanged by this build |

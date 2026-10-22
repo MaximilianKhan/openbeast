@@ -117,10 +117,10 @@ decide; read it before uploading.
   macro from `latex_tmlr.ASCII`. An unmapped character stops the build; a
   "Missing character" in the log fails it, as in the article build. The same
   file should compile with `pdflatex` + `bibtex` (not tried; no TeX Live here).
-- **Citations.** `refs.bib` is generated from `refs.json` (all 50 entries,
-  key `arxiv<id>`, `eprint`/`archivePrefix` kept; the three
-  `venue_withheld` entries print as arXiv preprints and are commented in the
-  file). Markers become `\citep` when a parenthesis holds only citations,
+- **Citations.** `refs.bib` is generated from `refs.json` (all 78 entries,
+  key `arxiv<id>`, `eprint`/`archivePrefix` kept; any
+  `venue_withheld` entry prints as an arXiv preprint and is commented in the
+  file; none is withheld since 2026-10-22). Markers become `\citep` when a parenthesis holds only citations,
   `\citet` when the id is used as a noun ("the convention of arXiv:X"), and
   `\citealp` inside a parenthesis with other text.
 - **Anonymization** (`paper-tmlr` only). Artifact tags render as
@@ -157,10 +157,9 @@ not verify falls back to its short name with a trailing "(unverified)". After
 citing a new id, run `python3 fetch_refs.py --fetch`, check the new title
 against the text, then rebuild.
 
-Before a formal submission: three entries print as arXiv preprints because
-their only venue statement is soft (`refs/review.json`, `venue_withheld`:
-LoftQ, LQ-LoRA, Punica — confirm against the proceedings), the check above
-covers each work's identity, not the specific numbers the text attributes
+Before a formal submission: the three venues once withheld (LoftQ, LQ-LoRA,
+Punica) were confirmed against OpenReview and the MLSys proceedings on
+2026-10-22 and now print; the check above covers each work's identity, not the specific numbers the text attributes
 to it (`../references.md` §Verification flags still stands). The author line
 is settled (2026-10-15): Max Khan, Independent Researcher, in the preprint
 build only; the TMLR build is anonymous. The venue is TMLR (see "The TMLR build").

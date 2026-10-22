@@ -12,7 +12,8 @@ refs.json keeps the sentence each venue was read from; `verified` is false when 
 not resolve or when refs/review.json records that the arXiv record is not the
 work the paper's text describes. refs/review.json is the one hand-kept input:
 the outcome of reading every fetched title against the text's description,
-plus the venues stated only by references.md that are too soft to print.
+plus the venues stated only by references.md that are too soft to print, and
+author spellings the arXiv record gets wrong (author_fix).
 """
 import json, pathlib, re, sys, time, urllib.request
 import xml.etree.ElementTree as ET
@@ -24,7 +25,7 @@ RAW = HERE / "refs"
 API = "http://export.arxiv.org/api/query?max_results={n}&id_list={ids}"
 NS = {"a": "http://www.w3.org/2005/Atom", "x": "http://arxiv.org/schemas/atom"}
 BATCH = 25
-VENUE_NAMES = ["NeurIPS", "ICML", "ICLR", "AAAI", "MLSys", "COLM", "ACL", "EMNLP", "NAACL"]
+VENUE_NAMES = ["NeurIPS", "ICML", "ICLR", "AAAI", "MLSys", "OSDI", "COLM", "EACL", "ACL", "EMNLP", "NAACL"]
 VENUES = "(" + "|".join(VENUE_NAMES) + ")"
 
 
@@ -81,7 +82,7 @@ def venue_in(text):
     Reads 'Accepted at ICML2024', "ICLR'26 camera ready", 'ICLR 2026 workshops',
     '(COLM), 2024'. Only the spelling is normalized; no venue is inferred.
     """
-    m = re.search(VENUES + r"\W{0,3}(\d{4}|\d{2})(?!\d)(\s+workshop)?", text or "", re.I)
+    m = re.search(r"\b" + VENUES + r"\W{0,3}(\d{4}|\d{2})(?!\d)(\s+workshop)?", text or "", re.I)
     if not m:
         return None
     year = int(m.group(2)) if len(m.group(2)) == 4 else 2000 + int(m.group(2))
@@ -101,9 +102,11 @@ def venue(rec, name):
     jr = rec["journal_ref"]
     if jr and not re.match(r"https?://\S+$", jr):
         return jr, None, "arxiv journal_ref", jr
-    hit = venue_in(rec["comment"])
+    # A comment that only reports a submission is not a venue.
+    hit = None if re.search(r"under review|submitted to", rec["comment"] or "", re.I) else venue_in(rec["comment"])
     if hit:
-        return hit[0], hit[1], "arxiv comment", rec["comment"]
+        name = ("Findings of " + hit[0]) if re.search(r"\bfindings\b", rec["comment"], re.I) else hit[0]
+        return name, hit[1], "arxiv comment", rec["comment"]
     paren = re.search(r"\(([^()]*)\)\s*$", name or "")
     if paren and not re.search(r"\bsoft\b|\bclaim|\?|unverified|submitted", paren.group(1), re.I):
         hit = venue_in(paren.group(1))
@@ -135,7 +138,9 @@ def main():
             if vsrc == "references.md" and i in review.get("venue_withheld", {}):
                 e["venue_withheld"] = review["venue_withheld"][i]
                 v = vy = vsrc = vev = None
-            e.update(verified=True, title=rec["title"], authors=rec["authors"], year=rec["year"],
+            fix = review.get("author_fix", {}).get(i, {})
+            authors = [fix.get(x, x) for x in rec["authors"]]
+            e.update(verified=True, title=rec["title"], authors=authors, year=rec["year"],
                      venue=v, venue_year=vy, venue_source=vsrc, venue_evidence=vev)
         entries.append(e)
     (HERE / "refs.json").write_text(json.dumps(entries, indent=1, ensure_ascii=False) + "\n")
