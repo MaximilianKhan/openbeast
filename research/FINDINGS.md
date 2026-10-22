@@ -1,6 +1,6 @@
 # OpenBeast research findings
 
-State of record as of 2026-10-16. Two research programs have run on this
+State of record as of 2026-10-22. Two research programs have run on this
 rig (one RTX 5090): **beast-rank**, on post-training repair of quantized
 models in llama.cpp, and **langaware**, on raising a local model's success
 rate in a language it was undertrained on. This page states what each
@@ -14,7 +14,9 @@ off the Calibration Distribution* (Max Khan; TMLR submission build
 `paper-tmlr.pdf`, preprint `paper-tmlr-preprint.pdf`). The 2026-10-15/16
 submission campaign that produced its current numbers is
 `lowrank/experiments/36-submission/` (pre-registration `PLAN.md`, results
-`RESULTS-*.md`).
+`RESULTS-*.md`, status in its `README.md`). The paper text passed a
+numbers audit on 2026-10-22 (commit de6ee1a); where this page and the
+paper differ, the paper's `sections/*.md` win.
 
 ## beast-rank: what repair of an aggressively quantized model buys
 
@@ -31,8 +33,11 @@ distribution), FineWeb-Edu and a code corpus no calibration touched.
 1. **Re-rounding a Q2_K file's codes helps small models and not large
    ones.** (`36-submission/RESULTS-D.md`, `RESULTS-B.md`, `RESULTS-G.md`)
    - 0.8B: −33% KLD on wikitext (t = −28.4, 40/40 chunks).
-   - Llama-3.1-8B and Qwen3.6-27B: −1.7% / −3.7% on wikitext, unresolved
-     (|t| < 2); worse on both held-out corpora (t = +7.8 to +12.6). The
+   - Llama-3.1-8B and Qwen3.6-27B: the registered 2:1 wikitext:code recipe
+     is worse than the untouched file on wikitext and FineWeb-Edu at both
+     sizes (t = +3.21 to +14.17) and level on code. A wikitext-only
+     calibration gives −1.7% / −3.7% on wikitext, unresolved (|t| < 2),
+     and is worse on both held-out corpora (t = +7.8 to +12.6). The
      project's earlier 27B "−13.3%" was a legacy Q6_K-derived pair and does
      not reproduce under single-step provenance or with the earlier Grams.
    - Mechanism at 27B (independent recomputation,
@@ -49,19 +54,24 @@ distribution), FineWeb-Edu and a code corpus no calibration touched.
    format and bytes beats frozen-grid re-rounding in 11 of 12 cells
    (0.8B, 8B, 27B), and still does not beat the untouched file at 8B/27B.
    (`RESULTS-E.md`)
-4. **Low-rank correction improves its base everywhere, by less (0.25–0.96×)
-   off-distribution, and more the thinner the base** (recipe-fixed 27B
-   recovery: 7% / 12% / 32% at Q2_K / IQ2_XS / IQ1_S on wikitext; 3% / 8% /
-   16% on FineWeb-Edu). (`RESULTS-D.md` §T1.9)
+4. **Low-rank correction improves its base everywhere, and more the
+   thinner the base** (recipe-fixed 27B recovery: 7% / 12% / 32% at Q2_K /
+   IQ2_XS / IQ1_S on wikitext; 3% / 8% / 16% on FineWeb-Edu;
+   `RESULTS-D.md` §T1.9). Off the calibration distribution the gain is
+   smaller in the ladder and recovery comparisons (0.25–0.96 of the
+   wikitext gain, by model and corpus) and 0.84–1.05 of it on the GSQ
+   head-to-head files (paper §5.3) — not smaller everywhere.
 5. **Against the stock types the correction falls short.**
    - Qwen3.6-27B: ahead of Q3_K_S by 4.5% on the whole wikitext test set
      (580 chunks, t = −4.32; t = −3.68 on the 480 chunks outside the
-     original 100; the n = 100 −2.62 replicates the pre-fix −2.85), **behind it on FineWeb-Edu (t = +3.26)**, level on
-     code; a same-byte mixed-type control beats it on all three corpora
-     (t = +2.4, +6.5, +7.1). (`RESULTS-A.md`)
-   - Qwen3.5-0.8B: a pure-quantization control 1.1% smaller has a third of
-     the corrected crown's KLD on every corpus, 40/40 chunks each
-     (t = −21 to −32). (`RESULTS-D.md`)
+     original 100; the n = 100 −2.62 replicates the pre-fix −2.85),
+     **behind it on FineWeb-Edu (t = +3.26)**, unresolved on code
+     (t = +1.86). A same-byte mixed-type control beats it on all three
+     corpora (corrected minus control t = +2.37, +6.48, +7.11 at n = 100;
+     +5.50 on all 580 wikitext chunks). (`RESULTS-A.md`)
+   - Qwen3.5-0.8B: a pure-quantization control 1.1% smaller is ahead of
+     the corrected configuration on every chunk of all three corpora
+     (t = −21 to −32) and has a third of its wikitext KLD. (`RESULTS-D.md`)
    - Llama-3.1-8B: ahead of Q3_K_S on wikitext (t = −17.4) and FineWeb-Edu
      (t = −3.8), level on code. (`RESULTS-G.md`)
    - IQ3_XS at fewer bytes beats the corrected file on every corpus at 8B
@@ -71,8 +81,10 @@ distribution), FineWeb-Edu and a code corpus no calibration touched.
    (`35-final-reanalysis/RESULTS.md` A2)
 7. **KL divergence to the reference ranks fidelity, not quality.** At a
    2,048-token context, released GSQ-RCO checkpoints are further from BF16
-   than their untrained baselines (t = +8.0, +5.0) while assigning the text
-   higher likelihood in the same run (t = −1.6, −2.5). (`RESULTS-C.md`)
+   than their untrained baselines (t = +8.0, +5.0) at both size classes;
+   in the same run the likelihood of the text is higher where it is
+   resolved, at the IQ3 class only (t = −2.49; IQ2 leans the same way,
+   t = −1.64). One method, one corpus at this context. (`RESULTS-C.md`)
 8. **Better surrogate, same or worse outcome — seven times** (§4.7 of the
    paper), the largest being the 27B re-round.
 9. **Equalization before quantization harms at every strength and
@@ -85,9 +97,11 @@ distribution), FineWeb-Edu and a code corpus no calibration touched.
 
 ### In flight / not done
 
-- Capability replication (`36-submission/f_capability.sh`): three runs per
-  arm of GSQ-RCO IQ3_S, UD-IQ3_S and UD-IQ3_S + our correction on the
-  112-unit coding suite; ~12 h per run. The paper's §5.5 waits on it.
+- Capability replication, E36-F (`36-submission/f_capability.sh`): three
+  runs per arm of GSQ-RCO IQ3_S, UD-IQ3_S and UD-IQ3_S + our correction on
+  the 112-unit coding suite, 9 rows. Running; completed rows are listed in
+  `36-submission/rows-f.txt`. No result is stated until all three rounds
+  are in; the paper's §5.5/§5.6 and six `[PENDING:F]` markers wait on it.
 - Not run: a 0.6B control; a BF16-referenced MoE table; learned-rounding
   and vector-quantizer baselines; a third width inside one family.
 
@@ -96,7 +110,10 @@ distribution), FineWeb-Edu and a code corpus no calibration touched.
 The record contains its own errors and their repairs, now including two
 from this campaign: the 27B re-rounding gain (legacy provenance; gone under
 single-step), and the 27B margin over Q3_K_S (on-distribution only). Each is
-in `lowrank/JOURNAL.md` and the paper's §7.6.
+in `lowrank/JOURNAL.md` and the paper's §7.6. The 2026-10-22 numbers audit
+of the paper text (sign convention of the whole-test-set control margin,
+the scope of the held-out ratio and of the likelihood result, a stale
+independence limitation) is listed in `lowrank/review/response-2026-10-16.md`.
 
 ## langaware: environment feedback for an undertrained language
 

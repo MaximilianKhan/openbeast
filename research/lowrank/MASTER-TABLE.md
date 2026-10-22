@@ -1,3 +1,25 @@
+> **2026-10-22 — historical; superseded in part by E36.** This table and
+> its verdicts are kept as written. The 0.8B and 27B rows below were scored
+> on llama.cpp builds before the Gated-DeltaNet normalization fix (b10829)
+> and on wikitext only; the paper re-scored the comparisons on b10865 on
+> three corpora (`paper/final/sections/`, `experiments/36-submission/`).
+> Superseded here:
+> - **0.8B table, "between-rungs window", pending interpolation control and
+>   RR held-out rows** → paper §3.1 and §4.3 (0.8B), `RESULTS-D.md`: a
+>   same-byte control has a third of the corrected configuration's wikitext
+>   KLD; re-rounding damages the kind of text its calibration lacks.
+> - **27B ladder verdicts ("MIXED+fc BEATS Q3_K_S", "standing 27B law",
+>   increment −0.0090)** → paper §4.3, `RESULTS-A.md`: the 4.5% lead over
+>   Q3_K_S holds on wikitext (580 chunks, t = −4.32) and reverses on
+>   FineWeb-Edu (t = +3.26); the same-byte control beats the corrected file
+>   on every corpus; the increment is 0.0108 on b10865.
+> - **E13 27B re-round pair, "−13.3% ... free lever paired-FINAL"** → paper
+>   §3.1 and §7.6, `RESULTS-B.md`: a legacy-provenance pair; under
+>   single-step provenance the gain is 3.7% and unresolved (t = −1.87), and
+>   held-out text is harmed.
+> - The MoE table (paper §4.6, still pre-fix build, n = 20, Q4-referenced),
+>   the R8 serving entry (paper §6.2) and E30/E31 are not superseded.
+
 # beast-rank MASTER COMPARISON TABLE
 # METRIC STANDARD (PROTOCOL §0): compression = targeted-reference bytes
 # / artifact bytes (×BF16 column is context, never headline); every
@@ -95,7 +117,7 @@ NOT tabled above per the provenance rule; both sides same provenance
 so the DELTA is clean): re-rounded Q2_K 0.1390 ± 0.0029 KLD / 84.55%
 top-1 vs bare 0.1603 ± 0.0032 / 83.48% — paired KLD t=−7.02 (77/100),
 top-1 t=+4.72, NLL tie (t=−0.98). **−13.3% KLD + 1.07 pt top-1 for
-zero bytes at 27B — the free lever is paired-FINAL at this scale.**
+zero bytes at 27B — the free lever is paired-FINAL at this scale.** [Superseded 2026-10-22: legacy provenance; does not reproduce single-step — see the banner at the top.]
 Wiki-calibrated/wiki-scored; the 0.8B R7 held-out anti-generalization
 gate is untested at 27B — no deployment language until it runs.
 

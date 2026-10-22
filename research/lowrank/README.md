@@ -16,9 +16,17 @@ not just feasible — they're FASTER: 27B Q6 61 tok/s vs Q2_K 99.7 on the
 5090. The trade was never compute-for-memory; it is accuracy-for-memory,
 with compute as the free resource that buys accuracy back.)
 
-**Status (2026-10-09): written up.** The paper is
-[`paper/final/paper.pdf`](paper/final/paper.pdf); the short version of what
-was found and what was not done is [`../FINDINGS.md`](../FINDINGS.md). The
+**Status (2026-10-22): TMLR submission in preparation.** The paper is
+[`paper/final/paper.pdf`](paper/final/paper.pdf), retitled *What
+Post-Training Repair Buys on llama.cpp Quantization: A Paired Audit on and
+off the Calibration Distribution*; its source is `paper/final/sections/`,
+and its numbers come from the E36 submission campaign
+([`experiments/36-submission/`](experiments/36-submission/README.md)) and
+were audited on 2026-10-22. One run is still in progress: the capability
+replication E36-F, on which the paper's §5.5 and six `[PENDING:F]` markers
+wait. The short version of what was found and what was not done is
+[`../FINDINGS.md`](../FINDINGS.md); what remains before submission is the
+top of [`TODO.md`](TODO.md). The
 investigation opened 2026-08-03 with the target of a CUDA-only prototype
 and an upstream llama.cpp PR; the framing below is the original one and is
 kept as written — the paper's abstract says what survived it.
@@ -124,9 +132,9 @@ Scale up (0.6B → 9B GLM → 27B) only after each stage earns it.
 - [`PROTOCOL.md`](PROTOCOL.md) — **methodology v2** (post-adversarial-
   review): the standards every result must meet + the ground-up rerun
   matrix (0.8B-first).
-- [`MASTER-TABLE.md`](MASTER-TABLE.md) — the PhD-grade comparison table
-  (BF16-referenced, ± everywhere, provenance column) — the paper's
-  Table 1 in waiting.
+- [`MASTER-TABLE.md`](MASTER-TABLE.md) — the comparison table through
+  2026-09 (BF16-referenced, ± everywhere, provenance column). Historical
+  since E36: its banner lists the rows the paper's tables replace.
 - [`review/`](review/) — the adversarial review (stats/claims/code);
   read before citing any verdict.
 - [`beastrank.py`](beastrank.py) — **the method as a tool**: one command
@@ -135,17 +143,16 @@ Scale up (0.6B → 9B GLM → 27B) only after each stage earns it.
   (0.6B: 1.81x vs Q8 ref in ~6 min — compression ratio only; the smoke
   prints no KLD/PPL, so never quote it without a quality metric
   attached).
-- [`RESULTS_ROLLUP.md`](RESULTS_ROLLUP.md) — **start here**: every
-  measured configuration at both scales on one page, plus the
-  campaign's headline observations (framings corrected 2026-08-04 per
-  [`review/`](review/): the capture "law" is a two-point observation;
-  ladder "victories" are ~1σ parity or wins-from-below).
+- [`RESULTS_ROLLUP.md`](RESULTS_ROLLUP.md) — every configuration measured
+  2026-08-03 → 09-14 on one page, with its dated corrections. Historical
+  since E36 (see its 2026-10-22 banner); for current verdicts start with
+  [`../FINDINGS.md`](../FINDINGS.md) and the paper.
 
 - [`JOURNAL.md`](JOURNAL.md) — dated lab notebook, append-only. Every session
   writes what was tried, what happened, what it taught us. Failed runs are
   sacred knowledge — record them with the same care as wins.
-- [`TODO.md`](TODO.md) — the investigation queue, ranked (recon-adjusted
-  2026-08-11: paper-math lane first, then the re-gated GPU queue).
+- [`TODO.md`](TODO.md) — the investigation queue; its top block is what
+  remains before submission (2026-10-22), the rest is the older queue.
 - [`prior-art/`](prior-art/) — one file per paper/system, with the numbers
   (compression vs perplexity/benchmarks), not vibes. **Start with
   [`recon-2026-08-11.md`](prior-art/recon-2026-08-11.md)** — the

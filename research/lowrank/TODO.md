@@ -1,16 +1,41 @@
 # beast-rank TODO — ranked
 
-> **2026-10-16: E36 submission campaign.** Every item in the old top block
+> **2026-10-22: E36 submission campaign.** Every item in the old top block
 > below was run in `experiments/36-submission/` except those listed here as
 > still open; results are in its `RESULTS-*.md` and in the paper. Venue:
-> TMLR (double-blind); author Max Khan.
+> TMLR (double-blind); author Max Khan. Status of each part:
+> `experiments/36-submission/README.md`.
+
+## DONE in E36 (2026-10-15 → 10-22)
+- [x] A — 27B ladder on b10865, three corpora (`RESULTS-A.md`)
+- [x] A-full — whole wikitext test set at 27B, 580 chunks (`RESULTS-A.md`,
+  "Whole test set"; answers referee 2026-10-16 M6)
+- [x] B — 27B re-rounder under single-step provenance, with IQ2_M / IQ3_XXS
+  brackets; diagnostics B5 (headroom) and B6 (earlier Grams) (`RESULTS-B.md`)
+- [x] C — KLD at a 2,048-token context for the E32 files (`RESULTS-C.md`)
+- [x] D — 0.8B on b10865: T1.1 calibration grid, T1.6 control (0.8B half),
+  T1.13 equalization, T1.15 sampling bound, IQ2_M / IQ3_XXS brackets; T1.9
+  recovery curve at 27B (`RESULTS-D.md`)
+- [x] E — free-grid GPTQ baseline (`RESULTS-E.md`)
+- [x] G — Llama-3.1-8B, the non-Qwen model (`RESULTS-G.md`)
+- [x] Paper retitled and rewritten on these results; pre-final numbers audit
+  of the text applied 2026-10-22 (commit de6ee1a)
 
 ## OPEN after E36
-- [ ] **F — capability replication** (running; `f_capability.sh`, ~12 h/row,
-  9 rows). Fill §5.5/§5.6 + abstract, then `build.py --final`.
-- [ ] After F: final numbers audit, rebuild supplementary
-  (`paper/final/supplementary/build_supp.py`), PR to main, Max submits
-  (OpenReview) and posts the preprint.
+- [ ] **F — capability replication** (running; `f_capability.sh`, 9 rows,
+  progress in `rows-f.txt`; resume steps in `experiments/36-submission/README.md`).
+- [ ] After F: `f_analysis.py` (and `--md` for the §5.5 tables), then fill the
+  six `[PENDING:F]` markers (abstract, §1.3, §5.5, §5.6, §7.2, §7.5) by the
+  procedure in `F-DRAFT.md`.
+- [ ] Final numbers audit of the filled text.
+- [ ] `mise exec typst@0.15.1 -- python3 build.py --final` (refuses while any
+  `[PENDING]` marker remains).
+- [ ] Rebuild the supplementary archive
+  (`nice -n 19 python3 paper/final/supplementary/build_supp.py`).
+- [ ] Delete the 73.5 GB A-full reference
+  `research/lowrank/data/e36-bf16ref27b-wiki-full.logits`.
+- [ ] PR to main.
+- [ ] Max submits on OpenReview (and posts the preprint).
 - [ ] Why re-rounding fails at 8B/27B (paper §7.4): regularizer toward the
   original codes off the calibration subspace; more calibration text; an
   end-to-end objective. Only then more codecs.
@@ -18,9 +43,11 @@
   vector-quantizer baselines; third width inside one family.
 
 
-> **Parked 2026-10-09.** No GPU run is in progress or half-banked. The ordered
-> list of what to run when the card is free, with times and the reason for
-> each, is the "GPU BACKLOG" section at the top of `docs/TODO.md`.
+> **Parked 2026-10-09** (historical: E36 has since run the research items
+> of that backlog, and E36-F is in progress). No GPU run is in progress or
+> half-banked. The ordered list of what to run when the card is free, with
+> times and the reason for each, is the "GPU BACKLOG" section at the top of
+> `docs/TODO.md`.
 
 ## 📄 WRITTEN UP 2026-10-09 — paper/final/paper.pdf + ../FINDINGS.md
 
@@ -29,14 +56,17 @@ E32 controls that landed 09-11..09-14 and had never been journaled (FineWeb
 KLD, PPL@2048, the IQ3 capability pair). Nothing below this block was run
 for the write-up. Still open, and stated as open in the paper's §7
 (§6 before the 2026-10-09 revision renumbered the sections):
-- [ ] T1.1 calibration-mix grid · T1.6 small-scale interpolation controls ·
-  T1.7 held-out pass over the ladder comparisons · T1.9 recovery curve,
-  recipe fixed · T1.13 equalization ablations · T1.15 sampling bound
-- [ ] E32: IQ2 capability pair (started 09-17, not completed); a capability
-  run of OUR arm; single-slot churn floor for the coding suite
-- [ ] third model width for E33; single-step 27B re-round pair
+- [x] T1.1 calibration-mix grid · T1.6 small-scale interpolation controls
+  (0.8B; the 0.6B control is not run) · T1.7 held-out pass over the ladder
+  comparisons · T1.9 recovery curve, recipe fixed · T1.13 equalization
+  ablations · T1.15 sampling bound — DONE in E36 (D, A)
+- [ ] E32: IQ2 capability pair (started 09-17, not completed); single-slot
+  churn floor for the coding suite. (A capability run of OUR arm is part of
+  E36-F, running.)
+- [ ] third model width for E33
+- [x] single-step 27B re-round pair — DONE in E36-B
 - [ ] re-rounder codecs: Q3_K / Q4_K / I-quants / NVFP4 (→ `gguf-refine`)
-- [ ] before an arXiv submission: a venue decision and Max's read. The
+- [ ] before submission: Max's read (venue decided: TMLR). The
   reference list is now full entries from arXiv metadata (all 50 ids resolve
   and match the text, `paper/final/refs.json`, 2026-10-09); left there: confirm
   the three withheld venues (LoftQ, LQ-LoRA, Punica — `refs/review.json`)
@@ -45,18 +75,19 @@ for the write-up. Still open, and stated as open in the paper's §7
 
 CPU reanalysis of the existing logs is done (`experiments/35-final-reanalysis/`);
 these are the items the logs cannot supply. Each is named in the paper's §7.2.
-- [ ] **Re-rounder on the ladder, paired (referee 1, 6).** Re-rounded Q2_K vs
+- [x] **Re-rounder on the ladder, paired (referee 1, 6).** DONE in E36-B (27B)
+  and E36-D (IQ2_M at 0.8B). Re-rounded Q2_K vs
   IQ2_M / IQ3_XXS at 27B under single-step BF16 provenance, same chunks and
   reference (needs the single-step 27B re-round pair, also open above). At
   0.8B the paired answer already exists from logs: IQ3_XXS at 412 MB beats
   re-rounded Q2_K at 436 MB by 0.0657 KLD, t = +10.8 (E35 A3). Add IQ2_M at
   0.8B to bracket the byte point from below.
-- [ ] **Capability replication (referee 4).** Three more single-slot runs
-  per IQ3 arm (GSQ-RCO IQ3_S, UD-IQ3_S) plus a run of OUR corrected arm, so
+- [ ] **Capability replication (referee 4).** RUNNING as E36-F. Three more
+  single-slot runs per IQ3 arm (GSQ-RCO IQ3_S, UD-IQ3_S) plus a run of OUR corrected arm, so
   the +12 can be read against a same-file run-to-run spread; confirm whether
   the Q5 band runs were single-slot.
-- [ ] **KLD at a 2048-token context (referee 4)** for the four E32 artifacts,
-  to separate context length from metric. Paired PPL@2048 is done from logs
+- [x] **KLD at a 2048-token context (referee 4)** — DONE in E36-C. For the
+  four E32 artifacts, to separate context length from metric. Paired PPL@2048 is done from logs
   (t = −3.33, −4.15, n = 145; E35 A5).
 - [ ] **MoE rescoring (referee 9): NOT warranted in the form raised.** E35 A4
   read the reference's tensor types: `ffn_down_exps` is Q5_K ×37 / Q6_K ×3 in
@@ -64,11 +95,13 @@ these are the items the logs cannot supply. Each is named in the paper's §7.2.
   What stays open is a BF16-referenced MoE table at n ≥ 40, if a BF16 of the
   35B-A3B is ever obtained.
 - [ ] **Baselines for the re-rounder (referee 13):** free-grid GPTQ at equal
-  bits; a learned-rounding method; (stretch) a vector/lattice 2-bit quantizer.
-- [ ] **A non-Qwen model (referee 13)**, and the third width E33 needs.
+  bits (DONE, E36-E); a learned-rounding method; (stretch) a vector/lattice
+  2-bit quantizer.
+- [ ] **A non-Qwen model (referee 13)** (DONE, E36-G: Llama-3.1-8B), and the
+  third width E33 needs (not run).
 - [x] **Held-out / replicated 27B ladder pair (referee 5).** DONE in E36:
   A (FineWeb-Edu, code) and A-full (whole wikitext test set, 580 chunks:
-  corrected vs Q3_K_S t = −4.32, control vs corrected t = −5.50).
+  corrected minus Q3_K_S t = −4.32, corrected minus control t = +5.50).
 
 ## DONE 2026-08-03
 - [x] **E01 — SVD spectrum census**: H1 confirmed, W is energy-full-rank,

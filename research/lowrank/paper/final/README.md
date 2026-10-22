@@ -3,6 +3,26 @@
 `paper.pdf` — *What Post-Training Repair Buys on llama.cpp Quantization: A Paired Audit on
 and off the Calibration Distribution.*
 
+## Status (2026-10-22)
+
+Venue TMLR, double-blind. The text is complete except for the capability
+replication (E36-F, running; `../../experiments/36-submission/README.md`):
+six `[PENDING:F]` markers remain by design, in the abstract, §1.3, §5.5, §5.6,
+§7.2 and §7.5, and `build.py --final` refuses to build while any remains. A
+pre-final numbers audit traced every quantitative claim to its results file
+and was applied on 2026-10-22 (commit de6ee1a; what it changed is listed in
+`../../review/response-2026-10-16.md`). What remains, in order:
+
+1. When F completes: `python3 f_analysis.py` and `--md` in
+   `../../experiments/36-submission/`, then fill the six markers by the
+   procedure in `F-DRAFT.md` there.
+2. A final numbers audit of the filled text.
+3. `mise exec typst@0.15.1 -- python3 build.py --final`.
+4. Rebuild the supplementary archive: `nice -n 19 python3 supplementary/build_supp.py`.
+5. Delete the 73.5 GB A-full reference
+   (`research/lowrank/data/e36-bf16ref27b-wiki-full.logits`), open the PR to
+   main; the author submits on OpenReview.
+
 | file | what it is |
 |---|---|
 | `paper.pdf` | the paper (Typst build) |
@@ -19,6 +39,7 @@ and off the Calibration Distribution.*
 | `latex.py` | the LaTeX backend `build.py` calls (Markdown subset → LaTeX, table layout, §-reference links, log check) |
 | `fetch_refs.py`, `refs/`, `refs.json` | the bibliographic record: `refs/arxiv-*.xml` are the saved arXiv API responses, `refs/review.json` the hand-kept cross-check outcome, `refs.json` what `fetch_refs.py` derives from them (`--fetch` re-downloads) |
 | `strip_notes.py` | how `sections/` was first derived from `../draft/` (one-time) |
+| `supplementary/` | `build_supp.py`, the anonymized supplementary-archive builder (output in `supplementary/build/`, file list in `MANIFEST.md`) |
 
 Rebuild:
 
@@ -29,7 +50,8 @@ mise exec typst@0.15.1 -- python3 build.py     # or any typst ≥ 0.13 on PATH
 
 That one command writes `paper.md`, `paper.typ`, `paper.pdf`, `paper.tex`,
 `paper-latex.pdf`, and the TMLR set (`refs.bib`, `paper-tmlr.tex/.pdf`,
-`paper-tmlr-preprint.tex/.pdf`). `--no-latex` skips both LaTeX halves;
+`paper-tmlr-preprint.tex/.pdf`). It warns on any `[PENDING]` marker; `--final`
+makes that an error (the submission build). `--no-latex` skips both LaTeX halves;
 `--no-tmlr` skips only the TMLR set; `--keep-log` leaves the TeX logs in
 `paper-latex.log`, `paper-tmlr.log` and `paper-tmlr-preprint.log`. Without
 Tectonic it still writes the `.tex` files and says so.
@@ -139,5 +161,6 @@ Before a formal submission: three entries print as arXiv preprints because
 their only venue statement is soft (`refs/review.json`, `venue_withheld`:
 LoftQ, LQ-LoRA, Punica — confirm against the proceedings), the check above
 covers each work's identity, not the specific numbers the text attributes
-to it (`../references.md` §Verification flags still stands), and the author
-line is the author's to settle. The venue is TMLR (see "The TMLR build").
+to it (`../references.md` §Verification flags still stands). The author line
+is settled (2026-10-15): Max Khan, Independent Researcher, in the preprint
+build only; the TMLR build is anonymous. The venue is TMLR (see "The TMLR build").

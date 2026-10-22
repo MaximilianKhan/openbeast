@@ -2,11 +2,17 @@
 
 ## ⏳ GPU BACKLOG — parked 2026-10-09 (Max: "kick that into the back, we come back to it later")
 
-> **Status 2026-10-16:** the research items of A, B and C below were run in the
-> E36 submission campaign (`research/lowrank/experiments/36-submission/`):
-> re-rounded Q2_K vs the IQ rungs at 27B, KLD@2048, T1.1, T1.6 (0.8B),
-> T1.7 (held-out), T1.9, T1.13, T1.15, plus a free-grid baseline and
-> Llama-3.1-8B. The IQ3 capability replication (C) is running as E36-F.
+> **Status 2026-10-22:** the research items of A, B and C below were run in the
+> E36 submission campaign (`research/lowrank/experiments/36-submission/`,
+> status in its `README.md`): re-rounded Q2_K vs the IQ rungs at 27B,
+> KLD@2048, T1.1, T1.6 (0.8B), T1.7 (held-out), T1.9, T1.13, T1.15, the
+> whole wikitext test set at 27B (A-full), plus a free-grid baseline and
+> Llama-3.1-8B; the paper's numbers were audited 2026-10-22. The IQ3
+> capability replication (C) is running as E36-F (GPU leased, stack must stay
+> down; do not merge #135 before it finishes). After F: fill the paper's
+> `[PENDING:F]` markers, final audit, `build.py --final`, supplementary,
+> delete the 73.5 GB A-full reference, PR, Max submits on OpenReview — the
+> list is at the top of `research/lowrank/TODO.md`.
 > Still parked: item 0 (real-boot smoke test — the stack has not been
 > started), prompt-cache restore time, cool-off thresholds, the held-out Zig
 > set, the IQ2 capability pair, the era-roll board (#135), escalation A/B,
@@ -68,9 +74,9 @@ the audit priced and the paper lists as not run.
 
 **Not GPU, but waiting on the same decision:** draft PR #135 (merge or
 not; it does not include the prompt trim), and the referee's baseline asks
-that are new work rather than reruns (free-grid GPTQ at equal bits, a
-learned-rounding baseline, a non-Qwen model). Detail for the research items:
-top block of `research/lowrank/TODO.md`; for the review items: the section
+that are new work rather than reruns (free-grid GPTQ at equal bits and a
+non-Qwen model are done in E36; a learned-rounding baseline is not). Detail
+for the research items: top block of `research/lowrank/TODO.md`; for the review items: the section
 below.
 
 ## 🔎 REVIEW 2026-10-09

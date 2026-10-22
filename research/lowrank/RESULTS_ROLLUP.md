@@ -1,3 +1,35 @@
+> **2026-10-22 — historical; superseded in part by E36.** Raw tables and
+> dated corrections below are kept as written. For current verdicts use the
+> paper (`paper/final/sections/`) and `experiments/36-submission/RESULTS-*.md`.
+> Superseded here:
+> - **27B verdicts ("MIXED+fc BEATS Q3_K_S at n=100", "standing law",
+>   fc increment −0.0090)** → paper §4.3, `RESULTS-A.md` (b10865, three
+>   corpora, plus all 580 wikitext chunks): ahead of Q3_K_S by 4.5% on
+>   wikitext (t = −4.32), behind it on FineWeb-Edu (t = +3.26), unresolved
+>   on code; the same-byte control beats it on every corpus.
+> - **"E13 free lever paired-FINAL (−13.3% KLD, t=−7.02)"** → paper §3.1,
+>   §7.6, `RESULTS-B.md`: legacy provenance; single-step 3.7%, unresolved
+>   (t = −1.87), harms FineWeb-Edu and code. Re-rounding helps at 0.6B/0.8B
+>   only; it fails at Llama-3.1-8B and 27B (`RESULTS-G.md`).
+> - **Recovery curve 20/28/41% (correction 6) and "IQ1_S recovery (41%)"**
+>   → paper §4.5, `RESULTS-D.md` §T1.9, recipe held fixed: 7.0% / 12.2% /
+>   32.0% at Q2_K / IQ2_XS / IQ1_S on wikitext.
+> - **Correction 2 (no small-scale control)** → built at 0.8B: paper §4.3,
+>   `RESULTS-D.md`. Still none at 0.6B.
+> - **Correction 7 (no held-out corpus, no task evals)** → held-out corpora
+>   added throughout (paper §3.1, §4.3, §4.5, §5.3); capability replication
+>   E36-F is running, results pending.
+> - **Block 6 (E32): "one CPU pass beats 20 GPU-epochs" framing** → paper
+>   §5.2-§5.4, `RESULTS-C.md`: 85% / 88% of the corrected arm's KLD lead over
+>   GSQ-RCO is the untrained baseline's own lead; KLD ranks fidelity, and
+>   GSQ-RCO's text likelihood is higher where resolved (IQ3 class).
+> - **E33 "full-Gram halves the penalty"** → paper §4.2: in the primary fit
+>   full-Gram whitening reduces the width exponent by about a third
+>   (−0.76 to −0.52).
+> - **Laws item 1 (capture-vs-width) and item 5 ("every lever shrinks")**
+>   → paper §4.2 (fitted form, one width step) and §3.1 (re-rounding gives
+>   no resolved gain at 8B/27B and damages held-out text).
+
 # beast-rank — consolidated results rollup
 > ⚠ round-2 corrections 2026-08-04 (review/adversarial-round2-*.md,
 > review/coherence-audit.md applied)
@@ -133,7 +165,8 @@ correction at 27B. **The interpolation CONTROL still beats the
 flagship (KLD t=+2.62)** — correction beats the rung, not the line;
 standing law: mixed-TYPE allocation > correction > uniform rung.
 fc increment paired-proven (−0.0090 KLD, t=−8.52); E13 free lever
-paired-FINAL (−13.3% KLD, t=−7.02, legacy-provenance pair); IQ3_XS
+paired-FINAL (−13.3% KLD, t=−7.02, legacy-provenance pair) [superseded
+2026-10-22 — see the banner at the top]; IQ3_XS
 keeps the KLD point-crown at 100ch; every lever real but
 scale-shrunk; corrected-Q2_K ≈ IQ-codebook efficiency at equal
 tensors.
