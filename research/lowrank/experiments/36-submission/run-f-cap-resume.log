@@ -1,0 +1,8 @@
+lease acquired by pid 1050250 — E36 f-cap
+=== E36-F start 2026-10-16 12:36:31, rounds=3 ===
+SKIP e36f-GSQ-IQ3S-r1
+[2026-10-16 12:36:31] ROW START e36f-UD-IQ3S-r1
+[2026-10-16 22:11:25] ROW END e36f-UD-IQ3S-r1 rc=1 result=evals/results/eval-e36f-ud-iq3s-r1-20261016-123635.json cuda_errors=0 sha=b28677d ended=2026-10-16 22:11:25
+[2026-10-16 22:11:25] ROW START e36f-OURS-IQ3S-r1
+[2026-10-17 09:11:00] ROW END e36f-OURS-IQ3S-r1 rc=1 result=evals/results/eval-e36f-ours-iq3s-r1-20261016-221130.json cuda_errors=0 sha=b28677d ended=2026-10-17 09:11:00
+[2026-10-17 09:11:00] ROW START e36f-GSQ-IQ3S-r2

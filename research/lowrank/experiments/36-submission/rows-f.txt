@@ -1,3 +1,5 @@
 e36f-GSQ-IQ3S-r1 rc=1 result=evals/results/eval-e36f-gsq-iq3s-r1-20261016-032722.json cuda_errors=0 sha=053ba2c ended=2026-10-16 12:00:23
 e36f-UD-IQ3S-r1 rc=1 result=evals/results/eval-e36f-ud-iq3s-r1-20261016-123635.json cuda_errors=0 sha=b28677d ended=2026-10-16 22:11:25
 e36f-OURS-IQ3S-r1 rc=1 result=evals/results/eval-e36f-ours-iq3s-r1-20261016-221130.json cuda_errors=0 sha=b28677d ended=2026-10-17 09:11:00
+e36f-GSQ-IQ3S-r2 rc=1 result=evals/results/eval-e36f-gsq-iq3s-r2-20261021-111911.json cuda_errors=0 sha=d427b5e ended=2026-10-21 19:27:51
+e36f-UD-IQ3S-r2 rc=1 result=evals/results/eval-e36f-ud-iq3s-r2-20261021-192756.json cuda_errors=0 sha=d427b5e ended=2026-10-22 03:57:36
