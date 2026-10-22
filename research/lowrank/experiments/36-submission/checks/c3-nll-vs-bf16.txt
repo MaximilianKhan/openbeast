@@ -1,0 +1,10 @@
+source: logs-b/ctx2048-*.log (E36-C); NLL_file - NLL_BF16 per 2048-token window, n = 40
+file  mean ± sem  t  file-better/40  Wilcoxon p
+gsq-rco-iq2xs      +0.07297 ± 0.01308  t=+5.58  4/40  p=2.23e-06
+unsloth-ud-iq2s    +0.09751 ± 0.00692  t=+14.09  0/40  p=1.82e-12
+gsq-rco-iq3s       -0.00395 ± 0.00861  t=-0.46  13/40  p=0.179
+unsloth-ud-iq3s    +0.01396 ± 0.00364  t=+3.84  8/40  p=7.71e-05
+ours-iq3s-fc128    +0.01370 ± 0.00320  t=+4.28  7/40  p=4.4e-05
+ours-iq2s-fc128    +0.07851 ± 0.00563  t=+13.96  1/40  p=3.64e-12
+unsloth-ud-q2kxl   +0.04496 ± 0.00914  t=+4.92  6/40  p=2.92e-06
+ours-q2kxl-fc128   +0.03725 ± 0.00732  t=+5.09  6/40  p=2.44e-06
