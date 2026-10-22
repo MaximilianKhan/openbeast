@@ -10,9 +10,10 @@ Only text is included: scripts, logs, results tables and notes. Model weights (G
 |---|---|---|---|---|
 | E1 | `experiments/01-svd-spectrum/` | §1.2, §4.1 | E01 — SVD spectrum census of Qwen3-0.6B | 3 (24.0 KB) |
 | E3 | `experiments/03-residual-rank/` | §1.2, §4.1 | E03 — Is quantization error low-rank? | 3 (23.2 KB) |
+| E4 | `experiments/04-served-v0/` | §6.1 | E04 — v0 end-to-end: served low-rank residual correction | 5 (24.7 KB) |
 | E10 | `experiments/10-full-covariance/` | §2.1, §4.7 | E10 — full-covariance whitening: the paradigm's second act | 2 (10.5 KB) |
 | E13 | `experiments/13-rerounder/` | §2.3, §3.1, §3.3, §4.9 | E13 — frozen-grid error-feedback re-rounding ("GPTQ for K-quants") | 3 (16.5 KB) |
-| E14 | `experiments/14-fused-kernel/` | §1.3, §6.2 | Experiment 14 — Phase 1 fused adapter epilogue (B·t + scale + add into mmvq) | 4 (38.5 KB) |
+| E14 | `experiments/14-fused-kernel/` | Abstract, §1.3, §6.2 | Experiment 14 — Phase 1 fused adapter epilogue (B·t + scale + add into mmvq) | 4 (38.5 KB) |
 | E15 | `experiments/15-iq1-carrier/` | §A.2 | E15 — the IQ1_S carrier: the original pure-factorization goal in servable form | 2 (3.7 KB) |
 | E17 | `experiments/17-task-conditioned/` | §4.8 | E14-cond — task-conditioned correction (dir: 17-task-conditioned) | 2 (2.3 KB) |
 | E20 | `experiments/20-gradgram/` | §2.1, §4.7 | E20 - output-gradient Gram capture (grad Grams for M2/M3) | 2 (13.0 KB) |
@@ -20,7 +21,7 @@ Only text is included: scripts, logs, results tables and notes. Model weights (G
 | E24 | `experiments/24-yaqa-lite/` | §2.3, §3.2, §3.3 | E24 — YAQA-lite: Kronecker-global-metric re-rounding (M1) on Qwen3.5-0.8B | 18 (147.7 KB) |
 | E25 | `experiments/25-alloc-concurrency/` | §1.3, §6.3 | Experiment 25 - allocator-level concurrency fix for GGML_CUDA_GRAPH_OPT | 1 (10.5 KB) |
 | E26 | `experiments/26-lloyd-gauge/` | §7.3, §A.3, §A.4 | E26 — Fisher-Lloyd fixed point (M4) + principled gauge-fixing (M5) | 28 (278.9 KB) |
-| E27 | `experiments/27-bf16-rederivation/` | §2, §4.3, §6.2 | E27 — the 27B story, re-derived BF16-pure (PROTOCOL v2 rerun) | 64 (2.6 MB) |
+| E27 | `experiments/27-bf16-rederivation/` | Abstract, §2, §4.3, §6.2 | E27 — the 27B story, re-derived BF16-pure (PROTOCOL v2 rerun) | 64 (2.6 MB) |
 | E28 | `experiments/28-glowq-shared-a/` | §4.4 | E28 — GlowQ shared-A: input-sharing groups share whitened residual subspaces — GO | 9 (34.0 KB) |
 | E29 | `experiments/29-srr-split/` | §4.4 | E29 — SRR preserve-then-quantize split at 27B: order doesn't matter | 9 (183.0 KB) |
 | E31 | `experiments/31-seeded-basis-duel/` | §4.4 | E31 — AWSRC seeded-basis vs learned whitened factors (capture-per-byte duel) | 3 (11.7 KB) |
@@ -28,13 +29,13 @@ Only text is included: scripts, logs, results tables and notes. Model weights (G
 | E33 | `experiments/33-t110-capture-width/` | §4.2 | E33 / T1.10 — capture-vs-width regression (CPU only, 2026-09-11) | 22 (672.1 KB) |
 | E34 | `experiments/34-e16-nvfp4-08b/` | §A.1 | E34 / E16 rung 1 — whitened low-rank correction on a self-quantized NVFP4 base, 0.8B (2026-09-11) | 34 (847.7 KB) |
 | E35 | `experiments/35-final-reanalysis/` | §2.5, §3.1, §4.3, §4.4, §4.6, §5.2, §5.3, §5.4, §6.1, §7.3, §A.2 | E35 — final reanalysis for the paper revision (2026-10-09) | 3 (60.0 KB) |
-| E36 | `experiments/36-submission/` | Abstract, §1.2, §1.3, §3.1, §3.4, §4.3, §4.5, §5.4, §7.2, §A.3 | E36 — the submission campaign (pre-registered 2026-10-15) | 266 (3.6 MB) |
+| E36 | `experiments/36-submission/` | Abstract, §1.2, §3.1, §3.4, §4.3, §4.5, §5.4, §7.2, §A.3 | E36 — the submission campaign (pre-registered 2026-10-15) | 411 (18.6 MB) |
 | ablation | `paper/ABLATION-PLAN.md` | §7.2 | the missing-runs matrix the final experiments were planned from | 1 (33.5 KB) |
-| journal | `JOURNAL.md` | §2.2, §3.2, §4.3, §4.7, §5.3, §7.6 | the timestamped experiment log (pre-registrations, decisions, incidents), in order of writing | 1 (92.1 KB) |
+| journal | `JOURNAL.md` | §2.2, §3.2, §4.3, §4.7, §5.3, §7.6 | the timestamped experiment log (pre-registrations, decisions, incidents), in order of writing | 1 (98.2 KB) |
 | kernels | `kernels/` | §2, §3, §6 (the patched llama-imatrix and kernels; not tagged) | the research-side llama.cpp changes as `git format-patch` files against upstream llama.cpp (correction kernels, re-rounding support, Gram/gradient capture), with their README | 3 (101.8 KB) |
 | manifolds | `prior-art/MANIFOLD-CANDIDATES.md` | §7.4 | literature note: manifold / information-geometry candidates (authored notes on cited work) | 1 (7.2 KB) |
 | protocol | `PROTOCOL.md` | §2.5 | the measurement protocol (methodology v2) the experiments follow | 1 (4.0 KB) |
-| review | `review/` | §2.2, §4, §4.2, §4.3, §4.7, §4.9, §6.1, §7.1, §7.6, §A.2 | the adversarial reviews of claims, code, statistics and the paper, and the coherence audit | 7 (134.8 KB) |
+| review | `review/` | §2.2, §4, §4.2, §4.3, §4.7, §4.9, §6.1, §7.1, §7.6, §A.2 | the adversarial reviews of claims, code, statistics and the paper, and the coherence audit | 9 (172.8 KB) |
 | rollup | `RESULTS_ROLLUP.md` | §1.1, §4.2, §4.3, §6.1 | consolidated results across experiments, with the corrections log | 1 (20.3 KB) |
 | theory-L6 | `paper/theory-L6-family-subsumption.md` | §2.2, §2.3, §8 | theory note: family subsumption (L6) | 1 (20.5 KB) |
 | theory-alt | `paper/theory-alternation-convergence.md` | §2.4, §A.5 | theory note: convergence of the alternation | 1 (4.2 KB) |
@@ -47,6 +48,9 @@ Only text is included: scripts, logs, results tables and notes. Model weights (G
 | E1 | binary or non-text type `.npz` | 1 | 767.6 KB |
 | E3 | binary or non-text type `.gguf` | 1 | 296.2 MB |
 | E3 | binary or non-text type `.npz` | 1 | 765.1 KB |
+| E4 | binary or non-text type `.gguf` | 19 | 4.1 GB |
+| E4 | cache / code-dump directory `__pycache__/` | 1 | 23.0 KB |
+| E4 | cache / code-dump directory `codes-kron-clean/` | 113 | 264.3 MB |
 | E10 | binary or non-text type `.gguf` | 7 | 5.1 GB |
 | E13 | binary or non-text type `.gguf` | 9 | 12.6 GB |
 | E13 | cache / code-dump directory `__pycache__/` | 1 | 18.3 KB |
@@ -72,10 +76,14 @@ Only text is included: scripts, logs, results tables and notes. Model weights (G
 | E33 | binary or non-text type `.png` | 3 | 490.8 KB |
 | E34 | binary or non-text type `.gguf` | 2 | 173.8 MB |
 | E35 | cache / code-dump directory `__pycache__/` | 1 | 48.5 KB |
+| E36 | binary or non-text type `.bf16-verified` | 1 | - |
 | E36 | binary or non-text type `.captures-done` | 1 | - |
-| E36 | binary or non-text type `.gguf` | 37 | 60.9 GB |
-| E36 | cache / code-dump directory `codes-08b-wiki/` | 96 | 91.9 MB |
-| E36 | cache / code-dump directory `codes-27b-mixed/` | 256 | 5.1 GB |
+| E36 | binary or non-text type `.gguf` | 34 | 12.7 GB |
+| E36 | binary or non-text type `.gitignore` | 1 | 319 B |
+| E36 | cache / code-dump directory `.ruff_cache/` | 3 | 282 B |
+| E36 | cache / code-dump directory `__pycache__/` | 1 | 10.3 KB |
+| E36 | cache / code-dump directory `codes-fg-mix2/` | 96 | 91.9 MB |
+| E36 | cache / code-dump directory `codes-fg-wiki/` | 96 | 91.9 MB |
 | E36 | cache / code-dump directory `codes-rr-code/` | 97 | 280.0 MB |
 | E36 | cache / code-dump directory `codes-rr-fw/` | 97 | 280.0 MB |
 | E36 | cache / code-dump directory `codes-rr-m111/` | 97 | 280.0 MB |
@@ -84,8 +92,6 @@ Only text is included: scripts, logs, results tables and notes. Model weights (G
 | E36 | cache / code-dump directory `codes-rr-thirdB/` | 97 | 280.0 MB |
 | E36 | cache / code-dump directory `codes-rr-thirdC/` | 97 | 280.0 MB |
 | E36 | cache / code-dump directory `codes-rr-wiki/` | 97 | 280.0 MB |
-| E36 | cache / code-dump directory `codes27b-mixed/` | 95 | 5.7 GB |
-| E36 | cache / code-dump directory `codes27b-wiki/` | 256 | 15.5 GB |
 | E36 | cache / code-dump directory `fc-cache-t19-IQ1_S/` | 209 | 1.3 GB |
 | E36 | cache / code-dump directory `fc-cache-t19-IQ2_XS/` | 209 | 1.3 GB |
 | E36 | cache / code-dump directory `fc-cache-t19-Q2_K/` | 209 | 1.3 GB |

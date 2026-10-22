@@ -232,7 +232,7 @@ ARCHIVE_EDITS = {
         ("The author: take the GPU and finish what a formal submission needs.",
          "The author asked for the GPU runs a formal submission needs.", 1),
         ("B waits for the author's go to restart", "B waits for the author's approval to restart", 1),
-        ("(the author's go)", "(approved by the author)", 1),
+        ("(the author's go)", "(approved by the author)", 2),
         ("Cache: PR #35's zero-token guard", "Cache: <PR>'s zero-token guard", 1),
         ("FULLY LIVE — the #56\npull", "FULLY LIVE — the <PR>\npull", 1)],
     "experiments/25-alloc-concurrency/REPORT.md": [
