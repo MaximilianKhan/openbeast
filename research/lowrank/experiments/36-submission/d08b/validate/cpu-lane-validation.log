@@ -1,0 +1,49 @@
+[2026-10-15 16:29:00] CPU-only validation run -> /home/max/Documents/openbeast/research/lowrank/experiments/36-submission/d08b/_val/lane
+[2026-10-15 16:29:00] quantize q2k.gguf (Q2_K)
+[2026-10-15 16:29:08]   436408864 B
+[2026-10-15 16:29:08] quantize iq3xxs.gguf (IQ3_XXS)
+[2026-10-15 16:29:26]   412082208 B
+[2026-10-15 16:29:26] quantize q3km.gguf (Q3_K_M)
+[2026-10-15 16:29:31]   480304160 B
+[2026-10-15 16:29:31] quantize q4km.gguf (Q4_K_M)
+[2026-10-15 16:29:38]   543378976 B
+[2026-10-15 16:29:38] quantize iq2m.gguf (IQ2_M)
+[2026-10-15 16:29:49]   392015904 B
+[2026-10-15 16:29:50] re-round q2k-rr-wiki.gguf with e36-gram08b-wiki
+[2026-10-15 16:31:24] extract fc-wiki.gguf on q2k.gguf with e36-gram08b-wiki
+[2026-10-15 16:33:31] alternation: W' = W - C0
+[2026-10-15 16:33:43] quantize q2k-alt1.gguf (Q2_K)
+[2026-10-15 16:33:48]   436408864 B
+[2026-10-15 16:33:48] extract fc-alt1-wiki.gguf on q2k-alt1.gguf with e36-gram08b-wiki
+[2026-10-15 16:35:42] crown bytes 523330240 (predicted 523330208)  <-- MISMATCH
+[2026-10-15 16:35:42] quantize control-B.gguf (Q3_K_M)
+[2026-10-15 16:35:48]   522992672 B
+[2026-10-15 16:35:48] quantize q2k-noimx.gguf (Q2_K)
+[2026-10-15 16:35:51]   436408480 B
+[2026-10-15 16:35:51] equalize alpha=025
+[2026-10-15 16:36:00] quantize q2k-eq-a025.gguf (Q2_K)
+[2026-10-15 16:36:06]   436408864 B
+[2026-10-15 16:36:06] equalize alpha=050
+[2026-10-15 16:36:15] quantize q2k-eq-a050.gguf (Q2_K)
+[2026-10-15 16:36:20]   436408864 B
+[2026-10-15 16:36:20] equalize alpha=075
+[2026-10-15 16:36:29] quantize q2k-eq-a075.gguf (Q2_K)
+[2026-10-15 16:36:35]   436408864 B
+[2026-10-15 16:36:35] equalize alpha=100
+[2026-10-15 16:36:43] quantize q2k-eq-a100.gguf (Q2_K)
+[2026-10-15 16:36:49]   436408864 B
+[2026-10-15 16:36:49] quantize q2k-eq-a100-noimx.gguf (Q2_K)
+[2026-10-15 16:36:53]   436408480 B
+[2026-10-15 16:36:53] CPU lane: waiting for the remaining captures
+[2026-10-15 16:36:53] re-round q2k-rr-thirdA.gguf with e36-gram08b-thirdA
+[2026-10-15 16:38:17] re-round q2k-rr-thirdB.gguf with e36-gram08b-thirdB
+[2026-10-15 16:39:39] re-round q2k-rr-thirdC.gguf with e36-gram08b-thirdC
+[2026-10-15 16:41:08] re-round q2k-rr-code.gguf with e36-gram08b-code
+[2026-10-15 16:42:37] re-round q2k-rr-fw.gguf with e36-gram08b-fw
+[2026-10-15 16:44:04] re-round q2k-rr-mix2.gguf with e36-gram08b-mix2
+[2026-10-15 16:45:33] re-round q2k-rr-m111.gguf with e36-gram08b-m111
+[2026-10-15 16:47:01] extract fc-code.gguf on q2k.gguf with e36-gram08b-code
+[2026-10-15 16:48:52] extract fc-fw.gguf on q2k.gguf with e36-gram08b-fw
+[2026-10-15 16:50:42] extract fc-mix2.gguf on q2k.gguf with e36-gram08b-mix2
+[2026-10-15 16:52:32] extract fc-m111.gguf on q2k.gguf with e36-gram08b-m111
+[2026-10-15 16:54:20] CPU lane done

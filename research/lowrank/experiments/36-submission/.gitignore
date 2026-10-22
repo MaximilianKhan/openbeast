@@ -1,0 +1,8 @@
+# Regenerable, multi-GB intermediates (rebuild with the scripts beside them).
+d08b/art/
+fc-cache-t19-*/
+# Calibration text built by d08b/calib/build_calib.py; pinned by SHA256SUMS.
+d08b/calib/*.txt
+llama8b/.bf16-verified
+# llama-server output, 2+ MB per row; rows-f.txt records its CUDA-error count.
+logs-f/serve-*.log
