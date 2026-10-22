@@ -40,3 +40,6 @@ Same adapter recipe on every base (r128 Q8_0, E27 non-FFN target set, Grams `gra
 | IQ1_S | 7,441,895,840 | 0.9348 → 0.6356 | 32.0% [30.1, 33.9] | 0.6588 → 0.5513 | 16.3% [15.3, 17.2] |
 
 Every increment is paired-resolved (t = −6.3 to −29.1, ≥ 86/100 chunks). Recovery rises monotonically as the base worsens, and on held-out FineWeb-Edu it is roughly half the on-distribution value. This replaces the confounded F7 curve (20/28/41%, budget and rank mix varying across points).
+
+**Note 2026-10-22.** "Roughly half" in §T1.9 is, per base, 0.47–0.62 of the
+wikitext recovery on FineWeb-Edu (paper §4.5).

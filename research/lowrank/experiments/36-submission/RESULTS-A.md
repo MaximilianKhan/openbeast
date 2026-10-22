@@ -172,3 +172,7 @@ Per-chunk agreement of the pre-fix build (`../27-bf16-rederivation/kld100-*.log`
 MIXEDfc - Q3_K_S: per-chunk ΔKLD, pre-fix (E27 logs) vs b10865 (logs-a), n=100: r = 0.870
 MIXEDfc - CONTROL: per-chunk ΔKLD, pre-fix (E27 logs) vs b10865 (logs-a), n=100: r = 0.945
 ```
+
+**Sign convention (note 2026-10-22).** The A-full verdict lines above state C2
+as CONTROL − MIXEDfc (t = −5.50; −4.96 on chunks 101–580). The paper reports
+the same pair as corrected − control: +0.0051, t = +5.50 and +4.96.
