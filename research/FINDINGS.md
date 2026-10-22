@@ -85,6 +85,13 @@ distribution), FineWeb-Edu and a code corpus no calibration touched.
    in the same run the likelihood of the text is higher where it is
    resolved, at the IQ3 class only (t = −2.49; IQ2 leans the same way,
    t = −1.64). One method, one corpus at this context. (`RESULTS-C.md`)
+   2026-10-22: the IQ3_S file's wikitext NLL is level with BF16's own
+   (t = −0.46; every other file is behind BF16, t = +3.8 to +14.1;
+   `36-submission/checks/c3-nll-vs-bf16.txt`), so lower NLL is not quality
+   either; both GSQ and RCO optimize fidelity to BF16, so "trained against
+   data" was wrong. The concept (KLD = displacement, not direction) is
+   published (arXiv:2606.19558, 2601.20088); the paired matched-byte
+   instance is ours. Capability rests on F.
 8. **Better surrogate, same or worse outcome — seven times** (§4.7 of the
    paper), the largest being the 27B re-round.
 9. **Equalization before quantization harms at every strength and
