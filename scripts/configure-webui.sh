@@ -379,20 +379,37 @@ else
 fi
 fi   # TOKEN_OK
 
-# --- 1b. Wire Open WebUI's built-in Web Search to the local SearXNG ---
+# --- 1b. Open WebUI's built-in Web Search: OFF unless WEBUI_WEB_SEARCH=true ---
 # Distinct from the `web_search` TOOL configured above: this is the "Web
 # Search" toggle in the chat composer, which Open WebUI implements itself
-# (retrieval + citations) instead of via a tool call. It ships disabled with no
-# engine set, so the toggle failed on every OpenBeast install even though we
-# run SearXNG right there. Requires SearXNG to serve format=json — ours does
-# (searxng/settings.yml `formats:`).
+# (retrieval + its own page loader + citations) instead of via a tool call.
+#
+# OFF BY DEFAULT (review 2026-10-27, R8-05). That path is Open WebUI's own
+# fetcher, not OpenBeast's: it bypasses the `fetch` tool's SSRF guard
+# (agents/tools.py _vet_addr) and the :3001 tool server's per-tier RBAC and
+# audit trail — and it is open to every account, guests included. The model
+# already searches through the `web_search` tool (same SearXNG), so nothing
+# is lost by default. An earlier version switched it ON for any install with
+# no engine chosen; this one switches it back OFF on such installs.
+#
+# Like 1c, the setting is asserted on EVERY run and the opt-in lives in
+# openbeast.conf, not the UI: WEBUI_WEB_SEARCH=true wires the toggle to the
+# local SearXNG (an engine the operator already chose is kept) and keeps it
+# on; false (the default) keeps it off and leaves engine/URL untouched.
 #
 # Written straight to the DB rather than through the API because the API needs
 # an admin token, and that sign-in fails the moment the operator changes their
 # WebUI password from the one in openbeast.conf — which is the normal case.
+# SearXNG serves format=json for it (searxng/settings.yml `formats:`).
+WEBUI_WEB_SEARCH="$(_ob_bool "${OPENBEAST_WEBUI_WEB_SEARCH:-$(_ob_conf_value WEBUI_WEB_SEARCH || true)}" false WEBUI_WEB_SEARCH)"
 SEARXNG_QUERY_URL="${SEARXNG_URL:-http://$_OB_LOCAL_HOST:8888}/search?q=<query>"
-echo "  Wiring built-in Web Search → SearXNG ..."
-if docker exec -e SXURL="$SEARXNG_QUERY_URL" open-webui python3 -c "
+if [[ "$WEBUI_WEB_SEARCH" == "true" ]]; then
+  echo "  Built-in Web Search: ON (WEBUI_WEB_SEARCH=true) → SearXNG ..."
+else
+  echo "  Built-in Web Search: OFF (bypasses the fetch SSRF guard + tool RBAC/audit;"
+  echo "    the model still searches via its web_search tool. Opt in: WEBUI_WEB_SEARCH=true)"
+fi
+if docker exec -e SXURL="$SEARXNG_QUERY_URL" -e WANT_WS="$WEBUI_WEB_SEARCH" open-webui python3 -c "
 import sqlite3, json, os, sys, time
 db = sqlite3.connect('/app/backend/data/webui.db')
 
@@ -408,22 +425,25 @@ def put(k, v):
 
 want = {}
 
-# CONFIGURE ONCE, THEN LEAVE IT ALONE. An earlier version asserted these values
-# on every run, which meant an admin who turned Web Search off in the UI had it
-# switched back on at the next start — forever, with no opt-out. We only fill in
-# an engine that was never chosen; after that the operator owns the setting.
-if not (get('web.search.engine') or '').strip():
-    want['web.search.engine'] = 'searxng'
-    want['web.search.searxng_query_url'] = os.environ['SXURL']
+if os.environ.get('WANT_WS') == 'true':
+    # Fill in an engine only if none was ever chosen; the operator's own
+    # engine choice is kept.
+    if not (get('web.search.engine') or '').strip():
+        want['web.search.engine'] = 'searxng'
+        want['web.search.searxng_query_url'] = os.environ['SXURL']
     want['web.search.enable'] = True
+else:
+    want['web.search.enable'] = False
 
-# Same restraint for Ollama, and only when the seeded default is the ONLY entry.
-# Substring-matching the whole JSON list disabled real Ollama servers whenever a
-# user had added one alongside the stale default, which is the common case.
+# Ollama: only when the seeded default is the ONLY entry. Substring-matching
+# the whole JSON list disabled real Ollama servers whenever a user had added
+# one alongside the stale default, which is the common case.
 urls = get('ollama.base_urls') or []
 if urls and all('host.docker.internal' in u for u in urls) and get('ollama.enable') is True:
     want['ollama.enable'] = False
 
+# A missing web.search.enable row is written too (False), pinning it against
+# an upstream default or an env seed (ENABLE_WEB_SEARCH) that turns it on.
 changed = [k for k, v in want.items() if get(k) != v]
 for k in changed:
     put(k, want[k])
@@ -431,12 +451,16 @@ if changed:
     db.commit()
     sys.exit(3)   # signal 'changed'
 " 2>/dev/null; then
-  echo "    already configured (leaving operator settings alone)"
+  echo "    already as configured"
 elif [[ $? -eq 3 ]]; then
   # No restart: this image reads config straight from the DB per request
   # (models/config.py — "Reads are direct DB lookups"), so a container bounce
   # would only kill in-flight streams for nothing.
-  echo "    web search wired → $SEARXNG_QUERY_URL"
+  if [[ "$WEBUI_WEB_SEARCH" == "true" ]]; then
+    echo "    web search on → $SEARXNG_QUERY_URL"
+  else
+    echo "    web search switched off"
+  fi
 else
   echo "    (could not configure web search — WebUI may not be up yet)"
 fi
