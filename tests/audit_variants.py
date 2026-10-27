@@ -101,6 +101,26 @@ TARGETS = {
 sys.path.insert(0, str(REPO / 'evals'))
 from run_eval import load_tasks
 
+
+def variant_task_ids(tasks_dir=TASKS_DIR):
+    """Every base task in the suite that declares variants, sorted by file."""
+    import json
+    ids = []
+    for path in sorted(Path(tasks_dir).glob('*.json')):
+        with open(path) as f:
+            task = json.load(f)
+        if task.get('variants'):
+            ids.append(task['id'])
+    return ids
+
+
+def default_task_ids(tasks_dir=TASKS_DIR):
+    """TARGETS, plus any variant task missing from it (reported [MISS]), so
+    a new variant task cannot pass the default run by being left out."""
+    ids = list(TARGETS)
+    ids += [t for t in variant_task_ids(tasks_dir) if t not in TARGETS]
+    return ids
+
 def audit(task_ids):
     """Returns the lines of every variant that did not pass ([FAIL]: setup or
     validation failed; [MISS]: no reference implementation to audit with)."""
@@ -114,9 +134,16 @@ def audit(task_ids):
 
     for tid in task_ids:
         if tid not in TARGETS:
-            print(f"  [SKIP] {tid}: no target mapping"); continue
+            # [MISS], not [SKIP]: a skip exited 0, so the skill's "verified via
+            # audit_variants.py <id>" step passed for every NEW task with
+            # nothing run — exactly the task the audit exists for.
+            print(f"  [MISS] {tid}: not in TARGETS — add "
+                  f"'{tid}': ('<stem>', '/tmp/eval_<x>') to tests/audit_variants.py "
+                  f"(refs are evals/refs/<stem>.<ext>)"); continue
         stem, dest_dir = TARGETS[tid]
         tasks = load_tasks([tid])
+        if not tasks:
+            print(f"  [MISS] {tid}: no such task in {TASKS_DIR}"); continue
         for t in tasks:
             lang = t.get('language', 'python')
             ext = LANG_EXT.get(lang)
@@ -150,7 +177,7 @@ if __name__ == '__main__':
     # turns each failure into a warning annotation instead.
     args = [a for a in sys.argv[1:] if a != '--advisory']
     advisory = '--advisory' in sys.argv[1:]
-    task_ids = args or list(TARGETS.keys())
+    task_ids = args or default_task_ids()
     bad = audit(task_ids)
     lint_spec_completeness(task_ids)
     if bad:

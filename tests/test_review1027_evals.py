@@ -377,3 +377,33 @@ def test_agent_model_tag_leaves_cache_key_alone(tmp_path, monkeypatch):
     task = {k: v for k, v in run_eval.load_tasks(None)[0].items()}
     assert [p.name for p in cache.CACHE_DIR.glob("*.json")] == [
         cache.cache_key(task, "served-model", max_iter=2) + ".json"]
+
+
+# ---------------------------------------------------------------------------
+# R9-04: audit_variants fails for a task that is not in its TARGETS list.
+# ---------------------------------------------------------------------------
+
+def test_audit_variants_unmapped_task_fails():
+    r = subprocess.run([sys.executable, str(ROOT / "tests" / "audit_variants.py"),
+                        "999_new_task"], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 1, r.stdout
+    assert "[MISS] 999_new_task: not in TARGETS" in r.stdout
+    # --advisory is the documented escape hatch (CI) and still exits 0.
+    r = subprocess.run([sys.executable, str(ROOT / "tests" / "audit_variants.py"),
+                        "--advisory", "999_new_task"], capture_output=True, text=True,
+                       timeout=60)
+    assert r.returncode == 0 and "[MISS]" in r.stdout
+
+
+def test_audit_variants_default_run_includes_unmapped_variant_tasks(tmp_path):
+    sys.path.insert(0, str(ROOT / "tests"))
+    sys.modules.pop("audit_variants", None)
+    av = importlib.import_module("audit_variants")
+    (tmp_path / "01_single.json").write_text(json.dumps({"id": "01_single"}))
+    assert av.default_task_ids(tmp_path) == list(av.TARGETS)      # negative control
+    (tmp_path / "999_new.json").write_text(json.dumps(
+        {"id": "999_new", "variants": [{"id": "go"}, {"id": "zig"}]}))
+    ids = av.default_task_ids(tmp_path)
+    assert ids[-1] == "999_new" and ids[:-1] == list(av.TARGETS)
+    # Today's suite: every variant task is mapped.
+    assert set(av.variant_task_ids()) <= set(av.TARGETS)
