@@ -21,7 +21,9 @@
 # verified it into MODELS_DIR, that directory is mounted read-only and
 # served; otherwise vLLM downloads the profile's SOURCE at its pinned
 # REVISION (--revision/--tokenizer-revision) into HF_CACHE, unverified by us
-# — the launcher says so. A lock mismatch refuses to start.
+# — the launcher says so. A lock mismatch refuses to start. That download
+# honours HF_ENDPOINT (a mirror) and HF_TOKEN_FILE from spark.env, and under
+# OFFLINE (env, spark.env or openbeast.conf) an unfetched profile is refused.
 #
 # The API key never touches argv: vLLM reads VLLM_API_KEY from its
 # environment (vllm/envs.py; middleware/register.py prefers --api-key, which
@@ -63,6 +65,12 @@ sp_load "$ENV_FILE" VLLM_IMAGE VLLM_IMAGE_DIGEST SPARK_IFACE SPARK_IB_HCA \
   SPARK_HEAD_IP SPARK_NODE_IP VLLM_MASTER_PORT SPARK_SERVE_HOST SPARK_SERVE_PORT \
   SPARK_ALLOW_WILDCARD_BIND HF_CACHE MODELS_DIR SPARK_PROFILE VLLM_API_KEY_FILE SPARK_NO_API_KEY
 sp_warn_legacy_model_keys "$ENV_FILE"
+# The Hub settings every other backend tool honours (model-fetch, model-inspect,
+# pylib/hfapi): HF_ENDPOINT (a mirror), HF_TOKEN_FILE, OFFLINE — from the
+# environment, else this settings file, else (OFFLINE only) openbeast.conf.
+# This launcher read none of them, so an unfetched profile on an OFFLINE Spark
+# started a container that went to huggingface.co, past any mirror.
+sp_backends_hub_env "$HERE/.." --env "$ENV_FILE"
 [[ -n "$HEAD_ADDR" ]] && SPARK_HEAD_IP="$HEAD_ADDR"
 PROFILE="${PROFILE:-${SPARK_PROFILE:-}}"
 if [[ -z "$PROFILE" ]]; then
@@ -93,7 +101,7 @@ fi
 # Where the weights come from: the verified local copy, else the Hub at the pin.
 sp_profile_locate "$PROFILE" "${MODELS_DIR:-}"
 MOUNTS=() SERVE_MODEL="" REV_ARGS=()
-OFFLINE_HUB=0
+OFFLINE_HUB=0 HUB_DOWNLOAD=0
 if [[ -n "$SP_MODEL_DIR" && $SP_LOCATE_RC -eq 0 ]]; then
   MOUNTS+=(-v "$SP_MODEL_DIR:/models/$PF_PROFILE_NAME:ro")
   SERVE_MODEL="/models/$PF_PROFILE_NAME"
@@ -101,13 +109,24 @@ if [[ -n "$SP_MODEL_DIR" && $SP_LOCATE_RC -eq 0 ]]; then
   # the checkpoint's config might point at. (A SPECULATIVE_CONFIG draft "model" must then already
   # be in HF_CACHE at its pinned revision.)
   OFFLINE_HUB=1
+elif [[ $SP_LOCATE_RC -eq 3 && "$PF_PROFILE_IS_HF" == 1 ]] && sp_offline; then
+  sp_err "profile '$PF_PROFILE_NAME' is not fetched into MODELS_DIR and OFFLINE is set — vLLM would download $PF_SOURCE from the Hub. Fetch it on a connected box (model-fetch.sh --profile $PF_PROFILE_NAME) and copy MODELS_DIR (and the profile's .lock) here."
 elif [[ $SP_LOCATE_RC -eq 3 && "$PF_PROFILE_IS_HF" == 1 ]]; then
+  HUB_DOWNLOAD=1
   echo "Warning: $PF_SOURCE@$PF_REVISION is not fetched into MODELS_DIR — vLLM will download it at the pinned revision, UNVERIFIED by us. Run model-fetch.sh --profile $PF_PROFILE_NAME (on both Sparks for TP 2) to verify and lock it." >&2
   SERVE_MODEL="$PF_SOURCE"
   REV_ARGS=(--revision "$PF_REVISION" --tokenizer-revision "$PF_REVISION")
   [[ "$PF_TRUST_REMOTE_CODE" == true ]] && REV_ARGS+=(--code-revision "$PF_REVISION")
 else
   sp_err "profile '$PF_PROFILE_NAME': the model on disk does not match its lock (above) — run model-fetch.sh --profile $PF_PROFILE_NAME --verify"
+fi
+# A gated repo needs the token on the download path. HF_TOKEN in the
+# environment is forwarded as before; HF_TOKEN_FILE (what spark.env documents)
+# is read just before docker runs and forwarded the same way, by NAME.
+USE_TOKEN_FILE=0
+if [[ $HUB_DOWNLOAD -eq 1 && -z "${HF_TOKEN:-}" && -n "${HF_TOKEN_FILE:-}" ]]; then
+  sp_check_secret_file "$HF_TOKEN_FILE" "HF_TOKEN_FILE"
+  USE_TOKEN_FILE=1
 fi
 USE_KEY=0
 if [[ "$RANK" == 0 ]]; then
@@ -146,7 +165,10 @@ CMD+=(-e VLLM_SKIP_MODEL_NAME_VALIDATION=1)
 # Pass-through by NAME only (docker copies the value from this shell's env),
 # so a token or a debug level never lands on argv.
 [[ -n "${NCCL_DEBUG:-}" ]] && CMD+=(-e NCCL_DEBUG)
-[[ -n "${HF_TOKEN:-}" ]] && CMD+=(-e HF_TOKEN)
+[[ -n "${HF_TOKEN:-}" || $USE_TOKEN_FILE -eq 1 ]] && CMD+=(-e HF_TOKEN)
+# A mirror (HF_ENDPOINT) is honoured by the container's download too, not only
+# by model-fetch: without it the container went to the public Hub directly.
+[[ $HUB_DOWNLOAD -eq 1 && -n "${HF_ENDPOINT:-}" ]] && CMD+=(-e HF_ENDPOINT)
 [[ $USE_KEY -eq 1 ]] && CMD+=(-e VLLM_API_KEY)
 CMD+=(-v "$HF_CACHE:/root/.cache/huggingface" ${MOUNTS[@]+"${MOUNTS[@]}"})
 [[ -n "$PF_CHAT_TEMPLATE" ]] && CMD+=(-v "$PF_CHAT_TEMPLATE:/openbeast/chat_template.jinja:ro")
@@ -178,6 +200,8 @@ fi
 if [[ $PRINT -eq 1 ]]; then
   echo "# profile $PF_PROFILE_NAME: $PF_SOURCE${PF_REVISION:+@$PF_REVISION} (TP $TP)"
   [[ $USE_KEY -eq 1 ]] && echo "# VLLM_API_KEY is exported from $VLLM_API_KEY_FILE into docker's environment (not argv)"
+  [[ $USE_TOKEN_FILE -eq 1 ]] && echo "# HF_TOKEN is exported from $HF_TOKEN_FILE into docker's environment (not argv)"
+  [[ $HUB_DOWNLOAD -eq 1 && -n "${HF_ENDPOINT:-}" ]] && echo "# HF_ENDPOINT=$HF_ENDPOINT is forwarded: the download goes through that mirror"
   sp_print_cmd "${CMD[@]}"
   exit 0
 fi
@@ -194,6 +218,10 @@ fi
 if [[ $USE_KEY -eq 1 ]]; then
   VLLM_API_KEY="$(cat "$VLLM_API_KEY_FILE")"
   export VLLM_API_KEY
+fi
+if [[ $USE_TOKEN_FILE -eq 1 ]]; then
+  HF_TOKEN="$(tr -d '[:space:]' < "$HF_TOKEN_FILE")"
+  export HF_TOKEN
 fi
 "${CMD[@]}"
 echo "Started $NAME. Logs: docker logs -f $NAME   Stop: $0 --rank $RANK --stop"
