@@ -1528,6 +1528,29 @@ def _is_store_path(resolved: str) -> bool:
         return False
 
 
+def _publish_base() -> str:
+    """The workspace a published page must come from (R1-04).
+
+    tools._base_dir() ends in os.getcwd(), and under OpenCode (MCP stdio,
+    the user's plain shell env, launched from the repo checkout) that cwd IS
+    the checkout holding openbeast.conf — so "inside your workspace" let
+    publish_artifact("openbeast.conf") mint a tailnet page of the stack's
+    keys. Same chain WITHOUT the cwd step: the request's shard, a spawned
+    agent's AGENT_WORKDIR, else the files dir (artifact.py's default,
+    ~/openbeast-files, when OPENBEAST_FILES_DIR is unset).
+    """
+    base = (_tools._BASE_DIR_OVERRIDE.get()
+            or os.environ.get("AGENT_WORKDIR")
+            or os.environ.get("OPENBEAST_FILES_DIR", "").strip())
+    if base:
+        return base
+    try:
+        import artifact as _artifact
+        return _artifact._files_dir()
+    except Exception:
+        return os.path.join(os.path.expanduser("~"), "openbeast-files")
+
+
 def _read_artifact_page(path: str, cap: int):
     """Read `path` as the page to publish. Returns (html, None) or (None, err).
 
@@ -1559,13 +1582,19 @@ def _read_artifact_page(path: str, cap: int):
             return None, (f"Error: refusing to read {path} — pseudo-filesystem "
                           f"paths (/proc, /sys, /dev) can be infinite or "
                           f"side-effecting")
-        base = os.path.realpath(_tools._base_dir())
+        base = os.path.realpath(_publish_base())
         rel = os.path.relpath(resolved, base)
         if rel == os.pardir or rel.startswith(os.pardir + os.sep):
             return None, (f"Error: refusing to publish {path} — it is outside "
                           f"your workspace ({base}), and publishing mints a "
                           f"durable URL on your tailnet. Write the page there "
                           f"first (write_file) and publish that path.")
+        if os.path.basename(os.path.realpath(resolved)).startswith(
+                "openbeast.conf"):
+            # Belt to the base above: an agent whose workdir IS a checkout
+            # still must not mint a URL for the stack's secrets.
+            return None, (f"Error: refusing to publish {path} — openbeast.conf "
+                          f"holds the stack's keys and passwords.")
         if _is_store_path(resolved):
             # D26. "Inside the workspace" is NOT the same as "yours": the
             # store is $OPENBEAST_FILES_DIR/artifacts and the workspace is

@@ -45,6 +45,57 @@ import sessions  # noqa: E402
 import tools as _tools  # noqa: E402
 
 
+# ── R1-04 ────────────────────────────────────────────────────────────────────
+
+@pytest.fixture()
+def opencode_env(tmp_path, monkeypatch):
+    """The OpenCode case: MCP stdio from a repo checkout, plain shell env —
+    no FILES_DIR, no AGENT_WORKDIR, no per-request override."""
+    home = tmp_path / "home"
+    (home / "openbeast-files").mkdir(parents=True)
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / "openbeast.conf").write_text("MCPO_ADMIN_KEY=sekret\n")
+    (checkout / "page.html").write_text("<p>hi</p>")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("OPENBEAST_FILES_DIR", raising=False)
+    monkeypatch.delenv("AGENT_WORKDIR", raising=False)
+    monkeypatch.chdir(checkout)
+    return home, checkout
+
+
+def test_r1_04_publish_refuses_the_cwd_checkout(opencode_env):
+    _home, checkout = opencode_env
+    html, err = mcp_server._read_artifact_page(
+        str(checkout / "openbeast.conf"), 1 << 20)
+    assert html is None and "refusing to publish" in err
+    # Not only the conf: cwd is simply not the workspace any more.
+    html, err = mcp_server._read_artifact_page(str(checkout / "page.html"),
+                                               1 << 20)
+    assert html is None and "outside" in err
+
+
+def test_r1_04_publish_still_works_from_the_files_dir(opencode_env):
+    home, _checkout = opencode_env
+    page = home / "openbeast-files" / "page.html"
+    page.write_text("<p>ok</p>")
+    html, err = mcp_server._read_artifact_page(str(page), 1 << 20)
+    assert err is None and html == "<p>ok</p>"
+
+
+def test_r1_04_conf_is_refused_even_inside_the_workspace(tmp_path, monkeypatch):
+    """Belt: an agent whose AGENT_WORKDIR is a checkout still can't publish it."""
+    (tmp_path / "openbeast.conf").write_text("JWT=x\n")
+    (tmp_path / "ok.html").write_text("<p>ok</p>")
+    monkeypatch.setenv("AGENT_WORKDIR", str(tmp_path))
+    html, err = mcp_server._read_artifact_page(
+        str(tmp_path / "openbeast.conf"), 1 << 20)
+    assert html is None and "openbeast.conf" in err
+    html, err = mcp_server._read_artifact_page(str(tmp_path / "ok.html"),
+                                               1 << 20)
+    assert err is None and html == "<p>ok</p>"
+
+
 # ── R1-10 ────────────────────────────────────────────────────────────────────
 
 @pytest.fixture()
