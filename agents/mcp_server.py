@@ -36,11 +36,15 @@ Skills (progressive disclosure):
 
 Transports:
   stdio:           opencode local MCP (default)
-  streamable-http: Open WebUI and remote clients (--transport http --port 3001)
+  streamable-http: DEBUG ONLY (--transport http). Open WebUI does NOT use it —
+                   WebUI talks to agents/openapi_tools.py on :3001. This
+                   transport has NO authentication, so it refuses a
+                   non-loopback bind unless OPENBEAST_ALLOW_OPEN_TOOLS=true
+                   or --allow-open is given.
 
 Usage:
   python mcp_server.py                              # stdio (for opencode)
-  python mcp_server.py --transport http --port 3001  # HTTP (for Open WebUI)
+  python mcp_server.py --transport http             # loopback debug, port 3009
 """
 
 import argparse
@@ -1961,14 +1965,71 @@ def language_reference(language: str, topic: str = "", error: str = "") -> str:
 # Entry point
 # ---------------------------------------------------------------------------
 
+# Debug-only HTTP port. NOT 3001: that is the identity tool server's port
+# (agents/openapi_tools.py), which start.sh and healthcheck.sh probe.
+_HTTP_DEBUG_PORT = 3009
+
+
+def _bind_is_loopback(host: str) -> bool:
+    """Same rule as openapi_tools.bind_is_loopback / conf.sh's
+    ob_bind_is_loopback (127.*, ::1, [::1], localhost). Duplicated, not
+    imported: openapi_tools imports THIS module, and importing it back from
+    __main__ would re-execute this file under its module name."""
+    import ipaddress
+    h = (host or "").strip()
+    if h.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(h.strip("[]")).is_loopback
+    except ValueError:
+        return False
+
+
+def http_exposure_refusal(host: str, allow_open: bool = False,
+                          env=None) -> str | None:
+    """Why the unauthenticated HTTP transport must not start, or None (R1-05).
+
+    This transport has NO authentication at all — every tool, bash included,
+    answers to whoever reaches the port. On loopback that is a debug aid; on
+    a LAN/tailnet bind (conf.sh sets OPENBEAST_BIND whenever BIND_HOST is) it
+    is remote code execution, so it refuses unless the operator says so with
+    --allow-open or OPENBEAST_ALLOW_OPEN_TOOLS=true. Unlike :3001, an RBAC
+    key does NOT satisfy this: nothing here would check it.
+    """
+    env = os.environ if env is None else env
+    if _bind_is_loopback(host):
+        return None
+    if allow_open or env.get("OPENBEAST_ALLOW_OPEN_TOOLS", "").strip().lower() in (
+            "1", "true", "yes", "on"):
+        return None
+    return (f"refusing to serve the unauthenticated MCP HTTP transport on "
+            f"non-loopback OPENBEAST_BIND={host!r}: anyone who can reach it "
+            f"could run shell commands as this user. This mode is for local "
+            f"debugging; Open WebUI uses agents/openapi_tools.py. Bind "
+            f"127.0.0.1, or pass --allow-open (or set "
+            f"OPENBEAST_ALLOW_OPEN_TOOLS=true) to accept the risk.")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="MCP tool server")
     parser.add_argument(
         "--transport", choices=["stdio", "http"], default="stdio",
-        help="Transport mode: stdio (opencode) or http (Open WebUI, port 3001)",
+        help="Transport mode: stdio (opencode, default) or http (DEBUG only, "
+             "unauthenticated; Open WebUI uses agents/openapi_tools.py)",
     )
-    parser.add_argument("--port", type=int, default=3001, help="HTTP port (default: 3001)")
+    parser.add_argument("--port", type=int, default=_HTTP_DEBUG_PORT,
+                        help=f"HTTP port (default: {_HTTP_DEBUG_PORT})")
+    parser.add_argument(
+        "--allow-open", action="store_true",
+        help="Serve the unauthenticated HTTP transport on a non-loopback "
+             "OPENBEAST_BIND anyway (same as OPENBEAST_ALLOW_OPEN_TOOLS=true)")
     args = parser.parse_args()
+
+    if args.transport == "http":
+        refusal = http_exposure_refusal(MCP_BIND, args.allow_open)
+        if refusal:
+            print(f"Error: {refusal}", file=sys.stderr)
+            sys.exit(2)
 
     # Before any agent/shell child exists: a spawned runner's model shell
     # must not read this process's secrets (device key, stack keys) from
@@ -1978,7 +2039,7 @@ if __name__ == "__main__":
 
     if args.transport == "http":
         print(f"MCP server starting on http://{MCP_BIND}:{args.port}/mcp")
-        if MCP_BIND not in ("127.0.0.1", "localhost", "::1"):
+        if not _bind_is_loopback(MCP_BIND):
             print("WARNING: non-loopback bind and this transport has NO auth — "
                   "every tool (bash included) is open to that network. Prefer "
                   "the identity tool server (agents/openapi_tools.py) instead.",

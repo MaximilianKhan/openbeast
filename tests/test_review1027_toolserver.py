@@ -96,6 +96,53 @@ def test_r1_04_conf_is_refused_even_inside_the_workspace(tmp_path, monkeypatch):
     assert err is None and html == "<p>ok</p>"
 
 
+# ── R1-05 ────────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "127.0.0.2", "::1", "[::1]",
+                                  "localhost"])
+def test_r1_05_loopback_binds_are_allowed(host):
+    assert mcp_server.http_exposure_refusal(host, env={}) is None
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.168.1.5",
+                                  "100.64.0.1", "beast.lan", ""])
+def test_r1_05_network_binds_are_refused(host):
+    reason = mcp_server.http_exposure_refusal(host, env={})
+    assert reason and "refusing" in reason
+
+
+def test_r1_05_explicit_opt_in_and_keys_do_not_count():
+    assert mcp_server.http_exposure_refusal("0.0.0.0", allow_open=True,
+                                            env={}) is None
+    assert mcp_server.http_exposure_refusal(
+        "0.0.0.0", env={"OPENBEAST_ALLOW_OPEN_TOOLS": "true"}) is None
+    # An RBAC key protects :3001, not this transport — nothing here checks it.
+    assert mcp_server.http_exposure_refusal(
+        "0.0.0.0", env={"OPENBEAST_MCPO_ADMIN_KEY": "k"})
+
+
+def test_r1_05_default_port_is_not_the_identity_servers():
+    assert mcp_server._HTTP_DEBUG_PORT != 3001
+
+
+def _free_port():
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def test_r1_05_main_exits_2_on_a_network_bind(tmp_path):
+    env = {k: v for k, v in os.environ.items()
+           if k != "OPENBEAST_ALLOW_OPEN_TOOLS"}
+    env["OPENBEAST_BIND"] = "0.0.0.0"
+    p = subprocess.run(
+        [sys.executable, os.path.join(AGENTS, "mcp_server.py"),
+         "--transport", "http", "--port", str(_free_port())],
+        env=env, capture_output=True, text=True, timeout=30, cwd=tmp_path)
+    assert p.returncode == 2, p.stderr
+    assert "refusing" in p.stderr
+
+
 # ── R1-10 ────────────────────────────────────────────────────────────────────
 
 @pytest.fixture()
