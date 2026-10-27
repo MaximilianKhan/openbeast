@@ -1,5 +1,68 @@
 # TODO
 
+## ⏳ GPU BACKLOG — parked 2026-10-09 (Max: "kick that into the back, we come back to it later")
+
+Everything below needs the GPU and was deliberately NOT run on 2026-10-09.
+Nothing here is in progress; nothing is half-banked. Times are estimates
+from wall times recorded for the same kinds of runs. Run under
+`scripts/gpu-lease.sh run`, with the stack down, and write the configuration
+and decision rule into the journal before each run.
+
+**0. Owed first, whenever the stack is next started (10 min, not optional).**
+A real-boot smoke test: `./start.sh -d`, then `./start.sh doctor`. PR #134
+changed `start.sh`, `serve.sh`, `healthcheck.sh` and `conf.sh` (port
+preflight, child-owns-the-port readiness, `--cache-ram`, removed KV warm-up,
+root refusal) and all of it was tested against stubs only. A boot-path merge
+that was not smoke-tested has reached main broken before. Expect two things
+to look different: `doctor` now FAILs on a keyless, ungated `:8443`, and
+Open WebUI no longer generates tags or follow-ups.
+
+**A. Cheap closers (about 3-4 h).** Why: each turns a sentence the paper
+currently states as a limitation into a measurement.
+- Prompt-cache restore time for 16-36 GiB states (15 min). The auto-sized
+  `--cache-ram` shipped on log evidence; restore cost was extrapolated.
+- Cool-off thresholds (30 min). `benchmark_all.py` now ends the cool-off at
+  50 °C with a 60 s floor; both numbers are a guess until one real cool-down
+  is watched.
+- Re-rounded Q2_K against the IQ rungs at 27B, paired, single-step
+  provenance (about 2 h). The paper has this at 0.8B only, where the stock
+  IQ3_XXS file wins.
+- KLD at a 2048-token context for the four GSQ-head-to-head files (about
+  1 h). Separates "context length" from "metric" in the paper's one
+  cross-family reversal.
+- Small-scale interpolation controls (T1.6), equalization ablations (T1.13),
+  calibration-sampling bound (T1.15), about 1 h each.
+
+**B. Overnight (about 14-16 h including A).** Why: closes all six ablations
+the audit priced and the paper lists as not run.
+- Calibration-mix grid (T1.1, 6-7 h): turns the re-rounder's "rescue
+  demonstration" into an ablation.
+- Held-out pass over the ladder comparisons (T1.7, 2-3 h): every 27B ladder
+  verdict in the paper is on-distribution.
+- Recovery curve with the recipe held fixed (T1.9, about 3 h).
+- Held-out Zig set for the language pack (LANG_AWARENESS_PLAN §5, about
+  1.5 h): the SHIP result is in-sample and greedy.
+
+**C. Multi-day, each a separate decision.**
+- Capability replication for the GSQ section: three more single-slot runs
+  per IQ3 arm plus our own corrected arm, 9-11 h each (60-90 h). Why: the
+  paper's weakest claim is one pair, one run per arm, and our arm was never
+  run on the suite.
+- The IQ2 capability pair that was started 2026-09-17 and never finished
+  (17-19 h).
+- Re-establishing the board after an era roll, only if draft PR #135 is
+  merged: 16-17 h for the champion and the default model, about 56 h for all
+  nine rows; v5-fast then needs re-pinning from at least two full runs.
+- Escalation A/B (about 5 h) and the single-slot churn floor (about 20 h),
+  both parked since September.
+
+**Not GPU, but waiting on the same decision:** draft PR #135 (merge or
+not; it does not include the prompt trim), and the referee's baseline asks
+that are new work rather than reruns (free-grid GPTQ at equal bits, a
+learned-rounding baseline, a non-Qwen model). Detail for the research items:
+top block of `research/lowrank/TODO.md`; for the review items: the section
+below.
+
 ## 🔎 REVIEW 2026-10-09
 
 - **DeepSeek Harness evaluated 2026-10-09: not integrated** (Max's call). Why, and ten
