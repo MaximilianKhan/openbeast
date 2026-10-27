@@ -87,6 +87,10 @@ case "${1:-}" in
     echo "Global skills ($GLOBAL_SKILLS):"
     if [[ -d "$GLOBAL_SKILLS" ]]; then
       for d in "$GLOBAL_SKILLS"/*/; do
+        # The glob's trailing slash makes `-L` follow the link (always false):
+        # every skill --link made was listed as a plain directory. Test the
+        # entry itself.
+        d="${d%/}"
         [[ -d "$d" || -L "$d" ]] || continue
         name="$(basename "$d")"
         if [[ -L "$d" ]]; then
