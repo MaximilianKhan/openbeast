@@ -460,6 +460,7 @@ or pulling from a different mirror.
 
 ```bash
 git clone https://github.com/ggml-org/llama.cpp.git
+git -C llama.cpp checkout "$(sed -n 's/^LLAMA_CPP_REF=//p' scripts/llama.cpp.ref)"   # the pinned commit, not HEAD
 cd llama.cpp
 export PATH=/opt/cuda/bin:$PATH
 cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=120
