@@ -374,15 +374,23 @@ class DeviceRegistry:
         try:
             with open(self.path) as f:
                 data = json.load(f)
-        except (OSError, ValueError):
-            return  # half-written file: keep serving the last good map
-        by_hash = {}
-        for dev in data.get("devices", []):
-            if not isinstance(dev, dict):
-                continue
-            digest = (dev.get("key_sha256") or "").strip().lower()
-            if digest:
-                by_hash[digest] = dev
+            # JSON of the wrong SHAPE (a top-level list, null, a non-string
+            # key hash) is as unusable as a parse error: it used to raise
+            # AttributeError out of the constructor (beast-chat would not
+            # start) and out of every later device lookup (500s).
+            devices = (data.get("devices", []) if isinstance(data, dict)
+                       else None)
+            if not isinstance(devices, list):
+                raise ValueError("devices is not a list")
+            by_hash = {}
+            for dev in devices:
+                if not isinstance(dev, dict):
+                    continue
+                digest = str(dev.get("key_sha256") or "").strip().lower()
+                if digest:
+                    by_hash[digest] = dev
+        except (OSError, ValueError, AttributeError, TypeError):
+            return  # half-written / wrong-shaped: keep the last good map
         self._by_hash, self._present, self._stamp = by_hash, True, stamp
 
     @property
