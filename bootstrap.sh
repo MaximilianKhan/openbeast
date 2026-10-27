@@ -955,7 +955,7 @@ else
        one in and verify it:
          ./scripts/fetch-weight.sh --list      (on a connected box)
          copy the .gguf into $WEIGHTS_DIR
-         ./scripts/verify-weights.sh           (checks size + sha256)
+         ./scripts/verify-weights.sh --file <name>   (checks size + sha256)
        Any registry weight works, not just this default — set SERVE_SCRIPT in
        openbeast.conf to match what you brought."
   warn "downloading the default 27B model — this is the long step, grab coffee."
