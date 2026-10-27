@@ -143,14 +143,22 @@ For non-deterministic outputs (e.g. multiple valid topological orders), write a
 
 ## Difficulty tiers (with concrete examples)
 
-| Tier | Weight | Time budget | Example |
-|---|---|---|---|
-| easy | 1.0 | 30s | "Count vowels in a string" |
-| medium | 1.5 | 90s | "Three-way quicksort" |
-| hard | 2.0 | 300s | "Number-theoretic transform with iterative bit-reversal" |
+| Tier | Weight | Example |
+|---|---|---|
+| easy | 1.0 | "Count vowels in a string" |
+| medium | 1.5 | "Three-way quicksort" |
+| hard | 2.0 | "Number-theoretic transform with iterative bit-reversal" |
 
-Multi-variant tasks split this by variant count: 4 variants of a hard task →
-each is worth 0.5.
+No per-tier time limit is enforced: the agent's wall budget is `max_iter` × 60 s
+whatever the tier (`scoring.py`'s `TIME_BUDGETS` 30/90/300 s only feed a legacy
+speed column, never the rank). Size a task by its difficulty, not by a clock.
+
+The ranking key is SCORE = 0.75·SOLVE + 0.25·LANG, per **base** problem: a
+task counts its full weight toward SOLVE if it passes in ≥1 language, and its
+variants only decide how much of that weight LANG credits (p of k languages
+passed). Variants do not split the weight among themselves for ranking (that was
+the legacy v1 accuracy column). A single-language task counts as fully carried
+in LANG whenever it is solved. Details: `evals/README.md` "Scoring".
 
 ## Common categories (existing taxonomy — don't invent new ones lightly)
 
@@ -167,6 +175,9 @@ top-level CATEGORY requires updating `docs/RESULTS.md` and `evals/README.md`.
 - [ ] Task JSON file in `evals/tasks/`
 - [ ] Reference impl in `evals/refs/{slug}.{ext}` (durable; was `/tmp/refs/` pre-2026-05-07)
 - [ ] Validation accepts reference impl (`OK`)
+- [ ] If the task has `variants`: follow eval-variant-porter's done criteria too —
+      `tests/audit_variants.py` audits only ids in its `TARGETS` dict, and an
+      unmapped id now reports `[MISS]` and exits 1 until you add it
 - [ ] Validation rejects an obvious wrong impl
 - [ ] `tests/test_scripts.sh` passes
 - [ ] (If new subcategory introduced) noted in commit message
