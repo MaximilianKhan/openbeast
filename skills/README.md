@@ -81,7 +81,10 @@ saying what we changed.
   advice applies when.
 - `skill(name)` returns only `SKILL.md`. The four imports that ship other
   files (`writing-skills`, `skill-creator`, `webapp-testing`, `mcp-builder`)
-  tell the model to `read_file` them by repo path.
+  tell the model to `read_file` them by the absolute skill directory that
+  the `skill(name)` header names. A relative `skills/...` path resolves
+  against the caller's working directory (the user's shard in Open WebUI,
+  the agent's workdir, OpenCode's project), so it works only in the checkout.
 
 ## How the model uses them
 

@@ -329,6 +329,17 @@ else:
         for required in ('name', 'description'):
             if required not in fm:
                 errors.append(f'{entry}: missing {required} in frontmatter')
+        # A YAML block scalar (`description: >` / `|` / `>-` / `|-`) is NOT
+        # supported: these line parsers read the description as the bare
+        # indicator, and the continuation line becomes a junk key. Require a
+        # real one-line description.
+        desc = fm.get('description')
+        if desc is not None:
+            if desc in ('>', '|', '>-', '|-', '>+', '|+'):
+                errors.append(f'{entry}: description is a YAML block scalar ({desc!r}); '
+                              'write it on one line')
+            elif len(desc) < 20:
+                errors.append(f'{entry}: description too short ({len(desc)} chars)')
         if fm.get('name') and fm['name'] != entry:
             errors.append(f'{entry}: frontmatter name={fm["name"]!r} does not match dir name')
         body = text[end+3:].strip()
