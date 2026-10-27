@@ -31,3 +31,15 @@ def test_scorer_other_extra_args_still_pass(tmp_path):
     r = sh(SCORER_SH, "--metrics", env=env)
     assert r.returncode != 0 and "no-such-weights" in r.stderr
     assert "refused" not in r.stderr
+
+
+def test_openjev_base_image_is_pinned_by_digest():
+    """R10-07: a bare tag lets the base move under a rebuild."""
+    import re
+
+    from test_instinct_cli import REPO
+    src = (REPO / "scripts" / "instinct" / "openjev" / "Dockerfile").read_text()
+    m = re.search(r"^ARG BASE_IMAGE=(\S+)$", src, re.M)
+    assert m, "no ARG BASE_IMAGE default"
+    assert re.fullmatch(r"[\w./:-]+@sha256:[0-9a-f]{64}", m.group(1)), m.group(1)
+    assert re.search(r"^FROM \$\{BASE_IMAGE\}$", src, re.M)
