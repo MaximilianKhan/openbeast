@@ -25,6 +25,7 @@ Usage:
   python3 scripts/generate-skill-index.py --check    # exit 1 if stale
 """
 
+import argparse
 import re
 import sys
 from pathlib import Path
@@ -48,7 +49,8 @@ def frontmatter(path: Path) -> dict:
     return fields
 
 
-def build_index() -> str:
+def menu_rows() -> list[str]:
+    """One menu row per skill that is ON the always-on menu."""
     rows = []
     for skill_md in sorted(SKILLS.glob("*/SKILL.md")):
         fm = frontmatter(skill_md)
@@ -57,27 +59,40 @@ def build_index() -> str:
         name = fm.get("name", skill_md.parent.name)
         desc = fm.get("description", "(no description)")
         rows.append(f"- **`{name}`** — {desc}")
-    return "\n".join(rows)
+    return rows
 
 
-def main() -> int:
-    check = "--check" in sys.argv
+def build_index() -> str:
+    return "\n".join(menu_rows())
+
+
+def main(argv: list[str] | None = None) -> int:
+    # argparse, not `"--check" in sys.argv`: any other argument (--help, a
+    # typo like --chek) used to fall through to the in-place rewrite of
+    # system-prompt-tools.md, an era-hashed file. Unknown arguments now exit 2
+    # and --help only prints.
+    ap = argparse.ArgumentParser(
+        description="Regenerate the skill index block in system-prompt-tools.md.")
+    ap.add_argument("--check", action="store_true",
+                    help="exit 1 if the index is stale; never writes")
+    args = ap.parse_args(argv)
     prompt = PROMPT.read_text(encoding="utf-8")
     if START not in prompt or END not in prompt:
         print(f"Error: markers not found in {PROMPT}", file=sys.stderr)
         return 2
     head, rest = prompt.split(START, 1)
     _, tail = rest.split(END, 1)
-    new = f"{head}{START}\n{build_index()}\n{END}{tail}"
+    rows = menu_rows()
+    new = f"{head}{START}\n" + "\n".join(rows) + f"\n{END}{tail}"
     if new == prompt:
         print("Skill index up to date.")
         return 0
-    if check:
+    if args.check:
         print("Skill index is STALE — run scripts/generate-skill-index.py",
               file=sys.stderr)
         return 1
     PROMPT.write_text(new, encoding="utf-8")
-    print(f"Skill index regenerated ({len(list(SKILLS.glob('*/SKILL.md')))} skills).")
+    print(f"Skill index regenerated ({len(rows)} skills on the menu).")
     return 0
 
 
