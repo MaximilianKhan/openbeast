@@ -26,7 +26,11 @@ concurrency:
 #
 # CI=true (set by the runner) turns a suite's "SKIP … exit 0" into a failure:
 # everything a suite needs is installed here, so a skip means it stopped
-# running. Every pytest call carries --timeout (pytest-timeout), so a hang
+# running. The pytest side holds the same rule through tests/conftest.py: under
+# CI=true a skip whose reason is not on its SKIP_ALLOWLIST (network off, no
+# llama-server build, toolchain versions that are not the rig's) fails the
+# session, and every pytest call carries -rs so the log names each skip.
+# Every pytest call carries --timeout (pytest-timeout), so a hang
 # fails on a named test instead of ending as a cancelled job.
 jobs:
   pytest:
@@ -82,7 +86,7 @@ jobs:
           # No outbound network assumptions in CI (httpbin flakiness);
           # SearXNG/llama-server are likewise not required by these tests.
           OPENBEAST_SKIP_NETWORK_TESTS: "1"
-        run: python -m pytest --timeout=300 tests/test_tools.py -q
+        run: python -m pytest --timeout=300 tests/test_tools.py -q -rs
 
       # Everything a NAMED pytest step runs (this job's tools step, and the
       # pytest-named job's two) is left out here. Keep this list in step with
@@ -93,7 +97,7 @@ jobs:
         env:
           OPENBEAST_SKIP_NETWORK_TESTS: "1"
         run: >-
-          python -m pytest --timeout=300 tests/ -q
+          python -m pytest --timeout=300 tests/ -q -rs
           --ignore=tests/test_model_profiles.py --ignore=tests/test_model_inspect.py
           --ignore=tests/test_model_fetch.py --ignore=tests/test_conformance.py
           --ignore=tests/test_use_model.py
@@ -151,13 +155,13 @@ jobs:
       # resume, lock), conformance against stub vLLM / TensorFold / broken
       # servers, use-model. Loopback stubs only; no network.
       - name: Spark model onboarding tests (profiles, inspect, fetch, conformance)
-        run: python -m pytest --timeout=300 tests/test_model_profiles.py tests/test_model_inspect.py tests/test_model_fetch.py tests/test_conformance.py tests/test_use_model.py -q
+        run: python -m pytest --timeout=300 tests/test_model_profiles.py tests/test_model_inspect.py tests/test_model_fetch.py tests/test_conformance.py tests/test_use_model.py -q -rs
 
       # beast-hydra (proxy, routing core) and beast-instinct (decision math,
       # engines, service, contract, router hook). Named here so a failure is
       # attributable; the full run (the pytest job) skips these files.
       - name: beast-hydra / beast-instinct tests
-        run: python -m pytest --timeout=300 tests/test_hydra_core.py tests/test_hydra_proxy.py tests/test_instinct_*.py tests/test_router_instinct.py -q
+        run: python -m pytest --timeout=300 tests/test_hydra_core.py tests/test_hydra_proxy.py tests/test_instinct_*.py tests/test_router_instinct.py -q -rs
 
   shell:
     name: shell suites

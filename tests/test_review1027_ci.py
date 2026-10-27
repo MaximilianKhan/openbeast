@@ -82,3 +82,41 @@ def test_cdp_timeout_scales_with_load(monkeypatch):
     assert _cdp_pipe.default_timeout() == 2 * _cdp_pipe.BASE_TIMEOUT
     monkeypatch.setattr(os, "getloadavg", lambda: (400.0, 0, 0))
     assert _cdp_pipe.default_timeout() == 3 * _cdp_pipe.BASE_TIMEOUT   # capped
+
+
+# ---------------------------------------------------------------------------
+# R7-04: under CI=true a skip outside the allowlist fails the pytest session.
+# ---------------------------------------------------------------------------
+
+def _gate_run(tmp_path, reason: str, **env):
+    """A scratch pytest session using the REAL tests/conftest.py, with one
+    test that skips for `reason`."""
+    d = tmp_path / "gate"
+    d.mkdir(exist_ok=True)
+    (d / "conftest.py").write_text((TESTS / "conftest.py").read_text())
+    (d / "test_one.py").write_text(
+        "import pytest\n\ndef test_x():\n    pytest.skip(%r)\n\ndef test_ok():\n    pass\n" % reason)
+    base = {k: v for k, v in os.environ.items()
+            if k not in ("CI", "GITHUB_ACTIONS", "OPENBEAST_SKIP_GATE", "PYTEST_ADDOPTS")}
+    return subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", str(d)],
+                          capture_output=True, text=True, timeout=120, cwd=d, env={**base, **env})
+
+
+def test_ci_fails_a_skip_outside_the_allowlist(tmp_path):
+    r = _gate_run(tmp_path, "no chromium/chrome binary", CI="true")
+    assert r.returncode == 1, r.stdout
+    assert "skips outside the CI allowlist" in r.stdout and "no chromium/chrome binary" in r.stdout
+
+
+def test_ci_accepts_an_allowlisted_skip(tmp_path):
+    r = _gate_run(tmp_path, "network tests disabled (OPENBEAST_SKIP_NETWORK_TESTS=1)", CI="true")
+    assert r.returncode == 0, r.stdout
+    assert "outside the CI allowlist" not in r.stdout
+
+
+def test_skip_gate_is_off_locally_and_can_be_overridden(tmp_path):
+    assert _gate_run(tmp_path, "no chromium/chrome binary").returncode == 0           # no CI
+    w = _gate_run(tmp_path, "no chromium/chrome binary", CI="true", OPENBEAST_SKIP_GATE="warn")
+    assert w.returncode == 0 and "outside the CI allowlist" in w.stdout
+    s = _gate_run(tmp_path, "no chromium/chrome binary", OPENBEAST_SKIP_GATE="strict")
+    assert s.returncode == 1
