@@ -11,6 +11,7 @@ browser tests, which SKIP when no chromium/chrome binary is found.
 """
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import queue
@@ -70,12 +71,47 @@ def find_chrome() -> str | None:
     return None
 
 
+# CDP reply ceiling. 30 s is plenty on an idle box, but a full suite sharing
+# the machine with other pytest runs hit it exactly (five browser calls at
+# 30.00 s) while the same files alone passed — so it scales with the load
+# average per CPU, up to 3x.
+BASE_TIMEOUT = 30.0
+
+
+def default_timeout() -> float:
+    try:
+        per_cpu = os.getloadavg()[0] / (os.cpu_count() or 1)
+    except (OSError, AttributeError):
+        return BASE_TIMEOUT
+    return BASE_TIMEOUT * min(3.0, max(1.0, per_cpu))
+
+
+# Every browser still open, so an interpreter that exits without close()
+# (a fixture that errored, a KeyboardInterrupt) still kills it and removes its
+# profile dir: runs under load left `ob-cdp-*` dirs (with a SingletonLock) and
+# chrome's own `com.google.Chrome.*` temp dirs behind in TMPDIR.
+_LIVE: "set[Chrome]" = set()
+
+
+@atexit.register
+def _close_all() -> None:
+    for b in list(_LIVE):
+        b.close()
+
+
 class Chrome:
+    CLOSE_WAIT = 10.0          # seconds to wait for the browser to exit
+
     def __init__(self, binary: str | None = None):
         self.binary = binary or find_chrome()
         if not self.binary:
             raise RuntimeError("no chromium/chrome binary")
         self.udd = tempfile.mkdtemp(prefix="ob-cdp-")
+        # chrome's own scratch (com.google.Chrome.*) goes in a directory of
+        # ours, removed with the profile. A sibling, not a subdirectory: chrome
+        # puts unix sockets under TMPDIR, and a socket path has ~107 bytes.
+        self.child_tmp = tempfile.mkdtemp(prefix="ob-cdpt-")
+        child_env = {**os.environ, "TMPDIR": self.child_tmp}
         cmd_r, self._cmd_w = os.pipe()          # we write, chrome reads fd 3
         self._out_r, out_w = os.pipe()          # chrome writes fd 4, we read
         # The child's ends must not BE fds 3/4 already: in a process with few
@@ -112,12 +148,26 @@ class Chrome:
         # CI timed out on Target.createTarget. Arch's /bin/sh is bash, which
         # is why it only failed there.
         shell = shutil.which("bash") or "sh"
-        self.proc = subprocess.Popen(
-            wrapper + [shell, "-c", script] + args,
-            pass_fds=(cmd_r, out_w), stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            self.proc = subprocess.Popen(
+                wrapper + [shell, "-c", script] + args,
+                pass_fds=(cmd_r, out_w), stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                env=child_env)
+        except BaseException:
+            for fd in (cmd_r, out_w, self._cmd_w, self._out_r):
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            shutil.rmtree(self.udd, ignore_errors=True)
+            shutil.rmtree(self.child_tmp, ignore_errors=True)
+            shutil.rmtree(self.child_tmp, ignore_errors=True)
+            raise
         os.close(cmd_r)
         os.close(out_w)
+        self._closed = False
+        _LIVE.add(self)
         self._id = 0
         self._lock = threading.Lock()
         self._waiters: dict = {}
@@ -155,7 +205,9 @@ class Chrome:
                         self.sessions[p["sessionId"]] = p["targetInfo"]
                     self.events.put(msg)
 
-    def send(self, method, params=None, session=None, timeout=30):
+    def send(self, method, params=None, session=None, timeout=None):
+        if timeout is None:
+            timeout = default_timeout()
         with self._lock:
             self._id += 1
             mid = self._id
@@ -180,21 +232,32 @@ class Chrome:
         return Page(self, sid, tid, width, height, scheme)
 
     def close(self):
+        """Idempotent; the profile dir is removed whatever happens before it."""
+        if self._closed:
+            return
+        self._closed = True
+        _LIVE.discard(self)
         try:
-            self.send("Browser.close", timeout=5)
-        except Exception:
-            pass
-        try:
-            self.proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            self.proc.kill()
-            self.proc.wait(timeout=10)
-        for fd in (self._cmd_w, self._out_r):
             try:
-                os.close(fd)
-            except OSError:
+                self.send("Browser.close", timeout=5)
+            except Exception:
                 pass
-        shutil.rmtree(self.udd, ignore_errors=True)
+            try:
+                self.proc.wait(timeout=self.CLOSE_WAIT)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                try:
+                    self.proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    pass
+        finally:
+            for fd in (self._cmd_w, self._out_r):
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            shutil.rmtree(self.udd, ignore_errors=True)
+            shutil.rmtree(self.child_tmp, ignore_errors=True)
 
     def __enter__(self):
         return self
