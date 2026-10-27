@@ -438,7 +438,14 @@ def _identity_headers(headers, jwt_secret=None):
 
 
 def _last_user_text(messages):
-    for m in reversed(messages or []):
+    # R1-09: the body is client-supplied JSON. `"messages": "hi"` or `[1]`
+    # must not 500 here, before the identity gate — treat it as "no user
+    # text" and let the request proxy through for llama-server's own 400.
+    if not isinstance(messages, list):
+        return ""
+    for m in reversed(messages):
+        if not isinstance(m, dict):
+            continue
         if m.get("role") == "user":
             c = m.get("content")
             if isinstance(c, str):

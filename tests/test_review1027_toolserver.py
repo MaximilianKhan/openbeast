@@ -216,6 +216,70 @@ def test_r1_07_control_normal_call_still_one_ok_row(toolserver):
     assert len(rows) == 1 and rows[0]["ok"] is True
 
 
+# ── R1-09 ────────────────────────────────────────────────────────────────────
+
+import router  # noqa: E402
+from starlette.testclient import TestClient as _StarletteClient  # noqa: E402
+
+
+@pytest.mark.parametrize("messages", ["hi", [1], [None, "x"], {"a": 1}, 7,
+                                      None])
+def test_r1_09_last_user_text_tolerates_garbage(messages):
+    assert router._last_user_text(messages) == ""
+
+
+def test_r1_09_last_user_text_still_reads_real_turns():
+    msgs = [1, {"role": "user", "content": "first"}, "junk",
+            {"role": "assistant", "content": "a"},
+            {"role": "user", "content": [{"type": "text", "text": "last"}, 3]}]
+    assert router._last_user_text(msgs) == "last"
+
+
+class _Upstream:
+    def __init__(self):
+        self.proxied = []
+
+    async def post(self, *a, **k):  # classify / spawn: must not happen here
+        raise AssertionError("garbage messages must not reach the classifier")
+
+    def build_request(self, method, url, content=None, headers=None):
+        self.proxied.append(url)
+        return {"url": url}
+
+    async def send(self, req, stream=False):
+        class Resp:
+            status_code = 400
+            headers = {"content-type": "application/json"}
+
+            async def aiter_raw(self_inner):
+                yield b'{"error": "upstream says no"}'
+
+            async def aclose(self_inner):
+                pass
+        return Resp()
+
+    async def aclose(self):
+        pass
+
+
+@pytest.mark.parametrize("messages", ["hi", [1]])
+def test_r1_09_garbage_messages_are_proxied_not_500(monkeypatch, messages):
+    from instinct.routerhook import RouterInstinct
+    monkeypatch.setattr(router, "REQUIRE_IDENTITY", False)
+    monkeypatch.setattr(router, "JWT_SECRET", "")
+    monkeypatch.setattr(router, "_LLAMA_KEY", "")
+    monkeypatch.setattr(router, "_INSTINCT", RouterInstinct("off"))
+    up = _Upstream()
+    with _StarletteClient(router.app, base_url="http://127.0.0.1:8088") as c:
+        router.app.state.client = up
+        r = c.post("/v1/chat/completions",
+                   content=json.dumps({"model": "m", "messages": messages}),
+                   headers={"Content-Type": "application/json"})
+    asyncio.run(router._INSTINCT.drain())
+    assert r.status_code == 400 and "upstream says no" in r.text
+    assert len(up.proxied) == 1
+
+
 # ── R1-10 ────────────────────────────────────────────────────────────────────
 
 @pytest.fixture()
