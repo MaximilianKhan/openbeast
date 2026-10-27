@@ -448,6 +448,17 @@ def test_r9_05_global_symlink_into_repo_counts_as_gated(skilldirs):
         {"source": "global", "path": str(rogue / "SKILL.md")})
 
 
+def test_r9_03_skill_header_names_its_directory(skilldirs):
+    repo, glob, captured = skilldirs
+    d = _write_skill(repo, "r", "body")
+    g = _write_skill(glob, "g", "body")
+    for name, where in (("r", d), ("g", g)):
+        want = f"— files: {os.path.abspath(where)}/ ==="
+        assert want in mcp_server.skill(name).splitlines()[0]
+        mcp_server.start_skill_agent(name, "t")
+        assert want in captured["context"].splitlines()[0]
+
+
 # ── R7-02 (test-only) ────────────────────────────────────────────────────────
 
 def test_r7_02_key_withheld_from_foreign_host_with_worker_configured(

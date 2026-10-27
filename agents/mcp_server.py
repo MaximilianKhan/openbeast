@@ -900,6 +900,12 @@ def _skill_gated(record: dict) -> bool:
         return False
 
 
+def _skill_dir(record: dict) -> str:
+    """Absolute directory holding the skill's SKILL.md (R9-03): skills ship
+    scripts/references next to it, and the body refers to them relatively."""
+    return os.path.abspath(os.path.dirname(record.get("path") or ""))
+
+
 def _skill_source_label(record: dict) -> str:
     """'repo', 'global', or 'global, unverified' (outside the import gate)."""
     src = str(record.get("source") or "global")
@@ -956,7 +962,8 @@ def skill(name: str = "") -> str:
         hint = f" Did you mean: {', '.join(close)}?" if close else ""
         listing = ", ".join(available) or "(none)"
         return f"Error: skill '{name}' not found.{hint} Available: {listing}"
-    header = f"=== SKILL: {name} ({_skill_source_label(record)}) ===\n\n"
+    header = (f"=== SKILL: {name} ({_skill_source_label(record)}) — files: "
+              f"{_skill_dir(record)}/ ===\n\n")
     return header + record["body"]
 
 
@@ -1133,7 +1140,8 @@ def start_skill_agent(skill: str, task: str, workdir: str = ".", max_iter: int =
 
     framed = (
         f"=== ACTIVATED SKILL: {skill} (source: "
-        f"{_skill_source_label(skill_record)}) ===\n\n"
+        f"{_skill_source_label(skill_record)}) — files: "
+        f"{_skill_dir(skill_record)}/ ===\n\n"
         f"{skill_record['body']}\n\n"
         f"=== END SKILL ===\n\n"
         f"Apply the above skill's approach and conventions to the task. "
