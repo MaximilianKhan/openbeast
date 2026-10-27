@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Regenerate CI's own hash-pinned tool requirements (test.txt, lint.txt,
-# audit.txt) from the exact versions in the matching *.in files.
+# audit.txt, variants.txt) from the exact versions in the matching *.in files.
 #
-#   ./.github/ci-requirements/relock.sh            # all three
+#   ./.github/ci-requirements/relock.sh            # all four
 #   ./.github/ci-requirements/relock.sh lint       # one
 #
 # WHY. The workflows installed pytest, ruff and pip-audit with a bare
@@ -39,7 +39,7 @@ _v="$("$CI_PY" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/nul
   exit 1
 }
 
-[[ $# -gt 0 ]] || set -- test lint audit
+[[ $# -gt 0 ]] || set -- test lint audit variants
 for name in "$@"; do
   [[ -f "$HERE/$name.in" ]] || { echo "error: no $HERE/$name.in" >&2; exit 1; }
   tmp="$(mktemp)"
