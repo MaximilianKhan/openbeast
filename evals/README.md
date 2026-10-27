@@ -55,7 +55,7 @@ a `SUITE_VERSION` bump.)
 ```bash
 python3 evals/run_eval.py --list                     # list every task
 python3 evals/run_eval.py                            # run all tasks against the live server on :8080
-python3 evals/run_eval.py --tasks 145,146            # run a subset
+python3 evals/run_eval.py --tasks 145,146            # run a subset: task numbers, full ids, or base ids (all variants); an entry matching nothing exits 2
 python3 evals/run_eval.py --jobs 4                   # 4 parallel workers — needs a server with -np >= 4 (clamped to /props total_slots; MTP configs are -np 1)
 python3 evals/run_eval.py --no-cache                 # disable result cache (force live runs)
 python3 evals/run_eval.py --cache-only --model-name MODEL  # replay cache only; cache misses → 'skipped_cache_miss'
@@ -243,6 +243,14 @@ a new era for every row. Set it for campaigns that pair arms across days or
 across a weight or toolchain change. It's off by default, so existing keys
 stay reachable. `--cache-only` takes the fingerprint from the model's last
 live results file.
+
+**Sandboxed model bash.** When `OPENBEAST_BASH_WRAPPER` is set (conf.sh
+exports it from openbeast.conf's `BASH_WRAPPER`, i.e. Sandlock), every model
+shell command in a unit runs confined. That is not the validated unconfined
+configuration, so run_eval stamps it as `harness.bash_wrapper` and keys the
+rows into their own `sbx-<sha8>` era (sha of the wrapper string). Unset or
+blank adds nothing, so every existing key is unchanged. benchmark_all treats
+it as an experiment arm (implies `--no-leaderboard`).
 
 Cache files: `evals/cache/{model_slug}.{task_id}.{spec_hash}[.mi{N}].{ctx_hash}.json`
 (the `.mi{N}` segment carries the effective max-iter when a run threads one).
