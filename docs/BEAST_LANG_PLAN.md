@@ -48,7 +48,7 @@ independent of it.
 | **1 — push diagnostics** | after every write, the language's checker runs and its output lands in the tool result | **shipped** as beast-assist (v1.2.0), opt-in, honestly documented as a small effect inside a ±5-14 churn floor |
 | **1.5 — doc-site escalation** | a compile error *triggers* a documentation lookup | **banked, unbuilt** (`origin/docs/lang-pack-abstraction`) |
 | **2 — LSP sidecar** | warm language servers, hover/signature tools | **DELETED** by adversarial review. Reasons in §4 of that doc, and one of them is the load-bearing constraint for this whole design — see §2 below |
-| **3 — awareness packs** | a ≤2,000-token version-pinned digest injected into the system prompt for the task's language | **built for zig only** (`agents/packs/zig-0.16.md`), opt-in `BEAST_PACKS=1`, **its A/B is running on the GPU as this is written** |
+| **3 — awareness packs** | a ≤2,000-token version-pinned digest injected into the system prompt for the task's language | **built for zig only** (`agents/packs/zig-0.16.md`). **In production since v1.7.0** (Tier-3 SHIP 2026-09-30): `LANG_PACK_CONTEXT=auto` (the default) hands it to agents on zig tasks, and only while the installed zig matches the pack's version. `BEAST_PACKS=1` / `--packs` is the EVAL arm only |
 | **4-6 — language-pack abstraction, go/C/C++ edition axis, per-project toolchain version gap** | banked design notes | **banked, unbuilt** (`origin/docs/cpp-go-editions`, `origin/docs/zig-version-gap`) |
 
 beast-lang is the generalization of Tier 3 with a real corpus behind it, plus
