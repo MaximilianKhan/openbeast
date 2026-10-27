@@ -5,6 +5,7 @@ dir, no real lease. Each asserts the negative control too.
 """
 
 import importlib
+import json
 import os
 import signal
 import subprocess
@@ -96,3 +97,88 @@ def test_benchmark_all_sigterm_reaps_live_agents(tmp_path):
             p.kill()
         if agent and _alive(agent):
             os.kill(agent, signal.SIGKILL)
+
+
+# ---------------------------------------------------------------------------
+# R6-6: the Sandlock wrapper is stamped and keyed — only when set.
+# ---------------------------------------------------------------------------
+
+def _fresh_eval(tmp_path: Path, monkeypatch):
+    for mod in ("cache", "run_eval"):
+        sys.modules.pop(mod, None)
+    cache = importlib.import_module("cache")
+    cache.CACHE_DIR = tmp_path / "cache"
+    cache.STRIKES_DIR = cache.CACHE_DIR / "env-strikes"
+    cache._context_cache.clear()
+    run_eval = importlib.import_module("run_eval")
+    monkeypatch.setattr(run_eval, "_TOOLCHAINS", {"zig": "0.16.0"})
+    monkeypatch.setattr(run_eval, "WEIGHTS_REGISTRY", str(tmp_path / "weights.registry"))
+    for var in ("OPENBEAST_EVAL_ENV_ERA", "OPENBEAST_BASH_WRAPPER", "OPENBEAST_EVAL_GREEDY",
+                "BEAST_ASSIST", "OPENBEAST_DIAGNOSTICS", "BEAST_PACKS", "OPENBEAST_PACKS",
+                "BEAST_ESCALATE", "OPENBEAST_ESCALATE"):
+        monkeypatch.delenv(var, raising=False)
+    tasks = tmp_path / "tasks"
+    tasks.mkdir()
+    (tasks / "01_alpha.json").write_text(json.dumps({
+        "id": "01_alpha", "name": "alpha", "difficulty": "easy", "task": "do alpha",
+        "validation": {"type": "bash", "script": "true"}, "max_iter": 2}))
+    monkeypatch.setattr(run_eval, "TASKS_DIR", str(tasks))
+    monkeypatch.setattr(run_eval, "RESULTS_DIR", str(tmp_path / "results"))
+    gguf = tmp_path / "Q.gguf"
+    gguf.write_bytes(b"x")
+    monkeypatch.setattr(run_eval, "capture_server_config",
+                        lambda *a, **k: run_eval._parse_server_flags(f"llama-server -m {gguf}"))
+    monkeypatch.setattr(run_eval, "capture_gpu_info", lambda: {})
+    monkeypatch.setattr(run_eval, "capture_inference_engine_info",
+                        lambda: {"build": "b1", "commit": "abc"})
+    seen_env = []
+
+    def fake_agent(task, *a, **k):
+        seen_env.append(os.environ.get("OPENBEAST_BASH_WRAPPER"))
+        return {"exit_code": 0, "elapsed_seconds": 1.0, "stdout": "", "stderr": "",
+                "tokens": {"prompt": 1, "completion": 2, "total": 3}, "iterations": 1,
+                "compactions": 0, "api_errors": 0}
+    monkeypatch.setattr(run_eval, "run_agent", fake_agent)
+    monkeypatch.setattr(run_eval, "run_validation", lambda t, **k: (True, "ok"))
+    return run_eval, cache, seen_env
+
+
+def test_sandbox_wrapper_unset_keeps_existing_key(tmp_path, monkeypatch):
+    run_eval, cache, _ = _fresh_eval(tmp_path, monkeypatch)
+    res = run_eval.run_eval(model_name="m")
+    keys = [p.name for p in cache.CACHE_DIR.glob("*.json")]
+    task = run_eval.load_tasks(None)[0]
+    legacy = cache.cache_key(task, "m", max_iter=2) + ".json"
+    assert keys == [legacy]                       # byte-identical legacy key
+    assert "sbx-" not in legacy
+    assert "bash_wrapper" not in res["harness"]
+    # Blank counts as unset (tools.py strips it too).
+    monkeypatch.setenv("OPENBEAST_BASH_WRAPPER", "   ")
+    res = run_eval.run_eval(model_name="m")
+    assert res["tasks"][0].get("from_cache")
+    assert "bash_wrapper" not in res["harness"]
+
+
+def test_sandbox_wrapper_set_forks_key_and_stamps(tmp_path, monkeypatch):
+    run_eval, cache, seen = _fresh_eval(tmp_path, monkeypatch)
+    run_eval.run_eval(model_name="m")             # banks the unconfined row
+    monkeypatch.setenv("OPENBEAST_BASH_WRAPPER", " sandlock --profile openbeast -- ")
+    res = run_eval.run_eval(model_name="m")
+    assert not res["tasks"][0].get("from_cache"), "confined unit replayed an unconfined row"
+    h = res["harness"]
+    assert h["bash_wrapper"] == "sandlock --profile openbeast --"
+    assert h["bash_wrapper_component"].startswith("sbx-")
+    keys = sorted(p.name for p in cache.CACHE_DIR.glob("*.json"))
+    assert len(keys) == 2 and sum(f".{h['bash_wrapper_component']}." in k for k in keys) == 1
+    assert seen[-1] == "sandlock --profile openbeast --"
+    # A different wrapper is a different era again.
+    monkeypatch.setenv("OPENBEAST_BASH_WRAPPER", "other-sandbox --")
+    assert not run_eval.run_eval(model_name="m")["tasks"][0].get("from_cache")
+
+
+def test_sandbox_wrapper_is_an_experiment_arm():
+    ba = _fresh("benchmark_all")
+    assert ba.experiment_arms({}) == []
+    assert ba.experiment_arms({"OPENBEAST_BASH_WRAPPER": "  "}) == []
+    assert ba.experiment_arms({"OPENBEAST_BASH_WRAPPER": "sandlock --"}) == [
+        "OPENBEAST_BASH_WRAPPER sandbox"]

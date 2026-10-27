@@ -790,6 +790,10 @@ def experiment_arms(env=None) -> list[str]:
         arms.append("beast-assist diagnostics")
     if "1" in (env.get("BEAST_ESCALATE", "").strip(), env.get("OPENBEAST_ESCALATE", "").strip()):
         arms.append("--escalate")
+    if env.get("OPENBEAST_BASH_WRAPPER", "").strip():
+        # Sandlock (conf BASH_WRAPPER): run_eval keys these rows into their
+        # own sbx-<sha8> era; they are not the validated unconfined regime.
+        arms.append("OPENBEAST_BASH_WRAPPER sandbox")
     return arms
 
 

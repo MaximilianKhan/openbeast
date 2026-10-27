@@ -691,6 +691,23 @@ def env_era_enabled() -> bool:
     return os.environ.get("OPENBEAST_EVAL_ENV_ERA", "").strip() == "1"
 
 
+def bash_wrapper_flag() -> tuple[str, str | None]:
+    """The model-bash sandbox wrapper (OPENBEAST_BASH_WRAPPER, exported by
+    scripts/lib/conf.sh when openbeast.conf sets BASH_WRAPPER — Sandlock).
+
+    agents/tools.py prefixes every model shell command with it, so a unit
+    run confined is a different experiment from one run bare: the conf file
+    itself calls the wrapper "opt-in until the eval suite is validated green
+    under confinement". Returns (wrapper, cache_component). The component is
+    `sbx-<sha8 of the wrapper string>` when set and None when unset/blank,
+    so every existing key — all banked rows ran unwrapped — stays reachable."""
+    import hashlib
+    wrapper = os.environ.get("OPENBEAST_BASH_WRAPPER", "").strip()
+    if not wrapper:
+        return "", None
+    return wrapper, "sbx-" + hashlib.sha256(wrapper.encode()).hexdigest()[:8]
+
+
 PACKS_DIR = os.path.join(EVALS_DIR, "..", "agents", "packs")
 # Language → pack file, and the drift check, live in agents/lang/pack_context
 # so the harness and PRODUCTION agents (which get the same pack since the
@@ -1500,6 +1517,15 @@ def run_eval(
             env_component = (_last[1].get("harness") or {}).get("env_component")
             env_info = (_last[1].get("harness") or {}).get("env")
     env_key = env_component if env_era_enabled() else None
+    # Sandbox wrapper: read ONCE and pinned, so the agents and the key agree.
+    # Its component rides the key's env slot (after env1- when both are on);
+    # absent when unset, so legacy keys are byte-identical.
+    sbx_wrapper, sbx_component = bash_wrapper_flag()
+    if sbx_wrapper:
+        os.environ["OPENBEAST_BASH_WRAPPER"] = sbx_wrapper
+    else:
+        os.environ.pop("OPENBEAST_BASH_WRAPPER", None)
+    key_env = ".".join(c for c in (env_key, sbx_component) if c) or None
     if env_era_enabled() and not env_component:
         raise SystemExit("OPENBEAST_EVAL_ENV_ERA=1 in --cache-only mode needs a live results "
                          "file for this model that recorded its env_component")
@@ -1548,6 +1574,9 @@ def run_eval(
               f"kv {server_info.get('kv_cache_type', '?')} reasoning-budget {rb}")
     if greedy_mode:
         print("Decode: GREEDY (low-churn eval mode — leaderboard-ineligible era)")
+    if sbx_wrapper:
+        print(f"Sandbox: model bash runs under OPENBEAST_BASH_WRAPPER={sbx_wrapper!r} — "
+              f"cache era {sbx_component} (not the validated unconfined configuration)")
     if diag_on:
         print(f"Diag:   push-diagnostics ON ({', '.join(diag_toolchains) or 'no toolchains?'}) — "
               f"cache era {diag_component}")
@@ -1593,6 +1622,8 @@ def run_eval(
                        if esc_on else {}),
                     **({"toolchains": diag_toolchains} if diag_on else {}),
                     **({"rb_component": rb_component} if rb_component else {}),
+                    **({"bash_wrapper": sbx_wrapper, "bash_wrapper_component": sbx_component}
+                       if sbx_wrapper else {}),
                     **({"env_component": env_component, "env": env_info,
                         "env_in_cache_key": bool(env_key)} if env_component else {})},
         "tasks": [],
@@ -1659,7 +1690,7 @@ def run_eval(
                                  diag=diag_component, rb=rb_component,
                                  greedy=greedy_mode,
                                  pack=packs_component if task.get("_context_file") else None,
-                                 env=env_key)
+                                 env=key_env)
             cached = cache.cache_get(ck)
             if cached is not None:
                 cached = dict(cached)
