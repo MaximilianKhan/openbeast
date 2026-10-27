@@ -120,3 +120,79 @@ def test_skip_gate_is_off_locally_and_can_be_overridden(tmp_path):
     assert w.returncode == 0 and "outside the CI allowlist" in w.stdout
     s = _gate_run(tmp_path, "no chromium/chrome binary", OPENBEAST_SKIP_GATE="strict")
     assert s.returncode == 1
+
+
+# ---------------------------------------------------------------------------
+# R5-01 / R5-02 / R10-08: the audit gate (.github/scripts/audit_gate.py).
+# Fixture reports in pip-audit's `-f json` shape (checked against pip-audit
+# 2.10.1's real output).
+# ---------------------------------------------------------------------------
+
+GATE = TESTS.parent / ".github" / "scripts" / "audit_gate.py"
+
+
+def _report(path, *deps):
+    import json
+    path.write_text(json.dumps({"dependencies": [
+        {"name": n, "version": v, "vulns": [{"id": i, "fix_versions": fx, "aliases": []} for i, fx in vulns]}
+        for n, v, vulns in deps], "fixes": []}))
+    return str(path)
+
+
+def _gate(*args):
+    return subprocess.run([sys.executable, str(GATE), "--label", "lock", *args],
+                          capture_output=True, text=True, timeout=30)
+
+
+def test_gate_fails_what_the_change_introduces(tmp_path):
+    base = _report(tmp_path / "b.json", ("starlette", "1.9.0", []), ("idna", "3.10", [("PYSEC-1", ["3.15"])]))
+    # the PR downgrades starlette into a known CVE (R5-02's attack)
+    head = _report(tmp_path / "h.json", ("starlette", "0.40.0", [("GHSA-x", ["1.0.0"])]),
+                   ("idna", "3.10", [("PYSEC-1", ["3.15"])]))
+    r = _gate("--head", head, "--gate", "--base", base)
+    assert r.returncode == 1, r.stdout
+    assert "::error::lock: this change introduces starlette==0.40.0 GHSA-x" in r.stdout
+    assert "idna==3.10 PYSEC-1" in r.stdout and "already on the base branch" in r.stdout
+
+
+def test_gate_passes_findings_the_base_already_has(tmp_path):
+    """R5-01: an advisory against an untouched pin no longer blocks a PR."""
+    both = (("idna", "3.10", [("PYSEC-1", ["3.15"])]),)
+    r = _gate("--head", _report(tmp_path / "h.json", *both), "--gate", "--base", _report(tmp_path / "b.json", *both))
+    assert r.returncode == 0 and "::warning::" in r.stdout, r.stdout
+
+
+def test_untouched_file_is_advisory(tmp_path):
+    r = _gate("--head", _report(tmp_path / "h.json", ("x", "1", [("V-1", ["2"])])))
+    assert r.returncode == 0 and "::warning::lock: x==1 V-1" in r.stdout
+
+
+def test_gate_fails_closed_when_an_audit_did_not_run(tmp_path):
+    head = _report(tmp_path / "h.json", ("x", "1", []))
+    assert _gate("--head", str(tmp_path / "missing.json"), "--gate", "--base-absent").returncode == 1
+    assert _gate("--head", head, "--gate", "--base", str(tmp_path / "missing.json")).returncode == 1
+    assert _gate("--head", head, "--gate", "--base-absent").returncode == 0      # control
+    new_file = _report(tmp_path / "n.json", ("x", "1", [("V-1", [])]))
+    assert _gate("--head", new_file, "--gate", "--base-absent").returncode == 1  # all of a new file is new
+
+
+def test_scheduled_mode_fails_only_on_fixable(tmp_path):
+    unfixable = _report(tmp_path / "u.json", ("accelerate", "1.13.0", [("PYSEC-9", [])]))
+    r = _gate("--head", unfixable, "--fail-fixable")
+    assert r.returncode == 0 and "no fixed release yet" in r.stdout
+    fixable = _report(tmp_path / "f.json", ("pyjwt", "2.8.0", [("PYSEC-8", ["2.12.0"])]))
+    assert _gate("--head", fixable, "--fail-fixable").returncode == 1
+
+
+def test_the_required_audit_check_cannot_be_green_by_continue_on_error():
+    import yaml
+    jobs = yaml.safe_load((TESTS.parent / ".github" / "workflows" / "pr-quality.yml").read_text())["jobs"]
+    (job,) = [j for j in jobs.values() if j.get("name") == "Dependency vulnerability audit"]
+    assert not job.get("continue-on-error"), "the required check's conclusion would not match the run's"
+    run = "\n".join(str(s.get("run", "")) for s in job["steps"])
+    assert "audit_gate.py" in run and "--gate" in run and "agents/requirements.lock" in run
+    sched = yaml.safe_load((TESTS.parent / ".github" / "workflows" / "dependency-audit.yml").read_text())
+    assert "schedule" in sched[True]          # yaml reads the `on:` key as True
+    srun = "\n".join(str(s.get("run", "")) for j in sched["jobs"].values() for s in j["steps"])
+    for f in (".github/ci-requirements/*.txt", "scripts/instinct/openjev/requirements.txt", "agents/requirements.lock"):
+        assert f in srun

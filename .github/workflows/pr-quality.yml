@@ -69,32 +69,60 @@ jobs:
   pip-audit:
     name: Dependency vulnerability audit
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-    # Advisory, not a merge gate: a new CVE published against a pinned dep
-    # would otherwise turn every open PR red — including external
-    # contributors' unrelated changes — until a maintainer bumps the pin.
-    # The job still runs on every PR and shows red in the checks list;
-    # it just can't block unrelated work.
-    continue-on-error: true
+    timeout-minutes: 10
+    # WHAT RED MEANS HERE: this change brings in a known vulnerability.
+    #
+    # Branch protection REQUIRES this check. It used to carry
+    # `continue-on-error: true` and a comment calling it advisory, but
+    # job-level continue-on-error only keeps the WORKFLOW run green: the job's
+    # own check run still concluded `failure`, and that is what branch
+    # protection reads. So one advisory published against any of the locked
+    # packages blocked every open PR (PR #141 had to wait for a manual relock),
+    # while a PR that DOWNGRADED a transitive package into a known CVE, with
+    # that release's real hashes, passed every required check.
+    #
+    # Now (.github/scripts/audit_gate.py), per audited file:
+    #   - a PR that changes the file: audited at the head AND at the base; an
+    #     advisory the head has and the base does not FAILS the check;
+    #   - otherwise (an untouched file, a push to main, a manual run): every
+    #     finding is a warning annotation + step summary, and the check passes.
+    # New advisories against untouched pins surface on main through the
+    # weekly scheduled audit (dependency-audit.yml) and Dependabot alerts.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      # The pins in agents/requirements.txt are the supply chain — audit
-      # them against the PyPI advisory DB on every change. (This gate found
-      # 4 PyJWT CVEs the day it was written.)
       # pip-audit and its own closure are hash-pinned too
-      # (.github/ci-requirements/audit.txt).
-      - name: pip-audit
+      # (.github/ci-requirements/audit.txt). The direct pins, the TRANSITIVE
+      # closure (requirements.txt names 4 packages, the lock 43 — this gate
+      # found 4 PyJWT CVEs the day it was written), and CI's own tool pins.
+      - name: pip-audit (gate what this change introduces)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT: ${{ github.event_name }}
         run: |
           python3 -m pip install -q --require-hashes -r .github/ci-requirements/audit.txt
-          pip-audit -r agents/requirements.txt --disable-pip --no-deps
-          # ...and the TRANSITIVE closure, which is where most of the supply
-          # chain actually lives: requirements.txt names 4 packages, the lock
-          # names 43. Auditing only the four meant an advisory against any of
-          # the other 39 was invisible here.
-          pip-audit -r agents/requirements.lock --disable-pip --no-deps
+          gate=0
+          if [[ "$EVENT" == pull_request && "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            git fetch --no-tags --depth=1 origin "$BASE_SHA" && gate=1
+          fi
+          d="$RUNNER_TEMP/audit"; mkdir -p "$d"; rc=0
+          for f in agents/requirements.txt agents/requirements.lock .github/ci-requirements/*.txt; do
+            n="$(basename "$f")"; args=()
+            pip-audit -r "$f" --disable-pip --no-deps -f json -o "$d/$n.head.json" || true
+            if [[ $gate -eq 1 ]] && ! git diff --quiet "$BASE_SHA" HEAD -- "$f"; then
+              if git cat-file -e "$BASE_SHA:$f" 2>/dev/null; then
+                git show "$BASE_SHA:$f" > "$d/$n.base.txt"
+                pip-audit -r "$d/$n.base.txt" --disable-pip --no-deps -f json -o "$d/$n.base.json" || true
+                args=(--gate --base "$d/$n.base.json")
+              else
+                args=(--gate --base-absent)
+              fi
+            fi
+            python3 .github/scripts/audit_gate.py --label "$f" --head "$d/$n.head.json" ${args[@]+"${args[@]}"} || rc=1
+          done
+          exit $rc
 
   lock-fresh:
     # `pydeps.sh verify` (CI's test job) proves the lock is self-consistent
@@ -109,6 +137,13 @@ jobs:
     # touch the lock means one of two things: the lock holds something the
     # resolver does not produce (read the diff it prints), or the index moved
     # since it was generated (regenerate: ./scripts/pydeps.sh lock).
+    #
+    # This is the ONLY check that pins the versions of TRANSITIVE packages
+    # (`pydeps.sh verify` compares only the direct pins), so it belongs among
+    # the REQUIRED checks — a branch-protection setting, not code. It cannot
+    # redden an unrelated PR: on one that touches neither file it skips its
+    # steps and succeeds. (The audit gate above catches a transitive change
+    # into a KNOWN CVE; this catches any transitive change at all.)
     name: Lock matches a fresh resolve
     runs-on: ubuntu-latest
     timeout-minutes: 10
