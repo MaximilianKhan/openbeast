@@ -147,10 +147,22 @@ def list_files(directory: str = ".", pattern: str = "**/*") -> str:
 
 
 @_tool()
-def grep(pattern: str, path: str = ".", file_glob: str = "") -> str:
-    """Search file contents for a regex pattern. Returns matching lines with
-    file paths and line numbers."""
-    return _tools.grep(pattern, path, file_glob)
+def grep(pattern: str, path: str = ".", file_glob: str = "",
+         context_lines: int = 0, ignore_case: bool = False,
+         max_results: int = 500) -> str:
+    """Search file contents for a regex pattern (POSIX ERE). Returns matching
+    lines with file paths and line numbers.
+
+    Args:
+        pattern: The regex (POSIX ERE: use [0-9], not \\d).
+        path: File or directory to search (default ".").
+        file_glob: Only search files matching this glob (e.g. '*.py').
+        context_lines: Lines of context around each match (0-10).
+        ignore_case: Case-insensitive match.
+        max_results: Cap on returned match lines (default 500).
+    """
+    return _tools.grep(pattern, path, file_glob, context_lines, ignore_case,
+                       max_results)
 
 
 @_tool()
