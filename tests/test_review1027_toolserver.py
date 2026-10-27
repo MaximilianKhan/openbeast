@@ -45,6 +45,52 @@ import sessions  # noqa: E402
 import tools as _tools  # noqa: E402
 
 
+# ── R1-10 ────────────────────────────────────────────────────────────────────
+
+@pytest.fixture()
+def ledger(tmp_path, monkeypatch):
+    monkeypatch.setattr(sessions, "SESSIONS_DIR", str(tmp_path / "sessions"))
+    monkeypatch.setattr(mcp_server, "_LOG_DIR", str(tmp_path / "logs"))
+    monkeypatch.setattr(mcp_server, "_agents", {})
+    procs = []
+
+    def spawn(sid):
+        p = subprocess.Popen(["sleep", "60"], start_new_session=True)
+        procs.append(p)
+        assert sessions.register(sid, kind="agent", pid=p.pid, pgid=p.pid,
+                                 title="t")
+        return p
+    yield spawn
+    for p in procs:
+        if p.poll() is None:
+            p.kill()
+        p.wait()
+
+
+def test_r1_10_stop_agent_stops_a_ledger_only_agent(ledger):
+    p = ledger("20261027-000000-aaaaaaaa")
+    assert "aaaaaaaa" in mcp_server.list_agents()   # listed...
+    out = mcp_server.stop_agent("20261027-000000-aaaaaaaa")
+    assert "stopped" in out, out                    # ...and now stoppable
+    assert p.wait(timeout=5) == -signal.SIGTERM
+
+
+def test_r1_10_unproven_identity_is_not_signalled(ledger):
+    sid = "20261027-000000-bbbbbbbb"
+    p = ledger(sid)
+    rec = sessions.get(sid)
+    rec["meta"]["pid_start"] = int(rec["meta"]["pid_start"]) + 12345
+    assert sessions._write_record(rec)      # a recycled-pid look-alike
+    out = mcp_server.stop_agent(sid)
+    assert "not running" in out, out
+    time.sleep(0.2)
+    assert p.poll() is None                 # the process was NOT touched
+
+
+def test_r1_10_unknown_agent_is_still_an_error(ledger):
+    assert mcp_server.stop_agent("nope-nope").startswith("Error: unknown agent")
+
+
 # ── R1-11 ────────────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("name", ["bash", "read_file", "write_file",

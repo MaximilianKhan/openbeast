@@ -1246,6 +1246,13 @@ def stop_agent(agent_id: str) -> str:
     """
     record = _agents.get(agent_id)
     if not record:
+        # R1-10: list_agents/check_agent resolve agents through the ledger
+        # (a previous life of this server, agent.sh, the client CLI, the
+        # router), so stop must too — or a listed, running agent is
+        # unstoppable from WebUI/OpenCode.
+        ledger_record = _ledger_get(agent_id)
+        if ledger_record:
+            return _stop_ledger_agent(agent_id, ledger_record)
         return f"Error: unknown agent '{agent_id}'"
 
     if record.process.poll() is not None:
@@ -1272,6 +1279,81 @@ def stop_agent(agent_id: str) -> str:
             return f"Agent {agent_id} force-killed after timeout (PID {record.pid})."
         except Exception as e:
             return f"Agent {agent_id}: escalated to SIGKILL but cleanup failed: {e}"
+
+
+def _ledger_signal(mod, record: dict, sig: int) -> bool:
+    """Signal a ledger session we did not spawn — only with proof it is ours.
+
+    The pid in a ledger row is a reusable integer, so this re-proves identity
+    (pid + start time + boot, sessions.is_alive(require_start=True))
+    IMMEDIATELY before every signal, and signals the GROUP only when the
+    session LEADS it (pgid == pid) and it is not our own group — the same
+    rules as chat_server.signal_session. A session that merely belongs to a
+    group (runner.py registered from a non-interactive script inherits the
+    script's group) gets a bare-pid signal: that group is not its to lose.
+    """
+    try:
+        if not mod.is_alive(record, require_start=True):
+            return False
+        pid = int(record.get("pid") or 0)
+        pgid = int(record.get("pgid") or 0)
+    except Exception:
+        return False
+    if pid <= 1:
+        return False
+    if pgid == pid and pgid > 1 and pgid != os.getpgrp():
+        try:
+            if os.getpgid(pid) == pgid:
+                os.killpg(pgid, sig)
+                return True
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    try:
+        os.kill(pid, sig)
+        return True
+    except (ProcessLookupError, PermissionError, OSError):
+        return False
+
+
+def _ledger_wait_gone(mod, record: dict, timeout: float) -> bool:
+    """Poll until the session's process is gone (or a zombie); True if so."""
+    import time as _time
+    deadline = _time.monotonic() + timeout
+    while True:
+        try:
+            if not mod.is_alive(record, require_start=True):
+                return True
+        except Exception:
+            return True
+        if _time.monotonic() >= deadline:
+            return False
+        _time.sleep(0.1)
+
+
+def _stop_ledger_agent(agent_id: str, record: dict) -> str:
+    """stop_agent for an agent this process never spawned (R1-10)."""
+    mod = _sessions()
+    if mod is None:
+        return f"Error: unknown agent '{agent_id}'"
+    pid = record.get("pid")
+    try:
+        alive = mod.is_alive(record, require_start=True)
+    except Exception:
+        alive = False
+    if not alive:
+        state = record.get("state") or "unknown"
+        return (f"Agent {agent_id} is not running (ledger state: {state}); "
+                f"nothing to stop. Its process is gone, or cannot be proven "
+                f"to be the one the ledger recorded, so it is not signalled.\n"
+                f"Use check_agent('{agent_id}') to see final status.")
+    if not _ledger_signal(mod, record, signal.SIGTERM):
+        return f"Error: could not signal agent {agent_id} (PID {pid})"
+    if _ledger_wait_gone(mod, record, 10):
+        return f"Agent {agent_id} stopped gracefully (PID {pid})."
+    _ledger_signal(mod, record, signal.SIGKILL)
+    if _ledger_wait_gone(mod, record, 5):
+        return f"Agent {agent_id} force-killed after timeout (PID {pid})."
+    return f"Agent {agent_id}: escalated to SIGKILL but it is still running (PID {pid})."
 
 
 @_tool()
