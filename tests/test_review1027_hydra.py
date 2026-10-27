@@ -51,3 +51,33 @@ def test_reload_moving_a_node_rejudges_conformance(tmp_path):
     assert hy.reload()["ok"]
     hy.load_conformance()
     assert hy.state.conformance["m@spark"][0] == "pass"
+
+
+# ── R3-F4: an engine 429 is passed through when nothing after it ran ──
+
+def test_429_passes_through_when_later_targets_are_skipped(fleet):
+    srv, rig, sparks, _ = fleet()
+    pause_probes(srv)
+    rig.set_fault("http_429", 1)
+    real = srv.hy.state.try_admit
+
+    def ta(d, node, now):
+        if d == "nvfp4@sparks":
+            return None, "breaker HALF_OPEN (trial in flight)"
+        return real(d, node, now)
+    srv.hy.state.try_admit = ta
+    r = post(srv, chat(stream=False))
+    assert r.status_code == 429, r.text
+    assert r.headers.get("retry-after") == "1"
+    att = r.headers["x-hydra-attempts"]
+    assert att.startswith("unc@rig:429") and "nvfp4@sparks" in att
+
+
+def test_429_still_fails_over_when_the_next_target_runs(fleet):
+    """Negative control: a 429 with a runnable next target is NOT returned."""
+    srv, rig, sparks, _ = fleet()
+    pause_probes(srv)
+    rig.set_fault("http_429", 1)
+    r = post(srv, chat(stream=False))
+    assert r.status_code == 200, r.text
+    assert r.headers["x-hydra-deployment"] == "nvfp4@sparks"

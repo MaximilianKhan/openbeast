@@ -1129,7 +1129,12 @@ async def proxy(request: Request, path: str, pin: str | None = None):
         finish(504, "timeout", attempts=attempts)
         return hy.error("hydra_timeout", "the pre-commit budget ran out before any attempt", hdr)
     c, a, edits, adm = last
-    if a.kind == "passthrough" or (a.kind == "throttled" and not _has_more(dec, c)):
+    # `last` is the newest attempt that actually RAN: a throttled (429) one
+    # only stays `last` when nothing after it ran (every later target was
+    # skipped at admission, or the budget ended). The plan having more
+    # entries is not the test: the caller needs the engine's 429 and its
+    # Retry-After, not a hydra 502 for an upstream that was merely busy.
+    if a.kind in ("passthrough", "throttled"):
         # An engine's own 4xx: status, bytes and content-type exactly as sent.
         finish(a.status, "upstream_4xx", c.d.id, attempts, edits=edits)
         h = {k: v for k, v in a.headers.items() if k.lower() in ("content-type", "retry-after")}
@@ -1226,11 +1231,6 @@ async def proxy(request: Request, path: str, pin: str | None = None):
     out_h.pop("content-length", None)
     return StreamingResponse(relay(), status_code=int(a.status), headers=out_h,
                              background=BackgroundTask(sweep))
-
-
-def _has_more(dec: core.Decision, c: core.Candidate) -> bool:
-    ids = [x.d.id for x in dec.attempts]
-    return c.d.id in ids and ids.index(c.d.id) < len(ids) - 1
 
 
 # ─────────────────────────────────── handlers ───────────────────────────────────
