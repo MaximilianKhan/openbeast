@@ -920,9 +920,10 @@ def main():
               f"arms are leaderboard-ineligible; the board holds serving reality).")
         update_lb = False
     if args.tasks and not args.no_leaderboard:
-        print("NOTE: --tasks given without --no-leaderboard. Partial-suite scores "
-              "will be recorded in leaderboard.json and mix incomparably with "
-              "full-suite rows. Use --no-leaderboard for smoke/partial runs.",
+        print("NOTE: --tasks given without --no-leaderboard. A partial-suite run "
+              "is not seated (scoring refuses a v4 row without all 291 units), "
+              "so the leaderboard update will be skipped. Pass --no-leaderboard "
+              "for smoke/partial runs to say so up front.",
               file=sys.stderr)
     # The GPU lease, before anything touches the card. cache-only never
     # starts a server, so it neither needs nor takes the lease.

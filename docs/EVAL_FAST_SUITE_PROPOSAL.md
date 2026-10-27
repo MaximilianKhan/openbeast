@@ -7,11 +7,14 @@
 > (not weighted pass rate) gave suite F only **τ = +0.810** and flipped the
 > near-tied #4–#6 ranks; renormalizing variant counts made it worse (+0.619)
 > and base-complete closure destroyed the speedup (85% of full runtime). The
-> shipped design scores fast runs by **imputation** instead: measured 106 units
-> + assumed outcomes for the 185 saturated units = EXACTLY the full-291
-> capability for in-family models (verified as an identity on all reference
-> runs), with tripwire failures flagging models where the assumption is unsafe.
-> See `evals/README.md` § v5-fast.
+> shipped design scores fast runs by **imputation** instead: the current pin
+> measures 112 units (92 discriminating + 20 tripwires) and assumes outcomes
+> for the 179 saturated units. That equals the full-291 capability exactly
+> only for the reference runs the pin was built from (an identity by
+> construction). On a model the pin has not seen, leave-one-model-out gives
+> a mean error of **+0.87** points and a worst of **+2.04**, always reading
+> high, and most misses trip no tripwire. Treat an imputed score as an upper
+> bound. See `evals/README.md` § v5-fast for the current numbers.
 
 Target: run the capability eval in **1/3 to 1/4** of current wall-clock.
 

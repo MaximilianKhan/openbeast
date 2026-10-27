@@ -24,8 +24,12 @@ See the next section.
 
 ## Known validator defects (v4)
 
-These are known and held for the next suite version, because fixing a
-validator or the harness changes the era and invalidates every cached result.
+These are known and held for the next suite version, because a fix makes
+rows incomparable. Fixing a validator changes that task's spec hash, not the
+era: its units miss the cache for every model, so every board row must be
+re-measured on that task before old and new rows can be compared. (The era
+hash moves only with the agent-context files `scripts/eval-era.sh` lists, or
+a `SUITE_VERSION` bump.)
 
 - **`23_sql_injection` rejects the canonical fix.** The validator flags any
   `+` or f-string inside the `execute(...)` call, including in the parameter
@@ -521,7 +525,7 @@ difficulty weight `d` with `k` language variants of which `p` passed contributes
 ```
 # per BASE problem (d = DIFFICULTY_WEIGHTS[diff], k = variant_count, p = passed langs)
 problem_solving  = 100 × Σ d·[p ≥ 1]      / Σ d               # solved in ≥1 language
-language_breadth = 100 × Σ_{p≥1} d·(p/k)  / Σ_{p≥1} d         # ports passed, among solved
+language_breadth = 100 × Σ_{p≥1} d·(p/k)  / Σ_{p≥1} d         # solved weight carried across its languages
 CAPABILITY       = 0.75 × problem_solving + 0.25 × language_breadth   # ← ranking key (SCORE)
 
 # retained columns
@@ -533,6 +537,21 @@ spd (tok/s) = sustained DECODE rate, token-weighted from the server log's
               (2026-07-08); see DECODE_ESTIMATES + decode_from_server_log().
 speed       = 100 × mean(max(0, 1 − elapsed/time_budget)) over passed tasks  # legacy factor
 ```
+
+### What LANG measures
+
+LANG averages p/k over **every** solved base problem, and a single-language
+task has k = 1: solved, it contributes 1, fully carried by construction. In
+v4 the 106 singletons hold 173.5 of the 221.0 difficulty weight (78.5%), and
+the 31 variant'd tasks the other 47.5. So for a model that solves every
+singleton, LANG ≈ 78.5% + 21.5% × (its variant port rate), and real port
+breadth carries about 0.25 × 0.215 ≈ 0.054 of SCORE, not the 0.25 the weight
+suggests. Example: a variant port rate of 81% gives LANG ≈ 95.9%, the board
+LANG of a model whose zig column is 7/31. Read LANG as "solved weight
+carried across its languages; single-language tasks count as fully carried".
+For a model's actual port coverage use `scoring.py --by-language`. (Defining
+LANG over variant'd tasks only would change every SCORE; it is an open
+decision, not a bug in the numbers.)
 
 **Why capability, not accuracy.** v1 required passing all 6 language ports for
 full credit, so *solving* a problem in one language earned only 1/6 — fusing
