@@ -45,6 +45,37 @@ import sessions  # noqa: E402
 import tools as _tools  # noqa: E402
 
 
+# ── shared fixtures ──────────────────────────────────────────────────────────
+
+@pytest.fixture()
+def toolserver(tmp_path, monkeypatch):
+    """Header-mode, unkeyed identity tool server with a temp workspace and a
+    temp audit trail (never the rig's real one)."""
+    ws = tmp_path / "files"
+    ws.mkdir()
+    audit = tmp_path / "run" / "tool-audit.jsonl"
+    monkeypatch.setenv("OPENBEAST_FILES_DIR", str(ws))
+    monkeypatch.setenv("OPENBEAST_TOOL_AUDIT_PATH", str(audit))
+    monkeypatch.setenv("OPENBEAST_FILES_SHARDING", "user")
+    for k in ("AGENT_WORKDIR", "OPENBEAST_MCPO_ADMIN_KEY",
+              "OPENBEAST_MCPO_GUEST_KEY", "OPENBEAST_IDENTITY_JWT_SECRET"):
+        monkeypatch.delenv(k, raising=False)
+    importlib.reload(_tools)
+    openapi_tools._AUDIT_KEY_CACHE.clear()
+    return {"ws": ws, "audit": audit}
+
+
+def _client(**kw):
+    return TestClient(openapi_tools.create_app(),
+                      base_url="http://127.0.0.1:3001", **kw)
+
+
+def _rows(audit):
+    if not audit.exists():
+        return []
+    return [json.loads(x) for x in audit.read_text().splitlines() if x.strip()]
+
+
 # ── R1-04 ────────────────────────────────────────────────────────────────────
 
 @pytest.fixture()
@@ -208,6 +239,36 @@ def test_r1_11_grep_ignore_case_and_context_reach_tools(tmp_path):
                           ignore_case=True)
     assert "HELLO world" in out and "before" in out
     assert mcp_server.grep("hello", str(tmp_path)) .startswith("(no matches)")
+
+
+# ── R1-12 ────────────────────────────────────────────────────────────────────
+
+def test_r1_12_args_digest_is_keyed_not_a_bare_sha256(toolserver):
+    c = _client()
+    body = {"command": "ls -la", "timeout": 120}
+    blob = json.dumps(body, sort_keys=True, default=str).encode()
+    plain = hashlib.sha256(blob).hexdigest()[:16]
+    for _ in range(2):
+        assert c.post("/bash", json=body).status_code == 200
+    rows = _rows(toolserver["audit"])
+    assert len(rows) == 2
+    assert rows[0]["args_sha256"] != plain          # dictionary-proof
+    assert rows[0]["args_sha256"] == rows[1]["args_sha256"]  # still correlates
+    assert len(rows[0]["args_sha256"]) == 16
+    assert rows[0]["args_digest"] == "hmac-sha256"
+    key = toolserver["audit"].parent / "tool-audit.key"
+    assert key.exists() and stat.S_IMODE(key.stat().st_mode) == 0o600
+    assert key.read_text().strip() not in toolserver["audit"].read_text()
+
+
+def test_r1_12_key_is_per_install(tmp_path):
+    a = openapi_tools.args_digest(str(tmp_path / "a" / "t.jsonl"), b"{}")
+    b = openapi_tools.args_digest(str(tmp_path / "b" / "t.jsonl"), b"{}")
+    assert a != b
+    # ...and stable for one install, across a cold cache (a restart).
+    openapi_tools._AUDIT_KEY_CACHE.clear()
+    assert openapi_tools.args_digest(str(tmp_path / "a" / "t.jsonl"),
+                                     b"{}") == a
 
 
 # ── R9-02 / R9-05 ────────────────────────────────────────────────────────────

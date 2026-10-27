@@ -25,7 +25,12 @@ the HTTP layer, which buys three things mcpo structurally can't provide:
              loopback Phase-1 parity. Replaces the two-instance MCPO split.
   AUDIT      Every tool call is appended to .run/tool-audit.jsonl (0600)
              with ts/user/role/chat/tool/status/ms and an argument DIGEST
-             (never the arguments themselves — chats stay private).
+             (never the arguments themselves — chats stay private). The
+             digest (`args_sha256`, 16 hex chars) is an HMAC-SHA256 keyed by
+             a per-install secret kept NEXT TO the trail, not in it
+             (tool-audit.key, 0600): a correlation digest — equal args, equal
+             digest on this install — that a dictionary over the trail alone
+             cannot reverse. `args_digest` names the scheme ("hmac-sha256").
 
 agents/mcp_server.py remains the MCP (stdio) surface for OpenCode and any
 real MCP client; this module imports and serves the same 18 tool functions,
@@ -199,6 +204,52 @@ def _audit_path() -> str:
     run_dir = os.environ.get("OPENBEAST_RUN_DIR", "").strip() or \
         os.path.join(REPO_DIR, ".run")
     return os.path.join(run_dir, "tool-audit.jsonl")
+
+
+_AUDIT_KEY_CACHE: dict = {}
+
+
+def _audit_key(audit_path: str) -> bytes:
+    """The per-install secret that keys the audit args digest (R1-12).
+
+    An unsalted sha256 of `{"command":"ls -la","timeout":120}` is reversed by
+    anyone holding the trail and a dictionary of likely tool calls. The key
+    lives beside the trail as tool-audit.key (0600, created once, O_EXCL so
+    two workers cannot mint different keys), so the trail alone reveals
+    nothing. If it cannot be read or created, a process-lifetime random key
+    is used: digests then correlate only within this run, which still never
+    leaks contents.
+    """
+    key_path = os.path.join(os.path.dirname(audit_path) or ".",
+                            "tool-audit.key")
+    cached = _AUDIT_KEY_CACHE.get(key_path)
+    if cached:
+        return cached
+    key = b""
+    try:
+        os.makedirs(os.path.dirname(key_path) or ".", mode=0o700,
+                    exist_ok=True)
+        try:
+            fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                         0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write(os.urandom(32).hex() + "\n")
+        except FileExistsError:
+            pass
+        with open(key_path) as f:
+            key = bytes.fromhex(f.read().strip())
+    except (OSError, ValueError):
+        key = b""
+    if len(key) < 16:
+        key = os.urandom(32)
+    _AUDIT_KEY_CACHE[key_path] = key
+    return key
+
+
+def args_digest(audit_path: str, blob: bytes) -> str:
+    """16-hex HMAC-SHA256 of an audit row's serialized args (R1-12)."""
+    return hmac.new(_audit_key(audit_path), blob,
+                    hashlib.sha256).hexdigest()[:16]
 
 
 def _key_matches(token: str, key: str) -> bool:
@@ -410,7 +461,8 @@ def create_app() -> FastAPI:
               ms: int, args: dict, err: str = "", owner: str = "",
               claimed_user=None) -> None:
         """Append-only call log. Argument CONTENTS never leave the request —
-        only a digest and size, so the audit trail can't leak chats."""
+        only a KEYED digest and size, so the audit trail can't leak chats
+        (see args_digest: an unsalted hash was reversible by dictionary)."""
         try:
             blob = json.dumps(args, sort_keys=True, default=str).encode()
             entry = {
@@ -422,7 +474,9 @@ def create_app() -> FastAPI:
                 "tool": tool,
                 "ok": ok,
                 "ms": ms,
-                "args_sha256": hashlib.sha256(blob).hexdigest()[:16],
+                # Field name kept for consumers; the value is a keyed HMAC.
+                "args_sha256": args_digest(audit_path, blob),
+                "args_digest": "hmac-sha256",
                 "args_bytes": len(blob),
                 "identity": "jwt" if jwt_secret else "header",
             }
