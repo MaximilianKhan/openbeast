@@ -793,6 +793,39 @@ def experiment_arms(env=None) -> list[str]:
     return arms
 
 
+def _on_signal(signum, frame):
+    """SIGINT/SIGTERM: reap the live agents, stop OUR server, exit 130.
+
+    run_eval's own reaper is installed only when run_eval.py is the entry
+    point; under this harness the agents (start_new_session=True) used to
+    survive a Ctrl-C or `kill`: still writing the unit's shared /tmp/eval_*
+    fixtures and reconnecting to whatever server came up next on :8080 —
+    llama-server ignores the model id, so a quick relaunch could have model
+    A's orphan write into the unit being measured for model B. Agents
+    first, so none reconnects to a server mid-shutdown. os._exit, not
+    sys.exit: with --jobs N, ThreadPoolExecutor's exit would otherwise join
+    N workers that are still waiting on (or spawning) agents."""
+    print(f"\n\nReceived signal {signum} — reaping eval agents, stopping llama-server "
+          f"and exiting...")
+    try:
+        run_eval._reap_live_agents()
+    finally:
+        try:
+            stop_llama_server()
+        finally:
+            for stream in (sys.stdout, sys.stderr):
+                try:
+                    stream.flush()
+                except Exception:
+                    pass
+            os._exit(130)
+
+
+def _install_signal_handlers() -> None:
+    signal.signal(signal.SIGINT, _on_signal)
+    signal.signal(signal.SIGTERM, _on_signal)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Benchmark all local models")
     parser.add_argument("--models", help="Comma-separated model slugs to benchmark "
@@ -857,13 +890,7 @@ def main():
         os.environ["BEAST_ESCALATE"] = "1"
     task_filter = args.tasks.split(",") if args.tasks else None
 
-    # Cleanup handler — make sure we don't leave llama-server running
-    def _on_signal(signum, frame):
-        print(f"\n\nReceived signal {signum} — stopping llama-server and exiting...")
-        stop_llama_server()
-        sys.exit(130)
-    signal.signal(signal.SIGINT, _on_signal)
-    signal.signal(signal.SIGTERM, _on_signal)
+    _install_signal_handlers()
 
     if args.cache_only and args.no_cache:
         print("--cache-only and --no-cache are mutually exclusive.", file=sys.stderr)
