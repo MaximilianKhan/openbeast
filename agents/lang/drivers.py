@@ -215,6 +215,13 @@ _RS_MOD = re.compile(r"\bmod\b(?!\s*(?:r#)?[A-Za-z_]\w*\s*\{)")
 _RS_FILE_ATTR = re.compile(r"\bdebugger_visualizer\b")
 _ZIG_FILE = re.compile(r"@(embedFile|import|cInclude)\b")
 _ZIG_FILE_ARG = re.compile(rf"\s*\(\s*{_LIT}\s*\)")
+#: C translation at all. `@cDefine("A", "1\n#include \"/abs\"\n")` inside an
+#: `@cImport` writes a #define whose value carries a newline, so the generated
+#: header holds a live #include of a host file and clang quotes it in the
+#: diagnostic (reproduced on 0.16 with libc linked — the default on macOS,
+#: and this module ships to Mac clients). No claim about zig std needs C, so
+#: the whole surface is refused rather than chasing how a value is spelled.
+_ZIG_C = re.compile(r"@(cImport|cDefine|cUndef)\b")
 
 
 def _escapes(path: str) -> bool:
@@ -507,6 +514,10 @@ def _in_token_tree(view: str, at: int) -> bool:
 def _refuse_zig(source: str) -> str | None:
     lexed = _lex(source, "zig")
     view, table = lexed if lexed else (source, None)
+    m = _ZIG_C.search(view)
+    if m:
+        return (f"@{m.group(1)} is refused — C translation can smuggle an "
+                f"#include of a host file, and no zig claim needs it")
     for m in _ZIG_FILE.finditer(view):
         # In doubt (no lexing) a `//` comment may sit between the builtin and
         # its `(`; the strict tail below then fails to match, which refuses.

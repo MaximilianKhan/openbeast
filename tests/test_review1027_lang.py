@@ -86,3 +86,20 @@ def test_unresolvable_worktree_is_unknown_not_free(tmp_path, monkeypatch):
     monkeypatch.setattr(S, "_REPO", str(wt))
     assert S.lease_status() == ""
     assert S.check_lease()[0] is False
+
+
+# ── R3-F5: zig C translation (@cImport/@cDefine/@cUndef) is refused ──
+
+def test_zig_cdefine_newline_include_is_refused():
+    from lang import drivers as D
+    z = D.driver_for("zig")
+    for src in ('const c = @cImport({ @cDefine("A", "1\\n#include \\"/etc/hostname\\"\\n"); });\n_ = c;',
+                'const c = @cImport({ @cUndef("A"); });\n_ = c;',
+                'const c = @cImport(@cInclude("stdio.h"));\n_ = c;'):
+        why = z.refusal(z.wrap(src))
+        assert why and "refused" in why, (src, why)
+    # negative controls: the words in a comment or a string are not a builtin
+    for src in ('// @cImport is gone in 0.17\nconst x = 1;\n_ = x;',
+                'const s = "@cDefine";\n_ = s;',
+                'const b = @import("builtin");\n_ = b;'):
+        assert z.refusal(z.wrap(src)) is None, src
