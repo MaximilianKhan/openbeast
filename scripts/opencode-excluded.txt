@@ -17,8 +17,12 @@
 #
 # NOTE these are not deletions. The serve scripts, registry pins, docs and
 # benchmark rows all remain, so re-downloading the weights (docs/INSTALL.md)
-# makes each one work again immediately with no repo change. Removing the slug
-# from this file is all that is needed to put it back in the picker.
+# makes each one serve again with no repo change. To put one back in the
+# OpenCode picker, remove its slug here AND add its entry back to
+# opencode.json's provider.llama-cpp.models (name and context limit from the
+# serve script): removing the slug alone fails tests/test_scripts.sh (a serve
+# script in neither file) and adds nothing to the picker. Note opencode.json
+# is hashed into the eval era, so that edit rolls it.
 fable-fusion-27b-q5	weights not on the reference rig (deleted to reclaim disk); DavidAU Fable-Fusion 711 — re-download per docs/INSTALL.md to restore
 fable-fusion-27b-mtp-q5	same weights as fable-fusion-27b-q5's MTP twin, also absent
 fable-fusion-27b-q6	same family, weights absent
