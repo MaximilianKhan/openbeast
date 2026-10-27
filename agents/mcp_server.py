@@ -78,11 +78,12 @@ import tools as _tools
 MCP_BIND = os.environ.get("OPENBEAST_BIND", "127.0.0.1").strip() or "127.0.0.1"
 mcp = MCPServer("local-tools")
 
-# RBAC Phase 2 (docs/RBAC_PLAN.md): OPENBEAST_MCP_TOOLS, when set, is a
-# comma-separated allowlist — only the named tools REGISTER at all. The guest
-# MCPO instance runs with OPENBEAST_MCP_TOOLS="web_search,fetch", so even a
-# caller holding the guest API key cannot reach bash/file/agent tools: they
-# don't exist on that server. Unset (the default) = every tool registers.
+# OPENBEAST_MCP_TOOLS, when set, is a comma-separated allowlist — only the
+# named tools REGISTER on THIS MCP server (stdio, e.g. a client's OpenCode).
+# It is a client-side registration lever only, NOT a security boundary of the
+# :3001 identity tool server: that server registers the plain callables
+# whatever this says, and its guest boundary is openapi_tools.GUEST_TOOLS.
+# Unset (the default) = every tool registers.
 _ALLOWED_TOOLS = {
     t.strip() for t in os.environ.get("OPENBEAST_MCP_TOOLS", "").split(",") if t.strip()
 }
