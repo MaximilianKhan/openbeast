@@ -232,6 +232,56 @@ class TestTenancyKnobs:
         # else's slot AND jumps the deferred queue. Never forwarded.
         assert "id_slot" not in sent
 
+    _INTERNAL = {"chat_parser": "x" * 32, "chat_format": 3,
+                 "generation_prompt": "<|im_start|>assistant",
+                 "message_delimiters": ["<a>", "<b>"],
+                 "continue_final_message": True}
+
+    @pytest.mark.parametrize("path,base", [
+        ("/v1/chat/completions", {"messages": [{"role": "user",
+                                                "content": "hi"}]}),
+        ("/v1/completions", {"prompt": "hi"}),
+        ("/v1/embeddings", {"input": "hi"}),
+    ])
+    def test_server_internal_knobs_are_stripped(self, edge, tmp_path,
+                                                path, base):
+        # Review R10-01: `chat_parser` reaches CVE-2026-107183 (a UAF in
+        # llama.cpp < b11393) on our pin; none of these are OpenAI fields.
+        _registry(tmp_path)
+        cap = {}
+        _stub_upstream(edge, cap)
+        with TestClient(edge.app) as c:
+            r = c.post(path, json={**base, **self._INTERNAL},
+                       headers={"Authorization": f"Bearer {DEVICE_KEY}"})
+        assert r.status_code == 200
+        sent = json.loads(cap["content"])
+        for k in self._INTERNAL:
+            assert k not in sent, k
+        for k, v in base.items():
+            assert sent[k] == v
+
+    def test_ordinary_openai_fields_pass_through_unchanged(self, edge,
+                                                           tmp_path):
+        # Negative control: the strip touches only the named knobs.
+        _registry(tmp_path)
+        cap = {}
+        _stub_upstream(edge, cap)
+        body = {"model": "m", "messages": [{"role": "user", "content": "hi"}],
+                "temperature": 0.2, "top_p": 0.9, "max_tokens": 64,
+                "stop": ["\n\n"], "seed": 7, "n": 1,
+                "tools": [{"type": "function",
+                           "function": {"name": "f", "parameters": {}}}],
+                "tool_choice": "auto",
+                "response_format": {"type": "json_object"},
+                "logit_bias": {"50256": -100}, "user": "u",
+                "presence_penalty": 0.1, "frequency_penalty": 0.1,
+                # a nested `chat_format` is message content, not a knob
+                "metadata": {"chat_format": "kept"}}
+        with TestClient(edge.app) as c:
+            c.post("/v1/chat/completions", json=body,
+                   headers={"Authorization": f"Bearer {DEVICE_KEY}"})
+        assert json.loads(cap["content"]) == body
+
     def test_server_side_affinity_is_injected(self, edge, tmp_path):
         _registry(tmp_path, slot=3)
         cap = {}

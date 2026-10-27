@@ -21,7 +21,9 @@ llama-server and you get, per device:
     /slots, /v1/stream, /infill and friends stop existing for remote callers
   * `id_slot` stripped from client bodies (it is unauthenticated, wraps
     modulo the slot count onto another tenant's slot, and jumps the deferred
-    queue) and re-injected ONLY from the server-side device->slot map
+    queue) and re-injected ONLY from the server-side device->slot map;
+    llama-server-internal template knobs (`chat_parser`, `chat_format`, …)
+    stripped likewise
   * X-Conversation-Id namespaced per device, so two devices cannot collide
     on — or hijack — each other's stream sessions
   * a token bucket + max-in-flight cap per device: llama-server's queue is an
@@ -137,6 +139,13 @@ JSON_PATHS = frozenset({
     "/v1/completions",
     "/v1/embeddings",
 })
+# Top-level body keys stripped on every JSON path, like id_slot: llama-server
+# reads them from the request but they are its own plumbing, not part of the
+# OpenAI API (review R10-01 — CVE-2026-107183 via `chat_parser`).
+_SERVER_INTERNAL_KNOBS = (
+    "chat_parser", "chat_format", "generation_prompt",
+    "message_delimiters", "continue_final_message",
+)
 # No legitimate request nests anywhere near this (a chat body with a deep tool
 # schema is ~15-20). The cap must sit far below the ~50k where Python's json
 # gives up AND llama-server's nlohmann deep copy overflows its thread stack.
@@ -763,6 +772,12 @@ def _sanitize_body(raw: bytes, device: dict,
     # count (landing on another tenant's slot) and a pinned task jumps the
     # deferred queue ahead of unpinned callers. Never honor the client's.
     body.pop("id_slot", None)
+    # llama-server-internal chat-template knobs no OpenAI-compatible client
+    # sends. `chat_parser` reaches a use-after-free in llama.cpp before b11393
+    # (CVE-2026-107183, R10-01) and the pin is older; the rest steer the same
+    # template/parser machinery. Defence in depth, independent of the pin.
+    for knob in _SERVER_INTERNAL_KNOBS:
+        body.pop(knob, None)
     slot = device.get("slot")
     if isinstance(slot, bool):
         slot = None                      # JSON true/false is not a slot index
