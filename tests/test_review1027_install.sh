@@ -1,0 +1,154 @@
+#!/bin/bash
+# Review 2026-10-27 — install / weights / WebUI / doctor fixes. Behaviour tests.
+#
+# Usage: bash tests/test_review1027_install.sh
+#
+# Runs against THROWAWAY copies of the scripts under $TMPDIR, with stub `hf`,
+# `curl` and `zig` on PATH that RECORD their calls, so assertions are about
+# what the script did. Every positive assertion has a negative control.
+#
+#   1  fetch-weight.sh   OFFLINE=true never probes or downloads        (R5-08)
+#   2  fetch-weight.sh   a PENDING row: loud UNVERIFIED, strict refuses (R5-09)
+#   3  bootstrap.sh      OFFLINE sideload names verify-weights --file   (R5-07)
+
+set -uo pipefail
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
+PASS=0
+FAIL=0
+# HERMETIC: a rig with OPENBEAST_* exported would steer the scripts under test.
+for _v in $(compgen -e | grep '^OPENBEAST_' || true); do unset "$_v"; done
+unset OFFLINE WEIGHT_ENFORCE
+
+pass() { echo "  PASS: $1"; PASS=$((PASS + 1)); }
+fail() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
+has()  { grep -qF -- "$2" <<< "$1"; }
+
+T="$(mktemp -d)"
+trap 'rm -rf "$T"' EXIT
+
+SB="$T/repo"
+mkdir -p "$SB/scripts/lib" "$T/bin" "$T/state"
+for f in fetch-weight.sh verify-weights.sh; do
+  install -m 755 "$REPO_DIR/scripts/$f" "$SB/scripts/$f"
+done
+install -m 644 "$REPO_DIR/scripts/lib/weights.sh" "$SB/scripts/lib/weights.sh"
+export OB_STUB_STATE="$T/state"
+
+cat > "$T/bin/hf" <<'STUB'
+#!/bin/bash
+# hf download <repo> <remote> --local-dir <dir>
+echo "$*" >> "$OB_STUB_STATE/hf.log"
+printf 'BYTES' > "$5/$3"
+STUB
+cat > "$T/bin/curl" <<'STUB'
+#!/bin/bash
+echo "$*" >> "$OB_STUB_STATE/curl.log"
+exit 0
+STUB
+chmod +x "$T/bin/hf" "$T/bin/curl"
+
+W="$T/weights"; mkdir -p "$W"
+export OPENBEAST_WEIGHTS_DIR="$W"
+_sha="$(printf 'BYTES' | sha256sum | awk '{print $1}')"
+printf '%s\t5\tpinned.gguf\torg/pinned\t-\n' "$_sha" >  "$SB/scripts/weights.registry"
+printf 'PENDING\t0\tpending.gguf\torg/pending\t-\n'   >> "$SB/scripts/weights.registry"
+
+reset_state() { rm -f "$T/state/"*.log "$W"/*.gguf "$SB/openbeast.conf"; }
+calls() { [[ -f "$T/state/$1.log" ]] && wc -l < "$T/state/$1.log" || echo 0; }
+fw() { PATH="$T/bin:$PATH" "$SB/scripts/fetch-weight.sh" "$@" 2>&1; }
+
+# ===========================================================================
+echo ""
+echo "1. fetch-weight.sh honours OFFLINE (R5-08):"
+# ===========================================================================
+reset_state
+_out="$(OPENBEAST_OFFLINE=true fw pinned.gguf)"; _rc=$?
+if [[ $_rc -eq 4 && "$(calls curl)" -eq 0 && "$(calls hf)" -eq 0 && ! -e "$W/pinned.gguf" ]]; then
+  pass "OPENBEAST_OFFLINE=true: exit 4, no probe, no download"
+else
+  fail "OFFLINE env ignored (rc=$_rc curl=$(calls curl) hf=$(calls hf)): $_out"
+fi
+has "$_out" "verify-weights.sh --file pinned.gguf" \
+  && pass "…and prints the sideload instructions" \
+  || fail "no sideload help under OFFLINE: $_out"
+
+reset_state
+printf 'OFFLINE=true  # air-gapped\n' > "$SB/openbeast.conf"
+_out="$(fw pinned.gguf)"; _rc=$?
+[[ $_rc -eq 4 && "$(calls curl)" -eq 0 && "$(calls hf)" -eq 0 ]] \
+  && pass "OFFLINE=true in openbeast.conf (with a trailing comment) is honoured too" \
+  || fail "conf OFFLINE ignored (rc=$_rc curl=$(calls curl) hf=$(calls hf)): $_out"
+
+reset_state   # negative control: online, the same row downloads and verifies
+_out="$(fw pinned.gguf)"; _rc=$?
+[[ $_rc -eq 0 && "$(calls hf)" -eq 1 && -f "$W/pinned.gguf" ]] \
+  && pass "control: without OFFLINE the pinned row is downloaded and verified" \
+  || fail "control: online fetch broke (rc=$_rc hf=$(calls hf)): $_out"
+
+reset_state   # an already-present weight is still verifiable offline
+printf 'BYTES' > "$W/pinned.gguf"
+_out="$(OPENBEAST_OFFLINE=true fw pinned.gguf)"; _rc=$?
+[[ $_rc -eq 0 && "$(calls curl)" -eq 0 ]] \
+  && pass "OFFLINE: a weight already present is verified, not refused" \
+  || fail "OFFLINE broke the already-present path (rc=$_rc): $_out"
+
+# ===========================================================================
+echo ""
+echo "2. fetch-weight.sh and PENDING rows (R5-09):"
+# ===========================================================================
+reset_state
+_out="$(fw pending.gguf)"; _rc=$?
+if [[ $_rc -eq 0 && -f "$W/pending.gguf" ]] && has "$_out" "UNVERIFIED"; then
+  pass "default (warn): a PENDING row downloads, and says UNVERIFIED"
+else
+  fail "PENDING under warn (rc=$_rc): $_out"
+fi
+has "$_out" "nothing to verify" \
+  && fail "the old soft 'nothing to verify' wording is still the final line" \
+  || pass "…the soft 'nothing to verify' line is gone"
+
+reset_state
+_out="$(OPENBEAST_WEIGHT_ENFORCE=strict fw pending.gguf)"; _rc=$?
+if [[ $_rc -ne 0 && "$(calls hf)" -eq 0 && "$(calls curl)" -eq 0 && ! -e "$W/pending.gguf" ]] \
+   && has "$_out" "WEIGHT_ENFORCE=strict"; then
+  pass "WEIGHT_ENFORCE=strict refuses a PENDING row before any network/download"
+else
+  fail "strict let a PENDING row through (rc=$_rc hf=$(calls hf)): $_out"
+fi
+
+reset_state
+printf 'WEIGHT_ENFORCE=strict\n' > "$SB/openbeast.conf"
+_out="$(fw pending.gguf)"; _rc=$?
+[[ $_rc -ne 0 && "$(calls hf)" -eq 0 ]] \
+  && pass "WEIGHT_ENFORCE=strict from openbeast.conf refuses too" \
+  || fail "conf strict ignored (rc=$_rc hf=$(calls hf)): $_out"
+
+reset_state   # negative control: strict still fetches a PINNED row
+printf 'WEIGHT_ENFORCE=strict\n' > "$SB/openbeast.conf"
+_out="$(fw pinned.gguf)"; _rc=$?
+[[ $_rc -eq 0 && -f "$W/pinned.gguf" ]] \
+  && pass "control: strict still fetches a pinned row" \
+  || fail "control: strict broke pinned fetches (rc=$_rc): $_out"
+
+reset_state   # the env override beats the conf, as the refusal message promises
+printf 'WEIGHT_ENFORCE=strict\n' > "$SB/openbeast.conf"
+_out="$(OPENBEAST_WEIGHT_ENFORCE=warn fw pending.gguf)"; _rc=$?
+[[ $_rc -eq 0 && -f "$W/pending.gguf" ]] \
+  && pass "OPENBEAST_WEIGHT_ENFORCE=warn overrides a strict conf for one fetch" \
+  || fail "the printed escape hatch does not work (rc=$_rc): $_out"
+
+# ===========================================================================
+echo ""
+echo "3. bootstrap.sh OFFLINE sideload message (R5-07):"
+# ===========================================================================
+_blk="$(awk '/ob_offline && die "OFFLINE=true and \$WEIGHT_FILE/,/openbeast.conf to match/' "$REPO_DIR/bootstrap.sh")"
+if [[ -n "$_blk" ]] && has "$_blk" "verify-weights.sh --file" ; then
+  pass "the sideload message names verify-weights.sh --file (which hashes)"
+else
+  fail "the sideload message still names a size-only verify: $_blk"
+fi
+
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+exit $(( FAIL > 0 ? 1 : 0 ))
