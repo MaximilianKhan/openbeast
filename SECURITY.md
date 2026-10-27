@@ -142,8 +142,11 @@ under CSP. Details: [`docs/BEAST_CHAT.md`](docs/BEAST_CHAT.md),
 [`docs/BEAST_ARTIFACT.md`](docs/BEAST_ARTIFACT.md).
 
 **Supply chain, and what a hash does not prove.** Container images are
-digest-pinned, every model weight is sha256-pinned in `scripts/weights.registry`,
-and the Python closure is hash-pinned in `agents/requirements.lock`
+digest-pinned, every model weight is sha256-pinned in `scripts/weights.registry`
+except rows still marked `PENDING` (no hash yet; today one vision projector,
+`mmproj-Qwen3.8-Flash-Next-Uncensored-F16.gguf`), which `fetch-weight.sh`
+downloads from the repo's moving `main` and installs unverified unless
+`WEIGHT_ENFORCE=strict`, and the Python closure is hash-pinned in `agents/requirements.lock`
 (installed with `--require-hashes`; bootstrap never falls back to the
 unpinned file on a hash mismatch). The offline bundle (`scripts/bundle.sh`)
 carries all of that across an air gap with every file's sha256 in

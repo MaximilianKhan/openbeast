@@ -41,7 +41,7 @@ Run what CI runs, so nothing surprises you in review:
 # Tests (the CI 'test' job)
 ./tests/run_tests.sh                 # the shell suites (scripts, clients, job.sh, artifact CLI,
                                      #   offline fixes, ssd-wear) + tool unit tests + full pytest
-python3 -m pytest tests/ -q          # full suite (~3,100 tests, CPU-only)
+python3 -m pytest tests/ -q          # full suite (~3,500 tests, CPU-only)
 
 # Quality gates (the CI 'PR quality' jobs) — install once:
 #   pip install --user ruff pip-audit shellcheck-py
@@ -68,7 +68,8 @@ and pushes it to the PR branch, because Dependabot edits only the latter.
 Dependabot opens weekly PRs; `./scripts/land-dependabot.sh` lands them one
 at a time (rebase → relock → approve the held CI runs → merge). With no
 arguments it takes only the PRs that touch `agents/requirements.txt`; pass a
-PR number to land any other — see
+PR number to land any other (a github-actions or docker bump has no lock, so
+it waits for the rebase only, then the same checks and merge) — see
 [`docs/UPDATING.md`](docs/UPDATING.md). **Never bump `requirements.txt`
 without the lock**: `update.sh --python` regenerates it, and CI goes red on a
 commit that moves one without the other.
