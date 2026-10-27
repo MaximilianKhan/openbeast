@@ -77,6 +77,18 @@ fi
 if [[ -f "$REPO_DIR/system-prompt-tools.md" ]]; then
   SYSTEM_PROMPT="$SYSTEM_PROMPT"$'\n\n'"$(cat "$REPO_DIR/system-prompt-tools.md")"
 fi
+# WebUI-only addendum (R9-14). WebUI stores ONE system prompt per model, so a
+# `user`-role (guest/family) account gets the same text as the admin — and
+# that text promises bash, agents and skills, while RBAC resolves only
+# web_search + fetch for that account (section 1 below). This paragraph is
+# appended to the WebUI copy only: system-prompt*.md are eval-era inputs
+# and stay untouched. A true per-tier prompt needs a guest-scoped model
+# preset; until then the model is told its tool list is the ground truth.
+if [[ -n "$SYSTEM_PROMPT" ]]; then
+  SYSTEM_PROMPT="$SYSTEM_PROMPT"$'\n\n'"## Which tools you actually have here
+
+This chat runs in Open WebUI, where each account gets the tools its role allows. Administrators get the full set described above. Other accounts (guests, family) get only \`web_search\` and \`fetch\`. The tools attached to THIS conversation are the ground truth: if \`bash\`, file tools, agents or skills are not in your tool list, you do not have them here — say so plainly and do what you can with the tools you do have, rather than promising or attempting an action you cannot take."
+fi
 
 [[ "$MODE" == "full" ]] && echo "Configuring Open WebUI..."
 
@@ -302,7 +314,7 @@ fi
 
 # --- 1. Configure MCPO tool servers with RBAC (two connections, same MCPO) ---
 # See docs/RBAC_PLAN.md. Two connections back the one MCPO instance:
-#   id=1 "privileged"  filter !web_search,!fetch (15 OS-touching tools),
+#   id=1 "privileged"  filter !web_search,!fetch (16 OS-touching tools),
 #                      admin-only (empty access_grants → non-admins denied;
 #                      admins bypass)
 #   id=2 "web"         filter web_search,fetch — public (everyone incl.
@@ -523,7 +535,8 @@ for m in json.load(sys.stdin).get('data', []):
 done
 
 if [[ -z "$MODELS" ]]; then
-  echo "  No models detected yet. Re-run ./configure-webui.sh after first chat."
+  echo "  No models detected yet (is llama-server still loading?). Re-run"
+  echo "  ./scripts/configure-webui.sh once \`curl :8080/v1/models\` lists one."
 else
   # Write system prompt to a temp file for the DB update script to read
   PROMPT_FILE=""
