@@ -214,6 +214,12 @@ jobs:
       - name: Supply-chain tests
         run: bash tests/test_supply_chain.sh
 
+      # The 2026-10-27 review's script fixes: land-dependabot's red-check and
+      # no-relock paths, the Spark launchers' OFFLINE / mirror / token
+      # handling, install-skills' link listing. Stub gh/docker; nothing runs.
+      - name: Review 2026-10-27 script tests
+        run: bash tests/test_review1027_ci.sh
+
       # The 2026-09-29 review's other hermetic suites (tests/run_tests.sh
       # runs the same files). Stub binaries only; test_conf_secrets.sh's
       # real-curl check talks to a loopback python http.server it starts and
