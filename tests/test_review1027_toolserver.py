@@ -174,6 +174,48 @@ def test_r1_05_main_exits_2_on_a_network_bind(tmp_path):
     assert "refusing" in p.stderr
 
 
+# ── R1-07 ────────────────────────────────────────────────────────────────────
+
+def test_r1_07_workdir_escape_is_audited(toolserver):
+    c = _client()
+    r = c.post("/start_agent",
+               json={"task": "x", "workdir": "../../../etc"},
+               headers={"X-OpenWebUI-User-Id": "alice"})
+    assert r.status_code == 400 and "escapes" in r.text
+    rows = _rows(toolserver["audit"])
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["tool"] == "start_agent" and row["ok"] is False
+    assert row["user"] == "alice" and "escapes" in row["error"]
+    # The raw workdir never lands in the trail — only the digest.
+    assert "../../../etc" not in toolserver["audit"].read_text()
+    m = c.get("/metrics").text
+    assert 'tool="start_agent",profile="open",outcome="error"} 1' in m
+
+
+def test_r1_07_shard_creation_failure_is_an_audited_500(tmp_path, toolserver,
+                                                        monkeypatch):
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("x")
+    monkeypatch.setenv("OPENBEAST_FILES_DIR", str(blocker))
+    c = _client(raise_server_exceptions=False)
+    r = c.post("/write_file", json={"path": "a.md", "content": "x"},
+               headers={"X-OpenWebUI-User-Id": "bob"})
+    assert r.status_code == 500
+    rows = _rows(toolserver["audit"])
+    assert len(rows) == 1 and rows[0]["ok"] is False
+    assert rows[0]["user"] == "bob" and "500" in rows[0]["error"]
+
+
+def test_r1_07_control_normal_call_still_one_ok_row(toolserver):
+    c = _client()
+    r = c.post("/write_file", json={"path": "a.md", "content": "x"},
+               headers={"X-OpenWebUI-User-Id": "carol"})
+    assert r.status_code == 200
+    rows = _rows(toolserver["audit"])
+    assert len(rows) == 1 and rows[0]["ok"] is True
+
+
 # ── R1-10 ────────────────────────────────────────────────────────────────────
 
 @pytest.fixture()

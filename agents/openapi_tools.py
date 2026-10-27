@@ -537,27 +537,48 @@ def create_app() -> FastAPI:
                     calls[(name, "denied", "error")] += 1
                 raise
             kwargs = args.model_dump()
-            # A spawned agent's workdir must not silently escape the
-            # caller's shard: mcp_server resolves a RELATIVE workdir against
-            # the server process CWD (the repo!), which the ContextVar can't
-            # reach across the subprocess boundary. Anchor it here instead.
-            shard = shard_for(user, chat)
-            if (shard and name in ("start_agent", "start_skill_agent")
-                    and not os.path.isabs(kwargs.get("workdir", "."))):
-                # normpath collapses "..", so verify the anchored path is
-                # still INSIDE the shard — a relative workdir of
-                # "../../somewhere" must be an error, not a silent escape.
-                # (An ABSOLUTE workdir stays allowed as-is: spawning is
-                # admin-only, and pointing an agent at a real project dir
-                # is the documented use; the shard anchors relative paths.)
-                anchored = os.path.normpath(
-                    os.path.join(shard, kwargs.get("workdir", ".")))
-                if os.path.commonpath([os.path.normpath(shard), anchored]) \
-                        != os.path.normpath(shard):
+            # R1-07: these refusals come after the audited auth block, so
+            # they are audited here — a `../../etc` workdir is exactly the
+            # probe the trail exists for. A shard that cannot be created is
+            # a 500, audited too, not an unrecorded traceback.
+            try:
+                # A spawned agent's workdir must not silently escape the
+                # caller's shard: mcp_server resolves a RELATIVE workdir
+                # against the server process CWD (the repo!), which the
+                # ContextVar can't reach across the subprocess boundary.
+                # Anchor it here instead.
+                try:
+                    shard = shard_for(user, chat)
+                except OSError as e:
                     raise HTTPException(
-                        status_code=400,
-                        detail="relative workdir escapes the caller's workspace")
-                kwargs["workdir"] = anchored
+                        status_code=500,
+                        detail={"message": f"could not create the caller's "
+                                           f"workspace: {e}"})
+                if (shard and name in ("start_agent", "start_skill_agent")
+                        and not os.path.isabs(kwargs.get("workdir", "."))):
+                    # normpath collapses "..", so verify the anchored path
+                    # is still INSIDE the shard — a relative workdir of
+                    # "../../somewhere" must be an error, not a silent
+                    # escape. (An ABSOLUTE workdir stays allowed as-is:
+                    # spawning is admin-only, and pointing an agent at a
+                    # real project dir is the documented use; the shard
+                    # anchors relative paths.)
+                    anchored = os.path.normpath(
+                        os.path.join(shard, kwargs.get("workdir", ".")))
+                    if os.path.commonpath(
+                            [os.path.normpath(shard), anchored]) \
+                            != os.path.normpath(shard):
+                        raise HTTPException(
+                            status_code=400,
+                            detail="relative workdir escapes the caller's "
+                                   "workspace")
+                    kwargs["workdir"] = anchored
+            except HTTPException as e:
+                audit(user, role, chat, name, profile, False, 0, kwargs,
+                      f"http {e.status_code}: {e.detail}")
+                with metrics_lock:
+                    calls[(name, profile, "error")] += 1
+                raise
             token = _tools.set_base_dir_override(shard) if shard else None
             # Published pages are owned by their publisher: mcp_server's
             # tool functions never see the request, so hand the identity
