@@ -218,14 +218,18 @@ lock is stale") and stays red. Two pieces close that:
   PR numbers it takes only the open Dependabot PRs that touch
   `agents/requirements.txt` — a github-actions or docker bump never triggers
   the relock, so it is skipped (and counted in the output) rather than waited
-  on; name such a PR explicitly to land it. Checks that have not appeared
+  on; name such a PR explicitly to land it — for a PR that does not touch
+  `agents/requirements.txt` the script waits for the rebase only, not for a
+  relock that will never come. Checks that have not appeared
   are waited on for up to 10 minutes, then the run stops without merging.
   The chain:
   `@dependabot rebase` (main moved when the previous PR merged, and branch
   protection wants an up-to-date branch) → wait for the relock push → approve
   the held runs (only this repo's, for the PR's head commit — never a fork's run
   on a same-named branch) → wait for CI (re-running a *cancelled* run once — a late
-  force-push does that) → squash-merge. Sequential on purpose: every one of
+  force-push does that) → squash-merge. **Any red check stops the run before
+  the merge**, required by branch protection or not (the script names the
+  failing checks); it used to merge over a red non-required check. Sequential on purpose: every one of
   these PRs touches the same two files, so each merge invalidates the next
   PR's lock. It refuses to run twice at once (`flock`), needs `gh`
   authenticated as a maintainer, and touches nothing local — it does **not**
