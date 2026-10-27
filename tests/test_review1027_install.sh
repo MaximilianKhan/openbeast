@@ -10,6 +10,7 @@
 #   1  fetch-weight.sh   OFFLINE=true never probes or downloads        (R5-08)
 #   2  fetch-weight.sh   a PENDING row: loud UNVERIFIED, strict refuses (R5-09)
 #   3  bootstrap.sh      OFFLINE sideload names verify-weights --file   (R5-07)
+#   4  doctor.sh         warns when installed zig != the shipped pack's zig
 
 set -uo pipefail
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -147,6 +148,53 @@ if [[ -n "$_blk" ]] && has "$_blk" "verify-weights.sh --file" ; then
   pass "the sideload message names verify-weights.sh --file (which hashes)"
 else
   fail "the sideload message still names a size-only verify: $_blk"
+fi
+
+# ===========================================================================
+echo ""
+echo "4. doctor.sh — installed zig vs the shipped zig pack's version:"
+# ===========================================================================
+D="$T/doctor"
+mkdir -p "$D/scripts/lib" "$D/.run" "$D/bin" "$D/home" "$D/agents/lang" "$D/agents/packs"
+cp "$REPO_DIR/scripts/doctor.sh" "$REPO_DIR/scripts/healthcheck.sh" "$D/scripts/"
+cp "$REPO_DIR"/scripts/lib/*.sh "$D/scripts/lib/"
+cp "$REPO_DIR/agents/lang/__init__.py" "$REPO_DIR/agents/lang/pack_context.py" "$D/agents/lang/"
+cp "$REPO_DIR/agents/packs/zig-0.16.md" "$D/agents/packs/"
+: > "$D/openbeast.conf"
+for c in curl docker tailscale nvidia-smi sudo systemctl systemd-run smartctl pkill pgrep; do
+  printf '#!/bin/bash\nexit 1\n' > "$D/bin/$c"; chmod +x "$D/bin/$c"
+done
+_pack_ver="$(sed -nE 's/^\(2\) GENERATED signature digest — zig ([^ ]+) std.*/\1/p' "$D/agents/packs/zig-0.16.md" | head -1)"
+doctor_with_zig() { # doctor_with_zig <version|none>
+  rm -f "$D/bin/zig"
+  [[ "$1" == none ]] || { printf '#!/bin/bash\necho %s\n' "$1" > "$D/bin/zig"; chmod +x "$D/bin/zig"; }
+  env -i HOME="$D/home" PATH="$D/bin:/usr/bin:/bin" bash "$D/scripts/doctor.sh" 2>&1 || true
+}
+if [[ -z "$_pack_ver" ]]; then
+  fail "could not read the shipped pack's zig version (header changed?)"
+else
+  _out="$(doctor_with_zig 9.99.0)"
+  has "$_out" "installed zig 9.99.0 != zig $_pack_ver" \
+    && pass "a different installed zig (9.99.0 vs $_pack_ver) is warned about" \
+    || fail "no zig mismatch warning: $(grep -i zig <<< "$_out" | tr '\n' ' ')"
+  printf 'LANG_PACK_CONTEXT=off\n' > "$D/openbeast.conf"
+  _out="$(doctor_with_zig 9.99.0)"
+  has "$_out" "installed zig 9.99.0 != zig $_pack_ver" \
+    && pass "…still warned with LANG_PACK_CONTEXT=off (where the pack row goes quiet)" \
+    || fail "the mismatch hides behind LANG_PACK_CONTEXT=off: $(grep -i zig <<< "$_out" | tr '\n' ' ')"
+  : > "$D/openbeast.conf"
+  _out="$(doctor_with_zig "$_pack_ver")"
+  if has "$_out" "installed zig $_pack_ver matches the shipped zig pack" && ! has "$_out" "!= zig"; then
+    pass "control: the matching zig passes"
+  else
+    fail "control: matching zig not passed: $(grep -i zig <<< "$_out" | tr '\n' ' ')"
+  fi
+  if [[ ! -x /usr/bin/zig ]]; then
+    _out="$(doctor_with_zig none)"
+    has "$_out" "zig not installed" && ! has "$_out" "!= zig" \
+      && pass "no zig at all is informational, not a warning" \
+      || fail "missing zig mis-reported: $(grep -i zig <<< "$_out" | tr '\n' ' ')"
+  fi
 fi
 
 echo ""
