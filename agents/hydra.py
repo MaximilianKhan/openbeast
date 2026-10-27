@@ -426,7 +426,9 @@ class Hydra:
         self.node_meta: dict[str, dict] = {n: {} for n in cfg.nodes}
         self.next_probe: dict[str, float] = {}
         self.next_models: dict[str, float] = {}
-        self.conf_mtime: dict[str, float | None] = {}
+        # deployment id -> (report mtime, node url) the cached verdict was computed for.
+        # Keyed on the url too: a reload that moves a node must re-judge the report.
+        self.conf_mtime: dict[str, tuple[float, str] | None] = {}
         self.conf_checked = -1e9
         self.tasks: list[asyncio.Task] = []
         self.background: set[asyncio.Task] = set()
@@ -681,14 +683,16 @@ class Hydra:
                 self.state.conformance[d.id] = ("missing", False)
                 self.conf_mtime[d.id] = None
                 continue
-            if self.conf_mtime.get(d.id) == m and d.id in self.state.conformance:
+            url = self.cfg.nodes[d.node].url
+            key = (m, url)
+            if self.conf_mtime.get(d.id) == key and d.id in self.state.conformance:
                 continue
-            self.conf_mtime[d.id] = m
+            self.conf_mtime[d.id] = key
             try:
                 doc = json.loads(p.read_text())
             except (OSError, ValueError):
                 doc = None
-            self.state.conformance[d.id] = core.conformance_verdict(doc, self.cfg.nodes[d.node].url)
+            self.state.conformance[d.id] = core.conformance_verdict(doc, url)
 
     # ─── status ───
     def routable(self, route_id: str) -> tuple[bool, dict]:
