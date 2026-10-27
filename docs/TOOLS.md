@@ -226,7 +226,7 @@ tool every turn, unattended, with nobody to correct it. `publish_artifact`,
 and are deliberately **not** in `agents/runner.py`'s 10-tool registry, so the
 runner's selection pressure is byte-for-byte what it was before — a background
 agent that wants a URL shells out to `scripts/artifact.sh` through `bash`, and
-one that wants language notes gets them pushed (`BEAST_PACKS`) rather than
+one that wants language notes gets them pushed (`LANG_PACK_CONTEXT`) rather than
 asking. (The same split is what keeps `agents/tools.py` unchanged, so the eval
 cache era doesn't roll; `evals/cache.py`.) On the MCP/WebUI side a human is in
 the loop and "publish this as a page" is an unambiguous ask.
