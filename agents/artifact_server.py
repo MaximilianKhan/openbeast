@@ -44,7 +44,11 @@ Auth (plan §5, as amended by the security model — IDENTITY IS REQUIRED):
           from this box, so with BIND_HOST on a LAN address its source IS
           that address; security-1). A LAN caller that forges it is
           ANONYMOUS, not the login it named. The reserved rig names ("rig",
-          "local") are never accepted from a header.
+          "local") are never accepted from a header. Opt-in hardening
+          (review R2-5, beast-chat's recipe): OPENBEAST_ARTIFACT_SOCKET adds
+          a 0600 Unix listener, and OPENBEAST_ARTIFACT_LOGIN_FROM=unix makes
+          it the ONLY place the header counts — host-network containers on
+          TCP loopback can then no longer claim a login.
   admin   the locality token, and the logins in ARTIFACT_ADMINS (else the
           FIRST valid operator-allowlist entry) — see artifact.admins(). An
           admin views and manages every page and may hand one to another
@@ -393,6 +397,64 @@ def _configured_port() -> int:
 
 def _configured_host() -> str:
     return os.environ.get("OPENBEAST_BIND", "").strip() or "127.0.0.1"
+
+
+def login_source() -> str:
+    """OPENBEAST_ARTIFACT_LOGIN_FROM: 'loopback' (default) or 'unix'.
+
+    beast-chat's OPENBEAST_CHAT_LOGIN_FROM, ported (review R2-5). Under
+    `loopback` any process on this host — Open WebUI, SearXNG and ntfy run
+    `network_mode: host` — can send `Tailscale-User-Login: <owner>` to
+    127.0.0.1:3004 and read that owner's private pages. Under `unix` the
+    header counts ONLY on a connection that arrived on
+    OPENBEAST_ARTIFACT_SOCKET, the 0600 socket `tailscale serve` (root)
+    proxies to; TCP callers then need the locality token.
+    """
+    v = (os.environ.get("OPENBEAST_ARTIFACT_LOGIN_FROM")
+         or "loopback").strip().lower()
+    return "unix" if v == "unix" else "loopback"
+
+
+def _unix_listener(path: str):
+    """Bind the login-bearing Unix socket: 0600 in a 0700 directory.
+
+    Same contract as chat_server._unix_listener (kept local: this server
+    must not import beast-chat). tailscaled runs as root, so 0600 costs it
+    nothing; every other local user and every container is kept out. A
+    stale socket is replaced; anything else at the path is left alone.
+    """
+    import stat as _st
+    parent = os.path.dirname(os.path.abspath(path))
+    os.makedirs(parent, mode=0o700, exist_ok=True)
+    try:
+        st = os.lstat(path)
+        if _st.S_ISSOCK(st.st_mode):
+            os.unlink(path)
+        else:
+            raise SystemExit(f"ERROR: {path} exists and is not a socket — "
+                             f"refusing to replace it")
+    except FileNotFoundError:
+        pass
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    old = os.umask(0o177)
+    try:
+        sock.bind(path)
+    finally:
+        os.umask(old)
+    os.chmod(path, 0o600)
+    sock.listen(128)
+    return sock
+
+
+def _login_header_trusted(request, login_from: str) -> bool:
+    """May this connection assert an identity by `Tailscale-User-Login`?
+
+    `loopback` (default): _peer_is_loopback. `unix`: only a connection with
+    no peer address — one accepted on OPENBEAST_ARTIFACT_SOCKET.
+    """
+    if login_from == "unix":
+        return getattr(request, "client", None) is None
+    return _peer_is_loopback(request)
 
 
 def _peer_is_loopback(request) -> bool:
@@ -831,6 +893,8 @@ def create_app(local_token: str | None = None) -> FastAPI:
     """
     operators = _operators()          # ordered; [0] owns CLI publishes
     operator_set = set(operators)
+    # Where a Tailscale-User-Login header may come from (review R2-5).
+    login_from = login_source()
     if local_token is None:
         local_token = _ensure_local_token()
     audit_path = os.path.join(_run_dir(), "artifact-audit.jsonl")
@@ -1253,7 +1317,7 @@ def create_app(local_token: str | None = None) -> FastAPI:
         # A login header from an off-box peer is not an identity at all (see
         # _peer_is_loopback): the caller is who the TOKEN says, or nobody.
         raw = ((request.headers.get(_HDR_LOGIN) or "").strip().lower()
-               if _peer_is_loopback(request) else "")
+               if _login_header_trusted(request, login_from) else "")
         # The rig's own names are never an identity a HEADER can carry. The
         # rig principal owns every CLI/campaign publish, so accepting it from
         # a header would make it a read password — the defect class R6
@@ -2217,11 +2281,26 @@ def main() -> None:
               f"been left alone, so scripts/artifact.sh keeps working.",
               file=sys.stderr)
         raise SystemExit(1)
+    sockets = [sock]
+    unix_path = (os.environ.get("OPENBEAST_ARTIFACT_SOCKET") or "").strip()
+    if unix_path:
+        try:
+            sockets.append(_unix_listener(unix_path))
+        except OSError as e:
+            sock.close()
+            print(f"ERROR: cannot bind the login socket {unix_path} ({e})",
+                  file=sys.stderr)
+            raise SystemExit(1)
+    if login_source() == "unix" and not unix_path:
+        print("WARNING: OPENBEAST_ARTIFACT_LOGIN_FROM=unix but "
+              "OPENBEAST_ARTIFACT_SOCKET is unset — no connection can present "
+              "a tailnet login; only the locality token will work.",
+              file=sys.stderr)
     app = create_app(local_token=_mint_local_token())
     _start_retention_thread(app)
     print(f"OpenBeast artifact server on {host}:{port} "
           f"(store {store.store_root()})")
-    uvicorn.Server(_uvicorn_config(app, host, port)).run(sockets=[sock])
+    uvicorn.Server(_uvicorn_config(app, host, port)).run(sockets=sockets)
 
 
 if __name__ == "__main__":
