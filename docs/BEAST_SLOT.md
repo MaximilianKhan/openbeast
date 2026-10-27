@@ -201,7 +201,8 @@ still safe) and against `min_client` (rig demands newer → update the client);
   one slot, concurrent requests (your WebUI turn + a remote client's turn)
   queue FIFO. Switching between conversations is cheaper than it sounds — the
   server saves the displaced conversation's KV state into a global RAM prompt
-  cache (8 GiB default) and restores it later, so a handoff costs a RAM copy,
+  cache (`PROMPT_CACHE_RAM_MB`; auto = 35% of host RAM, at most 48 GiB, never
+  below llama-server's own 8 GiB) and restores it later, so a handoff costs a RAM copy,
   not a full reprocess. A multi-slot profile answers the **same shape** with
   bigger numbers and `serving_profile: "batched-multi-slot"`; clients must not
   hard-code 1.
