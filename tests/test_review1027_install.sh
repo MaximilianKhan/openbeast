@@ -11,6 +11,7 @@
 #   2  fetch-weight.sh   a PENDING row: loud UNVERIFIED, strict refuses (R5-09)
 #   3  bootstrap.sh      OFFLINE sideload names verify-weights --file   (R5-07)
 #   4  doctor.sh         warns when installed zig != the shipped pack's zig
+#   5  doctor.sh         warns when tailscale < 1.98.9                 (R10-11)
 
 set -uo pipefail
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -196,6 +197,28 @@ else
       || fail "missing zig mis-reported: $(grep -i zig <<< "$_out" | tr '\n' ' ')"
   fi
 fi
+
+# ===========================================================================
+echo ""
+echo "5. doctor.sh — tailscale minimum version (1.98.9):"
+# ===========================================================================
+doctor_with_ts() { # doctor_with_ts <version-line>
+  printf '#!/bin/bash\n[[ "$1" == version ]] && { echo "%s"; echo "  long version: x"; exit 0; }\nexit 1\n' "$1" > "$D/bin/tailscale"
+  chmod +x "$D/bin/tailscale"
+  env -i HOME="$D/home" PATH="$D/bin:/usr/bin:/bin" bash "$D/scripts/doctor.sh" 2>&1 || true
+}
+_out="$(doctor_with_ts 1.98.8)"
+has "$_out" "tailscale 1.98.8 is older than 1.98.9" \
+  && pass "1.98.8 is warned about" \
+  || fail "old tailscale not warned: $(grep -i tailscale <<< "$_out" | tr '\n' ' ')"
+_out="$(doctor_with_ts 1.104.2)"   # 104 > 98 numerically, not lexically
+has "$_out" "tailscale 1.104.2 (≥ 1.98.9" && ! has "$_out" "older than" \
+  && pass "control: 1.104.2 passes (numeric, not lexical, compare)" \
+  || fail "1.104.2 mis-judged: $(grep -i tailscale <<< "$_out" | tr '\n' ' ')"
+_out="$(doctor_with_ts 1.98.9)"
+has "$_out" "tailscale 1.98.9 (≥" && pass "control: exactly 1.98.9 passes" \
+  || fail "1.98.9 mis-judged: $(grep -i tailscale <<< "$_out" | tr '\n' ' ')"
+printf '#!/bin/bash\nexit 1\n' > "$D/bin/tailscale"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

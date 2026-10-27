@@ -876,6 +876,20 @@ fi
 # documented default on a personal tailnet — WARN, never FAIL.
 if command -v tailscale >/dev/null 2>&1; then
   section "Tailnet surfaces"
+  # Minimum version: TS-2026-007/-008 (Serve/Services loopback exposure + a
+  # DoS, fixed in 1.98.9). OpenBeast publishes everything through Serve onto
+  # loopback binds, so an older client is exactly the exposed shape
+  # (dependency audit 2026-10-27, R10-11). `sort -V` compares the versions.
+  _ts_min="1.98.9"
+  _ts_ver="$(tailscale version 2>/dev/null | head -1 | grep -oE '^[0-9]+(\.[0-9]+)+' || true)"
+  if [[ -z "$_ts_ver" ]]; then
+    info "tailscale version unknown (could not parse \`tailscale version\`)"
+  elif [[ "$(printf '%s\n%s\n' "$_ts_min" "$_ts_ver" | sort -V | head -1)" != "$_ts_min" ]]; then
+    warn "tailscale $_ts_ver is older than $_ts_min (Serve loopback-exposure fixes, TS-2026-007/-008)" \
+         "upgrade tailscale from your distro's packages (e.g. sudo pacman -Syu tailscale / sudo apt upgrade tailscale)"
+  else
+    pass "tailscale $_ts_ver (≥ $_ts_min, the Serve loopback-exposure fixes)"
+  fi
   _serve=$(tailscale serve status 2>/dev/null || true)
   if [[ -n "$_serve" ]]; then
     # Print the mappings as tailscale reports them. Don't grep per-port: the
