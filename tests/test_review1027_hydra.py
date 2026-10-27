@@ -81,3 +81,50 @@ def test_429_still_fails_over_when_the_next_target_runs(fleet):
     r = post(srv, chat(stream=False))
     assert r.status_code == 200, r.text
     assert r.headers["x-hydra-deployment"] == "nvfp4@sparks"
+
+
+# ── R3-F6: hydra.sh conformance resolves a relative key_file from the repo ──
+
+def test_hydra_sh_conformance_resolves_relative_key_file(tmp_path):
+    """Run `hydra.sh conformance` from a foreign CWD against a config whose
+    remote node has a repo-relative key_file; a PYTHON wrapper records the
+    key file conformance.py was handed."""
+    keydir = REPO / ".run" / "review1027-test"
+    keydir.mkdir(parents=True, exist_ok=True)
+    key = keydir / f"k-{os.getpid()}.key"
+    key.write_text("spark-node-key\n")
+    key.chmod(0o600)
+    rel = str(key.relative_to(REPO))
+    try:
+        raw = {"schema": 1, "hydra": {"audit": str(tmp_path / "a.jsonl"), "instinct": {"enabled": False}},
+               "nodes": {"spark": {"url": "http://100.64.0.1:8000", "engine": "vllm", "slots": 1,
+                                   "key_file": rel}},
+               "deployments": {"m@spark": {"node": "spark", "upstream": "m", "ctx": 1000}},
+               "routes": {"beast": {"targets": [{"d": "m@spark"}]}}}
+        cfgp = tmp_path / "hydra.toml"
+        cfgp.write_text(core.to_toml(raw))
+        # PYTHON wrapper: runs hydra.sh's heredocs (`python3 -`) for real and
+        # records the conformance.py invocation instead of probing a node.
+        rec = tmp_path / "rec.json"
+        wrap = tmp_path / "py"
+        wrap.write_text("#!/bin/sh\n"
+                        'if [ "$1" = "-" ]; then exec python3 "$@"; fi\n'
+                        f"exec python3 -c 'import json,sys; json.dump(sys.argv[1:], open(sys.argv[1], \"w\"))' "
+                        f"{rec} \"$@\"\n")
+        wrap.chmod(0o755)
+        foreign = tmp_path / "elsewhere"
+        foreign.mkdir()
+        env = dict(os.environ, OPENBEAST_HYDRA_CONFIG=str(cfgp), PYTHON=str(wrap),
+                   OPENBEAST_HYDRA_NO_CONF="1", OPENBEAST_RUN_DIR=str(tmp_path / "run"))
+        p = subprocess.run(["bash", str(REPO / "scripts" / "hydra.sh"), "conformance", "m@spark"],
+                           cwd=foreign, env=env, capture_output=True, text=True, timeout=60)
+        assert p.returncode == 0, p.stderr
+        assert rec.exists(), "stub conformance.py was never called"
+        argv = json.loads(rec.read_text())[1:]
+        assert argv[0].endswith("conformance.py"), argv
+        assert argv[argv.index("--key-file") + 1] == str(key), argv
+        assert rel not in argv, argv
+    finally:
+        key.unlink(missing_ok=True)
+        with contextlib.suppress(OSError):
+            keydir.rmdir()
