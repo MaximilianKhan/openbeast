@@ -3023,7 +3023,10 @@ def create_app() -> FastAPI:
               int((time.monotonic() - t0) * 1000), {"from": start})
         with metrics_lock:
             counters[("GET /events", "stream_open")] += 1
-            gauges["sse_open"] += 1
+            # The sse_open gauge is raised inside _stream, not here: a client
+            # that leaves between the headers and the first frame leaves the
+            # generator un-started, so its `finally` (the decrement) never
+            # runs and the gauge would over-report for good (review R2-7).
 
         return StreamingResponse(
             _stream(request, rec, start, principal, tail_skipped, slot),
@@ -3077,6 +3080,8 @@ def create_app() -> FastAPI:
                             "start"),
             })
 
+        with metrics_lock:
+            gauges["sse_open"] += 1
         try:
             size = _file_size(path)
             if offset > size:
