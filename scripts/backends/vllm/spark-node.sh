@@ -215,6 +215,31 @@ if [[ "$RANK" == 0 ]]; then
 else
   echo "Rank 1 (worker, headless): joining $SPARK_HEAD_IP:$VLLM_MASTER_PORT."
 fi
+# THE vLLM INSIDE THE IMAGE. vLLM < 0.22.0 lets a request past its API-key
+# middleware (GHSA-94f4-hr76-p5j6), and < 0.31.0 has a request-controlled
+# code_revision RCE when --trust-remote-code is on (GHSA-h3rc-6mm3-gc2m). An
+# NGC tag does not say which vLLM it carries, so ask the pinned image (no
+# network, a few seconds) and warn. SPARK_SKIP_VLLM_VERSION_CHECK=true skips it.
+VLLM_MIN_SAFE="0.31.0"
+if ! sp_is_true "${SPARK_SKIP_VLLM_VERSION_CHECK:-}"; then
+  _vv="$(docker run --rm --network none --entrypoint python3 "$SP_IMAGE_REF" \
+           -c 'import vllm; print(vllm.__version__)' 2>/dev/null | tail -n 1 || true)"
+  _vcmp="$(python3 - "$_vv" <<'PY' 2>/dev/null || true
+import re, sys
+def v(s):
+    m = re.match(r"(\d+)\.(\d+)\.(\d+)", s.strip())
+    return tuple(int(x) for x in m.groups()) if m else None
+got = v(sys.argv[1])
+print("unknown" if got is None else "bypass" if got < (0, 22, 0) else "old" if got < (0, 31, 0) else "ok")
+PY
+)"
+  case "$_vcmp" in
+    ok) echo "vLLM in the image: $_vv (>= $VLLM_MIN_SAFE)" ;;
+    bypass) echo "WARNING: the image carries vLLM $_vv — below 0.22.0 its API-key check can be bypassed (GHSA-94f4-hr76-p5j6): VLLM_API_KEY does NOT protect this server. Move VLLM_IMAGE to a release with vLLM >= $VLLM_MIN_SAFE; until then keep SPARK_SERVE_HOST private, behind beast-gate." >&2 ;;
+    old) echo "WARNING: the image carries vLLM $_vv — below $VLLM_MIN_SAFE (GHSA-h3rc-6mm3-gc2m: RCE when TRUST_REMOTE_CODE is on). Move VLLM_IMAGE to a newer release." >&2 ;;
+    *) echo "Note: could not read the vLLM version from $SP_IMAGE_REF — check it is >= $VLLM_MIN_SAFE (spark.env.example, VLLM_IMAGE)." >&2 ;;
+  esac
+fi
 if [[ $USE_KEY -eq 1 ]]; then
   VLLM_API_KEY="$(cat "$VLLM_API_KEY_FILE")"
   export VLLM_API_KEY

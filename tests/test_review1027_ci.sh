@@ -8,7 +8,9 @@
 #      waits for the rebase only, not for a relock that never comes (R5-04)
 #   3. vllm/spark-node.sh — OFFLINE refuses an unfetched profile; HF_ENDPOINT
 #      and HF_TOKEN_FILE reach the container's download by NAME (R5-05)
-#   4. tensorfold/spark-node.sh — refuses to start under OFFLINE (R5-06)
+#   4. tensorfold/spark-node.sh — refuses to start under OFFLINE (R5-06) unless
+#      TENSORFOLD_PREBUILT=true (R10-05); vllm/spark-node.sh warns on a vLLM
+#      below 0.31.0 in the image (R10-06)
 #   5. install-skills.sh — a symlinked global skill is listed with its
 #      target (R5-10)
 #
@@ -121,6 +123,10 @@ echo "3-4. Spark launchers — OFFLINE, HF_ENDPOINT, HF_TOKEN_FILE:"
 K="$T/spark"; mkdir -p "$K/bin" "$K/home" "$K/profiles" "$K/models"
 cat > "$K/bin/docker" <<EOF
 #!/bin/bash
+# The launcher's version probe: answer with \$VLLM_STUB_VERSION (or nothing).
+if [[ "\$*" == *"import vllm"* ]]; then
+  echo "PROBE \$*" >> "$K/docker.log"; echo "\${VLLM_STUB_VERSION:-}"; exit 0
+fi
 echo "ARGV \$*" >> "$K/docker.log"
 echo "ENVTOKEN \${HF_TOKEN:-<unset>}" >> "$K/docker.log"
 echo "ENVENDPOINT \${HF_ENDPOINT:-<unset>}" >> "$K/docker.log"
@@ -221,6 +227,42 @@ if [[ $SPRC -eq 0 ]] && has "$_O" "UNPINNED from PyPI" && has "$_O" "git+https:/
 else
   fail "R5-06 control (rc=$SPRC): $_O"
 fi
+
+# TensorFold with a prebuilt image (R10-05): no pip install, OFFLINE allowed.
+sp "$TN" OFFLINE=true TENSORFOLD_PREBUILT=true -- --profile "$K/profiles/tftest.env" --rank 0 --env "$K/spark.env" --print
+if [[ $SPRC -eq 0 ]] && has "$_O" "TENSORFOLD_PREBUILT=true" && ! has "$_O" "pip\\ install" && has "$_O" "exec\\ tensorfold"; then
+  pass "R10-05: TENSORFOLD_PREBUILT=true runs the image's tensorfold, installs nothing, and is allowed OFFLINE"
+else
+  fail "R10-05 prebuilt (rc=$SPRC): $_O"
+fi
+sp "$TN" -- --profile "$K/profiles/tftest.env" --rank 0 --env "$K/spark.env" --print
+[[ $SPRC -eq 0 ]] && has "$_O" "pip\\ install\\ --quiet" \
+  && pass "R10-05 control: without it the launcher still pip-installs at start" || fail "R10-05 control: $_O"
+
+# vLLM version in the image (R10-06): warn below 0.22 / 0.31; quiet when ok.
+vrun() { : > "$K/docker.log"; sp "$VN" VLLM_IMAGE_DIGEST="$DIGEST" VLLM_STUB_VERSION="$1" \
+           -- --profile "$K/profiles/vnofetch.env" --rank 0 --env "$K/spark.env"; }
+vrun "0.21.3+nv26.05"
+if [[ $SPRC -eq 0 ]] && has "$_O" "vLLM 0.21.3" && has "$_O" "GHSA-94f4-hr76-p5j6" && has "$_O" "does NOT protect" \
+   && grep -q "^PROBE run --rm --network none --entrypoint python3 nvcr.io/nvidia/vllm:26.05-py3@$DIGEST" "$K/docker.log"; then
+  pass "R10-06: the pinned image is probed offline and vLLM < 0.22 warns that the API key does not protect it"
+else
+  fail "R10-06 <0.22 (rc=$SPRC): $_O :: $(cat "$K/docker.log")"
+fi
+vrun "0.28.1"
+has "$_O" "GHSA-h3rc-6mm3-gc2m" && ! has "$_O" "does NOT protect" && pass "R10-06: vLLM < 0.31 warns about GHSA-h3rc-6mm3-gc2m" \
+  || fail "R10-06 <0.31: $_O"
+vrun "0.31.2"
+if has "$_O" "vLLM in the image: 0.31.2" && ! has "$_O" "WARNING"; then
+  pass "R10-06 control: vLLM >= 0.31.0 is reported, no warning"
+else
+  fail "R10-06 control: $_O"
+fi
+vrun ""
+has "$_O" "could not read the vLLM version" && pass "R10-06: an unreadable version says so" || fail "R10-06 unknown: $_O"
+: > "$K/docker.log"
+sp "$VN" VLLM_IMAGE_DIGEST="$DIGEST" SPARK_SKIP_VLLM_VERSION_CHECK=true -- --profile "$K/profiles/vnofetch.env" --rank 0 --env "$K/spark.env"
+! grep -q "^PROBE" "$K/docker.log" && pass "R10-06: SPARK_SKIP_VLLM_VERSION_CHECK=true skips the probe" || fail "R10-06 skip: $(cat "$K/docker.log")"
 
 # ===========================================================================
 echo ""
