@@ -103,3 +103,43 @@ def test_zig_cdefine_newline_include_is_refused():
                 'const s = "@cDefine";\n_ = s;',
                 'const b = @import("builtin");\n_ = b;'):
         assert z.refusal(z.wrap(src)) is None, src
+
+
+# ── R3-F1 / R7-01: a zig toolchain mismatch is LOUD, not silent ──
+
+from lang import pack_context as PC  # noqa: E402
+
+
+def _stub_zig(tmp_path, monkeypatch, version):
+    b = tmp_path / "bin"
+    b.mkdir(exist_ok=True)
+    z = b / "zig"
+    z.write_text(f'#!/bin/sh\n[ "$1" = version ] && echo {version}\n')
+    z.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{b}:{os.environ.get('PATH', '')}")
+    PC._ZIG_VERSION.clear()
+
+
+def test_toolchain_mismatch_names_pack_index_and_the_pin(tmp_path, monkeypatch):
+    _stub_zig(tmp_path, monkeypatch, "0.17.0")
+    why = PC.toolchain_mismatch("zig")
+    assert why and "zig 0.17.0 is installed" in why
+    assert "pack" in why and "escalation index" in why
+    assert "mise use -g zig@0.16.0" in why
+    assert PC.main(["toolchain"]) == 1
+    assert PC.status_line().startswith("zig pack: NOT SERVED — zig toolchain mismatch")
+    PC._ZIG_VERSION.clear()
+
+
+def test_toolchain_match_is_quiet(tmp_path, monkeypatch):
+    _stub_zig(tmp_path, monkeypatch, "0.16.0")
+    assert PC.toolchain_mismatch("zig") is None
+    assert PC.main(["toolchain"]) == 0
+    PC._ZIG_VERSION.clear()
+
+
+def test_no_zig_is_not_a_mismatch(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", str(tmp_path))          # no zig anywhere
+    PC._ZIG_VERSION.clear()
+    assert PC.toolchain_mismatch("zig") is None
+    PC._ZIG_VERSION.clear()

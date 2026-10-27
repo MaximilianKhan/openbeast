@@ -472,18 +472,21 @@ def _env(tmp_path, home=None, **extra):
     return env
 
 
-def _zig_matches():
-    """The scripts run a real python with this box's zig: skip the positive
-    case where an installed zig would (correctly) refuse the 0.16 pack."""
+def _require_zig_match():
+    """The scripts run a real python with this box's zig, which (correctly)
+    refuses the 0.16 pack under any other zig. That is not a reason to SKIP:
+    it means production serves no pack on this box either (R7-01), so fail
+    with the reason and the fix. No zig at all is fine (nothing to mismatch)."""
     if not shutil.which("zig"):
-        return True
+        return
     v = subprocess.run(["zig", "version"], capture_output=True, text=True).stdout.strip()
-    return v == "0.16.0"
+    if v != "0.16.0":
+        pytest.fail(f"installed zig is {v}, the pack is for 0.16.0 — production serves no "
+                    f"zig pack on this box either; pin it: mise use -g zig@0.16.0")
 
 
 def test_agent_sh_passes_the_pack(tmp_path):
-    if not _zig_matches():
-        pytest.skip("installed zig is not 0.16.0")
+    _require_zig_match()
     root = _fake_tree(tmp_path)
     run = subprocess.run(["bash", str(root / "agent.sh"), "-w", str(tmp_path),
                           "write a zig tokenizer"],
@@ -506,8 +509,7 @@ def test_agent_sh_off_and_eval_leave_argv_alone(tmp_path):
 
 
 def test_client_sh_agent_passes_the_pack(tmp_path):
-    if not _zig_matches():
-        pytest.skip("installed zig is not 0.16.0")
+    _require_zig_match()
     root = _fake_tree(tmp_path)
     env = _env(tmp_path, home=tmp_path / "home",
                OPENBEAST_AGENT_INFERENCE_URL="http://rig.example:8443/v1")
