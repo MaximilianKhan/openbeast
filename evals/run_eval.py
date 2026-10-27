@@ -30,6 +30,7 @@ import argparse
 import json
 import os
 import re
+import secrets
 import shlex
 import signal
 import subprocess
@@ -1044,7 +1045,7 @@ def _stale_pin(suite_pin: dict) -> str | None:
     return make_fast_suite.pin_is_stale(suite_pin)
 
 
-def _run_reaped(cmd, timeout: int, shell: bool = False) -> tuple[int, str]:
+def _run_reaped(cmd, timeout: int, shell: bool = False, **popen_kw) -> tuple[int, str]:
     """Thin wrapper around tools.run_reaped for eval-harness callers.
 
     tools.run_reaped only supports shell=True (it manages the process group
@@ -1057,7 +1058,7 @@ def _run_reaped(cmd, timeout: int, shell: bool = False) -> tuple[int, str]:
         shell_cmd = " ".join(shlex.quote(c) for c in cmd)
     else:
         shell_cmd = cmd
-    return run_reaped(shell_cmd, timeout)
+    return run_reaped(shell_cmd, timeout, **popen_kw)
 
 
 def run_setup(task: dict, log=print) -> bool:
@@ -1300,6 +1301,85 @@ VALIDATION_TIMEOUT_S = 30
 VALIDATION_TIMED_OUT = "Validation timed out"
 
 
+# ---------------------------------------------------------------------------
+# Python validators must FINISH to pass (suite v4.1, review R6-1).
+#
+# A Python validator loads the solution in its own process
+# (`spec.loader.exec_module`), and its verdict used to be the exit code
+# alone. A solution that exits at import time (`sys.exit(0)`, `os._exit(0)`,
+# or a script-style `sys.exit(main())` with no __main__ guard) ended the
+# validator with rc 0 before one assert ran: 96 of 99 Python validators
+# passed `import sys; sys.exit(0)`.
+#
+# So the validator runs inside this wrapper. The harness hands it a fresh
+# random nonce on stdin (never in argv or the environment, which the
+# solution could read from /proc/self), the wrapper execs the validator,
+# and prints the nonce only after the validator's last statement ran. A
+# PASS needs rc 0 AND the nonce. A SystemExit with status 0/None raised
+# while the validator runs is turned into a failure, because no validator
+# exits 0 on purpose (they end with print('OK')); a non-zero SystemExit
+# (a validator's own `raise SystemExit('msg')`) keeps its meaning.
+#
+# What this does not stop: a solution written to defeat it (walking the
+# interpreter's frames to find the nonce). It closes the accidental and the
+# cheap cases; deliberate attacks on the harness need sandboxing.
+# ---------------------------------------------------------------------------
+VALIDATOR_SENTINEL = "OPENBEAST-VALIDATOR-COMPLETED:"
+VALIDATOR_UNFINISHED = ("[harness] the validator exited with status 0 before "
+                        "its checks finished (did the solution call sys.exit "
+                        "or os._exit when it was imported?)")
+_PY_VALIDATOR_WRAPPER = r"""
+import os, sys
+def _openbeast_validate(src, nonce):
+    # The validator's globals are __main__'s, as under a plain `python -c`
+    # (multiprocessing pickles functions by reference to __main__).
+    g = sys.modules["__main__"].__dict__
+    try:
+        exec(compile(src, "<validator>", "exec"), g)
+    except SystemExit as e:
+        if e.code is None or e.code == 0:
+            sys.stdout.flush()
+            sys.stderr.write("\n" + %(unfinished)r + "\n")
+            sys.stderr.flush()
+            os._exit(3)
+        raise
+    sys.stdout.flush()
+    sys.stderr.flush()
+    sys.stdout.write("\n" + %(sentinel)r + nonce + "\n")
+    sys.stdout.flush()
+_n = sys.stdin.readline().strip()
+_fd = os.open(os.devnull, os.O_RDONLY); os.dup2(_fd, 0); os.close(_fd)
+_s = sys.argv[1]
+del sys.argv[1:]
+_openbeast_validate(_s, _n)
+""" % {"sentinel": VALIDATOR_SENTINEL, "unfinished": VALIDATOR_UNFINISHED}
+
+
+def _run_python_validator(script: str, timeout: int) -> tuple[bool, str]:
+    """Run a Python validator under the completion wrapper. Returns
+    (passed, output with the sentinel line removed)."""
+    nonce = secrets.token_hex(16)
+    r, w = os.pipe()
+    try:
+        os.write(w, (nonce + "\n").encode())
+        os.close(w)
+        w = -1
+        returncode, output = _run_reaped(
+            [sys.executable, "-c", _PY_VALIDATOR_WRAPPER, script],
+            timeout=timeout, stdin=r,
+        )
+    finally:
+        os.close(r)
+        if w >= 0:
+            os.close(w)
+    line = VALIDATOR_SENTINEL + nonce
+    completed = line in output
+    output = "\n".join(ln for ln in output.split("\n") if ln.strip() != line)
+    if returncode == 0 and not completed:
+        output = output.rstrip() + "\n" + VALIDATOR_UNFINISHED
+    return returncode == 0 and completed, output
+
+
 def validator_timed_out(text: str | None) -> bool:
     """Whether a validation_output is run_validation's own timeout message."""
     return bool(text) and text.startswith(VALIDATION_TIMED_OUT)
@@ -1322,12 +1402,10 @@ def run_validation(task: dict, timeout_scale: float = 1.0) -> tuple[bool, str]:
     timeout = max(1, int(VALIDATION_TIMEOUT_S * timeout_scale))
     try:
         if vtype == "python":
-            returncode, output = _run_reaped(
-                [sys.executable, "-c", script], timeout=timeout,
-            )
+            passed, output = _run_python_validator(script, timeout)
         else:
             returncode, output = _run_reaped(script, timeout=timeout, shell=True)
-        passed = returncode == 0
+            passed = returncode == 0
         kept = output.strip()[:500]
         # The 500-char cut must never drop the evidence that the VALIDATOR
         # (not the model's code) died to fork/thread EAGAIN or a full disk:
