@@ -161,7 +161,7 @@ and reports `COMPACTIONS: n` next to the `TOKENS:` line.
 | Project | Contributes | Does NOT contribute tools |
 |---|---|---|
 | **llama.cpp** | Model serving (`llama-server`, OpenAI-compatible API) | — |
-| **Open WebUI** | Chat UI, accounts, RBAC enforcement, per-chat tool toggles | We don't enable its built-in web-search/code-interpreter/image-gen; the tool surface it shows is ours via the identity tool server |
+| **Open WebUI** | Chat UI, accounts, RBAC enforcement, per-chat tool toggles | We don't enable its code-interpreter/image-gen. Its built-in composer Web Search is **off by default**; `WEBUI_WEB_SEARCH=true` in `openbeast.conf` turns it on, wired to the local SearXNG. When on, it is Open WebUI's own retrieval and page loader, not our `fetch`: it bypasses the `fetch` SSRF guard and the tool server's RBAC and audit trail. The tool surface it shows is ours via the identity tool server |
 | **Identity tool server** (`agents/openapi_tools.py`, ours) | Transport + identity: serves the tools as OpenAPI for WebUI, shards workspaces per user, checks RBAC keys, writes the audit trail | — |
 | **SearXNG** | The search backend behind our `web_search` tool | It's a service, not a tool — the tool code is ours |
 | **OpenCode** | Its *own* native tool suite (its `bash`, `edit`, `view`, …) alongside our 18 via MCP stdio | OpenCode's built-ins are upstream's code and are documented upstream |

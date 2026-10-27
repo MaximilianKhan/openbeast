@@ -23,8 +23,9 @@ copy `openbeast.conf.example` to create it). Each key resolves as
 **env var → `openbeast.conf` → default** via `scripts/lib/conf.sh`
 (weights use their own resolver, `scripts/lib/weights.sh`). `conf.sh` must
 be sourced before any `docker compose up` so containers get the real values.
-The env form is always the `OPENBEAST_`-prefixed name: a plain `KEY=value`
-exported in your shell is not an override.
+The env form is the `OPENBEAST_`-prefixed name: a plain `KEY=value`
+exported in your shell is not an override (except `BEAST_ASSIST` and
+`BEAST_ESCALATE`, which are read under their bare names).
 
 **The file is linted every time it is read.** `conf.sh` warns — once per
 command, never fatally — about a key nothing reads, with the nearest real
@@ -83,6 +84,7 @@ conf key), so none of them creates or changes the file.
 | `WEBUI_AUTH` | `OPENBEAST_WEBUI_AUTH` | `false` | Open WebUI login wall. Default off for local single-user installs; `scripts/setup-tailscale.sh` flips it `true` when the WebUI goes tailnet-wide |
 | `ALLOW_OPEN_WEBUI` | `OPENBEAST_ALLOW_OPEN_WEBUI` | `false` | Persisted acknowledgement of publishing the WebUI on the tailnet (`:443`) with `WEBUI_AUTH` off. Written by `scripts/setup-tailscale.sh --i-accept-open-webui`; with it set, re-runs keep publishing and `doctor` WARNs about the open `:443` instead of FAILing. Delete the line to take it back |
 | `ALLOW_OPEN_INFERENCE` | `OPENBEAST_ALLOW_OPEN_INFERENCE` | `false` | Persisted acknowledgement of publishing llama-server on the tailnet (`:8443`) with no beast-gate and no `LLAMA_API_KEY`. Written by `scripts/setup-tailscale.sh --i-accept-open-inference`. Without it that script leaves `:8443` unpublished on such a rig (and takes an earlier raw mount down) and `doctor` FAILs a keyless `:8443`; with it, re-runs keep publishing and `doctor` WARNs. Delete the line to take it back |
+| `WEBUI_WEB_SEARCH` | `OPENBEAST_WEBUI_WEB_SEARCH` | `false` | Open WebUI's built-in composer Web Search. Off by default; `true` wires it to the local SearXNG. It is Open WebUI's own retrieval path, so it bypasses the `fetch` SSRF guard and the tool server's RBAC and audit trail. The `web_search` tool works either way. See `docs/TOOLS.md` |
 | `WEBUI_BACKGROUND_TASKS` | `OPENBEAST_WEBUI_BACKGROUND_TASKS` | `false` | After every answer Open WebUI asks the model for chat tags and follow-up suggestions; on a one-slot rig those generations take the slot from the next turn and evict its cached prompt. Default: `configure-webui.sh` switches both **off** at every start (chat titles stay on). `true` leaves WebUI's own switches (Admin Settings → Interface) alone — set it, restart, then re-enable them there |
 | `PROMPT_CACHE_RAM_MB` | `OPENBEAST_PROMPT_CACHE_RAM_MB` | *(unset = auto)* | Host RAM llama-server may use to park the state of conversations that are not on a slot (`--cache-ram`, MiB). Unset/`auto`: 35% of this machine's RAM, at most 48 GiB, and nothing passed when that is not above llama-server's own 8192. `0`: llama-server's default. `<n>`: exactly n MiB (`-1` = no limit). A serve script's own `--cache-ram` wins; a llama-server build without the flag is launched without it. Applies to every launch through `serve.sh`, evals included |
 | `LOGROTATE_AUTOINSTALL` | `OPENBEAST_LOGROTATE_AUTOINSTALL` | `true` | `start.sh` installs `openbeast-logrotate.timer` (daily systemd `--user` timer, no sudo) when it is missing and a user manager is reachable. `false` opts out; never fatal |
