@@ -191,8 +191,16 @@ class Registry:
         try:
             st = os.stat(self.path)
         except OSError:
+            # A file that vanishes drops its device map (its keys must not
+            # outlive it) but NOT the "a registry has existed" latch: moving
+            # clients.json aside used to reset `exists` and, with
+            # EDGE_ALLOW_ANON=true, reopen the gate to every tailnet peer
+            # until the next enrollment. Once seen in this process, a missing
+            # file reads as unreadable — closed.
+            if self._exists and self._present:
+                _log(f"ERROR: {self.path} has disappeared — refusing every "
+                     "caller until it is restored or a device is enrolled")
             self._by_hash, self._present, self._mtime = {}, False, 0.0
-            self._exists = False
             self._size = -1
             return
         self._exists = True
@@ -226,8 +234,9 @@ class Registry:
                      + ("serving the last good copy" if self._present else
                         "refusing every caller")
                      + " until it is repaired: ./scripts/clients.sh list "
-                     "names the fault; restore the file or move it aside "
-                     "and re-enroll")
+                     "names the fault; restore the file, or re-enroll "
+                     "(the gate stays closed meanwhile — EDGE_ALLOW_ANON "
+                     "never reopens it once a registry has existed)")
             return
         self._by_hash = by_hash
         self._present = True
@@ -258,6 +267,8 @@ class Registry:
         and reopen the gate to every tailnet peer: `clients.sh remove` of the
         last device (which re-admitted the very key it removed), and a file
         truncated before a gate restart (no last good map to keep).
+        Latched per process: a file that disappears after it was seen still
+        reads True (closed), so moving it aside cannot reopen the gate.
         """
         self.reload()
         return self._exists
