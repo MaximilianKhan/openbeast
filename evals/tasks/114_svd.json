@@ -6,7 +6,7 @@
   "task": "Create /tmp/eval_svd/svd.py with top_singular_values(matrix, k) returning a list of the k largest singular values of `matrix` (descending). Use power iteration on A^T A with deflation: iterate v \u2190 (A^T A) v, normalize, orthogonalize against previously found right singular vectors. Square root the eigenvalue to recover \u03c3.",
   "validation": {
     "type": "python",
-    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_svd/svd.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); T = mod.top_singular_values; s = T([[5,0],[0,3]], 2); assert abs(s[0] - 5) < 1e-6 and abs(s[1] - 3) < 1e-6; s2 = T([[3,0],[0,4],[0,0]], 2); assert abs(s2[0] - 4) < 1e-6 and abs(s2[1] - 3) < 1e-6; print('OK')"
+    "script": "import importlib.util; spec = importlib.util.spec_from_file_location('m','/tmp/eval_svd/svd.py'); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); T = mod.top_singular_values; s = T([[5,0],[0,3]], 2); assert abs(s[0] - 5) < 1e-6 and abs(s[1] - 3) < 1e-6; s2 = T([[3,0],[0,4],[0,0]], 2); assert abs(s2[0] - 4) < 1e-6 and abs(s2[1] - 3) < 1e-6\nimport math; g = (1 + math.sqrt(5)) / 2; s3 = T([[1,1],[0,1]], 2); assert len(s3) == 2 and abs(s3[0] - g) < 1e-6 and abs(s3[1] - 1/g) < 1e-6, f'[[1,1],[0,1]] has singular values {g}, {1/g}: got {s3}'\ns4 = T([[2,0,1],[1,3,0],[0,1,4],[1,1,1]], 2); assert len(s4) == 2 and abs(s4[0] - 4.6807229) < 1e-5 and abs(s4[1] - 3.0514903) < 1e-5, f'[[2,0,1],[1,3,0],[0,1,4],[1,1,1]] has top singular values 4.6807229, 3.0514903: got {s4}'\nprint('OK')"
   },
   "cleanup": "rm -rf /tmp/eval_svd",
   "max_iter": 30,
