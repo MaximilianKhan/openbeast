@@ -28,7 +28,7 @@ A full 5-model sweep takes ~3-4 hours; plan to run it overnight.
 Usage:
   python evals/benchmark_all.py                        # all configured models
   python evals/benchmark_all.py --models qwen-27b-q5,gemma-4-31b-q5
-  python evals/benchmark_all.py --tasks 21,22,23       # subset of tasks
+  python evals/benchmark_all.py --tasks 21,22,23       # subset (task numbers, ids or base ids)
   python evals/benchmark_all.py --max-iter 30          # cap iterations per task
 """
 
@@ -892,7 +892,14 @@ def main():
         os.environ["BEAST_PACKS"] = "1"
     if args.escalate:
         os.environ["BEAST_ESCALATE"] = "1"
-    task_filter = args.tasks.split(",") if args.tasks else None
+    try:
+        # Before the lease and any server: a filter that selects nothing
+        # used to load and health-wait every model for nothing.
+        task_filter = run_eval.resolve_task_filter(
+            args.tasks.split(",") if args.tasks else None)
+    except run_eval.TaskFilterError as e:
+        print(e, file=sys.stderr)
+        sys.exit(2)
 
     _install_signal_handlers()
 

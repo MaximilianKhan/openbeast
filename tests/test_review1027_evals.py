@@ -287,3 +287,57 @@ def test_profile_mtp_takes_free_lease(pm, monkeypatch, tmp_path):
     # Ours already: run on, no re-exec.
     monkeypatch.setattr(ba, "gpu_lease_check", lambda: (ba.LEASE_OURS, "ours"))
     mod.ensure_gpu_lease([], exec_fn=lambda *a: pytest.fail("must not exec"))
+
+
+# ---------------------------------------------------------------------------
+# R6-9: --tasks accepts task numbers and refuses entries that match nothing.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def re_tasks(tmp_path, monkeypatch):
+    run_eval = _fresh("run_eval")
+    tasks = tmp_path / "tasks"
+    tasks.mkdir()
+    for tid, extra in (("01_alpha", {}), ("145_seg", {}),
+                       ("21_race", {"variants": [{"id": "go", "language": "go"},
+                                                 {"id": "python"}]})):
+        (tasks / f"{tid}.json").write_text(json.dumps({
+            "id": tid, "task": "t", "validation": {"type": "bash", "script": "true"}, **extra}))
+    monkeypatch.setattr(run_eval, "TASKS_DIR", str(tasks))
+    return run_eval
+
+
+def test_task_filter_numeric_prefix(re_tasks):
+    r = re_tasks
+    assert r.load_tasks(["145"]) == []                         # negative control: raw filter
+    resolved = r.resolve_task_filter(["145", "1", "21"])
+    assert resolved == ["145_seg", "01_alpha", "21_race"]
+    ids = sorted(t["id"] for t in r.load_tasks(resolved))
+    assert ids == ["01_alpha", "145_seg", "21_race_go", "21_race_python"]
+    # Full, base and effective ids pass through unchanged.
+    assert r.resolve_task_filter(["21_race_go", "01_alpha", "21_race"]) == [
+        "21_race_go", "01_alpha", "21_race"]
+    assert r.resolve_task_filter(None) is None
+
+
+def test_task_filter_unmatched_is_an_error(re_tasks):
+    r = re_tasks
+    with pytest.raises(r.TaskFilterError, match="'999' matches no task"):
+        r.resolve_task_filter(["145", "999"])
+    with pytest.raises(r.TaskFilterError):
+        r.resolve_task_filter(["nope_task"])
+
+
+def test_task_filter_cli_exit_codes(tmp_path):
+    """Both entry points exit 2 on an unmatched filter, before any server,
+    lease or result file (cache-only/no model: nothing else could run)."""
+    # --cache-only/--no-leaderboard: even a regressed harness that ignored
+    # the bad filter could not take the lease or start a server from here.
+    safe = {"run_eval.py": [], "benchmark_all.py": ["--cache-only", "--no-leaderboard",
+                                                   "--models", _fresh("benchmark_all").MODELS[0]["slug"]]}
+    for script, extra in safe.items():
+        r = subprocess.run([sys.executable, str(EVALS / script), "--tasks", "99999", *extra],
+                           capture_output=True, text=True, timeout=60,
+                           env={**os.environ, "OPENBEAST_RUN_DIR": str(tmp_path / "run")})
+        assert r.returncode == 2, (script, r.stdout, r.stderr)
+        assert "matches no task" in r.stderr

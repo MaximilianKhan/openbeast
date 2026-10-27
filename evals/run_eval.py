@@ -18,7 +18,7 @@ The eval runner:
 
 Usage:
   python evals/run_eval.py                          # run all tasks
-  python evals/run_eval.py --tasks 01,02,03         # run specific tasks
+  python evals/run_eval.py --tasks 01,02,03         # run specific tasks (number, id or base id)
   python evals/run_eval.py --max-iter 5             # override max iterations
   python evals/run_eval.py --jobs 4                 # 4 parallel workers (server must run -np >= 4)
   python evals/run_eval.py --base-url http://...:8080/v1  # different server
@@ -585,6 +585,58 @@ def load_tasks(task_filter: list[str] | None = None) -> list[dict]:
             t["name"] = variant.get("name", f"{base_name} [{language}]")
             tasks.append(t)
     return tasks
+
+
+class TaskFilterError(ValueError):
+    """A --tasks entry selects no task, or a numeric prefix is ambiguous."""
+
+
+def resolve_task_filter(task_filter: list[str] | None) -> list[str] | None:
+    """Normalise a --tasks list before anything starts.
+
+    Accepts full ids (`145_segment_tree_lazy`), base ids of variant'd tasks
+    (all their variants) and effective variant ids, exactly as load_tasks
+    does — plus a bare numeric prefix (`145`, `21`, `1` for `01_...`), which
+    the docs had always shown but which used to select nothing: run_eval
+    printed "No tasks found." and exited 0, and benchmark_all started and
+    health-waited every model's server before marking it SKIPPED. An entry
+    that matches nothing, or a prefix that matches two tasks, raises
+    TaskFilterError instead."""
+    if task_filter is None:
+        return None
+    base_ids, all_ids = [], set()
+    for path in sorted(Path(TASKS_DIR).glob("*.json")):
+        with open(path) as f:
+            task = json.load(f)
+        base_ids.append(task["id"])
+        all_ids.add(task["id"])
+        for v in task.get("variants") or []:
+            all_ids.add(f"{task['id']}_{v['id']}")
+    out, bad = [], []
+    for raw in task_filter:
+        entry = raw.strip()
+        if not entry:
+            continue
+        if entry in all_ids:
+            out.append(entry)
+            continue
+        hits = []
+        if entry.isdigit():
+            hits = [b for b in base_ids
+                    if b.split("_", 1)[0].isdigit() and int(b.split("_", 1)[0]) == int(entry)]
+        if len(hits) == 1:
+            out.append(hits[0])
+        elif hits:
+            bad.append(f"{entry!r} is ambiguous ({', '.join(hits)})")
+        else:
+            bad.append(f"{entry!r} matches no task")
+    if bad:
+        raise TaskFilterError("--tasks: " + "; ".join(bad)
+                              + " (use full ids, base ids or a task's number; "
+                              "`run_eval.py --list` shows them)")
+    if not out:
+        raise TaskFilterError("--tasks selects no task")
+    return out
 
 
 def diagnostics_flag() -> tuple[bool, str | None, dict]:
@@ -2039,6 +2091,11 @@ def main():
     task_filter = args.tasks.split(",") if args.tasks else None
     if args.suite and args.tasks:
         print("--suite and --tasks are mutually exclusive.", file=sys.stderr)
+        sys.exit(2)
+    try:
+        task_filter = resolve_task_filter(task_filter)
+    except TaskFilterError as e:
+        print(e, file=sys.stderr)
         sys.exit(2)
     if args.cache_only and args.no_cache:
         print("--cache-only and --no-cache are mutually exclusive.", file=sys.stderr)
