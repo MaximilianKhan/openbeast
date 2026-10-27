@@ -1186,6 +1186,13 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
         "--max-iter", str(max_iter),
         "--workdir", "/tmp",
     ]
+    # The served model's name, for the runner's log `start` event only
+    # (tool_efficiency.py groups logs by it; without it every eval log said
+    # the runner default). llama-server ignores the request's model id and
+    # it is not in the prompt, so trajectories and verdicts are unaffected.
+    # Underscore key: excluded from the task hash, cache keys unchanged.
+    if task.get("_agent_model"):
+        cmd += ["--model", task["_agent_model"]]
     # Tier-3 awareness pack (docs/LANG_AWARENESS_PLAN.md §5): run_eval
     # annotates units whose language has a pack with `_context_file`
     # (underscore key ⇒ excluded from the task hash; the pack1-<sha8> era
@@ -1532,6 +1539,8 @@ def run_eval(
             raise ValueError("--cache-only requires --model-name (no live server query in cache-only mode)")
         model_name = detect_model(base_url)
     model_slug = slugify(model_name)
+    for t in tasks:
+        t["_agent_model"] = model_name
     gpu_info = capture_gpu_info() if not cache_only else None
     engine_info = capture_inference_engine_info() if not cache_only else None
     server_info = capture_server_config(base_url) if not cache_only else None

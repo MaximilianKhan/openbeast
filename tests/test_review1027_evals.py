@@ -341,3 +341,39 @@ def test_task_filter_cli_exit_codes(tmp_path):
                            env={**os.environ, "OPENBEAST_RUN_DIR": str(tmp_path / "run")})
         assert r.returncode == 2, (script, r.stdout, r.stderr)
         assert "matches no task" in r.stderr
+
+
+# ---------------------------------------------------------------------------
+# R6-10: the runner is told the served model's name (log attribution only).
+# ---------------------------------------------------------------------------
+
+def test_run_agent_passes_served_model_name(tmp_path, monkeypatch):
+    run_eval = _fresh("run_eval")
+    argv_file = tmp_path / "argv.json"
+    runner = tmp_path / "fake_runner.py"
+    runner.write_text("import json, sys\n"
+                      f"json.dump(sys.argv[1:], open({str(argv_file)!r}, 'w'))\n")
+    monkeypatch.setattr(run_eval, "RUNNER_PATH", str(runner))
+    run_eval.run_agent({"task": "do it", "max_iter": 1}, "http://127.0.0.1:9/v1")
+    argv = json.loads(argv_file.read_text())
+    assert "--model" not in argv                     # negative control: no name, no flag
+    run_eval.run_agent({"task": "do it", "max_iter": 1, "_agent_model": "Qwen3.6-27B Q5"},
+                       "http://127.0.0.1:9/v1")
+    argv = json.loads(argv_file.read_text())
+    assert argv[argv.index("--model") + 1] == "Qwen3.6-27B Q5"
+    assert argv[-1] == "do it"                       # task text stays last
+
+
+def test_agent_model_tag_leaves_cache_key_alone(tmp_path, monkeypatch):
+    run_eval, cache, _ = _fresh_eval(tmp_path, monkeypatch)
+    seen = []
+    monkeypatch.setattr(run_eval, "run_agent", lambda task, *a, **k: (
+        seen.append(task.get("_agent_model")) or {
+            "exit_code": 0, "elapsed_seconds": 1.0, "stdout": "", "stderr": "",
+            "tokens": {"prompt": 1, "completion": 2, "total": 3}, "iterations": 1,
+            "compactions": 0, "api_errors": 0}))
+    run_eval.run_eval(model_name="Served Model")
+    assert seen == ["Served Model"]
+    task = {k: v for k, v in run_eval.load_tasks(None)[0].items()}
+    assert [p.name for p in cache.CACHE_DIR.glob("*.json")] == [
+        cache.cache_key(task, "served-model", max_iter=2) + ".json"]
