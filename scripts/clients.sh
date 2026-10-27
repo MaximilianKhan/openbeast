@@ -210,8 +210,8 @@ def load():
         with open(REG, "r") as fh:
             doc = json.load(fh)
     except ValueError as exc:
-        die("%s is not valid JSON (%s).\n       Refusing to touch it — fix or "
-            "move it aside." % (REG, exc), 4)
+        die("%s is not valid JSON (%s).\n       Refusing to touch it — restore "
+            "or fix it (beast-gate stays closed meanwhile)." % (REG, exc), 4)
     if not isinstance(doc, dict) or not isinstance(doc.get("devices"), list):
         die("%s has an unexpected shape (want {\"version\":1,\"devices\":[...]}).\n"
             "       Refusing to touch it." % REG, 4)
@@ -479,17 +479,20 @@ elif CMD == "remove":
     print("Its audit row is GONE — past `last_seen` and enrollment history for")
     print("this device are unrecoverable. `revoke` keeps that trail; `remove`")
     print("does not. A future enroll of the same id starts a fresh history.")
-    # An empty registry is "not configured" to the gate, and with
-    # EDGE_ALLOW_ANON=true that means anonymous mode: removing the last
-    # device re-admits it, along with everyone else on the tailnet.
-    if not doc["devices"] and os.environ.get("OB_ALLOW_ANON") == "true":
+    # An emptied registry still EXISTS, and beast-gate decides
+    # EDGE_ALLOW_ANON on the file existing, not on it holding a device: the
+    # gate refuses every caller (401 no_registry) until the next enroll.
+    # (It used to warn the opposite — that the gate had reopened.)
+    if not doc["devices"]:
         sys.stderr.write(
-            "\nWARNING: the registry is now EMPTY and EDGE_ALLOW_ANON=true —\n"
-            "         beast-gate admits EVERY tailnet caller without a key,\n"
-            "         including the device you just removed ('%s').\n"
-            "         Close it: set EDGE_ALLOW_ANON=false in openbeast.conf and\n"
-            "         restart (./stop.sh && ./start.sh -d), or enroll a device:\n"
-            "         ./scripts/clients.sh enroll <id>\n" % dev_id)
+            "\nNOTE: the registry is now EMPTY — beast-gate refuses every caller\n"
+            "      (401) until you enroll a device: ./scripts/clients.sh enroll <id>\n")
+        if os.environ.get("OB_ALLOW_ANON") == "true":
+            # The one way back to anonymous mode: no file at a gate (re)start.
+            sys.stderr.write(
+                "      Do not delete .run/clients.json while EDGE_ALLOW_ANON=true:\n"
+                "      a beast-gate restarted with no registry file serves every\n"
+                "      tailnet caller as 'anon'.\n")
 
 else:
     die("internal: unknown OB_CMD '%s'" % CMD)
