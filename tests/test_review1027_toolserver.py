@@ -448,3 +448,34 @@ def test_r9_05_global_symlink_into_repo_counts_as_gated(skilldirs):
         {"source": "global", "path": str(rogue / "SKILL.md")})
 
 
+# ── R7-02 (test-only) ────────────────────────────────────────────────────────
+
+def test_r7_02_key_withheld_from_foreign_host_with_worker_configured(
+        monkeypatch):
+    import runner
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENBEAST_API_KEY", "rig-key")
+    monkeypatch.setenv("OPENBEAST_AGENT_INFERENCE_URL",
+                       "https://beast.ts.net:8443/v1")
+    assert runner.resolve_api_key(
+        base_url="https://attacker.example/v1") == "not-needed"
+    # Control: the configured worker host does get it.
+    assert runner.resolve_api_key(
+        base_url="https://beast.ts.net:8443/v1") == "rig-key"
+
+
+# ── R7-06 (test-only) ────────────────────────────────────────────────────────
+
+def test_r7_06_jwt_without_exp_is_rejected(toolserver, monkeypatch):
+    secret = "test-jwt-secret"
+    monkeypatch.setenv("OPENBEAST_IDENTITY_JWT_SECRET", secret)
+    now = int(time.time())
+    base = {"sub": "alice", "role": "admin", "iss": "open-webui", "iat": now}
+    no_exp = pyjwt.encode(base, secret, algorithm="HS256")
+    good = pyjwt.encode({**base, "exp": now + 300}, secret, algorithm="HS256")
+    c = _client()
+    r = c.post("/list_files", json={},
+               headers={"X-OpenWebUI-User-Jwt": no_exp})
+    assert r.status_code == 401 and "exp" in r.text
+    r = c.post("/list_files", json={}, headers={"X-OpenWebUI-User-Jwt": good})
+    assert r.status_code == 200
