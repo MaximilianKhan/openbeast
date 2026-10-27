@@ -969,12 +969,19 @@ def cacheable_result(result: dict) -> bool:
         rows were banked by 2026-10-09 and replayed as model regressions.
         Unless it repeated for the key (validator_timeout_repeats): then the
         solution itself hangs.
+      failed + request_timeouts >= 1 — a model turn outlasted the unit's
+        wall budget and the runner stopped. It is a verdict on the model
+        (not `server_error`: it seats on the board and counts in paired
+        verdicts), but like the exit -1 wall timeout it is the same event
+        as, it depends on the wall clock, so it is not banked.
     A PASS is always a genuine verdict: infrastructure trouble can only
     make a unit fail, never make it pass."""
     if (result.get("agent_exit_code") or 0) < 0:
         return False
     if result.get("passed"):
         return True
+    if (result.get("request_timeouts") or 0) > 0:
+        return False
     if not result.get("tokens_completion"):
         return False
     if result.get("reason") in ("server_error", "env_error", "validator_timeout"):
@@ -1029,6 +1036,14 @@ def load_suite(name: str) -> dict:
     return suite
 
 
+def _stale_pin(suite_pin: dict) -> str | None:
+    """Why a fast-suite pin's imputation is not valid on the suite this
+    checkout runs (it was built from another version's reference runs), or
+    None. See make_fast_suite.pin_is_stale."""
+    import make_fast_suite
+    return make_fast_suite.pin_is_stale(suite_pin)
+
+
 def _run_reaped(cmd, timeout: int, shell: bool = False) -> tuple[int, str]:
     """Thin wrapper around tools.run_reaped for eval-harness callers.
 
@@ -1070,6 +1085,8 @@ _TOKEN_LINE = re.compile(r"^TOKENS:\s+prompt=(\d+)\s+completion=(\d+)\s+total=(\
 _COMPACT_LINE = re.compile(r"^COMPACTIONS:\s+(\d+)\s*$", re.MULTILINE)
 _API_ERRORS_LINE = re.compile(r"^API_ERRORS:\s+(\d+)\s*$", re.MULTILINE)
 _API_ERROR_EVENT = re.compile(r"^\s*API error: ", re.MULTILINE)
+_REQUEST_TIMEOUTS_LINE = re.compile(r"^REQUEST_TIMEOUTS:\s+(\d+)\s*$", re.MULTILINE)
+_REQUEST_TIMEOUT_EVENT = re.compile(r"^\s*Request timed out: ", re.MULTILINE)
 
 
 def _parse_api_errors(stdout: str) -> int:
@@ -1080,6 +1097,16 @@ def _parse_api_errors(stdout: str) -> int:
     if matches:
         return int(matches[-1].group(1))
     return len(_API_ERROR_EVENT.findall(stdout))
+
+
+def _parse_request_timeouts(stdout: str) -> int:
+    """Model turns that outlasted the unit's wall budget (runner, eval mode).
+    Same shape as _parse_api_errors: the summary line, else the event lines
+    of a runner that was killed before printing it."""
+    matches = list(_REQUEST_TIMEOUTS_LINE.finditer(stdout))
+    if matches:
+        return int(matches[-1].group(1))
+    return len(_REQUEST_TIMEOUT_EVENT.findall(stdout))
 
 
 def _parse_compactions(stdout: str) -> int:
@@ -1095,6 +1122,21 @@ def _parse_tokens(stdout: str) -> dict:
         return {"prompt": 0, "completion": 0, "total": 0}
     m = matches[-1]
     return {"prompt": int(m.group(1)), "completion": int(m.group(2)), "total": int(m.group(3))}
+
+
+_TASK_PATH_RE = re.compile(r"/tmp/eval[\w\-./]*")
+
+
+def task_expected_paths(task: dict) -> list[str]:
+    """The /tmp/eval* paths the TASK TEXT names, for the agent's path guard.
+
+    From the text the model reads and nothing else. Until suite v4.1 the
+    list was scraped from setup, validation and cleanup as well, so it held
+    files only the validator writes (`/tmp/eval_ntt/out.txt`), and the
+    pattern kept a sentence's full stop (`/tmp/eval_gemm/gemm.zig.`, a file
+    that can never exist). Trailing sentence punctuation is stripped."""
+    found = {m.rstrip(".,;:)") for m in _TASK_PATH_RE.findall(str(task.get("task", "")))}
+    return sorted(p for p in found if p)
 
 
 def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
@@ -1134,9 +1176,7 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
     # wrong-place writes and refuses task_done while expected files are
     # missing. Passed via env= (NOT os.environ mutation) so --jobs
     # parallel tasks cannot race each other's path sets.
-    spec_text = " ".join(str(task.get(k, ""))
-                         for k in ("task", "validation", "setup", "cleanup"))
-    expected = sorted(set(re.findall(r"/tmp/eval[\w\-./]*", spec_text)))
+    expected = task_expected_paths(task)
     child_env = dict(os.environ)
 
     # === THE EVAL MARKER — beast-chat lock L1 (E1) ========================
@@ -1168,6 +1208,15 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
     if os.environ.get("OPENBEAST_EVAL_GREEDY", "") == "1":
         child_env["OPENBEAST_EVAL_GREEDY"] = "1"
 
+    # Rough budget: 1 min per iteration at single-stream decode, scaled up
+    # under parallel contention (see timeout_scale in the docstring). The
+    # runner gets the same number: it bounds each model request by what is
+    # left of it and never re-sends one. Before v4.1 the request had the
+    # openai client's own unscaled 600 s and one silent retry, so a long
+    # turn under --jobs was discarded, re-sent, and scored as a FAIL.
+    wall_budget = int(max_iter * 60 * timeout_scale)
+    child_env["OPENBEAST_EVAL_WALL_S"] = str(wall_budget)
+
     # start_new_session so an agent timeout SIGKILLs the runner's whole
     # process group, not just the runner. Its bash-tool children run in
     # their OWN sessions (agents/tools.py run_reaped), so the timeout path
@@ -1183,9 +1232,7 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
     with _live_pgid_lock:
         _live_pgids.add(proc.pid)          # == pgid: start_new_session above
     try:
-        # Rough budget: 1 min per iteration at single-stream decode, scaled up
-        # under parallel contention (see timeout_scale in the docstring).
-        stdout, stderr = proc.communicate(timeout=int(max_iter * 60 * timeout_scale))
+        stdout, stderr = proc.communicate(timeout=wall_budget)
         elapsed = time.time() - start_time
         tokens = _parse_tokens(stdout)
         return {
@@ -1197,15 +1244,15 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
             "iterations": _parse_iterations(stdout),
             "compactions": _parse_compactions(stdout),
             "api_errors": _parse_api_errors(stdout),
+            "request_timeouts": _parse_request_timeouts(stdout),
         }
     except subprocess.TimeoutExpired:
         _kill_agent_tree(proc.pid)
         proc.kill()
-        # What the runner had flushed before the kill. It prints its TOKENS
-        # line only on a normal exit, so today this is almost always
-        # without one and the row keeps tokens 0 (scoring counts such rows
-        # per board row). Parsed anyway: a recorded 0 for a unit that spent
-        # 20 minutes of decode understates TOKENS, and any count beats none.
+        # What the runner had flushed before the kill. Under eval it prints
+        # a running TOKENS line after every model turn, so the row records
+        # the tokens of the turns that completed (the turn in flight at the
+        # kill returned no usage and is not counted).
         partial = ""
         try:
             partial = proc.communicate(timeout=5)[0] or ""
@@ -1219,6 +1266,7 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
             "stderr": "",
             "tokens": _parse_tokens(partial),
             "iterations": None,
+            "request_timeouts": _parse_request_timeouts(partial),
         }
     finally:
         # Whatever happened, this group is no longer ours to reap.
@@ -1564,7 +1612,11 @@ def run_eval(
         c = suite_pin["counts"]
         print(f"Suite:  {suite} ({c['units']} pinned units = {c['discriminating']} discriminating "
               f"+ {c['tripwires']} tripwires; {c['assumed_passed'] + c['assumed_failed']} imputed; "
-              f"leaderboard-ineligible partial of v4)")
+              f"leaderboard-ineligible partial of {suite_pin.get('base_suite_version', 'v4')})")
+        if _stale_pin(suite_pin):
+            print(f"Suite:  STALE PIN — {_stale_pin(suite_pin)}")
+            print("        Paired comparisons on the measured units are valid; the imputed "
+                  "absolute score is not.")
     print(f"Results: {results_path}")
     print("=" * 60)
 
@@ -1750,6 +1802,9 @@ def run_eval(
         passed, validation_output = run_validation(task, timeout_scale=timeout_scale)
 
         # Infrastructure verdicts (not model verdicts) for a FAILED unit.
+        # A model turn that outlasted the wall budget (request_timeouts) is
+        # NOT one: the runner counts it apart from api_errors, so it falls
+        # through here as a plain model FAIL.
         # server_error: the runner saw failed model calls, or the server is
         # gone right after the agent finished — the health check above only
         # runs BEFORE a task, so a server that died mid-task was invisible.
@@ -1812,6 +1867,8 @@ def run_eval(
             "iterations": agent_result.get("iterations"),
             "compactions": agent_result.get("compactions", 0),
             "api_errors": api_errors,
+            **({"request_timeouts": agent_result["request_timeouts"]}
+               if agent_result.get("request_timeouts") else {}),
             **({"reason": infra_reason} if infra_reason else {}),
             **({"env_error_repeats": env_strikes} if env_strikes else {}),
             **({"validator_timeout_repeats": vt_strikes} if vt_strikes else {}),
@@ -1930,8 +1987,10 @@ def run_eval(
                        if not t.get("passed") and t["id"] in set(suite_pin["tripwires"])]
         imputed = scoring.impute_suite_tasks(results["tasks"], suite_pin)
         solve, lang, cap = scoring.compute_solve_breadth(imputed)
+        stale_pin = _stale_pin(suite_pin)
         results["fast_suite"] = {
             "suite": suite,
+            **({"pin_stale": stale_pin} if stale_pin else {}),
             "capability_imputed": cap,
             "problem_solving_imputed": solve,
             "language_breadth_imputed": lang,
@@ -1939,9 +1998,11 @@ def run_eval(
             "tripwire_failures": trip_failed,
         }
         _write_results(results_path, results)
-        print(f"Imputed capability (v4-leaderboard scale): {cap:.2f} "
+        print(f"Imputed capability ({suite_pin.get('base_suite_version', 'v4')}-leaderboard scale): {cap:.2f} "
               f"(solve {solve:.2f} / breadth {lang:.2f}; "
               f"{results['fast_suite']['imputed_units']} saturated units imputed)")
+        if stale_pin:
+            print(f"STALE PIN — the imputed score above is NOT valid: {stale_pin}")
         if trip_failed:
             print(f"TRIPWIRE FAILURES ({len(trip_failed)}): {', '.join(trip_failed)}")
             print("  This model breaks the suite's saturation assumption — the imputed "

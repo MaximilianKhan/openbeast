@@ -750,9 +750,12 @@ downloads any of them, staged and sha256-verified before it lands.
 A reproducible suite of **291 test units** (137 base tasks, 31 with variants
 across 6 languages) spanning 12 domains — software engineering, math, physics,
 ML/LLM internals, distributed systems, security, and more. Every task ships
-its own fixtures and a scripted check (the suite's known gaps, including live
-`fetch`/`web_search` under eval and two defective validators, are listed in
-[evals/README.md](evals/README.md#known-validator-defects-v4)), and the multi-model runner produces a
+its own fixtures and a scripted check. The current suite is **v4.1**, which
+corrects two defective validators, an exposed expected-output file and live
+`fetch`/`web_search` under eval; the board below was measured on v4, before
+those fixes, and v4 and v4.1 scores are not comparable (details and what is
+still open: [evals/README.md](evals/README.md#known-validator-defects-v4)).
+The multi-model runner produces a
 **capability-ranked** leaderboard (`SCORE = 0.75·problem-solving + 0.25·language-breadth`).
 
 **v4 leaderboard** (RTX 5090 ×1 — methodology in [`docs/RESULTS.md`](docs/RESULTS.md)):
@@ -881,7 +884,7 @@ scoring, per-category/per-language breakdowns, and the eval CLI:
 
 | Version | Headline | Notes |
 |---|---|---|
-| `main` (next) | remote-skill import gate (`scripts/skill-import.sh`) + nine imported skills, off the always-on menu · the 2026-10-09 review fixes: inference is never published keyless by accident, inline-media-only and host-pinned proxies, a pinned llama.cpp commit and strict hash-pinned installs, a RAM-sized prompt cache, `start.sh` preflights and command words, an honest eval board (T/O, †/‡) | [EXTERNAL_SKILLS_PLAN.md](docs/EXTERNAL_SKILLS_PLAN.md) · [TODO.md](docs/TODO.md) |
+| `main` (next) | remote-skill import gate (`scripts/skill-import.sh`) + nine imported skills, off the always-on menu · the 2026-10-09 review fixes: inference is never published keyless by accident, inline-media-only and host-pinned proxies, a pinned llama.cpp commit and strict hash-pinned installs, a RAM-sized prompt cache, `start.sh` preflights and command words, an honest eval board (T/O, †/‡) · eval suite **v4.1**: two validators, the exposed `expected.txt`, the 600 s request re-send and live `fetch`/`web_search` under eval corrected (the eval era rolls; v4 rows are kept in their own section) | [EXTERNAL_SKILLS_PLAN.md](docs/EXTERNAL_SKILLS_PLAN.md) · [TODO.md](docs/TODO.md) |
 | v1.7.0 | beast-hydra 🐉 (route across rig + DGX Sparks + 3090 Ti, uncensored-only fleet, GLM-5.3-Flash on TensorFold) · beast-instinct 🧿 (typed decisions on a full 27B; Open-Jev-27B target) · the zig awareness pack in production (Tier-3 FRESH SHIP, net +24; record corrected) · beast-artifact + beast-chat upgrades (rig owner + admins, phone lifecycle, new-session sheet, PWA, ntfy, export) · the 09-30 double pass (75 findings) · upgrade notes: [UPDATING.md](docs/UPDATING.md#upgrading-past-v160-beast-artifact-and-beast-chat) | [RELEASE_NOTES_v1.7.0.md](docs/RELEASE_NOTES_v1.7.0.md) |
 | v1.6.0 | the review 🔬 (118 findings fixed, a research verdict re-audited) · multi-engine inference 🟩 (vLLM / TensorFold, DGX Spark, model onboarding) · beast-lang escalation wired · opencode session tooling | [RELEASE_NOTES_v1.6.0.md](docs/RELEASE_NOTES_v1.6.0.md) |
 | v1.5.0 | beast-lang 📚 · air-gap 🔌 · beast-campaign 🧪 · the review | [RELEASE_NOTES_v1.5.0.md](docs/RELEASE_NOTES_v1.5.0.md) |

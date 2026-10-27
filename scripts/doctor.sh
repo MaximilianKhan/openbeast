@@ -257,7 +257,10 @@ if entry is None:
     print("unregistered|" + srv); raise SystemExit
 slug = re.sub(r"[^a-z0-9]+", "-", entry["name"].lower()).strip("-")
 rows = json.load(open(os.path.join(repo, "evals/leaderboard.json"))).get("entries", [])
-row = next((e for e in rows if e.get("model_slug") == slug), None)
+# A model can hold a row per suite (v4 and v4.1): report the newest suite's.
+mine = [e for e in rows if e.get("model_slug") == slug]
+row = max(mine, key=lambda e: [int(x) for x in re.findall(r"\d+", str(e.get("suite_version", "")))],
+          default=None)
 if row:
     print("ok|%s|%s|%s" % (entry["name"], row.get("suite_version", "?"),
                            row.get("accuracy", "?")))

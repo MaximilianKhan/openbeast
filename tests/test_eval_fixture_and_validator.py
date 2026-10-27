@@ -203,8 +203,9 @@ def test_wall_timeout_records_tokens_from_partial_stdout(tmp_path):
 
 
 def test_wall_timeout_without_a_token_line_stays_zero(tmp_path):
-    """Negative control — and today's real runner: it prints TOKENS only on
-    a normal exit, so a killed one has none to read."""
+    """Negative control: a runner killed before its first model turn
+    returned has printed no TOKENS line (from suite v4.1 the real runner
+    prints one after every turn; tests/test_eval_request_timeout.py)."""
     run_eval, _ = _fresh(tmp_path)
     run_eval.RUNNER_PATH = _fake_runner(tmp_path, '''
         import time
