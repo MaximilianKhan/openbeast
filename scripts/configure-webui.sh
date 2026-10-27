@@ -379,6 +379,47 @@ else
 fi
 fi   # TOKEN_OK
 
+# --- 1a. Community sharing OFF (GHSA-vpq8-f445-hcq7, CVSS 8.1) ---
+# With community sharing on — the image default — the pinned Open WebUI
+# (< 0.11.4) lets any website steal a signed-in user's session token.
+# docker-compose's ENABLE_COMMUNITY_SHARING=false only seeds a FIRST boot (it
+# is a PersistentConfig), so an existing install keeps whatever its DB says.
+# Asserted on every run through the admin config API: GET the whole config,
+# flip only this one field, POST it all back (the endpoint replaces the
+# config, so every other field must be sent as it was). Idempotent: nothing
+# is POSTed when it is already off.
+if [[ "$TOKEN_OK" != "1" ]]; then
+  echo "  Community sharing: not checked (no admin token). Turn it OFF by hand:" >&2
+  echo "    Admin Settings → General → Enable Community Sharing (GHSA-vpq8-f445-hcq7)." >&2
+else
+  _cs_body="$(ob_curl_hdr "$AUTH" -s -m 10 "$WEBUI_URL/api/v1/auths/admin/config" 2>/dev/null \
+    | python3 -c '
+import json, sys
+try:
+    cfg = json.load(sys.stdin)
+except Exception:
+    sys.exit(2)                       # not JSON: unknown, say so
+if not isinstance(cfg, dict) or "ENABLE_COMMUNITY_SHARING" not in cfg:
+    sys.exit(2)
+if cfg["ENABLE_COMMUNITY_SHARING"] is False:
+    sys.exit(0)                       # already off: print nothing
+cfg["ENABLE_COMMUNITY_SHARING"] = False
+print(json.dumps(cfg))
+' 2>/dev/null)" && _cs_rc=0 || _cs_rc=$?
+  if [[ $_cs_rc -ne 0 ]]; then
+    echo "  Community sharing: could not read the admin config — check it is OFF in" >&2
+    echo "    Admin Settings → General (GHSA-vpq8-f445-hcq7)." >&2
+  elif [[ -z "$_cs_body" ]]; then
+    echo "  Community sharing: already off."
+  elif printf '%s' "$_cs_body" | ob_curl_hdr "$AUTH" -s -m 10 -f -H "Content-Type: application/json" \
+         "$WEBUI_URL/api/v1/auths/admin/config" -X POST -d @- >/dev/null 2>&1; then
+    echo "  Community sharing: turned OFF (GHSA-vpq8-f445-hcq7 — a website could steal a session token)."
+  else
+    echo "  Community sharing: could NOT be turned off — do it in Admin Settings → General" >&2
+    echo "    (GHSA-vpq8-f445-hcq7)." >&2
+  fi
+fi
+
 # --- 1b. Open WebUI's built-in Web Search: OFF unless WEBUI_WEB_SEARCH=true ---
 # Distinct from the `web_search` TOOL configured above: this is the "Web
 # Search" toggle in the chat composer, which Open WebUI implements itself

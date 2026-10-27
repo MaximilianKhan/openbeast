@@ -184,3 +184,77 @@ def test_rbac_comment_counts_16_privileged_tools():
     with open(os.path.join(REPO, "scripts", "configure-webui.sh")) as f:
         src = f.read()
     assert "(16 OS-touching tools)" in src and "(15 OS-touching tools)" not in src
+
+
+# --- R10-02: community sharing OFF via the admin config API -----------------
+# GHSA-vpq8-f445-hcq7: the compose env only seeds a first boot, so existing
+# installs are switched through GET + POST /api/v1/auths/admin/config.
+
+_ADMIN_CFG_HOOK = (
+    'if path == "/api/v1/auths/admin/config":\n'
+    '    if st.get("admin_cfg") is None: out({"detail": "Not Found"})\n'
+    '    if method == "POST":\n'
+    '        st["admin_cfg"] = body; st["cfg_posts"] = st.get("cfg_posts", 0) + 1; save()\n'
+    '    out(st["admin_cfg"])\n'
+    'if path == "/api/v1/configs/tool_servers":\n')
+
+
+@pytest.fixture()
+def cs(wr):
+    stub = CURL_STUB.replace('if path == "/api/v1/configs/tool_servers":\n', _ADMIN_CFG_HOOK, 1)
+    assert stub != CURL_STUB
+    _write_exec(wr.bin / "curl", stub)
+
+    def with_cfg(cfg):
+        st = wr.get_state()
+        st["admin_cfg"] = cfg
+        wr.state.write_text(json.dumps(st))
+    wr.with_cfg = with_cfg
+    return wr
+
+
+_CFG = {"SHOW_ADMIN_DETAILS": True, "ENABLE_SIGNUP": False,
+        "DEFAULT_USER_ROLE": "pending", "ENABLE_COMMUNITY_SHARING": True,
+        "JWT_EXPIRES_IN": "4w"}
+
+
+def test_community_sharing_is_turned_off_and_other_fields_kept(cs):
+    cs.with_cfg(dict(_CFG))
+    p = cs.configure()
+    assert p.returncode == 0, p.stderr
+    st = cs.get_state()
+    assert st.get("cfg_posts") == 1
+    want = dict(_CFG, ENABLE_COMMUNITY_SHARING=False)
+    assert st["admin_cfg"] == want, "the POST dropped or changed another field"
+    assert "turned OFF" in p.stdout
+    posts = [c for c in cs.calls() if c["path"] == "/api/v1/auths/admin/config"
+             and c["method"] == "POST"]
+    assert posts and posts[0]["auth"] and not posts[0]["argv_bearer"]
+
+
+def test_community_sharing_already_off_posts_nothing(cs):
+    cs.with_cfg(dict(_CFG, ENABLE_COMMUNITY_SHARING=False))
+    p = cs.configure()
+    assert p.returncode == 0, p.stderr
+    assert "cfg_posts" not in cs.get_state()
+    assert "already off" in p.stdout
+
+
+def test_community_sharing_unreadable_config_is_loud_not_fatal(cs):
+    """An endpoint that does not answer with the config: nothing is POSTed
+    (no blind write of a half-config), the operator is told, the run goes on."""
+    cs.with_cfg(None)
+    p = cs.configure()
+    assert p.returncode == 0, p.stderr
+    assert "cfg_posts" not in cs.get_state()
+    assert "could not read the admin config" in p.stderr
+    assert "Open WebUI configured." in p.stdout
+
+
+def test_community_sharing_without_token_tells_operator(cs):
+    cs.with_cfg(dict(_CFG))
+    cs.set_state(auth=True, admin_pw="operator-changed-it", admin_cfg=dict(_CFG))
+    p = cs.configure()
+    assert p.returncode == 0, p.stderr
+    assert "cfg_posts" not in cs.get_state()
+    assert "Enable Community Sharing" in p.stderr
