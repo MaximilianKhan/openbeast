@@ -6,6 +6,17 @@ Kernel-level confinement — Landlock (filesystem/network/IPC) + seccomp-bpf
 (syscall filtering) — for every shell command the model runs through the
 `bash` tool. Unprivileged: no root, no containers, no images.
 
+**Scope: shell commands only.** `OPENBEAST_BASH_WRAPPER` wraps the `bash`
+tool, the `grep` tool and the beast-assist checker, all of which spawn a
+shell. It does **not** confine the file tools: `read_file`, `write_file`,
+`edit_file`, `list_files` and `publish_artifact`'s page read run in process,
+inside the unsandboxed tool server, MCP server or runner. With Sandlock on, a
+model can still `read_file` `~/.ssh/*` or `openbeast.conf`, and `write_file`
+anywhere the server's uid can write, including the repo's own code. OpenCode's
+built-in tools are not confined either. Loopback services stay reachable from
+a confined shell (the default profile allows all network), including the
+`:3001` tool server and the `:8088` router, whose file tools are unconfined.
+
 **Status: OPT-IN.** Installed by `scripts/setup-sandlock.sh`, enabled by one
 env var, OFF by default until agent behavior under confinement is
 eval-validated (see "Road to default").
@@ -21,7 +32,7 @@ layer, it does not replace it** — it adds what rlimits cannot express:
 |---|---|---|
 | rlimit/killpg (always on) | memory bombs, orphaned process trees, output floods | file reads/writes anywhere, network anywhere |
 | `fetch` SSRF guard (always on, **tool-scoped**) | the `fetch` *tool* reaching loopback/private/link-local/reserved addresses, and — pinned explicitly — Tailscale CGNAT `100.64.0.0/10` + ULA `fd7a:115c:a1e0::/48`, including v4-mapped/6to4/Teredo wrappers (`agents/tools.py` `_vet_addr`) | anything `bash` does. It is a guard *inside one tool*, not a network boundary |
-| Sandlock (this doc) | reads/writes outside the allowlist (`~/.ssh`, `~/.gnupg`, `~/.aws`, the repo, the rest of `$HOME` are *invisible*), outbound network per policy, dangerous syscalls | resource exhaustion (rlimit's job), a model exfiltrating data it can *legitimately* read (workdir contents + open network = data can leave), prompt injection itself |
+| Sandlock (this doc) | **shell commands** (`bash`, `grep`) reading/writing outside the allowlist (to them `~/.ssh`, `~/.gnupg`, `~/.aws`, the repo and the rest of `$HOME` are *invisible*), outbound network per policy, dangerous syscalls | the in-process file tools (`read_file`, `write_file`, `edit_file`, `list_files`) and OpenCode's built-ins, a confined shell calling loopback `:3001`/`:8088`, resource exhaustion (rlimit's job), a model exfiltrating data it can *legitimately* read (workdir contents + open network = data can leave), prompt injection itself |
 
 Honesty note: with the default profile's open outbound network, sandboxing
 is a **filesystem** integrity/secrecy boundary, not an exfiltration
@@ -89,7 +100,9 @@ not require a server restart — but the env of an already-running server
 can't be changed from outside; set it before launch.
 
 **Verify it's active:** ask the agent to run `ls ~/.ssh` → confined output
-is `No such file or directory`. Unconfined shows your keys.
+is `No such file or directory`. Unconfined shows your keys. Then ask it to
+`read_file ~/.ssh/known_hosts` (or any file there): that **succeeds** even
+with Sandlock on, because the file tools are not wrapped (see "Scope" above).
 
 **Disable:** unset `OPENBEAST_BASH_WRAPPER` (or comment the line) and
 restart.
