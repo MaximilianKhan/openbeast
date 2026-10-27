@@ -110,7 +110,14 @@ listed in [`evals/README.md`](../evals/README.md#known-validator-defects-v4).
 
 > **Reading the board:** **SPD** = *sustained decode* tok/s — the model's real generation speed, server‑measured (all 9 v4 rows have measured decode; a **~** would flag an isolated‑benchmark estimate). **†** *Qwen 27B Q5_K_XL ran `-np 6` with cache-resumed units, so its Wall isn't comparable to the serial `-np 1` MTP rows.* **‡** *The Qwen3.8 rows ran `--jobs 4`: Spd and Wall are depressed and inflated by four units sharing the GPU, and are not comparable to the sequential rows.* Detailed column notes, NVFP4's real use case, and per-language breakdowns are in [`evals/README.md`](../evals/README.md).
 
-> **Not yet benchmarked:** the five community models (Fable-Fusion 711 ×4, Heretic v2 Q5; the Heretic Q6 twin was pruned 2026-08-20, see [`MODELS.md`](MODELS.md)) are VRAM/speed-measured but not capability-ranked — pending a v4 sweep.
+> **Not yet benchmarked on v4:** 11 of the 20 configured models (`benchmark_all.py --list`) have no v4 row, **including the shipped default**:
+> - `qwen38-27b-uncensored-mtp-q5` — Qwen3.8 27B Uncensored MTP Q5_K_M, the `./start.sh` default (its non-MTP sibling is row 3; MTP is lossless, but the row itself is unmeasured)
+> - `qwen38-27b-mtp-q5` (Qwen3.8 27B MTP Q5_K_XL), `qwen38-27b-q6` (Qwen3.8 27B Q6_K), `qwen38-27b-mtp-q6` (Qwen3.8 27B MTP Q6_K)
+> - `qwopus-27b-v2-q5` (Qwopus 27B v2 Q5_K_M, the non-MTP sibling of row 6)
+> - `gemma-4-31b-q5` (Gemma 4 31B-it Q5_K_XL — legacy v3.5 row only)
+> - the five community models: `fable-fusion-27b-q5`, `fable-fusion-27b-mtp-q5`, `fable-fusion-27b-q6`, `fable-fusion-27b-mtp-q6` (Fable-Fusion 711 ×4) and `heretic-v2-27b-mtp-q5` (Heretic v2 Q5; the Heretic Q6 twin was pruned 2026-08-20, see [`MODELS.md`](MODELS.md)) — VRAM/speed-measured but not capability-ranked
+>
+> All pending a v4 sweep (`benchmark_all.py --models <slug>`).
 
 > **Suite version.** The results below are the **legacy v3.5 record — 323
 > effective test units** (159 base tasks · 33 variant'd across 6 languages ·
