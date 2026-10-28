@@ -332,6 +332,28 @@ else
   warn "remote-skill hash check could not run (exit $_sk_rc)" \
        "./scripts/skill-import.sh verify"
 fi
+# The global skills dir is outside that gate: a SKILL.md copied there by hand
+# has no pin, no scan and no ledger row, and skill() serves it labelled
+# [global, unverified] (R9-05). Symlinks back into <repo>/skills/ are gated;
+# a name the repo also ships is shadowed (repo wins) and never served.
+_gsk_dir="$HOME/.local/share/local-llm-skills"
+if [[ -d "$_gsk_dir" ]]; then
+  _gsk_repo="$(realpath "$REPO_DIR/skills" 2>/dev/null || echo "$REPO_DIR/skills")"
+  _gsk_bad=()
+  for _gsk in "$_gsk_dir"/*/SKILL.md; do
+    [[ -f "$_gsk" ]] || continue
+    _gsk_name="$(basename "$(dirname "$_gsk")")"
+    [[ -f "$REPO_DIR/skills/$_gsk_name/SKILL.md" ]] && continue
+    _gsk_real="$(realpath "$_gsk" 2>/dev/null || echo "$_gsk")"
+    [[ "$_gsk_real" == "$_gsk_repo"/* ]] || _gsk_bad+=("$_gsk_name")
+  done
+  if (( ${#_gsk_bad[@]} )); then
+    warn "global skills outside the import gate, served as [global, unverified]: ${_gsk_bad[*]}" \
+         "import them with ./scripts/skill-import.sh, or remove them from $_gsk_dir"
+  else
+    pass "global skills: none outside the import gate"
+  fi
+fi
 
 # ── Docker ──────────────────────────────────────────────────────────────────
 section "Docker"

@@ -12,6 +12,7 @@
 #   3  bootstrap.sh      OFFLINE sideload names verify-weights --file   (R5-07)
 #   4  doctor.sh         warns when installed zig != the shipped pack's zig
 #   5  doctor.sh         warns when tailscale < 1.98.9                 (R10-11)
+#   6  doctor.sh         warns on a global skill outside the import gate (R9-05)
 
 set -uo pipefail
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -219,6 +220,32 @@ _out="$(doctor_with_ts 1.98.9)"
 has "$_out" "tailscale 1.98.9 (≥" && pass "control: exactly 1.98.9 passes" \
   || fail "1.98.9 mis-judged: $(grep -i tailscale <<< "$_out" | tr '\n' ' ')"
 printf '#!/bin/bash\nexit 1\n' > "$D/bin/tailscale"
+
+# ===========================================================================
+echo ""
+echo "6. doctor.sh — global skills outside the import gate (R9-05):"
+# ===========================================================================
+_G="$D/home/.local/share/local-llm-skills"
+mkdir -p "$D/skills/gated-one" "$D/skills/shadowed" "$_G/handmade" "$_G/shadowed"
+echo "---" > "$D/skills/gated-one/SKILL.md"
+echo "---" > "$D/skills/shadowed/SKILL.md"
+echo "---" > "$_G/handmade/SKILL.md"
+echo "---" > "$_G/shadowed/SKILL.md"
+ln -s "$D/skills/gated-one" "$_G/gated-one"
+doctor_plain() { env -i HOME="$D/home" PATH="$D/bin:/usr/bin:/bin" bash "$D/scripts/doctor.sh" 2>&1 || true; }
+_out="$(doctor_plain)"
+_row="$(grep "outside the import gate" <<< "$_out" || true)"
+if has "$_row" "[global, unverified]: handmade" && ! has "$_row" "gated-one" && ! has "$_row" "shadowed"; then
+  pass "a hand-copied global skill is warned about; a symlink into skills/ and a shadowed name are not"
+else
+  fail "global-skill row wrong: ${_row:-<none>}"
+fi
+rm -rf "$_G/handmade"
+_out="$(doctor_plain)"
+has "$_out" "global skills: none outside the import gate" && ! has "$_out" "served as [global" \
+  && pass "control: only gated (symlinked) global skills pass" \
+  || fail "control: gated-only global dir mis-reported: $(grep -i 'global skills' <<< "$_out" | tr '\n' ' ')"
+rm -rf "$D/home/.local/share/local-llm-skills"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

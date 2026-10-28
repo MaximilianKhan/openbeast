@@ -182,3 +182,11 @@ Two locations are searched, repo first (wins on collision):
 
 Global skills are managed via `./scripts/install-skills.sh`. Use `--link-all`
 to symlink every repo skill globally; use `--link <name>` for one at a time.
+
+**The global directory is outside the import gate.** `scripts/skill-import.sh`
+reviews, ledgers and verifies what lands in `<repo>/skills/`; nothing checks
+a skill someone copies into `~/.local/share/local-llm-skills/` by hand. Such
+a skill (one that is not a symlink into this directory) is labelled
+`[global, unverified]` in the `skill()` index, in the `skill(name)` header and
+in `start_skill_agent`'s frame. Treat its text like any other unreviewed
+input, or import it through the gate.
