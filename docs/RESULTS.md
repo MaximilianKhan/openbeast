@@ -13,15 +13,19 @@ token cost are reported as separate columns.
 > - **PROBLEM_SOLVING** — difficulty-weighted fraction of *base problems* solved
 >   in **≥1 language** ("can the model crack it at all?").
 > - **LANGUAGE_BREADTH** — among solved problems, difficulty-weighted average
->   fraction of the 6 language ports passed ("can it carry the solution across
->   languages?").
+>   fraction of *that problem's* language variants passed (p of k). A solved
+>   single-language task counts as fully carried (1 of 1), and those are ~78%
+>   of v4's difficulty weight (173.5 of 221), so LANG is mostly SOLVE-driven:
+>   real port breadth is the other ~22% of LANG, about 0.054 of SCORE, not
+>   0.25. Details in [`evals/README.md`](../evals/README.md) "What LANG measures".
 > - **CAPABILITY = 0.75 · problem_solving + 0.25 · language_breadth** ← the ranking key (shown as SCORE).
 >
-> **Readout layout (v4 & v3.5).** Columns flow: **ACC** (legacy weighted
-> accuracy) · **SOLVE** (problem-solving) · **LANG** (language breadth) →
-> **SCORE** (the 75/25 end score) → **SPD** (effective tok/s = completion
-> tokens ÷ wall-clock) → **WALL** (total run time) → PASS. ACC/SOLVE/LANG/SCORE
-> are shown as percentages. (Per-tier pass rates were dropped from the at-a-glance
+> **Readout layout (v4 & v3.5).** Columns flow: **SOLVE** (problem-solving) ·
+> **LANG** (language breadth) → **SCORE** (the 75/25 end score) → **SPD**
+> (sustained decode tok/s, server-measured) → **TOKENS** → **WALL** (total run
+> time) → PASS. SOLVE/LANG/SCORE are shown as percentages; the legacy v1
+> accuracy (ACC) is no longer a column but stays in each entry's JSON
+> `accuracy`. (Per-tier pass rates were dropped from the at-a-glance
 > readout 2026-07-10 — too dense — but remain in each entry's JSON `breakdown`.)
 >
 > **Why (the v1 flaw).** v1 fused two different capabilities into one number and
@@ -70,7 +74,7 @@ token cost are reported as separate columns.
 **Ranked by capability** — `SCORE = 0.75·SOLVE + 0.25·LANG`:
 
 - **SOLVE** — % of base problems solved in **≥1 language** (problem-solving, the scarce skill).
-- **LANG** — % of the 6 language ports passed *among solved problems* (breadth, weighted lighter: porting a working solution is increasingly automatable via LSP / MCP / in-context translation).
+- **LANG** — solved weight carried across its languages: each solved problem contributes p/k (ports passed of its k language variants). A solved single-language task counts as fully carried, and those are ~78% of v4's weight, so LANG ≈ 0.785 + 0.215 × the variant port rate for a model that solves every singleton: port breadth is ~0.054 of SCORE, not 0.25. (Weighted lighter by design: porting a working solution is increasingly automatable via LSP / MCP / in-context translation.) For a model's real port coverage read `scoring.py --by-language`.
 - **SPD** *sustained decode tok/s* — the model's true generation rate (server-log measured; **~** = estimate) · **TOKENS** total prompt+completion · **WALL** total run time · **PASS** tasks passed. *(SOLVE / LANG / SCORE are percentages.)*
 
 Single RTX 5090 runs, board keyed by `(host, model)`; sub-~1-pt Score gaps are run-to-run noise. Full methodology → [`evals/README.md`](../evals/README.md).
@@ -106,7 +110,14 @@ listed in [`evals/README.md`](../evals/README.md#known-validator-defects-v4).
 
 > **Reading the board:** **SPD** = *sustained decode* tok/s — the model's real generation speed, server‑measured (all 9 v4 rows have measured decode; a **~** would flag an isolated‑benchmark estimate). **†** *Qwen 27B Q5_K_XL ran `-np 6` with cache-resumed units, so its Wall isn't comparable to the serial `-np 1` MTP rows.* **‡** *The Qwen3.8 rows ran `--jobs 4`: Spd and Wall are depressed and inflated by four units sharing the GPU, and are not comparable to the sequential rows.* Detailed column notes, NVFP4's real use case, and per-language breakdowns are in [`evals/README.md`](../evals/README.md).
 
-> **Not yet benchmarked:** the five community models (Fable-Fusion 711 ×4, Heretic v2 Q5; the Heretic Q6 twin was pruned 2026-08-20, see [`MODELS.md`](MODELS.md)) are VRAM/speed-measured but not capability-ranked — pending a v4 sweep.
+> **Not yet benchmarked on v4:** 11 of the 20 configured models (`benchmark_all.py --list`) have no v4 row, **including the shipped default**:
+> - `qwen38-27b-uncensored-mtp-q5` — Qwen3.8 27B Uncensored MTP Q5_K_M, the `./start.sh` default (its non-MTP sibling is row 3; MTP is lossless, but the row itself is unmeasured)
+> - `qwen38-27b-mtp-q5` (Qwen3.8 27B MTP Q5_K_XL), `qwen38-27b-q6` (Qwen3.8 27B Q6_K), `qwen38-27b-mtp-q6` (Qwen3.8 27B MTP Q6_K)
+> - `qwopus-27b-v2-q5` (Qwopus 27B v2 Q5_K_M, the non-MTP sibling of row 6)
+> - `gemma-4-31b-q5` (Gemma 4 31B-it Q5_K_XL — legacy v3.5 row only)
+> - the five community models: `fable-fusion-27b-q5`, `fable-fusion-27b-mtp-q5`, `fable-fusion-27b-q6`, `fable-fusion-27b-mtp-q6` (Fable-Fusion 711 ×4) and `heretic-v2-27b-mtp-q5` (Heretic v2 Q5; the Heretic Q6 twin was pruned 2026-08-20, see [`MODELS.md`](MODELS.md)) — VRAM/speed-measured but not capability-ranked
+>
+> All pending a v4 sweep (`benchmark_all.py --models <slug>`).
 
 > **Suite version.** The results below are the **legacy v3.5 record — 323
 > effective test units** (159 base tasks · 33 variant'd across 6 languages ·

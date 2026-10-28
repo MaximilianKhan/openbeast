@@ -276,9 +276,16 @@ Template 2 when input is a stream of whitespace-separated tokens.
 ## Done criteria for a variant task
 
 - [ ] All variants in the JSON (a–f as appropriate)
-- [ ] Reference impl for each language in `evals/refs/{slug}.{ext}` (durable; was `/tmp/refs/` pre-2026-05-07)
+- [ ] Task mapped in `tests/audit_variants.py`: add
+      `'{task_id}': ('<stem>', '/tmp/eval_<x>')` to `TARGETS`. `<stem>` is the
+      file name the variants write (e.g. `prho` for `137_pollard_rho`), and
+      `/tmp/eval_<x>` is the directory they write it to
+- [ ] Reference impl for each language at `evals/refs/<stem>.{ext}` — named by
+      that TARGETS stem, not the task slug (durable; was `/tmp/refs/` pre-2026-05-07)
 - [ ] All variants pass validation with their reference impls — verified via
-      `python3 tests/audit_variants.py {task_id}`
+      `python3 tests/audit_variants.py {task_id}` exiting 0 with a `[PASS]` line
+      per variant. An id missing from `TARGETS` reports `[MISS]` and exits 1, and
+      so does a missing ref
 - [ ] Forbidden-API lints catch obvious cheats in each language
 - [ ] Per-variant runtime <2s with reference impl (Zig <10s acceptable due to
       compile cost)

@@ -33,6 +33,12 @@ Usage:
   python3 evals/tool_efficiency.py --logs-dir agents/logs/
   python3 evals/tool_efficiency.py --since 2026-05-06
   python3 evals/tool_efficiency.py --model qwen-27b-q5-k-xl   # drill into one model
+
+Models are grouped by the `model` field of each log's `start` event, slugged.
+run_eval passes the served model's name (from /v1/models) since 2026-10-27;
+eval logs written before that all carry the runner's default
+(OPENBEAST_INFERENCE_MODEL or "qwen-27b-q5") whatever was served, so for
+those the per-model split is meaningless — filter them out with --since.
 """
 
 from __future__ import annotations

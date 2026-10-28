@@ -18,7 +18,7 @@ The eval runner:
 
 Usage:
   python evals/run_eval.py                          # run all tasks
-  python evals/run_eval.py --tasks 01,02,03         # run specific tasks
+  python evals/run_eval.py --tasks 01,02,03         # run specific tasks (number, id or base id)
   python evals/run_eval.py --max-iter 5             # override max iterations
   python evals/run_eval.py --jobs 4                 # 4 parallel workers (server must run -np >= 4)
   python evals/run_eval.py --base-url http://...:8080/v1  # different server
@@ -587,6 +587,58 @@ def load_tasks(task_filter: list[str] | None = None) -> list[dict]:
     return tasks
 
 
+class TaskFilterError(ValueError):
+    """A --tasks entry selects no task, or a numeric prefix is ambiguous."""
+
+
+def resolve_task_filter(task_filter: list[str] | None) -> list[str] | None:
+    """Normalise a --tasks list before anything starts.
+
+    Accepts full ids (`145_segment_tree_lazy`), base ids of variant'd tasks
+    (all their variants) and effective variant ids, exactly as load_tasks
+    does — plus a bare numeric prefix (`145`, `21`, `1` for `01_...`), which
+    the docs had always shown but which used to select nothing: run_eval
+    printed "No tasks found." and exited 0, and benchmark_all started and
+    health-waited every model's server before marking it SKIPPED. An entry
+    that matches nothing, or a prefix that matches two tasks, raises
+    TaskFilterError instead."""
+    if task_filter is None:
+        return None
+    base_ids, all_ids = [], set()
+    for path in sorted(Path(TASKS_DIR).glob("*.json")):
+        with open(path) as f:
+            task = json.load(f)
+        base_ids.append(task["id"])
+        all_ids.add(task["id"])
+        for v in task.get("variants") or []:
+            all_ids.add(f"{task['id']}_{v['id']}")
+    out, bad = [], []
+    for raw in task_filter:
+        entry = raw.strip()
+        if not entry:
+            continue
+        if entry in all_ids:
+            out.append(entry)
+            continue
+        hits = []
+        if entry.isdigit():
+            hits = [b for b in base_ids
+                    if b.split("_", 1)[0].isdigit() and int(b.split("_", 1)[0]) == int(entry)]
+        if len(hits) == 1:
+            out.append(hits[0])
+        elif hits:
+            bad.append(f"{entry!r} is ambiguous ({', '.join(hits)})")
+        else:
+            bad.append(f"{entry!r} matches no task")
+    if bad:
+        raise TaskFilterError("--tasks: " + "; ".join(bad)
+                              + " (use full ids, base ids or a task's number; "
+                              "`run_eval.py --list` shows them)")
+    if not out:
+        raise TaskFilterError("--tasks selects no task")
+    return out
+
+
 def diagnostics_flag() -> tuple[bool, str | None, dict]:
     """Derive the push-diagnostics state ONCE per run (docs/
     LANG_AWARENESS_PLAN.md §3.4): the cache-key component and the agent
@@ -689,6 +741,23 @@ def env_era_enabled() -> bool:
     Opt-in because turning it on forks every key into a new era; campaigns
     that pair arms across days should set it."""
     return os.environ.get("OPENBEAST_EVAL_ENV_ERA", "").strip() == "1"
+
+
+def bash_wrapper_flag() -> tuple[str, str | None]:
+    """The model-bash sandbox wrapper (OPENBEAST_BASH_WRAPPER, exported by
+    scripts/lib/conf.sh when openbeast.conf sets BASH_WRAPPER — Sandlock).
+
+    agents/tools.py prefixes every model shell command with it, so a unit
+    run confined is a different experiment from one run bare: the conf file
+    itself calls the wrapper "opt-in until the eval suite is validated green
+    under confinement". Returns (wrapper, cache_component). The component is
+    `sbx-<sha8 of the wrapper string>` when set and None when unset/blank,
+    so every existing key — all banked rows ran unwrapped — stays reachable."""
+    import hashlib
+    wrapper = os.environ.get("OPENBEAST_BASH_WRAPPER", "").strip()
+    if not wrapper:
+        return "", None
+    return wrapper, "sbx-" + hashlib.sha256(wrapper.encode()).hexdigest()[:8]
 
 
 PACKS_DIR = os.path.join(EVALS_DIR, "..", "agents", "packs")
@@ -1117,6 +1186,13 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
         "--max-iter", str(max_iter),
         "--workdir", "/tmp",
     ]
+    # The served model's name, for the runner's log `start` event only
+    # (tool_efficiency.py groups logs by it; without it every eval log said
+    # the runner default). llama-server ignores the request's model id and
+    # it is not in the prompt, so trajectories and verdicts are unaffected.
+    # Underscore key: excluded from the task hash, cache keys unchanged.
+    if task.get("_agent_model"):
+        cmd += ["--model", task["_agent_model"]]
     # Tier-3 awareness pack (docs/LANG_AWARENESS_PLAN.md §5): run_eval
     # annotates units whose language has a pack with `_context_file`
     # (underscore key ⇒ excluded from the task hash; the pack1-<sha8> era
@@ -1463,6 +1539,8 @@ def run_eval(
             raise ValueError("--cache-only requires --model-name (no live server query in cache-only mode)")
         model_name = detect_model(base_url)
     model_slug = slugify(model_name)
+    for t in tasks:
+        t["_agent_model"] = model_name
     gpu_info = capture_gpu_info() if not cache_only else None
     engine_info = capture_inference_engine_info() if not cache_only else None
     server_info = capture_server_config(base_url) if not cache_only else None
@@ -1500,6 +1578,15 @@ def run_eval(
             env_component = (_last[1].get("harness") or {}).get("env_component")
             env_info = (_last[1].get("harness") or {}).get("env")
     env_key = env_component if env_era_enabled() else None
+    # Sandbox wrapper: read ONCE and pinned, so the agents and the key agree.
+    # Its component rides the key's env slot (after env1- when both are on);
+    # absent when unset, so legacy keys are byte-identical.
+    sbx_wrapper, sbx_component = bash_wrapper_flag()
+    if sbx_wrapper:
+        os.environ["OPENBEAST_BASH_WRAPPER"] = sbx_wrapper
+    else:
+        os.environ.pop("OPENBEAST_BASH_WRAPPER", None)
+    key_env = ".".join(c for c in (env_key, sbx_component) if c) or None
     if env_era_enabled() and not env_component:
         raise SystemExit("OPENBEAST_EVAL_ENV_ERA=1 in --cache-only mode needs a live results "
                          "file for this model that recorded its env_component")
@@ -1548,6 +1635,9 @@ def run_eval(
               f"kv {server_info.get('kv_cache_type', '?')} reasoning-budget {rb}")
     if greedy_mode:
         print("Decode: GREEDY (low-churn eval mode — leaderboard-ineligible era)")
+    if sbx_wrapper:
+        print(f"Sandbox: model bash runs under OPENBEAST_BASH_WRAPPER={sbx_wrapper!r} — "
+              f"cache era {sbx_component} (not the validated unconfined configuration)")
     if diag_on:
         print(f"Diag:   push-diagnostics ON ({', '.join(diag_toolchains) or 'no toolchains?'}) — "
               f"cache era {diag_component}")
@@ -1593,6 +1683,8 @@ def run_eval(
                        if esc_on else {}),
                     **({"toolchains": diag_toolchains} if diag_on else {}),
                     **({"rb_component": rb_component} if rb_component else {}),
+                    **({"bash_wrapper": sbx_wrapper, "bash_wrapper_component": sbx_component}
+                       if sbx_wrapper else {}),
                     **({"env_component": env_component, "env": env_info,
                         "env_in_cache_key": bool(env_key)} if env_component else {})},
         "tasks": [],
@@ -1659,7 +1751,7 @@ def run_eval(
                                  diag=diag_component, rb=rb_component,
                                  greedy=greedy_mode,
                                  pack=packs_component if task.get("_context_file") else None,
-                                 env=env_key)
+                                 env=key_env)
             cached = cache.cache_get(ck)
             if cached is not None:
                 cached = dict(cached)
@@ -2008,6 +2100,11 @@ def main():
     task_filter = args.tasks.split(",") if args.tasks else None
     if args.suite and args.tasks:
         print("--suite and --tasks are mutually exclusive.", file=sys.stderr)
+        sys.exit(2)
+    try:
+        task_filter = resolve_task_filter(task_filter)
+    except TaskFilterError as e:
+        print(e, file=sys.stderr)
         sys.exit(2)
     if args.cache_only and args.no_cache:
         print("--cache-only and --no-cache are mutually exclusive.", file=sys.stderr)
