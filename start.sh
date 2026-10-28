@@ -61,12 +61,20 @@ _unknown_command() {
 }
 
 DAEMON=0; STATUS=0; DAEMONIZED=0; RESTART=0; SERVE_SCRIPT=""
-for arg in "$@"; do
+# `stop` and `doctor` hand off to their own scripts, WITH everything after
+# the word: they used to `exec` the moment the loop reached them and pass
+# nothing, so `./start.sh stop --help` ran a bare ./stop.sh — the whole stack
+# down and watchdog recovery disabled — and `./start.sh doctor --quiet`
+# printed the full report. The hand-off now happens after the root guard.
+HANDOFF=""; HANDOFF_ARGS=()
+_args=("$@")
+for (( _ai = 0; _ai < ${#_args[@]}; _ai++ )); do
+  arg="${_args[$_ai]}"
   case "$arg" in
     -d|--daemon)   DAEMON=1 ;;
     --status|status) STATUS=1 ;;
-    doctor)        exec "$SCRIPT_DIR/scripts/doctor.sh" ;;   # health/consistency report
-    stop)          exec "$SCRIPT_DIR/stop.sh" ;;
+    doctor|stop)   # health/consistency report | stop the stack
+      HANDOFF="$arg"; HANDOFF_ARGS=("${_args[@]:$((_ai + 1))}"); break ;;
     restart)       RESTART=1; DAEMON=1 ;;
     --_daemonized) DAEMONIZED=1 ;;   # internal: this process IS the detached supervisor
     -h|--help|help) usage; exit 0 ;;
@@ -94,6 +102,11 @@ if [[ "$(id -u)" -eq 0 ]]; then
   echo "  If sudo was for docker: sudo usermod -aG docker <your-user>, then log out and in." >&2
   exit 1
 fi
+case "$HANDOFF" in
+  stop)   exec "$SCRIPT_DIR/stop.sh" ${HANDOFF_ARGS[@]+"${HANDOFF_ARGS[@]}"} ;;
+  doctor) exec "$SCRIPT_DIR/scripts/doctor.sh" ${HANDOFF_ARGS[@]+"${HANDOFF_ARGS[@]}"} ;;
+esac
+unset _args _ai
 if [[ $RESTART -eq 1 && $STATUS -eq 0 ]]; then
   # stop.sh marks the stop as on purpose; the start below clears the marker.
   OPENBEAST_STOP_REASON="./start.sh restart" "$SCRIPT_DIR/stop.sh" \

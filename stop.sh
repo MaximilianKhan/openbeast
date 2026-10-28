@@ -23,15 +23,28 @@ case "${1:-}" in
     echo "Unknown option: $1 — ./stop.sh takes no arguments (see --help). Nothing was stopped." >&2
     exit 2 ;;
 esac
+# Not as root (R4-06): on a checkout with no openbeast.conf, sourcing conf.sh
+# as root mints a root-owned, mode-600 conf, and from then on every script
+# run as the user — ./stop.sh included — cannot read its own config.
+# `id -u`, not $EUID (read-only in bash, so a test could not stub it).
+if [[ "$(id -u)" -eq 0 ]]; then
+  echo "Error: do not run ./stop.sh as root (or with sudo) — OpenBeast lives in your user account." >&2
+  echo "  A root run leaves a root-owned openbeast.conf that you then cannot read. Run it as your normal user." >&2
+  exit 1
+fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RUN_DIR="$SCRIPT_DIR/.run"
 # Resolve user config before `docker compose down` below — compose
 # interpolates docker-compose.yml (including the required
 # OPENBEAST_SEARXNG_SECRET) for EVERY subcommand, down included.
 REPO_DIR="$SCRIPT_DIR"
-source "$SCRIPT_DIR/scripts/lib/conf.sh"
+# An unreadable conf (conf.sh says why and how to fix it) must not stop the
+# stop: the kills below need no config, and compose down falls back to a
+# warning without its secret.
+source "$SCRIPT_DIR/scripts/lib/conf.sh" \
+  || echo "Warning: continuing WITHOUT openbeast.conf — stopping by pidfile and path only." >&2
 source "$SCRIPT_DIR/scripts/lib/extensions.sh"
-source "$SCRIPT_DIR/scripts/lib/proc.sh"   # _ob_ere, ob_pid_matches
+source "$SCRIPT_DIR/scripts/lib/proc.sh"   # ob_py_ere, ob_bin_ere, ob_pid_matches
 source "$SCRIPT_DIR/scripts/lib/backend.sh" # ob_inference_managed, ob_backend_label
 
 # Record that this stop is ON PURPOSE, before anything is signalled (so a

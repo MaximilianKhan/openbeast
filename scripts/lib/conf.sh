@@ -62,6 +62,22 @@
 
 : "${REPO_DIR:?REPO_DIR must be set before sourcing lib/conf.sh}"
 
+# An openbeast.conf this account cannot read (a `sudo ./scripts/update.sh` or
+# `sudo ./stop.sh` on a checkout with no conf minted it root-owned, mode 600)
+# used to abort the sourcing script with ~70 lines of "grep: Permission
+# denied" and then "conf.sh: line N: …: Permission denied" from the
+# SEARXNG_SECRET append — ./start.sh died without a diagnosis and ./stop.sh
+# could not stop the stack. Say what is wrong and how to fix it, once, and
+# return non-zero; a caller that must carry on without the config (stop.sh)
+# says so at its `source` line.
+if [[ -e "$REPO_DIR/openbeast.conf" && ! -r "$REPO_DIR/openbeast.conf" ]]; then
+  _ob_owner="$(stat -c %U "$REPO_DIR/openbeast.conf" 2>/dev/null || stat -f %Su "$REPO_DIR/openbeast.conf" 2>/dev/null || echo '?')"
+  echo "Error: $REPO_DIR/openbeast.conf is not readable by $(id -un) (owned by $_ob_owner)." >&2
+  echo "  Usually a script was run with sudo. Fix: sudo chown $(id -un) '$REPO_DIR/openbeast.conf'" >&2
+  unset _ob_owner
+  return 1 2>/dev/null || exit 1
+fi
+
 # Read one KEY= value from openbeast.conf. Ignores comments and surrounding
 # whitespace/quotes; last assignment wins. Prints nothing when absent.
 _ob_conf_value() {
