@@ -32,15 +32,26 @@ Run AFTER the benchmark sweep finishes (it needs the GPU exclusively):
     python3 evals/profile_mtp.py --models qwopus-27b-v2-mtp-q5
 """
 from __future__ import annotations
-import argparse, json, os, subprocess, sys, time, urllib.request
+import argparse, json, os, signal, subprocess, sys, time, urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 SERVE = REPO / "scripts" / "serve.sh"
 WEIGHTS = os.environ.get("OPENBEAST_WEIGHTS_DIR") or str(REPO / "weights")
 RESULTS = REPO / "evals" / "results"
-HEALTH = "http://127.0.0.1:8080/health"
-CHAT = "http://127.0.0.1:8080/v1/chat/completions"
+PORT = 8080
+HEALTH = f"http://127.0.0.1:{PORT}/health"
+CHAT = f"http://127.0.0.1:{PORT}/v1/chat/completions"
+
+# Server ownership and the GPU lease are benchmark_all's: the same "target
+# by PID" stop (never `pkill -f llama-server`, which also killed the stack's
+# model, a sibling worktree's measurement server, the instinct scorer on
+# :8082 and any `tail -f ...llama-server.log`) and the same lease rules.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import benchmark_all as _ba  # noqa: E402
+
+GpuLeaseHeld = _ba.GpuLeaseHeld
+PortBusy = _ba.PortBusy
 
 # Leaderboard configs — the EXACT flags that produced the published v4
 # scores. The profiler pins the lossy/quality knobs (context, KV quant,
@@ -77,20 +88,25 @@ P_MIN_GRID = [0.0, 0.1, 0.25, 0.5]
 
 
 def stop_server():
-    subprocess.run(["pkill", "-TERM", "-f", "llama-server"], check=False)
-    for _ in range(20):
-        if subprocess.run(["pgrep", "-x", "llama-server"],
-                          capture_output=True).returncode != 0:
-            break
-        time.sleep(0.5)
-    subprocess.run(["pkill", "-KILL", "-f", "llama-server"], check=False)
-    time.sleep(2)
+    """Stop the server THIS profiler started (its process group), nothing
+    else. A no-op when we started none."""
+    _ba.stop_llama_server()
 
 
 def start_server(weight, context, n_max, p_min, n_min=0):
     path = os.path.join(WEIGHTS, weight)
     if not os.path.exists(path):
         raise FileNotFoundError(path)
+    # Asked before every load: a lease taken mid-profile (acquire --force)
+    # must not get a second model loaded into its window.
+    _ba.require_gpu_lease()
+    # Our previous server is stopped by now, so a bound port is someone
+    # else's (the stack, another worktree). Refuse — never kill it, and
+    # never measure it as ours.
+    if _ba._port_in_use(PORT):
+        raise PortBusy(f"port {PORT} is already serving and this profiler did not "
+                       f"start it. Stop it by PID (or ./stop.sh for the stack), then "
+                       f"rerun.\n{_ba._foreign_servers()}")
     args = [str(SERVE), "-m", path, "-c", str(context), "-np", "1",
             "-ctk", "q4_0", "-ctv", "q4_0",
             "--spec-type", "draft-mtp",
@@ -98,10 +114,30 @@ def start_server(weight, context, n_max, p_min, n_min=0):
             "--spec-draft-p-min", str(p_min)]
     if n_min:
         args += ["--spec-draft-n-min", str(n_min)]
-    log = open(RESULTS / "mtp_profile_server.log", "a")
-    proc = subprocess.Popen(args, stdout=log, stderr=subprocess.STDOUT,
-                            start_new_session=True)
+    with open(RESULTS / "mtp_profile_server.log", "a") as log:
+        proc = subprocess.Popen(args, stdout=log, stderr=subprocess.STDOUT,
+                                start_new_session=True)
+    _ba._own_server["proc"] = proc
     return proc
+
+
+def ensure_gpu_lease(argv, exec_fn=os.execvpe):
+    """Refuse someone else's lease; run on under ours; when the card is
+    FREE, re-exec this profiler under `gpu-lease.sh run` so the whole sweep
+    holds the card (benchmark_all.ensure_gpu_lease, for this script)."""
+    rc = _ba.require_gpu_lease()
+    if rc == _ba.LEASE_OURS:
+        return
+    env = _ba._lease_env()
+    if env.get(_ba._REEXEC_MARK):
+        raise GpuLeaseHeld("re-exec under `gpu-lease.sh run` did not take the lease "
+                           "(check still says FREE) — refusing to run unleased.")
+    env[_ba._REEXEC_MARK] = "1"
+    label = ("profile_mtp " + " ".join(argv)).strip()
+    print(f"GPU lease is free — taking it for this profile: {label}")
+    sys.stdout.flush()
+    exec_fn("bash", ["bash", _ba.GPU_LEASE_SH, "run", label, "--",
+                     sys.executable, os.path.abspath(__file__), *argv], env)
 
 
 def wait_health(proc, timeout=300):
@@ -174,6 +210,8 @@ def run_config(m, weight, context, n_max, p_min):
             res = measure()
         finally:
             stop_server()
+    except (GpuLeaseHeld, PortBusy):
+        raise                       # not a bad config: stop the whole run
     except Exception as e:
         # A single bad config (e.g. n16 draft buffers OOM at a tight context)
         # must NOT kill the whole run — record it as skipped and continue.
@@ -222,6 +260,19 @@ def main():
     if active == "active":
         sys.exit("REFUSING: openbeast-mtp-sweep is still running — it owns the "
                  "GPU. Wait for it to finish, then re-run this profiler.")
+    try:
+        ensure_gpu_lease(sys.argv[1:])
+    except GpuLeaseHeld as e:
+        sys.exit(f"REFUSING: {e}")
+    if _ba._port_in_use(PORT):
+        sys.exit(f"REFUSING: port {PORT} is already serving (the stack?). Stop it by "
+                 f"PID or ./stop.sh, then rerun.\n{_ba._foreign_servers()}")
+
+    def _on_signal(signum, _frame):
+        stop_server()                       # ours only; it runs in its own session
+        os._exit(128 + signum)
+    signal.signal(signal.SIGINT, _on_signal)
+    signal.signal(signal.SIGTERM, _on_signal)
 
     RESULTS.mkdir(exist_ok=True)
     slugs = args.models.split(",") if args.models else list(MODELS)
@@ -235,6 +286,9 @@ def main():
             print(f"unknown model {slug}", file=sys.stderr); continue
         try:
             out.append(profile_model(slug, MODELS[slug]))
+        except (GpuLeaseHeld, PortBusy) as e:
+            stop_server()
+            sys.exit(f"REFUSING to continue: {e}")
         except Exception as e:
             print(f"  {slug}: profiling aborted ({type(e).__name__}: {e})", file=sys.stderr)
         # Persist after EACH model so a late failure never loses earlier data.

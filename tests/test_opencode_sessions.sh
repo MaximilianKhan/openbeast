@@ -91,8 +91,11 @@ run() {   # run <args…> — output in $_O, exit code in $_RC
 }
 
 echo "opencode-sessions.sh — Bash 3.2 (stock macOS):"
-if ! grep -v '^[[:space:]]*#' "$SCRIPT" | grep -qE '(^|[^[:alnum:]_])(mapfile|readarray)([^[:alnum:]_]|$)|declare[[:space:]]+-A' \
-   && head -1 "$SCRIPT" | grep -q '/usr/bin/env bash'; then
+# Captured, then grepped: `! a | grep -q` under pipefail can pass vacuously
+# (grep -q exits on the match, the writer dies of SIGPIPE, `!` flips 141).
+_CODE="$(grep -v '^[[:space:]]*#' "$SCRIPT")"
+if ! grep -qE '(^|[^[:alnum:]_])(mapfile|readarray)([^[:alnum:]_]|$)|declare[[:space:]]+-A' <<< "$_CODE" \
+   && [[ "$(head -1 "$SCRIPT")" == *'/usr/bin/env bash'* ]]; then
   pass "no bash-4-only constructs, env-bash shebang"
 else
   fail "bash-4-only construct or non-env shebang (breaks stock macOS)"

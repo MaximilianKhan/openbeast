@@ -952,6 +952,10 @@ if [[ -n "${WIRING_BASELINE_REF:-}" ]]; then
       /Remote skills/ { skip = 1; next }
       skip && /^[[:space:]]*$/ { skip = 0; next }
       skip && /✓ remote skills: / { next }
+      # Tailscale minimum-version row (review 2026-10-27, R10-11): new since
+      # the baseline and unrelated to hydra/instinct. Dropped in all three
+      # forms (pass, warn, version unknown).
+      /tailscale version unknown/ || /TS-2026-007/ || /≥ 1\.98\.9/ { next }
       { print }' | sed -E 's/^doctor: [0-9]+ ok,/doctor: <N> ok,/'; }
   # Since UX-17 doctor folds the per-service rows of a stack that is NOT
   # RUNNING into one line. This comparison is about the rows, so both boxes

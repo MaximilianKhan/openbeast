@@ -23,8 +23,9 @@ copy `openbeast.conf.example` to create it). Each key resolves as
 **env var → `openbeast.conf` → default** via `scripts/lib/conf.sh`
 (weights use their own resolver, `scripts/lib/weights.sh`). `conf.sh` must
 be sourced before any `docker compose up` so containers get the real values.
-The env form is always the `OPENBEAST_`-prefixed name: a plain `KEY=value`
-exported in your shell is not an override.
+The env form is the `OPENBEAST_`-prefixed name: a plain `KEY=value`
+exported in your shell is not an override (except `BEAST_ASSIST` and
+`BEAST_ESCALATE`, which are read under their bare names).
 
 **The file is linted every time it is read.** `conf.sh` warns — once per
 command, never fatally — about a key nothing reads, with the nearest real
@@ -54,6 +55,7 @@ conf key), so none of them creates or changes the file.
 | `INFERENCE_BACKEND` | `OPENBEAST_INFERENCE_BACKEND` | `llama` | Which OpenAI-compatible server the stack talks to: `llama` (llama-server, today's behaviour byte for byte) \| `vllm` \| `tensorfold`. Picks the readiness rule (`scripts/lib/backend.sh`: llama = 200 `{"status":"ok"}`, a 503 `Loading model` is not ready; vLLM = any 200, its body is empty; TensorFold = 200 `{"ok":true}`) and the `/api/slot` capacity source. Any other value warns and falls back to `llama`. See `docs/DGX_SPARK_PLAN.md` |
 | `INFERENCE_URL` | `OPENBEAST_INFERENCE_URL` | `http://<probe host>:8080` | Base URL of that server, without `/v1` (a pasted `/v1` is stripped). Feeds Open WebUI's model connection (`OPENBEAST_MODEL_URL`, unless `AGENT_ROUTER=true`), the router's and beast-gate's upstream, the health probes, and — unless `AGENT_INFERENCE_URL` is set — spawned agents. A key the server demands goes in `LLAMA_API_KEY` |
 | `INFERENCE_MANAGED` | `OPENBEAST_INFERENCE_MANAGED` | `true` for a local llama, `false` for vLLM / TensorFold and for a llama `INFERENCE_URL` on another machine | Whether this stack launches, supervises, rolls back and kills the server. `false`: `start.sh` waits up to `OPENBEAST_LLAMA_LOAD_GRACE` s for `INFERENCE_URL` to be ready and brings up everything else either way (a server still down gets a "NOT ready at <INFERENCE_URL>" warning; `-d` reports "inference NOT ready" and exits 0); `healthcheck.sh --restart`, the watchdog and `stop.sh` report on it but never touch it; fast boot, rollback and the weight-registry rows say "not applicable". Always `false` for vLLM / TensorFold (`true` warns) |
+| `LLAMA_LOAD_GRACE` | `OPENBEAST_LLAMA_LOAD_GRACE` | `900` | Seconds a model may take to load. The one deadline for `start.sh` (a managed load still unfinished is stopped and counts as failed; an unmanaged `INFERENCE_URL` gets a warning) and for the watchdog, which treats a `Loading model` server as loading, not down, until it passes. A non-integer is dropped with a warning. A trailing `# comment` is allowed |
 | `INFERENCE_SLOTS` | `OPENBEAST_INFERENCE_SLOTS` | empty | Concurrency `/api/slot` reports as `slots.total` when the server exposes none (vLLM `--max-num-seqs`, TensorFold `--parallel`). Positive integer; anything else warns and is ignored |
 | `INFERENCE_MODEL` | `OPENBEAST_INFERENCE_MODEL` | empty | The served model id, for `vllm` / `tensorfold` only (llama-server ignores ids, so it is not exported there): `conf.sh` exports it as `OPENBEAST_INFERENCE_MODEL`, which `agents/runner.py` sends as its default `model` (vLLM 404s any other id unless started with `VLLM_SKIP_MODEL_NAME_VALIDATION=1`). A trailing ` # comment` and one layer of quotes are dropped; the id may contain spaces. Written by `scripts/backends/use-model.sh` after `conformance.sh` passes; `doctor.sh` warns when it is unset or not what the server lists. See `docs/DGX_SPARK_PLAN.md` §14 |
 | `EXTENSIONS` | `OPENBEAST_EXTENSIONS` | empty (core only) | Space-separated names of enabled optional services under `extensions/` — `start.sh` merges their compose fragments / launches their processes. Manage with `scripts/ext.sh` |
@@ -83,6 +85,7 @@ conf key), so none of them creates or changes the file.
 | `WEBUI_AUTH` | `OPENBEAST_WEBUI_AUTH` | `false` | Open WebUI login wall. Default off for local single-user installs; `scripts/setup-tailscale.sh` flips it `true` when the WebUI goes tailnet-wide |
 | `ALLOW_OPEN_WEBUI` | `OPENBEAST_ALLOW_OPEN_WEBUI` | `false` | Persisted acknowledgement of publishing the WebUI on the tailnet (`:443`) with `WEBUI_AUTH` off. Written by `scripts/setup-tailscale.sh --i-accept-open-webui`; with it set, re-runs keep publishing and `doctor` WARNs about the open `:443` instead of FAILing. Delete the line to take it back |
 | `ALLOW_OPEN_INFERENCE` | `OPENBEAST_ALLOW_OPEN_INFERENCE` | `false` | Persisted acknowledgement of publishing llama-server on the tailnet (`:8443`) with no beast-gate and no `LLAMA_API_KEY`. Written by `scripts/setup-tailscale.sh --i-accept-open-inference`. Without it that script leaves `:8443` unpublished on such a rig (and takes an earlier raw mount down) and `doctor` FAILs a keyless `:8443`; with it, re-runs keep publishing and `doctor` WARNs. Delete the line to take it back |
+| `WEBUI_WEB_SEARCH` | `OPENBEAST_WEBUI_WEB_SEARCH` | `false` | Open WebUI's built-in composer Web Search. Off by default; `true` wires it to the local SearXNG. It is Open WebUI's own retrieval path, so it bypasses the `fetch` SSRF guard and the tool server's RBAC and audit trail. The `web_search` tool works either way. See `docs/TOOLS.md` |
 | `WEBUI_BACKGROUND_TASKS` | `OPENBEAST_WEBUI_BACKGROUND_TASKS` | `false` | After every answer Open WebUI asks the model for chat tags and follow-up suggestions; on a one-slot rig those generations take the slot from the next turn and evict its cached prompt. Default: `configure-webui.sh` switches both **off** at every start (chat titles stay on). `true` leaves WebUI's own switches (Admin Settings → Interface) alone — set it, restart, then re-enable them there |
 | `PROMPT_CACHE_RAM_MB` | `OPENBEAST_PROMPT_CACHE_RAM_MB` | *(unset = auto)* | Host RAM llama-server may use to park the state of conversations that are not on a slot (`--cache-ram`, MiB). Unset/`auto`: 35% of this machine's RAM, at most 48 GiB, and nothing passed when that is not above llama-server's own 8192. `0`: llama-server's default. `<n>`: exactly n MiB (`-1` = no limit). A serve script's own `--cache-ram` wins; a llama-server build without the flag is launched without it. Applies to every launch through `serve.sh`, evals included |
 | `LOGROTATE_AUTOINSTALL` | `OPENBEAST_LOGROTATE_AUTOINSTALL` | `true` | `start.sh` installs `openbeast-logrotate.timer` (daily systemd `--user` timer, no sudo) when it is missing and a user manager is reachable. `false` opts out; never fatal |
@@ -179,9 +182,19 @@ URL.
 **beast-artifact's environment-only knobs:** `OPENBEAST_ARTIFACT_LOCK_TIMEOUT`
 (10 s; how long a publish waits for a page's lock) and
 `OPENBEAST_ARTIFACT_ALLOWED_HOSTS` (extra `Host` values for the DNS-rebinding
-guard). Everything a spawned session inherits from beast-chat includes
-`OPENBEAST_SESSION_ID`, which `artifact.sh publish` and `publish_artifact`
+guard), and, as for beast-chat, `OPENBEAST_ARTIFACT_SOCKET` (unset; a path
+adds a 0600 Unix listener in a 0700 directory) with
+`OPENBEAST_ARTIFACT_LOGIN_FROM` (`loopback`; `unix` makes that socket the
+only place a `Tailscale-User-Login` header counts; `setup-tailscale.sh
+--publish-artifact` then mounts `:8446` at `unix:<path>`). See
+[`BEAST_ARTIFACT.md`](BEAST_ARTIFACT.md). Everything a spawned session
+inherits from beast-chat includes `OPENBEAST_SESSION_ID`, which `artifact.sh publish` and `publish_artifact`
 stamp on the page as its source session.
+
+**`scripts/update.sh`'s environment-only knob:** `OPENBEAST_OPENWEBUI_TAG`
+(default `v0.12.3`, the `OPENWEBUI_TAG` line at the top of the script) is
+the Open WebUI release `--images` pulls and re-pins by digest. It is a
+release tag, never the moving `:main`. See [`UPDATING.md`](UPDATING.md).
 
 ### DGX Spark settings (`scripts/backends/`, not `openbeast.conf`)
 
@@ -460,6 +473,7 @@ or pulling from a different mirror.
 
 ```bash
 git clone https://github.com/ggml-org/llama.cpp.git
+git -C llama.cpp checkout "$(sed -n 's/^LLAMA_CPP_REF=//p' scripts/llama.cpp.ref)"   # the pinned commit, not HEAD
 cd llama.cpp
 export PATH=/opt/cuda/bin:$PATH
 cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=120
@@ -836,7 +850,11 @@ as `--status`), `stop`, `restart` (`stop.sh`, then a `-d` start), `doctor`
 and `help`. Any other word that is not a serve script is refused with exit 2
 and the nearest command ("did you mean: ./start.sh status"). `./stop.sh
 --help` prints usage and touches nothing; an unknown option to it exits 2.
-Neither script runs as root.
+Arguments after `stop` or `doctor` are passed to that script
+(`./start.sh stop --help`). `stop.sh` waits up to `OPENBEAST_STOP_WAIT`
+seconds (default 30) for every llama-server it signalled to exit, then
+sends SIGKILL. None of `start.sh`, `stop.sh`, `scripts/update.sh` or
+`scripts/ext.sh` runs as root.
 
 Before launching anything `start.sh` checks that its ports are free (the
 model port, 3001, 3000, 8888, plus the router's and the gate's when they are
@@ -1062,9 +1080,10 @@ python3 evals/benchmark_all.py --tasks 21,22,23      # subset of tasks
 python3 evals/benchmark_all.py --list                # show configured models
 ```
 
-Total runtime: `benchmark_all.py --list` registers 20 of the 23 serve
-scripts (the two vision configs and the 177B Flash-Next are not registered
-for sweeps), and `evals/leaderboard.json` holds 12 rows on the reference
+Total runtime: `benchmark_all.py --list` registers 20 of the 25 model serve
+scripts (`BENCH_EXCLUDED` in `evals/benchmark_all.py` names the other five
+and why: the two vision configs, the 177B Flash-Next, and the
+instinct-scorer and Open-Jev services, which are not chat models), and `evals/leaderboard.json` holds 12 rows on the reference
 host — 9 on v4, 3 still on legacy v3.5, two of those for models pruned on
 2026-08-20 and kept for history; the leaderboard file is the live answer. Individual v4 runs took ~4–8 h
 each (see the Wall column in `docs/RESULTS.md`); a full sweep — budget well
@@ -1088,7 +1107,10 @@ See `evals/scoring.py`:
 
 ```
 problem_solving  = % of base problems solved in ≥1 language (the scarce skill)
-language_breadth = % of language ports passed AMONG solved problems
+language_breadth = solved weight carried across its languages; a
+                   single-language task counts as fully carried
+                   (~78.5% of v4 weight, so real port breadth is ≈ 0.054
+                   of SCORE; see evals/README.md "What LANG measures")
 
 SCORE = capability   = 0.75 × problem_solving + 0.25 × language_breadth
                        ← the ranking key

@@ -5,7 +5,7 @@
 
 **Your own private AI workstation: frontier-class models, a full agent tool
 suite, and secure access from anywhere, running entirely on your hardware. No
-cloud, no API keys, nothing ever leaving hardware you own.**
+cloud model, no API keys: inference never leaves hardware you own.**
 
 Most local-model tools stop at "chat with a model." OpenBeast is the whole
 stack, and it is the only one that **measures** what it ships: an

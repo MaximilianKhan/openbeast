@@ -314,7 +314,13 @@ if d is None:
     sys.exit(f"hydra.sh conformance: no deployment {os.environ['HC_DEP']!r} in {cfg.source}")
 n = cfg.nodes[d.node]
 backend = {"openai": "vllm"}.get(n.engine, n.engine)
-print("\x1f".join([n.url, backend, d.upstream, n.key_env or "", n.key_file or ""]))
+# A relative key_file is repo-relative, exactly as validation and hydra read
+# it; conformance.py would otherwise resolve it against the caller's CWD.
+kf = ""
+if n.key_file:
+    q = Path(os.path.expanduser(n.key_file))
+    kf = str(q if q.is_absolute() else core.REPO / q)
+print("\x1f".join([n.url, backend, d.upstream, n.key_env or "", kf]))
 PYEOF
 )" || exit 1
   local url backend model key_env key_file

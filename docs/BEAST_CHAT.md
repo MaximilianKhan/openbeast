@@ -348,8 +348,14 @@ Unix socket and honour the login header **only** there:
 `OPENBEAST_CHAT_SOCKET=/path/to/.run/chat.sock` (created 0600 in a 0700
 directory; `tailscaled` runs as root, so it can still connect) plus
 `OPENBEAST_CHAT_LOGIN_FROM=unix`, and point `tailscale serve` at
-`unix:/path/to/.run/chat.sock`. TCP loopback then needs the locality token or
-a device key like any other caller. The default stays `loopback`.
+`unix:/path/to/.run/chat.sock` — `./scripts/setup-tailscale.sh --publish-chat`
+does that itself when `OPENBEAST_CHAT_SOCKET` is in its environment (run it
+with the environment `start.sh` had; it warns if it sees `LOGIN_FROM=unix`
+without a socket, since a TCP mount would then 404 every tailnet reader).
+TCP loopback then needs the locality token or a device key like any other
+caller. The default stays `loopback`. beast-artifact has the same option
+(`OPENBEAST_ARTIFACT_SOCKET` + `OPENBEAST_ARTIFACT_LOGIN_FROM=unix`,
+docs/BEAST_ARTIFACT.md).
 
 **Every write failure is the same 404.** No key, an unknown key, a revoked
 key, a key without the `chat` scope: one answer, and it is the answer an

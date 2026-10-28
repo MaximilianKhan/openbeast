@@ -77,6 +77,18 @@ fi
 if [[ -f "$REPO_DIR/system-prompt-tools.md" ]]; then
   SYSTEM_PROMPT="$SYSTEM_PROMPT"$'\n\n'"$(cat "$REPO_DIR/system-prompt-tools.md")"
 fi
+# WebUI-only addendum (R9-14). WebUI stores ONE system prompt per model, so a
+# `user`-role (guest/family) account gets the same text as the admin — and
+# that text promises bash, agents and skills, while RBAC resolves only
+# web_search + fetch for that account (section 1 below). This paragraph is
+# appended to the WebUI copy only: system-prompt*.md are eval-era inputs
+# and stay untouched. A true per-tier prompt needs a guest-scoped model
+# preset; until then the model is told its tool list is the ground truth.
+if [[ -n "$SYSTEM_PROMPT" ]]; then
+  SYSTEM_PROMPT="$SYSTEM_PROMPT"$'\n\n'"## Which tools you actually have here
+
+This chat runs in Open WebUI, where each account gets the tools its role allows. Administrators get the full set described above. Other accounts (guests, family) get only \`web_search\` and \`fetch\`. The tools attached to THIS conversation are the ground truth: if \`bash\`, file tools, agents or skills are not in your tool list, you do not have them here — say so plainly and do what you can with the tools you do have, rather than promising or attempting an action you cannot take."
+fi
 
 [[ "$MODE" == "full" ]] && echo "Configuring Open WebUI..."
 
@@ -302,7 +314,7 @@ fi
 
 # --- 1. Configure MCPO tool servers with RBAC (two connections, same MCPO) ---
 # See docs/RBAC_PLAN.md. Two connections back the one MCPO instance:
-#   id=1 "privileged"  filter !web_search,!fetch (15 OS-touching tools),
+#   id=1 "privileged"  filter !web_search,!fetch (16 OS-touching tools),
 #                      admin-only (empty access_grants → non-admins denied;
 #                      admins bypass)
 #   id=2 "web"         filter web_search,fetch — public (everyone incl.
@@ -367,20 +379,78 @@ else
 fi
 fi   # TOKEN_OK
 
-# --- 1b. Wire Open WebUI's built-in Web Search to the local SearXNG ---
+# --- 1a. Community sharing OFF (GHSA-vpq8-f445-hcq7, CVSS 8.1) ---
+# With community sharing on — the image default — the pinned Open WebUI
+# (< 0.11.4) lets any website steal a signed-in user's session token.
+# docker-compose's ENABLE_COMMUNITY_SHARING=false only seeds a FIRST boot (it
+# is a PersistentConfig), so an existing install keeps whatever its DB says.
+# Asserted on every run through the admin config API: GET the whole config,
+# flip only this one field, POST it all back (the endpoint replaces the
+# config, so every other field must be sent as it was). Idempotent: nothing
+# is POSTed when it is already off.
+if [[ "$TOKEN_OK" != "1" ]]; then
+  echo "  Community sharing: not checked (no admin token). Turn it OFF by hand:" >&2
+  echo "    Admin Settings → General → Enable Community Sharing (GHSA-vpq8-f445-hcq7)." >&2
+else
+  _cs_body="$(ob_curl_hdr "$AUTH" -s -m 10 "$WEBUI_URL/api/v1/auths/admin/config" 2>/dev/null \
+    | python3 -c '
+import json, sys
+try:
+    cfg = json.load(sys.stdin)
+except Exception:
+    sys.exit(2)                       # not JSON: unknown, say so
+if not isinstance(cfg, dict) or "ENABLE_COMMUNITY_SHARING" not in cfg:
+    sys.exit(2)
+if cfg["ENABLE_COMMUNITY_SHARING"] is False:
+    sys.exit(0)                       # already off: print nothing
+cfg["ENABLE_COMMUNITY_SHARING"] = False
+print(json.dumps(cfg))
+' 2>/dev/null)" && _cs_rc=0 || _cs_rc=$?
+  if [[ $_cs_rc -ne 0 ]]; then
+    echo "  Community sharing: could not read the admin config — check it is OFF in" >&2
+    echo "    Admin Settings → General (GHSA-vpq8-f445-hcq7)." >&2
+  elif [[ -z "$_cs_body" ]]; then
+    echo "  Community sharing: already off."
+  elif printf '%s' "$_cs_body" | ob_curl_hdr "$AUTH" -s -m 10 -f -H "Content-Type: application/json" \
+         "$WEBUI_URL/api/v1/auths/admin/config" -X POST -d @- >/dev/null 2>&1; then
+    echo "  Community sharing: turned OFF (GHSA-vpq8-f445-hcq7 — a website could steal a session token)."
+  else
+    echo "  Community sharing: could NOT be turned off — do it in Admin Settings → General" >&2
+    echo "    (GHSA-vpq8-f445-hcq7)." >&2
+  fi
+fi
+
+# --- 1b. Open WebUI's built-in Web Search: OFF unless WEBUI_WEB_SEARCH=true ---
 # Distinct from the `web_search` TOOL configured above: this is the "Web
 # Search" toggle in the chat composer, which Open WebUI implements itself
-# (retrieval + citations) instead of via a tool call. It ships disabled with no
-# engine set, so the toggle failed on every OpenBeast install even though we
-# run SearXNG right there. Requires SearXNG to serve format=json — ours does
-# (searxng/settings.yml `formats:`).
+# (retrieval + its own page loader + citations) instead of via a tool call.
+#
+# OFF BY DEFAULT (review 2026-10-27, R8-05). That path is Open WebUI's own
+# fetcher, not OpenBeast's: it bypasses the `fetch` tool's SSRF guard
+# (agents/tools.py _vet_addr) and the :3001 tool server's per-tier RBAC and
+# audit trail — and it is open to every account, guests included. The model
+# already searches through the `web_search` tool (same SearXNG), so nothing
+# is lost by default. An earlier version switched it ON for any install with
+# no engine chosen; this one switches it back OFF on such installs.
+#
+# Like 1c, the setting is asserted on EVERY run and the opt-in lives in
+# openbeast.conf, not the UI: WEBUI_WEB_SEARCH=true wires the toggle to the
+# local SearXNG (an engine the operator already chose is kept) and keeps it
+# on; false (the default) keeps it off and leaves engine/URL untouched.
 #
 # Written straight to the DB rather than through the API because the API needs
 # an admin token, and that sign-in fails the moment the operator changes their
 # WebUI password from the one in openbeast.conf — which is the normal case.
+# SearXNG serves format=json for it (searxng/settings.yml `formats:`).
+WEBUI_WEB_SEARCH="$(_ob_bool "${OPENBEAST_WEBUI_WEB_SEARCH:-$(_ob_conf_value WEBUI_WEB_SEARCH || true)}" false WEBUI_WEB_SEARCH)"
 SEARXNG_QUERY_URL="${SEARXNG_URL:-http://$_OB_LOCAL_HOST:8888}/search?q=<query>"
-echo "  Wiring built-in Web Search → SearXNG ..."
-if docker exec -e SXURL="$SEARXNG_QUERY_URL" open-webui python3 -c "
+if [[ "$WEBUI_WEB_SEARCH" == "true" ]]; then
+  echo "  Built-in Web Search: ON (WEBUI_WEB_SEARCH=true) → SearXNG ..."
+else
+  echo "  Built-in Web Search: OFF (bypasses the fetch SSRF guard + tool RBAC/audit;"
+  echo "    the model still searches via its web_search tool. Opt in: WEBUI_WEB_SEARCH=true)"
+fi
+if docker exec -e SXURL="$SEARXNG_QUERY_URL" -e WANT_WS="$WEBUI_WEB_SEARCH" open-webui python3 -c "
 import sqlite3, json, os, sys, time
 db = sqlite3.connect('/app/backend/data/webui.db')
 
@@ -396,22 +466,25 @@ def put(k, v):
 
 want = {}
 
-# CONFIGURE ONCE, THEN LEAVE IT ALONE. An earlier version asserted these values
-# on every run, which meant an admin who turned Web Search off in the UI had it
-# switched back on at the next start — forever, with no opt-out. We only fill in
-# an engine that was never chosen; after that the operator owns the setting.
-if not (get('web.search.engine') or '').strip():
-    want['web.search.engine'] = 'searxng'
-    want['web.search.searxng_query_url'] = os.environ['SXURL']
+if os.environ.get('WANT_WS') == 'true':
+    # Fill in an engine only if none was ever chosen; the operator's own
+    # engine choice is kept.
+    if not (get('web.search.engine') or '').strip():
+        want['web.search.engine'] = 'searxng'
+        want['web.search.searxng_query_url'] = os.environ['SXURL']
     want['web.search.enable'] = True
+else:
+    want['web.search.enable'] = False
 
-# Same restraint for Ollama, and only when the seeded default is the ONLY entry.
-# Substring-matching the whole JSON list disabled real Ollama servers whenever a
-# user had added one alongside the stale default, which is the common case.
+# Ollama: only when the seeded default is the ONLY entry. Substring-matching
+# the whole JSON list disabled real Ollama servers whenever a user had added
+# one alongside the stale default, which is the common case.
 urls = get('ollama.base_urls') or []
 if urls and all('host.docker.internal' in u for u in urls) and get('ollama.enable') is True:
     want['ollama.enable'] = False
 
+# A missing web.search.enable row is written too (False), pinning it against
+# an upstream default or an env seed (ENABLE_WEB_SEARCH) that turns it on.
 changed = [k for k, v in want.items() if get(k) != v]
 for k in changed:
     put(k, want[k])
@@ -419,12 +492,16 @@ if changed:
     db.commit()
     sys.exit(3)   # signal 'changed'
 " 2>/dev/null; then
-  echo "    already configured (leaving operator settings alone)"
+  echo "    already as configured"
 elif [[ $? -eq 3 ]]; then
   # No restart: this image reads config straight from the DB per request
   # (models/config.py — "Reads are direct DB lookups"), so a container bounce
   # would only kill in-flight streams for nothing.
-  echo "    web search wired → $SEARXNG_QUERY_URL"
+  if [[ "$WEBUI_WEB_SEARCH" == "true" ]]; then
+    echo "    web search on → $SEARXNG_QUERY_URL"
+  else
+    echo "    web search switched off"
+  fi
 else
   echo "    (could not configure web search — WebUI may not be up yet)"
 fi
@@ -523,7 +600,8 @@ for m in json.load(sys.stdin).get('data', []):
 done
 
 if [[ -z "$MODELS" ]]; then
-  echo "  No models detected yet. Re-run ./configure-webui.sh after first chat."
+  echo "  No models detected yet (is llama-server still loading?). Re-run"
+  echo "  ./scripts/configure-webui.sh once \`curl :8080/v1/models\` lists one."
 else
   # Write system prompt to a temp file for the DB update script to read
   PROMPT_FILE=""

@@ -107,7 +107,10 @@ def read_key(key_file: str | None, backend: str) -> str | None:
         return None
     if key_file:
         p = Path(os.path.expanduser(key_file))
-        st = p.stat()
+        try:
+            st = p.stat()
+        except OSError as e:
+            raise SystemExit(f"--key-file {p}: {e.strerror or e}") from None
         if st.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
             raise SystemExit(f"--key-file {p} is mode {stat.S_IMODE(st.st_mode):o} — chmod 600 it")
         return p.read_text().strip() or None

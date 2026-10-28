@@ -28,7 +28,7 @@ A full 5-model sweep takes ~3-4 hours; plan to run it overnight.
 Usage:
   python evals/benchmark_all.py                        # all configured models
   python evals/benchmark_all.py --models qwen-27b-q5,gemma-4-31b-q5
-  python evals/benchmark_all.py --tasks 21,22,23       # subset of tasks
+  python evals/benchmark_all.py --tasks 21,22,23       # subset (task numbers, ids or base ids)
   python evals/benchmark_all.py --max-iter 30          # cap iterations per task
 """
 
@@ -790,7 +790,44 @@ def experiment_arms(env=None) -> list[str]:
         arms.append("beast-assist diagnostics")
     if "1" in (env.get("BEAST_ESCALATE", "").strip(), env.get("OPENBEAST_ESCALATE", "").strip()):
         arms.append("--escalate")
+    if env.get("OPENBEAST_BASH_WRAPPER", "").strip():
+        # Sandlock (conf BASH_WRAPPER): run_eval keys these rows into their
+        # own sbx-<sha8> era; they are not the validated unconfined regime.
+        arms.append("OPENBEAST_BASH_WRAPPER sandbox")
     return arms
+
+
+def _on_signal(signum, frame):
+    """SIGINT/SIGTERM: reap the live agents, stop OUR server, exit 130.
+
+    run_eval's own reaper is installed only when run_eval.py is the entry
+    point; under this harness the agents (start_new_session=True) used to
+    survive a Ctrl-C or `kill`: still writing the unit's shared /tmp/eval_*
+    fixtures and reconnecting to whatever server came up next on :8080 —
+    llama-server ignores the model id, so a quick relaunch could have model
+    A's orphan write into the unit being measured for model B. Agents
+    first, so none reconnects to a server mid-shutdown. os._exit, not
+    sys.exit: with --jobs N, ThreadPoolExecutor's exit would otherwise join
+    N workers that are still waiting on (or spawning) agents."""
+    print(f"\n\nReceived signal {signum} — reaping eval agents, stopping llama-server "
+          f"and exiting...")
+    try:
+        run_eval._reap_live_agents()
+    finally:
+        try:
+            stop_llama_server()
+        finally:
+            for stream in (sys.stdout, sys.stderr):
+                try:
+                    stream.flush()
+                except Exception:
+                    pass
+            os._exit(130)
+
+
+def _install_signal_handlers() -> None:
+    signal.signal(signal.SIGINT, _on_signal)
+    signal.signal(signal.SIGTERM, _on_signal)
 
 
 def main():
@@ -855,15 +892,16 @@ def main():
         os.environ["BEAST_PACKS"] = "1"
     if args.escalate:
         os.environ["BEAST_ESCALATE"] = "1"
-    task_filter = args.tasks.split(",") if args.tasks else None
+    try:
+        # Before the lease and any server: a filter that selects nothing
+        # used to load and health-wait every model for nothing.
+        task_filter = run_eval.resolve_task_filter(
+            args.tasks.split(",") if args.tasks else None)
+    except run_eval.TaskFilterError as e:
+        print(e, file=sys.stderr)
+        sys.exit(2)
 
-    # Cleanup handler — make sure we don't leave llama-server running
-    def _on_signal(signum, frame):
-        print(f"\n\nReceived signal {signum} — stopping llama-server and exiting...")
-        stop_llama_server()
-        sys.exit(130)
-    signal.signal(signal.SIGINT, _on_signal)
-    signal.signal(signal.SIGTERM, _on_signal)
+    _install_signal_handlers()
 
     if args.cache_only and args.no_cache:
         print("--cache-only and --no-cache are mutually exclusive.", file=sys.stderr)
@@ -882,9 +920,10 @@ def main():
               f"arms are leaderboard-ineligible; the board holds serving reality).")
         update_lb = False
     if args.tasks and not args.no_leaderboard:
-        print("NOTE: --tasks given without --no-leaderboard. Partial-suite scores "
-              "will be recorded in leaderboard.json and mix incomparably with "
-              "full-suite rows. Use --no-leaderboard for smoke/partial runs.",
+        print("NOTE: --tasks given without --no-leaderboard. A partial-suite run "
+              "is not seated (scoring refuses a v4 row without all 291 units), "
+              "so the leaderboard update will be skipped. Pass --no-leaderboard "
+              "for smoke/partial runs to say so up front.",
               file=sys.stderr)
     # The GPU lease, before anything touches the card. cache-only never
     # starts a server, so it neither needs nor takes the lease.

@@ -37,6 +37,18 @@
 # 40-hex commit SHA (a tag or branch can be moved under us, and pip installs
 # whatever it names at start time), and --no-update-check stops the server
 # phoning GitHub for newer releases.
+#
+# SUPPLY CHAIN — NOT FULLY PINNED. The TensorFold commit is pinned; its
+# DEPENDENCIES are not. The container pip-installs it at every start, and pip
+# resolves its dependency closure fresh from PyPI each time: no hashes, no
+# version pins, sdist build backends allowed — inside a --gpus all, --network
+# host container with the model mounted. Every start also needs github.com and
+# PyPI, so under OFFLINE (env, spark.env or openbeast.conf) it REFUSES to start
+# rather than stall. The fix is a derived image with TensorFold and a
+# hash-pinned requirements file installed once, pinned by digest
+# (docs/DGX_SPARK_PLAN.md §6; recipe in spark.env.example). With such an image,
+# TENSORFOLD_PREBUILT=true runs `tensorfold` directly: nothing is installed at
+# start, and OFFLINE is allowed.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=../lib.sh
@@ -52,7 +64,7 @@ while [[ $# -gt 0 ]]; do
     --print)   PRINT=1; shift ;;
     --stop)    STOP=1; shift ;;
     --ckpt)    echo "Error: --ckpt is gone — the checkpoint comes from a profile: --profile NAME (scripts/backends/models/)" >&2; exit 2 ;;
-    -h|--help) sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,51p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)         echo "Unknown argument: $1 (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -71,8 +83,9 @@ if [[ ! -f "$ENV_FILE" ]]; then
 fi
 sp_load "$ENV_FILE" TENSORFOLD_IMAGE TENSORFOLD_IMAGE_DIGEST TENSORFOLD_REF \
   SPARK_IFACE SPARK_IB_HCA SPARK_HEAD_IP TENSORFOLD_MASTER_PORT SPARK_SERVE_HOST \
-  SPARK_SERVE_PORT SPARK_ALLOW_WILDCARD_BIND MODELS_DIR SPARK_PROFILE
+  SPARK_SERVE_PORT SPARK_ALLOW_WILDCARD_BIND MODELS_DIR SPARK_PROFILE TENSORFOLD_PREBUILT
 sp_warn_legacy_model_keys "$ENV_FILE"
+sp_backends_hub_env "$HERE/.." --env "$ENV_FILE"     # OFFLINE (and the Hub settings)
 PROFILE="${PROFILE:-${SPARK_PROFILE:-}}"
 if [[ -z "$PROFILE" ]]; then
   echo "Error: --profile NAME is required (scripts/backends/models/NAME.env; start from TEMPLATE.env or model-inspect.sh --write-profile)" >&2
@@ -102,6 +115,11 @@ fi
 [[ "$TENSORFOLD_MASTER_PORT" =~ ^[0-9]+$ ]] || sp_err "TENSORFOLD_MASTER_PORT='$TENSORFOLD_MASTER_PORT' is not a port"
 [[ "$SPARK_SERVE_PORT" =~ ^[0-9]+$ ]] || sp_err "SPARK_SERVE_PORT='$SPARK_SERVE_PORT' is not a port"
 [[ "$RANK" == 0 ]] && sp_check_bind "${SPARK_SERVE_HOST:-}"
+PREBUILT=0
+sp_is_true "${TENSORFOLD_PREBUILT:-}" && PREBUILT=1
+if [[ $PREBUILT -eq 0 ]] && sp_offline; then
+  sp_err "OFFLINE is set — this launcher pip-installs TensorFold from github.com, and its unpinned dependencies from PyPI, inside the container at every start. It cannot run offline until a derived image with them baked in exists (docs/DGX_SPARK_PLAN.md §6), or set TENSORFOLD_PREBUILT=true for an image that has them."
+fi
 
 sp_profile_locate "$PROFILE" "${MODELS_DIR:-}"
 MOUNTS=() DRAFTER=none
@@ -135,7 +153,13 @@ fi
 # The container installs the pinned commit, then execs the server. Arguments
 # travel as positional parameters, never spliced into the script text.
 # shellcheck disable=SC2016  # expanded inside the container, not here
-INNER='python -m pip install --quiet "$1" && shift && exec tensorfold "$@"'
+if [[ $PREBUILT -eq 1 ]]; then
+  # A derived image with TensorFold installed: nothing is fetched at start.
+  # The first parameter (the pinned git URL) is kept for the record and dropped.
+  INNER='shift && exec tensorfold "$@"'
+else
+  INNER='python -m pip install --quiet "$1" && shift && exec tensorfold "$@"'
+fi
 CMD=(docker run -d --rm --name "$NAME"
   --gpus all --ipc=host --network host --ulimit memlock=-1 --cap-add IPC_LOCK)
 if [[ "$TP" == 2 ]]; then
@@ -155,6 +179,11 @@ CMD+=("${MOUNTS[@]}"
 
 if [[ $PRINT -eq 1 ]]; then
   echo "# profile $PF_PROFILE_NAME: $PF_SOURCE${PF_REVISION:+@$PF_REVISION} (TP $TP) from $SP_MODEL_DIR"
+  if [[ $PREBUILT -eq 1 ]]; then
+    echo "# TENSORFOLD_PREBUILT=true: the image's own TensorFold runs; nothing is installed at start"
+  else
+    echo "# NOTE: TensorFold's dependencies are resolved UNPINNED from PyPI at every start (see --help)"
+  fi
   [[ "$RANK" == 0 && "$TP" == 2 ]] && echo "# start rank 1 FIRST; rank 0 serves http://${SPARK_SERVE_HOST}:${SPARK_SERVE_PORT} (NO API key — gate or firewall it)"
   [[ "$RANK" == 0 && "$TP" == 1 ]] && echo "# serves http://${SPARK_SERVE_HOST}:${SPARK_SERVE_PORT} (NO API key — gate or firewall it)"
   sp_print_cmd "${CMD[@]}"
@@ -173,3 +202,4 @@ mkdir -p "$HOME/.cache/tensorfold"
 "${CMD[@]}"
 echo "Started $NAME. Logs: docker logs -f $NAME   Stop: $0 --rank $RANK --stop"
 echo "The first start compiles kernels for this GPU (sm_121) and can take a while."
+[[ $PREBUILT -eq 1 ]] || echo "Note: TensorFold's dependencies were resolved UNPINNED from PyPI inside the container (see --help)."

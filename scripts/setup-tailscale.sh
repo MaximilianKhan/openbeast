@@ -575,9 +575,25 @@ if [[ $PUBLISH_CHAT -eq 1 ]]; then
     echo "      WARNING: BEAST_CHAT is not true in openbeast.conf — :8445 will"
     echo "               502 until: set BEAST_CHAT=true && ./stop.sh && ./start.sh"
   fi
-  sudo tailscale serve --bg --https=8445 "http://$CHAT_UP_HOST:${CHAT_PORT:-3003}"
-  echo "      beast-chat published (tailnet-only, :8445 → :${CHAT_PORT:-3003})."
-  if ! _is_loop "$CHAT_UP_HOST"; then
+  # The Unix-socket hardening (docs/BEAST_CHAT.md): with OPENBEAST_CHAT_SOCKET
+  # set, mount THAT. A TCP mount here used to silently replace a hand-made
+  # unix: mount on every re-run, and under LOGIN_FROM=unix every tailnet
+  # reader then got 404 (review R2-6).
+  _chat_sock="${OPENBEAST_CHAT_SOCKET:-}"
+  if [[ -n "$_chat_sock" ]]; then
+    sudo tailscale serve --bg --https=8445 "unix:$_chat_sock"
+    echo "      beast-chat published (tailnet-only, :8445 → unix:$_chat_sock)."
+  else
+    sudo tailscale serve --bg --https=8445 "http://$CHAT_UP_HOST:${CHAT_PORT:-3003}"
+    echo "      beast-chat published (tailnet-only, :8445 → :${CHAT_PORT:-3003})."
+  fi
+  if [[ "$(printf '%s' "${OPENBEAST_CHAT_LOGIN_FROM:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" == "unix" && -z "$_chat_sock" ]]; then
+    echo "      WARNING: OPENBEAST_CHAT_LOGIN_FROM=unix but OPENBEAST_CHAT_SOCKET is unset"
+    echo "               here — :8445 dials TCP, where tailnet logins are NOT honoured,"
+    echo "               so every reader gets 404. Re-run with OPENBEAST_CHAT_SOCKET set"
+    echo "               (the same environment start.sh had)."
+  fi
+  if [[ -z "$_chat_sock" ]] && ! _is_loop "$CHAT_UP_HOST"; then
     # The console trusts Tailscale-User-Login only from a LOOPBACK peer (the
     # header is otherwise forgeable), and tailscaled dials this address from
     # itself — so logins are not honoured through this mount.
@@ -601,9 +617,22 @@ if [[ $PUBLISH_ARTIFACT -eq 1 ]]; then
     echo "      WARNING: BEAST_ARTIFACT is not true — :8446 will 502 until:"
     echo "               set BEAST_ARTIFACT=true in openbeast.conf, then ./stop.sh && ./start.sh"
   fi
-  sudo tailscale serve --bg --https=8446 "http://$UP_HOST:${ARTIFACT_PORT:-3004}"
-  echo "      beast-artifact published (tailnet-only, :8446 → :${ARTIFACT_PORT:-3004})."
-  if ! _is_loop "$UP_HOST"; then
+  # Same Unix-socket hardening as beast-chat (docs/BEAST_ARTIFACT.md, R2-5).
+  _art_sock="${OPENBEAST_ARTIFACT_SOCKET:-}"
+  if [[ -n "$_art_sock" ]]; then
+    sudo tailscale serve --bg --https=8446 "unix:$_art_sock"
+    echo "      beast-artifact published (tailnet-only, :8446 → unix:$_art_sock)."
+  else
+    sudo tailscale serve --bg --https=8446 "http://$UP_HOST:${ARTIFACT_PORT:-3004}"
+    echo "      beast-artifact published (tailnet-only, :8446 → :${ARTIFACT_PORT:-3004})."
+  fi
+  if [[ "$(printf '%s' "${OPENBEAST_ARTIFACT_LOGIN_FROM:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" == "unix" && -z "$_art_sock" ]]; then
+    echo "      WARNING: OPENBEAST_ARTIFACT_LOGIN_FROM=unix but OPENBEAST_ARTIFACT_SOCKET is"
+    echo "               unset here — :8446 dials TCP, where tailnet logins are NOT"
+    echo "               honoured, so every reader gets 404. Re-run with"
+    echo "               OPENBEAST_ARTIFACT_SOCKET set (the same environment start.sh had)."
+  fi
+  if [[ -z "$_art_sock" ]] && ! _is_loop "$UP_HOST"; then
     # There is no 'public' visibility (private/tailnet only). The server
     # trusts Tailscale-User-Login from loopback OR from a peer whose address
     # is the one the connection was accepted on — tailscaled dialling the

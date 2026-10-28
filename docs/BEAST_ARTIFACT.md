@@ -613,7 +613,21 @@ sandbox instead — stricter on storage (there is none), identical on network.
   `nosniff` stops a browser from guessing otherwise.
 - `Tailscale-User-Login` is forgeable by a process already on the rig. That is
   inside the existing loopback trust model, and it only ever buys *reads* —
-  writes need the locality token.
+  writes need the locality token. "A process on the rig" includes the
+  **host-network containers**: Open WebUI, SearXNG and ntfy run
+  `network_mode: host`, so a compromise of any of them reaches
+  `127.0.0.1:3004` as loopback and can claim the owner's login to read every
+  private page. To close that — the same recipe as beast-chat's
+  (docs/BEAST_CHAT.md) — have the server also listen on a Unix socket and
+  honour the login header **only** there:
+  `OPENBEAST_ARTIFACT_SOCKET=/path/to/.run/artifact.sock` (created `0600` in a
+  `0700` directory; `tailscaled` runs as root, so it can still connect) plus
+  `OPENBEAST_ARTIFACT_LOGIN_FROM=unix`. `./scripts/setup-tailscale.sh
+  --publish-artifact` then mounts `:8446` at `unix:<that path>` when it sees
+  `OPENBEAST_ARTIFACT_SOCKET` in its environment (run it with the same
+  environment `start.sh` had). TCP loopback then needs the locality token like
+  any other caller — `scripts/artifact.sh` already sends it. The default stays
+  `loopback`; an unknown value means `loopback`.
 - **The header counts only from a peer on the rig.** The server binds
   `OPENBEAST_BIND`, so `BIND_HOST=0.0.0.0` or a LAN address puts `:3004`
   off the box — and a LAN host (or a tailnet node dialling `100.x:3004`

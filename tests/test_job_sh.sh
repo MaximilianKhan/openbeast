@@ -48,17 +48,21 @@ fi
 # to ("no mapfile/readarray", "deliberately does NOT source lib/conf.sh"), and
 # a grep over the raw file would match those very sentences and fail the
 # script for explaining itself. Strip whole-line comments first.
-_code() { grep -v '^[[:space:]]*#' "$REPO_DIR/scripts/job.sh"; }
+# CAPTURED, then grepped: `! _code | grep -q …` under pipefail passes
+# vacuously when grep -q matches early and the writer dies of SIGPIPE (141),
+# which `!` turns into a PASS — the forbidden construct present, the check
+# green (reproduced: 2 in ~350 runs).
+_CODE="$(grep -v '^[[:space:]]*#' "$REPO_DIR/scripts/job.sh")"
 # Bash 3.2 (stock macOS) has no mapfile/readarray/associative arrays — job.sh
 # sits beside clients.sh in the client-facing CLI and holds the same floor.
-if ! _code | grep -qE '(^|[^[:alnum:]_])(mapfile|readarray)([^[:alnum:]_]|$)|declare[[:space:]]+-A'; then
+if ! grep -qE '(^|[^[:alnum:]_])(mapfile|readarray)([^[:alnum:]_]|$)|declare[[:space:]]+-A' <<< "$_CODE"; then
   pass "no bash-4-only constructs (mapfile/readarray/declare -A)"
 else
   fail "job.sh uses a bash-4-only construct (breaks stock macOS bash 3.2)"
 fi
 # Sourcing lib/conf.sh has a SIDE EFFECT (it generates and appends a SearXNG
 # secret to openbeast.conf). `job.sh list` must never do that.
-if ! _code | grep -qE '(^|[^[:alnum:]_])(source|\.)[[:space:]]+[^;]*lib/conf\.sh'; then
+if ! grep -qE '(^|[^[:alnum:]_])(source|\.)[[:space:]]+[^;]*lib/conf\.sh' <<< "$_CODE"; then
   pass "job.sh does not source lib/conf.sh (no secret-generating side effect)"
 else
   fail "job.sh sources lib/conf.sh — a read-only subcommand would mutate openbeast.conf"
@@ -517,8 +521,8 @@ if echo "$LIST_OUT" | grep -q "$OK_ID" && echo "$LIST_OUT" | grep -q "demo job" 
 else
   fail "list output missing a registered job"
 fi
-if "$CLI" list --state failed | grep -q "$BAD_ID" \
-   && ! "$CLI" list --state failed | grep -q "$OK_ID"; then
+_FAILED_LIST="$("$CLI" list --state failed)"
+if grep -q "$BAD_ID" <<< "$_FAILED_LIST" && ! grep -q "$OK_ID" <<< "$_FAILED_LIST"; then
   pass "--state filters the listing"
 else
   fail "--state did not filter"

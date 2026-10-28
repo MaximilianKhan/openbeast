@@ -43,6 +43,12 @@ services:
       # server verifies — identity headers can no longer be forged. Empty =
       # feature off (WebUI treats an empty secret as unset).
       - FORWARD_USER_INFO_HEADER_JWT_SECRET=${OPENBEAST_IDENTITY_JWT_SECRET:-}
+      # Community sharing OFF. With it on (the image default), the pinned
+      # build lets any website steal a signed-in user's session token
+      # (GHSA-vpq8-f445-hcq7, fixed upstream in 0.11.4). This env var only
+      # applies on a fresh data volume; configure-webui.sh turns the same
+      # setting off on existing installs through the admin API.
+      - ENABLE_COMMUNITY_SHARING=false
     volumes:
       - open-webui-data:/app/backend/data
     # Hardening: a compromised WebUI process can't gain privileges via

@@ -23,6 +23,15 @@ case "${1:-}" in
     source "$SCRIPT_DIR/lib/usage.sh"
     ob_usage "$0"; exit 0 ;;
 esac
+# Not as root (R4-06): on a checkout with no openbeast.conf, sourcing conf.sh
+# as root mints a root-owned, mode-600 conf, and from then on every script
+# run as the user — scripts/ext.sh included — cannot read its own config.
+# `id -u`, not $EUID (read-only in bash, so a test could not stub it).
+if [[ "$(id -u)" -eq 0 ]]; then
+  echo "Error: do not run scripts/ext.sh as root (or with sudo) — OpenBeast lives in your user account." >&2
+  echo "  A root run leaves a root-owned openbeast.conf that you then cannot read. Run it as your normal user." >&2
+  exit 1
+fi
 source "$SCRIPT_DIR/lib/conf.sh"
 source "$SCRIPT_DIR/lib/extensions.sh"
 source "$SCRIPT_DIR/lib/proc.sh"      # ob_recorded_pid_ours, _ob_ere

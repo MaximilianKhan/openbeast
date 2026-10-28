@@ -314,7 +314,7 @@ def _pins(path: Path) -> dict[str, tuple[str, int]]:
     return out
 
 
-@pytest.mark.parametrize("name", ["test", "lint", "audit"])
+@pytest.mark.parametrize("name", ["test", "lint", "audit", "variants"])
 def test_ci_tool_requirements_are_exact_and_hashed(name):
     wanted = _pins(CI_REQS / f"{name}.in")
     assert wanted, f"{name}.in pins nothing"
@@ -352,15 +352,22 @@ def test_the_unpinned_install_check_can_fail():
 
 
 def test_zig_is_downloaded_from_ziglang_and_checked_before_it_is_unpacked():
-    (step,) = [s for job in _jobs(CI).values() for s in job["steps"]
-               if "zig" in str(s.get("name", "")).lower()]
-    assert re.fullmatch(r"[0-9a-f]{64}", step["env"]["ZIG_SHA256"])
-    run = step["run"]
-    assert "https://ziglang.org/download/${ZIG_VERSION}/" in run
-    assert run.index("sha256sum -c") < run.index("tar -x") < run.index("GITHUB_PATH")
-    # the job that gets zig is the one that runs the zig-gated tests
-    (owner,) = [n for n, job in _jobs(CI).items() if step in job["steps"]]
-    assert "pytest --timeout=300 tests/ -q" in " ".join(_runs(_jobs(CI)[owner]).split())
+    jobs = _jobs(CI)
+    steps = [(n, s) for n, job in jobs.items() for s in job["steps"]
+             if "zig" in str(s.get("name", "")).lower()]
+    assert steps, "no CI step installs zig"
+    # Every zig install (the pytest job's, the variants job's) is the SAME
+    # release with the SAME sha256: two copies are two pins to keep in step.
+    assert len({s["env"]["ZIG_VERSION"] for _n, s in steps}) == 1, "zig steps disagree on ZIG_VERSION"
+    assert len({s["env"]["ZIG_SHA256"] for _n, s in steps}) == 1, "zig steps disagree on ZIG_SHA256"
+    for _n, step in steps:
+        assert re.fullmatch(r"[0-9a-f]{64}", step["env"]["ZIG_SHA256"])
+        run = step["run"]
+        assert "https://ziglang.org/download/${ZIG_VERSION}/" in run
+        assert run.index("sha256sum -c") < run.index("tar -x") < run.index("GITHUB_PATH")
+    # one job that gets zig is the one that runs the zig-gated tests
+    assert any("pytest --timeout=300 tests/ -q" in " ".join(_runs(jobs[n]).split())
+               for n, _s in steps), "the full pytest job does not install zig"
 
 
 # ---------------------------------------------------------------------------

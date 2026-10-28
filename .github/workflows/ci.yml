@@ -26,7 +26,11 @@ concurrency:
 #
 # CI=true (set by the runner) turns a suite's "SKIP … exit 0" into a failure:
 # everything a suite needs is installed here, so a skip means it stopped
-# running. Every pytest call carries --timeout (pytest-timeout), so a hang
+# running. The pytest side holds the same rule through tests/conftest.py: under
+# CI=true a skip whose reason is not on its SKIP_ALLOWLIST (network off, no
+# llama-server build, toolchain versions that are not the rig's) fails the
+# session, and every pytest call carries -rs so the log names each skip.
+# Every pytest call carries --timeout (pytest-timeout), so a hang
 # fails on a named test instead of ending as a cancelled job.
 jobs:
   pytest:
@@ -82,7 +86,7 @@ jobs:
           # No outbound network assumptions in CI (httpbin flakiness);
           # SearXNG/llama-server are likewise not required by these tests.
           OPENBEAST_SKIP_NETWORK_TESTS: "1"
-        run: python -m pytest --timeout=300 tests/test_tools.py -q
+        run: python -m pytest --timeout=300 tests/test_tools.py -q -rs
 
       # Everything a NAMED pytest step runs (this job's tools step, and the
       # pytest-named job's two) is left out here. Keep this list in step with
@@ -93,7 +97,7 @@ jobs:
         env:
           OPENBEAST_SKIP_NETWORK_TESTS: "1"
         run: >-
-          python -m pytest --timeout=300 tests/ -q
+          python -m pytest --timeout=300 tests/ -q -rs
           --ignore=tests/test_model_profiles.py --ignore=tests/test_model_inspect.py
           --ignore=tests/test_model_fetch.py --ignore=tests/test_conformance.py
           --ignore=tests/test_use_model.py
@@ -151,13 +155,13 @@ jobs:
       # resume, lock), conformance against stub vLLM / TensorFold / broken
       # servers, use-model. Loopback stubs only; no network.
       - name: Spark model onboarding tests (profiles, inspect, fetch, conformance)
-        run: python -m pytest --timeout=300 tests/test_model_profiles.py tests/test_model_inspect.py tests/test_model_fetch.py tests/test_conformance.py tests/test_use_model.py -q
+        run: python -m pytest --timeout=300 tests/test_model_profiles.py tests/test_model_inspect.py tests/test_model_fetch.py tests/test_conformance.py tests/test_use_model.py -q -rs
 
       # beast-hydra (proxy, routing core) and beast-instinct (decision math,
       # engines, service, contract, router hook). Named here so a failure is
       # attributable; the full run (the pytest job) skips these files.
       - name: beast-hydra / beast-instinct tests
-        run: python -m pytest --timeout=300 tests/test_hydra_core.py tests/test_hydra_proxy.py tests/test_instinct_*.py tests/test_router_instinct.py -q
+        run: python -m pytest --timeout=300 tests/test_hydra_core.py tests/test_hydra_proxy.py tests/test_instinct_*.py tests/test_router_instinct.py -q -rs
 
   shell:
     name: shell suites
@@ -209,6 +213,18 @@ jobs:
       # Stubbed pip / pydeps / gh; nothing is installed or approved.
       - name: Supply-chain tests
         run: bash tests/test_supply_chain.sh
+
+      # The 2026-10-27 review's script fixes: land-dependabot's red-check and
+      # no-relock paths, the Spark launchers' OFFLINE / mirror / token
+      # handling, install-skills' link listing. Stub gh/docker; nothing runs.
+      - name: Review 2026-10-27 script tests
+        run: bash tests/test_review1027_ci.sh
+
+      # The same review's install fixes: fetch-weight's OFFLINE / PENDING /
+      # strict paths and doctor's zig-vs-pack and tailscale-version rows.
+      # Stub hf/curl/zig/tailscale; nothing is downloaded.
+      - name: Review 2026-10-27 install tests
+        run: bash tests/test_review1027_install.sh
 
       # The 2026-09-29 review's other hermetic suites (tests/run_tests.sh
       # runs the same files). Stub binaries only; test_conf_secrets.sh's
@@ -319,7 +335,7 @@ jobs:
   variants:
     name: variant audit + doc drift
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -335,14 +351,50 @@ jobs:
       - name: Doc-drift check (suite counts)
         run: python evals/suite_stats.py --check
 
-      # ADVISORY for now. The audit used to print [FAIL] and exit 0 whatever
-      # happened; it now exits 1 on a failed variant, and --advisory keeps
-      # this step green (with a warning annotation per failure) until a run
-      # here has shown which variants pass on the runner's toolchains. There
-      # is no zig in this job, so the zig variants are expected to fail.
-      # Drop --advisory to make it a gate.
+      # The variant audit runs every reference solution through its task's
+      # validation. It ran with --advisory (always green) and, worse, without
+      # the tools it needs: on main every zig variant failed `zig: not found`
+      # and 63_det / 122_gemm_blocked failed on a missing numpy — 40 [FAIL]
+      # rows a run, all environmental, so no zig variant and no reference of
+      # those two tasks was verified anywhere. With zig and numpy installed
+      # the audit passes in full (measured 2026-10-27 on the rig: 185 PASS,
+      # 0 FAIL, ~5.5 min), so it is a GATE now: a [FAIL] fails this job.
+      #
+      # The same zig release and sha256 as the pytest job's step: keep the
+      # two in step (tests/test_ci_workflow.py should check they agree).
+      - name: Install zig 0.16.0 (sha256-pinned) for the variant audit
+        env:
+          ZIG_VERSION: "0.16.0"
+          ZIG_SHA256: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
+        run: |
+          f="zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$f" "https://ziglang.org/download/${ZIG_VERSION}/$f"
+          echo "${ZIG_SHA256}  $RUNNER_TEMP/$f" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/$f" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/zig-x86_64-linux-${ZIG_VERSION}/zig" version
+
+      # numpy, hash-pinned (.github/ci-requirements/variants.txt). Only this
+      # job gets it: the pytest jobs keep the agents lock alone.
+      - name: Install the audit's python tools (hash-pinned numpy)
+        run: python -m pip install -q --require-hashes -r .github/ci-requirements/variants.txt
+
+      # Every toolchain a variant needs must be HERE before the audit runs:
+      # a missing one would turn every variant of that language into a
+      # [FAIL] that says nothing about the variant. Checked up front so the
+      # failure reads "the job is missing X", not 30 red variants.
+      - name: Audit toolchains present
+        run: |
+          rc=0
+          for t in python3 go gcc g++ rustc zig; do
+            command -v "$t" >/dev/null || { echo "::error::$t is not on PATH — the variant audit needs it"; rc=1; }
+          done
+          python -c 'import numpy' || { echo "::error::numpy is not importable"; rc=1; }
+          exit $rc
+
       - name: Variant spec audit
-        run: python tests/audit_variants.py --advisory
+        timeout-minutes: 12
+        run: python tests/audit_variants.py
 
   # The required check. It runs nothing itself: it fails unless every job
   # above succeeded (a cancelled or skipped one counts as a failure — `needs`

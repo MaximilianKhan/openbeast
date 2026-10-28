@@ -40,7 +40,9 @@ def test_reasons_cover_every_arm_and_infra_rows():
     for harness, word in (({"greedy": True}, "greedy"),
                           ({"diagnostics": True}, "diagnostics"),
                           ({"packs": {"zig": "abcd1234"}}, "packs"),
-                          ({"escalate_component": "esc1-deadbeef"}, "escalation")):
+                          ({"escalate_component": "esc1-deadbeef"}, "escalation"),
+                          ({"bash_wrapper": "sandlock run -p openbeast --",
+                            "bash_wrapper_component": "sbx-0123abcd"}, "sandboxed bash")):
         (r,) = scoring.ineligibility_reasons(_results("t", harness=harness))
         assert word in r
     (r,) = scoring.ineligibility_reasons(_results("t", suite_selection="v5-fast"))

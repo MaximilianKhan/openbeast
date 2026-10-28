@@ -90,7 +90,9 @@ are not obvious from the file:
   hydra.** With no `hydra.toml`, the node's first-byte and non-stream
   deadlines are 580 s, because a one-slot engine queues a second request
   behind the first for as long as that takes. An explicit `hydra.toml` keeps
-  the 120 s default unless it sets its own.
+  the defaults unless it sets its own: `ttft_timeout_s` defaults to 120 s,
+  and `nonstream_timeout_s` defaults to `pre_commit_budget_s` (580 s unless
+  you change it).
 - **A request queued behind a busy node does not trip the breaker.** A
   first-byte timeout is not counted as a node failure when the request had
   exactly one candidate and that node was already full (in-flight ≥ its
@@ -98,8 +100,11 @@ are not obvious from the file:
   failing node. This applies to **every** config, explicit `hydra.toml`
   included, not only the implicit one. Counting them opened the breaker on a
   rig that was merely busy, and every caller then got 503 for
-  `breaker.open_s`. The caller still gets its timeout; the decision trace
-  says `queued behind a saturated single candidate: not a breaker failure`.
+  `breaker.open_s`. The caller still gets its timeout. The note
+  `queued behind a saturated single candidate: not a breaker failure` is in
+  that request's **audit row** (`attempts[].why` in the raw JSONL), not in
+  the decision trace (`hydra.sh decisions`, which records only the plan) and
+  not in `hydra.sh tail`'s summary.
   A timeout on a node with free capacity, or on a route with somewhere else
   to go, counts as before.
 

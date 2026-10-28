@@ -426,7 +426,9 @@ class Hydra:
         self.node_meta: dict[str, dict] = {n: {} for n in cfg.nodes}
         self.next_probe: dict[str, float] = {}
         self.next_models: dict[str, float] = {}
-        self.conf_mtime: dict[str, float | None] = {}
+        # deployment id -> (report mtime, node url) the cached verdict was computed for.
+        # Keyed on the url too: a reload that moves a node must re-judge the report.
+        self.conf_mtime: dict[str, tuple[float, str] | None] = {}
         self.conf_checked = -1e9
         self.tasks: list[asyncio.Task] = []
         self.background: set[asyncio.Task] = set()
@@ -681,14 +683,16 @@ class Hydra:
                 self.state.conformance[d.id] = ("missing", False)
                 self.conf_mtime[d.id] = None
                 continue
-            if self.conf_mtime.get(d.id) == m and d.id in self.state.conformance:
+            url = self.cfg.nodes[d.node].url
+            key = (m, url)
+            if self.conf_mtime.get(d.id) == key and d.id in self.state.conformance:
                 continue
-            self.conf_mtime[d.id] = m
+            self.conf_mtime[d.id] = key
             try:
                 doc = json.loads(p.read_text())
             except (OSError, ValueError):
                 doc = None
-            self.state.conformance[d.id] = core.conformance_verdict(doc, self.cfg.nodes[d.node].url)
+            self.state.conformance[d.id] = core.conformance_verdict(doc, url)
 
     # ─── status ───
     def routable(self, route_id: str) -> tuple[bool, dict]:
@@ -1125,7 +1129,12 @@ async def proxy(request: Request, path: str, pin: str | None = None):
         finish(504, "timeout", attempts=attempts)
         return hy.error("hydra_timeout", "the pre-commit budget ran out before any attempt", hdr)
     c, a, edits, adm = last
-    if a.kind == "passthrough" or (a.kind == "throttled" and not _has_more(dec, c)):
+    # `last` is the newest attempt that actually RAN: a throttled (429) one
+    # only stays `last` when nothing after it ran (every later target was
+    # skipped at admission, or the budget ended). The plan having more
+    # entries is not the test: the caller needs the engine's 429 and its
+    # Retry-After, not a hydra 502 for an upstream that was merely busy.
+    if a.kind in ("passthrough", "throttled"):
         # An engine's own 4xx: status, bytes and content-type exactly as sent.
         finish(a.status, "upstream_4xx", c.d.id, attempts, edits=edits)
         h = {k: v for k, v in a.headers.items() if k.lower() in ("content-type", "retry-after")}
@@ -1222,11 +1231,6 @@ async def proxy(request: Request, path: str, pin: str | None = None):
     out_h.pop("content-length", None)
     return StreamingResponse(relay(), status_code=int(a.status), headers=out_h,
                              background=BackgroundTask(sweep))
-
-
-def _has_more(dec: core.Decision, c: core.Candidate) -> bool:
-    ids = [x.d.id for x in dec.attempts]
-    return c.d.id in ids and ids.index(c.d.id) < len(ids) - 1
 
 
 # ─────────────────────────────────── handlers ───────────────────────────────────

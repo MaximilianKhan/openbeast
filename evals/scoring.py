@@ -491,6 +491,11 @@ def ineligibility_reasons(results: dict) -> list[str]:
         reasons.append("awareness packs")
     if harness.get("escalate") or harness.get("escalate_component"):
         reasons.append("escalation cards")
+    # A confined bash (OPENBEAST_BASH_WRAPPER) is its own cache era: the eval
+    # baseline runs bash unwrapped. benchmark_all forces --no-leaderboard for
+    # it; this stops a run_eval.py-direct run being seated by --rebuild.
+    if harness.get("bash_wrapper") or harness.get("bash_wrapper_component"):
+        reasons.append("sandboxed bash (OPENBEAST_BASH_WRAPPER)")
     infra: dict[str, int] = defaultdict(int)
     for t in results.get("tasks", []):
         if t.get("reason") in INFRA_REASONS:
@@ -850,7 +855,10 @@ def format_leaderboard(entries: list[dict], show_host: bool = False) -> str:
             lines.append(_row(i, e))
     lines.append("")
     lines.append("SOLVE = % of base problems solved in >=1 language.  "
-                 "LANG = % of language ports passed among solved problems.")
+                 "LANG = solved weight carried across its languages (p/k ports passed per solved "
+                 "problem); a solved single-language task counts as fully carried, and those are "
+                 "~78% of v4's weight, so LANG is mostly SOLVE-driven and port breadth moves it only "
+                 "through the ~22% that has variants.")
     lines.append("SCORE = capability = 0.75*SOLVE + 0.25*LANG (ranking key).  "
                  "SPD = sustained decode tok/s (server-measured; ~ = isolated-benchmark estimate, "
                  "pre-2026-07-08 runs had no decode log).  TOKENS = total prompt+completion.  WALL = total run time.")
@@ -943,8 +951,9 @@ td.n{{text-align:right}}
 <h1>{t}</h1>
 <p>Generated {stamp} by evals/scoring.py --html. Ranked by Score (capability = 0.75·Solve + 0.25·Lang).</p>
 {"".join(parts)}
-<p>Solve = % of base problems solved in ≥1 language. Lang = % of language ports passed among
-solved problems. tok/s = sustained decode (~ = isolated-benchmark estimate). T/O = units whose
+<p>Solve = % of base problems solved in ≥1 language. Lang = solved weight carried across its
+languages (p/k ports passed per solved problem); a solved single-language task counts as fully
+carried (~78% of v4's weight), so only the ~22% with variants measures port breadth. tok/s = sustained decode (~ = isolated-benchmark estimate). T/O = units whose
 agent was killed at the wall timeout or by a signal: pass/fail still counts, their tokens are
 recorded as 0, and they are never cached.</p>
 </body></html>

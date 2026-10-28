@@ -1,5 +1,31 @@
 # TODO
 
+## 🔎 REVIEW 2026-10-27 — open items
+
+Fixes from the 2026-10-27 review are on `review/full-2026-10-27`. These are
+what it left for Max, or for hardware it could not reach.
+
+**Owner decisions**
+- **llama.cpp pin ≥ b11393** (CVE-2026-107183, a `chat_parser` use-after-free; R10-01). Deferred until the paper's capability rows, run on b10865, finish. beast-gate strips `chat_parser` and three sibling fields meanwhile; raw `:8443` and loopback callers are not covered.
+- **Open WebUI image → v0.12.3.** `./scripts/update.sh --images` (now follows the release tag, not `:main`), then a smoke test and commit the digest. It migrates the WebUI DB, so back up the `open-webui-data` volume first.
+- **Branch protection:** add "Lock matches a fresh resolve" as a required check on `main` (R5-02); keep "Dependency vulnerability audit" required (it now goes red only on advisories a PR introduces).
+- **Era roll:** draft PR #135 plus the era-roll fixes on branch `rev1027/fb-era-roll`. Merging rolls the eval era off `b5596c660b5ab819`.
+- **Redefine LANG** over variant'd tasks only (R6-4). Today single-language tasks count as fully carried, so real port breadth is ≈ 0.054 of SCORE. Changing it moves every SCORE; the docs now describe the current definition.
+- **R10-04:** llama.cpp crash bugs with no upstream fix: `json_schema`/`response_format` to grammar (CVE-2026-17500/17501, PR #25308 open) and the mirostat sampler (CVE-2026-116467, PR closed unmerged). Any enrolled device can abort llama-server; a pin bump does not fix them. Decide whether beast-gate refuses `mirostat != 0` and oversized schemas (a 400 for legitimate options).
+
+**Needs hardware or access**
+- **DGX Spark:** build the derived TensorFold image and pin it by digest (`TENSORFOLD_PREBUILT=true`, recipe in `spark.env.example`; R10-05). Run `python3 -c 'import vllm;print(vllm.__version__)'` in NGC `vllm:26.05-py3` to confirm it is ≥ 0.31.0 (R10-06).
+- **Open-Jev requirement hashes** (R10-07): `pip-compile --generate-hashes` for `scripts/instinct/openjev/requirements.txt` on the build host (py3.12, cu128 torch), then install with `--require-hashes`. The base image is already digest-pinned.
+- **Gated mmproj sha256** (R10-09): the `mmproj-Qwen3.8-Flash-Next-Uncensored-F16.gguf` row stays PENDING until someone with access to the gated HF repo reads its sha256. `fetch-weight.sh` prints UNVERIFIED for it and refuses it under `WEIGHT_ENFORCE=strict`.
+- **Rig zig:** mise says `zig = "0.16"`, but agent shells resolved 0.17.0 first on PATH. Check `zig version` in a fresh login shell; doctor now warns on a mismatch.
+- **CI variants job** now gates on the audit; measured locally (185 PASS), not yet on a GitHub runner, whose go/gcc/rust may differ.
+
+**Code follow-ups**
+- **R2-1 remainder:** beast-gate keeps a vanished registry closed only in-process. A gate restarted with no `.run/clients.json` honours `EDGE_ALLOW_ANON` again; a persistent "a registry existed" marker (gate, dashboard, `clients.sh`, docs) would close that.
+- **R1-01 code side:** the file tools (`read_file`, `write_file`, `edit_file`, `list_files`) run in-process and are not sandboxed; only `bash`/`grep` go through `OPENBEAST_BASH_WRAPPER`. The docs now say so.
+- **Move `chat_server.signal_session`** (with its descendant-group sweep) into `agents/sessions.py` and reuse it in `mcp_server.stop_agent`, which today signals the group or pid only (R1-10).
+- **R9-14 remainder:** a real per-tier WebUI prompt needs a guest-scoped model preset, checked against a live WebUI; today one appended paragraph tells the model its attached tools are the ground truth.
+
 ## ⏳ GPU BACKLOG — parked 2026-10-09 (Max: "kick that into the back, we come back to it later")
 
 Everything below needs the GPU and was deliberately NOT run on 2026-10-09.

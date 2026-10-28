@@ -200,9 +200,56 @@ def pack_problem(lang: str, path: str, data: bytes) -> str | None:
     if lang == "zig":
         installed = _installed_zig()
         if installed and installed != version:
+            # Pin, don't regenerate: a regenerated pack is new bytes, i.e. an
+            # unmeasured treatment that MEASURED_SHA256 refuses anyway.
             return (f"pack {path}: generated for zig {version} but zig {installed} is "
-                    f"installed — regenerate with agents/packs/gen_zig_pack.py")
+                    f"installed — {_ZIG_PIN_HINT.format(v=version)}")
     return None
+
+
+_ZIG_PIN_HINT = ("pin the toolchain back (mise use -g zig@{v}); regenerating the pack "
+                 "makes an unmeasured treatment that needs a new Tier-3 A/B")
+
+
+def toolchain_mismatch(lang: str = "zig") -> str | None:
+    """A LOUD reason when the installed compiler is not the one `lang`'s pack
+    (and its escalation index) were built and measured on, else None.
+
+    Both refuse to serve on a mismatch, by design (the drift guard) — but the
+    refusal alone is a quiet stderr line on the next spawn, and on 2026-10-27
+    a `mise` upgrade to zig 0.17 switched both off on the rig with nothing
+    saying so. doctor (and anyone else) can ask this. None also when the
+    compiler is absent: that is "no zig", not a mismatch. Never raises."""
+    try:
+        fn = PACK_FILES.get(lang)
+        if lang != "zig" or not fn:
+            return None
+        installed = _installed_zig()
+        if not installed:
+            return None
+        with open(os.path.join(PACKS_DIR, fn), "rb") as fh:
+            m = _PACK_HEADER_RE.search(fh.read().decode("utf-8", errors="replace"))
+        want = m.group(1) if m else None
+        off = []
+        if want and want != installed:
+            off.append(f"the {lang} pack ({fn}, measured on {lang} {want})")
+        try:
+            from lang import escalate as E                 # noqa: PLC0415
+            entry = (E.load_index().get("langs") or {}).get(lang)
+            if isinstance(entry, dict):
+                g = E.index_gate(lang, entry)
+                if g.get("installed") and g.get("toolchain") != g.get("installed"):
+                    off.append(f"the {lang} escalation index (built on {lang} {g.get('toolchain')})")
+                    want = want or g.get("toolchain")
+        except Exception:                                  # noqa: BLE001
+            pass
+        if not off:
+            return None
+        return (f"{lang} toolchain mismatch: {lang} {installed} is installed, so "
+                f"{' and '.join(off)} {'is' if len(off) == 1 else 'are'} NOT SERVED — "
+                + _ZIG_PIN_HINT.format(v=want))
+    except Exception:                                      # noqa: BLE001
+        return None
 
 
 class ServedPack:
@@ -482,7 +529,9 @@ def status_line() -> str:
         return "zig pack: off (zig not in LANG_PACKS)"
     p, why = served_pack("zig")
     if p is None:
-        return f"zig pack: NOT SERVED — {why}"
+        # A toolchain mismatch also switches the escalation index off; say
+        # both, in the one line doctor shows.
+        return f"zig pack: NOT SERVED — {toolchain_mismatch('zig') or why}"
     rel = os.path.relpath(p.path, os.path.dirname(_AGENTS))
     return f"zig pack: auto (agents on zig tasks get {rel} @{p.sha8})"
 
@@ -493,6 +542,11 @@ def main(argv: list[str] | None = None) -> int:
     if cmd == "status":
         print(status_line())
         return 0
+    if cmd == "toolchain":
+        # exit 1 + the reason on a mismatch, exit 0 + "ok" otherwise: doctor's hook
+        why = toolchain_mismatch("zig")
+        print(why or "zig toolchain: ok (matches the pack, or zig is not installed)")
+        return 1 if why else 0
     if cmd == "argv":
         rest = argv[1:]
         if rest[:1] == ["--"]:
@@ -501,7 +555,7 @@ def main(argv: list[str] | None = None) -> int:
         announce(info, "agent")
         sys.stdout.write("".join(a + "\0" for a in out))
         return 0
-    print("usage: pack_context.py status | argv -- <runner args...>", file=sys.stderr)
+    print("usage: pack_context.py status | toolchain | argv -- <runner args...>", file=sys.stderr)
     return 2
 
 

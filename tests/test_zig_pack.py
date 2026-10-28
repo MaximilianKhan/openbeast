@@ -116,7 +116,9 @@ def test_generator_is_deterministic_and_matches_committed_pack():
     lib = gen.zig_lib_dir()
     version = gen.zig_version()
     if version != "0.16.0":
-        pytest.skip(f"pack is for zig 0.16.0, installed {version}")
+        # Not a skip: under any other zig production serves no pack (R7-01).
+        pytest.fail(f"pack is for zig 0.16.0, installed {version} — production serves no "
+                    f"zig pack on this box either; pin it: mise use -g zig@0.16.0")
     curated = _section1(PACK.read_text())
     a = gen.compose(curated, lib, version)
     b = gen.compose(curated, lib, version)

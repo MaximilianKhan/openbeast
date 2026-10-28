@@ -126,7 +126,9 @@ Each is one arg away, e.g. `./start.sh serve-qwen-27b-q5.sh`. Board:
 ### Skills
 
 - Repo skills: `skills/<name>/SKILL.md` (this directory)
-- Global skills: `~/.local/share/local-llm-skills/<name>/SKILL.md`
+- Global skills: `~/.local/share/local-llm-skills/<name>/SKILL.md`. That
+  directory is outside the import gate (`scripts/skill-import.sh`): a global
+  skill that is not a symlink into `skills/` is labelled `[global, unverified]`
 - Repo wins on name collision
 - After editing a skill: just call `skill()` — the index rescans disk on
   every call (no need to restart MCP)

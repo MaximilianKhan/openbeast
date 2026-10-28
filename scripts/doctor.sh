@@ -332,6 +332,28 @@ else
   warn "remote-skill hash check could not run (exit $_sk_rc)" \
        "./scripts/skill-import.sh verify"
 fi
+# The global skills dir is outside that gate: a SKILL.md copied there by hand
+# has no pin, no scan and no ledger row, and skill() serves it labelled
+# [global, unverified] (R9-05). Symlinks back into <repo>/skills/ are gated;
+# a name the repo also ships is shadowed (repo wins) and never served.
+_gsk_dir="$HOME/.local/share/local-llm-skills"
+if [[ -d "$_gsk_dir" ]]; then
+  _gsk_repo="$(realpath "$REPO_DIR/skills" 2>/dev/null || echo "$REPO_DIR/skills")"
+  _gsk_bad=()
+  for _gsk in "$_gsk_dir"/*/SKILL.md; do
+    [[ -f "$_gsk" ]] || continue
+    _gsk_name="$(basename "$(dirname "$_gsk")")"
+    [[ -f "$REPO_DIR/skills/$_gsk_name/SKILL.md" ]] && continue
+    _gsk_real="$(realpath "$_gsk" 2>/dev/null || echo "$_gsk")"
+    [[ "$_gsk_real" == "$_gsk_repo"/* ]] || _gsk_bad+=("$_gsk_name")
+  done
+  if (( ${#_gsk_bad[@]} )); then
+    warn "global skills outside the import gate, served as [global, unverified]: ${_gsk_bad[*]}" \
+         "import them with ./scripts/skill-import.sh, or remove them from $_gsk_dir"
+  else
+    pass "global skills: none outside the import gate"
+  fi
+fi
 
 # ── Docker ──────────────────────────────────────────────────────────────────
 section "Docker"
@@ -876,6 +898,20 @@ fi
 # documented default on a personal tailnet — WARN, never FAIL.
 if command -v tailscale >/dev/null 2>&1; then
   section "Tailnet surfaces"
+  # Minimum version: TS-2026-007/-008 (Serve/Services loopback exposure + a
+  # DoS, fixed in 1.98.9). OpenBeast publishes everything through Serve onto
+  # loopback binds, so an older client is exactly the exposed shape
+  # (dependency audit 2026-10-27, R10-11). `sort -V` compares the versions.
+  _ts_min="1.98.9"
+  _ts_ver="$(tailscale version 2>/dev/null | head -1 | grep -oE '^[0-9]+(\.[0-9]+)+' || true)"
+  if [[ -z "$_ts_ver" ]]; then
+    info "tailscale version unknown (could not parse \`tailscale version\`)"
+  elif [[ "$(printf '%s\n%s\n' "$_ts_min" "$_ts_ver" | sort -V | head -1)" != "$_ts_min" ]]; then
+    warn "tailscale $_ts_ver is older than $_ts_min (Serve loopback-exposure fixes, TS-2026-007/-008)" \
+         "upgrade tailscale from your distro's packages (e.g. sudo pacman -Syu tailscale / sudo apt upgrade tailscale)"
+  else
+    pass "tailscale $_ts_ver (≥ $_ts_min, the Serve loopback-exposure fixes)"
+  fi
   _serve=$(tailscale serve status 2>/dev/null || true)
   if [[ -n "$_serve" ]]; then
     # Print the mappings as tailscale reports them. Don't grep per-port: the
@@ -1177,6 +1213,40 @@ if [[ -f "$REPO_DIR/agents/lang/pack_context.py" ]]; then
       warn "$_pc_line" "LANG_PACK_CONTEXT in openbeast.conf; docs/LANG_AWARENESS_PLAN.md" ;;
     *) warn "zig pack: status unavailable (see: python3 agents/lang/pack_context.py status)" ;;
   esac
+
+  # ── installed zig vs the shipped pack's zig ──────────────────────────────
+  # Asked separately from the row above, because that row is silent whenever
+  # the pack is switched off or zig is not in LANG_PACKS — and the mismatch
+  # matters regardless: the pack (written for one stdlib) is withheld, and the
+  # eval harness aborts zig tasks on it. zig moved 0.16 -> 0.17 silently on
+  # this rig on 2026-10-27 and nothing noticed. The version parsing and the
+  # `zig version` probe are pack_context's own (_PACK_HEADER_RE,
+  # _installed_zig), not a second copy of them.
+  _zv="$(cd "$REPO_DIR" && timeout 30 python3 -c '
+import os, sys
+sys.path.insert(0, "agents")
+from lang import pack_context as pc
+fn = pc.PACK_FILES.get("zig")
+try:
+    t = open(os.path.join(pc.PACKS_DIR, fn), encoding="utf-8", errors="replace").read()
+except (OSError, TypeError):
+    t = ""
+m = pc._PACK_HEADER_RE.search(t)
+print(m.group(1) if m else "?", pc._installed_zig() or "-")
+' 2>/dev/null || true)"
+  read -r _zv_pack _zv_have <<< "$_zv"
+  if [[ -z "${_zv_pack:-}" ]]; then
+    warn "zig version check unavailable (python3 agents/lang/pack_context.py failed to import)"
+  elif [[ "$_zv_have" == "-" ]]; then
+    info "zig not installed — the shipped pack targets zig $_zv_pack (only zig tasks need it)"
+  elif [[ "$_zv_pack" == "?" ]]; then
+    warn "the shipped zig pack has no version header" "python3 agents/packs/gen_zig_pack.py"
+  elif [[ "$_zv_have" == "$_zv_pack" ]]; then
+    pass "installed zig $_zv_have matches the shipped zig pack"
+  else
+    warn "installed zig $_zv_have != zig $_zv_pack the shipped pack was built for (pack withheld; zig evals abort on the drift)" \
+         "put zig $_zv_pack first on PATH (e.g. mise use -g zig@$_zv_pack), or regenerate the pack: agents/packs/gen_zig_pack.py"
+  fi
 fi
 
 # ── Verdict ─────────────────────────────────────────────────────────────────

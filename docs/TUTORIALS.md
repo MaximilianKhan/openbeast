@@ -332,17 +332,29 @@ auth model: [BEAST_CHAT.md](BEAST_CHAT.md).
 **What you get:** any Mac or Linux laptop runs OpenCode and the full 18-tool
 arsenal against *its own* files; only inference crosses the tailnet.
 
-On the rig, publish the two discovery surfaces once:
+On the rig, put a key in front of inference first. `setup-tailscale.sh`
+leaves `:8443` unpublished unless beast-gate (`EDGE_GATE=true`) or a shared
+`LLAMA_API_KEY` is set (or you pass `--i-accept-open-inference`). With the
+gate, enroll the laptop and keep the key it prints:
+
+```bash
+echo 'EDGE_GATE=true' >> openbeast.conf
+./stop.sh && ./start.sh -d
+./scripts/clients.sh enroll laptop --label "Work laptop"     # prints the key once
+```
+
+Then publish inference plus the two discovery surfaces:
 
 ```bash
 ./scripts/setup-tailscale.sh --publish-slot --publish-searxng
 ```
 
-On the laptop (Tailscale connected to the same tailnet):
+On the laptop (Tailscale connected to the same tailnet), paste the key when
+prompted:
 
 ```bash
 git clone https://github.com/MaximilianKhan/openbeast && cd openbeast
-./scripts/setup-client.sh --host beast.tail1234.ts.net
+./scripts/setup-client.sh --host beast.tail1234.ts.net --api-key-stdin
 openbeast-client status
 ```
 

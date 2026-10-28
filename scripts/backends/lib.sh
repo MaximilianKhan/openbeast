@@ -53,6 +53,19 @@ sp_err() { echo "Error: $*" >&2; SP_ERRORS=$((SP_ERRORS + 1)); }
 
 sp_is_true() { case "$(printf '%s' "${1:-}" | tr 'A-Z' 'a-z')" in true|yes|1|on) return 0 ;; esac; return 1; }
 
+# sp_offline — true when the network is off by policy: OPENBEAST_OFFLINE,
+# OFFLINE or HF_HUB_OFFLINE is true (first token, the way pylib/hfapi.py reads
+# them). Call sp_backends_hub_env first so spark.env / openbeast.conf count.
+sp_offline() {
+  local k v
+  for k in OPENBEAST_OFFLINE OFFLINE HF_HUB_OFFLINE; do
+    v="${!k:-}"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%%[[:space:]]*}"
+    v="${v#[\"\']}"; v="${v%[\"\']}"
+    sp_is_true "$v" && return 0
+  done
+  return 1
+}
+
 # sp_image <image> <digest> <print-mode 0|1> — sets SP_IMAGE_REF, the
 # reference to run (a global, not stdout: sp_err must count in THIS shell).
 # A real run requires a sha256 digest; --print shows the tag with a warning.
@@ -82,22 +95,26 @@ sp_check_bind() {
 
 # sp_check_secret_file <path> — exists, a regular file, owned by us, and not
 # readable by group/other.
-sp_check_secret_file() {
-  local f="$1" mode owner
+sp_check_secret_file() {   # sp_check_secret_file <file> [what, default "API key"]
+  local f="$1" what="${2:-API key}" mode owner
   if [[ ! -f "$f" ]]; then
-    sp_err "API key file '$f' does not exist (create it: (umask 077; openssl rand -hex 32 > '$f'))"
+    if [[ "$what" == "API key" ]]; then
+      sp_err "API key file '$f' does not exist (create it: (umask 077; openssl rand -hex 32 > '$f'))"
+    else
+      sp_err "$what file '$f' does not exist"
+    fi
     return 0
   fi
   mode="$(stat -c '%a' "$f" 2>/dev/null || stat -f '%Lp' "$f" 2>/dev/null || echo "")"
   owner="$(stat -c '%u' "$f" 2>/dev/null || stat -f '%u' "$f" 2>/dev/null || echo "")"
   if [[ -z "$mode" || "${mode: -2}" != "00" ]]; then
-    sp_err "API key file '$f' is mode ${mode:-?} — chmod 600 it"
+    sp_err "$what file '$f' is mode ${mode:-?} — chmod 600 it"
   fi
   if [[ -n "$owner" && "$owner" != "$(id -u)" ]]; then
-    sp_err "API key file '$f' is not owned by $(id -un)"
+    sp_err "$what file '$f' is not owned by $(id -un)"
   fi
   if [[ ! -s "$f" ]]; then
-    sp_err "API key file '$f' is empty"
+    sp_err "$what file '$f' is empty"
   fi
 }
 

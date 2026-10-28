@@ -275,8 +275,23 @@ def test_timing_log_written_when_pointed(tmp_path, diag_on, monkeypatch):
 
 
 def test_timing_log_absent_when_unset(tmp_path, diag_on, monkeypatch):
+    """Unset means NO timing log anywhere: not in the cwd, not under HOME,
+    not beside the written file (a default path would show up in one of
+    them). It used to only call _write ("must not raise") and assert nothing."""
     monkeypatch.delenv("OPENBEAST_DIAG_TIMING_LOG", raising=False)
-    _write(tmp_path, "untimed.py", "x = 1\n")  # must not raise
+    home, cwd, work = tmp_path / "home", tmp_path / "cwd", tmp_path / "work"
+    for d in (home, cwd, work):
+        d.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_STATE_HOME", str(home / ".local" / "state"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(home / ".local" / "share"))
+    monkeypatch.chdir(cwd)
+    out = _write(work, "untimed.py", "x = 1\n")
+    assert "diagnostics: OK (python)" in out          # the checker DID run
+    # (the python checker's own __pycache__ beside the file is not a log)
+    created = sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*")
+                     if p.is_file() and "__pycache__" not in p.parts)
+    assert created == ["work/untimed.py"], f"files appeared with the timing log unset: {created}"
 
 
 def test_eval_arm_pins_both_spellings(monkeypatch):

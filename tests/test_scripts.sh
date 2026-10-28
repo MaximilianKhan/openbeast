@@ -329,6 +329,17 @@ else:
         for required in ('name', 'description'):
             if required not in fm:
                 errors.append(f'{entry}: missing {required} in frontmatter')
+        # A YAML block scalar (`description: >` / `|` / `>-` / `|-`) is NOT
+        # supported: these line parsers read the description as the bare
+        # indicator, and the continuation line becomes a junk key. Require a
+        # real one-line description.
+        desc = fm.get('description')
+        if desc is not None:
+            if desc in ('>', '|', '>-', '|-', '>+', '|+'):
+                errors.append(f'{entry}: description is a YAML block scalar ({desc!r}); '
+                              'write it on one line')
+            elif len(desc) < 20:
+                errors.append(f'{entry}: description too short ({len(desc)} chars)')
         if fm.get('name') and fm['name'] != entry:
             errors.append(f'{entry}: frontmatter name={fm["name"]!r} does not match dir name')
         body = text[end+3:].strip()
@@ -672,8 +683,9 @@ else
 fi
 rm -rf "$_UD"
 # The unit must outlast the launcher it runs: start.sh -d gives up at
-# LLAMA_LOAD_GRACE + 300 s. Both numbers are read from start.sh.
-_GRACE="$(sed -n 's/^LLAMA_LOAD_GRACE="\${OPENBEAST_LLAMA_LOAD_GRACE:-\([0-9]*\)}"$/\1/p' "$REPO_DIR/start.sh")"
+# LLAMA_LOAD_GRACE + 300 s. The default grace is read from lib/conf.sh (the
+# conf key both start.sh and the watchdog resolve), the margin from start.sh.
+_GRACE="$(sed -n 's/^LLAMA_LOAD_GRACE="\${LLAMA_LOAD_GRACE:-\([0-9]*\)}"$/\1/p' "$REPO_DIR/scripts/lib/conf.sh")"
 _EXTRA="$(sed -n 's/.*_ready_deadline=\$(( SECONDS + LLAMA_LOAD_GRACE + \([0-9]*\) )).*/\1/p' "$REPO_DIR/start.sh")"
 _UTMO="$(sed -n 's/^TimeoutStartSec=//p' "$REPO_DIR/scripts/openbeast.service")"
 if [[ "$_GRACE" =~ ^[0-9]+$ && "$_EXTRA" =~ ^[0-9]+$ ]] \
@@ -1464,18 +1476,26 @@ else
   # somewhere else, which is exactly how this one first broke.
   _BD_OK="$(mktemp -d)"
   mkdir -p "$_BD_OK/agents"
-  _BD_VER="$(python3 -c 'import importlib.metadata as m; print(m.version("pytest"))' 2>/dev/null || true)"
+  # The probe package must be one CI's shell job installs: it installs the
+  # agents lock and NOT pytest, so probing pytest made this check a PASS that
+  # never ran there. The first of these that is installed is used; none
+  # installed is a SKIP (counted), never a pass.
+  _BD_PKG="" _BD_VER=""
+  for _p in fastapi httpx pytest; do
+    _BD_VER="$(python3 -c 'import importlib.metadata as m, sys; print(m.version(sys.argv[1]))' "$_p" 2>/dev/null || true)"
+    [[ -n "$_BD_VER" ]] && { _BD_PKG="$_p"; break; }
+  done
   if [[ -z "$_BD_VER" ]]; then
-    pass "satisfied-pin check skipped (pytest not installed here)"
+    skip "satisfied-pin check (none of fastapi/httpx/pytest is installed here)"
   else
-    printf 'pytest==%s\n' "$_BD_VER" > "$_BD_OK/agents/requirements.txt"
+    printf '%s==%s\n' "$_BD_PKG" "$_BD_VER" > "$_BD_OK/agents/requirements.txt"
     _BD_OUT="$(bash -c "REPO_DIR='$_BD_OK'
 $_BD_FN
 ob_python_deps_satisfied" 2>/dev/null || true)"
-    if grep -q 'pytest' <<< "$_BD_OUT"; then
+    if grep -q "$_BD_PKG" <<< "$_BD_OUT"; then
       fail "the guard reported an INSTALLED pin as missing: $_BD_OUT"
     else
-      pass "the guard does not report an installed pin as missing"
+      pass "the guard does not report an installed pin ($_BD_PKG) as missing"
     fi
   fi
   rm -rf "$_BD_OK"
@@ -2048,7 +2068,13 @@ if grep -q 'require-hashes -r agents/requirements.lock' "$REPO_DIR/.github/workf
 else
   fail "CI does not install from the lock — its cross-platform claim is untested"
 fi
-if grep -q 'pip-audit -r agents/requirements.lock' "$REPO_DIR/.github/workflows/pr-quality.yml"; then
+# Either a literal `pip-audit -r agents/requirements.lock`, or (since the
+# 2026-10-27 audit gate) a `for f in … agents/requirements.lock …` loop whose
+# body runs `pip-audit -r "$f"`.
+_PQ="$REPO_DIR/.github/workflows/pr-quality.yml"
+if grep -q 'pip-audit -r agents/requirements.lock' "$_PQ" \
+   || { grep -qE '^\s*for f in .*agents/requirements\.lock( |;)' "$_PQ" \
+        && grep -q 'pip-audit -r "$f"' "$_PQ"; }; then
   pass "the vulnerability audit covers the whole closure, not just the 4 direct pins"
 else
   fail "pip-audit only sees requirements.txt — 39 of 43 packages are unaudited"
@@ -2150,7 +2176,7 @@ PY
 done
 # and the orphan with no recorded pid must still be reapable, path-anchored so
 # a sibling worktree's server is never touched (healthcheck.sh's own rule)
-if grep -qE 'pkill -f "\$\(_ob_ere "\$REPO_DIR/agents/artifact_server\.py"\)"' \
+if grep -qE 'pkill -f "\$\((_ob_ere|ob_py_ere) "\$REPO_DIR/agents/artifact_server\.py"\)"' \
         "$REPO_DIR/scripts/healthcheck.sh"; then
   pass "healthcheck can reap an unrecorded beast-artifact orphan (ERE-quoted)"
 else
@@ -2166,7 +2192,7 @@ while IFS= read -r _ln; do
   _t="${_ln#"${_ln%%[![:space:]]*}"}"
   [[ "$_t" == \#* ]] && continue
   [[ "$_t" == *'$REPO_DIR'* ]] || continue
-  [[ "$_t" == *'_ob_ere'* ]] || _HC_BARE=1
+  [[ "$_t" =~ _ob_ere|ob_py_ere|ob_bin_ere ]] || _HC_BARE=1   # the ob_*_ere builders quote too
 done < <(grep 'pkill -f' "$REPO_DIR/scripts/healthcheck.sh" || true)
 if [[ $_HC_BARE -eq 0 ]]; then
   pass "every path-anchored pkill is ERE-quoted (a '+' or '.' in the repo path is safe)"
@@ -2412,7 +2438,7 @@ for _f in stop.sh scripts/healthcheck.sh; do
     _t="${_ln#"${_ln%%[![:space:]]*}"}"
     [[ "$_t" == \#* ]] && continue
     [[ "$_t" == *'$REPO_DIR'* || "$_t" == *'$SCRIPT_DIR'* ]] || continue
-    [[ "$_t" == *'_ob_ere'* ]] || _RV_BARE=1
+    [[ "$_t" =~ _ob_ere|ob_py_ere|ob_bin_ere ]] || _RV_BARE=1
   done < <(grep -E 'pkill -f|pgrep -f' "$REPO_DIR/$_f" || true)
   if [[ $_RV_BARE -eq 0 ]]; then
     pass "$_f: every path-anchored pkill/pgrep is ERE-quoted"
@@ -2475,7 +2501,7 @@ else
   fail "a just-launched llama-server is treated as down"
 fi
 # "Loading model" is BOUNDED too: a server wedged mid-load says it forever.
-if OPENBEAST_LLAMA_LOAD_GRACE=0 _rv_hc '{"error":{"message":"Loading model"}}' _llama_loading; then
+if LLAMA_LOAD_GRACE=0 _rv_hc '{"error":{"message":"Loading model"}}' _llama_loading; then
   fail "a recorded server still 'Loading model' past the grace is left alone forever"
 else
   pass "past the grace, a recorded server that is STILL loading is down"
@@ -2493,7 +2519,7 @@ else
 fi
 pkill -P "$_RV_TAIL" 2>/dev/null || true; kill "$_RV_TAIL" 2>/dev/null || true
 echo "$_RV_LL" > "$_RV/repo/.run/llama.pid"
-if OPENBEAST_LLAMA_LOAD_GRACE=0 _rv_hc '' _llama_loading; then
+if LLAMA_LOAD_GRACE=0 _rv_hc '' _llama_loading; then
   fail "the load grace never expires — a wedged server would be left forever"
 else
   pass "past the grace period a silent server IS down (control)"
@@ -2707,6 +2733,16 @@ if _LC_OUT="$(bash "$REPO_DIR/tests/test_lifecycle.sh" 2>&1)"; then
 else
   grep -E 'FAIL|passed, ' <<< "$_LC_OUT" | sed 's/^/    /' || true
   fail "lifecycle suite failed (bash tests/test_lifecycle.sh for detail)"
+fi
+
+# --- Review 2026-10-27 launcher/ops cases (tests/test_review1027_launcher.sh) ---
+echo ""
+echo "Launcher / ops review 2026-10-27 (tests/test_review1027_launcher.sh):"
+if _RL_OUT="$(bash "$REPO_DIR/tests/test_review1027_launcher.sh" 2>&1)"; then
+  pass "launcher review suite: $(grep -o '[0-9]* passed, [0-9]* failed' <<< "$_RL_OUT" | tail -n1)"
+else
+  grep -E 'FAIL|passed, ' <<< "$_RL_OUT" | sed 's/^/    /' || true
+  fail "launcher review suite failed (bash tests/test_review1027_launcher.sh for detail)"
 fi
 
 # --- Summary ---

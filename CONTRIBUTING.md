@@ -41,7 +41,7 @@ Run what CI runs, so nothing surprises you in review:
 # Tests (the CI 'test' job)
 ./tests/run_tests.sh                 # the shell suites (scripts, clients, job.sh, artifact CLI,
                                      #   offline fixes, ssd-wear) + tool unit tests + full pytest
-python3 -m pytest tests/ -q          # full suite (~3,100 tests, CPU-only)
+python3 -m pytest tests/ -q          # full suite (~3,500 tests, CPU-only)
 
 # Quality gates (the CI 'PR quality' jobs) — install once:
 #   pip install --user ruff pip-audit shellcheck-py
@@ -53,14 +53,32 @@ pip-audit -r agents/requirements.lock --disable-pip --no-deps  # …and the whol
 python3 evals/suite_stats.py --check  # docs cite the generated eval counts
 ```
 
+Under `CI=true`, `tests/conftest.py` fails the pytest session when a test is
+skipped for a reason not on its `SKIP_ALLOWLIST`, so a test that silently
+stops running is a red check, not a quiet `s`. `OPENBEAST_SKIP_GATE=off|warn|strict`
+overrides that (default: `strict` under CI, `off` locally). CI's own tool
+pins (`.github/ci-requirements/{test,lint,audit,variants}.txt`) are
+regenerated from the matching `*.in` by `.github/ci-requirements/relock.sh`
+(all four by default, or name one).
+
 Two workflows gate every PR (green is required):
 
 - **`ci.yml`** — installs the hash-pinned closure (`pip --require-hashes -r
   agents/requirements.lock`) and checks the lock is current
   (`pydeps.sh verify`), then the full pytest + structure suite, the
   doc-count check, the variant-spec audit, and a repo-wide `bash -n` sweep.
-- **`pr-quality.yml`** — ShellCheck (error severity), Ruff (E9,F), and
-  pip-audit against both the direct pins and the lock.
+- **`pr-quality.yml`** — ShellCheck (error severity), Ruff (E9,F),
+  pip-audit, and "Lock matches a fresh resolve". The audit
+  (`.github/scripts/audit_gate.py`) audits each requirements file at the PR
+  head and at its base, and goes red only on an advisory the change
+  **introduces**; an advisory already present on the base, against a pin
+  this PR does not touch, is a warning.
+
+A weekly `dependency-audit.yml` (Mondays, and on manual dispatch) audits
+every pinned file (the agents lock, `.github/ci-requirements/*.txt`, the
+Open-Jev requirements) and fails only on a finding that has a fix.
+Dependabot also opens grouped, weekly docker-compose image PRs (7-day
+cooldown).
 
 A third, `dependabot-relock.yml`, runs only on Dependabot's PRs: it
 regenerates `agents/requirements.lock` for the bumped `requirements.txt`
@@ -68,7 +86,8 @@ and pushes it to the PR branch, because Dependabot edits only the latter.
 Dependabot opens weekly PRs; `./scripts/land-dependabot.sh` lands them one
 at a time (rebase → relock → approve the held CI runs → merge). With no
 arguments it takes only the PRs that touch `agents/requirements.txt`; pass a
-PR number to land any other — see
+PR number to land any other (a github-actions or docker bump has no lock, so
+it waits for the rebase only, then the same checks and merge) — see
 [`docs/UPDATING.md`](docs/UPDATING.md). **Never bump `requirements.txt`
 without the lock**: `update.sh --python` regenerates it, and CI goes red on a
 commit that moves one without the other.

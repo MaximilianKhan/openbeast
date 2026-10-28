@@ -1,0 +1,5 @@
+# The variant audit's own tools (.github/workflows/ci.yml, `variants` job):
+# reference solutions and checkers of 63_det and 122_gemm_blocked import
+# numpy. Exact version; the hashes are in variants.txt — regenerate with
+# ./.github/ci-requirements/relock.sh variants
+numpy==2.4.4

@@ -161,7 +161,9 @@ for _suite in \
   "test_hydra_sim.sh|beast-hydra simulated fleet + scripts/hydra.sh" \
   "test_hydra_instinct_wiring.sh|beast-hydra / beast-instinct stack wiring (conf, start, stop, healthcheck)" \
   "test_setup_client.sh|Client installer (scripts/setup-client.sh)" \
-  "test_operator_scripts.sh|Operator scripts (2026-10-09 review fixes)"; do
+  "test_operator_scripts.sh|Operator scripts (2026-10-09 review fixes)" \
+  "test_review1027_ci.sh|Review 2026-10-27 script fixes (land-dependabot, Spark launchers, install-skills)" \
+  "test_review1027_install.sh|Review 2026-10-27 install fixes (fetch-weight, doctor zig/tailscale rows)"; do
   _file="${_suite%%|*}"; _label="${_suite#*|}"
   echo "--- $_label tests (tests/$_file) ---"
   echo ""

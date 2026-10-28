@@ -81,7 +81,10 @@ saying what we changed.
   advice applies when.
 - `skill(name)` returns only `SKILL.md`. The four imports that ship other
   files (`writing-skills`, `skill-creator`, `webapp-testing`, `mcp-builder`)
-  tell the model to `read_file` them by repo path.
+  tell the model to `read_file` them by the absolute skill directory that
+  the `skill(name)` header names. A relative `skills/...` path resolves
+  against the caller's working directory (the user's shard in Open WebUI,
+  the agent's workdir, OpenCode's project), so it works only in the checkout.
 
 ## How the model uses them
 
@@ -179,3 +182,11 @@ Two locations are searched, repo first (wins on collision):
 
 Global skills are managed via `./scripts/install-skills.sh`. Use `--link-all`
 to symlink every repo skill globally; use `--link <name>` for one at a time.
+
+**The global directory is outside the import gate.** `scripts/skill-import.sh`
+reviews, ledgers and verifies what lands in `<repo>/skills/`; nothing checks
+a skill someone copies into `~/.local/share/local-llm-skills/` by hand. Such
+a skill (one that is not a symlink into this directory) is labelled
+`[global, unverified]` in the `skill()` index, in the `skill(name)` header and
+in `start_skill_agent`'s frame. Treat its text like any other unreviewed
+input, or import it through the gate.
