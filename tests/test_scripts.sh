@@ -2068,7 +2068,13 @@ if grep -q 'require-hashes -r agents/requirements.lock' "$REPO_DIR/.github/workf
 else
   fail "CI does not install from the lock — its cross-platform claim is untested"
 fi
-if grep -q 'pip-audit -r agents/requirements.lock' "$REPO_DIR/.github/workflows/pr-quality.yml"; then
+# Either a literal `pip-audit -r agents/requirements.lock`, or (since the
+# 2026-10-27 audit gate) a `for f in … agents/requirements.lock …` loop whose
+# body runs `pip-audit -r "$f"`.
+_PQ="$REPO_DIR/.github/workflows/pr-quality.yml"
+if grep -q 'pip-audit -r agents/requirements.lock' "$_PQ" \
+   || { grep -qE '^\s*for f in .*agents/requirements\.lock( |;)' "$_PQ" \
+        && grep -q 'pip-audit -r "$f"' "$_PQ"; }; then
   pass "the vulnerability audit covers the whole closure, not just the 4 direct pins"
 else
   fail "pip-audit only sees requirements.txt — 39 of 43 packages are unaudited"
