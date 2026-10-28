@@ -28,7 +28,10 @@ it). RBAC **deliberately does not apply on this path**: the identity server
 (`:3001`) is rig-local and never published, and a client is a single-user
 device, so there is no role to enforce. `OPENBEAST_MCP_TOOLS` (a registration
 allowlist read by `agents/mcp_server.py`) is the only scoping lever if a shared
-client ever needs one. See `docs/BEAST_SLOT.md`.
+client ever needs one. It decides which tools *register* on that MCP server
+and nothing else: it is not a security boundary, and the `:3001` identity
+server ignores it (its guest boundary is `GUEST_TOOLS` in
+`agents/openapi_tools.py`). See `docs/BEAST_SLOT.md`.
 
 ## The 18 MCP tools
 
@@ -44,7 +47,7 @@ agent-management and skills layers on top.
 | `write_file` | Creates parent dirs; **refuses credential/persistence paths** (`~/.ssh`, `~/.gnupg`, `~/.aws`, shell rc files, `/etc`, `.git/config`) — realpath-resolved so symlinks can't dodge |
 | `edit_file` | Exact-string replacement with uniqueness checks; same write guard |
 | `list_files` | Recursive glob, capped at 200 entries |
-| `grep` | Shells out to system `grep -rn -E` through the reaped runner |
+| `grep` | Shells out to system `grep -rn -E` through the reaped runner. `grep(pattern, path=".", file_glob="", context_lines=0, ignore_case=False, max_results=500)`: all six parameters reach the tool on every surface (MCP, the `:3001` OpenAPI server, the runner) |
 
 ### Shell + web (3) — `agents/tools.py`
 
@@ -98,7 +101,12 @@ the artifact server; `:3004` exists to *serve* the pages, and
 locality token, on write verbs only). Two consequences: the tool path writes
 no `.run/artifact-audit.jsonl` row, and it checks `BEAST_ARTIFACT` itself
 rather than discovering the service is off by failing to connect. Opt-in via
-`BEAST_ARTIFACT=true`. Neither tool is in `GUEST_TOOLS` (guest → 404) and
+`BEAST_ARTIFACT=true`. `publish_artifact` only publishes a page from inside
+the caller's workspace, which is, in order: the request's file shard (WebUI),
+a spawned agent's `AGENT_WORKDIR`, `OPENBEAST_FILES_DIR`, else
+`~/openbeast-files`. It is never the process's working directory, so OpenCode
+launched from the checkout cannot publish repo files, and a file whose name
+starts with `openbeast.conf` is refused wherever it is. Neither tool is in `GUEST_TOOLS` (guest → 404) and
 neither is in the autonomous runner's registry — background agents publish
 through `scripts/artifact.sh` with `bash`. Authoring rules, the sandbox/CSP
 posture, versions and visibility: [`docs/BEAST_ARTIFACT.md`](BEAST_ARTIFACT.md).
@@ -166,6 +174,21 @@ and reports `COMPACTIONS: n` next to the `TOKENS:` line.
 | **SearXNG** | The search backend behind our `web_search` tool | It's a service, not a tool — the tool code is ours |
 | **OpenCode** | Its *own* native tool suite (its `bash`, `edit`, `view`, …) alongside our 18 via MCP stdio | OpenCode's built-ins are upstream's code and are documented upstream |
 | **MCP Python SDK** | The protocol plumbing `mcp_server.py` is written against | — |
+
+**The audit trail.** The identity tool server writes one row per call (and
+per refusal: a denied tool, a workdir escape, a shard it could not create) to
+`.run/tool-audit.jsonl` (`OPENBEAST_TOOL_AUDIT_PATH`). Arguments are never
+logged. `args_sha256` is a correlation digest, HMAC-SHA256 truncated to 16
+hex characters and keyed by `tool-audit.key` (0600, created once beside the
+trail), so equal arguments give equal digests but a short argument cannot be
+recovered by hashing guesses. `args_digest: "hmac-sha256"` names the scheme;
+rows written before 2026-10-27 carry a plain sha256 and do not compare with
+newer ones.
+
+**`mcp_server.py --transport http` is a debug transport.** WebUI does not use
+it (WebUI talks to `:3001`). It checks no keys, so it binds loopback by
+default on port 3009, and on a non-loopback `OPENBEAST_BIND` it exits 2
+unless given `--allow-open` or `OPENBEAST_ALLOW_OPEN_TOOLS=true`.
 
 ## RBAC visibility (who sees what)
 

@@ -85,6 +85,9 @@ a second full-tunnel VPN is running.
 **Obscured:** every outbound connection the machine makes, which for a rig means
 SearXNG's upstream queries, the SSRF-guarded `fetch` tool, model downloads and
 container pulls. Your ISP and the sites you reach see the exit node, not you.
+With `WEBUI_WEB_SEARCH=true` (off by default), Open WebUI's built-in Web
+Search also loads result pages itself, from its container and outside the
+`fetch` guard; the exit node covers that traffic too.
 
 **Not obscured, by design:** traffic *between* your own devices. Tailnet packets
 go direct (or via DERP), encrypted end to end with WireGuard, and they never
