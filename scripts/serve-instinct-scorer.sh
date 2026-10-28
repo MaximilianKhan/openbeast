@@ -24,7 +24,9 @@
 #   * the scorer URL equals INFERENCE_URL (it would contend for the primary's
 #     slot; the plan's launcher refuses that without --allow-primary, and this
 #     one has no such flag — use a different port);
-#   * a non-loopback host.
+#   * a --host / -p / --port among the extra args (serve.sh lets the LAST one
+#     win, so an extra arg could unbind loopback or land on the primary's
+#     port past the check above). The bind is 127.0.0.1:$INSTINCT_SCORER_PORT.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -39,9 +41,19 @@ RUN_DIR="${INSTINCT_RUN_DIR:-$REPO_DIR/.run}"
 KEY_FILE="${INSTINCT_SCORER_KEY_FILE:-$RUN_DIR/instinct-scorer.key}"
 
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-  sed -n '2,27p' "$0"
+  sed -n '2,29p' "$0"
   exit 0
 fi
+
+# The bind is pinned. serve.sh parses the extra args after ours and the last
+# --host / -p wins, so letting one through would undo both refusals below.
+for a in "$@"; do
+  case "$a" in
+    --host|--host=*|-p|--port|--port=*)
+      echo "Error: $a is refused — the scorer binds 127.0.0.1 only; set INSTINCT_SCORER_PORT for the port" >&2
+      exit 2 ;;
+  esac
+done
 
 phys_cores() {
   local n

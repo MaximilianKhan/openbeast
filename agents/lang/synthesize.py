@@ -223,13 +223,42 @@ def lease_status() -> str:
     OPENBEAST_RUN_DIR), so a git worktree asking its own copy of the script
     reads an empty directory and is told FREE while a campaign holds the card.
     """
+    env = dict(os.environ)
+    if not env.get("OPENBEAST_RUN_DIR"):
+        run_dir = _main_tree_run_dir(_REPO)
+        if run_dir is None:
+            return ""                      # a worktree whose main tree is unknown
+        if run_dir:
+            env["OPENBEAST_RUN_DIR"] = run_dir
     script = os.path.join(_REPO, "scripts", "gpu-lease.sh")
     try:
         r = subprocess.run(["bash", script, "status"], capture_output=True,
-                           text=True, timeout=30, check=False)
+                           text=True, timeout=30, check=False, env=env)
     except (OSError, subprocess.SubprocessError):
         return ""
     return (r.stdout or "").splitlines()[0].strip() if r.stdout else ""
+
+
+def _main_tree_run_dir(repo: str) -> str | None:
+    """The .run/ of the MAIN tree that `repo` belongs to.
+
+    "" — `repo` is not a git worktree (a plain checkout or an install without
+    git): its own .run/ is the right one and gpu-lease.sh finds it unaided.
+    None — `repo` IS a linked worktree (its .git is a file) but the main tree
+    cannot be resolved: unknown, which check_lease treats as not free."""
+    linked = os.path.isfile(os.path.join(repo, ".git"))
+    try:
+        r = subprocess.run(["git", "-C", repo, "rev-parse", "--path-format=absolute",
+                            "--git-common-dir"], capture_output=True, text=True,
+                           timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None if linked else ""
+    common = (r.stdout or "").strip()
+    if r.returncode != 0 or not common:
+        return None if linked else ""
+    if os.path.basename(common.rstrip("/")) != ".git":
+        return None if linked else ""      # a bare repository has no main tree
+    return os.path.join(os.path.dirname(common.rstrip("/")), ".run")
 
 
 def _ancestors(pid: int | None = None) -> set[int]:

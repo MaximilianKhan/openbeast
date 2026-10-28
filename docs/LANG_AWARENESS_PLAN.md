@@ -292,9 +292,11 @@ task's target language. Corrected per review:
   About 1.5 GPU-h at `--jobs 4`. It can ride along with the Tier-3 rerun as
   `EXTRA_UNITS`.
 
-**Built 2026-09-11 (zig pack, PR feat/zig-awareness-pack) — opt-in
+**Built 2026-09-11 (zig pack, PR feat/zig-awareness-pack) — then opt-in
 `BEAST_PACKS=1` / `OPENBEAST_PACKS=1` / `--packs`, default OFF, not yet
-A/B'd.** Composition of `agents/packs/zig-0.16.md` (7,880 bytes ≈ 1,970
+A/B'd.** (Since v1.7.0, after the Tier-3 SHIP on 2026-09-30, production
+serves it by default: `LANG_PACK_CONTEXT=auto`, agents on zig tasks only;
+`BEAST_PACKS` / `--packs` remains the eval arm.) Composition of `agents/packs/zig-0.16.md` (7,880 bytes ≈ 1,970
 tokens at 4 chars/token, budget 2,000):
 - **(1) CURATED rename/idiom map, ≈1,160 tokens, 17 bullets** — main/Io
   plumbing (`std.process.Init`, `std.Io.File.Writer/Reader.init(.stdout()/
