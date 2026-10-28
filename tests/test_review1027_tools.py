@@ -25,6 +25,23 @@ import tools  # noqa: E402
 
 
 # --------------------------------------------------------------------------
+# R1-03
+# --------------------------------------------------------------------------
+
+def test_edit_file_refuses_files_over_the_read_cap(tmp_path, monkeypatch):
+    big = tmp_path / "big.bin"
+    big.write_bytes(b"a" * 4096)
+    monkeypatch.setattr(tools, "_MAX_READ_BYTES", 1024)
+    out = tools.edit_file(str(big), "a", "b")
+    assert out.startswith("Error: file too large")
+    assert big.read_bytes() == b"a" * 4096
+    small = tmp_path / "small.txt"
+    small.write_text("hello")
+    assert not tools.edit_file(str(small), "hello", "bye").startswith("Error")
+    assert small.read_text() == "bye"
+
+
+# --------------------------------------------------------------------------
 # R1-06
 # --------------------------------------------------------------------------
 

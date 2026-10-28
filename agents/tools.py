@@ -1613,6 +1613,12 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
             return blocked
         if not os.path.isfile(path):
             return f"Error: file not found: {path}"
+        # Same cap as read_file (R1-03): open().read() loads every byte
+        # before it decodes, so a weight file OOMed the tool server.
+        size = os.stat(path).st_size
+        if size > _MAX_READ_BYTES:
+            return (f"Error: file too large ({size} bytes > "
+                    f"{_MAX_READ_BYTES}); edit a slice with bash instead")
 
         with open(path, "r") as f:
             content = f.read()
