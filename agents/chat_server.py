@@ -374,15 +374,23 @@ class DeviceRegistry:
         try:
             with open(self.path) as f:
                 data = json.load(f)
-        except (OSError, ValueError):
-            return  # half-written file: keep serving the last good map
-        by_hash = {}
-        for dev in data.get("devices", []):
-            if not isinstance(dev, dict):
-                continue
-            digest = (dev.get("key_sha256") or "").strip().lower()
-            if digest:
-                by_hash[digest] = dev
+            # JSON of the wrong SHAPE (a top-level list, null, a non-string
+            # key hash) is as unusable as a parse error: it used to raise
+            # AttributeError out of the constructor (beast-chat would not
+            # start) and out of every later device lookup (500s).
+            devices = (data.get("devices", []) if isinstance(data, dict)
+                       else None)
+            if not isinstance(devices, list):
+                raise ValueError("devices is not a list")
+            by_hash = {}
+            for dev in devices:
+                if not isinstance(dev, dict):
+                    continue
+                digest = str(dev.get("key_sha256") or "").strip().lower()
+                if digest:
+                    by_hash[digest] = dev
+        except (OSError, ValueError, AttributeError, TypeError):
+            return  # half-written / wrong-shaped: keep the last good map
         self._by_hash, self._present, self._stamp = by_hash, True, stamp
 
     @property
@@ -3015,7 +3023,10 @@ def create_app() -> FastAPI:
               int((time.monotonic() - t0) * 1000), {"from": start})
         with metrics_lock:
             counters[("GET /events", "stream_open")] += 1
-            gauges["sse_open"] += 1
+            # The sse_open gauge is raised inside _stream, not here: a client
+            # that leaves between the headers and the first frame leaves the
+            # generator un-started, so its `finally` (the decrement) never
+            # runs and the gauge would over-report for good (review R2-7).
 
         return StreamingResponse(
             _stream(request, rec, start, principal, tail_skipped, slot),
@@ -3069,6 +3080,8 @@ def create_app() -> FastAPI:
                             "start"),
             })
 
+        with metrics_lock:
+            gauges["sse_open"] += 1
         try:
             size = _file_size(path)
             if offset > size:

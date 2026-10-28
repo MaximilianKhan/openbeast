@@ -180,7 +180,7 @@ unspecified" rather than switching exhaustively — the set can grow:
 | `open` | no credential required (personal tailnet, gate off, no key) |
 | `key` | one shared `LLAMA_API_KEY` gates the endpoint |
 | `device` | beast-gate is on: you need your own enrolled device key |
-| `anon` | beast-gate is on, `EDGE_ALLOW_ANON=true` and **no device is enrolled yet**, so every caller is served as a single `anon` device — the gate is up, per-device identity is **not** in force. The moment one device is enrolled the gate ignores `ALLOW_ANON` (keyless callers get 401) and this reads `device` |
+| `anon` | beast-gate is on, `EDGE_ALLOW_ANON=true` and **no registry file (`.run/clients.json`) has ever been written**, so every caller is served as a single `anon` device — the gate is up, per-device identity is **not** in force. The moment the file exists — even emptied again by `clients.sh remove` — the gate ignores `ALLOW_ANON` (keyless callers get 401) and this reads `device` |
 
 `device` and `anon` were added alongside beast-gate. This is an additive
 change to an existing field's value set, not a rename, so `min_client` stays

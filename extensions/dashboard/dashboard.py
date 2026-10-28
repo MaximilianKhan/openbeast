@@ -60,7 +60,7 @@ _EDGE_GATE = os.environ.get("EDGE_GATE", "").strip().lower() == "true"
 # ALLOW_ANON serves unregistered callers as a single "anon" device, so the
 # gate is up but per-device identity is NOT in force. Saying "device" there
 # would overstate what a client is actually protected by. It only applies
-# while NO device is enrolled, though — see _edge_has_devices().
+# while no registry file has been written — see _edge_registry_exists().
 _EDGE_ANON = os.environ.get("OPENBEAST_EDGE_ALLOW_ANON", "").strip().lower() == "true"
 # beast-instinct: conf.sh exports these only under INSTINCT=true.
 _INSTINCT = os.environ.get("OPENBEAST_INSTINCT", "").strip().lower() == "true"
@@ -70,30 +70,24 @@ except ValueError:
     _INSTINCT_PORT = 8094
 
 
-def _edge_has_devices():
-    """Whether beast-gate's registry holds any enrolled device.
+def _edge_registry_exists():
+    """Whether beast-gate's registry FILE exists — whatever it contains.
 
-    The gate honours ALLOW_ANON only while its registry is empty
-    (agents/edge.py _identify): the moment one device is enrolled, a keyless
-    or unknown-key caller gets 401. Deriving "anon" from the env flag alone
-    told clients to connect without a key into a guaranteed 401. Mirrors
-    Registry.configured — any entry with a key hash counts, revoked or not.
-    An unreadable or corrupt registry answers True: the gate then keeps its
-    last good map, and claiming "anon" is the direction that misleads.
+    Mirrors agents/edge.py Registry.exists / _auth_mode: the gate honours
+    ALLOW_ANON only while .run/clients.json has never been written. A file
+    emptied by `clients.sh remove`, or one that is corrupt, still closes
+    the gate (401 for every keyless caller), so "anon" here would tell
+    clients to connect without a key into a guaranteed 401. Only a missing
+    file reads False.
     """
     path = os.path.join(REPO_DIR, ".run", "clients.json")
     try:
-        with open(path) as f:
-            data = json.load(f)
+        os.stat(path)
     except FileNotFoundError:
         return False
-    except (OSError, ValueError):
+    except OSError:
         return True
-    try:
-        return any((d.get("key_sha256") or "").strip()
-                   for d in data.get("devices", []))
-    except (AttributeError, TypeError):
-        return True
+    return True
 
 
 def _get(url, timeout=2, auth=False):
@@ -399,7 +393,7 @@ def _auth_mode():
     # Gate-aware: with EDGE_GATE=true remote clients need a per-DEVICE
     # key even when LLAMA_API_KEY is unset. Reporting "open" there told
     # clients the opposite of the truth.
-    return ("anon" if (_EDGE_GATE and _EDGE_ANON and not _edge_has_devices())
+    return ("anon" if (_EDGE_GATE and _EDGE_ANON and not _edge_registry_exists())
             else "device" if _EDGE_GATE
             else "key" if _API_KEY else "open")
 
