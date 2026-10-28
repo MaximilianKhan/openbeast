@@ -55,7 +55,7 @@ def test_reload_moving_a_node_rejudges_conformance(tmp_path):
 
 # ── R3-F4: an engine 429 is passed through when nothing after it ran ──
 
-def test_429_passes_through_when_later_targets_are_skipped(fleet):
+def test_429_passes_through_when_later_targets_are_skipped(fleet):  # noqa: F811
     srv, rig, sparks, _ = fleet()
     pause_probes(srv)
     rig.set_fault("http_429", 1)
@@ -73,7 +73,7 @@ def test_429_passes_through_when_later_targets_are_skipped(fleet):
     assert att.startswith("unc@rig:429") and "nvfp4@sparks" in att
 
 
-def test_429_still_fails_over_when_the_next_target_runs(fleet):
+def test_429_still_fails_over_when_the_next_target_runs(fleet):  # noqa: F811
     """Negative control: a 429 with a runnable next target is NOT returned."""
     srv, rig, sparks, _ = fleet()
     pause_probes(srv)

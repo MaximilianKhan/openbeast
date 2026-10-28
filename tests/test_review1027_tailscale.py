@@ -32,7 +32,7 @@ def _run(r, **env):
     return p, _mounts(r)
 
 
-def test_chat_and_artifact_sockets_are_mounted(ts_rig, tmp_path):
+def test_chat_and_artifact_sockets_are_mounted(ts_rig, tmp_path):  # noqa: F811
     chat, art = str(tmp_path / "chat.sock"), str(tmp_path / "art.sock")
     p, m = _run(ts_rig, OPENBEAST_CHAT_SOCKET=chat,
                 OPENBEAST_CHAT_LOGIN_FROM="unix",
@@ -44,7 +44,7 @@ def test_chat_and_artifact_sockets_are_mounted(ts_rig, tmp_path):
     assert "WARNING: OPENBEAST_ARTIFACT_LOGIN_FROM=unix" not in p.stdout
 
 
-def test_default_is_still_tcp(ts_rig):
+def test_default_is_still_tcp(ts_rig):  # noqa: F811
     # Negative control: nothing set, nothing changes.
     p, m = _run(ts_rig)
     assert m["8445"] == "http://127.0.0.1:3003"
@@ -52,7 +52,7 @@ def test_default_is_still_tcp(ts_rig):
     assert "LOGIN_FROM=unix" not in p.stdout
 
 
-def test_login_from_unix_without_a_socket_warns(ts_rig):
+def test_login_from_unix_without_a_socket_warns(ts_rig):  # noqa: F811
     p, m = _run(ts_rig, OPENBEAST_CHAT_LOGIN_FROM="unix",
                 OPENBEAST_ARTIFACT_LOGIN_FROM="UNIX")
     assert m["8445"] == "http://127.0.0.1:3003"
