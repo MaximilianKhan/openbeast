@@ -1912,14 +1912,23 @@ def fetch(url: str, max_length: int = 50_000) -> str:
     hostname resolving to loopback/private/link-local/reserved space is
     blocked, at request time and again on every redirect hop.
     """
-    reason = _fetch_url_blocked(url)
+    # Tools never raise (R1-08): urlparse raises ValueError on an
+    # out-of-range or non-numeric port and an unclosed IPv6 bracket, which
+    # the guest-reachable :3001 surface turned into an HTTP 500.
+    try:
+        reason = _fetch_url_blocked(url)
+    except (ValueError, TypeError) as e:
+        return f"Error: invalid URL: {e}"
     if reason:
         return f"Error: fetch blocked: {reason}"
     # max_length is model-controlled; without a ceiling, max_length*4 below
     # becomes an attempted multi-GB read into memory — and a result bigger
     # than the context is useless to the model anyway. The truncation marker
     # in _fetch_body tells it the page was cut.
-    max_length = max(1, min(int(max_length), _fetch_max_chars()))
+    try:
+        max_length = max(1, min(int(max_length), _fetch_max_chars()))
+    except (ValueError, TypeError, OverflowError):
+        return f"Error: max_length must be an integer, got {max_length!r}"
     # Total-deadline watchdog: at _FETCH_DEADLINE it shuts down every socket
     # this call opened, so a slow drip anywhere (TLS handshake, headers,
     # body, a redirect hop) ends instead of holding the worker.
