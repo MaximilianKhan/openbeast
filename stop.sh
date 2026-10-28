@@ -159,7 +159,14 @@ fi
 if [[ "${HYDRA:-false}" == "true" || -f "$RUN_DIR/hydra.pid" ]]; then
   # It never contacts a node on the way down: hydra holds no node state.
   echo "Stopping beast-hydra..."
-  pkill -f "$(ob_py_ere "$SCRIPT_DIR/agents/hydra.py")" 2>/dev/null && echo "beast-hydra stopped." || echo "beast-hydra was not running."
+  # By its recorded pid first (start.sh and the watchdog record it with its
+  # start time), then the invocation-anchored sweep for one with no record.
+  if ob_recorded_pid_ours "$RUN_DIR/hydra.pid" "$(_ob_ere "$SCRIPT_DIR/agents/hydra.py")"; then
+    _hy_pid="$(cat "$RUN_DIR/hydra.pid")"
+    kill "$_hy_pid" 2>/dev/null && echo "beast-hydra stopped (pid $_hy_pid)."
+  fi
+  pkill -f "$(ob_py_ere "$SCRIPT_DIR/agents/hydra.py")" 2>/dev/null && echo "beast-hydra stopped." \
+    || [[ -n "${_hy_pid:-}" ]] || echo "beast-hydra was not running."
   rm -f "$RUN_DIR/hydra.pid" "$RUN_DIR/hydra.start"
 fi
 
