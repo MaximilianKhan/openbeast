@@ -234,8 +234,7 @@ class TestTenancyKnobs:
 
     _INTERNAL = {"chat_parser": "x" * 32, "chat_format": 3,
                  "generation_prompt": "<|im_start|>assistant",
-                 "message_delimiters": ["<a>", "<b>"],
-                 "continue_final_message": True}
+                 "message_delimiters": ["<a>", "<b>"]}
 
     @pytest.mark.parametrize("path,base", [
         ("/v1/chat/completions", {"messages": [{"role": "user",
@@ -275,6 +274,9 @@ class TestTenancyKnobs:
                 "response_format": {"type": "json_object"},
                 "logit_bias": {"50256": -100}, "user": "u",
                 "presence_penalty": 0.1, "frequency_penalty": 0.1,
+                # a client option (assistant prefill), not server plumbing:
+                # stripping it broke prefill through the gate
+                "continue_final_message": True,
                 # a nested `chat_format` is message content, not a knob
                 "metadata": {"chat_format": "kept"}}
         with TestClient(edge.app) as c:

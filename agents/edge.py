@@ -141,10 +141,13 @@ JSON_PATHS = frozenset({
 })
 # Top-level body keys stripped on every JSON path, like id_slot: llama-server
 # reads them from the request but they are its own plumbing, not part of the
-# OpenAI API (review R10-01 — CVE-2026-107183 via `chat_parser`).
+# OpenAI API (review R10-01 — CVE-2026-107183 via `chat_parser`). Each is a
+# field llama-server SETS for itself while it renders the chat template
+# (tools/server/server-common.cpp at our pin). `continue_final_message` is
+# deliberately not here: it is a client option parsed from the chat body,
+# next to `add_generation_prompt` (assistant prefill), not plumbing.
 _SERVER_INTERNAL_KNOBS = (
-    "chat_parser", "chat_format", "generation_prompt",
-    "message_delimiters", "continue_final_message",
+    "chat_parser", "chat_format", "generation_prompt", "message_delimiters",
 )
 # No legitimate request nests anywhere near this (a chat body with a deep tool
 # schema is ~15-20). The cap must sit far below the ~50k where Python's json
