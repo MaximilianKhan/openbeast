@@ -491,6 +491,11 @@ def ineligibility_reasons(results: dict) -> list[str]:
         reasons.append("awareness packs")
     if harness.get("escalate") or harness.get("escalate_component"):
         reasons.append("escalation cards")
+    # A confined bash (OPENBEAST_BASH_WRAPPER) is its own cache era: the eval
+    # baseline runs bash unwrapped. benchmark_all forces --no-leaderboard for
+    # it; this stops a run_eval.py-direct run being seated by --rebuild.
+    if harness.get("bash_wrapper") or harness.get("bash_wrapper_component"):
+        reasons.append("sandboxed bash (OPENBEAST_BASH_WRAPPER)")
     infra: dict[str, int] = defaultdict(int)
     for t in results.get("tasks", []):
         if t.get("reason") in INFRA_REASONS:
