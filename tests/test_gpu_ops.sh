@@ -621,7 +621,7 @@ case "\$1" in
   pull) exit 0 ;;
   inspect)
     case "\${@: -1}" in
-      ghcr.io/open-webui/open-webui:main) echo "ghcr.io/open-webui/open-webui@$D_OW" ;;
+      ghcr.io/open-webui/open-webui:v0.12.3) echo "ghcr.io/open-webui/open-webui@$D_OW" ;;
       searxng/searxng:latest)             echo "searxng/searxng@$D_SX" ;;
     esac ;;
   compose) exit 0 ;;      # 'ps --status running' prints nothing: stack down
@@ -639,7 +639,7 @@ compose_with "sha256:$(printf '3%.0s' $(seq 1 64))" "sha256:$(printf '4%.0s' $(s
 compose_with "$ORIG_OW" "$ORIG_SX" > "$SBU/docker-compose.yml.pre-bundle"
 UPD --images
 if [[ $_rc -eq 0 ]] \
-   && grep -qx "    image: ghcr.io/open-webui/open-webui:main@$D_OW" "$SBU/docker-compose.yml" \
+   && grep -qx "    image: ghcr.io/open-webui/open-webui:v0.12.3@$D_OW" "$SBU/docker-compose.yml" \
    && grep -qx "    image: searxng/searxng:latest@$D_SX" "$SBU/docker-compose.yml" \
    && grep -qx '    # the chat UI' "$SBU/docker-compose.yml" && has "$_out" "re-pinned 'open-webui'"; then
   pass "a bundle content ID is re-pinned to the freshly pulled registry digest (by service, comments kept)"
@@ -660,7 +660,7 @@ fi
 # NEGATIVE CONTROL: an ordinary digest-pinned compose bumps as it always did.
 compose_with "$ORIG_OW" "$ORIG_SX" > "$SBU/docker-compose.yml"
 UPD --images
-if [[ $_rc -eq 0 ]] && grep -qx "    image: ghcr.io/open-webui/open-webui:main@$D_OW" "$SBU/docker-compose.yml" \
+if [[ $_rc -eq 0 ]] && grep -qx "    image: ghcr.io/open-webui/open-webui:v0.12.3@$D_OW" "$SBU/docker-compose.yml" \
    && has "$_out" "new images take effect on next" && ! has "$_out" "re-pinned"; then
   pass "negative control: a registry-pinned compose is bumped exactly as before"
 else

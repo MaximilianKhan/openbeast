@@ -20,6 +20,12 @@
 # running; restart (./stop.sh && ./start.sh) to pick everything up.
 set -euo pipefail
 
+# The Open WebUI RELEASE that --images pins (R10 #4). It followed `:main`,
+# an unreleased development branch, so every --images run pinned whatever
+# had merged that day. Bump this deliberately, to a release at least two
+# weeks old; OPENBEAST_OPENWEBUI_TAG overrides it for one run.
+OPENWEBUI_TAG="${OPENBEAST_OPENWEBUI_TAG:-v0.12.3}"
+
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_DIR"
 
@@ -351,7 +357,7 @@ update_images() {
     fi
   }
   for _spec in \
-    "ghcr.io/open-webui/open-webui:main" \
+    "ghcr.io/open-webui/open-webui:${OPENWEBUI_TAG}" \
     "searxng/searxng:latest"; do
     docker pull -q "$_spec" >/dev/null 2>&1 || { warn "pull failed: $_spec"; continue; }
     local _repo="${_spec%%:*}"

@@ -583,7 +583,7 @@ cat > "$T/binu/docker" <<STUB
 case "\$1" in
   inspect)
     case "\${@: -1}" in
-      ghcr.io/open-webui/open-webui:main) echo "ghcr.io/open-webui/open-webui@$D_OW" ;;
+      ghcr.io/open-webui/open-webui:v0.12.3) echo "ghcr.io/open-webui/open-webui@$D_OW" ;;   # a RELEASE (R10 #4)
       searxng/searxng:latest)             echo "searxng/searxng@$D_SX" ;;
     esac ;;
 esac
@@ -601,6 +601,12 @@ if [[ $_rc -eq 0 ]] && grep -qx "    image: searxng/searxng:latest@$D_SX" "$SBU/
   pass "a searxng bump is mirrored into scripts/client-searxng.compose.yml (network-exposure-5)"
 else
   fail "client pin after --images (rc=$_rc): $(tr '\n' '|' < "$SBU/scripts/client-searxng.compose.yml") :: $_O"
+fi
+# R10 #4: Open WebUI follows a release tag, not the unreleased `:main` branch.
+if grep -qx "    image: ghcr.io/open-webui/open-webui:v0.12.3@$D_OW" "$SBU/docker-compose.yml"; then
+  pass "--images pins Open WebUI to the release tag (OPENWEBUI_TAG), replacing a :main pin"
+else
+  fail "Open WebUI pin after --images: $(grep open-webui "$SBU/docker-compose.yml")"
 fi
 if ! grep -q 'open-webui' "$SBU/scripts/client-searxng.compose.yml"; then
   pass "…and only the searxng pin: the open-webui bump never lands in the client file (control)"
