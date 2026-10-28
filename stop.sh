@@ -47,6 +47,14 @@ printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "${OPENBEAST_STOP_REASON:-./stop
 # (ob_pid_record), which is exact; 'start\.sh' in a command line is not (any
 # project's ./start.sh matches it) and is only the fallback for a pidfile
 # written before the start time was recorded.
+# The model server this stack recorded, read BEFORE the supervisor is
+# signalled: its trap kills llama-server without waiting and deletes the
+# record, so afterwards nothing here would know which process to wait for
+# (see "Wait for llama-server to exit" below).
+_LLAMA_ERE='^([^ ]*/)?llama-server( |$)'
+_llama_pid0="$(cat "$RUN_DIR/llama.pid" 2>/dev/null || true)"
+ob_pid_matches "$_llama_pid0" "$_LLAMA_ERE" || _llama_pid0=""
+
 if ob_recorded_pid_ours "$RUN_DIR/supervisor.pid" 'start\.sh'; then
   SUP_PID=$(cat "$RUN_DIR/supervisor.pid")
   echo "Stopping supervisor (pid $SUP_PID) gracefully..."
@@ -200,16 +208,60 @@ echo "Stopping llama.cpp server..."
 # or healthcheck's no-supervisor relaunch). Skipping it too left it holding the
 # VRAM with its pidfile deleted a few lines below.
 _llama_pid="$(cat "$RUN_DIR/llama.pid" 2>/dev/null || true)"
-if ob_pid_matches "$_llama_pid" '(^|/)llama-server( |$)'; then
+_llama_wait=()
+[[ -n "$_llama_pid0" ]] && _llama_wait+=("$_llama_pid0")
+if ob_pid_matches "$_llama_pid" "$_LLAMA_ERE"; then
   kill "$_llama_pid" 2>/dev/null && echo "llama.cpp server stopped (pid $_llama_pid)."
+  [[ "$_llama_pid" == "$_llama_pid0" ]] || _llama_wait+=("$_llama_pid")
 fi
+_llama_bin_ere="$(ob_bin_ere "$SCRIPT_DIR/llama.cpp/build/bin/llama-server")"
 if [[ -x "$SCRIPT_DIR/scripts/gpu-lease.sh" ]] \
    && _lease="$("$SCRIPT_DIR/scripts/gpu-lease.sh" status 2>/dev/null | head -n1 || true)" \
    && [[ "$_lease" == HELD* ]]; then
   echo "GPU lease is $_lease"
   echo "  leaving llama-server processes alone — stop that job first (scripts/gpu-lease.sh status)."
 else
-pkill -f "$(_ob_ere "$SCRIPT_DIR/llama.cpp/build/bin/llama-server")" 2>/dev/null && echo "llama.cpp server stopped." || echo "llama.cpp server was not running."
+  while IFS= read -r _p; do
+    [[ "$_p" =~ ^[0-9]+$ && " ${_llama_wait[*]-} " != *" $_p "* ]] && _llama_wait+=("$_p")
+  done < <(pgrep -f "$_llama_bin_ere" 2>/dev/null || true)
+pkill -f "$_llama_bin_ere" 2>/dev/null && echo "llama.cpp server stopped." || echo "llama.cpp server was not running."
+fi
+
+# Wait for llama-server to exit. Nothing above waited for it — the
+# supervisor's trap sends TERM and moves on, and so did the kills here — so
+# stop.sh returned while a ~28 GB server was still releasing port 8080 and
+# its VRAM, and `./start.sh restart` went straight into a preflight that
+# found the port taken (stack down, .run/stopped written, watchdog idle) or
+# a load that OOMed against memory not yet freed. Bounded: TERM gets
+# OPENBEAST_STOP_WAIT seconds (default 30), then KILL. Only processes this
+# script signalled are waited for, each re-identified on every look.
+if [[ ${#_llama_wait[@]} -gt 0 ]]; then
+  _sw="${OPENBEAST_STOP_WAIT:-30}"; [[ "$_sw" =~ ^[0-9]+$ ]] || _sw=30
+  _llama_alive() {
+    local p out=()
+    for p in "${_llama_wait[@]}"; do ob_pid_matches "$p" "$_LLAMA_ERE" && out+=("$p"); done
+    [[ ${#out[@]} -gt 0 ]] && printf '%s ' "${out[@]}"   # (printf with no args still prints once)
+    return 0
+  }
+  _left="$(_llama_alive)"
+  if [[ -n "$_left" ]]; then
+    echo "Waiting for llama-server to exit (pid ${_left% })..."
+    for (( _i = 0; _i < _sw * 5; _i++ )); do
+      _left="$(_llama_alive)"; [[ -z "$_left" ]] && break
+      sleep 0.2
+    done
+    if [[ -n "$_left" ]]; then
+      echo "llama-server still running after ${_sw}s — escalating to SIGKILL (pid ${_left% })."
+      # shellcheck disable=SC2086  # a list of pids
+      kill -KILL $_left 2>/dev/null || true
+      for (( _i = 0; _i < 25; _i++ )); do
+        [[ -z "$(_llama_alive)" ]] && break
+        sleep 0.2
+      done
+    fi
+    [[ -z "$(_llama_alive)" ]] && echo "llama-server has exited (port and VRAM released)." \
+      || echo "Warning: llama-server pid $(_llama_alive)is still alive — check: ps -p $(_llama_alive)" >&2
+  fi
 fi
 fi
 
