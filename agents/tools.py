@@ -177,7 +177,7 @@ def kill_live_children(grace: float = 2.0) -> int:
     return len(procs)
 
 
-def run_reaped(command, timeout, as_limit=None, **popen_kw):
+def run_reaped(command, timeout, as_limit=None, reap_group=False, **popen_kw):
     """subprocess.run(shell=True)-alike that (a) kills the WHOLE process group
     on timeout and (b) bounds how much output the PARENT buffers.
 
@@ -189,6 +189,11 @@ def run_reaped(command, timeout, as_limit=None, **popen_kw):
     retaining at most _MAX_CAPTURE_BYTES (discarding the rest to avoid a
     pipe-full deadlock). Output is decoded errors="replace" so binary bytes
     don't crash the call.
+
+    reap_group: SIGKILL the command's whole process group as soon as the
+    shell exits, so nothing it backgrounded outlives the call — redirected
+    and nohup'd jobs included (the bash tool; review 2026-10-27, R1-06).
+    Without it, only a grandchild still holding the output pipe is killed.
 
     Returns (returncode, output_str) — stderr folded into stdout.
     Raises subprocess.TimeoutExpired after reaping on timeout.
@@ -225,7 +230,7 @@ def run_reaped(command, timeout, as_limit=None, **popen_kw):
     )
     _LIVE_GROUPS[proc.pid] = proc
     try:
-        return _reap(proc, command, timeout, _as_limit, _nproc)
+        return _reap(proc, command, timeout, _as_limit, _nproc, reap_group)
     except BaseException:
         # Anything escaping _reap (a failed reader-thread start, an
         # interrupt) must not leave the command running unsupervised.
@@ -236,7 +241,7 @@ def run_reaped(command, timeout, as_limit=None, **popen_kw):
         _LIVE_GROUPS.pop(proc.pid, None)
 
 
-def _reap(proc, command, timeout, _as_limit, _nproc):
+def _reap(proc, command, timeout, _as_limit, _nproc, reap_group=False):
     """run_reaped's body after the spawn (split out so the live-group
     registry is always cleared, whatever raises)."""
     if hasattr(resource, "prlimit"):
@@ -302,6 +307,10 @@ def _reap(proc, command, timeout, _as_limit, _nproc):
         raise subprocess.TimeoutExpired(command, timeout,
                                         output=_assemble()) from None
     finally:
+        if reap_group and proc.returncode is not None:
+            # The shell is done: whatever is left in its group was
+            # backgrounded by it. Kill it now, before the 5 s grace below.
+            _killpg(proc)
         reader.join(timeout=5)
         if reader.is_alive():
             # The shell exited but a backgrounded grandchild still holds the
@@ -510,6 +519,7 @@ def bash(command: str, timeout: int = 120) -> str:
             timeout,
             cwd=_base_dir(),
             env=_scrubbed_env(),
+            reap_group=True,
         )
         if not output.strip():
             output = f"(exit code {returncode})"
