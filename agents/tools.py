@@ -657,6 +657,41 @@ def _guard_write_path(path: str):
     return None
 
 
+# ---------------------------------------------------------------------------
+# Eval units: earlier solutions are off limits (review 2026-10-27, R6-11).
+# Every eval transcript holds the full write_file arguments, i.e. a passing
+# solution, and the cache, the task specs (hidden cases) and the reference
+# solutions sit in the same checkout. run_eval passes the directories in
+# OPENBEAST_EVAL_DENY_ROOTS (JSON list of realpaths, see evals/harness.py)
+# and the file tools refuse them, under eval only. `bash` can still read
+# them; sealing that needs the unit sandboxed away from the repo.
+# ---------------------------------------------------------------------------
+def _eval_deny_roots() -> list[str]:
+    if not os.environ.get("OPENBEAST_EVAL"):
+        return []
+    raw = os.environ.get("OPENBEAST_EVAL_DENY_ROOTS", "").strip()
+    if not raw:
+        return []
+    try:
+        roots = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    return [r for r in roots if isinstance(r, str) and r.startswith("/")]
+
+
+def _under(rp: str, root: str) -> bool:
+    return rp == root or rp.startswith(root.rstrip(os.sep) + os.sep)
+
+
+def _eval_denied(rp: str, roots: list[str] | None = None) -> str | None:
+    """An `Error:` string if the realpath'd `rp` is inside a denied root."""
+    for root in (_eval_deny_roots() if roots is None else roots):
+        if _under(rp, root):
+            return (f"Error: {rp} is off limits during an eval (earlier "
+                    f"transcripts, results and task files)")
+    return None
+
+
 def read_file(path: str, offset: int = 1, limit: int = 500) -> str:
     """Read lines from a file.
 
@@ -672,6 +707,9 @@ def read_file(path: str, offset: int = 1, limit: int = 500) -> str:
         # can be infinite, blocking, or side-effecting to read — e.g. a 0-size
         # /proc file that streams unbounded content, or /dev/zero. _resolve
         # already realpath'd, so a symlink into them is caught here too.
+        denied = _eval_denied(path)
+        if denied:
+            return denied
         if _hazard_path(path):
             return (f"Error: refusing to read {path} — pseudo-filesystem paths "
                     f"(/proc, /sys, /dev) can be infinite or side-effecting")
@@ -1398,7 +1436,7 @@ def write_file(path: str, content: str) -> str:
         # guard and write the SAME path — a symlink swapped in after the check
         # can't redirect the write.
         path = _resolve(path)
-        blocked = _guard_write_path(path)
+        blocked = _guard_write_path(path) or _eval_denied(path)
         if blocked:
             return blocked
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -1458,6 +1496,10 @@ def list_files(directory: str = ".", pattern: str = "**/*") -> str:
         while len(segs) > 1 and not _GLOB_MAGIC.search(segs[0]):
             directory = os.path.join(directory, segs.pop(0))
         directory = os.path.realpath(directory)
+        roots = _eval_deny_roots()
+        denied = _eval_denied(directory, roots)
+        if denied:
+            return denied
         if not os.path.isdir(directory):
             return f"No files matching '{pattern}' in {directory}"
         max_depth = None if "**" in segs else len(segs)
@@ -1469,7 +1511,8 @@ def list_files(directory: str = ".", pattern: str = "**/*") -> str:
             if max_depth is not None and len(base_parts) >= max_depth:
                 dirs[:] = []
             else:
-                dirs[:] = sorted(dirs)
+                dirs[:] = sorted(d for d in dirs
+                                 if not _eval_denied(os.path.join(cur, d), roots))
             entries += len(names) + len(dirs)
             for name in sorted(names):
                 full = os.path.join(cur, name)
@@ -1512,6 +1555,10 @@ def grep(pattern: str, path: str = ".", file_glob: str = "",
     scrubbed env apply — this was the one exec path that bypassed both."""
     try:
         path = _resolve(path)
+        roots = _eval_deny_roots()
+        denied = _eval_denied(path, roots)
+        if denied:
+            return denied
         flags = ["-rn", "-I", "-H",
                  "--exclude-dir=.git", "--exclude-dir=node_modules",
                  "--exclude-dir=__pycache__", "--exclude-dir=build",
@@ -1528,6 +1575,11 @@ def grep(pattern: str, path: str = ".", file_glob: str = "",
         if wrapper:
             cmd = f"{wrapper} /bin/sh -c {shlex.quote(cmd)}"
         _, output = run_reaped(cmd, 30, cwd=_base_dir(), env=_scrubbed_env())
+        if roots:
+            # Eval: drop every row from a denied directory below `path`.
+            prefixes = tuple(r.rstrip(os.sep) + os.sep for r in roots)
+            output = "\n".join(ln for ln in (output or "").split("\n")
+                               if not ln.startswith(prefixes))
         # "No matches" means no path:lineno: rows — grep may still have
         # printed warnings (e.g. "stray \ before d"), which we keep visible.
         has_match = re.search(r"^[^\n:]+:\d+:", output or "", re.M)
@@ -1682,7 +1734,7 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
     try:
         # Resolve first, then guard/operate on the SAME path (see write_file).
         path = _resolve(path)
-        blocked = _guard_write_path(path)
+        blocked = _guard_write_path(path) or _eval_denied(path)
         if blocked:
             return blocked
         if not os.path.isfile(path):

@@ -3,10 +3,16 @@
 R6-1  a Python validator must FINISH to pass: a solution that exits the
       validator's process at import time (sys.exit(0), os._exit(0),
       `raise SystemExit`) used to PASS 96 of 99 Python validators.
+R6-5  the era hash covers the harness contract (evals/harness.py) and only
+      the files an eval unit actually reads.
+R6-11 eval transcripts go outside the repo, and the agent's file tools
+      refuse earlier transcripts, the cache, task specs and refs.
 
 Every case builds its own fixture under tmp_path.
 """
 
+import json
+import os
 import sys
 from pathlib import Path
 
@@ -108,3 +114,107 @@ def test_bash_validators_unchanged(tmp_path):
     ok, out = run_eval.run_validation(
         {"validation": {"type": "bash", "script": "echo hi; exit 0"}})
     assert ok and out == "hi"
+
+
+# --------------------------------------------------------------------------
+# R6-5: the era covers the harness contract, and only files the eval reads
+# --------------------------------------------------------------------------
+
+import cache  # noqa: E402
+import harness  # noqa: E402
+
+
+def test_context_files_are_what_an_eval_unit_reads():
+    names = {p.relative_to(ROOT).as_posix() for p in cache.CONTEXT_FILES}
+    assert names == {"system-prompt.md", "agents/runner.py", "agents/tools.py",
+                     "evals/harness.py", "evals/SUITE_VERSION"}
+    for p in cache.CONTEXT_FILES:
+        assert p.exists(), p
+
+
+def test_dropped_files_are_really_unread_by_the_eval_agent():
+    # If runner.py or tools.py ever reads these again, they must go back
+    # into CONTEXT_FILES.
+    for f in ("agents/runner.py", "agents/tools.py"):
+        src = (ROOT / f).read_text()
+        assert "opencode.json" not in src, f
+        assert "system-prompt-tools" not in src, f
+    # And the one prompt file that stays is the one the runner loads.
+    assert "system-prompt.md" in (ROOT / "agents" / "runner.py").read_text()
+
+
+def test_harness_change_moves_the_era(tmp_path, monkeypatch):
+    h = tmp_path / "harness.py"
+    h.write_text((ROOT / "evals" / "harness.py").read_text())
+    monkeypatch.setattr(cache, "CONTEXT_FILES",
+                        [h if p.name == "harness.py" else p for p in cache.CONTEXT_FILES])
+    before = cache.context_hash()
+    h.write_text(h.read_text().replace("WALL_SECONDS_PER_ITER = 60",
+                                       "WALL_SECONDS_PER_ITER = 61"))
+    assert cache.context_hash() != before
+
+
+def test_run_eval_takes_its_contract_from_harness():
+    assert run_eval.VALIDATION_TIMEOUT_S is harness.VALIDATION_TIMEOUT_S
+    assert run_eval.task_expected_paths is harness.task_expected_paths
+    assert run_eval._PY_VALIDATOR_WRAPPER is harness.PY_VALIDATOR_WRAPPER
+    src = (ROOT / "evals" / "run_eval.py").read_text()
+    # The literals that used to live here are gone.
+    assert '"--workdir", "/tmp"' not in src
+    assert "max_iter * 60 * timeout_scale" not in src
+    assert 'task.get("max_iter", 15)' not in src
+
+
+# --------------------------------------------------------------------------
+# R6-11: transcripts outside the repo, earlier solutions off limits
+# --------------------------------------------------------------------------
+
+def test_default_eval_log_dir(monkeypatch, tmp_path):
+    monkeypatch.delenv("OPENBEAST_EVAL_LOG_DIR", raising=False)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    assert harness.default_eval_log_dir() == str(tmp_path / "state" / "openbeast" / "eval-logs")
+    monkeypatch.delenv("XDG_STATE_HOME")
+    monkeypatch.setenv("HOME", str(tmp_path / "h"))
+    assert harness.default_eval_log_dir() == str(tmp_path / "h" / ".local" / "state"
+                                                 / "openbeast" / "eval-logs")
+    monkeypatch.setenv("OPENBEAST_EVAL_LOG_DIR", str(tmp_path / "x"))
+    assert harness.default_eval_log_dir() == str(tmp_path / "x")
+
+
+def test_denied_roots_cover_every_checkout(tmp_path):
+    roots = harness.denied_roots(str(ROOT), str(tmp_path / "logs"))
+    assert str(tmp_path / "logs") in roots
+    assert os.path.realpath(ROOT / "agents" / "logs") in roots
+    assert os.path.realpath(ROOT / "evals") in roots
+    # A worktree also denies the main checkout's (git worktree list).
+    import subprocess
+    out = subprocess.run(["git", "-C", str(ROOT), "worktree", "list", "--porcelain"],
+                         capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        if line.startswith("worktree "):
+            assert os.path.realpath(os.path.join(line[9:], "agents", "logs")) in roots
+
+
+def test_run_agent_hands_the_runner_log_dir_and_deny_roots(tmp_path, monkeypatch):
+    import textwrap
+    dump = tmp_path / "dump.json"
+    fake = tmp_path / "fake_runner.py"
+    fake.write_text(textwrap.dedent(f'''
+        import json, os, sys
+        json.dump({{"argv": sys.argv[1:],
+                   "deny": os.environ.get("OPENBEAST_EVAL_DENY_ROOTS"),
+                   "eval": os.environ.get("OPENBEAST_EVAL")}}, open({str(dump)!r}, "w"))
+    '''))
+    monkeypatch.setattr(run_eval, "RUNNER_PATH", str(fake))
+    monkeypatch.setenv("OPENBEAST_EVAL_LOG_DIR", str(tmp_path / "evlogs"))
+    run_eval._DENIED_ROOTS.clear()
+    run_eval.run_agent({"task": "do it", "max_iter": 1}, "http://127.0.0.1:9/v1")
+    got = json.loads(dump.read_text())
+    argv = got["argv"]
+    assert argv[argv.index("--log-dir") + 1] == str(tmp_path / "evlogs")
+    assert argv[argv.index("--workdir") + 1] == "/tmp"
+    assert argv[-1] == "do it"
+    deny = json.loads(got["deny"])
+    assert str(tmp_path / "evlogs") in deny
+    assert os.path.realpath(ROOT / "agents" / "logs") in deny
+    assert got["eval"] == "1"

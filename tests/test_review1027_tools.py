@@ -169,3 +169,43 @@ def test_fetch_bad_max_length_is_an_error_string(bad, monkeypatch):
     assert out.startswith("Error: max_length")
 
 
+# --------------------------------------------------------------------------
+# R6-11
+# --------------------------------------------------------------------------
+
+@pytest.fixture
+def denied(tmp_path, monkeypatch):
+    logs = tmp_path / "repo" / "agents" / "logs"
+    logs.mkdir(parents=True)
+    (logs / "agent-1.jsonl").write_text('{"args": "def rkf45(f): pass"}\n')
+    open_dir = tmp_path / "repo" / "agents"
+    (open_dir / "ok.py").write_text("def rkf45(f): pass\n")
+    monkeypatch.setenv("OPENBEAST_EVAL_DENY_ROOTS", json.dumps([str(logs)]))
+    return tmp_path / "repo", logs
+
+
+def test_eval_file_tools_refuse_denied_roots(denied, monkeypatch):
+    repo, logs = denied
+    monkeypatch.setenv("OPENBEAST_EVAL", "1")
+    f = logs / "agent-1.jsonl"
+    assert tools.read_file(str(f)).startswith("Error:") and "off limits" in tools.read_file(str(f))
+    assert "off limits" in tools.list_files(str(logs))
+    assert "off limits" in tools.grep("rkf45", str(logs))
+    assert "off limits" in tools.edit_file(str(f), "pass", "x")
+    assert "off limits" in tools.write_file(str(logs / "new.py"), "x")
+    # From a parent: the denied subtree is invisible, the rest is not.
+    listed = tools.list_files(str(repo))
+    assert str(f) not in listed and str(repo / "agents" / "ok.py") in listed
+    hits = tools.grep("rkf45", str(repo))
+    assert str(f) not in hits and "ok.py" in hits
+    # Through a symlink: realpath'd before the check.
+    link = repo / "lnk"
+    os.symlink(logs, link)
+    assert "off limits" in tools.read_file(str(link / "agent-1.jsonl"))
+
+
+def test_deny_roots_inert_outside_eval(denied, monkeypatch):
+    repo, logs = denied
+    monkeypatch.delenv("OPENBEAST_EVAL", raising=False)
+    assert "def rkf45" in tools.read_file(str(logs / "agent-1.jsonl"))
+    assert "agent-1.jsonl" in tools.grep("rkf45", str(repo))

@@ -15,11 +15,11 @@ Hash key components:
    budget), greedy (low-churn decode), pack (awareness pack sha —
    task-scoped to the pack's language), env (opt-in environment
    fingerprint: weights, llama.cpp build, KV flags, toolchains).
-5. agent context hash — sha256 of system-prompt.md, system-prompt-tools.md,
-   opencode.json (which pins the available tools/transport), the agent
-   runtime itself (agents/runner.py, agents/tools.py), and the eval-suite
-   marker (evals/SUITE_VERSION). Changes to the agent's runtime context →
-   cache miss.
+5. agent context hash — sha256 of system-prompt.md (the soul prompt the
+   runner loads), the agent runtime itself (agents/runner.py,
+   agents/tools.py), the harness contract (evals/harness.py) and the
+   eval-suite marker (evals/SUITE_VERSION). Changes to the agent's runtime
+   context → cache miss.
 
 Cached payload mirrors the per-task entry written to results JSON: passed,
 elapsed_seconds, agent_exit_code, validation_output, token counts, and any
@@ -46,14 +46,24 @@ CACHE_DIR = EVALS_DIR / "cache"
 # Files that pin the agent's runtime context. Changing any of these
 # invalidates all cached results — that's intentional (it's the whole point
 # of the cache key).
+#
+# Suite v4.1 (review 2026-10-27, R6-5): the list is what an eval unit
+# actually reads. system-prompt-tools.md and opencode.json were dropped:
+# they configure Open WebUI and OpenCode, and neither runner.py nor
+# tools.py reads them, so an OpenCode-only edit used to roll the whole
+# board's era for nothing. evals/harness.py was added: it holds what
+# run_eval.py decides that shapes a run or a verdict (runner argv, wall
+# budget, path regex, denied paths, validator wrapper and timeout), which
+# used to change with every cache key staying identical.
 CONTEXT_FILES = [
+    # The soul prompt runner.py puts at the top of every system prompt.
     REPO_ROOT / "system-prompt.md",
-    REPO_ROOT / "system-prompt-tools.md",
-    REPO_ROOT / "opencode.json",
     # The agent runtime itself: a change to the loop or the tool
     # implementations changes what a "cached result" means.
     REPO_ROOT / "agents" / "runner.py",
     REPO_ROOT / "agents" / "tools.py",
+    # The harness contract run_eval.py runs every unit under.
+    EVALS_DIR / "harness.py",
     # The suite marker: a suite bump means the task set was redefined.
     EVALS_DIR / "SUITE_VERSION",
 ]

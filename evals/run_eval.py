@@ -52,6 +52,13 @@ RUNNER_PATH = os.path.join(EVALS_DIR, "..", "agents", "runner.py")
 sys.path.insert(0, os.path.join(EVALS_DIR, "..", "agents"))
 from tools import run_reaped  # noqa: E402
 
+# The harness contract: what this file decides that shapes a model's run or
+# its verdict. It is hashed into the eval era (evals/cache.py CONTEXT_FILES);
+# this file is not. Review 2026-10-27, R6-5.
+if EVALS_DIR not in sys.path:
+    sys.path.insert(0, EVALS_DIR)
+import harness as _harness  # noqa: E402
+
 # ---------------------------------------------------------------------------
 # Agent process groups we own, so a SIGTERM to US does not orphan THEM.
 #
@@ -1125,19 +1132,20 @@ def _parse_tokens(stdout: str) -> dict:
     return {"prompt": int(m.group(1)), "completion": int(m.group(2)), "total": int(m.group(3))}
 
 
-_TASK_PATH_RE = re.compile(r"/tmp/eval[\w\-./]*")
+# The path regex and its extraction live in the hashed harness contract.
+_TASK_PATH_RE = _harness.TASK_PATH_RE
+task_expected_paths = _harness.task_expected_paths
 
 
-def task_expected_paths(task: dict) -> list[str]:
-    """The /tmp/eval* paths the TASK TEXT names, for the agent's path guard.
+_DENIED_ROOTS: dict[str, list[str]] = {}
 
-    From the text the model reads and nothing else. Until suite v4.1 the
-    list was scraped from setup, validation and cleanup as well, so it held
-    files only the validator writes (`/tmp/eval_ntt/out.txt`), and the
-    pattern kept a sentence's full stop (`/tmp/eval_gemm/gemm.zig.`, a file
-    that can never exist). Trailing sentence punctuation is stripped."""
-    found = {m.rstrip(".,;:)") for m in _TASK_PATH_RE.findall(str(task.get("task", "")))}
-    return sorted(p for p in found if p)
+
+def _eval_denied_roots(log_dir: str) -> list[str]:
+    """harness.denied_roots, computed once per log dir (it asks git)."""
+    if log_dir not in _DENIED_ROOTS:
+        _DENIED_ROOTS[log_dir] = _harness.denied_roots(
+            os.path.dirname(EVALS_DIR), log_dir)
+    return _DENIED_ROOTS[log_dir]
 
 
 def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
@@ -1151,24 +1159,20 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
     (measured 2026-08-20: 3 spurious fails in the first 134 units of a
     --jobs 4 run). Scaling the budget restores sequential-equivalent
     semantics; the timeout exists to catch hung agents, not slow ones."""
-    max_iter = max_iter_override or task.get("max_iter", 15)
+    max_iter = max_iter_override or task.get("max_iter", _harness.DEFAULT_MAX_ITER)
     start_time = time.time()
 
-    cmd = [
-        sys.executable, RUNNER_PATH,
-        "--base-url", base_url,
-        "--max-iter", str(max_iter),
-        "--workdir", "/tmp",
-    ]
     # Tier-3 awareness pack (docs/LANG_AWARENESS_PLAN.md §5): run_eval
     # annotates units whose language has a pack with `_context_file`
     # (underscore key ⇒ excluded from the task hash; the pack1-<sha8> era
     # component carries the pack identity instead). The runner puts the
     # file into the system prompt as a delimited "Background context"
-    # block — zero runner.py edits, so the context hash is untouched.
-    if task.get("_context_file"):
-        cmd += ["--context-file", task["_context_file"]]
-    cmd.append(task["task"])
+    # block. The argv itself is the hashed contract's (evals/harness.py);
+    # transcripts go outside the repo (R6-11).
+    log_dir = _harness.default_eval_log_dir()
+    cmd = _harness.runner_argv(sys.executable, RUNNER_PATH, base_url, max_iter,
+                               task["task"], log_dir,
+                               context_file=task.get("_context_file"))
 
     # R1 path guard (2026-09-10): 25% of the diagnostics-A/B campaign's
     # zig failures were FileNotFound at validation — right code, wrong
@@ -1205,6 +1209,9 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
         child_env["OPENBEAST_TASK_PATHS"] = json.dumps(expected)
     else:
         child_env.pop("OPENBEAST_TASK_PATHS", None)
+    # R6-11: the agent's file tools refuse earlier transcripts, the cache,
+    # the task specs and the reference solutions (every checkout's).
+    child_env["OPENBEAST_EVAL_DENY_ROOTS"] = json.dumps(_eval_denied_roots(log_dir))
     # Low-churn eval mode rides the same env read the runner uses.
     if os.environ.get("OPENBEAST_EVAL_GREEDY", "") == "1":
         child_env["OPENBEAST_EVAL_GREEDY"] = "1"
@@ -1215,7 +1222,7 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
     # left of it and never re-sends one. Before v4.1 the request had the
     # openai client's own unscaled 600 s and one silent retry, so a long
     # turn under --jobs was discarded, re-sent, and scored as a FAIL.
-    wall_budget = int(max_iter * 60 * timeout_scale)
+    wall_budget = _harness.wall_budget(max_iter, timeout_scale)
     child_env["OPENBEAST_EVAL_WALL_S"] = str(wall_budget)
 
     # start_new_session so an agent timeout SIGKILLs the runner's whole
@@ -1295,64 +1302,17 @@ def run_pre_validate(task: dict, log=print):
         log(f"  (pre_validate error: {e} — continuing to validation)")
 
 
-VALIDATION_TIMEOUT_S = 30
+VALIDATION_TIMEOUT_S = _harness.VALIDATION_TIMEOUT_S   # hashed: evals/harness.py
 # What run_validation returns when the VALIDATOR ran out of time. process()
 # and cacheable_result match on it: a validator timeout is not a verdict.
 VALIDATION_TIMED_OUT = "Validation timed out"
 
 
-# ---------------------------------------------------------------------------
-# Python validators must FINISH to pass (suite v4.1, review R6-1).
-#
-# A Python validator loads the solution in its own process
-# (`spec.loader.exec_module`), and its verdict used to be the exit code
-# alone. A solution that exits at import time (`sys.exit(0)`, `os._exit(0)`,
-# or a script-style `sys.exit(main())` with no __main__ guard) ended the
-# validator with rc 0 before one assert ran: 96 of 99 Python validators
-# passed `import sys; sys.exit(0)`.
-#
-# So the validator runs inside this wrapper. The harness hands it a fresh
-# random nonce on stdin (never in argv or the environment, which the
-# solution could read from /proc/self), the wrapper execs the validator,
-# and prints the nonce only after the validator's last statement ran. A
-# PASS needs rc 0 AND the nonce. A SystemExit with status 0/None raised
-# while the validator runs is turned into a failure, because no validator
-# exits 0 on purpose (they end with print('OK')); a non-zero SystemExit
-# (a validator's own `raise SystemExit('msg')`) keeps its meaning.
-#
-# What this does not stop: a solution written to defeat it (walking the
-# interpreter's frames to find the nonce). It closes the accidental and the
-# cheap cases; deliberate attacks on the harness need sandboxing.
-# ---------------------------------------------------------------------------
-VALIDATOR_SENTINEL = "OPENBEAST-VALIDATOR-COMPLETED:"
-VALIDATOR_UNFINISHED = ("[harness] the validator exited with status 0 before "
-                        "its checks finished (did the solution call sys.exit "
-                        "or os._exit when it was imported?)")
-_PY_VALIDATOR_WRAPPER = r"""
-import os, sys
-def _openbeast_validate(src, nonce):
-    # The validator's globals are __main__'s, as under a plain `python -c`
-    # (multiprocessing pickles functions by reference to __main__).
-    g = sys.modules["__main__"].__dict__
-    try:
-        exec(compile(src, "<validator>", "exec"), g)
-    except SystemExit as e:
-        if e.code is None or e.code == 0:
-            sys.stdout.flush()
-            sys.stderr.write("\n" + %(unfinished)r + "\n")
-            sys.stderr.flush()
-            os._exit(3)
-        raise
-    sys.stdout.flush()
-    sys.stderr.flush()
-    sys.stdout.write("\n" + %(sentinel)r + nonce + "\n")
-    sys.stdout.flush()
-_n = sys.stdin.readline().strip()
-_fd = os.open(os.devnull, os.O_RDONLY); os.dup2(_fd, 0); os.close(_fd)
-_s = sys.argv[1]
-del sys.argv[1:]
-_openbeast_validate(_s, _n)
-""" % {"sentinel": VALIDATOR_SENTINEL, "unfinished": VALIDATOR_UNFINISHED}
+# The Python-validator completion wrapper (R6-1) lives in the hashed
+# harness contract; see evals/harness.py.
+VALIDATOR_SENTINEL = _harness.VALIDATOR_SENTINEL
+VALIDATOR_UNFINISHED = _harness.VALIDATOR_UNFINISHED
+_PY_VALIDATOR_WRAPPER = _harness.PY_VALIDATOR_WRAPPER
 
 
 def _run_python_validator(script: str, timeout: int) -> tuple[bool, str]:
@@ -1777,7 +1737,7 @@ def run_eval(
         # The iteration budget the agent will actually run with — part of
         # the cache key (a 5-iter capped run is a different experiment from
         # a 15-iter one).
-        effective_max_iter = max_iter_override or task.get("max_iter", 15)
+        effective_max_iter = max_iter_override or task.get("max_iter", _harness.DEFAULT_MAX_ITER)
 
         # Cache check — same task spec + same model + same max_iter + same
         # agent context = same answer. Saves the agent run and the validation

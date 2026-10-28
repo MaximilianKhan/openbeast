@@ -110,7 +110,7 @@ def test_validator_timeout_budget_scales_with_contention(tmp_path, monkeypatch):
     run_eval, _ = _fresh(tmp_path)
     seen = []
     monkeypatch.setattr(run_eval, "_run_reaped",
-                        lambda cmd, timeout, shell=False: seen.append(timeout) or (0, "ok"))
+                        lambda cmd, timeout, shell=False, **kw: seen.append(timeout) or (0, "ok"))
     task = {"validation": {"type": "bash", "script": "x"}}
     run_eval.run_validation(task)
     run_eval.run_validation(task, timeout_scale=2.0)
