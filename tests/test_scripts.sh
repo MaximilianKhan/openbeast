@@ -2710,6 +2710,16 @@ else
   fail "lifecycle suite failed (bash tests/test_lifecycle.sh for detail)"
 fi
 
+# --- Review 2026-10-27 launcher/ops cases (tests/test_review1027_launcher.sh) ---
+echo ""
+echo "Launcher / ops review 2026-10-27 (tests/test_review1027_launcher.sh):"
+if _RL_OUT="$(bash "$REPO_DIR/tests/test_review1027_launcher.sh" 2>&1)"; then
+  pass "launcher review suite: $(grep -o '[0-9]* passed, [0-9]* failed' <<< "$_RL_OUT" | tail -n1)"
+else
+  grep -E 'FAIL|passed, ' <<< "$_RL_OUT" | sed 's/^/    /' || true
+  fail "launcher review suite failed (bash tests/test_review1027_launcher.sh for detail)"
+fi
+
 # --- Summary ---
 echo ""
 echo "================================"
