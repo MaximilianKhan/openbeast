@@ -66,12 +66,23 @@ fi
 # reported" and returns at once, and the script went on to a merge that could
 # only fail (2026-10-09: it gave up on the third PR of a batch while the
 # relock workflow was still pending). Wait for them, bounded (10 min).
+#
+# Returns 0 when every check passed, 1 when none ever appeared, 2 when a check
+# finished red. gh's exit status used to be thrown away here (the output was
+# printed and 0 returned whatever it said), so a PR with a red check that
+# branch protection does not require — "Lock matches a fresh resolve", say —
+# was squash-merged without a word.
 _watch_checks() { # _watch_checks <pr>
-  local out n
+  local out n rc
   for n in $(seq 1 30); do
-    out="$(gh pr checks "$1" --watch --interval 30 2>&1)"
+    out="$(gh pr checks "$1" --watch --interval 30 2>&1)"; rc=$?
     if [[ "$out" != *"no checks reported"* ]]; then
       printf '%s\n' "$out" | tail -4
+      if [[ $rc -ne 0 ]]; then
+        echo "PR $1: not every check passed (gh pr checks exit $rc):"
+        printf '%s\n' "$out" | grep -E $'\t(fail|cancel)' | sed 's/^/    /' || true
+        return 2
+      fi
       return 0
     fi
     [[ $n -eq 1 ]] && echo "PR $1: no checks reported yet — waiting for them to appear"
@@ -80,22 +91,44 @@ _watch_checks() { # _watch_checks <pr>
   echo "PR $1: no checks appeared within 10 min"
   return 1
 }
+# The open Dependabot PRs that touch agents/requirements.txt: the only ones
+# that get a relock push to wait for. Asked once; a failed query stops the run
+# rather than guessing which wait applies.
+_relock_prs="$(gh pr list --author "app/dependabot" --state open --limit 200 --json number,files \
+                 -q '.[] | select(any(.files[]?; .path == "agents/requirements.txt")) | .number')" \
+  || { echo "could not list the open Dependabot PRs — stopping" >&2; exit 1; }
 for pr in "$@"; do
   echo "=== PR $pr $(date +%T)"
   br="$(gh pr view "$pr" --json headRefName -q .headRefName)"
   gh pr comment "$pr" --body "@dependabot rebase" >/dev/null
+  # A PR that does not touch agents/requirements.txt (a github-actions or
+  # docker bump) never triggers dependabot-relock.yml — it is path-filtered —
+  # so there is no relock to wait for: waiting for one timed out after 20
+  # minutes on every such PR, although the docs said naming it would land it.
+  # Those wait for the rebase alone.
+  relock=0
+  grep -qx -- "$pr" <<< "$_relock_prs" && relock=1
+  [[ $relock -eq 1 ]] || echo "PR $pr: does not touch agents/requirements.txt — no relock to wait for, rebase only"
   ok=0
   for i in $(seq 1 60); do            # up to 20 min for rebase + relock push
     sleep 20
     main="$(gh api repos/$R/commits/main -q .sha)"
-    last="$(gh pr view "$pr" --json commits -q '.commits[-1].messageHeadline')"
     base_ok="$(gh api "repos/$R/compare/$main...$br" -q .behind_by 2>/dev/null || echo 1)"
+    if [[ $relock -eq 0 ]]; then
+      [[ "$base_ok" == "0" ]] && { ok=1; break; }
+      continue
+    fi
+    last="$(gh pr view "$pr" --json commits -q '.commits[-1].messageHeadline')"
     if [[ "$base_ok" == "0" && "$last" == deps:\ regenerate* ]]; then ok=1; break; fi
     # a bump whose lock needed no change never gets a relock commit: accept after the relock run succeeded
     if [[ "$base_ok" == "0" ]] && gh run list --workflow dependabot-relock.yml --branch "$br" --limit 1 --json conclusion,headSha -q '.[0].conclusion' | grep -qx success \
        && [[ "$(gh run list --workflow dependabot-relock.yml --branch "$br" --limit 1 --json headSha -q '.[0].headSha')" == "$(gh pr view "$pr" --json headRefOid -q .headRefOid)" ]]; then ok=1; break; fi
   done
-  [[ $ok -eq 1 ]] || { echo "PR $pr: rebase/relock did not land in time — stopping"; exit 1; }
+  if [[ $ok -ne 1 ]]; then
+    if [[ $relock -eq 1 ]]; then echo "PR $pr: rebase/relock did not land in time — stopping"
+    else echo "PR $pr: the rebase did not land in time — stopping"; fi
+    exit 1
+  fi
   sleep 15
   # APPROVE ONLY THIS REPO'S HELD RUNS FOR THIS PR'S HEAD COMMIT. This used
   # to be `gh run list --branch "$br" --status action_required`, and a branch
@@ -111,7 +144,8 @@ for pr in "$@"; do
     gh api -X POST "repos/$R/actions/runs/$id/approve" >/dev/null && echo "approved run $id"
   done
   sleep 20
-  _watch_checks "$pr" || { echo "PR $pr: nothing to wait for — stopping"; exit 1; }
+  _watch_checks "$pr"; wrc=$?
+  [[ $wrc -eq 1 ]] && { echo "PR $pr: nothing to wait for — stopping"; exit 1; }
   # A CANCELLED run is not a failed check (a late Dependabot force-push does
   # it): re-run those once before giving up.
   head="$(gh pr view "$pr" --json headRefOid -q .headRefOid)"
@@ -121,13 +155,18 @@ for pr in "$@"; do
   if [[ -n "$redo" ]]; then
     for id in $redo; do gh run rerun "$id" >/dev/null 2>&1 && echo "re-ran cancelled run $id"; done
     sleep 30
-    _watch_checks "$pr" || { echo "PR $pr: nothing to wait for — stopping"; exit 1; }
+    _watch_checks "$pr"; wrc=$?
   elif [[ "$head" != "$_head" ]]; then
     # The head moved while we were waiting: the checks just watched belong to
     # a commit that is no longer the PR. Watch the one about to be merged.
     echo "PR $pr: head moved during the wait (${_head:0:12} -> ${head:0:12}) — watching the new commit"
-    _watch_checks "$pr" || { echo "PR $pr: nothing to wait for — stopping"; exit 1; }
+    _watch_checks "$pr"; wrc=$?
   fi
+  case $wrc in
+    0) ;;
+    1) echo "PR $pr: nothing to wait for — stopping"; exit 1 ;;
+    *) echo "PR $pr: a check is red — not merging; stopping"; exit 1 ;;
+  esac
   # --match-head-commit: merge exactly the commit read above, whose checks
   # were watched after it was read. A push that lands between "checks green"
   # and this line makes GitHub REFUSE the merge instead of landing a commit

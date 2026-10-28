@@ -1476,18 +1476,26 @@ else
   # somewhere else, which is exactly how this one first broke.
   _BD_OK="$(mktemp -d)"
   mkdir -p "$_BD_OK/agents"
-  _BD_VER="$(python3 -c 'import importlib.metadata as m; print(m.version("pytest"))' 2>/dev/null || true)"
+  # The probe package must be one CI's shell job installs: it installs the
+  # agents lock and NOT pytest, so probing pytest made this check a PASS that
+  # never ran there. The first of these that is installed is used; none
+  # installed is a SKIP (counted), never a pass.
+  _BD_PKG="" _BD_VER=""
+  for _p in fastapi httpx pytest; do
+    _BD_VER="$(python3 -c 'import importlib.metadata as m, sys; print(m.version(sys.argv[1]))' "$_p" 2>/dev/null || true)"
+    [[ -n "$_BD_VER" ]] && { _BD_PKG="$_p"; break; }
+  done
   if [[ -z "$_BD_VER" ]]; then
-    pass "satisfied-pin check skipped (pytest not installed here)"
+    skip "satisfied-pin check (none of fastapi/httpx/pytest is installed here)"
   else
-    printf 'pytest==%s\n' "$_BD_VER" > "$_BD_OK/agents/requirements.txt"
+    printf '%s==%s\n' "$_BD_PKG" "$_BD_VER" > "$_BD_OK/agents/requirements.txt"
     _BD_OUT="$(bash -c "REPO_DIR='$_BD_OK'
 $_BD_FN
 ob_python_deps_satisfied" 2>/dev/null || true)"
-    if grep -q 'pytest' <<< "$_BD_OUT"; then
+    if grep -q "$_BD_PKG" <<< "$_BD_OUT"; then
       fail "the guard reported an INSTALLED pin as missing: $_BD_OUT"
     else
-      pass "the guard does not report an installed pin as missing"
+      pass "the guard does not report an installed pin ($_BD_PKG) as missing"
     fi
   fi
   rm -rf "$_BD_OK"
