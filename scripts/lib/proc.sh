@@ -10,6 +10,20 @@
 # match other paths (the sibling-worktree reap).
 _ob_ere() { printf '%s' "$1" | sed -E 's/[][(){}.^$*+?|\]/\\&/g'; }
 
+# Patterns for the fallback sweeps (`pkill -f`), anchored to the INVOCATION,
+# not to "the path appears somewhere in the command line". The unanchored
+# "$REPO/agents/router.py" pattern SIGTERMed `nvim …/agents/router.py`,
+# `tail -f …/agents/edge.py`, `less`, `gdb …/llama-server` — on every
+# ./stop.sh, and from the watchdog every five minutes while the tool server
+# was down. Same rule ob_ext_reap below already follows for extensions.
+#   ob_py_ere <script>  — a Python interpreter (python, python3, python3.12,
+#                         a venv's …/bin/python; optional -flags) running
+#                         exactly <script>, as argv[1]-after-flags.
+#   ob_bin_ere <binary> — <binary> itself as argv[0] (llama-server is exec'd
+#                         by its absolute path: serve.sh, the profilers).
+ob_py_ere()  { printf '^([^ ]*/)?python[0-9.]*( -[^ ]+)* %s( |$)' "$(_ob_ere "$1")"; }
+ob_bin_ere() { printf '^%s( |$)' "$(_ob_ere "$1")"; }
+
 # ob_pid_matches <pid> <ERE> — alive AND its command line matches.
 #
 # A pidfile is a number on disk, and .run/ survives a reboot: after a power

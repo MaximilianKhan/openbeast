@@ -683,8 +683,9 @@ else
 fi
 rm -rf "$_UD"
 # The unit must outlast the launcher it runs: start.sh -d gives up at
-# LLAMA_LOAD_GRACE + 300 s. Both numbers are read from start.sh.
-_GRACE="$(sed -n 's/^LLAMA_LOAD_GRACE="\${OPENBEAST_LLAMA_LOAD_GRACE:-\([0-9]*\)}"$/\1/p' "$REPO_DIR/start.sh")"
+# LLAMA_LOAD_GRACE + 300 s. The default grace is read from lib/conf.sh (the
+# conf key both start.sh and the watchdog resolve), the margin from start.sh.
+_GRACE="$(sed -n 's/^LLAMA_LOAD_GRACE="\${LLAMA_LOAD_GRACE:-\([0-9]*\)}"$/\1/p' "$REPO_DIR/scripts/lib/conf.sh")"
 _EXTRA="$(sed -n 's/.*_ready_deadline=\$(( SECONDS + LLAMA_LOAD_GRACE + \([0-9]*\) )).*/\1/p' "$REPO_DIR/start.sh")"
 _UTMO="$(sed -n 's/^TimeoutStartSec=//p' "$REPO_DIR/scripts/openbeast.service")"
 if [[ "$_GRACE" =~ ^[0-9]+$ && "$_EXTRA" =~ ^[0-9]+$ ]] \
@@ -2161,7 +2162,7 @@ PY
 done
 # and the orphan with no recorded pid must still be reapable, path-anchored so
 # a sibling worktree's server is never touched (healthcheck.sh's own rule)
-if grep -qE 'pkill -f "\$\(_ob_ere "\$REPO_DIR/agents/artifact_server\.py"\)"' \
+if grep -qE 'pkill -f "\$\((_ob_ere|ob_py_ere) "\$REPO_DIR/agents/artifact_server\.py"\)"' \
         "$REPO_DIR/scripts/healthcheck.sh"; then
   pass "healthcheck can reap an unrecorded beast-artifact orphan (ERE-quoted)"
 else
@@ -2177,7 +2178,7 @@ while IFS= read -r _ln; do
   _t="${_ln#"${_ln%%[![:space:]]*}"}"
   [[ "$_t" == \#* ]] && continue
   [[ "$_t" == *'$REPO_DIR'* ]] || continue
-  [[ "$_t" == *'_ob_ere'* ]] || _HC_BARE=1
+  [[ "$_t" =~ _ob_ere|ob_py_ere|ob_bin_ere ]] || _HC_BARE=1   # the ob_*_ere builders quote too
 done < <(grep 'pkill -f' "$REPO_DIR/scripts/healthcheck.sh" || true)
 if [[ $_HC_BARE -eq 0 ]]; then
   pass "every path-anchored pkill is ERE-quoted (a '+' or '.' in the repo path is safe)"
@@ -2423,7 +2424,7 @@ for _f in stop.sh scripts/healthcheck.sh; do
     _t="${_ln#"${_ln%%[![:space:]]*}"}"
     [[ "$_t" == \#* ]] && continue
     [[ "$_t" == *'$REPO_DIR'* || "$_t" == *'$SCRIPT_DIR'* ]] || continue
-    [[ "$_t" == *'_ob_ere'* ]] || _RV_BARE=1
+    [[ "$_t" =~ _ob_ere|ob_py_ere|ob_bin_ere ]] || _RV_BARE=1
   done < <(grep -E 'pkill -f|pgrep -f' "$REPO_DIR/$_f" || true)
   if [[ $_RV_BARE -eq 0 ]]; then
     pass "$_f: every path-anchored pkill/pgrep is ERE-quoted"
@@ -2486,7 +2487,7 @@ else
   fail "a just-launched llama-server is treated as down"
 fi
 # "Loading model" is BOUNDED too: a server wedged mid-load says it forever.
-if OPENBEAST_LLAMA_LOAD_GRACE=0 _rv_hc '{"error":{"message":"Loading model"}}' _llama_loading; then
+if LLAMA_LOAD_GRACE=0 _rv_hc '{"error":{"message":"Loading model"}}' _llama_loading; then
   fail "a recorded server still 'Loading model' past the grace is left alone forever"
 else
   pass "past the grace, a recorded server that is STILL loading is down"
@@ -2504,7 +2505,7 @@ else
 fi
 pkill -P "$_RV_TAIL" 2>/dev/null || true; kill "$_RV_TAIL" 2>/dev/null || true
 echo "$_RV_LL" > "$_RV/repo/.run/llama.pid"
-if OPENBEAST_LLAMA_LOAD_GRACE=0 _rv_hc '' _llama_loading; then
+if LLAMA_LOAD_GRACE=0 _rv_hc '' _llama_loading; then
   fail "the load grace never expires — a wedged server would be left forever"
 else
   pass "past the grace period a silent server IS down (control)"
@@ -2718,6 +2719,16 @@ if _LC_OUT="$(bash "$REPO_DIR/tests/test_lifecycle.sh" 2>&1)"; then
 else
   grep -E 'FAIL|passed, ' <<< "$_LC_OUT" | sed 's/^/    /' || true
   fail "lifecycle suite failed (bash tests/test_lifecycle.sh for detail)"
+fi
+
+# --- Review 2026-10-27 launcher/ops cases (tests/test_review1027_launcher.sh) ---
+echo ""
+echo "Launcher / ops review 2026-10-27 (tests/test_review1027_launcher.sh):"
+if _RL_OUT="$(bash "$REPO_DIR/tests/test_review1027_launcher.sh" 2>&1)"; then
+  pass "launcher review suite: $(grep -o '[0-9]* passed, [0-9]* failed' <<< "$_RL_OUT" | tail -n1)"
+else
+  grep -E 'FAIL|passed, ' <<< "$_RL_OUT" | sed 's/^/    /' || true
+  fail "launcher review suite failed (bash tests/test_review1027_launcher.sh for detail)"
 fi
 
 # --- Summary ---

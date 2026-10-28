@@ -92,38 +92,53 @@ case "$_wr_enforce" in
   *) echo "WARNING: WEIGHT_ENFORCE='$_wr_enforce' is not warn|strict|off — using warn" >&2
      _wr_enforce="warn" ;;
 esac
-if [[ "$_wr_enforce" != "off" && -f "$SCRIPT_DIR/weights.registry" && -f "$MODEL" ]]; then
-  _wr_name="$(basename "$MODEL")"
-  _wr_row="$(awk -F'\t' -v n="$_wr_name" '$0 !~ /^#/ && $3 == n {print; exit}' \
-             "$SCRIPT_DIR/weights.registry" || true)"
-  if [[ -z "$_wr_row" ]]; then
-    _wr_msg="weight '$_wr_name' is NOT in scripts/weights.registry (unpinned)"
-    _wr_hint="add a row (sha256<TAB>bytes<TAB>filename<TAB>repo<TAB>remote) or set WEIGHT_ENFORCE=off"
+# Every GGUF this launch loads, not only -m: a vision projector (--mmproj)
+# and a speculative draft model (-md / --model-draft) are weights too, and
+# were never checked (R10-09). Same rule, same exit code.
+_wr_check() { # _wr_check <gguf> <what: weight|projector|draft model>
+  local f="$1" what="$2" name row want have msg="" hint=""
+  name="$(basename "$f")"
+  row="$(awk -F'\t' -v n="$name" '$0 !~ /^#/ && $3 == n {print; exit}' \
+         "$SCRIPT_DIR/weights.registry" || true)"
+  if [[ -z "$row" ]]; then
+    msg="$what '$name' is NOT in scripts/weights.registry (unpinned)"
+    hint="add a row (sha256<TAB>bytes<TAB>filename<TAB>repo<TAB>remote) or set WEIGHT_ENFORCE=off"
   else
-    _wr_want="$(printf '%s' "$_wr_row" | cut -f2)"
-    _wr_have="$(stat -c%s "$MODEL" 2>/dev/null || echo 0)"
-    if [[ "$_wr_want" != "0" && "$_wr_have" != "$_wr_want" ]]; then
-      _wr_msg="weight '$_wr_name' is ${_wr_have} bytes, registry pins ${_wr_want}"
-      _wr_hint="re-download, or re-pin only after vetting: ./scripts/verify-weights.sh --deep"
-    else
-      _wr_msg=""
+    want="$(printf '%s' "$row" | cut -f2)"
+    have="$(stat -c%s "$f" 2>/dev/null || echo 0)"
+    if [[ "$want" != "0" && "$have" != "$want" ]]; then
+      msg="$what '$name' is ${have} bytes, registry pins ${want}"
+      hint="re-download, or re-pin only after vetting: ./scripts/verify-weights.sh --deep"
     fi
   fi
-  if [[ -n "${_wr_msg:-}" ]]; then
-    if [[ "$_wr_enforce" == "strict" ]]; then
-      echo "Error: $_wr_msg" >&2
-      echo "       $_wr_hint" >&2
-      echo "       (WEIGHT_ENFORCE=strict — set warn/off in openbeast.conf to proceed)" >&2
-      # Exit 3, not 1: start.sh's MODEL_ROLLBACK cannot distinguish a crash
-      # from a deliberate supply-chain refusal, and would "recover" by
-      # silently serving a DIFFERENT model — the opposite of what strict
-      # mode is for. A distinct code lets the supervisor refuse to roll back.
-      echo "       (exit 3 = supply-chain refusal; rollback must NOT substitute another model)" >&2
-      exit 3
-    fi
-    echo "WARNING: $_wr_msg" >&2
-    echo "         $_wr_hint" >&2
+  [[ -n "$msg" ]] || return 0
+  if [[ "$_wr_enforce" == "strict" ]]; then
+    echo "Error: $msg" >&2
+    echo "       $hint" >&2
+    echo "       (WEIGHT_ENFORCE=strict — set warn/off in openbeast.conf to proceed)" >&2
+    # Exit 3, not 1: start.sh's MODEL_ROLLBACK cannot distinguish a crash
+    # from a deliberate supply-chain refusal, and would "recover" by
+    # silently serving a DIFFERENT model — the opposite of what strict
+    # mode is for. A distinct code lets the supervisor refuse to roll back.
+    echo "       (exit 3 = supply-chain refusal; rollback must NOT substitute another model)" >&2
+    exit 3
   fi
+  echo "WARNING: $msg" >&2
+  echo "         $hint" >&2
+}
+if [[ "$_wr_enforce" != "off" && -f "$SCRIPT_DIR/weights.registry" ]]; then
+  [[ -f "$MODEL" ]] && _wr_check "$MODEL" weight
+  _wr_prev=""
+  for _wr_a in ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}; do
+    case "$_wr_prev|$_wr_a" in
+      --mmproj\|*|-mm\|*)           [[ -f "$_wr_a" ]] && _wr_check "$_wr_a" projector ;;
+      --model-draft\|*|-md\|*)      [[ -f "$_wr_a" ]] && _wr_check "$_wr_a" "draft model" ;;
+      *\|--mmproj=*)                 [[ -f "${_wr_a#*=}" ]] && _wr_check "${_wr_a#*=}" projector ;;
+      *\|--model-draft=*)            [[ -f "${_wr_a#*=}" ]] && _wr_check "${_wr_a#*=}" "draft model" ;;
+    esac
+    _wr_prev="$_wr_a"
+  done
+  unset _wr_prev _wr_a
 fi
 
 # --- Adaptive context (Hardware Profiles Phase 2) --------------------------

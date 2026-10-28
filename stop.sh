@@ -23,15 +23,28 @@ case "${1:-}" in
     echo "Unknown option: $1 — ./stop.sh takes no arguments (see --help). Nothing was stopped." >&2
     exit 2 ;;
 esac
+# Not as root (R4-06): on a checkout with no openbeast.conf, sourcing conf.sh
+# as root mints a root-owned, mode-600 conf, and from then on every script
+# run as the user — ./stop.sh included — cannot read its own config.
+# `id -u`, not $EUID (read-only in bash, so a test could not stub it).
+if [[ "$(id -u)" -eq 0 ]]; then
+  echo "Error: do not run ./stop.sh as root (or with sudo) — OpenBeast lives in your user account." >&2
+  echo "  A root run leaves a root-owned openbeast.conf that you then cannot read. Run it as your normal user." >&2
+  exit 1
+fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RUN_DIR="$SCRIPT_DIR/.run"
 # Resolve user config before `docker compose down` below — compose
 # interpolates docker-compose.yml (including the required
 # OPENBEAST_SEARXNG_SECRET) for EVERY subcommand, down included.
 REPO_DIR="$SCRIPT_DIR"
-source "$SCRIPT_DIR/scripts/lib/conf.sh"
+# An unreadable conf (conf.sh says why and how to fix it) must not stop the
+# stop: the kills below need no config, and compose down falls back to a
+# warning without its secret.
+source "$SCRIPT_DIR/scripts/lib/conf.sh" \
+  || echo "Warning: continuing WITHOUT openbeast.conf — stopping by pidfile and path only." >&2
 source "$SCRIPT_DIR/scripts/lib/extensions.sh"
-source "$SCRIPT_DIR/scripts/lib/proc.sh"   # _ob_ere, ob_pid_matches
+source "$SCRIPT_DIR/scripts/lib/proc.sh"   # ob_py_ere, ob_bin_ere, ob_pid_matches
 source "$SCRIPT_DIR/scripts/lib/backend.sh" # ob_inference_managed, ob_backend_label
 
 # Record that this stop is ON PURPOSE, before anything is signalled (so a
@@ -47,6 +60,14 @@ printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "${OPENBEAST_STOP_REASON:-./stop
 # (ob_pid_record), which is exact; 'start\.sh' in a command line is not (any
 # project's ./start.sh matches it) and is only the fallback for a pidfile
 # written before the start time was recorded.
+# The model server this stack recorded, read BEFORE the supervisor is
+# signalled: its trap kills llama-server without waiting and deletes the
+# record, so afterwards nothing here would know which process to wait for
+# (see "Wait for llama-server to exit" below).
+_LLAMA_ERE='^([^ ]*/)?llama-server( |$)'
+_llama_pid0="$(cat "$RUN_DIR/llama.pid" 2>/dev/null || true)"
+ob_pid_matches "$_llama_pid0" "$_LLAMA_ERE" || _llama_pid0=""
+
 if ob_recorded_pid_ours "$RUN_DIR/supervisor.pid" 'start\.sh'; then
   SUP_PID=$(cat "$RUN_DIR/supervisor.pid")
   echo "Stopping supervisor (pid $SUP_PID) gracefully..."
@@ -105,12 +126,14 @@ fi
 
 # Fallback sweep for anything the supervisor didn't own. Patterns are
 # anchored to THIS repo's path so we never kill an unrelated llama-server
-# or router the user runs for another project on the same box.
+# or router the user runs for another project on the same box — and to the
+# INVOCATION (lib/proc.sh ob_py_ere / ob_bin_ere), so an editor, `tail -f` or
+# `less` that merely names one of these files is not killed either.
 echo "Stopping agent router..."
-pkill -f "$(_ob_ere "$SCRIPT_DIR/agents/router.py")" 2>/dev/null && echo "agent router stopped." || echo "agent router was not running."
+pkill -f "$(ob_py_ere "$SCRIPT_DIR/agents/router.py")" 2>/dev/null && echo "agent router stopped." || echo "agent router was not running."
 
 echo "Stopping beast-gate..."
-pkill -f "$(_ob_ere "$SCRIPT_DIR/agents/edge.py")" 2>/dev/null && echo "beast-gate stopped." || echo "beast-gate was not running."
+pkill -f "$(ob_py_ere "$SCRIPT_DIR/agents/edge.py")" 2>/dev/null && echo "beast-gate stopped." || echo "beast-gate was not running."
 
 # beast-instinct, then its CPU scorer (the reverse of the start order), then
 # beast-hydra. Only when they are on, or left a pidfile behind (a stack
@@ -136,7 +159,14 @@ fi
 if [[ "${HYDRA:-false}" == "true" || -f "$RUN_DIR/hydra.pid" ]]; then
   # It never contacts a node on the way down: hydra holds no node state.
   echo "Stopping beast-hydra..."
-  pkill -f "$(_ob_ere "$SCRIPT_DIR/agents/hydra.py")" 2>/dev/null && echo "beast-hydra stopped." || echo "beast-hydra was not running."
+  # By its recorded pid first (start.sh and the watchdog record it with its
+  # start time), then the invocation-anchored sweep for one with no record.
+  if ob_recorded_pid_ours "$RUN_DIR/hydra.pid" "$(_ob_ere "$SCRIPT_DIR/agents/hydra.py")"; then
+    _hy_pid="$(cat "$RUN_DIR/hydra.pid")"
+    kill "$_hy_pid" 2>/dev/null && echo "beast-hydra stopped (pid $_hy_pid)."
+  fi
+  pkill -f "$(ob_py_ere "$SCRIPT_DIR/agents/hydra.py")" 2>/dev/null && echo "beast-hydra stopped." \
+    || [[ -n "${_hy_pid:-}" ]] || echo "beast-hydra was not running."
   rm -f "$RUN_DIR/hydra.pid" "$RUN_DIR/hydra.start"
 fi
 
@@ -163,7 +193,7 @@ _stop_recorded() {                 # _stop_recorded <label> <pidfile> <script-pa
   if ob_pid_matches "$pid" "$pattern"; then
     kill "$pid" 2>/dev/null && echo "$label stopped (pid $pid)." && return 0
   fi
-  pkill -f "$pattern" 2>/dev/null \
+  pkill -f "$(ob_py_ere "$3")" 2>/dev/null \
     && echo "$label stopped (by path; no live recorded pid)." \
     || echo "$label was not running."
 }
@@ -174,9 +204,10 @@ _stop_recorded "chat server" "$RUN_DIR/chat.pid" \
   "$SCRIPT_DIR/agents/chat_server.py"
 
 echo "Stopping tool server..."
-pkill -f "$(_ob_ere "$SCRIPT_DIR/agents/openapi_tools.py")" 2>/dev/null && echo "Tool server stopped." || echo "Tool server was not running."
-# Legacy mcpo instances (pre-identity-server stacks)
-pkill -f "mcpo --port" 2>/dev/null || true
+pkill -f "$(ob_py_ere "$SCRIPT_DIR/agents/openapi_tools.py")" 2>/dev/null && echo "Tool server stopped." || echo "Tool server was not running."
+# (No more `pkill -f "mcpo --port"`: mcpo was replaced on 2026-07-09, and that
+# pattern named no path, so every stop killed ANY mcpo on the box — another
+# project's, another worktree's.)
 
 if ! ob_inference_managed; then
   # INFERENCE_MANAGED=false (always for vLLM / TensorFold): the inference
@@ -197,16 +228,60 @@ echo "Stopping llama.cpp server..."
 # or healthcheck's no-supervisor relaunch). Skipping it too left it holding the
 # VRAM with its pidfile deleted a few lines below.
 _llama_pid="$(cat "$RUN_DIR/llama.pid" 2>/dev/null || true)"
-if ob_pid_matches "$_llama_pid" '(^|/)llama-server( |$)'; then
+_llama_wait=()
+[[ -n "$_llama_pid0" ]] && _llama_wait+=("$_llama_pid0")
+if ob_pid_matches "$_llama_pid" "$_LLAMA_ERE"; then
   kill "$_llama_pid" 2>/dev/null && echo "llama.cpp server stopped (pid $_llama_pid)."
+  [[ "$_llama_pid" == "$_llama_pid0" ]] || _llama_wait+=("$_llama_pid")
 fi
+_llama_bin_ere="$(ob_bin_ere "$SCRIPT_DIR/llama.cpp/build/bin/llama-server")"
 if [[ -x "$SCRIPT_DIR/scripts/gpu-lease.sh" ]] \
    && _lease="$("$SCRIPT_DIR/scripts/gpu-lease.sh" status 2>/dev/null | head -n1 || true)" \
    && [[ "$_lease" == HELD* ]]; then
   echo "GPU lease is $_lease"
   echo "  leaving llama-server processes alone — stop that job first (scripts/gpu-lease.sh status)."
 else
-pkill -f "$(_ob_ere "$SCRIPT_DIR/llama.cpp/build/bin/llama-server")" 2>/dev/null && echo "llama.cpp server stopped." || echo "llama.cpp server was not running."
+  while IFS= read -r _p; do
+    [[ "$_p" =~ ^[0-9]+$ && " ${_llama_wait[*]-} " != *" $_p "* ]] && _llama_wait+=("$_p")
+  done < <(pgrep -f "$_llama_bin_ere" 2>/dev/null || true)
+pkill -f "$_llama_bin_ere" 2>/dev/null && echo "llama.cpp server stopped." || echo "llama.cpp server was not running."
+fi
+
+# Wait for llama-server to exit. Nothing above waited for it — the
+# supervisor's trap sends TERM and moves on, and so did the kills here — so
+# stop.sh returned while a ~28 GB server was still releasing port 8080 and
+# its VRAM, and `./start.sh restart` went straight into a preflight that
+# found the port taken (stack down, .run/stopped written, watchdog idle) or
+# a load that OOMed against memory not yet freed. Bounded: TERM gets
+# OPENBEAST_STOP_WAIT seconds (default 30), then KILL. Only processes this
+# script signalled are waited for, each re-identified on every look.
+if [[ ${#_llama_wait[@]} -gt 0 ]]; then
+  _sw="${OPENBEAST_STOP_WAIT:-30}"; [[ "$_sw" =~ ^[0-9]+$ ]] || _sw=30
+  _llama_alive() {
+    local p out=()
+    for p in "${_llama_wait[@]}"; do ob_pid_matches "$p" "$_LLAMA_ERE" && out+=("$p"); done
+    [[ ${#out[@]} -gt 0 ]] && printf '%s ' "${out[@]}"   # (printf with no args still prints once)
+    return 0
+  }
+  _left="$(_llama_alive)"
+  if [[ -n "$_left" ]]; then
+    echo "Waiting for llama-server to exit (pid ${_left% })..."
+    for (( _i = 0; _i < _sw * 5; _i++ )); do
+      _left="$(_llama_alive)"; [[ -z "$_left" ]] && break
+      sleep 0.2
+    done
+    if [[ -n "$_left" ]]; then
+      echo "llama-server still running after ${_sw}s — escalating to SIGKILL (pid ${_left% })."
+      # shellcheck disable=SC2086  # a list of pids
+      kill -KILL $_left 2>/dev/null || true
+      for (( _i = 0; _i < 25; _i++ )); do
+        [[ -z "$(_llama_alive)" ]] && break
+        sleep 0.2
+      done
+    fi
+    [[ -z "$(_llama_alive)" ]] && echo "llama-server has exited (port and VRAM released)." \
+      || echo "Warning: llama-server pid $(_llama_alive)is still alive — check: ps -p $(_llama_alive)" >&2
+  fi
 fi
 fi
 

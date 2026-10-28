@@ -100,6 +100,25 @@ else
   fail "dry run touched something: log=$(tr '\n' '|' < "$LOG") :: $OUT"
 fi
 
+# R4-08: the advice for OpenBeast's container images names THOSE images (as
+# the compose files pin them) — never `docker image prune -a`, which deletes
+# every unused image on the machine, other projects' included.
+_build
+cp "$REPO_DIR/docker-compose.yml" "$RIG/"
+mkdir -p "$RIG/extensions/ntfy"
+printf 'services:\n  ntfy:\n    image: "example/ntfy:v1@sha256:abcd"   # pinned\n' > "$RIG/extensions/ntfy/compose.yaml"
+OUT="$(_un 2>&1)"
+if ! grep -q "image prune" <<< "$OUT" \
+   && grep -q "remove: docker image rm .*ghcr.io/open-webui/open-webui:main@sha256:" <<< "$OUT" \
+   && grep -q "remove: docker image rm .*searxng/searxng:latest@sha256:" <<< "$OUT" \
+   && grep -q "remove: docker image rm .*example/ntfy:v1@sha256:abcd" <<< "$OUT" \
+   && grep -q "docker images <name> for each of: example/ntfy ghcr.io/open-webui/open-webui searxng/searxng" <<< "$OUT"; then
+  pass "image advice is scoped to OpenBeast's own pinned images (was: docker image prune -a)"
+else
+  fail "image advice not scoped: $(grep -iE 'image' <<< "$OUT" | tr '\n' '|')"
+fi
+_build
+
 OUT="$(_un --go 2>&1)" || true
 if [[ ! -e "$RIG/llama.cpp" && ! -e "$RIG/venv" ]] \
    && [[ -f "$T/proj/weights/m.gguf" && -f "$RIG/openbeast.conf" && -f "$H/openbeast-files/users/x/p.html" ]] \

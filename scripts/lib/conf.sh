@@ -62,6 +62,22 @@
 
 : "${REPO_DIR:?REPO_DIR must be set before sourcing lib/conf.sh}"
 
+# An openbeast.conf this account cannot read (a `sudo ./scripts/update.sh` or
+# `sudo ./stop.sh` on a checkout with no conf minted it root-owned, mode 600)
+# used to abort the sourcing script with ~70 lines of "grep: Permission
+# denied" and then "conf.sh: line N: …: Permission denied" from the
+# SEARXNG_SECRET append — ./start.sh died without a diagnosis and ./stop.sh
+# could not stop the stack. Say what is wrong and how to fix it, once, and
+# return non-zero; a caller that must carry on without the config (stop.sh)
+# says so at its `source` line.
+if [[ -e "$REPO_DIR/openbeast.conf" && ! -r "$REPO_DIR/openbeast.conf" ]]; then
+  _ob_owner="$(stat -c %U "$REPO_DIR/openbeast.conf" 2>/dev/null || stat -f %Su "$REPO_DIR/openbeast.conf" 2>/dev/null || echo '?')"
+  echo "Error: $REPO_DIR/openbeast.conf is not readable by $(id -un) (owned by $_ob_owner)." >&2
+  echo "  Usually a script was run with sudo. Fix: sudo chown $(id -un) '$REPO_DIR/openbeast.conf'" >&2
+  unset _ob_owner
+  return 1 2>/dev/null || exit 1
+fi
+
 # Read one KEY= value from openbeast.conf. Ignores comments and surrounding
 # whitespace/quotes; last assignment wins. Prints nothing when absent.
 _ob_conf_value() {
@@ -150,6 +166,35 @@ _ob_bool() {
   esac
 }
 
+# _ob_word <raw value> <default> <KEY> — the parser for single-word keys
+# (BIND_HOST, SERVE_SCRIPT, REASONING, WEIGHT_ENFORCE, FILES_SHARDING): the
+# FIRST word, with any attached `#comment` and quotes dropped, exactly as
+# _ob_bool reads its token. `_ob_conf_value` returns the rest of the line
+# verbatim, so `WEIGHT_ENFORCE=strict  # supply chain` arrived as "strict  #
+# supply chain", serve.sh's `case` fell through to WARN, and an unpinned
+# weight was served with the refusal the operator turned on silently off;
+# `REASONING=off  # fast` went to llama-server as `--reasoning "off  # fast"`
+# and killed it at launch. Words after the first that are NOT a comment are
+# reported (ob_conf_lint) and dropped. Not used for values that may hold
+# spaces or a literal "#" (passwords, secrets, EXTENSIONS lists).
+_ob_word() { # _ob_word <VAR> <raw> <default> <KEY> — sets VAR (no subshell, so
+  #            a finding reaches _OB_CONF_PROBLEMS)
+  local _w_var="$1" raw="$2" def="$3" key="${4:-value}" tok rest
+  read -r tok rest <<< "$raw" || true
+  if [[ -n "$rest" && "$tok" != *\#* && "$rest" != \#* ]]; then
+    _OB_CONF_PROBLEMS+=("$key='$raw' is more than one word — using '${tok//[\"\']/}' (a value here is one word; comments start with #)")
+  fi
+  tok="${tok%%#*}"
+  tok="${tok//[\"\']/}"
+  [[ -n "$tok" ]] || tok="$def"
+  printf -v "$_w_var" '%s' "$tok"
+}
+# Filled while resolving: values this file had to drop or reinterpret, one
+# message each. ob_conf_lint (end of file) reports them with its other
+# findings, so they are said once per command and doctor.sh can show them
+# as rows. (Declared before the first _ob_word call, which may append.)
+_OB_CONF_PROBLEMS=()
+
 # ob_bind_is_loopback [host] — true when the address only listens on this
 # machine. Anything else (0.0.0.0, ::, a LAN or tailnet IP, a hostname) puts
 # the services on a network.
@@ -160,7 +205,7 @@ ob_bind_is_loopback() {
   esac
 }
 
-BIND_HOST="${OPENBEAST_BIND:-$(_ob_conf_value BIND_HOST || echo 127.0.0.1)}"
+_ob_word BIND_HOST "${OPENBEAST_BIND:-$(_ob_conf_value BIND_HOST || true)}" 127.0.0.1 BIND_HOST
 # The warning for a non-loopback BIND_HOST sits further down, after the tool
 # server keys are resolved — whether it is merely loud or names an open
 # remote shell depends on them.
@@ -195,6 +240,7 @@ ob_offline() { [[ "${OFFLINE:-false}" == "true" ]]; }
 # healthcheck.sh --restart falls back to when no supervisor (and no
 # .run/serve-script record) exists. Conf key SERVE_SCRIPT.
 DEFAULT_SERVE_SCRIPT="${OPENBEAST_SERVE_SCRIPT:-$(_ob_conf_value SERVE_SCRIPT || echo serve-qwen38-27b-uncensored-mtp-q5.sh)}"
+_ob_word DEFAULT_SERVE_SCRIPT "$DEFAULT_SERVE_SCRIPT" serve-qwen38-27b-uncensored-mtp-q5.sh SERVE_SCRIPT
 # Fast boot (ODS-absorbed, docs/TODO.md): when true, start.sh serves the tiny
 # Qwen3-0.6B bridge on :8080 for instant chat, brings up the full stack, then
 # hot-swaps to DEFAULT_SERVE_SCRIPT once its weights are warmed. Off by default
@@ -221,12 +267,16 @@ EXTENSIONS="${OPENBEAST_EXTENSIONS:-$(_ob_conf_value EXTENSIONS || true)}"
 #                                           over-reasoning "MAX" tunes.
 # Both empty by default (each model's own default stands). Env overrides:
 # $OPENBEAST_REASONING / $OPENBEAST_REASONING_BUDGET.
-REASONING="${OPENBEAST_REASONING:-$(_ob_conf_value REASONING || true)}"
+_ob_word REASONING "${OPENBEAST_REASONING:-$(_ob_conf_value REASONING || true)}" "" REASONING
+# on | off | auto, or nothing. Anything else reached llama-server as
+# --reasoning <it> and killed it at launch, and the rollback relaunch under the
+# same global flag died too ("No healthy model to roll back to").
+REASONING="$(printf '%s' "$REASONING" | tr 'A-Z' 'a-z')"
+if [[ -n "$REASONING" && ! "$REASONING" =~ ^(on|off|auto)$ ]]; then
+  _OB_CONF_PROBLEMS+=("REASONING='$REASONING' is not on, off or auto — ignoring it, each model's own default stands")
+  REASONING=""
+fi
 REASONING_BUDGET="${OPENBEAST_REASONING_BUDGET:-$(_ob_conf_value REASONING_BUDGET || true)}"
-# Values this file had to drop while resolving, one message each. ob_conf_lint
-# (end of file) reports them with its other findings, so they are said once
-# per command and doctor.sh can show them as rows.
-_OB_CONF_PROBLEMS=()
 # An integer or nothing. `REASONING_BUDGET=lots` (or `4096  # cap`, which
 # arrived whole) went to llama-server as --reasoning-budget and killed it at
 # launch, reported only as the generic "llama-server exited".
@@ -235,6 +285,20 @@ if [[ -n "$REASONING_BUDGET" && ! "$REASONING_BUDGET" =~ ^-?[0-9]+$ ]]; then
   _OB_CONF_PROBLEMS+=("REASONING_BUDGET='$REASONING_BUDGET' is not an integer (thinking tokens; 0 = none, -1 = unlimited) — ignoring it, each model's own default stands")
   REASONING_BUDGET=""
 fi
+# How long a model may take to LOAD (seconds) before the load counts as
+# failed: start.sh's launch deadline AND the watchdog's bound on "Loading
+# model" (healthcheck.sh). It was env-only (OPENBEAST_LLAMA_LOAD_GRACE), and
+# openbeast-watchdog.service has no environment, so a raised grace reached
+# the supervisor (start.sh -d forwards OPENBEAST_*) but not the watchdog,
+# which then shot a slow load at 900 s. As a conf key both read the same
+# value; the env var still wins. A whole number of seconds, default 900.
+LLAMA_LOAD_GRACE="${OPENBEAST_LLAMA_LOAD_GRACE:-$(_ob_conf_value LLAMA_LOAD_GRACE || true)}"
+LLAMA_LOAD_GRACE="${LLAMA_LOAD_GRACE%%[[:space:]#]*}"
+if [[ -n "$LLAMA_LOAD_GRACE" && ! "$LLAMA_LOAD_GRACE" =~ ^[0-9]+$ ]]; then
+  _OB_CONF_PROBLEMS+=("LLAMA_LOAD_GRACE='$LLAMA_LOAD_GRACE' is not a whole number of seconds — using 900")
+  LLAMA_LOAD_GRACE=""
+fi
+LLAMA_LOAD_GRACE="${LLAMA_LOAD_GRACE:-900}"
 # Host-RAM prompt cache (serve.sh hands it to llama-server), integer MiB:
 #   empty / auto = automatic (serve.sh sizes it to this machine's RAM),
 #   0     = the server's own default, N = exactly N MiB, -1 = no limit.
@@ -323,7 +387,18 @@ fi
 # from tailnet hosts. Forwarded only when non-empty, same as BASH_WRAPPER.
 # Model supply chain: check the weight about to be served against
 # scripts/weights.registry. warn (default) | strict (refuse) | off.
-WEIGHT_ENFORCE="${OPENBEAST_WEIGHT_ENFORCE:-$(_ob_conf_value WEIGHT_ENFORCE || echo warn)}"
+_ob_word WEIGHT_ENFORCE "${OPENBEAST_WEIGHT_ENFORCE:-$(_ob_conf_value WEIGHT_ENFORCE || true)}" warn WEIGHT_ENFORCE
+WEIGHT_ENFORCE="$(printf '%s' "$WEIGHT_ENFORCE" | tr 'A-Z' 'a-z')"
+case "$WEIGHT_ENFORCE" in
+  warn|strict|off) ;;
+  # Fail CLOSED on anything that still says strict (`strict,` `strictly`):
+  # the operator asked for the refusal, so a misspelling must not drop it.
+  strict*)
+    _OB_CONF_PROBLEMS+=("WEIGHT_ENFORCE='$WEIGHT_ENFORCE' is not warn, strict or off — reading it as strict")
+    WEIGHT_ENFORCE=strict ;;
+  *)
+    _OB_CONF_PROBLEMS+=("WEIGHT_ENFORCE='$WEIGHT_ENFORCE' is not warn, strict or off — serve.sh will use warn") ;;
+esac
 export WEIGHT_ENFORCE
 _FETCH_ALLOW_TAILNET="${OPENBEAST_FETCH_ALLOW_TAILNET:-$(_ob_conf_value FETCH_ALLOW_TAILNET || true)}"
 if [[ -n "$_FETCH_ALLOW_TAILNET" ]]; then
@@ -912,7 +987,7 @@ fi
 MCPO_ADMIN_KEY="${OPENBEAST_MCPO_ADMIN_KEY:-$(_ob_conf_value MCPO_ADMIN_KEY || true)}"
 MCPO_GUEST_KEY="${OPENBEAST_MCPO_GUEST_KEY:-$(_ob_conf_value MCPO_GUEST_KEY || true)}"
 # Workspace sharding mode for the identity tool server (off|user|chat).
-FILES_SHARDING="${OPENBEAST_FILES_SHARDING:-$(_ob_conf_value FILES_SHARDING || echo user)}"
+_ob_word FILES_SHARDING "${OPENBEAST_FILES_SHARDING:-$(_ob_conf_value FILES_SHARDING || true)}" user FILES_SHARDING
 export OPENBEAST_FILES_SHARDING="$FILES_SHARDING"
 # Signed identity (enterprise): one shared secret. Open WebUI mints an HS256
 # JWT per tool call (FORWARD_USER_INFO_HEADER_JWT_SECRET, wired in
@@ -1018,12 +1093,17 @@ export OPENBEAST_SEARXNG_SECRET="$SEARXNG_SECRET"
 # anywhere in the repo is in one of the two — add a new key there, or here.
 # Without openbeast.conf.example next to the conf (a stripped copy) the
 # unknown-key half is skipped: there is nothing to compare against.
-_OB_CONF_EXTRA_KEYS="BEAST_ASSIST BEAST_ESCALATE CHAT_BASE_URL CHAT_PUBLIC_URL WEBUI_DEFAULT_ADMIN_PASSWORD"
+_OB_CONF_EXTRA_KEYS="BEAST_ASSIST BEAST_ESCALATE CHAT_BASE_URL CHAT_PUBLIC_URL WEBUI_DEFAULT_ADMIN_PASSWORD LLAMA_LOAD_GRACE"
 # Whole numbers that are used exactly as written (the port keys and the gate's
 # limits take no inline comment — openbeast.conf.example says so)...
 _OB_CONF_INT_KEYS="ROUTER_PORT EDGE_PORT CHAT_PORT ARTIFACT_PORT NTFY_PORT MEM_LIMIT_PCT EDGE_RATE_LIMIT EDGE_MAX_INFLIGHT EDGE_MAX_BODY ARTIFACT_RETAIN_DAYS"
 # ...and those whose reader strips a trailing `# comment` first.
-_OB_CONF_INT_KEYS_COMMENT_OK="HYDRA_READY_GRACE AGENT_LOG_RETENTION_DAYS"
+_OB_CONF_INT_KEYS_COMMENT_OK="HYDRA_READY_GRACE AGENT_LOG_RETENTION_DAYS LLAMA_LOAD_GRACE"
+# One-word keys read through _ob_word. An inline comment on them is now read
+# correctly, but the example's "inline comments are fine" note is only true
+# for true/false keys, and every other reader of these lines (doctor rows,
+# an operator's grep) sees the whole line — so it is said, not silent.
+_OB_CONF_WORD_KEYS="BIND_HOST SERVE_SCRIPT REASONING WEIGHT_ENFORCE FILES_SHARDING"
 ob_conf_lint() {
   local conf="$REPO_DIR/openbeast.conf" example="$REPO_DIR/openbeast.conf.example" k v p
   for p in ${_OB_CONF_PROBLEMS[@]+"${_OB_CONF_PROBLEMS[@]}"}; do
@@ -1039,9 +1119,15 @@ ob_conf_lint() {
     v="$(_ob_conf_value "$k" || true)"; v="${v%%[[:space:]#]*}"
     [[ -z "$v" || "$v" =~ ^[0-9]+$ ]] || printf "openbeast.conf: %s='%s' is not a whole number\n" "$k" "$v"
   done
+  for k in $_OB_CONF_WORD_KEYS; do
+    v="$(_ob_conf_value "$k" || true)"
+    [[ "$v" == *\#* ]] || continue
+    p=""; _ob_word p "$v" "" "$k"
+    printf "openbeast.conf: %s='%s' carries an inline comment — read as '%s' (put comments on their own line)\n" "$k" "$v" "$p"
+  done
   # Only where this stack launches the model itself; start.sh says the same
   # thing, but only once the operator has asked for a start.
-  v="$(_ob_conf_value SERVE_SCRIPT || true)"
+  v="$(_ob_conf_value SERVE_SCRIPT || true)"; [[ -z "$v" ]] || _ob_word v "$v" "" SERVE_SCRIPT
   if [[ -n "$v" && "${INFERENCE_MANAGED:-true}" == "true" && ! -f "$REPO_DIR/scripts/$v" ]]; then
     printf "openbeast.conf: SERVE_SCRIPT='%s' names no file in scripts/ — start.sh will refuse to launch it (list them: ls scripts/serve-*.sh)\n" "$v"
   fi
