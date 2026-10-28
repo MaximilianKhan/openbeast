@@ -10,6 +10,7 @@ from __future__ import annotations
 import codecs
 import difflib
 import errno
+import fnmatch
 import functools
 import glob
 import html
@@ -1409,17 +1410,90 @@ def write_file(path: str, content: str) -> str:
         return f"Error: {e}"
 
 
+# list_files bounds (review 2026-10-27, R1-02). glob.glob(recursive=True)
+# followed directory symlinks, so two links to an ancestor (Wine/Proton's
+# `dosdevices/z: -> /`, or `ln -s . a; ln -s . b`) made one call walk an
+# exponential tree, pinning a shared tool-server worker; and it built and
+# sorted every match to show 200. The walk below never follows a directory
+# symlink and stops at a match, entry or time cap, saying so.
+_LIST_SHOW = 200
+_LIST_MAX_MATCHES = 10_000
+_LIST_MAX_ENTRIES = 200_000
+_LIST_MAX_SECONDS = 10.0
+_GLOB_MAGIC = re.compile(r"[*?\[]")
+
+
+def _glob_seg_match(name: str, seg: str) -> bool:
+    """One path component against one glob segment, glob.glob-style: a
+    wildcard never matches a leading dot."""
+    if name.startswith(".") and not seg.startswith("."):
+        return False
+    return fnmatch.fnmatchcase(name, seg)
+
+
+def _glob_parts_match(parts: list[str], segs: list[str]) -> bool:
+    """Whether relative path components match the pattern segments, with
+    `**` matching zero or more non-hidden directories (glob's recursive=True)."""
+    if not segs:
+        return not parts
+    if segs[0] == "**":
+        if _glob_parts_match(parts, segs[1:]):
+            return True
+        return (bool(parts) and not parts[0].startswith(".")
+                and _glob_parts_match(parts[1:], segs))
+    return (bool(parts) and _glob_seg_match(parts[0], segs[0])
+            and _glob_parts_match(parts[1:], segs[1:]))
+
+
 def list_files(directory: str = ".", pattern: str = "**/*") -> str:
-    """List files matching a glob pattern."""
+    """List files matching a glob pattern (`**` recurses; directory
+    symlinks are listed as entries but never descended)."""
     try:
         directory = _resolve(directory)
-        matches = sorted(glob.glob(os.path.join(directory, pattern), recursive=True))
-        files = [m for m in matches if os.path.isfile(m)]
-        if not files:
+        pat = pattern or "**/*"
+        if os.path.isabs(pat):
+            directory, pat = "/", pat.lstrip("/")
+        segs = [x for x in pat.split("/") if x not in ("", ".")]
+        # Leading literal segments narrow the walk instead of filtering it.
+        while len(segs) > 1 and not _GLOB_MAGIC.search(segs[0]):
+            directory = os.path.join(directory, segs.pop(0))
+        directory = os.path.realpath(directory)
+        if not os.path.isdir(directory):
             return f"No files matching '{pattern}' in {directory}"
-        result = "\n".join(files[:200])
-        if len(files) > 200:
-            result += f"\n... and {len(files) - 200} more"
+        max_depth = None if "**" in segs else len(segs)
+        files, entries, stopped = [], 0, ""
+        deadline = time.monotonic() + _LIST_MAX_SECONDS
+        for cur, dirs, names in os.walk(directory, followlinks=False):
+            rel = os.path.relpath(cur, directory)
+            base_parts = [] if rel == "." else rel.split(os.sep)
+            if max_depth is not None and len(base_parts) >= max_depth:
+                dirs[:] = []
+            else:
+                dirs[:] = sorted(dirs)
+            entries += len(names) + len(dirs)
+            for name in sorted(names):
+                full = os.path.join(cur, name)
+                if _glob_parts_match(base_parts + [name], segs) and os.path.isfile(full):
+                    files.append(full)
+            if len(files) >= _LIST_MAX_MATCHES:
+                stopped = f"stopped after {_LIST_MAX_MATCHES} matching files"
+            elif entries >= _LIST_MAX_ENTRIES:
+                stopped = f"stopped after scanning {_LIST_MAX_ENTRIES} entries"
+            elif time.monotonic() > deadline:
+                stopped = f"stopped after {_LIST_MAX_SECONDS:.0f} s"
+            if stopped:
+                break
+        if not files:
+            note = f" ({stopped})" if stopped else ""
+            return f"No files matching '{pattern}' in {directory}{note}"
+        files.sort()
+        result = "\n".join(files[:_LIST_SHOW])
+        if len(files) > _LIST_SHOW:
+            more = len(files) - _LIST_SHOW
+            result += (f"\n... and {more}{'+' if stopped else ''} more")
+        if stopped:
+            result += (f"\n[listing incomplete: {stopped} — narrow the "
+                       f"directory or the pattern]")
         return result
     except Exception as e:
         return f"Error: {e}"

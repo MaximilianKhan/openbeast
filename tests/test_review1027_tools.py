@@ -25,6 +25,61 @@ import tools  # noqa: E402
 
 
 # --------------------------------------------------------------------------
+# R1-02
+# --------------------------------------------------------------------------
+
+def test_list_files_survives_a_symlink_cycle(tmp_path):
+    cyc = tmp_path / "cyc"
+    cyc.mkdir()
+    (cyc / "f.txt").write_text("x")
+    os.symlink(".", cyc / "a")
+    os.symlink(".", cyc / "b")
+    t = time.monotonic()
+    out = tools.list_files(str(cyc))
+    assert time.monotonic() - t < 5
+    assert out.strip() == str(cyc / "f.txt")
+
+
+def test_list_files_lists_symlinked_files_not_symlinked_dirs(tmp_path):
+    (tmp_path / "real").mkdir()
+    (tmp_path / "real" / "r.py").write_text("")
+    (tmp_path / "top.py").write_text("")
+    os.symlink(tmp_path / "top.py", tmp_path / "link.py")
+    os.symlink(tmp_path / "real", tmp_path / "dirlink")
+    out = tools.list_files(str(tmp_path), "**/*.py").splitlines()
+    assert out == sorted([str(tmp_path / "link.py"), str(tmp_path / "real" / "r.py"),
+                          str(tmp_path / "top.py")])
+
+
+@pytest.mark.parametrize("pattern", ["**/*", "*.py", "**/*.py", "a/*.py", "a/**/*.py",
+                                     "*/*.py", ".*", ".hid/*", "**/.*", "[xa]*",
+                                     "x.py", "../t/*.py", "nomatch*"])
+def test_list_files_matches_glob_semantics(tmp_path, pattern):
+    t = tmp_path / "t"
+    for d in ("a/b", ".hid", "c"):
+        (t / d).mkdir(parents=True, exist_ok=True)
+    for f in ("x.py", "a/y.py", "a/b/z.py", ".dot.py", ".hid/h.py", "c/w.txt", "a/.q.py"):
+        (t / f).write_text("")
+    want = sorted(os.path.normpath(f) for f in glob.glob(str(t / pattern), recursive=True)
+                  if os.path.isfile(f))
+    got = tools.list_files(str(t), pattern)
+    got = [] if got.startswith("No files") else got.splitlines()
+    assert got == want
+
+
+def test_list_files_cap_is_reported(tmp_path, monkeypatch):
+    for i in range(30):
+        (tmp_path / f"f{i:02}.txt").write_text("")
+    monkeypatch.setattr(tools, "_LIST_SHOW", 5)
+    monkeypatch.setattr(tools, "_LIST_MAX_ENTRIES", 10)
+    out = tools.list_files(str(tmp_path))
+    assert "[listing incomplete:" in out
+    # Negative control: no note when nothing was cut.
+    monkeypatch.setattr(tools, "_LIST_MAX_ENTRIES", 10_000)
+    assert "[listing incomplete:" not in tools.list_files(str(tmp_path))
+
+
+# --------------------------------------------------------------------------
 # R1-03
 # --------------------------------------------------------------------------
 
