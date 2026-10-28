@@ -78,12 +78,14 @@ flowchart LR
   own SearXNG instead (`--local-search`).
 - **The client is purely additive.** The rig keeps running its full stack
   unchanged whether zero or ten clients are attached.
-- **The dashed beast-gate box is the honest default.** With `EDGE_GATE=false`
-  (shipped default) `:8443` maps straight at llama-server and publishes its
-  *entire* route table — `/slots`, `/props`, `POST /lora-adapters`,
-  `/v1/stream/<id>` — to every tailnet peer. That is fine on a tailnet you
-  fully own. `EDGE_GATE=true` routes it through beast-gate instead, which
-  allowlists the OpenAI routes and gives each device its own revocable key.
+- **The beast-gate box is dashed because it is opt-in.** With `EDGE_GATE=false`
+  (shipped default) and no `LLAMA_API_KEY`, `setup-tailscale.sh` leaves `:8443`
+  unpublished. It maps `:8443` straight at llama-server only behind a shared
+  `LLAMA_API_KEY` or with `--i-accept-open-inference`, and then every tailnet
+  peer reaches llama-server's *entire* route table — `/slots`, `/props`,
+  `POST /lora-adapters`, `/v1/stream/<id>` (the key gates access, not routes).
+  `EDGE_GATE=true` routes it through beast-gate instead, which allowlists the
+  OpenAI routes and gives each device its own revocable key.
   Full detail: [`BEAST_SLOT.md`](BEAST_SLOT.md).
 - **The brain can move off the rig.** `INFERENCE_BACKEND=vllm|tensorfold`
   plus `INFERENCE_URL` point the whole command center (WebUI, router, gate,

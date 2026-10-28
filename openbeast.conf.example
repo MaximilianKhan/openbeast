@@ -316,6 +316,10 @@
 # link matches the certificate), and uses http://localhost:<ARTIFACT_PORT>
 # when nothing is published. Set it only if you front the viewer yourself.
 #ARTIFACT_BASE_URL=https://artifacts.example.internal
+# The beast-chat console URL the viewer's "made by session …" link points to.
+# Unset: https://<name>:8445 when `tailscale serve` publishes :8445, else no
+# link. off/none disables the link. Env: $OPENBEAST_CHAT_BASE_URL.
+#CHAT_BASE_URL=
 
 # Tailnet logins allowed to READ the gallery and its pages, comma-separated
 # (the same values Tailscale shows as "Tailscale-User-Login", e.g. an email).
@@ -385,6 +389,13 @@
 # Set true to leave WebUI's own switches alone (Admin > Settings > Interface).
 # Env: $OPENBEAST_WEBUI_BACKGROUND_TASKS.
 #WEBUI_BACKGROUND_TASKS=false
+
+# Open WebUI's own composer Web Search. Off by default. true wires it to the
+# local SearXNG. It is Open WebUI's retrieval and page loader, not the
+# `fetch` tool: it bypasses the fetch SSRF guard and the :3001 tool server's
+# RBAC and audit trail (docs/TOOLS.md). The `web_search` tool works either way.
+# Env: $OPENBEAST_WEBUI_WEB_SEARCH.
+#WEBUI_WEB_SEARCH=false
 
 # Open WebUI admin credentials, used by scripts/configure-webui.sh to apply
 # tool-server + native function-calling config when WEBUI_AUTH is on.
@@ -470,6 +481,16 @@
 # Env override: $OPENBEAST_LANG_PACK_CONTEXT.  Inspect: ./scripts/doctor.sh
 #LANG_PACK_CONTEXT=auto
 
+# beast-assist: 1 pushes the language's checker verdict (zig, rustc, go vet,
+# gcc/g++, py_compile, shellcheck) into every write_file/edit_file result.
+# Exactly 1 — `true` leaves it off. Default: empty (off).
+# beast-lang escalation: with BEAST_ASSIST=1, attach the toolchain-confirmed
+# one-line fix to a failing check (boolean; does nothing without assist).
+# Both are read under their BARE names as env overrides (not OPENBEAST_*):
+# $BEAST_ASSIST, $BEAST_ESCALATE (or $OPENBEAST_ESCALATE).
+#BEAST_ASSIST=
+#BEAST_ESCALATE=false
+
 #CHAT_PORT=3003
 
 # READ allowlist: comma-separated tailnet logins, matched against the
@@ -510,6 +531,10 @@
 #CHAT_NOTIFY_URL=http://127.0.0.1:3005/openbeast-<long-random-topic>
 #CHAT_NOTIFY_ON=failed,lost,done
 #CHAT_NOTIFY_TOKEN_FILE=~/.config/openbeast/ntfy.token
+# The console URL a notification's link opens. Unset: the name `tailscale
+# serve` publishes :8445 under, else http://localhost:<CHAT_PORT>.
+# Env: $OPENBEAST_CHAT_PUBLIC_URL.
+#CHAT_PUBLIC_URL=
 # The ntfy extension's own port (loopback; --publish-ntfy mounts it at :8447)
 # and, for iOS instant delivery only, its public base URL + upstream relay —
 # see the iOS caveat in extensions/ntfy/README.md before setting either.

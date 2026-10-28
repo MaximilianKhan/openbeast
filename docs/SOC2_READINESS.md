@@ -15,7 +15,7 @@ technical controls in its own boundary. It cannot give you a SOC 2 report.
 
 OpenBeast is **self-hosted software running on hardware the customer owns**.
 There is no OpenBeast-operated service, no vendor-side data plane, and no
-telemetry. That has three consequences an assessor should understand up front:
+telemetry in OpenBeast's own code. That has three consequences an assessor should understand up front:
 
 - **OpenBeast is not a subservice organisation.** There is no carve-out or
   inclusive method to apply to us, because no customer data reaches us. There is
@@ -25,9 +25,16 @@ telemetry. That has three consequences an assessor should understand up front:
   supply-chain controls in §5.
 - **The system boundary is the customer's rig, its clients, and the tailnet
   between them.** All of it sits inside the customer's own control environment.
-- **Confidentiality is architectural rather than configured.** There is no cloud
-  code path to disable, so "data must not leave our environment" is enforced by
-  the absence of a mechanism rather than by a setting somebody could flip.
+- **Confidentiality is architectural rather than configured, for OpenBeast's
+  own code.** OpenBeast's code has no cloud path to disable, so "data must not
+  leave our environment" is enforced by the absence of a mechanism rather than
+  by a setting somebody could flip. Bundled upstream components keep their own
+  defaults: the Open WebUI service in `docker-compose.yml` sets none of
+  upstream's egress switches (`OFFLINE_MODE`, `ENABLE_VERSION_UPDATE_CHECK`,
+  `ENABLE_COMMUNITY_SHARING`), so upstream's defaults apply, including its
+  version update check. Treat that as a known outbound connection, and add
+  those variables to the `open-webui` service's environment if policy forbids it. We have not measured
+  Open WebUI's outbound requests ourselves.
 
 **In-scope Trust Services Criteria:** Security (the common criteria) throughout,
 Confidentiality where customer data is processed, and Availability only where

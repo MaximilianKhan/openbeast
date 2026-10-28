@@ -53,8 +53,10 @@ sudo usermod -aG docker "$USER" && newgrp docker
 # Clone the repo
 git clone https://github.com/MaximilianKhan/openbeast && cd openbeast
 
-# Build llama.cpp with CUDA (set CMAKE_CUDA_ARCHITECTURES for your GPU)
+# Build llama.cpp with CUDA (set CMAKE_CUDA_ARCHITECTURES for your GPU),
+# at the commit pinned in scripts/llama.cpp.ref — not upstream HEAD
 git clone https://github.com/ggml-org/llama.cpp.git
+git -C llama.cpp checkout "$(sed -n 's/^LLAMA_CPP_REF=//p' scripts/llama.cpp.ref)"
 export PATH=/opt/cuda/bin:$PATH
 (cd llama.cpp && cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=120 \
                  && cmake --build build --config Release -j$(nproc))
@@ -69,10 +71,9 @@ export PATH="$HOME/.local/bin:$PATH"   # add to your shell rc to persist
 hf download JonathanColetti/Qwen3.8-27B-Uncensored-GGUF \
    Qwen3.8-27B-Uncensored-Q5_K_M.gguf --local-dir weights/
 
-# Frontends
+# Frontends (Open WebUI and SearXNG need no pull: compose fetches the
+# digest-pinned images in docker-compose.yml when the stack first starts)
 curl -fsSL https://opencode.ai/install | bash
-docker pull ghcr.io/open-webui/open-webui:main
-docker pull searxng/searxng:latest
 
 # Make scripts executable (in case clone didn't preserve the bit)
 chmod +x start.sh stop.sh agent.sh scripts/*.sh tests/*.sh
@@ -110,7 +111,7 @@ toolchains need to be available:
 | C (gcc) | variant `c` | (already required for llama.cpp) |
 | C++ (g++) | variant `d` | (already required for llama.cpp) |
 | Rust (rustc) | variant `e` | `sudo pacman -S rust` |
-| Zig | variant `f` | `mise use -g zig@latest` (no sudo needed) |
+| Zig | variant `f` | `mise use -g zig@0.16` (no sudo needed; pin it, see below) |
 
 If you skip a toolchain, the variant tasks for that language will fail at
 the build step — their pass/fail entries in the leaderboard will record
@@ -124,7 +125,7 @@ sudo pacman -S cuda cmake docker gcc
 
 # Toolchains (skip any you already have)
 sudo pacman -S go rust         # if installing system-wide
-mise install zig@latest && mise use -g zig@latest    # via mise (no sudo)
+mise install zig@0.16 && mise use -g zig@0.16    # via mise (no sudo); pinned, not latest
 
 # Daemons
 sudo systemctl enable --now docker
@@ -135,12 +136,21 @@ sudo usermod -aG docker "$USER"   # log out/in or run `newgrp docker`
 on the user's box for Go and Node. Using mise for Zig avoids needing sudo
 and lets you switch versions easily.
 
+**Pin zig to 0.16, not `latest`.** The zig awareness pack
+(`agents/packs/zig-0.16.md`) and the zig escalation index were generated for
+zig 0.16.0, and each refuses to serve when the installed compiler is a
+different version, so `zig@latest` silently switches both off the day a new
+zig ships (0.17 also removed `@cImport`). The v4 zig rows were measured on
+0.16 too. Check with `python3 agents/lang/pack_context.py status`.
+
 ## 1. Build llama.cpp
 
-Clone and build llama.cpp with CUDA support from the repo root:
+Clone llama.cpp at the pinned commit (`scripts/llama.cpp.ref`, the same one
+`bootstrap.sh` checks out) and build it with CUDA support, from the repo root:
 
 ```bash
 git clone https://github.com/ggml-org/llama.cpp.git
+git -C llama.cpp checkout "$(sed -n 's/^LLAMA_CPP_REF=//p' scripts/llama.cpp.ref)"
 cd llama.cpp
 export PATH=/opt/cuda/bin:$PATH
 cmake -B build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=120
@@ -461,9 +471,8 @@ the MCP command to the absolute path of `agents/mcp_server.py`.
 
 ### Open WebUI (browser chat interface)
 
-```bash
-docker pull ghcr.io/open-webui/open-webui:main
-```
+No manual pull: `docker-compose.yml` pins the image by digest and compose
+fetches it when the stack first starts.
 
 Open WebUI is configured by `docker-compose.yml` (in repo root). It:
 - Runs in `network_mode: host` so it can reach `localhost:8080` (llama.cpp)
@@ -482,9 +491,7 @@ Available at http://localhost:3000 once the stack is running.
 
 ### SearXNG (private web search backend)
 
-```bash
-docker pull searxng/searxng:latest
-```
+No manual pull either; the image is digest-pinned in `docker-compose.yml`.
 
 Used by the `web_search` MCP tool. Our `docker-compose.yml` mounts
 `searxng/settings.yml` (committed in the repo) into the container with two
@@ -550,9 +557,12 @@ On first run, `configure-webui.sh` populates Open WebUI with:
 OpenCode runs separately from the stack:
 
 ```bash
-cd ~/my-project        # any directory, but opencode.json must be reachable
+cd /path/to/openbeast  # the checkout: opencode.json (MCP tools + models) is project-local
 opencode
 ```
+
+To use it from another project, copy the `provider` and `mcp` blocks into
+`~/.config/opencode/opencode.json` (see the OpenCode section above).
 
 To stop everything:
 

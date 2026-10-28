@@ -5,8 +5,11 @@ guest-fetch LIVE (2026-07-08) — verified with the real Open WebUI
 access-control code.** A `user`-role account resolves `web_search` +
 `fetch` (SSRF-guarded) ONLY (bash/file/agent tools denied at the connection
 layer); an `admin` account gets all 18. Baked into `configure-webui.sh` so
-fresh installs land RBAC'd. Remaining Phase 2 hardening: per-profile MCPO
-keys + Sandlock (below-app enforcement).
+fresh installs land RBAC'd. Per-profile keys shipped: MCPO was replaced by
+the identity tool server (`agents/openapi_tools.py`), keyed per profile by
+`scripts/setup-mcpo-keys.sh`. Still open: Sandlock (below-app enforcement),
+which is opt-in and confines only shell commands (`bash`, `grep`), not the
+in-process file tools — see docs/SANDBOXING.md.
 
 > ✅ **FIXED (2026-07-08) — the agent-spawn router is now identity-aware.**
 > Previously, with `AGENT_ROUTER=true`, `agents/router.py` classified
@@ -113,7 +116,10 @@ manage. Assign in Admin Panel → Users → role dropdown (or the API).
 > to act as every other one. Real separation needs one of two things:
 > Sandlock default-on for tool execution, extended beyond Phase 2 item 2
 > below (which wraps only guest-profile execution) to cover admin-profile
-> execution and deny reads of `openbeast.conf`; or running the tool server
+> execution and deny reads of `openbeast.conf` — which also needs the file
+> tools confined: today Sandlock wraps only `bash`/`grep`, and `read_file`
+> runs in the tool server's own process, so it reads `openbeast.conf`
+> whatever the profile says; or running the tool server
 > as a separate uid that cannot read `openbeast.conf`. Both
 > are architecture decisions for Max and are still open.
 
