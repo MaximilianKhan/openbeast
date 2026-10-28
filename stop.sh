@@ -105,12 +105,14 @@ fi
 
 # Fallback sweep for anything the supervisor didn't own. Patterns are
 # anchored to THIS repo's path so we never kill an unrelated llama-server
-# or router the user runs for another project on the same box.
+# or router the user runs for another project on the same box — and to the
+# INVOCATION (lib/proc.sh ob_py_ere / ob_bin_ere), so an editor, `tail -f` or
+# `less` that merely names one of these files is not killed either.
 echo "Stopping agent router..."
-pkill -f "$(_ob_ere "$SCRIPT_DIR/agents/router.py")" 2>/dev/null && echo "agent router stopped." || echo "agent router was not running."
+pkill -f "$(ob_py_ere "$SCRIPT_DIR/agents/router.py")" 2>/dev/null && echo "agent router stopped." || echo "agent router was not running."
 
 echo "Stopping beast-gate..."
-pkill -f "$(_ob_ere "$SCRIPT_DIR/agents/edge.py")" 2>/dev/null && echo "beast-gate stopped." || echo "beast-gate was not running."
+pkill -f "$(ob_py_ere "$SCRIPT_DIR/agents/edge.py")" 2>/dev/null && echo "beast-gate stopped." || echo "beast-gate was not running."
 
 # beast-instinct, then its CPU scorer (the reverse of the start order), then
 # beast-hydra. Only when they are on, or left a pidfile behind (a stack
@@ -136,7 +138,7 @@ fi
 if [[ "${HYDRA:-false}" == "true" || -f "$RUN_DIR/hydra.pid" ]]; then
   # It never contacts a node on the way down: hydra holds no node state.
   echo "Stopping beast-hydra..."
-  pkill -f "$(_ob_ere "$SCRIPT_DIR/agents/hydra.py")" 2>/dev/null && echo "beast-hydra stopped." || echo "beast-hydra was not running."
+  pkill -f "$(ob_py_ere "$SCRIPT_DIR/agents/hydra.py")" 2>/dev/null && echo "beast-hydra stopped." || echo "beast-hydra was not running."
   rm -f "$RUN_DIR/hydra.pid" "$RUN_DIR/hydra.start"
 fi
 
@@ -163,7 +165,7 @@ _stop_recorded() {                 # _stop_recorded <label> <pidfile> <script-pa
   if ob_pid_matches "$pid" "$pattern"; then
     kill "$pid" 2>/dev/null && echo "$label stopped (pid $pid)." && return 0
   fi
-  pkill -f "$pattern" 2>/dev/null \
+  pkill -f "$(ob_py_ere "$3")" 2>/dev/null \
     && echo "$label stopped (by path; no live recorded pid)." \
     || echo "$label was not running."
 }
@@ -174,9 +176,10 @@ _stop_recorded "chat server" "$RUN_DIR/chat.pid" \
   "$SCRIPT_DIR/agents/chat_server.py"
 
 echo "Stopping tool server..."
-pkill -f "$(_ob_ere "$SCRIPT_DIR/agents/openapi_tools.py")" 2>/dev/null && echo "Tool server stopped." || echo "Tool server was not running."
-# Legacy mcpo instances (pre-identity-server stacks)
-pkill -f "mcpo --port" 2>/dev/null || true
+pkill -f "$(ob_py_ere "$SCRIPT_DIR/agents/openapi_tools.py")" 2>/dev/null && echo "Tool server stopped." || echo "Tool server was not running."
+# (No more `pkill -f "mcpo --port"`: mcpo was replaced on 2026-07-09, and that
+# pattern named no path, so every stop killed ANY mcpo on the box — another
+# project's, another worktree's.)
 
 if ! ob_inference_managed; then
   # INFERENCE_MANAGED=false (always for vLLM / TensorFold): the inference

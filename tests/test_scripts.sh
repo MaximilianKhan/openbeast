@@ -2151,7 +2151,7 @@ PY
 done
 # and the orphan with no recorded pid must still be reapable, path-anchored so
 # a sibling worktree's server is never touched (healthcheck.sh's own rule)
-if grep -qE 'pkill -f "\$\(_ob_ere "\$REPO_DIR/agents/artifact_server\.py"\)"' \
+if grep -qE 'pkill -f "\$\((_ob_ere|ob_py_ere) "\$REPO_DIR/agents/artifact_server\.py"\)"' \
         "$REPO_DIR/scripts/healthcheck.sh"; then
   pass "healthcheck can reap an unrecorded beast-artifact orphan (ERE-quoted)"
 else
@@ -2167,7 +2167,7 @@ while IFS= read -r _ln; do
   _t="${_ln#"${_ln%%[![:space:]]*}"}"
   [[ "$_t" == \#* ]] && continue
   [[ "$_t" == *'$REPO_DIR'* ]] || continue
-  [[ "$_t" == *'_ob_ere'* ]] || _HC_BARE=1
+  [[ "$_t" =~ _ob_ere|ob_py_ere|ob_bin_ere ]] || _HC_BARE=1   # the ob_*_ere builders quote too
 done < <(grep 'pkill -f' "$REPO_DIR/scripts/healthcheck.sh" || true)
 if [[ $_HC_BARE -eq 0 ]]; then
   pass "every path-anchored pkill is ERE-quoted (a '+' or '.' in the repo path is safe)"
@@ -2413,7 +2413,7 @@ for _f in stop.sh scripts/healthcheck.sh; do
     _t="${_ln#"${_ln%%[![:space:]]*}"}"
     [[ "$_t" == \#* ]] && continue
     [[ "$_t" == *'$REPO_DIR'* || "$_t" == *'$SCRIPT_DIR'* ]] || continue
-    [[ "$_t" == *'_ob_ere'* ]] || _RV_BARE=1
+    [[ "$_t" =~ _ob_ere|ob_py_ere|ob_bin_ere ]] || _RV_BARE=1
   done < <(grep -E 'pkill -f|pgrep -f' "$REPO_DIR/$_f" || true)
   if [[ $_RV_BARE -eq 0 ]]; then
     pass "$_f: every path-anchored pkill/pgrep is ERE-quoted"
