@@ -254,10 +254,14 @@ fi
 # The key discipline must survive the new flag: the plaintext is shown on
 # stdout at enroll time and NOWHERE else, ever again — not in the registry,
 # not in a later `show`, not in a `scope` grant.
-if echo "$PHONE_OUT" | grep -qi "not recoverable" \
+# Capture first, then grep: `! cmd | grep -q` under pipefail asserts the
+# command's exit status, not its output (a failing `show` would pass). R7-08.
+_SHOW_OUT="$("$CLI" show phone 2>&1)"
+_SCOPE_OUT="$("$CLI" scope phone add extra 2>&1)"
+if grep -qi "not recoverable" <<< "$PHONE_OUT" \
    && ! grep -qF "$PHONE_KEY" "$REG" \
-   && ! "$CLI" show phone | grep -qF "$PHONE_KEY" \
-   && ! "$CLI" scope phone add extra 2>&1 | grep -qF "$PHONE_KEY"; then
+   && [[ -n "$_SHOW_OUT" ]] && ! grep -qF "$PHONE_KEY" <<< "$_SHOW_OUT" \
+   && [[ -n "$_SCOPE_OUT" ]] && ! grep -qF "$PHONE_KEY" <<< "$_SCOPE_OUT"; then
   pass "the plaintext key is printed only at enroll — never by show or scope"
 else
   fail "a scoped device's key was recoverable after enrollment"
