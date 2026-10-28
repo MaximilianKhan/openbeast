@@ -7,6 +7,12 @@
 # true/false keys accept true|yes|1|on and false|no|0|off (any case), and an
 # inline "# comment" after the value is fine. Anything else is read as false
 # and warned about, so a typo is visible instead of silently flipping a mode.
+#
+# The one-word keys (BIND_HOST, SERVE_SCRIPT, REASONING, WEIGHT_ENFORCE,
+# FILES_SHARDING) are read by their first word, so a trailing comment does
+# not change the value, but conf.sh still warns about it: other readers of the
+# line (doctor rows, your own grep) see the whole thing. Put comments on
+# their own line. Other keys (paths, ports, secrets) take no inline comment.
 
 # Where your .gguf model weights live. Weights are large and are NOT stored in
 # the repo — put them wherever you have space (NVMe, USB, NAS mount, etc.) and
@@ -158,6 +164,12 @@
 # watchdog, stop.sh — launches, restarts or kills it.
 # Env: $OPENBEAST_INFERENCE_MANAGED.
 #INFERENCE_MANAGED=true
+
+# Seconds a model may take to load before start.sh and the watchdog give up
+# on it (a managed server is stopped and counts as failed; an unmanaged one
+# gets a warning). Raise it for a very large model on slow storage.
+# Env: $OPENBEAST_LLAMA_LOAD_GRACE (wins over this line).
+#LLAMA_LOAD_GRACE=900
 
 # Concurrency /api/slot advertises when the server does not report one:
 # vLLM's --max-num-seqs, TensorFold's --parallel. Env: $OPENBEAST_INFERENCE_SLOTS.

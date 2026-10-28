@@ -1093,7 +1093,7 @@ export OPENBEAST_SEARXNG_SECRET="$SEARXNG_SECRET"
 # anywhere in the repo is in one of the two — add a new key there, or here.
 # Without openbeast.conf.example next to the conf (a stripped copy) the
 # unknown-key half is skipped: there is nothing to compare against.
-_OB_CONF_EXTRA_KEYS="BEAST_ASSIST BEAST_ESCALATE CHAT_BASE_URL CHAT_PUBLIC_URL WEBUI_DEFAULT_ADMIN_PASSWORD LLAMA_LOAD_GRACE"
+_OB_CONF_EXTRA_KEYS="BEAST_ASSIST BEAST_ESCALATE CHAT_BASE_URL CHAT_PUBLIC_URL WEBUI_DEFAULT_ADMIN_PASSWORD"
 # Whole numbers that are used exactly as written (the port keys and the gate's
 # limits take no inline comment — openbeast.conf.example says so)...
 _OB_CONF_INT_KEYS="ROUTER_PORT EDGE_PORT CHAT_PORT ARTIFACT_PORT NTFY_PORT MEM_LIMIT_PCT EDGE_RATE_LIMIT EDGE_MAX_INFLIGHT EDGE_MAX_BODY ARTIFACT_RETAIN_DAYS"
