@@ -194,13 +194,15 @@ _llama_loading() {
     # says "Loading model" forever, and nothing else in the stack bounds a
     # load either — so past the grace a recorded server that is STILL loading
     # is down. With no recorded pid there is no age to judge by: leave it.
-    [[ -z "$age" || "$age" -lt "${OPENBEAST_LLAMA_LOAD_GRACE:-900}" ]]
+    # (LLAMA_LOAD_GRACE: lib/conf.sh — the conf key, so this unit, which has
+    # no environment of its own, uses the grace start.sh used.)
+    [[ -z "$age" || "$age" -lt "${LLAMA_LOAD_GRACE:-900}" ]]
     return
   fi
   # Answering at all (healthy OR some other error) is not "loading": only a
   # server that has not bound its port yet gets the benefit of its age.
   [[ -n "$body" ]] && return 1
-  [[ -n "$age" && "$age" -lt "${OPENBEAST_LLAMA_LOAD_GRACE:-900}" ]]
+  [[ -n "$age" && "$age" -lt "${LLAMA_LOAD_GRACE:-900}" ]]
 }
 
 # Kill THIS stack's llama-server and nothing else: the recorded pid when it

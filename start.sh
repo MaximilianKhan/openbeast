@@ -353,10 +353,12 @@ print("true" if d.get("classify_route") else "false",
   [[ "$HYDRA_CLASSIFY_ROUTE" == "true" ]] || HYDRA_CLASSIFY_ROUTE=false
   unset _hy_json _hy_check
 fi
-# How long a model may take to LOAD before the load counts as failed (the
-# watchdog's bound on "Loading model", healthcheck.sh, is the same knob).
-LLAMA_LOAD_GRACE="${OPENBEAST_LLAMA_LOAD_GRACE:-900}"
-[[ "$LLAMA_LOAD_GRACE" =~ ^[0-9]+$ ]] || LLAMA_LOAD_GRACE=900
+# How long a model may take to LOAD before the load counts as failed. The
+# watchdog's bound on "Loading model" (healthcheck.sh) is the same knob, and
+# both resolve it in lib/conf.sh (conf key LLAMA_LOAD_GRACE, env
+# OPENBEAST_LLAMA_LOAD_GRACE wins): env-only, it reached this supervisor but
+# not the watchdog unit, which then shot a slow load at the default.
+[[ "${LLAMA_LOAD_GRACE:-}" =~ ^[0-9]+$ ]] || LLAMA_LOAD_GRACE=900
 
 # ---- log rotation: installed on the default path, not by a manual step ----
 # stack.log and the audit trails grow without bound unless
@@ -904,7 +906,7 @@ wait_llama_health() {
       return 0
     fi
     if (( SECONDS - t0 >= LLAMA_LOAD_GRACE )); then
-      echo "llama-server not healthy after ${LLAMA_LOAD_GRACE}s (OPENBEAST_LLAMA_LOAD_GRACE) — stopping it; the load has failed." >&2
+      echo "llama-server not healthy after ${LLAMA_LOAD_GRACE}s (LLAMA_LOAD_GRACE) — stopping it; the load has failed." >&2
       kill "$LLAMA_PID" 2>/dev/null || true
       for _i in $(seq 1 20); do kill -0 "$LLAMA_PID" 2>/dev/null || break; sleep 1; done
       kill -KILL "$LLAMA_PID" 2>/dev/null || true
@@ -1082,7 +1084,7 @@ wait_backend_ready() {
   local t0=$SECONDS
   until _infer_ready; do
     if (( SECONDS - t0 >= LLAMA_LOAD_GRACE )); then
-      echo "WARNING: inference backend NOT ready at $LLAMA_BASE after ${LLAMA_LOAD_GRACE}s (OPENBEAST_LLAMA_LOAD_GRACE)." >&2
+      echo "WARNING: inference backend NOT ready at $LLAMA_BASE after ${LLAMA_LOAD_GRACE}s (LLAMA_LOAD_GRACE)." >&2
       echo "         It is not managed by this stack (INFERENCE_BACKEND=$INFERENCE_BACKEND, INFERENCE_MANAGED=false):" >&2
       echo "         start it where it runs (docs/DGX_SPARK_PLAN.md), or fix INFERENCE_URL in openbeast.conf." >&2
       echo "         Bringing up tools, WebUI and search anyway; the supervisor logs when it becomes ready." >&2
