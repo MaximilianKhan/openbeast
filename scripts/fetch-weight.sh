@@ -41,6 +41,23 @@ die()  { printf 'Error: %s\n' "$*" >&2; exit 1; }
 
 [[ -f "$REGISTRY" ]] || die "$REGISTRY is missing — restore it from git"
 
+# --- the two settings this tool honours, read WITHOUT sourcing lib/conf.sh --
+# (conf.sh mints and appends a SearXNG secret; a weight fetch must not write
+# the conf). Same precedence as conf.sh: OPENBEAST_<KEY>, then the value a
+# parent that sourced conf.sh exported, then openbeast.conf. First token
+# only, lowercased, so `OFFLINE=true  # air-gapped` reads as true.
+_fw_setting() {                       # _fw_setting KEY -> lowercased value
+  local ev="OPENBEAST_$1" v=""
+  if   [[ -n "${!ev:-}" ]]; then v="${!ev}"
+  elif [[ -n "${!1:-}"  ]]; then v="${!1}"
+  else v="$(_ob_weights_conf_key "$1" || true)"; fi
+  read -r v _ <<< "$v" || true
+  v="${v%%#*}"; v="${v//[\"\']/}"
+  printf '%s' "$v" | tr 'A-Z' 'a-z'
+}
+case "$(_fw_setting OFFLINE)" in true|yes|1|on) FW_OFFLINE=1 ;; *) FW_OFFLINE=0 ;; esac
+FW_ENFORCE="$(_fw_setting WEIGHT_ENFORCE)"
+
 cmd_list() {
   say "weight registry — $REGISTRY"
   say ""
@@ -73,10 +90,10 @@ online() {
   curl -fsS --max-time 6 -o /dev/null "$HF_BASE" 2>/dev/null
 }
 
-sideload_help() {                     # sideload_help <name> <repo> <remote>
-  local name="$1" repo="$2" remote="$3"
+sideload_help() {                     # sideload_help <name> <repo> <remote> [why]
+  local name="$1" repo="$2" remote="$3" why="${4:-No route to $HF_BASE.}"
   say ""
-  say "  No route to $HF_BASE. This weight can still be sideloaded:"
+  say "  $why This weight can still be sideloaded:"
   say "    1. on a connected machine:  hf download $repo $remote"
   say "    2. copy it to this box as:  $WEIGHTS_DIR/$name"
   say "    3. verify the pin:          ./scripts/verify-weights.sh --file $name"
@@ -95,7 +112,12 @@ cmd_fetch() {
   say "repo:    $repo  (remote name: $remote)"
   say "dest:    $dest"
   if [[ "$sha" == "PENDING" ]]; then
-    warn "registry row is PENDING — there is no hash to verify against yet"
+    # A PENDING row has no hash, and its download comes from the MOVING main
+    # of the HF repo: whatever is there today is what gets installed. Said in
+    # capitals because the rest of this tool's output reads as "verified".
+    warn "UNVERIFIED: the registry row for $name is PENDING — it has no sha256"
+    warn "pin, so this file is NOT checked against anything. Whatever the HF repo"
+    warn "serves today is what you get. Pin it after vetting (see the end of this run)."
   else
     say "pinned:  ${bytes} bytes, sha256 ${sha:0:16}…"
   fi
@@ -104,6 +126,25 @@ cmd_fetch() {
   if [[ -f "$dest" ]]; then
     ok "already present"
     exec "$SCRIPT_DIR/verify-weights.sh" --file "$name"
+  fi
+
+  # WEIGHT_ENFORCE=strict means "refuse a weight that is not pinned" (serve.sh
+  # refuses an unregistered one at load time). A PENDING row is unpinned, so
+  # strict refuses to DOWNLOAD it — before any network or disk is touched.
+  if [[ "$sha" == "PENDING" && "$FW_ENFORCE" == "strict" ]]; then
+    die "refusing to fetch $name: its registry row is PENDING (no sha256 pin) and
+       WEIGHT_ENFORCE=strict. Nothing was downloaded. Either pin the row in
+       $REGISTRY after vetting the file on another box, or fetch it once
+       with  OPENBEAST_WEIGHT_ENFORCE=warn $0 $name"
+  fi
+
+  # OFFLINE=true (conf.sh: "steps which cannot possibly succeed are not
+  # attempted"): no probe at all. A proxy or captive portal answering the
+  # probe would otherwise start a 20 GB download on a closed network.
+  if [[ $FW_OFFLINE -eq 1 ]]; then
+    warn "OFFLINE=true — not contacting $HF_BASE"
+    sideload_help "$name" "$repo" "$remote" "OFFLINE=true, so nothing is downloaded."
+    exit 4
   fi
 
   mkdir -p "$WEIGHTS_DIR" || die "cannot create $WEIGHTS_DIR"
@@ -206,7 +247,8 @@ cmd_fetch() {
   [[ -f "$dest" ]] || die "could not move $staged -> $dest"
 
   if [[ "$sha" == "PENDING" ]]; then
-    ok "downloaded ($(stat -c%s "$dest") bytes) — registry row is PENDING, nothing to verify"
+    warn "UNVERIFIED: downloaded $name ($(stat -c%s "$dest") bytes) WITHOUT any hash check —"
+    warn "its registry row is PENDING. Treat it as unvetted until you pin it."
     say "  Pin it:  sha256sum '$dest'  &&  stat -c%s '$dest'   then edit $REGISTRY"
     return 0
   fi
