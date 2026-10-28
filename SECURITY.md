@@ -160,6 +160,14 @@ touch; the images and the llama.cpp source have only the signature, so an
 unsigned bundle is accepted but *said* to be unsigned rather than trusted
 silently.
 
+Two pieces of the DGX Spark backends are not pinned like the rest
+(`docs/DGX_SPARK_PLAN.md` §6/§7). TensorFold's Python dependencies are
+resolved from PyPI at every start unless `TENSORFOLD_PREBUILT=true` points
+the launcher at a derived image built once and pinned by digest. The vLLM
+image is digest-pinned, but its vLLM must be ≥ 0.31.0 (below 0.22.0 the API
+key can be bypassed), which the launcher probes and warns about at each
+start.
+
 ## Supported versions
 
 The latest tagged release plus `main`. (v1.0 went public 2026-07-13; the

@@ -162,8 +162,15 @@ with no revision argument, so the launcher only hands it the verified
 directory, read-only, with `HF_HUB_OFFLINE=1`. A drafter is pinned the same
 way (`DRAFTER_SOURCE`/`DRAFTER_REVISION`); without one it passes `--drafter
 none`, never `auto` (which would pick up any unpinned draft model in the HF
-cache). A derived image built once
-and pinned by digest would avoid the pip install at every start — later. **Start rank 1 first**, then rank 0 (RUNBOOK.md, "two ranks").
+cache). **TensorFold's own Python dependencies are not pinned:** the
+pip install at every start resolves them from PyPI afresh, so it needs
+github.com and PyPI each time and the launcher refuses to start under
+`OFFLINE`; `--help`, `--print` and the start output say so. The fix is a
+derived image with TensorFold installed once and pinned by digest:
+`TENSORFOLD_PREBUILT=true` in `spark.env` runs `tensorfold` from such an
+image with no install at start (allowed under `OFFLINE`); the recipe is in
+`spark.env.example`. That image is **not built yet** (it needs a Spark).
+**Start rank 1 first**, then rank 0 (RUNBOOK.md, "two ranks").
 
 Limits — each one is a reason TensorFold is the *second* backend, not the
 first:
@@ -212,6 +219,18 @@ two-rank 71–82 tok/s (docs/recipes/qwen3.8-27b.md). **VERIFY ON HARDWARE.**
 - **Two identity layers stay separate** (AGENTS.md): the gate identifies
   devices; the vLLM key only proves "is the rig". Never hand the vLLM key to
   a client.
+- **vLLM must be ≥ 0.31.0.** Below 0.22.0 a request can bypass the API-key
+  check (GHSA-94f4-hr76-p5j6), so `VLLM_API_KEY` protects nothing; below
+  0.31.0 another advisory applies (`spark.env.example` names both). At each
+  start the vLLM launcher reads `vllm.__version__` from the pinned image
+  (`docker run --network none`) and warns below 0.31, loudly below 0.22;
+  `SPARK_SKIP_VLLM_VERSION_CHECK=true` skips the probe. The NGC 26.05 image's
+  version is unchecked until a Spark runs it.
+- **Network and token settings reach vLLM.** The vLLM launcher honours
+  `OFFLINE` (from the env, `spark.env` or `openbeast.conf`: an unfetched
+  profile is refused), forwards `HF_ENDPOINT` (a Hub mirror) by name, and
+  reads `HF_TOKEN_FILE`, refusing a file readable by group or others, and
+  forwards the token by name, never on argv.
 
 ## 8. Coupling inventory — status after this PR
 
