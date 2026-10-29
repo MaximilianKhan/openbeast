@@ -347,6 +347,7 @@ agents/                      # Agent framework + servers
   runner.py                  # Autonomous agent loop (10-tool registry; steering inbox as a session)
   router.py                  # Agent-spawn router on :8088 (opt-in)
   edge.py                    # beast-gate on :8090 — identity-aware inference edge (opt-in)
+  island.py                  # beast-island — runtime offline mode: probe, watcher, .run/island.json
   hydra.py / hydra_core.py   # beast-hydra on :8095 — routes inference across engines (opt-in)
   instinct/                  # beast-instinct on :8094 — calibrated routing decisions (opt-in)
   chat_server.py             # beast-chat on :3003 — sessions API + the phone console (opt-in)
@@ -369,6 +370,7 @@ searxng/settings.yml         # Custom config: enables JSON format + disables lim
 tests/                       # pytest + standalone shell suites (tests/run_tests.sh runs all)
   test_scripts.sh            # Script behaviour under set -e/pipefail, incl. end-to-end healthcheck
   test_offline_fixes.sh      # bundle/pydeps/fetch-weight with stubbed hf/pip/docker/git
+  test_island.py             # beast-island: state machine, real watcher, hostile state files, conf
   test_skill_import.sh       # the remote-skill gate against a stub scanner and a stub git
   test_job_sh.sh · test_artifact_cli.sh · test_clients.sh · test_ssd_wear.sh
   test_chat_*.py · test_sessions.py · test_steering.py · test_artifact_*.py

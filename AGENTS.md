@@ -31,6 +31,11 @@ four facts that change how you edit code here:
   rate + in-flight caps, inference audit. It is the one place on the inference
   path where identity exists (llama-server has no users). Devices are enrolled
   with `scripts/clients.sh`.
+- **beast-island** (`agents/island.py`, `ISLAND=auto` default) is the runtime
+  offline mode: when the internet drops, the web tools refuse at once via a
+  guard in `agents/mcp_server.py`. It is deliberately **not** in
+  `agents/tools.py`, which is part of the eval era hash
+  ([`docs/BEAST_ISLAND.md`](docs/BEAST_ISLAND.md)).
 - **Two identity layers, deliberately separate.** `:3001` authenticates the
   *human* (WebUI user → RBAC tier → file shard); beast-gate authenticates the
   *device*. Don't conflate them.
@@ -109,7 +114,7 @@ Each is one arg away, e.g. `./start.sh serve-qwen-27b-q5.sh`. Board:
 | Eval suite (137 tasks across 12 categories) | `evals/` — see `evals/README.md` |
 | Skills (this system) | `skills/` — see `skills/README.md` |
 | Tests | `tests/run_tests.sh` (runs all) + `python3 -m pytest tests/ -q`. Full list is `ls tests/`; the load-bearing ones: `test_tools.py`, `test_scripts.sh`, `test_smoke.sh` (needs a live stack), `test_cache.py`, `test_proc_hygiene.py`, `test_edge.py` (beast-gate), `test_clients.sh` (enrollment CLI), `test_beast_slot.py` (`/api/slot` contract), `test_identity_server.py` (RBAC/sharding/audit), `test_fetch_guards.py` (SSRF) |
-| Documentation (technical) | **Live** (start here): `docs/ARCHITECTURE.md`, `docs/BEAST_SLOT.md`, `docs/INSTALL.md`, `docs/REFERENCE.md`, `docs/TOOLS.md`, `docs/RESULTS.md`, `docs/MODELS.md`, `docs/UPDATING.md`, `docs/TODO.md` — `ls docs/` for the rest (plans, SANDBOXING, RBAC_PLAN, HARDWARE_PROFILES…). **Do not cite as current:** anything under `docs/archive/` (historical, v3-era), and `docs/MAC_CLIENT_PLAN.md`, superseded by `docs/BEAST_SLOT.md` |
+| Documentation (technical) | **Live** (start here): `docs/ARCHITECTURE.md`, `docs/BEAST_SLOT.md`, `docs/BEAST_ISLAND.md`, `docs/INSTALL.md`, `docs/REFERENCE.md`, `docs/TOOLS.md`, `docs/RESULTS.md`, `docs/MODELS.md`, `docs/UPDATING.md`, `docs/TODO.md` — `ls docs/` for the rest (plans, SANDBOXING, RBAC_PLAN, HARDWARE_PROFILES…). **Do not cite as current:** anything under `docs/archive/` (historical, v3-era), and `docs/MAC_CLIENT_PLAN.md`, superseded by `docs/BEAST_SLOT.md` |
 | Documentation (overview / persona / tools) | `README.md`, `system-prompt.md`, `system-prompt-tools.md` |
 
 ### Eval suite

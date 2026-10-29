@@ -91,6 +91,13 @@ go direct (or via DERP), encrypted end to end with WireGuard, and they never
 touch the exit node. That is the point: your laptop talking to your rig should
 not detour through a third party.
 
+**One more outbound flow to know about:** beast-island's connectivity probe
+(`ISLAND=auto`, the default). Every 15 s it makes a bare TCP connect, with no
+payload, to `1.1.1.1:443`, `9.9.9.9:443` and `8.8.8.8:443`, then closes. Through an exit
+node those connects leave from the exit node, like everything else. Point
+`ISLAND_PROBES` elsewhere, or set `ISLAND=off`, if you'd rather not contact
+those resolvers ([BEAST_ISLAND.md](BEAST_ISLAND.md)).
+
 **Not changed at all:** the data-residency promise. Prompts, file contents and
 model output still never leave hardware you own. An exit node changes where your
 *web* traffic appears to come from. It does not move your inference anywhere.
