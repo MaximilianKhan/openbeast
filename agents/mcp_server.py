@@ -62,6 +62,7 @@ from mcp.server.mcpserver import MCPServer
 # reaping, rlimits, output capping, and protected-path write guards).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import tools as _tools
+import island as _island  # beast-island: web tools refuse at once when offline
 
 # ---------------------------------------------------------------------------
 # Server
@@ -187,6 +188,9 @@ def fetch(url: str, max_length: int = 50_000) -> str:
         url: The URL to fetch (http or https, public hosts only).
         max_length: Maximum characters to return (default 50000).
     """
+    refusal = _island.web_refusal("fetch")
+    if refusal:
+        return refusal
     return _tools.fetch(url, max_length)
 
 
@@ -1316,6 +1320,9 @@ def web_search(query: str, max_results: int = 10, pageno: int = 1,
         pageno: Result page, 1-based (default 1); use 2, 3, … for more results.
         time_range: Restrict to recent pages: 'day', 'month' or 'year' (default: none).
     """
+    refusal = _island.web_refusal("web_search")
+    if refusal:
+        return refusal
     return _tools.web_search(query, max_results, pageno, time_range)
 
 

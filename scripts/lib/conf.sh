@@ -41,6 +41,13 @@
 #       reports a clear refusal instead of a multi-minute stall followed by a
 #       misdiagnosis. Affects bootstrap.sh, scripts/update.sh, the compose
 #       pull policy and doctor's reporting. Use `ob_offline` as the predicate.
+#   ISLAND           (env OPENBEAST_ISLAND)      default auto
+#   ISLAND_GRACE     (env OPENBEAST_ISLAND_GRACE) default 90 (seconds)
+#   ISLAND_PROBES    (env OPENBEAST_ISLAND_PROBES) default 1.1.1.1:443 9.9.9.9:443 8.8.8.8:443
+#       beast-island: the RUNTIME offline mode (power outage, router dark).
+#       auto = islands after ISLAND_GRACE seconds without a route and rejoins
+#       by itself; force = islanded from launch (./start.sh -d --offline);
+#       off = no watcher. docs/BEAST_ISLAND.md.
 #   GPU_BACKEND      (env OPENBEAST_GPU_BACKEND) default auto
 #       llama.cpp build backend: auto | cuda | hip | sycl | cpu. "auto" maps
 #       the detected GPU vendor (lib/hardware.sh): nvidia→cuda, amd→hip,
@@ -227,6 +234,57 @@ REASONING_BUDGET="${OPENBEAST_REASONING_BUDGET:-$(_ob_conf_value REASONING_BUDGE
 # (end of file) reports them with its other findings, so they are said once
 # per command and doctor.sh can show them as rows.
 _OB_CONF_PROBLEMS=()
+# ISLAND: beast-island, the RUNTIME counterpart of OFFLINE (agents/island.py,
+# docs/BEAST_ISLAND.md). OFFLINE says the box never has a route; ISLAND says
+# what to do when the route DISAPPEARS while the stack runs — the power-outage
+# case, router dark, rig on its UPS.
+#   auto  (default) a watcher probes the internet; after ISLAND_GRACE seconds
+#         with no route the web tools answer "offline" at once instead of
+#         stalling, and a launch with no route boots islanded
+#   force islanded from launch until the stack stops (start.sh --offline)
+#   off   no watcher at all
+# true/on/yes mean force and false/no/0 mean off, so the boolean spellings
+# people reach for do what they say. Anything else warns and means auto.
+_ob_is="${OPENBEAST_ISLAND:-$(_ob_conf_value ISLAND || true)}"
+_ob_is="${_ob_is%%[[:space:]#]*}"; _ob_is="${_ob_is//[\"\']/}"
+case "$(printf '%s' "$_ob_is" | tr 'A-Z' 'a-z')" in
+  ""|auto)          ISLAND=auto ;;
+  force|true|on|yes|1) ISLAND=force ;;
+  off|false|no|0)   ISLAND=off ;;
+  *) _OB_CONF_PROBLEMS+=("ISLAND='$_ob_is' is not auto, force or off — using auto")
+     ISLAND=auto ;;
+esac
+unset _ob_is
+ISLAND_GRACE="${OPENBEAST_ISLAND_GRACE:-$(_ob_conf_value ISLAND_GRACE || true)}"
+ISLAND_GRACE="${ISLAND_GRACE%%[[:space:]#]*}"
+[[ "$ISLAND_GRACE" =~ ^[0-9]+$ ]] || ISLAND_GRACE=90
+# Space-separated host:port TCP targets, IP literals (a probe that needs DNS
+# stalls exactly when it matters). Empty = agents/island.py's defaults. Quotes
+# and a trailing `# comment` are dropped (the value itself contains spaces, so
+# only a `#` starts a comment here).
+ISLAND_PROBES="${OPENBEAST_ISLAND_PROBES:-$(_ob_conf_value ISLAND_PROBES || true)}"
+ISLAND_PROBES="${ISLAND_PROBES%%#*}"; ISLAND_PROBES="${ISLAND_PROBES//[\"\']/}"
+ISLAND_PROBES="$(printf '%s' "$ISLAND_PROBES" | xargs 2>/dev/null || printf '%s' "$ISLAND_PROBES")"
+# Where the island state file lives — ONE answer for the writer (start.sh)
+# and every reader (stop/healthcheck/doctor/status here, mcp_server.py via
+# the same OPENBEAST_RUN_DIR rule in agents/island.py).
+ISLAND_STATE_DIR="${OPENBEAST_RUN_DIR:-$REPO_DIR/.run}"
+# Open WebUI's OFFLINE_MODE (docker-compose.yml). ALWAYS derived, never taken
+# from the environment: a shell that sourced this file once would otherwise
+# pin a stale answer for every later compose call. True when:
+#   - OFFLINE=true (a closed-network box), or ISLAND=force (a --offline launch)
+#   - a LIVE island watcher says the rig is islanded now or launched islanded
+#     (healthcheck.sh --restart re-runs compose mid-outage: a WebUI recreated
+#     without OFFLINE_MODE then stalls its boot on Hugging Face downloads)
+# start.sh re-decides it after its launch probe and exports the result.
+OPENBEAST_WEBUI_OFFLINE=false
+if [[ "$OFFLINE" == "true" || "$ISLAND" == "force" ]]; then
+  OPENBEAST_WEBUI_OFFLINE=true
+elif [[ "$ISLAND" != "off" && -f "$ISLAND_STATE_DIR/island.json" ]] \
+     && [[ "$(OPENBEAST_RUN_DIR="$ISLAND_STATE_DIR" python3 "$REPO_DIR/agents/island.py" status --webui-offline 2>/dev/null || true)" == "true" ]]; then
+  OPENBEAST_WEBUI_OFFLINE=true
+fi
+export OPENBEAST_WEBUI_OFFLINE
 # An integer or nothing. `REASONING_BUDGET=lots` (or `4096  # cap`, which
 # arrived whole) went to llama-server as --reasoning-budget and killed it at
 # launch, reported only as the generic "llama-server exited".
@@ -1023,7 +1081,7 @@ _OB_CONF_EXTRA_KEYS="BEAST_ASSIST BEAST_ESCALATE CHAT_BASE_URL CHAT_PUBLIC_URL W
 # limits take no inline comment — openbeast.conf.example says so)...
 _OB_CONF_INT_KEYS="ROUTER_PORT EDGE_PORT CHAT_PORT ARTIFACT_PORT NTFY_PORT MEM_LIMIT_PCT EDGE_RATE_LIMIT EDGE_MAX_INFLIGHT EDGE_MAX_BODY ARTIFACT_RETAIN_DAYS"
 # ...and those whose reader strips a trailing `# comment` first.
-_OB_CONF_INT_KEYS_COMMENT_OK="HYDRA_READY_GRACE AGENT_LOG_RETENTION_DAYS"
+_OB_CONF_INT_KEYS_COMMENT_OK="HYDRA_READY_GRACE AGENT_LOG_RETENTION_DAYS ISLAND_GRACE"
 ob_conf_lint() {
   local conf="$REPO_DIR/openbeast.conf" example="$REPO_DIR/openbeast.conf.example" k v p
   for p in ${_OB_CONF_PROBLEMS[@]+"${_OB_CONF_PROBLEMS[@]}"}; do

@@ -49,6 +49,7 @@ line in `openbeast.conf`.
 | **beast-chat** 📱 *opt-in* | Watch and steer the rig's own sessions from a phone: live transcripts that reattach by byte offset, `say` to a running agent, stop it, start a job. Since v1.7: a new-session sheet with presets, pause/resume, an installable PWA, push notifications through an ntfy extension, transcript export to beast-artifact, a rig status strip | v1.4 · v1.7 |
 | **beast-lang** 📚 | The offline language library: acquired docs, the installed toolchain introspected as ground truth, every claim compile-verified, a `language_reference` tool, (opt-in, `BEAST_ESCALATE`) a compile error that arrives with its confirmed fix, and the measured zig 0.16 awareness pack handed to agents on zig tasks (`LANG_PACK_CONTEXT`) | v1.5 · v1.7 |
 | **Air-gap ready** 🔌 | `OFFLINE=true`, a hash-pinned Python lockfile with a wheelhouse, and a signed offline bundle: build it connected, install it from a USB stick | v1.5 |
+| **beast-island** 🏝️ | Runtime offline mode for a power outage: the rig notices the internet is gone (about 90 to 120 s), web tools answer "offline" at once instead of stalling, and everything else keeps running locally. A launch with no route boots islanded; `./start.sh -d --offline` forces it | main |
 | **beast-campaign** 🧪 | A GPU lease so two measurements cannot share the card, an eval *era* hash so rows from different code are never compared as if they were the same, and a harness that refuses to bank an infrastructure failure (a dead server, an exhausted thread pool, a full disk) as a model failure | v1.5 |
 | **Multi-engine inference** 🟩 *opt-in* | `INFERENCE_BACKEND=vllm\|tensorfold`: the whole stack (WebUI, tools, agents, gate, `/api/slot`) talks to a vLLM or TensorFold server, e.g. tensor-parallel across two DGX Sparks. Any new checkpoint is inspected, pinned by commit, sha256-locked and conformance-tested before OpenBeast uses it | v1.6 |
 | **beast-hydra** 🐉 + **beast-instinct** 🧿 *opt-in* | `HYDRA=true`: one router on `:8095` in front of the rig's engine and any tailnet engines, choosing per request by the `model` field, with health checks and failover before the first byte; every consumer (WebUI, gate, agents) goes through it. `INSTINCT=true`: a calibrated decision service on `:8094` that hydra and the router can consult, shadow-only until a decision passes its gate, and deciding on a full 27B (the rig's own now, Open-Jev-27B on its own GPU next). The fleet is uncensored-only, enforced: hydra never answers from a stock model; the Sparks serve GLM-5.3-Flash uncensored on TensorFold. Tested against simulated fleets, not yet on the Sparks | v1.7 |
@@ -334,6 +335,26 @@ by beast-assist arrives with the one-line fix the toolchain confirmed, and only
 when the index actually knows that member. Model-drafted claims go through the same verifier before
 they can ever be served.
 → [`docs/BEAST_LANG_PLAN.md`](docs/BEAST_LANG_PLAN.md)
+
+### beast-island — the rig that just lost the internet 🏝️
+
+*(main.)* The power goes out, the router goes dark, and the rig keeps going on
+its UPS. With the default `ISLAND=auto`, a watcher notices roughly 90 to 120 s
+after the route dies. From then on the model's `web_search` and `fetch` tools
+answer *"ISLAND MODE … do not retry"* immediately instead of stalling while the
+model retries. The model, the other tools, OpenCode and Open WebUI carry on as
+normal (Open WebUI's own Web Search toggle is not covered). When the route
+comes back, the rig rejoins by itself. Booting with no internet starts
+islanded, so Open WebUI doesn't stall on model downloads and compose doesn't
+try a registry; a rig that booted that way keeps Open WebUI offline until its
+next restart.
+
+```bash
+./start.sh -d --offline            # islanded from launch
+python3 agents/island.py status    # what state are we in?
+```
+
+→ [`docs/BEAST_ISLAND.md`](docs/BEAST_ISLAND.md)
 
 ### Air-gap — the rig that never sees the internet 🔌
 
@@ -838,6 +859,7 @@ scoring, per-category/per-language breakdowns, and the eval CLI:
 | [BEAST_HYDRA.md](docs/BEAST_HYDRA.md) | Routing inference across engines: what `HYDRA=true` re-points, `hydra.toml`, `hydra.sh`, env knobs |
 | [BEAST_INSTINCT.md](docs/BEAST_INSTINCT.md) | Calibrated routing decisions: contracts, invariants, lifecycle, what answers today |
 | [BEAST_LANG_PLAN.md](docs/BEAST_LANG_PLAN.md) | The offline language library: layers, verifier, escalation, synthesis, status |
+| [BEAST_ISLAND.md](docs/BEAST_ISLAND.md) | Runtime offline mode: auto/force/off, what changes when islanded, the state file, known limits |
 | [LANG_AWARENESS_PLAN.md](docs/LANG_AWARENESS_PLAN.md) | beast-assist: push-diagnostics and awareness packs, with the A/B results |
 | [BEAST_CAMPAIGN_PLAN.md](docs/BEAST_CAMPAIGN_PLAN.md) | The GPU lease and the eval era |
 

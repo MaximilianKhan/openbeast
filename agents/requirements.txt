@@ -2,9 +2,9 @@
 # anchoring: an unpinned install would pull whatever PyPI has newest,
 # including a compromised release). scripts/update.sh --python bumps these,
 # but only after agents/ imports cleanly against them.
-openai==3.24.0
+openai==3.35.1
 mcp==2.3.0
-fastapi==0.142.2
+fastapi==0.146.0
 uvicorn==0.54.0
 PyJWT==2.15.1
 # httpx: direct runtime dep of router.py + edge.py — was riding TRANSITIVELY

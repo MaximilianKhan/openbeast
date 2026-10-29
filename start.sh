@@ -20,6 +20,11 @@
 #   ./start.sh help                # this text (also -h, --help)
 #   ./start.sh serve-qwen-27b-q5.sh    # specific model (combines with -d);
 #                                  #   the choices: ls scripts/serve-*.sh
+#   ./start.sh -d --offline        # beast-island forced: islanded from launch
+#                                  #   (no internet assumed; web tools answer
+#                                  #   "offline"). Without it, ISLAND=auto
+#                                  #   islands by itself when the route dies.
+#                                  #   docs/BEAST_ISLAND.md
 #
 # Daemon mode runs inside a memory-capped systemd scope when available
 # (MEM_LIMIT_PCT of this machine's RAM — default 75% — plus 8G swap) so a
@@ -55,7 +60,7 @@ _unknown_command() {
       done ;;
   esac
   echo "Unknown command '$w'$hint" >&2
-  echo "  Commands: status | stop | restart | doctor | help   (flags: -d, --status, --help)" >&2
+  echo "  Commands: status | stop | restart | doctor | help   (flags: -d, --offline, --status, --help)" >&2
   echo "  A model is named by its serve script: ls scripts/serve-*.sh" >&2
   exit 2
 }
@@ -64,6 +69,10 @@ DAEMON=0; STATUS=0; DAEMONIZED=0; RESTART=0; SERVE_SCRIPT=""
 for arg in "$@"; do
   case "$arg" in
     -d|--daemon)   DAEMON=1 ;;
+    # beast-island forced for this launch. Exported BEFORE conf.sh is sourced
+    # (it reads OPENBEAST_ISLAND), and the -d launcher forwards OPENBEAST_*
+    # into the daemon's unit, so the supervisor sees it too.
+    --offline|offline) export OPENBEAST_ISLAND=force ;;
     --status|status) STATUS=1 ;;
     doctor)        exec "$SCRIPT_DIR/scripts/doctor.sh" ;;   # health/consistency report
     stop)          exec "$SCRIPT_DIR/stop.sh" ;;
@@ -118,6 +127,7 @@ _pid_pattern() {
     edge)       echo 'edge\.py' ;;
     chat)       echo 'chat_server\.py' ;;
     artifact)   echo 'artifact_server\.py' ;;
+    island)     echo 'island\.py' ;;
     hydra)      echo 'agents/hydra\.py' ;;
     instinct)   echo 'instinct\.server' ;;
     instinct-scorer) echo 'serve-instinct-scorer\.sh|serve\.sh|llama-server' ;;
@@ -144,9 +154,12 @@ if [[ $STATUS -eq 1 ]]; then
   [[ "${HYDRA:-false}" == "true" ]] && _st_names+=(hydra)
   [[ "${INSTINCT_SCORER:-false}" == "true" ]] && _st_names+=(instinct-scorer)
   [[ "${INSTINCT:-false}" == "true" ]] && _st_names+=(instinct)
+  [[ "${ISLAND:-auto}" != "off" ]] && _st_names+=(island)
   # The row label; the tool server's pidfile kept the name of the proxy it
   # replaced (mcpo.pid), which is not something to show a user.
-  _st_label() { if [[ "$1" == mcpo ]]; then echo "tool server"; else echo "$1"; fi; }
+  _st_label() {
+    case "$1" in mcpo) echo "tool server" ;; island) echo "island watcher" ;; *) echo "$1" ;; esac
+  }
   for name in "${_st_names[@]}"; do
     if [[ $name == llama && $_st_managed -eq 0 ]]; then
       if ob_backend_ready "$INFERENCE_URL"; then
@@ -171,6 +184,10 @@ if [[ $STATUS -eq 1 ]]; then
     else
       echo "  hydra health: not answering on :${HYDRA_PORT:-8095}"
     fi
+  fi
+  if [[ "${ISLAND:-auto}" != "off" ]]; then
+    _st_isl="$(OPENBEAST_RUN_DIR="${ISLAND_STATE_DIR:-$RUN_DIR}" python3 "$SCRIPT_DIR/agents/island.py" status 2>/dev/null || true)"
+    echo "  network: ${_st_isl:-unknown (agents/island.py did not answer)}"
   fi
   echo ""
   echo "Service health: ./scripts/healthcheck.sh   Logs: .run/stack.log"
@@ -472,6 +489,19 @@ _webui_line() {
   fi
 }
 
+# One line for the banners: what beast-island decided (agents/island.py).
+# `|| true` twice over: status exits 3 when islanded, and a banner line must
+# never abort a start under set -e.
+_island_line() {
+  [[ "${ISLAND:-auto}" == "off" ]] && return 0
+  local st; st="$(OPENBEAST_RUN_DIR="${ISLAND_STATE_DIR:-$RUN_DIR}" python3 "$SCRIPT_DIR/agents/island.py" status 2>/dev/null || true)"
+  echo "  beast-island:  ${st:-unknown}"
+  if [[ "$st" == ISLAND* ]]; then
+    echo "                 everything local works; web_search/fetch answer \"offline\""
+  fi
+  return 0
+}
+
 # ---- daemon launcher: spawn the detached supervisor, wait for readiness ----
 if [[ $DAEMON -eq 1 ]]; then
   mkdir -p "$RUN_DIR"
@@ -640,6 +670,7 @@ if [[ $DAEMON -eq 1 ]]; then
       if [[ "${INSTINCT:-false}" == "true" ]]; then
         echo "  beast-instinct: http://127.0.0.1:${INSTINCT_PORT} (scripts/instinct.sh status)"
       fi
+      _island_line
       echo "  Status:        ./start.sh --status    Stop: ./stop.sh"
       exit 0
     fi
@@ -683,6 +714,7 @@ ob_pid_record "$SUP_PID_FILE" "$$"
 # stack again (stop.sh wrote .run/stopped; healthcheck.sh honours it), and
 # its relaunch budget starts fresh.
 rm -f "$RUN_DIR/stopped" "$RUN_DIR/watchdog-relaunches"
+
 # The supervisor giving up on a crash-looping model is a stop too: without
 # the marker the watchdog relaunched it every five minutes, forever.
 _mark_gave_up() {
@@ -780,6 +812,21 @@ cleanup() {
   if [[ -n "${IDLE_PID:-}" ]]; then
     kill "$IDLE_PID" 2>/dev/null || true
   fi
+  # beast-island last: web tools keep refusing until the stack is truly down,
+  # then the state file goes with it (a stale file is ignored anyway, but a
+  # stopped stack should leave nothing to explain).
+  # Wait for it (bounded): a tick mid-probe when TERM lands must finish
+  # BEFORE the file is removed, or it is written back afterwards. The watcher
+  # also skips writes once told to stop and removes its own file.
+  if [[ -n "${ISLAND_PID:-}" ]]; then
+    kill "$ISLAND_PID" 2>/dev/null || true
+    for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+      kill -0 "$ISLAND_PID" 2>/dev/null || break
+      sleep 0.2
+    done
+    _rm_own_pidfile "$RUN_DIR/island.pid" "$ISLAND_PID"
+    rm -f "${ISLAND_STATE_DIR:-$RUN_DIR}/island.json"
+  fi
   # Reap any process-kind extensions we launched — identity-checked. This
   # trap also fires on every early exit of a FRESH start, i.e. against
   # pidfiles a crashed run left behind, whose numbers may now be anyone's.
@@ -826,6 +873,59 @@ _mark_stopped() { # _mark_stopped <reason>
 }
 trap 'STOPPING=1; _mark_stopped "Ctrl+C on a foreground ./start.sh"; cleanup; exit 143' INT
 trap 'STOPPING=1; _mark_stopped "SIGTERM to a foreground ./start.sh"; cleanup; exit 143' TERM
+
+# ---- beast-island: the launch decision, then the watcher -------------------
+# Before anything that could wait on the internet (compose, Open WebUI's
+# first-boot downloads). ISLAND=force islands now; auto probes once and boots
+# islanded when there is no route right now — the "power came back on the
+# UPS, router still dark" boot. Islanded at launch means, for this run only:
+# compose never pulls (ob_offline) and Open WebUI starts in OFFLINE_MODE.
+# After the traps, so cleanup() always reaps the watcher. Every failure
+# here is a warning: island mode is resilience, and a stack that refuses
+# to boot over it would defeat the point.
+ISLAND_PID=""
+ISLAND_AT_LAUNCH=0
+_island_py="$SCRIPT_DIR/agents/island.py"
+_was_offline=0; ob_offline && _was_offline=1
+# A watcher left by a supervisor that was SIGKILLed (its trap never ran) would
+# keep heartbeating next to ours and the state would flap between the two.
+# The recorded one is identity-checked; the sweep catches an unrecorded one.
+if ob_recorded_pid_ours "$RUN_DIR/island.pid" 'island\.py'; then
+  kill "$(cat "$RUN_DIR/island.pid")" 2>/dev/null || true
+fi
+pkill -f "$(_ob_ere "$_island_py") watch" 2>/dev/null || true
+rm -f "$RUN_DIR/island.pid" "$RUN_DIR/island.start"
+if [[ "${ISLAND:-auto}" != "off" ]]; then
+  # --opt=value: a probe list starting with "-" must not read as a flag.
+  _island_args=(--mode "$ISLAND" --grace "$ISLAND_GRACE")
+  [[ -n "${ISLAND_PROBES:-}" ]] && _island_args+=("--probes=$ISLAND_PROBES")
+  _irc=0
+  OPENBEAST_RUN_DIR="$ISLAND_STATE_DIR" python3 "$_island_py" init "${_island_args[@]}" || _irc=$?
+  # Forced is islanded whatever init managed: a failed init must not turn
+  # --offline into an online launch (the watcher islands itself too).
+  if [[ $_irc -eq 3 || "$ISLAND" == "force" ]]; then
+    ISLAND_AT_LAUNCH=1
+    OFFLINE=true
+    echo "beast-island: $(OPENBEAST_RUN_DIR="$ISLAND_STATE_DIR" python3 "$_island_py" status 2>/dev/null || true)"
+    echo "              (this run: no image pulls, Open WebUI in OFFLINE_MODE, web tools refuse)"
+  fi
+  if [[ $_irc -ne 0 && $_irc -ne 3 ]]; then
+    echo "Warning: beast-island could not make its launch decision (exit $_irc)$( [[ $ISLAND_AT_LAUNCH -eq 1 ]] && echo ' — islanded anyway (forced)' || echo ' — starting as online')." >&2
+  fi
+  OPENBEAST_RUN_DIR="$ISLAND_STATE_DIR" python3 "$_island_py" watch "${_island_args[@]}" "--parent=$$" &
+  ISLAND_PID=$!
+  ob_pid_record "$RUN_DIR/island.pid" "$ISLAND_PID"
+else
+  rm -f "$ISLAND_STATE_DIR/island.json"
+fi
+# docker-compose.yml reads this for Open WebUI's OFFLINE_MODE. Always set it
+# explicitly so an inherited export never decides it. A closed-network box
+# (OFFLINE=true) needs it as much as an islanded one.
+if [[ $ISLAND_AT_LAUNCH -eq 1 || $_was_offline -eq 1 ]]; then
+  export OPENBEAST_WEBUI_OFFLINE=true
+else
+  export OPENBEAST_WEBUI_OFFLINE=false
+fi
 
 # Returns 2, launching nothing, when the port is already held: our server
 # would die on the bind while the holder answered /health in its place — a
@@ -1522,7 +1622,10 @@ if ! docker compose "${COMPOSE_FILES[@]}" "${COMPOSE_UP[@]}"; then
   # Not a bare `docker compose up -d`: compose needs the environment conf.sh
   # exports (the SearXNG secret is required), which healthcheck.sh sources.
   echo "Warning: frontend containers failed to start — model API (:8080) and tools (:3001) are still up. Retry with: ./scripts/healthcheck.sh --restart" >&2
-  if ob_offline; then
+  if [[ $ISLAND_AT_LAUNCH -eq 1 ]]; then
+    echo "         beast-island: no internet at launch, so nothing was pulled — the" >&2
+    echo "         images must already be on this box (docker images)." >&2
+  elif ob_offline; then
     echo "         OFFLINE=true, so nothing was pulled. Images are the fourth of" >&2
     echo "         the four fetches a closed network cannot do. Move them with" >&2
     echo "         docker save/load from a connected box — and note the trap:" >&2
@@ -1571,6 +1674,7 @@ fi
 echo "  Tool server:   http://localhost:3001 (OpenAPI docs at /docs)"
 _webui_line "$COMPOSE_FAILED"
 echo "  OpenCode:      run 'opencode' in any project directory"
+_island_line
 if [[ "${HYDRA:-false}" == "true" ]]; then
   echo "  beast-hydra:   $HYDRA_URL (${HYDRA_CHECK_SUMMARY:-?}) — scripts/hydra.sh status"
 fi

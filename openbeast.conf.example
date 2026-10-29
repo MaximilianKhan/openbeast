@@ -65,6 +65,26 @@
 #   ./scripts/fetch-weight.sh --list
 #OFFLINE=false
 
+# ── beast-island: runtime offline mode ──────────────────────────────────────
+# OFFLINE (above) is for a box that NEVER has internet. ISLAND is for one that
+# LOSES it mid-run — a power outage that takes the router down while the rig
+# keeps going on its UPS. Everything but the web tools is local, so the rig
+# stays useful; island mode stops anything from waiting on the dead link.
+#   auto   (default) probe every 15s; after ISLAND_GRACE seconds of failed
+#          probes, the web_search/fetch tools answer "offline" instantly
+#          instead of stalling, and status/doctor say so. Rejoins by itself
+#          once the route is back. A launch with no route boots islanded: no
+#          image pulls, Open WebUI in its OFFLINE_MODE (no model downloads).
+#   force  islanded from launch until the stack stops. One-off:
+#          ./start.sh -d --offline
+#   off    no watcher.
+# Probes are TCP connects to IP literals with ports (IPv6 in brackets, no
+# hostnames: no DNS). On a proxy-only network, point them at something
+# reachable or use ISLAND=off. docs/BEAST_ISLAND.md.
+#ISLAND=auto
+#ISLAND_GRACE=90
+#ISLAND_PROBES=1.1.1.1:443 9.9.9.9:443 8.8.8.8:443
+
 
 # Daemon-mode memory cap, as a PERCENT of this machine's physical RAM
 # (1-100; default 75). `./start.sh -d` computes the byte value fresh at
