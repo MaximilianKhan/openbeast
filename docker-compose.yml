@@ -43,6 +43,10 @@ services:
       # server verifies — identity headers can no longer be forged. Empty =
       # feature off (WebUI treats an empty secret as unset).
       - FORWARD_USER_INFO_HEADER_JWT_SECRET=${OPENBEAST_IDENTITY_JWT_SECRET:-}
+      # beast-island: start.sh sets this true when the stack launches with no
+      # internet (or with --offline). Open WebUI then skips its Hugging Face
+      # model auto-updates and version checks, which otherwise stall its boot.
+      - OFFLINE_MODE=${OPENBEAST_WEBUI_OFFLINE:-false}
     volumes:
       - open-webui-data:/app/backend/data
     # Hardening: a compromised WebUI process can't gain privileges via

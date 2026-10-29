@@ -160,7 +160,9 @@ if [[ -n "${WIRING_BASELINE_REF:-}" ]]; then
   #   OPENBEAST_CHAT_NOTIFY_ON, OPENBEAST_NTFY_PORT — beast-chat notify (#113)
   #   OB_CONF_LINTED — conf.sh's "unknown-key warnings already printed" mark
   #                    (review 2026-10-09, UX-13)
-  _BASELINE_ALLOW='^ENV OPENBEAST_(CHAT_NOTIFY_ON|NTFY_PORT)=|^ENV OB_CONF_LINTED='
+  #   OPENBEAST_WEBUI_OFFLINE — beast-island: Open WebUI's OFFLINE_MODE for
+  #                    docker-compose.yml (docs/BEAST_ISLAND.md)
+  _BASELINE_ALLOW='^ENV OPENBEAST_(CHAT_NOTIFY_ON|NTFY_PORT|WEBUI_OFFLINE)=|^ENV OB_CONF_LINTED='
   if [[ -n "${WIRING_BASELINE_ALLOW:-}" ]]; then
     _BASELINE_ALLOW="$_BASELINE_ALLOW|$WIRING_BASELINE_ALLOW"
   fi
@@ -915,9 +917,13 @@ if [[ -n "${WIRING_BASELINE_REF:-}" ]]; then
   # baseline's label is mapped to the new one; its state is still compared.
   # (This comparison runs only with a baseline ref — in CI — so the rename
   # went through every local run green.)
+  # beast-island (docs/BEAST_ISLAND.md) added two `--status` rows and one
+  # healthcheck/doctor row, all about network state, none about
+  # hydra/instinct: exactly those lines are dropped.
   _norm() { sed -e "s#$1#<BOX>#g" -e 's/— [0-9-]* [0-9:]*$/— <DATE>/' -e 's/^  mcpo: /  tool server: /' \
               | grep -v -- '--restart: relaunching' \
-              | grep -vE '^(Next: |Stack is not running)'; }
+              | grep -vE '^(Next: |Stack is not running)' \
+              | grep -vE '^  (island watcher: |network: |--   Network: |ISLE Network: |- beast-island|✓ beast-island: )'; }
   RUN_ENV=()
   if diff <(_run "$_OB" "$_OB/stop.sh" | _norm "$_OB") <(_run "$_NB" "$_NB/stop.sh" | _norm "$_NB") >/dev/null; then
     pass "stop.sh: identical output"

@@ -754,6 +754,21 @@ if [[ " ${EXTENSIONS:-} " == *" dashboard "* || "${EXTENSIONS:-}" == "dashboard"
   check "Dashboard (beast-slot)" "http://${HEALTH_HOST:-127.0.0.1}:3002/api/slot" "beast_slot" || true
 fi
 
+# beast-island (agents/island.py): one line, and the flag the Tailscale row
+# below needs. status exits 3 when islanded.
+ISLANDED=0
+if [[ "${ISLAND:-auto}" != "off" && -f "$REPO_DIR/agents/island.py" ]]; then
+  _isl_rc=0
+  _isl="$(OPENBEAST_RUN_DIR="$REPO_DIR/.run" python3 "$REPO_DIR/agents/island.py" status 2>/dev/null)" || _isl_rc=$?
+  [[ $_isl_rc -eq 3 ]] && ISLANDED=1
+  if [[ $ISLANDED -eq 1 ]]; then
+    echo "  ISLE Network: $_isl"
+    echo "       (everything local works; web_search/fetch answer \"offline\")"
+  else
+    echo "  --   Network: ${_isl:-unknown}"
+  fi
+fi
+
 # Tailscale (remote access) — only checked when installed; the stack is
 # fully functional without it, just localhost-only.
 if command -v tailscale &>/dev/null; then
@@ -769,6 +784,11 @@ except Exception: print('no')
   if [[ "$TS_ONLINE" == "yes" ]]; then
     echo "  OK   Tailscale (remote access)"
     HEALTHY=$((HEALTHY + 1))
+  elif [[ $ISLANDED -eq 1 ]]; then
+    # beast-island: no internet, so no coordination server — an offline
+    # tailnet is the expected state, not a fault. Not counted as unhealthy,
+    # and no tailscaled restart every 5 minutes (the watchdog) that cannot help.
+    echo "  --   Tailscale (remote access) offline — expected in island mode"
   else
     echo "  DOWN Tailscale (remote access)"
     UNHEALTHY=$((UNHEALTHY + 1))

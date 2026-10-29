@@ -62,6 +62,12 @@ guard would refuse both. The exposure is bounded — the URL comes from operator
 config, not from the model, and only `/search?q=…` is ever constructed — but it
 is a deliberate hole, not an oversight.
 
+**In island mode both web tools refuse at once** (beast-island,
+`docs/BEAST_ISLAND.md`). The check sits in `agents/mcp_server.py`, so it covers
+the MCP and `:3001` surfaces. It deliberately stays out of `agents/tools.py`,
+which is part of the eval era hash, so the autonomous runner still fails these
+calls by timeout.
+
 ### Agent management (5) — `agents/mcp_server.py`
 
 `start_agent`, `check_agent`, `tail_agent`, `list_agents`, `stop_agent` —
