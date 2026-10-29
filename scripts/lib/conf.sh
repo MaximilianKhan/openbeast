@@ -43,11 +43,11 @@
 #       pull policy and doctor's reporting. Use `ob_offline` as the predicate.
 #   ISLAND           (env OPENBEAST_ISLAND)      default auto
 #   ISLAND_GRACE     (env OPENBEAST_ISLAND_GRACE) default 90 (seconds)
-#   ISLAND_PROBES    (env OPENBEAST_ISLAND_PROBES) default 1.1.1.1:443 9.9.9.9:443 8.8.8.8:53
+#   ISLAND_PROBES    (env OPENBEAST_ISLAND_PROBES) default 1.1.1.1:443 9.9.9.9:443 8.8.8.8:443
 #       beast-island: the RUNTIME offline mode (power outage, router dark).
 #       auto = islands after ISLAND_GRACE seconds without a route and rejoins
-#       by itself; force = islanded from launch (start.sh --offline, the
-#       beastup-offline alias); off = no watcher. docs/BEAST_ISLAND.md.
+#       by itself; force = islanded from launch (./start.sh -d --offline);
+#       off = no watcher. docs/BEAST_ISLAND.md.
 #   GPU_BACKEND      (env OPENBEAST_GPU_BACKEND) default auto
 #       llama.cpp build backend: auto | cuda | hip | sycl | cpu. "auto" maps
 #       the detected GPU vendor (lib/hardware.sh): nvidia→cuda, amd→hip,
@@ -259,20 +259,30 @@ ISLAND_GRACE="${OPENBEAST_ISLAND_GRACE:-$(_ob_conf_value ISLAND_GRACE || true)}"
 ISLAND_GRACE="${ISLAND_GRACE%%[[:space:]#]*}"
 [[ "$ISLAND_GRACE" =~ ^[0-9]+$ ]] || ISLAND_GRACE=90
 # Space-separated host:port TCP targets, IP literals (a probe that needs DNS
-# stalls exactly when it matters). Empty = agents/island.py's defaults.
+# stalls exactly when it matters). Empty = agents/island.py's defaults. Quotes
+# and a trailing `# comment` are dropped (the value itself contains spaces, so
+# only a `#` starts a comment here).
 ISLAND_PROBES="${OPENBEAST_ISLAND_PROBES:-$(_ob_conf_value ISLAND_PROBES || true)}"
-# ob_island_mode is the predicate start.sh uses; one answer, one place.
-ob_island_mode() { printf '%s\n' "${ISLAND:-auto}"; }
-# Open WebUI's OFFLINE_MODE (docker-compose.yml). start.sh decides it at
-# launch and exports it; every OTHER compose caller (healthcheck.sh --restart,
-# the watchdog) derives the same answer here from the running stack's island
-# state, so a frontend restart never flips the mode the stack launched with.
-if [[ -z "${OPENBEAST_WEBUI_OFFLINE:-}" ]]; then
-  OPENBEAST_WEBUI_OFFLINE=false
-  if [[ "$ISLAND" == "force" ]] \
-     || grep -qs '"launched_islanded": true' "${OPENBEAST_RUN_DIR:-$REPO_DIR/.run}/island.json"; then
-    OPENBEAST_WEBUI_OFFLINE=true
-  fi
+ISLAND_PROBES="${ISLAND_PROBES%%#*}"; ISLAND_PROBES="${ISLAND_PROBES//[\"\']/}"
+ISLAND_PROBES="$(printf '%s' "$ISLAND_PROBES" | xargs 2>/dev/null || printf '%s' "$ISLAND_PROBES")"
+# Where the island state file lives — ONE answer for the writer (start.sh)
+# and every reader (stop/healthcheck/doctor/status here, mcp_server.py via
+# the same OPENBEAST_RUN_DIR rule in agents/island.py).
+ISLAND_STATE_DIR="${OPENBEAST_RUN_DIR:-$REPO_DIR/.run}"
+# Open WebUI's OFFLINE_MODE (docker-compose.yml). ALWAYS derived, never taken
+# from the environment: a shell that sourced this file once would otherwise
+# pin a stale answer for every later compose call. True when:
+#   - OFFLINE=true (a closed-network box), or ISLAND=force (a --offline launch)
+#   - a LIVE island watcher says the rig is islanded now or launched islanded
+#     (healthcheck.sh --restart re-runs compose mid-outage: a WebUI recreated
+#     without OFFLINE_MODE then stalls its boot on Hugging Face downloads)
+# start.sh re-decides it after its launch probe and exports the result.
+OPENBEAST_WEBUI_OFFLINE=false
+if [[ "$OFFLINE" == "true" || "$ISLAND" == "force" ]]; then
+  OPENBEAST_WEBUI_OFFLINE=true
+elif [[ "$ISLAND" != "off" && -f "$ISLAND_STATE_DIR/island.json" ]] \
+     && [[ "$(OPENBEAST_RUN_DIR="$ISLAND_STATE_DIR" python3 "$REPO_DIR/agents/island.py" status --webui-offline 2>/dev/null || true)" == "true" ]]; then
+  OPENBEAST_WEBUI_OFFLINE=true
 fi
 export OPENBEAST_WEBUI_OFFLINE
 # An integer or nothing. `REASONING_BUDGET=lots` (or `4096  # cap`, which
