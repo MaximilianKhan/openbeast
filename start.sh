@@ -186,7 +186,7 @@ if [[ $STATUS -eq 1 ]]; then
     fi
   fi
   if [[ "${ISLAND:-auto}" != "off" ]]; then
-    _st_isl="$(python3 "$SCRIPT_DIR/agents/island.py" status 2>/dev/null || true)"
+    _st_isl="$(OPENBEAST_RUN_DIR="${ISLAND_STATE_DIR:-$RUN_DIR}" python3 "$SCRIPT_DIR/agents/island.py" status 2>/dev/null || true)"
     echo "  network: ${_st_isl:-unknown (agents/island.py did not answer)}"
   fi
   echo ""
@@ -494,7 +494,7 @@ _webui_line() {
 # never abort a start under set -e.
 _island_line() {
   [[ "${ISLAND:-auto}" == "off" ]] && return 0
-  local st; st="$(python3 "$SCRIPT_DIR/agents/island.py" status 2>/dev/null || true)"
+  local st; st="$(OPENBEAST_RUN_DIR="${ISLAND_STATE_DIR:-$RUN_DIR}" python3 "$SCRIPT_DIR/agents/island.py" status 2>/dev/null || true)"
   echo "  beast-island:  ${st:-unknown}"
   if [[ "$st" == ISLAND* ]]; then
     echo "                 everything local works; web_search/fetch answer \"offline\""
@@ -815,10 +815,17 @@ cleanup() {
   # beast-island last: web tools keep refusing until the stack is truly down,
   # then the state file goes with it (a stale file is ignored anyway, but a
   # stopped stack should leave nothing to explain).
+  # Wait for it (bounded): a tick mid-probe when TERM lands must finish
+  # BEFORE the file is removed, or it is written back afterwards. The watcher
+  # also skips writes once told to stop and removes its own file.
   if [[ -n "${ISLAND_PID:-}" ]]; then
     kill "$ISLAND_PID" 2>/dev/null || true
+    for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+      kill -0 "$ISLAND_PID" 2>/dev/null || break
+      sleep 0.2
+    done
     _rm_own_pidfile "$RUN_DIR/island.pid" "$ISLAND_PID"
-    rm -f "$RUN_DIR/island.json"
+    rm -f "${ISLAND_STATE_DIR:-$RUN_DIR}/island.json"
   fi
   # Reap any process-kind extensions we launched — identity-checked. This
   # trap also fires on every early exit of a FRESH start, i.e. against
@@ -879,28 +886,42 @@ trap 'STOPPING=1; _mark_stopped "SIGTERM to a foreground ./start.sh"; cleanup; e
 ISLAND_PID=""
 ISLAND_AT_LAUNCH=0
 _island_py="$SCRIPT_DIR/agents/island.py"
+_was_offline=0; ob_offline && _was_offline=1
+# A watcher left by a supervisor that was SIGKILLed (its trap never ran) would
+# keep heartbeating next to ours and the state would flap between the two.
+# The recorded one is identity-checked; the sweep catches an unrecorded one.
+if ob_recorded_pid_ours "$RUN_DIR/island.pid" 'island\.py'; then
+  kill "$(cat "$RUN_DIR/island.pid")" 2>/dev/null || true
+fi
+pkill -f "$(_ob_ere "$_island_py") watch" 2>/dev/null || true
+rm -f "$RUN_DIR/island.pid" "$RUN_DIR/island.start"
 if [[ "${ISLAND:-auto}" != "off" ]]; then
+  # --opt=value: a probe list starting with "-" must not read as a flag.
   _island_args=(--mode "$ISLAND" --grace "$ISLAND_GRACE")
-  [[ -n "${ISLAND_PROBES:-}" ]] && _island_args+=(--probes "$ISLAND_PROBES")
+  [[ -n "${ISLAND_PROBES:-}" ]] && _island_args+=("--probes=$ISLAND_PROBES")
   _irc=0
-  OPENBEAST_RUN_DIR="$RUN_DIR" python3 "$_island_py" init "${_island_args[@]}" || _irc=$?
-  if [[ $_irc -eq 3 ]]; then
+  OPENBEAST_RUN_DIR="$ISLAND_STATE_DIR" python3 "$_island_py" init "${_island_args[@]}" || _irc=$?
+  # Forced is islanded whatever init managed: a failed init must not turn
+  # --offline into an online launch (the watcher islands itself too).
+  if [[ $_irc -eq 3 || "$ISLAND" == "force" ]]; then
     ISLAND_AT_LAUNCH=1
     OFFLINE=true
-    echo "beast-island: $(OPENBEAST_RUN_DIR="$RUN_DIR" python3 "$_island_py" status 2>/dev/null || true)"
+    echo "beast-island: $(OPENBEAST_RUN_DIR="$ISLAND_STATE_DIR" python3 "$_island_py" status 2>/dev/null || true)"
     echo "              (this run: no image pulls, Open WebUI in OFFLINE_MODE, web tools refuse)"
-  elif [[ $_irc -ne 0 ]]; then
-    echo "Warning: beast-island could not make its launch decision (exit $_irc) — starting as online." >&2
   fi
-  OPENBEAST_RUN_DIR="$RUN_DIR" python3 "$_island_py" watch "${_island_args[@]}" &
+  if [[ $_irc -ne 0 && $_irc -ne 3 ]]; then
+    echo "Warning: beast-island could not make its launch decision (exit $_irc)$( [[ $ISLAND_AT_LAUNCH -eq 1 ]] && echo ' — islanded anyway (forced)' || echo ' — starting as online')." >&2
+  fi
+  OPENBEAST_RUN_DIR="$ISLAND_STATE_DIR" python3 "$_island_py" watch "${_island_args[@]}" "--parent=$$" &
   ISLAND_PID=$!
   ob_pid_record "$RUN_DIR/island.pid" "$ISLAND_PID"
 else
-  rm -f "$RUN_DIR/island.json"
+  rm -f "$ISLAND_STATE_DIR/island.json"
 fi
 # docker-compose.yml reads this for Open WebUI's OFFLINE_MODE. Always set it
-# explicitly so an inherited export never decides it.
-if [[ $ISLAND_AT_LAUNCH -eq 1 ]]; then
+# explicitly so an inherited export never decides it. A closed-network box
+# (OFFLINE=true) needs it as much as an islanded one.
+if [[ $ISLAND_AT_LAUNCH -eq 1 || $_was_offline -eq 1 ]]; then
   export OPENBEAST_WEBUI_OFFLINE=true
 else
   export OPENBEAST_WEBUI_OFFLINE=false

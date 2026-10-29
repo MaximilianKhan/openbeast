@@ -755,16 +755,20 @@ if [[ " ${EXTENSIONS:-} " == *" dashboard "* || "${EXTENSIONS:-}" == "dashboard"
 fi
 
 # beast-island (agents/island.py): one line, and the flag the Tailscale row
-# below needs. status exits 3 when islanded.
-ISLANDED=0
-if [[ "${ISLAND:-auto}" != "off" && -f "$REPO_DIR/agents/island.py" ]]; then
+# below needs. Asked whatever ISLAND says in the conf: a one-off
+# `./start.sh -d --offline` runs a watcher on a box whose conf says off.
+# status exits 3 when islanded; `--net` is the last probe's answer.
+ISLANDED=0; ISLAND_NET_DOWN=0
+if [[ -f "$REPO_DIR/agents/island.py" ]]; then
   _isl_rc=0
-  _isl="$(OPENBEAST_RUN_DIR="$REPO_DIR/.run" python3 "$REPO_DIR/agents/island.py" status 2>/dev/null)" || _isl_rc=$?
+  _isl="$(OPENBEAST_RUN_DIR="${ISLAND_STATE_DIR:-$REPO_DIR/.run}" python3 "$REPO_DIR/agents/island.py" status 2>/dev/null)" || _isl_rc=$?
   [[ $_isl_rc -eq 3 ]] && ISLANDED=1
   if [[ $ISLANDED -eq 1 ]]; then
+    [[ "$(OPENBEAST_RUN_DIR="${ISLAND_STATE_DIR:-$REPO_DIR/.run}" python3 "$REPO_DIR/agents/island.py" status --net 2>/dev/null || true)" == "down" ]] \
+      && ISLAND_NET_DOWN=1
     echo "  ISLE Network: $_isl"
     echo "       (everything local works; web_search/fetch answer \"offline\")"
-  else
+  elif [[ "${ISLAND:-auto}" != "off" ]]; then
     echo "  --   Network: ${_isl:-unknown}"
   fi
 fi
@@ -784,10 +788,11 @@ except Exception: print('no')
   if [[ "$TS_ONLINE" == "yes" ]]; then
     echo "  OK   Tailscale (remote access)"
     HEALTHY=$((HEALTHY + 1))
-  elif [[ $ISLANDED -eq 1 ]]; then
-    # beast-island: no internet, so no coordination server — an offline
-    # tailnet is the expected state, not a fault. Not counted as unhealthy,
-    # and no tailscaled restart every 5 minutes (the watchdog) that cannot help.
+  elif [[ $ISLAND_NET_DOWN -eq 1 ]]; then
+    # beast-island, and the last probe found no internet: no coordination
+    # server, so an offline tailnet is the expected state, not a fault. Not
+    # counted as unhealthy and no tailscaled restart that cannot help. Islanded
+    # with the internet UP (a forced launch) gets the normal row below.
     echo "  --   Tailscale (remote access) offline — expected in island mode"
   else
     echo "  DOWN Tailscale (remote access)"
