@@ -111,6 +111,11 @@ pkill -f "$(_ob_ere "$SCRIPT_DIR/agents/router.py")" 2>/dev/null && echo "agent 
 
 echo "Stopping beast-gate..."
 pkill -f "$(_ob_ere "$SCRIPT_DIR/agents/edge.py")" 2>/dev/null && echo "beast-gate stopped." || echo "beast-gate was not running."
+# beast-island: the watcher, then its state file — a stopped stack must not
+# leave web tools refusing (OpenCode's MCP server reads the same file).
+# Quiet when there was none: ISLAND=off and older stacks never had one.
+pkill -f "$(_ob_ere "$SCRIPT_DIR/agents/island.py") watch" 2>/dev/null && echo "beast-island watcher stopped." || true
+rm -f "$RUN_DIR/island.json" "$RUN_DIR/island.pid" "$RUN_DIR/island.start" 2>/dev/null || true
 
 # beast-instinct, then its CPU scorer (the reverse of the start order), then
 # beast-hydra. Only when they are on, or left a pidfile behind (a stack

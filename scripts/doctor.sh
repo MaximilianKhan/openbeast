@@ -1061,6 +1061,28 @@ if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/d
   fi
 fi
 
+# ── beast-island (runtime offline mode) ─────────────────────────────────────
+# What the watcher says right now, plus the one misconfiguration worth a row:
+# probes that cannot work. Islanded is a PASS — it is the feature working.
+case "${ISLAND:-auto}" in
+  off) info "beast-island: ISLAND=off — no watcher; a lost internet route stalls web tools on timeouts" ;;
+  *)
+    _isl_rc=0
+    _isl="$(OPENBEAST_RUN_DIR="$REPO_DIR/.run" python3 "$REPO_DIR/agents/island.py" status 2>/dev/null)" || _isl_rc=$?
+    if [[ $_isl_rc -eq 3 ]]; then
+      pass "beast-island: $_isl — local intelligence serving, web tools refuse fast"
+    else
+      info "beast-island (ISLAND=${ISLAND:-auto}, grace ${ISLAND_GRACE:-90}s): ${_isl:-unknown}"
+    fi
+    if [[ -n "${ISLAND_PROBES:-}" ]] && ! python3 -c '
+import sys; sys.path.insert(0, sys.argv[1]); import island
+sys.exit(0 if island.parse_probes(sys.argv[2], fallback=False) else 1)
+' "$REPO_DIR/agents" "$ISLAND_PROBES" 2>/dev/null; then
+      warn "ISLAND_PROBES='$ISLAND_PROBES' has no valid host:port entry — the defaults are probed instead" \
+           "space-separated IP:port pairs, e.g. ISLAND_PROBES=1.1.1.1:443 9.9.9.9:443"
+    fi ;;
+esac
+
 # ── Closed network ──────────────────────────────────────────────────────────
 # Reported unconditionally, because the mode changes what several other rows
 # MEAN. A cert-expiry warning on a box that can never reach the coordination
