@@ -186,7 +186,8 @@ if [[ $STATUS -eq 1 ]]; then
     fi
   fi
   if [[ "${ISLAND:-auto}" != "off" ]]; then
-    echo "  network: $(python3 "$SCRIPT_DIR/agents/island.py" status 2>/dev/null || true)"
+    _st_isl="$(python3 "$SCRIPT_DIR/agents/island.py" status 2>/dev/null || true)"
+    echo "  network: ${_st_isl:-unknown (agents/island.py did not answer)}"
   fi
   echo ""
   echo "Service health: ./scripts/healthcheck.sh   Logs: .run/stack.log"
