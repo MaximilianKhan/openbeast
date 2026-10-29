@@ -171,7 +171,9 @@ opencode                            # terminal coding agent (run from this check
 ```
 
 Daemon controls: `./start.sh -d` (background), `./start.sh --status`,
-`./stop.sh`, `./start.sh doctor`. Pick a specific model with
+`./stop.sh`, `./start.sh doctor`. No internet (power outage, router dark)?
+`./start.sh -d --offline` boots in [island mode](docs/BEAST_ISLAND.md); a
+plain `./start.sh -d` also islands by itself when the internet drops. Pick a specific model with
 `./start.sh serve-<model>.sh`, or set your default via `SERVE_SCRIPT` in
 `openbeast.conf`.
 
