@@ -66,7 +66,8 @@ is a deliberate hole, not an oversight.
 `docs/BEAST_ISLAND.md`). The check sits in `agents/mcp_server.py`, so it covers
 the MCP and `:3001` surfaces. It deliberately stays out of `agents/tools.py`,
 which is part of the eval era hash, so the autonomous runner still fails these
-calls by timeout.
+calls by timeout. Open WebUI's own Web Search toggle goes to SearXNG directly
+and is not covered either.
 
 ### Agent management (5) — `agents/mcp_server.py`
 
