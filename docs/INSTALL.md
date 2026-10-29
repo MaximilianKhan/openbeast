@@ -916,6 +916,12 @@ checkout. Full detail: [BEAST_SLOT.md](BEAST_SLOT.md).
 
 ## 9. Offline / air-gapped install
 
+> **Lost the internet on an installed rig (power outage, router dark)?** That
+> is not this section: see [BEAST_ISLAND.md](BEAST_ISLAND.md). The stack
+> handles it at runtime by itself (`ISLAND=auto`), or start it with
+> `./start.sh -d --offline`. This section is for a box that **never** has
+> internet.
+
 An installed rig serves fine with no internet at all. What needs the network
 is a **first install** — exactly four fetches: the llama.cpp source, the
 Python wheels, the ~20 GB weight, and the two container images — and an

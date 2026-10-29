@@ -422,6 +422,61 @@ differently offline: [INSTALL.md § Offline](INSTALL.md).
 
 ---
 
+## beast-island — keep working through a power outage
+
+**What you get:** the rig keeps its intelligence running on its UPS when an
+outage takes the router (and the internet) down. Only the web tools stop, and
+they say so at once instead of stalling. Full reference:
+[BEAST_ISLAND.md](BEAST_ISLAND.md).
+
+**Nothing to set up.** `ISLAND=auto` is the default. While the stack runs, a
+watcher probes the internet every 15 s. About 90 to 120 s after the route dies
+the rig islands; when it has been back for two probes in a row, it rejoins:
+
+```bash
+./start.sh -d                      # normal start; islands by itself if the internet drops
+python3 agents/island.py status    # online (watching…) | ISLAND MODE since … — why
+./start.sh --status                # same line, plus the watcher's pid
+```
+
+**Power came back before the router?** Just start normally. A launch that
+finds no route boots islanded: no image pulls, and Open WebUI starts in its
+offline mode so it doesn't stall downloading models.
+
+**Know the internet is gone (or want it ignored)?** Force it:
+
+```bash
+./start.sh -d --offline            # islanded from launch until the stack stops
+./start.sh restart --offline       # a restart forgets --offline: say it again
+./stop.sh && ./start.sh -d         # rejoin: back to auto
+```
+
+**What to expect once islanded:**
+- The model's `web_search` and `fetch` reply *"ISLAND MODE … do not retry"*.
+  The model answers from local knowledge and files and tells you when
+  something would need the web.
+- Everything else works as usual: chat, OpenCode, files, bash, agents, skills,
+  beast-chat, beast-artifact.
+- `./scripts/healthcheck.sh` shows `ISLE Network:`. An offline Tailscale
+  counts as expected, not as a fault.
+
+**Two things island mode doesn't cover:**
+- Open WebUI's own **Web Search** toggle still calls SearXNG and comes back
+  empty after its timeouts.
+- Background agents started with `start_agent` still hit web timeouts rather
+  than the instant refusal. This is held back on purpose until the next eval
+  era roll.
+
+**On battery:** `sudo nvidia-smi -pl <watts>` trades speed for UPS runtime.
+Island mode doesn't do this for you.
+
+**Settings** (`openbeast.conf`): `ISLAND=auto|force|off`, `ISLAND_GRACE=90`,
+`ISLAND_PROBES=1.1.1.1:443 9.9.9.9:443 8.8.8.8:443`. Probes are IP literals
+only. On a network that reaches the internet only through a proxy, point them
+at something reachable or set `ISLAND=off`.
+
+---
+
 ## beast-campaign — measure something without lying to yourself
 
 **What you get:** two small tools that make an eval row mean what it says.
