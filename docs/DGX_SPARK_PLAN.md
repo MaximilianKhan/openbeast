@@ -74,9 +74,11 @@ keys and stops trying to own it.
 - **The GPU on the rig is free.** Nothing in M1 uses it; llama-server can
   still be run by hand (`INFERENCE_BACKEND=llama ./scripts/measure-vram.sh …`
   works) but the stack does not start one.
-- **T2** (the whole stack on Spark 1, next to vLLM) is *not* M1: it needs an
-  aarch64 Python lock, the arm zig tarball and GB10 detection in
-  `hardware.sh`. See §8.
+- **T2** (the whole stack on Spark 1, next to vLLM or TensorFold) is *not*
+  M1. Its blockers — GB10 detection in `hardware.sh`, a bootstrap that
+  builds llama.cpp and fetches a GGUF for a server it never starts, and the
+  aarch64 python wheels — are handled (§8 rows 14, 19, 20; §8a). What is left
+  is the air-gap bundle and the zig compiler, both outside the online path.
 
 ## 4. Rig configuration
 
@@ -233,15 +235,43 @@ prints "not applicable" instead of failing; **later** = not needed for M1.
 | 11 | Router `response_format` | OK on vLLM, degrades cleanly on TensorFold |
 | 12 | `doctor.sh` VRAM rows / llama probe | **done** — backend probe, key warnings, n/a rows |
 | 13 | Weights, serve scripts, `WEIGHT_ENFORCE` (GGUF) | **n/a msg** in doctor. **done** for the Sparks: profiles pin `SOURCE@REVISION` (commit SHA only); `model-fetch.sh` verifies every file against the Hub's LFS sha256 / git blob id and writes `models/<name>.lock` |
-| 14 | `hardware.sh` GB10 (`memory.total` N/A) | **later** (T2 only) |
+| 14 | `hardware.sh` GB10 (`memory.total` N/A) | **done** — an `[N/A]` row is a unified-memory GPU: counted (it was `0x`), sized by `/proc/meminfo` MemTotal once (not per GPU), `OB_GPU_UNIFIED=1`, its own advice ("GB10 / DGX Spark profile", not "5090-class"); passes the 24 GB floor. Discrete cards byte-identical (tests/test_scripts.sh). **later**: the dashboard's `/api/status` GPU tile parses `int("[N/A]")` and shows "no GPU" on a Spark |
 | 15 | `gpu-lease.sh` busy check silently fail-open on `[N/A]` | **done** — says "not applicable" |
 | 16 | `stop.sh` llama sweep | **done** — leaves an unmanaged server alone |
 | 17 | Eval provenance (`capture_server_config`, `/props` jobs clamp) | **later** — see §10 |
 | 18 | `measure-vram.sh`, `profile-*-mtp.sh` | **n/a msg**. `evals/profile_mtp.py` **later** |
-| 19 | `bootstrap.sh` / `update.sh --llama` | **later** — harmless in T1 (the rig can still build llama.cpp) |
-| 20 | aarch64 (pydeps lock, zig tarball, air-gap bundle) | **later** (T2 only) |
+| 19 | `bootstrap.sh` / `update.sh --llama` | **done** for bootstrap — `INFERENCE_MANAGED=false` (any vLLM / TensorFold, a remote llama) skips cmake/g++/nvcc checks, the llama.cpp build, the `GPU_BACKEND` pin, the GGUF disk check and download, and the github/HF probes; the GPU is reported, never failed; `--minimal` (llama-server only) is refused. `update.sh --llama` unchanged (it needs a clone, which such a box does not have) |
+| 20 | aarch64 (pydeps lock, zig tarball, air-gap bundle) | **pydeps: no change needed** — the lock already lists every file of each release; on spark-1 a `--require-hashes` download got all 43 (7 native `manylinux_*_aarch64` cp312/abi3 wheels) and a fresh resolve names the same 43 packages. Cross-built wheelhouse flags in `pydeps.sh` (§8a). **zig: see §8a.** **air-gap bundle: later** — `bundle.sh build` saves the BUILD host's wheels and image platform, so a bundle for a Spark must be built on an aarch64 box |
 | 21 | `MEM_LIMIT_PCT` scope | N/A in T1 (containers on other boxes) |
 | 22 | `client.sh` reads `/props` `n_ctx` | **later** — falls back cleanly; could read `max_model_len` |
+
+### 8a. T2 — the command center on a Spark
+
+Measured on spark-1 (2026-11-13): aarch64, Ubuntu 24.04, python 3.12.3,
+Docker 29.6, GB10 `compute_cap` 12.1, `nvidia-smi --query-gpu=memory.*`
+= `[N/A]`, MemTotal 127598416 kB.
+
+- **Config.** `INFERENCE_BACKEND=tensorfold`, `INFERENCE_URL=http://<this
+  Spark's tailnet IP>:8000` (not `localhost`: the server binds one address,
+  §7). `INFERENCE_MANAGED` is forced false for TensorFold, so
+  `./bootstrap.sh` builds no llama.cpp and downloads no GGUF (row 19).
+- **Images.** All three compose images are multi-arch at the pinned digest
+  (`docker manifest inspect` on spark-1): open-webui (amd64 + arm64),
+  searxng (amd64, arm64, arm/v7), ntfy (amd64, arm64, arm v6/v7). The pins
+  are index digests, so the same `docker-compose.yml` pulls arm64 there.
+- **Python.** The committed lock installs as-is (row 20). For a closed
+  Spark, build the wheelhouse elsewhere with every manylinux tag spelled out
+  (`./scripts/pydeps.sh wheelhouse` prints the line); one
+  `--platform manylinux_2_39_aarch64` alone misses cffi.
+- **zig.** Nothing in the stack downloads a zig *compiler* (the rig's comes
+  from mise; CI pins the x86_64 tarball). `lang-library.sh acquire zig`
+  fetches the `x86_64-linux` tarball on any host, which is fine: it is read
+  as a std-source corpus, never executed. For `language_reference` and the
+  zig variants on a Spark, install the compiler by hand, pinned like CI's:
+  `zig-aarch64-linux-0.16.0.tar.xz`, sha256
+  `ea4b09bfb22ec6f6c6ceac57ab63efb6b46e17ab08d21f69f3a48b38e1534f17`
+  (ziglang.org index, read 2026-11-13; the x86_64 entry there matches CI's
+  pin `70e49664…`). No zig is installed on spark-1 today.
 
 ## 9. Runbook: the day the Sparks arrive
 
