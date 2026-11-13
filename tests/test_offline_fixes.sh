@@ -337,6 +337,7 @@ fi
   echo 'set -euo pipefail'
   echo 'step() { echo "==> $*"; }; ok() { echo "OK: $*"; }; warn() { echo "WARN: $*"; }'
   echo 'die() { echo "DIE: $*" >&2; exit 1; }; ob_offline() { return 1; }'
+  echo 'OB_LOCAL_LLAMA="${OB_LOCAL_LLAMA:-1}"; INFERENCE_BACKEND="${INFERENCE_BACKEND:-llama}"; INFERENCE_URL="${INFERENCE_URL:-http://127.0.0.1:8080}"'
   echo "$_wdefs"
   echo "$_wsec"
   echo 'echo HARNESS-REACHED-END'
@@ -395,6 +396,18 @@ if [[ $_rc -eq 0 && "$(n_hf)" == "0" ]] && has "$_out" "already downloaded, sha2
   pass "negative control: the re-run hashes the existing weight, accepts it, and does not re-download"
 else
   fail "re-run on a good weight (rc=$_rc, hf=$(n_hf)): $_out"
+fi
+# UNMANAGED INFERENCE (a DGX Spark serving TensorFold, docs/DGX_SPARK_PLAN.md
+# §8 row 19): nothing launches llama-server, so the step downloads nothing,
+# creates no weights dir and does not even read the registry.
+rm -rf "$WB13"; : > "$T/state/hf.log"
+_out="$(env PATH="$T/bin:$PATH" REPO_DIR="$SB" OPENBEAST_WEIGHTS_DIR="$WB13" OB_LOCAL_LLAMA=0 \
+        INFERENCE_BACKEND=tensorfold INFERENCE_URL=http://100.64.0.7:8000 bash "$T/bootstrap_weight_step.sh" 2>&1)"; _rc=$?
+if [[ $_rc -eq 0 && "$(n_hf)" == "0" && ! -e "$WB13" ]] && has "$_out" "none downloaded — inference is tensorfold at http://100.64.0.7:8000" \
+   && has "$_out" "HARNESS-REACHED-END"; then
+  pass "an unmanaged backend downloads no weight and creates no weights dir"
+else
+  fail "unmanaged weight step (rc=$_rc, hf=$(n_hf), dir: $(ls -A "$WB13" 2>/dev/null)): $_out"
 fi
 printf '%s\n' "$_dw_reg" > "$SB/scripts/weights.registry"
 
@@ -1518,6 +1531,7 @@ LR="$T/repo_llama"; mkdir -p "$LR/scripts" "$T/binl"
   echo 'step() { echo "==> $*"; }; ok() { echo "OK: $*"; }; warn() { echo "WARN: $*"; }'
   echo 'die() { echo "DIE: $*" >&2; exit 1; }; ob_offline() { return 1; }'
   echo 'OB_BACKEND=cpu; GPU_BACKEND=cpu; ob_cmake_flags() { echo ""; }'
+  echo 'OB_LOCAL_LLAMA="${OB_LOCAL_LLAMA:-1}"; INFERENCE_BACKEND="${INFERENCE_BACKEND:-llama}"; INFERENCE_URL="${INFERENCE_URL:-http://127.0.0.1:8080}"'
   echo "$_lsec"
   echo 'echo HARNESS-REACHED-END'
 } > "$T/bootstrap_llama_step.sh"
@@ -1601,6 +1615,16 @@ if [[ $_rc -eq 0 && "$(n_git " clone --depth 1 ")" == "1" && "$(n_git " fetch ")
   pass "negative control: a pin that is not a 40-hex commit (a branch name) is not used — unpinned clone, loud warning"
 else
   fail "unusable pin (rc=$_rc): $_out :: $(cat "$T/state/gitl.log")"
+fi
+# UNMANAGED INFERENCE: no git, no cmake, no llama.cpp/ — and it says why.
+llama_fresh; : > "$T/state/gitl.log"
+_out="$(env PATH="$T/binl:$PATH" REPO_DIR="$LR" OB_LLAMA_DIR="$LR/llama.cpp" OB_LOCAL_LLAMA=0 \
+        INFERENCE_BACKEND=tensorfold INFERENCE_URL=http://100.64.0.7:8000 bash "$T/bootstrap_llama_step.sh" 2>&1)"; _rc=$?
+if [[ $_rc -eq 0 && ! -s "$T/state/gitl.log" && ! -e "$LR/llama.cpp" ]] \
+   && has "$_out" "not built — inference is tensorfold at http://100.64.0.7:8000" && has "$_out" "HARNESS-REACHED-END"; then
+  pass "an unmanaged backend fetches and builds no llama.cpp (no git, no cmake call)"
+else
+  fail "unmanaged llama step (rc=$_rc): $_out :: $(cat "$T/state/gitl.log")"
 fi
 # The committed pin itself: one full commit id, nothing movable.
 if [[ "$(grep -cE '^LLAMA_CPP_REF=[0-9a-f]{40}$' "$REPO_DIR/scripts/llama.cpp.ref")" == "1" \
@@ -1915,6 +1939,7 @@ fi
 _psec="$(sed -n '/^# Persist the resolved backend/,/^# ---- 3\. Python dependencies/p' "$REPO_DIR/bootstrap.sh" | sed '$d')"
 { echo 'set -euo pipefail'
   echo 'ok() { echo "OK: $*"; }; warn() { echo "WARN: $*"; }'
+  echo 'OB_LOCAL_LLAMA="${OB_LOCAL_LLAMA:-1}"; INFERENCE_BACKEND="${INFERENCE_BACKEND:-llama}"; INFERENCE_URL="${INFERENCE_URL:-http://127.0.0.1:8080}"'
   echo "$_psec"
 } > "$T/persist_step.sh"
 PR16="$T/repo_persist"; mkdir -p "$PR16"
@@ -1938,6 +1963,14 @@ if [[ $_rc -eq 0 ]] && grep -qx 'GPU_BACKEND=cuda' "$PR16/openbeast.conf" && [[ 
 else
   fail "auto->cuda (rc=$_rc): $(cat "$PR16/openbeast.conf" 2>&1)"
 fi
+# Nothing built (unmanaged inference): no flavour to pin, the conf untouched.
+rm -f "$PR16/openbeast.conf"; printf 'INFERENCE_BACKEND=tensorfold\n' > "$PR16/openbeast.conf"
+_out="$(REPO_DIR="$PR16" GPU_BACKEND=auto OB_BACKEND=cuda OB_LOCAL_LLAMA=0 bash "$T/persist_step.sh" 2>&1)"; _rc=$?
+if [[ $_rc -eq 0 && "$(cat "$PR16/openbeast.conf")" == "INFERENCE_BACKEND=tensorfold" ]]; then
+  pass "an unmanaged backend pins no GPU_BACKEND (nothing was built)"
+else
+  fail "unmanaged persist (rc=$_rc): $(cat "$PR16/openbeast.conf" 2>&1) :: $_out"
+fi
 # No conf yet (conf.sh had nothing to persist): the file bootstrap creates will
 # hold secrets later, so it is born 0600 — whatever the caller's umask.
 _out="$(umask 022; rm -f "$PR16/openbeast.conf"; REPO_DIR="$PR16" GPU_BACKEND=auto OB_BACKEND=cuda bash "$T/persist_step.sh" 2>&1)"
@@ -1950,6 +1983,7 @@ fi
 # --- the closing banner says where the weights are ---------------------------
 { echo 'set -euo pipefail'
   echo 'step() { echo "==> $*"; }; c_grn=""; c_bold=""; c_rst=""; START_STACK=no'
+  echo 'OB_LOCAL_LLAMA="${OB_LOCAL_LLAMA:-1}"; INFERENCE_BACKEND="${INFERENCE_BACKEND:-llama}"; INFERENCE_URL="${INFERENCE_URL:-http://127.0.0.1:8080}"'
   grep -E '^WEIGHT_FILE="[^"]+"$' "$REPO_DIR/bootstrap.sh"
   sed -n '/^ob_weights_line() {/,/^}/p' "$REPO_DIR/bootstrap.sh"
   sed -n '/^# ---- Done/,$p' "$REPO_DIR/bootstrap.sh"
@@ -1961,6 +1995,16 @@ if [[ $_rc -eq 0 ]] && has "$_out" "OpenBeast is ready" && has "$_out" "Weights:
   pass "the 'OpenBeast is ready' banner prints the weight's absolute path and size, and names WEIGHTS_DIR"
 else
   fail "banner (rc=$_rc): $_out"
+fi
+# Unmanaged: no weight (WEIGHTS_DIR is never resolved), and the model API is
+# the server it talks to — not a localhost:8080 that nothing listens on.
+_out="$(REPO_DIR="$PR16" OB_LOCAL_LLAMA=0 INFERENCE_BACKEND=tensorfold INFERENCE_URL=http://100.64.0.7:8000 \
+        bash "$T/banner_step.sh" 2>&1 </dev/null)"; _rc=$?
+if [[ $_rc -eq 0 ]] && has "$_out" "Model API: http://100.64.0.7:8000/v1" && has "$_out" "Inference: tensorfold at http://100.64.0.7:8000" \
+   && ! has "$_out" "localhost:8080" && ! has "$_out" "Weights:"; then
+  pass "unmanaged: the banner names the inference server, and no weight or localhost:8080"
+else
+  fail "unmanaged banner (rc=$_rc): $_out"
 fi
 
 echo ""

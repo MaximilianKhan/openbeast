@@ -1466,6 +1466,78 @@ fi
 rm -rf "$_PF_TMP"
 rm -rf "$_PF_TMP"
 
+# DGX Spark as command center (docs/DGX_SPARK_PLAN.md T2, §8 row 19): a box
+# whose inference is TensorFold at its own tailnet IP builds no llama.cpp,
+# needs no CUDA toolchain and downloads no GGUF. Built here: a GB10 (spark-1's
+# nvidia-smi answers, its MemTotal), docker and curl stubs that succeed, so
+# the backend is the only axis. The control runs the SAME box as llama.
+echo ""
+echo "bootstrap on an unmanaged backend (GB10 + TensorFold):"
+_SP="$(mktemp -d)"
+cat > "$_SP/nvidia-smi" <<'SH'
+#!/bin/bash
+case "$*" in
+  *memory.total*) echo "[N/A]" ;;
+  *compute_cap*)  echo "12.1" ;;
+  *name*)         echo "NVIDIA GB10" ;;
+esac
+exit 0
+SH
+printf '#!/bin/bash\nexit 0\n' > "$_SP/docker"
+printf '#!/bin/bash\nexit 0\n' > "$_SP/curl"
+chmod +x "$_SP/nvidia-smi" "$_SP/docker" "$_SP/curl"
+printf 'MemTotal:       127598416 kB\n' > "$_SP/meminfo"
+_sp_run() { # _sp_run [ENV=val...] -> SP_OUT, SP_RC
+  SP_RC=0
+  SP_OUT="$(env PATH="$_SP:$PATH" OB_MEMINFO="$_SP/meminfo" OPENBEAST_OFFLINE=false \
+            OPENBEAST_GPU_BACKEND=auto "$@" "$REPO_DIR/bootstrap.sh" --preflight 2>&1)" || SP_RC=$?
+  SP_OUT="$(sed 's/\x1b\[[0-9;]*m//g' <<< "$SP_OUT")"
+}
+_sp_run OPENBEAST_INFERENCE_BACKEND=tensorfold OPENBEAST_INFERENCE_URL=http://100.64.0.7:8000
+if [[ $SP_RC -eq 0 && "$SP_OUT" == *"Environment looks ready"* ]]; then
+  pass "TensorFold on a GB10: preflight passes"
+else
+  fail "TensorFold on a GB10: preflight rc=$SP_RC: $(grep -E '✗|!' <<< "$SP_OUT" | tr '\n' ' ')"
+fi
+[[ "$SP_OUT" == *"not managed here"* && "$SP_OUT" == *"no llama.cpp build"* ]] \
+  && pass "…says inference is not managed here and nothing is built" \
+  || fail "unmanaged preflight does not say why nothing is built"
+if [[ "$SP_OUT" != *"cmake present"* && "$SP_OUT" != *"g++ present"* \
+      && "$SP_OUT" != *"llama.cpp build backend"* && "$SP_OUT" != *"CUDA toolkit"* \
+      && "$SP_OUT" != *"nvcc"* ]]; then
+  pass "…and asks for no build toolchain (cmake, g++, nvcc)"
+else
+  fail "unmanaged preflight still checks the llama.cpp toolchain"
+fi
+[[ "$SP_OUT" == *"NVIDIA GB10 (124607 MiB unified memory, 1x) — not used by this stack"* ]] \
+  && pass "…reports the GB10 as 124607 MiB unified memory, 1x" \
+  || fail "GB10 line: $(grep -E 'GB10' <<< "$SP_OUT" | tr '\n' ' ')"
+[[ "$SP_OUT" == *"no local weight needed"* && "$SP_OUT" != *"default 27B weight"* ]] \
+  && pass "…needs no disk for a weight" \
+  || fail "unmanaged preflight still sizes the disk for the GGUF"
+[[ "$SP_OUT" == *"pypi.org reachable"* && "$SP_OUT" != *"github.com"* ]] \
+  && pass "…probes only pypi.org (no llama.cpp source, no weight to fetch)" \
+  || fail "unmanaged network probe: $(grep -E 'network' <<< "$SP_OUT" | tr '\n' ' ')"
+# --minimal is llama-server only: on an unmanaged box it has nothing to do.
+SP_RC=0
+SP_OUT="$(env PATH="$_SP:$PATH" OB_MEMINFO="$_SP/meminfo" OPENBEAST_OFFLINE=false \
+          OPENBEAST_INFERENCE_BACKEND=tensorfold OPENBEAST_INFERENCE_URL=http://100.64.0.7:8000 \
+          "$REPO_DIR/bootstrap.sh" --preflight --minimal 2>&1)" || SP_RC=$?
+[[ $SP_RC -ne 0 && "$SP_OUT" == *"--minimal installs llama-server and nothing else"* ]] \
+  && pass "…--minimal on an unmanaged box is refused with the reason" \
+  || fail "--minimal + unmanaged (rc=$SP_RC)"
+# Control: the same GB10 as a MANAGED llama box keeps the llama.cpp path, and
+# the floor (124607 MiB unified) does not refuse it.
+_sp_run OPENBEAST_INFERENCE_BACKEND=llama
+if [[ "$SP_OUT" == *"NVIDIA GPU: NVIDIA GB10 (124607 MiB unified memory, 1x)"* \
+      && "$SP_OUT" == *"llama.cpp build backend: cuda"* && "$SP_OUT" != *"24 GB floor"* \
+      && "$SP_OUT" == *"github.com"* ]]; then
+  pass "control: the same GB10 under llama keeps the llama.cpp path and passes the floor"
+else
+  fail "control (managed llama on a GB10): $(grep -E 'GB10|backend|floor|network' <<< "$SP_OUT" | tr '\n' ' ')"
+fi
+rm -rf "$_SP"
+
 # update.sh must tell "the remote is unreachable" apart from "your worktree is
 # dirty". It used to swallow git's stderr, burn a SECOND connect timeout, and
 # then blame local changes — the wrong cause, in the script you reach for when
