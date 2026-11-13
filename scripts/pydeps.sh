@@ -29,6 +29,9 @@
 #
 # PLATFORM COVERAGE, measured not assumed:
 #   linux x86_64, python 3.12 and 3.14   all 43 packages  ✓
+#   linux aarch64 (DGX Spark), py 3.12   all 43 packages  ✓  (spark-1, 2026-11-13:
+#                                        a --require-hashes download, and a fresh
+#                                        resolve there names the same 43)
 #   macOS arm64 (Apple Silicon)          all 43 packages  ✓
 #   macOS x86_64 (Intel)                 cffi 2.1.1 ships no wheel for it, so
 #                                        pip must build it from the sdist
@@ -160,6 +163,12 @@ any other checkout passes the hash above, read off THIS screen):
 For a DIFFERENT target than this box, add pip's platform flags, e.g.
   ./scripts/pydeps.sh wheelhouse wheels-mac \\
       --only-binary :all: --platform macosx_11_0_arm64 --python-version 3.12
+A DGX Spark (linux aarch64) needs EVERY manylinux tag spelled out — pip does
+not widen one --platform to older glibc tags, and cffi ships only 2_17:
+  ./scripts/pydeps.sh wheelhouse wheels-spark --only-binary :all: \\
+      --python-version 3.12 --platform manylinux_2_39_aarch64 \\
+      --platform manylinux_2_34_aarch64 --platform manylinux_2_28_aarch64 \\
+      --platform manylinux_2_17_aarch64 --platform manylinux2014_aarch64
 (macOS x86_64 cannot be covered by wheels alone — see the header.)
 EOF
     ;;
