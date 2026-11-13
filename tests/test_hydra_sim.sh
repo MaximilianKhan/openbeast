@@ -122,7 +122,7 @@ PYEOF
 out="$(bash "$H" add-node pub --url http://8.8.8.8:8080 --engine llama 2>&1)"; rc=$?
 [[ $rc -ne 0 ]] && grep -q "public" <<< "$out" && ok "add-node refuses a public URL" || bad "add-node public: $out"
 out="$(bash "$H" add-node tf --url "$HYDRA_SIM_TI" --engine tensorfold --key-file "$W/sim/ti.key" 2>&1)"; rc=$?
-[[ $rc -ne 0 ]] && grep -q "never give it a key" <<< "$out" && ok "add-node refuses a key for TensorFold" \
+[[ $rc -eq 0 ]] && grep -q "^key_file    = \"$W/sim/ti.key\"" <<< "$out" && ok "add-node keys a TensorFold node (native --api-key-file)" \
   || bad "add-node tf key: $out"
 
 # the keyed vLLM decoy: conformance is admin mechanics on any deployment, not routing

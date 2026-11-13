@@ -577,12 +577,9 @@ def _validate(raw, env, repo: Path, source: str, errors: list[str]) -> Config:
         loopback = cls == "loopback"
         if n.get("key_env") and n.get("key_file"):
             errors.append(f"{where}: set key_env OR key_file, not both")
-        if engine == "tensorfold" and (n.get("key_env") or n.get("key_file")):
-            errors.append(f"{where}: TensorFold has no auth — a key must never be sent to it "
-                          "(firewall it to the rig instead)")
         if isinstance(n.get("key_file"), str):
             errors += _key_file_errors(where, n["key_file"], repo)
-        if (not loopback and engine != "tensorfold" and not n.get("key_env")
+        if (not loopback and not n.get("key_env")
                 and not n.get("key_file") and cls != "invalid"):
             warnings.append(f"{where}: remote {engine} node with no key")
         slots = n.get("slots", 1)
@@ -922,8 +919,7 @@ def implicit_raw(env: dict | None = None) -> dict:
     # so a gate-assigned id_slot reaches a multi-slot llama-server untouched.
     if slots_raw.isdigit() and int(slots_raw) > 0:
         node["slots"] = int(slots_raw)
-    if engine != "tensorfold":
-        node["key_env"] = "LLAMA_API_KEY"
+    node["key_env"] = "LLAMA_API_KEY"
     # No gpu_lease here: "behaves like today" means chat is not drained while
     # a campaign holds the lease. An explicit hydra.toml opts in (runbook §7).
     caps = [c for c in CAPS if engine == "llama" or c not in LLAMA_ONLY_CAPS]

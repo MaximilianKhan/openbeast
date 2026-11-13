@@ -91,14 +91,14 @@ def test_example_config_validates(tmp_path, monkeypatch):
     home = tmp_path / "home"
     kd = home / ".config" / "openbeast" / "hydra"
     kd.mkdir(parents=True)
-    for k in ("ti",):
+    for k in ("ti", "sparks"):
         (kd / f"{k}.key").write_text("secret\n")
         (kd / f"{k}.key").chmod(0o600)
     monkeypatch.setenv("HOME", str(home))
     cfg = core.load_config(REPO / "hydra.toml.example", {})
     assert set(cfg.routes) >= {"beast", "beast:max", "beast:fast", "beast:long", "beast:vision", "classify"}
     assert cfg.nodes["rig"].gpu_lease and cfg.nodes["rig"].loopback
-    assert cfg.nodes["sparks"].engine == "tensorfold" and not cfg.nodes["sparks"].has_key
+    assert cfg.nodes["sparks"].engine == "tensorfold" and cfg.nodes["sparks"].has_key
     assert cfg.route_by_id_or_alias["qwen-27b-q5"].id == "beast"
     assert cfg.settings.instinct.url == "http://127.0.0.1:8094"
     assert cfg.warnings == [], cfg.warnings            # the shipped example is clean under `check`
@@ -122,8 +122,9 @@ def test_example_config_is_uncensored_only(tmp_path, monkeypatch):
     # (and the stock 35B-A3B MoE) in four routes, and same_family = false.
     kd = tmp_path / ".config" / "openbeast" / "hydra"
     kd.mkdir(parents=True)
-    (kd / "ti.key").write_text("secret\n")
-    (kd / "ti.key").chmod(0o600)
+    for k in ("ti", "sparks"):
+        (kd / f"{k}.key").write_text("secret\n")
+        (kd / f"{k}.key").chmod(0o600)
     monkeypatch.setenv("HOME", str(tmp_path))
     cfg = core.load_config(REPO / "hydra.toml.example", {})
     allowed = cfg.settings.allowed_families
@@ -206,13 +207,13 @@ def test_implicit_config_from_env():
     assert not n.gpu_lease, "implicit config must behave like today: no lease drain"
 
 
-def test_implicit_vllm_has_no_llama_only_caps_and_no_key_on_tensorfold():
+def test_implicit_vllm_has_no_llama_only_caps_and_keys_tensorfold():
     v = core.implicit_config({"INFERENCE_URL": "http://10.0.0.5:8000", "INFERENCE_BACKEND": "vllm",
                               "INFERENCE_MODEL": "qwen3.8-27b-nvfp4"})
     d = v.deployments["local@rig"]
     assert "id_slot" not in d.caps and "grammar" not in d.caps and d.upstream == "qwen3.8-27b-nvfp4"
     t = core.implicit_config({"INFERENCE_URL": "http://10.0.0.5:8000", "INFERENCE_BACKEND": "tensorfold"})
-    assert not t.nodes["rig"].has_key
+    assert t.nodes["rig"].has_key, "native TensorFold takes --api-key-file: present LLAMA_API_KEY like vLLM"
 
 
 def test_implicit_ignores_route_id_in_openbeast_inference_model():
@@ -290,8 +291,6 @@ REJECT = {
                                        "claimed by both"),
     "alias_collides_across_routes": (lambda r: r["routes"]["beast:fast"].update(aliases=["default"]),
                                      "claimed by both"),
-    "key_on_tensorfold": (lambda r: r["nodes"].update(tf={"url": "http://10.0.0.9:8000", "engine": "tensorfold",
-                                                          "key_env": "X"}), "TensorFold has no auth"),
     "id_slot_on_vllm": (lambda r: r["deployments"]["nvfp4@sparks"]["caps"].append("id_slot"), "llama.cpp-only"),
     "grammar_on_vllm": (lambda r: r["deployments"]["nvfp4@sparks"]["caps"].append("grammar"), "llama.cpp-only"),
     "unknown_cap": (lambda r: r["deployments"]["nvfp4@sparks"]["caps"].append("telepathy"), "unknown capability"),

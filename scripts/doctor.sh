@@ -409,18 +409,16 @@ if [[ "$INFERENCE_BACKEND" != "llama" ]] || ! ob_inference_managed; then
     warn "$(ob_backend_label) at $INFERENCE_URL is not ready (INFERENCE_BACKEND=$INFERENCE_BACKEND, not managed here)" \
          "start it where it runs (docs/DGX_SPARK_PLAN.md) — healthcheck --restart will not"
   fi
-  # vLLM leaves /health and /metrics open even with --api-key, and TensorFold
-  # has no key at all: the network path to it IS the access control.
+  # vLLM leaves /health and /metrics open even with --api-key, and native
+  # TensorFold leaves /health open with --api-key-file: the key guards /v1,
+  # the network path guards the rest.
   # ob_url_host strips an IPv6 literal's brackets: http://[::1]:8000 is
   # loopback (the old split left "::1]" and warned about it).
   _be_host="$(ob_url_host "$INFERENCE_URL")"
   if ! ob_bind_is_loopback "$_be_host"; then
-    if [[ "$INFERENCE_BACKEND" == "tensorfold" ]]; then
-      warn "TensorFold has no API key: anyone who can reach $INFERENCE_URL can use it" \
-           "bind it to the ConnectX / tailnet address only and firewall it (docs/DGX_SPARK_PLAN.md § Security)"
-    elif [[ -z "${LLAMA_API_KEY:-}" ]]; then
+    if [[ -z "${LLAMA_API_KEY:-}" ]]; then
       warn "the inference server at $INFERENCE_URL is reached without a key (LLAMA_API_KEY empty)" \
-           "start vLLM with an API key (spark.env VLLM_API_KEY_FILE) and set the same LLAMA_API_KEY here"
+           "start vLLM / TensorFold with an API key (spark.env VLLM_API_KEY_FILE / TENSORFOLD_API_KEY_FILE) and set the same LLAMA_API_KEY here"
     fi
   fi
 elif [[ $_llama_up -eq 1 ]]; then
@@ -745,7 +743,7 @@ for nid, n in (s.get("nodes") or {}).items():
         print("warn|node %s: public address %s (allow_public)|keep nodes on loopback, RFC1918 or the tailnet" % (nid, host))
     else:
         print("pass|node %s: %s address, key %s|" % (nid, cls, n.get("key")))
-    if cls != "loopback" and n.get("key") == "none" and n.get("engine") != "tensorfold":
+    if cls != "loopback" and n.get("key") == "none":
         print("warn|node %s: remote node with no key|set key_file (0600) in hydra.toml" % nid)
 for did, d in (s.get("deployments") or {}).items():
     st = d.get("state")

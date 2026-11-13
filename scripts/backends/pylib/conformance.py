@@ -23,7 +23,7 @@ model in advance. Each probe is PASS / FAIL / WARN / INFO / UNKNOWN / SKIP:
 
 Exit 0 only when every REQUIRED probe passes; 1 otherwise; 2 on bad usage.
 The API key comes from LLAMA_API_KEY / OPENBEAST_API_KEY in the environment or
---key-file (0600) — never argv — and is never sent when --backend tensorfold.
+--key-file (0600) — never argv. Native TensorFold (>= 1.0) takes it like vLLM (--api-key-file).
 """
 from __future__ import annotations
 
@@ -103,8 +103,6 @@ def runner_overflow_re() -> re.Pattern | None:
 
 
 def read_key(key_file: str | None, backend: str) -> str | None:
-    if backend == "tensorfold":
-        return None
     if key_file:
         p = Path(os.path.expanduser(key_file))
         st = p.stat()

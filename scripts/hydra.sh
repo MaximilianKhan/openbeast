@@ -236,12 +236,9 @@ if cls in ("invalid", "public"):
     problems.append(f"--url {url}: {cls} (nodes must be loopback, RFC1918 or tailnet)")
 key = None
 if e.get("HN_KEY_FILE"):
-    if engine == "tensorfold":
-        problems.append("TensorFold has no auth: never give it a key (firewall it to the rig)")
-    else:
-        problems += core._key_file_errors("--key-file", e["HN_KEY_FILE"], core.REPO)
-        if not problems:
-            key = open(os.path.expanduser(e["HN_KEY_FILE"])).read().strip() or None
+    problems += core._key_file_errors("--key-file", e["HN_KEY_FILE"], core.REPO)
+    if not problems:
+        key = open(os.path.expanduser(e["HN_KEY_FILE"])).read().strip() or None
 if problems:
     sys.exit("hydra.sh add-node: " + "; ".join(problems))
 
@@ -271,9 +268,9 @@ print(f"# probe: GET {url}/v1/models ({'with' if key else 'no'} key) -> {st} {se
 if st in (401, 403):
     print("# WARNING: the node refused the key — hydra would mark it AUTH_FAILED", file=sys.stderr)
 lines = [f"[nodes.{nid}]", f'url         = "{url}"', f'engine      = "{engine}"']
-if e.get("HN_KEY_FILE") and engine != "tensorfold":
+if e.get("HN_KEY_FILE"):
     lines.append(f'key_file    = "{e["HN_KEY_FILE"]}"')
-elif engine not in ("tensorfold",) and cls != "loopback":
+elif cls != "loopback":
     print("# WARNING: a remote node with no key", file=sys.stderr)
 if e.get("HN_SLOTS"):
     lines.append(f"slots       = {int(e['HN_SLOTS'])}")
@@ -327,7 +324,7 @@ PYEOF
   # it to this node. Exactly the node's key (by env, child only, never argv),
   # or its --key-file, or nothing.
   local node_key=""
-  [[ -n "$key_env" && "$backend" != "tensorfold" ]] && node_key="${!key_env:-}"
+  [[ -n "$key_env" ]] && node_key="${!key_env:-}"
   LLAMA_API_KEY="$node_key" OPENBEAST_API_KEY="" \
     exec "$PY" "$REPO_DIR/scripts/backends/pylib/conformance.py" "${args[@]}" "$@"
 }

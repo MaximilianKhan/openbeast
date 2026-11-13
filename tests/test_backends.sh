@@ -131,8 +131,8 @@ _bm() { # _bm <backend> -> the id ob_backend_models reports from /authecho
 }
 _got="$(_bm vllm)"; [[ "$_got" == "AUTH:Bearer k-123" ]] && pass "ob_backend_models presents LLAMA_API_KEY to vLLM" \
   || fail "vLLM models probe did not send the key: $_got"
-_got="$(_bm tensorfold)"; [[ "$_got" == "AUTH:none" ]] && pass "…and never to TensorFold (it has no auth)" \
-  || fail "the key was sent to TensorFold: $_got"
+_got="$(_bm tensorfold)"; [[ "$_got" == "AUTH:Bearer k-123" ]] && pass "…and to TensorFold (native --api-key-file guards /v1)" \
+  || fail "TensorFold models probe did not send the key: $_got"
 [[ "$_NA" == "keep these" ]] && pass "sourcing lib/backend.sh leaves \$@ alone" \
   || fail "sourcing lib/backend.sh clobbered \$@: '$_NA'"
 
@@ -454,7 +454,7 @@ grep -qF "INFERENCE_MODEL='some-other-model' is not what" <<< "$_O" \
   && pass "…and warns when the server does not list it" || fail "doctor INFERENCE_MODEL mismatch: $(grep -i inference_model <<< "$_O" || true)"
 RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=tensorfold "OPENBEAST_INFERENCE_URL=http://10.66.0.1:1")
 _O="$(_run "$_R" 120 "$_R/scripts/doctor.sh")"
-grep -q "TensorFold has no API key" <<< "$_O" && pass "doctor warns that a remote TensorFold is unauthenticated" \
+grep -q "is reached without a key (LLAMA_API_KEY empty)" <<< "$_O" && pass "doctor warns that a remote TensorFold is reached keyless" \
   || fail "no TensorFold no-key warning"
 RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=vllm "OPENBEAST_INFERENCE_URL=http://[::1]:1")
 _O="$(_run "$_R" 120 "$_R/scripts/doctor.sh")"
