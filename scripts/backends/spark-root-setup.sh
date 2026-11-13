@@ -3,8 +3,8 @@
 # Spark, as yourself through sudo (it needs SUDO_USER). Idempotent.
 # docs/DGX_SPARK_PLAN.md §9
 #
-#   sudo scripts/backends/spark-root-setup.sh spark-hydra     # Spark 1: rank 0 + command center
-#   sudo scripts/backends/spark-root-setup.sh spark-hydra-2   # Spark 2: rank 1, no services
+#   sudo scripts/backends/spark-root-setup.sh spark-1   # Spark 1: rank 0 + command center
+#   sudo scripts/backends/spark-root-setup.sh spark-2   # Spark 2: rank 1, no services
 #
 # What it does, and nothing else:
 #   1. libnccl2 pinned to a CUDA 13.0 build and held. The native TensorFold
@@ -21,7 +21,7 @@
 #      is point-to-point, so "from the peer" is everything on it).
 #      --serve also opens the TensorFold port on tailscale0, only for a keyed
 #      engine that must be reached directly. By default inference listens on
-#      loopback behind spark-hydra's beast-gate, which needs no open port.
+#      loopback behind the pair's (spark-hydra's) beast-gate, which needs no open port.
 #      Nothing else in ufw is touched; status is printed before and after.
 #
 # It does not change netplan (NVIDIA Sync owns 99-nvidia-sync-cluster.yaml),
