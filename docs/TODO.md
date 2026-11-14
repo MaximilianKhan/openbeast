@@ -151,7 +151,18 @@ Decisions the 2026-10-09 review deferred to the owner. Each is open.
   Open-Jev image on its host; get access to the gated
   `neko-legends/GLM-5.3-Flash-Uncensored-EXL3`.
 
-## 🟩 DGX SPARK INFERENCE — milestone 1 built 2026-09-29, hardware pending
+## 🟩 DGX SPARK INFERENCE — LIVE 2026-11-13 as spark-hydra
+
+- **Live:** GLM-5.3-Flash Ablit (EXL3 4-bit) TP 2 over spark-1 + spark-2 on
+  Mia-AiLab's TensorFold v0.6.0 recipe, DFlash2, 4 streams, 1M window
+  (code 68-70 tok/s single, 224 aggregate); command center on spark-1;
+  boot units for both. Runbook: [`SPARK_HYDRA.md`](SPARK_HYDRA.md).
+- **Next:** full offline playbook (image save/load, DFlash2, aarch64 air-gap
+  bundle, zig); remote access (beast-gate via `tailscale serve`,
+  `svc:spark-hydra`); primary switch beast ↔ spark-hydra; `PARALLEL=8`;
+  native TensorFold 1.2.7 A/B.
+
+### History: milestone 1 (built 2026-09-29)
 
 - **What:** the stack stays on the rig and points at vLLM or TensorFold
   running tensor-parallel across two DGX Sparks. Plan, security, coupling

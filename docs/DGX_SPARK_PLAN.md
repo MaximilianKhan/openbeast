@@ -1,5 +1,11 @@
 # Two DGX Sparks as the inference plane — plan and runbook
 
+> **2026-11-13: the pair is live as `spark-hydra`** — GLM-5.3-Flash Ablit on
+> Mia-AiLab's TensorFold v0.6.0 recipe, command center on spark-1 (T2). How it
+> actually runs, and how to operate it: [`SPARK_HYDRA.md`](SPARK_HYDRA.md).
+> This plan is the design record; where the two differ, SPARK_HYDRA.md is
+> what is deployed.
+
 **Status (2026-09-29): milestone 1 is built and tested hermetically. Nothing
 here has run on a GB10 yet.** Every step marked **VERIFY ON HARDWARE** comes
 from vendor docs, recipes or source reading, not from a measurement on our
