@@ -38,9 +38,12 @@ v1.7.0 → v1.8.0: 17 merged PRs (#127 – #146), 184 commits (160 non-merge),
 3. **The imported skills are off the menu.** All nine set
    `prompt_index: false`: they cost the local model nothing and do not move
    the era. Nothing else about skills changes.
-4. **One lock entry moves for a CVE:** `opentelemetry-api` 1.45.1 → 1.45.2
-   (CVE-2026-126360), hashes from a fresh resolve. Nothing else in the lock
-   moves.
+4. **The Python lock is re-resolved** for CVE-2026-126360
+   (`opentelemetry-api` 1.45.1 → 1.45.2). The lock must equal a fresh
+   resolve, so 16 other transitive packages move with it, all patch or
+   minor: starlette 1.10.0, huggingface_hub 2.4.0, pydantic 2.14.3, anyio
+   4.16.0, certifi 2026.10.23 and more. The direct pins are unchanged. To
+   update an install, run `./scripts/pydeps.sh install` (or `./bootstrap.sh`).
 
 Restart the stack after upgrading (`./stop.sh && ./start.sh -d`).
 
@@ -149,7 +152,7 @@ The fixes that would change the era are on a separate branch,
 - fastapi 0.146.0, openai 3.35.1, mcp 2.3.0 (#129 – #131, #139, #140).
 - CI actions bumped (#137, #138).
 - The CI audit tools were relocked for certifi PYSEC-2026-4320 (#142).
-- opentelemetry-api 1.45.2 for CVE-2026-126360.
+- A full relock for CVE-2026-126360 (opentelemetry-api 1.45.2, 16 transitive patch/minor bumps).
 
 ## Known open items
 
