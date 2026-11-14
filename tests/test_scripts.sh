@@ -437,6 +437,69 @@ if [[ "$_FLOOR_MSG" == *"24 GB floor"* ]]; then
 else
   fail "the refusal text does not name the 24 GB floor"
 fi
+# GB10 / DGX Spark (docs/DGX_SPARK_PLAN.md §8 row 14). nvidia-smi answers
+# memory.total with a literal [N/A] on a unified-memory GPU, and detection
+# skipped the card: "NVIDIA GB10 (0 MiB VRAM, 0x)", measured on spark-1. The
+# card and its RAM are BUILT here (stub nvidia-smi, fake meminfo): the
+# outputs are spark-1's, byte for byte, and nothing reads this box.
+_HW="$(mktemp -d)"
+mkdir -p "$_HW/bin"
+cat > "$_HW/bin/nvidia-smi" <<SH
+#!/bin/bash
+case "\$*" in
+  *memory.total*) cat "$_HW/mem" ;;
+  *name*)         cat "$_HW/name" ;;
+esac
+exit 0
+SH
+chmod +x "$_HW/bin/nvidia-smi"
+printf 'MemTotal:       127598416 kB\nMemFree:        120000000 kB\n' > "$_HW/meminfo"
+# _hw <name> <memory.total rows> -> "vendor|name|vram|total|count|unified|floor-rc"
+_hw() {
+  printf '%s\n' "$1" > "$_HW/name"; printf '%b' "$2" > "$_HW/mem"
+  ( PATH="$_HW/bin:$PATH"; OB_MEMINFO="$_HW/meminfo"; unset OPENBEAST_FORCE_VRAM
+    source "$REPO_DIR/scripts/lib/hardware.sh"; ob_detect_gpu
+    _rc=0; ob_vram_floor_check >/dev/null || _rc=$?
+    echo "$OB_GPU_VENDOR|$OB_GPU_NAME|$OB_VRAM_MB|$OB_VRAM_TOTAL_MB|$OB_GPU_COUNT|$OB_GPU_UNIFIED|$_rc" )
+}
+_got="$(_hw "NVIDIA GB10" '[N/A]\n')"
+[[ "$_got" == "nvidia|NVIDIA GB10|124607|124607|1|1|0" ]] \
+  && pass "GB10: [N/A] memory.total → one unified GPU sized by MemTotal (124607 MiB), floor passes" \
+  || fail "GB10 detection: $_got (want nvidia|NVIDIA GB10|124607|124607|1|1|0)"
+# Two [N/A] rows are still ONE pool: summing would invent memory.
+_got="$(_hw "NVIDIA GB10" '[N/A]\n[N/A]\n')"
+[[ "$_got" == "nvidia|NVIDIA GB10|124607|124607|2|1|0" ]] \
+  && pass "…two unified rows count two GPUs but one memory pool" \
+  || fail "two unified rows: $_got"
+# Discrete cards are untouched — the 5090, a 2x 3090, a 16 GB card refused.
+_got="$(_hw "NVIDIA GeForce RTX 5090" '32607\n')"
+[[ "$_got" == "nvidia|NVIDIA GeForce RTX 5090|32607|32607|1|0|0" ]] \
+  && pass "…a 5090 (32607) is detected exactly as before, not unified" \
+  || fail "5090 detection changed: $_got"
+_got="$(_hw "NVIDIA GeForce RTX 3090" '24564\n24564\n')"
+[[ "$_got" == "nvidia|NVIDIA GeForce RTX 3090|24564|49128|2|0|0" ]] \
+  && pass "…a 2x 3090 still reports largest 24564 / sum 49128" \
+  || fail "2x 3090 detection changed: $_got"
+_got="$(_hw "NVIDIA RTX A4000" '16376\n')"
+[[ "$_got" == "nvidia|NVIDIA RTX A4000|16376|16376|1|0|1" ]] \
+  && pass "…a 16 GB card is still refused by the floor" \
+  || fail "16 GB card: $_got"
+# Unreadable meminfo on a unified GPU: unknown (0), which the floor passes
+# through to its own warning rather than refusing a box it cannot size.
+_got="$(printf 'NVIDIA GB10\n' > "$_HW/name"; printf '[N/A]\n' > "$_HW/mem"
+        ( PATH="$_HW/bin:$PATH"; OB_MEMINFO="$_HW/nope"; source "$REPO_DIR/scripts/lib/hardware.sh"
+          ob_detect_gpu; ob_vram_floor_check >/dev/null && echo "$OB_VRAM_MB|$OB_GPU_UNIFIED|ok" ))"
+[[ "$_got" == "0|1|ok" ]] \
+  && pass "…a unified GPU with unreadable meminfo is unknown (0), not refused" \
+  || fail "unified + no meminfo: $_got"
+# The advice names the profile and does NOT call it 5090-class.
+_adv="$( source "$REPO_DIR/scripts/lib/hardware.sh"; unset OPENBEAST_ASSUME_5090
+         OB_GPU_VENDOR=nvidia OB_GPU_NAME="NVIDIA GB10" OB_GPU_COUNT=1 OB_VRAM_MB=124607 OB_GPU_UNIFIED=1
+         ob_profile_advice )"
+[[ "$_adv" == *"GB10 / DGX Spark profile"* && "$_adv" == *"unified memory"* && "$_adv" != *"5090-class"* ]] \
+  && pass "…the GB10 advice names the unified-memory profile, not 5090-class" \
+  || fail "GB10 advice: $(tr '\n' ' ' <<< "$_adv")"
+rm -rf "$_HW"
 if grep -q 'ob_scale_context' "$REPO_DIR/scripts/serve.sh"; then
   pass "serve.sh applies adaptive context via ob_scale_context"
 else
@@ -1402,6 +1465,78 @@ else
 fi
 rm -rf "$_PF_TMP"
 rm -rf "$_PF_TMP"
+
+# DGX Spark as command center (docs/DGX_SPARK_PLAN.md T2, §8 row 19): a box
+# whose inference is TensorFold at its own tailnet IP builds no llama.cpp,
+# needs no CUDA toolchain and downloads no GGUF. Built here: a GB10 (spark-1's
+# nvidia-smi answers, its MemTotal), docker and curl stubs that succeed, so
+# the backend is the only axis. The control runs the SAME box as llama.
+echo ""
+echo "bootstrap on an unmanaged backend (GB10 + TensorFold):"
+_SP="$(mktemp -d)"
+cat > "$_SP/nvidia-smi" <<'SH'
+#!/bin/bash
+case "$*" in
+  *memory.total*) echo "[N/A]" ;;
+  *compute_cap*)  echo "12.1" ;;
+  *name*)         echo "NVIDIA GB10" ;;
+esac
+exit 0
+SH
+printf '#!/bin/bash\nexit 0\n' > "$_SP/docker"
+printf '#!/bin/bash\nexit 0\n' > "$_SP/curl"
+chmod +x "$_SP/nvidia-smi" "$_SP/docker" "$_SP/curl"
+printf 'MemTotal:       127598416 kB\n' > "$_SP/meminfo"
+_sp_run() { # _sp_run [ENV=val...] -> SP_OUT, SP_RC
+  SP_RC=0
+  SP_OUT="$(env PATH="$_SP:$PATH" OB_MEMINFO="$_SP/meminfo" OPENBEAST_OFFLINE=false \
+            OPENBEAST_GPU_BACKEND=auto "$@" "$REPO_DIR/bootstrap.sh" --preflight 2>&1)" || SP_RC=$?
+  SP_OUT="$(sed 's/\x1b\[[0-9;]*m//g' <<< "$SP_OUT")"
+}
+_sp_run OPENBEAST_INFERENCE_BACKEND=tensorfold OPENBEAST_INFERENCE_URL=http://100.64.0.7:8000
+if [[ $SP_RC -eq 0 && "$SP_OUT" == *"Environment looks ready"* ]]; then
+  pass "TensorFold on a GB10: preflight passes"
+else
+  fail "TensorFold on a GB10: preflight rc=$SP_RC: $(grep -E '✗|!' <<< "$SP_OUT" | tr '\n' ' ')"
+fi
+[[ "$SP_OUT" == *"not managed here"* && "$SP_OUT" == *"no llama.cpp build"* ]] \
+  && pass "…says inference is not managed here and nothing is built" \
+  || fail "unmanaged preflight does not say why nothing is built"
+if [[ "$SP_OUT" != *"cmake present"* && "$SP_OUT" != *"g++ present"* \
+      && "$SP_OUT" != *"llama.cpp build backend"* && "$SP_OUT" != *"CUDA toolkit"* \
+      && "$SP_OUT" != *"nvcc"* ]]; then
+  pass "…and asks for no build toolchain (cmake, g++, nvcc)"
+else
+  fail "unmanaged preflight still checks the llama.cpp toolchain"
+fi
+[[ "$SP_OUT" == *"NVIDIA GB10 (124607 MiB unified memory, 1x) — not used by this stack"* ]] \
+  && pass "…reports the GB10 as 124607 MiB unified memory, 1x" \
+  || fail "GB10 line: $(grep -E 'GB10' <<< "$SP_OUT" | tr '\n' ' ')"
+[[ "$SP_OUT" == *"no local weight needed"* && "$SP_OUT" != *"default 27B weight"* ]] \
+  && pass "…needs no disk for a weight" \
+  || fail "unmanaged preflight still sizes the disk for the GGUF"
+[[ "$SP_OUT" == *"pypi.org reachable"* && "$SP_OUT" != *"github.com"* ]] \
+  && pass "…probes only pypi.org (no llama.cpp source, no weight to fetch)" \
+  || fail "unmanaged network probe: $(grep -E 'network' <<< "$SP_OUT" | tr '\n' ' ')"
+# --minimal is llama-server only: on an unmanaged box it has nothing to do.
+SP_RC=0
+SP_OUT="$(env PATH="$_SP:$PATH" OB_MEMINFO="$_SP/meminfo" OPENBEAST_OFFLINE=false \
+          OPENBEAST_INFERENCE_BACKEND=tensorfold OPENBEAST_INFERENCE_URL=http://100.64.0.7:8000 \
+          "$REPO_DIR/bootstrap.sh" --preflight --minimal 2>&1)" || SP_RC=$?
+[[ $SP_RC -ne 0 && "$SP_OUT" == *"--minimal installs llama-server and nothing else"* ]] \
+  && pass "…--minimal on an unmanaged box is refused with the reason" \
+  || fail "--minimal + unmanaged (rc=$SP_RC)"
+# Control: the same GB10 as a MANAGED llama box keeps the llama.cpp path, and
+# the floor (124607 MiB unified) does not refuse it.
+_sp_run OPENBEAST_INFERENCE_BACKEND=llama
+if [[ "$SP_OUT" == *"NVIDIA GPU: NVIDIA GB10 (124607 MiB unified memory, 1x)"* \
+      && "$SP_OUT" == *"llama.cpp build backend: cuda"* && "$SP_OUT" != *"24 GB floor"* \
+      && "$SP_OUT" == *"github.com"* ]]; then
+  pass "control: the same GB10 under llama keeps the llama.cpp path and passes the floor"
+else
+  fail "control (managed llama on a GB10): $(grep -E 'GB10|backend|floor|network' <<< "$SP_OUT" | tr '\n' ' ')"
+fi
+rm -rf "$_SP"
 
 # update.sh must tell "the remote is unreachable" apart from "your worktree is
 # dirty". It used to swallow git's stderr, burn a SECOND connect timeout, and

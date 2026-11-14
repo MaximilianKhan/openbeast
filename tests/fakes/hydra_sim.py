@@ -94,7 +94,7 @@ class Sim:
         def node(e: FakeEngine, name: str, slots: int) -> dict:
             n = {"url": e.url, "engine": e.personality, "slots": slots,
                  "ttft_timeout_s": 10, "idle_timeout_s": 2, "nonstream_timeout_s": 20}
-            if e.personality != "tensorfold":             # TensorFold never gets a key
+            if e.personality != "tensorfold":             # the sim's TensorFold runs keyless
                 n["key_file"] = str(self.dir / f"{name}.key")
             return n
         unc, glm = "qwen3.8-27b-uncensored", "glm-5.3-flash-uncensored"

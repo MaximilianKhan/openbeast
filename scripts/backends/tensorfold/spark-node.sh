@@ -3,6 +3,17 @@
 # one rank per Spark over NCCL, or --tp 1 on one Spark). Runs ON A SPARK, not
 # on the rig. docs/DGX_SPARK_PLAN.md
 #
+# Two engines, picked by TENSORFOLD_ENGINE in spark.env:
+#   native     (default) the signed TensorFold >= 1.0 release binary on the
+#              host (install-native.sh), run as a systemd --user unit. Keyed
+#              with --api-key-file. GLM-5.3-Flash places its ranks with
+#              TF_GLM_RANK / TF_GLM_WORLD / NCCL_COMM_ID; other families with
+#              --tp / --rank / --master.
+#   container  the frozen Python 0.x engine, pip-installed at a commit SHA
+#              into NVIDIA's PyTorch container. No auth. Kept for profiles
+#              that need it; everything below about TENSORFOLD_REF, the image
+#              and the unauthenticated rendezvous is about this engine.
+#
 #   scripts/backends/tensorfold/spark-node.sh --profile NAME --rank 1 --master IP   # FIRST, on Spark 2
 #   scripts/backends/tensorfold/spark-node.sh --profile NAME --rank 0 --master IP   # then on Spark 1
 #
@@ -12,8 +23,8 @@
 #   --master IP     rank 0's address on the ConnectX link (SPARK_HEAD_IP);
 #                   required for TP 2
 #   --env FILE      HOST settings (default: scripts/backends/spark.env)
-#   --print         print the exact docker command and exit; runs nothing
-#   --stop          docker stop this rank's container
+#   --print         print the exact command and exit; runs nothing
+#   --stop          stop this rank (systemctl --user stop / docker stop)
 #
 # The checkpoint MUST be fetched first (model-fetch.sh --profile NAME, on both
 # Sparks for TP 2): TensorFold's own download takes the latest commit of a
@@ -61,17 +72,24 @@ case "$RANK" in
   *) echo "Error: --rank 0|1 is required (start rank 1 first)" >&2; exit 2 ;;
 esac
 NAME="openbeast-tensorfold-rank$RANK"
-if [[ $STOP -eq 1 ]]; then
-  exec docker stop "$NAME"
-fi
 
 ENV_FILE="${ENV_FILE:-${SPARK_ENV:-$HERE/../spark.env}}"
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "Note: no settings file at $ENV_FILE — using the environment only (template: $HERE/../spark.env.example)." >&2
 fi
-sp_load "$ENV_FILE" TENSORFOLD_IMAGE TENSORFOLD_IMAGE_DIGEST TENSORFOLD_REF \
+sp_load "$ENV_FILE" TENSORFOLD_ENGINE TENSORFOLD_BIN TENSORFOLD_VERSION TENSORFOLD_API_KEY_FILE \
+  SPARK_NO_API_KEY TENSORFOLD_IMAGE TENSORFOLD_IMAGE_DIGEST TENSORFOLD_REF \
   SPARK_IFACE SPARK_IB_HCA SPARK_HEAD_IP TENSORFOLD_MASTER_PORT SPARK_SERVE_HOST \
   SPARK_SERVE_PORT SPARK_ALLOW_WILDCARD_BIND MODELS_DIR SPARK_PROFILE
+ENGINE="${TENSORFOLD_ENGINE:-native}"
+case "$ENGINE" in
+  native|container) ;;
+  *) echo "Error: TENSORFOLD_ENGINE='$ENGINE' — native or container" >&2; exit 2 ;;
+esac
+if [[ $STOP -eq 1 ]]; then
+  [[ "$ENGINE" == native ]] && exec systemctl --user stop "$NAME"
+  exec docker stop "$NAME"
+fi
 sp_warn_legacy_model_keys "$ENV_FILE"
 PROFILE="${PROFILE:-${SPARK_PROFILE:-}}"
 if [[ -z "$PROFILE" ]]; then
@@ -84,7 +102,13 @@ if ! sp_profile_load "$PROFILE" tensorfold; then
 fi
 TP="$PF_TENSOR_PARALLEL_SIZE"
 [[ -n "$MASTER" ]] || MASTER="${SPARK_HEAD_IP:-}"
-TENSORFOLD_MASTER_PORT="${TENSORFOLD_MASTER_PORT:-29551}"
+# 29551: the Python engine's TCPStore. 29583: native GLM's NCCL_COMM_ID port
+# (its recipe's); each rank also keeps a TCP line to rank 0 on port + 1.
+if [[ "$ENGINE" == native ]]; then
+  TENSORFOLD_MASTER_PORT="${TENSORFOLD_MASTER_PORT:-29583}"
+else
+  TENSORFOLD_MASTER_PORT="${TENSORFOLD_MASTER_PORT:-29551}"
+fi
 SPARK_SERVE_PORT="${SPARK_SERVE_PORT:-8000}"
 
 if [[ "$TP" == 2 ]]; then
@@ -94,10 +118,26 @@ if [[ "$TP" == 2 ]]; then
 elif [[ "$RANK" == 1 ]]; then
   sp_err "profile '$PF_PROFILE_NAME' is TENSOR_PARALLEL_SIZE=1: it runs on ONE Spark — start --rank 0 only"
 fi
-sp_need TENSORFOLD_IMAGE "NVIDIA's PyTorch container (spark.env)"
-sp_need TENSORFOLD_REF "the TensorFold commit to install, as a full 40-hex SHA"
-if [[ -n "${TENSORFOLD_REF:-}" && ! "$TENSORFOLD_REF" =~ ^[0-9a-f]{40}$ ]]; then
-  sp_err "TENSORFOLD_REF='$TENSORFOLD_REF' is not a commit SHA — a tag or branch can move; use the full 40-hex commit (v0.5.0 = 9cd52ab4daba68ddd09be89be8f23ad43175e821)"
+if [[ "$ENGINE" == native ]]; then
+  TENSORFOLD_BIN="${TENSORFOLD_BIN:-$HOME/.local/bin/tensorfold}"
+  sp_need TENSORFOLD_VERSION "the release install-native.sh installed (e.g. 1.2.7) — the launcher refuses any other binary"
+  if [[ ! -x "$TENSORFOLD_BIN" ]]; then
+    sp_err "no TensorFold binary at $TENSORFOLD_BIN — scripts/backends/tensorfold/install-native.sh"
+  elif [[ -n "${TENSORFOLD_VERSION:-}" ]]; then
+    _have="$("$TENSORFOLD_BIN" --version 2>/dev/null | awk '{print $NF}')"
+    [[ "$_have" == "$TENSORFOLD_VERSION" ]] \
+      || sp_err "$TENSORFOLD_BIN is TensorFold '${_have:-?}', spark.env pins $TENSORFOLD_VERSION — both ranks must run the same build"
+  fi
+  if [[ "$RANK" == 0 ]] && ! sp_is_true "${SPARK_NO_API_KEY:-}"; then
+    sp_need TENSORFOLD_API_KEY_FILE "the 0600 file rank 0 serves with --api-key-file (the rig's LLAMA_API_KEY holds the same value)"
+    [[ -n "${TENSORFOLD_API_KEY_FILE:-}" ]] && sp_check_secret_file "$TENSORFOLD_API_KEY_FILE"
+  fi
+else
+  sp_need TENSORFOLD_IMAGE "NVIDIA's PyTorch container (spark.env)"
+  sp_need TENSORFOLD_REF "the TensorFold commit to install, as a full 40-hex SHA"
+  if [[ -n "${TENSORFOLD_REF:-}" && ! "$TENSORFOLD_REF" =~ ^[0-9a-f]{40}$ ]]; then
+    sp_err "TENSORFOLD_REF='$TENSORFOLD_REF' is not a commit SHA — a tag or branch can move; use the full 40-hex commit (v0.5.0 = 9cd52ab4daba68ddd09be89be8f23ad43175e821)"
+  fi
 fi
 [[ "$TENSORFOLD_MASTER_PORT" =~ ^[0-9]+$ ]] || sp_err "TENSORFOLD_MASTER_PORT='$TENSORFOLD_MASTER_PORT' is not a port"
 [[ "$SPARK_SERVE_PORT" =~ ^[0-9]+$ ]] || sp_err "SPARK_SERVE_PORT='$SPARK_SERVE_PORT' is not a port"
@@ -118,10 +158,61 @@ else
     DRAFTER="/models/$PF_PROFILE_NAME.drafter"
   fi
 fi
-sp_image "${TENSORFOLD_IMAGE:-}" "${TENSORFOLD_IMAGE_DIGEST:-}" "$PRINT"
+[[ "$ENGINE" == container ]] && sp_image "${TENSORFOLD_IMAGE:-}" "${TENSORFOLD_IMAGE_DIGEST:-}" "$PRINT"
 if [[ $SP_ERRORS -gt 0 ]]; then
   echo "Refusing to start: $SP_ERRORS setting(s) missing or unsafe (settings: $ENV_FILE, profile: $PF_PROFILE_PATH)." >&2
   exit 1
+fi
+
+if [[ "$ENGINE" == native ]]; then
+  # The checkpoint's own model_type decides how ranks are placed: native GLM
+  # reads its rank from the environment, every other ranked family from flags.
+  MODEL_TYPE="$(python3 -c 'import json,sys; c=json.load(open(sys.argv[1])); print(c.get("model_type",""))' "$SP_MODEL_DIR/config.json" 2>/dev/null || true)"
+  SERVE=(serve "$SP_MODEL_DIR" --no-update-check)
+  [[ -n "$PF_DRAFTER_SOURCE" ]] && SERVE+=(--drafter "$SP_DRAFTER_DIR")
+  [[ -n "$PF_TENSORFOLD_PARALLEL" ]] && SERVE+=(--parallel "$PF_TENSORFOLD_PARALLEL")
+  [[ -n "$PF_MAX_MODEL_LEN" ]] && SERVE+=(--context "$PF_MAX_MODEL_LEN")
+  SERVE+=(${PF_EXTRA[@]+"${PF_EXTRA[@]}"})
+  RANKENV=()
+  if [[ "$TP" == 2 ]]; then
+    if [[ "$MODEL_TYPE" == glm5_next ]]; then
+      RANKENV+=("TF_GLM_RANK=$RANK" "TF_GLM_WORLD=$TP" "NCCL_COMM_ID=$MASTER:$TENSORFOLD_MASTER_PORT")
+    else
+      SERVE+=(--tp "$TP" --rank "$RANK" --master "$MASTER" --master-port "$TENSORFOLD_MASTER_PORT")
+    fi
+    # SPARK_IFACE / SPARK_IB_HCA may list both ConnectX rails, comma-separated.
+    RANKENV+=("NCCL_SOCKET_IFNAME=$SPARK_IFACE" "NCCL_IB_HCA=$SPARK_IB_HCA" "NCCL_IB_DISABLE=0")
+  fi
+  # Rank 0 alone serves HTTP. VERIFY ON HARDWARE: native GLM compares the
+  # ranks' settings before loading; if it names --host/--port/--name as a
+  # difference, give rank 1 the same ones.
+  if [[ "$RANK" == 0 ]]; then
+    SERVE+=(--name "$PF_SERVED_MODEL_NAME" --host "$SPARK_SERVE_HOST" --port "$SPARK_SERVE_PORT")
+    sp_is_true "${SPARK_NO_API_KEY:-}" || SERVE+=(--api-key-file "$TENSORFOLD_API_KEY_FILE")
+  fi
+  [[ -n "${NCCL_DEBUG:-}" ]] && RANKENV+=("NCCL_DEBUG=$NCCL_DEBUG")
+  # A transient systemd --user unit: logs in the journal, one --stop, and it
+  # outlives this shell (linger is set by spark-root-setup.sh).
+  CMD=(systemd-run --user --unit "$NAME" --collect --property=Restart=no
+    --setenv=HF_HUB_OFFLINE=1)
+  for _e in ${RANKENV[@]+"${RANKENV[@]}"}; do CMD+=("--setenv=$_e"); done
+  CMD+=("$TENSORFOLD_BIN" "${SERVE[@]}")
+  if [[ $PRINT -eq 1 ]]; then
+    echo "# profile $PF_PROFILE_NAME: $PF_SOURCE${PF_REVISION:+@$PF_REVISION} (TP $TP, model_type ${MODEL_TYPE:-?}) from $SP_MODEL_DIR"
+    echo "# native TensorFold $TENSORFOLD_VERSION at $TENSORFOLD_BIN"
+    [[ "$RANK" == 0 ]] && echo "# rank 0 serves http://${SPARK_SERVE_HOST}:${SPARK_SERVE_PORT}"
+    sp_print_cmd "${CMD[@]}"
+    exit 0
+  fi
+  if systemctl --user is-active --quiet "$NAME"; then
+    echo "Error: $NAME is already running — $0 --rank $RANK --stop first" >&2
+    exit 1
+  fi
+  [[ "$RANK" == 0 && "$TP" == 2 ]] && echo "Rank 0: start rank 1 on the other Spark too; both wait for each other on $MASTER:$TENSORFOLD_MASTER_PORT."
+  [[ "$RANK" == 1 ]] && echo "Rank 1: rendezvous with rank 0 at $MASTER:$TENSORFOLD_MASTER_PORT."
+  "${CMD[@]}"
+  echo "Started $NAME. Logs: journalctl --user -fu $NAME   Stop: $0 --rank $RANK --stop"
+  exit 0
 fi
 
 SERVE=(serve "/models/$PF_PROFILE_NAME" --tp "$TP" --rank "$RANK" --no-update-check --drafter "$DRAFTER")

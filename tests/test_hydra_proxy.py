@@ -493,7 +493,7 @@ def test_inbound_key_and_node_keys(fleet):
     post(srv, chat(model="mlx@tf"))
     assert posts(rig)[-1]["headers"]["authorization"] == f"Bearer {RIG_KEY}"
     assert posts(sparks)[-1]["headers"]["authorization"] == f"Bearer {SPARK_KEY}"
-    assert "authorization" not in posts(tf)[-1]["headers"], "never a key to TensorFold"
+    assert "authorization" not in posts(tf)[-1]["headers"], "a TensorFold node with no key sends none"
     for e in (rig, sparks, tf):
         for req in e.requests:
             assert INBOUND not in json.dumps(req), "the inbound key must never travel upstream"
@@ -1377,14 +1377,14 @@ def test_an_upstream_cannot_forge_provenance_headers(fleet):
     assert all(len(r.headers.get_list(k)) == 1 for k in r.headers if k.lower().startswith("x-hydra-"))
 
 
-def test_tensorfold_never_gets_a_key_even_past_validation(fleet):
-    # validate() refuses a key on a TensorFold node; this is the runtime guard
-    # behind it (a node edited after validation, or a validator regression).
+def test_tensorfold_node_with_a_key_presents_it(fleet):
+    # Native TensorFold (>= 1.0) guards /v1 with --api-key-file, so a keyed
+    # TensorFold node is presented its key exactly like vLLM.
     import dataclasses
     srv, rig, _, tf = fleet()
     n = dataclasses.replace(srv.hy.cfg.nodes["tf"], key_env="RIG_KEY")
     srv.hy.cfg.nodes["tf"] = n
-    assert srv.hy.node_key(n) is None
+    assert srv.hy.node_key(n) == RIG_KEY
     r = post(srv, chat(model="beast:tf"))
     assert r.status_code == 200 and r.headers["x-hydra-deployment"] == "mlx@tf"
-    assert "authorization" not in posts(tf)[-1]["headers"]
+    assert posts(tf)[-1]["headers"]["authorization"] == f"Bearer {RIG_KEY}"

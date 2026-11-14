@@ -9,6 +9,8 @@
 #   OB_GPU_COUNT     number of GPUs seen
 #   OB_VRAM_MB       VRAM of the largest single GPU, in MiB (0 if unknown)
 #   OB_VRAM_TOTAL_MB sum across GPUs, in MiB
+#   OB_GPU_UNIFIED   1 when the GPU has no memory of its own (GB10 / DGX
+#                    Spark): the OB_VRAM_* values are then host RAM
 #
 # Build backend selection (Phase 1, docs/HARDWARE_PROFILES.md): after
 # ob_detect_gpu, call ob_resolve_backend to map GPU_BACKEND (lib/conf.sh)
@@ -29,9 +31,17 @@
 # Overrides:
 #   OPENBEAST_ASSUME_5090=1   skip the advice block entirely (CI, headless)
 
+# Host RAM in MiB from MemTotal (0 when unreadable). OB_MEMINFO exists so
+# the tests can hand it a GB10's meminfo without being on one.
+ob_meminfo_total_mb() {
+  local kb
+  kb=$(awk '$1 == "MemTotal:" {print $2; exit}' "${OB_MEMINFO:-/proc/meminfo}" 2>/dev/null || true)
+  [[ "$kb" =~ ^[0-9]+$ ]] && echo $((kb / 1024)) || echo 0
+}
+
 ob_detect_gpu() {
   OB_GPU_VENDOR="none"; OB_GPU_NAME=""; OB_GPU_COUNT=0
-  OB_VRAM_MB=0; OB_VRAM_TOTAL_MB=0
+  OB_VRAM_MB=0; OB_VRAM_TOTAL_MB=0; OB_GPU_UNIFIED=0
 
   if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
     OB_GPU_VENDOR="nvidia"
@@ -40,6 +50,22 @@ ob_detect_gpu() {
     mems=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null || true)
     local m
     while read -r m; do
+      # UNIFIED MEMORY (GB10, DGX Spark): the GPU has no framebuffer of its
+      # own, so nvidia-smi answers memory.total with a literal [N/A] — and
+      # this loop skipped the card entirely, reporting "NVIDIA GB10 (0 MiB
+      # VRAM, 0x)" on a box with 128 GB the GPU can address. What the GPU can
+      # use is the host's RAM (shared with the OS), so that is the number.
+      # Counted ONCE however many such rows appear: the pool is one pool, and
+      # summing it per GPU would invent memory that does not exist.
+      if [[ "$m" == "[N/A]" ]]; then
+        OB_GPU_COUNT=$((OB_GPU_COUNT + 1))
+        if [[ $OB_GPU_UNIFIED -eq 0 ]]; then
+          OB_GPU_UNIFIED=1
+          OB_VRAM_MB=$(ob_meminfo_total_mb)
+          OB_VRAM_TOTAL_MB=$OB_VRAM_MB
+        fi
+        continue
+      fi
       [[ "$m" =~ ^[0-9]+$ ]] || continue
       OB_GPU_COUNT=$((OB_GPU_COUNT + 1))
       OB_VRAM_TOTAL_MB=$((OB_VRAM_TOTAL_MB + m))
@@ -80,7 +106,16 @@ ob_profile_advice() {
 
   case "$OB_GPU_VENDOR" in
     nvidia)
-      if [[ $OB_GPU_COUNT -gt 1 ]]; then
+      if [[ "${OB_GPU_UNIFIED:-0}" -eq 1 ]]; then
+        # Not "5090-class": the number is RAM the OS shares, and no shipped
+        # serve script was measured on it. A Spark's inference is vLLM or
+        # TensorFold (docs/DGX_SPARK_PLAN.md), with INFERENCE_MANAGED=false.
+        echo "  ${OB_GPU_NAME:-NVIDIA GPU}: unified memory — ${OB_VRAM_MB} MiB of host"
+        echo "  RAM shared by the CPU and the GPU (GB10 / DGX Spark profile)."
+        echo "  The shipped llama.cpp serve scripts are tuned for a discrete"
+        echo "  32 GB card, not this; on a Spark serve vLLM or TensorFold and set"
+        echo "  INFERENCE_BACKEND + INFERENCE_URL (docs/DGX_SPARK_PLAN.md)."
+      elif [[ $OB_GPU_COUNT -gt 1 ]]; then
         echo "  Multi-GPU detected (${OB_GPU_COUNT}x, ${OB_VRAM_TOTAL_MB} MiB total)."
         echo "  llama.cpp splits the model across the cards, and serve.sh"
         echo "  budgets the context against their summed VRAM — but every"

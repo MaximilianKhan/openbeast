@@ -110,7 +110,8 @@ ob_inference_managed() { [[ "${INFERENCE_MANAGED:-true}" == "true" ]]; }
 # llama keeps ob_llama_ready's exact semantics (200 + {"status":"ok"}; a 503
 # "Loading model" is NOT ready). vllm: any HTTP 200 (the body is empty).
 # tensorfold: HTTP 200 whose body says ok. /health needs no key on any of the
-# three (vLLM's --api-key guards /v1 only), so none is sent.
+# three (vLLM's --api-key guards /v1 only; TensorFold's --api-key-file leaves
+# /health open with less detail), so none is sent.
 ob_backend_ready() {
   local url="${1%/}" backend="${2:-${INFERENCE_BACKEND:-llama}}" body
   case "$backend" in
@@ -145,13 +146,11 @@ ob_hydra_answering() {
 # ob_backend_models <base-url> — the served model ids, one per line (empty
 # output = none or unreachable; exit 1 when the request failed). Presents
 # LLAMA_API_KEY when set, through lib/curl_auth.sh (never argv) when that is
-# loaded — vLLM with --api-key guards /v1/models. Never to TensorFold.
+# loaded — vLLM with --api-key and native TensorFold (>= 1.0) with
+# --api-key-file both guard /v1/models.
 ob_backend_models() {
   local url="${1%/}" body
-  # TensorFold has no auth at all: a key sent there buys nothing and is one
-  # more place it can be logged.
-  if [[ "${INFERENCE_BACKEND:-llama}" != "tensorfold" ]] \
-     && declare -F ob_curl_bearer >/dev/null 2>&1; then
+  if declare -F ob_curl_bearer >/dev/null 2>&1; then
     body="$(ob_curl_bearer "${LLAMA_API_KEY:-}" -fsS -m 5 "$url/v1/models" 2>/dev/null)" || return 1
   else
     body="$(curl -fsS -m 5 "$url/v1/models" 2>/dev/null)" || return 1

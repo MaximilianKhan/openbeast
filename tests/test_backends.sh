@@ -131,8 +131,8 @@ _bm() { # _bm <backend> -> the id ob_backend_models reports from /authecho
 }
 _got="$(_bm vllm)"; [[ "$_got" == "AUTH:Bearer k-123" ]] && pass "ob_backend_models presents LLAMA_API_KEY to vLLM" \
   || fail "vLLM models probe did not send the key: $_got"
-_got="$(_bm tensorfold)"; [[ "$_got" == "AUTH:none" ]] && pass "…and never to TensorFold (it has no auth)" \
-  || fail "the key was sent to TensorFold: $_got"
+_got="$(_bm tensorfold)"; [[ "$_got" == "AUTH:Bearer k-123" ]] && pass "…and to TensorFold (native --api-key-file guards /v1)" \
+  || fail "TensorFold models probe did not send the key: $_got"
 [[ "$_NA" == "keep these" ]] && pass "sourcing lib/backend.sh leaves \$@ alone" \
   || fail "sourcing lib/backend.sh clobbered \$@: '$_NA'"
 
@@ -454,7 +454,7 @@ grep -qF "INFERENCE_MODEL='some-other-model' is not what" <<< "$_O" \
   && pass "…and warns when the server does not list it" || fail "doctor INFERENCE_MODEL mismatch: $(grep -i inference_model <<< "$_O" || true)"
 RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=tensorfold "OPENBEAST_INFERENCE_URL=http://10.66.0.1:1")
 _O="$(_run "$_R" 120 "$_R/scripts/doctor.sh")"
-grep -q "TensorFold has no API key" <<< "$_O" && pass "doctor warns that a remote TensorFold is unauthenticated" \
+grep -q "is reached without a key (LLAMA_API_KEY empty)" <<< "$_O" && pass "doctor warns that a remote TensorFold is reached keyless" \
   || fail "no TensorFold no-key warning"
 RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=vllm "OPENBEAST_INFERENCE_URL=http://[::1]:1")
 _O="$(_run "$_R" 120 "$_R/scripts/doctor.sh")"
@@ -557,7 +557,15 @@ chmod +x "$_K/bin/docker"
 sed -e "s|^SPARK_SERVE_HOST=.*|SPARK_SERVE_HOST=100.64.1.2|" \
     -e "s|^VLLM_API_KEY_FILE=.*|VLLM_API_KEY_FILE=$_K/key|" \
     -e "s|^MODELS_DIR=.*|MODELS_DIR=$_K/models|" \
+    -e "s|^TENSORFOLD_ENGINE=.*|TENSORFOLD_ENGINE=container|" \
     "$REPO_DIR/scripts/backends/spark.env.example" > "$_K/spark.env"
+# The native engine's settings: a stub binary that reports its release, a key.
+sed -e "s|^TENSORFOLD_ENGINE=.*|TENSORFOLD_ENGINE=native|" \
+    -e "s|^TENSORFOLD_BIN=.*|TENSORFOLD_BIN=$_K/bin/tensorfold|" \
+    -e "s|^TENSORFOLD_API_KEY_FILE=.*|TENSORFOLD_API_KEY_FILE=$_K/key|" \
+    "$_K/spark.env" > "$_K/spark-native.env"
+printf '#!/bin/sh\necho "tensorfold-native ${TF_STUB_VERSION:-1.2.7}"\n' > "$_K/bin/tensorfold"
+chmod +x "$_K/bin/tensorfold"
 _REV=0123456789abcdef0123456789abcdef01234567
 _DREV=89abcdef0123456789abcdef0123456789abcdef
 # Profiles: data files, by path. The names are NOT any real model.
@@ -825,7 +833,7 @@ for _ref in main v0.5.0 9cd52ab 9CD52AB4DABA68DDD09BE89BE8F23AD43175E821; do
     fail "tensorfold accepted TENSORFOLD_REF=$_ref (rc=$SPRC): $_O"
   fi
 done
-_sp "$_TN" TENSORFOLD_REF= -- --profile "$_P/tftest.env" --rank 1 --master 1.2.3.4 --env "$_K/absent.env" --print
+_sp "$_TN" TENSORFOLD_ENGINE=container TENSORFOLD_REF= -- --profile "$_P/tftest.env" --rank 1 --master 1.2.3.4 --env "$_K/absent.env" --print
 [[ $SPRC -eq 1 ]] && _has "$_O" "TENSORFOLD_REF is not set" && pass "tensorfold refuses a missing TENSORFOLD_REF" \
   || fail "missing TENSORFOLD_REF accepted (rc=$SPRC): $_O"
 _sp "$_TN" -- --profile "$_P/tftest.env" --rank 0 --ckpt Vontra/Other --env "$_K/spark.env" --print
@@ -836,6 +844,35 @@ if [[ $SPRC -eq 0 ]] && grep -qF "nvcr.io/nvidia/pytorch:26.07-py3@$_DIGEST -c" 
 else
   fail "tensorfold pinned run (rc=$SPRC): $_O / $(cat "$_K/docker.log")"
 fi
+# Native engine (TensorFold >= 1.0 on the host, systemd --user, keyed).
+_sp "$_TN" -- --profile "$_P/tftest.env" --rank 0 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+if [[ $SPRC -eq 0 ]] && _has "$_O" "systemd-run --user --unit openbeast-tensorfold-rank0" \
+   && _has "$_O" "$_K/bin/tensorfold serve $_K/models/tftest --no-update-check --parallel auto" \
+   && _has "$_O" "--tp 2 --rank 0 --master 192.168.100.10 --master-port 29583" \
+   && _has "$_O" "--api-key-file $_K/key" && _has "$_O" "--host 100.64.1.2 --port 8000" \
+   && _has "$_O" "--setenv=HF_HUB_OFFLINE=1" && _has "$_O" "--setenv=NCCL_IB_HCA=rocep1s0f1" \
+   && ! _has "$_O" "docker"; then
+  pass "native rank 0 --print: host binary under systemd, keyed, --tp flags, offline hub"
+else
+  fail "native rank 0 --print (rc=$SPRC): $_O"
+fi
+python3 -c 'import json,sys; json.dump({"model_type": "glm5_next"}, open(sys.argv[1], "w"))' "$_K/models/tftest/config.json"
+_sp "$_TN" -- --profile "$_P/tftest.env" --rank 1 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+if [[ $SPRC -eq 0 ]] && _has "$_O" "--setenv=TF_GLM_RANK=1" && _has "$_O" "--setenv=TF_GLM_WORLD=2" \
+   && _has "$_O" "--setenv=NCCL_COMM_ID=192.168.100.10:29583" && ! _has "$_O" "--tp 2" \
+   && ! _has "$_O" "--api-key-file" && ! _has "$_O" "--host "; then
+  pass "native GLM rank 1: placed by TF_GLM_RANK/WORLD + NCCL_COMM_ID, no HTTP, no key"
+else
+  fail "native GLM rank 1 (rc=$SPRC): $_O"
+fi
+_sp "$_TN" TF_STUB_VERSION=1.2.6 -- --profile "$_P/tftest.env" --rank 1 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "spark.env pins 1.2.7" && pass "native refuses a binary that is not the pinned release" \
+  || fail "native version pin (rc=$SPRC): $_O"
+_sp "$_TN" TENSORFOLD_API_KEY_FILE="$_K/no-such-key" -- --profile "$_P/tftest.env" --rank 0 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "does not exist" && pass "native rank 0 refuses to serve without its key file" \
+  || fail "native rank 0 keyless (rc=$SPRC): $_O"
+python3 -c 'import json,sys; json.dump({"model_type": "brand_new"}, open(sys.argv[1], "w"))' "$_K/models/tftest/config.json"
+
 # Injection: a profile value is data — it reaches argv as ONE element, never a shell.
 cat > "$_P/vinject.env" <<EOF
 BACKEND=vllm

@@ -130,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
         print("Note: INFERENCE_BACKEND=llama — llama-server ignores model ids, so INFERENCE_MODEL takes effect "
               "only once INFERENCE_BACKEND is vllm or tensorfold.")
     ctx = (doc.get("facts") or {}).get("max_model_len") if doc else None
-    keyed = backend != "tensorfold" and bool(os.environ.get("LLAMA_API_KEY") or os.environ.get("OPENBEAST_API_KEY"))
+    keyed = bool(os.environ.get("LLAMA_API_KEY") or os.environ.get("OPENBEAST_API_KEY"))
     snip = json.dumps(opencode_snippet(model, url or "http://SPARK:8000", ctx, keyed), indent=2)
     if a.opencode_out:
         if a.opencode_out.exists() and not a.force:

@@ -1,0 +1,44 @@
+# spark-hydra inference: the two-Spark GLM-5.3-Flash server (user service, on
+# spark-1 — the head). docs/SPARK_HYDRA.md
+#
+# Runs Mia's GLM-5.3-Flash-EXL3 recipe (TensorFold v0.6.0 + patches, Docker)
+# in its foreground mode: start.sh starts rank 1 on spark-2 over ssh, then
+# rank 0 here, stays attached to rank 0's log and exits with its code; when
+# either rank ends it stops the other. The recipe's own settings live in
+# @RECIPE@/scripts/local.sh.
+#
+# Install (on spark-1):
+#   mkdir -p ~/.config/systemd/user
+#   sed "s|@RECIPE@|$HOME/openbeast-recipes/glm53|" scripts/backends/spark-hydra-inference.service \
+#     > ~/.config/systemd/user/spark-hydra-inference.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now spark-hydra-inference
+# Needs linger (spark-root-setup.sh sets it) and a user manager that sees the
+# docker group: after `usermod -aG docker`, reboot once.
+#
+# openbeast.service (the command center) does not order against this unit:
+# start.sh waits OPENBEAST_LLAMA_LOAD_GRACE for INFERENCE_URL and brings the
+# rest of the stack up either way.
+
+[Unit]
+Description=spark-hydra inference (GLM-5.3-Flash, TensorFold TP 2 over spark-1 + spark-2)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@RECIPE@
+# PREPARE=0: never reach the Hub, ghcr or the worker's setup at boot — the
+# images and weights are staged (prepare.sh, or the offline steps in the
+# playbook). HF_HUB_OFFLINE=1 is the recipe's own default.
+Environment=FOREGROUND=1 PREPARE=0
+ExecStart=@RECIPE@/start.sh
+ExecStop=@RECIPE@/stop.sh
+# Loading ~80 GiB a Spark takes 2-6 min; a kernel compile on a new image more.
+TimeoutStartSec=infinity
+TimeoutStopSec=120
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target

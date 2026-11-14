@@ -409,9 +409,9 @@ class TestRemoteBackends(unittest.TestCase):
                            slots="eight")
         self.assertIsNone(out["slots"]["total"])
 
-    def test_key_never_sent_to_tensorfold(self):
-        # The real _get, with urlopen captured: TensorFold has no auth, so
-        # the key must not ride along; vLLM (--api-key) must get it.
+    def test_key_sent_to_vllm_and_tensorfold(self):
+        # The real _get, with urlopen captured: vLLM (--api-key) and native
+        # TensorFold (--api-key-file) both guard /v1, so both get the key.
         import urllib.request as ur
         dashboard._get = self._saved[0]
         dashboard._API_KEY = "k-secret"
@@ -432,7 +432,7 @@ class TestRemoteBackends(unittest.TestCase):
         real = ur.urlopen
         ur.urlopen = lambda req, timeout=2: (seen.append(req.get_header("Authorization")), R())[1]
         try:
-            for backend, want in (("tensorfold", None), ("vllm", "Bearer k-secret")):
+            for backend, want in (("tensorfold", "Bearer k-secret"), ("vllm", "Bearer k-secret")):
                 seen.clear()
                 dashboard._BACKEND = backend
                 dashboard._get("http://10.0.0.5:8000/v1/models", auth=True)

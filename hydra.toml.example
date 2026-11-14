@@ -88,7 +88,8 @@ labels      = ["local", "5090", "mtp"]
 
 [nodes.sparks]                                # both Sparks, TensorFold TP=2 = ONE node (rank 0 serves HTTP)
 url         = "http://100.101.102.103:8000"   # tensorfold/spark-node.sh rank 0 (tailnet IP)
-engine      = "tensorfold"                    # never gets a key; MUST be firewalled to the rig (DGX §7)
+engine      = "tensorfold"                    # native TensorFold >= 1.0: --api-key-file guards /v1
+key_file    = "~/.config/openbeast/hydra/sparks.key"   # same value as the Spark's TENSORFOLD_API_KEY_FILE
 slots       = 1                               # TENSORFOLD_PARALLEL=auto = one request at a time on CUDA (VERIFY)
 members     = ["spark-a", "spark-b"]
 exclusive_group = "spark-pair"                # any other engine on these boxes joins this group, disabled

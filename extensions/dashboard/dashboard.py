@@ -99,8 +99,7 @@ def _edge_has_devices():
 def _get(url, timeout=2, auth=False):
     try:
         req = urllib.request.Request(url)
-        # TensorFold has no auth at all: never hand it the key.
-        if auth and _API_KEY and _BACKEND != "tensorfold":
+        if auth and _API_KEY:
             req.add_header("Authorization", f"Bearer {_API_KEY}")
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.status, r.read().decode("utf-8", "replace")

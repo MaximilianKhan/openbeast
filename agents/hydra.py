@@ -489,8 +489,6 @@ class Hydra:
         return c
 
     def node_key(self, n: core.Node) -> str | None:
-        if n.engine == "tensorfold":
-            return None                  # never, whatever the config says
         if n.key_env:
             return (self.env.get(n.key_env) or "").strip() or None
         if n.key_file:

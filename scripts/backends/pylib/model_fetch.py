@@ -313,6 +313,11 @@ def verify_dir(d: Path, entry: dict, full: bool = True) -> list[str]:
     locked = set(entry.get("files") or {})
     for p in d.rglob("*"):
         rel = p.relative_to(d).as_posix()
+        # Hidden paths (.cache/huggingface/ download metadata a `hf download
+        # --local-dir` copy carries) are skipped exactly as local_lock_entry
+        # skips them when it writes the lock: no engine loads from them.
+        if any(part.startswith(".") for part in PurePosixPath(rel).parts):
+            continue
         if p.is_file() and rel not in (MARKER, STAGE_META) and rel not in locked and rel.endswith((".safetensors", ".json", ".py",
                                                                                 ".jinja", ".model", ".txt")):
             problems.append(f"unlocked file {rel} (not from the pinned revision)")
