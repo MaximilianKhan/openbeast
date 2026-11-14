@@ -296,3 +296,23 @@ def test_unsafe_tree_paths_refuse_the_revision(tmp_path, remote, monkeypatch, ca
     remote.extra_entries = [{"type": "file", "path": bad, "size": 1, "oid": "0" * 40}]
     assert fetch(tmp_path, hf_profile(tmp_path)) == 1
     assert "unsafe path" in capsys.readouterr().err and remote.downloads() == []
+
+
+def test_local_source_with_hf_download_metadata_verifies(tmp_path, capsys):
+    # A `hf download --local-dir` copy carries .cache/huggingface/ metadata
+    # (trees/<rev>.json, download/*.metadata). The lock written on first use
+    # skips hidden paths; --verify must skip them the same way, not call the
+    # metadata "unlocked" (seen on the spark-hydra Ablit copy, 2026-11-13).
+    src = tmp_path / "ckpt"
+    (src / ".cache" / "huggingface" / "trees").mkdir(parents=True)
+    (src / "config.json").write_text(json.dumps({"model_type": "brand_new"}))
+    (src / "model.safetensors").write_bytes(b"\0" * 64)
+    (src / ".cache" / "huggingface" / "trees" / f"{SHA}.json").write_text("[]")
+    prof = tmp_path / "localtest.env"
+    prof.write_text(f"BACKEND=tensorfold\nSOURCE={src}\nSERVED_MODEL_NAME=local-test\nTENSOR_PARALLEL_SIZE=1\n")
+    assert model_fetch.main(["--profile", str(prof)]) == 0          # records the lock (TOFU)
+    lock = json.loads(prof.with_suffix(".lock").read_text())
+    assert set(lock["artifacts"]["model"]["files"]) == {"config.json", "model.safetensors"}
+    assert model_fetch.main(["--profile", str(prof), "--verify"]) == 0, capsys.readouterr()
+    (src / "model.safetensors").write_bytes(b"\1" * 64)              # a real change still fails
+    assert model_fetch.main(["--profile", str(prof), "--verify"]) != 0
