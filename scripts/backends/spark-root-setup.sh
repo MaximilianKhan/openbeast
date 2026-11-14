@@ -24,6 +24,11 @@
 #      loopback behind the pair's (spark-hydra's) beast-gate, which needs no open port.
 #      Nothing else in ufw is touched; status is printed before and after.
 #
+# OFFLINE: --debs DIR installs libnccl2 and tailscale from .deb files staged
+# there beforehand (on any Spark with internet:
+#   apt-get download libnccl2=2.28.9-1+cuda13.0 tailscale ) — no apt repo is
+# reached. --no-tailscale skips step 3 (a box with no tailnet to join).
+#
 # It does not change netplan (NVIDIA Sync owns 99-nvidia-sync-cluster.yaml),
 # the MTU, the driver or Docker.
 set -euo pipefail
@@ -34,11 +39,13 @@ SERVE=no
 
 usage() { sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; }
 
-TS_HOSTNAME=""
+TS_HOSTNAME="" DEBS="" NO_TS=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --serve)    SERVE=yes ;;
     --port)     SERVE_PORT="${2:?--port needs a value}"; shift ;;
+    --debs)     DEBS="${2:?--debs needs a directory}"; shift ;;
+    --no-tailscale) NO_TS=1 ;;
     -h|--help)  usage; exit 0 ;;
     -*)         echo "unknown option: $1" >&2; exit 2 ;;
     *)          TS_HOSTNAME="$1" ;;
@@ -55,9 +62,15 @@ step "1/4 libnccl2 $NCCL_VERSION"
 if [[ "$(dpkg-query -W -f='${Version}' libnccl2 2>/dev/null || true)" == "$NCCL_VERSION" ]]; then
   echo "already installed"
 else
-  apt-get update -qq
   apt-mark unhold libnccl2 >/dev/null 2>&1 || true
-  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --allow-downgrades "libnccl2=$NCCL_VERSION"
+  if [[ -n "$DEBS" ]]; then
+    deb="$(ls "$DEBS"/libnccl2_"${NCCL_VERSION//+/?}"_arm64.deb 2>/dev/null | head -1)"
+    [[ -n "$deb" ]] || { echo "no libnccl2 $NCCL_VERSION .deb in $DEBS" >&2; exit 1; }
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --allow-downgrades --no-download "$deb"
+  else
+    apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --allow-downgrades "libnccl2=$NCCL_VERSION"
+  fi
 fi
 apt-mark hold libnccl2 >/dev/null
 ldconfig -p | grep -q 'libnccl.so.2 ' && echo "libnccl.so.2 visible to the loader"
@@ -67,7 +80,13 @@ loginctl enable-linger "$SUDO_USER"
 loginctl show-user "$SUDO_USER" -p Linger
 
 step "3/4 Tailscale as '$TS_HOSTNAME'"
-if ! command -v tailscale >/dev/null; then
+if [[ $NO_TS -eq 1 ]]; then
+  echo "skipped (--no-tailscale)"
+elif ! command -v tailscale >/dev/null && [[ -n "$DEBS" ]]; then
+  deb="$(ls "$DEBS"/tailscale_*_arm64.deb 2>/dev/null | sort -V | tail -1)"
+  [[ -n "$deb" ]] || { echo "no tailscale .deb in $DEBS" >&2; exit 1; }
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-download "$deb"
+elif ! command -v tailscale >/dev/null; then
   # Tailscale's signed apt repo for this release (what install.sh sets up).
   . /etc/os-release
   curl -fsSL "https://pkgs.tailscale.com/stable/ubuntu/${VERSION_CODENAME}.noarmor.gpg" \
@@ -77,9 +96,14 @@ if ! command -v tailscale >/dev/null; then
   apt-get update -qq
   DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tailscale
 fi
-systemctl enable --now tailscaled
-tailscale up --hostname="$TS_HOSTNAME" --operator="$SUDO_USER"
-echo "tailnet IPv4: $(tailscale ip -4)"
+if [[ $NO_TS -eq 0 ]]; then
+  systemctl enable --now tailscaled
+  # Joining needs the coordination server; offline, the box keeps working on
+  # the ConnectX link and the LAN, and joins on the first run with a route.
+  tailscale up --hostname="$TS_HOSTNAME" --operator="$SUDO_USER" \
+    || echo "  tailscale up failed (offline?) — re-run this script once there is a route" >&2
+  echo "tailnet IPv4: $(tailscale ip -4 2>/dev/null || echo none)"
+fi
 
 step "4/4 ufw"
 ufw status verbose || true
@@ -107,4 +131,4 @@ fi
 ufw status verbose
 
 echo
-echo "Done on $(hostname) as tailnet '$TS_HOSTNAME' ($(tailscale ip -4))."
+echo "Done on $(hostname) as tailnet '$TS_HOSTNAME' ($(tailscale ip -4 2>/dev/null || echo 'not joined'))".
