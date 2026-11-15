@@ -1443,13 +1443,18 @@ def set_current(artifact_id, version, *, owner=None,
 
 
 def remove(artifact_id, *, owner=None, admin=False,
-           reason=None) -> bool:
+           reason=None, only_if=None) -> bool:
     """Delete an artifact and every version. True if something was removed.
 
     Owner-only (D22), and it is the loudest of the three: round one left
     DELETE the one mutation with no ownership check at all, so a second
     operator could destroy another owner's page and every version it ever
     had — irreversibly, since versions are the only copy.
+
+    only_if(meta) -> bool, when given, is evaluated on the record read UNDER
+    the per-artifact lock; False (or an unparseable record) removes nothing.
+    It is how a caller that decided from a snapshot (the retention sweep)
+    re-decides on what is actually there.
     """
     aid = _check_id(artifact_id)
     d = _artifact_dir(aid)
@@ -1482,6 +1487,8 @@ def remove(artifact_id, *, owner=None, admin=False,
         # DELETE cannot guess at.
         if meta is not None:
             _require_owner(meta, owner, admin)
+        if only_if is not None and (meta is None or not only_if(meta)):
+            return False
         if not os.path.isdir(real):
             return False
         shutil.rmtree(real)
@@ -1729,6 +1736,19 @@ def retain_days() -> int:
     return days if days > 0 else 0
 
 
+def _stale(meta, cutoff: float) -> bool:
+    """Retention's whole judgement on one record: unpinned, last updated
+    before the cutoff, and not unpinned since (a page unpinned recently gets
+    a full retention period from then). Anything unreadable is NOT stale."""
+    if not isinstance(meta, dict) or meta.get("pinned") is True:
+        return False
+    ts = _parse_ts(meta.get("updated_at"))
+    if ts is None or ts.timestamp() >= cutoff:
+        return False
+    unpinned = _parse_ts(meta.get("unpinned_at"))
+    return not (unpinned is not None and unpinned.timestamp() >= cutoff)
+
+
 def sweep_retention(days=None, *, now=None) -> list:
     """Opt-in retention (F-A2): delete every UNPINNED artifact whose last
     update is older than `days` days (default: retain_days()). Pinned pages
@@ -1752,15 +1772,16 @@ def sweep_retention(days=None, *, now=None) -> list:
         except Exception:
             continue
         # Re-checked on the record itself: the row is a snapshot.
-        if not isinstance(meta, dict) or meta.get("pinned") is True:
-            continue
-        # A page unpinned recently gets a full retention period from then.
-        unpinned = _parse_ts(meta.get("unpinned_at"))
-        if unpinned is not None and unpinned.timestamp() >= cutoff:
+        if not _stale(meta, cutoff):
             continue
         try:
+            # And re-checked once more UNDER THE LOCK, inside remove(): a
+            # republish or pin holding the lock right now would otherwise
+            # commit, release, and be rmtree'd by the remove queued behind it
+            # (review, spark-scale: beast-artifact).
             if remove(row["id"], owner=RIG_OWNER, admin=True,
-                      reason="retention"):
+                      reason="retention",
+                      only_if=lambda m: _stale(m, cutoff)):
                 removed.append(row["id"])
         except ArtifactError:
             continue

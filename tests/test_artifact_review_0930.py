@@ -624,6 +624,34 @@ def test_unpinning_an_old_page_does_not_schedule_its_deletion(env, monkeypatch):
     assert store.sweep_retention(now=later) == [a["id"]]
 
 
+def test_the_sweep_rechecks_staleness_under_the_lock(env, monkeypatch):
+    """Review (spark-scale) beast-artifact: the sweep decided "stale" from an
+    unlocked snapshot, then remove() waited on the lock a republish (or a
+    pin) held — and rmtree'd the page, the version the publisher had just
+    been told about included. Simulated deterministically: the competing
+    write commits exactly between the sweep's decision and its remove()."""
+    old = store.publish(PAGE, title="campaign verdict")
+    pinned = store.publish(PAGE, title="about to be pinned")
+    for aid in (old["id"], pinned["id"]):
+        meta = store.get_meta(aid)
+        meta["updated_at"] = "2020-01-01T00:00:00+00:00"
+        store._write_meta(aid, meta)
+    monkeypatch.setenv("OPENBEAST_ARTIFACT_RETAIN_DAYS", "30")
+    real_remove = store.remove
+
+    def racing_remove(aid, **kw):
+        if aid == old["id"]:
+            store.publish(PAGE, artifact_id=aid)           # the republish
+        else:
+            store.set_pinned(aid, True, admin=True)        # the phone's pin
+        return real_remove(aid, **kw)
+
+    monkeypatch.setattr(store, "remove", racing_remove)
+    assert store.sweep_retention() == []
+    assert store.get_meta(old["id"])["current"] == 2
+    assert store.get_meta(pinned["id"])["pinned"] is True
+
+
 def test_the_example_conf_documents_admins_and_retention(env, monkeypatch):
     """B-artifact-3: the server tells the operator to "Set ARTIFACT_ADMINS in
     openbeast.conf", but the example conf had neither key. The documented
