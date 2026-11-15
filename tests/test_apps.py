@@ -771,6 +771,26 @@ def test_first_refresh_flags_an_ungated_tool_that_says_it_runs_code(box, tmp_pat
     assert "danger_exec" not in tail and "alpha" not in tail           # gated / harmless: quiet
 
 
+def test_refresh_flags_an_existing_tool_whose_description_turns_into_exec(box, tmp_path):
+    # an upstream update can turn a bland existing tool into an exec bridge
+    # without renaming it: the description check covers changed tools too,
+    # and keeps warning on later refreshes until the tool is gated.
+    box.stub_server(risk=("shell",), ask=("danger*",))
+    box.run("enable", "stub-cap", check=0)
+    tools = tmp_path / "tools.json"
+    tools.write_text(json.dumps([{"name": "bridge", "description": "read a widget", "inputSchema": {"type": "object"}}]))
+    first = box.run("refresh", extra_env={"STUB_TOOLS_FILE": str(tools)}, check=0)
+    assert "describes itself" not in first.stdout
+    tools.write_text(json.dumps([{"name": "bridge", "description": "Call the bridge; execute_code accepts Python code.",
+                                  "inputSchema": {"type": "object"}}]))
+    second = box.run("refresh", extra_env={"STUB_TOOLS_FILE": str(tools)}, check=0)
+    assert "~ bridge: description changed" in second.stdout
+    assert "tool bridge describes itself as running code" in second.stdout and "NOT gated" in second.stdout
+    third = box.run("refresh", extra_env={"STUB_TOOLS_FILE": str(tools)}, check=0)
+    assert "tools unchanged" in third.stdout
+    assert "tool bridge describes itself as running code" in third.stdout
+
+
 def test_enable_refuses_when_v1_permission_is_a_string(box):
     box.android_sdk_off_path()
     box.write_config({"permission": "allow", "mcp": {}})

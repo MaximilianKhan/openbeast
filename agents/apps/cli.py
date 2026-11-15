@@ -314,7 +314,8 @@ def make_manifest(sid: str, version: str, transport: str, info: dict, tools: lis
 
 # Phrases in a tool's DESCRIPTION that mean it runs code or installs
 # something on this machine. A tool that says so and is not gated is
-# flagged on every refresh, the first one included.
+# flagged on every refresh (the first one included) until it is gated,
+# whether the tool is new or an existing one whose description changed.
 EXEC_MARKERS = ("execute_code", "execute_blender_code", "python code", "arbitrary code", "arbitrary python",
                 "shell command", "run on startup", "login item", "launchagent", "runs a script")
 
@@ -339,11 +340,15 @@ def diff_manifests(old: dict | None, new: dict, server: dict) -> dict:
                 changed.append({"name": name, "changed": what})
     flagged = []
     desc = {t["name"]: (t.get("description") or "").lower() for t in new["tools"]}
-    for name in added:
-        hits = [p for p in server.get("risk_patterns", []) if p.lower() in name.lower()]
+    new_names = set(added)
+    for name in sorted(desc):
+        # Name patterns are a review hint for NEW tools only.
+        hits = [p for p in server.get("risk_patterns", []) if p.lower() in name.lower()] if name in new_names else []
         # Names alone miss a bridge ("blender_mcp_call") whose description
-        # says it runs code or installs something: check what it says it does.
-        said = [m for m in EXEC_MARKERS if m in desc.get(name, "")]
+        # says it runs code or installs something: check what EVERY tool says
+        # it does, on every manifest, so an upstream update that rewrites an
+        # existing tool's description into an exec bridge is caught too.
+        said = [m for m in EXEC_MARKERS if m in desc[name]]
         if hits or said:
             gated = any(fnmatch.fnmatchcase(name, g) for g in gates)
             flagged.append({"name": name, "patterns": hits, "description": said, "gated": gated})
