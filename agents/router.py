@@ -584,8 +584,16 @@ async def _spawn(client, task, workdir, identity=None):
         return None, str(e)
 
 
+def _utf8(s: str) -> str:
+    """A lone UTF-16 surrogate in model output (a "\\ud800" JSON escape)
+    cannot be encoded as UTF-8: httpx's request body and starlette's
+    JSONResponse both raise on it. Each one becomes '?'."""
+    return s.encode("utf-8", "replace").decode("utf-8")
+
+
 def _synthetic(model, text, stream):
     """An OpenAI-shaped assistant reply (the router's own message)."""
+    text = _utf8(text)
     cid = "chatcmpl-router-" + uuid.uuid4().hex[:12]
     if not stream:
         return JSONResponse({
@@ -701,6 +709,7 @@ async def chat_completions(request: Request):
             return await _proxy_through(request, client, raw)
     if hinted:
         spawn, task, workdir = await _classify(client, user_text)
+        task, workdir = _utf8(task), _utf8(workdir)
         _INSTINCT.classified(turn, spawn)   # paired baseline; fire-and-forget
         if spawn and len(task) <= 8:
             # Detected a delegation request but couldn't extract a usable task —

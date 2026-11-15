@@ -77,6 +77,13 @@ cd ~/openbeast && ./agent.sh -w ~/ob-work --max-iter 40 \
 `iteration`, `tool_call`, `assistant`, `max_iterations` / done events) out of
 `git status`.
 
+A lone UTF-16 surrogate in model output (a `\ud800` JSON escape with no
+partner) shows as `?`: the runner prints with `errors="replace"`, and when the
+history cannot be encoded for the next request it replaces each surrogate
+once, logs a `surrogates_scrubbed` event and retries at once. It does not
+count as an API error. The router does the same for the task it classified
+and for its own replies (`tests/test_runner_surrogates.py`).
+
 **opencode on the Mac** ([SPARK_HYDRA.md F](SPARK_HYDRA.md#f-the-mac-client)):
 run `opencode` in the clone and pick an `openbeast-rig/…` model. The repo's own
 `opencode.json` is era-hashed: never edit it to point somewhere else. The

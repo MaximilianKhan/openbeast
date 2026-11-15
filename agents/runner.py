@@ -585,6 +585,40 @@ def proactive_asks(est: int, context_budget: int) -> tuple[int, int] | None:
     return ((est - target) * _CHARS_PER_TOKEN, (est - low) * _CHARS_PER_TOKEN)
 
 
+def _unsurrogate(v):
+    """A lone UTF-16 surrogate (a model's "\\ud800" JSON escape) cannot be
+    encoded as UTF-8: it crashes print() and the next request's JSON body.
+    Strings come back with each one as '?'; dicts/lists are rebuilt."""
+    if isinstance(v, str):
+        return v.encode("utf-8", "replace").decode("utf-8")
+    if isinstance(v, dict):
+        return {k: _unsurrogate(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_unsurrogate(x) for x in v]
+    return v
+
+
+def _scrub_surrogates(messages: list[dict]) -> int:
+    """In place, on the history: how many message fields changed."""
+    n = 0
+    for m in messages:
+        for k, v in m.items():
+            clean = _unsurrogate(v)
+            if clean != v:
+                m[k] = clean
+                n += 1
+    return n
+
+
+def _safe_stdio():
+    """print() of model/tool text must never be what kills the run."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def _with_plan(messages: list[dict], plan: str) -> list[dict]:
     """Request payload = history + the current plan block (transient: the
     block is never stored, so it can't bloat or be evicted). Folded into a
@@ -805,6 +839,7 @@ def run_agent(
     steer: bool = False,
 ) -> str:
     """Run the agent loop. Returns the final summary or last model message."""
+    _safe_stdio()
 
     if workdir:
         workdir = os.path.expanduser(workdir)
@@ -1046,6 +1081,11 @@ def run_agent(
                 **cap_kwargs,
             )
         except Exception as e:
+            if isinstance(e, UnicodeEncodeError) and _scrub_surrogates(messages):
+                # Not an API error: the payload could not be encoded, and an
+                # identical retry would fail the same way every 5 s.
+                log_event({"type": "surrogates_scrubbed"})
+                continue
             err = str(e)
             print(f"  API error: {err}")
             log_event({"type": "error", "error": err})
