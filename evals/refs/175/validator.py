@@ -1,31 +1,27 @@
 # Validator for task 175 (op-based OR-Set + RGA across 3 replicas).
 # build_task.py embeds this file verbatim as the task's python validation
-# script. Every scenario comes from hand-written edge scripts plus a seeded
-# generator below; the expected observations come from a declarative oracle
-# in this file. The solution runs in a child process (fed the scripts over
-# stdin, never from disk); each replica is built from its own freshly
-# imported copy of the module. A mismatch reports only the case index.
-import json, random, subprocess, sys
+# script; the harness feeds it on stdin (`python -I -S -`), so its source
+# (oracle included) is in no argv. Every scenario comes from hand-written
+# edge scripts plus a seeded generator below; the expected observations come
+# from a declarative oracle that never leaves this process. The solution runs
+# in a separate driver process (vlib.run_solution: own session, CPU budget
+# over the whole tree, fork refused, scaled by OPENBEAST_TIMEOUT_SCALE). The
+# driver holds no answers: it gets the scenario scripts (inputs only) on
+# stdin and prints observations, which are compared here. Each replica is
+# built from its own freshly exec'd copy of the module, so module and class
+# state is not shared. Residual: the three replicas still share one
+# interpreter (sys, builtins), so rule 5 is enforced only against ordinary
+# module/class state; that buys a cheat nothing, because every observation
+# is still checked exactly against the oracle. A mismatch reports only the
+# case index.
+import json, os, random, shutil, sys, tempfile
 
-# The harness runs this script as `python -c <script>`, which would leave the
-# whole source (oracle included) in this process's argv, readable by the
-# solution (a descendant) through ps. So before anything else, re-exec in
-# place (same pid: the harness's timeout and reaping are unaffected) from a
-# private temp file that is deleted before the solution is ever started.
-if "_STAGED" not in globals() and "-c" in sys.orig_argv[1:]:
-    import os, tempfile
-    _src = sys.orig_argv[sys.orig_argv.index("-c", 1) + 1]
-    _fd, _p = tempfile.mkstemp(prefix="v175-", suffix=".py")
-    with os.fdopen(_fd, "w") as _f:
-        _f.write(_src)
-    sys.stdout.flush()
-    os.execv(sys.executable, [sys.executable, "-c",
-             "import os,sys;p=sys.argv.pop(1);s=open(p).read();os.unlink(p);"
-             "exec(compile(s,'validator','exec'),{'__name__':'__main__','_STAGED':1})", _p])
+import vlib
 
 D = "/tmp/eval_crdt"
 SRC = D + "/crdt.py"
-RUN_LIMIT_S = 10
+RUN_CPU_S = 10     # the prompt's 10 s budget, at scale 1 (vlib scales it)
+RUN_WALL_S = 20    # at scale 1; inside the harness's 30 s x scale
 HEAD = (0, -1)
 
 
@@ -365,11 +361,19 @@ def main():
     built = all_cases()
     cases = [b.s for b in built]
     want = [b.want for b in built]
+    tmp = tempfile.mkdtemp(prefix="v175-")
     try:
-        r = subprocess.run([sys.executable, "-B", "-c", DRIVER, SRC], cwd=D, input=json.dumps(cases),
-                           capture_output=True, text=True, timeout=RUN_LIMIT_S)
-    except subprocess.TimeoutExpired:
-        fail(f"solution timed out ({RUN_LIMIT_S}s)")
+        drv = os.path.join(tmp, "driver.py")       # no answers in it: inputs only
+        with open(drv, "w") as f:
+            f.write(DRIVER)
+        r = vlib.run_solution([sys.executable, "-I", "-S", "-B", drv, SRC], input=json.dumps(cases),
+                              cpu_s=RUN_CPU_S, wall_s=RUN_WALL_S, cwd=D)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    if r.verdict in ("cpu", "wall"):
+        fail(f"solution timed out ({r.verdict})")
+    if r.verdict != "ok":
+        fail(f"solution refused: {r.verdict}")
     lines = r.stdout.splitlines()
     for i, w in enumerate(want):
         if i >= len(lines):
