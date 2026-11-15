@@ -388,7 +388,8 @@ def test_enable_v1_schema_uses_legacy_keys(box):
     assert cfg["mcp"]["mine"] == {"type": "local", "command": ["x"], "enabled": True}
     e = cfg["mcp"]["replicant-mcp"]
     assert e["enabled"] is True and "codemode" not in e
-    assert cfg["permission"] == {"replicant-mcp_adb-shell": "ask"}
+    assert cfg["permission"] == {"replicant-mcp_adb-shell": "ask", "replicant-mcp_gradle-build": "ask",
+                                 "replicant-mcp_gradle-test": "ask", "replicant-mcp_gradle-list": "ask"}
     box.run("disable", "replicant-mcp", check=0)
     assert box.read_config() == {"mcp": {"mine": {"type": "local", "command": ["x"], "enabled": True}}}
 
@@ -724,6 +725,19 @@ def test_3d_print_gates_its_code_and_install_bridges():
     assert loud == [], f"tools that say they run code, ungated: {loud}"
     for t in ("blender_mcp_call", "fusion_mcp_call", "fusion_mcp_setup"):
         assert next(f for f in d["flagged"] if f["name"] == t)["description"]
+
+
+def test_build_tools_that_run_project_scripts_are_gated():
+    # docs/BEAST_APPS.md Safety: building a project runs its build scripts,
+    # and the user approves every such call.
+    s, _, _ = _real("replicant-mcp")
+    for t in ("gradle-build", "gradle-test", "gradle-list", "adb-shell"):   # ./gradlew or a shell
+        assert _gated(s, t), t
+    assert not _gated(s, "gradle-get-details")
+    s, _, _ = _real("mobilebuildmcp")
+    for t in ("build_sim", "build_run_sim", "test_sim"):
+        assert _gated(s, t), t
+    assert not _gated(s, "list_sims") and not _gated(s, "screenshot")
 
 
 def test_3d_print_bridge_programs_come_from_the_shell_never_a_project_env(box):

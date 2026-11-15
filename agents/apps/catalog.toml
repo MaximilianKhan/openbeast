@@ -93,10 +93,11 @@ probes = ["macos-14-5", "node-18", "npx", "xcode-app", "xcodebuild-full", "simct
 # Only the `simulator` workflow (its own default): every advertised tool costs
 # the model context. Add "ui-automation,debugging" here when needed.
 env = { MOBILEBUILDMCP_ENABLED_WORKFLOWS = "simulator", MOBILEBUILDMCP_SENTRY_DISABLED = "true" }
-ask_tools = []
+# Building or testing runs the project's own build phases and scripts.
+ask_tools = ["build_*", "test_*"]
 deny_tools = []
-risk_patterns = ["erase", "delete", "shell", "exec", "device"]
-notes = "Builds run the project's own build phases and scripts: building an untrusted project executes its code. Device tools need code signing configured in Xcode. The legacy npm name `xcodebuildmcp` (2.7.0) is the same project; do not install both."
+risk_patterns = ["erase", "delete", "shell", "exec", "device", "build", "test", "run"]
+notes = "Builds run the project's own build phases and scripts: building an untrusted project executes its code, so build_* and test_* are gated as ask. Device tools need code signing configured in Xcode. The legacy npm name `xcodebuildmcp` (2.7.0) is the same project; do not install both."
 
 [server.replicant-mcp]
 title = "replicant-mcp (Gradle builds, emulators, adb, logcat, UI)"
@@ -111,10 +112,12 @@ command = ["npx", "-y", "{package}@{version}"]
 platforms = ["darwin", "linux"]
 probes = ["node-18", "npx", "adb", "java-17", "android-emulator"]
 env = {}
-ask_tools = ["adb-shell"]
+# gradle-build/-test/-list all run the project's ./gradlew, i.e. its build
+# scripts; gradle-get-details only reads a previous run's output.
+ask_tools = ["adb-shell", "gradle-build", "gradle-test", "gradle-list"]
 deny_tools = []
-risk_patterns = ["shell", "exec", "wipe", "uninstall", "delete"]
-notes = "`adb-shell` runs commands on the device behind a denylist (no su, rm -rf /, sh -c, metacharacters); still gated as ask. Gradle builds execute the project's build scripts. Needs an Android project with ./gradlew for the gradle-* tools."
+risk_patterns = ["shell", "exec", "wipe", "uninstall", "delete", "gradle", "build", "test"]
+notes = "`adb-shell` runs commands on the device behind a denylist (no su, rm -rf /, sh -c, metacharacters); still gated as ask. gradle-build, gradle-test and gradle-list run the project's ./gradlew (its build scripts) and are gated as ask. Needs an Android project with ./gradlew for the gradle-* tools."
 
 [server.mobile-mcp]
 title = "Mobile MCP (mobile-next)"

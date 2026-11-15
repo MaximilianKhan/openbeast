@@ -243,9 +243,12 @@ cached package still answers and an uncached one fails fast. `upgrade` without
 ## Safety
 
 - **The server runs with your user's rights.** Building a project runs its
-  build scripts. `execute_blender_code` runs arbitrary Python in Blender.
-  replicant's `adb-shell` runs device commands behind its own denylist. Each
-  of these is an opencode **ask** rule, and the user approves every call.
+  build scripts (MobileBuildMCP `build_*`/`test_*`, replicant `gradle-build`,
+  `gradle-test`, `gradle-list`). `execute_blender_code` runs arbitrary Python
+  in Blender. replicant's `adb-shell` runs device commands behind its own
+  denylist. Each of these is an opencode **ask** rule, and the user approves
+  every call. `tests/test_apps.py` checks the gates against the pinned
+  releases' real tool lists (`tests/fixtures/apps/*.tools.json`).
 - **Physical actions.** `mcp-3d-printer-server` has no confirmation prompt of
   its own (upstream: "the client's own print action is the approval"), so it
   is **off by default**. `enable 3d-print` needs `--accept-risk`, and every
