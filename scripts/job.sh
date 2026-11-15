@@ -263,17 +263,23 @@ _pid_alive() { # _pid_alive <pid>
   return 0
 }
 
-# Live, non-zombie members of process group <pgid> other than this shell, one
-# pid per line. The ps snapshot is taken by a command substitution whose own
-# processes (ps, the subshell) share our group but are gone — and fail the
-# kill -0 below — by the time the snapshot is walked.
+# Sets GROUP_OTHERS to the live, non-zombie members of process group <pgid>
+# other than this shell, space-separated. A GLOBAL, not stdout: called as
+# `x="$(_group_others ...)"` the function would run in a subshell that is
+# itself a live member of the group -- and would list itself, forever. The ps
+# snapshot's own processes (ps, its subshell) are gone, and fail kill -0,
+# by the time the snapshot is walked. (No $BASHPID: bash 3.2.)
+GROUP_OTHERS=""
 _group_others() { # _group_others <pgid>
   local snap gpid gpg gst
+  GROUP_OTHERS=""
   snap="$(ps -A -o pid= -o pgid= -o stat= 2>/dev/null)" || return 0
   while read -r gpid gpg gst; do
     [[ "$gpg" == "$1" && "$gpid" != "$$" ]] || continue
     case "$gst" in Z*) continue ;; esac
-    kill -0 "$gpid" 2>/dev/null && printf '%s\n' "$gpid"
+    if kill -0 "$gpid" 2>/dev/null; then
+      GROUP_OTHERS="${GROUP_OTHERS:+$GROUP_OTHERS }$gpid"
+    fi
   done <<EOS
 $snap
 EOS
@@ -355,14 +361,14 @@ _supervise() {
     # which is us), before writing the verdict. Only when we lead the group:
     # otherwise its other members are not ours to touch.
     if [[ "$pgid" == "$$" ]]; then
-      others="$(_group_others "$pgid")"
+      _group_others "$pgid"; others="$GROUP_OTHERS"
       # TERM again: a pid-only stop (the group was never signalled) must
       # still give the rest of the job a polite chance first.
       [[ -n "$others" ]] && { kill -TERM $others 2>/dev/null || true; }
       while [[ -n "$others" && $waited -lt $grace ]]; do
         sleep 1
         waited=$((waited + 1))
-        others="$(_group_others "$pgid")"
+        _group_others "$pgid"; others="$GROUP_OTHERS"
       done
       [[ -n "$others" ]] && { kill -KILL $others 2>/dev/null || true; }
     fi

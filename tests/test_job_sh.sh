@@ -567,6 +567,21 @@ if [[ "$WK_STATE" == "stopped" ]] && ! echo "$WK_OUT" | grep -q "escalating"; th
 else
   fail "state '$WK_STATE' / output: $WK_OUT"
 fi
+# Negative control at the DEFAULT grace: a job that dies on TERM must not sit
+# in the drain. (The first cut listed its own command-substitution subshell
+# as a group member and waited out the full grace on every stop.)
+"$CLI" run --title "quick job" -- bash -c 'sleep 300 & wait' >/dev/null 2>&1
+QK_ID="$(_latest)"
+sleep 1
+QK_T0=$(date +%s)
+QK_OUT="$("$CLI" stop "$QK_ID" --timeout 20 2>&1)"
+QK_DT=$(( $(date +%s) - QK_T0 ))
+if [[ "$(_q "$QK_ID" 'rec["state"]')" == "stopped" && $QK_DT -le 8 ]] \
+   && ! echo "$QK_OUT" | grep -q "escalating"; then
+  pass "a TERM-obeying job is recorded 'stopped' promptly (${QK_DT}s), no drain wait"
+else
+  fail "stop took ${QK_DT}s: $QK_OUT"
+fi
 
 # show reads a bounded tail, not the whole log (multi-GB campaign logs)
 BIG_LOG="$TMPROOT/big.log"
