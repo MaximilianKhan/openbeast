@@ -336,9 +336,10 @@ fi
 {
   echo 'set -euo pipefail'
   echo 'step() { echo "==> $*"; }; ok() { echo "OK: $*"; }; warn() { echo "WARN: $*"; }'
-  echo 'die() { echo "DIE: $*" >&2; exit 1; }; ob_offline() { return 1; }'
+  echo 'die() { echo "DIE: $*" >&2; exit 1; }; ob_offline() { [[ "${OFFLINE:-false}" == "true" ]]; }'
   echo 'OB_LOCAL_LLAMA="${OB_LOCAL_LLAMA:-1}"; INFERENCE_BACKEND="${INFERENCE_BACKEND:-llama}"; INFERENCE_URL="${INFERENCE_URL:-http://127.0.0.1:8080}"'
   echo "$_wdefs"
+  sed -n '/^ob_offline_weights() {/,/^}/p' "$REPO_DIR/bootstrap.sh"
   echo "$_wsec"
   echo 'echo HARNESS-REACHED-END'
 } > "$T/bootstrap_weight_step.sh"
@@ -409,6 +410,50 @@ if [[ $_rc -eq 0 && "$(n_hf)" == "0" && ! -e "$WB13" ]] && has "$_out" "none dow
 else
   fail "unmanaged weight step (rc=$_rc, hf=$(n_hf), dir: $(ls -A "$WB13" 2>/dev/null)): $_out"
 fi
+# OFFLINE with a NON-DEFAULT SERVE_SCRIPT: docs/INSTALL.md says "any registry
+# weight works ... set SERVE_SCRIPT to match what you brought". The step used
+# to demand the default weight regardless, so this died on every run.
+_ow_body='OTHER-REGISTRY-WEIGHT'
+_ow_sha="$(printf '%s' "$_ow_body" | sha256sum | awk '{print $1}')"
+pin_default "$_dw_sha"
+printf '%s\t%s\t%s\t%s\t%s\n' "$_ow_sha" "${#_ow_body}" "other-27b.gguf" "org/other-GGUF" "-" >> "$SB/scripts/weights.registry"
+printf '#!/bin/bash\n# the comment mentions %s, which must NOT count\nexec llama-server -m "$WEIGHTS_DIR/other-27b.gguf"\n' "$_DW" > "$SB/scripts/serve-other.sh"
+run_owstep() { : > "$T/state/hf.log"; _out="$(env PATH="$T/bin:$PATH" REPO_DIR="$SB" OPENBEAST_WEIGHTS_DIR="$WB13" OFFLINE=true \
+                 DEFAULT_SERVE_SCRIPT=serve-other.sh bash "$T/bootstrap_weight_step.sh" 2>&1)"; _rc=$?; }
+rm -rf "$WB13"; mkdir -p "$WB13"; printf '%s' "$_ow_body" > "$WB13/other-27b.gguf"
+run_owstep
+if [[ $_rc -eq 0 && "$(n_hf)" == "0" && ! -e "$WB13/$_DW" ]] && has "$_out" "other-27b.gguf present, sha256 verified" \
+   && has "$_out" "HARNESS-REACHED-END"; then
+  pass "OFFLINE + a non-default SERVE_SCRIPT: the weight THAT script loads is verified, the default is not demanded"
+else
+  fail "offline non-default weight (rc=$_rc, hf=$(n_hf)): $_out"
+fi
+printf '%s' "${_ow_body//O/X}" > "$WB13/other-27b.gguf"
+run_owstep
+if [[ $_rc -ne 0 ]] && has "$_out" "NOT the weight OpenBeast pinned" && ! has "$_out" "HARNESS-REACHED-END"; then
+  pass "...and a wrong file under that name is still refused (hashed, not trusted by name)"
+else
+  fail "offline non-default wrong weight (rc=$_rc): $_out"
+fi
+rm -f "$WB13/other-27b.gguf"
+run_owstep
+if [[ $_rc -ne 0 && "$(n_hf)" == "0" ]] && has "$_out" "serve-other.sh (SERVE_SCRIPT) loads weight(s) not in" \
+   && has "$_out" "other-27b.gguf" && ! has "$_out" "HARNESS-REACHED-END"; then
+  pass "...and a missing one is named (the configured weight, not the default) and fatal"
+else
+  fail "offline non-default missing weight (rc=$_rc): $_out"
+fi
+# NEGATIVE CONTROL: OFFLINE with the DEFAULT serve script still wants the default.
+printf '#!/bin/bash\nexec llama-server -m "$WEIGHTS_DIR/%s"\n' "$_DW" > "$SB/scripts/serve-default.sh"
+rm -rf "$WB13"; mkdir -p "$WB13"; : > "$T/state/hf.log"
+_out="$(env PATH="$T/bin:$PATH" REPO_DIR="$SB" OPENBEAST_WEIGHTS_DIR="$WB13" OFFLINE=true \
+        DEFAULT_SERVE_SCRIPT=serve-default.sh bash "$T/bootstrap_weight_step.sh" 2>&1)"; _rc=$?
+if [[ $_rc -ne 0 && "$(n_hf)" == "0" ]] && has "$_out" "OFFLINE=true and $_DW is not in"; then
+  pass "negative control: OFFLINE with the default SERVE_SCRIPT still requires the default weight"
+else
+  fail "offline default weight missing (rc=$_rc, hf=$(n_hf)): $_out"
+fi
+rm -f "$SB/scripts/serve-other.sh" "$SB/scripts/serve-default.sh"
 printf '%s\n' "$_dw_reg" > "$SB/scripts/weights.registry"
 
 # ===========================================================================
