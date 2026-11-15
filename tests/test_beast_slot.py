@@ -612,11 +612,20 @@ class TestEdgeAuthMode(unittest.TestCase):
     def test_corrupt_registry_does_not_claim_anon(self):
         self.assertEqual(self._auth(True, "{ half-written"), "device")
 
-    def test_anon_holds_while_registry_is_empty(self):
-        # Negative controls: no file, or a file with no keyed device — the
-        # gate really does serve keyless callers as "anon" then.
+    def test_anon_holds_only_while_registry_was_never_written(self):
+        # Negative control: no file at all — the gate really does serve
+        # keyless callers as "anon" then (edge.py: ALLOW_ANON and not exists).
         self.assertEqual(self._auth(True), "anon")
-        self.assertEqual(self._auth(True, {"version": 1, "devices": []}), "anon")
+
+    def test_emptied_registry_is_device_not_anon(self):
+        # `clients.sh remove` of the last device leaves {"devices": []}. The
+        # gate keys on the FILE existing (Registry.exists) and answers a
+        # keyless caller 401 no_registry, so "anon" would be a lie.
+        self.assertEqual(self._auth(True, {"version": 1, "devices": []}), "device")
+
+    def test_registry_with_unkeyed_devices_is_device(self):
+        reg = {"version": 1, "devices": [{"id": "half", "key_sha256": ""}]}
+        self.assertEqual(self._auth(True, reg), "device")
 
     def test_gate_without_anon_is_device(self):
         self.assertEqual(self._auth(False), "device")
