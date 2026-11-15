@@ -611,6 +611,40 @@ class TestResourceCaps(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("hi", out)
 
+    def _assert_dies(self, pid):
+        import time
+        for _ in range(100):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.05)
+        os.kill(pid, 9)
+        self.fail(f"background pid {pid} outlived the tool call")
+
+    def test_redirected_background_child_is_killed_on_return(self):
+        # The documented contract: background processes (trailing &, nohup)
+        # are killed when the command returns — also the usual idiom that
+        # redirects away from the pipe, which used to survive unsupervised.
+        import tempfile
+        from tools import run_reaped
+        with tempfile.TemporaryDirectory() as d:
+            pf = os.path.join(d, "pid")
+            for cmd in (f"sleep 300 >/dev/null 2>&1 & echo $! > {pf}",
+                        f"nohup sleep 300 >/dev/null 2>&1 & echo $! > {pf}"):
+                rc, _ = run_reaped(cmd, 30)
+                self.assertEqual(rc, 0)
+                self._assert_dies(int(open(pf).read()))
+
+    def test_pipe_holding_background_child_adds_no_stall(self):
+        # It used to cost a fixed 5 s reader.join before the group kill.
+        import time
+        from tools import run_reaped
+        start = time.monotonic()
+        rc, out = run_reaped("sleep 300 & echo hi", 30)
+        self.assertLess(time.monotonic() - start, 3)
+        self.assertIn("hi", out)
+
 
 class TestTaskDone(unittest.TestCase):
     def test_returns_summary(self):

@@ -302,13 +302,19 @@ def _reap(proc, command, timeout, _as_limit, _nproc):
         raise subprocess.TimeoutExpired(command, timeout,
                                         output=_assemble()) from None
     finally:
+        # The no-orphans policy the bash tool documents: background
+        # processes (trailing &, nohup) die when the command returns. Kill
+        # whatever is left of the session's group NOW — not only when a
+        # grandchild still holds the pipe (that both let the usual
+        # `cmd >log 2>&1 &` idiom run on unsupervised past every timeout
+        # and cost a fixed 5 s join first). Output already in the pipe is
+        # still drained below. Only a deliberate setsid escapes the group.
+        if proc.poll() is not None and _group_alive(proc.pid):
+            _killpg(proc)
         reader.join(timeout=5)
         if reader.is_alive():
-            # The shell exited but a backgrounded grandchild still holds the
-            # stdout pipe — the reader would block forever (and so would we).
-            # Killing the group unblocks it AND enforces the no-orphans
-            # policy: nothing outlives the tool call. Long-lived daemons must
-            # detach properly (setsid + redirect away from the pipe).
+            # A grandchild still holds the stdout pipe — the reader would
+            # block forever (and so would we). Kill the group (again).
             _killpg(proc)
             reader.join(timeout=2)
         if reader.is_alive():
