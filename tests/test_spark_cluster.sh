@@ -169,6 +169,12 @@ _run start --cluster "$T/cluster.env" --profile glm53-flash-ablit-exl3-tensorfol
 [[ $RC -ne 0 ]] && _has "$OUT" "TENSOR_PARALLEL_SIZE=2 but" && pass "a profile whose TP is not the node count is refused" || fail "TP mismatch (rc=$RC): $OUT"
 _run start --cluster "$T/cluster.env" --dry-run
 [[ $RC -ne 0 ]] && _has "$OUT" "--profile NAME is required" && pass "start needs a profile" || fail "start without profile (rc=$RC): $OUT"
+# CLUSTER_REPO=~/x reaches each node as ~/x, so it expands to THAT node's
+# home (a worker reached as another ssh user), never the head's.
+printf 'CLUSTER_NODES="local ubuntu@n1"\nCLUSTER_REPO=~/ob\n' > "$T/cluster-tilde.env"
+_run start --cluster "$T/cluster-tilde.env" --profile glm53-flash-ablit-exl3-tensorfold --dry-run
+[[ $RC -eq 0 ]] && _has "$OUT" "[rank 1 ubuntu@n1] cd ~/ob && " && ! _has "$OUT" "$T/home/ob" \
+  && pass "CLUSTER_REPO ~/... expands on each node, not to the head's home" || fail "CLUSTER_REPO tilde (rc=$RC): $OUT"
 
 # Real (not --dry-run) start/stop against stub launchers: a checkout whose
 # spark-node.sh records "<node> <engine> <args>" and fails where told

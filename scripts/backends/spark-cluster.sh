@@ -50,12 +50,17 @@ case "$ENGINE" in tensorfold|vllm) ;; *) echo "Error: --engine tensorfold|vllm" 
 
 CLUSTER_FILE="${CLUSTER_FILE:-$HERE/cluster.env}"
 [[ -f "$CLUSTER_FILE" ]] || { echo "Error: no cluster file at $CLUSTER_FILE (copy $HERE/cluster.env.example)" >&2; exit 1; }
-CLUSTER_NODES="" CLUSTER_NAME="" CLUSTER_REPO=""
-sp_load "$CLUSTER_FILE" CLUSTER_NODES CLUSTER_NAME CLUSTER_REPO
+CLUSTER_NODES="" CLUSTER_NAME=""
+sp_load "$CLUSTER_FILE" CLUSTER_NODES CLUSTER_NAME
+# Raw, NOT through sp_load: that expands ~ to the HEAD's home, and a worker
+# reached as another ssh user has another home. A literal ~/ reaches each
+# node and expands there.
+CLUSTER_REPO="$(_sp_env_value "$CLUSTER_FILE" CLUSTER_REPO || true)"
 read -r -a NODES <<< "$CLUSTER_NODES"
 N=${#NODES[@]}
 CLUSTER_NAME="${CLUSTER_NAME:-cluster}"
-CLUSTER_REPO="${CLUSTER_REPO:-$HOME/openbeast}"
+# shellcheck disable=SC2088  # a literal ~ on purpose: it expands on each node
+CLUSTER_REPO="${CLUSTER_REPO:-~/openbeast}"
 if (( N < 1 || N > 8 )); then
   echo "Error: CLUSTER_NODES lists $N node(s) — 1 to 8 (one rank per Spark)" >&2; exit 1
 fi
@@ -74,8 +79,9 @@ on_node() {
   if [[ "${NODES[$r]}" == local ]]; then bash -c "$c"; else ssh "${SSH_OPTS[@]}" "${NODES[$r]}" "$c"; fi
 }
 q() { printf '%q' "$1"; }
+REPO_Q="$(q "$CLUSTER_REPO")"
 # shellcheck disable=SC2088  # a literal ~ on purpose: it expands on the NODE
-REPO_Q="$(q "$CLUSTER_REPO")"; [[ "$CLUSTER_REPO" == "~/"* ]] && REPO_Q="~/$(q "${CLUSTER_REPO#\~/}")"
+case "$CLUSTER_REPO" in "~") REPO_Q="~" ;; "~/"*) REPO_Q="~/$(q "${CLUSTER_REPO#"~/"}")" ;; esac
 
 need_profile() {
   [[ -n "$PROFILE" ]] || { echo "Error: --profile NAME is required" >&2; exit 2; }
