@@ -17,7 +17,8 @@
 #       (doctor.sh): exit 1 when login is ON and admin@localhost still signs
 #       in with upstream's default password, 0 when login is ON and it does
 #       not, 4 when the running WebUI has login off (or /api/config does not
-#       say) so the probe did not run, 3 when WebUI is unreachable.
+#       say) so the probe did not run, 3 when WebUI is unreachable, 5 when
+#       the sign-in did not answer yes or no (429 rate limit, 5xx, timeout).
 
 set -euo pipefail
 
@@ -106,21 +107,36 @@ done
 #     WEBUI_ADMIN_PASSWORD in openbeast.conf name an admin account. If the
 #     built-in admin@localhost still has the default password, it is rotated
 #     first and its new password becomes those two keys (see below).
+# Prints the token and returns 0 when the sign-in worked; returns 1 when the
+# WebUI REFUSED those credentials (HTTP 400/401/403 — upstream answers a wrong
+# password with 400); returns 2 when it said neither (429 rate limit — 15
+# sign-ins per 3 min per email — a 5xx while booting, a reset, a timeout).
+# Callers asking "does the default password still work?" must treat 2 as
+# "unknown", never as "no": reading every token-less answer as "no" let
+# setup-tailscale publish :443 and doctor report the default as retired while
+# admin/admin still worked. Call it as `tok=$(_signin …) || rc=$?` under set -e.
 _signin() {
-  # || true: a non-JSON response (502 HTML, connection reset) makes the
-  # python step exit 1; under pipefail that would silently kill the whole
-  # script at the TOKEN=$(...) assignment instead of reaching the fallback
-  # guidance below.
   # The password travels via env + stdin, never argv: an argv JSON blob is
   # world-readable in /proc/*/cmdline while curl runs, and printf-splicing
   # broke on passwords containing '"' or '\'. /proc/<pid>/environ is
   # owner-only, and python json.dumps escapes correctly.
-  SIGNIN_EMAIL="$1" SIGNIN_PASSWORD="$2" python3 -c \
+  local out code tok
+  out=$(SIGNIN_EMAIL="$1" SIGNIN_PASSWORD="$2" python3 -c \
     'import json,os; print(json.dumps({"email": os.environ["SIGNIN_EMAIL"], "password": os.environ["SIGNIN_PASSWORD"]}))' \
-    | curl -s "$WEBUI_URL/api/v1/auths/signin" \
-        -H "Content-Type: application/json" -d @- \
-    | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null \
-    || true
+    | curl -s -m 10 -w '\n%{http_code}' "$WEBUI_URL/api/v1/auths/signin" \
+        -H "Content-Type: application/json" -d @- 2>/dev/null) || true
+  code=${out##*$'\n'}
+  # A non-JSON body (502 HTML, reset) must not kill the script under pipefail.
+  tok=$(printf '%s' "${out%$'\n'*}" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null) || tok=""
+  if [[ -n "$tok" ]]; then
+    printf '%s\n' "$tok"
+    return 0
+  fi
+  case "$code" in
+    400|401|403) return 1 ;;
+    *)           return 2 ;;
+  esac
 }
 
 # Is the RUNNING WebUI enforcing logins? /api/config is public (the login
@@ -174,11 +190,22 @@ os.replace(tmp, path)
 # checks the stored hash against its hardcoded default, so rotating then would
 # break the running auth-off UI until the next restart. Returns 0 when the
 # default no longer works (rotated now, or never there), 1 when it still does.
+_default_unknown_warning() {
+  echo "SECURITY WARNING: could not tell whether $DEFAULT_ADMIN_EMAIL still signs in with" >&2
+  echo "  upstream's default password — the WebUI's sign-in answered neither yes nor no" >&2
+  echo "  (rate-limited, erroring or not answering). Treating it as NOT retired." >&2
+  echo "  Wait a few minutes (the sign-in limit is 15 per 3 min) and re-run." >&2
+}
+
 _secure_default_admin() {
-  local tok newpw resp
+  local tok newpw resp rc=0
   [[ "$(_live_auth)" == "true" ]] || return 0
-  tok=$(_signin "$DEFAULT_ADMIN_EMAIL" "$DEFAULT_ADMIN_PASSWORD")
-  [[ -n "$tok" ]] || return 0      # default password doesn't work: nothing to do
+  tok=$(_signin "$DEFAULT_ADMIN_EMAIL" "$DEFAULT_ADMIN_PASSWORD") || rc=$?
+  [[ $rc -eq 1 ]] && return 0      # default password refused: nothing to do
+  if [[ $rc -ne 0 ]]; then
+    _default_unknown_warning
+    return 1
+  fi
   newpw=$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')
   resp=$(OLD_PW="$DEFAULT_ADMIN_PASSWORD" NEW_PW="$newpw" python3 -c \
       'import json,os; print(json.dumps({"password": os.environ["OLD_PW"], "new_password": os.environ["NEW_PW"]}))' \
@@ -212,8 +239,11 @@ _secure_default_admin() {
     return 0
   fi
   # Rotation refused. Another run may have just rotated it (tokens are
-  # revoked on a password change) — re-probe before crying wolf.
-  [[ -z "$(_signin "$DEFAULT_ADMIN_EMAIL" "$DEFAULT_ADMIN_PASSWORD")" ]] && return 0
+  # revoked on a password change) — re-probe before crying wolf. Only a real
+  # "wrong password" answer clears it.
+  rc=0
+  _signin "$DEFAULT_ADMIN_EMAIL" "$DEFAULT_ADMIN_PASSWORD" >/dev/null || rc=$?
+  [[ $rc -eq 1 ]] && return 0
   echo "SECURITY WARNING: WebUI login is ON, but $DEFAULT_ADMIN_EMAIL still signs in" >&2
   echo "  as ADMIN with upstream's default password \"$DEFAULT_ADMIN_PASSWORD\", and rotating it" >&2
   echo "  failed. Anyone who can reach the WebUI can take admin (and bash)." >&2
@@ -228,8 +258,13 @@ if [[ "$MODE" == "check" ]]; then
   # Login off / unknown: the question does not arise, and "0" would read as
   # "checked, and safe" — a claim nothing verified. Say "not probed" (4).
   [[ "$(_live_auth)" == "true" ]] || exit 4
-  [[ -z "$(_signin "$DEFAULT_ADMIN_EMAIL" "$DEFAULT_ADMIN_PASSWORD")" ]] && exit 0
-  exit 1
+  _rc=0
+  _signin "$DEFAULT_ADMIN_EMAIL" "$DEFAULT_ADMIN_PASSWORD" >/dev/null || _rc=$?
+  case $_rc in
+    0) exit 1 ;;   # the default still works
+    1) exit 0 ;;   # refused: retired
+    *) exit 5 ;;   # no yes/no answer: not verified
+  esac
 fi
 
 if [[ "$MODE" == "secure" ]]; then
@@ -246,9 +281,9 @@ fi
 # A failure warns loudly but does not stop the rest of the configuration.
 _secure_default_admin || true
 
-TOKEN=$(_signin "admin@localhost" "")
+TOKEN=$(_signin "admin@localhost" "") || TOKEN=""
 if [[ -z "$TOKEN" && -n "$WEBUI_ADMIN_EMAIL" ]]; then
-  TOKEN=$(_signin "$WEBUI_ADMIN_EMAIL" "$WEBUI_ADMIN_PASSWORD")
+  TOKEN=$(_signin "$WEBUI_ADMIN_EMAIL" "$WEBUI_ADMIN_PASSWORD") || TOKEN=""
 fi
 
 # Only the tool-server reconciliation actually needs the admin API; everything

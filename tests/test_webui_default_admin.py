@@ -33,13 +33,14 @@ CURL_STUB = textwrap.dedent(r'''
     """Stub curl: a tiny Open WebUI, driven by $STUB_STATE, logging to $STUB_LOG."""
     import json, os, sys
     args = sys.argv[1:]
-    url, method, data, headers = None, None, None, {}
+    url, method, data, headers, wfmt = None, None, None, {}, None
     i = 0
     while i < len(args):
         a = args[i]
         if a in ("-X", "-d", "-H", "-m", "-o", "-w", "--max-time", "--config", "-K"):
             v = args[i + 1]; i += 2
             if a == "-X": method = v
+            elif a == "-w": wfmt = v
             elif a == "-d": data = sys.stdin.read() if v == "@-" else v
             elif a == "-H":
                 k, _, val = v.partition(":"); headers[k.strip().lower()] = val.strip()
@@ -67,8 +68,11 @@ CURL_STUB = textwrap.dedent(r'''
                             "url": url,
                             # a credential on argv is world-readable in /proc
                             "argv_bearer": any("Bearer" in a for a in args)}) + "\n")
-    def out(o):
-        sys.stdout.write(json.dumps(o)); sys.exit(0)
+    def out(o, code=200):
+        sys.stdout.write(json.dumps(o))
+        if wfmt:   # curl -w '\n%{http_code}'
+            sys.stdout.write(wfmt.replace("\\n", "\n").replace("%{http_code}", str(code)))
+        sys.exit(0)
     def save():
         json.dump(st, open(os.environ["STUB_STATE"], "w"))
     if st.get("down"):
@@ -79,12 +83,14 @@ CURL_STUB = textwrap.dedent(r'''
     if path == "/api/version": out({"version": "stub"})
     if path == "/api/config": out({"features": {"auth": st["auth"]}})
     if path == "/api/v1/auths/signin":
+        if st.get("signin_status"):   # 429 rate limit, 5xx while booting
+            out({"detail": "Too many requests"}, st["signin_status"])
         email, pw = body["email"], body["password"]
         if email == "admin@localhost" and not st["auth"]:
             pw = "admin"   # upstream's auth-off branch uses its own constant
         if st["accounts"].get(email) == pw:
             out({"token": tok(email)})
-        out({"detail": "The email or password provided is incorrect."})
+        out({"detail": "The email or password provided is incorrect."}, 400)
     if path == "/api/v1/auths/update/password":
         if st.get("fail_update"):
             out({"detail": "nope"})
@@ -1219,3 +1225,30 @@ def test_an_operator_searxng_url_stays(db_rig, url):
     db_rig.seed({"web.search.engine": "searxng", "web.search.searxng_query_url": url})
     assert db_rig.configure(env_extra={"OPENBEAST_BIND": "192.168.1.50"}).returncode == 0
     assert _websearch(db_rig)["web.search.searxng_query_url"] == url
+
+
+
+# The default-admin probe must not fail open: a 429 (upstream limits sign-ins
+# to 15 per 3 min per email), a 5xx or a timeout is "unknown", never "the
+# default password no longer works".
+
+@pytest.mark.parametrize("status", [429, 500])
+def test_check_default_admin_says_unverified_on_no_answer(rig, status):
+    rig.set_state(auth=True, admin_pw="admin", signin_status=status)
+    p = rig.run("configure-webui.sh", "--check-default-admin")
+    assert p.returncode == 5, (p.stdout, p.stderr)
+
+
+@pytest.mark.parametrize("status", [429, 503])
+def test_secure_default_admin_fails_closed_on_no_answer(rig, status):
+    rig.set_state(auth=True, admin_pw="admin", signin_status=status)
+    p = rig.run("configure-webui.sh", "--secure-default-admin")
+    assert p.returncode == 1, (p.stdout, p.stderr)
+    assert "could not tell" in p.stderr
+
+
+def test_tailscale_does_not_publish_when_the_probe_is_rate_limited(ts_rig):
+    ts_rig.set_state(auth=True, admin_pw="admin", signin_status=429)
+    p = ts_rig.run("setup-tailscale.sh", env_extra={"OPENBEAST_API_KEY": "k"})
+    assert not _mounted_443(ts_rig), p.stdout + p.stderr
+    assert "NOT publishing the WebUI" in p.stderr

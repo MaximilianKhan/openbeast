@@ -431,8 +431,9 @@ else
       # fixed password "admin" while auth was off. Retire it before the
       # login page is reachable from the tailnet.
       if ! "$REPO_DIR/scripts/configure-webui.sh" --secure-default-admin; then
-        _webui_block="admin@localhost still has upstream's default password and it
-               could not be rotated (see the warning above). Change it, then re-run."
+        _webui_block="admin@localhost still has upstream's default password, or the
+               WebUI would not say whether it does, and it was not rotated (see
+               the warning above). Change it, then re-run."
       fi ;;
     *)
       case "$_ct" in
