@@ -1148,11 +1148,13 @@ async def proxy(request: Request, path: str, pin: str | None = None):
     if a.kind == "commit":
         for refused in charge_if_served:
             refused.record_failure(time.monotonic())
-    if a.kind == "passthrough" or a.kind == "engine_error" or \
-            (a.kind == "throttled" and not _has_more(dec, c)):
+    if a.kind in ("passthrough", "engine_error", "throttled"):
         # An engine's own 4xx (or its own JSON 500 about this body, which no
         # other target served either): status, bytes and content-type exactly
-        # as sent — a 502 would hide why the request is refused.
+        # as sent — a 502 would hide why the request is refused. `last` is
+        # the last attempt that RAN, so a 429 here had nothing after it:
+        # planned targets skipped at admission or the budget gone. Its
+        # Retry-After is the caller's back-off hint.
         finish(a.status, "upstream_5xx" if a.kind == "engine_error" else "upstream_4xx",
                c.d.id, attempts, edits=edits)
         h = {k: v for k, v in a.headers.items() if k.lower() in ("content-type", "retry-after")}
@@ -1249,11 +1251,6 @@ async def proxy(request: Request, path: str, pin: str | None = None):
     out_h.pop("content-length", None)
     return StreamingResponse(relay(), status_code=int(a.status), headers=out_h,
                              background=BackgroundTask(sweep))
-
-
-def _has_more(dec: core.Decision, c: core.Candidate) -> bool:
-    ids = [x.d.id for x in dec.attempts]
-    return c.d.id in ids and ids.index(c.d.id) < len(ids) - 1
 
 
 # ─────────────────────────────────── handlers ───────────────────────────────────

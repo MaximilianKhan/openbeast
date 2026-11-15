@@ -1436,3 +1436,20 @@ def test_a_bodyless_500_still_counts_at_once(fleet):
     r = post(srv, chat(model="solo"))
     assert r.status_code == 502
     assert srv.hy.state.health["unc@rig"].h.fails == 1
+
+
+def test_a_429_passes_through_when_no_later_attempt_ran(fleet):
+    """Review 2026-11 F9: a 429 with a planned-but-skipped failover target
+    became a 502 'every attempt failed', and the engine's Retry-After was lost."""
+    srv, rig, sparks, _ = fleet()
+    real = srv.hy.state.try_admit
+
+    def no_sparks(d, node, now):
+        if node == "sparks":
+            return None, "node sparks drained (test)"
+        return real(d, node, now)
+    srv.hy.state.try_admit = no_sparks
+    rig.set_fault("http_429", 1)
+    r = post(srv, chat())
+    assert r.status_code == 429 and r.headers["retry-after"] == "1", r.text
+    assert r.headers["x-hydra-attempts"] == "unc@rig:429,nvfp4@sparks:skipped"
