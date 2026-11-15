@@ -12,7 +12,8 @@
                      under a 10 s limit, compare, print only case index+kind
   sample_test.py     the agent-visible sample (the only fixture file)
   autograd.py        reference solution
-  wrong_*.py / slow.py / leak.py   prover arms, classes in prove.json
+  wrong_*.py / cheat_fd.py / slow.py / leak.py / leak_argv.py
+                     prover arms, classes in prove.json
 
 Run:  python3 evals/refs/190_autograd_mlp/build.py
 """
@@ -56,11 +57,30 @@ cross_entropy(logits, targets): logits is a Tensor of shape (N, C), targets a li
 
 train_mlp(X, y, params, lr, steps) -> (losses, final_params). X is an N x D nested list of floats, y a list of N ints, params = [W1, b1, W2, b2, W3, b3] as nested lists: W1 is D x H1, b1 has length H1, W2 is H1 x H2, b2 has length H2, W3 is H2 x C, b3 has length C. The model is logits = relu(tanh(X @ W1 + b1) @ W2 + b2) @ W3 + b3 and the loss is cross_entropy(logits, y). Run `steps` iterations of full-batch gradient descent using gradients computed by your Tensor: each iteration evaluates the loss at the current parameters, then replaces every parameter p by p - lr * dloss/dp (all six from the same gradient evaluation). losses is a list of steps + 1 floats: the loss before each update, then the loss at the final parameters. final_params is a list of the six final parameters as nested lists in the layout of params. Do not modify the input lists.
 
-Validation imports your module in a fresh process and runs about 200 hidden, seeded programs built from the operations above (random shapes up to rank 3, broadcasting, every reduction form, matmul of ranks 1 to 3, shared subgraphs, several backward() calls, very large logits, a 20,000-operation chain), then one 60-step train_mlp run on a 60-point, 3-class problem. Every forward value must match to a relative 1e-9; every leaf gradient g must satisfy |g - fd| <= 1e-6 * max(1, |fd|), where fd is a central finite difference of the root(s); the MLP loss trace and final parameters must match a reference implementation to a relative 1e-6, and the final MLP loss must be below half the initial one. The whole hidden run (programs and training) must finish within 10 seconds. Only the index and kind of the first failing case is reported, so write your own tests. {DIR}/sample_test.py is a small example (run it with python3 from {DIR}).
+Validation imports your module in a fresh process and runs about 200 hidden, seeded programs built from the operations above (random shapes up to rank 3, broadcasting, every reduction form, matmul of ranks 1 to 3, shared subgraphs, several backward() calls, very large logits, a 20,000-operation chain, a 2,000-element tensor through 500 operations), then one 60-step train_mlp run on a 60-point, 3-class problem. Every forward value must match to a relative 1e-9; every leaf gradient g must satisfy |g - fd| <= 1e-6 * max(1, |fd|), where fd is a central finite difference of the root(s); the MLP loss trace and final parameters must match a reference implementation to a relative 1e-6, and the final MLP loss must be below half the initial one. The whole hidden run (programs and training) must finish within 10 seconds. Only the index and kind of the first failing case is reported, so write your own tests. {DIR}/sample_test.py is a small example (run it with python3 from {DIR}).
 """
 
-validator = ('ORACLE = ' + repr(read('oracle.py')) + '\n' +
-             'DRIVER = ' + repr(read('driver.py')) + '\n' + read('validator_main.py'))
+body = ('ORACLE = ' + repr(read('oracle.py')) + '\n' +
+        'DRIVER = ' + repr(read('driver.py')) + '\n' + read('validator_main.py'))
+
+# run_eval starts python validators as `python -c <script>`, so the script
+# (oracle, seeds, MLP reference) would sit in this process's argv, readable
+# by the solution with `ps -o args= -p $PPID`. The stub moves the body to a
+# 0600 temp file and exec()s a short loader that deletes the file before
+# anything else runs: the long argv is gone before the solution is spawned.
+LOADER = ("import os,sys\n"
+          "p=sys.argv[1]\n"
+          "s=open(p).read()\n"
+          "os.unlink(p)\n"
+          "exec(compile(s,'validator','exec'),{'__name__':'__main__'})\n")
+validator = (
+    'import os, sys, tempfile\n'
+    'BODY = ' + repr(body) + '\n'
+    'fd, path = tempfile.mkstemp(prefix="v190-", suffix=".py")\n'
+    'with os.fdopen(fd, "w") as f:\n'
+    '    f.write(BODY)\n'
+    'sys.stdout.flush()\n'
+    'os.execv(sys.executable, [sys.executable, "-I", "-c", ' + repr(LOADER) + ', path])\n')
 
 setup = (f"rm -rf {DIR} && mkdir -p {DIR} && cat > {DIR}/sample_test.py <<'SAMPLE_EOF'\n"
          + read('sample_test.py') + "SAMPLE_EOF\n")

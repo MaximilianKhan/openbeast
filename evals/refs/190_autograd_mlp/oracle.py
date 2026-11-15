@@ -9,7 +9,11 @@
   signature, or whose values leave a sane range, is rejected by the seeded
   generator (deterministically), so the expected gradients are smooth.
 * `mlp_oracle` trains the 3-layer MLP with hand-derived backprop.
-There is no reverse-mode code here: the expected gradients are numerical.
+* `wide_case` is the one exception to finite differences: a 2000-element
+  leaf whose exact gradient comes from per-element forward-mode tangents
+  plus a closed-form tail (FD there is what a cheating backward would do,
+  and it must not fit the time limit).
+There is no reverse-mode code here.
 """
 import math
 import random
@@ -554,6 +558,57 @@ def deep_case(steps=5000):
     return {"ins": g.ins, "losses": g.finish([x]), "deep": True}
 
 
+def wide_case(N=50, D=40, M=3, steps=125):
+    """A 2000-element leaf through 500 broadcast/elementwise ops, then
+    + bias (D,), @ W (D, M), * C and a sum. 2120 trainable elements, each
+    of which a finite-difference backward would need two full forward
+    passes (about 1e6 element operations each) for, so only a real
+    reverse pass fits the time limit. The expected values are cheap and
+    exact: the chain is elementwise, so each element's derivative comes from
+    forward-mode (value, tangent) propagation, and the bias / matmul / sum
+    tail has a closed form."""
+    rng = random.Random(0x190D1DE)
+    g = Gen(rng)
+    x0 = g.leaf([N, D], lo=-1.5, hi=1.5)
+    coefs = []
+    x = x0
+    for _ in range(steps):
+        c = g.leaf([D], rg=False, lo=0.5, hi=1.5)
+        coefs.append(g.ins[c][2])
+        u = g.emit(["bin", "*", x, c], [N, D])
+        t = g.emit(["un", "tanh", u], [N, D])
+        s = g.emit(["sc", "*", t, 0.05, False], [N, D])
+        x = g.emit(["bin", "+", x, s], [N, D])
+    b = g.leaf([D])
+    z = g.emit(["bin", "+", x, b], [N, D])
+    w = g.leaf([D, M], lo=-1.0, hi=1.0)
+    mmn = g.emit(["mm", z, w], [N, M])
+    (loss,) = g.finish([mmn])
+    C = g.ins[loss - 2][2]              # finish(): coefficient leaf, product, sum
+    X0, B, W = g.ins[x0][2], g.ins[b][2], g.ins[w][2]
+    Z, dX = [], []
+    for e, v in enumerate(X0):
+        d, dv = e % D, 1.0
+        for cs in coefs:
+            cd = cs[d]
+            t = math.tanh(v * cd)
+            dv *= 1.0 + 0.05 * cd * (1.0 - t * t)
+            v = v + t * 0.05
+        Z.append(v + B[d])
+        dX.append(dv)
+    GZ = [math.fsum(C[n * M + m] * W[d * M + m] for m in range(M))
+          for n in range(N) for d in range(D)]
+    P = [math.fsum(Z[n * D + d] * W[d * M + m] for d in range(D))
+         for n in range(N) for m in range(M)]
+    L = math.fsum(p * c for p, c in zip(P, C))
+    G = {x0: [dX[e] * GZ[e] for e in range(N * D)],
+         b: [math.fsum(GZ[n * D + d] for n in range(N)) for d in range(D)],
+         w: [math.fsum(Z[n * D + d] * C[n * M + m] for n in range(N))
+             for d in range(D) for m in range(M)]}
+    case = {"ins": g.ins, "losses": [loss], "deep": True}
+    return case, {loss: [L]}, g.S, G
+
+
 def build_cases(seed=0x190A6D):
     rng = random.Random(seed)
     cases = []
@@ -576,6 +631,7 @@ def build_cases(seed=0x190A6D):
                 raise
             continue
         out.append((c, V, S, G))
+    out.append(wide_case())
     return out
 
 

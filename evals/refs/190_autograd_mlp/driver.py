@@ -108,7 +108,8 @@ def run_case(c):
             t = cross_entropy(T[op[1]], list(op[2]))
         T.append(t)
     deep = c.get("deep", False)
-    res = {"shapes": None if deep else [list(t.shape) for t in T]}
+    res = {"shapes": None if deep else [list(t.shape) for t in T],
+           "rg": [bool(t.requires_grad) for t in T]}
     res["vals"] = {str(i): flat(T[i].data) for i in
                    (c["losses"] if deep else range(len(T)))}
     for i in c["losses"]:
@@ -128,9 +129,11 @@ for c in req["cases"]:
 
 mlp = None
 p = req["mlp"]
+before = json.dumps([p["X"], p["y"], p["params"]])
 try:
     losses, params = train_mlp(p["X"], p["y"], p["params"], p["lr"], p["steps"])
-    mlp = {"losses": [float(v) for v in losses], "params": [flat(q) for q in params]}
+    mlp = {"losses": [float(v) for v in losses], "params": [flat(q) for q in params],
+           "inputs_intact": json.dumps([p["X"], p["y"], p["params"]]) == before}
 except BaseException as e:  # noqa: BLE001
     mlp = {"error": type(e).__name__}
 emit({"cases": results, "mlp": mlp})

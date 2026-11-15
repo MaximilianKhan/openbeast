@@ -60,6 +60,14 @@ def check_case(c, V, S, G, res):
     if 'error' in res:
         return f'error {res["error"]}'
     deep = c.get('deep', False)
+    rg = []
+    for op in c['ins']:
+        k = op[0]
+        src = {'bin': (2, 3), 'sc': (2,), 'pow': (1,), 'un': (2,), 'red': (2,),
+               'reshape': (1,), 'T': (1,), 'mm': (1, 2), 'ce': (1,)}.get(k)
+        rg.append(bool(op[3]) if k == 'leaf' else any(rg[j] for j in (op[q] for q in src)))
+    if res.get('rg') != rg:
+        return 'requires_grad mismatch'
     if not deep and res['shapes'] != S:
         return 'shape mismatch'
     for k, fv in res['vals'].items():
@@ -102,6 +110,8 @@ if bad:
 m = got.get('mlp') or {}
 if 'error' in m:
     fail(f'mlp: error {m["error"]}')
+if m.get('inputs_intact') is not True:
+    fail('mlp: train_mlp modified its input lists')
 ls = m.get('losses') or []
 if len(ls) != len(want_losses):
     fail(f'mlp: returned {len(ls)} losses, want steps + 1')
