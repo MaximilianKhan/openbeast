@@ -1,0 +1,17 @@
+{
+  "unit": "188_gmm_em",
+  "dest": "/tmp/eval_gmm/gmm.py",
+  "ref": "gmm.py",
+  "alt": ["gmm_alt.py", "gmm_alt2.py"],
+  "wrong": {
+    "wrong_naive_exp.py": "first: case 6: (trace length differs|log-likelihood trace)",
+    "wrong_det_product.py": "(?s)FAIL 4/17 hidden cases; first: case 10: .*case 11: .*case 15: .*case 16: ",
+    "wrong_onepass_cov.py": "(?s)FAIL 2/17 hidden cases; first: case 12: .*case 13: ",
+    "wrong_returns_next.py": "first: case \\d+: parameters mismatch",
+    "wrong_rel_tol.py": "first: case \\d+: trace length differs"
+  },
+  "slow": {"slow_quadratic.py": "FAIL solution timed out"},
+  "leak": {"leak_probe.py": "FAIL 17/17 hidden cases"},
+  "empty": "FAIL missing /tmp/eval_gmm/gmm.py",
+  "notes": "Arms are run by the v5 prover: ref N/N (+alt) must pass; every other arm must fail with output matching its regex (the INTENDED failure class). gen.py documents which case index exercises which trap."
+}
