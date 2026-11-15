@@ -252,6 +252,7 @@ jobs:
         run: |
           command -v nft >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq nftables >/dev/null; }
           bash tests/test_spark_guard.sh
+          bash tests/test_spark_supply.sh
 
       # The Tier-3 campaign harness in a stub repo: the benchmark, era,
       # engine and verdict are stubs, so no GPU or server is touched.
