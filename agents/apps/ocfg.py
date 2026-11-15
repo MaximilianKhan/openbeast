@@ -159,6 +159,36 @@ def rules_for(key: str, server: dict) -> list[dict]:
     return rules
 
 
+def ungatable(cfg: dict, rules: list[dict], fl: str) -> str | None:
+    """Why `rules` cannot be written into cfg, or None when they can.
+
+    opencode 1.x accepts `"permission": "allow"` (a string for every tool);
+    there is then nowhere to put a per-tool ask rule. Callers must refuse
+    rather than wire in a server whose only safety is that gate."""
+    if not rules:
+        return None
+    if fl == "v2":
+        return None if isinstance(cfg.get("permissions", []), list) else \
+            "`permissions` is not a list, so the per-tool gates cannot be written"
+    perm = cfg.get("permission", {})
+    if isinstance(perm, dict):
+        return None
+    if isinstance(perm, str):
+        what = f"the string {perm!r}"
+    elif perm is None:
+        what = "null"
+    elif isinstance(perm, list):
+        what = "a list"
+    elif isinstance(perm, bool):
+        what = f"the boolean {str(perm).lower()}"
+    elif isinstance(perm, (int, float)):
+        what = "a number"
+    else:
+        what = f"a {type(perm).__name__}"
+    return (f"`permission` is {what}, not an object, so the per-tool gates cannot be "
+            "written: " + ", ".join(f"{r['action']}={r['effect']}" for r in rules))
+
+
 def install(cfg: dict, key: str, entry: dict, rules: list[dict], fl: str) -> list[str]:
     """Merge one server + its gates into cfg in place. Returns warnings."""
     warns: list[str] = []

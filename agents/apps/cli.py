@@ -249,7 +249,9 @@ def latest_version(server: dict, env: dict) -> tuple[str | None, str | None]:
 def render_launch(cat: dict, sid: str, version: str, env: dict, ev: dict) -> tuple[list[str] | None, dict, str | None]:
     """(argv with absolute argv[0], MCP environment, error)."""
     s = cat["server"][sid]
-    environment = dict(s.get("env") or {})
+    # {state} in a fixed env value is the beast-apps state dir: a location a
+    # project cannot choose (a pinned path never comes from the opened dir).
+    environment = {k: v.replace("{state}", C.state_dir(env)) for k, v in (s.get("env") or {}).items()}
     environment.update(ev.get("export_env") or {})
     for var in s.get("env_passthrough", []):
         if env.get(var):
@@ -312,6 +314,14 @@ def make_manifest(sid: str, version: str, transport: str, info: dict, tools: lis
             "hash": _h(core), "tools": rows}
 
 
+# Phrases in a tool's DESCRIPTION that mean it runs code or installs
+# something on this machine. A tool that says so and is not gated is
+# flagged on every refresh (the first one included) until it is gated,
+# whether the tool is new or an existing one whose description changed.
+EXEC_MARKERS = ("execute_code", "execute_blender_code", "python code", "arbitrary code", "arbitrary python",
+                "shell command", "run on startup", "login item", "launchagent", "runs a script")
+
+
 def diff_manifests(old: dict | None, new: dict, server: dict) -> dict:
     gates = list(server.get("ask_tools", [])) + list(server.get("deny_tools", []))
     if not old:
@@ -331,11 +341,19 @@ def diff_manifests(old: dict | None, new: dict, server: dict) -> dict:
             if what:
                 changed.append({"name": name, "changed": what})
     flagged = []
-    for name in added:
-        hits = [p for p in server.get("risk_patterns", []) if p.lower() in name.lower()]
-        if hits:
+    desc = {t["name"]: (t.get("description") or "").lower() for t in new["tools"]}
+    new_names = set(added)
+    for name in sorted(desc):
+        # Name patterns are a review hint for NEW tools only.
+        hits = [p for p in server.get("risk_patterns", []) if p.lower() in name.lower()] if name in new_names else []
+        # Names alone miss a bridge ("blender_mcp_call") whose description
+        # says it runs code or installs something: check what EVERY tool says
+        # it does, on every manifest, so an upstream update that rewrites an
+        # existing tool's description into an exec bridge is caught too.
+        said = [m for m in EXEC_MARKERS if m in desc[name]]
+        if hits or said:
             gated = any(fnmatch.fnmatchcase(name, g) for g in gates)
-            flagged.append({"name": name, "patterns": hits, "gated": gated})
+            flagged.append({"name": name, "patterns": hits, "description": said, "gated": gated})
     return {"first": old is None, "previous_version": (old or {}).get("version"),
             "previous_hash": (old or {}).get("hash"), "hash": new["hash"],
             "same": bool(old) and old.get("hash") == new["hash"],
@@ -555,12 +573,23 @@ def cmd_enable(ctx: Ctx) -> int:
     rules = ocfg.rules_for(key, s)
     if key in mine:                                    # re-enable: drop the old gates first
         ocfg.uninstall(cfg, key, mine[key].get("rules", []))
+    why = ocfg.ungatable(cfg, rules, fl)
+    ungated = []
+    if why:
+        if not a.ungated:
+            print(f"Refusing to enable {sid}: {why}.\n  Those tools would run with no approval. Make "
+                  f"`permission` an object in {ctx.cfg_path} (e.g. {{\"*\": \"allow\"}}) and re-run, or pass "
+                  "--ungated to wire it in without the gates anyway.")
+            return EXIT_RISK
+        ungated, rules = rules, []                     # nothing written, nothing recorded
     warns = ocfg.install(cfg, key, entry, rules, fl)
+    if ungated:
+        warns.append("NOT gated (--ungated): " + ", ".join(f"{r['action']}={r['effect']}" for r in ungated))
     secret = any(v in environment for v in s.get("secret_env", [])) or (
         os.path.exists(ctx.cfg_path) and os.stat(ctx.cfg_path).st_mode & 0o077 == 0)
     where = f"mcp.servers.{key}" if fl == "v2" else f"mcp.{key}"
     out = {"enabled": True, "capability": cid, "server": sid, "version": version, "key": key,
-           "config": ctx.cfg_path, "schema": fl, "entry": entry, "rules": rules,
+           "config": ctx.cfg_path, "schema": fl, "entry": entry, "rules": rules, "ungated": ungated,
            "warnings": warns + ev["warnings"], "dry_run": bool(a.dry_run), "backup": None}
     if not a.dry_run:
         out["backup"] = ocfg.backup(ctx.cfg_path)
@@ -659,7 +688,13 @@ def _render_diff(sid: str, d: dict) -> list[str]:
         for c in d["changed"]:
             L.append(f"    ~ {c['name']}: {', '.join(c['changed'])} changed")
     for f in d["flagged"]:
-        if not f["gated"] and not d["first"]:
+        if f["gated"]:
+            continue
+        if f.get("description"):          # says it runs code / installs: always, first manifest too
+            L.append(f"    ! tool {f['name']} describes itself as running code or installing something "
+                     f"({', '.join(f['description'])}) and is NOT gated — add it to ask_tools in the "
+                     f"catalog (or an overlay) to gate it")
+        elif not d["first"]:
             L.append(f"    ! new tool {f['name']} matches risk pattern(s) {', '.join(f['patterns'])} and is NOT "
                      f"gated — review it; add it to ask_tools in the catalog (or an overlay) to gate it")
     return L
@@ -770,6 +805,22 @@ def cmd_upgrade(ctx: Ctx) -> int:
         for i, m in enumerate(ev["missing"], 1):
             print(f"  {i}. {m}")
         return EXIT_MISSING if ev["status"] == "MISSING" else EXIT_UNSUPPORTED
+    if rec and rec.get("rules"):
+        # The entry is gated today. If the config can no longer hold those
+        # gates, rewriting it would drop them silently: refuse before any
+        # pin, manifest or config is written, unless --ungated says so.
+        try:
+            cfg0 = ctx.cfg()
+        except ocfg.ConfigError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return EXIT_ERR
+        fl0 = rec.get("schema") or ocfg.flavor(cfg0, ctx.env)
+        why = ocfg.ungatable(cfg0, ocfg.rules_for(rec["key"], s), fl0)
+        if why and not a.ungated:
+            print(f"Refusing to upgrade {sid}: {why}.\n  The entry {rec['key']} is gated now and would lose "
+                  f"its gates. Make `permission` an object in {ctx.cfg_path} (e.g. {{\"*\": \"allow\"}}) and "
+                  "re-run, or pass --ungated to upgrade without the gates anyway.")
+            return EXIT_RISK
     cmd, environment, err = render_launch(ctx.cat, sid, target, ctx.env, ev)
     if err:
         print(f"error: {err}", file=sys.stderr)
@@ -799,6 +850,10 @@ def cmd_upgrade(ctx: Ctx) -> int:
         entry = ocfg.build_entry(s, cmd, environment, fl)
         ocfg.uninstall(cfg, key, rec.get("rules", []))
         rules = ocfg.rules_for(key, s)
+        why = ocfg.ungatable(cfg, rules, fl)
+        if why:          # the old entry had no gates either, or --ungated (checked above)
+            rules = []
+            L.append(f"  ! NOT gated{' (--ungated)' if a.ungated else ''}: {why}")
         ocfg.install(cfg, key, entry, rules, fl)
         out["backup"] = ocfg.backup(ctx.cfg_path)
         secret = os.path.exists(ctx.cfg_path) and os.stat(ctx.cfg_path).st_mode & 0o077 == 0
@@ -862,6 +917,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--key", help="opencode entry name (default: the server id)")
     sp.add_argument("--accept-risk", action="store_true", help="enable a server that is off by default")
     sp.add_argument("--dry-run", action="store_true", help="print what would be written")
+    sp.add_argument("--ungated", action="store_true",
+                    help="enable even when the config cannot hold its ask/deny gates")
     sp.add_argument("--allow-duplicate", action="store_true",
                     help="add it even though your own entry already runs the same package")
     sp = add("disable", cmd_disable, "remove what enable wrote")
@@ -874,6 +931,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("server")
     sp.add_argument("--to", help="exact version (default: latest published)")
     sp.add_argument("--reintrospect", action="store_true")
+    sp.add_argument("--ungated", action="store_true",
+                    help="upgrade even when the config can no longer hold the entry's ask/deny gates")
     sp = add("tools", cmd_tools, "show the recorded tool manifest", cfg=False)
     sp.add_argument("server")
     add("validate", cmd_validate, "validate the catalog", json_=False, cfg=False)

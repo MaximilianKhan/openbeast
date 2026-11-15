@@ -17,6 +17,7 @@
 #   [probe.<id>]       one prerequisite check, shared between servers.
 #                      kinds: command | path | env | tcp | any (see the doc).
 #
+# Fixed `env` values may use {state}: the beast-apps state dir.
 # Command templates: {package} and {version} expand from the server entry
 # (the version is the effective pin: an `apps.sh upgrade` override in the
 # state dir wins over the one written here). argv[0] is resolved to an
@@ -93,10 +94,11 @@ probes = ["macos-14-5", "node-18", "npx", "xcode-app", "xcodebuild-full", "simct
 # Only the `simulator` workflow (its own default): every advertised tool costs
 # the model context. Add "ui-automation,debugging" here when needed.
 env = { MOBILEBUILDMCP_ENABLED_WORKFLOWS = "simulator", MOBILEBUILDMCP_SENTRY_DISABLED = "true" }
-ask_tools = []
+# Building or testing runs the project's own build phases and scripts.
+ask_tools = ["build_*", "test_*"]
 deny_tools = []
-risk_patterns = ["erase", "delete", "shell", "exec", "device"]
-notes = "Builds run the project's own build phases and scripts: building an untrusted project executes its code. Device tools need code signing configured in Xcode. The legacy npm name `xcodebuildmcp` (2.7.0) is the same project; do not install both."
+risk_patterns = ["erase", "delete", "shell", "exec", "device", "build", "test", "run"]
+notes = "Builds run the project's own build phases and scripts: building an untrusted project executes its code, so build_* and test_* are gated as ask. Device tools need code signing configured in Xcode. The legacy npm name `xcodebuildmcp` (2.7.0) is the same project; do not install both."
 
 [server.replicant-mcp]
 title = "replicant-mcp (Gradle builds, emulators, adb, logcat, UI)"
@@ -111,10 +113,12 @@ command = ["npx", "-y", "{package}@{version}"]
 platforms = ["darwin", "linux"]
 probes = ["node-18", "npx", "adb", "java-17", "android-emulator"]
 env = {}
-ask_tools = ["adb-shell"]
+# gradle-build/-test/-list all run the project's ./gradlew, i.e. its build
+# scripts; gradle-get-details only reads a previous run's output.
+ask_tools = ["adb-shell", "gradle-build", "gradle-test", "gradle-list"]
 deny_tools = []
-risk_patterns = ["shell", "exec", "wipe", "uninstall", "delete"]
-notes = "`adb-shell` runs commands on the device behind a denylist (no su, rm -rf /, sh -c, metacharacters); still gated as ask. Gradle builds execute the project's build scripts. Needs an Android project with ./gradlew for the gradle-* tools."
+risk_patterns = ["shell", "exec", "wipe", "uninstall", "delete", "gradle", "build", "test"]
+notes = "`adb-shell` runs commands on the device behind a denylist (no su, rm -rf /, sh -c, metacharacters); still gated as ask. gradle-build, gradle-test and gradle-list run the project's ./gradlew (its build scripts) and are gated as ask. Needs an Android project with ./gradlew for the gradle-* tools."
 
 [server.mobile-mcp]
 title = "Mobile MCP (mobile-next)"
@@ -177,17 +181,32 @@ transport = "stdio"
 command = ["npx", "-y", "{package}@{version}"]
 platforms = ["darwin", "linux"]
 probes = ["node-18", "npx", "printer-type", "printer-host"]
-env = {}
+# Every variable that names a program this server spawns is pinned EMPTY:
+# upstream calls dotenv.config(), which reads the .env of the directory the
+# server starts in (the opened project) but never overrides a variable that
+# is already set. So a project's .env cannot choose the Blender/Fusion/FULU
+# bridge or the slicer binary; your shell still can, via env_passthrough.
+# Pinned the same way: the transport (a .env MCP_TRANSPORT=http would serve
+# every tool over unauthenticated HTTP, past every ask gate) and the CAD data
+# dir, whose runtime/bin/python the UNGATED cad_check_fit runs. CAD_DATA_DIR
+# must be a real path, never "" (upstream path.resolve("") is the cwd).
+# TEMP_DIR="" / CAD_OUTPUT_DIRS="" keep upstream's own defaults.
+env = { MCP_TRANSPORT = "stdio", MCP_HTTP_HOST = "127.0.0.1", CAD_DATA_DIR = "{state}/mcp-3d-printer-server/cad", TEMP_DIR = "", CAD_OUTPUT_DIRS = "", BLENDER_MCP_COMMAND = "", BLENDER_MCP_ARGS = "", BLENDER_MCP_BRIDGE_COMMAND = "", FUSION_MCP_COMMAND = "", FUSION_MCP_ARGS = "", FULU_BAMBU_BRIDGE_COMMAND = "", FULU_ORCA_PATH = "", ORCASLICER_BAMBULAB_PATH = "", ORCA_SLICER_BAMBULAB_PATH = "", SLICER_PATH = "", MCP_ALLOW_EXECUTABLE_ARG = "false", MCP_ALLOW_BRIDGE_COMMAND_ARG = "false" }
 # Copied from YOUR shell into the MCP entry at enable time (the config file
 # is then chmod 600). Set them first, e.g. PRINTER_TYPE=octoprint.
-env_passthrough = ["PRINTER_TYPE", "PRINTER_HOST", "PRINTER_PORT", "API_KEY", "BAMBU_SERIAL", "BAMBU_TOKEN", "BAMBU_MODEL", "SLICER_TYPE", "SLICER_PATH", "BAMBU_PROFILES_ROOT"]
+env_passthrough = ["PRINTER_TYPE", "PRINTER_HOST", "PRINTER_PORT", "API_KEY", "BAMBU_SERIAL", "BAMBU_TOKEN", "BAMBU_MODEL", "SLICER_TYPE", "SLICER_PATH", "BAMBU_PROFILES_ROOT", "BLENDER_MCP_COMMAND", "BLENDER_MCP_ARGS", "FUSION_MCP_COMMAND", "FUSION_MCP_ARGS", "FULU_BAMBU_BRIDGE_COMMAND", "FULU_ORCA_PATH", "ORCASLICER_BAMBULAB_PATH"]
 secret_env = ["API_KEY", "BAMBU_TOKEN"]
 default_enabled = false
 risk = "No print confirmation: upstream states 'There is no confirmation prompt and no bed check: your client's own print action is the approval.' A model tool call can heat a printer and start a physical print."
-ask_tools = ["start_print", "print_3mf", "upload_gcode", "process_and_print_stl", "resume_print", "set_printer_temperature"]
+# 1.2.77 also bridges to Blender and Fusion: blender_mcp_call reaches
+# execute_blender_code (arbitrary Python), fusion_mcp_call reaches
+# execute_code, fusion_mcp_setup installs an add-in plus a login item
+# (LaunchAgent), cad_run runs a build123d script, cad_setup installs a
+# runtime. pause_print stays ungated on purpose: it is the stop button.
+ask_tools = ["start_print", "print_3mf", "upload_gcode", "process_and_print_stl", "resume_print", "set_printer_temperature", "cancel_print", "blender_mcp_call", "blender_mcp_setup", "blender_mcp_edit_model", "fusion_mcp_call", "fusion_mcp_setup", "cad_run", "cad_setup", "fulu_bambu_network_rpc"]
 deny_tools = []
-risk_patterns = ["print", "temperature", "heat", "gcode", "move", "home", "extrude", "rpc"]
-notes = "Disabled by default (see risk). When enabled, every tool that can start, resume or heat a print is gated as ask."
+risk_patterns = ["print", "temperature", "heat", "gcode", "move", "home", "extrude", "rpc", "call", "setup", "code", "execute", "exec", "cad", "install", "script"]
+notes = "Disabled by default (see risk). When enabled, every tool that can start, resume, heat or cancel a print is gated as ask, and so is every tool that runs code or installs something: the Blender/Fusion bridges (blender_mcp_call, fusion_mcp_call, blender_mcp_edit_model and both *_setup tools), cad_run/cad_setup and the raw FULU RPC. The bridge and slicer programs come from your shell (env_passthrough) only, never from a project's .env; the transport is pinned to stdio and the CAD runtime lives in the beast-apps state dir."
 
 [server.ros-mcp]
 title = "ROS MCP server (robotmcp)"

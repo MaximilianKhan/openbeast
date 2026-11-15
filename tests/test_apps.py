@@ -388,7 +388,8 @@ def test_enable_v1_schema_uses_legacy_keys(box):
     assert cfg["mcp"]["mine"] == {"type": "local", "command": ["x"], "enabled": True}
     e = cfg["mcp"]["replicant-mcp"]
     assert e["enabled"] is True and "codemode" not in e
-    assert cfg["permission"] == {"replicant-mcp_adb-shell": "ask"}
+    assert cfg["permission"] == {"replicant-mcp_adb-shell": "ask", "replicant-mcp_gradle-build": "ask",
+                                 "replicant-mcp_gradle-test": "ask", "replicant-mcp_gradle-list": "ask"}
     box.run("disable", "replicant-mcp", check=0)
     assert box.read_config() == {"mcp": {"mine": {"type": "local", "command": ["x"], "enabled": True}}}
 
@@ -672,3 +673,181 @@ def test_skill_is_registered_and_off_the_always_on_menu():
     assert "app-control" in names
     assert "app-control" not in (REPO / "system-prompt-tools.md").read_text()
     assert (REPO / "docs" / "BEAST_APPS.md").exists()
+
+
+# ── safety gates against the real pinned tool lists ─────────────────────────
+# tests/fixtures/apps/<server>-<version>.tools.json are the names and
+# descriptions the pinned upstream releases answer tools/list with (read off
+# the real packages, 2026-11-15). A gate that names no real tool, or a tool
+# that says it runs code with no gate, fails here instead of on a user's box.
+FIX = REPO / "tests" / "fixtures" / "apps"
+
+
+def _apps():
+    sys.path.insert(0, str(REPO / "agents" / "apps"))
+    import catalog as C
+    import cli
+    return C, cli
+
+
+def _real(sid: str):
+    C, cli = _apps()
+    cat = C.load(str(CATALOG), env={}, overlays=False)
+    s = cat["server"][sid]
+    tools = json.loads((FIX / f"{sid}-{s['version']}.tools.json").read_text())
+    man = cli.make_manifest(sid, s["version"], "stdio", {}, tools)
+    return s, {t["name"] for t in tools}, cli.diff_manifests(None, man, s)
+
+
+def _gated(s: dict, name: str) -> bool:
+    import fnmatch
+    return any(fnmatch.fnmatchcase(name, g) for g in s["ask_tools"] + s["deny_tools"])
+
+
+@pytest.mark.parametrize("sid", ["mcp-3d-printer-server", "replicant-mcp", "mobilebuildmcp"])
+def test_every_gate_names_a_real_tool(sid):
+    import fnmatch
+    s, names, _ = _real(sid)
+    for g in s["ask_tools"] + s["deny_tools"]:
+        assert any(fnmatch.fnmatchcase(n, g) for n in names), f"{sid}: gate {g!r} matches no tool"
+
+
+def test_3d_print_gates_its_code_and_install_bridges():
+    s, names, d = _real("mcp-3d-printer-server")
+    # blender_mcp_call reaches execute_blender_code; fusion_mcp_call reaches
+    # execute_code; fusion_mcp_setup installs an add-in + a LaunchAgent.
+    for t in ("blender_mcp_call", "blender_mcp_setup", "blender_mcp_edit_model", "fusion_mcp_call",
+              "fusion_mcp_setup", "cad_run", "cad_setup", "cancel_print", "fulu_bambu_network_rpc",
+              "start_print", "print_3mf", "set_printer_temperature"):
+        assert t in names and _gated(s, t), t
+    assert not _gated(s, "pause_print")                   # the stop button stays one call away
+    loud = [f["name"] for f in d["flagged"] if f["description"] and not f["gated"]]
+    assert loud == [], f"tools that say they run code, ungated: {loud}"
+    for t in ("blender_mcp_call", "fusion_mcp_call", "fusion_mcp_setup"):
+        assert next(f for f in d["flagged"] if f["name"] == t)["description"]
+
+
+def test_build_tools_that_run_project_scripts_are_gated():
+    # docs/BEAST_APPS.md Safety: building a project runs its build scripts,
+    # and the user approves every such call.
+    s, _, _ = _real("replicant-mcp")
+    for t in ("gradle-build", "gradle-test", "gradle-list", "adb-shell"):   # ./gradlew or a shell
+        assert _gated(s, t), t
+    assert not _gated(s, "gradle-get-details")
+    s, _, _ = _real("mobilebuildmcp")
+    for t in ("build_sim", "build_run_sim", "test_sim"):
+        assert _gated(s, t), t
+    assert not _gated(s, "list_sims") and not _gated(s, "screenshot")
+
+
+def test_3d_print_bridge_programs_come_from_the_shell_never_a_project_env(box):
+    # upstream dotenv.config() reads the cwd's .env but never overrides a
+    # variable that is already set: pinning them empty closes that path.
+    env = {"PRINTER_TYPE": "octoprint", "PRINTER_HOST": "10.0.0.5"}
+    rc, out = box.json("enable", "3d-print", "--accept-risk", "--dry-run", extra_env=env)
+    assert rc == 0, out
+    e = out["entry"]["environment"]
+    for v in ("BLENDER_MCP_COMMAND", "BLENDER_MCP_ARGS", "FUSION_MCP_COMMAND", "FULU_BAMBU_BRIDGE_COMMAND",
+              "SLICER_PATH", "TEMP_DIR", "CAD_OUTPUT_DIRS"):
+        assert e[v] == "", v
+    # a .env MCP_TRANSPORT=http would serve every tool unauthenticated, past the gates
+    assert e["MCP_TRANSPORT"] == "stdio" and e["MCP_HTTP_HOST"] == "127.0.0.1"
+    # the ungated cad_check_fit runs <CAD_DATA_DIR>/runtime/bin/python: a fixed
+    # absolute path, never "" (which upstream resolves to the project cwd)
+    assert os.path.isabs(e["CAD_DATA_DIR"]) and "{state}" not in e["CAD_DATA_DIR"], e["CAD_DATA_DIR"]
+    rc, out = box.json("enable", "3d-print", "--accept-risk", "--dry-run",
+                       extra_env={**env, "BLENDER_MCP_COMMAND": "/usr/bin/uvx"})
+    assert out["entry"]["environment"]["BLENDER_MCP_COMMAND"] == "/usr/bin/uvx"
+
+
+def test_first_refresh_flags_an_ungated_tool_that_says_it_runs_code(box, tmp_path):
+    box.stub_server(risk=("shell",), ask=("danger*",))
+    box.run("enable", "stub-cap", check=0)
+    tools = tmp_path / "tools.json"
+    tools.write_text(json.dumps([
+        {"name": "alpha", "description": "read a widget", "inputSchema": {"type": "object"}},
+        {"name": "bridge_call", "description": "Call a tool on the bridge; execute_code accepts Python code.",
+         "inputSchema": {"type": "object"}},
+        {"name": "danger_exec", "description": "Runs arbitrary code.", "inputSchema": {"type": "object"}},
+    ]))
+    cp = box.run("refresh", extra_env={"STUB_TOOLS_FILE": str(tools)}, check=0)
+    tail = cp.stdout.split("first manifest: 3 tools")[1]
+    assert "tool bridge_call describes itself as running code" in tail and "NOT gated" in tail
+    assert "danger_exec" not in tail and "alpha" not in tail           # gated / harmless: quiet
+
+
+def test_refresh_flags_an_existing_tool_whose_description_turns_into_exec(box, tmp_path):
+    # an upstream update can turn a bland existing tool into an exec bridge
+    # without renaming it: the description check covers changed tools too,
+    # and keeps warning on later refreshes until the tool is gated.
+    box.stub_server(risk=("shell",), ask=("danger*",))
+    box.run("enable", "stub-cap", check=0)
+    tools = tmp_path / "tools.json"
+    tools.write_text(json.dumps([{"name": "bridge", "description": "read a widget", "inputSchema": {"type": "object"}}]))
+    first = box.run("refresh", extra_env={"STUB_TOOLS_FILE": str(tools)}, check=0)
+    assert "describes itself" not in first.stdout
+    tools.write_text(json.dumps([{"name": "bridge", "description": "Call the bridge; execute_code accepts Python code.",
+                                  "inputSchema": {"type": "object"}}]))
+    second = box.run("refresh", extra_env={"STUB_TOOLS_FILE": str(tools)}, check=0)
+    assert "~ bridge: description changed" in second.stdout
+    assert "tool bridge describes itself as running code" in second.stdout and "NOT gated" in second.stdout
+    third = box.run("refresh", extra_env={"STUB_TOOLS_FILE": str(tools)}, check=0)
+    assert "tools unchanged" in third.stdout
+    assert "tool bridge describes itself as running code" in third.stdout
+
+
+def test_upgrade_refuses_to_drop_gates_the_entry_already_had(box):
+    # enabled WITH gates, then `permission` became a string: an upgrade must not
+    # silently rewrite the entry ungated (and record rules=[]) with exit 0.
+    v1 = {"OPENBEAST_OPENCODE_SCHEMA": "v1"}
+    box.stub_server()
+    box.write_config({"permission": {"*": "allow"}, "mcp": {}})
+    box.run("enable", "stub-cap", extra_env=v1, check=0)
+    assert json.loads((box.state / "enabled.json").read_text())["stubsrv"]["rules"]
+    cfg = box.read_config()
+    cfg["permission"] = "allow"
+    box.write_config(cfg)
+    before = box.config.read_text()
+    cp = box.run("upgrade", "stubsrv", "--to", "1.1.0", extra_env=v1)
+    assert cp.returncode == 6, cp.stdout + cp.stderr
+    assert "Refusing to upgrade stubsrv" in cp.stdout and "--ungated" in cp.stdout
+    assert "the string 'allow'" in cp.stdout
+    assert box.config.read_text() == before
+    assert not (box.state / "pins.json").exists()
+    assert json.loads((box.state / "enabled.json").read_text())["stubsrv"]["rules"]
+    # explicit opt-out goes through, and records what was actually written
+    rc, out = box.json("upgrade", "stubsrv", "--to", "1.1.0", "--ungated", extra_env=v1)
+    assert rc == 0 and out["config_updated"], out
+    assert json.loads((box.state / "enabled.json").read_text())["stubsrv"]["rules"] == []
+
+
+def test_ungatable_names_the_actual_type_of_permission():
+    sys.path.insert(0, str(CLI.parent))
+    import ocfg
+    rules = [{"action": "k_t", "effect": "ask"}]
+    assert "the string 'allow'" in ocfg.ungatable({"permission": "allow"}, rules, "v1")
+    for bad, word in ((None, "null"), (["x"], "a list"), (3, "a number")):
+        why = ocfg.ungatable({"permission": bad}, rules, "v1")
+        assert why and word in why and "the string" not in why, why
+
+
+def test_enable_refuses_when_v1_permission_is_a_string(box):
+    box.android_sdk_off_path()
+    box.write_config({"permission": "allow", "mcp": {}})
+    before = box.config.read_text()
+    v1 = {"OPENBEAST_OPENCODE_SCHEMA": "v1"}
+    cp = box.run("enable", "android-build", extra_env=v1)
+    assert cp.returncode == 6, cp.stdout + cp.stderr
+    assert "Refusing to enable replicant-mcp" in cp.stdout and "--ungated" in cp.stdout
+    assert "gated:" not in cp.stdout
+    assert box.config.read_text() == before and box.backups() == []
+    assert not (box.state / "enabled.json").exists()
+    # explicit opt-out: the entry goes in, and no gate is claimed or recorded
+    rc, out = box.json("enable", "android-build", "--ungated", extra_env=v1)
+    assert rc == 0, out
+    assert out["rules"] == [] and out["ungated"] and any("NOT gated" in w for w in out["warnings"])
+    cfg = box.read_config()
+    assert cfg["permission"] == "allow" and "replicant-mcp" in cfg["mcp"]
+    assert json.loads((box.state / "enabled.json").read_text())["replicant-mcp"]["rules"] == []
+    cp = box.run("enable", "android-build", "--ungated", extra_env=v1)
+    assert cp.returncode == 0 and "  gated: " not in cp.stdout
