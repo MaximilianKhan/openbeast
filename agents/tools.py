@@ -2332,6 +2332,14 @@ def web_search(query: str, max_results: int = 10, pageno: int = 1,
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        # Before URLError (its base class): SearXNG IS running and answered
+        # — 429 is its limiter, 403 usually means `json` is missing from
+        # search.formats in settings.yml. "Not running, docker run …" sent
+        # the model (and client-mode users) down the wrong fix.
+        return (f"Error: SearXNG returned HTTP {e.code} {e.reason}"
+                + (" (rate limited — wait and retry)" if e.code == 429 else "")
+                + (" (is `json` enabled in search.formats?)" if e.code == 403 else ""))
     except urllib.error.URLError:
         return (
             "Error: SearXNG is not running. Start it with:\n"

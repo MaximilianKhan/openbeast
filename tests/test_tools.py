@@ -436,6 +436,25 @@ class TestWebSearch(unittest.TestCase):
         self.assertIn("SearXNG", result)
         self.assertIn("not running", result.lower())
 
+    def test_http_error_from_a_running_searxng(self):
+        # HTTPError subclasses URLError: a 429 (limiter) or 403 (json format
+        # off) from a LIVE SearXNG used to say "not running, docker run …".
+        import io
+        import urllib.error
+        import urllib.request
+        saved = urllib.request.urlopen
+
+        def boom(req, timeout=None):
+            raise urllib.error.HTTPError(req.full_url, 429, "Too Many Requests",
+                                         {}, io.BytesIO(b""))
+        urllib.request.urlopen = boom
+        try:
+            result = web_search("test query")
+        finally:
+            urllib.request.urlopen = saved
+        self.assertIn("HTTP 429", result)
+        self.assertNotIn("not running", result.lower())
+
 
 class TestWriteGuards(unittest.TestCase):
     """Protected-path guard on write_file / edit_file (credential stores,
