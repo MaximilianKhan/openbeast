@@ -1954,6 +1954,8 @@ _fetch_opener = _build_fetch_opener()
 #: agent's history (review efficiency-3). Env OPENBEAST_FETCH_MAX_CHARS
 #: overrides it (read per call).
 _FETCH_MAX_CHARS_DEFAULT = 200_000
+#: Floor on fetch's byte read budget (see _fetch_body).
+_FETCH_MIN_READ_BYTES = 2 * 1024 * 1024
 
 
 def _fetch_max_chars() -> int:
@@ -2050,7 +2052,12 @@ def _fetch_body(url: str, max_length: int, deadline: float,
             # Chunked read1() (one recv at most per call), not read(n) —
             # which loops internally until n bytes — so the deadline is
             # checked between every network read.
-            limit = max_length * 4
+            # Byte budget: max_length*4, but never below
+            # _FETCH_MIN_READ_BYTES — at the old bare max_length*4 (200 KB by
+            # default) a big inline <script>/JSON head used up the whole read
+            # and the page came back empty. The char cap still applies after
+            # stripping; the 2M-char ceiling keeps the worst case at 8 MB.
+            limit = max(max_length * 4, _FETCH_MIN_READ_BYTES)
             buf = bytearray()
             read_some = getattr(resp, "read1", resp.read)
             while len(buf) < limit and time.monotonic() < deadline:
@@ -2063,6 +2070,9 @@ def _fetch_body(url: str, max_length: int, deadline: float,
                 if not chunk:
                     break
                 buf += chunk
+            # Stopped at the budget with the body not known to be complete
+            # (http.client's .length is the unread Content-Length; 0 = done).
+            byte_cut = len(buf) >= limit and getattr(resp, "length", None) != 0
             raw_bytes = bytes(buf)
             text = raw_bytes.decode(charset, errors="replace")
         cut_note = ""
@@ -2072,6 +2082,13 @@ def _fetch_body(url: str, max_length: int, deadline: float,
                         f"total deadline (server too slow)")
             cut_note = (f"\n\n[fetch stopped at its {_FETCH_DEADLINE:.0f}s total "
                         f"deadline — partial content, {len(raw_bytes)} bytes]")
+        elif byte_cut:
+            cut_note = (f"\n\n[page cut at {len(raw_bytes)} bytes — the rest "
+                        f"was not fetched]")
+        if cut_note:
+            # The cut can land inside a tag: drop the dangling '<div cla…'
+            # the tag stripper below cannot match.
+            text = re.sub(r"<[^<>]*\Z", "", text)
 
         if "html" in content_type.lower() or text.strip()[:100].lower().startswith(("<!doctype", "<html")):
             # Every pattern here must be LINEAR on hostile input: re holds

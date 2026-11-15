@@ -353,6 +353,48 @@ class TestHtmlStripIsLinear(unittest.TestCase):
             self.assertNotIn(gone, out)
 
 
+class TestFetchByteCapCut(unittest.TestCase):
+    """The read stops at a byte budget. A cut inside a big inline <script>
+    used to come back as '(empty response)', and a cut page whose stripped
+    text was short came back with no marker at all."""
+
+    def setUp(self):
+        import tools
+        self.tools = tools
+        self._opener = tools._fetch_opener
+        self._blocked = tools._fetch_url_blocked
+        tools._fetch_url_blocked = lambda url: None  # no DNS: body is stubbed
+
+    def tearDown(self):
+        self.tools._fetch_opener = self._opener
+        self.tools._fetch_url_blocked = self._blocked
+
+    def _fetch(self, body: bytes, max_length=50_000):
+        self.tools._fetch_opener = _FakeOpener(body)
+        return self.tools.fetch("http://big.example/", max_length)
+
+    def test_big_head_script_does_not_empty_the_page(self):
+        body = (b"<html><head><script>" + b"var a=1;" * 30000
+                + b"</script></head><body><h1>Title</h1>"
+                + b"<div><p>row</p></div>" * 2000
+                + b"<p>THE CONCLUSION</p></body></html>")
+        out = self._fetch(body)
+        self.assertNotEqual(out, "(empty response)")
+        self.assertIn("Title", out)
+        self.assertIn("THE CONCLUSION", out)
+
+    def test_cut_page_with_short_text_is_marked(self):
+        body = b"<html><body>" + b'<div class="aaaa"></div>' * 200_000 + b"<p>END</p>"
+        out = self._fetch(body)
+        self.assertIn("page cut", out)
+        self.assertNotIn("END", out)
+        self.assertNotIn("<div", out)  # no half tag left at the cut
+
+    def test_whole_page_has_no_cut_marker(self):
+        out = self._fetch(b"<html><body><p>small</p></body></html>")
+        self.assertEqual(out, "small")
+
+
 class TestFetchTotalDeadline(unittest.TestCase):
     """urllib's timeout= is per socket operation: a server dripping a byte
     every few seconds used to hold a tool-server worker until the 8 MB cap
