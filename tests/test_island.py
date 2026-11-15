@@ -579,15 +579,39 @@ def test_cli_init_force_and_auto_offline(run_dir):
 
 # ── conf.sh and start.sh wiring ─────────────────────────────────────────────
 
-def _conf(env_extra, expr):
+def _fake_repo(tmp, conf=None):
+    """A REPO_DIR with the real scripts/ and agents/ but its OWN
+    openbeast.conf: the real checkout's conf (a rig's ISLAND=off, OFFLINE=true)
+    must not decide what these tests see."""
+    root = pathlib.Path(tmp)
+    root.mkdir(parents=True, exist_ok=True)
+    for name in ("scripts", "agents", "openbeast.conf.example"):
+        if not (root / name).exists():
+            os.symlink(REPO / name, root / name)
+    if conf is not None:
+        (root / "openbeast.conf").write_text(conf)
+    return root
+
+
+def _conf(env_extra, expr, conf=None):
+    import tempfile
     env = {k: v for k, v in os.environ.items() if not k.startswith("OPENBEAST_")}
-    env.update(REPO_DIR=str(REPO), OB_CONF_READONLY="1", OB_CONF_LINTED="1",
-               OPENBEAST_RUN_DIR="/nonexistent-island-test")
-    env.update(env_extra)
-    r = subprocess.run(["bash", "-c", f'source scripts/lib/conf.sh >/dev/null; {expr}'],
-                       cwd=REPO, env=env, capture_output=True, text=True, timeout=30)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _fake_repo(tmp, conf)
+        env.update(REPO_DIR=str(root), OB_CONF_READONLY="1", OB_CONF_LINTED="1",
+                   OPENBEAST_RUN_DIR="/nonexistent-island-test")
+        env.update(env_extra)
+        r = subprocess.run(["bash", "-c", f'source scripts/lib/conf.sh >/dev/null; {expr}'],
+                           cwd=root, env=env, capture_output=True, text=True, timeout=30)
     assert r.returncode == 0, r.stderr
     return r.stdout.strip()
+
+
+def test_conf_ignores_the_real_checkouts_conf(tmp_path):
+    """The hermetic helper itself: a conf it is handed is read, the
+    checkout's is not."""
+    assert _conf({}, 'echo "$ISLAND"', conf="ISLAND=off\n") == "off"
+    assert _conf({}, 'echo "$ISLAND $OPENBEAST_WEBUI_OFFLINE"', conf="") == "auto false"
 
 
 @pytest.mark.parametrize("raw,want", [
@@ -620,6 +644,52 @@ def test_conf_webui_offline_follows_the_running_stack(tmp_path):
         {"state": "island", "launched_islanded": True, "updated_at": 1,
          "stale_after": 90, "pid": 2 ** 22 + 1}))
     assert _conf(env, 'echo "$OPENBEAST_WEBUI_OFFLINE"') == "false"
+
+
+def test_conf_webui_offline_honours_a_watcher_on_an_island_off_conf(tmp_path):
+    """A one-off `./start.sh -d --offline` on a box whose conf says
+    ISLAND=off runs a watcher; the watchdog's healthcheck.sh --restart does
+    not inherit OPENBEAST_ISLAND=force, so conf.sh must still ask the
+    watcher, or compose recreates WebUI without OFFLINE_MODE mid-outage."""
+    run = tmp_path / "run"
+    run.mkdir()
+    w = _spawn_watcher(run)
+    try:
+        assert _cli(run, "status").returncode == 3
+        assert _conf({"OPENBEAST_RUN_DIR": str(run)},
+                     'echo "$ISLAND $OPENBEAST_WEBUI_OFFLINE"', conf="ISLAND=off\n") == "off true"
+    finally:
+        w.terminate(); w.wait(timeout=10)
+    assert _conf({"OPENBEAST_RUN_DIR": str(run)}, 'echo "$OPENBEAST_WEBUI_OFFLINE"',
+                 conf="ISLAND=off\n") == "false"
+
+
+def test_status_reports_a_watcher_on_an_island_off_conf(tmp_path):
+    """`./start.sh --status` from another shell lacks the --offline launch's
+    OPENBEAST_ISLAND=force; on an ISLAND=off conf it must still show the live
+    watcher and the island state (docs/BEAST_ISLAND.md), and must not add
+    either line when no watcher runs."""
+    root = _fake_repo(tmp_path / "repo", conf="ISLAND=off\n")
+    os.symlink(REPO / "start.sh", root / "start.sh")
+    run = root / ".run"
+    run.mkdir()
+    env = {k: v for k, v in os.environ.items() if not k.startswith("OPENBEAST_")}
+    env["OB_CONF_LINTED"] = "1"
+
+    def status():
+        r = subprocess.run(["bash", str(root / "start.sh"), "--status"], env=env,
+                           capture_output=True, text=True, timeout=60)
+        return r.stdout
+    out = status()
+    assert "island watcher" not in out and "network:" not in out, out
+    w = _spawn_watcher(run)
+    try:
+        (run / "island.pid").write_text(f"{w.pid}\n")
+        out = status()
+        assert f"island watcher: running (pid {w.pid})" in out, out
+        assert "network: ISLAND MODE" in out and "[forced]" in out, out
+    finally:
+        w.terminate(); w.wait(timeout=10)
 
 
 def test_a_boot_race_does_not_pin_webui_offline(tmp_path):
