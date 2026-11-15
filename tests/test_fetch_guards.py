@@ -444,6 +444,97 @@ class TestFetchTotalDeadline(unittest.TestCase):
         out, _ = self._timed_fetch()
         self.assertEqual(out, "hello")
 
+    def test_redirect_hop_straddling_the_deadline_is_cut(self):
+        # The watchdog fires once: a socket a redirect hop opens AFTER it
+        # fired (slow hop-2 DNS) used to escape it, leaving only the 30 s
+        # per-op timeout while hop 2 dripped headers indefinitely.
+        import threading
+        import time
+        hop2 = socket.socket()
+        hop2.bind(("127.0.0.1", 0))
+        hop2.listen(1)
+        p2 = hop2.getsockname()[1]
+        self.addCleanup(hop2.close)
+
+        def run2():
+            try:
+                conn, _ = hop2.accept()
+            except OSError:
+                return
+            with conn:
+                try:
+                    conn.recv(65536)
+                    conn.sendall(b"HTTP/1.1 200 OK\r\n")
+                    while not self.stop.wait(0.1):
+                        conn.sendall(b"X-a: b\r\n")
+                except OSError:
+                    return
+        t = threading.Thread(target=run2, daemon=True)
+        t.start()
+        self.threads.append(t)
+
+        def resolve(host, port, scheme):
+            if port == p2:
+                time.sleep(0.8)  # hop-2 resolve runs across the deadline
+            return ["127.0.0.1"], None
+        self.tools._resolve_vetted = resolve
+
+        def run1():
+            try:
+                conn, _ = self.srv.accept()
+            except OSError:
+                return
+            with conn:
+                conn.recv(65536)
+                self.stop.wait(0.5)
+                conn.sendall(f"HTTP/1.1 302 Found\r\nLocation: "
+                             f"http://127.0.0.1:{p2}/\r\nContent-Length: 0"
+                             f"\r\n\r\n".encode())
+                self.stop.wait(10)
+        t1 = threading.Thread(target=run1, daemon=True)
+        t1.start()
+        self.threads.append(t1)
+        res = {}
+        th = threading.Thread(target=lambda: res.setdefault(
+            "out", self.tools.fetch(f"http://127.0.0.1:{self.port}/")),
+            daemon=True)
+        t0 = time.monotonic()
+        th.start()
+        th.join(8)
+        self.assertFalse(th.is_alive(), "fetch outlived its deadline")
+        self.assertLess(time.monotonic() - t0, 5.0)
+        self.assertIn("deadline", res["out"])
+
+    def test_socket_registered_after_expiry_is_shut_down(self):
+        # A connect that completes after the watchdog fired must not escape
+        # it: registration itself shuts the late socket down.
+        import threading
+        a, b = socket.socketpair()
+        self.addCleanup(a.close)
+        self.addCleanup(b.close)
+        st = self.tools._fetch_state
+        ev = threading.Event()
+        ev.set()
+        st.socks, st.expired = [], ev
+        try:
+            self.tools._fetch_track(a)
+        finally:
+            for s_ in st.socks:
+                s_.close()
+            st.socks = st.expired = None
+        a.settimeout(2)
+        self.assertEqual(a.recv(1), b"")  # EOF now, not a 2 s wait
+
+    def test_slow_initial_dns_is_cut_at_the_deadline(self):
+        # getaddrinfo cannot be interrupted, so the up-front resolve used to
+        # run before (and outside) the watchdog.
+        import time
+        self.tools._fetch_url_blocked = lambda url: time.sleep(4) or None
+        t0 = time.monotonic()
+        out = self.tools.fetch(f"http://127.0.0.1:{self.port}/")
+        self.assertLess(time.monotonic() - t0, 3.0, out)
+        self.assertIn("deadline", out)
+
 
 class TestFetchThroughProxy(unittest.TestCase):
     """With http_proxy/https_proxy set, fetch used to pin the TARGET's IP but

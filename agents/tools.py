@@ -1779,7 +1779,12 @@ def _fetch_track(sock) -> None:
     """Register a freshly connected socket with the in-flight fetch's
     watchdog. A dup is kept (not the object) because TLS wrapping detaches
     the original; shutdown() on the dup still ends the shared connection,
-    which unblocks a recv stuck in another frame of this thread."""
+    which unblocks a recv stuck in another frame of this thread.
+
+    The watchdog fires ONCE: a socket a redirect hop opens after it fired
+    (its resolve or connect straddled the deadline) is shut down here, on
+    registration — append-then-check pairs with _expire's set-then-iterate,
+    so whichever runs second sees the other."""
     socks = getattr(_fetch_state, "socks", None)
     if socks is None:
         return
@@ -1787,6 +1792,55 @@ def _fetch_track(sock) -> None:
         socks.append(sock.dup())
     except OSError:
         pass
+    expired = getattr(_fetch_state, "expired", None)
+    if expired is not None and expired.is_set():
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+
+def _fetch_check_deadline() -> None:
+    """Raise URLError once the in-flight fetch's total deadline has passed
+    (no-op outside a fetch)."""
+    deadline = getattr(_fetch_state, "deadline", None)
+    if deadline is not None and time.monotonic() >= deadline:
+        raise urllib.error.URLError("fetch total deadline exceeded")
+
+
+def _fetch_op_timeout(timeout):
+    """Per-operation socket timeout clamped to what is left of the fetch's
+    total deadline, so a connect that starts late cannot outlast it."""
+    deadline = getattr(_fetch_state, "deadline", None)
+    if deadline is None:
+        return timeout
+    left = max(0.05, deadline - time.monotonic())
+    return left if timeout is None else min(timeout, left)
+
+
+def _fetch_bounded(fn, *args):
+    """Run a resolver call (getaddrinfo cannot be interrupted) on a helper
+    thread and wait at most the fetch's remaining deadline for it. Outside a
+    fetch it is a plain call. The helper is a daemon and finishes on its own
+    when the system resolver gives up; the worker does not wait for it."""
+    deadline = getattr(_fetch_state, "deadline", None)
+    if deadline is None:
+        return fn(*args)
+    box = {}
+
+    def run():
+        try:
+            box["r"] = fn(*args)
+        except BaseException as e:  # surfaced to the caller below
+            box["e"] = e
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(max(0.0, deadline - time.monotonic()))
+    if t.is_alive():
+        raise urllib.error.URLError("fetch total deadline exceeded (DNS)")
+    if "e" in box:
+        raise box["e"]
+    return box["r"]
 
 
 class _PinnedHTTPConnection(http.client.HTTPConnection):
@@ -1799,6 +1853,8 @@ class _PinnedHTTPConnection(http.client.HTTPConnection):
     def connect(self):
         # pinned_ip None = proxied request: dial the operator's proxy
         # (self.host) — see _pinned_open.
+        _fetch_check_deadline()
+        self.timeout = _fetch_op_timeout(self.timeout)
         self.sock = socket.create_connection(
             (self._pinned_ip or self.host, self.port), self.timeout,
             self.source_address)
@@ -1815,6 +1871,8 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         self._pinned_ip = pinned_ip
 
     def connect(self):
+        _fetch_check_deadline()
+        self.timeout = _fetch_op_timeout(self.timeout)
         sock = socket.create_connection(
             (self._pinned_ip or self.host, self.port), self.timeout,
             self.source_address)
@@ -1841,14 +1899,17 @@ def _pinned_open(handler, req, conn_class, scheme):
         # name, then dial the proxy, which does its own resolution: the IP
         # pin cannot cover a proxied target (a rebinding answer at the
         # proxy is out of our hands), only the name-level vet can.
-        reason = _fetch_url_blocked(req.full_url)
+        reason = _fetch_bounded(_fetch_url_blocked, req.full_url)
         if reason:
             raise urllib.error.URLError(f"fetch blocked: {reason}")
+        _fetch_check_deadline()
         return handler.do_open(conn_class, req, pinned_ip=None)
     parsed = urllib.parse.urlparse(req.full_url)
-    ips, reason = _resolve_vetted(parsed.hostname, parsed.port, scheme)
+    ips, reason = _fetch_bounded(_resolve_vetted, parsed.hostname,
+                                 parsed.port, scheme)
     if reason:
         raise urllib.error.URLError(f"fetch blocked: {reason}")
+    _fetch_check_deadline()
     return handler.do_open(conn_class, req, pinned_ip=ips[0])
 
 
@@ -1868,7 +1929,8 @@ class _FetchRedirectHandler(urllib.request.HTTPRedirectHandler):
     pinned handlers when urllib re-opens the redirected request, so this
     early check being one resolution ahead can't be exploited."""
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        reason = _fetch_url_blocked(newurl)
+        _fetch_check_deadline()
+        reason = _fetch_bounded(_fetch_url_blocked, newurl)
         if reason:
             raise urllib.error.URLError(
                 f"fetch blocked: redirect to {newurl}: {reason}")
@@ -1912,9 +1974,6 @@ def fetch(url: str, max_length: int = 50_000) -> str:
     hostname resolving to loopback/private/link-local/reserved space is
     blocked, at request time and again on every redirect hop.
     """
-    reason = _fetch_url_blocked(url)
-    if reason:
-        return f"Error: fetch blocked: {reason}"
     # max_length is model-controlled; without a ceiling, max_length*4 below
     # becomes an attempted multi-GB read into memory — and a result bigger
     # than the context is useless to the model anyway. The truncation marker
@@ -1938,12 +1997,26 @@ def fetch(url: str, max_length: int = 50_000) -> str:
     watchdog = threading.Timer(_FETCH_DEADLINE, _expire)
     watchdog.daemon = True
     _fetch_state.socks = socks
+    _fetch_state.expired = expired
+    _fetch_state.deadline = deadline
     watchdog.start()
     try:
+        # The up-front (friendly-error) resolve runs under the deadline too:
+        # getaddrinfo is uninterruptible, so _fetch_bounded waits for it on a
+        # helper thread for at most the time left.
+        try:
+            reason = _fetch_bounded(_fetch_url_blocked, url)
+        except urllib.error.URLError:
+            return (f"Error: fetch exceeded its {_FETCH_DEADLINE:.0f}s "
+                    f"total deadline (DNS resolution too slow)")
+        if reason:
+            return f"Error: fetch blocked: {reason}"
         return _fetch_body(url, max_length, deadline, expired)
     finally:
         watchdog.cancel()
         _fetch_state.socks = None
+        _fetch_state.expired = None
+        _fetch_state.deadline = None
         for s_ in socks:
             try:
                 s_.close()
@@ -2029,12 +2102,12 @@ def _fetch_body(url: str, max_length: int, deadline: float,
             pass
         return f"HTTP {e.code} {e.reason}" + (f"\n{body}" if body else "")
     except urllib.error.URLError as e:
-        if expired.is_set():
+        if expired.is_set() or time.monotonic() >= deadline:
             return (f"Error: fetch exceeded its {_FETCH_DEADLINE:.0f}s "
                     f"total deadline (server too slow)")
         return f"URL error: {e.reason}"
     except Exception as e:
-        if expired.is_set():
+        if expired.is_set() or time.monotonic() >= deadline:
             return (f"Error: fetch exceeded its {_FETCH_DEADLINE:.0f}s "
                     f"total deadline (server too slow)")
         return f"Error: {e}"
