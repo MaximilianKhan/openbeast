@@ -69,6 +69,14 @@ _CHILD_AS_LIMIT = 32 * 1024**3
 # below current usage yet still stops a bomb a few thousand tasks in.
 _CHILD_NPROC_MARGIN = 4096
 
+# Platforms without prlimit(2) (Darwin): setrlimit(RLIMIT_AS) is accepted or
+# refused but never ENFORCED there, and NPROC/FSIZE/CPU are not applied at
+# all, so a memory or fork bomb in a Mac client's bash ran unbounded. A
+# parent-side guard polls the command's group instead and SIGKILLs it past
+# the RSS cap (the same number as the AS cap) or this many processes.
+_GROUP_GUARD_POLL = 0.5
+_GROUP_GUARD_MAX_PROCS = 1024
+
 
 def _uid_task_count(uid: int | None = None) -> int | None:
     """Tasks (processes + threads) whose REAL uid is `uid` — the quantity the
@@ -236,9 +244,68 @@ def run_reaped(command, timeout, as_limit=None, **popen_kw):
         _LIVE_GROUPS.pop(proc.pid, None)
 
 
+def _group_usage(pgid: int):
+    """(total RSS bytes, process count) of the command's process group, or
+    None if ps fails. start_new_session makes session == group == pid, so
+    `ps -g` selects it on both BSD (group) and procps (session)."""
+    try:
+        out = subprocess.run(["ps", "-o", "rss=", "-g", str(pgid)],
+                             capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    rows = [int(x) for x in out.split() if x.isdigit()]
+    return sum(rows) * 1024, len(rows)
+
+
+def _start_group_guard(proc, as_limit):
+    """Parent-side memory/process backstop for prlimit-less platforms (see
+    _GROUP_GUARD_POLL). Returns (stop_event, verdict_list)."""
+    stop = threading.Event()
+    verdict: list = []
+
+    def run():
+        while not stop.wait(_GROUP_GUARD_POLL):
+            if proc.poll() is not None:
+                return
+            usage = _group_usage(proc.pid)
+            if usage is None:
+                continue
+            rss, nprocs = usage
+            if rss > as_limit:
+                why = (f"memory cap: group RSS {rss // 1024**2} MB over "
+                       f"{as_limit // 1024**2} MB")
+            elif nprocs > _GROUP_GUARD_MAX_PROCS:
+                why = (f"process cap: {nprocs} processes over "
+                       f"{_GROUP_GUARD_MAX_PROCS}")
+            else:
+                continue
+            verdict.append(why)
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            return
+    threading.Thread(target=run, daemon=True).start()
+    return stop, verdict
+
+
 def _reap(proc, command, timeout, _as_limit, _nproc):
     """run_reaped's body after the spawn (split out so the live-group
     registry is always cleared, whatever raises)."""
+    guard = None
+    if not hasattr(resource, "prlimit"):
+        guard = _start_group_guard(proc, _as_limit)
+    try:
+        rc, out = _reap_body(proc, command, timeout, _as_limit, _nproc)
+    finally:
+        if guard:
+            guard[0].set()
+    if guard and guard[1]:
+        out += f"\n[killed by the {guard[1][0]}]"
+    return rc, out
+
+
+def _reap_body(proc, command, timeout, _as_limit, _nproc):
     if hasattr(resource, "prlimit"):
         # NPROC/FSIZE/CPU joined AS in the 2026-09-10 hardening: fork bombs,
         # disk-fill, and pure-CPU spins previously ran free until the wall
