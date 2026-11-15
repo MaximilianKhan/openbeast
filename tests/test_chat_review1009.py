@@ -171,3 +171,39 @@ def test_a_stream_that_never_started_gives_its_slot_back(rig):
     assert c.get("/api/chat/health").json()["streams"] == 0
     assert c.get(f"/api/chat/sessions/{sid}/events?from=0").status_code == 200
     assert c.get("/api/chat/health").json()["streams"] == 0
+
+
+def _bounded(fn, *args, budget=3.0):
+    """Run fn in a daemon thread; (finished, result)."""
+    out = {}
+    t = threading.Thread(target=lambda: out.setdefault("v", fn(*args)),
+                         daemon=True)
+    t.start()
+    t.join(budget)
+    return (not t.is_alive()), out.get("v")
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs mkfifo")
+def test_a_fifo_or_device_transcript_never_wedges_or_floods_a_reader(tmp_path):
+    """Review finding: record["transcript"] was opened with a plain open().
+    A FIFO blocked every reader forever (one threadpool worker per session
+    list poll); /dev/zero has getsize() == 0, so the size-bounded tail reads
+    fell through to an unbounded read() and OOM'd the server."""
+    fifo = str(tmp_path / "t.fifo")
+    os.mkfifo(fifo)
+    for path in (fifo, "/dev/zero"):
+        for fn, args in ((chat_server._tail_line, (path,)),
+                         (chat_server.read_lines_from, (path, 0)),
+                         (chat_server.tail_start, (path, 1024)),
+                         (chat_server._read_tail, (path, 4096)),
+                         (chat_server.derive_status,
+                          ({"transcript": path, "kind": "job"},))):
+            done, _ = _bounded(fn, *args)
+            assert done, f"{fn.__name__}({path}) did not return"
+    assert chat_server._tail_line("/dev/zero") == ""
+    assert chat_server.read_lines_from(fifo, 0) == ([], 0)
+    # negative control: a regular file still reads
+    reg = tmp_path / "t.log"
+    reg.write_text("one\ntwo\n")
+    assert chat_server._tail_line(str(reg)) == "two"
+    assert chat_server.read_lines_from(str(reg), 0)[0][-1][0] == "two"

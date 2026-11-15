@@ -111,11 +111,13 @@ import asyncio
 import contextlib
 import hashlib
 import hmac
+import io
 import ipaddress
 import json
 import os
 import shlex
 import signal
+import stat as _stat
 import subprocess
 import sys
 import threading
@@ -509,6 +511,29 @@ def _file_size(path: str) -> int:
         return 0
 
 
+def _open_transcript(path: str):
+    """open(path, "rb"), for a REGULAR file only — else OSError.
+
+    `record["transcript"]` is whatever the registering process said, and a
+    runner's --log-file is taken as given. A FIFO there blocked open()
+    forever (one pinned threadpool worker per session-list poll until every
+    sync route stalled), and /dev/zero has getsize() == 0, so the size-bounded
+    reads below fell through to an unbounded read() and OOM'd the server.
+    O_NONBLOCK makes a FIFO open return at once; fstat on the OPEN fd (no
+    stat-then-open race) then refuses anything that is not a plain file.
+    Symlinks are still followed — to a regular file only.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+    fd = os.open(path, flags)
+    try:
+        if not _stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(f"not a regular file: {path}")
+        return os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 def read_lines_from(path: str, offset: int) -> tuple[list[tuple[str, int]], int]:
     """Complete lines at/after `offset`, plus the new offset.
 
@@ -525,7 +550,7 @@ def read_lines_from(path: str, offset: int) -> tuple[list[tuple[str, int]], int]
     which is all a capped read needs to be correct.
     """
     try:
-        with open(path, "rb") as f:
+        with _open_transcript(path) as f:
             f.seek(offset)
             buf = f.read(STREAM_MAX_READ)
             if buf and b"\n" not in buf and len(buf) >= STREAM_MAX_READ:
@@ -568,7 +593,7 @@ def tail_start(path: str, tail: int) -> int:
         return 0
     pos = size - tail
     try:
-        with open(path, "rb") as f:
+        with _open_transcript(path) as f:
             f.seek(pos - 1)
             chunk = f.read(min(STREAM_MAX_LINE, size - pos + 1))
     except OSError:
@@ -645,7 +670,8 @@ def derive_status(record: dict) -> dict:
     if not path or not os.path.isfile(path):
         return status
     try:
-        with open(path, "r", errors="replace") as f:
+        with io.TextIOWrapper(_open_transcript(path), encoding="utf-8",
+                              errors="replace") as f:
             for line in f:
                 line = line.rstrip("\n")
                 if not line.strip():
@@ -2078,15 +2104,16 @@ def scrub_secrets(text: str) -> str:
 
 def _read_tail(path: str, limit: int) -> tuple[str, bool]:
     try:
-        size = os.path.getsize(path)
-        with open(path, "rb") as f:
+        with _open_transcript(path) as f:
+            size = os.fstat(f.fileno()).st_size
             if size > limit:
                 f.seek(size - limit)
                 data = f.read(limit)
                 nl = data.find(b"\n")
                 data = data[nl + 1:] if nl >= 0 else data
                 return data.decode("utf-8", "replace"), True
-            return f.read().decode("utf-8", "replace"), False
+            # Capped even here: the file may have grown since the fstat.
+            return f.read(limit).decode("utf-8", "replace"), False
     except OSError:
         return "", False
 
@@ -4061,10 +4088,10 @@ def _tail_line(path: str, window: int = 8192) -> str:
     """Last non-empty line, read from the tail — a transcript can be large and
     the session LIST renders one of these per row."""
     try:
-        size = os.path.getsize(path)
-        with open(path, "rb") as f:
+        with _open_transcript(path) as f:
+            size = os.fstat(f.fileno()).st_size
             f.seek(max(0, size - window))
-            chunk = f.read()
+            chunk = f.read(window)
     except OSError:
         return ""
     for raw in reversed(chunk.split(b"\n")):
