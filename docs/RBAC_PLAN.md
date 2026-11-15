@@ -2,9 +2,12 @@
 
 **Status: Phase 0 + Phase 1 LIVE (2026-07-07); Phase 2 router-identity +
 guest-fetch LIVE (2026-07-08) — verified with the real Open WebUI
-access-control code.** A `user`-role account resolves `web_search` +
-`fetch` (SSRF-guarded) ONLY (bash/file/agent tools denied at the connection
-layer); an `admin` account gets all 18. Baked into `configure-webui.sh` so
+access-control code.** Of OpenBeast's tools a `user`-role account resolves
+`web_search` + `fetch` (SSRF-guarded) + `weather` only (bash/file/agent tools
+denied at the connection layer); an `admin` account gets them all. Open
+WebUI's own per-model builtin tools are a separate list: `configure-webui.sh`
+turns the clock, knowledge-base and chat-search ones off once per model
+(`meta.builtinTools`); an admin can turn any back on in Admin → Models. Baked into `configure-webui.sh` so
 fresh installs land RBAC'd. Remaining Phase 2 hardening: per-profile MCPO
 keys + Sandlock (below-app enforcement).
 

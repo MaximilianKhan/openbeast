@@ -1163,3 +1163,27 @@ def test_presets_get_no_grant_from_us(db_rig):
     db_rig.seed_model("persona", base="m1", user="u1")
     assert db_rig.configure().returncode == 0
     assert db_rig.grants() == []
+
+
+# Under native FC the pinned image injects its own builtin tools (clock,
+# knowledge-base, chat search: ~11 schemas) into every UI turn for every role
+# unless meta.builtinTools turns the category off. Off once; the admin's
+# later choice stands.
+
+_BUILTIN_OFF = {"time": False, "knowledge": False, "chats": False}
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_webui_builtin_tools_are_turned_off_once(db_rig, existing):
+    if existing:
+        db_rig.seed_model("m1", params={"function_calling": "native"})
+    assert db_rig.configure().returncode == 0
+    assert db_rig.models()["m1"]["meta"]["builtinTools"] == _BUILTIN_OFF
+
+
+def test_an_admin_builtin_tools_choice_stands(db_rig):
+    mine = {"time": True, "knowledge": False, "chats": False}
+    db_rig.seed_model("m1", params={"function_calling": "native"},
+                      meta={"builtinTools": mine})
+    assert db_rig.configure().returncode == 0
+    assert db_rig.models()["m1"]["meta"]["builtinTools"] == mine

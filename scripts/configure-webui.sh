@@ -311,8 +311,10 @@ fi
 #                      agents/tools.py), so it can't reach MCPO, metadata
 #                      services, or the local disk.
 # Models reference both (meta.toolIds). Open WebUI enforces per-connection
-# access at tool-resolution time, so a `user`-role (family/guest) account
-# resolves web_search + fetch + weather ONLY — never bash/file/agent tools. `admin`
+# access at tool-resolution time, so of OUR tools a `user`-role (family/guest)
+# account resolves web_search + fetch + weather only — never bash/file/agent
+# tools. (WebUI's own builtin tools are separate and per-model; section 2
+# turns the clock/knowledge/chat-search ones off.) `admin`
 # accounts get all 19 via BYPASS_ADMIN_ACCESS_CONTROL (each tool lives on
 # exactly one connection, so no duplicates). Idempotent: reconciles to this
 # exact shape every run without clobbering unrelated connections.
@@ -551,6 +553,15 @@ if os.path.exists(prompt_path):
     with open(prompt_path) as f:
         system_prompt = f.read().strip()
 
+# Under native function calling the pinned image injects its OWN builtin
+# tools into every UI chat turn, for every role, unless meta.builtinTools
+# turns a category off (utils/tools.py get_builtin_tools: each category
+# defaults to on): the clock pair, 4-7 knowledge-base tools and the chat
+# search pair — about 11 schemas on top of ours, every turn, guests included.
+# Turned off ONCE, only when the row has no builtinTools yet, so a category
+# an admin re-enables in Admin -> Models stays on.
+BUILTIN_OFF = {'time': False, 'knowledge': False, 'chats': False}
+
 cols = {r[1] for r in db.execute('PRAGMA table_info(model)')}
 has_base = 'base_model_id' in cols
 row = db.execute('SELECT params, meta, is_active%s FROM model WHERE id=?'
@@ -577,6 +588,11 @@ elif row:
         meta['toolIds'] = tool_refs
         changed = True
 
+    # WebUI's own builtin tools: off once, then the admin's (see BUILTIN_OFF).
+    if 'builtinTools' not in meta:
+        meta['builtinTools'] = dict(BUILTIN_OFF)
+        changed = True
+
     # This model is being SERVED: its override row must be active. An
     # inactive base-model row makes WebUI drop the served model from
     # /api/models entirely (utils/models.py), and the stale-row sweep this
@@ -595,7 +611,8 @@ elif row:
 else:
     # Model detected by API but not yet in DB — insert it
     params = json.dumps({'function_calling': 'native'})
-    meta_dict = {'profile_image_url': '/static/favicon.png', 'description': None, 'capabilities': {'vision': True, 'citations': True}}
+    meta_dict = {'profile_image_url': '/static/favicon.png', 'description': None, 'capabilities': {'vision': True, 'citations': True},
+                 'builtinTools': dict(BUILTIN_OFF)}
     if tool_refs:
         meta_dict['toolIds'] = tool_refs
     if system_prompt:
