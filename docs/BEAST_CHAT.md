@@ -1,7 +1,7 @@
 # beast-chat — the rig's sessions, from your phone
 
 **Status: shipped in v1.4.0 (2026-09-14); this page describes `main` as of
-2026-09-30.** Since v1.6.0 the console starts agents and jobs from a
+2026-09-30.** Since v1.7.0 the console starts agents and jobs from a
 new-session sheet (with operator presets), pauses and resumes agents, installs
 as a PWA, pushes a notification when a session ends (opt-in, through the ntfy
 extension), exports a transcript as a beast-artifact page, shows a rig status
