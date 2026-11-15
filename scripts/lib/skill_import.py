@@ -332,10 +332,17 @@ def judge(report: dict, accept: set[str],
         issues = report["issues"]
         version = report["metadata"]["skillspector_version"]
         comp = report["analysis_completeness"]
-        ran = report["execution_successful"] and comp["execution_successful"]
+        # `is True`: a JSON true, not any truthy value — the string "false"
+        # used to count as a successful run.
+        ran = report["execution_successful"] is True and comp["execution_successful"] is True
         uninspected = int(comp["entirely_uninspected_files"])
         partial_files = int(comp["partially_inspected_files"])
         exceptions = comp["ledger_exceptions"]
+        # Read like every other field: a report without the analyzer list (or
+        # with null) is not one this gate knows, so it cannot say none failed.
+        statuses = comp["analyzer_statuses"]
+        if not isinstance(statuses, list):
+            raise TypeError(f"analyzer_statuses is {type(statuses).__name__}, not a list")
         ids = [str(i["id"]).upper() for i in issues]
         # Which files, and why. A missing reference (a backticked path that is
         # not a bundled file) is reported as partial too but leaves every file
@@ -382,7 +389,7 @@ def judge(report: dict, accept: set[str],
     for exc in exceptions:
         if isinstance(exc, dict) and exc.get("fatal"):
             incomplete.append(f"fatal analysis exception at {exc.get('path')}: {exc.get('reason_code')}")
-    for st in comp.get("analyzer_statuses") or []:
+    for st in statuses:
         if isinstance(st, dict) and (st.get("status") == "failed" or st.get("failed")):
             incomplete.append(f"analyzer {st.get('analyzer_id')} failed")
 

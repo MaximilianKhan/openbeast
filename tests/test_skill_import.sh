@@ -162,6 +162,16 @@ if mode == "analyzerfailed":
     comp["analyzer_statuses"].append({"analyzer_id": "static_patterns", "status": "failed", "failed": 1})
 if mode == "unknown":
     del report["analysis_completeness"]
+# 2026-11 review: the analyzer list is a field this gate reads, so a report
+# without it (or with null) is unrecognised, not "no analyzer failed"; and a
+# success flag is a JSON true, never a truthy string such as "false".
+if mode == "nostatus":
+    del comp["analyzer_statuses"]
+if mode == "nullstatus":
+    comp["analyzer_statuses"] = None
+if mode == "strfalse":
+    report["execution_successful"] = "false"
+    comp["execution_successful"] = "false"
 json.dump(report, open(out, "w"))
 # "crashclean": an error exit that still leaves a clean-looking report behind.
 sys.exit(2 if mode == "crashclean" else 1 if issues else 0)
@@ -308,7 +318,8 @@ if ! run promote demo >/dev/null 2>&1 && blocked; then
 else
   fail "promote ran without a reviewer"
 fi
-for mode in crash crashclean garbage unknown incomplete notran uninspected fatalonly analyzerfailed badrec; do
+for mode in crash crashclean garbage unknown incomplete notran uninspected fatalonly analyzerfailed badrec \
+            nostatus nullstatus strfalse; do
   echo "$mode" > "$SCAN_MODE"
   if ! run promote demo --reviewed-by MK >/dev/null 2>&1 && blocked; then
     pass "scanner '$mode': promote is refused; skills/ and ledger untouched"
