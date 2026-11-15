@@ -502,7 +502,10 @@ variable naming a key, token, secret or password — the same list the bash
 tool scrubs — nor the notification URL. Agents keep only their inference key
 (`OPENBEAST_API_KEY`, `OPENAI_API_KEY`). The same command started with
 `job.sh run` from a terminal keeps your shell's environment. A job that needs
-a credential should read it from a file (or set it in the preset's command).
+a credential should read it from a 0600 file at run time. Do **not** write
+it into a preset's or a job's command: readers are served commands scrubbed of
+secret-shaped values, but the job's argv (`/bin/bash -lc <cmd>`) is visible to
+any process on the box via `ps`, and the 0600 audit log keeps it whole.
 
 ### Presets: `.run/chat-presets.json`
 

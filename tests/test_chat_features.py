@@ -177,6 +177,33 @@ def test_presets_are_listed_only_from_a_private_file(rig, tmp_path):
     assert d["presets"] == [] and "0600" in d["problem"]
 
 
+def test_a_credential_in_a_command_never_reaches_a_reader(rig, tmp_path):
+    """Review finding: the docs said a job could "set [a credential] in the
+    preset's command", but GET /api/chat/presets is a READ route that served
+    cmd verbatim, and every session read served meta.command and a title that
+    defaults to the command. The job still runs the command as written."""
+    secret = "hf_abcdefSECRETtoken123"
+    _write_presets(rig, {"presets": [
+        {"name": "quant", "cmd": f"HF_TOKEN={secret} echo quantize-ran",
+         "workdir": str(tmp_path)}]})
+    d = rig.client.get("/api/chat/presets").json()
+    assert d["presets"][0]["name"] == "quant"
+    assert secret not in json.dumps(d) and "quantize-ran" in json.dumps(d)
+    r = rig.client.post("/api/chat/sessions", headers=rig.local, json={
+        "kind": "job", "cmd": f"HF_TOKEN={secret} echo inline-ran",
+        "workdir": str(tmp_path)})
+    assert r.status_code == 201, r.text
+    sid = r.json()["session"]["id"]
+    rec = wait_state(sid, "done", "failed")
+    assert rec["state"] == "done"                   # it ran as written
+    one = rig.client.get(f"/api/chat/sessions/{sid}").json()
+    rows = rig.client.get("/api/chat/sessions").json()
+    for doc in (one, rows):
+        text = json.dumps(doc)
+        assert secret not in text, text[:400]
+        assert "inline-ran" in text
+
+
 def test_a_symlinked_preset_file_is_refused(rig, tmp_path):
     real = tmp_path / "elsewhere.json"
     real.write_text(json.dumps({"presets": [{"name": "x", "cmd": "id"}]}))

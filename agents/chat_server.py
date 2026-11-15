@@ -2102,6 +2102,31 @@ def scrub_secrets(text: str) -> str:
     return text
 
 
+def reader_view(rec: dict) -> dict:
+    """A session record as a READ-tier caller may see it.
+
+    A job's title defaults to its shell command and meta.command is that
+    command verbatim, so an inline `HF_TOKEN=… ./quantize.sh` reached every
+    reader (any identified login in open mode). The command still runs as
+    written and the 0600 audit log keeps it whole; reads get it scrubbed.
+    """
+    if not isinstance(rec, dict):
+        return rec
+    out = dict(rec)
+    if isinstance(out.get("title"), str):
+        out["title"] = scrub_secrets(out["title"])
+    meta = out.get("meta")
+    if isinstance(meta, dict) and "command" in meta:
+        meta = dict(meta)
+        cmd = meta["command"]
+        if isinstance(cmd, str):
+            meta["command"] = scrub_secrets(cmd)
+        elif isinstance(cmd, list):
+            meta["command"] = [scrub_secrets(str(c)) for c in cmd]
+        out["meta"] = meta
+    return out
+
+
 def _read_tail(path: str, limit: int) -> tuple[str, bool]:
     try:
         with _open_transcript(path) as f:
@@ -2997,7 +3022,7 @@ def create_app() -> FastAPI:
                     continue
                 path = rec.get("transcript") or ""
                 out.append({
-                    **rec,
+                    **reader_view(rec),
                     "transcript_bytes": _file_size(path),
                     "last_line": _preview_line(_tail_line(path),
                                                rec.get("kind")),
@@ -3013,7 +3038,7 @@ def create_app() -> FastAPI:
             rec = load_session(session_id)
             status = derive_status(rec)
             return {
-                "session": rec,
+                "session": reader_view(rec),
                 "status": status,
                 "artifacts": {
                     "events": f"/api/chat/sessions/{session_id}/events",
@@ -3841,6 +3866,10 @@ def create_app() -> FastAPI:
         with audited("GET /api/chat/presets", request=request) as ctx:
             ctx["principal"] = read_gate(request)
             rows, problem = load_presets(presets_path)
+            # A read route: the phone starts a preset by NAME, so the command
+            # shown here is for the eye only — never a credential (review).
+            rows = [{**r, "cmd": scrub_secrets(r.get("cmd") or "")}
+                    if isinstance(r, dict) else r for r in rows]
             return {"presets": rows, "path": presets_path,
                     **({"problem": problem} if problem else {})}
 
