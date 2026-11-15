@@ -2549,7 +2549,7 @@ else
 fi
 rm -rf "$_GL_DIR"
 
-# The era assertion. Rows either side of a change to the six hashed files are
+# The era assertion. Rows either side of a change to the era-hashed files are
 # not comparable, and until now era was a thing people remembered — the
 # 2026-09-08 plan put the churn floor before a git pull and the cells it
 # calibrates after it, and review did not catch it because it was nobody's job.

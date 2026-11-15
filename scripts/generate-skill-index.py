@@ -13,12 +13,11 @@ between the SKILL_INDEX markers in system-prompt-tools.md.
 
 A skill whose frontmatter says `prompt_index: false` is left OUT of that menu
 (it stays fully available through skill() / skill(name), which scan the disk).
-Two reasons a skill wants that. The menu is paid for by the local model on
-every turn, and this repo measured that skills fire ~0% on local models
-(docs/BEAST_LANG_PLAN.md §2.1) — so a skill written for CLOUD models working
-in this repo is pure cost there. And system-prompt-tools.md is hashed into the
-eval cache era (evals/cache.py): adding a menu line rolls the era, which a
-skill nobody is measuring should not be able to do by existing.
+The menu is paid for by the local model on every turn, and this repo measured
+that skills fire ~0% on local models (docs/BEAST_LANG_PLAN.md §2.1) — so a
+skill written for CLOUD models working in this repo is pure cost there.
+(system-prompt-tools.md is not in the eval cache era: the eval agent never
+reads it, so a menu line does not roll the era.)
 
 Usage:
   python3 scripts/generate-skill-index.py            # rewrite in place

@@ -8,8 +8,8 @@
   python evals/cache_cli.py clear --model SLUG # remove entries for one model
 
 Cache invalidates automatically when (a) the task spec changes or (b) the
-agent runtime context (system-prompt.md, system-prompt-tools.md,
-opencode.json, agents/runner.py, agents/tools.py, evals/SUITE_VERSION)
+agent runtime context (system-prompt.md, agents/runner.py,
+agents/tools.py, evals/SUITE_VERSION)
 changes — the hash key includes both. This CLI exists for manual cleanup /
 inspection."""
 

@@ -15,11 +15,11 @@ Hash key components:
    budget), greedy (low-churn decode), pack (awareness pack sha —
    task-scoped to the pack's language), env (opt-in environment
    fingerprint: weights, llama.cpp build, KV flags, toolchains).
-5. agent context hash — sha256 of system-prompt.md, system-prompt-tools.md,
-   opencode.json (which pins the available tools/transport), the agent
-   runtime itself (agents/runner.py, agents/tools.py), and the eval-suite
-   marker (evals/SUITE_VERSION). Changes to the agent's runtime context →
-   cache miss.
+5. agent context hash — sha256 of system-prompt.md (the only prompt the
+   eval agent loads), the agent runtime itself (agents/runner.py,
+   agents/tools.py), and the eval-suite marker (evals/SUITE_VERSION).
+   Changes to the agent's runtime context → cache miss. opencode.json and
+   system-prompt-tools.md are NOT hashed: the eval path never reads them.
 
 Cached payload mirrors the per-task entry written to results JSON: passed,
 elapsed_seconds, agent_exit_code, validation_output, token counts, and any
@@ -46,10 +46,15 @@ CACHE_DIR = EVALS_DIR / "cache"
 # Files that pin the agent's runtime context. Changing any of these
 # invalidates all cached results — that's intentional (it's the whole point
 # of the cache key).
+#
+# Only what an eval unit actually SEES belongs here. opencode.json and
+# system-prompt-tools.md used to be listed, but neither runner.py nor
+# run_eval.py reads them (runner.py loads system-prompt.md only): they are
+# OpenCode's picker/MCP wiring and the WebUI arsenal. Hashing them rolled the
+# era for all models on every model onboarding (test_scripts.sh forces an
+# opencode.json row per serve script) and on every skill-menu regeneration.
 CONTEXT_FILES = [
     REPO_ROOT / "system-prompt.md",
-    REPO_ROOT / "system-prompt-tools.md",
-    REPO_ROOT / "opencode.json",
     # The agent runtime itself: a change to the loop or the tool
     # implementations changes what a "cached result" means.
     REPO_ROOT / "agents" / "runner.py",

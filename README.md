@@ -389,7 +389,7 @@ payload, which is why `sign` exists.
 GPU-hours: `scripts/gpu-lease.sh` is an advisory **lease on the card** (pid +
 start time, never pid alone), so a build agent cannot start compiling inside a
 measurement's window and the watchdog will not relaunch the stack's model into
-someone else's run; `scripts/eval-era.sh` prints the **era hash** of the six
+someone else's run; `scripts/eval-era.sh` prints the **era hash** of the four
 files that define what an eval unit sees, so two rows are compared only when
 they were produced by the same code.
 

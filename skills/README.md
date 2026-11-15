@@ -115,13 +115,12 @@ The agent decides when to invoke. Helpful prompts: "use a skill if relevant",
    index call (no restart needed)
 5. Decide whether it belongs in the **always-on menu**. `python3
    scripts/generate-skill-index.py` rewrites the skill list in
-   `system-prompt-tools.md`, which every local-model turn pays for and which
-   is one of the six era-hashed files — so adding a menu entry rolls the eval
-   cache era (`./scripts/eval-era.sh`) and CI fails on a stale index. A skill
-   written for cloud models working in this repo (like `beast-lang`) sets
-   `prompt_index: false` in its frontmatter: it stays reachable by name
-   through `skill("my-skill")` and `start_skill_agent`, costs the local model
-   nothing, and leaves the era alone.
+   `system-prompt-tools.md`, which every local-model WebUI turn pays for, and
+   CI fails on a stale index. (It is not era-hashed: the eval agent never
+   reads it.) A skill written for cloud models working in this repo (like
+   `beast-lang`) sets `prompt_index: false` in its frontmatter: it stays
+   reachable by name through `skill("my-skill")` and `start_skill_agent`, and
+   costs the local model nothing.
 
 `tests/test_scripts.sh` validates that every `SKILL.md` parses cleanly and
 has the required frontmatter fields.

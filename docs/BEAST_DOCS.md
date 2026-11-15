@@ -359,8 +359,8 @@ laptop, the slim checkout ships `agents/`, `scripts/` and `skills/`, and the
 mirror is the laptop's own. `docs.sh` picks a usable python itself:
 `OPENBEAST_PYTHON`, then the client venv, then python3.13 down to 3.10, then
 python3. The code runs on 3.9 too. The skill is `prompt_index: false`
-because the always-on menu lives in `system-prompt-tools.md`, which is
-hashed into the eval era. It is reachable with `skill("platform-docs")`, and
+because the always-on menu in `system-prompt-tools.md` is paid for on every
+local-model WebUI turn. It is reachable with `skill("platform-docs")`, and
 `skill()` lists it.
 
 **(b) The `platform_docs` MCP tool — yes, worth it too, for three reasons:**

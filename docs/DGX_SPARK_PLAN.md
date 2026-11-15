@@ -622,7 +622,7 @@ rig's `INFERENCE_URL` (`--force` overrides). It records
 `INFERENCE_MODEL="<id>"` in openbeast.conf; conf.sh exports it for
 vllm/tensorfold and `agents/runner.py` sends it. It prints the opencode
 provider entry for `~/.config/opencode/opencode.json` (the repo's
-`opencode.json` is tracked and era-hashed, so it is not edited). Open WebUI
+`opencode.json` is tracked and shared by every rig, so it is not edited). Open WebUI
 needs nothing: it lists `/v1/models`, which conformance proved.
 
 **7. Doctor**

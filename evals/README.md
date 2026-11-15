@@ -146,10 +146,13 @@ runtime-injected `_path`, are stripped before hashing, so relocating the repo
 does NOT bust the cache), (b) the model changes, (c) the **effective iteration
 budget** changes (a `--max-iter 5` smoke run is a different experiment from the
 default), (d) the eval **suite version** bumps (`evals/SUITE_VERSION`), or
-(e) the agent runtime context changes — `system-prompt.md`,
-`system-prompt-tools.md`, `opencode.json`, or the agent runtime itself
+(e) the agent runtime context changes — `system-prompt.md` (the only prompt
+the eval agent loads), or the agent runtime itself
 (`agents/runner.py`, `agents/tools.py`: a change to the loop or a tool's
-behavior changes what a "cached result" means). Timeouts (`agent_exit_code
+behavior changes what a "cached result" means). `opencode.json` and
+`system-prompt-tools.md` are deliberately *not* hashed: the eval path never
+reads them, so onboarding a model or regenerating the WebUI skill menu does
+not invalidate every cached unit. Timeouts (`agent_exit_code
 == -1`) are NOT cached: those are environmental, not deterministic. Neither
 are FAILs caused by infrastructure (`cacheable_result` in `run_eval.py`):
 a unit whose runner reported `API_ERRORS: n` ≥ 1, or whose server failed
@@ -200,8 +203,8 @@ is also flagged `skipped_cache_miss`, so a replay against the wrong era
 reads as one at a glance.
 
 **The era hash, and the experiment flags that fork it.** Item (e) above is
-one 16-hex hash over six files, and `./scripts/eval-era.sh` prints it
-(`--files` lists the six with their own hashes; `--check <hash>` exits 1 if
+one 16-hex hash over four files, and `./scripts/eval-era.sh` prints it
+(`--files` lists the four with their own hashes; `--check <hash>` exits 1 if
 the tree has moved — a campaign asserts it at start and between stages, so
 rows from different code are never compared as if they were the same).
 Two experiment modes add their own era component on top, so their rows never
