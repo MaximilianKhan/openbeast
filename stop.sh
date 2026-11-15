@@ -189,8 +189,9 @@ _stop_recorded "chat server" "$RUN_DIR/chat.pid" \
 
 echo "Stopping tool server..."
 pkill -f "$(_ob_ere "$SCRIPT_DIR/agents/openapi_tools.py")" 2>/dev/null && echo "Tool server stopped." || echo "Tool server was not running."
-# Legacy mcpo instances (pre-identity-server stacks)
-pkill -f "mcpo --port" 2>/dev/null || true
+# (No `pkill -f "mcpo --port"` any more: nothing here has launched mcpo since
+# 2026-07-09, so that unanchored pattern could only reach ANOTHER project's
+# mcpo proxy — against this file's own rule above.)
 
 if ! ob_inference_managed; then
   # INFERENCE_MANAGED=false (always for vLLM / TensorFold): the inference

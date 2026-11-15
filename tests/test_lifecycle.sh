@@ -48,7 +48,7 @@ _sandbox() { # _sandbox <dir>
     printf '#!/bin/bash\nexit 1\n' > "$d/bin/$c"; chmod +x "$d/bin/$c"
   done
   # pkill/pgrep reach the REAL process table. Let through only patterns
-  # anchored inside this sandbox (stop.sh also carries an unanchored legacy
+  # anchored inside this sandbox (stop.sh once carried an unanchored legacy
   # `pkill -f "mcpo --port"`, which must never run against the host).
   for c in pkill pgrep; do
     printf '#!/bin/bash\nfor a in "$@"; do [[ "$a" == *%s* ]] && exec /usr/bin/%s "$@"; done\nexit 1\n' \
@@ -1086,6 +1086,8 @@ _banner_case() { # _banner_case <compose-rc> -> prints start.sh's output up to t
     sleep 0.1
   done
   tool="$(cat "$_BN/.run/mcpo.pid" 2>/dev/null || true)"; [[ "$tool" =~ ^[0-9]+$ ]] && _PIDS="$_PIDS $tool"
+  # The banner ends the start: healthcheck --restart may repair from here on.
+  [[ -e "$_BN/.run/starting" ]] && echo "TEST: .run/starting still present at the banner"
   kill -TERM "$p" 2>/dev/null || true; wait "$p" 2>/dev/null || true
   cat "$_BN/out"
 }
@@ -1103,6 +1105,11 @@ if grep -qE '^  Open WebUI: +http://localhost:3000 \(container still starting' <
   pass "compose succeeded: the URL is shown, as still starting (control)"
 else
   fail "foreground banner after a good compose: $(grep -E 'Stack is running|Open WebUI|Warning' <<< "$_O" | tr '\n' ' ') :: $(tail -n 3 <<< "$_O" | tr '\n' ' ')"
+fi
+if grep -q "Stack is running" <<< "$_O" && ! grep -q "TEST: .run/starting still present" <<< "$_O"; then
+  pass "the start-in-progress marker is gone by the banner (the watchdog may repair from there)"
+else
+  fail "start.sh still marks itself as starting at its banner"
 fi
 if [[ "$(grep -c '_webui_line' "$REPO_DIR/start.sh")" -ge 3 ]]; then
   pass "the -d launcher and the foreground banner share one Open WebUI row"
@@ -1132,10 +1139,13 @@ src = open(sys.argv[1]).read()
 a = src.index("MCPO_UP=0\n")
 b = src.index('echo "Tool server ready on http://localhost:3001"', a)
 open(sys.argv[2], "w").write(
-    'set -euo pipefail\nHEALTH_HOST=127.0.0.1; MCPO_PID=$$; : > "$SLEEP_LOG"; _n=0\n'
+    'set -euo pipefail\nHEALTH_HOST=127.0.0.1; MCPO_PID=$$; : > "$SLEEP_LOG"; echo 0 > "$SLEEP_LOG.n"\n'
     'sleep() { echo "$1" >> "$SLEEP_LOG"; SECONDS=$((SECONDS + ${CLOCK_STEP:-0})); }\n'
-    'curl() { _n=$((_n + 1)); [[ $_n -gt ${CURL_FAILS:-0} ]]; }\n'
-    + src[a:b] + 'echo "UP after $_n probes"\n')
+    # The probe count lives in a file: the loop reads curl's body through $(…).
+    'curl() { local n; n=$(( $(cat "$SLEEP_LOG.n") + 1 )); echo "$n" > "$SLEEP_LOG.n"\n'
+    '         [[ $n -gt ${CURL_FAILS:-0} ]] && echo \'{"status":"ok"}\'; }\n'
+    '_ready_ours() { return 0; }\n_lost_bind() { echo "lost: $1" >&2; }\n'
+    + src[a:b] + 'echo "UP after $(cat "$SLEEP_LOG.n") probes"\n')
 PY
 _O="$(SLEEP_LOG="$_PL/sleeps" CURL_FAILS=3 bash "$_PL/loop.sh" 2>&1)" || true
 if [[ "$_O" == *"UP after 4 probes"* && "$(sort -u "$_PL/sleeps" | tr '\n' ' ')" == "0.2 " && "$(wc -l < "$_PL/sleeps")" -eq 3 ]]; then
@@ -1499,6 +1509,207 @@ if [[ -n "${_CW:-}" && "${_LW:-}" == "$((_CW + 3))" && "${_LF:-x}" == "$_CF" ]];
   pass "…and they are WARNINGS: +3 warnings, the failure count does not move"
 else
   fail "conf findings changed doctor's verdict wrongly: ${_LW:-?}w/${_LF:-?}f with them, ${_CW:-?}w/${_CF:-?}f without"
+fi
+
+# ---------------------------------------------------------------------------
+# stack-lifecycle review (2026-11): the watchdog against a start in progress
+# and a stop in the middle of its tick, relaunches and readiness that must be
+# OUR process, the legacy mcpo sweep, and an inline comment on BIND_HOST.
+# ---------------------------------------------------------------------------
+echo ""
+echo "stack-lifecycle review (2026-11):"
+_SL="$_T/sl"; _sandbox "$_SL"; mkdir -p "$_SL/agents" "$_SL/pydeps"
+: > "$_SL/pydeps/fastapi.py"; : > "$_SL/pydeps/uvicorn.py"
+printf '#!/bin/bash\necho "$*" >> "$DOCKER_LOG"\nexit 0\n' > "$_SL/bin/docker"; chmod +x "$_SL/bin/docker"
+# curl: everything answers, except the ports in $CURL_DOWN (and those in
+# $CURL_DOWN_ONCE, for their first probe only). A probe of a port in
+# $CURL_STOP_ON first writes .run/stopped: ./stop.sh landing mid-tick.
+cat > "$_SL/bin/curl" <<'SH'
+#!/bin/bash
+url=""; for a in "$@"; do [[ "$a" == http* ]] && url="$a"; done
+port="${url#http://*:}"; port="${port%%/*}"
+for p in ${CURL_STOP_ON:-}; do [[ "$port" == "$p" ]] && echo "2026-11-15T00:00:00 test ./stop.sh" > "$SL_RUN/stopped"; done
+for p in ${CURL_DOWN:-}; do [[ "$port" == "$p" ]] && exit 7; done
+for p in ${CURL_DOWN_ONCE:-}; do
+  [[ "$port" == "$p" && ! -e "$SL_RUN/.down-once-$p" ]] && { : > "$SL_RUN/.down-once-$p"; exit 7; }
+done
+case "$url" in
+  *:3000/*)      printf '{"version":"x"}' ;;
+  *:8888*)       printf '<title>searxng</title>' ;;
+  */gate/health) printf '{"status":"ok","service":"beast-gate"}' ;;
+  *)             printf '{"status":"ok"}' ;;
+esac
+SH
+chmod +x "$_SL/bin/curl"
+# The tool server, by $TOOL_MODE: exit (dies at once), linger (alive 3 s,
+# never binds), serve (binds $STUB_HOST:3001), race (a DETACHED child takes
+# :3001 and answers, while this process dies 2 s later — the bind race).
+# Every run notes whether .run/starting existed when it was spawned.
+cat > "$_SL/agents/openapi_tools.py" <<'PY'
+import http.server, os, sys, threading, time
+open(os.environ["SL_MARK"], "a").write(
+    "ran starting=%s\n" % os.path.exists(os.path.join(os.environ["SL_RUN"], "starting")))
+mode = os.environ.get("TOOL_MODE", "exit")
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        b = b'{"status":"ok"}'
+        self.send_response(200); self.send_header("Content-Length", str(len(b)))
+        self.end_headers(); self.wfile.write(b)
+def serve():
+    srv = http.server.HTTPServer((os.environ["STUB_HOST"], 3001), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+if mode == "linger":
+    time.sleep(3)
+elif mode == "serve":
+    serve(); time.sleep(20); os._exit(0)
+elif mode == "race":
+    if os.fork() == 0:
+        os.setsid()
+        fd = os.open(os.devnull, os.O_RDWR)
+        for i in (0, 1, 2): os.dup2(fd, i)
+        serve()
+        open(os.environ["SL_SQUAT"], "w").write(str(os.getpid()))
+        time.sleep(20); os._exit(0)
+    time.sleep(2)
+sys.exit(1)
+PY
+printf 'import sys\nsys.exit(1)\n' > "$_SL/agents/edge.py"
+_sl_hc() { # _sl_hc [VAR=value...] — one healthcheck --restart tick; prints its output
+  : > "$_SL/docker.log"; : > "$_SL/mark"; rm -f "$_SL/.run"/.down-once-*
+  RUN_ENV=(DOCKER_LOG="$_SL/docker.log" SL_RUN="$_SL/.run" SL_MARK="$_SL/mark" SL_SQUAT="$_SL/squat"
+           STUB_HOST="$_LO" OPENBEAST_BIND="$_LO" "$@")
+  _run "$_SL" "$_SL/scripts/healthcheck.sh" --restart
+  RUN_ENV=()
+}
+_sl_reap() { # stop whatever the last tick relaunched (by its record)
+  local f p
+  for f in mcpo edge; do
+    p="$(cat "$_SL/.run/$f.pid" 2>/dev/null || true)"
+    [[ "$p" =~ ^[0-9]+$ ]] && kill "$p" 2>/dev/null || true
+  done
+}
+
+# 1. A live supervisor that has not reached its banner: report only. It
+#    starts the tool server itself after the model load, and a copy started
+#    here raced it for the port.
+sleep 120 & _SUP=$!; _PIDS="$_PIDS $_SUP"
+bash -c 'source "$1"; ob_pid_record "$2" "$3"' _ "$REPO_DIR/scripts/lib/proc.sh" "$_SL/.run/supervisor.pid" "$_SUP"
+echo "$_SUP" > "$_SL/.run/starting"
+_O="$(_sl_hc CURL_DOWN=3001)"
+if [[ ! -s "$_SL/mark" && "$_O" == *"Stack is starting (supervisor pid $_SUP)"* ]]; then
+  pass "a start in progress (live supervisor + .run/starting): the watchdog relaunches nothing"
+else
+  fail "the watchdog raced a starting supervisor: tool server ran $(wc -l < "$_SL/mark")x: $(grep -F '→' <<< "$_O" | tr '\n' ' ')"
+fi
+rm -f "$_SL/.run/starting"
+_O="$(_sl_hc CURL_DOWN=3001 TOOL_MODE=exit)"
+if [[ -s "$_SL/mark" && "$_O" == *"restart FAILED: the relaunched tool server exited"* ]]; then
+  pass "…past the banner a DOWN tool server is relaunched, and one that dies is named at once (control)"
+else
+  fail "no relaunch without the marker: $(grep -F '→' <<< "$_O" | tr '\n' ' ')"
+fi
+echo "999999" > "$_SL/.run/starting"
+_O="$(_sl_hc CURL_DOWN=3001 TOOL_MODE=exit)"
+if [[ -s "$_SL/mark" && "$_O" != *"Stack is starting"* ]]; then
+  pass "…and a marker that names no live supervisor is ignored (a crashed start)"
+else
+  fail "a stale .run/starting blocked the watchdog"
+fi
+rm -f "$_SL/.run/starting"
+
+# 2. ./stop.sh while the tick is running: the marker is read again before
+#    every restart, not once at the top.
+_O="$(_sl_hc CURL_DOWN="3001 3000 8888" CURL_STOP_ON=3001 TOOL_MODE=exit)"
+if [[ ! -s "$_SL/mark" && ! -s "$_SL/docker.log" && "$_O" == *"stopped on purpose during this pass"* ]]; then
+  pass "a stop that lands mid-tick: no tool server, WebUI or SearXNG is brought back"
+else
+  fail "the tick undid a ./stop.sh made while it ran: tool server $(wc -l < "$_SL/mark")x, docker: $(tr '\n' ' ' < "$_SL/docker.log")"
+fi
+rm -f "$_SL/.run/stopped"
+
+# 3. A relaunch is ours only if OUR process holds the port.
+_O="$(_sl_hc CURL_DOWN_ONCE=3001 TOOL_MODE=linger)"
+if [[ "$_O" == *"restart FAILED: the relaunched tool server exited"* && "$_O" != *"→ restarted (pid"* ]]; then
+  pass "a relaunched tool server that never binds is FAILED, though something answers :3001"
+else
+  fail "something else answering :3001 counted as our relaunch: $(grep -F '→' <<< "$_O" | tr '\n' ' ')"
+fi
+_O="$(_sl_hc CURL_DOWN_ONCE=3001 TOOL_MODE=serve)"
+if [[ "$_O" == *"→ restarted (pid $(cat "$_SL/.run/mcpo.pid" 2>/dev/null))"* ]]; then
+  pass "…and one that does hold :3001 is restarted (control)"
+else
+  fail "a relaunched tool server holding :3001 was not accepted: $(grep -F '→' <<< "$_O" | tr '\n' ' ')"
+fi
+_sl_reap
+printf 'EDGE_GATE=true\n' > "$_SL/openbeast.conf"
+_O="$(_sl_hc CURL_DOWN=8090)"
+if [[ "$_O" == *"restart FAILED: the relaunched beast-gate exited"* && "$_O" != *"→ restarted"* ]]; then
+  pass "a relaunched beast-gate that dies is FAILED (was: 'restarted' after a bare sleep 3)"
+else
+  fail "the gate relaunch: $(grep -A1 'beast-gate' <<< "$_O" | tr '\n' ' ')"
+fi
+: > "$_SL/openbeast.conf"
+# Green, but from a process this stack did not start: flagged, like chat.
+(exec python3 -c 'import socket, sys, time
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind((sys.argv[1], 3001)); s.listen(4); time.sleep(60)' "$_LO" >/dev/null 2>&1) & _SQ=$!; _PIDS="$_PIDS $_SQ"
+for _ in 1 2 3 4 5 6 7 8 9 10; do (exec 3<>"/dev/tcp/$_LO/3001") 2>/dev/null && break; sleep 0.2; done
+rm -f "$_SL/.run/mcpo.pid"
+_O="$(_sl_hc)"
+if grep -q "FOREIGN Tool server answers, but from pid .*$_SQ" <<< "$_O"; then
+  pass "a green :3001 held by a process the stack did not start is FOREIGN, not OK"
+else
+  fail "a foreign :3001 holder read as healthy: $(grep -i 'tool server' <<< "$_O" | tr '\n' ' ')"
+fi
+echo "$_SQ" > "$_SL/.run/mcpo.pid"
+_O="$(_sl_hc)"
+if ! grep -q "FOREIGN Tool server" <<< "$_O" && grep -q "OK   Tool server" <<< "$_O"; then
+  pass "…and the recorded holder is OK (control)"
+else
+  fail "the recorded tool server was flagged: $(grep -i 'tool server' <<< "$_O" | tr '\n' ' ')"
+fi
+kill "$_SQ" 2>/dev/null || true; wait "$_SQ" 2>/dev/null || true
+rm -f "$_SL/.run/mcpo.pid"
+
+# 4. start.sh: the tool server is ready only when OURS holds :3001. Unmanaged
+#    backend, real curl; the stub loses the bind race to a squatter.
+_SR="$_T/slr"; _sandbox "$_SR"; rm -f "$_SR/bin/curl"; mkdir -p "$_SR/agents"
+cp "$_SL/agents/openapi_tools.py" "$_SR/agents/"
+: > "$_SR/mark"
+RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=vllm "OPENBEAST_INFERENCE_URL=http://$_LO:9" OPENBEAST_LLAMA_LOAD_GRACE=1
+         "PYTHONPATH=$_SL/pydeps" TOOL_MODE=race STUB_HOST="$_LO" SL_RUN="$_SR/.run" SL_MARK="$_SR/mark" SL_SQUAT="$_SR/squat")
+_start_rc "$_SR" 40
+RUN_ENV=()
+_sq="$(cat "$_SR/squat" 2>/dev/null || true)"; [[ "$_sq" =~ ^[0-9]+$ ]] && { kill "$_sq" 2>/dev/null || true; }
+if [[ $_SRC -eq 1 && "$_SO" == *"tool server exited during startup"* && "$_SO" == *"DIFFERENT process answers on port 3001"* \
+      && "$_SO" != *"Tool server ready"* ]]; then
+  pass "start.sh: a squatter answering :3001 while ours loses the bind is not 'ready' (it is named)"
+else
+  fail "start.sh accepted another process's :3001 as its tool server (rc=$_SRC): $(grep -iE 'tool server|DIFFERENT' <<< "$_SO" | tr '\n' ' ')"
+fi
+if grep -q "starting=True" "$_SR/mark" && [[ ! -e "$_SR/.run/starting" ]]; then
+  pass "…the supervisor marks itself starting while it spawns, and the marker goes with it on exit"
+else
+  fail ".run/starting: at spawn '$(tr '\n' ' ' < "$_SR/mark")', after exit $(ls "$_SR/.run" | tr '\n' ' ')"
+fi
+
+# 5. stop.sh never pkills by a pattern outside this checkout (the legacy
+#    `mcpo --port` sweep reached any project's mcpo).
+_SP="$_T/slp"; _sandbox "$_SP"
+for _c in pkill pgrep; do
+  printf '#!/bin/bash\necho "%s $*" >> "%s/pk.log"\nexit 1\n' "$_c" "$_SP" > "$_SP/bin/$_c"; chmod +x "$_SP/bin/$_c"
+done
+_run "$_SP" "$_SP/stop.sh" >/dev/null
+if [[ -s "$_SP/pk.log" ]] && ! grep -v "$_SP" "$_SP/pk.log" >/dev/null; then
+  pass "every pkill/pgrep pattern stop.sh uses is anchored to this checkout"
+else
+  fail "stop.sh kills by an unanchored pattern: $(grep -v "$_SP" "$_SP/pk.log" | tr '\n' ' ')"
+fi
+if ! grep -vE '^[[:space:]]*#' "$REPO_DIR/scripts/healthcheck.sh" | grep -q 'mcpo --port'; then
+  pass "…and neither does healthcheck.sh (no 'mcpo --port' sweep)"
+else
+  fail "healthcheck.sh still pkills 'mcpo --port' — any project's mcpo"
 fi
 
 # ---------------------------------------------------------------------------
