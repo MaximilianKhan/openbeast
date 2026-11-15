@@ -1694,6 +1694,18 @@ while IFS= read -r _cf; do [[ -n "$_cf" ]] && COMPOSE_FILES+=("$_cf"); done < <(
 # store lacks the pinned digest, which on a closed network is a stall followed
 # by a confusing failure. `--pull never` turns that into an immediate, honest
 # "the image is not here".
+# Islanded at launch by a boot race? The launch probe ran seconds after boot;
+# by now (after the model wait) the watcher may have seen the route come
+# back. On spark-1 it had, 30 s later — and Open WebUI was still created in
+# OFFLINE_MODE minutes after that, for the whole 43 h run (ops review). Auto
+# mode only: forced (--offline) and OFFLINE=true stay offline.
+if [[ $ISLAND_AT_LAUNCH -eq 1 && "${ISLAND:-auto}" == "auto" && $_was_offline -eq 0 ]] \
+   && OPENBEAST_RUN_DIR="$ISLAND_STATE_DIR" python3 "$_island_py" status >/dev/null 2>&1; then
+  echo "beast-island: the internet came back before the frontends started — Open WebUI starts online."
+  ISLAND_AT_LAUNCH=0
+  OFFLINE=false
+  export OPENBEAST_WEBUI_OFFLINE=false
+fi
 COMPOSE_UP=(up -d)
 if ob_offline; then
   COMPOSE_UP+=(--pull never)

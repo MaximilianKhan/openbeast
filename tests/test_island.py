@@ -510,6 +510,50 @@ def test_conf_webui_offline_follows_the_running_stack(tmp_path):
     assert _conf(env, 'echo "$OPENBEAST_WEBUI_OFFLINE"') == "false"
 
 
+def test_a_boot_race_does_not_pin_webui_offline(tmp_path):
+    """ops review: spark-1's launch probe ran 12 s after boot, found no route,
+    and the network came back 30 s later — but "launched islanded" kept
+    --webui-offline true, so Open WebUI ran in OFFLINE_MODE for 43 h. Once
+    the watcher is back ONLINE the answer is false, and the next compose
+    (start.sh's, or healthcheck --restart's) creates WebUI online."""
+    import socket
+    srv = socket.socket(); srv.bind(("127.0.0.1", 0)); srv.listen(16)
+    up = f"127.0.0.1:{srv.getsockname()[1]}"
+    dead = socket.socket(); dead.bind(("127.0.0.1", 0))
+    down = f"127.0.0.1:{dead.getsockname()[1]}"; dead.close()
+    env = dict(os.environ, OPENBEAST_RUN_DIR=str(tmp_path))
+    island = [sys.executable, str(REPO / "agents" / "island.py")]
+    r = subprocess.run(island + ["init", "--mode", "auto", f"--probes={down}", "--timeout", "0.5"],
+                       env=env, capture_output=True, text=True, timeout=30)
+    assert r.returncode == 3, r.stdout + r.stderr            # islanded at launch
+    w = subprocess.Popen(island + ["watch", "--mode", "auto", "--interval", "1",
+                                   f"--probes={up}", "--timeout", "0.5"],
+                         env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    try:
+        def state():
+            try:
+                return json.loads(_cli(tmp_path, "status", "--json").stdout) or {}
+            except ValueError:
+                return {}
+        deadline = time.time() + 20
+        while time.time() < deadline and state().get("state") != "online":
+            time.sleep(0.2)
+        st = state()
+        assert st["state"] == "online" and st["launched_islanded"], st
+        assert _cli(tmp_path, "status", "--webui-offline").stdout.strip() == "false"
+        assert _conf({"OPENBEAST_RUN_DIR": str(tmp_path)}, 'echo "$OPENBEAST_WEBUI_OFFLINE"') == "false"
+    finally:
+        w.terminate(); w.wait(timeout=10); srv.close()
+
+
+def test_start_sh_rechecks_the_island_before_compose_and_healthcheck_recreates():
+    src = (REPO / "start.sh").read_text()
+    i, j = src.index("Islanded at launch by a boot race"), src.index("COMPOSE_UP=(up -d)")
+    assert i < j and "OPENBEAST_WEBUI_OFFLINE=false" in src[i:j]
+    hc = (REPO / "scripts" / "healthcheck.sh").read_text()
+    assert "OFFLINE_MODE=true" in hc and "recreating it online" in hc
+
+
 def test_conf_webui_offline_is_derived_not_inherited():
     assert _conf({"OPENBEAST_WEBUI_OFFLINE": "true"}, 'echo "$OPENBEAST_WEBUI_OFFLINE"') == "false"
     # a closed-network box needs OFFLINE_MODE too, even with ISLAND=off

@@ -490,8 +490,9 @@ class Watcher:
             if self.state == "island" and self.ok_streak >= REJOIN_OK:
                 note = "internet reachable again"
                 if self.launched_islanded:
-                    note += (" (Open WebUI was started in offline mode and stays that way "
-                             "until the next ./stop.sh && ./start.sh -d)")
+                    note += (" (Open WebUI was started in offline mode; the next "
+                             "healthcheck.sh --restart — the watchdog, or the supervisor — "
+                             "recreates it online)")
                 self._enter("online", note)
         else:
             self.ok_streak = 0
@@ -618,9 +619,12 @@ def main(argv: list[str] | None = None) -> int:
             net = (st or {}).get("net_up")
             print("up" if net is True else "down" if net is False else "unknown")
         elif args.webui_offline:
-            # Fresh state only: islanded now, or launched islanded (the
-            # container was created that way; keep it until a restart).
-            on = bool(st and (st.get("state") == "island" or st.get("launched_islanded")))
+            # Fresh state only, and islanded NOW. "Launched islanded" used to
+            # count too, so a boot whose uplink came up 30 s late pinned Open
+            # WebUI to OFFLINE_MODE for the whole run (43 h on spark-1, ops
+            # review). Online now means the next compose (start.sh's own, or
+            # healthcheck.sh --restart's) creates it online.
+            on = bool(st and st.get("state") == "island")
             print("true" if on else "false")
         else:
             print(json.dumps(st, indent=1, sort_keys=True) if args.json else describe(st))

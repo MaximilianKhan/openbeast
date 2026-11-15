@@ -397,6 +397,19 @@ if ! check "Open WebUI" "$WEBUI_URL/api/version" "version"; then
       echo "       → restart FAILED (docker compose up failed — daemon down?)"
     fi
   fi
+elif $RESTART && [[ "${OPENBEAST_WEBUI_OFFLINE:-false}" == "false" ]] \
+     && [[ $'\n'"$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' open-webui 2>/dev/null || true)"$'\n' \
+           == *$'\n'"OFFLINE_MODE=true"$'\n'* ]]; then
+  # Up, but still in the OFFLINE_MODE an islanded launch gave it, while the
+  # rig is online now (conf.sh derives OPENBEAST_WEBUI_OFFLINE from the live
+  # island state). It used to stay that way until a manual restart — 43 h on
+  # spark-1 after a boot race (ops review). Recreate it once, online.
+  echo "       → Open WebUI is still in OFFLINE_MODE from an islanded launch; recreating it online..."
+  if docker compose -f "$REPO_DIR/docker-compose.yml" up -d open-webui; then
+    echo "       → recreated"
+  else
+    echo "       → recreate FAILED (docker compose up failed)"
+  fi
 fi
 
 # SearXNG
