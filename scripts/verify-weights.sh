@@ -83,7 +83,7 @@ while IFS=$'\t' read -r sha bytes fname repo remote; do
     continue
   fi
   checked=$((checked + 1))
-  actual_bytes="$(stat -c '%s' "$path")"
+  actual_bytes="$(stat -L -c '%s' "$path")"
   if [[ "$actual_bytes" != "$bytes" ]]; then
     echo "FAIL     $fname — size $actual_bytes, registry pins $bytes (truncated or swapped download; delete and re-fetch from $repo)"
     fails=$((fails + 1))

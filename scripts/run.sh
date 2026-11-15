@@ -16,6 +16,10 @@ if [[ ! -x "$LLAMA_CLI" ]]; then
   exit 1
 fi
 
+# Same as serve.sh: the binary's baked-in RUNPATH points at wherever
+# llama.cpp was built, which breaks if the repo moves.
+export LD_LIBRARY_PATH="$(dirname "$LLAMA_CLI")${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
 # Defaults (overridable by model scripts or CLI flags)
 MODEL=""
 CONTEXT=65536
@@ -39,6 +43,20 @@ if [[ -z "$MODEL" ]]; then
   exit 1
 fi
 
+# WEIGHT_ENFORCE applies here too (lib/weightcheck.sh, the check serve.sh
+# runs): strict mode is a supply-chain control, and an interactive run loads
+# the same weights. The mode comes from openbeast.conf via conf.sh (read-only:
+# a chat launcher mints no secrets). Context scaling stays serve.sh's — the
+# run-*.sh presets are fixed RTX 5090 settings (override with -c).
+OB_CONF_READONLY=1 source "$SCRIPT_DIR/lib/conf.sh"
+source "$SCRIPT_DIR/lib/weightcheck.sh"
+WEIGHT_FILES=()
+while IFS= read -r _wf; do WEIGHT_FILES+=("$_wf"); done \
+  < <(ob_weight_files "$MODEL" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"})
+_wr_rc=0
+ob_weight_enforce "$SCRIPT_DIR/weights.registry" "${WEIGHT_ENFORCE:-warn}" "${WEIGHT_FILES[@]}" || _wr_rc=$?
+[[ $_wr_rc -eq 0 ]] || exit "$_wr_rc"
+
 exec "$LLAMA_CLI" \
   -m "$MODEL" \
   -ngl "$GPU_LAYERS" \
@@ -46,4 +64,4 @@ exec "$LLAMA_CLI" \
   -ctk "$KV_QUANT" \
   -ctv "$KV_QUANT" \
   --conversation \
-  "${EXTRA_ARGS[@]}"
+  ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}

@@ -23,7 +23,7 @@ Current advisory tiers (single NVIDIA GPU):
 | ≥ 30 GB | 5090 / A6000 | Shipped defaults as-is | **Measured** (reference) |
 | 24–30 GB | 3090 / 4090 | Default model, context auto-scaled by `serve.sh`; or a Q4 quant for far more context; keep ~2 GB headroom | Floor tier — unmeasured, conservative |
 | **< 24 GB** | 16 GB-class, 1080 Ti / 2080 Ti / 3060 12GB, and smaller | **BLOCKED at bootstrap** | **Below the floor** |
-| Multi-GPU | e.g. 2x 3090 Ti | `--tensor-split`; hand-tune `-c` for now | Phase 2 |
+| Multi-GPU | e.g. 2x 3090 Ti | Context auto-budgeted by `serve.sh` on the SUM of the cards (less 2 GB per extra card, `ob_context_vram_mb`); a launch pinned to a subset (`CUDA_VISIBLE_DEVICES`, `--device`, `--split-mode none`) keeps the single-card budget. Override with `OPENBEAST_VRAM_MIB` or `OPENBEAST_CONTEXT`. `--tensor-split` placement is not tuned | Estimated, unmeasured |
 
 **The 24 GB floor (Max, 2026-09-17; it was 11 GB from 2026-07-09 — enforced
 by `ob_vram_floor_check` in `scripts/lib/hardware.sh`, called from bootstrap,

@@ -352,7 +352,7 @@ printf '#!/bin/bash\necho "weight rejected by the registry" >&2\nexit 3\n' > "$_
 chmod +x "$_L/scripts/serve-refused.sh"
 _R="$(_launch_case serve-refused.sh serve-ok.sh)"
 if [[ "$_R" == "RC=1 SERVING=serve-refused.sh LASTGOOD=serve-ok.sh FAIL=refused "* ]] \
-   && grep -q "Refusing to roll back: 'serve-refused.sh' was rejected by the weight registry" "$_L/out"; then
+   && grep -q "Refusing to roll back: 'serve-refused.sh' was refused by serve.sh" "$_L/out"; then
   pass "a strict weight refusal (serve.sh exit 3) is NOT rolled back past, even with a last-good and MODEL_ROLLBACK=true"
 else
   fail "a weight-registry refusal was rolled back past: $_R :: $(tr '\n' ' ' < "$_L/out")"

@@ -181,7 +181,7 @@ cmd_fetch() {
   # never exists under a name a serve script would load.
   if [[ "$sha" != "PENDING" ]]; then
     local got_bytes got_sha
-    got_bytes="$(stat -c%s "$staged")"
+    got_bytes="$(stat -L -c%s "$staged")"
     if [[ "$got_bytes" != "$bytes" ]]; then
       rm -f "$staged"
       die "SIZE MISMATCH for $name: got $got_bytes, pinned $bytes. Deleted — a corrupt
@@ -206,8 +206,8 @@ cmd_fetch() {
   [[ -f "$dest" ]] || die "could not move $staged -> $dest"
 
   if [[ "$sha" == "PENDING" ]]; then
-    ok "downloaded ($(stat -c%s "$dest") bytes) — registry row is PENDING, nothing to verify"
-    say "  Pin it:  sha256sum '$dest'  &&  stat -c%s '$dest'   then edit $REGISTRY"
+    ok "downloaded ($(stat -L -c%s "$dest") bytes) — registry row is PENDING, nothing to verify"
+    say "  Pin it:  sha256sum '$dest'  &&  stat -L -c%s '$dest'   then edit $REGISTRY"
     return 0
   fi
   ok "downloaded and verified against the pin"

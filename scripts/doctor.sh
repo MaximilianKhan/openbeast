@@ -211,6 +211,16 @@ if ! ob_bind_is_loopback "$BIND_HOST"; then
     warn "the WebUI has NO login on a network bind (ALLOW_OPEN_WEBUI=true acknowledges it) — everyone on that network is admin, with bash" \
          "set WEBUI_AUTH=true (or BIND_HOST=127.0.0.1), then ./stop.sh && ./start.sh -d"
   fi
+  # serve.sh refuses this one at launch unless acknowledged.
+  if [[ -z "${LLAMA_API_KEY:-}" ]]; then
+    if [[ "${ALLOW_OPEN_INFERENCE:-false}" == "true" ]]; then
+      warn "llama-server keyless on a network bind (ALLOW_OPEN_INFERENCE=true acknowledges it) — past beast-gate and its audit" \
+           "set LLAMA_API_KEY, or BIND_HOST=127.0.0.1 behind beast-gate (EDGE_GATE=true)"
+    else
+      fail "llama-server keyless on a network bind — serve.sh refuses to start it" \
+           "BIND_HOST=127.0.0.1 (remote: scripts/setup-tailscale.sh), set LLAMA_API_KEY, or ALLOW_OPEN_INFERENCE=true"
+    fi
+  fi
 else
   pass "bind host is loopback-scoped ($BIND_HOST)"
 fi

@@ -1183,20 +1183,23 @@ fi
 # Model governance: serve.sh must check the weight it is about to load against
 # the registry, and must default to WARN (a hard refusal on the critical start
 # path would be a foot-gun on upgrade).
-# BEHAVIORAL, not a grep: extract the enforcement block into a scratch script
-# and exercise every mode. A substring grep would pass for any regression that
-# kept the words but broke the logic — and this block sits on the critical
-# start path, so "it mentions the registry" is not evidence of anything.
+# BEHAVIORAL, not a grep: drive the check serve.sh (and run.sh) call —
+# ob_weight_enforce in lib/weightcheck.sh — through every mode. A substring
+# grep would pass for any regression that kept the words but broke the logic
+# — and this sits on the critical start path, so "it mentions the registry"
+# is not evidence of anything. (tests/test_llama_serving.sh runs serve.sh
+# itself on shards, --mmproj, -md and symlinks.)
 WE_SCRATCH=$(mktemp -d)
 mkdir -p "$WE_SCRATCH/scripts"
-sed -n '/^# --- Model registry enforcement/,/^fi$/p' "$REPO_DIR/scripts/serve.sh" \
-  > "$WE_SCRATCH/block.sh"
+grep -q 'ob_weight_enforce "$SCRIPT_DIR/weights.registry"' "$REPO_DIR/scripts/serve.sh" \
+  && cp "$REPO_DIR/scripts/lib/weightcheck.sh" "$WE_SCRATCH/block.sh"
 cp "$REPO_DIR/scripts/weights.registry" "$WE_SCRATCH/scripts/" 2>/dev/null
 cat > "$WE_SCRATCH/run.sh" <<'WEEOF'
 set -euo pipefail
-SCRIPT_DIR="$1"; MODEL="$2"; WEIGHT_ENFORCE="${3:-warn}"
+SCRIPT_DIR="$1"; MODEL="$2"
 source "$SCRIPT_DIR/../block.sh"
-exit 0
+rc=0; ob_weight_enforce "$SCRIPT_DIR/weights.registry" "${3:-warn}" "$MODEL" || rc=$?
+exit "$rc"
 WEEOF
 echo unlisted > "$WE_SCRATCH/unlisted.gguf"
 _we_rc() { bash "$WE_SCRATCH/run.sh" "$WE_SCRATCH/scripts" "$1" "$2" >/dev/null 2>&1; echo $?; }
@@ -1230,7 +1233,7 @@ if [[ -s "$WE_SCRATCH/block.sh" ]]; then
     fail "wrong-size weight rc (strict=$_rc_ws_strict warn=$_rc_ws_warn right-size strict=$_rc_rs_strict; want 3/0/0): $_ws_msg"
   fi
 else
-  fail "could not extract the weight-enforcement block from serve.sh"
+  fail "serve.sh does not call ob_weight_enforce (lib/weightcheck.sh) on the registry"
 fi
 rm -rf "$WE_SCRATCH"
 # start.sh must refuse to roll back on that exit code, or strict mode would
@@ -1251,24 +1254,32 @@ if [[ "$WE_DEFAULT" == "warn" ]]; then
 else
   fail "WEIGHT_ENFORCE default is '$WE_DEFAULT', want 'warn'"
 fi
-# Every weight a shipped serve script targets should be pinned, or strict mode
-# is unusable out of the box.
-UNPINNED=""
+# Every weight a shipped serve script loads should be pinned, or strict mode
+# is unusable out of the box. EVERY $WEIGHTS_DIR/*.gguf it names (the -m file,
+# --mmproj, -md), and for a split GGUF every shard — serve.sh checks them all.
+# A PENDING row (bytes 0) is not a pin: strict refuses to load it.
+UNPINNED=""; PENDING_PINS=""
+source "$REPO_DIR/scripts/lib/weightcheck.sh"
 for _ss in "$REPO_DIR"/scripts/serve-*.sh; do
   # `|| true` is load-bearing: under `set -euo pipefail` a serve script with no
   # $WEIGHTS_DIR/*.gguf line makes grep exit 1, and a bare `_g=$(...)` then
   # kills the ENTIRE suite mid-run rather than reporting a failure — the same
   # set -e trap already fixed once in serve.sh's ob_scale_context call.
   # Surfaced 2026-08-15 by the negative test for the drift guards below.
-  _g=$(grep -oE '\$WEIGHTS_DIR/[^"]+\.gguf' "$_ss" 2>/dev/null | head -1 || true); _g="${_g##*/}"
-  [[ -n "$_g" ]] || continue
-  awk -F'\t' -v n="$_g" '$0 !~ /^#/ && $3 == n {found=1} END{exit !found}' \
-    "$REPO_DIR/scripts/weights.registry" || UNPINNED="$UNPINNED $(basename "$_ss")"
+  while IFS= read -r _g; do
+    [[ -n "$_g" ]] || continue
+    while IFS= read -r _w; do
+      _w="${_w##*/}"
+      _b="$(awk -F'\t' -v n="$_w" '$0 !~ /^#/ && $3 == n {print $2; exit}' "$REPO_DIR/scripts/weights.registry")"
+      if [[ -z "$_b" ]]; then UNPINNED="$UNPINNED $(basename "$_ss"):$_w"
+      elif [[ "$_b" == "0" ]]; then PENDING_PINS="$PENDING_PINS $(basename "$_ss"):$_w"; fi
+    done < <(ob_weight_files "$_g")
+  done < <(grep -oE '\$WEIGHTS_DIR/[^"]+\.gguf' "$_ss" 2>/dev/null | sort -u || true)
 done
-if [[ -z "$UNPINNED" ]]; then
-  pass "every shipped serve script targets a registry-pinned weight"
+if [[ -z "$UNPINNED$PENDING_PINS" ]]; then
+  pass "every weight a shipped serve script loads (shards, mmproj, draft) is registry-pinned with a real size"
 else
-  fail "serve scripts targeting unpinned weights:$UNPINNED"
+  fail "serve scripts loading unpinned weights:${UNPINNED:- none}; PENDING (strict refuses):${PENDING_PINS:- none}"
 fi
 
 # Two more tables that are supposed to mirror the serve scripts and silently
