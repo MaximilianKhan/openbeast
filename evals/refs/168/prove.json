@@ -1,0 +1,62 @@
+{
+ "unit_base": "168_linearizability_kv",
+ "dest_dir": "/tmp/eval_linz",
+ "ref_stem": "168/linz",
+ "repeat": 5,
+ "scale_recheck": 2.0,
+ "ext": {
+  "a": "py",
+  "b": "go",
+  "c": "c",
+  "d": "cpp",
+  "e": "rs",
+  "f": "zig"
+ },
+ "arms": {
+  "wrong": [
+   {
+    "stem": "168/wrong_tie",
+    "expect": "wrong verdict at case"
+   },
+   {
+    "stem": "168/wrong_nopend",
+    "expect": "wrong verdict at case"
+   },
+   {
+    "stem": "168/wrong_memoset",
+    "expect": "wrong verdict at case",
+    "langs": [
+     "py"
+    ]
+   }
+  ],
+  "slow": [
+   {
+    "stem": "168/slow_nomemo",
+    "expect": "timed out"
+   },
+   {
+    "stem": "168/slow_global",
+    "expect": "timed out",
+    "langs": [
+     "py",
+     "c"
+    ]
+   }
+  ],
+  "leak": [
+   {
+    "stem": "168/leak/leak",
+    "expect": "verdict lines"
+   }
+  ],
+  "empty": {
+   "expect": "missing"
+  }
+ },
+ "regen": [
+  "python3 evals/refs/168/build_cases.py",
+  "python3 evals/refs/168/build_task.py",
+  "python3 evals/refs/168/mk_wrongs.py"
+ ]
+}
