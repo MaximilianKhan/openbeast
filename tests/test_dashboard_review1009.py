@@ -254,6 +254,68 @@ def test_unparseable_nvidia_smi_is_still_no_gpu(monkeypatch, out):
     assert d.gpu_status() is None
 
 
+# ───────── extensions-ntfy review: a unified-memory GPU (DGX Spark GB10) ─────────
+
+_GB10 = "NVIDIA GB10, [N/A], [N/A], 0, 43\n"
+
+
+def test_gb10_na_memory_is_still_a_gpu(monkeypatch):
+    # Live spark-1 output. It used to hit int('[N/A]') and come back as None
+    # ("no GPU detected") with name, util and temp all readable.
+    d = load(monkeypatch)
+    _smi(monkeypatch, d, _GB10)
+    monkeypatch.setattr(d, "_meminfo_mib", lambda path="/proc/meminfo": (40000, 121000))
+    assert d.gpu_status() == {"name": "NVIDIA GB10", "used_mib": 40000, "total_mib": 121000,
+                              "free_mib": 81000, "util_pct": 0, "temp_c": 43, "used_pct": 33,
+                              "unified": True}
+
+
+def test_gb10_without_meminfo_reports_memory_unknown(monkeypatch):
+    d = load(monkeypatch)
+    _smi(monkeypatch, d, _GB10)
+    monkeypatch.setattr(d, "_meminfo_mib", lambda path="/proc/meminfo": None)
+    g = d.gpu_status()
+    assert g["name"] == "NVIDIA GB10" and g["util_pct"] == 0 and g["temp_c"] == 43
+    assert g["used_mib"] is g["total_mib"] is g["free_mib"] is g["used_pct"] is None
+
+
+def test_one_na_field_drops_only_that_field(monkeypatch):
+    d = load(monkeypatch)
+    _smi(monkeypatch, d, "RTX 5090, 1000, 32000, [N/A], 50\n")
+    g = d.gpu_status()
+    assert g["util_pct"] is None and g["temp_c"] == 50 and g["total_mib"] == 32000
+    assert "unified" not in g, "discrete VRAM was reported: not unified"
+
+
+def test_meminfo_sizes_unified_memory(tmp_path, monkeypatch):
+    d = load(monkeypatch)
+    mi = tmp_path / "meminfo"
+    mi.write_text("MemTotal:       123904000 kB\nMemFree: 1 kB\nMemAvailable:   82000000 kB\n")
+    assert d._meminfo_mib(str(mi)) == (123904000 // 1024 - 82000000 // 1024, 123904000 // 1024)
+    assert d._meminfo_mib(str(tmp_path / "nope")) is None
+
+
+@pytest.mark.parametrize("url,want", [("http://127.0.0.1:8000", "127.0.0.1:8000"),
+                                      ("http://10.0.0.5:8080/", "10.0.0.5:8080"),
+                                      ("https://u:p@spark-1.ts.net", "spark-1.ts.net:443"),
+                                      ("http://[::1]:8080", "[::1]:8080"),
+                                      ("http://[::1]", "[::1]:80")])
+def test_endpoint_label(monkeypatch, url, want):
+    d = load(monkeypatch)
+    assert d._endpoint(url) == want
+
+
+def test_model_status_names_the_real_inference_endpoint(monkeypatch):
+    # Was: the page printed a literal ":8080 healthy" while probing TensorFold
+    # on :8000 (spark-1).
+    d = load(monkeypatch, OPENBEAST_INFERENCE_BACKEND="tensorfold",
+             OPENBEAST_INFERENCE_URL="http://127.0.0.1:8000")
+    d._get = recorder([])
+    m = d.model_status()
+    assert m["endpoint"] == "127.0.0.1:8000" and m["backend"] == "tensorfold"
+    assert ":8080" not in d.PAGE and "localhost:3001" not in d.PAGE
+
+
 # ───────────────────────── S13: upstream strings never reach innerHTML raw ─────────────────────────
 
 def _script(d):
@@ -267,7 +329,7 @@ def test_every_interpolation_is_escaped_or_local(monkeypatch):
     exprs = re.findall(r"\$\{([^}]*)\}", _script(d))
     assert len(exprs) >= 15
     ok = re.compile(r"""^(?:esc\(.*\)|num\([\w.]+\)|\(num\([\w.]+\)/1024\)\.toFixed\(\d\)
-                         |[\w.]+\?'[^'<]*':'[^'<]*'|gpu|svc)$""", re.X)
+                         |[\w.]+\?'[^'<]*':'[^'<]*'|gpu|svc|mem|uni)$""", re.X)
     bad = [e for e in exprs if not ok.match(e)]
     assert not bad, bad
     # the control: the pre-fix spellings are exactly what this refuses
@@ -308,3 +370,27 @@ def test_a_hostile_model_id_renders_as_text(monkeypatch, tmp_path):
     r = subprocess.run(["node", str(js)], capture_output=True, text=True, timeout=30,
                        env={"PATH": os.environ["PATH"], "STATUS": json.dumps(status)})
     assert ">qwen38-27b</div>" in r.stdout
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+@pytest.mark.parametrize("mem", [{"used_mib": 40000, "total_mib": 121000, "free_mib": 81000,
+                                  "used_pct": 33, "unified": True},
+                                 {"used_mib": None, "total_mib": None, "free_mib": None,
+                                  "used_pct": None, "unified": True}])
+def test_page_renders_a_unified_memory_gpu(monkeypatch, tmp_path, mem):
+    d = load(monkeypatch)
+    status = {"gpu": dict(name="NVIDIA GB10", util_pct=0, temp_c=43, **mem),
+              "model": {"healthy": True, "alias": "m", "serve_script": "s",
+                        "backend": "tensorfold", "endpoint": "127.0.0.1:8000"},
+              "services": {"model": True}, "metrics": {}}
+    js = tmp_path / "page.js"
+    js.write_text(_HARNESS % _script(d))
+    r = subprocess.run(["node", str(js)], capture_output=True, text=True, timeout=30,
+                       env={"PATH": os.environ["PATH"], "STATUS": json.dumps(status)})
+    assert r.returncode == 0, r.stderr
+    html = r.stdout
+    assert "no GPU detected" not in html and "NVIDIA GB10" in html and "43°C" in html, html
+    assert "unified (host RAM)" in html
+    assert ("memory not reported" in html) == (mem["total_mib"] is None)
+    assert "127.0.0.1:8000 healthy" in html and ":8080" not in html
+    assert 'href="http://127.0.0.1:3001/metrics"' in html

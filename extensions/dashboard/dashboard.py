@@ -40,6 +40,15 @@ _INFER = (os.environ.get("OPENBEAST_INFERENCE_URL", "").strip().rstrip("/")
           or f"http://{H}:8080")
 
 
+def _endpoint(url):
+    """host:port of the inference URL, for the page ("127.0.0.1:8000")."""
+    rest = url.split("//", 1)[-1].split("/", 1)[0]
+    rest = rest.rsplit("@", 1)[-1]   # never a userinfo part
+    if rest.endswith("]") or ":" not in rest:
+        rest += ":443" if url.startswith("https://") else ":80"
+    return rest
+
+
 def _conf_slots():
     """INFERENCE_SLOTS: the concurrency a server that exposes none was
     launched with (vLLM --max-num-seqs, TensorFold --parallel), or None."""
@@ -119,7 +128,37 @@ def gpu_status():
         return None
 
 
-def _parse_gpus(out):
+def _smi_int(v):
+    """One nvidia-smi field as an int; None for "[N/A]" / "[Not Supported]".
+
+    A unified-memory GPU (the DGX Spark's GB10) has no VRAM of its own and
+    answers memory.used / memory.total with the literal "[N/A]". int() on
+    that raised, and the whole GPU card read "no GPU detected" on a rig whose
+    name, utilisation and temperature were all readable.
+    """
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return None
+
+
+def _meminfo_mib(path="/proc/meminfo"):
+    """(used, total) host RAM in MiB, the pool a unified-memory GPU draws
+    from (MemTotal - MemAvailable, as lib/hardware.sh sizes it), or None."""
+    try:
+        vals = {}
+        with open(path) as f:
+            for ln in f:
+                k, _, rest = ln.partition(":")
+                if k in ("MemTotal", "MemAvailable"):
+                    vals[k] = int(rest.split()[0]) // 1024
+        total, avail = vals["MemTotal"], vals["MemAvailable"]
+    except (OSError, KeyError, ValueError, IndexError):
+        return None
+    return (total - avail, total) if total > 0 else None
+
+
+def _parse_gpus(out, meminfo=None):
     """nvidia-smi's csv rows -> the one `gpu` object /api/status serves.
 
     One row per card. Several cards fold into the same shape: memory summed
@@ -127,13 +166,23 @@ def _parse_gpus(out):
     busiest / hottest card. Splitting the whole output on commas glued row
     one's temperature to row two's name and reported "no GPU detected" on
     every multi-GPU host.
+
+    A field the card does not report ("[N/A]") is that field missing, not
+    the GPU: a unified-memory card's memory is sized from host RAM instead
+    (`unified: true`), and with no number at all the memory fields are null.
+    A row with no readable number at all is not a GPU row.
     """
     cards = []
     for line in out.splitlines():
         if not line.strip():
             continue
-        name, used, total, util, temp = [x.strip() for x in line.split(",")[:5]]
-        cards.append((name, int(used), int(total), int(util), int(temp)))
+        parts = [x.strip() for x in line.split(",")]
+        if len(parts) < 5:
+            raise ValueError(f"short nvidia-smi row: {line!r}")
+        name, nums = parts[0], [_smi_int(x) for x in parts[1:5]]
+        if not name or all(n is None for n in nums):
+            raise ValueError(f"unparseable nvidia-smi row: {line!r}")
+        cards.append((name, *nums))
     if not cards:
         return None
     names = [c[0] for c in cards]
@@ -143,11 +192,24 @@ def _parse_gpus(out):
         name = f"{len(cards)}x {names[0]}"
     else:
         name = " + ".join(names)
-    used, total = sum(c[1] for c in cards), sum(c[2] for c in cards)
-    return {"name": name, "used_mib": used, "total_mib": total,
-            "free_mib": total - used, "util_pct": max(c[3] for c in cards),
-            "temp_c": max(c[4] for c in cards),
-            "used_pct": round(100 * used / total) if total else 0}
+
+    def agg(i, fn):
+        vals = [c[i] for c in cards if c[i] is not None]
+        return fn(vals) if vals else None
+
+    unified = any(c[1] is None or c[2] is None for c in cards)
+    if unified:
+        used, total = (meminfo or _meminfo_mib)() or (None, None)
+    else:
+        used, total = agg(1, sum), agg(2, sum)
+    gpu = {"name": name, "used_mib": used, "total_mib": total,
+           "free_mib": total - used if total is not None else None,
+           "util_pct": agg(3, max), "temp_c": agg(4, max),
+           "used_pct": (round(100 * used / total) if total
+                        else None if total is None else 0)}
+    if unified:
+        gpu["unified"] = True
+    return gpu
 
 
 def model_status(health=None):
@@ -164,7 +226,8 @@ def model_status(health=None):
             alias = json.loads(body)["data"][0].get("id", "")
         except Exception:
             pass
-    return {"healthy": ok, "serve_script": served, "alias": alias}
+    return {"healthy": ok, "serve_script": served, "alias": alias,
+            "backend": _BACKEND, "endpoint": _endpoint(_INFER)}
 
 
 def services_status(health=None):
@@ -580,10 +643,17 @@ async function tick(){
  // inference server says it is): escape it before it meets innerHTML.
  const esc=v=>String(v??'').replace(/[&<>"'`]/g,c=>'&#'+c.charCodeAt(0)+';');
  const num=v=>Number(v)||0;
+ // The tool server's metrics on the host this page was opened on, not the
+ // viewer's own localhost. (location.hostname keeps an IPv6 literal's [].)
+ const mlink='http://'+(globalThis.location?.hostname||'127.0.0.1')+':3001/metrics';
  const svc=Object.entries(sv).map(([k,v])=>`<div class=row><span><span class="dot ${v?'up':'down'}"></span>${esc(k)}</span><span class=k>${v?'up':'down'}</span></div>`).join('');
- const gpu=g?`<div class=big>${num(g.used_pct)}% <span class=k style=font-size:14px>${(num(g.used_mib)/1024).toFixed(1)}/${(num(g.total_mib)/1024).toFixed(0)} GB</span></div>
+ // A unified-memory GPU (GB10) has no VRAM of its own: its memory is the
+ // host's (g.unified), or unknown (total_mib null) when that is unreadable.
+ const mem=g&&g.total_mib!=null?`<div class=big>${num(g.used_pct)}% <span class=k style=font-size:14px>${(num(g.used_mib)/1024).toFixed(1)}/${(num(g.total_mib)/1024).toFixed(0)} GB</span></div>
    <div class=bar><i style=width:${num(g.used_pct)}%></i></div>
-   <div class=row><span class=k>free</span><span>${(num(g.free_mib)/1024).toFixed(1)} GB</span></div>
+   <div class=row><span class=k>free</span><span>${(num(g.free_mib)/1024).toFixed(1)} GB</span></div>`:'<div class=k>memory not reported</div>';
+ const uni=g&&g.unified?'<div class=row><span class=k>memory</span><span>unified (host RAM)</span></div>':'';
+ const gpu=g?`${mem}${uni}
    <div class=row><span class=k>GPU util</span><span>${num(g.util_pct)}%</span></div>
    <div class=row><span class=k>temp</span><span>${num(g.temp_c)}°C</span></div>
    <div class=row><span class=k>card</span><span>${esc(g.name)}</span></div>`:'<div class=k>no GPU detected</div>';
@@ -592,12 +662,12 @@ async function tick(){
   <div class=card><h2>Model</h2>
     <div class=big style=font-size:18px><span class="dot ${m.healthy?'up':'down'}"></span>${esc(m.alias||m.serve_script||'—')}</div>
     <div class=row><span class=k>serve script</span><span>${esc(m.serve_script||'—')}</span></div>
-    <div class=row><span class=k>API</span><span>${m.healthy?':8080 healthy':'down'}</span></div></div>
+    <div class=row><span class=k>API</span><span>${esc(m.endpoint||'')} ${m.healthy?'healthy':'down'}</span></div></div>
   <div class=card><h2>Services</h2>${svc}</div>
   <div class=card><h2>Tool activity</h2>
     <div class=big>${esc(mt.tool_calls??'—')}</div><div class=k>total tool calls</div>
     <div class=row><span class=k>errors</span><span>${esc(mt.tool_errors??'—')}</span></div>
-    <div class=row><span class=k>raw</span><span><a href=http://localhost:3001/metrics>:3001/metrics</a></span></div></div>`;
+    <div class=row><span class=k>raw</span><span><a href="${esc(mlink)}">:3001/metrics</a></span></div></div>`;
  document.getElementById('ts').textContent='updated '+new Date().toLocaleTimeString();
 }
 tick();setInterval(tick,3000);
