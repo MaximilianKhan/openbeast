@@ -72,6 +72,23 @@ mk('wrong_rel_tol.py',
    [("""trace[t] - trace[t - 1] <= tol * len(X)""",
      """abs(trace[t] - trace[t - 1]) <= tol * abs(trace[t])""")])
 
+mk('wrong_cap_first.py',
+   'tests the iteration cap BEFORE the convergence test. When both hold at the\n'
+   'same t (case 3: K=1 converges at t=2 = max_iter) it reports converged=False.\n'
+   'Trace and parameters are right. Intended: case 3: converged flag wrong.\n',
+   [("""        if t >= 1 and trace[t] - trace[t - 1] <= tol * len(X):
+            converged = True
+            break
+        if t == max_iter:
+            break
+""",
+     """        if t == max_iter:
+            break
+        if t >= 1 and trace[t] - trace[t - 1] <= tol * len(X):
+            converged = True
+            break
+""")])
+
 open(os.path.join(D, 'slow_quadratic.py'), 'w').write(
     '"""SLOW (188_gmm_em): correct arithmetic, but every E-step also re-sums a\n'
     'per-point pass over all of X (O(n^2) per iteration), as a naive "recompute\n'
@@ -81,3 +98,16 @@ open(os.path.join(D, 'slow_quadratic.py'), 'w').write(
 """, """        LL += lse
         _ = sum(abs(v) for xx in X for v in xx for __ in w)
 """, 1))
+
+# Lint arms: the reference plus a numpy import the old line-anchored regex
+# missed. Both must be refused for using numpy, not for any arithmetic.
+open(os.path.join(D, 'wrong_import_list.py'), 'w').write(
+    '"""WRONG (188_gmm_em): `import os, numpy` slipped past the v1 lint (only the\n'
+    'first module after `import` was checked). Intended: FAIL forbidden import."""\n'
+    'import os, numpy\n' + body)
+open(os.path.join(D, 'wrong_import_dynamic.py'), 'w').write(
+    '"""WRONG (188_gmm_em): imports numpy by a string-built name through\n'
+    '__builtins__, which no source lint can see. The driver\'s import blocker\n'
+    'refuses it at load time. Intended: FAIL solution crashed ... ImportError."""\n'
+    'np = (__builtins__ if isinstance(__builtins__, dict) else vars(__builtins__))'
+    '["__imp" + "ort__"]("num" + "py")\n' + body)

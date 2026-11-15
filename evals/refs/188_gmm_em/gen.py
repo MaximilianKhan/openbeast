@@ -3,7 +3,8 @@ validator by build_task.py; never written to the agent-visible dir).
 
 Case families, by index (the validator prints only the index on failure):
   0-2  overlapping clusters, d=1..3          (plain EM correctness)
-  3    K=1                                    (one-step MLE, then stop)
+  3    K=1, max_iter=2                        (one-step MLE; at t=2 the convergence
+       test and t == max_iter both hold -> converged=True, convergence first)
   4    max_iter=0                             (trace of length 1, init params)
   5    max_iter=7 cap, tiny tol               (converged=False path)
   6-8  initial covariances far narrower than the data-to-mean distance:
@@ -78,7 +79,7 @@ def cases():
     C.append(make(rng, 1, 2, 500, sep=1.6, mi=300, tol=1e-10))                    # 0 benign d1
     C.append(make(rng, 2, 3, 500, sep=2.5, mi=300, tol=1e-10))                    # 1 benign d2
     C.append(make(rng, 3, 2, 400, sep=1.8, mi=300, tol=1e-9))                     # 2 benign d3
-    C.append(make(rng, 2, 1, 120, tol=1e-9))                                      # 3 K=1
+    C.append(make(rng, 2, 1, 120, mi=2, tol=1e-9))                                # 3 K=1, stops at t=2=max_iter
     C.append(make(rng, 2, 2, 60, mi=0))                                           # 4 max_iter=0
     C.append(make(rng, 2, 3, 200, sep=2.5, mi=7, tol=1e-12))                      # 5 iteration cap
     C.append(make(rng, 2, 3, 500, sd=1e-3, sep=2.5, off=0.8, isd=2e-3, mi=300, tol=1e-10))   # 6 underflow

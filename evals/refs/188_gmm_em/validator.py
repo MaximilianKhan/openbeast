@@ -10,18 +10,20 @@ if not os.path.isfile(SOL):
 src = open(SOL, encoding="utf-8", errors="replace").read()
 
 
-def code_only(s):
-    out = []
+BANNED = ("numpy", "scipy", "sklearn", "torch", "jax", "pandas", "mpmath", "sympy")
+
+
+def names(s):
     try:
-        for tok in tokenize.generate_tokens(io.StringIO(s).readline):
-            out.append(" " if tok.type in (tokenize.COMMENT, tokenize.STRING) else tok.string)
+        return {t.string for t in tokenize.generate_tokens(io.StringIO(s).readline)
+                if t.type == tokenize.NAME}
     except Exception:
-        return s
-    return " ".join(out)
+        return set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", s))
 
 
-if re.search(r"(?m)^\s*(?:import|from)\s+(?:numpy|scipy|sklearn|torch|jax|pandas|mpmath|sympy)\b",
-             code_only(src).replace(" . ", ".")):
+# Any code use of a banned package name, or of a dynamic importer, is refused;
+# the driver also blocks the imports themselves (string-built names included).
+if names(src) & set(BANNED + ("__import__", "importlib", "import_module")):
     print("FAIL forbidden import (standard library only)"); sys.exit(1)
 
 # ---- hidden generator -------------------------------------------------------
@@ -37,6 +39,15 @@ DRIVER = r'''
 import importlib.util, json, sys
 real = sys.stdout
 sys.stdout = sys.stderr
+BANNED = %r
+class _Block:
+    def find_spec(self, name, path=None, target=None):
+        if name.split(".")[0] in BANNED:
+            raise ImportError("standard library only")
+        return None
+sys.meta_path.insert(0, _Block())
+for _m in [m for m in sys.modules if m.split(".")[0] in BANNED]:
+    del sys.modules[_m]
 cases = json.loads(sys.stdin.read())
 spec = importlib.util.spec_from_file_location("gmm_sol", "/tmp/eval_gmm/gmm.py")
 mod = importlib.util.module_from_spec(spec)
@@ -55,7 +66,7 @@ for c in cases:
         out.append({"ok": False, "err": type(e).__name__})
 real.write("@@RESULT@@" + json.dumps(out))
 real.flush()
-'''
+''' % (BANNED,)
 
 try:
     p = subprocess.run([sys.executable, "-c", DRIVER], input=json.dumps(CASES), cwd="/tmp/eval_gmm",
