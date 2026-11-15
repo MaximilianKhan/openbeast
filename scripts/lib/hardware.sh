@@ -39,6 +39,45 @@ ob_meminfo_total_mb() {
   [[ "$kb" =~ ^[0-9]+$ ]] && echo $((kb / 1024)) || echo 0
 }
 
+# MemAvailable in MiB (0 when unreadable). On unified memory (GB10) the
+# model's GPU allocations come out of MemTotal, so this — not MemTotal — is
+# what is left for everything else on the box.
+ob_meminfo_available_mb() {
+  local kb
+  kb=$(awk '$1 == "MemAvailable:" {print $2; exit}' "${OB_MEMINFO:-/proc/meminfo}" 2>/dev/null || true)
+  [[ "$kb" =~ ^[0-9]+$ ]] && echo $((kb / 1024)) || echo 0
+}
+
+# The stack's memory budget on a UNIFIED-memory box whose model runs beside
+# it (a GB10 head node: TensorFold rank 0 + the command center). Measured
+# AFTER the model is resident, so the numbers are what is really left.
+#
+#   ob_unified_mem_budget <stack_now_mb> <reserve_mb> <ceiling_mb>
+#   -> "<stack_cap_mb> <chat_job_pct> <available_mb> <short>"
+#
+# The reserve stays free for the model (its prompt peaks, the desktop,
+# Open WebUI's container — which runs outside the stack's cgroup). Of what
+# is left, the chat jobs' slice (its own cgroup, outside the stack's) gets
+# about half as a whole percent of RAM — at least 1 — and the stack gets the
+# rest on top of what it already holds. The stack never goes below
+# OB_STACK_FLOOR_MB (default 2048): under that it cannot even start, and
+# <short>=1 says the reserve is being eaten. Never above <ceiling_mb> (the
+# MEM_LIMIT_PCT cap). Returns 1, printing nothing, when meminfo is unreadable.
+ob_unified_mem_budget() {
+  local now="${1:-0}" reserve="${2:-3072}" ceiling="${3:-0}"
+  local floor="${OB_STACK_FLOOR_MB:-2048}" avail total spare pct jobs cap short=0
+  avail="$(ob_meminfo_available_mb)"; total="$(ob_meminfo_total_mb)"
+  [[ "$avail" -gt 0 && "$total" -gt 0 ]] || return 1
+  [[ "$now" =~ ^[0-9]+$ ]] || now=0
+  spare=$(( avail - reserve )); (( spare < 0 )) && spare=0
+  pct=$(( spare * 50 / total )); (( pct < 1 )) && pct=1
+  jobs=$(( total * pct / 100 ))
+  cap=$(( now + spare - jobs ))
+  if (( cap < floor )); then cap=$floor; short=1; fi
+  (( ceiling > 0 && cap > ceiling )) && cap=$ceiling
+  echo "$cap $pct $avail $short"
+}
+
 ob_detect_gpu() {
   OB_GPU_VENDOR="none"; OB_GPU_NAME=""; OB_GPU_COUNT=0
   OB_VRAM_MB=0; OB_VRAM_TOTAL_MB=0; OB_GPU_UNIFIED=0

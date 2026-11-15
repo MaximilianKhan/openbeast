@@ -581,7 +581,10 @@ def _validate(raw, env, repo: Path, source: str, errors: list[str]) -> Config:
             errors += _key_file_errors(where, n["key_file"], repo)
         if (not loopback and not n.get("key_env")
                 and not n.get("key_file") and cls != "invalid"):
-            warnings.append(f"{where}: remote {engine} node with no key")
+            warnings.append(f"{where}: remote {engine} node with no key"
+                            + (" (a key_file only helps native TensorFold >= 1.0: the container "
+                               "engine has no auth, so bind it to loopback or firewall it to the rig)"
+                               if engine == "tensorfold" else ""))
         slots = n.get("slots", 1)
         if isinstance(slots, int) and not isinstance(slots, bool) and slots < 1:
             errors.append(f"{where}.slots must be >= 1")

@@ -28,7 +28,10 @@
 #
 # Daemon mode runs inside a memory-capped systemd scope when available
 # (MEM_LIMIT_PCT of this machine's RAM — default 75% — plus 8G swap) so a
-# runaway process can only take down the stack — never the box. On OOM the
+# runaway process can only take down the stack — never the box. On a
+# unified-memory box (GB10) running its own model beside the stack, the cap
+# is re-sized once the model is up to MemAvailable minus MEM_RESERVE_GB: 75%
+# of a MemTotal the model already holds would protect nothing. On OOM the
 # supervisor shuts down what remains gracefully. Logs: .run/stack.log;
 # pidfiles: .run/*.pid.
 #
@@ -219,6 +222,7 @@ source "$SCRIPT_DIR/scripts/lib/net.sh"          # ob_probe_host, ob_llama_ready
 source "$SCRIPT_DIR/scripts/lib/backend.sh"      # ob_backend_ready, ob_inference_managed
 source "$SCRIPT_DIR/scripts/lib/curl_auth.sh"    # ob_curl_hdr: tokens never on argv
 source "$SCRIPT_DIR/scripts/lib/portown.sh"      # ob_port_listening, ob_pid_owns_port
+source "$SCRIPT_DIR/scripts/lib/hardware.sh"     # ob_detect_gpu, ob_unified_mem_budget
 SERVE_SCRIPT="${SERVE_SCRIPT:-$DEFAULT_SERVE_SCRIPT}"
 
 # _port_busy <host> <port> — 0 when something accepts a TCP connection there,
@@ -397,6 +401,45 @@ ensure_logrotate_timer() {
   return 0
 }
 [[ $DAEMONIZED -eq 1 ]] || ensure_logrotate_timer
+
+# ---- the watchdog: installed for a daemon stack, not by a manual step ----
+# openbeast-watchdog.timer runs healthcheck.sh --restart every 5 minutes —
+# the only thing that brings a crashed tool server, beast-gate, beast-chat
+# or beast-artifact back (the supervisor relaunches llama-server only, and
+# an unmanaged supervisor nothing). It was a manual install from the timer's
+# header, so spark-1 (rebuilt from the runbook) ran without one, and a dead
+# :3001 or :8090 stayed dead (ops review). Same rules as log rotation: a
+# no-op when enabled already, without a reachable user manager, or with
+# WATCHDOG_AUTOINSTALL=false; only for `-d` (a stack meant to stay up); never
+# fatal. healthcheck --restart never touches an unmanaged inference server,
+# and does nothing after ./stop.sh (.run/stopped).
+ensure_watchdog_timer() {
+  [[ "${WATCHDOG_AUTOINSTALL:-true}" == "true" ]] || return 0
+  [[ -f "$SCRIPT_DIR/scripts/openbeast-watchdog.service" ]] || return 0
+  command -v systemctl >/dev/null 2>&1 || return 0
+  systemctl --user is-enabled --quiet openbeast-watchdog.timer 2>/dev/null && return 0
+  systemctl --user show-environment >/dev/null 2>&1 || return 0
+  echo "Installing the 5-minute health watchdog (openbeast-watchdog.timer; opt out: WATCHDOG_AUTOINSTALL=false)..."
+  local unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user" line pct exe
+  # systemd expands %specifiers everywhere and $VARS, \escapes and quotes in
+  # ExecStart's quoted path: escape each so the path stays literal (as
+  # scripts/logrotate.sh does for its unit).
+  pct="${SCRIPT_DIR//%/%%}"; exe="${pct//\\/\\\\}"; exe="${exe//\"/\\\"}"; exe="${exe//\$/\$\$}"
+  if mkdir -p "$unit_dir" \
+     && while IFS= read -r line || [[ -n "$line" ]]; do
+          if [[ "$line" == ExecStart=* ]]; then printf '%s\n' "${line//@REPO@/$exe}"
+          else printf '%s\n' "${line//@REPO@/$pct}"; fi
+        done < "$SCRIPT_DIR/scripts/openbeast-watchdog.service" > "$unit_dir/openbeast-watchdog.service" \
+     && cp "$SCRIPT_DIR/scripts/openbeast-watchdog.timer" "$unit_dir/openbeast-watchdog.timer" \
+     && systemctl --user daemon-reload \
+     && systemctl --user enable --now openbeast-watchdog.timer >/dev/null 2>&1; then
+    echo "  installed: openbeast-watchdog.timer (journalctl --user -u openbeast-watchdog)"
+  else
+    echo "  Warning: watchdog not installed — see the header of scripts/openbeast-watchdog.timer" >&2
+  fi
+  return 0
+}
+[[ $DAEMONIZED -eq 1 || $DAEMON -ne 1 ]] || ensure_watchdog_timer
 
 # ---- preflight: refuse BEFORE the multi-minute model load, not after it ----
 # Run by the process the operator is looking at (the foreground start, or the
@@ -1115,6 +1158,44 @@ _infer_ready() {
   fi
 }
 
+# UNIFIED memory (GB10 head node): re-size the stack's cap to what is really
+# left. The launcher capped the scope at MEM_LIMIT_PCT of MemTotal, but here
+# the model (TensorFold rank 0, outside every cgroup of ours) holds most of
+# MemTotal: on spark-1 the cap was 91 GiB with 6.4 GiB available, so it could
+# never fire before the box itself ran out — and a GB10 out of memory freezes
+# or OOM-kills rank 0 instead of the runaway. Called once the model is READY
+# (at boot both start together, and a cap measured before the model loads
+# would be the same useless number), and again whenever it comes back.
+# Only for an unmanaged model (a managed llama-server runs INSIDE the scope)
+# and only inside the scope this launcher made. Never fatal.
+fit_unified_mem_cap() {
+  [[ $MANAGED -eq 0 ]] || return 0
+  grep -qs 'openbeast-stack\.service' "${OB_PROC_CGROUP:-/proc/self/cgroup}" || return 0
+  [[ -n "${OB_GPU_UNIFIED:-}" ]] || ob_detect_gpu 2>/dev/null || true
+  [[ "${OB_GPU_UNIFIED:-0}" -eq 1 ]] || return 0
+  local now_b now_mb ceil_mb out cap_mb pct avail_mb short
+  now_b="$(systemctl --user show -p MemoryCurrent --value openbeast-stack.service 2>/dev/null || true)"
+  [[ "$now_b" =~ ^[0-9]+$ ]] && now_mb=$(( now_b / 1048576 )) || now_mb=0
+  ceil_mb=$(( $(ob_meminfo_total_mb) * ${MEM_LIMIT_PCT:-75} / 100 ))
+  out="$(ob_unified_mem_budget "$now_mb" $(( ${MEM_RESERVE_GB:-3} * 1024 )) "$ceil_mb")" || return 0
+  read -r cap_mb pct avail_mb short <<< "$out"
+  if systemctl --user set-property --runtime openbeast-stack.service \
+       "MemoryMax=${cap_mb}M" >/dev/null 2>&1; then
+    echo "Unified memory: ${avail_mb} MiB available beside the model — stack cap now ${cap_mb} MiB" \
+         "(MemAvailable − MEM_RESERVE_GB=${MEM_RESERVE_GB:-3}G kept for the model; chat jobs ${pct}% of RAM)"
+  else
+    echo "Warning: could not lower the stack's memory cap to ${cap_mb} MiB (systemctl set-property failed)" >&2
+  fi
+  if [[ "$short" == "1" ]]; then
+    echo "Warning: only ${avail_mb} MiB available beside the model — the stack's floor eats into the" >&2
+    echo "         ${MEM_RESERVE_GB:-3} GiB reserve. Free memory on this box (or shrink the model's pool)." >&2
+  fi
+  # The chat jobs' slice leaves the stack's cgroup (agents/chat_server.py),
+  # so it needs its own share. An operator's explicit value wins.
+  [[ -n "${OPENBEAST_CHAT_JOB_MEM_PCT:-}" ]] || export OPENBEAST_CHAT_JOB_MEM_PCT="$pct"
+  return 0
+}
+
 # beast-hydra (opt-in, HYDRA=true): the inference router every consumer now
 # talks to (docs/BEAST_HYDRA_PLAN.md §6.7). Launched BEFORE the inference
 # wait so it watches the engine load, and so the unmanaged wait can ask it.
@@ -1248,6 +1329,7 @@ if [[ $MANAGED -eq 0 ]]; then
   if wait_backend_ready; then
     INFER_UP=1
     echo "$(ob_backend_label) ready at $LLAMA_BASE"
+    fit_unified_mem_cap
   fi
 elif [[ $FAST_BOOT_ACTIVE -eq 1 ]]; then
   echo "Waiting for llama.cpp server to be ready..."
@@ -1612,6 +1694,18 @@ while IFS= read -r _cf; do [[ -n "$_cf" ]] && COMPOSE_FILES+=("$_cf"); done < <(
 # store lacks the pinned digest, which on a closed network is a stall followed
 # by a confusing failure. `--pull never` turns that into an immediate, honest
 # "the image is not here".
+# Islanded at launch by a boot race? The launch probe ran seconds after boot;
+# by now (after the model wait) the watcher may have seen the route come
+# back. On spark-1 it had, 30 s later — and Open WebUI was still created in
+# OFFLINE_MODE minutes after that, for the whole 43 h run (ops review). Auto
+# mode only: forced (--offline) and OFFLINE=true stay offline.
+if [[ $ISLAND_AT_LAUNCH -eq 1 && "${ISLAND:-auto}" == "auto" && $_was_offline -eq 0 ]] \
+   && OPENBEAST_RUN_DIR="$ISLAND_STATE_DIR" python3 "$_island_py" status >/dev/null 2>&1; then
+  echo "beast-island: the internet came back before the frontends started — Open WebUI starts online."
+  ISLAND_AT_LAUNCH=0
+  OFFLINE=false
+  export OPENBEAST_WEBUI_OFFLINE=false
+fi
 COMPOSE_UP=(up -d)
 if ob_offline; then
   COMPOSE_UP+=(--pull never)
@@ -1722,17 +1816,39 @@ if [[ $FAST_BOOT_ACTIVE -eq 1 ]]; then
   FAST_BOOT_ACTIVE=0
 fi
 
-# Unmanaged: nothing to relaunch. Stay up (the trap still owns shutdown)
+# Unmanaged: no model to relaunch. Stay up (the trap still owns shutdown)
 # and log only TRANSITIONS of the remote server's readiness, so a Spark
 # rebooting shows up in stack.log without a line every 30 seconds.
+# Every 5 minutes, run healthcheck.sh --restart for the stack's OWN services
+# (tool server, beast-gate, beast-chat, beast-artifact, WebUI, SearXNG): this
+# loop used to only log, so on spark-1 a crashed :3001 or :8090 stayed down
+# (ops review). Run from here, a relaunched service stays inside this
+# memory-capped scope; healthcheck never touches the unmanaged model, and a
+# pass the watchdog timer is already running makes this one report-only. Its
+# output reaches stack.log only when something was down.
 if [[ $MANAGED -eq 0 ]]; then
   _up="${INFER_UP:-1}"
+  _hc_tick=0
   while true; do
     sleep 30 & IDLE_PID=$!
     wait "$IDLE_PID" || true
     IDLE_PID=""
+    _hc_tick=$(( _hc_tick + 1 ))
+    if (( _hc_tick >= ${OPENBEAST_SUPERVISOR_HEAL_TICKS:-10} )) && [[ -x "$SCRIPT_DIR/scripts/healthcheck.sh" ]]; then
+      _hc_tick=0
+      "$SCRIPT_DIR/scripts/healthcheck.sh" --restart > "$RUN_DIR/supervisor-heal.log" 2>&1 & IDLE_PID=$!
+      _hc_rc=0; wait "$IDLE_PID" || _hc_rc=$?
+      IDLE_PID=""
+      if [[ $_hc_rc -ne 0 && -s "$RUN_DIR/supervisor-heal.log" ]]; then
+        echo "$(date '+%H:%M:%S') supervisor: healthcheck --restart found something down:"
+        grep -E '^  (DOWN|FOREIGN|WARN)|→' "$RUN_DIR/supervisor-heal.log" | sed 's/^/  /' || true
+      fi
+    fi
     if _infer_ready; then
-      [[ $_up -eq 0 ]] && echo "$(date '+%H:%M:%S') $(ob_backend_label) at $LLAMA_BASE is ready again."
+      if [[ $_up -eq 0 ]]; then
+        echo "$(date '+%H:%M:%S') $(ob_backend_label) at $LLAMA_BASE is ready again."
+        fit_unified_mem_cap   # a reloaded model re-sizes what is left beside it
+      fi
       _up=1
     else
       [[ $_up -eq 1 ]] && echo "$(date '+%H:%M:%S') $(ob_backend_label) at $LLAMA_BASE is NOT ready — not managed here, so nothing is restarted."

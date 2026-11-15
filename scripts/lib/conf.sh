@@ -873,9 +873,20 @@ export OPENBEAST_MODEL_URL="$MODEL_URL"
 # (start.sh computes the byte value from /proc/meminfo at every launch, so
 # the cap scales with whatever box OpenBeast lands on — 128 GB or 32 GB).
 MEM_LIMIT_PCT="${OPENBEAST_MEM_LIMIT_PCT:-$(_ob_conf_value MEM_LIMIT_PCT || echo 75)}"
+# UNIFIED memory (GB10 head node, unmanaged model on this box): GiB kept
+# free beside the model. The supervisor sizes the stack's cap — and the chat
+# jobs' — from MemAvailable minus this once the model is resident, instead of
+# MEM_LIMIT_PCT of a MemTotal the model already holds most of. Ignored on a
+# discrete GPU. Doctor and healthcheck warn when MemAvailable is below it.
+MEM_RESERVE_GB="${OPENBEAST_MEM_RESERVE_GB:-$(_ob_conf_value MEM_RESERVE_GB || echo 3)}"
+[[ "$MEM_RESERVE_GB" =~ ^[0-9]+$ ]] || MEM_RESERVE_GB=3
 # start.sh installs + enables the daily openbeast-logrotate.timer (systemd
 # --user) when it is missing. false = leave rotation to the operator.
 LOGROTATE_AUTOINSTALL="$(_ob_bool "${OPENBEAST_LOGROTATE_AUTOINSTALL:-$(_ob_conf_value LOGROTATE_AUTOINSTALL || true)}" true LOGROTATE_AUTOINSTALL)"
+# `./start.sh -d` installs + enables openbeast-watchdog.timer (systemd --user,
+# healthcheck.sh --restart every 5 min) when it is missing. false = leave
+# supervision of the stack's services to the operator.
+WATCHDOG_AUTOINSTALL="$(_ob_bool "${OPENBEAST_WATCHDOG_AUTOINSTALL:-$(_ob_conf_value WATCHDOG_AUTOINSTALL || true)}" true WATCHDOG_AUTOINSTALL)"
 # Where files the CHAT model writes/reads via the direct tools land. A direct
 # tool call carries no conversation or user id (the OpenAPI tool server is
 # stateless), so without this the model picks its own path and defaults to a
@@ -1079,7 +1090,7 @@ export OPENBEAST_SEARXNG_SECRET="$SEARXNG_SECRET"
 _OB_CONF_EXTRA_KEYS="BEAST_ASSIST BEAST_ESCALATE CHAT_BASE_URL CHAT_PUBLIC_URL WEBUI_DEFAULT_ADMIN_PASSWORD"
 # Whole numbers that are used exactly as written (the port keys and the gate's
 # limits take no inline comment — openbeast.conf.example says so)...
-_OB_CONF_INT_KEYS="ROUTER_PORT EDGE_PORT CHAT_PORT ARTIFACT_PORT NTFY_PORT MEM_LIMIT_PCT EDGE_RATE_LIMIT EDGE_MAX_INFLIGHT EDGE_MAX_BODY ARTIFACT_RETAIN_DAYS"
+_OB_CONF_INT_KEYS="ROUTER_PORT EDGE_PORT CHAT_PORT ARTIFACT_PORT NTFY_PORT MEM_LIMIT_PCT MEM_RESERVE_GB EDGE_RATE_LIMIT EDGE_MAX_INFLIGHT EDGE_MAX_BODY ARTIFACT_RETAIN_DAYS"
 # ...and those whose reader strips a trailing `# comment` first.
 _OB_CONF_INT_KEYS_COMMENT_OK="HYDRA_READY_GRACE AGENT_LOG_RETENTION_DAYS ISLAND_GRACE"
 ob_conf_lint() {

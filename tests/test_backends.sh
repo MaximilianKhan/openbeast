@@ -465,6 +465,144 @@ _O="$(_run "$_R" 120 "$_R/scripts/doctor.sh")"
 grep -q "reached without a key" <<< "$_O" && pass "…while a remote keyless vLLM is warned about (control)" \
   || fail "no keyless warning for a remote vLLM"
 
+# GB10 (unified memory): nvidia-smi answers memory.used/total with [N/A], so
+# the VRAM-headroom rows said nothing ("unavailable") and doctor printed host
+# RAM as "VRAM" (ops review). spark-1's meminfo, idle and squeezed.
+echo ""
+echo "doctor.sh / healthcheck.sh on a GB10 (unified memory):"
+_R="$_T/gb10"; _rig "$_R"
+cat > "$_R/bin/nvidia-smi" <<'SH'
+#!/bin/bash
+case "$*" in
+  *name,memory.used*|*memory.used,memory.total*) echo "NVIDIA GB10, [N/A], [N/A]" ;;
+  *memory.total*|*memory.used*) echo "[N/A]" ;;
+  *name*) echo "NVIDIA GB10" ;;
+esac
+exit 0
+SH
+chmod +x "$_R/bin/nvidia-smi"
+printf 'MemTotal:       127598412 kB\nMemAvailable:    6690096 kB\n' > "$_R/meminfo-ok"
+printf 'MemTotal:       127598412 kB\nMemAvailable:    2097152 kB\n' > "$_R/meminfo-low"
+RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=tensorfold "OPENBEAST_INFERENCE_URL=$_S/tf" "OB_MEMINFO=$_R/meminfo-ok")
+_O="$(_run "$_R" 120 "$_R/scripts/doctor.sh")"
+grep -q "GB10 (unified memory — 124607 MiB of host RAM" <<< "$_O" && ! grep -q "MiB VRAM)" <<< "$_O" \
+  && pass "doctor labels the GB10's memory unified host RAM, not VRAM" \
+  || fail "GB10 GPU row: $(grep -i gb10 <<< "$_O" || true)"
+grep -q "unified memory headroom: 6533 MiB available beside the model" <<< "$_O" \
+  && pass "…and shows a real headroom row from MemAvailable" || fail "no unified headroom row: $(grep -i headroom <<< "$_O" || true)"
+_O="$(_run "$_R" 60 "$_R/scripts/healthcheck.sh")"
+grep -q "Unified memory: 6533 MiB available of 124607 MiB" <<< "$_O" && ! grep -q "GPU VRAM: unavailable" <<< "$_O" \
+  && pass "healthcheck reports unified memory, not 'GPU VRAM: unavailable'" \
+  || fail "healthcheck GB10 memory line: $(grep -iE 'vram|unified' <<< "$_O" || true)"
+RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=tensorfold "OPENBEAST_INFERENCE_URL=$_S/tf" "OB_MEMINFO=$_R/meminfo-low")
+_O="$(_run "$_R" 120 "$_R/scripts/doctor.sh")"
+grep -q "unified memory headroom: only 2048 MiB available (MEM_RESERVE_GB=3)" <<< "$_O" \
+  && pass "…and warns once MemAvailable is under the MEM_RESERVE_GB reserve" \
+  || fail "no low-headroom warning: $(grep -i headroom <<< "$_O" || true)"
+_O="$(_run "$_R" 60 "$_R/scripts/healthcheck.sh")"
+grep -q "WARNING: under the 3 GiB reserve" <<< "$_O" && pass "…healthcheck too" \
+  || fail "healthcheck low unified memory: $(grep -iE 'unified|warning' <<< "$_O" || true)"
+
+# A frozen peer rank: TensorFold rank 0 keeps answering /health ok:true
+# while every request hangs (ops review). healthcheck reads iteration_s, and
+# when idle sends one rate-limited 1-token completion with a short timeout.
+echo ""
+echo "healthcheck.sh: a stalled TensorFold pair is DOWN, not OK:"
+cat > "$_T/tfstub.py" <<'PY'
+import http.server, json, sys, threading, time, os
+COUNT = {"n": 0}
+def health(mode):
+    if mode == "stuck":  return {"ok": True, "requests_running": 2, "iteration_s": 400.0}
+    if mode == "busy":   return {"ok": True, "requests_running": 2, "iteration_s": 0.3}
+    return {"ok": True, "requests_running": 0, "iteration_s": 0.0}
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def _send(self, st, obj):
+        b = json.dumps(obj).encode()
+        self.send_response(st); self.send_header("Content-Length", str(len(b)))
+        self.end_headers(); self.wfile.write(b)
+    def do_GET(self):
+        mode, _, path = self.path.lstrip("/").partition("/")
+        if path == "health":      return self._send(200, health(mode))
+        if path == "v1/models":   return self._send(200, {"data": [{"id": "GLM"}]})
+        if path == "count":       return self._send(200, COUNT)
+        self._send(404, {})
+    def do_POST(self):
+        mode, _, path = self.path.lstrip("/").partition("/")
+        COUNT["n"] += 1
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        if mode == "hang":
+            time.sleep(6)
+        self._send(200, {"choices": [{"message": {"content": "I"}}]})
+srv = http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), H)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+time.sleep(600); os._exit(0)
+PY
+_TFP="$(_free_port)"; python3 "$_T/tfstub.py" "$_TFP" & _PIDS="$_PIDS $!"
+_TF="http://127.0.0.1:$_TFP"
+for _i in $(seq 1 50); do curl -s -o /dev/null "$_TF/idle/health" 2>/dev/null && break; sleep 0.1; done
+_R="$_T/hc-tf"; _rig "$_R"
+_tfhc() { RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=tensorfold "OPENBEAST_INFERENCE_URL=$_TF/$1" OPENBEAST_TF_PROBE_TIMEOUT=2)
+          _O="$(_run "$_R" 60 "$_R/scripts/healthcheck.sh")"; }
+_tfhc stuck
+grep -q "DOWN TensorFold.*rank 0's current iteration has run 400 s" <<< "$_O" \
+  && pass "an iteration stuck for 400 s is DOWN although /health says ok" \
+  || fail "stuck TensorFold: $(grep -i tensorfold <<< "$_O" || true)"
+rm -f "$_R/.run/tf-liveness"; _tfhc busy
+grep -q "OK   TensorFold" <<< "$_O" && [[ ! -f "$_R/.run/tf-liveness" ]] \
+  && pass "…a busy pair making progress is OK, and is not probed" \
+  || fail "busy TensorFold: $(grep -i tensorfold <<< "$_O" || true)"
+rm -f "$_R/.run/tf-liveness"; _tfhc hang
+grep -q "DOWN TensorFold.*a 1-token completion did not finish in 2 s" <<< "$_O" \
+  && pass "an idle pair whose 1-token completion never returns is DOWN" \
+  || fail "hung idle TensorFold: $(grep -i tensorfold <<< "$_O" || true)"
+rm -f "$_R/.run/tf-liveness"; _tfhc idle
+_n1="$(curl -s "$_TF/idle/count")"; _tfhc idle; _n2="$(curl -s "$_TF/idle/count")"
+grep -q "OK   TensorFold" <<< "$_O" && [[ -n "$_n1" && "$_n1" == "$_n2" ]] \
+  && pass "…an idle pair that answers is OK, and a second pass within the interval sends no probe" \
+  || fail "idle TensorFold: $(grep -i tensorfold <<< "$_O" || true) probes $_n1 -> $_n2"
+
+# A keyed rig in front of a server that does not enforce the key (the
+# container TensorFold engine has no auth): doctor must ask the server.
+# http://2130706433 is 127.0.0.1 spelled so doctor treats it as remote.
+echo ""
+echo "doctor.sh asks the server whether it enforces a key:"
+_R="$_T/doc-open"; _rig "$_R"
+RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=tensorfold "OPENBEAST_INFERENCE_URL=http://2130706433:$_TFP/idle" OPENBEAST_API_KEY=k-rig)
+printf 'LLAMA_API_KEY=k-rig\n' > "$_R/openbeast.conf"
+_O="$(_run "$_R" 120 "$_R/scripts/doctor.sh")"
+grep -q "serves /v1 WITHOUT a key (keyless /v1/models → 200) — LLAMA_API_KEY is set here, but the server does not enforce it" <<< "$_O" \
+  && grep -q "container TensorFold has NO auth" <<< "$_O" \
+  && pass "a keyed rig + an open TensorFold /v1 is warned, with the container-engine fix" \
+  || fail "open /v1 behind a rig key: $(grep -iE 'key|/v1' <<< "$_O" | head -5)"
+RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=tensorfold "OPENBEAST_INFERENCE_URL=http://2130706433:$(_free_port)" OPENBEAST_API_KEY=k-rig)
+_O="$(_run "$_R" 120 "$_R/scripts/doctor.sh")"
+grep -qE "WITHOUT a key|reached without a key" <<< "$_O" \
+  && fail "control: a keyed rig whose server does not answer keyless was warned" \
+  || pass "…control: no keyless 200, key set → no key warning"
+
+# One restarter at a time: the watchdog timer and the unmanaged supervisor
+# both run --restart. A live pass holds .run/healthcheck-restart.pid.
+echo ""
+echo "healthcheck.sh --restart: one pass at a time:"
+_R="$_T/hc-lock"; _rig "$_R"
+echo "serve-marker.sh" > "$_R/.run/serve-script"
+printf '#!/bin/bash\nsleep 30\n' > "$_R/healthcheck.sh"; chmod +x "$_R/healthcheck.sh"
+"$_R/healthcheck.sh" & _HOLD=$!
+echo "$_HOLD" > "$_R/.run/healthcheck-restart.pid"
+RUN_ENV=()
+_O="$(_run "$_R" 60 "$_R/scripts/healthcheck.sh" --restart)"
+kill "$_HOLD" 2>/dev/null || true; wait "$_HOLD" 2>/dev/null || true
+grep -q "Another healthcheck --restart is running (pid $_HOLD)" <<< "$_O" && ! grep -q serve-marker "$_R/calls.log" \
+  && pass "a second --restart while one runs reports only (restarts nothing)" \
+  || fail "concurrent --restart: $(head -n 4 <<< "$_O") :: $(cat "$_R/calls.log")"
+[[ "$(cat "$_R/.run/healthcheck-restart.pid")" == "$_HOLD" ]] \
+  && pass "…and leaves the running pass's lock alone" || fail "the holder's lock was taken"
+_O="$(_run "$_R" 60 "$_R/scripts/healthcheck.sh" --restart)"
+grep -q serve-marker "$_R/calls.log" && [[ ! -f "$_R/.run/healthcheck-restart.pid" ]] \
+  && pass "…a dead pass's leftover lock is taken over, and released on exit (control: it restarts)" \
+  || fail "stale lock: $(head -n 4 <<< "$_O") :: lock=$(cat "$_R/.run/healthcheck-restart.pid" 2>/dev/null)"
+
 echo ""
 echo "start.sh --status on an unmanaged stack:"
 _R="$_T/status"; _rig "$_R"

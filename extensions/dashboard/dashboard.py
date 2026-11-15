@@ -455,10 +455,19 @@ def _slot_status_remote():
     sequence from ONE block pool, so ctx_shared is true — but the pool's
     size in tokens is not something we can read without guessing, so
     ctx_total stays null (never a guessed budget, as for llama).
-    TensorFold: /health and /v1/models only, so capacity is null.
+    TensorFold: its /health body carries what vLLM needs /metrics for —
+    context_length (model.ctx), requests_running (busy), streams.max (slots
+    when INFERENCE_SLOTS is unset) and the ONE token pool every stream draws
+    on (pool_tokens -> ctx_total, pool_free_tokens -> kv_usage). Its
+    iteration_s is how long rank 0's current iteration has run: past
+    TF_STALL_S the pair is stalled (a frozen or rebooting peer rank) while
+    /health still says ok, so the model reads as down.
     """
     health = _get(f"{_INFER}/health")
     ok = health[0] == 200
+    tf = _tf_health(health[1]) if _BACKEND == "tensorfold" and ok else {}
+    if tf.get("stalled"):
+        ok = False
     model = {"id": None, "ctx": None}
     slots = {"total": _conf_slots(), "busy": None}
     capacity = {"ctx_shared": None, "ctx_total": None, "queue_deferred": None,
@@ -478,6 +487,16 @@ def _slot_status_remote():
         slots["busy"] = running
         capacity["queue_deferred"] = waiting
         capacity["kv_usage"] = kv
+    elif tf:
+        if model["ctx"] is None:
+            model["ctx"] = tf.get("ctx")
+        if slots["total"] is None:
+            slots["total"] = tf.get("streams")
+        slots["busy"] = tf.get("busy")
+        if tf.get("pool"):
+            capacity["ctx_shared"] = True
+            capacity["ctx_total"] = tf["pool"]
+            capacity["kv_usage"] = tf.get("kv")
     total = slots["total"]
     capacity["serving_profile"] = ("unknown" if total is None
                                    else "single-slot" if total == 1
@@ -490,9 +509,50 @@ def _slot_status_remote():
         "model": model,
         "slots": slots,
         "capacity": capacity,
-        "services": services_status(health),
+        "services": dict(services_status(health), **({"model": False} if tf.get("stalled") else {})),
         "auth": _auth_mode(),
     }
+
+
+# rank 0's current iteration running longer than this = a stalled pair. A
+# normal iteration is milliseconds (a long-prompt prefill chunk, seconds);
+# the recipe's own stall report fires at 300 (TF_GLM_MULTI_WATCHDOG_S).
+TF_STALL_S = 120.0
+
+
+def _tf_health(body):
+    """The fields /api/slot reads from a TensorFold /health body; a field
+    that is missing or not a sane number is simply absent (null upstream),
+    never a guess."""
+    try:
+        h = json.loads(body)
+    except Exception:
+        return {}
+    if not isinstance(h, dict):
+        return {}
+
+    def num(v, lo=0):
+        return v if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= lo else None
+
+    out = {}
+    ctx = num(h.get("context_length"), 1)
+    if isinstance(ctx, int):
+        out["ctx"] = ctx
+    busy = num(h.get("requests_running"))
+    if isinstance(busy, int):
+        out["busy"] = busy
+    streams = h.get("streams") if isinstance(h.get("streams"), dict) else {}
+    smax = num(streams.get("max"), 1)
+    if isinstance(smax, int):
+        out["streams"] = smax
+    pool, free = num(h.get("pool_tokens"), 1), num(h.get("pool_free_tokens"))
+    if isinstance(pool, int):
+        out["pool"] = pool
+        if free is not None and free <= pool:
+            out["kv"] = round(1 - free / pool, 4)
+    it = num(h.get("iteration_s"))
+    out["stalled"] = it is not None and it > TF_STALL_S
+    return out
 
 
 PAGE = """<!doctype html><html><head><meta charset=utf-8>

@@ -32,6 +32,7 @@ source "$SCRIPT_DIR/lib/net.sh"       # ob_probe_host, ob_llama_ready
 source "$SCRIPT_DIR/lib/backend.sh"   # ob_backend_ready, ob_inference_managed
 source "$SCRIPT_DIR/lib/curl_auth.sh" # ob_curl_bearer: keys never on argv
 source "$SCRIPT_DIR/lib/portown.sh"   # ob_pid_owns_port: "healthy" must mean OUR process
+source "$SCRIPT_DIR/lib/hardware.sh"  # ob_meminfo_available_mb (unified-memory headroom)
 
 # Where a helper server relaunched below writes its output. It used to be
 # >/dev/null: a replacement that crashed on a bad conf, a taken port or an
@@ -97,6 +98,24 @@ if $RESTART && [[ -f "$STOPPED_FILE" ]]; then
   echo "  — reporting only, restarting nothing. ./start.sh clears this."
   echo ""
   RESTART=false
+fi
+# ONE restarter at a time. The watchdog timer and an unmanaged supervisor
+# (start.sh) both run --restart every 5 minutes; two passes at once would
+# each pkill the other's fresh tool server. A pidfile lock, not flock: every
+# service relaunched below would inherit a lock fd and hold it for life.
+HC_LOCK="$REPO_DIR/.run/healthcheck-restart.pid"
+if $RESTART; then
+  mkdir -p "$REPO_DIR/.run"
+  if ! ( set -o noclobber; echo $$ > "$HC_LOCK" ) 2>/dev/null; then
+    if ob_pid_matches "$(cat "$HC_LOCK" 2>/dev/null || true)" 'healthcheck\.sh'; then
+      echo "Another healthcheck --restart is running (pid $(cat "$HC_LOCK" 2>/dev/null)) — reporting only."
+      echo ""
+      RESTART=false
+    else
+      echo $$ > "$HC_LOCK"   # a dead pass's leftover
+    fi
+  fi
+  $RESTART && trap '[[ "$(cat "$HC_LOCK" 2>/dev/null)" == "$$" ]] && rm -f "$HC_LOCK"' EXIT
 fi
 
 # The no-supervisor llama relaunch below is the watchdog acting on its own,
@@ -233,6 +252,59 @@ _gpu_leased() {
   [[ "$out" == HELD* ]]
 }
 
+# TensorFold across Sparks: rank 0 answers /health {"ok": true} even while
+# its peer rank is frozen or rebooting and every request hangs (ops review).
+# Two cheap signals, in order:
+#   1. /health iteration_s — how long rank 0's current iteration has run (0
+#      between iterations). A healthy iteration is milliseconds; past
+#      TF_STALL_S (120; the recipe's own stall dump is at 300) it is stuck.
+#   2. Idle (requests_running 0, so nothing would show a stall): a 1-token
+#      completion with a short timeout (~0.1 s on the live pair), at most
+#      every OPENBEAST_TF_PROBE_INTERVAL seconds (240) — the watchdog and the
+#      supervisor both run this every 5 minutes, and the cached answer
+#      (.run/tf-liveness) serves the one that comes second.
+# Sets TF_STALL to the reason and returns 0 when stalled; any other backend,
+# or a /health it cannot read, is "not stalled" (readiness already decided).
+TF_STALL=""
+_tf_stalled() {
+  [[ "$INFERENCE_BACKEND" == "tensorfold" ]] || return 1
+  local body fields it running now stamp t verdict model code
+  body="$(ob_curl_bearer "${LLAMA_API_KEY:-}" -s --max-time 5 "$LLAMA_URL/health" 2>/dev/null || true)"
+  fields="$(python3 -c '
+import json, sys
+try:
+    h = json.loads(sys.stdin.read())
+except Exception:
+    h = {}
+num = lambda v: v if isinstance(v, (int, float)) and not isinstance(v, bool) else ""
+print(num(h.get("iteration_s")), num(h.get("requests_running")))' <<< "$body" 2>/dev/null || true)"
+  read -r it running <<< "$fields"
+  if [[ "$it" =~ ^[0-9]+(\.[0-9]+)?$ ]] && (( ${it%.*} > ${TF_STALL_S:-120} )); then
+    TF_STALL="rank 0's current iteration has run ${it%.*} s (stalled; iteration_s)"
+    return 0
+  fi
+  [[ "$running" == "0" ]] || return 1       # busy and progressing, or unknown
+  now="$(date +%s)"; stamp="$REPO_DIR/.run/tf-liveness"
+  if read -r t verdict < "$stamp" 2>/dev/null && [[ "$t" =~ ^[0-9]+$ ]] \
+     && (( now - t < ${OPENBEAST_TF_PROBE_INTERVAL:-240} )); then
+    [[ "$verdict" == "stalled" ]] || return 1
+    TF_STALL="a 1-token completion did not finish in ${OPENBEAST_TF_PROBE_TIMEOUT:-20} s (probed $(( now - t )) s ago)"
+    return 0
+  fi
+  model="${INFERENCE_MODEL:-$(ob_backend_models "$LLAMA_URL" 2>/dev/null | head -1 || true)}"
+  code="$(ob_curl_bearer "${LLAMA_API_KEY:-}" -s -o /dev/null -w '%{http_code}' \
+            --max-time "${OPENBEAST_TF_PROBE_TIMEOUT:-20}" -H 'Content-Type: application/json' \
+            --data "$(python3 -c 'import json, sys; print(json.dumps({"model": sys.argv[1], "max_tokens": 1, "stream": False, "messages": [{"role": "user", "content": "1"}]}))' "${model:-local-model}")" \
+            "$LLAMA_URL/v1/chat/completions" 2>/dev/null || true)"
+  # Only a request that never came back is a stall; a 4xx (a model id the
+  # engine rejects, an auth mismatch) is another row's problem.
+  verdict="alive"; [[ -z "$code" || "$code" == "000" ]] && verdict="stalled"
+  mkdir -p "$REPO_DIR/.run" 2>/dev/null && printf '%s %s\n' "$now" "$verdict" > "$stamp" 2>/dev/null || true
+  [[ "$verdict" == "stalled" ]] || return 1
+  TF_STALL="a 1-token completion did not finish in ${OPENBEAST_TF_PROBE_TIMEOUT:-20} s"
+  return 0
+}
+
 if ! ob_inference_managed; then
   # NOT OURS (INFERENCE_MANAGED=false — always for vLLM / TensorFold): a
   # cluster on other boxes, in containers this stack did not start. Report
@@ -240,9 +312,16 @@ if ! ob_inference_managed; then
   # pgrep/kill a local llama-server and exec a serve script into a port and
   # a GPU that have nothing to do with the real server.
   _be_label="$(ob_backend_label) ($INFERENCE_BACKEND @ $LLAMA_URL)"
-  if ob_backend_ready "$LLAMA_URL"; then
+  if ob_backend_ready "$LLAMA_URL" && ! _tf_stalled; then
     echo "  OK   $_be_label"
     HEALTHY=$((HEALTHY + 1))
+  elif [[ -n "${TF_STALL:-}" ]]; then
+    echo "  DOWN $_be_label — answers /health ok, but $TF_STALL"
+    echo "       (a frozen or rebooting peer rank — is every Spark of the pair up?)"
+    UNHEALTHY=$((UNHEALTHY + 1))
+    if $RESTART; then
+      echo "       → not restarting: INFERENCE_MANAGED=false — this stack does not own it."
+    fi
   else
     echo "  DOWN $_be_label"
     UNHEALTHY=$((UNHEALTHY + 1))
@@ -377,6 +456,19 @@ if ! check "Open WebUI" "$WEBUI_URL/api/version" "version"; then
     else
       echo "       → restart FAILED (docker compose up failed — daemon down?)"
     fi
+  fi
+elif $RESTART && [[ "${OPENBEAST_WEBUI_OFFLINE:-false}" == "false" ]] \
+     && [[ $'\n'"$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' open-webui 2>/dev/null || true)"$'\n' \
+           == *$'\n'"OFFLINE_MODE=true"$'\n'* ]]; then
+  # Up, but still in the OFFLINE_MODE an islanded launch gave it, while the
+  # rig is online now (conf.sh derives OPENBEAST_WEBUI_OFFLINE from the live
+  # island state). It used to stay that way until a manual restart — 43 h on
+  # spark-1 after a boot race (ops review). Recreate it once, online.
+  echo "       → Open WebUI is still in OFFLINE_MODE from an islanded launch; recreating it online..."
+  if docker compose -f "$REPO_DIR/docker-compose.yml" up -d open-webui; then
+    echo "       → recreated"
+  else
+    echo "       → recreate FAILED (docker compose up failed)"
   fi
 fi
 
@@ -816,7 +908,22 @@ echo ""
 if command -v nvidia-smi &>/dev/null; then
   VRAM_USED=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1 || true)
   VRAM_TOTAL=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 || true)
-  if [[ -z "$VRAM_TOTAL" || ! "$VRAM_TOTAL" =~ ^[0-9]+$ || "$VRAM_TOTAL" -eq 0 \
+  if [[ "$VRAM_TOTAL" == "[N/A]" ]]; then
+    # UNIFIED memory (GB10): no VRAM of its own. What is left is MemAvailable
+    # — the model's allocations come out of the same RAM, and a GB10 that
+    # runs out freezes rather than failing an allocation.
+    _avail_mb="$(ob_meminfo_available_mb)"; _total_mb="$(ob_meminfo_total_mb)"
+    VRAM_PCT=0
+    if [[ "$_avail_mb" -gt 0 ]]; then
+      echo "  Unified memory: ${_avail_mb} MiB available of ${_total_mb} MiB (the model's share is in the total)"
+      if [[ "$_avail_mb" -lt $(( ${MEM_RESERVE_GB:-3} * 1024 )) ]]; then
+        echo "  WARNING: under the ${MEM_RESERVE_GB:-3} GiB reserve (MEM_RESERVE_GB) — this box freezes when"
+        echo "           it runs out. Stop heavy jobs, or shrink the model's pool."
+      fi
+    else
+      echo "  Unified memory: unavailable (no MemAvailable in /proc/meminfo)"
+    fi
+  elif [[ -z "$VRAM_TOTAL" || ! "$VRAM_TOTAL" =~ ^[0-9]+$ || "$VRAM_TOTAL" -eq 0 \
         || -z "$VRAM_USED" || ! "$VRAM_USED" =~ ^[0-9]+$ ]]; then
     echo "  GPU VRAM: unavailable (nvidia-smi returned no data)"
     VRAM_PCT=0

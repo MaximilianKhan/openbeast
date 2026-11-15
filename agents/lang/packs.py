@@ -75,8 +75,13 @@ def _conf_value(key: str, missing=""):
 
     `missing` is what to return when the key is absent — callers that need to
     distinguish "absent" from "present but empty" pass None.
+
+    The LAST assignment wins, as in scripts/lib/conf.sh (`tail -n1`) and
+    agents/runner.py: the conf is edited by appending, and a first-match
+    reader kept an appended `LANG_PACKS=off` serving every language.
     """
     path = os.path.join(_REPO, "openbeast.conf")
+    found = missing
     try:
         with open(path) as fh:
             for line in fh:
@@ -88,10 +93,10 @@ def _conf_value(key: str, missing=""):
                     # openbeast.conf values are NOT shell — a trailing comment
                     # is literal text, which has bitten this repo before
                     # (CHAT_OPERATORS). Take the value verbatim, minus quotes.
-                    return v.strip().strip('"').strip("'")
+                    found = v.strip().strip('"').strip("'")
     except OSError:
         pass
-    return missing
+    return found
 
 
 def allow_list_raw() -> str:

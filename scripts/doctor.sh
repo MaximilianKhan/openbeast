@@ -82,8 +82,26 @@ if command -v ob_detect_gpu >/dev/null 2>&1; then
   elif [[ "${OB_VRAM_MB:-0}" -gt 0 && "${OB_VRAM_MB:-0}" -lt "${OB_VRAM_FLOOR_MB:-22000}" ]]; then
     fail "GPU has ${OB_VRAM_MB} MiB VRAM — below the 24 GB floor" \
          "OpenBeast targets 3090 / 4090 class and up (docs/HARDWARE_PROFILES.md)"
+  elif [[ "${OB_GPU_UNIFIED:-0}" -eq 1 ]]; then
+    pass "GPU: ${OB_GPU_NAME:-unknown} (unified memory — ${OB_VRAM_MB:-?} MiB of host RAM, shared with the OS)"
   else
     pass "GPU: ${OB_GPU_NAME:-unknown} (${OB_VRAM_MB:-?} MiB VRAM)"
+  fi
+fi
+# UNIFIED memory (GB10): nvidia-smi's memory.used/total are [N/A], so the
+# VRAM-headroom rule below has nothing to read — and MemAvailable is the
+# number that matters: the model's allocations come out of the same RAM,
+# and a GB10 that runs out freezes rather than failing an allocation.
+if [[ "${OB_GPU_UNIFIED:-0}" -eq 1 ]] && command -v ob_meminfo_available_mb >/dev/null 2>&1; then
+  _avail_mb="$(ob_meminfo_available_mb)"
+  _resv_mb=$(( ${MEM_RESERVE_GB:-3} * 1024 ))
+  if [[ "$_avail_mb" -le 0 ]]; then
+    warn "unified memory: MemAvailable unreadable — headroom unknown" "cat /proc/meminfo"
+  elif [[ "$_avail_mb" -lt "$_resv_mb" ]]; then
+    warn "unified memory headroom: only ${_avail_mb} MiB available (MEM_RESERVE_GB=${MEM_RESERVE_GB:-3})" \
+         "the model and the stack share this RAM — stop heavy jobs, or shrink the model's pool (KV_POOL_GIB / MEMORY_RESERVE_GIB)"
+  else
+    pass "unified memory headroom: ${_avail_mb} MiB available beside the model (reserve ${MEM_RESERVE_GB:-3} GiB)"
   fi
 fi
 if command -v nvidia-smi >/dev/null 2>&1; then
@@ -416,9 +434,25 @@ if [[ "$INFERENCE_BACKEND" != "llama" ]] || ! ob_inference_managed; then
   # loopback (the old split left "::1]" and warned about it).
   _be_host="$(ob_url_host "$INFERENCE_URL")"
   if ! ob_bind_is_loopback "$_be_host"; then
-    if [[ -z "${LLAMA_API_KEY:-}" ]]; then
+    # Engine-aware: the CONTAINER TensorFold engine (the GLM recipe's 0.x)
+    # has no auth at all — TENSORFOLD_API_KEY_FILE is read by the native
+    # engine (>= 1.0) only, so advising it there produced a green board and
+    # an open port (supply review).
+    case "$INFERENCE_BACKEND" in
+      tensorfold) _be_keyfix="container TensorFold has NO auth: bind it to 127.0.0.1 and reach it through beast-gate, or firewall the port to this rig; only native TensorFold >= 1.0 enforces TENSORFOLD_API_KEY_FILE (then set the same LLAMA_API_KEY here)" ;;
+      vllm)       _be_keyfix="start vLLM with an API key (spark.env VLLM_API_KEY_FILE) and set the same LLAMA_API_KEY here" ;;
+      *)          _be_keyfix="start that llama-server with --api-key and set the same LLAMA_API_KEY here" ;;
+    esac
+    # Ask the SERVER, not the rig's config: a key set here proves nothing
+    # about a server that ignores it. A keyless GET /v1/models that answers
+    # 200 is an open /v1, whatever LLAMA_API_KEY holds.
+    _be_open="$(curl -s -o /dev/null -m 4 -w '%{http_code}' "${INFERENCE_URL%/}/v1/models" 2>/dev/null || true)"
+    if [[ "$_be_open" == "200" ]]; then
+      warn "the inference server at $INFERENCE_URL serves /v1 WITHOUT a key (keyless /v1/models → 200)$([[ -n "${LLAMA_API_KEY:-}" ]] && echo ' — LLAMA_API_KEY is set here, but the server does not enforce it')" \
+           "$_be_keyfix"
+    elif [[ -z "${LLAMA_API_KEY:-}" ]]; then
       warn "the inference server at $INFERENCE_URL is reached without a key (LLAMA_API_KEY empty)" \
-           "start vLLM / TensorFold with an API key (spark.env VLLM_API_KEY_FILE / TENSORFOLD_API_KEY_FILE) and set the same LLAMA_API_KEY here"
+           "$_be_keyfix"
     fi
   fi
 elif [[ $_llama_up -eq 1 ]]; then
@@ -744,7 +778,15 @@ for nid, n in (s.get("nodes") or {}).items():
     else:
         print("pass|node %s: %s address, key %s|" % (nid, cls, n.get("key")))
     if cls != "loopback" and n.get("key") == "none":
-        print("warn|node %s: remote node with no key|set key_file (0600) in hydra.toml" % nid)
+        print("warn|node %s: remote node with no key|%s" % (nid,
+              "container TensorFold has no auth: bind it to loopback or firewall it to the rig; native TensorFold >= 1.0: set key_file (0600) in hydra.toml"
+              if n.get("engine") == "tensorfold" else "set key_file (0600) in hydra.toml"))
+    elif cls != "loopback" and n.get("engine") == "tensorfold":
+        # hydra holds a key, but only the native engine enforces one: the key
+        # proves nothing about the server (supply review). Ask the server:
+        # curl -s -o /dev/null -w '%{http_code}' <node url>/v1/models  → want 401
+        print("pass|node %s: tensorfold with a key — only native TensorFold >= 1.0 enforces it; "
+              "the container engine has none (check: a keyless /v1/models must answer 401)|" % nid)
 for did, d in (s.get("deployments") or {}).items():
     st = d.get("state")
     if st == "READY":
@@ -1056,6 +1098,14 @@ if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/d
   else
     warn "log rotation timer is missing or disabled — stack.log and the audit logs grow without bound" \
          "./scripts/logrotate.sh --install"
+  fi
+  # The watchdog is what brings a crashed tool server / gate / chat /
+  # artifact back; `./start.sh -d` installs it (WATCHDOG_AUTOINSTALL).
+  if systemctl --user is-enabled --quiet openbeast-watchdog.timer 2>/dev/null; then
+    pass "health watchdog enabled (openbeast-watchdog.timer, healthcheck --restart every 5 min)"
+  elif [[ "${WATCHDOG_AUTOINSTALL:-true}" == "true" ]]; then
+    warn "health watchdog (openbeast-watchdog.timer) not installed or not enabled — a crashed tool server, gate or chat console stays down" \
+         "./stop.sh && ./start.sh -d   (installs it), or see scripts/openbeast-watchdog.timer"
   fi
 fi
 

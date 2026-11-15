@@ -230,14 +230,19 @@ answer is unchanged, so a missing `backend` means `llama`:
 | field | vLLM | TensorFold |
 |---|---|---|
 | `backend` | `"vllm"` | `"tensorfold"` |
-| `model.ctx` | `/v1/models` `max_model_len` (the per-request window) | `null` |
-| `slots.total` | `INFERENCE_SLOTS` from the rig's conf (its `--max-num-seqs`) — vLLM does not expose it | `INFERENCE_SLOTS` (its `--parallel`) |
-| `slots.busy` | `vllm:num_requests_running` (summed over engines) | `null` |
-| `capacity.ctx_shared` | `true` — PagedAttention draws every sequence from one block pool | `null` |
-| `capacity.ctx_total` | `null` — the pool's size in tokens is not published without guessing | `null` |
+| `model.ctx` | `/v1/models` `max_model_len` (the per-request window) | `/health` `context_length` |
+| `slots.total` | `INFERENCE_SLOTS` from the rig's conf (its `--max-num-seqs`) — vLLM does not expose it | `INFERENCE_SLOTS` (its `--parallel`), else `/health` `streams.max` |
+| `slots.busy` | `vllm:num_requests_running` (summed over engines) | `/health` `requests_running` |
+| `capacity.ctx_shared` | `true` — PagedAttention draws every sequence from one block pool | `true` when `/health` has `pool_tokens` — every stream draws on one pool |
+| `capacity.ctx_total` | `null` — the pool's size in tokens is not published without guessing | `/health` `pool_tokens` |
 | `capacity.queue_deferred` | `vllm:num_requests_waiting` | `null` |
-| `capacity.kv_usage` | `vllm:kv_cache_usage_perc`, a 0..1 fraction (fullest engine) | `null` |
+| `capacity.kv_usage` | `vllm:kv_cache_usage_perc`, a 0..1 fraction (fullest engine) | `1 - pool_free_tokens / pool_tokens` (kept prompts count as used) |
 | `capacity.serving_profile` | `single-slot` / `batched-multi-slot` / `unknown`, from `slots.total` | same |
+
+A TensorFold `/health` whose `iteration_s` (how long rank 0's current
+iteration has run) is past 120 s reads as `healthy: false` and
+`services.model: false`: a pair whose other rank is frozen or rebooting
+keeps answering `ok: true` while every request hangs.
 
 `mtp-single-slot` stays a llama-only value (vLLM's MTP batches). Unknown
 `serving_profile` values should be treated as "unknown", like `auth`.

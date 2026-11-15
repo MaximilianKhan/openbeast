@@ -499,6 +499,69 @@ _adv="$( source "$REPO_DIR/scripts/lib/hardware.sh"; unset OPENBEAST_ASSUME_5090
 [[ "$_adv" == *"GB10 / DGX Spark profile"* && "$_adv" == *"unified memory"* && "$_adv" != *"5090-class"* ]] \
   && pass "…the GB10 advice names the unified-memory profile, not 5090-class" \
   || fail "GB10 advice: $(tr '\n' ' ' <<< "$_adv")"
+# The stack's cap on unified memory (ops review): spark-1 capped the stack at
+# 75% of MemTotal = 91 GiB with 6.4 GiB available — a cap that can never fire
+# before the box runs out. The budget is MemAvailable minus the reserve.
+# spark-1's meminfo with rank 0 resident (2026-11-15): 6533 MiB available.
+printf 'MemTotal:       127598412 kB\nMemAvailable:    6690096 kB\n' > "$_HW/spark1"
+_got="$( OB_MEMINFO="$_HW/spark1"; source "$REPO_DIR/scripts/lib/hardware.sh"
+         ob_unified_mem_budget 200 3072 93455 )"
+# spare 6533-3072=3461; jobs 1% (1246 MiB); stack 200+3461-1246 = 2415
+[[ "$_got" == "2415 1 6533 0" ]] \
+  && pass "unified budget: spark-1 → stack 2415 MiB + chat jobs 1%, the 3 GiB reserve untouched" \
+  || fail "unified budget on spark-1's meminfo: '$_got' (want '2415 1 6533 0')"
+printf 'MemTotal:       127598412 kB\nMemAvailable:    3145728 kB\n' > "$_HW/tight"
+_got="$( OB_MEMINFO="$_HW/tight"; source "$REPO_DIR/scripts/lib/hardware.sh"
+         ob_unified_mem_budget 0 3072 93455 )"
+[[ "$_got" == "2048 1 3072 1" ]] \
+  && pass "…with nothing spare the stack keeps its 2 GiB floor and says the reserve is short" \
+  || fail "tight unified budget: '$_got' (want '2048 1 3072 1')"
+printf 'MemTotal:       127598412 kB\nMemAvailable:  120000000 kB\n' > "$_HW/empty"
+_got="$( OB_MEMINFO="$_HW/empty"; source "$REPO_DIR/scripts/lib/hardware.sh"
+         ob_unified_mem_budget 0 3072 20000 )"
+[[ "${_got%% *}" == "20000" ]] \
+  && pass "…never above the MEM_LIMIT_PCT ceiling (a box with no model loaded)" \
+  || fail "unified budget ignored the ceiling: '$_got'"
+_got="$( OB_MEMINFO="$_HW/nope"; source "$REPO_DIR/scripts/lib/hardware.sh"
+         ob_unified_mem_budget 0 3072 93455 && echo sized || echo unknown )"
+[[ "$_got" == "unknown" ]] \
+  && pass "…unreadable meminfo sizes nothing (the launcher's cap stays)" \
+  || fail "unified budget without meminfo: '$_got'"
+# fit_unified_mem_cap, run: stub systemctl records set-property; a fake
+# cgroup file says we are inside openbeast-stack.service.
+_FIT="$_HW/fit"; mkdir -p "$_FIT/bin"
+cat > "$_FIT/bin/systemctl" <<SH
+#!/bin/bash
+case "\$*" in
+  *"show -p MemoryCurrent"*) echo 209715200 ;;
+  *set-property*) echo "\$*" >> "$_FIT/calls" ;;
+esac
+SH
+chmod +x "$_FIT/bin/systemctl"
+echo "0::/user.slice/user-1000.slice/user@1000.service/app.slice/openbeast-stack.service" > "$_FIT/cg"
+echo "0::/user.slice/user-1000.slice/session-2.scope" > "$_FIT/cg-other"
+_fit() { # _fit <managed> <unified> <cgroup file>
+  ( PATH="$_FIT/bin:$PATH"; OB_MEMINFO="$_HW/spark1"; OB_PROC_CGROUP="$3"
+    MANAGED=$1; OB_GPU_UNIFIED=$2; MEM_LIMIT_PCT=75; MEM_RESERVE_GB=3
+    unset OPENBEAST_CHAT_JOB_MEM_PCT
+    source "$REPO_DIR/scripts/lib/hardware.sh"
+    eval "$(sed -n '/^fit_unified_mem_cap() {/,/^}/p' "$REPO_DIR/start.sh")"
+    fit_unified_mem_cap; echo "jobs=${OPENBEAST_CHAT_JOB_MEM_PCT:-unset}" )
+}
+rm -f "$_FIT/calls"; _out="$(_fit 0 1 "$_FIT/cg" 2>&1)"
+if grep -q "set-property --runtime openbeast-stack.service MemoryMax=2415M" "$_FIT/calls" 2>/dev/null \
+   && [[ "$_out" == *"jobs=1"* && "$_out" == *"6533 MiB available"* ]]; then
+  pass "start.sh re-caps the live scope at 2415M on a GB10 and gives chat jobs 1%"
+else
+  fail "fit_unified_mem_cap on a GB10: calls=$(cat "$_FIT/calls" 2>/dev/null) out=$_out"
+fi
+for _case in "1 1 $_FIT/cg managed" "0 0 $_FIT/cg discrete" "0 1 $_FIT/cg-other unscoped"; do
+  read -r _m _u _c _why <<< "$_case"
+  rm -f "$_FIT/calls"; _out="$(_fit "$_m" "$_u" "$_c" 2>&1)"
+  [[ ! -f "$_FIT/calls" && "$_out" == "jobs=unset" ]] \
+    && pass "…control: a $_why stack's cap is left alone" \
+    || fail "fit_unified_mem_cap touched a $_why stack: $_out $(cat "$_FIT/calls" 2>/dev/null)"
+done
 rm -rf "$_HW"
 if grep -q 'ob_scale_context' "$REPO_DIR/scripts/serve.sh"; then
   pass "serve.sh applies adaptive context via ob_scale_context"
@@ -745,6 +808,50 @@ if [[ "$_GRACE" =~ ^[0-9]+$ && "$_EXTRA" =~ ^[0-9]+$ ]] \
 else
   fail "openbeast.service TimeoutStartSec='$_UTMO' is not above the launcher's deadline (grace '$_GRACE' + '$_EXTRA')"
 fi
+# The watchdog is installed by `./start.sh -d` (ops review: spark-1 was
+# rebuilt from the runbook without it, and a dead :3001 / :8090 stayed dead).
+# ensure_watchdog_timer, run against a stub systemctl and a sandbox HOME.
+_WD="$(mktemp -d)"; mkdir -p "$_WD/bin" "$_WD/home" "$_WD/repo with space/scripts"
+cp "$REPO_DIR/scripts/openbeast-watchdog.service" "$REPO_DIR/scripts/openbeast-watchdog.timer" "$_WD/repo with space/scripts/"
+cat > "$_WD/bin/systemctl" <<SH
+#!/bin/bash
+echo "\$*" >> "$_WD/calls"
+case "\$*" in
+  *is-enabled*) [[ -f "$_WD/enabled" ]] ;;
+  *show-environment*) [[ -f "$_WD/manager" ]] ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$_WD/bin/systemctl"
+_wd() { ( PATH="$_WD/bin:$PATH"; HOME="$_WD/home"; unset XDG_CONFIG_HOME
+          SCRIPT_DIR="$_WD/repo with space"; WATCHDOG_AUTOINSTALL="${1:-true}"
+          eval "$(sed -n '/^ensure_watchdog_timer() {/,/^}/p' "$REPO_DIR/start.sh")"
+          ensure_watchdog_timer; echo "rc=$?" ) 2>&1; }
+touch "$_WD/manager"; rm -f "$_WD/calls"; _out="$(_wd)"
+_unit="$_WD/home/.config/systemd/user/openbeast-watchdog.service"
+if [[ "$_out" == *"rc=0"* ]] && grep -q "enable --now openbeast-watchdog.timer" "$_WD/calls" \
+   && grep -qx 'ExecStart="'"$_WD"'/repo with space/scripts/healthcheck.sh" --restart' "$_unit" 2>/dev/null \
+   && [[ -f "$_WD/home/.config/systemd/user/openbeast-watchdog.timer" ]]; then
+  pass "start.sh -d installs + enables openbeast-watchdog.timer, the repo path intact"
+else
+  fail "ensure_watchdog_timer: $_out :: $(cat "$_WD/calls" 2>/dev/null) :: $(grep ExecStart "$_unit" 2>/dev/null)"
+fi
+touch "$_WD/enabled"; rm -f "$_WD/calls"; _wd >/dev/null
+grep -q "enable --now" "$_WD/calls" && fail "an enabled watchdog was reinstalled" || pass "…already enabled: no reinstall"
+rm -f "$_WD/enabled" "$_WD/calls"; _wd false >/dev/null
+[[ ! -s "$_WD/calls" ]] && pass "…WATCHDOG_AUTOINSTALL=false opts out" || fail "watchdog opt-out ignored: $(cat "$_WD/calls")"
+rm -f "$_WD/manager" "$_WD/calls" "$_unit"; _wd >/dev/null
+[[ ! -f "$_unit" ]] && pass "…no reachable user manager: no-op" || fail "watchdog installed without a user manager"
+rm -rf "$_WD"
+grep -q '^\[\[ \$DAEMONIZED -eq 1 || \$DAEMON -ne 1 \]\] || ensure_watchdog_timer' "$REPO_DIR/start.sh" \
+  && pass "…only for a daemon launch (./start.sh -d), never a foreground dev run" \
+  || fail "ensure_watchdog_timer is not gated on -d"
+# The unmanaged supervisor heals the stack's own services (it used to only
+# log), through healthcheck --restart, which never touches the unmanaged model.
+_ul="$(sed -n '/^if \[\[ \$MANAGED -eq 0 \]\]; then$/,/^fi$/p' "$REPO_DIR/start.sh")"
+[[ "$_ul" == *'scripts/healthcheck.sh" --restart'* && "$_ul" == *'_infer_ready'* ]] \
+  && pass "the unmanaged supervisor loop runs healthcheck --restart for its own services" \
+  || fail "unmanaged supervisor loop does not self-heal"
 
 # --- 9. Entry-point shell syntax ---
 echo ""
