@@ -4,7 +4,7 @@
 #
 #   ./scripts/pydeps.sh lock                    regenerate agents/requirements.lock
 #   ./scripts/pydeps.sh verify                  offline: is the lock sane and current
-#   ./scripts/pydeps.sh check                   online: re-resolve, is the lock STALE
+#   ./scripts/pydeps.sh check                   online: is the lock EXACTLY the closure (1), newest (4)
 #   ./scripts/pydeps.sh wheelhouse <dir>        fill a dir with the exact artifacts
 #   ./scripts/pydeps.sh audit <dir>             every file in <dir> must be in the lock
 #   ./scripts/pydeps.sh install [--from <dir> [--lock-sha256 <hex>]]
@@ -105,29 +105,17 @@ case "$CMD" in
 
   check)
     # ONLINE. `verify` proves the lock is self-consistent and covers every
-    # direct pin; only a resolver can prove it is not missing a package that
-    # a bumped dependency now needs. Re-resolve into a temp file and diff the
-    # pins — the hashes are expected to be identical, so any difference is a
-    # stale lock, not noise.
+    # direct pin; only a resolver can prove it is EXACTLY the closure. It used
+    # to diff the lock against one unconstrained resolve and call any
+    # difference "a stale lock, not noise" — but an unconstrained resolve
+    # moves every time any unpinned transitive dependency ships a release, so
+    # "extra package" and "certifi moved" looked identical. pydeps_lock.py
+    # check asks the two questions apart (see its docstring):
+    #   exit 0 CURRENT, 1 WRONG/STALE (extra, missing or re-hashed package —
+    #   held to the lock's own versions, so not index movement), 4 OUTDATED
+    #   (a correct closure, but a fresh resolve picks other releases).
     [[ -f "$LOCK" ]] || die "$LOCK does not exist"
-    _tmp="$(mktemp -d)"
-    trap 'rm -rf "$_tmp"' EXIT
-    if ! "$PY" "$HELPER" build --lock "$_tmp/fresh.lock" --req "$REQ" "${EXTRA[@]}" >/dev/null; then
-      die "could not re-resolve (network? index?) — the committed lock is unchanged"
-    fi
-    # Compare the PINS, not the comment header: the header records the
-    # resolver's own version, which moves for reasons that are not a stale
-    # lock and would make this check cry wolf on every pip upgrade.
-    _strip() { grep -vE '^\s*#' "$1" | grep -vE '^\s*$'; }
-    if diff -u <(_strip "$LOCK") <(_strip "$_tmp/fresh.lock") > "$_tmp/diff"; then
-      echo "$LOCK: CURRENT — a fresh resolve produces the same pins and hashes"
-    else
-      echo "$LOCK: STALE — a fresh resolve differs:"
-      sed -n '1,60p' "$_tmp/diff"
-      echo
-      echo "regenerate with: ./scripts/pydeps.sh lock"
-      exit 1
-    fi
+    "$PY" "$HELPER" check --lock "$LOCK" --req "$REQ" "${EXTRA[@]}"
     ;;
 
   wheelhouse)

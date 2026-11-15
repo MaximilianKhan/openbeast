@@ -54,8 +54,10 @@ def _norm(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
-def resolve(req_files: list[str], extra: list[str], pip: list[str]) -> list[dict]:
-    """The installable closure, as pip itself resolves it."""
+def resolve(req_files: list[str], extra: list[str], pip: list[str],
+            constraints: str | None = None) -> list[dict]:
+    """The installable closure, as pip itself resolves it (held to the
+    versions in a `-c constraints` file when one is given)."""
     import tempfile
     with tempfile.TemporaryDirectory(prefix="ob-lock-") as tmp:
         report = os.path.join(tmp, "report.json")
@@ -69,6 +71,8 @@ def resolve(req_files: list[str], extra: list[str], pip: list[str]) -> list[dict
                       "--only-binary", ":all:", "--report", report]
         for f in req_files:
             argv += ["-r", f]
+        if constraints:
+            argv += ["-c", constraints]
         argv += list(extra)
         p = subprocess.run(argv, capture_output=True, text=True, timeout=900)
         if p.returncode != 0:
@@ -126,8 +130,9 @@ def release_files(name: str, version: str) -> list[dict]:
     return sorted(files, key=lambda f: f["filename"])
 
 
-def build(req_files: list[str], extra: list[str], pip: list[str]) -> dict:
-    closure = resolve(req_files, extra, pip)
+def build(req_files: list[str], extra: list[str], pip: list[str],
+          constraints: str | None = None) -> dict:
+    closure = resolve(req_files, extra, pip, constraints)
     packages, mismatches = [], []
     for entry in closure:
         files = release_files(entry["name"], entry["version"])
@@ -573,9 +578,79 @@ def audit_dir(lock_path: str, directory: str,
     return matched, problems
 
 
+def check(lock_path: str, req_files: list[str], extra: list[str],
+          pip: list[str]) -> int:
+    """ONLINE. Two questions, answered separately, because one diff could not
+    tell them apart and so was useless for the one that matters:
+
+    1. IS THE LOCK THE CLOSURE OF ITS OWN VERSIONS? Re-resolve with every
+       locked version as a constraint and diff pins + hashes. A difference is
+       an extra package nothing requires, a missing one, or a re-hashed file:
+       the lock is WRONG (exit 1). Index movement cannot cause this.
+    2. IS IT THE NEWEST? An unconstrained resolve picks the newest release of
+       every unpinned transitive dependency, so it moves whenever certifi (or
+       any of ~37 others) ships. Only versions are compared: a difference is
+       OUTDATED (exit 4), a correct closure that is not the newest one, or
+       one whose transitive pin was moved back to an older real release; the
+       list names which.
+    CURRENT (exit 0) only when both agree.
+    """
+    import difflib
+    import tempfile
+    pkgs = parse(lock_path)
+
+    def _body(text: str) -> list[str]:
+        # the PINS, not the header (it records the resolver's own version)
+        return [ln.rstrip() for ln in text.splitlines()
+                if ln.strip() and not ln.lstrip().startswith("#")]
+
+    with open(lock_path, "r", encoding="utf-8") as fh:
+        have = _body(fh.read())
+    with tempfile.TemporaryDirectory(prefix="ob-check-") as tmp:
+        cons = os.path.join(tmp, "constraints.txt")
+        with open(cons, "w", encoding="utf-8") as fh:
+            for p in pkgs.values():
+                fh.write(f"{p['name']}=={p['version']}\n")
+        try:
+            fresh = build(req_files, extra, pip, constraints=cons)
+        except LockError as e:
+            print(f"{lock_path}: STALE — the locked versions no longer satisfy "
+                  f"the requirements (or the index is unreachable):\n  {e}")
+            print("regenerate with: ./scripts/pydeps.sh lock")
+            return 1
+    want = _body(render(fresh))
+    if have != want:
+        print(f"{lock_path}: WRONG — a resolve held to the lock's OWN versions "
+              f"produces a different closure (an extra, missing or re-hashed "
+              f"package; not index movement):")
+        diff = list(difflib.unified_diff(have, want, "lock", "fresh",
+                                         lineterm=""))
+        print("\n".join(diff[:60]))
+        print("regenerate with: ./scripts/pydeps.sh lock")
+        return 1
+    latest = resolve(req_files, extra, pip)
+    locked = {_norm(p["name"]): p["version"] for p in pkgs.values()}
+    newest = {_norm(e["name"]): e["version"] for e in latest}
+    moved = sorted(
+        f"{n}: locked {locked.get(n, '(none)')}, newest {newest.get(n, '(none)')}"
+        for n in set(locked) | set(newest) if locked.get(n) != newest.get(n))
+    if moved:
+        print(f"{lock_path}: OUTDATED — it IS the exact closure of its own "
+              f"versions (no extra, missing or re-hashed package), but a "
+              f"fresh resolve picks other releases:")
+        for m in moved[:60]:
+            print(f"  {m}")
+        print("an upstream release is the usual cause; a pin moved BACKWARDS "
+              "is worth a look. Regenerate with: ./scripts/pydeps.sh lock")
+        return 4
+    print(f"{lock_path}: CURRENT — a fresh resolve produces the same pins "
+          f"and hashes")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("action", choices=("build", "verify", "audit"))
+    ap.add_argument("action", choices=("build", "verify", "audit", "check"))
     ap.add_argument("--lock", default="agents/requirements.lock")
     ap.add_argument("--req", action="append", default=[])
     ap.add_argument("--extra", action="append", default=[],
@@ -647,6 +722,9 @@ def main(argv=None) -> int:
                       "python, so there is no offline record of who requires "
                       "what — ./scripts/pydeps.sh check decides it (online).")
             return 0
+
+        if args.action == "check":
+            return check(args.lock, reqs, args.extra, pip)
 
         if args.action == "audit":
             if not args.dir:

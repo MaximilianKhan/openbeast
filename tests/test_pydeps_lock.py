@@ -625,3 +625,72 @@ def test_the_resolver_never_builds_an_sdist(tmp_path, monkeypatch):
     assert L.resolve([str(tmp_path / "r.txt")], [], ["pip"])[0]["name"] == "foo"
     i = seen["argv"].index("--only-binary")
     assert seen["argv"][i + 1] == ":all:"
+
+
+# --------------------------------------------------------------------------
+# install-supply-chain finding: `check` called "certifi shipped" STALE, the
+# same word (and exit) as "the lock carries a package nothing requires"
+# --------------------------------------------------------------------------
+
+def _fake_index(monkeypatch, newest):
+    """A resolver + PyPI: unconstrained, every package resolves to `newest`;
+    with `-c`, to the constrained version."""
+    import hashlib
+
+    def resolve(req_files, extra, pip, constraints=None):
+        want = dict(newest)
+        if constraints:
+            for ln in open(constraints, encoding="utf-8"):
+                n, _, v = ln.strip().partition("==")
+                if n in want:
+                    want[n] = v
+        return [{"name": n, "version": v, "pip_sha256": None, "pip_url": None}
+                for n, v in sorted(want.items())]
+
+    def release_files(name, version):
+        sha = hashlib.sha256(f"{name}-{version}".encode()).hexdigest()
+        return [{"filename": f"{name}-{version}-py3-none-any.whl",
+                 "sha256": sha, "kind": "bdist_wheel"}]
+    monkeypatch.setattr(L, "resolve", resolve)
+    monkeypatch.setattr(L, "release_files", release_files)
+    monkeypatch.setattr(L, "_pip_version", lambda pip: "pip 0")
+
+
+def _check_world(tmp_path, monkeypatch, locked, newest, extra_text=""):
+    req = _write(tmp_path / "requirements.txt", f"openai=={locked['openai']}\n")
+    _fake_index(monkeypatch, locked)
+    lock = _write(tmp_path / "l.lock",
+                  L.render(L.build([req], [], ["pip"])) + extra_text)
+    _fake_index(monkeypatch, newest)
+    return lock, req
+
+
+def test_check_current_when_both_resolves_agree(tmp_path, monkeypatch, capsys):
+    v = {"openai": "3.9.0", "httpx": "0.28.1"}
+    lock, req = _check_world(tmp_path, monkeypatch, v, v)
+    assert L.main(["check", "--lock", lock, "--req", req]) == 0
+    assert "CURRENT" in capsys.readouterr().out
+
+
+def test_check_calls_an_upstream_release_OUTDATED_not_wrong(tmp_path, monkeypatch, capsys):
+    """The lock is a correct closure; httpx merely shipped 0.28.2."""
+    lock, req = _check_world(tmp_path, monkeypatch,
+                             {"openai": "3.9.0", "httpx": "0.28.1"},
+                             {"openai": "3.9.0", "httpx": "0.28.2"})
+    assert L.main(["check", "--lock", lock, "--req", req]) == 4
+    out = capsys.readouterr().out
+    assert "OUTDATED" in out and "httpx: locked 0.28.1, newest 0.28.2" in out
+    assert "WRONG" not in out
+
+
+def test_check_calls_an_extra_package_WRONG_even_when_the_index_moved(
+        tmp_path, monkeypatch, capsys):
+    import hashlib
+    evil = (f"evil-pkg==6.6.6 \\\n    --hash=sha256:"
+            f"{hashlib.sha256(b'evil').hexdigest()}\n")
+    lock, req = _check_world(tmp_path, monkeypatch,
+                             {"openai": "3.9.0", "httpx": "0.28.1"},
+                             {"openai": "3.9.0", "httpx": "0.28.2"}, evil)
+    assert L.main(["check", "--lock", lock, "--req", req]) == 1
+    out = capsys.readouterr().out
+    assert "WRONG" in out and "-evil-pkg==6.6.6" in out
