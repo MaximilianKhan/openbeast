@@ -130,3 +130,32 @@ def test_accepted_task_done_still_ends_the_run(tmp_path, monkeypatch):
                                [_resp("task_done", '{"summary": "fin"}')])
     assert out == "fin" and len(client.calls) == 1
     assert events[-1]["type"] == "done"
+
+
+def test_wrongly_typed_fields_do_not_crash_the_run(tmp_path, monkeypatch):
+    # Valid JSON objects whose fields are null / numbers / objects: the
+    # console summary must not raise outside the handler's try.
+    monkeypatch.delenv("OPENBEAST_TASK_PATHS", raising=False)
+    script = [_resp("bash", '{"command": 5}', "1"),
+              _resp("bash", '{"command": null}', "2"),
+              _resp("fetch", '{"url": 7}', "3"),
+              _resp("update_plan", '{"steps": [], "explanation": 3}', "4"),
+              _resp("task_done", '{"summary": {"a": 1}}', "5"),
+              _resp("task_done", '{"summary": 5}', "6"),
+              _resp("task_done", '{"summary": null}', "7"),
+              _resp("task_done", '{"summary": "ok"}', "8")]
+    out, client, events = _run(tmp_path, monkeypatch, script, max_iter=10)
+    done = [e for e in events if e["type"] == "done"]
+    assert len(done) == 1 and isinstance(done[0]["summary"], str)
+    assert isinstance(out, str) and out == done[0]["summary"]
+    # every call before the accepted task_done got a tool turn back
+    assert len(client.calls) >= 5
+
+
+def test_null_summary_is_returned_as_a_string(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENBEAST_TASK_PATHS", raising=False)
+    out, client, events = _run(tmp_path, monkeypatch,
+                               [_resp("task_done", '{"summary": null}', "1"),
+                                _resp("task_done", '{"summary": "ok"}', "2")])
+    assert isinstance(out, str)
+    assert all(isinstance(e["summary"], str) for e in events if e["type"] == "done")

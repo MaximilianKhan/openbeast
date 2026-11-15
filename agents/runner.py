@@ -212,7 +212,12 @@ def _tool_summary(name: str, args: dict) -> str:
     }
     fmt = summaries.get(name)
     if fmt and isinstance(args, dict):
-        return fmt(args)
+        # Called outside the handler's try: a field of the wrong type
+        # ({"summary": null}, {"command": 5}) must not kill the run here.
+        try:
+            return str(fmt(args))
+        except Exception:
+            pass
     return str(args)[:100]
 
 
@@ -1185,7 +1190,11 @@ def run_agent(
             # the model must get to act on.
             if (fn_name == "task_done" and call_ok
                     and str(result).startswith("TASK_DONE")):
-                final_summary = fn_args.get("summary", result)
+                final_summary = fn_args.get("summary")
+                if not isinstance(final_summary, str):
+                    # {"summary": null|5|{...}}: callers slice the summary.
+                    final_summary = (str(result) if final_summary is None
+                                     else str(final_summary))
                 print(f"\n{'=' * 60}")
                 print(f"Task complete (iteration {iteration})")
                 print(f"Summary: {final_summary}")
