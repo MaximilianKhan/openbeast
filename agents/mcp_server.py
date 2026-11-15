@@ -52,6 +52,7 @@ import atexit
 import difflib
 import json
 import os
+import re
 import signal
 import stat
 import subprocess
@@ -824,6 +825,15 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
     return fm, body
 
 
+# A skill directory is named like a skill: the same rule `skill-import.sh`
+# (scripts/lib/skill_import.py NAME_RE) and generate-skill-index.py apply.
+# Hidden entries (skills/.cache/, which .gitignore also hides) and `_drafts`
+# are never skills, and a SKILL.md must carry its own directory's name: before
+# this, skills/.cache/SKILL.md saying `name: security-audit` sorted first, took
+# that name, and was served — verify never walked it.
+_SKILL_DIR_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+
+
 def _discover_skills(force: bool = False) -> dict:
     """Walk repo and global skill directories. Repo wins on name collision.
     Cached after first call; pass force=True to re-scan."""
@@ -837,6 +847,8 @@ def _discover_skills(force: bool = False) -> dict:
         if not os.path.isdir(base):
             continue
         for entry in sorted(os.listdir(base)):
+            if not _SKILL_DIR_RE.match(entry):
+                continue
             skill_path = os.path.join(base, entry)
             md_path = os.path.join(skill_path, "SKILL.md")
             if not os.path.isfile(md_path):
@@ -847,6 +859,10 @@ def _discover_skills(force: bool = False) -> dict:
                 continue
             fm, body = _parse_frontmatter(text)
             name = fm.get("name") or entry
+            if name != entry:
+                print(f"skills: ignoring {md_path}: its frontmatter name {name!r} "
+                      f"is not its directory name {entry!r}", file=sys.stderr)
+                continue
             if name in skills:
                 continue  # repo already claimed this name
             skills[name] = {
@@ -861,8 +877,13 @@ def _discover_skills(force: bool = False) -> dict:
 
 
 def _resolve_skill(name: str) -> dict | None:
-    """Return the cached skill record, or None if not found."""
-    return _discover_skills().get(name)
+    """Return the skill record as it is on disk NOW, or None if not found.
+
+    Re-scans on every named lookup (a couple of dozen small files): a cached
+    record kept serving a skill deleted for losing trust, or the old body of a
+    refreshed one, to skill(name) and into start_skill_agent's system prompt
+    until something happened to call the index."""
+    return _discover_skills(force=True).get(name)
 
 
 @_tool()
@@ -876,8 +897,8 @@ def skill(name: str = "") -> str:
     instructions to the work at hand. This keeps the system prompt small and
     only pays for the content you need.
 
-    Index calls re-scan the skills directories, so a newly added or edited
-    SKILL.md shows up without restarting the server.
+    Every call re-scans the skills directories, so a newly added, edited or
+    removed SKILL.md shows up without restarting the server.
 
     Args:
         name: Skill identifier from the index (e.g. 'code-review').
@@ -907,9 +928,6 @@ def skill(name: str = "") -> str:
         return "\n".join(lines)
 
     record = _resolve_skill(name)
-    if record is None:
-        # The cache may predate a newly added skill — re-scan once before failing.
-        record = _discover_skills(force=True).get(name)
     if record is None:
         available = sorted(_discover_skills().keys())
         close = difflib.get_close_matches(name, available, n=3, cutoff=0.5)
@@ -1087,8 +1105,6 @@ def start_skill_agent(skill: str, task: str, workdir: str = ".", max_iter: int =
         Agent ID for use with check_agent, list_agents, and stop_agent.
     """
     skill_record = _resolve_skill(skill)
-    if skill_record is None:
-        skill_record = _discover_skills(force=True).get(skill)
     if skill_record is None:
         available = ", ".join(sorted(_discover_skills().keys())) or "(none)"
         return f"Error: skill '{skill}' not found. Available: {available}"
