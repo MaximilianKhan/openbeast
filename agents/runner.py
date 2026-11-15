@@ -718,11 +718,24 @@ def _apply_steer_ops(ops: list[dict], messages: list[dict], log_event,
     return {"stop": stop, "paused": paused, "said": said}
 
 
-def _host_of(url: str) -> str:
+_LOOPBACK_NAMES = ("localhost", "127.0.0.1", "::1")
+
+
+def _origin_of(url: str) -> tuple[str, str, int] | None:
+    """(scheme, host, port) with the default port filled in and loopback
+    aliases folded to one name; None for anything that is not http(s)."""
     try:
-        return (urllib.parse.urlsplit(url).hostname or "").lower()
-    except Exception:
-        return ""
+        u = urllib.parse.urlsplit((url or "").strip())
+        scheme = u.scheme.lower()
+        host = (u.hostname or "").lower()
+        port = u.port or {"http": 80, "https": 443}.get(scheme)
+    except ValueError:
+        return None
+    if scheme not in ("http", "https") or not host or port is None:
+        return None
+    if host in _LOOPBACK_NAMES:
+        host = "localhost"
+    return scheme, host, port
 
 
 def _key_endpoint_trusted(base_url: str) -> bool:
@@ -730,16 +743,23 @@ def _key_endpoint_trusted(base_url: str) -> bool:
 
     start_agent(base_url=...) is a model-callable MCP parameter with no host
     allowlist, so an injected prompt can name an arbitrary endpoint. The
-    ambient key therefore travels ONLY to the endpoint this install was
-    configured for (OPENBEAST_AGENT_INFERENCE_URL) or to the local server;
-    anywhere else gets the keyless sentinel. An explicit --api-key is operator
-    intent and always honored.
+    ambient key therefore travels ONLY to an endpoint this install was
+    configured for — the runner's local default, OPENBEAST_AGENT_INFERENCE_URL,
+    OPENBEAST_INFERENCE_URL or OPENBEAST_CONSUMER_BASE (hydra) — matched by
+    ORIGIN (scheme + host + port), so another loopback listener or another
+    port/scheme on the worker host gets the keyless sentinel. An explicit
+    --api-key is operator intent and always honored.
     """
-    host = _host_of(base_url)
-    if not host or host in ("localhost", "127.0.0.1", "::1"):
-        return True
-    configured = os.environ.get("OPENBEAST_AGENT_INFERENCE_URL", "")
-    return bool(configured) and host == _host_of(configured)
+    origin = _origin_of(base_url)
+    if origin is None:
+        return False
+    trusted = {_origin_of(DEFAULT_BASE_URL)}
+    for name in ("OPENBEAST_AGENT_INFERENCE_URL", "OPENBEAST_INFERENCE_URL",
+                 "OPENBEAST_CONSUMER_BASE"):
+        configured = os.environ.get(name, "").strip()
+        if configured:
+            trusted.add(_origin_of(configured))
+    return origin in trusted
 
 
 def resolve_api_key(explicit: str | None = None,
