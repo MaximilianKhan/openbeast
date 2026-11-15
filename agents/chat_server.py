@@ -109,6 +109,7 @@ Env:
 """
 import asyncio
 import contextlib
+import copy
 import hashlib
 import hmac
 import io
@@ -123,7 +124,7 @@ import sys
 import threading
 import time
 import uuid
-from collections import defaultdict, deque
+from collections import OrderedDict, defaultdict, deque
 from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, Request
@@ -663,77 +664,134 @@ def sse_frame(event: str, data: dict, offset: int | None = None) -> str:
     return "\n".join(parts) + "\n\n"
 
 
+def _status_acc() -> dict:
+    return {"events": 0, "iterations": 0, "compactions": 0, "tool_calls": 0,
+            "errors": 0, "tokens": {"prompt": 0, "completion": 0, "total": 0},
+            "last_event": None, "last_line": ""}
+
+
+def _status_fold(acc: dict, line: str, kind: str) -> None:
+    """Fold ONE transcript line into the running status."""
+    if not line.strip():
+        return
+    acc["events"] += 1
+    acc["last_line"] = line[:500]
+    if kind != "agent":
+        return
+    try:
+        ev = json.loads(line)
+    except Exception:
+        return
+    if not isinstance(ev, dict):
+        return
+    etype = ev.get("type")
+    if etype == "iteration":
+        acc["iterations"] = max(acc["iterations"], int(ev.get("number") or 0))
+    elif etype == "compaction":
+        acc["compactions"] += 1
+    elif etype == "tool_call":
+        acc["tool_calls"] += 1
+    elif etype in ("error", "context_overflow_unrecoverable"):
+        acc["errors"] += 1
+    # done / max_iterations carry the run's token totals; any
+    # event that carries them is allowed to update (monotonic).
+    for src, dst in (("tokens_prompt", "prompt"),
+                     ("tokens_completion", "completion"),
+                     ("tokens_total", "total")):
+        if isinstance(ev.get(src), int):
+            acc["tokens"][dst] = max(acc["tokens"][dst], ev[src])
+    if etype in ("done", "max_iterations"):
+        acc["iterations"] = max(acc["iterations"],
+                                int(ev.get("iterations") or 0))
+        acc["compactions"] = max(acc["compactions"],
+                                 int(ev.get("compactions") or 0))
+    acc["last_event"] = {k: v for k, v in ev.items() if k != "result"}
+    if etype == "tool_call":
+        res = ev.get("result")
+        acc["last_event"]["result_truncated"] = (
+            isinstance(res, str) and len(res) >= TOOL_RESULT_LIMIT)
+
+
+# (path, kind) -> {"file": (dev, ino), "offset": int, "mark": bytes, "acc"}.
+# `offset` is the end of the last COMPLETE line folded into `acc`; `mark` is
+# the bytes just before it, so a copytruncate rotation that regrew the file
+# past the old offset is noticed and rescanned instead of resumed mid-line.
+_STATUS_CACHE: "OrderedDict[tuple, dict]" = OrderedDict()
+_STATUS_CACHE_MAX = 256
+_STATUS_MARK = 64
+_STATUS_LOCK = threading.Lock()
+
+
 def derive_status(record: dict) -> dict:
     """Roll the transcript up into the numbers the console header shows.
 
-    One streaming pass, never loading the file into memory — a long agent run
-    is megabytes and this endpoint gets polled.
+    INCREMENTAL: the console fetches this on every session open, and a
+    full pass json-parsed every line of a transcript that can be gigabytes
+    (0.5 s per 200 MB, holding a threadpool worker) — while the stream it
+    precedes reads only the tail. The rollup is cached per transcript and
+    resumed from the last complete line, so each call costs only the bytes
+    appended since the previous one.
     """
     path = record.get("transcript") or ""
     kind = record.get("kind") or "agent"
     status = {
         "kind": kind,
-        "events": 0,
-        "iterations": 0,
-        "compactions": 0,
-        "tool_calls": 0,
-        "errors": 0,
-        "tokens": {"prompt": 0, "completion": 0, "total": 0},
-        "last_event": None,
-        "last_line": "",
+        **_status_acc(),
         "transcript_bytes": _file_size(path),
         "terminal": record.get("state") in TERMINAL_STATES,
     }
     if not path or not os.path.isfile(path):
         return status
+    key = (path, kind)
     try:
-        with io.TextIOWrapper(_open_transcript(path), encoding="utf-8",
-                              errors="replace") as f:
-            for line in f:
-                line = line.rstrip("\n")
-                if not line.strip():
-                    continue
-                status["events"] += 1
-                status["last_line"] = line[:500]
-                if kind != "agent":
-                    continue
-                try:
-                    ev = json.loads(line)
-                except Exception:
-                    continue
-                if not isinstance(ev, dict):
-                    continue
-                etype = ev.get("type")
-                if etype == "iteration":
-                    status["iterations"] = max(status["iterations"],
-                                               int(ev.get("number") or 0))
-                elif etype == "compaction":
-                    status["compactions"] += 1
-                elif etype == "tool_call":
-                    status["tool_calls"] += 1
-                elif etype in ("error", "context_overflow_unrecoverable"):
-                    status["errors"] += 1
-                # done / max_iterations carry the run's token totals; any
-                # event that carries them is allowed to update (monotonic).
-                for src, dst in (("tokens_prompt", "prompt"),
-                                 ("tokens_completion", "completion"),
-                                 ("tokens_total", "total")):
-                    if isinstance(ev.get(src), int):
-                        status["tokens"][dst] = max(status["tokens"][dst],
-                                                    ev[src])
-                if etype in ("done", "max_iterations"):
-                    status["iterations"] = max(status["iterations"],
-                                               int(ev.get("iterations") or 0))
-                    status["compactions"] = max(status["compactions"],
-                                                int(ev.get("compactions") or 0))
-                status["last_event"] = {k: v for k, v in ev.items()
-                                        if k != "result"}
-                if etype == "tool_call":
-                    res = ev.get("result")
-                    status["last_event"]["result_truncated"] = (
-                        isinstance(res, str) and len(res) >= TOOL_RESULT_LIMIT)
+        with _open_transcript(path) as f:
+            st = os.fstat(f.fileno())
+            ident = (st.st_dev, st.st_ino)
+            with _STATUS_LOCK:
+                ent = _STATUS_CACHE.get(key)
+            acc, offset = _status_acc(), 0
+            if (ent and ent["file"] == ident and ent["offset"] <= st.st_size):
+                mark = ent["mark"]
+                if mark:
+                    f.seek(ent["offset"] - len(mark))
+                    ok = f.read(len(mark)) == mark
+                else:
+                    ok = True
+                if ok:
+                    acc, offset = copy.deepcopy(ent["acc"]), ent["offset"]
+            f.seek(offset)
+            pending = b""
+            consumed = offset
+            while True:
+                chunk = f.read(1 << 20)
+                if not chunk:
+                    break
+                buf = pending + chunk
+                lines = buf.split(b"\n")
+                pending = lines.pop()
+                for raw in lines:
+                    consumed += len(raw) + 1
+                    _status_fold(acc, raw.decode("utf-8", "replace")
+                                 .rstrip("\r"), kind)
+            mark = b""
+            if consumed:
+                f.seek(max(0, consumed - _STATUS_MARK))
+                mark = f.read(min(_STATUS_MARK, consumed))
+            with _STATUS_LOCK:
+                _STATUS_CACHE[key] = {"file": ident, "offset": consumed,
+                                      "mark": mark,
+                                      "acc": copy.deepcopy(acc)}
+                _STATUS_CACHE.move_to_end(key)
+                while len(_STATUS_CACHE) > _STATUS_CACHE_MAX:
+                    _STATUS_CACHE.popitem(last=False)
+            if pending:
+                # A line still being written counts NOW (as it always did)
+                # but is never cached: it is re-read once it is complete.
+                _status_fold(acc, pending.decode("utf-8", "replace")
+                             .rstrip("\r"), kind)
     except OSError:
-        pass
+        return status
+    status.update(acc)
     return status
 
 

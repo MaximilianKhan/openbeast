@@ -232,3 +232,46 @@ def test_the_login_socket_directory_is_ours_and_only_we_can_write_it(
     monkeypatch.setattr(chat_server.os, "getuid", lambda: os.stat(other).st_uid + 1)
     with pytest.raises(SystemExit):
         chat_server._unix_listener(str(other / "chat.sock"))
+
+
+def test_derive_status_resumes_instead_of_rescanning(tmp_path, monkeypatch):
+    """Review finding: every session open ran derive_status over the WHOLE
+    transcript, json-parsing each line (0.5 s per 200 MB, a threadpool worker
+    held for it). It now resumes from the last complete line it folded."""
+    import json as _json
+    path = tmp_path / "t.jsonl"
+    lines = [{"type": "iteration", "number": i} for i in range(1, 501)]
+    lines.append({"type": "tool_call", "name": "bash", "result": "x"})
+    path.write_text("".join(_json.dumps(x) + "\n" for x in lines))
+    rec = {"transcript": str(path), "kind": "agent", "state": "running"}
+    first = chat_server.derive_status(rec)
+    assert first["iterations"] == 500 and first["tool_calls"] == 1
+
+    parsed = []
+    real = chat_server.json.loads
+    monkeypatch.setattr(chat_server.json, "loads",
+                        lambda s, *a, **k: parsed.append(s) or real(s, *a, **k))
+    with open(path, "a") as f:
+        f.write(_json.dumps({"type": "done", "iterations": 501,
+                             "tokens_total": 42}) + "\n")
+        f.write('{"type": "iteration", "num')            # mid-write
+    second = chat_server.derive_status(rec)
+    assert len(parsed) <= 3, len(parsed)                  # not 502
+    assert second["iterations"] == 501 and second["tokens"]["total"] == 42
+    assert second["events"] == 503                        # partial counts now
+    assert second["last_line"].startswith('{"type": "iteration", "num')
+
+    # ...and gives exactly what a cold full pass would
+    monkeypatch.setattr(chat_server.json, "loads", real)
+    with open(path, "a") as f:
+        f.write('ber": 502}\n')
+    warm = chat_server.derive_status(rec)
+    chat_server._STATUS_CACHE.clear()
+    cold = chat_server.derive_status(rec)
+    assert warm == cold and cold["iterations"] == 502 and cold["events"] == 503
+
+    # a rewrite in place (copytruncate, then regrown) is rescanned, not resumed
+    path.write_text("".join(_json.dumps({"type": "compaction", "pad": "y" * 40})
+                            + "\n" for _ in range(600)))
+    redo = chat_server.derive_status(rec)
+    assert redo["compactions"] == 600 and redo["iterations"] == 0
