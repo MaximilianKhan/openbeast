@@ -471,6 +471,56 @@ def test_audit_names_the_packages_a_short_wheelhouse_is_missing(tmp_path):
         problems
 
 
+def _lock_one_pkg(tmp_path, bodies):
+    """ONE package whose release has several files (the real lock's shape)."""
+    import hashlib
+    hashes = " \\\n".join(f"    --hash=sha256:{hashlib.sha256(b).hexdigest()}"
+                          for b in bodies)
+    return _write(tmp_path / "l.lock", f"pkgx==1.0 \\\n{hashes}\n")
+
+
+# A platform no interpreter that runs this suite can install.
+FOREIGN = "pkgx-1.0-cp99-cp99-plan9_mips.whl"
+
+
+def test_audit_coverage_refuses_a_wheelhouse_built_for_another_platform(tmp_path):
+    """Install-supply-chain finding: the lock lists EVERY file of each
+    release, so a wheelhouse built entirely on a Mac (or an aarch64 Spark)
+    covered every package by name, passed the audit, and the x86_64 rig
+    learned otherwise only inside pip --no-index."""
+    lock = _lock_one_pkg(tmp_path, [b"FOREIGN", b"NATIVE"])
+    wh = _wheelhouse(tmp_path, {FOREIGN: b"FOREIGN"})
+    matched, problems = L.audit_dir(lock, wh)
+    assert matched == [FOREIGN]
+    assert any("NONE this python/platform can install" in p for p in problems), problems
+    assert L.main(["audit", "--lock", lock, "--dir", wh]) == 1
+
+
+def test_audit_any_platform_accepts_a_deliberately_foreign_wheelhouse(tmp_path):
+    """`pydeps.sh wheelhouse ... --platform X` fills for ANOTHER target; that
+    box's tags are the wrong question there."""
+    lock = _lock_one_pkg(tmp_path, [b"FOREIGN", b"NATIVE"])
+    wh = _wheelhouse(tmp_path, {FOREIGN: b"FOREIGN"})
+    assert L.audit_dir(lock, wh, tags=None)[1] == []
+    assert L.main(["audit", "--lock", lock, "--dir", wh, "--any-platform"]) == 0
+
+
+def test_negative_control_a_pure_wheel_or_sdist_covers_on_any_host(tmp_path):
+    lock = _lock_one_pkg(tmp_path, [b"FOREIGN", b"PURE"])
+    wh = _wheelhouse(tmp_path, {FOREIGN: b"FOREIGN", "pkgx-1.0-py3-none-any.whl": b"PURE"})
+    assert L.audit_dir(lock, wh)[1] == []
+    lock2 = _lock_one_pkg(tmp_path, [b"SDIST"])
+    wh2 = tmp_path / "wh2"
+    wh2.mkdir()
+    (wh2 / "pkgx-1.0.tar.gz").write_bytes(b"SDIST")
+    assert L.audit_dir(lock2, str(wh2))[1] == []
+
+
+def test_wheel_tags_expands_compressed_tag_sets():
+    assert L.wheel_tags("a-1.0-py2.py3-none-any.whl") == {"py2-none-any", "py3-none-any"}
+    assert L.wheel_tags("a-1.0.tar.gz") is None
+
+
 # --------------------------------------------------------------------------
 # 2026-10-09 review, supply S1: what `verify` waved through
 # --------------------------------------------------------------------------
@@ -575,3 +625,72 @@ def test_the_resolver_never_builds_an_sdist(tmp_path, monkeypatch):
     assert L.resolve([str(tmp_path / "r.txt")], [], ["pip"])[0]["name"] == "foo"
     i = seen["argv"].index("--only-binary")
     assert seen["argv"][i + 1] == ":all:"
+
+
+# --------------------------------------------------------------------------
+# install-supply-chain finding: `check` called "certifi shipped" STALE, the
+# same word (and exit) as "the lock carries a package nothing requires"
+# --------------------------------------------------------------------------
+
+def _fake_index(monkeypatch, newest):
+    """A resolver + PyPI: unconstrained, every package resolves to `newest`;
+    with `-c`, to the constrained version."""
+    import hashlib
+
+    def resolve(req_files, extra, pip, constraints=None):
+        want = dict(newest)
+        if constraints:
+            for ln in open(constraints, encoding="utf-8"):
+                n, _, v = ln.strip().partition("==")
+                if n in want:
+                    want[n] = v
+        return [{"name": n, "version": v, "pip_sha256": None, "pip_url": None}
+                for n, v in sorted(want.items())]
+
+    def release_files(name, version):
+        sha = hashlib.sha256(f"{name}-{version}".encode()).hexdigest()
+        return [{"filename": f"{name}-{version}-py3-none-any.whl",
+                 "sha256": sha, "kind": "bdist_wheel"}]
+    monkeypatch.setattr(L, "resolve", resolve)
+    monkeypatch.setattr(L, "release_files", release_files)
+    monkeypatch.setattr(L, "_pip_version", lambda pip: "pip 0")
+
+
+def _check_world(tmp_path, monkeypatch, locked, newest, extra_text=""):
+    req = _write(tmp_path / "requirements.txt", f"openai=={locked['openai']}\n")
+    _fake_index(monkeypatch, locked)
+    lock = _write(tmp_path / "l.lock",
+                  L.render(L.build([req], [], ["pip"])) + extra_text)
+    _fake_index(monkeypatch, newest)
+    return lock, req
+
+
+def test_check_current_when_both_resolves_agree(tmp_path, monkeypatch, capsys):
+    v = {"openai": "3.9.0", "httpx": "0.28.1"}
+    lock, req = _check_world(tmp_path, monkeypatch, v, v)
+    assert L.main(["check", "--lock", lock, "--req", req]) == 0
+    assert "CURRENT" in capsys.readouterr().out
+
+
+def test_check_calls_an_upstream_release_OUTDATED_not_wrong(tmp_path, monkeypatch, capsys):
+    """The lock is a correct closure; httpx merely shipped 0.28.2."""
+    lock, req = _check_world(tmp_path, monkeypatch,
+                             {"openai": "3.9.0", "httpx": "0.28.1"},
+                             {"openai": "3.9.0", "httpx": "0.28.2"})
+    assert L.main(["check", "--lock", lock, "--req", req]) == 4
+    out = capsys.readouterr().out
+    assert "OUTDATED" in out and "httpx: locked 0.28.1, newest 0.28.2" in out
+    assert "WRONG" not in out
+
+
+def test_check_calls_an_extra_package_WRONG_even_when_the_index_moved(
+        tmp_path, monkeypatch, capsys):
+    import hashlib
+    evil = (f"evil-pkg==6.6.6 \\\n    --hash=sha256:"
+            f"{hashlib.sha256(b'evil').hexdigest()}\n")
+    lock, req = _check_world(tmp_path, monkeypatch,
+                             {"openai": "3.9.0", "httpx": "0.28.1"},
+                             {"openai": "3.9.0", "httpx": "0.28.2"}, evil)
+    assert L.main(["check", "--lock", lock, "--req", req]) == 1
+    out = capsys.readouterr().out
+    assert "WRONG" in out and "-evil-pkg==6.6.6" in out

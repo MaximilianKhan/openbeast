@@ -198,7 +198,14 @@ echo ""
 echo "3. land-dependabot.sh — approves only THIS repo's held runs for the PR head:"
 # ===========================================================================
 if ! command -v jq >/dev/null 2>&1; then
-  echo "  SKIP: jq not installed (the gh stub evaluates -q filters with it)"
+  # CI=true turns a skip into a failure (ci.yml), as section 4 does for
+  # PyYAML: otherwise every approval/merge guard here could stop running in
+  # CI with the job still green.
+  if [[ "${CI:-}" == "true" ]]; then
+    fail "jq not installed under CI=true — the land-dependabot guards did not run"
+  else
+    echo "  SKIP: jq not installed (the gh stub evaluates -q filters with it)"
+  fi
 else
   LB="$T/bin_land"; mkdir -p "$LB"
   printf '#!/bin/bash\nexit 0\n' > "$LB/sleep"          # the script waits in 15-30 s steps
@@ -248,6 +255,11 @@ case "$*" in
       if [[ "$n" -gt 0 ]]; then
         echo $((n - 1)) > "$S/no_checks"
         echo "no checks reported on the 'dependabot/pip/agents/openai-9' branch"; exit 1
+      fi
+      # $S/checks_fail: a non-required check (lock-fresh) went red; gh says
+      # so and exits 1, as the real one does.
+      if [[ -f "$S/checks_fail" ]]; then
+        printf 'Some checks were not successful\n1 failing, 5 successful\nX  Lock matches a fresh resolve  1m  https://x\n'; exit 1
       fi
       echo "All checks were successful" ;;
   "pr list"*)
@@ -354,6 +366,18 @@ STUB
     fail "never-appearing checks (rc=$_rc, $(wc -l < "$T/state/checks.calls") calls, merge=$(cat "$T/state/merge.log")): $_out"
   fi
   echo 0 > "$T/state/no_checks"
+  # A RED check is not a green one (install-supply-chain finding): gh's exit
+  # status was discarded, so a failed non-required check was printed and the
+  # PR squash-merged anyway.
+  : > "$T/state/checks_fail"
+  land 7
+  if [[ $_rc -ne 0 && ! -s "$T/state/merge.log" ]] && has "$_out" "checks did NOT all pass" \
+     && has "$_out" "NOT merging"; then
+    pass "a failing check stops the run with NO merge attempted"
+  else
+    fail "red checks (rc=$_rc, merge=$(cat "$T/state/merge.log")): $_out"
+  fi
+  rm -f "$T/state/checks_fail"
 fi
 
 # ===========================================================================

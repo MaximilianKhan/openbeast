@@ -40,13 +40,11 @@ jobs:
         with:
           python-version: "3.12"
 
-      # INSTALL FROM THE LOCK, with hashes enforced. This is the one place
-      # that proves the lockfile is installable on a python and platform that
-      # are NOT the box it was generated on (CI is 3.12/ubuntu; the rig is
-      # 3.14/arch) — which is the whole reason it lists every file of each
-      # release rather than just the wheel one machine happened to resolve.
-      # If this step ever fails, the lock's cross-platform claim is false and
-      # a Mac client install would fail the same way.
+      # INSTALL FROM THE LOCK, with hashes enforced. This is 3.12/ubuntu —
+      # the SAME python the lock is resolved on (its header; the relock job
+      # too), so it proves the lock installs where it was made, not anywhere
+      # else. The other targets (the rig's 3.14, a Mac client) are the
+      # `lock-installs` job below, on every change that touches the lock.
       #
       # pytest itself is hash-pinned too (.github/ci-requirements/test.txt;
       # it used to be `pip install -U pip pytest`, whatever PyPI served).
@@ -138,13 +136,11 @@ jobs:
         with:
           python-version: "3.12"
 
-      # INSTALL FROM THE LOCK, with hashes enforced. This is the one place
-      # that proves the lockfile is installable on a python and platform that
-      # are NOT the box it was generated on (CI is 3.12/ubuntu; the rig is
-      # 3.14/arch) — which is the whole reason it lists every file of each
-      # release rather than just the wheel one machine happened to resolve.
-      # If this step ever fails, the lock's cross-platform claim is false and
-      # a Mac client install would fail the same way.
+      # INSTALL FROM THE LOCK, with hashes enforced. This is 3.12/ubuntu —
+      # the SAME python the lock is resolved on (its header; the relock job
+      # too), so it proves the lock installs where it was made, not anywhere
+      # else. The other targets (the rig's 3.14, a Mac client) are the
+      # `lock-installs` job below, on every change that touches the lock.
       #
       # pytest itself is hash-pinned too (.github/ci-requirements/test.txt;
       # it used to be `pip install -U pip pytest`, whatever PyPI served).
@@ -383,13 +379,115 @@ jobs:
       - name: Variant spec audit
         run: python tests/audit_variants.py --advisory
 
+  lock-fresh:
+    # `pydeps.sh verify` (CI's test job) proves the lock is self-consistent
+    # and covers every direct pin. It accepts ANY extra package and any hash:
+    # a lock carrying `evil-pkg==6.6.6 --hash=<its real hash>` verifies. Only
+    # a fresh resolve can say "this is exactly the closure pip produces", so
+    # whenever a change touches the lock or its input, re-resolve and diff.
+    #
+    # Not on every PR: it needs the index, and it compares against PyPI as it
+    # is NOW — on an untouched lock it would turn unrelated PRs red the day a
+    # transitive dependency ships a release. A red run here on a PR that DID
+    # touch the lock means one of two things: the lock holds something the
+    # resolver does not produce (read the diff it prints), or the index moved
+    # since it was generated (regenerate: ./scripts/pydeps.sh lock).
+    #
+    # IN ci.yml, UNDER THE REQUIRED `test` GATE (it lived in pr-quality.yml,
+    # which branch protection does not require, so a red run there did not
+    # block a merge). Safe to require: on a change that touches neither
+    # file its steps are skipped and the job succeeds. `check` exits 1 for a
+    # WRONG closure and 4 for OUTDATED (index moved; regenerate) and says
+    # which; both fail the gate.
+    name: Lock matches a fresh resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Did this change touch the lock or requirements.txt?
+        id: touched
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [[ -z "$BASE_SHA" || "$BASE_SHA" =~ ^0+$ ]]; then
+            echo "no base to compare with (manual run or a new branch): checking"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            git fetch --no-tags --depth=1 origin "$BASE_SHA"
+            if git diff --quiet "$BASE_SHA" HEAD -- agents/requirements.lock agents/requirements.txt; then
+              echo "neither file changed — nothing to re-resolve"
+              echo "run=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "run=true" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+          # Resolve on the python the lock says it was resolved on: the SET
+          # of packages depends on it (environment markers), so another
+          # python reports a correct lock as stale.
+          py="$(sed -n 's/^# resolver: .* on python \([0-9]*\.[0-9]*\).*/\1/p' agents/requirements.lock | head -n 1)"
+          echo "python=${py:-3.12}" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        if: steps.touched.outputs.run == 'true'
+        with:
+          python-version: ${{ steps.touched.outputs.python }}
+      # Wheels only (pydeps_lock.py resolves with --only-binary :all:), so no
+      # package's build code runs here; the token is read-only regardless.
+      - name: ./scripts/pydeps.sh check
+        if: steps.touched.outputs.run == 'true'
+        run: OPENBEAST_PYTHON=python ./scripts/pydeps.sh check
+
+  # THE LOCK ON THE PYTHONS AND PLATFORMS IT WAS NOT RESOLVED ON. The lock is
+  # resolved on 3.12/linux; the rig runs 3.14 and Mac clients install it too
+  # (scripts/setup-client.sh prefers 3.13). Listing every file of each
+  # release covers other wheels, NOT a package that joins the closure only
+  # under a 3.14 or darwin marker — that fails `--require-hashes` there while
+  # every 3.12 job stays green. A hash-checked dry run on each, whenever the
+  # lock or requirements.txt changes (skipped, and green, otherwise).
+  lock-installs:
+    name: lock installs on ${{ matrix.os }} / python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, python: "3.14" }
+          - { os: macos-latest, python: "3.13" }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Did this change touch the lock or requirements.txt?
+        id: touched
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [[ -z "$BASE_SHA" || "$BASE_SHA" =~ ^0+$ ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            git fetch --no-tags --depth=1 origin "$BASE_SHA"
+            if git diff --quiet "$BASE_SHA" HEAD -- agents/requirements.lock agents/requirements.txt; then
+              echo "neither file changed — nothing to check"
+              echo "run=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "run=true" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        if: steps.touched.outputs.run == 'true'
+        with:
+          python-version: ${{ matrix.python }}
+      - name: The lock installs here, hash-checked (dry run)
+        if: steps.touched.outputs.run == 'true'
+        run: |
+          python -m pip install -q --dry-run --ignore-installed \
+            --require-hashes -r agents/requirements.lock
+
   # The required check. It runs nothing itself: it fails unless every job
   # above succeeded (a cancelled or skipped one counts as a failure — `needs`
   # alone would SKIP this job, and a skipped required check reads as passed).
   test:
     name: test
     if: ${{ always() }}
-    needs: [pytest, pytest-named, shell, variants]
+    needs: [pytest, pytest-named, shell, variants, lock-fresh, lock-installs]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

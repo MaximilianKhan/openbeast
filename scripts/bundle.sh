@@ -4,7 +4,7 @@
 #   ./scripts/bundle.sh build <dir> [--with-weights[=A,B]] [--no-images]
 #   ./scripts/bundle.sh show <dir>        what is in it
 #   ./scripts/bundle.sh verify <dir>      re-hash everything it claims
-#   ./scripts/bundle.sh install <dir> [--key <allowed-signers>]
+#   ./scripts/bundle.sh install <dir> [--key <allowed-signers>] [--allow-unpinned-weights]
 #   ./scripts/bundle.sh sign   <dir> --key <ssh-private-key> [--identity ID]
 #   ./scripts/bundle.sh verify <dir> [--key <allowed-signers>] [--identity ID]
 #
@@ -67,8 +67,12 @@
 #            REPO, not the bundle, so an attacker who rewrites the manifest
 #            cannot rewrite the lock — the swapped wheel's hash is in no lock
 #            entry and pydeps refuses. Verified.
-#   weights  TWO. scripts/weights.registry is also in the repo, and a weight
-#            that does not match it is DELETED, not just rejected.
+#   weights  TWO — for a weight with a real (non-PENDING) row in
+#            scripts/weights.registry, which is also in the repo: one that
+#            does not match it is DELETED, not just rejected. A weight with
+#            no row, or a PENDING one, has only the manifest; an UNSIGNED
+#            bundle may therefore not place one (nor replace an existing
+#            file) unless --allow-unpinned-weights says so.
 #   images   ONE. The image ID is recorded in the manifest, so a rebuilt
 #            manifest can name the attacker's image and the load-time ID
 #            check will agree with it.
@@ -646,13 +650,27 @@ EOF
       || die "ssh-keygen could not sign $_m"
     ok "wrote $(basename "$_m").sig"
     _fp="$(ssh-keygen -lf "${KEY}.pub" 2>/dev/null | awk '{print $2}' || true)"
+    # THE LITERAL KEY LINE, not a `$(cat KEY.pub)` for the operator to run:
+    # that used to be printed inside single quotes, so running it verbatim
+    # wrote the text "$(cat …)" into allowed-signers and every later --key
+    # failed "no principal matched" — and the closed box has no KEY.pub at
+    # the build box's path anyway. Single quotes in it are escaped for the shell.
+    _publine="$(head -n 1 "${KEY}.pub" 2>/dev/null || true)"
+    if [[ -n "$_publine" ]]; then
+      _sq="'\\''"
+      _al="${IDENT:-builder} ${_publine}"
+      _al_cmd="printf '%s\\n' '${_al//\'/$_sq}' > ~/.config/openbeast/allowed-signers"
+    else
+      _al_cmd="(no ${KEY}.pub next to the key: write '${IDENT:-builder} <that public key line>' into ~/.config/openbeast/allowed-signers)"
+    fi
     cat <<EOF
 
   Signed with ${_fp:-that key}.
   On the closed box, verification needs an allowed-signers file — the same
   format ssh and git use, one line per key:
 
-    echo '${IDENT:-builder} \$(cat ${KEY}.pub)' > ~/.config/openbeast/allowed-signers
+    mkdir -p ~/.config/openbeast
+    $_al_cmd
 
   then:
     ./scripts/bundle.sh verify  $DIR --key ~/.config/openbeast/allowed-signers${IDENT:+ --identity $IDENT}
@@ -690,11 +708,12 @@ EOF
   install)
     DIR="${1:-}"; shift || true
     [[ -n "$DIR" ]] || die "install needs a bundle directory"
-    KEY=""; IDENT=""
+    KEY=""; IDENT=""; ALLOW_UNPINNED=0
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --key)      _need_value --key "$#" "${2-}"; KEY="$(_from_caller "$2")"; shift 2 ;;
         --identity) _need_value --identity "$#" "${2-}"; IDENT="$2"; shift 2 ;;
+        --allow-unpinned-weights) ALLOW_UNPINNED=1; shift ;;
         *) die "unknown flag $1" ;;
       esac
     done
@@ -735,6 +754,33 @@ EOF
       || die "MANIFEST.json on the medium changed while it was being verified.
        Refusing: the medium is not answering consistently."
     ok "every recorded file matches its sha256"
+
+    # IS THIS BUNDLE FOR THIS BOX? Wheels and saved images are built for the
+    # BUILD box's OS/CPU (no cross-target flags reach them), and `built_on`
+    # was recorded but never compared — so a bundle built on a Mac or a Spark
+    # passed verify here, extracted llama.cpp, and only then died inside
+    # pip --no-index (or, wheels aside, at start.sh: "exec format error").
+    # Checked BEFORE anything is placed.
+    _built_on="$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("built_on") or "")' "$MANIFEST_FILE" 2>/dev/null || true)"
+    _here="$(uname -s) $(uname -m)"
+    if [[ -n "$_built_on" && "$_built_on" != "$_here" ]]; then
+      die "this bundle was built on '$_built_on'; this box is '$_here'.
+       Its wheels and container images are for the build box's OS/CPU and
+       cannot be used here. Nothing was installed. Build the bundle on a
+       connected box of the same kind as this one."
+    fi
+    # (Only when the bundle's lock IS this checkout's: a different lock is
+    # refused below, with the reason that actually applies.)
+    if [[ -d "$DIR/wheels" && -f "$REPO_DIR/agents/requirements.lock" ]] \
+       && { [[ ! -f "$DIR/meta/requirements.lock" ]] \
+            || cmp -s "$DIR/meta/requirements.lock" "$REPO_DIR/agents/requirements.lock"; }; then
+      _wa="$("$PY" "$REPO_DIR/scripts/lib/pydeps_lock.py" audit \
+               --lock "$REPO_DIR/agents/requirements.lock" --dir "$DIR/wheels" 2>&1)" \
+        || die "the bundle's wheels do not cover the lock for this python and platform ($("$PY" -V 2>&1), $_here):
+$(sed 's/^/         /' <<< "$_wa")
+       Nothing was installed. Rebuild the bundle on a connected box with the
+       same OS, CPU and python version as this one."
+    fi
 
     # _stage_verified <relative path> <dest>: copy ONE bundle file into the
     # private dir and check the COPY against the snapshot's recorded sha256.
@@ -814,7 +860,15 @@ for c in doc.get("components", []):
        error above). NOTHING was written to llama.cpp/, so re-running after
        fixing or rebuilding the bundle will work."
         fi
-        _links="$(find "$_stage" -type l -printf '%p -> %l\n' 2>/dev/null | head -5 || true)"
+        # PORTABLE AND FAIL-CLOSED. This used `find -printf`, which BSD find
+        # (macOS) rejects; with stderr dropped and `|| true`, "find could not
+        # run" read as "no symlinks" and the archive was accepted, links and
+        # all. Plain `-type l` is POSIX, and a find that fails is a refusal.
+        _links_all="$(find "$_stage" -type l 2>&1)" || {
+          rm -rf "$_stage"
+          die "could not scan the extracted source for symlinks — refusing it:
+$(head -3 <<< "$_links_all" | sed 's/^/         /')"; }
+        _links="$(head -5 <<< "$_links_all")"
         if [[ -n "$_links" ]]; then
           rm -rf "$_stage"
           die "the source archive contains symlinks, which a legitimate
@@ -1119,6 +1173,28 @@ for comp in doc.get("components", []):
         _w="$DIR/$_rel"
         _n="$(basename "$_rel")"
         _dest="$_wd/$_n"
+        # PINNED OR NOT, decided BEFORE anything is copied. Only a real
+        # registry row is a second line of defence; with no row (or a PENDING
+        # one) the manifest is the only thing vouching for the bytes, and an
+        # UNSIGNED manifest is written by whoever wrote the stick. In this
+        # stack the model chooses bash/file/fetch calls, so a planted weight
+        # is not inert. Unsigned + unpinned: refused unless the operator opts
+        # in, and an existing file of that name is never replaced.
+        _reg="$(awk -F'\t' -v f="$_n" '$1 !~ /^#/ && $3 == f {print $1}' "$REPO_DIR/scripts/weights.registry" 2>/dev/null | head -n 1 || true)"
+        _pinned=0; [[ -n "$_reg" && "$_reg" != "PENDING" ]] && _pinned=1
+        if [[ $_pinned -eq 0 && "$_SIG_VERIFIED" -ne 1 ]]; then
+          [[ $ALLOW_UNPINNED -eq 1 ]] || die "$_n has no sha256 pin in scripts/weights.registry${_reg:+ (its row is PENDING)},
+       and this bundle's signature was not verified — so nothing but the
+       stick itself vouches for it. NOT installed.
+         - install with --key <allowed-signers> (a signed bundle), or
+         - pass --allow-unpinned-weights if you built this stick yourself."
+          if [[ -f "$_dest" ]] && [[ "$(sha256sum "$_dest" | awk '{print $1}')" != "$_msha" ]]; then
+            die "$_n already exists in $_wd and differs from the bundle's copy.
+       An unsigned bundle never replaces an unpinned weight. Remove it yourself
+       if the bundle's copy is the one you want."
+          fi
+          warn "--allow-unpinned-weights: placing $_n on the word of an UNSIGNED manifest alone"
+        fi
         if [[ -f "$_dest" ]]; then
           # "already there — left alone" USED TO BE UNCONDITIONAL, and the copy
           # went straight to the final name. So an ENOSPC or a Ctrl-C left a
@@ -1155,8 +1231,7 @@ for comp in doc.get("components", []):
        The copy was removed. A failing disk or stick is the usual cause."
         # The manifest hash proved the TRANSFER. The registry hash proves it
         # is the weight OpenBeast pinned, which is a different claim.
-        _reg="$(awk -F'\t' -v f="$_n" '$3 == f {print $1}' "$REPO_DIR/scripts/weights.registry" 2>/dev/null || true)"
-        if [[ -n "$_reg" && "$_reg" != "PENDING" && "$_got" != "$_reg" ]]; then
+        if [[ $_pinned -eq 1 && "$_got" != "$_reg" ]]; then
           die "$_n does not match the registry sha256 — NOT installed (the copy
        was removed; anything already at $_dest was not touched).
        expected $_reg
@@ -1164,7 +1239,7 @@ for comp in doc.get("components", []):
         fi
         mv -f -- "$_OB_PARTIAL" "$_dest" || die "could not move $_n into place in $_wd"
         _OB_PARTIAL=""
-        if [[ -n "$_reg" && "$_reg" != "PENDING" ]]; then
+        if [[ $_pinned -eq 1 ]]; then
           ok "$_n (sha256 matches the manifest AND scripts/weights.registry)"
         else
           warn "$_n is not pinned in scripts/weights.registry — copied, unverifiable

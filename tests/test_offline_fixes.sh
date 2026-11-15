@@ -336,9 +336,10 @@ fi
 {
   echo 'set -euo pipefail'
   echo 'step() { echo "==> $*"; }; ok() { echo "OK: $*"; }; warn() { echo "WARN: $*"; }'
-  echo 'die() { echo "DIE: $*" >&2; exit 1; }; ob_offline() { return 1; }'
+  echo 'die() { echo "DIE: $*" >&2; exit 1; }; ob_offline() { [[ "${OFFLINE:-false}" == "true" ]]; }'
   echo 'OB_LOCAL_LLAMA="${OB_LOCAL_LLAMA:-1}"; INFERENCE_BACKEND="${INFERENCE_BACKEND:-llama}"; INFERENCE_URL="${INFERENCE_URL:-http://127.0.0.1:8080}"'
   echo "$_wdefs"
+  sed -n '/^ob_closed_box_weights() {/,/^}/p' "$REPO_DIR/bootstrap.sh"
   echo "$_wsec"
   echo 'echo HARNESS-REACHED-END'
 } > "$T/bootstrap_weight_step.sh"
@@ -409,6 +410,50 @@ if [[ $_rc -eq 0 && "$(n_hf)" == "0" && ! -e "$WB13" ]] && has "$_out" "none dow
 else
   fail "unmanaged weight step (rc=$_rc, hf=$(n_hf), dir: $(ls -A "$WB13" 2>/dev/null)): $_out"
 fi
+# OFFLINE with a NON-DEFAULT SERVE_SCRIPT: docs/INSTALL.md says "any registry
+# weight works ... set SERVE_SCRIPT to match what you brought". The step used
+# to demand the default weight regardless, so this died on every run.
+_ow_body='OTHER-REGISTRY-WEIGHT'
+_ow_sha="$(printf '%s' "$_ow_body" | sha256sum | awk '{print $1}')"
+pin_default "$_dw_sha"
+printf '%s\t%s\t%s\t%s\t%s\n' "$_ow_sha" "${#_ow_body}" "other-27b.gguf" "org/other-GGUF" "-" >> "$SB/scripts/weights.registry"
+printf '#!/bin/bash\n# the comment mentions %s, which must NOT count\nexec llama-server -m "$WEIGHTS_DIR/other-27b.gguf"\n' "$_DW" > "$SB/scripts/serve-other.sh"
+run_owstep() { : > "$T/state/hf.log"; _out="$(env PATH="$T/bin:$PATH" REPO_DIR="$SB" OPENBEAST_WEIGHTS_DIR="$WB13" OFFLINE=true \
+                 DEFAULT_SERVE_SCRIPT=serve-other.sh bash "$T/bootstrap_weight_step.sh" 2>&1)"; _rc=$?; }
+rm -rf "$WB13"; mkdir -p "$WB13"; printf '%s' "$_ow_body" > "$WB13/other-27b.gguf"
+run_owstep
+if [[ $_rc -eq 0 && "$(n_hf)" == "0" && ! -e "$WB13/$_DW" ]] && has "$_out" "other-27b.gguf present, sha256 verified" \
+   && has "$_out" "HARNESS-REACHED-END"; then
+  pass "OFFLINE + a non-default SERVE_SCRIPT: the weight THAT script loads is verified, the default is not demanded"
+else
+  fail "offline non-default weight (rc=$_rc, hf=$(n_hf)): $_out"
+fi
+printf '%s' "${_ow_body//O/X}" > "$WB13/other-27b.gguf"
+run_owstep
+if [[ $_rc -ne 0 ]] && has "$_out" "NOT the weight OpenBeast pinned" && ! has "$_out" "HARNESS-REACHED-END"; then
+  pass "...and a wrong file under that name is still refused (hashed, not trusted by name)"
+else
+  fail "offline non-default wrong weight (rc=$_rc): $_out"
+fi
+rm -f "$WB13/other-27b.gguf"
+run_owstep
+if [[ $_rc -ne 0 && "$(n_hf)" == "0" ]] && has "$_out" "serve-other.sh (SERVE_SCRIPT) loads weight(s) not in" \
+   && has "$_out" "other-27b.gguf" && ! has "$_out" "HARNESS-REACHED-END"; then
+  pass "...and a missing one is named (the configured weight, not the default) and fatal"
+else
+  fail "offline non-default missing weight (rc=$_rc): $_out"
+fi
+# NEGATIVE CONTROL: OFFLINE with the DEFAULT serve script still wants the default.
+printf '#!/bin/bash\nexec llama-server -m "$WEIGHTS_DIR/%s"\n' "$_DW" > "$SB/scripts/serve-default.sh"
+rm -rf "$WB13"; mkdir -p "$WB13"; : > "$T/state/hf.log"
+_out="$(env PATH="$T/bin:$PATH" REPO_DIR="$SB" OPENBEAST_WEIGHTS_DIR="$WB13" OFFLINE=true \
+        DEFAULT_SERVE_SCRIPT=serve-default.sh bash "$T/bootstrap_weight_step.sh" 2>&1)"; _rc=$?
+if [[ $_rc -ne 0 && "$(n_hf)" == "0" ]] && has "$_out" "OFFLINE=true and $_DW is not in"; then
+  pass "negative control: OFFLINE with the default SERVE_SCRIPT still requires the default weight"
+else
+  fail "offline default weight missing (rc=$_rc, hf=$(n_hf)): $_out"
+fi
+rm -f "$SB/scripts/serve-other.sh" "$SB/scripts/serve-default.sh"
 printf '%s\n' "$_dw_reg" > "$SB/scripts/weights.registry"
 
 # ===========================================================================
@@ -443,6 +488,11 @@ if [[ "${1:-}" == "-m" && "${2:-}" == "pip" ]]; then
   echo "pip ${*:3}" >> "$S/pip.log"
   case "${3:-}" in
     install)
+      # what real pip says (and does) inside a venv when handed --user
+      if [[ -f "$S/in_venv" && " $* " == *" --user "* ]]; then
+        echo "ERROR: Can not perform a '--user' install. User site-packages are not visible in this virtualenv." >&2
+        exit 1
+      fi
       if [[ " $* " == *" --require-hashes "* ]]; then
         case "$mode" in
           hashfail)
@@ -481,6 +531,12 @@ if [[ "${1:-}" == "-" && "${2:-}" == */agents/requirements.txt ]]; then
   [[ -f "$S/pip_installed" ]] && exit 0
   echo "foo (not installed)"; exit 1
 fi
+# The venv probe (sys.prefix != sys.base_prefix) answers what the case says,
+# never what the interpreter running the suite happens to be.
+if [[ "${1:-}" == "-c" && "${2:-}" == *base_prefix* ]]; then
+  [[ "${2:-}" == *"print("* ]] && { echo "/fake/venv"; exit 0; }
+  [[ -f "$S/in_venv" ]]; exit $?
+fi
 exec "$REAL_PY" "$@"
 STUB
 chmod +x "$T/bin/python3"
@@ -511,6 +567,24 @@ if has "$_out" "THESE PACKAGES DO NOT MATCH"; then
   pass "pip's own report is still shown to the operator (stderr was captured, not swallowed)"
 else
   fail "pip's stderr was swallowed: $_out"
+fi
+# INSIDE A VENV (install-supply-chain finding): pip refuses --user there, and
+# bootstrap passed it unconditionally, so the online path died blaming the
+# network/lock while the OFFLINE path (pydeps.sh) worked on the same box.
+: > "$T/state/in_venv"
+run_step ok
+if [[ $_rc -eq 0 && "$(n_locked)" == "1" ]] && ! grep -q -- "--user" "$T/state/pip.log" \
+   && has "$_out" "inside a virtualenv" && has "$_out" "HARNESS-REACHED-END"; then
+  pass "inside a venv the locked install runs WITHOUT --user (pip would refuse it) and succeeds"
+else
+  fail "venv install (rc=$_rc, pip.log: $(cat "$T/state/pip.log")): $_out"
+fi
+rm -f "$T/state/in_venv"
+run_step ok
+if [[ $_rc -eq 0 ]] && grep -q -- "--user" "$T/state/pip.log" && ! has "$_out" "inside a virtualenv"; then
+  pass "negative control: outside a venv the install is still --user"
+else
+  fail "non-venv install (rc=$_rc, pip.log: $(cat "$T/state/pip.log")): $_out"
 fi
 
 # A NON-hash failure STOPS too, by default (2026-10-09 review, supply S2). "No
@@ -889,6 +963,54 @@ if [[ $_rc -eq 0 && -f "$SB/llama.cpp/GOOD.txt" ]] && has "$_out" "extracted lla
 else
   fail "honest source bundle (rc=$_rc): $_out"
 fi
+# A bundle BUILT ON ANOTHER OS/CPU: its wheels and images are the build box's.
+# built_on was recorded and never compared, so install extracted llama.cpp
+# and only then died inside pip --no-index. Refused before anything is placed.
+rm -rf "$SB/llama.cpp"; mk_srcbundle
+"$REAL_PY" "$SB/scripts/lib/bundle_manifest.py" write "$SRCB" --built-at t --repo-commit c --built-on "Plan9 mips" \
+    --component source:source --meta "source:{\"commit\": \"$_commit\"}" >/dev/null
+install_bundle "$SRCB"
+if [[ $_rc -ne 0 && ! -e "$SB/llama.cpp" ]] && has "$_out" "built on 'Plan9 mips'; this box is '$(uname -s) $(uname -m)'"; then
+  pass "a bundle built on another OS/CPU is refused BEFORE anything is extracted"
+else
+  fail "foreign-platform bundle (rc=$_rc, llama.cpp: $(ls "$SB/llama.cpp" 2>/dev/null)): $_out"
+fi
+rm -rf "$SB/llama.cpp"; mk_srcbundle
+"$REAL_PY" "$SB/scripts/lib/bundle_manifest.py" write "$SRCB" --built-at t --repo-commit c --built-on "$(uname -s) $(uname -m)" \
+    --component source:source --meta "source:{\"commit\": \"$_commit\"}" >/dev/null
+install_bundle "$SRCB"
+if [[ $_rc -eq 0 && -f "$SB/llama.cpp/GOOD.txt" ]]; then
+  pass "negative control: a bundle built on this OS/CPU installs"
+else
+  fail "same-platform bundle (rc=$_rc): $_out"
+fi
+# A SYMLINK in the source archive is refused — also on a non-GNU find (BSD
+# find on macOS has no -printf; the old check ran it with stderr dropped and
+# `|| true`, so "find failed" read as "no symlinks"). The stub find below
+# behaves like BSD find: it rejects -printf and otherwise runs the real one.
+mk_symbundle() {
+  rm -rf "$SRCB" "$T/srclink"; mkdir -p "$SRCB/source" "$T/srclink/llama.cpp"
+  echo "real source" > "$T/srclink/llama.cpp/GOOD.txt"; ln -s /etc "$T/srclink/llama.cpp/evil"
+  tar -czf "$SRCB/source/llama.cpp-${_commit:0:12}.tar.gz" -C "$T/srclink" llama.cpp
+  "$REAL_PY" "$SB/scripts/lib/bundle_manifest.py" write "$SRCB" --built-at t --repo-commit c \
+      --component source:source --meta "source:{\"commit\": \"$_commit\"}" >/dev/null
+}
+mkdir -p "$T/bin_bsdfind"; REAL_FIND="$(command -v find)"; export REAL_FIND
+cat > "$T/bin_bsdfind/find" <<'STUB'
+#!/bin/bash
+for a in "$@"; do [[ "$a" == -printf ]] && { echo "find: -printf: unknown primary or operator" >&2; exit 1; }; done
+exec "$REAL_FIND" "$@"
+STUB
+chmod +x "$T/bin_bsdfind/find"
+for _fp in "$T/bin" "$T/bin_bsdfind:$T/bin"; do
+  rm -rf "$SB/llama.cpp"; mk_symbundle
+  _out="$(cd "$T" && PATH="$_fp:$PATH" OPENBEAST_PYTHON="$REAL_PY" "$SB/scripts/bundle.sh" install "$SRCB" 2>&1)"; _rc=$?
+  if [[ $_rc -ne 0 && ! -e "$SB/llama.cpp" ]] && has "$_out" "contains symlinks"; then
+    pass "a source archive with a symlink is refused, nothing placed ($([[ "$_fp" == *bsdfind* ]] && echo 'BSD-like find' || echo 'host find'))"
+  else
+    fail "symlinked source archive, PATH=$_fp (rc=$_rc, llama.cpp: $(ls -A "$SB/llama.cpp" 2>/dev/null)): $_out"
+  fi
+done
 # The bundle's commit against THIS checkout's pin (scripts/llama.cpp.ref): the
 # build box may have had its clone somewhere else, and install said nothing.
 rm -rf "$SB/llama.cpp"; mk_srcbundle
@@ -1387,6 +1509,35 @@ if [[ $_rc -ne 0 && "$(cat "$WD/w.gguf")" == "PRE-EXISTING" && ! -e "$WD/w.gguf.
 else
   fail "registry mismatch (rc=$_rc, have: $(cat "$WD/w.gguf" 2>/dev/null)): $_out"
 fi
+# UNPINNED weight, UNSIGNED bundle (install-supply-chain finding): the
+# registry check only fired for a real row, so any other name (or a PENDING
+# one) was placed — or REPLACED an existing file — on the stick's word alone.
+for _row in none pending; do
+  mk_wbundle
+  if [[ "$_row" == none ]]; then : > "$SB/scripts/weights.registry"
+  else printf 'PENDING\t0\tw.gguf\torg/w\t-\n' > "$SB/scripts/weights.registry"; fi
+  install_w
+  if [[ $_rc -ne 0 && ! -e "$WD/w.gguf" && ! -e "$WD/w.gguf.partial" ]] && has "$_out" "has no sha256 pin" \
+     && has "$_out" "--allow-unpinned-weights"; then
+    pass "an UNSIGNED bundle cannot place an unpinned weight (registry row: $_row)"
+  else
+    fail "unsigned unpinned weight, row=$_row (rc=$_rc, dir: $(ls -A "$WD")): $_out"
+  fi
+done
+printf 'OPERATORS-OWN-MODEL' > "$WD/w.gguf"
+_out="$(cd "$T" && PATH="$T/bin:$PATH" OPENBEAST_WEIGHTS_DIR="$WD" OPENBEAST_PYTHON="$REAL_PY" "$SB/scripts/bundle.sh" install "$WB" --allow-unpinned-weights 2>&1)"; _rc=$?
+if [[ $_rc -ne 0 && "$(cat "$WD/w.gguf")" == "OPERATORS-OWN-MODEL" ]] && has "$_out" "never replaces an unpinned weight"; then
+  pass "...and even with --allow-unpinned-weights it never REPLACES an existing unpinned file"
+else
+  fail "unsigned unpinned replace (rc=$_rc, have: $(cat "$WD/w.gguf" 2>/dev/null)): $_out"
+fi
+rm -f "$WD/w.gguf"
+_out="$(cd "$T" && PATH="$T/bin:$PATH" OPENBEAST_WEIGHTS_DIR="$WD" OPENBEAST_PYTHON="$REAL_PY" "$SB/scripts/bundle.sh" install "$WB" --allow-unpinned-weights 2>&1)"; _rc=$?
+if [[ $_rc -eq 0 ]] && cmp -s "$WB/weights/w.gguf" "$WD/w.gguf" && has "$_out" "UNSIGNED manifest alone"; then
+  pass "negative control: --allow-unpinned-weights places a new unpinned weight, loudly"
+else
+  fail "opt-in unpinned weight (rc=$_rc): $_out"
+fi
 
 # ===========================================================================
 echo ""
@@ -1401,6 +1552,18 @@ else
   bsh() { _out="$(cd "$T/usb" && PATH="$T/bin:$PATH" OPENBEAST_WEIGHTS_DIR="$WD" OPENBEAST_PYTHON="$REAL_PY" "$SB/scripts/bundle.sh" "$@" 2>&1)"; _rc=$?; }
   bsh sign ./wbundle --key "$T/key"
   [[ $_rc -eq 0 && -f "$WB/MANIFEST.json.sig" ]] && pass "signed the test bundle" || fail "sign (rc=$_rc): $_out"
+  # THE COMMANDS sign PRINTS, run verbatim (INSTALL.md: sign "prints the exact
+  # command"). They used to single-quote a `$(cat KEY.pub)`, writing that
+  # literal text into allowed-signers, so every --key then failed.
+  _signcmds="$(grep -E '^    (mkdir -p ~/.config/openbeast|printf |echo )' <<< "$_out" || true)"
+  rm -rf "$T/hsign"; mkdir -p "$T/hsign"
+  (cd "$T" && HOME="$T/hsign" bash -c "$_signcmds") >/dev/null 2>&1
+  bsh verify ./wbundle --key "$T/hsign/.config/openbeast/allowed-signers"
+  if [[ $_rc -eq 0 ]] && has "$_out" "signature verified"; then
+    pass "the allowed-signers command sign prints, run verbatim, makes a file that verifies"
+  else
+    fail "printed allowed-signers command (rc=$_rc, cmds: $_signcmds, file: $(cat "$T/hsign/.config/openbeast/allowed-signers" 2>/dev/null)): $_out"
+  fi
 
   # NEGATIVE CONTROL first: the good path works — with a RELATIVE --key (9).
   bsh verify ./wbundle --key ./allowed

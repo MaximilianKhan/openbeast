@@ -943,7 +943,10 @@ and being misdiagnosed as something local.
 
 **On a connected box** (a machine with this repo checked out and a
 `llama.cpp/` clone inside it — a GPU is not needed; without the clone the
-source component is skipped and the manifest says so):
+source component is skipped and the manifest says so). It must be the **same
+OS, CPU architecture and Python version as the rig**: the wheels and saved
+images are the build box's own, so `install` refuses a bundle built on, say,
+a Mac or an aarch64 Spark for an x86_64 rig — before placing anything.
 
 ```bash
 ./scripts/bundle.sh build /media/usb/openbeast --with-weights   # or --with-weights=A.gguf,B.gguf; --no-images / --no-source
@@ -974,8 +977,11 @@ file — the same one-line-per-key format ssh and git use — which `sign`
 prints the exact command for. Wheels and weights have a second line of
 defence that lives in the repo, not the bundle (`requirements.lock`,
 `weights.registry`: a swapped wheel or weight is refused even by a rebuilt
-manifest); images and the source tarball have **only** the signature, which
-is why it exists.
+manifest) — for weights, only those with a real (non-`PENDING`) registry
+row. An unpinned weight has only the manifest, so an **unsigned** bundle
+will not place one, nor replace an existing file, unless you pass
+`--allow-unpinned-weights`. Images and the source tarball have **only** the
+signature, which is why it exists.
 
 **On the air-gapped rig** (clone or copy the repo there first):
 
