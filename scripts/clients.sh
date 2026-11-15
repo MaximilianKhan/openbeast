@@ -7,7 +7,7 @@
 # device its OWN bearer key, so a lost device is one `revoke` away from silence
 # and every other device keeps working.
 #
-#   ./scripts/clients.sh enroll <id> [--label "text"] [--slot N] [--rate N] [--scope S]
+#   ./scripts/clients.sh enroll <id> [--label "text"] [--slot N] [--rate N] [--scope S] [--login L]
 #   ./scripts/clients.sh list [--json]
 #   ./scripts/clients.sh show <id> [--json]
 #   ./scripts/clients.sh scope <id> add|remove <name>
@@ -357,6 +357,8 @@ if CMD == "enroll":
     # same as label/slot/rate.
     if os.environ.get("OB_HAS_SCOPES") == "1":
         dev["scopes"] = parse_scopes(os.environ.get("OB_SCOPES"))
+    if os.environ.get("OB_HAS_LOGIN") == "1":
+        dev["login"] = os.environ.get("OB_LOGIN", "").strip().lower()
     save(doc)
     print(action)
     if action == "rotated" and dev.get("revoked_at"):
@@ -508,6 +510,7 @@ case "$cmd" in
     _valid_id "$dev_id" || _die "invalid id '$dev_id' — use [a-z0-9][a-z0-9-]{0,30} (e.g. laptop-air)"
     label=""; slot=""; rate=""; scopes=""
     has_label=0; has_slot=0; has_rate=0; has_scopes=0
+    login=""; has_login=0
     force=0
     # rotate implies --force, but ALSO requires the device to already exist:
     # rotating a mistyped id must fail loudly, not silently enroll a brand-new
@@ -548,6 +551,13 @@ print(int(any(d.get("id") == os.environ["OB_ID"]
         --scope=*) _scope_val="${1#*=}"
                    _valid_scope "$_scope_val" || _die "invalid scope '$_scope_val' — use [a-z0-9][a-z0-9_-]{0,30} (e.g. chat)"
                    scopes="${scopes:+$scopes,}$_scope_val"; has_scopes=1; shift ;;
+        # The tailnet login this key answers for (beast-artifact: a bound key
+        # is refused under any other login, and only a bound key carries
+        # that login's admin power). Stored lowercased in `login`.
+        --login)   [[ $# -ge 2 && -n "${2:-}" ]] || _die "--login needs a value"
+                   login="$2"; has_login=1; shift 2 ;;
+        --login=*) login="${1#*=}"; [[ -n "$login" ]] || _die "--login needs a value"
+                   has_login=1; shift ;;
         --force)   force=1; shift ;;
         *)         _die "unknown option for $cmd: $1" ;;
       esac
@@ -567,7 +577,7 @@ print(int(any(d.get("id") == os.environ["OB_ID"]
     action="$(OB_CMD=enroll OB_ID="$dev_id" OB_LABEL="$label" OB_HASH="$key_hash" \
               OB_SLOT="$slot" OB_RATE="$rate" OB_FORCE="$force" OB_SCOPES="$scopes" \
               OB_HAS_LABEL="$has_label" OB_HAS_SLOT="$has_slot" OB_HAS_RATE="$has_rate" \
-              OB_HAS_SCOPES="$has_scopes" \
+              OB_HAS_SCOPES="$has_scopes" OB_LOGIN="$login" OB_HAS_LOGIN="$has_login" \
               _registry_op)"
 
     echo ""

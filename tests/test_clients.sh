@@ -279,6 +279,17 @@ if "$CLI" enroll multi --scope chat --scope admin >/dev/null \
 else
   fail "repeated --scope did not accumulate"
 fi
+# beast-artifact binds a key to the login it answers for (review, spark-scale).
+if "$CLI" enroll bound --scope artifact --login Max@Example.com >/dev/null \
+   && [[ "$(_q '[d.get("login") for d in devs if d["id"] == "bound"][0]')" == "max@example.com" ]] \
+   && "$CLI" rotate bound >/dev/null \
+   && [[ "$(_q '[d.get("login") for d in devs if d["id"] == "bound"][0]')" == "max@example.com" ]] \
+   && ! "$CLI" enroll unbound-x --login >/dev/null 2>&1; then
+  pass "--login binds a key (lowercased), survives rotate, needs a value"
+else
+  fail "--login did not bind the key"
+fi
+"$CLI" remove bound --yes >/dev/null
 if ! "$CLI" enroll bad-scope --scope "Chat Admin" >/dev/null 2>&1; then
   pass "an invalid scope name is refused at enroll"
 else

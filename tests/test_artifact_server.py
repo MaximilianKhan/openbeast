@@ -154,9 +154,11 @@ def local(c, extra=None):
     return h
 
 
-def enroll(tmp_path, dev_id="phone", scopes=("artifact",), revoked=False):
+def enroll(tmp_path, dev_id="phone", scopes=("artifact",), revoked=False,
+           login=None):
     """Write an enrolled device into .run/clients.json (the schema
-    scripts/clients.sh owns) and return its bearer header."""
+    scripts/clients.sh owns) and return its bearer header. `login` binds the
+    key to one tailnet login (`clients.sh enroll ... --login`)."""
     import hashlib
     key = f"key-{dev_id}-{'-'.join(scopes)}-{int(revoked)}"
     path = tmp_path / "run" / "clients.json"
@@ -168,7 +170,8 @@ def enroll(tmp_path, dev_id="phone", scopes=("artifact",), revoked=False):
     doc["devices"] = [d for d in doc["devices"] if d.get("id") != dev_id]
     doc["devices"].append({
         "id": dev_id, "key_sha256": hashlib.sha256(key.encode()).hexdigest(),
-        "scopes": list(scopes), "revoked_at": "x" if revoked else None})
+        "scopes": list(scopes), "revoked_at": "x" if revoked else None,
+        **({"login": login} if login else {})})
     path.write_text(json.dumps(doc))
     os.chmod(path, 0o600)
     return {"Authorization": f"Bearer {key}"}
@@ -733,6 +736,45 @@ def test_patch_is_attributed_to_the_caller_not_the_first_operator(make_client):
                 headers=local(c))
     assert r.status_code == 200, r.text
     assert store.get_meta(a["id"])["visibility"] == "private"
+
+
+def test_a_forged_admin_header_with_someone_elses_key_buys_no_admin(
+        make_client):
+    """Review (spark-scale) beast-artifact sec: the key was never tied to the
+    login, so a process on the rig holding ANY artifact-scoped key (kid's)
+    plus a forged `Tailscale-User-Login: <admin>` got admin PATCH (share,
+    chown) and DELETE on every page — while the docs said header forgery
+    "only ever buys reads". ARTIFACT_ADMINS is unset, so max (first on the
+    allowlist) is the admin."""
+    c = make_client(operators="max@example.com,kid@example.com")
+    rigs = publish(c)                                     # owned by the rig
+    kid_key = enroll(c.tmp, "kidtablet", login="kid@example.com")
+    r = c.patch(f"/api/artifacts/{rigs['id']}", json={"visibility": "tailnet"},
+                headers={**MAX, **kid_key})
+    assert r.status_code == 404 and r.json() == FLAT_404
+    r = c.delete(f"/api/artifacts/{rigs['id']}", headers={**MAX, **kid_key})
+    assert r.status_code == 404 and r.json() == FLAT_404
+    assert store.get_meta(rigs["id"]) is not None
+    # an UNBOUND key (enrolled without `--login`) still manages the header
+    # login's own pages, but never carries admin
+    loose = enroll(c.tmp, "loose")
+    r = c.delete(f"/api/artifacts/{rigs['id']}", headers={**MAX, **loose})
+    assert r.status_code == 404
+    assert store.get_meta(rigs["id"]) is not None
+    mine = publish(c, headers=local(c, MAX))
+    r = c.patch(f"/api/artifacts/{mine['id']}", json={"visibility": "tailnet"},
+                headers={**MAX, **loose})
+    assert r.status_code == 200, r.text
+    # control: the admin's own BOUND key keeps admin power
+    max_key = enroll(c.tmp, "maxphone", login="max@example.com")
+    r = c.patch(f"/api/artifacts/{rigs['id']}", json={"visibility": "tailnet"},
+                headers={**MAX, **max_key})
+    assert r.status_code == 200, r.text
+    # and kid's bound key still works for kid
+    kids = publish(c, headers=local(c, KID))
+    r = c.patch(f"/api/artifacts/{kids['id']}", json={"pinned": True},
+                headers={**KID, **kid_key})
+    assert r.status_code == 200, r.text
 
 
 # --- R2: every mutation names its owner, without help from the ContextVar ----

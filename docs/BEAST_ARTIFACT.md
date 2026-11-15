@@ -420,9 +420,15 @@ rollback, delete — can also come from a phone, with two things together:
 2. a device key enrolled with the **`artifact` scope**:
 
 ```bash
-./scripts/clients.sh enroll phone --label "My phone" --scope artifact   # prints the key once
+./scripts/clients.sh enroll phone --label "My phone" --scope artifact \
+    --login you@example.com                       # prints the key once
 ./scripts/clients.sh scope phone add artifact      # or grant it to a device you already have
+./scripts/clients.sh rotate phone --login you@example.com   # bind an existing device (new key)
 ```
+
+`--login` binds the key to your tailnet login: under any other login it is
+the flat 404, and **only a bound key carries admin** (`ARTIFACT_ADMINS`)
+power — an unbound key manages only the pages its login owns.
 
 In the viewer, the **⋯** button opens the **Manage** sheet. It shows only
 when your login owns the page or is an admin. Paste the key under *Device
@@ -612,8 +618,13 @@ sandbox instead — stricter on storage (there is none), identical on network.
 - Content types on supporting files come from the **published** extension, and
   `nosniff` stops a browser from guessing otherwise.
 - `Tailscale-User-Login` is forgeable by a process already on the rig. That is
-  inside the existing loopback trust model, and it only ever buys *reads* —
-  writes need the locality token.
+  inside the existing loopback trust model. Alone it buys only *reads*:
+  writes need the locality token, or an `artifact`-scoped device key (see
+  *Managing pages from a phone*). A key enrolled with `--login` answers only
+  for that login, and only such a bound key carries the login's admin power,
+  so a forged admin header plus somebody else's key buys nothing. An
+  unbound key (enrolled without `--login`) still manages the header login's
+  own pages — bind every phone key to close that too.
 - **The header counts only from a peer on the rig.** The server binds
   `OPENBEAST_BIND`, so `BIND_HOST=0.0.0.0` or a LAN address puts `:3004`
   off the box — and a LAN host (or a tailnet node dialling `100.x:3004`

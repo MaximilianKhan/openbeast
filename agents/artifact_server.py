@@ -423,7 +423,8 @@ def _peer_is_loopback(request) -> bool:
 
     The converse is NOT claimed: a loopback peer proves nothing about who is
     behind the proxy (edge.py:412), which is why writes need the locality
-    token and still do. Fail closed on anything that is not an IP literal.
+    token or a device key — and why a key bound to a login answers only for
+    it (_remote_write_refusal). Fail closed on anything not an IP literal.
     """
     client = getattr(request, "client", None)
     if client is None:
@@ -1203,6 +1204,16 @@ def create_app(local_token: str | None = None) -> FastAPI:
         dev = registry.lookup(_device_key(request), DEVICE_SCOPE)
         if dev is None:
             return "not-local"
+        # The key proves a DEVICE, the header names a LOGIN — and a process
+        # on the rig can set the header to anyone (review, spark-scale:
+        # beast-artifact). A key bound to a login (`clients.sh enroll …
+        # --login <login>`, the record's `login` field) answers only for that
+        # login, and only a bound key carries the login's ADMIN power: an
+        # unbound key plus a forged admin header used to buy chown, rollback
+        # and delete on every page.
+        bound = str(dev.get("login") or "").strip().lower()
+        if bound and bound != principal.login:
+            return "not-local"
         raw_len = request.headers.get("content-length")
         if raw_len is None and request.headers.get("transfer-encoding"):
             return "oversize"          # no length, no streaming
@@ -1222,7 +1233,8 @@ def create_app(local_token: str | None = None) -> FastAPI:
             remote_hits[dev_id] = q
         request.state.principal = Principal(
             login=principal.login, local=False, operator=principal.operator,
-            admin=principal.admin, device=dev_id)
+            admin=principal.admin and bound == principal.login,
+            device=dev_id)
         return ""
 
     def _ambiguous_identity(request: Request) -> bool:
