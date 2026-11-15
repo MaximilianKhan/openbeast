@@ -64,7 +64,7 @@ task = {
     'est_s': 165,
     'max_wall_s': 900,
     'role': 'scored',
-    'ref_stem': '195_riscv_insn_budget/ref',
+    'ref_stem': '195_riscv_insn_budget/ref.s',
     'dest': '/tmp/eval_rv195/lib.s',
     'setup': SETUP,
     'task': TASK,

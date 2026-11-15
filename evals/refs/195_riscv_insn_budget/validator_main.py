@@ -2,6 +2,17 @@
 # The interpreter is the validator's own sealed copy; the fixture's rvi.py is
 # never imported. Hidden cases come from a seeded generator and are fed to the
 # interpreter from memory; a failure names only the function and case index.
+#
+# Isolation (skills/eval-task-author "Validator isolation"): the submission is
+# never executed as host code. lib.s is DATA, parsed by the sealed assembler
+# and stepped by the sealed interpreter, whose only reachable state is the
+# 32-register file and the case's bytearray; there is no ecall, no host I/O
+# and no Python escape. So there is no solution process to hand to
+# vlib.run_solution, and no wall or CPU limit to scale with
+# OPENBEAST_TIMEOUT_SCALE: the gate is the exact retired-instruction count
+# (max_steps), identical on every host and at every --scale. A pathological
+# lib.s (megabytes of code) can only run out the harness's validator timeout,
+# which is already scaled, and that is a fail.
 import random
 import sys
 import types
@@ -35,14 +46,18 @@ def budget_crc32(n):
 
 
 try:
-    with open(LIB) as f:
+    with open(LIB, encoding='utf-8') as f:
         SRC = f.read()
 except OSError:
     fail('lib.s not found')
+except UnicodeDecodeError:
+    fail('lib.s is not UTF-8 text')
 try:
     PROG = rvi.assemble(SRC)
 except rvi.AsmError as e:
     fail('assembly error: %s' % e)
+except Exception as e:  # malformed operands the assembler did not foresee
+    fail('assembly error (%s)' % type(e).__name__)
 for lab in ('memcpy', 'strlen', 'crc32'):
     if lab not in PROG.labels:
         fail('missing entry label %s' % lab)
