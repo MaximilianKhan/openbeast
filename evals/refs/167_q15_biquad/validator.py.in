@@ -148,6 +148,12 @@ cases.append((1, 1, [(32767, 32767, 32767, -32768, -32768, 3)], [32767] * 30))
 # and a step-3 low saturation must land on -2^31 (not -2^31+1) before step 4 adds back
 cases.append((1, 1, [(-32768, -32768, 1, 0, 0, 0)], [-16384, -32768, -32768]))
 cases.append((1, 1, [(-32768, -32768, -32768, 1, 0, 0)], [-32768, 32767, 16384, 32767]))
+# clamp-bound off-by-one: a step-2 high saturation (exactly 2^31) followed by
+# +y2 = -16383 lands exactly on a rounding boundary, so a high bound of
+# 2^31-2 shifts v by one (case 9); likewise a step-3 low saturation then
+# -a2*y2 = 16384*32767 makes a low bound of -2^31-1 visible (case 10)
+cases.append((1, 1, [(-32768, -32768, 0, 0, -1, 0)], [16383, -32768, -32768]))
+cases.append((1, 1, [(32767, 32767, 32767, 0, 16384, 0)], [-32768, -32768, -32768]))
 for i in range(66):
     A, O = i & 1, (i >> 1) & 1
     nsec = rng.randint(1, 8)

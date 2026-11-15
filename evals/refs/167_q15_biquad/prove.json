@@ -3,6 +3,13 @@
  "note": "Arms for the model-free prover (tests/prove_task.py discovers wrong_*, slow.*, leak.* next to biquad.* by extension). Each wrong solution must fail with its declared output class. slow.* is a busy-loop hang; leak.* replays the visible sample output.",
  "expect": {
   "wrong_always_sat.rs": "^mismatch at case \\d+$",
+  "wrong_clamphi.c": "^mismatch at case 9$",
+  "wrong_clamphi.go": "^mismatch at case 9$",
+  "wrong_clamphi.py": "^mismatch at case 9$",
+  "wrong_clamplo.cpp": "^mismatch at case 10$",
+  "wrong_clamplo.py": "^mismatch at case 10$",
+  "wrong_clamplo.rs": "^mismatch at case 10$",
+  "wrong_clamplo.zig": "^mismatch at case 10$",
   "wrong_divtrunc.go": "^mismatch at case \\d+$",
   "wrong_divtrunc.zig": "^mismatch at case \\d+$",
   "wrong_i32acc.c": "^mismatch at case \\d+$",
