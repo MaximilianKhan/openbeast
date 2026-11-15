@@ -40,6 +40,9 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 SPARK_BYTES = 128 * 10**9          # "128 GB unified memory" per DGX Spark (nominal, CPU + GPU share it)
 RUNTIME_OVERHEAD = 5 * 10**9       # per rank: CUDA context, activations, CUDA graphs, sampler (assumption)
+MAX_SPARKS = 8                     # a cluster is 1..8 Sparks, one GPU (= one TP rank) each
+SPARK_COUNTS = range(1, MAX_SPARKS + 1)
+TP_SLACK_PER_EXTRA_RANK = 0.03     # replicated-tensor share of the weights (calibrated at TP=2; see tp_slack)
 MIN_USEFUL_CTX = 32768             # below this much KV room a model "fits" but is not useful for agents
 DTYPE_BYTES = {"F64": 8, "I64": 8, "U64": 8, "F32": 4, "I32": 4, "U32": 4, "F16": 2, "BF16": 2, "I16": 2,
                "U16": 2, "F8_E4M3": 1, "F8_E5M2": 1, "F8_E8M0": 1, "I8": 1, "U8": 1, "BOOL": 1, "F4": 0.5,
@@ -361,6 +364,10 @@ def moe(tc: dict) -> dict | None:
             or tc.get("num_shared_experts"), "note": "total params decide MEMORY; active params decide SPEED"}
 
 
+def _int_or_none(v):
+    return v if isinstance(v, int) and not isinstance(v, bool) and v > 0 else None
+
+
 def kv_per_token(tc: dict) -> dict:
     layers = tc.get("num_hidden_layers") or tc.get("n_layer") or tc.get("num_layers")
     if not layers:
@@ -377,38 +384,62 @@ def kv_per_token(tc: dict) -> dict:
     elif tc.get("full_attention_interval"):
         attn = layers // int(tc["full_attention_interval"])
         how = f"1 in {tc['full_attention_interval']} layers (full_attention_interval)"
+    heads = tc.get("num_attention_heads") or tc.get("n_head")
     if tc.get("kv_lora_rank"):
         per_layer = int(tc["kv_lora_rank"]) + int(tc.get("qk_rope_head_dim") or 0)
         b = attn * per_layer * 2
         return {"bytes": b, "attention_layers": attn, "why": f"MLA latent {per_layer} x {attn} layers x 2 B",
-                "how": how, "splits_across_tp": False}
-    heads = tc.get("num_attention_heads") or tc.get("n_head")
+                "how": how, "splits_across_tp": False, "attention_heads": _int_or_none(heads)}
     kvh = tc.get("num_key_value_heads") or tc.get("num_kv_heads") or heads
     hd = tc.get("head_dim") or (tc.get("hidden_size") // heads if tc.get("hidden_size") and heads else None)
     if not (kvh and hd):
         return {"bytes": None, "why": "head counts not in config"}
     b = 2 * attn * int(kvh) * int(hd) * 2
     return {"bytes": b, "attention_layers": attn, "kv_heads": kvh, "head_dim": hd, "how": how,
+            "attention_heads": _int_or_none(heads),
             "why": f"2 (K,V) x {attn} layers x {kvh} kv-heads x {hd} dim x 2 B (bf16 KV; fp8 KV halves it)",
             "splits_across_tp": int(kvh) >= 2,
             "note": "linear-attention / SSM layers keep a fixed per-sequence state, not per-token KV"
             if attn < layers else None}
 
 
+def tp_slack(tp: int) -> float:
+    """Per-rank weight inflation for TP=tp. The slack is for REPLICATED tensors (norms, router gates,
+    unsharded biases): every rank holds a full copy of those, so if they are a fraction r of the
+    weights a rank holds W/tp + r*W*(tp-1)/tp = W/tp * (1 + r*(tp-1)). r = 3 % reproduces the TP=2
+    figure this model was calibrated on; TP=8 is then 21 % of W/8 — still only ~2.6 % of W per rank."""
+    return TP_SLACK_PER_EXTRA_RANK * (tp - 1)
+
+
+def _sparks(n: int) -> str:
+    return "ONE Spark" if n == 1 else f"{n} Sparks"
+
+
 def fit(weight_bytes: int, kv: dict, native: int | None, util: float) -> dict:
     budget = SPARK_BYTES * util
     kvb = kv.get("bytes")
+    kvh = kv.get("kv_heads")
+    heads = kv.get("attention_heads")
     out = {"assumptions": {
         "spark_bytes": SPARK_BYTES, "gpu_memory_utilization": util, "budget_per_spark": int(budget),
-        "runtime_overhead_per_rank": RUNTIME_OVERHEAD, "tp2_weight_slack": 0.03,
-        "min_useful_context": MIN_USEFUL_CTX,
-        "method": ("weights = safetensors bytes (exact); per-rank need = weights/TP x (1 + slack for replicated "
-                   "norms/embeddings) + a fixed runtime overhead; what is left of util x 128 GB is KV cache. "
+        "runtime_overhead_per_rank": RUNTIME_OVERHEAD, "tp2_weight_slack": tp_slack(2),
+        "tp_weight_slack": {str(n): round(tp_slack(n), 4) for n in SPARK_COUNTS},
+        "max_sparks": MAX_SPARKS, "min_useful_context": MIN_USEFUL_CTX,
+        "method": ("weights = safetensors bytes (exact); per-rank need = weights/TP x (1 + 3 % x (TP-1) slack for "
+                   "replicated norms/gates) + a fixed runtime overhead; what is left of util x 128 GB is KV cache "
+                   "(KV heads split across ranks, never below one head per rank). "
                    "The OS lives in the same 128 GB — util above ~0.85 starves it.")}}
-    for tp in (1, 2):
-        need = weight_bytes / tp * (1.03 if tp == 2 else 1.0) + RUNTIME_OVERHEAD
+    for tp in SPARK_COUNTS:
+        need = weight_bytes / tp * (1 + tp_slack(tp)) + RUNTIME_OVERHEAD
         room = budget - need
-        per_tok = (kvb / tp if kv.get("splits_across_tp") else kvb) if kvb else None
+        if not kvb:
+            per_tok = None
+        elif not kv.get("splits_across_tp"):
+            per_tok = kvb                                   # MLA latent / one KV head: every rank holds it all
+        elif kvh:
+            per_tok = kvb * max(1, math.ceil(int(kvh) / tp)) / int(kvh)   # vLLM replicates heads past kvh ranks
+        else:
+            per_tok = kvb / tp
         tokens = int(room // per_tok) if per_tok and room > 0 else (0 if room <= 0 else None)
         if room <= 0:
             verdict = "does not fit"
@@ -422,17 +453,30 @@ def fit(weight_bytes: int, kv: dict, native: int | None, util: float) -> dict:
         if tokens:
             cap = min(tokens, native or tokens)
             suggest = max(4096, (cap // 8192) * 8192) if cap >= 8192 else cap
+        # vLLM refuses a TP that does not divide the attention heads, and shards KV heads only when one
+        # count divides the other (QKVParallelLinear); None = head counts unknown (MLA: query heads only)
+        divides = None
+        if heads:
+            divides = int(heads) % tp == 0 and (not kvh or int(kvh) % tp == 0 or tp % int(kvh) == 0)
         out[f"tp{tp}"] = {"per_rank_need": int(need), "kv_room_per_rank": int(room), "kv_tokens_total": tokens,
-                          "verdict": verdict, "suggested_max_model_len": suggest}
-    one, two = out["tp1"]["verdict"], out["tp2"]["verdict"]
-    if one == "fits":
-        out["verdict"] = "fits on ONE Spark (TP=1); TP=2 only buys KV room / aggregate throughput"
-    elif two in ("fits", "fits (KV size unknown)"):
-        out["verdict"] = "needs BOTH Sparks (TP=2)" + (" — one Spark is tight" if one == "tight" else "")
-    elif two == "tight":
-        out["verdict"] = "only just fits on two Sparks: little KV room left — lower GPU util headroom or use a smaller quant"
+                          "verdict": verdict, "suggested_max_model_len": suggest, "sparks": tp,
+                          "weight_slack": round(tp_slack(tp), 4), "vllm_heads_divisible": divides}
+    verdicts = {n: out[f"tp{n}"]["verdict"] for n in SPARK_COUNTS}
+    n_fit = next((n for n in SPARK_COUNTS if verdicts[n] in ("fits", "fits (KV size unknown)")), None)
+    n_tight = next((n for n in SPARK_COUNTS if verdicts[n] == "tight"), None)
+    out["min_sparks"] = n_fit                               # smallest N that fits with useful KV room (or KV unknown)
+    out["min_sparks_tight"] = n_tight if n_tight and (n_fit is None or n_tight < n_fit) else None
+    if n_fit == 1 and verdicts[1] == "fits":
+        out["verdict"] = "fits on ONE Spark (TP=1); more Sparks only buy KV room / aggregate throughput"
+    elif n_fit:
+        out["verdict"] = ("needs BOTH Sparks of a pair (TP=2)" if n_fit == 2
+                          else f"fits on {_sparks(n_fit)} (TP={n_fit}); fewer do not") + (
+            f" — {_sparks(n_fit - 1)} is tight" if n_fit > 1 and verdicts[n_fit - 1] == "tight" else "")
+    elif n_tight:
+        out["verdict"] = (f"only just fits on {_sparks(n_tight)}: little KV room left — add a Spark, lower GPU "
+                          "util headroom or use a smaller quant")
     else:
-        out["verdict"] = "does NOT fit on two Sparks at this quantization"
+        out["verdict"] = f"does NOT fit on {_sparks(MAX_SPARKS)} at this quantization"
     return out
 
 
@@ -707,13 +751,16 @@ def tensorfold_support(cfg: dict, q: dict, source_label: str, tp: int | None = N
         if bits - {4, 8}:
             status = "unsupported"
             notes.append("TensorFold reads only NVFP4 / FP8 ModelOpt or compressed-tensors weights")
-    tps = list(fam.get("tp") or [])
-    only2 = fam.get("tp2_quant_methods")
-    if 2 in tps and only2 and (qm or None) not in only2:
-        tps.remove(2)
-        notes.append(f"this format runs on ONE rank only (two ranks need {', '.join(only2)} weights)")
+    # the vendored rank list is the engine's own (a family may allow 1, 1 and 2, or exactly 2): report
+    # THAT, never assume a cluster size. tp2_quant_methods names the formats any multi-rank run needs.
+    tps = sorted(int(x) for x in (fam.get("tp") or []))
+    multi = fam.get("tp2_quant_methods")
+    if multi and (qm or None) not in multi and any(x > 1 for x in tps):
+        tps = [x for x in tps if x == 1]
+        notes.append(f"this format runs on ONE rank only (more than one rank needs {', '.join(multi)} weights)")
     if tps:
-        notes.append(f"ranks: {' or '.join(map(str, tps))}")
+        listed = (", ".join(map(str, tps[:-1])) + " or " if len(tps) > 1 else "") + str(tps[-1])
+        notes.append(f"ranks: {listed} — the only cluster sizes (TP = Sparks) this engine runs it on")
     notes.extend(fam.get("notes", []))
     tested = fam.get("tested_checkpoints", [])
     repo = source_label.split("@")[0]
@@ -817,11 +864,19 @@ def render(r: dict) -> str:
         add(f"KV cache   {kv['bytes'] / 1024:.0f} KiB/token — {kv['why']}; {kv.get('how', '')}")
     f = r["fit"]
     add(f"Fit        {f['verdict']}")
-    for tp in ("tp1", "tp2"):
+    # TP=1 and TP=2 always; larger clusters up to the smallest one that fits and vLLM can shard (all
+    # eight when none does)
+    last = next((n for n in SPARK_COUNTS if n >= (f.get("min_sparks") or MAX_SPARKS + 1)
+                 and f[f"tp{n}"]["verdict"] in ("fits", "fits (KV size unknown)")
+                 and f[f"tp{n}"].get("vllm_heads_divisible") is not False), f.get("min_sparks") or MAX_SPARKS)
+    last = max(2, last)
+    for tp in [f"tp{n}" for n in SPARK_COUNTS if n <= last]:
         x = f[tp]
         add(f"  {tp.upper()}: need {_gb(x['per_rank_need'])}/rank of {_gb(f['assumptions']['budget_per_spark'])} "
             f"(util {f['assumptions']['gpu_memory_utilization']}) → {x['verdict']}"
-            + (f", KV room ~{x['kv_tokens_total']:,} tokens" if x.get("kv_tokens_total") else ""))
+            + (f", KV room ~{x['kv_tokens_total']:,} tokens" if x.get("kv_tokens_total") else "")
+            + ("; vLLM refuses: TP does not divide the attention/KV heads"
+               if x.get("vllm_heads_divisible") is False else ""))
     add(f"  ({f['assumptions']['method']})")
     t = r["chat_template"]
     if t.get("present"):
@@ -851,6 +906,37 @@ def _comment(text) -> str:
     return _UNSAFE.sub(" ", str(text))[:200]
 
 
+def choose_tp(r: dict, backend: str) -> tuple[int, str]:
+    """The cluster size (TP = Sparks) a draft asks for, and a note when it differs from the fit's
+    min_sparks. The smallest size the engine allows that fits; with the KV size unknown, only when
+    the weights per rank take well under half a Spark's budget (a tiny model is not worth a ConnectX
+    hop per token, and an unknown KV needs room). Then any size the weights fit, then a tight one;
+    nothing at all → the largest allowed size, marked. The engine narrows the sizes: vLLM needs TP to
+    divide the attention/KV heads, TensorFold allows only its vendored rank list."""
+    f = r["fit"]
+    budget = f["assumptions"]["budget_per_spark"]
+    wb = r["weights"]["weight_bytes"]
+    sizes = [n for n in SPARK_COUNTS if f"tp{n}" in f]
+    if backend == "tensorfold":
+        ranks = r["engines"]["tensorfold"].get("ranks") or []
+        allowed = [n for n in sizes if n in ranks] or sizes
+    else:
+        allowed = [n for n in sizes if f[f"tp{n}"].get("vllm_heads_divisible") is not False] or sizes
+    v = {n: f[f"tp{n}"]["verdict"] for n in allowed}
+    n = (next((n for n in allowed if v[n] == "fits" or (v[n] == "fits (KV size unknown)"
+                                                        and wb / n < 0.5 * budget)), None)
+         or next((n for n in allowed if v[n] == "fits (KV size unknown)"), None)
+         or next((n for n in allowed if v[n] == "tight"), None))
+    if n is None:
+        return allowed[-1], f"nothing fits: TP={allowed[-1]} is the largest size {backend} allows here"
+    m = f.get("min_sparks")
+    if m is not None and m < n and m not in allowed:
+        return n, (f"TP={m} would fit, but "
+                   + (f"TensorFold runs this on {'/'.join(map(str, allowed))} ranks only" if backend == "tensorfold"
+                      else f"vLLM needs TP to divide the attention/KV heads"))
+    return n, ""
+
+
 def draft_profile(r: dict, name: str, backend: str) -> tuple[str, list[str]]:
     """The draft profile text and the keys it sets. Every VALUE is either a constant or checked
     against the profile grammar (repo id, SHA, parser name, integer); anything the checkpoint said
@@ -858,13 +944,10 @@ def draft_profile(r: dict, name: str, backend: str) -> tuple[str, list[str]]:
     best = lambda kind: next((s for s in r["suggestions"][kind] if s["parser"]), None)  # noqa: E731
     tool, reas = best("tool_call_parser"), best("reasoning_parser")
     f = r["fit"]
-    # One Spark when it fits; also when the KV size is unknown but the weights alone take well under
-    # half of one Spark's budget (a tiny model is not worth a ConnectX hop per token).
-    one = f["tp1"]["verdict"]
-    light = r["weights"]["weight_bytes"] < 0.5 * f["assumptions"]["budget_per_spark"]
-    tp = 1 if one == "fits" or (one == "fits (KV size unknown)" and light) else 2
-    tp_note = f"VERIFY: {_comment(f['verdict'])}" + (
-        " — KV size unknown: TP chosen from the weights alone" if one == "fits (KV size unknown)" else "")
+    tp, why = choose_tp(r, backend)
+    tp_note = f"VERIFY: {_comment(f['verdict'])}" + (f" — {why}" if why else "") + (
+        " — KV size unknown: TP chosen from the weights alone"
+        if f[f"tp{tp}"]["verdict"] == "fits (KV size unknown)" else "")
     native = r["context"].get("native")
     mml = f[f"tp{tp}"].get("suggested_max_model_len") or native or ""
     mml = str(mml) if isinstance(mml, int) and not isinstance(mml, bool) and mml > 0 else ""

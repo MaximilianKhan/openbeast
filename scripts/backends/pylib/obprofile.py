@@ -34,6 +34,8 @@ REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 PARSER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 LINE_RE = re.compile(r"^([A-Z][A-Z0-9_]*)=(.*)$")
+MAX_SPARKS = 8                                   # a cluster is 1..8 DGX Sparks, one GPU (TP rank) each
+TP_SIZES = tuple(str(n) for n in range(1, MAX_SPARKS + 1))
 
 # key -> one-line meaning (also the allow list)
 KEYS = {
@@ -41,7 +43,7 @@ KEYS = {
     "SOURCE": "Hugging Face repo id (owner/name) or an absolute local directory",
     "REVISION": "full 40-hex commit SHA of SOURCE (required for a Hugging Face SOURCE)",
     "SERVED_MODEL_NAME": "the model id /v1/models lists and clients send",
-    "TENSOR_PARALLEL_SIZE": "1 (one Spark) or 2 (both Sparks)",
+    "TENSOR_PARALLEL_SIZE": "1..8 — one rank per Spark (1 = one Spark, 2 = a pair; default 2)",
     "MAX_MODEL_LEN": "context window in tokens (empty = the engine's default from config.json)",
     "DTYPE": "vLLM --dtype: auto | bfloat16 | float16 | float32",
     "QUANTIZATION": "vLLM --quantization (empty = from the checkpoint's quantization_config)",
@@ -297,8 +299,8 @@ def validate(p: Profile, backend: str | None = None) -> Profile:
     elif len(name) > 200:
         err("SERVED_MODEL_NAME is longer than 200 characters")
     tp = p.get("TENSOR_PARALLEL_SIZE", "2")
-    if tp not in ("1", "2"):
-        err(f"TENSOR_PARALLEL_SIZE={tp!r} — 1 (one Spark) or 2 (both)")
+    if tp not in TP_SIZES:
+        err(f"TENSOR_PARALLEL_SIZE={tp!r} — 1..{MAX_SPARKS} — one rank per Spark")
     for key in ("MAX_MODEL_LEN", "MAX_NUM_SEQS"):
         if p.get(key) and not re.match(r"^[1-9][0-9]*$", p.get(key)):
             err(f"{key}={p.get(key)!r} is not a positive integer")
