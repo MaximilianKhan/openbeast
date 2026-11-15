@@ -116,7 +116,17 @@ set_key() { # set_key <NAME>
       echo "  ${name}: already set — leaving as-is (use --rotate to replace)."
     fi
   else
+    # A hand-edited conf may lack its final newline: appending then glued
+    # the key onto the last line (`WEBUI_AUTH=trueIDENTITY_JWT_SECRET=…`),
+    # leaving the key unset and the last setting corrupted.
+    if [[ -s "$CONF" && -n "$(tail -c1 "$CONF")" ]]; then
+      printf '\n' >> "$CONF"
+    fi
     printf '%s=%s\n' "$name" "$(genkey)" >> "$CONF"
+    if ! _key_has_value "$name"; then
+      echo "  ${name}: append FAILED — not set; check openbeast.conf." >&2
+      return 1
+    fi
     echo "  ${name}: generated."
   fi
 }
