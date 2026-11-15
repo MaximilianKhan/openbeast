@@ -674,12 +674,12 @@ else
 fi
 
 echo ""
-echo "remove that empties the registry (netsec S7):"
-# An empty registry is "not configured" to beast-gate; with
-# EDGE_ALLOW_ANON=true that is anonymous mode, so deleting the last device
-# re-admits it. `remove` must say so — and only then.
+echo "remove that empties the registry (netsec S7, review 2026-11-15):"
+# An emptied registry still EXISTS to beast-gate (edge.py Registry.exists),
+# so EDGE_ALLOW_ANON stays ignored and the gate answers 401. `remove` must
+# say that true thing — not that the gate reopened — and only then.
 A="$(_fresh_repo anon)"
-AW="registry is now EMPTY and EDGE_ALLOW_ANON=true"
+AW="registry is now EMPTY"
 printf 'EDGE_GATE=true\nEDGE_ALLOW_ANON=true\n' > "$A/openbeast.conf"
 "$A/scripts/clients.sh" enroll one >/dev/null 2>&1
 "$A/scripts/clients.sh" enroll two >/dev/null 2>&1
@@ -690,10 +690,12 @@ else
   fail "warned although a device is still enrolled"
 fi
 out="$("$A/scripts/clients.sh" remove two --yes 2>&1)" || true
-if _has "$out" "$AW" && _has "$out" "EDGE_ALLOW_ANON=false" && _has "$out" "'two'"; then
-  pass "removing the LAST device under EDGE_ALLOW_ANON=true warns and names the fix"
+if _has "$out" "$AW" && _has "$out" "stays CLOSED" && _has "$out" "401" \
+   && _has "$out" "'two'" && _has "$out" "clients.sh enroll" \
+   && ! _has "$out" "admits EVERY" && ! _has "$out" "EDGE_ALLOW_ANON=false"; then
+  pass "removing the LAST device under EDGE_ALLOW_ANON=true says the gate stays closed (401)"
 else
-  fail "emptied the registry under EDGE_ALLOW_ANON=true without a warning"
+  fail "remove of the last device misstated the gate's state: $out"
 fi
 printf 'EDGE_GATE=true\nEDGE_ALLOW_ANON=false\n' > "$A/openbeast.conf"
 "$A/scripts/clients.sh" enroll three >/dev/null 2>&1
