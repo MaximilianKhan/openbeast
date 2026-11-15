@@ -1519,6 +1519,87 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# extensions-ntfy review: DASHBOARD_PORT was honoured by run.sh only;
+# healthcheck and --publish-slot dialled :3002 regardless.
+# ---------------------------------------------------------------------------
+echo ""
+echo "DASHBOARD_PORT reaches every caller of the dashboard:"
+_DP="$_T/dport"; _sandbox "$_DP"
+printf '#!/bin/bash\nfor a in "$@"; do [[ "$a" == http* ]] && echo "$a" >> "$CURL_LOG"; done\nexit 7\n' > "$_DP/bin/curl"
+chmod +x "$_DP/bin/curl"
+_dport_urls() { # _dport_urls <conf-text> [VAR=value ...] -> the slot URLs healthcheck asked for
+  local text="$1"; shift
+  printf 'SEARXNG_SECRET=s\nEXTENSIONS="dashboard"\n%s\n' "$text" > "$_DP/openbeast.conf"
+  : > "$_DP/curl.log"
+  RUN_ENV=(CURL_LOG="$_DP/curl.log" "$@")
+  _run "$_DP" "$_DP/scripts/healthcheck.sh" >/dev/null
+  RUN_ENV=()
+  grep '/api/slot' "$_DP/curl.log" || true
+}
+_U="$(_dport_urls "DASHBOARD_PORT=3999")"
+if [[ "$_U" == *":3999/api/slot"* && "$_U" != *":3002/"* ]]; then
+  pass "conf DASHBOARD_PORT=3999: healthcheck probes :3999/api/slot"
+else
+  fail "healthcheck with DASHBOARD_PORT=3999 asked for: $(tr '\n' ' ' <<< "$_U")"
+fi
+_U="$(_dport_urls "" OPENBEAST_DASHBOARD_PORT=3998)"
+[[ "$_U" == *":3998/api/slot"* ]] && pass "…and the OPENBEAST_DASHBOARD_PORT env override (what start.sh -d forwards)" \
+  || fail "OPENBEAST_DASHBOARD_PORT ignored: $(tr '\n' ' ' <<< "$_U")"
+_U="$(_dport_urls "")"
+[[ "$_U" == *":3002/api/slot"* ]] && pass "…unset is :3002, as before (control)" \
+  || fail "default dashboard port moved: $(tr '\n' ' ' <<< "$_U")"
+if ! grep -nE 'UP_HOST:3002' "$REPO_DIR/scripts/setup-tailscale.sh" >/dev/null \
+   && grep -q 'UP_HOST:${DASHBOARD_PORT:-3002}/api/slot' "$REPO_DIR/scripts/setup-tailscale.sh"; then
+  pass "setup-tailscale.sh --publish-slot mounts :8444 at DASHBOARD_PORT"
+else
+  fail "setup-tailscale.sh still mounts a hard-coded :3002: $(grep -n 'UP_HOST:3002' "$REPO_DIR/scripts/setup-tailscale.sh" | tr '\n' ' ')"
+fi
+
+# ---------------------------------------------------------------------------
+# extensions-ntfy review: a dead dashboard was reported by healthcheck but
+# never relaunched by --restart, so :8444/api/slot stayed 502 until a full
+# stack restart.
+# ---------------------------------------------------------------------------
+echo ""
+echo "healthcheck.sh --restart relaunches a dead dashboard extension:"
+_DR="$_T/dashre"; _sandbox "$_DR"
+_DPORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')"
+mkdir -p "$_DR/extensions/dashboard"
+printf 'NAME=dashboard\nKIND=process\n' > "$_DR/extensions/dashboard/manifest"
+cat > "$_DR/extensions/dashboard/server.py" <<'PY'
+import http.server, os
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        b = b'{"beast_slot": 2}'
+        self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+    def log_message(self, *a): pass
+http.server.HTTPServer(("127.0.0.1", int(os.environ["DASHBOARD_PORT"])), H).serve_forever()
+PY
+printf '#!/bin/bash\nexec python3 "$(cd "$(dirname "$0")" && pwd)/server.py"\n' > "$_DR/extensions/dashboard/run.sh"
+chmod +x "$_DR/extensions/dashboard/run.sh"
+# Only the dashboard's own URL reaches a real curl; every other probe is down.
+printf '#!/bin/bash\nfor a in "$@"; do [[ "$a" == *":%s/api/slot" ]] && exec /usr/bin/curl "$@"; done\nexit 7\n' "$_DPORT" > "$_DR/bin/curl"
+chmod +x "$_DR/bin/curl"
+printf 'SEARXNG_SECRET=s\nEXTENSIONS="dashboard"\nDASHBOARD_PORT=%s\n' "$_DPORT" > "$_DR/openbeast.conf"
+_O="$(timeout 300 bash -c "$(declare -f _run); RUN_ENV=(); _run '$_DR' '$_DR/scripts/healthcheck.sh' --restart")"
+_DPID="$(cat "$_DR/.run/ext-dashboard.pid" 2>/dev/null || true)"
+[[ "$_DPID" =~ ^[0-9]+$ ]] && _PIDS="$_PIDS $_DPID"
+if [[ "$_O" == *"restarting the dashboard extension"* && "$_O" == *"→ restarted (pid $_DPID)"* ]] \
+   && kill -0 "$_DPID" 2>/dev/null && [[ -s "$_DR/.run/ext-dashboard.start" ]] \
+   && /usr/bin/curl -fsS -m 2 "http://127.0.0.1:$_DPORT/api/slot" | grep -q beast_slot; then
+  pass "a dead dashboard is relaunched, recorded (pid + start time) and serving"
+else
+  fail "dashboard not relaunched: $(grep -iE 'dashboard|→' <<< "$_O" | tr '\n' ' ')"
+fi
+_O="$(timeout 300 bash -c "$(declare -f _run); RUN_ENV=(); _run '$_DR' '$_DR/scripts/healthcheck.sh' --restart")"
+if [[ "$_O" != *"restarting the dashboard"* && "$(cat "$_DR/.run/ext-dashboard.pid")" == "$_DPID" ]]; then
+  pass "…and a serving dashboard is left alone (control)"
+else
+  fail "healthcheck relaunched a live dashboard: $(grep -iE 'dashboard' <<< "$_O" | tr '\n' ' ')"
+fi
+[[ "$_DPID" =~ ^[0-9]+$ ]] && kill "$_DPID" 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
 echo ""
 echo "================================"
 echo "Lifecycle: $PASS passed, $FAIL failed"

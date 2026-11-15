@@ -160,6 +160,9 @@
 # with ./scripts/ext.sh (enable/disable/list). Space-separated; empty = the
 # opinionated core only. Env override: $OPENBEAST_EXTENSIONS.
 #EXTENSIONS="dashboard"
+# The dashboard extension's loopback port (healthcheck and --publish-slot
+# follow it). Env override: $OPENBEAST_DASHBOARD_PORT.
+#DASHBOARD_PORT=3002
 
 # ---------------------------------------------------------------------------
 # Inference backend  (see docs/DGX_SPARK_PLAN.md)

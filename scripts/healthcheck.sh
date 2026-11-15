@@ -861,7 +861,45 @@ fi
 
 # beast-slot status API (dashboard extension) — only when enabled in conf.
 if [[ " ${EXTENSIONS:-} " == *" dashboard "* || "${EXTENSIONS:-}" == "dashboard" ]]; then
-  check "Dashboard (beast-slot)" "http://${HEALTH_HOST:-127.0.0.1}:3002/api/slot" "beast_slot" || true
+  DASH_URL="http://${HEALTH_HOST:-127.0.0.1}:${DASHBOARD_PORT:-3002}/api/slot"
+  if ! check "Dashboard (beast-slot)" "$DASH_URL" "beast_slot" \
+     && $RESTART && [[ -x "$REPO_DIR/extensions/dashboard/run.sh" ]]; then
+    # start.sh launches process extensions once and nothing supervises them,
+    # so a dashboard that died (OOM in the capped scope, a bind error) left
+    # every client's :8444/api/slot at 502 until a full stack restart. The
+    # same launch start.sh does: identity-checked pidfile, then run.sh.
+    echo "       → restarting the dashboard extension..."
+    _dash_pidf="$REPO_DIR/.run/ext-dashboard.pid"
+    if ob_recorded_pid_ours "$_dash_pidf" "$(_ob_ere "$REPO_DIR/extensions/dashboard/")"; then
+      kill "$(cat "$_dash_pidf")" 2>/dev/null || true    # alive, not answering
+      sleep 1
+    fi
+    _dash_log="$(_restart_log dashboard)"
+    "$REPO_DIR/extensions/dashboard/run.sh" >>"$_dash_log" 2>&1 &
+    DASH_NEW_PID=$!
+    ob_pid_record "$_dash_pidf" "$DASH_NEW_PID"
+    DASH_OK=0
+    for _i in $(seq 1 10); do
+      if curl -s --max-time 2 "$DASH_URL" 2>/dev/null | grep -q beast_slot; then
+        _own=0; ob_pid_owns_port "$DASH_NEW_PID" "${DASHBOARD_PORT:-3002}" || _own=$?
+        if [[ $_own -eq 2 ]]; then sleep 1; kill -0 "$DASH_NEW_PID" 2>/dev/null || _own=1; fi
+        if [[ $_own -ne 1 ]]; then DASH_OK=1; break; fi
+      fi
+      kill -0 "$DASH_NEW_PID" 2>/dev/null || break
+      sleep 1
+    done
+    if [[ $DASH_OK -eq 1 ]]; then
+      echo "       → restarted (pid $DASH_NEW_PID)"
+    else
+      if kill -0 "$DASH_NEW_PID" 2>/dev/null; then
+        echo "       → restart FAILED: the dashboard is not serving after 10s"
+      else
+        echo "       → restart FAILED: the relaunched dashboard exited"
+        rm -f "$_dash_pidf" "${_dash_pidf%.pid}.start"
+      fi
+      _restart_tail "$_dash_log"
+    fi
+  fi
 fi
 
 # beast-island (agents/island.py): one line, and the flag the Tailscale row

@@ -88,7 +88,8 @@ The `dashboard` slot API established the sanctioned pattern. Follow it:
 
 - **`dashboard`** — a lightweight read-only status page (GPU / model / services)
   on top of the tool server's `/metrics` and `doctor`. `KIND=process`, stdlib
-  Python, no new dependency. Serves three routes on `${OPENBEAST_BIND}:${DASHBOARD_PORT:-3002}`:
+  Python, no new dependency. Serves three routes on `${OPENBEAST_BIND}:${DASHBOARD_PORT:-3002}`
+  (conf key `DASHBOARD_PORT`; healthcheck and `--publish-slot` follow it):
   `/` (the page), `GET /api/status` (what the page polls), and
   **`GET /api/slot`** — the **beast-slot discovery contract** a remote client
   reads to learn the rig's real model, slot pool, shared-KV capacity, and

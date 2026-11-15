@@ -571,11 +571,11 @@ if [[ $PUBLISH_SLOT -eq 1 ]]; then
   # whole dashboard (HTML page + /api/status) to every tailnet device. Fall
   # back to the full mount on tailscale builds without --set-path.
   if ts_admin serve --bg --https=8444 --set-path=/api/slot \
-       "http://$UP_HOST:3002/api/slot" 2>/dev/null; then
+       "http://$UP_HOST:${DASHBOARD_PORT:-3002}/api/slot" 2>/dev/null; then
     echo "      beast-slot status API published (tailnet-only, :8444/api/slot)."
   else
-    ts_admin serve --bg --https=8444 "http://$UP_HOST:3002"
-    echo "      beast-slot published (tailnet-only, :8444 → :3002)."
+    ts_admin serve --bg --https=8444 "http://$UP_HOST:${DASHBOARD_PORT:-3002}"
+    echo "      beast-slot published (tailnet-only, :8444 → :${DASHBOARD_PORT:-3002})."
     echo "      NOTE: this tailscale build lacks --set-path, so the whole"
     echo "            dashboard (page + /api/status) is tailnet-visible."
   fi

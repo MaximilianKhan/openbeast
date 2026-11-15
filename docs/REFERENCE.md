@@ -979,7 +979,7 @@ when configured:
 | **beast-hydra** | `HYDRA=true` | `:$HYDRA_PORT/health` (default 8095): 200 OK; 503 = up but no routable default route (WARN, never restarted — a restart cannot fix it); no answer = DOWN, and `--restart` relaunches `agents/hydra.py` and rewrites `.run/hydra.pid`. Prints a per-deployment table from `/hydra/status` (local token) |
 | **beast-instinct** | `INSTINCT=true` | `127.0.0.1:$INSTINCT_PORT/health` (default 8094). `--restart` runs `scripts/instinct.sh up` |
 | **beast-gate** | `EDGE_GATE=true` | `:$EDGE_PORT/gate/health` (default 8090) — the inference edge remote clients arrive through. `--restart` relaunches `agents/edge.py` and rewrites `.run/edge.pid` |
-| **Dashboard (beast-slot)** | `dashboard` in `EXTENSIONS` | `:3002/api/slot` — the discovery contract. Advisory only; never fails the run |
+| **Dashboard (beast-slot)** | `dashboard` in `EXTENSIONS` | `:${DASHBOARD_PORT:-3002}/api/slot` — the discovery contract. Advisory only; never fails the run. `--restart` relaunches a dead dashboard |
 | **beast-artifact** | `BEAST_ARTIFACT=true` | `:$ARTIFACT_PORT/api/artifacts/health` (default 3004). `--restart` relaunches `agents/artifact_server.py` from `.run/artifact.pid` — by recorded PID, never by pattern — and appends its output to `.run/stack.log` |
 | **beast-chat console** | `BEAST_CHAT=true` | `:$CHAT_PORT/api/chat/health` (default 3003, on `OPENBEAST_CHAT_BIND` rather than `BIND_HOST`) expecting `"status":"ok"`. `--restart` relaunches `agents/chat_server.py` from `.run/chat.pid` — by recorded PID (identity-checked via `lib/proc.sh`), never by pattern — and appends its output to `.run/stack.log` |
 

@@ -218,6 +218,14 @@ MODEL_ROLLBACK="$(_ob_bool "${OPENBEAST_MODEL_ROLLBACK:-$(_ob_conf_value MODEL_R
 # fragments / launches their processes. Manage with scripts/ext.sh; empty by
 # default (opinionated core only). Conf key EXTENSIONS.
 EXTENSIONS="${OPENBEAST_EXTENSIONS:-$(_ob_conf_value EXTENSIONS || true)}"
+# The dashboard extension's port. Conf key DASHBOARD_PORT; env
+# OPENBEAST_DASHBOARD_PORT (forwarded by `start.sh -d`), or the bare
+# DASHBOARD_PORT extensions/dashboard/run.sh has always read. Resolved here
+# so healthcheck and setup-tailscale.sh --publish-slot dial the same port
+# the dashboard binds (they hard-coded :3002).
+DASHBOARD_PORT="${OPENBEAST_DASHBOARD_PORT:-${DASHBOARD_PORT:-$(_ob_conf_value DASHBOARD_PORT || echo 3002)}}"
+export DASHBOARD_PORT
+export OPENBEAST_DASHBOARD_PORT="$DASHBOARD_PORT"
 # Reasoning/thinking control (serve.sh applies these to llama-server). OpenBeast
 # keeps reasoning ON by default (per-request toggle preserved); these are the
 # GLOBAL escape hatches, and they OVERRIDE any per-serve-script default:
@@ -1105,7 +1113,7 @@ export OPENBEAST_SEARXNG_SECRET="$SEARXNG_SECRET"
 _OB_CONF_EXTRA_KEYS="BEAST_ASSIST BEAST_ESCALATE CHAT_BASE_URL CHAT_PUBLIC_URL WEBUI_DEFAULT_ADMIN_PASSWORD"
 # Whole numbers that are used exactly as written (the port keys and the gate's
 # limits take no inline comment — openbeast.conf.example says so)...
-_OB_CONF_INT_KEYS="ROUTER_PORT EDGE_PORT CHAT_PORT ARTIFACT_PORT NTFY_PORT MEM_LIMIT_PCT MEM_RESERVE_GB EDGE_RATE_LIMIT EDGE_MAX_INFLIGHT EDGE_MAX_BODY ARTIFACT_RETAIN_DAYS"
+_OB_CONF_INT_KEYS="ROUTER_PORT EDGE_PORT CHAT_PORT ARTIFACT_PORT NTFY_PORT DASHBOARD_PORT MEM_LIMIT_PCT MEM_RESERVE_GB EDGE_RATE_LIMIT EDGE_MAX_INFLIGHT EDGE_MAX_BODY ARTIFACT_RETAIN_DAYS"
 # ...and those whose reader strips a trailing `# comment` first.
 _OB_CONF_INT_KEYS_COMMENT_OK="HYDRA_READY_GRACE AGENT_LOG_RETENTION_DAYS ISLAND_GRACE"
 ob_conf_lint() {
