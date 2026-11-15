@@ -164,6 +164,33 @@ def test_service_skips_the_primary_for_an_offloaded_classify(tmp_path):
                                "reason": "primary_not_substitute", "ms": 0.0}
 
 
+def test_a_pasted_file_is_capped_before_it_is_sent(tmp_path):
+    """Review finding (beast-instinct): the raw last user message went out
+    whole; > 200,000 chars was a 422 and > 256 KiB a 400 — no ledger row,
+    and a breaker failure each. The hook now keeps head + tail (the spec
+    scores head_tail:200:1200 tokens anyway)."""
+    from instinct.routerhook import TURN_HEAD_CHARS, TURN_TAIL_CHARS
+    calls = []
+    hook = RouterInstinct("shadow", make_client(tmp_path, verdict(False, "abstain", "spawn"),
+                                                calls), shadow_unhinted=True)
+    cls, _ = legacy_classify(False)
+    big = "spawn an agent to refactor this: " + "🎉" * 250_000 + " THE END"
+    run_site(hook, admin=True, user_text=big, classify=cls)
+    run_site(hook, admin=True, user_text="x" * 300_000, classify=cls)   # unhinted shadow
+    sent = [c.content for c in decides(calls)]
+    assert len(sent) == 2
+    for raw in sent:
+        assert len(raw) < 256 * 1024
+        turn = json.loads(raw)["inputs"]["user_turn"]
+        assert len(turn) <= TURN_HEAD_CHARS + TURN_TAIL_CHARS + 3
+    first = json.loads(sent[0])["inputs"]["user_turn"]
+    assert first.startswith("spawn an agent to refactor this: ") and first.endswith("THE END")
+    small = "spawn an agent to port it"
+    calls.clear()
+    run_site(hook, admin=True, user_text=small, classify=cls)
+    assert json.loads(decides(calls)[0].content)["inputs"]["user_turn"] == small
+
+
 def test_shadow_hinted_turn_latency_is_bounded_by_the_primary(tmp_path):
     """R-instinct-1, end to end: router hook -> real client -> real service
     app -> [prim, cpu(slow 400 ms), rules]. The hinted turn waits for the

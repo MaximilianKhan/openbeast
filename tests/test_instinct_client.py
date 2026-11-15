@@ -136,6 +136,20 @@ def test_breaker_opens_after_5_and_half_opens_after_30s(tmp_path):
     assert c.fails == 0
 
 
+@pytest.mark.parametrize("code", [400, 413, 422])
+def test_a_refused_request_fails_open_without_tripping_the_breaker(tmp_path, code):
+    """Review finding (beast-instinct): a 422 (input > 200,000 chars) or 400
+    (body > 256 KiB) counted as a breaker failure, so five big pastes turned
+    instinct off for every turn for 30 s."""
+    async def h(req):
+        return httpx.Response(code, json={"detail": "too large"})
+    c, rec = client(tmp_path, h)
+    for _ in range(BREAKER_FAILS + 2):
+        v = decide(c)
+        assert v.enforce is False and v.reason == "client_refused"
+    assert c.fails == 0 and len(rec.calls) == BREAKER_FAILS + 2
+
+
 def test_rank_ids_outside_the_input_fail_open(tmp_path):
     """I1 on the client side: never trust an id we did not send."""
     async def h(req):

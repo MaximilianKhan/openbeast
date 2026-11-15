@@ -49,6 +49,13 @@ class Verdict:
     trace_id: str | None = None
 
 
+_REFUSED = (400, 413, 422)
+
+
+class _Refused(ValueError):
+    """The service answered and refused this request (not an outage)."""
+
+
 def _fallback(reason: str, trace_id: str | None = None) -> Verdict:
     return Verdict(enforce=False, label=None, items=None, action="fallback", reason=reason,
                    trace_id=trace_id)
@@ -108,6 +115,8 @@ class InstinctClient:
                        headers={"Authorization": f"Bearer {key}",
                                 "Content-Type": "application/json"}),
                 timeout=timeout)
+        if r.status_code in _REFUSED:
+            raise _Refused(f"HTTP {r.status_code}")
         if r.status_code != 200:
             raise ValueError(f"HTTP {r.status_code}")
         data = r.json()
@@ -145,6 +154,11 @@ class InstinctClient:
             if data is None:
                 return _fallback("client_no_key")
             v = self._verdict(data, items)
+        except _Refused:
+            # 400/413/422: the service is up and refused THIS request's body
+            # (too large, bad inputs). Fail open, but do not trip the breaker:
+            # five big pastes must not switch instinct off for every turn.
+            return _fallback("client_refused")
         except Exception:  # fail open on ANYTHING
             self._fail()
             return _fallback("client_error")

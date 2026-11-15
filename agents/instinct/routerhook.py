@@ -70,6 +70,18 @@ DEADLINE_MS = 600
 HINT_BASELINE = "hint"
 OFFLOAD_BASELINE = "hint_offload"
 OFFLOAD_CLASSIFY_MODELS = ("classify",)   # hydra's off-primary classify route
+# The spec scores head_tail:200:1200 TOKENS of the turn, so a pasted file is
+# cut here first, keeping its head and tail: the service refuses > 200,000
+# chars (422) and bodies > 256 KiB (400; json escapes a non-BMP char to 12
+# bytes), and each refusal used to count toward the client breaker.
+TURN_HEAD_CHARS = 4_000
+TURN_TAIL_CHARS = 12_000
+
+
+def cap_turn(text: str) -> str:
+    if len(text) <= TURN_HEAD_CHARS + TURN_TAIL_CHARS:
+        return text
+    return text[:TURN_HEAD_CHARS] + " … " + text[-TURN_TAIL_CHARS:]
 
 
 @dataclass(frozen=True)
@@ -130,7 +142,7 @@ class RouterInstinct:
 
         async def run():
             try:
-                await self.client.decide(DECISION, {"user_turn": user_text},
+                await self.client.decide(DECISION, {"user_turn": cap_turn(user_text)},
                                          ceiling="shadow", deadline_ms=DEADLINE_MS,
                                          baseline=baseline,
                                          context={"caller": "router", "eval": False})
@@ -161,7 +173,7 @@ class RouterInstinct:
         rid = "rt_" + uuid.uuid4().hex[:20]
         try:
             v: Verdict = await self.client.decide(
-                DECISION, {"user_turn": user_text},
+                DECISION, {"user_turn": cap_turn(user_text)},
                 ceiling="shadow" if shadow else "enforce", deadline_ms=DEADLINE_MS,
                 baseline=self.hint_baseline, request_id=rid,
                 context={"caller": "router", "eval": False},
