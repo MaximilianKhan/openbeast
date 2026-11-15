@@ -211,7 +211,7 @@ def _tool_summary(name: str, args: dict) -> str:
         "task_done": lambda a: a.get("summary", "")[:100],
     }
     fmt = summaries.get(name)
-    if fmt:
+    if fmt and isinstance(args, dict):
         return fmt(args)
     return str(args)[:100]
 
@@ -1122,6 +1122,7 @@ def run_agent(
                              f"Re-issue the call with valid JSON.")
 
             handler = TOOL_HANDLERS.get(fn_name)
+            call_ok = False  # the handler ran and returned (no error turn)
             if parse_err:
                 result = parse_err
             elif not handler:
@@ -1139,6 +1140,7 @@ def run_agent(
                         raise TypeError(
                             f"arguments must be an object, got {type(fn_args).__name__}")
                     result = handler(**coerce_args(fn_name, fn_args))
+                    call_ok = True
                 except Exception as e:
                     result = f"Error: bad tool call to {fn_name}: {e}"
 
@@ -1157,8 +1159,12 @@ def run_agent(
                 "content": result,
             })
 
-            # Check for task completion
-            if fn_name == "task_done":
+            # Check for task completion. Only an ACCEPTED task_done ends the
+            # run: a bad call (invalid JSON, non-object args, missing summary)
+            # and the R1 path guard's "NOT DONE — ..." refusal are tool turns
+            # the model must get to act on.
+            if (fn_name == "task_done" and call_ok
+                    and str(result).startswith("TASK_DONE")):
                 final_summary = fn_args.get("summary", result)
                 print(f"\n{'=' * 60}")
                 print(f"Task complete (iteration {iteration})")
