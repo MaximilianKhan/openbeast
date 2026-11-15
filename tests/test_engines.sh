@@ -181,6 +181,13 @@ echo '{"model_type": "qwen3"}' > "$T/ckpt-tf/config.json"
 printf 'BACKEND=vllm\nSOURCE=%s\nSERVED_MODEL_NAME=rig-model\nTENSOR_PARALLEL_SIZE=1\nMAX_NUM_SEQS=4\nGPU_MEMORY_UTILIZATION=0.90\nREASONING_PARSER=qwen3\nTOOL_CALL_PARSER=qwen3_xml\n' "$T/ckpt" > "$T/prof/rigvllm.env"
 printf 'BACKEND=vllm\nSOURCE=%s\nSERVED_MODEL_NAME=two\nTENSOR_PARALLEL_SIZE=2\n' "$T/ckpt" > "$T/prof/tp2.env"
 printf 'BACKEND=tensorfold\nSOURCE=%s\nSERVED_MODEL_NAME=rig-model\nTENSOR_PARALLEL_SIZE=1\nTENSORFOLD_PARALLEL=2\n' "$T/ckpt-tf" > "$T/prof/rigtf.env"
+# A local SOURCE is only "fetched + verified" once it has a lock (model-fetch
+# refuses an unlocked local copy since the supply-chain review): record each
+# one the way an operator would, with a plain fetch of the profile.
+for _p in rigvllm tp2 rigtf; do
+  python3 "$REPO_DIR/scripts/backends/pylib/model_fetch.py" --profile "$T/prof/$_p.env" >/dev/null 2>&1 \
+    || { echo "fixture: could not lock $_p"; exit 1; }
+done
 
 # ════════════════════════════════════════════════════════════════════════════
 echo "Library: engines, host class, defaults, conf writes"
