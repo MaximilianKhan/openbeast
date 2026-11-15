@@ -207,6 +207,42 @@ def _label(c: dict) -> str:
     return out + (f" ({c['note']})" if c.get("note") else "")
 
 
+IMPERIAL_CC = {"US", "LR", "MM"}
+# IANA zones of the 50 states: Canada and Mexico have zones of their own
+# (America/Toronto, America/Vancouver, America/Tijuana), so the zone alone
+# tells a caller in Detroit from one across the river in Windsor.
+_US_TZ = {"America/New_York", "America/Detroit", "America/Chicago", "America/Menominee",
+          "America/Denver", "America/Boise", "America/Phoenix", "America/Los_Angeles",
+          "America/Anchorage", "America/Juneau", "America/Sitka", "America/Metlakatla",
+          "America/Yakutat", "America/Nome", "America/Adak", "Pacific/Honolulu"}
+_IMPERIAL_TZ = _US_TZ | {"Africa/Monrovia", "Asia/Yangon", "Asia/Rangoon"}
+_UNIT_WORDS = {"imperial": True, "us": True, "fahrenheit": True, "f": True,
+               "metric": False, "si": False, "celsius": False, "c": False}
+
+
+def _imperial(units: str, country_code: str | None, tz: str | None) -> bool:
+    """An explicit `units` wins; else the place's country; else (the caller's
+    own position) the country its timezone belongs to."""
+    word = _UNIT_WORDS.get((units or "").strip().lower())
+    if word is not None:
+        return word
+    if country_code:
+        return country_code.upper() in IMPERIAL_CC
+    tz = tz or ""
+    return tz in _IMPERIAL_TZ or tz.startswith(("America/Indiana/", "America/Kentucky/",
+                                                "America/North_Dakota/"))
+
+
+def _conv(v, kind: str, imperial: bool):
+    if not imperial or not isinstance(v, (int, float)):
+        return v
+    if kind == "t":
+        return round(v * 9 / 5 + 32, 1)
+    if kind == "w":
+        return round(v / 1.609344, 1)
+    return round(v / 25.4, 2)
+
+
 def weather(location: str = "", days: int = 3, *, near=None, units: str = "",
             geo=None, forecast=None) -> str:
     where = (location or "").strip()
@@ -227,31 +263,34 @@ def weather(location: str = "", days: int = 3, *, near=None, units: str = "",
         place = {"name": "your current location", "latitude": near[0], "longitude": near[1],
                  "country_code": ""}
         others = []
-    cc = (place.get("country_code") or "").upper()
-    imperial = units == "imperial" or (units != "metric" and cc in ("US", "LR", "MM", ""))
     days = max(1, min(int(days or 3), 7))
+    # Always fetched metric; the units are decided after the reply, because
+    # for the caller's own position the forecast's `timezone` is the cheap
+    # (no extra request) answer to "which country is the caller in".
     fc = (forecast or (lambda p: _get(FORECAST_URL, p)))({
         "latitude": place["latitude"], "longitude": place["longitude"], "timezone": "auto",
         "forecast_days": days,
         "current": "temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m",
         "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
-        "temperature_unit": "fahrenheit" if imperial else "celsius",
-        "wind_speed_unit": "mph" if imperial else "kmh",
-        "precipitation_unit": "inch" if imperial else "mm",
+        "temperature_unit": "celsius", "wind_speed_unit": "kmh", "precipitation_unit": "mm",
     })
+    imperial = _imperial(units, place.get("country_code"), fc.get("timezone"))
     t, w, p = ("°F", "mph", "in") if imperial else ("°C", "km/h", "mm")
+    def T(v): return _conv(v, "t", imperial)  # noqa: E704
+    def W(v): return _conv(v, "w", imperial)  # noqa: E704
+    def P(v): return _conv(v, "p", imperial)  # noqa: E704
     cur = fc.get("current") or {}
     head = f"Weather for {_label(place)} ({place['latitude']:.2f}, {place['longitude']:.2f})"
     if where and near:
         head += f", {_km(near, (place['latitude'], place['longitude'])):.0f} km from the caller"
     lines = [head + f"; local time {cur.get('time', '?')} {fc.get('timezone_abbreviation', '')}".rstrip(),
-             f"Now: {WMO.get(cur.get('weather_code'), 'unknown')}, {cur.get('temperature_2m')}{t} "
-             f"(feels {cur.get('apparent_temperature')}{t}), humidity {cur.get('relative_humidity_2m')}%, "
-             f"wind {cur.get('wind_speed_10m')} {w}, precipitation {cur.get('precipitation')} {p}"]
+             f"Now: {WMO.get(cur.get('weather_code'), 'unknown')}, {T(cur.get('temperature_2m'))}{t} "
+             f"(feels {T(cur.get('apparent_temperature'))}{t}), humidity {cur.get('relative_humidity_2m')}%, "
+             f"wind {W(cur.get('wind_speed_10m'))} {w}, precipitation {P(cur.get('precipitation'))} {p}"]
     d = fc.get("daily") or {}
     for i, day in enumerate(d.get("time") or []):
         lines.append(f"{day}: {WMO.get((d.get('weather_code') or [None])[i], 'unknown')}, "
-                     f"{(d.get('temperature_2m_min') or [None])[i]}–{(d.get('temperature_2m_max') or [None])[i]}{t}, "
+                     f"{T((d.get('temperature_2m_min') or [None])[i])}–{T((d.get('temperature_2m_max') or [None])[i])}{t}, "
                      f"rain chance {(d.get('precipitation_probability_max') or [None])[i]}%")
     if others:
         lines.append("Other places with that name: " + "; ".join(_label(c) for c in others)

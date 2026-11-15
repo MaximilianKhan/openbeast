@@ -1326,7 +1326,7 @@ def web_search(query: str, max_results: int = 10, pageno: int = 1,
     return _tools.web_search(query, max_results, pageno, time_range)
 
 
-def weather(location: str = "", days: int = 3) -> str:
+def weather(location: str = "", days: int = 3, units: str = "") -> str:
     """Current weather and a daily forecast (1-7 days) from Open-Meteo.
 
     Use this for any weather question instead of web_search. Leave location
@@ -1338,6 +1338,8 @@ def weather(location: str = "", days: int = 3) -> str:
     Args:
         location: 'City, State' / 'City, Country', or empty for the user's own position.
         days: Days of daily forecast, 1-7 (default 3).
+        units: 'metric' or 'imperial' when the user asks for one; empty = the place's
+            own country's units (the user's own country for their position).
     """
     # Not an MCP tool (no @_tool): it is served on the WebUI tool server,
     # which knows who is calling and therefore where they are.
@@ -1345,7 +1347,7 @@ def weather(location: str = "", days: int = 3) -> str:
     if refusal:
         return refusal
     import weather as _weather
-    return _weather.weather(location, days, near=_weather.CALLER_NEAR.get())
+    return _weather.weather(location, days, near=_weather.CALLER_NEAR.get(), units=units)
 
 
 # ---------------------------------------------------------------------------

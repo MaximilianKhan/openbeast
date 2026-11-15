@@ -43,13 +43,25 @@ RICHMOND_VA = (37.541, -77.436)
 MONTREAL = (45.502, -73.567)
 
 
-def _fc(params):
+def _fc(params, tz="America/Los_Angeles"):
+    """Open-Meteo's forecast reply shape; like the real API it answers in the
+    units asked for (default metric) and names the place's IANA timezone."""
     _fc.last = params
-    return {"timezone_abbreviation": "PST",
-            "current": {"time": "2026-11-15T11:00", "temperature_2m": 61, "apparent_temperature": 60,
-                        "relative_humidity_2m": 55, "precipitation": 0, "weather_code": 1, "wind_speed_10m": 4},
-            "daily": {"time": ["2026-11-15"], "weather_code": [1], "temperature_2m_min": [44],
-                      "temperature_2m_max": [64], "precipitation_probability_max": [5]}}
+    f = params.get("temperature_unit") == "fahrenheit"
+    mph = params.get("wind_speed_unit") == "mph"
+    inch = params.get("precipitation_unit") == "inch"
+    return {"timezone": tz, "timezone_abbreviation": "PST",
+            "current": {"time": "2026-11-15T11:00", "temperature_2m": 60.8 if f else 16.0,
+                        "apparent_temperature": 59.0 if f else 15.0, "relative_humidity_2m": 55,
+                        "precipitation": 0.04 if inch else 1.0, "weather_code": 1,
+                        "wind_speed_10m": 6.2 if mph else 10.0},
+            "daily": {"time": ["2026-11-15"], "weather_code": [1],
+                      "temperature_2m_min": [44.6 if f else 7.0],
+                      "temperature_2m_max": [64.4 if f else 18.0], "precipitation_probability_max": [5]}}
+
+
+def _fc_in(tz):
+    return lambda params: _fc(params, tz)
 
 
 def _where(text, near=None):
@@ -152,8 +164,46 @@ def test_reply_names_the_place_and_distance():
     out = weather.weather("Danville", near=SAN_RAMON, geo=geo, forecast=_fc)
     assert out.startswith("Weather for Danville, California, United States")
     assert "km from the caller" in out and "Other places with that name" in out
-    assert _fc.last["temperature_unit"] == "fahrenheit"
+    assert "Now: mainly clear, 60.8°F" in out and "6.2 mph" in out
     assert weather.weather("Nowhereville", geo=geo, forecast=_fc).startswith("No place matches")
+
+
+PARIS = (48.857, 2.352)
+
+
+def test_units_follow_the_place_and_the_callers_own_country():
+    # A named place: its country decides.
+    assert "°C" in weather.weather("Tokyo, Japan", near=DANVILLE_CA, geo=real_geo,
+                                   forecast=_fc_in("Asia/Tokyo"))
+    assert "°F" in weather.weather("Danville, CA", near=PARIS, geo=real_geo, forecast=_fc)
+    # The caller's own position: a caller in Paris is metric, not imperial.
+    out = weather.weather("", near=PARIS, geo=geo, forecast=_fc_in("Europe/Paris"))
+    assert "16.0°C" in out and "10.0 km/h" in out and "°F" not in out
+    out = weather.weather("", near=SAN_RAMON, geo=geo, forecast=_fc_in("America/Los_Angeles"))
+    assert "60.8°F" in out and "mph" in out
+    out = weather.weather("", near=(39.77, -86.16), geo=geo,
+                          forecast=_fc_in("America/Indiana/Indianapolis"))
+    assert "°F" in out
+    out = weather.weather("", near=(43.65, -79.38), geo=geo, forecast=_fc_in("America/Toronto"))
+    assert "°C" in out
+
+
+def test_units_override():
+    out = weather.weather("Danville, CA", units="metric", geo=real_geo, forecast=_fc)
+    assert "16.0°C" in out and "°F" not in out
+    out = weather.weather("", near=PARIS, units="imperial", geo=geo, forecast=_fc_in("Europe/Paris"))
+    assert "60.8°F" in out and "°C" not in out
+
+
+def test_mcp_weather_passes_units_through(monkeypatch):
+    import inspect
+    import mcp_server
+    assert "units" in inspect.signature(mcp_server.weather).parameters
+    seen = {}
+    monkeypatch.setattr(weather, "weather", lambda *a, **k: seen.update(a=a, k=k) or "ok")
+    monkeypatch.setattr(mcp_server._island, "web_refusal", lambda name: "")
+    assert mcp_server.weather("Paris, FR", 2, units="imperial") == "ok"
+    assert seen["k"]["units"] == "imperial" and seen["a"][:2] == ("Paris, FR", 2)
 
 
 def test_parse_latlon():
