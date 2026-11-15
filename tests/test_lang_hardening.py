@@ -502,6 +502,25 @@ def test_c_family_snippets_that_read_a_host_file_are_refused(lang, secret, monke
     assert ran == [], f"the toolchain was started on a refused snippet: {ran}"
 
 
+@pytest.mark.parametrize("lang", ["c", "cpp"])
+def test_a_leading_bom_does_not_hide_a_host_include(lang, secret, monkeypatch):
+    # clang/gcc skip a leading UTF-8 BOM, but the directive scan's `^` sat
+    # before it: '\ufeff#include "/abs"' reached the compiler unrefused.
+    ran = []
+    real = D._run
+    monkeypatch.setattr(D, "_run", lambda argv, *a, **k: ran.append(argv) or real(argv, *a, **k))
+    drv = D.driver_for(lang)
+    for src in _c_leaks(secret):
+        r = drv.compile_source("\ufeff" + src)
+        assert not r and r.detail.startswith("refused, not compiled"), (src, r.detail)
+    assert ran == []
+
+
+def test_a_leading_bom_is_not_a_python_syntax_error():
+    r = D.driver_for("python").compile_source("\ufeffimport json\njson.dumps\n")
+    assert r and "SyntaxError" not in r.detail, r.detail
+
+
 def test_the_leak_was_real_and_ordinary_includes_are_untouched(secret, tmp_path, monkeypatch):
     if not _c_works():
         pytest.skip("no C toolchain here that accepts the driver's flags")

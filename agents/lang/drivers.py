@@ -574,6 +574,10 @@ class Driver:
 
     # -- shared plumbing ----------------------------------------------------
     def _in_tmp(self, source: str, name: str, argv_for, env: dict | None = None):
+        # clang, gcc, rustc and zig skip a leading UTF-8 BOM, but every scan's
+        # `^` sits before it: `\ufeff#include "/abs"` ran unrefused. Strip it
+        # here, so the file compiled is byte-for-byte the text scanned.
+        source = source.removeprefix("\ufeff")
         why = self.refusal(source)
         if why:
             return Result(False, f"refused, not compiled: {why}", "refused",
@@ -813,7 +817,9 @@ class PythonDriver(Driver):
 
     def compile_source(self, source: str, variant: str | None = None) -> Result:
         try:
-            tree = ast.parse(source)
+            # A str BOM is a SyntaxError to ast.parse, though python runs the
+            # same file: it made every BOM'd snippet an "old form that fails".
+            tree = ast.parse(source.removeprefix("\ufeff"))
         except SyntaxError as e:
             return Result(False, f"SyntaxError: {e}", "ast.parse")
         # Everything is decided HERE, statically, in message order; the only

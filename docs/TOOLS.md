@@ -132,6 +132,12 @@ the language's pack. Three properties are the point:
   boundary, saying so. With the toolchain absent, or a language off the
   `LANG_PACKS` allow list, the answer is the list of languages this rig *can*
   serve.
+- **A snippet that would read the host is refused, not compiled.** A host
+  `#include`/`#embed`, a Rust `include!`/`env!`, or a zig `@embedFile` of an
+  absolute path is refused before the compiler starts
+  (`agents/lang/drivers.py`). A leading UTF-8 BOM is stripped before that scan
+  and before the file is written, because the compilers skip it and the scan's
+  `^` once sat in front of it (`tests/test_lang_hardening.py`).
 - **It is not how a local model learns a language.** The repo measured that
   local models do not call optional tools (plan §2.1), so delivery for them is
   push (the pack) and escalate (the compile-error card). This tool is for the
