@@ -89,8 +89,9 @@ conf key), so none of them creates or changes the file.
 | `EDGE_MAX_BODY` | `OPENBEAST_EDGE_MAX_BODY` | `8388608` (8 MiB) | Largest request body the gate accepts, in bytes; a larger one is a 413. Raise it only for clients that send large inline media |
 | `EDGE_ALLOW_MEDIA_URLS` | `OPENBEAST_EDGE_ALLOW_MEDIA_URLS` | `false` | Default: an image/audio/video part must carry a `data:` URI or bare base64, and one that names a URL is a 400 — llama-server would fetch it from inside the rig. `true` forwards such parts. The agent router enforces the same rule (`agents/mediapolicy.py`) with no switch |
 | `EDGE_ALLOW_ANON` | `OPENBEAST_EDGE_ALLOW_ANON` | `false` | While **no registry exists** (`.run/clients.json` has never been written), serve every caller as a single `anon` device. Ignored for good once the file exists — even emptied by `clients.sh remove`, even unreadable; then a missing/unknown key is 401. Default fails closed — an empty registry refuses remote callers rather than serving them |
-| `WEBUI_AUTH` | `OPENBEAST_WEBUI_AUTH` | `false` | Open WebUI login wall. Default off for local single-user installs; `scripts/setup-tailscale.sh` flips it `true` when the WebUI goes tailnet-wide |
-| `ALLOW_OPEN_WEBUI` | `OPENBEAST_ALLOW_OPEN_WEBUI` | `false` | Persisted acknowledgement of publishing the WebUI on the tailnet (`:443`) with `WEBUI_AUTH` off. Written by `scripts/setup-tailscale.sh --i-accept-open-webui`; with it set, re-runs keep publishing and `doctor` WARNs about the open `:443` instead of FAILing. Delete the line to take it back |
+| `WEBUI_AUTH` | `OPENBEAST_WEBUI_AUTH` | `false` | Open WebUI login wall. Default off for local single-user installs; `scripts/setup-tailscale.sh` flips it `true` when the WebUI goes tailnet-wide. `false` is ignored (login stays on, with a warning) while the WebUI is reachable beyond this machine — a non-loopback `BIND_HOST`, or a `:443` mount still live — unless `ALLOW_OPEN_WEBUI=true` |
+| `ALLOW_OPEN_WEBUI` | `OPENBEAST_ALLOW_OPEN_WEBUI` | `false` | Persisted acknowledgement of running the WebUI with `WEBUI_AUTH` off where more than this machine reaches it: published on the tailnet (`:443`), or on a non-loopback `BIND_HOST`. Written by `scripts/setup-tailscale.sh --i-accept-open-webui`; with it set, re-runs keep publishing and `doctor` WARNs about the open WebUI instead of FAILing. Delete the line to take it back |
+| `WEBUI_ORIGINS` | `OPENBEAST_WEBUI_ORIGINS` | empty | Extra browser origins allowed to call the Open WebUI API (its `CORS_ALLOW_ORIGIN`, which also gates the chat socket), `;`- or `,`-separated. `scripts/lib/conf.sh` always allows `http://localhost:3000`, the `BIND_HOST` address and `https://<tailnet name>`; add a reverse proxy of your own here. `*` restores upstream's allow-every-site default, which lets any web page you open drive an auth-off WebUI as admin |
 | `ALLOW_OPEN_INFERENCE` | `OPENBEAST_ALLOW_OPEN_INFERENCE` | `false` | Persisted acknowledgement of publishing llama-server on the tailnet (`:8443`) with no beast-gate and no `LLAMA_API_KEY`. Written by `scripts/setup-tailscale.sh --i-accept-open-inference`. Without it that script leaves `:8443` unpublished on such a rig (and takes an earlier raw mount down) and `doctor` FAILs a keyless `:8443`; with it, re-runs keep publishing and `doctor` WARNs. Delete the line to take it back |
 | `WEBUI_BACKGROUND_TASKS` | `OPENBEAST_WEBUI_BACKGROUND_TASKS` | `false` | After every answer Open WebUI asks the model for chat tags and follow-up suggestions; on a one-slot rig those generations take the slot from the next turn and evict its cached prompt. Default: `configure-webui.sh` switches both **off** at every start (chat titles stay on). `true` leaves WebUI's own switches (Admin Settings → Interface) alone — set it, restart, then re-enable them there |
 | `PROMPT_CACHE_RAM_MB` | `OPENBEAST_PROMPT_CACHE_RAM_MB` | *(unset = auto)* | Host RAM llama-server may use to park the state of conversations that are not on a slot (`--cache-ram`, MiB). Unset/`auto`: 35% of this machine's RAM, at most 48 GiB, and nothing passed when that is not above llama-server's own 8192. `0`: llama-server's default. `<n>`: exactly n MiB (`-1` = no limit). A serve script's own `--cache-ram` wins; a llama-server build without the flag is launched without it. Applies to every launch through `serve.sh`, evals included |
@@ -606,7 +607,14 @@ shows up without them (e.g. a brand-new alias), re-run
 local-only install is single-user with zero login friction, and
 `configure-webui.sh` can auto-configure tools via the default admin
 account. This is the right mode as long as the WebUI is only reachable on
-`127.0.0.1`.
+`127.0.0.1` — so a non-loopback `BIND_HOST`, or a `:443` mount left live,
+keeps login on regardless (`scripts/lib/conf.sh` warns) unless
+`ALLOW_OPEN_WEBUI=true` says otherwise. A browser on the box is the other
+way in: Open WebUI's upstream CORS default is every origin, with
+credentials, so the stack pins `CORS_ALLOW_ORIGIN` to the WebUI's own
+origins (see `WEBUI_ORIGINS`) and another site's script can no longer sign
+in to an auth-off WebUI and read the admin token. (DNS rebinding, which
+needs no CORS, is not covered by that: the WebUI has no Host allowlist.)
 
 **Auth turns on with remote access.** `scripts/setup-tailscale.sh` flips
 `WEBUI_AUTH=true` automatically when the WebUI becomes reachable from your
@@ -646,7 +654,9 @@ says leave it on there; the cost is one login per device. With it off,
 `setup-tailscale.sh` refuses to publish the WebUI unless you pass
 `--i-accept-open-webui`, which it records as `ALLOW_OPEN_WEBUI=true` so later
 runs keep publishing and `doctor` reports the open `:443` as a warning, not a
-failure. Auth-off WebUI signs in with upstream's built-in
+failure. While a `:443` mount is still live, `WEBUI_AUTH=false` alone is
+ignored (login stays on) — unmount it first (`sudo tailscale serve
+--https=443 off`) or set `ALLOW_OPEN_WEBUI=true`. Auth-off WebUI signs in with upstream's built-in
 `admin@localhost` / `admin`, so if that password was rotated, set it back
 to `admin` (Settings → Account) before turning auth off, or the auth-off
 UI cannot sign in.

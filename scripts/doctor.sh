@@ -205,6 +205,12 @@ if ! ob_bind_is_loopback "$BIND_HOST"; then
            "./scripts/setup-mcpo-keys.sh (or BIND_HOST=127.0.0.1)"
     fi
   fi
+  # conf.sh keeps login on for a network bind unless ALLOW_OPEN_WEBUI=true,
+  # so WEBUI_AUTH still false here means the open WebUI was acknowledged.
+  if [[ "${WEBUI_AUTH:-false}" != "true" ]]; then
+    warn "the WebUI has NO login on a network bind (ALLOW_OPEN_WEBUI=true acknowledges it) — everyone on that network is admin, with bash" \
+         "set WEBUI_AUTH=true (or BIND_HOST=127.0.0.1), then ./stop.sh && ./start.sh -d"
+  fi
 else
   pass "bind host is loopback-scoped ($BIND_HOST)"
 fi

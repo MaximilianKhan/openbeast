@@ -423,6 +423,17 @@
 # publishing and doctor.sh WARNs instead of FAILing. Default false.
 # Env: $OPENBEAST_ALLOW_OPEN_WEBUI.
 #ALLOW_OPEN_WEBUI=false
+# It also covers a WebUI with WEBUI_AUTH off that is reachable by more than
+# this machine — a non-loopback BIND_HOST, or a :443 mount still live. Without
+# it, scripts/lib/conf.sh keeps login ON in those cases and says so.
+
+# Extra browser origins allowed to call the Open WebUI API (CORS, and the
+# chat socket). The defaults already cover http://localhost:3000, the
+# BIND_HOST address and https://<this box's tailnet name>; add your own
+# reverse-proxy origin here, separated by ; or , (e.g.
+# https://chat.example.org). '*' restores upstream's allow-every-site default.
+# Env: $OPENBEAST_WEBUI_ORIGINS. Takes effect when the container is recreated.
+#WEBUI_ORIGINS=
 
 # Acknowledge publishing llama-server itself on the tailnet (:8443) with NO
 # beast-gate and NO LLAMA_API_KEY: every tailnet device, shared-in users
