@@ -1210,3 +1210,27 @@ def test_a_link_no_browser_can_open_says_so(store):
     assert "publish-artifact" in store.url_caveat("http://localhost:3004/a/x")
     assert store.url_caveat("https://beast.tail1.ts.net:8446/a/x") == ""   # control
     assert store.url_caveat(None) == ""
+
+
+def test_removing_the_top_version_never_frees_its_number(store):
+    """Review (spark-scale) beast-artifact: publish picked max(meta + disk)
+    + 1, so after a rollback and removing the TOP version the next publish
+    reused its number — /a/<id>/v/<n> (and its raw token) silently served
+    different bytes, against "Nothing overwrites a published version, ever"."""
+    aid = store.publish("<p>ONE</p>")["id"]
+    store.publish("<p>TWO</p>", artifact_id=aid)
+    store.publish("<p>THREE</p>", artifact_id=aid)
+    store.set_current(aid, 2)
+    store.remove_version(aid, 3)
+    r = store.publish("<p>FOUR</p>", artifact_id=aid)
+    assert r["version"] == 4
+    with pytest.raises(store.ArtifactError):
+        store.read_file(aid, 3)
+    # a page whose meta predates the high-water mark: removing its top
+    # version still records the number it must never hand out again
+    meta = store.get_meta(aid)
+    meta.pop("max_n", None)
+    store._write_meta(aid, meta)
+    store.set_current(aid, 2)
+    store.remove_version(aid, 4)
+    assert store.publish("<p>FIVE</p>", artifact_id=aid)["version"] == 5

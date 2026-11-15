@@ -969,7 +969,14 @@ def publish(html, *, title=None, description=None, favicon=None,
         # publish (D14) is stepped over instead of destroyed — it stays
         # unreachable, meta names it nowhere, and the id is not wedged, which
         # is all D14 ever asked for.
-        n = max(_resolvable_versions(aid, meta) + _disk_versions(aid) or [0]) + 1
+        #
+        # And clear of every number EVER handed out: remove_version() frees
+        # meta's entry and the vN directory, so without the high-water mark
+        # removing the TOP version (after a rollback) let the next publish
+        # reuse its number and a pinned /a/<id>/v/<n> served different bytes
+        # (review, spark-scale: beast-artifact).
+        n = max([_coerce_int(meta.get("max_n"), 0)]
+                + _resolvable_versions(aid, meta) + _disk_versions(aid)) + 1
         vdir = os.path.join(_artifact_dir(aid), f"v{n}")
         adir_existed = os.path.isdir(_artifact_dir(aid))
         try:
@@ -1025,6 +1032,7 @@ def publish(html, *, title=None, description=None, favicon=None,
             entry["source_session"] = session
             meta["source_session"] = session
         meta["versions"].append(entry)
+        meta["max_n"] = n                # monotonic: never lowered
         meta["current"] = n
         meta["updated_at"] = _now()
         page_title = extract_title(page)
@@ -1606,6 +1614,10 @@ def remove_version(artifact_id, version, *, owner=None, admin=False) -> dict:
             if vn != n:
                 keep.append(v)
         meta["versions"] = keep
+        # The removed number stays spent (see publish): a page whose meta
+        # predates `max_n` learns it here, before its top entry disappears.
+        meta["max_n"] = max(_coerce_int(meta.get("max_n"), 0), n,
+                            *_version_numbers(meta))
         _write_meta_or_raise(aid, meta)
         # Meta first, THEN the directory: a crash between the two leaves an
         # unreferenced vN, which is exactly the debris D14 already tolerates.
