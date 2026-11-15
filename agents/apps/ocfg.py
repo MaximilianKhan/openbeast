@@ -173,7 +173,19 @@ def ungatable(cfg: dict, rules: list[dict], fl: str) -> str | None:
     perm = cfg.get("permission", {})
     if isinstance(perm, dict):
         return None
-    return (f"`permission` is the string {perm!r}, not an object, so the per-tool gates cannot be "
+    if isinstance(perm, str):
+        what = f"the string {perm!r}"
+    elif perm is None:
+        what = "null"
+    elif isinstance(perm, list):
+        what = "a list"
+    elif isinstance(perm, bool):
+        what = f"the boolean {str(perm).lower()}"
+    elif isinstance(perm, (int, float)):
+        what = "a number"
+    else:
+        what = f"a {type(perm).__name__}"
+    return (f"`permission` is {what}, not an object, so the per-tool gates cannot be "
             "written: " + ", ".join(f"{r['action']}={r['effect']}" for r in rules))
 
 

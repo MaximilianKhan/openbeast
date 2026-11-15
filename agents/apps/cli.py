@@ -805,6 +805,22 @@ def cmd_upgrade(ctx: Ctx) -> int:
         for i, m in enumerate(ev["missing"], 1):
             print(f"  {i}. {m}")
         return EXIT_MISSING if ev["status"] == "MISSING" else EXIT_UNSUPPORTED
+    if rec and rec.get("rules"):
+        # The entry is gated today. If the config can no longer hold those
+        # gates, rewriting it would drop them silently: refuse before any
+        # pin, manifest or config is written, unless --ungated says so.
+        try:
+            cfg0 = ctx.cfg()
+        except ocfg.ConfigError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return EXIT_ERR
+        fl0 = rec.get("schema") or ocfg.flavor(cfg0, ctx.env)
+        why = ocfg.ungatable(cfg0, ocfg.rules_for(rec["key"], s), fl0)
+        if why and not a.ungated:
+            print(f"Refusing to upgrade {sid}: {why}.\n  The entry {rec['key']} is gated now and would lose "
+                  f"its gates. Make `permission` an object in {ctx.cfg_path} (e.g. {{\"*\": \"allow\"}}) and "
+                  "re-run, or pass --ungated to upgrade without the gates anyway.")
+            return EXIT_RISK
     cmd, environment, err = render_launch(ctx.cat, sid, target, ctx.env, ev)
     if err:
         print(f"error: {err}", file=sys.stderr)
@@ -835,9 +851,9 @@ def cmd_upgrade(ctx: Ctx) -> int:
         ocfg.uninstall(cfg, key, rec.get("rules", []))
         rules = ocfg.rules_for(key, s)
         why = ocfg.ungatable(cfg, rules, fl)
-        if why:                                        # the old entry had no gates either
+        if why:          # the old entry had no gates either, or --ungated (checked above)
             rules = []
-            L.append(f"  ! NOT gated: {why}")
+            L.append(f"  ! NOT gated{' (--ungated)' if a.ungated else ''}: {why}")
         ocfg.install(cfg, key, entry, rules, fl)
         out["backup"] = ocfg.backup(ctx.cfg_path)
         secret = os.path.exists(ctx.cfg_path) and os.stat(ctx.cfg_path).st_mode & 0o077 == 0
@@ -915,6 +931,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("server")
     sp.add_argument("--to", help="exact version (default: latest published)")
     sp.add_argument("--reintrospect", action="store_true")
+    sp.add_argument("--ungated", action="store_true",
+                    help="upgrade even when the config can no longer hold the entry's ask/deny gates")
     sp = add("tools", cmd_tools, "show the recorded tool manifest", cfg=False)
     sp.add_argument("server")
     add("validate", cmd_validate, "validate the catalog", json_=False, cfg=False)

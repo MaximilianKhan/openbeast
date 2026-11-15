@@ -796,6 +796,41 @@ def test_refresh_flags_an_existing_tool_whose_description_turns_into_exec(box, t
     assert "tool bridge describes itself as running code" in third.stdout
 
 
+def test_upgrade_refuses_to_drop_gates_the_entry_already_had(box):
+    # enabled WITH gates, then `permission` became a string: an upgrade must not
+    # silently rewrite the entry ungated (and record rules=[]) with exit 0.
+    v1 = {"OPENBEAST_OPENCODE_SCHEMA": "v1"}
+    box.stub_server()
+    box.write_config({"permission": {"*": "allow"}, "mcp": {}})
+    box.run("enable", "stub-cap", extra_env=v1, check=0)
+    assert json.loads((box.state / "enabled.json").read_text())["stubsrv"]["rules"]
+    cfg = box.read_config()
+    cfg["permission"] = "allow"
+    box.write_config(cfg)
+    before = box.config.read_text()
+    cp = box.run("upgrade", "stubsrv", "--to", "1.1.0", extra_env=v1)
+    assert cp.returncode == 6, cp.stdout + cp.stderr
+    assert "Refusing to upgrade stubsrv" in cp.stdout and "--ungated" in cp.stdout
+    assert "the string 'allow'" in cp.stdout
+    assert box.config.read_text() == before
+    assert not (box.state / "pins.json").exists()
+    assert json.loads((box.state / "enabled.json").read_text())["stubsrv"]["rules"]
+    # explicit opt-out goes through, and records what was actually written
+    rc, out = box.json("upgrade", "stubsrv", "--to", "1.1.0", "--ungated", extra_env=v1)
+    assert rc == 0 and out["config_updated"], out
+    assert json.loads((box.state / "enabled.json").read_text())["stubsrv"]["rules"] == []
+
+
+def test_ungatable_names_the_actual_type_of_permission():
+    sys.path.insert(0, str(CLI.parent))
+    import ocfg
+    rules = [{"action": "k_t", "effect": "ask"}]
+    assert "the string 'allow'" in ocfg.ungatable({"permission": "allow"}, rules, "v1")
+    for bad, word in ((None, "null"), (["x"], "a list"), (3, "a number")):
+        why = ocfg.ungatable({"permission": bad}, rules, "v1")
+        assert why and word in why and "the string" not in why, why
+
+
 def test_enable_refuses_when_v1_permission_is_a_string(box):
     box.android_sdk_off_path()
     box.write_config({"permission": "allow", "mcp": {}})
