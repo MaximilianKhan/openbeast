@@ -568,6 +568,12 @@ It refuses while any opencode is running, backs the database up first
 delete` (opencode's own cascade: sub-agent sessions, messages, parts, todos,
 events), then reclaims the space (VACUUM + a truncating WAL checkpoint). It
 works the same from the rig and from a Mac client checkout (Bash 3.2-safe).
+**opencode 1.x only:** opencode 2.x removed `opencode db`, so on 2.x the
+script refuses with an error (nothing read or changed) instead of reporting
+"no sessions"; there, use `opencode session list` / `opencode session delete
+<id>` per project after `opencode service stop`. `--history` is refused when
+`OPENCODE_DB` has moved the database out of the data dir, because snapshots
+and tool output do not move with it.
 
 ### Open WebUI (browser chat interface)
 

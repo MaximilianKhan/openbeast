@@ -184,7 +184,8 @@ on a Mac (`~/.local/share/opencode/opencode.db`). `./scripts/opencode-sessions.s
 shows them all per project, and `… clear` (a dry run until `--go`) removes them
 safely: it refuses while opencode is running, backs up first, deletes through
 opencode's own cascade, and then reclaims the space. `--dir` limits it to one
-project.
+project. It drives opencode 1.x and refuses on 2.x, which has no `opencode db`
+([REFERENCE.md](docs/REFERENCE.md)).
 
 **On a client** — same agent, same tools, acting on *this* machine's files:
 
