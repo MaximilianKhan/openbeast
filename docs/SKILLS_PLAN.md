@@ -165,8 +165,10 @@ this for you.
 
 1. `mkdir -p skills/my-skill`
 2. Write `skills/my-skill/SKILL.md` with frontmatter + body
-3. Restart the MCP server (the `list_skills` cache is built at startup —
-   future improvement: hot reload)
+3. Nothing to restart: `skill()` and `skill(name)` re-scan `skills/` on
+   every call. Then add the name to `skills/IN_HOUSE_SKILLS.txt` (or `verify`
+   fails it as a skill with no provenance), and run
+   `scripts/generate-skill-index.py` if it should be on the always-on menu
 
 `tests/test_scripts.sh` validates that every `SKILL.md` parses cleanly and has
 the required frontmatter fields.
@@ -177,15 +179,14 @@ the required frontmatter fields.
 |---|---|---|
 | YAML frontmatter parser? | Manual parser, no PyYAML dependency | The project tries to stay lean; PyYAML is an extra runtime dep just for a few-line frontmatter |
 | Skill body in system prompt vs context? | Context (via runner's `--context` flag) | No runner changes needed. Existing framing ("Background context from the caller") is sufficient. |
-| Cache skills at startup or read on every call? | Cache at startup | Tiny; trades freshness for simplicity. Hot-reload is a future improvement. |
+| Cache skills at startup or read on every call? | Read on every call (was: cache at startup) | A couple of dozen small files. A cache kept serving a skill deleted for losing trust, or the old body of a refreshed one, until a restart or an index call. |
 | Enforce `allowed_tools`? | Advisory in v1 | Hard enforcement requires per-call tool filtering in the MCP layer; defer until we have a skill that genuinely needs it. |
 | Routing layer (Phase 5)? | Defer | The model's already pretty good at calling `list_skills` when prompted. Real friction needed before adding a classifier. |
 
 ## Open follow-ups
 
-- **Hot-reload skills.** Currently MCP server caches skills at startup. If you
-  edit a skill, restart the MCP. Could add a `reload_skills()` MCP tool, or
-  re-scan on each `list_skills()` call (cheap).
+- ~~**Hot-reload skills.**~~ Done: `skill()` / `skill(name)` /
+  `start_skill_agent` re-scan the disk on every call.
 - **`allowed_tools` enforcement.** When `start_skill_agent` runs a sub-agent,
   could filter the tool list passed to runner. Needs runner-level support.
 - **Skill versioning.** No story yet. If a skill changes incompatibly,
@@ -219,6 +220,6 @@ Candidates if routing is still noisy:
   WebUI chats; candidate for global-skills (installed, not repo-default).
 
 **R1 (lean core connection) and R5 (collapse agent-mgmt verbs) remain open**
-— both change the MCP surface (docs/TOOLS.md tool counts — 15 today) and R1
+— both change the MCP surface (docs/TOOLS.md tool counts; `tests/test_tools.py` pins it) and R1
 needs the RBAC connection layout touched; schedule after the sweep, as their
 own change with docs updated in the same commit.

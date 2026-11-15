@@ -6,7 +6,7 @@ security audit, eval-task authoring, debugging methodology, deep counsel.
 The model discovers them via MCP and loads them on demand. See
 [`docs/SKILLS_PLAN.md`](../docs/SKILLS_PLAN.md) for the full design.
 
-## Currently shipped (16 skills)
+## Currently shipped (17 in-house skills, plus 9 imported below)
 
 ### Universal-applicability (Tier 1)
 

@@ -3,7 +3,8 @@
 You're working in **OpenBeast**, a fully local AI workstation — llama.cpp
 serving Qwen and Gemma models, MCP-based tool server, OpenCode + Open WebUI as frontends,
 a 137-task eval suite (v4 — 291 effective units with multi-language variants,
-across 12 categories), and 16 curated skills for specialized work.
+across 12 categories), and 26 curated skills for specialized work (17 written
+here, 9 imported through the gate).
 
 This file is auto-loaded as project-wide instructions. Read it once at the
 start of a session.
@@ -54,7 +55,7 @@ arithmetic is wrong, and `/api/slot`'s `capacity.ctx_*` exists because of it.
 
 ## Use skills first
 
-You have access to **16 curated skills** via two MCP tools:
+You have access to **26 curated skills** (17 in-house, 9 imported) via two MCP tools:
 
 - `skill()` — see all available skills (one line each; rescans disk every call)
 - `skill(name)` — read the full skill body inline
