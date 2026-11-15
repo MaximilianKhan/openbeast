@@ -829,12 +829,30 @@ def _diag_checker(path: str):
     if ext == ".py":
         # -I (isolated) is a SECURITY requirement: bare python executes
         # model-writable .pth files from user site-packages at startup.
-        return ("python", f"{shlex.quote(sys.executable)} -I -m py_compile {q}", {}, [])
+        # `-m py_compile FILE` WROTE __pycache__/*.pyc next to the source —
+        # into the user's workspace / file shard, on every write (-I and
+        # PYTHONDONTWRITEBYTECODE do not stop an explicit compile). The
+        # bytecode now goes to a scratch dir; the error text is py_compile's
+        # own, exactly as `-m py_compile` printed it.
+        scratch = tempfile.mkdtemp(prefix="diagpy")
+        cfile = shlex.quote(os.path.join(scratch, "x.pyc"))
+        return ("python", f"{shlex.quote(sys.executable)} -I -c {shlex.quote(_PY_CHECK)} "
+                f"{q} {cfile}", {}, [scratch])
     if ext == ".sh":
         if not shutil.which("shellcheck"):
             return None
         return ("shell", f"shellcheck -S warning {q}", {}, [])
     return None
+
+
+_PY_CHECK = (
+    "import sys, py_compile\n"
+    "try:\n"
+    "    py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)\n"
+    "except py_compile.PyCompileError as e:\n"
+    "    sys.stderr.write(e.msg); sys.exit(1)\n"
+    "except OSError as e:\n"
+    "    sys.stderr.write(str(e)); sys.exit(1)\n")
 
 
 def diagnostics_enabled() -> bool:

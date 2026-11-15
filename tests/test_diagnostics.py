@@ -70,6 +70,16 @@ def test_python_syntax_error_reported(tmp_path, diag_on):
     assert "── diagnostics (python) ──" in out and "SyntaxError" in out
 
 
+def test_python_check_leaves_no_bytecode_in_the_workspace(tmp_path, diag_on):
+    """`-m py_compile FILE` wrote __pycache__/*.pyc beside the source: the
+    'read-only' check littered the user's workspace on every .py write."""
+    ok = _write(tmp_path, "m.py", "x = 1\n")
+    bad = _write(tmp_path, "b.py", "def broken(:\n")
+    assert "diagnostics: OK (python)" in ok
+    assert "SyntaxError" in bad and "b.py" in bad
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["b.py", "m.py"]
+
+
 def test_edit_file_also_pushes(tmp_path, diag_on):
     p = tmp_path / "e.py"
     p.write_text("x = 1\n")
