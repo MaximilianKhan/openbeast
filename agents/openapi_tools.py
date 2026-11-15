@@ -21,7 +21,7 @@ the HTTP layer, which buys three things mcpo structurally can't provide:
              publish, list and republish as that operator.
   PROFILES   Both RBAC Phase 2 keys are checked natively in ONE process:
              the admin key reaches all tools, the guest key only
-             GUEST_TOOLS — web_search, fetch, weather (403 elsewhere); no
+             GUEST_TOOLS — web_search, fetch, weather (404 elsewhere); no
              key configured = open loopback Phase-1 parity. Replaces the
              two-instance MCPO split. weather is a web read, but note it
              also signs in to Open WebUI AS ADMIN to read the CALLER'S OWN
@@ -34,8 +34,8 @@ the HTTP layer, which buys three things mcpo structurally can't provide:
              without the key cannot confirm a guessed query either.
 
 agents/mcp_server.py remains the MCP (stdio) surface for OpenCode and any
-real MCP client; this module imports and serves the same 18 tool functions,
-so the two surfaces cannot drift.
+real MCP client; this module imports and serves the same 18 tool functions
+(plus the WebUI-only `weather`: 19 here), so the two surfaces cannot drift.
 
 Env:
   OPENBEAST_TOOLS_PORT        listen port (default 3001 — note start.sh and
@@ -100,7 +100,8 @@ from hostpolicy import PinnedHostMiddleware, trusted_hosts  # noqa: E402
 
 REPO_DIR = os.path.dirname(_HERE)
 
-# The full WebUI tool surface — same 18 functions the MCP server exposes.
+# The full WebUI tool surface — the 18 functions the MCP server exposes,
+# plus `weather` (19).
 # `language_reference` (beast-lang's pull surface) is read-only and harmless,
 # and it is STILL admin-only: GUEST_TOOLS below is web reads only (search,
 # fetch, weather — outbound reads of guarded or fixed hosts) on purpose, and a
