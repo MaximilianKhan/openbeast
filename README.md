@@ -10,7 +10,7 @@ cloud, no API keys, nothing ever leaving hardware you own.**
 Most local-model tools stop at "chat with a model." OpenBeast is the whole
 stack, and it is the only one that **measures** what it ships: an
 OpenAI-compatible model server tuned to your card, an autonomous agent with an
-18-tool arsenal, a browser chat UI *and* a terminal coding agent, a phone
+19-tool arsenal, a browser chat UI *and* a terminal coding agent, a phone
 console for the rig's own long jobs, publishable pages, a compiler in the
 agent loop, one-command encrypted remote access, family-grade multi-user
 permissions, and an install path that works with the network cable unplugged.
@@ -19,7 +19,7 @@ class of hardware.
 
 **One GPU box, every device you own.** Install the **rig** on the machine with
 the graphics card, then install the **client** on any laptop (no GPU, no
-weights). It runs the same agent and the same 18 tools against *its own* files,
+weights). It runs the same agent and the same 19 tools against *its own* files,
 with only the thinking crossing your private tailnet. Your laptop stays a
 laptop; your rig does the reasoning. **Outgrowing one card?** Point the same
 stack at a vLLM or TensorFold server spanning two NVIDIA DGX Sparks, and bring
@@ -42,12 +42,13 @@ line in `openbeast.conf`.
 | | What it is | Since |
 |---|---|---|
 | **The rig** | llama.cpp serving the biggest model your GPU holds, MTP speculative decoding, Open WebUI, private SearXNG, the identity tool server (RBAC, per-user shards, audit; added in v1.1), health-monitored daemon with fast boot and model-load rollback | v1.0 |
-| **beast-slot** 🎰 | Client mode: any Mac/Linux laptop runs OpenCode + the full 18-tool arsenal on *its own* files; only inference crosses the tailnet. `/api/slot` publishes what the rig is really serving | v1.1 |
+| **beast-slot** 🎰 | Client mode: any Mac/Linux laptop runs OpenCode + the full 19-tool arsenal on *its own* files; only inference crosses the tailnet. `/api/slot` publishes what the rig is really serving | v1.1 |
 | **beast-gate** 🛡️ *opt-in* | Identity-aware inference edge: per-device keys, OpenAI-route allowlist, rate + in-flight caps, an inference audit trail | v1.1 |
 | **beast-assist** 🔧 *opt-in* | The compiler joins the agent loop: every source-file write gets the language's real checker verdict pushed back into the tool result | v1.2 |
 | **beast-artifact** 🎨 *opt-in* | A durable, versioned URL for anything the model renders (reports, dashboards, small tools), served from an opaque-origin sandbox under CSP. Since v1.7: one `rig` owner for everything the rig publishes, admins, pin/tag/share/delete from a phone, version pruning and opt-in retention, a paged and searchable gallery, links back to the session that made a page | v1.3 · v1.7 |
 | **beast-chat** 📱 *opt-in* | Watch and steer the rig's own sessions from a phone: live transcripts that reattach by byte offset, `say` to a running agent, stop it, start a job. Since v1.7: a new-session sheet with presets, pause/resume, an installable PWA, push notifications through an ntfy extension, transcript export to beast-artifact, a rig status strip | v1.4 · v1.7 |
 | **beast-lang** 📚 | The offline language library: acquired docs, the installed toolchain introspected as ground truth, every claim compile-verified, a `language_reference` tool, (opt-in, `BEAST_ESCALATE`) a compile error that arrives with its confirmed fix, and the measured zig 0.16 awareness pack handed to agents on zig tasks (`LANG_PACK_CONTEXT`) | v1.5 · v1.7 |
+| **beast-docs** 📗 | Current Apple (SwiftUI, UIKit, Swift, Xcode, App Review) and Android (Compose, Kotlin, AGP) developer docs, mirrored offline from the publishers' own DocC JSON / markdown, every answer stamped with its URL and fetch date; live fetch when online, island-aware; a `platform_docs` tool and `scripts/docs.sh` ([docs](docs/BEAST_DOCS.md)) | unreleased |
 | **Air-gap ready** 🔌 | `OFFLINE=true`, a hash-pinned Python lockfile with a wheelhouse, and a signed offline bundle: build it connected, install it from a USB stick | v1.5 |
 | **beast-island** 🏝️ | Runtime offline mode for a power outage: the rig notices the internet is gone (about 90 to 120 s), web tools answer "offline" at once instead of stalling, and everything else keeps running locally. A launch with no route boots islanded; `./start.sh -d --offline` forces it | v1.8 |
 | **spark-hydra** 🐉🐉 *opt-in* | Two DGX Sparks as one serving pair: GLM-5.3-Flash Ablit tensor-parallel over ConnectX-7 (4 streams, 1M window, ~70 tok/s code alone, ~224 across four), with the full command center on spark-1 — a second, independent OpenBeast. Boots by itself, offline. [SPARK_HYDRA.md](docs/SPARK_HYDRA.md) | v1.9 |
@@ -122,7 +123,7 @@ every model — is in **[docs/INSTALL.md](docs/INSTALL.md)**.
 ### 💻 A client (use a rig from your laptop)
 
 Turns any Mac or Linux machine into a full OpenBeast workstation with **no GPU
-and no model download**. OpenCode and the entire 18-tool arsenal run *on the
+and no model download**. OpenCode and the entire 19-tool arsenal run *on the
 laptop*, so `bash`, `grep` and file edits act on the laptop's own files; only
 the thinking happens on the rig.
 
@@ -449,7 +450,7 @@ flowchart TB
       coc["⌨️ <b>OpenCode</b><br/>terminal agent"]
       ccli["🧰 <b>openbeast-client</b><br/>status · agent<br/>search · update"]
       cmcp["🔌 <b>MCP server</b><br/>stdio · no port"]
-      ctools["⚙️ <b>18 tools</b><br/>bash · files · grep<br/><b>act on THIS disk</b>"]
+      ctools["⚙️ <b>19 tools</b><br/>bash · files · grep<br/><b>act on THIS disk</b>"]
       coc --> cmcp
       cmcp --> ctools
     end
@@ -475,7 +476,7 @@ flowchart TB
       subgraph TOOLPLANE["🔑 TOOL PLANE — acts on the rig · never published"]
         direction TB
         idsrv["🔑 <b>tool server</b> · :3001<br/>RBAC · user shards · audit<br/><i>authenticates the HUMAN</i>"]
-        mcp["🔌 <b>MCP surface — 18 tools</b><br/>skill · agent ctl · publish_artifact<br/>language_reference"]
+        mcp["🔌 <b>MCP surface — 19 tools</b><br/>skill · agent ctl · publish_artifact<br/>language_reference · platform_docs"]
         prim["⚙️ <b>primitives — 8</b><br/>bash · r/w/edit/ls · grep · fetch · search<br/>+ <b>beast-assist</b>: checker verdict on every write"]
         idsrv --> mcp
         mcp --> prim
@@ -701,7 +702,7 @@ least to most feature parity** with OpenBeast (the rightmost reference):
 
 ⁷ Deliberately **out of scope**. OpenBeast maximizes one model rather than bundling services. Bolt these on via the [extension system](extensions/README.md) if you want them.
 
-⁸ Hermes is *itself* client-side and consumes a remote endpoint, so it shares the shape. What it doesn't do is install as a second role of the same distribution: one command turning any laptop into a peer of the rig, with the same 18-tool arsenal and model list, per-device keys, and an inference audit trail on the rig side when beast-gate is on.
+⁸ Hermes is *itself* client-side and consumes a remote endpoint, so it shares the shape. What it doesn't do is install as a second role of the same distribution: one command turning any laptop into a peer of the rig, with the same 19-tool arsenal and model list, per-device keys, and an inference audit trail on the rig side when beast-gate is on.
 
 **Ollama** (and the same-archetype LM Studio, text-generation-webui, GPT4All) is
 a bare model runner: it serves a model and stops there. OpenBeast *includes* a

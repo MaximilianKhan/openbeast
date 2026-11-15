@@ -4,7 +4,7 @@ The single source of truth for **every tool a model can call in OpenBeast**:
 what it does, where the code lives, what external software powers it, and
 which surfaces can see it.
 
-TL;DR: **all 18 MCP tools are custom OpenBeast code** — there is no
+TL;DR: **all 19 MCP tools are custom OpenBeast code** — there is no
 third-party tool plugin in the chain. The open source projects we pull in
 (llama.cpp, Open WebUI, SearXNG, OpenCode) provide *serving, frontends,
 and search*; the transport is our own identity tool server
@@ -14,10 +14,10 @@ and search*; the transport is our own identity tool server
 
 | Surface | Transport | Where tools execute | Tools visible |
 |---|---|---|---|
-| **Open WebUI** (browser chat) | identity tool server (`agents/openapi_tools.py`) → OpenAPI (`localhost:3001`) | rig | 18 (admin) / 2 (guest — see RBAC) |
-| **OpenCode** (terminal agent) | MCP stdio (`opencode.json`) | rig | 18 from us, *plus OpenCode's own built-in tools* (see below) |
+| **Open WebUI** (browser chat) | identity tool server (`agents/openapi_tools.py`) → OpenAPI (`localhost:3001`) | rig | 19 (admin) / 2 (guest — see RBAC) |
+| **OpenCode** (terminal agent) | MCP stdio (`opencode.json`) | rig | 19 from us, *plus OpenCode's own built-in tools* (see below) |
 | **Autonomous runner** (`agent.sh`, `start_agent`) | in-process (`agents/runner.py` → `agents/tools.py`) | rig | 10 |
-| **OpenBeast client** (`scripts/setup-client.sh`) | MCP stdio into OpenCode *on the client device* (`~/.config/opencode/opencode.json`) | **the client's disk** | 18, inference over the tailnet at `:8443` |
+| **OpenBeast client** (`scripts/setup-client.sh`) | MCP stdio into OpenCode *on the client device* (`~/.config/opencode/opencode.json`) | **the client's disk** | 19, inference over the tailnet at `:8443` |
 
 The client row is the one that breaks the usual assumption: tools execute
 where the *process* runs, not where the model runs. On a client, `bash`,
@@ -30,7 +30,7 @@ device, so there is no role to enforce. `OPENBEAST_MCP_TOOLS` (a registration
 allowlist read by `agents/mcp_server.py`) is the only scoping lever if a shared
 client ever needs one. See `docs/BEAST_SLOT.md`.
 
-## The 18 MCP tools
+## The 19 MCP tools
 
 All implemented in this repo. `agents/tools.py` holds the hardened
 implementations; `agents/mcp_server.py` registers them with MCP and adds the
@@ -144,6 +144,35 @@ Admin profile only: it is harmless, and `GUEST_TOOLS` stays web-only anyway
 (guest → 404) — a profile that is "web-only plus whatever looked safe" is not
 one anybody can reason about.
 
+### Platform docs (1) — `agents/mcp_server.py` → `agents/docs/`
+
+`platform_docs(query="", source="", doc="", live=False)` — beast-docs
+([`docs/BEAST_DOCS.md`](BEAST_DOCS.md)): current Apple (SwiftUI, UIKit,
+Swift, Xcode, App Review Guidelines), Android (Compose, Kotlin, AGP) and
+other developer documentation from a **local mirror** built by
+`scripts/docs.sh sync` (or carried in with `docs.sh unpack`). `query` →
+ranked hits (SQLite FTS5 / bm25, exact title first) with doc id, URL and
+fetched date; `doc` → that page as markdown; `doc` + `live=true` → the
+official page now, through the same adapter; nothing → what is mirrored and
+how old. Properties:
+
+- **Every answer carries its URL and fetched date**, and says STALE past the
+  source's refresh window. It is the publisher's text, labelled as such —
+  not compiler-verified (that is `language_reference`).
+- **Offline-first.** Search and read never touch the network. Live mode is
+  island-aware (`OFFLINE=true` or island mode → it does not dial, and serves
+  the mirror copy with its age, saying so on the first line).
+- **Live mode fetches only configured doc hosts** (`agents/docs/sources.toml`),
+  redirects included, obeys robots.txt, and goes through the same
+  resolve-vet-pin SSRF machinery as `fetch` (imported from `agents/tools.py`,
+  not copied).
+- **No-raise and bounded:** lazy import, the package's no-raise facade
+  (`agents/docs/__init__.py`), output clipped at 12 000 chars with a notice.
+
+Admin profile only (not in `GUEST_TOOLS`); **not** in the runner's registry.
+In client mode it reads the laptop's own mirror (`~/.openbeast/docs`), like
+every tool. The `platform-docs` skill teaches when to use it and the
+`scripts/docs.sh` equivalent for bash.
 ## The autonomous runner's 10 tools
 
 `agents/runner.py` binds `TOOL_SCHEMAS` from `agents/tools.py` directly (no
@@ -179,7 +208,7 @@ and reports `COMPACTIONS: n` next to the `TOKENS:` line.
 Two WebUI connections to the one identity server are configured by `scripts/configure-webui.sh`
 (details: `docs/RBAC_PLAN.md`):
 
-- **Admin** (WebUI admin role): all 18 tools.
+- **Admin** (WebUI admin role): all 19 tools.
 - **Guest** (WebUI user role): `web_search` + `fetch`. No filesystem, no
   shell. Guest `fetch` is SSRF-guarded: http/https only, loopback/private/
   link-local/reserved targets refused, redirects re-validated per hop, and the
@@ -214,7 +243,7 @@ Two WebUI connections to the one identity server are configured by `scripts/conf
 > that elsewhere too. Spawns carry the caller's identity to the tool server,
 > which does the attribution and sharding. Details: `docs/RBAC_PLAN.md`.
 
-## Why 18 and not more
+## Why 19 and not more
 
 Deliberate, and the number has moved in both directions. The production review
 (`docs/archive/PRODUCTION_ROADMAP.md` §B, historical) found the pain was *too much
@@ -222,14 +251,15 @@ always-on meta-machinery for a local model's context* — which is why the
 skill-discovery trio was collapsed into the single `skill` tool, taking the
 surface from 17 down to 15 (7 of those 15 still agent-mgmt/skills plumbing).
 beast-artifact's two tools took it back to 17 in 2026-09 and beast-lang's
-`language_reference` to 18; all three are capability, not plumbing, so the
-meta-machinery share went *down*, from 7/15 to 7/18.
+`language_reference` to 18, beast-docs' `platform_docs` to 19 (2026-11); all
+four are capability, not plumbing, so the meta-machinery share went *down*,
+from 7/15 to 7/19.
 
 **The real argument is tool-selection accuracy, which degrades as a registry
 grows — so note which surface the three new tools do and do not appear on.** The
 surface where a bad pick costs most is the autonomous runner's: it chooses a
 tool every turn, unattended, with nobody to correct it. `publish_artifact`,
-`list_artifacts` and `language_reference` ship on the **MCP/WebUI surface only**
+`list_artifacts`, `language_reference` and `platform_docs` ship on the **MCP/WebUI surface only**
 and are deliberately **not** in `agents/runner.py`'s 10-tool registry, so the
 runner's selection pressure is byte-for-byte what it was before — a background
 agent that wants a URL shells out to `scripts/artifact.sh` through `bash`, and
