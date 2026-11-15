@@ -10,8 +10,11 @@ Arms come from PROVE.json next to this file:
   pass[]                alternative correct fixes, must pass
   wrong[]               must fail, and with the asserted failure line
   empty                 the fixture as shipped, must fail as asserted
-  leak                  harness-gaming probe, must fail as asserted
-  slow                  a hanging fix, must fail as asserted within budget
+  leak                  harness-gaming probes, must fail as asserted
+                        ([name, regex] or [name, regex, "ref"|"empty"]:
+                        the layer it goes on, ref by default)
+  slow                  slow or hanging fixes, must fail as asserted within
+                        budget (one [name, regex] or a list of them)
   ref @ scale 2.0       must pass (--jobs contention)
 
 Every arm must also finish within budget_s x scale.
@@ -75,8 +78,14 @@ plan = [("ref#%d" % (i + 1), [ref], True, None, 1.0) for i in range(a.repeat or 
 plan += [("pass:" + n, [n], True, rx, 1.0) for n, rx in P.get("pass", [])]
 plan += [("wrong:" + n, [ref, n], False, rx, 1.0) for n, rx in P["wrong"]]
 plan.append(("empty(as shipped)", [], False, P["empty"], 1.0))
-plan.append(("leak:" + P["leak"][0], [ref, P["leak"][0]], False, P["leak"][1], 1.0))
-plan.append(("slow:" + P["slow"][0], [ref, P["slow"][0]], False, P["slow"][1], 1.0))
+def arms(v):
+    return [v] if isinstance(v[0], str) else v
+
+
+for lk in arms(P["leak"]):
+    plan.append(("leak:" + lk[0], ([] if lk[2:] == ["empty"] else [ref]) + [lk[0]], False, lk[1], 1.0))
+for sl in arms(P["slow"]):
+    plan.append(("slow:" + sl[0], [ref, sl[0]], False, sl[1], 1.0))
 plan.append(("ref@scale2.0", [ref], True, None, 2.0))
 
 bad = 0

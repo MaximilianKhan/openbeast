@@ -10,7 +10,7 @@ Cursors are compact: the two integers packed big-endian and base64'd.
 from __future__ import annotations
 
 import base64
-import binascii
+import re
 import struct
 
 from .errors import BadRequest
@@ -20,18 +20,14 @@ _PACK = struct.Struct(">qI")
 
 def encode_cursor(sort_key: tuple[int, int]) -> str:
     raw = _PACK.pack(int(sort_key[0]), int(sort_key[1]))
-    return base64.b64encode(raw).decode("ascii").rstrip("=")
+    # Lower-case hex: nothing in it needs escaping in a query string.
+    return raw.hex()
 
 
 def decode_cursor(token: str) -> tuple[int, int]:
-    # A '+' in a cursor appended verbatim to a query string arrives as ' '.
-    token = token.replace(" ", "+")
-    try:
-        raw = base64.b64decode(token + "=" * (-len(token) % 4), validate=True)
-        created_ms, row_id = _PACK.unpack(raw)
-    except (binascii.Error, ValueError, struct.error):
+    if not re.fullmatch(r"[0-9a-f]{24}", token or ""):
         raise BadRequest("malformed cursor", code="invalid_cursor")
-    return created_ms, row_id
+    return _PACK.unpack(bytes.fromhex(token))
 
 
 def parse_limit(query: dict, default: int, maximum: int) -> int:

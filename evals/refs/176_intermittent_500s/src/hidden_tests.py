@@ -1,20 +1,24 @@
 # Hidden tests for 176_intermittent_500s.
 #
-# Embedded into the validator by build_task.py and fed to a fresh, isolated
-# interpreter over stdin, one test function per process (so per-thread and
-# per-process state cannot leak between tests). Each function raises on any
+# Embedded into the validator by build_task.py and run IN THE VALIDATOR
+# PROCESS, never in the process that imports shopd. Each test talks to a
+# fresh service process (the validator's CHILD, one per test, so per-thread
+# and per-process state cannot leak between tests) over a request/response
+# pipe: the child only builds an App, turns each request into a response and
+# reports what it observed. Every expectation and every check lives here, on
+# the far side of a process boundary, so nothing the graded code does inside
+# its own process can reach or fake a verdict. Each function raises on any
 # deviation from docs/API.md. Expected values come from the independent
 # oracle below, never from the service.
+import base64
+import datetime
 import decimal
 import json
 import random
-import threading
+import re
 from decimal import ROUND_HALF_UP, Decimal
 
-from shopd.app import create_app
-from shopd.clock import FakeClock
-from shopd.config import Config
-from shopd.http import Request
+CHILD = None                   # set by the validator before each test
 
 START = 1767225600000          # 2026-01-01T00:00:00Z
 DAY = 86400000
@@ -31,8 +35,8 @@ def check(cond, what="check"):
         raise Fail(what)
 
 
-# The service and these tests share the thread's decimal context, which the
-# code under test may change: every computation here runs in a private one.
+# Every oracle computation runs in a private 60-digit context, independent
+# of whatever the validator's own thread context happens to be.
 def hp():
     return decimal.localcontext(decimal.Context(prec=60))
 
@@ -81,16 +85,71 @@ def share(part, whole):
         return r2(Decimal(part) * 100 / Decimal(whole))
 
 
+class Headers(dict):
+    def get(self, key, default=None):
+        return dict.get(self, key.lower(), default)
+
+
+class Resp:
+    """What the service process reported for one request."""
+
+    def __init__(self, wire):
+        if not (isinstance(wire, list) and len(wire) == 3 and isinstance(wire[0], int)
+                and isinstance(wire[1], list) and isinstance(wire[2], str)):
+            raise Fail("protocol")
+        self.status = wire[0]
+        self.headers = Headers((str(k).lower(), str(v)) for k, v in wire[1])
+        self.body = base64.b64decode(wire[2])
+
+    def json(self):
+        return json.loads(self.body.decode("utf-8")) if self.body else None
+
+
+def wire_req(method, target, body=None, headers=None, client="h"):
+    return {"m": method, "t": target, "b": body, "h": headers, "c": client}
+
+
+class Clock:
+    """Mirror of the service's FakeClock; the child's clock moves with it."""
+
+    def __init__(self, start):
+        self.now = start
+        CHILD.call({"op": "new_clock", "start": start})
+
+    def now_ms(self):
+        return self.now
+
+    def advance(self, ms):
+        self.now += int(ms)
+        CHILD.call({"op": "adv", "ms": int(ms)})
+        return self.now
+
+
 class Svc:
     def __init__(self, **cfg):
         cfg.setdefault("rate_capacity", 0)
-        self.clock = FakeClock(START)
-        self.log = []
-        self.app = create_app(config=Config(**cfg), clock=self.clock, log_sink=self.log)
+        self.clock = Clock(START)
+        CHILD.call({"op": "new_app", "cfg": cfg})
+
+    @property
+    def log(self):
+        got = CHILD.call({"op": "log"})
+        check(isinstance(got, list) and all(isinstance(x, str) for x in got), "protocol")
+        return got
 
     def raw(self, method, target, body=None, headers=None, client="h"):
-        return self.app.handle(Request.build(method, target, headers=headers, json_body=body,
-                                             client=client))
+        return Resp(CHILD.call(dict(wire_req(method, target, body, headers, client), op="req")))
+
+    def threads(self, plans):
+        """Run each [thread_name, [request, ...]] plan on its own named
+        thread, all concurrently; returns the responses per plan."""
+        got = CHILD.call({"op": "threads", "plans": plans})
+        check(isinstance(got, list) and len(got) == len(plans), "protocol")
+        out = []
+        for (_name, reqs), rs in zip(plans, got):
+            check(isinstance(rs, list) and len(rs) == len(reqs), "thread did not finish")
+            out.append([Resp(r) for r in rs])
+        return out
 
     def call(self, method, target, body=None, headers=None, status=None, error=None):
         r = self.raw(method, target, body, headers)
@@ -145,6 +204,7 @@ def walk(svc, base, limit):
         if cur is None:
             return seen
         check(isinstance(cur, str) and cur, "cursor type")
+        check(re.fullmatch(r"[A-Za-z0-9._~-]+", cur) is not None, "cursor alphabet")
         target = base + ("&" if "?" in base else "?") + "limit=%d&cursor=%s" % (limit, cur)
 
 
@@ -194,6 +254,16 @@ def H02():
     o = s.order(c["id"], [(p["id"], 400)]).json()
     same_money(o, price_order([(Decimal("2500.00"), 400)], True, None))
     check(s.j("GET", "/products/%d" % p["id"])["stock"] == 94, "stock after large orders")
+    # The API maxima: qty 1000 at the top price, then 13 lines whose exact
+    # tax needs 16 significant digits.
+    top = [s.product("MAX-%02d" % i, "1000000.00", 1000000) for i in range(13)]
+    odd = s.product("ODD-1", "999998.75", 1000)
+    s.poison()
+    o = s.order(c["id"], [(top[0]["id"], 1000)]).json()
+    same_money(o, price_order([(Decimal("1000000.00"), 1000)], True, None))
+    s.poison()
+    o = s.order(c["id"], [(t["id"], 1000) for t in top[1:]] + [(odd["id"], 997)]).json()
+    same_money(o, price_order([(Decimal("1000000.00"), 1000)] * 12 + [(Decimal("999998.75"), 997)], True, None))
 
 
 # H03: after a report, ordinary orders must still be priced exactly.
@@ -579,8 +649,7 @@ def _owner(s, oid):
 
 
 def _day(ms):
-    from shopd.clock import day_of
-    return day_of(ms)
+    return (datetime.datetime(1970, 1, 1) + datetime.timedelta(milliseconds=ms)).strftime("%Y-%m-%d")
 
 
 # H14: plumbing regression (green on the seed).
@@ -604,23 +673,23 @@ def H15():
     t = Svc()
     p = t.product("AB-1", "2000.00", 10000)
     c = t.customer("w@example.com")
-    errors = []
-
-    def worker(n):
-        try:
-            for i in range(15):
-                if i % 5 == 0:
-                    t.j("GET", "/reports/daily?date=2025-12-30")
-                o = t.order(c["id"], [(p["id"], 1 + (n + i) % 7)]).json()
-                same_money(o, price_order([(Decimal("2000.00"), 1 + (n + i) % 7)], False, None))
-        except Exception as e:  # noqa: BLE001
-            errors.append(e)
-    ths = [threading.Thread(target=worker, args=(n,), name="w%d" % (n + 1)) for n in range(4)]
-    for th in ths:
-        th.start()
-    for th in ths:
-        th.join(20)
-    check(not errors, "threaded orders")
+    plans, want = [], []
+    for n in range(4):
+        reqs, exp = [], []
+        for i in range(15):
+            if i % 5 == 0:
+                reqs.append(wire_req("GET", "/reports/daily?date=2025-12-30"))
+                exp.append(None)
+            q = 1 + (n + i) % 7
+            reqs.append(wire_req("POST", "/orders", t.order_body(c["id"], [(p["id"], q)])))
+            exp.append(price_order([(Decimal("2000.00"), q)], False, None))
+        plans.append(["w%d" % (n + 1), reqs])
+        want.append(exp)
+    for rs, exp in zip(t.threads(plans), want):
+        for r, e in zip(rs, exp):
+            check(r.status == (200 if e is None else 201), "threaded status")
+            if e is not None:
+                same_money(r.json(), e)
     check(t.j("GET", "/reports/summary")["orders"] == 60, "60 orders")
 
 

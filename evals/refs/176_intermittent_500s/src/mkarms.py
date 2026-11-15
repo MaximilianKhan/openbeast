@@ -85,19 +85,17 @@ t = edit(t, 's.catalog.delete(path_id(params, what="product"))', 's.catalog.dele
 put('ref_alt', 'shopd/handlers/products.py', t)
 
 t = read('seed', 'shopd/pagination.py')
-t = edit(t, 'import base64\n', 'import base64\nimport binascii\n')
+t = edit(t, 'import base64\n', 'import base64\nimport re\n')
+t = edit(t, '''    return base64.b64encode(raw).decode("ascii").rstrip("=")''',
+         '''    # Lower-case hex: nothing in it needs escaping in a query string.
+    return raw.hex()''')
 t = edit(t, '''def decode_cursor(token: str) -> tuple[int, int]:
     raw = base64.b64decode(token + "=" * (-len(token) % 4))
     created_ms, row_id = _PACK.unpack(raw)
     return created_ms, row_id''', '''def decode_cursor(token: str) -> tuple[int, int]:
-    # A '+' in a cursor appended verbatim to a query string arrives as ' '.
-    token = token.replace(" ", "+")
-    try:
-        raw = base64.b64decode(token + "=" * (-len(token) % 4), validate=True)
-        created_ms, row_id = _PACK.unpack(raw)
-    except (binascii.Error, ValueError, struct.error):
+    if not re.fullmatch(r"[0-9a-f]{24}", token or ""):
         raise BadRequest("malformed cursor", code="invalid_cursor")
-    return created_ms, row_id''')
+    return _PACK.unpack(bytes.fromhex(token))''')
 put('ref_alt', 'shopd/pagination.py', t)
 
 # ------------------------------------------------------------ wrong arms --
@@ -228,6 +226,31 @@ t = edit(t, '''            return json_response(500, {"error": "internal", "mess
                                        "request_id": request.request_id})''')
 put('wrong_blanket', 'shopd/middleware.py', t)
 
+# W12/W13: raise the share precision instead of scoping it. The lowered
+# precision still leaks into pricing: 10 digits cannot hold a top-price
+# qty-1000 line (500); 14 digits double-rounds a 16-digit exact tax. (From
+# 15 digits up every accepted order prices exactly: the widest exact
+# intermediate within the API limits has 16 significant digits and a 15-digit
+# rounding of it never moves round2, so prec >= 15 is not a wrong arm.)
+for _prec in (10, 14):
+    fresh('wrong_prec%d' % _prec)
+    put('wrong_prec%d' % _prec, 'shopd/services/reports.py',
+        edit(seed_reports, 'SHARE_PRECISION = 6', 'SHARE_PRECISION = %d' % _prec))
+
+# W14: keeps '+'/'/' cursors and maps the space a query string decodes '+'
+# to back to '+'. Works for this client, breaks the cursor-alphabet contract.
+fresh('wrong_cursor_lenient')
+t = read('ref', 'shopd/pagination.py')
+t = edit(t, '_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{16}$")', '_TOKEN_RE = re.compile(r"^[A-Za-z0-9+/]{16}$")')
+t = edit(t, '    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")',
+         '    return base64.b64encode(raw).decode("ascii").rstrip("=")')
+t = edit(t, '''    if not isinstance(token, str) or not _TOKEN_RE.match(token):''',
+         '''    if isinstance(token, str):
+        token = token.replace(" ", "+")
+    if not isinstance(token, str) or not _TOKEN_RE.match(token):''')
+t = edit(t, '        raw = base64.urlsafe_b64decode(token)', '        raw = base64.b64decode(token)')
+put('wrong_cursor_lenient', 'shopd/pagination.py', t)
+
 # ------------------------------------------------------------- slow/hang --
 fresh('hang')
 t = read('ref', 'shopd/idempotency.py')
@@ -259,4 +282,69 @@ _os._exit(0)
 put('leak', 'sitecustomize.py', 'import os\nos._exit(0)\n')
 put('leak', 'conftest.py', 'import pytest\n\n\ndef pytest_collection_modifyitems(items):\n    items.clear()\n')
 put('leak', 'tests/conftest.py', 'collect_ignore_glob = ["test_*.py"]\n')
+
+# ------------------------------------------------------------ forge probes --
+# forge_nonce: the frame-walk cheat against the old in-child judge: find a
+# frame holding the run nonce, print the RESULT token, exit 0. Applied on the
+# fixture as shipped; with the judge out of the child there is no nonce and
+# the unfixed service fails as usual.
+fresh('forge_nonce')
+put('forge_nonce', 'shopd/__init__.py', read('seed', 'shopd/__init__.py') + """
+
+def _forge():
+    import hashlib, os, sys
+    f = sys._getframe(1)
+    while f is not None:
+        if "nonce" in f.f_locals:
+            n, tid = f.f_locals["nonce"], f.f_locals.get("tid")
+            tag = hashlib.sha256((n + ":" + (tid or "visible")).encode()).hexdigest()
+            sys.stdout.write("\\nRESULT %s 49 0 0\\n" % tag if tid is None else "\\nRESULT %s\\n" % tag)
+            sys.stdout.flush()
+            os._exit(0)
+        f = f.f_back
+
+
+_forge()
+""")
+
+# forge: the same cheat aimed at the new protocol. It finds the boot's private
+# protocol stream and forges the visible report (which works: the visible gate
+# runs in-process and is only a regression gate), then, in a hidden-test
+# process, answers every message itself without a real service. With every
+# expectation held by the validator it cannot know the right answers.
+fresh('forge')
+put('forge', 'shopd/__init__.py', read('seed', 'shopd/__init__.py') + """
+
+def _forge():
+    import base64, json, os, sys
+    f = sys._getframe(1)
+    while f is not None:
+        g = f.f_globals
+        out = g.get("out")
+        if out is not None and hasattr(out, "write"):
+            if "unittest" in sys.modules:
+                out.write("\\nRESULT 49 0 0\\n")
+                out.flush()
+                os._exit(0)
+            body = base64.b64encode(b'{"id":1,"items":[],"next_cursor":null}').decode()
+            for line in sys.stdin:
+                out.write(json.dumps([201, [["Content-Type", "application/json"]], body]) + "\\n")
+                out.flush()
+            os._exit(0)
+        f = f.f_back
+
+
+_forge()
+""")
+
+# ------------------------------------------------------------- time budget --
+# A fix that is merely slow everywhere: each process sleeps just under its
+# own timeout. The validator must still end inside the 15 s budget.
+fresh('slowimport')
+put('slowimport', 'shopd/__init__.py', read('seed', 'shopd/__init__.py') + """
+
+import sys as _sys
+import time as _time
+_time.sleep(5.5 if "unittest" in _sys.modules else 4.5)
+""")
 print("arms built")
