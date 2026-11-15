@@ -406,6 +406,43 @@ class TestWriteGuards(unittest.TestCase):
         result = write_file("/etc/test_guard_probe", "x")
         self.assertIn("refusing", result.lower())
 
+    def test_guard_refuses_private_etc(self):
+        # macOS: realpath('/etc') is '/private/etc', so the /etc rule never
+        # fired there.
+        from tools import _guard_write_path
+        self.assertIsNotNone(_guard_write_path("/private/etc/hosts"))
+
+    def test_guard_refuses_code_on_next_start_targets(self):
+        # Review: each of these runs code (or swaps the tool server) on the
+        # next python / OpenCode / client / shell / login start.
+        from tools import _guard_write_path
+        for p in ("~/.local/lib/python3.12/site-packages/evil.pth",
+                  "~/.local/lib/python3.12/site-packages/usercustomize.py",
+                  "~/Library/Python/3.12/lib/python/site-packages/x.pth",
+                  "~/.config/opencode/opencode.json",
+                  "~/.openbeast-client.env",
+                  "~/.openbeast-client/bin/openbeast-client",
+                  "~/.bashrc.d/x.sh",
+                  "~/.zshrc.d/x.zsh",
+                  "~/Library/LaunchAgents/com.evil.plist"):
+            self.assertIsNotNone(_guard_write_path(p), p)
+        # Negative control: ordinary project work stays allowed.
+        self.assertIsNone(_guard_write_path("~/proj/lib/x.py"))
+
+    def test_guard_folds_case_on_case_insensitive_fs(self):
+        # macOS's default APFS is case-insensitive and realpath keeps the
+        # caller's spelling: ~/.SSH/authorized_keys opened the real file.
+        import tools
+        saved = tools._CASE_INSENSITIVE_FS
+        tools._CASE_INSENSITIVE_FS = True
+        try:
+            for p in ("~/.SSH/authorized_keys", "~/.Zshrc",
+                      "/tmp/r/.GIT/hooks/pre-commit", "/tmp/r/.git/HOOKS/x",
+                      "~/.Config/Autostart/x.desktop", "/PRIVATE/ETC/hosts"):
+                self.assertIsNotNone(tools._guard_write_path(p), p)
+        finally:
+            tools._CASE_INSENSITIVE_FS = saved
+
     def test_write_refuses_git_config(self):
         result = write_file("/tmp/somerepo/.git/config", "x")
         self.assertIn("refusing", result.lower())

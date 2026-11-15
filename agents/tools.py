@@ -626,6 +626,9 @@ _PROTECTED_BASENAMES = {
     ".bash_login", ".bash_logout", ".zshenv", ".zprofile", ".zlogin",
     ".zlogout", ".gitconfig", ".pam_environment", ".xprofile", ".xinitrc",
     ".xsession", ".xsessionrc",
+    # Sourced under `set -a` by client.sh: can clear OPENBEAST_BASH_WRAPPER
+    # or set LD_PRELOAD for the next client start.
+    ".openbeast-client.env",
 }
 # Directories under ~ whose files execute (or set the env of) the next
 # login/shell/git/session. Checked as path prefixes relative to HOME.
@@ -638,6 +641,20 @@ _PERSIST_PREFIXES = (
     os.path.join(".config", "environment.d"),
     os.path.join(".config", "hypr"),            # exec-once (Omarchy)
     os.path.join(".config", "uwsm"),            # session env files
+    # Code on the next start, missed until the 2026-11 review: user
+    # site-packages *.pth / usercustomize.py run in every non-isolated
+    # python3 (runner.py and the tool server included; macOS keeps them
+    # under ~/Library/Python), opencode.json can swap the MCP server
+    # command, ~/.openbeast-client is the client install itself, rc.d dirs
+    # are sourced by a loop _SOURCE_RE cannot see, and LaunchAgents are
+    # macOS's login autostart.
+    os.path.join(".local", "lib"),
+    os.path.join("Library", "Python"),
+    os.path.join("Library", "LaunchAgents"),
+    os.path.join(".config", "opencode"),
+    ".openbeast-client",
+    ".bashrc.d",
+    ".zshrc.d",
 )
 # Live shell rc files whose `source X` / `. X` lines extend the protected set:
 # a file the user's ~/.bashrc sources (this box: ~/.bashrc_custom) is as
@@ -679,32 +696,49 @@ def _hazard_path(rp: str) -> bool:
     return any(rp == p or rp.startswith(p + os.sep) for p in _HAZARD_PREFIXES)
 
 
+#: macOS's default APFS volumes are case-insensitive: fold case before
+#: matching protected paths there (a case-sensitive volume only gets a
+#: harmless over-refusal).
+_CASE_INSENSITIVE_FS = sys.platform == "darwin"
+
+
+def _case_key(p: str) -> str:
+    return p.casefold() if _CASE_INSENSITIVE_FS else p
+
+
 def _guard_write_path(path: str):
     """Return an error string if `path` is a protected credential/persistence
     target, else None. Applied to write_file / edit_file only — reads stay
-    open (an agent may legitimately read config)."""
+    open (an agent may legitimately read config).
+
+    On a case-insensitive filesystem (macOS's default APFS) realpath keeps
+    the caller's spelling, so every comparison is made on case-folded paths
+    there — ~/.SSH/authorized_keys opens the real ~/.ssh."""
     rp = os.path.realpath(os.path.expanduser(path))
     home = os.path.realpath(os.path.expanduser("~"))
-    rel = os.path.relpath(rp, home)
+    k = _case_key
+    crp = k(rp)
+    rel = os.path.relpath(crp, k(home))
     inside_home = rel != os.pardir and not rel.startswith(os.pardir + os.sep)
     if inside_home:
-        if rel.split(os.sep)[0] in _PROTECTED_DIRS:
+        if rel.split(os.sep)[0] in {k(d) for d in _PROTECTED_DIRS}:
             return f"Error: refusing to write inside a credential store ({rp})"
-        if rel in _PROTECTED_BASENAMES:
+        if rel in {k(b) for b in _PROTECTED_BASENAMES}:
             return f"Error: refusing to write protected file {rp}"
     if inside_home:
         # Persistence/execution targets (2026-09-10 hardening): a hook fires
         # on the next git command, autostart/systemd-user on next login, and
         # ~/.local/bin shadows real binaries on PATH.
-        for pfx in _PERSIST_PREFIXES:
+        for pfx in map(k, _PERSIST_PREFIXES):
             if rel == pfx or rel.startswith(pfx + os.sep):
                 return f"Error: refusing to write a persistence target ({rp})"
-        if rp in _rc_sourced_files(home):
+        if crp in {k(f) for f in _rc_sourced_files(home)}:
             return (f"Error: refusing to write a file your shell rc sources "
                     f"({rp})")
-    if rp == "/etc" or rp.startswith("/etc/"):
-        return f"Error: refusing to write under /etc ({rp})"
-    parts = rp.split(os.sep)
+    for etc in ("/etc", "/private/etc"):  # macOS: /etc -> /private/etc
+        if crp == etc or crp.startswith(etc + "/"):
+            return f"Error: refusing to write under /etc ({rp})"
+    parts = crp.split(os.sep)
     if ".git" in parts:
         # Anywhere under a .git dir — including submodule and worktree
         # gitdirs (.git/modules/<m>/config, .git/modules/<m>/hooks/*), which
