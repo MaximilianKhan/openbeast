@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+"""beast-gate (agents/edge.py) — the 2026-11-15 adversarial-review findings.
+
+One class per finding. Each builds its own registry and stub upstream under
+tmp_path (the helpers are test_edge.py's); nothing here opens a real port.
+
+Run: python3 -m pytest tests/test_edge_review1115.py -q
+"""
+
+from __future__ import annotations
+
+import hashlib
+import importlib
+import json
+import os
+import sys
+
+from starlette.testclient import TestClient
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import test_edge as _te  # noqa: E402
+from test_edge import (DEVICE_KEY, _FakeResponse,  # noqa: E402
+                       _laptop_bucket_app, _local_headers, _registry)
+
+edge = _te.edge          # the fixture: a fresh module on a scratch REPO_DIR
+
+HDR = {"Authorization": f"Bearer {DEVICE_KEY}"}
+CHAT = "/v1/chat/completions"
+
+
+def _anon_edge(tmp_path, monkeypatch):
+    """The module with EDGE_ALLOW_ANON=true (config is read at import)."""
+    monkeypatch.setenv("OPENBEAST_REPO_DIR", str(tmp_path))
+    monkeypatch.setenv("OPENBEAST_EDGE_ALLOW_ANON", "true")
+    import edge as _edge
+    importlib.reload(_edge)
+    return _edge
+
+
+def _stub(e, *, health_status=200, health_text='{"status":"ok"}',
+          health_exc=None, resp=None):
+    """A stub upstream whose /health and completion reply are configurable."""
+    class _Client:
+        def build_request(self, method, url, content=None, headers=None):
+            return object()
+
+        async def send(self, req, stream=False):
+            return resp() if resp else _FakeResponse()
+
+        async def get(self, url, timeout=None):
+            if health_exc:
+                raise health_exc
+
+            class R:
+                status_code = health_status
+                text = health_text
+            return R()
+
+        async def aclose(self):
+            pass
+
+    @e.asynccontextmanager
+    async def _lifespan(a):
+        a.state.client = _Client()
+        a.state.registry = e.Registry()
+        a.state.limiter = e.Limiter()
+        yield
+
+    e.app.router.lifespan_context = _lifespan
+
+
+# A real engine /health body (tensorfold on spark-1, values illustrative).
+_RICH_HEALTH = json.dumps({
+    "backend": "tensorfold", "requests_total": 53,
+    "prompt_tokens_total": 499347, "completion_tokens_total": 4137,
+    "cached_tokens_total": 427136, "kept_prompts": 32,
+    "streams": {"decoding": 0}})
+
+
+class TestHealthIsNormalized:
+    """sec: the proxied /health relayed the upstream's JSON verbatim, handing
+    every enrolled device rig-wide cross-tenant usage counters."""
+
+    def test_rich_upstream_body_is_not_echoed(self, edge, tmp_path):
+        _registry(tmp_path)
+        _stub(edge, health_text=_RICH_HEALTH)
+        with TestClient(edge.app) as c:
+            r = c.get("/health", headers=HDR)
+        assert r.status_code == 200
+        assert r.json() == {"status": "ok"}
+        for leak in ("requests_total", "cached_tokens_total", "tensorfold",
+                     "streams", "kept_prompts"):
+            assert leak not in r.text
+
+    def test_loading_upstream_keeps_its_status_but_not_its_body(self, edge,
+                                                                 tmp_path):
+        # 503 "still loading" is what setup-client.sh tells apart from 502.
+        _registry(tmp_path)
+        _stub(edge, health_status=503,
+              health_text='{"error":{"code":503,"message":"Loading model",'
+                          '"requests_total":7}}')
+        with TestClient(edge.app) as c:
+            r = c.get("/health", headers=HDR)
+        assert r.status_code == 503
+        assert "requests_total" not in r.text and "Loading" not in r.text
+        # client.sh greps the body for "ok": a not-ready rig must not match.
+        assert "ok" not in r.text
+
+    def test_unreachable_upstream_does_not_name_it(self, edge, tmp_path):
+        _registry(tmp_path)
+        _stub(edge, health_exc=edge.httpx.ConnectError(
+            "All connection attempts failed for http://127.0.0.1:8000"))
+        with TestClient(edge.app) as c:
+            r = c.get("/health", headers=HDR)
+        assert r.status_code == 502
+        assert "127.0.0.1" not in r.text and "ok" not in r.text

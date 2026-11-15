@@ -876,13 +876,25 @@ async def _upstream_health(app, client) -> tuple[int, dict]:
         cached = getattr(st, "health_cache", None)
         if cached and _clock() - cached[0] < _HEALTH_TTL_S:
             return cached[1], cached[2]
+        # A NORMALIZED liveness body, never the upstream's own JSON: an
+        # engine's /health can carry rig-wide counters (request, token and
+        # cached-token totals, live streams) for every tenant, and any
+        # enrolled device reads this path. The status code is kept — clients
+        # tell "still loading" (503) from "down" (502) by it.
         try:
             r = await client.get(f"{UPSTREAM}/health", timeout=5)
-            status, payload = r.status_code, (
-                json.loads(r.text) if r.text.startswith("{")
-                else {"status": "ok"})
+            status = r.status_code
         except httpx.HTTPError as e:
-            status, payload = 502, {"error": {"message": f"upstream: {e}"}}
+            _log(f"upstream /health failed: {e}")
+            status = 502
+        if 200 <= status < 300:
+            payload = {"status": "ok"}
+        else:
+            if status < 500:
+                status = 502
+            payload = {"status": "unavailable", "error": {
+                "message": f"model server not ready (HTTP {status})",
+                "type": "upstream_unavailable"}}
         st.health_cache = (_clock(), status, payload)
         return status, payload
 
