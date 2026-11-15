@@ -79,6 +79,7 @@ lists them; `skills/README.md` ("Imported") says what each is for.
 | Intractable problem, exhausted obvious paths, "consult the council" | `deep-counsel` |
 | User wants to add a new eval task to the suite | `eval-task-author` |
 | User wants multi-language variants (Py/Go/C/C++/Rust/Zig) on an existing task | `eval-variant-porter` |
+| Writing Swift / SwiftUI / UIKit / Kotlin / Compose / Gradle against a platform API, or asked whether one exists / is deprecated | `platform-docs` |
 | Touching `agents/lang/`, packs, claims or the escalation index — or about to write zig 0.16 / C++ / Python here and unsure an API still exists | `beast-lang` |
 | Task needs an external app (iOS/Xcode or Android/Gradle build, emulator, Blender, Figma, 3D printer, ROS) — check `scripts/apps.sh check <capability> --json` before improvising | `app-control` |
 
@@ -115,7 +116,7 @@ Each is one arg away, e.g. `./start.sh serve-qwen-27b-q5.sh`. Board:
 | Eval suite (137 tasks across 12 categories) | `evals/` — see `evals/README.md` |
 | Skills (this system) | `skills/` — see `skills/README.md` |
 | Tests | `tests/run_tests.sh` (runs all) + `python3 -m pytest tests/ -q`. Full list is `ls tests/`; the load-bearing ones: `test_tools.py`, `test_scripts.sh`, `test_smoke.sh` (needs a live stack), `test_cache.py`, `test_proc_hygiene.py`, `test_edge.py` (beast-gate), `test_clients.sh` (enrollment CLI), `test_beast_slot.py` (`/api/slot` contract), `test_identity_server.py` (RBAC/sharding/audit), `test_fetch_guards.py` (SSRF) |
-| Documentation (technical) | **Live** (start here): `docs/ARCHITECTURE.md`, `docs/BEAST_SLOT.md`, `docs/BEAST_ISLAND.md`, `docs/BEAST_APPS.md` (external apps through MCP servers: `scripts/apps.sh`), `docs/SPARK_HYDRA.md` (the live two-DGX-Spark pair: operate, restart, rebuild), `docs/INSTALL.md`, `docs/REFERENCE.md`, `docs/TOOLS.md`, `docs/RESULTS.md`, `docs/MODELS.md`, `docs/UPDATING.md`, `docs/TODO.md` — `ls docs/` for the rest (plans, SANDBOXING, RBAC_PLAN, HARDWARE_PROFILES…). **Do not cite as current:** anything under `docs/archive/` (historical, v3-era), and `docs/MAC_CLIENT_PLAN.md`, superseded by `docs/BEAST_SLOT.md` |
+| Documentation (technical) | **Live** (start here): `docs/ARCHITECTURE.md`, `docs/BEAST_SLOT.md`, `docs/BEAST_ISLAND.md`, `docs/BEAST_APPS.md` (external apps through MCP servers: `scripts/apps.sh`), `docs/SPARK_HYDRA.md` (the live two-DGX-Spark pair: operate, restart, rebuild), `docs/BEAST_DOCS.md` (beast-docs: the offline mirror of current Apple / Android / other platform docs), `docs/INSTALL.md`, `docs/REFERENCE.md`, `docs/TOOLS.md`, `docs/RESULTS.md`, `docs/MODELS.md`, `docs/UPDATING.md`, `docs/TODO.md` — `ls docs/` for the rest (plans, SANDBOXING, RBAC_PLAN, HARDWARE_PROFILES…). **Do not cite as current:** anything under `docs/archive/` (historical, v3-era), and `docs/MAC_CLIENT_PLAN.md`, superseded by `docs/BEAST_SLOT.md` |
 | Documentation (overview / persona / tools) | `README.md`, `system-prompt.md`, `system-prompt-tools.md` |
 
 ### Eval suite
@@ -153,7 +154,7 @@ are overhead. Use them when the task involves design choices, multi-step
 reasoning, or domain-specific discipline. The bar: would loading the skill
 prevent a real failure mode? If yes, load it. If no, just do the task.
 
-## Tool surface (18 MCP tools)
+## Tool surface (19 MCP tools)
 
 Beyond skills (`skill`, `start_skill_agent`), you have:
 - File / code: `read_file`, `write_file`, `edit_file`, `list_files`, `grep`
@@ -166,8 +167,11 @@ Beyond skills (`skill`, `start_skill_agent`), you have:
   C++ / Python API still exists
 - Artifacts: `publish_artifact`, `list_artifacts` — publish a self-contained
   HTML page to a tailnet URL (they refuse unless `BEAST_ARTIFACT=true`)
+- Platform docs: `platform_docs` — current Apple / Android / other developer
+  documentation from the offline beast-docs mirror (URL + fetched date on
+  every answer); `scripts/docs.sh` is the same thing for bash
 
-The last three are on the MCP/WebUI surface only, not in the autonomous
+The last four are on the MCP/WebUI surface only, not in the autonomous
 runner's registry. Details: [`docs/TOOLS.md`](docs/TOOLS.md).
 
 Prefer `edit_file` over `write_file` for existing files. Prefer running code

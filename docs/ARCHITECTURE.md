@@ -24,7 +24,7 @@ flowchart LR
 
         subgraph CLIENT["💻 CLIENT — any Mac / Linux laptop &nbsp;(optional, purely additive)"]
             cagent["⌨️ <b>OpenCode</b> · <b>openbeast-client</b><br/>the agent loop runs HERE"]
-            ctools["⚙️ <b>18 tools</b> — bash · files · grep · spawn<br/>they act on THIS laptop's disk"]
+            ctools["⚙️ <b>19 tools</b> — bash · files · grep · spawn<br/>they act on THIS laptop's disk"]
             cagent --> ctools
         end
 
@@ -115,7 +115,7 @@ flowchart TB
 
     subgraph TOOLPLANE["🔑 TOOL PLANE — runs on the rig, acts on the rig · NEVER published"]
         its["<b>Identity tool server</b> · :3001<br/><code>agents/openapi_tools.py</code><br/>RBAC profile keys · per-user file shards · audit<br/><i>authenticates the HUMAN</i>"]
-        mcp["<b>MCP tool surface — 18 tools</b><br/><code>agents/mcp_server.py</code> · stdio, no port<br/>adds skill · start/start_skill/check/tail/list/stop_agent<br/>publish_artifact · list_artifacts · language_reference"]
+        mcp["<b>MCP tool surface — 19 tools</b><br/><code>agents/mcp_server.py</code> · stdio, no port<br/>adds skill · start/start_skill/check/tail/list/stop_agent<br/>publish_artifact · list_artifacts · language_reference · platform_docs"]
         core["<b>Tool primitives</b> · <code>agents/tools.py</code><br/>bash · read/write/edit/list/grep<br/>fetch (SSRF-guarded) · web_search<br/><i>+ push-diagnostics on write/edit (opt-in)</i>"]
         its --> mcp --> core
     end
@@ -278,7 +278,7 @@ flowchart TB
   [`BEAST_CAMPAIGN_PLAN.md`](BEAST_CAMPAIGN_PLAN.md).
 - **Nothing in the tool plane is ever published.** With RBAC Phase 2 keys
   (`scripts/setup-mcpo-keys.sh`), every `:3001` tool call must present a
-  profile key — **admin** reaches all 18 tools, **guest** reaches `web_search`
+  profile key — **admin** reaches all 19 tools, **guest** reaches `web_search`
   + `fetch` only (anything else 404s). `:3001`, `:8088`, `:8888` and `:8080`
   are loopback-only; remote devices arrive exclusively through Tailscale's
   authenticated HTTPS proxy (see [Remote access](REMOTE_ACCESS_PLAN.md)).
@@ -318,6 +318,7 @@ scripts/                     # Server, ops, and feature CLIs
   publish-verdict.sh         # A campaign verdict or leaderboard → one stable artifact URL
   job.sh                     # beast-chat: run/list/show/stop a tracked long job
   lang-library.sh            # beast-lang: acquire/check/list/verify/pack/where
+  docs.sh                    # beast-docs: sources/sync/status/search/read/live/pack/unpack
   lang-introspect.sh         # beast-lang: probe the installed toolchains
   lang-synthesize.sh         # beast-lang: model-drafted claims → verifier → staging → promote
   bundle.sh                  # Air-gap: build/sign/verify/install the offline bundle
@@ -341,7 +342,7 @@ scripts/                     # Server, ops, and feature CLIs
                              #   use-model.sh (rig), pylib/ (their python), data/ (vendored engine lists)
 
 agents/                      # Agent framework + servers
-  mcp_server.py              # MCP tool surface (18 tools; stdio for OpenCode)
+  mcp_server.py              # MCP tool surface (19 tools; stdio for OpenCode)
   openapi_tools.py           # Identity tool server on :3001 (RBAC keys, per-user shards, audit)
   tools.py                   # Tool primitives + beast-assist push-diagnostics (+ escalation, opt-in)
   runner.py                  # Autonomous agent loop (10-tool registry; steering inbox as a session)
@@ -358,6 +359,7 @@ agents/                      # Agent framework + servers
   mediapolicy.py             # The inline-media rule beast-gate and the router share (no URL fetches)
   chat_ui/ · artifact_ui/    # The console and the gallery/viewer (self-contained HTML)
   lang/                      # beast-lang: drivers, introspect, verify, packs, escalate, reference, synthesize
+  docs/                      # beast-docs: sources.toml, DocC/HTML/markdown adapters, sync, search (docs/BEAST_DOCS.md)
   requirements.txt / .lock   # Pinned deps and the hash-pinned closure CI installs
   logs/                      # Agent run logs (JSONL) [gitignored]
 
@@ -388,7 +390,7 @@ evals/                       # Eval harness — 137 tasks / 291 units + multi-mo
   suites/ · tasks/ · results/ · leaderboard.json
 
 docs/                        # 44 top-level documents — see README.md § Documentation
-skills/                      # 24 skills: 15 in-house + 9 imported (skills/README.md)
+skills/                      # 25 skills: 16 in-house + 9 imported (skills/README.md)
 system-prompt.md             # Soul file (persona, applied to all frontends)    [era-hashed]
 system-prompt-tools.md       # Tool guidance (Open WebUI only)                    [era-hashed]
 opencode.json                # OpenCode project config (MCP wiring + model list) [era-hashed]

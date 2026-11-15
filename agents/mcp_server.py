@@ -30,6 +30,10 @@ Language reference (beast-lang, the PULL surface):
   - language_reference: what the INSTALLED toolchain confirmed about a
     language — the pack, the cards for a compile error, or one topic
 
+Platform docs (beast-docs, mirrored offline):
+  - platform_docs: search / read current Apple, Android and other developer
+    documentation from the local mirror, or fetch one page live
+
 Skills (progressive disclosure):
   - skill: skill() returns the index of every skill; skill(name) loads one
   - start_skill_agent: spawn a background agent with a skill activated
@@ -1832,6 +1836,77 @@ def language_reference(language: str, topic: str = "", error: str = "") -> str:
         return _lang_ref_clip("\n".join(p.rstrip("\n") + "\n" for p in parts))
     except Exception as e:  # the facade does not raise; this is the belt
         return f"Error: language_reference failed: {e}"
+
+
+# ---------------------------------------------------------------------------
+# beast-docs — current platform documentation (docs/BEAST_DOCS.md)
+# ---------------------------------------------------------------------------
+# The documentation counterpart of language_reference: SwiftUI, UIKit,
+# Compose, AGP, ... as the publisher wrote them, from a local mirror
+# (scripts/docs.sh sync / unpack), every answer stamped with its URL and the
+# date it was fetched. MCP/WebUI surface only, admin profile only, NOT the
+# runner's registry — same reasons as language_reference above. In client
+# mode the mirror is the laptop's own (~/.openbeast/docs), like every tool.
+#
+# Imported lazily and called through the package's no-raise facade
+# (agents/docs/__init__.py): a missing mirror or a broken page costs one
+# answer, never the tool server.
+
+_DOCS_MAX_CHARS = 12_000
+
+
+@_tool()
+def platform_docs(query: str = "", source: str = "", doc: str = "",
+                  live: bool = False) -> str:
+    """Search CURRENT platform developer documentation — Apple (SwiftUI,
+    UIKit, Swift, Xcode, App Store Review Guidelines), Android (Jetpack
+    Compose, Kotlin, Gradle/AGP) and any other mirrored developer site — from
+    the local mirror, which works with no internet. Your training data is
+    older than these pages: use this before writing code against a platform
+    API you are not certain about, and cite the URL and date it returns.
+
+    CALL IT WHEN:
+      - you are about to use a SwiftUI / UIKit / Compose / Gradle API and
+        are unsure of its current name, signature, availability or whether it
+        is deprecated — pass `query` (e.g. "NavigationStack", "LazyColumn
+        item keys", "navigationDestination");
+      - a search result looks right and you need the whole page — pass its
+        doc id (or URL) as `doc`;
+      - the mirror copy is stale or missing and the rig is online — pass the
+        page URL (or an Apple symbol name like "NavigationStack") as `doc`
+        with `live=true`. Offline, live falls back to the mirror and says so.
+
+    Args:
+        query: Words or a symbol name to search for.
+        source: Optional source name to search in ("swiftui", "uikit",
+            "android-compose", ...); several may be comma-separated.
+        doc: A doc id from a search result ("swiftui:/documentation/...") or
+            a page URL, to read the whole page.
+        live: With `doc`: fetch the official page now instead of the mirror.
+
+    Returns:
+        Ranked results or the page as markdown, each with its source URL and
+        fetched date (and a STALE warning when the mirror is old); or a line
+        saying nothing matched / no mirror exists, which means: say you could
+        not confirm it, do not invent an API.
+    """
+    try:
+        import docs as _docs  # lazy: see the note above
+    except Exception as e:
+        return f"Error: beast-docs is unavailable on this host ({e})."
+    try:
+        query = " ".join(str(query or "").split())[:300]
+        source = str(source or "").strip()[:200]
+        doc = str(doc or "").strip()[:2000]
+        if doc and live:
+            return _docs.safe_live(doc, source, _DOCS_MAX_CHARS)
+        if doc:
+            return _docs.safe_read(doc, _DOCS_MAX_CHARS)
+        if query:
+            return _docs.safe_search(query, source)[:_DOCS_MAX_CHARS]
+        return _docs.safe_status()[:_DOCS_MAX_CHARS]
+    except Exception as e:  # the facade does not raise; this is the belt
+        return f"Error: platform_docs failed: {e}"
 
 
 # ---------------------------------------------------------------------------

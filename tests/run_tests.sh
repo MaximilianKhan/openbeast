@@ -200,6 +200,25 @@ if [[ $HAVE_PYTEST -eq 1 ]]; then
   echo ""
 fi
 
+# --- beast-docs (docs/BEAST_DOCS.md) ---
+# Hermetic: a stub HTTP server on loopback serves synthetic DocC JSON,
+# Android-shaped markdown and HTML. Also part of the full pytest run below;
+# listed on its own so a failure here is named, as in CI.
+if [[ $HAVE_PYTEST -eq 1 ]]; then
+  echo "--- beast-docs tests (tests/test_beast_docs.py, test_platform_docs_tool.py) ---"
+  echo ""
+  if python3 -m pytest "$REPO_DIR/tests/test_beast_docs.py" "$REPO_DIR/tests/test_platform_docs_tool.py" -q; then
+    echo ""
+    echo "beast-docs tests: ALL PASSED"
+  else
+    echo ""
+    echo "beast-docs tests: SOME FAILED"
+    OVERALL=1
+  fi
+  echo ""
+  echo ""
+fi
+
 # --- Spark model onboarding (profiles, inspect, fetch, conformance) ---
 # Hermetic: a stub Hugging Face Hub and stub OpenAI servers on ephemeral
 # loopback ports. Also part of the full pytest run below; listed on its own

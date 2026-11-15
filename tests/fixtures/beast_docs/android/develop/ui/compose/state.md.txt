@@ -1,0 +1,5 @@
+> Documentation index: /develop/ui/llms.txt
+
+# State and Jetpack Compose
+
+Synthetic fixture text about `remember` and `mutableStateOf`, with a link back to [lists](/develop/ui/compose/lists.md.txt).

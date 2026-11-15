@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Lazy lists  |  Jetpack Compose  |  Android Developers</title>
+  <meta name="description" content="Synthetic DevSite-shaped page for the beast-docs HTML adapter.">
+  <script>window.analytics = 1;</script>
+  <style>.x { color: red }</style>
+</head>
+<body>
+  <header><nav><a href="/develop/ui/compose/nav-only">Nav only link</a></nav></header>
+  <article class="devsite-article">
+    <h1 class="devsite-page-title">Lazy lists <devsite-actions hidden>Bookmark this page</devsite-actions></h1>
+    <div class="devsite-article-body clearfix">
+      <p>Use a <code>LazyColumn</code> for <a href="/develop/ui/compose/state?hl=fr#top">long</a> lists.
+         Items are composed <em>on demand</em> and <strong>recycled</strong>.</p>
+      <devsite-code>
+        <pre syntax="Kotlin" class="devsite-click-to-copy">LazyColumn {
+    items(100) { Text("Row $it") }
+}</pre>
+        <div class="devsite-github-link nocontent">View on GitHub</div>
+      </devsite-code>
+      <h2 id="keys" data-text="Item keys">Item keys</h2>
+      <aside class="note"><strong>Note:</strong> keys must be stable.</aside>
+      <ul>
+        <li>First <code>key</code></li>
+        <li>Second
+          <ol><li>nested one</li><li>nested two</li></ol>
+        </li>
+      </ul>
+      <table>
+        <tr><th>API</th><th>Since</th></tr>
+        <tr><td><code>LazyColumn</code></td><td>1.0</td></tr>
+      </table>
+      <button>Copy</button>
+      <div aria-hidden="true">invisible chrome</div>
+    </div>
+    <p>Last updated 2026-11-14 UTC.</p>
+  </article>
+  <footer>Content and code samples on this page are subject to the licenses described in the Content License.</footer>
+</body>
+</html>

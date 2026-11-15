@@ -43,6 +43,7 @@ The model discovers them via MCP and loads them on demand. See
 | `eval-variant-porter` | Adding multi-language variants (Python/Go/C/C++/Rust/Zig) to existing tasks |
 | `beast-lang` | The offline language library: look up what the *installed* compiler confirmed, add a verified claim, rebuild the escalation index, review model-drafted claims. Written for cloud models working in this repo — `prompt_index: false`, so it is not in the local model's always-on menu |
 | `app-control` | Drive external apps (Xcode, Gradle/adb, Blender, Figma, 3D printers, ROS) through MCP servers with beast-apps: `scripts/apps.sh check` first, report the exact remediation when something is missing, enable only after a passing check, `refresh` after an update. See [`docs/BEAST_APPS.md`](../docs/BEAST_APPS.md). `prompt_index: false` for now — adding it to the menu rewrites the era-hashed `system-prompt-tools.md`; reachable by `skill("app-control")` |
+| `platform-docs` | beast-docs: search the offline mirror of current Apple / Android / other platform docs before writing code against a platform API, cite the URL and its fetched date, say when it is stale. `prompt_index: false` (the menu file is era-locked) — reachable with `skill("platform-docs")` and backed by the `platform_docs` tool |
 
 ### Imported (9 skills, off the always-on menu)
 

@@ -106,6 +106,7 @@ jobs:
           --ignore=tests/test_use_model.py
           --ignore=tests/test_hydra_core.py --ignore=tests/test_hydra_proxy.py
           --ignore-glob='tests/test_instinct_*.py' --ignore=tests/test_router_instinct.py
+          --ignore=tests/test_beast_docs.py --ignore=tests/test_platform_docs_tool.py
           --ignore=tests/test_tools.py --ignore=tests/test_apps.py
 
   pytest-named:
@@ -165,6 +166,13 @@ jobs:
       # attributable; the full run (the pytest job) skips these files.
       - name: beast-hydra / beast-instinct tests
         run: python -m pytest --timeout=300 tests/test_hydra_core.py tests/test_hydra_proxy.py tests/test_instinct_*.py tests/test_router_instinct.py -q
+
+      # beast-docs (docs/BEAST_DOCS.md): the DocC / HTML / markdown adapters
+      # by golden file, incremental sync (304 = no rewrite), robots refusal,
+      # search ranking, offline/island fallback, the tarball round trip, and
+      # the platform_docs tool. A stub HTTP server on loopback; no network.
+      - name: beast-docs tests
+        run: python -m pytest --timeout=300 tests/test_beast_docs.py tests/test_platform_docs_tool.py -q
 
   shell:
     name: shell suites

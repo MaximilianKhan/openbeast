@@ -1,0 +1,394 @@
+{
+ "abstract": [
+  {
+   "text": "A view that shows a root view and pushes more views on top.",
+   "type": "text"
+  }
+ ],
+ "identifier": {
+  "interfaceLanguage": "swift",
+  "url": "doc://com.example.Kit/documentation/SwiftUI/NavigationStack"
+ },
+ "kind": "symbol",
+ "metadata": {
+  "modules": [
+   {
+    "name": "SwiftUI"
+   }
+  ],
+  "platforms": [
+   {
+    "introducedAt": "16.0",
+    "name": "iOS"
+   },
+   {
+    "introducedAt": "13.0",
+    "name": "macOS"
+   },
+   {
+    "beta": true,
+    "introducedAt": "1.0",
+    "name": "visionOS"
+   }
+  ],
+  "role": "symbol",
+  "roleHeading": "Structure",
+  "symbolKind": "struct",
+  "title": "NavigationStack"
+ },
+ "primaryContentSections": [
+  {
+   "declarations": [
+    {
+     "languages": [
+      "swift"
+     ],
+     "platforms": [
+      "iOS"
+     ],
+     "tokens": [
+      {
+       "kind": "keyword",
+       "text": "struct"
+      },
+      {
+       "text": " ",
+       "type": "text"
+      },
+      {
+       "kind": "identifier",
+       "text": "NavigationStack"
+      },
+      {
+       "kind": "text",
+       "text": "<Data, Root> "
+      },
+      {
+       "kind": "keyword",
+       "text": "where"
+      },
+      {
+       "kind": "text",
+       "text": " Root : "
+      },
+      {
+       "identifier": "doc://com.example.Kit/documentation/SwiftUI/View",
+       "kind": "typeIdentifier",
+       "text": "View"
+      }
+     ]
+    }
+   ],
+   "kind": "declarations"
+  },
+  {
+   "kind": "parameters",
+   "parameters": [
+    {
+     "content": [
+      {
+       "inlineContent": [
+        {
+         "text": "The view at the bottom of the stack.",
+         "type": "text"
+        }
+       ],
+       "type": "paragraph"
+      }
+     ],
+     "name": "root"
+    }
+   ]
+  },
+  {
+   "kind": "mentions",
+   "mentions": [
+    "doc://com.example.Kit/documentation/SwiftUI/Navigation-Guide"
+   ]
+  },
+  {
+   "content": [
+    {
+     "anchor": "overview",
+     "level": 2,
+     "text": "Overview",
+     "type": "heading"
+    },
+    {
+     "inlineContent": [
+      {
+       "text": "Push values with ",
+       "type": "text"
+      },
+      {
+       "code": "navigationDestination(for:destination:)",
+       "type": "codeVoice"
+      },
+      {
+       "text": " and present them with a ",
+       "type": "text"
+      },
+      {
+       "inlineContent": [
+        {
+         "text": "link",
+         "type": "text"
+        }
+       ],
+       "type": "emphasis"
+      },
+      {
+       "text": ".",
+       "type": "text"
+      }
+     ],
+     "type": "paragraph"
+    },
+    {
+     "code": [
+      "NavigationStack {",
+      "    List(items) { item in Text(item.name) }",
+      "}"
+     ],
+     "syntax": "swift",
+     "type": "codeListing"
+    },
+    {
+     "content": [
+      {
+       "inlineContent": [
+        {
+         "text": "The root view cannot be popped.",
+         "type": "text"
+        }
+       ],
+       "type": "paragraph"
+      }
+     ],
+     "name": "Note",
+     "style": "note",
+     "type": "aside"
+    },
+    {
+     "items": [
+      {
+       "content": [
+        {
+         "inlineContent": [
+          {
+           "text": "First point",
+           "type": "text"
+          }
+         ],
+         "type": "paragraph"
+        }
+       ]
+      },
+      {
+       "content": [
+        {
+         "inlineContent": [
+          {
+           "inlineContent": [
+            {
+             "text": "Second",
+             "type": "text"
+            }
+           ],
+           "type": "strong"
+          },
+          {
+           "text": " point",
+           "type": "text"
+          }
+         ],
+         "type": "paragraph"
+        }
+       ]
+      }
+     ],
+     "type": "unorderedList"
+    },
+    {
+     "header": "row",
+     "rows": [
+      [
+       [
+        {
+         "inlineContent": [
+          {
+           "text": "Platform",
+           "type": "text"
+          }
+         ],
+         "type": "paragraph"
+        }
+       ],
+       [
+        {
+         "inlineContent": [
+          {
+           "text": "Behavior",
+           "type": "text"
+          }
+         ],
+         "type": "paragraph"
+        }
+       ]
+      ],
+      [
+       [
+        {
+         "inlineContent": [
+          {
+           "text": "iOS",
+           "type": "text"
+          }
+         ],
+         "type": "paragraph"
+        }
+       ],
+       [
+        {
+         "inlineContent": [
+          {
+           "text": "Pushes | slides",
+           "type": "text"
+          }
+         ],
+         "type": "paragraph"
+        }
+       ]
+      ]
+     ],
+     "type": "table"
+    },
+    {
+     "inlineContent": [
+      {
+       "identifier": "img.png",
+       "type": "image"
+      }
+     ],
+     "type": "paragraph"
+    }
+   ],
+   "kind": "content"
+  }
+ ],
+ "references": {
+  "doc://com.example.Kit/documentation/SwiftUI": {
+   "abstract": [
+    {
+     "text": "Synthetic fixture framework.",
+     "type": "text"
+    }
+   ],
+   "identifier": "doc://com.example.Kit/documentation/SwiftUI",
+   "kind": "symbol",
+   "role": "collection",
+   "title": "SwiftUI",
+   "type": "topic",
+   "url": "/documentation/swiftui"
+  },
+  "doc://com.example.Kit/documentation/SwiftUI/Navigation-Guide": {
+   "abstract": [
+    {
+     "text": "How the stack fits together.",
+     "type": "text"
+    }
+   ],
+   "identifier": "doc://com.example.Kit/documentation/SwiftUI/Navigation-Guide",
+   "kind": "article",
+   "role": "article",
+   "title": "Understanding navigation",
+   "type": "topic",
+   "url": "/documentation/swiftui/navigation-guide"
+  },
+  "doc://com.example.Kit/documentation/SwiftUI/NavigationStack": {
+   "abstract": [
+    {
+     "text": "A view that shows a root view and pushes more views on top.",
+     "type": "text"
+    }
+   ],
+   "identifier": "doc://com.example.Kit/documentation/SwiftUI/NavigationStack",
+   "kind": "symbol",
+   "role": "symbol",
+   "title": "NavigationStack",
+   "type": "topic",
+   "url": "/documentation/swiftui/navigationstack"
+  },
+  "doc://com.example.Kit/documentation/SwiftUI/NavigationView": {
+   "abstract": [
+    {
+     "text": "An older navigation container.",
+     "type": "text"
+    }
+   ],
+   "deprecated": true,
+   "identifier": "doc://com.example.Kit/documentation/SwiftUI/NavigationView",
+   "kind": "symbol",
+   "role": "symbol",
+   "title": "NavigationView",
+   "type": "topic",
+   "url": "/documentation/swiftui/navigationview"
+  },
+  "doc://com.example.Kit/documentation/SwiftUI/View": {
+   "abstract": [
+    {
+     "text": "A piece of user interface.",
+     "type": "text"
+    }
+   ],
+   "identifier": "doc://com.example.Kit/documentation/SwiftUI/View",
+   "kind": "symbol",
+   "role": "symbol",
+   "title": "View",
+   "type": "topic",
+   "url": "/documentation/swiftui/view"
+  },
+  "img.png": {
+   "alt": "A diagram of a stack",
+   "identifier": "img.png",
+   "type": "image",
+   "variants": []
+  },
+  "outside": {
+   "kind": "symbol",
+   "title": "Elsewhere",
+   "type": "topic",
+   "url": "/documentation/uikit/elsewhere"
+  }
+ },
+ "relationshipsSections": [
+  {
+   "identifiers": [
+    "doc://com.example.Kit/documentation/SwiftUI/View"
+   ],
+   "title": "Conforms To",
+   "type": "conformsTo"
+  }
+ ],
+ "schemaVersion": {
+  "major": 0,
+  "minor": 3,
+  "patch": 0
+ },
+ "seeAlsoSections": [
+  {
+   "identifiers": [
+    "doc://com.example.Kit/documentation/SwiftUI/NavigationView"
+   ],
+   "title": "Older navigation"
+  }
+ ],
+ "topicSections": [
+  {
+   "identifiers": [
+    "doc://com.example.Kit/documentation/SwiftUI/View"
+   ],
+   "title": "Related"
+  }
+ ]
+}

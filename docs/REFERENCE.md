@@ -765,7 +765,7 @@ tools:
 **Discovery order:** repo `skills/` first, then `~/.local/share/local-llm-skills/`.
 Repo wins on name collision. The index re-scans on every `skill()` call.
 
-**Currently shipped (15 in-house skills, plus 9 imported and off the
+**Currently shipped (16 in-house skills, plus 9 imported and off the
 always-on menu — `ls skills/*/SKILL.md`):** see `skills/README.md` for both tables.
 Tier 1 (universal): codebase-onboarding, spec-extraction, git-discipline,
 long-context-synthesis. Tier 2 (situational): test-driven-development,
