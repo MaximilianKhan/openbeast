@@ -1,0 +1,61 @@
+{
+ "task": "167_q15_biquad",
+ "note": "Arms for the model-free prover. Wrong solutions must fail with the given output class.",
+ "repeat": 3,
+ "units": {
+  "a": {
+   "wrong": {
+    "wrong/biquad_trunc.py": "^mismatch at case \\d+$",
+    "wrong/biquad_unsat_state.py": "^mismatch at case \\d+$",
+    "wrong/biquad_sat_once.py": "^mismatch at case \\d+$"
+   },
+   "leak": "probe/leak.py",
+   "hang": "probe/hang.py"
+  },
+  "b": {
+   "wrong": {
+    "wrong/biquad_i32acc.go": "^mismatch at case \\d+$",
+    "wrong/biquad_divtrunc.go": "^mismatch at case \\d+$"
+   },
+   "leak": "probe/leak.go",
+   "hang": "probe/hang.go"
+  },
+  "c": {
+   "wrong": {
+    "wrong/biquad_i32acc.c": "^mismatch at case \\d+$",
+    "wrong/biquad_roundsat.c": "^mismatch at case \\d+$"
+   },
+   "leak": "probe/leak.c",
+   "hang": "probe/hang.c"
+  },
+  "d": {
+   "wrong": {
+    "wrong/biquad_unsat_state.cpp": "^mismatch at case \\d+$",
+    "wrong/biquad_sat_once.cpp": "^mismatch at case \\d+$"
+   },
+   "leak": "probe/leak.cpp",
+   "hang": "probe/hang.cpp"
+  },
+  "e": {
+   "wrong": {
+    "wrong/biquad_i32wrap.rs": "^mismatch at case \\d+$",
+    "wrong/biquad_always_sat.rs": "^mismatch at case \\d+$"
+   },
+   "leak": "probe/leak.rs",
+   "hang": "probe/hang.rs"
+  },
+  "f": {
+   "wrong": {
+    "wrong/biquad_i32wrap.zig": "^mismatch at case \\d+$",
+    "wrong/biquad_divtrunc.zig": "^mismatch at case \\d+$"
+   },
+   "leak": "probe/leak.zig",
+   "hang": "probe/hang.zig"
+  }
+ },
+ "classes": {
+  "leak": "^(mismatch at case \\d+|wrong number of output lines)",
+  "hang": "^solution timed out",
+  "empty": "^missing biquad"
+ }
+}
