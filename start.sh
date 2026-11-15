@@ -28,7 +28,10 @@
 #
 # Daemon mode runs inside a memory-capped systemd scope when available
 # (MEM_LIMIT_PCT of this machine's RAM — default 75% — plus 8G swap) so a
-# runaway process can only take down the stack — never the box. On OOM the
+# runaway process can only take down the stack — never the box. On a
+# unified-memory box (GB10) running its own model beside the stack, the cap
+# is re-sized once the model is up to MemAvailable minus MEM_RESERVE_GB: 75%
+# of a MemTotal the model already holds would protect nothing. On OOM the
 # supervisor shuts down what remains gracefully. Logs: .run/stack.log;
 # pidfiles: .run/*.pid.
 #
@@ -219,6 +222,7 @@ source "$SCRIPT_DIR/scripts/lib/net.sh"          # ob_probe_host, ob_llama_ready
 source "$SCRIPT_DIR/scripts/lib/backend.sh"      # ob_backend_ready, ob_inference_managed
 source "$SCRIPT_DIR/scripts/lib/curl_auth.sh"    # ob_curl_hdr: tokens never on argv
 source "$SCRIPT_DIR/scripts/lib/portown.sh"      # ob_port_listening, ob_pid_owns_port
+source "$SCRIPT_DIR/scripts/lib/hardware.sh"     # ob_detect_gpu, ob_unified_mem_budget
 SERVE_SCRIPT="${SERVE_SCRIPT:-$DEFAULT_SERVE_SCRIPT}"
 
 # _port_busy <host> <port> — 0 when something accepts a TCP connection there,
@@ -1115,6 +1119,44 @@ _infer_ready() {
   fi
 }
 
+# UNIFIED memory (GB10 head node): re-size the stack's cap to what is really
+# left. The launcher capped the scope at MEM_LIMIT_PCT of MemTotal, but here
+# the model (TensorFold rank 0, outside every cgroup of ours) holds most of
+# MemTotal: on spark-1 the cap was 91 GiB with 6.4 GiB available, so it could
+# never fire before the box itself ran out — and a GB10 out of memory freezes
+# or OOM-kills rank 0 instead of the runaway. Called once the model is READY
+# (at boot both start together, and a cap measured before the model loads
+# would be the same useless number), and again whenever it comes back.
+# Only for an unmanaged model (a managed llama-server runs INSIDE the scope)
+# and only inside the scope this launcher made. Never fatal.
+fit_unified_mem_cap() {
+  [[ $MANAGED -eq 0 ]] || return 0
+  grep -qs 'openbeast-stack\.service' "${OB_PROC_CGROUP:-/proc/self/cgroup}" || return 0
+  [[ -n "${OB_GPU_UNIFIED:-}" ]] || ob_detect_gpu 2>/dev/null || true
+  [[ "${OB_GPU_UNIFIED:-0}" -eq 1 ]] || return 0
+  local now_b now_mb ceil_mb out cap_mb pct avail_mb short
+  now_b="$(systemctl --user show -p MemoryCurrent --value openbeast-stack.service 2>/dev/null || true)"
+  [[ "$now_b" =~ ^[0-9]+$ ]] && now_mb=$(( now_b / 1048576 )) || now_mb=0
+  ceil_mb=$(( $(ob_meminfo_total_mb) * ${MEM_LIMIT_PCT:-75} / 100 ))
+  out="$(ob_unified_mem_budget "$now_mb" $(( ${MEM_RESERVE_GB:-3} * 1024 )) "$ceil_mb")" || return 0
+  read -r cap_mb pct avail_mb short <<< "$out"
+  if systemctl --user set-property --runtime openbeast-stack.service \
+       "MemoryMax=${cap_mb}M" >/dev/null 2>&1; then
+    echo "Unified memory: ${avail_mb} MiB available beside the model — stack cap now ${cap_mb} MiB" \
+         "(MemAvailable − MEM_RESERVE_GB=${MEM_RESERVE_GB:-3}G kept for the model; chat jobs ${pct}% of RAM)"
+  else
+    echo "Warning: could not lower the stack's memory cap to ${cap_mb} MiB (systemctl set-property failed)" >&2
+  fi
+  if [[ "$short" == "1" ]]; then
+    echo "Warning: only ${avail_mb} MiB available beside the model — the stack's floor eats into the" >&2
+    echo "         ${MEM_RESERVE_GB:-3} GiB reserve. Free memory on this box (or shrink the model's pool)." >&2
+  fi
+  # The chat jobs' slice leaves the stack's cgroup (agents/chat_server.py),
+  # so it needs its own share. An operator's explicit value wins.
+  [[ -n "${OPENBEAST_CHAT_JOB_MEM_PCT:-}" ]] || export OPENBEAST_CHAT_JOB_MEM_PCT="$pct"
+  return 0
+}
+
 # beast-hydra (opt-in, HYDRA=true): the inference router every consumer now
 # talks to (docs/BEAST_HYDRA_PLAN.md §6.7). Launched BEFORE the inference
 # wait so it watches the engine load, and so the unmanaged wait can ask it.
@@ -1248,6 +1290,7 @@ if [[ $MANAGED -eq 0 ]]; then
   if wait_backend_ready; then
     INFER_UP=1
     echo "$(ob_backend_label) ready at $LLAMA_BASE"
+    fit_unified_mem_cap
   fi
 elif [[ $FAST_BOOT_ACTIVE -eq 1 ]]; then
   echo "Waiting for llama.cpp server to be ready..."
@@ -1732,7 +1775,10 @@ if [[ $MANAGED -eq 0 ]]; then
     wait "$IDLE_PID" || true
     IDLE_PID=""
     if _infer_ready; then
-      [[ $_up -eq 0 ]] && echo "$(date '+%H:%M:%S') $(ob_backend_label) at $LLAMA_BASE is ready again."
+      if [[ $_up -eq 0 ]]; then
+        echo "$(date '+%H:%M:%S') $(ob_backend_label) at $LLAMA_BASE is ready again."
+        fit_unified_mem_cap   # a reloaded model re-sizes what is left beside it
+      fi
       _up=1
     else
       [[ $_up -eq 1 ]] && echo "$(date '+%H:%M:%S') $(ob_backend_label) at $LLAMA_BASE is NOT ready — not managed here, so nothing is restarted."

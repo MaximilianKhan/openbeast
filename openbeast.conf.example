@@ -93,6 +93,12 @@
 # scope is additionally capped at 8G regardless of this setting.
 # The $OPENBEAST_MEM_LIMIT_PCT env var overrides this per-shell.
 #MEM_LIMIT_PCT=75
+# UNIFIED memory only (a GB10 / DGX Spark that runs its own model beside the
+# stack, INFERENCE_MANAGED=false): the model's memory is part of MemTotal, so
+# 75% of it protects nothing. Once the model is up the supervisor re-sizes the
+# stack's cap (and the chat jobs') from MemAvailable minus this many GiB, which
+# stay free for the model. Whole GiB; ignored on a discrete GPU.
+#MEM_RESERVE_GB=3
 
 # Host RAM llama-server may use to keep the state of conversations that are
 # not on a slot right now (its --cache-ram, in MiB). With the one-slot
