@@ -246,6 +246,25 @@ else
   echo "Tool tests: NOT RUN (pytest is not installed)"
 fi
 
+# --- beast-apps (scripts/apps.sh, agents/apps/; docs/BEAST_APPS.md) ---------
+# Named so a failure here reads as "beast-apps", not as one line in the full
+# run below (which skips it, as CI does: it has its own CI step).
+if [[ $HAVE_PYTEST -eq 1 ]]; then
+  echo ""
+  echo "--- beast-apps tests (stub toolchains, stub MCP server, local registry) ---"
+  echo ""
+  if python3 -m pytest "$REPO_DIR/tests/test_apps.py" -q; then
+    echo ""
+    echo "beast-apps tests: ALL PASSED"
+  else
+    echo ""
+    echo "beast-apps tests: SOME FAILED"
+    OVERALL=1
+  fi
+else
+  echo "beast-apps tests: NOT RUN (pytest is not installed)"
+fi
+
 # --- Full Python suite -----------------------------------------------------
 # The block above runs ONE file. CI runs `pytest tests/ -q` as a separate step,
 # so for a long time every suite outside test_tools.py (the artifact, chat,
@@ -257,7 +276,7 @@ if [[ $HAVE_PYTEST -eq 1 ]]; then
   echo ""
   echo "--- Full Python suite (everything CI runs) ---"
   echo ""
-  if python3 -m pytest "$REPO_DIR/tests" -q; then
+  if python3 -m pytest "$REPO_DIR/tests" -q --ignore="$REPO_DIR/tests/test_apps.py"; then
     echo ""
     echo "Full Python suite: ALL PASSED"
   else

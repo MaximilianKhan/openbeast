@@ -84,6 +84,13 @@ jobs:
           OPENBEAST_SKIP_NETWORK_TESTS: "1"
         run: python -m pytest --timeout=300 tests/test_tools.py -q
 
+      # beast-apps (scripts/apps.sh, agents/apps/): catalog validation, probes
+      # against stub toolchains, opencode v1/v2 merge + backup + disable,
+      # refresh/upgrade against a stub stdio MCP server and a local registry,
+      # offline degradation. Hermetic: no network, no real opencode config.
+      - name: beast-apps tests
+        run: python -m pytest --timeout=300 tests/test_apps.py -q
+
       # Everything a NAMED pytest step runs (this job's tools step, and the
       # pytest-named job's two) is left out here. Keep this list in step with
       # them: a file named there and not ignored here just runs twice; one
@@ -99,7 +106,7 @@ jobs:
           --ignore=tests/test_use_model.py
           --ignore=tests/test_hydra_core.py --ignore=tests/test_hydra_proxy.py
           --ignore-glob='tests/test_instinct_*.py' --ignore=tests/test_router_instinct.py
-          --ignore=tests/test_tools.py
+          --ignore=tests/test_tools.py --ignore=tests/test_apps.py
 
   pytest-named:
     name: pytest (hydra, instinct, onboarding)
