@@ -509,7 +509,7 @@ flowchart TB
       subgraph ASSETS["💾 ON DISK — yours, never uploaded"]
         direction LR
         weights["💾 <b>weights/</b><br/>GGUF · sha256-pinned"]
-        skills["📚 <b>skills/</b> · 24"]
+        skills["📚 <b>skills/</b> · 26"]
         evals["📊 <b>evals/</b><br/>leaderboard · era hash"]
         store["🗂️ <b>artifacts/</b> · <b>sessions/</b>"]
       end

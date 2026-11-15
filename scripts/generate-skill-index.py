@@ -34,6 +34,7 @@ PROMPT = REPO / "system-prompt-tools.md"
 SKILLS = REPO / "skills"
 START = "<!-- SKILL_INDEX_START (generated — edit skills/*/SKILL.md, then run scripts/generate-skill-index.py) -->"
 END = "<!-- SKILL_INDEX_END -->"
+SKILL_DIR_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 
 
 def frontmatter(path: Path) -> dict:
@@ -51,10 +52,18 @@ def frontmatter(path: Path) -> dict:
 def build_index() -> str:
     rows = []
     for skill_md in sorted(SKILLS.glob("*/SKILL.md")):
+        # The loader's rule (agents/mcp_server.py _SKILL_DIR_RE): a hidden or
+        # misnamed directory is not a skill, and a SKILL.md names its own
+        # directory. pathlib's glob matches dot-directories, so without this
+        # skills/.x/SKILL.md went onto the always-on menu.
+        if not SKILL_DIR_RE.match(skill_md.parent.name):
+            continue
         fm = frontmatter(skill_md)
+        if fm.get("name", skill_md.parent.name) != skill_md.parent.name:
+            continue
         if fm.get("prompt_index", "").lower() == "false":
             continue                    # opted out of the always-on menu
-        name = fm.get("name", skill_md.parent.name)
+        name = skill_md.parent.name
         desc = fm.get("description", "(no description)")
         rows.append(f"- **`{name}`** — {desc}")
     return "\n".join(rows)
