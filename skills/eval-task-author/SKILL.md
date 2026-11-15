@@ -141,6 +141,91 @@ but Python's `-c` parsing chokes on multiline. Heredocs sidestep the trap.
 For non-deterministic outputs (e.g. multiple valid topological orders), write a
 `check.py` via heredoc in setup that programmatically verifies the output.
 
+> **v5 supersedes the two paragraphs above for every new unit.** Writing
+> `expected.txt` or `check.py` into the agent's working dir hands it the
+> answer key (a probe that only `cat`s the file passed v4 units). A v5 unit:
+> setup writes 2-5 labelled samples only (`sample_input.txt`,
+> `sample_output.txt`); the validator is `type: python` and carries a seeded
+> generator + the oracle (or a property check for non-unique outputs), feeds
+> hidden cases over stdin from memory, prints only the failing case's index,
+> and finishes in <= 15 s at scale 1. Declare `ref_stem`/`dest` in the JSON,
+> keep >= 2 wrong solutions with their failure classes in
+> `evals/refs/<task_id>/`, and run `python3 tests/prove_task.py --unit <id>`
+> until it prints PROVEN. The agent cannot read `evals/tasks/` while a unit
+> is measured (the oracle seal). The oracle inside the validator is safe only
+> if the validator follows "Validator isolation" below. The seal covers the
+> agent's tools, not the solution's own code at validation time.
+
+## Validator isolation (v5, required)
+
+The solution is written by the model under test. It runs with the same uid
+as your validator, and it may try to pass without solving: by reading your
+argv, environment or files, by planting modules on your import path, by
+monkeypatching your functions, or by hiding CPU in forked children. The v5
+verifiers passed a dozen families exactly this way. The full rationale is in
+`evals/README.md`, "Validator isolation".
+
+**What the harness already does** (`run_eval.run_validation`; you get it
+for free):
+
+- The script arrives on **stdin**, from an already-unlinked file. A python
+  validator runs as `python -I -S -`; a bash validator runs as
+  `sh -c '<read stdin>; eval'`. Your source is in no argv.
+- The cwd is a fresh, empty 0700 dir, removed after the unit. It is not on
+  `sys.path`, and neither is the harness cwd.
+- The environment is scrubbed: PATH, HOME, locale, toolchain vars, and
+  `OPENBEAST_TIMEOUT_SCALE`. On Linux the validator is non-dumpable.
+- `import vlib` works, injected from source; it is never a file on disk.
+
+**What your validator must do:**
+
+1. **Run the solution in a SEPARATE process.** Judge only its output. Never
+   import the solution into the process that holds the oracle, the seed or
+   the expected answers. Never trust the solution's in-process state: a
+   module you imported can rebind your functions, `time.perf_counter`, or
+   `sys.exit`. If a scenario driver has to load the solution in-process (a
+   Python API task), that driver is a separate child that holds **no**
+   answers. It prints observations; the parent compares them.
+2. **Use `vlib.run_solution`** to run it:
+   `r = vlib.run_solution(cmd, input=data, cpu_s=4)`, then check
+   `r.verdict == "ok"` and `r.returncode == 0`, or just `r.ok`. It runs the
+   solution in its own session and process group. The CPU budget counts
+   every descendant, through a cgroup, or else RLIMIT_CPU plus the wait4
+   rusage plus a process-tree sampler with a Linux subreaper. Orphans and
+   survivors get verdict `daemon`, every descendant is killed afterwards,
+   and fork is refused by default (`allow_fork=True` to permit it). Report
+   `r.reason`, never the oracle.
+3. **Scale every fixed limit.** Write limits at scale 1 and wrap them in
+   `vlib.t(seconds)`, or pass them to `run_solution`, which scales them
+   itself. Under `--jobs 4` the scale is 2.0. Use `scale_cpu=False` only for a
+   perf gate whose subject is CPU time. A cold zig or rust compile can't be
+   predicted: do an untimed warm-up exec of a fresh binary before the timed
+   run (first exec on macOS costs 3-11 s of Gatekeeper scanning).
+4. **No `python -c SRC` children.** A child's argv is readable too. Start a
+   driver as `[sys.executable, "-I", "-S", "-"]` and feed SRC on stdin. Pass
+   the driver's data in a file or a pipe. In a bash validator, use a quoted
+   heredoc to `python3 -I -`. The prover lints for both.
+5. **Run a Python solution with `vlib.python_cmd(path)`** (`-I -S`). Then
+   site-packages (numpy, torch) is really unavailable when the prompt says
+   so, and the script's dir is not on its path.
+6. **Lint with the AST, not a regex**: `vlib.lint_python(src,
+   ban_modules=("numpy",), ban_calls=("divmod",))`. It catches
+   `import math, torch`, `from x import y`, `__import__`, importlib, exec,
+   eval, getattr with a computed or dunder name, dunder walks,
+   `"{0.__globals__}".format(f)` field lookups, and `sys.modules`. For C,
+   C++ and zig, lint *after* stripping comments **and** resolving aliases
+   (`const s = std; s.crypto`, `@field(std, "crypto")`), and ban the
+   sanitizer escape hatches (`__tsan_*`, `__sanitizer_*`, `no_sanitize`)
+   wherever TSan/ASan is the check. A lint is the second line of defence,
+   after process separation.
+7. **Check all of the output.** A checker that tests only part of the output
+   (one field, the last case, a containment prefix without the separator)
+   is a pass for a partial solution. Assert the count, every field, and
+   every case.
+8. **Keep secrets in memory.** Files you write are readable by the same uid
+   wherever they live. Write only inputs to disk. Expected outputs stay in
+   your process.
+
 ## Difficulty tiers (with concrete examples)
 
 | Tier | Weight | Time budget | Example |
@@ -168,5 +253,8 @@ top-level CATEGORY requires updating `docs/RESULTS.md` and `evals/README.md`.
 - [ ] Reference impl in `evals/refs/{slug}.{ext}` (durable; was `/tmp/refs/` pre-2026-05-07)
 - [ ] Validation accepts reference impl (`OK`)
 - [ ] Validation rejects an obvious wrong impl
+- [ ] Validator follows "Validator isolation": solution in a separate process
+      via `vlib.run_solution`, every fixed limit through `vlib.t`, no
+      `python -c` children (`tests/prove_task.py` lints the last two)
 - [ ] `tests/test_scripts.sh` passes
 - [ ] (If new subcategory introduced) noted in commit message

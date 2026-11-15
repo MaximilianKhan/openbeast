@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """
-v5-fast suite generator — pin the discriminating subset of the v4 suite.
+v4-fast suite generator — pin the discriminating subset of the v4 suite.
+
+(Named v5-fast until the v5 era break renamed it: v5 is now a real suite
+version, evals/suites/v5.json, and is never imputed. This pin and its
+imputation stay valid for v4 runs only — the frozen board's history.)
 
 Implements Phase C of docs/EVAL_FAST_SUITE_PROPOSAL.md (suite F): the
 units that separate models (passed by >=1 and < all of the reference
 models) plus a fixed number of cheap all-pass "tripwire" units kept as
-regression canaries, pinned to evals/suites/v5-fast.json so the subset is
+regression canaries, pinned to evals/suites/v4-fast.json so the subset is
 REPRODUCIBLE, not recomputed per run.
 
-Reference runs are the latest FULL (291-unit) v4 result file per model
+Reference runs are the latest FULL v4 result file per model
 slug in evals/results/. Results files are gitignored — regeneration needs
 a machine that has them; that is deliberate (the pin is the artifact of
 record, its inputs are listed in its metadata).
@@ -41,16 +45,27 @@ from datetime import datetime
 EVALS_DIR = os.path.dirname(os.path.abspath(__file__))
 RESULTS_DIR = os.path.join(EVALS_DIR, "results")
 SUITES_DIR = os.path.join(EVALS_DIR, "suites")
-SUITE_PATH = os.path.join(SUITES_DIR, "v5-fast.json")
+SUITE_NAME = "v4-fast"
+SUITE_PATH = os.path.join(SUITES_DIR, f"{SUITE_NAME}.json")
+# The suite the pin is a subset of; its full size is looked up, never
+# written as a literal (it was 291 in six places before v5).
+BASE_SUITE = "v4"
 
 sys.path.insert(0, EVALS_DIR)
 import scoring  # noqa: E402
+import suite_manifest  # noqa: E402
+
+# A new pin must measure at least this many units in every (category,
+# language) cell its suite has: v4-fast measured nothing in SWE/DevOps or
+# Signal Processing, so a "fast" score said nothing about either.
+DEFAULT_COVERAGE_FLOOR = {"cell_min": 1}
 
 TRIPWIRE_COUNT = 20
 
 
 def load_reference_runs(exclude_slugs: set[str]) -> dict[str, tuple[str, dict]]:
-    """Latest full-291 v4 results file per slug, minus exclusions."""
+    """Latest full v4 results file per slug, minus exclusions."""
+    n_full = scoring.expected_units(BASE_SUITE)
     latest: dict[str, tuple[str, dict]] = {}
     for path in sorted(glob.glob(os.path.join(RESULTS_DIR, "eval-*.json"))):
         try:
@@ -59,10 +74,10 @@ def load_reference_runs(exclude_slugs: set[str]) -> dict[str, tuple[str, dict]]:
         except (OSError, json.JSONDecodeError):
             continue  # in-progress or corrupt file — a live sweep writes these
         tasks = d.get("tasks", [])
-        if len(tasks) != 291:
+        if len(tasks) != n_full:
             continue
-        sv = d.get("suite_version") or ("v4" if (d.get("summary") or {}).get("total") == 291 else "?")
-        if sv != "v4":
+        sv = scoring._suite_version(d)
+        if sv != BASE_SUITE:
             continue
         slug = d.get("model_slug", "unknown")
         if slug in exclude_slugs:
@@ -116,6 +131,36 @@ def pick_tripwires(allpass: list[str], meta: dict, elapsed: dict,
             if groups[key] and len(picked) < count:
                 picked.append(groups[key].pop(0))
     return sorted(picked)
+
+
+def pin_coverage_gaps(pin: dict, floor: dict | None, tasks: list[dict] | None = None) -> list[str]:
+    """Cells of the pin's universe left under `floor` by its MEASURED units.
+    A cell exists when the universe has a unit there; the measured units
+    (pin["units"]) must put at least floor["cell_min"] in each. Assumed
+    (imputed) units measure nothing, so they never count."""
+    if not floor:
+        return []
+    if tasks is None:
+        import run_eval  # noqa: PLC0415 — keeps the CLI import surface lazy
+        tasks = run_eval.load_tasks(None)
+    meta = scoring._task_meta()
+    measured_ids = set(pin.get("units", []))
+    universe = measured_ids | set(pin.get("assumed_passed", [])) \
+        | set(pin.get("assumed_failed", []))
+    rows = []
+    for t in tasks:
+        if t["id"] not in universe:
+            continue
+        cat = t.get("category") or (meta.get(t.get("base_id") or t["id"]) or (None,))[0]
+        rows.append({"id": t["id"], "category": cat,
+                     "lang": suite_manifest.norm_lang(t.get("language")),
+                     "role": "scored" if t["id"] in measured_ids else "assumed"})
+    have = {(r["category"], r["lang"]) for r in rows}
+    measured = suite_manifest.coverage_cells(rows)
+    cell_min = int(floor.get("cell_min", 1))
+    return [f"{cat} x {lang}: {measured.get((cat, lang), 0)} measured < {cell_min}"
+            for cat, lang in sorted(have, key=lambda x: (str(x[0]), x[1]))
+            if measured.get((cat, lang), 0) < cell_min]
 
 
 def kendall_tau_b(a: list[float], b: list[float]) -> float:
@@ -247,8 +292,8 @@ def suite_from_refs(refs: dict, exclude_slugs: set[str]) -> dict:
     trips = pick_tripwires(allpass, meta, elapsed)
     units = sorted(set(disc) | set(trips))
     suite = {
-        "suite": "v5-fast",
-        "base_suite_version": "v4",
+        "suite": SUITE_NAME,
+        "base_suite_version": BASE_SUITE,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "generator": "evals/make_fast_suite.py",
         "criteria": {
@@ -304,7 +349,7 @@ def main() -> int:
         with open(args.check_run) as f:
             run = json.load(f)
         outcomes = {t["id"]: bool(t.get("passed")) for t in run.get("tasks", [])}
-        n_expected = 291
+        n_expected = scoring.expected_units(pinned.get("base_suite_version", BASE_SUITE))
         if len(outcomes) != n_expected:
             print(f"NOT A FULL RUN: {len(outcomes)} units recorded (need {n_expected}) — "
                   f"the check needs the model's real outcome for every assumed unit")
@@ -327,6 +372,14 @@ def main() -> int:
 
     if args.generate:
         suite = generate(exclude)
+        gaps = pin_coverage_gaps(suite, DEFAULT_COVERAGE_FLOOR)
+        if gaps:
+            print(f"REFUSED: the pin leaves {len(gaps)} cell(s) under the coverage floor "
+                  f"{DEFAULT_COVERAGE_FLOOR} — a fast score would say nothing about them:")
+            for g in gaps[:20]:
+                print(f"  {g}")
+            return 1
+        suite["coverage_floor"] = dict(DEFAULT_COVERAGE_FLOOR)
         os.makedirs(SUITES_DIR, exist_ok=True)
         with open(SUITE_PATH, "w") as f:
             json.dump(suite, f, indent=2)

@@ -15,20 +15,31 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "evals"))
 
 from scoring import (_suite_version, score_run, entry_dedup_key, entry_host_id,
-                     compute_solve_breadth, SOLVE_WEIGHT, LANG_WEIGHT)
+                     compute_solve_breadth, SOLVE_WEIGHT, LANG_WEIGHT,
+                     SUITE_EXPECTED_UNITS, imputation_allowed)
+
+V4_UNITS = SUITE_EXPECTED_UNITS["v4"]
+V35_UNITS = SUITE_EXPECTED_UNITS["v3.5"]
 
 
 class TestSuiteVersion(unittest.TestCase):
     def test_explicit_field_wins(self):
         self.assertEqual(
-            _suite_version({"suite_version": "v9", "summary": {"total": 291}}),
+            _suite_version({"suite_version": "v9", "summary": {"total": V4_UNITS}}),
             "v9")
 
-    def test_291_units_is_v4(self):
-        self.assertEqual(_suite_version({"summary": {"total": 291}}), "v4")
+    def test_v4_unit_count_is_v4(self):
+        self.assertEqual(_suite_version({"summary": {"total": V4_UNITS}}), "v4")
 
-    def test_323_units_is_v3_5(self):
-        self.assertEqual(_suite_version({"summary": {"total": 323}}), "v3.5")
+    def test_v3_5_unit_count_is_v3_5(self):
+        self.assertEqual(_suite_version({"summary": {"total": V35_UNITS}}), "v3.5")
+
+    def test_v5_expects_111_scored_units(self):
+        self.assertEqual(SUITE_EXPECTED_UNITS["v5"], 111)
+
+    def test_v5_is_never_inferred_from_a_count(self):
+        # v5 rows always record suite_version; a bare 111 is not v5.
+        self.assertEqual(_suite_version({"summary": {"total": 111}}), "legacy")
 
     def test_other_count_is_legacy(self):
         self.assertEqual(_suite_version({"summary": {"total": 144}}), "legacy")
@@ -120,6 +131,65 @@ class TestSolveBreadth(unittest.TestCase):
             self.assertIn(k, entry)
 
 
+
+class TestV5Scoring(unittest.TestCase):
+    """v5 rules (brief §6.6): LANG over k>1 bases only, probes and
+    budget-skipped units never scored, no imputation for v5 or any arm."""
+
+    def _multi(self, base, k, passed, diff="hard"):
+        return [{"id": f"{base}_{i}", "base_id": base, "difficulty": diff,
+                 "variant_count": k, "passed": i < passed} for i in range(k)]
+
+    def test_lang_over_multi_language_bases_only(self):
+        tasks = [{"id": "s", "difficulty": "hard", "passed": True}] + self._multi("b", 6, 3)
+        _s, lang_v4, _c = compute_solve_breadth(tasks)
+        _s, lang_v5, _c = compute_solve_breadth(tasks, lang_multi_only=True)
+        self.assertEqual(lang_v4, 75.0)    # the singleton counted as 6/6
+        self.assertEqual(lang_v5, 50.0)    # only the k=6 base: 3/6
+
+    def test_lang_is_zero_with_no_solved_multi_base(self):
+        tasks = [{"id": "s", "difficulty": "hard", "passed": True}] + self._multi("b", 6, 0)
+        solve, lang, cap = compute_solve_breadth(tasks, lang_multi_only=True)
+        self.assertEqual((solve, lang), (50.0, 0.0))
+        self.assertAlmostEqual(cap, SOLVE_WEIGHT * 50, places=2)
+
+    def test_score_run_applies_v5_rules_by_suite_version(self):
+        tasks = [{"id": "s", "difficulty": "hard", "passed": True}] + self._multi("b", 6, 3)
+        v4 = score_run({"suite_version": "v4", "tasks": tasks})
+        v5 = score_run({"suite_version": "v5", "tasks": tasks})
+        self.assertEqual(v4["language_breadth"], 75.0)
+        self.assertEqual(v5["language_breadth"], 50.0)
+        self.assertNotIn("lang_scope", v4)          # the v4 board is frozen
+        self.assertIn("capability_category_balanced", v5)
+
+    def test_probes_and_budget_skips_are_not_scored(self):
+        tasks = self._multi("b", 6, 6)
+        probe = {"id": "p_f", "difficulty": "easy", "passed": False, "role": "probe"}
+        skip = {"id": "z", "difficulty": "hard", "passed": False, "reason": "budget_skip"}
+        clean = score_run({"suite_version": "v5", "tasks": tasks})
+        noisy = score_run({"suite_version": "v5", "tasks": tasks + [probe, skip]})
+        for k in ("capability", "problem_solving", "language_breadth", "tasks_total"):
+            self.assertEqual(clean[k], noisy[k], k)
+        self.assertEqual((noisy["probe_units"], noisy["budget_skipped"]), (1, 1))
+        # a budget-skipped run is partial: never seated
+        self.assertTrue(any("budget-skipped" in r for r in noisy["ineligible_reasons"]))
+
+    def test_no_imputation_for_v5_or_any_arm(self):
+        self.assertTrue(imputation_allowed("v4"))
+        self.assertFalse(imputation_allowed("v5"))
+        for arm in ("L0", "L1", "L2"):
+            self.assertFalse(imputation_allowed("v4", arm=arm))
+            self.assertFalse(imputation_allowed("v5", arm=arm))
+
+    def test_only_the_board_arm_is_eligible(self):
+        tasks = self._multi("b", 6, 6)
+        l0 = score_run({"suite_version": "v5", "tasks": tasks,
+                        "harness": {"arm": "L0", "board_arm": "L0"}})
+        l1 = score_run({"suite_version": "v5", "tasks": tasks,
+                        "harness": {"arm": "L1", "board_arm": "L0"}})
+        self.assertFalse(any(r.startswith("arm ") for r in l0["ineligible_reasons"]))
+        self.assertIn("arm L1", l1["ineligible_reasons"])
+
 def _cli(monkeypatch, tmp_path, *argv):
     import scoring
     monkeypatch.setattr(scoring, "RESULTS_DIR", str(tmp_path / "results"))
@@ -144,7 +214,7 @@ def test_rebuild_then_html_renders_the_rebuilt_board(monkeypatch, tmp_path, caps
     import json
     _one_run(tmp_path)
     (tmp_path / "leaderboard.json").write_text(json.dumps({"entries": [
-        {"model": "STALE-ROW", "suite_version": "v4", "tasks_total": 291}]}))
+        {"model": "STALE-ROW", "suite_version": "v4", "tasks_total": V4_UNITS}]}))
     out = tmp_path / "board.html"
     _cli(monkeypatch, tmp_path, "--rebuild", "--html", str(out))
     said = capsys.readouterr().out
@@ -160,7 +230,7 @@ def test_rebuild_with_no_result_files_refuses_and_keeps_the_board(monkeypatch, t
     import json
     import pytest
     board = json.dumps({"entries": [
-        {"model": "SEATED-ROW", "suite_version": "v4", "tasks_total": 291}]})
+        {"model": "SEATED-ROW", "suite_version": "v4", "tasks_total": V4_UNITS}]})
     for make_dir in (False, True):                 # no results dir; an empty one
         if make_dir:
             (tmp_path / "results").mkdir()
