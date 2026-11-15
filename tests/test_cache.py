@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tokenize
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -526,7 +527,11 @@ def test_era_hashes_what_the_eval_agent_consumes(cache_dir):
     assert "system-prompt-tools.md" not in names
     assert "HARNESS_VERSION" in names
     for f in ("runner.py", "tools.py"):
-        src = (ROOT / "agents" / f).read_text()
+        # Code only: a comment naming a frontend file (tools.py's write
+        # guard explains why ~/.config/opencode is protected) reads nothing.
+        with open(ROOT / "agents" / f, encoding="utf-8") as fh:
+            src = "".join(t.string for t in tokenize.generate_tokens(fh.readline)
+                          if t.type != tokenize.COMMENT)
         assert "opencode.json" not in src and "system-prompt-tools" not in src, \
             f"agents/{f} now reads a frontend file: put it back in the era"
 
