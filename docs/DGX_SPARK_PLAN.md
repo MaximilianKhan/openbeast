@@ -248,7 +248,7 @@ prints "not applicable" instead of failing; **later** = not needed for M1.
 | 18 | `measure-vram.sh`, `profile-*-mtp.sh` | **n/a msg**. `evals/profile_mtp.py` **later** |
 | 19 | `bootstrap.sh` / `update.sh --llama` | **done** for bootstrap — `INFERENCE_MANAGED=false` (any vLLM / TensorFold, a remote llama) skips cmake/g++/nvcc checks, the llama.cpp build, the `GPU_BACKEND` pin, the GGUF disk check and download, and the github/HF probes; the GPU is reported, never failed; `--minimal` (llama-server only) is refused. `update.sh --llama` unchanged (it needs a clone, which such a box does not have) |
 | 20 | aarch64 (pydeps lock, zig tarball, air-gap bundle) | **pydeps: no change needed** — the lock already lists every file of each release; on spark-1 a `--require-hashes` download got all 43 (7 native `manylinux_*_aarch64` cp312/abi3 wheels) and a fresh resolve names the same 43 packages. Cross-built wheelhouse flags in `pydeps.sh` (§8a). **zig: see §8a.** **air-gap bundle: later** — `bundle.sh build` saves the BUILD host's wheels and image platform, so a bundle for a Spark must be built on an aarch64 box |
-| 21 | `MEM_LIMIT_PCT` scope | N/A in T1 (containers on other boxes) |
+| 21 | `MEM_LIMIT_PCT` scope | N/A in T1 (containers on other boxes). **T2 (command center + rank 0 on one GB10) needs it:** 75 % of a MemTotal the model holds protects nothing, so the supervisor re-sizes the scope to MemAvailable − `MEM_RESERVE_GB` once the model is up (start.sh `fit_unified_mem_cap`) |
 | 22 | `client.sh` reads `/props` `n_ctx` | **later** — falls back cleanly; could read `max_model_len` |
 
 ### 8a. T2 — the command center on a Spark
