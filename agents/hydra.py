@@ -67,6 +67,7 @@ REPO = HERE.parent
 MAX_BODY_BYTES = 32 * 1024 * 1024          # the gate's cap
 NONSTREAM_BUFFER = 16 * 1024 * 1024
 ERROR_BODY_CAP = 1024 * 1024
+POOL_TIMEOUT_S = 5.0
 ROUTED_PATHS = ("/v1/chat/completions", "/v1/completions", "/v1/embeddings")
 _HOP = {"host", "content-length", "transfer-encoding", "connection", "keep-alive", "te", "trailer",
         "upgrade", "proxy-authorization", "proxy-authenticate", "proxy-connection"}
@@ -481,10 +482,16 @@ class Hydra:
             return cur[1]
         if cur:
             self.retired.append(cur[1])
+        # No connection cap: the engine's own queue is the queue. A cap of
+        # slots*4 made the 5th concurrent turn on a 1-slot rig wait
+        # POOL_TIMEOUT_S for a socket and then fail as a 502 that counted
+        # toward the breaker — where llama-server would just have queued it.
+        # How many requests reach a node is bounded upstream (the gate's
+        # in-flight caps, the callers), and every attempt by its deadline.
         c = httpx.AsyncClient(
             trust_env=False,
-            timeout=httpx.Timeout(None, connect=n.connect_timeout_s, pool=5.0),
-            limits=httpx.Limits(max_connections=n.slots * 4, max_keepalive_connections=n.slots))
+            timeout=httpx.Timeout(None, connect=n.connect_timeout_s, pool=POOL_TIMEOUT_S),
+            limits=httpx.Limits(max_connections=None, max_keepalive_connections=n.slots))
         self.clients[n.id] = (k, c)
         return c
 

@@ -1453,3 +1453,24 @@ def test_a_429_passes_through_when_no_later_attempt_ran(fleet):
     r = post(srv, chat())
     assert r.status_code == 429 and r.headers["retry-after"] == "1", r.text
     assert r.headers["x-hydra-attempts"] == "unc@rig:429,nvfp4@sparks:skipped"
+
+
+def test_more_callers_than_the_pool_on_a_one_slot_node_queue_rather_than_502(fleet, monkeypatch):
+    """Review 2026-11 F2: each node's pool was capped at slots*4 with a 5 s pool
+    timeout, so the 5th concurrent turn on a 1-slot rig got a 502 that counted
+    toward the breaker — where the engine itself would have queued it."""
+    monkeypatch.setattr(hydra, "POOL_TIMEOUT_S", 0.3)        # 5 s in production: same cliff, faster
+    srv, rig, _, _ = fleet(lambda r: r["nodes"]["rig"].update(ttft_timeout_s=15), chunks=10, tok_ms=100)
+    out, lock = [], threading.Lock()
+
+    def go():
+        s = post(srv, chat(model="solo", stream=True)).status_code
+        with lock:
+            out.append(s)
+    ts = [threading.Thread(target=go) for _ in range(7)]          # 1 slot x 4 + 3
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join(30)
+    assert sorted(out) == [200] * 7, out
+    assert srv.hy.state.health["unc@rig"].h.fail_total == 0
