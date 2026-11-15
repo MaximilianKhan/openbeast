@@ -139,7 +139,9 @@ def _eval_marker() -> str | None:
 
 
 def _lang_allowed(lang: str) -> bool:
-    """LANG_PACKS is the operator's language allow list for beast-lang."""
+    """LANG_PACKS is the operator's language allow list for beast-lang.
+    `auto` admits the language here; served_pack() then refuses it when its
+    toolchain is absent, which is where packs.allow_list('auto') drops it."""
     try:
         from lang import packs as P                    # noqa: PLC0415
         raw = P.allow_list_raw()
@@ -233,6 +235,14 @@ def served_pack(lang: str) -> tuple[ServedPack | None, str]:
     problem = pack_problem(lang, path, data)
     if problem:
         return None, problem
+    if lang == "zig" and not _installed_zig():
+        # pack_problem skips the version match when there is no zig (the
+        # eval harness's drift check shares it, and decides that for
+        # itself). Production does not: the pack says "The installed
+        # compiler is zig 0.16.0", and with no compiler that is false —
+        # unverifiable is never a pass (the escalation gate's rule too).
+        return None, ("zig is not installed here, so the pack cannot be "
+                      "confirmed to match it")
     want = MEASURED_SHA256.get(lang)
     got = hashlib.sha256(data).hexdigest()
     if want != got:

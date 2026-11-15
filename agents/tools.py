@@ -923,16 +923,68 @@ _DIAG_TIMEOUT = 10
 _DIAG_MAX_LINES = 30
 _DIAG_MAX_BYTES = 2048
 _DIAG_AS_LIMIT = 4 * 1024**3   # tighter than _CHILD_AS_LIMIT (§3.3)
-_DIAG_SLOTS = threading.BoundedSemaphore(2)  # N-jobs × checkers RAM cap
+# At most 2 checkers at once IN THIS PROCESS (an MCP server's threads). Not
+# an aggregate cap: each eval/agent runner is its own process with its own
+# semaphore and dispatches tools one at a time, so `--jobs N` runs up to N
+# checkers, each bounded only by _DIAG_AS_LIMIT and _DIAG_TIMEOUT — worst
+# case N × 4 GiB. (A cross-process limiter would make busy-skips depend on
+# --jobs, i.e. change what an A/B arm measures.)
+_DIAG_SLOTS = threading.BoundedSemaphore(2)
+
+
+def _ancestor_has(path: str, name: str) -> bool:
+    """Whether `name` exists in path's directory or any directory above it."""
+    d = os.path.dirname(os.path.abspath(path))
+    while True:
+        if os.path.exists(os.path.join(d, name)):
+            return True
+        parent = os.path.dirname(d)
+        if parent == d:
+            return False
+        d = parent
+
+
+_GO_MAIN_RE = re.compile(r"^func\s+main\s*\(\s*\)", re.M)
+
+
+def _go_has_main(path: str) -> bool:
+    try:
+        with open(path, errors="replace") as f:
+            return _GO_MAIN_RE.search(f.read(_DIAG_MAX_BYTES * 64)) is not None
+    except OSError:
+        return False
+
+
+def _go_standalone_mains(path: str) -> bool:
+    """A module-less directory of independent programs (hello.go and
+    solver.go, each with its own main). Vetting the siblings together then
+    reports a made-up `main redeclared in this block` on every write, though
+    each file builds on its own with `go run file.go`."""
+    if not _go_has_main(path) or _ancestor_has(path, "go.mod"):
+        return False
+    d = os.path.dirname(path) or "."
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return False
+    here = os.path.basename(path)
+    return any(n.endswith(".go") and not n.endswith("_test.go") and n != here
+               and _go_has_main(os.path.join(d, n)) for n in names)
 
 
 def _diag_checker(path: str):
     """(lang, command, extra_env, scratch_dirs) for a source path, or None.
 
-    Commands mirror the eval validators' flags (docs/LANG_AWARENESS_PLAN.md
-    §3.2 — measured on the rig). A missing toolchain returns None: the
-    feature silently no-ops rather than degrading the write."""
+    Under eval (OPENBEAST_EVAL, set by run_eval for every agent) the
+    commands mirror the eval validators' flags (docs/LANG_AWARENESS_PLAN.md
+    §3.2 — measured on the rig), so a unit is checked the way it is graded.
+    Outside eval those pins MADE UP errors for code the installed toolchain
+    builds fine — -std=c11 hides POSIX's CLOCK_MONOTONIC/strdup, -std=c++17
+    rejects std::span, bare rustc is a 2015-edition binary crate — so
+    production uses the compiler's own defaults. A missing toolchain returns
+    None: the feature silently no-ops rather than degrading the write."""
     ext = os.path.splitext(path)[1]
+    under_eval = bool(os.environ.get("OPENBEAST_EVAL", "").strip())
     q = shlex.quote(path)
     qdir = shlex.quote(os.path.dirname(path) or ".")
     if ext == ".zig":
@@ -960,10 +1012,26 @@ def _diag_checker(path: str):
     if ext == ".rs":
         if not shutil.which("rustc"):
             return None
+        flags = ""
+        if not under_eval:
+            # A file in a cargo crate (lib.rs, a module, anything using a
+            # dependency) cannot be judged by single-file rustc — E0601 /
+            # E0432 on correct code — and `cargo check` would RUN build
+            # scripts and proc macros. Say nothing rather than something false.
+            if _ancestor_has(path, "Cargo.toml"):
+                return None
+            try:
+                with open(path, errors="replace") as f:
+                    has_main = re.search(r"\bfn\s+main\s*\(",
+                                         f.read(_DIAG_MAX_BYTES * 64)) is not None
+            except OSError:
+                has_main = True
+            flags = f"--edition 2021 --crate-type {'bin' if has_main else 'lib'} "
         scratch = tempfile.mkdtemp(prefix="diagrs")
         # NOT -o /dev/null (rustc can't create temp files there — measured
-        # failing on CLEAN code). No --edition pin: mirrors the validator.
-        return ("rust", f"rustc --emit=metadata --out-dir {shlex.quote(scratch)} {q}",
+        # failing on CLEAN code). Under eval no --edition pin: mirrors the
+        # validator.
+        return ("rust", f"rustc {flags}--emit=metadata --out-dir {shlex.quote(scratch)} {q}",
                 {}, [scratch])
     if ext == ".go":
         if not shutil.which("go"):
@@ -973,24 +1041,48 @@ def _diag_checker(path: str):
         # download (GOTOOLCHAIN), network (GOPROXY) and cgo channels.
         env = {"GOTOOLCHAIN": "local", "GOPROXY": "off",
                "GOFLAGS": "-mod=readonly", "CGO_ENABLED": "0"}
-        return ("go", f"cd {qdir} && go vet ./*.go", env, [])
+        target = "./*.go"
+        if _go_standalone_mains(path):
+            # ...unless that would vet several standalone programs as one.
+            target = "./" + shlex.quote(os.path.basename(path))
+        return ("go", f"cd {qdir} && go vet {target}", env, [])
     if ext == ".c":
         if not shutil.which("gcc"):
             return None
-        return ("c", f"gcc -fsyntax-only -std=c11 -Wall -Wextra -I{qdir} {q}", {}, [])
+        std = "-std=c11 " if under_eval else ""
+        return ("c", f"gcc -fsyntax-only {std}-Wall -Wextra -I{qdir} {q}", {}, [])
     if ext in (".cpp", ".cc", ".cxx"):
         if not shutil.which("g++"):
             return None
-        return ("c++", f"g++ -fsyntax-only -std=c++17 -Wall -Wextra -I{qdir} {q}", {}, [])
+        std = "-std=c++17 " if under_eval else ""
+        return ("c++", f"g++ -fsyntax-only {std}-Wall -Wextra -I{qdir} {q}", {}, [])
     if ext == ".py":
         # -I (isolated) is a SECURITY requirement: bare python executes
         # model-writable .pth files from user site-packages at startup.
-        return ("python", f"{shlex.quote(sys.executable)} -I -m py_compile {q}", {}, [])
+        # `-m py_compile FILE` WROTE __pycache__/*.pyc next to the source —
+        # into the user's workspace / file shard, on every write (-I and
+        # PYTHONDONTWRITEBYTECODE do not stop an explicit compile). The
+        # bytecode now goes to a scratch dir; the error text is py_compile's
+        # own, exactly as `-m py_compile` printed it.
+        scratch = tempfile.mkdtemp(prefix="diagpy")
+        cfile = shlex.quote(os.path.join(scratch, "x.pyc"))
+        return ("python", f"{shlex.quote(sys.executable)} -I -c {shlex.quote(_PY_CHECK)} "
+                f"{q} {cfile}", {}, [scratch])
     if ext == ".sh":
         if not shutil.which("shellcheck"):
             return None
         return ("shell", f"shellcheck -S warning {q}", {}, [])
     return None
+
+
+_PY_CHECK = (
+    "import sys, py_compile\n"
+    "try:\n"
+    "    py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)\n"
+    "except py_compile.PyCompileError as e:\n"
+    "    sys.stderr.write(e.msg); sys.exit(1)\n"
+    "except OSError as e:\n"
+    "    sys.stderr.write(str(e)); sys.exit(1)\n")
 
 
 def diagnostics_enabled() -> bool:
@@ -1024,9 +1116,14 @@ def diagnostics_enabled() -> bool:
 # ---------------------------------------------------------------------------
 
 _ESC_MAX_BYTES = 600             # its share of the 2 KB block, budgeted first
-# The diagnostics layer's language names -> beast-lang's.
-_ESC_LANG = {"zig": "zig", "c": "c", "c++": "cpp", "python": "python",
-             "rust": "rust", "go": "go"}
+# The diagnostics layer's language names -> beast-lang's. NOT python: its
+# checker is py_compile, which only ever reports a SyntaxError, and the index
+# records python's SyntaxError shape as `generic` (decoys produce it too) —
+# every python signature that can select a card is ModuleNotFoundError /
+# AttributeError / ImportError wording, which a parse never prints. The entry
+# could never attach a card; python's cards reach a model through the
+# beast-lang pull surface and the packs instead.
+_ESC_LANG = {"zig": "zig", "c": "c", "c++": "cpp", "rust": "rust", "go": "go"}
 
 
 def escalation_enabled() -> bool:

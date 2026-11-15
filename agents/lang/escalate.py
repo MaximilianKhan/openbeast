@@ -534,17 +534,35 @@ def cards_for(lang: str, diagnostic: str, max_cards: int = MAX_CARDS,
     score = {cid: sc for cid, sc in score.items() if cid in eligible}
     if not score:
         return []
-    summaries = {c.id: c.summary for c in claims}
+    by_id = {c.id: c for c in claims}
     ranked = sorted(score.items(), key=lambda kv: (-kv[1], kv[0]))
     out = []
     for cid, sc in ranked:
-        summary = summaries.get(cid) or ""
+        c = by_id.get(cid)
+        summary = (c.summary if c else "") or ""
         if not summary:
-            continue                       # verified but undeliverable
+            continue                       # undeliverable
+        # The index was built from OLD fixtures only, possibly on another
+        # machine; it says nothing about whether the NEW form (the fix this
+        # card hands over) compiles HERE. The header says "Confirmed against
+        # the toolchain installed on this machine", so the same gate as
+        # packs.render() and reference.verified_cards(): VERIFIED now, or not
+        # said. The verdict cache makes this one compile per claim, once.
+        if not _verified_here(c):
+            continue
         out.append({"claim": cid, "summary": summary, "score": sc})
         if len(out) >= max_cards:
             break
     return out
+
+
+def _verified_here(claim) -> bool:
+    """VERIFIED by the installed toolchain right now. Any failure to judge is
+    "no": a card we cannot stand behind is worse than silence."""
+    try:
+        return V.verify(claim)["verdict"] == V.VERIFIED
+    except Exception:                                    # noqa: BLE001
+        return False
 
 
 def render_escalation(lang: str, diagnostic: str, **kw) -> str:

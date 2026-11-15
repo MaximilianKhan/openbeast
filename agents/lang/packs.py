@@ -13,7 +13,8 @@ Three things live here:
 1. THE DEPLOYMENT ALLOW LIST. Which languages this install cares about is a
    deployment decision, not a property of our eval suite. `LANG_PACKS=auto`
    (the default) means every language with an installed toolchain AND
-   verified claims; `LANG_PACKS=cpp,zig` pins it; `LANG_PACKS=off` disables
+   either verified claims or a toolchain probe (introspect.PROBES — see
+   _eligible_langs); `LANG_PACKS=cpp,zig` pins it; `LANG_PACKS=off` disables
    the feature. One rig wants C++ and zig; another drops in a model that
    needs Rust and Go, and gets them by editing one line.
 

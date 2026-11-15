@@ -251,6 +251,16 @@ def test_other_installed_zig_injects_nothing(monkeypatch, tmp_path):
     assert path is None and "0.17.0" in info["reason"]
 
 
+def test_no_installed_zig_injects_nothing(monkeypatch, tmp_path):
+    """The pack says "The installed compiler is zig 0.16.0"; with no zig on
+    this box that is false, and the conf promises the pack is served "only
+    when it matches the installed zig"."""
+    monkeypatch.setattr(PC, "_installed_zig", lambda ttl=60.0: "")
+    path, info = _ctx("write zig", str(tmp_path))
+    assert path is None and "not installed" in info["reason"]
+    assert "NOT SERVED" in PC.status_line()
+
+
 def test_run_eval_uses_the_same_check():
     """One drift check, not two: the harness delegates to pack_context."""
     src = open(os.path.join(REPO, "evals", "run_eval.py")).read()
@@ -491,16 +501,17 @@ def _env(tmp_path, home=None, **extra):
 
 def _zig_matches():
     """The scripts run a real python with this box's zig: skip the positive
-    case where an installed zig would (correctly) refuse the 0.16 pack."""
+    case where an installed zig would (correctly) refuse the 0.16 pack —
+    and where there is no zig at all, which refuses it too."""
     if not shutil.which("zig"):
-        return True
+        return False
     v = subprocess.run(["zig", "version"], capture_output=True, text=True).stdout.strip()
     return v == "0.16.0"
 
 
 def test_agent_sh_passes_the_pack(tmp_path):
     if not _zig_matches():
-        pytest.skip("installed zig is not 0.16.0")
+        pytest.skip("zig 0.16.0 is not installed")
     root = _fake_tree(tmp_path)
     run = subprocess.run(["bash", str(root / "agent.sh"), "-w", str(tmp_path),
                           "write a zig tokenizer"],
@@ -524,7 +535,7 @@ def test_agent_sh_off_and_eval_leave_argv_alone(tmp_path):
 
 def test_client_sh_agent_passes_the_pack(tmp_path):
     if not _zig_matches():
-        pytest.skip("installed zig is not 0.16.0")
+        pytest.skip("zig 0.16.0 is not installed")
     root = _fake_tree(tmp_path)
     env = _env(tmp_path, home=tmp_path / "home",
                OPENBEAST_AGENT_INFERENCE_URL="http://rig.example:8443/v1")

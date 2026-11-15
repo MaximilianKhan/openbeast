@@ -557,6 +557,68 @@ def test_zig_snippets_that_read_a_host_file_are_refused(secret):
         assert z.refusal(z.wrap(src)) is None, src
 
 
+def _c_ff_vt_leaks(path):
+    """A form feed or vertical tab AFTER the `#`: gcc/g++/clang warn ("form
+    feed in preprocessing directive") and still run the directive."""
+    out = []
+    for ws in ("\f", "\v"):
+        out += [
+            f'#{ws}include "{path}"\nint main(void){{return 0;}}\n',
+            f'#{ws}include{ws}"{path}"\nint main(void){{return 0;}}\n',
+            f'#{ws}include <{path}>\nint main(void){{return 0;}}\n',
+            f'# {ws}/**/{ws}include "{path}"\nint main(void){{return 0;}}\n',
+            f'#{ws}line 1 "{path}"\nint x = ;\n',
+            f'#{ws}1 "{path}"\nint x = ;\n',
+            f'int main(void){{ static const unsigned char b[] = {{\n#{ws}embed "{path}"\n}}; '
+            "return b[0]; }\n",
+            f'#{ws}if __has_include("{path}")\n#endif\n',
+            f'#define F "{path}"\n#{ws}include F\nint main(void){{return 0;}}\n',
+            f'{ws}import{ws}"{path}";\n',
+        ]
+    # clang ignores a NUL byte ("null character ignored") and still runs the
+    # directive, so a NUL anywhere is refused outright.
+    out += [
+        f'#\x00include "{path}"\nint main(void){{return 0;}}\n',
+        f'\x00#include "{path}"\nint main(void){{return 0;}}\n',
+        f'#\x00line 1 "{path}"\nint x = ;\n',
+        f'#include\x00"{path}"\nint main(void){{return 0;}}\n',
+    ]
+    return out
+
+
+@pytest.mark.parametrize("lang", ["c", "cpp"])
+def test_a_form_feed_or_vtab_after_the_hash_still_refuses(lang, secret, monkeypatch):
+    ran = []
+    monkeypatch.setattr(D, "_run", lambda argv, *a, **k: ran.append(argv))
+    drv = D.driver_for(lang)
+    for src in _c_ff_vt_leaks(secret):
+        r = drv.compile_source(src)
+        assert not r and r.refused, (lang, src, r.detail)
+    assert ran == [], f"the toolchain was started on a refused snippet: {ran}"
+    # negative controls: an ordinary include / #line with \f stays judged
+    for src in ('#\finclude <stdio.h>\nint main(void){return 0;}\n',
+                '#\finclude\f"local.h"\nint main(void){return 0;}\n',
+                '#\vline 10 "renamed.c"\nint main(void){return 0;}\n'):
+        assert drv.refusal(src) is None, src
+
+
+def test_zig_cdefine_cannot_inject_a_directive(secret):
+    """@cDefine/@cUndef are printed verbatim into the @cImport header
+    (`#define {name} {value}\n`), so an escaped newline in either argument
+    injects an `#include` of a host file that clang then reads."""
+    z = D.driver_for("zig")
+    for src in (f'const c = @cImport({{ @cDefine("X", "1\\n#include \\"{secret}\\""); }});\n_ = c;',
+                f'const c = @cImport({{ @cDefine("X\\n#include <{secret}>\\n#define Y", "1"); }});\n_ = c;',
+                f'const c = @cImport({{ @cUndef("X\\n#include <{secret}>"); }});\n_ = c;',
+                'const v = "1\\n#include <x>";\nconst c = @cImport({ @cDefine("X", v); });\n_ = c;',
+                'const c = @cImport({ @cDefine("X",\n    \\\\1\n); });\n_ = c;'):
+        r = z.compile_source(z.wrap(src))
+        assert not r and r.refused, (src, r.detail)
+    for src in ('const c = @cImport({ @cDefine("X", "1"); @cInclude("local.h"); });\n_ = c;',
+                'const c = @cImport({ @cDefine("_GNU_SOURCE", {}); @cUndef("X"); });\n_ = c;'):
+        assert z.refusal(z.wrap(src)) is None, src
+
+
 @pytest.mark.skipif(not (shutil.which("go") and shutil.which("gcc")),
                     reason="needs go and gcc (cgo)")
 def test_cgo_cannot_be_used_to_include_a_host_file(secret):

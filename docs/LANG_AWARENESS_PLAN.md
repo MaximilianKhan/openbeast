@@ -137,7 +137,10 @@ instead of after a dead A/B.
   `RLIMIT_CPU`, not the 32 GB child default — 4 parallel agents ×
   pathological input × 10 s runway is otherwise the 2026-07-07 OOM class
   again. Per-language concurrency cap so `--jobs N` checkers can't sum
-  past a RAM budget. 10 s hard timeout; timeout/crash ⇒
+  past a RAM budget. *As built:* the cap (`_DIAG_SLOTS`, 2) is per
+  PROCESS, not per language or per rig — every runner is its own process,
+  so `--jobs N` runs up to N checkers and the bound is N × the 4 GiB
+  `RLIMIT_AS`. 10 s hard timeout; timeout/crash ⇒
   `diagnostics: unavailable (<reason>)`, never a failed write.
 - Output cap: first 30 lines / 2 KB.
 
