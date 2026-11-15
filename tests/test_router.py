@@ -292,6 +292,7 @@ class TestSpawnCarriesIdentity(unittest.TestCase):
             self.headers = headers
 
             class R:
+                status_code = 200
                 text = '"started agent 20260929-120000-deadbeef"'
 
                 def json(self):

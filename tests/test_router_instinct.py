@@ -358,6 +358,7 @@ class _Upstream:
         spawn = self.spawn
 
         class R:
+            status_code = 200
             text = '"started agent 20260930-120000-deadbeef"'
 
             def json(self_inner):

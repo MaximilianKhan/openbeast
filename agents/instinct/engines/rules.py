@@ -25,8 +25,9 @@ import time
 from . import Caps, Engine, ScoreReq, ScoreRes, ScoreRow
 
 ROUTER_HINTS_PATTERN = (
-    r"\b(agents?|background|spawn|launch|kick[ -]?off|autonomous|delegate|"
-    r"in parallel|meanwhile|report back|check back|don'?t (wait|block))\b")
+    r"\b((?<![/.])(?<!user[ -])agents?(?!/|\.\w)|"
+    r"background(?![ -]?(?:colou?r|image))|spawn|launch|kick[ -]?off|autonomous|"
+    r"delegate|in parallel|meanwhile|report back|check back|don'?t (wait|block))\b")
 ROUTER_HINTS = re.compile(ROUTER_HINTS_PATTERN, re.IGNORECASE)
 
 DEFAULT_LONG_CONTEXT_TOKENS = 32000
