@@ -162,9 +162,101 @@ def test_fit_estimates():
     assert mid["tp1"]["verdict"] == "does not fit" and mid["tp2"]["verdict"] == "fits"
     assert "BOTH Sparks" in mid["verdict"]
     big = model_inspect.fit(230 * 10**9, kv, 262144, 0.80)
-    assert big["tp2"]["verdict"] == "does not fit" and "does NOT fit" in big["verdict"]
+    # too big for a pair; a cluster of three takes it (it was "does NOT fit" when the ceiling was two)
+    assert big["tp2"]["verdict"] == "does not fit" and big["tp3"]["verdict"] == "fits"
+    assert big["min_sparks"] == 3 and "fits on 3 Sparks (TP=3)" in big["verdict"]
+    huge = model_inspect.fit(700 * 10**9, kv, 262144, 0.80)
+    assert huge["tp8"]["verdict"] == "does not fit" and huge["min_sparks"] is None
+    assert "does NOT fit on 8 Sparks at this quantization" in huge["verdict"]
     assert small["tp1"]["suggested_max_model_len"] <= 262144
     assert "128 GB" in small["assumptions"]["method"] or small["assumptions"]["spark_bytes"] == 128 * 10**9
+    assert (small["min_sparks"], mid["min_sparks"]) == (1, 2)
+
+
+def test_fit_json_keeps_old_keys_and_adds_one_row_per_cluster_size():
+    f = model_inspect.fit(150 * 10**9, {"bytes": 65536, "splits_across_tp": True}, 262144, 0.80)
+    assert f["assumptions"]["tp2_weight_slack"] == 0.03          # the old key keeps its meaning
+    assert f["assumptions"]["max_sparks"] == 8 and f["assumptions"]["tp_weight_slack"]["8"] == 0.21
+    for n in range(1, 9):
+        row = f[f"tp{n}"]
+        assert row["sparks"] == n and {"per_rank_need", "kv_room_per_rank", "kv_tokens_total", "verdict",
+                                       "suggested_max_model_len"} <= set(row)
+    assert "tp9" not in f and "tp0" not in f
+    # the slack is the replicated share: 3 % x (TP-1) of weights/TP, unchanged at TP=1 and TP=2
+    assert f["tp1"]["per_rank_need"] == 150 * 10**9 + model_inspect.RUNTIME_OVERHEAD
+    assert f["tp2"]["per_rank_need"] == int(75 * 10**9 * 1.03 + model_inspect.RUNTIME_OVERHEAD)
+    assert f["tp4"]["per_rank_need"] == int(37.5 * 10**9 * 1.09 + model_inspect.RUNTIME_OVERHEAD)
+    needs = [f[f"tp{n}"]["per_rank_need"] for n in range(1, 9)]
+    assert needs == sorted(needs, reverse=True), "more Sparks never need more per rank"
+
+
+def test_fit_kv_heads_stop_splitting_at_one_per_rank():
+    kv = {"bytes": 4 * 1024, "splits_across_tp": True, "kv_heads": 4}
+    f = model_inspect.fit(100 * 10**9, kv, None, 0.80)
+    for n, heads_per_rank in ((2, 2), (4, 1), (8, 1)):               # TP 8 > 4 KV heads: replicated
+        row = f[f"tp{n}"]
+        assert row["kv_tokens_total"] == int(row["kv_room_per_rank"] // (1024 * heads_per_rank))
+
+
+def test_fit_tight_and_smallest_size_phrasing():
+    kv = {"bytes": 5 * 10**5, "splits_across_tp": False}           # 0.5 MB/token, never splits
+    f = model_inspect.fit(270 * 10**9, kv, None, 0.80)
+    assert f["tp3"]["verdict"] == "tight" and f["tp4"]["verdict"] == "fits"
+    assert f["min_sparks"] == 4 and f["verdict"].startswith("fits on 4 Sparks (TP=4)")
+    assert "3 Sparks is tight" in f["verdict"]
+    tight = model_inspect.fit(500 * 10**9, {"bytes": 10**7, "splits_across_tp": False}, None, 0.80)
+    assert tight["min_sparks"] is None and tight["min_sparks_tight"] is not None
+    assert tight["verdict"].startswith(f"only just fits on {tight['min_sparks_tight']} Sparks")
+
+
+def test_fit_flags_tp_sizes_vllm_cannot_shard():
+    kv = model_inspect.kv_per_token({"num_hidden_layers": 4, "num_attention_heads": 32,
+                                     "num_key_value_heads": 8, "head_dim": 128})
+    assert kv["attention_heads"] == 32
+    f = model_inspect.fit(10**9, kv, None, 0.80)
+    assert [n for n in range(1, 9) if f[f"tp{n}"]["vllm_heads_divisible"]] == [1, 2, 4, 8]
+    mla = model_inspect.kv_per_token({"num_hidden_layers": 4, "num_attention_heads": 48, "kv_lora_rank": 512})
+    g = model_inspect.fit(10**9, mla, None, 0.80)
+    assert [n for n in range(1, 9) if g[f"tp{n}"]["vllm_heads_divisible"]] == [1, 2, 3, 4, 6, 8]
+    assert model_inspect.fit(10**9, {"bytes": None}, None, 0.80)["tp3"]["vllm_heads_divisible"] is None
+
+
+def _sized(tmp_path, cfg, weight_bytes, name="ck"):
+    """An inspected fixture whose fit is recomputed as if the weights were weight_bytes."""
+    r = run_inspect(make_ckpt(tmp_path / name, cfg, QWEN_TEMPLATE))
+    r["weights"]["weight_bytes"] = weight_bytes
+    r["fit"] = model_inspect.fit(weight_bytes, r["kv_cache"], r["context"].get("native"), 0.80)
+    return r
+
+
+def test_draft_picks_the_smallest_cluster_that_fits(tmp_path):
+    r = _sized(tmp_path, dense("Qwen3ForCausalLM", "qwen3", num_attention_heads=48, num_key_value_heads=12),
+               230 * 10**9)
+    assert r["fit"]["min_sparks"] == 3
+    text, keys = model_inspect.draft_profile(r, "three", "vllm")
+    assert "TENSOR_PARALLEL_SIZE=3 " in text and set(obprofile.parse_text(text)) == set(keys)
+    assert "fits on 3 Sparks" in text
+
+
+def test_draft_skips_a_cluster_size_vllm_cannot_shard(tmp_path):
+    r = _sized(tmp_path, dense("Qwen3ForCausalLM", "qwen3"), 230 * 10**9)    # 32 heads: TP=3 refused
+    assert r["fit"]["min_sparks"] == 3 and r["fit"]["tp3"]["vllm_heads_divisible"] is False
+    text, _ = model_inspect.draft_profile(r, "four", "vllm")
+    assert "TENSOR_PARALLEL_SIZE=4 " in text and "TP=3 would fit, but vLLM needs TP to divide" in text
+    assert "vLLM refuses: TP does not divide" in model_inspect.render(r)
+    assert "TP4:" in model_inspect.render(r) and "TP5:" not in model_inspect.render(r)
+
+
+def test_draft_profile_obeys_tensorfold_rank_list(tmp_path):
+    r = _sized(tmp_path, glm(TR3), 30 * 10**9, "g")                  # fits on ONE, but GLM runs on 2 only
+    assert r["fit"]["min_sparks"] == 1 and r["engines"]["tensorfold"]["ranks"] == [2]
+    assert any(n.startswith("ranks: 2 —") for n in r["engines"]["tensorfold"]["notes"])
+    text, _ = model_inspect.draft_profile(r, "g", "tensorfold")
+    assert "TENSOR_PARALLEL_SIZE=2 " in text and "TensorFold runs this on 2 ranks only" in text
+    r = _sized(tmp_path, glm(TR3), 300 * 10**9, "g2")                 # needs more than the engine allows
+    assert r["fit"]["min_sparks"] > 2
+    text, _ = model_inspect.draft_profile(r, "g2", "tensorfold")
+    assert "TENSOR_PARALLEL_SIZE=2 " in text and "nothing fits: TP=2 is the largest size tensorfold allows" in text
 
 
 def test_write_profile_draft_is_marked_and_parses(tmp_path):
