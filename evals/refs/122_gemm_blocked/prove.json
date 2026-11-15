@@ -1,0 +1,8 @@
+{
+  "expect": {
+    "wrong_edge": "mismatch at case",
+    "wrong_operand_order": "mismatch at case"
+  },
+  "slow_expect": "solution timed out",
+  "timed": true
+}
