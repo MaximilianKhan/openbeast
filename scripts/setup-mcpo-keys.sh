@@ -2,8 +2,8 @@
 # Enable RBAC Phase 2: per-profile tool-server keys (docs/RBAC_PLAN.md).
 #
 # Generates two random keys and persists them in openbeast.conf:
-#   MCPO_ADMIN_KEY — admin profile: all 18 tools
-#   MCPO_GUEST_KEY — guest profile: web_search + fetch ONLY (anything else
+#   MCPO_ADMIN_KEY — admin profile: all 19 tools
+#   MCPO_GUEST_KEY — guest profile: web_search, fetch, weather ONLY (anything else
 #                    answers 404 for this key)
 #
 # The identity tool server (agents/openapi_tools.py, :3001) checks the

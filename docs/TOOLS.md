@@ -14,7 +14,7 @@ and search*; the transport is our own identity tool server
 
 | Surface | Transport | Where tools execute | Tools visible |
 |---|---|---|---|
-| **Open WebUI** (browser chat) | identity tool server (`agents/openapi_tools.py`) → OpenAPI (`localhost:3001`) | rig | 18 (admin) / 2 (guest — see RBAC) |
+| **Open WebUI** (browser chat) | identity tool server (`agents/openapi_tools.py`) → OpenAPI (`localhost:3001`) | rig | 19 (admin: the 18 MCP tools + `weather`) / 3 (guest — see RBAC) |
 | **OpenCode** (terminal agent) | MCP stdio (`opencode.json`) | rig | 18 from us, *plus OpenCode's own built-in tools* (see below) |
 | **Autonomous runner** (`agent.sh`, `start_agent`) | in-process (`agents/runner.py` → `agents/tools.py`) | rig | 10 |
 | **OpenBeast client** (`scripts/setup-client.sh`) | MCP stdio into OpenCode *on the client device* (`~/.config/opencode/opencode.json`) | **the client's disk** | 18, inference over the tailnet at `:8443` |
@@ -219,8 +219,8 @@ and reports `COMPACTIONS: n` next to the `TOKENS:` line.
 Two WebUI connections to the one identity server are configured by `scripts/configure-webui.sh`
 (details: `docs/RBAC_PLAN.md`):
 
-- **Admin** (WebUI admin role): all 18 tools.
-- **Guest** (WebUI user role): `web_search` + `fetch`. No filesystem, no
+- **Admin** (WebUI admin role): all 19 tools (the 18 MCP tools + `weather`).
+- **Guest** (WebUI user role): `web_search`, `fetch` and `weather`. No filesystem, no
   shell. Guest `fetch` is SSRF-guarded: http/https only, loopback/private/
   link-local/reserved targets refused, redirects re-validated per hop, and the
   vetted IP is pinned for the actual connect so a DNS flip can't slip through
