@@ -1,0 +1,23 @@
+{
+ "unit": "173_taskgroup_cancel",
+ "dest": "/tmp/eval_tg173/tg.py",
+ "ref": "ref.py",
+ "repeat": 5,
+ "scale_check": 2.0,
+ "wrong": {
+  "wrong_uncancel_early.py": "case \\d+: behaviour mismatch",
+  "wrong_no_wait.py": "case \\d+: tasks left pending",
+  "wrong_timer_leak.py": "callbacks left scheduled",
+  "wrong_timeout_priority.py": "case \\d+: behaviour mismatch",
+  "wrong_no_close.py": "misuse case: behaviour mismatch",
+  "wrong_naive.py": "case \\d+: behaviour mismatch",
+  "leak_gc.py": "forbidden api"
+ },
+ "slow": {
+  "wrong_polling.py": "error \\(_Runaway\\)",
+  "slow_spin.py": "solution timed out"
+ },
+ "slow_max_s": 15,
+ "leak": "leak_probe.py",
+ "notes": "ref.py is also the validator's embedded oracle; build.py regenerates evals/tasks/173_taskgroup_cancel.json from harness.py + ref.py + validator_main.py. Equivalence was checked against CPython 3.13's asyncio.TaskGroup on every scenario that uses neither timeout nor cancel() (0 differences); CPython 3.12's TaskGroup differs on ~13% of them (its uncancel ordering), which is the intended discrimination."
+}
