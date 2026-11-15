@@ -232,3 +232,30 @@ def test_caller_location_reads_the_users_webui_info(tmp_path):
     assert weather.caller_location(None, str(conf), http=http) is None
     weather._ADMIN.update(token=None, until=0)
     assert weather.caller_location(uid, str(tmp_path / "absent.conf"), http=http) is None
+
+
+def _raiser(exc):
+    def f(*_a, **_k):
+        raise exc
+    return f
+
+
+def test_upstream_failures_are_a_worded_answer_not_a_500():
+    import io
+    import socket
+    import urllib.error
+    failures = [
+        urllib.error.HTTPError("https://geocoding-api.open-meteo.com/v1/search", 429,
+                               "Too Many Requests", {}, io.BytesIO(b"")),
+        urllib.error.URLError(socket.gaierror(8, "nodename nor servname provided")),
+        TimeoutError("The read operation timed out"),
+        ValueError("Expecting value: line 1 column 1 (char 0)"),   # a non-JSON body
+    ]
+    for exc in failures:
+        for kw in ({"geo": _raiser(exc), "forecast": _fc},
+                   {"geo": real_geo, "forecast": _raiser(exc)}):
+            out = weather.weather("Danville, CA", **kw)
+            assert out.startswith("Open-Meteo"), out
+            assert "do not retry" in out and "Traceback" not in out
+    out = weather.weather("", near=SAN_RAMON, geo=geo, forecast=_raiser(failures[0]))
+    assert "rate-limit" in out

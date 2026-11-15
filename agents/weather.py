@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import socket
 import time
 import unicodedata
 import urllib.parse
@@ -243,6 +244,25 @@ def _conv(v, kind: str, imperial: bool):
     return round(v / 25.4, 2)
 
 
+def _upstream(what: str, e: Exception) -> str:
+    """An Open-Meteo failure as an answer the model can relay. A raised error
+    became an HTTP 500 carrying a bare urllib message, which models retry in
+    a loop (island.py says the same of network errors)."""
+    code = getattr(e, "code", None)
+    if code == 429:
+        why = "it is rate-limiting this server (HTTP 429)"
+    elif isinstance(code, int):
+        why = f"it answered HTTP {code}"
+    elif isinstance(e, (TimeoutError, socket.timeout)) or "timed out" in str(e):
+        why = f"it did not answer within {TIMEOUT_S}s"
+    elif isinstance(e, ValueError):
+        why = "it sent a reply that is not valid JSON"
+    else:
+        why = "it is unreachable (" + str(getattr(e, "reason", e))[:120] + ")"
+    return (f"Open-Meteo {what} failed: {why}. This is the weather service, not the place name: "
+            "do not retry now; tell the user the weather service is unavailable at the moment.")
+
+
 def weather(location: str = "", days: int = 3, *, near=None, units: str = "",
             geo=None, forecast=None) -> str:
     where = (location or "").strip()
@@ -251,7 +271,10 @@ def weather(location: str = "", days: int = 3, *, near=None, units: str = "",
                 "Interface -> Allow User Location). Ask the user which place, as 'City, State' or "
                 "'City, Country'.")
     if where:
-        place, others = resolve(where, near, geo)
+        try:
+            place, others = resolve(where, near, geo)
+        except Exception as e:  # noqa: BLE001 — any upstream failure is one answer
+            return _upstream("geocoding", e)
         if place is None and others:
             return (f"'{where}' is ambiguous and the caller's position is unknown: it is "
                     + " or ".join(f"{_label(c)} ({'a country' if _is_country(c) else 'a US state'})"
@@ -263,17 +286,25 @@ def weather(location: str = "", days: int = 3, *, near=None, units: str = "",
         place = {"name": "your current location", "latitude": near[0], "longitude": near[1],
                  "country_code": ""}
         others = []
-    days = max(1, min(int(days or 3), 7))
+    try:
+        days = max(1, min(int(days or 3), 7))
+    except (TypeError, ValueError):
+        days = 3
     # Always fetched metric; the units are decided after the reply, because
     # for the caller's own position the forecast's `timezone` is the cheap
     # (no extra request) answer to "which country is the caller in".
-    fc = (forecast or (lambda p: _get(FORECAST_URL, p)))({
-        "latitude": place["latitude"], "longitude": place["longitude"], "timezone": "auto",
-        "forecast_days": days,
-        "current": "temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m",
-        "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
-        "temperature_unit": "celsius", "wind_speed_unit": "kmh", "precipitation_unit": "mm",
-    })
+    try:
+        fc = (forecast or (lambda p: _get(FORECAST_URL, p)))({
+            "latitude": place["latitude"], "longitude": place["longitude"], "timezone": "auto",
+            "forecast_days": days,
+            "current": "temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m",
+            "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
+            "temperature_unit": "celsius", "wind_speed_unit": "kmh", "precipitation_unit": "mm",
+        })
+        if not isinstance(fc, dict):
+            raise ValueError("forecast reply is not a JSON object")
+    except Exception as e:  # noqa: BLE001
+        return _upstream("forecast", e)
     imperial = _imperial(units, place.get("country_code"), fc.get("timezone"))
     t, w, p = ("°F", "mph", "in") if imperial else ("°C", "km/h", "mm")
     def T(v): return _conv(v, "t", imperial)  # noqa: E704
