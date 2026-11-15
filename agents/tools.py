@@ -767,7 +767,13 @@ _DIAG_TIMEOUT = 10
 _DIAG_MAX_LINES = 30
 _DIAG_MAX_BYTES = 2048
 _DIAG_AS_LIMIT = 4 * 1024**3   # tighter than _CHILD_AS_LIMIT (§3.3)
-_DIAG_SLOTS = threading.BoundedSemaphore(2)  # N-jobs × checkers RAM cap
+# At most 2 checkers at once IN THIS PROCESS (an MCP server's threads). Not
+# an aggregate cap: each eval/agent runner is its own process with its own
+# semaphore and dispatches tools one at a time, so `--jobs N` runs up to N
+# checkers, each bounded only by _DIAG_AS_LIMIT and _DIAG_TIMEOUT — worst
+# case N × 4 GiB. (A cross-process limiter would make busy-skips depend on
+# --jobs, i.e. change what an A/B arm measures.)
+_DIAG_SLOTS = threading.BoundedSemaphore(2)
 
 
 def _diag_checker(path: str):
