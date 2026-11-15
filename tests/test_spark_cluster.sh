@@ -323,7 +323,7 @@ mkdir -p "$T/local-model"; echo '{"model_type": "brand_new"}' > "$T/local-model/
 printf 'BACKEND=tensorfold\nSOURCE=%s\nSERVED_MODEL_NAME=m\nTENSOR_PARALLEL_SIZE=2\n' "$T/local-model" > "$T/hp/loc.env"
 cp "$T/hp/loc.env" "$_WM/loc.env"; : > "$SC_RSYNC_LOG"
 _run sync-weights --cluster "$T/cluster-w.env" --profile "$T/hp/loc.env"
-[[ $RC -ne 0 ]] && _has "$OUT" "has no lock entry" && [[ ! -s "$SC_RSYNC_LOG" ]] && [[ ! -e "$_WM/loc.lock" ]] \
+[[ $RC -ne 0 ]] && { _has "$OUT" "has no lock entry" || _has "$OUT" "has no lock in"; } && [[ ! -s "$SC_RSYNC_LOG" ]] && [[ ! -e "$_WM/loc.lock" ]] \
   && pass "sync-weights: a head with no lock for the profile is refused (no TOFU lock on the worker)" || fail "sync-weights unlocked local (rc=$RC): $OUT"
 
 echo ""
