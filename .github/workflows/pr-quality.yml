@@ -36,7 +36,7 @@ jobs:
           # scripts/backends/ too (the Spark launchers and their per-engine
           # dirs): `bash -n` covered them in CI, ShellCheck did not.
           shellcheck -S error start.sh stop.sh bootstrap.sh agent.sh \
-            scripts/*.sh scripts/lib/*.sh scripts/backends/*.sh scripts/backends/*/*.sh \
+            scripts/*.sh scripts/lib/*.sh scripts/engines/*.sh scripts/backends/*.sh scripts/backends/*/*.sh \
             tests/*.sh extensions/*/*.sh .github/ci-requirements/*.sh
 
   ruff:
