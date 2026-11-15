@@ -1532,3 +1532,25 @@ def test_a_malformed_but_parseable_body_is_answered_and_audited(fleet, tmp_path,
     assert r.status_code == status, r.text
     rid = r.headers["x-hydra-request-id"]
     assert wait_audit(tmp_path, lambda x: x.get("request_id") == rid)["status"] == status
+
+
+@pytest.mark.parametrize("mode", [0o640, 0o604])
+def test_a_caller_token_readable_by_others_is_not_trusted(fleet, tmp_path, mode):
+    # Review 2026-11 F6: hydra_caller's fail-closed rule held for the presenter only.
+    srv, _, _, _ = fleet()
+    who = {"X-OpenBeast-Device": "max-phone", "X-Hydra-Caller": "caller-secret"}
+    assert post(srv, chat(), who).headers["x-hydra-route"] == "beast:fast"      # 0600: trusted
+    (tmp_path / "caller.token").chmod(mode)
+    r = post(srv, chat(), who)
+    assert r.headers["x-hydra-route"] == "beast" and audit_rows(tmp_path)[-1]["trusted"] is False
+    (tmp_path / "caller.token").chmod(0o600)
+    assert post(srv, chat(), who).headers["x-hydra-route"] == "beast:fast"
+
+
+def test_a_caller_token_that_is_not_a_regular_file_is_not_trusted(fleet, tmp_path):
+    srv, _, _, _ = fleet()
+    tok = tmp_path / "caller.token"
+    tok.unlink()
+    tok.mkdir()
+    r = post(srv, chat(), {"X-OpenBeast-Device": "max-phone", "X-Hydra-Caller": "caller-secret"})
+    assert r.status_code == 200 and r.headers["x-hydra-route"] == "beast"

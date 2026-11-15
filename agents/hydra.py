@@ -62,6 +62,7 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 import hydra_core as core  # noqa: E402
 from hostpolicy import trusted_hosts  # noqa: E402
+from hydra_caller import CallerToken  # noqa: E402
 
 REPO = HERE.parent
 MAX_BODY_BYTES = 32 * 1024 * 1024          # the gate's cap
@@ -416,8 +417,11 @@ class Hydra:
         self.metrics = Metrics()
         self.audit = Audit(_resolve(cfg.settings.audit, REPO), cfg.settings.audit_max_mb)
         self.local_token = secrets.token_hex(32)
-        self.caller_token = _FileSecret(Path(self.env.get("OPENBEAST_HYDRA_CALLER_TOKEN_FILE")
-                                             or self.run / "hydra-caller.token"))
+        # The verifier holds the same fail-closed rule as the presenters
+        # (hydra_caller.py): a token file that is not a regular 0600 file
+        # proves nothing, so every caller is then untrusted.
+        self.caller_token = CallerToken(str(self.env.get("OPENBEAST_HYDRA_CALLER_TOKEN_FILE")
+                                            or self.run / "hydra-caller.token"))
         self.instinct = InstinctClient(cfg.settings.instinct, REPO)
         self.clients: dict[str, tuple[tuple, httpx.AsyncClient]] = {}
         self.retired: list[httpx.AsyncClient] = []
