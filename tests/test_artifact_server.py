@@ -154,9 +154,11 @@ def local(c, extra=None):
     return h
 
 
-def enroll(tmp_path, dev_id="phone", scopes=("artifact",), revoked=False):
+def enroll(tmp_path, dev_id="phone", scopes=("artifact",), revoked=False,
+           login=None):
     """Write an enrolled device into .run/clients.json (the schema
-    scripts/clients.sh owns) and return its bearer header."""
+    scripts/clients.sh owns) and return its bearer header. `login` binds the
+    key to one tailnet login (`clients.sh enroll ... --login`)."""
     import hashlib
     key = f"key-{dev_id}-{'-'.join(scopes)}-{int(revoked)}"
     path = tmp_path / "run" / "clients.json"
@@ -168,7 +170,8 @@ def enroll(tmp_path, dev_id="phone", scopes=("artifact",), revoked=False):
     doc["devices"] = [d for d in doc["devices"] if d.get("id") != dev_id]
     doc["devices"].append({
         "id": dev_id, "key_sha256": hashlib.sha256(key.encode()).hexdigest(),
-        "scopes": list(scopes), "revoked_at": "x" if revoked else None})
+        "scopes": list(scopes), "revoked_at": "x" if revoked else None,
+        **({"login": login} if login else {})})
     path.write_text(json.dumps(doc))
     os.chmod(path, 0o600)
     return {"Authorization": f"Bearer {key}"}
@@ -733,6 +736,87 @@ def test_patch_is_attributed_to_the_caller_not_the_first_operator(make_client):
                 headers=local(c))
     assert r.status_code == 200, r.text
     assert store.get_meta(a["id"])["visibility"] == "private"
+
+
+def test_a_forged_admin_header_with_someone_elses_key_buys_no_admin(
+        make_client):
+    """Review (spark-scale) beast-artifact sec: the key was never tied to the
+    login, so a process on the rig holding ANY artifact-scoped key (kid's)
+    plus a forged `Tailscale-User-Login: <admin>` got admin PATCH (share,
+    chown) and DELETE on every page — while the docs said header forgery
+    "only ever buys reads". ARTIFACT_ADMINS is unset, so max (first on the
+    allowlist) is the admin."""
+    c = make_client(operators="max@example.com,kid@example.com")
+    rigs = publish(c)                                     # owned by the rig
+    kid_key = enroll(c.tmp, "kidtablet", login="kid@example.com")
+    r = c.patch(f"/api/artifacts/{rigs['id']}", json={"visibility": "tailnet"},
+                headers={**MAX, **kid_key})
+    assert r.status_code == 404 and r.json() == FLAT_404
+    r = c.delete(f"/api/artifacts/{rigs['id']}", headers={**MAX, **kid_key})
+    assert r.status_code == 404 and r.json() == FLAT_404
+    assert store.get_meta(rigs["id"]) is not None
+    # an UNBOUND key (enrolled without `--login`) still manages the header
+    # login's own pages, but never carries admin
+    loose = enroll(c.tmp, "loose")
+    r = c.delete(f"/api/artifacts/{rigs['id']}", headers={**MAX, **loose})
+    assert r.status_code == 404
+    assert store.get_meta(rigs["id"]) is not None
+    mine = publish(c, headers=local(c, MAX))
+    r = c.patch(f"/api/artifacts/{mine['id']}", json={"visibility": "tailnet"},
+                headers={**MAX, **loose})
+    assert r.status_code == 200, r.text
+    # control: the admin's own BOUND key keeps admin power
+    max_key = enroll(c.tmp, "maxphone", login="max@example.com")
+    r = c.patch(f"/api/artifacts/{rigs['id']}", json={"visibility": "tailnet"},
+                headers={**MAX, **max_key})
+    assert r.status_code == 200, r.text
+    # and kid's bound key still works for kid
+    kids = publish(c, headers=local(c, KID))
+    r = c.patch(f"/api/artifacts/{kids['id']}", json={"pinned": True},
+                headers={**KID, **kid_key})
+    assert r.status_code == 200, r.text
+
+
+def test_a_keyed_non_admin_cannot_touch_an_ownerless_or_corrupt_page(
+        make_client):
+    """Review (spark-scale) beast-artifact sec: "no recorded owner is open to
+    every caller" and "a corrupt record is deletable" were written when only
+    the rig could write. Since F-A2 a keyed non-admin operator reached them
+    too, and could DELETE another operator's damaged page or share an
+    owner-less legacy one. That recovery is now the rig's and admins' only."""
+    c = make_client(operators="max@example.com,kid@example.com")
+    kid = {**KID, **enroll(c.tmp, "kidtablet", login="kid@example.com")}
+    legacy = publish(c, headers=local(c, MAX))
+    meta = store.get_meta(legacy["id"])
+    meta.pop("owner", None)
+    store._write_meta(legacy["id"], meta)
+    assert not store._owner_of(store.get_meta(legacy["id"]))
+    r = c.patch(f"/api/artifacts/{legacy['id']}",
+                json={"visibility": "tailnet"}, headers=kid)
+    assert r.status_code == 404 and r.json() == FLAT_404
+    assert store.get_meta(legacy["id"])["visibility"] == "private"
+    publish(c, headers=local(c), artifact_id=legacy["id"])         # v2
+    r = c.delete(f"/api/artifacts/{legacy['id']}/v/1", headers=kid)
+    assert r.status_code == 404 and r.json() == FLAT_404
+    r = c.delete(f"/api/artifacts/{legacy['id']}", headers=kid)
+    assert r.status_code == 404 and r.json() == FLAT_404
+    assert store.get_meta(legacy["id"]) is not None
+    broken = publish(c, headers=local(c, MAX))
+    with open(os.path.join(store.store_root(), broken["id"], "meta.json"),
+              "w") as fh:
+        fh.write('{"owner": "max@exa')                       # truncated
+    r = c.delete(f"/api/artifacts/{broken['id']}", headers=kid)
+    assert r.status_code == 404 and r.json() == FLAT_404
+    assert os.path.isdir(os.path.join(store.store_root(), broken["id"]))
+    # control: the rig still recovers both
+    assert c.delete(f"/api/artifacts/{broken['id']}",
+                    headers=local(c)).status_code == 200
+    assert c.delete(f"/api/artifacts/{legacy['id']}",
+                    headers=local(c)).status_code == 200
+    # and kid still manages kid's own page with the same key
+    kids = publish(c, headers=local(c, KID))
+    assert c.delete(f"/api/artifacts/{kids['id']}",
+                    headers=kid).status_code == 200
 
 
 # --- R2: every mutation names its owner, without help from the ContextVar ----
@@ -2345,3 +2429,30 @@ def test_login_audit_constants_are_sane():
     assert isinstance(artifact_server.LOGIN_AUDIT_ROWS, int)
     assert 0 < artifact_server.LOGIN_AUDIT_ROWS <= 10_000
     assert 0 < artifact_server.LOGIN_AUDIT_BUCKETS <= 100_000
+
+
+def test_every_answer_but_the_capability_tree_is_corp_same_origin(make_client):
+    """Review (spark-scale) beast-artifact sec: CORP was same-origin on the
+    shell/gallery/raw 200s but absent on the flat 404 and the API JSON, so a
+    cross-site `fetch(url, {mode: 'no-cors'})` REJECTED on a page that exists
+    (CORP blocks the opaque answer) and RESOLVED on the 404 — the same
+    existence oracle COOP was added to close. Every non-capability answer,
+    200, 404 and 429 alike, must now carry the same CORP and nosniff."""
+    c = make_client(operators="max@example.com,kid@example.com")
+    a = publish(c, headers=local(c, MAX))
+    corp, sniff = "cross-origin-resource-policy", "x-content-type-options"
+    for hdrs, path in ((MAX, "/"), (KID, "/"), ({}, "/"),
+                       (MAX, f"/a/{a['id']}"), (MAX, f"/a/{a['id']}/v/9"),
+                       (MAX, "/a/no-such-id"), (MAX, "/api/artifacts"),
+                       (MAX, f"/api/artifacts/{a['id']}"),
+                       (MAX, "/api/artifacts/no-such-id"),
+                       (MAX, f"/raw/{a['id']}/v/1/"),
+                       (MAX, f"/raw/{a['id']}/v/9/")):
+        r = c.get(path, headers=hdrs)
+        assert r.headers.get(corp) == "same-origin", (path, r.status_code)
+        assert r.headers.get(sniff) == "nosniff", (path, r.status_code)
+    # a refusal leaves the gate middleware without passing through
+    # call_next: it must be uniform too
+    r = c.get(f"/a/{a['id']}", headers={"Tailscale-User-Login": "x@y"})
+    assert r.status_code == 404
+    assert r.headers.get(corp) == "same-origin"
