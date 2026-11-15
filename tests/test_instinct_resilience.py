@@ -232,6 +232,37 @@ def test_shadow_only_act_does_not_hide_a_gated_engine(tmp_path):
     assert rs["cascade"][1]["action"] == "act" and "probabilities" in rs["cascade"][1]
 
 
+def test_shadow_only_linear_non_act_does_not_hide_a_gated_engine(tmp_path):
+    """A full-model tier's scored non-act is terminal whatever its lifecycle
+    (verifier finding on d89199d) — but `linear` is the tier-0 baseline, not
+    a full model: an ungated linear's non-act must not stop the walk before
+    the gated model behind it (hydra.task_class runs linear first)."""
+    from instinct.engines import ScoreRes, ScoreRow
+
+    async def body(url):
+        cfgp, _ = H.promote_linear(tmp_path, gate_passed=False,
+                                   chain='["linear", "stub", "rules"]',
+                                   extra_engines={"stub": H.llama_binding(url)},
+                                   thresholds={"inline": 0.5})
+        cfg = load_config(cfgp, env={})
+        inst = Instinct(cfg, repo_root=tmp_path)
+        await inst.start()
+        _gate(inst, cfg, "stub")
+
+        async def lin_score(req):
+            return ScoreRes(rows=[ScoreRow(q={"spawn": 0.9, "inline": 0.1})], engine_ms=1)
+        inst.engines["linear"].score = lin_score
+        assert inst.lifecycle(DID, "linear", "enforce") == ("shadow", "no_gate")
+        r = await _decide(inst, "what is 17 times 23")
+        await inst.aclose()
+        return r
+    with H.stub_server() as (url, _):
+        r = H.run(body(url))
+    assert [(c["engine"], c["action"]) for c in r["cascade"]] == [
+        ("linear", "abstain"), ("stub", "act")]
+    assert r["enforce"] is True and r["engine"]["id"] == "stub"
+
+
 def test_unenforceable_act_is_still_the_would_answer(tmp_path):
     """No engine can enforce: the answer is the first act (what the service
     WOULD do), not a later abstain."""
@@ -394,6 +425,71 @@ def test_one_outlier_does_not_set_early_p95():
     assert eng.p95_ms() == 5.0
     eng.record_latency(2000.0)               # a second one is a pattern
     assert eng.p95_ms() == 2000.0
+
+
+def test_probe_samples_do_not_dilute_the_real_call_p95():
+    """Review finding (beast-instinct): every ~40-token probe call went into
+    the same window as real decide() calls, so with probes every 300 s and
+    rare hinted turns p95 was probe-sized and the deadline skip never fired
+    for a 1,400-token prompt. Probes now only seed a fresh engine."""
+    eng = build_engine(EngineBinding(name="e", **H.llama_binding("http://127.0.0.1:1",
+                                                                 timeout_ms=1500)))
+    for _ in range(12):
+        eng.record_latency(5.0, probe=True)
+    assert eng.p95_ms() == 5.0                 # a fresh engine is measured by its probes
+    for _ in range(200):
+        eng.record_latency(5.0, probe=True)    # a day of probes
+    for _ in range(6):
+        eng.record_latency(400.0)              # the real prompts
+    assert eng.p95_ms() == 400.0
+    assert eng.p50_ms() == 400.0
+
+
+def test_a_starved_later_engine_timeout_is_not_an_engine_fault(tmp_path):
+    """Review finding (beast-instinct): in a shadow walk the second engine
+    runs on whatever the first left of the shared deadline; its timeout was
+    an `engine_timeout` fallback that counted toward auto-demotion (>5 of
+    100 calls demoted the decision persistently). Now it is `deadline`."""
+    with H.stub_server() as (fast, _), H.stub_server({"slow": 700}) as (slow, _):
+        cfgp = H.write_config(tmp_path, {"a": H.llama_binding(fast),
+                                         "b": H.llama_binding(slow, timeout_ms=1500)},
+                              extra_decisions={DID: _spec('["a", "b", "rules"]')})
+
+        async def go():
+            inst = Instinct(load_config(cfgp, env={}))
+            await inst.reload()
+            for n in ("a", "b"):
+                inst.states[n].healthy = True
+                inst.states[n].last_probe = inst.clock()
+                inst.engines[n].latencies.extend([10.0] * 25)
+            r = await _decide(inst, "hello", deadline_ms=600)
+            await inst.aclose()
+            return inst, r
+        inst, r = H.run(go())
+    b = next(c for c in r["cascade"] if c["engine"] == "b")
+    assert b["action"] == "fallback" and b["reason"] == "deadline", b
+    assert r["cascade"][0]["engine"] == "a" and r["cascade"][0]["action"] != "fallback"
+    assert list(inst.autodemoter.outcomes[DID])[0] is False
+
+
+def test_first_engine_timeout_still_counts_toward_demotion(tmp_path):
+    with H.stub_server({"slow": 700}) as (slow, _):
+        cfgp = H.write_config(tmp_path, {"b": H.llama_binding(slow, timeout_ms=150)},
+                              extra_decisions={DID: _spec('["b", "rules"]')})
+
+        async def go():
+            inst = Instinct(load_config(cfgp, env={}))
+            await inst.reload()
+            inst.states["b"].healthy = True
+            inst.states["b"].last_probe = inst.clock()
+            inst.engines["b"].latencies.extend([10.0] * 25)
+            r = await _decide(inst, "hello", deadline_ms=200)
+            await inst.aclose()
+            return inst, r
+        inst, r = H.run(go())
+    b = r["cascade"][0]
+    assert b["reason"] == "engine_timeout"
+    assert list(inst.autodemoter.outcomes[DID]) == [True]
 
 
 # --- m7: a reload keeps auto-demotions unless the decision changed ---------------

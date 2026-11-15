@@ -55,6 +55,31 @@ def test_promote_with_a_live_llm_engine_does_not_crash(tmp_path):
     assert _check(checks, "engine conformance probe passes") is True
 
 
+def test_promote_writes_no_service_state(tmp_path):
+    """Review finding (beast-instinct): promote is documented as check-only
+    and the service as the ONLY writer of auto-demoted.json, but its reload
+    rewrote locks/*.json and saved/dropped auto-demotions — a stale-snapshot
+    writer that could delete one the live service had just persisted."""
+    import time as _t
+    from instinct.cli import promote_check
+    with H.stub_server() as (url, _):
+        cfg = _spawn_cfg(tmp_path, url)
+        state = cfg.state_dir
+        state.mkdir(parents=True, exist_ok=True)
+        auto = state / "auto-demoted.json"
+        # an auto-demotion with stale hashes (reload would drop it) and a
+        # tombstone for another decision (reload would save the auto file)
+        auto.write_text(json.dumps({DID: {"reason": "fallback_rate 9/100",
+                                          "at": _t.time() - 10,
+                                          "hashes": {"stub": "0" * 64}},
+                                    "x.y": {"reason": "r", "at": _t.time() - 10}}))
+        (state / "undemoted.json").write_text(json.dumps({"x.y": {"at": _t.time()}}))
+        before = auto.read_bytes()
+        promote_check(cfg, DID, "stub", repo=tmp_path)
+    assert auto.read_bytes() == before
+    assert not (state / "locks").exists()
+
+
 def test_promote_refuses_a_gate_for_a_stale_calibration(tmp_path):
     """A-instinct-5: promote said READY for a gate the service rejects (it was
     computed against an older calibration)."""

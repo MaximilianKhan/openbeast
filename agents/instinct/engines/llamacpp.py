@@ -109,9 +109,26 @@ class LlamaCppEngine(LLMEngine):
             toks = await self._tokenize_raw(text)
         except (EngineError, asyncio.TimeoutError):
             return None
-        pieces = [t.get("piece") for t in toks if isinstance(t, dict)]
-        if len(pieces) != len(toks) or not all(isinstance(p, str) for p in pieces):
+        raw = [t.get("piece") for t in toks if isinstance(t, dict)]
+        if len(raw) != len(toks):
             return None
+        # llama-server sends a piece that is not valid UTF-8 on its own (an
+        # emoji or rare CJK char split into byte tokens) as a list of byte
+        # values; a run of those decodes as one piece. Refusing them all
+        # used to drop truncation to the whitespace approximation.
+        pieces: list[str] = []
+        run = bytearray()
+        for p in raw + [""]:
+            if isinstance(p, list) and all(isinstance(b, int) and 0 <= b < 256 for b in p):
+                run.extend(p)
+                continue
+            if run:
+                pieces.append(run.decode("utf-8", errors="replace"))
+                run = bytearray()
+            if not isinstance(p, str):
+                return None
+            if p:
+                pieces.append(p)
         return pieces
 
     async def _one(self, prompt: str, label_ids: dict[str, int], timeout_s: float) -> ScoreRow:

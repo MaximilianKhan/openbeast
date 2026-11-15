@@ -41,6 +41,12 @@ Properties (tests/test_router_instinct.py):
     have is to SKIP the generative classify — and only on a verdict that is
     enforce + act + label "inline" (I4). There is no code path from here to a
     spawn;
+  * the primary only SUBSTITUTES for the classify when the classify runs on
+    it: under beast-hydra with a `classify` route (ROUTER_CLASSIFY_MODEL =
+    "classify", start.sh) hydra places the classify OFF the one-slot primary,
+    so a hinted turn sends baseline "hint_offload" instead of "hint" and the
+    service skips the primary (`primary_not_substitute`) — otherwise every
+    hinted turn added a 27B prefill (and a KV swap) that replaced nothing;
   * after the classify runs, its verdict goes back as feedback on the same
     trace_id (with a request_id, which also makes canary_pct usable): the
     paired classify-vs-instinct data the plan's P1 exit needs (A-instinct-7).
@@ -59,6 +65,23 @@ MODES = ("off", "shadow", "enforce")
 SHADOW_SLOTS = 2
 FEEDBACK_SLOTS = 4
 DEADLINE_MS = 600
+# Sent on a hinted turn whose classify does NOT run on the primary: anything
+# but spec.SUBSTITUTE_BASELINE ("hint") makes the service skip the primary.
+HINT_BASELINE = "hint"
+OFFLOAD_BASELINE = "hint_offload"
+OFFLOAD_CLASSIFY_MODELS = ("classify",)   # hydra's off-primary classify route
+# The spec scores head_tail:200:1200 TOKENS of the turn, so a pasted file is
+# cut here first, keeping its head and tail: the service refuses > 200,000
+# chars (422) and bodies > 256 KiB (400; json escapes a non-BMP char to 12
+# bytes), and each refusal used to count toward the client breaker.
+TURN_HEAD_CHARS = 4_000
+TURN_TAIL_CHARS = 12_000
+
+
+def cap_turn(text: str) -> str:
+    if len(text) <= TURN_HEAD_CHARS + TURN_TAIL_CHARS:
+        return text
+    return text[:TURN_HEAD_CHARS] + " … " + text[-TURN_TAIL_CHARS:]
 
 
 @dataclass(frozen=True)
@@ -77,12 +100,16 @@ def _truthy(v: str | None) -> bool:
 
 class RouterInstinct:
     def __init__(self, mode: str | None = None, client: InstinctClient | None = None,
-                 shadow_unhinted: bool | None = None):
+                 shadow_unhinted: bool | None = None, classify_offloaded: bool | None = None):
         m = (mode if mode is not None else os.environ.get("ROUTER_INSTINCT", "off"))
         m = (m or "off").strip().lower()
         self.mode = m if m in MODES else "off"
         self.shadow_unhinted = (shadow_unhinted if shadow_unhinted is not None else
                                 _truthy(os.environ.get("ROUTER_INSTINCT_SHADOW_UNHINTED")))
+        if classify_offloaded is None:
+            classify_offloaded = (os.environ.get("ROUTER_CLASSIFY_MODEL", "").strip()
+                                  in OFFLOAD_CLASSIFY_MODELS)
+        self.hint_baseline = OFFLOAD_BASELINE if classify_offloaded else HINT_BASELINE
         self._client = client
         self.inflight = 0
         self.fb_inflight = 0
@@ -115,7 +142,7 @@ class RouterInstinct:
 
         async def run():
             try:
-                await self.client.decide(DECISION, {"user_turn": user_text},
+                await self.client.decide(DECISION, {"user_turn": cap_turn(user_text)},
                                          ceiling="shadow", deadline_ms=DEADLINE_MS,
                                          baseline=baseline,
                                          context={"caller": "router", "eval": False})
@@ -146,9 +173,9 @@ class RouterInstinct:
         rid = "rt_" + uuid.uuid4().hex[:20]
         try:
             v: Verdict = await self.client.decide(
-                DECISION, {"user_turn": user_text},
+                DECISION, {"user_turn": cap_turn(user_text)},
                 ceiling="shadow" if shadow else "enforce", deadline_ms=DEADLINE_MS,
-                baseline="hint", request_id=rid,
+                baseline=self.hint_baseline, request_id=rid,
                 context={"caller": "router", "eval": False},
                 # The service honours this only below an actable target:
                 # in shadow the turn waits for the primary engine alone

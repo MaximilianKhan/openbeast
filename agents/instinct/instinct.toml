@@ -86,7 +86,8 @@ timeout_ms    = 900
 
 # FALLBACK tier: Qwen3-0.6B on a CPU llama-server (scripts/serve-instinct-scorer.sh,
 # INSTINCT_SCORER=true). Uses no VRAM. Answers only when the 27B is skipped
-# (engine_busy / deadline / identity) — it never outranks a full model.
+# (engine_busy / deadline / identity) or returns no usable row — it never
+# outranks a full model's scored verdict, whatever that model's lifecycle.
 [engines.rig-cpu]
 adapter      = "llamacpp_logprobs"
 url          = "http://127.0.0.1:8082"

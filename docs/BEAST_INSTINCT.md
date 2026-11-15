@@ -68,8 +68,9 @@ Optional `"return_after": "primary"` (the router sends it): on a request whose
 target is below `canary` (nothing can act), the service answers as soon as the
 walk has left every engine bound to the primary, with `"partial": true`,
 `enforce: false` and `fallback.reason: "shadow_pending"`; the rest of the chain
-still runs, and the ONE ledger row for that `trace_id` is written when it
-finishes. An actable target ignores it and always gets the whole answer.
+still runs — each engine past the primary on its own `timeout_ms`, not on what
+the primary left of the caller's deadline, since nobody waits on it — and the
+ONE ledger row for that `trace_id` is written when it finishes. An actable target ignores it and always gets the whole answer.
 
 The client sets `context.eval = true` itself whenever its process carries the
 eval markers that `evals/run_eval.py` puts in every child's environment
@@ -92,7 +93,16 @@ the spec's mode and the ceiling). An `act` from an engine that can only shadow
 enforce. If nothing can enforce, the answer is the first `act` (what the
 service *would* have done), else the **first** result from a probabilistic
 engine — chain order is tier order, so a row nobody acted on is credited to
-the 27B, not to its 0.6B fallback or `linear` — else `rules`. When the target can act (canary/enforce) the walk stops at the
+the 27B, not to its 0.6B fallback or `linear` — else `rules`. On an actable
+target, a full-model engine that SCORED the row is terminal even when it
+declines to act, whatever its own lifecycle — a stale probe or a gate for an
+older hash only stops it *enforcing*, never hands its row to a lower tier (a
+27B `spawn` is never overridden by the 0.6B's `inline`). A later tier answers
+only when the earlier one was skipped or failed on the row (no label, labels
+truncated, out-of-distribution input, mass below `min_label_mass`). `linear`,
+the tier-0 baseline, is the exception: its non-act ends the walk only when it
+could enforce itself. Stopping early only ever reduces enforcement. When the
+target can act (canary/enforce) the walk stops at the
 answer; below that (shadow/off) it goes on through the whole chain, so shadow
 data measures every engine, including on rows an earlier engine was confident
 about. Every attempted engine's own `probabilities`, `label_mass` and the
@@ -260,7 +270,7 @@ Decisions route into a **full model**, not a small one. For
 |---|---|---|---|
 | target | `openjev` (commented in `instinct.toml`) | Open-Jev-27B-v1.1 — LoRA + scalar decision head on the Qwen3.8-27B backbone — run **locally** by `scripts/serve-openjev.sh` on a GPU of its own | first in the chain once its host exists and it is re-validated (below) |
 | interim default | `rig-27b` | the rig's own primary 27B (Qwen3.8-27B-Uncensored MTP Q5), answer-boundary logprobs through `llamacpp_logprobs` | substitute engine: replaces the router's generative classify on that same model |
-| fallback | `rig-cpu` | Qwen3-0.6B on CPU (`INSTINCT_SCORER=true`) | answers only when the 27B is skipped (busy slot, deadline, failed identity probe) |
+| fallback | `rig-cpu` | Qwen3-0.6B on CPU (`INSTINCT_SCORER=true`) | answers only when the 27B is skipped (busy slot, deadline, failed identity probe) or returns no usable row |
 | baseline | `linear` | tier-0 bag-of-words | McNemar reference; shadow-only until it clears its gate (it does not: 3 adversarial errors) |
 | incumbent | `rules` | today's behaviour | always last |
 
@@ -283,7 +293,10 @@ says so explicitly and the service enforces it:
   call, a primary engine is skipped for an `async` decision whose caller can
   act on the answer (`primary_async_only`), and for a `substitute` decision
   unless the caller declares it would make the substituted call
-  (`baseline = "hint"`, else `primary_not_substitute`).
+  (`baseline = "hint"`, else `primary_not_substitute`). Under beast-hydra with
+  a `classify` route (`ROUTER_CLASSIFY_MODEL=classify`) the classify runs off
+  the primary, so the router hook sends `baseline = "hint_offload"` and the
+  primary is skipped: there is no call on its slot to replace.
 - `busy_skip = true` (primary bindings only): each call first asks `GET /slots`;
   a slot with `is_processing` (a user's turn, an agent) raises `engine_busy` in
   about a millisecond and the chain moves to the 0.6B — never queueing behind

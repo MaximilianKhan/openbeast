@@ -208,6 +208,19 @@ def _lint_url(field_name: str, url: str, b: EngineBinding, inference_url: str,
     return None
 
 
+def _lint_path(field_name: str, p: str) -> str | None:
+    """A request path relative to the binding's url: one leading '/', no
+    scheme, no authority ('//host'), no backslash or whitespace tricks."""
+    try:
+        parts = urlsplit(p)
+    except ValueError:
+        return f"unparseable {field_name} {p!r}"
+    if (not p.startswith("/") or p.startswith("//") or parts.scheme or parts.netloc
+            or "\\" in p or any(c.isspace() or ord(c) < 0x20 for c in p)):
+        return f"{field_name} must be a path on url (e.g. /tokenize), not a URL"
+    return None
+
+
 def lint_binding(b: EngineBinding, inference_url: str = "", hydra_url: str = "",
                  forbidden: dict[int, str] | None = None) -> str | None:
     """Return a refusal reason, or None if the binding may be used. Every URL
@@ -234,6 +247,13 @@ def lint_binding(b: EngineBinding, inference_url: str = "", hydra_url: str = "",
             # third party.
             if _norm_url(b.sis_url)[:2] != _norm_url(b.url)[:2]:
                 return "sis_url must use the same scheme and host as url (it receives the key)"
+        if b.tokenize_path:
+            # The engine POSTs to tokenize_path with its bearer key and the raw
+            # user text; an absolute URL there would make httpx ignore the
+            # base url and bypass every check above. Only a path on `url`.
+            why = _lint_path("tokenize_path", b.tokenize_path)
+            if why:
+                return why
         if b.score_query not in ("empty", "prompt"):
             return "score_query must be empty|prompt"
         if b.score_query != "empty" and b.adapter != "sglang_score":
