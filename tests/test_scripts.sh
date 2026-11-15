@@ -982,6 +982,21 @@ if [[ -f "$CSC" ]] && ! grep -qE '^[[:space:]]*network_mode:' "$CSC" \
 else
   fail "client-searxng.compose.yml missing or violates the client contract"
 fi
+# ts_admin: as tailscaled's operator, `tailscale serve` runs without sudo (no
+# password prompt over ssh — spark-root-setup.sh sets --operator); otherwise sudo.
+_TSA="$(mktemp -d)"
+sed -n '/^ts_admin() {/,/^}/p' "$REPO_DIR/scripts/setup-tailscale.sh" > "$_TSA/fn.sh"
+printf '#!/bin/bash\nif [[ "$1 $2" == "debug prefs" ]]; then echo "{\\"OperatorUser\\": \\"${TSA_OPERATOR:-}\\"}"; exit 0; fi\necho "tailscale $*" >> "$TSA_LOG"\n' > "$_TSA/tailscale"
+printf '#!/bin/bash\necho "sudo $*" >> "$TSA_LOG"\n' > "$_TSA/sudo"
+chmod +x "$_TSA/tailscale" "$_TSA/sudo"
+_tsa() { : > "$_TSA/log"; TSA_OPERATOR="$1" TSA_LOG="$_TSA/log" PATH="$_TSA:$PATH" bash -c "source '$_TSA/fn.sh'; ts_admin serve --bg --https=443 http://127.0.0.1:3000"; cat "$_TSA/log"; }
+[[ -s "$_TSA/fn.sh" && "$(_tsa "$(id -un)")" == "tailscale serve --bg --https=443 http://127.0.0.1:3000" ]] \
+  && pass "ts_admin: the tailscaled operator runs tailscale serve without sudo" || fail "ts_admin as operator: $(_tsa "$(id -un)")"
+[[ "$(_tsa someone-else)" == "sudo tailscale serve --bg --https=443 http://127.0.0.1:3000" ]] \
+  && pass "ts_admin: anyone else goes through sudo" || fail "ts_admin as non-operator: $(_tsa someone-else)"
+! grep -q "sudo tailscale serve" "$REPO_DIR/scripts/setup-tailscale.sh" \
+  && pass "setup-tailscale.sh routes every serve change through ts_admin" || fail "a bare 'sudo tailscale serve' is left in setup-tailscale.sh"
+rm -rf "$_TSA"
 if grep -q -- '--publish-searxng' "$REPO_DIR/scripts/setup-tailscale.sh" \
    && grep -q -- '--unpublish-searxng' "$REPO_DIR/scripts/setup-tailscale.sh" \
    && grep -q 'https=8889' "$REPO_DIR/scripts/setup-tailscale.sh"; then
