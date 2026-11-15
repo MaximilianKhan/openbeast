@@ -35,7 +35,7 @@ sees tool calls and results. Nothing here changes the rig.
 | `scripts/apps.sh list [--json]` | every capability, its status here, enabled or not | 0 |
 | `scripts/apps.sh find <words…> [--json]` | which capability covers a request ("mobile build on the mac") | 0, 2 = no match |
 | `scripts/apps.sh check <cap> [--server S] [--json]` | runs the probes: READY, or MISSING with numbered remediation | 0 READY · 3 MISSING · 4 UNSUPPORTED |
-| `scripts/apps.sh enable <cap> [--server S] [--key K] [--dry-run] [--accept-risk]` | merges the first READY server into opencode, backing the old file up first | 0 · 3/4 refused · 6 risk · 7 conflict |
+| `scripts/apps.sh enable <cap> [--server S] [--key K] [--dry-run] [--accept-risk] [--ungated]` | merges the first READY server into opencode, backing the old file up first | 0 · 3/4 refused · 6 risk / gates cannot be written · 7 conflict |
 | `scripts/apps.sh disable <cap\|server\|key> [--dry-run]` | removes exactly what `enable` wrote | 0 · 2 not ours |
 | `scripts/apps.sh refresh [server…] [--no-introspect] [--json]` | latest published version vs the pin; live `tools/list`; manifest + diff | 0 · 1 all failed |
 | `scripts/apps.sh upgrade <server> [--to V]` | moves a pin: re-probe, re-read tools, rewrite the entry | 0 · 3 · 5 offline |
@@ -207,6 +207,10 @@ Guarantees:
 - `enable` refuses when the check fails. It also refuses when an entry with
   the same key exists that beast-apps did not write, and when your own entry
   already runs the same package (pass `--allow-duplicate` to add it anyway).
+- `enable` refuses (exit 6, nothing written) when the config cannot hold the
+  server's gates: a v1 `"permission": "allow"` string has no room for a
+  per-tool rule. Make `permission` an object, or pass `--ungated` to wire the
+  server in without them; `gated:` lists only rules that were written.
 - Every write first copies the old file to `opencode.json.bak-beast-apps-<ts>`
   (mode 600), then writes atomically, keeping the file's mode. The file
   becomes 600 when a secret env var is copied in.

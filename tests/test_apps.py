@@ -672,3 +672,25 @@ def test_skill_is_registered_and_off_the_always_on_menu():
     assert "app-control" in names
     assert "app-control" not in (REPO / "system-prompt-tools.md").read_text()
     assert (REPO / "docs" / "BEAST_APPS.md").exists()
+
+
+def test_enable_refuses_when_v1_permission_is_a_string(box):
+    box.android_sdk_off_path()
+    box.write_config({"permission": "allow", "mcp": {}})
+    before = box.config.read_text()
+    v1 = {"OPENBEAST_OPENCODE_SCHEMA": "v1"}
+    cp = box.run("enable", "android-build", extra_env=v1)
+    assert cp.returncode == 6, cp.stdout + cp.stderr
+    assert "Refusing to enable replicant-mcp" in cp.stdout and "--ungated" in cp.stdout
+    assert "gated:" not in cp.stdout
+    assert box.config.read_text() == before and box.backups() == []
+    assert not (box.state / "enabled.json").exists()
+    # explicit opt-out: the entry goes in, and no gate is claimed or recorded
+    rc, out = box.json("enable", "android-build", "--ungated", extra_env=v1)
+    assert rc == 0, out
+    assert out["rules"] == [] and out["ungated"] and any("NOT gated" in w for w in out["warnings"])
+    cfg = box.read_config()
+    assert cfg["permission"] == "allow" and "replicant-mcp" in cfg["mcp"]
+    assert json.loads((box.state / "enabled.json").read_text())["replicant-mcp"]["rules"] == []
+    cp = box.run("enable", "android-build", "--ungated", extra_env=v1)
+    assert cp.returncode == 0 and "  gated: " not in cp.stdout

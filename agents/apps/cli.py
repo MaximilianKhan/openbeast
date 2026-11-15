@@ -555,12 +555,23 @@ def cmd_enable(ctx: Ctx) -> int:
     rules = ocfg.rules_for(key, s)
     if key in mine:                                    # re-enable: drop the old gates first
         ocfg.uninstall(cfg, key, mine[key].get("rules", []))
+    why = ocfg.ungatable(cfg, rules, fl)
+    ungated = []
+    if why:
+        if not a.ungated:
+            print(f"Refusing to enable {sid}: {why}.\n  Those tools would run with no approval. Make "
+                  f"`permission` an object in {ctx.cfg_path} (e.g. {{\"*\": \"allow\"}}) and re-run, or pass "
+                  "--ungated to wire it in without the gates anyway.")
+            return EXIT_RISK
+        ungated, rules = rules, []                     # nothing written, nothing recorded
     warns = ocfg.install(cfg, key, entry, rules, fl)
+    if ungated:
+        warns.append("NOT gated (--ungated): " + ", ".join(f"{r['action']}={r['effect']}" for r in ungated))
     secret = any(v in environment for v in s.get("secret_env", [])) or (
         os.path.exists(ctx.cfg_path) and os.stat(ctx.cfg_path).st_mode & 0o077 == 0)
     where = f"mcp.servers.{key}" if fl == "v2" else f"mcp.{key}"
     out = {"enabled": True, "capability": cid, "server": sid, "version": version, "key": key,
-           "config": ctx.cfg_path, "schema": fl, "entry": entry, "rules": rules,
+           "config": ctx.cfg_path, "schema": fl, "entry": entry, "rules": rules, "ungated": ungated,
            "warnings": warns + ev["warnings"], "dry_run": bool(a.dry_run), "backup": None}
     if not a.dry_run:
         out["backup"] = ocfg.backup(ctx.cfg_path)
@@ -799,6 +810,10 @@ def cmd_upgrade(ctx: Ctx) -> int:
         entry = ocfg.build_entry(s, cmd, environment, fl)
         ocfg.uninstall(cfg, key, rec.get("rules", []))
         rules = ocfg.rules_for(key, s)
+        why = ocfg.ungatable(cfg, rules, fl)
+        if why:                                        # the old entry had no gates either
+            rules = []
+            L.append(f"  ! NOT gated: {why}")
         ocfg.install(cfg, key, entry, rules, fl)
         out["backup"] = ocfg.backup(ctx.cfg_path)
         secret = os.path.exists(ctx.cfg_path) and os.stat(ctx.cfg_path).st_mode & 0o077 == 0
@@ -862,6 +877,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--key", help="opencode entry name (default: the server id)")
     sp.add_argument("--accept-risk", action="store_true", help="enable a server that is off by default")
     sp.add_argument("--dry-run", action="store_true", help="print what would be written")
+    sp.add_argument("--ungated", action="store_true",
+                    help="enable even when the config cannot hold its ask/deny gates")
     sp.add_argument("--allow-duplicate", action="store_true",
                     help="add it even though your own entry already runs the same package")
     sp = add("disable", cmd_disable, "remove what enable wrote")
