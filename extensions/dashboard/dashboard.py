@@ -130,7 +130,10 @@ def _parse_gpus(out):
         if not line.strip():
             continue
         name, used, total, util, temp = [x.strip() for x in line.split(",")[:5]]
-        cards.append((name, int(used), int(total), int(util), int(temp)))
+        nums = (_smi_int(used), _smi_int(total), _smi_int(util), _smi_int(temp))
+        if all(v is None for v in nums):
+            continue            # not a GPU row at all
+        cards.append((name,) + nums)
     if not cards:
         return None
     names = [c[0] for c in cards]
@@ -140,11 +143,30 @@ def _parse_gpus(out):
         name = f"{len(cards)}x {names[0]}"
     else:
         name = " + ".join(names)
-    used, total = sum(c[1] for c in cards), sum(c[2] for c in cards)
+
+    def fold(i, how):
+        # A field one card cannot report makes the fold unknown, not a
+        # smaller number: half a memory total is worse than none.
+        vals = [c[i] for c in cards]
+        return None if any(v is None for v in vals) else how(vals)
+
+    used, total = fold(1, sum), fold(2, sum)
+    have_mem = used is not None and total
     return {"name": name, "used_mib": used, "total_mib": total,
-            "free_mib": total - used, "util_pct": max(c[3] for c in cards),
-            "temp_c": max(c[4] for c in cards),
-            "used_pct": round(100 * used / total) if total else 0}
+            "free_mib": total - used if have_mem else None,
+            "util_pct": fold(3, max), "temp_c": fold(4, max),
+            "used_pct": round(100 * used / total) if have_mem else None}
+
+
+def _smi_int(field):
+    """One nvidia-smi csv value as an int, or None for "[N/A]",
+    "[Not Supported]" and the like. A GB10 (DGX Spark, unified memory)
+    reports memory.used/total as [N/A]; int() on that used to throw away the
+    whole row and the page said "no GPU detected" on the reference rig."""
+    try:
+        return int(float(field))
+    except (TypeError, ValueError):
+        return None
 
 
 def model_status(health=None):
@@ -578,11 +600,17 @@ async function tick(){
  const esc=v=>String(v??'').replace(/[&<>"'`]/g,c=>'&#'+c.charCodeAt(0)+';');
  const num=v=>Number(v)||0;
  const svc=Object.entries(sv).map(([k,v])=>`<div class=row><span><span class="dot ${v?'up':'down'}"></span>${esc(k)}</span><span class=k>${v?'up':'down'}</span></div>`).join('');
- const gpu=g?`<div class=big>${num(g.used_pct)}% <span class=k style=font-size:14px>${(num(g.used_mib)/1024).toFixed(1)}/${(num(g.total_mib)/1024).toFixed(0)} GB</span></div>
+ // null = the card does not report it (GB10 unified memory: [N/A]) — show
+ // a dash, never a made-up 0.
+ const has=v=>v!==null&&v!==undefined&&v!=='';
+ const gb=(v,d)=>has(v)?(num(v)/1024).toFixed(d):'—';
+ const pct=v=>has(v)?num(v)+'%':'—';
+ const deg=v=>has(v)?num(v)+'°C':'—';
+ const gpu=g?`<div class=big>${pct(g.used_pct)} <span class=k style=font-size:14px>${gb(g.used_mib,1)}/${gb(g.total_mib,0)} GB</span></div>
    <div class=bar><i style=width:${num(g.used_pct)}%></i></div>
-   <div class=row><span class=k>free</span><span>${(num(g.free_mib)/1024).toFixed(1)} GB</span></div>
-   <div class=row><span class=k>GPU util</span><span>${num(g.util_pct)}%</span></div>
-   <div class=row><span class=k>temp</span><span>${num(g.temp_c)}°C</span></div>
+   <div class=row><span class=k>free</span><span>${gb(g.free_mib,1)} GB</span></div>
+   <div class=row><span class=k>GPU util</span><span>${pct(g.util_pct)}</span></div>
+   <div class=row><span class=k>temp</span><span>${deg(g.temp_c)}</span></div>
    <div class=row><span class=k>card</span><span>${esc(g.name)}</span></div>`:'<div class=k>no GPU detected</div>';
  document.getElementById('grid').innerHTML=`
   <div class=card><h2>GPU / VRAM</h2>${gpu}</div>

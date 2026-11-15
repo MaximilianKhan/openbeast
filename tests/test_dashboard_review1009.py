@@ -247,6 +247,19 @@ def test_two_gpus_are_one_gpu_object_not_none(monkeypatch):
     assert d.gpu_status()["name"] == "RTX 5090 + RTX 3090"
 
 
+def test_gb10_unified_memory_still_reports_a_gpu(monkeypatch):
+    # DGX Spark (GB10): memory.used/total are "[N/A]" — the row used to be
+    # thrown away whole and the page said "no GPU detected".
+    d = load(monkeypatch)
+    _smi(monkeypatch, d, "NVIDIA GB10, [N/A], [N/A], 0, 44\n")
+    assert d.gpu_status() == {"name": "NVIDIA GB10", "used_mib": None, "total_mib": None,
+                              "free_mib": None, "util_pct": 0, "temp_c": 44, "used_pct": None}
+    # one card short a field makes the fold unknown, never a partial sum
+    _smi(monkeypatch, d, "A, 10, 100, 5, 40\nB, [N/A], [N/A], 7, [Not Supported]\n")
+    g = d.gpu_status()
+    assert g["total_mib"] is None and g["used_pct"] is None and g["util_pct"] == 7 and g["temp_c"] is None
+
+
 @pytest.mark.parametrize("out", ["", "\n", "garbage\n", "a, b, c, d, e\n"])
 def test_unparseable_nvidia_smi_is_still_no_gpu(monkeypatch, out):
     d = load(monkeypatch)
@@ -267,6 +280,7 @@ def test_every_interpolation_is_escaped_or_local(monkeypatch):
     exprs = re.findall(r"\$\{([^}]*)\}", _script(d))
     assert len(exprs) >= 15
     ok = re.compile(r"""^(?:esc\(.*\)|num\([\w.]+\)|\(num\([\w.]+\)/1024\)\.toFixed\(\d\)
+                         |(?:pct|deg)\([\w.]+\)|gb\([\w.]+,\d\)
                          |[\w.]+\?'[^'<]*':'[^'<]*'|gpu|svc)$""", re.X)
     bad = [e for e in exprs if not ok.match(e)]
     assert not bad, bad
@@ -308,3 +322,21 @@ def test_a_hostile_model_id_renders_as_text(monkeypatch, tmp_path):
     r = subprocess.run(["node", str(js)], capture_output=True, text=True, timeout=30,
                        env={"PATH": os.environ["PATH"], "STATUS": json.dumps(status)})
     assert ">qwen38-27b</div>" in r.stdout
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_unreported_gpu_memory_renders_as_a_dash_not_zero(monkeypatch, tmp_path):
+    d = load(monkeypatch)
+    status = {"gpu": {"name": "NVIDIA GB10", "used_mib": None, "total_mib": None, "free_mib": None,
+                      "util_pct": 0, "temp_c": 44, "used_pct": None},
+              "model": {"healthy": True, "alias": "m", "serve_script": "s"},
+              "services": {"tools": True}, "metrics": {}}
+    js = tmp_path / "page.js"
+    js.write_text(_HARNESS % _script(d))
+    r = subprocess.run(["node", str(js)], capture_output=True, text=True, timeout=30,
+                       env={"PATH": os.environ["PATH"], "STATUS": json.dumps(status)})
+    assert r.returncode == 0, r.stderr
+    html = r.stdout
+    assert "no GPU detected" not in html and "NVIDIA GB10" in html, html
+    assert "<div class=big>— " in html and "—/— GB" in html and "<span>44°C</span>" in html, html
+    assert "<span>0%</span>" in html            # a real 0 utilisation is still 0
