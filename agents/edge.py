@@ -975,6 +975,29 @@ async def _send_watched(request: Request, coro, still_enrolled) -> tuple:
         raise
 
 
+def _browser_keyless(request: Request) -> bool:
+    """True for a browser request that carries no device key.
+
+    Origin / Sec-Fetch-Site mark a browser; a missing Authorization header
+    marks a request a page could send WITHOUT a CORS preflight (the gate has
+    no OPTIONS route, so a preflighted one never gets here). That pair is
+    the cross-site attack shape — only reachable as an identity under
+    EDGE_ALLOW_ANON, refused in every mode. A request that presents a key is
+    a client that holds one, not a page riding a tailnet user's browser.
+    """
+    if _bearer(request):
+        return False
+    site = (request.headers.get("sec-fetch-site") or "").strip().lower()
+    if site in ("cross-site", "same-site"):
+        return True
+    return request.headers.get("origin") is not None
+
+
+# Never relayed: llama-server reflects the caller's Origin in
+# Access-Control-Allow-Origin, which would let a web page READ a reply.
+_RESPONSE_STRIP_PREFIX = "access-control-"
+
+
 async def gate(request: Request):
     started = time.monotonic()
     path = request.url.path.rstrip("/") or "/"
@@ -988,6 +1011,19 @@ async def gate(request: Request):
         return JSONResponse(
             {"error": {"message": "not found", "type": "invalid_request_error"}},
             status_code=404)
+
+    if _browser_keyless(request):
+        # A web page's "simple" request (text/plain body, no Authorization
+        # header) needs no CORS preflight, so under EDGE_ALLOW_ANON any site
+        # open on any tailnet device could drive inference through us.
+        _bump("denied_total", "cross_site")
+        _log_denial("cross_site", f"denied cross_site path={path} "
+                    f"peer={_peer(request)}")
+        return JSONResponse(
+            {"error": {"message": "browser request refused: beast-gate "
+                       "serves device clients, not web pages — present a "
+                       "device key: Authorization: Bearer <key>",
+                       "type": "cross_site_refused"}}, status_code=403)
 
     device, reason = _identify(request, registry)
     if device is None:
@@ -1217,7 +1253,8 @@ async def gate(request: Request):
         raise
 
     hdrs = {k: v for k, v in resp.headers.items()
-            if k.lower() not in _HOP_BY_HOP}
+            if k.lower() not in _HOP_BY_HOP
+            and not k.lower().startswith(_RESPONSE_STRIP_PREFIX)}
     hdrs["X-OpenBeast-Request-Id"] = request_id
     state = {"tail": b"", "whole": b"", "oversize": False, "audited": False}
 

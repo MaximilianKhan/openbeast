@@ -195,3 +195,51 @@ class TestReenrolledIdIsAFreshDevice:
                    headers={"Authorization": f"Bearer {NEW_KEY}"})
         assert seen.exists() and "laptop" in json.loads(seen.read_text()), \
             "the new enrollment's first use was throttled away"
+
+
+class _CorsResponse(_FakeResponse):
+    """llama-server reflects the caller's Origin back."""
+
+    def __init__(self):
+        super().__init__()
+        self.headers = {"content-type": "application/json",
+                        "access-control-allow-origin": "https://evil.example",
+                        "Access-Control-Allow-Credentials": "true"}
+
+
+class TestBrowserPagesCannotDriveAnon:
+    """sec: in EDGE_ALLOW_ANON mode a web page's preflight-free text/plain
+    POST was served, and the relayed ACAO header let it read the reply."""
+
+    def _post(self, e, **headers):
+        _stub(e, resp=_CorsResponse)
+        with TestClient(e.app) as c:
+            return c.post(CHAT, content=b'{"messages":[]}', headers=headers)
+
+    def test_cross_site_text_plain_post_is_refused(self, tmp_path,
+                                                    monkeypatch):
+        e = _anon_edge(tmp_path, monkeypatch)
+        r = self._post(e, **{"Content-Type": "text/plain",
+                             "Origin": "https://evil.example"})
+        assert r.status_code == 403, r.text
+
+    def test_sec_fetch_site_cross_site_is_refused(self, tmp_path,
+                                                   monkeypatch):
+        e = _anon_edge(tmp_path, monkeypatch)
+        r = self._post(e, **{"Content-Type": "text/plain",
+                             "Sec-Fetch-Site": "cross-site"})
+        assert r.status_code == 403
+
+    def test_non_browser_anon_caller_still_served(self, tmp_path,
+                                                  monkeypatch):
+        # Negative control: curl / an SDK sends neither header.
+        e = _anon_edge(tmp_path, monkeypatch)
+        r = self._post(e, **{"Content-Type": "application/json"})
+        assert r.status_code == 200
+
+    def test_access_control_headers_are_not_relayed(self, edge, tmp_path):
+        _registry(tmp_path)
+        r = self._post(edge, Authorization=f"Bearer {DEVICE_KEY}")
+        assert r.status_code == 200
+        assert not [k for k in r.headers
+                    if k.lower().startswith("access-control-")]
