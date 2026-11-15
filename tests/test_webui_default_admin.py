@@ -95,7 +95,12 @@ CURL_STUB = textwrap.dedent(r'''
         out(True)
     if path == "/api/v1/configs/tool_servers":
         out({"TOOL_SERVER_CONNECTIONS": []} if method == "GET" else {})
-    if path in ("/api/models", "/v1/models"): out({"data": [{"id": "m1"}]})
+    if path == "/api/models":
+        # WebUI's view: hides inactive base overrides, lists workspace presets.
+        out({"data": st.get("webui_models", [{"id": "m1"}])})
+    if path == "/v1/models":
+        # The inference endpoint: only what is actually served.
+        out({"data": [{"id": m} for m in st.get("served", ["m1"])]})
     out({})
 ''').lstrip()
 
@@ -895,6 +900,9 @@ DOCKER_DB_STUB = textwrap.dedent(r'''
             k, _, v = a[1].partition("="); env[k] = v; a = a[2:]
         else:
             a = a[1:]
+    if os.environ.get("STUB_DOCKER_LOG"):
+        with open(os.environ["STUB_DOCKER_LOG"], "a") as f:
+            f.write(" ".join(sys.argv[1:2] + a[:1]) + "\n")
     if a[:3] != ["open-webui", "python3", "-c"]:
         sys.exit(1)
     code = a[3].replace("/app/backend/data/webui.db", os.environ["STUB_DB"])
@@ -908,8 +916,11 @@ def db_rig(rig):
     rig.db = rig.tmp / "webui.db"
     con = sqlite3.connect(rig.db)
     con.execute("CREATE TABLE config (key TEXT PRIMARY KEY, value JSON NOT NULL, updated_at BIGINT)")
-    con.execute("CREATE TABLE model (id TEXT PRIMARY KEY, user_id TEXT, name TEXT, meta TEXT, "
-                "params TEXT, created_at BIGINT, updated_at BIGINT, is_active INTEGER)")
+    # The pinned image's model table (base_model_id NULL = an override of a
+    # served base model; set = a user's workspace preset on top of one).
+    con.execute("CREATE TABLE model (id TEXT PRIMARY KEY, user_id TEXT, base_model_id TEXT, "
+                "name TEXT, meta TEXT, params TEXT, created_at BIGINT, updated_at BIGINT, "
+                "is_active INTEGER)")
     con.commit()
     con.close()
     _write_exec(rig.bin / "docker", DOCKER_DB_STUB)
@@ -932,8 +943,29 @@ def db_rig(rig):
         return got
     rig.tasks = tasks
 
+    def seed_model(mid, base=None, params=None, meta=None, active=1, user="system"):
+        con = sqlite3.connect(rig.db)
+        con.execute("INSERT INTO model (id, user_id, base_model_id, name, meta, params, "
+                    "created_at, updated_at, is_active) VALUES (?, ?, ?, ?, ?, ?, 1, 1, ?)",
+                    (mid, user, base, mid, json.dumps(meta or {}), json.dumps(params or {}), active))
+        con.commit()
+        con.close()
+    rig.seed_model = seed_model
+
+    def models():
+        con = sqlite3.connect(rig.db)
+        got = {r[0]: {"base": r[1], "params": json.loads(r[2] or "{}"),
+                      "meta": json.loads(r[3] or "{}"), "active": r[4]}
+               for r in con.execute("SELECT id, base_model_id, params, meta, is_active FROM model")}
+        con.close()
+        return got
+    rig.models = models
+
+    rig.docker_log = rig.tmp / "docker.log"
+    rig.docker_log.write_text("")
+
     def configure(env_extra=None):
-        env = {"STUB_DB": str(rig.db)}
+        env = {"STUB_DB": str(rig.db), "STUB_DOCKER_LOG": str(rig.docker_log)}
         env.update(env_extra or {})
         return rig.run("configure-webui.sh", env_extra=env)
     rig.configure = configure
@@ -1005,3 +1037,76 @@ def test_background_tasks_survive_an_unreachable_container(rig):
     assert p.returncode == 0, p.stderr
     assert "could not set them" in p.stdout
     assert "Open WebUI configured." in p.stdout
+
+
+# --- configure-webui.sh: model rows (review 2026-11, webui-searxng) ---------
+#
+# The stale-row sweep set is_active=0 on every row missing from this run's
+# list. In the pinned image an inactive base-model override REMOVES the served
+# model from /api/models, and nothing ever set it back to 1 — so a model
+# switch, a fast boot or a rollback left WebUI with no model. The same sweep
+# disabled every workspace preset on a tokenless run (presets are never in the
+# endpoint's list), and a token run rewrote their system prompt and tools.
+
+@pytest.mark.parametrize("auth", [False, True])
+def test_served_model_with_an_inactive_row_is_reactivated(db_rig, auth):
+    """auth=True: a token run, where WebUI's /api/models HIDES the model (the
+    old code then found nothing and printed 'No models detected yet')."""
+    db_rig.set_state(auth=auth, admin_pw="admin", webui_models=[])
+    db_rig.seed_model("m1", params={"function_calling": "native"}, active=0)
+    p = db_rig.configure()
+    assert p.returncode == 0, p.stderr
+    assert db_rig.models()["m1"]["active"] == 1, p.stdout
+    assert "re-activated" in p.stdout
+
+
+def test_a_model_switch_deactivates_nothing(db_rig):
+    """Serving B after A must not touch A's row: WebUI already hides an
+    override whose id is not served, and A must come back when served again."""
+    db_rig.set_state(auth=False, admin_pw="admin", served=["B"])
+    db_rig.seed_model("A", params={"function_calling": "native"})
+    assert db_rig.configure().returncode == 0
+    assert db_rig.models()["A"]["active"] == 1
+    db_rig.set_state(auth=False, admin_pw="admin", served=["A"])
+    assert db_rig.configure().returncode == 0
+    got = db_rig.models()
+    assert got["A"]["active"] == 1 and got["B"]["active"] == 1
+
+
+def test_workspace_preset_survives_a_tokenless_run(db_rig):
+    persona = {"system": "You are a translator", "function_calling": "default"}
+    db_rig.set_state(auth=True, admin_pw="operator-chose-this")   # no token
+    db_rig.seed_model("persona", base="m1", params=persona, user="u1",
+                      meta={"toolIds": ["mine"]})
+    p = db_rig.configure()
+    assert p.returncode == 0, p.stderr
+    got = db_rig.models()["persona"]
+    assert got["active"] == 1, p.stdout
+    assert got["params"] == persona and got["meta"] == {"toolIds": ["mine"]}
+
+
+def test_workspace_preset_is_not_rewritten_on_a_token_run(db_rig):
+    """Token run whose endpoint probe fails, so WebUI's list (which carries
+    presets) is the fallback: the preset must still be skipped."""
+    persona = {"system": "You are a translator"}
+    db_rig.set_state(auth=False, admin_pw="admin", served=[],
+                     webui_models=[{"id": "m1"}, {"id": "persona", "preset": True}])
+    db_rig.seed_model("persona", base="m1", params=persona, user="u1")
+    p = db_rig.configure()
+    assert p.returncode == 0, p.stderr
+    got = db_rig.models()
+    assert got["persona"]["params"] == persona
+    assert got["persona"]["meta"] == {}
+    assert got["m1"]["params"]["function_calling"] == "native"   # the base model was configured
+
+
+def test_a_changed_model_connection_does_not_bounce_webui(db_rig):
+    """The pinned image reads openai.api_base_urls from the DB per request;
+    the old closing block restarted the container (killing every in-flight
+    stream) whenever the connection changed."""
+    db_rig.seed({"openai.api_base_urls": ["http://old:9999/v1"]})
+    p = db_rig.configure()
+    assert p.returncode == 0, p.stderr
+    assert "connection updated" in p.stdout
+    assert "restart" not in db_rig.docker_log.read_text()
+    assert "Restarting" not in p.stdout

@@ -482,42 +482,37 @@ fi
 # Model tool wiring uses these two connection ids.
 TOOL_REFS='["server:1","server:2"]'
 
-# Resolve the MCPO server's id so models can reference it in meta.toolIds
-# ("server:<id>") — that's what attaches the tools to every chat by default
-# instead of requiring the per-conversation ＋-menu toggle.
-# --- 2. Set native function calling for all models ---
-# Poll until Open WebUI has detected models from llama.cpp (bounded: up to
-# 30s, 1s interval, proceed on the first non-empty list). A blind sleep
-# either wasted time or — on a slow first scan — missed the models entirely.
+# --- 2. Native function calling, system prompt and tools on SERVED models ---
+# Poll until the served model list answers (bounded: up to 30s, 1s interval,
+# proceed on the first non-empty list). A blind sleep either wasted time or —
+# on a slow first scan — missed the models entirely.
 #
-# Without an admin token WebUI's /api/models returns 401, so fall back to
-# asking the inference endpoint itself for the model ids — the same list WebUI
-# would discover. The existing-setting probe ('|<fc>') is only an optimization
-# to skip already-configured models; the DB step below is idempotent anyway.
+# The list comes from the inference endpoint WebUI itself talks to — it is the
+# truth about what is served. WebUI's /api/models (admin token only) is the
+# fallback when that endpoint does not answer from here, and is not used
+# first: it HIDES a served model whose override row is inactive (the very row
+# this step must repair) and it LISTS workspace presets, which are not served
+# models and are not ours to rewrite.
 MODELS=""
 for _i in $(seq 1 30); do
-  if [[ "$TOKEN_OK" == "1" ]]; then
-    MODELS=$(ob_curl_hdr "$AUTH" -s -m 5 "$WEBUI_URL/api/models" 2>/dev/null \
-      | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-for m in data.get('data', []):
-    mid = m.get('id', '')
-    # Skip arena/internal models
-    if mid and 'arena' not in mid:
-        params = m.get('info', {}).get('params', {})
-        fc = params.get('function_calling', '')
-        print(f'{mid}|{fc}')
-" 2>/dev/null || true)
-  else
-    MODELS=$(ob_curl_bearer "${LLAMA_API_KEY:-}" -s -m 5 \
-        "${OPENBEAST_MODEL_URL:-http://localhost:8080/v1}/models" 2>/dev/null \
-      | python3 -c "
+  MODELS=$(ob_curl_bearer "${LLAMA_API_KEY:-}" -s -m 5 \
+      "${OPENBEAST_MODEL_URL:-http://localhost:8080/v1}/models" 2>/dev/null \
+    | python3 -c "
 import sys, json
 for m in json.load(sys.stdin).get('data', []):
     mid = m.get('id', '')
     if mid and 'arena' not in mid:
-        print(f'{mid}|')
+        print(mid)
+" 2>/dev/null || true)
+  if [[ -z "$MODELS" && "$TOKEN_OK" == "1" ]]; then
+    MODELS=$(ob_curl_hdr "$AUTH" -s -m 5 "$WEBUI_URL/api/models" 2>/dev/null \
+      | python3 -c "
+import sys, json
+for m in json.load(sys.stdin).get('data', []):
+    mid = m.get('id', '')
+    # Skip arena/internal models and workspace presets (base_model_id set).
+    if mid and 'arena' not in mid and not m.get('preset'):
+        print(mid)
 " 2>/dev/null || true)
   fi
   [[ -n "$MODELS" ]] && break
@@ -536,10 +531,10 @@ else
     rm -f "$PROMPT_FILE"
   fi
 
-  while IFS='|' read -r model_id fc_mode; do
+  while IFS= read -r model_id; do
     [[ -z "$model_id" ]] && continue
     echo "  Configuring $model_id..."
-    docker exec -e MODEL_ID="$model_id" open-webui python3 -c "
+    docker exec -e MODEL_ID="$model_id" -e TOOL_REFS="$TOOL_REFS" open-webui python3 -c "
 import sqlite3, json, os, time
 
 db = sqlite3.connect('/app/backend/data/webui.db')
@@ -547,7 +542,7 @@ db = sqlite3.connect('/app/backend/data/webui.db')
 # a quote must not become Python code.
 model_id = os.environ['MODEL_ID']
 # Both RBAC connections; per-user access control decides which resolve.
-tool_refs = json.loads('$TOOL_REFS')
+tool_refs = json.loads(os.environ['TOOL_REFS'])
 
 # Load system prompt
 system_prompt = ''
@@ -556,8 +551,15 @@ if os.path.exists(prompt_path):
     with open(prompt_path) as f:
         system_prompt = f.read().strip()
 
-row = db.execute('SELECT params, meta FROM model WHERE id=?', (model_id,)).fetchone()
-if row:
+cols = {r[1] for r in db.execute('PRAGMA table_info(model)')}
+has_base = 'base_model_id' in cols
+row = db.execute('SELECT params, meta, is_active%s FROM model WHERE id=?'
+                 % (', base_model_id' if has_base else ''), (model_id,)).fetchone()
+if row and has_base and row[3]:
+    # A workspace preset (a user's persona on top of a base model) that
+    # happens to share a served id. Its prompt and tools are its owner's.
+    print('    Workspace preset — left as its owner configured it.')
+elif row:
     params = json.loads(row[0]) if row[0] else {}
     meta = json.loads(row[1]) if row[1] else {}
     changed = False
@@ -575,10 +577,19 @@ if row:
         meta['toolIds'] = tool_refs
         changed = True
 
-    if changed:
-        db.execute('UPDATE model SET params=?, meta=? WHERE id=?', (json.dumps(params), json.dumps(meta), model_id))
+    # This model is being SERVED: its override row must be active. An
+    # inactive base-model row makes WebUI drop the served model from
+    # /api/models entirely (utils/models.py), and the stale-row sweep this
+    # script used to run deactivated it on every model switch, fast boot
+    # and rollback — with nothing ever turning it back on.
+    reactivated = not row[2]
+
+    if changed or reactivated:
+        db.execute('UPDATE model SET params=?, meta=?, is_active=1 WHERE id=?',
+                   (json.dumps(params), json.dumps(meta), model_id))
         db.commit()
-        print('    Updated (native FC + system prompt + default tools).')
+        print('    Updated (native FC + system prompt + default tools%s).'
+              % (', re-activated' if reactivated else ''))
     else:
         print('    Already configured.')
 else:
@@ -603,29 +614,15 @@ else:
       || echo "    Warning: failed to configure model '$model_id' (docker exec error) — re-run ./scripts/configure-webui.sh" >&2
   done <<< "$MODELS"
 
-  # Deactivate rows for models we are no longer serving.
-  #
-  # Nothing ever cleaned these up, so they accumulate one per model ever loaded
-  # — and llama.cpp's single-model server ignores the `model` field entirely, so
-  # picking a dead entry does NOT error: you get the loaded model's answers
-  # under the wrong name, at the wrong advertised context, recorded that way in
-  # the transcript. Fast boot makes this concrete by design, briefly serving a
-  # bootstrap bridge whose row would otherwise linger as a selectable option.
-  ACTIVE_IDS=$(printf '%s\n' "$MODELS" | cut -d'|' -f1 | paste -sd'\n' -)
-  docker exec -i -e ACTIVE_IDS="$ACTIVE_IDS" open-webui python3 -c "
-import sqlite3, os
-db = sqlite3.connect('/app/backend/data/webui.db')
-active = {m for m in os.environ.get('ACTIVE_IDS', '').split('\n') if m.strip()}
-if active:   # never blank the list on a failed/empty model probe
-    rows = db.execute('SELECT id FROM model WHERE is_active=1').fetchall()
-    stale = [r[0] for r in rows if r[0] not in active]
-    for mid in stale:
-        db.execute('UPDATE model SET is_active=0 WHERE id=?', (mid,))
-    if stale:
-        db.commit()
-        print('    Deactivated %d stale model entr%s (no longer served).'
-              % (len(stale), 'y' if len(stale) == 1 else 'ies'))
-" 2>/dev/null || true
+  # No stale-row sweep. Rows for models no longer served (an earlier model,
+  # the fast-boot bridge) need no cleanup: WebUI only shows a base-model
+  # override whose id the endpoint serves (utils/models.py looks each row up
+  # in the served list), so they vanish from the picker on their own and come
+  # back configured when that model is served again. The sweep that used to
+  # run here set is_active=0 on them, which (a) hid the model for good once it
+  # was served again — nothing reactivated it — and (b) disabled every
+  # workspace preset on each tokenless start, since presets never appear in
+  # the endpoint's list.
 fi
 
 # No restart at the end. The pinned image reads every config key straight from
