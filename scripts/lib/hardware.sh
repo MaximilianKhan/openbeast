@@ -255,19 +255,33 @@ ob_context_vram_mb() {
 # with <mem_total_kb> of RAM: 35% of it, at most 48 GiB. Echoes 0 — "pass
 # nothing, the server's own default stands" — when that would not be MORE
 # than the default (8192 MiB), or when the RAM is unknown.
+# Optional <limit_pct> <host_weights_mib>: a launch that keeps weights in host
+# RAM (--n-cpu-moe, -ngl 0) shares start.sh's MemoryMax scope (limit_pct of
+# RAM) with them, so the cache gets at most what that scope has left after
+# the weights and OB_PROMPT_CACHE_RESERVE_MB for the rest of the stack.
+# Flash-Next (--n-cpu-moe 35 --load-mode none, ~65 GB of RAM) plus 35% of a
+# 122 GB rig came to ~107 GiB in a 91.5 GiB scope: the kernel OOM-killed
+# llama-server once the cache filled.
 # Why: with one slot, a second conversation taking it makes the server stash
 # the first one's state in host RAM. 27B agent sessions at 100K+ tokens are
 # 16–36 GiB each; 8 GiB holds none of them, so every return to a conversation
 # reprocessed its whole prompt (555 "exceeds cache size limit" lines and
 # ~20% of all GPU-busy time in this rig's log, 2026-07 to 10). 48 GiB covers
-# every state seen; 35% keeps it well inside start.sh's MEM_LIMIT_PCT scope.
+# every state seen; 35% sits inside start.sh's MEM_LIMIT_PCT scope beside ONE
+# GPU-resident server — host-resident weights are subtracted (above), and a
+# second llama-server (the instinct scorer) sizes its own cache.
 # Pure integer math, no I/O.
 OB_PROMPT_CACHE_DEFAULT_MB=8192
+OB_PROMPT_CACHE_RESERVE_MB=8192
 ob_prompt_cache_mb() {
-  local kb="${1:-}" mb
+  local kb="${1:-}" pct="${2:-}" host="${3:-0}" mb room
   [[ "$kb" =~ ^[0-9]+$ ]] || { echo 0; return 0; }
   mb=$(( kb / 1024 * 35 / 100 ))
   [[ $mb -gt 49152 ]] && mb=49152
+  if [[ "$pct" =~ ^[0-9]+$ && "$host" =~ ^[0-9]+$ && "$host" -gt 0 ]]; then
+    room=$(( kb / 1024 * pct / 100 - host - OB_PROMPT_CACHE_RESERVE_MB ))
+    [[ $room -lt $mb ]] && mb=$room
+  fi
   [[ $mb -le $OB_PROMPT_CACHE_DEFAULT_MB ]] && mb=0
   echo "$mb"
 }

@@ -240,10 +240,18 @@ if [[ $_pc_own -eq 0 && "$_pc" != "0" ]]; then
   if [[ -z "$_pc" || "$_pc" == "auto" ]]; then
     declare -F ob_prompt_cache_mb >/dev/null 2>&1 || source "$SCRIPT_DIR/lib/hardware.sh" 2>/dev/null || true
     _pc=0
+    # Weights kept in host RAM share the stack's memory scope with the cache.
+    _pc_host=0
+    [[ $WEIGHTS_IN_HOST_RAM -eq 1 ]] && _pc_host="$(ob_weight_set_mib "${WEIGHT_FILES[@]}")"
     if declare -F ob_prompt_cache_mb >/dev/null 2>&1; then
-      _pc="$(ob_prompt_cache_mb "$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null || true)")"
+      _pc="$(ob_prompt_cache_mb "$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null || true)" \
+             "${MEM_LIMIT_PCT:-75}" "$_pc_host")"
     fi
     _pc_how="auto: 35% of host RAM, max 48 GiB"
+    if [[ $_pc_host -gt 0 ]]; then
+      _pc_how="auto: 35% of host RAM, max 48 GiB, less ~${_pc_host} MiB of host-resident weights in the ${MEM_LIMIT_PCT:-75}% memory scope"
+      [[ "$_pc" == "0" ]] && echo "Prompt cache: llama-server's default — this launch keeps ~${_pc_host} MiB of weights in host RAM, which leaves the ${MEM_LIMIT_PCT:-75}% memory scope no room for more (PROMPT_CACHE_RAM_MB=<MiB> to choose)."
+    fi
   fi
   if [[ "$_pc" != "0" ]]; then
     # Captured, not piped into grep -q: under pipefail an early-exiting grep

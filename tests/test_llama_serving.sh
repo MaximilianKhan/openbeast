@@ -151,6 +151,31 @@ _serve OPENBEAST_WEIGHT_ENFORCE=off -- -m "$SV/weights/Six-00001-of-00003.gguf" 
 : > "$SV/gpus"
 
 echo ""
+echo "host prompt cache vs the stack's memory scope:"
+_pcm() { ( source "$REPO_DIR/scripts/lib/hardware.sh"; ob_prompt_cache_mb "$@" ); }
+# 122 GB rig (127,926,272 kB), MEM_LIMIT_PCT 75 -> 93,696 MiB scope.
+if [[ "$(_pcm 127926272)" == "43724" && "$(_pcm 127926272 75 0)" == "43724" \
+      && "$(_pcm 127926272 75 66560)" == "18944" && "$(_pcm 127926272 75 94208)" == "0" ]]; then
+  pass "ob_prompt_cache_mb: host-resident weights come out of the scope first (none: unchanged 35%)"
+else
+  fail "ob_prompt_cache_mb with host weights: none $(_pcm 127926272 75 0) (43724), 65 GiB $(_pcm 127926272 75 66560) (18944), 92 GiB $(_pcm 127926272 75 94208) (0)"
+fi
+# serve.sh e2e: a CPU-offloaded weight set as big as this host's scope gets no
+# auto cache (the server default), a GPU-resident one keeps the auto size.
+_memkb="$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo)"
+truncate -s $(( _memkb * 1024 * 3 / 4 )) "$SV/weights/Huge.gguf"
+_serve OPENBEAST_WEIGHT_ENFORCE=off -- -m "$SV/weights/Huge.gguf" -c 8192 --n-cpu-moe 35 --load-mode none
+_pc_cpu="$(_sv_arg --cache-ram)"
+_serve OPENBEAST_WEIGHT_ENFORCE=off -- -m "$SV/weights/Huge.gguf" -c 8192
+_pc_gpu="$(_sv_arg --cache-ram)"
+_auto="$(_pcm "$_memkb")"; [[ "$_auto" == "0" ]] && _auto=""
+if [[ -z "$_pc_cpu" && "$_pc_gpu" == "$_auto" ]]; then
+  pass "serve.sh: no auto --cache-ram beside host-resident weights that fill the scope (GPU-resident: ${_pc_gpu:-none})"
+else
+  fail "auto --cache-ram: CPU-offloaded '$_pc_cpu' (want none), GPU-resident '$_pc_gpu' (want '$_auto')"
+fi
+rm -f "$SV/weights/Huge.gguf"
+
 echo ""
 echo "========================================"
 echo "llama-serving: $PASS passed, $FAIL failed"

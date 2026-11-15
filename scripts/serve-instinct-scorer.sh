@@ -85,6 +85,10 @@ export OPENBEAST_API_KEY
 export CUDA_VISIBLE_DEVICES=""
 export OPENBEAST_AUTO_CONTEXT=0        # no VRAM-based scaling: this is a CPU server
 export OPENBEAST_CONTEXT=8192
+# Its own host prompt cache, not serve.sh's auto 35% of RAM: that is sized
+# for the primary, and two of them sat in start.sh's one 75% memory scope.
+# A full 8192-token f16 state of the 0.6B is ~0.9 GiB.
+export OPENBEAST_PROMPT_CACHE_RAM_MB="${INSTINCT_SCORER_CACHE_RAM_MB:-1024}"
 # Global reasoning overrides are for the primary; the scorer reads the answer
 # boundary through /completion and never thinks.
 unset REASONING REASONING_BUDGET
