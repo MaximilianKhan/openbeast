@@ -29,7 +29,7 @@ tools (§2.1) — pull is for you, a cloud model, and for people.
 
 This skill is `prompt_index: false`: it is reachable with `skill("beast-lang")`
 but deliberately not in the local model's always-on menu in
-`system-prompt-tools.md` (that file is hashed into the eval cache era).
+`system-prompt-tools.md` (every menu entry costs tokens on every turn).
 
 ## Look something up
 
