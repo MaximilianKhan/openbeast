@@ -545,3 +545,28 @@ def test_no_cdn_docs_pages(workspace):
     assert c.get("/redoc").status_code == 404
     assert c.get("/openapi.json").status_code == 200
 
+
+def test_guest_key_reaches_its_own_tools(workspace, monkeypatch):
+    """The module docstring claimed this was covered; every guest assertion
+    was negative, so GUEST_TOOLS = set() passed the whole suite."""
+    def web_search(query: str, max_results: int = 10, pageno: int = 1,
+                   time_range: str = "") -> str:
+        return "stub results"
+
+    def weather(location: str = "", days: int = 3, units: str = "") -> str:
+        return "stub weather"
+
+    def fetch(url: str, max_length: int = 50_000) -> str:
+        return "stub page"
+
+    for fn in (web_search, weather, fetch):
+        monkeypatch.setattr(openapi_tools.impl, fn.__name__, fn)
+    import weather as _weather
+    monkeypatch.setattr(_weather, "caller_location", lambda *a, **k: None)
+    c = _keyed(monkeypatch)
+    for path, body in (("/web_search", {"query": "q"}), ("/weather", {}),
+                       ("/fetch", {"url": "https://example.com"})):
+        r = c.post(path, json=body, headers=GUEST)
+        assert r.status_code == 200, (path, r.status_code, r.text)
+        row = _rows(os.environ["OPENBEAST_TOOL_AUDIT_PATH"])[-1]
+        assert row["profile"] == "guest" and row["ok"] is True, row
