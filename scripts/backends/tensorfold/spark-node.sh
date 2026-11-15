@@ -34,8 +34,13 @@
 # repo id with no way to pin a revision (hub.py pull → snapshot_download),
 # so this launcher only ever hands it a verified, read-only local directory.
 # A drafter is the profile's DRAFTER_SOURCE@DRAFTER_REVISION, fetched the same
-# way; without one it passes --drafter none (never "auto": that picks up
-# whatever unpinned draft model happens to sit in the HF cache).
+# way. Without one, the CONTAINER engine passes --drafter none (never "auto":
+# that picks up whatever unpinned draft model happens to sit in the HF cache).
+# The NATIVE engine then passes no --drafter at all: in tensorfold-native
+# 1.2.7 the cached-drafter "auto" belongs to the managed server (benchmark),
+# and a family that drafts with its own MTP head refuses any --drafter
+# ("serve without --drafter"). VERIFY ON HARDWARE that a plain native serve
+# loads no cached drafter (HF_HUB_OFFLINE=1 does not hide a cached copy).
 #
 # Order matters: start ranks 1..N-1 FIRST, then rank 0 (TensorFold RUNBOOK.md,
 # "two ranks"). Every rank needs the same checkpoint, drafter, --context and
@@ -44,7 +49,10 @@
 #
 # SPARK_IFACE / SPARK_IB_HCA may be comma-separated lists (several rails, or a
 # NIC per peer); they reach NCCL unchanged. From 3 ranks on, NCCL_CROSS_NIC=1
-# (a ring of Sparks crosses NICs; a switch fabric does not mind).
+# (rails / NICs per peer). VERIFY ON HARDWARE: nothing past 2 ranks has run
+# through this launcher; rails on separate subnets may also need
+# NCCL_IB_SUBNET_AWARE_ROUTING=1, and a cabled 3-Spark ring cannot rendezvous
+# here at all (one SPARK_HEAD_IP; spark-cluster.sh check flags it).
 #
 # SECURITY. TensorFold has NO API key and its rendezvous port (29551) is
 # unauthenticated. rank 0's HTTP binds SPARK_SERVE_HOST (a specific address;
@@ -70,7 +78,7 @@ while [[ $# -gt 0 ]]; do
     --print)   PRINT=1; shift ;;
     --stop)    STOP=1; shift ;;
     --ckpt)    echo "Error: --ckpt is gone — the checkpoint comes from a profile: --profile NAME (scripts/backends/models/)" >&2; exit 2 ;;
-    -h|--help) sed -n '2,47p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,55p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)         echo "Unknown argument: $1 (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -144,7 +152,9 @@ if [[ "$ENGINE" == native ]]; then
   if [[ ! -x "$TENSORFOLD_BIN" ]]; then
     sp_err "no TensorFold binary at $TENSORFOLD_BIN — scripts/backends/tensorfold/install-native.sh"
   elif [[ -n "${TENSORFOLD_VERSION:-}" ]]; then
-    _have="$("$TENSORFOLD_BIN" --version 2>/dev/null | awk '{print $NF}')"
+    # || true: a binary that cannot even run (missing library, wrong arch)
+    # is reported as '?' below, not a silent exit under set -e/pipefail.
+    _have="$( ("$TENSORFOLD_BIN" --version 2>/dev/null || true) | awk '{print $NF}')"
     [[ "$_have" == "$TENSORFOLD_VERSION" ]] \
       || sp_err "$TENSORFOLD_BIN is TensorFold '${_have:-?}', spark.env pins $TENSORFOLD_VERSION — every rank must run the same build"
   fi
@@ -214,7 +224,10 @@ if [[ "$ENGINE" == native ]]; then
   [[ -n "${NCCL_DEBUG:-}" ]] && RANKENV+=("NCCL_DEBUG=$NCCL_DEBUG")
   # A transient systemd --user unit: logs in the journal, one --stop, and it
   # outlives this shell (linger is set by spark-root-setup.sh).
-  CMD=(systemd-run --user --unit "$NAME" --collect --property=Restart=no
+  # --expand-environment=no (systemd >= 254; the Sparks run 255): otherwise
+  # the service manager rewrites ${VAR}, $VAR and $$ in every argument at
+  # exec time, and the unit would not run the argv --print shows.
+  CMD=(systemd-run --user --unit "$NAME" --collect --property=Restart=no --expand-environment=no
     --setenv=HF_HUB_OFFLINE=1)
   for _e in ${RANKENV[@]+"${RANKENV[@]}"}; do CMD+=("--setenv=$_e"); done
   CMD+=("$TENSORFOLD_BIN" "${SERVE[@]}")

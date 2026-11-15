@@ -32,7 +32,10 @@
 #
 # SPARK_IFACE / SPARK_IB_HCA may be comma-separated lists (several rails, or a
 # NIC per peer); they reach NCCL unchanged. From 3 ranks on, NCCL_CROSS_NIC=1
-# (a ring of Sparks crosses NICs; a switch fabric does not mind).
+# (rails / NICs per peer). VERIFY ON HARDWARE: nothing past 2 ranks has run
+# through this launcher; rails on separate subnets may also need
+# NCCL_IB_SUBNET_AWARE_ROUTING=1, and a cabled 3-Spark ring cannot rendezvous
+# here at all (one SPARK_HEAD_IP; spark-cluster.sh check flags it).
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=../lib.sh
@@ -48,7 +51,7 @@ while [[ $# -gt 0 ]]; do
     --print)      PRINT=1; shift ;;
     --stop)       STOP=1; shift ;;
     --model)      echo "Error: --model is gone — the model comes from a profile: --profile NAME (scripts/backends/models/)" >&2; exit 2 ;;
-    -h|--help)    sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)    sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)            echo "Unknown argument: $1 (see --help)" >&2; exit 2 ;;
   esac
 done

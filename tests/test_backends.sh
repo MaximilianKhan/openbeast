@@ -911,6 +911,17 @@ if [[ $SPRC -eq 0 ]] && _has "$_O" "--setenv=TF_GLM_RANK=1" && _has "$_O" "--set
 else
   fail "native GLM rank 1 (rc=$SPRC): $_O"
 fi
+printf '#!/bin/sh\nexit 3\n' > "$_K/bin/tensorfold-broken"; chmod +x "$_K/bin/tensorfold-broken"
+_sp "$_TN" TENSORFOLD_BIN="$_K/bin/tensorfold-broken" -- --profile "$_P/tftest.env" --rank 1 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "is TensorFold '?', spark.env pins 1.2.7" && _has "$_O" "Refusing to start" \
+  && pass "native: a binary whose --version fails is refused with a reason (not a silent exit)" || fail "native broken binary (rc=$SPRC): $_O"
+_sp "$_TN" -- --profile "$_P/tftest.env" --rank 1 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+[[ $SPRC -eq 0 ]] && _has "$_O" "systemd-run --user --unit openbeast-tensorfold-rank1 --collect --property=Restart=no --expand-environment=no" \
+  && pass "native: systemd-run --expand-environment=no, so the unit runs the argv --print shows (no \${VAR} rewriting)" \
+  || fail "native expand-environment (rc=$SPRC): $_O"
+# Native without a profile drafter: no --drafter flag at all (see the header:
+# MTP-head families refuse any --drafter, `none` included as far as we know).
+! _has "$_O" "--drafter" && pass "native: a profile without a drafter passes no --drafter" || fail "native drafter flag: $_O"
 _sp "$_TN" TF_STUB_VERSION=1.2.6 -- --profile "$_P/tftest.env" --rank 1 --master 192.168.100.10 --env "$_K/spark-native.env" --print
 [[ $SPRC -eq 1 ]] && _has "$_O" "spark.env pins 1.2.7" && pass "native refuses a binary that is not the pinned release" \
   || fail "native version pin (rc=$SPRC): $_O"
