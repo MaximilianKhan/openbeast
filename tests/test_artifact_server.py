@@ -2345,3 +2345,30 @@ def test_login_audit_constants_are_sane():
     assert isinstance(artifact_server.LOGIN_AUDIT_ROWS, int)
     assert 0 < artifact_server.LOGIN_AUDIT_ROWS <= 10_000
     assert 0 < artifact_server.LOGIN_AUDIT_BUCKETS <= 100_000
+
+
+def test_every_answer_but_the_capability_tree_is_corp_same_origin(make_client):
+    """Review (spark-scale) beast-artifact sec: CORP was same-origin on the
+    shell/gallery/raw 200s but absent on the flat 404 and the API JSON, so a
+    cross-site `fetch(url, {mode: 'no-cors'})` REJECTED on a page that exists
+    (CORP blocks the opaque answer) and RESOLVED on the 404 — the same
+    existence oracle COOP was added to close. Every non-capability answer,
+    200, 404 and 429 alike, must now carry the same CORP and nosniff."""
+    c = make_client(operators="max@example.com,kid@example.com")
+    a = publish(c, headers=local(c, MAX))
+    corp, sniff = "cross-origin-resource-policy", "x-content-type-options"
+    for hdrs, path in ((MAX, "/"), (KID, "/"), ({}, "/"),
+                       (MAX, f"/a/{a['id']}"), (MAX, f"/a/{a['id']}/v/9"),
+                       (MAX, "/a/no-such-id"), (MAX, "/api/artifacts"),
+                       (MAX, f"/api/artifacts/{a['id']}"),
+                       (MAX, "/api/artifacts/no-such-id"),
+                       (MAX, f"/raw/{a['id']}/v/1/"),
+                       (MAX, f"/raw/{a['id']}/v/9/")):
+        r = c.get(path, headers=hdrs)
+        assert r.headers.get(corp) == "same-origin", (path, r.status_code)
+        assert r.headers.get(sniff) == "nosniff", (path, r.status_code)
+    # a refusal leaves the gate middleware without passing through
+    # call_next: it must be uniform too
+    r = c.get(f"/a/{a['id']}", headers={"Tailscale-User-Login": "x@y"})
+    assert r.status_code == 404
+    assert r.headers.get(corp) == "same-origin"

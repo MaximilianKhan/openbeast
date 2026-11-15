@@ -631,7 +631,11 @@ sandbox instead — stricter on storage (there is none), identical on network.
   capability tree (`/raw/<id>/v/<n>/~<token>/…`), the flat 404 included.
   The identity rides the network, not a cookie, so without it any site the
   viewer visits could `window.open` a shell URL and count frames to learn
-  which private pages and versions exist.
+  which private pages and versions exist. The same answers all carry
+  `Cross-Origin-Resource-Policy: same-origin` and `nosniff` too — the 404,
+  the 429 and the API JSON included — because CORP on the 200s alone made a
+  cross-site `fetch(…, {mode: "no-cors"})` reject on a page that exists and
+  resolve on the 404: the same oracle through a different door.
 - **The `Host` header is pinned** (`TrustedHostMiddleware`, the outermost
   middleware, sharing the one allowlist in `agents/hostpolicy.py` with
   beast-chat). A browser cannot forge `Host`, and that is what closes DNS

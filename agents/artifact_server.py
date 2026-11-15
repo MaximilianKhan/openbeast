@@ -357,6 +357,18 @@ RAW_FILE_HEADERS = dict(RAW_HEADERS, **{
 # of a sandbox is a network error against a COOP response.
 COOP_HEADER = ("Cross-Origin-Opener-Policy", "same-origin")
 
+# The same XS-Leak, through `fetch(url, {mode: "no-cors"})` or `<script src>`
+# instead of `window.open`: CORP same-origin turns a cross-site load of a 200
+# into a network error, so CORP on the 200s alone (shell, gallery, /raw) and
+# not on the flat 404 or the API JSON made "rejects vs resolves" an existence
+# oracle. Every answer outside the capability tree carries the same set, put
+# on by the gate middleware (review, spark-scale: beast-artifact).
+UNIFORM_HEADERS = (
+    COOP_HEADER,
+    ("Cross-Origin-Resource-Policy", "same-origin"),
+    ("X-Content-Type-Options", "nosniff"),
+)
+
 SHELL_HEADERS = {
     "Content-Security-Policy": SHELL_CSP,
     "X-Content-Type-Options": "nosniff",
@@ -875,7 +887,7 @@ def create_app(local_token: str | None = None) -> FastAPI:
     def _flat_404() -> JSONResponse:
         """The single refusal (D9). Same status, same body, same length."""
         return JSONResponse(NOT_FOUND_BODY, status_code=404,
-                            headers=dict([COOP_HEADER]))
+                            headers=dict(UNIFORM_HEADERS))
 
     # D27/R5. An UNIDENTIFIED caller can mint audit rows two ways — a refusal,
     # and a hit on the one route exempt from the anonymity gate
@@ -1095,7 +1107,7 @@ def create_app(local_token: str | None = None) -> FastAPI:
             _record(request, 429, t0, {"denied": deny})
             return JSONResponse({"detail": "too many changes — wait a minute"},
                                 status_code=429,
-                                headers=dict([COOP_HEADER]))
+                                headers=dict(UNIFORM_HEADERS))
         if deny:
             _record(request, 404, t0, {"denied": deny})
             return _flat_404()
@@ -1124,7 +1136,8 @@ def create_app(local_token: str | None = None) -> FastAPI:
             store.reset_owner_override(owner_token)
         _record(request, response.status_code, t0)
         if _coop_applies(request.url.path):
-            response.headers[COOP_HEADER[0]] = COOP_HEADER[1]
+            for name, value in UNIFORM_HEADERS:
+                response.headers[name] = value
         return response
 
     # Host pinning, added LAST so it is OUTERMOST (Starlette's add_middleware
