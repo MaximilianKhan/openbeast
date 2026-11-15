@@ -252,6 +252,59 @@ _gpu_leased() {
   [[ "$out" == HELD* ]]
 }
 
+# TensorFold across Sparks: rank 0 answers /health {"ok": true} even while
+# its peer rank is frozen or rebooting and every request hangs (ops review).
+# Two cheap signals, in order:
+#   1. /health iteration_s — how long rank 0's current iteration has run (0
+#      between iterations). A healthy iteration is milliseconds; past
+#      TF_STALL_S (120; the recipe's own stall dump is at 300) it is stuck.
+#   2. Idle (requests_running 0, so nothing would show a stall): a 1-token
+#      completion with a short timeout (~0.1 s on the live pair), at most
+#      every OPENBEAST_TF_PROBE_INTERVAL seconds (240) — the watchdog and the
+#      supervisor both run this every 5 minutes, and the cached answer
+#      (.run/tf-liveness) serves the one that comes second.
+# Sets TF_STALL to the reason and returns 0 when stalled; any other backend,
+# or a /health it cannot read, is "not stalled" (readiness already decided).
+TF_STALL=""
+_tf_stalled() {
+  [[ "$INFERENCE_BACKEND" == "tensorfold" ]] || return 1
+  local body fields it running now stamp t verdict model code
+  body="$(ob_curl_bearer "${LLAMA_API_KEY:-}" -s --max-time 5 "$LLAMA_URL/health" 2>/dev/null || true)"
+  fields="$(python3 -c '
+import json, sys
+try:
+    h = json.loads(sys.stdin.read())
+except Exception:
+    h = {}
+num = lambda v: v if isinstance(v, (int, float)) and not isinstance(v, bool) else ""
+print(num(h.get("iteration_s")), num(h.get("requests_running")))' <<< "$body" 2>/dev/null || true)"
+  read -r it running <<< "$fields"
+  if [[ "$it" =~ ^[0-9]+(\.[0-9]+)?$ ]] && (( ${it%.*} > ${TF_STALL_S:-120} )); then
+    TF_STALL="rank 0's current iteration has run ${it%.*} s (stalled; iteration_s)"
+    return 0
+  fi
+  [[ "$running" == "0" ]] || return 1       # busy and progressing, or unknown
+  now="$(date +%s)"; stamp="$REPO_DIR/.run/tf-liveness"
+  if read -r t verdict < "$stamp" 2>/dev/null && [[ "$t" =~ ^[0-9]+$ ]] \
+     && (( now - t < ${OPENBEAST_TF_PROBE_INTERVAL:-240} )); then
+    [[ "$verdict" == "stalled" ]] || return 1
+    TF_STALL="a 1-token completion did not finish in ${OPENBEAST_TF_PROBE_TIMEOUT:-20} s (probed $(( now - t )) s ago)"
+    return 0
+  fi
+  model="${INFERENCE_MODEL:-$(ob_backend_models "$LLAMA_URL" 2>/dev/null | head -1 || true)}"
+  code="$(ob_curl_bearer "${LLAMA_API_KEY:-}" -s -o /dev/null -w '%{http_code}' \
+            --max-time "${OPENBEAST_TF_PROBE_TIMEOUT:-20}" -H 'Content-Type: application/json' \
+            --data "$(python3 -c 'import json, sys; print(json.dumps({"model": sys.argv[1], "max_tokens": 1, "stream": False, "messages": [{"role": "user", "content": "1"}]}))' "${model:-local-model}")" \
+            "$LLAMA_URL/v1/chat/completions" 2>/dev/null || true)"
+  # Only a request that never came back is a stall; a 4xx (a model id the
+  # engine rejects, an auth mismatch) is another row's problem.
+  verdict="alive"; [[ -z "$code" || "$code" == "000" ]] && verdict="stalled"
+  mkdir -p "$REPO_DIR/.run" 2>/dev/null && printf '%s %s\n' "$now" "$verdict" > "$stamp" 2>/dev/null || true
+  [[ "$verdict" == "stalled" ]] || return 1
+  TF_STALL="a 1-token completion did not finish in ${OPENBEAST_TF_PROBE_TIMEOUT:-20} s"
+  return 0
+}
+
 if ! ob_inference_managed; then
   # NOT OURS (INFERENCE_MANAGED=false — always for vLLM / TensorFold): a
   # cluster on other boxes, in containers this stack did not start. Report
@@ -259,9 +312,16 @@ if ! ob_inference_managed; then
   # pgrep/kill a local llama-server and exec a serve script into a port and
   # a GPU that have nothing to do with the real server.
   _be_label="$(ob_backend_label) ($INFERENCE_BACKEND @ $LLAMA_URL)"
-  if ob_backend_ready "$LLAMA_URL"; then
+  if ob_backend_ready "$LLAMA_URL" && ! _tf_stalled; then
     echo "  OK   $_be_label"
     HEALTHY=$((HEALTHY + 1))
+  elif [[ -n "${TF_STALL:-}" ]]; then
+    echo "  DOWN $_be_label — answers /health ok, but $TF_STALL"
+    echo "       (a frozen or rebooting peer rank — is every Spark of the pair up?)"
+    UNHEALTHY=$((UNHEALTHY + 1))
+    if $RESTART; then
+      echo "       → not restarting: INFERENCE_MANAGED=false — this stack does not own it."
+    fi
   else
     echo "  DOWN $_be_label"
     UNHEALTHY=$((UNHEALTHY + 1))
