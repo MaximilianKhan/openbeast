@@ -1154,8 +1154,9 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
     # agents/runner.py:_steering_enabled() checks OPENBEAST_EVAL first, and
     # its remaining opt-in is explicit argv only.
     #
-    # This file is deliberately NOT in evals/cache.py CONTEXT_FILES, so this
-    # costs no cache era — verified before and after the change.
+    # This function's code IS in the era, via evals/HARNESS_VERSION (pinned
+    # to cache.harness_fingerprint()): a change here that moves argv, env or
+    # budgets must bump it — tests/test_cache.py refuses a stale pin.
     child_env["OPENBEAST_EVAL"] = "1"
     child_env.pop("OPENBEAST_BEAST_CHAT", None)
     # ======================================================================

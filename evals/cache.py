@@ -15,11 +15,11 @@ Hash key components:
    budget), greedy (low-churn decode), pack (awareness pack sha —
    task-scoped to the pack's language), env (opt-in environment
    fingerprint: weights, llama.cpp build, KV flags, toolchains).
-5. agent context hash — sha256 of system-prompt.md, system-prompt-tools.md,
-   opencode.json (which pins the available tools/transport), the agent
-   runtime itself (agents/runner.py, agents/tools.py), and the eval-suite
-   marker (evals/SUITE_VERSION). Changes to the agent's runtime context →
-   cache miss.
+5. agent context hash (the era) — sha256 of what an eval unit consumes:
+   system-prompt.md, the agent runtime itself (agents/runner.py,
+   agents/tools.py), the eval-suite marker (evals/SUITE_VERSION) and the
+   harness marker (evals/HARNESS_VERSION, pinned to run_eval's
+   agent-shaping code). Changes to any of them → cache miss.
 
 Cached payload mirrors the per-task entry written to results JSON: passed,
 elapsed_seconds, agent_exit_code, validation_output, token counts, and any
@@ -46,17 +46,89 @@ CACHE_DIR = EVALS_DIR / "cache"
 # Files that pin the agent's runtime context. Changing any of these
 # invalidates all cached results — that's intentional (it's the whole point
 # of the cache key).
+#
+# ONLY what an eval unit consumes. system-prompt-tools.md and opencode.json
+# were hashed until 2026-11 although the eval agent reads neither (its prompt
+# is system-prompt.md, its tools tools.TOOL_SCHEMAS): every OpenCode catalog
+# edit cold-started the cache for every model. Conversely run_eval.py — which
+# builds the agent's argv, env (OPENBEAST_TASK_PATHS, OPENBEAST_EVAL) and
+# wall/validation budgets — was in no era at all; HARNESS_VERSION now carries
+# it, pinned to harness_fingerprint() by tests/test_cache.py (review finding
+# campaign-evals: era hashes the wrong files).
 CONTEXT_FILES = [
     REPO_ROOT / "system-prompt.md",
-    REPO_ROOT / "system-prompt-tools.md",
-    REPO_ROOT / "opencode.json",
     # The agent runtime itself: a change to the loop or the tool
     # implementations changes what a "cached result" means.
     REPO_ROOT / "agents" / "runner.py",
     REPO_ROOT / "agents" / "tools.py",
     # The suite marker: a suite bump means the task set was redefined.
     EVALS_DIR / "SUITE_VERSION",
+    # The harness marker: run_eval's agent-shaping code (see
+    # HARNESS_FUNCTIONS). Bumped, deliberately, when that code changes.
+    EVALS_DIR / "HARNESS_VERSION",
 ]
+
+# The parts of run_eval.py that decide what an agent sees and how a unit is
+# judged: its argv/env/wall budget, fixture setup and re-assertion, the
+# validator and its timeout. harness_fingerprint() hashes their AST (comments
+# and docstrings excluded, so prose edits move nothing).
+HARNESS_FUNCTIONS = ("run_agent", "_run_reaped", "run_setup", "run_pre_validate",
+                     "run_validation", "run_cleanup")
+HARNESS_CONSTANTS = ("VALIDATION_TIMEOUT_S",)
+
+
+def _ast_canon(node) -> str:
+    """Python-version-stable AST serialization: ast.dump's format moves
+    between releases (3.13 hides empty fields; new versions add fields such
+    as type_params), so emit only NON-empty fields, with no positions."""
+    import ast
+    if isinstance(node, ast.AST):
+        fields = []
+        for name in node._fields:
+            val = getattr(node, name, None)
+            if val is None or val == []:
+                continue
+            fields.append(f"{name}={_ast_canon(val)}")
+        return f"{type(node).__name__}({','.join(fields)})"
+    if isinstance(node, list):
+        return "[" + ",".join(_ast_canon(v) for v in node) + "]"
+    return repr(node)
+
+
+def harness_fingerprint(path: Path | None = None) -> str:
+    """sha256[:16] over the AST of run_eval's agent-shaping code. Read by
+    parsing, never importing, so cache.py stays import-light."""
+    import ast
+    src = (path or EVALS_DIR / "run_eval.py").read_text()
+    tree = ast.parse(src)
+    parts: dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name in HARNESS_FUNCTIONS:
+            body = node.body
+            if (body and isinstance(body[0], ast.Expr)
+                    and isinstance(getattr(body[0], "value", None), ast.Constant)
+                    and isinstance(body[0].value.value, str)):
+                node.body = body[1:] or [ast.Pass()]
+            parts[node.name] = _ast_canon(node)
+        elif isinstance(node, ast.Assign):
+            for t in node.targets:
+                if isinstance(t, ast.Name) and t.id in HARNESS_CONSTANTS:
+                    parts[t.id] = _ast_canon(node.value)
+    missing = set(HARNESS_FUNCTIONS + HARNESS_CONSTANTS) - set(parts)
+    if missing:
+        raise ValueError(f"run_eval.py lacks harness parts {sorted(missing)}")
+    blob = "\x00".join(f"{k}={parts[k]}" for k in sorted(parts))
+    return _short_hash(blob.encode())
+
+
+def pinned_harness() -> tuple[str, str]:
+    """(version, fingerprint) recorded in evals/HARNESS_VERSION."""
+    for line in (EVALS_DIR / "HARNESS_VERSION").read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            ver, fp = line.split()
+            return ver, fp
+    raise ValueError("evals/HARNESS_VERSION has no `<version> <fingerprint>` line")
 
 
 def _short_hash(data: bytes) -> str:

@@ -10,8 +10,8 @@
    line; mode preserved, 0600 when created). conf.sh exports it as
    OPENBEAST_INFERENCE_MODEL for vllm/tensorfold, which agents/runner.py sends.
 4. Prints the opencode provider entry (or writes it to --opencode-out). The
-   repo's opencode.json is NOT edited: it is tracked and part of the eval era
-   hash; opencode merges ~/.config/opencode/opencode.json with it.
+   repo's opencode.json is NOT edited: it is tracked (frontend catalog);
+   opencode merges ~/.config/opencode/opencode.json with it.
 Open WebUI needs nothing: it lists whatever /v1/models lists, which the
 conformance report proves.
 """

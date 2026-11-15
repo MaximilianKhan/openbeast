@@ -513,3 +513,55 @@ def test_context_hash_separates_its_files(cache_dir, tmp_path, monkeypatch):
 
     assert h("ab", "c") != h("a", "bc")
     assert h("ab", "c") == h("ab", "c")
+
+
+def test_era_hashes_what_the_eval_agent_consumes(cache_dir):
+    """The era must hash the files an eval unit reads and nothing else: the
+    runner never reads opencode.json or system-prompt-tools.md, so a
+    frontend-catalog edit must not cold-start every model's cache — and
+    run_eval's agent-shaping code must be in it (via HARNESS_VERSION)."""
+    cache = fresh_cache_module(cache_dir)
+    names = {p.name for p in cache.CONTEXT_FILES}
+    assert "opencode.json" not in names
+    assert "system-prompt-tools.md" not in names
+    assert "HARNESS_VERSION" in names
+    for f in ("runner.py", "tools.py"):
+        src = (ROOT / "agents" / f).read_text()
+        assert "opencode.json" not in src and "system-prompt-tools" not in src, \
+            f"agents/{f} now reads a frontend file: put it back in the era"
+
+
+def test_harness_pin_matches_run_eval(cache_dir):
+    """run_eval's agent-shaping code (argv, env, budgets, validator) is in
+    the era only through evals/HARNESS_VERSION. A change to that code with
+    a stale pin would let rows judged by different harness code replay
+    together — so the pin must match the code."""
+    cache = fresh_cache_module(cache_dir)
+    ver, pinned = cache.pinned_harness()
+    now = cache.harness_fingerprint()
+    assert pinned == now, (
+        f"run_eval.py's agent-shaping code changed (fingerprint {now}, pinned "
+        f"{pinned}). Bump {ver} in evals/HARNESS_VERSION and set the "
+        f"fingerprint to {now}: this deliberately moves the eval era.")
+
+
+def test_harness_fingerprint_ignores_prose_but_sees_code(tmp_path):
+    cache = fresh_cache_module(tmp_path / "c")
+    src = (ROOT / "evals" / "run_eval.py").read_text()
+    base = cache.harness_fingerprint()
+    p = tmp_path / "run_eval.py"
+    for anchor in ("Run the agent against a task.", "max_iter * 60 * timeout_scale",
+                   "VALIDATION_TIMEOUT_S = 30"):
+        assert anchor in src, f"test anchor gone from run_eval.py: {anchor}"
+    # A comment and a docstring edit inside run_agent: no era move.
+    p.write_text(src.replace('    max_iter = max_iter_override or task.get("max_iter", 15)\n',
+                             '    # a new comment\n'
+                             '    max_iter = max_iter_override or task.get("max_iter", 15)\n', 1)
+                 .replace("Run the agent against a task.", "Run THE agent on a task.", 1))
+    assert cache.harness_fingerprint(p) == base
+    # The wall budget changes: the fingerprint moves.
+    p.write_text(src.replace("max_iter * 60 * timeout_scale", "max_iter * 90 * timeout_scale", 1))
+    assert cache.harness_fingerprint(p) != base
+    # So does the validator timeout.
+    p.write_text(src.replace("VALIDATION_TIMEOUT_S = 30", "VALIDATION_TIMEOUT_S = 45", 1))
+    assert cache.harness_fingerprint(p) != base
