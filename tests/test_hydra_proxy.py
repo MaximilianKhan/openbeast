@@ -1613,6 +1613,26 @@ def test_a_cross_site_browser_request_never_reaches_a_node(fleet, tmp_path, hdr)
     assert wait_audit(tmp_path, lambda x: x.get("outcome") == "cross_site")["status"] == 403
 
 
+def test_an_unauthenticated_cross_site_request_writes_no_audit_row(fleet, tmp_path):
+    """Verifier 2026-11: the cross-site refusal ran before the key check and
+    audited, so a keyless caller adding an Origin header could write rows
+    (and force rotations that flush real audit history). Refuse it, unaudited;
+    an authenticated cross-site request is still audited."""
+    srv, rig, _, _ = fleet()
+    before = len(posts(rig))
+    h = {"Content-Type": "text/plain;charset=UTF-8", "Origin": "http://attacker.example/" + "A" * 300}
+    for _ in range(3):
+        r = httpx.post(srv.url + "/v1/chat/completions", content=json.dumps(chat()), headers=h, timeout=10)
+        assert r.status_code == 403 and r.json()["error"]["type"] == "hydra_cross_site", r.text
+    time.sleep(0.2)
+    assert [x for x in audit_rows(tmp_path) if x.get("outcome") == "cross_site"] == []
+    r = httpx.post(srv.url + "/v1/chat/completions", content=json.dumps(chat()),
+                   headers={**h, "Authorization": f"Bearer {INBOUND}"}, timeout=10)
+    assert r.status_code == 403
+    assert wait_audit(tmp_path, lambda x: x.get("outcome") == "cross_site")["status"] == 403
+    assert len(posts(rig)) == before, "nothing reached the engine"
+
+
 def test_own_frontends_are_not_cross_site(fleet):
     srv, _, _, _ = fleet()
     assert post(srv, chat()).status_code == 200                                   # no browser headers

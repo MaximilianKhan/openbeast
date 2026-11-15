@@ -1083,10 +1083,13 @@ async def proxy(request: Request, path: str, pin: str | None = None):
     request_id = rid_in if _REQ_ID_RE.match(rid_in) else uuid.uuid4().hex[:16]
     base_h = hy.hydra_headers(request_id)
     if hy.cross_site(request):
-        hy.audit.write({"ts": _now_iso(), "request_id": request_id, "path": path, "config": cfg.hash,
-                        "requested": None, "strict": bool(pin), "status": 403, "outcome": "cross_site",
-                        "origin": (request.headers.get("origin") or "")[:200] or None,
-                        "ms": int((time.monotonic() - started) * 1000)})
+        # refused before any node is touched; audited only for a caller that
+        # holds the key, so a keyless page cannot write (and rotate) the audit
+        if hy.inbound_ok(request):
+            hy.audit.write({"ts": _now_iso(), "request_id": request_id, "path": path, "config": cfg.hash,
+                            "requested": None, "strict": bool(pin), "status": 403, "outcome": "cross_site",
+                            "origin": (request.headers.get("origin") or "")[:200] or None,
+                            "ms": int((time.monotonic() - started) * 1000)})
         return _cross_site_refusal(hy, base_h)
     if not hy.inbound_ok(request):
         return hy.error("hydra_unauthorized", "present the inference key: Authorization: Bearer <LLAMA_API_KEY>",
