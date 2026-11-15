@@ -1,16 +1,20 @@
 # Validator body for 183_heston_little_trap (build.py prepends ORACLE = '...').
 # Hidden cases come from a seeded generator here; the oracle lives only in
 # this script. Nothing but the agent's own files is in the fixture dir.
+# The harness feeds this script on stdin (python -I -S -) and injects vlib;
+# the solution runs in its own process through vlib.run_solution, so the
+# oracle and the seed never share a process (or an argv) with it.
 import math
 import os
 import random
-import re
-import subprocess
 import sys
+
+import vlib
 
 D = '/tmp/eval_heston183'
 SRC = os.path.join(D, 'heston.py')
-RUN_LIMIT_S = 8
+RUN_LIMIT_S = 8          # CPU seconds at scale 1; run_solution scales it
+WALL_LIMIT_S = 20        # wall seconds at scale 1 (scaled), a backstop only
 TOL = 1e-6
 
 ns = {}
@@ -46,6 +50,25 @@ def cases(seed=0x4E57183):
     return out
 
 
+def sealed_paths():
+    """The harness's sealed eval dirs plus the whole repo they live in and its
+    git object store (the committed task JSON is in there too). macOS only:
+    vlib enforces deny_read through sandbox-exec."""
+    out = [p for p in os.environ.get('OPENBEAST_VALIDATOR_SEAL', '').split(os.pathsep) if p]
+    for p in list(out):
+        root = os.path.dirname(os.path.dirname(os.path.realpath(p)))
+        out.append(root)
+        git = os.path.join(root, '.git')
+        if os.path.isfile(git):  # a worktree: .git names its gitdir
+            try:
+                line = open(git).read().strip()
+            except OSError:
+                line = ''
+            if line.startswith('gitdir:'):
+                out.append(os.path.realpath(os.path.join(line[7:].strip(), '..', '..')))
+    return sorted({p for p in out if os.path.exists(p)})
+
+
 def fail(msg):
     print(msg)
     sys.exit(1)
@@ -54,16 +77,20 @@ def fail(msg):
 if not os.path.isfile(SRC):
     fail('no solution: /tmp/eval_heston183/heston.py does not exist')
 src = open(SRC, errors='replace').read()
-if re.search(r'^\s*(?:import|from)\s+(?:numpy|scipy|mpmath|sympy|ctypes|cffi)\b', src, re.M):
-    fail('forbidden api: standard library only (no numpy/scipy/mpmath/sympy/ctypes)')
+problems = vlib.lint_python(src, ban_modules=('numpy', 'scipy', 'mpmath', 'sympy',
+                                              'ctypes', 'cffi', 'subprocess',
+                                              'multiprocessing'))
+if problems:
+    fail('forbidden api: standard library only, no dynamic code (%s)' % problems[0])
 
 cs = cases()
 inp = '%d\n' % len(cs) + ''.join(' '.join(repr(x) for x in c) + '\n' for c in cs)
-try:
-    r = subprocess.run([sys.executable, '-I', '-S', SRC], cwd=D, input=inp,
-                       capture_output=True, text=True, timeout=RUN_LIMIT_S)
-except subprocess.TimeoutExpired:
-    fail('solution timed out (%ds for %d options)' % (RUN_LIMIT_S, len(cs)))
+r = vlib.run_solution(vlib.python_cmd(SRC), input=inp, cpu_s=RUN_LIMIT_S,
+                      wall_s=WALL_LIMIT_S, cwd=D, deny_read=sealed_paths())
+if r.verdict in ('cpu', 'wall'):
+    fail('solution timed out (%ds CPU for %d options; %s)' % (RUN_LIMIT_S, len(cs), r.reason))
+if r.verdict != 'ok':
+    fail('solution refused: %s' % r.reason)
 if r.returncode != 0:
     tail = (r.stderr or '').strip().splitlines()[-1:] or ['']
     fail('solution exited with code %d: %s' % (r.returncode, tail[0][:160]))

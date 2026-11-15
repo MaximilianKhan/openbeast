@@ -3,7 +3,7 @@
 
   oracle.py          Lewis-form pricer with the little-trap char. function,
                      adaptive Gauss-Kronrod; embedded in the validator only
-  validator_main.py  validator body: seeded case generator, sandboxed run,
+  validator_main.py  validator body: seeded case generator, vlib.run_solution run,
                      compare to the oracle at 1e-6 absolute
   heston.py          reference solution (P1/P2 form, composite Gauss-Legendre)
   wrong_*.py / slow.py / leak.py   prover arms, classes in prove.json
@@ -31,7 +31,7 @@ SAMPLE_IN = ("3\n"
 SAMPLE_OUT = "5.7851554344\n0.9047208082\n15.9686989483\n"
 
 TASK = f"""\
-Create {DIR}/heston.py: a Python 3 program that prices European call options under the Heston stochastic-volatility model. Standard library only: it is run as `python3 -I -S heston.py` from {DIR}, so no third-party package (numpy, scipy, mpmath, ...) is importable.
+Create {DIR}/heston.py: a Python 3 program that prices European call options under the Heston stochastic-volatility model. Standard library only: it is run as `python3 -I -S heston.py` from {DIR}, so no third-party package (numpy, scipy, mpmath, ...) is importable. The source is linted: imports of third-party, ctypes, subprocess or multiprocessing modules and dynamic code (exec, eval, __import__, importlib) are rejected.
 
 Model, under the pricing measure:
   dS_t = (r - q) S_t dt + sqrt(v_t) S_t dW1_t
@@ -43,7 +43,7 @@ Output on stdout: N lines, the call price of each input line, in order, as a dec
 
 Every hidden case lies in this domain: 50 <= S0 <= 150; 0.6*S0 <= K <= 1.6*S0; 0.02 <= T <= 30 (years; maturities up to and including 30 occur); -0.01 <= r <= 0.08; 0 <= q <= 0.05; 0.005 <= v0 <= 0.25; 0.1 <= kappa <= 5; 0.01 <= theta <= 0.25; 0.1 <= sigma <= 1.5; -0.95 <= rho <= 0. The Feller condition 2*kappa*theta >= sigma^2 does not necessarily hold.
 
-Accuracy: each printed price must be within 1e-6 (absolute) of the exact model price; the validator compares against an independent high-precision reference. Speed: the hidden run is 140 options in one process and must finish within 8 seconds in total.
+Accuracy: each printed price must be within 1e-6 (absolute) of the exact model price; the validator compares against an independent high-precision reference. Speed: the hidden run is 140 options in one process (no child processes) and must use at most 8 seconds of CPU time in total.
 
 Sample: {DIR}/sample_input.txt holds 3 options, {DIR}/sample_output.txt their prices to 10 decimals. Validation uses 140 hidden, seeded cases spread over the whole domain and reports only the index of the first failing case, so write your own tests.
 """
