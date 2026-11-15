@@ -129,16 +129,25 @@ def test_force_never_rejoins(run_dir, monkeypatch):
     assert any("staying islanded" in m for m in logs)
 
 
-def test_launch_offline_records_launched_islanded(run_dir, monkeypatch):
+def test_launch_offline_records_launched_islanded(run_dir, monkeypatch, capsys):
+    """Nothing greps the file: conf.sh asks `island.py status --webui-offline`
+    (and the rejoin log reads launched_islanded). Pin what that consumer
+    answers, not json.dump's spacing."""
     clock = Clock()
     monkeypatch.setattr(island, "_now", clock)
-    w, _ = _watcher("auto", Probe(False), clock)
+    monkeypatch.setattr(island, "_watcher_alive", lambda pid: True)
+    w, _ = _watcher("auto", Probe(False, True, True), clock)
     w.init()
-    raw = (run_dir / "island.json").read_text()
-    # conf.sh greps for exactly this spelling to keep WebUI's OFFLINE_MODE
-    # consistent across healthcheck restarts — pin the format.
-    assert '"launched_islanded": true' in raw
-    assert json.loads(raw)["state"] == "island"
+    st = json.loads((run_dir / "island.json").read_text())
+    assert st["state"] == "island" and st["launched_islanded"] is True
+    assert island.main(["status", "--webui-offline"]) == island.EXIT_ISLAND
+    assert capsys.readouterr().out.strip() == "true"
+    # Rejoined: still launched islanded, but WebUI's next compose is online.
+    clock.t += 15; w.tick()
+    clock.t += 15; w.tick()
+    assert w.state == "online" and w.launched_islanded
+    assert island.main(["status", "--webui-offline"]) == island.EXIT_ONLINE
+    assert capsys.readouterr().out.strip() == "false"
 
 
 def test_resume_continues_from_init(run_dir, monkeypatch):
