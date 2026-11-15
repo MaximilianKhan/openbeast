@@ -815,6 +815,57 @@ if [[ "$(_lq "m['qwen38-27b-nvfp4']['limit']['context']")" == "131072" ]] \
 else
   fail "live row lost its context limit :: $LIVE_OUT"
 fi
+# A TensorFold rig (the Spark pair): no /props (404, and beast-gate blocks it
+# anyway), the window is /health's context_length. A vLLM rig's is /v1/models
+# max_model_len. Both rows used to ship with no limit (ops review, client mode).
+for _be in tensorfold vllm; do
+  TF_DIR="$TMPROOT/live-$_be"; mkdir -p "$TF_DIR"
+  python3 - "$TF_DIR/port" "$_be" <<'PY' &
+import http.server, json, sys
+be = sys.argv[2]
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/v1/models":
+            row = {"id": "GLM-5.3-Flash-EXL3"}
+            if be == "vllm":
+                row["max_model_len"] = 262144
+            body = {"data": [row]}
+        elif self.path == "/health" and be == "tensorfold":
+            body = {"ok": True, "backend": "tensorfold", "context_length": 1048576}
+        else:
+            self.send_error(404); return
+        raw = json.dumps(body).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers(); self.wfile.write(raw)
+    def log_message(self, *a):
+        pass
+srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+open(sys.argv[1] + ".tmp", "w").write(str(srv.server_address[1]))
+import os; os.replace(sys.argv[1] + ".tmp", sys.argv[1])
+srv.serve_forever()
+PY
+  TF_PID=$!
+  for _ in $(seq 1 100); do [[ -s "$TF_DIR/port" ]] && break; sleep 0.05; done
+  LCFG="$TF_DIR/opencode.json"
+  python3 -c "
+import json, sys
+json.dump({'provider': {'openbeast-rig': {'options': {'baseURL': 'http://127.0.0.1:%s/v1' % sys.argv[2], 'apiKey': 'not-needed'},
+                                          'models': {}}}},
+          open(sys.argv[1], 'w'), indent=2)" "$LCFG" "$(cat "$TF_DIR/port")"
+  TF_OUT="$(bash -c "OC_CONFIG='$LCFG'; REPO='$REPO_DIR'; PY_BIN=python3
+$RF
+_refresh_oc_catalog" 2>&1)" || true
+  kill "$TF_PID" 2>/dev/null || true
+  wait "$TF_PID" 2>/dev/null || true
+  _want=1048576; [[ $_be == vllm ]] && _want=262144
+  if [[ "$(_lq "m['GLM-5.3-Flash-EXL3'].get('limit', {}).get('context')")" == "$_want" ]]; then
+    pass "a $_be rig's live row carries its real context window ($_want)"
+  else
+    fail "$_be live row has no context limit :: $TF_OUT"
+  fi
+done
 # Negative control: the dead-rig run above (section 9) must not have invented
 # a live row either — every key is a catalog id.
 if [[ "$(_ocq "'rig-live' in c['provider']['openbeast-rig']['models']")" == "False" ]]; then

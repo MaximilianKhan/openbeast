@@ -114,16 +114,26 @@ if base:
             r.add_header("Authorization", "Bearer " + key)
         return json.load(urllib.request.urlopen(r, timeout=6))
     try:
-        alias = _get(base + "/models")["data"][0]["id"]
-        # /props carries the real n_ctx, but it lives at the SERVER root (not
-        # under /v1) and beast-gate's path allowlist deliberately blocks it on
-        # gated installs — so this is strictly best-effort. No n_ctx just means
-        # the live row ships without a context limit.
+        first = _get(base + "/models")["data"][0]
+        alias = first["id"]
+        # The real window, from whichever server this is. llama.cpp: /props
+        # (at the SERVER root, not under /v1 — and beast-gate's allowlist
+        # blocks it on gated installs). vLLM: /v1/models max_model_len.
+        # TensorFold (the Spark pair): /health context_length — /props is a
+        # 404 there, and /health is on the gate's allowlist. Best-effort: no
+        # window just means the live row ships without a context limit.
         root = base[:-3] if base.endswith("/v1") else base
-        try:
-            n_ctx = _get(root + "/props")["default_generation_settings"]["n_ctx"]
-        except Exception:
-            n_ctx = None
+        def _ctx(v):
+            return v if isinstance(v, int) and not isinstance(v, bool) and v > 0 else None
+        n_ctx = _ctx(first.get("max_model_len"))
+        for path, pick in (("/props", lambda d: d["default_generation_settings"]["n_ctx"]),
+                           ("/health", lambda d: d["context_length"])):
+            if n_ctx:
+                break
+            try:
+                n_ctx = _ctx(pick(_get(root + path)))
+            except Exception:
+                n_ctx = None
         live = (alias, n_ctx)
     except Exception:
         live = None
@@ -138,7 +148,7 @@ if live:
     row = dict(models.get(alias) or {})
     row["name"] = "%s  [live on rig]" % alias
     if n_ctx:
-        row["limit"] = {"context": n_ctx, "output": 32768}
+        row["limit"] = {"context": n_ctx, "output": min(32768, n_ctx)}
     models[alias] = row
 prov["models"] = models
 
