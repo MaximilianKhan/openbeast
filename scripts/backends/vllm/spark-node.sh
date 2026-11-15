@@ -1,16 +1,18 @@
 #!/bin/bash
 # Launch ONE rank of a DGX Spark vLLM server for a MODEL PROFILE (tensor
-# parallel 2 across both Sparks — native multi-node, no Ray — or TP 1 on one
-# Spark). Runs ON A SPARK, not on the rig. docs/DGX_SPARK_PLAN.md
+# parallel N across N = 2..8 Sparks, one rank per Spark — native multi-node,
+# no Ray — or TP 1 on one Spark). Runs ON A SPARK, not on the rig.
+# docs/DGX_SPARK_PLAN.md
 #
-#   scripts/backends/vllm/spark-node.sh --profile NAME --rank 1   # on Spark 2 (TP 2 only)
+#   scripts/backends/vllm/spark-node.sh --profile NAME --rank R   # on Sparks 2..N, R = 1..N-1 (TP > 1 only)
 #   scripts/backends/vllm/spark-node.sh --profile NAME --rank 0   # on Spark 1
 #
 # Options:
 #   --profile NAME|PATH  required (or SPARK_PROFILE): scripts/backends/models/NAME.env —
 #                   the model, its revision, parsers, context, memory, extra args
-#   --rank 0|1      required. 0 = head: serves HTTP on SPARK_SERVE_HOST:PORT.
-#                   1 = worker: --headless, no HTTP (TP 2 profiles only).
+#   --rank R        required, 0..N-1 for the profile's TENSOR_PARALLEL_SIZE=N
+#                   (1..8). 0 = head: serves HTTP on SPARK_SERVE_HOST:PORT.
+#                   1..N-1 = workers: --headless, no HTTP.
 #   --head-addr IP  rank 0's address on the ConnectX link (SPARK_HEAD_IP)
 #   --env FILE      HOST settings (default: scripts/backends/spark.env;
 #                   template: spark.env.example next to it)
@@ -27,6 +29,10 @@
 # environment (vllm/envs.py; middleware/register.py prefers --api-key, which
 # we never pass), docker forwards `-e VLLM_API_KEY` from THIS shell's
 # environment, and this shell reads it from a 0600 file.
+#
+# SPARK_IFACE / SPARK_IB_HCA may be comma-separated lists (several rails, or a
+# NIC per peer); they reach NCCL unchanged. From 3 ranks on, NCCL_CROSS_NIC=1
+# (a ring of Sparks crosses NICs; a switch fabric does not mind).
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=../lib.sh
@@ -42,14 +48,14 @@ while [[ $# -gt 0 ]]; do
     --print)      PRINT=1; shift ;;
     --stop)       STOP=1; shift ;;
     --model)      echo "Error: --model is gone — the model comes from a profile: --profile NAME (scripts/backends/models/)" >&2; exit 2 ;;
-    -h|--help)    sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)    sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)            echo "Unknown argument: $1 (see --help)" >&2; exit 2 ;;
   esac
 done
-case "$RANK" in
-  0|1) ;;
-  *) echo "Error: --rank 0|1 is required (0 = head, serves HTTP; 1 = worker)" >&2; exit 2 ;;
-esac
+if ! sp_rank_syntax "$RANK"; then
+  echo "Error: --rank R is required: 0..N-1 for a TENSOR_PARALLEL_SIZE=N profile (0 = head, serves HTTP; 1..N-1 = workers)" >&2
+  exit 2
+fi
 NAME="openbeast-vllm-rank$RANK"
 if [[ $STOP -eq 1 ]]; then
   exec docker stop "$NAME"
@@ -82,12 +88,14 @@ GMU="${PF_GPU_MEMORY_UTILIZATION:-0.80}"
 sp_need VLLM_IMAGE "the vLLM container image (spark.env)"
 [[ "$VLLM_MASTER_PORT" =~ ^[0-9]+$ ]] || sp_err "VLLM_MASTER_PORT='$VLLM_MASTER_PORT' is not a port"
 [[ "$SPARK_SERVE_PORT" =~ ^[0-9]+$ ]] || sp_err "SPARK_SERVE_PORT='$SPARK_SERVE_PORT' is not a port"
-if [[ "$TP" == 2 ]]; then
+if ! sp_check_rank "$RANK" "$TP"; then
+  echo "Refusing to start: profile '$PROFILE' is invalid (above)." >&2
+  exit 1
+fi
+if (( TP > 1 )); then
   sp_need SPARK_IFACE "the ConnectX-7 interface ibdev2netdev shows Up"
   sp_need SPARK_IB_HCA "the ConnectX-7 HCA ibdev2netdev shows Up"
   sp_need SPARK_HEAD_IP "rank 0's address on the ConnectX link (--head-addr)"
-elif [[ "$RANK" == 1 ]]; then
-  sp_err "profile '$PF_PROFILE_NAME' is TENSOR_PARALLEL_SIZE=1: it runs on ONE Spark — start --rank 0 only"
 fi
 
 # Where the weights come from: the verified local copy, else the Hub at the pin.
@@ -102,7 +110,7 @@ if [[ -n "$SP_MODEL_DIR" && $SP_LOCATE_RC -eq 0 ]]; then
   # be in HF_CACHE at its pinned revision.)
   OFFLINE_HUB=1
 elif [[ $SP_LOCATE_RC -eq 3 && "$PF_PROFILE_IS_HF" == 1 ]]; then
-  echo "Warning: $PF_SOURCE@$PF_REVISION is not fetched into MODELS_DIR — vLLM will download it at the pinned revision, UNVERIFIED by us. Run model-fetch.sh --profile $PF_PROFILE_NAME (on both Sparks for TP 2) to verify and lock it." >&2
+  echo "Warning: $PF_SOURCE@$PF_REVISION is not fetched into MODELS_DIR — vLLM will download it at the pinned revision, UNVERIFIED by us. Run model-fetch.sh --profile $PF_PROFILE_NAME (on every Spark that runs a rank) to verify and lock it." >&2
   SERVE_MODEL="$PF_SOURCE"
   REV_ARGS=(--revision "$PF_REVISION" --tokenizer-revision "$PF_REVISION")
   [[ "$PF_TRUST_REMOTE_CODE" == true ]] && REV_ARGS+=(--code-revision "$PF_REVISION")
@@ -130,12 +138,13 @@ fi
 CMD=(docker run -d --rm --name "$NAME"
   --gpus all --ipc=host --network host
   --ulimit memlock=-1 --ulimit nofile=1048576:1048576 --cap-add IPC_LOCK)
-if [[ "$TP" == 2 ]]; then
+if (( TP > 1 )); then
   IF="$SPARK_IFACE"
   CMD+=(--device /dev/infiniband
     -e "NCCL_SOCKET_IFNAME=$IF" -e "GLOO_SOCKET_IFNAME=$IF" -e "TP_SOCKET_IFNAME=$IF"
     -e "UCX_NET_DEVICES=$IF" -e "OMPI_MCA_btl_tcp_if_include=$IF"
     -e "NCCL_IB_HCA=$SPARK_IB_HCA" -e NCCL_IB_DISABLE=0 -e NCCL_IGNORE_CPU_AFFINITY=1)
+  (( TP >= 3 )) && CMD+=(-e NCCL_CROSS_NIC=1)
   [[ -n "${SPARK_NODE_IP:-}" ]] && CMD+=(-e "VLLM_HOST_IP=$SPARK_NODE_IP")
 fi
 # llama-server ignores the request's model id and the whole stack relies on
@@ -153,8 +162,8 @@ CMD+=(-v "$HF_CACHE:/root/.cache/huggingface" ${MOUNTS[@]+"${MOUNTS[@]}"})
 CMD+=(--entrypoint vllm "$SP_IMAGE_REF"
   serve "$SERVE_MODEL" ${REV_ARGS[@]+"${REV_ARGS[@]}"}
   --tensor-parallel-size "$TP" --gpu-memory-utilization "$GMU")
-if [[ "$TP" == 2 ]]; then
-  CMD+=(--nnodes 2 --node-rank "$RANK" --master-addr "$SPARK_HEAD_IP" --master-port "$VLLM_MASTER_PORT")
+if (( TP > 1 )); then
+  CMD+=(--nnodes "$TP" --node-rank "$RANK" --master-addr "$SPARK_HEAD_IP" --master-port "$VLLM_MASTER_PORT")
 fi
 [[ -n "$PF_MAX_MODEL_LEN" ]] && CMD+=(--max-model-len "$PF_MAX_MODEL_LEN")
 [[ -n "$PF_DTYPE" ]] && CMD+=(--dtype "$PF_DTYPE")
@@ -185,11 +194,13 @@ fi
 if [[ "$RANK" == 0 ]]; then
   if [[ "$TP" == 2 ]]; then
     echo "Rank 0 (head): serving http://$SPARK_SERVE_HOST:$SPARK_SERVE_PORT once rank 1 has joined."
+  elif (( TP > 2 )); then
+    echo "Rank 0 (head): serving http://$SPARK_SERVE_HOST:$SPARK_SERVE_PORT once ranks 1..$((TP - 1)) have joined."
   else
     echo "Serving http://$SPARK_SERVE_HOST:$SPARK_SERVE_PORT (one Spark, TP 1)."
   fi
 else
-  echo "Rank 1 (worker, headless): joining $SPARK_HEAD_IP:$VLLM_MASTER_PORT."
+  echo "Rank $RANK (worker, headless): joining $SPARK_HEAD_IP:$VLLM_MASTER_PORT."
 fi
 if [[ $USE_KEY -eq 1 ]]; then
   VLLM_API_KEY="$(cat "$VLLM_API_KEY_FILE")"

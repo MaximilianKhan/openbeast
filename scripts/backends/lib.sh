@@ -101,6 +101,32 @@ sp_check_secret_file() {
   fi
 }
 
+# ── Ranks: one GPU per Spark, so TENSOR_PARALLEL_SIZE N = N Sparks = ranks
+# 0..N-1. Rank 0 serves HTTP; every other rank is a headless worker.
+# sp_rank_syntax <rank> — a plain decimal 0..99 (no sign, no leading zero).
+# Checked before the profile is read (--stop needs only the unit name).
+sp_rank_syntax() { [[ "$1" =~ ^(0|[1-9][0-9]?)$ ]]; }
+
+# sp_check_rank <rank> <tp> — the profile's TP has this rank. Returns 1 when
+# TP itself is not 1..8 (nothing after can do arithmetic on it); a rank
+# outside 0..TP-1 is counted with sp_err like any other refusal.
+sp_check_rank() {
+  local rank="$1" tp="$2"
+  if [[ ! "$tp" =~ ^[1-8]$ ]]; then
+    echo "Error: profile '${PF_PROFILE_NAME:-?}' is TENSOR_PARALLEL_SIZE='$tp' — 1..8 (one rank per Spark)" >&2
+    return 1
+  fi
+  if [[ "$tp" == 1 && "$rank" != 0 ]]; then
+    sp_err "profile '$PF_PROFILE_NAME' is TENSOR_PARALLEL_SIZE=1: it runs on ONE Spark — start --rank 0 only"
+  elif (( rank >= tp )); then
+    sp_err "profile '$PF_PROFILE_NAME' is TENSOR_PARALLEL_SIZE=$tp: its ranks are 0..$((tp - 1)), one per Spark — there is no --rank $rank"
+  fi
+}
+
+# sp_workers <tp> — "rank 1" for TP 2, "ranks 1..N-1" above: the workers,
+# for messages.
+sp_workers() { if [[ "$1" == 2 ]]; then echo "rank 1"; else echo "ranks 1..$(($1 - 1))"; fi; }
+
 # sp_print_cmd <argv...> — the exact command, shell-quoted, one line.
 sp_print_cmd() {
   local out="" a
