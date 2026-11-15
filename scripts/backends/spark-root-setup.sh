@@ -16,9 +16,12 @@
 #   3. Tailscale from its signed apt repo, then `tailscale up` with the given
 #      tailnet name (a login URL is printed on first run). --operator lets
 #      SUDO_USER run `tailscale serve` without sudo.
-#   4. ufw: lets the peer Spark reach this one on each ConnectX-7 link that is
-#      Up (NCCL rendezvous, NCCL's own sockets and RoCE all need it; the cable
-#      is point-to-point, so "from the peer" is everything on it).
+#   4. ufw: lets the other Sparks reach this one on each ConnectX-7 link that
+#      is Up (NCCL rendezvous, NCCL's own sockets and RoCE all need it), from
+#      that link's own private subnet. One rule shape for every topology from
+#      1 to 8 Sparks: a direct cable (2), a cabled ring (3, a subnet per
+#      cable), or a switch (4-8, one fabric subnet). Only the fabric is opened,
+#      never the LAN or the tailnet.
 #      --serve also opens the TensorFold port on tailscale0, only for a keyed
 #      engine that must be reached directly. By default inference listens on
 #      loopback behind the pair's (spark-hydra's) beast-gate, which needs no open port.
@@ -110,21 +113,17 @@ ufw status verbose || true
 command -v ibdev2netdev >/dev/null || { echo "ibdev2netdev missing — is this a DGX Spark?" >&2; exit 1; }
 links=0
 while read -r iface; do
-  # NVIDIA Sync numbers each link /24 with .1 and .2 — the peer is the other one.
   addr="$(ip -4 -o addr show dev "$iface" | awk '{print $4}' | head -1)"
   [[ -n "$addr" ]] || { echo "  $iface is Up but has no IPv4 — skipped"; continue; }
-  ip="${addr%/*}"; net="${ip%.*}"; last="${ip##*.}"
-  case "$last" in
-    1) peer="$net.2" ;;
-    2) peer="$net.1" ;;
-    *) echo "  $iface has $ip, not .1/.2 — set the rule by hand" >&2; continue ;;
-  esac
-  ping -c1 -W1 -I "$iface" "$peer" >/dev/null 2>&1 \
-    || { echo "  $iface: peer $peer does not answer — rule not added" >&2; continue; }
-  ufw allow in on "$iface" from "$peer" comment "openbeast: ConnectX-7 peer (NCCL / TensorFold ranks)"
+  # The link's own network (e.g. 10.100.216.0/24). A /16 or wider on a
+  # ConnectX port is not a private point-to-point or fabric subnet: refuse it
+  # rather than open a big range.
+  net="$(python3 -c 'import ipaddress,sys; n=ipaddress.ip_interface(sys.argv[1]).network; print(n if n.prefixlen >= 20 and n.is_private else "")' "$addr")"
+  [[ -n "$net" ]] || { echo "  $iface has $addr — not a private /20-or-narrower fabric subnet; rule not added" >&2; continue; }
+  ufw allow in on "$iface" from "$net" comment "openbeast: ConnectX-7 fabric $net (NCCL / TensorFold ranks)"
   links=$((links + 1))
 done < <(ibdev2netdev | awk '/\(Up\)/ {print $5}')
-echo "  peer rules on $links link(s)"
+echo "  fabric rules on $links link(s)"
 if [[ "$SERVE" == yes ]]; then
   ufw allow in on tailscale0 to any port "$SERVE_PORT" proto tcp comment "openbeast: TensorFold API (keyed) on the tailnet"
 fi
