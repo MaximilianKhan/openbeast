@@ -357,3 +357,40 @@ def test_decision_hash_covers_every_engine_identity_field(field, a, b):
     one = EngineBinding(**{**base, field: a}).hash_identity()
     two = EngineBinding(**{**base, field: b}).hash_identity()
     assert decision_hash(SPAWN, one, None) != decision_hash(SPAWN, two, None)
+
+
+# --- review finding: truncation never silently turns off -------------------------
+
+def test_fallback_splitter_truncates_text_without_whitespace():
+    """CJK prose, minified code or base64 has no whitespace: the old
+    `\\S+\\s*` approximation made it ONE piece, so head_tail:200:1200 never
+    cut a 192K-char turn and max_tokens=1400 was not enforced."""
+    from instinct.render import render, whitespace_pieces
+    for text in ("中" * 192_000, "QUJD" * 50_000, "a=b;" * 50_000):
+        r = render(SPAWN, {"user_turn": text})
+        assert r.truncated_fields == ["user_turn"], text[:8]
+        assert len(r.prompt) < 20_000, (text[:8], len(r.prompt))
+    for text in ("héllo wörld 🎉🎉 中文混合 text\n\n  tabs\tand  spaces ", "", "x" * 30,
+                 "\x01\x02 ctrl", "日本語のテキスト。終わり"):
+        assert "".join(whitespace_pieces(text)) == text
+    short = "spawn a background agent to port the tests"
+    assert render(SPAWN, {"user_turn": short}).truncated_fields == []
+
+
+def test_llamacpp_pieces_decode_byte_split_tokens():
+    """llama-server sends a piece that is not valid UTF-8 alone as a byte
+    list; one such emoji used to make _pieces return None for the whole
+    input, dropping truncation to the whitespace approximation."""
+    eng = build_engine(_bind("http://127.0.0.1:1"))
+    emoji = list("🎉".encode())
+
+    async def fake(text):
+        return [{"id": 1, "piece": "hi "}, {"id": 2, "piece": emoji[:2]},
+                {"id": 3, "piece": emoji[2:]}, {"id": 4, "piece": " 中"}]
+    eng._tokenize_raw = fake
+    assert H.run(eng._pieces("hi 🎉 中")) == ["hi ", "🎉", " 中"]
+
+    async def bad(text):
+        return [{"id": 1, "piece": 7}]
+    eng._tokenize_raw = bad
+    assert H.run(eng._pieces("x")) is None
