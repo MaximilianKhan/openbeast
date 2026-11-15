@@ -1,0 +1,160 @@
+"""tests/prove_task.py — the v5 authoring gate — proves a sound unit and
+refuses each way a unit can be unsound (brief §6.3).
+
+A synthetic Python unit in the v5 pattern (samples only on disk; a seeded
+generator and the oracle inside the validator; a mismatch prints only the
+case index; the validator's own per-run limit) is PROVEN. Then each defect
+the gate exists for is introduced once and must turn the verdict:
+a validator that accepts anything, a fixture that leaks the expected
+output, a wrong solution that fails for a reason other than its declared
+class, too few wrong solutions, and a timed unit with no slow solution.
+"""
+
+import json
+import os
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "tests"))
+
+import prove_task  # noqa: E402
+
+VALIDATOR = r'''
+import os, random, subprocess, sys
+SOL = "@DIR@/sol.py"
+if not os.path.exists(SOL):
+    print("no solution"); sys.exit(1)
+rng = random.Random(0x5EED)
+cases = [(rng.randint(-10**6, 10**6), rng.randint(-10**6, 10**6)) for _ in range(200)]
+cases += [(0, 0), (1, -1), (-7, 3)]
+inp = "\n".join(f"{a} {b}" for a, b in cases) + "\n"
+try:
+    r = subprocess.run([sys.executable, SOL], input=inp, capture_output=True,
+                       text=True, timeout=3)
+except subprocess.TimeoutExpired:
+    print("solution timed out (3 s)"); sys.exit(1)
+got = r.stdout.split()
+if len(got) != len(cases):
+    print(f"mismatch at case {min(len(got), len(cases))} (count)"); sys.exit(1)
+for i, ((a, b), g) in enumerate(zip(cases, got)):
+    if str(a * b + a) != g:
+        print(f"mismatch at case {i}"); sys.exit(1)
+print("OK")
+'''
+
+SOLS = {
+    "ref.py": "import sys\nfor ln in sys.stdin:\n    a, b = map(int, ln.split())\n    print(a * b + a)\n",
+    "wrong_noadd.py": "import sys\nfor ln in sys.stdin:\n    a, b = map(int, ln.split())\n    print(a * b)\n",
+    "wrong_samples.py": "print(6)\nprint(0)\n",
+    "slow.py": "import time\ntime.sleep(10)\n",
+    "leak.py": ("import glob\nfor p in glob.glob('@DIR@/*'):\n"
+                "    print(open(p).read())\n"),
+}
+
+
+def _world(tmp_path, *, validator=VALIDATOR, setup_extra="", expect=None, sols=None,
+           timed=True):
+    d = f"/tmp/eval_provetest_{os.getpid()}_{tmp_path.name[-12:]}"
+    tasks = tmp_path / "tasks"
+    refs = tmp_path / "refs" / "990_prove_demo"
+    tasks.mkdir()
+    refs.mkdir(parents=True)
+    task = {
+        "id": "990_prove_demo", "name": "prove demo", "difficulty": "medium",
+        "category": "Algorithms & DS", "max_iter": 15,
+        "task": f"Write {d}/sol.py: for each stdin line `a b` print a*b+a. "
+                f"Samples: {d}/sample_input.txt, {d}/sample_output.txt.",
+        "setup": (f"mkdir -p {d} && printf '2 2\\n0 5\\n' > {d}/sample_input.txt && "
+                  f"printf '6\\n0\\n' > {d}/sample_output.txt{setup_extra}"),
+        "validation": {"type": "python", "script": validator.replace("@DIR@", d)},
+        "cleanup": f"rm -rf {d}",
+        "ref_stem": "990_prove_demo/ref", "dest": f"{d}/sol.py",
+    }
+    (tasks / "990_prove_demo.json").write_text(json.dumps(task))
+    for name, body in (SOLS if sols is None else sols).items():
+        (refs / name).write_text(body.replace("@DIR@", d))
+    (refs / "prove.json").write_text(json.dumps({
+        "timed": timed,
+        "expect": expect if expect is not None else
+        {"wrong_noadd.py": r"mismatch at case \d+", "wrong_samples.py": r"mismatch at case"},
+        "slow_expect": "solution timed out"}))
+    return ["--tasks-dir", str(tasks), "--refs-dir", str(tmp_path / "refs"),
+            "--unit", "990_prove_demo"]
+
+
+def test_a_sound_unit_is_proven(tmp_path, capsys):
+    assert prove_task.main(_world(tmp_path)) == 0
+    out = capsys.readouterr().out
+    assert "990_prove_demo: PROVEN" in out
+    assert out.count("OK  ref#") == 5                 # timed unit: 5/5
+    for arm in ("wrong:wrong_noadd.py", "wrong:wrong_samples.py", "empty",
+                "leak-probe", "slow", "ref@scale2.0"):
+        assert f"OK  {arm}" in out, arm
+
+
+def test_a_validator_that_accepts_anything_is_not_proven(tmp_path, capsys):
+    rc = prove_task.main(_world(tmp_path, validator="print('OK')", timed=False))
+    out = capsys.readouterr().out
+    assert rc == 1 and "NOT PROVEN" in out
+    assert "BAD empty" in out and "a wrong solution PASSED" in out
+
+
+def test_a_leaked_expected_file_is_not_proven(tmp_path, capsys):
+    leak = " && printf 'secret' > {d}/expected_output.txt"
+    argv = _world(tmp_path, setup_extra="", timed=False)
+    # rebuild with the leak, now that the dir name is known
+    d = json.loads((tmp_path / "tasks" / "990_prove_demo.json").read_text())["dest"]
+    d = os.path.dirname(d)
+    p = tmp_path / "tasks" / "990_prove_demo.json"
+    t = json.loads(p.read_text())
+    t["setup"] += leak.format(d=d)
+    p.write_text(json.dumps(t))
+    assert prove_task.main(argv) == 1
+    assert "oracle-like file(s) in the fixture dir" in capsys.readouterr().out
+
+
+def test_a_wrong_solution_failing_for_another_reason_is_not_proven(tmp_path, capsys):
+    rc = prove_task.main(_world(tmp_path, timed=False,
+                                 expect={"wrong_noadd.py": "segmentation fault",
+                                         "wrong_samples.py": "mismatch"}))
+    out = capsys.readouterr().out
+    assert rc == 1 and "failed for the wrong reason" in out
+
+
+def test_an_undeclared_failure_class_is_not_proven_unless_lenient(tmp_path, capsys):
+    argv = _world(tmp_path, expect={}, timed=False)
+    assert prove_task.main(argv) == 1
+    assert "failure class not declared" in capsys.readouterr().out
+    assert prove_task.main(argv + ["--lenient"]) == 0
+
+
+def test_one_wrong_solution_is_not_enough(tmp_path, capsys):
+    sols = {k: v for k, v in SOLS.items() if k != "wrong_samples.py"}
+    assert prove_task.main(_world(tmp_path, sols=sols, timed=False)) == 1
+    assert "need >= 2" in capsys.readouterr().out
+
+
+def test_a_timed_unit_needs_a_slow_solution(tmp_path, capsys):
+    sols = {k: v for k, v in SOLS.items() if k != "slow.py"}
+    assert prove_task.main(_world(tmp_path, sols=sols)) == 1
+    assert "timed unit ships no slow solution" in capsys.readouterr().out
+
+
+def test_lint_catches_coreutils_timeout_bits_and_zig_tutoring():
+    sys.path.insert(0, str(ROOT / "evals"))
+    import suite_manifest as M
+    t = {"id": "x_f", "language": "zig", "setup": "timeout 5 ./x",
+         "validation": {"type": "bash", "script": "timeout 10 ./x < in"},
+         "task": "Use `&fr.interface` and pass init.io; #include <bits/stdc++.h>"}
+    problems = prove_task.lint_unit(t, M, [])
+    assert any("setup uses coreutils" in p for p in problems)
+    assert any("validation uses coreutils" in p for p in problems)
+    assert any("bits/stdc++.h" in p for p in problems)
+    assert any("API tutoring" in p for p in problems)
+    clean = {"id": "y", "language": "python", "setup": "mkdir -p /tmp/eval_y",
+             "validation": {"type": "python", "script": "subprocess.run(x, timeout=5)"},
+             "task": "Write /tmp/eval_y/y.py"}
+    assert prove_task.lint_unit(clean, M, []) == []

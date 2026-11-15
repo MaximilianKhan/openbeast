@@ -141,6 +141,19 @@ but Python's `-c` parsing chokes on multiline. Heredocs sidestep the trap.
 For non-deterministic outputs (e.g. multiple valid topological orders), write a
 `check.py` via heredoc in setup that programmatically verifies the output.
 
+> **v5 supersedes the two paragraphs above for every new unit.** Writing
+> `expected.txt` or `check.py` into the agent's working dir hands it the
+> answer key (a probe that only `cat`s the file passed v4 units). A v5 unit:
+> setup writes 2-5 labelled samples only (`sample_input.txt`,
+> `sample_output.txt`); the validator is `type: python` and carries a seeded
+> generator + the oracle (or a property check for non-unique outputs), feeds
+> hidden cases over stdin from memory, prints only the failing case's index,
+> and finishes in <= 15 s at scale 1. Declare `ref_stem`/`dest` in the JSON,
+> keep >= 2 wrong solutions with their failure classes in
+> `evals/refs/<task_id>/`, and run `python3 tests/prove_task.py --unit <id>`
+> until it prints PROVEN. The agent cannot read `evals/tasks/` while a unit
+> is measured (the oracle seal), so an oracle inside the validator is safe.
+
 ## Difficulty tiers (with concrete examples)
 
 | Tier | Weight | Time budget | Example |
