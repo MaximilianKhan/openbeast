@@ -763,6 +763,23 @@ else
   fail "in-house list: $_n names, problems:$_missing"
 fi
 
+# --- 9. install-skills.sh inventory (the global dir the gate does not cover) ---
+# 2026-11 review: `for d in "$GLOBAL"/*/` leaves a trailing slash on $d, and
+# `[[ -L dir/ ]]` follows the link — so a --link'ed skill was listed as a
+# plain copy and the "-> target" line never printed.
+echo ""
+echo "install-skills.sh:"
+FAKE_HOME="$TMPROOT/home"; G="$FAKE_HOME/.local/share/local-llm-skills"
+mkdir -p "$G/copied" "$TMPROOT/linktarget"
+ln -s "$TMPROOT/linktarget" "$G/linked"
+HOME="$FAKE_HOME" "$REPO_DIR/scripts/install-skills.sh" >"$TMPROOT/out" 2>&1; rc=$?
+if [[ $rc -eq 0 ]] && grep -q "^  linked  -> $TMPROOT/linktarget$" "$TMPROOT/out" \
+   && grep -q "^  copied$" "$TMPROOT/out"; then
+  pass "the inventory shows a symlinked global skill's target, and a copy as a copy"
+else
+  fail "install-skills.sh inventory (rc=$rc): $(grep -E 'linked|copied' "$TMPROOT/out" | tr '\n' ' ')"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]
