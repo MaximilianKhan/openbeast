@@ -18,6 +18,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime
 import uuid
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -507,6 +508,66 @@ def test_an_undelivered_alert_is_given_up_after_the_max_age(rig, monkeypatch):
     late = time.time() + chat_server.NOTIFY_RETRY_MAX_AGE + 60
     assert n.tick(now=late) == [] and len(sent) == 1
     assert n.tick(now=late + 1) == [] and len(sent) == 1
+
+
+def _mark_lost(sid, at=None):
+    """What sessions._reconciled persists: state + summary + updated_at, and
+    NO ended_at (only finalize() writes one)."""
+    rec = json.load(open(sessions.record_path(sid)))
+    rec.update(state="lost", summary="process gone without a terminal event",
+               updated_at=datetime.fromtimestamp(at or time.time()).isoformat())
+    rec.pop("ended_at", None)
+    assert sessions._write_record(rec)
+
+
+def test_an_undelivered_lost_alert_is_given_up_too(rig):
+    """Review finding: `ended = ended_at or now` — a reconciled `lost` has no
+    ended_at, so `now - ended` was 0 and the 24 h give-up never fired."""
+    sent = []
+    sid = rig.session(kind="job", state="running")
+    n = _notifier(rig, "http://127.0.0.1:9/t",
+                  poster=lambda b, h: sent.append(b) and False)
+    n.tick()
+    _mark_lost(sid, at=time.time() - 60)
+    late = time.time() + chat_server.NOTIFY_RETRY_MAX_AGE + 60
+    assert n.tick(now=late) == [] and len(sent) == 1
+    assert n.tick(now=late + 1) == [] and len(sent) == 1
+
+
+def test_failed_sends_count_against_the_burst_cap(rig):
+    """Review finding: the cap counted SUCCESSES, so a failing endpoint got
+    one POST per due session per tick, uncapped."""
+    sent = []
+    ids = [rig.session(kind="job", state="running") for _ in range(30)]
+    n = _notifier(rig, "http://127.0.0.1:9/t", burst=10,
+                  poster=lambda b, h: sent.append(b) and False)
+    n.tick()
+    for sid in ids:
+        sessions.finalize(sid, "failed")
+    for i in range(3):
+        before = len(sent)
+        n.tick()
+        assert len(sent) - before <= 11, (i, len(sent) - before)  # 10 + summary
+
+
+def test_a_lost_that_an_operator_stop_corrects_never_alerts(rig, stub):
+    """Review finding: an operator stop that needs SIGKILL passes through
+    `lost` for about a second before the stopper writes `stopped`. A tick in
+    that window pushed a high-priority 'lost' for a deliberate stop."""
+    s = stub()
+    sid = rig.session(kind="job", state="running", title="stubborn")
+    real = rig.session(kind="job", state="running", title="crashed")
+    n = _notifier(rig, s.url + "/t")
+    n.tick()
+    _mark_lost(sid)
+    _mark_lost(real, at=time.time() - 2)
+    assert n.tick() == []                          # fresh losses settle first
+    sessions.finalize(sid, "stopped", summary="force-killed by operator",
+                      override_lost=True)
+    assert n.tick() == []                          # still settling
+    later = time.time() + chat_server.NOTIFY_LOST_SETTLE_S + 1
+    assert n.tick(now=later) == [real]             # a real loss still alerts
+    assert all("stubborn" not in c["body"].decode() for c in s.calls)
 
 
 def test_a_failed_post_never_logs_the_token(rig, tmp_path, capsys):

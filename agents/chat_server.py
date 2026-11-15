@@ -1621,6 +1621,9 @@ def _iso_epoch(value) -> float | None:
 
 # How long an undelivered end-of-session alert keeps being retried.
 NOTIFY_RETRY_MAX_AGE = 24 * 3600.0
+# How long a reconciled `lost` must stay lost before it alerts — longer than
+# an operator stop's SIGKILL-to-`stopped` window (about 1.5 s for job.sh).
+NOTIFY_LOST_SETTLE_S = 10.0
 
 
 class Notifier:
@@ -1801,11 +1804,29 @@ class Notifier:
                       and (_iso_epoch(rec.get("started_at")) or 0) >= last_tick):
                     due.append(rec)      # started and ended while we were away
             fired = []
+            attempts = 0
             overflow = 0
             mono = time.monotonic()
             for rec in due:
                 sid = rec["id"]
-                ended = _iso_epoch(rec.get("ended_at")) or now
+                # `lost` is the reconciler's INFERENCE, and an operator stop
+                # that had to SIGKILL passes through it for a second or so
+                # before the stopper writes `stopped` (job.sh stop sleeps 1 s
+                # then forks python to finalize). A tick in that window sent
+                # a high-priority "lost" push for a deliberate stop, and the
+                # correction never alerted. Let a fresh `lost` settle first:
+                # keep it pending; if it is still lost after the settle time
+                # it is a real loss and alerts then.
+                if (rec.get("state") == "lost"
+                        and now - (_iso_epoch(rec.get("updated_at")) or 0)
+                        < NOTIFY_LOST_SETTLE_S):
+                    current[sid] = "running"
+                    continue
+                # A reconciled `lost` has no ended_at (only finalize writes
+                # one); its updated_at is when the loss was recorded. Falling
+                # straight back to `now` made the max-age below never expire.
+                ended = (_iso_epoch(rec.get("ended_at"))
+                         or _iso_epoch(rec.get("updated_at")) or now)
                 # A send that fails (ntfy restarting, relay down) or is held
                 # back by min_interval must be tried again next tick — so the
                 # snapshot keeps it `running` until it is delivered. Give up
@@ -1816,9 +1837,12 @@ class Notifier:
                     if retry:
                         current[sid] = "running"
                     continue
-                if len(fired) >= self.burst:
+                # ATTEMPTS, not successes: counting only delivered sends let a
+                # failing endpoint take one POST per due session per tick.
+                if attempts >= self.burst:
                     overflow += 1
                     continue
+                attempts += 1
                 self._last_sent[sid] = mono
                 if self.notify_session(rec):
                     fired.append(sid)
