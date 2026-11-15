@@ -1502,6 +1502,28 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# BIND_HOST with an inline comment is the address, not the comment
+# (stack-lifecycle review).
+# ---------------------------------------------------------------------------
+echo ""
+echo "BIND_HOST with an inline comment:"
+_BHS="$_T/bindhost"; _sandbox "$_BHS"
+_bh() { # _bh <conf line> — BIND_HOST|INFERENCE_URL as conf.sh resolves them
+  printf '%s\n' "$1" > "$_BHS/openbeast.conf"
+  env -i HOME="$_BHS/home" PATH="$_BHS/bin:/usr/bin:/bin" OB_CONF_READONLY=1 \
+    bash -c 'REPO_DIR="$1"; source "$1/scripts/lib/conf.sh" 2>/dev/null; printf "%s|%s" "$BIND_HOST" "$INFERENCE_URL"' _ "$_BHS"
+}
+_BH="$(_bh 'BIND_HOST=127.0.0.1   # loopback only')"
+if [[ "$_BH" == "127.0.0.1|http://127.0.0.1:8080" ]]; then
+  pass "BIND_HOST=127.0.0.1 # comment -> 127.0.0.1 (was the whole line, in every bind and URL)"
+else
+  fail "BIND_HOST with an inline comment gave: '$_BH'"
+fi
+_BH="$(_bh 'BIND_HOST=192.0.2.9')"
+[[ "$_BH" == "192.0.2.9|http://192.0.2.9:8080" ]] && pass "…a plain BIND_HOST is unchanged (control)" \
+  || fail "plain BIND_HOST gave '$_BH'"
+
+# ---------------------------------------------------------------------------
 echo ""
 echo "================================"
 echo "Lifecycle: $PASS passed, $FAIL failed"

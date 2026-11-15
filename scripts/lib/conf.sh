@@ -168,6 +168,11 @@ ob_bind_is_loopback() {
 }
 
 BIND_HOST="${OPENBEAST_BIND:-$(_ob_conf_value BIND_HOST || echo 127.0.0.1)}"
+# An address has no spaces and no '#': `BIND_HOST=127.0.0.1   # loopback only`
+# went verbatim into llama-server --host and every probe URL, and still read
+# as loopback (127.*), so nothing warned (stack-lifecycle review).
+BIND_HOST="${BIND_HOST%%[[:space:]#]*}"
+[[ -n "$BIND_HOST" ]] || BIND_HOST=127.0.0.1
 # The warning for a non-loopback BIND_HOST sits further down, after the tool
 # server keys are resolved — whether it is merely loud or names an open
 # remote shell depends on them.
