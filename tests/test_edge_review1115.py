@@ -301,3 +301,32 @@ class TestAnonDoesNotReopenAfterEnrollment:
         _stub(e)
         with TestClient(e.app) as c:
             assert self._keyless(c).status_code == 200
+
+
+class TestModelListIsNotAGeneration:
+    """cbp: GET /v1/models took an in-flight unit, so it 429'd ("device
+    already has 2 generations in flight") while two streams ran — and
+    client.sh read that as a wrong key."""
+
+    def test_models_served_while_inflight_cap_is_full(self, edge, tmp_path):
+        _registry(tmp_path)
+        _stub(edge)
+        with TestClient(edge.app) as c:
+            c.get("/v1/models", headers=HDR)          # creates the bucket
+            b = _laptop_bucket_app(edge, c.app)
+            b.inflight = b.max_inflight              # two streams running
+            r = c.get("/v1/models", headers=HDR)
+            assert r.status_code == 200, r.text
+            # It neither took nor released a unit of the running streams'.
+            assert b.inflight == b.max_inflight
+            # Negative control: a generation IS refused at the cap.
+            assert c.post(CHAT, json={"messages": []},
+                          headers=HDR).status_code == 429
+
+    def test_models_still_pays_the_rate_limit(self, edge, tmp_path):
+        _registry(tmp_path, rate=1)
+        _stub(edge)
+        with TestClient(edge.app) as c:
+            codes = [c.get("/v1/models", headers=HDR).status_code
+                     for _ in range(3)]
+        assert codes[0] == 200 and 429 in codes

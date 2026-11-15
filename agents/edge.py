@@ -389,13 +389,17 @@ class Bucket:
         if getattr(self, "tokens", 0.0) > self.capacity:
             self.tokens = float(self.capacity)
 
-    def reserve(self) -> str | None:
+    def reserve(self, hold: bool = True) -> str | None:
         """Atomically admit one request, or return a refusal reason.
 
         Check-and-increment MUST happen with no await in between: the caller
         reads the request body (a real suspension point) before proxying, and
         a check-then-act split there let a device blow straight through
         EDGE_MAX_INFLIGHT with concurrent requests.
+
+        hold=False admits a request that creates no generation (/v1/models):
+        it pays a rate token but neither needs nor takes an in-flight unit —
+        the cap counts generations, not HTTP requests.
         """
         now = time.monotonic()
         self.tokens = min(self.capacity,
@@ -403,10 +407,11 @@ class Bucket:
         self.updated = now
         if self.tokens < 1.0:
             return "rate_limited"
-        if self.inflight >= self.max_inflight:
+        if hold and self.inflight >= self.max_inflight:
             return "max_inflight"
         self.tokens -= 1.0
-        self.inflight += 1
+        if hold:
+            self.inflight += 1
         return None
 
     def reserve_more(self, extra: int) -> str | None:
@@ -1102,7 +1107,10 @@ async def gate(request: Request):
     # Atomic admit: check-and-increment in one step with no await between,
     # otherwise concurrent requests sail past EDGE_MAX_INFLIGHT.
     bucket = app.state.limiter.bucket(device)
-    refusal = bucket.reserve()
+    # The model list generates nothing: rate-limited like everything else,
+    # but it must not 429 behind a device's own running generations.
+    holds = path != "/v1/models"
+    refusal = bucket.reserve(hold=holds)
     if refusal:
         _bump("denied_total", refusal)
         _audit(device_id, user, path, 429, None,
@@ -1120,7 +1128,7 @@ async def gate(request: Request):
     # a BaseException, so a client disconnect would otherwise skip the
     # release and wedge the device at 429 forever.
     # `held` grows past 1 only when the body fans out (see _generations).
-    released = {"done": False, "held": 1}
+    released = {"done": False, "held": 1 if holds else 0}
 
     def _release():
         if not released["done"]:
@@ -1203,7 +1211,8 @@ async def gate(request: Request):
                 status_code=429,
                 headers={"Retry-After": "5" if refusal == "rate_limited"
                          else "2"})
-        released["held"] = gens
+        if holds:
+            released["held"] = gens
         headers = _upstream_headers(request, device, request_id)
         registry.touch(device_id, uid)
 
