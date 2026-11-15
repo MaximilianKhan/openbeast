@@ -67,7 +67,9 @@ def conf(tmp_path):
 
     def run(conf_text="", ts=True, **env_extra):
         (root / "openbeast.conf").write_text("SEARXNG_SECRET=stub\n" + conf_text)
-        for name, body in (("tailscale", TS_STUB if ts else None),
+        # ts=False: a tailscale that never answers. PATH keeps /usr/bin, so
+        # leaving the stub out would run a real tailscale on a box with one.
+        for name, body in (("tailscale", TS_STUB if ts else "#!/bin/sh\nexit 1\n"),
                            ("hostname", HOSTNAME_STUB)):
             p = bin_dir / name
             if p.exists():
