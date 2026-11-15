@@ -4046,6 +4046,10 @@ def create_app() -> FastAPI:
             "running": live,
             "sessions": total,
             "reads": "operators" if operators.configured else "any-identified",
+            # Who may ASSERT a login: "loopback" means any process sharing
+            # the host's network namespace, host-network containers included
+            # (doctor warns when one is running).
+            "login_from": login_source(),
             "devices": registry.configured,
             "streams": max(0, gauges.get("sse_open", 0)),
             "login": principal.get("login"),

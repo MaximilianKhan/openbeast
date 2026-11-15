@@ -538,6 +538,20 @@ if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
       warn "beast-chat has no operator allowlist — every tailnet login can read every session" \
            "set CHAT_OPERATORS=<your-tailnet-login> in openbeast.conf (writes still need a chat-scoped key)"
     fi
+    # login_from=loopback trusts Tailscale-User-Login from ANY loopback peer,
+    # and a network_mode: host container IS a loopback peer: code running in
+    # one (an Open WebUI Function, a third-party backend image) can name the
+    # operator's login and read every transcript. Name the containers.
+    _chat_lf=$(echo "$_chat" | grep -o '"login_from":"[a-z]*"' | cut -d'"' -f4)
+    if [[ "$_chat_lf" == "loopback" ]] && command -v docker >/dev/null 2>&1; then
+      _chat_hostnet="$(docker ps -q 2>/dev/null | xargs docker inspect \
+          -f '{{.Name}} {{.HostConfig.NetworkMode}}' 2>/dev/null \
+          | awk '$2 == "host" {sub(/^\//, "", $1); printf "%s ", $1}')"
+      if [[ -n "$_chat_hostnet" ]]; then
+        warn "beast-chat trusts a login header from any loopback peer, and host-network containers are running (${_chat_hostnet% }) — code inside one can read every session" \
+             "set OPENBEAST_CHAT_SOCKET + OPENBEAST_CHAT_LOGIN_FROM=unix (docs/BEAST_CHAT.md)"
+      fi
+    fi
   else
     down_row "beast-chat enabled but not responding (:${CHAT_PORT:-3003})" \
          "./scripts/healthcheck.sh --restart"

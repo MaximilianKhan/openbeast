@@ -1545,6 +1545,10 @@ def test_health_says_only_ok_without_a_credential(rig):
     assert full["sessions_dir"] == str(rig.sdir)
     assert full["running"] == 1
     assert full["reads"] == "operators"
+    # who may assert a login: doctor reads this to warn about host-network
+    # containers on the loopback default (review: chat login-from-loopback)
+    assert full["login_from"] == "loopback"
+    assert bare.json() == {"status": "ok"}          # never to the anonymous
 
 
 def test_the_listing_limit_is_not_a_route_oracle(rig):

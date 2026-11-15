@@ -340,10 +340,14 @@ is a header — real when tailscale injects it, forgeable by any process
 already on the box. A forgeable header is enough to *watch*. It is not enough
 to *act*.
 
-"Any process on the box" includes the **host-network containers**: Open
-WebUI and SearXNG run `network_mode: host`, so a compromise of either reaches
-`127.0.0.1:3003` as loopback and can claim any login — without being able to
-read the 0600 token files. To close that, have `chat_server` also listen on a
+"Any process on the box" includes **every host-network container**: Open
+WebUI and SearXNG run `network_mode: host`, and so may a backend you started
+from `scripts/backends/` (a third-party inference image, say). Code running
+inside any of them — a compromise, or an Open WebUI Function, which runs as
+root in that container — reaches `127.0.0.1:3003` as loopback and can claim
+any login, without being able to read the 0600 token files. `doctor` names
+the running host-network containers while `login_from` (in the health
+detail) is still `loopback`. To close that, have `chat_server` also listen on a
 Unix socket and honour the login header **only** there:
 `OPENBEAST_CHAT_SOCKET=/path/to/.run/chat.sock` (created 0600; its directory
 must be yours, and `chat_server` strips group/other write from it at start so
