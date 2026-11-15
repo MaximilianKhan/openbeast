@@ -9,6 +9,7 @@ and serves a self-refreshing HTML page plus a /api/status JSON endpoint.
 Bind + port come from OPENBEAST_BIND / DASHBOARD_PORT (see run.sh). This is an
 optional extension (extensions/dashboard) — the core stack does not depend on it.
 """
+import importlib.util
 import json
 import os
 import subprocess
@@ -38,6 +39,38 @@ if _BACKEND not in ("llama", "vllm", "tensorfold"):
     _BACKEND = "llama"
 _INFER = (os.environ.get("OPENBEAST_INFERENCE_URL", "").strip().rstrip("/")
           or f"http://{H}:8080")
+
+
+def _load_hostpolicy():
+    """agents/hostpolicy.py, loaded by path: the one Host allowlist every
+    OpenBeast HTTP surface shares. By path rather than a sys.path entry, so
+    agents/ (sessions.py, tools.py, ...) never shadows anything imported here."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "..", "..", "agents", "hostpolicy.py")
+    spec = importlib.util.spec_from_file_location("openbeast_hostpolicy", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# DNS rebinding: a page the operator opens on the rig can re-point its own
+# name at 127.0.0.1 and read the rig-local routes (the page, /api/status) as
+# same-origin. A loopback bind does not stop that; a Host pin does. The same
+# list beast-chat, beast-artifact and the tool server answer to (loopback,
+# this machine's name, *.ts.net), plus any IP literal: rebinding needs a
+# NAME, and a literal is answered by whatever owns it (us, on a LAN or
+# tailnet BIND). Extra names: OPENBEAST_DASHBOARD_ALLOWED_HOSTS.
+_hostpolicy = _load_hostpolicy()
+ALLOWED_HOSTS = _hostpolicy.trusted_hosts(
+    os.environ.get("OPENBEAST_DASHBOARD_ALLOWED_HOSTS", ""))
+
+
+def host_ok(values):
+    """True when the request's Host header(s) may see a rig-local route."""
+    if len(values) != 1:
+        return False                 # none, or two answers to "which host"
+    return (_hostpolicy.host_allowed(values[0], ALLOWED_HOSTS)
+            or _hostpolicy.is_ip_literal(values[0]))
 
 
 def _endpoint(url):
@@ -721,6 +754,20 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        # /api/slot is the tailnet discovery contract, published to every
+        # device and read by whatever name a client dials: never pinned.
+        # The page and /api/status are rig-local, and Host-pinned.
+        if (not self.path.startswith("/api/slot")
+                and not host_ok(self.headers.get_all("Host") or [])):
+            body = (b"Invalid host header: the dashboard page answers only to "
+                    b"loopback, this machine's name, *.ts.net names and IP "
+                    b"literals. Another name: OPENBEAST_DASHBOARD_ALLOWED_HOSTS.\n")
+            self.send_response(400)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path.startswith("/api/slot"):
             body = json.dumps(_slot_cached.get()).encode()
             self.send_response(200)

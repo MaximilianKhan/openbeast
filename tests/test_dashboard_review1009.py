@@ -26,7 +26,8 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _PATH = os.path.join(REPO, "extensions", "dashboard", "dashboard.py")
 _ENV = ("OPENBEAST_PROBE_HOST", "OPENBEAST_INFERENCE_URL", "OPENBEAST_INFERENCE_BACKEND",
         "OPENBEAST_INFERENCE_SLOTS", "OPENBEAST_API_KEY", "EDGE_GATE",
-        "OPENBEAST_EDGE_ALLOW_ANON", "OPENBEAST_INSTINCT", "OPENBEAST_INSTINCT_PORT")
+        "OPENBEAST_EDGE_ALLOW_ANON", "OPENBEAST_INSTINCT", "OPENBEAST_INSTINCT_PORT",
+        "OPENBEAST_DASHBOARD_ALLOWED_HOSTS")
 
 
 def load(monkeypatch, **env):
@@ -191,6 +192,64 @@ def test_handler_threads_are_capped_and_given_back(monkeypatch):
     finally:
         gate.set()
         live.close()
+
+
+# ───────── extensions-ntfy review: DNS rebinding vs the rig-local routes ─────────
+
+def _raw(live, path, hosts):
+    """GET with exactly these Host headers (none, one, or two)."""
+    import http.client
+    port = live.srv.server_address[1]
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    c.putrequest("GET", path, skip_host=True)
+    for h in hosts:
+        c.putheader("Host", h)
+    c.endheaders()
+    r = c.getresponse()
+    body = r.read()
+    c.close()
+    return r.status, body
+
+
+@pytest.mark.parametrize("path", ["/", "/index.html", "/api/status"])
+def test_rig_local_routes_refuse_a_rebound_name(monkeypatch, path):
+    d = load(monkeypatch)
+    d._get = recorder([])
+    d.gpu_status = lambda: None
+    live = Live(d)
+    try:
+        port = live.srv.server_address[1]
+        st, body = _raw(live, path, [f"attacker.example:{port}"])
+        assert st == 400 and b"OPENBEAST_DASHBOARD_ALLOWED_HOSTS" in body
+        assert _raw(live, path, [])[0] == 400, "no Host is not a trusted Host"
+        assert _raw(live, path, [f"127.0.0.1:{port}", "attacker.example"])[0] == 400
+        # controls: every name the operator legitimately opens it by
+        for ok in (f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}",
+                   f"192.168.1.50:{port}", "spark-1.tail4109f9.ts.net:8444"):
+            assert _raw(live, path, [ok])[0] == 200, ok
+    finally:
+        live.close()
+
+
+def test_api_slot_answers_any_host(monkeypatch):
+    # The tailnet discovery contract: a client reads it by whatever name it
+    # dials, so it is deliberately not pinned (and holds nothing rig-local).
+    d = load(monkeypatch)
+    d._get = recorder([])
+    live = Live(d)
+    try:
+        st, body = _raw(live, "/api/slot", ["rig.lan:3002"])
+        assert st == 200 and json.loads(body)["beast_slot"] == d.SLOT_CONTRACT
+    finally:
+        live.close()
+
+
+def test_extra_allowed_hosts_come_from_env(monkeypatch):
+    d = load(monkeypatch, OPENBEAST_DASHBOARD_ALLOWED_HOSTS="rig.lan, beast.home")
+    assert d.host_ok(["rig.lan:3002"]) and d.host_ok(["BEAST.home"])
+    assert not d.host_ok(["evil.lan"])
+    d = load(monkeypatch)
+    assert not d.host_ok(["rig.lan:3002"])
 
 
 # ───────────────────────── F6: probes follow OPENBEAST_PROBE_HOST ─────────────────────────

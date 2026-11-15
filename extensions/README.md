@@ -98,6 +98,10 @@ The `dashboard` slot API established the sanctioned pattern. Follow it:
   as `:8444`, via `tailscale serve --set-path` — the HTML page and `/api/status`
   stay rig-local. (On a tailscale build without `--set-path` it falls back to
   mounting the whole dashboard and says so; `--unpublish-slot` reverses either.)
+  The page and `/api/status` are also Host-pinned against DNS rebinding: they
+  answer only to loopback, this machine's name, `*.ts.net` names and IP
+  literals (400 otherwise; more names via `OPENBEAST_DASHBOARD_ALLOWED_HOSTS`,
+  comma-separated). `/api/slot` answers any Host.
 
   **Footgun: `EXTENSIONS` is empty by default.** `--publish-slot` publishes the
   tailnet route whether or not anything is listening, so with the dashboard
