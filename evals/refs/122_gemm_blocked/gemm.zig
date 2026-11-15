@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const BS: usize = 64;
+const V8 = @Vector(8, f64);
 
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
@@ -44,11 +45,27 @@ pub fn main(init: std.process.Init) !void {
                 var i = ii;
                 while (i < ie) : (i += 1) {
                     const crow = C[i * n + jj .. i * n + je];
-                    var k = kk;
-                    while (k < ke) : (k += 1) {
-                        const aik = A[i * n + k];
-                        const brow = B[k * n + jj .. k * n + je];
-                        for (crow, brow) |*cv, bv| cv.* += aik * bv;
+                    if (je - jj == BS) {
+                        // Full tile: keep the C row segment in vector registers.
+                        var acc: [BS / 8]V8 = undefined;
+                        for (&acc, 0..) |*a, t| a.* = crow[t * 8 ..][0..8].*;
+                        var k = kk;
+                        while (k < ke) : (k += 1) {
+                            const aik: V8 = @splat(A[i * n + k]);
+                            const brow = B[k * n + jj ..];
+                            for (&acc, 0..) |*a, t| {
+                                const bv: V8 = brow[t * 8 ..][0..8].*;
+                                a.* += aik * bv;
+                            }
+                        }
+                        for (acc, 0..) |a, t| crow[t * 8 ..][0..8].* = a;
+                    } else {
+                        var k = kk;
+                        while (k < ke) : (k += 1) {
+                            const aik = A[i * n + k];
+                            const brow = B[k * n + jj .. k * n + je];
+                            for (crow, brow) |*cv, bv| cv.* += aik * bv;
+                        }
                     }
                 }
             }
