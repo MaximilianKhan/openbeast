@@ -2,7 +2,7 @@
 """Identity tool server (agents/openapi_tools.py) — auth, sharding, audit.
 
 Covers:
-  - all 18 tools registered in openapi.json; /health reports mode
+  - all 19 tools (the 18 MCP tools + weather) registered in openapi.json; /health reports mode
   - unkeyed mode: calls pass with no Authorization (Phase-1 parity)
   - keyed mode: 401 no key / 403 wrong key / 404 guest on admin tool /
     200 admin; guest can reach its own tools (auth layer)
@@ -72,7 +72,7 @@ def test_all_tools_in_spec_and_health(workspace):
     for name in openapi_tools.TOOL_NAMES:
         assert f"/{name}" in spec["paths"], name
     h = c.get("/health").json()
-    assert h["status"] == "ok" and h["tools"] == 18 and h["auth"] == "open"
+    assert h["status"] == "ok" and h["tools"] == 19 and h["auth"] == "open"
 
 
 # --- auth matrix -------------------------------------------------------------

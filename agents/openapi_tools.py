@@ -103,8 +103,11 @@ TOOL_NAMES = [
     "stop_agent", "tail_agent",
     "publish_artifact", "list_artifacts",
     "language_reference",
+    # WebUI-only (not an MCP tool): it needs the caller's identity to find
+    # where the caller is (agents/weather.py).
+    "weather",
 ]
-GUEST_TOOLS = {"web_search", "fetch"}
+GUEST_TOOLS = {"web_search", "fetch", "weather"}
 
 _HDR_USER = "x-openwebui-user-id"
 _HDR_ROLE = "x-openwebui-user-role"
@@ -505,6 +508,11 @@ def create_app() -> FastAPI:
                         detail="relative workdir escapes the caller's workspace")
                 kwargs["workdir"] = anchored
             token = _tools.set_base_dir_override(shard) if shard else None
+            wtoken = None
+            if name == "weather":
+                import weather as _weather
+                wtoken = _weather.CALLER_NEAR.set(_weather.caller_location(
+                    user, os.path.join(REPO_DIR, "openbeast.conf")))
             # Published pages are owned by their publisher: mcp_server's
             # tool functions never see the request, so hand the identity
             # down the same way the workspace shard travels. What travels is
@@ -542,6 +550,9 @@ def create_app() -> FastAPI:
             finally:
                 if token is not None:
                     _tools.reset_base_dir_override(token)
+                if wtoken is not None:
+                    import weather as _weather
+                    _weather.CALLER_NEAR.reset(wtoken)
                 if otoken is not None:
                     try:
                         import artifact as _artifact

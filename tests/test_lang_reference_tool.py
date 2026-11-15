@@ -203,8 +203,9 @@ def test_it_is_on_the_webui_surface_for_admin_only(monkeypatch, tmp_path):
     from fastapi.testclient import TestClient
     import openapi_tools
     assert "language_reference" in openapi_tools.TOOL_NAMES
-    # the guest profile is web-only ON PURPOSE — harmless is not the test
-    assert openapi_tools.GUEST_TOOLS == {"web_search", "fetch"}
+    # the guest profile is web-only ON PURPOSE — harmless is not the test.
+    # weather IS a web read (two fixed Open-Meteo hosts), so it is web-only too.
+    assert openapi_tools.GUEST_TOOLS == {"web_search", "fetch", "weather"}
     f = Facade(monkeypatch)
     monkeypatch.setenv("OPENBEAST_FILES_DIR", str(tmp_path))
     monkeypatch.setenv("OPENBEAST_RUN_DIR", str(tmp_path / "run"))

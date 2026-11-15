@@ -1326,6 +1326,28 @@ def web_search(query: str, max_results: int = 10, pageno: int = 1,
     return _tools.web_search(query, max_results, pageno, time_range)
 
 
+def weather(location: str = "", days: int = 3) -> str:
+    """Current weather and a daily forecast (1-7 days) from Open-Meteo.
+
+    Use this for any weather question instead of web_search. Leave location
+    empty for the weather where the user is right now. Name a place as
+    'City, State' (US: 'Danville, CA' means California) or 'City, Country';
+    a bare town name picks the one nearest the user. The reply names the
+    exact place it describes and lists other places with that name.
+
+    Args:
+        location: 'City, State' / 'City, Country', or empty for the user's own position.
+        days: Days of daily forecast, 1-7 (default 3).
+    """
+    # Not an MCP tool (no @_tool): it is served on the WebUI tool server,
+    # which knows who is calling and therefore where they are.
+    refusal = _island.web_refusal("weather")
+    if refusal:
+        return refusal
+    import weather as _weather
+    return _weather.weather(location, days, near=_weather.CALLER_NEAR.get())
+
+
 # ---------------------------------------------------------------------------
 # Artifacts — a durable URL for anything the model renders
 # ---------------------------------------------------------------------------

@@ -144,6 +144,31 @@ Admin profile only: it is harmless, and `GUEST_TOOLS` stays web-only anyway
 (guest → 404) — a profile that is "web-only plus whatever looked safe" is not
 one anybody can reason about.
 
+## The WebUI-only tool: `weather`
+
+The WebUI tool server (`:3001`, `agents/openapi_tools.py`) serves the 18 MCP
+tools **plus `weather`** (`agents/weather.py`). It is not an MCP tool on
+purpose: it needs to know *who* is calling, and only the WebUI path carries
+that.
+
+- **Why a tool:** `web_search` for "weather Danville, CA" can land on
+  Danville, Quebec, because "CA" is also Canada's country code. `weather`
+  resolves the place deliberately and names the exact place in its reply:
+  - `City, XX` with a US state code means that state;
+  - another two-letter code is read as a country;
+  - spelled-out states and countries filter the same way.
+- **Where the caller is:** a bare town name picks the one **nearest the
+  caller**, and no location means the weather where the caller is now. The
+  position is the device geolocation Open WebUI keeps when the user turns on
+  **Settings → Interface → Allow User Location** (`user.info.location`). The
+  tool server reads it for the calling user with the WebUI admin credentials
+  (`WEBUI_ADMIN_*`).
+- **No fixed home.** With no position, the tool asks which place.
+- **Data:** Open-Meteo forecast and geocoding, two fixed hosts with no key.
+  In island mode it refuses at once, like the other web tools.
+- **RBAC:** it is a web read, so guests get it next to `web_search` and
+  `fetch`.
+
 ## The autonomous runner's 10 tools
 
 `agents/runner.py` binds `TOOL_SCHEMAS` from `agents/tools.py` directly (no

@@ -157,7 +157,7 @@ prevent a real failure mode? If yes, load it. If no, just do the task.
 Beyond skills (`skill`, `start_skill_agent`), you have:
 - File / code: `read_file`, `write_file`, `edit_file`, `list_files`, `grep`
 - Shell: `bash`
-- Web: `fetch`, `web_search` (via local SearXNG)
+- Web: `fetch`, `web_search` (via local SearXNG); on the WebUI tool server only, `weather` (place resolved near the caller — docs/TOOLS.md)
 - Long-running agents: `start_agent`, `check_agent`, `tail_agent`,
   `list_agents`, `stop_agent`
 - Language: `language_reference` — the installed toolchain's verified claims
