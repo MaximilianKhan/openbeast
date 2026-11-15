@@ -78,8 +78,9 @@ PROMPT = (
     "narrower than the distance from the data to the initial means (L_0 of order -1e8); and "
     "outliers. Every N_k stays well above zero and every Sigma_k stays well-conditioned "
     "(condition number below 1e4) in every hidden case, so no degeneracy handling is needed. "
-    "All hidden cases together must finish within 10 seconds (a direct pure-Python "
-    "implementation needs about 1 s).\n\n"
+    "All hidden cases together must finish within 10 seconds of CPU time (a direct "
+    "pure-Python implementation needs about 1 s), in one process (no subprocesses). The "
+    "source is linted: no dynamic imports, exec/eval or import-hook tampering.\n\n"
     "A worked sample: /tmp/eval_gmm/sample_input.json holds the keyword arguments of one "
     "small case; /tmp/eval_gmm/sample_output.json holds the returned dict for it."
 )

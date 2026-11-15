@@ -1,6 +1,6 @@
 """WRONG (188_gmm_em): imports numpy by a string-built name through
-__builtins__, which no source lint can see. The driver's import blocker
-refuses it at load time. Intended: FAIL solution crashed ... ImportError."""
+__builtins__, which a token lint can't see. The AST lint refuses __builtins__,
+vars() and the string-built __import__. Intended: FAIL forbidden import."""
 np = (__builtins__ if isinstance(__builtins__, dict) else vars(__builtins__))["__imp" + "ort__"]("num" + "py")
 import math
 

@@ -6,7 +6,8 @@
     "gmm_alt.py",
     "gmm_alt2.py"
   ],
-  "wrong": {
+  "timed": true,
+  "expect": {
     "wrong_naive_exp.py": "first: case 6: (trace length differs|log-likelihood trace)",
     "wrong_det_product.py": "(?s)FAIL 4/17 hidden cases; first: case 10: .*case 11: .*case 15: .*case 16: ",
     "wrong_onepass_cov.py": "(?s)FAIL 2/17 hidden cases; first: case 12: .*case 13: ",
@@ -14,14 +15,11 @@
     "wrong_rel_tol.py": "first: case \\d+: trace length differs",
     "wrong_cap_first.py": "(?s)FAIL 1/17 hidden cases; first: case 3: converged flag wrong",
     "wrong_import_list.py": "FAIL forbidden import",
-    "wrong_import_dynamic.py": "FAIL solution crashed before returning results: ImportError"
+    "wrong_import_dynamic.py": "FAIL forbidden import or construct",
+    "wrong_import_helper.py": "FAIL solution crashed before returning results: ImportError"
   },
-  "slow": {
-    "slow_quadratic.py": "FAIL solution timed out"
-  },
-  "leak": {
-    "leak_probe.py": "FAIL 17/17 hidden cases"
-  },
-  "empty": "FAIL missing /tmp/eval_gmm/gmm.py",
-  "notes": "Arms are run by the v5 prover: ref N/N (+alt) must pass; every other arm must fail with output matching its regex (the INTENDED failure class). gen.py documents which case index exercises which trap."
+  "slow_expect": "FAIL solution timed out",
+  "leak_expect": "FAIL 17/17 hidden cases",
+  "empty_expect": "FAIL missing /tmp/eval_gmm/gmm.py",
+  "notes": "tests/prove_task.py reads expect/slow_expect/timed (5 ref runs + scale-2.0 arm). leak_expect, empty_expect and alt are checked by hand: the alts must pass N/N too. gen.py documents which case index exercises which trap."
 }
