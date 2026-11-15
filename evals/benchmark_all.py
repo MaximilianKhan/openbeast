@@ -793,6 +793,31 @@ def experiment_arms(env=None) -> list[str]:
     return arms
 
 
+def _leaderboard_policy(args, arms: list[str]) -> bool:
+    """Whether this sweep may record into leaderboard.json, printing why not.
+
+    --tasks IMPLIES --no-leaderboard, like --suite. The old NOTE said partial
+    scores "will be recorded" — but scoring's 291-unit guard refuses every
+    partial v4 entry, so it described something that could not happen
+    (review finding campaign-evals); and that guard is v4-only, so the next
+    suite would have let them in. One rule here, whatever the suite."""
+    if args.no_leaderboard:
+        return False
+    if args.suite:
+        print(f"NOTE: --suite {args.suite} implies --no-leaderboard (fast-suite "
+              f"scores are imputed readouts, never leaderboard rows).")
+        return False
+    if args.tasks:
+        print("NOTE: --tasks implies --no-leaderboard (a partial-suite score is "
+              "not comparable with full-suite rows).")
+        return False
+    if arms:
+        print(f"NOTE: {', '.join(arms)} implies --no-leaderboard (experiment "
+              f"arms are leaderboard-ineligible; the board holds serving reality).")
+        return False
+    return True
+
+
 def _on_signal(signum, _frame):
     """SIGTERM/SIGINT: reap the in-flight eval agents, stop our server, die.
 
@@ -831,10 +856,10 @@ def main():
     parser.add_argument("--list", action="store_true", help="List configured models and exit")
     parser.add_argument("--no-cache", action="store_true", help="Disable result cache (force live runs)")
     parser.add_argument("--no-leaderboard", action="store_true",
-                        help="Do not record scores in leaderboard.json. REQUIRED for "
-                             "smoke tests / partial-suite runs: the leaderboard must only "
-                             "ever contain full-suite sweeps, or its accuracy numbers "
-                             "become incomparable (a 13-task 100%% is not a 323-task 97%%).")
+                        help="Do not record scores in leaderboard.json. Implied by "
+                             "--tasks, --suite and experiment arms: the leaderboard must "
+                             "only ever contain full-suite sweeps, or its accuracy numbers "
+                             "become incomparable (a 13-task 100%% is not a 291-unit 97%%).")
     parser.add_argument("--suite", help="Run a pinned suite subset from evals/suites/ "
                         "(e.g. v5-fast) instead of the full task set. Implies "
                         "--no-leaderboard: fast-suite scores are imputed readouts, "
@@ -895,21 +920,7 @@ def main():
     if args.suite and args.tasks:
         print("--suite and --tasks are mutually exclusive.", file=sys.stderr)
         sys.exit(2)
-    update_lb = not args.no_leaderboard
-    if args.suite and update_lb:
-        print(f"NOTE: --suite {args.suite} implies --no-leaderboard (fast-suite "
-              f"scores are imputed readouts, never leaderboard rows).")
-        update_lb = False
-    arms = experiment_arms()
-    if arms and update_lb:
-        print(f"NOTE: {', '.join(arms)} implies --no-leaderboard (experiment "
-              f"arms are leaderboard-ineligible; the board holds serving reality).")
-        update_lb = False
-    if args.tasks and not args.no_leaderboard:
-        print("NOTE: --tasks given without --no-leaderboard. Partial-suite scores "
-              "will be recorded in leaderboard.json and mix incomparably with "
-              "full-suite rows. Use --no-leaderboard for smoke/partial runs.",
-              file=sys.stderr)
+    update_lb = _leaderboard_policy(args, experiment_arms())
     # The GPU lease, before anything touches the card. cache-only never
     # starts a server, so it neither needs nor takes the lease.
     if not args.cache_only:
