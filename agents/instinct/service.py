@@ -471,8 +471,11 @@ class Instinct:
         Every attempted engine's own view (label, probabilities, label_mass)
         is kept in its cascade entry.
 
-        When the target can act (canary/enforce) the walk stops at that
-        answer. Below that (shadow/off) nothing is acted on, so the walk goes
+        When the target can act (canary/enforce), a probabilistic engine
+        whose lifecycle reaches the target and that SCORED the row is
+        terminal even when it does not act: a later, lower tier never
+        overrides it (the 0.6B answers only when the 27B is skipped or
+        fails). The walk stops at that answer. Below that (shadow/off) nothing is acted on, so the walk goes
         on through the whole chain under the deadline: shadow data must
         measure EVERY engine, including on the rows an earlier engine was
         confident about (A-instinct-2).
@@ -590,6 +593,14 @@ class Instinct:
                     final = out
                     if not walk_all:
                         break
+            elif not walk_all and final is None and eng.caps.probs and MODE_ORDER[
+                    self.lifecycle(spec.id, name, ceiling, v)[0]] >= MODE_ORDER[target]:
+                # A tier that may enforce here SCORED the row and declined to
+                # act (spawn, below threshold, ...): its verdict is the answer.
+                # A later, lower tier (the 0.6B behind the 27B) only answers
+                # when this one is skipped or fails — it never outranks it.
+                final = out
+                break
         if released is not None:
             released.set()
         if final is None:

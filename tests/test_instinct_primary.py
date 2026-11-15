@@ -284,6 +284,53 @@ def test_no_act_row_is_credited_to_the_highest_tier(tmp_path):
     assert r["answer"]["label"] == r["cascade"][0]["label"]
 
 
+def _promote_both(inst):
+    """What a promotion of BOTH tiers yields: gate + calibration records."""
+    for n in ("prim", "cpu"):
+        inst.calib[(DID, n)] = {"T": 1.0, "thresholds": {}}
+        inst.gates[(DID, n)] = True
+
+
+def test_a_27b_non_act_is_never_overridden_by_the_fallback(tmp_path):
+    """Review finding (beast-instinct): with both tiers promoted, a 27B that
+    SCORED the row `spawn` used to fall through to the 0.6B, whose
+    confident `inline` act was then enforced — the 20x-cost skip of a true
+    spawn, and the router waited on the CPU scorer every such turn. The
+    0.6B answers only when the 27B is skipped; a 27B verdict is final."""
+    from instinct.engines import ScoreRes, ScoreRow
+    cpu_calls = []
+
+    async def body(purl, curl):
+        inst = Instinct(_two_tier(tmp_path, purl, curl, mode="enforce"), repo_root=tmp_path)
+        await inst.start()
+        _promote_both(inst)
+
+        async def cpu_score(req):
+            cpu_calls.append(1)
+            return ScoreRes(rows=[ScoreRow(q={"spawn": 0.02, "inline": 0.97},
+                                           label_mass=0.99)], engine_ms=5)
+        inst.engines["cpu"].score = cpu_score
+        assert inst.lifecycle(DID, "prim", "enforce")[0] == "enforce"
+        assert inst.lifecycle(DID, "cpu", "enforce")[0] == "enforce"
+        r = await _decide(inst, "Spawn a background agent to port the whole utils/ module "
+                          "to Go and report back when it is done.",
+                          ceiling="enforce", baseline="hint", request_id="r1")
+        # control: the primary skipped (no hint) -> the 0.6B does answer
+        rc = await _decide(inst, "what is 17 times 23", ceiling="enforce",
+                           baseline="nohint", request_id="r2")
+        await inst.aclose()
+        return r, rc
+    with H.stub_server() as (purl, _), H.stub_server() as (curl, _):
+        r, rc = H.run(body(purl, curl))
+    assert r["cascade"][0]["engine"] == "prim" and r["cascade"][0]["label"] == "spawn"
+    assert r["enforce"] is False and r["engine"]["id"] == "prim"
+    assert r["answer"]["label"] == "spawn"
+    assert [c["engine"] for c in r["cascade"]] == ["prim"]     # no wait on the CPU
+    assert rc["cascade"][0]["reason"] == "primary_not_substitute"
+    assert rc["engine"]["id"] == "cpu" and rc["enforce"] is True
+    assert len(cpu_calls) == 1
+
+
 def test_shipped_chain_credits_rig_27b_when_nobody_acts():
     """The same rule against the SHIPPED chain order."""
     from instinct.service import Instinct as _I

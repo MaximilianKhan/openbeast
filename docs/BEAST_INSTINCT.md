@@ -92,7 +92,11 @@ the spec's mode and the ceiling). An `act` from an engine that can only shadow
 enforce. If nothing can enforce, the answer is the first `act` (what the
 service *would* have done), else the **first** result from a probabilistic
 engine — chain order is tier order, so a row nobody acted on is credited to
-the 27B, not to its 0.6B fallback or `linear` — else `rules`. When the target can act (canary/enforce) the walk stops at the
+the 27B, not to its 0.6B fallback or `linear` — else `rules`. On an actable
+target, an engine that could enforce and SCORED the row is terminal even when
+it declines to act (a 27B `spawn` is never overridden by the 0.6B's `inline`):
+a later tier answers only when the earlier one was skipped or failed. When the
+target can act (canary/enforce) the walk stops at the
 answer; below that (shadow/off) it goes on through the whole chain, so shadow
 data measures every engine, including on rows an earlier engine was confident
 about. Every attempted engine's own `probabilities`, `label_mass` and the
