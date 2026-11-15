@@ -1,0 +1,13 @@
+{
+ "timed": true,
+ "expect": {
+  "wrong_unbroadcast.py": "^case 1: gradient mismatch \\(\\d+ of \\d+ cases wrong\\)",
+  "wrong_naive_lse.py": "^case \\d+: error OverflowError \\(\\d+ of \\d+ cases wrong\\)",
+  "wrong_recursive.py": "^case 190: error RecursionError \\(1 of 191 cases wrong\\)",
+  "wrong_stale_grad.py": "^case 12: gradient mismatch \\(\\d+ of \\d+ cases wrong\\)",
+  "wrong_no_zero_grad.py": "^mlp: loss trace mismatch at step 2$",
+  "wrong_matmul_vec.py": "^case 3: shape mismatch \\(\\d+ of \\d+ cases wrong\\)"
+ },
+ "slow_expect": "^solution timed out \\(10s",
+ "notes": "Expected values come from a forward-only oracle plus central finite differences (h=1e-5); the reference's exact gradients agree with them to 2.2e-8 worst case over all 191 programs (gate 1e-6). wrong_unbroadcast sums broadcast grads over leading axes only (fails the (B,1)-(B,C) keepdims probe); wrong_naive_lse has no max shift in logsumexp (OverflowError on the |logit|~900 cases); wrong_recursive builds the topological order recursively (RecursionError on the 20000-op chain only); wrong_stale_grad keeps intermediate grads on the nodes across backward() calls (first trips on the two-root reduction probe, case 12, then every multi-root program); wrong_no_zero_grad accumulates parameter grads across SGD steps (step 1 still uses clean grads; the trace diverges at step 2); wrong_matmul_vec keeps the axis inserted for a rank-1 matmul operand. slow.py finds each node's consumers by scanning all nodes (quadratic): killed by the validator's own 10 s limit on the chain. The reference runs the whole hidden set in about 1 s."
+}
