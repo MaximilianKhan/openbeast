@@ -314,6 +314,16 @@ if command -v python3 >/dev/null 2>&1; then
   fi
 fi
 
+# >>> engine-plane hook (docs/ENGINES.md) — which engine, which build, which
+# pin, for this host class. Read-only, no network (scripts/engine.sh list).
+if [[ -f "$SCRIPT_DIR/lib/engine.sh" ]]; then
+  section "Inference engine"
+  # shellcheck source=lib/engine.sh
+  source "$SCRIPT_DIR/lib/engine.sh"
+  ob_engine_doctor_rows
+fi
+# <<< engine-plane hook
+
 # ── Remote skills ───────────────────────────────────────────────────────────
 # A skill body goes straight into a sub-agent's system prompt, so an imported
 # one is pinned by hash like any other supply-chain input. This row is the

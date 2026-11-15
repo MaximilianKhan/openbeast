@@ -121,7 +121,7 @@ _pid_alive() { # _pid_alive <pidfile> [cmdline-pattern]
 _pid_pattern() {
   case "$1" in
     supervisor) echo 'start\.sh' ;;
-    llama)      echo 'llama-server' ;;
+    llama)      [[ "${INFERENCE_BACKEND:-llama}" == llama ]] && echo 'llama-server' || echo 'llama-server|engine-serve\.sh|tensorfold' ;;   # engine-plane hook
     mcpo)       echo 'mcpo|openapi_tools\.py' ;;   # pidfile name kept; server replaced mcpo
     router)     echo 'router\.py' ;;
     edge)       echo 'edge\.py' ;;
@@ -319,6 +319,26 @@ _spawn_ready() {
 # server to answer at INFERENCE_URL and brings everything else up around it.
 MANAGED=1
 ob_inference_managed || MANAGED=0
+
+# >>> engine-plane hook (docs/ENGINES.md) — a MANAGED vLLM / TensorFold (one
+# host, `scripts/engine.sh use <engine> --profile NAME`) is launched through
+# scripts/engine-serve.sh in place of a serve script, and everything below
+# supervises it like a llama-server. Never entered for INFERENCE_BACKEND=llama.
+unset _OB_READY_FN _OB_OWNS_FN _OB_ENGINE_LABEL _OB_ENGINE_URL   # never inherited
+if [[ $MANAGED -eq 1 && "$INFERENCE_BACKEND" != "llama" ]]; then
+  source "$SCRIPT_DIR/scripts/lib/engine.sh"
+  if [[ "$SERVE_SCRIPT" != "$DEFAULT_SERVE_SCRIPT" ]]; then
+    echo "Note: $SERVE_SCRIPT is a llama.cpp launcher; INFERENCE_BACKEND=$INFERENCE_BACKEND is active — ignoring it (scripts/engine.sh use llama to switch back)." >&2
+  fi
+  SERVE_SCRIPT="engine-serve.sh"
+  FAST_BOOT=false            # the bridge is a llama.cpp GGUF
+  MODEL_ROLLBACK=false       # last-good records serve scripts, not engines
+  _OB_READY_FN=ob_backend_ready          # wait_llama_health asks THIS engine's question
+  _OB_OWNS_FN=ob_engine_owns_port        # a container is not our child: ask the adapter
+  _OB_ENGINE_LABEL="$(ob_backend_label)"
+  _OB_ENGINE_URL="$INFERENCE_URL"
+fi
+# <<< engine-plane hook
 
 if [[ $MANAGED -eq 1 && ! -x "$SCRIPT_DIR/scripts/$SERVE_SCRIPT" ]]; then
   echo "Error: scripts/$SERVE_SCRIPT not found or not executable" >&2
@@ -936,7 +956,7 @@ launch_llama() {
     echo "  Not launching llama-server: it could not bind." >&2
     return 2
   fi
-  echo "Starting llama.cpp server ($SERVE_SCRIPT)..."
+  echo "Starting ${_OB_ENGINE_LABEL:-llama.cpp server} ($SERVE_SCRIPT)..."   # engine-plane hook
   "$SCRIPT_DIR/scripts/$SERVE_SCRIPT" &
   LLAMA_PID=$!
   echo "$LLAMA_PID" > "$RUN_DIR/llama.pid"
@@ -947,6 +967,13 @@ launch_llama() {
 # it for a hand-written one that does not.
 _llama_port_ours() {
   local pids rc=0 p hops
+  # engine-plane hook: a container engine's listener is no child of ours;
+  # its adapter answers (2 = "use the pid-tree check below").
+  if [[ -n "${_OB_OWNS_FN:-}" ]]; then
+    "$_OB_OWNS_FN" "$LLAMA_PID" "$LLAMA_PORT" || rc=$?
+    [[ $rc -ne 2 ]] && return $rc
+    rc=0
+  fi
   pids="$(ob_port_pids "$LLAMA_PORT")" || rc=$?
   if [[ $rc -eq 2 || -z "$pids" ]]; then
     # The holder cannot be named here (no ss / lsof / /proc). The rule
@@ -993,14 +1020,14 @@ wait_llama_health() {
   local t0=$SECONDS _i
   while true; do
     if ! kill -0 "$LLAMA_PID" 2>/dev/null; then
-      if ob_llama_ready "$LLAMA_BASE"; then
+      if ${_OB_READY_FN:-ob_llama_ready} "$LLAMA_BASE"; then   # engine-plane hook
         _i="$(_port_holder "$LLAMA_PORT")"
         echo "llama-server (pid $LLAMA_PID) exited, yet a server answers on port $LLAMA_PORT${_i:+: $_i}." >&2
         echo "  It is not the one this stack launched, so it is not reported as ready." >&2
       fi
       return 1
     fi
-    if ob_llama_ready "$LLAMA_BASE" && _llama_port_ours; then
+    if ${_OB_READY_FN:-ob_llama_ready} "$LLAMA_BASE" && _llama_port_ours; then   # engine-plane hook
       return 0
     fi
     if (( SECONDS - t0 >= LLAMA_LOAD_GRACE )); then
@@ -1258,7 +1285,7 @@ elif [[ $FAST_BOOT_ACTIVE -eq 1 ]]; then
     exit 1
   fi
 else
-  echo "Waiting for llama.cpp server to be ready..."
+  echo "Waiting for ${_OB_ENGINE_LABEL:-llama.cpp server} to be ready..."   # engine-plane hook
   # Real model, with load-failure rollback to the last-known-good.
   if ! launch_and_wait; then
     case "$LLAMA_FAIL" in
@@ -1274,7 +1301,7 @@ else
   fi
 fi
 if [[ $MANAGED -eq 1 ]]; then
-  echo "llama.cpp server ready on http://localhost:8080"
+  echo "${_OB_ENGINE_LABEL:-llama.cpp server} ready on ${_OB_ENGINE_URL:-http://localhost:8080}"   # engine-plane hook
   wait_hydra_routable || true
 fi
 
