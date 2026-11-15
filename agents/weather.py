@@ -6,12 +6,19 @@ can land on Danville, Quebec — "CA" is also Canada's country code — and the
 model then reports the wrong town with confidence. Here the place is resolved
 deliberately and the answer always names the exact place it describes:
 
-- `City, XX` where XX is a US state code (CA, TX, …) means that US state.
-  A two-letter code that is not a state is read as an ISO country code.
-- `City, State` / `City, Country` spelled out filters the same way.
-- Several towns left after that: the one NEAREST the caller when the
-  caller's location is known, else the most populous — and the reply lists
-  the runners-up so a wrong pick shows.
+- `City, XX` where XX is a US state code (CA, TX, …) means that US state
+  whenever the state has such a town ("Danville, CA" is California even for
+  a caller in Montreal). Otherwise XX is read as an ISO country code, then
+  as a Canadian province ("Berlin, DE", "Mumbai, IN", "Toronto, ON").
+- `City, State` matches the state EXACTLY ("Charleston, VA" is not West
+  Virginia); `City, Country` matches the geocoder's country name ("Tokyo,
+  Japan"); any other qualifier matches whole words of the region.
+- Several towns left after that: the one nearest the caller, weighted by
+  size, when the caller's location is known, else the most populous — and
+  the reply lists the runners-up so a wrong pick shows. Parks, airports and
+  hills lose to any real town of that name.
+- "Georgia" alone is the state or the country by the caller's position;
+  with no position the tool lists both and asks.
 - No location named: the caller's own position. There is no fixed home
   (Max travels): with no caller position, the tool asks for a place.
 
@@ -30,6 +37,7 @@ import json
 import math
 import re
 import time
+import unicodedata
 import urllib.parse
 import urllib.request
 
@@ -50,8 +58,28 @@ US_STATES = {
     "TX": "Texas", "UT": "Utah", "VT": "Vermont", "VA": "Virginia", "WA": "Washington",
     "WV": "West Virginia", "WI": "Wisconsin", "WY": "Wyoming", "DC": "District of Columbia",
 }
-COUNTRY_ALIASES = {"usa": "US", "us": "US", "united states": "US", "america": "US",
-                   "uk": "GB", "united kingdom": "GB", "england": "GB", "canada": "CA"}
+_STATE_NAMES = {v.lower(): v for v in US_STATES.values()}
+CA_PROVINCES = {
+    "AB": "Alberta", "BC": "British Columbia", "MB": "Manitoba", "NB": "New Brunswick",
+    "NL": "Newfoundland and Labrador", "NS": "Nova Scotia", "NT": "Northwest Territories",
+    "NU": "Nunavut", "ON": "Ontario", "PE": "Prince Edward Island", "QC": "Quebec",
+    "SK": "Saskatchewan", "YT": "Yukon",
+}
+# Spelled-out countries match the geocoder's own English `country` field;
+# these are only the common names that field does not use.
+COUNTRY_ALIASES = {"usa": "US", "us": "US", "united states of america": "US", "america": "US",
+                   "uk": "GB", "great britain": "GB", "britain": "GB", "england": "GB",
+                   "scotland": "GB", "wales": "GB", "holland": "NL", "the netherlands": "NL",
+                   "czech republic": "CZ", "korea": "KR", "uae": "AE"}
+# A bare name that is BOTH a US state and a country. The geocoder returns the
+# country as a feature but never the state, so the state gets a stand-in
+# point (its capital) to compete on distance from the caller.
+STATE_COUNTRY_CLASH = {"georgia": {"name": "Georgia", "admin1": "Georgia", "country": "United States",
+                                   "country_code": "US", "feature_code": "ADM1", "latitude": 33.749,
+                                   "longitude": -84.388, "population": 10_700_000,
+                                   "note": "US state; forecast for Atlanta"}}
+# Abandoned / destroyed / historical places are not where anyone is.
+_GONE = {"PPLH", "PPLQ", "PPLW", "PPLCH"}
 
 # WMO weather interpretation codes (Open-Meteo `weather_code`).
 WMO = {0: "clear", 1: "mainly clear", 2: "partly cloudy", 3: "overcast", 45: "fog",
@@ -69,25 +97,41 @@ def _get(url: str, params: dict) -> dict:
         return json.load(r)
 
 
-def parse_place(text: str) -> tuple[str, str | None, str | None]:
-    """'Danville, CA' -> ('Danville', admin1 'California', country 'US')."""
-    parts = [p.strip() for p in text.split(",") if p.strip()]
-    if not parts:
-        return "", None, None
-    name, admin1, country = parts[0], None, None
-    for q in parts[1:]:
-        u, lo = q.upper(), q.lower()
-        if len(q) == 2 and u in US_STATES and admin1 is None and country in (None, "US"):
-            admin1, country = US_STATES[u], "US"
-        elif lo in COUNTRY_ALIASES:
-            country = COUNTRY_ALIASES[lo]
-        elif len(q) == 2 and q.isalpha():
-            country = u
-        elif q.title() in US_STATES.values():
-            admin1, country = q.title(), "US"
-        elif admin1 is None:
-            admin1 = q
-    return name, admin1, country
+def fold(text: str) -> str:
+    """Lower-case, accents stripped: 'São Paulo' and 'Sao Paulo' compare equal."""
+    return "".join(ch for ch in unicodedata.normalize("NFKD", text or "")
+                   if not unicodedata.combining(ch)).lower().strip()
+
+
+def _readings(q: str) -> list:
+    """What one qualifier after a comma may mean, most-preferred first. Each
+    reading is a predicate over a candidate; the first one that leaves any
+    candidate wins, so a US state outranks a country but never hides it."""
+    u, lo = q.upper(), fold(q)
+
+    def cc(code):
+        return lambda c: (c.get("country_code") or "").upper() == code
+
+    def region(name, code):  # EXACT admin1 — never a substring, never admin2
+        return lambda c: fold(c.get("admin1") or "") == fold(name) and cc(code)(c)
+
+    if len(q) == 2 and q.isalpha():
+        out = [region(US_STATES[u], "US")] if u in US_STATES else []
+        out.append(cc(u))
+        if u in CA_PROVINCES:
+            out.append(region(CA_PROVINCES[u], "CA"))
+        return out
+    out = [cc(COUNTRY_ALIASES[lo])] if lo in COUNTRY_ALIASES else []
+    if lo in _STATE_NAMES:
+        out.append(region(_STATE_NAMES[lo], "US"))
+    out.append(lambda c: fold(c.get("country") or "") == lo)
+    if lo not in _STATE_NAMES:
+        # Free text ("Quebec", "Ile-de-France", "Bavaria"): whole words of the
+        # region or county. Never for a US state name: 'virginia' is a word
+        # of 'west virginia', and Washington County is not Washington state.
+        word = re.compile(r"\b" + re.escape(lo) + r"\b")
+        out.append(lambda c: any(word.search(fold(c.get(k) or "")) for k in ("admin1", "admin2")))
+    return out
 
 
 def _km(a: tuple[float, float], b: tuple[float, float]) -> float:
@@ -105,31 +149,62 @@ def parse_latlon(value) -> tuple[float, float] | None:
     return (lat, lon) if -90 <= lat <= 90 and -180 <= lon <= 180 else None
 
 
+def _is_country(c: dict) -> bool:
+    return (c.get("feature_code") or "").startswith("PCL")
+
+
+def _rank(cands: list[dict], near) -> list[dict]:
+    """Nearest the caller, weighted by size (population / distance²): a
+    caller in Berlin NH gets Berlin NH, but "Sao Paulo, Brazil" asked from
+    California is the city, not a hamlet in Amazonas that happens to be
+    closer. No caller position: the most populous."""
+    def pop(c):
+        return c.get("population") or 500
+    if near:
+        return sorted(cands, key=lambda c: -pop(c) / max(
+            _km(near, (c["latitude"], c["longitude"])), 10.0) ** 2)
+    return sorted(cands, key=lambda c: -pop(c))
+
+
 def resolve(text: str, near: tuple[float, float] | None = None, geo=None) -> tuple[dict | None, list[dict]]:
-    """The best Open-Meteo place for `text`, and the other candidates."""
+    """The best Open-Meteo place for `text`, and the other candidates.
+    (None, []) is no match; (None, [a, b]) is ambiguous — ask which."""
     geo = geo or (lambda name: _get(GEO_URL, {"name": name, "count": 20, "language": "en",
                                               "format": "json"}).get("results") or [])
-    name, admin1, country = parse_place(text)
-    if not name:
+    parts = [p.strip() for p in (text or "").split(",") if p.strip()]
+    if not parts:
         return None, []
+    name, quals = parts[0], parts[1:]
     cands = geo(name)
-    if country:
-        cands = [c for c in cands if (c.get("country_code") or "").upper() == country]
-    if admin1:
-        a = admin1.lower()
-        cands = [c for c in cands if a in (c.get("admin1") or "").lower()
-                 or a in (c.get("admin2") or "").lower()]
+    # The geocoder also returns parks, airports and hills ("Tokyo Disney
+    # Land", "Tokyo Hill"); and fuzzy neighbours ("Charlestown"). A real town
+    # of exactly that name beats both; fall back only if there is none.
+    towns = [c for c in cands if (c.get("feature_code") or "PPL")[:3] in ("PPL", "PCL")
+             and c.get("feature_code") not in _GONE]
+    cands = towns or cands
+    cands = [c for c in cands if fold(c.get("name") or "") == fold(name)] or cands
+    for q in quals:
+        for keep in _readings(q):
+            hit = [c for c in cands if keep(c)]
+            if hit:
+                cands = hit
+                break
+        else:
+            return None, []
+    clash = None if quals else STATE_COUNTRY_CLASH.get(fold(name))
+    if clash and any(_is_country(c) for c in cands):
+        if not near:
+            return None, [dict(clash), next(c for c in cands if _is_country(c))]
+        cands = [dict(clash)] + cands
     if not cands:
         return None, []
-    if near:
-        cands.sort(key=lambda c: _km(near, (c["latitude"], c["longitude"])))
-    else:
-        cands.sort(key=lambda c: -(c.get("population") or 0))
+    cands = _rank(cands, near)
     return cands[0], cands[1:4]
 
 
 def _label(c: dict) -> str:
-    return ", ".join(x for x in (c.get("name"), c.get("admin1"), c.get("country")) if x)
+    out = ", ".join(x for x in (c.get("name"), c.get("admin1"), c.get("country")) if x)
+    return out + (f" ({c['note']})" if c.get("note") else "")
 
 
 def weather(location: str = "", days: int = 3, *, near=None, units: str = "",
@@ -141,6 +216,11 @@ def weather(location: str = "", days: int = 3, *, near=None, units: str = "",
                 "'City, Country'.")
     if where:
         place, others = resolve(where, near, geo)
+        if place is None and others:
+            return (f"'{where}' is ambiguous and the caller's position is unknown: it is "
+                    + " or ".join(f"{_label(c)} ({'a country' if _is_country(c) else 'a US state'})"
+                                  for c in others)
+                    + ". Ask the user which one, or call again as 'City, State' / 'City, Country'.")
         if place is None:
             return f"No place matches '{where}'. Ask for 'City, State' (US) or 'City, Country'."
     else:

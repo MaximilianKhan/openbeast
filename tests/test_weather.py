@@ -4,11 +4,28 @@ travels — there is no fixed home); no place and no caller position means the
 tool asks. No network: the geocoder and forecast are stubs."""
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agents"))
 import weather  # noqa: E402
+
+# Real Open-Meteo geocoding replies (count=20, language=en), captured
+# 2026-11-15 and trimmed to the fields the tool reads. Keyed by the name
+# the geocoder was asked for; the geocoder folds accents ("Sao Paulo" finds
+# São Paulo), so lookups here fold the same way.
+REAL = json.loads((Path(__file__).parent / "fixtures" / "open_meteo_geocoding.json")
+                  .read_text(encoding="utf-8"))
+
+
+def real_geo(name):
+    return [dict(c) for c in REAL.get(weather.fold(name).title(), [])]
+
+
+TOKYO_CALLER = (35.68, 139.76)
+DANVILLE_CA = (37.822, -121.999)
+TBILISI_CALLER = (41.72, 44.79)
 
 DANVILLES = [
     {"name": "Danville", "admin1": "Virginia", "country": "United States", "country_code": "US",
@@ -35,12 +52,71 @@ def _fc(params):
                       "temperature_2m_max": [64], "precipitation_probability_max": [5]}}
 
 
-def test_parse_place():
-    assert weather.parse_place("Danville, CA") == ("Danville", "California", "US")
-    assert weather.parse_place("Danville, California") == ("Danville", "California", "US")
-    assert weather.parse_place("Danville, Quebec, Canada") == ("Danville", "Quebec", "CA")
-    assert weather.parse_place("Paris, FR") == ("Paris", None, "FR")
-    assert weather.parse_place("Austin, TX, USA") == ("Austin", "Texas", "US")
+def _where(text, near=None):
+    place, _ = weather.resolve(text, near, real_geo)
+    return place and (place["name"], place.get("admin1"), place["country_code"])
+
+
+def test_qualifier_forms_on_real_geocoder_output():
+    assert _where("Danville, CA") == ("Danville", "California", "US")
+    assert _where("Danville, California") == ("Danville", "California", "US")
+    assert _where("Danville, Quebec, Canada") == ("Danville", "Quebec", "CA")
+    assert _where("Danville, CA, USA") == ("Danville", "California", "US")
+    assert _where("Danville, ca") == ("Danville", "California", "US")
+
+
+def test_spelled_out_country_matches_the_country_field():
+    # These used to fall through to an admin1 substring filter and answer
+    # "No place matches" — the very retry the error text told the model to try.
+    assert _where("Tokyo, Japan") == ("Tokyo", "Tokyo", "JP")
+    assert _where("Berlin, Germany") == ("Berlin", "State of Berlin", "DE")
+    assert _where("Sao Paulo, Brazil") == ("São Paulo", "São Paulo", "BR")
+    assert _where("São Paulo, Brazil") == ("São Paulo", "São Paulo", "BR")
+    assert _where("Tbilisi, Georgia") == ("Tbilisi", "Tbilisi", "GE")
+    # ...even for a caller far away, where the nearest same-named village in
+    # that country is a hamlet (São Paulo, Amazonas) or a theme park (Chiba).
+    assert _where("Tokyo, Japan", DANVILLE_CA) == ("Tokyo", "Tokyo", "JP")
+    assert _where("Sao Paulo, Brazil", DANVILLE_CA) == ("São Paulo", "São Paulo", "BR")
+
+
+def test_state_match_is_exact_not_a_substring():
+    # 'virginia' is inside 'west virginia', 'kansas' inside 'arkansas'.
+    assert _where("Charleston, VA") is None
+    assert _where("Charleston, Virginia") is None
+    assert _where("Charleston, WV") == ("Charleston", "West Virginia", "US")
+    assert _where("Arkadelphia, KS") is None
+    assert _where("Arkadelphia, AR") == ("Arkadelphia", "Arkansas", "US")
+    # admin2 is the county: Washington County is not Washington state.
+    assert _where("Danville, Washington") == ("Danville", "Washington", "US")
+    assert _where("Danville, WA") == ("Danville", "Washington", "US")
+
+
+def test_two_letter_code_falls_back_from_state_to_country():
+    assert _where("Berlin, DE") == ("Berlin", "State of Berlin", "DE")    # not Delaware
+    assert _where("Mumbai, IN") == ("Mumbai", "Maharashtra", "IN")        # not Indiana
+    assert _where("Toronto, ON") == ("Toronto", "Ontario", "CA")         # a province
+    # A state that HAS the town still wins, wherever the caller is.
+    assert _where("Berlin, NH", TOKYO_CALLER) == ("Berlin", "New Hampshire", "US")
+    assert _where("Danville, CA", TOKYO_CALLER) == ("Danville", "California", "US")
+
+
+def test_bare_name_skips_non_towns():
+    # A bare "Tokyo" from California must not be Tokyo Hill, Texas (a hill).
+    assert _where("Tokyo", DANVILLE_CA) == ("Tokyo", "Tokyo", "JP")
+    # A caller in Berlin, New Hampshire means their own town...
+    assert _where("Berlin", (44.47, -71.18)) == ("Berlin", "New Hampshire", "US")
+    # ...and a caller in Europe means the capital.
+    assert _where("Berlin", (48.85, 2.35)) == ("Berlin", "State of Berlin", "DE")
+
+
+def test_georgia_alone_is_resolved_by_the_caller_or_asked():
+    out = weather.weather("Georgia", near=None, geo=real_geo, forecast=_fc)
+    assert "US state" in out and "country" in out and "Weather for" not in out
+    place, others = weather.resolve("Georgia", TBILISI_CALLER, real_geo)
+    assert place["country_code"] == "GE"
+    place, others = weather.resolve("Georgia", DANVILLE_CA, real_geo)
+    assert place["country_code"] == "US" and place["admin1"] == "Georgia"
+    assert any(o["country_code"] == "GE" for o in others)   # the other one is listed
 
 
 def test_ca_is_california_not_canada():
