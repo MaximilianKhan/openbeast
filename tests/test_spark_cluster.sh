@@ -1,8 +1,9 @@
 #!/bin/bash
 # spark-cluster.sh: a DGX Spark cluster of 1 to 8 nodes, driven from rank 0.
 # Hermetic: ssh is a stub that runs the remote command locally with NODE set,
-# and the node probes (nvidia-smi, dpkg-query, ibdev2netdev, ip, docker) are
-# stubs that answer per NODE. No network, no docker, no GPU.
+# and every node probe (uname, hostname, nvidia-smi, dpkg-query, ibdev2netdev,
+# ip, df, docker) is a stub that answers per NODE, so the suite gives the same
+# answers on a Spark, on x86_64 CI and on a Mac. No network, no docker, no GPU.
 set -uo pipefail
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SC="$REPO_DIR/scripts/backends/spark-cluster.sh"
@@ -20,6 +21,21 @@ args=("$@"); n=${#args[@]}
 target="${args[$((n - 2))]}"; cmd="${args[$((n - 1))]}"
 echo "$target :: $cmd" >> "$SC_SSH_LOG"
 NODE="$target" bash -c "$cmd"
+S
+# A DGX Spark answers aarch64 / its own hostname, whatever box runs the suite.
+cat > "$T/bin/uname" <<'S'
+#!/bin/bash
+[[ "${1:-}" == -m ]] && { echo "${SC_ARCH:-aarch64}"; exit 0; }
+echo Linux
+S
+cat > "$T/bin/hostname" <<'S'
+#!/bin/bash
+echo "spark-${NODE:-local}"
+S
+cat > "$T/bin/df" <<'S'
+#!/bin/bash
+echo "Filesystem 1024-blocks Used Available Capacity Mounted on"
+echo "/dev/nvme0n1p2 3800000000 1000000000 2800000000 27% /"
 S
 cat > "$T/bin/nvidia-smi" <<'S'
 #!/bin/bash
@@ -62,7 +78,7 @@ _cluster "local n1 n2 n3 n4 n5 n6 n7 n8"; _run status --cluster "$T/cluster.env"
 _cluster "n0 local"; _run status --cluster "$T/cluster.env"
 [[ $RC -ne 0 ]] && _has "$OUT" "rank 0 must be" && pass "rank 0 must be the local head" || fail "remote rank 0 (rc=$RC): $OUT"
 _cluster "local n1 'x;rm'"; _run status --cluster "$T/cluster.env"
-[[ $RC -ne 0 ]] && pass "a node entry that is not a plain ssh target is refused" || fail "hostile node entry (rc=$RC): $OUT"
+[[ $RC -ne 0 ]] && _has "$OUT" "is not a plain ssh target" && pass "a node entry that is not a plain ssh target is refused" || fail "hostile node entry (rc=$RC): $OUT"
 _cluster "local n1 n2 n3 n4 n5 n6 n7"; _run status --cluster "$T/cluster.env"
 [[ $RC -eq 0 ]] && [[ "$(grep -c '^  rank' <<< "$OUT")" == 8 ]] && pass "status covers all 8 ranks of an 8-node cluster" || fail "8-node status (rc=$RC): $OUT"
 
