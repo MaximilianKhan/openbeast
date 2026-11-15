@@ -1039,20 +1039,32 @@ _ob_ts() {
   command -v tailscale >/dev/null 2>&1 || return 1
   if command -v timeout >/dev/null 2>&1; then timeout 3 tailscale "$@"; else tailscale "$@"; fi
 }
-# True when `tailscale serve` maps :443 onto the WebUI (:3000) right now.
-# Mounts made with `serve --bg` persist across reboots and stack restarts.
+# True when `tailscale serve` maps :443 onto the WebUI (:3000).
+# Mounts made with `serve --bg` persist across reboots and stack restarts —
+# and tailscaled re-applies them when it comes up, so "tailscale gave no
+# answer" (a start racing tailscaled at boot, a >3 s stall) is NOT "no
+# mount": then the last real answer stands (.run/webui-on-443).
 _ob_webui_on_443() {
+  local rc cache="$ISLAND_STATE_DIR/webui-on-443"
   _ob_ts serve status --json 2>/dev/null | python3 -c '
 import json, re, sys
 try:
     web = json.load(sys.stdin).get("Web") or {}
 except Exception:
-    sys.exit(1)
+    sys.exit(2)
 for hp, cfg in web.items():
     if hp.endswith(":443") and any(re.search(r":3000/?$", str((h or {}).get("Proxy", "")))
                                    for h in ((cfg or {}).get("Handlers") or {}).values()):
         sys.exit(0)
 sys.exit(1)' 2>/dev/null
+  rc=$?
+  if (( rc == 0 || rc == 1 )); then
+    if [[ "${OB_CONF_READONLY:-}" != "1" ]]; then
+      { mkdir -p "$ISLAND_STATE_DIR" && echo "$rc" > "$cache"; } 2>/dev/null || true
+    fi
+    return "$rc"
+  fi
+  [[ "$(head -n1 "$cache" 2>/dev/null)" == "0" ]]
 }
 # WEBUI_AUTH=false is honoured only while the WebUI is reachable from this
 # machine alone. Auth off means "no login, everyone is admin@localhost", and
@@ -1096,6 +1108,47 @@ fi
 # really opened from: loopback, the bind address, the tailnet name Tailscale
 # Serve publishes it under — plus WEBUI_ORIGINS for anything else (your own
 # reverse proxy). WEBUI_ORIGINS='*' restores upstream's wildcard.
+# The tailnet name the WebUI is published under, from the most stable source
+# that answers. `tailscale status` alone is transient: a start at boot races
+# tailscaled (a user unit has no ordering against it), a logged-out or slow
+# (>3 s) daemon gives nothing — and an origin list computed then left the
+# tailnet UI failing Socket.IO's origin check until the next lucky restart.
+# So: Self.DNSName, else the host of a `serve status` Web key ("<fqdn>:443",
+# the mount itself), else the last name either gave (cached in the run dir).
+_ob_webui_tailnet_name() {
+  local name cache="$ISLAND_STATE_DIR/webui-tailnet-name"
+  name=$(_ob_ts status --json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    print(((json.load(sys.stdin).get("Self") or {}).get("DNSName") or "").rstrip(".").lower())
+except Exception:
+    pass' 2>/dev/null) || name=""
+  if [[ -z "$name" ]]; then
+    name=$(_ob_ts serve status --json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    keys = list((json.load(sys.stdin).get("Web") or {}))
+except Exception:
+    sys.exit(0)
+keys.sort(key=lambda k: not k.endswith(":443"))
+for k in keys:
+    h = k.rsplit(":", 1)[0].rstrip(".").lower()
+    if h and "." in h:
+        print(h)
+        break' 2>/dev/null) || name=""
+  fi
+  # A DNS name only; anything else in the cache is ignored, never echoed.
+  if [[ -n "$name" && "$name" =~ ^[a-z0-9.-]+$ ]]; then
+    if [[ "${OB_CONF_READONLY:-}" != "1" ]]; then
+      { mkdir -p "$ISLAND_STATE_DIR" && printf '%s\n' "$name" > "$cache.tmp" \
+          && mv -f "$cache.tmp" "$cache"; } 2>/dev/null || rm -f "$cache.tmp" 2>/dev/null
+    fi
+  else
+    name=$(head -n1 "$cache" 2>/dev/null || true)
+    [[ "$name" =~ ^[a-z0-9.-]+$ ]] || name=""
+  fi
+  printf '%s' "$name"
+}
 _ob_webui_cors() {
   local extra list=() h fq
   extra="${OPENBEAST_WEBUI_ORIGINS:-$(_ob_conf_value WEBUI_ORIGINS || true)}"
@@ -1116,12 +1169,7 @@ _ob_webui_cors() {
     h="$(hostname 2>/dev/null | tr '[:upper:]' '[:lower:]')"
     [[ -n "$h" ]] && list+=("http://$h:3000")
   fi
-  fq=$(_ob_ts status --json 2>/dev/null | python3 -c '
-import json, sys
-try:
-    print(((json.load(sys.stdin).get("Self") or {}).get("DNSName") or "").rstrip(".").lower())
-except Exception:
-    pass' 2>/dev/null) || fq=""
+  fq="$(_ob_webui_tailnet_name)"
   if [[ -n "$fq" ]]; then
     list+=("https://$fq")
     ob_bind_is_loopback "$BIND_HOST" || list+=("http://$fq:3000")

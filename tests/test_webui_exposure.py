@@ -114,6 +114,37 @@ def test_the_tailnet_name_is_allowed(conf):
     assert not [o for o in r.origins if o.endswith(".ts.net:8446")]
 
 
+def test_the_tailnet_name_survives_a_status_outage(conf):
+    """`tailscale status` is transient (boot race with tailscaled, logged out,
+    >3 s): the persisted :443 mount still names the host, so a start then
+    must not drop https://<fqdn> and break Socket.IO on the tailnet UI."""
+    r = conf("WEBUI_AUTH=true\n", TS_SERVE=_serve("http://127.0.0.1:3000"))
+    assert "https://beast.example.ts.net" in r.origins, r.cors
+
+
+def test_the_tailnet_name_is_remembered(conf, tmp_path):
+    """tailscaled wholly unreachable: the last name seen is reused, so the
+    container env (and CORS) does not flip between runs."""
+    conf(TS_DNS="beast.example.ts.net.", OB_CONF_READONLY="")
+    assert (tmp_path / "run" / "webui-tailnet-name").read_text().strip() == "beast.example.ts.net"
+    r = conf()   # stub tailscale answers nothing
+    assert "https://beast.example.ts.net" in r.origins, r.cors
+    r = conf(ts=False)
+    assert "https://beast.example.ts.net" in r.origins, r.cors
+
+
+def test_a_readonly_source_writes_no_cache(conf, tmp_path):
+    conf(TS_DNS="beast.example.ts.net.")
+    assert not (tmp_path / "run" / "webui-tailnet-name").exists()
+
+
+def test_a_junk_cache_is_ignored(conf, tmp_path):
+    (tmp_path / "run").mkdir()
+    (tmp_path / "run" / "webui-tailnet-name").write_text("evil.example;http://x\n")
+    r = conf(ts=False)
+    assert r.origins == ["http://localhost:3000", "http://127.0.0.1:3000"]
+
+
 def test_a_specific_bind_is_allowed(conf):
     r = conf(ts=False, OPENBEAST_BIND="192.168.1.20", ALLOW_OPEN_WEBUI="true")
     assert "http://192.168.1.20:3000" in r.origins and "http://beast:3000" in r.origins
@@ -185,8 +216,23 @@ def test_a_live_443_mount_with_the_acknowledgement_stays_open(conf):
     assert r.auth == "false"
 
 
+def test_a_mount_seen_before_keeps_login_on_while_tailscale_is_silent(conf, tmp_path):
+    """tailscaled re-applies a persisted :443 mount when it comes up: a start
+    that raced it at boot (no answer) must not recreate an auth-off WebUI."""
+    conf("WEBUI_AUTH=false\n", TS_SERVE=_serve("http://127.0.0.1:3000"),
+         OB_CONF_READONLY="")
+    r = conf("WEBUI_AUTH=false\n")          # tailscale answers nothing now
+    assert r.auth == "true", r.stderr
+    r = conf("WEBUI_AUTH=false\n", ts=False)
+    assert r.auth == "true", r.stderr
+    # a real "no mount" answer clears it
+    conf("WEBUI_AUTH=false\n", TS_SERVE=_serve("http://127.0.0.1:3004"), OB_CONF_READONLY="")
+    assert conf("WEBUI_AUTH=false\n").auth == "false"
+
+
 @pytest.mark.parametrize("serve", [_serve("http://127.0.0.1:3004"),
                                    _serve("http://127.0.0.1:3000", port=8446), "", "not json"])
 def test_other_mounts_do_not_force_login(conf, serve):
     r = conf("WEBUI_AUTH=false\n", TS_SERVE=serve)
     assert r.auth == "false"
+

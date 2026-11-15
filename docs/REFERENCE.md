@@ -615,6 +615,9 @@ credentials, so the stack pins `CORS_ALLOW_ORIGIN` to the WebUI's own
 origins (see `WEBUI_ORIGINS`) and another site's script can no longer sign
 in to an auth-off WebUI and read the admin token. (DNS rebinding, which
 needs no CORS, is not covered by that: the WebUI has no Host allowlist.)
+The tailnet name in that list comes from `tailscale status`, else the live
+`serve` mount, else the last name seen (`.run/webui-tailnet-name`), so a
+start that races `tailscaled` at boot keeps the tailnet origin.
 
 **Auth turns on with remote access.** `scripts/setup-tailscale.sh` flips
 `WEBUI_AUTH=true` automatically when the WebUI becomes reachable from your
