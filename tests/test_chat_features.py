@@ -631,6 +631,42 @@ def test_an_unknown_notify_on_word_is_said_out_loud(rig, monkeypatch, capsys, ra
         assert "CHAT_NOTIFY_ON" not in err, err
 
 
+def test_main_hardens_the_process_before_anything_else(monkeypatch):
+    # extensions-ntfy review: beast-chat holds CHAT_NOTIFY_URL (and the other
+    # exported secrets) and was never made non-dumpable, so a spawned agent's
+    # same-uid bash read them from /proc/<chat pid>/environ.
+    class Hardened(Exception):
+        pass
+
+    def harden():
+        raise Hardened
+
+    monkeypatch.setattr(chat_server, "_harden_process", harden)
+    monkeypatch.setattr(chat_server, "create_app", lambda: pytest.fail("built before hardening"))
+    with pytest.raises(Hardened):
+        chat_server.main()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="procfs + prctl are Linux-only")
+@pytest.mark.parametrize("keep", ["", "1"])
+def test_a_child_cannot_read_beast_chat_environ(tmp_path, keep):
+    probe = ("import os, subprocess, sys\n"
+             "sys.path.insert(0, sys.argv[1])\n"
+             "import chat_server\n"
+             "chat_server._harden_process()\n"
+             "r = subprocess.run(['sh', '-c', 'cat /proc/$PPID/environ | tr \"\\\\0\" \"\\\\n\" "
+             "| grep -c NOTIFY_MARK'], capture_output=True, text=True)\n"
+             "print('HITS', r.stdout.strip() or '0')\n")
+    env = {k: v for k, v in os.environ.items() if k != "OPENBEAST_KEEP_DUMPABLE"}
+    env.update(OPENBEAST_CHAT_NOTIFY_URL="http://127.0.0.1:3005/NOTIFY_MARK")
+    if keep:
+        env["OPENBEAST_KEEP_DUMPABLE"] = keep      # negative control: the probe can see a leak
+    r = subprocess.run([sys.executable, "-c", probe, AGENTS],
+                       env=env, capture_output=True, text=True, timeout=60, cwd=tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert ("HITS 1" in r.stdout) == bool(keep), r.stdout + r.stderr
+
+
 def test_notifier_is_off_without_a_url_or_with_a_bad_one(rig, monkeypatch):
     assert chat_server.Notifier.from_env(str(rig.run), 3003) is None
     monkeypatch.setenv("OPENBEAST_CHAT_NOTIFY_URL", "file:///etc/passwd")

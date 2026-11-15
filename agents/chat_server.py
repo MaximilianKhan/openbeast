@@ -4111,6 +4111,19 @@ def _uvicorn_config(app, host: str, port: int):
                           proxy_headers=False, forwarded_allow_ips="")
 
 
+def _harden_process() -> bool:
+    """Make beast-chat non-dumpable (tools.harden_process, PR_SET_DUMPABLE=0).
+
+    child_env() keeps CHAT_NOTIFY_URL and the other secrets out of every
+    agent and job this server spawns, but that scrub only holds together
+    with this. Otherwise a same-uid process (a spawned agent's model-authored
+    bash) reads them straight back from /proc/<this pid>/environ. The tool
+    server, mcp_server and runner already do this; beast-chat did not.
+    """
+    from tools import harden_process
+    return harden_process()
+
+
 def main() -> None:
     """Bind the port FIRST, then build the app (which mints the token).
 
@@ -4121,6 +4134,7 @@ def main() -> None:
     """
     import socket
     import uvicorn
+    _harden_process()
     host = os.environ.get("OPENBEAST_CHAT_BIND", "127.0.0.1")
     port = int(os.environ.get("OPENBEAST_CHAT_PORT") or DEFAULT_PORT)
     if not _bind_is_loopback(host):
