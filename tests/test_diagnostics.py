@@ -236,6 +236,41 @@ def test_go_standalone_programs_are_vetted_one_at_a_time(tmp_path, monkeypatch):
     assert _cmd(monkeypatch, tmp_path / "hello.go").endswith("go vet ./*.go")
 
 
+def test_validator_flags_are_pinned_only_under_eval(tmp_path, monkeypatch):
+    """The eval validators' -std=c11 / -std=c++17 / bare-rustc flags made up
+    errors for production code the installed toolchain builds fine (POSIX
+    CLOCK_MONOTONIC, std::span, a lib.rs, edition-2018+ syntax)."""
+    c, cpp = tmp_path / "p.c", tmp_path / "s.cpp"
+    lib, bin_ = tmp_path / "lib.rs", tmp_path / "main.rs"
+    c.write_text("int main(void){return 0;}\n")
+    cpp.write_text("int main(){}\n")
+    lib.write_text("pub async fn f() {}\n")
+    bin_.write_text("fn main() {}\n")
+    monkeypatch.setenv("OPENBEAST_EVAL", "1")
+    assert "-std=c11 " in _cmd(monkeypatch, c)
+    assert "-std=c++17 " in _cmd(monkeypatch, cpp)
+    assert _cmd(monkeypatch, lib).startswith("rustc --emit=metadata ")
+    monkeypatch.delenv("OPENBEAST_EVAL")
+    assert "-std=" not in _cmd(monkeypatch, c)
+    assert "-std=" not in _cmd(monkeypatch, cpp)
+    assert "--edition 2021 --crate-type lib " in _cmd(monkeypatch, lib)
+    assert "--edition 2021 --crate-type bin " in _cmd(monkeypatch, bin_)
+    # a cargo crate member: single-file rustc cannot judge it -> no checker
+    (tmp_path / "Cargo.toml").write_text("[package]\nname = 'x'\n")
+    monkeypatch.setattr(tools.shutil, "which", lambda exe: f"/usr/bin/{exe}")
+    assert tools._diag_checker(str(lib)) is None
+
+
+@gcc
+def test_posix_c_is_not_a_made_up_error_in_production(tmp_path, diag_on, monkeypatch):
+    monkeypatch.delenv("OPENBEAST_EVAL", raising=False)
+    out = _write(tmp_path, "posix.c",
+                 "#include <string.h>\n#include <time.h>\n#include <stdlib.h>\n"
+                 "int main(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);\n"
+                 "  char *s = strdup(\"x\"); free(s); return 0; }\n")
+    assert "diagnostics: OK (c)" in out, out
+
+
 @godep
 def test_go_two_standalone_mains_are_not_an_error(tmp_path, diag_on):
     _write(tmp_path, "hello.go", "package main\nfunc main() {}\n")

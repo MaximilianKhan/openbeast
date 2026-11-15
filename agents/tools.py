@@ -819,10 +819,16 @@ def _go_standalone_mains(path: str) -> bool:
 def _diag_checker(path: str):
     """(lang, command, extra_env, scratch_dirs) for a source path, or None.
 
-    Commands mirror the eval validators' flags (docs/LANG_AWARENESS_PLAN.md
-    §3.2 — measured on the rig). A missing toolchain returns None: the
-    feature silently no-ops rather than degrading the write."""
+    Under eval (OPENBEAST_EVAL, set by run_eval for every agent) the
+    commands mirror the eval validators' flags (docs/LANG_AWARENESS_PLAN.md
+    §3.2 — measured on the rig), so a unit is checked the way it is graded.
+    Outside eval those pins MADE UP errors for code the installed toolchain
+    builds fine — -std=c11 hides POSIX's CLOCK_MONOTONIC/strdup, -std=c++17
+    rejects std::span, bare rustc is a 2015-edition binary crate — so
+    production uses the compiler's own defaults. A missing toolchain returns
+    None: the feature silently no-ops rather than degrading the write."""
     ext = os.path.splitext(path)[1]
+    under_eval = bool(os.environ.get("OPENBEAST_EVAL", "").strip())
     q = shlex.quote(path)
     qdir = shlex.quote(os.path.dirname(path) or ".")
     if ext == ".zig":
@@ -850,10 +856,26 @@ def _diag_checker(path: str):
     if ext == ".rs":
         if not shutil.which("rustc"):
             return None
+        flags = ""
+        if not under_eval:
+            # A file in a cargo crate (lib.rs, a module, anything using a
+            # dependency) cannot be judged by single-file rustc — E0601 /
+            # E0432 on correct code — and `cargo check` would RUN build
+            # scripts and proc macros. Say nothing rather than something false.
+            if _ancestor_has(path, "Cargo.toml"):
+                return None
+            try:
+                with open(path, errors="replace") as f:
+                    has_main = re.search(r"\bfn\s+main\s*\(",
+                                         f.read(_DIAG_MAX_BYTES * 64)) is not None
+            except OSError:
+                has_main = True
+            flags = f"--edition 2021 --crate-type {'bin' if has_main else 'lib'} "
         scratch = tempfile.mkdtemp(prefix="diagrs")
         # NOT -o /dev/null (rustc can't create temp files there — measured
-        # failing on CLEAN code). No --edition pin: mirrors the validator.
-        return ("rust", f"rustc --emit=metadata --out-dir {shlex.quote(scratch)} {q}",
+        # failing on CLEAN code). Under eval no --edition pin: mirrors the
+        # validator.
+        return ("rust", f"rustc {flags}--emit=metadata --out-dir {shlex.quote(scratch)} {q}",
                 {}, [scratch])
     if ext == ".go":
         if not shutil.which("go"):
@@ -871,11 +893,13 @@ def _diag_checker(path: str):
     if ext == ".c":
         if not shutil.which("gcc"):
             return None
-        return ("c", f"gcc -fsyntax-only -std=c11 -Wall -Wextra -I{qdir} {q}", {}, [])
+        std = "-std=c11 " if under_eval else ""
+        return ("c", f"gcc -fsyntax-only {std}-Wall -Wextra -I{qdir} {q}", {}, [])
     if ext in (".cpp", ".cc", ".cxx"):
         if not shutil.which("g++"):
             return None
-        return ("c++", f"g++ -fsyntax-only -std=c++17 -Wall -Wextra -I{qdir} {q}", {}, [])
+        std = "-std=c++17 " if under_eval else ""
+        return ("c++", f"g++ -fsyntax-only {std}-Wall -Wextra -I{qdir} {q}", {}, [])
     if ext == ".py":
         # -I (isolated) is a SECURITY requirement: bare python executes
         # model-writable .pth files from user site-packages at startup.
