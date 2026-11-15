@@ -803,10 +803,18 @@ fi
 # ---- 3. Python dependencies ------------------------------------------------
 step "Python dependencies"
 PIP_FLAGS=""
+# INSIDE A VENV, pip REFUSES --user ("User site-packages are not visible in
+# this virtualenv") — not a hash error, so this step died blaming the network
+# or the lock, while the OFFLINE path (scripts/pydeps.sh, whose _pip_flags
+# checks this first) worked on the same box. Same test, same order, here.
+PIP_USER="--user"
+if python3 -c 'import sys; sys.exit(0 if sys.prefix != sys.base_prefix else 1)' 2>/dev/null; then
+  PIP_USER=""
+  ok "inside a virtualenv ($(python3 -c 'import sys; print(sys.prefix)' 2>/dev/null)) → installing into it, not --user"
 # PEP-668 "externally managed" environments (Arch, newer Debian) reject a
 # bare 'pip install --user'. Use --break-system-packages there; it only
 # touches ~/.local, never system site-packages.
-if python3 -c 'import sysconfig,os;p=sysconfig.get_path("stdlib");exit(0 if os.path.exists(os.path.join(p,"EXTERNALLY-MANAGED")) else 1)' 2>/dev/null; then
+elif python3 -c 'import sysconfig,os;p=sysconfig.get_path("stdlib");exit(0 if os.path.exists(os.path.join(p,"EXTERNALLY-MANAGED")) else 1)' 2>/dev/null; then
   PIP_FLAGS="--break-system-packages"
   warn "externally-managed Python → using --user --break-system-packages (~/.local only)"
 fi
@@ -932,7 +940,7 @@ $(sed 's/^/         /' <<< "$_ob_stale")
   if [[ $_ob_lock_usable -eq 1 ]]; then
     # pip's stderr is KEPT, because why it failed decides what happens next.
     _ob_pip_err="$(mktemp)"
-    if python3 -m pip install --user $PIP_FLAGS -q --require-hashes -r "$_ob_lock" 2>"$_ob_pip_err"; then
+    if python3 -m pip install $PIP_USER $PIP_FLAGS -q --require-hashes -r "$_ob_lock" 2>"$_ob_pip_err"; then
       _ob_locked_ok=1
       rm -f "$_ob_pip_err"
       ok "installed the hash-pinned closure ($(grep -cE '^[A-Za-z0-9].*==' "$_ob_lock") packages, content verified)"
@@ -989,7 +997,7 @@ $(sed 's/^/         /' <<< "$_ob_stale")
          git checkout -- agents/requirements.lock
        or accept versions pinned but content NOT verified:
          OPENBEAST_PIP_STRICT=0 ./bootstrap.sh"
-    python3 -m pip install --user $PIP_FLAGS -q -U "huggingface_hub" -r "$REPO_DIR/agents/requirements.txt" \
+    python3 -m pip install $PIP_USER $PIP_FLAGS -q -U "huggingface_hub" -r "$REPO_DIR/agents/requirements.txt" \
       || die "pip install failed. On a closed network, pre-stage the wheels:
        on a connected box:  ./scripts/pydeps.sh wheelhouse wheels
        copy ./wheels here (NOT the lock — this checkout's is the trust root), then:

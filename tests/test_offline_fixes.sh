@@ -488,6 +488,11 @@ if [[ "${1:-}" == "-m" && "${2:-}" == "pip" ]]; then
   echo "pip ${*:3}" >> "$S/pip.log"
   case "${3:-}" in
     install)
+      # what real pip says (and does) inside a venv when handed --user
+      if [[ -f "$S/in_venv" && " $* " == *" --user "* ]]; then
+        echo "ERROR: Can not perform a '--user' install. User site-packages are not visible in this virtualenv." >&2
+        exit 1
+      fi
       if [[ " $* " == *" --require-hashes "* ]]; then
         case "$mode" in
           hashfail)
@@ -526,6 +531,12 @@ if [[ "${1:-}" == "-" && "${2:-}" == */agents/requirements.txt ]]; then
   [[ -f "$S/pip_installed" ]] && exit 0
   echo "foo (not installed)"; exit 1
 fi
+# The venv probe (sys.prefix != sys.base_prefix) answers what the case says,
+# never what the interpreter running the suite happens to be.
+if [[ "${1:-}" == "-c" && "${2:-}" == *base_prefix* ]]; then
+  [[ "${2:-}" == *"print("* ]] && { echo "/fake/venv"; exit 0; }
+  [[ -f "$S/in_venv" ]]; exit $?
+fi
 exec "$REAL_PY" "$@"
 STUB
 chmod +x "$T/bin/python3"
@@ -556,6 +567,24 @@ if has "$_out" "THESE PACKAGES DO NOT MATCH"; then
   pass "pip's own report is still shown to the operator (stderr was captured, not swallowed)"
 else
   fail "pip's stderr was swallowed: $_out"
+fi
+# INSIDE A VENV (install-supply-chain finding): pip refuses --user there, and
+# bootstrap passed it unconditionally, so the online path died blaming the
+# network/lock while the OFFLINE path (pydeps.sh) worked on the same box.
+: > "$T/state/in_venv"
+run_step ok
+if [[ $_rc -eq 0 && "$(n_locked)" == "1" ]] && ! grep -q -- "--user" "$T/state/pip.log" \
+   && has "$_out" "inside a virtualenv" && has "$_out" "HARNESS-REACHED-END"; then
+  pass "inside a venv the locked install runs WITHOUT --user (pip would refuse it) and succeeds"
+else
+  fail "venv install (rc=$_rc, pip.log: $(cat "$T/state/pip.log")): $_out"
+fi
+rm -f "$T/state/in_venv"
+run_step ok
+if [[ $_rc -eq 0 ]] && grep -q -- "--user" "$T/state/pip.log" && ! has "$_out" "inside a virtualenv"; then
+  pass "negative control: outside a venv the install is still --user"
+else
+  fail "non-venv install (rc=$_rc, pip.log: $(cat "$T/state/pip.log")): $_out"
 fi
 
 # A NON-hash failure STOPS too, by default (2026-10-09 review, supply S2). "No
