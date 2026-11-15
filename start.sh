@@ -919,7 +919,8 @@ trap 'STOPPING=1; _mark_stopped "SIGTERM to a foreground ./start.sh"; cleanup; e
 
 # ---- beast-island: the launch decision, then the watcher -------------------
 # Before anything that could wait on the internet (compose, Open WebUI's
-# first-boot downloads). ISLAND=force islands now; auto probes once and boots
+# first-boot downloads). ISLAND=force islands now; auto probes (re-trying for
+# up to 20 s: a boot whose DHCP is still settling is not an outage) and boots
 # islanded when there is no route right now — the "power came back on the
 # UPS, router still dark" boot. Islanded at launch means, for this run only:
 # compose never pulls (ob_offline) and Open WebUI starts in OFFLINE_MODE.

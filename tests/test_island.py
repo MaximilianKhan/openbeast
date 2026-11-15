@@ -61,10 +61,10 @@ def run_dir(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _watcher(mode, probe, clock, grace=90, interval=15):
+def _watcher(mode, probe, clock, grace=90, interval=15, launch_wait=0):
     logs = []
     w = island.Watcher(mode, grace, interval, probe_fn=probe, clock=clock,
-                       log=logs.append)
+                       log=logs.append, launch_wait=launch_wait)
     return w, logs
 
 
@@ -157,6 +157,83 @@ def test_resume_continues_from_init(run_dir, monkeypatch):
 def test_bad_mode_rejected():
     with pytest.raises(ValueError):
         island.Watcher("off", 90, 15, probe_fn=lambda: True)
+
+
+# ── the launch decision survives a slow network bring-up ────────────────────
+
+def test_launch_reprobes_before_islanding(run_dir, monkeypatch):
+    """spark-1: a linger boot ran the launch probe before DHCP had set the
+    default route (it came 0.6 s later) and islanded an ordinary reboot. A
+    failed launch probe is re-tried for launch_wait seconds first."""
+    clock = Clock()
+    monkeypatch.setattr(island, "_now", clock)
+    slept = []
+    probe = Probe(False, False, True)
+    w = island.Watcher("auto", 90, 15, probe_fn=probe, clock=clock, log=lambda m: None,
+                       sleep=slept.append)
+    assert w.launch_wait == island.DEFAULT_LAUNCH_WAIT > 0
+    assert w.init() == "online"
+    assert probe.calls == 3 and slept == [island.LAUNCH_RETRY] * 2
+    assert not w.launched_islanded
+
+
+def test_launch_islands_once_the_wait_runs_out(run_dir, monkeypatch):
+    clock = Clock()
+    monkeypatch.setattr(island, "_now", clock)
+    fake = [0.0]
+    monkeypatch.setattr(island.time, "monotonic", lambda: fake[0])
+
+    def sleep(s):
+        fake[0] += s
+    probe = Probe(*[False] * 100)
+    w = island.Watcher("auto", 90, 15, probe_fn=probe, clock=clock, log=lambda m: None,
+                       launch_wait=7, sleep=sleep)
+    assert w.init() == "island" and w.launched_islanded
+    assert probe.calls == 5            # t=0, 2, 4, 6, 7: bounded by the wait
+    assert fake[0] == 7
+
+
+def test_cli_init_launch_wait_flag(run_dir):
+    s = socket.socket(); s.bind(("127.0.0.1", 0)); dead = s.getsockname()[1]; s.close()
+    t0 = time.time()
+    r = _cli(run_dir, "init", "--mode", "auto", f"--probes=127.0.0.1:{dead}",
+             "--timeout", "0.2", "--launch-wait", "1.5")
+    assert r.returncode == 3, r.stdout + r.stderr
+    assert 1.4 <= time.time() - t0 < 15
+    assert "re-probing" in r.stdout
+
+
+# ── stopping: the signal handler takes no locks ─────────────────────────────
+
+def test_stop_request_takes_no_lock(run_dir):
+    """The SIGTERM handler runs on the main thread, which may be inside
+    stopping.wait() holding the Event's non-reentrant lock. Event.set() there
+    deadlocks the watcher; request_stop must not touch the lock."""
+    import threading
+    w, _ = _watcher("force", Probe(True), Clock())
+    done = threading.Event()
+
+    def handler_while_locked():
+        with w.stopping._cond:          # what an interrupted wait() holds
+            w.request_stop()
+        done.set()
+    t = threading.Thread(target=handler_while_locked, daemon=True)
+    t.start()
+    assert done.wait(3), "request_stop blocked on the Event lock"
+    assert w.stop_requested
+    t0 = time.time()
+    w.run(parent=os.getppid())          # sees the flag, removes its file
+    assert time.time() - t0 < 2
+    assert not (run_dir / "island.json").exists()
+
+
+def test_stop_request_wakes_the_wait():
+    import threading
+    w = island.Watcher("force", 90, 60, probe_fn=lambda: True, log=lambda m: None)
+    threading.Timer(0.3, w.request_stop).start()
+    t0 = time.time()
+    assert w._wait(60) is True
+    assert time.time() - t0 < 2
 
 
 # ── staleness: a dead watcher must not keep refusing ────────────────────────
@@ -494,7 +571,8 @@ def test_cli_init_force_and_auto_offline(run_dir):
     assert r.returncode == 3
     # A closed loopback port as the only probe = "no route" deterministically.
     s = socket.socket(); s.bind(("127.0.0.1", 0)); dead = s.getsockname()[1]; s.close()
-    r = _cli(run_dir, "init", "--mode", "auto", "--probes", f"127.0.0.1:{dead}", "--timeout", "1")
+    r = _cli(run_dir, "init", "--mode", "auto", "--probes", f"127.0.0.1:{dead}", "--timeout", "1",
+             "--launch-wait", "0")
     assert r.returncode == 3
     assert json.loads((run_dir / "island.json").read_text())["reason"] == "no internet route at launch"
 
@@ -557,7 +635,8 @@ def test_a_boot_race_does_not_pin_webui_offline(tmp_path):
     down = f"127.0.0.1:{dead.getsockname()[1]}"; dead.close()
     env = dict(os.environ, OPENBEAST_RUN_DIR=str(tmp_path))
     island = [sys.executable, str(REPO / "agents" / "island.py")]
-    r = subprocess.run(island + ["init", "--mode", "auto", f"--probes={down}", "--timeout", "0.5"],
+    r = subprocess.run(island + ["init", "--mode", "auto", f"--probes={down}", "--timeout", "0.5",
+                                 "--launch-wait", "0"],
                        env=env, capture_output=True, text=True, timeout=30)
     assert r.returncode == 3, r.stdout + r.stderr            # islanded at launch
     w = subprocess.Popen(island + ["watch", "--mode", "auto", "--interval", "1",
