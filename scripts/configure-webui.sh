@@ -385,6 +385,13 @@ web = {'url': MCPO, 'path': 'openapi.json', 'type': 'openapi',
        'spec_type': 'url', 'spec': '',
        'info': {'id': '2', 'name': 'Web Search (all users)',
                 'description': 'web_search via SearXNG, SSRF-guarded fetch, weather — safe for guest accounts'}}
+if ADMIN_KEY and not GUEST_KEY:
+    # No guest profile: the keyless connection 2 would 401 on the keyed
+    # server for EVERYONE — admins lost web_search/fetch/weather, which live
+    # only there. Connection 1 (admin key) carries every tool instead, and
+    # connection 2 is switched off (non-admin accounts get no tools).
+    priv['config']['function_name_filter_list'] = ''
+    web['config']['enable'] = False
 print(json.dumps({'TOOL_SERVER_CONNECTIONS': conns + [priv, web]}))
 " | ob_curl_hdr "$AUTH" -s -H "Content-Type: application/json" \
     "$WEBUI_URL/api/v1/configs/tool_servers" -X POST -d @- > /dev/null
@@ -393,9 +400,15 @@ then
   echo "  answer JSON) — connections left as they were. Re-run ./scripts/configure-webui.sh." >&2
 elif [[ -n "${OPENBEAST_MCPO_ADMIN_KEY:-}" && -n "${OPENBEAST_MCPO_GUEST_KEY:-}" ]]; then
   echo "  Tool server configured (Phase 2: admin + guest profiles keyed, one server :3001)."
-elif [[ -n "${OPENBEAST_MCPO_ADMIN_KEY:-}${OPENBEAST_MCPO_GUEST_KEY:-}" ]]; then
-  echo "  Tool server configured with ONE profile key — the other profile is disabled" >&2
-  echo "  (the server fails closed). Run scripts/setup-mcpo-keys.sh to generate both." >&2
+elif [[ -n "${OPENBEAST_MCPO_ADMIN_KEY:-}" ]]; then
+  echo "  Tool server configured with ONE profile key — the guest profile is disabled" >&2
+  echo "  (the server fails closed): admins keep every tool on the privileged" >&2
+  echo "  connection, non-admin accounts get none. Run scripts/setup-mcpo-keys.sh" >&2
+  echo "  to generate both." >&2
+elif [[ -n "${OPENBEAST_MCPO_GUEST_KEY:-}" ]]; then
+  echo "  Tool server configured with ONE profile key — the admin profile is disabled" >&2
+  echo "  (the server fails closed): every account, admins included, reaches only" >&2
+  echo "  web_search/fetch/weather. Run scripts/setup-mcpo-keys.sh to generate both." >&2
 else
   echo "  Tool server configured (privileged=admin-only, web_search+fetch+weather=all users)."
 fi

@@ -271,6 +271,26 @@ def test_single_admin_key_still_reaches_admin_tools(rig):
     assert conns["1"]["auth_type"] == "bearer" and conns["1"]["key"] == "adm-key"
     assert conns["2"]["auth_type"] == "none" and conns["2"]["key"] == ""
     assert "ONE profile key" in p.stderr
+    # Review 2026-11: web_search/fetch/weather lived ONLY on connection 2,
+    # which a keyed server 401s with no key — so admins silently lost every
+    # web tool. With no guest profile, connection 1 carries them all (admin
+    # key) and the keyless connection 2 is switched off.
+    assert conns["1"]["config"]["function_name_filter_list"] == ""
+    assert conns["2"]["config"]["enable"] is False
+
+
+def test_single_guest_key_keeps_the_privileged_filter(rig):
+    """Negative control: guest-only keeps the partition (connection 2 is
+    keyed and serves everyone's web tools; the admin profile is the one
+    disabled)."""
+    rig.set_state(auth=False, admin_pw="admin")
+    p = rig.run("configure-webui.sh",
+                env_extra={"OPENBEAST_MCPO_GUEST_KEY": "gst-key"})
+    assert p.returncode == 0, p.stderr
+    conns = {c["info"]["id"]: c for c in
+             _tool_server_post(rig)["body"]["TOOL_SERVER_CONNECTIONS"]}
+    assert conns["1"]["config"]["function_name_filter_list"] == "!web_search,!fetch,!weather"
+    assert conns["2"]["config"]["enable"] is True and conns["2"]["key"] == "gst-key"
 
 
 def test_both_keys_bind_both_connections(rig):
@@ -292,6 +312,7 @@ def test_no_keys_leaves_connections_open(rig):
     assert p.returncode == 0, p.stderr
     conns = _tool_server_post(rig)["body"]["TOOL_SERVER_CONNECTIONS"]
     assert all(c["auth_type"] == "none" and c["key"] == "" for c in conns)
+    assert all(c["config"]["enable"] is True for c in conns)
 
 
 def test_unreadable_config_does_not_silently_skip_rotation(rig):
