@@ -2254,11 +2254,6 @@ def _fetch_body(url: str, max_length: int, deadline: float,
         elif byte_cut:
             cut_note = (f"\n\n[page cut at {len(raw_bytes)} bytes — the rest "
                         f"was not fetched]")
-        if cut_note:
-            # The cut can land inside a tag: drop the dangling '<div cla…'
-            # the tag stripper below cannot match.
-            text = re.sub(r"<[^<>]*\Z", "", text)
-
         if "html" in content_type.lower() or text.strip()[:100].lower().startswith(("<!doctype", "<html")):
             # Every pattern here must be LINEAR on hostile input: re holds
             # the GIL, and this runs inside the shared tool server. The old
@@ -2267,6 +2262,12 @@ def _fetch_body(url: str, max_length: int, deadline: float,
             # to hours on an 8 MB page, freezing every user's tools. [^<>]
             # stops each attempt at the next '<', and an unclosed script/style
             # block swallows the rest (as a browser would) in one pass.
+            if cut_note:
+                # The cut can land inside a tag: drop the dangling
+                # '<div cla…' the tag stripper cannot match. HTML only, and
+                # only a short tail: in plain text an early 'a < b' with no
+                # later '>' must not take the rest of the body with it.
+                text = re.sub(r"<[^<>]{0,1024}\Z", "", text)
             text = re.sub(r"<script[^<>]*>.*?(?:</script>|\Z)", "", text, flags=re.DOTALL | re.IGNORECASE)
             text = re.sub(r"<style[^<>]*>.*?(?:</style>|\Z)", "", text, flags=re.DOTALL | re.IGNORECASE)
             text = re.sub(r"<(br|hr|/p|/div|/h[1-6]|/li|/tr)[^<>]*>", "\n", text, flags=re.IGNORECASE)

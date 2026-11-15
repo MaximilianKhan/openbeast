@@ -314,11 +314,12 @@ class _FakeResp:
 
 
 class _FakeOpener:
-    def __init__(self, body: bytes):
+    def __init__(self, body: bytes, ctype="text/html; charset=utf-8"):
         self.body = body
+        self.ctype = ctype
 
     def open(self, req, timeout=None):
-        return _FakeResp(self.body)
+        return _FakeResp(self.body, self.ctype)
 
 
 class TestHtmlStripIsLinear(unittest.TestCase):
@@ -404,6 +405,17 @@ class TestFetchByteCapCut(unittest.TestCase):
         self.assertIn("page cut", out)
         self.assertNotIn("END", out)
         self.assertNotIn("<div", out)  # no half tag left at the cut
+
+    def test_cut_plain_text_keeps_body_after_early_lt(self):
+        # The dangling-tag strip once ran on every content type, unbounded:
+        # one early 'a < b' with no later '>' deleted the whole 2 MB read.
+        self.tools._fetch_opener = _FakeOpener(
+            b"if a < b: total += 1\n" + b"some log line with numbers 12345\n" * 80000,
+            ctype="text/plain; charset=utf-8")
+        out = self.tools.fetch("http://big.example/", 50_000)
+        self.assertIn("if a < b", out)
+        self.assertGreater(len(out), 50_000)
+        self.assertIn("truncated at 50000", out)
 
     def test_whole_page_has_no_cut_marker(self):
         out = self._fetch(b"<html><body><p>small</p></body></html>")
