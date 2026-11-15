@@ -136,7 +136,13 @@ restarting) leaves `:8444` proxying to a port nothing is listening on, so
 clients get **502**, not a clean "not published" — `setup-tailscale.sh`
 warns but does not block. `openbeast-client status` treats a missing slot
 API as informational, so a client will look healthy while silently flying
-blind about what the rig is serving.
+blind about what the rig is serving. Its `!` line does say which failure
+it saw: a 502 means the dashboard is not running, a 404 means the path is
+not published, a 503 (retried once) means the dashboard is busy, and no
+answer within 5 s is reported as such. On a rig whose `backend` is not
+llama, it also flags an opencode default that is not the id the rig
+serves. `refresh-config` pins the id `/api/slot` reports whenever
+`/v1/models` cannot be read.
 
 ### The `/api/slot` discovery contract (version 2)
 
