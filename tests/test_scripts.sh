@@ -1443,11 +1443,13 @@ if grep -q 'web.search.enable' "$CW" && grep -q 'web.search.searxng_query_url' "
 else
   fail "configure-webui.sh no longer configures built-in web search"
 fi
-# A DB-written setting is invisible until WebUI reloads its cached config.
-if grep -q 'WEBSEARCH_CHANGED' "$CW" && grep -q 'docker restart open-webui' "$CW"; then
-  pass "configure-webui.sh restarts WebUI when it changes cached config"
+# The pinned WebUI reads config from the DB per request, so a restart after
+# a DB write only drops in-flight chat streams (review: the old block tested a
+# WEBSEARCH_CHANGED flag nothing ever set, and bounced on CONN_CHANGED).
+if ! grep -qE '^[^#]*docker restart open-webui' "$CW" && ! grep -q 'WEBSEARCH_CHANGED' "$CW"; then
+  pass "configure-webui.sh never bounces WebUI after a DB config write"
 else
-  fail "configure-webui.sh writes config without triggering a reload"
+  fail "configure-webui.sh restarts WebUI for config it reads per request"
 fi
 
 # FAST_BOOT must DEGRADE, never fail the boot. The bridge weight

@@ -278,7 +278,6 @@ AUTH="Authorization: Bearer ${TOKEN:-}"
 # docker-compose only seeds a fresh install — for an existing WebUI we must set
 # the DB connection ourselves. OPENBEAST_MODEL_URL (from lib/conf.sh) is the
 # router (:8088) when AGENT_ROUTER=true, else llama-server (:8080). Idempotent.
-CONN_CHANGED=0
 if [[ -n "${OPENBEAST_MODEL_URL:-}" ]]; then
   echo "  Setting WebUI model connection → $OPENBEAST_MODEL_URL ..."
   if docker exec -e MODEL_URL="$OPENBEAST_MODEL_URL" open-webui python3 -c "
@@ -294,7 +293,7 @@ if cur != [url]:
 " 2>/dev/null; then
     echo "    already set"
   elif [[ $? -eq 3 ]]; then
-    echo "    connection updated"; CONN_CHANGED=1
+    echo "    connection updated"
   else
     echo "    (could not set connection — WebUI may not be up yet)"
   fi
@@ -629,14 +628,11 @@ if active:   # never blank the list on a failed/empty model probe
 " 2>/dev/null || true
 fi
 
-# Open WebUI caches its persisted config at startup, so anything we wrote
-# straight to the DB (the model connection, the web-search settings) only takes
-# effect after a restart. All config above is persisted and survives it. (No-op
-# on a fresh install where the env already seeded the right values, so both
-# flags stay 0.)
-if [[ "${CONN_CHANGED:-0}" == "1" || "${WEBSEARCH_CHANGED:-0}" == "1" ]]; then
-  echo "  Restarting Open WebUI to load the new configuration..."
-  docker restart open-webui >/dev/null 2>&1 || true
-fi
+# No restart at the end. The pinned image reads every config key straight from
+# the DB per request (models/config.py: "Reads are direct DB lookups";
+# routers/openai.py re-reads openai.api_base_urls for each call), so the rows
+# written above are live as soon as they commit. A `docker restart open-webui`
+# here only dropped every in-flight chat stream and took the UI down for its
+# boot time.
 
 echo "Open WebUI configured."
