@@ -985,7 +985,7 @@ when configured:
 | **beast-artifact** | `BEAST_ARTIFACT=true` | `:$ARTIFACT_PORT/api/artifacts/health` (default 3004). `--restart` relaunches `agents/artifact_server.py` from `.run/artifact.pid` — by recorded PID, never by pattern — and appends its output to `.run/stack.log` |
 | **beast-chat console** | `BEAST_CHAT=true` | `:$CHAT_PORT/api/chat/health` (default 3003, on `OPENBEAST_CHAT_BIND` rather than `BIND_HOST`) expecting `"status":"ok"`. `--restart` relaunches `agents/chat_server.py` from `.run/chat.pid` — by recorded PID (identity-checked via `lib/proc.sh`), never by pattern — and appends its output to `.run/stack.log` |
 
-For beast-chat and beast-artifact, a green health answer is checked against the pidfile: when the
+For the tool server, beast-gate, beast-chat and beast-artifact, a green health answer is checked against the pidfile: when the
 port's listener is not the recorded pid (a sibling worktree's server, an
 orphan), the row reads `FOREIGN … answers, but from pid N` and counts as
 unhealthy. Nothing is killed — it may be someone else's. `start.sh` applies
@@ -1007,10 +1007,17 @@ purpose* stays stopped: `./stop.sh` writes `.run/stopped` (the reason is
 while it exists `--restart` only reports. The supervisor writes it too when
 it gives up on a crash-looping model, and the watchdog's own no-supervisor
 relaunch is budgeted at 3 per hour (`.run/watchdog-relaunches`) before it
-marks the stack stopped. Every kill is by the
+marks the stack stopped. The marker is read again before every restart, so a
+`./stop.sh` made while a tick is running is not undone by that same tick. A
+start in progress is left alone too. Until its banner, the supervisor keeps
+`.run/starting` (its pid), and while that supervisor is alive `--restart` only
+reports, because the tool server, router and gate are started after the
+model load. Every kill is by the
 recorded pid, whose command line must still match (`ob_pid_matches` in
-`scripts/lib/proc.sh`) — a pidfile that survived a reboot never SIGTERMs a
-stranger.
+`scripts/lib/proc.sh`), with a repo-anchored pattern only as the fallback —
+a pidfile that survived a reboot never SIGTERMs a stranger. A llama-server
+that ignores the SIGTERM for `OPENBEAST_LLAMA_TERM_GRACE` seconds (20) gets
+SIGKILL. A relaunch counts as restarted only once its own pid holds the port.
 
 When nothing is running, `doctor` says so in one line instead of six red
 rows — `Stack is not running (stopped on purpose <time>) — start it:

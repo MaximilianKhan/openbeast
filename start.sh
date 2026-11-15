@@ -325,6 +325,35 @@ _spawn_ready() {
   return 1
 }
 
+# _ready_ours <pid> <port> — after a health probe answered: is <pid> the
+# process holding <port>? The fatal core servers (tool server, router, gate)
+# used the old shape _spawn_ready replaced: kill -0, then "something
+# answered". Their first probe runs while our child is still importing, so a
+# process that took the port during the model load was accepted as ready. It
+# then received the admin key (WebUI, router) or every device key (tailscale
+# serve -> the gate) while ours died on the bind (stack-lifecycle review).
+# With nothing to name a holder (no ss / lsof / /proc): outlive the
+# bind-failure window, then require that ours is still alive.
+_ready_ours() {
+  local own=0
+  ob_pid_owns_port "$1" "$2" || own=$?
+  if [[ $own -eq 2 ]]; then
+    sleep 1
+    kill -0 "$1" 2>/dev/null && own=0 || own=1
+  fi
+  return $own
+}
+# _lost_bind <label> <port> — our child exited during startup: say so, and
+# name a different holder of its port if there is one.
+_lost_bind() {
+  echo "Error: $1 exited during startup — see output above" >&2
+  if ob_port_listening "$2"; then
+    local holder; holder="$(_port_holder "$2")"
+    echo "  A DIFFERENT process answers on port $2${holder:+ ($holder)} — not ours, so not" >&2
+    echo "  used. It took the port after the preflight. Stop it, then ./start.sh again." >&2
+  fi
+}
+
 # INFERENCE_MANAGED=false (always, for vLLM / TensorFold): the inference
 # server belongs to someone else — a cluster on other boxes. This stack
 # launches, rolls back, supervises and kills NOTHING there; it waits for the
@@ -785,6 +814,14 @@ ob_pid_record "$SUP_PID_FILE" "$$"
 # stack again (stop.sh wrote .run/stopped; healthcheck.sh honours it), and
 # its relaunch budget starts fresh.
 rm -f "$RUN_DIR/stopped" "$RUN_DIR/watchdog-relaunches"
+# STARTING. Until the "Stack is running" banner, the tool server, router and
+# gate are down because they come up only after the model has loaded. A
+# watchdog tick in that window used to relaunch them itself, outside this
+# scope, onto the ports this supervisor was about to bind. Its relaunches
+# then served under a pid nothing recorded. healthcheck.sh --restart reads
+# this marker, while the supervisor it names is alive, as "report only".
+# It is removed before the banner and by cleanup().
+echo "$$" > "$RUN_DIR/starting"
 
 # The supervisor giving up on a crash-looping model is a stop too: without
 # the marker the watchdog relaunched it every five minutes, forever.
@@ -907,6 +944,7 @@ cleanup() {
     ob_ext_reap "$_pf" "$REPO_DIR/extensions/${_n#ext-}"
   done
   rm -f "$RUN_DIR/supervisor.pid" "$RUN_DIR/supervisor.start"
+  [[ "$(cat "$RUN_DIR/starting" 2>/dev/null || true)" == "$$" ]] && rm -f "$RUN_DIR/starting"
   # The tool server, router, gate and model: only while the file still names
   # the child WE spawned, like chat/artifact/hydra. healthcheck.sh --restart
   # replaces a crashed tool server (router, gate, model) and records the
@@ -1440,18 +1478,26 @@ fi
 if [[ -n "${OPENBEAST_MCPO_ADMIN_KEY:-}" && -n "${OPENBEAST_MCPO_GUEST_KEY:-}" ]]; then
   echo "  (RBAC Phase 2 keys active: admin + guest profiles on :3001)"
 fi
+# The preflight checked :3001 before the model load; anything can have taken
+# it since.
+if _port_busy "$HEALTH_HOST" 3001; then
+  _port_refuse 3001 "the tool server"
+  exit 1
+fi
 python3 "$SCRIPT_DIR/agents/openapi_tools.py" &
 MCPO_PID=$!
 echo "$MCPO_PID" > "$RUN_DIR/mcpo.pid"
-# Verify it actually serves — a blind sleep once masked a dead tool server.
+# Verify it actually serves — a blind sleep once masked a dead tool server —
+# and that the one serving is OURS (_ready_ours).
 MCPO_UP=0
 _t0=$SECONDS
 while (( SECONDS - _t0 < 30 )); do
   if ! kill -0 "$MCPO_PID" 2>/dev/null; then
-    echo "Error: tool server exited during startup — see output above" >&2
+    _lost_bind "tool server" 3001
     exit 1
   fi
-  curl -s -m 2 "http://$HEALTH_HOST:3001/health" >/dev/null 2>&1 && { MCPO_UP=1; break; }
+  _h="$(curl -fsS -m 2 "http://$HEALTH_HOST:3001/health" 2>/dev/null || true)"
+  [[ "$_h" == *'"status"'* ]] && _ready_ours "$MCPO_PID" 3001 && { MCPO_UP=1; break; }
   sleep 0.2
 done
 [[ $MCPO_UP -eq 1 ]] || { echo "Error: tool server not serving after 30s" >&2; exit 1; }
@@ -1550,6 +1596,10 @@ if [[ "${AGENT_ROUTER:-false}" == "true" ]]; then
     # turn every classification (and so every spawn) into an error.
     _router_env+=(ROUTER_CLASSIFY_MODEL="$HYDRA_DEFAULT_MODEL")
   fi
+  if _port_busy 127.0.0.1 "$ROUTER_PORT"; then
+    _port_refuse "$ROUTER_PORT" "the agent router, ROUTER_PORT"
+    exit 1
+  fi
   OPENBEAST_ROUTER_PORT="$ROUTER_PORT" \
   OPENBEAST_LLAMA_UPSTREAM="$CONSUMER_BASE" \
   OPENBEAST_MCPO_URL="http://$HEALTH_HOST:3001" \
@@ -1558,11 +1608,14 @@ if [[ "${AGENT_ROUTER:-false}" == "true" ]]; then
   echo "$ROUTER_PID" > "$RUN_DIR/router.pid"
   ROUTER_UP=0
   _t0=$SECONDS
+  # ANY HTTP answer is a live router (it forwards /health upstream) — but
+  # only from the process we started (_ready_ours).
   while (( SECONDS - _t0 < 20 )); do
     if ! kill -0 "$ROUTER_PID" 2>/dev/null; then
-      echo "Error: agent router exited during startup — see output above" >&2; exit 1
+      _lost_bind "agent router" "$ROUTER_PORT"; exit 1
     fi
-    curl -s -m 2 "http://127.0.0.1:${ROUTER_PORT}/health" >/dev/null 2>&1 && { ROUTER_UP=1; break; }
+    curl -s -m 2 "http://127.0.0.1:${ROUTER_PORT}/health" >/dev/null 2>&1 \
+      && _ready_ours "$ROUTER_PID" "$ROUTER_PORT" && { ROUTER_UP=1; break; }
     sleep 0.2
   done
   [[ $ROUTER_UP -eq 1 ]] || { echo "Error: agent router not serving after 20s" >&2; exit 1; }
@@ -1578,6 +1631,10 @@ if [[ "${EDGE_GATE:-false}" == "true" ]]; then
   # Upstream on the probe host for the same reason as the router's above.
   # Under HYDRA=true the gate's upstream is hydra (CONSUMER_BASE) and it
   # vouches for the device it authenticated with X-Hydra-Caller.
+  if _port_busy "$HEALTH_HOST" "$EDGE_PORT"; then
+    _port_refuse "$EDGE_PORT" "beast-gate, EDGE_PORT"
+    exit 1
+  fi
   OPENBEAST_REPO_DIR="$SCRIPT_DIR" \
   OPENBEAST_LLAMA_UPSTREAM="$CONSUMER_BASE" \
     python3 "$SCRIPT_DIR/agents/edge.py" &
@@ -1587,9 +1644,10 @@ if [[ "${EDGE_GATE:-false}" == "true" ]]; then
   _t0=$SECONDS
   while (( SECONDS - _t0 < 20 )); do
     if ! kill -0 "$EDGE_PID" 2>/dev/null; then
-      echo "Error: beast-gate exited during startup — see output above" >&2; exit 1
+      _lost_bind "beast-gate" "$EDGE_PORT"; exit 1
     fi
-    curl -s -m 2 "http://$HEALTH_HOST:${EDGE_PORT}/gate/health" >/dev/null 2>&1 && { EDGE_UP=1; break; }
+    _h="$(curl -sS -m 2 "http://$HEALTH_HOST:${EDGE_PORT}/gate/health" 2>/dev/null || true)"
+    [[ "$_h" == *beast-gate* ]] && _ready_ours "$EDGE_PID" "$EDGE_PORT" && { EDGE_UP=1; break; }
     sleep 0.2
   done
   [[ $EDGE_UP -eq 1 ]] || { echo "Error: beast-gate not serving after 20s" >&2; exit 1; }
@@ -1792,6 +1850,9 @@ done < <(ob_ext_processes)
 "$SCRIPT_DIR/scripts/configure-webui.sh" &
 CONFIG_PID=$!
 
+# Every service of this start is up (or reported): from here a DOWN one is
+# the watchdog's to repair.
+rm -f "$RUN_DIR/starting"
 echo ""
 echo "Stack is running:"
 if [[ $MANAGED -eq 1 ]]; then
