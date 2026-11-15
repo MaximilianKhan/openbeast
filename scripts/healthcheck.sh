@@ -99,6 +99,24 @@ if $RESTART && [[ -f "$STOPPED_FILE" ]]; then
   echo ""
   RESTART=false
 fi
+# ONE restarter at a time. The watchdog timer and an unmanaged supervisor
+# (start.sh) both run --restart every 5 minutes; two passes at once would
+# each pkill the other's fresh tool server. A pidfile lock, not flock: every
+# service relaunched below would inherit a lock fd and hold it for life.
+HC_LOCK="$REPO_DIR/.run/healthcheck-restart.pid"
+if $RESTART; then
+  mkdir -p "$REPO_DIR/.run"
+  if ! ( set -o noclobber; echo $$ > "$HC_LOCK" ) 2>/dev/null; then
+    if ob_pid_matches "$(cat "$HC_LOCK" 2>/dev/null || true)" 'healthcheck\.sh'; then
+      echo "Another healthcheck --restart is running (pid $(cat "$HC_LOCK" 2>/dev/null)) — reporting only."
+      echo ""
+      RESTART=false
+    else
+      echo $$ > "$HC_LOCK"   # a dead pass's leftover
+    fi
+  fi
+  $RESTART && trap '[[ "$(cat "$HC_LOCK" 2>/dev/null)" == "$$" ]] && rm -f "$HC_LOCK"' EXIT
+fi
 
 # The no-supervisor llama relaunch below is the watchdog acting on its own,
 # so it gets its own budget, persistent across ticks: at most

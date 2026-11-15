@@ -503,6 +503,28 @@ _O="$(_run "$_R" 60 "$_R/scripts/healthcheck.sh")"
 grep -q "WARNING: under the 3 GiB reserve" <<< "$_O" && pass "…healthcheck too" \
   || fail "healthcheck low unified memory: $(grep -iE 'unified|warning' <<< "$_O" || true)"
 
+# One restarter at a time: the watchdog timer and the unmanaged supervisor
+# both run --restart. A live pass holds .run/healthcheck-restart.pid.
+echo ""
+echo "healthcheck.sh --restart: one pass at a time:"
+_R="$_T/hc-lock"; _rig "$_R"
+echo "serve-marker.sh" > "$_R/.run/serve-script"
+printf '#!/bin/bash\nsleep 30\n' > "$_R/healthcheck.sh"; chmod +x "$_R/healthcheck.sh"
+"$_R/healthcheck.sh" & _HOLD=$!
+echo "$_HOLD" > "$_R/.run/healthcheck-restart.pid"
+RUN_ENV=()
+_O="$(_run "$_R" 60 "$_R/scripts/healthcheck.sh" --restart)"
+kill "$_HOLD" 2>/dev/null || true; wait "$_HOLD" 2>/dev/null || true
+grep -q "Another healthcheck --restart is running (pid $_HOLD)" <<< "$_O" && ! grep -q serve-marker "$_R/calls.log" \
+  && pass "a second --restart while one runs reports only (restarts nothing)" \
+  || fail "concurrent --restart: $(head -n 4 <<< "$_O") :: $(cat "$_R/calls.log")"
+[[ "$(cat "$_R/.run/healthcheck-restart.pid")" == "$_HOLD" ]] \
+  && pass "…and leaves the running pass's lock alone" || fail "the holder's lock was taken"
+_O="$(_run "$_R" 60 "$_R/scripts/healthcheck.sh" --restart)"
+grep -q serve-marker "$_R/calls.log" && [[ ! -f "$_R/.run/healthcheck-restart.pid" ]] \
+  && pass "…a dead pass's leftover lock is taken over, and released on exit (control: it restarts)" \
+  || fail "stale lock: $(head -n 4 <<< "$_O") :: lock=$(cat "$_R/.run/healthcheck-restart.pid" 2>/dev/null)"
+
 echo ""
 echo "start.sh --status on an unmanaged stack:"
 _R="$_T/status"; _rig "$_R"

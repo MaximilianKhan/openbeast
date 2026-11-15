@@ -1075,6 +1075,14 @@ if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/d
     warn "log rotation timer is missing or disabled — stack.log and the audit logs grow without bound" \
          "./scripts/logrotate.sh --install"
   fi
+  # The watchdog is what brings a crashed tool server / gate / chat /
+  # artifact back; `./start.sh -d` installs it (WATCHDOG_AUTOINSTALL).
+  if systemctl --user is-enabled --quiet openbeast-watchdog.timer 2>/dev/null; then
+    pass "health watchdog enabled (openbeast-watchdog.timer, healthcheck --restart every 5 min)"
+  elif [[ "${WATCHDOG_AUTOINSTALL:-true}" == "true" ]]; then
+    warn "health watchdog timer is missing or disabled — a crashed tool server, gate or chat console stays down" \
+         "./stop.sh && ./start.sh -d   (installs it), or see scripts/openbeast-watchdog.timer"
+  fi
 fi
 
 # ── beast-island (runtime offline mode) ─────────────────────────────────────

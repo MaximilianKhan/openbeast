@@ -121,6 +121,14 @@
 # Env override: $OPENBEAST_LOGROTATE_AUTOINSTALL.
 #LOGROTATE_AUTOINSTALL=true
 
+# Health watchdog: every ./start.sh -d makes sure openbeast-watchdog.timer
+# (systemd --user; healthcheck.sh --restart every 5 minutes) is installed and
+# enabled, so a crashed tool server, beast-gate, beast-chat or beast-artifact
+# comes back. It never touches an unmanaged inference server, and does
+# nothing after ./stop.sh. No-op without a systemd user manager.
+# Env override: $OPENBEAST_WATCHDOG_AUTOINSTALL.
+#WATCHDOG_AUTOINSTALL=true
+
 # Agent transcript retention (agents/logs/*.jsonl, *.log). Off by default:
 # transcripts are kept forever. Set a day count and the daily logrotate timer
 # deletes transcripts untouched for that long that no session-ledger record

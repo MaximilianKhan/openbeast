@@ -402,6 +402,45 @@ ensure_logrotate_timer() {
 }
 [[ $DAEMONIZED -eq 1 ]] || ensure_logrotate_timer
 
+# ---- the watchdog: installed for a daemon stack, not by a manual step ----
+# openbeast-watchdog.timer runs healthcheck.sh --restart every 5 minutes —
+# the only thing that brings a crashed tool server, beast-gate, beast-chat
+# or beast-artifact back (the supervisor relaunches llama-server only, and
+# an unmanaged supervisor nothing). It was a manual install from the timer's
+# header, so spark-1 (rebuilt from the runbook) ran without one, and a dead
+# :3001 or :8090 stayed dead (ops review). Same rules as log rotation: a
+# no-op when enabled already, without a reachable user manager, or with
+# WATCHDOG_AUTOINSTALL=false; only for `-d` (a stack meant to stay up); never
+# fatal. healthcheck --restart never touches an unmanaged inference server,
+# and does nothing after ./stop.sh (.run/stopped).
+ensure_watchdog_timer() {
+  [[ "${WATCHDOG_AUTOINSTALL:-true}" == "true" ]] || return 0
+  [[ -f "$SCRIPT_DIR/scripts/openbeast-watchdog.service" ]] || return 0
+  command -v systemctl >/dev/null 2>&1 || return 0
+  systemctl --user is-enabled --quiet openbeast-watchdog.timer 2>/dev/null && return 0
+  systemctl --user show-environment >/dev/null 2>&1 || return 0
+  echo "Installing the 5-minute health watchdog (openbeast-watchdog.timer; opt out: WATCHDOG_AUTOINSTALL=false)..."
+  local unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user" line pct exe
+  # systemd expands %specifiers everywhere and $VARS, \escapes and quotes in
+  # ExecStart's quoted path: escape each so the path stays literal (as
+  # scripts/logrotate.sh does for its unit).
+  pct="${SCRIPT_DIR//%/%%}"; exe="${pct//\\/\\\\}"; exe="${exe//\"/\\\"}"; exe="${exe//\$/\$\$}"
+  if mkdir -p "$unit_dir" \
+     && while IFS= read -r line || [[ -n "$line" ]]; do
+          if [[ "$line" == ExecStart=* ]]; then printf '%s\n' "${line//@REPO@/$exe}"
+          else printf '%s\n' "${line//@REPO@/$pct}"; fi
+        done < "$SCRIPT_DIR/scripts/openbeast-watchdog.service" > "$unit_dir/openbeast-watchdog.service" \
+     && cp "$SCRIPT_DIR/scripts/openbeast-watchdog.timer" "$unit_dir/openbeast-watchdog.timer" \
+     && systemctl --user daemon-reload \
+     && systemctl --user enable --now openbeast-watchdog.timer >/dev/null 2>&1; then
+    echo "  installed: openbeast-watchdog.timer (journalctl --user -u openbeast-watchdog)"
+  else
+    echo "  Warning: watchdog not installed — see the header of scripts/openbeast-watchdog.timer" >&2
+  fi
+  return 0
+}
+[[ $DAEMONIZED -eq 1 || $DAEMON -ne 1 ]] || ensure_watchdog_timer
+
 # ---- preflight: refuse BEFORE the multi-minute model load, not after it ----
 # Run by the process the operator is looking at (the foreground start, or the
 # -d launcher), once it knows no stack of ours is already up. Not by the
@@ -1765,15 +1804,34 @@ if [[ $FAST_BOOT_ACTIVE -eq 1 ]]; then
   FAST_BOOT_ACTIVE=0
 fi
 
-# Unmanaged: nothing to relaunch. Stay up (the trap still owns shutdown)
+# Unmanaged: no model to relaunch. Stay up (the trap still owns shutdown)
 # and log only TRANSITIONS of the remote server's readiness, so a Spark
 # rebooting shows up in stack.log without a line every 30 seconds.
+# Every 5 minutes, run healthcheck.sh --restart for the stack's OWN services
+# (tool server, beast-gate, beast-chat, beast-artifact, WebUI, SearXNG): this
+# loop used to only log, so on spark-1 a crashed :3001 or :8090 stayed down
+# (ops review). Run from here, a relaunched service stays inside this
+# memory-capped scope; healthcheck never touches the unmanaged model, and a
+# pass the watchdog timer is already running makes this one report-only. Its
+# output reaches stack.log only when something was down.
 if [[ $MANAGED -eq 0 ]]; then
   _up="${INFER_UP:-1}"
+  _hc_tick=0
   while true; do
     sleep 30 & IDLE_PID=$!
     wait "$IDLE_PID" || true
     IDLE_PID=""
+    _hc_tick=$(( _hc_tick + 1 ))
+    if (( _hc_tick >= ${OPENBEAST_SUPERVISOR_HEAL_TICKS:-10} )) && [[ -x "$SCRIPT_DIR/scripts/healthcheck.sh" ]]; then
+      _hc_tick=0
+      "$SCRIPT_DIR/scripts/healthcheck.sh" --restart > "$RUN_DIR/supervisor-heal.log" 2>&1 & IDLE_PID=$!
+      _hc_rc=0; wait "$IDLE_PID" || _hc_rc=$?
+      IDLE_PID=""
+      if [[ $_hc_rc -ne 0 && -s "$RUN_DIR/supervisor-heal.log" ]]; then
+        echo "$(date '+%H:%M:%S') supervisor: healthcheck --restart found something down:"
+        grep -E '^  (DOWN|FOREIGN|WARN)|→' "$RUN_DIR/supervisor-heal.log" | sed 's/^/  /' || true
+      fi
+    fi
     if _infer_ready; then
       if [[ $_up -eq 0 ]]; then
         echo "$(date '+%H:%M:%S') $(ob_backend_label) at $LLAMA_BASE is ready again."

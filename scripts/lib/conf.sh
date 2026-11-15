@@ -883,6 +883,10 @@ MEM_RESERVE_GB="${OPENBEAST_MEM_RESERVE_GB:-$(_ob_conf_value MEM_RESERVE_GB || e
 # start.sh installs + enables the daily openbeast-logrotate.timer (systemd
 # --user) when it is missing. false = leave rotation to the operator.
 LOGROTATE_AUTOINSTALL="$(_ob_bool "${OPENBEAST_LOGROTATE_AUTOINSTALL:-$(_ob_conf_value LOGROTATE_AUTOINSTALL || true)}" true LOGROTATE_AUTOINSTALL)"
+# `./start.sh -d` installs + enables openbeast-watchdog.timer (systemd --user,
+# healthcheck.sh --restart every 5 min) when it is missing. false = leave
+# supervision of the stack's services to the operator.
+WATCHDOG_AUTOINSTALL="$(_ob_bool "${OPENBEAST_WATCHDOG_AUTOINSTALL:-$(_ob_conf_value WATCHDOG_AUTOINSTALL || true)}" true WATCHDOG_AUTOINSTALL)"
 # Where files the CHAT model writes/reads via the direct tools land. A direct
 # tool call carries no conversation or user id (the OpenAPI tool server is
 # stateless), so without this the model picks its own path and defaults to a

@@ -808,6 +808,50 @@ if [[ "$_GRACE" =~ ^[0-9]+$ && "$_EXTRA" =~ ^[0-9]+$ ]] \
 else
   fail "openbeast.service TimeoutStartSec='$_UTMO' is not above the launcher's deadline (grace '$_GRACE' + '$_EXTRA')"
 fi
+# The watchdog is installed by `./start.sh -d` (ops review: spark-1 was
+# rebuilt from the runbook without it, and a dead :3001 / :8090 stayed dead).
+# ensure_watchdog_timer, run against a stub systemctl and a sandbox HOME.
+_WD="$(mktemp -d)"; mkdir -p "$_WD/bin" "$_WD/home" "$_WD/repo with space/scripts"
+cp "$REPO_DIR/scripts/openbeast-watchdog.service" "$REPO_DIR/scripts/openbeast-watchdog.timer" "$_WD/repo with space/scripts/"
+cat > "$_WD/bin/systemctl" <<SH
+#!/bin/bash
+echo "\$*" >> "$_WD/calls"
+case "\$*" in
+  *is-enabled*) [[ -f "$_WD/enabled" ]] ;;
+  *show-environment*) [[ -f "$_WD/manager" ]] ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$_WD/bin/systemctl"
+_wd() { ( PATH="$_WD/bin:$PATH"; HOME="$_WD/home"; unset XDG_CONFIG_HOME
+          SCRIPT_DIR="$_WD/repo with space"; WATCHDOG_AUTOINSTALL="${1:-true}"
+          eval "$(sed -n '/^ensure_watchdog_timer() {/,/^}/p' "$REPO_DIR/start.sh")"
+          ensure_watchdog_timer; echo "rc=$?" ) 2>&1; }
+touch "$_WD/manager"; rm -f "$_WD/calls"; _out="$(_wd)"
+_unit="$_WD/home/.config/systemd/user/openbeast-watchdog.service"
+if [[ "$_out" == *"rc=0"* ]] && grep -q "enable --now openbeast-watchdog.timer" "$_WD/calls" \
+   && grep -qx 'ExecStart="'"$_WD"'/repo with space/scripts/healthcheck.sh" --restart' "$_unit" 2>/dev/null \
+   && [[ -f "$_WD/home/.config/systemd/user/openbeast-watchdog.timer" ]]; then
+  pass "start.sh -d installs + enables openbeast-watchdog.timer, the repo path intact"
+else
+  fail "ensure_watchdog_timer: $_out :: $(cat "$_WD/calls" 2>/dev/null) :: $(grep ExecStart "$_unit" 2>/dev/null)"
+fi
+touch "$_WD/enabled"; rm -f "$_WD/calls"; _wd >/dev/null
+grep -q "enable --now" "$_WD/calls" && fail "an enabled watchdog was reinstalled" || pass "…already enabled: no reinstall"
+rm -f "$_WD/enabled" "$_WD/calls"; _wd false >/dev/null
+[[ ! -s "$_WD/calls" ]] && pass "…WATCHDOG_AUTOINSTALL=false opts out" || fail "watchdog opt-out ignored: $(cat "$_WD/calls")"
+rm -f "$_WD/manager" "$_WD/calls" "$_unit"; _wd >/dev/null
+[[ ! -f "$_unit" ]] && pass "…no reachable user manager: no-op" || fail "watchdog installed without a user manager"
+rm -rf "$_WD"
+grep -q '^\[\[ \$DAEMONIZED -eq 1 || \$DAEMON -ne 1 \]\] || ensure_watchdog_timer' "$REPO_DIR/start.sh" \
+  && pass "…only for a daemon launch (./start.sh -d), never a foreground dev run" \
+  || fail "ensure_watchdog_timer is not gated on -d"
+# The unmanaged supervisor heals the stack's own services (it used to only
+# log), through healthcheck --restart, which never touches the unmanaged model.
+_ul="$(sed -n '/^if \[\[ \$MANAGED -eq 0 \]\]; then$/,/^fi$/p' "$REPO_DIR/start.sh")"
+[[ "$_ul" == *'scripts/healthcheck.sh" --restart'* && "$_ul" == *'_infer_ready'* ]] \
+  && pass "the unmanaged supervisor loop runs healthcheck --restart for its own services" \
+  || fail "unmanaged supervisor loop does not self-heal"
 
 # --- 9. Entry-point shell syntax ---
 echo ""
