@@ -567,11 +567,22 @@ class TestEdgeAuthMode(unittest.TestCase):
     def test_corrupt_registry_does_not_claim_anon(self):
         self.assertEqual(self._auth(True, "{ half-written"), "device")
 
-    def test_anon_holds_while_registry_is_empty(self):
-        # Negative controls: no file, or a file with no keyed device — the
-        # gate really does serve keyless callers as "anon" then.
+    def test_anon_holds_only_while_no_registry_has_existed(self):
+        # Negative control: no file at all — the gate really does serve
+        # keyless callers as "anon" then.
         self.assertEqual(self._auth(True), "anon")
-        self.assertEqual(self._auth(True, {"version": 1, "devices": []}), "anon")
+
+    def test_emptied_registry_is_not_anon(self):
+        # What `clients.sh remove` of the last device leaves: the gate keeps
+        # ignoring ALLOW_ANON (401 no_registry), so advertising "anon" sent
+        # keyless clients into a guaranteed 401 (review 2026-11-15).
+        self.assertEqual(self._auth(True, {"version": 1, "devices": []}),
+                         "device")
+
+    def test_deleted_registry_with_marker_is_not_anon(self):
+        # The gate's sticky clients.enrolled marker survives the registry.
+        open(os.path.join(self.repo, ".run", "clients.enrolled"), "w").close()
+        self.assertEqual(self._auth(True), "device")
 
     def test_gate_without_anon_is_device(self):
         self.assertEqual(self._auth(False), "device")
