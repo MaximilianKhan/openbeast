@@ -205,6 +205,12 @@ if ! ob_bind_is_loopback "$BIND_HOST"; then
            "./scripts/setup-mcpo-keys.sh (or BIND_HOST=127.0.0.1)"
     fi
   fi
+  # conf.sh keeps login on for a network bind unless ALLOW_OPEN_WEBUI=true,
+  # so WEBUI_AUTH still false here means the open WebUI was acknowledged.
+  if [[ "${WEBUI_AUTH:-false}" != "true" ]]; then
+    warn "the WebUI has NO login on a network bind (ALLOW_OPEN_WEBUI=true acknowledges it) — everyone on that network is admin, with bash" \
+         "set WEBUI_AUTH=true (or BIND_HOST=127.0.0.1), then ./stop.sh && ./start.sh -d"
+  fi
 else
   pass "bind host is loopback-scoped ($BIND_HOST)"
 fi
@@ -549,6 +555,8 @@ if [[ $_WEBUI_UP -eq 1 && -x "$SCRIPT_DIR/configure-webui.sh" ]]; then
     1) fail "WebUI login is on, but admin@localhost still signs in with upstream's default password" \
             "./scripts/configure-webui.sh --secure-default-admin (or change it in Settings → Account)" ;;
     0) pass "built-in WebUI admin does not accept the upstream default password" ;;
+    5) warn "could not verify that admin@localhost no longer accepts upstream's default password (the sign-in was rate-limited, erroring or timed out)" \
+            "rerun doctor in a few minutes (the sign-in limit is 15 per 3 min)" ;;
     # 4: login is off (or not reported) on the running WebUI, so the probe
     # did not sign in at all — no row, never a green check it did not earn.
     # 3/other: WebUI went away between the two probes — the row above covers it.

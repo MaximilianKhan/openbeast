@@ -1058,6 +1058,180 @@ export OPENBEAST_ALLOW_OPEN_TOOLS="$ALLOW_OPEN_TOOLS"
 # flag publishes; doctor.sh then WARNs about the open :443 instead of FAILing.
 ALLOW_OPEN_WEBUI="$(_ob_bool "${OPENBEAST_ALLOW_OPEN_WEBUI:-$(_ob_conf_value ALLOW_OPEN_WEBUI || true)}" false ALLOW_OPEN_WEBUI)"
 export OPENBEAST_ALLOW_OPEN_WEBUI="$ALLOW_OPEN_WEBUI"
+# `tailscale …` with a bound, or nothing at all when it is not installed.
+_ob_ts() {
+  command -v tailscale >/dev/null 2>&1 || return 1
+  if command -v timeout >/dev/null 2>&1; then timeout 3 tailscale "$@"; else tailscale "$@"; fi
+}
+# True when `tailscale serve` maps :443 onto the WebUI (:3000).
+# Mounts made with `serve --bg` persist across reboots and stack restarts —
+# and tailscaled re-applies them when it comes up, so "tailscale gave no
+# answer" (a start racing tailscaled at boot, a >3 s stall) is NOT "no
+# mount": then the last real answer stands (.run/webui-on-443).
+_ob_webui_on_443() {
+  local rc cache="$ISLAND_STATE_DIR/webui-on-443"
+  _ob_ts serve status --json 2>/dev/null | python3 -c '
+import json, re, sys
+try:
+    web = json.load(sys.stdin).get("Web") or {}
+except Exception:
+    sys.exit(2)
+for hp, cfg in web.items():
+    if hp.endswith(":443") and any(re.search(r":3000/?$", str((h or {}).get("Proxy", "")))
+                                   for h in ((cfg or {}).get("Handlers") or {}).values()):
+        sys.exit(0)
+sys.exit(1)' 2>/dev/null
+  rc=$?
+  if (( rc == 0 || rc == 1 )); then
+    if [[ "${OB_CONF_READONLY:-}" != "1" ]]; then
+      { mkdir -p "$ISLAND_STATE_DIR" && echo "$rc" > "$cache"; } 2>/dev/null || true
+    fi
+    return "$rc"
+  fi
+  [[ "$(head -n1 "$cache" 2>/dev/null)" == "0" ]]
+}
+# WEBUI_AUTH=false is honoured only while the WebUI is reachable from this
+# machine alone. Auth off means "no login, everyone is admin@localhost", and
+# that admin holds the privileged tool connection — bash. Two states put that
+# on a network with no acknowledgement (review, webui-searxng):
+#   - a non-loopback BIND_HOST: the WebUI binds it (compose HOST=), and the
+#     only guard was the tool server's keyless check, which setup-mcpo-keys.sh
+#     clears while the no-login admin UI (and its bash) stays on the LAN;
+#   - a :443 mount left by setup-tailscale.sh (they persist), after the conf
+#     or OPENBEAST_WEBUI_AUTH turned auth back off: start.sh recreated the
+#     container auth-off behind the live mount.
+# Either way login stays ON unless ALLOW_OPEN_WEBUI=true acknowledges it — the
+# same acknowledgement setup-tailscale.sh --i-accept-open-webui records.
+if [[ "$WEBUI_AUTH" != "true" && "$ALLOW_OPEN_WEBUI" != "true" ]]; then
+  _ob_open_why=""
+  if ! ob_bind_is_loopback "$BIND_HOST"; then
+    _ob_open_why="BIND_HOST=$BIND_HOST puts the WebUI on that network"
+  elif _ob_webui_on_443; then
+    _ob_open_why="tailscale serve still publishes the WebUI on :443 (every tailnet device)"
+  fi
+  if [[ -n "$_ob_open_why" ]]; then
+    WEBUI_AUTH=true
+    export OPENBEAST_WEBUI_AUTH=true
+    if [[ "${OB_CONF_WEBUI_AUTH_WARNED:-}" != "1" ]]; then
+      echo "WARNING: WEBUI_AUTH=false ignored — $_ob_open_why, and with login" >&2
+      echo "         off every visitor is the WebUI admin (with bash). Login stays ON;" >&2
+      echo "         the built-in admin's password is in openbeast.conf after the first" >&2
+      echo "         start. Set ALLOW_OPEN_WEBUI=true to really run it open." >&2
+      export OB_CONF_WEBUI_AUTH_WARNED=1
+    fi
+  fi
+  unset _ob_open_why
+fi
+# Open WebUI's CORS allowlist (docker-compose CORS_ALLOW_ORIGIN). Upstream's
+# default is '*' WITH credentials, so Starlette echoed any Origin back: on an
+# auth-off WebUI any web page the operator opened could POST the sign-in,
+# read the admin token and run code (Functions) or read the tool-server key;
+# with auth on, any page on any other tailnet host (ts.net is a public suffix,
+# so they are all same-site with the WebUI's cookie) could read the admin's
+# API. Socket.IO uses the same list, so it must name EVERY origin the WebUI is
+# really opened from: loopback, the bind address, the tailnet name Tailscale
+# Serve publishes it under — plus WEBUI_ORIGINS for anything else (your own
+# reverse proxy). WEBUI_ORIGINS='*' restores upstream's wildcard.
+# The tailnet name the WebUI is published under, from the most stable source
+# that answers. `tailscale status` alone is transient: a start at boot races
+# tailscaled (a user unit has no ordering against it), a logged-out or slow
+# (>3 s) daemon gives nothing — and an origin list computed then left the
+# tailnet UI failing Socket.IO's origin check until the next lucky restart.
+# So: Self.DNSName, else the host of a `serve status` Web key ("<fqdn>:443",
+# the mount itself), else the last name either gave (cached in the run dir).
+_ob_webui_tailnet_name() {
+  local name cache="$ISLAND_STATE_DIR/webui-tailnet-name"
+  name=$(_ob_ts status --json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    print(((json.load(sys.stdin).get("Self") or {}).get("DNSName") or "").rstrip(".").lower())
+except Exception:
+    pass' 2>/dev/null) || name=""
+  if [[ -z "$name" ]]; then
+    name=$(_ob_ts serve status --json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    keys = list((json.load(sys.stdin).get("Web") or {}))
+except Exception:
+    sys.exit(0)
+keys.sort(key=lambda k: not k.endswith(":443"))
+for k in keys:
+    h = k.rsplit(":", 1)[0].rstrip(".").lower()
+    if h and "." in h:
+        print(h)
+        break' 2>/dev/null) || name=""
+  fi
+  # A DNS name only; anything else in the cache is ignored, never echoed.
+  if [[ -n "$name" && "$name" =~ ^[a-z0-9.-]+$ ]]; then
+    if [[ "${OB_CONF_READONLY:-}" != "1" ]]; then
+      { mkdir -p "$ISLAND_STATE_DIR" && printf '%s\n' "$name" > "$cache.tmp" \
+          && mv -f "$cache.tmp" "$cache"; } 2>/dev/null || rm -f "$cache.tmp" 2>/dev/null
+    fi
+  else
+    name=$(head -n1 "$cache" 2>/dev/null || true)
+    [[ "$name" =~ ^[a-z0-9.-]+$ ]] || name=""
+  fi
+  printf '%s' "$name"
+}
+_ob_webui_cors() {
+  local extra list=() h fq
+  extra="${OPENBEAST_WEBUI_ORIGINS:-$(_ob_conf_value WEBUI_ORIGINS || true)}"
+  if [[ "${extra// /}" == "*" ]]; then echo '*'; return 0; fi
+  list=("http://localhost:3000" "http://127.0.0.1:3000")
+  if ! ob_bind_is_loopback "$BIND_HOST"; then
+    case "$BIND_HOST" in
+      0.0.0.0|::|"[::]")
+        # Wildcard: every address of this box, as typed in a browser.
+        for h in $(hostname -I 2>/dev/null); do
+          [[ "$h" == *:* ]] && h="[$h]"
+          list+=("http://$h:3000")
+        done ;;
+      *) h="$BIND_HOST"
+         [[ "$h" == *:* && "$h" != \[* ]] && h="[$h]"
+         list+=("http://$h:3000") ;;
+    esac
+    h="$(hostname 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+    [[ -n "$h" ]] && list+=("http://$h:3000")
+  fi
+  fq="$(_ob_webui_tailnet_name)"
+  if [[ -n "$fq" ]]; then
+    list+=("https://$fq")
+    ob_bind_is_loopback "$BIND_HOST" || list+=("http://$fq:3000")
+  fi
+  for h in ${extra//[,;]/ }; do list+=("$h"); done
+  local IFS=';'
+  echo "${list[*]}"
+}
+OPENBEAST_WEBUI_CORS="$(_ob_webui_cors)"
+export OPENBEAST_WEBUI_CORS
+# The Host names the WebUI answers (docker-compose OB_WEBUI_HOSTS, enforced
+# by scripts/webui/sitecustomize.py inside the container, with the shared
+# agents/hostpolicy.py allowlist on top: loopback, this machine's name,
+# *.ts.net). CORS does not stop
+# DNS rebinding: a page that re-resolves its own name to 127.0.0.1 is "same
+# origin" with the WebUI, and with login off it signs in as admin (bash).
+# Its requests carry its own name in Host, so while login is off — which the
+# guard above allows only on loopback — the WebUI answers loopback names
+# alone (plus the hosts of WEBUI_ORIGINS). With login on a rebound page has
+# no session, and ALLOW_OPEN_WEBUI / WEBUI_ORIGINS='*' are the operator's
+# explicit "open": both are '*', no check.
+_ob_webui_hosts() {
+  if [[ "$WEBUI_AUTH" == "true" || "$ALLOW_OPEN_WEBUI" == "true" || "$OPENBEAST_WEBUI_CORS" == "*" ]]; then
+    echo '*'; return 0
+  fi
+  local list=(localhost 127.0.0.1 ::1) o h
+  ob_bind_is_loopback "$BIND_HOST" && [[ "$BIND_HOST" != *:* ]] && list+=("$BIND_HOST")
+  for o in ${OPENBEAST_WEBUI_CORS//;/ }; do
+    h="${o#*://}"; h="${h%%/*}"
+    # hostpolicy's form: an IPv6 literal keeps its brackets, a port goes.
+    if [[ "$h" == \[* ]]; then h="${h%%\]*}]"; else h="${h%%:*}"; fi
+    [[ -n "$h" ]] && list+=("$h")
+  done
+  local IFS=','
+  echo "${list[*]}"
+}
+OPENBEAST_WEBUI_HOSTS="$(_ob_webui_hosts)"
+export OPENBEAST_WEBUI_HOSTS
 # ALLOW_OPEN_INFERENCE (env OPENBEAST_ALLOW_OPEN_INFERENCE) default false: the
 # persisted form of setup-tailscale.sh --i-accept-open-inference — "yes,
 # publish llama-server on :8443 with no beast-gate and no LLAMA_API_KEY".

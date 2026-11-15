@@ -5,7 +5,10 @@ guest-fetch LIVE (2026-07-08) — verified with the real Open WebUI
 access-control code.** A `user`-role account resolves `web_search`,
 `fetch` (SSRF-guarded) and `weather` ONLY (bash/file/agent tools denied at
 the connection layer); an `admin` account gets all 19 (the 18 MCP tools +
-the WebUI-only `weather`). Baked into `configure-webui.sh` so
+the WebUI-only `weather`). Open WebUI's own per-model builtin tools are a
+separate list: `configure-webui.sh` turns the clock, knowledge-base and
+chat-search ones off once per model (`meta.builtinTools`); an admin can turn
+any back on in Admin → Models. Baked into `configure-webui.sh` so
 fresh installs land RBAC'd. Remaining Phase 2 hardening: per-profile MCPO
 keys + Sandlock (below-app enforcement).
 

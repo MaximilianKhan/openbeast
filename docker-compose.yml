@@ -27,6 +27,18 @@ services:
       # openbeast.conf) when the WebUI goes tailnet-wide — that's when a
       # per-user login boundary matters. Resolved by scripts/lib/conf.sh.
       - WEBUI_AUTH=${OPENBEAST_WEBUI_AUTH:-false}
+      # The origins a browser may call the API from. Upstream's default is
+      # '*' with credentials, which let any web page take an auth-off admin
+      # (and any tailnet host read an auth-on admin's API). lib/conf.sh lists
+      # loopback, the bind address and the tailnet name; WEBUI_ORIGINS adds.
+      - CORS_ALLOW_ORIGIN=${OPENBEAST_WEBUI_CORS:-http://localhost:3000;http://127.0.0.1:3000}
+      # Host allowlist (scripts/webui/sitecustomize.py, loaded via PYTHONPATH):
+      # with login off a DNS-rebinding page is "same origin" and CORS cannot
+      # stop it, so the WebUI answers only agents/hostpolicy.py's names
+      # (loopback, this machine, *.ts.net) plus these. lib/conf.sh sets '*'
+      # (no check) whenever login is on or ALLOW_OPEN_WEBUI=true.
+      - OB_WEBUI_HOSTS=${OPENBEAST_WEBUI_HOSTS:-localhost,127.0.0.1,::1}
+      - PYTHONPATH=/opt/openbeast-webui
       # Loopback-only by default; Tailscale Serve proxies remote devices in.
       - HOST=${OPENBEAST_BIND:-127.0.0.1}
       - PORT=3000
@@ -49,6 +61,8 @@ services:
       - OFFLINE_MODE=${OPENBEAST_WEBUI_OFFLINE:-false}
     volumes:
       - open-webui-data:/app/backend/data
+      - ./scripts/webui/sitecustomize.py:/opt/openbeast-webui/sitecustomize.py:ro
+      - ./agents/hostpolicy.py:/opt/openbeast-webui/hostpolicy.py:ro
     # Hardening: a compromised WebUI process can't gain privileges via
     # setuid binaries. (cap_drop is NOT applied here — the image's startup
     # chown/setup needs default caps; revisit when upstream ships non-root.)
