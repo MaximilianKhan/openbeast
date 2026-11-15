@@ -406,6 +406,24 @@ class TestFetchByteCapCut(unittest.TestCase):
         self.assertNotIn("END", out)
         self.assertNotIn("<div", out)  # no half tag left at the cut
 
+    def test_cut_inside_a_long_tag_leaks_no_markup(self):
+        # The dangling-tag strip only looked 1024 chars back: a cut inside a
+        # longer tag (a base64 data: URI) leaked '<img src="data:…' raw.
+        lim = self.tools._FETCH_MIN_READ_BYTES
+        body = (b"<html><body><p>KEPT</p>" + b"<i></i>" * ((lim - 3000) // 7)
+                + b'<img src="data:image/png;base64,' + b"A" * 5000 + b'">after')
+        out = self._fetch(body)
+        self.assertIn("KEPT", out)
+        self.assertIn("page cut", out)
+        for gone in ("<img", "data:image", "AAAA"):
+            self.assertNotIn(gone, out)
+
+    def test_cut_html_keeps_prose_lt_in_tail(self):
+        lim = self.tools._FETCH_MIN_READ_BYTES
+        body = b"<html><body><p>x</p>if a < b then " + b"z " * lim
+        out = self._fetch(body, 200_000)
+        self.assertIn("if a < b then", out)
+
     def test_cut_plain_text_keeps_body_after_early_lt(self):
         # The dangling-tag strip once ran on every content type, unbounded:
         # one early 'a < b' with no later '>' deleted the whole 2 MB read.

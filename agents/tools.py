@@ -2409,11 +2409,15 @@ def _fetch_body(url: str, max_length: int, deadline: float,
             # stops each attempt at the next '<', and an unclosed script/style
             # block swallows the rest (as a browser would) in one pass.
             if cut_note:
-                # The cut can land inside a tag: drop the dangling
-                # '<div cla…' the tag stripper cannot match. HTML only, and
-                # only a short tail: in plain text an early 'a < b' with no
-                # later '>' must not take the rest of the body with it.
-                text = re.sub(r"<[^<>]{0,1024}\Z", "", text)
+                # The cut can land inside a tag of any length (a base64
+                # data: URI runs to megabytes): drop from the first tag
+                # opener after the last '>' — a browser treats that tail as
+                # one unterminated tag too. HTML only, and only '<' + a tag
+                # character, so a prose 'a < b' is kept. rfind + one search:
+                # linear.
+                m = re.compile(r"<[A-Za-z/!?]").search(text, text.rfind(">") + 1)
+                if m:
+                    text = text[:m.start()]
             text = re.sub(r"<script[^<>]*>.*?(?:</script>|\Z)", "", text, flags=re.DOTALL | re.IGNORECASE)
             text = re.sub(r"<style[^<>]*>.*?(?:</style>|\Z)", "", text, flags=re.DOTALL | re.IGNORECASE)
             text = re.sub(r"<(br|hr|/p|/div|/h[1-6]|/li|/tr)[^<>]*>", "\n", text, flags=re.IGNORECASE)
