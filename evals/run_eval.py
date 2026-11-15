@@ -1131,7 +1131,7 @@ def load_suite(name: str) -> dict:
     return suite
 
 
-def _run_reaped(cmd, timeout: int, shell: bool = False) -> tuple[int, str]:
+def _run_reaped(cmd, timeout: int, shell: bool = False, **popen_kw) -> tuple[int, str]:
     """Thin wrapper around tools.run_reaped for eval-harness callers.
 
     tools.run_reaped only supports shell=True (it manages the process group
@@ -1144,7 +1144,7 @@ def _run_reaped(cmd, timeout: int, shell: bool = False) -> tuple[int, str]:
         shell_cmd = " ".join(shlex.quote(c) for c in cmd)
     else:
         shell_cmd = cmd
-    return run_reaped(shell_cmd, timeout)
+    return run_reaped(shell_cmd, timeout, **popen_kw)
 
 
 def run_setup(task: dict, log=print) -> bool:
@@ -1382,13 +1382,123 @@ def validator_timed_out(text: str | None) -> bool:
     return bool(text) and text.startswith(VALIDATION_TIMED_OUT)
 
 
+# --- Validator isolation (v5) ----------------------------------------------
+#
+# The solution under test is a child (or grandchild) of the validator and
+# runs as the same uid, so everything the validator exposes to a same-uid
+# process is exposed to the model's code:
+#
+#   argv     `ps -ww -o command= -p $PPID` (macOS) or /proc/PPID/cmdline
+#            (Linux) is world-readable. `python -c <script>` put the whole
+#            validator there, oracle and seed included. Proven cheats passed
+#            163, 164, 168, 173, 181, 183, 188, 20, 40 and 121 that way.
+#            The script now arrives on STDIN, from an already-unlinked file.
+#   cwd      `python -c` puts '' (the harness cwd) on sys.path, so a planted
+#            urllib/parse.py there ran inside the validator on a lazy
+#            import (176), and stayed for every later unit. Validators now run
+#            as `python -I -S -` in a fresh, empty 0700 cwd, removed after the
+#            unit.
+#   environ  readable with `ps eww` on macOS. The validator gets a scrubbed
+#            environment (_validator_env).
+#   memory   the bootstrap makes the validator non-dumpable on Linux.
+#   orphans  vlib records every solution process group it starts in the
+#            private dir, and the harness SIGKILLs them after the validator
+#            exits, so a validator killed on timeout cannot leave a solution
+#            running into the next unit.
+
+VLIB_PATH = os.path.join(EVALS_DIR, "vlib.py")
+# Eval data a solution has no business reading (vlib denies it on macOS).
+VALIDATOR_SEAL = tuple(os.path.join(EVALS_DIR, d) for d in ("tasks", "refs", "suites"))
+
+_VALIDATOR_ENV_KEEP = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TZ",
+                       "TMPDIR", "TERM", "SDKROOT", "DEVELOPER_DIR",
+                       "MACOSX_DEPLOYMENT_TARGET", "CC", "CXX", "GOROOT", "GOPATH",
+                       "GOCACHE", "GOMODCACHE", "GOFLAGS", "GOTOOLCHAIN", "GOPROXY",
+                       "GOSUMDB", "CARGO_HOME", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN",
+                       "ZIG_GLOBAL_CACHE_DIR", "ZIG_LOCAL_CACHE_DIR", "XDG_CACHE_HOME",
+                       "PKG_CONFIG_PATH")
+
+# Python bootstrap: the only program on the validator's argv is `-I -S -`.
+# It reads nothing more from stdin, hardens itself, keeps cwd off sys.path,
+# injects vlib from source, and runs the validator as __main__.
+_PY_BOOT = r"""
+def _ob_boot(src, vlib_src, group_file):
+    import os, sys, types, linecache
+    try:
+        fd = os.open(os.devnull, os.O_RDONLY); os.dup2(fd, 0); os.close(fd)
+    except OSError:
+        pass
+    if sys.platform.startswith("linux") and os.environ.get("OPENBEAST_KEEP_DUMPABLE") != "1":
+        try:
+            import ctypes
+            ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)  # PR_SET_DUMPABLE 0
+        except Exception:
+            pass
+    cwd = os.getcwd()
+    sys.path[:] = [p for p in sys.path if p and os.path.abspath(p) != cwd]
+    m = types.ModuleType("vlib")
+    m.__file__ = "<vlib>"
+    sys.modules["vlib"] = m
+    exec(compile(vlib_src, "<vlib>", "exec", dont_inherit=True), m.__dict__)
+    m._GROUP_FILE = group_file
+    sys.argv[:] = ["<validator>"]
+    linecache.cache["<validator>"] = (len(src), None, src.splitlines(True), "<validator>")
+    del globals()["_ob_boot"]
+    return compile(src, "<validator>", "exec", dont_inherit=True)
+exec(_ob_boot(%r, %r, %r))
+"""
+
+# Shell validators: read the whole script from stdin, give stdin up, run it.
+# The script never appears in any argv.
+_SH_BOOT = '__ob_v=$(cat) && exec </dev/null && eval "$__ob_v"'
+
+
+def _validator_env(timeout_scale: float) -> dict:
+    env = {k: v for k, v in os.environ.items()
+           if k in _VALIDATOR_ENV_KEEP or k.startswith("LC_")}
+    env.setdefault("PATH", "/usr/local/bin:/usr/bin:/bin")
+    env["OPENBEAST_TIMEOUT_SCALE"] = f"{float(timeout_scale):g}"
+    env["OPENBEAST_EVAL"] = "1"
+    env["OPENBEAST_VALIDATOR_SEAL"] = os.pathsep.join(VALIDATOR_SEAL)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    return env
+
+
+def _vlib_source() -> str:
+    with open(VLIB_PATH) as f:
+        return f.read()
+
+
+def _kill_recorded_groups(group_file: str):
+    try:
+        with open(group_file) as f:
+            pgids = {int(x) for x in f.read().split() if x.strip().isdigit()}
+    except OSError:
+        return
+    mine = os.getpgrp()
+    for pg in pgids:
+        if pg <= 1 or pg == mine:
+            continue
+        try:
+            os.killpg(pg, signal.SIGKILL)
+        except OSError:
+            pass
+
+
 def run_validation(task: dict, timeout_scale: float = 1.0) -> tuple[bool, str]:
     """Run validation. Returns (passed, output).
 
     timeout_scale: the same contention multiplier run_agent's wall budget
     gets. The validator compiles the solution itself (`zig build-exe -O
     ReleaseFast` is 7-12 s warm on an idle host), so under --jobs the fixed
-    30 s was mostly the compiler's, and a correct solution timed out."""
+    30 s was mostly the compiler's, and a correct solution timed out. It is
+    also exported to the validator as OPENBEAST_TIMEOUT_SCALE (vlib.t()).
+
+    Isolation (see the block comment above): the script is fed on stdin from
+    an unlinked file in a private 0700 dir, the validator runs in a fresh
+    empty cwd with a scrubbed environment, python validators run as
+    `python -I -S -` with vlib injected, and the private dir is removed
+    afterwards."""
     validation = task.get("validation", {})
     vtype = validation.get("type", "bash")
     script = validation.get("script", "")
@@ -1397,13 +1507,31 @@ def run_validation(task: dict, timeout_scale: float = 1.0) -> tuple[bool, str]:
         return False, "No validation script defined"
 
     timeout = max(1, int(VALIDATION_TIMEOUT_S * timeout_scale))
+    import shutil
+    import tempfile
+    private = tempfile.mkdtemp(prefix="ob-validator-")  # 0700
+    os.chmod(private, 0o700)
+    vcwd = os.path.join(private, "cwd")
+    os.mkdir(vcwd, 0o700)
+    group_file = os.path.join(private, "pgids")
     try:
         if vtype == "python":
-            returncode, output = _run_reaped(
-                [sys.executable, "-c", script], timeout=timeout,
-            )
+            payload = _PY_BOOT % (script, _vlib_source(), group_file)
+            cmd = [sys.executable, "-I", "-S", "-"]
         else:
-            returncode, output = _run_reaped(script, timeout=timeout, shell=True)
+            payload = script
+            cmd = _SH_BOOT
+        # The script reaches the validator through an UNLINKED file on its
+        # stdin: no path to find, no argv to read.
+        sfd, spath = tempfile.mkstemp(dir=private, prefix="s-")
+        with os.fdopen(sfd, "w+") as sf:
+            os.unlink(spath)
+            sf.write(payload)
+            sf.flush()
+            sf.seek(0)
+            returncode, output = _run_reaped(
+                cmd, timeout=timeout, shell=not isinstance(cmd, list),
+                stdin=sf, cwd=vcwd, env=_validator_env(timeout_scale))
         passed = returncode == 0
         kept = output.strip()[:500]
         # The 500-char cut must never drop the evidence that the VALIDATOR
@@ -1417,6 +1545,9 @@ def run_validation(task: dict, timeout_scale: float = 1.0) -> tuple[bool, str]:
         return False, f"{VALIDATION_TIMED_OUT} ({timeout}s)"
     except Exception as e:
         return False, f"Validation error: {e}"
+    finally:
+        _kill_recorded_groups(group_file)
+        shutil.rmtree(private, ignore_errors=True)
 
 
 def run_cleanup(task: dict, log=print):
