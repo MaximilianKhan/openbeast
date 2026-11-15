@@ -192,7 +192,7 @@ project.
 opencode                                   # tools run here, thinking runs on the rig
 openbeast-client agent "refactor utils.py" # autonomous agent, local files
 openbeast-client status                    # rig's real model, context, busy slots
-openbeast-client update                    # reinstall pinned deps (pulls too, on a slim checkout)
+openbeast-client update                    # git pull this checkout, reinstall pinned deps, refresh models
 ```
 
 **On your phone:** the chat UI is a PWA ("Add to Home Screen"), and with
