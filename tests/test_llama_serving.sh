@@ -254,6 +254,64 @@ _pc_is="$(grep '^OPENBEAST_PROMPT_CACHE_RAM_MB=' "$IS/serve-env" 2>/dev/null | c
   || fail "scorer prompt cache: OPENBEAST_PROMPT_CACHE_RAM_MB='$_pc_is'"
 
 echo ""
+echo "measure-vram.sh:"
+MV="$(_mk)"; mkdir -p "$MV/scripts/lib" "$MV/bin"
+cp "$REPO_DIR/scripts/measure-vram.sh" "$MV/scripts/"; cp "$REPO_DIR"/scripts/lib/*.sh "$MV/scripts/lib/"
+printf 'SEARXNG_SECRET=x\n' > "$MV/openbeast.conf"
+printf '#!/bin/bash\n[[ "$1" == check ]] && { echo "held by this caller"; exit 0; }\nexit 0\n' > "$MV/scripts/gpu-lease.sh"
+cat > "$MV/bin/nvidia-smi" <<'SH'
+#!/bin/bash
+case "$*" in *memory.total*) echo 32607 ;; *memory.used*) echo 20000 ;; esac
+exit 0
+SH
+# The "serve script": records its argv, then serves /health on the host and
+# port it was told (like serve.sh would) and logs the context it allocated.
+cat > "$MV/scripts/serve-fake.sh" <<SH
+#!/bin/bash
+printf '%s\n' "\$@" > "$MV/serve-argv"
+host=127.0.0.1; port=8080
+while [[ \$# -gt 0 ]]; do case "\$1" in --host) host="\$2"; shift 2 ;; --port|-p) port="\$2"; shift 2 ;; *) shift ;; esac; done
+echo "llama_context: n_ctx         = 57344"
+exec python3 -c '
+import http.server, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200); self.end_headers(); self.wfile.write(b"{\"status\":\"ok\"}")
+    def log_message(self, *a): pass
+http.server.HTTPServer((sys.argv[1], int(sys.argv[2])), H).serve_forever()
+' "\$host" "\$port"
+SH
+chmod +x "$MV/scripts/gpu-lease.sh" "$MV/bin/nvidia-smi" "$MV/scripts/serve-fake.sh"
+_mv_port=$(( 20000 + RANDOM % 20000 ))
+_mv() { MV_RC=0; MV_OUT="$(env -i HOME="$MV" PATH="$MV/bin:/usr/bin:/bin" OPENBEAST_MEASURE_PORT="$_mv_port" "$@" \
+  timeout 60 bash "$MV/scripts/measure-vram.sh" serve-fake.sh 2>&1)" || MV_RC=$?; }
+_mv OPENBEAST_BIND=192.0.2.10
+_mv_host="$(awk 'p {print; exit} $0 == "--host" {p = 1}' "$MV/serve-argv" 2>/dev/null)"
+if [[ $MV_RC -eq 0 && "$_mv_host" == "127.0.0.1" ]]; then
+  pass "with BIND_HOST=192.0.2.10 the measured server is put on loopback and seen healthy"
+else
+  fail "measure-vram with BIND_HOST=192.0.2.10 (rc=$MV_RC, --host '$_mv_host'): $(tail -5 <<< "$MV_OUT" | tr '\n' ' ')"
+fi
+[[ "$MV_OUT" == *"RESULT"*"ctx=57344"* ]] && pass "…and the RESULT line names the context actually allocated (ctx=57344)" \
+  || fail "RESULT line without the served context: $(grep RESULT <<< "$MV_OUT")"
+# The stack's server on a specific (non-default loopback) address must still
+# be found by the pre-flight probe.
+python3 -c '
+import http.server, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200); self.end_headers(); self.wfile.write(b"{\"status\":\"ok\"}")
+    def log_message(self, *a): pass
+http.server.HTTPServer(("127.0.0.2", int(sys.argv[1])), H).serve_forever()
+' "$_mv_port" & _squat=$!
+sleep 1
+rm -f "$MV/serve-argv"
+_mv OPENBEAST_BIND=127.0.0.2
+kill "$_squat" 2>/dev/null; wait "$_squat" 2>/dev/null
+[[ $MV_RC -eq 4 && ! -e "$MV/serve-argv" ]] && pass "…a server already on BIND_HOST=127.0.0.2:<port> is refused before anything launches" \
+  || fail "measure-vram missed the stack's server on 127.0.0.2 (rc=$MV_RC): $(tail -3 <<< "$MV_OUT" | tr '\n' ' ')"
+
+echo ""
 echo "========================================"
 echo "llama-serving: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]
