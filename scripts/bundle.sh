@@ -860,7 +860,15 @@ for c in doc.get("components", []):
        error above). NOTHING was written to llama.cpp/, so re-running after
        fixing or rebuilding the bundle will work."
         fi
-        _links="$(find "$_stage" -type l -printf '%p -> %l\n' 2>/dev/null | head -5 || true)"
+        # PORTABLE AND FAIL-CLOSED. This used `find -printf`, which BSD find
+        # (macOS) rejects; with stderr dropped and `|| true`, "find could not
+        # run" read as "no symlinks" and the archive was accepted, links and
+        # all. Plain `-type l` is POSIX, and a find that fails is a refusal.
+        _links_all="$(find "$_stage" -type l 2>&1)" || {
+          rm -rf "$_stage"
+          die "could not scan the extracted source for symlinks — refusing it:
+$(head -3 <<< "$_links_all" | sed 's/^/         /')"; }
+        _links="$(head -5 <<< "$_links_all")"
         if [[ -n "$_links" ]]; then
           rm -rf "$_stage"
           die "the source archive contains symlinks, which a legitimate

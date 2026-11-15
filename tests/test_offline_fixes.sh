@@ -955,6 +955,33 @@ if [[ $_rc -eq 0 && -f "$SB/llama.cpp/GOOD.txt" ]]; then
 else
   fail "same-platform bundle (rc=$_rc): $_out"
 fi
+# A SYMLINK in the source archive is refused — also on a non-GNU find (BSD
+# find on macOS has no -printf; the old check ran it with stderr dropped and
+# `|| true`, so "find failed" read as "no symlinks"). The stub find below
+# behaves like BSD find: it rejects -printf and otherwise runs the real one.
+mk_symbundle() {
+  rm -rf "$SRCB" "$T/srclink"; mkdir -p "$SRCB/source" "$T/srclink/llama.cpp"
+  echo "real source" > "$T/srclink/llama.cpp/GOOD.txt"; ln -s /etc "$T/srclink/llama.cpp/evil"
+  tar -czf "$SRCB/source/llama.cpp-${_commit:0:12}.tar.gz" -C "$T/srclink" llama.cpp
+  "$REAL_PY" "$SB/scripts/lib/bundle_manifest.py" write "$SRCB" --built-at t --repo-commit c \
+      --component source:source --meta "source:{\"commit\": \"$_commit\"}" >/dev/null
+}
+mkdir -p "$T/bin_bsdfind"; REAL_FIND="$(command -v find)"; export REAL_FIND
+cat > "$T/bin_bsdfind/find" <<'STUB'
+#!/bin/bash
+for a in "$@"; do [[ "$a" == -printf ]] && { echo "find: -printf: unknown primary or operator" >&2; exit 1; }; done
+exec "$REAL_FIND" "$@"
+STUB
+chmod +x "$T/bin_bsdfind/find"
+for _fp in "$T/bin" "$T/bin_bsdfind:$T/bin"; do
+  rm -rf "$SB/llama.cpp"; mk_symbundle
+  _out="$(cd "$T" && PATH="$_fp:$PATH" OPENBEAST_PYTHON="$REAL_PY" "$SB/scripts/bundle.sh" install "$SRCB" 2>&1)"; _rc=$?
+  if [[ $_rc -ne 0 && ! -e "$SB/llama.cpp" ]] && has "$_out" "contains symlinks"; then
+    pass "a source archive with a symlink is refused, nothing placed ($([[ "$_fp" == *bsdfind* ]] && echo 'BSD-like find' || echo 'host find'))"
+  else
+    fail "symlinked source archive, PATH=$_fp (rc=$_rc, llama.cpp: $(ls -A "$SB/llama.cpp" 2>/dev/null)): $_out"
+  fi
+done
 # The bundle's commit against THIS checkout's pin (scripts/llama.cpp.ref): the
 # build box may have had its clone somewhere else, and install said nothing.
 rm -rf "$SB/llama.cpp"; mk_srcbundle
