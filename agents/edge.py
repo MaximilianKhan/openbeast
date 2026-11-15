@@ -1099,10 +1099,29 @@ async def gate(request: Request):
     # used to bloat audit rows.
     user = (request.headers.get("x-openwebui-user-id") or "")[:128] or None
 
+    def _rid(**extra) -> dict:
+        # On EVERY reply from here on, refusals included: the error a
+        # support question is about must carry the id its audit row has.
+        return {"X-OpenBeast-Request-Id": request_id, **extra}
+
+    def _too_large():
+        # Authenticated, so audited and counted like every other refusal.
+        _release()
+        _bump("denied_total", "too_large")
+        _audit(device_id, user, path, 413, None,
+               int((time.monotonic() - started) * 1000), None,
+               "too_large", request_id, uid)
+        _log(f"body over cap device={device_id} path={path} "
+             f"request_id={request_id}")
+        return JSONResponse(
+            {"error": {"message": "request body too large",
+                       "type": "invalid_request_error"}},
+            status_code=413, headers=_rid())
+
     if path == "/health":
         # Cheap liveness, no admission control — clients poll it.
         status, payload = await _upstream_health(app, client)
-        return JSONResponse(payload, status_code=status)
+        return JSONResponse(payload, status_code=status, headers=_rid())
 
     # Atomic admit: check-and-increment in one step with no await between,
     # otherwise concurrent requests sail past EDGE_MAX_INFLIGHT.
@@ -1121,7 +1140,7 @@ async def gate(request: Request):
                else f"device already has {bucket.max_inflight} generations in flight")
         return JSONResponse(
             {"error": {"message": msg, "type": "rate_limit_error"}},
-            status_code=429, headers={"Retry-After": retry})
+            status_code=429, headers=_rid(**{"Retry-After": retry}))
 
     # From here the slot is HELD: every exit path must release it. Note the
     # bare `except:`/BaseException handling below — asyncio.CancelledError is
@@ -1137,10 +1156,7 @@ async def gate(request: Request):
 
     try:
         if int(request.headers.get("content-length") or 0) > MAX_BODY_BYTES:
-            _release()
-            return JSONResponse(
-                {"error": {"message": "request body too large",
-                           "type": "invalid_request_error"}}, status_code=413)
+            return _too_large()
         # Drain INCREMENTALLY and stop at the cap. `await request.body()`
         # buffers the whole body first, so a chunked request (no
         # Content-Length, so the check above cannot fire) would be fully
@@ -1150,12 +1166,7 @@ async def gate(request: Request):
         async for chunk in request.stream():
             buf += chunk
             if len(buf) > MAX_BODY_BYTES:
-                _release()
-                _log(f"body over cap device={device_id} path={path}")
-                return JSONResponse(
-                    {"error": {"message": "request body too large",
-                               "type": "invalid_request_error"}},
-                    status_code=413)
+                return _too_large()
         raw = bytes(buf)
         body, model, streaming, gens = raw, None, False, 1
         if raw and path in JSON_PATHS:
@@ -1182,7 +1193,7 @@ async def gate(request: Request):
                 return JSONResponse(
                     {"error": {"message": str(e),
                                "type": "invalid_request_error"}},
-                    status_code=400)
+                    status_code=400, headers=_rid())
         if gens > bucket.max_inflight:
             # Could never be admitted, so 400 rather than a 429 to retry.
             _release()
@@ -1195,7 +1206,8 @@ async def gate(request: Request):
                     f"request fans out into {gens} generations (prompts x n); "
                     f"this device may run at most {bucket.max_inflight} at "
                     "once — split it into smaller requests"),
-                    "type": "invalid_request_error"}}, status_code=400)
+                    "type": "invalid_request_error"}}, status_code=400,
+                headers=_rid())
         refusal = bucket.reserve_more(gens - 1)
         if refusal:
             _release()
@@ -1209,8 +1221,8 @@ async def gate(request: Request):
                     "does not have them free right now"),
                     "type": "rate_limit_error"}},
                 status_code=429,
-                headers={"Retry-After": "5" if refusal == "rate_limited"
-                         else "2"})
+                headers=_rid(**{"Retry-After": "5" if refusal == "rate_limited"
+                                else "2"}))
         if holds:
             released["held"] = gens
         headers = _upstream_headers(request, device, request_id)
@@ -1266,7 +1278,8 @@ async def gate(request: Request):
             _log(f"upstream connect timeout device={device_id} path={path}: {e}")
             return JSONResponse(
                 {"error": {"message": f"model server unreachable: {e}",
-                           "type": "upstream_unavailable"}}, status_code=502)
+                           "type": "upstream_unavailable"}}, status_code=502,
+                headers=_rid())
         except httpx.TimeoutException as e:
             # Distinct from unreachable: the model server IS there and simply
             # took longer than OPENBEAST_EDGE_READ_TIMEOUT to produce the
@@ -1283,7 +1296,8 @@ async def gate(request: Request):
                     f"({os.environ.get('OPENBEAST_EDGE_READ_TIMEOUT', '600')}s). "
                     "A long non-streaming completion can exceed it — raise "
                     "OPENBEAST_EDGE_READ_TIMEOUT, or stream the request."),
-                    "type": "upstream_timeout"}}, status_code=504)
+                    "type": "upstream_timeout"}}, status_code=504,
+                headers=_rid())
         except httpx.HTTPError as e:
             _release()
             _audit(device_id, user, path, 502, None,
@@ -1292,7 +1306,8 @@ async def gate(request: Request):
             _log(f"upstream error device={device_id} path={path}: {e}")
             return JSONResponse(
                 {"error": {"message": f"model server unreachable: {e}",
-                           "type": "upstream_unavailable"}}, status_code=502)
+                           "type": "upstream_unavailable"}}, status_code=502,
+                headers=_rid())
     except BaseException:
         # Includes CancelledError (client vanished mid-read).
         _release()

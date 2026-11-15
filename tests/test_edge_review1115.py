@@ -330,3 +330,70 @@ class TestModelListIsNotAGeneration:
             codes = [c.get("/v1/models", headers=HDR).status_code
                      for _ in range(3)]
         assert codes[0] == 200 and 429 in codes
+
+
+def _audit_rows(tmp_path) -> list:
+    p = tmp_path / ".run" / "inference-audit.jsonl"
+    return [json.loads(ln) for ln in p.read_text().splitlines()] \
+        if p.exists() else []
+
+
+class TestEveryReplyCarriesItsRequestId:
+    """cbp: X-OpenBeast-Request-Id was echoed only on success, the revoked
+    401 and the 499; every other refusal had an audit row the caller could
+    not name. Both 413 paths were neither audited nor counted."""
+
+    def _rid_matches_audit(self, tmp_path, r, outcome):
+        rid = r.headers.get("x-openbeast-request-id")
+        assert rid, f"{r.status_code} reply carries no request id"
+        rows = [x for x in _audit_rows(tmp_path) if x["request_id"] == rid]
+        assert rows and rows[-1]["outcome"] == outcome, rows
+
+    def test_rate_limited_429(self, edge, tmp_path):
+        _registry(tmp_path, rate=1)
+        _stub(edge)
+        with TestClient(edge.app) as c:
+            c.post(CHAT, json={"messages": []}, headers=HDR)
+            r = c.post(CHAT, json={"messages": []}, headers=HDR)
+        assert r.status_code == 429
+        self._rid_matches_audit(tmp_path, r, "rate_limited")
+
+    def test_bad_body_400(self, edge, tmp_path):
+        _registry(tmp_path)
+        _stub(edge)
+        with TestClient(edge.app) as c:
+            r = c.post(CHAT, content=b"{not json", headers=HDR)
+        assert r.status_code == 400
+        self._rid_matches_audit(tmp_path, r, "bad_request")
+
+    def test_upstream_error_502(self, edge, tmp_path):
+        _registry(tmp_path)
+
+        def _boom():
+            raise edge.httpx.ConnectError("refused")
+        _stub(edge, resp=_boom)
+        with TestClient(edge.app) as c:
+            r = c.post(CHAT, json={"messages": []}, headers=HDR)
+        assert r.status_code == 502
+        self._rid_matches_audit(tmp_path, r, "upstream_error")
+
+    def test_oversize_body_413_is_audited_and_counted(self, edge, tmp_path,
+                                                      monkeypatch):
+        _registry(tmp_path)
+        _stub(edge)
+        monkeypatch.setattr(edge, "MAX_BODY_BYTES", 64)
+        big = json.dumps({"messages": [{"role": "user",
+                                        "content": "x" * 200}]}).encode()
+
+        def _chunks():
+            yield big        # no Content-Length: the streamed cap fires
+        with TestClient(edge.app) as c:
+            r1 = c.post(CHAT, content=big, headers=HDR)
+            r2 = c.post(CHAT, content=_chunks(), headers=HDR)
+            m = c.get("/gate/metrics", headers=_local_headers(edge)).text
+            b = _laptop_bucket_app(edge, c.app)
+        for r in (r1, r2):
+            assert r.status_code == 413
+            self._rid_matches_audit(tmp_path, r, "too_large")
+        assert 'openbeast_edge_denied_total{reason="too_large"} 2' in m
+        assert b.inflight == 0
