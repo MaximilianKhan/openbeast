@@ -1,0 +1,1 @@
+"""The ``ferrule`` command line."""

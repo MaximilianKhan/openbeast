@@ -1,0 +1,19 @@
+{
+  "task": "178_codebase_qa",
+  "note": "Prover arms (prove.py). Paths are relative to this directory; each regex must match the validator's last output line. There is no perf gate, so no slow arm. The leak probe is leak_probe.py run after setup: it harvests anything answer-like the agent could read in the fixture dir and submits it. fixture_files: setup must create exactly the bundled repo under repo/ and nothing else. rederive: solve.py is re-run on the EXTRACTED fixture and must reproduce answers.json, proving the shipped tarball is the repo the digests were computed from.",
+  "dest_dir": "/tmp/eval_codeqa",
+  "unit": "178_codebase_qa",
+  "ref": "answers.json",
+  "repeat": 3,
+  "also_pass": ["arms/ref_lenient.json"],
+  "wrong": [
+    ["arms/wrong_docs_naive.json", "^FAIL: 12 of 12 answers wrong: q1 q2 q3 q4 q5 q6 q7 q8 q9 q10 q11 q12$"],
+    ["arms/wrong_q5_docs_append.json", "^FAIL: 1 of 12 answers wrong: q5$"],
+    ["arms/wrong_q12_wal_disabled.json", "^FAIL: 1 of 12 answers wrong: q12$"],
+    ["arms/wrong_q4_plugin_order.json", "^FAIL: 1 of 12 answers wrong: q4$"],
+    ["arms/wrong_q7_sorted.json", "^FAIL: 1 of 12 answers wrong: q7$"],
+    ["arms/wrong_malformed.json", "^FAIL: answers.json is not valid JSON$"]
+  ],
+  "empty": "^FAIL: /tmp/eval_codeqa/answers.json not found$",
+  "leak": ["leak_probe.py", "^FAIL: 12 of 12 answers wrong: "]
+}
