@@ -568,6 +568,35 @@ else
   fail "state '$WK_STATE' / output: $WK_OUT"
 fi
 
+# show reads a bounded tail, not the whole log (multi-GB campaign logs)
+BIG_LOG="$TMPROOT/big.log"
+python3 -c '
+import sys
+with open(sys.argv[1], "w") as f:
+    for i in range(200000):
+        f.write("line %d\n" % i)' "$BIG_LOG"
+OPENBEAST_SESSIONS_DIR="$LEDGER" python3 - "$SANDBOX/agents" "$BIG_LOG" <<'PY'
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import sessions
+sessions.register("biglog", kind="job", title="b", pid=os.getpid(), pgid=0,
+                  transcript=sys.argv[2])
+sessions.finalize("biglog", "done", summary="exit 0")
+PY
+BIG_TAIL="$("$CLI" show biglog | sed -n '/--- last 20 lines/,$p' | sed 1d)"
+if [[ "$(printf '%s\n' "$BIG_TAIL" | wc -l | tr -d ' ')" -eq 20 ]] \
+   && [[ "$(printf '%s\n' "$BIG_TAIL" | head -1)" == "  line 199980" ]] \
+   && [[ "$(printf '%s\n' "$BIG_TAIL" | tail -1)" == "  line 199999" ]]; then
+  pass "show prints exactly the last 20 lines of a large log"
+else
+  fail "show tail wrong: $(printf '%s\n' "$BIG_TAIL" | head -2)"
+fi
+if ! grep -q 'readlines()' "$REPO_DIR/scripts/job.sh"; then
+  pass "show never materialises the whole log (no readlines())"
+else
+  fail "job.sh still calls readlines() on a log"
+fi
+
 # --- 8. list / show ---
 echo ""
 echo "list / show:"

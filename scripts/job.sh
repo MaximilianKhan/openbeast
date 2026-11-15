@@ -179,12 +179,21 @@ elif CMD == "show":
         print("  %-12s %s" % ("command:", command if isinstance(command, str)
                               else " ".join(str(c) for c in command)))
     log = record.get("transcript")
-    if log and os.path.exists(log):
+    if log and os.path.isfile(log):
         print("")
         print("  --- last 20 lines of %s ---" % log)
-        with open(log, "r", errors="replace") as fh:
-            for line in fh.readlines()[-20:]:
-                print("  " + line.rstrip("\n"))
+        # Bounded: seek near EOF, never read every line of a multi-day
+        # campaign log (several GB of list for 20 lines). 64 KiB holds the
+        # last 20 lines of anything readable; a longer line is clipped.
+        with open(log, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            end = fh.tell()
+            fh.seek(max(0, end - 65536))
+            tail = fh.read(65536).decode("utf-8", "replace").splitlines()
+        if end > 65536 and tail:
+            tail = tail[1:]                 # the first line is a fragment
+        for line in tail[-20:]:
+            print("  " + line)
 
 elif CMD == "stopinfo":
     record = need(ARGV[0])
