@@ -7,7 +7,9 @@
    "wrong": {
     "wrong/biquad_trunc.py": "^mismatch at case \\d+$",
     "wrong/biquad_unsat_state.py": "^mismatch at case \\d+$",
-    "wrong/biquad_sat_once.py": "^mismatch at case \\d+$"
+    "wrong/biquad_sat_once.py": "^mismatch at case \\d+$",
+    "wrong/biquad_skip2.py": "^mismatch at case (7|8)$",
+    "wrong/biquad_negmin.py": "^mismatch at case (7|8)$"
    },
    "leak": "probe/leak.py",
    "hang": "probe/hang.py"
@@ -15,7 +17,9 @@
   "b": {
    "wrong": {
     "wrong/biquad_i32acc.go": "^mismatch at case \\d+$",
-    "wrong/biquad_divtrunc.go": "^mismatch at case \\d+$"
+    "wrong/biquad_divtrunc.go": "^mismatch at case \\d+$",
+    "wrong/biquad_skip2.go": "^mismatch at case (7|8)$",
+    "wrong/biquad_negmin.go": "^mismatch at case (7|8)$"
    },
    "leak": "probe/leak.go",
    "hang": "probe/hang.go"
@@ -23,7 +27,9 @@
   "c": {
    "wrong": {
     "wrong/biquad_i32acc.c": "^mismatch at case \\d+$",
-    "wrong/biquad_roundsat.c": "^mismatch at case \\d+$"
+    "wrong/biquad_roundsat.c": "^mismatch at case \\d+$",
+    "wrong/biquad_skip2.c": "^mismatch at case (7|8)$",
+    "wrong/biquad_negmin.c": "^mismatch at case (7|8)$"
    },
    "leak": "probe/leak.c",
    "hang": "probe/hang.c"
@@ -31,7 +37,9 @@
   "d": {
    "wrong": {
     "wrong/biquad_unsat_state.cpp": "^mismatch at case \\d+$",
-    "wrong/biquad_sat_once.cpp": "^mismatch at case \\d+$"
+    "wrong/biquad_sat_once.cpp": "^mismatch at case \\d+$",
+    "wrong/biquad_skip2.cpp": "^mismatch at case (7|8)$",
+    "wrong/biquad_negmin.cpp": "^mismatch at case (7|8)$"
    },
    "leak": "probe/leak.cpp",
    "hang": "probe/hang.cpp"
@@ -39,7 +47,9 @@
   "e": {
    "wrong": {
     "wrong/biquad_i32wrap.rs": "^mismatch at case \\d+$",
-    "wrong/biquad_always_sat.rs": "^mismatch at case \\d+$"
+    "wrong/biquad_always_sat.rs": "^mismatch at case \\d+$",
+    "wrong/biquad_skip2.rs": "^mismatch at case (7|8)$",
+    "wrong/biquad_negmin.rs": "^mismatch at case (7|8)$"
    },
    "leak": "probe/leak.rs",
    "hang": "probe/hang.rs"
@@ -47,7 +57,9 @@
   "f": {
    "wrong": {
     "wrong/biquad_i32wrap.zig": "^mismatch at case \\d+$",
-    "wrong/biquad_divtrunc.zig": "^mismatch at case \\d+$"
+    "wrong/biquad_divtrunc.zig": "^mismatch at case \\d+$",
+    "wrong/biquad_skip2.zig": "^mismatch at case (7|8)$",
+    "wrong/biquad_negmin.zig": "^mismatch at case (7|8)$"
    },
    "leak": "probe/leak.zig",
    "hang": "probe/hang.zig"
