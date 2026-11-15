@@ -6,7 +6,7 @@ security audit, eval-task authoring, debugging methodology, deep counsel.
 The model discovers them via MCP and loads them on demand. See
 [`docs/SKILLS_PLAN.md`](../docs/SKILLS_PLAN.md) for the full design.
 
-## Currently shipped (15 skills)
+## Currently shipped (16 skills)
 
 ### Universal-applicability (Tier 1)
 
@@ -42,6 +42,7 @@ The model discovers them via MCP and loads them on demand. See
 | `eval-task-author` | Authoring eval suite tasks; encodes the 6 pitfalls from past post-mortems |
 | `eval-variant-porter` | Adding multi-language variants (Python/Go/C/C++/Rust/Zig) to existing tasks |
 | `beast-lang` | The offline language library: look up what the *installed* compiler confirmed, add a verified claim, rebuild the escalation index, review model-drafted claims. Written for cloud models working in this repo — `prompt_index: false`, so it is not in the local model's always-on menu |
+| `app-control` | Drive external apps (Xcode, Gradle/adb, Blender, Figma, 3D printers, ROS) through MCP servers with beast-apps: `scripts/apps.sh check` first, report the exact remediation when something is missing, enable only after a passing check, `refresh` after an update. See [`docs/BEAST_APPS.md`](../docs/BEAST_APPS.md). `prompt_index: false` for now — adding it to the menu rewrites the era-hashed `system-prompt-tools.md`; reachable by `skill("app-control")` |
 
 ### Imported (9 skills, off the always-on menu)
 
