@@ -290,6 +290,38 @@ class TestListFiles(unittest.TestCase):
         result = list_files(self.tmpdir, pattern="*.xyz")
         self.assertIn("No files", result)
 
+    def test_walk_stops_at_the_scan_budget(self):
+        # Review: list_files globbed and sorted the WHOLE tree in-process
+        # (directory='~' or '/' walked the filesystem) before cutting to 200.
+        import glob as _glob
+        import tools
+        for i in range(300):
+            open(os.path.join(self.tmpdir, f"f{i:03}.txt"), "w").close()
+        pulled = [0]
+        real_iglob = _glob.iglob
+
+        def counting_iglob(*a, **k):
+            for m in real_iglob(*a, **k):
+                pulled[0] += 1
+                yield m
+        saved = (tools._LIST_SCAN_MAX, tools.glob.iglob)
+        tools._LIST_SCAN_MAX = 50
+        tools.glob.iglob = counting_iglob
+        try:
+            result = list_files(self.tmpdir)
+        finally:
+            tools._LIST_SCAN_MAX, tools.glob.iglob = saved
+        self.assertLessEqual(pulled[0], 51)
+        self.assertIn("stopped", result)
+
+    def test_more_marker_kept_under_the_budget(self):
+        for i in range(250):
+            open(os.path.join(self.tmpdir, f"g{i:03}.txt"), "w").close()
+        result = list_files(self.tmpdir, pattern="*.txt")
+        self.assertEqual(len(result.splitlines()), 201)
+        self.assertTrue(result.endswith("... and 50 more"))
+        self.assertIn("g000.txt", result.splitlines()[0])  # still sorted
+
 
 class TestGrep(unittest.TestCase):
     def setUp(self):

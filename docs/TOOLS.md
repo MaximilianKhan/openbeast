@@ -43,7 +43,7 @@ agent-management and skills layers on top.
 | `read_file` | Numbered lines; refuses non-regular files (`/dev/zero`, FIFOs) and >64 MB slurps |
 | `write_file` | Creates parent dirs; **refuses credential/persistence paths** (`~/.ssh`, `~/.gnupg`, `~/.aws`, shell rc files, `/etc`, `.git/config`) — realpath-resolved so symlinks can't dodge |
 | `edit_file` | Exact-string replacement with uniqueness checks; same write guard |
-| `list_files` | Recursive glob, capped at 200 entries |
+| `list_files` | Recursive glob, capped at 200 entries; the walk itself stops after 20 000 matches or 5 s with a "stopped early" note (a huge tree no longer runs whole in-process) |
 | `grep` | Shells out to system `grep -rn -E` through the reaped runner |
 
 ### Shell + web (3) — `agents/tools.py`

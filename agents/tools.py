@@ -1510,16 +1510,42 @@ def write_file(path: str, content: str) -> str:
         return f"Error: {e}"
 
 
+#: list_files walk budget: most glob matches examined, and wall seconds. The
+#: whole-tree glob + sort ran in-process with no bound (directory='~' or '/'
+#: walked the filesystem, holding a tool-server thread and the GIL), all to
+#: print 200 lines. Under the budget the output is exactly as before.
+_LIST_SCAN_MAX = 20_000
+_LIST_SCAN_SECONDS = 5.0
+
+
 def list_files(directory: str = ".", pattern: str = "**/*") -> str:
     """List files matching a glob pattern."""
     try:
         directory = _resolve(directory)
-        matches = sorted(glob.glob(os.path.join(directory, pattern), recursive=True))
-        files = [m for m in matches if os.path.isfile(m)]
+        files = []
+        scanned = 0
+        stopped = False
+        t_end = time.monotonic() + _LIST_SCAN_SECONDS
+        for m in glob.iglob(os.path.join(directory, pattern), recursive=True):
+            scanned += 1
+            if os.path.isfile(m):
+                files.append(m)
+            if scanned >= _LIST_SCAN_MAX or time.monotonic() >= t_end:
+                stopped = True
+                break
+        files.sort()
         if not files:
+            if stopped:
+                return (f"No files among the first {scanned} matches of "
+                        f"'{pattern}' in {directory} (stopped early — narrow "
+                        f"the directory or pattern)")
             return f"No files matching '{pattern}' in {directory}"
         result = "\n".join(files[:200])
-        if len(files) > 200:
+        if stopped:
+            result += (f"\n... stopped after scanning {scanned} matches "
+                       f"({len(files)} files so far, not a sorted prefix of "
+                       f"the whole tree) — narrow the directory or pattern")
+        elif len(files) > 200:
             result += f"\n... and {len(files) - 200} more"
         return result
     except Exception as e:
