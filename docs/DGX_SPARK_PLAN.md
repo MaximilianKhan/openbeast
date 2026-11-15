@@ -498,7 +498,7 @@ commit and warns: pin that SHA. How to read it:
 | `Context` | `max_position_embeddings`, rope scaling, and a note when rope extension is declared |
 | `MoE` | experts / active per token: total params decide memory, active params decide speed |
 | `KV cache` | bytes per token from layer/head counts — hybrid (linear-attention / SSM) models count only full-attention layers; MLA counts the latent |
-| `Fit` | 1 vs 2 Sparks: weights/TP × (1 + 3 % slack) + 5 GB runtime per rank against `GPU_MEMORY_UTILIZATION` × 128 GB; what is left is KV room, shown in tokens. **fits / tight / does not fit**, with every assumption printed |
+| `Fit` | 1 to 8 Sparks (TP = N), the smallest N that fits reported: weights/N × (1 + 3 % × (N-1) slack) + 5 GB runtime per rank, and whether vLLM can split the heads N ways against `GPU_MEMORY_UTILIZATION` × 128 GB; what is left is KV room, shown in tokens. **fits / tight / does not fit**, with every assumption printed |
 | `Template` | does it render `tools`; which tool-call markers (`<tool_call>`, `<function=`, `<|python_tag|>`, `[TOOL_CALLS]`, …) and reasoning markers (`<think>`, …) appear |
 | `Suggest` | `--tool-call-parser` / `--reasoning-parser` names **from vLLM's registry at the vendored commit**, each with a confidence and its evidence. A template that never renders `tools` gets "no parser": OpenBeast's tools will not work with that model |
 | `vllm` / `tensorfold` | SUPPORTED / UNSUPPORTED / UNKNOWN at the vendored engine commits (`data/*.json`). "unknown to vLLM @a96ee59…" = needs a newer image, the Transformers backend, or trust_remote_code. TensorFold: family by `model_type`, a CUDA engine, a readable quant format, the ranks allowed for that format, tested vs untested checkpoint |
