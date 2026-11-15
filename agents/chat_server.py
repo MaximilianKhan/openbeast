@@ -1619,7 +1619,17 @@ class Notifier:
                  public_url: str = "", min_interval: float = 60.0,
                  burst: int = 10, poster=None, port: int | None = None):
         self.url = url
+        on = list(on)
         self.on = tuple(s for s in on if s in TERMINAL_STATES)
+        # A typo (CHAT_NOTIFY_ON=error) used to vanish silently, and with
+        # every word gone no alert ever fired while health said notify:true.
+        dropped = [s for s in on if s not in TERMINAL_STATES]
+        if dropped or not self.on:
+            print("[beast-chat] CHAT_NOTIFY_ON: "
+                  + (f"ignoring {', '.join(map(repr, dropped))} " if dropped else "")
+                  + f"(valid: {', '.join(sorted(TERMINAL_STATES))})"
+                  + ("" if self.on else " — NO session state will notify"),
+                  file=sys.stderr)
         self.token_file = token_file
         self.state_path = state_path
         self._public_url = public_url.rstrip("/")

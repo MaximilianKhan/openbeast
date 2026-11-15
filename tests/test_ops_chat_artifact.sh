@@ -482,6 +482,26 @@ if has "$_O" "CHAT_NOTIFY_URL is set but BEAST_CHAT is off"; then
 else
   fail "notify without chat: $(row 'notif')"
 fi
+# extensions-ntfy review: beast-chat drops a word that is not a terminal
+# state, so CHAT_NOTIFY_ON=error sent nothing behind a doctor `pass`.
+doctor BEAST_CHAT=true "CHAT_NOTIFY_URL=http://127.0.0.1:3005/$TOPIC" "CHAT_NOTIFY_ON=error"
+if has "$_O" "CHAT_NOTIFY_ON: 'error' is not a session state; NO session state will notify"; then
+  pass "CHAT_NOTIFY_ON with no valid state WARNs that nothing will notify"
+else
+  fail "CHAT_NOTIFY_ON=error: $(row 'NOTIFY_ON|notif')"
+fi
+doctor BEAST_CHAT=true "CHAT_NOTIFY_URL=http://127.0.0.1:3005/$TOPIC" "CHAT_NOTIFY_ON=Failed, fail,done"
+if has "$_O" "CHAT_NOTIFY_ON: 'fail' is not a session state; it is ignored" && ! has "$_O" "'failed'"; then
+  pass "…a partial typo WARNs about the one word (case and spaces are fine, as beast-chat reads them)"
+else
+  fail "CHAT_NOTIFY_ON partial: $(row 'NOTIFY_ON|notif')"
+fi
+doctor BEAST_CHAT=true "CHAT_NOTIFY_URL=http://127.0.0.1:3005/$TOPIC" "CHAT_NOTIFY_ON=failed,stopped"
+if ! has "$_O" "CHAT_NOTIFY_ON:"; then
+  pass "…and a valid CHAT_NOTIFY_ON stays quiet (control)"
+else
+  fail "valid CHAT_NOTIFY_ON warned: $(row 'NOTIFY_ON')"
+fi
 doctor BEAST_CHAT=true "CHAT_NOTIFY_URL=ntfy.example/$TOPIC"
 if has "$_O" "CHAT_NOTIFY_URL is not an http(s) URL"; then
   pass "a malformed notify URL FAILs"

@@ -611,6 +611,26 @@ def test_deep_link_follows_a_publish_after_start(rig, monkeypatch):
     assert n.link() == "https://beast.tail1234.ts.net:8445/#/"
 
 
+@pytest.mark.parametrize("raw,on,said", [
+    ("error", (), "ignoring 'error' (valid: done, failed, lost, stopped) — NO session state will notify"),
+    ("failed, fail", ("failed",), "ignoring 'fail' (valid: done, failed, lost, stopped)"),
+    (" , ", (), "(valid: done, failed, lost, stopped) — NO session state will notify"),
+    ("failed,done", ("failed", "done"), None)])
+def test_an_unknown_notify_on_word_is_said_out_loud(rig, monkeypatch, capsys, raw, on, said):
+    # extensions-ntfy review: a typo was dropped silently, and with every
+    # word gone no alert ever fired while health said notify:true.
+    monkeypatch.setenv("OPENBEAST_CHAT_NOTIFY_URL", "http://127.0.0.1:9/t")
+    monkeypatch.setenv("OPENBEAST_CHAT_PUBLIC_URL", "https://b.example:8445")
+    monkeypatch.setenv("OPENBEAST_CHAT_NOTIFY_ON", raw)
+    n = chat_server.Notifier.from_env(str(rig.run), 3003)
+    assert n.on == on
+    err = capsys.readouterr().err
+    if said:
+        assert f"[beast-chat] CHAT_NOTIFY_ON: {said}" in err, err
+    else:
+        assert "CHAT_NOTIFY_ON" not in err, err
+
+
 def test_notifier_is_off_without_a_url_or_with_a_bad_one(rig, monkeypatch):
     assert chat_server.Notifier.from_env(str(rig.run), 3003) is None
     monkeypatch.setenv("OPENBEAST_CHAT_NOTIFY_URL", "file:///etc/passwd")

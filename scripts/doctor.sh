@@ -698,6 +698,19 @@ if [[ -n "${CHAT_NOTIFY_URL:-}" || $_ntfy_on -eq 1 ]]; then
   else
     _n_origin="${BASH_REMATCH[1]}"
     pass "notifications configured → $_n_origin (on: ${CHAT_NOTIFY_ON:-failed,lost,done})"
+    # beast-chat drops a word that is not a terminal state, so a typo
+    # (CHAT_NOTIFY_ON=error) silenced every alert behind the pass above.
+    _n_bad=() _n_good=0
+    IFS=',' read -r -a _n_words <<< "${CHAT_NOTIFY_ON:-failed,lost,done}"
+    for _n_w in ${_n_words[@]+"${_n_words[@]}"}; do
+      _n_w="$(tr '[:upper:]' '[:lower:]' <<< "$_n_w" | tr -d '[:space:]')"
+      [[ -z "$_n_w" ]] && continue
+      case "$_n_w" in done|failed|stopped|lost) _n_good=1 ;; *) _n_bad+=("$_n_w") ;; esac
+    done
+    if [[ ${#_n_bad[@]} -gt 0 || $_n_good -eq 0 ]]; then
+      warn "CHAT_NOTIFY_ON: $( [[ ${#_n_bad[@]} -gt 0 ]] && printf "'%s' is not a session state; " "${_n_bad[@]}")$( [[ $_n_good -eq 0 ]] && echo "NO session state will notify" || echo "it is ignored")" \
+           "CHAT_NOTIFY_ON takes done, failed, stopped, lost (comma-separated), e.g. CHAT_NOTIFY_ON=failed,lost,done"
+    fi
     if [[ "${BEAST_CHAT:-false}" != "true" ]]; then
       warn "CHAT_NOTIFY_URL is set but BEAST_CHAT is off — beast-chat is what sends notifications" \
            "set BEAST_CHAT=true in openbeast.conf, then ./stop.sh && ./start.sh -d"
