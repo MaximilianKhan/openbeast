@@ -2,9 +2,16 @@
 
 OpenBeast runs local LLMs via llama.cpp on NVIDIA GPUs, with OpenCode (terminal
 agent), Open WebUI (browser chat), an autonomous agent runner, and an MCP tool
-server providing 18 tools for file I/O, shell, web search, agent management,
-and a skills system (25 skills loaded on demand: 16 in-house plus 9 imported;
+server providing 19 tools for file I/O, shell, web search, agent management,
+and a skills system (26 skills loaded on demand: 17 in-house plus 9 imported;
 14 are on the always-on menu).
+
+> **Installing on DGX Sparks?** This page is the rig (x86_64 + one NVIDIA GPU,
+> llama.cpp). For one to eight DGX Sparks — root setup, the firewall guard,
+> weights, the TensorFold pair, the command center on spark-1, the Mac client,
+> and a fully offline build — follow the linear runbook
+> [SPARK_HYDRA.md](SPARK_HYDRA.md). For the pair's own model maintaining
+> OpenBeast, see [SELF_DEVELOPMENT.md](SELF_DEVELOPMENT.md).
 
 The inference engine, model weights, and Docker volumes are not checked in —
 follow the steps below to set them up. Everything else (configs, scripts,

@@ -3,7 +3,7 @@
 You're working in **OpenBeast**, a fully local AI workstation — llama.cpp
 serving Qwen and Gemma models, MCP-based tool server, OpenCode + Open WebUI as frontends,
 a 137-task eval suite (v4 — 291 effective units with multi-language variants,
-across 12 categories), and 16 curated skills for specialized work.
+across 12 categories), and 17 curated skills for specialized work.
 
 This file is auto-loaded as project-wide instructions. Read it once at the
 start of a session.
@@ -54,7 +54,7 @@ arithmetic is wrong, and `/api/slot`'s `capacity.ctx_*` exists because of it.
 
 ## Use skills first
 
-You have access to **16 curated skills** via two MCP tools:
+You have access to **17 curated skills** via two MCP tools:
 
 - `skill()` — see all available skills (one line each; rescans disk every call)
 - `skill(name)` — read the full skill body inline
@@ -89,6 +89,7 @@ lists them; `skills/README.md` ("Imported") says what each is for.
 | Writing Swift / SwiftUI / UIKit / Kotlin / Compose / Gradle against a platform API, or asked whether one exists / is deprecated | `platform-docs` |
 | Touching `agents/lang/`, packs, claims or the escalation index — or about to write zig 0.16 / C++ / Python here and unsure an API still exists | `beast-lang` |
 | Task needs an external app (iOS/Xcode or Android/Gradle build, emulator, Blender, Figma, 3D printer, ROS) — check `scripts/apps.sh check <capability> --json` before improvising | `app-control` |
+| You are the local model (GLM-5.3-Flash on spark-hydra) working on this repo, especially with the network off | read `docs/SELF_DEVELOPMENT.md` first, then `codebase-onboarding` |
 
 When multiple skills could apply, pick the one most-specific to the task.
 You can also chain — e.g., `codebase-onboarding` → `spec-extraction` →
@@ -123,7 +124,7 @@ Each is one arg away, e.g. `./start.sh serve-qwen-27b-q5.sh`. Board:
 | Eval suite (137 tasks across 12 categories) | `evals/` — see `evals/README.md` |
 | Skills (this system) | `skills/` — see `skills/README.md` |
 | Tests | `tests/run_tests.sh` (runs all) + `python3 -m pytest tests/ -q`. Full list is `ls tests/`; the load-bearing ones: `test_tools.py`, `test_scripts.sh`, `test_smoke.sh` (needs a live stack), `test_cache.py`, `test_proc_hygiene.py`, `test_edge.py` (beast-gate), `test_clients.sh` (enrollment CLI), `test_beast_slot.py` (`/api/slot` contract), `test_identity_server.py` (RBAC/sharding/audit), `test_fetch_guards.py` (SSRF) |
-| Documentation (technical) | **Live** (start here): `docs/ARCHITECTURE.md`, `docs/BEAST_SLOT.md`, `docs/BEAST_ISLAND.md`, `docs/BEAST_APPS.md` (external apps through MCP servers: `scripts/apps.sh`), `docs/SPARK_HYDRA.md` (the live two-DGX-Spark pair: operate, restart, rebuild), `docs/BEAST_DOCS.md` (beast-docs: the offline mirror of current Apple / Android / other platform docs), `docs/INSTALL.md`, `docs/REFERENCE.md`, `docs/TOOLS.md`, `docs/RESULTS.md`, `docs/MODELS.md`, `docs/UPDATING.md`, `docs/TODO.md` — `ls docs/` for the rest (plans, SANDBOXING, RBAC_PLAN, HARDWARE_PROFILES…). **Do not cite as current:** anything under `docs/archive/` (historical, v3-era), and `docs/MAC_CLIENT_PLAN.md`, superseded by `docs/BEAST_SLOT.md` |
+| Documentation (technical) | **Live** (start here): `docs/ARCHITECTURE.md`, `docs/BEAST_SLOT.md`, `docs/BEAST_ISLAND.md`, `docs/BEAST_APPS.md` (external apps through MCP servers: `scripts/apps.sh`), `docs/SPARK_HYDRA.md` (the DGX Spark launch runbook: bare boxes to a serving pair, day-2 operations, troubleshooting, fully offline), `docs/SELF_DEVELOPMENT.md` (the local model developing OpenBeast itself, network off: setup, a file-area → test map, the era rule, worked sessions), `docs/ENGINES.md` (llama.cpp / vLLM / TensorFold through `scripts/engine.sh`), `docs/BEAST_DOCS.md` (beast-docs: the offline mirror of current Apple / Android / other platform docs), `docs/INSTALL.md`, `docs/REFERENCE.md`, `docs/TOOLS.md`, `docs/RESULTS.md`, `docs/MODELS.md`, `docs/UPDATING.md`, `docs/TODO.md` — `ls docs/` for the rest (plans, SANDBOXING, RBAC_PLAN, HARDWARE_PROFILES…). **Do not cite as current:** anything under `docs/archive/` (historical, v3-era), and `docs/MAC_CLIENT_PLAN.md`, superseded by `docs/BEAST_SLOT.md` |
 | Documentation (overview / persona / tools) | `README.md`, `system-prompt.md`, `system-prompt-tools.md` |
 
 ### Eval suite

@@ -6,7 +6,7 @@ security audit, eval-task authoring, debugging methodology, deep counsel.
 The model discovers them via MCP and loads them on demand. See
 [`docs/SKILLS_PLAN.md`](../docs/SKILLS_PLAN.md) for the full design.
 
-## Currently shipped (16 skills)
+## Currently shipped (17 skills)
 
 ### Universal-applicability (Tier 1)
 
@@ -71,7 +71,7 @@ saying what we changed.
 - `writing-skills` and `skill-creator` give opposite advice on two points. The
   first says a description states only *when* to use a skill and favours
   absolute rules; the second wants *what and when* and explained reasons. Our
-  15 in-house descriptions follow the second style. Format is settled by the
+  17 in-house descriptions follow the second style. Format is settled by the
   schema below; the rest is for measuring.
 - `executing-plans` and `writing-plans` name skills we did not import
   (upstream's own TDD, debugging, review and branch-finishing skills). Those
