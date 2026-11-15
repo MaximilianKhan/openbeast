@@ -249,7 +249,9 @@ def latest_version(server: dict, env: dict) -> tuple[str | None, str | None]:
 def render_launch(cat: dict, sid: str, version: str, env: dict, ev: dict) -> tuple[list[str] | None, dict, str | None]:
     """(argv with absolute argv[0], MCP environment, error)."""
     s = cat["server"][sid]
-    environment = dict(s.get("env") or {})
+    # {state} in a fixed env value is the beast-apps state dir: a location a
+    # project cannot choose (a pinned path never comes from the opened dir).
+    environment = {k: v.replace("{state}", C.state_dir(env)) for k, v in (s.get("env") or {}).items()}
     environment.update(ev.get("export_env") or {})
     for var in s.get("env_passthrough", []):
         if env.get(var):

@@ -748,8 +748,13 @@ def test_3d_print_bridge_programs_come_from_the_shell_never_a_project_env(box):
     assert rc == 0, out
     e = out["entry"]["environment"]
     for v in ("BLENDER_MCP_COMMAND", "BLENDER_MCP_ARGS", "FUSION_MCP_COMMAND", "FULU_BAMBU_BRIDGE_COMMAND",
-              "SLICER_PATH"):
+              "SLICER_PATH", "TEMP_DIR", "CAD_OUTPUT_DIRS"):
         assert e[v] == "", v
+    # a .env MCP_TRANSPORT=http would serve every tool unauthenticated, past the gates
+    assert e["MCP_TRANSPORT"] == "stdio" and e["MCP_HTTP_HOST"] == "127.0.0.1"
+    # the ungated cad_check_fit runs <CAD_DATA_DIR>/runtime/bin/python: a fixed
+    # absolute path, never "" (which upstream resolves to the project cwd)
+    assert os.path.isabs(e["CAD_DATA_DIR"]) and "{state}" not in e["CAD_DATA_DIR"], e["CAD_DATA_DIR"]
     rc, out = box.json("enable", "3d-print", "--accept-risk", "--dry-run",
                        extra_env={**env, "BLENDER_MCP_COMMAND": "/usr/bin/uvx"})
     assert out["entry"]["environment"]["BLENDER_MCP_COMMAND"] == "/usr/bin/uvx"

@@ -258,7 +258,10 @@ cached package still answers and an uncached one fails fast. `upgrade` without
   `fusion_mcp_setup`, which installs an add-in and a login item; `cad_run`;
   the `*_setup` tools). The programs those bridges spawn come only from your
   shell: the entry pins them empty, so a project's `.env` (which upstream
-  loads) cannot choose them. ROS publish, service
+  loads) cannot choose them. The same `.env` cannot switch the server to its
+  unauthenticated HTTP transport (`MCP_TRANSPORT` is pinned to `stdio`) or
+  pick the CAD runtime's python, which the ungated `cad_check_fit` runs
+  (`CAD_DATA_DIR` is pinned under the beast-apps state dir). ROS publish, service
   and action calls move real robots and are gated with globs.
 - **Egress.** Telemetry is switched off where the server offers a switch:
   `MOBILEBUILDMCP_SENTRY_DISABLED`, `MOBILEMCP_DISABLE_TELEMETRY`, Blender's
