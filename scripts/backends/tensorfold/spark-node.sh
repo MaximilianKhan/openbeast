@@ -1,7 +1,7 @@
 #!/bin/bash
-# Launch ONE rank of a DGX Spark TensorFold server for a MODEL PROFILE (--tp 2,
-# one rank per Spark over NCCL, or --tp 1 on one Spark). Runs ON A SPARK, not
-# on the rig. docs/DGX_SPARK_PLAN.md
+# Launch ONE rank of a DGX Spark TensorFold server for a MODEL PROFILE (--tp N
+# for N = 2..8 Sparks, one rank per Spark over NCCL, or --tp 1 on one Spark).
+# Runs ON A SPARK, not on the rig. docs/DGX_SPARK_PLAN.md
 #
 # Two engines, picked by TENSORFOLD_ENGINE in spark.env:
 #   native     (default) the signed TensorFold >= 1.0 release binary on the
@@ -14,30 +14,36 @@
 #              that need it; everything below about TENSORFOLD_REF, the image
 #              and the unauthenticated rendezvous is about this engine.
 #
-#   scripts/backends/tensorfold/spark-node.sh --profile NAME --rank 1 --master IP   # FIRST, on Spark 2
+#   scripts/backends/tensorfold/spark-node.sh --profile NAME --rank R --master IP   # FIRST, R = 1..N-1, one per Spark
 #   scripts/backends/tensorfold/spark-node.sh --profile NAME --rank 0 --master IP   # then on Spark 1
 #
 # Options:
 #   --profile NAME|PATH  required (or SPARK_PROFILE): scripts/backends/models/NAME.env
-#   --rank 0|1      required. 0 serves HTTP on SPARK_SERVE_HOST:PORT.
+#   --rank R        required, 0..N-1 for the profile's TENSOR_PARALLEL_SIZE=N
+#                   (1..8). 0 serves HTTP on SPARK_SERVE_HOST:PORT; the rest
+#                   are headless.
 #   --master IP     rank 0's address on the ConnectX link (SPARK_HEAD_IP);
-#                   required for TP 2
+#                   required for TP > 1
 #   --env FILE      HOST settings (default: scripts/backends/spark.env)
 #   --print         print the exact command and exit; runs nothing
 #   --stop          stop this rank (systemctl --user stop / docker stop)
 #
-# The checkpoint MUST be fetched first (model-fetch.sh --profile NAME, on both
-# Sparks for TP 2): TensorFold's own download takes the latest commit of a
+# The checkpoint MUST be fetched first (model-fetch.sh --profile NAME, on every
+# Spark that runs a rank): TensorFold's own download takes the latest commit of a
 # repo id with no way to pin a revision (hub.py pull → snapshot_download),
 # so this launcher only ever hands it a verified, read-only local directory.
 # A drafter is the profile's DRAFTER_SOURCE@DRAFTER_REVISION, fetched the same
 # way; without one it passes --drafter none (never "auto": that picks up
 # whatever unpinned draft model happens to sit in the HF cache).
 #
-# Order matters: start rank 1 FIRST, then rank 0 (TensorFold RUNBOOK.md,
-# "two ranks"). Both ranks need the same checkpoint, drafter, --context and
+# Order matters: start ranks 1..N-1 FIRST, then rank 0 (TensorFold RUNBOOK.md,
+# "two ranks"). Every rank needs the same checkpoint, drafter, --context and
 # --parallel — one profile gives them that. After a mid-stream generation
-# error on two ranks, restart BOTH.
+# error on several ranks, restart ALL of them.
+#
+# SPARK_IFACE / SPARK_IB_HCA may be comma-separated lists (several rails, or a
+# NIC per peer); they reach NCCL unchanged. From 3 ranks on, NCCL_CROSS_NIC=1
+# (a ring of Sparks crosses NICs; a switch fabric does not mind).
 #
 # SECURITY. TensorFold has NO API key and its rendezvous port (29551) is
 # unauthenticated. rank 0's HTTP binds SPARK_SERVE_HOST (a specific address;
@@ -63,14 +69,14 @@ while [[ $# -gt 0 ]]; do
     --print)   PRINT=1; shift ;;
     --stop)    STOP=1; shift ;;
     --ckpt)    echo "Error: --ckpt is gone — the checkpoint comes from a profile: --profile NAME (scripts/backends/models/)" >&2; exit 2 ;;
-    -h|--help) sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)         echo "Unknown argument: $1 (see --help)" >&2; exit 2 ;;
   esac
 done
-case "$RANK" in
-  0|1) ;;
-  *) echo "Error: --rank 0|1 is required (start rank 1 first)" >&2; exit 2 ;;
-esac
+if ! sp_rank_syntax "$RANK"; then
+  echo "Error: --rank R is required: 0..N-1 for a TENSOR_PARALLEL_SIZE=N profile (start ranks 1..N-1 first)" >&2
+  exit 2
+fi
 NAME="openbeast-tensorfold-rank$RANK"
 
 ENV_FILE="${ENV_FILE:-${SPARK_ENV:-$HERE/../spark.env}}"
@@ -101,6 +107,10 @@ if ! sp_profile_load "$PROFILE" tensorfold; then
   exit 1
 fi
 TP="$PF_TENSOR_PARALLEL_SIZE"
+if ! sp_check_rank "$RANK" "$TP"; then
+  echo "Refusing to start: profile '$PROFILE' is invalid (above)." >&2
+  exit 1
+fi
 [[ -n "$MASTER" ]] || MASTER="${SPARK_HEAD_IP:-}"
 # 29551: the Python engine's TCPStore. 29583: native GLM's NCCL_COMM_ID port
 # (its recipe's); each rank also keeps a TCP line to rank 0 on port + 1.
@@ -111,12 +121,10 @@ else
 fi
 SPARK_SERVE_PORT="${SPARK_SERVE_PORT:-8000}"
 
-if [[ "$TP" == 2 ]]; then
+if (( TP > 1 )); then
   [[ -n "$MASTER" ]] || sp_err "--master is required: rank 0's address on the ConnectX link"
   sp_need SPARK_IFACE "the ConnectX-7 interface ibdev2netdev shows Up"
   sp_need SPARK_IB_HCA "the ConnectX-7 HCA ibdev2netdev shows Up"
-elif [[ "$RANK" == 1 ]]; then
-  sp_err "profile '$PF_PROFILE_NAME' is TENSOR_PARALLEL_SIZE=1: it runs on ONE Spark — start --rank 0 only"
 fi
 if [[ "$ENGINE" == native ]]; then
   TENSORFOLD_BIN="${TENSORFOLD_BIN:-$HOME/.local/bin/tensorfold}"
@@ -126,7 +134,7 @@ if [[ "$ENGINE" == native ]]; then
   elif [[ -n "${TENSORFOLD_VERSION:-}" ]]; then
     _have="$("$TENSORFOLD_BIN" --version 2>/dev/null | awk '{print $NF}')"
     [[ "$_have" == "$TENSORFOLD_VERSION" ]] \
-      || sp_err "$TENSORFOLD_BIN is TensorFold '${_have:-?}', spark.env pins $TENSORFOLD_VERSION — both ranks must run the same build"
+      || sp_err "$TENSORFOLD_BIN is TensorFold '${_have:-?}', spark.env pins $TENSORFOLD_VERSION — every rank must run the same build"
   fi
   if [[ "$RANK" == 0 ]] && ! sp_is_true "${SPARK_NO_API_KEY:-}"; then
     sp_need TENSORFOLD_API_KEY_FILE "the 0600 file rank 0 serves with --api-key-file (the rig's LLAMA_API_KEY holds the same value)"
@@ -147,7 +155,7 @@ sp_profile_locate "$PROFILE" "${MODELS_DIR:-}"
 MOUNTS=() DRAFTER=none
 if [[ $SP_LOCATE_RC -ne 0 || -z "$SP_MODEL_DIR" ]]; then
   if [[ $SP_LOCATE_RC -eq 3 ]]; then
-    sp_err "profile '$PF_PROFILE_NAME' is not fetched — TensorFold cannot pin a revision itself, so it only serves a verified local copy: model-fetch.sh --profile $PF_PROFILE_NAME (on both Sparks for TP 2)"
+    sp_err "profile '$PF_PROFILE_NAME' is not fetched — TensorFold cannot pin a revision itself, so it only serves a verified local copy: model-fetch.sh --profile $PF_PROFILE_NAME (on every Spark that runs a rank)"
   else
     sp_err "profile '$PF_PROFILE_NAME': the model on disk does not match its lock (above) — model-fetch.sh --profile $PF_PROFILE_NAME --verify"
   fi
@@ -174,18 +182,19 @@ if [[ "$ENGINE" == native ]]; then
   [[ -n "$PF_MAX_MODEL_LEN" ]] && SERVE+=(--context "$PF_MAX_MODEL_LEN")
   SERVE+=(${PF_EXTRA[@]+"${PF_EXTRA[@]}"})
   RANKENV=()
-  if [[ "$TP" == 2 ]]; then
+  if (( TP > 1 )); then
     if [[ "$MODEL_TYPE" == glm5_next ]]; then
       RANKENV+=("TF_GLM_RANK=$RANK" "TF_GLM_WORLD=$TP" "NCCL_COMM_ID=$MASTER:$TENSORFOLD_MASTER_PORT")
     else
       SERVE+=(--tp "$TP" --rank "$RANK" --master "$MASTER" --master-port "$TENSORFOLD_MASTER_PORT")
     fi
-    # SPARK_IFACE / SPARK_IB_HCA may list both ConnectX rails, comma-separated.
+    # SPARK_IFACE / SPARK_IB_HCA may list several ConnectX rails, comma-separated.
     RANKENV+=("NCCL_SOCKET_IFNAME=$SPARK_IFACE" "NCCL_IB_HCA=$SPARK_IB_HCA" "NCCL_IB_DISABLE=0")
+    (( TP >= 3 )) && RANKENV+=(NCCL_CROSS_NIC=1)
   fi
   # Rank 0 alone serves HTTP. VERIFY ON HARDWARE: native GLM compares the
   # ranks' settings before loading; if it names --host/--port/--name as a
-  # difference, give rank 1 the same ones.
+  # difference, give ranks 1..N-1 the same ones.
   if [[ "$RANK" == 0 ]]; then
     SERVE+=(--name "$PF_SERVED_MODEL_NAME" --host "$SPARK_SERVE_HOST" --port "$SPARK_SERVE_PORT")
     sp_is_true "${SPARK_NO_API_KEY:-}" || SERVE+=(--api-key-file "$TENSORFOLD_API_KEY_FILE")
@@ -208,15 +217,19 @@ if [[ "$ENGINE" == native ]]; then
     echo "Error: $NAME is already running — $0 --rank $RANK --stop first" >&2
     exit 1
   fi
-  [[ "$RANK" == 0 && "$TP" == 2 ]] && echo "Rank 0: start rank 1 on the other Spark too; both wait for each other on $MASTER:$TENSORFOLD_MASTER_PORT."
-  [[ "$RANK" == 1 ]] && echo "Rank 1: rendezvous with rank 0 at $MASTER:$TENSORFOLD_MASTER_PORT."
+  if [[ "$RANK" == 0 && "$TP" == 2 ]]; then
+    echo "Rank 0: start rank 1 on the other Spark too; both wait for each other on $MASTER:$TENSORFOLD_MASTER_PORT."
+  elif [[ "$RANK" == 0 ]] && (( TP > 2 )); then
+    echo "Rank 0: start ranks 1..$((TP - 1)) on the other Sparks too; all $TP wait for each other on $MASTER:$TENSORFOLD_MASTER_PORT."
+  fi
+  [[ "$RANK" != 0 ]] && echo "Rank $RANK: rendezvous with rank 0 at $MASTER:$TENSORFOLD_MASTER_PORT."
   "${CMD[@]}"
   echo "Started $NAME. Logs: journalctl --user -fu $NAME   Stop: $0 --rank $RANK --stop"
   exit 0
 fi
 
 SERVE=(serve "/models/$PF_PROFILE_NAME" --tp "$TP" --rank "$RANK" --no-update-check --drafter "$DRAFTER")
-[[ "$TP" == 2 ]] && SERVE+=(--master "$MASTER" --master-port "$TENSORFOLD_MASTER_PORT")
+(( TP > 1 )) && SERVE+=(--master "$MASTER" --master-port "$TENSORFOLD_MASTER_PORT")
 [[ -n "$PF_TENSORFOLD_PARALLEL" ]] && SERVE+=(--parallel "$PF_TENSORFOLD_PARALLEL")
 [[ -n "$PF_MAX_MODEL_LEN" ]] && SERVE+=(--context "$PF_MAX_MODEL_LEN")
 SERVE+=(${PF_EXTRA[@]+"${PF_EXTRA[@]}"})
@@ -229,11 +242,12 @@ fi
 INNER='python -m pip install --quiet "$1" && shift && exec tensorfold "$@"'
 CMD=(docker run -d --rm --name "$NAME"
   --gpus all --ipc=host --network host --ulimit memlock=-1 --cap-add IPC_LOCK)
-if [[ "$TP" == 2 ]]; then
+if (( TP > 1 )); then
   IF="$SPARK_IFACE"
   CMD+=(--device /dev/infiniband
     -e "NCCL_SOCKET_IFNAME=$IF" -e "GLOO_SOCKET_IFNAME=$IF" -e "TP_SOCKET_IFNAME=$IF"
     -e "UCX_NET_DEVICES=$IF" -e "NCCL_IB_HCA=$SPARK_IB_HCA")
+  (( TP >= 3 )) && CMD+=(-e NCCL_CROSS_NIC=1)
 fi
 [[ -n "${NCCL_DEBUG:-}" ]] && CMD+=(-e NCCL_DEBUG)
 CMD+=("${MOUNTS[@]}"
@@ -246,20 +260,28 @@ CMD+=("${MOUNTS[@]}"
 
 if [[ $PRINT -eq 1 ]]; then
   echo "# profile $PF_PROFILE_NAME: $PF_SOURCE${PF_REVISION:+@$PF_REVISION} (TP $TP) from $SP_MODEL_DIR"
-  [[ "$RANK" == 0 && "$TP" == 2 ]] && echo "# start rank 1 FIRST; rank 0 serves http://${SPARK_SERVE_HOST}:${SPARK_SERVE_PORT} (NO API key — gate or firewall it)"
+  [[ "$RANK" == 0 ]] && (( TP > 1 )) && echo "# start $(sp_workers "$TP") FIRST; rank 0 serves http://${SPARK_SERVE_HOST}:${SPARK_SERVE_PORT} (NO API key — gate or firewall it)"
   [[ "$RANK" == 0 && "$TP" == 1 ]] && echo "# serves http://${SPARK_SERVE_HOST}:${SPARK_SERVE_PORT} (NO API key — gate or firewall it)"
   sp_print_cmd "${CMD[@]}"
   exit 0
 fi
 
 if [[ "$RANK" == 0 ]]; then
-  [[ "$TP" == 2 ]] && echo "Rank 0: make sure rank 1 is already running. Serving http://$SPARK_SERVE_HOST:$SPARK_SERVE_PORT when both are up."
+  if [[ "$TP" == 2 ]]; then
+    echo "Rank 0: make sure rank 1 is already running. Serving http://$SPARK_SERVE_HOST:$SPARK_SERVE_PORT when both are up."
+  elif (( TP > 2 )); then
+    echo "Rank 0: make sure ranks 1..$((TP - 1)) are already running. Serving http://$SPARK_SERVE_HOST:$SPARK_SERVE_PORT when all $TP are up."
+  fi
   [[ "$TP" == 1 ]] && echo "Serving http://$SPARK_SERVE_HOST:$SPARK_SERVE_PORT (one Spark, TP 1)."
   echo "  TensorFold has NO API key — keep this port behind beast-gate or a firewall."
 else
-  echo "Rank 1: waiting for rank 0 at $MASTER:$TENSORFOLD_MASTER_PORT (start rank 0 next)."
+  echo "Rank $RANK: waiting for rank 0 at $MASTER:$TENSORFOLD_MASTER_PORT (start rank 0 next)."
 fi
-[[ "$TP" == 2 ]] && echo "  Rendezvous $TENSORFOLD_MASTER_PORT is unauthenticated: firewall it to the peer's link address."
+if [[ "$TP" == 2 ]]; then
+  echo "  Rendezvous $TENSORFOLD_MASTER_PORT is unauthenticated: firewall it to the peer's link address."
+elif (( TP > 2 )); then
+  echo "  Rendezvous $TENSORFOLD_MASTER_PORT is unauthenticated: firewall it to the peers' link addresses."
+fi
 mkdir -p "$HOME/.cache/tensorfold"
 "${CMD[@]}"
 echo "Started $NAME. Logs: docker logs -f $NAME   Stop: $0 --rank $RANK --stop"

@@ -873,6 +873,101 @@ _sp "$_TN" TENSORFOLD_API_KEY_FILE="$_K/no-such-key" -- --profile "$_P/tftest.en
   || fail "native rank 0 keyless (rc=$SPRC): $_O"
 python3 -c 'import json,sys; json.dump({"model_type": "brand_new"}, open(sys.argv[1], "w"))' "$_K/models/tftest/config.json"
 
+# Clusters of 1..8 Sparks: TENSOR_PARALLEL_SIZE N = N ranks, 0..N-1.
+sed -e 's/^TENSOR_PARALLEL_SIZE=2/TENSOR_PARALLEL_SIZE=4/' "$_P/tftest.env" > "$_P/tf4.env"
+sed -e 's/^TENSOR_PARALLEL_SIZE=2/TENSOR_PARALLEL_SIZE=3/' "$_P/tftest.env" > "$_P/tf3.env"
+sed -e 's/^TENSOR_PARALLEL_SIZE=2/TENSOR_PARALLEL_SIZE=8/' "$_P/vtest.env" > "$_P/vt8.env"
+sed -e 's/^TENSOR_PARALLEL_SIZE=2/TENSOR_PARALLEL_SIZE=9/' "$_P/vtest.env" > "$_P/vt9.env"
+_mkfetched "$_P/tf4.env" "model:tf4:acme/Brand-New-Model-MLX-4bit:$_REV"
+_mkfetched "$_P/tf3.env" "model:tf3:acme/Brand-New-Model-MLX-4bit:$_REV"
+_mkfetched "$_P/vt8.env" "model:vt8:acme/Brand-New-Model-FP8:$_REV"
+_sp "$_TN" -- --profile "$_P/tf4.env" --rank 3 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+if [[ $SPRC -eq 0 ]] && _has "$_O" "--tp 4 --rank 3 --master 192.168.100.10 --master-port 29583" \
+   && _has "$_O" "--unit openbeast-tensorfold-rank3" && _has "$_O" "--setenv=NCCL_CROSS_NIC=1" \
+   && ! _has "$_O" "--host " && ! _has "$_O" "--api-key-file"; then
+  pass "native TP 4 rank 3 (brand_new): --tp 4 --rank 3, headless, no key, NCCL_CROSS_NIC=1"
+else
+  fail "native TP 4 rank 3 (rc=$SPRC): $_O"
+fi
+# Same size as "brand_new", so the lock's size check still matches.
+python3 -c 'import json,sys; json.dump({"model_type": "glm5_next"}, open(sys.argv[1], "w"))' "$_K/models/tf4/config.json"
+_sp "$_TN" -- --profile "$_P/tf4.env" --rank 3 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+if [[ $SPRC -eq 0 ]] && _has "$_O" "--setenv=TF_GLM_RANK=3" && _has "$_O" "--setenv=TF_GLM_WORLD=4" \
+   && _has "$_O" "--setenv=NCCL_COMM_ID=192.168.100.10:29583" && _has "$_O" "--setenv=NCCL_CROSS_NIC=1" \
+   && ! _has "$_O" "--tp 4" && ! _has "$_O" "--host "; then
+  pass "native GLM TP 4 rank 3: TF_GLM_RANK=3 TF_GLM_WORLD=4 + NCCL_COMM_ID, no HTTP"
+else
+  fail "native GLM TP 4 rank 3 (rc=$SPRC): $_O"
+fi
+_sp "$_TN" -- --profile "$_P/tf4.env" --rank 0 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+if [[ $SPRC -eq 0 ]] && _has "$_O" "--setenv=TF_GLM_RANK=0" && _has "$_O" "--setenv=TF_GLM_WORLD=4" \
+   && _has "$_O" "--host 100.64.1.2 --port 8000" && _has "$_O" "--api-key-file $_K/key"; then
+  pass "…and its rank 0 alone serves HTTP, keyed"
+else
+  fail "native GLM TP 4 rank 0 (rc=$SPRC): $_O"
+fi
+_sp "$_TN" -- --profile "$_P/tf4.env" --rank 4 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "ranks are 0..3" && _has "$_O" "no --rank 4" \
+  && pass "native refuses --rank 4 for a TP 4 profile (rank >= N)" || fail "rank >= N accepted (rc=$SPRC): $_O"
+_sp "$_TN" -- --profile "$_P/tf3.env" --rank 2 --master 192.168.100.10 --env "$_K/spark.env" --print
+if [[ $SPRC -eq 0 ]] && _has "$_O" "serve /models/tf3 --tp 3 --rank 2 --no-update-check --drafter none --master 192.168.100.10 --master-port 29551" \
+   && _has "$_O" "--name openbeast-tensorfold-rank2" && _has "$_O" "-e NCCL_CROSS_NIC=1" \
+   && ! _has "$_O" "--host "; then
+  pass "container TP 3 rank 2: --tp 3 --rank 2 --master, headless, NCCL_CROSS_NIC=1"
+else
+  fail "container TP 3 rank 2 (rc=$SPRC): $_O"
+fi
+_sp "$_TN" -- --profile "$_P/tf3.env" --rank 0 --master 192.168.100.10 --env "$_K/spark.env" --print
+[[ $SPRC -eq 0 ]] && _has "$_O" "start ranks 1..2 FIRST" && _has "$_O" "--host 100.64.1.2 --port 8000" \
+  && pass "…its rank 0 serves HTTP and says to start ranks 1..2 FIRST" || fail "container TP 3 rank 0 (rc=$SPRC): $_O"
+_sp "$_VN" -- --profile "$_P/vt8.env" --rank 7 --env "$_K/spark.env" --print
+if [[ $SPRC -eq 0 ]] && _has "$_O" "--tensor-parallel-size 8" \
+   && _has "$_O" "--nnodes 8 --node-rank 7 --master-addr 192.168.100.10 --master-port 29501" \
+   && _has "$_O" "--headless" && _has "$_O" "-e NCCL_CROSS_NIC=1" && _has "$_O" "--name openbeast-vllm-rank7" \
+   && ! _has "$_O" "--host " && ! _has "$_O" "VLLM_API_KEY"; then
+  pass "vllm TP 8 rank 7: --nnodes 8 --node-rank 7 --headless, no HTTP, no key, NCCL_CROSS_NIC=1"
+else
+  fail "vllm TP 8 rank 7 (rc=$SPRC): $_O"
+fi
+_sp "$_VN" -- --profile "$_P/vt8.env" --rank 0 --env "$_K/spark.env" --print
+if [[ $SPRC -eq 0 ]] && _has "$_O" "--nnodes 8 --node-rank 0" && ! _has "$_O" "--headless" \
+   && _has "$_O" "--host 100.64.1.2 --port 8000" && _has "$_O" "-e VLLM_API_KEY "; then
+  pass "vllm TP 8 rank 0: not headless, serves HTTP, keyed"
+else
+  fail "vllm TP 8 rank 0 (rc=$SPRC): $_O"
+fi
+_sp "$_VN" -- --profile "$_P/vt8.env" --rank 8 --env "$_K/spark.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "ranks are 0..7" && pass "vllm refuses --rank 8 for a TP 8 profile" \
+  || fail "vllm rank 8 of 8 (rc=$SPRC): $_O"
+_sp "$_VN" -- --profile "$_P/vt9.env" --rank 0 --env "$_K/spark.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "1..8 (one rank per Spark)" && pass "a TENSOR_PARALLEL_SIZE=9 profile is refused (1..8)" \
+  || fail "TP 9 (rc=$SPRC): $_O"
+for _r in -1 1.5 x 01 ""; do
+  _sp "$_VN" -- --profile "$_P/vt8.env" --rank "$_r" --env "$_K/spark.env" --print
+  [[ $SPRC -eq 2 ]] && _has "$_O" "--rank R is required" && pass "vllm refuses --rank '$_r' (not a rank number)" \
+    || fail "vllm took --rank '$_r' (rc=$SPRC): $_O"
+done
+_sp "$_TN" -- --profile "$_P/tf3.env" --rank two --master 1.2.3.4 --env "$_K/spark.env" --print
+[[ $SPRC -eq 2 ]] && _has "$_O" "start ranks 1..N-1 first" && pass "tensorfold refuses --rank two" \
+  || fail "tensorfold took --rank two (rc=$SPRC): $_O"
+_IFL="enp1s0f0np0,enp1s0f1np1" _HCL="rocep1s0f0,roceP2p1s0f1"
+# --print shell-quotes (printf %q), which escapes each comma.
+_QIFL="${_IFL//,/\\,}" _QHCL="${_HCL//,/\\,}"
+_sp "$_VN" SPARK_IFACE="$_IFL" SPARK_IB_HCA="$_HCL" -- --profile "$_P/vtest.env" --rank 1 --env "$_K/spark.env" --print
+if [[ $SPRC -eq 0 ]] && _has "$_O" "-e NCCL_SOCKET_IFNAME=$_QIFL" && _has "$_O" "-e NCCL_IB_HCA=$_QHCL" \
+   && ! _has "$_O" "NCCL_CROSS_NIC"; then
+  pass "vllm TP 2: comma-separated SPARK_IFACE / SPARK_IB_HCA pass through unchanged; no NCCL_CROSS_NIC at N=2"
+else
+  fail "vllm iface list / N=2 cross-nic (rc=$SPRC): $_O"
+fi
+_sp "$_TN" SPARK_IFACE="$_IFL" SPARK_IB_HCA="$_HCL" -- --profile "$_P/tf4.env" --rank 1 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+[[ $SPRC -eq 0 ]] && _has "$_O" "--setenv=NCCL_SOCKET_IFNAME=$_QIFL" && _has "$_O" "--setenv=NCCL_IB_HCA=$_QHCL" \
+  && pass "native: comma-separated iface/HCA lists pass through unchanged" || fail "native iface list (rc=$SPRC): $_O"
+_sp "$_TN" -- --profile "$_P/tftest.env" --rank 1 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+[[ $SPRC -eq 0 ]] && ! _has "$_O" "NCCL_CROSS_NIC" && pass "native TP 2: no NCCL_CROSS_NIC" || fail "native N=2 cross-nic (rc=$SPRC): $_O"
+_sp "$_TN" -- --profile "$_P/tftest.env" --rank 1 --master 192.168.100.10 --env "$_K/spark.env" --print
+[[ $SPRC -eq 0 ]] && ! _has "$_O" "NCCL_CROSS_NIC" && pass "container TP 2: no NCCL_CROSS_NIC" || fail "container N=2 cross-nic (rc=$SPRC): $_O"
+
 # Injection: a profile value is data — it reaches argv as ONE element, never a shell.
 cat > "$_P/vinject.env" <<EOF
 BACKEND=vllm
