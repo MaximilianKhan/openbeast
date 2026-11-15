@@ -37,9 +37,17 @@ cat > "$T/bin/df" <<'S'
 echo "Filesystem 1024-blocks Used Available Capacity Mounted on"
 echo "/dev/nvme0n1p2 3800000000 1000000000 2800000000 27% /"
 S
+# GPU per node: SC_GPU_<node>, set (even empty) overrides "NVIDIA GB10".
 cat > "$T/bin/nvidia-smi" <<'S'
 #!/bin/bash
-echo "NVIDIA GB10"
+k="SC_GPU_$(printf '%s' "${NODE:-local}" | tr -c 'A-Za-z0-9' '_')"
+if [[ -n "${!k+x}" ]]; then [[ -n "${!k}" ]] && echo "${!k}"; else echo "NVIDIA GB10"; fi
+S
+# git: rev-parse on node $SC_GIT_SKEW answers another commit; else the real git.
+cat > "$T/bin/git" <<S
+#!/bin/bash
+if [[ -n "\${SC_GIT_SKEW:-}" && "\${NODE:-local}" == "\$SC_GIT_SKEW" && " \$* " == *" rev-parse "* ]]; then echo deadbee; exit 0; fi
+exec $(command -v git) "\$@"
 S
 cat > "$T/bin/dpkg-query" <<'S'
 #!/bin/bash
@@ -98,17 +106,49 @@ _cluster "local n1 n2 n3 n4 n5 n6 n7"; _run status --cluster "$T/cluster.env"
 
 # check: the fabric pairing. A switch (one subnet) and a direct cable pass; a
 # mirrored ring (one pair with no common subnet) fails and names the pair.
+# Every node reads SPARK_HEAD_IP from its checkout's spark.env (one shared
+# file here: the nodes share this filesystem).
+_headip() { mkdir -p "$T/repo/scripts/backends"; printf 'SPARK_HEAD_IP=%s   # rank 0\n' "$1" > "$T/repo/scripts/backends/spark.env"; }
+_bangs() { grep -c '^ *!' <<< "$1"; }
 export SC_FABRIC_local="cx0=10.9.0.1/24" SC_FABRIC_n1="cx0=10.9.0.2/24" SC_FABRIC_n2="cx0=10.9.0.3/24" SC_FABRIC_n3="cx0=10.9.0.4/24"
+_headip 10.9.0.1
 _cluster "local n1 n2 n3"; _run check --cluster "$T/cluster.env"
 [[ $RC -eq 0 ]] && _has "$OUT" "every pair of ranks shares a subnet" && _has "$OUT" "a RoCE-capable switch" \
+  && _has "$OUT" "every rank reaches SPARK_HEAD_IP 10.9.0.1" && _has "$OUT" "gpu=NVIDIA GB10" && _has "$OUT" "disk_free=" \
   && pass "check: 4 nodes on one switch subnet pass" || fail "check 4-node switch (rc=$RC): $OUT"
+# A cabled 3-Spark ring (a subnet per cable): every pair shares a subnet, but
+# no address of rank 0 is on a subnet with BOTH peers, and the launchers put
+# the whole rendezvous (SPARK_HEAD_IP / NCCL_COMM_ID / --master-addr, the
+# NCCL bootstrap interface) on one fabric address. It cannot start.
 export SC_FABRIC_local="a=10.1.0.1/24 b=10.3.0.1/24" SC_FABRIC_n1="a=10.1.0.2/24 b=10.2.0.1/24" SC_FABRIC_n2="a=10.2.0.2/24 b=10.3.0.2/24"
+_headip 10.1.0.1
 _cluster "local n1 n2"; _run check --cluster "$T/cluster.env"
-[[ $RC -eq 0 ]] && _has "$OUT" "every pair of ranks shares a subnet" && pass "check: a correctly cabled 3-node ring passes" || fail "check ring (rc=$RC): $OUT"
+if [[ $RC -ne 0 ]] && _has "$OUT" "every pair of ranks shares a subnet" && _has "$OUT" "rank 2 cannot reach SPARK_HEAD_IP 10.1.0.1" \
+   && _has "$OUT" "no fabric subnet of rank 0 reaches every rank" && [[ "$(_bangs "$OUT")" == 2 ]]; then
+  pass "check: a cabled 3-Spark ring is flagged — one rendezvous address cannot reach both peers"
+else
+  fail "check ring (rc=$RC): $OUT"
+fi
 export SC_FABRIC_n2="a=10.2.0.2/24 b=10.4.0.2/24"
 _run check --cluster "$T/cluster.env"
 [[ $RC -ne 0 ]] && _has "$OUT" "no common fabric subnet: 0-2" && pass "check: a mis-wired ring names the pair NCCL cannot connect" || fail "check mis-wired ring (rc=$RC): $OUT"
-_cluster "local"; unset SC_FABRIC_local; _run check --cluster "$T/cluster.env"
+# Two rails on a switch: two subnets, each spanning every node -> fine.
+export SC_FABRIC_local="a=10.1.0.1/24 b=10.2.0.1/24" SC_FABRIC_n1="a=10.1.0.2/24 b=10.2.0.2/24" SC_FABRIC_n2="a=10.1.0.3/24 b=10.2.0.3/24"
+_run check --cluster "$T/cluster.env"
+[[ $RC -eq 0 ]] && [[ "$(_bangs "$OUT")" == 0 ]] && pass "check: 3 nodes on a two-rail switch pass" || fail "check 3-node two-rail switch (rc=$RC): $OUT"
+_headip 10.1.0.77; _run check --cluster "$T/cluster.env"
+[[ $RC -ne 0 ]] && _has "$OUT" "SPARK_HEAD_IP 10.1.0.77 is not one of rank 0's fabric addresses" \
+  && pass "check: a SPARK_HEAD_IP that is not rank 0's fabric address fails" || fail "check wrong head ip (rc=$RC): $OUT"
+: > "$T/repo/scripts/backends/spark.env"; _run check --cluster "$T/cluster.env"
+[[ $RC -ne 0 ]] && _has "$OUT" "SPARK_HEAD_IP is not set" && pass "check: a multi-node cluster needs SPARK_HEAD_IP on every node" || fail "check no head ip (rc=$RC): $OUT"
+_headip 10.1.0.1
+# Checkouts at different commits: the worker would run another launcher.
+SC_GIT_SKEW=n2 _run check --cluster "$T/cluster.env"
+[[ $RC -ne 0 ]] && _has "$OUT" "checkout is at deadbee, rank 0's at" && pass "check: a worker whose checkout differs from the head's fails" || fail "check repo skew (rc=$RC): $OUT"
+# A node whose GPU is not a GB10 (or nvidia-smi is missing).
+SC_GPU_n1="" _run check --cluster "$T/cluster.env"
+[[ $RC -ne 0 ]] && _has "$OUT" "GPU '' is not a GB10" && pass "check: a node with no GB10 fails" || fail "check gpu (rc=$RC): $OUT"
+_cluster "local"; unset SC_FABRIC_local; : > "$T/repo/scripts/backends/spark.env"; _run check --cluster "$T/cluster.env"
 [[ $RC -eq 0 ]] && _has "$OUT" "one Spark — no fabric needed" && pass "check: one Spark needs no fabric" || fail "check one node (rc=$RC): $OUT"
 
 # start/stop: workers first on start (ranks N-1..1, then 0), rank 0 first on

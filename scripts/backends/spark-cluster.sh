@@ -2,7 +2,9 @@
 # Run a DGX Spark cluster of 1 to 8 nodes from its head (rank 0).
 # docs/SPARK_HYDRA.md ("Scaling: 1 to 8 Sparks")
 #
-#   scripts/backends/spark-cluster.sh check                      every node: reachable, GB10, NCCL, fabric, memory, disk
+#   scripts/backends/spark-cluster.sh check                      every node: reachable, aarch64 + GB10, docker, NCCL, same
+#                                                                checkout as rank 0, fabric pairing + SPARK_HEAD_IP reach;
+#                                                                free memory and disk are shown, not judged
 #   scripts/backends/spark-cluster.sh sync-weights --profile NAME   head -> workers over the fabric (model + drafter), verified vs the HEAD's lock
 #   scripts/backends/spark-cluster.sh sync-image IMAGE           docker save | load to every worker that lacks it
 #   scripts/backends/spark-cluster.sh save-image IMAGE FILE      write IMAGE to FILE (carry it to an offline cluster)
@@ -14,7 +16,9 @@
 # The nodes and their rank order come from cluster.env (CLUSTER_NODES, rank 0
 # first, `local` = this machine). A profile's TENSOR_PARALLEL_SIZE must equal
 # the node count: one rank per Spark. Each node launches its own rank with its
-# own spark.env through scripts/backends/<engine>/spark-node.sh.
+# own spark.env through scripts/backends/<engine>/spark-node.sh; start goes
+# N-1..0 and stops the ranks it started if a later one fails. Only N = 1 and
+# N = 2 have run on hardware; past 2 Sparks this is untested.
 #
 # OFFLINE: nothing here reaches the internet. Weights travel head -> worker
 # with rsync and are checked against the head's sha256 lock on arrival;
@@ -33,13 +37,13 @@ while [[ $# -gt 0 ]]; do
     --profile) PROFILE="${2:?}"; shift 2 ;;
     --engine)  ENGINE="${2:?}"; ENGINE_SET=1; shift 2 ;;
     --dry-run) DRY=1; shift ;;
-    -h|--help) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) ARGS+=("$1"); shift ;;
   esac
 done
 case "$CMD" in
   check|sync-weights|sync-image|save-image|start|stop|status) ;;
-  ""|-h|--help) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  ""|-h|--help) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
   *) echo "Unknown command: $CMD (see --help)" >&2; exit 2 ;;
 esac
 case "$ENGINE" in tensorfold|vllm) ;; *) echo "Error: --engine tensorfold|vllm" >&2; exit 2 ;; esac
@@ -88,52 +92,105 @@ check)
   case "$N" in
     1) echo "   topology: one Spark — no fabric needed" ;;
     2) echo "   topology: two Sparks — one direct QSFP cable (both rails used when addressed)" ;;
-    3) echo "   topology: three Sparks — a cabled ring (port 0 -> next Spark's port 1), a subnet per cable, or a switch" ;;
-    *) echo "   topology: $N Sparks — a RoCE-capable switch; every node on the fabric subnet(s)" ;;
+    3) echo "   topology: three Sparks — a switch, or one subnet every Spark is on (NOT a cabled ring with a subnet per cable: the launchers rendezvous on one fabric address). Untested on hardware." ;;
+    *) echo "   topology: $N Sparks — a RoCE-capable switch; every node on the fabric subnet(s). Untested on hardware." ;;
   esac
-  # One probe script for every node; it prints KEY=VALUE lines.
-  PROBE='echo host=$(hostname); echo arch=$(uname -m)
+  # One probe script for every node; it prints KEY=VALUE lines. SPARK_HEAD_IP
+  # and MODELS_DIR come from that node's own spark.env (parsed, never sourced).
+  IFS= read -r -d '' PROBE <<'P' || true
+kv() { awk -v k="$1" '$0 ~ "^[[:space:]]*" k "[[:space:]]*=" {v = substr($0, index($0, "=") + 1)} END {sub(/[[:space:]]+#.*/, "", v); gsub(/^[[:space:]]+|[[:space:]]+$/, "", v); gsub(/^["\047]|["\047]$/, "", v); print v}' @REPO@/scripts/backends/spark.env 2>/dev/null; }
+echo host=$(hostname); echo arch=$(uname -m)
 echo gpu=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
-echo mem_avail_gib=$(awk "/MemAvailable/ {printf \"%.1f\", \$2/1048576}" /proc/meminfo)
-echo nccl=$(dpkg-query -W -f="\${Version}" libnccl2 2>/dev/null)
+echo mem_avail_gib=$(awk '/MemAvailable/ {printf "%.1f", $2/1048576}' /proc/meminfo 2>/dev/null)
+m=$(kv MODELS_DIR); case "$m" in "~"*) m="$HOME${m#"~"}" ;; esac
+echo disk_free_gib=$(df -Pk "${m:-@REPO@}" 2>/dev/null | awk 'NR == 2 {printf "%.0f", $4/1048576}')
+echo nccl=$(dpkg-query -W -f='${Version}' libnccl2 2>/dev/null)
 echo docker=$(docker info >/dev/null 2>&1 && echo ok || echo no)
-echo tensorfold=$( (~/.local/bin/tensorfold --version 2>/dev/null || true) | awk "{print \$NF}")
-echo fabric=$(for i in $(ibdev2netdev 2>/dev/null | awk "/\\(Up\\)/ {print \$5}"); do ip -4 -o addr show dev $i | awk "{print \$4}"; done | paste -sd, -)
-echo repo=$(test -d '"$REPO_Q"'/.git && git -C '"$REPO_Q"' rev-parse --short HEAD 2>/dev/null || echo missing)'
+echo tensorfold=$( (~/.local/bin/tensorfold --version 2>/dev/null || true) | awk '{print $NF}')
+echo fabric=$(for i in $(ibdev2netdev 2>/dev/null | awk '/\(Up\)/ {print $5}'); do ip -4 -o addr show dev $i | awk '{print $4}'; done | paste -sd, -)
+echo head_ip=$(kv SPARK_HEAD_IP)
+echo repo=$(test -d @REPO@/.git && git -C @REPO@ rev-parse --short HEAD 2>/dev/null || echo missing)
+P
+  PROBE="${PROBE//@REPO@/$REPO_Q}"
   FAIL=0
-  declare -a FAB
+  declare -a FAB HIP
+  REPO0=""
   for ((r = 0; r < N; r++)); do
+    FAB[$r]="" HIP[$r]=""
     if ! out="$(on_node "$r" "$PROBE" 2>&1)"; then
-      echo "   rank $r ${NODES[$r]}: UNREACHABLE — $out"; FAIL=1; FAB[$r]=""; continue
+      echo "   rank $r ${NODES[$r]}: UNREACHABLE — $out"; FAIL=1; continue
     fi
     [[ $DRY -eq 1 ]] && { echo "$out"; continue; }
     get() { sed -n "s/^$1=//p" <<< "$out" | head -1; }
-    FAB[$r]="$(get fabric)"
-    line="   rank $r ${NODES[$r]}: $(get host) $(get arch) gpu=$(get gpu) mem_free=$(get mem_avail_gib)GiB nccl=$(get nccl) docker=$(get docker) tensorfold=$(get tensorfold) repo=$(get repo) fabric=${FAB[$r]:-none}"
+    FAB[$r]="$(get fabric)" HIP[$r]="$(get head_ip)"
+    line="   rank $r ${NODES[$r]}: $(get host) $(get arch) gpu=$(get gpu) mem_free=$(get mem_avail_gib)GiB disk_free=$(get disk_free_gib)GiB nccl=$(get nccl) docker=$(get docker) tensorfold=$(get tensorfold) repo=$(get repo) fabric=${FAB[$r]:-none}"
     echo "$line"
     [[ "$(get arch)" == aarch64 ]] || { echo "     ! not aarch64 — is this a DGX Spark?"; FAIL=1; }
+    [[ "$(get gpu)" == *GB10* ]] || { echo "     ! GPU '$(get gpu)' is not a GB10 (nvidia-smi) — is this a DGX Spark?"; FAIL=1; }
     [[ "$(get docker)" == ok ]] || { echo "     ! docker not reachable for this user"; FAIL=1; }
-    [[ "$(get repo)" != missing ]] || { echo "     ! no OpenBeast checkout at $CLUSTER_REPO"; FAIL=1; }
+    if [[ "$(get repo)" == missing ]]; then
+      echo "     ! no OpenBeast checkout at $CLUSTER_REPO"; FAIL=1
+    elif [[ $r -eq 0 ]]; then
+      REPO0="$(get repo)"
+    elif [[ -n "$REPO0" && "$(get repo)" != "$REPO0" ]]; then
+      # start runs each node's OWN spark-node.sh and lock: a skewed checkout
+      # runs another launcher against another lock.
+      echo "     ! checkout is at $(get repo), rank 0's at $REPO0 — check out the same commit on every node"; FAIL=1
+    fi
     if (( N > 1 )); then
       [[ -n "$(get nccl)" ]] || { echo "     ! libnccl2 missing (spark-root-setup.sh)"; FAIL=1; }
       [[ -n "${FAB[$r]}" ]] || { echo "     ! no addressed ConnectX-7 link"; FAIL=1; }
+      [[ -n "${HIP[$r]}" ]] || { echo "     ! SPARK_HEAD_IP is not set in this node's spark.env (start needs it: rank 0's fabric address)"; FAIL=1; }
     fi
   done
-  # Every pair of ranks must share a fabric subnet: NCCL and RoCE connect
-  # pairwise, and a pair with no common subnet cannot (a mirrored ring).
+  # The fabric, as the launchers use it. NCCL and RoCE connect pairwise, so
+  # every pair of ranks must share a subnet (a mirrored ring has one that
+  # does not). And the whole rendezvous — SPARK_HEAD_IP as NCCL_COMM_ID /
+  # --master / --master-addr, and the bootstrap sockets pinned to SPARK_IFACE
+  # — sits on ONE fabric address of rank 0: every rank must have a subnet
+  # holding it. A cabled 3-Spark ring (a subnet per cable) fails that: no
+  # address of rank 0 is on a subnet with both peers.
   if (( N > 1 && DRY == 0 )); then
-    pairs="$(python3 - "${FAB[@]}" <<'PY'
+    args=(); for ((r = 0; r < N; r++)); do args+=("${FAB[$r]}|${HIP[$r]}"); done
+    python3 - "${args[@]}" <<'PY' || FAIL=1
 import ipaddress, sys
-nets = [{ipaddress.ip_interface(a).network for a in s.split(",") if a} for s in sys.argv[1:]]
-bad = [f"{i}-{j}" for i in range(len(nets)) for j in range(i + 1, len(nets)) if not nets[i] & nets[j]]
-print(" ".join(bad))
+ranks = [a.split("|", 1) for a in sys.argv[1:]]
+ifs = [[ipaddress.ip_interface(x) for x in fab.split(",") if x] for fab, _ in ranks]
+nets = [{i.network for i in f} for f in ifs]
+bad = False
+pairs = [f"{i}-{j}" for i in range(len(nets)) for j in range(i + 1, len(nets)) if not nets[i] & nets[j]]
+if pairs:
+    print(f"   ! rank pairs with no common fabric subnet: {' '.join(pairs)} (rewire, or address them on one subnet)")
+    bad = True
+else:
+    print("   fabric: every pair of ranks shares a subnet")
+heads = {h for _, h in ranks if h}
+if len(heads) > 1:
+    print(f"   ! the nodes' spark.env disagree on SPARK_HEAD_IP ({', '.join(sorted(heads))}): every rank must rendezvous at the same address")
+    bad = True
+for h in sorted(heads):
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        print(f"   ! SPARK_HEAD_IP {h!r} is not an IP address"); bad = True; continue
+    if ip not in {i.ip for i in ifs[0]}:
+        print(f"   ! SPARK_HEAD_IP {h} is not one of rank 0's fabric addresses ({', '.join(str(i.ip) for i in ifs[0]) or 'none'})")
+        bad = True
+        continue
+    lost = [r for r in range(1, len(nets)) if not any(ip in n for n in nets[r])]
+    for r in lost:
+        print(f"   ! rank {r} cannot reach SPARK_HEAD_IP {h}: none of its fabric subnets holds it")
+    if lost:
+        bad = True
+    else:
+        print(f"   fabric: every rank reaches SPARK_HEAD_IP {h} on its own subnet")
+if len(nets) >= 3 and not any(all(n in nets[r] for r in range(1, len(nets))) for n in nets[0]):
+    print("   ! no fabric subnet of rank 0 reaches every rank (e.g. a cabled 3-Spark ring, a subnet per cable): "
+          "spark-node.sh rendezvous on one fabric address, so this cannot start — use a switch or one shared "
+          "subnet (the GLM recipe's start-tp3.sh handles a ring its own way)")
+    bad = True
+sys.exit(1 if bad else 0)
 PY
-)"
-    if [[ -n "$pairs" ]]; then
-      echo "   ! rank pairs with no common fabric subnet: $pairs (rewire, or address them on one subnet)"; FAIL=1
-    else
-      echo "   fabric: every pair of ranks shares a subnet"
-    fi
   fi
   [[ $FAIL -eq 0 ]] && echo "== OK" || { echo "== problems above"; exit 1; }
   ;;
