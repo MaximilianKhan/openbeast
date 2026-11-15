@@ -1,6 +1,6 @@
 {
   "task": "196_polyphase_resampler",
-  "note": "Prover arms. Paths are relative to this directory; each regex must match the validator's last output line. Case order is fixed by seed 0x196A11: 0-11 length cases (N = 0,1,2,3,146,...), 12-21 tones (12 = DC, 13 = 997 Hz, 14 = 19950 Hz, 15 = 20 kHz, then 6 seeded), 22-31 one-shot/stream pairs (23 = random chunks over 20000 samples), 32 = 2 s speed case.",
+  "note": "Prover arms. Paths are relative to this directory; each regex must match the validator's last output line. Case order is fixed by seed 0x196A11: 0-11 length cases (N = 0,1,2,3,146,...), 12-21 tones (12 = DC, 13 = 997 Hz, 14 = 19950 Hz, 15 = 20 kHz, then 6 seeded), 22-31 one-shot/stream pairs (23 = random chunks over 20000 samples), 32 = 2 s speed case (8 fresh tone segments of 11025 samples; every output >= 2 ms from a segment edge is checked).",
   "dest": "/tmp/eval_resamp196/resample.py",
   "timed": true,
   "units": {
@@ -12,7 +12,9 @@
                 ["wrong_gain.py", "^case 12 failed \\(gain\\)"],
                 ["wrong_floorlen.py", "^case 1 failed \\(length\\)"],
                 ["wrong_eager.py", "^case 23 failed \\(stream\\)"],
-                ["wrong_lazy.py", "^case 23 failed \\(lookahead\\)"]],
+                ["wrong_lazy.py", "^case 23 failed \\(lookahead\\)"],
+                ["wrong_perftail.py", "^case 32 failed \\(accuracy\\)"],
+                ["wrong_lintbypass.py", "^case 0 failed \\(crash"]],
       "empty": "^no submission at ",
       "leak": ["leak.py", "^case 2 failed \\(length\\)"],
       "slow": ["slow_naive.py", "^solution timed out"]

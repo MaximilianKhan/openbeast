@@ -7,7 +7,7 @@ SUB = "/tmp/eval_resamp196/resample.py"
 SOL_TIMEOUT_S = 10.0
 L, M = 160, 147
 WIN = 8192            # interior outputs analysed per tone case
-M0 = 300              # first analysed output (6.25 ms in)
+M0 = 300              # first FFT-window output of a tone case (6.25 ms in)
 EXCL_HZ = 100.0
 ALLOWED = {"math", "cmath", "array", "itertools", "functools", "operator",
            "bisect", "collections", "typing", "dataclasses", "fractions",
@@ -84,7 +84,6 @@ def chunking(n, sizes):
     return out
 
 
-BASE_PAIR = None
 streams = [
     (base_x, chunking(20000, [0, 1, 2, 3, 7, 63, 64, 65, 147, 160, 500,
                               1000, 3000])),
@@ -95,15 +94,25 @@ streams = [
 ]
 for x, ch in streams:
     pair = len(cases)
-    if x is base_x:
-        BASE_PAIR = pair
     cases.append({"mode": "oneshot", "x": x, "check": "len"})
     cases.append({"mode": "stream", "x": x, "chunks": ch, "check": "stream",
                   "pair": pair})
 
-NP = 88200            # perf: 2 s of audio; its head equals base_x
-cases.append({"mode": "oneshot", "x": base_x + noise(NP - 20000),
-              "check": "perf"})
+# perf: 2 s of audio as 8 back-to-back tone segments of 11025 samples (each
+# yields exactly 12000 outputs). The tones are fresh (no other case holds
+# them) and EVERY output whose dependency window lies inside one segment is
+# checked against that segment's tone, so no part of the output is free.
+PSEG, NSEG = 11025, 8
+perf_x, perf_segs = [], []
+for s_i in range(NSEG):
+    f = rng.uniform(20.0, 20000.0)
+    A = rng.uniform(0.1, 1.0)
+    ph = rng.uniform(-math.pi, math.pi)
+    w = 2 * math.pi * f / 44100.0
+    perf_x += [A * math.sin(w * n + ph) for n in range(PSEG)]
+    # phase referred to absolute time 0 (the segment starts at s_i*PSEG)
+    perf_segs.append((s_i * PSEG, f, A, ph - w * s_i * PSEG))
+cases.append({"mode": "oneshot", "x": perf_x, "check": "perf"})
 
 
 # ---------------------------------------------------------------- analysis
@@ -151,16 +160,21 @@ KWIN = [i0(_KB * math.sqrt(max(0.0, 1 - (2 * k / (WIN - 1) - 1) ** 2))) / _i0b
         for k in range(WIN)]
 
 
-def tone_check(y, c):
-    f, A, ph = c["f"], c["A"], c["ph"]
-    seg = y[M0:M0 + WIN]
-    ts = [(M0 + k) / 48000.0 for k in range(WIN)]
+EDGE = 96            # 2 ms of outputs: interior starts this far from an edge
+
+
+def tone_check(y, f, A, ph, lo, hi, m0):
+    """Judge outputs y[lo:hi] (absolute indices, all interior) against the
+    tone A*sin(2*pi*f*t + ph), t = m/48000; the gain/phase fit and the
+    Kaiser FFT use the WIN outputs from m0, then every output in lo..hi-1
+    is checked sample by sample (the bound gain + phase + spur error allow)."""
+    w = 2 * math.pi * f / 48000.0
+    seg = y[m0:m0 + WIN]
     if f == 0:
         g, perr = (sum(seg) / WIN) / A, 0.0
     else:
-        w = 2 * math.pi * f
-        s = [math.sin(w * t) for t in ts]
-        co = [math.cos(w * t) for t in ts]
+        s = [math.sin(w * (m0 + k)) for k in range(WIN)]
+        co = [math.cos(w * (m0 + k)) for k in range(WIN)]
         ss = sum(v * v for v in s)
         cc = sum(v * v for v in co)
         sc = sum(p * q for p, q in zip(s, co))
@@ -182,6 +196,12 @@ def tone_check(y, c):
     far = [mags[k] for k in range(len(mags)) if abs(k * df - f) > EXCL_HZ]
     if max(far) > max(near) * 10 ** (-80 / 20):
         return "stopband"
+    # sample accuracy over every interior output
+    tol = A * (0.0136 + 2 * math.pi * f * 1e-6)
+    for m in range(lo, hi):
+        want = A if f == 0 else A * math.sin(w * m + ph)
+        if abs(y[m] - want) > tol:
+            return "accuracy"
     return None
 
 
@@ -227,7 +247,8 @@ def main():
         if len(y) != out_len(n):
             die("case %d failed (length)" % i)
         if c["check"] == "tone":
-            kind = tone_check(y, c)
+            kind = tone_check(y, c["f"], c["A"], c["ph"], EDGE,
+                              len(y) - EDGE, M0)
             if kind:
                 die("case %d failed (%s)" % (i, kind))
         elif c["check"] == "stream":
@@ -241,10 +262,12 @@ def main():
                 if have < need:
                     die("case %d failed (lookahead)" % i)
         elif c["check"] == "perf":
-            ref = results[BASE_PAIR][1]
-            k = (L * (20000 - 64)) // M
-            if any(abs(p - q) > 1e-9 for p, q in zip(y[:k], ref[:k])):
-                die("case %d failed (consistency)" % i)
+            for s0, f, A, ph in perf_segs:
+                lo = (L * s0 + M - 1) // M + EDGE
+                hi = (L * (s0 + PSEG) + M - 1) // M - EDGE
+                kind = tone_check(y, f, A, ph, lo, hi, lo + 204)
+                if kind:
+                    die("case %d failed (%s)" % (i, kind))
     print("OK: %d hidden cases passed" % len(cases))
 
 

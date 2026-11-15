@@ -24,6 +24,33 @@ def as_floats(v):
 
 
 cases = json.loads(sys.stdin.read())
+
+# Enforce the import rule at run time as well as in the lint: preload every
+# allowed module, then an audit hook refuses any further module load, any
+# file open outside the task dir, and any process / ctypes / socket use.
+for _m in ("math", "cmath", "array", "itertools", "functools", "operator",
+           "bisect", "collections", "collections.abc", "typing",
+           "dataclasses", "fractions", "decimal", "abc", "enum", "numbers",
+           "copy", "heapq"):
+    __import__(_m)
+_DIR = os.path.dirname(os.path.abspath(sys.argv[1])) + os.sep
+_DENY = ("import", "os.system", "os.exec", "os.spawn", "os.posix_spawn",
+         "os.fork", "os.forkpty", "subprocess.", "ctypes.", "socket.",
+         "_posixsubprocess.", "pty.")
+
+
+def _audit(ev, args):
+    if ev == "open":
+        path = args[0]
+        if (isinstance(path, (str, bytes)) and
+                os.path.abspath(os.fsdecode(path)).startswith(_DIR)):
+            return
+        raise PermissionError("open is not allowed")
+    if ev.startswith(_DENY):
+        raise PermissionError("%s is not allowed" % ev)
+
+
+sys.addaudithook(_audit)
 spec = importlib.util.spec_from_file_location("resample196", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)

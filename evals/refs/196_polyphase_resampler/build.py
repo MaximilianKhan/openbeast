@@ -30,13 +30,14 @@ API (both required):
 - resample(x: list[float]) -> list[float]: the whole signal at once.
 - class Resampler with Resampler() (no arguments), process(chunk: list[float]) -> list[float] and flush() -> list[float]. Feeding x as consecutive chunks of any sizes (empty chunks included) and concatenating every process() result followed by the flush() result must give resample(x) to within 1e-9 per sample. Streaming may hold outputs back, but once process() calls have delivered n samples in total, every output m with 147*m/160 + 64 < n (its whole dependency window delivered) must already have been returned. One Resampler instance converts one stream; flush() is called once, at the end.
 
-Quality, judged on interior outputs (at least 5 ms from either end of the signal). For any input tone x[n] = A*sin(2*pi*f*n/44100 + phi) with 0 <= f <= 20000 Hz, 0.1 <= A <= 1 (for f = 0, x[n] = A):
+Quality, judged on interior outputs (at least 2 ms from either end of the signal). For any input tone x[n] = A*sin(2*pi*f*n/44100 + phi) with 0 <= f <= 20000 Hz, 0.1 <= A <= 1 (for f = 0, x[n] = A), with t = m/48000 s:
 - passband: the output's component at f has amplitude within +/-0.1 dB of A and phase within 2*pi*f*1e-6 rad of phi (timing error at most 1 microsecond);
-- stopband: every other spectral component of the output, at a frequency more than 100 Hz away from f, is at least 80 dB below that tone. The validator measures this with a Kaiser-window (beta = 14) FFT over 8192 consecutive interior output samples.
+- stopband: every other spectral component of the output, at a frequency more than 100 Hz away from f, is at least 80 dB below that tone. The validator measures this with a Kaiser-window (beta = 14) FFT over 8192 consecutive interior output samples;
+- sample accuracy: every interior y[m] is within A*(0.0136 + 2*pi*f*1e-6) of A*sin(2*pi*f*t + phi) (of A for f = 0).
 
-Speed: all hidden cases together (about 270,000 output samples in all, including one 2-second signal) must finish within 10 s of wall time.
+Speed: all hidden cases together (about 270,000 output samples in all) must finish within 10 s of wall time. One of them is a 2-second signal made of back-to-back tone segments (each segment a fresh tone of the form above, starting at its own segment boundary); every one of its outputs at least 2 ms from a segment boundary is held to all three quality criteria for its segment's tone.
 
-Allowed imports: math, cmath, array, itertools, functools, operator, bisect, collections, typing, dataclasses, fractions, decimal, abc, enum, numbers, copy, heapq. No other module (no numpy/scipy), and no exec/eval/compile/__import__/open.
+Allowed imports: math, cmath, array, itertools, functools, operator, bisect, collections, typing, dataclasses, fractions, decimal, abc, enum, numbers, copy, heapq. No other module (no numpy/scipy), and no exec/eval/compile/__import__/open; this is also enforced at run time (loading any other module, or opening files, makes the solution process fail).
 
 /tmp/eval_resamp196/sample.txt lists a few input/output lengths. Validation runs about 30 hidden, seeded cases (lengths, tones across the passband, streaming with random chunk sizes, a speed case) and reports only the index and kind of the first failing case. Write your own tests.
 """
