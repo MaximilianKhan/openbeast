@@ -2,8 +2,13 @@
 """Regenerate evals/tasks/192_pike_regex.json from the sources here.
 
   gen.py            seeded pattern/text generator, pathological set, hand-picked cases
+  timed.py          build-time builder of the semantic timed cases (slow for re,
+                    answers depend on priority/laziness/captures/$); only its
+                    output is embedded, as the TIMED literal
   validator_main.py the validator body (lint, sandboxed runs, differential compare)
   ref.py            reference solution (Pike VM); not embedded, used for proofs
+  wrong_*.py        mutants of ref (make_wrong.py); timed.py guarantees each of
+                    longest/lazy/dollar/word gets timed cases wrong
 
 The generator lives only inside the validator script and the oracle is the
 validator's own `re`; the agent-visible fixture dir /tmp/eval_pike192 holds
@@ -23,10 +28,27 @@ def read(n):
 
 
 sys.path.insert(0, HERE)
-import gen, ref  # noqa: E402
+import importlib.util  # noqa: E402
+import gen, ref, timed  # noqa: E402
 for k, (p, t, e) in enumerate(gen.pathological()):
     got = ref.search(p, t)
     assert got == e, ('pathological expectation %d disagrees with ref' % k, p, got, e)
+
+
+def load(name):
+    spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, name + '.py'))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+MUTANTS = {n: load(n) for n in ('wrong_longest', 'wrong_lazy', 'wrong_dollar', 'wrong_word')}
+TIMED = timed.build(MUTANTS)
+for k, m in MUTANTS.items():
+    nbad = sum(timed._norm(m.search(p, t)) != e for p, t, e in TIMED)
+    assert nbad >= 8, (k, nbad)
+TIMED_JSON = json.dumps([[p, t, [list(x) if x else None for x in e]] for p, t, e in TIMED])
+N_TIMED = len(gen.pathological()) + len(TIMED)
 
 TASK = r"""Create /tmp/eval_pike192/rx.py (Python >= 3.11, standard library only): a regular-expression matcher that reproduces Python's re exactly on the pattern language below and never takes super-linear time.
 
@@ -45,13 +67,20 @@ Pattern language (test patterns use only this; anything else need not be handled
 - Patterns are at most 60 characters. Strings are at most 5000 characters of printable ASCII, newline and tab.
 
 Rules
-- Do not use re or any other regex engine. The validator rejects code in which any of these identifiers appears: re, _sre, sre_compile, sre_parse, sre_constants, regex, fnmatch, glob, importlib, __import__, builtins, __builtins__, exec, eval, modules, subprocess, os, posix, pty, ctypes, multiprocessing, _posixsubprocess, breakpoint. (re is disabled in the process that runs your code.)
+- Do not use re or any other regex engine. The validator rejects code in which any of these identifiers appears: @BANNED@.
+- rx.py is loaded in a process in which re is disabled, no file can be opened and no module can be newly imported. Only these already-loaded modules may be imported: __future__ abc array bisect collections collections.abc contextlib copy dataclasses enum functools heapq io itertools math operator random string types typing weakref.
 - search must run in worst-case time O(P * len(string)) for every pattern in the language, where P is the size of the pattern once counted repeats are written out, including the patterns that make backtracking engines (re among them) take exponential time, such as (a|a)*b against 4000 a's.
 
-Validation: about 14000 hidden, seeded search cases (some 5000 distinct patterns) and 1500 finditer cases, checked exactly against re, then a set of 18 pathological search cases (strings up to 5000 characters) that must all finish within 4 seconds in total. Only a failing case's index is reported. Write your own tests; you may use re in them.
+Validation: about 14000 hidden, seeded search cases (some 5000 distinct patterns) and 1500 finditer cases, checked exactly against re, then a timed set of @NTIMED@ search cases on which backtracking engines take exponential time (strings up to 5000 characters), which must all be answered exactly and finish within 6 seconds in total (more on a slow or loaded host). Only a failing case's index is reported. Write your own tests; you may use re in them.
 """
+_vm = read('validator_main.py')
+_b = _vm.index('BANNED = {')
+BANNED = eval(_vm[_b + len('BANNED = '):_vm.index('}', _b) + 1])
+TASK = TASK.replace('@BANNED@', ', '.join(sorted(BANNED, key=lambda w: (w.lstrip('_').lower(), w))))
+TASK = TASK.replace('@NTIMED@', str(N_TIMED))
 
-validator = 'GEN = ' + repr(read('gen.py')) + '\n' + read('validator_main.py')
+validator = ('GEN = ' + repr(read('gen.py')) + '\n' + 'TIMED = __import__("json").loads('
+             + repr(TIMED_JSON) + ')\n' + read('validator_main.py'))
 
 task = {
     'id': '192_pike_regex',

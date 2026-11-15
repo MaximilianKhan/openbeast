@@ -36,6 +36,11 @@ mutate('wrong_lazy.py', 'ignores the lazy ? suffix', [(
             greedy = False""", """            self.take()
             greedy = True""")])
 
+# \w (and so \W, \b, \B) without the upper-case letters
+mutate('wrong_word.py', '\\w leaves out A-Z', [(
+    "WORD = frozenset('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_')",
+    "WORD = frozenset('abcdefghijklmnopqrstuvwxyz0123456789_')")])
+
 # finditer: after an empty match, skip a character instead of re's must-advance rule
 mutate('wrong_finditer.py', 'pre-3.7 empty-match stepping in finditer', [(
     "pos, must_advance = e, s == e", "pos, must_advance = (e + 1 if s == e else e), False")])

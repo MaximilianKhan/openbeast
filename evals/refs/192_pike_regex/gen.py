@@ -4,10 +4,14 @@
 import random
 
 ALPHA = 'ab'
-TEXT_CHARS = 'aaaabbbbc_1 \n'
-LIT_CHARS = 'abc1_ -'
+# texts: mostly a/b so random patterns match, plus upper case, other digits,
+# tab, punctuation and metacharacters as plain text. Never '~' (the timed
+# set's sentinel).
+TEXT_CHARS = 'aaaaaabbbbbbcAAB_19Z \n\t.,-*(]$\\!#'
+LIT_CHARS = 'abcAZ19_ -,!#='
 CLASS_ITEMS = ['a', 'b', 'c', '1', '_', ' ', 'a-c', '0-9', 'b-c', '\\d', '\\w', '\\s',
-               '\\D', '\\W', '\\S', '\\-', '\\]', '\\n', 'x']
+               '\\D', '\\W', '\\S', '\\-', '\\]', '\\n', 'x', 'A-Z', 'A', 'Z', '!-/',
+               '\\t', '\\.', '\\\\', '\\[', '#', '5-9']
 ESC_LIT = ['\\.', '\\*', '\\+', '\\?', '\\(', '\\)', '\\[', '\\]', '\\{', '\\}', '\\|',
            '\\^', '\\$', '\\\\', '\\n', '\\t']
 
