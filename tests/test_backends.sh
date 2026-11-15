@@ -630,7 +630,7 @@ for spec in sys.argv[3:]:
     key, d, repo, rev = spec.split(":")
     root = mdir / d
     root.mkdir(parents=True, exist_ok=True)
-    (root / "config.json").write_text(json.dumps({"model_type": "brand_new"}))
+    (root / "config.json").write_text(json.dumps({"model_type": os.environ.get("MKF_MODEL_TYPE", "brand_new")}))
     (root / "model.safetensors").write_bytes(b"\0" * 64)
     (root / ".openbeast-model.json").write_text(json.dumps({"source": repo, "revision": rev}))
     files = {}
@@ -1007,6 +1007,41 @@ done
 _sp "$_TN" -- --profile "$_P/tf3.env" --rank two --master 1.2.3.4 --env "$_K/spark.env" --print
 [[ $SPRC -eq 2 ]] && _has "$_O" "start ranks 1..N-1 first" && pass "tensorfold refuses --rank two" \
   || fail "tensorfold took --rank two (rc=$SPRC): $_O"
+# Rank sizes the ENGINE takes, by the checkpoint's model_type. Native 1.2.7:
+# --tp is 1/2/4/8 (capabilities --json); GLM is placed by TF_GLM_* (up to 16),
+# MiniMax by TF_MINIMAX_* at exactly 2, Nemotron by TF_NEMOTRON_* (not wired),
+# Flash Next (qwen4_exp) at 1 or 2. Container: data/tensorfold.json's list.
+_tfmk() { # _tfmk <name> <tp> <model_type> — a fetched tensorfold profile
+  sed -e "s/^TENSOR_PARALLEL_SIZE=2/TENSOR_PARALLEL_SIZE=$2/" "$_P/tftest.env" > "$_P/$1.env"
+  MKF_MODEL_TYPE="$3" _mkfetched "$_P/$1.env" "model:$1:acme/Brand-New-Model-MLX-4bit:$_REV"
+}
+_tfmk n3new 3 brand_new; _tfmk n3glm 3 glm5_next; _tfmk n4fn 4 qwen4_exp; _tfmk n2mm 2 minimax_m3_vl
+_tfmk n2nem 2 nemotron_h; _tfmk c3q 3 qwen3_5; _tfmk c2moe 2 qwen3_5_moe
+_sp "$_TN" -- --profile "$_P/n3new.env" --rank 1 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "native TensorFold's --tp takes 1, 2, 4 or 8" \
+  && pass "native refuses --tp 3 for a family it places by flags (the binary takes 1/2/4/8)" || fail "native tp 3 flags (rc=$SPRC): $_O"
+_sp "$_TN" -- --profile "$_P/n3glm.env" --rank 2 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+[[ $SPRC -eq 0 ]] && _has "$_O" "--setenv=TF_GLM_WORLD=3" && pass "native GLM at TP 3 is placed by TF_GLM_* (up to 16 ranks)" || fail "native glm tp3 (rc=$SPRC): $_O"
+_sp "$_TN" -- --profile "$_P/n4fn.env" --rank 1 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "Flash Next" && _has "$_O" "1 or 2 ranks" && pass "native refuses Flash Next (qwen4_exp) at TP 4" || fail "native flash next tp4 (rc=$SPRC): $_O"
+_sp "$_TN" -- --profile "$_P/n2mm.env" --rank 1 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+if [[ $SPRC -eq 0 ]] && _has "$_O" "--setenv=TF_MINIMAX_RANK=1" && _has "$_O" "--setenv=TF_MINIMAX_WORLD=2" \
+   && _has "$_O" "--setenv=NCCL_COMM_ID=192.168.100.10:29583" && ! _has "$_O" "--tp 2"; then
+  pass "native MiniMax at TP 2: placed by TF_MINIMAX_RANK/WORLD + NCCL_COMM_ID, not --tp"
+else
+  fail "native minimax (rc=$SPRC): $_O"
+fi
+_sp "$_TN" -- --profile "$_P/n2nem.env" --rank 1 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "TF_NEMOTRON_RANK" && pass "native refuses Nemotron at TP > 1 (its env placement is not wired)" || fail "native nemotron (rc=$SPRC): $_O"
+_sp "$_TN" -- --profile "$_P/c3q.env" --rank 1 --master 192.168.100.10 --env "$_K/spark.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "runs family qwen3_5 on 1 or 2 rank(s)" \
+  && pass "container refuses TP 3 for a family its pinned engine runs on 1 or 2 ranks" || fail "container qwen3_5 tp3 (rc=$SPRC): $_O"
+_sp "$_TN" -- --profile "$_P/c2moe.env" --rank 1 --master 192.168.100.10 --env "$_K/spark.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "runs family qwen3_5_moe on 1 rank(s)" && pass "container refuses TP 2 for a one-GPU family" || fail "container moe tp2 (rc=$SPRC): $_O"
+_sp "$_TN" TENSORFOLD_REF=0123456789abcdef0123456789abcdef01234567 -- --profile "$_P/c3q.env" --rank 1 --master 192.168.100.10 --env "$_K/spark.env" --print
+[[ $SPRC -eq 0 ]] && _has "$_O" "Warning: TENSORFOLD_REF is not 9cd52ab" \
+  && pass "…another TENSORFOLD_REF only warns (the vendored list is for 9cd52ab)" || fail "container other ref (rc=$SPRC): $_O"
+
 _IFL="enp1s0f0np0,enp1s0f1np1" _HCL="rocep1s0f0,roceP2p1s0f1"
 # --print shell-quotes (printf %q), which escapes each comma.
 _QIFL="${_IFL//,/\\,}" _QHCL="${_HCL//,/\\,}"

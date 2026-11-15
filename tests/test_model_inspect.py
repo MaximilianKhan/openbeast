@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -247,16 +248,34 @@ def test_draft_skips_a_cluster_size_vllm_cannot_shard(tmp_path):
     assert "TP4:" in model_inspect.render(r) and "TP5:" not in model_inspect.render(r)
 
 
+GLM_NATIVE_RANKS = [2, 3, 4, 5, 6, 7, 8]
+
+
 def test_draft_profile_obeys_tensorfold_rank_list(tmp_path):
-    r = _sized(tmp_path, glm(TR3), 30 * 10**9, "g")                  # fits on ONE, but GLM runs on 2 only
-    assert r["fit"]["min_sparks"] == 1 and r["engines"]["tensorfold"]["ranks"] == [2]
-    assert any(n.startswith("ranks: 2 —") for n in r["engines"]["tensorfold"]["notes"])
+    # Judged against native TensorFold (the default TENSORFOLD_ENGINE): GLM runs on 2..8 of our
+    # Sparks (TF_GLM_WORLD, up to 16), never 1 (WORLD 1 is for a thin test model only).
+    r = _sized(tmp_path, glm(TR3), 30 * 10**9, "g")                  # fits on ONE, but GLM runs on 2+
+    tf = r["engines"]["tensorfold"]
+    assert r["fit"]["min_sparks"] == 1 and tf["ranks"] == GLM_NATIVE_RANKS and tf["container_ranks"] == [2]
+    assert any(n.startswith("ranks: 2, 3, 4, 5, 6, 7 or 8 —") for n in tf["notes"])
     text, _ = model_inspect.draft_profile(r, "g", "tensorfold")
-    assert "TENSOR_PARALLEL_SIZE=2 " in text and "TensorFold runs this on 2 ranks only" in text
-    r = _sized(tmp_path, glm(TR3), 300 * 10**9, "g2")                 # needs more than the engine allows
-    assert r["fit"]["min_sparks"] > 2
+    assert "TENSOR_PARALLEL_SIZE=2 " in text and "TensorFold runs this on 2/3/4/5/6/7/8 ranks only" in text
+    r = _sized(tmp_path, glm(TR3), 300 * 10**9, "g2")                 # needs more than 2 Sparks
+    m = r["fit"]["min_sparks"]
+    assert m > 2
     text, _ = model_inspect.draft_profile(r, "g2", "tensorfold")
-    assert "TENSOR_PARALLEL_SIZE=2 " in text and "nothing fits: TP=2 is the largest size tensorfold allows" in text
+    drafted = int(re.search(r"^TENSOR_PARALLEL_SIZE=(\d+)", text, re.M).group(1))
+    assert drafted >= m and drafted in GLM_NATIVE_RANKS and "nothing fits" not in text   # v0.5's "2 only" no longer caps it
+
+
+def test_tensorfold_ranks_are_judged_per_engine(tmp_path):
+    # GLM at TP 4: native places it by TF_GLM_WORLD; the vendored container engine (v0.5) runs 2 only.
+    q = run_inspect(make_ckpt(tmp_path / "g", glm(TR3), QWEN_TEMPLATE, expert_tensors()))["quantization"]
+    tf = model_inspect.tensorfold_support(glm(TR3), q, "g", tp=4)
+    assert tf["status"] == "supported", tf
+    assert any("container engine" in n and "TP=4" in n for n in tf["notes"]), tf["notes"]
+    tf = model_inspect.tensorfold_support(glm(TR3), q, "g", tp=1)
+    assert tf["status"] == "unsupported" and "TP=1 is not allowed for this family" in tf["notes"]
 
 
 def test_write_profile_draft_is_marked_and_parses(tmp_path):
@@ -439,7 +458,8 @@ def expert_tensors(infix: str = "") -> dict:
 
 def test_tensorfold_glm_exl3_tr3_layout_is_supported_on_two_ranks(tmp_path):
     tf = run_inspect(make_ckpt(tmp_path / "g", glm(TR3), QWEN_TEMPLATE, expert_tensors()))["engines"]["tensorfold"]
-    assert tf["status"] == "supported" and tf["family"] == "glm5_next" and tf["ranks"] == [2]
+    assert tf["status"] == "supported" and tf["family"] == "glm5_next" and tf["ranks"] == GLM_NATIVE_RANKS
+    assert tf["container_ranks"] == [2]
 
 
 @pytest.mark.parametrize("qc", [
