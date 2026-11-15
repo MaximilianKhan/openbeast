@@ -3,7 +3,7 @@
   "note": "Prover arms (prove.py). Paths are relative to this directory; each regex must match the validator's last output line. There is no perf gate, so no slow arm. The leak probe is leak_probe.py run after setup: it harvests anything answer-like the agent could read in the fixture dir and submits it. fixture_files: setup must create exactly the bundled repo under repo/ and nothing else. rederive: solve.py is re-run on the EXTRACTED fixture and must reproduce answers.json, proving the shipped tarball is the repo the digests were computed from.",
   "dest_dir": "/tmp/eval_codeqa",
   "unit": "178_codebase_qa",
-  "ref": "answers.json",
+  "ref": "arms/answers.json",
   "repeat": 3,
   "also_pass": ["arms/ref_lenient.json"],
   "wrong": [

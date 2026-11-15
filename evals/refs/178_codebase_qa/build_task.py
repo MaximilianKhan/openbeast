@@ -13,8 +13,9 @@ Inputs (all in this directory):
   solve.py         derives every answer by executing repo/ (single source of
                    truth for the digests and for answers.json)
 
-Outputs: ../../tasks/178_codebase_qa.json, answers.json (the reference
-solution) and the derived wrong/lenient arms under arms/.
+Outputs: ../../tasks/178_codebase_qa.json, and under arms/ the reference
+solution answers.json (the task's ref_stem) with the derived wrong and
+lenient arms beside it, where tests/prove_task.py finds them as siblings.
 """
 
 import base64
@@ -64,6 +65,16 @@ def tarball() -> bytes:
     return gz.getvalue()
 
 
+PROVE_EXPECT = {
+    "wrong_docs_naive.json": "^FAIL: 12 of 12 answers wrong: q1 q2 q3 q4 q5 q6 q7 q8 q9 q10 q11 q12$",
+    "wrong_q5_docs_append.json": "^FAIL: 1 of 12 answers wrong: q5$",
+    "wrong_q12_wal_disabled.json": "^FAIL: 1 of 12 answers wrong: q12$",
+    "wrong_q4_plugin_order.json": "^FAIL: 1 of 12 answers wrong: q4$",
+    "wrong_q7_sorted.json": "^FAIL: 1 of 12 answers wrong: q7$",
+    "wrong_malformed.json": "^FAIL: answers.json is not valid JSON$",
+}
+
+
 def solve() -> dict:
     out = subprocess.run([sys.executable, "-B", os.path.join(HERE, "solve.py"), os.path.join(HERE, "repo")],
                          capture_output=True, text=True, check=True, env={"PATH": os.environ.get("PATH", "")})
@@ -107,12 +118,15 @@ def build():
         "max_wall_s": 900,
         "role": "scored",
         "language": "python",
-        "ref_stem": "178_codebase_qa/answers",
+        "ref_stem": "178_codebase_qa/arms/answers.json",
         "dest": f"{FIX}/answers.json",
         "setup": setup,
         "task": open(os.path.join(HERE, "src", "task.md")).read().strip(),
         "validation": {"type": "python", "script": script},
         "cleanup": f"rm -rf {FIX}",
+        # Failure classes for tests/prove_task.py (its sibling discovery).
+        # Messages only; no answer appears here.
+        "prove": {"expect": PROVE_EXPECT},
     }
 
     arms = os.path.join(HERE, "arms")
@@ -123,7 +137,7 @@ def build():
             json.dump(obj, fh, indent=1)
             fh.write("\n")
 
-    with open(os.path.join(HERE, "answers.json"), "w") as fh:
+    with open(os.path.join(arms, "answers.json"), "w") as fh:
         json.dump(answers, fh, indent=1)
         fh.write("\n")
     # Same answers in tolerated alternative spellings: must still pass.
