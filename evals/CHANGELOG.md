@@ -1,5 +1,28 @@
 # Eval suite changelog
 
+## v5 (2026-11-15) — the measured suite (CURRENT; era break)
+
+`evals/SUITE_VERSION` = v5 rolls every cache era; the v4 board is frozen
+and nothing is compared across versions. The suite is the manifest
+`evals/suites/v5.json`: 111 scored units over 39 base tasks (50 kept from v4
+on 16 bases, all upgraded; 61 new on 23 bases, ids 163-196) plus 7 unscored
+zig probe units, every cell of 12 categories x 6 languages covered.
+
+- Hidden seeded tests inside the validator; no expected file or `check.py`
+  in the agent's dir; a mismatch prints only the case index.
+- Zig API tutoring banned from prompts (L0 is unassisted).
+- Oracle seal: `evals/tasks|refs|suites` unreadable under `OPENBEAST_EVAL=1`;
+  `fetch`/`web_search` off under eval (or recorded).
+- Every unit proven without a model (`tests/prove_task.py`).
+- Arms L0/L1/L2 in one process (`run_eval.py --arms`), diagnostics keyed per
+  unit, per-unit wall caps, longest-first scheduling, `--slots`.
+- `evals/profile.py --budget-h 4` (calibrate k on L0, fixed L2 cut order,
+  `budget_skip` never scored) and `evals/ablation.py` (McNemar, MDE /
+  within_churn, strata, Horvitz-Thompson for stratified L2, `--pool`).
+- Scoring: LANG over multi-language bases only; imputation retired for v5
+  and every arm; v5 full row = 111 scored units.
+- The v4 fast pin is renamed `v4-fast` (was `v5-fast`) and stays v4-only.
+
 ## v5-fast overlay (2026-09-08) — pinned fast subset, imputation-scored
 
 NOT a new suite version — v4 stays current and frozen; v5-fast is a pinned
