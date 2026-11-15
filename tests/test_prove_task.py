@@ -164,3 +164,22 @@ def test_lint_catches_coreutils_timeout_bits_and_zig_tutoring():
     dash_c = dict(clean, validation={"type": "python",
                                      "script": "subprocess.run([sys.executable, '-c', D])"})
     assert any("`-c`" in p for p in prove_task.lint_unit(dash_c, M, []))
+
+
+def test_a_stem_naming_its_own_file_sets_the_sibling_extension(tmp_path):
+    """An assembly unit (task language python, solution lib.s) declares
+    `ref_stem: "<dir>/ref.s"`; its wrong/slow/leak siblings are .s too."""
+    sys.path.insert(0, str(ROOT / "evals"))
+    import suite_manifest as M
+    d = tmp_path / "995_asm"
+    d.mkdir()
+    for n in ("ref.s", "wrong_a.s", "wrong_b.s", "slow_x.s", "leak_probe.s", "wrong_c.py"):
+        (d / n).write_text("")
+    (d / "prove.json").write_text(json.dumps({"expect": {"wrong_a.s": "x"}}))
+    spec = prove_task.discover({"id": "995_asm", "ref_stem": "995_asm/ref.s",
+                                "dest": "/tmp/eval_asm/lib.s"}, M, str(tmp_path))
+    assert spec["ref"] == str(d / "ref.s")
+    assert [os.path.basename(w) for w, _ in spec["wrong"]] == ["wrong_a.s", "wrong_b.s"]
+    assert dict((os.path.basename(w), rx) for w, rx in spec["wrong"])["wrong_a.s"] == "x"
+    assert os.path.basename(spec["slow"]) == "slow_x.s"
+    assert os.path.basename(spec["leak"]) == "leak_probe.s"
