@@ -26,7 +26,8 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _PATH = os.path.join(REPO, "extensions", "dashboard", "dashboard.py")
 _ENV = ("OPENBEAST_PROBE_HOST", "OPENBEAST_INFERENCE_URL", "OPENBEAST_INFERENCE_BACKEND",
         "OPENBEAST_INFERENCE_SLOTS", "OPENBEAST_API_KEY", "EDGE_GATE",
-        "OPENBEAST_EDGE_ALLOW_ANON", "OPENBEAST_INSTINCT", "OPENBEAST_INSTINCT_PORT")
+        "OPENBEAST_EDGE_ALLOW_ANON", "OPENBEAST_INSTINCT", "OPENBEAST_INSTINCT_PORT",
+        "DASHBOARD_ALLOWED_HOSTS")
 
 
 def load(monkeypatch, **env):
@@ -153,6 +154,143 @@ def test_api_slot_is_served_from_the_cache(monkeypatch):
         assert live.get("/api/slot")[0] == 200 and len(seen) == n + one
     finally:
         live.close()
+
+
+def _raw(live, path, host):
+    """GET with an explicit Host header (urllib would derive it from the URL)."""
+    import http.client
+    port = int(live.url.rsplit(":", 1)[1])
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        c.request("GET", path, headers={"Host": host})
+        r = c.getresponse()
+        return r.status, r.read()
+    finally:
+        c.close()
+
+
+def test_a_rebinding_host_is_refused(monkeypatch):
+    # A hostile name re-pointed at 127.0.0.1 makes its page same-origin with
+    # the dashboard; Host is the one thing that page cannot forge.
+    d = load(monkeypatch)
+    d._get = recorder([])
+    d.gpu_status = lambda: None
+    live = Live(d)
+    try:
+        for path in ("/api/status", "/api/slot", "/"):
+            st, body = _raw(live, path, "evil.example:3002")
+            assert st == 400 and b"DASHBOARD_ALLOWED_HOSTS" in body, (path, st)
+        # controls: loopback, the tailnet name tailscale serve forwards, an IP
+        # literal (a LAN/tailnet OPENBEAST_BIND dialled by address)
+        for host in ("127.0.0.1:3002", "localhost", "[::1]:3002", "rig.tail1.ts.net",
+                     "192.168.1.50:3002", "100.101.102.103"):
+            assert _raw(live, "/api/status", host)[0] == 200, host
+    finally:
+        live.close()
+
+
+def test_dashboard_allowed_hosts_adds_a_name(monkeypatch):
+    d = load(monkeypatch, DASHBOARD_ALLOWED_HOSTS="beast.lan")
+    d._get = recorder([])
+    live = Live(d)
+    try:
+        assert _raw(live, "/api/slot", "beast.lan:3002")[0] == 200
+        assert _raw(live, "/api/slot", "other.lan:3002")[0] == 400
+    finally:
+        live.close()
+
+
+def test_trickling_clients_cannot_hold_every_handler(monkeypatch):
+    # SOCKET_TIMEOUT_S bounds one recv, not the request: a byte every few
+    # seconds used to keep a handler forever, and MAX_HANDLERS of them made
+    # every real caller's /api/slot a 503.
+    import socket
+    d = load(monkeypatch)
+    d._get = recorder([])
+    monkeypatch.setattr(d.Handler, "header_deadline", 0.6)
+    monkeypatch.setattr(d.Handler, "timeout", 5)
+    live = Live(d, max_handlers=2)
+    port = int(live.url.rsplit(":", 1)[1])
+    stop = threading.Event()
+    socks = []
+
+    def trickle(s):
+        try:
+            s.sendall(b"GET /api/slot HTTP/1.1\r\n")
+            while not stop.wait(0.2):
+                s.sendall(b"X")
+        except OSError:
+            pass                     # cut off: exactly what should happen
+    try:
+        for _ in range(2):
+            s = socket.create_connection(("127.0.0.1", port))
+            socks.append(s)
+            threading.Thread(target=trickle, args=(s,), daemon=True).start()
+        time.sleep(0.3)
+        assert live.get("/api/slot")[0] == 503      # both handlers held right now
+        deadline = time.time() + 5
+        while (st := live.get("/api/slot")[0]) != 200 and time.time() < deadline:
+            time.sleep(0.1)
+        assert st == 200, "a trickling client kept its handler past the header deadline"
+        assert time.time() < deadline
+    finally:
+        stop.set()
+        for s in socks:
+            s.close()
+        live.close()
+
+
+def test_a_hung_upstream_is_bounded_not_summed(monkeypatch):
+    # A llama-server that accepts and never answers: five sequential 2 s
+    # probes used to make one /api/slot take 10 s+, past the client's 5 s.
+    d = load(monkeypatch)
+    monkeypatch.setattr(d, "GATHER_DEADLINE_S", 0.5)
+    base = recorder([])
+
+    def get(url, timeout=2, auth=False):
+        if ":8080/" in url:
+            time.sleep(1.5)          # well past the deadline, each
+            return 200, "{}"
+        return base(url, timeout, auth)
+    d._get = get
+    t0 = time.monotonic()
+    out = d.slot_status()
+    took = time.monotonic() - t0
+    assert took < 1.5, f"slot_status took {took:.1f}s"
+    assert out["healthy"] is False and out["services"]["model"] is False
+    assert out["services"]["webui"] is True          # the healthy upstreams still report
+    # /api/status too (nvidia-smi stubbed out)
+    d.gpu_status = lambda: None
+    t0 = time.monotonic()
+    st = d.status()
+    assert time.monotonic() - t0 < 1.5 and st["model"]["healthy"] is False
+
+
+def test_a_straggling_probe_is_not_stacked(monkeypatch):
+    # The deadline must not turn a hung upstream into one leaked thread per
+    # gather: while a probe of a URL is still out, that URL is not re-asked.
+    d = load(monkeypatch)
+    monkeypatch.setattr(d, "GATHER_DEADLINE_S", 0.2)
+    release = threading.Event()
+    calls = []
+
+    def get(url, timeout=2, auth=False):
+        if url.endswith(":8080/health"):
+            calls.append(url)
+            release.wait(5)
+        return None, ""
+    d._get = get
+    try:
+        for _ in range(4):
+            assert d.slot_status()["healthy"] is False
+        assert len(calls) == 1, calls
+    finally:
+        release.set()
+    deadline = time.time() + 5
+    while d._inflight and time.time() < deadline:
+        time.sleep(0.02)
+    d.slot_status()
+    assert len(calls) == 2, "once it came back, the URL is probed again"
 
 
 def test_handler_threads_are_capped_and_given_back(monkeypatch):

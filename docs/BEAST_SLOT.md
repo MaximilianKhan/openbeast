@@ -146,7 +146,15 @@ and `/api/status` stay rig-local. The answer is gathered at most once every
 1.5 s and shared by every caller in that window, so it can be up to 1.5 s
 old; do not poll faster than that. The dashboard serves at most 16
 connections at once and answers **503** with `Retry-After: 1` beyond that —
-retry, it is not an outage:
+retry, it is not an outage. A connection must deliver its whole request
+line and headers within 5 s or it is cut, so slow senders cannot hold those
+16. All upstream probes for one answer run at once, under a 3 s overall
+deadline. A probe still out at the deadline counts as down or `null`, so a
+hung model server shows up as `healthy: false` instead of a timeout. Like
+beast-chat and beast-artifact, the dashboard refuses (400) any `Host` that
+is not loopback, this machine's name, a `*.ts.net` name or an IP address.
+This is the DNS-rebinding guard in `agents/hostpolicy.py`, and
+`DASHBOARD_ALLOWED_HOSTS` adds names:
 
 ```json
 {

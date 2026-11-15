@@ -9,13 +9,34 @@ and serves a self-refreshing HTML page plus a /api/status JSON endpoint.
 Bind + port come from OPENBEAST_BIND / DASHBOARD_PORT (see run.sh). This is an
 optional extension (extensions/dashboard) — the core stack does not depend on it.
 """
+import contextlib
+import importlib.util
 import json
 import os
+import socket
 import subprocess
 import threading
 import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+def _load_hostpolicy():
+    """The one Host-header allowlist every OpenBeast HTTP surface shares
+    (agents/hostpolicy.py, stdlib only), loaded by path from this checkout —
+    not via sys.path, which would let agents/*.py shadow a stdlib module."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "..", "..", "agents", "hostpolicy.py")
+    spec = importlib.util.spec_from_file_location("openbeast_hostpolicy", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_hostpolicy = _load_hostpolicy()
+host_allowed = _hostpolicy.host_allowed
+is_ip_literal = _hostpolicy.is_ip_literal
+trusted_hosts = _hostpolicy.trusted_hosts
 
 REPO_DIR = os.environ.get("OPENBEAST_REPO_DIR", ".")
 BIND = os.environ.get("OPENBEAST_BIND", "127.0.0.1").strip() or "127.0.0.1"
@@ -104,6 +125,85 @@ def _get(url, timeout=2, auth=False):
         return None, ""
 
 
+# One status document asks up to nine upstreams. Asked one after another,
+# each with its own 2 s timeout, a single upstream that accepts and then says
+# nothing (a wedged or SIGSTOPped llama-server) cost 10 s of it, and the
+# cache lock made every caller wait that long: the client's 5 s curl gave up
+# and reported the slot API "not published" — hiding the healthy:false it
+# exists to show. Now every probe of one document runs at once, and the
+# document is built from whatever answered within GATHER_DEADLINE_S; a probe
+# still out then reads as no answer (down / null), never as a hang.
+GATHER_DEADLINE_S = 3.0
+_memo = threading.local()
+_inflight = set()
+_inflight_lock = threading.Lock()
+
+
+def _fetch(url, auth=False):
+    """_get, answered from the current _prefetched() batch when it is there."""
+    answers = getattr(_memo, "answers", None)
+    if answers is not None and (url, auth) in answers:
+        return answers[(url, auth)]
+    return _get(url, auth=auth)
+
+
+@contextlib.contextmanager
+def _prefetched(reqs, deadline=None):
+    """Probe every (url, auth) in `reqs` concurrently, bounded by `deadline`
+    overall, and serve those answers to _fetch for the duration."""
+    deadline = GATHER_DEADLINE_S if deadline is None else deadline
+    reqs = list(dict.fromkeys(reqs))
+    got = {}
+
+    def one(key):
+        try:
+            got[key] = _get(key[0], auth=key[1])
+        finally:
+            with _inflight_lock:
+                _inflight.discard(key)
+
+    threads = []
+    for k in reqs:
+        # A probe that outlived an earlier deadline (an upstream trickling
+        # bytes slower than the per-recv timeout) is still out: do not stack
+        # another on it, so stragglers stay at most one per URL. That URL
+        # reads as no answer until the first one comes back.
+        with _inflight_lock:
+            if k in _inflight:
+                continue
+            _inflight.add(k)
+        threads.append(threading.Thread(target=one, args=(k,), daemon=True))
+    for t in threads:
+        t.start()
+    end = time.monotonic() + deadline
+    for t in threads:
+        t.join(max(0.0, end - time.monotonic()))
+    prev = getattr(_memo, "answers", None)
+    _memo.answers = {k: got.get(k, (None, "")) for k in reqs}
+    try:
+        yield
+    finally:
+        _memo.answers = prev
+
+
+def _service_requests():
+    reqs = [(f"http://{H}:3001/health", False), (f"http://{H}:3000/api/version", False),
+            (f"http://{H}:8888/", False)]
+    if _INSTINCT:
+        reqs.append((f"http://{_LOOP}:{_INSTINCT_PORT}/health", False))
+    return reqs
+
+
+def _slot_requests():
+    reqs = [(f"{_INFER}/health", False), (f"{_INFER}/v1/models", True)]
+    if _BACKEND == "llama":
+        reqs += [(f"{_INFER}/props", True), (f"{_INFER}/slots", True),
+                 (f"{_INFER}/metrics", True)]
+    elif _BACKEND == "vllm":
+        reqs.append((f"{_INFER}/metrics", True))
+    return reqs + _service_requests()
+
+
 def gpu_status():
     try:
         out = subprocess.run(
@@ -170,14 +270,14 @@ def _smi_int(field):
 
 
 def model_status(health=None):
-    ok = (health or _get(f"{_INFER}/health"))[0] == 200
+    ok = (health or _fetch(f"{_INFER}/health"))[0] == 200
     served = ""
     try:
         served = open(os.path.join(REPO_DIR, ".run", "serve-script")).read().strip()
     except Exception:
         pass
     alias = ""
-    st, body = _get(f"{_INFER}/v1/models", auth=True)
+    st, body = _fetch(f"{_INFER}/v1/models", auth=True)
     if st == 200:
         try:
             alias = json.loads(body)["data"][0].get("id", "")
@@ -191,7 +291,7 @@ def services_status(health=None):
     (status, body), when the caller already has it — one status document then
     costs the inference server one /health, not one per section."""
     if health is None:
-        health = _get(f"{_INFER}/health")
+        health = _fetch(f"{_INFER}/health")
     svc = [
         ("model", None, "ok"),
         ("tools", f"http://{H}:3001/health", "ok"),
@@ -200,7 +300,7 @@ def services_status(health=None):
     ]
     out = {}
     for name, url, needle in svc:
-        st, body = health if url is None else _get(url)
+        st, body = health if url is None else _fetch(url)
         out[name] = bool(st and st < 500 and (needle in body if needle else True))
     if _BACKEND != "llama":
         # vLLM's /health is an EMPTY 200 and TensorFold's {"ok": true}: for
@@ -212,13 +312,13 @@ def services_status(health=None):
         # off, so a default rig's /api/slot is byte-identical (v2 is additive:
         # a new key inside `services`, never a new top-level key).
         # Always loopback: instinct never follows BIND_HOST (start.sh).
-        out["instinct"] = _get(f"http://{_LOOP}:{_INSTINCT_PORT}/health")[0] == 200
+        out["instinct"] = _fetch(f"http://{_LOOP}:{_INSTINCT_PORT}/health")[0] == 200
     return out
 
 
 def tool_metrics():
     # Pull a few headline counters from the tool server's Prometheus text.
-    st, body = _get(f"http://{H}:3001/metrics")
+    st, body = _fetch(f"http://{H}:3001/metrics")
     if st != 200:
         return {}
     calls, errors = 0, 0
@@ -235,9 +335,17 @@ def tool_metrics():
 
 
 def status():
-    health = _get(f"{_INFER}/health")
-    return {"gpu": gpu_status(), "model": model_status(health),
-            "services": services_status(health), "metrics": tool_metrics()}
+    gpu = {}
+    smi = threading.Thread(target=lambda: gpu.update(v=gpu_status()), daemon=True)
+    smi.start()
+    reqs = [(f"{_INFER}/health", False), (f"{_INFER}/v1/models", True),
+            (f"http://{H}:3001/metrics", False)] + _service_requests()
+    with _prefetched(reqs):
+        health = _fetch(f"{_INFER}/health")
+        out = {"model": model_status(health), "services": services_status(health),
+               "metrics": tool_metrics()}
+    smi.join(6)                     # nvidia-smi has its own 5 s timeout
+    return {"gpu": gpu.get("v"), **out}
 
 
 # The beast-slot contract version this rig publishes, and the oldest client
@@ -313,7 +421,7 @@ def _queue_deferred():
     are opt-in server-side (--metrics); without it /metrics answers 501 and we
     report null rather than pretending the queue is empty.
     """
-    st, body = _get(f"{_INFER}/metrics", auth=True)
+    st, body = _fetch(f"{_INFER}/metrics", auth=True)
     if st != 200:
         return None
     for line in body.splitlines():
@@ -340,19 +448,24 @@ def slot_status():
     states the real total budget, whether it is shared, and the queue depth
     that slots.busy cannot see.
     """
-    if _BACKEND != "llama":
-        return _slot_status_remote()
-    health = _get(f"{_INFER}/health")
+    with _prefetched(_slot_requests()):
+        if _BACKEND != "llama":
+            return _slot_status_remote()
+        return _slot_status_llama()
+
+
+def _slot_status_llama():
+    health = _fetch(f"{_INFER}/health")
     ok = health[0] == 200
     model = {"id": None, "ctx": None}
     slots = {"total": None, "busy": None}
-    st, body = _get(f"{_INFER}/v1/models", auth=True)
+    st, body = _fetch(f"{_INFER}/v1/models", auth=True)
     if st == 200:
         try:
             model["id"] = json.loads(body)["data"][0].get("id") or None
         except Exception:
             pass
-    st, body = _get(f"{_INFER}/props", auth=True)
+    st, body = _fetch(f"{_INFER}/props", auth=True)
     if st == 200:
         try:
             props = json.loads(body)
@@ -366,7 +479,7 @@ def slot_status():
             pass
     # /slots may be disabled (--no-slots) → busy stays null. Busy detection
     # covers both server generations: is_processing (current) / state != 0.
-    st, body = _get(f"{_INFER}/slots", auth=True)
+    st, body = _fetch(f"{_INFER}/slots", auth=True)
     if st == 200:
         try:
             data = json.loads(body)
@@ -449,7 +562,7 @@ def _vllm_metrics():
     fullest engine's fraction (0..1 — "perc" in the name notwithstanding,
     vllm/v1/metrics/loggers.py: "1 means 100 percent usage"). /metrics is
     unauthenticated on vLLM even under --api-key; the key is sent anyway."""
-    st, body = _get(f"{_INFER}/metrics", auth=True)
+    st, body = _fetch(f"{_INFER}/metrics", auth=True)
     if st != 200:
         return None, None, None
     run = _prom(body, "vllm:num_requests_running")
@@ -482,7 +595,7 @@ def _slot_status_remote():
     TF_STALL_S the pair is stalled (a frozen or rebooting peer rank) while
     /health still says ok, so the model reads as down.
     """
-    health = _get(f"{_INFER}/health")
+    health = _fetch(f"{_INFER}/health")
     ok = health[0] == 200
     tf = _tf_health(health[1]) if _BACKEND == "tensorfold" and ok else {}
     if tf.get("stalled"):
@@ -491,7 +604,7 @@ def _slot_status_remote():
     slots = {"total": _conf_slots(), "busy": None}
     capacity = {"ctx_shared": None, "ctx_total": None, "queue_deferred": None,
                 "kv_usage": None}
-    st, body = _get(f"{_INFER}/v1/models", auth=True)
+    st, body = _fetch(f"{_INFER}/v1/models", auth=True)
     if st == 200:
         try:
             first = json.loads(body)["data"][0]
@@ -639,6 +752,18 @@ CACHE_S = 1.5
 MAX_HANDLERS = 16
 # A client that connects and then says nothing gives its thread back.
 SOCKET_TIMEOUT_S = 10
+# ...and so does one that TRICKLES: SOCKET_TIMEOUT_S bounds each recv, not
+# the request, so a byte every 9 s held a handler forever and 16 of them
+# answered every real caller 503. The request line plus headers must be in
+# within this, whole.
+HEADER_DEADLINE_S = 5.0
+# The DNS-rebinding guard (agents/hostpolicy.py): a page on a hostile name
+# re-pointed at 127.0.0.1 is same-origin with this server and could read
+# /api/status. Loopback, this machine's name and *.ts.net (what tailscale
+# serve forwards) are answered; so is any IP literal (rebinding needs a
+# name), which keeps a LAN/tailnet OPENBEAST_BIND dialled by address working.
+# DASHBOARD_ALLOWED_HOSTS adds names, comma-separated.
+_ALLOWED_HOSTS = trusted_hosts(os.environ.get("DASHBOARD_ALLOWED_HOSTS", ""))
 
 
 class _Cached:
@@ -671,11 +796,50 @@ _status_cached = _Cached(lambda: status())
 
 class Handler(BaseHTTPRequestHandler):
     timeout = SOCKET_TIMEOUT_S
+    header_deadline = HEADER_DEADLINE_S
 
     def log_message(self, *a):  # quiet
         pass
 
+    def setup(self):
+        super().setup()
+        # Cut the connection if the request is not fully read by the deadline;
+        # parse_request() returning is "fully read" (HTTP/1.0: one request).
+        self._header_timer = threading.Timer(self.header_deadline, self._too_slow)
+        self._header_timer.daemon = True
+        self._header_timer.start()
+
+    def _too_slow(self):
+        try:
+            self.connection.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    def parse_request(self):
+        ok = super().parse_request()
+        self._header_timer.cancel()
+        return ok
+
+    def finish(self):
+        self._header_timer.cancel()
+        super().finish()
+
+    def _host_ok(self):
+        hosts = self.headers.get_all("Host") or []
+        return len(hosts) == 1 and (host_allowed(hosts[0], _ALLOWED_HOSTS)
+                                    or is_ip_literal(hosts[0]))
+
     def do_GET(self):
+        if not self._host_ok():
+            body = (b"Invalid host header: the dashboard answers only to loopback, "
+                    b"this machine's own name, *.ts.net names and IP addresses. "
+                    b"Add a name with DASHBOARD_ALLOWED_HOSTS=<name>.\n")
+            self.send_response(400)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path.startswith("/api/slot"):
             body = json.dumps(_slot_cached.get()).encode()
             self.send_response(200)
