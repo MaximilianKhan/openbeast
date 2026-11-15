@@ -441,10 +441,16 @@ else
           _webui_block="the WebUI container is up but never answered, so its default
                admin password could not be checked. Re-run this script once it is up." ;;
         absent|*:true)
-          # Not running (or a stopped container that restarts auth on): it
-          # starts from the conf, and start.sh's configure-webui.sh run
-          # retires the default password then.
-          : ;;
+          # Not running (no container: the normal state after ./stop.sh, or a
+          # stopped one that restarts auth on). Its volume may still hold
+          # admin@localhost with upstream's "admin" password from auth-off
+          # use, and nothing here can check that until it answers. Publishing
+          # anyway put a known admin password on the tailnet from the WebUI's
+          # first boot until start.sh's backgrounded configure-webui got to
+          # it — and for good if that rotation failed (it only warns).
+          _webui_block="the WebUI is not running, so its default admin password could
+               not be checked before going tailnet-wide. Start the stack
+               (./start.sh), wait for the WebUI, then re-run this script." ;;
         running:*|*:false)
           # A container carrying WEBUI_AUTH=false keeps it (restart:
           # unless-stopped) until compose recreates it.

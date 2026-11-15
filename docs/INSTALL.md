@@ -689,8 +689,10 @@ at a glance.
    `./stop.sh && ./start.sh`. If the stack was running when you ran
    `setup-tailscale.sh`, the script did **not** publish the WebUI (`:443`) —
    the running container still had auth off, which would have made every
-   tailnet device an admin. Re-run `./scripts/setup-tailscale.sh` after the
-   restart to publish it.
+   tailnet device an admin. It does not publish a stopped WebUI either: the
+   default admin password can only be checked (and retired) on a WebUI that
+   answers. Re-run `./scripts/setup-tailscale.sh` after the restart, once the
+   WebUI is up, to publish it.
 2. **Your admin account.** Any install that ever started with the default
    `WEBUI_AUTH=false` already has one: Open WebUI created `admin@localhost`
    as admin with its built-in password `admin`. The first auth-on start (and

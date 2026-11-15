@@ -567,15 +567,20 @@ def _docker(rig, inspect=None, err="Error: No such object: open-webui"):
     _write_exec(rig.bin / "docker", body)
 
 
-def test_tailscale_publishes_when_webui_not_running(ts_rig):
-    """WebUI down and no container: it will start from the conf (auth on) and
-    start.sh's configure-webui.sh retires the default password then."""
+def test_tailscale_refuses_443_when_webui_not_running(ts_rig):
+    """WebUI down and no container (the state ./stop.sh leaves): the volume may
+    still hold admin@localhost/admin, and nothing can check it until the WebUI
+    answers. Publishing anyway exposed that password from first boot until the
+    backgrounded rotation ran (review, webui-searxng). Auth is still persisted
+    and the rest of the tailnet setup still runs."""
     _docker(ts_rig)
     ts_rig.set_state(auth=True, admin_pw="admin", down=True)
-    p = ts_rig.run("setup-tailscale.sh")
+    p = ts_rig.run("setup-tailscale.sh", env_extra={"OPENBEAST_API_KEY": "k"})
     assert p.returncode == 0, p.stderr
-    assert _mounted_443(ts_rig)
+    assert not _mounted_443(ts_rig)
+    assert "WebUI is not running" in p.stderr
     assert ts_rig.conf_values()["WEBUI_AUTH"] == "true"
+    assert any(k == "ts" and "--https=8443" in a for k, a in _events(ts_rig))
 
 
 @pytest.mark.parametrize("status", ["running", "created", "exited"])
@@ -593,13 +598,15 @@ def test_tailscale_refuses_443_for_unanswering_auth_off_container(ts_rig, status
     assert any(k == "ts" and "--https=8443" in a for k, a in _events(ts_rig))
 
 
-def test_tailscale_publishes_for_stopped_auth_on_container(ts_rig):
-    """Negative control: a stopped container created auth-on restarts auth-on."""
+def test_tailscale_refuses_443_for_stopped_auth_on_container(ts_rig):
+    """A stopped container created auth-on restarts auth-on — but its default
+    admin password still cannot be checked until it answers."""
     _docker(ts_rig, inspect="exited PATH=/usr/bin WEBUI_AUTH=true")
     ts_rig.set_state(auth=True, admin_pw="admin", down=True)
     p = ts_rig.run("setup-tailscale.sh", env_extra={"WEBUI_WAIT_S": "0"})
     assert p.returncode == 0, p.stderr
-    assert _mounted_443(ts_rig), p.stdout + p.stderr
+    assert not _mounted_443(ts_rig), p.stdout + p.stderr
+    assert "WebUI is not running" in p.stderr
 
 
 def test_tailscale_refuses_443_when_docker_cannot_be_asked(ts_rig):
