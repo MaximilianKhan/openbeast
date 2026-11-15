@@ -165,12 +165,20 @@ def need_scanner() -> str:
 
 # --- files and hashes -------------------------------------------------------
 
-def walk_skill(root: str) -> list[str]:
+BYTECODE_DIR = "__pycache__"
+
+
+def walk_skill(root: str, skip_bytecode: bool = False) -> list[str]:
     """Relative paths of every file under root, sorted bytewise.
 
     Refuses symlinks and anything that is not a regular file: a link out of
     the tree is the classic way to make a reviewed directory mean something
     else on another machine, and neither the scanner nor the hash follows it.
+
+    skip_bytecode leaves out __pycache__/ directories. Only `verify` asks for
+    it: running a skill's helpers (skill-creator's `python -m scripts.…`)
+    writes one, and that is not an edit to the skill. An import never pins one
+    (promote refuses a staged __pycache__/), so the two hashes still agree.
     """
     out: list[str] = []
     total = 0
@@ -178,6 +186,8 @@ def walk_skill(root: str) -> list[str]:
         for d in dirnames:
             if os.path.islink(os.path.join(dirpath, d)):
                 raise GateError(f"symlinked directory in the skill: {os.path.join(dirpath, d)}")
+        if skip_bytecode:
+            dirnames[:] = [d for d in dirnames if d != BYTECODE_DIR]
         for f in filenames:
             full = os.path.join(dirpath, f)
             if os.path.islink(full) or not os.path.isfile(full):
@@ -199,14 +209,15 @@ def sha256_file(path: str) -> str:
     return h.hexdigest()
 
 
-def tree_sha256(root: str) -> str:
+def tree_sha256(root: str, skip_bytecode: bool = False) -> str:
     """One digest over every file, so a changed helper script is caught too.
 
     Byte-identical to (the ledger documents this command):
       (cd DIR && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum)
+    for any tree without a __pycache__/ — which every imported tree is.
     """
     h = hashlib.sha256()
-    rels = sorted(("./" + r for r in walk_skill(root)), key=lambda p: p.encode())
+    rels = sorted(("./" + r for r in walk_skill(root, skip_bytecode)), key=lambda p: p.encode())
     for rel in rels:
         h.update(f"{sha256_file(os.path.join(root, rel[2:]))}  {rel}\n".encode())
     return h.hexdigest()
@@ -711,7 +722,12 @@ def cmd_promote(args) -> int:
     md = os.path.join(staged, "SKILL.md")
     added = ensure_off_menu(md, name)
     _, fm, _ = check_skill_md(md, name)
-    walk_skill(staged)
+    caches = sorted(r for r in walk_skill(staged) if BYTECODE_DIR in r.split(os.sep))
+    if caches:
+        raise GateError(
+            f"the staged copy carries a bytecode cache ({os.path.dirname(caches[0])}/): "
+            "an import is source, and verify leaves __pycache__/ out of the tree hash.\n"
+            f"  delete it from {os.path.relpath(staged, REPO)}/ and promote again")
 
     say(f"promote {name}  ({url}@{rev[:12]})")
     allowed, summary = scan_and_judge(staged, parse_accept(args.accept),
@@ -808,15 +824,39 @@ def cmd_verify(args) -> int:
     # imported skill's row (or add a new directory) and its SKILL.md stayed in
     # skills/, unpinned, with verify green. Every directory must be accounted
     # for by exactly one of the ledger and the committed in-house list.
+    #
+    # "Directory" means one that holds a SKILL.md — the only thing the loader
+    # (agents/mcp_server.py _discover_skills) reads. A SKILL.md-less directory
+    # is never loaded (skill-creator's sibling <skill>-workspace/ is one), and
+    # a ledger row whose SKILL.md is gone is caught by the row walk below.
+    # Hidden and misnamed entries are NOT skipped: this check used to skip
+    # dot-directories while the loader read them, so skills/.cache/SKILL.md
+    # (hidden by .gitignore too) could claim `security-audit` with verify
+    # green. The loader now ignores them; a SKILL.md there is refused anyway.
     in_house = read_in_house()
     pinned = {row["Skill"].strip("`") for row in rows}
     try:
         on_disk = sorted(d for d in os.listdir(SKILLS)
-                         if not d.startswith(".") and os.path.isdir(os.path.join(SKILLS, d)))
+                         if os.path.isfile(os.path.join(SKILLS, d, "SKILL.md")))
     except OSError:
         on_disk = []
     unaccounted = 0
     for name in on_disk:
+        if not NAME_RE.match(name):
+            unaccounted += 1
+            print(f"  ✗ skills/{name}/SKILL.md: not a skill directory name (lowercase letters, "
+                  "digits, dashes) — nothing loads it; delete it")
+            continue
+        try:
+            with open(os.path.join(SKILLS, name, "SKILL.md"), encoding="utf-8") as fh:
+                fm_name = split_frontmatter(fh.read())[0].get("name") or name
+        except (OSError, UnicodeDecodeError, GateError):  # no frontmatter: keyed by directory
+            fm_name = name
+        if fm_name != name:
+            unaccounted += 1
+            print(f"  ✗ {name}: its frontmatter name {fm_name!r} is not its directory name"
+                  " — the loader ignores it; one directory cannot claim another skill's name")
+            continue
         if name in pinned and name in in_house:
             unaccounted += 1
             print(f"  ✗ {name}: has a ledger row AND is listed in skills/{os.path.basename(IN_HOUSE)}"
@@ -845,8 +885,13 @@ def cmd_verify(args) -> int:
             try:
                 if sha256_file(md) != row["SHA-256"].strip("`"):
                     problems.append("SKILL.md does not match its pinned SHA-256")
-                if tree_sha256(live) != row["Tree SHA-256"].strip("`"):
+                if tree_sha256(live, skip_bytecode=True) != row["Tree SHA-256"].strip("`"):
                     problems.append("the skill's files do not match the pinned tree SHA-256")
+                elif not args.quiet:
+                    for dirpath, dirnames, _ in os.walk(live):
+                        if BYTECODE_DIR in dirnames:
+                            say(f"  · {os.path.relpath(os.path.join(dirpath, BYTECODE_DIR), REPO)}/:"
+                                " a local bytecode cache, not part of the pinned tree")
             except GateError as e:
                 problems.append(str(e))
         if problems:
