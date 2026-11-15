@@ -2185,7 +2185,12 @@ def wrap_skeleton(body_html, *, theme=None, link_guard=False) -> bytes:
     guard = LINK_GUARD if link_guard else b""
     at = _html_tag_at(data)
     if at >= 0:
-        if stamp and b"data-theme" not in data[:2048]:
+        # Only the document's OWN start tag decides: a 2 KB substring scan
+        # also matched a `:root[data-theme="dark"]` selector in <head> —
+        # exactly the pages the stamp is for — and skipped them.
+        tag_end = data.find(b">", at)
+        own_tag = data[at:tag_end if tag_end >= 0 else len(data)]
+        if stamp and b"data-theme" not in own_tag.lower():
             # Stamp THE document's tag, found above — never a "<html" that
             # happens to sit inside the leading comment.
             data = data[:at + 5] + stamp.encode() + data[at + 5:]

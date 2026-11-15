@@ -1264,3 +1264,18 @@ def test_a_plain_environment_reads_the_store_and_url_from_the_conf(
     # the environment still wins over the conf
     monkeypatch.setenv("OPENBEAST_FILES_DIR", str(tmp_path / "envfiles"))
     assert store.store_root() == str(tmp_path / "envfiles" / "artifacts")
+
+
+def test_the_theme_stamp_reaches_a_document_that_styles_off_data_theme(store):
+    """Review (spark-scale) beast-artifact: the "already stamped?" test was a
+    substring scan of the first 2 KB, so a [data-theme] selector in <head>
+    skipped the stamp on exactly the pages that key off it."""
+    doc = (b"<!doctype html><html lang=\"en\"><head><style>"
+           b":root[data-theme=\"dark\"]{--bg:#000}</style></head>"
+           b"<body>x</body></html>")
+    out = store.wrap_skeleton(doc, theme="dark", link_guard=True)
+    assert b"<html data-theme=\"dark\" lang=\"en\">" in out
+    # an author who stamped their own <html> keeps it
+    own = b"<!doctype html><html data-theme=\"light\"><body>x</body></html>"
+    out = store.wrap_skeleton(own, theme="dark")
+    assert out.count(b"data-theme") == 1 and b"data-theme=\"light\"" in out
