@@ -302,10 +302,10 @@ fi
 
 # --- 1. Configure MCPO tool servers with RBAC (two connections, same MCPO) ---
 # See docs/RBAC_PLAN.md. Two connections back the one MCPO instance:
-#   id=1 "privileged"  filter !web_search,!fetch (15 OS-touching tools),
+#   id=1 "privileged"  filter !web_search,!fetch,!weather (the other 16),
 #                      admin-only (empty access_grants → non-admins denied;
 #                      admins bypass)
-#   id=2 "web"         filter web_search,fetch — public (everyone incl.
+#   id=2 "web"         filter web_search,fetch,weather — public (everyone incl.
 #                      guests). fetch is guest-safe since RBAC Phase 2: it
 #                      refuses non-http(s) schemes and any host resolving to
 #                      loopback/private/link-local space (SSRF-guarded in
@@ -313,8 +313,8 @@ fi
 #                      services, or the local disk.
 # Models reference both (meta.toolIds). Open WebUI enforces per-connection
 # access at tool-resolution time, so a `user`-role (family/guest) account
-# resolves web_search + fetch ONLY — never bash/file/agent tools. `admin`
-# accounts get all 18 via BYPASS_ADMIN_ACCESS_CONTROL (each tool lives on
+# resolves web_search + fetch + weather ONLY — never bash/file/agent tools. `admin`
+# accounts get all 19 via BYPASS_ADMIN_ACCESS_CONTROL (each tool lives on
 # exactly one connection, so no duplicates). Idempotent: reconciles to this
 # exact shape every run without clobbering unrelated connections.
 if [[ "$TOKEN_OK" != "1" ]]; then
@@ -324,7 +324,10 @@ echo "  Reconciling RBAC tool-server connections..."
 # Both connections target the ONE identity tool server (:3001,
 # agents/openapi_tools.py). RBAC Phase 2 keys (conf.sh) differentiate them:
 # connection 1 carries the admin key (all tools), connection 2 the guest key
-# (server enforces web_search/fetch only for it). Keys absent = both
+# (server enforces GUEST_TOOLS — web_search/fetch/weather — only for it). The
+# two filter lists below must partition the tools along GUEST_TOOLS
+# (tests/test_weather.py pins it): a guest tool left off connection 2 is
+# server-allowed but never offered to a non-admin account. Keys absent = both
 # connections keyless, server open — Phase-1 single-user behavior.
 ob_curl_hdr "$AUTH" -s "$WEBUI_URL/api/v1/configs/tool_servers" 2>/dev/null \
   | MCPO_URL="$MCPO_URL" python3 -c "
@@ -342,18 +345,18 @@ conns = [c for c in data.get('TOOL_SERVER_CONNECTIONS', [])
 priv = {'url': MCPO, 'path': 'openapi.json', 'type': 'openapi',
         'auth_type': 'bearer' if ADMIN_KEY else 'none',
         'headers': None, 'key': ADMIN_KEY,
-        'config': {'enable': True, 'function_name_filter_list': '!web_search,!fetch', 'access_grants': []},
+        'config': {'enable': True, 'function_name_filter_list': '!web_search,!fetch,!weather', 'access_grants': []},
         'spec_type': 'url', 'spec': '',
         'info': {'id': '1', 'name': 'Local Tools (privileged)',
                  'description': 'bash, file r/w/edit, grep, agents, skills — admin-only'}}
 web = {'url': MCPO, 'path': 'openapi.json', 'type': 'openapi',
        'auth_type': 'bearer' if GUEST_KEY else 'none',
        'headers': None, 'key': GUEST_KEY,
-       'config': {'enable': True, 'function_name_filter_list': 'web_search,fetch',
+       'config': {'enable': True, 'function_name_filter_list': 'web_search,fetch,weather',
                   'access_grants': [{'principal_type': 'user', 'principal_id': '*', 'permission': 'read'}]},
        'spec_type': 'url', 'spec': '',
        'info': {'id': '2', 'name': 'Web Search (all users)',
-                'description': 'web_search via SearXNG + SSRF-guarded fetch — safe for guest accounts'}}
+                'description': 'web_search via SearXNG, SSRF-guarded fetch, weather — safe for guest accounts'}}
 print(json.dumps({'TOOL_SERVER_CONNECTIONS': conns + [priv, web]}))
 " | ob_curl_hdr "$AUTH" -s -H "Content-Type: application/json" \
     "$WEBUI_URL/api/v1/configs/tool_servers" -X POST -d @- > /dev/null
@@ -363,7 +366,7 @@ elif [[ -n "${OPENBEAST_MCPO_ADMIN_KEY:-}${OPENBEAST_MCPO_GUEST_KEY:-}" ]]; then
   echo "  Tool server configured with ONE profile key — the other profile is disabled" >&2
   echo "  (the server fails closed). Run scripts/setup-mcpo-keys.sh to generate both." >&2
 else
-  echo "  Tool server configured (privileged=admin-only, web_search+fetch=all users)."
+  echo "  Tool server configured (privileged=admin-only, web_search+fetch+weather=all users)."
 fi
 fi   # TOKEN_OK
 

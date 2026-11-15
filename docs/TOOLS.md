@@ -154,9 +154,14 @@ that.
 - **Why a tool:** `web_search` for "weather Danville, CA" can land on
   Danville, Quebec, because "CA" is also Canada's country code. `weather`
   resolves the place deliberately and names the exact place in its reply:
-  - `City, XX` with a US state code means that state;
-  - another two-letter code is read as a country;
-  - spelled-out states and countries filter the same way.
+  - `City, XX` with a US state code means that state whenever the state
+    has such a town; otherwise XX is a country code, then a Canadian
+    province (`Berlin, DE`, `Mumbai, IN`, `Toronto, ON`);
+  - a spelled-out state must match exactly (`Charleston, VA` is not West
+    Virginia); a spelled-out country matches the geocoder's country name
+    (`Tokyo, Japan`, `Sao Paulo, Brazil`);
+  - `Georgia` alone is the state or the country by the caller's position,
+    and with no position the tool lists both and asks.
 - **Where the caller is:** a bare town name picks the one **nearest the
   caller**, and no location means the weather where the caller is now. The
   position is the device geolocation Open WebUI keeps when the user turns on
@@ -164,10 +169,20 @@ that.
   tool server reads it for the calling user with the WebUI admin credentials
   (`WEBUI_ADMIN_*`).
 - **No fixed home.** With no position, the tool asks which place.
+- **Units** follow the place's country; for the caller's own position, the
+  country of its timezone (from the forecast reply, no extra request). The
+  model can pass `units='metric'|'imperial'` when the user asks.
+- **Failures** (Open-Meteo down, 429, timeout) come back as one sentence
+  telling the model not to retry, never as a 500. The admin token used for
+  the position lookup is cached; a failed signin backs off five minutes,
+  because Open WebUI rate-limits signin per email and the human admin
+  shares that budget.
 - **Data:** Open-Meteo forecast and geocoding, two fixed hosts with no key.
   In island mode it refuses at once, like the other web tools.
 - **RBAC:** it is a web read, so guests get it next to `web_search` and
-  `fetch`.
+  `fetch`: it is in `GUEST_TOOLS` and on the all-users connection that
+  `configure-webui.sh` writes (re-run it after upgrading). It reads only
+  the caller's own WebUI record, with the admin credentials.
 
 ## The autonomous runner's 10 tools
 

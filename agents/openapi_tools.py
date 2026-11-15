@@ -21,8 +21,12 @@ the HTTP layer, which buys three things mcpo structurally can't provide:
              publish, list and republish as that operator.
   PROFILES   Both RBAC Phase 2 keys are checked natively in ONE process:
              the admin key reaches all tools, the guest key only
-             web_search/fetch (403 elsewhere), no key configured = open
-             loopback Phase-1 parity. Replaces the two-instance MCPO split.
+             GUEST_TOOLS — web_search, fetch, weather (403 elsewhere); no
+             key configured = open loopback Phase-1 parity. Replaces the
+             two-instance MCPO split. weather is a web read, but note it
+             also signs in to Open WebUI AS ADMIN to read the CALLER'S OWN
+             user.info.location (agents/weather.py caller_location) — only
+             that user's record, keyed by the forwarded user id.
   AUDIT      Every tool call is appended to .run/tool-audit.jsonl (0600)
              with ts/user/role/chat/tool/status/ms and an argument DIGEST
              (never the arguments themselves — chats stay private).
@@ -93,7 +97,8 @@ REPO_DIR = os.path.dirname(_HERE)
 
 # The full WebUI tool surface — same 18 functions the MCP server exposes.
 # `language_reference` (beast-lang's pull surface) is read-only and harmless,
-# and it is STILL admin-only: GUEST_TOOLS below is web-only on purpose, and a
+# and it is STILL admin-only: GUEST_TOOLS below is web reads only (search,
+# fetch, weather — outbound reads of guarded or fixed hosts) on purpose, and a
 # profile that is "web-only, plus the things that seemed safe" is not a
 # profile anyone can reason about. tests/test_lang_reference_tool.py pins it.
 TOOL_NAMES = [
