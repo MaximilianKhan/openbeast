@@ -536,7 +536,7 @@ class H(http.server.BaseHTTPRequestHandler):
         self._send(200, {"choices": [{"message": {"content": "I"}}]})
 srv = http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), H)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
-time.sleep(150); os._exit(0)
+time.sleep(600); os._exit(0)
 PY
 _TFP="$(_free_port)"; python3 "$_T/tfstub.py" "$_TFP" & _PIDS="$_PIDS $!"
 _TF="http://127.0.0.1:$_TFP"
@@ -561,6 +561,25 @@ _n1="$(curl -s "$_TF/idle/count")"; _tfhc idle; _n2="$(curl -s "$_TF/idle/count"
 grep -q "OK   TensorFold" <<< "$_O" && [[ -n "$_n1" && "$_n1" == "$_n2" ]] \
   && pass "…an idle pair that answers is OK, and a second pass within the interval sends no probe" \
   || fail "idle TensorFold: $(grep -i tensorfold <<< "$_O" || true) probes $_n1 -> $_n2"
+
+# A keyed rig in front of a server that does not enforce the key (the
+# container TensorFold engine has no auth): doctor must ask the server.
+# http://2130706433 is 127.0.0.1 spelled so doctor treats it as remote.
+echo ""
+echo "doctor.sh asks the server whether it enforces a key:"
+_R="$_T/doc-open"; _rig "$_R"
+RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=tensorfold "OPENBEAST_INFERENCE_URL=http://2130706433:$_TFP/idle" OPENBEAST_API_KEY=k-rig)
+printf 'LLAMA_API_KEY=k-rig\n' > "$_R/openbeast.conf"
+_O="$(_run "$_R" 120 "$_R/scripts/doctor.sh")"
+grep -q "serves /v1 WITHOUT a key (keyless /v1/models → 200) — LLAMA_API_KEY is set here, but the server does not enforce it" <<< "$_O" \
+  && grep -q "container TensorFold has NO auth" <<< "$_O" \
+  && pass "a keyed rig + an open TensorFold /v1 is warned, with the container-engine fix" \
+  || fail "open /v1 behind a rig key: $(grep -iE 'key|/v1' <<< "$_O" | head -5)"
+RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=tensorfold "OPENBEAST_INFERENCE_URL=http://2130706433:$(_free_port)" OPENBEAST_API_KEY=k-rig)
+_O="$(_run "$_R" 120 "$_R/scripts/doctor.sh")"
+grep -qE "WITHOUT a key|reached without a key" <<< "$_O" \
+  && fail "control: a keyed rig whose server does not answer keyless was warned" \
+  || pass "…control: no keyless 200, key set → no key warning"
 
 # One restarter at a time: the watchdog timer and the unmanaged supervisor
 # both run --restart. A live pass holds .run/healthcheck-restart.pid.

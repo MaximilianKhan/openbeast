@@ -395,6 +395,12 @@ def test_key_file_mode_and_presence(tmp_path):
 
 WARN = {
     "remote_no_key": (lambda r: r["nodes"]["ti"].pop("key_env"), "remote llama node with no key"),
+    # supply review: the advice must not be "add a key" alone — the container
+    # TensorFold engine ignores one.
+    "remote_tf_no_key": (lambda r: (r["nodes"]["ti"].pop("key_env"), r["nodes"]["ti"].update(engine="tensorfold"),
+                                    [d.update(caps=[c for c in d.get("caps", []) if c not in ("grammar", "id_slot")])
+                                     for d in r["deployments"].values() if d.get("node") == "ti"]),
+                         "container engine has no auth"),
     "allow_public": (lambda r: r["nodes"]["ti"].update(url="http://8.8.8.8:8080", allow_public=True),
                      "allow_public = true"),
     "ctx_zero": (lambda r: r["deployments"]["moe@ti"].update(ctx=0), "ctx = 0"),
