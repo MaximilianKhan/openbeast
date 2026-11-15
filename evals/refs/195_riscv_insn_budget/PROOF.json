@@ -1,0 +1,24 @@
+{
+ "unit": "195_riscv_insn_budget",
+ "dest": "/tmp/eval_rv195/lib.s",
+ "ref": "ref.s",
+ "repeat": 5,
+ "scale_check": 2.0,
+ "wrong": {
+  "wrong_misaligned_lw.s": "^memcpy case \\d+: trap \\(lw\\)",
+  "wrong_overrun.s": "^memcpy case \\d+: clobbered memory outside dst",
+  "wrong_haszero.s": "^strlen case \\d+: wrong result",
+  "wrong_clobber_s0.s": "^crc32 case \\d+: callee-saved register s0 not preserved",
+  "wrong_crc_noinvert.s": "^crc32 case \\d+: wrong result"
+ },
+ "slow": {
+  "slow_bytecopy.s": "^memcpy case \\d+: over instruction budget",
+  "slow_mis_noblock.s": "^memcpy case \\d+: over instruction budget",
+  "slow_strlen_bytes.s": "^strlen case \\d+: over instruction budget",
+  "slow_crc_bytes.s": "^crc32 case \\d+: over instruction budget",
+  "hang.s": "^memcpy case 0: over instruction budget"
+ },
+ "slow_max_s": 15,
+ "leak": "leak_probe.s",
+ "notes": "The budget is an exact retired-instruction count from the validator's sealed copy of rvi.py, so the gate is deterministic and host-independent (no timing); --scale only widens the harness timeout. Regenerate: gen_ref.py -> ref.s, mkwrong.py -> bad .s files, build.py -> evals/tasks/195_riscv_insn_budget.json. Reference uses 70% / 81% / 63% of the summed memcpy / strlen / crc32 budgets and has positive margin on every size 0..69 and every alignment (min 37 insns, memcpy n=15). The slow arms are correct code that is too slow: byte-loop memcpy, one-word-per-iteration shift-merge memcpy, byte-loop strlen and the textbook byte-table CRC loop (11 insns/byte)."
+}
