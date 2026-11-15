@@ -1,12 +1,17 @@
-"""Pinned fast-suite (evals/suites/v5-fast.json) integrity + imputation tests.
+"""Pinned fast-suite (evals/suites/v4-fast.json) integrity + imputation
+tests, and the coverage floor every suite (pin or v5 manifest) must meet.
 
-The fast suite's fidelity contract: a v5-fast run scored as
-(measured units + imputed complement) equals the full-291 capability
+The pin was named v5-fast until the v5 era break; v5 is now a real suite
+(evals/suites/v5.json, never imputed) and the pin is a subset of the v4
+universe (task files 01..162) only.
+
+The fast suite's fidelity contract: a v4-fast run scored as
+(measured units + imputed complement) equals the full-v4 capability
 EXACTLY for any model whose outcomes match the pin's assumptions.
 These tests pin the machinery that keeps that contract honest:
 
   1. The pin partitions the CURRENT effective unit set exactly
-     (units + assumed_passed + assumed_failed == all 291, no overlap).
+     (units + assumed_passed + assumed_failed == the v4 universe, no overlap).
   2. Declared counts match the lists (drift between metadata and content
      would silently mis-describe the suite).
   3. Tripwires are a subset of the measured units.
@@ -33,7 +38,8 @@ sys.path.insert(0, str(ROOT / "agents"))
 import run_eval  # noqa: E402
 import scoring  # noqa: E402
 
-PIN_PATH = ROOT / "evals" / "suites" / "v5-fast.json"
+PIN_NAME = "v4-fast"
+PIN_PATH = ROOT / "evals" / "suites" / f"{PIN_NAME}.json"
 
 
 @pytest.fixture(scope="module")
@@ -44,7 +50,13 @@ def pin() -> dict:
 
 @pytest.fixture(scope="module")
 def all_units() -> list[dict]:
-    return run_eval.load_tasks(None)
+    """The pin's universe: the v4 task files. New v5 task files (163+) are
+    outside it by construction."""
+    with open(PIN_PATH) as f:
+        pin = json.load(f)
+    tasks = run_eval.load_tasks(None)
+    universe = run_eval.suite_universe(pin, tasks)
+    return [t for t in tasks if t["id"] in universe]
 
 
 def test_pin_partitions_unit_set_exactly(pin, all_units):
@@ -122,13 +134,95 @@ def test_load_suite_unknown_name(tmp_path, monkeypatch):
 
 def test_suite_and_tasks_mutually_exclusive():
     with pytest.raises(ValueError, match="mutually exclusive"):
-        run_eval.run_eval(task_filter=["01_create_file"], suite="v5-fast",
+        run_eval.run_eval(task_filter=["01_create_file"], suite=PIN_NAME,
                           cache_only=True, model_name="x")
 
 
 def test_pinned_suite_loads_cleanly(pin):
+    loaded = run_eval.load_suite(PIN_NAME)
+    assert loaded["counts"]["units"] == len(pin["units"])
+
+
+def test_old_pin_name_still_loads(pin, capsys):
     loaded = run_eval.load_suite("v5-fast")
     assert loaded["counts"]["units"] == len(pin["units"])
+    assert "renamed" in capsys.readouterr().out
+
+
+def test_v4_universe_ignores_new_task_files():
+    """A v5 task file (id >= 163) is not drift of the frozen v4 pin."""
+    fake = [{"id": "20_priority_queue_a", "base_id": "20_priority_queue"},
+            {"id": "163_bigint_divmod_f", "base_id": "163_bigint_divmod"},
+            {"id": "173_asyncio"}]
+    assert run_eval.suite_universe({"base_suite_version": "v4"}, fake) == {"20_priority_queue_a"}
+    assert len(run_eval.suite_universe({}, fake)) == 3
+
+
+# --- coverage floor (brief §6.2): no pin may leave a cell empty ---------------
+
+def test_pin_coverage_floor_refuses_an_empty_cell(pin, all_units, tmp_path, monkeypatch):
+    import make_fast_suite as mfs
+    # The shipped v4 pin measures nothing in Signal Processing (and only
+    # tripwires in SWE): exactly the gap the floor exists to refuse.
+    gaps = mfs.pin_coverage_gaps(pin, {"cell_min": 1}, all_units)
+    assert any(g.startswith("Signal Processing & DSP x python") for g in gaps)
+    # A pin that declares the floor and leaves a cell empty does not load.
+    floored = dict(pin, coverage_floor={"cell_min": 1})
+    suites = tmp_path / "suites"
+    suites.mkdir()
+    (suites / "floored.json").write_text(json.dumps(floored))
+    monkeypatch.setattr(run_eval, "SUITES_DIR", str(suites))
+    with pytest.raises(SystemExit, match="coverage"):
+        run_eval.load_suite("floored")
+
+
+def test_pin_coverage_floor_passes_when_every_cell_is_measured(all_units):
+    import make_fast_suite as mfs
+    every = {"units": [t["id"] for t in all_units], "assumed_passed": [], "assumed_failed": []}
+    assert mfs.pin_coverage_gaps(every, {"cell_min": 1}, all_units) == []
+
+
+def test_v5_manifest_meets_its_coverage_floor():
+    import suite_manifest as sm
+    man = sm.load_manifest("v5")                      # refuses on any gap
+    assert len(sm.scored_units(man)) == 111
+    cells = sm.coverage_cells(man["units"])
+    cats = {c for c, _ in cells}
+    assert len(cats) == 12
+    for cat in cats:
+        for lang in sm.SIX_LANGS:
+            assert cells[(cat, lang)] >= 1, (cat, lang)
+
+
+def test_manifest_with_an_empty_cell_is_refused(tmp_path, monkeypatch):
+    import suite_manifest as sm
+    with open(sm.manifest_path("v5")) as f:
+        man = json.load(f)
+    # Drop every DSP zig unit: one empty cell.
+    man["units"] = [u for u in man["units"]
+                    if not (u["category"] == "Signal Processing & DSP" and u["lang"] == "zig")]
+    assert any("Signal Processing & DSP x zig" in e for e in sm.validate_manifest(man))
+    monkeypatch.setattr(sm, "SUITES_DIR", str(tmp_path))
+    (tmp_path / "broken.json").write_text(json.dumps(man))
+    with pytest.raises(SystemExit, match="coverage floor"):
+        sm.load_manifest("broken")
+
+
+def test_make_fast_suite_generate_refuses_a_gappy_pin(all_units, monkeypatch, capsys, tmp_path):
+    import make_fast_suite as mfs
+    refs, _ = _loo_refs(all_units)
+    monkeypatch.setattr(mfs, "load_reference_runs", lambda exclude: refs)
+    out = tmp_path / "pin.json"
+    monkeypatch.setattr(mfs, "SUITE_PATH", str(out))      # never the real pin
+    # Other test modules reload run_eval against a temp TASKS_DIR; the gap
+    # check must see the real task files.
+    monkeypatch.setitem(sys.modules, "run_eval", run_eval)
+    monkeypatch.setattr(run_eval, "TASKS_DIR", str(ROOT / "evals" / "tasks"))
+    before = PIN_PATH.read_bytes()
+    monkeypatch.setattr(sys, "argv", ["make_fast_suite.py", "--generate"])
+    assert mfs.main() == 1
+    assert "REFUSED" in capsys.readouterr().out
+    assert not out.exists() and PIN_PATH.read_bytes() == before
 
 
 # --- --check-run pre-flight (LANG_AWARENESS_PLAN.md §7) ----------------------

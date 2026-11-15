@@ -285,7 +285,7 @@ def test_eval_arm_pins_both_spellings(monkeypatch):
     monkeypatch.setenv("BEAST_ASSIST", "1")
     monkeypatch.delenv("OPENBEAST_DIAGNOSTICS", raising=False)
     src = (ROOT / "evals" / "run_eval.py").read_text()
-    assert 'os.environ["BEAST_ASSIST"] = "1" if diag_on else "0"' in src
+    assert 'os.environ["BEAST_ASSIST"] = "1" if ctx.diag_on else "0"' in src
 
 
 # ===========================================================================

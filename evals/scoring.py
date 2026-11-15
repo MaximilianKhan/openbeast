@@ -211,7 +211,8 @@ def compute_accuracy(tasks: list[dict]) -> tuple[float, dict]:
     return round(score, 2), dict(by_diff)
 
 
-def compute_solve_breadth(tasks: list[dict]) -> tuple[float, float, float]:
+def compute_solve_breadth(tasks: list[dict], lang_multi_only: bool = False
+                          ) -> tuple[float, float, float]:
     """Scoring v2 — two-axis capability decomposition. Returns
     (problem_solving, language_breadth, capability), all 0-100.
 
@@ -228,6 +229,12 @@ def compute_solve_breadth(tasks: list[dict]) -> tuple[float, float, float]:
 
     Singletons (k=1) and full-6-language solves score identically to the v1
     accuracy metric; only partial-language cases rebalance toward solving.
+
+    lang_multi_only (v5, brief §6.6): LANGUAGE_BREADTH is taken over
+    multi-language bases only (k > 1). Under v4 a solved singleton earned
+    LANG = 100 by construction, so a suite with many singletons read as
+    "language-broad" for solving Python tasks. With no solved k>1 base,
+    LANG is 0 (nothing that could be carried across languages was).
     """
     by_base: dict = defaultdict(list)
     for t in tasks:
@@ -244,6 +251,8 @@ def compute_solve_breadth(tasks: list[dict]) -> tuple[float, float, float]:
         solve_total += d
         if p >= 1:
             solve_earned += d
+            if lang_multi_only and k <= 1:
+                continue
             lang_total += d
             lang_earned += d * (p / max(1, k))
 
@@ -432,23 +441,74 @@ def current_suite_version() -> str:
 
 # Expected effective-unit counts per suite version. Entries whose suite has
 # no expected count here (legacy runs) are treated as full.
-SUITE_EXPECTED_UNITS = {"v4": 291, "v3.5": 323}
+# v5 counts SCORED units only: the 7 zig probe units (role "probe" in
+# evals/suites/v5.json) run in every arm but never score.
+SUITE_EXPECTED_UNITS = {"v5": 111, "v4": 291, "v3.5": 323}
+# Suites scored under the v4-era rules (LANG over every base, imputation
+# allowed). Anything newer gets the v5 rules.
+V4_ERA_SUITES = frozenset({"v4", "v3.5", "legacy", "unknown"})
+# Row reasons that are not outcomes at all: the unit was never attempted
+# because the profile's deadline hit first (evals/profile.py --budget-h).
+# Never scored as a failure: dropped from every score, counted separately.
+NOT_SCORED_REASONS = frozenset({"budget_skip"})
+
+
+def expected_units(suite_version: str | None) -> int | None:
+    """Scored-unit count a full run of this suite covers (None = unknown)."""
+    return SUITE_EXPECTED_UNITS.get(suite_version or "")
+
+
+def is_v4_era(suite_version: str | None) -> bool:
+    return (suite_version or "unknown") in V4_ERA_SUITES
+
+
+def imputation_allowed(suite_version: str | None, arm: str | None = None) -> bool:
+    """Fast-suite imputation (impute_suite_tasks) is RETIRED for v5 and for
+    every arm (brief §6.4): v5 has no assumed units; the leave-one-out error
+    of the v4 pin read high by +0.87 mean / +2.04 worst; and assumed
+    outcomes come from UNTREATED reference runs, so imputing a treatment arm
+    mixes two experiments."""
+    return is_v4_era(suite_version) and not arm
 
 
 def _suite_version(results: dict) -> str:
     """Suite version for a run. Prefer the recorded field (new runs write it);
     otherwise infer from the effective-unit count so `--rebuild` from older
     result files (which predate the field) still tags rows correctly instead
-    of flipping everything to 'unknown'. 291 units = v4, 323 = v3.5."""
+    of flipping everything to 'unknown'. The count is looked up in
+    SUITE_EXPECTED_UNITS (291 = v4, 323 = v3.5). v5 rows always record the
+    field, so v5 is never inferred."""
     sv = results.get("suite_version")
     if sv:
         return sv
     total = (results.get("summary") or {}).get("total")
-    if total == 291:
-        return "v4"
-    if total == 323:
-        return "v3.5"
+    by_count = {n: v for v, n in SUITE_EXPECTED_UNITS.items() if is_v4_era(v)}
+    if total in by_count:
+        return by_count[total]
     return "legacy" if total else "unknown"
+
+
+def scored_rows(tasks: list[dict]) -> list[dict]:
+    """The rows a score is computed over: probe units (role "probe") and
+    never-attempted units (budget_skip) are excluded."""
+    return [t for t in tasks if t.get("role", "scored") != "probe"
+            and t.get("reason") not in NOT_SCORED_REASONS]
+
+
+def compute_category_balanced(tasks: list[dict], lang_multi_only: bool = True) -> float | None:
+    """Secondary readout (brief §6.6): the mean over categories of each
+    category's own CAPABILITY. Never the ranking key — a 2-base category
+    (Performance) is too noisy to weigh as much as a 7-base one."""
+    meta = _task_meta()
+    by_cat: dict = defaultdict(list)
+    for t in tasks:
+        cat = t.get("category") or (meta.get(t.get("base_id") or t.get("id")) or (None,))[0]
+        by_cat[cat or "(uncategorized)"].append(t)
+    if not by_cat:
+        return None
+    caps = [compute_solve_breadth(rows, lang_multi_only=lang_multi_only)[2]
+            for rows in by_cat.values()]
+    return round(sum(caps) / len(caps), 2)
 
 
 # Row reasons that record an INFRASTRUCTURE outcome, not a model verdict:
@@ -483,6 +543,11 @@ def ineligibility_reasons(results: dict) -> list[str]:
     if results.get("suite_selection"):
         reasons.append(f"fast suite {results['suite_selection']}")
     harness = results.get("harness") or {}
+    if harness.get("arm") and harness.get("arm") != harness.get("board_arm", "L0"):
+        reasons.append(f"arm {harness['arm']}")
+    skipped = sum(1 for t in results.get("tasks", []) if t.get("reason") in NOT_SCORED_REASONS)
+    if skipped:
+        reasons.append(f"budget-skipped units ({skipped})")
     if harness.get("greedy"):
         reasons.append("greedy decode")
     if harness.get("diagnostics"):
@@ -602,9 +667,15 @@ def killed_units(tasks: list[dict]) -> int:
 def score_run(results: dict) -> dict:
     """Compute scores for a single eval run. Returns dict suitable for the
     leaderboard."""
-    tasks = results.get("tasks", [])
+    sv = _suite_version(results)
+    all_rows = results.get("tasks", [])
+    # v5: probes and budget-skipped units are not outcomes of the scored
+    # suite. v4-era rows have neither, so this is the identity for them.
+    tasks = scored_rows(all_rows)
     accuracy, breakdown = compute_accuracy(tasks)
-    problem_solving, language_breadth, capability = compute_solve_breadth(tasks)
+    multi_only = not is_v4_era(sv)
+    problem_solving, language_breadth, capability = compute_solve_breadth(
+        tasks, lang_multi_only=multi_only)
     speed = compute_speed(tasks)
     composite = compute_composite(accuracy, speed)
     by_category = compute_category_breakdown(tasks)
@@ -633,7 +704,7 @@ def score_run(results: dict) -> dict:
         "model": results.get("model", "unknown"),
         "model_slug": results.get("model_slug", "unknown"),
         "timestamp": results.get("timestamp"),
-        "suite_version": _suite_version(results),
+        "suite_version": sv,
         # `or {}` (not .get default): a cache-only result file may store an
         # explicit null, and .get returns that None instead of the default.
         "gpu": results.get("gpu") or {},
@@ -672,6 +743,13 @@ def score_run(results: dict) -> dict:
         "by_language": by_language,
         # update_leaderboard / --rebuild refuse a row with reasons here.
         "ineligible_reasons": ineligibility_reasons(results),
+        **({"arm": (results.get("harness") or {}).get("arm"),
+            "probe_units": sum(1 for t in all_rows if t.get("role") == "probe"),
+            "budget_skipped": sum(1 for t in all_rows
+                                  if t.get("reason") in NOT_SCORED_REASONS),
+            "capability_category_balanced": compute_category_balanced(tasks),
+            "lang_scope": "multi-language bases (k>1)"}
+           if multi_only else {}),
     }
 
 
@@ -742,10 +820,12 @@ def update_leaderboard(score_entry: dict, path: str = LEADERBOARD_PATH,
               f"leaderboard-ineligible run ({'; '.join(score_entry['ineligible_reasons'])}). "
               f"Existing leaderboard unchanged.")
         return load_leaderboard(path)
-    if (not force and score_entry.get("suite_version") == "v4"
-            and score_entry.get("tasks_total") not in (291,)):
+    expected = expected_units(score_entry.get("suite_version"))
+    if (not force and expected is not None
+            and score_entry.get("tasks_total") != expected):
         print(f"REFUSED leaderboard update for {score_entry.get('model', '?')}: "
-              f"v4 entry covers {score_entry.get('tasks_total')} tasks, expected 291. "
+              f"{score_entry.get('suite_version')} entry covers "
+              f"{score_entry.get('tasks_total')} tasks, expected {expected}. "
               f"Partial/aborted runs must not enter the leaderboard "
               f"(use force=True to override). Existing leaderboard unchanged.")
         return load_leaderboard(path)

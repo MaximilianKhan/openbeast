@@ -8,9 +8,13 @@ pinned here:
   1. Two variants of the same base task NEVER run concurrently.
   2. Distinct base tasks DO overlap in time (the whole point of --jobs).
   3. Parallel results match a sequential run in content and task ORDER.
-  4. jobs is clamped to the server's /props total_slots.
+  4. jobs is clamped to the server's /props total_slots (and to --slots).
   5. The scheduling-isolation precondition holds on the REAL suite: every
      /tmp/eval_* fixture dir belongs to exactly one task file.
+  6. v5 arms (--arms): a base group stays serialized ACROSS arms, the arms
+     of one unit run back to back, identical requests are shared, and each
+     arm gets its own results file with harness.arm / harness.pair_id.
+  7. Groups start longest-first by planned seconds (est_s x arms).
 """
 
 import importlib
@@ -77,11 +81,17 @@ class _Tracker:
         self.group_violation = False
         self.saw_overlap = False
         self.timeout_scales: set = set()
+        self.events: list[tuple] = []          # (unit, arm, "start"|"end")
+        self.walls: dict = {}
 
-    def run_agent(self, task, base_url, max_iter_override=None, timeout_scale=1.0):
+    def run_agent(self, task, base_url, max_iter_override=None, timeout_scale=1.0,
+                  env_overlay=None, wall_s=None):
         self.timeout_scales.add(timeout_scale)
         group = task.get("base_id", task["id"])
+        arm = (env_overlay or {}).get("OPENBEAST_EVAL_ARM")
+        self.walls[task["id"]] = wall_s
         with self.lock:
+            self.events.append((task["id"], arm, "start"))
             self.active_per_group[group] = self.active_per_group.get(group, 0) + 1
             if self.active_per_group[group] > 1:
                 self.group_violation = True
@@ -93,6 +103,7 @@ class _Tracker:
         with self.lock:
             self.active_per_group[group] -= 1
             self.current -= 1
+            self.events.append((task["id"], arm, "end"))
         return {
             "exit_code": 0, "elapsed_seconds": self.delay,
             "stdout": "", "stderr": "",
@@ -214,3 +225,126 @@ def test_fixture_dirs_unique_per_task_file():
             owners.setdefault(tok, set()).add(path.name)
     shared = {tok: sorted(files) for tok, files in owners.items() if len(files) > 1}
     assert not shared, f"fixture dirs shared across task files: {shared}"
+
+
+# --- v5: arms in one process, longest-first ------------------------------------
+
+def _arm_run(tmp_path, monkeypatch, jobs: int, delay: float = 0.05):
+    run_eval = _load_run_eval(tmp_path, server_slots=8)
+    # Two treatments that need no toolchain: B turns push-diagnostics on,
+    # whose assist scope covers go (not python) — so a python unit's B
+    # request is byte-identical to A's and must be SHARED, never re-run.
+    monkeypatch.setattr(run_eval, "BUILTIN_ARMS", {"A": {}, "B": {"diag": True}})
+    monkeypatch.setattr(run_eval, "BOARD_ARM", "A")
+    tracker = _Tracker(delay=delay)
+    run_eval.run_agent = tracker.run_agent
+    out = run_eval.run_eval(model_name="fake-model", use_cache=False, jobs=jobs,
+                            arms=["A", "B"])
+    return run_eval, tracker, out
+
+
+def test_arms_serialize_each_base_group_across_arms(tmp_path, monkeypatch):
+    _re, tracker, out = _arm_run(tmp_path, monkeypatch, jobs=4, delay=0.1)
+    assert not tracker.group_violation, "two jobs of one base group ran concurrently"
+    assert tracker.saw_overlap, "distinct groups should still overlap"
+    # The arms of one unit are adjacent within its group's timeline.
+    starts = [(u, a) for u, a, ev in tracker.events if ev == "start"]
+    for base in ("10_aa", "10_bb", "10_cc"):
+        seq = [(u, a) for u, a in starts if u.startswith(base)]
+        assert seq == [(f"{base}_python", "A"), (f"{base}_go", "A"), (f"{base}_go", "B")], seq
+
+
+def test_arms_write_one_file_per_arm_with_pair_id(tmp_path, monkeypatch):
+    _re, tracker, out = _arm_run(tmp_path, monkeypatch, jobs=1)
+    assert set(out["arms"]) == {"A", "B"}
+    pid = out["pair_id"]
+    for arm, path in out["paths"].items():
+        assert f"-{arm}-" in Path(path).name
+        data = json.loads(Path(path).read_text())
+        assert data["harness"]["arm"] == arm and data["harness"]["pair_id"] == pid
+        assert len(data["tasks"]) == 7
+    b = {t["id"]: t for t in out["arms"]["B"]["tasks"]}
+    # python units: identical request -> shared, not re-run
+    assert b["10_aa_python"]["shared_from"] == "A" and "shared_from" not in b["10_aa_go"]
+    assert b["20_solo"]["shared_from"] == "A"
+    ran_b = {u for u, a, ev in tracker.events if a == "B" and ev == "start"}
+    assert ran_b == {"10_aa_go", "10_bb_go", "10_cc_go"}
+    # diag runs only on in-scope units: B's harness says which
+    assert out["arms"]["B"]["harness"]["diag_scope"]
+    assert out["arms"]["A"]["harness"]["diagnostics"] is False
+
+
+def test_arm_units_plan_marks_unmeasured_pairs(tmp_path, monkeypatch):
+    run_eval = _load_run_eval(tmp_path, server_slots=8)
+    monkeypatch.setattr(run_eval, "BUILTIN_ARMS", {"A": {}, "B": {"diag": True}})
+    monkeypatch.setattr(run_eval, "BOARD_ARM", "A")
+    tracker = _Tracker(delay=0.01)
+    run_eval.run_agent = tracker.run_agent
+    out = run_eval.run_eval(model_name="fake-model", use_cache=False, jobs=1,
+                            arms=["A", "B"], arm_units={"B": {"10_aa_go"}},
+                            arm_meta={"B": {"stratified": True}})
+    b = {t["id"]: t for t in out["arms"]["B"]["tasks"]}
+    assert "reason" not in b["10_aa_go"]
+    assert b["10_bb_go"]["reason"] == run_eval.NOT_IN_ARM
+    assert out["arms"]["B"]["harness"]["arm_meta"] == {"stratified": True}
+    # an unmeasured pair is not an outcome: neither passed nor failed
+    s = out["arms"]["B"]["summary"]
+    assert s["passed"] + s["failed"] == 7 - s["not_in_arm"]
+
+
+def test_budget_deadline_skips_instead_of_failing(tmp_path):
+    run_eval = _load_run_eval(tmp_path, server_slots=8)
+    tracker = _Tracker(delay=0.0)
+    run_eval.run_agent = tracker.run_agent
+    out = run_eval.run_eval(model_name="fake-model", use_cache=False, jobs=1,
+                            deadline=time.time() - 1)
+    assert all(t["reason"] == "budget_skip" for t in out["tasks"])
+    assert out["summary"]["failed"] == 0 and not tracker.events
+    import scoring
+    entry = scoring.score_run(out)
+    assert entry["tasks_total"] == 0                 # never scored as failures
+
+
+def test_longest_first_ordering():
+    import run_eval as re_
+    groups = [["s"], ["l1", "l2"], ["m"]]
+    w = {"s": 10, "l1": 100, "l2": 100, "m": 50}
+    assert re_.order_groups_longest_first(groups, lambda j: w[j]) == \
+        [["l1", "l2"], ["m"], ["s"]]
+    # stable on ties: input order kept
+    assert re_.order_groups_longest_first([["a"], ["b"]], lambda j: 1) == [["a"], ["b"]]
+
+
+def test_parallel_run_starts_the_longest_group_first(tmp_path):
+    run_eval = _load_run_eval(tmp_path, server_slots=1)
+    # 20_solo is declared the longest unit by far
+    p = tmp_path / "tasks" / "20_solo.json"
+    d = json.loads(p.read_text())
+    d["est_s"] = 10_000
+    p.write_text(json.dumps(d))
+    tracker = _Tracker(delay=0.05)
+    run_eval.run_agent = tracker.run_agent
+    run_eval._fetch_server_slots = lambda base_url: 2
+    run_eval.run_eval(model_name="fake-model", use_cache=False, jobs=2)
+    starts = [u for u, _a, ev in tracker.events if ev == "start"]
+    # In task-file order 20_solo would be submitted LAST (after 10_cc);
+    # longest-first submits it first, so it starts among the first two.
+    assert starts.index("20_solo") < 2
+    assert starts.index("20_solo") < starts.index("10_cc_python")
+
+
+def test_unit_wall_cap_replaces_max_iter_minutes(tmp_path):
+    import run_eval as re_
+    assert re_.agent_wall_s({"max_iter": 40}, 40) == 2400          # v4 rule kept
+    assert re_.agent_wall_s({"max_iter": 40, "_max_wall_s": 900}, 40) == 900
+    assert re_.agent_wall_s({"max_iter": 40, "max_wall_s": 900}, 40, cap_override=300) == 300
+    assert re_.agent_wall_s({"max_iter": 10}, 10, cap_override=3000) == 600
+
+
+def test_slots_flag_clamps_when_props_is_unreadable(tmp_path, capsys):
+    run_eval = _load_run_eval(tmp_path, server_slots=None)
+    tracker = _Tracker(delay=0.0)
+    run_eval.run_agent = tracker.run_agent
+    out = run_eval.run_eval(model_name="fake-model", use_cache=False, jobs=8, slots=3)
+    assert out["jobs"] == 3
+    assert "--slots exposes 3" in capsys.readouterr().out

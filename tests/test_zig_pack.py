@@ -203,7 +203,7 @@ def test_env_injects_pack_for_zig_only_and_stamps_provenance(tmp_path, monkeypat
     run_eval.RESULTS_DIR = str(tmp_path / "results")
     seen = {}
 
-    def fake_agent(task, base_url, max_iter_override=None, timeout_scale=1.0):
+    def fake_agent(task, base_url, max_iter_override=None, timeout_scale=1.0, **_kw):
         seen[task["id"]] = task.get("_context_file")
         return {"exit_code": 0, "elapsed_seconds": 0.1, "stdout": "[iter 1/1]\nTask complete (iteration 1)\nTOKENS: prompt=1 completion=5 total=6\n",
                 "stderr": "", "tokens": {"prompt": 1, "completion": 5, "total": 6}, "iterations": 1}
@@ -227,7 +227,7 @@ def test_packs_off_by_default_no_context_no_provenance(tmp_path, monkeypatch):
     run_eval.RESULTS_DIR = str(tmp_path / "results")
     seen = {}
 
-    def fake_agent(task, base_url, max_iter_override=None, timeout_scale=1.0):
+    def fake_agent(task, base_url, max_iter_override=None, timeout_scale=1.0, **_kw):
         seen[task["id"]] = task.get("_context_file")
         return {"exit_code": 0, "elapsed_seconds": 0.1, "stdout": "", "stderr": "",
                 "tokens": {"prompt": 1, "completion": 5, "total": 6}}
@@ -295,8 +295,8 @@ def test_benchmark_all_passes_packs_through():
 
 def test_eval_arm_pins_both_pack_spellings():
     src = (ROOT / "evals" / "run_eval.py").read_text()
-    assert 'os.environ["BEAST_PACKS"] = "1" if packs_on else "0"' in src
-    assert 'os.environ["OPENBEAST_PACKS"] = "1" if packs_on else "0"' in src
+    assert 'os.environ["BEAST_PACKS"] = "1" if ctx.packs_on else "0"' in src
+    assert 'os.environ["OPENBEAST_PACKS"] = "1" if ctx.packs_on else "0"' in src
 
 
 # --- 5. cache era + drift ---------------------------------------------------
