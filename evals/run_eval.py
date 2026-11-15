@@ -32,6 +32,7 @@ import os
 import re
 import shlex
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -1059,6 +1060,58 @@ def _run_reaped(cmd, timeout: int, shell: bool = False) -> tuple[int, str]:
     return run_reaped(shell_cmd, timeout)
 
 
+_FIXTURE_PATH = re.compile(r"/tmp/eval[\w\-./]*")
+
+
+def unsafe_fixture_roots(task: dict) -> list[str]:
+    """The task's /tmp/eval* fixture roots that are NOT safely ours.
+
+    Every fixture is a fixed, global name directly under world-writable
+    /tmp, and setup's `mkdir -p` silently accepts a directory that already
+    exists — whoever made it. Another local uid could pre-create
+    /tmp/eval_debug 0777 with symlinks named like fixture files (setup's
+    `printf > …` then overwrites the operator's files), read the model's
+    solution, or rewrite it before validation to flip the verdict
+    (review finding campaign-evals: /tmp fixture squatting). fs.protected_*
+    guard only entries directly in sticky /tmp, not inside such a dir.
+
+    A root is unsafe when it is a symlink, is owned by another uid, or is
+    world-writable (or group-writable by a group other than ours). A root
+    that does not exist yet is fine."""
+    spec = " ".join(str(task.get(k, "")) for k in ("setup", "task", "validation",
+                                                   "cleanup", "pre_validate"))
+    roots = sorted({"/tmp/" + p[len("/tmp/"):].split("/", 1)[0]
+                    for p in _FIXTURE_PATH.findall(spec)})
+    bad = []
+    me = os.getuid()
+    for root in roots:
+        try:
+            st = os.lstat(root)
+        except FileNotFoundError:
+            continue
+        except OSError as e:
+            bad.append(f"{root} ({e.__class__.__name__})")
+            continue
+        if stat.S_ISLNK(st.st_mode):
+            bad.append(f"{root} (a symlink)")
+        elif st.st_uid != me:
+            bad.append(f"{root} (owned by uid {st.st_uid}, not {me})")
+        elif st.st_mode & 0o002 or (st.st_mode & 0o020 and st.st_gid != os.getgid()):
+            # Group-writable is fine under our OWN primary group: Ubuntu's
+            # default umask 0002 (user-private groups, the Sparks) makes
+            # every fixture dir 0775, and refusing that refused every unit.
+            bad.append(f"{root} (writable by others, mode {stat.S_IMODE(st.st_mode):o})")
+    return bad
+
+
+def _refuse_unsafe_fixtures(task: dict, log=print) -> bool:
+    bad = unsafe_fixture_roots(task)
+    if bad:
+        log(f"  Refusing fixtures not safely ours: {', '.join(bad)} — remove them "
+            f"(another uid may have planted them) and rerun")
+    return bool(bad)
+
+
 def run_setup(task: dict, log=print) -> bool:
     """Run task setup command. Returns True on success. Timeouts and
     unexpected errors are recorded as failures, not crashes — a single bad
@@ -1743,8 +1796,12 @@ def run_eval(
         # nothing, the leftover solution validated and a PASS was banked.
         run_cleanup(task, log=log)
 
-        # Setup
-        if not run_setup(task, log=log):
+        # Setup, between two checks that every /tmp/eval* fixture root is
+        # OURS (see unsafe_fixture_roots): before, so setup never writes
+        # through a directory another uid planted; after, for one created in
+        # the window between the check and setup's `mkdir -p`.
+        if (_refuse_unsafe_fixtures(task, log) or not run_setup(task, log=log)
+                or _refuse_unsafe_fixtures(task, log)):
             log("  FAIL (setup failed)")
             return record({
                 "id": task_id, "name": task_name, "difficulty": difficulty,
