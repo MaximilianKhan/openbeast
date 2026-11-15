@@ -581,6 +581,36 @@ def test_notify_test_endpoint(rig, stub, monkeypatch):
     assert s.calls[-1]["headers"]["Title"] == "beast-chat: test notification"
 
 
+def test_deep_link_follows_a_publish_after_start(rig, monkeypatch):
+    # extensions-ntfy review: public_url was resolved once at app creation,
+    # so the documented order (start, then --publish-chat) left every
+    # alert's link at http://localhost:<port> until a restart.
+    monkeypatch.delenv("OPENBEAST_CHAT_PUBLIC_URL", raising=False)
+    monkeypatch.setenv("OPENBEAST_CHAT_NOTIFY_URL", "http://127.0.0.1:9/t")
+    import shutil
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/tailscale")
+    serve = {"out": ""}
+
+    def run(cmd, **kw):
+        assert cmd[1:] == ["serve", "status"]
+        return subprocess.CompletedProcess(cmd, 0, stdout=serve["out"], stderr="")
+    monkeypatch.setattr(chat_server.subprocess, "run", run)
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(chat_server.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setitem(chat_server._PUBLIC_URL_CACHE, "at", 0.0)
+    monkeypatch.setitem(chat_server._PUBLIC_URL_CACHE, "value", "")
+    n = chat_server.Notifier.from_env(str(rig.run), 3003)
+    assert n.link("s1") == "http://localhost:3003/#/s/s1"      # not published yet
+    serve["out"] = "https://beast.tail1234.ts.net:8445 (tailnet only)\n|-- / proxy http://127.0.0.1:3003\n"
+    clock["t"] += 31                                           # the next alert
+    assert n.link("s1") == "https://beast.tail1234.ts.net:8445/#/s/s1"
+    assert n.link() == "https://beast.tail1234.ts.net:8445/#/"
+    # a found name is cached the long way (300 s), the fallback only 30 s
+    serve["out"] = ""
+    clock["t"] += 200
+    assert n.link() == "https://beast.tail1234.ts.net:8445/#/"
+
+
 def test_notifier_is_off_without_a_url_or_with_a_bad_one(rig, monkeypatch):
     assert chat_server.Notifier.from_env(str(rig.run), 3003) is None
     monkeypatch.setenv("OPENBEAST_CHAT_NOTIFY_URL", "file:///etc/passwd")

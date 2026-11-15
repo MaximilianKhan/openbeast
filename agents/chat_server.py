@@ -1617,12 +1617,13 @@ class Notifier:
     def __init__(self, url: str, *, on=NOTIFY_STATES_DEFAULT,
                  token_file: str = "", state_path: str,
                  public_url: str = "", min_interval: float = 60.0,
-                 burst: int = 10, poster=None):
+                 burst: int = 10, poster=None, port: int | None = None):
         self.url = url
         self.on = tuple(s for s in on if s in TERMINAL_STATES)
         self.token_file = token_file
         self.state_path = state_path
-        self.public_url = public_url.rstrip("/")
+        self._public_url = public_url.rstrip("/")
+        self.port = port
         self.min_interval = min_interval
         self.burst = max(1, burst)
         self.poster = poster or self._post
@@ -1654,7 +1655,20 @@ class Notifier:
                    token_file=(os.environ.get("OPENBEAST_CHAT_NOTIFY_TOKEN_FILE")
                                or "").strip(),
                    state_path=os.path.join(run_dir, "notify-state.json"),
-                   public_url=chat_public_url(port))
+                   port=port)
+
+    @property
+    def public_url(self) -> str:
+        """The deep-link base, resolved per use (chat_public_url caches it).
+
+        Frozen at app creation it stayed http://localhost:<port> on the
+        documented path, where `setup-tailscale.sh --publish-chat` runs after
+        `./start.sh -d`, and every alert's link was dead on the phone until
+        the next restart. An explicit `public_url` (tests) is used as given.
+        """
+        if self._public_url or self.port is None:
+            return self._public_url
+        return chat_public_url(self.port).rstrip("/")
 
     # -- state -------------------------------------------------------------
     def _load(self) -> dict | None:
@@ -1727,8 +1741,12 @@ class Notifier:
             headers["Authorization"] = f"Bearer {token}"
         return bool(self.poster(body, headers))
 
-    def link(self, session_id: str) -> str:
-        return f"{self.public_url}/#/s/{session_id}" if self.public_url else ""
+    def link(self, session_id: str = "") -> str:
+        """The deep link to one session, or (no id) to the console."""
+        base = self.public_url
+        if not base:
+            return ""
+        return f"{base}/#/s/{session_id}" if session_id else f"{base}/#/"
 
     def notify_session(self, rec: dict) -> bool:
         sid = str(rec.get("id") or "")
@@ -1818,7 +1836,7 @@ class Notifier:
                 self.send(title="beast-chat: more sessions ended",
                           body=f"{overflow} more session(s) ended — open the "
                                f"console for the list",
-                          click=self.public_url + "/#/" if self.public_url else "")
+                          click=self.link())
             snap = {"version": 1,
                     "last_tick": datetime.fromtimestamp(now).isoformat(),
                     "sessions": current}
@@ -1850,8 +1868,13 @@ def chat_public_url(port: int) -> str:
     if v.startswith(("http://", "https://")):
         return v
     now = time.monotonic()
-    if _PUBLIC_URL_CACHE["value"] and now - _PUBLIC_URL_CACHE["at"] < 300:
-        return _PUBLIC_URL_CACHE["value"]
+    cached = _PUBLIC_URL_CACHE["value"]
+    # The loopback fallback is the "not published yet" answer: asked again
+    # after 30 s, not 300, so a --publish-chat that follows the start shows
+    # up in the next alert's link.
+    ttl = 30 if cached.startswith("http://localhost:") else 300
+    if cached and now - _PUBLIC_URL_CACHE["at"] < ttl:
+        return cached
     import re
     import shutil
     value = f"http://localhost:{port}"
@@ -3838,11 +3861,12 @@ def create_app() -> FastAPI:
                         status_code=409,
                         detail="notifications are off — set CHAT_NOTIFY_URL "
                                "(an ntfy topic URL) and restart")
+                # link() may ask `tailscale serve status`: off the event loop.
+                click = await asyncio.to_thread(notifier.link)
                 ok = await asyncio.to_thread(
                     notifier.send, title="beast-chat: test notification",
                     body="If you can read this, session alerts will reach you.",
-                    click=notifier.public_url + "/#/" if notifier.public_url else "",
-                    tags="bell")
+                    click=click, tags="bell")
                 ctx["extra"] = {"sent": ok}
                 if not ok:
                     raise HTTPException(status_code=502,
