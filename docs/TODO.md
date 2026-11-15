@@ -1,5 +1,33 @@
 # TODO
 
+## 🧮 PERFORMANCE MATRIX — engine × language-assistance × model (opened 2026-11-15)
+
+Max, 2026-11-15: the 5090 rig must be eval-tested running the same models on
+**llama.cpp vs vLLM**, and the result belongs in the same matrix as the v5
+language-assistance ablation (L0 bare / L1 packs / L2 packs+assist+escalate)
+and the variables added later.
+
+- [ ] **Rig engine A/B: llama.cpp vs vLLM on the 5090**, per model, same weights family
+  (GGUF for llama.cpp; the closest safetensors quant for vLLM: NVFP4/FP8/AWQ —
+  record which, it is a confound). Measure on the **v5 suite**: SCORE, SOLVE,
+  LANG, per-language pass rates, tokens and wall time per unit, single-stream
+  and `--jobs N` aggregate tok/s, TTFT, VRAM headroom, failure classes
+  (tool-call parse errors, context overflows). Same decoding settings, same
+  reasoning budget, same era. Start with the default uncensored Qwen3.8 27B
+  and the 35B-A3B MoE.
+- [ ] **One matrix, one runner**: rows = (host, engine, engine version,
+  weights repo@rev / quant, model), columns = arms (L0 / L1 / L2) and the
+  later variables (MTP / speculative decoding on-off, KV dtype, context size,
+  slots). `evals/profile.py` writes each cell; `evals/ablation.py` reports
+  paired deltas only *within* an engine, and the engine delta only within an
+  arm, never across eras.
+- [ ] **Engine provenance in every result**: engine name + exact version/commit
+  + image digest + flags (the v5 harness's provenance capture for
+  vLLM/TensorFold, not only `pgrep llama-server`).
+- [ ] Sparks: the same A/B between TensorFold (recipe / native) and vLLM once a
+  vLLM build serves the chosen model on GB10.
+- Engine swapping itself: `scripts/engine.sh` (see docs/ENGINES.md once it lands).
+
 ## ⏳ GPU BACKLOG — parked 2026-10-09 (Max: "kick that into the back, we come back to it later")
 
 Everything below needs the GPU and was deliberately NOT run on 2026-10-09.
