@@ -1321,3 +1321,16 @@ def test_an_inline_image_is_not_counted_as_prompt_text():
     assert feats(cfg, two).est_prompt_tokens >= 2 * core.IMAGE_TOKEN_ESTIMATE
     # the caller's body is untouched (it is forwarded as is)
     assert body["messages"][0]["content"][1]["image_url"]["url"] == uri
+
+
+def test_the_requested_model_is_bounded_and_encodable():
+    # Review 2026-11 F4: the caller's `model` lands in Trace.requested, a note,
+    # the decision ring and the audit row — unbounded, it pinned GBs of RAM.
+    cfg = cfg_of()
+    f = feats(cfg, {"model": "x" * 1_000_000, "messages": [{"role": "user", "content": "hi"}]})
+    assert len(f.model) <= core.MAX_ID_CHARS + 16
+    f = feats(cfg, {"model": "beast", "messages": []}, headers={"x-hydra-pin": "p" * 100_000})
+    assert len(f.pin) <= core.MAX_ID_CHARS + 16
+    f = feats(cfg, {"model": "be\ud800ast", "messages": []})
+    f.model.encode("utf-8")                                   # no lone surrogate survives
+    assert feats(cfg).model == "beast"

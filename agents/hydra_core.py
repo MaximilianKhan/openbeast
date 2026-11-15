@@ -1416,6 +1416,21 @@ def _header(headers, name: str) -> str | None:
     return v
 
 
+# Caller-chosen ids (`model`, X-Hydra-Pin) are kept in the Trace, a note,
+# the 200-entry decision ring and the audit row. Unbounded, an 8 MiB `model`
+# pinned ~17 MB per request until 200 newer ones pushed it out. No real
+# route, alias or deployment id is anywhere near this long.
+MAX_ID_CHARS = 256
+
+
+def _bounded_id(v) -> str:
+    s = v if isinstance(v, str) else str(v)
+    if len(s) > MAX_ID_CHARS:
+        s = f"{s[:MAX_ID_CHARS]}…(+{len(s) - MAX_ID_CHARS})"      # can match no id
+    # a lone surrogate (JSON "\ud800") would make every later .encode() raise
+    return s.encode("utf-8", "replace").decode("utf-8")
+
+
 def extract_features(path: str, body: dict, headers, cfg: Config) -> Features:
     msgs = body.get("messages")
     if msgs is None:
@@ -1433,6 +1448,8 @@ def extract_features(path: str, body: dict, headers, cfg: Config) -> Features:
     except (TypeError, ValueError):
         mt = cfg.settings.default_max_tokens
     session = _header(headers, "x-conversation-id") or _header(headers, "x-hydra-session")
+    if session and len(session) > MAX_ID_CHARS:      # an affinity key, kept 4096-deep: bound it
+        session = hashlib.sha1(session.encode("utf-8", "surrogateescape")).hexdigest()
     if not session and isinstance(body.get("messages"), list):
         first_sys = next((_text_of(m.get("content")) for m in body["messages"]
                           if isinstance(m, dict) and m.get("role") == "system"), "")
@@ -1441,7 +1458,7 @@ def extract_features(path: str, body: dict, headers, cfg: Config) -> Features:
         if first_sys or first_user:
             session = hashlib.sha1((first_sys + "\x00" + first_user).encode()).hexdigest()[:16]
     return Features(
-        path=path, model=str(body.get("model") or ""), stream=bool(body.get("stream")),
+        path=path, model=_bounded_id(body.get("model") or ""), stream=bool(body.get("stream")),
         has_images=_any_image_part(body.get("messages")),
         has_tools=bool(body.get("tools")),
         needs_json_schema=rf.get("type") in ("json_schema", "json_object") or "json_schema" in body,
@@ -1450,7 +1467,7 @@ def extract_features(path: str, body: dict, headers, cfg: Config) -> Features:
         needs_embeddings=path.endswith("/embeddings"),
         est_prompt_tokens=math.ceil(len(text) / cfg.settings.chars_per_token) + n_images * IMAGE_TOKEN_ESTIMATE,
         max_tokens=max(0, mt), session_key=session or None,
-        pin=_header(headers, "x-hydra-pin") or None,
+        pin=_bounded_id(_header(headers, "x-hydra-pin") or "") or None,
         prompt_head=_prompt_head(body.get("messages")))
 
 

@@ -1505,3 +1505,12 @@ def test_a_half_open_stream_that_dies_midway_reopens_the_breaker(fleet):
     assert r.status_code == 200 and "[DONE]" not in r.text
     assert hs.breaker_state(time.monotonic()) == core.OPEN
     assert hs.h.trial_inflight == 0 and srv.hy.state.inflight("unc@rig") == 0
+
+
+def test_a_huge_model_id_is_not_kept_in_the_decision_ring(fleet, tmp_path):
+    # Review 2026-11 F4
+    srv, _, _, _ = fleet()
+    r = post(srv, chat(model="x" * 200_000))
+    assert r.status_code == 200 and r.headers["x-hydra-route"] == "beast"
+    assert len(json.dumps(srv.hy.decisions[-1])) < 4096
+    assert len(audit_rows(tmp_path)[-1]["requested"]) <= core.MAX_ID_CHARS + 16
