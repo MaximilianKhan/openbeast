@@ -1,7 +1,7 @@
 # beast-chat — the rig's sessions, from your phone
 
 **Status: shipped in v1.4.0 (2026-09-14); this page describes `main` as of
-2026-09-30.** Since v1.6.0 the console starts agents and jobs from a
+2026-09-30.** Since v1.7.0 the console starts agents and jobs from a
 new-session sheet (with operator presets), pauses and resumes agents, installs
 as a PWA, pushes a notification when a session ends (opt-in, through the ntfy
 extension), exports a transcript as a beast-artifact page, shows a rig status
@@ -340,13 +340,19 @@ is a header — real when tailscale injects it, forgeable by any process
 already on the box. A forgeable header is enough to *watch*. It is not enough
 to *act*.
 
-"Any process on the box" includes the **host-network containers**: Open
-WebUI and SearXNG run `network_mode: host`, so a compromise of either reaches
-`127.0.0.1:3003` as loopback and can claim any login — without being able to
-read the 0600 token files. To close that, have `chat_server` also listen on a
+"Any process on the box" includes **every host-network container**: Open
+WebUI and SearXNG run `network_mode: host`, and so may a backend you started
+from `scripts/backends/` (a third-party inference image, say). Code running
+inside any of them — a compromise, or an Open WebUI Function, which runs as
+root in that container — reaches `127.0.0.1:3003` as loopback and can claim
+any login, without being able to read the 0600 token files. `doctor` names
+the running host-network containers while `login_from` (in the health
+detail) is still `loopback`. To close that, have `chat_server` also listen on a
 Unix socket and honour the login header **only** there:
-`OPENBEAST_CHAT_SOCKET=/path/to/.run/chat.sock` (created 0600 in a 0700
-directory; `tailscaled` runs as root, so it can still connect) plus
+`OPENBEAST_CHAT_SOCKET=/path/to/.run/chat.sock` (created 0600; its directory
+must be yours, and `chat_server` strips group/other write from it at start so
+no one else can swap the socket; `tailscaled` runs as root, so it can still
+connect) plus
 `OPENBEAST_CHAT_LOGIN_FROM=unix`, and point `tailscale serve` at
 `unix:/path/to/.run/chat.sock`. TCP loopback then needs the locality token or
 a device key like any other caller. The default stays `loopback`.
@@ -388,6 +394,13 @@ so editing it in `openbeast.conf` changes nothing until `./stop.sh &&
 ./start.sh` — and a login still listed there stays authorized whatever the
 file says. For revocation you can do without a restart, keep the list in the
 file.
+
+The file's **existence** turns enforcement on, not its contents: an empty or
+all-comment `.run/chat-operators` is an allowlist of nobody, so removing the
+last reader revokes it rather than reopening reads to the whole tailnet. Once
+`chat_server` has seen the file, deleting it also fails closed (only device keys and the
+locality token read) until the next restart. Going back to open mode is
+deliberate: delete the file and restart.
 
 A caller that presents `.run/chat-local.token` satisfies both tiers at once:
 reading it is proof of being on the box, which is strictly more than a device
@@ -495,7 +508,10 @@ variable naming a key, token, secret or password — the same list the bash
 tool scrubs — nor the notification URL. Agents keep only their inference key
 (`OPENBEAST_API_KEY`, `OPENAI_API_KEY`). The same command started with
 `job.sh run` from a terminal keeps your shell's environment. A job that needs
-a credential should read it from a file (or set it in the preset's command).
+a credential should read it from a 0600 file at run time. Do **not** write
+it into a preset's or a job's command: readers are served commands scrubbed of
+secret-shaped values, but the job's argv (`/bin/bash -lc <cmd>`) is visible to
+any process on the box via `ps`, and the 0600 audit log keeps it whole.
 
 ### Presets: `.run/chat-presets.json`
 
@@ -612,12 +628,16 @@ in any model-run command's. One consequence: a `python3
 agents/chat_server.py` started by hand gets no URL and sends nothing.
 
 Delivery is bounded. A session notifies at most once a minute, and one diff
-sends at most 10; past that it sends one "N more sessions ended" summary.
+attempts at most 10 sends (failed ones count); past that it sends one "N more
+sessions ended" summary. A `lost` alerts only once it has stayed `lost` for
+10 s, so an operator stop that passes through `lost` on its way to `stopped`
+does not page you.
 Every ~5 s the ledger is compared with `.run/notify-state.json` (0600), so a
 job that ended while the server was down still notifies on the next start. A
 failing endpoint costs one stderr line per five minutes, and an alert it
 could not take is retried on later passes (at most once a minute) until it is
-delivered or 24 hours have passed since the session ended.
+delivered or 24 hours have passed since the session ended (for a `lost`
+session, since it was found lost).
 **Test alert** in the 🔑 sheet sends one on demand (`POST
 /api/chat/notify/test`, write gate; 409 when notifications are off).
 
