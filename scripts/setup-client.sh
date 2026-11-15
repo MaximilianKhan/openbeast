@@ -159,6 +159,8 @@ removed = []
 mcp = cfg.get("mcp", {})
 if "openbeast-tools" in mcp:
     del mcp["openbeast-tools"]; removed.append("mcp.openbeast-tools")
+if isinstance(mcp.get("servers"), dict) and "openbeast-tools" in mcp["servers"]:
+    del mcp["servers"]["openbeast-tools"]; removed.append("mcp.servers.openbeast-tools")
 # Sweep the legacy "local-tools" key older installers wrote — but ONLY when its
 # command points into our venv (~/.openbeast-client, true for both install
 # shapes), so we never touch the checkout's own bare-python3 "local-tools".
@@ -622,13 +624,40 @@ if api_key:
 # on ModuleNotFoundError ("server unavailable"). A distinct key can't be
 # shadowed; we pin the venv python + an absolute path. Do NOT rename to
 # "local-tools".
-cfg.setdefault("mcp", {})["openbeast-tools"] = {
+entry = {
     "type": "local",
     "command": [os.path.join(venv, "bin", "python3"),
                 os.path.join(repo, "agents", "mcp_server.py")],
-    "enabled": True,
     "environment": env,
 }
+# opencode v2 keeps MCP servers under mcp.servers.<name> and does NOT merge a
+# v1 top-level mcp.<name> entry with them: a file mixing the two layouts loses
+# servers silently (seen 2026-11-15: `opencode mcp list` said "No MCP servers
+# configured" once beast-apps had added a v2 entry next to our v1 one). So on
+# v2 — detected from the CLI, or from a file that already uses mcp.servers —
+# write the v2 shape and move any other v1 server entries in with it.
+mcp = cfg.setdefault("mcp", {})
+def _oc_major():
+    try:
+        import re, subprocess
+        out = subprocess.run(["opencode", "--version"], capture_output=True, text=True, timeout=20).stdout
+        m = re.search(r"(\d+)\.\d+", out)
+        return int(m.group(1)) if m else 0
+    except Exception:
+        return 0
+if isinstance(mcp.get("servers"), dict) or _oc_major() >= 2:
+    servers = mcp.setdefault("servers", {})
+    for k in [k for k, v in mcp.items() if k != "servers" and isinstance(v, dict) and "type" in v]:
+        v = mcp.pop(k)
+        if v.pop("enabled", True) is False:
+            v["disabled"] = True
+        servers.setdefault(k, v)
+    # Code Mode (v2's default) wraps tools in an `execute` script; OpenBeast's
+    # conformance and evals measure plain tool calls, so expose them directly.
+    servers["openbeast-tools"] = dict(entry, codemode=False)
+    mcp.pop("openbeast-tools", None)
+else:
+    mcp["openbeast-tools"] = dict(entry, enabled=True)
 
 # Model list: copy from the checkout's opencode.json (kept current with the
 # rig's serve scripts); fall back to the default model alone.

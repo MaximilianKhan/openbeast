@@ -173,6 +173,38 @@ else
   fail "merge with a bad PATH python3 (rc=$RC, calls=$(tr '\n' ' ' < "$S/py.calls")): $OUT"
 fi
 
+# opencode v2 keeps MCP servers under mcp.servers and does not merge a v1
+# top-level entry with them: write the v2 shape (Code Mode off) and move the
+# user's own v1 servers in with it, so the file never mixes the two layouts.
+echo ""
+echo "3b. opencode v2: the MCP entry lands in mcp.servers, never mixed with v1:"
+printf '#!/bin/bash\n[[ "$1" == --version ]] && echo "opencode v2.0.25"\nexit 0\n' > "$BIN/opencode"
+OC="$T/hv2/.config/opencode/opencode.json"; mkdir -p "$(dirname "$OC")"
+echo '{"mcp":{"mine":{"type":"local","command":["/bin/true"],"enabled":false}}}' > "$OC"
+run hv2 200 200 -- --host rig.example --no-search
+if [[ $RC -eq 0 ]] && "$REAL_PY" - "$OC" <<'PYEOF'
+import json, sys
+m = json.load(open(sys.argv[1]))["mcp"]
+s = m.get("servers", {})
+ok = (set(m) == {"servers"}                                   # nothing left at the v1 level
+      and s.get("openbeast-tools", {}).get("codemode") is False
+      and "enabled" not in s["openbeast-tools"]
+      and s.get("mine", {}).get("disabled") is True)          # the user's v1 entry, moved, still off
+sys.exit(0 if ok else 1)
+PYEOF
+then
+  pass "v2: openbeast-tools under mcp.servers with Code Mode off; the user's v1 server moved in, still disabled"
+else
+  fail "v2 MCP layout (rc=$RC): $(cat "$OC" 2>/dev/null)"
+fi
+run hv2 200 200 -- --uninstall
+if "$REAL_PY" -c 'import json,sys; m=json.load(open(sys.argv[1]))["mcp"]; sys.exit(0 if "openbeast-tools" not in m.get("servers",{}) and "mine" in m["servers"] else 1)' "$OC"; then
+  pass "v2: --uninstall removes mcp.servers.openbeast-tools and keeps the user's own server"
+else
+  fail "v2 uninstall: $(cat "$OC" 2>/dev/null)"
+fi
+printf '#!/bin/bash\nexit 0\n' > "$BIN/opencode"
+
 # ---------------------------------------------------------------------------
 echo ""
 echo "4. rig auto-detection (supply S12, UX-29):"
