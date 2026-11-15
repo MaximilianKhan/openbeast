@@ -321,8 +321,9 @@ Three conclusions shaped the policy:
   command. The gate makes the review visible and recorded, not mandatory in
   spirit. The ledger row shows what was accepted.
 - **Scanner upgrades change the report.** The gate refuses a report missing its
-  fields and warns on a version other than 2.12.0. Bump `SCANNER_REV` and
-  `SCANNER_VERSION` together after reading a real report.
+  fields, and refuses (exit 1) a report from any version other than the pinned
+  2.12.0 — a clean report from another scanner never promotes. Bump
+  `SCANNER_REV` and `SCANNER_VERSION` together after reading a real report.
 - **Not in CI.** CI runs the stubbed tests and the ledger hash check. It does
   not run SkillSpector over `skills/`, because that would mean installing an
   unlocked dependency closure in CI. A baseline file plus a locked install
