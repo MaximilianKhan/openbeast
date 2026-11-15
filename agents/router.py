@@ -201,9 +201,13 @@ _CHAT_HEADER = "x-openwebui-chat-id"
 # keyword-free IMPLICIT spawns ("handle this huge thing while I grab coffee")
 # for keeping every normal turn fast; explicit requests ("spawn/launch an
 # agent", "in the background", "autonomous", "report back") still all fire.
+# "agent(s)" and "background" are delegation words, but not inside a path
+# or file name (agents/runner.py, agent.py), User-Agent, or CSS
+# (background-color, background image): those are ordinary coding chat.
 _HINTS = re.compile(
-    r"\b(agents?|background|spawn|launch|kick[ -]?off|autonomous|delegate|"
-    r"in parallel|meanwhile|report back|check back|don'?t (wait|block))\b",
+    r"\b((?<![/.])(?<!user[ -])agents?(?!/|\.\w)|"
+    r"background(?![ -]?(?:colou?r|image))|spawn|launch|kick[ -]?off|autonomous|"
+    r"delegate|in parallel|meanwhile|report back|check back|don'?t (wait|block))\b",
     re.IGNORECASE,
 )
 
