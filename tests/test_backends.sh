@@ -620,6 +620,24 @@ for spec in sys.argv[3:]:
 prof.with_suffix(".lock").write_text(json.dumps({"schema": 1, "artifacts": arts}))
 PY
 }
+# _model_type <profile> <dir> <model_type> — rewrite a fetched config.json and
+# re-record it in the profile's lock: --locate hashes every non-weight file,
+# so a same-size edit no longer slips past the lock.
+_model_type() {
+  python3 - "$@" <<'PY'
+import hashlib, json, sys
+from pathlib import Path
+prof, d, mt = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+(d / "config.json").write_text(json.dumps({"model_type": mt}))
+lock = prof.with_suffix(".lock")
+data = json.loads(lock.read_text())
+b = (d / "config.json").read_bytes()
+for art in data["artifacts"].values():
+    if art.get("dir") == d.name:
+        art["files"]["config.json"].update(size=len(b), sha256=hashlib.sha256(b).hexdigest())
+lock.write_text(json.dumps(data))
+PY
+}
 _mkfetched "$_K/profiles/vtest.env" "model:vtest:acme/Brand-New-Model-FP8:$_REV"
 cp "$_K/profiles/vtest.lock" "$_K/profiles/vtp1.lock"
 mkdir -p "$_K/models/vtp1"; cp -r "$_K/models/vtest/." "$_K/models/vtp1/"
@@ -856,7 +874,7 @@ if [[ $SPRC -eq 0 ]] && _has "$_O" "systemd-run --user --unit openbeast-tensorfo
 else
   fail "native rank 0 --print (rc=$SPRC): $_O"
 fi
-python3 -c 'import json,sys; json.dump({"model_type": "glm5_next"}, open(sys.argv[1], "w"))' "$_K/models/tftest/config.json"
+_model_type "$_P/tftest.env" "$_K/models/tftest" glm5_next
 _sp "$_TN" -- --profile "$_P/tftest.env" --rank 1 --master 192.168.100.10 --env "$_K/spark-native.env" --print
 if [[ $SPRC -eq 0 ]] && _has "$_O" "--setenv=TF_GLM_RANK=1" && _has "$_O" "--setenv=TF_GLM_WORLD=2" \
    && _has "$_O" "--setenv=NCCL_COMM_ID=192.168.100.10:29583" && ! _has "$_O" "--tp 2" \
@@ -871,7 +889,7 @@ _sp "$_TN" TF_STUB_VERSION=1.2.6 -- --profile "$_P/tftest.env" --rank 1 --master
 _sp "$_TN" TENSORFOLD_API_KEY_FILE="$_K/no-such-key" -- --profile "$_P/tftest.env" --rank 0 --master 192.168.100.10 --env "$_K/spark-native.env" --print
 [[ $SPRC -eq 1 ]] && _has "$_O" "does not exist" && pass "native rank 0 refuses to serve without its key file" \
   || fail "native rank 0 keyless (rc=$SPRC): $_O"
-python3 -c 'import json,sys; json.dump({"model_type": "brand_new"}, open(sys.argv[1], "w"))' "$_K/models/tftest/config.json"
+_model_type "$_P/tftest.env" "$_K/models/tftest" brand_new
 
 # Clusters of 1..8 Sparks: TENSOR_PARALLEL_SIZE N = N ranks, 0..N-1.
 sed -e 's/^TENSOR_PARALLEL_SIZE=2/TENSOR_PARALLEL_SIZE=4/' "$_P/tftest.env" > "$_P/tf4.env"
@@ -889,8 +907,7 @@ if [[ $SPRC -eq 0 ]] && _has "$_O" "--tp 4 --rank 3 --master 192.168.100.10 --ma
 else
   fail "native TP 4 rank 3 (rc=$SPRC): $_O"
 fi
-# Same size as "brand_new", so the lock's size check still matches.
-python3 -c 'import json,sys; json.dump({"model_type": "glm5_next"}, open(sys.argv[1], "w"))' "$_K/models/tf4/config.json"
+_model_type "$_P/tf4.env" "$_K/models/tf4" glm5_next
 _sp "$_TN" -- --profile "$_P/tf4.env" --rank 3 --master 192.168.100.10 --env "$_K/spark-native.env" --print
 if [[ $SPRC -eq 0 ]] && _has "$_O" "--setenv=TF_GLM_RANK=3" && _has "$_O" "--setenv=TF_GLM_WORLD=4" \
    && _has "$_O" "--setenv=NCCL_COMM_ID=192.168.100.10:29583" && _has "$_O" "--setenv=NCCL_CROSS_NIC=1" \
