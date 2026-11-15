@@ -71,7 +71,14 @@ shows what hydra thinks of every node.
 | `sim` | The simulated fleet (`scripts/hydra-sim.sh`) |
 
 Admin calls present the per-start local token (`.run/hydra-local.token`).
-Inference calls present `LLAMA_API_KEY`.
+Inference calls present `LLAMA_API_KEY`. With `LLAMA_API_KEY` empty (the
+`conf.sh` default) inference is open to every local process, and hydra says
+so at start when it holds keys for any node. Browser pages are refused
+either way: a request a browser marks cross-site (`Sec-Fetch-Site:
+cross-site`, or an `Origin` whose host is not on hydra's Host allowlist) gets
+a 403 `hydra_cross_site` before it reaches a node, and an engine's
+`Access-Control-*` headers are not relayed. Requests the router or the gate
+vouch for with the caller token are exempt; they do their own browser check.
 
 ## Health
 
@@ -102,6 +109,20 @@ are not obvious from the file:
   says `queued behind a saturated single candidate: not a breaker failure`.
   A timeout on a node with free capacity, or on a route with somewhere else
   to go, counts as before.
+- **An engine's own JSON 500 about a request is not, by itself, a node
+  failure.** A 500/501 whose body is a JSON `error` object (llama.cpp's
+  answer when the chat template refuses the messages) still fails over, but
+  it is charged to the breaker only if another deployment then serves the
+  same body. When every target refuses it, the caller gets the engine's own
+  status and body (audit outcome `upstream_5xx`) and no breaker moves: one
+  caller with a malformed body cannot black out the route. A 500 with no
+  body, a cut body or a non-JSON body, and any 502/503/504, count at once.
+- **A HALF_OPEN trial lasts until the first byte, not the whole stream.**
+  After `breaker.open_s` one request at a time is let through to test the
+  deployment. Once it has its first upstream byte the next caller may become
+  a trial too, so a long generation no longer 503s everyone else. The
+  breaker still closes only on `success_threshold` completed requests, and
+  a trial stream that dies mid-way reopens it.
 
 `python3 agents/hydra.py --print-default-config` prints the implicit config,
 580 s deadlines included and `slots` omitted when `INFERENCE_SLOTS` is unset

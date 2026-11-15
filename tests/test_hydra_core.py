@@ -1285,3 +1285,83 @@ def test_a_stale_models_ok_does_not_clear_a_newer_auth_failure():
     assert hs.h.state == core.AUTH_FAILED
     hs.on_models("ok", 7.0, started=5.5)          # sent after it: real recovery
     assert hs.h.state == core.READY
+
+
+# ───────────────────────── review 2026-11 (beast-hydra sysfix) ─────────────────────────
+
+
+def test_a_half_open_trial_can_end_before_its_unit_is_released():
+    # Review 2026-11 F3/F7: a committed stream holds its in-flight unit to the
+    # end, but the trial slot only until the commit point — otherwise one long
+    # generation 503s every other caller for its whole length.
+    cfg = cfg_of()
+    st = ready_state(cfg)
+    hs = st.health["nvfp4@sparks"]
+    for _ in range(5):
+        hs.record_failure(0)
+    now = 31.0
+    adm = st.admit("nvfp4@sparks", "sparks", now)
+    assert adm.trial and hs.admit_reason(now) == "breaker HALF_OPEN (trial in flight)"
+    adm.end_trial()
+    assert hs.h.trial_inflight == 0 and hs.admit_reason(now) is None
+    assert st.inflight("nvfp4@sparks") == 1, "the unit is still held"
+    adm.end_trial()                                          # idempotent
+    adm.release()
+    assert hs.h.trial_inflight == 0 and st.inflight("nvfp4@sparks") == 0
+    assert hs.breaker_state(now) == core.HALF_OPEN, "only a recorded success closes it"
+
+
+def test_an_inline_image_is_not_counted_as_prompt_text():
+    # Review 2026-11 F8: a 1 MB JPEG as a data: URI is ~1.33 M base64 chars —
+    # ~445 K "tokens" — which excluded every 262 K deployment on ctx.
+    cfg = cfg_of()
+    uri = "data:image/jpeg;base64," + "A" * 1_400_000
+    body = {"model": "beast", "messages": [{"role": "user", "content": [
+        {"type": "text", "text": "what is this?"},
+        {"type": "image_url", "image_url": {"url": uri}}]}]}
+    f = feats(cfg, body)
+    assert f.has_images
+    assert 0 < f.est_prompt_tokens < 10_000, f.est_prompt_tokens
+    two = {"model": "beast", "messages": [{"role": "user", "content": [
+        {"type": "image_url", "image_url": {"url": uri}}, {"type": "input_image", "image_url": uri}]}]}
+    assert feats(cfg, two).est_prompt_tokens >= 2 * core.IMAGE_TOKEN_ESTIMATE
+    # the caller's body is untouched (it is forwarded as is)
+    assert body["messages"][0]["content"][1]["image_url"]["url"] == uri
+
+
+def test_the_requested_model_is_bounded_and_encodable():
+    # Review 2026-11 F4: the caller's `model` lands in Trace.requested, a note,
+    # the decision ring and the audit row — unbounded, it pinned GBs of RAM.
+    cfg = cfg_of()
+    f = feats(cfg, {"model": "x" * 1_000_000, "messages": [{"role": "user", "content": "hi"}]})
+    assert len(f.model) <= core.MAX_ID_CHARS + 16
+    f = feats(cfg, {"model": "beast", "messages": []}, headers={"x-hydra-pin": "p" * 100_000})
+    assert len(f.pin) <= core.MAX_ID_CHARS + 16
+    f = feats(cfg, {"model": "be\ud800ast", "messages": []})
+    f.model.encode("utf-8")                                   # no lone surrogate survives
+    assert feats(cfg).model == "beast"
+
+
+@pytest.mark.parametrize("mt", [float("inf"), float("-inf"), float("nan"), "Infinity", [1]])
+def test_a_non_finite_max_tokens_falls_back_to_the_default(mt):
+    # Review 2026-11 F5: int(inf) raised OverflowError — a bare 500, no audit.
+    cfg = cfg_of()
+    f = feats(cfg, {"model": "beast", "max_tokens": mt, "messages": [{"role": "user", "content": "hi"}]})
+    assert f.max_tokens == cfg.settings.default_max_tokens
+
+
+def test_a_lone_surrogate_in_the_prompt_still_yields_a_session_key():
+    cfg = cfg_of()
+    f = feats(cfg, {"model": "beast", "messages": [{"role": "user", "content": "x\ud800y"}]})
+    assert f.session_key and len(f.session_key) == 16
+
+
+def test_release_hooks_run_once():
+    cfg = cfg_of()
+    st = ready_state(cfg)
+    seen = []
+    adm = st.admit("nvfp4@sparks", "sparks", 0.0)
+    adm.on_release.append(lambda: seen.append(1))
+    adm.release()
+    adm.release()
+    assert seen == [1]
