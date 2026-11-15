@@ -886,9 +886,14 @@ def diagnostics_enabled() -> bool:
 # ---------------------------------------------------------------------------
 
 _ESC_MAX_BYTES = 600             # its share of the 2 KB block, budgeted first
-# The diagnostics layer's language names -> beast-lang's.
-_ESC_LANG = {"zig": "zig", "c": "c", "c++": "cpp", "python": "python",
-             "rust": "rust", "go": "go"}
+# The diagnostics layer's language names -> beast-lang's. NOT python: its
+# checker is py_compile, which only ever reports a SyntaxError, and the index
+# records python's SyntaxError shape as `generic` (decoys produce it too) —
+# every python signature that can select a card is ModuleNotFoundError /
+# AttributeError / ImportError wording, which a parse never prints. The entry
+# could never attach a card; python's cards reach a model through
+# language_reference and the packs instead.
+_ESC_LANG = {"zig": "zig", "c": "c", "c++": "cpp", "rust": "rust", "go": "go"}
 
 
 def escalation_enabled() -> bool:
