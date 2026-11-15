@@ -171,7 +171,8 @@ def discover(task: dict, M, refs_dir: str) -> dict:
 
 
 def prove(R, M, task: dict, spec: dict, repeat: int | None = None,
-          strict: bool = True, quiet: bool = False) -> tuple[bool, list[tuple]]:
+          strict: bool = True, quiet: bool = False,
+          scale: float = 1.0) -> tuple[bool, list[tuple]]:
     """Run every arm for one unit. Returns (proven, rows); a row is
     (verdict_ok, label, passed, seconds, detail)."""
     say = (lambda *_: None) if quiet else print
@@ -202,12 +203,12 @@ def prove(R, M, task: dict, spec: dict, repeat: int | None = None,
     n = repeat or (5 if timed else 3)
     ref_times = []
     for i in range(n):
-        ok, dt, out, leaks = arm(f"ref#{i + 1}", spec["ref"])
+        ok, dt, out, leaks = arm(f"ref#{i + 1}", spec["ref"], scale=scale)
         ref_times.append(dt)
         add(ok is True, f"ref#{i + 1}", ok, dt, out.splitlines()[-1][:90] if out else "")
         if leaks:
             add(False, "leak:fixture", None, 0.0, f"oracle-like file(s) in the fixture dir: {leaks[:3]}")
-    if ref_times and max(ref_times) > VALIDATOR_BUDGET_S:
+    if ref_times and max(ref_times) > VALIDATOR_BUDGET_S * scale:
         add(False, "budget", None, max(ref_times),
             f"slowest ref validation {max(ref_times):.1f}s > {VALIDATOR_BUDGET_S:.0f}s at scale 1")
 
@@ -277,6 +278,8 @@ def main(argv=None) -> int:
     ap.add_argument("--leak")
     ap.add_argument("--timed", action="store_true")
     ap.add_argument("--repeat", type=int)
+    ap.add_argument("--scale", type=float, default=1.0,
+                    help="timeout scale for the ref arms (the scale-2.0 arm always runs)")
     ap.add_argument("--lenient", action="store_true",
                     help="accept a wrong solution with no declared failure class")
     ap.add_argument("--json", help="write per-unit verdicts here")
@@ -322,7 +325,8 @@ def main(argv=None) -> int:
                 verdicts[uid], worst = "no refs declared", 1
                 continue
         print(f"\n== {uid}")
-        proven, rows = prove(R, M, task, spec, repeat=a.repeat, strict=not a.lenient)
+        proven, rows = prove(R, M, task, spec, repeat=a.repeat, strict=not a.lenient,
+                             scale=a.scale)
         verdicts[uid] = "PROVEN" if proven else "NOT PROVEN"
         worst = worst or (0 if proven else 1)
     if a.json:
