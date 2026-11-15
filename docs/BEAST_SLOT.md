@@ -331,7 +331,9 @@ Three more things that surprise owners:
   Until per-request budgets land ([roadmap](#roadmap-behind-the-same-contract)),
   the controls are social: enroll people you'd lend the machine to, watch
   `.run/inference-audit.jsonl`, and `./scripts/clients.sh revoke <id>` — new
-  requests fail at once, though a stream already in flight runs to completion.
+  requests fail at once, and a generation already running is cut off within
+  ~5 s (the gate re-checks enrollment, cancels the upstream request and audits
+  it `revoked`; a stream that has gone silent is re-checked at its next chunk).
 
 **You do one thing** — point the installer at their machine:
 
