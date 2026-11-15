@@ -754,6 +754,19 @@ class TestResourceCaps(unittest.TestCase):
                 self.assertEqual(rc, 0)
                 self._assert_dies(int(open(pf).read()))
 
+    def test_job_control_background_child_is_killed_on_return(self):
+        # `set -m` puts the job in its own process group inside the same
+        # session: the group kill alone missed it.
+        import tempfile
+        from tools import run_reaped
+        with tempfile.TemporaryDirectory() as d:
+            pf = os.path.join(d, "pid")
+            for cmd in (f"set -m; sleep 300 >/dev/null 2>&1 & echo $! > {pf}",
+                        f"set -m; sleep 300 & echo $! > {pf}; echo hi"):
+                rc, _ = run_reaped(cmd, 30)
+                self.assertEqual(rc, 0)
+                self._assert_dies(int(open(pf).read()))
+
     def test_pipe_holding_background_child_adds_no_stall(self):
         # It used to cost a fixed 5 s reader.join before the group kill.
         import time

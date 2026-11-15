@@ -158,6 +158,51 @@ def _group_alive(pgid: int) -> bool:
     return True
 
 
+def _session_pids(sid: int) -> list:
+    """Every live pid in session `sid` (start_new_session: sid == the
+    command's pid). /proc on Linux, `ps -A` elsewhere; getsid() reads any
+    pid's session on both."""
+    if os.path.isdir("/proc/self"):
+        try:
+            pids = [int(n) for n in os.listdir("/proc") if n.isdigit()]
+        except OSError:
+            return []
+    else:
+        try:
+            out = subprocess.run(["ps", "-A", "-o", "pid="], capture_output=True,
+                                 text=True, timeout=5).stdout
+        except (OSError, subprocess.SubprocessError):
+            return []
+        pids = [int(x) for x in out.split() if x.isdigit()]
+    me = os.getpid()
+    found = []
+    for pid in pids:
+        if pid in (me, sid):
+            continue
+        try:
+            if os.getsid(pid) == sid:
+                found.append(pid)
+        except OSError:
+            pass
+    return found
+
+
+def _kill_session(sid: int) -> None:
+    """SIGKILL whatever is left in the command's session. The group kill
+    misses jobs that moved to their own process group (`set -m`, setpgid)
+    but stayed in the session. A few passes: a survivor may fork while we
+    scan."""
+    for _ in range(3):
+        pids = _session_pids(sid)
+        if not pids:
+            return
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+
 def kill_live_children(grace: float = 2.0) -> int:
     """SIGTERM every in-flight run_reaped process group, give it `grace`
     seconds, then SIGKILL whatever is left. Safe to call from a signal
@@ -375,9 +420,13 @@ def _reap_body(proc, command, timeout, _as_limit, _nproc):
         # grandchild still holds the pipe (that both let the usual
         # `cmd >log 2>&1 &` idiom run on unsupervised past every timeout
         # and cost a fixed 5 s join first). Output already in the pipe is
-        # still drained below. Only a deliberate setsid escapes the group.
-        if proc.poll() is not None and _group_alive(proc.pid):
-            _killpg(proc)
+        # still drained below. A job in its own group (`set -m`, setpgid)
+        # is still in the session, so the session is swept too; only a
+        # deliberate setsid escapes.
+        if proc.poll() is not None:
+            if _group_alive(proc.pid):
+                _killpg(proc)
+            _kill_session(proc.pid)
         reader.join(timeout=5)
         if reader.is_alive():
             # A grandchild still holds the stdout pipe — the reader would
