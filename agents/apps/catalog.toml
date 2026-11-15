@@ -177,17 +177,27 @@ transport = "stdio"
 command = ["npx", "-y", "{package}@{version}"]
 platforms = ["darwin", "linux"]
 probes = ["node-18", "npx", "printer-type", "printer-host"]
-env = {}
+# Every variable that names a program this server spawns is pinned EMPTY:
+# upstream calls dotenv.config(), which reads the .env of the directory the
+# server starts in (the opened project) but never overrides a variable that
+# is already set. So a project's .env cannot choose the Blender/Fusion/FULU
+# bridge or the slicer binary; your shell still can, via env_passthrough.
+env = { BLENDER_MCP_COMMAND = "", BLENDER_MCP_ARGS = "", BLENDER_MCP_BRIDGE_COMMAND = "", FUSION_MCP_COMMAND = "", FUSION_MCP_ARGS = "", FULU_BAMBU_BRIDGE_COMMAND = "", FULU_ORCA_PATH = "", ORCASLICER_BAMBULAB_PATH = "", ORCA_SLICER_BAMBULAB_PATH = "", SLICER_PATH = "", MCP_ALLOW_EXECUTABLE_ARG = "false", MCP_ALLOW_BRIDGE_COMMAND_ARG = "false" }
 # Copied from YOUR shell into the MCP entry at enable time (the config file
 # is then chmod 600). Set them first, e.g. PRINTER_TYPE=octoprint.
-env_passthrough = ["PRINTER_TYPE", "PRINTER_HOST", "PRINTER_PORT", "API_KEY", "BAMBU_SERIAL", "BAMBU_TOKEN", "BAMBU_MODEL", "SLICER_TYPE", "SLICER_PATH", "BAMBU_PROFILES_ROOT"]
+env_passthrough = ["PRINTER_TYPE", "PRINTER_HOST", "PRINTER_PORT", "API_KEY", "BAMBU_SERIAL", "BAMBU_TOKEN", "BAMBU_MODEL", "SLICER_TYPE", "SLICER_PATH", "BAMBU_PROFILES_ROOT", "BLENDER_MCP_COMMAND", "BLENDER_MCP_ARGS", "FUSION_MCP_COMMAND", "FUSION_MCP_ARGS", "FULU_BAMBU_BRIDGE_COMMAND", "FULU_ORCA_PATH", "ORCASLICER_BAMBULAB_PATH"]
 secret_env = ["API_KEY", "BAMBU_TOKEN"]
 default_enabled = false
 risk = "No print confirmation: upstream states 'There is no confirmation prompt and no bed check: your client's own print action is the approval.' A model tool call can heat a printer and start a physical print."
-ask_tools = ["start_print", "print_3mf", "upload_gcode", "process_and_print_stl", "resume_print", "set_printer_temperature"]
+# 1.2.77 also bridges to Blender and Fusion: blender_mcp_call reaches
+# execute_blender_code (arbitrary Python), fusion_mcp_call reaches
+# execute_code, fusion_mcp_setup installs an add-in plus a login item
+# (LaunchAgent), cad_run runs a build123d script, cad_setup installs a
+# runtime. pause_print stays ungated on purpose: it is the stop button.
+ask_tools = ["start_print", "print_3mf", "upload_gcode", "process_and_print_stl", "resume_print", "set_printer_temperature", "cancel_print", "blender_mcp_call", "blender_mcp_setup", "blender_mcp_edit_model", "fusion_mcp_call", "fusion_mcp_setup", "cad_run", "cad_setup", "fulu_bambu_network_rpc"]
 deny_tools = []
-risk_patterns = ["print", "temperature", "heat", "gcode", "move", "home", "extrude", "rpc"]
-notes = "Disabled by default (see risk). When enabled, every tool that can start, resume or heat a print is gated as ask."
+risk_patterns = ["print", "temperature", "heat", "gcode", "move", "home", "extrude", "rpc", "call", "setup", "code", "execute", "exec", "cad", "install", "script"]
+notes = "Disabled by default (see risk). When enabled, every tool that can start, resume, heat or cancel a print is gated as ask, and so is every tool that runs code or installs something: the Blender/Fusion bridges (blender_mcp_call, fusion_mcp_call, blender_mcp_edit_model and both *_setup tools), cad_run/cad_setup and the raw FULU RPC. The bridge and slicer programs come from your shell (env_passthrough) only, never from a project's .env."
 
 [server.ros-mcp]
 title = "ROS MCP server (robotmcp)"

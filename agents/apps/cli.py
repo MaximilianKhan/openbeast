@@ -312,6 +312,13 @@ def make_manifest(sid: str, version: str, transport: str, info: dict, tools: lis
             "hash": _h(core), "tools": rows}
 
 
+# Phrases in a tool's DESCRIPTION that mean it runs code or installs
+# something on this machine. A tool that says so and is not gated is
+# flagged on every refresh, the first one included.
+EXEC_MARKERS = ("execute_code", "execute_blender_code", "python code", "arbitrary code", "arbitrary python",
+                "shell command", "run on startup", "login item", "launchagent", "runs a script")
+
+
 def diff_manifests(old: dict | None, new: dict, server: dict) -> dict:
     gates = list(server.get("ask_tools", [])) + list(server.get("deny_tools", []))
     if not old:
@@ -331,11 +338,15 @@ def diff_manifests(old: dict | None, new: dict, server: dict) -> dict:
             if what:
                 changed.append({"name": name, "changed": what})
     flagged = []
+    desc = {t["name"]: (t.get("description") or "").lower() for t in new["tools"]}
     for name in added:
         hits = [p for p in server.get("risk_patterns", []) if p.lower() in name.lower()]
-        if hits:
+        # Names alone miss a bridge ("blender_mcp_call") whose description
+        # says it runs code or installs something: check what it says it does.
+        said = [m for m in EXEC_MARKERS if m in desc.get(name, "")]
+        if hits or said:
             gated = any(fnmatch.fnmatchcase(name, g) for g in gates)
-            flagged.append({"name": name, "patterns": hits, "gated": gated})
+            flagged.append({"name": name, "patterns": hits, "description": said, "gated": gated})
     return {"first": old is None, "previous_version": (old or {}).get("version"),
             "previous_hash": (old or {}).get("hash"), "hash": new["hash"],
             "same": bool(old) and old.get("hash") == new["hash"],
@@ -670,7 +681,13 @@ def _render_diff(sid: str, d: dict) -> list[str]:
         for c in d["changed"]:
             L.append(f"    ~ {c['name']}: {', '.join(c['changed'])} changed")
     for f in d["flagged"]:
-        if not f["gated"] and not d["first"]:
+        if f["gated"]:
+            continue
+        if f.get("description"):          # says it runs code / installs: always, first manifest too
+            L.append(f"    ! tool {f['name']} describes itself as running code or installing something "
+                     f"({', '.join(f['description'])}) and is NOT gated — add it to ask_tools in the "
+                     f"catalog (or an overlay) to gate it")
+        elif not d["first"]:
             L.append(f"    ! new tool {f['name']} matches risk pattern(s) {', '.join(f['patterns'])} and is NOT "
                      f"gated — review it; add it to ask_tools in the catalog (or an overlay) to gate it")
     return L

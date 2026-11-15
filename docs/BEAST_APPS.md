@@ -169,7 +169,10 @@ case through data, not code:
   over all of them. `refresh` diffs it against the previous manifest and
   reports added, removed and changed tools. A **new** tool whose name
   matches `risk_patterns` and is not covered by `ask_tools` or `deny_tools`
-  is flagged for review.
+  is flagged for review. Any tool, on the first manifest too, whose
+  description says it runs code or installs something (`execute_code`,
+  "Python code", "login item", …) and is not gated is flagged as well, so an
+  exec bridge hiding behind a bland name ("blender_mcp_call") is caught.
 - **New capability, or a new server for an existing one.** Add it to the
   catalog (or an overlay). `servers` is a preference list. When the preferred
   server is not the one you enabled, `refresh` says so.
@@ -246,7 +249,13 @@ cached package still answers and an uncached one fails fast. `upgrade` without
 - **Physical actions.** `mcp-3d-printer-server` has no confirmation prompt of
   its own (upstream: "the client's own print action is the approval"), so it
   is **off by default**. `enable 3d-print` needs `--accept-risk`, and every
-  tool that starts, resumes or heats a print is gated. ROS publish, service
+  tool that starts, resumes, heats or cancels a print is gated. So are its
+  Blender/Fusion bridges and installers (`blender_mcp_call`, which reaches
+  `execute_blender_code`; `fusion_mcp_call`, which reaches `execute_code`;
+  `fusion_mcp_setup`, which installs an add-in and a login item; `cad_run`;
+  the `*_setup` tools). The programs those bridges spawn come only from your
+  shell: the entry pins them empty, so a project's `.env` (which upstream
+  loads) cannot choose them. ROS publish, service
   and action calls move real robots and are gated with globs.
 - **Egress.** Telemetry is switched off where the server offers a switch:
   `MOBILEBUILDMCP_SENTRY_DISABLED`, `MOBILEMCP_DISABLE_TELEMETRY`, Blender's

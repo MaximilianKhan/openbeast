@@ -674,6 +674,89 @@ def test_skill_is_registered_and_off_the_always_on_menu():
     assert (REPO / "docs" / "BEAST_APPS.md").exists()
 
 
+# ── safety gates against the real pinned tool lists ─────────────────────────
+# tests/fixtures/apps/<server>-<version>.tools.json are the names and
+# descriptions the pinned upstream releases answer tools/list with (read off
+# the real packages, 2026-11-15). A gate that names no real tool, or a tool
+# that says it runs code with no gate, fails here instead of on a user's box.
+FIX = REPO / "tests" / "fixtures" / "apps"
+
+
+def _apps():
+    sys.path.insert(0, str(REPO / "agents" / "apps"))
+    import catalog as C
+    import cli
+    return C, cli
+
+
+def _real(sid: str):
+    C, cli = _apps()
+    cat = C.load(str(CATALOG), env={}, overlays=False)
+    s = cat["server"][sid]
+    tools = json.loads((FIX / f"{sid}-{s['version']}.tools.json").read_text())
+    man = cli.make_manifest(sid, s["version"], "stdio", {}, tools)
+    return s, {t["name"] for t in tools}, cli.diff_manifests(None, man, s)
+
+
+def _gated(s: dict, name: str) -> bool:
+    import fnmatch
+    return any(fnmatch.fnmatchcase(name, g) for g in s["ask_tools"] + s["deny_tools"])
+
+
+@pytest.mark.parametrize("sid", ["mcp-3d-printer-server", "replicant-mcp", "mobilebuildmcp"])
+def test_every_gate_names_a_real_tool(sid):
+    import fnmatch
+    s, names, _ = _real(sid)
+    for g in s["ask_tools"] + s["deny_tools"]:
+        assert any(fnmatch.fnmatchcase(n, g) for n in names), f"{sid}: gate {g!r} matches no tool"
+
+
+def test_3d_print_gates_its_code_and_install_bridges():
+    s, names, d = _real("mcp-3d-printer-server")
+    # blender_mcp_call reaches execute_blender_code; fusion_mcp_call reaches
+    # execute_code; fusion_mcp_setup installs an add-in + a LaunchAgent.
+    for t in ("blender_mcp_call", "blender_mcp_setup", "blender_mcp_edit_model", "fusion_mcp_call",
+              "fusion_mcp_setup", "cad_run", "cad_setup", "cancel_print", "fulu_bambu_network_rpc",
+              "start_print", "print_3mf", "set_printer_temperature"):
+        assert t in names and _gated(s, t), t
+    assert not _gated(s, "pause_print")                   # the stop button stays one call away
+    loud = [f["name"] for f in d["flagged"] if f["description"] and not f["gated"]]
+    assert loud == [], f"tools that say they run code, ungated: {loud}"
+    for t in ("blender_mcp_call", "fusion_mcp_call", "fusion_mcp_setup"):
+        assert next(f for f in d["flagged"] if f["name"] == t)["description"]
+
+
+def test_3d_print_bridge_programs_come_from_the_shell_never_a_project_env(box):
+    # upstream dotenv.config() reads the cwd's .env but never overrides a
+    # variable that is already set: pinning them empty closes that path.
+    env = {"PRINTER_TYPE": "octoprint", "PRINTER_HOST": "10.0.0.5"}
+    rc, out = box.json("enable", "3d-print", "--accept-risk", "--dry-run", extra_env=env)
+    assert rc == 0, out
+    e = out["entry"]["environment"]
+    for v in ("BLENDER_MCP_COMMAND", "BLENDER_MCP_ARGS", "FUSION_MCP_COMMAND", "FULU_BAMBU_BRIDGE_COMMAND",
+              "SLICER_PATH"):
+        assert e[v] == "", v
+    rc, out = box.json("enable", "3d-print", "--accept-risk", "--dry-run",
+                       extra_env={**env, "BLENDER_MCP_COMMAND": "/usr/bin/uvx"})
+    assert out["entry"]["environment"]["BLENDER_MCP_COMMAND"] == "/usr/bin/uvx"
+
+
+def test_first_refresh_flags_an_ungated_tool_that_says_it_runs_code(box, tmp_path):
+    box.stub_server(risk=("shell",), ask=("danger*",))
+    box.run("enable", "stub-cap", check=0)
+    tools = tmp_path / "tools.json"
+    tools.write_text(json.dumps([
+        {"name": "alpha", "description": "read a widget", "inputSchema": {"type": "object"}},
+        {"name": "bridge_call", "description": "Call a tool on the bridge; execute_code accepts Python code.",
+         "inputSchema": {"type": "object"}},
+        {"name": "danger_exec", "description": "Runs arbitrary code.", "inputSchema": {"type": "object"}},
+    ]))
+    cp = box.run("refresh", extra_env={"STUB_TOOLS_FILE": str(tools)}, check=0)
+    tail = cp.stdout.split("first manifest: 3 tools")[1]
+    assert "tool bridge_call describes itself as running code" in tail and "NOT gated" in tail
+    assert "danger_exec" not in tail and "alpha" not in tail           # gated / harmless: quiet
+
+
 def test_enable_refuses_when_v1_permission_is_a_string(box):
     box.android_sdk_off_path()
     box.write_config({"permission": "allow", "mcp": {}})
