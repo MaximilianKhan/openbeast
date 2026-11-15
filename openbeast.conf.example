@@ -298,6 +298,14 @@
 # images or audio. No trailing comment, as above.
 #EDGE_MAX_BODY=8388608
 
+# How long the gate waits on the model server, in whole seconds. READ is the
+# wait for each byte — for a NON-streaming completion that is the whole
+# generation, so a long one (or one queued behind another on a 1-slot rig)
+# can hit the 504 at 600 s; raise it, or have the client stream. CONNECT is
+# how long reaching the server may take. No trailing comment, as above.
+#EDGE_READ_TIMEOUT=600
+#EDGE_CONNECT_TIMEOUT=10
+
 # Remote devices must send media INLINE: an image/audio/video part carrying a
 # data: URI or bare base64. A part that names a URL (http://, file://, ...)
 # gets 400, because llama-server would fetch it from inside the rig — a

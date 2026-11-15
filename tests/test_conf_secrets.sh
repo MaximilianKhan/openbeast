@@ -97,6 +97,20 @@ if [[ "$OUT" == "true|false|ABSENT" ]]; then
 else
   fail "defaults wrong: got '$OUT'"
 fi
+# beast-gate's 504 says to raise EDGE_READ_TIMEOUT: it must reach the gate.
+OUT="$(conf_eval 'EDGE_READ_TIMEOUT=1800
+EDGE_CONNECT_TIMEOUT=20' -- 'printf "%s|%s" "$OPENBEAST_EDGE_READ_TIMEOUT" "$OPENBEAST_EDGE_CONNECT_TIMEOUT"')"
+if [[ "$OUT" == "1800|20" ]]; then
+  pass "EDGE_READ_TIMEOUT / EDGE_CONNECT_TIMEOUT export to the gate"
+else
+  fail "gate timeouts not exported from openbeast.conf: got '$OUT'"
+fi
+OUT="$(conf_eval '# empty' -- 'printf "%s|%s" "${OPENBEAST_EDGE_READ_TIMEOUT-ABSENT}" "${OPENBEAST_EDGE_CONNECT_TIMEOUT-ABSENT}"')"
+if [[ "$OUT" == "ABSENT|ABSENT" ]]; then
+  pass "gate timeouts unset in the conf are not exported (gate defaults apply)"
+else
+  fail "gate timeouts exported although unset: got '$OUT'"
+fi
 # Env overrides go through the same parser.
 OUT="$(conf_eval 'WEBUI_AUTH=false' OPENBEAST_WEBUI_AUTH=1 OPENBEAST_EDGE_GATE='yes # x' -- 'printf "%s|%s" "$OPENBEAST_WEBUI_AUTH" "$EDGE_GATE"')"
 if [[ "$OUT" == "true|true" ]]; then

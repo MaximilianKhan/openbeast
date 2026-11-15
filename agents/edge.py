@@ -1294,8 +1294,9 @@ async def gate(request: Request):
                 {"error": {"message": (
                     "model server did not respond within the gate's timeout "
                     f"({os.environ.get('OPENBEAST_EDGE_READ_TIMEOUT', '600')}s). "
-                    "A long non-streaming completion can exceed it — raise "
-                    "OPENBEAST_EDGE_READ_TIMEOUT, or stream the request."),
+                    "A long non-streaming completion can exceed it — stream "
+                    "the request, or ask the rig's operator to raise "
+                    "EDGE_READ_TIMEOUT in openbeast.conf."),
                     "type": "upstream_timeout"}}, status_code=504,
                 headers=_rid())
         except httpx.HTTPError as e:
