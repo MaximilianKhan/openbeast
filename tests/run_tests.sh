@@ -156,6 +156,7 @@ for _suite in \
   "test_ops_chat_artifact.sh|beast-chat / beast-artifact ops" \
   "test_backends.sh|Inference backends (vLLM / TensorFold, unmanaged)" \
   "test_spark_cluster.sh|DGX Spark cluster of 1-8 nodes (spark-cluster.sh)" \
+  "test_spark_guard.sh|DGX Spark guard (nftables for the rendezvous ports)" \
   "test_opencode_sessions.sh|opencode session clearing" \
   "test_tier3_harness.sh|Tier-3 campaign harness (manifest, stop file, drift)" \
   "test_hydra_ready_parity.sh|beast-hydra readiness parity (hydra_core vs backend.sh)" \
