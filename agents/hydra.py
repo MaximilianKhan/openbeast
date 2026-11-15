@@ -47,6 +47,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 from starlette.applications import Starlette
@@ -61,7 +62,7 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 import hydra_core as core  # noqa: E402
-from hostpolicy import trusted_hosts  # noqa: E402
+from hostpolicy import host_allowed, trusted_hosts  # noqa: E402
 from hydra_caller import CallerToken  # noqa: E402
 
 REPO = HERE.parent
@@ -81,12 +82,12 @@ _REQ_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 ERR_STATUS = {"hydra_unavailable": 503, "hydra_pinned_unavailable": 503, "hydra_pin_incompatible": 422,
               "hydra_unknown_model": 404, "hydra_unknown_deployment": 404, "hydra_timeout": 504,
               "hydra_upstream_auth": 502, "hydra_upstream_error": 502, "hydra_unauthorized": 401,
-              "hydra_bad_request": 400}
+              "hydra_bad_request": 400, "hydra_cross_site": 403}
 OUTCOME_OF = {"hydra_unavailable": "unavailable", "hydra_pinned_unavailable": "pinned_unavailable",
               "hydra_pin_incompatible": "pin_incompatible", "hydra_unknown_model": "unknown_model",
               "hydra_unknown_deployment": "unknown_deployment", "hydra_timeout": "timeout",
               "hydra_upstream_auth": "upstream_auth", "hydra_upstream_error": "upstream_error",
-              "hydra_bad_request": "bad_request"}
+              "hydra_bad_request": "bad_request", "hydra_cross_site": "cross_site"}
 TTFT_BUCKETS = (0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 600)
 
 
@@ -437,6 +438,7 @@ class Hydra:
         self.tasks: list[asyncio.Task] = []
         self.background: set[asyncio.Task] = set()
         self.inbound_key = self._inbound_key()
+        self.allowed_hosts = trusted_hosts(self.env.get("OPENBEAST_HYDRA_TRUSTED_HOSTS", ""))
 
     # ─── config ───
     def _inbound_key(self) -> str:
@@ -550,6 +552,9 @@ class Hydra:
         if not self.inbound_key:
             return True
         return _ct_eq(_bearer(request), self.inbound_key)
+
+    def cross_site(self, request: Request) -> bool:
+        return not self.caller(request).trusted and _cross_site(request, self.allowed_hosts)
 
     def is_local(self, request: Request) -> bool:
         p = request.headers.get("x-openbeast-local", "")
@@ -855,6 +860,55 @@ def _resp_headers(resp: httpx.Response) -> dict:
             if k.lower() not in _HOP and not k.lower().startswith("x-hydra-")}
 
 
+def _no_cors(headers: dict) -> dict:
+    """Drop the engine's Access-Control-* for a caller nobody vouched for:
+    llama-server reflects Origin and vLLM allows *, and relayed they let a
+    web page READ an answer hydra signed with a node's key. A trusted caller
+    (the router, the gate) did its own browser check and keeps them, as it
+    would talking to the engine directly."""
+    return {k: v for k, v in headers.items() if not k.lower().startswith("access-control-")}
+
+
+def _cross_site(request: Request, allowed) -> bool:
+    """True when a browser says this request came from somebody else's page
+    (the router's rule, agents/router.py `_cross_site`). Sec-Fetch-Site is
+    the browser's own verdict; Origin covers browsers that do not send it,
+    and is ours only when its host is on the Host allowlist; `null` is
+    nobody's. No such header at all is a non-browser caller — WebUI's
+    backend, OpenCode, the SDKs — and passes. A trusted caller (X-Hydra-
+    Caller: the router, which checks this itself, or the gate, which
+    authenticated a device key) is not asked.
+
+    Hydra is on loopback, which any page the operator opens can reach: a
+    CORS-simple text/plain POST needs no preflight, and hydra would sign it
+    with the stored node keys."""
+    if (request.headers.get("sec-fetch-site") or "").strip().lower() == "cross-site":
+        return True
+    origin = request.headers.get("origin")
+    if origin is None:
+        return False
+    return not host_allowed(urlsplit(origin.strip()).netloc, allowed)
+
+
+def _cross_site_refusal(hy: "Hydra", headers: dict) -> JSONResponse:
+    return hy.error("hydra_cross_site", "cross-site browser request refused: hydra serves its own "
+                    "frontends, not another site's page", headers)
+
+
+def inbound_warnings(hy: "Hydra") -> list[str]:
+    """Said at start: an open inbound (no key in the inbound key env) in front
+    of nodes hydra holds keys for lends those keys to any local process."""
+    if hy.inbound_key:
+        return []
+    keyed = sorted(n.id for n in hy.cfg.nodes.values() if n.key_env or n.key_file)
+    if not keyed:
+        return []
+    env = hy.cfg.settings.inbound_key_env
+    return [f"{env} is empty, so inference on hydra is open to every local process, and hydra "
+            f"presents its stored keys for node(s) {', '.join(keyed)} on their behalf. "
+            f"Set {env} (scripts/lib/conf.sh) to require it."]
+
+
 def _is_engine_error(body: bytes | None) -> bool:
     """A 500/501 the ENGINE wrote about this request: a JSON object with an
     `error`. llama.cpp answers a request its chat template refuses (Qwen3's
@@ -1028,6 +1082,12 @@ async def proxy(request: Request, path: str, pin: str | None = None):
     rid_in = request.headers.get("x-openbeast-request-id", "")
     request_id = rid_in if _REQ_ID_RE.match(rid_in) else uuid.uuid4().hex[:16]
     base_h = hy.hydra_headers(request_id)
+    if hy.cross_site(request):
+        hy.audit.write({"ts": _now_iso(), "request_id": request_id, "path": path, "config": cfg.hash,
+                        "requested": None, "strict": bool(pin), "status": 403, "outcome": "cross_site",
+                        "origin": (request.headers.get("origin") or "")[:200] or None,
+                        "ms": int((time.monotonic() - started) * 1000)})
+        return _cross_site_refusal(hy, base_h)
     if not hy.inbound_ok(request):
         return hy.error("hydra_unauthorized", "present the inference key: Authorization: Bearer <LLAMA_API_KEY>",
                         base_h)
@@ -1241,6 +1301,8 @@ async def proxy(request: Request, path: str, pin: str | None = None):
         ms = a.ttft_s * 1000
         hs.h.ttft_ewma_ms = ms if hs.h.ttft_ewma_ms is None else 0.8 * hs.h.ttft_ewma_ms + 0.2 * ms
     out_h = {k: v for k, v in a.headers.items() if not k.startswith("_")}   # no x-hydra-*: _resp_headers
+    if not caller.trusted:
+        out_h = _no_cors(out_h)
     out_h.update(hdr)
     if a.it is None:
         # non-stream (or a stream that ended at once): the whole body is in hand
@@ -1359,6 +1421,8 @@ def _dep_entry(hy: Hydra, d: core.Deployment) -> dict:
 async def models(request: Request):
     hy = _hy(request)
     rid = uuid.uuid4().hex[:16]
+    if hy.cross_site(request):
+        return _cross_site_refusal(hy, hy.hydra_headers(rid))
     if not hy.inbound_ok(request):
         return hy.error("hydra_unauthorized", "present the inference key", hy.hydra_headers(rid))
     cfg = hy.cfg
@@ -1378,6 +1442,8 @@ async def pinned(request: Request):
     rest = "/" + request.path_params["rest"].strip("/")
     rid = uuid.uuid4().hex[:16]
     h = hy.hydra_headers(rid, route="pin")
+    if hy.cross_site(request):
+        return _cross_site_refusal(hy, h)
     if not hy.inbound_ok(request):
         return hy.error("hydra_unauthorized", "present the inference key", h)
     dep = hy.cfg.deployments.get(d)
@@ -1551,9 +1617,8 @@ def create_app(hy: Hydra, *, probe: bool = True) -> Starlette:
         Route("/hydra/metrics", a_metrics, methods=["GET"]),
         Route("/{path:path}", catch_all, methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]),
     ]
-    hosts = trusted_hosts(hy.env.get("OPENBEAST_HYDRA_TRUSTED_HOSTS", ""))
     app = Starlette(routes=routes, lifespan=lifespan,
-                    middleware=[Middleware(TrustedHostMiddleware, allowed_hosts=hosts)])
+                    middleware=[Middleware(TrustedHostMiddleware, allowed_hosts=hy.allowed_hosts)])
     app.state.hydra = hy
     return app
 
@@ -1688,7 +1753,7 @@ def serve(env, port: int | None = None) -> int:
     if implicit:
         _log(f"no {path} — using the implicit single-node config {cfg.hash} "
              f"(rig={cfg.nodes['rig'].url}, engine={cfg.nodes['rig'].engine})")
-    for w in cfg.warnings:
+    for w in cfg.warnings + inbound_warnings(hy):
         _log(f"WARNING: {w}")
     print(f"beast-hydra on http://127.0.0.1:{sock.getsockname()[1]}  config={cfg.hash}  "
           f"nodes={len(cfg.nodes)} routes={len(cfg.routes)}  inbound_auth="

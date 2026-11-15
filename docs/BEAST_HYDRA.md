@@ -71,7 +71,14 @@ shows what hydra thinks of every node.
 | `sim` | The simulated fleet (`scripts/hydra-sim.sh`) |
 
 Admin calls present the per-start local token (`.run/hydra-local.token`).
-Inference calls present `LLAMA_API_KEY`.
+Inference calls present `LLAMA_API_KEY`. With `LLAMA_API_KEY` empty (the
+`conf.sh` default) inference is open to every local process, and hydra says
+so at start when it holds keys for any node. Browser pages are refused
+either way: a request a browser marks cross-site (`Sec-Fetch-Site:
+cross-site`, or an `Origin` whose host is not on hydra's Host allowlist) gets
+a 403 `hydra_cross_site` before it reaches a node, and an engine's
+`Access-Control-*` headers are not relayed. Requests the router or the gate
+vouch for with the caller token are exempt; they do their own browser check.
 
 ## Health
 

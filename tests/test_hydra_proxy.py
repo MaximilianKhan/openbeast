@@ -1591,3 +1591,50 @@ def test_a_retired_client_is_closed_once_nothing_uses_it(tmp_path):
         await hy.probe_client.aclose()
         await hy.instinct.aclose()
     asyncio.run(go())
+
+
+@pytest.mark.parametrize("hdr", [{"Origin": "https://evil.example"}, {"Sec-Fetch-Site": "cross-site"},
+                                 {"Origin": "null"}])
+def test_a_cross_site_browser_request_never_reaches_a_node(fleet, tmp_path, hdr):
+    """Review 2026-11 F1: with the inbound key empty (the conf default) a web
+    page in the operator's browser could POST text/plain to loopback hydra,
+    which signed it with the stored node keys and relayed the engine's CORS
+    headers back so the page could read the answer."""
+    srv, rig, _, _ = fleet(env_extra={"LLAMA_API_KEY": ""})
+    before = len(posts(rig))
+    h = {"Content-Type": "text/plain;charset=UTF-8", **hdr}
+    for path in ("/v1/chat/completions", "/pin/unc@rig/v1/chat/completions"):
+        r = httpx.post(srv.url + path, content=json.dumps(chat()), headers=h, timeout=10)
+        assert r.status_code == 403 and r.json()["error"]["type"] == "hydra_cross_site", r.text
+        assert r.headers["x-hydra-request-id"]
+    r = httpx.get(srv.url + "/v1/models", headers=hdr, timeout=10)
+    assert r.status_code == 403
+    assert len(posts(rig)) == before, "nothing reached the engine"
+    assert wait_audit(tmp_path, lambda x: x.get("outcome") == "cross_site")["status"] == 403
+
+
+def test_own_frontends_are_not_cross_site(fleet):
+    srv, _, _, _ = fleet()
+    assert post(srv, chat()).status_code == 200                                   # no browser headers
+    assert post(srv, chat(), {"Origin": "http://localhost:3000",
+                              "Sec-Fetch-Site": "same-site"}).status_code == 200  # our own host
+
+
+def test_an_engines_cors_headers_are_not_relayed_to_an_unvouched_caller(fleet):
+    srv, _, _, _ = fleet(env_extra={"LLAMA_API_KEY": ""})
+    fault = {"X-Fake-Fault": "cors_headers"}
+    r = post(srv, chat(model="solo"), {**fault, "Origin": "http://localhost:3000"})
+    assert r.status_code == 200 and r.json()["choices"]
+    assert not [k for k in r.headers if k.lower().startswith("access-control-")], dict(r.headers)
+    # the router / gate vouch with the caller token and did their own browser check
+    r = post(srv, chat(model="solo"), {**fault, "X-Hydra-Caller": "caller-secret",
+                                       "Origin": "https://app.example"})
+    assert r.status_code == 200 and r.headers["access-control-allow-origin"] == "https://app.example"
+
+
+def test_an_open_inbound_in_front_of_keyed_nodes_is_warned_about(fleet):
+    srv, _, _, _ = fleet(env_extra={"LLAMA_API_KEY": ""})
+    w = hydra.inbound_warnings(srv.hy)
+    assert w and "LLAMA_API_KEY" in w[0] and "rig" in w[0]
+    keyed, _, _, _ = fleet()
+    assert hydra.inbound_warnings(keyed.hy) == []
