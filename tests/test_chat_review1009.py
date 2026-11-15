@@ -207,3 +207,28 @@ def test_a_fifo_or_device_transcript_never_wedges_or_floods_a_reader(tmp_path):
     reg.write_text("one\ntwo\n")
     assert chat_server._tail_line(str(reg)) == "two"
     assert chat_server.read_lines_from(str(reg), 0)[0][-1][0] == "two"
+
+
+def test_the_login_socket_directory_is_ours_and_only_we_can_write_it(
+        tmp_path, monkeypatch):
+    """Review finding: makedirs(mode=0o700, exist_ok=True) never touches an
+    existing directory, so in a 0775 .run/ any group member could unlink the
+    login socket and bind their own in its place."""
+    import shutil
+    import tempfile
+    # short: AF_UNIX paths are capped near 104 bytes and pytest's are long
+    run = tempfile.mkdtemp(prefix="obsk", dir="/tmp")
+    try:
+        os.chmod(run, 0o775)
+        sock = chat_server._unix_listener(os.path.join(run, "c.sock"))
+        sock.close()
+        assert os.stat(run).st_mode & 0o022 == 0
+        assert os.stat(run).st_mode & 0o750 == 0o750   # read/traverse kept
+        assert os.stat(os.path.join(run, "c.sock")).st_mode & 0o777 == 0o600
+    finally:
+        shutil.rmtree(run, ignore_errors=True)
+    other = tmp_path / "theirs"
+    other.mkdir()
+    monkeypatch.setattr(chat_server.os, "getuid", lambda: os.stat(other).st_uid + 1)
+    with pytest.raises(SystemExit):
+        chat_server._unix_listener(str(other / "chat.sock"))

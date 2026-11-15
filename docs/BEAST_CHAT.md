@@ -345,8 +345,10 @@ WebUI and SearXNG run `network_mode: host`, so a compromise of either reaches
 `127.0.0.1:3003` as loopback and can claim any login — without being able to
 read the 0600 token files. To close that, have `chat_server` also listen on a
 Unix socket and honour the login header **only** there:
-`OPENBEAST_CHAT_SOCKET=/path/to/.run/chat.sock` (created 0600 in a 0700
-directory; `tailscaled` runs as root, so it can still connect) plus
+`OPENBEAST_CHAT_SOCKET=/path/to/.run/chat.sock` (created 0600; its directory
+must be yours, and `chat_server` strips group/other write from it at start so
+no one else can swap the socket; `tailscaled` runs as root, so it can still
+connect) plus
 `OPENBEAST_CHAT_LOGIN_FROM=unix`, and point `tailscale serve` at
 `unix:/path/to/.run/chat.sock`. TCP loopback then needs the locality token or
 a device key like any other caller. The default stays `loopback`.

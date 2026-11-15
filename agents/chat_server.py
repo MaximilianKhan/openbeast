@@ -265,17 +265,34 @@ def login_source() -> str:
 
 
 def _unix_listener(path: str):
-    """Bind the login-bearing Unix socket: 0600 in a 0700 directory.
+    """Bind the login-bearing Unix socket: 0600, in a directory only we own
+    and only we can write.
 
     tailscaled runs as root, so 0600 costs it nothing; every OTHER local
     user, and every container, is kept out by the mode — which is the whole
     point of moving the login header off TCP loopback. A stale socket from
     a previous run is replaced; anything else at the path is left alone.
+
+    The DIRECTORY matters as much as the socket: anyone who can write it can
+    unlink our socket and bind their own at the path, and tailscale serve
+    then hands them real tailnet logins and phones' device keys. makedirs'
+    mode only applies to a directory it creates, and the recommended
+    `.run/` usually exists already (0775 under a 0002 umask). So: refuse a
+    directory someone else owns, and strip group/other WRITE from ours —
+    read/traverse is left as it was, nothing else in .run/ depends on it.
     """
     import socket
     import stat as _st
     parent = os.path.dirname(os.path.abspath(path))
     os.makedirs(parent, mode=0o700, exist_ok=True)
+    pst = os.stat(parent)
+    if pst.st_uid != os.getuid():
+        raise SystemExit(f"ERROR: {parent} is not owned by this user — "
+                         f"refusing to put the login socket there")
+    if pst.st_mode & 0o022:
+        os.chmod(parent, _st.S_IMODE(pst.st_mode) & ~0o022)
+        print(f"chat_server: removed group/other write from {parent} "
+              f"(it holds the login socket)", file=sys.stderr)
     try:
         st = os.lstat(path)
         if _st.S_ISSOCK(st.st_mode):
