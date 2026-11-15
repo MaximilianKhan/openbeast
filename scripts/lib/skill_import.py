@@ -283,9 +283,8 @@ def ensure_off_menu(path: str, name: str) -> bool:
     """Add `prompt_index: false` when the skill does not say. True if added.
 
     An imported skill stays out of the always-on menu by default: every menu
-    entry is paid for on every local-model turn, and system-prompt-tools.md is
-    one of the six era-hashed files, so a new entry rolls the eval era. Putting
-    a remote skill on the menu is a separate, deliberate edit.
+    entry is paid for on every local-model turn. Putting a remote skill on the
+    menu is a separate, deliberate edit.
     """
     text, fm, end = check_skill_md(path, name)
     if "prompt_index" in fm:
@@ -786,7 +785,6 @@ def cmd_promote(args) -> int:
         say("  added `prompt_index: false`: off the always-on menu, reachable by skill(name)")
     elif str(fm.get("prompt_index", "")).lower() != "false":
         say("  ! this skill is ON the always-on menu: run scripts/generate-skill-index.py")
-        say("    and expect the eval era to roll (./scripts/eval-era.sh)")
     if AGENT_CELL_RE.match(reviewer):
         say("  ! read by an agent, not a human. After reading it yourself:")
         say(f"    ./scripts/skill-import.sh attest {name} --reviewed-by <initials>")

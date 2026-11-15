@@ -781,7 +781,6 @@ identity, asking the model), a general download route for arbitrary shard
 files, and `localStorage` inside artifacts.
 
 Not built yet: a Markdown publish lane, a `publish-a-page` skill (it
-regenerates `system-prompt-tools.md`, so it rolls the eval cache era and has
-to land at a campaign boundary), remote *publish* (a device key can manage
+regenerates the WebUI skill menu in `system-prompt-tools.md`), remote *publish* (a device key can manage
 pages, not create them), a store-wide byte quota, and turning a comment on an
 artifact into a steer.

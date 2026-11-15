@@ -392,7 +392,7 @@ evals/                       # Eval harness — 137 tasks / 291 units + multi-mo
 docs/                        # 44 top-level documents — see README.md § Documentation
 skills/                      # 25 skills: 16 in-house + 9 imported (skills/README.md)
 system-prompt.md             # Soul file (persona, applied to all frontends)    [era-hashed]
-system-prompt-tools.md       # Tool guidance (Open WebUI only)
+system-prompt-tools.md       # Tool guidance (Open WebUI only; not era-hashed)
 opencode.json                # OpenCode project config (MCP wiring + model list)
 docker-compose.yml           # Open WebUI + SearXNG containers (digest-pinned)
 openbeast.conf.example       # Config template — copy to openbeast.conf to customize

@@ -363,8 +363,8 @@ def test_the_skill_loads_and_names_the_hard_rules():
 
 
 def test_prompt_index_false_keeps_a_skill_out_of_the_menu(tmp_path, monkeypatch):
-    """The menu lives in system-prompt-tools.md, which is hashed into the eval
-    cache era. A cloud-model skill must be able to exist without rolling it."""
+    """The menu lives in system-prompt-tools.md and costs a local model
+    tokens every turn. A cloud-model skill must be able to exist off it."""
     gen = _generator()
     for name, extra in (("shown", ""), ("hidden", "prompt_index: false\n")):
         d = tmp_path / name

@@ -2,10 +2,13 @@
 
 Every walkthrough below is copy-pasteable on a rig that has run
 `./bootstrap.sh`. Each says what you should see, and each stops at the point
-where the deeper document takes over. Nothing here is aspirational: every
-command was run against the scripts as they ship in v1.5.0, and the
-beast-artifact and beast-chat walkthroughs were re-checked against the
-scripts' argument parsers on `main` (2026-09-30).
+where the deeper document takes over. Nothing here is aspirational. When each
+section was last checked: every walkthrough that existed at v1.5.0 was run
+against the scripts as they shipped in v1.5.0 (2026-09-17); beast-artifact
+and beast-chat were re-checked against the scripts' argument parsers on
+`main` (2026-09-30); beast-island postdates v1.5.0 and its commands were
+checked against the argument parsers of `start.sh` and `agents/island.py` on
+`main` (2026-11-15), not run through a real outage.
 
 | Feature | Walkthrough | The full document |
 |---|---|---|
@@ -16,6 +19,7 @@ scripts' argument parsers on `main` (2026-09-30).
 | beast-slot 🎰 | [a laptop that thinks on the rig](#beast-slot--a-laptop-that-thinks-on-the-rig) | [BEAST_SLOT.md](BEAST_SLOT.md) |
 | beast-gate 🛡️ | [per-device keys for the inference port](#beast-gate--per-device-keys-for-the-inference-port) | [BEAST_SLOT.md § beast-gate](BEAST_SLOT.md) |
 | Air-gap 🔌 | [install a rig that has no internet](#air-gap--install-a-rig-that-has-no-internet) | [INSTALL.md § Offline](INSTALL.md) |
+| beast-island 🏝️ | [keep working through a power outage](#beast-island--keep-working-through-a-power-outage) | [BEAST_ISLAND.md](BEAST_ISLAND.md) |
 | beast-campaign 🧪 | [measure something without lying to yourself](#beast-campaign--measure-something-without-lying-to-yourself) | [BEAST_CAMPAIGN_PLAN.md](BEAST_CAMPAIGN_PLAN.md) |
 
 A convention used throughout: `openbeast.conf` keys are shown with `>>`, and

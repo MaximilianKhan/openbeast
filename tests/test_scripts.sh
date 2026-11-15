@@ -1331,6 +1331,14 @@ else
   fail "opencode.json advertises models with no serve script:$ORPHAN_OC"
 fi
 
+# opencode.json is project-local (relative MCP path) and fixed at :8080, so no
+# banner may send the operator to "any project directory".
+if grep -q "opencode' in any project directory" "$REPO_DIR/start.sh" "$REPO_DIR/bootstrap.sh"; then
+  fail "a start banner says 'run opencode in any project directory' (the config only works from the checkout)"
+else
+  pass "start banners send OpenCode users to the checkout, not 'any project directory'"
+fi
+
 # MODELS or BENCH_EXCLUDED — either is fine, but it has to be a decision.
 MISSING_BENCH=""
 for _ss in "$REPO_DIR"/scripts/serve-*.sh; do
@@ -2589,7 +2597,7 @@ else
 fi
 rm -rf "$_GL_DIR"
 
-# The era assertion. Rows either side of a change to the six hashed files are
+# The era assertion. Rows either side of a change to the era-hashed files are
 # not comparable, and until now era was a thing people remembered — the
 # 2026-09-08 plan put the churn floor before a git pull and the cells it
 # calibrates after it, and review did not catch it because it was nobody's job.

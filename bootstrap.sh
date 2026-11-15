@@ -1227,7 +1227,11 @@ if [[ $OB_LOCAL_LLAMA -eq 1 ]]; then
 else
   echo "  Model API: $INFERENCE_URL/v1   (OpenAI-compatible, $INFERENCE_BACKEND)"
 fi
-echo "  Terminal:  run 'opencode' in any project directory"
+if [[ $OB_LOCAL_LLAMA -eq 1 ]]; then
+  echo "  Terminal:  run 'opencode' from this checkout (its opencode.json is project-local)"
+else
+  echo "  Terminal:  opencode: add the entry scripts/backends/use-model.sh prints to ~/.config/opencode"
+fi
 ob_weights_line
 echo
 

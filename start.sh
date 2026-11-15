@@ -755,7 +755,7 @@ if [[ $DAEMON -eq 1 ]]; then
       # an unreachable docker daemon means it will not come up at all.
       _webui_line
       if [[ "${AGENT_ROUTER:-false}" == "true" ]]; then
-        echo "  Agent router:  http://localhost:${ROUTER_PORT} (frontends route through it)"
+        echo "  Agent router:  http://localhost:${ROUTER_PORT} (Open WebUI routes through it)"
       fi
       if [[ "${EDGE_GATE:-false}" == "true" ]]; then
         echo "  beast-gate:    http://localhost:${EDGE_PORT:-8090} (remote clients arrive here)"
@@ -1619,7 +1619,7 @@ if [[ "${AGENT_ROUTER:-false}" == "true" ]]; then
     sleep 0.2
   done
   [[ $ROUTER_UP -eq 1 ]] || { echo "Error: agent router not serving after 20s" >&2; exit 1; }
-  echo "Agent router ready on http://localhost:${ROUTER_PORT} (frontends route through it)"
+  echo "Agent router ready on http://localhost:${ROUTER_PORT} (Open WebUI routes through it)"
 fi
 
 # beast-gate (opt-in, EDGE_GATE=true) — the identity-aware inference edge for
@@ -1864,7 +1864,14 @@ else
 fi
 echo "  Tool server:   http://localhost:3001 (OpenAPI docs at /docs)"
 _webui_line "$COMPOSE_FAILED"
-echo "  OpenCode:      run 'opencode' in any project directory"
+# opencode.json is project-local (relative MCP path) and fixed at localhost:8080:
+# it never goes through the router or hydra, and is wrong for any other URL.
+if [[ "$LLAMA_BASE" =~ ^http://(localhost|127\.0\.0\.1):8080/?$ ]]; then
+  echo "  OpenCode:      run 'opencode' from this checkout (direct to :8080, not via router/hydra)"
+else
+  echo "  OpenCode:      this checkout's opencode.json targets localhost:8080, not $LLAMA_BASE;"
+  echo "                 use the ~/.config/opencode entry scripts/backends/use-model.sh prints"
+fi
 _island_line
 if [[ "${HYDRA:-false}" == "true" ]]; then
   echo "  beast-hydra:   $HYDRA_URL (${HYDRA_CHECK_SUMMARY:-?}) — scripts/hydra.sh status"
