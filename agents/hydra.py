@@ -1202,6 +1202,10 @@ async def proxy(request: Request, path: str, pin: str | None = None):
         out_h.pop("content-length", None)
         return Response(a.first, status_code=int(a.status), headers=out_h)
 
+    # The first byte answered the HALF_OPEN trial's question; the unit stays
+    # held until the relay ends, the trial slot does not (hydra_core
+    # Admission.end_trial).
+    adm.end_trial()
     st = {"tail": a.first[-16384:], "done": False}
     idle = c.n.idle_timeout_s
     is_sse = "text/event-stream" in (a.headers.get("content-type") or "")

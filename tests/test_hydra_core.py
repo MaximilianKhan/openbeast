@@ -1279,3 +1279,27 @@ def test_a_stale_models_ok_does_not_clear_a_newer_auth_failure():
     assert hs.h.state == core.AUTH_FAILED
     hs.on_models("ok", 7.0, started=5.5)          # sent after it: real recovery
     assert hs.h.state == core.READY
+
+
+# ───────────────────────── review 2026-11 (beast-hydra sysfix) ─────────────────────────
+
+
+def test_a_half_open_trial_can_end_before_its_unit_is_released():
+    # Review 2026-11 F3/F7: a committed stream holds its in-flight unit to the
+    # end, but the trial slot only until the commit point — otherwise one long
+    # generation 503s every other caller for its whole length.
+    cfg = cfg_of()
+    st = ready_state(cfg)
+    hs = st.health["nvfp4@sparks"]
+    for _ in range(5):
+        hs.record_failure(0)
+    now = 31.0
+    adm = st.admit("nvfp4@sparks", "sparks", now)
+    assert adm.trial and hs.admit_reason(now) == "breaker HALF_OPEN (trial in flight)"
+    adm.end_trial()
+    assert hs.h.trial_inflight == 0 and hs.admit_reason(now) is None
+    assert st.inflight("nvfp4@sparks") == 1, "the unit is still held"
+    adm.end_trial()                                          # idempotent
+    adm.release()
+    assert hs.h.trial_inflight == 0 and st.inflight("nvfp4@sparks") == 0
+    assert hs.breaker_state(now) == core.HALF_OPEN, "only a recorded success closes it"

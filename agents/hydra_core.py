@@ -1227,7 +1227,18 @@ class Admission:
         f = self._fleet
         f._inflight[self.d] = max(0, f._inflight.get(self.d, 0) - 1)
         f._node_inflight[self.node] = max(0, f._node_inflight.get(self.node, 0) - 1)
+        self.end_trial()
+
+    def end_trial(self) -> None:
+        """Give back the HALF_OPEN trial slot, keep the in-flight unit.
+
+        The trial asks "does this deployment answer?", and the commit point
+        (first upstream byte) answers it. Holding the slot to the end of a
+        stream 503'd every other caller, pins included, for a whole
+        generation. Success is still only recorded when the stream ends, and
+        a mid-stream failure still reopens the breaker. Idempotent."""
         if self.trial:
+            self.trial = False
             self.hs.h.trial_inflight = max(0, self.hs.h.trial_inflight - 1)
 
 

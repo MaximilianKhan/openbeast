@@ -110,6 +110,12 @@ are not obvious from the file:
   status and body (audit outcome `upstream_5xx`) and no breaker moves: one
   caller with a malformed body cannot black out the route. A 500 with no
   body, a cut body or a non-JSON body, and any 502/503/504, count at once.
+- **A HALF_OPEN trial lasts until the first byte, not the whole stream.**
+  After `breaker.open_s` one request at a time is let through to test the
+  deployment. Once it has its first upstream byte the next caller may become
+  a trial too, so a long generation no longer 503s everyone else. The
+  breaker still closes only on `success_threshold` completed requests, and
+  a trial stream that dies mid-way reopens it.
 
 `python3 agents/hydra.py --print-default-config` prints the implicit config,
 580 s deadlines included and `slots` omitted when `INFERENCE_SLOTS` is unset

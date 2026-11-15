@@ -1474,3 +1474,34 @@ def test_more_callers_than_the_pool_on_a_one_slot_node_queue_rather_than_502(fle
         t.join(30)
     assert sorted(out) == [200] * 7, out
     assert srv.hy.state.health["unc@rig"].h.fail_total == 0
+
+
+def test_a_half_open_trial_ends_at_the_commit_point(fleet):
+    """Review 2026-11 F3/F7: the single HALF_OPEN trial was held for the whole
+    generation, so one long stream 503'd every other caller (pins included)
+    on a deployment that had just proved it serves."""
+    srv, rig, _, _ = fleet(chunks=40, tok_ms=50)
+    hs = srv.hy.state.health["unc@rig"]
+    hs.h.breaker, hs.h.opened_at = core.OPEN, time.monotonic() - 1000       # due for HALF_OPEN
+    with httpx.stream("POST", srv.url + "/v1/chat/completions", json=chat(model="solo", stream=True),
+                      headers=auth(), timeout=30) as holder:
+        it = holder.iter_raw()
+        next(it)                                                  # committed: first byte is here
+        assert hs.h.trial_inflight == 0
+        assert hs.breaker_state(time.monotonic()) == core.HALF_OPEN, "first byte is not a success"
+        r = post(srv, chat(model="unc@rig"))                      # a pin, during the long trial
+        assert r.status_code == 200, r.text
+        for _ in it:
+            pass
+    assert hs.breaker_state(time.monotonic()) == core.CLOSED
+    assert srv.hy.state.inflight("unc@rig") == 0 and hs.h.trial_inflight == 0
+
+
+def test_a_half_open_stream_that_dies_midway_reopens_the_breaker(fleet):
+    srv, rig, _, _ = fleet()
+    hs = srv.hy.state.health["unc@rig"]
+    hs.h.breaker, hs.h.opened_at = core.OPEN, time.monotonic() - 1000
+    r = post(srv, chat(model="solo", stream=True), {"X-Fake-Fault": "die_after_chunks:3"})
+    assert r.status_code == 200 and "[DONE]" not in r.text
+    assert hs.breaker_state(time.monotonic()) == core.OPEN
+    assert hs.h.trial_inflight == 0 and srv.hy.state.inflight("unc@rig") == 0
