@@ -16,6 +16,10 @@ Case families, by index (the validator prints only the index on failure):
   14   d=4, K=3
   15-16 coordinates ~1e-150 / 1e150, d=2 (2x2 det ~1e-600 / 1e600: a closed-
        form adjugate inverse or det breaks even where d=2 survived 1e+-70)
+  17   identical initial means and covariances, unequal weights, all far
+       narrower than the data-to-mean distance: every density underflows at
+       t=0, so r_ik = w_k exactly. An E-step that falls back to a one-hot
+       argmax when every density underflows empties a component (N_k = 0).
 Robustness (re-checked by build_task.py --check): an independent
 correct solution and the reference on reversed point order agree to <=2e-12
 relative on every trace, and every stopping decision clears float noise by
@@ -93,4 +97,12 @@ def cases():
     C.append(make(rng, 4, 3, 500, sep=2.5, mi=300, tol=1e-10))                    # 14 d4
     C.append(transform(make(rng, 2, 2, 400, sep=2.5, mi=300, tol=1e-9), scale=1e-150)) # 15 d2 1e-150
     C.append(transform(make(rng, 2, 3, 400, sep=2.5, mi=300, tol=1e-9), scale=1e150))  # 16 d2 1e150
+    c = make(rng, 2, 2, 300, sep=2.5, mi=300, tol=1e-8)                          # 17 symmetric start
+    d = len(c["X"][0])
+    cen = [sum(x[a] for x in c["X"]) / len(c["X"]) for a in range(d)]
+    m = [cen[0] + 40.0, cen[1] - 25.0]
+    c["means"] = [list(m), list(m)]
+    c["covs"] = [[[0.01 if a == b else 0.0 for b in range(d)] for a in range(d)] for _ in range(2)]
+    c["weights"] = [0.3, 0.7]
+    C.append(c)
     return C
