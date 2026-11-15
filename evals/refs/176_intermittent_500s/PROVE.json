@@ -1,0 +1,26 @@
+{
+  "task": "176_intermittent_500s",
+  "unit": "176_intermittent_500s_a",
+  "dest_dir": "/tmp/eval_shopd500",
+  "note": "Arms for prove.py. A solution is an OVERLAY DIRECTORY copied over the fixture setup created. Wrong, hang and leak overlays are applied on top of ref/, so each isolates one defect. Each regex must match the validator's single output line. 'empty' is the fixture as shipped (nothing fixed).",
+  "repeat": 5,
+  "ref": "ref",
+  "pass": [["ref_alt", "^OK: visible suite green \\(49 tests\\), 15 hidden tests passed$"]],
+  "wrong": [
+    ["wrong_decimal_quantize_only", "^FAIL: hidden test H02$"],
+    ["wrong_decimal_catch", "^FAIL: hidden test H02$"],
+    ["wrong_idem_tolerant", "^FAIL: hidden test H05$"],
+    ["wrong_idem_noreplay", "^FAIL: hidden test H05$"],
+    ["wrong_cache_catch", "^FAIL: hidden test H07$"],
+    ["wrong_cache_partial", "^FAIL: hidden test H08$"],
+    ["wrong_cursor_catch", "^FAIL: hidden test H10$"],
+    ["wrong_cursor_noguard", "^FAIL: hidden test H12$"],
+    ["wrong_tests_edited", "^FAIL: visible test file modified: tests/test_orders.py$"],
+    ["wrong_breaks_visible", "^FAIL: visible suite is not green \\(ran 49 of 49, [1-9]\\d* failures, \\d+ errors\\)$"],
+    ["wrong_blanket", "^FAIL: visible suite is not green \\(ran 49 of 49, 1 failures, 0 errors\\)$"]
+  ],
+  "empty": "^FAIL: hidden test H02$",
+  "leak": ["leak", "^FAIL: visible suite did not complete \\(exit 0\\)$"],
+  "slow": ["hang", "^FAIL: hidden test H05 timed out \\(6 s\\)$"],
+  "budget_s": 15.0
+}
