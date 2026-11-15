@@ -1999,21 +1999,37 @@ def _fetch_bounded(fn, *args):
     return box["r"]
 
 
+def _dial_pinned(conn, ips):
+    """Connect `conn` to the first reachable of the PRE-VETTED `ips`, in
+    resolver order — what socket.create_connection does for a hostname, but
+    only ever over addresses the SSRF guard approved (an unreachable first
+    record, e.g. AAAA on a v6-less box, no longer fails the fetch). None =
+    dial conn.host (the operator's proxy). Each attempt is held to the
+    fetch's remaining deadline."""
+    last = None
+    for ip in (ips or [None]):
+        _fetch_check_deadline()
+        conn.timeout = _fetch_op_timeout(conn.timeout)
+        try:
+            return socket.create_connection(
+                (ip or conn.host, conn.port), conn.timeout,
+                conn.source_address)
+        except OSError as e:
+            last = e
+    raise last
+
+
 class _PinnedHTTPConnection(http.client.HTTPConnection):
     """HTTPConnection that dials a PRE-VETTED IP instead of re-resolving the
     hostname — the IP the SSRF guard approved is the exact IP we connect to."""
-    def __init__(self, *a, pinned_ip=None, **kw):
+    def __init__(self, *a, pinned_ips=None, **kw):
         super().__init__(*a, **kw)
-        self._pinned_ip = pinned_ip
+        self._pinned_ips = pinned_ips
 
     def connect(self):
-        # pinned_ip None = proxied request: dial the operator's proxy
+        # pinned_ips None = proxied request: dial the operator's proxy
         # (self.host) — see _pinned_open.
-        _fetch_check_deadline()
-        self.timeout = _fetch_op_timeout(self.timeout)
-        self.sock = socket.create_connection(
-            (self._pinned_ip or self.host, self.port), self.timeout,
-            self.source_address)
+        self.sock = _dial_pinned(self, self._pinned_ips)
         _fetch_track(self.sock)
         if self._tunnel_host:
             self._tunnel()
@@ -2022,16 +2038,12 @@ class _PinnedHTTPConnection(http.client.HTTPConnection):
 class _PinnedHTTPSConnection(http.client.HTTPSConnection):
     """Same pin for TLS. Crucially keeps server_hostname = the ORIGINAL host
     so SNI and certificate validation still check the real name, not the IP."""
-    def __init__(self, *a, pinned_ip=None, **kw):
+    def __init__(self, *a, pinned_ips=None, **kw):
         super().__init__(*a, **kw)
-        self._pinned_ip = pinned_ip
+        self._pinned_ips = pinned_ips
 
     def connect(self):
-        _fetch_check_deadline()
-        self.timeout = _fetch_op_timeout(self.timeout)
-        sock = socket.create_connection(
-            (self._pinned_ip or self.host, self.port), self.timeout,
-            self.source_address)
+        sock = _dial_pinned(self, self._pinned_ips)
         _fetch_track(sock)
         if self._tunnel_host:
             self.sock = sock
@@ -2059,14 +2071,15 @@ def _pinned_open(handler, req, conn_class, scheme):
         if reason:
             raise urllib.error.URLError(f"fetch blocked: {reason}")
         _fetch_check_deadline()
-        return handler.do_open(conn_class, req, pinned_ip=None)
+        return handler.do_open(conn_class, req, pinned_ips=None)
     parsed = urllib.parse.urlparse(req.full_url)
     ips, reason = _fetch_bounded(_resolve_vetted, parsed.hostname,
                                  parsed.port, scheme)
     if reason:
         raise urllib.error.URLError(f"fetch blocked: {reason}")
     _fetch_check_deadline()
-    return handler.do_open(conn_class, req, pinned_ip=ips[0])
+    return handler.do_open(conn_class, req,
+                           pinned_ips=list(dict.fromkeys(ips)))
 
 
 class _PinnedHTTPHandler(urllib.request.HTTPHandler):

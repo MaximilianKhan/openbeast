@@ -167,6 +167,21 @@ class TestDNSRebindingPin(unittest.TestCase):
         fetch("http://pin.example/")
         self.assertEqual(dialed["ip"], "93.184.216.34")
 
+    def test_falls_back_to_the_next_vetted_address(self):
+        # The pin dialed only ips[0]: an unreachable first record (AAAA on
+        # a v6-less box, one dead node of a multi-A set) failed the fetch.
+        dialed = []
+        socket.getaddrinfo = lambda h, p, *a, **k: [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2606:2800:220:1::1", p or 80, 0, 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", p or 80))]
+
+        def cc(addr, *a, **k):
+            dialed.append(addr[0])
+            raise OSError("stub dial")
+        socket.create_connection = cc
+        fetch("http://dual.example/")
+        self.assertEqual(dialed, ["2606:2800:220:1::1", "93.184.216.34"])
+
     def test_connect_time_flip_to_loopback_is_refused(self):
         n = {"i": 0}
 
