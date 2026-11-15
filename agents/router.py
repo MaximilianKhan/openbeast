@@ -623,10 +623,21 @@ async def _proxy_through(request, client, body_bytes):
     if _HYDRA_CALLER.configured:
         # Ours, never a caller's: the token is what makes hydra trust the
         # identity headers relayed alongside it.
-        headers = {k: v for k, v in headers.items() if k.lower() != "x-hydra-caller"}
+        # And the token vouches only for identity this router can stand
+        # behind: never a device (beast-gate asserts devices, and it does
+        # not route through here), and in signed-identity mode never a typed
+        # role: the role hydra sees is the one the JWT verified.
+        drop = {"x-hydra-caller", "x-openbeast-device"}
+        if JWT_SECRET:
+            drop.add(_ROLE_HEADER)
+        headers = {k: v for k, v in headers.items() if k.lower() not in drop}
         tok = _HYDRA_CALLER.get()
         if tok:
             headers[_HYDRA_CALLER_HEADER] = tok
+            if JWT_SECRET:
+                role = _caller_role(request.headers)
+                if role and role != "invalid":
+                    headers[_ROLE_HEADER] = role
     req = client.build_request(request.method, upstream_url, content=body_bytes, headers=headers)
     try:
         resp = await client.send(req, stream=True)
