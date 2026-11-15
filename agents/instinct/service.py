@@ -140,7 +140,8 @@ class Instinct:
 
     async def drain(self) -> None:
         """Wait for shadow walks that answered their caller early (each is
-        bounded by its decision's deadline)."""
+        bounded by its decision's deadline plus, past the primary, each
+        remaining engine's own timeout_ms)."""
         while self._bg:
             await asyncio.gather(*list(self._bg), return_exceptions=True)
 
@@ -511,6 +512,13 @@ class Instinct:
             eng, st = self.engines[name], self.states[name]
             is_rules = eng.adapter == "rules"
             remaining_ms = (deadline_at - self.clock()) * 1000
+            if released is not None and released.is_set():
+                # Background half of a shadow walk: the caller already has its
+                # answer and nobody waits on this engine, so it gets its OWN
+                # budget, not what the primary left of the caller's deadline —
+                # or the later tiers are only ever measured on short prompts.
+                remaining_ms = float(eng.binding.timeout_ms) if eng.caps.needs_render \
+                    else max(remaining_ms, 1000.0)
             lk = st.locks.get(spec.id)
             if eng.adapter != "rules" and (lk is None or not lk.ok):
                 why = ("label_lock_failed" if lk is not None and lk.reason

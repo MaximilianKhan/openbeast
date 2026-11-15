@@ -234,6 +234,41 @@ def test_shadow_router_waits_for_the_primary_only(tmp_path):
     assert rows[0]["engine"]["id"] == "prim"
 
 
+def test_background_walk_gets_its_own_budget(tmp_path):
+    """Review finding (beast-instinct): the background half of a shadow walk
+    kept the caller's deadline, so after the 27B used it (here: timed out)
+    the 0.6B was skipped as `deadline` and never measured on that row.
+    Nobody waits on it any more: it runs on its own timeout_ms."""
+    text = GOOD.replace('chain = ["rig-27b", "rig-cpu", "linear", "rules"]',
+                        'chain = ["prim", "cpu", "rules"]')
+    async def body(purl, pstub, curl):
+        p = H.write_config(tmp_path, {"prim": H.llama_binding(purl, allow_primary=True),
+                                      "cpu": H.llama_binding(curl)},
+                           extra_decisions={DID: text})
+        inst = Instinct(load_config(p, env={"INFERENCE_URL": purl}), repo_root=tmp_path)
+        await inst.reload()
+        for n in ("prim", "cpu"):
+            inst.states[n].healthy = True
+            inst.states[n].last_probe = inst.clock()
+            inst.engines[n].latencies.extend([10.0] * 25)
+        pstub.faults["slow"] = 400          # tokenize + completion > the 600 ms deadline
+        r = await _decide(inst, "spawn a background agent to port the tests",
+                          ceiling="shadow", baseline="hint", deadline_ms=600,
+                          return_after="primary")
+        await inst.drain()
+        await inst.aclose()
+        return r
+    with H.stub_server() as (purl, pstub), H.stub_server() as (curl, _):
+        r = H.run(body(purl, pstub, curl))
+    assert r["partial"] is True
+    rows = [x for x in _ledger_rows(tmp_path) if x.get("kind") == "decide"]
+    assert len(rows) == 1
+    cas = {c["engine"]: c for c in rows[0]["cascade"]}
+    assert cas["prim"]["reason"] == "engine_timeout"
+    assert cas["cpu"]["action"] not in ("skipped", "fallback"), cas["cpu"]
+    assert "label" in cas["cpu"]
+
+
 def test_return_after_is_ignored_when_the_target_can_act(tmp_path):
     """A caller that may act on the verdict always gets the whole answer."""
     async def body(purl, curl):

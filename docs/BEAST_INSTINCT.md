@@ -68,8 +68,9 @@ Optional `"return_after": "primary"` (the router sends it): on a request whose
 target is below `canary` (nothing can act), the service answers as soon as the
 walk has left every engine bound to the primary, with `"partial": true`,
 `enforce: false` and `fallback.reason: "shadow_pending"`; the rest of the chain
-still runs, and the ONE ledger row for that `trace_id` is written when it
-finishes. An actable target ignores it and always gets the whole answer.
+still runs — each engine past the primary on its own `timeout_ms`, not on what
+the primary left of the caller's deadline, since nobody waits on it — and the
+ONE ledger row for that `trace_id` is written when it finishes. An actable target ignores it and always gets the whole answer.
 
 The client sets `context.eval = true` itself whenever its process carries the
 eval markers that `evals/run_eval.py` puts in every child's environment
