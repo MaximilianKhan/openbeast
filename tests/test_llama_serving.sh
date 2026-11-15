@@ -211,6 +211,19 @@ grep -qx 'LLAMA_ARG_CORS_ORIGINS=https://ui.example' "$SV/env" 2>/dev/null \
   || fail "LLAMA_ARG_CORS_ORIGINS override lost: $(grep '^LLAMA_ARG_CORS' "$SV/env" 2>/dev/null)"
 
 echo ""
+echo "run.sh (interactive llama-cli):"
+_run() { rm -f "$SV/cli-argv" "$SV/cli-env"; RUN_RC=0
+  RUN_OUT="$(env -i HOME="$SV/home" PATH="$SV/bin:/usr/bin:/bin" "$@" 2>&1)" || RUN_RC=$?; }
+_run bash "$SV/scripts/run.sh" -m "$SV/weights/main.gguf" -c 8192
+grep -q "^LD_LIBRARY_PATH=$SV/llama.cpp/build/bin" "$SV/cli-env" 2>/dev/null \
+  && pass "run.sh resolves llama-cli's shared libs next to the binary (LD_LIBRARY_PATH), as serve.sh does" \
+  || fail "run.sh LD_LIBRARY_PATH: '$(grep '^LD_LIBRARY_PATH=' "$SV/cli-env" 2>/dev/null)'"
+head -c 10 /dev/zero > "$SV/weights/short.gguf"; _pin short.gguf 11
+_run OPENBEAST_WEIGHT_ENFORCE=strict bash "$SV/scripts/run.sh" -m "$SV/weights/short.gguf" -c 8192
+[[ $RUN_RC -eq 3 && ! -e "$SV/cli-argv" ]] && pass "…and WEIGHT_ENFORCE=strict refuses a wrong-size weight there too (exit 3)" \
+  || fail "run.sh under strict with a wrong-size weight (rc=$RUN_RC): $(tr '\n' ' ' <<< "$RUN_OUT")"
+
+echo ""
 echo "========================================"
 echo "llama-serving: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]
