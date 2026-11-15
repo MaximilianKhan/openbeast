@@ -698,6 +698,28 @@ def _exl3_norm(v):
         return v
 
 
+# Rank sizes of native TensorFold — the DEFAULT engine (spark.env TENSORFOLD_ENGINE=native) — for
+# the families whose limits its release states. data/tensorfold.json is the container engine's
+# (the 0.x Python package at one commit), and its rank lists differ. Read from tensorfold-native
+# 1.2.7's own refusals and `capabilities --json` (--tp 1/2/4/8); re-read them for a newer release.
+# Sizes are capped at our 8 Sparks. A family not listed falls back to the vendored list.
+NATIVE_TF_VERSION = "1.2.7"
+NATIVE_TF_RANKS: dict[str, dict] = {
+    "glm5_next": {"tp": list(range(2, MAX_SPARKS + 1)),
+                  "note": "placed by TF_GLM_RANK/TF_GLM_WORLD, up to 16 ranks (WORLD 1 is for a thin test model "
+                          "only)"},
+    "qwen4_exp": {"tp": [1, 2], "tp2_quant_methods": ["modelopt"],
+                  "note": "Flash Next: one GPU or --tp 2, and --tp 2 splits ModelOpt checkpoints only"},
+    "nemotron_h": {"tp": [1],
+                   "note": "multi-rank Nemotron is placed by TF_NEMOTRON_RANK/WORLD, which spark-node.sh does not "
+                           "set yet"},
+}
+
+
+def _listed(tps: list[int]) -> str:
+    return (", ".join(map(str, tps[:-1])) + " or " if len(tps) > 1 else "") + str(tps[-1])
+
+
 def tensorfold_support(cfg: dict, q: dict, source_label: str, tp: int | None = None, *,
                        also_known_as: tuple[str, ...] = (), mirror_of: tuple[str, ...] = (),
                        rank_sliced: bool = False) -> dict:
@@ -753,14 +775,28 @@ def tensorfold_support(cfg: dict, q: dict, source_label: str, tp: int | None = N
             notes.append("TensorFold reads only NVFP4 / FP8 ModelOpt or compressed-tensors weights")
     # the vendored rank list is the engine's own (a family may allow 1, 1 and 2, or exactly 2): report
     # THAT, never assume a cluster size. tp2_quant_methods names the formats any multi-rank run needs.
-    tps = sorted(int(x) for x in (fam.get("tp") or []))
-    multi = fam.get("tp2_quant_methods")
-    if multi and (qm or None) not in multi and any(x > 1 for x in tps):
-        tps = [x for x in tps if x == 1]
+    def narrowed(tps: list[int], multi) -> tuple[list[int], bool]:
+        if multi and (qm or None) not in multi and any(x > 1 for x in tps):
+            return [x for x in tps if x == 1], True
+        return tps, False
+
+    ctps, cone = narrowed(sorted(int(x) for x in (fam.get("tp") or [])), fam.get("tp2_quant_methods"))
+    nat = NATIVE_TF_RANKS.get(fam_name)
+    if nat:
+        tps, one = narrowed(list(nat["tp"]), nat.get("tp2_quant_methods"))
+        multi = nat.get("tp2_quant_methods")
+    else:
+        tps, one, multi = ctps, cone, fam.get("tp2_quant_methods")
+    if one:
         notes.append(f"this format runs on ONE rank only (more than one rank needs {', '.join(multi)} weights)")
     if tps:
-        listed = (", ".join(map(str, tps[:-1])) + " or " if len(tps) > 1 else "") + str(tps[-1])
-        notes.append(f"ranks: {listed} — the only cluster sizes (TP = Sparks) this engine runs it on")
+        engine = f"native TensorFold {NATIVE_TF_VERSION}, the default engine" if nat else "this engine"
+        notes.append(f"ranks: {_listed(tps)} — the only cluster sizes (TP = Sparks) {engine} runs it on"
+                     + (f"; {nat['note']}" if nat else ""))
+    if nat and ctps != tps:
+        notes.append(f"the container engine @{commit[:7]} (TENSORFOLD_ENGINE=container) runs it on "
+                     f"{_listed(ctps) if ctps else 'no'} rank(s)"
+                     + (f" — TP={tp} needs the native engine" if tp and ctps and tp not in ctps else ""))
     notes.extend(fam.get("notes", []))
     tested = fam.get("tested_checkpoints", [])
     repo = source_label.split("@")[0]
@@ -779,7 +815,7 @@ def tensorfold_support(cfg: dict, q: dict, source_label: str, tp: int | None = N
         status = "unsupported"
         notes.append(f"TP={tp} is not allowed for this family")
     return {"engine": "tensorfold", "status": status, "family": fam_name, "vendored_commit": commit,
-            "notes": notes, "tested": is_tested, "ranks": tps or None}
+            "notes": notes, "tested": is_tested, "ranks": tps or None, "container_ranks": ctps or None}
 
 
 # --------------------------------------------------------------------------- report

@@ -300,7 +300,7 @@ def validate(p: Profile, backend: str | None = None) -> Profile:
         err("SERVED_MODEL_NAME is longer than 200 characters")
     tp = p.get("TENSOR_PARALLEL_SIZE", "2")
     if tp not in TP_SIZES:
-        err(f"TENSOR_PARALLEL_SIZE={tp!r} — 1..{MAX_SPARKS} — one rank per Spark")
+        err(f"TENSOR_PARALLEL_SIZE={tp!r} — 1..{MAX_SPARKS} (one rank per Spark)")
     for key in ("MAX_MODEL_LEN", "MAX_NUM_SEQS"):
         if p.get(key) and not re.match(r"^[1-9][0-9]*$", p.get(key)):
             err(f"{key}={p.get(key)!r} is not a positive integer")

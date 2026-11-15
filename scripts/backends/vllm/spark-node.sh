@@ -17,7 +17,7 @@
 #   --env FILE      HOST settings (default: scripts/backends/spark.env;
 #                   template: spark.env.example next to it)
 #   --print         print the exact docker command and exit; runs nothing
-#   --stop          docker stop this rank's container
+#   --stop          docker stop this rank's container (already gone: exit 0)
 #
 # The model comes ONLY from the profile. If model-fetch.sh has fetched and
 # verified it into MODELS_DIR, that directory is mounted read-only and
@@ -32,7 +32,10 @@
 #
 # SPARK_IFACE / SPARK_IB_HCA may be comma-separated lists (several rails, or a
 # NIC per peer); they reach NCCL unchanged. From 3 ranks on, NCCL_CROSS_NIC=1
-# (a ring of Sparks crosses NICs; a switch fabric does not mind).
+# (rails / NICs per peer). VERIFY ON HARDWARE: nothing past 2 ranks has run
+# through this launcher; rails on separate subnets may also need
+# NCCL_IB_SUBNET_AWARE_ROUTING=1, and a cabled 3-Spark ring cannot rendezvous
+# here at all (one SPARK_HEAD_IP; spark-cluster.sh check flags it).
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=../lib.sh
@@ -48,7 +51,7 @@ while [[ $# -gt 0 ]]; do
     --print)      PRINT=1; shift ;;
     --stop)       STOP=1; shift ;;
     --model)      echo "Error: --model is gone — the model comes from a profile: --profile NAME (scripts/backends/models/)" >&2; exit 2 ;;
-    -h|--help)    sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)    sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)            echo "Unknown argument: $1 (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -58,14 +61,22 @@ if ! sp_rank_syntax "$RANK"; then
 fi
 NAME="openbeast-vllm-rank$RANK"
 if [[ $STOP -eq 1 ]]; then
-  exec docker stop "$NAME"
+  # Idempotent: a rank already gone (--rm) is not an error, so a cluster stop
+  # can walk every rank.
+  if ! docker container inspect "$NAME" >/dev/null 2>&1; then
+    echo "$NAME is not running (nothing to stop)."
+    exit 0
+  fi
+  docker stop "$NAME" >/dev/null
+  echo "Stopped $NAME."
+  exit 0
 fi
 
 ENV_FILE="${ENV_FILE:-${SPARK_ENV:-$HERE/../spark.env}}"
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "Note: no settings file at $ENV_FILE — using the environment only (template: $HERE/../spark.env.example)." >&2
 fi
-sp_load "$ENV_FILE" VLLM_IMAGE VLLM_IMAGE_DIGEST SPARK_IFACE SPARK_IB_HCA \
+sp_load "$ENV_FILE" VLLM_IMAGE VLLM_IMAGE_DIGEST VLLM_IMAGE_ID SPARK_IFACE SPARK_IB_HCA \
   SPARK_HEAD_IP SPARK_NODE_IP VLLM_MASTER_PORT SPARK_SERVE_HOST SPARK_SERVE_PORT \
   SPARK_ALLOW_WILDCARD_BIND HF_CACHE MODELS_DIR SPARK_PROFILE VLLM_API_KEY_FILE SPARK_NO_API_KEY
 sp_warn_legacy_model_keys "$ENV_FILE"
@@ -129,7 +140,7 @@ if [[ "$RANK" == 0 ]]; then
   fi
   [[ -n "$PF_TOOL_CALL_PARSER" ]] || echo "Warning: profile '$PF_PROFILE_NAME' has no TOOL_CALL_PARSER — tool calls will arrive as text and OpenBeast's tools will not work (model-inspect.sh suggests one)." >&2
 fi
-sp_image "${VLLM_IMAGE:-}" "${VLLM_IMAGE_DIGEST:-}" "$PRINT"
+sp_image "${VLLM_IMAGE:-}" "${VLLM_IMAGE_DIGEST:-}" "$PRINT" "${VLLM_IMAGE_ID:-}"
 if [[ $SP_ERRORS -gt 0 ]]; then
   echo "Refusing to start: $SP_ERRORS setting(s) missing or unsafe (settings: $ENV_FILE, profile: $PF_PROFILE_PATH)." >&2
   exit 1

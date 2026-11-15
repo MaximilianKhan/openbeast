@@ -58,7 +58,7 @@ def test_profile_trust_remote_code_needs_ack_bound_to_revision(tmp_path):
     (BASE + 'EXTRA_ARGS=["--trust-remote-code"]\n', "may not contain --trust-remote-code"),
     (BASE + 'EXTRA_ARGS=["--api-key","k"]\n', "may not contain --api-key"),
     (BASE + "EXTRA_ARGS=--foo --bar\n", "JSON array"),
-    (BASE + "TENSOR_PARALLEL_SIZE=9\n", "1..8 — one rank per Spark"),
+    (BASE + "TENSOR_PARALLEL_SIZE=9\n", r"1\.\.8 \(one rank per Spark\)"),
     (BASE + "TENSOR_PARALLEL_SIZE=0\n", "TENSOR_PARALLEL_SIZE"),
     (BASE + "TENSOR_PARALLEL_SIZE=08\n", "TENSOR_PARALLEL_SIZE"),
     (BASE + "TENSOR_PARALLEL_SIZE=2.0\n", "TENSOR_PARALLEL_SIZE"),

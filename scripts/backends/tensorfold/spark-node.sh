@@ -7,8 +7,10 @@
 #   native     (default) the signed TensorFold >= 1.0 release binary on the
 #              host (install-native.sh), run as a systemd --user unit. Keyed
 #              with --api-key-file. GLM-5.3-Flash places its ranks with
-#              TF_GLM_RANK / TF_GLM_WORLD / NCCL_COMM_ID; other families with
-#              --tp / --rank / --master.
+#              TF_GLM_RANK / TF_GLM_WORLD / NCCL_COMM_ID (any TP here),
+#              MiniMax-M3.1-Flash with TF_MINIMAX_* (TP 2 only); other
+#              families with --tp 2/4/8 / --rank / --master (Flash Next: 2
+#              at most; Nemotron's TF_NEMOTRON_* is not wired: TP 1 only).
 #   container  the frozen Python 0.x engine, pip-installed at a commit SHA
 #              into NVIDIA's PyTorch container. No auth. Kept for profiles
 #              that need it; everything below about TENSORFOLD_REF, the image
@@ -26,15 +28,21 @@
 #                   required for TP > 1
 #   --env FILE      HOST settings (default: scripts/backends/spark.env)
 #   --print         print the exact command and exit; runs nothing
-#   --stop          stop this rank (systemctl --user stop / docker stop)
+#   --stop          stop this rank: its native unit and/or container (one that
+#                   is already gone is "not running", exit 0)
 #
 # The checkpoint MUST be fetched first (model-fetch.sh --profile NAME, on every
 # Spark that runs a rank): TensorFold's own download takes the latest commit of a
 # repo id with no way to pin a revision (hub.py pull → snapshot_download),
 # so this launcher only ever hands it a verified, read-only local directory.
 # A drafter is the profile's DRAFTER_SOURCE@DRAFTER_REVISION, fetched the same
-# way; without one it passes --drafter none (never "auto": that picks up
-# whatever unpinned draft model happens to sit in the HF cache).
+# way. Without one, the CONTAINER engine passes --drafter none (never "auto":
+# that picks up whatever unpinned draft model happens to sit in the HF cache).
+# The NATIVE engine then passes no --drafter at all: in tensorfold-native
+# 1.2.7 the cached-drafter "auto" belongs to the managed server (benchmark),
+# and a family that drafts with its own MTP head refuses any --drafter
+# ("serve without --drafter"). VERIFY ON HARDWARE that a plain native serve
+# loads no cached drafter (HF_HUB_OFFLINE=1 does not hide a cached copy).
 #
 # Order matters: start ranks 1..N-1 FIRST, then rank 0 (TensorFold RUNBOOK.md,
 # "two ranks"). Every rank needs the same checkpoint, drafter, --context and
@@ -43,7 +51,10 @@
 #
 # SPARK_IFACE / SPARK_IB_HCA may be comma-separated lists (several rails, or a
 # NIC per peer); they reach NCCL unchanged. From 3 ranks on, NCCL_CROSS_NIC=1
-# (a ring of Sparks crosses NICs; a switch fabric does not mind).
+# (rails / NICs per peer). VERIFY ON HARDWARE: nothing past 2 ranks has run
+# through this launcher; rails on separate subnets may also need
+# NCCL_IB_SUBNET_AWARE_ROUTING=1, and a cabled 3-Spark ring cannot rendezvous
+# here at all (one SPARK_HEAD_IP; spark-cluster.sh check flags it).
 #
 # SECURITY. TensorFold has NO API key and its rendezvous port (29551) is
 # unauthenticated. rank 0's HTTP binds SPARK_SERVE_HOST (a specific address;
@@ -69,7 +80,7 @@ while [[ $# -gt 0 ]]; do
     --print)   PRINT=1; shift ;;
     --stop)    STOP=1; shift ;;
     --ckpt)    echo "Error: --ckpt is gone — the checkpoint comes from a profile: --profile NAME (scripts/backends/models/)" >&2; exit 2 ;;
-    -h|--help) sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,57p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)         echo "Unknown argument: $1 (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -78,13 +89,28 @@ if ! sp_rank_syntax "$RANK"; then
   exit 2
 fi
 NAME="openbeast-tensorfold-rank$RANK"
+if [[ $STOP -eq 1 ]]; then
+  # Idempotent, and engine-blind: stops this rank's native unit and/or its
+  # container, whichever exists. A rank already gone (a --collect unit, a --rm
+  # container) is "not running", exit 0, so a cluster stop can walk every rank.
+  _found=0
+  if command -v systemctl >/dev/null 2>&1 \
+     && systemctl --user list-units --all --plain --no-legend "$NAME.service" 2>/dev/null | grep -q .; then
+    _found=1; systemctl --user stop "$NAME"; echo "Stopped unit $NAME."
+  fi
+  if command -v docker >/dev/null 2>&1 && docker container inspect "$NAME" >/dev/null 2>&1; then
+    _found=1; docker stop "$NAME" >/dev/null; echo "Stopped container $NAME."
+  fi
+  [[ $_found -eq 1 ]] || echo "$NAME is not running (nothing to stop)."
+  exit 0
+fi
 
 ENV_FILE="${ENV_FILE:-${SPARK_ENV:-$HERE/../spark.env}}"
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "Note: no settings file at $ENV_FILE — using the environment only (template: $HERE/../spark.env.example)." >&2
 fi
 sp_load "$ENV_FILE" TENSORFOLD_ENGINE TENSORFOLD_BIN TENSORFOLD_VERSION TENSORFOLD_API_KEY_FILE \
-  SPARK_NO_API_KEY TENSORFOLD_IMAGE TENSORFOLD_IMAGE_DIGEST TENSORFOLD_REF \
+  SPARK_NO_API_KEY TENSORFOLD_IMAGE TENSORFOLD_IMAGE_DIGEST TENSORFOLD_IMAGE_ID TENSORFOLD_REF \
   SPARK_IFACE SPARK_IB_HCA SPARK_HEAD_IP TENSORFOLD_MASTER_PORT SPARK_SERVE_HOST \
   SPARK_SERVE_PORT SPARK_ALLOW_WILDCARD_BIND MODELS_DIR SPARK_PROFILE
 ENGINE="${TENSORFOLD_ENGINE:-native}"
@@ -92,10 +118,6 @@ case "$ENGINE" in
   native|container) ;;
   *) echo "Error: TENSORFOLD_ENGINE='$ENGINE' — native or container" >&2; exit 2 ;;
 esac
-if [[ $STOP -eq 1 ]]; then
-  [[ "$ENGINE" == native ]] && exec systemctl --user stop "$NAME"
-  exec docker stop "$NAME"
-fi
 sp_warn_legacy_model_keys "$ENV_FILE"
 PROFILE="${PROFILE:-${SPARK_PROFILE:-}}"
 if [[ -z "$PROFILE" ]]; then
@@ -132,7 +154,9 @@ if [[ "$ENGINE" == native ]]; then
   if [[ ! -x "$TENSORFOLD_BIN" ]]; then
     sp_err "no TensorFold binary at $TENSORFOLD_BIN — scripts/backends/tensorfold/install-native.sh"
   elif [[ -n "${TENSORFOLD_VERSION:-}" ]]; then
-    _have="$("$TENSORFOLD_BIN" --version 2>/dev/null | awk '{print $NF}')"
+    # || true: a binary that cannot even run (missing library, wrong arch)
+    # is reported as '?' below, not a silent exit under set -e/pipefail.
+    _have="$( ("$TENSORFOLD_BIN" --version 2>/dev/null || true) | awk '{print $NF}')"
     [[ "$_have" == "$TENSORFOLD_VERSION" ]] \
       || sp_err "$TENSORFOLD_BIN is TensorFold '${_have:-?}', spark.env pins $TENSORFOLD_VERSION — every rank must run the same build"
   fi
@@ -166,16 +190,66 @@ else
     DRAFTER="/models/$PF_PROFILE_NAME.drafter"
   fi
 fi
-[[ "$ENGINE" == container ]] && sp_image "${TENSORFOLD_IMAGE:-}" "${TENSORFOLD_IMAGE_DIGEST:-}" "$PRINT"
+[[ "$ENGINE" == container ]] && sp_image "${TENSORFOLD_IMAGE:-}" "${TENSORFOLD_IMAGE_DIGEST:-}" "$PRINT" "${TENSORFOLD_IMAGE_ID:-}"
+
+# ── Can this ENGINE run this family at TP ranks, and how are they placed?
+# The checkpoint's own model_type decides (config.json, or text_config's).
+MODEL_TYPE="" PLACE=flags
+if [[ -n "$SP_MODEL_DIR" ]]; then
+  MODEL_TYPE="$(python3 -c 'import json,sys; c=json.load(open(sys.argv[1])); print(c.get("model_type") or (c.get("text_config") or {}).get("model_type") or "")' "$SP_MODEL_DIR/config.json" 2>/dev/null || true)"
+fi
+if [[ -n "$SP_MODEL_DIR" ]] && (( TP > 1 )); then
+  if [[ "$ENGINE" == native ]]; then
+    # tensorfold-native 1.2.7 (its own messages and `capabilities --json`):
+    # --tp takes 1, 2, 4 or 8; GLM-5.3-Flash is placed by TF_GLM_RANK/WORLD
+    # (at most 16 ranks), MiniMax-M3.1-Flash by TF_MINIMAX_RANK/WORLD at
+    # exactly 2, Nemotron by TF_NEMOTRON_RANK/WORLD; Flash Next runs on one
+    # GPU or --tp 2. Re-check these against a newer TENSORFOLD_VERSION.
+    case "$MODEL_TYPE" in
+      glm5_next) PLACE=TF_GLM ;;
+      minimax_m3_vl)
+        PLACE=TF_MINIMAX
+        [[ "$TP" == 2 ]] || sp_err "profile '$PF_PROFILE_NAME' is TENSOR_PARALLEL_SIZE=$TP, but native TensorFold serves MiniMax-M3.1-Flash at TP 2 only (TF_MINIMAX_WORLD=2)" ;;
+      nemotron_h)
+        sp_err "native TensorFold places Nemotron's ranks with TF_NEMOTRON_RANK / TF_NEMOTRON_WORLD, which this launcher does not set yet — serve it at TENSOR_PARALLEL_SIZE=1" ;;
+      qwen4_exp)
+        [[ "$TP" == 2 ]] || sp_err "profile '$PF_PROFILE_NAME' is TENSOR_PARALLEL_SIZE=$TP, but native TensorFold runs Flash Next (qwen4_exp) on 1 or 2 ranks only" ;;
+      *)
+        case "$TP" in
+          2|4|8) ;;
+          *) sp_err "profile '$PF_PROFILE_NAME' is TENSOR_PARALLEL_SIZE=$TP: native TensorFold's --tp takes 1, 2, 4 or 8 (tensorfold capabilities --json); only a family it places by environment (GLM-5.3-Flash) runs at $TP" ;;
+        esac ;;
+    esac
+  else
+    # The container engine is the pip-installed 0.x at TENSORFOLD_REF;
+    # data/tensorfold.json lists each family's ranks as read from one commit.
+    _tf="$(python3 - "$HERE/../data/tensorfold.json" "$MODEL_TYPE" <<'PY' 2>/dev/null || true
+import json, sys
+d = json.load(open(sys.argv[1]))
+fam = next((k for k, f in (d.get("families") or {}).items() if sys.argv[2] in f.get("model_types", [])), "")
+tps = (d.get("families") or {}).get(fam, {}).get("tp") or []
+print((d.get("_provenance") or {}).get("commit", ""), fam, ",".join(str(x) for x in tps))
+PY
+)"
+    read -r _tfc _tff _tfs <<< "$_tf"
+    if [[ -n "${_tfs:-}" && ",$_tfs," != *",$TP,"* ]]; then
+      _why="TensorFold @${_tfc:0:7} runs family $_tff on ${_tfs//,/ or } rank(s), not $TP (data/tensorfold.json)"
+      if [[ "${TENSORFOLD_REF:-}" == "$_tfc" ]]; then
+        sp_err "profile '$PF_PROFILE_NAME' is TENSOR_PARALLEL_SIZE=$TP: $_why"
+      else
+        echo "Warning: TENSORFOLD_REF is not ${_tfc:0:7}, the commit data/tensorfold.json was read from — $_why there; check yours." >&2
+      fi
+    fi
+  fi
+fi
 if [[ $SP_ERRORS -gt 0 ]]; then
   echo "Refusing to start: $SP_ERRORS setting(s) missing or unsafe (settings: $ENV_FILE, profile: $PF_PROFILE_PATH)." >&2
   exit 1
 fi
 
 if [[ "$ENGINE" == native ]]; then
-  # The checkpoint's own model_type decides how ranks are placed: native GLM
-  # reads its rank from the environment, every other ranked family from flags.
-  MODEL_TYPE="$(python3 -c 'import json,sys; c=json.load(open(sys.argv[1])); print(c.get("model_type",""))' "$SP_MODEL_DIR/config.json" 2>/dev/null || true)"
+  # PLACE (above, from the checkpoint's model_type): GLM and MiniMax read
+  # their rank from the environment, every other ranked family from flags.
   SERVE=(serve "$SP_MODEL_DIR" --no-update-check)
   [[ -n "$PF_DRAFTER_SOURCE" ]] && SERVE+=(--drafter "$SP_DRAFTER_DIR")
   [[ -n "$PF_TENSORFOLD_PARALLEL" ]] && SERVE+=(--parallel "$PF_TENSORFOLD_PARALLEL")
@@ -183,11 +257,12 @@ if [[ "$ENGINE" == native ]]; then
   SERVE+=(${PF_EXTRA[@]+"${PF_EXTRA[@]}"})
   RANKENV=()
   if (( TP > 1 )); then
-    if [[ "$MODEL_TYPE" == glm5_next ]]; then
-      RANKENV+=("TF_GLM_RANK=$RANK" "TF_GLM_WORLD=$TP" "NCCL_COMM_ID=$MASTER:$TENSORFOLD_MASTER_PORT")
-    else
-      SERVE+=(--tp "$TP" --rank "$RANK" --master "$MASTER" --master-port "$TENSORFOLD_MASTER_PORT")
-    fi
+    case "$PLACE" in
+      TF_GLM|TF_MINIMAX)
+        RANKENV+=("${PLACE}_RANK=$RANK" "${PLACE}_WORLD=$TP" "NCCL_COMM_ID=$MASTER:$TENSORFOLD_MASTER_PORT") ;;
+      *)
+        SERVE+=(--tp "$TP" --rank "$RANK" --master "$MASTER" --master-port "$TENSORFOLD_MASTER_PORT") ;;
+    esac
     # SPARK_IFACE / SPARK_IB_HCA may list several ConnectX rails, comma-separated.
     RANKENV+=("NCCL_SOCKET_IFNAME=$SPARK_IFACE" "NCCL_IB_HCA=$SPARK_IB_HCA" "NCCL_IB_DISABLE=0")
     (( TP >= 3 )) && RANKENV+=(NCCL_CROSS_NIC=1)
@@ -202,7 +277,10 @@ if [[ "$ENGINE" == native ]]; then
   [[ -n "${NCCL_DEBUG:-}" ]] && RANKENV+=("NCCL_DEBUG=$NCCL_DEBUG")
   # A transient systemd --user unit: logs in the journal, one --stop, and it
   # outlives this shell (linger is set by spark-root-setup.sh).
-  CMD=(systemd-run --user --unit "$NAME" --collect --property=Restart=no
+  # --expand-environment=no (systemd >= 254; the Sparks run 255): otherwise
+  # the service manager rewrites ${VAR}, $VAR and $$ in every argument at
+  # exec time, and the unit would not run the argv --print shows.
+  CMD=(systemd-run --user --unit "$NAME" --collect --property=Restart=no --expand-environment=no
     --setenv=HF_HUB_OFFLINE=1)
   for _e in ${RANKENV[@]+"${RANKENV[@]}"}; do CMD+=("--setenv=$_e"); done
   CMD+=("$TENSORFOLD_BIN" "${SERVE[@]}")
