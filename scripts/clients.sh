@@ -289,6 +289,14 @@ def save(doc):
             pass
         raise
     os.chmod(REG, 0o600)
+    # beast-gate's sticky "this rig has had a registry" marker (edge.py
+    # ENROLLED_MARKER): with it, deleting or moving clients.json aside keeps
+    # EDGE_ALLOW_ANON off instead of reopening the gate to the tailnet.
+    try:
+        os.close(os.open(os.path.join(d, "clients.enrolled"),
+                         os.O_WRONLY | os.O_CREAT, 0o600))
+    except OSError:
+        pass
 
 def find(doc, dev_id):
     for dev in doc["devices"]:

@@ -743,6 +743,13 @@ if [[ "$(_nonce)" == "$n2" ]]; then
 else
   fail "rotate changed the enroll_nonce"
 fi
+# beast-gate's sticky marker: without it, deleting or moving clients.json
+# aside reopened EDGE_ALLOW_ANON to the whole tailnet.
+if [[ -f "$R/.run/clients.enrolled" ]]; then
+  pass "a registry write leaves the gate's clients.enrolled marker"
+else
+  fail "enroll did not write .run/clients.enrolled"
+fi
 
 echo ""
 echo "registry write lock (supply S15):"

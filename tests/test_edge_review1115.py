@@ -243,3 +243,61 @@ class TestBrowserPagesCannotDriveAnon:
         assert r.status_code == 200
         assert not [k for k in r.headers
                     if k.lower().startswith("access-control-")]
+
+
+class TestAnonDoesNotReopenAfterEnrollment:
+    """sec + cbp: "ignored for good once the file exists" was really "while
+    the file exists" — moving a corrupt registry aside (the gate's own
+    repair advice) or deleting it served every caller as anon again."""
+
+    def _keyless(self, c):
+        return c.post(CHAT, json={"messages": []})
+
+    def test_moving_the_registry_aside_stays_closed(self, tmp_path,
+                                                    monkeypatch):
+        e = _anon_edge(tmp_path, monkeypatch)
+        path = _registry(tmp_path)
+        _stub(e)
+        with TestClient(e.app) as c:
+            assert self._keyless(c).status_code == 401
+            os.rename(path, str(path) + ".bad")
+            r = self._keyless(c)
+            assert r.status_code == 401 and "no_registry" in r.text
+            # A device key that used to work is no anon pass either.
+            assert c.post(CHAT, json={"messages": []},
+                          headers=HDR).status_code == 401
+            body = c.get("/gate/health", headers=_local_headers(e)).json()
+        assert body["auth"] == "closed"
+
+    def test_deleted_registry_stays_closed_across_a_restart(self, tmp_path,
+                                                            monkeypatch):
+        e = _anon_edge(tmp_path, monkeypatch)
+        path = _registry(tmp_path)
+        e.Registry()                 # a gate saw it (writes the marker)
+        path.unlink()
+        _stub(e)
+        with TestClient(e.app) as c:      # fresh process state
+            assert self._keyless(c).status_code == 401
+        assert e._auth_mode(e.Registry()) == "closed"
+
+    def test_unstatable_registry_is_closed(self, tmp_path, monkeypatch):
+        e = _anon_edge(tmp_path, monkeypatch)
+        reg_path = str(tmp_path / ".run" / "clients.json")
+        real_stat = os.stat
+
+        def _stat(p, *a, **k):
+            if str(p) == reg_path:
+                raise PermissionError(13, "Permission denied", p)
+            return real_stat(p, *a, **k)
+
+        monkeypatch.setattr(e.os, "stat", _stat)
+        (tmp_path / ".run").mkdir(exist_ok=True)
+        assert e._auth_mode(e.Registry(reg_path)) == "closed"
+
+    def test_a_rig_that_never_had_a_registry_is_still_anon(self, tmp_path,
+                                                           monkeypatch):
+        # Negative control: the opt-in still works for a fresh rig.
+        e = _anon_edge(tmp_path, monkeypatch)
+        _stub(e)
+        with TestClient(e.app) as c:
+            assert self._keyless(c).status_code == 200

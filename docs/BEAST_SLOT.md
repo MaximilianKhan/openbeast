@@ -524,8 +524,10 @@ What each remote request now passes through:
 get 401 — an empty registry never means "everyone is welcome". `EDGE_ALLOW_ANON=true`
 opts out, at the cost of attribution and revocation — but only while
 `.run/clients.json` has never been written. Once the file exists the gate
-ignores `EDGE_ALLOW_ANON` for good: emptied again by `clients.sh remove`, a
-missing or unknown key is still a 401. A corrupt or half-written registry
+ignores `EDGE_ALLOW_ANON` for good: emptied again by `clients.sh remove`, or
+deleted / moved aside later (`.run/clients.enrolled`, written beside it,
+remembers), a missing or unknown key is still a 401 — to really start over
+as a fresh rig, delete both files. A corrupt or half-written registry
 keeps the last good device map rather than opening up; one that cannot be
 read at the gate's first load refuses every caller (`registry_unreadable`)
 and logs the repair command once.

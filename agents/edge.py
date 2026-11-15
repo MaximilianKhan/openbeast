@@ -50,10 +50,11 @@ Env (resolved from openbeast.conf by scripts/lib/conf.sh):
                                agents/mediapolicy.py)
   OPENBEAST_EDGE_ALLOW_ANON    "true" = while there is NO registry file, serve
                                every caller as the "anon" device (default
-                               false = fail closed). Ignored once
-                               .run/clients.json exists — even emptied by
-                               `clients.sh remove`, even unreadable: then
-                               no/unknown key -> 401
+                               false = fail closed). Ignored for good once
+                               .run/clients.json has existed — even emptied
+                               by `clients.sh remove`, unreadable, or later
+                               deleted (.run/clients.enrolled remembers):
+                               then no/unknown key -> 401
 """
 from __future__ import annotations
 
@@ -87,6 +88,11 @@ REPO_DIR = os.environ.get("OPENBEAST_REPO_DIR") or os.path.dirname(
     os.path.dirname(os.path.abspath(__file__)))
 RUN_DIR = os.path.join(REPO_DIR, ".run")
 REGISTRY_PATH = os.path.join(RUN_DIR, "clients.json")
+# Written next to the registry the first time one exists (by the gate and by
+# `clients.sh` saves). Its presence keeps EDGE_ALLOW_ANON off after the
+# registry itself is deleted or moved aside; to truly start over as a fresh
+# rig, delete both.
+ENROLLED_MARKER = "clients.enrolled"
 AUDIT_PATH = os.path.join(RUN_DIR, "inference-audit.jsonl")
 # Gate-owned last-seen sidecar. Kept OUT of clients.json so the data path
 # never rewrites the authorization source (see Registry.touch).
@@ -183,19 +189,44 @@ class Registry:
         # The FILE is there, parsed or not. Distinct from _present (a map was
         # loaded from it) — see `exists`.
         self._exists = False
+        self._missing = True
+        # Sticky "a registry has existed here": the marker survives the file
+        # being deleted or moved aside (see `exists`).
+        self._marker = os.path.join(os.path.dirname(path) or ".",
+                                    ENROLLED_MARKER)
+        self._ever = False
         self._bad_stamp = None
         self._touched: dict[str, float] = {}
         self.reload()
 
+    def _mark_enrolled(self) -> None:
+        """Persist that this rig has had a registry (once per process)."""
+        if self._ever:
+            return
+        self._ever = True
+        try:
+            fd = os.open(self._marker, os.O_WRONLY | os.O_CREAT, 0o600)
+            os.close(fd)
+        except OSError:
+            pass    # the in-process flag still holds until a restart
+
     def reload(self) -> None:
         try:
             st = os.stat(self.path)
-        except OSError:
+        except OSError as e:
             self._by_hash, self._present, self._mtime = {}, False, 0.0
-            self._exists = False
             self._size = -1
+            # Only a file that is really GONE may read as "never enrolled",
+            # and only if no registry was ever seen: a moved-aside, deleted
+            # or un-stat-able (EACCES) registry must keep the gate closed,
+            # not hand EDGE_ALLOW_ANON every tailnet peer.
+            self._missing = isinstance(e, FileNotFoundError)
+            self._exists = (not self._missing
+                            or self._ever or os.path.exists(self._marker))
             return
         self._exists = True
+        self._missing = False
+        self._mark_enrolled()
         # mtime alone is not enough: two writes inside the same filesystem
         # timestamp tick (mtime granularity can be 1s) would leave a stale
         # map — and a stale map means a MISSED REVOCATION. Key the cache on
@@ -258,6 +289,12 @@ class Registry:
         and reopen the gate to every tailnet peer: `clients.sh remove` of the
         last device (which re-admitted the very key it removed), and a file
         truncated before a gate restart (no last good map to keep).
+
+        It is also STICKY: once a registry has existed — seen by this
+        process, or recorded by the ENROLLED_MARKER beside it — a deleted or
+        moved-aside file (the repair advice for a corrupt one) still counts,
+        and so does one that cannot even be stat'ed. Only a rig that has
+        never had a registry can be anonymous.
         """
         self.reload()
         return self._exists
@@ -637,7 +674,7 @@ def _identify(request: Request, registry: Registry) -> tuple[dict | None, str]:
     # lesson from 2026-07-17). The opt-out covers ONLY a rig that has never
     # had a registry file: see Registry.exists.
     if registry.exists:
-        return None, ("no_registry" if registry._present
+        return None, ("no_registry" if registry._present or registry._missing
                       else "registry_unreadable")
     if ALLOW_ANON:
         return {"id": "anon", "label": "unregistered"}, "ok"
