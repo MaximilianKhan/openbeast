@@ -73,6 +73,7 @@ from __future__ import annotations
 import argparse
 import ipaddress
 import json
+import math
 import os
 import re
 import socket
@@ -297,6 +298,11 @@ def read_state(path: str | None = None) -> dict | None:
             age = _now() - float(st.get("updated_at", 0))
             stale_after = min(float(st.get("stale_after", 0)), MAX_STALE)
         except (TypeError, ValueError):
+            continue
+        # NaN compares False to everything (and min(nan, cap) is nan), so a
+        # NaN updated_at / stale_after would pass every test below and be
+        # trusted forever. "nan" also parses through float().
+        if not (math.isfinite(age) and math.isfinite(stale_after)):
             continue
         if stale_after <= 0 or age > stale_after or age < -60:
             continue
