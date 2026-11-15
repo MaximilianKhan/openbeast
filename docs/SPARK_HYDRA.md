@@ -32,6 +32,74 @@ resolve (seen right after a reboot), use the tailnet name or LAN IP:
 | Drafter | both | `incoai/GLM-5.3-Flash-DFlash2 @ bf582e4e` (CC BY-NC-ND — personal use, Max's call) |
 | Native TensorFold 1.2.7 | both | `~/.local/bin/tensorfold` (signed release) — challenger engine, not serving |
 
+## Remote access (live 2026-11-15)
+
+spark-1 is the pair's front door on the tailnet. Published with
+`TS_HOSTNAME=spark-1 ./scripts/setup-tailscale.sh --publish-slot --publish-chat --publish-artifact --publish-searxng`
+(as tailscaled's operator, so no sudo):
+
+| URL | What | Auth |
+|---|---|---|
+| `https://spark-1.tail4109f9.ts.net` | Open WebUI | WebUI login (`WEBUI_AUTH=true`) |
+| `https://spark-1.tail4109f9.ts.net:8443/v1` | inference, **through beast-gate** | per-device key (`scripts/clients.sh`) — 401 without |
+| `:8444/api/slot` | beast-slot discovery | open, read-only |
+| `:8445` | beast-chat console | tailnet login to read, chat-scoped device key to act |
+| `:8446` | beast-artifact gallery | tailnet login (`ARTIFACT_OPERATORS`) |
+| `:8889` | SearXNG for thin clients | open to the tailnet |
+
+The model itself still listens on `127.0.0.1:8000` only; `:8443` is the one
+inference door, and it always goes through the gate.
+
+- **WebUI accounts:** `maxjkh@gmail.com` (admin; password in
+  `~/.config/openbeast/webui-max-password` on spark-1, 0600 — change it in
+  Settings → Account). The built-in `admin@localhost` had its default password
+  rotated at the first auth-on start (`WEBUI_ADMIN_*` in `openbeast.conf`).
+  The WebUI database is spark-1's own: accounts and chats from the beast rig
+  do not carry over.
+- **Device keys** (beast-gate): `macbook` and `phone` (`phone` also has the
+  `chat` scope). The keys are in `~/.config/openbeast/gate-keys/` on spark-1
+  (0600); the MacBook's is also at `~/.config/openbeast/spark-hydra-gate.key`
+  on the Mac. Lost device: `./scripts/clients.sh revoke <id>`.
+- **A laptop in client mode:**
+  `./scripts/setup-client.sh --host spark-1.tail4109f9.ts.net --api-key-stdin < key`.
+- **ssh away from home:** the NVIDIA Sync `.local` names only resolve on the
+  home LAN. The Mac's `~/.ssh/config` has `spark-1.tail4109f9.ts.net` and
+  `spark-2.tail4109f9.ts.net` entries, with the Sync key and `HostKeyAlias`
+  pointing at the known `.local` host keys.
+
+**Not yet:** a stable `svc:spark-hydra` name. That is a Tailscale Service,
+which has to be defined in the admin console (and spark-1 tagged) before
+`tailscale serve --service=svc:spark-hydra` can advertise it. Until then the
+pair is reached by spark-1's name.
+
+## Parity with the beast rig (verified 2026-11-15)
+
+`openbeast.conf` on spark-1 enables what the rig ran in production:
+`WEBUI_AUTH=true`, `EDGE_GATE=true`, `EXTENSIONS="dashboard"`,
+`BEAST_CHAT=true`, `BEAST_ARTIFACT=true`, with `maxjkh@gmail.com` as the
+chat and artifact operator. `healthcheck.sh` reports all 9 services healthy.
+
+| Check | Result |
+|---|---|
+| `scripts/backends/conformance.sh --model GLM-5.3-Flash-EXL3 --heavy` | PASS: chat, stream, tools, tool_result, 2 parallel calls, max_tokens |
+| `./agent.sh` (create / edit / run a file) | done in 5 iterations, 0 API errors |
+| a WebUI chat that calls `bash` through the `:3001` tool server | executed server-side, answered `aarch64` / `20` |
+| remote: every surface above from off-LAN (phone hotspot) | 200; `:8443` 401 without a key, chat answers with one |
+| `./scripts/doctor.sh` | 39 ok, 1 warning (SSD wear needs a sudoers rule) |
+
+**Language assistance is OFF on the pair** (Max, 2026-11-15). Packs, the pack
+context, beast-assist and escalation were measured for, and help, the 27B.
+GLM-5.3-Flash needs far less help:
+
+```
+LANG_PACKS=off  LANG_PACK_CONTEXT=off  BEAST_ASSIST=0  BEAST_ESCALATE=0
+```
+
+`language_reference` stays available as a tool the model can choose to call.
+Not enabled on the pair: `AGENT_ROUTER` (an intent classifier that exists
+because the 27B would not call `start_agent` on its own) and `HYDRA` /
+`INSTINCT` (their scorer is the rig's 27B).
+
 ## Serving configuration (measured 2026-11-13)
 
 DFlash2, 4 parallel streams, 1M-token window, fp8 KV (pool ~2.2-2.6M tokens),
@@ -104,8 +172,9 @@ then `systemctl --user restart spark-hydra-inference` (loads in 2-6 min).
 - The full playbook: every artifact's offline staging (recipe image via
   `docker save`/`load`, DFlash2, OpenBeast's air-gap bundle built on aarch64,
   zig), and a guided walk-through for the rig's model.
-- Remote access to the pair: `tailscale serve` of beast-gate on spark-1 and a
-  `svc:spark-hydra` Tailscale Service name; the beast rig's hydra node for it.
+- A `svc:spark-hydra` Tailscale Service name (admin-console step), and the
+  beast rig's hydra node for the pair (`https://spark-1.tail4109f9.ts.net:8443`,
+  `engine = "openai"`, a gate device key), once the rig is back on.
 - Switching the primary between `beast` and `spark-hydra` (clients + hydra).
 - `PARALLEL=8` measurement; native TensorFold 1.2.7 vs the recipe.
 - `tests/test_scripts.sh` showed 7 failures when run from a non-git copy on
