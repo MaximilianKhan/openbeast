@@ -77,7 +77,11 @@ CURL_STUB = textwrap.dedent(r'''
         st["down_calls"] -= 1; save(); sys.exit(7)
     tok = lambda email: "tok-%s-%d" % (email, st["gen"])
     if path == "/api/version": out({"version": "stub"})
-    if path == "/api/config": out({"features": {"auth": st["auth"]}})
+    if path == "/api/config":
+        if st.get("config_broken", 0) > 0:   # busy first boot: an HTML 502
+            st["config_broken"] -= 1; save()
+            sys.stdout.write("<html>502 Bad Gateway</html>"); sys.exit(0)
+        out({"features": {"auth": st["auth"]}})
     if path == "/api/v1/auths/signin":
         email, pw = body["email"], body["password"]
         if email == "admin@localhost" and not st["auth"]:
@@ -94,6 +98,8 @@ CURL_STUB = textwrap.dedent(r'''
         st["accounts"][who[0]] = body["new_password"]; st["gen"] += 1; save()
         out(True)
     if path == "/api/v1/configs/tool_servers":
+        if method == "GET" and st.get("tool_servers_broken"):
+            sys.stdout.write("<html>502 Bad Gateway</html>"); sys.exit(0)
         out({"TOOL_SERVER_CONNECTIONS": []} if method == "GET" else {})
     if path in ("/api/models", "/v1/models"): out({"data": [{"id": "m1"}]})
     out({})
@@ -265,6 +271,26 @@ def test_single_admin_key_still_reaches_admin_tools(rig):
     assert conns["1"]["auth_type"] == "bearer" and conns["1"]["key"] == "adm-key"
     assert conns["2"]["auth_type"] == "none" and conns["2"]["key"] == ""
     assert "ONE profile key" in p.stderr
+    # Review 2026-11: web_search/fetch/weather lived ONLY on connection 2,
+    # which a keyed server 401s with no key — so admins silently lost every
+    # web tool. With no guest profile, connection 1 carries them all (admin
+    # key) and the keyless connection 2 is switched off.
+    assert conns["1"]["config"]["function_name_filter_list"] == ""
+    assert conns["2"]["config"]["enable"] is False
+
+
+def test_single_guest_key_keeps_the_privileged_filter(rig):
+    """Negative control: guest-only keeps the partition (connection 2 is
+    keyed and serves everyone's web tools; the admin profile is the one
+    disabled)."""
+    rig.set_state(auth=False, admin_pw="admin")
+    p = rig.run("configure-webui.sh",
+                env_extra={"OPENBEAST_MCPO_GUEST_KEY": "gst-key"})
+    assert p.returncode == 0, p.stderr
+    conns = {c["info"]["id"]: c for c in
+             _tool_server_post(rig)["body"]["TOOL_SERVER_CONNECTIONS"]}
+    assert conns["1"]["config"]["function_name_filter_list"] == "!web_search,!fetch,!weather"
+    assert conns["2"]["config"]["enable"] is True and conns["2"]["key"] == "gst-key"
 
 
 def test_both_keys_bind_both_connections(rig):
@@ -286,6 +312,56 @@ def test_no_keys_leaves_connections_open(rig):
     assert p.returncode == 0, p.stderr
     conns = _tool_server_post(rig)["body"]["TOOL_SERVER_CONNECTIONS"]
     assert all(c["auth_type"] == "none" and c["key"] == "" for c in conns)
+    assert all(c["config"]["enable"] is True for c in conns)
+
+
+def test_unreadable_config_does_not_silently_skip_rotation(rig):
+    """_live_auth's 'unknown' (timeout / non-JSON /api/config) used to count
+    as 'the default no longer works': the well-known admin password survived
+    the start that should retire it, with no word. Now it is retried, and a
+    persistent unknown is a loud SECURITY warning (and exit 1 in secure
+    mode)."""
+    rig.set_state(auth=True, admin_pw="admin", config_broken=1000)
+    p = rig.run("configure-webui.sh")
+    assert p.returncode == 0, p.stderr                  # the rest still runs
+    assert "SECURITY WARNING" in p.stderr and "/api/config" in p.stderr
+    rig.set_state(auth=True, admin_pw="admin", config_broken=1000)
+    p = rig.run("configure-webui.sh", "--secure-default-admin")
+    assert p.returncode == 1 and "SECURITY WARNING" in p.stderr
+
+
+def test_briefly_unreadable_config_is_retried_then_rotates(rig):
+    rig.set_state(auth=True, admin_pw="admin", config_broken=2)
+    p = rig.run("configure-webui.sh", "--secure-default-admin")
+    assert p.returncode == 0, p.stderr
+    assert rig.get_state()["accounts"]["admin@localhost"] != "admin"
+
+
+def test_non_json_tool_servers_reply_does_not_abort_the_run(rig):
+    """The reconciliation pipeline ran bare under set -euo pipefail: a 502
+    page on the GET killed the script before web search, background tasks
+    and per-model function calling were configured."""
+    rig.set_state(auth=False, admin_pw="admin", tool_servers_broken=True)
+    p = rig.run("configure-webui.sh")
+    assert p.returncode == 0, p.stderr
+    assert "tool-server reconciliation failed" in p.stderr
+    assert "Wiring built-in Web Search" in p.stdout
+    assert "Open WebUI configured." in p.stdout
+
+
+def test_no_token_with_keys_names_the_tool_outage(rig):
+    """No admin token = WebUI keeps whatever tool-server keys it stored. With
+    keys configured (first enable or --rotate) that means every WebUI tool
+    call fails auth — the warning has to say so, not just 'skipped'."""
+    rig.set_state(auth=True, admin_pw="operator-changed-it")
+    p = rig.run("configure-webui.sh",
+                env_extra={"OPENBEAST_MCPO_ADMIN_KEY": "adm-key",
+                           "OPENBEAST_MCPO_GUEST_KEY": "gst-key"})
+    assert p.returncode == 0, p.stderr
+    assert "EVERY tool call" in p.stderr
+    # Negative control: keyless, there is no key to go stale.
+    p = rig.run("configure-webui.sh")
+    assert "EVERY tool call" not in p.stderr
 
 
 # --- setup-tailscale.sh: never publish an open or default-password WebUI -----

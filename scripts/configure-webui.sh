@@ -175,8 +175,24 @@ os.replace(tmp, path)
 # break the running auth-off UI until the next restart. Returns 0 when the
 # default no longer works (rotated now, or never there), 1 when it still does.
 _secure_default_admin() {
-  local tok newpw resp
-  [[ "$(_live_auth)" == "true" ]] || return 0
+  local tok newpw resp live _try
+  # 'unknown' (timeout, non-JSON, no features.auth) is NOT 'auth off': it
+  # used to return 0 here, so a slow /api/config on a busy first boot let the
+  # well-known password survive the start meant to retire it, silently.
+  live="$(_live_auth)"
+  for _try in 1 2 3 4 5; do
+    [[ "$live" != "unknown" ]] && break
+    sleep 1
+    live="$(_live_auth)"
+  done
+  if [[ "$live" == "unknown" ]]; then
+    echo "SECURITY WARNING: could not read $WEBUI_URL/api/config, so whether WebUI" >&2
+    echo "  login is on — and whether $DEFAULT_ADMIN_EMAIL still has upstream's default" >&2
+    echo "  password — is UNVERIFIED. Re-run ./scripts/configure-webui.sh once WebUI" >&2
+    echo "  answers, or check: ./scripts/configure-webui.sh --check-default-admin" >&2
+    return 1
+  fi
+  [[ "$live" == "true" ]] || return 0
   tok=$(_signin "$DEFAULT_ADMIN_EMAIL" "$DEFAULT_ADMIN_PASSWORD")
   [[ -n "$tok" ]] || return 0      # default password doesn't work: nothing to do
   newpw=$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')
@@ -233,7 +249,9 @@ if [[ "$MODE" == "check" ]]; then
 fi
 
 if [[ "$MODE" == "secure" ]]; then
-  if [[ "$(_live_auth)" != "true" ]]; then
+  # Only a definite 'false' ends here; 'unknown' goes to the retry (and the
+  # loud failure) in _secure_default_admin.
+  if [[ "$(_live_auth)" == "false" ]]; then
     echo "WebUI login is not enforced by the running WebUI yet — nothing to rotate" >&2
     echo "  (the next start with WEBUI_AUTH=true retires the default password)." >&2
     exit 0   # --secure-default-admin: nothing to rotate yet
@@ -268,6 +286,14 @@ if [[ -z "$TOKEN" ]]; then
   echo "  Or configure manually:" >&2
   echo "  1. Admin Settings → External Tools → Add: OpenAPI, $MCPO_URL" >&2
   echo "  2. Admin Settings → Models → [model] → Function Calling: Native" >&2
+  if [[ -n "${OPENBEAST_MCPO_ADMIN_KEY:-}${OPENBEAST_MCPO_GUEST_KEY:-}" ]]; then
+    # Keys reach WebUI ONLY through this reconciliation. After a first
+    # enable or --rotate, the server checks keys WebUI does not have.
+    echo "ERROR: tool-server keys are set, but WebUI's stored connection keys could" >&2
+    echo "  not be updated. If they were enabled or rotated since WebUI last saw them," >&2
+    echo "  EVERY tool call from WebUI now fails (401/403) until this script runs" >&2
+    echo "  with a working admin sign-in (WEBUI_ADMIN_EMAIL / WEBUI_ADMIN_PASSWORD)." >&2
+  fi
 fi
 
 AUTH="Authorization: Bearer ${TOKEN:-}"
@@ -329,7 +355,9 @@ echo "  Reconciling RBAC tool-server connections..."
 # (tests/test_weather.py pins it): a guest tool left off connection 2 is
 # server-allowed but never offered to a non-admin account. Keys absent = both
 # connections keyless, server open — Phase-1 single-user behavior.
-ob_curl_hdr "$AUTH" -s "$WEBUI_URL/api/v1/configs/tool_servers" 2>/dev/null \
+# Guarded: under set -euo pipefail a non-JSON GET (a 502 page mid-boot) made
+# python exit 1 and killed the whole run before sections 1b, 1c and 2.
+if ! ob_curl_hdr "$AUTH" -s "$WEBUI_URL/api/v1/configs/tool_servers" 2>/dev/null \
   | MCPO_URL="$MCPO_URL" python3 -c "
 import sys, os, json
 MCPO = os.environ['MCPO_URL']
@@ -357,14 +385,30 @@ web = {'url': MCPO, 'path': 'openapi.json', 'type': 'openapi',
        'spec_type': 'url', 'spec': '',
        'info': {'id': '2', 'name': 'Web Search (all users)',
                 'description': 'web_search via SearXNG, SSRF-guarded fetch, weather — safe for guest accounts'}}
+if ADMIN_KEY and not GUEST_KEY:
+    # No guest profile: the keyless connection 2 would 401 on the keyed
+    # server for EVERYONE — admins lost web_search/fetch/weather, which live
+    # only there. Connection 1 (admin key) carries every tool instead, and
+    # connection 2 is switched off (non-admin accounts get no tools).
+    priv['config']['function_name_filter_list'] = ''
+    web['config']['enable'] = False
 print(json.dumps({'TOOL_SERVER_CONNECTIONS': conns + [priv, web]}))
 " | ob_curl_hdr "$AUTH" -s -H "Content-Type: application/json" \
     "$WEBUI_URL/api/v1/configs/tool_servers" -X POST -d @- > /dev/null
-if [[ -n "${OPENBEAST_MCPO_ADMIN_KEY:-}" && -n "${OPENBEAST_MCPO_GUEST_KEY:-}" ]]; then
+then
+  echo "Warning: tool-server reconciliation failed (WebUI's tool_servers API did not" >&2
+  echo "  answer JSON) — connections left as they were. Re-run ./scripts/configure-webui.sh." >&2
+elif [[ -n "${OPENBEAST_MCPO_ADMIN_KEY:-}" && -n "${OPENBEAST_MCPO_GUEST_KEY:-}" ]]; then
   echo "  Tool server configured (Phase 2: admin + guest profiles keyed, one server :3001)."
-elif [[ -n "${OPENBEAST_MCPO_ADMIN_KEY:-}${OPENBEAST_MCPO_GUEST_KEY:-}" ]]; then
-  echo "  Tool server configured with ONE profile key — the other profile is disabled" >&2
-  echo "  (the server fails closed). Run scripts/setup-mcpo-keys.sh to generate both." >&2
+elif [[ -n "${OPENBEAST_MCPO_ADMIN_KEY:-}" ]]; then
+  echo "  Tool server configured with ONE profile key — the guest profile is disabled" >&2
+  echo "  (the server fails closed): admins keep every tool on the privileged" >&2
+  echo "  connection, non-admin accounts get none. Run scripts/setup-mcpo-keys.sh" >&2
+  echo "  to generate both." >&2
+elif [[ -n "${OPENBEAST_MCPO_GUEST_KEY:-}" ]]; then
+  echo "  Tool server configured with ONE profile key — the admin profile is disabled" >&2
+  echo "  (the server fails closed): every account, admins included, reaches only" >&2
+  echo "  web_search/fetch/weather. Run scripts/setup-mcpo-keys.sh to generate both." >&2
 else
   echo "  Tool server configured (privileged=admin-only, web_search+fetch+weather=all users)."
 fi
