@@ -37,6 +37,7 @@ import json
 import math
 import re
 import socket
+import threading
 import time
 import unicodedata
 import urllib.parse
@@ -335,7 +336,14 @@ def weather(location: str = "", days: int = 3, *, near=None, units: str = "",
 # mcp_server.weather — the tool function never sees the request itself.
 import contextvars  # noqa: E402
 CALLER_NEAR: contextvars.ContextVar = contextvars.ContextVar("weather_caller_near", default=None)
-_ADMIN = {"token": None, "until": 0.0}
+_ADMIN = {"token": None, "until": 0.0, "retry_at": 0.0}
+_ADMIN_LOCK = threading.Lock()
+TOKEN_TTL_S = 600
+# Open WebUI rate-limits signin PER EMAIL (15 per 3 minutes) and counts
+# every attempt, so a stale WEBUI_ADMIN_PASSWORD retried on every weather
+# call would lock the human admin out of their own browser login. One
+# attempt per backoff window instead.
+SIGNIN_BACKOFF_S = 300
 
 
 def _conf_values(path: str, keys: tuple[str, ...]) -> dict:
@@ -358,23 +366,49 @@ def caller_location(user_id: str | None, conf_path: str, webui: str = "http://12
     """The calling WebUI user's last device position, or None. Signs in as the
     WebUI admin (WEBUI_ADMIN_* in openbeast.conf, which this process can read
     anyway) because Open WebUI returns a user's `info` only to admins; the
-    token is cached for ten minutes. Any failure is "position unknown"."""
+    token is cached (see _admin_token). Any failure is "position unknown"."""
     if not user_id or not re.fullmatch(r"[A-Za-z0-9-]{8,64}", user_id):
         return None
     http = http or (lambda url, body=None, tok=None: json.load(urllib.request.urlopen(
         urllib.request.Request(url, json.dumps(body).encode() if body is not None else None,
                                {"Content-Type": "application/json",
                                 **({"Authorization": "Bearer " + tok} if tok else {})}), timeout=5)))
-    try:
-        if not _ADMIN["token"] or time.monotonic() > _ADMIN["until"]:
-            c = _conf_values(conf_path, ("WEBUI_ADMIN_EMAIL", "WEBUI_ADMIN_PASSWORD"))
-            if not c.get("WEBUI_ADMIN_EMAIL") or not c.get("WEBUI_ADMIN_PASSWORD"):
-                return None
-            _ADMIN["token"] = http(webui + "/api/v1/auths/signin",
-                                   {"email": c["WEBUI_ADMIN_EMAIL"], "password": c["WEBUI_ADMIN_PASSWORD"]})["token"]
-            _ADMIN["until"] = time.monotonic() + 600
-        u = http(webui + "/api/v1/users/" + user_id, tok=_ADMIN["token"])
-        return parse_latlon((u.get("info") or {}).get("location"))
-    except Exception:
-        _ADMIN["token"] = None
+    tok = _admin_token(conf_path, webui, http)
+    if not tok:
         return None
+    try:
+        u = http(webui + "/api/v1/users/" + user_id, tok=tok)
+    except Exception as e:  # noqa: BLE001 — any failure is "position unknown"
+        # Only a 401 says the TOKEN is bad. A timeout, a 400 USER_NOT_FOUND
+        # or a 5xx says nothing about it, and dropping it would cost a signin.
+        if getattr(e, "code", None) == 401:
+            with _ADMIN_LOCK:
+                if _ADMIN["token"] == tok:
+                    _ADMIN["token"] = None
+        return None
+    return parse_latlon(((u if isinstance(u, dict) else {}).get("info") or {}).get("location"))
+
+
+def _admin_token(conf_path: str, webui: str, http) -> str | None:
+    """The cached admin token, signing in at most once per TTL — and, after a
+    failed signin, at most once per SIGNIN_BACKOFF_S. The lock makes
+    concurrent first calls (the tool server is a thread pool) share one."""
+    with _ADMIN_LOCK:
+        now = time.monotonic()
+        if _ADMIN["token"] and now < _ADMIN["until"]:
+            return _ADMIN["token"]
+        if now < _ADMIN["retry_at"]:
+            return None
+        c = _conf_values(conf_path, ("WEBUI_ADMIN_EMAIL", "WEBUI_ADMIN_PASSWORD"))
+        if not c.get("WEBUI_ADMIN_EMAIL") or not c.get("WEBUI_ADMIN_PASSWORD"):
+            return None                               # no request made, nothing to back off
+        try:
+            tok = http(webui + "/api/v1/auths/signin",
+                       {"email": c["WEBUI_ADMIN_EMAIL"], "password": c["WEBUI_ADMIN_PASSWORD"]})["token"]
+            if not isinstance(tok, str) or not tok:
+                raise ValueError("signin reply has no token")
+        except Exception:  # noqa: BLE001
+            _ADMIN.update(token=None, retry_at=now + SIGNIN_BACKOFF_S)
+            return None
+        _ADMIN.update(token=tok, until=now + TOKEN_TTL_S, retry_at=0.0)
+        return tok

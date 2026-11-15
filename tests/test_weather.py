@@ -223,15 +223,100 @@ def test_caller_location_reads_the_users_webui_info(tmp_path):
             assert body == {"email": "admin@localhost", "password": "s3cret"}
             return {"token": "T"}
         return {"info": {"location": "37.822, -121.999"}}
-    weather._ADMIN.update(token=None, until=0)
+    _fresh_cache()
     uid = "8f0c1a2b-3c4d-5e6f-7a8b-9c0d1e2f3a4b"
     assert weather.caller_location(uid, str(conf), http=http) == (37.822, -121.999)
     assert seen[-1] == (f"http://127.0.0.1:3000/api/v1/users/{uid}", None, "T")
     # A user id that is not a plain id never reaches a URL; no creds, no lookup.
     assert weather.caller_location("../../auths", str(conf), http=http) is None
     assert weather.caller_location(None, str(conf), http=http) is None
-    weather._ADMIN.update(token=None, until=0)
+    _fresh_cache()
     assert weather.caller_location(uid, str(tmp_path / "absent.conf"), http=http) is None
+
+
+UID = "8f0c1a2b-3c4d-5e6f-7a8b-9c0d1e2f3a4b"
+
+
+def _http_err(code):
+    import io
+    import urllib.error
+    return urllib.error.HTTPError("http://127.0.0.1:3000/x", code, "err", {}, io.BytesIO(b""))
+
+
+class FakeWebUI:
+    """Open WebUI's signin + user lookup, counting signins (Open WebUI
+    rate-limits them per email: 15 per 3 minutes, the human's login too)."""
+
+    def __init__(self, signin_error=None, lookup_error=None, delay=0.0):
+        self.signins, self.lookups = 0, 0
+        self.signin_error, self.lookup_error, self.delay = signin_error, lookup_error, delay
+
+    def __call__(self, url, body=None, tok=None):
+        import time
+        if url.endswith("/auths/signin"):
+            self.signins += 1
+            time.sleep(self.delay)
+            if self.signin_error:
+                raise self.signin_error
+            return {"token": f"T{self.signins}"}
+        self.lookups += 1
+        if self.lookup_error:
+            raise self.lookup_error
+        return {"info": {"location": "37.822, -121.999"}}
+
+
+def _conf(tmp_path):
+    conf = tmp_path / "openbeast.conf"
+    conf.write_text("WEBUI_ADMIN_EMAIL=admin@localhost\nWEBUI_ADMIN_PASSWORD=stale\n")
+    return str(conf)
+
+
+def _fresh_cache():
+    weather._ADMIN.update(token=None, until=0.0, retry_at=0.0)
+
+
+def test_failed_signin_backs_off_instead_of_hammering(tmp_path, monkeypatch):
+    _fresh_cache()
+    conf, ui = _conf(tmp_path), FakeWebUI(signin_error=_http_err(400))   # stale password
+    for _ in range(20):
+        assert weather.caller_location(UID, conf, http=ui) is None
+    assert ui.signins == 1                          # not 20: the 15/3-min limit is never hit
+    # After the backoff, one more try — and a fixed password works.
+    later = weather.time.monotonic() + weather.SIGNIN_BACKOFF_S + 1
+    monkeypatch.setattr(weather.time, "monotonic", lambda: later)
+    ui.signin_error = None
+    assert weather.caller_location(UID, conf, http=ui) == (37.822, -121.999)
+    assert ui.signins == 2
+
+
+def test_lookup_failure_keeps_a_good_token(tmp_path):
+    _fresh_cache()
+    conf, ui = _conf(tmp_path), FakeWebUI(lookup_error=TimeoutError("timed out"))
+    for _ in range(5):
+        assert weather.caller_location(UID, conf, http=ui) is None
+    ui.lookup_error = _http_err(400)                # e.g. USER_NOT_FOUND
+    assert weather.caller_location(UID, conf, http=ui) is None
+    assert ui.signins == 1
+    # Only a 401 (the token itself is bad) drops it.
+    ui.lookup_error = _http_err(401)
+    assert weather.caller_location(UID, conf, http=ui) is None
+    ui.lookup_error = None
+    assert weather.caller_location(UID, conf, http=ui) == (37.822, -121.999)
+    assert ui.signins == 2
+
+
+def test_concurrent_first_calls_share_one_signin(tmp_path):
+    import threading
+    _fresh_cache()
+    conf, ui = _conf(tmp_path), FakeWebUI(delay=0.05)
+    out = []
+    threads = [threading.Thread(target=lambda: out.append(weather.caller_location(UID, conf, http=ui)))
+               for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert out == [(37.822, -121.999)] * 8 and ui.signins == 1
 
 
 def _raiser(exc):
