@@ -81,11 +81,12 @@ def conf(tmp_path):
         env.update(env_extra)
         r = subprocess.run(
             ["bash", "-c", 'source "$REPO_DIR/scripts/lib/conf.sh" >/dev/null; '
-                           'printf "%s\\n%s\\n" "$OPENBEAST_WEBUI_AUTH" "$OPENBEAST_WEBUI_CORS"'],
+                           'printf "%s\\n%s\\n%s\\n" "$OPENBEAST_WEBUI_AUTH" "$OPENBEAST_WEBUI_CORS" '
+                           '"$OPENBEAST_WEBUI_HOSTS"'],
             env=env, capture_output=True, text=True, timeout=60)
         assert r.returncode == 0, r.stderr
-        auth, cors = r.stdout.splitlines()[-2:]
-        r.auth, r.cors = auth, cors
+        auth, cors, hosts = r.stdout.splitlines()[-3:]
+        r.auth, r.cors, r.hosts = auth, cors, hosts
         r.origins = cors.split(";")
         return r
     return run
@@ -236,3 +237,103 @@ def test_other_mounts_do_not_force_login(conf, serve):
     r = conf("WEBUI_AUTH=false\n", TS_SERVE=serve)
     assert r.auth == "false"
 
+
+# --- Host allowlist (DNS rebinding) ------------------------------------------
+
+def test_auth_off_answers_loopback_hosts_only(conf):
+    r = conf(ts=False)
+    assert set(r.hosts.split(",")) == {"localhost", "127.0.0.1", "::1"}, r.hosts
+    r = conf(ts=False, OPENBEAST_BIND="127.0.0.2")
+    assert "127.0.0.2" in r.hosts.split(","), r.hosts
+
+
+def test_auth_off_adds_operator_origin_hosts(conf):
+    r = conf("WEBUI_ORIGINS=http://webui.lan:81;http://[fd00::9]:80\n", ts=False)
+    assert {"webui.lan", "[fd00::9]", "localhost"} <= set(r.hosts.split(",")), r.hosts
+
+
+@pytest.mark.parametrize("kw", [dict(OPENBEAST_WEBUI_AUTH="true"),
+                                dict(OPENBEAST_ALLOW_OPEN_WEBUI="true"),
+                                dict(OPENBEAST_WEBUI_ORIGINS="*"),
+                                dict(OPENBEAST_BIND="192.168.1.20")])   # forces login on
+def test_no_host_check_when_login_is_on_or_open_is_acknowledged(conf, kw):
+    assert conf(ts=False, **kw).hosts == "*"
+
+
+def test_compose_wires_the_host_guard():
+    text = open(os.path.join(REPO, "docker-compose.yml")).read()
+    assert "- OB_WEBUI_HOSTS=${OPENBEAST_WEBUI_HOSTS:-localhost,127.0.0.1,::1}" in text
+    assert "- PYTHONPATH=/opt/openbeast-webui" in text
+    assert "./scripts/webui/sitecustomize.py:/opt/openbeast-webui/sitecustomize.py:ro" in text
+    assert "./agents/hostpolicy.py:/opt/openbeast-webui/hostpolicy.py:ro" in text
+
+
+GUARD_APP = textwrap.dedent(r'''
+    import sys, json
+    import sitecustomize  # site already ran it, from PYTHONPATH, as in the container
+    assert sitecustomize.__file__.startswith(sys.argv[1]), sitecustomize.__file__
+    from fastapi import FastAPI, WebSocket
+    from fastapi.testclient import TestClient
+    app = FastAPI()
+    sub = FastAPI()
+    @app.post("/api/v1/auths/signin")
+    def signin():
+        return {"token": "admin-token"}
+    @sub.get("/x")
+    def x():
+        return {"ok": 1}
+    app.mount("/sub", sub)
+    @app.websocket("/ws")
+    async def ws(w: WebSocket):
+        await w.accept(); await w.send_text("hi"); await w.close()
+    out = {}
+    c = TestClient(app)
+    for host in ["localhost:3000", "127.0.0.1:3000", "[::1]:3000", "evil.example:3000",
+                 "EVIL.example", "localhost.evil.example:3000", "beast.example.ts.net",
+                 "rig.lan:3000"]:
+        out[host] = c.post("/api/v1/auths/signin", headers={"host": host}).status_code
+    out["sub-evil"] = c.get("/sub/x", headers={"host": "evil.example"}).status_code
+    out["sub-ok"] = c.get("/sub/x", headers={"host": "localhost"}).status_code
+    def wsok(host):
+        try:
+            with c.websocket_connect("/ws", headers={"host": host}) as w:
+                return w.receive_text() == "hi"
+        except Exception:
+            return False
+    out["ws-ok"], out["ws-evil"] = wsok("localhost:3000"), wsok("evil.example:3000")
+    print(json.dumps(out))
+''')
+
+
+def _guard(tmp_path, hosts):
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    script = tmp_path / "guard_app.py"
+    script.write_text(GUARD_APP)
+    import sys as _sys
+    # PYTHONPATH, exactly as docker-compose.yml hands it to the image's python
+    env = dict(os.environ, OB_WEBUI_HOSTS=hosts, PYTHONPATH=os.pathsep.join([os.path.join(REPO, "scripts", "webui"),
+                                            os.path.join(REPO, "agents")]))
+    r = subprocess.run([_sys.executable, str(script), os.path.join(REPO, "scripts", "webui")],
+                       env=env, capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stderr
+    return json.loads(r.stdout.strip().splitlines()[-1])
+
+
+def test_host_guard_refuses_a_rebound_page(tmp_path):
+    """DNS rebinding: evil.example re-resolves to 127.0.0.1, so the browser
+    sends the auth-off sign-in as same-origin — no CORS involved — but its
+    Host header still says evil.example."""
+    out = _guard(tmp_path, "localhost,127.0.0.1,::1,rig.lan")
+    assert out["localhost:3000"] == out["127.0.0.1:3000"] == out["[::1]:3000"] == 200, out
+    assert out["evil.example:3000"] == out["EVIL.example"] == 400, out
+    assert out["localhost.evil.example:3000"] == 400, out
+    assert out["beast.example.ts.net"] == 200, out      # hostpolicy: *.ts.net
+    assert out["rig.lan:3000"] == 200, out              # an OB_WEBUI_HOSTS extra
+    assert out["sub-evil"] == 400 and out["sub-ok"] == 200, out
+    assert out["ws-ok"] is True and out["ws-evil"] is False, out
+
+
+def test_host_guard_wildcard_is_off(tmp_path):
+    out = _guard(tmp_path, "*")
+    assert out["evil.example:3000"] == 200 and out["ws-evil"] is True, out

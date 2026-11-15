@@ -1180,6 +1180,34 @@ _ob_webui_cors() {
 }
 OPENBEAST_WEBUI_CORS="$(_ob_webui_cors)"
 export OPENBEAST_WEBUI_CORS
+# The Host names the WebUI answers (docker-compose OB_WEBUI_HOSTS, enforced
+# by scripts/webui/sitecustomize.py inside the container, with the shared
+# agents/hostpolicy.py allowlist on top: loopback, this machine's name,
+# *.ts.net). CORS does not stop
+# DNS rebinding: a page that re-resolves its own name to 127.0.0.1 is "same
+# origin" with the WebUI, and with login off it signs in as admin (bash).
+# Its requests carry its own name in Host, so while login is off — which the
+# guard above allows only on loopback — the WebUI answers loopback names
+# alone (plus the hosts of WEBUI_ORIGINS). With login on a rebound page has
+# no session, and ALLOW_OPEN_WEBUI / WEBUI_ORIGINS='*' are the operator's
+# explicit "open": both are '*', no check.
+_ob_webui_hosts() {
+  if [[ "$WEBUI_AUTH" == "true" || "$ALLOW_OPEN_WEBUI" == "true" || "$OPENBEAST_WEBUI_CORS" == "*" ]]; then
+    echo '*'; return 0
+  fi
+  local list=(localhost 127.0.0.1 ::1) o h
+  ob_bind_is_loopback "$BIND_HOST" && [[ "$BIND_HOST" != *:* ]] && list+=("$BIND_HOST")
+  for o in ${OPENBEAST_WEBUI_CORS//;/ }; do
+    h="${o#*://}"; h="${h%%/*}"
+    # hostpolicy's form: an IPv6 literal keeps its brackets, a port goes.
+    if [[ "$h" == \[* ]]; then h="${h%%\]*}]"; else h="${h%%:*}"; fi
+    [[ -n "$h" ]] && list+=("$h")
+  done
+  local IFS=','
+  echo "${list[*]}"
+}
+OPENBEAST_WEBUI_HOSTS="$(_ob_webui_hosts)"
+export OPENBEAST_WEBUI_HOSTS
 # ALLOW_OPEN_INFERENCE (env OPENBEAST_ALLOW_OPEN_INFERENCE) default false: the
 # persisted form of setup-tailscale.sh --i-accept-open-inference — "yes,
 # publish llama-server on :8443 with no beast-gate and no LLAMA_API_KEY".

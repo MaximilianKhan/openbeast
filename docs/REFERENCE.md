@@ -91,7 +91,7 @@ conf key), so none of them creates or changes the file.
 | `EDGE_ALLOW_ANON` | `OPENBEAST_EDGE_ALLOW_ANON` | `false` | While **no registry exists** (`.run/clients.json` has never been written), serve every caller as a single `anon` device. Ignored for good once the file exists — even emptied by `clients.sh remove`, even unreadable; then a missing/unknown key is 401. Default fails closed — an empty registry refuses remote callers rather than serving them |
 | `WEBUI_AUTH` | `OPENBEAST_WEBUI_AUTH` | `false` | Open WebUI login wall. Default off for local single-user installs; `scripts/setup-tailscale.sh` flips it `true` when the WebUI goes tailnet-wide. `false` is ignored (login stays on, with a warning) while the WebUI is reachable beyond this machine — a non-loopback `BIND_HOST`, or a `:443` mount still live — unless `ALLOW_OPEN_WEBUI=true` |
 | `ALLOW_OPEN_WEBUI` | `OPENBEAST_ALLOW_OPEN_WEBUI` | `false` | Persisted acknowledgement of running the WebUI with `WEBUI_AUTH` off where more than this machine reaches it: published on the tailnet (`:443`), or on a non-loopback `BIND_HOST`. Written by `scripts/setup-tailscale.sh --i-accept-open-webui`; with it set, re-runs keep publishing and `doctor` WARNs about the open WebUI instead of FAILing. Delete the line to take it back |
-| `WEBUI_ORIGINS` | `OPENBEAST_WEBUI_ORIGINS` | empty | Extra browser origins allowed to call the Open WebUI API (its `CORS_ALLOW_ORIGIN`, which also gates the chat socket), `;`- or `,`-separated. `scripts/lib/conf.sh` always allows `http://localhost:3000`, the `BIND_HOST` address and `https://<tailnet name>`; add a reverse proxy of your own here. `*` restores upstream's allow-every-site default, which lets any web page you open drive an auth-off WebUI as admin |
+| `WEBUI_ORIGINS` | `OPENBEAST_WEBUI_ORIGINS` | empty | Extra browser origins allowed to call the Open WebUI API (its `CORS_ALLOW_ORIGIN`, which also gates the chat socket), `;`- or `,`-separated. `scripts/lib/conf.sh` always allows `http://localhost:3000`, the `BIND_HOST` address and `https://<tailnet name>`; add a reverse proxy of your own here (while login is off, its host is also added to the WebUI's `Host` allowlist). `*` restores upstream's allow-every-site default, which lets any web page you open drive an auth-off WebUI as admin |
 | `ALLOW_OPEN_INFERENCE` | `OPENBEAST_ALLOW_OPEN_INFERENCE` | `false` | Persisted acknowledgement of publishing llama-server on the tailnet (`:8443`) with no beast-gate and no `LLAMA_API_KEY`. Written by `scripts/setup-tailscale.sh --i-accept-open-inference`. Without it that script leaves `:8443` unpublished on such a rig (and takes an earlier raw mount down) and `doctor` FAILs a keyless `:8443`; with it, re-runs keep publishing and `doctor` WARNs. Delete the line to take it back |
 | `WEBUI_BACKGROUND_TASKS` | `OPENBEAST_WEBUI_BACKGROUND_TASKS` | `false` | After every answer Open WebUI asks the model for chat tags and follow-up suggestions; on a one-slot rig those generations take the slot from the next turn and evict its cached prompt. Default: `configure-webui.sh` switches both **off** at every start (chat titles stay on). `true` leaves WebUI's own switches (Admin Settings → Interface) alone — set it, restart, then re-enable them there |
 | `PROMPT_CACHE_RAM_MB` | `OPENBEAST_PROMPT_CACHE_RAM_MB` | *(unset = auto)* | Host RAM llama-server may use to park the state of conversations that are not on a slot (`--cache-ram`, MiB). Unset/`auto`: 35% of this machine's RAM, at most 48 GiB, and nothing passed when that is not above llama-server's own 8192. `0`: llama-server's default. `<n>`: exactly n MiB (`-1` = no limit). A serve script's own `--cache-ram` wins; a llama-server build without the flag is launched without it. Applies to every launch through `serve.sh`, evals included |
@@ -613,11 +613,16 @@ keeps login on regardless (`scripts/lib/conf.sh` warns) unless
 way in: Open WebUI's upstream CORS default is every origin, with
 credentials, so the stack pins `CORS_ALLOW_ORIGIN` to the WebUI's own
 origins (see `WEBUI_ORIGINS`) and another site's script can no longer sign
-in to an auth-off WebUI and read the admin token. (DNS rebinding, which
-needs no CORS, is not covered by that: the WebUI has no Host allowlist.)
-The tailnet name in that list comes from `tailscale status`, else the live
-`serve` mount, else the last name seen (`.run/webui-tailnet-name`), so a
-start that races `tailscaled` at boot keeps the tailnet origin.
+in to an auth-off WebUI and read the admin token. DNS rebinding needs no
+CORS (the rebound page is same-origin), so while login is off the WebUI
+also answers only loopback `Host` names, this machine's name, `*.ts.net`
+and the hosts of `WEBUI_ORIGINS` — the shared `agents/hostpolicy.py` list,
+enforced inside the container by `scripts/webui/sitecustomize.py` — and a
+rebound page's request is a 400. With login on (or `ALLOW_OPEN_WEBUI=true`)
+there is no `Host` check. The tailnet name in the CORS list comes from
+`tailscale status`, else the live `serve` mount, else the last name seen
+(`.run/webui-tailnet-name`), so a start that races `tailscaled` at boot
+keeps the tailnet origin.
 
 **Auth turns on with remote access.** `scripts/setup-tailscale.sh` flips
 `WEBUI_AUTH=true` automatically when the WebUI becomes reachable from your
