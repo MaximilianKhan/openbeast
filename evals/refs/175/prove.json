@@ -12,8 +12,15 @@
   "dupheld": "^mismatch at case 4$",
   "nobuffer": "^mismatch at case 2$",
   "removewins": "^mismatch at case 6$",
-  "recursive": "^exception at case 11: RecursionError$"
+  "recursive": "^exception at case 11: RecursionError$",
+  "unsorted": "^mismatch at case 6$",
+  "notlist": "^mismatch at case 0$"
  },
- "leak": {"leak": "^mismatch at case 0$"},
- "slow": {"slow": "^solution timed out \\(10s\\)$"}
+ "leak": {
+  "leak": "^mismatch at case 0$",
+  "argvcheat": "^mismatch at case 0$"
+ },
+ "slow": {
+  "slow": "^solution timed out \\(10s\\)$"
+ }
 }

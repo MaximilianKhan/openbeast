@@ -7,6 +7,22 @@
 # imported copy of the module. A mismatch reports only the case index.
 import json, random, subprocess, sys
 
+# The harness runs this script as `python -c <script>`, which would leave the
+# whole source (oracle included) in this process's argv, readable by the
+# solution (a descendant) through ps. So before anything else, re-exec in
+# place (same pid: the harness's timeout and reaping are unaffected) from a
+# private temp file that is deleted before the solution is ever started.
+if "_STAGED" not in globals() and "-c" in sys.orig_argv[1:]:
+    import os, tempfile
+    _src = sys.orig_argv[sys.orig_argv.index("-c", 1) + 1]
+    _fd, _p = tempfile.mkstemp(prefix="v175-", suffix=".py")
+    with os.fdopen(_fd, "w") as _f:
+        _f.write(_src)
+    sys.stdout.flush()
+    os.execv(sys.executable, [sys.executable, "-c",
+             "import os,sys;p=sys.argv.pop(1);s=open(p).read();os.unlink(p);"
+             "exec(compile(s,'validator','exec'),{'__name__':'__main__','_STAGED':1})", _p])
+
 D = "/tmp/eval_crdt"
 SRC = D + "/crdt.py"
 RUN_LIMIT_S = 10
@@ -331,7 +347,9 @@ for script in cases:
             else:
                 rp = reps[st[1]]
                 e, t, p = rp.elements(), rp.text(), rp.pending()
-                obs.append([sorted(e), t if isinstance(t, str) else repr(t), p if type(p) is int else repr(p)])
+                # exact types: elements() must be a list, already ascending
+                obs.append([e if type(e) is list else repr(e), t if isinstance(t, str) else repr(t),
+                            p if type(p) is int else repr(p)])
         out.write(json.dumps({"obs": obs}) + "\n")
     except BaseException as ex:
         out.write(json.dumps({"exc": type(ex).__name__}) + "\n")
