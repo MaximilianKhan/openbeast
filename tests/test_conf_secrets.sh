@@ -173,7 +173,7 @@ echo "3. serve.sh — the API key is not on llama-server's argv:"
 SS="$T/serve"
 mkdir -p "$SS/scripts/lib" "$SS/llama.cpp/build/bin"
 install -m 755 "$REPO_DIR/scripts/serve.sh" "$SS/scripts/"
-install -m 644 "$REPO_DIR/scripts/lib/conf.sh" "$SS/scripts/lib/"
+install -m 644 "$REPO_DIR/scripts/lib/conf.sh" "$REPO_DIR/scripts/lib/weightcheck.sh" "$SS/scripts/lib/"
 cat > "$SS/llama.cpp/build/bin/llama-server" <<EOF
 #!/bin/bash
 printf '%s\n' "\$@" > "$T/llama.argv"
