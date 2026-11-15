@@ -134,7 +134,8 @@ boundary.
 
 ## Validation matrix (measured 2026-07-08 on kernel 7.0.10-arch1-1)
 
-Requirements, not a pinned kernel: Linux ≥ 5.13 with Landlock enabled — confirm
+Requirements, not a pinned kernel: Linux ≥ 6.12 (Landlock ABI v6, needed for
+IPC scoping — `setup-sandlock.sh` refuses older kernels) with Landlock enabled — confirm
 with `cat /sys/kernel/security/lsm` (the list must contain `landlock`). This box
 has since moved to **7.1.4-arch1-1**, still Landlock-active; the matrix has not
 been re-measured on it and no behavior change is expected. What *does* require a
