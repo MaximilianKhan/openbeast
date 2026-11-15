@@ -242,6 +242,11 @@ jobs:
       - name: Shell ops tests (doctor, tailscale, conf, keys)
         run: bash tests/test_shell_ops.sh
 
+      # setup-tailscale.sh --publish-slot: /api/slot-only mount, no fall-open
+      # to the whole dashboard when that mount fails. A stubbed tailscale.
+      - name: beast-slot publish tests (setup-tailscale.sh --publish-slot)
+        run: bash tests/test_publish_slot.sh
+
       # beast-chat / beast-artifact ops: port ownership at start, watchdog
       # restart logs, job-log rotation + retention, doctor's :8446/:8447 and
       # notification rows, publish-verdict.sh, scoring.py --html. Loopback
