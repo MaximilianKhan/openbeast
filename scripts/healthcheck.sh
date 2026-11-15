@@ -226,17 +226,41 @@ _llama_loading() {
 # still is one, else the path-anchored pattern. Never the bare name — that
 # reaps a campaign's server and any sibling worktree's (it destroyed a live
 # measurement run on this box on 2026-09-14).
+#
+# TERM, then KILL. llama-server's first signal only ASKS for a graceful stop
+# (the second one exits); a server wedged in a CUDA call or a deadlocked loop
+# never acts on it. One TERM and a 180 s wait for health left chat down until
+# the next tick, 5 minutes later (stack-lifecycle review). Escalate after
+# OPENBEAST_LLAMA_TERM_GRACE seconds (20, like start.sh's wait_llama_health).
+_llama_gone() { # _llama_gone <pid> — exited, or a zombie waiting for its parent
+  ob_pid_matches "$1" "$_LLAMA_ARGV0" || return 0
+  [[ "$(ps -o stat= -p "$1" 2>/dev/null || true)" == *Z* ]]
+}
 _kill_own_llama() {
-  local pid
+  local pid i grace="${OPENBEAST_LLAMA_TERM_GRACE:-20}"
+  [[ "$grace" =~ ^[0-9]+$ ]] || grace=20
   pid="$(cat "$REPO_DIR/.run/llama.pid" 2>/dev/null || true)"
   # The recorded pid is identified by NAME, not path: it is ours by virtue of
   # being recorded, and a serve script may exec a build outside the default
   # path. The pattern fallback has no such provenance, so it stays anchored.
   if ob_pid_matches "$pid" "$_LLAMA_ARGV0"; then
     kill "$pid" 2>/dev/null || true
+    for ((i = 0; i < grace * 5; i++)); do
+      _llama_gone "$pid" && return 0
+      sleep 0.2
+    done
+    echo "       → llama-server ignored SIGTERM for ${grace}s — sending SIGKILL"
+    kill -KILL "$pid" 2>/dev/null || true
   elif pgrep -f "$LLAMA_BIN_ERE" >/dev/null 2>&1; then
     pkill -f "$LLAMA_BIN_ERE" 2>/dev/null || true
+    for ((i = 0; i < grace * 5; i++)); do
+      pgrep -f "$LLAMA_BIN_ERE" >/dev/null 2>&1 || return 0
+      sleep 0.2
+    done
+    echo "       → llama-server ignored SIGTERM for ${grace}s — sending SIGKILL"
+    pkill -KILL -f "$LLAMA_BIN_ERE" 2>/dev/null || true
   fi
+  return 0
 }
 
 # A live GPU lease means a campaign owns the card ON PURPOSE (the stack was

@@ -2697,7 +2697,7 @@ chmod +x "$_RV/bin/curl"
   echo "source '$REPO_DIR/scripts/lib/proc.sh'"
   echo "source '$REPO_DIR/scripts/lib/curl_auth.sh'"
   echo 'REPO_DIR="$RV_REPO"; LLAMA_URL=http://x; LLAMA_AUTH=(); LLAMA_BIN_ERE="$RV_BIN_ERE"'
-  sed -n '/^_LLAMA_ARGV0=/p; /^_llama_loading() {/,/^}/p; /^_kill_own_llama() {/,/^}/p' "$REPO_DIR/scripts/healthcheck.sh"
+  sed -n '/^_LLAMA_ARGV0=/p; /^_llama_loading() {/,/^}/p; /^_llama_gone() {/,/^}/p; /^_kill_own_llama() {/,/^}/p' "$REPO_DIR/scripts/healthcheck.sh"
   echo '"$@"'
 } > "$_RV/hc.sh"
 _rv_hc() { # _rv_hc <curl body> <function> — status is the function's
@@ -2770,6 +2770,19 @@ if kill -0 "$_RV_LL" 2>/dev/null; then
   fail "_kill_own_llama did not kill the recorded llama-server"
 else
   pass "the recorded llama-server is killed by its pid (control)"
+fi
+# A WEDGED server: llama-server's first TERM only asks for a graceful stop,
+# and one stuck in a CUDA call never acts on it. Escalate to KILL after the
+# grace instead of leaving it for the next tick (stack-lifecycle review).
+( trap '' TERM; exec -a "$_RV/llama-server" sleep 300 ) & _RV_WEDGED=$!; _RV_PIDS="$_RV_PIDS $!"
+sleep 0.3
+echo "$_RV_WEDGED" > "$_RV/repo/.run/llama.pid"
+_RV_KO="$(OPENBEAST_LLAMA_TERM_GRACE=1 _rv_hc '' _kill_own_llama 2>&1 || true)"; sleep 0.3
+if ! kill -0 "$_RV_WEDGED" 2>/dev/null && [[ "$_RV_KO" == *"ignored SIGTERM"* ]]; then
+  pass "a llama-server that ignores SIGTERM gets SIGKILL after the grace"
+else
+  fail "_kill_own_llama left a TERM-ignoring llama-server running (or did not say it escalated)"
+  kill -KILL "$_RV_WEDGED" 2>/dev/null || true
 fi
 kill "$_RV_STRANGER" 2>/dev/null || true; pkill -P "$_RV_LL" 2>/dev/null || true
 if grep -q '_gpu_leased' "$REPO_DIR/scripts/healthcheck.sh" \
