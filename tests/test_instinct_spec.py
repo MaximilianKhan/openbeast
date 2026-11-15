@@ -197,6 +197,25 @@ def test_sis_url_never_receives_the_key_off_host(tmp_path):
     assert "s" not in cfg.engines
 
 
+@pytest.mark.parametrize("bad", ["http://evil.example.com:8095/steal", "https://x/y",
+                                 "//evil.example/x", "tokenize", "\\\\evil\\x",
+                                 "/tok enize", "/tok\nenize"])
+def test_tokenize_path_must_be_a_relative_path(tmp_path, bad):
+    """tokenize_path goes to client().post(path, Authorization=key): an
+    absolute URL there made httpx ignore base_url, sending the primary's
+    key and the user text to any host (bypassing I7 and key_env loopback)."""
+    env = {"INFERENCE_URL": "http://127.0.0.1:8080"}
+    for mk in (H.llama_binding, H.sglang_binding):
+        cfg = _cfg(tmp_path, {"p": mk("http://127.0.0.1:8080", allow_primary=True,
+                                      key_env="LLAMA_API_KEY", tokenize_path=bad)}, env)
+        assert "p" not in cfg.engines, (mk.__name__, bad)
+        assert "tokenize_path" in cfg.engine_errors["p"]
+    ok = _cfg(tmp_path, {"p": H.llama_binding("http://127.0.0.1:8080", allow_primary=True,
+                                              key_env="LLAMA_API_KEY",
+                                              tokenize_path="/v1/tokenize")}, env)
+    assert "p" in ok.engines   # control
+
+
 def test_hydra_url_env_refused(tmp_path):
     cfg = _cfg(tmp_path, {"x": H.llama_binding("http://10.0.0.5:9000")},
                {"HYDRA_URL": "http://10.0.0.5:9000/"})
