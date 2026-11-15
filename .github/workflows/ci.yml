@@ -250,6 +250,17 @@ jobs:
       - name: DGX Spark cluster tests (1-8 nodes)
         run: bash tests/test_spark_cluster.sh
 
+      # spark-guard.sh (the nftables guard for the Sparks' rendezvous ports)
+      # and the Spark supply chain (install-native.sh's signature binding,
+      # spark-root-setup.sh's pinned .debs and Tailscale key). Stubs only;
+      # the real nft loads the rendered ruleset in a throwaway network
+      # namespace (sudo unshare -n), never the runner's own ruleset.
+      - name: DGX Spark guard + supply-chain tests
+        run: |
+          command -v nft >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq nftables >/dev/null; }
+          bash tests/test_spark_guard.sh
+          bash tests/test_spark_supply.sh
+
       # The Tier-3 campaign harness in a stub repo: the benchmark, era,
       # engine and verdict are stubs, so no GPU or server is touched.
       - name: Tier-3 campaign harness tests

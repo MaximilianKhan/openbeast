@@ -14,7 +14,10 @@
 #   systemctl --user daemon-reload
 #   systemctl --user enable --now spark-hydra-inference
 # Needs linger (spark-root-setup.sh sets it) and a user manager that sees the
-# docker group: after `usermod -aG docker`, reboot once.
+# docker group: after `usermod -aG docker`, reboot once. Run
+# `sudo scripts/backends/spark-guard.sh` on BOTH Sparks first: rank 0's
+# TensorFold TCPStore (29551) has no authentication and binds every interface,
+# and ufw (disabled on DGX OS) does not stop it.
 #
 # openbeast.service (the command center) does not order against this unit:
 # start.sh waits OPENBEAST_LLAMA_LOAD_GRACE for INFERENCE_URL and brings the
@@ -29,8 +32,9 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=@RECIPE@
 # PREPARE=0: never reach the Hub, ghcr or the worker's setup at boot — the
-# images and weights are staged (prepare.sh, or the offline steps in the
-# playbook). HF_HUB_OFFLINE=1 is the recipe's own default.
+# images and weights are staged (prepare.sh, or docs/SPARK_HYDRA.md "Offline
+# staging": the HF-cache layout, DFlash2 and the image). HF_HUB_OFFLINE=1 is
+# the recipe's own default.
 Environment=FOREGROUND=1 PREPARE=0
 ExecStart=@RECIPE@/start.sh
 ExecStop=@RECIPE@/stop.sh
