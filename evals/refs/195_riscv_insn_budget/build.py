@@ -35,9 +35,9 @@ Machine and calling convention
 - At return, sp, gp, tp and s0-s11 must hold their entry values. Any other register may be changed.
 
 Functions (labels memcpy, strlen, crc32; helpers of your own are fine)
-1. memcpy(a0 = dst, a1 = src, a2 = n): copy the n bytes at src to dst and return dst. 0 <= n <= 4096. dst and src have any alignment, the two ranges do not overlap, and both lie in the data area. It must not write any data-area byte outside [dst, dst+n).
-2. strlen(a0 = s): return the number of bytes before the first zero byte at s. The length is 0..4096, s has any alignment, and the string's bytes take any value 1..255. It must not write to the data area.
-3. crc32(a0 = buf, a1 = n): return the CRC-32 of the n bytes at buf (0 <= n <= 4096, any alignment): reflected polynomial 0xEDB88320, initial value 0xFFFFFFFF, final xor 0xFFFFFFFF, i.e. the value Python's zlib.crc32 returns. It must not write to the data area. Examples: the 9 bytes "123456789" give 0xCBF43926; n = 0 gives 0.
+1. memcpy(a0 = dst, a1 = src, a2 = n): copy the n bytes at src to dst and return dst. 0 <= n <= 4096. dst and src have any alignment, the two ranges do not overlap, and both lie in the data area. Every data-area byte outside [dst, dst+n) must hold its entry value at return.
+2. strlen(a0 = s): return the number of bytes before the first zero byte at s. The length is 0..4096, s has any alignment, and the string's bytes take any value 1..255. Every data-area byte must hold its entry value at return.
+3. crc32(a0 = buf, a1 = n): return the CRC-32 of the n bytes at buf (0 <= n <= 4096, any alignment): reflected polynomial 0xEDB88320, initial value 0xFFFFFFFF, final xor 0xFFFFFFFF, i.e. the value Python's zlib.crc32 returns. Every data-area byte must hold its entry value at return. Examples: the 9 bytes "123456789" give 0xCBF43926; n = 0 gives 0.
 
 Instruction budget
 The count runs from the first instruction at the entry label to the final ret, inclusive; every executed instruction costs 1, pseudo-instructions included (li costs 1). With n the byte count (the string length for strlen) and / meaning integer division, every single call must stay within:
@@ -46,7 +46,7 @@ The count runs from the first instruction at the entry label to the final ret, i
 - crc32: 9*n + 1600
 A call that exceeds its budget is stopped and fails.
 
-Validation: hundreds of hidden, seeded calls per function: every size from 0 through the small sizes, every alignment combination, and sizes up to 4096, with arbitrary memory contents around the buffers. Each call is checked for the result, for writes to forbidden memory, for the preserved registers, and against its budget. Only the failing function and case index are reported. Test with rvi.py yourself.
+Validation: hundreds of hidden, seeded calls per function: every size from 0 through the small sizes, every alignment combination, and sizes up to 4096, with arbitrary memory contents around the buffers. Each call is checked for the result, for data-area bytes that differ at return from their entry values (other than memcpy's [dst, dst+n)), for the preserved registers, and against its budget. Only the failing function and case index are reported. Test with rvi.py yourself.
 """
 
 SETUP = ("rm -rf /tmp/eval_rv195 && mkdir -p /tmp/eval_rv195 && "
