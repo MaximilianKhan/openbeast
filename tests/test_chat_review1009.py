@@ -164,6 +164,10 @@ def test_a_stream_that_never_started_gives_its_slot_back(rig):
 
     resp = route.endpoint(Req(), sid)                # a response nobody will iterate
     assert c.get(f"/api/chat/sessions/{sid}/events?from=0").status_code == 429
+    assert c.get("/api/chat/health").json()["streams"] == 1
     del resp
     gc.collect()
+    # ...and the open-streams gauge with it (review: it stayed +1 forever)
+    assert c.get("/api/chat/health").json()["streams"] == 0
     assert c.get(f"/api/chat/sessions/{sid}/events?from=0").status_code == 200
+    assert c.get("/api/chat/health").json()["streams"] == 0

@@ -2490,16 +2490,25 @@ def create_app() -> FastAPI:
         response whose body was never started (the client left between the
         headers and the first frame): a generator that never ran has no
         `finally` to run, and a slot leaked there is a 429 that never clears.
+
+        The open-streams GAUGE rides on the slot for the same reason: bumped
+        in events() and dropped only in the generator's `finally`, it drifted
+        up by one for every stream whose body never started, for the life of
+        the process. It is updated under sse_lock (re-entrant, safe from
+        __del__), never metrics_lock (a plain Lock a GC pass could deadlock).
         """
 
         def __init__(self, key: str):
             self.key, self._held = key, True
+            with sse_lock:
+                gauges["sse_open"] += 1
 
         def release(self) -> None:
             with sse_lock:
                 if not self._held:
                     return
                 self._held = False
+                gauges["sse_open"] -= 1
                 sse_held[self.key] -= 1
                 if sse_held[self.key] <= 0:
                     del sse_held[self.key]
@@ -3064,7 +3073,6 @@ def create_app() -> FastAPI:
               int((time.monotonic() - t0) * 1000), {"from": start})
         with metrics_lock:
             counters[("GET /events", "stream_open")] += 1
-            gauges["sse_open"] += 1
 
         return StreamingResponse(
             _stream(request, rec, start, principal, tail_skipped, slot),
@@ -3235,8 +3243,6 @@ def create_app() -> FastAPI:
         finally:
             if slot is not None:
                 slot.release()
-            with metrics_lock:
-                gauges["sse_open"] -= 1
             # What a reader actually pulled, and for how long — the open row
             # alone cannot say whether a revoked or hostile reader drained a
             # whole transcript (review chat-security-8).
