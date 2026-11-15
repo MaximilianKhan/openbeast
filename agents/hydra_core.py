@@ -1350,17 +1350,42 @@ class Caller:
     role: str | None = None
 
 
+def _is_image_part(part) -> bool:
+    return isinstance(part, dict) and (part.get("type") in ("image_url", "input_image", "image")
+                                       or "image_url" in part)
+
+
 def _any_image_part(messages) -> bool:
     if not isinstance(messages, list):
         return False
     for m in messages:
         c = m.get("content") if isinstance(m, dict) else None
-        if isinstance(c, list):
-            for part in c:
-                if isinstance(part, dict) and (part.get("type") in ("image_url", "input_image", "image")
-                                               or "image_url" in part):
-                    return True
+        if isinstance(c, list) and any(_is_image_part(p) for p in c):
+            return True
     return False
+
+
+# What one image costs the engine in prompt tokens, for est_prompt_tokens.
+# Its base64 data: URI is no measure: a 1 MB JPEG is ~1.33 M chars (~445 K
+# "tokens" at 3 chars/token, which excluded every 262 K deployment on ctx),
+# while a VL model encodes it to on the order of a thousand tokens. 2048 is
+# deliberately on the high side, like the rest of the estimate.
+IMAGE_TOKEN_ESTIMATE = 2048
+
+
+def _images_out(messages) -> tuple[object, int]:
+    """`messages` with every image part replaced by a stub, and how many there
+    were. Shallow copies: the caller's body (which is forwarded) is untouched."""
+    if not isinstance(messages, list):
+        return messages, 0
+    out, n = [], 0
+    for m in messages:
+        c = m.get("content") if isinstance(m, dict) else None
+        if isinstance(c, list) and any(_is_image_part(p) for p in c):
+            n += sum(1 for p in c if _is_image_part(p))
+            m = dict(m, content=[{"type": "image"} if _is_image_part(p) else p for p in c])
+        out.append(m)
+    return out, n
 
 
 def _text_of(content) -> str:
@@ -1399,6 +1424,7 @@ def extract_features(path: str, body: dict, headers, cfg: Config) -> Features:
         msgs = body.get("input")
     if msgs is None:
         msgs = ""
+    msgs, n_images = _images_out(msgs)
     text = json.dumps(msgs, ensure_ascii=False) + json.dumps(body.get("tools") or [], ensure_ascii=False)
     rf = body.get("response_format") if isinstance(body.get("response_format"), dict) else {}
     mt = body.get("max_tokens") or body.get("max_completion_tokens") or cfg.settings.default_max_tokens
@@ -1422,7 +1448,7 @@ def extract_features(path: str, body: dict, headers, cfg: Config) -> Features:
         needs_grammar="grammar" in body,
         needs_reasoning_budget="reasoning_budget_tokens" in body,
         needs_embeddings=path.endswith("/embeddings"),
-        est_prompt_tokens=math.ceil(len(text) / cfg.settings.chars_per_token),
+        est_prompt_tokens=math.ceil(len(text) / cfg.settings.chars_per_token) + n_images * IMAGE_TOKEN_ESTIMATE,
         max_tokens=max(0, mt), session_key=session or None,
         pin=_header(headers, "x-hydra-pin") or None,
         prompt_head=_prompt_head(body.get("messages")))

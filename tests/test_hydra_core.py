@@ -1303,3 +1303,21 @@ def test_a_half_open_trial_can_end_before_its_unit_is_released():
     adm.release()
     assert hs.h.trial_inflight == 0 and st.inflight("nvfp4@sparks") == 0
     assert hs.breaker_state(now) == core.HALF_OPEN, "only a recorded success closes it"
+
+
+def test_an_inline_image_is_not_counted_as_prompt_text():
+    # Review 2026-11 F8: a 1 MB JPEG as a data: URI is ~1.33 M base64 chars —
+    # ~445 K "tokens" — which excluded every 262 K deployment on ctx.
+    cfg = cfg_of()
+    uri = "data:image/jpeg;base64," + "A" * 1_400_000
+    body = {"model": "beast", "messages": [{"role": "user", "content": [
+        {"type": "text", "text": "what is this?"},
+        {"type": "image_url", "image_url": {"url": uri}}]}]}
+    f = feats(cfg, body)
+    assert f.has_images
+    assert 0 < f.est_prompt_tokens < 10_000, f.est_prompt_tokens
+    two = {"model": "beast", "messages": [{"role": "user", "content": [
+        {"type": "image_url", "image_url": {"url": uri}}, {"type": "input_image", "image_url": uri}]}]}
+    assert feats(cfg, two).est_prompt_tokens >= 2 * core.IMAGE_TOKEN_ESTIMATE
+    # the caller's body is untouched (it is forwarded as is)
+    assert body["messages"][0]["content"][1]["image_url"]["url"] == uri
