@@ -214,6 +214,22 @@ else
   unset LLAMA_API_KEY
 fi
 
+# Browser origins. llama-server's default (--cors-origins "*" with
+# credentials) echoes ANY request's Origin back in Access-Control-Allow-
+# Origin, so with no key every web page open in a browser on this box could
+# POST to 127.0.0.1:8080 and READ the reply cross-origin (/v1/*, /props,
+# /slots, /metrics). "localhost" reflects only localhost / 127.0.0.1 / ::1
+# origins. Nothing in the stack needs more: Open WebUI, the router, gate and
+# clients call it server-side or with no Origin, and llama-server's own web
+# UI is same-origin. Through the environment (llama-server reads it
+# natively, common/arg.cpp `.set_env("LLAMA_ARG_CORS_ORIGINS")`), so a build
+# without the flag ignores it rather than exiting; an operator's own
+# LLAMA_ARG_CORS_ORIGINS, or --cors-origins in a serve script, wins.
+# Not the whole fix: a page can still send a blind request, and a DNS-
+# rebinding page is same-origin (llama-server at the pinned commit checks
+# no Host header). LLAMA_API_KEY is what closes those.
+export LLAMA_ARG_CORS_ORIGINS="${LLAMA_ARG_CORS_ORIGINS:-localhost}"
+
 echo "Parallel slots: $PARALLEL (unified KV cache, continuous batching)"
 
 # Global reasoning control (lib/conf.sh REASONING / REASONING_BUDGET). Placed

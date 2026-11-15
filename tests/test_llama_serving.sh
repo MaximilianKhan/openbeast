@@ -198,6 +198,19 @@ _serve -- -m "$SV/weights/main.gguf" -c 8192
   || fail "keyless loopback default (rc=$SV_RC): $(tr '\n' ' ' <<< "$SV_OUT")"
 
 echo ""
+echo "browser origins (keyless loopback llama-server):"
+_serve -- -m "$SV/weights/main.gguf" -c 8192
+if grep -qx 'LLAMA_ARG_CORS_ORIGINS=localhost' "$SV/env" 2>/dev/null; then
+  pass "llama-server only reflects localhost origins by default (LLAMA_ARG_CORS_ORIGINS=localhost)"
+else
+  fail "llama-server started with CORS '$(grep '^LLAMA_ARG_CORS_ORIGINS=' "$SV/env" 2>/dev/null)' (want localhost)"
+fi
+_serve LLAMA_ARG_CORS_ORIGINS=https://ui.example -- -m "$SV/weights/main.gguf" -c 8192
+grep -qx 'LLAMA_ARG_CORS_ORIGINS=https://ui.example' "$SV/env" 2>/dev/null \
+  && pass "…an operator's own LLAMA_ARG_CORS_ORIGINS stands" \
+  || fail "LLAMA_ARG_CORS_ORIGINS override lost: $(grep '^LLAMA_ARG_CORS' "$SV/env" 2>/dev/null)"
+
+echo ""
 echo "========================================"
 echo "llama-serving: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]
