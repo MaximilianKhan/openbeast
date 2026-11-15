@@ -705,6 +705,46 @@ else
 fi
 
 echo ""
+echo "remove + re-enroll of one id is a fresh device (review 2026-11-15):"
+# The gate keys last-seen by id and device_uid by id:enrolled_at(:nonce).
+# Without the prune, `list` showed the new device as seen at its
+# predecessor's last use; without the nonce, a same-second re-enroll shared
+# the predecessor's uid (limiter bucket, audit identity).
+R="$(_fresh_repo reenroll)"
+"$R/scripts/clients.sh" enroll lap >/dev/null 2>&1
+"$R/scripts/clients.sh" enroll keep >/dev/null 2>&1
+printf '{"lap": "2026-01-02T03:04:05Z", "keep": "2026-01-02T03:04:06Z"}' \
+  > "$R/.run/clients-lastseen.json"
+_nonce() { python3 -c 'import json,sys; print(next(d.get("enroll_nonce") or "" for d in json.load(open(sys.argv[1]))["devices"] if d["id"]=="lap"))' "$R/.run/clients.json"; }
+n1="$(_nonce)"
+"$R/scripts/clients.sh" remove lap --yes >/dev/null 2>&1
+"$R/scripts/clients.sh" enroll lap >/dev/null 2>&1
+n2="$(_nonce)"
+if [[ -n "$n1" && -n "$n2" && "$n1" != "$n2" ]]; then
+  pass "each enrollment writes its own enroll_nonce"
+else
+  fail "enroll_nonce missing or reused across re-enroll ('$n1' vs '$n2')"
+fi
+out="$("$R/scripts/clients.sh" show lap --json 2>&1)" || true
+if ! _has "$out" "2026-01-02T03:04:05Z"; then
+  pass "a re-enrolled id does not inherit its predecessor's last-seen"
+else
+  fail "re-enrolled id shows the removed device's last-seen: $out"
+fi
+out="$("$R/scripts/clients.sh" show keep --json 2>&1)" || true
+if _has "$out" "2026-01-02T03:04:06Z"; then
+  pass "control: other devices keep their last-seen after a remove"
+else
+  fail "remove pruned another device's last-seen: $out"
+fi
+"$R/scripts/clients.sh" rotate lap >/dev/null 2>&1
+if [[ "$(_nonce)" == "$n2" ]]; then
+  pass "rotate keeps the enroll_nonce (same device, same uid)"
+else
+  fail "rotate changed the enroll_nonce"
+fi
+
+echo ""
 echo "registry write lock (supply S15):"
 # load -> modify -> save without a lock lets an overlapping writer put a stale
 # copy back (a revoke lost to a concurrent enroll). Hold the lock from here

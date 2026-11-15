@@ -25,7 +25,9 @@
 # Registry schema (version 1) — the shared contract with agents/edge.py:
 #   {"version":1,"devices":[{"id","label","key_sha256","enrolled_at",
 #                            "revoked_at","slot","rate_limit_per_min",
-#                            "last_seen","scopes"}]}
+#                            "last_seen","scopes","enroll_nonce"}]}
+# enroll_nonce: random, written once per enrollment (kept on rotate) so two
+# enrollments of one id inside the same second still get distinct device_uids.
 # Unknown/future fields are round-tripped untouched, so a newer edge.py can add
 # fields (and keep writing last_seen) without this CLI dropping them. `scopes`
 # arrived that way and is why the version stays 1: a consumer that has never
@@ -167,6 +169,7 @@ import datetime
 import fcntl
 import json
 import os
+import secrets
 import sys
 import tempfile
 
@@ -194,6 +197,36 @@ def last_seen_of(dev):
     if not isinstance(seen, dict):
         seen = {}
     return seen.get(dev.get("id")) or dev.get("last_seen")
+
+
+def prune_last_seen(dev_id):
+    """Drop a removed id from the gate's last-seen sidecar.
+
+    The sidecar is keyed by id, so without this a later `enroll` of the same
+    id showed the PREVIOUS device's last use before the new key was ever
+    presented. Best effort, atomic like the gate's own write.
+    """
+    path = os.path.join(os.path.dirname(REG), "clients-lastseen.json")
+    try:
+        with open(path) as fh:
+            seen = json.load(fh)
+    except (OSError, ValueError):
+        return
+    if not isinstance(seen, dict) or dev_id not in seen:
+        return
+    del seen[dev_id]
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path),
+                               prefix=".lastseen-", suffix=".json")
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            json.dump(seen, fh)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
 
 
 def now():
@@ -337,6 +370,10 @@ if CMD == "enroll":
             # Always present on a fresh row (empty = no grants), so a
             # consumer can read the field instead of probing for it.
             "scopes": parse_scopes(os.environ.get("OB_SCOPES")),
+            # Bound into the gate's device_uid: enrolled_at is one-second
+            # resolution, so a scripted remove + enroll inside one second
+            # would otherwise share a uid (limiter bucket, audit identity).
+            "enroll_nonce": secrets.token_hex(8),
         }
         doc["devices"].append(dev)
         action = "enrolled"
@@ -474,6 +511,7 @@ elif CMD == "remove":
     doc["devices"] = [d for d in doc["devices"]
                       if not (isinstance(d, dict) and d.get("id") == dev_id)]
     save(doc)
+    prune_last_seen(dev_id)
     print("Removed '%s' from the registry." % dev_id)
     print("")
     print("Its audit row is GONE — past `last_seen` and enrollment history for")

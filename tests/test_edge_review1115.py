@@ -114,3 +114,84 @@ class TestHealthIsNormalized:
             r = c.get("/health", headers=HDR)
         assert r.status_code == 502
         assert "127.0.0.1" not in r.text and "ok" not in r.text
+
+
+NEW_KEY = "c" * 64
+
+
+def _reenroll(tmp_path, enrolled_at="2026-08-15T09:00:00Z", nonce=None):
+    """What `clients.sh remove laptop --yes && enroll laptop` leaves behind:
+    the same id, a new key, a new enrollment."""
+    dev = {"id": "laptop", "label": "New holder",
+           "key_sha256": hashlib.sha256(NEW_KEY.encode()).hexdigest(),
+           "enrolled_at": enrolled_at, "revoked_at": None}
+    if nonce:
+        dev["enroll_nonce"] = nonce
+    (tmp_path / ".run" / "clients.json").write_text(
+        json.dumps({"version": 1, "devices": [dev]}))
+
+
+class TestReenrolledIdIsAFreshDevice:
+    """sec + cbp: per-device metrics were keyed by the reusable id, so a
+    re-enrolled id read its predecessor's usage; same-second re-enrolls
+    shared a device_uid; last-seen throttling followed the id."""
+
+    def test_new_holder_does_not_read_predecessor_metrics(self, edge,
+                                                          tmp_path):
+        _registry(tmp_path)
+        _stub(edge)
+        with TestClient(edge.app) as c:
+            assert c.post(CHAT, json={"messages": []},
+                          headers=HDR).status_code == 200
+            _reenroll(tmp_path)
+            new = {"Authorization": f"Bearer {NEW_KEY}"}
+            mine = c.get("/gate/metrics", headers=new).text
+            rig = c.get("/gate/metrics", headers=_local_headers(edge)).text
+            # The new holder's own traffic does show up for it.
+            c.post(CHAT, json={"messages": []}, headers=new)
+            after = c.get("/gate/metrics", headers=new).text
+        assert 'openbeast_edge_prompt_tokens_total{device="laptop"}' not in mine
+        assert "openbeast_edge_requests_total{" not in mine
+        # The rig still sees the old enrollment's usage, under the id.
+        assert 'openbeast_edge_prompt_tokens_total{device="laptop"} 10' in rig
+        assert 'openbeast_edge_prompt_tokens_total{device="laptop"} 10' in after
+
+    def test_rig_view_sums_enrollments_without_duplicate_series(self, edge,
+                                                                tmp_path):
+        _registry(tmp_path)
+        _stub(edge)
+        with TestClient(edge.app) as c:
+            c.post(CHAT, json={"messages": []}, headers=HDR)
+            _reenroll(tmp_path)
+            c.post(CHAT, json={"messages": []},
+                   headers={"Authorization": f"Bearer {NEW_KEY}"})
+            rig = c.get("/gate/metrics", headers=_local_headers(edge)).text
+        lines = [ln for ln in rig.splitlines()
+                 if ln.startswith('openbeast_edge_prompt_tokens_total{')]
+        assert lines == [
+            'openbeast_edge_prompt_tokens_total{device="laptop"} 20']
+
+    def test_same_second_reenroll_gets_a_distinct_uid(self, edge):
+        ts = "2026-08-15T09:00:00Z"
+        a = edge.device_uid({"id": "laptop", "enrolled_at": ts,
+                             "enroll_nonce": "1111"})
+        b = edge.device_uid({"id": "laptop", "enrolled_at": ts,
+                             "enroll_nonce": "2222"})
+        assert a != b
+        # Rows written before the nonce keep the uid they always had.
+        assert edge.device_uid({"id": "laptop", "enrolled_at": ts}) == \
+            hashlib.sha256(f"laptop:{ts}".encode()).hexdigest()[:12]
+
+    def test_reenrolled_id_records_last_seen_at_once(self, edge, tmp_path):
+        _registry(tmp_path)
+        _stub(edge)
+        seen = tmp_path / ".run" / "clients-lastseen.json"
+        with TestClient(edge.app) as c:
+            c.post(CHAT, json={"messages": []}, headers=HDR)
+            assert seen.exists()
+            seen.unlink()                 # what `clients.sh remove` prunes
+            _reenroll(tmp_path)
+            c.post(CHAT, json={"messages": []},
+                   headers={"Authorization": f"Bearer {NEW_KEY}"})
+        assert seen.exists() and "laptop" in json.loads(seen.read_text()), \
+            "the new enrollment's first use was throttled away"

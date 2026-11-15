@@ -273,7 +273,7 @@ class Registry:
                 return None if dev.get("revoked_at") else dev
         return None
 
-    def touch(self, device_id: str) -> None:
+    def touch(self, device_id: str, uid: str | None = None) -> None:
         """Record last-seen in a GATE-OWNED sidecar, throttled.
 
         Deliberately does NOT write clients.json. Two reasons, both learned
@@ -287,16 +287,23 @@ class Registry:
              gratuitous disk churn (see the SSD-wear item in docs/TODO.md)
              and it blocked concurrent streams.
         `clients.sh list/show` merges this file for display.
+
+        The sidecar is keyed by the id (that is what `list` shows), but the
+        throttle is keyed by the ENROLLMENT (`uid`): a re-enrolled id must
+        get its first last-seen at once, not up to a minute later while the
+        sidecar still shows its predecessor's (`clients.sh remove` prunes
+        the old entry).
         """
         now = time.monotonic()
-        last = self._touched.get(device_id)
+        throttle_key = uid or device_id
+        last = self._touched.get(throttle_key)
         # `last is None` means never touched -> always write. Do NOT use 0.0 as
         # the sentinel: time.monotonic() is time since BOOT, so on a machine
         # that booted less than _TOUCH_INTERVAL_S ago the arithmetic would
         # silently skip a device's very first last-seen record.
         if last is not None and now - last < _TOUCH_INTERVAL_S:
             return
-        self._touched[device_id] = now
+        self._touched[throttle_key] = now
         try:
             seen = {}
             try:
@@ -418,12 +425,16 @@ class Limiter:
 # happened and how much it cost, never the content and never key material.
 # ---------------------------------------------------------------------------
 
+# Per-device series are keyed on (device id, device_uid): the id is the
+# Prometheus label, the uid is the ENROLLMENT. A tenant's /gate/metrics view
+# filters on its uid, so a removed-and-re-enrolled id never reads the
+# previous holder's usage; the rig's view sums them back under the id.
 _METRICS = {
-    "requests_total": {},     # (device, path, outcome) -> count
+    "requests_total": {},     # (device, uid, path, outcome) -> count
     "denied_total": {},       # reason -> count
-    "prompt_tokens": {},      # device -> count
-    "completion_tokens": {},  # device -> count
-    "latency_ms": {},         # device -> cumulative
+    "prompt_tokens": {},      # (device, uid) -> count
+    "completion_tokens": {},  # (device, uid) -> count
+    "latency_ms": {},         # (device, uid) -> cumulative
 }
 
 
@@ -434,10 +445,19 @@ def device_uid(device: dict) -> str:
     `enroll laptop-air` yields a different physical device wearing the same
     name, which would silently conflate two devices in the audit trail (and
     inherit the old one's in-flight counters). Binding the enrollment
-    timestamp in makes each enrollment distinct without adding a field the
-    CLI would have to write.
+    timestamp in makes each enrollment distinct.
+
+    enrolled_at has one-second resolution, so a scripted `remove` + `enroll`
+    inside one second would mint the SAME uid. `clients.sh enroll` therefore
+    also writes a random `enroll_nonce`, bound in when present. Rows written
+    before it existed have none and keep the uid they always had, so audit
+    history still joins across the upgrade. A key rotation keeps both
+    fields: same device, same uid.
     """
     raw = f"{device.get('id','anon')}:{device.get('enrolled_at','')}"
+    nonce = device.get("enroll_nonce")
+    if nonce:
+        raw += f":{nonce}"
     return hashlib.sha256(raw.encode()).hexdigest()[:12]
 
 
@@ -468,11 +488,12 @@ def _audit(device: str, user: str | None, path: str, status: int,
             f.write(json.dumps(row) + "\n")
     except Exception:
         pass
-    _bump("requests_total", (device, path, outcome))
+    _bump("requests_total", (device, uid, path, outcome))
     if usage:
-        _add("prompt_tokens", device, usage.get("prompt_tokens") or 0)
-        _add("completion_tokens", device, usage.get("completion_tokens") or 0)
-    _add("latency_ms", device, ms)
+        _add("prompt_tokens", (device, uid), usage.get("prompt_tokens") or 0)
+        _add("completion_tokens", (device, uid),
+             usage.get("completion_tokens") or 0)
+    _add("latency_ms", (device, uid), ms)
 
 
 def _bump(metric: str, key) -> None:
@@ -1111,7 +1132,7 @@ async def gate(request: Request):
                          else "2"})
         released["held"] = gens
         headers = _upstream_headers(request, device, request_id)
-        registry.touch(device_id)
+        registry.touch(device_id, uid)
 
         def _still_enrolled() -> bool:
             # The SAME enrollment, not merely a key that resolves: a device
@@ -1318,7 +1339,10 @@ async def gate(request: Request):
 
 
 def _introspection_scope(request: Request) -> str | None:
-    """Who is asking a /gate/* route: "*" (the rig), a device id, or None.
+    """Who is asking a /gate/* route: "*" (the rig), a device_uid, or None.
+
+    A device is scoped by its ENROLLMENT (device_uid), not its reusable id:
+    a re-enrolled `laptop` must not read its predecessor's series.
 
     These expose the device roster size and per-device usage counters. The
     gate is published at the tailnet ROOT (`tailscale serve :8443 -> :8090`
@@ -1338,7 +1362,7 @@ def _introspection_scope(request: Request) -> str | None:
     reg: Registry = request.app.state.registry
     key = _bearer(request)
     dev = reg.lookup(key) if key else None
-    return None if dev is None else str(dev.get("id", "anon"))
+    return None if dev is None else device_uid(dev)
 
 
 async def metrics(request: Request):
@@ -1349,17 +1373,22 @@ async def metrics(request: Request):
             {"error": {"message": "not found", "type": "invalid_request_error"}},
             status_code=404)
 
-    def mine(dev) -> bool:
-        return scope == "*" or dev == scope
+    def series(metric: str) -> list:
+        """(label key, value) rows visible to this scope. A tenant sees only
+        its own enrollment's rows; the rig sees every row, summed by device
+        id so re-enrollments do not emit duplicate label sets."""
+        out: dict = {}
+        for (dev, uid, *rest), n in _METRICS[metric].items():
+            if scope == "*" or uid == scope:
+                k = (dev, *rest)
+                out[k] = out.get(k, 0) + n
+        return sorted(out.items(), key=lambda kv: str(kv[0]))
 
     lines = [
         "# HELP openbeast_edge_requests_total Requests through beast-gate.",
         "# TYPE openbeast_edge_requests_total counter",
     ]
-    for (dev, path, outcome), n in sorted(
-            _METRICS["requests_total"].items(), key=lambda kv: str(kv[0])):
-        if not mine(dev):
-            continue
+    for (dev, path, outcome), n in series("requests_total"):
         lines.append(f'openbeast_edge_requests_total{{device="{_esc(dev)}",'
                      f'path="{_esc(path)}",outcome="{_esc(outcome)}"}} {n}')
     if scope == "*":
@@ -1379,9 +1408,8 @@ async def metrics(request: Request):
             ("latency_ms", "openbeast_edge_latency_ms_total",
              "Cumulative upstream latency per device.")):
         lines += [f"# HELP {name} {helptext}", f"# TYPE {name} counter"]
-        for dev, n in sorted(_METRICS[metric].items()):
-            if mine(dev):
-                lines.append(f'{name}{{device="{_esc(dev)}"}} {n}')
+        for (dev,), n in series(metric):
+            lines.append(f'{name}{{device="{_esc(dev)}"}} {n}')
     return StreamingResponse(iter(["\n".join(lines) + "\n"]),
                              media_type="text/plain; version=0.0.4")
 
