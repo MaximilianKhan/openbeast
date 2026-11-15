@@ -288,7 +288,10 @@ says so explicitly and the service enforces it:
   call, a primary engine is skipped for an `async` decision whose caller can
   act on the answer (`primary_async_only`), and for a `substitute` decision
   unless the caller declares it would make the substituted call
-  (`baseline = "hint"`, else `primary_not_substitute`).
+  (`baseline = "hint"`, else `primary_not_substitute`). Under beast-hydra with
+  a `classify` route (`ROUTER_CLASSIFY_MODEL=classify`) the classify runs off
+  the primary, so the router hook sends `baseline = "hint_offload"` and the
+  primary is skipped: there is no call on its slot to replace.
 - `busy_skip = true` (primary bindings only): each call first asks `GET /slots`;
   a slot with `is_processing` (a user's turn, an agent) raises `engine_busy` in
   about a millisecond and the chain moves to the 0.6B — never queueing behind
