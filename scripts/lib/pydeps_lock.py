@@ -43,6 +43,14 @@ UA = "openbeast-pydeps-lock/1 (+https://github.com/MaximilianKhan/openbeast)"
 #: this stack can install and listing it only invites confusion.
 SKIP_SUFFIXES = (".exe", ".msi")
 
+#: Transit droppings a wheelhouse audit ignores (see audit_dir). IDENTICAL to
+#: scripts/lib/bundle_manifest.py BENIGN_NAMES — tests/test_bundle_manifest.py
+#: pins the two together, because they disagreed twice: this list also held
+#: .Trashes/.directory/Thumbs.db, so a wheelhouse this audit accepted was
+#: refused by `bundle verify`. Narrow, like that one: a stray file is one
+#: `rm` away, while an exemption is a place for a payload to hide.
+BENIGN_NAMES = frozenset({".DS_Store"})
+
 
 class LockError(RuntimeError):
     pass
@@ -499,9 +507,9 @@ def audit_dir(lock_path: str, directory: str,
     #: Files a wheelhouse legitimately picks up in transit. NARROW ON PURPOSE:
     #: the old rule exempted EVERY dotfile, so anything hidden rode in
     #: unaudited — and pip's find-links treatment of a directory that contains
-    #: an index page is not something to leave to chance. These three are what
-    #: a Mac or a file manager actually leaves on a USB stick.
-    BENIGN = {".DS_Store", ".Trashes", ".directory", "Thumbs.db"}
+    #: an index page is not something to leave to chance. BENIGN_NAMES (module
+    #: level, kept identical to bundle_manifest's) is the list.
+    BENIGN = BENIGN_NAMES
     #: ...plus AppleDouble sidecars (`._<name>`), which macOS writes next to
     #: EVERY file carrying an xattr on a FAT/exFAT stick — so a wheelhouse
     #: browsed on a Mac grows a `._foo.whl` per wheel. Matched by name AND by
