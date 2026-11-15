@@ -253,6 +253,69 @@ category-balanced SCORE (mean of per-category capabilities) is reported as
 a secondary readout only. A full v5 row covers 111 scored units; probe rows
 and `budget_skip` rows never enter a score.
 
+### Validator isolation
+
+The solution under test is a same-uid child of its validator. During the v5
+authoring gate, adversarial verifiers passed units in 163, 164, 168, 173,
+176, 181, 183, 188, 20, 40, 121 and 122 without solving them, all through the
+harness rather than through the tasks:
+
+| Hole | Attack | Closed by |
+|---|---|---|
+| argv | `python -c <script>` put the whole validator (oracle, seed, keys) in a command line anyone can read: `ps -ww -o command= -p $PPID`, `/proc/PPID/cmdline` | `run_validation` feeds the script on **stdin**, from an unlinked file in a private 0700 dir. Python runs as `python -I -S -` and shell as `sh -c '<read stdin>; eval'` |
+| import path | `-c` put `''`, the harness cwd, on `sys.path`. A planted `urllib/parse.py` ran on a lazy import (176) and **stayed for every later unit** | `-I` keeps cwd and PYTHON* off the path. The validator runs in a fresh, empty cwd that is removed after the unit |
+| environ / memory | `ps eww` and `/proc/PPID/environ` read the validator env; `/proc/PPID/mem` reads its memory | The environment is scrubbed down to PATH, HOME, locale, toolchain vars and `OPENBEAST_TIMEOUT_SCALE`. On Linux the validator is non-dumpable |
+| scale | Fixed solution limits (4-10 s) ignored `--scale`, so references timed out under load and wrong solutions failed for the wrong class | `OPENBEAST_TIMEOUT_SCALE` is exported, and `vlib.t(s)` multiplies by it |
+| hidden CPU | 122: double-forked, never-waited workers kept their CPU out of `RUSAGE_CHILDREN` (29 s of naive gemm was charged as 0.03 s) | `vlib.run_solution` counts the whole tree. Leftovers are refused as `daemon` |
+| lingering solutions | a validator killed on timeout left its solution's group running into the next unit | vlib records each group it starts, and the harness SIGKILLs them after the validator exits |
+
+`evals/vlib.py` is the validator's standard library. The harness injects it
+into the validator from source; it is never on an import path or in the cwd.
+
+- `vlib.run_solution(cmd, input=, cpu_s=, wall_s=, allow_fork=False)` runs
+  the solution in its own session and process group under a CPU budget for
+  ALL descendants. That is exact through a delegated cgroup v2 when the host
+  has one. Otherwise it is RLIMIT_CPU per process, plus wait4 rusage, plus a
+  pgid/ancestry sampler. That sampler reads `/proc` on Linux, with a child
+  subreaper so that orphans stay in view; elsewhere it reads `ps`. Fork is
+  refused by default, and on macOS `sandbox-exec` enforces it. With
+  `allow_fork=True`, orphans and survivors get `verdict="daemon"`. On macOS
+  it also denies reads of `evals/tasks`, `evals/refs` and `evals/suites`
+  (`OPENBEAST_VALIDATOR_SEAL`).
+- `vlib.t(s)` and `vlib.scale()` give the timeout scale. `vlib.python_cmd(p)`
+  gives `[python, -I, -S, p]`. `vlib.processes()` is a /proc-free process
+  table. `vlib.lint_python(src, ban_modules=, ban_calls=)` is an AST lint for
+  the known dodges.
+
+**What a validator must do** (the full checklist is in
+`skills/eval-task-author/SKILL.md`, "Validator isolation"):
+
+- Run the solution in a **separate process** from anything that holds
+  answers, and judge only its output. A scenario driver that has to import
+  the solution holds no answers; it prints observations and the parent
+  compares them. Never trust the solution's in-process state: it can rebind
+  your functions and timers.
+- Run it with `vlib.run_solution`, and scale every fixed limit (`vlib.t`).
+- Start no `python -c SRC` child. Feed SRC on stdin to `python -I -S -`, or
+  use a quoted heredoc to `python3 -I -` in bash.
+- Lint with the AST (`vlib.lint_python`), not with a line regex, and check
+  the whole output.
+
+`tests/prove_task.py` lints validators for `-c` children and for fixed
+limits that never read the scale. The isolation itself is pinned by
+`tests/test_eval_validator_isolation.py`.
+
+**Residual, by platform.**
+
+- On Linux, a solution can still read `evals/tasks/*.json` from disk at
+  validation time. Only the agent's tools are sealed, and vlib's read-deny is
+  macOS only. Closing it needs a separate uid or a mount namespace on the
+  rig.
+- On macOS, with `allow_fork=True`, a double-fork plus `setsid` can slip past
+  the sampler. A timed gate there keeps the default `allow_fork=False`.
+- A shell validator that runs `python3 -` without `-I` still puts its
+  private cwd on `sys.path`.
+
 ### The era break
 
 `evals/SUITE_VERSION` is `v5`, which rolls the cache era (`ctxhash`) for
