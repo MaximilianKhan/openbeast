@@ -252,9 +252,10 @@ class LLMEngine(Engine):
         await self.ensure_idle()   # a probe never queues in front of a user
         t0 = time.perf_counter()
         rows, _, _ = await self._score_rendered(r, locks, timeout_s)
-        # Probe calls seed the rolling latency window, so a fresh engine's p95
-        # is measured rather than assumed to be its (larger) timeout.
-        self.record_latency((time.perf_counter() - t0) * 1000)
+        # Probe calls seed the latency estimate (a separate window), so a fresh
+        # engine's p95 is measured rather than assumed to be its timeout; real
+        # calls replace them as soon as there are a few.
+        self.record_latency((time.perf_counter() - t0) * 1000, probe=True)
         row = rows[0]
         if row.truncated:
             return 0.5, row.label_mass

@@ -504,6 +504,7 @@ class Instinct:
             progress["cascade"], progress["results"] = cascade, results
         last_primary = max((i for i, n in enumerate(chain)
                             if self.engines[n].binding.allow_primary), default=-1)
+        ran = False   # an earlier engine already spent part of the deadline
         for i, name in enumerate(chain):
             if released is not None and i > last_primary:
                 released.set()
@@ -534,6 +535,8 @@ class Instinct:
                 last_err = last_err or "deadline"
                 continue
             t0 = self.clock()
+            starved = ran and eng.caps.needs_render and remaining_ms < eng.binding.timeout_ms
+            ran_before, ran = ran, ran or eng.caps.needs_render
             try:
                 timeout = max(0.001, remaining_ms / 1000) if not is_rules else None
                 req = ScoreReq(spec=spec, inputs=inputs, items=texts,
@@ -545,6 +548,7 @@ class Instinct:
                 # The primary's slot is serving someone: skip in ~1 ms, never
                 # queue behind them. Not an engine fault (no auto-demotion,
                 # no latency sample), just "not now".
+                ran = ran_before          # and it spent none of the deadline
                 cascade.append({"engine": name, "action": "skipped", "reason": "engine_busy",
                                 "ms": round((self.clock() - t0) * 1000, 3)})
                 last_err = last_err or "engine_busy"
@@ -552,9 +556,13 @@ class Instinct:
             except asyncio.TimeoutError:
                 ms = (self.clock() - t0) * 1000
                 eng.record_latency(ms)
+                # Starved: an earlier engine spent the shared deadline and this
+                # one got less than its own timeout — that is the deadline, not
+                # an engine fault, so it never feeds auto-demotion.
+                why = "deadline" if starved else "engine_timeout"
                 cascade.append({"engine": name, "action": "fallback",
-                                "reason": "engine_timeout", "ms": round(ms, 3)})
-                last_err = "engine_timeout"
+                                "reason": why, "ms": round(ms, 3)})
+                last_err = why
                 continue
             except (EngineError, InputError, OSError) as exc:
                 cascade.append({"engine": name, "action": "fallback",
@@ -885,7 +893,8 @@ class Instinct:
         label_mass is watched per engine against THAT engine's calibration
         reference, from every row it scored (not just rows that acted)."""
         cascade = resp["cascade"] or []
-        failed = any(c.get("action") == "fallback" for c in cascade) or (
+        failed = any(c.get("action") == "fallback" and c.get("reason") != "deadline"
+                     for c in cascade) or (
             resp["action"] == "fallback" and resp["fallback"]["reason"] in (
                 "engine_timeout", "engine_unavailable", "overload"))
         self.autodemoter.observe(spec.id, failed=failed, label_mass=None, mass_ref_p50=None)
