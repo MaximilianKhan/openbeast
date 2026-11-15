@@ -342,9 +342,18 @@ def _artifact_lock(artifact_id: str):
 # --- paths -------------------------------------------------------------------
 
 def _files_dir() -> str:
-    return os.path.expanduser(
-        os.environ.get("OPENBEAST_FILES_DIR", "").strip()
-        or os.path.join(os.path.expanduser("~"), "openbeast-files"))
+    """$OPENBEAST_FILES_DIR, else openbeast.conf's FILES_DIR (conf_value),
+    else ~/openbeast-files. The conf fallback is for a process start.sh did
+    not launch — OpenCode's stdio MCP server gets the plain environment, and
+    it used to write a store the server never served (review, spark-scale).
+    A relative conf value is anchored to the checkout, as lib/conf.sh does."""
+    env = os.environ.get("OPENBEAST_FILES_DIR", "").strip()
+    if env:
+        return os.path.expanduser(env)
+    raw = os.path.expanduser((_conf_file_value("FILES_DIR") or "").strip())
+    if not raw:
+        return os.path.join(os.path.expanduser("~"), "openbeast-files")
+    return raw if os.path.isabs(raw) else os.path.join(_repo_dir(), raw)
 
 
 def store_root() -> str:
@@ -1934,7 +1943,7 @@ def _detect_base_url() -> str:
     if m:
         value = f"https://{m.group(1).lower()}:{_PUBLISHED_PORT}"
     else:
-        port = _coerce_int(os.environ.get("OPENBEAST_ARTIFACT_PORT"), 3004)
+        port = _coerce_int(conf_value("ARTIFACT_PORT"), 3004)
         value = f"http://localhost:{port if 0 < port < 65536 else 3004}"
     with _BASE_URL_LOCK:
         _BASE_URL_CACHE.update(at=now, value=value)
@@ -1962,8 +1971,9 @@ def url_caveat(url) -> str:
 
 def artifact_url(artifact_id, version=None) -> str:
     """The durable URL. Base from $OPENBEAST_ARTIFACT_BASE_URL (conf key
-    ARTIFACT_BASE_URL), else detected — see _detect_base_url()."""
-    base = os.environ.get("OPENBEAST_ARTIFACT_BASE_URL", "").strip()
+    ARTIFACT_BASE_URL, read through conf_value so a plain environment sees
+    it too), else detected — see _detect_base_url()."""
+    base = (conf_value("ARTIFACT_BASE_URL") or "").strip()
     if not base:
         base = _detect_base_url()
     base = base.rstrip("/")

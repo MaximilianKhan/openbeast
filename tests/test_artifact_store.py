@@ -1234,3 +1234,33 @@ def test_removing_the_top_version_never_frees_its_number(store):
     store.set_current(aid, 2)
     store.remove_version(aid, 4)
     assert store.publish("<p>FIVE</p>", artifact_id=aid)["version"] == 5
+
+
+def test_a_plain_environment_reads_the_store_and_url_from_the_conf(
+        store, tmp_path, monkeypatch):
+    """Review (spark-scale) beast-artifact: OpenCode starts mcp_server.py with
+    the plain environment. BEAST_ARTIFACT came from openbeast.conf, but the
+    store root, base URL and port did not — publish_artifact wrote
+    ~/openbeast-files/artifacts while the server (conf.sh) served
+    $FILES_DIR/artifacts, and every URL it handed out was a 404."""
+    conf = tmp_path / "openbeast.conf"
+    conf.write_text("BEAST_ARTIFACT=true\nFILES_DIR=\"~/beast-store\"\n"
+                    "ARTIFACT_PORT=3999\n")
+    monkeypatch.setenv("OPENBEAST_CONF", str(conf))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    for name in ("OPENBEAST_FILES_DIR", "OPENBEAST_ARTIFACT_BASE_URL",
+                 "OPENBEAST_ARTIFACT_PORT"):
+        monkeypatch.delenv(name, raising=False)
+    assert store.store_root() == str(tmp_path / "home" / "beast-store"
+                                     / "artifacts")
+    _fresh_base_url(store, monkeypatch, "")
+    assert store.artifact_url("abc") == "http://localhost:3999/a/abc"
+    # a relative FILES_DIR is anchored to the checkout, as conf.sh does
+    conf.write_text("FILES_DIR=rel-files\nARTIFACT_BASE_URL=https://art.example/\n")
+    monkeypatch.setenv("OPENBEAST_REPO_DIR", str(tmp_path / "repo"))
+    assert store.store_root() == str(tmp_path / "repo" / "rel-files"
+                                     / "artifacts")
+    assert store.artifact_url("abc", 2) == "https://art.example/a/abc/v/2"
+    # the environment still wins over the conf
+    monkeypatch.setenv("OPENBEAST_FILES_DIR", str(tmp_path / "envfiles"))
+    assert store.store_root() == str(tmp_path / "envfiles" / "artifacts")
