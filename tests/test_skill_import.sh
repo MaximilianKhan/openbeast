@@ -185,7 +185,9 @@ while [[ "${1:-}" == "-c" ]]; do shift 2; done
 echo "$*" >> "$STUB_GIT_LOG"
 case "$1" in
   init)      mkdir -p "${@: -1}/.git" ;;
-  checkout)  cp -a "$STUB_GIT_FIXTURE/." . ;;
+  # ${:?}: a case that reaches git without the fixture set must fail, not
+  # copy "/." (the whole filesystem) into the staging directory.
+  checkout)  cp -a "${STUB_GIT_FIXTURE:?no fixture}/." . ;;
   rev-parse) cat "$STUB_GIT_HEAD" ;;
 esac
 exit 0
@@ -238,6 +240,36 @@ if PATH="$TMPROOT/bin:$PATH" XDG_DATA_HOME="$TMPROOT/xdg" OFFLINE=true SKILL_SCA
 else
   pass "OFFLINE=true: fetch is refused and git never runs"
 fi
+# 2026-11 review: OFFLINE is read the way lib/conf.sh reads it — the
+# OPENBEAST_OFFLINE override first, `KEY = value` spacing, and every _ob_bool
+# "true" spelling — or the gate went online on a box the stack calls offline.
+offline_refused() { # offline_refused <label> <env...>: fetch must refuse before git
+  local label="$1"; shift
+  : > "$GIT_LOG"
+  if env -u OFFLINE "$@" PATH="$TMPROOT/bin:$PATH" XDG_DATA_HOME="$TMPROOT/xdg" \
+       SKILL_SCANNER="$TMPROOT/bin/stub-scanner" STUB_GIT_LOG="$GIT_LOG" \
+       "$CLI" fetch "$URL" --rev "$REV" --name demo >"$TMPROOT/out" 2>&1 || [[ -s "$GIT_LOG" ]] \
+     || ! grep -q "OFFLINE=true" "$TMPROOT/out"; then
+    fail "$label: fetch went online (or failed for another reason): $(tail -1 "$TMPROOT/out")"
+  else
+    pass "$label: fetch is refused as offline, git never runs"
+  fi
+}
+offline_refused "OPENBEAST_OFFLINE=true (the env override)" OPENBEAST_OFFLINE=true
+for line in 'OFFLINE=yes' 'OFFLINE=1' 'OFFLINE = true' 'OFFLINE=On  # air-gapped' 'OFFLINE="true"'; do
+  printf 'OFFLINE=false\n%s\n' "$line" > "$SANDBOX/openbeast.conf"
+  offline_refused "openbeast.conf '$line' (last assignment wins)"
+done
+printf 'OFFLINE=true\nOFFLINE=no\n' > "$SANDBOX/openbeast.conf"
+: > "$GIT_LOG"
+env -u OFFLINE PATH="$TMPROOT/bin:$PATH" XDG_DATA_HOME="$TMPROOT/xdg" SKILL_SCANNER="$TMPROOT/nope" \
+  STUB_GIT_LOG="$GIT_LOG" "$CLI" fetch "$URL" --rev "$REV" --name demo >"$TMPROOT/out" 2>&1
+if grep -q "install-scanner" "$TMPROOT/out" && ! grep -q "OFFLINE=true" "$TMPROOT/out"; then
+  pass "control: openbeast.conf 'OFFLINE=no' after a true is online (reaches the scanner check)"
+else
+  fail "control: OFFLINE=no was read as offline: $(tail -1 "$TMPROOT/out")"
+fi
+rm -f "$SANDBOX/openbeast.conf"
 : > "$GIT_LOG"
 if PATH="$TMPROOT/bin:/usr/bin:/bin" XDG_DATA_HOME="$TMPROOT/xdg" OFFLINE=false SKILL_SCANNER="$TMPROOT/nope" \
    STUB_GIT_LOG="$GIT_LOG" "$CLI" fetch "$URL" --rev "$REV" --name demo >"$TMPROOT/out" 2>&1 || [[ -s "$GIT_LOG" ]]; then

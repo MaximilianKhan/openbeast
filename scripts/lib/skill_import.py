@@ -123,18 +123,28 @@ def offline() -> bool:
     Read by hand rather than by sourcing lib/conf.sh: conf.sh generates a
     SearXNG secret and appends it to openbeast.conf, and `verify` is called
     from doctor and from the test suite. A read-only check must not write.
+
+    The same answer as conf.sh's `OFFLINE`: the OPENBEAST_OFFLINE override
+    first, then an exported OFFLINE (a shell that sourced conf.sh), then the
+    file's last `OFFLINE = value` (spaces allowed around '='), read by
+    _ob_bool's rules — first token, `#` comment dropped, quotes stripped, and
+    true/yes/1/on (any case) mean offline.
     """
-    val = os.environ.get("OFFLINE")
+    val = os.environ.get("OPENBEAST_OFFLINE") or None
+    if val is None:
+        val = os.environ.get("OFFLINE")
     if val is None:
         try:
             with open(os.path.join(REPO, "openbeast.conf"), encoding="utf-8") as fh:
                 for line in fh:
-                    m = re.match(r"^\s*OFFLINE=[\"']?([A-Za-z]+)", line)
+                    m = re.match(r"^\s*OFFLINE\s*=(.*)$", line)
                     if m:
                         val = m.group(1)
         except OSError:
             val = None
-    return (val or "").lower() == "true"
+    tok = (val or "").split()
+    tok = tok[0].split("#", 1)[0].replace('"', "").replace("'", "") if tok else ""
+    return tok.lower() in ("true", "yes", "1", "on")
 
 
 def scanner_home() -> str:

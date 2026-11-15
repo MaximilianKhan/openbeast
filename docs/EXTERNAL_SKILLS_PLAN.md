@@ -246,7 +246,8 @@ every file; `verify` checks both.
 refused, as is one over 2000 files or 50 MiB.
 
 **No config side effects.** The script does not source `lib/conf.sh` (that
-appends a generated secret to `openbeast.conf`); it reads `OFFLINE` directly.
+appends a generated secret to `openbeast.conf`); it reads `OFFLINE` directly,
+by conf.sh's rules: `OPENBEAST_OFFLINE` first, and true/yes/1/on all mean offline.
 
 **Scanner install.** `install-scanner` puts SkillSpector, pinned to the v2.12.0
 commit, in its own venv under `~/.local/share/openbeast/skillspector`.
