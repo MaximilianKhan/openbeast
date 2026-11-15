@@ -116,7 +116,8 @@ consumers read island.json
 - **When a reader trusts it.** All three must hold:
   - the heartbeat is fresh (`stale_after`, capped at 10 minutes on read)
   - the pid it names is alive
-  - that pid is an `island.py` process
+  - that pid is an `island.py` process (its argv, from `/proc` on Linux and
+    `sysctl` on macOS; an argv that cannot be read counts as *not*)
   
   So a dead watcher, a crashed stack or a hand-planted file all read as *not
   islanded*. A stale file must never make web tools refuse on a box whose

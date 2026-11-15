@@ -262,9 +262,59 @@ def _load(path: str) -> dict | None:
     return obj if isinstance(obj, dict) else None
 
 
+def _darwin_argv(pid: int) -> list[bytes] | None:
+    """A process's argv on macOS (sysctl KERN_PROCARGS2), or None when it
+    cannot be read — another user's process, a pid that just exited, no
+    libc. Layout: int argc, the exec path, NUL padding, then argc strings."""
+    try:
+        import ctypes
+        libc = ctypes.CDLL(None, use_errno=True)
+        CTL_KERN, KERN_ARGMAX, KERN_PROCARGS2 = 1, 8, 49
+        argmax = ctypes.c_int(0)
+        size = ctypes.c_size_t(ctypes.sizeof(argmax))
+        mib = (ctypes.c_int * 2)(CTL_KERN, KERN_ARGMAX)
+        if libc.sysctl(mib, 2, ctypes.byref(argmax), ctypes.byref(size), None, 0) != 0:
+            return None
+        buf = ctypes.create_string_buffer(max(4096, min(argmax.value, 4 << 20)))
+        size = ctypes.c_size_t(len(buf))
+        mib3 = (ctypes.c_int * 3)(CTL_KERN, KERN_PROCARGS2, pid)
+        if libc.sysctl(mib3, 3, buf, ctypes.byref(size), None, 0) != 0:
+            return None
+        raw = buf.raw[:size.value]
+    except (OSError, AttributeError, ValueError):
+        return None
+    if len(raw) < 4:
+        return None
+    argc = int.from_bytes(raw[:4], sys.byteorder)
+    rest = raw[4:]
+    end = rest.find(b"\0")                       # the exec path
+    if end < 0:
+        return None
+    rest = rest[end:].lstrip(b"\0")
+    argv = rest.split(b"\0")[:argc]
+    return argv if len(argv) == argc else None
+
+
+def _proc_argv(pid: int) -> list[bytes] | None:
+    """argv from /proc (Linux) or sysctl (macOS); None = cannot tell."""
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            return f.read(8192).split(b"\0")
+    except FileNotFoundError:
+        if os.path.isdir("/proc/self"):
+            return None                          # /proc, but the pid is gone
+    except OSError:
+        return None
+    if sys.platform == "darwin":
+        return _darwin_argv(pid)
+    return None
+
+
 def _watcher_alive(pid) -> bool:
-    """The pid the file names is alive and is an island.py process. Where
-    there is no /proc (macOS) liveness alone is the check."""
+    """The pid the file names is alive and is an island.py process (argv
+    from /proc on Linux, sysctl on macOS). When the argv cannot be read the
+    answer is no: liveness alone would trust pid 1 (launchd) or a recycled
+    pid, and "not islanded" is the safe side to fail on."""
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
         return False
     try:
@@ -275,16 +325,10 @@ def _watcher_alive(pid) -> bool:
         pass                      # alive, another user's: cmdline decides
     except OSError:
         return False
-    try:
-        with open(f"/proc/{pid}/cmdline", "rb") as f:
-            argv = f.read(8192).split(b"\0")
-        # An argv element that IS island.py — not one that merely contains
-        # it (tests/test_island.py would pass a substring check).
-        return any(os.path.basename(a) == b"island.py" for a in argv)
-    except FileNotFoundError:
-        return not os.path.isdir("/proc/self")
-    except OSError:
-        return False
+    argv = _proc_argv(pid)
+    # An argv element that IS island.py — not one that merely contains it
+    # (tests/test_island.py would pass a substring check).
+    return bool(argv) and any(os.path.basename(a) == b"island.py" for a in argv)
 
 
 def read_state(path: str | None = None) -> dict | None:

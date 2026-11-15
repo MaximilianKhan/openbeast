@@ -362,8 +362,27 @@ def test_dead_watcher_pid_reads_as_not_islanded(run_dir):
     assert not island.islanded()
     st["pid"] = os.getpid()           # alive, but not an island.py process
     (run_dir / "island.json").write_text(json.dumps(st))
-    if os.path.isdir("/proc/self"):
-        assert not island.islanded()
+    assert not island.islanded()      # on every platform, macOS included
+    st["pid"] = 1                     # init / launchd: always alive
+    (run_dir / "island.json").write_text(json.dumps(st))
+    assert not island.islanded()
+
+
+def test_a_live_island_py_process_is_trusted(run_dir):
+    """The other half: an argv element that IS island.py passes, on macOS
+    (sysctl) as on Linux (/proc)."""
+    p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)",
+                          str(run_dir / "island.py")])
+    try:
+        deadline = time.time() + 5
+        while time.time() < deadline and not island._watcher_alive(p.pid):
+            time.sleep(0.05)
+        assert island._watcher_alive(p.pid)
+        (run_dir / "island.json").write_text(json.dumps(
+            {"state": "island", "updated_at": time.time(), "stale_after": 90, "pid": p.pid}))
+        assert island.islanded()
+    finally:
+        p.kill(); p.wait()
 
 
 def test_stale_after_is_capped_on_read(run_dir, monkeypatch):
