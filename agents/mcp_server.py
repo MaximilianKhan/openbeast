@@ -1189,6 +1189,22 @@ def check_agent(agent_id: str) -> str:
     return f"Error: unknown agent '{agent_id}'. Use list_agents() to see tracked agents."
 
 
+#: list_agents parses only this tail of each transcript (plus its first
+#: line): status lives in the last events and the iteration count in the
+#: last iteration event's `number`. A full 10 MB parse per row made one call
+#: up to ~1 GB of JSON work for _LEDGER_LIST_LIMIT rows.
+_LIST_TAIL_BYTES = 256 * 1024
+
+
+def _iteration_count(events: list[dict]) -> int:
+    """Iterations so far: the highest iteration `number` seen (runner.py
+    numbers them), so a tail window still reports the true count; falls
+    back to counting events for logs without numbers."""
+    iters = [e for e in events if e.get("type") == "iteration"]
+    nums = [e.get("number") for e in iters if isinstance(e.get("number"), int)]
+    return max(nums) if nums else len(iters)
+
+
 @_tool()
 def list_agents() -> str:
     """List every agent known to this rig with its current status.
@@ -1207,12 +1223,13 @@ def list_agents() -> str:
         session_id = str(ledger_record.get("id") or "")
         if not session_id:
             continue
-        events = _parse_agent_log(_ledger_transcript(ledger_record, session_id))
+        events = _parse_agent_log(_ledger_transcript(ledger_record, session_id),
+                                  _LIST_TAIL_BYTES)
         meta = ledger_record.get("meta") if isinstance(ledger_record.get("meta"), dict) else {}
         started = _parse_ts(ledger_record.get("started_at"))
         rows[session_id] = (
             _ledger_status(ledger_record, events),
-            sum(1 for e in events if e.get("type") == "iteration"),
+            _iteration_count(events),
             meta.get("max_iter") or "-",
             _format_elapsed(started) if started else "-",
             _ledger_task(ledger_record, events)[:50].replace("\n", " "),
@@ -1222,10 +1239,10 @@ def list_agents() -> str:
     # start_agent can mutate _agents mid-iteration (same guard as _cleanup_agents).
     for agent_id, record in list(_agents.items()):
         alive = record.process.poll() is None
-        events = _parse_agent_log(record.log_path)
+        events = _parse_agent_log(record.log_path, _LIST_TAIL_BYTES)
         rows[agent_id] = (
             _classify_agent_status(alive, events, record.process.returncode),
-            sum(1 for e in events if e.get("type") == "iteration"),
+            _iteration_count(events),
             record.max_iter,
             _format_elapsed(record.started_at),
             record.task[:50].replace("\n", " "),

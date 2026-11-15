@@ -532,3 +532,36 @@ def test_stop_agent_ledger_refuses_a_recycled_pid(tmp_path, monkeypatch):
     finally:
         proc.kill()
         proc.wait()
+
+
+# --- list_agents parse cost (review) ------------------------------------------
+
+def test_list_agents_reads_only_a_tail_of_each_transcript(tmp_path, monkeypatch):
+    # Up to 100 ledger sessions x a 10 MB parse each made one list_agents
+    # ~1 GB of JSON work inside the shared tool server.
+    import json as _json
+    import mcp_server
+    import sessions
+    monkeypatch.setattr(sessions, "SESSIONS_DIR", str(tmp_path / "ledger"))
+    monkeypatch.setattr(mcp_server, "_agents", {})
+    log = tmp_path / "agent-big.jsonl"
+    pad = "x" * 1000
+    with open(log, "w") as f:
+        f.write(_json.dumps({"type": "spawn", "task": "big task"}) + "\n")
+        for n in range(1, 3001):
+            f.write(_json.dumps({"type": "iteration", "number": n}) + "\n")
+            f.write(_json.dumps({"type": "assistant", "content": pad}) + "\n")
+        f.write(_json.dumps({"type": "done", "summary": "ok"}) + "\n")
+    assert sessions.register("big", transcript=str(log), title="big task")
+    sessions.finalize("big", "done")
+    seen = []
+    real = mcp_server._parse_agent_log
+
+    def spy(path, max_bytes=10_000_000):
+        seen.append(max_bytes)
+        return real(path, max_bytes)
+    monkeypatch.setattr(mcp_server, "_parse_agent_log", spy)
+    out = mcp_server.list_agents()
+    assert seen and max(seen) <= 1_000_000, seen
+    row = next(line for line in out.splitlines() if line.startswith("big"))
+    assert "completed" in row and "3000/" in row, row
