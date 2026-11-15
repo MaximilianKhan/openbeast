@@ -237,6 +237,12 @@ jobs:
       - name: GPU lease / update / ops tests
         run: bash tests/test_gpu_ops.sh
 
+      # serve.sh, run.sh, the instinct scorer, measure-vram.sh and the MTP
+      # profilers against stub llama-server / llama-cli / nvidia-smi / curl;
+      # sparse files stand in for weights. Loopback python servers only.
+      - name: llama-serving tests (serve.sh, run.sh, scorer, profilers)
+        run: bash tests/test_llama_serving.sh
+
       - name: Shell ops tests (doctor, tailscale, conf, keys)
         run: bash tests/test_shell_ops.sh
 

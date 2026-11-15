@@ -151,6 +151,7 @@ echo ""
 for _suite in \
   "test_conf_secrets.sh|Conf parsing + secrets-off-argv" \
   "test_gpu_ops.sh|GPU lease / update / ops" \
+  "test_llama_serving.sh|llama-serving (serve.sh, run.sh, scorer, measure-vram, profilers)" \
   "test_supply_chain.sh|Supply-chain (hash-pinned installs, pin parity)" \
   "test_shell_ops.sh|Shell ops (doctor, tailscale, conf, keys)" \
   "test_ops_chat_artifact.sh|beast-chat / beast-artifact ops" \

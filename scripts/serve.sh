@@ -101,7 +101,7 @@ if [[ "$_wr_enforce" != "off" && -f "$SCRIPT_DIR/weights.registry" && -f "$MODEL
     _wr_hint="add a row (sha256<TAB>bytes<TAB>filename<TAB>repo<TAB>remote) or set WEIGHT_ENFORCE=off"
   else
     _wr_want="$(printf '%s' "$_wr_row" | cut -f2)"
-    _wr_have="$(stat -c%s "$MODEL" 2>/dev/null || echo 0)"
+    _wr_have="$(stat -L -c%s "$MODEL" 2>/dev/null || echo 0)"
     if [[ "$_wr_want" != "0" && "$_wr_have" != "$_wr_want" ]]; then
       _wr_msg="weight '$_wr_name' is ${_wr_have} bytes, registry pins ${_wr_want}"
       _wr_hint="re-download, or re-pin only after vetting: ./scripts/verify-weights.sh --deep"
@@ -180,7 +180,7 @@ elif [[ "${OPENBEAST_AUTO_CONTEXT:-1}" == "1" ]]; then
     fi
   fi
   weights_mib=0
-  [[ -f "$MODEL" ]] && weights_mib=$(( ($(stat -c '%s' "$MODEL") + 1048575) / 1048576 ))
+  [[ -f "$MODEL" ]] && weights_mib=$(( ($(stat -L -c '%s' "$MODEL") + 1048575) / 1048576 ))
   # rc=0 capture-then-|| : under `set -e`, a plain `scaled=$(...)` with a
   # nonzero exit would kill the script HERE — the rc=2 "weights don't fit"
   # branch below was unreachable and small-card users got a silent exit.

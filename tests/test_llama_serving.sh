@@ -1,0 +1,107 @@
+#!/bin/bash
+# llama-serving: serve.sh, its siblings (run.sh, serve-instinct-scorer.sh,
+# measure-vram.sh, the MTP profilers) and the weight check they share.
+# Hermetic, like test_scripts.sh §8b: every case runs a throwaway copy of the
+# scripts with stub binaries (llama-server, llama-cli, nvidia-smi, curl,
+# gpu-lease.sh). Nothing here reads this box's GPU or weights, binds a port
+# the stack uses, or touches a real openbeast.conf. GNU userland (stat -c,
+# truncate) — run it where the stack runs (Linux).
+#
+# Every case is a finding of the 2026-11 llama-serving review; the comment
+# above it names which.
+set -uo pipefail
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+PASS=0; FAIL=0
+pass() { echo "  ✓ $1"; PASS=$((PASS + 1)); }
+fail() { echo "  ✗ $1"; FAIL=$((FAIL + 1)); }
+SCRATCHES=()
+cleanup() { local d; for d in "${SCRATCHES[@]}"; do rm -rf "$d"; done; }
+trap cleanup EXIT
+_mk() { local d; d="$(mktemp -d)"; SCRATCHES+=("$d"); printf '%s' "$d"; }
+
+# --- the serve.sh rig: a copy of serve.sh + lib, a stub llama-server that
+# records its argv ($SV/argv) and environment ($SV/env), a stub nvidia-smi
+# that reports the cards in $SV/gpus.
+SV="$(_mk)"
+mkdir -p "$SV/scripts/lib" "$SV/llama.cpp/build/bin" "$SV/weights" "$SV/bin" "$SV/home"
+cp "$REPO_DIR/scripts/serve.sh" "$REPO_DIR/scripts/run.sh" "$SV/scripts/"
+cp "$REPO_DIR"/scripts/lib/*.sh "$SV/scripts/lib/"
+printf 'SEARXNG_SECRET=x\n' > "$SV/openbeast.conf"
+: > "$SV/scripts/weights.registry"
+cat > "$SV/llama.cpp/build/bin/llama-server" <<SH
+#!/bin/bash
+if [[ " \$* " == *" --help "* ]]; then cat "$SV/help.txt" 2>/dev/null; exit 0; fi
+printf '%s\n' "\$@" > "$SV/argv"
+env > "$SV/env"
+SH
+cat > "$SV/llama.cpp/build/bin/llama-cli" <<SH
+#!/bin/bash
+printf '%s\n' "\$@" > "$SV/cli-argv"
+env > "$SV/cli-env"
+SH
+cat > "$SV/bin/nvidia-smi" <<SH
+#!/bin/bash
+[[ -s "$SV/gpus" ]] || exit 1
+case "\$*" in
+  *memory.total*) cat "$SV/gpus" ;;
+  *name*)         sed 's/.*/Stub GPU/' "$SV/gpus" ;;
+esac
+exit 0
+SH
+chmod +x "$SV/llama.cpp/build/bin/llama-server" "$SV/llama.cpp/build/bin/llama-cli" "$SV/bin/nvidia-smi"
+printf 'usage: llama-server\n-cram, --cache-ram N   set the maximum cache size in MiB (default: 8192)\n' > "$SV/help.txt"
+: > "$SV/gpus"
+# _pin <file> [bytes] — a registry row for weights/<file> (its real size by default)
+_pin() {
+  local b="${2:-$(stat -L -c%s "$SV/weights/$1")}"
+  printf '%s\t%s\t%s\torg/repo\t-\n' "$(printf '0%.0s' {1..64})" "$b" "$1" >> "$SV/scripts/weights.registry"
+}
+# _serve [ENV=val...] -- <serve.sh args>  -> SV_OUT, SV_RC
+_serve() {
+  local envs=()
+  while [[ "$1" != "--" ]]; do envs+=("$1"); shift; done; shift
+  rm -f "$SV/argv" "$SV/env"; SV_RC=0
+  SV_OUT="$(env -i HOME="$SV/home" PATH="$SV/bin:/usr/bin:/bin" ${envs[@]+"${envs[@]}"} \
+    bash "$SV/scripts/serve.sh" "$@" 2>&1)" || SV_RC=$?
+}
+_sv_arg() { awk -v f="$1" 'p {print; exit} $0 == f {p = 1}' "$SV/argv" 2>/dev/null || true; }
+_launched() { [[ -s "$SV/argv" ]]; }
+
+echo ""
+echo "weights behind a symlink (stat without -L):"
+head -c 4096 /dev/zero > "$SV/weights/blob-4096"
+ln -s "$SV/weights/blob-4096" "$SV/weights/linked.gguf"
+_pin linked.gguf 4096
+_serve OPENBEAST_WEIGHT_ENFORCE=strict -- -m "$SV/weights/linked.gguf" -c 8192
+if [[ $SV_RC -eq 0 ]] && _launched && [[ "$SV_OUT" != *"registry pins"* ]]; then
+  pass "a symlinked, correctly pinned weight launches under WEIGHT_ENFORCE=strict"
+else
+  fail "symlinked pinned weight under strict (rc=$SV_RC): $(tr '\n' ' ' <<< "$SV_OUT")"
+fi
+# The context scaler must see the size of what the link points at.
+truncate -s 19535701408 "$SV/weights/big-blob"
+ln -s "$SV/weights/big-blob" "$SV/weights/big-linked.gguf"
+cp --sparse=always "$SV/weights/big-blob" "$SV/weights/big-real.gguf" 2>/dev/null \
+  || truncate -s 19535701408 "$SV/weights/big-real.gguf"
+printf '24564\n' > "$SV/gpus"
+_serve OPENBEAST_WEIGHT_ENFORCE=off -- -m "$SV/weights/big-real.gguf" -c 262144;   _c_real="$(_sv_arg -c)"
+_serve OPENBEAST_WEIGHT_ENFORCE=off -- -m "$SV/weights/big-linked.gguf" -c 262144; _c_link="$(_sv_arg -c)"
+: > "$SV/gpus"
+if [[ -n "$_c_real" && "$_c_real" == "$_c_link" && "$_c_real" -lt 262144 ]]; then
+  pass "…and the context scaler budgets a symlinked weight at its real size (-c $_c_link)"
+else
+  fail "context for a symlinked 19.5 GB weight on a 24 GB card: -c '$_c_link', the same file unlinked: -c '$_c_real'"
+fi
+# verify-weights.sh is the operator's size check on the same files.
+VW="$(_mk)"; mkdir -p "$VW/scripts/lib" "$VW/weights"
+cp "$REPO_DIR/scripts/verify-weights.sh" "$VW/scripts/"; cp "$REPO_DIR"/scripts/lib/*.sh "$VW/scripts/lib/"
+head -c 4096 /dev/zero > "$VW/blob"; ln -s "$VW/blob" "$VW/weights/linked.gguf"
+printf '%s\t4096\tlinked.gguf\torg/repo\t-\n' "$(printf '0%.0s' {1..64})" > "$VW/scripts/weights.registry"
+_vw_rc=0; _vw_out="$(env -i HOME="$VW" PATH=/usr/bin:/bin OPENBEAST_WEIGHTS_DIR="$VW/weights" bash "$VW/scripts/verify-weights.sh" 2>&1)" || _vw_rc=$?
+[[ $_vw_rc -eq 0 && "$_vw_out" != *FAIL* ]] && pass "verify-weights.sh passes a symlinked weight of the pinned size" \
+  || fail "verify-weights.sh on a symlinked weight (rc=$_vw_rc): $(tr '\n' ' ' <<< "$_vw_out")"
+
+echo ""
+echo "========================================"
+echo "llama-serving: $PASS passed, $FAIL failed"
+[[ $FAIL -eq 0 ]]
