@@ -224,6 +224,36 @@ _run OPENBEAST_WEIGHT_ENFORCE=strict bash "$SV/scripts/run.sh" -m "$SV/weights/s
   || fail "run.sh under strict with a wrong-size weight (rc=$RUN_RC): $(tr '\n' ' ' <<< "$RUN_OUT")"
 
 echo ""
+echo "serve-instinct-scorer.sh pass-through arguments:"
+IS="$(_mk)"; mkdir -p "$IS/scripts/lib" "$IS/run"
+cp "$REPO_DIR/scripts/serve-instinct-scorer.sh" "$IS/scripts/"; cp "$REPO_DIR"/scripts/lib/*.sh "$IS/scripts/lib/"
+printf '#!/bin/bash\nprintf "%%s\\n" "$@" > "%s/serve-argv"\nenv > "%s/serve-env"\n' "$IS" "$IS" > "$IS/scripts/serve.sh"
+chmod +x "$IS/scripts/serve.sh"
+head -c 100 /dev/zero > "$IS/model.gguf"
+_is_port=$(( 20000 + RANDOM % 20000 ))
+_scorer() { rm -f "$IS/serve-argv" "$IS/serve-env"; IS_RC=0
+  IS_OUT="$(env -i HOME="$IS" PATH=/usr/bin:/bin INSTINCT_SCORER_MODEL="$IS/model.gguf" INSTINCT_RUN_DIR="$IS/run" \
+    INSTINCT_SCORER_PORT="$_is_port" bash "$IS/scripts/serve-instinct-scorer.sh" "$@" 2>&1)" || IS_RC=$?; }
+_scorer --host 0.0.0.0
+[[ $IS_RC -eq 2 && ! -e "$IS/serve-argv" ]] && pass "--host 0.0.0.0 is refused, as the header promises (a non-loopback host)" \
+  || fail "scorer --host 0.0.0.0 (rc=$IS_RC, launched=$([[ -e "$IS/serve-argv" ]] && echo yes || echo no)): $IS_OUT"
+_scorer -p 8080
+[[ $IS_RC -eq 2 && ! -e "$IS/serve-argv" ]] && pass "…so is -p 8080 (it would skip the port checks)" \
+  || fail "scorer -p 8080 (rc=$IS_RC): $IS_OUT"
+_scorer --port=8080
+[[ $IS_RC -eq 2 && ! -e "$IS/serve-argv" ]] && pass "…and --port=8080" || fail "scorer --port=8080 (rc=$IS_RC): $IS_OUT"
+_scorer
+if [[ $IS_RC -eq 0 && "$(awk 'p {print; exit} $0 == "--host" {p = 1}' "$IS/serve-argv" 2>/dev/null)" == "127.0.0.1" ]]; then
+  pass "…and a plain start launches on loopback (control)"
+else
+  fail "scorer plain start (rc=$IS_RC): $IS_OUT"
+fi
+_pc_is="$(grep '^OPENBEAST_PROMPT_CACHE_RAM_MB=' "$IS/serve-env" 2>/dev/null | cut -d= -f2)"
+[[ "$_pc_is" =~ ^[0-9]+$ && "$_pc_is" -gt 0 && "$_pc_is" -le 2048 ]] \
+  && pass "the scorer sizes its own host prompt cache (${_pc_is} MiB), not 35% of RAM beside the primary's" \
+  || fail "scorer prompt cache: OPENBEAST_PROMPT_CACHE_RAM_MB='$_pc_is'"
+
+echo ""
 echo "========================================"
 echo "llama-serving: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

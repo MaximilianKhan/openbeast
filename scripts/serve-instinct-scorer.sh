@@ -43,6 +43,19 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   exit 0
 fi
 
+# Extra arguments pass through to serve.sh, whose parser takes the LAST
+# --host / -p it sees — so `--host 0.0.0.0` published the scorer on every
+# interface (the non-loopback refusal above existed only in this header) and
+# `-p 8080` skipped both port checks below, which ran against $PORT. The
+# address is this script's to choose: INSTINCT_SCORER_PORT moves the port.
+for _a in "$@"; do
+  case "$_a" in
+    --host|--host=*|-p|--port|--port=*)
+      echo "Error: $_a is not accepted here — the scorer is loopback-only on \$INSTINCT_SCORER_PORT (default 8082); refusing" >&2
+      exit 2 ;;
+  esac
+done
+
 phys_cores() {
   local n
   n="$(lscpu -p=CORE 2>/dev/null | grep -v '^#' | sort -u | wc -l || true)"
