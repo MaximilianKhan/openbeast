@@ -132,7 +132,7 @@ HF_REPO="JonathanColetti/Qwen3.8-27B-Uncensored-GGUF"
 # named another registry weight, so the documented "any registry weight works"
 # died on every run. Prints WEIGHT_FILE when the configured script loads it,
 # names no file, or cannot be read.
-ob_offline_weights() {
+ob_closed_box_weights() {
   local s="$REPO_DIR/scripts/${DEFAULT_SERVE_SCRIPT:-}" names="" n
   if [[ -n "${DEFAULT_SERVE_SCRIPT:-}" && -f "$s" ]]; then
     names="$(grep -vE '^[[:space:]]*#' "$s" | grep -oE '[A-Za-z0-9._-]+\.gguf' | sort -u || true)"
@@ -447,10 +447,10 @@ preflight_disk() {
   [[ "$avail_kb" =~ ^[0-9]+$ ]] || avail_kb=""
   avail_gb=$(( ${avail_kb:-0} / 1024 / 1024 ))
   # OFFLINE with a non-default SERVE_SCRIPT: step 4 checks the weight that
-  # script loads (ob_offline_weights), so presence and size are judged on
+  # script loads (ob_closed_box_weights), so presence and size are judged on
   # that — not on a 20 GB default this box will never hold.
   local _pf_w="$WEIGHT_FILE"
-  ob_offline && _pf_w="$(ob_offline_weights)"
+  ob_offline && _pf_w="$(ob_closed_box_weights)"
   if [[ "$_pf_w" != "$WEIGHT_FILE" ]]; then
     local _n _all=1 _b _sum=0
     while IFS= read -r _n; do
@@ -831,19 +831,39 @@ fi
 # Upgrades are not lost: scripts/update.sh --python owns them (it already runs
 # `pip list --outdated` and reinstalls against requirements.txt), which is the
 # right place for an upgrade — bootstrap's job is to make the box WORK.
+# THE PARSER IS pydeps_lock's, not a second copy. This one used
+# `^name\s*==\s*(.+)$`, the shape pydeps_lock.py documents as failing on both
+# ordinary decorations: `uvicorn[standard]==X` fell through to presence-only
+# (ANY installed uvicorn "satisfied", so the hash-pinned install was skipped),
+# and `pkg==X ; marker` read the version as "X ; marker" (never satisfied,
+# reinstalled every run). A line that parser cannot read is NOT satisfied; a
+# pin whose environment marker excludes this python is not required.
 ob_python_deps_satisfied() {
-  python3 - "$REPO_DIR/agents/requirements.txt" <<'PYDEPS'
+  python3 - "$REPO_DIR/agents/requirements.txt" "$REPO_DIR/scripts/lib" <<'PYDEPS'
 import importlib.metadata as md, re, sys
-missing = []
-for raw in open(sys.argv[1]):
-    line = raw.split("#")[0].strip()
-    if not line:
-        continue
-    m = re.match(r"^([A-Za-z0-9._-]+)\s*==\s*(.+)$", line)
-    if not m:                      # unpinned line: presence is all we can check
-        name, want = re.split(r"[<>=!~\[]", line, 1)[0].strip(), None
-    else:
-        name, want = m.group(1), m.group(2).strip()
+sys.path.insert(0, sys.argv[2])
+from pydeps_lock import direct_pins, _norm
+try:
+    from packaging.markers import Marker
+except ImportError:
+    try:
+        from pip._vendor.packaging.markers import Marker
+    except ImportError:
+        Marker = None
+pins, unparsed = direct_pins(sys.argv[1])
+missing = [f"{u} (treated as NOT satisfied)" for u in unparsed]
+if Marker is not None:
+    for raw in open(sys.argv[1]):
+        spec, sep, mk = raw.split("#")[0].strip().partition(";")
+        if not sep:
+            continue
+        try:
+            applies = Marker(mk.strip()).evaluate()
+        except Exception:
+            continue                 # unreadable marker: keep the pin, check it
+        if not applies:
+            pins.pop(_norm(re.split(r"[<>=!~\[\s]", spec.strip(), maxsplit=1)[0]), None)
+for name, want in pins.items():
     try:
         got = md.version(name)
     except md.PackageNotFoundError:
@@ -1061,7 +1081,7 @@ else
   # bootstrap). A mismatch is fatal and NOT auto-deleted here: the file may be
   # one the operator put there by hand.
   _ob_ow="$WEIGHT_FILE"
-  ob_offline && _ob_ow="$(ob_offline_weights)"
+  ob_offline && _ob_ow="$(ob_closed_box_weights)"
   if [[ "$_ob_ow" != "$WEIGHT_FILE" ]]; then
     # OFFLINE, and SERVE_SCRIPT loads something other than the default: that
     # is what has to be here (and verified), not the default.

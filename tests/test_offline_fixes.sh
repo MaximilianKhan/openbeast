@@ -339,7 +339,7 @@ fi
   echo 'die() { echo "DIE: $*" >&2; exit 1; }; ob_offline() { [[ "${OFFLINE:-false}" == "true" ]]; }'
   echo 'OB_LOCAL_LLAMA="${OB_LOCAL_LLAMA:-1}"; INFERENCE_BACKEND="${INFERENCE_BACKEND:-llama}"; INFERENCE_URL="${INFERENCE_URL:-http://127.0.0.1:8080}"'
   echo "$_wdefs"
-  sed -n '/^ob_offline_weights() {/,/^}/p' "$REPO_DIR/bootstrap.sh"
+  sed -n '/^ob_closed_box_weights() {/,/^}/p' "$REPO_DIR/bootstrap.sh"
   echo "$_wsec"
   echo 'echo HARNESS-REACHED-END'
 } > "$T/bootstrap_weight_step.sh"

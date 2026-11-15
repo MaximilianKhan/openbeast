@@ -1720,7 +1720,7 @@ else
   # that depends on what happens to be installed is a test that fails
   # somewhere else, which is exactly how this one first broke.
   _BD_OK="$(mktemp -d)"
-  mkdir -p "$_BD_OK/agents"
+  mkdir -p "$_BD_OK/agents" "$_BD_OK/scripts/lib"; cp "$REPO_DIR/scripts/lib/pydeps_lock.py" "$_BD_OK/scripts/lib/"
   _BD_VER="$(python3 -c 'import importlib.metadata as m; print(m.version("pytest"))' 2>/dev/null || true)"
   if [[ -z "$_BD_VER" ]]; then
     pass "satisfied-pin check skipped (pytest not installed here)"
@@ -1738,7 +1738,7 @@ ob_python_deps_satisfied" 2>/dev/null || true)"
   rm -rf "$_BD_OK"
   # unsatisfied: a synthetic requirements file naming something impossible
   _BD_TMP="$(mktemp -d)"
-  mkdir -p "$_BD_TMP/agents"
+  mkdir -p "$_BD_TMP/agents" "$_BD_TMP/scripts/lib"; cp "$REPO_DIR/scripts/lib/pydeps_lock.py" "$_BD_TMP/scripts/lib/"
   printf 'openai==3.9.0\ndefinitely-not-installed-xyz==1.2.3\n' \
     > "$_BD_TMP/agents/requirements.txt"
   _BD_OUT="$(bash -c "REPO_DIR='$_BD_TMP'
@@ -1748,6 +1748,33 @@ ob_python_deps_satisfied" 2>/dev/null || true)"
     pass "the guard names what is missing instead of silently skipping"
   else
     fail "the guard did not report a missing pin: $_BD_OUT"
+  fi
+  # DECORATED LINES (install-supply-chain finding): the guard kept its own
+  # `^name==(.+)$` parser, the shape pydeps_lock.py documents as failing on
+  # both decorations. `pip[x]==0.0.1` was presence-only (any installed pip
+  # "satisfied", the hash-pinned install skipped); `pip==<have> ; marker`
+  # read the version as "<have> ; marker" (never satisfied).
+  _BD_PIPV="$(python3 -c 'import importlib.metadata as m; print(m.version("pip"))' 2>/dev/null || true)"
+  if [[ -n "$_BD_PIPV" ]]; then
+    printf 'pip[standard]==0.0.1\n' > "$_BD_TMP/agents/requirements.txt"
+    _BD_OUT="$(bash -c "REPO_DIR='$_BD_TMP'
+$_BD_FN
+ob_python_deps_satisfied" 2>/dev/null || true)"
+    if grep -q "pip (have $_BD_PIPV, need 0.0.1)" <<< "$_BD_OUT"; then
+      pass "a pin with an extra (name[x]==V) is version-checked, not presence-only"
+    else
+      fail "extras pin not version-checked: $_BD_OUT"
+    fi
+    printf 'pip==%s ; python_version > "3"\nnever-here-xyz==1.0 ; python_version < "3"\n' "$_BD_PIPV" \
+      > "$_BD_TMP/agents/requirements.txt"
+    _BD_OUT="$(bash -c "REPO_DIR='$_BD_TMP'
+$_BD_FN
+ob_python_deps_satisfied" 2>/dev/null || true)"
+    if ! grep -q "pip (\|never-here-xyz" <<< "$_BD_OUT"; then
+      pass "a marker is not part of the version, and a pin whose marker excludes this python is not required"
+    else
+      fail "marker-decorated pins misread: $_BD_OUT"
+    fi
   fi
   rm -rf "$_BD_TMP"
 fi
