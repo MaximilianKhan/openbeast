@@ -111,10 +111,36 @@ def test_key_invalidation_on_context_change(cache_dir):
         cache._context_cache.clear()
         t = {"id": "t_a", "task": "x", "setup": "s", "validation": {}, "cleanup": "c"}
         k1 = cache.cache_key(t, "m1")
-        sys_prompt.write_text("v2")  # context changed
-        cache._context_cache.clear()  # force recompute
+        # Context changed mid-process, and the memo is NOT cleared by hand:
+        # the memo itself must notice (a long sweep never clears it).
+        sys_prompt.write_text("v2-")  # different size, so stat moves too
         k2 = cache.cache_key(t, "m1")
         check("context change → key change", k1 != k2)
+        check("stamped era follows the keys",
+              cache.current_era() == cache.context_hash() == k2.rsplit(".", 1)[1])
+
+
+def test_same_size_edit_still_moves_the_era(cache_dir, tmp_path, monkeypatch):
+    """A same-size, same-second rewrite (the common one-character fix) must
+    still invalidate the memo: the signature carries ns mtime/ctime and the
+    inode, not just the size."""
+    import time
+    cache = fresh_cache_module(cache_dir)
+    f = tmp_path / "runner.py"
+    f.write_text("aaaa")
+    monkeypatch.setattr(cache, "CONTEXT_FILES", [f])
+    t = {"id": "t_a", "task": "x", "setup": "s", "validation": {}, "cleanup": "c"}
+    k1 = cache.cache_key(t, "m1")
+    time.sleep(0.01)
+    f.write_text("bbbb")
+    k2 = cache.cache_key(t, "m1")
+    check("same-size edit → key change", k1 != k2)
+    # Unchanged tree: the memo is reused (no rehash).
+    calls = []
+    real = cache.context_hash
+    monkeypatch.setattr(cache, "context_hash", lambda: calls.append(1) or real())
+    cache.cache_key(t, "m1")
+    check("unchanged tree → memo reused", calls == [])
 
 
 def test_cross_process_durability(cache_dir):

@@ -1585,7 +1585,7 @@ def run_eval(
                     # The eval era (scripts/eval-era.sh): rows either side of
                     # a change to it are not comparable, and until this was
                     # stamped the board could only infer it from cache keys.
-                    "era": cache.context_hash(),
+                    "era": cache.current_era(),
                     "greedy": greedy_mode,
                     "packs": dict(packs_meta.get("sha", {})) if packs_on else {},
                     **({"packs_component": packs_component} if packs_on else {}),
@@ -1904,6 +1904,15 @@ def run_eval(
     no_agent = sum(1 for r in indexed.values() if r.get("reason") in NO_AGENT_REASONS)
     results["summary"]["live_units"] = (len(indexed) - counters["cache_hits"]
                                         - counters["cache_misses_skipped"] - no_agent)
+    # The era is re-read per unit (cache._context_hash_cached validates on
+    # stat), so a tree change mid-run keys later rows under the NEW era while
+    # this file is stamped with the start era. Say so rather than hide it.
+    era_now = cache.current_era()
+    if era_now != results["harness"].get("era"):
+        results["harness"]["era_moved_to"] = era_now
+        print(f"ERA MOVED DURING THE RUN: {results['harness'].get('era')} -> "
+              f"{era_now}. Rows either side are not comparable; rerun this model.",
+              file=sys.stderr)
     _write_results(results_path, results)
 
     # Print summary

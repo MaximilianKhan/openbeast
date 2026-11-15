@@ -64,9 +64,7 @@ def _short_hash(data: bytes) -> str:
 
 
 def context_hash() -> str:
-    """Hash the agent runtime context. Cached because reading three files
-    every cache lookup is wasteful — but the cache is invalidated on file
-    mtime change so it stays correct."""
+    """Hash the agent runtime context (uncached; see _context_hash_cached)."""
     h = hashlib.sha256()
     for p in CONTEXT_FILES:
         if p.exists():
@@ -75,14 +73,39 @@ def context_hash() -> str:
     return h.hexdigest()[:16]
 
 
-# Lazy memoization — recomputed once per process.
-_context_cache: dict[str, str] = {}
+# Memo, SELF-VALIDATING: keyed on each context file's stat signature, so a
+# pull or an edit mid-sweep (benchmark_all keeps one process — and one memo
+# — across every model of a multi-day run) is seen at the next lookup. A
+# once-per-process memo banked every later unit — run by a fresh runner
+# reading the NEW files — under the OLD era's key (review finding
+# campaign-evals: era memo never invalidated).
+_context_cache: dict[str, object] = {}
+
+
+def _context_signature() -> tuple:
+    sig = []
+    for p in CONTEXT_FILES:
+        try:
+            st = os.stat(p)
+            sig.append((str(p), st.st_ino, st.st_size, st.st_mtime_ns,
+                        st.st_ctime_ns))
+        except OSError:
+            sig.append((str(p), None))
+    return tuple(sig)
 
 
 def _context_hash_cached() -> str:
-    if "h" not in _context_cache:
+    sig = _context_signature()
+    if _context_cache.get("sig") != sig or "h" not in _context_cache:
         _context_cache["h"] = context_hash()
-    return _context_cache["h"]
+        _context_cache["sig"] = sig
+    return _context_cache["h"]  # type: ignore[return-value]
+
+
+def current_era() -> str:
+    """The era the cache keys are built with RIGHT NOW. Stamp results with
+    this, never a separately computed hash, so stamp and keys agree."""
+    return _context_hash_cached()
 
 
 def task_hash(task: dict[str, Any]) -> str:
