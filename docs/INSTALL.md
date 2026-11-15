@@ -966,8 +966,11 @@ file — the same one-line-per-key format ssh and git use — which `sign`
 prints the exact command for. Wheels and weights have a second line of
 defence that lives in the repo, not the bundle (`requirements.lock`,
 `weights.registry`: a swapped wheel or weight is refused even by a rebuilt
-manifest); images and the source tarball have **only** the signature, which
-is why it exists.
+manifest) — for weights, only those with a real (non-`PENDING`) registry
+row. An unpinned weight has only the manifest, so an **unsigned** bundle
+will not place one, nor replace an existing file, unless you pass
+`--allow-unpinned-weights`. Images and the source tarball have **only** the
+signature, which is why it exists.
 
 **On the air-gapped rig** (clone or copy the repo there first):
 

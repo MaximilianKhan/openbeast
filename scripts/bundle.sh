@@ -4,7 +4,7 @@
 #   ./scripts/bundle.sh build <dir> [--with-weights[=A,B]] [--no-images]
 #   ./scripts/bundle.sh show <dir>        what is in it
 #   ./scripts/bundle.sh verify <dir>      re-hash everything it claims
-#   ./scripts/bundle.sh install <dir> [--key <allowed-signers>]
+#   ./scripts/bundle.sh install <dir> [--key <allowed-signers>] [--allow-unpinned-weights]
 #   ./scripts/bundle.sh sign   <dir> --key <ssh-private-key> [--identity ID]
 #   ./scripts/bundle.sh verify <dir> [--key <allowed-signers>] [--identity ID]
 #
@@ -67,8 +67,12 @@
 #            REPO, not the bundle, so an attacker who rewrites the manifest
 #            cannot rewrite the lock — the swapped wheel's hash is in no lock
 #            entry and pydeps refuses. Verified.
-#   weights  TWO. scripts/weights.registry is also in the repo, and a weight
-#            that does not match it is DELETED, not just rejected.
+#   weights  TWO — for a weight with a real (non-PENDING) row in
+#            scripts/weights.registry, which is also in the repo: one that
+#            does not match it is DELETED, not just rejected. A weight with
+#            no row, or a PENDING one, has only the manifest; an UNSIGNED
+#            bundle may therefore not place one (nor replace an existing
+#            file) unless --allow-unpinned-weights says so.
 #   images   ONE. The image ID is recorded in the manifest, so a rebuilt
 #            manifest can name the attacker's image and the load-time ID
 #            check will agree with it.
@@ -690,11 +694,12 @@ EOF
   install)
     DIR="${1:-}"; shift || true
     [[ -n "$DIR" ]] || die "install needs a bundle directory"
-    KEY=""; IDENT=""
+    KEY=""; IDENT=""; ALLOW_UNPINNED=0
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --key)      _need_value --key "$#" "${2-}"; KEY="$(_from_caller "$2")"; shift 2 ;;
         --identity) _need_value --identity "$#" "${2-}"; IDENT="$2"; shift 2 ;;
+        --allow-unpinned-weights) ALLOW_UNPINNED=1; shift ;;
         *) die "unknown flag $1" ;;
       esac
     done
@@ -1146,6 +1151,28 @@ for comp in doc.get("components", []):
         _w="$DIR/$_rel"
         _n="$(basename "$_rel")"
         _dest="$_wd/$_n"
+        # PINNED OR NOT, decided BEFORE anything is copied. Only a real
+        # registry row is a second line of defence; with no row (or a PENDING
+        # one) the manifest is the only thing vouching for the bytes, and an
+        # UNSIGNED manifest is written by whoever wrote the stick. In this
+        # stack the model chooses bash/file/fetch calls, so a planted weight
+        # is not inert. Unsigned + unpinned: refused unless the operator opts
+        # in, and an existing file of that name is never replaced.
+        _reg="$(awk -F'\t' -v f="$_n" '$1 !~ /^#/ && $3 == f {print $1}' "$REPO_DIR/scripts/weights.registry" 2>/dev/null | head -n 1 || true)"
+        _pinned=0; [[ -n "$_reg" && "$_reg" != "PENDING" ]] && _pinned=1
+        if [[ $_pinned -eq 0 && "$_SIG_VERIFIED" -ne 1 ]]; then
+          [[ $ALLOW_UNPINNED -eq 1 ]] || die "$_n has no sha256 pin in scripts/weights.registry${_reg:+ (its row is PENDING)},
+       and this bundle's signature was not verified — so nothing but the
+       stick itself vouches for it. NOT installed.
+         - install with --key <allowed-signers> (a signed bundle), or
+         - pass --allow-unpinned-weights if you built this stick yourself."
+          if [[ -f "$_dest" ]] && [[ "$(sha256sum "$_dest" | awk '{print $1}')" != "$_msha" ]]; then
+            die "$_n already exists in $_wd and differs from the bundle's copy.
+       An unsigned bundle never replaces an unpinned weight. Remove it yourself
+       if the bundle's copy is the one you want."
+          fi
+          warn "--allow-unpinned-weights: placing $_n on the word of an UNSIGNED manifest alone"
+        fi
         if [[ -f "$_dest" ]]; then
           # "already there — left alone" USED TO BE UNCONDITIONAL, and the copy
           # went straight to the final name. So an ENOSPC or a Ctrl-C left a
@@ -1182,8 +1209,7 @@ for comp in doc.get("components", []):
        The copy was removed. A failing disk or stick is the usual cause."
         # The manifest hash proved the TRANSFER. The registry hash proves it
         # is the weight OpenBeast pinned, which is a different claim.
-        _reg="$(awk -F'\t' -v f="$_n" '$3 == f {print $1}' "$REPO_DIR/scripts/weights.registry" 2>/dev/null || true)"
-        if [[ -n "$_reg" && "$_reg" != "PENDING" && "$_got" != "$_reg" ]]; then
+        if [[ $_pinned -eq 1 && "$_got" != "$_reg" ]]; then
           die "$_n does not match the registry sha256 — NOT installed (the copy
        was removed; anything already at $_dest was not touched).
        expected $_reg
@@ -1191,7 +1217,7 @@ for comp in doc.get("components", []):
         fi
         mv -f -- "$_OB_PARTIAL" "$_dest" || die "could not move $_n into place in $_wd"
         _OB_PARTIAL=""
-        if [[ -n "$_reg" && "$_reg" != "PENDING" ]]; then
+        if [[ $_pinned -eq 1 ]]; then
           ok "$_n (sha256 matches the manifest AND scripts/weights.registry)"
         else
           warn "$_n is not pinned in scripts/weights.registry — copied, unverifiable

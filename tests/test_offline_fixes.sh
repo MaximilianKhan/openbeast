@@ -1453,6 +1453,35 @@ if [[ $_rc -ne 0 && "$(cat "$WD/w.gguf")" == "PRE-EXISTING" && ! -e "$WD/w.gguf.
 else
   fail "registry mismatch (rc=$_rc, have: $(cat "$WD/w.gguf" 2>/dev/null)): $_out"
 fi
+# UNPINNED weight, UNSIGNED bundle (install-supply-chain finding): the
+# registry check only fired for a real row, so any other name (or a PENDING
+# one) was placed — or REPLACED an existing file — on the stick's word alone.
+for _row in none pending; do
+  mk_wbundle
+  if [[ "$_row" == none ]]; then : > "$SB/scripts/weights.registry"
+  else printf 'PENDING\t0\tw.gguf\torg/w\t-\n' > "$SB/scripts/weights.registry"; fi
+  install_w
+  if [[ $_rc -ne 0 && ! -e "$WD/w.gguf" && ! -e "$WD/w.gguf.partial" ]] && has "$_out" "has no sha256 pin" \
+     && has "$_out" "--allow-unpinned-weights"; then
+    pass "an UNSIGNED bundle cannot place an unpinned weight (registry row: $_row)"
+  else
+    fail "unsigned unpinned weight, row=$_row (rc=$_rc, dir: $(ls -A "$WD")): $_out"
+  fi
+done
+printf 'OPERATORS-OWN-MODEL' > "$WD/w.gguf"
+_out="$(cd "$T" && PATH="$T/bin:$PATH" OPENBEAST_WEIGHTS_DIR="$WD" OPENBEAST_PYTHON="$REAL_PY" "$SB/scripts/bundle.sh" install "$WB" --allow-unpinned-weights 2>&1)"; _rc=$?
+if [[ $_rc -ne 0 && "$(cat "$WD/w.gguf")" == "OPERATORS-OWN-MODEL" ]] && has "$_out" "never replaces an unpinned weight"; then
+  pass "...and even with --allow-unpinned-weights it never REPLACES an existing unpinned file"
+else
+  fail "unsigned unpinned replace (rc=$_rc, have: $(cat "$WD/w.gguf" 2>/dev/null)): $_out"
+fi
+rm -f "$WD/w.gguf"
+_out="$(cd "$T" && PATH="$T/bin:$PATH" OPENBEAST_WEIGHTS_DIR="$WD" OPENBEAST_PYTHON="$REAL_PY" "$SB/scripts/bundle.sh" install "$WB" --allow-unpinned-weights 2>&1)"; _rc=$?
+if [[ $_rc -eq 0 ]] && cmp -s "$WB/weights/w.gguf" "$WD/w.gguf" && has "$_out" "UNSIGNED manifest alone"; then
+  pass "negative control: --allow-unpinned-weights places a new unpinned weight, loudly"
+else
+  fail "opt-in unpinned weight (rc=$_rc): $_out"
+fi
 
 # ===========================================================================
 echo ""
