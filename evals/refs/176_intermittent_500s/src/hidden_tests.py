@@ -10,6 +10,11 @@
 # its own process can reach or fake a verdict. Each function raises on any
 # deviation from docs/API.md. Expected values come from the independent
 # oracle below, never from the service.
+#
+# Every import is top-level: the validator imports the same modules before it
+# starts any child and then freezes its import system, so an import that
+# first ran after a child started (once a lazy `from urllib.parse import
+# quote` in H12) is refused instead of resolving from a planted directory.
 import base64
 import datetime
 import decimal
@@ -17,6 +22,7 @@ import json
 import random
 import re
 from decimal import ROUND_HALF_UP, Decimal
+from urllib.parse import quote
 
 CHILD = None                   # set by the validator before each test
 
@@ -461,7 +467,6 @@ def H12():
     for bad in ("undefined", "null", "AAAA", "%%%", "@@@@@@@@@@@@@@@@", "abc def", "x" * 40,
                 "AAABm3baqAAAAAAB" + "Q", "=", "AAAAAAAAAAAAAAA"):
         for base in ("/orders?limit=2&cursor=", "/products?cursor="):
-            from urllib.parse import quote
             r = s.raw("GET", base + quote(bad, safe=""))
             check(r.status == 400 and r.json()["error"] == "invalid_cursor", "invalid cursor")
 

@@ -4,7 +4,9 @@
 # Only /tmp/eval_shopd500/shopd/ is graded. It is copied, with the pristine
 # visible tests, into a private temp dir outside the fixture and imported
 # only by isolated child interpreters (-I -B: no PYTHON* env, no user site,
-# no cwd on sys.path), so nothing else left in the fixture dir is loaded.
+# no cwd on sys.path; own session and process group; on macOS sandboxed
+# with no fork and no read of the eval data), so nothing else left in the
+# fixture dir is loaded.
 #   1. tests/*: every visible test file byte-identical (sha256);
 #   2. the visible suite is green (exact test count). This is a regression
 #      gate: the suite imports shopd in the same process, so its report is
@@ -15,18 +17,42 @@
 #      responses and reports what it saw, and every expectation and check
 #      stays on this side. The child holds no secret and no expected value,
 #      so code under test can only influence the responses it returns.
-# Every child wait is capped by the 14 s budget, so the validator ends
-# within it. Output is ONE line; a hidden failure names only the test id.
-import hashlib, json, os, select, shutil, subprocess, sys, tempfile, time
+# The graded code runs with our uid, so it can write anywhere we can. This
+# process therefore imports everything it will ever need BEFORE it starts
+# the first child, drops every writable or relative entry from sys.path,
+# and then freezes its import system: any later import of a module not yet
+# loaded is refused, so a module planted in a cwd (or anywhere) cannot run
+# here. The child boot scripts are files (no `-c SRC` argv).
+# Every limit is written at scale 1 and scaled by vlib.t; every child wait
+# is capped by the overall budget, so the validator ends within it. Output
+# is ONE line; a hidden failure names only the test id.
+import base64, datetime, decimal, hashlib, json, os, random, re, select, shutil, signal, subprocess, sys, tempfile, time
+import urllib.parse
+from decimal import ROUND_HALF_UP, Decimal
+import vlib
+
+_cwd = os.getcwd()
+sys.path[:] = [p for p in sys.path
+               if p and os.path.isabs(p) and os.path.abspath(p) != _cwd and not os.access(p, os.W_OK)]
+
+
+class _NoNewImports:
+    """Refuse every import of a module not loaded yet (installed below,
+    before the first child starts)."""
+
+    @staticmethod
+    def find_spec(name, path=None, target=None):
+        raise ImportError('validator import of %r after children started' % name)
+
 
 D = '/tmp/eval_shopd500'
 HASHES = @@HASHES@@
 N_VISIBLE = @@N_VISIBLE@@
 HIDDEN = @@HIDDEN@@
 ORDER = @@ORDER@@
-VISIBLE_TIMEOUT = 6
-HIDDEN_TIMEOUT = 5
-BUDGET_S = 14.0
+VISIBLE_TIMEOUT = vlib.t(6)
+HIDDEN_TIMEOUT = vlib.t(5)
+BUDGET_S = vlib.t(14.0)
 T0 = time.time()
 
 # Both boots write their protocol on a private dup of fd 1 and point fd 1 and
@@ -119,8 +145,7 @@ class Child:
 
     def __init__(self, root, env, deadline):
         self.deadline = deadline
-        self.p = subprocess.Popen([sys.executable, '-I', '-B', '-c', CHILD_BOOT, root], stdin=subprocess.PIPE,
-                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, cwd=root, env=env)
+        self.p = spawn(CHILD_BOOT_PATH, root, env, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         self.fd = self.p.stdout.fileno()
         self.buf = b''
 
@@ -145,9 +170,29 @@ class Child:
             raise Gone()
 
     def close(self):
-        if self.p.poll() is None:
-            self.p.kill()
-        self.p.wait()
+        reap(self.p)
+
+
+# Children: own session (so a kill reaches everything they started), group
+# recorded with the harness (which SIGKILLs it if we die first), and on macOS
+# sandboxed with no fork and no read of the sealed eval paths.
+SANDBOX = vlib._sandbox_prefix(False, vlib._sealed_paths())
+
+
+def spawn(boot, root, env, stdin, stdout):
+    p = subprocess.Popen(SANDBOX + [sys.executable, '-I', '-S', '-B', boot, root], stdin=stdin, stdout=stdout,
+                         stderr=subprocess.DEVNULL, cwd=root, env=env, start_new_session=True, close_fds=True)
+    vlib._register_group(p.pid)
+    return p
+
+
+def reap(p):
+    try:
+        os.killpg(p.pid, signal.SIGKILL)
+    except OSError:
+        pass
+    p.wait()
+    vlib._unregister_group(p.pid)
 
 
 pkg = os.path.join(D, 'shopd')
@@ -163,6 +208,15 @@ for rel, h in sorted(HASHES.items()):
 env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8',
        'TZ': 'UTC', 'HOME': tempfile.gettempdir()}
 tmp = tempfile.mkdtemp(prefix='ob176_')
+ctl = tempfile.mkdtemp(prefix='ob176c_')
+VISIBLE_BOOT_PATH = os.path.join(ctl, 'visible_boot.py')
+CHILD_BOOT_PATH = os.path.join(ctl, 'child_boot.py')
+for _path, _src in ((VISIBLE_BOOT_PATH, VISIBLE_BOOT), (CHILD_BOOT_PATH, CHILD_BOOT)):
+    with open(_path, 'w') as f:
+        f.write(_src)
+HIDDEN_CODE = compile(HIDDEN, '<hidden>', 'exec')
+exec(HIDDEN_CODE, {'__name__': 'hidden'})   # its imports load now, before any child
+sys.meta_path.insert(0, _NoNewImports)
 try:
     shutil.copytree(pkg, os.path.join(tmp, 'shopd'),
                     ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
@@ -170,13 +224,27 @@ try:
     for rel in HASHES:
         shutil.copyfile(os.path.join(D, rel), os.path.join(tmp, rel))
 
-    vt = min(VISIBLE_TIMEOUT, left())
-    try:
-        p = subprocess.run([sys.executable, '-I', '-B', '-c', VISIBLE_BOOT, tmp], stdin=subprocess.DEVNULL,
-                           capture_output=True, text=True, cwd=tmp, env=env, timeout=max(vt, 0.1))
-    except subprocess.TimeoutExpired:
-        fail('visible suite timed out (%d s)' % VISIBLE_TIMEOUT)
-    r = [ln.split() for ln in p.stdout.splitlines() if ln.startswith('RESULT ')]
+    p = spawn(VISIBLE_BOOT_PATH, tmp, env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE)
+    vend = time.time() + max(min(VISIBLE_TIMEOUT, left()), 0.1)
+    vout, timed_out = b'', False
+    while True:
+        wait = vend - time.time()
+        if wait <= 0 or not select.select([p.stdout], [], [], wait)[0]:
+            timed_out = True
+            break
+        chunk = os.read(p.stdout.fileno(), 1 << 16)
+        if not chunk:
+            break
+        vout += chunk
+    if not timed_out:
+        try:
+            p.wait(timeout=max(vend - time.time(), 0.1))
+        except subprocess.TimeoutExpired:
+            timed_out = True
+    reap(p)
+    if timed_out:
+        fail('visible suite timed out (%d s)' % round(VISIBLE_TIMEOUT / vlib.scale()))
+    r = [ln.split() for ln in vout.decode('utf-8', 'replace').splitlines() if ln.startswith('RESULT ')]
     if not r or len(r[-1]) != 4:
         fail('visible suite did not complete (exit %d)' % p.returncode)
     ran, nf, ne = r[-1][1:]
@@ -191,12 +259,12 @@ try:
         child = Child(tmp, env, min(per_test, budget_end))
         g = {'__name__': 'hidden'}
         try:
-            exec(compile(HIDDEN, '<hidden>', 'exec'), g)
+            exec(HIDDEN_CODE, g)
             g['CHILD'] = child
             g[tid]()
         except Deadline:
             if per_test <= budget_end:
-                fail('hidden test %s timed out (%d s)' % (tid, HIDDEN_TIMEOUT))
+                fail('hidden test %s timed out (%d s)' % (tid, round(HIDDEN_TIMEOUT / vlib.scale())))
             fail('validator time budget exceeded during hidden test %s' % tid)
         except Exception:  # noqa: BLE001 -- a failed check, a dead child or a malformed reply
             fail('hidden test %s' % tid)
@@ -204,4 +272,5 @@ try:
             child.close()
 finally:
     shutil.rmtree(tmp, ignore_errors=True)
+    shutil.rmtree(ctl, ignore_errors=True)
 print('OK: visible suite green (%d tests), %d hidden tests passed' % (N_VISIBLE, len(ORDER)))
