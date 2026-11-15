@@ -213,6 +213,38 @@ def test_go_undefined_reported_moduleless(tmp_path, diag_on):
     assert "── diagnostics (go) ──" in out, out
 
 
+def _cmd(monkeypatch, path):
+    monkeypatch.setattr(tools.shutil, "which", lambda exe: f"/usr/bin/{exe}")
+    lang, cmd, _env, scratch = tools._diag_checker(str(path))
+    for d in scratch:
+        shutil.rmtree(d, ignore_errors=True)
+    return cmd
+
+
+def test_go_standalone_programs_are_vetted_one_at_a_time(tmp_path, monkeypatch):
+    """Two module-less `package main` programs in one directory: vetting
+    ./*.go reported `main redeclared in this block` on every write."""
+    (tmp_path / "hello.go").write_text("package main\nfunc main() {}\n")
+    (tmp_path / "solver.go").write_text("package main\n\nfunc main() {\n}\n")
+    assert _cmd(monkeypatch, tmp_path / "solver.go").endswith("go vet ./solver.go")
+    # a multi-file program (one main + helpers) still vets its siblings
+    (tmp_path / "solver.go").write_text("package main\nfunc helper() {}\n")
+    assert _cmd(monkeypatch, tmp_path / "hello.go").endswith("go vet ./*.go")
+    # and inside a module two mains really are one broken package
+    (tmp_path / "solver.go").write_text("package main\nfunc main() {}\n")
+    (tmp_path / "go.mod").write_text("module x\n\ngo 1.21\n")
+    assert _cmd(monkeypatch, tmp_path / "hello.go").endswith("go vet ./*.go")
+
+
+@godep
+def test_go_two_standalone_mains_are_not_an_error(tmp_path, diag_on):
+    _write(tmp_path, "hello.go", "package main\nfunc main() {}\n")
+    out = _write(tmp_path, "solver.go", "package main\nfunc main() {}\n")
+    assert "diagnostics: OK (go)" in out, out
+    bad = _write(tmp_path, "solver.go", "package main\nfunc main() { missing() }\n")
+    assert "── diagnostics (go) ──" in bad and "redeclared" not in bad, bad
+
+
 @gcc
 def test_c_error_reported(tmp_path, diag_on):
     out = _write(tmp_path, "bad.c", "int main(void){ return x; }\n")

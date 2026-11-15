@@ -776,6 +776,46 @@ _DIAG_AS_LIMIT = 4 * 1024**3   # tighter than _CHILD_AS_LIMIT (§3.3)
 _DIAG_SLOTS = threading.BoundedSemaphore(2)
 
 
+def _ancestor_has(path: str, name: str) -> bool:
+    """Whether `name` exists in path's directory or any directory above it."""
+    d = os.path.dirname(os.path.abspath(path))
+    while True:
+        if os.path.exists(os.path.join(d, name)):
+            return True
+        parent = os.path.dirname(d)
+        if parent == d:
+            return False
+        d = parent
+
+
+_GO_MAIN_RE = re.compile(r"^func\s+main\s*\(\s*\)", re.M)
+
+
+def _go_has_main(path: str) -> bool:
+    try:
+        with open(path, errors="replace") as f:
+            return _GO_MAIN_RE.search(f.read(_DIAG_MAX_BYTES * 64)) is not None
+    except OSError:
+        return False
+
+
+def _go_standalone_mains(path: str) -> bool:
+    """A module-less directory of independent programs (hello.go and
+    solver.go, each with its own main). Vetting the siblings together then
+    reports a made-up `main redeclared in this block` on every write, though
+    each file builds on its own with `go run file.go`."""
+    if not _go_has_main(path) or _ancestor_has(path, "go.mod"):
+        return False
+    d = os.path.dirname(path) or "."
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return False
+    here = os.path.basename(path)
+    return any(n.endswith(".go") and not n.endswith("_test.go") and n != here
+               and _go_has_main(os.path.join(d, n)) for n in names)
+
+
 def _diag_checker(path: str):
     """(lang, command, extra_env, scratch_dirs) for a source path, or None.
 
@@ -823,7 +863,11 @@ def _diag_checker(path: str):
         # download (GOTOOLCHAIN), network (GOPROXY) and cgo channels.
         env = {"GOTOOLCHAIN": "local", "GOPROXY": "off",
                "GOFLAGS": "-mod=readonly", "CGO_ENABLED": "0"}
-        return ("go", f"cd {qdir} && go vet ./*.go", env, [])
+        target = "./*.go"
+        if _go_standalone_mains(path):
+            # ...unless that would vet several standalone programs as one.
+            target = "./" + shlex.quote(os.path.basename(path))
+        return ("go", f"cd {qdir} && go vet {target}", env, [])
     if ext == ".c":
         if not shutil.which("gcc"):
             return None
