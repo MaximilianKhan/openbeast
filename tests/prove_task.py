@@ -26,7 +26,11 @@ A unit is PROVEN only when every arm comes out as required:
           harness's validator_timeout — within the harness budget
   scale2  the reference passes again at --scale 2.0 (the --jobs 4 budget)
   lint    no coreutils `timeout` (absent on macOS), no <bits/stdc++.h>, no
-          zig API tutoring in a zig prompt
+          zig API tutoring in a zig prompt; and validator isolation: no child
+          Python started with `-c SRC` (its argv is readable by the
+          solution), and every fixed time limit scales with
+          OPENBEAST_TIMEOUT_SCALE (vlib.t), which run_validation exports
+          (1.0 for every arm here, 2.0 for the scale2 arm)
 
 Where the solutions come from (in precedence order):
   1. flags: --ref FILE --dest PATH [--wrong FILE::REGEX]... [--slow FILE[::REGEX]]
@@ -70,6 +74,16 @@ VALIDATOR_BUDGET_S = 15.0          # at scale 1, including a cold zig compile
 LEAK_NAME_RE = re.compile(r"^(expected|answer|check|oracle|hidden|solution)", re.I)
 COREUTILS_TIMEOUT_RE = re.compile(r"(?:^|[\s;&|(`])timeout\s+-?[\w.]+\s", re.M)
 BITS_RE = re.compile(r"#\s*include\s*<bits/stdc\+\+\.h>")
+# A validator that starts a child Python with `-c SRC` puts SRC in that
+# child's argv, where the solution can read it (`ps -o args= -p $PPID`).
+PY_DASH_C_RE = re.compile(
+    r"""(?:sys\.executable|['"](?:[\w./-]*/)?python3?(?:\.\d+)?['"])\s*,\s*"""
+    r"""(?:['"]-[A-Za-z]+['"]\s*,\s*)*['"]-[A-Za-z]*c['"]""")
+SHELL_PY_DASH_C_RE = re.compile(r"\bpython3?(?:\.\d+)?\s+(?:-[A-Za-z]+\s+)*-[A-Za-z]*c\s")
+# A fixed time limit in a validator: timeout=10, RUN_TIMEOUT = 8, LIMIT_S = 4.
+FIXED_LIMIT_RE = re.compile(
+    r"(?:\btimeout\s*=\s*\d|\b[A-Z_]*(?:TIMEOUT|LIMIT|BUDGET)[A-Z_]*\s*=\s*\d)")
+SCALE_REF_RE = re.compile(r"OPENBEAST_TIMEOUT_SCALE|\bvlib\b")
 
 
 def _load_harness(repo: str, tasks_dir: str | None):
@@ -109,8 +123,10 @@ def lint_unit(task: dict, M, refs: list[str]) -> list[str]:
         if COREUTILS_TIMEOUT_RE.search(" " + str(task.get(k) or "")):
             problems.append(f"{k} uses coreutils `timeout` (absent on macOS)")
     v = task.get("validation") or {}
-    if v.get("type", "bash") == "bash" and COREUTILS_TIMEOUT_RE.search(" " + v.get("script", "")):
+    vscript = v.get("script", "") or ""
+    if v.get("type", "bash") == "bash" and COREUTILS_TIMEOUT_RE.search(" " + vscript):
         problems.append("validation uses coreutils `timeout` (absent on macOS)")
+    problems += isolation_problems(v.get("type", "bash"), vscript)
     for k in ("task", "setup"):
         if BITS_RE.search(str(task.get(k) or "")):
             problems.append(f"{k} names <bits/stdc++.h> (fails on clang)")
@@ -125,6 +141,26 @@ def lint_unit(task: dict, M, refs: list[str]) -> list[str]:
         if bad:
             problems.append(f"zig prompt carries API tutoring {bad} (banned in v5)")
     return problems
+
+
+def isolation_problems(vtype: str, script: str) -> list[str]:
+    """Validator-isolation lint (evals/README.md, v5 "Validator isolation").
+
+    The harness feeds the validator on stdin and exports
+    OPENBEAST_TIMEOUT_SCALE; these catch a validator that reopens a hole on
+    its own: a child Python started with `-c SRC` (SRC lands in a readable
+    argv), or a fixed time limit that ignores the scale."""
+    out = []
+    if vtype == "python" and PY_DASH_C_RE.search(script):
+        out.append("validator starts a child python with `-c`: its source is readable "
+                   "from argv; feed it on stdin to `python -I -S -`")
+    if vtype != "python" and SHELL_PY_DASH_C_RE.search(script):
+        out.append("validator runs `python -c`: its source is readable from argv; "
+                   "use a quoted heredoc to `python3 -I -`")
+    if FIXED_LIMIT_RE.search(script) and not SCALE_REF_RE.search(script):
+        out.append("validator has a fixed time limit but never reads OPENBEAST_TIMEOUT_SCALE "
+                   "(use vlib.t(seconds))")
+    return out
 
 
 def _ext(task: dict, M) -> str:

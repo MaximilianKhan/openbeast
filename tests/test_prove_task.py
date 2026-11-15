@@ -23,7 +23,8 @@ sys.path.insert(0, str(ROOT / "tests"))
 import prove_task  # noqa: E402
 
 VALIDATOR = r'''
-import os, random, subprocess, sys
+import os, random, sys
+import vlib
 SOL = "@DIR@/sol.py"
 if not os.path.exists(SOL):
     print("no solution"); sys.exit(1)
@@ -31,11 +32,9 @@ rng = random.Random(0x5EED)
 cases = [(rng.randint(-10**6, 10**6), rng.randint(-10**6, 10**6)) for _ in range(200)]
 cases += [(0, 0), (1, -1), (-7, 3)]
 inp = "\n".join(f"{a} {b}" for a, b in cases) + "\n"
-try:
-    r = subprocess.run([sys.executable, SOL], input=inp, capture_output=True,
-                       text=True, timeout=3)
-except subprocess.TimeoutExpired:
-    print("solution timed out (3 s)"); sys.exit(1)
+r = vlib.run_solution(vlib.python_cmd(SOL), input=inp, cpu_s=3, wall_s=3)
+if r.verdict != "ok":
+    print(f"solution timed out ({r.reason})"); sys.exit(1)
 got = r.stdout.split()
 if len(got) != len(cases):
     print(f"mismatch at case {min(len(got), len(cases))} (count)"); sys.exit(1)
@@ -155,6 +154,13 @@ def test_lint_catches_coreutils_timeout_bits_and_zig_tutoring():
     assert any("bits/stdc++.h" in p for p in problems)
     assert any("API tutoring" in p for p in problems)
     clean = {"id": "y", "language": "python", "setup": "mkdir -p /tmp/eval_y",
-             "validation": {"type": "python", "script": "subprocess.run(x, timeout=5)"},
+             "validation": {"type": "python", "script": "subprocess.run(x, timeout=vlib.t(5))"},
              "task": "Write /tmp/eval_y/y.py"}
     assert prove_task.lint_unit(clean, M, []) == []
+    # A fixed limit that ignores OPENBEAST_TIMEOUT_SCALE, and a child python
+    # whose source sits in its argv, are both refused.
+    unscaled = dict(clean, validation={"type": "python", "script": "subprocess.run(x, timeout=5)"})
+    assert any("OPENBEAST_TIMEOUT_SCALE" in p for p in prove_task.lint_unit(unscaled, M, []))
+    dash_c = dict(clean, validation={"type": "python",
+                                     "script": "subprocess.run([sys.executable, '-c', D])"})
+    assert any("`-c`" in p for p in prove_task.lint_unit(dash_c, M, []))
