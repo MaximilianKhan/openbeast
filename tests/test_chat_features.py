@@ -372,6 +372,44 @@ def test_a_session_ending_fires_title_state_and_link_only(rig, stub, tmp_path):
     assert n.tick() == []                              # once, not every pass
 
 
+def test_unwritable_state_file_neither_repeats_nor_drops_alerts(rig, stub, capsys):
+    # extensions-ntfy review: _save swallowed OSError and tick() re-read the
+    # stale file, so every finished session was re-sent each min_interval
+    # forever (and, beyond `burst`, the summary went out every tick).
+    s = stub()
+    sids = [rig.session(kind="job", state="running", title=f"build {i}")
+            for i in range(12)]
+    n = _notifier(rig, s.url + "/t")
+    assert n.tick() == []
+    os.mkdir(rig.run / "notify-state.json.tmp")         # every write now fails
+    for sid in sids:
+        sessions.finalize(sid, "failed")
+    assert len(n.tick()) == 10                          # burst, + one summary
+    posts = len(s.calls)
+    assert posts == 11
+    for _ in range(4):
+        assert n.tick() == []
+    assert len(s.calls) == posts, "finished sessions were re-sent from a stale snapshot"
+    assert capsys.readouterr().err.count("cannot write") == 1   # loud once
+    # once the file is writable again, the in-memory snapshot lands on disk
+    os.rmdir(rig.run / "notify-state.json.tmp")
+    n.tick()
+    st = json.loads((rig.run / "notify-state.json").read_text())
+    assert set(st["sessions"].values()) == {"failed"}
+
+
+def test_never_written_state_still_fires_on_a_real_transition(rig, stub):
+    s = stub()
+    blocker = rig.run / "not-a-dir"
+    blocker.write_text("")
+    n = _notifier(rig, s.url + "/t", state_path=str(blocker / "notify-state.json"))
+    sid = rig.session(kind="job", state="running", title="x")
+    assert n.tick() == []                               # first pass: history
+    sessions.finalize(sid, "failed")
+    assert n.tick() == [sid], "a snapshot that never reached disk silenced every alert"
+    assert n.tick() == []
+
+
 def _job_with_command(title, command):
     sid = sessions.new_id("job")
     sessions.register(sid, kind="job", title=title, pid=os.getpid(),

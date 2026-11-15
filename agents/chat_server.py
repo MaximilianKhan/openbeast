@@ -1630,6 +1630,12 @@ class Notifier:
         # -inf, not 0: time.monotonic() counts from boot on Linux, so a 0
         # here kept the first failure silent for the machine's first 300 s.
         self._last_err = float("-inf")
+        # The snapshot this process last wrote, kept ONLY while the file
+        # could not be written. Diffing against the stale (or missing) file
+        # instead re-sent every finished session each min_interval forever,
+        # or never fired at all (first_run on every tick).
+        self._mem_doc: dict | None = None
+        self._last_save_err = float("-inf")
         self.lock = threading.Lock()
 
     @classmethod
@@ -1659,7 +1665,9 @@ class Notifier:
             return None
         return doc if isinstance(doc, dict) else None
 
-    def _save(self, doc: dict) -> None:
+    def _save(self, doc: dict) -> bool:
+        """Persist the snapshot; False (and one stderr line per 5 min) when
+        it cannot be written — a full disk, a root-owned file."""
         tmp = self.state_path + ".tmp"
         try:
             os.makedirs(os.path.dirname(self.state_path), exist_ok=True)
@@ -1668,8 +1676,15 @@ class Notifier:
                 json.dump(doc, f)
             os.chmod(tmp, 0o600)
             os.replace(tmp, self.state_path)
-        except OSError:
-            pass
+            return True
+        except OSError as e:
+            now = time.monotonic()
+            if now - self._last_save_err > 300:
+                self._last_save_err = now
+                print(f"[beast-chat] cannot write {self.state_path} "
+                      f"({type(e).__name__}: {e.strerror or e}) — notification "
+                      f"state is kept in memory until it can", file=sys.stderr)
+            return False
 
     # -- sending -----------------------------------------------------------
     def _token(self) -> str:
@@ -1749,7 +1764,7 @@ class Notifier:
         """One pass. Returns the session ids it notified about."""
         with self.lock:
             now = time.time() if now is None else now
-            doc = self._load()
+            doc = self._mem_doc if self._mem_doc is not None else self._load()
             first_run = doc is None
             known = (doc or {}).get("sessions") or {}
             if not isinstance(known, dict):
@@ -1804,9 +1819,10 @@ class Notifier:
                           body=f"{overflow} more session(s) ended — open the "
                                f"console for the list",
                           click=self.public_url + "/#/" if self.public_url else "")
-            self._save({"version": 1,
-                        "last_tick": datetime.fromtimestamp(now).isoformat(),
-                        "sessions": current})
+            snap = {"version": 1,
+                    "last_tick": datetime.fromtimestamp(now).isoformat(),
+                    "sessions": current}
+            self._mem_doc = None if self._save(snap) else snap
             return fired
 
     def run_forever(self, period: float, stop: threading.Event) -> None:
