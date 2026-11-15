@@ -88,7 +88,13 @@ if url.endswith("/api/config"):
     if la == "down": sys.exit(7)          # WebUI not answering: curl fails
     out({} if la == "unknown" else {"features": {"auth": la == "true"}})
 if url.endswith("/api/v1/auths/signin"):
-    out({"token": "tok"} if os.environ.get("DEFAULT_PW_WORKS") == "1" else {"detail": "no"})
+    # configure-webui's _signin asks for the status (-w '\n%{http_code}'):
+    # upstream answers wrong credentials with 400.
+    ok = os.environ.get("DEFAULT_PW_WORKS") == "1"
+    code = "\n200" if ok else "\n400"
+    sys.stdout.write(json.dumps({"token": "tok"} if ok else {"detail": "no"})
+                     + (code if any("%{http_code}" in a for a in args) else ""))
+    sys.exit(0)
 if "/gate/health" in url: out({"service": "beast-gate", "auth": "devices", "devices": 1})
 if "/api/chat/health" in url: out({"status": "ok", "reads": "allowlist", "running": 0})
 if "/api/artifacts/health" in url: out({"status": "ok", "artifacts": 2})
