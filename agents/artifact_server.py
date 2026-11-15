@@ -1757,9 +1757,26 @@ def create_app(local_token: str | None = None) -> FastAPI:
         # raw_page so both get wrap_skeleton.
         if path.strip().strip("/") in ("", "index.html"):
             return raw_page(request, artifact_id, n)
+        mid = _meta_id(meta, artifact_id)
         try:
-            data, ctype = store.read_file(_meta_id(meta, artifact_id),
-                                          version, path)
+            # A Range reads ONLY its bytes: slicing a whole-file read cost a
+            # full 15 MB read per media range request (review, spark-scale).
+            size = store.file_size(mid, version, path)
+            rng = _parse_range(request.headers.get("range"), size)
+            if isinstance(rng, tuple):
+                data, ctype = store.read_file(mid, version, path, span=rng)
+                headers = dict(RAW_HEADERS, **{
+                    "Accept-Ranges": "bytes",
+                    "Content-Range": f"bytes {rng[0]}-{rng[1]}/{size}"})
+                request.state.extra = {"bytes": len(data)}
+                return Response(content=data, status_code=206,
+                                media_type=ctype, headers=headers)
+            if rng == "unsatisfiable":
+                headers = dict(RAW_HEADERS, **{
+                    "Accept-Ranges": "bytes",
+                    "Content-Range": f"bytes */{size}"})
+                return Response(status_code=416, headers=headers)
+            data, ctype = store.read_file(mid, version, path)
         except store.ArtifactError:
             raise HTTPException(status_code=404, detail="Not Found")
         request.state.extra = {"bytes": len(data)}

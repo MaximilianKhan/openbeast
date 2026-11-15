@@ -1285,13 +1285,51 @@ def list_page(*, owner=None, viewer=None, limit=25, offset=0, admin=False,
     return (rows[:limit] if limit > 0 else rows), total
 
 
-def read_file(artifact_id, version: int, path="index.html") -> tuple[bytes, str]:
+def read_file(artifact_id, version: int, path="index.html", *,
+              span=None) -> tuple[bytes, str]:
     """(bytes, content_type) for one file of one version.
 
     path defaults to the page. Supporting files resolve under vN/files/ and
     are re-validated here, so a crafted URL cannot walk out of the store even
     if a caller skipped validation on the way in.
+
+    span    (start, end), inclusive: read only those bytes. A Range request
+            used to read the WHOLE file and slice it, so a 15 MB video
+            played in small ranges cost 15 MB of read and allocation per
+            request (review, spark-scale: beast-artifact).
     """
+    target, ctype, rel, n = _file_target(artifact_id, version, path)
+    try:
+        with open(target, "rb") as fh:
+            if span is None:
+                return fh.read(), ctype
+            start, end = int(span[0]), int(span[1])
+            fh.seek(max(0, start))
+            return fh.read(max(0, end - start + 1)), ctype
+    except (FileNotFoundError, IsADirectoryError, NotADirectoryError):
+        raise ArtifactError(f"no such file in v{n}: {rel}")
+    except OSError as e:
+        raise ArtifactError(f"unreadable file: {e}")
+
+
+def file_size(artifact_id, version: int, path="index.html") -> int:
+    """The byte size of one file of one version, resolved and validated
+    exactly as read_file() does — what a Range answer is computed against."""
+    target, _, rel, n = _file_target(artifact_id, version, path)
+    try:
+        st = os.stat(target)
+    except (FileNotFoundError, NotADirectoryError):
+        raise ArtifactError(f"no such file in v{n}: {rel}")
+    except OSError as e:
+        raise ArtifactError(f"unreadable file: {e}")
+    if not _stat.S_ISREG(st.st_mode):
+        raise ArtifactError(f"no such file in v{n}: {rel}")
+    return st.st_size
+
+
+def _file_target(artifact_id, version, path):
+    """(absolute target, content type, relative path, n) — read_file's
+    resolution and containment checks, shared with file_size()."""
     aid = _check_id(artifact_id)
     meta = _read_meta(aid)
     if meta is None:
@@ -1315,13 +1353,7 @@ def read_file(artifact_id, version: int, path="index.html") -> tuple[bytes, str]
         if target != base and not target.startswith(base + os.sep):
             raise ArtifactError(f"path escapes the artifact: {path!r}")
         ctype = content_type_for(safe)
-    try:
-        with open(target, "rb") as fh:
-            return fh.read(), ctype
-    except (FileNotFoundError, IsADirectoryError, NotADirectoryError):
-        raise ArtifactError(f"no such file in v{n}: {rel}")
-    except OSError as e:
-        raise ArtifactError(f"unreadable file: {e}")
+    return target, ctype, rel, n
 
 
 # --- mutate (metadata only; versions stay immutable) -------------------------

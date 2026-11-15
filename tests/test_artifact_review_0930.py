@@ -411,6 +411,31 @@ def test_supporting_files_answer_byte_ranges(make_client):
     assert r.headers["content-security-policy"] == artifact_server.RAW_CSP
 
 
+def test_a_range_reads_only_its_bytes(make_client, monkeypatch):
+    """Review (spark-scale) beast-artifact: a Range request read the WHOLE
+    supporting file and sliced it, so a 15 MB video played in small ranges
+    cost 15 MB of disk read and allocation per request."""
+    c = make_client()
+    blob = bytes(range(256)) * 64
+    a = publish(c, files={"v.mp4": {"b64": base64.b64encode(blob).decode()}})
+    real, read = store.read_file, []
+
+    def spy(*args, **kw):
+        data, ctype = real(*args, **kw)
+        read.append(len(data))
+        return data, ctype
+
+    monkeypatch.setattr(store, "read_file", spy)
+    url = f"/raw/{a['id']}/v/1/v.mp4"
+    r = c.get(url, headers=local(c, {"Range": "bytes=100-109"}))
+    assert r.status_code == 206 and r.content == blob[100:110]
+    assert read == [10]
+    read.clear()
+    r = c.get(url, headers=local(c, {"Range": f"bytes={len(blob)}-"}))
+    assert r.status_code == 416 and read == []
+    assert r.headers["content-range"] == f"bytes */{len(blob)}"
+
+
 def test_timestamps_are_human(make_client):
     """browser-10: '2026-09-30T05:29:39.044636+00:00' in the strip, the
     picker and every gallery row."""
