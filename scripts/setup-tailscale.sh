@@ -103,6 +103,40 @@ except Exception: print("")' 2>/dev/null)" == "$(id -un)" ]]; then
   fi
 }
 
+# beast-slot mount (--publish-slot). Mount ONLY /api/slot: a bare
+# `--https=8444 → :3002` publishes the whole dashboard (HTML page +
+# /api/status) to every tailnet device. The whole-dashboard mount is used
+# ONLY on a tailscale build that has no --set-path at all, decided by asking
+# its help text up front. Any failure of the path-scoped mount itself (a
+# tailscaled hiccup, a cancelled sudo prompt, a conflicting :8444 config) used
+# to be read as "no --set-path" and fell OPEN to the whole dashboard; now it
+# is an error, and nothing wider is mounted.
+_ts_has_set_path() {
+  local _h
+  # Captured, not piped into grep -q: under pipefail an early-exiting grep
+  # SIGPIPEs tailscale and the pipeline reads as "no".
+  _h="$(tailscale serve --help 2>&1 || true)"
+  case "$_h" in *set-path*) return 0 ;; esac
+  return 1
+}
+_publish_slot_mount() { # _publish_slot_mount <upstream-host>
+  if _ts_has_set_path; then
+    if ! ts_admin serve --bg --https=8444 --set-path=/api/slot "http://$1:3002/api/slot"; then
+      echo "      ERROR: could not mount :8444/api/slot (tailscale's message is above)." >&2
+      echo "             NOT falling back to publishing the whole dashboard. Fix the cause" >&2
+      echo "             and re-run: ./scripts/setup-tailscale.sh --publish-slot" >&2
+      return 1
+    fi
+    echo "      beast-slot status API published (tailnet-only, :8444/api/slot)."
+  else
+    ts_admin serve --bg --https=8444 "http://$1:3002"
+    echo "      beast-slot published (tailnet-only, :8444 → :3002)."
+    echo "      NOTE: this tailscale build has no --set-path, so the whole"
+    echo "            dashboard (page + /api/status) is tailnet-visible."
+    echo "            Update tailscale and re-run to narrow it to /api/slot."
+  fi
+}
+
 STATUS_ONLY=0
 PUBLISH_SEARXNG=0
 PUBLISH_SLOT=0
@@ -567,18 +601,7 @@ if [[ $PUBLISH_SLOT -eq 1 ]]; then
     echo "      WARNING: dashboard extension not in EXTENSIONS — the slot API"
     echo "               will 502 until: ./scripts/ext.sh enable dashboard && ./stop.sh && ./start.sh"
   fi
-  # Mount ONLY /api/slot — a bare `--https=8444 → :3002` would publish the
-  # whole dashboard (HTML page + /api/status) to every tailnet device. Fall
-  # back to the full mount on tailscale builds without --set-path.
-  if ts_admin serve --bg --https=8444 --set-path=/api/slot \
-       "http://$UP_HOST:3002/api/slot" 2>/dev/null; then
-    echo "      beast-slot status API published (tailnet-only, :8444/api/slot)."
-  else
-    ts_admin serve --bg --https=8444 "http://$UP_HOST:3002"
-    echo "      beast-slot published (tailnet-only, :8444 → :3002)."
-    echo "      NOTE: this tailscale build lacks --set-path, so the whole"
-    echo "            dashboard (page + /api/status) is tailnet-visible."
-  fi
+  _publish_slot_mount "$UP_HOST"
 fi
 if [[ $PUBLISH_CHAT -eq 1 ]]; then
   # beast-chat (docs/BEAST_CHAT.md). Unlike the slot API this mounts "/" on

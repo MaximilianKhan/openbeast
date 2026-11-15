@@ -136,17 +136,34 @@ restarting) leaves `:8444` proxying to a port nothing is listening on, so
 clients get **502**, not a clean "not published" — `setup-tailscale.sh`
 warns but does not block. `openbeast-client status` treats a missing slot
 API as informational, so a client will look healthy while silently flying
-blind about what the rig is serving.
+blind about what the rig is serving. Its `!` line does say which failure
+it saw: a 502 means the dashboard is not running, a 404 means the path is
+not published, a 503 (retried once) means the dashboard is busy, and no
+answer within 5 s is reported as such. On a rig whose `backend` is not
+llama, it also flags an opencode default that is not the id the rig
+serves. `refresh-config` pins the id `/api/slot` reports whenever
+`/v1/models` cannot be read.
 
 ### The `/api/slot` discovery contract (version 2)
 
 `GET https://<rig>:8444/api/slot` — read-only JSON. `--publish-slot` mounts
 *only* this path (`tailscale serve --set-path`), so the dashboard's HTML page
-and `/api/status` stay rig-local. The answer is gathered at most once every
+and `/api/status` stay rig-local. If that path-scoped mount fails, the script
+exits with an error and mounts nothing wider. The whole dashboard is mounted
+on `:8444` in only one case: a tailscale build whose `serve --help` has no
+`--set-path` at all. The script prints a NOTE when it does that. The answer is gathered at most once every
 1.5 s and shared by every caller in that window, so it can be up to 1.5 s
 old; do not poll faster than that. The dashboard serves at most 16
 connections at once and answers **503** with `Retry-After: 1` beyond that —
-retry, it is not an outage:
+retry, it is not an outage. A connection must deliver its whole request
+line and headers within 5 s or it is cut, so slow senders cannot hold those
+16. All upstream probes for one answer run at once, under a 3 s overall
+deadline. A probe still out at the deadline counts as down or `null`, so a
+hung model server shows up as `healthy: false` instead of a timeout. Like
+beast-chat and beast-artifact, the dashboard refuses (400) any `Host` that
+is not loopback, this machine's name, a `*.ts.net` name or an IP address.
+This is the DNS-rebinding guard in `agents/hostpolicy.py`, and
+`DASHBOARD_ALLOWED_HOSTS` adds names:
 
 ```json
 {

@@ -814,10 +814,14 @@ git clone https://github.com/MaximilianKhan/openbeast && cd openbeast
 ```
 
 Auto-detect only considers peers under **your own** MagicDNS suffix — a node
-named `beast` that was shared in from another tailnet is never picked. When a
-key is given and the host was auto-detected, the installer asks you to
-confirm the host on a terminal and refuses without one; pass `--host` to
-name the rig yourself. On a miss it lists the peers it can see. The install
+named `beast` that was shared in from another tailnet is never picked, and a
+`beast` owned by a *different* user of your tailnet (or a tagged node) is
+used only after you confirm it, key or no key. When a key is given and the
+host was auto-detected, the installer asks you to confirm the host on a
+terminal and refuses without one; pass `--host` to name the rig yourself.
+A key stored by an earlier install is re-sent only to the rig it was stored
+for: re-running with a different `--host` drops it (pass `--api-key-stdin`
+for the new rig). On a miss it lists the peers it can see. The install
 is hash-pinned and strict like the rig's (`OPENBEAST_PIP_STRICT=0` opts out,
 §3).
 

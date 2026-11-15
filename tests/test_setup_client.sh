@@ -13,7 +13,9 @@
 #   2  the env file is 0600 even when it already existed wider (supply S11)
 #   3  the opencode.json merge runs the vetted interpreter (UX-28)
 #   4  auto-detection: own-tailnet peers only, and never a key to a host
-#      nobody named (supply S12); a miss lists the peers that exist (UX-29)
+#      nobody named (supply S12); a miss lists the peers that exist (UX-29);
+#      a 'beast' owned by another tailnet user is never wired unconfirmed
+#   5  a stored key only ever goes back to the rig it was stored for
 
 set -uo pipefail
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -35,7 +37,21 @@ install -m 644 "$REPO_DIR/scripts/lib/curl_auth.sh" "$R/scripts/lib/"
 : > "$R/agents/tools.py"                       # marks "running inside a full clone"
 echo 'openai==1.0' > "$R/agents/requirements.txt"
 echo '{"provider":{"llama-cpp":{"models":{"stub-model":{"name":"Stub"}}}}}' > "$R/opencode.json"
-REAL_PY="$(python3 -c 'import sys; print(sys.executable)')"
+# The vetted interpreter must itself pass the installer's >=3.10 check, or every
+# case dies in preflight ("no python >=3.10 found") and the suite reports 15
+# regressions that are not there — stock macOS python3 is 3.9. Search the
+# same way _find_py does, and skip clearly when nothing qualifies.
+REAL_PY=""
+for _c in python3.13 python3.12 python3.11 python3.10 python3; do
+  command -v "$_c" >/dev/null 2>&1 || continue
+  if "$_c" -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null; then
+    REAL_PY="$("$_c" -c 'import sys; print(sys.executable)')"; break
+  fi
+done
+if [[ -z "$REAL_PY" ]]; then
+  echo "  SKIP: no python >= 3.10 on PATH — the installer under test refuses older ones"
+  exit 0
+fi
 
 # --- stubs -------------------------------------------------------------------
 # The vetted interpreter the installer is told to use (OPENBEAST_PYTHON)…
@@ -226,16 +242,36 @@ if has "$OUT" "desk.tail1.ts.net" && has "$OUT" "ANOTHER tailnet" && has "$OUT" 
 else
   fail "miss did not list peers: $OUT"
 fi
+# Same suffix, but the 'beast' belongs to ANOTHER member of the tailnet.
 cat > "$S/ts.json" <<'EOF'
-{"Self":{"DNSName":"lap.tail1.ts.net."},
- "Peer":{"a":{"DNSName":"beast.othernet.ts.net."},
-         "b":{"DNSName":"desk.tail1.ts.net."},
-         "c":{"DNSName":"beast.tail1.ts.net."}}}
+{"Self":{"DNSName":"lap.tail1.ts.net.","UserID":1},
+ "Peer":{"b":{"DNSName":"desk.tail1.ts.net.","UserID":1},
+         "c":{"DNSName":"beast.tail1.ts.net.","UserID":2}}}
+EOF
+run hautox 200 200 -- --no-search
+if [[ $RC -eq 1 ]] && has "$OUT" "owned by another tailnet user" \
+   && has "$OUT" "--host beast.tail1.ts.net" && [[ ! -s "$S/curl.argv" ]] \
+   && [[ ! -e "$H/.openbeast-client.env" ]]; then
+  pass "keyless: another user's 'beast' is refused with no terminal, nothing probed or written"
+else
+  fail "other-owner beast, keyless (rc=$RC, curl=$(tr '\n' ' ' < "$S/curl.argv")): $OUT"
+fi
+run hautox2 200 200 -- --host beast.tail1.ts.net --no-search
+if [[ $RC -eq 0 ]] && has "$OUT" "Client mode ready"; then
+  pass "control: naming that host with --host wires it"
+else
+  fail "other-owner beast, explicit host (rc=$RC): $OUT"
+fi
+cat > "$S/ts.json" <<'EOF'
+{"Self":{"DNSName":"lap.tail1.ts.net.","UserID":1},
+ "Peer":{"a":{"DNSName":"beast.othernet.ts.net.","UserID":1},
+         "b":{"DNSName":"desk.tail1.ts.net.","UserID":1},
+         "c":{"DNSName":"beast.tail1.ts.net.","UserID":1}}}
 EOF
 run hauto2 200 200 -- --no-search
 if [[ $RC -eq 0 ]] && has "$OUT" "rig auto-detected: beast.tail1.ts.net" \
    && grep -q "https://beast.tail1.ts.net:8443/health" "$S/curl.argv" && ! grep -q "othernet" "$S/curl.argv"; then
-  pass "control: our own tailnet's 'beast' is auto-detected (no key involved → no prompt)"
+  pass "control: our own 'beast' (same owner) is auto-detected (no key involved → no prompt)"
 else
   fail "own beast, keyless (rc=$RC): $OUT"
 fi
@@ -252,6 +288,38 @@ if [[ $RC -eq 0 ]] && has "$OUT" "Client mode ready" && ! has "$OUT" "AUTO-DETEC
   pass "control: the same key with an explicit --host installs without asking"
 else
   fail "keyed explicit host (rc=$RC): $OUT"
+fi
+
+# ---------------------------------------------------------------------------
+echo ""
+echo "5. a stored key goes back only to the rig it was stored for:"
+_stored_env() {
+  mkdir -p "$T/$1"
+  printf "OPENBEAST_AGENT_INFERENCE_URL='https://%s:8443/v1'\nOPENBEAST_API_KEY='%s'\n" "$2" "$3" \
+    > "$T/$1/.openbeast-client.env"
+  chmod 600 "$T/$1/.openbeast-client.env"
+}
+_stored_env hswitch rigA.tail1.ts.net rigA-device-key
+run hswitch 200 200 -- --host rigB.tail1.ts.net --no-search
+if [[ $RC -eq 0 ]] && has "$OUT" "belongs to rigA.tail1.ts.net" \
+   && ! grep -q "rigA-device-key" "$S/curl.argv" "$H/.openbeast-client.env" "$H/.config/opencode/opencode.json"; then
+  pass "re-run against a DIFFERENT rig: the old rig's key is not sent, nor written as the new one's"
+else
+  fail "rig switch leaked the stored key (rc=$RC): $OUT"
+fi
+_stored_env hsame rigA.tail1.ts.net rigA-device-key
+run hsame 200 200 -- --host RIGA.tail1.ts.net. --no-search
+if [[ $RC -eq 0 ]] && grep -q "rigA-device-key" "$H/.openbeast-client.env" && ! has "$OUT" "NOT sending"; then
+  pass "control: a re-run against the SAME rig keeps its key (host compared case/dot-insensitively)"
+else
+  fail "same-rig re-run de-keyed (rc=$RC): $OUT"
+fi
+_stored_env hnew rigA.tail1.ts.net rigA-device-key
+run hnew 200 200 OPENBEAST_API_KEY=rigB-key -- --host rigB.tail1.ts.net --no-search
+if [[ $RC -eq 0 ]] && grep -q "rigB-key" "$H/.openbeast-client.env" && ! grep -q "rigA-device-key" "$H/.openbeast-client.env"; then
+  pass "control: an explicitly given key for the new rig is used"
+else
+  fail "explicit key on switch (rc=$RC): $OUT"
 fi
 
 echo ""

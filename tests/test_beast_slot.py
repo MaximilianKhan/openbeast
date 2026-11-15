@@ -629,6 +629,10 @@ class TestEdgeAuthMode(unittest.TestCase):
         open(os.path.join(self.repo, ".run", "clients.enrolled"), "w").close()
         self.assertEqual(self._auth(True), "device")
 
+    def test_registry_with_unkeyed_devices_is_device(self):
+        reg = {"version": 1, "devices": [{"id": "half", "key_sha256": ""}]}
+        self.assertEqual(self._auth(True, reg), "device")
+
     def test_gate_without_anon_is_device(self):
         self.assertEqual(self._auth(False), "device")
 
