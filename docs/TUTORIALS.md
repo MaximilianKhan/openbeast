@@ -485,7 +485,7 @@ at something reachable or set `ISLAND=off`.
 ./scripts/gpu-lease.sh status                    # FREE, or HELD by whom since when
 ./scripts/gpu-lease.sh run "my sweep" -- bash my-sweep.sh
 ./scripts/eval-era.sh                            # the hash of what an eval unit sees
-./scripts/eval-era.sh --files                    # the six files behind it
+./scripts/eval-era.sh --files                    # the five files behind it
 ./scripts/eval-era.sh --check 3b7c2adb8da7968d   # exit 1 if it moved
 ```
 

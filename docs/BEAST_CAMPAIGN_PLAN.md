@@ -39,7 +39,7 @@ hand-rolled differently each time:
 
 1. **Stages with dependencies**, run sequentially because they share one GPU.
 2. **One cache era across the whole campaign** — rows measured either side of
-   a change to the six hashed files are not comparable, and nothing currently
+   a change to the era-hashed files are not comparable, and nothing currently
    checks.
 3. **An exclusive GPU lease** — a stage must not start while another holds the
    card, and *nothing else on the box* may compete for the resources a
@@ -89,7 +89,7 @@ The runner owns what the scripts keep re-implementing:
   structurally impossible because there is nothing to chain.
 - **Era assertion at start and before every stage.** `era = "<hash>"` is a
   precondition, not a comment. A campaign whose tree no longer hashes to its
-  declared era refuses to start and says which of the six files moved. The
+  declared era refuses to start and says which hashed file moved. The
   09-08 latent mismatch becomes an error message.
 - **A real GPU lease.** A lockfile with the holder's pid *and start time*
   (pid alone is not identity — that lesson is already in

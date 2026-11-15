@@ -695,6 +695,7 @@ printf '%s\n' "$@" > "$STUB_DIR/art.argv"
 cp "$2" "$STUB_DIR/art.page" 2>/dev/null
 [[ "${ART_RC:-0}" == 0 ]] && echo "Published: http://localhost:3004/a/$4 (v1)"
 [[ "${ART_RC:-0}" == 4 ]] && echo "ERROR: beast-artifact is not answering" >&2
+[[ "${ART_RC:-0}" == 3 ]] && echo "ERROR: publish failed (HTTP 404): not found" >&2
 exit "${ART_RC:-0}"
 STUB
 printf '#!/bin/bash\necho era-abc123\n' > "$PV/scripts/eval-era.sh"
@@ -704,13 +705,28 @@ printf 'verdict: <b>SHIP</b> & p=0.019\n' > "$T/verdict.txt"
 pv() { env -i HOME="$T" PATH="/usr/bin:/bin" STUB_DIR="$T" ${PV_ENV[@]+"${PV_ENV[@]}"} \
          bash "$PV/scripts/publish-verdict.sh" "$@" 2>&1; }
 PV_ENV=()
-WANT_ID="$(python3 -c 'import uuid; print(uuid.uuid5(uuid.NAMESPACE_URL, "openbeast:verdict:tier3-zig"))')"
-rm -f "$T/art.argv"
+# The verdict id is an HMAC under the rig's .run/verdict-id.key, NOT the
+# public uuid5 of the slug a WebUI user could compute and claim first.
+vid() { # vid <repo-dir> <slug>
+  OB_KEY="$1/.run/verdict-id.key" python3 -c 'import hashlib, hmac, os, sys, uuid
+k = open(os.environ["OB_KEY"]).read().strip().encode()
+m = hmac.new(k, ("openbeast:verdict:" + sys.argv[1]).encode(), hashlib.sha256).digest()
+print(uuid.UUID(bytes=m[:16], version=5))' "$2"; }
+PUBLIC_ID="$(python3 -c 'import uuid; print(uuid.uuid5(uuid.NAMESPACE_URL, "openbeast:verdict:tier3-zig"))')"
+rm -f "$T/art.argv" "$PV/.run/verdict-id.key"
 _O="$(pv tier3-zig "$T/verdict.txt")"; _rc=$?
 _argv="$(tr '\n' '|' < "$T/art.argv" 2>/dev/null)"
+WANT_ID="$(vid "$PV" tier3-zig 2>/dev/null)"
+_kmode="$(stat -c %a "$PV/.run/verdict-id.key" 2>/dev/null || stat -f %Lp "$PV/.run/verdict-id.key" 2>/dev/null)"
+if [[ -n "$WANT_ID" && "$WANT_ID" != "$PUBLIC_ID" && "$_kmode" == 600 ]] \
+   && ! has "$_argv" "$PUBLIC_ID"; then
+  pass "the verdict id is keyed by a 0600 rig-local key, not the public uuid5 of the slug"
+else
+  fail "verdict id: want=$WANT_ID public=$PUBLIC_ID keymode=$_kmode argv=[$_argv]"
+fi
 if [[ $_rc -eq 0 ]] && has "$_argv" "--id|$WANT_ID|" && ! has "$_argv" "--visibility" \
    && has "$_argv" "--label|nogit era=era-abc123|" && has "$_O" "Published:"; then
-  pass "uuid5 id, no visibility asked (a share must survive), label '<sha> era=<era>', URL passed through"
+  pass "keyed id, no visibility asked (a share must survive), label '<sha> era=<era>', URL passed through"
 else
   fail "publish argv: [$_argv] rc=$_rc :: $_O"
 fi
@@ -748,6 +764,17 @@ if [[ $_rc -eq 0 && "$(wc -l <<< "$_O")" == 1 ]] && has "$_O" "not answering"; t
   pass "artifact server down: exit 0 and one line — a campaign under set -e keeps going"
 else
   fail "server down: rc=$_rc :: $_O"
+fi
+# A REFUSAL (the page at this id is someone else's) is loud and names the id;
+# exit 0 by default (set -e callers), exit 3 only under an explicit --strict.
+PV_ENV=(ART_RC=3)
+_O="$(pv tier3-zig "$T/verdict.txt")"; _rc=$?
+_O2="$(pv tier3-zig "$T/verdict.txt" --strict)"; _rc2=$?
+if [[ $_rc -eq 0 && $_rc2 -eq 3 ]] && has "$_O" "WARNING" && has "$_O" "REFUSED" \
+   && has "$_O" "$WANT_ID" && has "$_O" "HTTP 404"; then
+  pass "a refused publish is a WARNING naming the id (exit 0; --strict exits 3)"
+else
+  fail "refusal: rc=$_rc strict=$_rc2 :: $_O"
 fi
 PV_ENV=()
 _O="$(pv 'bad slug!' "$T/verdict.txt")"; _rc=$?
@@ -800,6 +827,7 @@ if "$PY3" -c 'import fastapi, uvicorn' 2>/dev/null; then
   done
   _O="$(env -i HOME="$T" PATH="/usr/bin:/bin" bash "$RR/scripts/publish-verdict.sh" tier3-zig "$T/verdict.txt" 2>&1)"
   _O="$_O$(env -i HOME="$T" PATH="/usr/bin:/bin" bash "$RR/scripts/publish-verdict.sh" tier3-zig "$T/verdict.txt" --label second 2>&1)"
+  WANT_ID="$(vid "$RR" tier3-zig 2>/dev/null)"   # this tree's own key
   _show="$(env -i HOME="$T" PATH="/usr/bin:/bin" bash "$RR/scripts/artifact.sh" show "$WANT_ID" --json 2>&1)"
   if has "$_show" "$WANT_ID" && has "$_show" "second" && has "$_show" "era=era-real" \
      && has "$_show" '"private"'; then

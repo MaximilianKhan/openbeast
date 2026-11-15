@@ -1,0 +1,15 @@
+# The eval HARNESS marker, hashed into the cache era (evals/cache.py).
+#
+# The line below is `<version> <fingerprint>`. The fingerprint is
+# cache.harness_fingerprint(): the AST of run_eval's agent-shaping code
+# (cache.HARNESS_FUNCTIONS / HARNESS_CONSTANTS: the agent's argv, env and
+# wall budget and its --jobs contention_scale, fixture setup, the validator
+# and its timeout). Comments and docstrings are excluded, so prose edits do
+# not count.
+#
+# tests/test_cache.py fails when the code and this pin disagree. When it
+# does: bump the version (harness1 -> harness2) and paste the new
+# fingerprint. That moves the era — rows judged by different harness code
+# are not comparable. Print the fingerprint with:
+#   python3 -c 'import sys; sys.path.insert(0,"evals"); import cache; print(cache.harness_fingerprint())'
+harness3 ec102ee1c26317f1

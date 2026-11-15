@@ -388,11 +388,14 @@ payload, which is why `sign` exists.
 
 *(v1.5.0.)* Two small tools that exist because their absence cost real
 GPU-hours: `scripts/gpu-lease.sh` is an advisory **lease on the card** (pid +
-start time, never pid alone), so a build agent cannot start compiling inside a
-measurement's window and the watchdog will not relaunch the stack's model into
-someone else's run; `scripts/eval-era.sh` prints the **era hash** of the six
-files that define what an eval unit sees, so two rows are compared only when
-they were produced by the same code.
+start time, never pid alone) that every GPU-loading caller asks first — eval
+sweeps, VRAM/MTP profiling, start/stop/update, the watchdog — so none of them
+loads a model into someone else's run. It protects only callers that ask: the
+agent `bash` tool and `start_agent` do not consult it, so a model-driven build
+can still compile inside a measurement's window (the concurrency budget that
+would close that is planned, not built); `scripts/eval-era.sh` prints the
+**era hash** of the files that define what an eval unit sees, so two rows are
+compared only when they were produced by the same code.
 
 The harness also refuses to cache what the model did not do. A unit whose
 server died mid-task (the runner now reports `API_ERRORS: n`), or whose

@@ -273,7 +273,7 @@ flowchart TB
 - **The GPU has one owner at a time.** `scripts/gpu-lease.sh` is an advisory
   lease (pid + start time) that campaigns take before measuring; the watchdog
   and `stop.sh` consult it before touching any llama-server, and
-  `scripts/eval-era.sh` names the hash of the six files that define what an
+  `scripts/eval-era.sh` names the hash of the five files that define what an
   eval unit sees, so rows are only ever compared within one era.
   [`BEAST_CAMPAIGN_PLAN.md`](BEAST_CAMPAIGN_PLAN.md).
 - **Nothing in the tool plane is ever published.** With RBAC Phase 2 keys
@@ -324,7 +324,7 @@ scripts/                     # Server, ops, and feature CLIs
   bundle.sh                  # Air-gap: build/sign/verify/install the offline bundle
   pydeps.sh                  # Hash-pinned Python lockfile: lock/verify/wheelhouse/install
   gpu-lease.sh               # Advisory GPU lease: status/acquire/release/run
-  eval-era.sh                # The eval era hash and the six files behind it
+  eval-era.sh                # The eval era hash and the five files behind it
   land-dependabot.sh         # Rebase → relock → approve → merge, one Dependabot PR at a time
   skill-import.sh            # Remote-skill gate: fetch a pinned commit, scan, promote with a reviewer, verify
   uninstall.sh               # Rig decommissioning (dry run by default; --go; --purge-*)
@@ -392,8 +392,8 @@ evals/                       # Eval harness — 137 tasks / 291 units + multi-mo
 docs/                        # 44 top-level documents — see README.md § Documentation
 skills/                      # 25 skills: 16 in-house + 9 imported (skills/README.md)
 system-prompt.md             # Soul file (persona, applied to all frontends)    [era-hashed]
-system-prompt-tools.md       # Tool guidance (Open WebUI only)                    [era-hashed]
-opencode.json                # OpenCode project config (MCP wiring + model list) [era-hashed]
+system-prompt-tools.md       # Tool guidance (Open WebUI only)
+opencode.json                # OpenCode project config (MCP wiring + model list)
 docker-compose.yml           # Open WebUI + SearXNG containers (digest-pinned)
 openbeast.conf.example       # Config template — copy to openbeast.conf to customize
 weights/                     # GGUF model files (relocatable — see MODELS.md) [gitignored]

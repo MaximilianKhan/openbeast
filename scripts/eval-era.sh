@@ -2,11 +2,11 @@
 # The eval cache era: print it, or assert it has not moved.
 #
 #   ./scripts/eval-era.sh                 # print the current era hash
-#   ./scripts/eval-era.sh --files         # and the six files that produce it
+#   ./scripts/eval-era.sh --files         # and the files that produce it
 #   ./scripts/eval-era.sh --check <hash>  # exit 1 if the era has moved
 #
 # WHY (docs/BEAST_CAMPAIGN_PLAN.md §1). Rows measured either side of a change
-# to any of the six files evals/cache.py hashes are NOT comparable, and until
+# to any of the files evals/cache.py hashes are NOT comparable, and until
 # now nothing enforced that — era was a property people remembered. The
 # 2026-09-08 plan scheduled the greedy churn floor before a `git pull` and the
 # Tier-3 cells it calibrates after it, a cross-era mismatch that survived
