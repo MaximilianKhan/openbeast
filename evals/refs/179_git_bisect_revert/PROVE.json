@@ -20,5 +20,5 @@
   ],
   "empty_expect": "^FAIL: no new commit on main$",
   "leak": ["leak.sh", "^FAIL: the commit message does not name the first bad commit"],
-  "slow": ["slow.sh", "^FAIL: tests/run.sh timed out on the committed tree$"]
+  "slow": ["slow.sh", "^FAIL: tests/run.sh timed out on the committed tree \\((cpu|wall) budget\\)$"]
 }

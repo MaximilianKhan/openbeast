@@ -11,12 +11,24 @@
 #   6. ~330 seeded hidden cases (compare/sort/max/satisfies/filter, prerelease
 #      heavy, numeric identifiers up to 26 digits) match a SemVer 2.0.0 oracle;
 #      a mismatch reports only the case index
-import os, random, re, shutil, signal, subprocess, sys, tempfile
+#
+# Isolation (evals/README.md, "Validator isolation"): this script arrives on
+# stdin; the committed code runs only through vlib.run_solution (own session,
+# CPU budget over the whole tree, scrubbed env) and is judged by its output.
+# Every limit is written at scale 1 and scaled by OPENBEAST_TIMEOUT_SCALE.
+# Both solution runs share one wall budget, so a validation stays inside the
+# 15 s authoring budget at scale 1 even when the suite is slow AND the hidden
+# run hangs.
+import os, random, re, shutil, subprocess, sys, tempfile, time
+import vlib
 
 REPO = "/tmp/eval_bisect/semver"
 ORIG = "@@ORIG@@"
 BAD = "@@BAD@@"
 R1, R2 = @@R1@@, @@R2@@          # culprit block = lines [R1, R2) of ORIG:semver.sh (0-based)
+SUITE_CPU_S = 6.0   # per run, scale 1, whole process tree (a sane bash fix: ~1 s)
+HIDDEN_CPU_S = 6.0
+SOLUTION_WALL_S = 11.0   # suite + hidden runs together, scale 1
 GENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
 GENV.update(GIT_NO_REPLACE_OBJECTS="1", GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
             GIT_TERMINAL_PROMPT="0", LC_ALL="C")
@@ -28,28 +40,30 @@ def fail(msg):
 
 
 def git(*args, raw=False):
-    p = subprocess.run(["git", "-C", REPO] + list(args), env=GENV, stdout=subprocess.PIPE,
-                       stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, timeout=20)
+    p = subprocess.run(["git", "-c", "core.fsmonitor=false", "-C", REPO] + list(args), env=GENV,
+                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                       timeout=vlib.t(20))
     if p.returncode != 0:
         return None
     return p.stdout if raw else p.stdout.decode("utf-8", "replace").strip()
 
 
-def run_group(argv, cwd, data=None, limit=8.0):
-    """Run argv in its own process group; kill the whole group on timeout."""
-    p = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.PIPE if data is not None else subprocess.DEVNULL,
-                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True,
-                         env=dict(os.environ, LC_ALL="C"))
-    try:
-        out, _ = p.communicate(data, timeout=limit)
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(p.pid, signal.SIGKILL)
-        except OSError:
-            pass
-        p.communicate()
-        return None, b""
-    return p.returncode, out
+_deadline = [None]   # monotonic end of the shared solution wall budget
+
+
+def run_committed(argv, cwd, data=None, cpu_s=6.0):
+    """Run committed code via vlib.run_solution: own session and process group,
+    CPU budget over every descendant (bash forks for $(...)), scrubbed env.
+    Returns (rc, stdout, stderr), or (None, verdict, b"") over a budget."""
+    now = time.monotonic()
+    if _deadline[0] is None:
+        _deadline[0] = now + vlib.t(SOLUTION_WALL_S)
+    wall = max(0.5, (_deadline[0] - now) / vlib.scale())   # run_solution rescales it
+    r = vlib.run_solution(argv, input=data, cpu_s=cpu_s, wall_s=wall, cwd=cwd, text=False,
+                          allow_fork=True, env=vlib.clean_env({"LC_ALL": "C"}))
+    if r.verdict != "ok":
+        return None, r.verdict, b""
+    return r.returncode, r.stdout or b"", r.stderr or b""
 
 
 # ---- 1. repository state
@@ -114,11 +128,11 @@ try:
         os.makedirs(os.path.dirname(full), exist_ok=True)
         with open(full, "wb") as f:
             f.write(git("cat-file", "blob", sha, raw=True))
-    rc, out = run_group(["bash", "tests/run.sh"], work, limit=8.0)
+    rc, out, err = run_committed(["bash", "tests/run.sh"], work, cpu_s=SUITE_CPU_S)
     if rc is None:
-        fail("tests/run.sh timed out on the committed tree")
+        fail("tests/run.sh timed out on the committed tree (%s budget)" % out)
     if rc != 0:
-        last = out.decode("utf-8", "replace").strip().splitlines()[-1:] or [""]
+        last = (out + err).decode("utf-8", "replace").strip().splitlines()[-1:] or [""]
         fail("tests/run.sh fails on the committed tree (%s)" % last[0][:60])
 
     # ---- 6. hidden seeded cases against a SemVer 2.0.0 oracle
@@ -244,9 +258,9 @@ try:
                 "    printf '%s\\x1e' \"$out\"\n"
                 "done\n")
     data = "".join("\x1f".join(argv) + "\n" for argv, _ in cases).encode()
-    rc, out = run_group(["bash", driver], work, data=data, limit=8.0)
+    rc, out, _ = run_committed(["bash", driver], work, data=data, cpu_s=HIDDEN_CPU_S)
     if rc is None:
-        fail("hidden tests timed out")
+        fail("hidden tests timed out (%s budget)" % out)
     got = out.decode("utf-8", "replace").split("\x1e")
     for i, (_, want) in enumerate(cases):
         if i >= len(got) - 1 or got[i].strip("\n") != want:
