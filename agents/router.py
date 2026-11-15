@@ -458,6 +458,29 @@ def _last_user_text(messages):
     return ""
 
 
+def _is_webui_task_prompt(text):
+    """Open WebUI's own background requests (title, tags, follow-ups, query
+    generation) are one user message: a "### Task:" template that quotes the
+    chat in <chat_history>. That history can hold the spawn request and our
+    "Started a background agent" reply, and classifying it again could
+    start a second agent for the same task."""
+    return "### Task:" in text and "<chat_history>" in text
+
+
+def _user_turn_text(messages):
+    """The text of the user turn this request answers, or "" when it is not
+    one: a tool-loop continuation (messages end in assistant/tool), or a
+    WebUI task prompt. Only such a turn is worth a classify."""
+    if not (isinstance(messages, list) and messages
+            and isinstance(messages[-1], dict)
+            and messages[-1].get("role") == "user"):
+        return ""
+    text = _last_user_text(messages)
+    if _is_webui_task_prompt(text):
+        return ""
+    return text
+
+
 async def _classify(client, user_text):
     """Grammar-constrained {spawn,task,workdir}. Thinking disabled so a
     reasoning model can't burn its budget before emitting the JSON."""
@@ -614,7 +637,7 @@ async def chat_completions(request: Request):
     messages = body.get("messages", [])
     stream = bool(body.get("stream", False))
     model = body.get("model", "local")
-    user_text = _last_user_text(messages)
+    user_text = _user_turn_text(messages)
 
     # Identity gate FIRST (docs/RBAC_PLAN.md Phase 2): non-admin turns skip
     # prefilter + classify entirely — zero added latency, and no path to
