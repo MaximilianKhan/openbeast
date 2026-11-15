@@ -280,7 +280,11 @@ ISLAND_STATE_DIR="${OPENBEAST_RUN_DIR:-$REPO_DIR/.run}"
 OPENBEAST_WEBUI_OFFLINE=false
 if [[ "$OFFLINE" == "true" || "$ISLAND" == "force" ]]; then
   OPENBEAST_WEBUI_OFFLINE=true
-elif [[ "$ISLAND" != "off" && -f "$ISLAND_STATE_DIR/island.json" ]] \
+# Asked whatever ISLAND says in the conf (as healthcheck/doctor do): a one-off
+# `--offline` launch runs a watcher on a box whose conf says ISLAND=off, and
+# the watchdog's healthcheck does not inherit that launch's OPENBEAST_ISLAND.
+# A file with no live watcher behind it reads as not islanded anyway.
+elif [[ -f "$ISLAND_STATE_DIR/island.json" ]] \
      && [[ "$(OPENBEAST_RUN_DIR="$ISLAND_STATE_DIR" python3 "$REPO_DIR/agents/island.py" status --webui-offline 2>/dev/null || true)" == "true" ]]; then
   OPENBEAST_WEBUI_OFFLINE=true
 fi

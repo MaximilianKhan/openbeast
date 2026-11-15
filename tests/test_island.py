@@ -61,10 +61,10 @@ def run_dir(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _watcher(mode, probe, clock, grace=90, interval=15):
+def _watcher(mode, probe, clock, grace=90, interval=15, launch_wait=0):
     logs = []
     w = island.Watcher(mode, grace, interval, probe_fn=probe, clock=clock,
-                       log=logs.append)
+                       log=logs.append, launch_wait=launch_wait)
     return w, logs
 
 
@@ -129,16 +129,25 @@ def test_force_never_rejoins(run_dir, monkeypatch):
     assert any("staying islanded" in m for m in logs)
 
 
-def test_launch_offline_records_launched_islanded(run_dir, monkeypatch):
+def test_launch_offline_records_launched_islanded(run_dir, monkeypatch, capsys):
+    """Nothing greps the file: conf.sh asks `island.py status --webui-offline`
+    (and the rejoin log reads launched_islanded). Pin what that consumer
+    answers, not json.dump's spacing."""
     clock = Clock()
     monkeypatch.setattr(island, "_now", clock)
-    w, _ = _watcher("auto", Probe(False), clock)
+    monkeypatch.setattr(island, "_watcher_alive", lambda pid: True)
+    w, _ = _watcher("auto", Probe(False, True, True), clock)
     w.init()
-    raw = (run_dir / "island.json").read_text()
-    # conf.sh greps for exactly this spelling to keep WebUI's OFFLINE_MODE
-    # consistent across healthcheck restarts — pin the format.
-    assert '"launched_islanded": true' in raw
-    assert json.loads(raw)["state"] == "island"
+    st = json.loads((run_dir / "island.json").read_text())
+    assert st["state"] == "island" and st["launched_islanded"] is True
+    assert island.main(["status", "--webui-offline"]) == island.EXIT_ISLAND
+    assert capsys.readouterr().out.strip() == "true"
+    # Rejoined: still launched islanded, but WebUI's next compose is online.
+    clock.t += 15; w.tick()
+    clock.t += 15; w.tick()
+    assert w.state == "online" and w.launched_islanded
+    assert island.main(["status", "--webui-offline"]) == island.EXIT_ONLINE
+    assert capsys.readouterr().out.strip() == "false"
 
 
 def test_resume_continues_from_init(run_dir, monkeypatch):
@@ -157,6 +166,83 @@ def test_resume_continues_from_init(run_dir, monkeypatch):
 def test_bad_mode_rejected():
     with pytest.raises(ValueError):
         island.Watcher("off", 90, 15, probe_fn=lambda: True)
+
+
+# ── the launch decision survives a slow network bring-up ────────────────────
+
+def test_launch_reprobes_before_islanding(run_dir, monkeypatch):
+    """spark-1: a linger boot ran the launch probe before DHCP had set the
+    default route (it came 0.6 s later) and islanded an ordinary reboot. A
+    failed launch probe is re-tried for launch_wait seconds first."""
+    clock = Clock()
+    monkeypatch.setattr(island, "_now", clock)
+    slept = []
+    probe = Probe(False, False, True)
+    w = island.Watcher("auto", 90, 15, probe_fn=probe, clock=clock, log=lambda m: None,
+                       sleep=slept.append)
+    assert w.launch_wait == island.DEFAULT_LAUNCH_WAIT > 0
+    assert w.init() == "online"
+    assert probe.calls == 3 and slept == [island.LAUNCH_RETRY] * 2
+    assert not w.launched_islanded
+
+
+def test_launch_islands_once_the_wait_runs_out(run_dir, monkeypatch):
+    clock = Clock()
+    monkeypatch.setattr(island, "_now", clock)
+    fake = [0.0]
+    monkeypatch.setattr(island.time, "monotonic", lambda: fake[0])
+
+    def sleep(s):
+        fake[0] += s
+    probe = Probe(*[False] * 100)
+    w = island.Watcher("auto", 90, 15, probe_fn=probe, clock=clock, log=lambda m: None,
+                       launch_wait=7, sleep=sleep)
+    assert w.init() == "island" and w.launched_islanded
+    assert probe.calls == 5            # t=0, 2, 4, 6, 7: bounded by the wait
+    assert fake[0] == 7
+
+
+def test_cli_init_launch_wait_flag(run_dir):
+    s = socket.socket(); s.bind(("127.0.0.1", 0)); dead = s.getsockname()[1]; s.close()
+    t0 = time.time()
+    r = _cli(run_dir, "init", "--mode", "auto", f"--probes=127.0.0.1:{dead}",
+             "--timeout", "0.2", "--launch-wait", "1.5")
+    assert r.returncode == 3, r.stdout + r.stderr
+    assert 1.4 <= time.time() - t0 < 15
+    assert "re-probing" in r.stdout
+
+
+# ── stopping: the signal handler takes no locks ─────────────────────────────
+
+def test_stop_request_takes_no_lock(run_dir):
+    """The SIGTERM handler runs on the main thread, which may be inside
+    stopping.wait() holding the Event's non-reentrant lock. Event.set() there
+    deadlocks the watcher; request_stop must not touch the lock."""
+    import threading
+    w, _ = _watcher("force", Probe(True), Clock())
+    done = threading.Event()
+
+    def handler_while_locked():
+        with w.stopping._cond:          # what an interrupted wait() holds
+            w.request_stop()
+        done.set()
+    t = threading.Thread(target=handler_while_locked, daemon=True)
+    t.start()
+    assert done.wait(3), "request_stop blocked on the Event lock"
+    assert w.stop_requested
+    t0 = time.time()
+    w.run(parent=os.getppid())          # sees the flag, removes its file
+    assert time.time() - t0 < 2
+    assert not (run_dir / "island.json").exists()
+
+
+def test_stop_request_wakes_the_wait():
+    import threading
+    w = island.Watcher("force", 90, 60, probe_fn=lambda: True, log=lambda m: None)
+    threading.Timer(0.3, w.request_stop).start()
+    t0 = time.time()
+    assert w._wait(60) is True
+    assert time.time() - t0 < 2
 
 
 # ── staleness: a dead watcher must not keep refusing ────────────────────────
@@ -362,8 +448,27 @@ def test_dead_watcher_pid_reads_as_not_islanded(run_dir):
     assert not island.islanded()
     st["pid"] = os.getpid()           # alive, but not an island.py process
     (run_dir / "island.json").write_text(json.dumps(st))
-    if os.path.isdir("/proc/self"):
-        assert not island.islanded()
+    assert not island.islanded()      # on every platform, macOS included
+    st["pid"] = 1                     # init / launchd: always alive
+    (run_dir / "island.json").write_text(json.dumps(st))
+    assert not island.islanded()
+
+
+def test_a_live_island_py_process_is_trusted(run_dir):
+    """The other half: an argv element that IS island.py passes, on macOS
+    (sysctl) as on Linux (/proc)."""
+    p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)",
+                          str(run_dir / "island.py")])
+    try:
+        deadline = time.time() + 5
+        while time.time() < deadline and not island._watcher_alive(p.pid):
+            time.sleep(0.05)
+        assert island._watcher_alive(p.pid)
+        (run_dir / "island.json").write_text(json.dumps(
+            {"state": "island", "updated_at": time.time(), "stale_after": 90, "pid": p.pid}))
+        assert island.islanded()
+    finally:
+        p.kill(); p.wait()
 
 
 def test_stale_after_is_capped_on_read(run_dir, monkeypatch):
@@ -375,6 +480,21 @@ def test_stale_after_is_capped_on_read(run_dir, monkeypatch):
     assert island.islanded()
     clock.t += island.MAX_STALE + 1
     assert not island.islanded()
+
+
+@pytest.mark.parametrize("field", ["updated_at", "stale_after"])
+@pytest.mark.parametrize("bad", ["NaN", '"nan"'])
+def test_nan_freshness_is_not_trusted(run_dir, monkeypatch, field, bad):
+    """NaN compares False to everything and min(nan, MAX_STALE) is nan, so a
+    NaN heartbeat used to read as fresh forever ("nan" parses via float())."""
+    monkeypatch.setattr(island, "_watcher_alive", lambda pid: True)
+    vals = {"updated_at": repr(time.time()), "stale_after": "90"}
+    vals[field] = bad
+    (run_dir / "island.json").write_text(
+        '{"state": "island", "updated_at": %(updated_at)s, '
+        '"stale_after": %(stale_after)s, "pid": 1}' % vals)
+    assert island.read_state() is None
+    assert island.web_refusal("fetch") is None
 
 
 def test_planted_reason_is_not_echoed(run_dir, monkeypatch):
@@ -460,22 +580,47 @@ def test_cli_init_force_and_auto_offline(run_dir):
     assert r.returncode == 3
     # A closed loopback port as the only probe = "no route" deterministically.
     s = socket.socket(); s.bind(("127.0.0.1", 0)); dead = s.getsockname()[1]; s.close()
-    r = _cli(run_dir, "init", "--mode", "auto", "--probes", f"127.0.0.1:{dead}", "--timeout", "1")
+    r = _cli(run_dir, "init", "--mode", "auto", "--probes", f"127.0.0.1:{dead}", "--timeout", "1",
+             "--launch-wait", "0")
     assert r.returncode == 3
     assert json.loads((run_dir / "island.json").read_text())["reason"] == "no internet route at launch"
 
 
 # ── conf.sh and start.sh wiring ─────────────────────────────────────────────
 
-def _conf(env_extra, expr):
+def _fake_repo(tmp, conf=None):
+    """A REPO_DIR with the real scripts/ and agents/ but its OWN
+    openbeast.conf: the real checkout's conf (a rig's ISLAND=off, OFFLINE=true)
+    must not decide what these tests see."""
+    root = pathlib.Path(tmp)
+    root.mkdir(parents=True, exist_ok=True)
+    for name in ("scripts", "agents", "openbeast.conf.example"):
+        if not (root / name).exists():
+            os.symlink(REPO / name, root / name)
+    if conf is not None:
+        (root / "openbeast.conf").write_text(conf)
+    return root
+
+
+def _conf(env_extra, expr, conf=None):
+    import tempfile
     env = {k: v for k, v in os.environ.items() if not k.startswith("OPENBEAST_")}
-    env.update(REPO_DIR=str(REPO), OB_CONF_READONLY="1", OB_CONF_LINTED="1",
-               OPENBEAST_RUN_DIR="/nonexistent-island-test")
-    env.update(env_extra)
-    r = subprocess.run(["bash", "-c", f'source scripts/lib/conf.sh >/dev/null; {expr}'],
-                       cwd=REPO, env=env, capture_output=True, text=True, timeout=30)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _fake_repo(tmp, conf)
+        env.update(REPO_DIR=str(root), OB_CONF_READONLY="1", OB_CONF_LINTED="1",
+                   OPENBEAST_RUN_DIR="/nonexistent-island-test")
+        env.update(env_extra)
+        r = subprocess.run(["bash", "-c", f'source scripts/lib/conf.sh >/dev/null; {expr}'],
+                           cwd=root, env=env, capture_output=True, text=True, timeout=30)
     assert r.returncode == 0, r.stderr
     return r.stdout.strip()
+
+
+def test_conf_ignores_the_real_checkouts_conf(tmp_path):
+    """The hermetic helper itself: a conf it is handed is read, the
+    checkout's is not."""
+    assert _conf({}, 'echo "$ISLAND"', conf="ISLAND=off\n") == "off"
+    assert _conf({}, 'echo "$ISLAND $OPENBEAST_WEBUI_OFFLINE"', conf="") == "auto false"
 
 
 @pytest.mark.parametrize("raw,want", [
@@ -510,6 +655,52 @@ def test_conf_webui_offline_follows_the_running_stack(tmp_path):
     assert _conf(env, 'echo "$OPENBEAST_WEBUI_OFFLINE"') == "false"
 
 
+def test_conf_webui_offline_honours_a_watcher_on_an_island_off_conf(tmp_path):
+    """A one-off `./start.sh -d --offline` on a box whose conf says
+    ISLAND=off runs a watcher; the watchdog's healthcheck.sh --restart does
+    not inherit OPENBEAST_ISLAND=force, so conf.sh must still ask the
+    watcher, or compose recreates WebUI without OFFLINE_MODE mid-outage."""
+    run = tmp_path / "run"
+    run.mkdir()
+    w = _spawn_watcher(run)
+    try:
+        assert _cli(run, "status").returncode == 3
+        assert _conf({"OPENBEAST_RUN_DIR": str(run)},
+                     'echo "$ISLAND $OPENBEAST_WEBUI_OFFLINE"', conf="ISLAND=off\n") == "off true"
+    finally:
+        w.terminate(); w.wait(timeout=10)
+    assert _conf({"OPENBEAST_RUN_DIR": str(run)}, 'echo "$OPENBEAST_WEBUI_OFFLINE"',
+                 conf="ISLAND=off\n") == "false"
+
+
+def test_status_reports_a_watcher_on_an_island_off_conf(tmp_path):
+    """`./start.sh --status` from another shell lacks the --offline launch's
+    OPENBEAST_ISLAND=force; on an ISLAND=off conf it must still show the live
+    watcher and the island state (docs/BEAST_ISLAND.md), and must not add
+    either line when no watcher runs."""
+    root = _fake_repo(tmp_path / "repo", conf="ISLAND=off\n")
+    os.symlink(REPO / "start.sh", root / "start.sh")
+    run = root / ".run"
+    run.mkdir()
+    env = {k: v for k, v in os.environ.items() if not k.startswith("OPENBEAST_")}
+    env["OB_CONF_LINTED"] = "1"
+
+    def status():
+        r = subprocess.run(["bash", str(root / "start.sh"), "--status"], env=env,
+                           capture_output=True, text=True, timeout=60)
+        return r.stdout
+    out = status()
+    assert "island watcher" not in out and "network:" not in out, out
+    w = _spawn_watcher(run)
+    try:
+        (run / "island.pid").write_text(f"{w.pid}\n")
+        out = status()
+        assert f"island watcher: running (pid {w.pid})" in out, out
+        assert "network: ISLAND MODE" in out and "[forced]" in out, out
+    finally:
+        w.terminate(); w.wait(timeout=10)
+
+
 def test_a_boot_race_does_not_pin_webui_offline(tmp_path):
     """ops review: spark-1's launch probe ran 12 s after boot, found no route,
     and the network came back 30 s later — but "launched islanded" kept
@@ -523,7 +714,8 @@ def test_a_boot_race_does_not_pin_webui_offline(tmp_path):
     down = f"127.0.0.1:{dead.getsockname()[1]}"; dead.close()
     env = dict(os.environ, OPENBEAST_RUN_DIR=str(tmp_path))
     island = [sys.executable, str(REPO / "agents" / "island.py")]
-    r = subprocess.run(island + ["init", "--mode", "auto", f"--probes={down}", "--timeout", "0.5"],
+    r = subprocess.run(island + ["init", "--mode", "auto", f"--probes={down}", "--timeout", "0.5",
+                                 "--launch-wait", "0"],
                        env=env, capture_output=True, text=True, timeout=30)
     assert r.returncode == 3, r.stdout + r.stderr            # islanded at launch
     w = subprocess.Popen(island + ["watch", "--mode", "auto", "--interval", "1",

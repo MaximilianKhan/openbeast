@@ -157,7 +157,11 @@ if [[ $STATUS -eq 1 ]]; then
   [[ "${HYDRA:-false}" == "true" ]] && _st_names+=(hydra)
   [[ "${INSTINCT_SCORER:-false}" == "true" ]] && _st_names+=(instinct-scorer)
   [[ "${INSTINCT:-false}" == "true" ]] && _st_names+=(instinct)
-  [[ "${ISLAND:-auto}" != "off" ]] && _st_names+=(island)
+  # The island row also when the conf says ISLAND=off but a watcher runs: a
+  # one-off --offline launch, whose OPENBEAST_ISLAND=force this shell lacks.
+  if [[ "${ISLAND:-auto}" != "off" ]] || _pid_alive "$RUN_DIR/island.pid" "$(_pid_pattern island)"; then
+    _st_names+=(island)
+  fi
   # The row label; the tool server's pidfile kept the name of the proxy it
   # replaced (mcpo.pid), which is not something to show a user.
   _st_label() {
@@ -188,9 +192,13 @@ if [[ $STATUS -eq 1 ]]; then
       echo "  hydra health: not answering on :${HYDRA_PORT:-8095}"
     fi
   fi
-  if [[ "${ISLAND:-auto}" != "off" ]]; then
+  if [[ "${ISLAND:-auto}" != "off" || -f "${ISLAND_STATE_DIR:-$RUN_DIR}/island.json" ]]; then
     _st_isl="$(OPENBEAST_RUN_DIR="${ISLAND_STATE_DIR:-$RUN_DIR}" python3 "$SCRIPT_DIR/agents/island.py" status 2>/dev/null || true)"
-    echo "  network: ${_st_isl:-unknown (agents/island.py did not answer)}"
+    # ISLAND=off in the conf: only a LIVE watcher (a one-off --offline) gets
+    # the line, so a default ISLAND=off box reports what it always did.
+    if [[ "${ISLAND:-auto}" != "off" || ( -n "$_st_isl" && "$_st_isl" != "not watching"* ) ]]; then
+      echo "  network: ${_st_isl:-unknown (agents/island.py did not answer)}"
+    fi
   fi
   echo ""
   echo "Service health: ./scripts/healthcheck.sh   Logs: .run/stack.log"
@@ -560,7 +568,7 @@ _island_line() {
   local st; st="$(OPENBEAST_RUN_DIR="${ISLAND_STATE_DIR:-$RUN_DIR}" python3 "$SCRIPT_DIR/agents/island.py" status 2>/dev/null || true)"
   echo "  beast-island:  ${st:-unknown}"
   if [[ "$st" == ISLAND* ]]; then
-    echo "                 everything local works; web_search/fetch answer \"offline\""
+    echo "                 everything local works; web_search/fetch/weather answer \"offline\""
   fi
   return 0
 }
@@ -939,7 +947,8 @@ trap 'STOPPING=1; _mark_stopped "SIGTERM to a foreground ./start.sh"; cleanup; e
 
 # ---- beast-island: the launch decision, then the watcher -------------------
 # Before anything that could wait on the internet (compose, Open WebUI's
-# first-boot downloads). ISLAND=force islands now; auto probes once and boots
+# first-boot downloads). ISLAND=force islands now; auto probes (re-trying for
+# up to 20 s: a boot whose DHCP is still settling is not an outage) and boots
 # islanded when there is no route right now — the "power came back on the
 # UPS, router still dark" boot. Islanded at launch means, for this run only:
 # compose never pulls (ob_offline) and Open WebUI starts in OFFLINE_MODE.

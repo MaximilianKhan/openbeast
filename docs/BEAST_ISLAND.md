@@ -8,13 +8,14 @@
 
 ## Why this exists
 
-Everything OpenBeast does is local except two tools, `web_search` and `fetch`.
+Everything OpenBeast does is local except three tools: `web_search`, `fetch`
+and, on the Open WebUI tool server, `weather` (Open-Meteo).
 So an installed rig already *works* with no internet. What it did badly was
 **waiting**:
 
 | Without beast-island | With it |
 |---|---|
-| Each `web_search` / `fetch` stalls for seconds per call: SearXNG engine timeouts, or DNS followed by a 30 s socket timeout. The model then retries | They answer at once: *"ISLAND MODE … do not retry"* |
+| Each `web_search` / `fetch` / `weather` stalls for seconds per call: SearXNG engine timeouts, or DNS followed by a 30 s socket timeout. The model then retries | They answer at once: *"ISLAND MODE … do not retry"* |
 | Booting with no internet: Open WebUI auto-updates its embedding models from Hugging Face on every start and stalls | A launch with no route boots islanded: Open WebUI starts in `OFFLINE_MODE`, compose never pulls |
 | `healthcheck.sh` counts an offline Tailscale as DOWN and, under `--restart` with passwordless sudo, restarts `tailscaled` on every run | With no internet it's reported as *expected in island mode*: not counted, not restarted |
 | Nothing tells you what state you are in | `./start.sh --status`, `healthcheck.sh` and `doctor` all say it |
@@ -49,9 +50,13 @@ keeps the rig online, and web tools still stall on that link. Set
 `ISLAND=force` by hand if your uplink is flapping.
 
 **At launch, auto skips the grace.** If `./start.sh` finds no route, the stack
-boots islanded right away. Waiting would mean Open WebUI stalling on its
-downloads. This covers the case where power comes back to the rig before the
-router.
+boots islanded. Waiting out the 90 s grace would mean Open WebUI stalling on
+its downloads. This covers the case where power comes back to the rig before
+the router. A failed launch probe is first re-tried every 2 s for up to 20 s
+(`OPENBEAST_ISLAND_LAUNCH_WAIT`): a linger boot starts the user unit before
+DHCP has a default route (a user manager has no `network-online.target`), and
+on spark-1 the single probe lost that race by under a second, islanding an
+ordinary reboot.
 
 **Forced** (`--offline`, `ISLAND=force`) islands from launch and stays
 islanded until the stack stops. This holds even if the launch decision could
@@ -63,7 +68,7 @@ forced. Rejoin with: ./stop.sh && ./start.sh -d"*.
 
 | Piece | Behaviour |
 |---|---|
-| `web_search`, `fetch` (OpenCode MCP and the Open WebUI `:3001` tool server, one code path) | Return the island refusal immediately; no network call is attempted. The `:3001` audit row records the call as `ok` (the refusal is a normal tool answer) |
+| `web_search`, `fetch` (OpenCode MCP and the Open WebUI `:3001` tool server, one code path), and `weather` (`:3001` only) | Return the island refusal immediately; no network call is attempted. The `:3001` audit row records the call as `ok` (the refusal is a normal tool answer) |
 | Open WebUI's built-in **Web Search** toggle | **Not guarded.** It calls SearXNG directly, not through the tools, so it returns empty results after SearXNG's engine timeouts |
 | Every other tool, the model, agents, skills, files, beast-chat, beast-artifact | Unchanged; all local |
 | `docker compose up` | `--pull never` when islanded **at launch** (images must already be local, which they are on an installed rig) |
@@ -83,6 +88,7 @@ reaches what it reached before. Nothing about the model or its sampling changes.
 | `ISLAND_GRACE` | `OPENBEAST_ISLAND_GRACE` | `90` | Seconds of failed probes before auto mode islands (not used at launch) |
 | `ISLAND_PROBES` | `OPENBEAST_ISLAND_PROBES` | `1.1.1.1:443 9.9.9.9:443 8.8.8.8:443` | TCP targets: IP literals with ports, IPv6 in brackets (`[2606:4700::1111]:443`), space-separated. Hostnames are rejected because a probe that needs DNS stalls exactly when it matters. Port 443 rather than 53 because a router that hijacks DNS would answer with the uplink dead. `doctor` warns when no entry is valid |
 | — | `OPENBEAST_ISLAND_INTERVAL` | `15` | Seconds between probes (env only, for testing) |
+| — | `OPENBEAST_ISLAND_LAUNCH_WAIT` | `20` | Seconds a failed launch probe is re-tried before the run boots islanded (env only; `0` = decide on one probe). A real outage at launch costs this much extra boot time |
 
 **Proxy-only networks.** If this box reaches the internet only through a
 proxy, direct TCP to those addresses fails and auto mode islands a working
@@ -106,7 +112,7 @@ start.sh (supervisor)
         exits when the supervisor is gone; removes its own file on exit
 
 consumers read island.json
-  mcp_server.fetch / web_search ──► island.web_refusal()  (served by :3001 too)
+  mcp_server.fetch / web_search / weather ──► island.web_refusal()  (served by :3001 too)
   start.sh --status · healthcheck.sh · doctor.sh ──► island.py status
   conf.sh ──► island.py status --webui-offline  (for compose restarts)
 ```
@@ -116,7 +122,8 @@ consumers read island.json
 - **When a reader trusts it.** All three must hold:
   - the heartbeat is fresh (`stale_after`, capped at 10 minutes on read)
   - the pid it names is alive
-  - that pid is an `island.py` process
+  - that pid is an `island.py` process (its argv, from `/proc` on Linux and
+    `sysctl` on macOS; an argv that cannot be read counts as *not*)
   
   So a dead watcher, a crashed stack or a hand-planted file all read as *not
   islanded*. A stale file must never make web tools refuse on a box whose
