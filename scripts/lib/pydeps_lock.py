@@ -434,8 +434,40 @@ def unreachable(pkgs: dict, roots: list[str]) -> tuple[bool, list[str]]:
                         for k in pkgs if k not in seen)
 
 
-def audit_dir(lock_path: str, directory: str) -> tuple[list[str], list[str]]:
+def host_tags() -> set[str] | None:
+    """The wheel tags THIS interpreter can install (`py-abi-plat` strings),
+    from the same packaging.tags pip itself uses — or None when neither
+    packaging nor pip's vendored copy can be imported (then coverage is
+    checked by name only, as before)."""
+    try:
+        from packaging.tags import sys_tags
+    except ImportError:
+        try:
+            from pip._vendor.packaging.tags import sys_tags
+        except ImportError:
+            return None
+    return {str(t) for t in sys_tags()}
+
+
+def wheel_tags(filename: str) -> set[str] | None:
+    """The expanded `py-abi-plat` tags of a wheel filename, or None for a file
+    that is not a wheel (an sdist installs anywhere pip can build it)."""
+    if not filename.endswith(".whl"):
+        return None
+    parts = filename[:-4].split("-")
+    if len(parts) < 5:
+        return set()
+    pys, abis, plats = (x.split(".") for x in parts[-3:])
+    return {f"{a}-{b}-{c}" for a in pys for b in abis for c in plats}
+
+
+def audit_dir(lock_path: str, directory: str,
+              tags: set[str] | None | str = "host") -> tuple[list[str], list[str]]:
     """(matched, problems) for every file in a wheelhouse.
+
+    `tags`: the wheel tags the INSTALLING interpreter accepts. "host" (the
+    default) means this interpreter; None means any platform — for a
+    wheelhouse deliberately filled for a different target.
 
     A file whose hash is not in the lock is the interesting case: it is what a
     tampered or stale wheelhouse looks like, and installing from it with
@@ -447,7 +479,16 @@ def audit_dir(lock_path: str, directory: str) -> tuple[list[str], list[str]]:
     "verified", and an incomplete wheelhouse (one built for another platform,
     or a half-finished copy) passed the gate and failed later inside pip. A
     package with no file present is a problem, named.
+
+    AND COVERAGE IS PER PLATFORM. The lock lists every file of every release,
+    so "some locked file of each package is here" was satisfied by a
+    wheelhouse built entirely on a Mac or an aarch64 Spark, and an x86_64 rig
+    learned otherwise only inside pip --no-index ("No matching
+    distribution"). A package counts as covered only by a file THIS python
+    can install: an sdist, or a wheel whose tags it supports.
     """
+    if tags == "host":
+        tags = host_tags()
     pkgs = parse(lock_path)
     known = {h for p in pkgs.values() for h in p["hashes"]}
     #: Files a wheelhouse legitimately picks up in transit. NARROW ON PURPOSE:
@@ -476,6 +517,7 @@ def audit_dir(lock_path: str, directory: str) -> tuple[list[str], list[str]]:
 
     matched, problems = [], []
     seen_hashes: set = set()
+    installable: set = set()
     for entry in sorted(os.listdir(directory)):
         path = os.path.join(directory, entry)
         if entry in BENIGN:
@@ -496,6 +538,9 @@ def audit_dir(lock_path: str, directory: str) -> tuple[list[str], list[str]]:
         if digest in known:
             matched.append(entry)
             seen_hashes.add(digest)
+            wt = wheel_tags(entry)
+            if tags is None or wt is None or (wt & tags):
+                installable.add(digest)
         else:
             problems.append(f"{entry}: sha256:{digest} is in no lock entry")
     # COVERAGE: every package the lock pins needs at least one file here, or
@@ -511,6 +556,20 @@ def audit_dir(lock_path: str, directory: str) -> tuple[list[str], list[str]]:
             f"{len(uncovered)} of {len(pkgs)} locked package(s) have NO file "
             f"in this directory, so an install from it cannot complete: "
             f"{shown}{more}")
+    wrong_target = sorted(
+        f"{p['name']}=={p['version']}"
+        for p in pkgs.values()
+        if (set(p["hashes"]) & seen_hashes)
+        and not (set(p["hashes"]) & installable))
+    if wrong_target:
+        shown = ", ".join(wrong_target[:6])
+        more = f" (+{len(wrong_target) - 6} more)" if len(wrong_target) > 6 else ""
+        problems.append(
+            f"{len(wrong_target)} of {len(pkgs)} locked package(s) have files "
+            f"here but NONE this python/platform can install (python "
+            f"{sys.version_info[0]}.{sys.version_info[1]}, "
+            f"{sys.platform}) — the wheelhouse was built for a different "
+            f"target: {shown}{more}")
     return matched, problems
 
 
@@ -522,6 +581,9 @@ def main(argv=None) -> int:
     ap.add_argument("--extra", action="append", default=[],
                     help="a package bootstrap installs by name, unpinned")
     ap.add_argument("--dir", help="wheelhouse directory (audit)")
+    ap.add_argument("--any-platform", action="store_true",
+                    help="audit: a wheel for ANY platform covers its package "
+                         "(a wheelhouse filled for a different target)")
     ap.add_argument("--pip", default=f"{sys.executable} -m pip")
     args = ap.parse_args(argv)
     reqs = args.req or ["agents/requirements.txt"]
@@ -590,12 +652,14 @@ def main(argv=None) -> int:
             if not args.dir:
                 print("audit needs --dir", file=sys.stderr)
                 return 2
-            matched, problems = audit_dir(args.lock, args.dir)
+            matched, problems = audit_dir(
+                args.lock, args.dir,
+                tags=None if args.any_platform else "host")
             for p in problems:
                 print(f"  ! {p}")
             # "N do not" counted coverage problems as mismatched FILES, which
             # they are not. Say what each number means.
-            bad_files = [p for p in problems if "locked package(s) have NO" not in p]
+            bad_files = [p for p in problems if "locked package(s) have" not in p]
             cover = len(problems) - len(bad_files)
             tail = (f", {len(bad_files)} file(s) the lock does not name"
                     if bad_files else "")

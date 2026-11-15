@@ -934,6 +934,27 @@ if [[ $_rc -eq 0 && -f "$SB/llama.cpp/GOOD.txt" ]] && has "$_out" "extracted lla
 else
   fail "honest source bundle (rc=$_rc): $_out"
 fi
+# A bundle BUILT ON ANOTHER OS/CPU: its wheels and images are the build box's.
+# built_on was recorded and never compared, so install extracted llama.cpp
+# and only then died inside pip --no-index. Refused before anything is placed.
+rm -rf "$SB/llama.cpp"; mk_srcbundle
+"$REAL_PY" "$SB/scripts/lib/bundle_manifest.py" write "$SRCB" --built-at t --repo-commit c --built-on "Plan9 mips" \
+    --component source:source --meta "source:{\"commit\": \"$_commit\"}" >/dev/null
+install_bundle "$SRCB"
+if [[ $_rc -ne 0 && ! -e "$SB/llama.cpp" ]] && has "$_out" "built on 'Plan9 mips'; this box is '$(uname -s) $(uname -m)'"; then
+  pass "a bundle built on another OS/CPU is refused BEFORE anything is extracted"
+else
+  fail "foreign-platform bundle (rc=$_rc, llama.cpp: $(ls "$SB/llama.cpp" 2>/dev/null)): $_out"
+fi
+rm -rf "$SB/llama.cpp"; mk_srcbundle
+"$REAL_PY" "$SB/scripts/lib/bundle_manifest.py" write "$SRCB" --built-at t --repo-commit c --built-on "$(uname -s) $(uname -m)" \
+    --component source:source --meta "source:{\"commit\": \"$_commit\"}" >/dev/null
+install_bundle "$SRCB"
+if [[ $_rc -eq 0 && -f "$SB/llama.cpp/GOOD.txt" ]]; then
+  pass "negative control: a bundle built on this OS/CPU installs"
+else
+  fail "same-platform bundle (rc=$_rc): $_out"
+fi
 # The bundle's commit against THIS checkout's pin (scripts/llama.cpp.ref): the
 # build box may have had its clone somewhere else, and install said nothing.
 rm -rf "$SB/llama.cpp"; mk_srcbundle

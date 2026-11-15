@@ -141,7 +141,12 @@ case "$CMD" in
     echo "filling $DIR from $LOCK (hash-checked on arrival)..."
     "$PY" -m pip download --require-hashes -r "$LOCK" -d "$DIR" "$@" \
       || die "download failed — nothing in $DIR should be trusted; see the error above"
-    "$PY" "$HELPER" audit --lock "$LOCK" --dir "$DIR"
+    # The audit judges coverage for THIS interpreter's wheel tags — unless
+    # pip was given flags (--platform/--python-version: a different target),
+    # where this box's tags are the wrong question; the closed box's own
+    # `install --from` audits for its tags.
+    _aud=(); [[ $# -eq 0 ]] || _aud=(--any-platform)
+    "$PY" "$HELPER" audit --lock "$LOCK" --dir "$DIR" ${_aud[@]+"${_aud[@]}"}
     _n=$(find "$DIR" -maxdepth 1 -type f | wc -l)
     _lock_sha="$("$PY" -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$LOCK")"
     _commit="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || echo "not a git checkout")"

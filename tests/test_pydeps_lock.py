@@ -471,6 +471,56 @@ def test_audit_names_the_packages_a_short_wheelhouse_is_missing(tmp_path):
         problems
 
 
+def _lock_one_pkg(tmp_path, bodies):
+    """ONE package whose release has several files (the real lock's shape)."""
+    import hashlib
+    hashes = " \\\n".join(f"    --hash=sha256:{hashlib.sha256(b).hexdigest()}"
+                          for b in bodies)
+    return _write(tmp_path / "l.lock", f"pkgx==1.0 \\\n{hashes}\n")
+
+
+# A platform no interpreter that runs this suite can install.
+FOREIGN = "pkgx-1.0-cp99-cp99-plan9_mips.whl"
+
+
+def test_audit_coverage_refuses_a_wheelhouse_built_for_another_platform(tmp_path):
+    """Install-supply-chain finding: the lock lists EVERY file of each
+    release, so a wheelhouse built entirely on a Mac (or an aarch64 Spark)
+    covered every package by name, passed the audit, and the x86_64 rig
+    learned otherwise only inside pip --no-index."""
+    lock = _lock_one_pkg(tmp_path, [b"FOREIGN", b"NATIVE"])
+    wh = _wheelhouse(tmp_path, {FOREIGN: b"FOREIGN"})
+    matched, problems = L.audit_dir(lock, wh)
+    assert matched == [FOREIGN]
+    assert any("NONE this python/platform can install" in p for p in problems), problems
+    assert L.main(["audit", "--lock", lock, "--dir", wh]) == 1
+
+
+def test_audit_any_platform_accepts_a_deliberately_foreign_wheelhouse(tmp_path):
+    """`pydeps.sh wheelhouse ... --platform X` fills for ANOTHER target; that
+    box's tags are the wrong question there."""
+    lock = _lock_one_pkg(tmp_path, [b"FOREIGN", b"NATIVE"])
+    wh = _wheelhouse(tmp_path, {FOREIGN: b"FOREIGN"})
+    assert L.audit_dir(lock, wh, tags=None)[1] == []
+    assert L.main(["audit", "--lock", lock, "--dir", wh, "--any-platform"]) == 0
+
+
+def test_negative_control_a_pure_wheel_or_sdist_covers_on_any_host(tmp_path):
+    lock = _lock_one_pkg(tmp_path, [b"FOREIGN", b"PURE"])
+    wh = _wheelhouse(tmp_path, {FOREIGN: b"FOREIGN", "pkgx-1.0-py3-none-any.whl": b"PURE"})
+    assert L.audit_dir(lock, wh)[1] == []
+    lock2 = _lock_one_pkg(tmp_path, [b"SDIST"])
+    wh2 = tmp_path / "wh2"
+    wh2.mkdir()
+    (wh2 / "pkgx-1.0.tar.gz").write_bytes(b"SDIST")
+    assert L.audit_dir(lock2, str(wh2))[1] == []
+
+
+def test_wheel_tags_expands_compressed_tag_sets():
+    assert L.wheel_tags("a-1.0-py2.py3-none-any.whl") == {"py2-none-any", "py3-none-any"}
+    assert L.wheel_tags("a-1.0.tar.gz") is None
+
+
 # --------------------------------------------------------------------------
 # 2026-10-09 review, supply S1: what `verify` waved through
 # --------------------------------------------------------------------------

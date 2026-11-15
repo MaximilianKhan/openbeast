@@ -736,6 +736,33 @@ EOF
        Refusing: the medium is not answering consistently."
     ok "every recorded file matches its sha256"
 
+    # IS THIS BUNDLE FOR THIS BOX? Wheels and saved images are built for the
+    # BUILD box's OS/CPU (no cross-target flags reach them), and `built_on`
+    # was recorded but never compared — so a bundle built on a Mac or a Spark
+    # passed verify here, extracted llama.cpp, and only then died inside
+    # pip --no-index (or, wheels aside, at start.sh: "exec format error").
+    # Checked BEFORE anything is placed.
+    _built_on="$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("built_on") or "")' "$MANIFEST_FILE" 2>/dev/null || true)"
+    _here="$(uname -s) $(uname -m)"
+    if [[ -n "$_built_on" && "$_built_on" != "$_here" ]]; then
+      die "this bundle was built on '$_built_on'; this box is '$_here'.
+       Its wheels and container images are for the build box's OS/CPU and
+       cannot be used here. Nothing was installed. Build the bundle on a
+       connected box of the same kind as this one."
+    fi
+    # (Only when the bundle's lock IS this checkout's: a different lock is
+    # refused below, with the reason that actually applies.)
+    if [[ -d "$DIR/wheels" && -f "$REPO_DIR/agents/requirements.lock" ]] \
+       && { [[ ! -f "$DIR/meta/requirements.lock" ]] \
+            || cmp -s "$DIR/meta/requirements.lock" "$REPO_DIR/agents/requirements.lock"; }; then
+      _wa="$("$PY" "$REPO_DIR/scripts/lib/pydeps_lock.py" audit \
+               --lock "$REPO_DIR/agents/requirements.lock" --dir "$DIR/wheels" 2>&1)" \
+        || die "the bundle's wheels do not cover the lock for this python and platform ($("$PY" -V 2>&1), $_here):
+$(sed 's/^/         /' <<< "$_wa")
+       Nothing was installed. Rebuild the bundle on a connected box with the
+       same OS, CPU and python version as this one."
+    fi
+
     # _stage_verified <relative path> <dest>: copy ONE bundle file into the
     # private dir and check the COPY against the snapshot's recorded sha256.
     # What is consumed afterwards is the copy — the bytes that were checked.
