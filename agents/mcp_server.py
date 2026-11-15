@@ -409,6 +409,32 @@ def _cleanup_agents():
 
 
 atexit.register(_cleanup_agents)
+# In-flight bash/grep commands run in their OWN sessions (run_reaped): on a
+# clean exit (stdio EOF, uvicorn shutdown of the :3001 server that imports
+# this module) nothing else would stop them once this process is gone.
+atexit.register(_tools.kill_live_children)
+
+
+def _on_stop_signal(signum, frame):
+    """SIGTERM/SIGHUP (OpenCode tearing down its MCP child, a `kill`): stop
+    the in-flight tool commands and non-detached agents, then die the way
+    the signal says. atexit never runs on a default SIGTERM death, so
+    without this the command ran on under init with no timeout."""
+    try:
+        _tools.kill_live_children(2.0)
+        _cleanup_agents()
+    finally:
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
+
+def _install_stop_handlers() -> None:
+    """Hook the stop signals, except one the launcher chose to IGNORE (an
+    inherited SIG_IGN, e.g. nohup's SIGHUP, is how it survives a hangup)."""
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        if signal.getsignal(sig) is signal.SIG_IGN:
+            continue
+        signal.signal(sig, _on_stop_signal)
 
 
 def _parse_agent_log(log_path: str, max_bytes: int = 10_000_000) -> list[dict]:
@@ -1875,6 +1901,7 @@ if __name__ == "__main__":
     # /proc/<ancestor>/environ. run_reaped and start_agent also do this
     # lazily (the :3001 server imports this module and relies on them).
     _tools.harden_process()
+    _install_stop_handlers()
 
     if args.transport == "http":
         print(f"MCP server starting on http://{MCP_BIND}:{args.port}/mcp")
