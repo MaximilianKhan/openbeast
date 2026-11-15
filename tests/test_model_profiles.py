@@ -58,7 +58,10 @@ def test_profile_trust_remote_code_needs_ack_bound_to_revision(tmp_path):
     (BASE + 'EXTRA_ARGS=["--trust-remote-code"]\n', "may not contain --trust-remote-code"),
     (BASE + 'EXTRA_ARGS=["--api-key","k"]\n', "may not contain --api-key"),
     (BASE + "EXTRA_ARGS=--foo --bar\n", "JSON array"),
-    (BASE + "TENSOR_PARALLEL_SIZE=4\n", "TENSOR_PARALLEL_SIZE"),
+    (BASE + "TENSOR_PARALLEL_SIZE=9\n", "1..8 — one rank per Spark"),
+    (BASE + "TENSOR_PARALLEL_SIZE=0\n", "TENSOR_PARALLEL_SIZE"),
+    (BASE + "TENSOR_PARALLEL_SIZE=08\n", "TENSOR_PARALLEL_SIZE"),
+    (BASE + "TENSOR_PARALLEL_SIZE=2.0\n", "TENSOR_PARALLEL_SIZE"),
     (BASE + "GPU_MEMORY_UTILIZATION=0.99\n", "GPU_MEMORY_UTILIZATION"),
     (BASE + "TOOL_CALL_PARSER=a;rm -rf\n", "characters no vLLM name has"),
     (BASE + "CHAT_TEMPLATE=missing.jinja\n", "does not exist"),
@@ -70,6 +73,16 @@ def test_profile_trust_remote_code_needs_ack_bound_to_revision(tmp_path):
 def test_profile_junk_is_refused(tmp_path, body, msg):
     with pytest.raises(obprofile.ProfileError, match=msg):
         load_body(tmp_path, body)
+
+
+@pytest.mark.parametrize("n", range(1, 9))
+def test_profile_tensor_parallel_one_rank_per_spark_up_to_eight(tmp_path, n):
+    assert load_body(tmp_path, BASE + f"TENSOR_PARALLEL_SIZE={n}\n").get("TENSOR_PARALLEL_SIZE") == str(n)
+
+
+def test_profile_tensor_parallel_defaults_to_a_pair(tmp_path):
+    assert load_body(tmp_path, BASE).get("TENSOR_PARALLEL_SIZE", "2") == "2"
+    assert "1..8" in obprofile.KEYS["TENSOR_PARALLEL_SIZE"]
 
 
 def test_profile_backend_specific_keys(tmp_path):
