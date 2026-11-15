@@ -12,7 +12,7 @@ pass() { echo "  PASS: $*"; PASS=$((PASS + 1)); }
 fail() { echo "  FAIL: $*"; FAIL=$((FAIL + 1)); }
 echo "=== spark-cluster tests ==="
 
-T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
+T="$(cd "$(mktemp -d)" && pwd -P)"; trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin" "$T/home"
 # ssh <opts...> <target> <cmd>: the last two arguments are target and command.
 cat > "$T/bin/ssh" <<'S'
@@ -209,6 +209,76 @@ rm -f "$SC_DIMG/n2"
 SC_LOAD_AS="sha256:bad" _run sync-image --cluster "$T/cluster.env" some/image:tag
 [[ $RC -ne 0 ]] && _has "$OUT" "rank 2: image id sha256:bad after load, head has $_ID" \
   && pass "sync-image: a load that lands a different image id fails" || fail "sync-image id mismatch (rc=$RC): $OUT"
+
+# sync-weights: the HEAD's lock is the pin for every worker. Workers are on
+# this filesystem (same paths), so rsync is a recording stub; what is tested
+# is which lock each worker verifies against, and what gets copied.
+cat > "$T/bin/rsync" <<'S'
+#!/bin/bash
+echo "rsync $*" >> "$SC_RSYNC_LOG"
+S
+chmod +x "$T/bin/rsync"
+export SC_RSYNC_LOG="$T/rsync.log" MODELS_DIR="$T/models"
+mkdir -p "$T/wrepo/scripts" "$T/hp" "$MODELS_DIR"
+cp -R "$REPO_DIR/scripts/backends" "$T/wrepo/scripts/backends"
+rm -f "$T/wrepo/scripts/backends/models/"*.lock
+git -C "$T" init -q wrepo && git -C "$T/wrepo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+_DREV=89abcdef0123456789abcdef0123456789abcdef
+printf 'BACKEND=tensorfold\nSOURCE=acme/Some-Model-MLX\nREVISION=%s\nSERVED_MODEL_NAME=m\nTENSOR_PARALLEL_SIZE=2\nDRAFTER_SOURCE=acme/Some-Drafter\nDRAFTER_REVISION=%s\n' "$_REV" "$_DREV" > "$T/hp/syn.env"
+# A fetched model + drafter and the head's lock, as model-fetch.sh leaves them.
+python3 - "$MODELS_DIR" "$T/hp/syn.lock" "model:syn:acme/Some-Model-MLX:$_REV" "drafter:syn.drafter:acme/Some-Drafter:$_DREV" <<'PY'
+import hashlib, json, sys
+from pathlib import Path
+mdir, lock = Path(sys.argv[1]), Path(sys.argv[2])
+arts = {}
+for spec in sys.argv[3:]:
+    key, d, repo, rev = spec.split(":")
+    root = mdir / d
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "config.json").write_text(json.dumps({"model_type": "brand_new"}))
+    (root / "model.safetensors").write_bytes(b"\0" * 64)
+    (root / ".openbeast-model.json").write_text(json.dumps({"source": repo, "revision": rev}))
+    files = {f: {"size": (root / f).stat().st_size, "sha256": hashlib.sha256((root / f).read_bytes()).hexdigest(),
+                 "hub_oid": None, "lfs": False} for f in ("config.json", "model.safetensors")}
+    arts[key] = {"source": repo, "revision": rev, "dir": d, "files": files}
+lock.write_text(json.dumps({"schema": 1, "artifacts": arts}))
+PY
+_WM="$T/wrepo/scripts/backends/models"
+cp "$T/hp/syn.env" "$_WM/syn.env"
+printf 'CLUSTER_NODES="local n1"\nCLUSTER_NAME=test\nCLUSTER_REPO=%s\n' "$T/wrepo" > "$T/cluster-w.env"
+: > "$SC_RSYNC_LOG"
+_run sync-weights --cluster "$T/cluster-w.env" --profile "$T/hp/syn.env"
+if [[ $RC -eq 0 ]] && cmp -s "$T/hp/syn.lock" "$_WM/syn.lock" && _has "$OUT" "installed the head's lock" \
+   && _has "$OUT" "every worker holds syn"; then
+  pass "sync-weights: a worker with no lock of its own is verified against the HEAD's lock (installed there), not a fresh one"
+else
+  fail "sync-weights head lock (rc=$RC): $OUT"
+fi
+if grep -qF "$MODELS_DIR/syn/ n1:$MODELS_DIR/syn/" "$SC_RSYNC_LOG" && grep -qF "$MODELS_DIR/syn.drafter/ n1:$MODELS_DIR/syn.drafter/" "$SC_RSYNC_LOG"; then
+  pass "sync-weights: copies the drafter directory too"
+else
+  fail "sync-weights drafter (rc=$RC): $OUT // $(cat "$SC_RSYNC_LOG")"
+fi
+# A worker whose own lock differs from the head's: refused before any copy.
+printf '{"schema": 1, "artifacts": {}}\n' > "$_WM/syn.lock"; : > "$SC_RSYNC_LOG"
+_run sync-weights --cluster "$T/cluster-w.env" --profile "$T/hp/syn.env"
+[[ $RC -ne 0 ]] && _has "$OUT" "differs from the head's" && [[ ! -s "$SC_RSYNC_LOG" ]] \
+  && pass "sync-weights: a worker whose lock differs from the head's is refused before the copy" || fail "sync-weights lock skew (rc=$RC): $OUT"
+rm -f "$_WM/syn.lock"
+# A worker whose profile differs (another checkout): refused before any copy.
+echo "MAX_MODEL_LEN=4096" >> "$_WM/syn.env"; : > "$SC_RSYNC_LOG"
+_run sync-weights --cluster "$T/cluster-w.env" --profile "$T/hp/syn.env"
+[[ $RC -ne 0 ]] && _has "$OUT" "is missing or differs from the head's" && [[ ! -s "$SC_RSYNC_LOG" ]] \
+  && pass "sync-weights: a worker whose profile differs from the head's is refused" || fail "sync-weights profile skew (rc=$RC): $OUT"
+cp "$T/hp/syn.env" "$_WM/syn.env"
+# A local-SOURCE profile with no lock on the head: there is nothing to verify
+# a worker's copy against, so nothing is sent (no trust-on-first-use lock).
+mkdir -p "$T/local-model"; echo '{"model_type": "brand_new"}' > "$T/local-model/config.json"
+printf 'BACKEND=tensorfold\nSOURCE=%s\nSERVED_MODEL_NAME=m\nTENSOR_PARALLEL_SIZE=2\n' "$T/local-model" > "$T/hp/loc.env"
+cp "$T/hp/loc.env" "$_WM/loc.env"; : > "$SC_RSYNC_LOG"
+_run sync-weights --cluster "$T/cluster-w.env" --profile "$T/hp/loc.env"
+[[ $RC -ne 0 ]] && _has "$OUT" "has no lock entry" && [[ ! -s "$SC_RSYNC_LOG" ]] && [[ ! -e "$_WM/loc.lock" ]] \
+  && pass "sync-weights: a head with no lock for the profile is refused (no TOFU lock on the worker)" || fail "sync-weights unlocked local (rc=$RC): $OUT"
 
 echo ""
 echo "=== $PASS passed, $FAIL failed ==="

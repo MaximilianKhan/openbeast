@@ -3,7 +3,7 @@
 # docs/SPARK_HYDRA.md ("Scaling: 1 to 8 Sparks")
 #
 #   scripts/backends/spark-cluster.sh check                      every node: reachable, GB10, NCCL, fabric, memory, disk
-#   scripts/backends/spark-cluster.sh sync-weights --profile NAME   head -> workers over the fabric, then verify vs the lock
+#   scripts/backends/spark-cluster.sh sync-weights --profile NAME   head -> workers over the fabric (model + drafter), verified vs the HEAD's lock
 #   scripts/backends/spark-cluster.sh sync-image IMAGE           docker save | load to every worker that lacks it
 #   scripts/backends/spark-cluster.sh save-image IMAGE FILE      write IMAGE to FILE (carry it to an offline cluster)
 #   scripts/backends/spark-cluster.sh start --profile NAME [--engine tensorfold|vllm]
@@ -17,7 +17,7 @@
 # own spark.env through scripts/backends/<engine>/spark-node.sh.
 #
 # OFFLINE: nothing here reaches the internet. Weights travel head -> worker
-# with rsync and are checked against the profile's sha256 lock on arrival;
+# with rsync and are checked against the head's sha256 lock on arrival;
 # images travel with docker save | docker load (or a file, save-image, for a
 # cluster with no registry at all).
 set -euo pipefail
@@ -143,25 +143,63 @@ sync-weights)
   MODELS_DIR="${MODELS_DIR:-}"; sp_load "${SPARK_ENV:-$HERE/spark.env}" MODELS_DIR
   sp_profile_locate "$PROFILE" "${MODELS_DIR:-}"
   [[ $SP_LOCATE_RC -eq 0 && -n "$SP_MODEL_DIR" ]] || { echo "Error: '$PF_PROFILE_NAME' is not on the head, or does not match its lock (model-fetch.sh --profile $PF_PROFILE_NAME [--verify])" >&2; exit 1; }
+  [[ -z "$PF_DRAFTER_SOURCE" || -n "$SP_DRAFTER_DIR" ]] || { echo "Error: the drafter of '$PF_PROFILE_NAME' is not on the head (model-fetch.sh --profile $PF_PROFILE_NAME)" >&2; exit 1; }
+  # The HEAD's lock is the pin every worker's copy is checked against, so it
+  # must pin every artifact. (--locate passes a local SOURCE with no lock at
+  # all; a worker's --verify would then record a fresh trust-on-first-use
+  # lock of whatever arrived and call it verified.)
+  if ! python3 - "$PF_PROFILE_LOCK" model ${PF_DRAFTER_SOURCE:+drafter} <<'PY'
+import json, sys
+try:
+    arts = json.load(open(sys.argv[1])).get("artifacts") or {}
+except (OSError, ValueError):
+    sys.exit(1)
+sys.exit(0 if all((arts.get(k) or {}).get("files") for k in sys.argv[2:]) else 1)
+PY
+  then
+    echo "Error: $PF_PROFILE_LOCK has no lock entry for every artifact of '$PF_PROFILE_NAME' — run model-fetch.sh --profile $PF_PROFILE_NAME on the head first (it locks a local SOURCE on its first run), then sync" >&2
+    exit 1
+  fi
   (( N > 1 )) || { echo "One node: nothing to sync."; exit 0; }
-  echo "== $PF_PROFILE_NAME: $SP_MODEL_DIR -> ranks 1..$((N - 1))"
+  sha() { python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$1"; }
+  PSHA="$(sha "$PF_PROFILE_PATH")" LSHA="$(sha "$PF_PROFILE_LOCK")"
+  NAME_Q="$(q "$PF_PROFILE_NAME")"
+  # Same parent for the model and the drafter (MODELS_DIR); none for a local SOURCE.
+  MDIR=""
+  if [[ -n "$SP_DRAFTER_DIR" ]]; then MDIR="$(dirname "$SP_DRAFTER_DIR")"; elif [[ "$PF_PROFILE_IS_HF" == 1 ]]; then MDIR="$(dirname "$SP_MODEL_DIR")"; fi
+  DIRS=("$SP_MODEL_DIR"); [[ -n "$SP_DRAFTER_DIR" ]] && DIRS+=("$SP_DRAFTER_DIR")
+  # The worker launches the profile by NAME from its own checkout, against its
+  # own lock: both must be byte-identical to the head's. Checked before any
+  # copy; a worker with no lock gets the head's after its hash is confirmed.
+  # shellcheck disable=SC2016  # $p, $l, $1 expand on the worker
+  H='h() { { sha256sum "$1" 2>/dev/null || shasum -a 256 "$1"; } | cut -d" " -f1; }'
+  PRE="cd $REPO_Q && p=scripts/backends/models/$NAME_Q.env l=scripts/backends/models/$NAME_Q.lock && $H"'
+if [ ! -f "$p" ] || [ "$(h "$p")" != '"$PSHA"' ]; then echo "this node'"'"'s $p is missing or differs from the head'"'"'s — check out the head'"'"'s commit (spark-cluster.sh check compares them)"; exit 1; fi
+if [ -f "$l" ] && [ "$(h "$l")" != '"$LSHA"' ]; then echo "this node'"'"'s $l differs from the head'"'"'s — the head'"'"'s lock is the pin: restore it from git, or remove it here to take the head'"'"'s"; exit 1; fi'
+  POST="cd $REPO_Q && l=scripts/backends/models/$NAME_Q.lock && $H"'
+if [ -f "$l" ]; then cat > /dev/null; else t="$l.partial.$$"; if cat > "$t" && [ "$(h "$t")" = '"$LSHA"' ]; then mv "$t" "$l"; echo "installed the head'"'"'s lock as $l"; else rm -f "$t"; echo "the head'"'"'s lock did not arrive intact"; exit 1; fi; fi
+scripts/backends/model-fetch.sh --profile '"$NAME_Q ${MDIR:+--models-dir $(q "$MDIR")}"' --verify || exit 1
+scripts/backends/model-fetch.sh --profile '"$NAME_Q"' --locate > /dev/null || { echo "verified where the head wrote it, but this node'"'"'s own MODELS_DIR (its spark.env) does not lead there, so its launcher will not find it — make MODELS_DIR match the head'"'"'s"; exit 1; }'
+  echo "== $PF_PROFILE_NAME: ${DIRS[*]} -> ranks 1..$((N - 1)), checked against the head's lock ($PF_PROFILE_LOCK)"
   pids=()
   for ((r = 1; r < N; r++)); do
     (
-      on_node "$r" "mkdir -p $(q "$SP_MODEL_DIR")"
-      if [[ $DRY -eq 1 ]]; then
-        echo "[rank $r] rsync -a --partial $SP_MODEL_DIR/ ${NODES[$r]}:$SP_MODEL_DIR/"
-      else
-        rsync -a --partial -e "ssh ${SSH_OPTS[*]} -c aes128-gcm@openssh.com -o Compression=no" \
-          "$SP_MODEL_DIR/" "${NODES[$r]}:$SP_MODEL_DIR/"
-      fi
-      # The lock travels with the repo checkout; verify there, on the worker.
-      on_node "$r" "cd $REPO_Q && scripts/backends/model-fetch.sh --profile $(q "$PF_PROFILE_NAME") --verify"
+      on_node "$r" "$PRE"
+      for d in "${DIRS[@]}"; do
+        on_node "$r" "mkdir -p $(q "$d")"
+        if [[ $DRY -eq 1 ]]; then
+          echo "[rank $r] rsync -a --partial $d/ ${NODES[$r]}:$d/"
+        else
+          rsync -a --partial -e "ssh ${SSH_OPTS[*]} -c aes128-gcm@openssh.com -o Compression=no" \
+            "$d/" "${NODES[$r]}:$d/"
+        fi
+      done
+      on_node "$r" "$POST" < "$PF_PROFILE_LOCK"
     ) > >(sed "s/^/  [rank $r] /") 2>&1 &
     pids+=($!)
   done
   rc=0; for p in "${pids[@]}"; do wait "$p" || rc=1; done
-  [[ $rc -eq 0 ]] && echo "== every worker holds $PF_PROFILE_NAME, verified against its lock" || { echo "== a worker failed (above)"; exit 1; }
+  [[ $rc -eq 0 ]] && echo "== every worker holds $PF_PROFILE_NAME, verified against the head's lock" || { echo "== a worker failed (above)"; exit 1; }
   ;;
 
 sync-image|save-image)
