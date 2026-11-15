@@ -605,7 +605,7 @@ $(printf '         %s\n' "${_ob_net_need[@]}")
        Nothing was built or downloaded. Check the connection (a VPN, a proxy,
        DNS) and re-run. On a network that is closed on purpose, set
        OFFLINE=true in openbeast.conf and bring the artifacts in:
-         ./scripts/bundle.sh build ./bundle      (on a connected box)
+         ./scripts/bundle.sh build ./bundle      (on a connected box of the SAME arch: an aarch64 Spark for a Spark)
          ./scripts/bundle.sh install ./bundle    (here)"
   fi
 fi
@@ -687,7 +687,7 @@ else
     die "OFFLINE=true and there is no llama.cpp source to build.
        The source is one of the four fetches a first install cannot do on a
        closed network. Bring it in with a bundle:
-         connected box:  ./scripts/bundle.sh build ./bundle
+         connected box (same arch as this one):  ./scripts/bundle.sh build ./bundle
          here:           ./scripts/bundle.sh install ./bundle
        or by hand: git clone --depth 1 https://github.com/ggml-org/llama.cpp.git
        into $REPO_DIR/llama.cpp (a source tarball is enough — this build
@@ -1088,7 +1088,7 @@ if ob_offline; then
   warn "OFFLINE=true → not pulling the $_n_img frontend image(s); a registry
       pull cannot succeed here. Images already in the local store are used as
       they are. To bring them in from a connected box:
-        connected:  ./scripts/bundle.sh build ./bundle
+        connected, same arch:  ./scripts/bundle.sh build ./bundle
         here:       ./scripts/bundle.sh install ./bundle
       That loads them AND rewrites docker-compose.yml to reference them by
       content id, because a digest-pinned ref cannot be satisfied from a
