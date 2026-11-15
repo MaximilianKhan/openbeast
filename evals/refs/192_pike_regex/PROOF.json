@@ -1,0 +1,22 @@
+{
+ "unit": "192_pike_regex",
+ "dest": "/tmp/eval_pike192/rx.py",
+ "ref": "ref.py",
+ "repeat": 5,
+ "scale_check": 2.0,
+ "wrong": {
+  "wrong_longest.py": "^search case \\d+: mismatch$",
+  "wrong_dollar.py": "^search case \\d+: mismatch$",
+  "wrong_lazy.py": "^search case \\d+: mismatch$",
+  "wrong_finditer.py": "^finditer case \\d+: mismatch$",
+  "wrong_none.py": "^search case \\d+: mismatch$",
+  "wrong_uses_re.py": "^forbidden api: re$"
+ },
+ "slow": {
+  "slow_backtrack.py": "^pathological case \\d+: timed out",
+  "slow_restart.py": "^pathological case \\d+: timed out"
+ },
+ "slow_max_s": 15,
+ "leak": "leak_probe.py",
+ "notes": "ref.py is a Pike VM; build.py regenerates evals/tasks/192_pike_regex.json from gen.py + validator_main.py and asserts ref agrees with every pathological expectation; make_wrong.py derives the single-mutation known-bad solutions from ref.py. The random/hand-picked oracle is the validator's own re: ref.py matched re on 140k random search and 60k random finditer cases from gen.py (seeds 1-13) plus the hand-picked set with 0 differences."
+}
