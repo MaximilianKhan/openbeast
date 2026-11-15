@@ -404,6 +404,11 @@ def create_app() -> FastAPI:
         title="OpenBeast local tools",
         version="1.0",
         description="Identity-aware tool server (see agents/openapi_tools.py).",
+        # /docs and /redoc OFF: FastAPI's pages pull floating, unpinned
+        # swagger-ui@5 / redoc@2 bundles from a CDN into THIS origin — the
+        # one serving /bash — and are broken offline anyway. WebUI reads
+        # only /openapi.json.
+        docs_url=None, redoc_url=None,
     )
     # Rebinding defence: a hostile DNS name pointed at 127.0.0.1 is refused
     # here, before a route (or the key check) runs. This was the one server

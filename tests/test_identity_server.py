@@ -537,4 +537,11 @@ def test_audit_digest_is_keyed_and_size_is_bucketed(workspace):
         == row["args_hmac"]
 
 
+def test_no_cdn_docs_pages(workspace):
+    """/docs and /redoc loaded floating swagger-ui@5 / redoc@2 from a CDN
+    into the same origin as /bash. WebUI needs only /openapi.json."""
+    c = client()
+    assert c.get("/docs").status_code == 404
+    assert c.get("/redoc").status_code == 404
+    assert c.get("/openapi.json").status_code == 200
 
