@@ -73,7 +73,7 @@ ENV_FILE="${ENV_FILE:-${SPARK_ENV:-$HERE/../spark.env}}"
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "Note: no settings file at $ENV_FILE — using the environment only (template: $HERE/../spark.env.example)." >&2
 fi
-sp_load "$ENV_FILE" VLLM_IMAGE VLLM_IMAGE_DIGEST SPARK_IFACE SPARK_IB_HCA \
+sp_load "$ENV_FILE" VLLM_IMAGE VLLM_IMAGE_DIGEST VLLM_IMAGE_ID SPARK_IFACE SPARK_IB_HCA \
   SPARK_HEAD_IP SPARK_NODE_IP VLLM_MASTER_PORT SPARK_SERVE_HOST SPARK_SERVE_PORT \
   SPARK_ALLOW_WILDCARD_BIND HF_CACHE MODELS_DIR SPARK_PROFILE VLLM_API_KEY_FILE SPARK_NO_API_KEY
 sp_warn_legacy_model_keys "$ENV_FILE"
@@ -137,7 +137,7 @@ if [[ "$RANK" == 0 ]]; then
   fi
   [[ -n "$PF_TOOL_CALL_PARSER" ]] || echo "Warning: profile '$PF_PROFILE_NAME' has no TOOL_CALL_PARSER — tool calls will arrive as text and OpenBeast's tools will not work (model-inspect.sh suggests one)." >&2
 fi
-sp_image "${VLLM_IMAGE:-}" "${VLLM_IMAGE_DIGEST:-}" "$PRINT"
+sp_image "${VLLM_IMAGE:-}" "${VLLM_IMAGE_DIGEST:-}" "$PRINT" "${VLLM_IMAGE_ID:-}"
 if [[ $SP_ERRORS -gt 0 ]]; then
   echo "Refusing to start: $SP_ERRORS setting(s) missing or unsafe (settings: $ENV_FILE, profile: $PF_PROFILE_PATH)." >&2
   exit 1

@@ -171,9 +171,15 @@ sync-image|save-image)
     [[ $DRY -eq 1 ]] && { echo "docker save $IMAGE | gzip > $FILE"; exit 0; }
     docker save "$IMAGE" | gzip > "$FILE"
     echo "wrote $FILE ($(du -h "$FILE" | cut -f1)). On the offline head: gunzip -c $FILE | docker load; then $0 sync-image $IMAGE"
+    echo "  docker load keeps the image id but not the registry's RepoDigest: pin it by id (VLLM_IMAGE_ID / TENSORFOLD_IMAGE_ID = $(docker image inspect -f '{{.Id}}' "$IMAGE"))"
     exit 0
   fi
+  # The image ID (sha256 of the image config, which names every layer) is
+  # what survives docker save | load; a RepoDigest (the registry manifest's
+  # hash, what *_IMAGE_DIGEST pins) does not on the classic overlay2 store.
+  # So the workers are compared, and the launchers can be pinned, by ID.
   want="$( [[ $DRY -eq 1 ]] && echo "<head image id>" || docker image inspect -f '{{.Id}}' "$IMAGE")"
+  nodigest=()
   for ((r = 1; r < N; r++)); do
     have="$(on_node "$r" "docker image inspect -f '{{.Id}}' $(q "$IMAGE") 2>/dev/null || true")"
     if [[ "$have" == "$want" ]]; then echo "  rank $r: has $IMAGE ($want)"; continue; fi
@@ -182,8 +188,18 @@ sync-image|save-image)
     docker save "$IMAGE" | ssh "${SSH_OPTS[@]}" "${NODES[$r]}" "docker load" >/dev/null
     have="$(on_node "$r" "docker image inspect -f '{{.Id}}' $(q "$IMAGE")")"
     [[ "$have" == "$want" ]] || { echo "  rank $r: image id $have after load, head has $want" >&2; exit 1; }
-    echo "  rank $r: loaded, identical"
+    echo "  rank $r: loaded, identical (image id $want)"
+    digs="$(on_node "$r" "docker image inspect -f '{{join .RepoDigests \" \"}}' $(q "$IMAGE") 2>/dev/null || true")"
+    if [[ -z "${digs// /}" ]]; then
+      echo "  rank $r: has no RepoDigest after docker load — an *_IMAGE_DIGEST pin cannot resolve there offline (docker would try to pull)"
+      nodigest+=("$r")
+    fi
   done
+  if [[ ${#nodigest[@]} -gt 0 || $DRY -eq 1 ]]; then
+    echo "== pin the image by ID in every node's spark.env (runs that exact image, never pulls):"
+    echo "     VLLM_IMAGE_ID=$want      (vLLM)"
+    echo "     TENSORFOLD_IMAGE_ID=$want      (TensorFold container engine)"
+  fi
   ;;
 
 start)

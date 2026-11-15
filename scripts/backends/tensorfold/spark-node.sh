@@ -100,7 +100,7 @@ if [[ ! -f "$ENV_FILE" ]]; then
   echo "Note: no settings file at $ENV_FILE — using the environment only (template: $HERE/../spark.env.example)." >&2
 fi
 sp_load "$ENV_FILE" TENSORFOLD_ENGINE TENSORFOLD_BIN TENSORFOLD_VERSION TENSORFOLD_API_KEY_FILE \
-  SPARK_NO_API_KEY TENSORFOLD_IMAGE TENSORFOLD_IMAGE_DIGEST TENSORFOLD_REF \
+  SPARK_NO_API_KEY TENSORFOLD_IMAGE TENSORFOLD_IMAGE_DIGEST TENSORFOLD_IMAGE_ID TENSORFOLD_REF \
   SPARK_IFACE SPARK_IB_HCA SPARK_HEAD_IP TENSORFOLD_MASTER_PORT SPARK_SERVE_HOST \
   SPARK_SERVE_PORT SPARK_ALLOW_WILDCARD_BIND MODELS_DIR SPARK_PROFILE
 ENGINE="${TENSORFOLD_ENGINE:-native}"
@@ -178,7 +178,7 @@ else
     DRAFTER="/models/$PF_PROFILE_NAME.drafter"
   fi
 fi
-[[ "$ENGINE" == container ]] && sp_image "${TENSORFOLD_IMAGE:-}" "${TENSORFOLD_IMAGE_DIGEST:-}" "$PRINT"
+[[ "$ENGINE" == container ]] && sp_image "${TENSORFOLD_IMAGE:-}" "${TENSORFOLD_IMAGE_DIGEST:-}" "$PRINT" "${TENSORFOLD_IMAGE_ID:-}"
 if [[ $SP_ERRORS -gt 0 ]]; then
   echo "Refusing to start: $SP_ERRORS setting(s) missing or unsafe (settings: $ENV_FILE, profile: $PF_PROFILE_PATH)." >&2
   exit 1

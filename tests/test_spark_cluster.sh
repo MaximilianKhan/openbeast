@@ -57,15 +57,29 @@ cat > "$T/bin/ip" <<'S'
 iface="${@: -1}"; k="SC_FABRIC_$(printf '%s' "${NODE:-local}" | tr -c 'A-Za-z0-9' '_')"
 for pair in ${!k:-}; do [[ "${pair%%=*}" == "$iface" ]] && echo "5: $iface    inet ${pair#*=} scope global $iface"; done
 S
+# docker, per NODE: $SC_DIMG/<node> holds that node's image id (absent = no
+# image), <node>.digests its RepoDigests. `save` writes the id as the "image",
+# `load` reads it back (SC_LOAD_AS overrides what lands: a corrupt transfer)
+# and, like the classic overlay2 store, records NO RepoDigest.
 cat > "$T/bin/docker" <<'S'
 #!/bin/bash
-echo "docker $*" >> "${SC_DOCKER_LOG:-/dev/null}"
-case "$1" in info) exit 0 ;; image) echo "sha256:${SC_IMAGE_ID:-aaa}"; exit 0 ;; esac
+n="${NODE:-local}"; st="$SC_DIMG"
+echo "$n docker $*" >> "${SC_DOCKER_LOG:-/dev/null}"
+case "$1" in
+  info) exit 0 ;;
+  image)
+    [[ -f "$st/$n" ]] || { echo "Error: No such image" >&2; exit 1; }
+    if [[ "$*" == *RepoDigests* ]]; then cat "$st/$n.digests" 2>/dev/null || echo; else cat "$st/$n"; fi
+    exit 0 ;;
+  save) echo "IMAGE $(cat "$st/$n")" ;;
+  load) read -r _ id; echo "${SC_LOAD_AS:-$id}" > "$st/$n"; rm -f "$st/$n.digests"; echo "Loaded image ID: $id" ;;
+esac
 exit 0
 S
 chmod +x "$T/bin/"*
 git -C "$T" init -q repo && git -C "$T/repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
-export SC_SSH_LOG="$T/ssh.log" PATH="$T/bin:$PATH"
+export SC_SSH_LOG="$T/ssh.log" SC_DIMG="$T/dimg" PATH="$T/bin:$PATH"
+mkdir -p "$SC_DIMG"
 _run() { : > "$SC_SSH_LOG"; OUT="$(HOME="$T/home" bash "$SC" "$@" 2>&1)"; RC=$?; }
 _has() { grep -qF -- "$2" <<< "$1"; }
 _cluster() { printf 'CLUSTER_NODES="%s"\nCLUSTER_NAME=test\nCLUSTER_REPO=%s\n' "$1" "$T/repo" > "$T/cluster.env"; }
@@ -172,11 +186,29 @@ _run start --cluster "$T/cluster4.env" --profile "$T/tf4.env"
 
 # sync-image: a worker that already has the same image id is left alone; one
 # that lacks it gets docker save | ssh docker load.
-_cluster "local n1"
+_cluster "local n1 n2"
 export SC_DOCKER_LOG="$T/docker.log"; : > "$SC_DOCKER_LOG"
+_ID="sha256:$(printf 'c%.0s' $(seq 1 64))"
+echo "$_ID" > "$SC_DIMG/local"; echo "some/image@sha256:feed" > "$SC_DIMG/local.digests"
+echo "$_ID" > "$SC_DIMG/n1"; echo "some/image@sha256:feed" > "$SC_DIMG/n1.digests"; rm -f "$SC_DIMG/n2" "$SC_DIMG/n2.digests"
 _run sync-image --cluster "$T/cluster.env" some/image:tag
-[[ $RC -eq 0 ]] && _has "$OUT" "rank 1: has some/image:tag" && ! grep -q "docker save" "$SC_DOCKER_LOG" \
-  && pass "sync-image: an identical image is not resent" || fail "sync-image same id (rc=$RC): $OUT"
+if [[ $RC -eq 0 ]] && _has "$OUT" "rank 1: has some/image:tag" && ! grep -q "^n1 docker load" "$SC_DOCKER_LOG" \
+   && grep -q "^n2 docker load" "$SC_DOCKER_LOG" && [[ "$(cat "$SC_DIMG/n2")" == "$_ID" ]] \
+   && _has "$OUT" "rank 2: loaded, identical (image id $_ID)"; then
+  pass "sync-image: an identical image is not resent; a missing one goes docker save | ssh docker load and is re-checked"
+else
+  fail "sync-image send path (rc=$RC): $OUT / $(cat "$SC_DOCKER_LOG")"
+fi
+# docker load carries no RepoDigest: say so, and give the pin that works there.
+if _has "$OUT" "rank 2: has no RepoDigest after docker load" && _has "$OUT" "VLLM_IMAGE_ID=$_ID" && _has "$OUT" "TENSORFOLD_IMAGE_ID=$_ID"; then
+  pass "sync-image: says a loaded image has no RepoDigest and prints the *_IMAGE_ID pin the launchers run by"
+else
+  fail "sync-image RepoDigest note (rc=$RC): $OUT"
+fi
+rm -f "$SC_DIMG/n2"
+SC_LOAD_AS="sha256:bad" _run sync-image --cluster "$T/cluster.env" some/image:tag
+[[ $RC -ne 0 ]] && _has "$OUT" "rank 2: image id sha256:bad after load, head has $_ID" \
+  && pass "sync-image: a load that lands a different image id fails" || fail "sync-image id mismatch (rc=$RC): $OUT"
 
 echo ""
 echo "=== $PASS passed, $FAIL failed ==="

@@ -808,6 +808,31 @@ else
   fail "pinned run (rc=$SPRC): $_O / $(cat "$_K/docker.log")"
 fi
 
+# Pinned by IMAGE ID (what survives docker save | load; sync-image prints it):
+# the run is by ID, never IMAGE@DIGEST, and only if that ID is on this node.
+_IMGID="sha256:$(printf 'b%.0s' $(seq 1 64))"
+: > "$_K/docker.log"
+_sp "$_VN" VLLM_IMAGE_ID="$_IMGID" -- --profile "$_P/vtest.env" --rank 0 --env "$_K/spark.env"
+if [[ $SPRC -eq 1 ]] && _has "$_O" "image $_IMGID (nvcr.io/nvidia/vllm:26.05-py3) is not on this node" && ! grep -q "^ARGV run" "$_K/docker.log"; then
+  pass "an *_IMAGE_ID pin whose image is not on this node is refused before docker run (no pull)"
+else
+  fail "absent image id (rc=$SPRC): $_O / $(cat "$_K/docker.log")"
+fi
+echo "$_IMGID" > "$_K/images/$(printf '%s' "$_IMGID" | tr '/:@' '___')"
+: > "$_K/docker.log"
+_sp "$_VN" VLLM_IMAGE_ID="$_IMGID" VLLM_IMAGE_DIGEST="$_DIGEST" -- --profile "$_P/vtest.env" --rank 0 --env "$_K/spark.env"
+if [[ $SPRC -eq 0 ]] && grep -qF -- "--entrypoint vllm $_IMGID serve /models/vtest " "$_K/docker.log" && ! grep -qF "@$_DIGEST" "$_K/docker.log"; then
+  pass "vllm pinned by image ID runs that ID (the ID wins over a digest), never IMAGE@DIGEST"
+else
+  fail "vllm image id run (rc=$SPRC): $_O / $(cat "$_K/docker.log")"
+fi
+: > "$_K/docker.log"
+_sp "$_TN" TENSORFOLD_IMAGE_ID="$_IMGID" -- --profile "$_P/tftest.env" --rank 1 --env "$_K/spark.env"
+[[ $SPRC -eq 0 ]] && grep -qF -- "--entrypoint bash $_IMGID -c" "$_K/docker.log" \
+  && pass "tensorfold container pinned by image ID runs that ID" || fail "tensorfold image id (rc=$SPRC): $_O / $(cat "$_K/docker.log")"
+_sp "$_VN" VLLM_IMAGE_ID=sha256:abc -- --profile "$_P/vtest.env" --rank 0 --env "$_K/spark.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "is not sha256:<64 hex>" && pass "a malformed *_IMAGE_ID is refused" || fail "bad image id (rc=$SPRC): $_O"
+
 : > "$_K/docker.log"
 _sp "$_TN" -- --profile "$_P/tftest.env" --rank 0 --master 192.168.100.10 --env "$_K/spark.env" --print
 if [[ $SPRC -eq 0 ]] && _has "$_O" "serve /models/tftest --tp 2 --rank 0 --no-update-check --drafter none --master 192.168.100.10 --master-port 29551" \
