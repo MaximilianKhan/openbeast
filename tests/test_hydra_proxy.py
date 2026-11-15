@@ -1554,3 +1554,40 @@ def test_a_caller_token_that_is_not_a_regular_file_is_not_trusted(fleet, tmp_pat
     tok.mkdir()
     r = post(srv, chat(), {"X-OpenBeast-Device": "max-phone", "X-Hydra-Caller": "caller-secret"})
     assert r.status_code == 200 and r.headers["x-hydra-route"] == "beast"
+
+
+def test_a_retired_client_is_closed_once_nothing_uses_it(tmp_path):
+    """Review 2026-11 F10: a reload that changed a node's url/slots parked the
+    old AsyncClient (and its keep-alive sockets) until shutdown."""
+    import asyncio
+    import dataclasses
+    engines = [type("E", (), {"url": f"http://127.0.0.1:{p}", "model": "m"})() for p in (7, 11, 13)]
+    cfg = core.validate(raw_config(*engines, tmp_path), env_for(tmp_path))
+    hy = hydra.Hydra(cfg, env=env_for(tmp_path), run=tmp_path / "run")
+
+    async def go():
+        n = cfg.nodes["rig"]
+        old = hy.client_for(n)
+        hy.hold(old)
+        new = hy.client_for(dataclasses.replace(n, slots=2))        # retired while in use
+        assert new is not old
+        await asyncio.sleep(0)
+        assert not old.is_closed, "a request still uses it"
+        hy.unhold(old)
+        for _ in range(50):
+            await asyncio.sleep(0.01)
+            if old.is_closed:
+                break
+        assert old.is_closed and old not in hy.retired
+        idle = hy.client_for(n)                                       # nobody holds it
+        hy.client_for(dataclasses.replace(n, slots=3))
+        for _ in range(50):
+            await asyncio.sleep(0.01)
+            if idle.is_closed:
+                break
+        assert idle.is_closed and hy.retired == []
+        for _, c in hy.clients.values():
+            await c.aclose()
+        await hy.probe_client.aclose()
+        await hy.instinct.aclose()
+    asyncio.run(go())

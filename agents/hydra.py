@@ -425,6 +425,7 @@ class Hydra:
         self.instinct = InstinctClient(cfg.settings.instinct, REPO)
         self.clients: dict[str, tuple[tuple, httpx.AsyncClient]] = {}
         self.retired: list[httpx.AsyncClient] = []
+        self.client_refs: dict[httpx.AsyncClient, int] = {}
         self.probe_client = httpx.AsyncClient(trust_env=False, timeout=httpx.Timeout(3.0, connect=3.0))
         self.manual_drain: dict[str, str] = {}
         self.lease_drain: set[str] = set()
@@ -466,7 +467,7 @@ class Hydra:
         self._apply_drain()
         for nid in list(self.clients):
             if nid not in new.nodes or self._client_key(new.nodes[nid]) != self.clients[nid][0]:
-                self.retired.append(self.clients.pop(nid)[1])
+                self._retire(self.clients.pop(nid)[1])
         self.next_probe.clear()
         self.next_models.clear()
         self.conf_checked = -1e9
@@ -485,7 +486,7 @@ class Hydra:
         if cur and cur[0] == k:
             return cur[1]
         if cur:
-            self.retired.append(cur[1])
+            self._retire(cur[1])
         # No connection cap: the engine's own queue is the queue. A cap of
         # slots*4 made the 5th concurrent turn on a 1-slot rig wait
         # POOL_TIMEOUT_S for a socket and then fail as a 502 that counted
@@ -498,6 +499,36 @@ class Hydra:
             limits=httpx.Limits(max_connections=None, max_keepalive_connections=n.slots))
         self.clients[n.id] = (k, c)
         return c
+
+    # A client replaced by a reload (url, connect timeout or slots changed)
+    # is closed as soon as no request still uses it. Parked until shutdown,
+    # every such reload leaked a client and its keep-alive sockets.
+    def hold(self, c: httpx.AsyncClient) -> None:
+        self.client_refs[c] = self.client_refs.get(c, 0) + 1
+
+    def unhold(self, c: httpx.AsyncClient) -> None:
+        n = self.client_refs.get(c, 0) - 1
+        if n > 0:
+            self.client_refs[c] = n
+            return
+        self.client_refs.pop(c, None)
+        if c in self.retired:
+            self._close_retired(c)
+
+    def _retire(self, c: httpx.AsyncClient) -> None:
+        self.retired.append(c)
+        if not self.client_refs.get(c):
+            self._close_retired(c)
+
+    def _close_retired(self, c: httpx.AsyncClient) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return                      # no loop (a CLI path): the lifespan closes it
+        self.retired.remove(c)
+        t = loop.create_task(c.aclose())
+        self.background.add(t)
+        t.add_done_callback(self.background.discard)
 
     def node_key(self, n: core.Node) -> str | None:
         if n.key_env:
@@ -843,10 +874,10 @@ class _UpstreamTruncated(Exception):
 
 
 async def _attempt(hy: Hydra, c: core.Candidate, path: str, payload: bytes, headers: dict,
-                   stream: bool, deadline: float) -> _Attempt:
+                   stream: bool, deadline: float, client: httpx.AsyncClient | None = None) -> _Attempt:
     """One upstream try, up to (not past) the commit point."""
     a = _Attempt()
-    client = hy.client_for(c.n)
+    client = client or hy.client_for(c.n)
     t0 = time.monotonic()
     req = client.build_request("POST", f"{c.n.url}{path}", content=payload, headers=headers)
     resp = None
@@ -1112,8 +1143,12 @@ async def proxy(request: Request, path: str, pin: str | None = None):
                              "ttft_ms": None, "outcome": "skipped", "why": why})
             continue
         hs = adm.hs                       # survives a reload that drops the deployment
+        client = hy.client_for(c.n)       # held for as long as the admission is
+        hy.hold(client)
+        adm.on_release.append(lambda cl=client: hy.unhold(cl))
         try:
-            a = await _until_disconnect(request, _attempt(hy, c, path, payload, uh, f.stream, deadline))
+            a = await _until_disconnect(request, _attempt(hy, c, path, payload, uh, f.stream, deadline,
+                                                          client))
         except BaseException:
             adm.release()
             raise
@@ -1360,10 +1395,14 @@ async def pinned(request: Request):
         key = hy.node_key(n)
         if key and rest != "/health":
             hdr["Authorization"] = f"Bearer {key}"
+        client = hy.client_for(n)
+        hy.hold(client)
         try:
-            r = await hy.client_for(n).get(f"{n.url}{rest}", headers=hdr, timeout=10.0)
+            r = await client.get(f"{n.url}{rest}", headers=hdr, timeout=10.0)
         except httpx.HTTPError as e:
             return hy.error("hydra_pinned_unavailable", f"{d}: {type(e).__name__}", h, retry_after=5)
+        finally:
+            hy.unhold(client)
         out = {k: v for k, v in r.headers.items() if k.lower() in ("content-type",)}
         out.update(h)
         out.update({"X-Hydra-Deployment": dep.id, "X-Hydra-Node": n.id, "X-Hydra-Engine": n.engine,

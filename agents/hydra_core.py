@@ -1219,6 +1219,7 @@ class Admission:
     def __init__(self, fleet: "FleetState", d: str, node: str, trial: bool, hs: "HealthState"):
         self._fleet, self.d, self.node, self.trial, self.done = fleet, d, node, trial, False
         self.hs = hs
+        self.on_release: list = []      # callables, run once by release() (the I/O side's)
 
     def release(self) -> None:
         if self.done:
@@ -1228,6 +1229,8 @@ class Admission:
         f._inflight[self.d] = max(0, f._inflight.get(self.d, 0) - 1)
         f._node_inflight[self.node] = max(0, f._node_inflight.get(self.node, 0) - 1)
         self.end_trial()
+        for fn in self.on_release:
+            fn()
 
     def end_trial(self) -> None:
         """Give back the HALF_OPEN trial slot, keep the in-flight unit.

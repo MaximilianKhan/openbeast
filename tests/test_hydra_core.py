@@ -1348,3 +1348,14 @@ def test_a_lone_surrogate_in_the_prompt_still_yields_a_session_key():
     cfg = cfg_of()
     f = feats(cfg, {"model": "beast", "messages": [{"role": "user", "content": "x\ud800y"}]})
     assert f.session_key and len(f.session_key) == 16
+
+
+def test_release_hooks_run_once():
+    cfg = cfg_of()
+    st = ready_state(cfg)
+    seen = []
+    adm = st.admit("nvfp4@sparks", "sparks", 0.0)
+    adm.on_release.append(lambda: seen.append(1))
+    adm.release()
+    adm.release()
+    assert seen == [1]
