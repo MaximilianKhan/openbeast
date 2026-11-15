@@ -1877,13 +1877,35 @@ def create_app(local_token: str | None = None) -> FastAPI:
                                "bytes": result.get("bytes")}
         return result
 
+    def _managed_meta(request: Request, artifact_id: str) -> dict:
+        """The page's meta when the caller may manage it, else the flat 404.
+
+        A non-admin (a keyed tailnet operator: every other writer is the
+        rig) must be the page's RECORDED owner. The store's "no recorded
+        owner is open to everyone" and "an unparseable record is deletable"
+        were recovery paths for the rig, written when only the rig could
+        write; F-A2 handed them to every keyed operator, who could delete
+        another operator's damaged page or share an owner-less legacy one
+        (review, spark-scale: beast-artifact). Rig and admins keep both.
+        """
+        try:
+            meta = store.get_meta(artifact_id)
+        except store.ArtifactError:
+            meta = None          # corrupt: only an admin may act on it
+        if is_admin(request):
+            return meta
+        if not meta or not store._owner_of(meta):
+            raise HTTPException(status_code=404, detail="Not Found")
+        try:
+            store._require_owner(meta, owner_for(request))
+        except store.ArtifactError:
+            raise HTTPException(status_code=404, detail="Not Found")
+        return meta
+
     @app.patch("/api/artifacts/{artifact_id}")
     def api_patch(request: Request, artifact_id: str, body: PatchBody,
                   _w: None = Depends(require_manager)):
-        try:
-            current_meta = store.get_meta(artifact_id)
-        except store.ArtifactError:
-            current_meta = None
+        current_meta = _managed_meta(request, artifact_id)
         if not current_meta:
             raise HTTPException(status_code=404, detail="Not Found")
         admin = is_admin(request)
@@ -2000,6 +2022,7 @@ def create_app(local_token: str | None = None) -> FastAPI:
     @app.delete("/api/artifacts/{artifact_id}")
     def api_delete(request: Request, artifact_id: str,
                    _w: None = Depends(require_manager)):
+        _managed_meta(request, artifact_id)
         try:
             # R2, and the loudest of the four: DELETE is irreversible.
             gone = store.remove(artifact_id, owner=owner_for(request),
@@ -2019,10 +2042,7 @@ def create_app(local_token: str | None = None) -> FastAPI:
         # store runs (as api_patch does): the store's "no such artifact" went
         # out as a 400 to a keyed tailnet caller while someone else's page
         # was a 404 — an existence oracle for guessable custom ids (D9/D29).
-        try:
-            current_meta = store.get_meta(artifact_id)
-        except store.ArtifactError:
-            current_meta = None
+        current_meta = _managed_meta(request, artifact_id)
         if not current_meta:
             raise HTTPException(status_code=404, detail="Not Found")
         admin = is_admin(request)

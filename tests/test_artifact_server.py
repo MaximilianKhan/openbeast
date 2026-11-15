@@ -777,6 +777,48 @@ def test_a_forged_admin_header_with_someone_elses_key_buys_no_admin(
     assert r.status_code == 200, r.text
 
 
+def test_a_keyed_non_admin_cannot_touch_an_ownerless_or_corrupt_page(
+        make_client):
+    """Review (spark-scale) beast-artifact sec: "no recorded owner is open to
+    every caller" and "a corrupt record is deletable" were written when only
+    the rig could write. Since F-A2 a keyed non-admin operator reached them
+    too, and could DELETE another operator's damaged page or share an
+    owner-less legacy one. That recovery is now the rig's and admins' only."""
+    c = make_client(operators="max@example.com,kid@example.com")
+    kid = {**KID, **enroll(c.tmp, "kidtablet", login="kid@example.com")}
+    legacy = publish(c, headers=local(c, MAX))
+    meta = store.get_meta(legacy["id"])
+    meta.pop("owner", None)
+    store._write_meta(legacy["id"], meta)
+    assert not store._owner_of(store.get_meta(legacy["id"]))
+    r = c.patch(f"/api/artifacts/{legacy['id']}",
+                json={"visibility": "tailnet"}, headers=kid)
+    assert r.status_code == 404 and r.json() == FLAT_404
+    assert store.get_meta(legacy["id"])["visibility"] == "private"
+    publish(c, headers=local(c), artifact_id=legacy["id"])         # v2
+    r = c.delete(f"/api/artifacts/{legacy['id']}/v/1", headers=kid)
+    assert r.status_code == 404 and r.json() == FLAT_404
+    r = c.delete(f"/api/artifacts/{legacy['id']}", headers=kid)
+    assert r.status_code == 404 and r.json() == FLAT_404
+    assert store.get_meta(legacy["id"]) is not None
+    broken = publish(c, headers=local(c, MAX))
+    with open(os.path.join(store.store_root(), broken["id"], "meta.json"),
+              "w") as fh:
+        fh.write('{"owner": "max@exa')                       # truncated
+    r = c.delete(f"/api/artifacts/{broken['id']}", headers=kid)
+    assert r.status_code == 404 and r.json() == FLAT_404
+    assert os.path.isdir(os.path.join(store.store_root(), broken["id"]))
+    # control: the rig still recovers both
+    assert c.delete(f"/api/artifacts/{broken['id']}",
+                    headers=local(c)).status_code == 200
+    assert c.delete(f"/api/artifacts/{legacy['id']}",
+                    headers=local(c)).status_code == 200
+    # and kid still manages kid's own page with the same key
+    kids = publish(c, headers=local(c, KID))
+    assert c.delete(f"/api/artifacts/{kids['id']}",
+                    headers=kid).status_code == 200
+
+
 # --- R2: every mutation names its owner, without help from the ContextVar ----
 # D22's server half was written for `set_visibility` and never reached the
 # other three. They passed their tests anyway, because a ContextVar set in

@@ -450,7 +450,8 @@ or `X-OpenBeast-Device-Key`. Rules:
   page it cannot manage gets the same flat 404 as a page that does not exist,
   checked *before* its request body is validated, so a bad tag on someone
   else's private page cannot confirm the page exists. Your own page gets the
-  readable 400.
+  readable 400. A page with no recorded owner (legacy) or an unparseable
+  `meta.json` is managed by the rig and admins only.
 - Missing, unknown, revoked and unscoped keys all get the same flat 404.
 - Bodies are capped at **64 KB**, and each device at **60 changes a minute**
   (429 past that).
