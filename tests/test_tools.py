@@ -169,6 +169,36 @@ class TestEditFile(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmpdir)
 
+    def _bytes_after_edit(self, raw: bytes, old: str, new: str) -> tuple:
+        p = os.path.join(self.tmpdir, "eol.bat")
+        with open(p, "wb") as f:
+            f.write(raw)
+        result = edit_file(p, old, new)
+        with open(p, "rb") as f:
+            return result, f.read()
+
+    def test_crlf_line_endings_preserved(self):
+        # Review: universal-newline read rewrote EVERY \r\n to \n on any edit.
+        result, data = self._bytes_after_edit(
+            b"@echo off\r\nset A=1\r\nset B=2\r\n", "A=1", "A=9")
+        self.assertIn("Edited", result)
+        self.assertEqual(data, b"@echo off\r\nset A=9\r\nset B=2\r\n")
+
+    def test_crlf_multiline_edit_either_spelling(self):
+        for old in ("set A=1\nset B=2", "set A=1\r\nset B=2"):
+            result, data = self._bytes_after_edit(
+                b"@echo off\r\nset A=1\r\nset B=2\r\n", old, "set A=1\nset C=3")
+            self.assertIn("Edited", result, old)
+            self.assertEqual(data, b"@echo off\r\nset A=1\r\nset C=3\r\n")
+
+    def test_cr_line_endings_preserved(self):
+        _, data = self._bytes_after_edit(b"old\rmac\r", "old", "new")
+        self.assertEqual(data, b"new\rmac\r")
+
+    def test_mixed_line_endings_untouched_outside_the_edit(self):
+        _, data = self._bytes_after_edit(b"a=1\r\nb=2\nc=3\r\n", "b=2", "b=5")
+        self.assertEqual(data, b"a=1\r\nb=5\nc=3\r\n")
+
     def test_simple_replace(self):
         result = edit_file(self.testfile, "print('hello')", "print('hi')")
         self.assertIn("Edited", result)

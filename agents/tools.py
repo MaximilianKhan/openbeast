@@ -1715,8 +1715,26 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
         if not os.path.isfile(path):
             return f"Error: file not found: {path}"
 
-        with open(path, "r") as f:
+        # newline="": keep the file's own line endings. The universal-newline
+        # read rewrote every \r\n / \r in the file to \n on ANY edit. A file
+        # with one non-LF style is matched in LF form (the model's strings
+        # are normalized the same way) and written back in that style; a
+        # mixed-ending file is matched and written exactly as it is.
+        with open(path, "r", newline="") as f:
             content = f.read()
+        eol = "\n"
+        if "\r" in content:
+            crlf = content.count("\r\n")
+            lone_cr = content.count("\r") - crlf
+            lone_lf = content.count("\n") - crlf
+            if crlf and not lone_cr and not lone_lf:
+                eol = "\r\n"
+            elif lone_cr and not crlf and not lone_lf:
+                eol = "\r"
+            if eol != "\n":
+                content = content.replace(eol, "\n")
+                old_string = old_string.replace("\r\n", "\n").replace("\r", "\n")
+                new_string = new_string.replace("\r\n", "\n").replace("\r", "\n")
 
         if not old_string:
             return "Error: old_string must not be empty"
@@ -1763,7 +1781,8 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
         else:
             new_content = content.replace(old_string, new_string, 1)
 
-        _atomic_write_text(path, new_content)
+        _atomic_write_text(path, new_content if eol == "\n"
+                           else new_content.replace("\n", eol))
         _manifest_log("edit", path, len(new_content))
         _EDIT_FAILS.pop(path, None)
 
