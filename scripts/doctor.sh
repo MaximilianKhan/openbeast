@@ -82,8 +82,26 @@ if command -v ob_detect_gpu >/dev/null 2>&1; then
   elif [[ "${OB_VRAM_MB:-0}" -gt 0 && "${OB_VRAM_MB:-0}" -lt "${OB_VRAM_FLOOR_MB:-22000}" ]]; then
     fail "GPU has ${OB_VRAM_MB} MiB VRAM — below the 24 GB floor" \
          "OpenBeast targets 3090 / 4090 class and up (docs/HARDWARE_PROFILES.md)"
+  elif [[ "${OB_GPU_UNIFIED:-0}" -eq 1 ]]; then
+    pass "GPU: ${OB_GPU_NAME:-unknown} (unified memory — ${OB_VRAM_MB:-?} MiB of host RAM, shared with the OS)"
   else
     pass "GPU: ${OB_GPU_NAME:-unknown} (${OB_VRAM_MB:-?} MiB VRAM)"
+  fi
+fi
+# UNIFIED memory (GB10): nvidia-smi's memory.used/total are [N/A], so the
+# VRAM-headroom rule below has nothing to read — and MemAvailable is the
+# number that matters: the model's allocations come out of the same RAM,
+# and a GB10 that runs out freezes rather than failing an allocation.
+if [[ "${OB_GPU_UNIFIED:-0}" -eq 1 ]] && command -v ob_meminfo_available_mb >/dev/null 2>&1; then
+  _avail_mb="$(ob_meminfo_available_mb)"
+  _resv_mb=$(( ${MEM_RESERVE_GB:-3} * 1024 ))
+  if [[ "$_avail_mb" -le 0 ]]; then
+    warn "unified memory: MemAvailable unreadable — headroom unknown" "cat /proc/meminfo"
+  elif [[ "$_avail_mb" -lt "$_resv_mb" ]]; then
+    warn "unified memory headroom: only ${_avail_mb} MiB available (MEM_RESERVE_GB=${MEM_RESERVE_GB:-3})" \
+         "the model and the stack share this RAM — stop heavy jobs, or shrink the model's pool (KV_POOL_GIB / MEMORY_RESERVE_GIB)"
+  else
+    pass "unified memory headroom: ${_avail_mb} MiB available beside the model (reserve ${MEM_RESERVE_GB:-3} GiB)"
   fi
 fi
 if command -v nvidia-smi >/dev/null 2>&1; then

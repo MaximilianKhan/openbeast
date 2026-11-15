@@ -465,6 +465,44 @@ _O="$(_run "$_R" 120 "$_R/scripts/doctor.sh")"
 grep -q "reached without a key" <<< "$_O" && pass "…while a remote keyless vLLM is warned about (control)" \
   || fail "no keyless warning for a remote vLLM"
 
+# GB10 (unified memory): nvidia-smi answers memory.used/total with [N/A], so
+# the VRAM-headroom rows said nothing ("unavailable") and doctor printed host
+# RAM as "VRAM" (ops review). spark-1's meminfo, idle and squeezed.
+echo ""
+echo "doctor.sh / healthcheck.sh on a GB10 (unified memory):"
+_R="$_T/gb10"; _rig "$_R"
+cat > "$_R/bin/nvidia-smi" <<'SH'
+#!/bin/bash
+case "$*" in
+  *name,memory.used*|*memory.used,memory.total*) echo "NVIDIA GB10, [N/A], [N/A]" ;;
+  *memory.total*|*memory.used*) echo "[N/A]" ;;
+  *name*) echo "NVIDIA GB10" ;;
+esac
+exit 0
+SH
+chmod +x "$_R/bin/nvidia-smi"
+printf 'MemTotal:       127598412 kB\nMemAvailable:    6690096 kB\n' > "$_R/meminfo-ok"
+printf 'MemTotal:       127598412 kB\nMemAvailable:    2097152 kB\n' > "$_R/meminfo-low"
+RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=tensorfold "OPENBEAST_INFERENCE_URL=$_S/tf" "OB_MEMINFO=$_R/meminfo-ok")
+_O="$(_run "$_R" 120 "$_R/scripts/doctor.sh")"
+grep -q "GB10 (unified memory — 124607 MiB of host RAM" <<< "$_O" && ! grep -q "MiB VRAM)" <<< "$_O" \
+  && pass "doctor labels the GB10's memory unified host RAM, not VRAM" \
+  || fail "GB10 GPU row: $(grep -i gb10 <<< "$_O" || true)"
+grep -q "unified memory headroom: 6533 MiB available beside the model" <<< "$_O" \
+  && pass "…and shows a real headroom row from MemAvailable" || fail "no unified headroom row: $(grep -i headroom <<< "$_O" || true)"
+_O="$(_run "$_R" 60 "$_R/scripts/healthcheck.sh")"
+grep -q "Unified memory: 6533 MiB available of 124607 MiB" <<< "$_O" && ! grep -q "GPU VRAM: unavailable" <<< "$_O" \
+  && pass "healthcheck reports unified memory, not 'GPU VRAM: unavailable'" \
+  || fail "healthcheck GB10 memory line: $(grep -iE 'vram|unified' <<< "$_O" || true)"
+RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=tensorfold "OPENBEAST_INFERENCE_URL=$_S/tf" "OB_MEMINFO=$_R/meminfo-low")
+_O="$(_run "$_R" 120 "$_R/scripts/doctor.sh")"
+grep -q "unified memory headroom: only 2048 MiB available (MEM_RESERVE_GB=3)" <<< "$_O" \
+  && pass "…and warns once MemAvailable is under the MEM_RESERVE_GB reserve" \
+  || fail "no low-headroom warning: $(grep -i headroom <<< "$_O" || true)"
+_O="$(_run "$_R" 60 "$_R/scripts/healthcheck.sh")"
+grep -q "WARNING: under the 3 GiB reserve" <<< "$_O" && pass "…healthcheck too" \
+  || fail "healthcheck low unified memory: $(grep -iE 'unified|warning' <<< "$_O" || true)"
+
 echo ""
 echo "start.sh --status on an unmanaged stack:"
 _R="$_T/status"; _rig "$_R"

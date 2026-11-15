@@ -32,6 +32,7 @@ source "$SCRIPT_DIR/lib/net.sh"       # ob_probe_host, ob_llama_ready
 source "$SCRIPT_DIR/lib/backend.sh"   # ob_backend_ready, ob_inference_managed
 source "$SCRIPT_DIR/lib/curl_auth.sh" # ob_curl_bearer: keys never on argv
 source "$SCRIPT_DIR/lib/portown.sh"   # ob_pid_owns_port: "healthy" must mean OUR process
+source "$SCRIPT_DIR/lib/hardware.sh"  # ob_meminfo_available_mb (unified-memory headroom)
 
 # Where a helper server relaunched below writes its output. It used to be
 # >/dev/null: a replacement that crashed on a bad conf, a taken port or an
@@ -816,7 +817,22 @@ echo ""
 if command -v nvidia-smi &>/dev/null; then
   VRAM_USED=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1 || true)
   VRAM_TOTAL=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 || true)
-  if [[ -z "$VRAM_TOTAL" || ! "$VRAM_TOTAL" =~ ^[0-9]+$ || "$VRAM_TOTAL" -eq 0 \
+  if [[ "$VRAM_TOTAL" == "[N/A]" ]]; then
+    # UNIFIED memory (GB10): no VRAM of its own. What is left is MemAvailable
+    # — the model's allocations come out of the same RAM, and a GB10 that
+    # runs out freezes rather than failing an allocation.
+    _avail_mb="$(ob_meminfo_available_mb)"; _total_mb="$(ob_meminfo_total_mb)"
+    VRAM_PCT=0
+    if [[ "$_avail_mb" -gt 0 ]]; then
+      echo "  Unified memory: ${_avail_mb} MiB available of ${_total_mb} MiB (the model's share is in the total)"
+      if [[ "$_avail_mb" -lt $(( ${MEM_RESERVE_GB:-3} * 1024 )) ]]; then
+        echo "  WARNING: under the ${MEM_RESERVE_GB:-3} GiB reserve (MEM_RESERVE_GB) — this box freezes when"
+        echo "           it runs out. Stop heavy jobs, or shrink the model's pool."
+      fi
+    else
+      echo "  Unified memory: unavailable (no MemAvailable in /proc/meminfo)"
+    fi
+  elif [[ -z "$VRAM_TOTAL" || ! "$VRAM_TOTAL" =~ ^[0-9]+$ || "$VRAM_TOTAL" -eq 0 \
         || -z "$VRAM_USED" || ! "$VRAM_USED" =~ ^[0-9]+$ ]]; then
     echo "  GPU VRAM: unavailable (nvidia-smi returned no data)"
     VRAM_PCT=0
