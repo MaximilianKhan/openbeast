@@ -1444,8 +1444,8 @@ def extract_features(path: str, body: dict, headers, cfg: Config) -> Features:
     rf = body.get("response_format") if isinstance(body.get("response_format"), dict) else {}
     mt = body.get("max_tokens") or body.get("max_completion_tokens") or cfg.settings.default_max_tokens
     try:
-        mt = int(mt)
-    except (TypeError, ValueError):
+        mt = int(mt)            # 1e999 / Infinity parse as float inf: OverflowError
+    except (TypeError, ValueError, OverflowError):
         mt = cfg.settings.default_max_tokens
     session = _header(headers, "x-conversation-id") or _header(headers, "x-hydra-session")
     if session and len(session) > MAX_ID_CHARS:      # an affinity key, kept 4096-deep: bound it
@@ -1456,7 +1456,8 @@ def extract_features(path: str, body: dict, headers, cfg: Config) -> Features:
         first_user = next((_text_of(m.get("content")) for m in body["messages"]
                            if isinstance(m, dict) and m.get("role") == "user"), "")
         if first_sys or first_user:
-            session = hashlib.sha1((first_sys + "\x00" + first_user).encode()).hexdigest()[:16]
+            session = hashlib.sha1((first_sys + "\x00" + first_user).encode(
+                "utf-8", "surrogatepass")).hexdigest()[:16]          # JSON allows a lone "\ud800"
     return Features(
         path=path, model=_bounded_id(body.get("model") or ""), stream=bool(body.get("stream")),
         has_images=_any_image_part(body.get("messages")),

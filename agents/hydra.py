@@ -1005,17 +1005,26 @@ async def proxy(request: Request, path: str, pin: str | None = None):
             return hy.error("hydra_bad_request", "request body too large", base_h, status=413)
     try:
         body = json.loads(bytes(buf) or b"null")
-    except ValueError:
+    except (ValueError, RecursionError):      # RecursionError: "[[[[…" nested past the limit
         body = None
     caller = hy.caller(request)
     row = {"ts": _now_iso(), "request_id": request_id, "device": caller.device, "role": caller.role,
            "trusted": caller.trusted, "path": path, "config": cfg.hash}
-    if not isinstance(body, dict):
+
+    def bad_request(message: str) -> JSONResponse:
         row.update(requested=None, strict=bool(pin), status=400, outcome="bad_request",
                    ms=int((time.monotonic() - started) * 1000))
         hy.audit.write(row)
-        return hy.error("hydra_bad_request", "the request body must be a JSON object", base_h)
-    f = core.extract_features(path, body, request.headers, cfg)
+        return hy.error("hydra_bad_request", message, base_h)
+
+    if not isinstance(body, dict):
+        return bad_request("the request body must be a JSON object")
+    try:
+        f = core.extract_features(path, body, request.headers, cfg)
+    except (ValueError, TypeError, OverflowError, RecursionError) as e:
+        # A body json.loads accepts can still be one no feature reader
+        # expected; it is the caller's 400, audited — never a bare 500.
+        return bad_request(f"the request body could not be read ({type(e).__name__})")
     now = time.monotonic()
     ins = None
     task_class = None
@@ -1068,7 +1077,12 @@ async def proxy(request: Request, path: str, pin: str | None = None):
         if now >= budget_end:
             break
         fbody, edits = core.forward_body(body, c.d, c.n)
-        payload = json.dumps(fbody, ensure_ascii=False).encode()
+        try:
+            payload = json.dumps(fbody, ensure_ascii=False).encode()
+        except UnicodeEncodeError:
+            # a lone surrogate ("\ud800" in the caller's JSON) has no UTF-8
+            # form: send it escaped, exactly as the caller wrote it
+            payload = json.dumps(fbody).encode()
         uh = _upstream_headers(request, caller, hy.node_key(c.n), request_id)
         if f.stream:
             limit = core.effective_ttft(c.n, f.est_prompt_tokens, s.pre_commit_budget_s)

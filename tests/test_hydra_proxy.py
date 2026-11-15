@@ -1514,3 +1514,21 @@ def test_a_huge_model_id_is_not_kept_in_the_decision_ring(fleet, tmp_path):
     assert r.status_code == 200 and r.headers["x-hydra-route"] == "beast"
     assert len(json.dumps(srv.hy.decisions[-1])) < 4096
     assert len(audit_rows(tmp_path)[-1]["requested"]) <= core.MAX_ID_CHARS + 16
+
+
+@pytest.mark.parametrize("raw,status", [
+    (b'{"model":"beast","max_tokens":1e999,"messages":[{"role":"user","content":"hi"}]}', 200),
+    (b'{"model":"beast","max_tokens":Infinity,"messages":[{"role":"user","content":"hi"}]}', 200),
+    (b'{"model":"beast","messages":[{"role":"user","content":"x\\ud800y"}]}', 200),
+    (b'{"model":"be\\ud800ast","messages":[{"role":"user","content":"hi"}]}', 200),
+    (b"[" * 100_000 + b"]" * 100_000, 400),
+])
+def test_a_malformed_but_parseable_body_is_answered_and_audited(fleet, tmp_path, raw, status):
+    # Review 2026-11 F5: each of these was a bare Starlette 500 with no
+    # X-Hydra-Request-Id and no audit row.
+    srv, _, _, _ = fleet()
+    r = httpx.post(srv.url + "/v1/chat/completions", content=raw,
+                   headers={**auth(), "Content-Type": "application/json"}, timeout=30)
+    assert r.status_code == status, r.text
+    rid = r.headers["x-hydra-request-id"]
+    assert wait_audit(tmp_path, lambda x: x.get("request_id") == rid)["status"] == status

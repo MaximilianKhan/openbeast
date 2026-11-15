@@ -1334,3 +1334,17 @@ def test_the_requested_model_is_bounded_and_encodable():
     f = feats(cfg, {"model": "be\ud800ast", "messages": []})
     f.model.encode("utf-8")                                   # no lone surrogate survives
     assert feats(cfg).model == "beast"
+
+
+@pytest.mark.parametrize("mt", [float("inf"), float("-inf"), float("nan"), "Infinity", [1]])
+def test_a_non_finite_max_tokens_falls_back_to_the_default(mt):
+    # Review 2026-11 F5: int(inf) raised OverflowError — a bare 500, no audit.
+    cfg = cfg_of()
+    f = feats(cfg, {"model": "beast", "max_tokens": mt, "messages": [{"role": "user", "content": "hi"}]})
+    assert f.max_tokens == cfg.settings.default_max_tokens
+
+
+def test_a_lone_surrogate_in_the_prompt_still_yields_a_session_key():
+    cfg = cfg_of()
+    f = feats(cfg, {"model": "beast", "messages": [{"role": "user", "content": "x\ud800y"}]})
+    assert f.session_key and len(f.session_key) == 16
