@@ -820,6 +820,29 @@ def test_escalation_escalates_to_sigkill_when_term_is_ignored(rig, victim):
     assert "SIGKILL" in (rec["summary"] or "")
 
 
+def test_escalation_never_files_an_undelivered_sigkill_as_stopped(rig, victim):
+    """Review finding: `sent_kill = True` was set whatever signal_session
+    returned, so a session reconcile still calls alive but that the identity
+    guard refuses to signal (no pid_start on file) was finalized `stopped`
+    while it ran on — and /stop then answered "already finished" for good."""
+    proc = victim("sleep 60")
+    sid = rig.session(kind="agent", state="running", pid=proc.pid)
+    path = sessions.record_path(sid)
+    rec = json.load(open(path))
+    rec["meta"].pop("pid_start", None)        # a pre-start-time record
+    assert sessions._write_record(rec)
+    events = []
+    t = chat_server.start_escalation(sid, 30.0, 0.1, poll=0.02,
+                                     on_event=events.append)
+    t.join(timeout=10)
+    assert not t.is_alive()
+    assert proc.poll() is None                 # nothing was signalled
+    assert sessions.get(sid)["state"] == "running"
+    assert not any(e.get("outcome") == "finalized" for e in events), events
+    assert not any(e.get("outcome") == "signal" for e in events), events
+    assert any(e.get("outcome") == "undelivered" for e in events), events
+
+
 def test_signal_session_refuses_a_recycled_or_unproven_pid(rig, victim):
     """killpg on a stale record is how you take down an unrelated process
     group. Identity is re-verified immediately before the signal."""

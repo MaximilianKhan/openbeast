@@ -1374,7 +1374,21 @@ def start_escalation(session_id: str, term_after: float, kill_after: float,
                 continue
             if elapsed >= kill_after:
                 delivered = bool(signal_session(rec, signal.SIGKILL))
-                report(outcome="signal", signal="SIGKILL", delivered=delivered,
+                if not delivered:
+                    # signal_session refused (no identity proof, EPERM) or the
+                    # process went in this very window. Only the second is a
+                    # stop that landed. Filing the first as `stopped` made a
+                    # LIVE process terminal for good: /stop then answered
+                    # "already finished" and beast-chat could never stop it.
+                    if not _still_running(session_id):
+                        if sent_term:
+                            finalize_stopped()
+                        return
+                    report(outcome="undelivered", signal="SIGKILL",
+                           delivered=False, pgid=rec.get("pgid"),
+                           state="running")
+                    return
+                report(outcome="signal", signal="SIGKILL", delivered=True,
                        pgid=rec.get("pgid"))
                 sent_kill = True
                 kill_deadline = now + max(poll * 4, 0.5)
