@@ -1388,3 +1388,51 @@ def test_tensorfold_node_with_a_key_presents_it(fleet):
     r = post(srv, chat(model="beast:tf"))
     assert r.status_code == 200 and r.headers["x-hydra-deployment"] == "mlx@tf"
     assert posts(tf)[-1]["headers"]["authorization"] == f"Bearer {RIG_KEY}"
+
+
+# ───────────────────────── review 2026-11 (beast-hydra sysfix) ─────────────────────────
+
+
+def test_a_request_every_engine_rejects_with_500_never_opens_a_breaker(fleet, tmp_path):
+    """Review 2026-11 F0: a body the engine itself refuses with a JSON 500
+    (llama.cpp's template raise_exception) failed over to every target and
+    counted a breaker failure on each — fail_threshold such requests blacked
+    out the whole route, pins included, for breaker.open_s."""
+    srv, rig, sparks, _ = fleet()
+    poison = {"X-Fake-Fault": "http_500"}                  # every attempt answers 500
+    for _ in range(4):                                     # fail_threshold is 3
+        r = post(srv, chat(), poison)
+        # the engine's own error, not a 502 that hides it
+        assert r.status_code == 500 and r.json()["error"]["message"] == "fake http_500", r.text
+        assert r.headers["x-hydra-request-id"] and r.headers["x-hydra-attempts"] == "unc@rig:500,nvfp4@sparks:500"
+    assert wait_audit(tmp_path, lambda x: x.get("status") == 500)["outcome"] == "upstream_5xx"
+    now = time.monotonic()
+    for d in ("unc@rig", "nvfp4@sparks"):
+        hs = srv.hy.state.health[d]
+        assert hs.breaker_state(now) == core.CLOSED and hs.h.fails == 0, (d, hs.h)
+    assert post(srv, chat()).status_code == 200
+    assert post(srv, chat(model="unc@rig")).status_code == 200
+    # a single-candidate route: passed through, never counted
+    for _ in range(4):
+        assert post(srv, chat(model="solo"), poison).status_code == 500
+    assert srv.hy.state.health["unc@rig"].h.fails == 0
+
+
+def test_a_node_that_500s_what_another_node_serves_is_charged(fleet):
+    # the control: the SAME body was served elsewhere, so the 500 was the node's
+    srv, rig, sparks, _ = fleet()
+    rig.set_fault("http_500")
+    for _ in range(3):
+        r = post(srv, chat())
+        assert r.status_code == 200 and r.headers["x-hydra-deployment"] == "nvfp4@sparks"
+    assert srv.hy.state.health["unc@rig"].breaker_state(time.monotonic()) == core.OPEN
+    rig.set_fault(None)
+
+
+def test_a_bodyless_500_still_counts_at_once(fleet):
+    # a 500 that is no engine JSON error is not attributable to the request
+    srv, rig, _, _ = fleet()
+    rig.set_fault("error_body_stall:10", 1)        # 500 + a truncated body
+    r = post(srv, chat(model="solo"))
+    assert r.status_code == 502
+    assert srv.hy.state.health["unc@rig"].h.fails == 1

@@ -813,6 +813,19 @@ def _resp_headers(resp: httpx.Response) -> dict:
             if k.lower() not in _HOP and not k.lower().startswith("x-hydra-")}
 
 
+def _is_engine_error(body: bytes | None) -> bool:
+    """A 500/501 the ENGINE wrote about this request: a JSON object with an
+    `error`. llama.cpp answers a request its chat template refuses (Qwen3's
+    `raise_exception('No user query found in messages.')`) exactly so; a
+    node that is falling over answers with no body, a cut body, HTML from a
+    proxy, or a 502/503/504."""
+    try:
+        doc = json.loads(body or b"")
+    except (ValueError, RecursionError):
+        return False
+    return isinstance(doc, dict) and isinstance(doc.get("error"), (dict, str))
+
+
 class _UpstreamTruncated(Exception):
     """Raised out of a non-SSE relay so the server aborts the response
     instead of ending it cleanly: a truncated JSON body must look broken."""
@@ -868,6 +881,8 @@ async def _attempt(hy: Hydra, c: core.Candidate, path: str, payload: bytes, head
                 a.kind = "throttled"
             elif st == 503 and "Loading model" in text:
                 a.kind = "loading"
+            elif st in (500, 501) and _is_engine_error(a.body):
+                a.kind = "engine_error"
             elif st >= 500:
                 a.kind = "fail"
             else:
@@ -1040,6 +1055,7 @@ async def proxy(request: Request, path: str, pin: str | None = None):
     attempts: list[dict] = []
     route = cfg.routes.get(dec.route) if not dec.strict else None
     last = None
+    charge_if_served: list = []
     for i, c in enumerate(dec.attempts):
         now = time.monotonic()
         if now >= budget_end:
@@ -1104,6 +1120,12 @@ async def proxy(request: Request, path: str, pin: str | None = None):
                 break
         elif a.kind == "fail":
             hs.record_failure(now)
+        elif a.kind == "engine_error":
+            # The engine refused THIS body. Whose fault that is shows only
+            # later: charged if another deployment then serves the same body,
+            # never if every one refuses it — counted at once, one poison
+            # request tripped the breaker on every target it was tried on.
+            charge_if_served.append(hs)
         elif a.kind == "loading":
             hs.request_state("loading", now)
         elif a.kind == "auth":
@@ -1123,9 +1145,16 @@ async def proxy(request: Request, path: str, pin: str | None = None):
         finish(504, "timeout", attempts=attempts)
         return hy.error("hydra_timeout", "the pre-commit budget ran out before any attempt", hdr)
     c, a, edits, adm = last
-    if a.kind == "passthrough" or (a.kind == "throttled" and not _has_more(dec, c)):
-        # An engine's own 4xx: status, bytes and content-type exactly as sent.
-        finish(a.status, "upstream_4xx", c.d.id, attempts, edits=edits)
+    if a.kind == "commit":
+        for refused in charge_if_served:
+            refused.record_failure(time.monotonic())
+    if a.kind == "passthrough" or a.kind == "engine_error" or \
+            (a.kind == "throttled" and not _has_more(dec, c)):
+        # An engine's own 4xx (or its own JSON 500 about this body, which no
+        # other target served either): status, bytes and content-type exactly
+        # as sent — a 502 would hide why the request is refused.
+        finish(a.status, "upstream_5xx" if a.kind == "engine_error" else "upstream_4xx",
+               c.d.id, attempts, edits=edits)
         h = {k: v for k, v in a.headers.items() if k.lower() in ("content-type", "retry-after")}
         h.update(hdr)
         return Response(a.body or b"", status_code=int(a.status), headers=h)

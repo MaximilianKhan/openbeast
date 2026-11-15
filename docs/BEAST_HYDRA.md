@@ -102,6 +102,14 @@ are not obvious from the file:
   says `queued behind a saturated single candidate: not a breaker failure`.
   A timeout on a node with free capacity, or on a route with somewhere else
   to go, counts as before.
+- **An engine's own JSON 500 about a request is not, by itself, a node
+  failure.** A 500/501 whose body is a JSON `error` object (llama.cpp's
+  answer when the chat template refuses the messages) still fails over, but
+  it is charged to the breaker only if another deployment then serves the
+  same body. When every target refuses it, the caller gets the engine's own
+  status and body (audit outcome `upstream_5xx`) and no breaker moves: one
+  caller with a malformed body cannot black out the route. A 500 with no
+  body, a cut body or a non-JSON body, and any 502/503/504, count at once.
 
 `python3 agents/hydra.py --print-default-config` prints the implicit config,
 580 s deadlines included and `slots` omitted when `INFERENCE_SLOTS` is unset
