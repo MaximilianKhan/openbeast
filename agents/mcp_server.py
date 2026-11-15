@@ -52,6 +52,7 @@ import signal
 import stat
 import subprocess
 import sys
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -1246,6 +1247,50 @@ def list_agents() -> str:
     return "\n".join(lines)
 
 
+def _signal_ledger_agent(rec: dict, sig: int) -> bool:
+    """Signal a ledger session's group (only when it LEADS it) or its pid,
+    and only while the recorded pid is provably still that process
+    (sessions.is_alive's pid + start-time check): a stale record's pid may
+    belong to a stranger by now."""
+    mod = _sessions()
+    if mod is None or not mod.is_alive(rec, require_start=True):
+        return False
+    try:
+        pid = int(rec.get("pid") or 0)
+        pgid = int(rec.get("pgid") or pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 1:
+        return False
+    try:
+        if pgid == pid and pgid != os.getpgrp() and os.getpgid(pid) == pgid:
+            os.killpg(pgid, sig)
+        else:
+            os.kill(pid, sig)
+        return True
+    except (ProcessLookupError, PermissionError, OSError):
+        return False
+
+
+def _stop_ledger_agent(agent_id: str, rec: dict) -> str:
+    """stop_agent for an agent this process did not spawn (a detached agent
+    after a restart of this server, or another spawn path). The runner's own
+    SIGTERM handler stops its in-flight tool command."""
+    mod = _sessions()
+    if mod is None or not mod.is_alive(rec, require_start=True):
+        return (f"Agent {agent_id} is not running (ledger state: "
+                f"{rec.get('state') or 'unknown'}). Use check_agent('{agent_id}').")
+    if not _signal_ledger_agent(rec, signal.SIGTERM):
+        return f"Error: could not signal agent {agent_id} (PID {rec.get('pid')})"
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if not mod.is_alive(rec, require_start=True):
+            return f"Agent {agent_id} stopped gracefully (PID {rec.get('pid')})."
+        time.sleep(0.1)
+    _signal_ledger_agent(rec, signal.SIGKILL)
+    return f"Agent {agent_id} force-killed after timeout (PID {rec.get('pid')})."
+
+
 @_tool()
 def stop_agent(agent_id: str) -> str:
     """Stop a running agent. Sends SIGTERM for graceful shutdown, escalates to
@@ -1256,6 +1301,9 @@ def stop_agent(agent_id: str) -> str:
     """
     record = _agents.get(agent_id)
     if not record:
+        ledger_record = _ledger_get(agent_id)
+        if ledger_record:
+            return _stop_ledger_agent(agent_id, ledger_record)
         return f"Error: unknown agent '{agent_id}'"
 
     if record.process.poll() is not None:

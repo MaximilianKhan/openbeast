@@ -485,3 +485,50 @@ def test_wrapper_refuses_home_and_root_workdirs(tmp_path, monkeypatch):
     assert mcp_server._sandboxed_workdir_refusal(str(home / "proj")) is None
     monkeypatch.delenv("OPENBEAST_BASH_WRAPPER")
     assert mcp_server._sandboxed_workdir_refusal(str(home)) is None
+
+
+# --- stop_agent for an agent this process did not spawn (review) -------------
+
+def test_stop_agent_falls_back_to_the_ledger(tmp_path, monkeypatch):
+    # A detached agent outlives a tool-server restart (that is what detach
+    # is for) and check/list_agents show it from the ledger — stop_agent
+    # used to answer "unknown agent" for exactly those.
+    import signal as _signal
+    import subprocess as _sp
+    import mcp_server
+    import sessions
+    monkeypatch.setattr(sessions, "SESSIONS_DIR", str(tmp_path / "ledger"))
+    monkeypatch.setattr(mcp_server, "_agents", {})
+    proc = _sp.Popen(["sleep", "300"], start_new_session=True)
+    try:
+        assert sessions.register("detached-1", pid=proc.pid, pgid=proc.pid)
+        out = mcp_server.stop_agent("detached-1")
+        assert "stopped" in out, out
+        assert proc.wait(timeout=5) == -_signal.SIGTERM
+        # Already gone now: reported, never signalled again.
+        assert "Error: unknown" not in mcp_server.stop_agent("detached-1")
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+
+
+def test_stop_agent_ledger_refuses_a_recycled_pid(tmp_path, monkeypatch):
+    import subprocess as _sp
+    import mcp_server
+    import sessions
+    monkeypatch.setattr(sessions, "SESSIONS_DIR", str(tmp_path / "ledger"))
+    monkeypatch.setattr(mcp_server, "_agents", {})
+    proc = _sp.Popen(["sleep", "300"], start_new_session=True)
+    try:
+        assert sessions.register("detached-2", pid=proc.pid, pgid=proc.pid,
+                                 meta={})
+        rec = sessions.get("detached-2")
+        rec["meta"]["pid_start"] = -12345  # the pid now belongs to a stranger
+        monkeypatch.setattr(mcp_server, "_ledger_get", lambda _id: rec)
+        out = mcp_server.stop_agent("detached-2")
+        assert proc.poll() is None, out   # not signalled
+        assert "not running" in out or "already" in out, out
+    finally:
+        proc.kill()
+        proc.wait()
