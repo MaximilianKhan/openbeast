@@ -114,25 +114,39 @@ def test_run_reaped_reaps_grandchild():
     os.unlink(pidfile)
 
 
+class _NoPrlimit:
+    """tools.resource stand-in without prlimit(2), as on macOS. With
+    enforce_as=False setrlimit is a no-op too: Darwin accepts or refuses
+    RLIMIT_AS but never enforces it, so that is the faithful simulation."""
+
+    def __init__(self, enforce_as=True):
+        import resource as real_resource
+        self._real = real_resource
+        self._enforce_as = enforce_as
+
+    def __getattr__(self, name):
+        if name == "prlimit":
+            raise AttributeError(name)
+        if name == "setrlimit" and not self._enforce_as:
+            return lambda *a, **k: None
+        return getattr(self._real, name)
+
+
 def test_prlimitless_platform_still_works():
     # macOS has no prlimit(2): simulate it by hiding resource.prlimit from
     # tools and confirm bash() still runs (the pre-fix behavior was an
-    # AttributeError on EVERY bash/grep call plus a leaked child) and the
-    # preexec_fn/setrlimit fallback still caps the child's address space.
-    import resource as real_resource
-
-    class _NoPrlimit:
-        def __getattr__(self, name):
-            if name == "prlimit":
-                raise AttributeError(name)
-            return getattr(real_resource, name)
-
+    # AttributeError on EVERY bash/grep call plus a leaked child) and, where
+    # setrlimit(RLIMIT_AS) is enforced (Linux), the preexec_fn fallback
+    # still caps the child's address space. Darwin never enforces it — see
+    # test_group_guard_stops_memory_bomb_without_rlimits.
     saved = tools.resource
     tools.resource = _NoPrlimit()
     try:
         out = tools.bash("echo darwin-ok", timeout=10)
         check("bash() works without resource.prlimit", "darwin-ok" in out,
               f"got: {out[:80]}")
+        if sys.platform != "linux":
+            return
         out = tools.bash(
             "python3 -c \"b = bytearray(48 * 1024**3); print('ALLOC' + 'ATED')\"",
             timeout=30,
@@ -146,11 +160,37 @@ def test_prlimitless_platform_still_works():
         tools.resource = saved
 
 
+def test_group_guard_stops_memory_bomb_without_rlimits():
+    # No prlimit AND no enforced RLIMIT_AS (Darwin, really or simulated):
+    # the parent-side group guard must kill a bomb that touches its memory.
+    # Random pages so macOS's compressor cannot hide the RSS.
+    saved = tools.resource
+    if hasattr(saved, "prlimit"):
+        tools.resource = _NoPrlimit(enforce_as=False)
+    try:
+        t0 = time.time()
+        rc, out = tools.run_reaped(
+            "python3 -c \"import os, time; "
+            "b = bytearray(os.urandom(1 << 20)) * 768; "
+            "time.sleep(20); print('SURV' + 'IVED')\"",
+            30, as_limit=256 * 1024**2)
+        elapsed = time.time() - t0
+    finally:
+        tools.resource = saved
+    check("group guard kills the memory bomb",
+          "SURVIVED" not in out and "memory cap" in out, f"got: {out[-160:]}")
+    check("group guard acts promptly", elapsed < 10, f"{elapsed:.1f}s")
+
+
 def test_rlimit_stops_memory_bomb():
     # Try to grab 48 GB in one shot — over the 32 GB RLIMIT_AS cap, so the
     # child must die with MemoryError instead of succeeding.
     # Success marker is assembled at runtime so the source line echoed in a
-    # traceback can never contain it.
+    # traceback can never contain it. Linux-only: RLIMIT_AS is not enforced
+    # on Darwin (the group guard test covers that platform).
+    if sys.platform != "linux":
+        print("  SKIP: RLIMIT_AS is not enforced off Linux")
+        return
     out = tools.bash(
         "python3 -c \"b = bytearray(48 * 1024**3); print('ALLOC' + 'ATED')\"",
         timeout=30,
@@ -167,6 +207,7 @@ def main():
     test_bash_tool_reaps_grandchild()
     test_run_reaped_reaps_grandchild()
     test_prlimitless_platform_still_works()
+    test_group_guard_stops_memory_bomb_without_rlimits()
     test_rlimit_stops_memory_bomb()
     print(f"\n{PASS} passed, {FAIL} failed")
     return 1 if FAIL else 0

@@ -69,6 +69,14 @@ _CHILD_AS_LIMIT = 32 * 1024**3
 # below current usage yet still stops a bomb a few thousand tasks in.
 _CHILD_NPROC_MARGIN = 4096
 
+# Platforms without prlimit(2) (Darwin): setrlimit(RLIMIT_AS) is accepted or
+# refused but never ENFORCED there, and NPROC/FSIZE/CPU are not applied at
+# all, so a memory or fork bomb in a Mac client's bash ran unbounded. A
+# parent-side guard polls the command's group instead and SIGKILLs it past
+# the RSS cap (the same number as the AS cap) or this many processes.
+_GROUP_GUARD_POLL = 0.5
+_GROUP_GUARD_MAX_PROCS = 1024
+
 
 def _uid_task_count(uid: int | None = None) -> int | None:
     """Tasks (processes + threads) whose REAL uid is `uid` — the quantity the
@@ -148,6 +156,51 @@ def _group_alive(pgid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def _session_pids(sid: int) -> list:
+    """Every live pid in session `sid` (start_new_session: sid == the
+    command's pid). /proc on Linux, `ps -A` elsewhere; getsid() reads any
+    pid's session on both."""
+    if os.path.isdir("/proc/self"):
+        try:
+            pids = [int(n) for n in os.listdir("/proc") if n.isdigit()]
+        except OSError:
+            return []
+    else:
+        try:
+            out = subprocess.run(["ps", "-A", "-o", "pid="], capture_output=True,
+                                 text=True, timeout=5).stdout
+        except (OSError, subprocess.SubprocessError):
+            return []
+        pids = [int(x) for x in out.split() if x.isdigit()]
+    me = os.getpid()
+    found = []
+    for pid in pids:
+        if pid in (me, sid):
+            continue
+        try:
+            if os.getsid(pid) == sid:
+                found.append(pid)
+        except OSError:
+            pass
+    return found
+
+
+def _kill_session(sid: int) -> None:
+    """SIGKILL whatever is left in the command's session. The group kill
+    misses jobs that moved to their own process group (`set -m`, setpgid)
+    but stayed in the session. A few passes: a survivor may fork while we
+    scan."""
+    for _ in range(3):
+        pids = _session_pids(sid)
+        if not pids:
+            return
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
 
 
 def kill_live_children(grace: float = 2.0) -> int:
@@ -236,9 +289,68 @@ def run_reaped(command, timeout, as_limit=None, **popen_kw):
         _LIVE_GROUPS.pop(proc.pid, None)
 
 
+def _group_usage(pgid: int):
+    """(total RSS bytes, process count) of the command's process group, or
+    None if ps fails. start_new_session makes session == group == pid, so
+    `ps -g` selects it on both BSD (group) and procps (session)."""
+    try:
+        out = subprocess.run(["ps", "-o", "rss=", "-g", str(pgid)],
+                             capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    rows = [int(x) for x in out.split() if x.isdigit()]
+    return sum(rows) * 1024, len(rows)
+
+
+def _start_group_guard(proc, as_limit):
+    """Parent-side memory/process backstop for prlimit-less platforms (see
+    _GROUP_GUARD_POLL). Returns (stop_event, verdict_list)."""
+    stop = threading.Event()
+    verdict: list = []
+
+    def run():
+        while not stop.wait(_GROUP_GUARD_POLL):
+            if proc.poll() is not None:
+                return
+            usage = _group_usage(proc.pid)
+            if usage is None:
+                continue
+            rss, nprocs = usage
+            if rss > as_limit:
+                why = (f"memory cap: group RSS {rss // 1024**2} MB over "
+                       f"{as_limit // 1024**2} MB")
+            elif nprocs > _GROUP_GUARD_MAX_PROCS:
+                why = (f"process cap: {nprocs} processes over "
+                       f"{_GROUP_GUARD_MAX_PROCS}")
+            else:
+                continue
+            verdict.append(why)
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            return
+    threading.Thread(target=run, daemon=True).start()
+    return stop, verdict
+
+
 def _reap(proc, command, timeout, _as_limit, _nproc):
     """run_reaped's body after the spawn (split out so the live-group
     registry is always cleared, whatever raises)."""
+    guard = None
+    if not hasattr(resource, "prlimit"):
+        guard = _start_group_guard(proc, _as_limit)
+    try:
+        rc, out = _reap_body(proc, command, timeout, _as_limit, _nproc)
+    finally:
+        if guard:
+            guard[0].set()
+    if guard and guard[1]:
+        out += f"\n[killed by the {guard[1][0]}]"
+    return rc, out
+
+
+def _reap_body(proc, command, timeout, _as_limit, _nproc):
     if hasattr(resource, "prlimit"):
         # NPROC/FSIZE/CPU joined AS in the 2026-09-10 hardening: fork bombs,
         # disk-fill, and pure-CPU spins previously ran free until the wall
@@ -302,13 +414,23 @@ def _reap(proc, command, timeout, _as_limit, _nproc):
         raise subprocess.TimeoutExpired(command, timeout,
                                         output=_assemble()) from None
     finally:
+        # The no-orphans policy the bash tool documents: background
+        # processes (trailing &, nohup) die when the command returns. Kill
+        # whatever is left of the session's group NOW — not only when a
+        # grandchild still holds the pipe (that both let the usual
+        # `cmd >log 2>&1 &` idiom run on unsupervised past every timeout
+        # and cost a fixed 5 s join first). Output already in the pipe is
+        # still drained below. A job in its own group (`set -m`, setpgid)
+        # is still in the session, so the session is swept too; only a
+        # deliberate setsid escapes.
+        if proc.poll() is not None:
+            if _group_alive(proc.pid):
+                _killpg(proc)
+            _kill_session(proc.pid)
         reader.join(timeout=5)
         if reader.is_alive():
-            # The shell exited but a backgrounded grandchild still holds the
-            # stdout pipe — the reader would block forever (and so would we).
-            # Killing the group unblocks it AND enforces the no-orphans
-            # policy: nothing outlives the tool call. Long-lived daemons must
-            # detach properly (setsid + redirect away from the pipe).
+            # A grandchild still holds the stdout pipe — the reader would
+            # block forever (and so would we). Kill the group (again).
             _killpg(proc)
             reader.join(timeout=2)
         if reader.is_alive():
@@ -553,6 +675,9 @@ _PROTECTED_BASENAMES = {
     ".bash_login", ".bash_logout", ".zshenv", ".zprofile", ".zlogin",
     ".zlogout", ".gitconfig", ".pam_environment", ".xprofile", ".xinitrc",
     ".xsession", ".xsessionrc",
+    # Sourced under `set -a` by client.sh: can clear OPENBEAST_BASH_WRAPPER
+    # or set LD_PRELOAD for the next client start.
+    ".openbeast-client.env",
 }
 # Directories under ~ whose files execute (or set the env of) the next
 # login/shell/git/session. Checked as path prefixes relative to HOME.
@@ -565,6 +690,20 @@ _PERSIST_PREFIXES = (
     os.path.join(".config", "environment.d"),
     os.path.join(".config", "hypr"),            # exec-once (Omarchy)
     os.path.join(".config", "uwsm"),            # session env files
+    # Code on the next start, missed until the 2026-11 review: user
+    # site-packages *.pth / usercustomize.py run in every non-isolated
+    # python3 (runner.py and the tool server included; macOS keeps them
+    # under ~/Library/Python), opencode.json can swap the MCP server
+    # command, ~/.openbeast-client is the client install itself, rc.d dirs
+    # are sourced by a loop _SOURCE_RE cannot see, and LaunchAgents are
+    # macOS's login autostart.
+    os.path.join(".local", "lib"),
+    os.path.join("Library", "Python"),
+    os.path.join("Library", "LaunchAgents"),
+    os.path.join(".config", "opencode"),
+    ".openbeast-client",
+    ".bashrc.d",
+    ".zshrc.d",
 )
 # Live shell rc files whose `source X` / `. X` lines extend the protected set:
 # a file the user's ~/.bashrc sources (this box: ~/.bashrc_custom) is as
@@ -606,32 +745,49 @@ def _hazard_path(rp: str) -> bool:
     return any(rp == p or rp.startswith(p + os.sep) for p in _HAZARD_PREFIXES)
 
 
+#: macOS's default APFS volumes are case-insensitive: fold case before
+#: matching protected paths there (a case-sensitive volume only gets a
+#: harmless over-refusal).
+_CASE_INSENSITIVE_FS = sys.platform == "darwin"
+
+
+def _case_key(p: str) -> str:
+    return p.casefold() if _CASE_INSENSITIVE_FS else p
+
+
 def _guard_write_path(path: str):
     """Return an error string if `path` is a protected credential/persistence
     target, else None. Applied to write_file / edit_file only — reads stay
-    open (an agent may legitimately read config)."""
+    open (an agent may legitimately read config).
+
+    On a case-insensitive filesystem (macOS's default APFS) realpath keeps
+    the caller's spelling, so every comparison is made on case-folded paths
+    there — ~/.SSH/authorized_keys opens the real ~/.ssh."""
     rp = os.path.realpath(os.path.expanduser(path))
     home = os.path.realpath(os.path.expanduser("~"))
-    rel = os.path.relpath(rp, home)
+    k = _case_key
+    crp = k(rp)
+    rel = os.path.relpath(crp, k(home))
     inside_home = rel != os.pardir and not rel.startswith(os.pardir + os.sep)
     if inside_home:
-        if rel.split(os.sep)[0] in _PROTECTED_DIRS:
+        if rel.split(os.sep)[0] in {k(d) for d in _PROTECTED_DIRS}:
             return f"Error: refusing to write inside a credential store ({rp})"
-        if rel in _PROTECTED_BASENAMES:
+        if rel in {k(b) for b in _PROTECTED_BASENAMES}:
             return f"Error: refusing to write protected file {rp}"
     if inside_home:
         # Persistence/execution targets (2026-09-10 hardening): a hook fires
         # on the next git command, autostart/systemd-user on next login, and
         # ~/.local/bin shadows real binaries on PATH.
-        for pfx in _PERSIST_PREFIXES:
+        for pfx in map(k, _PERSIST_PREFIXES):
             if rel == pfx or rel.startswith(pfx + os.sep):
                 return f"Error: refusing to write a persistence target ({rp})"
-        if rp in _rc_sourced_files(home):
+        if crp in {k(f) for f in _rc_sourced_files(home)}:
             return (f"Error: refusing to write a file your shell rc sources "
                     f"({rp})")
-    if rp == "/etc" or rp.startswith("/etc/"):
-        return f"Error: refusing to write under /etc ({rp})"
-    parts = rp.split(os.sep)
+    for etc in ("/etc", "/private/etc"):  # macOS: /etc -> /private/etc
+        if crp == etc or crp.startswith(etc + "/"):
+            return f"Error: refusing to write under /etc ({rp})"
+    parts = crp.split(os.sep)
     if ".git" in parts:
         # Anywhere under a .git dir — including submodule and worktree
         # gitdirs (.git/modules/<m>/config, .git/modules/<m>/hooks/*), which
@@ -1298,7 +1454,11 @@ def _run_diagnostics(path: str) -> str:
             _diag_log_timing(lang, (time.monotonic() - t0) * 1000, "busy")
             return "\ndiagnostics: unavailable (busy)"
         try:
-            rc, out = run_reaped(cmd, _DIAG_TIMEOUT, as_limit=_DIAG_AS_LIMIT, env=env)
+            # cwd = the file's directory: under a BASH_WRAPPER (Sandlock's
+            # `-w "$PWD"`) the checker is granted where the file lives, as
+            # bash() grants its workdir — not the tool server's launch dir.
+            rc, out = run_reaped(cmd, _DIAG_TIMEOUT, as_limit=_DIAG_AS_LIMIT,
+                                 env=env, cwd=os.path.dirname(path) or None)
         finally:
             _DIAG_SLOTS.release()
         escalation = _escalation_for(lang, rc, out)
@@ -1399,16 +1559,42 @@ def write_file(path: str, content: str) -> str:
         return f"Error: {e}"
 
 
+#: list_files walk budget: most glob matches examined, and wall seconds. The
+#: whole-tree glob + sort ran in-process with no bound (directory='~' or '/'
+#: walked the filesystem, holding a tool-server thread and the GIL), all to
+#: print 200 lines. Under the budget the output is exactly as before.
+_LIST_SCAN_MAX = 20_000
+_LIST_SCAN_SECONDS = 5.0
+
+
 def list_files(directory: str = ".", pattern: str = "**/*") -> str:
     """List files matching a glob pattern."""
     try:
         directory = _resolve(directory)
-        matches = sorted(glob.glob(os.path.join(directory, pattern), recursive=True))
-        files = [m for m in matches if os.path.isfile(m)]
+        files = []
+        scanned = 0
+        stopped = False
+        t_end = time.monotonic() + _LIST_SCAN_SECONDS
+        for m in glob.iglob(os.path.join(directory, pattern), recursive=True):
+            scanned += 1
+            if os.path.isfile(m):
+                files.append(m)
+            if scanned >= _LIST_SCAN_MAX or time.monotonic() >= t_end:
+                stopped = True
+                break
+        files.sort()
         if not files:
+            if stopped:
+                return (f"No files among the first {scanned} matches of "
+                        f"'{pattern}' in {directory} (stopped early — narrow "
+                        f"the directory or pattern)")
             return f"No files matching '{pattern}' in {directory}"
         result = "\n".join(files[:200])
-        if len(files) > 200:
+        if stopped:
+            result += (f"\n... stopped after scanning {scanned} matches "
+                       f"({len(files)} files so far, not a sorted prefix of "
+                       f"the whole tree) — narrow the directory or pattern")
+        elif len(files) > 200:
             result += f"\n... and {len(files) - 200} more"
         return result
     except Exception as e:
@@ -1604,8 +1790,26 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
         if not os.path.isfile(path):
             return f"Error: file not found: {path}"
 
-        with open(path, "r") as f:
+        # newline="": keep the file's own line endings. The universal-newline
+        # read rewrote every \r\n / \r in the file to \n on ANY edit. A file
+        # with one non-LF style is matched in LF form (the model's strings
+        # are normalized the same way) and written back in that style; a
+        # mixed-ending file is matched and written exactly as it is.
+        with open(path, "r", newline="") as f:
             content = f.read()
+        eol = "\n"
+        if "\r" in content:
+            crlf = content.count("\r\n")
+            lone_cr = content.count("\r") - crlf
+            lone_lf = content.count("\n") - crlf
+            if crlf and not lone_cr and not lone_lf:
+                eol = "\r\n"
+            elif lone_cr and not crlf and not lone_lf:
+                eol = "\r"
+            if eol != "\n":
+                content = content.replace(eol, "\n")
+                old_string = old_string.replace("\r\n", "\n").replace("\r", "\n")
+                new_string = new_string.replace("\r\n", "\n").replace("\r", "\n")
 
         if not old_string:
             return "Error: old_string must not be empty"
@@ -1652,7 +1856,8 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
         else:
             new_content = content.replace(old_string, new_string, 1)
 
-        _atomic_write_text(path, new_content)
+        _atomic_write_text(path, new_content if eol == "\n"
+                           else new_content.replace("\n", eol))
         _manifest_log("edit", path, len(new_content))
         _EDIT_FAILS.pop(path, None)
 
@@ -1779,7 +1984,12 @@ def _fetch_track(sock) -> None:
     """Register a freshly connected socket with the in-flight fetch's
     watchdog. A dup is kept (not the object) because TLS wrapping detaches
     the original; shutdown() on the dup still ends the shared connection,
-    which unblocks a recv stuck in another frame of this thread."""
+    which unblocks a recv stuck in another frame of this thread.
+
+    The watchdog fires ONCE: a socket a redirect hop opens after it fired
+    (its resolve or connect straddled the deadline) is shut down here, on
+    registration — append-then-check pairs with _expire's set-then-iterate,
+    so whichever runs second sees the other."""
     socks = getattr(_fetch_state, "socks", None)
     if socks is None:
         return
@@ -1787,21 +1997,88 @@ def _fetch_track(sock) -> None:
         socks.append(sock.dup())
     except OSError:
         pass
+    expired = getattr(_fetch_state, "expired", None)
+    if expired is not None and expired.is_set():
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+
+def _fetch_check_deadline() -> None:
+    """Raise URLError once the in-flight fetch's total deadline has passed
+    (no-op outside a fetch)."""
+    deadline = getattr(_fetch_state, "deadline", None)
+    if deadline is not None and time.monotonic() >= deadline:
+        raise urllib.error.URLError("fetch total deadline exceeded")
+
+
+def _fetch_op_timeout(timeout):
+    """Per-operation socket timeout clamped to what is left of the fetch's
+    total deadline, so a connect that starts late cannot outlast it."""
+    deadline = getattr(_fetch_state, "deadline", None)
+    if deadline is None:
+        return timeout
+    left = max(0.05, deadline - time.monotonic())
+    return left if timeout is None else min(timeout, left)
+
+
+def _fetch_bounded(fn, *args):
+    """Run a resolver call (getaddrinfo cannot be interrupted) on a helper
+    thread and wait at most the fetch's remaining deadline for it. Outside a
+    fetch it is a plain call. The helper is a daemon and finishes on its own
+    when the system resolver gives up; the worker does not wait for it."""
+    deadline = getattr(_fetch_state, "deadline", None)
+    if deadline is None:
+        return fn(*args)
+    box = {}
+
+    def run():
+        try:
+            box["r"] = fn(*args)
+        except BaseException as e:  # surfaced to the caller below
+            box["e"] = e
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(max(0.0, deadline - time.monotonic()))
+    if t.is_alive():
+        raise urllib.error.URLError("fetch total deadline exceeded (DNS)")
+    if "e" in box:
+        raise box["e"]
+    return box["r"]
+
+
+def _dial_pinned(conn, ips):
+    """Connect `conn` to the first reachable of the PRE-VETTED `ips`, in
+    resolver order — what socket.create_connection does for a hostname, but
+    only ever over addresses the SSRF guard approved (an unreachable first
+    record, e.g. AAAA on a v6-less box, no longer fails the fetch). None =
+    dial conn.host (the operator's proxy). Each attempt is held to the
+    fetch's remaining deadline."""
+    last = None
+    for ip in (ips or [None]):
+        _fetch_check_deadline()
+        conn.timeout = _fetch_op_timeout(conn.timeout)
+        try:
+            return socket.create_connection(
+                (ip or conn.host, conn.port), conn.timeout,
+                conn.source_address)
+        except OSError as e:
+            last = e
+    raise last
 
 
 class _PinnedHTTPConnection(http.client.HTTPConnection):
     """HTTPConnection that dials a PRE-VETTED IP instead of re-resolving the
     hostname — the IP the SSRF guard approved is the exact IP we connect to."""
-    def __init__(self, *a, pinned_ip=None, **kw):
+    def __init__(self, *a, pinned_ips=None, **kw):
         super().__init__(*a, **kw)
-        self._pinned_ip = pinned_ip
+        self._pinned_ips = pinned_ips
 
     def connect(self):
-        # pinned_ip None = proxied request: dial the operator's proxy
+        # pinned_ips None = proxied request: dial the operator's proxy
         # (self.host) — see _pinned_open.
-        self.sock = socket.create_connection(
-            (self._pinned_ip or self.host, self.port), self.timeout,
-            self.source_address)
+        self.sock = _dial_pinned(self, self._pinned_ips)
         _fetch_track(self.sock)
         if self._tunnel_host:
             self._tunnel()
@@ -1810,14 +2087,12 @@ class _PinnedHTTPConnection(http.client.HTTPConnection):
 class _PinnedHTTPSConnection(http.client.HTTPSConnection):
     """Same pin for TLS. Crucially keeps server_hostname = the ORIGINAL host
     so SNI and certificate validation still check the real name, not the IP."""
-    def __init__(self, *a, pinned_ip=None, **kw):
+    def __init__(self, *a, pinned_ips=None, **kw):
         super().__init__(*a, **kw)
-        self._pinned_ip = pinned_ip
+        self._pinned_ips = pinned_ips
 
     def connect(self):
-        sock = socket.create_connection(
-            (self._pinned_ip or self.host, self.port), self.timeout,
-            self.source_address)
+        sock = _dial_pinned(self, self._pinned_ips)
         _fetch_track(sock)
         if self._tunnel_host:
             self.sock = sock
@@ -1841,15 +2116,19 @@ def _pinned_open(handler, req, conn_class, scheme):
         # name, then dial the proxy, which does its own resolution: the IP
         # pin cannot cover a proxied target (a rebinding answer at the
         # proxy is out of our hands), only the name-level vet can.
-        reason = _fetch_url_blocked(req.full_url)
+        reason = _fetch_bounded(_fetch_url_blocked, req.full_url)
         if reason:
             raise urllib.error.URLError(f"fetch blocked: {reason}")
-        return handler.do_open(conn_class, req, pinned_ip=None)
+        _fetch_check_deadline()
+        return handler.do_open(conn_class, req, pinned_ips=None)
     parsed = urllib.parse.urlparse(req.full_url)
-    ips, reason = _resolve_vetted(parsed.hostname, parsed.port, scheme)
+    ips, reason = _fetch_bounded(_resolve_vetted, parsed.hostname,
+                                 parsed.port, scheme)
     if reason:
         raise urllib.error.URLError(f"fetch blocked: {reason}")
-    return handler.do_open(conn_class, req, pinned_ip=ips[0])
+    _fetch_check_deadline()
+    return handler.do_open(conn_class, req,
+                           pinned_ips=list(dict.fromkeys(ips)))
 
 
 class _PinnedHTTPHandler(urllib.request.HTTPHandler):
@@ -1868,7 +2147,8 @@ class _FetchRedirectHandler(urllib.request.HTTPRedirectHandler):
     pinned handlers when urllib re-opens the redirected request, so this
     early check being one resolution ahead can't be exploited."""
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        reason = _fetch_url_blocked(newurl)
+        _fetch_check_deadline()
+        reason = _fetch_bounded(_fetch_url_blocked, newurl)
         if reason:
             raise urllib.error.URLError(
                 f"fetch blocked: redirect to {newurl}: {reason}")
@@ -1892,6 +2172,8 @@ _fetch_opener = _build_fetch_opener()
 #: agent's history (review efficiency-3). Env OPENBEAST_FETCH_MAX_CHARS
 #: overrides it (read per call).
 _FETCH_MAX_CHARS_DEFAULT = 200_000
+#: Floor on fetch's byte read budget (see _fetch_body).
+_FETCH_MIN_READ_BYTES = 2 * 1024 * 1024
 
 
 def _fetch_max_chars() -> int:
@@ -1912,9 +2194,6 @@ def fetch(url: str, max_length: int = 50_000) -> str:
     hostname resolving to loopback/private/link-local/reserved space is
     blocked, at request time and again on every redirect hop.
     """
-    reason = _fetch_url_blocked(url)
-    if reason:
-        return f"Error: fetch blocked: {reason}"
     # max_length is model-controlled; without a ceiling, max_length*4 below
     # becomes an attempted multi-GB read into memory — and a result bigger
     # than the context is useless to the model anyway. The truncation marker
@@ -1938,12 +2217,26 @@ def fetch(url: str, max_length: int = 50_000) -> str:
     watchdog = threading.Timer(_FETCH_DEADLINE, _expire)
     watchdog.daemon = True
     _fetch_state.socks = socks
+    _fetch_state.expired = expired
+    _fetch_state.deadline = deadline
     watchdog.start()
     try:
+        # The up-front (friendly-error) resolve runs under the deadline too:
+        # getaddrinfo is uninterruptible, so _fetch_bounded waits for it on a
+        # helper thread for at most the time left.
+        try:
+            reason = _fetch_bounded(_fetch_url_blocked, url)
+        except urllib.error.URLError:
+            return (f"Error: fetch exceeded its {_FETCH_DEADLINE:.0f}s "
+                    f"total deadline (DNS resolution too slow)")
+        if reason:
+            return f"Error: fetch blocked: {reason}"
         return _fetch_body(url, max_length, deadline, expired)
     finally:
         watchdog.cancel()
         _fetch_state.socks = None
+        _fetch_state.expired = None
+        _fetch_state.deadline = None
         for s_ in socks:
             try:
                 s_.close()
@@ -1977,7 +2270,12 @@ def _fetch_body(url: str, max_length: int, deadline: float,
             # Chunked read1() (one recv at most per call), not read(n) —
             # which loops internally until n bytes — so the deadline is
             # checked between every network read.
-            limit = max_length * 4
+            # Byte budget: max_length*4, but never below
+            # _FETCH_MIN_READ_BYTES — at the old bare max_length*4 (200 KB by
+            # default) a big inline <script>/JSON head used up the whole read
+            # and the page came back empty. The char cap still applies after
+            # stripping; the 2M-char ceiling keeps the worst case at 8 MB.
+            limit = max(max_length * 4, _FETCH_MIN_READ_BYTES)
             buf = bytearray()
             read_some = getattr(resp, "read1", resp.read)
             while len(buf) < limit and time.monotonic() < deadline:
@@ -1990,6 +2288,9 @@ def _fetch_body(url: str, max_length: int, deadline: float,
                 if not chunk:
                     break
                 buf += chunk
+            # Stopped at the budget with the body not known to be complete
+            # (http.client's .length is the unread Content-Length; 0 = done).
+            byte_cut = len(buf) >= limit and getattr(resp, "length", None) != 0
             raw_bytes = bytes(buf)
             text = raw_bytes.decode(charset, errors="replace")
         cut_note = ""
@@ -1999,7 +2300,9 @@ def _fetch_body(url: str, max_length: int, deadline: float,
                         f"total deadline (server too slow)")
             cut_note = (f"\n\n[fetch stopped at its {_FETCH_DEADLINE:.0f}s total "
                         f"deadline — partial content, {len(raw_bytes)} bytes]")
-
+        elif byte_cut:
+            cut_note = (f"\n\n[page cut at {len(raw_bytes)} bytes — the rest "
+                        f"was not fetched]")
         if "html" in content_type.lower() or text.strip()[:100].lower().startswith(("<!doctype", "<html")):
             # Every pattern here must be LINEAR on hostile input: re holds
             # the GIL, and this runs inside the shared tool server. The old
@@ -2008,6 +2311,12 @@ def _fetch_body(url: str, max_length: int, deadline: float,
             # to hours on an 8 MB page, freezing every user's tools. [^<>]
             # stops each attempt at the next '<', and an unclosed script/style
             # block swallows the rest (as a browser would) in one pass.
+            if cut_note:
+                # The cut can land inside a tag: drop the dangling
+                # '<div cla…' the tag stripper cannot match. HTML only, and
+                # only a short tail: in plain text an early 'a < b' with no
+                # later '>' must not take the rest of the body with it.
+                text = re.sub(r"<[^<>]{0,1024}\Z", "", text)
             text = re.sub(r"<script[^<>]*>.*?(?:</script>|\Z)", "", text, flags=re.DOTALL | re.IGNORECASE)
             text = re.sub(r"<style[^<>]*>.*?(?:</style>|\Z)", "", text, flags=re.DOTALL | re.IGNORECASE)
             text = re.sub(r"<(br|hr|/p|/div|/h[1-6]|/li|/tr)[^<>]*>", "\n", text, flags=re.IGNORECASE)
@@ -2029,12 +2338,12 @@ def _fetch_body(url: str, max_length: int, deadline: float,
             pass
         return f"HTTP {e.code} {e.reason}" + (f"\n{body}" if body else "")
     except urllib.error.URLError as e:
-        if expired.is_set():
+        if expired.is_set() or time.monotonic() >= deadline:
             return (f"Error: fetch exceeded its {_FETCH_DEADLINE:.0f}s "
                     f"total deadline (server too slow)")
         return f"URL error: {e.reason}"
     except Exception as e:
-        if expired.is_set():
+        if expired.is_set() or time.monotonic() >= deadline:
             return (f"Error: fetch exceeded its {_FETCH_DEADLINE:.0f}s "
                     f"total deadline (server too slow)")
         return f"Error: {e}"
@@ -2073,6 +2382,14 @@ def web_search(query: str, max_results: int = 10, pageno: int = 1,
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        # Before URLError (its base class): SearXNG IS running and answered
+        # — 429 is its limiter, 403 usually means `json` is missing from
+        # search.formats in settings.yml. "Not running, docker run …" sent
+        # the model (and client-mode users) down the wrong fix.
+        return (f"Error: SearXNG returned HTTP {e.code} {e.reason}"
+                + (" (rate limited — wait and retry)" if e.code == 429 else "")
+                + (" (is `json` enabled in search.formats?)" if e.code == 403 else ""))
     except urllib.error.URLError:
         return (
             "Error: SearXNG is not running. Start it with:\n"

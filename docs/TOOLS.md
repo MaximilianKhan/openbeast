@@ -14,7 +14,7 @@ and search*; the transport is our own identity tool server
 
 | Surface | Transport | Where tools execute | Tools visible |
 |---|---|---|---|
-| **Open WebUI** (browser chat) | identity tool server (`agents/openapi_tools.py`) → OpenAPI (`localhost:3001`) | rig | 19 (admin) / 2 (guest — see RBAC) |
+| **Open WebUI** (browser chat) | identity tool server (`agents/openapi_tools.py`) → OpenAPI (`localhost:3001`) | rig | 20 (admin: the 19 MCP tools + `weather`) / 3 (guest — see RBAC) |
 | **OpenCode** (terminal agent) | MCP stdio (`opencode.json`) | rig | 19 from us, *plus OpenCode's own built-in tools* (see below) |
 | **Autonomous runner** (`agent.sh`, `start_agent`) | in-process (`agents/runner.py` → `agents/tools.py`) | rig | 10 |
 | **OpenBeast client** (`scripts/setup-client.sh`) | MCP stdio into OpenCode *on the client device* (`~/.config/opencode/opencode.json`) | **the client's disk** | 19, inference over the tailnet at `:8443` |
@@ -43,14 +43,14 @@ agent-management and skills layers on top.
 | `read_file` | Numbered lines; refuses non-regular files (`/dev/zero`, FIFOs) and >64 MB slurps |
 | `write_file` | Creates parent dirs; **refuses credential/persistence paths** (`~/.ssh`, `~/.gnupg`, `~/.aws`, shell rc files, `/etc`, `.git/config`) — realpath-resolved so symlinks can't dodge |
 | `edit_file` | Exact-string replacement with uniqueness checks; same write guard |
-| `list_files` | Recursive glob, capped at 200 entries |
+| `list_files` | Recursive glob, capped at 200 entries; the walk itself stops after 20 000 matches or 5 s with a "stopped early" note (a huge tree no longer runs whole in-process) |
 | `grep` | Shells out to system `grep -rn -E` through the reaped runner |
 
 ### Shell + web (3) — `agents/tools.py`
 
 | Tool | Powered by |
 |---|---|
-| `bash` | `/bin/sh` via `run_reaped`: whole-process-group SIGKILL on timeout, 32 GB `RLIMIT_AS` on children, parent-side output capped at 4 MB (a `cat /dev/zero` cannot OOM the box — learned the hard way, see `docs/TODO.md` post-mortem). Sandbox hook: set `OPENBEAST_BASH_WRAPPER` to a command prefix (`sandlock run -p openbeast -w "$PWD" --`, single-quoted — see `docs/SANDBOXING.md`) and every model command runs through it — Arsenal Phase 1 ships the Sandlock profile; unset (default) is the eval-validated configuration. The child env is scrubbed of stack secrets, and the spawning process (tool server, MCP server, runner) makes itself non-dumpable (`PR_SET_DUMPABLE=0`) before its first shell or agent spawn, so a model shell can't read the parent's secrets back from `/proc/$PPID/environ`; `OPENBEAST_KEEP_DUMPABLE=1` opts out (e.g. to attach py-spy/gdb) |
+| `bash` | `/bin/sh` via `run_reaped`: whole-process-group SIGKILL on timeout (and on return: background processes do not outlive the call), 32 GB `RLIMIT_AS` plus NPROC/FSIZE/CPU caps on children on Linux — macOS never enforces `RLIMIT_AS`, so there a parent-side guard SIGKILLs the group past 32 GB RSS or 1024 processes (no FSIZE/CPU cap), parent-side output capped at 4 MB (a `cat /dev/zero` cannot OOM the box — learned the hard way, see `docs/TODO.md` post-mortem). Sandbox hook: set `OPENBEAST_BASH_WRAPPER` to a command prefix (`sandlock run -p openbeast -w "$PWD" --`, single-quoted — see `docs/SANDBOXING.md`) and every model command runs through it — Arsenal Phase 1 ships the Sandlock profile; unset (default) is the eval-validated configuration. The child env is scrubbed of stack secrets, and the spawning process (tool server, MCP server, runner) makes itself non-dumpable (`PR_SET_DUMPABLE=0`) before its first shell or agent spawn, so a model shell can't read the parent's secrets back from `/proc/$PPID/environ`; `OPENBEAST_KEEP_DUMPABLE=1` opts out (e.g. to attach py-spy/gdb) |
 | `fetch` | Python stdlib `urllib` + in-repo HTML→text stripper. No third-party fetch service. SSRF-guarded at resolve time *and* re-checked at connect time against a pinned IP (see below). A 45 s whole-request deadline (connect, TLS, headers, redirects, body) cuts slow-drip servers, returning any partial body with a note; the HTML stripper is linear-time on hostile markup. Returns at most 200 000 chars whatever `max_length` asks for (a truncation marker says so; env `OPENBEAST_FETCH_MAX_CHARS` overrides, up to 2 000 000) |
 | `web_search` | **SearXNG** (self-hosted container, `localhost:8888`) — the one tool backed by a pulled-in service. No external API keys, no tracking. The endpoint is `SEARXNG_URL`-indirected, which is how client mode points a laptop's local tool at the rig's search over the tailnet (`docs/BEAST_SLOT.md`). On a rig with a specific `BIND_HOST`, `scripts/lib/conf.sh` exports `SEARXNG_URL=http://<BIND_HOST>:8888` unless you set it yourself |
 
@@ -249,8 +249,8 @@ and reports `COMPACTIONS: n` next to the `TOKENS:` line.
 Two WebUI connections to the one identity server are configured by `scripts/configure-webui.sh`
 (details: `docs/RBAC_PLAN.md`):
 
-- **Admin** (WebUI admin role): all 20 tools (the 19 MCP tools + weather).
-- **Guest** (WebUI user role): `web_search` + `fetch`. No filesystem, no
+- **Admin** (WebUI admin role): all 20 tools (the 19 MCP tools + `weather`).
+- **Guest** (WebUI user role): `web_search`, `fetch` and `weather`. No filesystem, no
   shell. Guest `fetch` is SSRF-guarded: http/https only, loopback/private/
   link-local/reserved targets refused, redirects re-validated per hop, and the
   vetted IP is pinned for the actual connect so a DNS flip can't slip through

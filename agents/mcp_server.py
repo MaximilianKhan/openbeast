@@ -56,6 +56,7 @@ import signal
 import stat
 import subprocess
 import sys
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -413,6 +414,32 @@ def _cleanup_agents():
 
 
 atexit.register(_cleanup_agents)
+# In-flight bash/grep commands run in their OWN sessions (run_reaped): on a
+# clean exit (stdio EOF, uvicorn shutdown of the :3001 server that imports
+# this module) nothing else would stop them once this process is gone.
+atexit.register(_tools.kill_live_children)
+
+
+def _on_stop_signal(signum, frame):
+    """SIGTERM/SIGHUP (OpenCode tearing down its MCP child, a `kill`): stop
+    the in-flight tool commands and non-detached agents, then die the way
+    the signal says. atexit never runs on a default SIGTERM death, so
+    without this the command ran on under init with no timeout."""
+    try:
+        _tools.kill_live_children(2.0)
+        _cleanup_agents()
+    finally:
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
+
+def _install_stop_handlers() -> None:
+    """Hook the stop signals, except one the launcher chose to IGNORE (an
+    inherited SIG_IGN, e.g. nohup's SIGHUP, is how it survives a hangup)."""
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        if signal.getsignal(sig) is signal.SIG_IGN:
+            continue
+        signal.signal(sig, _on_stop_signal)
 
 
 def _parse_agent_log(log_path: str, max_bytes: int = 10_000_000) -> list[dict]:
@@ -923,6 +950,26 @@ def skill(name: str = "") -> str:
 # --- Agent MCP tools ---
 
 
+def _sandboxed_workdir_refusal(workdir: str) -> str | None:
+    """Refusal text when a BASH_WRAPPER sandbox is on and `workdir` would
+    widen it past a workspace. The wrapper grants `-w "$PWD"` and an agent's
+    bash runs with cwd = its workdir, so workdir='/' or '~' made the whole
+    filesystem (or $HOME, ~/.ssh included) read-write to a confined model.
+    No wrapper: the workdir is not a boundary anyway (tools._base_dir)."""
+    if not os.environ.get("OPENBEAST_BASH_WRAPPER", "").strip():
+        return None
+    rp = os.path.realpath(workdir)
+    home = os.path.realpath(os.path.expanduser("~"))
+    if rp == home or rp == os.sep or home.startswith(rp.rstrip(os.sep) + os.sep):
+        return (f"Error: workdir {rp} would grant the bash sandbox all of "
+                f"{rp} (it contains your home directory); pick a project "
+                f"directory")
+    if _tools._guard_write_path(os.path.join(rp, "_")):
+        return (f"Error: workdir {rp} is a protected credential/persistence "
+                f"location; the bash sandbox would grant it read-write")
+    return None
+
+
 @_tool()
 def start_agent(task: str, workdir: str = ".", max_iter: int = 200, context: str = "",
                 base_url: str = "", detach: bool = False) -> str:
@@ -968,6 +1015,9 @@ def start_agent(task: str, workdir: str = ".", max_iter: int = 200, context: str
     workdir = os.path.abspath(os.path.expanduser(workdir))
     if not os.path.isdir(workdir):
         return f"Error: workdir does not exist: {workdir}"
+    refusal = _sandboxed_workdir_refusal(workdir)
+    if refusal:
+        return refusal
 
     agent_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
     log_path = os.path.join(_LOG_DIR, f"agent-{agent_id}.jsonl")
@@ -1143,6 +1193,22 @@ def check_agent(agent_id: str) -> str:
     return f"Error: unknown agent '{agent_id}'. Use list_agents() to see tracked agents."
 
 
+#: list_agents parses only this tail of each transcript (plus its first
+#: line): status lives in the last events and the iteration count in the
+#: last iteration event's `number`. A full 10 MB parse per row made one call
+#: up to ~1 GB of JSON work for _LEDGER_LIST_LIMIT rows.
+_LIST_TAIL_BYTES = 256 * 1024
+
+
+def _iteration_count(events: list[dict]) -> int:
+    """Iterations so far: the highest iteration `number` seen (runner.py
+    numbers them), so a tail window still reports the true count; falls
+    back to counting events for logs without numbers."""
+    iters = [e for e in events if e.get("type") == "iteration"]
+    nums = [e.get("number") for e in iters if isinstance(e.get("number"), int)]
+    return max(nums) if nums else len(iters)
+
+
 @_tool()
 def list_agents() -> str:
     """List every agent known to this rig with its current status.
@@ -1161,12 +1227,13 @@ def list_agents() -> str:
         session_id = str(ledger_record.get("id") or "")
         if not session_id:
             continue
-        events = _parse_agent_log(_ledger_transcript(ledger_record, session_id))
+        events = _parse_agent_log(_ledger_transcript(ledger_record, session_id),
+                                  _LIST_TAIL_BYTES)
         meta = ledger_record.get("meta") if isinstance(ledger_record.get("meta"), dict) else {}
         started = _parse_ts(ledger_record.get("started_at"))
         rows[session_id] = (
             _ledger_status(ledger_record, events),
-            sum(1 for e in events if e.get("type") == "iteration"),
+            _iteration_count(events),
             meta.get("max_iter") or "-",
             _format_elapsed(started) if started else "-",
             _ledger_task(ledger_record, events)[:50].replace("\n", " "),
@@ -1176,10 +1243,10 @@ def list_agents() -> str:
     # start_agent can mutate _agents mid-iteration (same guard as _cleanup_agents).
     for agent_id, record in list(_agents.items()):
         alive = record.process.poll() is None
-        events = _parse_agent_log(record.log_path)
+        events = _parse_agent_log(record.log_path, _LIST_TAIL_BYTES)
         rows[agent_id] = (
             _classify_agent_status(alive, events, record.process.returncode),
-            sum(1 for e in events if e.get("type") == "iteration"),
+            _iteration_count(events),
             record.max_iter,
             _format_elapsed(record.started_at),
             record.task[:50].replace("\n", " "),
@@ -1201,6 +1268,50 @@ def list_agents() -> str:
     return "\n".join(lines)
 
 
+def _signal_ledger_agent(rec: dict, sig: int) -> bool:
+    """Signal a ledger session's group (only when it LEADS it) or its pid,
+    and only while the recorded pid is provably still that process
+    (sessions.is_alive's pid + start-time check): a stale record's pid may
+    belong to a stranger by now."""
+    mod = _sessions()
+    if mod is None or not mod.is_alive(rec, require_start=True):
+        return False
+    try:
+        pid = int(rec.get("pid") or 0)
+        pgid = int(rec.get("pgid") or pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 1:
+        return False
+    try:
+        if pgid == pid and pgid != os.getpgrp() and os.getpgid(pid) == pgid:
+            os.killpg(pgid, sig)
+        else:
+            os.kill(pid, sig)
+        return True
+    except (ProcessLookupError, PermissionError, OSError):
+        return False
+
+
+def _stop_ledger_agent(agent_id: str, rec: dict) -> str:
+    """stop_agent for an agent this process did not spawn (a detached agent
+    after a restart of this server, or another spawn path). The runner's own
+    SIGTERM handler stops its in-flight tool command."""
+    mod = _sessions()
+    if mod is None or not mod.is_alive(rec, require_start=True):
+        return (f"Agent {agent_id} is not running (ledger state: "
+                f"{rec.get('state') or 'unknown'}). Use check_agent('{agent_id}').")
+    if not _signal_ledger_agent(rec, signal.SIGTERM):
+        return f"Error: could not signal agent {agent_id} (PID {rec.get('pid')})"
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if not mod.is_alive(rec, require_start=True):
+            return f"Agent {agent_id} stopped gracefully (PID {rec.get('pid')})."
+        time.sleep(0.1)
+    _signal_ledger_agent(rec, signal.SIGKILL)
+    return f"Agent {agent_id} force-killed after timeout (PID {rec.get('pid')})."
+
+
 @_tool()
 def stop_agent(agent_id: str) -> str:
     """Stop a running agent. Sends SIGTERM for graceful shutdown, escalates to
@@ -1211,6 +1322,9 @@ def stop_agent(agent_id: str) -> str:
     """
     record = _agents.get(agent_id)
     if not record:
+        ledger_record = _ledger_get(agent_id)
+        if ledger_record:
+            return _stop_ledger_agent(agent_id, ledger_record)
         return f"Error: unknown agent '{agent_id}'"
 
     if record.process.poll() is not None:
@@ -1927,6 +2041,7 @@ if __name__ == "__main__":
     # /proc/<ancestor>/environ. run_reaped and start_agent also do this
     # lazily (the :3001 server imports this module and relies on them).
     _tools.harden_process()
+    _install_stop_handlers()
 
     if args.transport == "http":
         print(f"MCP server starting on http://{MCP_BIND}:{args.port}/mcp")

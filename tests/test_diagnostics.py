@@ -89,6 +89,21 @@ def test_hostile_filename_does_not_execute(tmp_path, diag_on):
 
 # --- 4. robustness ---------------------------------------------------------
 
+def test_wrapper_pwd_is_the_files_directory(tmp_path, diag_on, monkeypatch):
+    # The Sandlock wrapper grants `-w "$PWD"`; bash() sets cwd so that is
+    # the workspace. Diagnostics ran with the SERVER's cwd, so the checker
+    # was granted the launch dir and could not see the file it checks.
+    probe = tmp_path / "pwd.txt"
+    work = tmp_path / "ws"
+    work.mkdir()
+    monkeypatch.setenv(
+        "OPENBEAST_BASH_WRAPPER",
+        f"/bin/sh -c 'pwd -P > {probe}; exec \"$@\"' wrap")
+    out = _write(work, "x.py", "print('hi')\n")
+    assert out.startswith("Wrote ")
+    assert probe.read_text().strip() == str(work.resolve())
+
+
 def test_missing_checker_appends_nothing(tmp_path, diag_on, monkeypatch):
     monkeypatch.setattr(tools.shutil, "which", lambda _: None)
     out = _write(tmp_path, "x.zig", "pub fn main() void {}\n")
