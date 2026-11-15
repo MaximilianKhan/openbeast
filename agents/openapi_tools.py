@@ -28,7 +28,7 @@ the HTTP layer, which buys three things mcpo structurally can't provide:
              (never the arguments themselves — chats stay private).
 
 agents/mcp_server.py remains the MCP (stdio) surface for OpenCode and any
-real MCP client; this module imports and serves the same 18 tool functions,
+real MCP client; this module imports and serves the same 19 tool functions,
 so the two surfaces cannot drift.
 
 Env:
@@ -91,18 +91,20 @@ from hostpolicy import PinnedHostMiddleware, trusted_hosts  # noqa: E402
 
 REPO_DIR = os.path.dirname(_HERE)
 
-# The full WebUI tool surface — same 18 functions the MCP server exposes.
+# The full WebUI tool surface — same 19 functions the MCP server exposes.
 # `language_reference` (beast-lang's pull surface) is read-only and harmless,
 # and it is STILL admin-only: GUEST_TOOLS below is web-only on purpose, and a
 # profile that is "web-only, plus the things that seemed safe" is not a
 # profile anyone can reason about. tests/test_lang_reference_tool.py pins it.
+# `platform_docs` (beast-docs) is admin-only for the same reason, and because
+# its live mode makes outbound requests (to configured doc hosts only).
 TOOL_NAMES = [
     "bash", "read_file", "write_file", "edit_file", "list_files", "grep",
     "fetch", "web_search", "skill",
     "start_agent", "start_skill_agent", "check_agent", "list_agents",
     "stop_agent", "tail_agent",
     "publish_artifact", "list_artifacts",
-    "language_reference",
+    "language_reference", "platform_docs",
 ]
 GUEST_TOOLS = {"web_search", "fetch"}
 
