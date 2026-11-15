@@ -344,3 +344,20 @@ def test_upstream_failures_are_a_worded_answer_not_a_500():
             assert "do not retry" in out and "Traceback" not in out
     out = weather.weather("", near=SAN_RAMON, geo=geo, forecast=_raiser(failures[0]))
     assert "rate-limit" in out
+
+
+def test_webui_connections_offer_exactly_the_guest_tools():
+    """configure-webui.sh splits the one tool server into an admin-only
+    connection and an all-users one by function-name filter. The server's
+    GUEST_TOOLS allowance is unreachable unless the all-users filter lists
+    the same tools — weather was server-allowed but filtered onto admin-only."""
+    import re
+    import openapi_tools
+    src = (Path(__file__).resolve().parent.parent / "scripts" / "configure-webui.sh").read_text()
+    filters = re.findall(r"'function_name_filter_list':\s*'([^']*)'", src)
+    assert len(filters) == 2, filters
+    priv, web = (set(f.split(",")) for f in filters)
+    assert all(x.startswith("!") for x in priv)
+    assert {x[1:] for x in priv} == openapi_tools.GUEST_TOOLS      # admin connection: the rest
+    assert web == openapi_tools.GUEST_TOOLS                         # all-users connection
+    assert openapi_tools.GUEST_TOOLS <= set(openapi_tools.TOOL_NAMES)
