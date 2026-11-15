@@ -40,6 +40,13 @@ four facts that change how you edit code here:
   *human* (WebUI user → RBAC tier → file shard); beast-gate authenticates the
   *device*. Don't conflate them.
 
+**Choosing the engine.** llama.cpp (rig default), vLLM and TensorFold (Spark
+default) are swapped, updated, pinned and rolled back with one command,
+`scripts/engine.sh` (`list | status | use | install | update | stage |
+rollback`). An engine is one adapter file in `scripts/engines/`. The
+matrix of engines × host classes × weights formats is in
+[`docs/ENGINES.md`](docs/ENGINES.md).
+
 **Unified KV, one shared pool.** `serve.sh` passes `--kv-unified`
 unconditionally: with `-np N`, every slot advertises the full `-c` context
 while all slots draw on ONE pool. Never divide context by slot count — that

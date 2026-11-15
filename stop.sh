@@ -199,6 +199,14 @@ if ! ob_inference_managed; then
   # sweep below has nothing of ours to find.
   echo "Leaving the inference server alone: $(ob_backend_label) at $INFERENCE_URL is not managed by this stack."
   echo "  (stop it where it runs — docs/DGX_SPARK_PLAN.md)"
+# >>> engine-plane hook (docs/ENGINES.md) — a MANAGED vLLM / TensorFold of
+# this checkout: its adapter stops it (the container by its per-checkout
+# name, a native server by its recorded pid). Never the llama path below.
+elif [[ "$INFERENCE_BACKEND" != "llama" ]]; then
+  source "$SCRIPT_DIR/scripts/lib/engine.sh"
+  echo "Stopping $(ob_backend_label) (managed by this stack)..."
+  ob_engine_stop_managed
+# <<< engine-plane hook
 else
 echo "Stopping llama.cpp server..."
 # The supervisor's own llama-server is already gone by now (its trap stopped

@@ -205,6 +205,29 @@
 #INFERENCE_MODEL=my-model-nvfp4
 
 # ---------------------------------------------------------------------------
+# Engine plane  (scripts/engine.sh, docs/ENGINES.md)
+# ---------------------------------------------------------------------------
+# scripts/engine.sh writes these; you rarely set them by hand.
+#
+# The engine `engine.sh use default` picks. Unset = by host class: rig →
+# llama, DGX Spark (GB10) → tensorfold. Env: $OPENBEAST_ENGINE_DEFAULT.
+#ENGINE_DEFAULT=llama
+# The model profile (scripts/backends/models/<name>.env, TENSOR_PARALLEL_SIZE=1)
+# a MANAGED vllm / tensorfold serves. Written by engine.sh use --profile NAME.
+#ENGINE_PROFILE=my-model-tp1
+# Where model-fetch.sh's verified checkpoints live (one dir per profile).
+# Default: MODELS_DIR, else ~/openbeast-models.
+#ENGINE_MODELS_DIR=~/openbeast-models
+# Pins: <version>@<immutable ref>. llama.cpp's pin is scripts/llama.cpp.ref.
+#ENGINE_PIN_VLLM=v0.33.0@sha256:d825baf9ce4b1b6bfc5ecc7b79880c7e6748c65a72d697ce3d47607aafa84c6e
+#ENGINE_PIN_TENSORFOLD=1.2.9@sha256:<archive sha256>
+# vLLM image repository (multi-arch release tags vX.Y.Z).
+#ENGINE_VLLM_IMAGE=vllm/vllm-openai
+# --enforce-eager for a managed vLLM: auto (on a GB10, for the sparse-MLA
+# families hit by CUDA-graph NaN, vllm#57156) | true | false.
+#ENGINE_VLLM_EAGER=auto
+
+# ---------------------------------------------------------------------------
 # beast-hydra — route inference across machines  (docs/BEAST_HYDRA_PLAN.md)
 # ---------------------------------------------------------------------------
 

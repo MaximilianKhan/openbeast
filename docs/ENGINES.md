@@ -1,0 +1,281 @@
+# Engines — choose, swap, update and roll back the inference engine
+
+OpenBeast talks OpenAI-compatible HTTP to one inference server. That server, the
+**inference plane**, can be one of three engines. Each has defaults per host
+class, and you can override them. `scripts/engine.sh` is the one command for
+all of it:
+
+```bash
+scripts/engine.sh list                         # what this host can run, what is installed / pinned / active
+scripts/engine.sh status                       # the active engine: version, pin, endpoint readiness, model served
+scripts/engine.sh use vllm --profile NAME      # switch (stops a running stack, rewrites the conf, starts it)
+scripts/engine.sh use llama                    # back to the default rig, byte for byte
+scripts/engine.sh update tensorfold            # latest release: download, verify, pin
+scripts/engine.sh install vllm --version v0.32.0 [--digest sha256:…]
+scripts/engine.sh rollback vllm                # the previous pin (offline when it is still on disk)
+scripts/engine.sh stage llama --version v1.0.0 ./carry   # connected box: fetch + verify for a closed one
+scripts/engine.sh install llama --from ./carry           # the closed box
+scripts/engine.sh history                      # every install / update / rollback / use
+```
+
+`--dry-run` works on `use`, `install`, `update` and `rollback`. With `use` it
+prints the conf changes and the exact launch command.
+
+## The matrix
+
+| Engine | `rig` (x86_64 + RTX 5090, CUDA sm_120) | `spark` (DGX Spark GB10, aarch64, sm_121, unified memory) | Weights it serves | Managed here? |
+|---|---|---|---|---|
+| **llama** (llama.cpp `llama-server`) | **default** — every `scripts/serve-*.sh`, measured on the 5090 | builds (CUDA arm64), not the Spark default | **GGUF** only | yes, through `scripts/serve-*.sh` (unchanged) |
+| **vllm** (`vllm/vllm-openai`, container) | yes — one GPU, TP 1, managed | yes — TP 1 managed, or TP 1..8 across Sparks (unmanaged, `spark-node.sh`) | safetensors: BF16 / FP8 / **NVFP4** / AWQ / GPTQ. GGUF only through the out-of-tree `vllm-gguf-plugin` ("highly experimental") | TP 1 on this box: yes (`engine-serve.sh`). Otherwise unmanaged |
+| **tensorfold** (native ≥ 1.0 release binary) | yes — sm_120 kernels ship. Single-GPU fits such as Qwen3.8-27B MLX-4bit are plausible, **not qualified on a 5090** | **default** — TP 1 managed, or TP 1..8 across Sparks (unmanaged, `spark-node.sh`) | **MLX-affine 4/6/8-bit** safetensors, NVFP4 (ModelOpt), EXL3 (GLM-5.3-Flash). **No GGUF on CUDA** | TP 1 on this box: yes. Otherwise unmanaged |
+
+**Host class** comes from `scripts/lib/hardware.sh`. A GPU that reports
+`memory.total` as `[N/A]` (`OB_GPU_UNIFIED=1`) makes this host a `spark`; macOS
+is `mac` (llama or tensorfold `macos-arm64`); everything else is a `rig`.
+`OB_ENGINE_HOST_CLASS` overrides the detection, and `ENGINE_DEFAULT` in
+`openbeast.conf` overrides the default engine. The runtime fallback in
+`conf.sh` stays `llama` when `INFERENCE_BACKEND` is unset. The host-class
+default only decides what `engine.sh use default` picks and what `list` and
+`doctor` call the default, so an unset conf never changes what a box launches.
+
+### Weights format is the coupling
+
+The engine decides which model files you can serve, so swapping engines nearly
+always means a different checkpoint:
+
+- **OpenBeast's default models are GGUF** (`weights.registry`; the default is
+  the uncensored Qwen3.8-27B MTP Q5_K_M). Only llama.cpp serves them
+  natively.
+- **vLLM** wants safetensors. Use the NVFP4 build of a model on Blackwell:
+  W4A4 NVFP4 has been the default on SM120/121 since v0.30.0 (#55170). Serving
+  our own GGUF through `vllm-gguf-plugin` would be the only same-weights A/B
+  between llama.cpp and vLLM, and the docs call that path experimental and
+  under-optimized.
+- **TensorFold** wants MLX-affine safetensors (Vontra conversions), NVFP4, or
+  EXL3. It has no GGUF serving on CUDA (its CHANGELOG says "GGUF serving remains
+  unavailable" for Qwen3.8-27B).
+- On vllm and tensorfold the model comes **only** from a profile,
+  `scripts/backends/models/<name>.env` (DGX_SPARK_PLAN §14), fetched and
+  verified with `scripts/backends/model-fetch.sh`. A managed engine serves only
+  a verified local copy. It never downloads from the Hub at start.
+- Every OpenBeast model is uncensored (DGX_SPARK_PLAN §15), and that rule
+  carries over to whatever checkpoint a profile names.
+
+## Managed and unmanaged
+
+| Mode | When | What the stack does |
+|---|---|---|
+| **managed** | `INFERENCE_MANAGED=true`, `INFERENCE_URL` on **this** box | `start.sh` launches the engine, waits for readiness, supervises it (3 relaunches, budget refilled after 5 min), and its trap stops it. `stop.sh` stops it. llama goes through `scripts/serve-*.sh` as always. vllm / tensorfold go through `scripts/engine-serve.sh` (TP 1 profiles only) |
+| **unmanaged** | `INFERENCE_MANAGED=false`, the default for vllm / tensorfold, and for any URL on another machine | Exactly as before (DGX_SPARK_PLAN §4): `start.sh` waits, never launches, kills or rolls back. `healthcheck` reports. The Sparks are run with `scripts/backends/spark-cluster.sh` / `*/spark-node.sh` |
+
+`conf.sh` honours `INFERENCE_MANAGED=true` for a non-llama engine only when the
+URL names this box **and** the engine's adapter has a launcher. Anything else
+warns and is forced to false, which keeps today's rule for the Sparks.
+
+What a managed vllm / tensorfold run gets, and does not get:
+
+- **Readiness** is per engine (`lib/backend.sh`): vLLM returns 200 with an empty
+  body, TensorFold returns 200 `{"ok": true}`. "Ready" also means "ours": a
+  container is not a child of `start.sh`, so its adapter answers that question
+  (the launcher is alive and the container with this checkout's name is
+  running).
+- **Container name** is `openbeast-engine-<engine>-<8 hex of the repo path>`,
+  one per checkout. Two worktrees on one box never stop each other's engine,
+  and a leftover from a SIGKILLed launcher is removed at the next launch.
+- **The API key**: `LLAMA_API_KEY` reaches vLLM as `-e VLLM_API_KEY` (by name)
+  and TensorFold as a 0600 `--api-key-file` under `.run/`. It never goes on
+  argv.
+- **Not applicable**: FAST_BOOT (the bridge is a GGUF) and MODEL_ROLLBACK
+  (last-good records serve scripts). For an engine, rollback is
+  `engine.sh rollback`.
+- **healthcheck `--restart`** reports a down managed engine and restarts
+  nothing. The supervisor relaunches an engine that exits. One that is up but
+  not ready needs `./stop.sh && ./start.sh -d`.
+- **vLLM CUDA graphs**: `ENGINE_VLLM_EAGER=auto` adds `--enforce-eager` on a
+  GB10, but only for the sparse-MLA families (`glm5*`, `deepseek_v4*`,
+  `deepseek_v32*`). Those families hit the CUDA-graph NaN of vllm#57156 (open,
+  2026-11-15: capture batches poison the null KV block on SM120/121). Every
+  other model keeps CUDA graphs. Set `true` or `false` to force it either way.
+
+## Pins, verification, history
+
+| Engine | Pin (what can never move) | Integrity check | Rollback |
+|---|---|---|---|
+| llama | `scripts/llama.cpp.ref` `LLAMA_CPP_REF=<40-hex commit>` (tracked: what a fresh `bootstrap.sh` builds; review and commit the change) | The commit id *is* the content hash. A tag (`v1.0.0`, `b12422`) is resolved to its commit, and a local tag is never moved | `git checkout` of the old commit and rebuild. The objects are already local, so this works offline |
+| vllm | `ENGINE_PIN_VLLM=<tag>@sha256:<index digest>` | The pull resolves the digest. `--digest` must match it, or the install is refused. Offline: the tarball's sha256 is checked against the MANIFEST, then the image id after `docker load` | Re-pin an image still on the box (by digest, or by the image id kept in the history). No pull |
+| tensorfold | `ENGINE_PIN_TENSORFOLD=<version>@sha256:<archive sha256>` | `install-native.sh`: archive against `.sha256`, `.sha256` against the release's ed25519 signature (vendored key), every unpacked file against `SHA256SUMS`. It always stages into `.engines/cache/` first | Relink `~/.local/opt/tensorfold-<V>-<platform>` after `SHA256SUMS` is re-checked. Instant and offline |
+
+- `update` = install the latest **release**. llama: the highest `vX.Y.Z`
+  (stable). The `bNNNN` CI builds are pre-releases, available as
+  `--version b12422` or `--version latest-build`. vLLM: the GitHub release
+  *name*, because v0.33.0's release object carries the tag `v0.33.0rc3` (both
+  name the same commit). TensorFold: `releases/latest`.
+- A failed install never moves a pin. llama: `update.sh --llama --force` builds
+  the checked-out commit with its own bin/ snapshot and restore. If that fails,
+  `llama.cpp/` goes back to the previous commit too.
+- History is `.engines/history.tsv` (untracked). Every `use` first copies the
+  conf to `.engines/conf-backups/` (0600).
+- **On a Spark**, install / update / rollback also rewrite
+  `scripts/backends/spark.env` (`VLLM_IMAGE` / `VLLM_IMAGE_DIGEST`,
+  `TENSORFOLD_VERSION`), so `spark-node.sh` launches the pinned build.
+  `--spark-env FILE` does the same anywhere. **Every rank must run the same
+  build**: update each Spark, then restart all ranks.
+
+### Offline (closed network, `OFFLINE=true`)
+
+Every install has an offline path. Stage on a connected box (any
+architecture), carry the folder over, install from it:
+
+```bash
+# connected box
+scripts/engine.sh stage llama      --version v1.0.0 /media/usb/llama
+scripts/engine.sh stage vllm       --version v0.33.0 /media/usb/vllm      # the box's own arch; docker save
+scripts/engine.sh stage tensorfold --version 1.2.9 --platform linux-aarch64 /media/usb/tf
+# closed box
+scripts/engine.sh install llama      --from /media/usb/llama
+scripts/engine.sh install vllm       --from /media/usb/vllm
+scripts/engine.sh install tensorfold --from /media/usb/tf
+```
+
+Each folder is re-verified on the closed box: the llama commit id, the vLLM
+tarball sha256 and image id, and the TensorFold signature. Under
+`OFFLINE=true`, `update` without `--from` refuses and says why.
+
+## Adapter contract (adding an engine)
+
+An engine is **one file**, `scripts/engines/<name>.sh` (`[a-z][a-z0-9-]*`),
+sourced by `scripts/lib/engine.sh`. It defines `eng_<name>_*` functions (a
+`-` in the name becomes `_`). Once that file exists, `<name>` is a valid
+`INFERENCE_BACKEND` (`lib/backend.sh`), `engine.sh list` shows it, and `use` /
+`install` / `rollback` drive it. Nothing else needs an edit.
+
+| Function | Required | Contract |
+|---|---|---|
+| `label` | yes | Human name (`vLLM`) |
+| `hosts` | yes | Host classes it runs on, space-separated (`rig spark mac`) |
+| `formats` | yes | Weights formats, one line |
+| `installed` | yes | Print the installed version and return 0; return 1 when absent. No network |
+| `pin` | no | Print `version@ref`. Without it, the pin is `ENGINE_PIN_<NAME>` in openbeast.conf |
+| `latest` | yes | Print `version ref-or-dash` for the newest release (network) |
+| `install <version> <from-dir> <digest>` | yes | Fetch or build and **verify**, then set `ENG_RESULT_VERSION`, `ENG_RESULT_REF` (immutable) and optionally `ENG_RESULT_NOTE`. Return non-zero without side effects on failure |
+| `stage <version> <dir>` | yes | Write a self-verifying folder (with a `MANIFEST`) for `install --from` |
+| `activate <version> <ref> <note>` | no | Rollback without the network. Return 1 when impossible, and engine.sh then reinstalls |
+| `launch` | no | Single-host managed server, **foreground**. `ENG_PRINT=1` prints the command only. Reads `INFERENCE_URL`, `ENGINE_PROFILE`, `LLAMA_API_KEY` |
+| `profile_check <profile>` | with `launch` | Can this profile run managed here (TP 1, right `BACKEND`)? |
+| `stop` | with `launch` | Stop this checkout's managed instance (`stop.sh`). Idempotent |
+| `owns_port <pid> <port>` | no | For servers that are not a descendant of the launcher (containers). Return 2 for "use the pid-tree check" |
+| `ready <url>` | no | Readiness. The default for a new engine is HTTP 200 on `/health` |
+| `spark_env <version> <ref>` | no | `KEY=VALUE` lines to keep `spark.env` in step |
+| `hydra_kind` | no | What beast-hydra calls it (`llama` / `vllm` / `tensorfold` / `openai`) |
+
+What a 4th engine (SGLang, exllamav3 / TabbyAPI, Ollama) still needs outside
+its file:
+
+- beast-hydra: a node with `engine = "openai"` (hydra's own list is `llama
+  vllm tensorfold openai`, `agents/hydra_core.py`).
+- A profile `BACKEND` value, if it should take model profiles: `obprofile.py`
+  accepts only `vllm | tensorfold` today.
+- The dashboard's `/api/slot` reports a generic OpenAI server.
+
+## Hooks in shared files
+
+Every hook is delimited by `>>> engine-plane hook` / `<<< engine-plane hook`,
+or ends in `# engine-plane hook`. For `INFERENCE_BACKEND=llama` each one is a
+no-op: the variables they set stay empty, and every `${_OB_*:-…}` falls back
+to the original word. `tests/test_lifecycle.sh` lifts the llama launch
+functions out of `start.sh` verbatim and still passes, and
+`tests/test_engines.sh` runs the llama path end to end.
+
+- `start.sh`
+  - one block after `MANAGED=` that switches to `engine-serve.sh`
+  - `${_OB_READY_FN:-ob_llama_ready}` twice in `wait_llama_health`
+  - an `_OB_OWNS_FN` guard at the top of `_llama_port_ours`
+  - labels in three echo lines
+  - `_pid_pattern llama` widened only when the backend is not llama
+- `stop.sh`: an `elif` for a managed non-llama engine.
+- `scripts/healthcheck.sh`: an `elif` before the llama-loading check.
+- `scripts/lib/conf.sh`: the managed-non-llama rule (one host plus an adapter
+  launcher).
+- `scripts/doctor.sh`: an "Inference engine" section (`ob_engine_doctor_rows`).
+- `scripts/lib/backend.sh` (not a shared hot spot): adapter-only engine names
+  in `normalize`, `label` and `ready`.
+
+## Research notes (primary sources, read 2026-11-15)
+
+- **llama.cpp**: GitHub's "latest" is the first semver release, **v1.0.0**
+  (2026-11-13). It is an annotated tag that peels to commit `b1b770d9…`, the
+  same commit as build b12359. The CI builds are still `bNNNN`, marked
+  pre-release; the newest is **b12422** (2026-11-15, `a681a53b…`). Prebuilt
+  `ubuntu-cuda-13.5-x64` and `-arm64` tarballs exist. OpenBeast builds from
+  source at a pinned commit (`bootstrap.sh`, `update.sh --llama`). v1.0.0
+  removed 35 deprecated options (incl. `--defrag-thold`, which no serve script
+  uses), added an FP8 KV cache, and tightened `llama-server` security
+  (`--allow-unauthenticated-tools`, `--media-allow-private-urls`, CORS / DNS
+  rebinding / SSRF). **Read the serve scripts against v1.0.0 before moving the
+  pin.**
+  - `gh api repos/ggml-org/llama.cpp/releases/latest`, `…/git/ref/tags/v1.0.0`,
+    `…/releases/tags/b12422`
+- **vLLM**: **v0.33.0** (2026-11-02, commit `4ba787ec…`; the release object's
+  tag is `v0.33.0rc3`). Previous: v0.32.0 (2026-10-18). Docker Hub
+  `vllm/vllm-openai:v0.33.0` is a multi-arch index:
+  `sha256:d825baf9ce4b1b6bfc5ecc7b79880c7e6748c65a72d697ce3d47607aafa84c6e`
+  (amd64 `sha256:91ee972a…` = `v0.33.0-x86_64`, arm64 `sha256:e3481489…` =
+  `v0.33.0-aarch64`). CUDA 13 is the default, and v0.33.0 dropped the cu129
+  images (#62575). GLM-5.3-Flash (`Glm5Next*`) has been upstream since
+  **v0.30.0** (PR #53906, merged 2026-09-03; absent in v0.29.0), which
+  confirms DGX_SPARK_PLAN §15's "vLLM ≥ 0.30". GB10 / SM12x issues open
+  today:
+  - #57156: CUDA-graph NaN for sparse MLA; workaround `--enforce-eager`.
+  - #50925: NVFP4 MoE falls back to Marlin on sm_121.
+  - #61007: cuDNN FP8 GEMM hang on GB10.
+  - #51920: FlashInferMLASparseSM120 crash.
+  - #51884: FP8 block-scaled weights fail in DeepGEMM on an RTX 5090.
+
+  NGC `nvcr.io/nvidia/vllm:26.10-py3` (manifest list `sha256:0a0de936…`) ships
+  vLLM **0.31.0**. Its Spark notes advise `--gpu-memory-utilization 0.7`.
+  - `gh api repos/vllm-project/vllm/releases`, `…/pulls/53906`,
+    `…/issues/57156`
+  - https://hub.docker.com/v2/repositories/vllm/vllm-openai/tags
+  - https://docs.nvidia.com/deeplearning/frameworks/vllm-release-notes/rel-26-10.html
+  - https://docs.vllm.ai/en/latest/features/quantization/gguf.html
+- **TensorFold**: **v1.2.9** (2026-11-15; v1.2.8 2026-11-13).
+  - Assets: `tensorfold-1.2.9-linux-{x86_64,aarch64}.tar.gz` plus `.sha256`
+    and `.sha256.sig`, and `macos-arm64`.
+  - Requirements: glibc ≥ 2.28 and driver R580+ (CUDA 13).
+  - CUDA fatbins: **sm_80, sm_86, sm_120, sm_121** (no sm_90). v1.2.9 refuses,
+    by name, a GPU it has no kernels for.
+  - Signature scheme unchanged: ed25519 over
+    `"tensorfold-native-checksum-v1\n" + .sha256`. The key is in
+    `packaging/runtime-trust.json`, unchanged since `27b1b136` (2026-11-07),
+    and it is the key `install-native.sh` vendors.
+  - On a 5090: the CHANGELOG records Qwen3.8-27B MLX-4bit running on CUDA on an
+    RTX 5090 (#1373, #1078). Qualified sm_120 runs are on RTX PRO 6000 / 4500
+    only.
+  - `gh api repos/ashhart/TensorFold/releases`, `packaging/README.md`,
+    `packaging/runtime-trust.json`, `docs/evaluating.md`
+
+## The rig A/B (llama.cpp vs vLLM), when the rig is back
+
+None of this has run on the 5090 yet. To measure the A/B you need:
+
+1. **A model that both engines can serve and that is allowed to be served.**
+   The default is a GGUF of the uncensored Qwen3.8-27B.
+   - vLLM needs either an uncensored **safetensors / NVFP4** build of the same
+     model, or the GGUF through `vllm-gguf-plugin`. The plugin is
+     experimental, but it is the only same-weights comparison.
+   - Write a TP 1 profile with `GPU_MEMORY_UTILIZATION≈0.90` and a
+     `MAX_MODEL_LEN` that fits 32 GB:
+     `model-inspect.sh <repo@sha> --write-profile NAME`, then
+     `model-fetch.sh --profile NAME`.
+   - No such profile ships, because no reviewed uncensored NVFP4 repo is
+     pinned yet.
+2. `scripts/engine.sh install vllm` (pins v0.33.0 by digest), then
+   `scripts/engine.sh use vllm --profile NAME`.
+3. `scripts/backends/conformance.sh` (tools, reasoning split), then the eval
+   suite against both engines at the same model. Pass `--models <slug>` on
+   `evals/benchmark_all.py`, or both rows will not exist.
+4. Record decode tok/s single-stream and at `MAX_NUM_SEQS`, time to first
+   token, VRAM at idle, and the context vLLM admits. Then
+   `scripts/engine.sh use llama` to go back.
+5. The same for TensorFold (Qwen3.8-27B MLX-4bit, TP 1) is the third column.
+   It is unqualified on a 5090, so treat the first run as a qualification.

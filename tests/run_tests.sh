@@ -155,6 +155,7 @@ for _suite in \
   "test_shell_ops.sh|Shell ops (doctor, tailscale, conf, keys)" \
   "test_ops_chat_artifact.sh|beast-chat / beast-artifact ops" \
   "test_backends.sh|Inference backends (vLLM / TensorFold, unmanaged)" \
+  "test_engines.sh|Engine plane (scripts/engine.sh: swap / pin / update / rollback, managed vLLM / TensorFold)" \
   "test_spark_cluster.sh|DGX Spark cluster of 1-8 nodes (spark-cluster.sh)" \
   "test_spark_guard.sh|DGX Spark guard (nftables for the rendezvous ports)" \
   "test_spark_supply.sh|DGX Spark supply chain (install-native, root-setup debs and key)" \

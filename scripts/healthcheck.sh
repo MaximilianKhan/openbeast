@@ -330,6 +330,24 @@ if ! ob_inference_managed; then
       echo "         Start it where it runs (docs/DGX_SPARK_PLAN.md)."
     fi
   fi
+# >>> engine-plane hook (docs/ENGINES.md) — a MANAGED vLLM / TensorFold: its
+# own readiness question, and no pgrep/kill/serve-script relaunch below (that
+# path is llama-server's). start.sh's supervisor relaunches one that exits.
+elif [[ "$INFERENCE_BACKEND" != "llama" ]]; then
+  _be_label="$(ob_backend_label) ($INFERENCE_BACKEND @ $LLAMA_URL, managed)"
+  if ob_backend_ready "$LLAMA_URL"; then
+    echo "  OK   $_be_label"
+    HEALTHY=$((HEALTHY + 1))
+  else
+    echo "  DOWN $_be_label"
+    UNHEALTHY=$((UNHEALTHY + 1))
+    CORE_LLAMA_DOWN=1
+    if $RESTART; then
+      echo "       → not restarted here: the start.sh supervisor relaunches a managed $INFERENCE_BACKEND that exits;"
+      echo "         one that is up but not ready: ./stop.sh && ./start.sh -d   (scripts/engine.sh status)"
+    fi
+  fi
+# <<< engine-plane hook
 elif _llama_loading; then
   echo "  LOAD llama.cpp server (model still loading — left alone)"
   LOADING=1

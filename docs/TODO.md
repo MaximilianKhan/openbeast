@@ -27,6 +27,7 @@ and the variables added later.
 - [ ] Sparks: the same A/B between TensorFold (recipe / native) and vLLM once a
   vLLM build serves the chosen model on GB10.
 - Engine swapping itself: `scripts/engine.sh` (see docs/ENGINES.md once it lands).
+- Landed: [docs/ENGINES.md](ENGINES.md) — `scripts/engine.sh use|install|update|rollback`, managed TP 1 vLLM / TensorFold on the rig, and "The rig A/B" section lists what the 5090 run needs (an uncensored safetensors/NVFP4 profile, or the GGUF via vllm-gguf-plugin).
 
 ## ⏳ GPU BACKLOG — parked 2026-10-09 (Max: "kick that into the back, we come back to it later")
 

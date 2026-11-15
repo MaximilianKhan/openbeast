@@ -556,9 +556,11 @@ export OPENBEAST_PROBE_HOST
 #       false: start.sh launches, rolls back, supervises and kills NOTHING —
 #       it waits for the server to answer, brings up everything else, and
 #       healthcheck --restart / stop.sh leave the server alone. vLLM and
-#       TensorFold are never managed (they run on other boxes, in
-#       containers this stack did not start), so `true` there warns and is
-#       ignored.
+#       TensorFold default to unmanaged (they run on other boxes, in
+#       containers this stack did not start); `true` is honoured only for
+#       ONE host — INFERENCE_URL on this box and an engine adapter with a
+#       launcher (scripts/engine.sh use, docs/ENGINES.md) — else it warns
+#       and is ignored.
 #   INFERENCE_SLOTS    integer                            default empty
 #       Concurrency /api/slot advertises when the server does not expose one
 #       (vLLM --max-num-seqs, TensorFold --parallel).
@@ -621,10 +623,23 @@ if [[ "$INFERENCE_BACKEND" == "llama" ]]; then
   unset _ob_remote
 else
   INFERENCE_MANAGED="$(_ob_bool "$_ob_managed_raw" false INFERENCE_MANAGED)"
+  # >>> engine-plane hook (docs/ENGINES.md): managed = ONE host. start.sh
+  # launches vLLM / TensorFold itself (scripts/engine-serve.sh) only when the
+  # engine has an adapter with a launcher and INFERENCE_URL names THIS box;
+  # a server on other boxes (the Sparks) stays someone else's, as before.
   if [[ "$INFERENCE_MANAGED" == "true" ]]; then
-    echo "WARNING: INFERENCE_MANAGED=true is not supported for INFERENCE_BACKEND=$INFERENCE_BACKEND — start.sh cannot launch it; treating it as false." >&2
-    INFERENCE_MANAGED=false
+    _ob_eng_ad="$(dirname "${BASH_SOURCE[0]}")/../engines/$INFERENCE_BACKEND.sh"
+    if [[ "$INFERENCE_URL_SET" == "true" ]] && declare -F ob_url_is_local >/dev/null 2>&1 \
+       && ! ob_url_is_local "$INFERENCE_URL" "$OPENBEAST_PROBE_HOST" "$BIND_HOST"; then
+      echo "WARNING: INFERENCE_MANAGED=true is not supported for INFERENCE_BACKEND=$INFERENCE_BACKEND at INFERENCE_URL=$INFERENCE_URL (another machine) — start.sh launches engines only on this box; treating it as false." >&2
+      INFERENCE_MANAGED=false
+    elif [[ ! -f "$_ob_eng_ad" ]] || ! grep -q "^eng_${INFERENCE_BACKEND//-/_}_launch()" "$_ob_eng_ad"; then
+      echo "WARNING: INFERENCE_MANAGED=true is not supported for INFERENCE_BACKEND=$INFERENCE_BACKEND — no single-host launcher (scripts/engines/$INFERENCE_BACKEND.sh); treating it as false." >&2
+      INFERENCE_MANAGED=false
+    fi
+    unset _ob_eng_ad
   fi
+  # <<< engine-plane hook
 fi
 unset _ob_managed_raw
 INFERENCE_SLOTS="${OPENBEAST_INFERENCE_SLOTS:-$(_ob_conf_value INFERENCE_SLOTS || true)}"

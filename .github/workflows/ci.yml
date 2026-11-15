@@ -253,6 +253,14 @@ jobs:
       - name: Inference backend tests (vLLM / TensorFold, unmanaged)
         run: bash tests/test_backends.sh
 
+      # The engine plane (docs/ENGINES.md): scripts/engine.sh list / status /
+      # use / install / update / stage / rollback, and managed single-host
+      # vLLM / TensorFold through start.sh / stop.sh. docker, the llama.cpp
+      # build and the GitHub API are stubs; TensorFold releases are signed
+      # with a per-run ed25519 key (OpenSSL 3 on ubuntu-latest).
+      - name: Engine plane tests (swap / pin / update / rollback)
+        run: bash tests/test_engines.sh
+
       # spark-cluster.sh for 1 to 8 nodes: ssh and the node probes are stubs
       # that answer per node, so topology, ordering and refusals run here.
       - name: DGX Spark cluster tests (1-8 nodes)
