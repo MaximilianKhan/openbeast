@@ -73,3 +73,6 @@ llamacpp-clean/
 # instinct: shadow rows labelled from the ledger carry user text (0600);
 # a human moves chosen rows into a dataset split — never commit this file.
 evals/decisions/*/shadow-labelled.jsonl
+
+# Engine plane state: pin history, conf backups, staged releases (scripts/engine.sh)
+.engines/

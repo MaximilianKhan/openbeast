@@ -55,6 +55,11 @@ ob_backend_normalize() {
     vllm)                 printf 'vllm\n' ;;
     tensorfold)           printf 'tensorfold\n' ;;
     *)
+      # An engine added as an adapter file (scripts/engines/<name>.sh,
+      # docs/ENGINES.md "Adapter contract") is a backend too.
+      if [[ "$tok" =~ ^[a-z][a-z0-9-]*$ && -f "$(dirname "${BASH_SOURCE[0]}")/../engines/$tok.sh" ]]; then
+        printf '%s\n' "$tok"; return 0
+      fi
       echo "WARNING: INFERENCE_BACKEND='$raw' is not one of: $OB_BACKENDS — using llama." >&2
       printf 'llama\n' ;;
   esac
@@ -97,7 +102,12 @@ ob_backend_label() {
   case "${1:-${INFERENCE_BACKEND:-llama}}" in
     vllm)       printf 'vLLM\n' ;;
     tensorfold) printf 'TensorFold\n' ;;
-    *)          printf 'llama.cpp server\n' ;;
+    llama)      printf 'llama.cpp server\n' ;;
+    *)
+      # An adapter-only engine names itself (eng_<name>_label).
+      if declare -F ob_engine_call >/dev/null 2>&1 \
+         && ob_engine_call "${1:-${INFERENCE_BACKEND:-llama}}" label 2>/dev/null; then :
+      else printf 'llama.cpp server\n'; fi ;;
   esac
 }
 
@@ -121,8 +131,18 @@ ob_backend_ready() {
       body="$(curl -fsS -m 3 "$url/health" 2>/dev/null)" || return 1
       [[ "$body" =~ \"ok\"[[:space:]]*:[[:space:]]*true \
          || "$body" =~ \"status\"[[:space:]]*:[[:space:]]*\"ok\" ]] ;;
-    *)
+    llama)
       ob_llama_ready "$url" ;;
+    *)
+      # An adapter-only engine (docs/ENGINES.md): its eng_<name>_ready, else
+      # the plain OpenAI-server answer — HTTP 200 on /health.
+      if declare -F ob_engine_has >/dev/null 2>&1 && ob_engine_has "$backend" ready; then
+        ob_engine_call "$backend" ready "$url"
+      elif [[ -f "$(dirname "${BASH_SOURCE[0]}")/../engines/$backend.sh" ]]; then
+        curl -fsS -m 3 -o /dev/null "$url/health" 2>/dev/null
+      else
+        ob_llama_ready "$url"
+      fi ;;
   esac
 }
 
