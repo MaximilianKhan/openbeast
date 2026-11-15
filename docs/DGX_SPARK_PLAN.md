@@ -180,8 +180,8 @@ first:
 |---|---|
 | **Alpha** | PyPI "Development Status :: 3 - Alpha"; five releases in ~36 h around v0.3.7. The launcher accepts only a commit SHA |
 | **No GGUF** | CUDA serves MLX-affine 4-bit safetensors (Vontra/* conversions), NVFP4 and EXL3 — and Qwen3.8-27B on **two** ranks only as MLX-4bit (NVFP4/EXL3 are one-GPU) |
-| **No API key, no auth at all** | Must sit behind beast-gate or a firewall (§7) |
-| **Unauthenticated rendezvous on 29551** | The TCPStore listener's bind address is not configurable in TensorFold's CLI — firewall it to the peer's link address |
+| **No API key on the Python 0.x engine** (this section's container path, and the live GLM recipe's v0.6.0) | Must sit on loopback behind beast-gate (§7). The native >= 1.0 engine (`TENSORFOLD_ENGINE=native`, spark.env's default) is keyed with `--api-key-file` (`TENSORFOLD_API_KEY_FILE`) |
+| **Unauthenticated rendezvous on 29551** (native: 29583, `NCCL_COMM_ID`; both use port + 1 too) | The listener binds every interface (`*:29551`, seen live) and its address is not configurable — `scripts/backends/spark-guard.sh` drops it unless it arrives on the ConnectX fabric (§7) |
 | **No `/metrics`, `/props`, `/slots`** | `/api/slot` reports healthy + model id + `INFERENCE_SLOTS`, capacity null |
 | **No thinking budget on CUDA** | `thinking_budget` / `reasoning_effort` are MLX-only; the runner's `max_tokens` is the only bound |
 | **Serial by default** | `--parallel auto` = one request at a time on CUDA; set an integer for shared rounds (not with Flash Next at `--tp 2`) |
@@ -198,20 +198,36 @@ two-rank 71–82 tok/s (docs/recipes/qwen3.8-27b.md). **VERIFY ON HARDWARE.**
   the Spark's tailnet or private-LAN IP. Both launchers refuse `0.0.0.0`/`::`
   without `SPARK_ALLOW_WILDCARD_BIND=true`. vLLM's `--api-key` guards only
   `/v1` (and `/v2`, `/inference`, `/cohere`): **`/health` and `/metrics` stay
-  open** (`middleware/authenticate.py`); TensorFold has no key at all.
-- **Firewall the link.** vLLM's `--master-port` (29501) and TensorFold's 29551
-  should accept only the peer's CX-7 address, e.g. on each Spark
-  `nft add rule inet filter input ip saddr != <peer-link-ip> tcp dport {29501, 29551} drop`
-  (adapt to the Spark's firewall; **VERIFY ON HARDWARE** that the CX-7 link
-  is not also routed to the LAN).
-- **Key the vLLM API, and present the key from the rig.** `VLLM_API_KEY_FILE`
-  (0600, checked by the launcher) on Spark 1; the same value in the rig's
-  `LLAMA_API_KEY`, which WebUI, the runner, the router, the gate and the
-  dashboard already present. `doctor.sh` warns when a remote vLLM is reached
-  keyless and whenever the backend is TensorFold. **With TensorFold leave
-  `LLAMA_API_KEY` empty:** it has no auth, so a key sent there buys nothing
-  and is one more place to be logged. The dashboard and doctor's probes never
-  send it to TensorFold; WebUI and the agent runner would, if it were set.
+  open** (`middleware/authenticate.py`); native TensorFold's key guards `/v1`
+  and leaves `/health` open; the Python 0.x engine has no key at all. When
+  the command center runs on the head Spark itself (§8a, spark-hydra), bind
+  `127.0.0.1` and let beast-gate be the only network door.
+- **Keep the rendezvous on the fabric: `sudo scripts/backends/spark-guard.sh`
+  on every Spark.** vLLM's `--master-port` (29501), TensorFold's 29551 and
+  native TensorFold's 29583 (each + 1) have no authentication and bind every
+  interface. **Measured 2026-11-15:** ufw is installed but disabled on DGX OS,
+  and Tailscale's `ts-input` chain accepts tailnet traffic before ufw would
+  anyway — the live 29551 answered from a tailnet laptop. spark-guard loads
+  its own nftables table (input, priority `filter - 10`, ahead of ufw and
+  Tailscale) that drops TCP to those ports, and to the fabric addresses
+  (NCCL's ephemeral bootstrap listeners), unless it arrives on loopback or a
+  ConnectX netdev; it never flushes the ruleset and persists through its own
+  unit. Operation and verification: SPARK_HYDRA.md "Firewall: spark-guard".
+  (The single `nft add rule inet filter …` this bullet used to suggest assumed
+  a table that does not exist on DGX OS.)
+- **Key the API, and present the key from the rig.** vLLM:
+  `VLLM_API_KEY_FILE`; native TensorFold (>= 1.0): `TENSORFOLD_API_KEY_FILE`
+  (`--api-key-file`). Either file is 0600 and checked by the launcher; put the
+  **same value in the rig's `LLAMA_API_KEY`** — WebUI, the runner, the router,
+  the gate, the dashboard, `ob_backend_models`, conformance, use-model, hydra
+  and doctor all present it, to TensorFold as to vLLM (since v1.9.0). A keyed
+  native engine with an empty `LLAMA_API_KEY` answers every consumer 401.
+  `doctor.sh` warns when a non-loopback `INFERENCE_URL` is reached with no
+  key. The Python 0.x container engine (and the GLM recipe's v0.6.0) has **no
+  key at all**: keep it on loopback behind beast-gate, as spark-hydra does
+  (`INFERENCE_URL=http://127.0.0.1:8000`); a key the rig sends it is ignored,
+  and doctor cannot tell the two engines apart, so a green row does not mean
+  it is keyed.
 - **Remote clients go through beast-gate.** `EDGE_GATE=true`: the gate's
   upstream follows `INFERENCE_URL`, so per-device keys, the path allowlist and
   the inference audit keep working. The *raw* `:8443` publish
@@ -257,9 +273,13 @@ Measured on spark-1 (2026-11-13): aarch64, Ubuntu 24.04, python 3.12.3,
 Docker 29.6, GB10 `compute_cap` 12.1, `nvidia-smi --query-gpu=memory.*`
 = `[N/A]`, MemTotal 127598416 kB.
 
-- **Config.** `INFERENCE_BACKEND=tensorfold`, `INFERENCE_URL=http://<this
-  Spark's tailnet IP>:8000` (not `localhost`: the server binds one address,
-  §7). `INFERENCE_MANAGED` is forced false for TensorFold, so
+- **Config.** `INFERENCE_BACKEND=tensorfold`, `INFERENCE_URL=http://127.0.0.1:8000`
+  with the server bound to loopback (`HOST=127.0.0.1` in the GLM recipe,
+  `SPARK_SERVE_HOST=127.0.0.1` for `spark-node.sh`): the command center is on
+  the same box, so the model needs no network address at all, and
+  `EDGE_GATE=true` publishes the one keyed door (SPARK_HYDRA.md, deployed
+  2026-11-13). Bind the tailnet IP instead only for a *keyed* engine that
+  another box must reach directly. `INFERENCE_MANAGED` is forced false for TensorFold, so
   `./bootstrap.sh` builds no llama.cpp and downloads no GGUF (row 19).
 - **Images.** All three compose images are multi-arch at the pinned digest
   (`docker manifest inspect` on spark-1): open-webui (amd64 + arm64),
@@ -288,8 +308,9 @@ Docker 29.6, GB10 `compute_cap` 12.1, `nvidia-smi --query-gpu=memory.*`
    `rocep1s0f1 port 1 ==> enp1s0f1np1 (Up)`): HCA left, interface right.
 3. Static IPs on that interface (playbook), e.g. `192.168.100.10` (Spark 1)
    and `.11` (Spark 2); `ping` across. Passwordless SSH Spark 1 → Spark 2.
-4. Firewall the rendezvous ports to the peer (§7). Put each Spark on the
-   tailnet (or the rig's LAN) for the HTTP side.
+4. Keep the rendezvous ports on the fabric: `sudo scripts/backends/spark-guard.sh`
+   on each Spark (§7; `spark-root-setup.sh --guard` runs it). Put each Spark
+   on the tailnet (or the rig's LAN) for the HTTP side.
 
 **B. Prove the link is RDMA, not TCP**
 
