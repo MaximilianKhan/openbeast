@@ -431,9 +431,18 @@ class OperatorList:
                                  because mtime alone misses two writes inside
                                  one filesystem timestamp tick)
 
-    Empty from both sources is the single-user default: any *identified*
+    Empty env AND no file is the single-user default: any *identified*
     login passes. It is not an anonymous bypass — read_gate still demands a
     credential of some kind.
+
+    The file's EXISTENCE is what turns enforcement on, not its contents: a
+    file that is empty, all comments, or mid-rewrite by an editor is an
+    allowlist of nobody, and denies every login. Removing the last reader is
+    a revocation; it must never be the switch that opens reads to the whole
+    tailnet. Likewise, once this process has seen the file, a later stat
+    failure (deleted, unreadable directory) fails CLOSED until restart —
+    going back to open mode is a deliberate act (delete the file, restart),
+    never a side effect of a lockdown.
     """
 
     def __init__(self, path: str, env_var: str = "OPENBEAST_CHAT_OPERATORS"):
@@ -441,6 +450,7 @@ class OperatorList:
         self.env_var = env_var
         self._stamp = None
         self._file: set[str] = set()
+        self._file_seen = False   # sticky: the file existed at some check
 
     def _reload_file(self) -> None:
         try:
@@ -448,6 +458,7 @@ class OperatorList:
         except OSError:
             self._file, self._stamp = set(), None
             return
+        self._file_seen = True
         stamp = (st.st_mtime, st.st_size, st.st_ino)
         if stamp == self._stamp:
             return
@@ -472,11 +483,11 @@ class OperatorList:
 
     @property
     def configured(self) -> bool:
-        return bool(self.current())
+        return bool(self.current()) or self._file_seen
 
     def allows(self, login: str) -> bool:
         listed = self.current()
-        if not listed:
+        if not listed and not self._file_seen:
             return True
         return (login or "").strip().lower() in listed
 

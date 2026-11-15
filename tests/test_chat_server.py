@@ -1818,6 +1818,34 @@ def test_the_operator_list_reloads_from_a_file_too(rig):
     assert c.get(f"/api/chat/sessions/{sid}", headers=HDR_OK).status_code == 200
 
 
+def test_removing_the_last_reader_from_the_file_revokes_not_opens(rig):
+    """Review finding: the allowlist was `env | file` and an EMPTY union meant
+    open mode, so emptying (or commenting out, or deleting) the hot-revocable
+    file to cut off its last reader turned enforcement OFF and every tailnet
+    login read everything. The file existing is what enforces; once seen, its
+    disappearance fails closed."""
+    path = rig.run / "chat-operators"
+    path.write_text(f"{OTHER}\n")
+    c = rig.client
+    assert c.get("/api/chat/sessions", headers=HDR_BAD).status_code == 200
+    assert c.get("/api/chat/sessions", headers=HDR_OK).status_code == 404
+
+    path.write_text(f"# revoked {OTHER}\n")             # all comments
+    os.utime(path, (time.time() + 1, time.time() + 1))
+    assert c.get("/api/chat/sessions", headers=HDR_BAD).status_code == 404
+    assert c.get("/api/chat/sessions", headers=HDR_OK).status_code == 404
+
+    path.write_text("")                                 # editor truncation
+    os.utime(path, (time.time() + 2, time.time() + 2))
+    assert c.get("/api/chat/sessions", headers=HDR_OK).status_code == 404
+
+    path.unlink()                                       # lockdown by delete
+    assert c.get("/api/chat/sessions", headers=HDR_BAD).status_code == 404
+    assert c.get("/api/chat/sessions", headers=HDR_OK).status_code == 404
+    # a local caller still reads: the box owner is never locked out
+    assert c.get("/api/chat/sessions", headers=rig.local).status_code == 200
+
+
 def test_paused_is_a_first_class_event(rig):
     """The runner emits `paused` when an operator pauses it. Without it in the
     closed set the console binds nothing and a paused agent looks stuck."""

@@ -389,6 +389,13 @@ so editing it in `openbeast.conf` changes nothing until `./stop.sh &&
 file says. For revocation you can do without a restart, keep the list in the
 file.
 
+The file's **existence** turns enforcement on, not its contents: an empty or
+all-comment `.run/chat-operators` is an allowlist of nobody, so removing the
+last reader revokes it rather than reopening reads to the whole tailnet. Once
+`chat_server` has seen the file, deleting it also fails closed (only device keys and the
+locality token read) until the next restart. Going back to open mode is
+deliberate: delete the file and restart.
+
 A caller that presents `.run/chat-local.token` satisfies both tiers at once:
 reading it is proof of being on the box, which is strictly more than a device
 key proves. Everything else needs the two tiers above.
