@@ -162,6 +162,22 @@ def _install_signal_reaper() -> None:
             pass
 
 
+def _auth_headers(base_url: str) -> dict:
+    """Bearer header for a probe of `base_url`, under the RUNNER's key policy
+    (runner.resolve_api_key / _key_endpoint_trusted): the ambient key goes
+    only to loopback or OPENBEAST_AGENT_INFERENCE_URL. The probes used to
+    attach OPENBEAST_API_KEY / OPENAI_API_KEY to ANY --base-url — in
+    cleartext over http — while the runner child went keyless against the
+    same host (review finding campaign-evals: harness leaks the ambient
+    key). One function decides for both, so they cannot disagree."""
+    try:
+        from runner import resolve_api_key
+    except Exception:
+        return {}          # no runner, no agent: fail closed, send nothing
+    key = resolve_api_key(None, base_url)
+    return {} if key == "not-needed" else {"Authorization": f"Bearer {key}"}
+
+
 def detect_model(base_url: str) -> str:
     """Query /v1/models on the llama.cpp server. Returns the alias the model
     was launched with (set via the -a flag in our serve scripts)."""
@@ -169,8 +185,7 @@ def detect_model(base_url: str) -> str:
         url = base_url.rstrip("/") + "/models"
         # /v1/models is key-protected on a keyed server (LLAMA_API_KEY);
         # completions inherit the key via the runner's env resolution.
-        key = os.environ.get("OPENBEAST_API_KEY") or os.environ.get("OPENAI_API_KEY")
-        headers = {"Authorization": f"Bearer {key}"} if key else {}
+        headers = _auth_headers(base_url)
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode("utf-8"))
@@ -190,8 +205,7 @@ def _fetch_server_slots(base_url: str) -> int | None:
     None when unreadable."""
     try:
         root = re.sub(r"/v1/?$", "", base_url.rstrip("/"))
-        key = os.environ.get("OPENBEAST_API_KEY") or os.environ.get("OPENAI_API_KEY")
-        headers = {"Authorization": f"Bearer {key}"} if key else {}
+        headers = _auth_headers(base_url)
         req = urllib.request.Request(root + "/props", headers=headers)
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode("utf-8"))
