@@ -1187,3 +1187,35 @@ def test_an_admin_builtin_tools_choice_stands(db_rig):
                       meta={"builtinTools": mine})
     assert db_rig.configure().returncode == 0
     assert db_rig.models()["m1"]["meta"]["builtinTools"] == mine
+
+
+
+# Built-in Web Search: configured once, then the operator's — except the
+# SearXNG URL this script wrote, which must follow a BIND_HOST change
+# (SearXNG binds it; the old http://localhost:8888 is then refused).
+
+def _websearch(db_rig):
+    import sqlite3
+    con = sqlite3.connect(db_rig.db)
+    got = {k: json.loads(v) for k, v in
+           con.execute("SELECT key, value FROM config WHERE key LIKE 'web.search.%'")}
+    con.close()
+    return got
+
+
+def test_our_searxng_url_follows_a_bind_change(db_rig):
+    db_rig.seed({"web.search.engine": "searxng", "web.search.enable": False,
+                 "web.search.searxng_query_url": "http://localhost:8888/search?q=<query>"})
+    p = db_rig.configure(env_extra={"OPENBEAST_BIND": "192.168.1.50"})
+    assert p.returncode == 0, p.stderr
+    got = _websearch(db_rig)
+    assert got["web.search.searxng_query_url"] == "http://192.168.1.50:8888/search?q=<query>"
+    assert got["web.search.enable"] is False      # the operator's toggle stands
+
+
+@pytest.mark.parametrize("url", ["https://search.example.org/search?q=<query>",
+                                 "http://localhost:8888/search?q=<query>&lang=de"])
+def test_an_operator_searxng_url_stays(db_rig, url):
+    db_rig.seed({"web.search.engine": "searxng", "web.search.searxng_query_url": url})
+    assert db_rig.configure(env_extra={"OPENBEAST_BIND": "192.168.1.50"}).returncode == 0
+    assert _websearch(db_rig)["web.search.searxng_query_url"] == url

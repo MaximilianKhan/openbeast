@@ -408,6 +408,15 @@ if not (get('web.search.engine') or '').strip():
     want['web.search.engine'] = 'searxng'
     want['web.search.searxng_query_url'] = os.environ['SXURL']
     want['web.search.enable'] = True
+elif get('web.search.engine') == 'searxng':
+    # One exception: the URL this script itself wrote. SearXNG binds BIND_HOST,
+    # so after a bind change the stored http://<old probe host>:8888 is refused
+    # and the composer's Web Search failed silently forever. Re-point a URL of
+    # exactly that shape; any other URL is the operator's and stays.
+    import re
+    cur = get('web.search.searxng_query_url') or ''
+    if cur != os.environ['SXURL'] and re.fullmatch(r'http://[^/]+:8888/search\?q=<query>', cur):
+        want['web.search.searxng_query_url'] = os.environ['SXURL']
 
 # Same restraint for Ollama, and only when the seeded default is the ONLY entry.
 # Substring-matching the whole JSON list disabled real Ollama servers whenever a
