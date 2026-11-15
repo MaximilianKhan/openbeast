@@ -1,5 +1,5 @@
 """SLOW solution for 173_taskgroup_cancel: __aenter__ spins forever. The
-validator must fail it inside its own 10 s budget, not by the harness's
+validator must fail it inside its own CPU budget, not by the harness's
 validator timeout. The prover asserts: solution timed out"""
 
 

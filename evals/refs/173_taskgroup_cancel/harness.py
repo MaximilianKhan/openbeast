@@ -56,10 +56,32 @@ EXC = {'ValueError': ValueError, 'KeyError': KeyError, 'OSError': OSError,
        'ZeroDivisionError': ZeroDivisionError, 'LookupError': LookupError}
 
 
+def _mark(e, **kw):
+    for k, v in kw.items():
+        try:
+            setattr(e, k, v)
+        except Exception:
+            pass
+    return e
+
+
 def canon(e):
     if isinstance(e, BaseExceptionGroup):
-        return '%s<%s>[%s]' % (type(e).__name__, e.message,
-                               ','.join(sorted(canon(x) for x in e.exceptions)))
+        # Child exceptions must come in completion order, the body's last.
+        # Children cancelled in the same tick may finish in any order, so
+        # members are compared sorted, plus two order flags: the body's
+        # exception is last, and child raise times never decrease.
+        xs = list(e.exceptions)
+        body = [i for i, x in enumerate(xs) if getattr(x, '_h_body', False)]
+        kids = [x for x in xs if not getattr(x, '_h_body', False)]
+        ts = [getattr(x, '_h_t', None) for x in kids]
+        flags = ''
+        if body and body != [len(xs) - 1]:
+            flags += '!body-not-last'
+        if any(a is not None and b is not None and b < a for a, b in zip(ts, ts[1:])):
+            flags += '!not-completion-order'
+        parts = sorted(canon(x) for x in kids) + ['body:' + canon(xs[i]) for i in body]
+        return '%s<%s>[%s]%s' % (type(e).__name__, e.message, ','.join(parts), flags)
     if isinstance(e, asyncio.CancelledError):
         return 'CancelledError'
     if isinstance(e, TimeoutError):
@@ -101,11 +123,12 @@ class _Run:
                 raise
             if oc[0] == 'raise':
                 self.log('raise-in-cancel')
-                raise EXC[oc[1]](oc[2]) from None
+                raise _mark(EXC[oc[1]](oc[2]), _h_t=asyncio.get_running_loop().time()) from None
             await asyncio.sleep(oc[1])               # 'swallow'
             self.log('swallowed')
             return 'swallowed'
         except Exception as e:
+            _mark(e, _h_t=asyncio.get_running_loop().time())
             self.log('fail ' + canon(e))
             raise
         self.log('finished')
@@ -165,7 +188,11 @@ class _Run:
                     self.log('enter-returned-other')
                 for c in G['children']:
                     g.create_task(self.task(c, g), name=c['name'])
-                await self.steps(G['body'], g)
+                try:
+                    await self.steps(G['body'], g)
+                except Exception as e:
+                    _mark(e, _h_body=True)
+                    raise
         except asyncio.CancelledError:
             self.log('exit CancelledError c=%d' % me.cancelling())
             raise
@@ -298,13 +325,91 @@ async def _misuse(TG):
             out.append('g6 body cancelled t=%s' % asyncio.get_running_loop().time())
             raise
     out.append('g6 exit ok c=%d' % asyncio.current_task().cancelling())
+    g7 = TG(timeout=5)                             # the deadline counts from __aenter__,
+    await asyncio.sleep(3)                         # not from the constructor
+    try:
+        async with g7:
+            g7.create_task(nap(4))
+        out.append('g7 ok t=%s' % asyncio.get_running_loop().time())
+    except BaseException as e:
+        out.append('g7 %s t=%s' % (canon(e), asyncio.get_running_loop().time()))
+    try:
+        async with TG(timeout=5) as g8:            # ...and it still fires once entered
+            await asyncio.sleep(3)
+            g8.create_task(nap(4))
+    except BaseException as e:
+        out.append('g8 %s t=%s' % (canon(e), asyncio.get_running_loop().time()))
+    else:
+        out.append('g8 ok')
+    try:
+        async with TG() as g9:                     # completion order, body's error last
+            g9.create_task(_raise_on_cancel(2, OSError('o3')))
+            g9.create_task(_raise_later(1, KeyError('k1')))
+            try:
+                await asyncio.sleep(50)
+            except asyncio.CancelledError:
+                raise ZeroDivisionError('body') from None
+    except BaseException as e:
+        out.append('g9 t=%s %s order=%s' % (asyncio.get_running_loop().time(), canon(e),
+                                            [canon(x) for x in getattr(e, 'exceptions', ())]))
     return out
+
+
+async def _raise_on_cancel(d, e):
+    try:
+        await asyncio.sleep(1000)
+    except asyncio.CancelledError:
+        await asyncio.sleep(d)
+        raise e from None
+
+
+async def _raise_later(d, e):
+    await asyncio.sleep(d)
+    raise e
+
+
+_all_tasks = asyncio.all_tasks                     # bound before any submission loads
+_task_done = asyncio.Task.done                      # a Task subclass cannot override these
+_handle_cancelled = asyncio.TimerHandle.cancelled
+
+
+def _watched():
+    import asyncio.base_events as be, asyncio.events as ev, asyncio.futures as fu
+    import asyncio.selector_events as se, asyncio.tasks as tk, asyncio.timeouts as to
+    import asyncio.coroutines as co
+    return [asyncio, be, ev, fu, se, tk, to, co, selectors, inspect,
+            VLoop, _VSel, asyncio.SelectorEventLoop, se.BaseSelectorEventLoop,
+            be.BaseEventLoop, ev.AbstractEventLoop, ev.Handle, ev.TimerHandle,
+            to.Timeout, selectors.DefaultSelector, selectors.BaseSelector,
+            selectors._BaseSelectorImpl, _Run]
+
+
+def _fingerprint():
+    """Identity of every binding in the loop / asyncio modules and classes the
+    scenario interpreter relies on. A submission that rebinds any of them (to
+    hide pending tasks, timers or handler calls) changes it."""
+    fp = []
+    for o in _watched():
+        fp.append((id(o), tuple(sorted((k, id(v)) for k, v in vars(o).items()
+                                       if not (k.startswith('__') and k.endswith('__'))))))
+    return fp
+
+
+def _tampered(lp, st):
+    if _fingerprint() != _BASE:
+        return True
+    if lp._scheduled is not st[0] or lp._ready is not st[1] or lp._exception_handler is not st[2]:
+        return True
+    cls = type(lp)
+    return any(callable(getattr(cls, k, None)) for k in vars(lp))
 
 
 def _one(fn, TG):
     lp = VLoop()
     errs = []
-    lp.set_exception_handler(lambda l, ctx: errs.append(1))
+    eh = lambda l, ctx: errs.append(1)
+    lp.set_exception_handler(eh)
+    st = (lp._scheduled, lp._ready, eh)
     try:
         try:
             res = lp.run_until_complete(fn())
@@ -312,12 +417,14 @@ def _one(fn, TG):
             return {'err': type(e).__name__}
         except BaseException as e:
             return {'err': 'crash ' + type(e).__name__}
-        pend = sum(1 for t in asyncio.all_tasks(lp) if not t.done())
-        sched = sum(1 for h in lp._scheduled if not h.cancelled())
+        pend = sum(1 for t in _all_tasks(lp) if not _task_done(t))
+        sched = sum(1 for h in st[0] if not _handle_cancelled(h))
+        if _tampered(lp, st):
+            return {'err': 'tampered with the event loop or asyncio'}
         return {'res': res, 'pend': pend, 'sched': sched, 'eh': len(errs)}
     finally:
         try:
-            for t in asyncio.all_tasks(lp):
+            for t in _all_tasks(lp):
                 t._log_destroy_pending = False
             lp.close()
         except Exception:
@@ -329,13 +436,29 @@ def run_all(scenarios, TG):
     r = _one(lambda: _misuse(TG), TG)
     out.append(r)
     for S in scenarios:
+        if 'err' in r:
+            break                                  # no point running the rest
         R = _Run(TG)
         r = _one(lambda: R.driver(S), TG)
         r['trace'] = sorted(R.log_)
         out.append(r)
-        if 'err' in r:
-            break                                  # no point running the rest
     return out
+
+
+async def _warm():
+    async with asyncio.timeout(1):
+        await asyncio.sleep(0.5)
+    t = asyncio.get_running_loop().create_task(asyncio.sleep(2))
+    t.cancel()
+    try:
+        await t
+    except asyncio.CancelledError:
+        pass
+
+
+_BASE = None
+_one(_warm, None)                                  # let lazy module state settle
+_BASE = _fingerprint()
 
 
 def gen_scenarios(seed, n):

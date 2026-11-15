@@ -1,4 +1,4 @@
-"""LEAK PROBE for 173_taskgroup_cancel: digs the original stdlib TaskGroup
+"""WRONG (lint probe) for 173_taskgroup_cancel: digs the original stdlib TaskGroup
 class out of the heap with gc after the validator disabled it.
 The prover asserts the validator rejects it with: forbidden api"""
 import asyncio, gc
