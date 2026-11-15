@@ -49,6 +49,10 @@ FALLBACK_REASONS = (
 
 # The caller-side ceiling at or above which a verdict may be acted on (awaited).
 _ACTABLE = MODE_ORDER["canary"]
+# Abstain reasons that mean the engine could not judge THIS row (its label
+# set got cut, its mass left the labels, the input is out of distribution):
+# that is the tier failing, so the next tier may answer.
+_ENGINE_FAILED = frozenset({"labels_truncated", "low_label_mass", "ood_input"})
 # A probe deferred because the primary's slot was busy retries this soon,
 # not a full probe_interval_s later: on a rig whose agents keep the -np 1
 # slot busy, a 300 s cadence could leave the 27B unprobed indefinitely and
@@ -649,19 +653,38 @@ class Instinct:
                     final = out
                     if not walk_all:
                         break
-            elif not walk_all and final is None and eng.caps.probs and MODE_ORDER[
-                    self.lifecycle(spec.id, name, ceiling, v)[0]] >= MODE_ORDER[target]:
-                # A tier that may enforce here SCORED the row and declined to
-                # act (spawn, below threshold, ...): its verdict is the answer.
+            elif not walk_all and final is None and eng.caps.probs and (
+                    MODE_ORDER[self.lifecycle(spec.id, name, ceiling, v)[0]]
+                    >= MODE_ORDER[target] if eng.adapter == "linear"
+                    else self._judged(spec, out)):
+                # A full-model tier SCORED the row and declined to act (spawn,
+                # below threshold, ...): its verdict is the answer, whatever
+                # its own lifecycle (a stale probe, a gate for an older hash).
                 # A later, lower tier (the 0.6B behind the 27B) only answers
-                # when this one is skipped or fails — it never outranks it.
-                final = out
+                # when this one is skipped or FAILS (no usable row) — it never
+                # outranks it. Stopping only ever REDUCES enforcement: the
+                # fail-safe side. `linear` is the tier-0 baseline, not a full
+                # model: its non-act ends the walk only when it could enforce.
+                # The answer is still _pick_final's (an earlier shadow-only
+                # act stays the "would" answer); nothing later is consulted.
                 break
         if released is not None:
             released.set()
         if final is None:
             final = self._pick_final(results)
         return final, cascade, last_err
+
+    @staticmethod
+    def _judged(spec: DecisionSpec, out: Outcome) -> bool:
+        """The engine gave a VERDICT on this row, not a failure: it answered,
+        its label set was not cut, the input was in distribution and its
+        probability mass stayed on the labels."""
+        a = out.answer
+        if a is None or a.label is None:
+            return False
+        if out.reason in _ENGINE_FAILED or a.labels_truncated:
+            return False
+        return a.label_mass is None or a.label_mass >= spec.policy.min_label_mass
 
     def _pick_final(self, results: list[Outcome]) -> Outcome | None:
         """No act reached the target: the first act, else the FIRST

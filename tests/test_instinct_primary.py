@@ -276,6 +276,15 @@ def test_return_after_is_ignored_when_the_target_can_act(tmp_path):
                         repo_root=tmp_path)
         await inst.start()
         assert inst.specs[DID].policy.mode == "enforce"
+        from instinct.engines import ScoreRes, ScoreRow
+
+        async def prim_fails(req):
+            # no usable row from the 27B (mass off the labels), so the walk
+            # must go on to the fallback — synchronously, not "partial"
+            # (a 27B VERDICT would end the walk at prim by itself)
+            return ScoreRes(rows=[ScoreRow(q={"spawn": 0.9, "inline": 0.1},
+                                           label_mass=0.01)], engine_ms=5)
+        inst.engines["prim"].score = prim_fails
         r = await _decide(inst, "spawn a background agent to port the tests",
                           ceiling="enforce", baseline="hint", return_after="primary")
         await inst.aclose()
@@ -364,6 +373,84 @@ def test_a_27b_non_act_is_never_overridden_by_the_fallback(tmp_path):
     assert rc["cascade"][0]["reason"] == "primary_not_substitute"
     assert rc["engine"]["id"] == "cpu" and rc["enforce"] is True
     assert len(cpu_calls) == 1
+
+
+@pytest.mark.parametrize("why", ["stale_probe", "no_gate", "no_calib"])
+def test_a_27b_spawn_is_final_even_when_its_own_lifecycle_is_shadow(tmp_path, why):
+    """Verifier finding (beast-instinct, on d89199d): the 27B's non-act was
+    only terminal while ITS lifecycle reached the target. With a stale probe
+    (busy-slot deferrals), or a gate/calibration record that no longer
+    matches its hash (model swapped), the 27B still scored the row `spawn`
+    at p=0.99 — and the 0.6B's `inline` act was enforced over it. A scored
+    non-act from a full-model tier is terminal whatever its own lifecycle:
+    that can only REDUCE enforcement (the fail-safe direction)."""
+    from instinct.engines import ScoreRes, ScoreRow
+    cpu_calls = []
+
+    async def body(purl, curl):
+        inst = Instinct(_two_tier(tmp_path, purl, curl, mode="enforce"), repo_root=tmp_path)
+        await inst.start()
+        _promote_both(inst)
+
+        async def prim_score(req):
+            return ScoreRes(rows=[ScoreRow(q={"spawn": 0.99, "inline": 0.01},
+                                           label_mass=0.99)], engine_ms=5)
+
+        async def cpu_score(req):
+            cpu_calls.append(1)
+            return ScoreRes(rows=[ScoreRow(q={"spawn": 0.02, "inline": 0.97},
+                                           label_mass=0.99)], engine_ms=5)
+        inst.engines["prim"].score = prim_score
+        inst.engines["cpu"].score = cpu_score
+        if why == "stale_probe":
+            inst.states["prim"].last_probe = inst.clock() - 10**6
+        elif why == "no_gate":
+            inst.gates.pop((DID, "prim"))
+        else:
+            inst.calib.pop((DID, "prim"))
+        assert inst.lifecycle(DID, "prim", "enforce")[0] == "shadow"
+        assert inst.lifecycle(DID, "cpu", "enforce")[0] == "enforce"
+        r = await _decide(inst, "Spawn a background agent to port utils to Go.",
+                          ceiling="enforce", baseline="hint", request_id="r1")
+        await inst.aclose()
+        return r
+    with H.stub_server() as (purl, _), H.stub_server() as (curl, _):
+        r = H.run(body(purl, curl))
+    assert [c["engine"] for c in r["cascade"]] == ["prim"], r["cascade"]
+    assert r["enforce"] is False and r["engine"]["id"] == "prim"
+    assert r["answer"]["label"] == "spawn"
+    assert cpu_calls == []
+
+
+def test_a_27b_that_could_not_judge_the_row_falls_to_the_fallback(tmp_path):
+    """The other side of the rule: a 27B abstain that means the tier FAILED
+    on this row (its probability mass left the label set) is not a verdict,
+    so the 0.6B still answers."""
+    from instinct.engines import ScoreRes, ScoreRow
+
+    async def body(purl, curl):
+        inst = Instinct(_two_tier(tmp_path, purl, curl, mode="enforce"), repo_root=tmp_path)
+        await inst.start()
+        _promote_both(inst)
+
+        async def prim_score(req):
+            return ScoreRes(rows=[ScoreRow(q={"spawn": 0.99, "inline": 0.01},
+                                           label_mass=0.01)], engine_ms=5)
+
+        async def cpu_score(req):
+            return ScoreRes(rows=[ScoreRow(q={"spawn": 0.02, "inline": 0.97},
+                                           label_mass=0.99)], engine_ms=5)
+        inst.engines["prim"].score = prim_score
+        inst.engines["cpu"].score = cpu_score
+        r = await _decide(inst, "what is 17 times 23", ceiling="enforce",
+                          baseline="hint", request_id="r1")
+        await inst.aclose()
+        return r
+    with H.stub_server() as (purl, _), H.stub_server() as (curl, _):
+        r = H.run(body(purl, curl))
+    assert [c["engine"] for c in r["cascade"]][:2] == ["prim", "cpu"]
+    assert r["cascade"][0]["label_mass"] == 0.01 and r["cascade"][1]["action"] == "act"
+    assert r["engine"]["id"] == "cpu" and r["enforce"] is True
 
 
 def test_shipped_chain_credits_rig_27b_when_nobody_acts():

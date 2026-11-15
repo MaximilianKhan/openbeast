@@ -232,6 +232,37 @@ def test_shadow_only_act_does_not_hide_a_gated_engine(tmp_path):
     assert rs["cascade"][1]["action"] == "act" and "probabilities" in rs["cascade"][1]
 
 
+def test_shadow_only_linear_non_act_does_not_hide_a_gated_engine(tmp_path):
+    """A full-model tier's scored non-act is terminal whatever its lifecycle
+    (verifier finding on d89199d) — but `linear` is the tier-0 baseline, not
+    a full model: an ungated linear's non-act must not stop the walk before
+    the gated model behind it (hydra.task_class runs linear first)."""
+    from instinct.engines import ScoreRes, ScoreRow
+
+    async def body(url):
+        cfgp, _ = H.promote_linear(tmp_path, gate_passed=False,
+                                   chain='["linear", "stub", "rules"]',
+                                   extra_engines={"stub": H.llama_binding(url)},
+                                   thresholds={"inline": 0.5})
+        cfg = load_config(cfgp, env={})
+        inst = Instinct(cfg, repo_root=tmp_path)
+        await inst.start()
+        _gate(inst, cfg, "stub")
+
+        async def lin_score(req):
+            return ScoreRes(rows=[ScoreRow(q={"spawn": 0.9, "inline": 0.1})], engine_ms=1)
+        inst.engines["linear"].score = lin_score
+        assert inst.lifecycle(DID, "linear", "enforce") == ("shadow", "no_gate")
+        r = await _decide(inst, "what is 17 times 23")
+        await inst.aclose()
+        return r
+    with H.stub_server() as (url, _):
+        r = H.run(body(url))
+    assert [(c["engine"], c["action"]) for c in r["cascade"]] == [
+        ("linear", "abstain"), ("stub", "act")]
+    assert r["enforce"] is True and r["engine"]["id"] == "stub"
+
+
 def test_unenforceable_act_is_still_the_would_answer(tmp_path):
     """No engine can enforce: the answer is the first act (what the service
     WOULD do), not a later abstain."""
