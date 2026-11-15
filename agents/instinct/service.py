@@ -109,12 +109,17 @@ class View:
 
 class Instinct:
     def __init__(self, cfg: ServiceConfig, *, engine_ctx: dict | None = None,
-                 clock=time.monotonic, wall=time.time, repo_root: Path = REPO_ROOT):
+                 clock=time.monotonic, wall=time.time, repo_root: Path = REPO_ROOT,
+                 read_only: bool = False):
         self.cfg = cfg
+        # read_only (scripts/instinct.sh promote): the same reload + probe as
+        # the service, but no state file is written — the live service is the
+        # only writer of auto-demoted.json and locks/*.json.
+        self.read_only = read_only
         self.clock, self.wall = clock, wall
         self.repo_root = Path(repo_root)
         self.ledger = Ledger(cfg.ledger_dir, retention_days=cfg.retention_days, clock=wall)
-        self.demotions = Demotions(Path(cfg.state_dir) / "demoted.json")
+        self.demotions = Demotions(Path(cfg.state_dir) / "demoted.json", read_only=read_only)
         self.autodemoter = AutoDemoter(self.demotions, hashes_for=self.hashes_of)
         ctx = dict(engine_ctx or {})
         ctx.setdefault("records_dir", cfg.records_dir)
@@ -241,6 +246,8 @@ class Instinct:
                 for s in specs}
 
     def _write_locks(self, engine: str, locks: dict[str, LockResult]) -> None:
+        if self.read_only:
+            return
         d = Path(self.cfg.state_dir) / "locks"
         try:
             d.mkdir(parents=True, exist_ok=True)

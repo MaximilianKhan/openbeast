@@ -113,8 +113,12 @@ class Demotions:
     lists those decisions in `cleared`, so the service can also reset their
     rolling windows (else the next call re-demotes)."""
 
-    def __init__(self, path: Path, auto_path: Path | None = None):
+    def __init__(self, path: Path, auto_path: Path | None = None, *,
+                 read_only: bool = False):
         self.path = Path(path)
+        # read_only: a CLI check (`promote`) reads the service's view and
+        # must never write the file the service alone owns.
+        self.read_only = read_only
         self.auto_path = Path(auto_path) if auto_path else self.path.with_name(
             "auto-demoted.json")
         self.undemote_path = self.path.with_name("undemoted.json")
@@ -151,6 +155,8 @@ class Demotions:
             self.save_auto()
 
     def save_auto(self) -> None:
+        if self.read_only:
+            return
         try:
             self.auto_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.auto_path.with_suffix(".tmp")
