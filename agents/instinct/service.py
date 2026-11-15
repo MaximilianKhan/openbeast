@@ -132,6 +132,11 @@ class Instinct:
         self.shadow_inflight = 0
         self._bg: set[asyncio.Task] = set()   # shadow walks answered early
         self.probe_deferred = False
+        self._deferred: set[str] = set()      # engines whose last probe met a busy slot
+        # reload() and probe_all() rebuild the same lock maps across awaits:
+        # one at a time (a SIGHUP reload racing the periodic probe could
+        # otherwise lose the new registry's locks to the old one's).
+        self._registry_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------ setup
     async def start(self) -> None:
@@ -151,6 +156,10 @@ class Instinct:
             await e.aclose()
 
     async def reload(self) -> None:
+        async with self._registry_lock:
+            await self._reload()
+
+    async def _reload(self) -> None:
         specs, errors = load_registry(self.cfg.decisions_dir)
         chains: dict[str, list[str]] = {}
         for did, spec in list(specs.items()):
@@ -302,9 +311,25 @@ class Instinct:
         interval = self.cfg.probe_interval_s
         return min(interval, PROBE_BUSY_RETRY_S) if self.probe_deferred else interval
 
-    async def probe_all(self) -> None:
+    def _probe_due(self, name: str) -> bool:
+        """For the periodic loop: an engine is re-probed when its last probe
+        was deferred (busy slot) or is about a full interval old — NOT every
+        PROBE_BUSY_RETRY_S just because the primary was busy (that re-ran the
+        CPU scorer's 14-completion probe every 15 s)."""
+        last = self.states[name].last_probe
+        if name in self._deferred or last is None:
+            return True
+        return self.clock() - last >= self.cfg.probe_interval_s - PROBE_BUSY_RETRY_S
+
+    async def probe_all(self, *, due_only: bool = False) -> None:
+        """Probe every LLM engine (start, SIGHUP, CLI) or, with `due_only`
+        (the periodic loop), only the ones `_probe_due` names."""
+        async with self._registry_lock:
+            await self._probe_all(due_only)
+
+    async def _probe_all(self, due_only: bool) -> None:
         changed = False
-        self.probe_deferred = False
+        deferred: set[str] = set()
         for name, eng in self.engines.items():
             relevant = [s for s in self.specs.values() if name in self.chains.get(s.id, [])]
             if not eng.caps.needs_render:
@@ -313,6 +338,8 @@ class Instinct:
                 continue
             if not relevant:
                 continue
+            if due_only and not self._probe_due(name):
+                continue
             try:
                 res = await eng.probe(relevant)
             except EngineBusy:
@@ -320,8 +347,8 @@ class Instinct:
                 # probe is DEFERRED, never allowed to queue in front of them.
                 # State is untouched; a probe that stays deferred goes stale
                 # and the engine drops to shadow (fail safe). The loop retries
-                # it in PROBE_BUSY_RETRY_S, not probe_interval_s.
-                self.probe_deferred = True
+                # THIS engine in PROBE_BUSY_RETRY_S, not probe_interval_s.
+                deferred.add(name)
                 continue
             except Exception as exc:  # a probe must never take the service down
                 res = ProbeResult(False, {}, f"probe crashed: {exc.__class__.__name__}")
@@ -331,10 +358,16 @@ class Instinct:
             if getattr(eng, "exec_forced", None) != forced and hasattr(eng, "exec_forced"):
                 eng.exec_forced = forced
                 changed = True
-            if res.ok and any(not lk.ok for lk in st.locks.values()):
-                st.locks = await self._attach(eng, relevant)
-                self._write_locks(name, st.locks)
+            # Repair every decision of this engine whose lock failed OR is
+            # missing (a decision added by a reload), merged per decision.
+            need = [s for s in relevant if not getattr(st.locks.get(s.id), "ok", False)]
+            if res.ok and need:
+                fresh = await self._attach(eng, need)
+                st.locks = {**st.locks, **fresh}
+                self._write_locks(name, fresh)
                 changed = True
+        self._deferred = deferred
+        self.probe_deferred = bool(deferred)
         if changed:
             self.refresh_records()
 

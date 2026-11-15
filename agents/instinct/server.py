@@ -161,11 +161,13 @@ def create_app(inst: Instinct, key: str, *, allowed_hosts: list[str] | None = No
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         await inst.start()
-        tasks = []
+        tasks: set[asyncio.Task] = set()
         loop = asyncio.get_running_loop()
 
         def _hup():
-            tasks.append(loop.create_task(_reload()))
+            t = loop.create_task(_reload())
+            tasks.add(t)
+            t.add_done_callback(tasks.discard)
 
         async def _reload():
             await inst.reload()
@@ -179,15 +181,15 @@ def create_app(inst: Instinct, key: str, *, allowed_hosts: list[str] | None = No
             while inst.cfg.probe_interval_s > 0:
                 await asyncio.sleep(inst.next_probe_delay())
                 try:
-                    await inst.probe_all()
+                    await inst.probe_all(due_only=True)
                 except Exception:  # never let the loop die
                     log.exception("probe loop")
         if probe_loop and inst.cfg.probe_interval_s > 0:
-            tasks.append(loop.create_task(_probe_forever()))
+            tasks.add(loop.create_task(_probe_forever()))
         try:
             yield
         finally:
-            for t in tasks:
+            for t in list(tasks):
                 t.cancel()
             try:
                 loop.remove_signal_handler(signal.SIGHUP)

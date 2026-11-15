@@ -424,6 +424,85 @@ def test_a_deferred_probe_retries_soon_not_a_full_interval_later(tmp_path):
     assert busy == PROBE_BUSY_RETRY_S < 300
 
 
+def test_a_busy_primary_retries_only_itself(tmp_path):
+    """Review finding (beast-instinct): a deferred primary probe shortened the
+    WHOLE probe cadence to 15 s, so the CPU scorer's full conformance probe
+    (~14 completions) re-ran every 15 s exactly while it served decisions.
+    The short retry now re-probes the deferred engine only."""
+    clog, plog = tmp_path / "cpu.jsonl", tmp_path / "prim.jsonl"
+
+    def completions(log):
+        return sum(1 for c in H.read_calls(log) if c.get("path") == "/completion")
+
+    async def body(purl, pstub, curl):
+        inst = Instinct(_two_tier(tmp_path, purl, curl), repo_root=tmp_path)
+        await inst.start()
+        pstub.faults["busy"] = True
+        await inst.probe_all(due_only=True)        # nothing due yet: no probe at all
+        n_cpu = completions(clog)
+        await inst.probe_all()                     # full: prim deferred, cpu probed
+        assert inst.probe_deferred and completions(clog) > n_cpu
+        n_cpu = completions(clog)
+        pstub.faults["busy"] = False
+        n_prim = completions(plog)
+        await inst.probe_all(due_only=True)        # the 15 s retry
+        retried = completions(plog) - n_prim
+        cpu_again = completions(clog) - n_cpu
+        await inst.aclose()
+        return retried, cpu_again, inst.probe_deferred
+    with H.stub_server(call_log=str(plog)) as (purl, pstub), \
+            H.stub_server(call_log=str(clog)) as (curl, _):
+        retried, cpu_again, deferred = H.run(body(purl, pstub, curl))
+    assert retried > 0 and not deferred           # the primary was re-probed
+    assert cpu_again == 0                         # the CPU scorer was not
+
+
+def test_reload_waits_for_an_in_flight_probe(tmp_path):
+    """Review finding (beast-instinct): a SIGHUP reload ran concurrently with
+    the periodic probe_all, whose re-attach then replaced the new registry's
+    locks with the old one's. They are serialized now."""
+    import asyncio
+
+    async def body(url):
+        inst = Instinct(_primary_cfg(tmp_path, url), repo_root=tmp_path)
+        await inst.start()
+        eng = inst.engines["prim"]
+        gate = asyncio.Event()
+        real = eng.probe
+
+        async def slow_probe(specs):
+            await gate.wait()
+            return await real(specs)
+        eng.probe = slow_probe
+        p = asyncio.create_task(inst.probe_all())
+        await asyncio.sleep(0.05)
+        r = asyncio.create_task(inst.reload())
+        await asyncio.sleep(0.2)
+        reload_ran_during_probe = r.done()
+        gate.set()
+        await asyncio.gather(p, r)
+        await inst.aclose()
+        return reload_ran_during_probe
+    with H.stub_server() as (url, _):
+        assert H.run(body(url)) is False
+
+
+def test_probe_repairs_a_missing_lock(tmp_path):
+    """A decision with NO lock entry (added by a reload whose map was lost)
+    is re-attached by the next probe, not left engine_unavailable forever."""
+    async def body(url):
+        inst = Instinct(_primary_cfg(tmp_path, url), repo_root=tmp_path)
+        await inst.start()
+        inst.states["prim"].locks.pop(DID)
+        await inst.probe_all()
+        lk = inst.states["prim"].locks.get(DID)
+        await inst.aclose()
+        return lk
+    with H.stub_server() as (url, _):
+        lk = H.run(body(url))
+    assert lk is not None and lk.ok
+
+
 def test_key_env_sends_the_stack_key_and_nothing_when_unset(tmp_path, monkeypatch):
     log = tmp_path / "calls.jsonl"
     with H.stub_server(call_log=str(log)) as (url, _):
