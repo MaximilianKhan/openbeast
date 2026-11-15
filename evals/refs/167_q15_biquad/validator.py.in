@@ -1,4 +1,5 @@
-import math, os, random, subprocess, sys, time
+import math, os, random, subprocess, sys
+import vlib
 LANG = "@LANG@"
 D = "/tmp/eval_q15biquad"
 SRC = {"python": "biquad.py", "go": "biquad.go", "c": "biquad.c", "cpp": "biquad.cpp",
@@ -9,13 +10,23 @@ BUILD = {"python": None,
          "cpp": ["g++", "-O2", "-std=c++17", "-Wall", "-Wextra", "-o", "biquad", "biquad.cpp"],
          "rust": ["rustc", "-O", "--edition", "2021", "biquad.rs", "-o", "biquad"],
          "zig": ["zig", "build-exe", "-O", "ReleaseFast", "biquad.zig"]}[LANG]
-RUN = [sys.executable, "biquad.py"] if LANG == "python" else ["./biquad"]
-LIMIT = 4.0
+RUN = vlib.python_cmd("biquad.py") if LANG == "python" else ["./biquad"]
+# Budgets at scale 1; vlib scales them by OPENBEAST_TIMEOUT_SCALE.
+CPU_LIMIT = 4.0      # CPU seconds of the solution's whole process tree
+BUILD_LIMIT = 25.0   # wall seconds for the compile
+WARM_CPU, WARM_WALL = 2.0, 15.0
 
 
 def fail(msg):
     print(msg)
     sys.exit(1)
+
+
+def judge(r, budget, label=""):
+    if r.verdict in ("cpu", "wall"):
+        fail(f"solution timed out ({budget:.0f}s CPU budget, verdict {r.verdict}){label}")
+    if r.verdict != "ok":
+        fail(f"solution rejected ({r.verdict}): {r.reason}")
 
 
 if not os.path.isfile(os.path.join(D, SRC)):
@@ -26,11 +37,20 @@ if BUILD:
     except OSError:
         pass
     try:
-        b = subprocess.run(BUILD, cwd=D, capture_output=True, text=True, timeout=25)
+        b = subprocess.run(BUILD, cwd=D, capture_output=True, text=True,
+                           env=vlib.clean_env({"CGO_ENABLED": "0"}), timeout=vlib.t(BUILD_LIMIT))
     except subprocess.TimeoutExpired:
         fail("build timed out")
     if b.returncode or not os.path.isfile(os.path.join(D, "biquad")):
         fail("build failed: " + (b.stderr or b.stdout)[-300:])
+
+# Untimed-ish warm-up exec. The first exec of a freshly linked binary on macOS
+# sits in an XProtect/Gatekeeper scan for 3-11 s of WALL time (not the
+# solution's CPU). Pay it here, on a one-sample input, so the measured run
+# below sees a warm binary. A solution that burns WARM_CPU on one sample is
+# a hang and fails as one.
+judge(vlib.run_solution(RUN, input="1\n0 0 1 1\n1 0 0 0 0 0\n0\n", cpu_s=WARM_CPU,
+                        wall_s=WARM_WALL, cwd=D), WARM_CPU, " on a 1-sample warm-up")
 
 I32MIN, I32MAX = -(1 << 31), (1 << 31) - 1
 
@@ -143,11 +163,8 @@ for (A, O, secs, xs) in cases:
     parts.append(" ".join(map(str, xs)))
 inp = "\n".join(parts) + "\n"
 
-t0 = time.time()
-try:
-    r = subprocess.run(RUN, cwd=D, input=inp, capture_output=True, text=True, timeout=LIMIT)
-except subprocess.TimeoutExpired:
-    fail(f"solution timed out ({LIMIT:.0f}s)")
+r = vlib.run_solution(RUN, input=inp, cpu_s=CPU_LIMIT, cwd=D)
+judge(r, CPU_LIMIT)
 if r.returncode:
     fail(f"solution exited with code {r.returncode}")
 lines = [l for l in r.stdout.split("\n") if l.strip()]
@@ -161,4 +178,4 @@ for i, (A, O, secs, xs) in enumerate(cases):
         fail(f"mismatch at case {i}: unparsable output")
     if got != want:
         fail(f"mismatch at case {i}")
-print(f"OK ({len(cases)} cases, {time.time() - t0:.2f}s)")
+print(f"OK ({len(cases)} cases, {r.cpu_s:.2f}s CPU, {r.wall_s:.2f}s wall)")
