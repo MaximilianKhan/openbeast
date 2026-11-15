@@ -642,7 +642,7 @@ if "$REPO_DIR/scripts/skill-import.sh" verify --quiet >"$TMPROOT/out" 2>&1; then
 else
   fail "the real ledger does not verify: $(head -3 "$TMPROOT/out")"
 fi
-# The committed in-house list names 15 skills, each a real directory, and
+# The committed in-house list names 16 skills, each a real directory, and
 # none of them has a ledger row.
 REAL_LIST="$REPO_DIR/skills/IN_HOUSE_SKILLS.txt"
 _n=0; _missing=""
@@ -653,8 +653,8 @@ while IFS= read -r _s; do
   [[ -f "$REPO_DIR/skills/$_s/SKILL.md" ]] || _missing="$_missing $_s"
   grep -q "^| \`$_s\` |" "$REPO_DIR/skills/REMOTE_PROVENANCE.md" && _missing="$_missing $_s(in-ledger)"
 done < "$REAL_LIST"
-if [[ $_n -eq 15 && -z "$_missing" ]]; then
-  pass "skills/IN_HOUSE_SKILLS.txt lists the 15 in-house skills, all present, none in the ledger"
+if [[ $_n -eq 16 && -z "$_missing" ]]; then
+  pass "skills/IN_HOUSE_SKILLS.txt lists the 16 in-house skills, all present, none in the ledger"
 else
   fail "in-house list: $_n names, problems:$_missing"
 fi

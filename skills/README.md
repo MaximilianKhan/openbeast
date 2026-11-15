@@ -6,7 +6,7 @@ security audit, eval-task authoring, debugging methodology, deep counsel.
 The model discovers them via MCP and loads them on demand. See
 [`docs/SKILLS_PLAN.md`](../docs/SKILLS_PLAN.md) for the full design.
 
-## Currently shipped (15 skills)
+## Currently shipped (16 skills)
 
 ### Universal-applicability (Tier 1)
 
@@ -42,6 +42,7 @@ The model discovers them via MCP and loads them on demand. See
 | `eval-task-author` | Authoring eval suite tasks; encodes the 6 pitfalls from past post-mortems |
 | `eval-variant-porter` | Adding multi-language variants (Python/Go/C/C++/Rust/Zig) to existing tasks |
 | `beast-lang` | The offline language library: look up what the *installed* compiler confirmed, add a verified claim, rebuild the escalation index, review model-drafted claims. Written for cloud models working in this repo — `prompt_index: false`, so it is not in the local model's always-on menu |
+| `platform-docs` | beast-docs: search the offline mirror of current Apple / Android / other platform docs before writing code against a platform API, cite the URL and its fetched date, say when it is stale. `prompt_index: false` (the menu file is era-locked) — reachable with `skill("platform-docs")` and backed by the `platform_docs` tool |
 
 ### Imported (9 skills, off the always-on menu)
 
