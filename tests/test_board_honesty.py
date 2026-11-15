@@ -14,13 +14,27 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "evals"))
 sys.path.insert(0, str(ROOT / "agents"))
 
+import pytest  # noqa: E402
+
 import scoring  # noqa: E402
 
+# The board readout under test is suite-agnostic; these rows are v4-shaped
+# (the frozen board), so the checkout's current suite is pinned to the rows'
+# suite rather than to whatever evals/SUITE_VERSION says (v5 since the era
+# break), and the unit count comes from the one table that defines it.
+SUITE = "v4"
+N_UNITS = scoring.SUITE_EXPECTED_UNITS[SUITE]
 
-def _results(slug: str = "m", passed: int = 291, exits: dict | None = None, **extra) -> dict:
+
+@pytest.fixture(autouse=True)
+def _rows_are_the_current_suite(monkeypatch):
+    monkeypatch.setattr(scoring, "current_suite_version", lambda: SUITE)
+
+
+def _results(slug: str = "m", passed: int = N_UNITS, exits: dict | None = None, **extra) -> dict:
     """A full v4-shaped results file. exits: {unit index: agent_exit_code}."""
     tasks = []
-    for i in range(291):
+    for i in range(N_UNITS):
         t = {"id": f"t{i:03d}", "difficulty": "easy", "passed": i < passed,
              "elapsed_seconds": 1.0, "agent_exit_code": 0,
              "tokens_prompt": 10, "tokens_completion": 5, "tokens_total": 15}
@@ -29,8 +43,8 @@ def _results(slug: str = "m", passed: int = 291, exits: dict | None = None, **ex
                      tokens_total=0)
         tasks.append(t)
     return {"timestamp": "2026-10-01T00:00:00", "model": slug.upper(), "model_slug": slug,
-            "suite_version": "v4", "gpu": {"host_id": "rig"}, "harness": {},
-            "summary": {"total": 291}, "tasks": tasks, **extra}
+            "suite_version": SUITE, "gpu": {"host_id": "rig"}, "harness": {},
+            "summary": {"total": N_UNITS}, "tasks": tasks, **extra}
 
 
 def _cells(board: str, model: str) -> list[str]:
@@ -81,10 +95,10 @@ def test_html_board_carries_the_killed_column():
     page = scoring.format_leaderboard_html(
         [scoring.score_run(_results("aa", passed=280, exits={285: -1}))])
     assert "<th>T/O</th>" in page
-    assert '<td class="n">280/291</td><td class="n">1</td></tr>' in page
+    assert f'<td class="n">280/{N_UNITS}</td><td class="n">1</td></tr>' in page
     # Negative control: no stray column on a board with no killed units.
     clean = scoring.format_leaderboard_html([scoring.score_run(_results("aa", passed=280))])
-    assert '<td class="n">280/291</td><td class="n">0</td></tr>' in clean
+    assert f'<td class="n">280/{N_UNITS}</td><td class="n">0</td></tr>' in clean
 
 
 # --- F3: rows measured under different regimes are footnoted ---------------
@@ -169,7 +183,7 @@ def test_footnotes_never_reorder_or_drop_rows():
     entries = [_entry("aa", 250), _entry("bb", 290, **_FULL), _entry("cc", 270, jobs=4)]
     board = scoring.format_leaderboard(entries)
     ranked = [ln.split()[1] for ln in board.splitlines()
-              if ln[:2].strip().isdigit() and " v4 " in ln]
+              if ln[:2].strip().isdigit() and f" {SUITE} " in ln]
     assert ranked == ["BB", "CC", "AA"]        # by score, exactly as before
     assert _cells(board, "CC")[-1] == "†" and _cells(board, "AA")[-1] == "†"
     assert _cells(board, "BB")[-1] == "0"      # T/O is the last cell: no mark
