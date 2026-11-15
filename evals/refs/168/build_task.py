@@ -19,7 +19,7 @@ CASES = json.load(open(os.path.join(HERE, "cases.json")))
 
 LANGS = [
     # id, language, ext, build argv (cwd = D), run argv, build line for the prompt
-    ("a", "python", "py", None, ["@PY", "linz.py"], "Run: python3 linz.py < input."),
+    ("a", "python", "py", None, None, "Run: python3 linz.py < input."),
     ("b", "go", "go", ["go", "build", "-o", "linz", "linz.go"], ["./linz"],
      "Single file, package main, standard library only. Build: go build -o linz linz.go"),
     ("c", "c", "c", ["gcc", "-O2", "-std=c11", "-Wall", "-Wextra", "-o", "linz", "linz.c"], ["./linz"],
@@ -76,52 +76,70 @@ Bounds: 1 <= T <= 50; 1 <= N <= 2000; 0 <= c, r < 2^31; 0 <= k <= 999999; 1 <= v
 
 OUTPUT (stdout). Exactly T lines, in input order: LINEARIZABLE or VIOLATION.
 
-Samples: {d}/sample_input.txt -> {d}/sample_output.txt. The validator runs a hidden input of 40 histories (both verdicts, up to 2000 operations and dozens of pending operations each; about 0.8 MB) in a single process with a 6-second limit, and every verdict must be exact.
+Samples: {d}/sample_input.txt -> {d}/sample_output.txt. The validator runs a hidden input of 40 histories (both verdicts, up to 2000 operations and dozens of pending operations each; about 0.8 MB) in a single process with a 6-second CPU limit, and every verdict must be exact.
 {build}"""
 
 VALIDATOR = r'''import hashlib, json, os, subprocess, sys
+import vlib
+# The harness feeds this script on stdin (python -I -S -) in a private cwd, so
+# the oracle below is in no argv and no file. The solution runs in its own
+# process group under vlib.run_solution: a CPU budget over its whole tree (load
+# on the host does not eat it), fork refused, and every limit scaled by
+# OPENBEAST_TIMEOUT_SCALE.
 D = "/tmp/eval_linz"
 LANG = @LANG@
 SRC = @SRC@
 BUILD = @BUILD@
-RUN = @RUN@
 CASES = json.loads(@CASES@)
 EXPECT = @EXPECT@
 SHA = @SHA@
-RUN_TIMEOUT = 6
+CPU_S = 6          # solution CPU budget at scale 1 (refs: 0.01-0.5 s)
+WALL_S = 15        # solution wall budget at scale 1 (the CPU budget is the gate)
+BUILD_S = 20       # compiler wall budget at scale 1
 GEN = @GEN@
 g = {}
 exec(compile(GEN, "gen168", "exec"), g)
 src = os.path.join(D, SRC)
 if not os.path.isfile(src):
     print("missing " + src); sys.exit(1)
+env = vlib.clean_env()
 if BUILD:
     try:
         os.remove(os.path.join(D, "linz"))
     except OSError:
         pass
     try:
-        b = subprocess.run(BUILD, cwd=D, capture_output=True, text=True, timeout=20)
+        b = subprocess.run(BUILD, cwd=D, capture_output=True, text=True, env=env,
+                           stdin=subprocess.DEVNULL, timeout=vlib.t(BUILD_S))
     except subprocess.TimeoutExpired:
-        print("build timed out (20s)"); sys.exit(1)
-    if b.returncode != 0:
+        print("build timed out (%ds)" % vlib.t(BUILD_S)); sys.exit(1)
+    if b.returncode != 0 or not os.path.isfile(os.path.join(D, "linz")):
         print("build failed: " + (b.stderr or b.stdout)[-300:]); sys.exit(1)
+    run = [os.path.join(D, "linz")]
+    # Untimed warm-up exec of the fresh binary: the first exec on macOS pays
+    # the Gatekeeper scan. Its output is ignored.
+    vlib.run_solution(run, input="1\n1\n0 1 GET 1 NIL\n", cpu_s=2, wall_s=20, cwd=D, env=env)
+else:
+    run = vlib.python_cmd(src)
 inp = g["build"]([s if isinstance(s, str) else tuple(s) for s in CASES])
 if hashlib.sha256(inp.encode()).hexdigest() != SHA:
     print("internal: hidden-input generator drift"); sys.exit(2)
-run = [sys.executable if a == "@PY" else a for a in RUN]
-try:
-    r = subprocess.run(run, cwd=D, input=inp, capture_output=True, text=True, timeout=RUN_TIMEOUT)
-except subprocess.TimeoutExpired:
-    print("solution timed out (%ds) on the hidden histories" % RUN_TIMEOUT); sys.exit(1)
+r = vlib.run_solution(run, input=inp, cpu_s=CPU_S, wall_s=WALL_S, cwd=D, env=env)
+if r.verdict in ("cpu", "wall"):
+    print("solution timed out (%s: %s) on the hidden histories" % (r.verdict, r.reason)); sys.exit(1)
+if r.verdict != "ok":
+    print("solution refused (%s: %s)" % (r.verdict, r.reason)); sys.exit(1)
 if r.returncode != 0:
     print("solution exited with code %d" % r.returncode); sys.exit(1)
-got = r.stdout.split()
+lines = r.stdout.split("\n")
+if lines and lines[-1] == "":
+    lines.pop()
+got = [x.rstrip("\r") for x in lines]
 want = ["LINEARIZABLE" if e == "L" else "VIOLATION" for e in EXPECT]
 if len(got) != len(want):
     print("expected %d verdict lines, got %d" % (len(want), len(got))); sys.exit(1)
 for i, (x, y) in enumerate(zip(got, want)):
-    if x != y:
+    if x.strip() != y:
         print("wrong verdict at case %d" % i); sys.exit(1)
 print("OK: %d/%d verdicts exact" % (len(want), len(want)))
 '''
@@ -142,7 +160,6 @@ def main():
                   .replace("@LANG@", repr(lang))
                   .replace("@SRC@", repr(f"linz.{ext}"))
                   .replace("@BUILD@", repr(build))
-                  .replace("@RUN@", repr(run))
                   .replace("@CASES@", repr(json.dumps(CASES["specs"], separators=(",", ":"))))
                   .replace("@EXPECT@", repr(CASES["expect"]))
                   .replace("@SHA@", repr(CASES["sha256"]))
@@ -163,7 +180,7 @@ def main():
         })
     task = {
         "id": "168_linearizability_kv",
-        "name": "Linearizability checker (Wing-Gong-Lowe) over KV histories",
+        "name": "Linearizability checker over KV histories",
         "difficulty": "hard",
         "category": "Distributed / SysDesign",
         "subcategory": "Consistency checking",
