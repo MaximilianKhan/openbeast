@@ -381,6 +381,21 @@ def test_a_changed_lock_is_checked_against_a_fresh_resolve():
         "a second, non-required copy would only invite reading the wrong one"
 
 
+def test_the_lock_is_installed_on_targets_it_was_not_resolved_on():
+    """Install-supply-chain finding: the comment said the 3.12/ubuntu install
+    proved the lock on 'a python and platform that are NOT the box it was
+    generated on' — but the lock IS resolved on 3.12/ubuntu. The rig's 3.14
+    and a Mac client get a hash-checked dry run of their own."""
+    jobs = _jobs(CI)
+    job = jobs["lock-installs"]
+    legs = {(i["os"], i["python"]) for i in job["strategy"]["matrix"]["include"]}
+    assert ("ubuntu-latest", "3.14") in legs
+    assert any(os_.startswith("macos") for os_, _ in legs)
+    assert "--require-hashes -r agents/requirements.lock" in " ".join(_runs(job).split())
+    assert "lock-installs" in jobs["test"]["needs"]
+    assert "NOT the box it was generated on" not in CI.read_text()
+
+
 def test_the_relock_is_rechecked_by_a_job_that_cannot_push():
     jobs = _jobs(RELOCK)
     checkers = [n for n, job in jobs.items() if "pydeps.sh check" in _runs(job)]
