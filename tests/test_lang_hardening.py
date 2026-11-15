@@ -575,6 +575,14 @@ def _c_ff_vt_leaks(path):
             f'#define F "{path}"\n#{ws}include F\nint main(void){{return 0;}}\n',
             f'{ws}import{ws}"{path}";\n',
         ]
+    # clang ignores a NUL byte ("null character ignored") and still runs the
+    # directive, so a NUL anywhere is refused outright.
+    out += [
+        f'#\x00include "{path}"\nint main(void){{return 0;}}\n',
+        f'\x00#include "{path}"\nint main(void){{return 0;}}\n',
+        f'#\x00line 1 "{path}"\nint x = ;\n',
+        f'#include\x00"{path}"\nint main(void){{return 0;}}\n',
+    ]
     return out
 
 

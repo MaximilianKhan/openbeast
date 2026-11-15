@@ -262,6 +262,11 @@ def _decode_ucns(src: str) -> str | None:
 
 
 def _refuse_c(source: str) -> str | None:
+    # cpp ignores a NUL byte ("null character ignored") and still runs the
+    # directive around it, so `#\0include` slips past every pattern below.
+    # No real snippet carries one: refuse it outright, as _lex does.
+    if "\x00" in source:
+        return "it contains a NUL byte, which cpp ignores inside a directive"
     # Phases 1-2 of translation happen before any directive is recognised:
     # line endings, trigraphs (live under -std=c99/c++11), then line splicing.
     src = source.replace("\r\n", "\n").replace("\r", "\n")
