@@ -478,7 +478,36 @@ def _user_turn_text(messages):
     text = _last_user_text(messages)
     if _is_webui_task_prompt(text):
         return ""
-    return text
+    return _strip_pasted_context(text)
+
+
+_SOURCE_BLOCK = re.compile(r"<source\b[^>]*>.*?</source>", re.IGNORECASE | re.DOTALL)
+
+
+def _strip_pasted_context(text):
+    """Drop what Open WebUI pasted into the user turn: with the default
+    RAG_SYSTEM_CONTEXT=false its RAG template (a "### Task:" preamble and a
+    <context> of <source> blocks: web-search results, attached files) goes
+    INTO the last user message. That text is fetched, not typed, and must
+    never be able to ask for a spawn or write the agent's task."""
+    i, j = text.find("<context>"), text.rfind("</context>")
+    if i != -1 and j > i:
+        head, tail = text[:i], text[j + len("</context>"):]
+        k = head.find("### Task:")
+        text = (head[:k] if k != -1 else head) + tail
+    return _SOURCE_BLOCK.sub("", text).strip()
+
+
+# The classify sees at most this much of the turn: a pasted 40K-token file
+# must not cost the one slot a second full prefill before the real turn.
+_CLASSIFY_MAX_CHARS = 6000
+
+
+def _clip_for_classify(text):
+    if len(text) <= _CLASSIFY_MAX_CHARS:
+        return text
+    head = _CLASSIFY_MAX_CHARS // 4
+    return text[:head] + "\n[...]\n" + text[-(_CLASSIFY_MAX_CHARS - head):]
 
 
 async def _classify(client, user_text):
@@ -487,7 +516,7 @@ async def _classify(client, user_text):
     body = {
         "messages": [
             {"role": "system", "content": _CLASSIFIER_SYS},
-            {"role": "user", "content": user_text},
+            {"role": "user", "content": _clip_for_classify(user_text)},
         ],
         "temperature": 0,
         "max_tokens": 400,
