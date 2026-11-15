@@ -19,9 +19,12 @@ sys.path.insert(0, str(ROOT / "agents"))
 import scoring  # noqa: E402
 
 
-def _results(ts: str, passed: int = 291, harness=None, reason=None, **extra) -> dict:
+V4_UNITS = scoring.SUITE_EXPECTED_UNITS["v4"]
+
+
+def _results(ts: str, passed: int = V4_UNITS, harness=None, reason=None, **extra) -> dict:
     tasks = []
-    for i in range(291):
+    for i in range(V4_UNITS):
         t = {"id": f"t{i:03d}", "difficulty": "easy", "passed": i < passed,
              "elapsed_seconds": 1.0}
         if reason and i >= passed:
@@ -29,7 +32,7 @@ def _results(ts: str, passed: int = 291, harness=None, reason=None, **extra) -> 
         tasks.append(t)
     return {"timestamp": ts, "model": "M", "model_slug": "m", "suite_version": "v4",
             "gpu": {"host_id": "rig"}, "harness": harness or {},
-            "summary": {"total": 291}, "tasks": tasks, **extra}
+            "summary": {"total": V4_UNITS}, "tasks": tasks, **extra}
 
 
 def test_reasons_cover_every_arm_and_infra_rows():
@@ -72,16 +75,37 @@ def test_update_leaderboard_refuses_a_partial_v4_run(tmp_path):
     accuracy over the few it reached and would outrank every real row."""
     lb = str(tmp_path / "leaderboard.json")
     full = scoring.score_run(_results("2026-09-01T00:00:00", passed=255))
-    assert full["suite_version"] == "v4" and full["tasks_total"] == 291
+    assert full["suite_version"] == "v4" and full["tasks_total"] == V4_UNITS
     scoring.update_leaderboard(full, path=lb)
     partial = dict(scoring.score_run(_results("2026-09-02T00:00:00", passed=290)),
                    tasks_total=106, tasks_passed=106)
     assert not partial.get("ineligible_reasons")      # only the unit count is wrong
     entries = scoring.update_leaderboard(partial, path=lb)
-    assert [(e["tasks_total"], e["tasks_passed"]) for e in entries] == [(291, 255)]
+    assert [(e["tasks_total"], e["tasks_passed"]) for e in entries] == [(V4_UNITS, 255)]
     # force=True is the deliberate override.
     entries = scoring.update_leaderboard(partial, path=lb, force=True)
     assert [(e["tasks_total"], e["tasks_passed"]) for e in entries] == [(106, 106)]
+
+
+def test_update_leaderboard_refuses_a_partial_v5_run(tmp_path):
+    """The partial-run guard is a lookup, not a v4 literal: a v5 row must
+    cover all 111 scored units (probes excluded)."""
+    lb = str(tmp_path / "leaderboard.json")
+    n = scoring.SUITE_EXPECTED_UNITS["v5"]
+    rows = [{"id": f"u{i}", "difficulty": "hard", "passed": True} for i in range(n)]
+    probes = [{"id": f"p{i}", "difficulty": "easy", "passed": False, "role": "probe"}
+              for i in range(7)]
+    full = scoring.score_run({"timestamp": "2026-11-01T00:00:00", "model": "M5",
+                              "model_slug": "m5", "suite_version": "v5",
+                              "gpu": {"host_id": "rig"}, "harness": {"arm": "L0"},
+                              "tasks": rows + probes})
+    assert full["tasks_total"] == n and full["ineligible_reasons"] == []
+    assert len(scoring.update_leaderboard(full, path=lb)) == 1
+    partial = scoring.score_run({"timestamp": "2026-11-02T00:00:00", "model": "M5",
+                                 "model_slug": "m5", "suite_version": "v5",
+                                 "gpu": {"host_id": "rig"}, "tasks": rows[:-1]})
+    entries = scoring.update_leaderboard(partial, path=lb)
+    assert [e["timestamp"] for e in entries] == ["2026-11-01T00:00:00"]
 
 
 def test_update_leaderboard_refuses_cache_only_misses(tmp_path):
@@ -134,7 +158,7 @@ def test_full_hit_cache_only_replay_is_not_seated(tmp_path, monkeypatch, capsys)
     lb = str(tmp_path / "leaderboard.json")
     live = scoring.score_run(_results("2026-09-01T00:00:00", passed=255))
     scoring.update_leaderboard(live, path=lb)
-    replay = _results("2026-09-02T00:00:00", passed=291, cache_only=True)
+    replay = _results("2026-09-02T00:00:00", passed=V4_UNITS, cache_only=True)
     replay.update(gpu=None, inference_engine=None, server=None)
     (r,) = scoring.ineligibility_reasons(replay)
     assert "cache-only" in r

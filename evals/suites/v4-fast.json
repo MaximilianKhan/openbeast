@@ -1,5 +1,5 @@
 {
-  "suite": "v5-fast",
+  "suite": "v4-fast",
   "base_suite_version": "v4",
   "generated_at": "2026-09-08T23:45:13",
   "generator": "evals/make_fast_suite.py",
