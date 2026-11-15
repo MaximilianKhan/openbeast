@@ -61,14 +61,26 @@ outputs).
 
 ### Validation script template
 
+> **v5 rule (the suite since the v5 era break).** The template below is the
+> v4 shape and is kept only to read v4 tasks. A v5 unit never puts the
+> answer on disk: 120 v4 units left `expected.txt` and 53 left `check.py`
+> in the agent's working dir, and a probe that only `cat`s them PASSED. In
+> v5, setup writes 2-5 clearly labelled samples (`sample_input.txt`,
+> `sample_output.txt`) and nothing else; the validator is `type: python`,
+> holds a seeded generator and the oracle, compiles once, feeds the hidden
+> cases over stdin with `subprocess.run(input=..., timeout=...)`, prints only
+> the failing case's INDEX on a mismatch, and stays under 15 s at scale 1
+> including a cold zig compile. No coreutils `timeout` (absent on macOS), no
+> `<bits/stdc++.h>`. Prove it with `tests/prove_task.py` (below).
+
 ```bash
 set -e
 cd /tmp/eval_X
 {build_command}            # no-op for python
 ./sol < input.txt > out.txt   # or python3 sol.py < input.txt > out.txt
-diff -u expected.txt out.txt && echo OK
+diff -u expected.txt out.txt && echo OK      # v4 only: v5 bans this
 # OR for non-deterministic outputs:
-python3 check.py
+python3 check.py                              # v4 only: v5 bans this
 ```
 
 ## JSON skeleton (6-language variant task)
@@ -93,10 +105,31 @@ python3 check.py
     {"id": "c", "language": "c",    "setup": "...", "task": "Create /tmp/eval_X/sol.c. Must compile cleanly with `gcc -O2 -std=c11 -Wall -Wextra -o sol sol.c`. ...", "validation": {...}, "cleanup": "..."},
     {"id": "d", "language": "cpp",  "setup": "...", "task": "Create /tmp/eval_X/sol.cpp. Must compile cleanly with `g++ -O2 -std=c++17 -Wall -Wextra -o sol sol.cpp`. ...", "validation": {...}, "cleanup": "..."},
     {"id": "e", "language": "rust", "setup": "...", "task": "Create /tmp/eval_X/sol.rs. Idiomatic Rust 2021+; compile with `rustc -O sol.rs -o sol`. ...", "validation": {...}, "cleanup": "..."},
-    {"id": "f", "language": "zig",  "setup": "...", "task": "Create /tmp/eval_X/sol.zig. Zig 0.16+ idioms — see the canonical Zig section below for the full pattern, especially the `&fr.interface` indirection. Compile with `zig build-exe -O ReleaseFast sol.zig`. ...", "validation": {...}, "cleanup": "..."}
+    {"id": "f", "language": "zig",  "setup": "...", "task": "Create /tmp/eval_X/sol.zig for Zig 0.16 (entry point `pub fn main(init: std.process.Init) !void`). It is built with `zig build-exe -O ReleaseFast sol.zig`. ...", "validation": {...}, "cleanup": "..."}
   ]
 }
 ```
+
+**The zig `task` states the contract and teaches no API.** v4 prompts
+carried the stdio recipe (`&fr.interface`, `init.io`, `takeDelimiter`,
+flush), so every "unassisted" zig arm was tutored — the packs-OFF arm of the
+Tier-3 A/B passed 10-11/30 *with* the recipe in its prompt. v5 bans those
+phrases in a zig `task` (`tests/audit_variants.py` ZIG TUTORING BAN LINT,
+enforced on every v5 unit by `tests/test_v5_suite.py`). The version, the
+entry point the validator needs, and the exact compile command are the
+spec; everything else about the stdlib is the model's job, or the
+treatment arms' (`--packs`, `BEAST_ASSIST`, `--escalate`). The canonical
+patterns below are for writing the REFERENCE solution, never the prompt.
+
+**Declare the refs in the JSON.** Each unit (base or variant) names its
+reference as `"ref_stem": "<dir under evals/refs/>/ref"` (no extension; the
+language picks `py go c cpp rs zig sh`) and `"dest"`: the path the task
+says the solution lives at. Wrong solutions (`wrong_<name>.<ext>`, >= 2), a
+slow solution for a timed unit (`slow.<ext>`), an optional leak probe
+(`leak.<ext>`) and their failure classes (`prove.json`:
+`{"expect": {"wrong_<name>.<ext>": "<regex>"}, "slow_expect": "...",
+"timed": true}`) sit next to it in `evals/refs/<task_id>/`. The old hand
+map in `audit_variants.py` (LEGACY_TARGETS) is for v4 tasks only.
 
 The `setup` should be **identical across all variants** of a task — same input,
 same expected output. Only the build/run commands and language-specific
@@ -179,8 +212,9 @@ docstrings legitimately. See `eval-task-author` SKILL pitfall #1.
 > directly on `std.Io.File.Reader`. Those methods don't live there — they
 > live on the underlying `std.Io.Reader` *interface*, accessed via
 > `&fr.interface`. The omission scored 0/13 across both 27B models in the
-> first v3 sweep. These templates are the verified fix. Use them in every
-> Zig variant `task` field.
+> first v3 sweep. These templates are the verified fix **for reference
+> solutions**. Since v5 they must NOT appear in a variant's `task` field
+> (see the ban above): a prompt that teaches the API measures the prompt.
 
 ### Critical API rules
 
@@ -276,8 +310,16 @@ Template 2 when input is a stream of whitespace-separated tokens.
 ## Done criteria for a variant task
 
 - [ ] All variants in the JSON (a–f as appropriate)
-- [ ] Reference impl for each language in `evals/refs/{slug}.{ext}` (durable; was `/tmp/refs/` pre-2026-05-07)
-- [ ] All variants pass validation with their reference impls — verified via
+- [ ] Reference impl for each language under `evals/refs/{task_id}/`, declared
+      per unit as `ref_stem` + `dest` (v4 tasks: `evals/refs/{slug}.{ext}`)
+- [ ] **PROVEN** by the model-free gate, every variant:
+      `python3 tests/prove_task.py --unit {task_id}_{v}` — ref N/N (5/5 if
+      timed), >= 2 wrong solutions failing for their declared class, empty
+      fails, no oracle file in the fixture dir, slow solution fails by the
+      validator's own limit, ref passes again at `--scale 2.0`
+- [ ] No banned zig tutoring in any zig `task` (`&fr.interface`, `init.io`,
+      `takeDelimiter`)
+- [ ] All variants pass validation with their reference impls — quick smoke:
       `python3 tests/audit_variants.py {task_id}`
 - [ ] Forbidden-API lints catch obvious cheats in each language
 - [ ] Per-variant runtime <2s with reference impl (Zig <10s acceptable due to

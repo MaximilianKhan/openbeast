@@ -6,6 +6,12 @@ Docs used to hand-write counts (313 / 323 / 223 effective units all appeared
 at various times); this computes them from evals/tasks/*.json so they can't
 drift. Cite THESE numbers, or better, paste the --markdown output.
 
+Since v5 there are two sets of numbers: the task LIBRARY (every file in
+evals/tasks/, v4's dropped units included, so v4 stays runnable for
+history) and the SUITE (the manifest evals/suites/<SUITE_VERSION>.json:
+v5 = 111 scored units over 39 base tasks + 7 unscored zig probes). Docs may
+cite either; --check accepts both.
+
 Usage:
   python3 evals/suite_stats.py               # human-readable summary
   python3 evals/suite_stats.py --markdown    # docs-ready markdown block
@@ -67,6 +73,26 @@ def collect() -> dict:
         with open(ver_path) as f:
             suite_version = f.read().strip() or "unknown"
 
+    manifest = None
+    man_path = os.path.join(EVALS_DIR, "suites", f"{suite_version}.json")
+    if os.path.exists(man_path):
+        with open(man_path) as f:
+            man = json.load(f)
+        units = man.get("units") if isinstance(man.get("units"), list) else []
+        if units and isinstance(units[0], dict):
+            scored = [u for u in units if u.get("role", "scored") == "scored"]
+            manifest = {
+                "suite": man.get("suite"),
+                "scored_units": len(scored),
+                "probe_units": len(units) - len(scored),
+                "base_tasks": len({u.get("task") for u in scored}),
+                "language_units": dict(Counter(u.get("lang") for u in scored)),
+                "categories": dict(Counter(u.get("category") for u in scored).most_common()),
+                "arms": {a: sum(1 for u in units if a in u.get("arms", []))
+                         for a in (man.get("arms") or {})},
+                "ref_seq_h": (man.get("budget") or {}).get("ref_seq_h"),
+            }
+
     return {
         "suite_version": suite_version,
         "base_tasks": base_tasks,
@@ -76,6 +102,7 @@ def collect() -> dict:
         "difficulty_units": dict(diff_units),
         "language_units": dict(lang_units),
         "categories": dict(categories.most_common()),
+        "manifest": manifest,
     }
 
 
@@ -100,6 +127,12 @@ def render_text(s: dict) -> str:
     lines.append(f"Categories ({len(s['categories'])}):")
     for cat, n in s["categories"].items():
         lines.append(f"  {n:>4}  {cat}")
+    m = s.get("manifest")
+    if m:
+        lines += ["", f"Suite manifest {m['suite']}: {m['scored_units']} scored units over "
+                      f"{m['base_tasks']} base tasks + {m['probe_units']} probe units "
+                      f"({m['ref_seq_h']} reference-sequential hours, all arms)",
+                  "  arms: " + ", ".join(f"{a} {n}" for a, n in m["arms"].items())]
     return "\n".join(lines)
 
 
@@ -126,6 +159,14 @@ def render_markdown(s: dict) -> str:
     ]
     for lang, n in langs:
         lines.append(f"| {lang} | {n} |")
+    m = s.get("manifest")
+    if m:
+        lines += ["", f"**Suite manifest {m['suite']}** (`evals/suites/{m['suite']}.json`): "
+                      f"{m['scored_units']} scored units over {m['base_tasks']} base tasks, "
+                      f"plus {m['probe_units']} unscored probe units.", "",
+                  "| Language | Scored units |", "|---|---:|"]
+        for lang, n in sorted(m["language_units"].items(), key=lambda kv: -kv[1]):
+            lines.append(f"| {lang} | {n} |")
     return "\n".join(lines)
 
 
@@ -134,6 +175,9 @@ def check_docs(s: dict) -> int:
     doc cites a stale base-task or effective-unit count in its headline claim
     ("<N> base tasks" / "<N> effective units" / "<N> units")."""
     base, units = s["base_tasks"], s["effective_units"]
+    m = s.get("manifest") or {}
+    ok_base = {base} | ({m["base_tasks"]} if m else set())
+    ok_units = {units} | ({m["scored_units"], m["scored_units"] + m["probe_units"]} if m else set())
     ok = True
     for rel in CHECKED_DOCS:
         path = os.path.join(REPO_ROOT, rel)
@@ -144,12 +188,12 @@ def check_docs(s: dict) -> int:
             text = f.read()
         # Any "<N> base tasks" claim must cite the current count.
         stale = set()
-        for m in re.finditer(r"(\d+)\s+base\s+tasks", text):
-            if int(m.group(1)) != base:
-                stale.add(f"{m.group(1)} base tasks (now {base})")
-        for m in re.finditer(r"(\d+)\s+effective\s+units", text):
-            if int(m.group(1)) != units:
-                stale.add(f"{m.group(1)} effective units (now {units})")
+        for hit in re.finditer(r"(\d+)\s+base\s+tasks", text):
+            if int(hit.group(1)) not in ok_base:
+                stale.add(f"{hit.group(1)} base tasks (now {sorted(ok_base)})")
+        for hit in re.finditer(r"(\d+)\s+effective\s+units", text):
+            if int(hit.group(1)) not in ok_units:
+                stale.add(f"{hit.group(1)} effective units (now {sorted(ok_units)})")
         if stale:
             ok = False
             print(f"  DRIFT in {rel}:")
