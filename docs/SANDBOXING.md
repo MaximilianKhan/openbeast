@@ -59,7 +59,8 @@ unlisted is denied at the kernel:
   `/run/systemd/resolve` (DNS).
 - **Read+write:** the per-call agent workdir (`AGENT_WORKDIR` /
   `OPENBEAST_FILES_DIR` — granted at runtime via the wrapper's `-w "$PWD"`,
-  because `bash()` sets cwd to it), `/tmp`, `/var/tmp`, and device sinks
+  because `bash()` sets cwd to it; push-diagnostics run with cwd = the
+  written file's directory, so their checker is granted that), `/tmp`, `/var/tmp`, and device sinks
   (`/dev/null` etc. — without these, `>/dev/null` fails with EACCES).
 - **Denied implicitly:** everything else. `~/.ssh` reads return ENOENT —
   Landlock *hides* the paths rather than erroring EPERM.

@@ -1304,7 +1304,11 @@ def _run_diagnostics(path: str) -> str:
             _diag_log_timing(lang, (time.monotonic() - t0) * 1000, "busy")
             return "\ndiagnostics: unavailable (busy)"
         try:
-            rc, out = run_reaped(cmd, _DIAG_TIMEOUT, as_limit=_DIAG_AS_LIMIT, env=env)
+            # cwd = the file's directory: under a BASH_WRAPPER (Sandlock's
+            # `-w "$PWD"`) the checker is granted where the file lives, as
+            # bash() grants its workdir — not the tool server's launch dir.
+            rc, out = run_reaped(cmd, _DIAG_TIMEOUT, as_limit=_DIAG_AS_LIMIT,
+                                 env=env, cwd=os.path.dirname(path) or None)
         finally:
             _DIAG_SLOTS.release()
         escalation = _escalation_for(lang, rc, out)
