@@ -304,7 +304,7 @@ and proven; only implementation remains.
 3. If `spawn == false`: proceed with the normal turn (thinking ON, default).
 
 **Where it lives:** a thin proxy in front of llama-server `/v1/chat/completions`
-(WebUI/OpenCode point at it). One interception point, both frontends.
+(WebUI points at it; the checkout's OpenCode config is fixed at :8080 and does not).
 
 **Proven facts backing it:**
 - tool_choice forcing is unreliable in llama.cpp (1/5) — do NOT use it.

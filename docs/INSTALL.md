@@ -547,12 +547,22 @@ On first run, `configure-webui.sh` populates Open WebUI with:
 - The system prompt (`system-prompt.md` + `system-prompt-tools.md`) written
   into each model's DB entry
 
-OpenCode runs separately from the stack:
+OpenCode runs separately from the stack, **from the checkout** (its
+`opencode.json` is project-local and starts the MCP server by the relative
+path `agents/mcp_server.py`):
 
 ```bash
-cd ~/my-project        # any directory, but opencode.json must be reachable
+cd ~/openbeast         # the checkout, not another project directory
 opencode
 ```
+
+That config talks straight to llama-server on `localhost:8080`: it does not go
+through the agent router or beast-hydra, and on a vLLM/TensorFold rig (any
+`INFERENCE_URL` other than `:8080`) it has nothing to talk to. There, add the
+provider entry `scripts/backends/use-model.sh` prints to
+`~/.config/opencode/opencode.json`. To work in another project directory,
+copy the `provider` and `mcp` blocks there with the absolute path of
+`agents/mcp_server.py` (§ OpenCode above).
 
 To stop everything:
 
@@ -572,7 +582,7 @@ To stop everything:
 - **beast-slot discovery** (only with the dashboard extension enabled —
   `./scripts/ext.sh enable dashboard`): `curl http://127.0.0.1:3002/api/slot`
   — read-only JSON: loaded model, slots busy/total, context, service health
-- **OpenCode:** run `opencode` from the OpenBeast checkout and select the `qwen*`/`heretic*` entry matching the model the rig is serving
+- **OpenCode:** run `opencode` from the OpenBeast checkout and select the `qwen*`/`heretic*` entry matching the model the rig is serving (llama-server on `:8080` only; on a vLLM/TensorFold rig use the `scripts/backends/use-model.sh` entry instead — see § 5)
 - **Tool use:** `configure-webui.sh` attaches the tool servers to every model row, so a new chat in Open WebUI has tools without a per-chat toggle; ask something that needs one ("search the web for…")
 - **Long-running agents:** ask the model to use `start_agent` to spawn a background agent, then `check_agent` to monitor
 - **Health check:** `./scripts/healthcheck.sh` (services + GPU VRAM + slot usage; `--restart` to auto-recover)

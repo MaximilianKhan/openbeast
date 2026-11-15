@@ -1320,6 +1320,14 @@ else
   fail "opencode.json advertises models with no serve script:$ORPHAN_OC"
 fi
 
+# opencode.json is project-local (relative MCP path) and fixed at :8080, so no
+# banner may send the operator to "any project directory".
+if grep -q "opencode' in any project directory" "$REPO_DIR/start.sh" "$REPO_DIR/bootstrap.sh"; then
+  fail "a start banner says 'run opencode in any project directory' (the config only works from the checkout)"
+else
+  pass "start banners send OpenCode users to the checkout, not 'any project directory'"
+fi
+
 # MODELS or BENCH_EXCLUDED — either is fine, but it has to be a decision.
 MISSING_BENCH=""
 for _ss in "$REPO_DIR"/scripts/serve-*.sh; do
