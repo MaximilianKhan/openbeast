@@ -1,0 +1,366 @@
+# beast-apps capability catalog — docs/BEAST_APPS.md
+#
+# DATA, not code. A new capability, a new MCP server for an existing
+# capability, a version bump or a new prerequisite is an edit here (or in a
+# local overlay, ~/.openbeast-client/apps/catalog.d/*.toml), never a code
+# change. `scripts/apps.sh validate` checks this file; tests/test_apps.py
+# runs it in CI.
+#
+# Three tables:
+#   [capability.<id>]  what the user asks for ("ios-build"); `servers` lists
+#                      candidate MCP servers in PREFERENCE order. The first
+#                      server whose probes pass on this machine is the one
+#                      `enable` wires in.
+#   [server.<id>]      one MCP server: package + PINNED version, launch
+#                      command, transport, env, probes, safety rules, and the
+#                      primary source it was verified from (+ date checked).
+#   [probe.<id>]       one prerequisite check, shared between servers.
+#                      kinds: command | path | env | tcp | any (see the doc).
+#
+# Command templates: {package} and {version} expand from the server entry
+# (the version is the effective pin: an `apps.sh upgrade` override in the
+# state dir wins over the one written here). argv[0] is resolved to an
+# absolute path at enable time, because GUI-launched clients do not inherit
+# the shell PATH ("spawn npx ENOENT").
+#
+# Safety: `ask_tools` become opencode "ask" permission rules, `deny_tools`
+# become "deny" rules (globs allowed; the rule's action is <key>_<tool>).
+# `risk_patterns` are substrings a NEWLY appearing tool is checked against on
+# `refresh`, so an upstream release that adds an exec-style tool is flagged
+# instead of silently trusted. `default_enabled = false` means `enable`
+# refuses without --accept-risk.
+
+schema = 1
+
+# ── capabilities ────────────────────────────────────────────────────────────
+
+[capability.ios-build]
+title = "Build, run and test iOS/macOS apps with Xcode and the iOS Simulator"
+stage = "mobile"
+keywords = ["ios", "iphone", "ipad", "xcode", "swift", "simulator", "mobile", "build", "app", "mac", "macos", "xcodebuild"]
+servers = ["mobilebuildmcp"]
+
+[capability.android-build]
+title = "Build Android apps with Gradle; install, launch and debug them over adb"
+stage = "mobile"
+keywords = ["android", "gradle", "adb", "apk", "emulator", "kotlin", "mobile", "build", "app", "logcat"]
+servers = ["replicant-mcp"]
+
+[capability.mobile-ui]
+title = "Drive running iOS simulators / Android emulators and devices (tap, type, screenshot)"
+stage = "mobile"
+keywords = ["mobile", "ui", "automation", "tap", "screenshot", "simulator", "emulator", "device", "ios", "android", "test"]
+servers = ["mobile-mcp"]
+
+[capability.blender]
+title = "Model, edit and render 3D scenes in a running Blender"
+stage = "3d"
+keywords = ["blender", "3d", "model", "mesh", "render", "scene", "stl", "modeling"]
+servers = ["mcp-for-blender"]
+
+[capability.figma]
+title = "Read Figma designs (frames, variables, code hints) from the Figma desktop app"
+stage = "2d"
+keywords = ["figma", "design", "ui", "2d", "mockup", "frame", "vector"]
+servers = ["figma-desktop"]
+
+[capability.3d-print]
+title = "Slice models and control 3D printers (OctoPrint, Klipper, Bambu, Prusa, Duet, ...)"
+stage = "fabrication"
+keywords = ["3d", "print", "printer", "slice", "gcode", "stl", "octoprint", "klipper", "bambu", "prusa"]
+servers = ["mcp-3d-printer-server"]
+
+[capability.sim-ros]
+title = "Talk to a ROS / ROS 2 robot or simulator (Gazebo, Isaac) through rosbridge"
+stage = "simulation"
+keywords = ["ros", "ros2", "robot", "robotics", "simulation", "sim", "gazebo", "isaac", "rosbridge"]
+servers = ["ros-mcp"]
+
+# ── servers ─────────────────────────────────────────────────────────────────
+
+[server.mobilebuildmcp]
+title = "MobileBuildMCP (getsentry; formerly XcodeBuildMCP)"
+source = "https://github.com/getsentry/MobileBuildMCP"
+docs = "https://github.com/getsentry/xcodebuildmcp.com/blob/main/app/docs/_content/env-vars.mdx"
+checked = "2026-11-15"
+registry = "npm"
+package = "mobilebuildmcp"
+version = "2.7.1"
+transport = "stdio"
+command = ["npx", "-y", "{package}@{version}", "mcp"]
+platforms = ["darwin"]
+probes = ["macos-14-5", "node-18", "npx", "xcode-app", "xcodebuild-full", "simctl"]
+# Only the `simulator` workflow (its own default): every advertised tool costs
+# the model context. Add "ui-automation,debugging" here when needed.
+env = { MOBILEBUILDMCP_ENABLED_WORKFLOWS = "simulator", MOBILEBUILDMCP_SENTRY_DISABLED = "true" }
+ask_tools = []
+deny_tools = []
+risk_patterns = ["erase", "delete", "shell", "exec", "device"]
+notes = "Builds run the project's own build phases and scripts: building an untrusted project executes its code. Device tools need code signing configured in Xcode. The legacy npm name `xcodebuildmcp` (2.7.0) is the same project; do not install both."
+
+[server.replicant-mcp]
+title = "replicant-mcp (Gradle builds, emulators, adb, logcat, UI)"
+source = "https://github.com/thecombatwombat/replicant-mcp"
+docs = "https://github.com/thecombatwombat/replicant-mcp/blob/master/docs/security.md"
+checked = "2026-11-15"
+registry = "npm"
+package = "replicant-mcp"
+version = "1.6.7"
+transport = "stdio"
+command = ["npx", "-y", "{package}@{version}"]
+platforms = ["darwin", "linux"]
+probes = ["node-18", "npx", "adb", "java-17", "android-emulator"]
+env = {}
+ask_tools = ["adb-shell"]
+deny_tools = []
+risk_patterns = ["shell", "exec", "wipe", "uninstall", "delete"]
+notes = "`adb-shell` runs commands on the device behind a denylist (no su, rm -rf /, sh -c, metacharacters); still gated as ask. Gradle builds execute the project's build scripts. Needs an Android project with ./gradlew for the gradle-* tools."
+
+[server.mobile-mcp]
+title = "Mobile MCP (mobile-next)"
+source = "https://github.com/mobile-next/mobile-mcp"
+checked = "2026-11-15"
+registry = "npm"
+package = "@mobilenext/mobile-mcp"
+version = "1.0.17"
+transport = "stdio"
+command = ["npx", "-y", "{package}@{version}"]
+platforms = ["darwin", "linux"]
+probes = ["node-20", "npx", "adb-or-simctl"]
+env = { MOBILEMCP_DISABLE_TELEMETRY = "1" }
+ask_tools = ["mobile_uninstall_app", "mobile_clear_app_data", "mobile_login_to_cloud_provider", "mobile_allocate_remote_device"]
+deny_tools = []
+risk_patterns = ["cloud", "remote", "login", "uninstall", "clear", "shell"]
+notes = "Telemetry (PostHog/Scarf) is on upstream by default; MOBILEMCP_DISABLE_TELEMETRY=1 turns it off. The cloud-device tools send work off this machine (Mobile Next Cloud) and are gated as ask."
+
+[server.mcp-for-blender]
+title = "MCP for Blender (ahujasid; PyPI renamed from blender-mcp)"
+source = "https://github.com/ahujasid/mcp-for-blender"
+checked = "2026-11-15"
+registry = "pypi"
+package = "mcp-for-blender"
+version = "2.3.0"
+transport = "stdio"
+command = ["uvx", "{package}@{version}"]
+platforms = ["darwin", "linux"]
+probes = ["uvx", "blender-app", "blender-addon-socket"]
+env = { DISABLE_TELEMETRY = "true", UV_PYTHON_PREFERENCE = "only-managed" }
+ask_tools = ["execute_blender_code"]
+deny_tools = []
+risk_patterns = ["execute", "code", "python", "script", "generate", "download", "hyper3d", "sketchfab", "world"]
+notes = "execute_blender_code runs arbitrary Python inside Blender (save your work first); gated as ask. Asset/generation tools (Poly Haven, Sketchfab, Hyper3D, World Labs) call third-party web APIs. Blender must be running with the addon's server started (N panel → MCP for Blender → Start MCP Server); install the addon with `uvx mcp-for-blender@2.3.0 install-addon`. The old PyPI name blender-mcp still works upstream."
+
+[server.figma-desktop]
+title = "Figma desktop MCP server (official, local)"
+source = "https://developers.figma.com/docs/figma-mcp-server/local-server-installation"
+checked = "2026-11-15"
+registry = "app"
+package = "Figma desktop app"
+version = "app"
+transport = "http"
+url = "http://127.0.0.1:3845/mcp"
+platforms = ["darwin"]
+probes = ["figma-app", "figma-mcp-port"]
+ask_tools = []
+deny_tools = []
+risk_patterns = ["write", "create", "delete", "publish"]
+notes = "Read-only: the desktop server cannot write to the canvas. Needs a Dev or Full seat on a Professional/Education/Organization/Enterprise plan, and is only up while the Figma desktop app runs. Its version follows the app, so `refresh` tracks it by the tool-manifest hash alone."
+
+[server.mcp-3d-printer-server]
+title = "mcp-3d-printer-server (DMontgomery40)"
+source = "https://github.com/DMontgomery40/mcp-3D-printer-server"
+checked = "2026-11-15"
+registry = "npm"
+package = "mcp-3d-printer-server"
+version = "1.2.77"
+transport = "stdio"
+command = ["npx", "-y", "{package}@{version}"]
+platforms = ["darwin", "linux"]
+probes = ["node-18", "npx", "printer-type", "printer-host"]
+env = {}
+# Copied from YOUR shell into the MCP entry at enable time (the config file
+# is then chmod 600). Set them first, e.g. PRINTER_TYPE=octoprint.
+env_passthrough = ["PRINTER_TYPE", "PRINTER_HOST", "PRINTER_PORT", "API_KEY", "BAMBU_SERIAL", "BAMBU_TOKEN", "BAMBU_MODEL", "SLICER_TYPE", "SLICER_PATH", "BAMBU_PROFILES_ROOT"]
+secret_env = ["API_KEY", "BAMBU_TOKEN"]
+default_enabled = false
+risk = "No print confirmation: upstream states 'There is no confirmation prompt and no bed check: your client's own print action is the approval.' A model tool call can heat a printer and start a physical print."
+ask_tools = ["start_print", "print_3mf", "upload_gcode", "process_and_print_stl", "resume_print", "set_printer_temperature"]
+deny_tools = []
+risk_patterns = ["print", "temperature", "heat", "gcode", "move", "home", "extrude", "rpc"]
+notes = "Disabled by default (see risk). When enabled, every tool that can start, resume or heat a print is gated as ask."
+
+[server.ros-mcp]
+title = "ROS MCP server (robotmcp)"
+source = "https://github.com/robotmcp/ros-mcp-server"
+docs = "https://github.com/robotmcp/ros-mcp-server/blob/main/docs/install/installation.md"
+checked = "2026-11-15"
+registry = "pypi"
+package = "ros-mcp"
+version = "3.1.2"
+transport = "stdio"
+command = ["uvx", "{package}@{version}", "--transport=stdio"]
+platforms = ["darwin", "linux"]
+probes = ["uvx", "rosbridge"]
+env = {}
+ask_tools = ["publish*", "call_service*", "send_action*", "set_param*"]
+deny_tools = []
+risk_patterns = ["publish", "service", "action", "param", "move", "velocity", "cmd"]
+notes = "Publishing topics, calling services and sending actions MOVE a real robot when one is attached; those are gated as ask (glob rules, because upstream tool names are not pinned here — check them with `apps.sh refresh`). Needs rosbridge on the robot/sim machine: `ros2 launch rosbridge_server rosbridge_websocket_launch.xml`."
+
+# ── probes ──────────────────────────────────────────────────────────────────
+# fix / fix_off_path are shown verbatim to the user and the model. {path},
+# {dir}, {found} and {output} expand from the probe result.
+
+[probe.macos-14-5]
+kind = "command"
+what = "macOS 14.5 or later"
+command = ["sw_vers", "-productVersion"]
+version_regex = '(\d+\.\d+(?:\.\d+)?)'
+min_version = "14.5"
+fix = "macOS {found} is too old for MobileBuildMCP (needs 14.5+). Update macOS in System Settings → General → Software Update."
+
+[probe.node-18]
+kind = "command"
+what = "Node.js 18 or later"
+command = ["node", "--version"]
+search = ["/opt/homebrew/bin", "/usr/local/bin", "~/.volta/bin"]
+version_regex = 'v(\d+\.\d+\.\d+)'
+min_version = "18.0"
+fix = "Node.js 18+ is required (found: {found}). Install it: `brew install node` (macOS) or your distro's nodejs package, or use nvm/volta."
+
+[probe.node-20]
+kind = "command"
+what = "Node.js 20 or later"
+command = ["node", "--version"]
+search = ["/opt/homebrew/bin", "/usr/local/bin", "~/.volta/bin"]
+version_regex = 'v(\d+\.\d+\.\d+)'
+min_version = "20.0"
+fix = "Node.js 20+ is required (found: {found}). Install it: `brew install node` (macOS) or your distro's nodejs package, or use nvm/volta."
+
+[probe.npx]
+kind = "command"
+what = "npx (ships with Node.js)"
+command = ["npx", "--version"]
+search = ["/opt/homebrew/bin", "/usr/local/bin", "~/.volta/bin"]
+fix = "npx is missing — it ships with Node.js: `brew install node`."
+
+[probe.uvx]
+kind = "command"
+what = "uvx (from uv)"
+command = ["uvx", "--version"]
+search = ["~/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", "~/.cargo/bin"]
+off_path = "warn"
+fix = "uvx is missing. Install uv with its official installer: `curl -LsSf https://astral.sh/uv/install.sh | sh` (not `pip install uv`, which may not create uvx)."
+fix_off_path = "uvx exists at {path} but is not on PATH. beast-apps writes the absolute path into the MCP entry, so the server still starts; to use it in a shell add `export PATH=\"{dir}:$PATH\"` to ~/.zshrc."
+
+[probe.xcode-app]
+kind = "path"
+what = "Xcode.app (full Xcode, not only the Command Line Tools)"
+paths = ["/Applications/Xcode.app", "/Applications/Xcode*.app"]
+fix = "Xcode.app is not installed: only the Command Line Tools are present (they have no simulators and no iOS SDK). Install Xcode from the App Store, or `brew install xcodes && xcodes install --latest`, then `sudo xcode-select -s /Applications/Xcode.app` and `sudo xcodebuild -runFirstLaunch`."
+
+[probe.xcodebuild-full]
+kind = "command"
+what = "xcodebuild from a full Xcode 16+ (selected with xcode-select)"
+command = ["xcodebuild", "-version"]
+version_regex = 'Xcode (\d+(?:\.\d+)*)'
+min_version = "16.0"
+fix = "xcodebuild does not run a full Xcode ({output}). If Xcode.app is installed, select it: `sudo xcode-select -s /Applications/Xcode.app && sudo xcodebuild -runFirstLaunch` (accept the licence with `sudo xcodebuild -license accept`). MobileBuildMCP needs Xcode 16 or later."
+
+[probe.simctl]
+kind = "command"
+what = "the iOS Simulator tools (xcrun simctl)"
+command = ["xcrun", "simctl", "list", "devices"]
+fix = "`xcrun simctl` is unavailable ({output}). It ships with full Xcode only: install and select Xcode (see above), then add a simulator runtime in Xcode → Settings → Components (or `xcodebuild -downloadPlatform iOS`)."
+
+[probe.adb]
+kind = "command"
+what = "adb (Android platform-tools)"
+command = ["adb", "version"]
+search = ["${ANDROID_HOME}/platform-tools", "${ANDROID_SDK_ROOT}/platform-tools", "~/Library/Android/sdk/platform-tools", "~/Android/Sdk/platform-tools"]
+off_path = "warn"
+export_env = { ANDROID_HOME = "{dir}/.." }
+fix = "adb was not found on PATH or in the default SDK locations. Install Android Studio (it installs the SDK at ~/Library/Android/sdk) or just the tools: `brew install --cask android-platform-tools`."
+fix_off_path = "adb exists at {path} but is not on PATH. beast-apps sets ANDROID_HOME in the MCP entry so the server finds it; for your shell add to ~/.zshrc: `export ANDROID_HOME=\"$HOME/Library/Android/sdk\"; export PATH=\"$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH\"`."
+
+[probe.android-emulator]
+kind = "command"
+what = "the Android emulator (optional: only for emulator workflows)"
+command = ["emulator", "-version"]
+search = ["${ANDROID_HOME}/emulator", "${ANDROID_SDK_ROOT}/emulator", "~/Library/Android/sdk/emulator", "~/Android/Sdk/emulator"]
+off_path = "warn"
+required = false
+fix = "The Android emulator is not installed (only needed for emulator workflows; a USB device works without it). Install it: `sdkmanager --install emulator` or Android Studio → Settings → SDK Tools → Android Emulator."
+fix_off_path = "The emulator exists at {path} but is not on PATH; add `export PATH=\"$ANDROID_HOME/emulator:$PATH\"` to ~/.zshrc."
+
+[probe.java-17]
+kind = "command"
+what = "a JDK 17+ (Gradle and sdkmanager need one)"
+command = ["java", "-version"]
+search = ["${JAVA_HOME}/bin", "/Applications/Android Studio.app/Contents/jbr/Contents/Home/bin", "/opt/homebrew/opt/openjdk/bin", "/opt/homebrew/opt/openjdk@17/bin", "/opt/homebrew/opt/openjdk@21/bin"]
+version_regex = 'version "(\d+(?:\.\d+)*)'
+min_version = "17"
+off_path = "warn"
+export_env = { JAVA_HOME = "{dir}/.." }
+fix = "No JDK 17+ was found ({output}). Install one: `brew install openjdk@17` (or use the one inside Android Studio: /Applications/Android Studio.app/Contents/jbr)."
+fix_off_path = "A JDK exists at {path} but `java` on PATH is not it. beast-apps sets JAVA_HOME in the MCP entry; for your shell add `export JAVA_HOME=\"{parent}\"` to ~/.zshrc."
+
+[probe.adb-or-simctl]
+kind = "any"
+what = "a mobile platform toolchain (adb for Android, or xcrun simctl for iOS)"
+of = ["adb", "simctl"]
+fix = "Neither adb nor the iOS simulator tools were found. Android: install Android Studio or `brew install --cask android-platform-tools`. iOS: install full Xcode from the App Store."
+
+[probe.blender-app]
+kind = "command"
+what = "Blender 3.0 or later"
+command = ["blender", "--version"]
+search = ["/Applications/Blender.app/Contents/MacOS", "~/Applications/Blender.app/Contents/MacOS", "/snap/bin", "/usr/bin"]
+binary_names = ["Blender", "blender"]
+version_regex = 'Blender (\d+\.\d+(?:\.\d+)?)'
+min_version = "3.0"
+off_path = "ok"
+timeout = 30
+fix = "Blender 3.0+ was not found ({output}). Install it from https://www.blender.org/download/ (macOS: drag Blender.app into /Applications) or `brew install --cask blender`."
+
+[probe.blender-addon-socket]
+kind = "tcp"
+what = "Blender running with the MCP for Blender addon server (port ${BLENDER_PORT:-9876})"
+host = "${BLENDER_HOST:-127.0.0.1}"
+port = "${BLENDER_PORT:-9876}"
+required = false
+fix = "Nothing is listening on {found}: Blender is not running with the addon's server. Install the addon once with `uvx mcp-for-blender@2.3.0 install-addon`, open Blender, press N in the 3D viewport → MCP for Blender → Start MCP Server."
+
+[probe.figma-app]
+kind = "path"
+what = "the Figma desktop app"
+paths = ["/Applications/Figma.app", "~/Applications/Figma.app"]
+fix = "The Figma desktop app is not installed (the local MCP server lives inside it). Download it from https://www.figma.com/downloads/ or `brew install --cask figma`."
+
+[probe.figma-mcp-port]
+kind = "tcp"
+what = "Figma's desktop MCP server on 127.0.0.1:3845"
+host = "127.0.0.1"
+port = "3845"
+fix = "Figma's desktop MCP server is not running on {found}. Open the Figma desktop app (keep it up to date), open a Design file with nothing selected, switch to Dev Mode, and click 'Enable desktop MCP server' in the right sidebar. It needs a Dev or Full seat on a paid plan."
+
+[probe.printer-type]
+kind = "env"
+what = "PRINTER_TYPE (octoprint, klipper, duet, repetier, bambu, prusa, creality)"
+var = "PRINTER_TYPE"
+match = '^(octoprint|klipper|duet|repetier|bambu|prusa|creality)$'
+fix = "PRINTER_TYPE is not set (or not a supported backend). Export it before `apps.sh enable 3d-print`, e.g. `export PRINTER_TYPE=octoprint` — never guess it."
+
+[probe.printer-host]
+kind = "env"
+what = "PRINTER_HOST (the printer's address)"
+var = "PRINTER_HOST"
+fix = "PRINTER_HOST is not set. Export the printer's address (and API_KEY / BAMBU_SERIAL + BAMBU_TOKEN + BAMBU_MODEL as your backend needs) before `apps.sh enable 3d-print`."
+
+[probe.rosbridge]
+kind = "tcp"
+what = "rosbridge websocket (${ROSBRIDGE_HOST:-127.0.0.1}:${ROSBRIDGE_PORT:-9090})"
+host = "${ROSBRIDGE_HOST:-127.0.0.1}"
+port = "${ROSBRIDGE_PORT:-9090}"
+required = false
+fix = "No rosbridge answers on {found}. On the robot/simulator machine: `sudo apt install ros-<distro>-rosbridge-server && ros2 launch rosbridge_server rosbridge_websocket_launch.xml`. Set ROSBRIDGE_HOST/ROSBRIDGE_PORT to check a remote robot."
