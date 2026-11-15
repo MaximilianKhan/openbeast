@@ -70,6 +70,29 @@ from tools import run_reaped  # noqa: E402
 _live_pgids: set[int] = set()
 _live_pgid_lock = threading.Lock()
 
+# Set, once, by a signal handler that is about to os._exit. Reaping the
+# live set is not enough under --jobs N: the handler may block (benchmark_
+# all stops llama-server first, up to ~15 s) while worker threads keep
+# running, and a worker whose agent was just SIGKILLed validates, cleans up
+# and Popens the NEXT agent, which os._exit then orphans (verifier finding
+# on campaign-evals: signal handler still orphans agents under --jobs).
+# run_agent refuses to spawn once it is set, and kills its own agent if the
+# flag appeared between the Popen and the registration.
+_stopping = threading.Event()
+
+
+def stopping() -> bool:
+    """Whether a signal handler has begun tearing this process down."""
+    return _stopping.is_set()
+
+
+def begin_stop() -> None:
+    """Forbid new agents, then reap every live one. Call from a handler
+    before anything slow; call _reap_live_agents() again just before
+    os._exit to cover a spawn that raced the first reap."""
+    _stopping.set()
+    _reap_live_agents()
+
 
 def _descendant_pids(root: int) -> list[int]:
     """Every live descendant of `root`, from /proc (Linux). [] where there
@@ -142,7 +165,7 @@ def _reap_live_agents() -> None:
 def _install_signal_reaper() -> None:
     """Reap our agent groups before dying, for SIGTERM and SIGINT alike."""
     def _handler(signum, _frame):
-        _reap_live_agents()
+        begin_stop()
         # os._exit skips the interpreter's own flush, and under nohup or a
         # log file stdout is BLOCK-buffered: a stopped campaign lost the last
         # screenful of its log — exactly the lines that say where it stopped.
@@ -1240,6 +1263,10 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
     # process group, not just the runner. Its bash-tool children run in
     # their OWN sessions (agents/tools.py run_reaped), so the timeout path
     # walks the tree and kills those groups too (_kill_agent_tree).
+    stopped = {"exit_code": -1, "elapsed_seconds": 0.0, "stdout": "(stopped)",
+               "stderr": "", "tokens": _parse_tokens(""), "iterations": None}
+    if _stopping.is_set():                 # the process is being torn down
+        return stopped
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -1250,6 +1277,14 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
     )
     with _live_pgid_lock:
         _live_pgids.add(proc.pid)          # == pgid: start_new_session above
+    # Registered BEFORE this check: a begin_stop() that snapshotted the set
+    # without us has already set the flag, so one side always kills it.
+    if _stopping.is_set():
+        _kill_agent_tree(proc.pid)
+        proc.kill()
+        with _live_pgid_lock:
+            _live_pgids.discard(proc.pid)
+        return stopped
     try:
         # Rough budget: 1 min per iteration at single-stream decode, scaled up
         # under parallel contention (see timeout_scale in the docstring).

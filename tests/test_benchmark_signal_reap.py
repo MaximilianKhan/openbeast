@@ -22,6 +22,9 @@ FAKE_RUNNER = textwrap.dedent('''
     import os, sys, time
     with open(os.environ["T_PIDFILE"], "w") as f:
         f.write(str(os.getpid()))
+    # Every agent ever spawned, for the --jobs test.
+    with open(os.environ["T_PIDFILE"] + ".all", "a") as f:
+        f.write(f"{os.getpid()}\\n")
     time.sleep(60)
 ''')
 
@@ -77,5 +80,62 @@ def test_sigterm_reaps_the_inflight_agent(tmp_path):
         if agent:
             try:
                 os.killpg(agent, signal.SIGKILL)
+            except OSError:
+                pass
+
+
+# --jobs N: units run in worker threads that keep going while the handler
+# blocks in stop_llama_server (up to ~15 s). A worker whose agent was just
+# reaped must not Popen the next one for os._exit to orphan (verifier
+# finding on campaign-evals: signal handler still orphans under --jobs).
+WORKER_DRIVER = textwrap.dedent('''
+    import sys, threading, time
+    sys.path.insert(0, sys.argv[1] + "/evals")
+    sys.path.insert(0, sys.argv[1] + "/agents")
+    import benchmark_all, run_eval
+    run_eval.RUNNER_PATH = sys.argv[2]
+    # A slow server stop: the window the workers keep running through.
+    benchmark_all.stop_llama_server = lambda: time.sleep(2)
+    benchmark_all._install_signal_handler()
+    def worker():
+        while True:
+            run_eval.run_agent({"task": "t", "max_iter": 1}, "http://127.0.0.1:9/v1")
+    threading.Thread(target=worker, daemon=True).start()
+    while True:
+        time.sleep(0.1)
+''')
+
+
+def test_sigterm_under_jobs_spawns_no_agent_to_orphan(tmp_path):
+    runner, driver = tmp_path / "runner.py", tmp_path / "driver.py"
+    pidfile = tmp_path / "agent.pid"
+    runner.write_text(FAKE_RUNNER)
+    driver.write_text(WORKER_DRIVER)
+    env = dict(os.environ, T_PIDFILE=str(pidfile))
+    proc = subprocess.Popen([sys.executable, str(driver), str(ROOT), str(runner)],
+                            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    allfile = Path(str(pidfile) + ".all")
+    pids: list[int] = []
+    try:
+        end = time.time() + 15
+        while time.time() < end and not (allfile.exists() and allfile.read_text()):
+            time.sleep(0.05)
+        assert allfile.exists(), "fake agent never started"
+        proc.send_signal(signal.SIGTERM)
+        proc.wait(timeout=20)
+        assert proc.returncode == 128 + signal.SIGTERM
+        time.sleep(0.5)          # let a raced child finish writing its pid
+        pids = [int(x) for x in allfile.read_text().split()]
+        end = time.time() + 5
+        while time.time() < end and any(_alive(p) for p in pids):
+            time.sleep(0.05)
+        alive = [p for p in pids if _alive(p)]
+        assert not alive, f"agents outlived the sweep's SIGTERM: {alive} of {pids}"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        for p in pids:
+            try:
+                os.killpg(p, signal.SIGKILL)
             except OSError:
                 pass

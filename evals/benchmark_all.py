@@ -308,6 +308,10 @@ def stop_llama_server():
         time.sleep(0.5)
 
 
+class SweepStopping(RuntimeError):
+    """A signal handler is tearing the sweep down: start nothing new."""
+
+
 class PortBusy(RuntimeError):
     """LLAMA_PORT is already served by a process this harness did not start."""
 
@@ -480,6 +484,8 @@ def start_model(serve_script: str, slug: str = "model") -> tuple[subprocess.Pope
     # Asked on every (re)start, not just at launch: a mid-sweep recovery
     # after someone took the card with `acquire --force` must not load a
     # second model into their window.
+    if run_eval.stopping():
+        raise SweepStopping("sweep is stopping: not starting a server")
     require_gpu_lease()
     # Our own previous server is stopped by now, so a bound port belongs to
     # someone else (the stack, another worktree's campaign). Refuse rather
@@ -507,6 +513,11 @@ def start_model(serve_script: str, slug: str = "model") -> tuple[subprocess.Pope
         # one fd per (re)start — including when Popen itself raises.
         log_fp.close()
     _own_server["proc"] = proc
+    # The handler may have begun between the check above and the Popen,
+    # and already run its stop_llama_server: this one is ours to stop.
+    if run_eval.stopping():
+        stop_llama_server()
+        raise SweepStopping("sweep is stopping: stopped the server just started")
     return proc, log_path
 
 
@@ -558,7 +569,7 @@ def restart_server(serve_script: str, slug: str,
     stop_llama_server()
     try:
         proc, _ = start_model(serve_script, slug)
-    except (FileNotFoundError, PortBusy, GpuLeaseHeld) as e:
+    except (FileNotFoundError, PortBusy, GpuLeaseHeld, SweepStopping) as e:
         print(f"  Restart failed: {e}")
         return False
     print(f"  Waiting for /health (up to {health_timeout}s)...")
@@ -614,7 +625,7 @@ def benchmark_model(model: dict, task_filter: list[str] | None,
     print(f"Starting {model['serve']}...")
     try:
         proc, _ = start_model(model["serve"], model["slug"])
-    except (FileNotFoundError, PortBusy, GpuLeaseHeld) as e:
+    except (FileNotFoundError, PortBusy, GpuLeaseHeld, SweepStopping) as e:
         return {"slug": model["slug"], "name": model["name"], "error": str(e),
                 "gpu_work": False}
 
@@ -830,6 +841,15 @@ def _on_signal(signum, _frame):
     Agents first: they are what writes fixtures and holds a slot."""
     print(f"\n\nReceived signal {signum} — reaping eval agents, stopping "
           f"llama-server and exiting...")
+    # begin_stop forbids new agents BEFORE the slow server stop: under
+    # --jobs N the worker threads keep running through it, and one whose
+    # agent was just reaped would otherwise Popen the next agent (or
+    # restart the server) for os._exit to orphan.
+    run_eval.begin_stop()
+    stop_llama_server()
+    # Again, for a spawn that raced the first pass: an agent registered
+    # after begin_stop's snapshot kills itself, but a server a recovery
+    # started mid-stop is ours to stop here.
     run_eval._reap_live_agents()
     stop_llama_server()
     for stream in (sys.stdout, sys.stderr):
