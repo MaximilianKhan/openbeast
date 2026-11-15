@@ -206,7 +206,7 @@ verify            every row's SHA-256 and tree SHA-256 still match the disk
 
 **Interface.** `scripts/skill-import.sh` with `install-scanner`, `scanner`,
 `fetch`, `scan`, `diff`, `promote`, `attest`, `verify`. Exit 0 pass, 1 could
-not judge, 3 the gate said no.
+not judge, 3 the gate said no (`diff` exits 0 whether or not the copies differ).
 
 **Policy: accept by rule id.** A finding is open until the reviewer names its
 rule id (`--accept TM1,PE3`), and the accepted ids are written into the ledger

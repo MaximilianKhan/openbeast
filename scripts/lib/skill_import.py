@@ -690,7 +690,10 @@ def cmd_diff(args) -> int:
     for d in (live, staged):
         if not os.path.isdir(d):
             raise GateError(f"{d} does not exist")
-    return subprocess.run(["diff", "-ru", live, staged]).returncode
+    # diff(1) says 1 for "they differ" (the normal case for a refresh) and 2
+    # for trouble; this CLI's contract spends 1 on "could not judge".
+    rc = subprocess.run(["diff", "-ru", live, staged]).returncode
+    return EXIT_OK if rc in (0, 1) else EXIT_ERROR
 
 
 def cmd_promote(args) -> int:

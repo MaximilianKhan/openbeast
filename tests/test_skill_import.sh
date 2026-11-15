@@ -404,11 +404,13 @@ echo ""
 echo "Refresh and collisions:"
 echo clean > "$SCAN_MODE"
 echo "extra upstream line" >> "$FIXTURE/pack/demo/SKILL.md"
-if fetch_demo --force >/dev/null 2>&1 && run diff demo >"$TMPROOT/out" 2>&1; [[ $? -eq 1 ]] \
+# 2026-11 review: diff(1)'s own "they differ" is 1, which this CLI's exit
+# contract spends on "could not judge". Showing a difference is a success.
+if fetch_demo --force >/dev/null 2>&1 && run diff demo >"$TMPROOT/out" 2>&1; [[ $? -eq 0 ]] \
    && grep -q "extra upstream line" "$TMPROOT/out"; then
-  pass "diff shows the staged revision against the live skill"
+  pass "diff shows the staged revision against the live skill (exit 0, per the contract)"
 else
-  fail "diff did not show the upstream change"
+  fail "diff did not show the upstream change, or did not exit 0"
 fi
 mkdir -p "$STAGE/nostage"
 run diff nostage >/dev/null 2>&1; rc=$?
