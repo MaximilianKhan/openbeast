@@ -1104,7 +1104,7 @@ if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/d
   if systemctl --user is-enabled --quiet openbeast-watchdog.timer 2>/dev/null; then
     pass "health watchdog enabled (openbeast-watchdog.timer, healthcheck --restart every 5 min)"
   elif [[ "${WATCHDOG_AUTOINSTALL:-true}" == "true" ]]; then
-    warn "health watchdog timer is missing or disabled — a crashed tool server, gate or chat console stays down" \
+    warn "health watchdog (openbeast-watchdog.timer) not installed or not enabled — a crashed tool server, gate or chat console stays down" \
          "./stop.sh && ./start.sh -d   (installs it), or see scripts/openbeast-watchdog.timer"
   fi
 fi
