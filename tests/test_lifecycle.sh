@@ -544,6 +544,23 @@ if [[ "$(_ext_conf)" == 'EXTENSIONS="other"' ]]; then
 else
   fail "ext.sh disable dashboard -> $(_ext_conf) ($(tr '\n' ' ' <<< "$_O"))"
 fi
+# extensions-ntfy review: enable/disable built the new conf line from the
+# env-resolved list, writing a one-off OPENBEAST_EXTENSIONS into the conf.
+echo 'EXTENSIONS="other"' > "$_X/openbeast.conf"
+RUN_ENV=(OPENBEAST_EXTENSIONS=dashboard)
+_O="$(_ext enable dashboard)"
+if [[ "$(_ext_conf)" == 'EXTENSIONS="other dashboard"' && "$_O" == *"OPENBEAST_EXTENSIONS=\"dashboard\" is set"* ]]; then
+  pass "enable with an env override adds to the conf's own list, and says the override is set"
+else
+  fail "ext.sh enable under OPENBEAST_EXTENSIONS -> $(_ext_conf) ($(tr '\n' ' ' <<< "$_O"))"
+fi
+_O="$(_ext disable dashboard)"
+if [[ "$(_ext_conf)" == 'EXTENSIONS="other"' ]]; then
+  pass "…and disable removes it from the conf's list, keeping what only the conf named"
+else
+  fail "ext.sh disable under OPENBEAST_EXTENSIONS -> $(_ext_conf) ($(tr '\n' ' ' <<< "$_O"))"
+fi
+RUN_ENV=()
 # start.sh's launch loop, lifted verbatim, under set -euo pipefail.
 python3 - "$REPO_DIR/start.sh" "$_X/launch.sh" <<'PY'
 import sys

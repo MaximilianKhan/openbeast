@@ -64,6 +64,17 @@ _write_extensions() {
 }
 
 cmd="${1:-list}"
+# enable/disable rewrite openbeast.conf, so they start from the conf's OWN
+# list. lib/conf.sh resolved EXTENSIONS as ${OPENBEAST_EXTENSIONS:-<conf>},
+# and building the new line from that wrote a one-off env override into the
+# conf for good, dropping what the conf listed. list/status keep the
+# effective list: that is what a start would run.
+if [[ "$cmd" == enable || "$cmd" == disable ]]; then
+  if [[ -n "${OPENBEAST_EXTENSIONS:-}" ]]; then
+    echo "Note: OPENBEAST_EXTENSIONS=\"$OPENBEAST_EXTENSIONS\" is set in this shell and overrides openbeast.conf until it is unset — editing the conf's own list." >&2
+  fi
+  EXTENSIONS="$(_ob_conf_value EXTENSIONS || true)"
+fi
 case "$cmd" in
   list)
     echo "Available extensions (extensions/):"
