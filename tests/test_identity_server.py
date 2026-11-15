@@ -32,6 +32,22 @@ ADMIN = {"Authorization": "Bearer test-admin-key"}
 GUEST = {"Authorization": "Bearer test-guest-key"}
 
 
+# Every env var a test here sets. They must all come back exactly as found:
+# a key written straight into os.environ outlived this module and silently
+# put every later tool-server test in the session into keyed mode.
+_ENV_SET_HERE = ("OPENBEAST_MCPO_ADMIN_KEY", "OPENBEAST_MCPO_GUEST_KEY",
+                 "OPENBEAST_FILES_SHARDING", "OPENBEAST_IDENTITY_JWT_SECRET",
+                 "OPENBEAST_FILES_DIR")
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _module_leaves_env_as_found():
+    before = {k: os.environ.get(k) for k in _ENV_SET_HERE}
+    yield
+    after = {k: os.environ.get(k) for k in _ENV_SET_HERE}
+    assert after == before, "test_identity_server leaked env into the session"
+
+
 @pytest.fixture()
 def workspace(tmp_path, monkeypatch):
     ws = tmp_path / "files"
@@ -49,11 +65,14 @@ def workspace(tmp_path, monkeypatch):
 
 
 def client(monkeypatch=None, keyed=False, sharding=None):
+    # Env goes through monkeypatch ONLY, so pytest undoes it at teardown.
+    if (keyed or sharding) and monkeypatch is None:
+        raise AssertionError("client(keyed/sharding) needs monkeypatch")
     if keyed:
-        os.environ["OPENBEAST_MCPO_ADMIN_KEY"] = "test-admin-key"
-        os.environ["OPENBEAST_MCPO_GUEST_KEY"] = "test-guest-key"
+        monkeypatch.setenv("OPENBEAST_MCPO_ADMIN_KEY", "test-admin-key")
+        monkeypatch.setenv("OPENBEAST_MCPO_GUEST_KEY", "test-guest-key")
     if sharding:
-        os.environ["OPENBEAST_FILES_SHARDING"] = sharding
+        monkeypatch.setenv("OPENBEAST_FILES_SHARDING", sharding)
     return TestClient(openapi_tools.create_app(), base_url="http://127.0.0.1:3001")
 
 
@@ -83,8 +102,8 @@ def test_unkeyed_mode_is_open(workspace):
     assert r.status_code == 200
 
 
-def test_keyed_mode_auth_matrix(workspace):
-    c = client(keyed=True)
+def test_keyed_mode_auth_matrix(workspace, monkeypatch):
+    c = client(monkeypatch, keyed=True)
     body = {"directory": ".", "pattern": "*"}
     assert c.post("/list_files", json=body).status_code == 401           # no key
     bad = {"Authorization": "Bearer nope"}
@@ -127,16 +146,16 @@ def test_users_are_isolated_by_namespace(workspace):
     assert "a.md" not in r.text
 
 
-def test_per_chat_sharding(workspace):
-    c = client(sharding="chat")
+def test_per_chat_sharding(workspace, monkeypatch):
+    c = client(monkeypatch, sharding="chat")
     hdr = {"X-OpenWebUI-User-Id": "alice", "X-OpenWebUI-Chat-Id": "chat-42"}
     c.post("/write_file", json={"path": "n.md", "content": "x"}, headers=hdr)
     assert (workspace / "users" / openapi_tools._sanitize("alice") / "chats"
             / openapi_tools._sanitize("chat-42") / "n.md").exists()
 
 
-def test_sharding_off(workspace):
-    c = client(sharding="off")
+def test_sharding_off(workspace, monkeypatch):
+    c = client(monkeypatch, sharding="off")
     c.post("/write_file", json={"path": "root.md", "content": "x"},
            headers={"X-OpenWebUI-User-Id": "alice"})
     assert (workspace / "root.md").exists()
@@ -181,11 +200,11 @@ def test_sanitize_is_injective():
     assert all("/" not in s and ".." not in s for s in shards)
 
 
-def test_denied_calls_reach_audit_and_metrics(workspace):
+def test_denied_calls_reach_audit_and_metrics(workspace, monkeypatch):
     """401/403/404 must be visible in the audit trail (review bug #4)."""
     audit = os.environ["OPENBEAST_TOOL_AUDIT_PATH"]   # conftest isolates it
     before = os.path.getsize(audit) if os.path.exists(audit) else 0
-    c = client(keyed=True)
+    c = client(monkeypatch, keyed=True)
     c.post("/bash", json={"command": "true"},
            headers={"Authorization": "Bearer test-guest-key",
                     "X-OpenWebUI-User-Id": "prober"})   # guest on admin tool: 404
@@ -233,12 +252,12 @@ def test_spawn_workdir_dotdot_escape_rejected(workspace, monkeypatch):
     assert "escapes" in r.json()["detail"]
 
 
-def test_single_key_fails_closed(workspace):
+def test_single_key_fails_closed(workspace, monkeypatch):
     """ONE configured key must flip the server to keyed mode. It used to
     require BOTH keys, so setting only the admin key — the intuitive way to
     lock down — silently left every tool open."""
-    os.environ["OPENBEAST_MCPO_ADMIN_KEY"] = "test-admin-key"
-    os.environ.pop("OPENBEAST_MCPO_GUEST_KEY", None)
+    monkeypatch.setenv("OPENBEAST_MCPO_ADMIN_KEY", "test-admin-key")
+    monkeypatch.delenv("OPENBEAST_MCPO_GUEST_KEY", raising=False)
     c = TestClient(openapi_tools.create_app(), base_url="http://127.0.0.1:3001")
     body = {"directory": ".", "pattern": "*"}
     assert c.get("/health").json()["auth"] == "keyed"
