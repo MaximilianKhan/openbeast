@@ -285,8 +285,12 @@ python3 evals/scoring.py --html "$OUT/board.html" \
   && ./scripts/publish-verdict.sh leaderboard "$OUT/board.html"
 ```
 
-The id is `uuid5(NAMESPACE_URL, "openbeast:verdict:<slug>")`, so each rerun
-adds a version to the same page. Each version is labelled
+The id is an HMAC of `openbeast:verdict:<slug>` under the rig-local 0600 key
+`.run/verdict-id.key` (created on first use), shaped as a uuid, so each rerun
+adds a version to the same page — and nobody without the key can compute the
+id and claim the page before the rig's first publish. A publish the server
+refuses (the page is owned by another login) prints a `WARNING` naming the
+id; `--strict` makes that exit 3. Each version is labelled
 `<git short sha> era=<eval era>` unless you pass `--label`; `--title` sets the
 title. A `.txt` (or any non-HTML) file is wrapped in a page, HTML-escaped
 inside `<pre>`. Pages are always private and owned by the rig, so they open

@@ -2,16 +2,22 @@
 # Publish a campaign verdict or leaderboard as a beast-artifact page, at a URL
 # that stays the same every time that verdict is republished.
 #
-#   ./scripts/publish-verdict.sh <slug> <file.html|file.txt> [--label "L"] [--title "T"]
+#   ./scripts/publish-verdict.sh <slug> <file.html|file.txt> [--label "L"] [--title "T"] [--strict]
 #
 #   <slug>   names the verdict, e.g. tier3-zig or leaderboard. The artifact id
-#            is uuid5(NAMESPACE_URL, "openbeast:verdict:<slug>"), so each
-#            republish adds a VERSION to the same page instead of a new URL.
+#            is HMAC-SHA256(.run/verdict-id.key, "openbeast:verdict:<slug>")
+#            shaped as a uuid, so each republish adds a VERSION to the same
+#            page instead of a new URL — and nobody without the rig's 0600
+#            key can compute the id and claim it before the rig's first
+#            publish (it was a public uuid5 a WebUI user could squat).
 #   <file>   an .html/.htm page as-is. Anything else (a .txt verdict, a log
 #            excerpt) is wrapped in a minimal page, HTML-escaped inside <pre>.
 #   --label  the version label. Default: "<git short sha> era=<eval era>", so
 #            a verdict names the code and the eval era it was measured under.
 #   --title  the page title (default: the file's own <title>, or "Verdict: <slug>").
+#   --strict exit 3 (not 0) when the server REFUSES the publish — e.g. the
+#            page at this id is owned by another login. Opt-in, so set -e
+#            campaign callers keep the never-fail contract below.
 #
 # PRIVATE on first publish, owned by the rig (its admins can open it). Share
 # one with ./scripts/artifact.sh visibility <id> tailnet; a share survives
@@ -20,7 +26,8 @@
 #
 # NEVER FAILS THE CALLER. This runs at the end of hours-long campaign stages
 # under `set -e`: a page viewer that is off or down must cost one stderr line,
-# never the stage. Exit status is 0 on every path, published or not.
+# never the stage. Exit status is 0 on every path, published or not (only an
+# explicit --strict turns a server REFUSAL into exit 3).
 # (Usage mistakes are reported the same way — one line, exit 0.)
 #
 # Hooking it in (a campaign's verdict step, after the verdict file exists):
@@ -35,17 +42,18 @@ _skip() { echo "publish-verdict: $* — not published" >&2; exit 0; }
 
 slug="${1:-}"; src="${2:-}"
 case "$slug" in
-  -h|--help) sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -h|--help) sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 esac
-[[ -n "$slug" && -n "$src" ]] || _skip "usage: publish-verdict.sh <slug> <file.html|file.txt> [--label L] [--title T]"
+[[ -n "$slug" && -n "$src" ]] || _skip "usage: publish-verdict.sh <slug> <file.html|file.txt> [--label L] [--title T] [--strict]"
 shift 2
-# A slug is a name, not a sentence: it becomes part of the uuid5 name, the
+# A slug is a name, not a sentence: it becomes the HMAC input of the id, the
 # default title, and the log line — keep it to a filename-safe alphabet.
 [[ "$slug" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]] \
   || _skip "slug '$slug' is not [A-Za-z0-9._-] (100 chars max)"
-label=""; title=""
+label=""; title=""; strict=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --strict)  strict=1; shift ;;
     --label)   [[ $# -ge 2 ]] || _skip "--label needs a value"; label="$2"; shift 2 ;;
     --label=*) label="${1#*=}"; shift ;;
     --title)   [[ $# -ge 2 ]] || _skip "--title needs a value"; title="$2"; shift 2 ;;
@@ -69,8 +77,37 @@ case "$(printf '%s' "$_enabled" | tr '[:upper:]' '[:lower:]')" in
   *) _skip "$slug: beast-artifact is off (BEAST_ARTIFACT=true in openbeast.conf turns it on)" ;;
 esac
 
-art_id="$(python3 -c 'import sys, uuid; print(uuid.uuid5(uuid.NAMESPACE_URL, "openbeast:verdict:" + sys.argv[1]))' "$slug" 2>/dev/null)" \
-  || _skip "$slug: python3 could not derive the artifact id"
+# The id: an HMAC under a rig-local 0600 key, created once (O_EXCL + link, so
+# two concurrent first publishes agree on one key). A public uuid5 of the slug
+# let any non-guest WebUI user — or a model steered in their chat — create
+# the page at the canonical id before the rig did, after which the rig's
+# publish was refused (review finding campaign-evals: verdict id squatting).
+# Same trust model as .run/artifact-local.token: can read it == is the rig.
+# No key and none creatable → do not publish at a guessable id; skip.
+art_id="$(OB_KEY="$REPO_DIR/.run/verdict-id.key" python3 - "$slug" <<'PY' 2>/dev/null
+import hashlib, hmac, os, secrets, sys, uuid
+path = os.environ["OB_KEY"]
+if not os.path.exists(path):
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(secrets.token_hex(32) + "\n")
+    try:
+        os.link(tmp, path)          # fails if another publish won the race
+    except FileExistsError:
+        pass
+    finally:
+        os.unlink(tmp)
+key = open(path).read().strip()
+if len(key) < 32:
+    sys.exit(1)
+mac = hmac.new(key.encode(), ("openbeast:verdict:" + sys.argv[1]).encode(),
+               hashlib.sha256).digest()
+print(uuid.UUID(bytes=mac[:16], version=5))
+PY
+)" && [[ -n "$art_id" ]] \
+  || _skip "$slug: could not read or create the verdict id key at .run/verdict-id.key"
 
 if [[ -z "$label" ]]; then
   _sha="$(git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null || echo nogit)"
@@ -113,6 +150,16 @@ rc=$?
 case "$rc" in
   0) printf '%s\n' "$out" ;;
   4) _skip "$slug: the artifact server is not answering (./start.sh --status)" ;;
+  3)
+    # The server said NO. On a verdict id that is (almost always) "this page
+    # is owned by another login": say so loudly, name the id, and let a
+    # --strict caller fail on it. Not one quiet line any more.
+    echo "WARNING: publish-verdict: the server REFUSED the rig's publish of '$slug' to $art_id." >&2
+    echo "         $(printf '%s' "$out" | grep -m1 -E 'ERROR' || printf '%s' "$out" | head -n1)" >&2
+    echo "         If that page is owned by another login, it is not this rig's verdict:" >&2
+    echo "         inspect it (./scripts/artifact.sh show $art_id) before trusting its URL." >&2
+    [[ $strict -eq 1 ]] && exit 3
+    exit 0 ;;
   *) _skip "$slug: artifact.sh exit $rc: $(printf '%s' "$out" | grep -m1 -E 'ERROR' || printf '%s' "$out" | head -n1)" ;;
 esac
 exit 0
