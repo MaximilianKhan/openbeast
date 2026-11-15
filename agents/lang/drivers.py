@@ -113,7 +113,12 @@ def _run(argv: list[str], cwd: str | None = None, env: dict | None = None,
 # it (an unterminated literal, a NUL) falls back to scanning the raw text —
 # the conservative direction. When unsure, refuse.
 
-_GAP_C = r"(?:[ \t]|/\*.*?\*/)*"           # blanks / block comments, not newlines
+#: Horizontal blanks are space, tab, FORM FEED and VERTICAL TAB: gcc, g++
+#: and clang accept \f/\v between `#` and the directive name (a pedantic
+#: "form feed in preprocessing directive" diagnostic, and the directive
+#: STILL runs), so a gap that stopped at [ \t] let `#\finclude "/abs"` by.
+_BLANK_C = r"[ \t\v\f]"
+_GAP_C = rf"(?:{_BLANK_C}|/\*.*?\*/)*"   # blanks / block comments, not newlines
 #: The start of a preprocessor directive. After trigraphs and line splicing a
 #: directive is a LINE whose first token is `#` (or the digraph `%:`), and the
 #: only things that may come before it on that line are blanks and comments —
@@ -127,7 +132,7 @@ _C_KW = r"(?:include_next|include|import|embed)\b"
 _C_HEADER = r"(?:\"([^\"\n]*)\"|<([^>\n]*)>)"
 _C_INCLUDE = re.compile(_C_DIRECTIVE + _C_KW + _GAP_C + _C_HEADER, re.M | re.S)
 _C_COMPUTED = re.compile(
-    _C_DIRECTIVE + _C_KW + _GAP_C + r"(?![ \t\"<]|/\*|\n|\Z)", re.M | re.S)
+    _C_DIRECTIVE + _C_KW + _GAP_C + r"(?![ \t\v\f\"<]|/\*|\n|\Z)", re.M | re.S)
 #: `#if __has_include("/home/u/.ssh/id_ed25519")` reads nothing and still
 #: answers a question about the host: it is a file-existence oracle.
 _C_HAS = re.compile(
@@ -157,14 +162,14 @@ _C_PASTE = re.compile(_C_DIRECTIVE + r"[^\n]*(?:##|%:%:)", re.M | re.S)
 #: lines of THAT file in the caret block of every later diagnostic. The
 #: operand must be literal: digits, then optionally a plain relative name.
 _C_LINE = re.compile(_C_DIRECTIVE + r"(?:line\b|(?=\d))([^\n]*)", re.M | re.S)
-_C_LINE_OK = re.compile(r"\d+(?:[ \t]+\"([^\"\n]*)\")?(?:[ \t]+\d+)*")
+_C_LINE_OK = re.compile(r"\d+(?:[ \t\v\f]+\"([^\"\n]*)\")?(?:[ \t\v\f]+\d+)*")
 #: `#pragma GCC dependency "/abs"` (or through _Pragma) opens that path: a
 #: fatal "No such file" when it is absent, a clean compile when it is there.
 _C_DEPENDENCY = re.compile(r"\bdependency\b")
 #: C++20 header units: `import "/abs/file";` (only live under -fmodules, but
 #: a flag is not a reason to leave a read primitive in).
 _CPP_IMPORT = re.compile(
-    r"^[ \t]*(?:export[ \t]+)?import[ \t]*" + _C_HEADER, re.M)
+    r"^[ \t\v\f]*(?:export[ \t\v\f]+)?import[ \t\v\f]*" + _C_HEADER, re.M)
 
 _LIT = r"\"(?:\x00(\d+)\x00|([^\"\\\n\x00]*))\""     # lexed placeholder | raw literal
 _RS_INCLUDE = re.compile(r"\b(include|include_str|include_bytes)\s*!(?!=)")
@@ -215,6 +220,15 @@ _RS_MOD = re.compile(r"\bmod\b(?!\s*(?:r#)?[A-Za-z_]\w*\s*\{)")
 _RS_FILE_ATTR = re.compile(r"\bdebugger_visualizer\b")
 _ZIG_FILE = re.compile(r"@(embedFile|import|cInclude)\b")
 _ZIG_FILE_ARG = re.compile(rf"\s*\(\s*{_LIT}\s*\)")
+#: @cDefine/@cUndef are printed VERBATIM into the @cImport header that zig
+#: hands to clang (Sema: `#define {name} {value}\n`), unescaped — so a `\n`
+#: escape in either argument starts a new preprocessor line, and
+#: `@cDefine("X", "1\n#include \"/abs\"")` reads a host file exactly like
+#: the @cInclude above. Only PLAIN literals (no escape, so no newline and no
+#: line splice) are accepted, and `{}` for the valueless define.
+_ZIG_DEFINE = re.compile(r"@(cDefine|cUndef)\b")
+_ZIG_DEFINE_ARGS = re.compile(
+    rf"\s*\(\s*{_LIT}\s*(?:,\s*(?:{_LIT}|\{{\s*\}})\s*)?,?\s*\)")
 
 
 def _escapes(path: str) -> bool:
@@ -252,7 +266,7 @@ def _refuse_c(source: str) -> str | None:
     # line endings, trigraphs (live under -std=c99/c++11), then line splicing.
     src = source.replace("\r\n", "\n").replace("\r", "\n")
     src = src.replace("??=", "#").replace("??/", "\\")
-    src = re.sub(r"\\[ \t]*\n", "", src)
+    src = re.sub(r"\\[ \t\v\f]*\n", "", src)   # cpp splices across \f/\v too
     why = _refuse_c_text(src)
     if why or not _C_UCN.search(src):
         return why
@@ -514,6 +528,15 @@ def _refuse_zig(source: str) -> str | None:
         if path is None or _escapes(path):
             return (f"@{m.group(1)} must name a plain relative string literal "
                     f"— anything else can read a host file")
+    for m in _ZIG_DEFINE.finditer(view):
+        args = _ZIG_DEFINE_ARGS.match(view, m.end())
+        plain = args is not None and all(
+            table[int(ph)] is not None if table is not None else False
+            for ph in (args.group(1), args.group(3)) if ph is not None)
+        if not plain:
+            return (f"@{m.group(1)} arguments must be plain string literals — "
+                    f"they are pasted verbatim into the @cImport header, where "
+                    f"an escaped newline injects an #include")
     return None
 
 
