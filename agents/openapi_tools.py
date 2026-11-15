@@ -28,8 +28,10 @@ the HTTP layer, which buys three things mcpo structurally can't provide:
              user.info.location (agents/weather.py caller_location) — only
              that user's record, keyed by the forwarded user id.
   AUDIT      Every tool call is appended to .run/tool-audit.jsonl (0600)
-             with ts/user/role/chat/tool/status/ms and an argument DIGEST
-             (never the arguments themselves — chats stay private).
+             with ts/user/role/chat/tool/status/ms, an argument HMAC under
+             the install's .run/tool-audit.key and a power-of-two size
+             bound — never the arguments themselves, and a copy of the trail
+             without the key cannot confirm a guessed query either.
 
 agents/mcp_server.py remains the MCP (stdio) surface for OpenCode and any
 real MCP client; this module imports and serves the same 18 tool functions,
@@ -75,6 +77,7 @@ import ipaddress
 import json
 import os
 import re
+import secrets
 import sys
 import threading
 import time
@@ -218,6 +221,12 @@ def _audit_path() -> str:
 # model-authored text; publish_artifact takes a path, not the page).
 _DEFAULT_MAX_BODY = 16 * 1024 * 1024
 
+# Audit fields copied from a request are capped like `error`/`claimed_user`:
+# a header can be ~16 KB, and an uncapped row let one keyless request append
+# that much to the trail.
+_AUDIT_FIELD_CAP = 200
+
+
 def _max_body_bytes() -> int:
     raw = os.environ.get("OPENBEAST_TOOLS_MAX_BODY_BYTES", "").strip()
     try:
@@ -225,6 +234,48 @@ def _max_body_bytes() -> int:
     except ValueError:
         n = _DEFAULT_MAX_BODY
     return n if n > 0 else _DEFAULT_MAX_BODY
+
+
+def _audit_key(audit_path: str) -> bytes:
+    """The per-install key the argument digest is an HMAC under.
+
+    A plain sha256 of the canonical argument JSON was confirmable offline:
+    the tool signatures fix every field but the query/URL/command, so a
+    reader of the trail could test guesses (and args_bytes gave the exact
+    length). The key lives BESIDE the trail (tool-audit.key, 0600), never in
+    it, so a copy of the log that leaves the rig — a backup, a log shipper —
+    no longer confirms guesses. It hides nothing from the account that owns
+    both files; nothing on the box could.
+    """
+    path = os.path.join(os.path.dirname(audit_path) or ".", "tool-audit.key")
+    try:
+        os.makedirs(os.path.dirname(path) or ".", mode=0o700, exist_ok=True)
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            with open(path, "rb") as f:
+                key = f.read().strip()
+            if len(key) >= 32:
+                return key
+            raise OSError("audit key too short")
+        key = secrets.token_hex(32).encode()
+        with os.fdopen(fd, "wb") as f:
+            f.write(key)
+        return key
+    except OSError:
+        # Unwritable run dir: digests still correlate within this process,
+        # and still confirm nothing offline.
+        return secrets.token_hex(32).encode()
+
+
+def _size_bound(n: int) -> int:
+    """The smallest power of two >= n: the size class of a call, not the
+    exact length of the one unknown field in it."""
+    return 1 << max(0, (n - 1).bit_length())
+
+
+def _cap(value):
+    return None if value is None else str(value)[:_AUDIT_FIELD_CAP]
 
 
 def _key_matches(token: str, key: str) -> bool:
@@ -264,6 +315,7 @@ def create_app() -> FastAPI:
         os.chmod(audit_path, 0o600)
     except OSError:
         pass
+    audit_key = _audit_key(audit_path)
     max_body = _max_body_bytes()
     # Signed identity (enterprise): when this secret is set — the SAME value
     # given to Open WebUI as FORWARD_USER_INFO_HEADER_JWT_SECRET — WebUI
@@ -329,6 +381,10 @@ def create_app() -> FastAPI:
         /bash" into the trail by typing her id. Now the row carries only what
         identity_from would VERIFY (nothing, if the token is absent or bad);
         a typed id in JWT mode is kept, clearly marked, as claimed_user.
+        Header mode follows the same rule when the KEY check failed (401 /
+        403): a caller with no valid key has proved nothing, so the id it
+        typed is a claim, not the caller. With a valid key (a guest's 404)
+        the header id is as trusted as on any header-mode row.
         """
         try:
             user, role, chat, _email = identity_from(request)
@@ -336,6 +392,8 @@ def create_app() -> FastAPI:
             user, role, chat = None, None, \
                 (request.headers.get(_HDR_CHAT, "").strip() or None)
         claimed = None
+        if keyed and not jwt_secret and status in (401, 403):
+            return None, None, chat, user
         if jwt_secret:
             typed = request.headers.get(_HDR_USER, "").strip()
             if typed and typed != user:
@@ -435,20 +493,23 @@ def create_app() -> FastAPI:
               ms: int, args: dict, err: str = "", owner: str = "",
               claimed_user=None) -> None:
         """Append-only call log. Argument CONTENTS never leave the request —
-        only a digest and size, so the audit trail can't leak chats."""
+        only a KEYED digest (HMAC under the install's tool-audit.key, see
+        _audit_key) and a power-of-two size bound, so a copy of the trail
+        can neither leak a chat nor confirm a guessed query offline."""
         try:
             blob = json.dumps(args, sort_keys=True, default=str).encode()
             entry = {
                 "ts": datetime.now().isoformat(timespec="seconds"),
-                "user": user,
-                "role": role,
-                "chat": chat,
+                "user": _cap(user),
+                "role": _cap(role),
+                "chat": _cap(chat),
                 "profile": profile,
                 "tool": tool,
                 "ok": ok,
                 "ms": ms,
-                "args_sha256": hashlib.sha256(blob).hexdigest()[:16],
-                "args_bytes": len(blob),
+                "args_hmac": hmac.new(audit_key, blob,
+                                      hashlib.sha256).hexdigest()[:16],
+                "args_bytes_max": _size_bound(len(blob)),
                 "identity": "jwt" if jwt_secret else "header",
             }
             if err:

@@ -187,7 +187,7 @@ def test_audit_log_written_without_raw_args(workspace):
     assert secret not in tail
     entry = json.loads(tail.strip().splitlines()[-1])
     assert entry["tool"] == "write_file" and entry["user"] == "alice"
-    assert entry["ok"] is True and "args_sha256" in entry
+    assert entry["ok"] is True and "args_hmac" in entry
 
 
 # --- perfection-pass regressions (2026-07-09 adversarial review) --------------
@@ -482,10 +482,59 @@ def test_workdir_escape_is_audited(workspace, monkeypatch):
     assert 'tool="start_agent"' in c.get("/metrics").text
 
 
+def test_audit_identity_fields_are_capped(workspace, monkeypatch):
+    """user/role/chat were written untruncated: one keyless request with a
+    15 KB header appended a 15 KB row."""
+    c = _keyed(monkeypatch)
+    huge = "v" * 15000
+    c.post("/bash", json={"command": "true"},
+           headers={**ADMIN, "X-OpenWebUI-User-Id": huge,
+                    "X-OpenWebUI-User-Role": huge, "X-OpenWebUI-Chat-Id": huge})
+    c.post("/bash", json={"command": "true"},
+           headers={"X-OpenWebUI-User-Id": huge, "X-OpenWebUI-User-Role": huge,
+                    "X-OpenWebUI-Chat-Id": huge})
+    for raw in open(os.environ["OPENBEAST_TOOL_AUDIT_PATH"]).read().splitlines()[-2:]:
+        assert len(raw) < 2000, len(raw)
 
 
+def test_header_mode_keyless_denial_marks_typed_id_as_claimed(workspace,
+                                                              monkeypatch):
+    """A caller that failed the KEY check proved nothing, so the id it typed
+    is kept only as claimed_user — the rule JWT mode already follows. (A
+    VALID key with a header id stays `user`: see the negative control
+    test_header_mode_denial_row_keeps_header_identity.)"""
+    c = _keyed(monkeypatch)
+    for hdrs in ({}, {"Authorization": "Bearer nope"}):
+        c.post("/bash", json={"command": "true"},
+               headers={**hdrs, "X-OpenWebUI-User-Id": "alice-victim",
+                        "X-OpenWebUI-User-Role": "admin"})
+        row = _rows(os.environ["OPENBEAST_TOOL_AUDIT_PATH"])[-1]
+        assert row["user"] is None and row["role"] is None
+        assert row["claimed_user"] == "alice-victim"
 
 
+def test_audit_digest_is_keyed_and_size_is_bucketed(workspace):
+    """An unsalted sha256 of canonical JSON let anyone holding the log
+    confirm a guessed web_search query offline, with args_bytes giving its
+    exact length. The digest is now an HMAC under a per-install key kept
+    beside (never in) the trail, and the size is a power-of-two bound."""
+    import hashlib
+    c = client()
+    args = {"path": "s.md", "content": "guessable"}
+    c.post("/write_file", json=args)
+    row = _rows(os.environ["OPENBEAST_TOOL_AUDIT_PATH"])[-1]
+    blob = json.dumps(args, sort_keys=True).encode()
+    assert "args_sha256" not in row and "args_bytes" not in row
+    assert row["args_hmac"] != hashlib.sha256(blob).hexdigest()[:16]
+    assert row["args_bytes_max"] >= len(blob)
+    assert row["args_bytes_max"] & (row["args_bytes_max"] - 1) == 0
+    key = os.path.join(os.path.dirname(os.environ["OPENBEAST_TOOL_AUDIT_PATH"]),
+                       "tool-audit.key")
+    assert (os.stat(key).st_mode & 0o777) == 0o600
+    # Stable across restarts (same install key), so identical calls correlate.
+    client().post("/write_file", json=args)
+    assert _rows(os.environ["OPENBEAST_TOOL_AUDIT_PATH"])[-1]["args_hmac"] \
+        == row["args_hmac"]
 
 
 
