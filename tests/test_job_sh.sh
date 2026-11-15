@@ -507,6 +507,67 @@ else
   fail "show mangled a string command: $("$CLI" show strcmd | grep command:)"
 fi
 
+# --- 7e. review 2026-11 (beast-chat): stop and process-group LEADERSHIP ---
+echo ""
+echo "stop (a session that does not lead its group):"
+# An agent exec'd by a non-interactive campaign script registers with no
+# pgid, so the ledger records the SCRIPT's group. `stop` used to send TERM
+# (then KILL) to that whole group: campaign + every sibling stage gone.
+# The host leads its own group via setsid so the test shell is never in it.
+setsid bash -c 'sleep 300 & sleep 300 & wait' </dev/null >/dev/null 2>&1 &
+HOST_PID=$!
+sleep 0.5
+MEMBERS="$(ps -eo pid= -o pgid= | awk -v g="$HOST_PID" '$2==g && $1!=g {print $1}')"
+VICTIM_PID="$(printf '%s\n' "$MEMBERS" | sed -n 1p)"
+SIBLING_PID="$(printf '%s\n' "$MEMBERS" | sed -n 2p)"
+NL_ID="nonleader-$$"
+OPENBEAST_SESSIONS_DIR="$LEDGER" python3 - "$SANDBOX/agents" "$NL_ID" "$VICTIM_PID" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import sessions
+# no pgid, exactly like runner.py: register() fills in os.getpgid(pid)
+assert sessions.register(sys.argv[2], kind="agent", title="nl", pid=int(sys.argv[3]))
+PY
+NL_OUT="$("$CLI" stop "$NL_ID" --timeout 3 2>&1)"
+sleep 0.5
+if kill -0 "$HOST_PID" 2>/dev/null && kill -0 "$SIBLING_PID" 2>/dev/null; then
+  pass "stop left the host script and its sibling stage alone"
+else
+  fail "stop killed the session's host group: $NL_OUT"
+fi
+if ! kill -0 "$VICTIM_PID" 2>/dev/null && echo "$NL_OUT" | grep -q "does not lead"; then
+  pass "and signalled the session's own pid only, saying why"
+else
+  fail "the session itself was not stopped by pid: $NL_OUT"
+fi
+kill -KILL -- "-$HOST_PID" 2>/dev/null || true
+wait "$HOST_PID" 2>/dev/null || true
+
+echo ""
+echo "stop (a TERM-ignoring worker under a TERM-dying wrapper):"
+# The supervisor used to finalize 'stopped' the moment its DIRECT child
+# exited, which also ended every SIGKILL escalation; a grandchild that
+# ignores TERM kept running (and holding the GPU) behind a 'stopped' record.
+OPENBEAST_JOB_STOP_GRACE_S=2 "$CLI" run --title "worker job" -- \
+  bash -c 'bash -c "trap \"\" TERM; exec sleep 300" & wait' >/dev/null 2>&1
+WK_ID="$(_latest)"
+sleep 1
+WK_PG="$(_q "$WK_ID" 'rec["pgid"]')"
+WK_OUT="$("$CLI" stop "$WK_ID" --timeout 15 2>&1)"
+WK_STATE="$(_q "$WK_ID" 'rec["state"]')"
+sleep 0.5
+WK_AFTER="$(ps -eo pgid= -o pid= | awk -v g="$WK_PG" '$1==g' | wc -l | tr -d ' ')"
+if [[ "$WK_AFTER" -eq 0 ]]; then
+  pass "no member of the job's group outlives a 'stopped' verdict"
+else
+  fail "$WK_AFTER process(es) of group $WK_PG still alive after: $WK_OUT"
+fi
+if [[ "$WK_STATE" == "stopped" ]] && ! echo "$WK_OUT" | grep -q "escalating"; then
+  pass "the supervisor drained its group itself and recorded 'stopped'"
+else
+  fail "state '$WK_STATE' / output: $WK_OUT"
+fi
+
 # --- 8. list / show ---
 echo ""
 echo "list / show:"
