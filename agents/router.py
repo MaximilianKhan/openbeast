@@ -438,13 +438,23 @@ def _identity_headers(headers, jwt_secret=None):
 
 
 def _last_user_text(messages):
-    for m in reversed(messages or []):
-        if m.get("role") == "user":
-            c = m.get("content")
-            if isinstance(c, str):
-                return c
-            if isinstance(c, list):  # OpenAI content-parts form
-                return " ".join(p.get("text", "") for p in c if isinstance(p, dict))
+    """The newest user message's text; "" for any shape it cannot read.
+
+    Runs before the gate on every chat request, so a malformed body (a
+    string for `messages`, a non-dict message, a non-str text part) must
+    come out as "" and fall through to upstream's 400, never a 500 here."""
+    if not isinstance(messages, list):
+        return ""
+    for m in reversed(messages):
+        if not isinstance(m, dict) or m.get("role") != "user":
+            continue
+        c = m.get("content")
+        if isinstance(c, str):
+            return c
+        if isinstance(c, list):  # OpenAI content-parts form
+            return " ".join(p["text"] for p in c
+                            if isinstance(p, dict) and isinstance(p.get("text"), str))
+        return ""
     return ""
 
 
