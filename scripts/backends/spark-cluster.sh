@@ -7,7 +7,7 @@
 #   scripts/backends/spark-cluster.sh sync-image IMAGE           docker save | load to every worker that lacks it
 #   scripts/backends/spark-cluster.sh save-image IMAGE FILE      write IMAGE to FILE (carry it to an offline cluster)
 #   scripts/backends/spark-cluster.sh start --profile NAME [--engine tensorfold|vllm]
-#   scripts/backends/spark-cluster.sh stop  --profile NAME [--engine tensorfold|vllm]
+#   scripts/backends/spark-cluster.sh stop  [--engine tensorfold|vllm]   every rank, rank 0 first; no profile needed (default: both engines)
 #   scripts/backends/spark-cluster.sh status
 #   ... --cluster FILE (default scripts/backends/cluster.env)  --dry-run (print, run nothing)
 #
@@ -26,12 +26,12 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 source "$HERE/lib.sh"
 
 CMD="${1:-}"; [[ $# -gt 0 ]] && shift
-CLUSTER_FILE="" PROFILE="" ENGINE=tensorfold DRY=0 ARGS=()
+CLUSTER_FILE="" PROFILE="" ENGINE=tensorfold ENGINE_SET=0 DRY=0 ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --cluster) CLUSTER_FILE="${2:?}"; shift 2 ;;
     --profile) PROFILE="${2:?}"; shift 2 ;;
-    --engine)  ENGINE="${2:?}"; shift 2 ;;
+    --engine)  ENGINE="${2:?}"; ENGINE_SET=1; shift 2 ;;
     --dry-run) DRY=1; shift ;;
     -h|--help) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) ARGS+=("$1"); shift ;;
@@ -186,24 +186,59 @@ sync-image|save-image)
   done
   ;;
 
-start|stop)
+start)
   need_profile
   LAUNCH="scripts/backends/$ENGINE/spark-node.sh --profile $(q "$PF_PROFILE_NAME")"
-  if [[ "$CMD" == start ]]; then
-    # Workers first (TensorFold's container engine needs them waiting; vLLM
-    # and native GLM ranks wait for each other either way), then rank 0.
-    order=(); for ((r = N - 1; r >= 0; r--)); do order+=("$r"); done
-  else
-    order=(); for ((r = 0; r < N; r++)); do order+=("$r"); done
-  fi
-  for r in "${order[@]}"; do
-    flag=""; [[ "$CMD" == stop ]] && flag=" --stop"
-    echo "== rank $r (${NODES[$r]}): $CMD"
-    on_node "$r" "cd $REPO_Q && $LAUNCH --rank $r$flag"
+  # Workers first (TensorFold's container engine needs them waiting; vLLM
+  # and native GLM ranks wait for each other either way), then rank 0. A
+  # rank that fails stops the ranks already started: they would otherwise sit
+  # at the rendezvous holding memory, waiting for ranks that never come.
+  started=()
+  for ((r = N - 1; r >= 0; r--)); do
+    echo "== rank $r (${NODES[$r]}): start"
+    if on_node "$r" "cd $REPO_Q && $LAUNCH --rank $r"; then
+      started+=("$r"); continue
+    fi
+    echo "== rank $r (${NODES[$r]}) failed to start (above)" >&2
+    left=()
+    if [[ ${#started[@]} -gt 0 ]]; then
+      echo "== rolling back rank(s) ${started[*]}, started by this run" >&2
+      for s in "${started[@]}"; do
+        on_node "$s" "cd $REPO_Q && scripts/backends/$ENGINE/spark-node.sh --rank $s --stop" || left+=("$s")
+      done
+    fi
+    if [[ ${#left[@]} -gt 0 ]]; then
+      echo "== STILL RUNNING: rank(s) ${left[*]} — stop them: $0 stop --cluster $CLUSTER_FILE --engine $ENGINE" >&2
+    else
+      echo "== nothing this run started is left running" >&2
+    fi
+    exit 1
   done
-  if [[ "$CMD" == start ]]; then
-    echo "== started $N rank(s); rank 0 serves once every rank has loaded. Logs: each node's journalctl --user / docker logs"
+  echo "== started $N rank(s); rank 0 serves once every rank has loaded. Logs: each node's journalctl --user / docker logs"
+  echo "   (a rank that dies after launching shows only in its own log: $0 status)"
+  ;;
+
+stop)
+  # Every rank, rank 0 first, whatever happens to the others: a rank that is
+  # already down (the usual reason to stop) must not keep the rest running.
+  # No profile needed. Without --engine, both engines' ranks are stopped.
+  if [[ $ENGINE_SET -eq 1 ]]; then
+    engines=("$ENGINE")
+  else
+    engines=(tensorfold vllm)
   fi
+  failed=()
+  for ((r = 0; r < N; r++)); do
+    echo "== rank $r (${NODES[$r]}): stop"
+    c="cd $REPO_Q && rc=0"
+    for e in "${engines[@]}"; do c+=" && { scripts/backends/$e/spark-node.sh --rank $r --stop || rc=1; }"; done
+    on_node "$r" "$c; exit \$rc" || failed+=("$r")
+  done
+  if [[ ${#failed[@]} -gt 0 ]]; then
+    echo "== could not stop rank(s): ${failed[*]} (above) — the other ranks were stopped" >&2
+    exit 1
+  fi
+  echo "== every rank is stopped"
   ;;
 
 status)

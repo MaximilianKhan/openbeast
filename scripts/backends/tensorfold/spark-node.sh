@@ -26,7 +26,8 @@
 #                   required for TP > 1
 #   --env FILE      HOST settings (default: scripts/backends/spark.env)
 #   --print         print the exact command and exit; runs nothing
-#   --stop          stop this rank (systemctl --user stop / docker stop)
+#   --stop          stop this rank: its native unit and/or container (one that
+#                   is already gone is "not running", exit 0)
 #
 # The checkpoint MUST be fetched first (model-fetch.sh --profile NAME, on every
 # Spark that runs a rank): TensorFold's own download takes the latest commit of a
@@ -69,7 +70,7 @@ while [[ $# -gt 0 ]]; do
     --print)   PRINT=1; shift ;;
     --stop)    STOP=1; shift ;;
     --ckpt)    echo "Error: --ckpt is gone — the checkpoint comes from a profile: --profile NAME (scripts/backends/models/)" >&2; exit 2 ;;
-    -h|--help) sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,47p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)         echo "Unknown argument: $1 (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -78,6 +79,21 @@ if ! sp_rank_syntax "$RANK"; then
   exit 2
 fi
 NAME="openbeast-tensorfold-rank$RANK"
+if [[ $STOP -eq 1 ]]; then
+  # Idempotent, and engine-blind: stops this rank's native unit and/or its
+  # container, whichever exists. A rank already gone (a --collect unit, a --rm
+  # container) is "not running", exit 0, so a cluster stop can walk every rank.
+  _found=0
+  if command -v systemctl >/dev/null 2>&1 \
+     && systemctl --user list-units --all --plain --no-legend "$NAME.service" 2>/dev/null | grep -q .; then
+    _found=1; systemctl --user stop "$NAME"; echo "Stopped unit $NAME."
+  fi
+  if command -v docker >/dev/null 2>&1 && docker container inspect "$NAME" >/dev/null 2>&1; then
+    _found=1; docker stop "$NAME" >/dev/null; echo "Stopped container $NAME."
+  fi
+  [[ $_found -eq 1 ]] || echo "$NAME is not running (nothing to stop)."
+  exit 0
+fi
 
 ENV_FILE="${ENV_FILE:-${SPARK_ENV:-$HERE/../spark.env}}"
 if [[ ! -f "$ENV_FILE" ]]; then
@@ -92,10 +108,6 @@ case "$ENGINE" in
   native|container) ;;
   *) echo "Error: TENSORFOLD_ENGINE='$ENGINE' — native or container" >&2; exit 2 ;;
 esac
-if [[ $STOP -eq 1 ]]; then
-  [[ "$ENGINE" == native ]] && exec systemctl --user stop "$NAME"
-  exec docker stop "$NAME"
-fi
 sp_warn_legacy_model_keys "$ENV_FILE"
 PROFILE="${PROFILE:-${SPARK_PROFILE:-}}"
 if [[ -z "$PROFILE" ]]; then

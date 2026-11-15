@@ -116,6 +116,60 @@ _run start --cluster "$T/cluster.env" --profile glm53-flash-ablit-exl3-tensorfol
 _run start --cluster "$T/cluster.env" --dry-run
 [[ $RC -ne 0 ]] && _has "$OUT" "--profile NAME is required" && pass "start needs a profile" || fail "start without profile (rc=$RC): $OUT"
 
+# Real (not --dry-run) start/stop against stub launchers: a checkout whose
+# spark-node.sh records "<node> <engine> <args>" and fails where told
+# (SC_LAUNCH_FAIL="<node>:<start|stop> ...", node = local for rank 0).
+mkdir -p "$T/srepo/scripts/backends/tensorfold" "$T/srepo/scripts/backends/vllm"
+for _e in tensorfold vllm; do
+  cat > "$T/srepo/scripts/backends/$_e/spark-node.sh" <<S
+#!/bin/bash
+n="\${NODE:-local}"; what=start; [[ " \$* " == *" --stop "* ]] && what=stop
+echo "\$n $_e \$*" >> "\$SC_LAUNCH_LOG"
+[[ " \${SC_LAUNCH_FAIL:-} " == *" \$n:\$what "* ]] && { echo "stub: \$n refuses to \$what" >&2; exit 1; }
+exit 0
+S
+  chmod +x "$T/srepo/scripts/backends/$_e/spark-node.sh"
+done
+git -C "$T" init -q srepo && git -C "$T/srepo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+export SC_LAUNCH_LOG="$T/launch.log"
+printf 'CLUSTER_NODES="local n1 n2 n3"\nCLUSTER_NAME=test\nCLUSTER_REPO=%s\n' "$T/srepo" > "$T/cluster4.env"
+_REV=0123456789abcdef0123456789abcdef01234567
+printf 'BACKEND=tensorfold\nSOURCE=acme/Some-Model-MLX\nREVISION=%s\nSERVED_MODEL_NAME=m\nTENSOR_PARALLEL_SIZE=4\n' "$_REV" > "$T/tf4.env"
+
+# stop with rank 0 already gone: every other rank is still stopped, and the
+# run names the rank that failed (exit 1).
+: > "$SC_LAUNCH_LOG"
+SC_LAUNCH_FAIL="local:stop" _run stop --cluster "$T/cluster4.env" --engine tensorfold
+if [[ $RC -ne 0 ]] && [[ "$(grep -c -- '--stop' "$SC_LAUNCH_LOG")" == 4 ]] && grep -q "^n3 tensorfold --rank 3 --stop" "$SC_LAUNCH_LOG" \
+   && _has "$OUT" "could not stop rank(s): 0"; then
+  pass "stop: a rank that fails to stop does not stop the others; the failed rank is named"
+else
+  fail "stop with dead rank 0 (rc=$RC): $OUT / $(cat "$SC_LAUNCH_LOG")"
+fi
+# stop needs no profile and, without --engine, stops both engines' ranks.
+: > "$SC_LAUNCH_LOG"; _run stop --cluster "$T/cluster4.env"
+if [[ $RC -eq 0 ]] && grep -q "^n2 tensorfold --rank 2 --stop" "$SC_LAUNCH_LOG" && grep -q "^n2 vllm --rank 2 --stop" "$SC_LAUNCH_LOG"; then
+  pass "stop: no --profile needed; without --engine both engines' ranks are stopped"
+else
+  fail "stop without profile/engine (rc=$RC): $OUT / $(cat "$SC_LAUNCH_LOG")"
+fi
+# start: rank 2 refuses after rank 3 is up -> rank 3 is stopped again, ranks
+# 1 and 0 never start, exit 1.
+: > "$SC_LAUNCH_LOG"
+SC_LAUNCH_FAIL="n2:start" _run start --cluster "$T/cluster4.env" --profile "$T/tf4.env"
+if [[ $RC -ne 0 ]] && grep -q "^n3 tensorfold --profile tf4 --rank 3$" "$SC_LAUNCH_LOG" \
+   && grep -q "^n3 tensorfold --rank 3 --stop" "$SC_LAUNCH_LOG" \
+   && ! grep -q "^n1 " "$SC_LAUNCH_LOG" && ! grep -q "^local " "$SC_LAUNCH_LOG" \
+   && _has "$OUT" "rank 2 (n2) failed to start" && _has "$OUT" "rolling back rank(s) 3"; then
+  pass "start: a rank that fails rolls back the ranks already started (no half-up cluster)"
+else
+  fail "start rollback (rc=$RC): $OUT / $(cat "$SC_LAUNCH_LOG")"
+fi
+: > "$SC_LAUNCH_LOG"
+_run start --cluster "$T/cluster4.env" --profile "$T/tf4.env"
+[[ $RC -eq 0 ]] && [[ "$(cut -d' ' -f1 "$SC_LAUNCH_LOG" | paste -sd, -)" == "n3,n2,n1,local" ]] && ! grep -q -- --stop "$SC_LAUNCH_LOG" \
+  && pass "start: a clean start launches ranks 3,2,1 then 0 and stops nothing" || fail "clean start (rc=$RC): $OUT / $(cat "$SC_LAUNCH_LOG")"
+
 # sync-image: a worker that already has the same image id is left alone; one
 # that lacks it gets docker save | ssh docker load.
 _cluster "local n1"

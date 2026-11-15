@@ -546,13 +546,34 @@ echo ""
 echo "Spark launch scaffolds with model profiles (docker stubbed):"
 _K="$_T/spark"; mkdir -p "$_K/bin" "$_K/home" "$_K/profiles" "$_K/models"
 # docker records argv AND whether VLLM_API_KEY reached its ENVIRONMENT.
+# A container "exists" for `container inspect` only while $_K/running/NAME does;
+# `image inspect` answers $_K/images/<ref> (its image id) or fails.
+mkdir -p "$_K/running" "$_K/images"
 cat > "$_K/bin/docker" <<EOF
 #!/bin/bash
 echo "ARGV \$*" >> "$_K/docker.log"
 echo "ENVKEY \${VLLM_API_KEY:-<unset>}" >> "$_K/docker.log"
+case "\$1 \${2:-}" in
+  "container inspect") [[ -e "$_K/running/\${@: -1}" ]]; exit ;;
+  "image inspect") f="$_K/images/\$(printf '%s' "\${@: -1}" | tr '/:@' '___')"; [[ -f "\$f" ]] && cat "\$f"; [[ -f "\$f" ]]; exit ;;
+esac
 exit 0
 EOF
 chmod +x "$_K/bin/docker"
+# systemctl --user: a unit is loaded only while $_K/units/NAME exists.
+mkdir -p "$_K/units"
+cat > "$_K/bin/systemctl" <<EOF
+#!/bin/bash
+echo "SYSTEMCTL \$*" >> "$_K/docker.log"
+u="\${@: -1}"; u="\${u%.service}"
+case " \$* " in
+  *" list-units "*) [[ -e "$_K/units/\$u" ]] && echo "\$u.service loaded active running x"; exit 0 ;;
+  *" stop "*) [[ -e "$_K/units/\$u" ]] || { echo "Unit \$u.service not loaded." >&2; exit 5; }; rm -f "$_K/units/\$u"; exit 0 ;;
+  *" is-active "*) [[ -e "$_K/units/\$u" ]]; exit ;;
+esac
+exit 0
+EOF
+chmod +x "$_K/bin/systemctl"
 (umask 077; printf 'sk-test-SECRET-4242\n' > "$_K/key")
 sed -e "s|^SPARK_SERVE_HOST=.*|SPARK_SERVE_HOST=100.64.1.2|" \
     -e "s|^VLLM_API_KEY_FILE=.*|VLLM_API_KEY_FILE=$_K/key|" \
@@ -967,6 +988,31 @@ _sp "$_TN" -- --profile "$_P/tftest.env" --rank 1 --master 192.168.100.10 --env 
 [[ $SPRC -eq 0 ]] && ! _has "$_O" "NCCL_CROSS_NIC" && pass "native TP 2: no NCCL_CROSS_NIC" || fail "native N=2 cross-nic (rc=$SPRC): $_O"
 _sp "$_TN" -- --profile "$_P/tftest.env" --rank 1 --master 192.168.100.10 --env "$_K/spark.env" --print
 [[ $SPRC -eq 0 ]] && ! _has "$_O" "NCCL_CROSS_NIC" && pass "container TP 2: no NCCL_CROSS_NIC" || fail "container N=2 cross-nic (rc=$SPRC): $_O"
+
+# --stop is idempotent: a rank that is already gone (a --rm container that
+# exited, a --collect unit) is "not running", exit 0 — so spark-cluster.sh stop
+# can walk every rank. TensorFold's --stop covers both its engines.
+: > "$_K/docker.log"
+_sp "$_VN" -- --rank 3 --stop
+[[ $SPRC -eq 0 ]] && _has "$_O" "openbeast-vllm-rank3 is not running" && ! grep -q "^ARGV stop" "$_K/docker.log" \
+  && pass "vllm --stop of a rank that is already gone: 'not running', exit 0" || fail "vllm --stop absent (rc=$SPRC): $_O"
+touch "$_K/running/openbeast-vllm-rank3"
+_sp "$_VN" -- --rank 3 --stop
+[[ $SPRC -eq 0 ]] && grep -q "^ARGV stop openbeast-vllm-rank3" "$_K/docker.log" \
+  && pass "vllm --stop of a running rank: docker stop" || fail "vllm --stop running (rc=$SPRC): $_O / $(cat "$_K/docker.log")"
+rm -f "$_K/running/openbeast-vllm-rank3"; : > "$_K/docker.log"
+_sp "$_TN" -- --rank 2 --stop --env "$_K/spark-native.env"
+[[ $SPRC -eq 0 ]] && _has "$_O" "openbeast-tensorfold-rank2 is not running" && ! grep -qE "^(ARGV stop|SYSTEMCTL --user stop)" "$_K/docker.log" \
+  && pass "tensorfold --stop of a rank that is already gone: 'not running', exit 0" || fail "tensorfold --stop absent (rc=$SPRC): $_O / $(cat "$_K/docker.log")"
+touch "$_K/units/openbeast-tensorfold-rank2" "$_K/running/openbeast-tensorfold-rank2"
+_sp "$_TN" -- --rank 2 --stop --env "$_K/spark-native.env"
+if [[ $SPRC -eq 0 ]] && grep -q "^SYSTEMCTL --user stop openbeast-tensorfold-rank2" "$_K/docker.log" \
+   && grep -q "^ARGV stop openbeast-tensorfold-rank2" "$_K/docker.log"; then
+  pass "tensorfold --stop stops the native unit AND a container of that rank, whatever TENSORFOLD_ENGINE says"
+else
+  fail "tensorfold --stop both (rc=$SPRC): $_O / $(cat "$_K/docker.log")"
+fi
+rm -f "$_K/running/openbeast-tensorfold-rank2" "$_K/units/openbeast-tensorfold-rank2"
 
 # Injection: a profile value is data — it reaches argv as ONE element, never a shell.
 cat > "$_P/vinject.env" <<EOF

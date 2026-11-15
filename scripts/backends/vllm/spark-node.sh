@@ -17,7 +17,7 @@
 #   --env FILE      HOST settings (default: scripts/backends/spark.env;
 #                   template: spark.env.example next to it)
 #   --print         print the exact docker command and exit; runs nothing
-#   --stop          docker stop this rank's container
+#   --stop          docker stop this rank's container (already gone: exit 0)
 #
 # The model comes ONLY from the profile. If model-fetch.sh has fetched and
 # verified it into MODELS_DIR, that directory is mounted read-only and
@@ -58,7 +58,15 @@ if ! sp_rank_syntax "$RANK"; then
 fi
 NAME="openbeast-vllm-rank$RANK"
 if [[ $STOP -eq 1 ]]; then
-  exec docker stop "$NAME"
+  # Idempotent: a rank already gone (--rm) is not an error, so a cluster stop
+  # can walk every rank.
+  if ! docker container inspect "$NAME" >/dev/null 2>&1; then
+    echo "$NAME is not running (nothing to stop)."
+    exit 0
+  fi
+  docker stop "$NAME" >/dev/null
+  echo "Stopped $NAME."
+  exit 0
 fi
 
 ENV_FILE="${ENV_FILE:-${SPARK_ENV:-$HERE/../spark.env}}"
