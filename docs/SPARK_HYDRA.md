@@ -175,9 +175,12 @@ command center up — unified memory freezes rather than OOMs).
 
 ## Scaling: 1 to 8 Sparks
 
-Everything here works for a cluster of **1 to 8** DGX Sparks, one GPU each,
-one tensor-parallel rank per Spark (so a profile's `TENSOR_PARALLEL_SIZE` is
-the node count). Our own pair is the N = 2 case.
+The scripts handle a cluster of **1 to 8** DGX Sparks, one GPU each, one
+tensor-parallel rank per Spark (so a profile's `TENSOR_PARALLEL_SIZE` is the
+node count). **Only N = 1 and N = 2 have run on hardware** (our pair is the
+N = 2 case); N >= 3 is built and tested against stubs but VERIFY ON HARDWARE.
+For a 3-Spark GLM today, the recipe's own `start-tp3.sh` (experimental) is
+the measured path.
 
 **Cabling and addressing**
 
@@ -185,46 +188,47 @@ the node count). Our own pair is the N = 2 case.
 |---|---|---|
 | 1 | none | `TENSOR_PARALLEL_SIZE=1`, rank 0 only |
 | 2 | one QSFP cable | both PCIe "rails" of the port are used when both twins are addressed (NVIDIA Sync does it) |
-| 3 | a cabled ring: each Spark's port 0 to the next Spark's port 1, a subnet per cable; or a switch | a *mirrored* ring leaves one pair with no common subnet; `spark-cluster.sh check` names it |
+| 3 | a switch, or one fabric subnet every Spark is on | a cabled ring with a subnet per cable cannot rendezvous through `spark-node.sh` (every rank meets at one `SPARK_HEAD_IP`); `spark-cluster.sh check` flags it. The GLM recipe's `start-tp3.sh` handles a ring (LAN rendezvous + `NCCL_IB_SUBNET_AWARE_ROUTING=1`) |
 | 4-8 | a RoCE-capable 200 GbE switch, every node on the fabric subnet(s) | each Spark has two QSFP ports, so no cabled topology reaches past 3 |
 
 **Bring-up, per node:** `sudo scripts/backends/spark-root-setup.sh spark-N --guard`
 (its ufw rules admit each ConnectX link's own private subnet — inert while
 ufw is disabled, as it is on DGX OS — and `--guard` runs `spark-guard.sh`,
 which keeps the rendezvous ports on the fabric for a cable, a ring and a
-switch alike; see "Firewall: spark-guard"), the repo at the same path (and
-commit) on every node, and
-each node's own `scripts/backends/spark.env` (`SPARK_IFACE` / `SPARK_IB_HCA`
-may list several rails, comma-separated; `SPARK_HEAD_IP` = rank 0's fabric
-address).
+switch alike; see "Firewall: spark-guard"), the repo at the **same commit** on every node (`check` compares HEADs;
+`CLUSTER_REPO=~/…` expands on each node), and each node's own
+`scripts/backends/spark.env` (`SPARK_IFACE` / `SPARK_IB_HCA` may list several
+rails, comma-separated; every node sets the **same** `SPARK_HEAD_IP`, rank 0's
+fabric address — `check` enforces it).
 
 **From the head**, list the nodes in rank order in
 `scripts/backends/cluster.env` (from `cluster.env.example`), then:
 
 ```bash
-scripts/backends/spark-cluster.sh check                          # every node + the fabric pairing
-scripts/backends/spark-cluster.sh sync-weights --profile NAME    # rsync over the fabric, verify vs the lock
-scripts/backends/spark-cluster.sh sync-image IMAGE               # docker save | load where it differs
+scripts/backends/spark-cluster.sh check                          # every node, same commit, fabric pairing + SPARK_HEAD_IP reach
+scripts/backends/spark-cluster.sh sync-weights --profile NAME    # model + drafter over the fabric, verified vs the HEAD's lock
+scripts/backends/spark-cluster.sh sync-image IMAGE               # docker save | load where it differs; prints the *_IMAGE_ID pin
 scripts/backends/spark-cluster.sh start --profile NAME [--engine tensorfold|vllm]
 scripts/backends/spark-cluster.sh status
-scripts/backends/spark-cluster.sh stop  --profile NAME
+scripts/backends/spark-cluster.sh stop [--engine tensorfold|vllm]   # every rank, no profile needed; both engines by default
 ```
 
 `start` launches ranks N-1..1 and then 0, each with its own
-`spark-node.sh --rank R`; `stop` goes 0 first. `--dry-run` prints every
-command. `sync-weights` copies over the fabric and then runs `model-fetch.sh
---verify` on each worker, which needs the profile's `.lock` in the worker's
-checkout: with none it now fails (exit 3) instead of recording one.
+`spark-node.sh --rank R`, and stops the ranks it started if a later rank
+fails; `stop` goes 0 first and walks every rank even if one is already down.
+`--dry-run` prints every command. `sync-weights` refuses unless the head's
+lock pins every artifact, checks each worker's profile and lock hash-match the
+head's (sending the head's lock to a worker that has none), copies, verifies,
+and confirms the worker's own launcher will find the copy.
 
 **Offline caveats (2026-11-15, open):**
-- `sync-image` / `save-image IMAGE FILE` move an image with `docker save |
-  docker load`, but `spark-node.sh` runs `IMAGE@sha256:<digest>`, and a
-  loaded image has no RepoDigest on the Sparks' overlay2 store — so a worker
-  with no registry route cannot resolve the ref (online, docker re-pulls it).
-  Until the launchers run a loaded image by its ID (`lib.sh` `sp_image`, as
-  `scripts/bundle.sh` already does), the vLLM engine and the container
-  TensorFold engine are **not** offline-capable this way. The GLM recipe is
-  unaffected: it checks its image by tag (see "Offline staging").
+- `docker save | docker load` keeps an image's ID but drops its RepoDigest,
+  so a digest pin (`*_IMAGE_DIGEST`) would make an offline worker try a
+  registry pull. **Pin by ID instead** — `VLLM_IMAGE_ID` / `TENSORFOLD_IMAGE_ID`
+  in `spark.env` win over a digest, the container runs as `sha256:<id>`
+  (docker never pulls an ID), and `sync-image` prints the exact line to pin.
+  The GLM recipe is unaffected: it checks its image by tag (see "Offline
+  staging").
 - The container TensorFold engine (`TENSORFOLD_ENGINE=container`)
   pip-installs TensorFold from GitHub, and its dependencies from PyPI,
   unpinned, at every rank start: it needs the internet every time. The native
@@ -235,11 +239,13 @@ checkout: with none it now fails (exit 3) instead of recording one.
 | Engine | Ranks | |
 |---|---|---|
 | Mia-AiLab GLM recipe (TensorFold v0.6.0 + patches) | 2 (`start.sh`), 3 (`start-tp3.sh`, experimental) | what serves our pair; its own scripts drive the ranks |
-| native TensorFold >= 1.0 | GLM up to 16 (`TF_GLM_WORLD`); other families `--tp` 1/2/4/8 | `spark-node.sh` places GLM by env, others by flags |
+| native TensorFold >= 1.0 (1.2.7) | GLM-5.3-Flash up to 16 (`TF_GLM_WORLD`); MiniMax-M3.1-Flash 2 only (`TF_MINIMAX_*`); Flash Next 1-2; Nemotron 1; other families `--tp` 2/4/8 | from the 1.2.7 binary's own messages and `capabilities --json`; `spark-node.sh` refuses sizes the engine refuses |
+| container TensorFold 0.x (@9cd52ab) | per `data/tensorfold.json`: GLM 2, most families 1-2, qwen3_5_moe 1 | the launcher refuses an excluded size at that commit, warns at any other |
 | vLLM (native multi-node) | `--nnodes N`, TP = N | the model's head count must divide by N |
 
 Whether a model *fits* at N is a memory question: `model-inspect.sh` reports
-the smallest N that holds the weights with KV room.
+the smallest N that holds the weights with KV room, judges ranks against the
+native TensorFold engine, and lists the container engine's ranks separately.
 
 **Several smaller groups instead of one big one:** e.g. 4 Sparks as two
 independent pairs, each its own hydra node (`[nodes.pairA]`, `[nodes.pairB]`,
