@@ -198,7 +198,14 @@ echo ""
 echo "3. land-dependabot.sh — approves only THIS repo's held runs for the PR head:"
 # ===========================================================================
 if ! command -v jq >/dev/null 2>&1; then
-  echo "  SKIP: jq not installed (the gh stub evaluates -q filters with it)"
+  # CI=true turns a skip into a failure (ci.yml), as section 4 does for
+  # PyYAML: otherwise every approval/merge guard here could stop running in
+  # CI with the job still green.
+  if [[ "${CI:-}" == "true" ]]; then
+    fail "jq not installed under CI=true — the land-dependabot guards did not run"
+  else
+    echo "  SKIP: jq not installed (the gh stub evaluates -q filters with it)"
+  fi
 else
   LB="$T/bin_land"; mkdir -p "$LB"
   printf '#!/bin/bash\nexit 0\n' > "$LB/sleep"          # the script waits in 15-30 s steps
