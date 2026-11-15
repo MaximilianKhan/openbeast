@@ -96,52 +96,6 @@ jobs:
           # the other 39 was invisible here.
           pip-audit -r agents/requirements.lock --disable-pip --no-deps
 
-  lock-fresh:
-    # `pydeps.sh verify` (CI's test job) proves the lock is self-consistent
-    # and covers every direct pin. It accepts ANY extra package and any hash:
-    # a lock carrying `evil-pkg==6.6.6 --hash=<its real hash>` verifies. Only
-    # a fresh resolve can say "this is exactly the closure pip produces", so
-    # whenever a change touches the lock or its input, re-resolve and diff.
-    #
-    # Not on every PR: it needs the index, and it compares against PyPI as it
-    # is NOW — on an untouched lock it would turn unrelated PRs red the day a
-    # transitive dependency ships a release. A red run here on a PR that DID
-    # touch the lock means one of two things: the lock holds something the
-    # resolver does not produce (read the diff it prints), or the index moved
-    # since it was generated (regenerate: ./scripts/pydeps.sh lock).
-    name: Lock matches a fresh resolve
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Did this change touch the lock or requirements.txt?
-        id: touched
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          if [[ -z "$BASE_SHA" || "$BASE_SHA" =~ ^0+$ ]]; then
-            echo "no base to compare with (manual run or a new branch): checking"
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          else
-            git fetch --no-tags --depth=1 origin "$BASE_SHA"
-            if git diff --quiet "$BASE_SHA" HEAD -- agents/requirements.lock agents/requirements.txt; then
-              echo "neither file changed — nothing to re-resolve"
-              echo "run=false" >> "$GITHUB_OUTPUT"
-            else
-              echo "run=true" >> "$GITHUB_OUTPUT"
-            fi
-          fi
-          # Resolve on the python the lock says it was resolved on: the SET
-          # of packages depends on it (environment markers), so another
-          # python reports a correct lock as stale.
-          py="$(sed -n 's/^# resolver: .* on python \([0-9]*\.[0-9]*\).*/\1/p' agents/requirements.lock | head -n 1)"
-          echo "python=${py:-3.12}" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        if: steps.touched.outputs.run == 'true'
-        with:
-          python-version: ${{ steps.touched.outputs.python }}
-      # Wheels only (pydeps_lock.py resolves with --only-binary :all:), so no
-      # package's build code runs here; the token is read-only regardless.
-      - name: ./scripts/pydeps.sh check
-        if: steps.touched.outputs.run == 'true'
-        run: OPENBEAST_PYTHON=python ./scripts/pydeps.sh check
+  # lock-fresh ("Lock matches a fresh resolve") moved to ci.yml, under the
+  # required `test` gate: here it was not a required check, so a PR whose
+  # lock it rejected could still merge.

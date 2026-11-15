@@ -368,11 +368,17 @@ def test_zig_is_downloaded_from_ziglang_and_checked_before_it_is_unpacked():
 # ---------------------------------------------------------------------------
 
 def test_a_changed_lock_is_checked_against_a_fresh_resolve():
-    checkers = [n for n, job in _jobs(QUALITY).items() if "pydeps.sh check" in _runs(job)]
-    assert checkers, "no PR-quality job runs ./scripts/pydeps.sh check"
-    job = _jobs(QUALITY)[checkers[0]]
+    """...and the check is under the REQUIRED `test` gate (install-supply-chain
+    finding): in pr-quality.yml it was not a required status check, so a PR
+    whose lock it rejected could merge with it red."""
+    checkers = [n for n, job in _jobs(CI).items() if "pydeps.sh check" in _runs(job)]
+    assert checkers, "no CI job runs ./scripts/pydeps.sh check"
+    job = _jobs(CI)[checkers[0]]
     assert "agents/requirements.lock agents/requirements.txt" in _runs(job)
     assert not job.get("continue-on-error")
+    assert checkers[0] in _jobs(CI)["test"]["needs"]
+    assert not [n for n, j in _jobs(QUALITY).items() if "pydeps.sh check" in _runs(j)], \
+        "a second, non-required copy would only invite reading the wrong one"
 
 
 def test_the_relock_is_rechecked_by_a_job_that_cannot_push():
