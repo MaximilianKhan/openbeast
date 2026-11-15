@@ -674,12 +674,12 @@ else
 fi
 
 echo ""
-echo "remove that empties the registry (netsec S7):"
-# An empty registry is "not configured" to beast-gate; with
-# EDGE_ALLOW_ANON=true that is anonymous mode, so deleting the last device
-# re-admits it. `remove` must say so — and only then.
+echo "remove that empties the registry (netsec S7, review 2026-11-15):"
+# An emptied registry still EXISTS to beast-gate (edge.py Registry.exists),
+# so EDGE_ALLOW_ANON stays ignored and the gate answers 401. `remove` must
+# say that true thing — not that the gate reopened — and only then.
 A="$(_fresh_repo anon)"
-AW="registry is now EMPTY and EDGE_ALLOW_ANON=true"
+AW="registry is now EMPTY"
 printf 'EDGE_GATE=true\nEDGE_ALLOW_ANON=true\n' > "$A/openbeast.conf"
 "$A/scripts/clients.sh" enroll one >/dev/null 2>&1
 "$A/scripts/clients.sh" enroll two >/dev/null 2>&1
@@ -690,10 +690,12 @@ else
   fail "warned although a device is still enrolled"
 fi
 out="$("$A/scripts/clients.sh" remove two --yes 2>&1)" || true
-if _has "$out" "$AW" && _has "$out" "EDGE_ALLOW_ANON=false" && _has "$out" "'two'"; then
-  pass "removing the LAST device under EDGE_ALLOW_ANON=true warns and names the fix"
+if _has "$out" "$AW" && _has "$out" "stays CLOSED" && _has "$out" "401" \
+   && _has "$out" "'two'" && _has "$out" "clients.sh enroll" \
+   && ! _has "$out" "admits EVERY" && ! _has "$out" "EDGE_ALLOW_ANON=false"; then
+  pass "removing the LAST device under EDGE_ALLOW_ANON=true says the gate stays closed (401)"
 else
-  fail "emptied the registry under EDGE_ALLOW_ANON=true without a warning"
+  fail "remove of the last device misstated the gate's state: $out"
 fi
 printf 'EDGE_GATE=true\nEDGE_ALLOW_ANON=false\n' > "$A/openbeast.conf"
 "$A/scripts/clients.sh" enroll three >/dev/null 2>&1
@@ -702,6 +704,53 @@ if ! _has "$out" "$AW" && _has "$out" "Removed 'three'"; then
   pass "the fail-closed default (EDGE_ALLOW_ANON=false) empties without the warning"
 else
   fail "warned although EDGE_ALLOW_ANON=false"
+fi
+
+echo ""
+echo "remove + re-enroll of one id is a fresh device (review 2026-11-15):"
+# The gate keys last-seen by id and device_uid by id:enrolled_at(:nonce).
+# Without the prune, `list` showed the new device as seen at its
+# predecessor's last use; without the nonce, a same-second re-enroll shared
+# the predecessor's uid (limiter bucket, audit identity).
+R="$(_fresh_repo reenroll)"
+"$R/scripts/clients.sh" enroll lap >/dev/null 2>&1
+"$R/scripts/clients.sh" enroll keep >/dev/null 2>&1
+printf '{"lap": "2026-01-02T03:04:05Z", "keep": "2026-01-02T03:04:06Z"}' \
+  > "$R/.run/clients-lastseen.json"
+_nonce() { python3 -c 'import json,sys; print(next(d.get("enroll_nonce") or "" for d in json.load(open(sys.argv[1]))["devices"] if d["id"]=="lap"))' "$R/.run/clients.json"; }
+n1="$(_nonce)"
+"$R/scripts/clients.sh" remove lap --yes >/dev/null 2>&1
+"$R/scripts/clients.sh" enroll lap >/dev/null 2>&1
+n2="$(_nonce)"
+if [[ -n "$n1" && -n "$n2" && "$n1" != "$n2" ]]; then
+  pass "each enrollment writes its own enroll_nonce"
+else
+  fail "enroll_nonce missing or reused across re-enroll ('$n1' vs '$n2')"
+fi
+out="$("$R/scripts/clients.sh" show lap --json 2>&1)" || true
+if ! _has "$out" "2026-01-02T03:04:05Z"; then
+  pass "a re-enrolled id does not inherit its predecessor's last-seen"
+else
+  fail "re-enrolled id shows the removed device's last-seen: $out"
+fi
+out="$("$R/scripts/clients.sh" show keep --json 2>&1)" || true
+if _has "$out" "2026-01-02T03:04:06Z"; then
+  pass "control: other devices keep their last-seen after a remove"
+else
+  fail "remove pruned another device's last-seen: $out"
+fi
+"$R/scripts/clients.sh" rotate lap >/dev/null 2>&1
+if [[ "$(_nonce)" == "$n2" ]]; then
+  pass "rotate keeps the enroll_nonce (same device, same uid)"
+else
+  fail "rotate changed the enroll_nonce"
+fi
+# beast-gate's sticky marker: without it, deleting or moving clients.json
+# aside reopened EDGE_ALLOW_ANON to the whole tailnet.
+if [[ -f "$R/.run/clients.enrolled" ]]; then
+  pass "a registry write leaves the gate's clients.enrolled marker"
+else
+  fail "enroll did not write .run/clients.enrolled"
 fi
 
 echo ""

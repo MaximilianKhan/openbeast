@@ -180,7 +180,7 @@ unspecified" rather than switching exhaustively — the set can grow:
 | `open` | no credential required (personal tailnet, gate off, no key) |
 | `key` | one shared `LLAMA_API_KEY` gates the endpoint |
 | `device` | beast-gate is on: you need your own enrolled device key |
-| `anon` | beast-gate is on, `EDGE_ALLOW_ANON=true` and **no device is enrolled yet**, so every caller is served as a single `anon` device — the gate is up, per-device identity is **not** in force. The moment one device is enrolled the gate ignores `ALLOW_ANON` (keyless callers get 401) and this reads `device` |
+| `anon` | beast-gate is on, `EDGE_ALLOW_ANON=true` and **`.run/clients.json` has never been written**, so every caller is served as a single `anon` device — the gate is up, per-device identity is **not** in force. The moment a registry exists the gate ignores `ALLOW_ANON` for good (keyless callers get 401 — even after `clients.sh remove` empties it) and this reads `device` |
 
 `device` and `anon` were added alongside beast-gate. This is an additive
 change to an existing field's value set, not a rename, so `min_client` stays
@@ -336,7 +336,9 @@ Three more things that surprise owners:
   Until per-request budgets land ([roadmap](#roadmap-behind-the-same-contract)),
   the controls are social: enroll people you'd lend the machine to, watch
   `.run/inference-audit.jsonl`, and `./scripts/clients.sh revoke <id>` — new
-  requests fail at once, though a stream already in flight runs to completion.
+  requests fail at once, and a generation already running is cut off within
+  ~5 s (the gate re-checks enrollment, cancels the upstream request and audits
+  it `revoked`; a stream that has gone silent is re-checked at its next chunk).
 
 **You do one thing** — point the installer at their machine:
 
@@ -520,7 +522,7 @@ What each remote request now passes through:
 | **Tenancy knobs** | Client `id_slot` stripped unconditionally; re-injected only from the server-side device→slot map. On `/v1/chat/completions`, `/v1/completions` and `/v1/embeddings` a non-empty body that is not a UTF-8 JSON object, or that nests deeper than 64 levels, is refused with **400** and never forwarded — a body the gate cannot parse would otherwise reach llama-server with every tenancy knob intact. A body over **8 MiB** is refused with **413** (`EDGE_MAX_BODY`, bytes; it was 32 MiB) |
 | **Inline media only** | An `image_url`, `input_audio` or `input_video` part must carry its media inline — a `data:` URI, or the bare base64 OpenAI's audio shape uses. A part that names a URL (`http://…`, `file://…`, anything with a scheme, or a scheme-less value starting `http`) is refused with **400**: with a vision model loaded llama-server would fetch it from the rig's own loopback, which hands a remote device a way to read the rig's local services and LAN. `EDGE_ALLOW_MEDIA_URLS=true` forwards such parts again. The agent router applies the same rule to WebUI and loopback callers (one shared implementation, `agents/mediapolicy.py`), with no opt-out |
 | **Session isolation** | `X-Conversation-Id` namespaced per device, so two devices can neither collide on nor cancel each other's stream sessions |
-| **Admission control** | Token bucket (`EDGE_RATE_LIMIT`, default 120/min) plus an in-flight cap (`EDGE_MAX_INFLIGHT`, default 2) per device → 429 with `Retry-After`. Both count **generations**, not HTTP requests: a `prompt`/`input` array or `n` > 1 makes llama-server run prompts × `n` tasks, so such a request holds (and pays for) that many units, and one that fans out past `EDGE_MAX_INFLIGHT` is refused with 400 — split it, or raise the cap |
+| **Admission control** | Token bucket (`EDGE_RATE_LIMIT`, default 120/min) plus an in-flight cap (`EDGE_MAX_INFLIGHT`, default 2) per device → 429 with `Retry-After`. Both count **generations**, not HTTP requests: a `prompt`/`input` array or `n` > 1 makes llama-server run prompts × `n` tasks, so such a request holds (and pays for) that many units, and one that fans out past `EDGE_MAX_INFLIGHT` is refused with 400 — split it, or raise the cap. `GET /v1/models` generates nothing, so it pays one rate token but never holds an in-flight unit (it answers while the device's streams run); `/health` is exempt from both |
 | **Audit + metering** | One line per completion in `.run/inference-audit.jsonl`: `request_id`, `device`, `device_uid`, `user_claimed`, model, status, duration, prompt/completion tokens (the gate sets `stream_options.include_usage` so the streaming path meters too; a non-streaming reply too large to buffer is metered from its tail). A request the client abandons is recorded as `outcome: client_disconnect`, not `ok`: while still waiting for the first byte the upstream request is cancelled, the in-flight unit released and the row carries status **499**; mid-body it keeps the upstream's status, and its tokens may be null, since the usage chunk never arrived. A request cut off because its device was revoked is `outcome: revoked` (401 before the first byte). A stream the model server breaks off mid-body is `upstream_error` (502), not blamed on the client. Never content, never key material. Prometheus at `/gate/metrics` (authenticated — see Introspection below). Rotated by `scripts/logrotate-openbeast.conf` |
 | **Attribution rules** | `device` is the **authenticated** identity. `device_uid` binds the *enrollment*, so a removed-and-re-enrolled `laptop-air` is a distinct device in the trail rather than inheriting its predecessor's history — **join on `device_uid`**, not `device`. `user_claimed` is a client-supplied header and is not proof of anything. `request_id` is echoed to the caller as `X-OpenBeast-Request-Id`, so "what happened to my 11:04 request" is answerable exactly. Unauthenticated rejects are counted in metrics and logged with a key fingerprint, but deliberately not written to the audit file — otherwise any tailnet peer could grow it without bound. For the same reason the log line is throttled: the first 10 per reason per minute, then one "suppressed N more" summary (the exact count stays in `/gate/metrics`) |
 | **Introspection** | `/gate/health` and `/gate/metrics` carry the device roster and per-device usage, so the full view needs the rig-local token (`.run/edge-local.token`, 0600, minted per gate start — start.sh/healthcheck/doctor read it). An enrolled device key gets **its own** series from `/gate/metrics` and nothing else (no other device's usage, no `denied_total`), and liveness only from `/gate/health` (no roster size, no upstream URL). Peer address is deliberately NOT used: `tailscale serve` proxies from 127.0.0.1, so every tailnet caller looks local. With no credential `/gate/health` returns liveness only and `/gate/metrics` 404s |
@@ -529,8 +531,10 @@ What each remote request now passes through:
 get 401 — an empty registry never means "everyone is welcome". `EDGE_ALLOW_ANON=true`
 opts out, at the cost of attribution and revocation — but only while
 `.run/clients.json` has never been written. Once the file exists the gate
-ignores `EDGE_ALLOW_ANON` for good: emptied again by `clients.sh remove`, a
-missing or unknown key is still a 401. A corrupt or half-written registry
+ignores `EDGE_ALLOW_ANON` for good: emptied again by `clients.sh remove`, or
+deleted / moved aside later (`.run/clients.enrolled`, written beside it,
+remembers), a missing or unknown key is still a 401 — to really start over
+as a fresh rig, delete both files. A corrupt or half-written registry
 keeps the last good device map rather than opening up; one that cannot be
 read at the gate's first load refuses every caller (`registry_unreadable`)
 and logs the repair command once.

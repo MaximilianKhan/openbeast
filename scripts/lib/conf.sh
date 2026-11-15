@@ -441,6 +441,13 @@ _EDGE_ANON="${OPENBEAST_EDGE_ALLOW_ANON:-$(_ob_conf_value EDGE_ALLOW_ANON || tru
 # 8 MiB). Exported only when set, like the limits above.
 _EDGE_BODY="${OPENBEAST_EDGE_MAX_BODY:-$(_ob_conf_value EDGE_MAX_BODY || true)}"
 [[ -n "$_EDGE_BODY" ]] && export OPENBEAST_EDGE_MAX_BODY="$_EDGE_BODY"
+# Gate -> upstream deadlines, in seconds (gate defaults: read 600, connect
+# 10). The gate's 504 tells operators to raise EDGE_READ_TIMEOUT, so it has
+# to be settable here, not only by exporting the variable by hand.
+_EDGE_RTO="${OPENBEAST_EDGE_READ_TIMEOUT:-$(_ob_conf_value EDGE_READ_TIMEOUT || true)}"
+[[ -n "$_EDGE_RTO" ]] && export OPENBEAST_EDGE_READ_TIMEOUT="$_EDGE_RTO"
+_EDGE_CTO="${OPENBEAST_EDGE_CONNECT_TIMEOUT:-$(_ob_conf_value EDGE_CONNECT_TIMEOUT || true)}"
+[[ -n "$_EDGE_CTO" ]] && export OPENBEAST_EDGE_CONNECT_TIMEOUT="$_EDGE_CTO"
 # Inline media only by default: the gate answers 400 for an image/audio/video
 # part that names a URL, because llama-server would fetch it from inside the
 # rig (SSRF for a remote device). true forwards such parts again.
@@ -1105,7 +1112,7 @@ export OPENBEAST_SEARXNG_SECRET="$SEARXNG_SECRET"
 _OB_CONF_EXTRA_KEYS="BEAST_ASSIST BEAST_ESCALATE CHAT_BASE_URL CHAT_PUBLIC_URL WEBUI_DEFAULT_ADMIN_PASSWORD"
 # Whole numbers that are used exactly as written (the port keys and the gate's
 # limits take no inline comment — openbeast.conf.example says so)...
-_OB_CONF_INT_KEYS="ROUTER_PORT EDGE_PORT CHAT_PORT ARTIFACT_PORT NTFY_PORT MEM_LIMIT_PCT MEM_RESERVE_GB EDGE_RATE_LIMIT EDGE_MAX_INFLIGHT EDGE_MAX_BODY ARTIFACT_RETAIN_DAYS"
+_OB_CONF_INT_KEYS="ROUTER_PORT EDGE_PORT CHAT_PORT ARTIFACT_PORT NTFY_PORT MEM_LIMIT_PCT MEM_RESERVE_GB EDGE_RATE_LIMIT EDGE_MAX_INFLIGHT EDGE_MAX_BODY EDGE_READ_TIMEOUT EDGE_CONNECT_TIMEOUT ARTIFACT_RETAIN_DAYS"
 # ...and those whose reader strips a trailing `# comment` first.
 _OB_CONF_INT_KEYS_COMMENT_OK="HYDRA_READY_GRACE AGENT_LOG_RETENTION_DAYS ISLAND_GRACE"
 ob_conf_lint() {
