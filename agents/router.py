@@ -487,6 +487,11 @@ async def _classify(client, user_text):
 async def _spawn(client, task, workdir, identity=None):
     """Spawn via the real MCPO start_agent tool. Returns (agent_id, error).
 
+    Started means a 2xx reply that names an agent id. Anything else — an
+    auth/RBAC refusal, a 5xx, or start_agent's own "Error: ..." string
+    (which the tool server returns as a 200) — is (None, why), so the user
+    is told the spawn failed instead of that an agent is running.
+
     `identity` = the caller's identity headers (_identity_headers), sent
     alongside the admin key so the spawn is attributed and sharded."""
     try:
@@ -500,8 +505,15 @@ async def _spawn(client, task, workdir, identity=None):
             txt = data if isinstance(data, str) else json.dumps(data)
         except Exception:
             pass
+        excerpt = " ".join(str(txt).split())[:160] or "empty reply"
+        if not 200 <= r.status_code < 300:
+            return None, f"HTTP {r.status_code}: {excerpt}"
+        if str(txt).lstrip().startswith("Error"):
+            return None, excerpt
         m = re.search(r"([0-9]{8}-[0-9]{6}-[0-9a-f]{8})", txt)  # agent-id shape
-        return (m.group(1) if m else txt.strip()[:80]), None
+        if not m:
+            return None, f"no agent id in the reply: {excerpt}"
+        return m.group(1), None
     except Exception as e:
         return None, str(e)
 
