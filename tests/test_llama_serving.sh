@@ -312,6 +312,64 @@ kill "$_squat" 2>/dev/null; wait "$_squat" 2>/dev/null
   || fail "measure-vram missed the stack's server on 127.0.0.2 (rc=$MV_RC): $(tail -3 <<< "$MV_OUT" | tr '\n' ' ')"
 
 echo ""
+echo "MTP profilers:"
+# One rig per profiler: stub llama-server (records env, marks itself up),
+# stub curl (answers /health from that mark, records chat requests and their
+# -K config), stub gpu-lease.sh / stop.sh / nvidia-smi.
+for _prof in profile-qwen38-uncensored-mtp.sh:: profile-heretic-v2-mtp.sh:q5:heretic-v2-mtp-q5 profile-fable-fusion-mtp.sh:q5:fable-fusion-mtp-q5; do
+  IFS=: read -r _p _arg _res <<< "$_prof"
+  [[ -n "$_res" ]] || _res=qwen38-uncensored-mtp
+  PR="$(_mk)"; mkdir -p "$PR/scripts/lib" "$PR/llama.cpp/build/bin" "$PR/weights" "$PR/bin" "$PR/.run"
+  cp "$REPO_DIR/scripts/$_p" "$PR/scripts/"; cp "$REPO_DIR"/scripts/lib/*.sh "$PR/scripts/lib/"
+  for _w in Qwen3.8-27B-Uncensored-Q5_K_M.gguf Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-Q5_K_M.gguf \
+            Qwen3.6-27B-Fable-Fus-711-UnHeretic-NM-DAU-NEO-MAX-NEO-MTP-Q5_K_M.gguf; do : > "$PR/weights/$_w"; done
+  cat > "$PR/llama.cpp/build/bin/llama-server" <<SH
+#!/bin/bash
+env > "$PR/ls-env"; printf '%s\n' "\$@" > "$PR/ls-argv"
+touch "$PR/up"; trap 'rm -f "$PR/up"; exit 0' TERM
+echo "eval time = 1 ms / 2 tokens (0.5 ms per token, 123.4 tokens per second)"
+while :; do sleep 0.2; done
+SH
+  cat > "$PR/bin/curl" <<SH
+#!/bin/bash
+args="\$*"
+if [[ "\$args" == *"/health"* ]]; then
+  [[ -e "$PR/up" ]] || exit 7
+  [[ "\$args" == *" -o "* ]] || echo '{"status":"ok"}'
+  exit 0
+fi
+printf '%s\n' "\$@" >> "$PR/curl-argv"
+for a in "\$@"; do [[ "\$a" == "-K" || "\$a" == "--config" ]] && cat >> "$PR/curl-config"; done
+exit 0
+SH
+  printf '#!/bin/bash\ncase "$1" in check) echo "%s"; exit "$(cat %s/lease-rc 2>/dev/null || echo 0)" ;; esac\nexit 0\n' \
+    "held by job x" "$PR" > "$PR/scripts/gpu-lease.sh"
+  printf '#!/bin/bash\nexit 0\n' > "$PR/stop.sh"
+  printf '#!/bin/bash\necho 20000\n' > "$PR/bin/nvidia-smi"
+  chmod +x "$PR/llama.cpp/build/bin/llama-server" "$PR/bin/curl" "$PR/scripts/gpu-lease.sh" "$PR/stop.sh" "$PR/bin/nvidia-smi"
+  _prof_run() { PR_RC=0; PR_OUT="$(cd "$PR" && env -i HOME="$PR" PATH="$PR/bin:/usr/bin:/bin" \
+      OPENBEAST_WEIGHTS_DIR="$PR/weights" SWEEP_CTX=8192 "$@" timeout 60 bash "$PR/scripts/$_p" ${_arg:+"$_arg"} 2>&1)" || PR_RC=$?; }
+  # Lease held by another job: refused, and the last sweep's results survive.
+  echo "n=4  decode=123.7 tok/s  (the shipped tuning's evidence)" > "$PR/.run/$_res-results.txt"
+  echo 4 > "$PR/lease-rc"
+  _prof_run
+  if [[ $PR_RC -eq 4 && "$(cat "$PR/.run/$_res-results.txt")" == *"shipped tuning"* ]]; then
+    pass "$_p: refused under someone else's GPU lease without erasing the previous results"
+  else
+    fail "$_p under a foreign lease (rc=$PR_RC): results now '$(cat "$PR/.run/$_res-results.txt")'"
+  fi
+  # A run (lease wraps us): the sweep server is keyed, and so are its requests.
+  echo 0 > "$PR/lease-rc"
+  _prof_run SWEEP_N=4
+  _ls_key="$(grep '^LLAMA_API_KEY=' "$PR/ls-env" 2>/dev/null | cut -d= -f2-)"
+  if [[ $PR_RC -eq 0 && ${#_ls_key} -ge 32 ]] && grep -qF "Bearer $_ls_key" "$PR/curl-config" 2>/dev/null \
+     && ! grep -qF "$_ls_key" "$PR/curl-argv" "$PR/ls-argv" 2>/dev/null; then
+    pass "$_p: the sweep's llama-server requires a per-run key, presented off argv"
+  else
+    fail "$_p sweep auth (rc=$PR_RC, key len ${#_ls_key}): config '$(cat "$PR/curl-config" 2>/dev/null | head -2 | sed 's/Bearer .*/Bearer …/')' :: $(tail -3 <<< "$PR_OUT" | tr '\n' ' ')"
+  fi
+done
+echo ""
 echo "========================================"
 echo "llama-serving: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]
