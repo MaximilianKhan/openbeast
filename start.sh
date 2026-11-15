@@ -1126,9 +1126,9 @@ launch_and_wait() {
   if [[ -n "${LLAMA_PID:-}" ]] && ! kill -0 "$LLAMA_PID" 2>/dev/null; then
     wait "$LLAMA_PID" 2>/dev/null; local _rc=$?
     if [[ $_rc -eq 3 ]]; then
-      echo "Refusing to roll back: '$failed' was rejected by the weight registry" >&2
-      echo "  (WEIGHT_ENFORCE=strict). Serving a different model would defeat the check." >&2
-      echo "  Fix the weight, re-pin it, or set WEIGHT_ENFORCE=warn in openbeast.conf." >&2
+      echo "Refusing to roll back: '$failed' was refused by serve.sh (the reason is above:" >&2
+      echo "  the weight registry under WEIGHT_ENFORCE=strict, or keyless inference on a" >&2
+      echo "  network bind). Serving a different model would defeat the check." >&2
       LLAMA_FAIL=refused
       return 1
     fi

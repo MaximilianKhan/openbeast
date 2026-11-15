@@ -1038,8 +1038,10 @@ export OPENBEAST_ALLOW_OPEN_WEBUI="$ALLOW_OPEN_WEBUI"
 # persisted form of setup-tailscale.sh --i-accept-open-inference — "yes,
 # publish llama-server on :8443 with no beast-gate and no LLAMA_API_KEY".
 # setup-tailscale writes it when that flag publishes; doctor.sh then WARNs
-# about the keyless :8443 instead of FAILing. Not exported: only those two
-# scripts read it, and both source this file.
+# about the keyless :8443 instead of FAILing. serve.sh takes it as the same
+# "yes" for a keyless llama-server on a non-loopback BIND_HOST, which it
+# otherwise refuses. Not exported: only those three read it, and all of them
+# source this file.
 ALLOW_OPEN_INFERENCE="$(_ob_bool "${OPENBEAST_ALLOW_OPEN_INFERENCE:-$(_ob_conf_value ALLOW_OPEN_INFERENCE || true)}" false ALLOW_OPEN_INFERENCE)"
 # ob_tools_exposed_open — true when the tool server would listen off-loopback
 # with no key: the state start.sh / doctor.sh / the tool server must refuse

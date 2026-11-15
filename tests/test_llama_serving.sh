@@ -177,6 +177,27 @@ fi
 rm -f "$SV/weights/Huge.gguf"
 
 echo ""
+echo "keyless llama-server on a network bind:"
+_serve OPENBEAST_BIND=192.0.2.10 -- -m "$SV/weights/main.gguf" -c 8192
+if [[ $SV_RC -eq 3 ]] && ! _launched && [[ "$SV_OUT" == *"ALLOW_OPEN_INFERENCE"* ]]; then
+  pass "BIND_HOST=192.0.2.10 with no LLAMA_API_KEY is refused (exit 3), naming ALLOW_OPEN_INFERENCE"
+else
+  fail "keyless non-loopback bind (rc=$SV_RC, launched=$(_launched && echo yes || echo no)): $(tr '\n' ' ' <<< "$SV_OUT")"
+fi
+_serve -- -m "$SV/weights/main.gguf" -c 8192 --host 0.0.0.0
+[[ $SV_RC -eq 3 ]] && ! _launched && pass "…so is --host 0.0.0.0 on the command line (the effective host is judged)" \
+  || fail "keyless --host 0.0.0.0 (rc=$SV_RC): $(tr '\n' ' ' <<< "$SV_OUT")"
+_serve OPENBEAST_BIND=192.0.2.10 OPENBEAST_ALLOW_OPEN_INFERENCE=true -- -m "$SV/weights/main.gguf" -c 8192
+[[ $SV_RC -eq 0 && "$(_sv_arg --host)" == "192.0.2.10" ]] && pass "…ALLOW_OPEN_INFERENCE=true acknowledges it and launches" \
+  || fail "ALLOW_OPEN_INFERENCE=true (rc=$SV_RC): $(tr '\n' ' ' <<< "$SV_OUT")"
+_serve OPENBEAST_BIND=192.0.2.10 OPENBEAST_API_KEY=k1 -- -m "$SV/weights/main.gguf" -c 8192
+[[ $SV_RC -eq 0 && "$(_sv_arg --host)" == "192.0.2.10" ]] && pass "…and a keyed server on the same bind launches (control)" \
+  || fail "keyed non-loopback bind (rc=$SV_RC): $(tr '\n' ' ' <<< "$SV_OUT")"
+_serve -- -m "$SV/weights/main.gguf" -c 8192
+[[ $SV_RC -eq 0 && "$(_sv_arg --host)" == "127.0.0.1" ]] && pass "…as does the keyless loopback default (control)" \
+  || fail "keyless loopback default (rc=$SV_RC): $(tr '\n' ' ' <<< "$SV_OUT")"
+
+echo ""
 echo "========================================"
 echo "llama-serving: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

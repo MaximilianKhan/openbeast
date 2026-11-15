@@ -75,6 +75,25 @@ if [[ ! -f "$MODEL" ]]; then
   exit 4
 fi
 
+# --- No keyless inference on a network bind --------------------------------
+# A non-loopback HOST (BIND_HOST, or --host) with no LLAMA_API_KEY put a
+# keyless llama-server on that network: every route (/v1/*, /slots, /props,
+# /metrics) to anyone who can reach it, past beast-gate's per-device keys,
+# caps and audit even with EDGE_GATE=true, and past the acknowledgement
+# setup-tailscale.sh demands before it publishes the same thing on :8443.
+# The keyless tool server is refused in this state (ALLOW_OPEN_TOOLS); so is
+# this, with the same kind of explicit "yes": ALLOW_OPEN_INFERENCE=true.
+# Exit 3, like a registry refusal: start.sh must not "recover" by launching
+# another model on the same bind.
+if ! ob_bind_is_loopback "$HOST" && [[ -z "$LLAMA_API_KEY" && "${ALLOW_OPEN_INFERENCE:-false}" != "true" ]]; then
+  echo "Error: refusing to serve keyless inference on $HOST:$PORT — anyone on that network" >&2
+  echo "       could use the GPU and every llama-server route, past beast-gate and its audit." >&2
+  echo "       Fix one of: BIND_HOST=127.0.0.1 (remote access: scripts/setup-tailscale.sh)," >&2
+  echo "       set LLAMA_API_KEY, or ALLOW_OPEN_INFERENCE=true in openbeast.conf to accept it." >&2
+  echo "       (exit 3 = refusal; rollback must NOT substitute another model)" >&2
+  exit 3
+fi
+
 # --- Model registry enforcement (supply chain for weights) -----------------
 # Every weight file this launch loads — the -m file, all shards of a split
 # GGUF, and any --mmproj / -md draft — is checked against
@@ -107,8 +126,9 @@ done
 # --kv-unified the KV cache scales with context and is shared across slots.
 # --metrics turns on llama-server's Prometheus endpoint. It's what makes
 # requests_deferred — the real queue depth — visible to the beast-slot
-# contract (slots.busy only counts in-flight work). Loopback-bound like
-# everything else. NOTE the honest caveat: beast-gate's allowlist keeps
+# contract (slots.busy only counts in-flight work). Bound to HOST like every
+# route: loopback by default, and never keyless on a network bind (refused
+# above unless ALLOW_OPEN_INFERENCE=true). NOTE the honest caveat: beast-gate's allowlist keeps
 # /metrics away from remote clients, but on the DEFAULT topology (EDGE_GATE
 # =false, :8443 mapped straight at llama-server) it joins /slots and /props
 # as tailnet-readable aggregate metadata. Documented in docs/BEAST_SLOT.md.
