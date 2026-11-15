@@ -921,6 +921,13 @@ def db_rig(rig):
     con.execute("CREATE TABLE model (id TEXT PRIMARY KEY, user_id TEXT, base_model_id TEXT, "
                 "name TEXT, meta TEXT, params TEXT, created_at BIGINT, updated_at BIGINT, "
                 "is_active INTEGER)")
+    # The pinned image's DDL, verbatim (read-only from the live spark-1 DB).
+    con.execute("CREATE TABLE access_grant (id TEXT NOT NULL, resource_type TEXT NOT NULL, "
+                "resource_id TEXT NOT NULL, principal_type TEXT NOT NULL, "
+                "principal_id TEXT NOT NULL, permission TEXT NOT NULL, "
+                "created_at BIGINT NOT NULL, PRIMARY KEY (id), "
+                "CONSTRAINT uq_access_grant_grant UNIQUE (resource_type, resource_id, "
+                "principal_type, principal_id, permission))")
     con.commit()
     con.close()
     _write_exec(rig.bin / "docker", DOCKER_DB_STUB)
@@ -960,6 +967,14 @@ def db_rig(rig):
         con.close()
         return got
     rig.models = models
+
+    def grants():
+        con = sqlite3.connect(rig.db)
+        got = sorted(con.execute("SELECT resource_type, resource_id, principal_type, "
+                                 "principal_id, permission FROM access_grant"))
+        con.close()
+        return got
+    rig.grants = grants
 
     rig.docker_log = rig.tmp / "docker.log"
     rig.docker_log.write_text("")
@@ -1110,3 +1125,41 @@ def test_a_changed_model_connection_does_not_bounce_webui(db_rig):
     assert "connection updated" in p.stdout
     assert "restart" not in db_rig.docker_log.read_text()
     assert "Restarting" not in p.stdout
+
+
+# Guests (user-role accounts) see a model with a DB row only through an
+# access_grant row in the pinned image, and the script wrote none — so the
+# documented guest tier (docs/RBAC_PLAN.md) got an empty model picker.
+
+def test_served_models_are_readable_by_every_account(db_rig):
+    p = db_rig.configure()
+    assert p.returncode == 0, p.stderr
+    assert db_rig.grants() == [("model", "m1", "user", "*", "read")], p.stdout
+    # a second run adds nothing (one grant, not one per start)
+    assert db_rig.configure().returncode == 0
+    assert db_rig.grants() == [("model", "m1", "user", "*", "read")]
+
+
+def test_an_existing_row_gets_the_grant_too(db_rig):
+    """The live rigs already have their model row: the update path grants."""
+    db_rig.seed_model("m1", params={"function_calling": "native"})
+    assert db_rig.configure().returncode == 0
+    assert db_rig.grants() == [("model", "m1", "user", "*", "read")]
+
+
+def test_a_model_the_admin_made_private_stays_private(db_rig):
+    import sqlite3
+    assert db_rig.configure().returncode == 0
+    con = sqlite3.connect(db_rig.db)
+    con.execute("DELETE FROM access_grant")   # Admin -> Models -> Private
+    con.commit()
+    con.close()
+    assert db_rig.configure().returncode == 0
+    assert db_rig.grants() == []
+
+
+def test_presets_get_no_grant_from_us(db_rig):
+    db_rig.set_state(auth=False, admin_pw="admin", served=["persona"])
+    db_rig.seed_model("persona", base="m1", user="u1")
+    assert db_rig.configure().returncode == 0
+    assert db_rig.grants() == []

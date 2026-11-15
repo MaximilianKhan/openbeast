@@ -610,6 +610,37 @@ else:
     )
     db.commit()
     print('    Created model entry (native FC + system prompt + default tools).')
+
+# Guest access. The pinned image shows a model with a DB row to a user-role
+# account only through an access_grant row (utils/models.py
+# get_filtered_models; the chat path checks the same grant), and this script
+# writes the row with user_id 'system' and no grant — so the documented guest
+# tier (docs/RBAC_PLAN.md) logged in to an empty model picker. Grant public
+# read ONCE per model: the ids already seeded are recorded beside the DB, so an
+# admin who later makes a model private in Admin -> Models keeps that choice.
+if not (row and has_base and row[3]):
+    try:
+        import uuid
+        mark = os.path.join(os.path.dirname('/app/backend/data/webui.db'),
+                            '.openbeast-model-access.json')
+        try:
+            seeded = set(json.load(open(mark)))
+        except Exception:
+            seeded = set()
+        if model_id not in seeded:
+            db.execute(
+                'INSERT OR IGNORE INTO access_grant (id, resource_type, resource_id, '
+                'principal_type, principal_id, permission, created_at) '
+                'VALUES (?, ?, ?, ?, ?, ?, ?)',
+                (str(uuid.uuid4()), 'model', model_id, 'user', '*', 'read', int(time.time())))
+            db.commit()
+            seeded.add(model_id)
+            with open(mark + '.tmp', 'w') as f:
+                json.dump(sorted(seeded), f)
+            os.replace(mark + '.tmp', mark)
+            print('    Granted read access to every account (guests included).')
+    except sqlite3.OperationalError:
+        pass   # an image without access_grant: models are not access-gated there
 " 2>/dev/null \
       || echo "    Warning: failed to configure model '$model_id' (docker exec error) — re-run ./scripts/configure-webui.sh" >&2
   done <<< "$MODELS"
