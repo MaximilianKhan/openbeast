@@ -467,3 +467,21 @@ def test_start_agent_keep_dumpable_opt_out(tmp_path):
     # Negative control: the probe sees a dumpable process when opted out.
     out = _run_start_agent_probe(tmp_path, OPENBEAST_KEEP_DUMPABLE="1")
     assert "AT_SPAWN [1]" in out, out
+
+
+# --- start_agent workdir vs the BASH_WRAPPER grant (review: sandbox) --------
+
+def test_wrapper_refuses_home_and_root_workdirs(tmp_path, monkeypatch):
+    import mcp_server
+    home = tmp_path / "home"
+    (home / ".ssh").mkdir(parents=True)
+    (home / "proj").mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("OPENBEAST_BASH_WRAPPER",
+                       'sandlock run -p openbeast -w "$PWD" --')
+    for wd in ("/", str(home), str(tmp_path), str(home / ".ssh")):
+        assert mcp_server._sandboxed_workdir_refusal(wd), wd
+        assert mcp_server.start_agent("noop", workdir=wd).startswith("Error")
+    assert mcp_server._sandboxed_workdir_refusal(str(home / "proj")) is None
+    monkeypatch.delenv("OPENBEAST_BASH_WRAPPER")
+    assert mcp_server._sandboxed_workdir_refusal(str(home)) is None

@@ -919,6 +919,26 @@ def skill(name: str = "") -> str:
 # --- Agent MCP tools ---
 
 
+def _sandboxed_workdir_refusal(workdir: str) -> str | None:
+    """Refusal text when a BASH_WRAPPER sandbox is on and `workdir` would
+    widen it past a workspace. The wrapper grants `-w "$PWD"` and an agent's
+    bash runs with cwd = its workdir, so workdir='/' or '~' made the whole
+    filesystem (or $HOME, ~/.ssh included) read-write to a confined model.
+    No wrapper: the workdir is not a boundary anyway (tools._base_dir)."""
+    if not os.environ.get("OPENBEAST_BASH_WRAPPER", "").strip():
+        return None
+    rp = os.path.realpath(workdir)
+    home = os.path.realpath(os.path.expanduser("~"))
+    if rp == home or rp == os.sep or home.startswith(rp.rstrip(os.sep) + os.sep):
+        return (f"Error: workdir {rp} would grant the bash sandbox all of "
+                f"{rp} (it contains your home directory); pick a project "
+                f"directory")
+    if _tools._guard_write_path(os.path.join(rp, "_")):
+        return (f"Error: workdir {rp} is a protected credential/persistence "
+                f"location; the bash sandbox would grant it read-write")
+    return None
+
+
 @_tool()
 def start_agent(task: str, workdir: str = ".", max_iter: int = 200, context: str = "",
                 base_url: str = "", detach: bool = False) -> str:
@@ -964,6 +984,9 @@ def start_agent(task: str, workdir: str = ".", max_iter: int = 200, context: str
     workdir = os.path.abspath(os.path.expanduser(workdir))
     if not os.path.isdir(workdir):
         return f"Error: workdir does not exist: {workdir}"
+    refusal = _sandboxed_workdir_refusal(workdir)
+    if refusal:
+        return refusal
 
     agent_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
     log_path = os.path.join(_LOG_DIR, f"agent-{agent_id}.jsonl")
