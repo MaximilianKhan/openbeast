@@ -1496,6 +1496,18 @@ else
   bsh() { _out="$(cd "$T/usb" && PATH="$T/bin:$PATH" OPENBEAST_WEIGHTS_DIR="$WD" OPENBEAST_PYTHON="$REAL_PY" "$SB/scripts/bundle.sh" "$@" 2>&1)"; _rc=$?; }
   bsh sign ./wbundle --key "$T/key"
   [[ $_rc -eq 0 && -f "$WB/MANIFEST.json.sig" ]] && pass "signed the test bundle" || fail "sign (rc=$_rc): $_out"
+  # THE COMMANDS sign PRINTS, run verbatim (INSTALL.md: sign "prints the exact
+  # command"). They used to single-quote a `$(cat KEY.pub)`, writing that
+  # literal text into allowed-signers, so every --key then failed.
+  _signcmds="$(grep -E '^    (mkdir -p ~/.config/openbeast|printf |echo )' <<< "$_out" || true)"
+  rm -rf "$T/hsign"; mkdir -p "$T/hsign"
+  (cd "$T" && HOME="$T/hsign" bash -c "$_signcmds") >/dev/null 2>&1
+  bsh verify ./wbundle --key "$T/hsign/.config/openbeast/allowed-signers"
+  if [[ $_rc -eq 0 ]] && has "$_out" "signature verified"; then
+    pass "the allowed-signers command sign prints, run verbatim, makes a file that verifies"
+  else
+    fail "printed allowed-signers command (rc=$_rc, cmds: $_signcmds, file: $(cat "$T/hsign/.config/openbeast/allowed-signers" 2>/dev/null)): $_out"
+  fi
 
   # NEGATIVE CONTROL first: the good path works — with a RELATIVE --key (9).
   bsh verify ./wbundle --key ./allowed

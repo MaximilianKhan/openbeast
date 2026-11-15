@@ -650,13 +650,27 @@ EOF
       || die "ssh-keygen could not sign $_m"
     ok "wrote $(basename "$_m").sig"
     _fp="$(ssh-keygen -lf "${KEY}.pub" 2>/dev/null | awk '{print $2}' || true)"
+    # THE LITERAL KEY LINE, not a `$(cat KEY.pub)` for the operator to run:
+    # that used to be printed inside single quotes, so running it verbatim
+    # wrote the text "$(cat …)" into allowed-signers and every later --key
+    # failed "no principal matched" — and the closed box has no KEY.pub at
+    # the build box's path anyway. Single quotes in it are escaped for the shell.
+    _publine="$(head -n 1 "${KEY}.pub" 2>/dev/null || true)"
+    if [[ -n "$_publine" ]]; then
+      _sq="'\\''"
+      _al="${IDENT:-builder} ${_publine}"
+      _al_cmd="printf '%s\\n' '${_al//\'/$_sq}' > ~/.config/openbeast/allowed-signers"
+    else
+      _al_cmd="(no ${KEY}.pub next to the key: write '${IDENT:-builder} <that public key line>' into ~/.config/openbeast/allowed-signers)"
+    fi
     cat <<EOF
 
   Signed with ${_fp:-that key}.
   On the closed box, verification needs an allowed-signers file — the same
   format ssh and git use, one line per key:
 
-    echo '${IDENT:-builder} \$(cat ${KEY}.pub)' > ~/.config/openbeast/allowed-signers
+    mkdir -p ~/.config/openbeast
+    $_al_cmd
 
   then:
     ./scripts/bundle.sh verify  $DIR --key ~/.config/openbeast/allowed-signers${IDENT:+ --identity $IDENT}
