@@ -181,6 +181,23 @@ def test_off_switch_from_openbeast_conf(monkeypatch, tmp_path):
     assert PC.setting()[0] == "auto"                        # absent = default
 
 
+def test_an_appended_override_wins_like_conf_sh(monkeypatch, tmp_path):
+    """openbeast.conf is edited by APPENDING, and conf.sh / runner.py read the
+    LAST assignment. beast-lang read the first, so an appended `off` stayed
+    `auto` for the pack context and language_reference (ops review)."""
+    monkeypatch.delenv("OPENBEAST_LANG_PACK_CONTEXT", raising=False)
+    monkeypatch.delenv("OPENBEAST_LANG_PACKS", raising=False)
+    (tmp_path / "openbeast.conf").write_text(
+        "LANG_PACK_CONTEXT=auto\nLANG_PACKS=auto\n# ...\n"
+        "LANG_PACK_CONTEXT=off\nLANG_PACKS=off\n")
+    monkeypatch.setattr(P, "_REPO", str(tmp_path))
+    assert PC.setting()[0] == "off"
+    assert P.allow_list() == ("off", [])
+    # Negative control: a single assignment still reads as written.
+    (tmp_path / "openbeast.conf").write_text("LANG_PACK_CONTEXT=auto\n")
+    assert PC.setting()[0] == "auto"
+
+
 def test_lang_packs_without_zig_disables_it(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENBEAST_LANG_PACKS", "cpp,go")
     assert _ctx("write zig", str(tmp_path))[0] is None
