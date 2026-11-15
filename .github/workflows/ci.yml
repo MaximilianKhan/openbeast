@@ -238,6 +238,11 @@ jobs:
       - name: Inference backend tests (vLLM / TensorFold, unmanaged)
         run: bash tests/test_backends.sh
 
+      # spark-cluster.sh for 1 to 8 nodes: ssh and the node probes are stubs
+      # that answer per node, so topology, ordering and refusals run here.
+      - name: DGX Spark cluster tests (1-8 nodes)
+        run: bash tests/test_spark_cluster.sh
+
       # The Tier-3 campaign harness in a stub repo: the benchmark, era,
       # engine and verdict are stubs, so no GPU or server is touched.
       - name: Tier-3 campaign harness tests

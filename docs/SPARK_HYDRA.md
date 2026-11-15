@@ -115,6 +115,61 @@ time** (4 queued requests wait 16-20 s). DFlash2 wins; kept. Not yet tried:
 `PARALLEL=8` (needs a larger memory reserve; spark-1 has ~10 GiB free with the
 command center up — unified memory freezes rather than OOMs).
 
+## Scaling: 1 to 8 Sparks
+
+Everything here works for a cluster of **1 to 8** DGX Sparks, one GPU each,
+one tensor-parallel rank per Spark (so a profile's `TENSOR_PARALLEL_SIZE` is
+the node count). Our own pair is the N = 2 case.
+
+**Cabling and addressing**
+
+| Sparks | Fabric | Notes |
+|---|---|---|
+| 1 | none | `TENSOR_PARALLEL_SIZE=1`, rank 0 only |
+| 2 | one QSFP cable | both PCIe "rails" of the port are used when both twins are addressed (NVIDIA Sync does it) |
+| 3 | a cabled ring: each Spark's port 0 to the next Spark's port 1, a subnet per cable; or a switch | a *mirrored* ring leaves one pair with no common subnet; `spark-cluster.sh check` names it |
+| 4-8 | a RoCE-capable 200 GbE switch, every node on the fabric subnet(s) | each Spark has two QSFP ports, so no cabled topology reaches past 3 |
+
+**Bring-up, per node:** `sudo scripts/backends/spark-root-setup.sh spark-N`
+(it admits each ConnectX link's own private subnet, so the same rule serves
+a cable, a ring and a switch), the repo at the same path on every node, and
+each node's own `scripts/backends/spark.env` (`SPARK_IFACE` / `SPARK_IB_HCA`
+may list several rails, comma-separated; `SPARK_HEAD_IP` = rank 0's fabric
+address).
+
+**From the head**, list the nodes in rank order in
+`scripts/backends/cluster.env` (from `cluster.env.example`), then:
+
+```bash
+scripts/backends/spark-cluster.sh check                          # every node + the fabric pairing
+scripts/backends/spark-cluster.sh sync-weights --profile NAME    # rsync over the fabric, verify vs the lock
+scripts/backends/spark-cluster.sh sync-image IMAGE               # docker save | load where it differs
+scripts/backends/spark-cluster.sh start --profile NAME [--engine tensorfold|vllm]
+scripts/backends/spark-cluster.sh status
+scripts/backends/spark-cluster.sh stop  --profile NAME
+```
+
+`start` launches ranks N-1..1 and then 0, each with its own
+`spark-node.sh --rank R`; `stop` goes 0 first. `--dry-run` prints every
+command. Offline: weights and images never leave the fabric, and
+`save-image IMAGE FILE` writes an image for a cluster with no registry.
+
+**Which engine scales how far** (as of 2026-11-15):
+
+| Engine | Ranks | |
+|---|---|---|
+| Mia-AiLab GLM recipe (TensorFold v0.6.0 + patches) | 2 (`start.sh`), 3 (`start-tp3.sh`, experimental) | what serves our pair; its own scripts drive the ranks |
+| native TensorFold >= 1.0 | GLM up to 16 (`TF_GLM_WORLD`); other families `--tp` 1/2/4/8 | `spark-node.sh` places GLM by env, others by flags |
+| vLLM (native multi-node) | `--nnodes N`, TP = N | the model's head count must divide by N |
+
+Whether a model *fits* at N is a memory question: `model-inspect.sh` reports
+the smallest N that holds the weights with KV room.
+
+**Several smaller groups instead of one big one:** e.g. 4 Sparks as two
+independent pairs, each its own hydra node (`[nodes.pairA]`, `[nodes.pairB]`,
+both in one route), trades the long single-request context of TP 4 for twice
+the concurrent capacity.
+
 ## Day-to-day
 
 ```bash
