@@ -365,3 +365,127 @@ def test_header_mode_denial_row_keeps_header_identity(workspace, monkeypatch):
            headers={**GUEST, "X-OpenWebUI-User-Id": "prober"})
     row = _rows(os.environ["OPENBEAST_TOOL_AUDIT_PATH"])[-1]
     assert row["user"] == "prober" and "claimed_user" not in row
+
+
+# --- 2026-11 systems review: pre-body gate, audit hardening -----------------
+
+def _asgi_post(app, path, headers, receive):
+    """Drive the ASGI app by hand, so a test controls (and can forbid) the
+    body read. Returns (status, body bytes)."""
+    import asyncio
+    scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
+             "method": "POST", "scheme": "http", "path": path,
+             "raw_path": path.encode(), "root_path": "", "query_string": b"",
+             "server": ("127.0.0.1", 3001), "client": ("127.0.0.1", 50000),
+             "headers": [(k.lower().encode(), v.encode()) for k, v in headers]}
+    sent = []
+
+    async def send(msg):
+        sent.append(msg)
+
+    asyncio.run(app(scope, receive, send))
+    status = next(m["status"] for m in sent if m["type"] == "http.response.start")
+    body = b"".join(m.get("body", b"") for m in sent
+                    if m["type"] == "http.response.body")
+    return status, body
+
+
+def test_unauthenticated_body_is_never_read(workspace, monkeypatch):
+    """The key was checked INSIDE the endpoint, after FastAPI had read and
+    parsed the whole body: a keyless caller could make the process hold a
+    300 MB POST in (unified) memory. The key is now checked from the headers
+    before one body byte is received."""
+    monkeypatch.setenv("OPENBEAST_MCPO_ADMIN_KEY", "test-admin-key")
+    monkeypatch.setenv("OPENBEAST_MCPO_GUEST_KEY", "test-guest-key")
+    app = openapi_tools.create_app()
+
+    async def receive():
+        raise AssertionError("the body was read before the key check")
+
+    for hdrs, want in (([], 401), ([("authorization", "Bearer nope")], 403),
+                       ([("authorization", "Bearer test-guest-key")], 404)):
+        status, _ = _asgi_post(app, "/bash",
+                               [("host", "127.0.0.1:3001"),
+                                ("content-type", "application/json"),
+                                ("content-length", "300000000")] + hdrs,
+                               receive)
+        assert status == want, (hdrs, status)
+    denied = [e for e in _rows(os.environ["OPENBEAST_TOOL_AUDIT_PATH"])
+              if e["profile"] == "denied"]
+    assert len(denied) == 3 and all(e["tool"] == "bash" for e in denied)
+
+
+def test_malformed_body_without_key_is_401_not_422(workspace, monkeypatch):
+    """Validation used to run first: no key + a bad body was a 422 that
+    echoed the input back and wrote no audit row."""
+    c = _keyed(monkeypatch)
+    r = c.post("/bash", content=b"{not json",
+               headers={"Content-Type": "application/json"})
+    assert r.status_code == 401
+    assert "not json" not in r.text
+    assert _rows(os.environ["OPENBEAST_TOOL_AUDIT_PATH"])[-1]["profile"] == "denied"
+
+
+def test_oversized_body_is_413(workspace, monkeypatch):
+    """A body cap, on Content-Length AND on a streamed (chunked) body, so even
+    a key holder cannot park an unbounded body in memory."""
+    monkeypatch.setenv("OPENBEAST_TOOLS_MAX_BODY_BYTES", "1024")
+    c = _keyed(monkeypatch)
+    big = {"path": "x.md", "content": "y" * 4096}
+    r = c.post("/write_file", json=big, headers=ADMIN)
+    assert r.status_code == 413
+    assert not (workspace / "x.md").exists()
+
+    def chunks():
+        yield b'{"path": "x.md", "content": "'
+        for _ in range(8):
+            yield b"y" * 512
+        yield b'"}'
+
+    r = c.post("/write_file", content=chunks(),
+               headers={**ADMIN, "Content-Type": "application/json"})
+    assert r.status_code == 413
+    assert not (workspace / "x.md").exists()
+    rows = [e for e in _rows(os.environ["OPENBEAST_TOOL_AUDIT_PATH"])
+            if "413" in e.get("error", "")]
+    assert len(rows) == 2 and all(e["profile"] == "admin" for e in rows)
+    # Negative control: a body under the cap still goes through.
+    r = c.post("/write_file", json={"path": "x.md", "content": "small"},
+               headers=ADMIN)
+    assert r.status_code == 200 and (workspace / "x.md").read_text() == "small"
+
+
+def test_validation_failure_is_audited(workspace, monkeypatch):
+    """A 422 for malformed arguments (key valid) reaches the trail + metrics."""
+    c = _keyed(monkeypatch)
+    r = c.post("/bash", json={"bad": 1}, headers=ADMIN)
+    assert r.status_code == 422
+    row = _rows(os.environ["OPENBEAST_TOOL_AUDIT_PATH"])[-1]
+    assert row["tool"] == "bash" and row["ok"] is False and "422" in row["error"]
+    assert row["profile"] == "admin"
+    assert 'tool="bash",profile="admin",outcome="error"' in c.get("/metrics").text
+
+
+def test_workdir_escape_is_audited(workspace, monkeypatch):
+    def stub(task: str, workdir: str = ".", max_iter: int = 200,
+             context: str = "", base_url: str = "") -> str:
+        return "agent stub"
+
+    monkeypatch.setattr(openapi_tools.impl, "start_agent", stub)
+    c = TestClient(openapi_tools.create_app(), base_url="http://127.0.0.1:3001")
+    r = c.post("/start_agent", json={"task": "t", "workdir": "../../../../etc"},
+               headers={"X-OpenWebUI-User-Id": "alice"})
+    assert r.status_code == 400
+    row = _rows(os.environ["OPENBEAST_TOOL_AUDIT_PATH"])[-1]
+    assert row["tool"] == "start_agent" and row["ok"] is False
+    assert row["user"] == "alice" and "escapes" in row["error"]
+    assert 'tool="start_agent"' in c.get("/metrics").text
+
+
+
+
+
+
+
+
+
