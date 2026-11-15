@@ -76,55 +76,29 @@ if [[ ! -f "$MODEL" ]]; then
 fi
 
 # --- Model registry enforcement (supply chain for weights) -----------------
-# Container images are digest-pinned and Python deps are hash-pinned; weights
-# are the one shipped artifact too big to vendor, so scripts/weights.registry
-# pins each by sha256 + byte size. This checks the file we are ABOUT to load.
-#
-# Default is `warn`, deliberately: a hard refusal here cannot start the stack,
-# and someone serving a legitimately unlisted local GGUF should not be locked
-# out by an upgrade. `strict` turns it into a refusal for installs that want
-# supply-chain enforcement. `off` silences it entirely.
-# Size-only by design — a sha256 of 20 GB on every launch would add minutes to
-# every start; `./scripts/verify-weights.sh --deep` is the hash-level check.
-_wr_enforce="${WEIGHT_ENFORCE:-warn}"
-case "$_wr_enforce" in
-  warn|strict|off) ;;
-  *) echo "WARNING: WEIGHT_ENFORCE='$_wr_enforce' is not warn|strict|off — using warn" >&2
-     _wr_enforce="warn" ;;
-esac
-if [[ "$_wr_enforce" != "off" && -f "$SCRIPT_DIR/weights.registry" && -f "$MODEL" ]]; then
-  _wr_name="$(basename "$MODEL")"
-  _wr_row="$(awk -F'\t' -v n="$_wr_name" '$0 !~ /^#/ && $3 == n {print; exit}' \
-             "$SCRIPT_DIR/weights.registry" || true)"
-  if [[ -z "$_wr_row" ]]; then
-    _wr_msg="weight '$_wr_name' is NOT in scripts/weights.registry (unpinned)"
-    _wr_hint="add a row (sha256<TAB>bytes<TAB>filename<TAB>repo<TAB>remote) or set WEIGHT_ENFORCE=off"
-  else
-    _wr_want="$(printf '%s' "$_wr_row" | cut -f2)"
-    _wr_have="$(stat -L -c%s "$MODEL" 2>/dev/null || echo 0)"
-    if [[ "$_wr_want" != "0" && "$_wr_have" != "$_wr_want" ]]; then
-      _wr_msg="weight '$_wr_name' is ${_wr_have} bytes, registry pins ${_wr_want}"
-      _wr_hint="re-download, or re-pin only after vetting: ./scripts/verify-weights.sh --deep"
-    else
-      _wr_msg=""
-    fi
-  fi
-  if [[ -n "${_wr_msg:-}" ]]; then
-    if [[ "$_wr_enforce" == "strict" ]]; then
-      echo "Error: $_wr_msg" >&2
-      echo "       $_wr_hint" >&2
-      echo "       (WEIGHT_ENFORCE=strict — set warn/off in openbeast.conf to proceed)" >&2
-      # Exit 3, not 1: start.sh's MODEL_ROLLBACK cannot distinguish a crash
-      # from a deliberate supply-chain refusal, and would "recover" by
-      # silently serving a DIFFERENT model — the opposite of what strict
-      # mode is for. A distinct code lets the supervisor refuse to roll back.
-      echo "       (exit 3 = supply-chain refusal; rollback must NOT substitute another model)" >&2
-      exit 3
-    fi
-    echo "WARNING: $_wr_msg" >&2
-    echo "         $_wr_hint" >&2
-  fi
-fi
+# Every weight file this launch loads — the -m file, all shards of a split
+# GGUF, and any --mmproj / -md draft — is checked against
+# scripts/weights.registry (lib/weightcheck.sh has the rules). Default `warn`;
+# `strict` refuses with exit 3; `off` silences it. Size-only by design;
+# `./scripts/verify-weights.sh --deep` is the hash-level check.
+source "$SCRIPT_DIR/lib/weightcheck.sh"
+WEIGHT_FILES=()
+while IFS= read -r _wf; do WEIGHT_FILES+=("$_wf"); done \
+  < <(ob_weight_files "$MODEL" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"})
+_wr_rc=0
+ob_weight_enforce "$SCRIPT_DIR/weights.registry" "${WEIGHT_ENFORCE:-warn}" "${WEIGHT_FILES[@]}" || _wr_rc=$?
+[[ $_wr_rc -eq 0 ]] || exit "$_wr_rc"
+
+# Weights kept in host RAM (MoE experts on the CPU, or no GPU layers at all):
+# the GGUF size then says nothing about VRAM, and everything about RAM.
+WEIGHTS_IN_HOST_RAM=0
+[[ "$GPU_LAYERS" == "0" ]] && WEIGHTS_IN_HOST_RAM=1
+for _a in ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}; do
+  case "$_a" in
+    --n-cpu-moe|-ncmoe|--n-cpu-moe=*|--cpu-moe|-cmoe|--override-tensor|-ot|--override-tensor=*)
+      WEIGHTS_IN_HOST_RAM=1 ;;
+  esac
+done
 
 # --- Adaptive context (Hardware Profiles Phase 2) --------------------------
 # The shipped -c values are MEASURED on the 32 GB reference card (RTX 5090).
@@ -179,14 +153,20 @@ elif [[ "${OPENBEAST_AUTO_CONTEXT:-1}" == "1" ]]; then
       vram_what="${OB_GPU_COUNT} GPUs (${OB_VRAM_TOTAL_MB} MiB total, ${vram} MiB budgeted)"
     fi
   fi
-  weights_mib=0
-  [[ -f "$MODEL" ]] && weights_mib=$(( ($(stat -L -c '%s' "$MODEL") + 1048575) / 1048576 ))
+  # Every file of the set: shard 1 alone of a 3-shard GGUF was 42.7 of its
+  # 97 GB, and the --mmproj / draft weights sit in VRAM too.
+  weights_mib="$(ob_weight_set_mib "${WEIGHT_FILES[@]}")"
   # rc=0 capture-then-|| : under `set -e`, a plain `scaled=$(...)` with a
   # nonzero exit would kill the script HERE — the rc=2 "weights don't fit"
   # branch below was unreachable and small-card users got a silent exit.
   rc=0
   scaled=$(ob_scale_context "$CONTEXT" "$vram" "$weights_mib") || rc=$?
-  if [[ $rc -eq 2 ]]; then
+  if [[ $WEIGHTS_IN_HOST_RAM -eq 1 ]]; then
+    # How much of the GGUF lands on the GPU is up to --n-cpu-moe / -ot, not
+    # this script: scaling on the whole file "forced -c 8192" on cards the
+    # launch fits. The script's measured -c stands.
+    [[ "$scaled" != "$CONTEXT" ]] && echo "Context: $CONTEXT kept — this launch keeps weights in host RAM, so the GGUF size (~${weights_mib} MiB) is not its VRAM cost. Override: OPENBEAST_CONTEXT=<n>."
+  elif [[ $rc -eq 2 ]]; then
     echo "Warning: ${vram_what} can't hold this model's weights (~${weights_mib} MiB) + 2 GB headroom — try a smaller quant. Forcing -c ${scaled}." >&2
     CONTEXT="$scaled"
   elif [[ "$scaled" -lt "$CONTEXT" ]]; then

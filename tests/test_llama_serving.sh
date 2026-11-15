@@ -102,6 +102,56 @@ _vw_rc=0; _vw_out="$(env -i HOME="$VW" PATH=/usr/bin:/bin OPENBEAST_WEIGHTS_DIR=
   || fail "verify-weights.sh on a symlinked weight (rc=$_vw_rc): $(tr '\n' ' ' <<< "$_vw_out")"
 
 echo ""
+echo "the whole weight set is checked (split shards, --mmproj, -md):"
+for _i in 1 2 3; do head -c 2048 /dev/zero > "$SV/weights/Big-0000${_i}-of-00003.gguf"; done
+_pin Big-00001-of-00003.gguf; _pin Big-00002-of-00003.gguf 9999; _pin Big-00003-of-00003.gguf
+_serve OPENBEAST_WEIGHT_ENFORCE=strict -- -m "$SV/weights/Big-00001-of-00003.gguf" -c 8192
+if [[ $SV_RC -eq 3 ]] && ! _launched && [[ "$SV_OUT" == *"Big-00002-of-00003.gguf' is 2048 bytes, registry pins 9999"* ]]; then
+  pass "strict refuses (exit 3) when shard 2 of a split GGUF has the wrong size"
+else
+  fail "a wrong-size shard 2 under strict (rc=$SV_RC): $(tr '\n' ' ' <<< "$SV_OUT")"
+fi
+head -c 100 /dev/zero > "$SV/weights/proj.gguf"; _pin proj.gguf 101
+head -c 4096 /dev/zero > "$SV/weights/main.gguf"; _pin main.gguf
+_serve OPENBEAST_WEIGHT_ENFORCE=strict -- -m "$SV/weights/main.gguf" -c 8192 --mmproj "$SV/weights/proj.gguf"
+[[ $SV_RC -eq 3 ]] && ! _launched && [[ "$SV_OUT" == *"'proj.gguf' is 100 bytes"* ]] \
+  && pass "…and a wrong-size --mmproj" || fail "a wrong-size --mmproj under strict (rc=$SV_RC): $(tr '\n' ' ' <<< "$SV_OUT")"
+head -c 100 /dev/zero > "$SV/weights/draft.gguf"
+_serve OPENBEAST_WEIGHT_ENFORCE=strict -- -m "$SV/weights/main.gguf" -c 8192 -md "$SV/weights/draft.gguf"
+[[ $SV_RC -eq 3 ]] && ! _launched && [[ "$SV_OUT" == *"'draft.gguf' is NOT in scripts/weights.registry"* ]] \
+  && pass "…and an unpinned -md draft model" || fail "an unpinned -md under strict (rc=$SV_RC): $(tr '\n' ' ' <<< "$SV_OUT")"
+head -c 100 /dev/zero > "$SV/weights/pending.gguf"
+printf 'PENDING\t0\tpending.gguf\torg/repo\t-\n' >> "$SV/scripts/weights.registry"
+_serve OPENBEAST_WEIGHT_ENFORCE=strict -- -m "$SV/weights/main.gguf" -c 8192 --mmproj "$SV/weights/pending.gguf"
+[[ $SV_RC -eq 3 ]] && ! _launched && [[ "$SV_OUT" == *"'pending.gguf' is pinned PENDING"* ]] \
+  && pass "…and a PENDING row (nothing to check the file against)" || fail "a PENDING-pinned file under strict (rc=$SV_RC): $(tr '\n' ' ' <<< "$SV_OUT")"
+_pin Big-00002-of-00003.gguf   # the right size; first matching row wins, so rebuild
+grep -v $'\tBig-00002-of-00003.gguf\t' "$SV/scripts/weights.registry" > "$SV/reg.tmp"; mv "$SV/reg.tmp" "$SV/scripts/weights.registry"; _pin Big-00002-of-00003.gguf
+_pin draft.gguf; grep -v $'\tproj.gguf\t' "$SV/scripts/weights.registry" > "$SV/reg.tmp"; mv "$SV/reg.tmp" "$SV/scripts/weights.registry"; _pin proj.gguf
+_serve OPENBEAST_WEIGHT_ENFORCE=strict -- -m "$SV/weights/Big-00001-of-00003.gguf" -c 8192 --mmproj "$SV/weights/proj.gguf" -md "$SV/weights/draft.gguf"
+[[ $SV_RC -eq 0 ]] && _launched && pass "…a fully pinned set (3 shards, mmproj, draft) launches under strict (control)" \
+  || fail "a fully pinned weight set was refused (rc=$SV_RC): $(tr '\n' ' ' <<< "$SV_OUT")"
+_serve OPENBEAST_WEIGHT_ENFORCE=warn -- -m "$SV/weights/main.gguf" -c 8192 --mmproj "$SV/weights/pending.gguf"
+[[ $SV_RC -eq 0 ]] && _launched && [[ "$SV_OUT" == *"WARNING: weight 'pending.gguf' is pinned PENDING"* ]] \
+  && pass "…and warn mode warns about the extra file but launches" || fail "warn mode on a PENDING mmproj (rc=$SV_RC): $(tr '\n' ' ' <<< "$SV_OUT")"
+# The scaler counts every shard: three 6 GiB shards cost what one 18 GiB file does.
+for _i in 1 2 3; do truncate -s 6442450944 "$SV/weights/Six-0000${_i}-of-00003.gguf"; done
+truncate -s 19327352832 "$SV/weights/Eighteen.gguf"
+printf '24564\n' > "$SV/gpus"
+_serve OPENBEAST_WEIGHT_ENFORCE=off -- -m "$SV/weights/Six-00001-of-00003.gguf" -c 262144; _c_split="$(_sv_arg -c)"
+_serve OPENBEAST_WEIGHT_ENFORCE=off -- -m "$SV/weights/Eighteen.gguf" -c 262144;          _c_one="$(_sv_arg -c)"
+[[ -n "$_c_one" && "$_c_split" == "$_c_one" ]] && pass "the context scaler sums the shards of a split GGUF (-c $_c_split)" \
+  || fail "split GGUF context: -c '$_c_split', one file of the same total: -c '$_c_one'"
+# With expert weights kept in host RAM the GGUF size says nothing about VRAM:
+# no scaling and no false "can't hold this model's weights".
+_serve OPENBEAST_WEIGHT_ENFORCE=off -- -m "$SV/weights/Six-00001-of-00003.gguf" -c 262144 --n-cpu-moe 35
+[[ "$(_sv_arg -c)" == "262144" && "$SV_OUT" != *"can't hold this model"* && "$SV_OUT" == *"host RAM"* ]] \
+  && pass "…and leaves -c alone (with a note) when --n-cpu-moe keeps weights in host RAM" \
+  || fail "--n-cpu-moe launch was context-scaled: -c '$(_sv_arg -c)' :: $(grep -i context <<< "$SV_OUT" | tr '\n' ' ')"
+: > "$SV/gpus"
+
+echo ""
+echo ""
 echo "========================================"
 echo "llama-serving: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]
