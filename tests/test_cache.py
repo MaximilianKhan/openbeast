@@ -565,3 +565,17 @@ def test_harness_fingerprint_ignores_prose_but_sees_code(tmp_path):
     # So does the validator timeout.
     p.write_text(src.replace("VALIDATION_TIMEOUT_S = 30", "VALIDATION_TIMEOUT_S = 45", 1))
     assert cache.harness_fingerprint(p) != base
+
+
+def test_harness_fingerprint_sees_the_jobs_contention_scale(tmp_path):
+    """The --jobs wall-budget multiplier multiplies every parallel agent's
+    budget and validator timeout; it was computed inline in run_eval(),
+    outside every fingerprinted function, so changing it moved no era
+    (verifier finding on campaign-evals: fingerprint omits timeout_scale)."""
+    cache = fresh_cache_module(tmp_path / "c")
+    src = (ROOT / "evals" / "run_eval.py").read_text()
+    anchor = "1.0 + (jobs - 1) / 3.0"
+    assert anchor in src, f"test anchor gone from run_eval.py: {anchor}"
+    p = tmp_path / "run_eval.py"
+    p.write_text(src.replace(anchor, "1.0 + (jobs - 1) / 2.0", 1))
+    assert cache.harness_fingerprint(p) != cache.harness_fingerprint()

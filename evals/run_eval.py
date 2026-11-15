@@ -1360,6 +1360,16 @@ def validator_timed_out(text: str | None) -> bool:
     return bool(text) and text.startswith(VALIDATION_TIMED_OUT)
 
 
+def contention_scale(jobs: int) -> float:
+    """The --jobs multiplier on every agent's wall budget and validator
+    timeout. N concurrent streams share GPU bandwidth, so per-stream decode
+    slows with N (measured ~1.6x at jobs=4). Linear ramp with margin
+    (jobs=4 -> 2.0x) restores sequential-equivalent budgets; see run_agent's
+    docstring. A function, not an inline expression, so it is in
+    cache.HARNESS_FUNCTIONS and a change to it moves the era."""
+    return 1.0 if jobs == 1 else 1.0 + (jobs - 1) / 3.0
+
+
 def run_validation(task: dict, timeout_scale: float = 1.0) -> tuple[bool, str]:
     """Run validation. Returns (passed, output).
 
@@ -1623,11 +1633,7 @@ def run_eval(
                   f"running --jobs {jobs} unclamped; against an -np 1 (MTP) server "
                   f"this queues and trips per-task timeouts")
 
-    # Per-iteration wall budget scales with contention: N concurrent streams
-    # share GPU bandwidth, so per-stream decode slows with N (measured ~1.6×
-    # at jobs=4). Linear ramp with margin — jobs=4 → 2.0× — restores
-    # sequential-equivalent budgets; see run_agent's docstring.
-    timeout_scale = 1.0 if jobs == 1 else 1.0 + (jobs - 1) / 3.0
+    timeout_scale = contention_scale(jobs)
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")

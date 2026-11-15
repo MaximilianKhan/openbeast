@@ -69,11 +69,11 @@ CONTEXT_FILES = [
 ]
 
 # The parts of run_eval.py that decide what an agent sees and how a unit is
-# judged: its argv/env/wall budget, fixture setup and re-assertion, the
-# validator and its timeout. harness_fingerprint() hashes their AST (comments
+# judged: its argv/env/wall budget (and the --jobs contention multiplier on
+# it), fixture setup and re-assertion, the validator and its timeout. harness_fingerprint() hashes their AST (comments
 # and docstrings excluded, so prose edits move nothing).
 HARNESS_FUNCTIONS = ("run_agent", "_run_reaped", "run_setup", "run_pre_validate",
-                     "run_validation", "run_cleanup")
+                     "run_validation", "run_cleanup", "contention_scale")
 HARNESS_CONSTANTS = ("VALIDATION_TIMEOUT_S",)
 
 
