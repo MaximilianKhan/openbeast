@@ -548,7 +548,7 @@ _island_line() {
   local st; st="$(OPENBEAST_RUN_DIR="${ISLAND_STATE_DIR:-$RUN_DIR}" python3 "$SCRIPT_DIR/agents/island.py" status 2>/dev/null || true)"
   echo "  beast-island:  ${st:-unknown}"
   if [[ "$st" == ISLAND* ]]; then
-    echo "                 everything local works; web_search/fetch answer \"offline\""
+    echo "                 everything local works; web_search/fetch/weather answer \"offline\""
   fi
   return 0
 }

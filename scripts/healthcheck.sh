@@ -859,7 +859,7 @@ if [[ -f "$REPO_DIR/agents/island.py" ]]; then
     [[ "$(OPENBEAST_RUN_DIR="${ISLAND_STATE_DIR:-$REPO_DIR/.run}" python3 "$REPO_DIR/agents/island.py" status --net 2>/dev/null || true)" == "down" ]] \
       && ISLAND_NET_DOWN=1
     echo "  ISLE Network: $_isl"
-    echo "       (everything local works; web_search/fetch answer \"offline\")"
+    echo "       (everything local works; web_search/fetch/weather answer \"offline\")"
   elif [[ "${ISLAND:-auto}" != "off" ]]; then
     echo "  --   Network: ${_isl:-unknown}"
   fi

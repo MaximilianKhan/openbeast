@@ -8,13 +8,14 @@
 
 ## Why this exists
 
-Everything OpenBeast does is local except two tools, `web_search` and `fetch`.
+Everything OpenBeast does is local except three tools: `web_search`, `fetch`
+and, on the Open WebUI tool server, `weather` (Open-Meteo).
 So an installed rig already *works* with no internet. What it did badly was
 **waiting**:
 
 | Without beast-island | With it |
 |---|---|
-| Each `web_search` / `fetch` stalls for seconds per call: SearXNG engine timeouts, or DNS followed by a 30 s socket timeout. The model then retries | They answer at once: *"ISLAND MODE … do not retry"* |
+| Each `web_search` / `fetch` / `weather` stalls for seconds per call: SearXNG engine timeouts, or DNS followed by a 30 s socket timeout. The model then retries | They answer at once: *"ISLAND MODE … do not retry"* |
 | Booting with no internet: Open WebUI auto-updates its embedding models from Hugging Face on every start and stalls | A launch with no route boots islanded: Open WebUI starts in `OFFLINE_MODE`, compose never pulls |
 | `healthcheck.sh` counts an offline Tailscale as DOWN and, under `--restart` with passwordless sudo, restarts `tailscaled` on every run | With no internet it's reported as *expected in island mode*: not counted, not restarted |
 | Nothing tells you what state you are in | `./start.sh --status`, `healthcheck.sh` and `doctor` all say it |
@@ -67,7 +68,7 @@ forced. Rejoin with: ./stop.sh && ./start.sh -d"*.
 
 | Piece | Behaviour |
 |---|---|
-| `web_search`, `fetch` (OpenCode MCP and the Open WebUI `:3001` tool server, one code path) | Return the island refusal immediately; no network call is attempted. The `:3001` audit row records the call as `ok` (the refusal is a normal tool answer) |
+| `web_search`, `fetch` (OpenCode MCP and the Open WebUI `:3001` tool server, one code path), and `weather` (`:3001` only) | Return the island refusal immediately; no network call is attempted. The `:3001` audit row records the call as `ok` (the refusal is a normal tool answer) |
 | Open WebUI's built-in **Web Search** toggle | **Not guarded.** It calls SearXNG directly, not through the tools, so it returns empty results after SearXNG's engine timeouts |
 | Every other tool, the model, agents, skills, files, beast-chat, beast-artifact | Unchanged; all local |
 | `docker compose up` | `--pull never` when islanded **at launch** (images must already be local, which they are on an installed rig) |
@@ -111,7 +112,7 @@ start.sh (supervisor)
         exits when the supervisor is gone; removes its own file on exit
 
 consumers read island.json
-  mcp_server.fetch / web_search ──► island.web_refusal()  (served by :3001 too)
+  mcp_server.fetch / web_search / weather ──► island.web_refusal()  (served by :3001 too)
   start.sh --status · healthcheck.sh · doctor.sh ──► island.py status
   conf.sh ──► island.py status --webui-offline  (for compose restarts)
 ```
