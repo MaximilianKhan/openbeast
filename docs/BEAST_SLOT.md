@@ -148,7 +148,10 @@ serves. `refresh-config` pins the id `/api/slot` reports whenever
 
 `GET https://<rig>:8444/api/slot` — read-only JSON. `--publish-slot` mounts
 *only* this path (`tailscale serve --set-path`), so the dashboard's HTML page
-and `/api/status` stay rig-local. The answer is gathered at most once every
+and `/api/status` stay rig-local. If that path-scoped mount fails, the script
+exits with an error and mounts nothing wider. The whole dashboard is mounted
+on `:8444` in only one case: a tailscale build whose `serve --help` has no
+`--set-path` at all. The script prints a NOTE when it does that. The answer is gathered at most once every
 1.5 s and shared by every caller in that window, so it can be up to 1.5 s
 old; do not poll faster than that. The dashboard serves at most 16
 connections at once and answers **503** with `Retry-After: 1` beyond that —
