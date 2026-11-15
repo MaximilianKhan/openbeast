@@ -123,6 +123,28 @@ elif [[ "${CI:-}" == "true" ]]; then
 else
   echo "  SKIP: no /proc/net/tcp on this OS"
 fi
+# A non-dumpable listener (beast-chat and the tool server harden themselves,
+# tools.harden_process): `ss -p` shows the socket but no pid, so the holder
+# is unknown. It used to read as "someone else's", and start.sh never called
+# a hardened beast-chat ready.
+if [[ "$(uname -s)" == Linux ]]; then
+  P_ND="$(free_port)"
+  python3 -c "import ctypes,runpy,sys; ctypes.CDLL(None).prctl(4,0,0,0,0); sys.argv=sys.argv[1:]; runpy.run_path(sys.argv[0])" \
+    "$T/health.py" "$P_ND" & ND_PID=$!; PIDS="$PIDS $ND_PID"
+  wait_listen "$P_ND" || fail "the non-dumpable health server never listened on $P_ND"
+  _rc=0; ob_pid_owns_port "$ND_PID" "$P_ND" || _rc=$?
+  if [[ $_rc -eq 0 || $_rc -eq 2 ]]; then
+    pass "a non-dumpable listener is ours-or-unknown (rc=$_rc), never 'someone else's'"
+  else
+    fail "ob_pid_owns_port called our non-dumpable server foreign (rc=$_rc; pids: $(ob_port_pids "$P_ND" | tr '\n' ' '))"
+  fi
+  _rc=0; ob_pid_owns_port "$ND_PID" "$P_FREE" || _rc=$?
+  [[ $_rc -eq 1 ]] && pass "…and a port nobody listens on is still 1 (control)" \
+    || fail "ob_pid_owns_port on a free port: rc=$_rc"
+  kill "$ND_PID" 2>/dev/null || true
+else
+  echo "  SKIP: prctl is Linux-only"
+fi
 
 # ---------------------------------------------------------------------------
 echo ""
@@ -481,6 +503,26 @@ if has "$_O" "CHAT_NOTIFY_URL is set but BEAST_CHAT is off"; then
   pass "a notify URL without beast-chat WARNs (nothing would send it)"
 else
   fail "notify without chat: $(row 'notif')"
+fi
+# extensions-ntfy review: beast-chat drops a word that is not a terminal
+# state, so CHAT_NOTIFY_ON=error sent nothing behind a doctor `pass`.
+doctor BEAST_CHAT=true "CHAT_NOTIFY_URL=http://127.0.0.1:3005/$TOPIC" "CHAT_NOTIFY_ON=error"
+if has "$_O" "CHAT_NOTIFY_ON: 'error' is not a session state; NO session state will notify"; then
+  pass "CHAT_NOTIFY_ON with no valid state WARNs that nothing will notify"
+else
+  fail "CHAT_NOTIFY_ON=error: $(row 'NOTIFY_ON|notif')"
+fi
+doctor BEAST_CHAT=true "CHAT_NOTIFY_URL=http://127.0.0.1:3005/$TOPIC" "CHAT_NOTIFY_ON=Failed, fail,done"
+if has "$_O" "CHAT_NOTIFY_ON: 'fail' is not a session state; it is ignored" && ! has "$_O" "'failed'"; then
+  pass "…a partial typo WARNs about the one word (case and spaces are fine, as beast-chat reads them)"
+else
+  fail "CHAT_NOTIFY_ON partial: $(row 'NOTIFY_ON|notif')"
+fi
+doctor BEAST_CHAT=true "CHAT_NOTIFY_URL=http://127.0.0.1:3005/$TOPIC" "CHAT_NOTIFY_ON=failed,stopped"
+if ! has "$_O" "CHAT_NOTIFY_ON:"; then
+  pass "…and a valid CHAT_NOTIFY_ON stays quiet (control)"
+else
+  fail "valid CHAT_NOTIFY_ON warned: $(row 'NOTIFY_ON')"
 fi
 doctor BEAST_CHAT=true "CHAT_NOTIFY_URL=ntfy.example/$TOPIC"
 if has "$_O" "CHAT_NOTIFY_URL is not an http(s) URL"; then

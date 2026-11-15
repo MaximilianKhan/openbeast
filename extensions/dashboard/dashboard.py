@@ -61,6 +61,37 @@ _INFER = (os.environ.get("OPENBEAST_INFERENCE_URL", "").strip().rstrip("/")
           or f"http://{H}:8080")
 
 
+
+# DNS rebinding: a page the operator opens on the rig can re-point its own
+# name at 127.0.0.1 and read the rig-local routes (the page, /api/status) as
+# same-origin. A loopback bind does not stop that; a Host pin does. The same
+# list beast-chat, beast-artifact and the tool server answer to (loopback,
+# this machine's name, *.ts.net), plus any IP literal: rebinding needs a
+# NAME, and a literal is answered by whatever owns it (us, on a LAN or
+# tailnet BIND). Extra names: OPENBEAST_DASHBOARD_ALLOWED_HOSTS (or the
+# bare DASHBOARD_ALLOWED_HOSTS), comma-separated.
+ALLOWED_HOSTS = _hostpolicy.trusted_hosts(",".join(filter(None, (
+    os.environ.get("OPENBEAST_DASHBOARD_ALLOWED_HOSTS", ""),
+    os.environ.get("DASHBOARD_ALLOWED_HOSTS", "")))))   # the bare name, too
+
+
+def host_ok(values):
+    """True when the request's Host header(s) may see a rig-local route."""
+    if len(values) != 1:
+        return False                 # none, or two answers to "which host"
+    return (_hostpolicy.host_allowed(values[0], ALLOWED_HOSTS)
+            or _hostpolicy.is_ip_literal(values[0]))
+
+
+def _endpoint(url):
+    """host:port of the inference URL, for the page ("127.0.0.1:8000")."""
+    rest = url.split("//", 1)[-1].split("/", 1)[0]
+    rest = rest.rsplit("@", 1)[-1]   # never a userinfo part
+    if rest.endswith("]") or ":" not in rest:
+        rest += ":443" if url.startswith("https://") else ":80"
+    return rest
+
+
 def _conf_slots():
     """INFERENCE_SLOTS: the concurrency a server that exposes none was
     launched with (vLLM --max-num-seqs, TensorFold --parallel), or None."""
@@ -215,7 +246,37 @@ def gpu_status():
         return None
 
 
-def _parse_gpus(out):
+def _smi_int(v):
+    """One nvidia-smi field as an int; None for "[N/A]" / "[Not Supported]".
+
+    A unified-memory GPU (the DGX Spark's GB10) has no VRAM of its own and
+    answers memory.used / memory.total with the literal "[N/A]". int() on
+    that raised, and the whole GPU card read "no GPU detected" on a rig whose
+    name, utilisation and temperature were all readable.
+    """
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return None
+
+
+def _meminfo_mib(path="/proc/meminfo"):
+    """(used, total) host RAM in MiB, the pool a unified-memory GPU draws
+    from (MemTotal - MemAvailable, as lib/hardware.sh sizes it), or None."""
+    try:
+        vals = {}
+        with open(path) as f:
+            for ln in f:
+                k, _, rest = ln.partition(":")
+                if k in ("MemTotal", "MemAvailable"):
+                    vals[k] = int(rest.split()[0]) // 1024
+        total, avail = vals["MemTotal"], vals["MemAvailable"]
+    except (OSError, KeyError, ValueError, IndexError):
+        return None
+    return (total - avail, total) if total > 0 else None
+
+
+def _parse_gpus(out, meminfo=None):
     """nvidia-smi's csv rows -> the one `gpu` object /api/status serves.
 
     One row per card. Several cards fold into the same shape: memory summed
@@ -223,16 +284,23 @@ def _parse_gpus(out):
     busiest / hottest card. Splitting the whole output on commas glued row
     one's temperature to row two's name and reported "no GPU detected" on
     every multi-GPU host.
+
+    A field the card does not report ("[N/A]") is that field missing, not
+    the GPU: a unified-memory card's memory is sized from host RAM instead
+    (`unified: true`), and with no number at all the memory fields are null.
+    A row with no readable number at all is not a GPU row.
     """
     cards = []
     for line in out.splitlines():
         if not line.strip():
             continue
-        name, used, total, util, temp = [x.strip() for x in line.split(",")[:5]]
-        nums = (_smi_int(used), _smi_int(total), _smi_int(util), _smi_int(temp))
-        if all(v is None for v in nums):
+        parts = [x.strip() for x in line.split(",")]
+        if len(parts) < 5:
+            raise ValueError(f"short nvidia-smi row: {line!r}")
+        name, nums = parts[0], [_smi_int(x) for x in parts[1:5]]
+        if not name or all(n is None for n in nums):
             continue            # not a GPU row at all
-        cards.append((name,) + nums)
+        cards.append((name, *nums))
     if not cards:
         return None
     names = [c[0] for c in cards]
@@ -249,23 +317,21 @@ def _parse_gpus(out):
         vals = [c[i] for c in cards]
         return None if any(v is None for v in vals) else how(vals)
 
-    used, total = fold(1, sum), fold(2, sum)
-    have_mem = used is not None and total
-    return {"name": name, "used_mib": used, "total_mib": total,
-            "free_mib": total - used if have_mem else None,
-            "util_pct": fold(3, max), "temp_c": fold(4, max),
-            "used_pct": round(100 * used / total) if have_mem else None}
-
-
-def _smi_int(field):
-    """One nvidia-smi csv value as an int, or None for "[N/A]",
-    "[Not Supported]" and the like. A GB10 (DGX Spark, unified memory)
-    reports memory.used/total as [N/A]; int() on that used to throw away the
-    whole row and the page said "no GPU detected" on the reference rig."""
-    try:
-        return int(float(field))
-    except (TypeError, ValueError):
-        return None
+    # Unified memory (GB10): no card reports VRAM, so the pool is host RAM.
+    # Only some cards short of memory is a fold we cannot make: unknown.
+    unified = all(c[1] is None and c[2] is None for c in cards)
+    if unified:
+        used, total = (meminfo or _meminfo_mib)() or (None, None)
+    else:
+        used, total = fold(1, sum), fold(2, sum)
+    have_mem = used is not None and bool(total)
+    gpu = {"name": name, "used_mib": used, "total_mib": total,
+           "free_mib": total - used if have_mem else None,
+           "util_pct": fold(3, max), "temp_c": fold(4, max),
+           "used_pct": round(100 * used / total) if have_mem else None}
+    if unified:
+        gpu["unified"] = True
+    return gpu
 
 
 def model_status(health=None):
@@ -282,7 +348,8 @@ def model_status(health=None):
             alias = json.loads(body)["data"][0].get("id", "")
         except Exception:
             pass
-    return {"healthy": ok, "serve_script": served, "alias": alias}
+    return {"healthy": ok, "serve_script": served, "alias": alias,
+            "backend": _BACKEND, "endpoint": _endpoint(_INFER)}
 
 
 def services_status(health=None):
@@ -711,16 +778,22 @@ async function tick(){
  // inference server says it is): escape it before it meets innerHTML.
  const esc=v=>String(v??'').replace(/[&<>"'`]/g,c=>'&#'+c.charCodeAt(0)+';');
  const num=v=>Number(v)||0;
+ // The tool server's metrics on the host this page was opened on, not the
+ // viewer's own localhost. (location.hostname keeps an IPv6 literal's [].)
+ const mlink='http://'+(globalThis.location?.hostname||'127.0.0.1')+':3001/metrics';
  const svc=Object.entries(sv).map(([k,v])=>`<div class=row><span><span class="dot ${v?'up':'down'}"></span>${esc(k)}</span><span class=k>${v?'up':'down'}</span></div>`).join('');
- // null = the card does not report it (GB10 unified memory: [N/A]) — show
- // a dash, never a made-up 0.
+ // null = not reported (GB10 unified memory with host RAM unreadable): show
+ // a dash, never a made-up 0. g.unified: the memory is the host's.
  const has=v=>v!==null&&v!==undefined&&v!=='';
  const gb=(v,d)=>has(v)?(num(v)/1024).toFixed(d):'—';
  const pct=v=>has(v)?num(v)+'%':'—';
  const deg=v=>has(v)?num(v)+'°C':'—';
- const gpu=g?`<div class=big>${pct(g.used_pct)} <span class=k style=font-size:14px>${gb(g.used_mib,1)}/${gb(g.total_mib,0)} GB</span></div>
+ const mem=g?`<div class=big>${pct(g.used_pct)} <span class=k style=font-size:14px>${gb(g.used_mib,1)}/${gb(g.total_mib,0)} GB</span></div>
    <div class=bar><i style=width:${num(g.used_pct)}%></i></div>
-   <div class=row><span class=k>free</span><span>${gb(g.free_mib,1)} GB</span></div>
+   <div class=row><span class=k>free</span><span>${gb(g.free_mib,1)} GB</span></div>`:'';
+ const unk=g&&!has(g.total_mib)?'<div class=k>memory not reported</div>':'';
+ const uni=g&&g.unified?'<div class=row><span class=k>memory</span><span>unified (host RAM)</span></div>':'';
+ const gpu=g?`${mem}${unk}${uni}
    <div class=row><span class=k>GPU util</span><span>${pct(g.util_pct)}</span></div>
    <div class=row><span class=k>temp</span><span>${deg(g.temp_c)}</span></div>
    <div class=row><span class=k>card</span><span>${esc(g.name)}</span></div>`:'<div class=k>no GPU detected</div>';
@@ -729,12 +802,12 @@ async function tick(){
   <div class=card><h2>Model</h2>
     <div class=big style=font-size:18px><span class="dot ${m.healthy?'up':'down'}"></span>${esc(m.alias||m.serve_script||'—')}</div>
     <div class=row><span class=k>serve script</span><span>${esc(m.serve_script||'—')}</span></div>
-    <div class=row><span class=k>API</span><span>${m.healthy?':8080 healthy':'down'}</span></div></div>
+    <div class=row><span class=k>API</span><span>${esc(m.endpoint||'')} ${m.healthy?'healthy':'down'}</span></div></div>
   <div class=card><h2>Services</h2>${svc}</div>
   <div class=card><h2>Tool activity</h2>
     <div class=big>${esc(mt.tool_calls??'—')}</div><div class=k>total tool calls</div>
     <div class=row><span class=k>errors</span><span>${esc(mt.tool_errors??'—')}</span></div>
-    <div class=row><span class=k>raw</span><span><a href=http://localhost:3001/metrics>:3001/metrics</a></span></div></div>`;
+    <div class=row><span class=k>raw</span><span><a href="${esc(mlink)}">:3001/metrics</a></span></div></div>`;
  document.getElementById('ts').textContent='updated '+new Date().toLocaleTimeString();
 }
 tick();setInterval(tick,3000);
@@ -756,13 +829,6 @@ SOCKET_TIMEOUT_S = 10
 # answered every real caller 503. The request line plus headers must be in
 # within this, whole.
 HEADER_DEADLINE_S = 5.0
-# The DNS-rebinding guard (agents/hostpolicy.py): a page on a hostile name
-# re-pointed at 127.0.0.1 is same-origin with this server and could read
-# /api/status. Loopback, this machine's name and *.ts.net (what tailscale
-# serve forwards) are answered; so is any IP literal (rebinding needs a
-# name), which keeps a LAN/tailnet OPENBEAST_BIND dialled by address working.
-# DASHBOARD_ALLOWED_HOSTS adds names, comma-separated.
-_ALLOWED_HOSTS = trusted_hosts(os.environ.get("DASHBOARD_ALLOWED_HOSTS", ""))
 
 
 class _Cached:
@@ -823,16 +889,15 @@ class Handler(BaseHTTPRequestHandler):
         self._header_timer.cancel()
         super().finish()
 
-    def _host_ok(self):
-        hosts = self.headers.get_all("Host") or []
-        return len(hosts) == 1 and (host_allowed(hosts[0], _ALLOWED_HOSTS)
-                                    or is_ip_literal(hosts[0]))
-
     def do_GET(self):
-        if not self._host_ok():
-            body = (b"Invalid host header: the dashboard answers only to loopback, "
-                    b"this machine's own name, *.ts.net names and IP addresses. "
-                    b"Add a name with DASHBOARD_ALLOWED_HOSTS=<name>.\n")
+        # /api/slot is the tailnet discovery contract, published to every
+        # device and read by whatever name a client dials: never pinned.
+        # The page and /api/status are rig-local, and Host-pinned.
+        if (not self.path.startswith("/api/slot")
+                and not host_ok(self.headers.get_all("Host") or [])):
+            body = (b"Invalid host header: the dashboard page answers only to "
+                    b"loopback, this machine's name, *.ts.net names and IP "
+                    b"literals. Another name: OPENBEAST_DASHBOARD_ALLOWED_HOSTS.\n")
             self.send_response(400)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))

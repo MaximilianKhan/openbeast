@@ -88,7 +88,8 @@ The `dashboard` slot API established the sanctioned pattern. Follow it:
 
 - **`dashboard`** — a lightweight read-only status page (GPU / model / services)
   on top of the tool server's `/metrics` and `doctor`. `KIND=process`, stdlib
-  Python, no new dependency. Serves three routes on `${OPENBEAST_BIND}:${DASHBOARD_PORT:-3002}`:
+  Python, no new dependency. Serves three routes on `${OPENBEAST_BIND}:${DASHBOARD_PORT:-3002}`
+  (conf key `DASHBOARD_PORT`; healthcheck and `--publish-slot` follow it):
   `/` (the page), `GET /api/status` (what the page polls), and
   **`GET /api/slot`** — the **beast-slot discovery contract** a remote client
   reads to learn the rig's real model, slot pool, shared-KV capacity, and
@@ -98,6 +99,10 @@ The `dashboard` slot API established the sanctioned pattern. Follow it:
   as `:8444`, via `tailscale serve --set-path` — the HTML page and `/api/status`
   stay rig-local. (On a tailscale build without `--set-path` it falls back to
   mounting the whole dashboard and says so; `--unpublish-slot` reverses either.)
+  The page and `/api/status` are also Host-pinned against DNS rebinding: they
+  answer only to loopback, this machine's name, `*.ts.net` names and IP
+  literals (400 otherwise; more names via `OPENBEAST_DASHBOARD_ALLOWED_HOSTS`,
+  comma-separated). `/api/slot` answers any Host.
 
   **Footgun: `EXTENSIONS` is empty by default.** `--publish-slot` publishes the
   tailnet route whether or not anything is listening, so with the dashboard

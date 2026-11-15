@@ -71,11 +71,18 @@ ob_port_listening() {
 }
 
 # ob_pid_owns_port <pid> <port> — 0: <pid> holds the listener. 1: someone
-# else does (or nothing does). 2: cannot tell on this box.
+# else does (or nothing does). 2: cannot tell on this box — including a
+# listener whose holder nobody can name: another uid's, or one of OUR
+# non-dumpable servers (tools.harden_process), whose /proc/<pid>/fd is
+# root-owned, so `ss -p` lists it without a pid. That is unknown, not foreign.
 ob_pid_owns_port() {
   local pid="${1:-}" port="${2:-}" pids rc=0
   [[ "$pid" =~ ^[0-9]+$ ]] || return 1
   pids="$(ob_port_pids "$port")" || rc=$?
   [[ $rc -eq 2 ]] && return 2
+  if [[ -z "$pids" ]]; then
+    ob_port_listening "$port" && return 2
+    return 1
+  fi
   printf '%s\n' "$pids" | grep -qx "$pid"
 }

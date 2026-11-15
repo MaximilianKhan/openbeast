@@ -162,7 +162,9 @@ if [[ -n "${WIRING_BASELINE_REF:-}" ]]; then
   #                    (review 2026-10-09, UX-13)
   #   OPENBEAST_WEBUI_OFFLINE — beast-island: Open WebUI's OFFLINE_MODE for
   #                    docker-compose.yml (docs/BEAST_ISLAND.md)
-  _BASELINE_ALLOW='^ENV OPENBEAST_(CHAT_NOTIFY_ON|NTFY_PORT|WEBUI_OFFLINE)=|^ENV OB_CONF_LINTED='
+  #   DASHBOARD_PORT, OPENBEAST_DASHBOARD_PORT — the dashboard's port, resolved
+  #                    once for healthcheck and --publish-slot (extensions-ntfy)
+  _BASELINE_ALLOW='^ENV OPENBEAST_(CHAT_NOTIFY_ON|NTFY_PORT|WEBUI_OFFLINE)=|^ENV OB_CONF_LINTED=|^ENV (OPENBEAST_)?DASHBOARD_PORT='
   if [[ -n "${WIRING_BASELINE_ALLOW:-}" ]]; then
     _BASELINE_ALLOW="$_BASELINE_ALLOW|$WIRING_BASELINE_ALLOW"
   fi

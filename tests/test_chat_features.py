@@ -400,6 +400,44 @@ def test_a_session_ending_fires_title_state_and_link_only(rig, stub, tmp_path):
     assert n.tick() == []                              # once, not every pass
 
 
+def test_unwritable_state_file_neither_repeats_nor_drops_alerts(rig, stub, capsys):
+    # extensions-ntfy review: _save swallowed OSError and tick() re-read the
+    # stale file, so every finished session was re-sent each min_interval
+    # forever (and, beyond `burst`, the summary went out every tick).
+    s = stub()
+    sids = [rig.session(kind="job", state="running", title=f"build {i}")
+            for i in range(12)]
+    n = _notifier(rig, s.url + "/t")
+    assert n.tick() == []
+    os.mkdir(rig.run / "notify-state.json.tmp")         # every write now fails
+    for sid in sids:
+        sessions.finalize(sid, "failed")
+    assert len(n.tick()) == 10                          # burst, + one summary
+    posts = len(s.calls)
+    assert posts == 11
+    for _ in range(4):
+        assert n.tick() == []
+    assert len(s.calls) == posts, "finished sessions were re-sent from a stale snapshot"
+    assert capsys.readouterr().err.count("cannot write") == 1   # loud once
+    # once the file is writable again, the in-memory snapshot lands on disk
+    os.rmdir(rig.run / "notify-state.json.tmp")
+    n.tick()
+    st = json.loads((rig.run / "notify-state.json").read_text())
+    assert set(st["sessions"].values()) == {"failed"}
+
+
+def test_never_written_state_still_fires_on_a_real_transition(rig, stub):
+    s = stub()
+    blocker = rig.run / "not-a-dir"
+    blocker.write_text("")
+    n = _notifier(rig, s.url + "/t", state_path=str(blocker / "notify-state.json"))
+    sid = rig.session(kind="job", state="running", title="x")
+    assert n.tick() == []                               # first pass: history
+    sessions.finalize(sid, "failed")
+    assert n.tick() == [sid], "a snapshot that never reached disk silenced every alert"
+    assert n.tick() == []
+
+
 def _job_with_command(title, command):
     sid = sessions.new_id("job")
     sessions.register(sid, kind="job", title=title, pid=os.getpid(),
@@ -629,6 +667,92 @@ def test_notify_test_endpoint(rig, stub, monkeypatch):
     r = rig.client.post("/api/chat/notify/test", json={}, headers=rig.local)
     assert r.status_code == 200 and r.json()["sent"] is True
     assert s.calls[-1]["headers"]["Title"] == "beast-chat: test notification"
+
+
+def test_deep_link_follows_a_publish_after_start(rig, monkeypatch):
+    # extensions-ntfy review: public_url was resolved once at app creation,
+    # so the documented order (start, then --publish-chat) left every
+    # alert's link at http://localhost:<port> until a restart.
+    monkeypatch.delenv("OPENBEAST_CHAT_PUBLIC_URL", raising=False)
+    monkeypatch.setenv("OPENBEAST_CHAT_NOTIFY_URL", "http://127.0.0.1:9/t")
+    import shutil
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/tailscale")
+    serve = {"out": ""}
+
+    def run(cmd, **kw):
+        assert cmd[1:] == ["serve", "status"]
+        return subprocess.CompletedProcess(cmd, 0, stdout=serve["out"], stderr="")
+    monkeypatch.setattr(chat_server.subprocess, "run", run)
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(chat_server.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setitem(chat_server._PUBLIC_URL_CACHE, "at", 0.0)
+    monkeypatch.setitem(chat_server._PUBLIC_URL_CACHE, "value", "")
+    n = chat_server.Notifier.from_env(str(rig.run), 3003)
+    assert n.link("s1") == "http://localhost:3003/#/s/s1"      # not published yet
+    serve["out"] = "https://beast.tail1234.ts.net:8445 (tailnet only)\n|-- / proxy http://127.0.0.1:3003\n"
+    clock["t"] += 31                                           # the next alert
+    assert n.link("s1") == "https://beast.tail1234.ts.net:8445/#/s/s1"
+    assert n.link() == "https://beast.tail1234.ts.net:8445/#/"
+    # a found name is cached the long way (300 s), the fallback only 30 s
+    serve["out"] = ""
+    clock["t"] += 200
+    assert n.link() == "https://beast.tail1234.ts.net:8445/#/"
+
+
+@pytest.mark.parametrize("raw,on,said", [
+    ("error", (), "ignoring 'error' (valid: done, failed, lost, stopped) — NO session state will notify"),
+    ("failed, fail", ("failed",), "ignoring 'fail' (valid: done, failed, lost, stopped)"),
+    (" , ", (), "(valid: done, failed, lost, stopped) — NO session state will notify"),
+    ("failed,done", ("failed", "done"), None)])
+def test_an_unknown_notify_on_word_is_said_out_loud(rig, monkeypatch, capsys, raw, on, said):
+    # extensions-ntfy review: a typo was dropped silently, and with every
+    # word gone no alert ever fired while health said notify:true.
+    monkeypatch.setenv("OPENBEAST_CHAT_NOTIFY_URL", "http://127.0.0.1:9/t")
+    monkeypatch.setenv("OPENBEAST_CHAT_PUBLIC_URL", "https://b.example:8445")
+    monkeypatch.setenv("OPENBEAST_CHAT_NOTIFY_ON", raw)
+    n = chat_server.Notifier.from_env(str(rig.run), 3003)
+    assert n.on == on
+    err = capsys.readouterr().err
+    if said:
+        assert f"[beast-chat] CHAT_NOTIFY_ON: {said}" in err, err
+    else:
+        assert "CHAT_NOTIFY_ON" not in err, err
+
+
+def test_main_hardens_the_process_before_anything_else(monkeypatch):
+    # extensions-ntfy review: beast-chat holds CHAT_NOTIFY_URL (and the other
+    # exported secrets) and was never made non-dumpable, so a spawned agent's
+    # same-uid bash read them from /proc/<chat pid>/environ.
+    class Hardened(Exception):
+        pass
+
+    def harden():
+        raise Hardened
+
+    monkeypatch.setattr(chat_server, "_harden_process", harden)
+    monkeypatch.setattr(chat_server, "create_app", lambda: pytest.fail("built before hardening"))
+    with pytest.raises(Hardened):
+        chat_server.main()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="procfs + prctl are Linux-only")
+@pytest.mark.parametrize("keep", ["", "1"])
+def test_a_child_cannot_read_beast_chat_environ(tmp_path, keep):
+    probe = ("import os, subprocess, sys\n"
+             "sys.path.insert(0, sys.argv[1])\n"
+             "import chat_server\n"
+             "chat_server._harden_process()\n"
+             "r = subprocess.run(['sh', '-c', 'cat /proc/$PPID/environ | tr \"\\\\0\" \"\\\\n\" "
+             "| grep -c NOTIFY_MARK'], capture_output=True, text=True)\n"
+             "print('HITS', r.stdout.strip() or '0')\n")
+    env = {k: v for k, v in os.environ.items() if k != "OPENBEAST_KEEP_DUMPABLE"}
+    env.update(OPENBEAST_CHAT_NOTIFY_URL="http://127.0.0.1:3005/NOTIFY_MARK")
+    if keep:
+        env["OPENBEAST_KEEP_DUMPABLE"] = keep      # negative control: the probe can see a leak
+    r = subprocess.run([sys.executable, "-c", probe, AGENTS],
+                       env=env, capture_output=True, text=True, timeout=60, cwd=tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert ("HITS 1" in r.stdout) == bool(keep), r.stdout + r.stderr
 
 
 def test_notifier_is_off_without_a_url_or_with_a_bad_one(rig, monkeypatch):

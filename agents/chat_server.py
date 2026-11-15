@@ -1746,12 +1746,23 @@ class Notifier:
     def __init__(self, url: str, *, on=NOTIFY_STATES_DEFAULT,
                  token_file: str = "", state_path: str,
                  public_url: str = "", min_interval: float = 60.0,
-                 burst: int = 10, poster=None):
+                 burst: int = 10, poster=None, port: int | None = None):
         self.url = url
+        on = list(on)
         self.on = tuple(s for s in on if s in TERMINAL_STATES)
+        # A typo (CHAT_NOTIFY_ON=error) used to vanish silently, and with
+        # every word gone no alert ever fired while health said notify:true.
+        dropped = [s for s in on if s not in TERMINAL_STATES]
+        if dropped or not self.on:
+            print("[beast-chat] CHAT_NOTIFY_ON: "
+                  + (f"ignoring {', '.join(map(repr, dropped))} " if dropped else "")
+                  + f"(valid: {', '.join(sorted(TERMINAL_STATES))})"
+                  + ("" if self.on else " — NO session state will notify"),
+                  file=sys.stderr)
         self.token_file = token_file
         self.state_path = state_path
-        self.public_url = public_url.rstrip("/")
+        self._public_url = public_url.rstrip("/")
+        self.port = port
         self.min_interval = min_interval
         self.burst = max(1, burst)
         self.poster = poster or self._post
@@ -1759,6 +1770,12 @@ class Notifier:
         # -inf, not 0: time.monotonic() counts from boot on Linux, so a 0
         # here kept the first failure silent for the machine's first 300 s.
         self._last_err = float("-inf")
+        # The snapshot this process last wrote, kept ONLY while the file
+        # could not be written. Diffing against the stale (or missing) file
+        # instead re-sent every finished session each min_interval forever,
+        # or never fired at all (first_run on every tick).
+        self._mem_doc: dict | None = None
+        self._last_save_err = float("-inf")
         self.lock = threading.Lock()
 
     @classmethod
@@ -1777,7 +1794,20 @@ class Notifier:
                    token_file=(os.environ.get("OPENBEAST_CHAT_NOTIFY_TOKEN_FILE")
                                or "").strip(),
                    state_path=os.path.join(run_dir, "notify-state.json"),
-                   public_url=chat_public_url(port))
+                   port=port)
+
+    @property
+    def public_url(self) -> str:
+        """The deep-link base, resolved per use (chat_public_url caches it).
+
+        Frozen at app creation it stayed http://localhost:<port> on the
+        documented path, where `setup-tailscale.sh --publish-chat` runs after
+        `./start.sh -d`, and every alert's link was dead on the phone until
+        the next restart. An explicit `public_url` (tests) is used as given.
+        """
+        if self._public_url or self.port is None:
+            return self._public_url
+        return chat_public_url(self.port).rstrip("/")
 
     # -- state -------------------------------------------------------------
     def _load(self) -> dict | None:
@@ -1788,7 +1818,9 @@ class Notifier:
             return None
         return doc if isinstance(doc, dict) else None
 
-    def _save(self, doc: dict) -> None:
+    def _save(self, doc: dict) -> bool:
+        """Persist the snapshot; False (and one stderr line per 5 min) when
+        it cannot be written — a full disk, a root-owned file."""
         tmp = self.state_path + ".tmp"
         try:
             os.makedirs(os.path.dirname(self.state_path), exist_ok=True)
@@ -1797,8 +1829,15 @@ class Notifier:
                 json.dump(doc, f)
             os.chmod(tmp, 0o600)
             os.replace(tmp, self.state_path)
-        except OSError:
-            pass
+            return True
+        except OSError as e:
+            now = time.monotonic()
+            if now - self._last_save_err > 300:
+                self._last_save_err = now
+                print(f"[beast-chat] cannot write {self.state_path} "
+                      f"({type(e).__name__}: {e.strerror or e}) — notification "
+                      f"state is kept in memory until it can", file=sys.stderr)
+            return False
 
     # -- sending -----------------------------------------------------------
     def _token(self) -> str:
@@ -1841,8 +1880,12 @@ class Notifier:
             headers["Authorization"] = f"Bearer {token}"
         return bool(self.poster(body, headers))
 
-    def link(self, session_id: str) -> str:
-        return f"{self.public_url}/#/s/{session_id}" if self.public_url else ""
+    def link(self, session_id: str = "") -> str:
+        """The deep link to one session, or (no id) to the console."""
+        base = self.public_url
+        if not base:
+            return ""
+        return f"{base}/#/s/{session_id}" if session_id else f"{base}/#/"
 
     def notify_session(self, rec: dict) -> bool:
         sid = str(rec.get("id") or "")
@@ -1878,7 +1921,7 @@ class Notifier:
         """One pass. Returns the session ids it notified about."""
         with self.lock:
             now = time.time() if now is None else now
-            doc = self._load()
+            doc = self._mem_doc if self._mem_doc is not None else self._load()
             first_run = doc is None
             known = (doc or {}).get("sessions") or {}
             if not isinstance(known, dict):
@@ -1953,10 +1996,11 @@ class Notifier:
                 self.send(title="beast-chat: more sessions ended",
                           body=f"{overflow} more session(s) ended — open the "
                                f"console for the list",
-                          click=self.public_url + "/#/" if self.public_url else "")
-            self._save({"version": 1,
-                        "last_tick": datetime.fromtimestamp(now).isoformat(),
-                        "sessions": current})
+                          click=self.link())
+            snap = {"version": 1,
+                    "last_tick": datetime.fromtimestamp(now).isoformat(),
+                    "sessions": current}
+            self._mem_doc = None if self._save(snap) else snap
             return fired
 
     def run_forever(self, period: float, stop: threading.Event) -> None:
@@ -1984,8 +2028,13 @@ def chat_public_url(port: int) -> str:
     if v.startswith(("http://", "https://")):
         return v
     now = time.monotonic()
-    if _PUBLIC_URL_CACHE["value"] and now - _PUBLIC_URL_CACHE["at"] < 300:
-        return _PUBLIC_URL_CACHE["value"]
+    cached = _PUBLIC_URL_CACHE["value"]
+    # The loopback fallback is the "not published yet" answer: asked again
+    # after 30 s, not 300, so a --publish-chat that follows the start shows
+    # up in the next alert's link.
+    ttl = 30 if cached.startswith("http://localhost:") else 300
+    if cached and now - _PUBLIC_URL_CACHE["at"] < ttl:
+        return cached
     import re
     import shutil
     value = f"http://localhost:{port}"
@@ -4008,11 +4057,12 @@ def create_app() -> FastAPI:
                         status_code=409,
                         detail="notifications are off — set CHAT_NOTIFY_URL "
                                "(an ntfy topic URL) and restart")
+                # link() may ask `tailscale serve status`: off the event loop.
+                click = await asyncio.to_thread(notifier.link)
                 ok = await asyncio.to_thread(
                     notifier.send, title="beast-chat: test notification",
                     body="If you can read this, session alerts will reach you.",
-                    click=notifier.public_url + "/#/" if notifier.public_url else "",
-                    tags="bell")
+                    click=click, tags="bell")
                 ctx["extra"] = {"sent": ok}
                 if not ok:
                     raise HTTPException(status_code=502,
@@ -4251,6 +4301,19 @@ def _uvicorn_config(app, host: str, port: int):
                           proxy_headers=False, forwarded_allow_ips="")
 
 
+def _harden_process() -> bool:
+    """Make beast-chat non-dumpable (tools.harden_process, PR_SET_DUMPABLE=0).
+
+    child_env() keeps CHAT_NOTIFY_URL and the other secrets out of every
+    agent and job this server spawns, but that scrub only holds together
+    with this. Otherwise a same-uid process (a spawned agent's model-authored
+    bash) reads them straight back from /proc/<this pid>/environ. The tool
+    server, mcp_server and runner already do this; beast-chat did not.
+    """
+    from tools import harden_process
+    return harden_process()
+
+
 def main() -> None:
     """Bind the port FIRST, then build the app (which mints the token).
 
@@ -4261,6 +4324,7 @@ def main() -> None:
     """
     import socket
     import uvicorn
+    _harden_process()
     host = os.environ.get("OPENBEAST_CHAT_BIND", "127.0.0.1")
     port = int(os.environ.get("OPENBEAST_CHAT_PORT") or DEFAULT_PORT)
     if not _bind_is_loopback(host):

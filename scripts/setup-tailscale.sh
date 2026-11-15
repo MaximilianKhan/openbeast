@@ -121,7 +121,7 @@ _ts_has_set_path() {
 }
 _publish_slot_mount() { # _publish_slot_mount <upstream-host>
   if _ts_has_set_path; then
-    if ! ts_admin serve --bg --https=8444 --set-path=/api/slot "http://$1:3002/api/slot"; then
+    if ! ts_admin serve --bg --https=8444 --set-path=/api/slot "http://$1:${DASHBOARD_PORT:-3002}/api/slot"; then
       echo "      ERROR: could not mount :8444/api/slot (tailscale's message is above)." >&2
       echo "             NOT falling back to publishing the whole dashboard. Fix the cause" >&2
       echo "             and re-run: ./scripts/setup-tailscale.sh --publish-slot" >&2
@@ -129,8 +129,8 @@ _publish_slot_mount() { # _publish_slot_mount <upstream-host>
     fi
     echo "      beast-slot status API published (tailnet-only, :8444/api/slot)."
   else
-    ts_admin serve --bg --https=8444 "http://$1:3002"
-    echo "      beast-slot published (tailnet-only, :8444 → :3002)."
+    ts_admin serve --bg --https=8444 "http://$1:${DASHBOARD_PORT:-3002}"
+    echo "      beast-slot published (tailnet-only, :8444 → :${DASHBOARD_PORT:-3002})."
     echo "      NOTE: this tailscale build has no --set-path, so the whole"
     echo "            dashboard (page + /api/status) is tailnet-visible."
     echo "            Update tailscale and re-run to narrow it to /api/slot."
@@ -197,7 +197,7 @@ _print_mounts() { # _print_mounts <chat-port> <artifact-port> [ntfy-port]
   for row in \
     "443|Open WebUI (:3000)" \
     "8443|inference (llama-server / beast-gate)" \
-    "8444|beast-slot status API (:3002)" \
+    "8444|beast-slot status API (:${DASHBOARD_PORT:-3002})" \
     "8445|beast-chat console (:$1)" \
     "8446|beast-artifact pages (:$2)" \
     "8447|ntfy push notifications (:${3:-3005})" \
