@@ -157,6 +157,7 @@ for _suite in \
   "test_ops_chat_artifact.sh|beast-chat / beast-artifact ops" \
   "test_backends.sh|Inference backends (vLLM / TensorFold, unmanaged)" \
   "test_engines.sh|Engine plane (scripts/engine.sh: swap / pin / update / rollback, managed vLLM / TensorFold)" \
+  "test_weight_streaming.sh|Weight streaming (per-profile memory scope, MoE-cache / big-mode profiles, llama.cpp v1.0.0 flags, tok/s gate)" \
   "test_spark_cluster.sh|DGX Spark cluster of 1-8 nodes (spark-cluster.sh)" \
   "test_spark_guard.sh|DGX Spark guard (nftables for the rendezvous ports)" \
   "test_spark_supply.sh|DGX Spark supply chain (install-native, root-setup debs and key)" \
@@ -167,7 +168,10 @@ for _suite in \
   "test_hydra_instinct_wiring.sh|beast-hydra / beast-instinct stack wiring (conf, start, stop, healthcheck)" \
   "test_setup_client.sh|Client installer (scripts/setup-client.sh)" \
   "test_publish_slot.sh|beast-slot :8444 mount (setup-tailscale.sh --publish-slot)" \
-  "test_operator_scripts.sh|Operator scripts (2026-10-09 review fixes)"; do
+  "test_chat_unix_login.sh|beast-chat unix-socket login (CHAT_LOGIN_FROM, :8445 mount)" \
+  "test_tailscale_hostname.sh|Tailnet machine name from TS_HOSTNAME (setup-tailscale.sh)" \
+  "test_operator_scripts.sh|Operator scripts (2026-10-09 review fixes)" \
+  "test_ark.sh|beast-ark (scripts/ark.sh, the drive's bare-box ./ark)"; do
   _file="${_suite%%|*}"; _label="${_suite#*|}"
   echo "--- $_label tests (tests/$_file) ---"
   echo ""

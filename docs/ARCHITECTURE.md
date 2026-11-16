@@ -92,6 +92,15 @@ flowchart LR
   and kills no model server (`INFERENCE_MANAGED=false`); everything else in
   this picture is unchanged. Plan, security and runbook:
   [`DGX_SPARK_PLAN.md`](DGX_SPARK_PLAN.md).
+- **Models bigger than the card stream their experts from RAM.** On the one
+  RTX 5090 a MoE model's routed experts can live in host RAM while a VRAM
+  cache (llama.cpp v1.0.0 `--moe-cache-mib`) holds the hot ones: Flash-Next
+  in the daily 75% memory scope, and opt-in **big mode** (GLM-5.3-Flash),
+  whose serve script declares its own 90% scope, on the rig only. While big
+  mode runs, hydra's rig deployment reads MISMATCH and `routes.beast` falls
+  to the next node, or 503s on a rig-only install. A fourth engine (Project
+  Maya) is admitted only after it measures 1.5x llama.cpp on the rig.
+  Runbook: [`WEIGHT_STREAMING.md`](WEIGHT_STREAMING.md).
 
 ## 2. Inside the command center — two planes
 
@@ -289,6 +298,17 @@ flowchart TB
   pins `-np 1`, as MTP scripts do; a serve script that passes no `-np` gets
   `serve.sh`'s six unified-KV slots), and bootstrap refuses GPUs under the
   24 GB floor.
+- **Cold storage for everything else.** beast-ark (`scripts/ark.sh`,
+  `agents/ark/`) pins 112 open-source packages for offline work in
+  `agents/ark/catalog.toml`: Kubernetes and its images, container runtimes,
+  language toolchains, databases, observability, a git forge, a CA, DevDocs.
+  Each one has its git commit, a build per platform (rig, Spark, Mac) and a
+  sha256 or image digest that `lock` derived from upstream. `fetch` fills
+  a drive and checks every file. With no network, `verify` re-checks the
+  drive, `restore` unpacks or loads from it, and `serve` publishes it to the
+  tailnet as a read-only OCI registry with pip, npm and go mirrors. It is
+  separate from `bundle.sh`, which carries OpenBeast's own stack.
+  [`BEAST_ARK.md`](BEAST_ARK.md).
 
 ## Project structure
 
@@ -319,6 +339,7 @@ scripts/                     # Server, ops, and feature CLIs
   job.sh                     # beast-chat: run/list/show/stop a tracked long job
   lang-library.sh            # beast-lang: acquire/check/list/verify/pack/where
   docs.sh                    # beast-docs: sources/sync/status/search/read/live/pack/unpack
+  ark.sh                     # beast-ark: list/plan/lint/lock/update/fetch/verify/restore/serve (docs/BEAST_ARK.md)
   lang-introspect.sh         # beast-lang: probe the installed toolchains
   lang-synthesize.sh         # beast-lang: model-drafted claims → verifier → staging → promote
   bundle.sh                  # Air-gap: build/sign/verify/install the offline bundle
@@ -334,7 +355,13 @@ scripts/                     # Server, ops, and feature CLIs
   lib/                       # conf.sh (config), hardware.sh, weights.sh, extensions.sh,
                              #   proc.sh (identity-checked signalling), portown.sh (does OUR pid hold the port),
                              #   bundle_manifest.py, pydeps_lock.py, skill_import.py,
-                             #   backend.sh (per-backend readiness: llama / vLLM / TensorFold)
+                             #   backend.sh (per-backend readiness: llama / vLLM / TensorFold),
+                             #   engine.sh (the engine plane; ob_engine_gate_ok), memscope.sh
+                             #   (per-profile memory scope: docs/WEIGHT_STREAMING.md)
+  engines/                   # one adapter per engine: llama / vllm / tensorfold / maya (opt-in, gated);
+                             #   maya/ = its requirements.lock, profiles/, prepare.sh
+  engine.sh, engine-gate.sh  # swap / pin / roll back the engine (docs/ENGINES.md); the 1.5x tok/s gate
+  tokps.py                   # decode / prefill tok/s of an endpoint, acceptance checks, gate verdicts
   backends/                  # DGX Spark inference (docs/DGX_SPARK_PLAN.md): {vllm,tensorfold}/spark-node.sh
                              #   rank launchers (--profile), spark.env.example (host settings),
                              #   models/<name>.env per-model profiles + TEMPLATE.env, model-inspect.sh,
@@ -360,6 +387,7 @@ agents/                      # Agent framework + servers
   chat_ui/ · artifact_ui/    # The console and the gallery/viewer (self-contained HTML)
   lang/                      # beast-lang: drivers, introspect, verify, packs, escalate, reference, synthesize
   docs/                      # beast-docs: sources.toml, DocC/HTML/markdown adapters, sync, search (docs/BEAST_DOCS.md)
+  ark/                       # beast-ark: catalog.toml (112 pinned packages), fetch/verify/restore, OCI client + read-only registry, pure-python ed25519 (docs/BEAST_ARK.md)
   requirements.txt / .lock   # Pinned deps and the hash-pinned closure CI installs
   logs/                      # Agent run logs (JSONL) [gitignored]
 

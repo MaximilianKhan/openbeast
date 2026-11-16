@@ -215,6 +215,14 @@ jobs:
       - name: SSD wear tests (scripts/ssd-wear.sh)
         run: bash tests/test_ssd_wear.sh
 
+      # beast-ark (scripts/ark.sh, agents/ark/): CLI exit codes, the real
+      # catalog's lint, the offline refusal, and a drive's ./ark on a PATH
+      # with no python (it must unpack the archived CPython after checking
+      # SHA256SUMS, and refuse a tampered one). The python half,
+      # tests/test_ark.py, runs in the full pytest step. No network.
+      - name: beast-ark shell tests (scripts/ark.sh)
+        run: bash tests/test_ark.sh
+
       # Client venv / agent.sh hash-pinned installs, land-dependabot's run
       # approval filter, workflow action pinning, client image pin parity.
       # Stubbed pip / pydeps / gh; nothing is installed or approved.
@@ -246,6 +254,10 @@ jobs:
       # to the whole dashboard when that mount fails. A stubbed tailscale.
       - name: beast-slot publish tests (setup-tailscale.sh --publish-slot)
         run: bash tests/test_publish_slot.sh
+      - name: beast-chat unix-socket login (CHAT_LOGIN_FROM)
+        run: bash tests/test_chat_unix_login.sh
+      - name: tailnet machine name (TS_HOSTNAME)
+        run: bash tests/test_tailscale_hostname.sh
 
       # beast-chat / beast-artifact ops: port ownership at start, watchdog
       # restart logs, job-log rotation + retention, doctor's :8446/:8447 and
@@ -267,6 +279,13 @@ jobs:
       # with a per-run ed25519 key (OpenSSL 3 on ubuntu-latest).
       - name: Engine plane tests (swap / pin / update / rollback)
         run: bash tests/test_engines.sh
+
+      # Weight streaming (docs/WEIGHT_STREAMING.md): the per-profile memory
+      # scope, the MoE-cache and big-mode serve profiles, every serve-script
+      # flag against llama.cpp v1.0.0's option list, and the tok/s gate.
+      # Portable bash and stdlib python; no GPU, no network.
+      - name: Weight streaming tests (scope, profiles, v1.0.0 flags, tok/s gate)
+        run: bash tests/test_weight_streaming.sh
 
       # spark-cluster.sh for 1 to 8 nodes: ssh and the node probes are stubs
       # that answer per node, so topology, ordering and refusals run here.

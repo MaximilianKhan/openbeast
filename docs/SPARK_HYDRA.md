@@ -767,6 +767,7 @@ These are the keys in use on spark-1 on 2026-11-15. Secret values are not shown.
 | `EXTENSIONS` | `"dashboard"` | the dashboard serves beast-slot (`/api/slot`) |
 | `BEAST_CHAT` | `true` | the operator console |
 | `CHAT_OPERATORS` | `maxjkh@gmail.com` | tailnet logins that may read beast-chat |
+| `CHAT_LOGIN_FROM` | `unix` | beast-chat honours the login header only on `.run/chat.sock`; `:8445` proxies to that socket (`setup-tailscale.sh --publish-chat`), so the host-network containers below cannot claim a login ([BEAST_CHAT.md](BEAST_CHAT.md)) |
 | `BEAST_ARTIFACT` | `true` | the artifact gallery and `publish_artifact` |
 | `ARTIFACT_OPERATORS`, `ARTIFACT_ADMINS` | `maxjkh@gmail.com` | who reads and administers artifacts |
 | `LANG_PACKS`, `LANG_PACK_CONTEXT` | `off` | language assistance OFF on the pair (below) |
@@ -882,11 +883,17 @@ On spark-1:
 
 ```bash
 cd ~/openbeast
-TS_HOSTNAME=spark-1 ./scripts/setup-tailscale.sh --publish-slot --publish-chat --publish-artifact --publish-searxng
+grep -q '^TS_HOSTNAME=' openbeast.conf || echo 'TS_HOSTNAME=spark-1' >> openbeast.conf
+./scripts/setup-tailscale.sh --publish-slot --publish-chat --publish-artifact --publish-searxng
 ./scripts/setup-tailscale.sh --status        # read-only: which surface sits on which port
 ```
 
-`TS_HOSTNAME` defaults to `beast`, so set it on a Spark. The script refuses to
+`TS_HOSTNAME` (conf key, env overrides) names the box on the tailnet. On a Spark it
+has no default: the script refuses to join until it is set, because two Sparks
+both defaulting to `beast` would collide. It applies only to the first join; a
+Spark already on the tailnet keeps its name, and the script prints a note (never
+a rename) when the conf names it differently. Re-running it on a joined Spark is
+therefore safe. The script refuses to
 publish :443 unless the **running** WebUI enforces auth. It refuses :8443 unless
 beast-gate (`EDGE_GATE=true`) or a shared `LLAMA_API_KEY` is in front. The
 overrides `--i-accept-open-webui` and `--i-accept-open-inference` exist; do not
@@ -1241,6 +1248,8 @@ Every row below was hit on the way to the live pair.
 - **`./agent.sh`** works on spark-1.
 - **`language_reference`, `platform_docs`, `scripts/docs.sh search`** work
   against what is mirrored.
+- **beast-ark** works: `verify`, `restore` and `serve` an ark drive (H8a,
+  [BEAST_ARK.md](BEAST_ARK.md)).
 - **The tests** work (hermetic).
 - **The tailnet** keeps working wherever the LAN still routes between devices.
   Tailscale needs its coordination server to set up new paths, so existing
@@ -1411,6 +1420,36 @@ re-hashes every file, and only then swaps each source in and reindexes. The
 tarball hash proves integrity, not authenticity; sign the `.sha256` the way
 `bundle.sh sign` does if you need authenticity.
 
+### H8a. beast-ark: the rest of the software, on a drive
+
+H2-H8 carry OpenBeast itself. Building or testing a larger system next to
+the pair needs much more software. beast-ark
+([BEAST_ARK.md](BEAST_ARK.md)) holds it: 112 open-source packages, each
+pinned to a commit, with a sha256 or digest for every file and a build for
+linux-aarch64. That includes Kubernetes and k3s with their images,
+containerd, Docker, Go, Rust, Zig 0.16, Node, Temurin, Postgres, NATS,
+Prometheus and Grafana, headscale, Forgejo, step-ca, Trivy with its DB, and
+DevDocs. Fill a drive on any connected box, then restore on the Spark with
+no network:
+
+```bash
+./scripts/ark.sh fetch --to /Volumes/ARK --profile core --platform linux-aarch64   # ~5.4 GiB + source
+# plug the drive into the Spark (or rsync it over the cable)
+/media/max/ARK/ark verify /media/max/ARK                       # re-hash; signatures re-checked
+/media/max/ARK/ark restore go --from /media/max/ARK            # → ~/.local/opt/go-1.27.4, ~/.local/bin/go
+/media/max/ARK/ark restore k3s --from /media/max/ARK           # + the air-gap image bundle (BEAST_ARK §8.4)
+/media/max/ARK/ark serve /media/max/ARK --tailnet              # registry + pip/npm/go mirrors for the other boxes
+```
+
+The drive runs its own copy of the tool (`DRIVE/ark`), so it needs no
+checkout. The Spark's python 3.12 is enough. On a box with no python, the
+wrapper unpacks the CPython archived on the drive after checking it against
+`SHA256SUMS`. Verified on spark-2 on 2026-11-15 (Zig 0.16.0 with its
+minisign signature, and jq: fetched, verified, restored, run). `fetch`,
+`lock` and `update` exit 3 under `OFFLINE=true` or island mode. The
+TensorFold and llama.cpp pins in the ark are the repo's own (H5, H6), held
+equal by tests.
+
 ### H9. The order for a pair built entirely offline
 
 This order has not been run end to end. Every piece is measured on its own, and
@@ -1426,6 +1465,9 @@ the sequence is VERIFY ON HARDWARE.
 6. The command center from a Spark-built bundle with `OFFLINE=true` (H6),
    `openbeast.conf` (E2), units (E3), reboot.
 7. Optional: pytest venv, zig, beast-docs mirror (H7, H8).
+8. Optional: everything else from a beast-ark drive (H8a). `ark verify`
+   first, then `ark restore <name>` per tool, or `ark serve --tailnet` for
+   the whole fleet.
 
 ---
 
@@ -1523,8 +1565,10 @@ published, from the 2026-11-15 review:
   third-party alpha code. Anything in it can reach `127.0.0.1:8000` (no key, no
   gate audit) and the loopback-trusting beast-chat / beast-artifact ports
   (`OPENBEAST_CHAT_LOGIN_FROM=loopback` trusts any local TCP peer's
-  `Tailscale-User-Login`). Not fixed here; the mitigation belongs in
-  beast-chat's login source and in the recipe's network mode.
+  `Tailscale-User-Login`). **beast-chat: fixed on the pair (2026-11-15)** with
+  `CHAT_LOGIN_FROM=unix` (E2), so the header counts only on the 0600 socket
+  tailscaled proxies to. Still open: beast-artifact's loopback reads, and the
+  recipe's network mode.
 - **`bootstrap.sh` OFFLINE hint** points at `bundle.sh build` "on a connected
   box" without saying it must be an aarch64 Spark (H6).
 - **`setup-client.sh` writes the opencode v1 MCP shape** (`mcp.<name>` +

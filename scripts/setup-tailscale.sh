@@ -119,6 +119,20 @@ _ts_has_set_path() {
   case "$_h" in *set-path*) return 0 ;; esac
   return 1
 }
+_publish_chat_mount() { # _publish_chat_mount <up-host>
+  # CHAT_LOGIN_FROM=unix (lib/conf.sh): logins count only on CHAT_SOCKET, so
+  # :8445 proxies to that socket and a host-network container dialling
+  # 127.0.0.1 can no longer claim a login. Otherwise the TCP port, as before.
+  if [[ "${CHAT_LOGIN_FROM:-loopback}" == unix ]]; then
+    ts_admin serve --bg --https=8445 "unix:$CHAT_SOCKET"
+    echo "      beast-chat published (tailnet-only, :8445 → unix:$CHAT_SOCKET)."
+    [[ -S "$CHAT_SOCKET" ]] || echo "      NOTE: $CHAT_SOCKET does not exist yet — it appears when beast-chat starts."
+  else
+    ts_admin serve --bg --https=8445 "http://$1:${CHAT_PORT:-3003}"
+    echo "      beast-chat published (tailnet-only, :8445 → :${CHAT_PORT:-3003})."
+  fi
+}
+
 _publish_slot_mount() { # _publish_slot_mount <upstream-host>
   if _ts_has_set_path; then
     if ! ts_admin serve --bg --https=8444 --set-path=/api/slot "http://$1:${DASHBOARD_PORT:-3002}/api/slot"; then
@@ -214,19 +228,22 @@ _print_mounts() { # _print_mounts <chat-port> <artifact-port> [ntfy-port]
   done
 }
 
+# A plain read of one openbeast.conf key. lib/conf.sh is NOT sourced before
+# the join or by --status (it may write a generated secret into
+# openbeast.conf), so the keys needed that early are read with a grep.
+_conf_file="$(cd "$(dirname "$0")/.." && pwd)/openbeast.conf"
+_conf_get() { # _conf_get <KEY> <default>
+  local v
+  v="$(grep -E "^[[:space:]]*$1[[:space:]]*=" "$_conf_file" 2>/dev/null | tail -n1 \
+       | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]+(#.*)?$//; s/^["'\'']//; s/["'\'']$//' || true)"
+  printf '%s\n' "${v:-$2}"
+}
+
 if [[ $STATUS_ONLY -eq 1 ]]; then
-  # Read-only by construction: lib/conf.sh is NOT sourced here (it may write
-  # a generated secret into openbeast.conf); the two port labels are read
-  # straight from the env / conf with a plain grep.
+  # Read-only by construction: the two port labels come from the env / conf
+  # through _conf_get.
   command -v tailscale >/dev/null 2>&1 || {
     echo "tailscale is not installed — nothing is published on a tailnet." >&2; exit 1; }
-  _conf_file="$(cd "$(dirname "$0")/.." && pwd)/openbeast.conf"
-  _conf_get() { # _conf_get <KEY> <default>
-    local v
-    v="$(grep -E "^[[:space:]]*$1[[:space:]]*=" "$_conf_file" 2>/dev/null | tail -n1 \
-         | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]+(#.*)?$//; s/^["'\'']//; s/["'\'']$//' || true)"
-    printf '%s\n' "${v:-$2}"
-  }
   echo "Current serve config (tailscale serve status):"
   tailscale serve status 2>/dev/null | sed 's/^/      /' || true
   echo ""
@@ -236,9 +253,40 @@ if [[ $STATUS_ONLY -eq 1 ]]; then
   exit 0
 fi
 
-# Tailnet machine name — becomes https://beast.<tailnet>.ts.net everywhere.
-# (Chosen 2026-07-07; independent of the system hostname.)
-TS_HOSTNAME="${TS_HOSTNAME:-beast}"
+# Tailnet machine name — becomes https://<name>.<tailnet>.ts.net everywhere.
+# env TS_HOSTNAME > openbeast.conf TS_HOSTNAME > a per-host-class default:
+# "beast" on a rig (chosen 2026-07-07; independent of the system hostname),
+# none on a DGX Spark, where a pair of boxes both joining as "beast" would
+# collide, so _join_name refuses until the conf names the box.
+TS_HOSTNAME="${TS_HOSTNAME:-$(_conf_get TS_HOSTNAME "")}"
+if [[ -n "$TS_HOSTNAME" && ! "$TS_HOSTNAME" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]]; then
+  echo "Error: TS_HOSTNAME='$TS_HOSTNAME' is not a tailnet machine name" \
+       "(lowercase letters, digits, dashes; at most 63)." >&2
+  exit 1
+fi
+
+# _join_name <host-class> — the name a FIRST join uses: TS_HOSTNAME, else the
+# class default. Fails (prints why) when there is none.
+_join_name() {
+  if [[ -n "$TS_HOSTNAME" ]]; then printf '%s\n' "$TS_HOSTNAME"; return 0; fi
+  if [[ "$1" == spark ]]; then
+    echo "Error: set TS_HOSTNAME in openbeast.conf (e.g. TS_HOSTNAME=spark-1)" \
+         "before this DGX Spark joins the tailnet — every box defaulting to" \
+         "'beast' would collide." >&2
+    return 1
+  fi
+  printf 'beast\n'
+}
+
+# _name_note <current-tailnet-name> — on an already-joined machine the name is
+# never changed here; say so when the configured one differs.
+_name_note() {
+  if [[ -n "$TS_HOSTNAME" && -n "$1" && "$1" != "$TS_HOSTNAME" ]]; then
+    echo "      NOTE: joined as '$1', but TS_HOSTNAME is '$TS_HOSTNAME'. This script"
+    echo "            never renames a joined machine; to rename it (every URL"
+    echo "            and client --host changes): tailscale set --hostname=$TS_HOSTNAME"
+  fi
+}
 
 if [[ $EUID -eq 0 ]]; then
   echo "Run as your normal user — the script sudo's only where needed." >&2
@@ -300,11 +348,19 @@ fi
 
 # --- 2. Join the tailnet -----------------------------------------------------
 if tailscale status >/dev/null 2>&1; then
-  echo "[2/4] Already joined a tailnet."
+  _ts_name="$(tailscale status --json 2>/dev/null | python3 -c '
+import sys, json
+try: print(json.load(sys.stdin).get("Self", {}).get("HostName", ""))
+except Exception: print("")' 2>/dev/null || true)"
+  echo "[2/4] Already joined a tailnet${_ts_name:+ as '$_ts_name'}."
+  _name_note "$_ts_name"
 else
-  echo "[2/4] Joining your tailnet as '$TS_HOSTNAME' — a browser login URL will print below."
+  _host_class="$(REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)" bash -c \
+    'source "$REPO_DIR/scripts/lib/engine.sh" >/dev/null 2>&1; ob_engine_host_class' 2>/dev/null || echo rig)"
+  _join_as="$(_join_name "$_host_class")" || exit 1
+  echo "[2/4] Joining your tailnet as '$_join_as' — a browser login URL will print below."
   echo "      (Sign in with any SSO account; the free plan is plenty.)"
-  sudo tailscale up --hostname="$TS_HOSTNAME"
+  sudo tailscale up --hostname="$_join_as"
 fi
 
 # --- 3. Publish WebUI + API over HTTPS, tailnet-only -------------------------
@@ -619,9 +675,8 @@ if [[ $PUBLISH_CHAT -eq 1 ]]; then
     echo "      WARNING: BEAST_CHAT is not true in openbeast.conf — :8445 will"
     echo "               502 until: set BEAST_CHAT=true && ./stop.sh && ./start.sh"
   fi
-  ts_admin serve --bg --https=8445 "http://$CHAT_UP_HOST:${CHAT_PORT:-3003}"
-  echo "      beast-chat published (tailnet-only, :8445 → :${CHAT_PORT:-3003})."
-  if ! _is_loop "$CHAT_UP_HOST"; then
+  _publish_chat_mount "$CHAT_UP_HOST"
+  if [[ "${CHAT_LOGIN_FROM:-loopback}" != unix ]] && ! _is_loop "$CHAT_UP_HOST"; then
     # The console trusts Tailscale-User-Login only from a LOOPBACK peer (the
     # header is otherwise forgeable), and tailscaled dials this address from
     # itself — so logins are not honoured through this mount.

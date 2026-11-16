@@ -417,6 +417,53 @@ as for Qwen3.8-27B; unverified.
 **Not benchmarked.** A v5-fast row at ~35 tok/s single-slot is a ~1-day job;
 it is listed in `BENCH_EXCLUDED` with that reason until scheduled.
 
+**Un-shelved with the MoE expert cache (2026-11-15, unmeasured on our rig).**
+The 38 tok/s ceiling above came from reading every expert from DDR5 on every
+token. llama.cpp v1.0.0 (the pin since 2026-11-15) adds a VRAM cache of the
+hot experts (`--moe-cache-mib`); its author measured Flash-Next on a 5090 going
+from 30.8 to 67.8 tok/s. `serve-qwen38-flash-next-unc-iq4xs-moecache.sh` is
+the same weights with 8 resident expert layers plus an 8 GiB cache. The plan
+fits the normal 75% memory scope: the GGUF's 27.6 GiB of always-host tables
+rule out the all-in-RAM form there. Target **55–70 tok/s**. Acceptance,
+tuning and the memory plan: [WEIGHT_STREAMING.md](WEIGHT_STREAMING.md). The
+static script stays as the baseline, now with `--cache-ram 2048` pinned.
+
+## GLM-5.3-Flash abliterated (huihui-ai) UD-Q2_K_XL: big mode (added 2026-11-15, unmeasured)
+
+[huihui-ai/Huihui-GLM-5.3-Flash-abliterated-GGUF](https://huggingface.co/huihui-ai/Huihui-GLM-5.3-Flash-abliterated-GGUF)
+(rev `c43a9946`): unsloth's dynamic 2-bit quant of zai-org/GLM-5.3-Flash
+(321B total, about 18B active, 288 experts with 8 routed, arch `glm5-next`),
+with huihui's abliteration of layers 15–35. 101.25 GiB in four shards, pinned
+by sha256.
+
+- **Verified uncensored at the tensor level.** Over range reads against
+  unsloth's stock quant, the ablated layers' attention output and shared
+  experts differ, while the routed experts are byte-identical (huihui leaves
+  the experts unablated).
+- **Why this quant.** It is the best uncensored GGUF that fits 128 GB with
+  room for the stack. UD-IQ3_XXS (112 GiB) and orcarouter's Q2_K (109 GiB)
+  do not fit.
+- **Big mode is opt-in**: `./start.sh -d serve-glm53-flash-abl-q2kxl-big.sh`.
+  - All 94.7 GiB of routed experts sit pinned in host RAM, under the
+    profile's own **90% memory scope, rig only**. A 14 GiB VRAM cache serves
+    the hot ones.
+  - Target **20–30 tok/s**. Anchor: Project Maya measured 25.9–30.1 on our
+    rig class with stock weights.
+  - While it runs the 27B is not served: hydra's rig deployment reads
+    MISMATCH and `routes.beast` falls to the Ti, or returns 503 on a
+    rig-only install.
+  - Back to daily: `./stop.sh && ./start.sh -d`.
+- **Not benchmarked.** It is in `BENCH_EXCLUDED`, and a v5 cell is 2–3 GPU
+  days. The runbook, the acceptance check and the decision path if this quant
+  fails (other published quants first, self-quantizing last) are in
+  [WEIGHT_STREAMING.md](WEIGHT_STREAMING.md).
+
+**DeepSeek-V4.1-Flash does not fit usefully in 128 GB.** Its routed experts
+are about 204 GB at 3 bpw. On 128 GB that means 1-bit experts with zero
+headroom, or NVMe spill at an estimated ~11 tok/s. The rig's RAM is final
+(Max, 2026-11-15), so it stays on the DGX Spark pair
+([SPARK_HYDRA.md](SPARK_HYDRA.md)).
+
 ## What the opencode picker shows (and what it doesn't)
 
 Two things about the model list in opencode are worth knowing, because both

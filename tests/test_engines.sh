@@ -193,12 +193,12 @@ done
 echo "Library: engines, host class, defaults, conf writes"
 _lib() { env -i "${BASE_ENV[@]}" REPO_DIR="$SB" "$@"; }
 _o="$(_lib bash -c 'source "$REPO_DIR/scripts/lib/engine.sh"; ob_engines')"
-check "the three shipped adapters are discovered, in order" '[[ "$_o" == "llama vllm tensorfold" ]]' "$_o"
+check "the four shipped adapters are discovered, in order (maya last: opt-in, gated)" '[[ "$_o" == "llama vllm tensorfold maya" ]]' "$_o"
 cp "$SB/scripts/engines/vllm.sh" "$T/sglang.sh"; sed -i 's/eng_vllm_/eng_sglang_/g' "$T/sglang.sh"
 cp "$T/sglang.sh" "$SB/scripts/engines/sglang.sh"
 _o="$(_lib bash -c 'source "$REPO_DIR/scripts/lib/engine.sh"; ob_engines; source "$REPO_DIR/scripts/lib/backend.sh"; ob_backend_normalize sglang; ob_backend_normalize nonsense 2>&1')"
 check "a 4th engine is one new adapter file: listed, and a valid INFERENCE_BACKEND" \
-  '[[ "$_o" == *"llama vllm tensorfold sglang"* && "$_o" == *$'"'"'\nsglang\n'"'"'* && "$_o" == *"not one of"*llama ]]' "$_o"
+  '[[ "$_o" == *"llama vllm tensorfold maya sglang"* && "$_o" == *$'"'"'\nsglang\n'"'"'* && "$_o" == *"not one of"*llama ]]' "$_o"
 rm -f "$SB/scripts/engines/sglang.sh"
 _o="$(_lib OB_ENGINE_HOST_CLASS= bash -c 'source "$REPO_DIR/scripts/lib/engine.sh"; ob_engine_host_class')"
 check "no GPU (nvidia-smi fails) → host class rig" '[[ "$_o" == rig ]]' "$_o"
@@ -460,6 +460,76 @@ EOF
     'grep -E "tensorfold-native serve $T/ckpt-tf --no-update-check --name rig-model --host $_LO --port $TPORT --drafter none --parallel 2" "$T/calls.log" >/dev/null' "$(cat "$T/calls.log")"
   check "…and nothing of llama's ran" '! grep -qE "serve-marker|^(pkill|pgrep).*llama-server" "$T/calls.log"'
 fi
+
+# ════════════════════════════════════════════════════════════════════════════
+echo ""
+echo "Project Maya: reviewed commits, llama.cpp by commit, hash-locked packages, the gate"
+# Maya "upstream": a setup.py with the two facts the adapter vets. Its
+# llama.cpp: a repo with the ggml/ and gguf-py/ Maya builds against.
+_PYLINE="$(sed -n 's/^_ENG_MAYA_PYPKG_LINE=.\(.*\).$/\1/p' "$REPO_DIR/scripts/engines/maya.sh")"
+git init -q "$T/mllama"
+( cd "$T/mllama" && mkdir -p ggml gguf-py && echo 'project(ggml)' > ggml/CMakeLists.txt && echo x > gguf-py/x \
+  && git add -A && git commit -qm l1 )
+ML="$(git -C "$T/mllama" rev-parse HEAD)"; git -C "$T/mllama" config uploadpack.allowAnySHA1InWant true
+git init -q "$T/maya-up"
+_mk_maya() { # _mk_maya <tag> <py-packages line>
+  ( cd "$T/maya-up" && printf 'LLAMA_CPP_COMMIT = "%s"\n%s\n' "$ML" "$2" > setup.py \
+    && echo 'print("maya")' > maya.py && git add -A && git commit -qm "$1" && git tag "$1" )
+}
+_mk_maya v9.9.9 "$_PYLINE"
+MC1="$(git -C "$T/maya-up" rev-parse v9.9.9)"
+_mk_maya v9.9.10 'PY_PACKAGES = ["numpy", "something-new"]'
+MC2="$(git -C "$T/maya-up" rev-parse v9.9.10)"
+git -C "$T/maya-up" config uploadpack.allowAnySHA1InWant true
+printf '#!/bin/bash\nmkdir -p "$1/bin"\n' > "$T/bin/fake-venv"
+printf '#!/bin/bash\necho "pip $*" >> %s/pip.log\nif [[ "$1" == download ]]; then while [[ $# -gt 0 ]]; do [[ "$1" == -d ]] && { mkdir -p "$2"; : > "$2/numpy-2.5.4-x.whl"; }; shift; done; fi\n' "$T" > "$T/bin/fake-pip"
+chmod +x "$T/bin/fake-venv" "$T/bin/fake-pip"
+MENV=(OB_ENGINE_MAYA_URL="file://$T/maya-up" OB_ENGINE_LLAMA_URL="file://$T/mllama" OB_ENGINE_MAYA_OPT="$T/opt"
+      OB_ENGINE_MAYA_MKVENV="$T/bin/fake-venv" OB_ENGINE_MAYA_PIP="$T/bin/fake-pip"
+      OB_ENGINE_MAYA_REVIEWED="$(printf 'v9.9.9\t%s\t%s\nv9.9.10\t%s\t%s' "$MC1" "$ML" "$MC2" "$ML")")
+: > "$SB/openbeast.conf"; : > "$T/pip.log"
+_o="$(eng "${MENV[@]}" -- install maya --version v1.2.3)"
+check "an unreviewed Maya version is refused, and nothing is pinned" \
+  '[[ "$_o" == *"not a reviewed version"* && -z "$(confv ENGINE_PIN_MAYA)" && ! -e "$T/opt/maya" ]]' "$_o"
+_o="$(eng "${MENV[@]}" -- install maya --version v9.9.9)"
+check "install maya v9.9.9: the reviewed commit, pinned tag@commit, linked active" \
+  '[[ "$(confv ENGINE_PIN_MAYA)" == "v9.9.9@$MC1" && "$(git -C "$T/opt/maya" rev-parse HEAD)" == "$MC1" ]]' "$_o"
+check "…llama.cpp checked out at the commit its setup.py pins (no archive zip)" \
+  '[[ "$(git -C "$T/opt/maya-v9.9.9/third_party/llama.cpp" rev-parse HEAD)" == "$ML" && -f "$T/opt/maya-v9.9.9/third_party/llama.cpp/ggml/CMakeLists.txt" ]]'
+check "…packages through pip --require-hashes from the committed lock, and Maya's stamp written" \
+  'grep -q -- "install --require-hashes --no-deps --only-binary :all:.*-r $SB/scripts/engines/maya/requirements.lock" "$T/pip.log" && grep -qF "\"jsonschema>=4.18,<5\"]" "$T/opt/maya-v9.9.9/.venv/.strata-pip.json"' "$(cat "$T/pip.log")"
+_o="$(eng "${MENV[@]}" -- list)"
+check "…and list shows it installed and pinned" 'grep -E "^maya +v9\.9\.9 \(" <<< "$_o" >/dev/null' "$_o"
+_o="$(eng "${MENV[@]}" -- install maya --version v9.9.10)"
+check "a Maya whose setup.py changed its package list is refused; the pin stays" \
+  '[[ "$_o" == *"changed its Python package list"* && "$(confv ENGINE_PIN_MAYA)" == "v9.9.9@$MC1" && ! -d "$T/opt/maya-v9.9.10" ]]' "$_o"
+_o="$(eng "${MENV[@]}" -- install maya --version v9.9.9 --digest "$MC2")"
+check "…and a --digest that contradicts the reviewed commit is refused" '[[ "$_o" == *"names another commit"* ]]' "$_o"
+_o="$(eng "${MENV[@]}" -- stage maya --version v9.9.9 "$T/stage-maya")"
+check "stage maya: both commits as bare repos, the locked wheels, a MANIFEST" \
+  '[[ -d "$T/stage-maya/maya.git" && -d "$T/stage-maya/llama.cpp.git" && -f "$T/stage-maya/wheels/numpy-2.5.4-x.whl" ]] && grep -q "^COMMIT=$MC1$" "$T/stage-maya/MANIFEST" && grep -q "^LLAMA_COMMIT=$ML$" "$T/stage-maya/MANIFEST" && grep -q "pip download --require-hashes" "$T/pip.log"' "$_o"
+rm -rf "$T/opt"; : > "$T/pip.log"
+_o="$(eng "${MENV[@]}" OPENBEAST_OFFLINE=true OB_ENGINE_MAYA_URL=file:///nonexistent OB_ENGINE_LLAMA_URL=file:///nonexistent -- install maya --from "$T/stage-maya")"
+check "OFFLINE install maya --from DIR: verified commits from the folder, wheels with --no-index" \
+  '[[ "$(git -C "$T/opt/maya" rev-parse HEAD)" == "$MC1" ]] && grep -q -- "--no-index --find-links $T/stage-maya/wheels" "$T/pip.log"' "$_o"
+_o="$(eng "${MENV[@]}" OPENBEAST_OFFLINE=true -- install maya --version v9.9.9)"
+check "…and OFFLINE without --from refuses to download" '[[ "$_o" == *"OFFLINE=true — no download"* ]]' "$_o"
+# The gate: no verdict, no use. The profile ships in scripts/engines/maya/profiles/.
+printf 'LLAMA_API_KEY=sekrit-maya\n' > "$SB/openbeast.conf"; chmod 600 "$SB/openbeast.conf"
+_o="$(eng "${MENV[@]}" -- use maya --profile glm53-flash-abl-q2kxl --force)"
+check "use maya without a gate verdict is refused (even with --force), the conf untouched" \
+  '[[ "$_o" == *"maya is gated: no measurement on file"* && "$(cat "$SB/openbeast.conf")" == "LLAMA_API_KEY=sekrit-maya" ]]' "$_o"
+mkdir -p "$SB/.engines/gate"
+printf '{"schema": "openbeast-engine-gate/1", "engine": "maya", "pass": true, "ratio": 1.62, "candidate_tps": 32.4, "baseline_tps": 20.0, "time": "t"}\n' > "$SB/.engines/gate/maya.json"
+_o="$(eng "${MENV[@]}" -- use maya --profile glm53-flash-abl-q2kxl --force --dry-run)"
+check "…with a passing verdict: the plan sets maya managed and prints the launch" \
+  '[[ "$_o" == *"set   INFERENCE_BACKEND=maya"* && "$_o" == *"set   ENGINE_PROFILE=glm53-flash-abl-q2kxl"* && "$_o" == *"maya.py --config"* && "$_o" == *"MAYA_GLM_RAM_HEADROOM_GB=16"* ]]' "$_o"
+check "…and the key travels by environment only: never in the printed command" \
+  '[[ "$_o" == *"MAYA_API_KEY=\<from\ LLAMA_API_KEY"* && "$_o" != *sekrit-maya* ]]' "$_o"
+_o="$(env -i "${BASE_ENV[@]}" REPO_DIR="$SB" bash -c 'source "$REPO_DIR/scripts/lib/memscope.sh"; source "$REPO_DIR/scripts/lib/engine.sh"; ob_engine_load maya; ob_mem_scope "$(eng_maya_scope_file glm53-flash-abl-q2kxl)" rig 127926272 75')"
+check "the Maya profile asks start.sh for the same rig-only 90% / memlock scope as llama.cpp's big mode" \
+  '[[ "$_o" == "90 infinity profile:glm53-flash-abl-q2kxl.env" ]]' "$_o"
+rm -f "$SB/.engines/gate/maya.json"; : > "$SB/openbeast.conf"
 
 # ════════════════════════════════════════════════════════════════════════════
 echo ""

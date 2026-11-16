@@ -129,6 +129,7 @@ cat skills/codebase-onboarding/SKILL.md skills/git-discipline/SKILL.md > /tmp/ct
 | `language_reference` | the installed toolchain's verified claims. On a Spark only gcc/g++ are installed today (no zig, rust or go) |
 | `platform_docs`, `scripts/docs.sh search/read` | only what is mirrored. **spark-1 has no mirror yet**; carry one ([SPARK_HYDRA.md H8](SPARK_HYDRA.md#h8-beast-docs-mirror)) |
 | the docs in the repo | `docs/*.md`, `AGENTS.md`, `skills/*/SKILL.md`, `evals/README.md`, every script's `--help` |
+| beast-ark: `scripts/ark.sh list / plan / lint / verify / restore / serve` | the catalog is in the repo. A filled ark drive restores toolchains (go, zig, rust, node, cpython, …), images and source with no network ([BEAST_ARK.md](BEAST_ARK.md) §8 and §13). `fetch`, `lock` and `update` exit 3 offline, which is correct. Never invent a pin: add an entry as `verified = "unverified"` and leave `lock` to a connected session |
 | git (local) | commit, branch, diff, log, `git bundle` |
 | the hermetic test suites | stubs, no network ([3](#3-tests-which-to-run-for-which-change)) |
 
@@ -216,6 +217,7 @@ Run the narrow suites while iterating, then the full set before committing:
 | `scripts/lib/conf.sh`, `openbeast.conf` keys | `tests/test_conf_secrets.sh`, `tests/test_escalate_conf.sh`, `tests/test_shell_ops.sh` |
 | `scripts/healthcheck.sh`, `scripts/doctor.sh`, `setup-tailscale.sh` | `tests/test_shell_ops.sh`, `tests/test_operator_scripts.sh`, `tests/test_backends.sh` |
 | `scripts/engine.sh`, `scripts/engines/*`, `scripts/lib/engine.sh`, `engine-serve.sh` | `tests/test_engines.sh` (GNU), `tests/test_lifecycle.sh` |
+| `scripts/serve-*.sh` flags, `scripts/llama.cpp.ref`, `scripts/lib/memscope.sh`, `scripts/engine-gate.sh`, `scripts/tokps.py`, `scripts/engines/maya*` | `tests/test_weight_streaming.sh` (portable; every serve-script flag against the pinned llama.cpp's option list), `tests/test_tokps.py`, `tests/test_engines.sh` (GNU, Maya install/stage/gate), `tests/test_lifecycle.sh` (the big-mode scope through `start.sh -d`). Runbook: [WEIGHT_STREAMING.md](WEIGHT_STREAMING.md) |
 | `scripts/backends/spark-cluster.sh`, `tensorfold/spark-node.sh`, `vllm/` | `tests/test_spark_cluster.sh`, `tests/test_backends.sh` |
 | `scripts/backends/spark-guard.sh` | `tests/test_spark_guard.sh` |
 | `spark-root-setup.sh`, `tensorfold/install-native.sh` | `tests/test_spark_supply.sh` |
@@ -229,6 +231,7 @@ Run the narrow suites while iterating, then the full set before committing:
 | `agents/tools.py`, `agents/runner.py` (**era-hashed**, [4](#4-the-eval-era-rule)) | `tests/test_tools.py`, `test_runner_*.py`, `test_tool_*.py`, `test_fetch_guards.py`, `test_path_guard.py` |
 | `agents/apps/`, `scripts/apps.sh` (beast-apps) | `tests/test_apps.py` (its own step; the full run ignores it) |
 | `agents/docs/`, `scripts/docs.sh` (beast-docs) | `tests/test_beast_docs.py`, `tests/test_platform_docs_tool.py` |
+| `agents/ark/`, `agents/ark/catalog.toml`, `scripts/ark.sh` (beast-ark) | `tests/test_ark.py` (it lints the real catalog, checks repo-pin parity and runs the fake-server round trips), `tests/test_ark.sh` (CLI exit codes, the bare-box `./ark` wrapper) |
 | `agents/lang/`, `agents/packs/`, `lang-*.sh` | `tests/test_lang_*.py`, `test_pack_context.py`, `test_zig_pack.py`, `test_escalation_wiring.py` |
 | `agents/chat_server.py`, `sessions.py`, `job.sh` | `tests/test_chat_*.py`, `test_sessions.py`, `test_steering.py`, `test_job_sh.sh`, `test_ops_chat_artifact.sh` |
 | `agents/artifact*.py`, `scripts/artifact.sh` | `tests/test_artifact_*.py`, `tests/test_artifact_cli.sh` |
@@ -600,6 +603,23 @@ introducing commit and the conflicting assumption.
 > sha256 file. Do not install anything.
 
 **Done:** `OK: … holds the pinned .debs` and a `.sha256` next to the tarball.
+
+### 8.11 Restore a toolchain from an ark drive, offline
+
+> The ark drive is mounted at /media/max/ARK. Restore zig and go into
+> ~/ob-work/opt (not ~/.local), verify the drive first, and show
+> `zig version` and `go version`. The network is off.
+
+```bash
+/media/max/ARK/ark verify /media/max/ARK --quick        # fast presence check; drop --quick to re-hash
+/media/max/ARK/ark restore zig --from /media/max/ARK --prefix ~/ob-work/opt --bin ~/ob-work/bin --kinds file
+/media/max/ARK/ark restore go  --from /media/max/ARK --prefix ~/ob-work/opt --bin ~/ob-work/bin --kinds file
+~/ob-work/bin/zig version && ~/ob-work/bin/go version
+```
+
+**Done:** `RESULT: OK`, then `0.16.0` and `go version go1.27.4 linux/arm64`.
+If a file is corrupt, restore refuses with exit 1 and names it. Report it,
+and do not work around it ([BEAST_ARK.md](BEAST_ARK.md) §11).
 
 ---
 

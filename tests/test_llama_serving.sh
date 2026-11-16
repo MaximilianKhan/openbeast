@@ -48,7 +48,10 @@ case "\$*" in
 esac
 exit 0
 SH
-chmod +x "$SV/llama.cpp/build/bin/llama-server" "$SV/llama.cpp/build/bin/llama-cli" "$SV/bin/nvidia-smi"
+# tailscale answers "not here" unless a case says otherwise: serve.sh asks it
+# for the tailnet name (the :8443 origin), and the host's own must not leak in.
+printf '#!/bin/bash\nexit 1\n' > "$SV/bin/tailscale"
+chmod +x "$SV/llama.cpp/build/bin/llama-server" "$SV/llama.cpp/build/bin/llama-cli" "$SV/bin/nvidia-smi" "$SV/bin/tailscale"
 printf 'usage: llama-server\n-cram, --cache-ram N   set the maximum cache size in MiB (default: 8192)\n' > "$SV/help.txt"
 : > "$SV/gpus"
 # _pin <file> [bytes] — a registry row for weights/<file> (its real size by default)
@@ -209,6 +212,26 @@ _serve LLAMA_ARG_CORS_ORIGINS=https://ui.example -- -m "$SV/weights/main.gguf" -
 grep -qx 'LLAMA_ARG_CORS_ORIGINS=https://ui.example' "$SV/env" 2>/dev/null \
   && pass "…an operator's own LLAMA_ARG_CORS_ORIGINS stands" \
   || fail "LLAMA_ARG_CORS_ORIGINS override lost: $(grep '^LLAMA_ARG_CORS' "$SV/env" 2>/dev/null)"
+# llama.cpp v1.0.0's DNS-rebinding guard (#32098) refuses a loopback request
+# whose Host is not loopback or an allowed origin's host, and Tailscale Serve
+# keeps the client's Host. With the tailnet name known, the raw :8443 mount's
+# origin must be the allowed one, or every remote client gets a 403.
+cat > "$SV/bin/tailscale" <<'SH'
+#!/bin/bash
+[[ "$1 $2" == "status --json" ]] && { echo '{"Self": {"DNSName": "beast.tail123.ts.net."}}'; exit 0; }
+exit 1
+SH
+chmod +x "$SV/bin/tailscale"
+_serve -- -m "$SV/weights/main.gguf" -c 8192
+grep -qx 'LLAMA_ARG_CORS_ORIGINS=https://beast.tail123.ts.net:8443' "$SV/env" 2>/dev/null \
+  && pass "…with a tailnet name, the :8443 mount's origin is allowed (llama.cpp v1.0.0 Host guard)" \
+  || fail "tailnet origin not allowed: $(grep '^LLAMA_ARG_CORS' "$SV/env" 2>/dev/null) :: $(tr '\n' ' ' <<< "$SV_OUT" | tail -c 300)"
+_serve LLAMA_ARG_CORS_ORIGINS=https://ui.example -- -m "$SV/weights/main.gguf" -c 8192
+grep -qx 'LLAMA_ARG_CORS_ORIGINS=https://ui.example' "$SV/env" 2>/dev/null \
+  && pass "…and an operator's own value still wins over the tailnet name" \
+  || fail "tailnet name overrode LLAMA_ARG_CORS_ORIGINS: $(grep '^LLAMA_ARG_CORS' "$SV/env" 2>/dev/null)"
+# The name is cached in the run dir; later cases expect no tailnet.
+printf '#!/bin/bash\nexit 1\n' > "$SV/bin/tailscale"; rm -f "$SV/.run/webui-tailnet-name"
 
 echo ""
 echo "run.sh (interactive llama-cli):"

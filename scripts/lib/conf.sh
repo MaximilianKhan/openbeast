@@ -27,6 +27,8 @@
 #   BEAST_CHAT       (env OPENBEAST_BEAST_CHAT)  default false
 #   CHAT_PORT        (env OPENBEAST_CHAT_PORT)   default 3003
 #   CHAT_OPERATORS   (env OPENBEAST_CHAT_OPERATORS) default empty
+#   CHAT_LOGIN_FROM  (env OPENBEAST_CHAT_LOGIN_FROM) default loopback | unix
+#   CHAT_SOCKET      (env OPENBEAST_CHAT_SOCKET)  default .run/chat.sock (unix only)
 #       beast-chat: the tailnet operator console for the rig's agent and job
 #       sessions (docs/BEAST_CHAT.md). Off by default.
 #   CHAT_NOTIFY_URL / CHAT_NOTIFY_ON / CHAT_NOTIFY_TOKEN_FILE
@@ -491,6 +493,24 @@ export OPENBEAST_CHAT_PORT="$CHAT_PORT"
 # server can tell "no allowlist configured" from "an allowlist of nobody".
 if [[ -n "$CHAT_OPERATORS" ]]; then
   export OPENBEAST_CHAT_OPERATORS="$CHAT_OPERATORS"
+fi
+# Where beast-chat honours the Tailscale-User-Login header (docs/BEAST_CHAT.md).
+# `loopback` (default) trusts any 127.0.0.1 peer — including code inside a
+# host-network container. `unix` trusts it only on CHAT_SOCKET, a 0600 socket
+# `tailscale serve` proxies to (setup-tailscale.sh --chat follows this key).
+# Exported only when `unix`, so the default leaves the environment unchanged.
+CHAT_LOGIN_FROM="$(printf '%s' "${OPENBEAST_CHAT_LOGIN_FROM:-$(_ob_conf_value CHAT_LOGIN_FROM || true)}" | tr '[:upper:]' '[:lower:]')"
+case "$CHAT_LOGIN_FROM" in
+  ""|loopback) CHAT_LOGIN_FROM=loopback ;;
+  unix) ;;
+  *) echo "WARNING: CHAT_LOGIN_FROM='$CHAT_LOGIN_FROM' is not loopback or unix — using loopback" >&2
+     CHAT_LOGIN_FROM=loopback ;;
+esac
+CHAT_SOCKET="${OPENBEAST_CHAT_SOCKET:-$(_ob_conf_value CHAT_SOCKET || true)}"
+if [[ "$CHAT_LOGIN_FROM" == unix ]]; then
+  CHAT_SOCKET="${CHAT_SOCKET:-$REPO_DIR/.run/chat.sock}"
+  export OPENBEAST_CHAT_LOGIN_FROM=unix
+  export OPENBEAST_CHAT_SOCKET="$CHAT_SOCKET"
 fi
 # beast-chat push notifications (openbeast.conf.example § beast-chat). The
 # chat server reads OPENBEAST_CHAT_NOTIFY_URL / _ON / _TOKEN_FILE. ON always

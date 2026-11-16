@@ -1048,6 +1048,48 @@ else
 fi
 
 echo ""
+echo "start.sh -d raises the memory scope for a big-mode profile only (docs/WEIGHT_STREAMING.md):"
+# The 128 GB rig's MemTotal, whatever box runs this; host class forced to rig.
+printf 'MemTotal:       127926272 kB\nMemAvailable:  120000000 kB\n' > "$_SE/meminfo"
+printf '#!/bin/bash\n# openbeast-scope: mem-limit-pct=90 memlock=infinity host-class=rig min-mem-gib=118\nexit 0\n' \
+  > "$_SE/scripts/serve-big-test.sh"
+printf '#!/bin/bash\nexit 0\n' > "$_SE/scripts/serve-daily-test.sh"
+chmod +x "$_SE/scripts/serve-big-test.sh" "$_SE/scripts/serve-daily-test.sh"
+printf 'SEARXNG_SECRET=x\n' > "$_SE/openbeast.conf"
+_big() { # _big <serve script> [extra env...]
+  rm -f "$_SE/systemd-run.log"
+  RUN_ENV=(OB_MEMINFO="$_SE/meminfo" OB_ENGINE_HOST_CLASS="${_BIG_CLASS:-rig}" "${@:2}")
+  _start_rc "$_SE" 30 -d "$1"
+  RUN_ENV=()
+}
+# 90% of 127926272 kB, computed the way start.sh does it.
+_MAX90=$(( 127926272 * 1024 / 100 * 90 )); _MAX75=$(( 127926272 * 1024 / 100 * 75 ))
+_big serve-big-test.sh
+if grep -q -- "-p MemoryMax=$_MAX90 " "$_SE/systemd-run.log" 2>/dev/null \
+   && grep -q -- "--setenv=OPENBEAST_MEM_LIMIT_PCT=90" "$_SE/systemd-run.log" \
+   && grep -q -- "--_daemonized serve-big-test.sh" "$_SE/systemd-run.log" \
+   && { grep -q -- "-p LimitMEMLOCK=infinity" "$_SE/systemd-run.log" || [[ "$_SO" == *"asks for memlock=infinity"* ]]; }; then
+  # (The banner after systemd-run never prints here: the stub ends the
+  # launcher right after recording the launch, so the launch IS the evidence.)
+  pass "a big profile's scope is 90% of RAM, the daemon is told so, and memlock is passed (or the limit is named)"
+else
+  fail "big profile scope (rc=$_SRC): $(tail -n 4 <<< "$_SO" | tr '\n' ' ') :: $(cat "$_SE/systemd-run.log" 2>/dev/null)"
+fi
+_big serve-daily-test.sh
+if grep -q -- "-p MemoryMax=$_MAX75 " "$_SE/systemd-run.log" 2>/dev/null \
+   && ! grep -q -- "LimitMEMLOCK\|OPENBEAST_MEM_LIMIT_PCT" "$_SE/systemd-run.log"; then
+  pass "…any other profile keeps 75%, no memlock, nothing forwarded (control)"
+else
+  fail "daily profile scope changed: $(cat "$_SE/systemd-run.log" 2>/dev/null)"
+fi
+_BIG_CLASS=spark _big serve-big-test.sh
+if [[ $_SRC -ne 0 && "$_SO" == *"rig-only profile"* && "$_SO" == *"Nothing was started"* && ! -e "$_SE/systemd-run.log" ]]; then
+  pass "…and the big profile is refused on a Spark before anything is spawned"
+else
+  fail "big profile on a spark (rc=$_SRC): $(tail -n 3 <<< "$_SO" | tr '\n' ' ')"
+fi
+
+echo ""
 echo "start.sh's missing-deps hint (UX-14):"
 _DP="$_T/deps"; _sandbox "$_DP"; mkdir -p "$_DP/nodeps" "$_DP/deps"
 # Whatever this box has installed, PYTHONPATH decides: one shim makes the
