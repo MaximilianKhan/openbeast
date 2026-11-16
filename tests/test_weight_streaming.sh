@@ -208,7 +208,7 @@ class H(http.server.BaseHTTPRequestHandler):
         last = {"choices": [], "usage": {"completion_tokens": 16},
                 "timings": {"predicted_per_second": tps, "prompt_per_second": 900.0}}
         self.wfile.write(("data: %s\n\ndata: [DONE]\n\n" % json.dumps(last)).encode())
-threading.Timer(120, lambda: os._exit(0)).start()
+threading.Timer(1800, lambda: os._exit(0)).start()   # leak guard; the EXIT trap kills it
 s = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
 open(sb + "/port", "w").write(str(s.server_address[1]))
 s.serve_forever()

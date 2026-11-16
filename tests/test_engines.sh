@@ -53,7 +53,10 @@ class H(http.server.BaseHTTPRequestHandler):
         elif self.path == "/v1/models": code, body = 200, json.dumps({"data": [{"id": "rig-model"}]})
         self.send_response(code); self.send_header("Content-Length", str(len(body))); self.end_headers()
         self.wfile.write(body.encode())
-threading.Timer(90, lambda: os._exit(0)).start()
+# A leak guard only: cleanup() kills every stub. It must outlive the whole
+# suite — the GitHub stub starts first and `update tensorfold` asks it
+# minutes later on a slow runner (90 s here failed with curl: (7)).
+threading.Timer(1800, lambda: os._exit(0)).start()
 http.server.ThreadingHTTPServer((host, port), H).serve_forever()
 PY
 GH_PORT="$(_free_port)"
