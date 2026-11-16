@@ -184,10 +184,15 @@ def discover(task: dict, M, refs_dir: str) -> dict:
         ext = os.path.splitext(base)[1][1:]
     d, b = os.path.dirname(ref), os.path.basename(stem).split(".")[0]
     decl: dict = {}
-    pj = os.path.join(d, "prove.json")
-    if os.path.isfile(pj):
-        with open(pj) as f:
-            decl.update(json.load(f))
+    # PROVE.json too: macOS matched it case-insensitively, Linux did not, so
+    # 163's failure classes vanished on the rig and every wrong arm read as
+    # "failure class not declared".
+    for name in ("prove.json", "PROVE.json"):
+        pj = os.path.join(d, name)
+        if os.path.isfile(pj):
+            with open(pj) as f:
+                decl.update(json.load(f))
+            break
     decl.update(task.get("prove") or {})
     per = (decl.get("units") or {}).get(task["id"]) or {}
     expect = dict(decl.get("expect") or {})
@@ -210,6 +215,34 @@ def discover(task: dict, M, refs_dir: str) -> dict:
             "slow_expect": per.get("slow_expect") or decl.get("slow_expect"),
             "leak": leak[0] if leak else None,
             "timed": bool(per.get("timed", decl.get("timed", False)))}
+
+
+def family_prover(task: dict, refs_dir: str, spec: dict) -> str | None:
+    """The family's own prover (evals/refs/<dir>/prove.py), for a unit whose
+    arms this generic prover cannot run: a solution that is an overlay
+    DIRECTORY (176), shell scripts executed inside the fixture (179, prove
+    mode "exec"), or wrong solutions named in prove.json and kept in a bad/
+    subdir (175). Each one drives the same run_eval lifecycle and the same
+    arms (ref xN, wrongs with failure classes, empty, leak, slow, scale 2.0).
+    None when the generic prover applies."""
+    stem = task.get("ref_stem")
+    if not stem:
+        return None
+    script = os.path.join(refs_dir, os.path.dirname(stem), "prove.py")
+    if not os.path.isfile(script):
+        return None
+    ref = spec.get("ref") or ""
+    if (not os.path.isfile(ref) or (task.get("prove") or {}).get("mode") == "exec"
+            or not spec.get("wrong")):
+        return script
+    return None
+
+
+def run_family_prover(script: str, repo: str) -> bool:
+    import subprocess  # noqa: PLC0415
+    print(f"(arms in a family format: delegating to {os.path.relpath(script, repo)})")
+    r = subprocess.run([sys.executable, script], cwd=repo)
+    return r.returncode == 0
 
 
 def prove(R, M, task: dict, spec: dict, repeat: int | None = None,
@@ -367,8 +400,12 @@ def main(argv=None) -> int:
                 verdicts[uid], worst = "no refs declared", 1
                 continue
         print(f"\n== {uid}")
-        proven, rows = prove(R, M, task, spec, repeat=a.repeat, strict=not a.lenient,
-                             scale=a.scale)
+        fam = None if a.ref else family_prover(task, refs_dir, spec)
+        if fam:
+            proven = run_family_prover(fam, a.repo)
+        else:
+            proven, rows = prove(R, M, task, spec, repeat=a.repeat, strict=not a.lenient,
+                                 scale=a.scale)
         verdicts[uid] = "PROVEN" if proven else "NOT PROVEN"
         worst = worst or (0 if proven else 1)
     if a.json:

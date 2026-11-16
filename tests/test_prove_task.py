@@ -201,3 +201,39 @@ def test_a_stem_naming_its_own_file_sets_the_sibling_extension(tmp_path):
     assert dict((os.path.basename(w), rx) for w, rx in spec["wrong"])["wrong_a.s"] == "x"
     assert os.path.basename(spec["slow"]) == "slow_x.s"
     assert os.path.basename(spec["leak"]) == "leak_probe.s"
+
+
+# --- family formats: delegation, and PROVE.json on a case-sensitive host ------------
+
+def test_family_formats_delegate_to_the_familys_own_prover(tmp_path):
+    refs = tmp_path / "refs"
+    (refs / "900_x" / "ref").mkdir(parents=True)          # an overlay DIRECTORY solution
+    (refs / "900_x" / "prove.py").write_text("raise SystemExit(0)\n")
+    (refs / "901_y").mkdir()
+    (refs / "901_y" / "ref.sh").write_text("true\n")
+    (refs / "901_y" / "prove.py").write_text("raise SystemExit(0)\n")
+    (refs / "902_z").mkdir()
+    (refs / "902_z" / "ref.py").write_text("")
+    d = {"ref": str(refs / "900_x" / "ref.py"), "wrong": [("w", "x")]}
+    assert prove_task.family_prover({"ref_stem": "900_x/ref"}, str(refs), d) \
+        == str(refs / "900_x" / "prove.py")
+    sh = {"ref": str(refs / "901_y" / "ref.sh"), "wrong": [("w", "x"), ("v", "y")]}
+    assert prove_task.family_prover({"ref_stem": "901_y/ref", "prove": {"mode": "exec"}},
+                                    str(refs), sh) == str(refs / "901_y" / "prove.py")
+    assert prove_task.family_prover({"ref_stem": "901_y/ref"}, str(refs), sh) is None
+    # no prove.py of its own: the generic prover runs (and refuses what it must)
+    assert prove_task.family_prover({"ref_stem": "902_z/ref"}, str(refs),
+                                    {"ref": str(refs / "902_z" / "ref.py"), "wrong": []}) is None
+
+
+def test_upper_case_prove_json_is_read(tmp_path):
+    sys.path.insert(0, str(ROOT / "evals"))
+    import suite_manifest as M
+    refs = tmp_path / "refs"
+    (refs / "903_w").mkdir(parents=True)
+    (refs / "903_w" / "ref.py").write_text("")
+    (refs / "903_w" / "wrong_a.py").write_text("")
+    (refs / "903_w" / "PROVE.json").write_text(json.dumps({"expect": {"wrong_a.py": "^boom"}}))
+    spec = prove_task.discover({"id": "903_w", "ref_stem": "903_w/ref", "dest": "/tmp/x.py",
+                                "language": "python"}, M, str(refs))
+    assert spec["wrong"] == [(str(refs / "903_w" / "wrong_a.py"), "^boom")]
