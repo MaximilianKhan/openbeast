@@ -30,7 +30,9 @@ import shutil
 import sqlite3
 import tarfile
 import tempfile
+import threading
 import time
+from collections import OrderedDict
 import urllib.parse
 from typing import Optional
 
@@ -38,6 +40,14 @@ from . import config as C
 
 SCHEMA = 1
 BUNDLE_NAME = "BUNDLE.json"
+
+# Parsed manifests for READERS (search, read, live's fallback), keyed on the
+# file's identity: path + inode + mtime_ns + size. A save replaces the file
+# (new inode, new mtime), so a stale entry is never served. Small: a big
+# source's manifest parses to tens of MB.
+_PEEK_MAX = 4
+_PEEK: "OrderedDict" = OrderedDict()
+_PEEK_LOCK = threading.Lock()
 
 
 def now_iso() -> str:
@@ -122,6 +132,40 @@ class Store:
         return {"schema": SCHEMA, "source": name, "pages": {}, "frontier": [],
                 "created_at": now_iso()}
 
+    def peek(self, name: str) -> dict:
+        """The manifest for READING ONLY — shared, cached, never mutate it
+        (load() returns a private copy for writers). Re-parsed only when the
+        file changed, so a search with eight hits parses it at most once
+        instead of eight times."""
+        return self._peek(name)[0]
+
+    def _peek(self, name: str) -> tuple:
+        """(manifest, {doc_id.lower(): url}, {file basename: url})."""
+        path = self.manifest_path(name)
+        try:
+            st = os.stat(path)
+            key = (path, st.st_ino, st.st_mtime_ns, st.st_size)
+        except OSError:
+            return self.load(name), {}, {}
+        with _PEEK_LOCK:
+            hit = _PEEK.get(path)
+            if hit and hit[0] == key:
+                _PEEK.move_to_end(path)
+                return hit[1]
+        m = self.load(name)
+        by_id, by_file = {}, {}
+        for u, rec in m["pages"].items():
+            if isinstance(rec, dict):
+                by_id.setdefault(str(rec.get("doc_id", "")).lower(), u)
+                by_file.setdefault(os.path.basename(str(rec.get("file", ""))), u)
+        val = (m, by_id, by_file)
+        with _PEEK_LOCK:
+            _PEEK[path] = (key, val)
+            _PEEK.move_to_end(path)
+            while len(_PEEK) > _PEEK_MAX:
+                _PEEK.popitem(last=False)
+        return val
+
     def save(self, name: str, m: dict) -> None:
         _atomic_write(self.manifest_path(name),
                       json.dumps(m, indent=1, sort_keys=True).encode())
@@ -166,20 +210,26 @@ class Store:
             return fh.read()
 
     def find(self, ref: str, sources=None) -> Optional[tuple]:
-        """(source, url, record) for a doc id, a URL, or a page file name."""
+        """(source, url, record) for a doc id, a URL, or a page file name.
+        The record is the cached manifest's (read-only). A doc id names its
+        source (`swiftui:/documentation/...`), so only that manifest is
+        consulted for one; every lookup is a dict hit, not a page scan."""
         ref = (ref or "").strip()
         from .htmlmd import canonical  # noqa: PLC0415
-        for name in sources or self.sources_on_disk():
-            m = self.load(name)
-            pages = m["pages"]
-            cands = [ref, canonical(ref), canonical(ref, ".md.txt"), ref.rstrip("/")]
+        names = list(sources or self.sources_on_disk())
+        m = re.match(r"^([a-z0-9][a-z0-9_-]{0,47}):/", ref)
+        if m and m.group(1) in names:
+            names = [m.group(1)]           # doc ids carry their source's name; no other can hold it
+        cands = [u for u in (ref, canonical(ref), canonical(ref, ".md.txt"), ref.rstrip("/")) if u]
+        for name in names:
+            man, by_id, by_file = self._peek(name)
+            pages = man["pages"]
             for u in cands:
-                if u and u in pages:
+                if u in pages:
                     return name, u, pages[u]
-            for u, rec in pages.items():
-                if rec.get("doc_id") == ref or rec.get("doc_id", "").lower() == ref.lower() \
-                        or os.path.basename(rec.get("file", "")) == ref:
-                    return name, u, rec
+            u = by_id.get(ref.lower()) or by_file.get(ref)
+            if u and u in pages:
+                return name, u, pages[u]
         return None
 
     # the index -------------------------------------------------------------

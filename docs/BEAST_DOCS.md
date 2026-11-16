@@ -353,6 +353,13 @@ that both backends put the same document first.
   disk the first time it is opened, by a search or a sync. When the store
   is not writable, the search says so and names `docs.sh reindex`; reading
   by doc id keeps working.
+- **Readers parse a manifest once.** A big source's manifest is tens of MB
+  (every page keeps its outgoing links for sync). Search, read and live's
+  fallback share a small process-wide cache of parsed manifests keyed on
+  the file's inode, mtime and size, so a search with eight hits parses it
+  once rather than eight times, and a save (which replaces the file) is
+  seen at once. A doc id names its source, so `read swiftui:/…` consults
+  only that manifest, through a doc-id map instead of a page scan.
 
 Every hit prints title, doc id, URL, `fetched <date>, <n>d ago`, a
 `[DEPRECATED]` flag when the page carries one, and **STALE** past the
@@ -485,7 +492,8 @@ from `tests/fixtures/beast_docs/`. They pin:
   sync, rebuilds the index; an old-schema index is rebuilt on first search;
   a read-only store searches without writing; method symbols match their
   exact title; replacing a page and the exact-title step cost the same
-  SQLite work at 3,000 rows as at 300.
+  SQLite work at 3,000 rows as at 300; a search parses each manifest at
+  most once, a repeat parses none, and a save is seen by the next reader.
 - **Status**: STALE flags.
 - **Live, offline and island**: live goes through the adapter, including a
   guessed symbol URL and `--save`. Under `OFFLINE=true`, and under a

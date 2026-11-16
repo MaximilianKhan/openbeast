@@ -71,7 +71,7 @@ def search(query: str, source: str = "", limit: int = 8, store: Optional[Store] 
         idx.close()
     srcs = _sources()
     for r in rows:
-        rec = store.load(r["source"])["pages"].get(r["url"], {})
+        rec = store.peek(r["source"])["pages"].get(r["url"], {})     # parsed once per source
         r["fetched_at"] = rec.get("fetched_at", r["fetched_at"])
         r["checked_at"] = rec.get("checked_at", "")
         r["freshness"] = freshness(rec or {"fetched_at": r["fetched_at"]}, srcs.get(r["source"]))

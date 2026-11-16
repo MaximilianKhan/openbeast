@@ -886,6 +886,31 @@ def test_exact_title_matches_method_symbols():
             del os.environ["OPENBEAST_DOCS_NO_FTS"]
 
 
+def test_readers_parse_each_manifest_once(env, monkeypatch):
+    _sync("swiftui")
+    _sync("android-compose")
+    loads = []
+    real = ST.Store.load
+    monkeypatch.setattr(ST.Store, "load", lambda self, name: loads.append(name) or real(self, name))
+    rows = api.search("navigation", limit=8)
+    assert len(rows) >= 3 and loads.count("swiftui") <= 1, loads   # not once per hit
+    loads.clear()
+    api.search("navigation", limit=8)
+    api.read_text("swiftui:/documentation/swiftui/navigationstack")
+    assert loads == []                                          # unchanged files: served cached
+    # a doc id names its source: a miss there does not parse the others
+    ST._PEEK.clear()
+    assert api.read_text("swiftui:/nope") is None
+    assert loads == ["swiftui"], loads
+    # a save replaces the file: the next reader sees the new manifest
+    s = ST.Store()
+    m = real(s, "swiftui")
+    url = f"{env['stub'].base}/documentation/swiftui/navigationstack"
+    m["pages"][url]["deprecated"] = True
+    s.save("swiftui", m)
+    assert [r for r in api.search("NavigationStack") if r["url"] == url][0]["deprecated"] is True
+
+
 def test_status_flags_stale_mirrors(env):
     _sync("swiftui")
     s = ST.Store()
