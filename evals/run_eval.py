@@ -2078,6 +2078,17 @@ def agent_wall_s(task: dict, max_iter: int, cap_override: float | None = None) -
     return wall
 
 
+def wall_scaled_turns(task: dict, turns_per_wall_s: float) -> int:
+    """Turn budget scaled to the unit's own wall budget (before contention
+    scaling): one turn per `turns_per_wall_s` seconds, never fewer than the
+    task's declared max_iter. Units without a wall cap keep max_iter."""
+    base = int(task.get("max_iter") or 15)
+    cap = task.get("max_wall_s") or task.get("_max_wall_s")
+    if not cap or turns_per_wall_s <= 0:
+        return base
+    return max(base, int(float(cap) // turns_per_wall_s))
+
+
 def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
               timeout_scale: float = 1.0, env_overlay: dict | None = None,
               wall_s: float | None = None) -> dict:
@@ -2923,8 +2934,18 @@ def run_eval(
     slots: int | None = None,
     unit_wall_cap: float | None = None,
     pair_id: str | None = None,
+    turns_per_wall_s: float | None = None,
 ) -> dict:
     """Run the full eval suite. Returns results dict.
+
+    turns_per_wall_s: wall-scaled turn budget (2026-11-16). Each unit gets
+    max(its own max_iter, wall_s / turns_per_wall_s) turns, ignoring the
+    manifest's max_iter_ceiling, so the unit's wall budget (which v5 already
+    sizes per problem: 600/900/1500 s by tier) is the binding limit and the
+    turn cap only stops a loop. The GLM-5.3-Flash v5 L0 audit found most
+    failing units ended on max_iterations after 150-400 s of a 1,200-1,800 s
+    wall. The effective budget is in the cache key (.mi<N>), so these rows
+    never replay into, or from, default-budget rows.
 
     reasoning_budget: cache_only — the reasoning-budget era to replay
     (e.g. "20480"; "-1" = uncapped). A live run reads it from the server;
@@ -3242,6 +3263,7 @@ def run_eval(
                 "server": server_info,
                 "runtime": capture_runtime_info(),
                 "jobs": jobs,
+                **({"turns_per_wall_s": turns_per_wall_s} if turns_per_wall_s else {}),
                 "suite_selection": suite if suite_pin else None,
                 **({"suite_manifest": manifest["suite"]} if manifest else {}),
                 "cache_only": cache_only,
@@ -3262,6 +3284,8 @@ def run_eval(
     n_arms = len(ctxs)
 
     def effective_max_iter_of(task: dict) -> int:
+        if turns_per_wall_s and not max_iter_override:
+            return wall_scaled_turns(task, turns_per_wall_s)
         mi = max_iter_override or task.get("max_iter", 15)
         if task.get("_max_iter_ceiling"):
             mi = min(mi, task["_max_iter_ceiling"])
@@ -3542,6 +3566,7 @@ def run_eval(
             "tokens_completion": tokens["completion"],
             "tokens_total": tokens["total"],
             "iterations": agent_result.get("iterations"),
+            "max_iter": effective_max_iter,
             "compactions": agent_result.get("compactions", 0),
             "api_errors": api_errors,
             **({"reason": infra_reason} if infra_reason else {}),
@@ -3777,6 +3802,10 @@ def main():
                              "--base-url is marked as this install's inference endpoint so "
                              "the runner sends it there.")
     parser.add_argument("--max-iter", type=int, help="Override max iterations for all tasks")
+    parser.add_argument("--turns-per-wall-s", type=float,
+                        help="Wall-scaled turn budget: each unit gets max(its max_iter, "
+                             "wall_s / N) turns (e.g. 15 -> medium 40, hard 60, xl 100), "
+                             "ignoring the manifest's max_iter_ceiling. In the cache key.")
     parser.add_argument("--model-name", help="Override model name (default: auto-detect from /v1/models)")
     parser.add_argument("--list", action="store_true", help="List available tasks and exit")
     parser.add_argument("--no-cache", action="store_true", help="Disable result cache (force live run)")
@@ -3869,6 +3898,7 @@ def main():
         task_filter=task_filter,
         base_url=args.base_url,
         max_iter_override=args.max_iter,
+        turns_per_wall_s=args.turns_per_wall_s,
         model_name=args.model_name,
         use_cache=not args.no_cache,
         cache_only=args.cache_only,

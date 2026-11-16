@@ -83,6 +83,7 @@ class _Tracker:
         self.timeout_scales: set = set()
         self.events: list[tuple] = []          # (unit, arm, "start"|"end")
         self.walls: dict = {}
+        self.max_iters: dict = {}
 
     def run_agent(self, task, base_url, max_iter_override=None, timeout_scale=1.0,
                   env_overlay=None, wall_s=None):
@@ -90,6 +91,7 @@ class _Tracker:
         group = task.get("base_id", task["id"])
         arm = (env_overlay or {}).get("OPENBEAST_EVAL_ARM")
         self.walls[task["id"]] = wall_s
+        self.max_iters[task["id"]] = max_iter_override
         with self.lock:
             self.events.append((task["id"], arm, "start"))
             self.active_per_group[group] = self.active_per_group.get(group, 0) + 1
@@ -348,3 +350,32 @@ def test_slots_flag_clamps_when_props_is_unreadable(tmp_path, capsys):
     out = run_eval.run_eval(model_name="fake-model", use_cache=False, jobs=8, slots=3)
     assert out["jobs"] == 3
     assert "--slots exposes 3" in capsys.readouterr().out
+
+
+def test_wall_scaled_turns_rule():
+    import run_eval as re_
+    f = re_.wall_scaled_turns
+    assert f({"max_iter": 20, "_max_wall_s": 600}, 15) == 40      # medium
+    assert f({"max_iter": 25, "_max_wall_s": 900}, 15) == 60      # hard
+    assert f({"max_iter": 30, "_max_wall_s": 1500}, 15) == 100    # xl
+    assert f({"max_iter": 40, "_max_wall_s": 300}, 15) == 40      # never below max_iter
+    assert f({"max_iter": 12}, 15) == 12                          # no wall cap: unchanged
+    assert f({"max_iter": 12, "max_wall_s": 600}, 0) == 12        # off
+
+
+def test_turns_per_wall_s_reaches_the_agent_and_the_result(tmp_path):
+    run_eval = _load_run_eval(tmp_path, server_slots=1)
+    tracker = _Tracker(delay=0.0)
+    run_eval.run_agent = tracker.run_agent
+    orig = run_eval.load_tasks
+    run_eval.load_tasks = lambda f=None: [dict(t, max_wall_s=600) for t in orig(f)]
+    out = run_eval.run_eval(model_name="fake-model", use_cache=False, turns_per_wall_s=15)
+    assert tracker.max_iters and set(tracker.max_iters.values()) == {40}
+    assert out["turns_per_wall_s"] == 15
+    assert all(r["max_iter"] == 40 for r in out["tasks"])
+    # An explicit --max-iter still wins over the wall-scaled budget.
+    tracker2 = _Tracker(delay=0.0)
+    run_eval.run_agent = tracker2.run_agent
+    run_eval.run_eval(model_name="fake-model", use_cache=False, turns_per_wall_s=15,
+                      max_iter_override=7)
+    assert set(tracker2.max_iters.values()) == {7}
