@@ -16,6 +16,14 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PASS=0
 FAIL=0
 pass() { echo "  PASS: $1"; PASS=$((PASS + 1)); }
+# _with_timeout <secs> <cmd…> — GNU `timeout` is not on stock macOS (a client
+# platform), where it made the lock control below fail on every run. perl is.
+_with_timeout() {
+  if command -v timeout >/dev/null 2>&1; then timeout "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$@"
+  else perl -e 'alarm shift; exec @ARGV or exit 127' "$@"
+  fi
+}
 fail() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
 
 echo "=== clients.sh (per-device enrollment) tests ==="
@@ -792,7 +800,7 @@ else
   fail "revoke wrote the registry while the lock was held elsewhere"
 fi
 # Negative control: readers take no lock, so list must not hang behind it.
-if out="$(timeout 10 "$L/scripts/clients.sh" list 2>&1)" && _has "$out" "lap"; then
+if out="$(_with_timeout 10 "$L/scripts/clients.sh" list 2>&1)" && _has "$out" "lap"; then
   pass "list does not wait for the lock (reads stay lock-free)"
 else
   fail "list blocked on (or failed under) the writer lock"
