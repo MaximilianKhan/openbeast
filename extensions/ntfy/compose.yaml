@@ -10,9 +10,9 @@
 # a raw port), every capability dropped, no-new-privileges, read-only root.
 services:
   ntfy:
-    # Pinned by digest (the multi-arch index of v2.28.0): the tag moves, the
+    # Pinned by digest (the multi-arch index of v2.38.0): the tag moves, the
     # digest does not.
-    image: binwiederhier/ntfy:v2.28.0@sha256:6ef4b819f722fccdc036af611c4774cfdc2de821ab74fdd48bbf4c9d6f8973da
+    image: binwiederhier/ntfy:v2.38.0@sha256:771309aecfce18d8fe2bfb8069994ddd6be6ca6ccdd7badace3d791a0045ff0d
     container_name: ntfy
     command: ["serve"]
     network_mode: host
