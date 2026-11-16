@@ -971,6 +971,11 @@ class Registry:
             self.manifests[("toy/app", "1.0")] = index
         self.token, self.cdn, self.strict, self.log = token, cdn, strict_index, []
         self.uploads = {}
+        self.denied = 0              # 401s answered
+        self.issued = 0              # tokens handed out
+        self.rotate_after = 0        # >0: the token expires after this many blob GETs
+        self.blob_gets = 0
+        self.refuse_tag = 0          # >0: answer this status to a manifest PUT by tag
 
     def handler(self):
         reg = self
@@ -994,6 +999,7 @@ class Registry:
                 if self.headers.get("Authorization") == f"Bearer {reg.token}":
                     return True
                 port = self.server.server_address[1]
+                reg.denied += 1
                 self._send(401, b"", {"WWW-Authenticate": f'Bearer realm="http://127.0.0.1:{port}/token",service="fake",'
                                                           f'scope="repository:toy/app:pull"'})
                 return False
@@ -1006,6 +1012,7 @@ class Registry:
                 if not self._authed():
                     return
                 if self.path.startswith("/token"):
+                    reg.issued += 1
                     return self._send(200, json.dumps({"token": reg.token}).encode())
                 m = re.fullmatch(r"/v2/(.+)/(manifests|blobs)/([^?]+)", self.path.split("?")[0])
                 if self.path.startswith("/v2/") and "/tags/list" in self.path:
@@ -1022,6 +1029,10 @@ class Registry:
                     return self._send(200, body, {"Content-Type": mt, "Docker-Content-Digest": dig})
                 if ref not in reg.blobs:
                     return self._send(404)
+                if self.command == "GET":
+                    reg.blob_gets += 1
+                    if reg.rotate_after and reg.blob_gets == reg.rotate_after:
+                        reg.token = reg.token + "-rotated"      # every token issued so far is now expired
                 if reg.cdn and self.command == "GET":
                     return self._send(307, b"", {"Location": f"{reg.cdn.base}/cdn/{ref}"})
                 return self._send(200, reg.blobs[ref])
@@ -1130,6 +1141,19 @@ def test_oci_pull_by_digest_verify_push_and_load(registry, http, tmp_path, capsy
         dm = json.loads(t.extractfile("manifest.json").read())
     assert idx["manifests"][0]["digest"] == it["manifests"]["linux/arm64"]
     assert len(dm) == 1 and dm[0]["RepoTags"] == [f"{registry.host}/toy/app:1.0"]
+
+
+def test_oci_pull_refreshes_an_expired_token_and_reuses_a_live_one(registry, tmp_path, capsys):
+    registry.cdn = None                     # blobs straight from the registry, each one token-checked
+    registry.rotate_after = 1               # the token expires after the first blob (Docker Hub: 300 s)
+    cat = oci_catalog(tmp_path, registry)
+    rc, out = run(["--catalog", str(cat), "fetch", "--to", str(tmp_path / "d")], capsys)
+    assert rc == 0, out.err
+    it = json.loads((tmp_path / "d/ark.lock").read_text())["items"]["app/oci/app"]
+    assert set(it["manifests"]) == {"linux/amd64", "linux/arm64"}
+    # one 401 to start, one when the token expired; none per manifest once a token is held
+    assert registry.issued == 2 and registry.denied == 2, (registry.issued, registry.denied)
+    assert SECRET not in out.out + out.err
 
 
 def test_oci_refuses_a_registry_that_serves_the_wrong_manifest(registry, tmp_path, capsys):

@@ -64,9 +64,18 @@ def _scheme(host: str) -> str:
     return "http" if h in ("127.0.0.1", "localhost", "::1") else "https"
 
 
+def _host_of(url: str) -> str:
+    return re.sub(r"^\w+://([^/]+)(/.*)?$", r"\1", url)
+
+
 class Registry:
     """A pull client for one repository. Anonymous bearer tokens only; the
-    token is never printed and never follows a redirect (net._req)."""
+    token is never printed and never follows a redirect (net._req).
+
+    A token is reused for every later request to its host (no wasted 401
+    round trip per manifest), and a 401 that comes back WITH a token means
+    it expired — Docker Hub's anonymous ones last 300 s, far less than a
+    multi-GB pull — so the challenge is answered again for a fresh one."""
 
     def __init__(self, image: str):
         self.host, self.repo = split_image(image)
@@ -86,24 +95,27 @@ class Registry:
             q.append("service=" + quote(params["service"], safe=""))
         q.append("scope=" + quote(params.get("scope") or f"repository:{self.repo}:pull", safe=":/"))
         data, _ = net.get_bytes(realm + ("&" if "?" in realm else "?") + "&".join(q), limit=1 << 20)
-        j = json.loads(data)
-        tok = j.get("token") or j.get("access_token")
+        try:
+            j = json.loads(data)
+            tok = j.get("token") or j.get("access_token")
+        except (ValueError, AttributeError):
+            raise OciError(f"{self.host}: the token endpoint did not answer JSON") from None
         return f"Bearer {tok}" if tok else None
 
     def _open(self, url: str, method: str = "GET", accept: str = ""):
         headers = {"Accept": accept} if accept else {}
-        target, tok = url, None
+        target, tok = url, self.tokens.get(_host_of(url))
         for _ in range(3):
             try:
                 return net.open_url(target, method, headers=headers, token=tok)
             except net.HTTPFailure as e:
                 if e.status != 401:
                     raise
-                host = re.sub(r"^\w+://([^/]+)/.*$", r"\1", e.final_url)
-                tok = self.tokens.get(host) or self._token_for(e.headers.get("www-authenticate", ""))
+                # never resend the token that was just refused: answer the challenge again
+                tok = self._token_for(e.headers.get("www-authenticate", ""))
                 if not tok:
                     raise
-                self.tokens[host] = tok
+                self.tokens[_host_of(e.final_url)] = tok
                 target = e.final_url
         raise OciError(f"registry auth loop for {url}")
 
@@ -137,8 +149,16 @@ class Registry:
     def blob(self, digest: str, dest: str, size: int = 0) -> None:
         if os.path.isfile(dest) and _file_digest(dest) == digest:
             return
-        part = net.download(f"{self.base}/blobs/{digest}", dest, size=size, quiet=True,
-                            token=self._blob_token())
+        url = f"{self.base}/blobs/{digest}"
+        try:
+            part = net.download(url, dest, size=size, quiet=True, token=self._blob_token())
+        except net.HTTPFailure as e:
+            # the token expired mid-pull: get a fresh one and resume the .part
+            fresh = self._token_for(e.headers.get("www-authenticate", "")) if e.status == 401 else None
+            if not fresh:
+                raise
+            self.tokens[self.host] = fresh
+            part = net.download(url, dest, size=size, quiet=True, token=fresh)
         got = _file_digest(part)
         if got != digest:
             os.remove(part)
