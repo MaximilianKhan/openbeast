@@ -82,10 +82,11 @@ lo="$(_line "$R1" 'iifname "lo" accept')"; fab="$(_line "$R1" '} accept comment 
 dp="$(_line "$R1" 'tcp dport')"; da="$(_line "$R1" 'ip daddr')"
 [[ -n "$lo" && -n "$fab" && -n "$dp" && -n "$da" && $lo -lt $dp && $fab -lt $dp && $dp -lt $da ]] \
   && pass "loopback and fabric are accepted BEFORE the drops" || fail "rule order lo=$lo fab=$fab dport=$dp daddr=$da"
+_untouched=1
 for port in 22 443 8443 8444 8445 8446 8447 8889 3000 8000; do
-  if grep -E "dport .*\\b$port\\b" <<< "$R1" >/dev/null; then fail "port $port must not be guarded"; fi
+  if grep -E "dport .*\\b$port\\b" <<< "$R1" >/dev/null; then fail "port $port must not be guarded"; _untouched=0; fi
 done
-pass "ssh, tailscale serve and the stack's ports are not touched"
+[[ $_untouched -eq 1 ]] && pass "ssh, tailscale serve and the stack's ports are not touched"
 
 SG_NO_FABRIC=1 _run --render
 [[ $RC -ne 0 ]] && _has "$OUT" "--no-fabric" && pass "no ConnectX netdev: refused, naming --no-fabric" || fail "no fabric (rc=$RC): $OUT"
