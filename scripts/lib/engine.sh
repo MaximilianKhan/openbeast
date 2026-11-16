@@ -15,6 +15,8 @@
 #               moving it is a reviewed change, docs/UPDATING.md)
 #   vllm        ENGINE_PIN_VLLM=<tag>@sha256:<registry digest>   (openbeast.conf)
 #   tensorfold  ENGINE_PIN_TENSORFOLD=<version>@sha256:<archive sha256>
+#   maya        ENGINE_PIN_MAYA=<tag>@<40-hex commit> (reviewed per version in
+#               scripts/engines/maya.sh; gated, see ob_engine_gate_ok)
 # History: $OB_ENGINE_STATE_DIR/history.tsv (append-only; rollback reads it),
 # conf backups: $OB_ENGINE_STATE_DIR/conf-backups/ (one per conf write).
 #
@@ -23,8 +25,9 @@
 : "${REPO_DIR:?REPO_DIR must be set before sourcing lib/engine.sh}"
 OB_ENGINE_ADAPTER_DIR="${OB_ENGINE_ADAPTER_DIR:-$REPO_DIR/scripts/engines}"
 OB_ENGINE_STATE_DIR="${OPENBEAST_ENGINE_STATE_DIR:-$REPO_DIR/.engines}"
-# The three that ship, in display order; any other adapter file is appended.
-OB_ENGINES_SHIPPED="llama vllm tensorfold"
+# The ones that ship, in display order; any other adapter file is appended.
+# maya is opt-in and gated (ob_engine_gate_ok): listed, never a default.
+OB_ENGINES_SHIPPED="llama vllm tensorfold maya"
 
 # ob_engines — every engine with an adapter, shipped ones first.
 ob_engines() {

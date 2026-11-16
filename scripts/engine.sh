@@ -15,7 +15,8 @@
 #   scripts/engine.sh rollback <engine> [--dry-run]   back to the previous pin (offline when still on disk)
 #   scripts/engine.sh history [engine]          every install / update / rollback / use
 #
-# Engines: llama (llama.cpp), vllm, tensorfold — one adapter each in
+# Engines: llama (llama.cpp), vllm, tensorfold, maya (opt-in, gated on a
+# measured 1.5x over llama.cpp: scripts/engine-gate.sh) — one adapter each in
 # scripts/engines/; a new adapter file is a new engine. Defaults per host
 # class: rig → llama, spark (GB10) → tensorfold; ENGINE_DEFAULT overrides.
 # Every install has an offline path (stage on a connected box, --from DIR on
@@ -190,10 +191,21 @@ cmd_use() {
         [[ $FORCE -eq 1 ]] || die "$ENGINE is not installed here — scripts/engine.sh install $ENGINE (or --force)"
         echo "WARNING: $ENGINE is not installed — start.sh will fail to launch it until it is." >&2
       fi
-      sp_profile_locate "$PROFILE" "$(ob_engine_models_dir)" 2>/dev/null
-      if [[ $SP_LOCATE_RC -ne 0 ]]; then
-        [[ $FORCE -eq 1 ]] || die "profile '$PROFILE' is not fetched + verified in $(ob_engine_models_dir) — MODELS_DIR=$(ob_engine_models_dir) scripts/backends/model-fetch.sh --profile $PROFILE (or --force)"
-        echo "WARNING: profile '$PROFILE' is not fetched — start.sh will refuse to serve it." >&2
+      # An adapter with its own profile format (maya: GGUF weights from
+      # weights.registry) says where its weights are; the rest are
+      # scripts/backends/models/ profiles fetched by model-fetch.sh.
+      if ob_engine_has "$ENGINE" profile_locate; then
+        ob_engine_call "$ENGINE" profile_locate "$PROFILE"
+        if [[ $SP_LOCATE_RC -ne 0 ]]; then
+          [[ $FORCE -eq 1 ]] || die "profile '$PROFILE': its weights are not all on this box — scripts/fetch-weight.sh each shard (docs/WEIGHT_STREAMING.md), or --force"
+          echo "WARNING: profile '$PROFILE': weights missing — start.sh will fail to serve it." >&2
+        fi
+      else
+        sp_profile_locate "$PROFILE" "$(ob_engine_models_dir)" 2>/dev/null
+        if [[ $SP_LOCATE_RC -ne 0 ]]; then
+          [[ $FORCE -eq 1 ]] || die "profile '$PROFILE' is not fetched + verified in $(ob_engine_models_dir) — MODELS_DIR=$(ob_engine_models_dir) scripts/backends/model-fetch.sh --profile $PROFILE (or --force)"
+          echo "WARNING: profile '$PROFILE' is not fetched — start.sh will refuse to serve it." >&2
+        fi
       fi
       port="${PORT:-8080}"
       if [[ -n "$URL" ]]; then url="${URL%/}"; else url="http://127.0.0.1:$port"; fi
@@ -201,7 +213,9 @@ cmd_use() {
     else
       sets+=("INFERENCE_BACKEND=$ENGINE" "INFERENCE_URL=$url" "INFERENCE_MANAGED=false")
       unsets+=(ENGINE_PROFILE)
-      if [[ -n "$PROFILE" ]]; then
+      if [[ -n "$PROFILE" ]] && ob_engine_has "$ENGINE" profile_locate; then
+        ob_engine_call "$ENGINE" profile_check "$PROFILE" || die "profile '$PROFILE' is invalid for $ENGINE (above)"
+      elif [[ -n "$PROFILE" ]]; then
         ob_engine_profile_load "$PROFILE" "$ENGINE" || die "profile '$PROFILE' is invalid for $ENGINE (above)"
       fi
     fi
