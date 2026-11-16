@@ -1,0 +1,10 @@
+{
+  "expect": {
+    "wrong_rsplit.py": "AssertionError: rows mismatch:\\s+got\\s+\\[.*\\(3, 'Carol Anne', 'Davis', 'c@x'\\)",
+    "wrong_secondword.py": "AssertionError: rows mismatch:\\s+got\\s+\\[.*\\(3, 'Carol', 'Anne', 'c@x'\\)",
+    "wrong_nulllast.py": "AssertionError: rows mismatch:\\s+got\\s+\\[.*\\(4, 'Dan', None, 'd@x'\\)",
+    "wrong_keepcol.py": "AssertionError: columns: \\[.*'full_name'"
+  },
+  "timed": false,
+  "note": "v4 validator kept unchanged. Wrongs: split on the last space, last_name = second word only, NULL last_name for a one-word name, ALTER TABLE ADD COLUMN without dropping full_name. Known gap: transaction safety (commit at end, rollback on exception) is never exercised by the validator."
+}

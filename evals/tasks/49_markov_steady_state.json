@@ -11,5 +11,7 @@
   "cleanup": "rm -rf /tmp/eval_markov",
   "max_iter": 25,
   "category": "Probability & Stats",
-  "subcategory": "Stochastic processes"
+  "subcategory": "Stochastic processes",
+  "ref_stem": "49_markov_steady_state/markov",
+  "dest": "/tmp/eval_markov/markov.py"
 }

@@ -12,5 +12,7 @@
   "cleanup": "rm -rf /tmp/eval_migrate",
   "max_iter": 30,
   "category": "SWE / DevOps",
-  "subcategory": "Data engineering"
+  "subcategory": "Data engineering",
+  "ref_stem": "29_db_migration/migrate",
+  "dest": "/tmp/eval_migrate/migrate.py"
 }

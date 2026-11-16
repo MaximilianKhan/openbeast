@@ -11,5 +11,7 @@
   "cleanup": "rm -rf /tmp/eval_softmax",
   "max_iter": 15,
   "category": "LLM / ML",
-  "subcategory": "Activations"
+  "subcategory": "Activations",
+  "ref_stem": "37_softmax_stable/softmax",
+  "dest": "/tmp/eval_softmax/softmax.py"
 }

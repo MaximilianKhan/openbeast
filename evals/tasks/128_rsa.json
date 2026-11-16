@@ -11,5 +11,7 @@
   "cleanup": "rm -rf /tmp/eval_rsa",
   "max_iter": 35,
   "category": "Security",
-  "subcategory": "Cipher implementation"
+  "subcategory": "Cipher implementation",
+  "ref_stem": "128_rsa/rsa",
+  "dest": "/tmp/eval_rsa/rsa.py"
 }

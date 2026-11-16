@@ -1,0 +1,8 @@
+{
+  "expect": {
+    "wrong_pop_top.py": "\"<validator>\", line 5, in <module>\\nAssertionError\\s*$",
+    "wrong_steal_bottom.py": "\"<validator>\", line 8, in <module>\\nAssertionError\\s*$"
+  },
+  "timed": false,
+  "note": "v4 validator kept as is. Its asserts carry no message, so each failure class pins the validator line that fires: line 5 is the owner-LIFO pop check, line 8 the steal-from-top check. Not timed: the drain perf gate is the validator's own, but a slow O(n) steal only ever hit the harness timeout, so no slow arm is declared."
+}

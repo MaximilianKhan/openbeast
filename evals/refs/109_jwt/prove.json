@@ -1,0 +1,10 @@
+{
+  "expect": {
+    "wrong_padded.py": "AssertionError: padding present",
+    "wrong_sig_payload_only.py": "AssertionError: signature is not HMAC-SHA256 over header\\.payload",
+    "wrong_hex_sig.py": "AssertionError: signature is not HMAC-SHA256 over header\\.payload",
+    "wrong_no_exp.py": "AssertionError: expired token accepted"
+  },
+  "timed": false,
+  "note": "v4 validator kept as is. Ref copied from evals/refs/jwt.py. PASS this validator (gaps): exp checked with now > exp (the now == exp boundary is untested), exp skipped when now is None, signatures compared with == instead of hmac.compare_digest."
+}

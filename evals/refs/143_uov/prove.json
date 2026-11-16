@@ -1,0 +1,9 @@
+{
+  "expect": {
+    "wrong_half_cross_terms.py": "AssertionError: legitimate signature does not satisfy the public map",
+    "wrong_no_tinv.py": "AssertionError: legitimate signature does not satisfy the public map",
+    "wrong_sparse_public.py": "AssertionError: keys not independent"
+  },
+  "timed": false,
+  "note": "v4 validator kept as is. The wrongs probe the public-map expansion (cross terms), the T_inv step of signing, and key independence. wrong_identity_t and wrong_perm_t (a trivial T) PASS this validator: it never checks that T mixes the variables."
+}

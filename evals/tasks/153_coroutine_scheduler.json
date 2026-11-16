@@ -11,5 +11,7 @@
   "cleanup": "rm -rf /tmp/eval_sched",
   "max_iter": 35,
   "category": "Concurrency & Systems",
-  "subcategory": "Async patterns"
+  "subcategory": "Async patterns",
+  "ref_stem": "153_coroutine_scheduler/sched",
+  "dest": "/tmp/eval_sched/sched.py"
 }
