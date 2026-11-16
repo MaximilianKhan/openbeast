@@ -74,3 +74,30 @@ for hp, cfg in web.items():
         sys.exit(0)
 sys.exit(1)' "$1" 2>/dev/null
 }
+
+# ob_webui_host_guard <webui-base-url> — is Open WebUI's Host allowlist
+# (scripts/webui/sitecustomize.py, loaded through PYTHONPATH in compose)
+# actually live in the RUNNING container? It fails open by design (a broken
+# hook must not brick the chat UI on an image bump), and an image whose
+# entrypoint resets PYTHONPATH or runs python -I never loads it at all — so
+# nothing short of asking the container can tell. One request whose Host
+# names a host no allowlist contains; the guard answers 400 (review
+# 2026-11-16). Used by doctor.sh, start.sh and update.sh --images. Prints
+# one word, and returns:
+#   off  0  OPENBEAST_WEBUI_HOSTS is '*': no allowlist, by design (login on,
+#           or the WebUI opened on purpose)
+#   ok   0  the rebound Host was refused (400)
+#   open 1  the rebound Host was SERVED: the guard is not installed
+#   down 2  the WebUI did not answer at all
+ob_webui_host_guard() {
+  local code
+  if [[ "${OPENBEAST_WEBUI_HOSTS:-}" == "*" ]]; then echo off; return 0; fi
+  code="$(curl -s -o /dev/null -m 5 -w '%{http_code}' -H 'Host: rebind.invalid' \
+            "${1%/}/api/version" 2>/dev/null)" || true
+  case "$code" in
+    400)                 echo ok;   return 0 ;;
+    000)                 echo down; return 2 ;;
+    [1-5][0-9][0-9])     echo open; return 1 ;;
+    *)                   echo down; return 2 ;;   # no status at all
+  esac
+}

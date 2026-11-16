@@ -251,6 +251,9 @@ if url.endswith("/v1/health"):
     code = os.environ.get("NOTIFY_CODE", "200")
     if code == "000": sys.exit(7)
     out(code if w else {"healthy": True})
+# The WebUI Host guard probe (lib/net.sh ob_webui_host_guard): a live guard
+# refuses Host: rebind.invalid with 400; REBIND_CODE=200 plays a missing one.
+if w and "Host: rebind.invalid" in args: out(os.environ.get("REBIND_CODE", "400"))
 if w: out("200")
 if url.endswith(":8080/health"): out({"status": "ok"})
 if url.endswith("/slots"): out([])

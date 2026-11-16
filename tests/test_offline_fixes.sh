@@ -682,18 +682,26 @@ cat > "$T/bin/py_update" <<'STUB'
 S="$OB_STUB_STATE"
 if [[ "${1:-}" == "-m" && "${2:-}" == "pip" ]]; then
   case "${3:-}" in
-    show) echo "Version: 9.9.$(( $(cat "$S/upgraded" 2>/dev/null || echo 0) ))" ;;
+    show) echo x >> "$S/pipshow"; echo "Version: 9.9.$(( $(cat "$S/upgraded" 2>/dev/null || echo 0) ))" ;;
     install) [[ " $* " == *" -U "* ]] && echo 1 > "$S/upgraded" ;;
   esac
   exit 0
 fi
-if [[ "${1:-}" == "-" ]]; then cat >/dev/null; [[ -f "$S/import_breaks" ]] && exit 1; exit 0; fi
+if [[ "${1:-}" == "-" ]]; then
+  src="$(cat)"
+  # lib/pyversions.sh (ob_py_versions): one "name version" line per arg.
+  if [[ "$src" == *"metadata.version"* ]]; then
+    shift; for n in "$@"; do echo "$n 9.9.$(( $(cat "$S/upgraded" 2>/dev/null || echo 0) ))"; done; exit 0
+  fi
+  [[ -f "$S/import_breaks" ]] && exit 1; exit 0
+fi
 exec "$REAL_PY" "$@"
 STUB
 chmod +x "$T/bin/py_update"
 SBU="$T/repo_update"; mkdir -p "$SBU/scripts/lib" "$SBU/agents" "$T/binu"
 install -m 755 "$REPO_DIR/scripts/update.sh" "$SBU/scripts/update.sh"
-install -m 644 "$REPO_DIR/scripts/lib/conf.sh" "$REPO_DIR/scripts/lib/hardware.sh" "$SBU/scripts/lib/"
+install -m 644 "$REPO_DIR/scripts/lib/conf.sh" "$REPO_DIR/scripts/lib/hardware.sh" \
+  "$REPO_DIR/scripts/lib/pyversions.sh" "$SBU/scripts/lib/"
 ln -s "$T/bin/py_update" "$T/binu/python3"
 # The stub pydeps records WHAT requirements.txt SAID when `lock` was called:
 # regenerating before the pins are rewritten would lock the OLD versions.
@@ -708,7 +716,7 @@ run_update_python() {
   # A pin the old hand-kept list did not know about (httpx), with the comment
   # that explains it: both must survive the rewrite.
   printf 'openai==1.0\n# httpx: direct runtime dep of router.py — keep\nhttpx==0.28.1\n' > "$SBU/agents/requirements.txt"
-  : > "$T/state/pydeps.log"; rm -f "$T/state/upgraded"
+  : > "$T/state/pydeps.log"; rm -f "$T/state/upgraded" "$T/state/pipshow"
   _out="$(PATH="$T/binu:$PATH" "$SBU/scripts/update.sh" --python 2>&1)"; _rc=$?
 }
 rm -f "$T/state/lock_fails" "$T/state/import_breaks"
@@ -718,6 +726,13 @@ if [[ $_rc -eq 0 ]] && has "$(cat "$T/state/pydeps.log")" "pydeps lock :: openai
   pass "update.sh --python runs 'pydeps.sh lock' AFTER the pins are rewritten"
 else
   fail "update --python did not relock (rc=$_rc): $(cat "$T/state/pydeps.log") :: $_out"
+fi
+# review 2026-11-16: installed versions are read in one python3 per pass
+# (lib/pyversions.sh), not a `pip show` startup per pin per pass.
+if [[ ! -e "$T/state/pipshow" ]] && has "$_out" "openai 9.9.0 -> 9.9.1"; then
+  pass "update.sh --python reads versions without a pip startup per pin, and still reports what moved"
+else
+  fail "update --python: $(wc -l < "$T/state/pipshow" 2>/dev/null || echo 0) pip show calls; $_out"
 fi
 # The rewrite carries EVERY pin in the file forward, comments included — it
 # used to regenerate the file from a five-name list, dropping httpx.

@@ -612,6 +612,15 @@ _preflight_ports() {
 _webui_line() {
   if curl -s -m 2 -o /dev/null "http://$HEALTH_HOST:3000/health" 2>/dev/null; then
     echo "  Open WebUI:    http://localhost:3000"
+    # Its DNS-rebinding Host guard fails open (scripts/webui/sitecustomize.py),
+    # so ask the running container (lib/net.sh). Loud, not fatal: the chat UI
+    # stays up, and doctor.sh FAILs the same row.
+    if [[ "$(ob_webui_host_guard "http://$HEALTH_HOST:3000")" == "open" ]]; then
+      echo "  WARNING:       Open WebUI SERVES requests for unknown Host names — its DNS-rebinding" >&2
+      echo "                 guard did not load (an image change?). With login off, a web page that" >&2
+      echo "                 rebinds its name to this box gets admin, with bash. ./scripts/doctor.sh" >&2
+      echo "                 has the fix; until then, avoid browsing untrusted sites on this machine." >&2
+    fi
   elif [[ "${1:-0}" -eq 1 ]]; then
     echo "  Open WebUI:    NOT UP — docker compose failed (the warning above has the reason)."
     echo "                 Fix docker, then: ./scripts/healthcheck.sh --restart"
@@ -1335,8 +1344,9 @@ fit_unified_mem_cap() {
     echo "Warning: could not lower the stack's memory cap to ${cap_mb} MiB (systemctl set-property failed)" >&2
   fi
   if [[ "$short" == "1" ]]; then
-    echo "Warning: only ${avail_mb} MiB available beside the model — the stack's floor eats into the" >&2
-    echo "         ${MEM_RESERVE_GB:-3} GiB reserve. Free memory on this box (or shrink the model's pool)." >&2
+    echo "Warning: only ${avail_mb} MiB available beside the model — the stack has no headroom past what it" >&2
+    echo "         holds (or its floor eats into the ${MEM_RESERVE_GB:-3} GiB reserve). Free memory on this box" >&2
+    echo "         (or shrink the model's pool)." >&2
   fi
   # The chat jobs' slice leaves the stack's cgroup (agents/chat_server.py),
   # so it needs its own share. An operator's explicit value wins.

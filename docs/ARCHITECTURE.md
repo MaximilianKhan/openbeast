@@ -357,7 +357,9 @@ scripts/                     # Server, ops, and feature CLIs
                              #   bundle_manifest.py, pydeps_lock.py, skill_import.py,
                              #   backend.sh (per-backend readiness: llama / vLLM / TensorFold),
                              #   engine.sh (the engine plane; ob_engine_gate_ok), memscope.sh
-                             #   (per-profile memory scope: docs/WEIGHT_STREAMING.md)
+                             #   (per-profile memory scope: docs/WEIGHT_STREAMING.md),
+                             #   pyversions.sh (every pin's installed version in one python3:
+                             #   doctor.sh, update.sh --python)
   engines/                   # one adapter per engine: llama / vllm / tensorfold / maya (opt-in, gated);
                              #   maya/ = its requirements.lock, profiles/, prepare.sh
   engine.sh, engine-gate.sh  # swap / pin / roll back the engine (docs/ENGINES.md); the 1.5x tok/s gate

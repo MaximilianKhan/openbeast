@@ -27,6 +27,11 @@ when ALLOW_OPEN_WEBUI=true / WEBUI_ORIGINS='*' says the WebUI is open.
 Failure mode: if the hook cannot install (an upstream Starlette change), it
 says so on stderr and the WebUI starts unguarded — a bricked chat UI on an
 image bump is the worse outcome; tests/test_webui_exposure.py pins the hook.
+Because it fails open (and an image that resets PYTHONPATH never loads this
+file at all), the RUNNING container is checked from outside: lib/net.sh's
+ob_webui_host_guard sends Host: rebind.invalid and expects 400 — doctor.sh
+FAILs otherwise, start.sh warns, and update.sh --images rolls the open-webui
+pin back.
 """
 
 import os

@@ -424,7 +424,8 @@ SBU="$T/repo_update"
 mkdir -p "$SBU/scripts/lib" "$SBU/.run" "$SBU/llama.cpp/.git" "$SBU/llama.cpp/build/bin" "$T/binu"
 install -m 755 "$SRC/scripts/update.sh" "$SBU/scripts/update.sh"
 install -m 755 "$SRC/scripts/gpu-lease.sh" "$SBU/scripts/gpu-lease.sh"
-install -m 644 "$SRC/scripts/lib/conf.sh" "$SRC/scripts/lib/hardware.sh" "$SBU/scripts/lib/"
+# every lib update.sh sources unconditionally (pyversions.sh: ob_py_versions)
+install -m 644 "$SRC/scripts/lib/conf.sh" "$SRC/scripts/lib/hardware.sh" "$SRC/scripts/lib/pyversions.sh" "$SBU/scripts/lib/"
 printf '#!/bin/bash\n' > "$SBU/llama.cpp/build/bin/llama-server"; chmod +x "$SBU/llama.cpp/build/bin/llama-server"
 # git: records every call; the pull succeeds and HEAD does not move, so an
 # allowed update ends at "already up to date" without a cmake anywhere.

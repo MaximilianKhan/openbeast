@@ -7,6 +7,11 @@
 # true/false keys accept true|yes|1|on and false|no|0|off (any case), and an
 # inline "# comment" after the value is fine. Anything else is read as false
 # and warned about, so a typo is visible instead of silently flipping a mode.
+#
+# A value may be quoted: KEY="value" or KEY='value'. A quoted value may be
+# followed by a "# comment" (KEY="value"   # note); the quotes and the comment
+# are both dropped. Unquoted, most keys take the rest of the line as written
+# (the keys that do not are marked "No trailing comment" below).
 
 # Where your .gguf model weights live. Weights are large and are NOT stored in
 # the repo — put them wherever you have space (NVMe, USB, NAS mount, etc.) and
@@ -304,7 +309,8 @@
 # is then an unauthenticated remote SHELL for that network. Set keys with
 # scripts/setup-mcpo-keys.sh. The tool server REFUSES to start keyless on a
 # non-loopback bind (so ./start.sh stops there) unless ALLOW_OPEN_TOOLS below
-# says you mean it.
+# says you mean it. A value that is not an address or hostname (a stray
+# quote, "127.0.0.1,10.0.0.1") is refused with a warning, and loopback is used.
 #BIND_HOST=127.0.0.1
 
 # Acknowledge the case above: you mean to serve the KEYLESS tool server on a

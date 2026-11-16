@@ -75,18 +75,31 @@
 # Read one KEY= value from openbeast.conf. Ignores comments and surrounding
 # whitespace/quotes; last assignment wins. Prints nothing when absent.
 #
+# A QUOTED value may carry a trailing comment: `BIND_HOST="127.0.0.1"  # lo`
+# is 127.0.0.1. The plain quote strip below only removes a quote at BOTH
+# ends of what is left, so that line came back as `127.0.0.1"  # lo`; the
+# BIND_HOST comment-strip then left `127.0.0.1"`, which still read as
+# loopback and went into llama-server --host and every probe URL (review
+# 2026-11-16). The quoted form is taken whole only when nothing but a `#`
+# comment follows its closing quote, so a quote INSIDE a value (`"a"b"`) and
+# an unquoted value containing " #" (a password) read exactly as before.
+#
 # While this file is being sourced, lookups come from ONE pass over the conf
-# (_ob_conf_snapshot, below) instead of a `grep | tail` pair per key: ~85
-# lookups per source were ~170 forks, 142 of the 320 ms every conf.sh source
-# cost on a Spark (2026-11-16 review) — and start, doctor, healthcheck (every
-# 5 min under the watchdog) and 40+ scripts source it. The snapshot is
-# dropped at the end of this file, and wherever this file writes the conf,
-# so a caller that writes openbeast.conf later and reads it back still sees
-# the file as it is now. Pure bash (no associative array): bash 3.2 safe.
+# (_ob_conf_snapshot, below) instead of a `grep | tail` pair per key: ~85-100
+# lookups per source were ~170-200 forks, about half of every source (142 of
+# 320 ms on a Spark, 2.3 s on macOS bash 3.2; 2026-11-16 review) — and
+# start, doctor, healthcheck (every 5 min under the watchdog) and 40+
+# scripts source it. The snapshot has to be taken at top level: callers use
+# $(...), so a cache filled inside the function would die with the
+# subshell. It is marked with the conf path, so a REPO_DIR change never
+# reads stale lines, re-read wherever this file writes the conf, and
+# dropped at the end of this file, so a caller that writes openbeast.conf
+# later (setup-tailscale.sh, configure-webui.sh...) reads it fresh. Pure
+# bash (no associative array): bash 3.2 safe.
 _ob_conf_value() {
-  local key="$1" conf="$REPO_DIR/openbeast.conf" line
+  local key="$1" conf="$REPO_DIR/openbeast.conf" line="" q rest after
   [[ -f "$conf" ]] || return 1
-  if [[ -n "${_OB_CONF_SNAP+x}" ]]; then
+  if [[ -n "${_OB_CONF_SNAP+x}" && "${_OB_CONF_SNAP_PATH:-}" == "$conf" ]]; then
     [[ "$_OB_CONF_SNAP" == *$'\n'"$key="* ]] || return 1
     line="${_OB_CONF_SNAP##*$'\n'"$key="}"   # the LAST assignment
     line="${line%%$'\n'*}"
@@ -98,6 +111,20 @@ _ob_conf_value() {
   line="${line#*=}"
   line="${line#"${line%%[![:space:]]*}"}"   # ltrim
   line="${line%"${line##*[![:space:]]}"}"   # rtrim
+  q="${line:0:1}"
+  if [[ "$q" == '"' || "$q" == "'" ]]; then
+    rest="${line:1}"
+    if [[ "$rest" == *"$q"* ]]; then
+      after="${rest#*"$q"}"
+      after="${after#"${after%%[![:space:]]*}"}"
+      if [[ -z "$after" || "$after" == \#* ]]; then
+        line="${rest%%"$q"*}"
+        [[ -n "$line" ]] || return 1
+        printf '%s\n' "$line"
+        return 0
+      fi
+    fi
+  fi
   line="${line#\"}"; line="${line%\"}"
   line="${line#\'}"; line="${line%\'}"
   [[ -n "$line" ]] || return 1
@@ -110,14 +137,16 @@ _ob_conf_value() {
 _ob_conf_snapshot() {
   local conf="$REPO_DIR/openbeast.conf" l re='^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=(.*)$'
   _OB_CONF_SNAP=$'\n'
+  _OB_CONF_SNAP_PATH="$conf"
   [[ -f "$conf" && -r "$conf" ]] || return 0
   while IFS= read -r l || [[ -n "$l" ]]; do
     [[ "$l" == *=* && "$l" =~ $re ]] || continue
     _OB_CONF_SNAP+="${BASH_REMATCH[1]}=${BASH_REMATCH[2]}"$'\n'
   done < "$conf"
 }
-_ob_conf_snapshot_drop() { unset _OB_CONF_SNAP; }
+_ob_conf_snapshot_drop() { unset _OB_CONF_SNAP _OB_CONF_SNAP_PATH; }
 _ob_conf_snapshot
+
 
 # A few OPENBEAST_<KEY> names are BOTH the env override for KEY and this
 # file's own derived export (the dashboard, children and `start.sh -d` read
@@ -233,6 +262,20 @@ BIND_HOST="${OPENBEAST_BIND:-$(_ob_conf_value BIND_HOST || echo 127.0.0.1)}"
 # as loopback (127.*), so nothing warned (stack-lifecycle review).
 BIND_HOST="${BIND_HOST%%[[:space:]#]*}"
 [[ -n "$BIND_HOST" ]] || BIND_HOST=127.0.0.1
+# Values this file had to drop while resolving, one message each. ob_conf_lint
+# (end of file) reports them with its other findings, so they are said once
+# per command and doctor.sh can show them as rows.
+_OB_CONF_PROBLEMS=()
+# What is left must look like an address or a hostname. Anything else (a
+# stray quote, a typo'd separator) cannot bind and used to reach --host and
+# every probe URL as written, and `127.0.0.1"` even passed
+# ob_bind_is_loopback. Loopback is the safe fallback, and lint says so.
+_ob_host_re='^[A-Za-z0-9._:%-]+$'; _ob_host6_re='^\[[A-Fa-f0-9:.%]+\]$'
+if [[ ! "$BIND_HOST" =~ $_ob_host_re && ! "$BIND_HOST" =~ $_ob_host6_re ]]; then
+  _OB_CONF_PROBLEMS+=("BIND_HOST='$BIND_HOST' is not an address or hostname — using 127.0.0.1 (loopback)")
+  BIND_HOST=127.0.0.1
+fi
+unset _ob_host_re _ob_host6_re
 # The warning for a non-loopback BIND_HOST sits further down, after the tool
 # server keys are resolved — whether it is merely loud or names an open
 # remote shell depends on them.
@@ -303,10 +346,7 @@ export OPENBEAST_DASHBOARD_PORT="$DASHBOARD_PORT"
 # $OPENBEAST_REASONING / $OPENBEAST_REASONING_BUDGET.
 REASONING="${OPENBEAST_REASONING:-$(_ob_conf_value REASONING || true)}"
 REASONING_BUDGET="${OPENBEAST_REASONING_BUDGET:-$(_ob_conf_value REASONING_BUDGET || true)}"
-# Values this file had to drop while resolving, one message each. ob_conf_lint
-# (end of file) reports them with its other findings, so they are said once
-# per command and doctor.sh can show them as rows.
-_OB_CONF_PROBLEMS=()
+# (_OB_CONF_PROBLEMS starts at BIND_HOST, above.)
 # ISLAND: beast-island, the RUNTIME counterpart of OFFLINE (agents/island.py,
 # docs/BEAST_ISLAND.md). OFFLINE says the box never has a route; ISLAND says
 # what to do when the route DISAPPEARS while the stack runs — the power-outage
@@ -1416,7 +1456,7 @@ if [[ -z "$SEARXNG_SECRET" && "${OB_CONF_READONLY:-}" != "1" ]]; then
   fi
   printf 'SEARXNG_SECRET=%s\n' "$SEARXNG_SECRET" >> "$_ob_conf"
   chmod 600 "$_ob_conf" 2>/dev/null || true
-  _ob_conf_snapshot          # the file just changed: re-read it
+  _ob_conf_snapshot          # the file just changed (or was just created): re-read it
 fi
 export OPENBEAST_SEARXNG_SECRET="$SEARXNG_SECRET"
 
@@ -1518,6 +1558,7 @@ if [[ -z "${OB_CONF_LINTED:-}" ]]; then
   unset _ob_lint
   export OB_CONF_LINTED=1
 fi
-# Sourcing is over: later lookups (a caller that writes the conf and reads
-# it back) go to the file again.
+# Sourcing is over: drop the snapshot (see _ob_conf_value). From here on
+# every lookup reads openbeast.conf fresh, so a caller that edits it sees
+# its own write.
 _ob_conf_snapshot_drop

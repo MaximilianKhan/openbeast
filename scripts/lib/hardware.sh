@@ -59,9 +59,11 @@ ob_meminfo_available_mb() {
 # Open WebUI's container — which runs outside the stack's cgroup). Of what
 # is left, the chat jobs' slice (its own cgroup, outside the stack's) gets
 # about half as a whole percent of RAM — at least 1 — and the stack gets the
-# rest on top of what it already holds. The stack never goes below
-# OB_STACK_FLOOR_MB (default 2048): under that it cannot even start, and
-# <short>=1 says the reserve is being eaten. Never above <ceiling_mb> (the
+# rest on top of what it already holds — never less than it holds (the
+# jobs' slice shrinks to what is spare instead). The stack never goes below
+# OB_STACK_FLOOR_MB (default 2048): under that it cannot even start.
+# <short>=1 says there is no headroom: the floor eats into the reserve, or
+# less than the jobs' 1% is spare beside the model. Never above <ceiling_mb> (the
 # MEM_LIMIT_PCT cap). Returns 1, printing nothing, when meminfo is unreadable.
 ob_unified_mem_budget() {
   local now="${1:-0}" reserve="${2:-3072}" ceiling="${3:-0}"
@@ -72,6 +74,13 @@ ob_unified_mem_budget() {
   spare=$(( avail - reserve )); (( spare < 0 )) && spare=0
   pct=$(( spare * 50 / total )); (( pct < 1 )) && pct=1
   jobs=$(( total * pct / 100 ))
+  # The 1% floor on pct can ask for more than is spare (1246 MiB on a GB10
+  # with 1 GiB spare, or with none at all). Taken out of what the stack
+  # already holds, that set MemoryMax BELOW MemoryCurrent: forced reclaim or
+  # a cgroup OOM kill in the stack, and no warning (review 2026-11-16). The
+  # jobs' slice only ever comes out of spare, so the cap is never under
+  # <stack_now_mb>; when spare cannot cover it, <short>=1 says so.
+  if (( jobs > spare )); then jobs=$spare; short=1; fi
   cap=$(( now + spare - jobs ))
   if (( cap < floor )); then cap=$floor; short=1; fi
   (( ceiling > 0 && cap > ceiling )) && cap=$ceiling

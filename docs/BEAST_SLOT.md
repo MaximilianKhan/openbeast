@@ -270,6 +270,15 @@ still safe) and against `min_client` (rig demands newer → update the client);
   client's parallel agents to the smaller of the two; past it the gate answers
   429 with `Retry-After`. A device enrolled with its own `--rate` has that
   rate instead of R.
+- How the answer is gathered: every upstream probe of one document runs at
+  once, bounded by a 3 s deadline; a probe still out then reads as no answer
+  (`healthy: false`, `null`), never as a hang. `/api/slot` and the dashboard's
+  own `/api/status` ask many of the same upstreams: a probe one of them
+  already has in flight is **shared** with the other (it waits on the same
+  answer), so an open dashboard page can no longer make `/api/slot` report a
+  healthy model down. The probes never follow an HTTP redirect — a 3xx reads
+  as no answer — and the bearer key (keyed mode, below) is never copied onto
+  a redirected request.
 
 **Rigs served by vLLM or TensorFold** (`INFERENCE_BACKEND`, see
 [`DGX_SPARK_PLAN.md`](DGX_SPARK_PLAN.md)) answer the same version-2

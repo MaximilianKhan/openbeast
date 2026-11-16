@@ -32,6 +32,7 @@ source "$SCRIPT_DIR/lib/proc.sh"      # ob_recorded_pid_ours — is the supervis
 # ob_curl_hdr / ob_curl_bearer: every credential header below rides curl's
 # --config on fd 3, never argv (`ps` / /proc/*/cmdline are world-readable).
 source "$SCRIPT_DIR/lib/curl_auth.sh"
+source "$SCRIPT_DIR/lib/pyversions.sh"  # ob_py_versions — every pin's version in one python3
 # Where the core services answer (they bind BIND_HOST). It used to be a
 # private copy of the mapping with no `::` arm, so BIND_HOST=:: built
 # http://:::8080 and every service read as down on a healthy stack.
@@ -324,10 +325,19 @@ fi
 # ── Pinned dependencies ─────────────────────────────────────────────────────
 section "Pinned dependencies"
 if command -v python3 >/dev/null 2>&1; then
+  # Every pin's installed version from ONE interpreter (lib/pyversions.sh),
+  # not a `pip show` per pin: that was over half of doctor's run time.
+  _pins=(); _pinv=()
   while IFS='==' read -r pkg ver; do
     [[ -z "$pkg" || "$pkg" == \#* ]] && continue
-    ver="${ver#=}"
-    have=$(python3 -m pip show "$pkg" 2>/dev/null | awk '/^Version:/{print $2}')
+    _pins+=("$pkg"); _pinv+=("${ver#=}")
+  done < <(grep -vE '^\s*#|^\s*$' "$REPO_DIR/agents/requirements.txt")
+  _haves=()
+  if ((${#_pins[@]})); then
+    while read -r _ _h; do _haves+=("${_h:-}"); done < <(ob_py_versions "${_pins[@]}" || true)
+  fi
+  for _i in ${_pins[@]+"${!_pins[@]}"}; do
+    pkg="${_pins[_i]}"; ver="${_pinv[_i]}"; have="${_haves[_i]:-}"
     if [[ -z "$have" ]]; then
       # pydeps.sh, not a bare `pip install --user -r …`: that fails with
       # externally-managed-environment on Arch / Debian 12+ / Ubuntu 24.04
@@ -338,7 +348,8 @@ if command -v python3 >/dev/null 2>&1; then
     else
       pass "$pkg==$ver"
     fi
-  done < <(grep -vE '^\s*#|^\s*$' "$REPO_DIR/agents/requirements.txt")
+  done
+  unset _pins _pinv _haves _h _i
   # The four lines above are the DIRECT pins. The closure is 43 packages, and
   # the lock is what pins their content — so the question this row answers is
   # not "is the lock pretty" but "could this box reinstall exactly what it is
@@ -579,6 +590,20 @@ if [[ $_WEBUI_UP -eq 1 && -x "$SCRIPT_DIR/configure-webui.sh" ]]; then
     # 4: login is off (or not reported) on the running WebUI, so the probe
     # did not sign in at all — no row, never a green check it did not earn.
     # 3/other: WebUI went away between the two probes — the row above covers it.
+    *) ;;
+  esac
+fi
+# The DNS-rebinding Host guard (scripts/webui/sitecustomize.py), asked of the
+# RUNNING container: it fails open on purpose, so an image bump that breaks
+# or skips it used to leave a loopback rig with login off — every visitor
+# admin, with bash — open to a rebound page while this report stayed green.
+if [[ $_WEBUI_UP -eq 1 ]]; then
+  case "$(ob_webui_host_guard "http://$HEALTH_HOST:3000")" in
+    ok)   pass "Open WebUI refuses a rebound Host (DNS-rebinding guard live)" ;;
+    open) fail "Open WebUI SERVES a request for an unknown Host — its DNS-rebinding guard is not installed (login is off: a rebound web page gets admin, with bash)" \
+               "docker logs open-webui 2>&1 | grep 'Host allowlist'; if an image bump did it: ./scripts/update.sh --images rolls a failing image back, or pin the previous open-webui digest in docker-compose.yml (git log -p docker-compose.yml) and docker compose up -d" ;;
+    # off: OPENBEAST_WEBUI_HOSTS='*' (login on / opened on purpose) — no
+    # allowlist to check. down: went away between probes; the row above covers it.
     *) ;;
   esac
 fi

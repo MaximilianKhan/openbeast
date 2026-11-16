@@ -516,6 +516,21 @@ _got="$( OB_MEMINFO="$_HW/tight"; source "$REPO_DIR/scripts/lib/hardware.sh"
 [[ "$_got" == "2048 1 3072 1" ]] \
   && pass "…with nothing spare the stack keeps its 2 GiB floor and says the reserve is short" \
   || fail "tight unified budget: '$_got' (want '2048 1 3072 1')"
+# review 2026-11-16: the jobs' 1% floor came out of what the stack already
+# held, so a stack holding 6000 MiB with 1 GiB spare got MemoryMax=5778M,
+# below its own usage, with short=0 and no warning.
+printf 'MemTotal:       127597568 kB\nMemAvailable:    4194304 kB\n' > "$_HW/busy"
+_got="$( OB_MEMINFO="$_HW/busy"; source "$REPO_DIR/scripts/lib/hardware.sh"
+         ob_unified_mem_budget 6000 3072 95698 )"
+[[ "$_got" == "6000 1 4096 1" ]] \
+  && pass "…a busy stack is never capped below what it holds (1 GiB spare goes to the jobs), and short says so" \
+  || fail "unified budget below the stack's usage: '$_got' (want '6000 1 4096 1')"
+printf 'MemTotal:       127597568 kB\nMemAvailable:    2097152 kB\n' > "$_HW/eaten"
+_got="$( OB_MEMINFO="$_HW/eaten"; source "$REPO_DIR/scripts/lib/hardware.sh"
+         ob_unified_mem_budget 6000 3072 95698 )"
+[[ "$_got" == "6000 1 2048 1" ]] \
+  && pass "…with the reserve already eaten the stack keeps what it holds and short says so" \
+  || fail "unified budget with the reserve eaten: '$_got' (want '6000 1 2048 1')"
 printf 'MemTotal:       127598412 kB\nMemAvailable:  120000000 kB\n' > "$_HW/empty"
 _got="$( OB_MEMINFO="$_HW/empty"; source "$REPO_DIR/scripts/lib/hardware.sh"
          ob_unified_mem_budget 0 3072 20000 )"
@@ -891,6 +906,34 @@ if [[ "$ROUTER_URL" == "http://localhost:8088/v1" ]]; then
   pass "OPENBEAST_AGENT_ROUTER=true flips OPENBEAST_MODEL_URL to the router (:8088/v1)"
 else
   fail "AGENT_ROUTER=true didn't route OPENBEAST_MODEL_URL (got: ${ROUTER_URL:-empty})"
+fi
+# review 2026-11-16: one `grep | tail` per key was ~200 fork+execs per
+# source, about half its time. openbeast.conf is now read once per source;
+# a counting grep on PATH pins that (lint's one grep for unknown keys stays).
+mkdir -p "$CONF_SCRATCH/cbin"
+printf '#!/bin/bash\necho x >> "%s/greps"\nexec /usr/bin/grep "$@"\n' "$CONF_SCRATCH" > "$CONF_SCRATCH/cbin/grep"
+chmod +x "$CONF_SCRATCH/cbin/grep"
+printf 'SEARXNG_SECRET=s\nHYDRA=true\nHYDRA=false\nBIND_HOST="127.0.0.2"  # lo\n' > "$CONF_SCRATCH/openbeast.conf"
+: > "$CONF_SCRATCH/greps"
+_cc="$(env -i PATH="$CONF_SCRATCH/cbin:$PATH" HOME="$CONF_SCRATCH" REPO_DIR="$CONF_SCRATCH" OB_CONF_READONLY=1 \
+  bash -c "source '$REPO_DIR/scripts/lib/conf.sh' 2>/dev/null; printf '%s|%s|%s|' \"\$HYDRA\" \"\$BIND_HOST\" \"\${_OB_CONF_SNAP-unset}\"
+           printf 'HYDRA=true\n' >> '$CONF_SCRATCH/openbeast.conf'; _ob_conf_value HYDRA")"
+_ng="$(wc -l < "$CONF_SCRATCH/greps" | tr -d ' ')"
+if [[ "$_cc" == "false|127.0.0.2|unset|true" && "$_ng" -le 5 ]]; then
+  pass "conf.sh reads openbeast.conf once per source ($_ng greps), last key wins, and drops the cache after"
+else
+  fail "conf.sh lookup cache: got '$_cc' with $_ng grep calls (want 'false|127.0.0.2|unset|true', <= 5)"
+fi
+rm -f "$CONF_SCRATCH/openbeast.conf"
+# review 2026-11-16: doctor.sh and update.sh --python ran `python3 -m pip
+# show` per pin (2.3 s of doctor's 4.3 s on spark-1). ob_py_versions reads
+# them all in one interpreter, in argument order, empty when not installed.
+_pv="$(bash -c "source '$REPO_DIR/scripts/lib/pyversions.sh'; ob_py_versions pip obnotapackage" 2>/dev/null)"
+if [[ "$(sed -n 1p <<< "$_pv")" =~ ^pip\ [0-9] && "$(sed -n 2p <<< "$_pv")" == "obnotapackage " ]] \
+   && ! grep -vE '^[[:space:]]*#' "$REPO_DIR/scripts/doctor.sh" "$REPO_DIR/scripts/update.sh" | grep -q 'pip show'; then
+  pass "ob_py_versions: one interpreter for every pin; doctor/update.sh no longer start pip per pin"
+else
+  fail "ob_py_versions gave '$(tr '\n' '|' <<< "$_pv")' (or a 'pip show' is left in doctor/update.sh)"
 fi
 
 # Distributed agents Phase 1 (docs/DISTRIBUTED_AGENTS_PLAN.md):
