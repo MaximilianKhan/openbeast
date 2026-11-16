@@ -1067,8 +1067,10 @@ _MAX90=$(( 127926272 * 1024 / 100 * 90 )); _MAX75=$(( 127926272 * 1024 / 100 * 7
 _big serve-big-test.sh
 if grep -q -- "-p MemoryMax=$_MAX90 " "$_SE/systemd-run.log" 2>/dev/null \
    && grep -q -- "--setenv=OPENBEAST_MEM_LIMIT_PCT=90" "$_SE/systemd-run.log" \
-   && [[ "$_SO" == *"90% of RAM"*"raised for serve-big-test.sh"* ]] \
+   && grep -q -- "--_daemonized serve-big-test.sh" "$_SE/systemd-run.log" \
    && { grep -q -- "-p LimitMEMLOCK=infinity" "$_SE/systemd-run.log" || [[ "$_SO" == *"asks for memlock=infinity"* ]]; }; then
+  # (The banner after systemd-run never prints here: the stub ends the
+  # launcher right after recording the launch, so the launch IS the evidence.)
   pass "a big profile's scope is 90% of RAM, the daemon is told so, and memlock is passed (or the limit is named)"
 else
   fail "big profile scope (rc=$_SRC): $(tail -n 4 <<< "$_SO" | tr '\n' ' ') :: $(cat "$_SE/systemd-run.log" 2>/dev/null)"
