@@ -396,3 +396,65 @@ def test_40_numpy_bypass_is_refused_by_lint_and_by_the_confined_run(monkeypatch)
     ok, out = _validate_with(unlinted, bypass)
     assert not ok, out
     assert "OK:" not in out
+
+
+# --- kept-v4 fixed wall gates (finding: `el < 1.5` ignored --scale, and the
+# prover's lint could not see it) ----------------------------------------------
+
+@pytest.mark.parametrize("src,want", [
+    ("import time\nt0 = time.time()\nel = time.time() - t0\nassert el < 1.5\n", [1.5]),
+    ("import time\nt0 = time.monotonic()\nassert time.monotonic() - t0 <= 2\n", [2.0]),
+    ("import time\nt0 = time.perf_counter()\nd = time.perf_counter() - t0\nassert 3.0 > d\n", [3.0]),
+    ("import time\nt0=time.monotonic()\ne=time.monotonic()-t0\nassert 0.18 <= e < 0.5\n", [0.5]),
+    # scaled or not a time: clean
+    ("import time\nt0 = time.time()\nel = time.time() - t0\nassert el < 1.5 * _SCALE\n", []),
+    ("import time, vlib\nt0 = time.time()\nel = time.time() - t0\nassert el < vlib.t(1.5)\n", []),
+    ("n = len(x)\nassert n < 5\n", []),
+])
+def test_prover_lint_sees_a_fixed_gate_on_a_measured_time(src, want):
+    assert [lim for _l, lim in prove_task.unscaled_time_gates("python", src)] == want
+    bash = "python3 - <<'VALIDATEEOF'\n" + src + "VALIDATEEOF\n"
+    assert [lim for _l, lim in prove_task.unscaled_time_gates("bash", bash)] == want
+
+
+def test_every_v5_unit_passes_the_isolation_lint():
+    R, M = prove_task._load_harness(str(ROOT), None)
+    tasks = {t["id"]: t for t in R.load_tasks(None)}
+    man = M.load_manifest("v5", tasks=list(tasks.values()), strict=False)
+    bad = {}
+    for u in man["units"]:
+        t = tasks[man["resolved"][u["id"]]]
+        v = t.get("validation") or {}
+        probs = prove_task.isolation_problems(v.get("type", "bash"), v.get("script", ""))
+        if probs:
+            bad[u["id"]] = probs
+    assert not bad, bad
+
+
+@pytest.mark.parametrize("task_id", ["146_aho_corasick", "147_persistent_bst",
+                                     "153_coroutine_scheduler", "158_karatsuba_bytes",
+                                     "159_ntt_convolution"])
+def test_kept_v4_gates_read_the_scale_before_the_solution_runs(task_id):
+    d = json.loads((ROOT / "evals" / "tasks" / f"{task_id}.json").read_text())
+    vals = [v["validation"] for v in d.get("variants", []) if "validation" in v] \
+        or [d["validation"]]
+    for val in vals:
+        s = val["script"]
+        body = s if val.get("type") == "python" else s.split("\n", 1)[1]
+        # first statement: an in-process v4 solution cannot raise the scale
+        # through os.environ before the validator has read it
+        assert body.startswith("import os as _os; _SCALE = max(1.0, float(_os.environ.get("
+                               "'OPENBEAST_TIMEOUT_SCALE') or 1))"), task_id
+        assert " * _SCALE" in s
+
+
+def test_scaled_gate_follows_the_harness_scale(tmp_path):
+    # 146's own gate line, run at scale 1 and 2 against a fixed 2 s "measurement"
+    d = json.loads((ROOT / "evals" / "tasks" / "146_aho_corasick.json").read_text())
+    s = d["validation"]["script"]
+    prefix = s.split("\n", 1)[0]
+    probe = prefix + "\nelapsed = 2.0\nprint('PASS' if elapsed < 1.5 * _SCALE else 'FAIL')\n"
+    for scale, want in (("1", "FAIL"), ("2", "PASS")):
+        out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
+                             env={**os.environ, "OPENBEAST_TIMEOUT_SCALE": scale}).stdout
+        assert out.strip() == want, (scale, out)

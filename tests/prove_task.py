@@ -170,7 +170,77 @@ def isolation_problems(vtype: str, script: str) -> list[str]:
     if FIXED_LIMIT_RE.search(script) and not SCALE_REF_RE.search(script):
         out.append("validator has a fixed time limit but never reads OPENBEAST_TIMEOUT_SCALE "
                    "(use vlib.t(seconds))")
+    for line, limit in unscaled_time_gates(vtype, script):
+        out.append(f"validator compares a measured time with a fixed {limit} s (line {line}) "
+                   "that ignores OPENBEAST_TIMEOUT_SCALE (use vlib.t(seconds))")
     return out
+
+
+_CLOCKS = {"time", "monotonic", "perf_counter", "process_time", "monotonic_ns",
+           "perf_counter_ns", "time_ns"}
+_HEREDOC_RE = re.compile(r"<<-?\s*'?\"?(\w+)'?\"?[^\n]*\n(.*?)\n\1\s*$", re.S | re.M)
+
+
+def _python_sources(vtype: str, script: str) -> list[str]:
+    """The Python a validator runs: the script itself, or for a shell
+    validator the bodies of its heredocs (`python3 - <<'EOF' ... EOF`)."""
+    if vtype == "python":
+        return [script]
+    return [m.group(2) for m in _HEREDOC_RE.finditer(script)]
+
+
+def unscaled_time_gates(vtype: str, script: str) -> list[tuple[int, float]]:
+    """(line, limit) for every comparison of a measured wall time with a bare
+    number: `el = time.time() - t0; assert el < 1.5`. FIXED_LIMIT_RE only
+    sees `timeout=N` / `*LIMIT = N` assignments, so these gates (158, 159,
+    146, 147, 153 in v5.0) passed the lint while ignoring --scale (review
+    1116). A scaled bound (`1.5 * scale`, vlib.t(1.5)) is not a bare number."""
+    import ast  # noqa: PLC0415
+
+    def is_clock(node) -> bool:
+        if not isinstance(node, ast.Call):
+            return False
+        f = node.func
+        return ((isinstance(f, ast.Attribute) and f.attr in _CLOCKS)
+                or (isinstance(f, ast.Name) and f.id in _CLOCKS))
+
+    def is_delta(node, names) -> bool:
+        if isinstance(node, ast.Name):
+            return node.id in names
+        return (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Sub)
+                and is_clock(node.left))
+
+    def number(node):
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+            node = node.operand
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)) \
+                and not isinstance(node.value, bool):
+            return float(node.value)
+        return None
+
+    found = []
+    for src in _python_sources(vtype, script):
+        try:
+            tree = ast.parse(src)
+        except SyntaxError:
+            continue
+        names = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and is_delta(node.value, set()):
+                names |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Compare):
+                continue
+            operands = [node.left, *node.comparators]
+            for i, op in enumerate(node.ops):
+                a, b = operands[i], operands[i + 1]
+                # an upper bound on a delta: delta < N, delta <= N, N > delta, N >= delta
+                if isinstance(op, (ast.Lt, ast.LtE)) and is_delta(a, names) and number(b) is not None:
+                    found.append((node.lineno, number(b)))
+                elif isinstance(op, (ast.Gt, ast.GtE)) and is_delta(b, names) \
+                        and number(a) is not None:
+                    found.append((node.lineno, number(a)))
+    return found
 
 
 def _ext(task: dict, M) -> str:
