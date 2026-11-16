@@ -650,7 +650,11 @@ def _auth_headers(base_url: str) -> dict:
     attach OPENBEAST_API_KEY / OPENAI_API_KEY to ANY --base-url — in
     cleartext over http — while the runner child went keyless against the
     same host (review finding campaign-evals: harness leaks the ambient
-    key). One function decides for both, so they cannot disagree."""
+    key). One function decides for both, so they cannot disagree. EVERY
+    probe must build its headers here: two later probes (the /v1/models
+    fallback in _fetch_server_slots and capture_remote_server_info) read
+    os.environ directly and reopened the leak (review 1116);
+    tests/test_eval_key_policy.py now drives every probe."""
     try:
         from runner import resolve_api_key
     except Exception:
@@ -698,8 +702,7 @@ def _fetch_server_slots(base_url: str) -> int | None:
     # Some OpenAI-compatible servers publish their batch limit on the model
     # card; use it when present. Otherwise the caller needs --slots.
     try:
-        key = os.environ.get("OPENBEAST_API_KEY") or os.environ.get("OPENAI_API_KEY")
-        headers = {"Authorization": f"Bearer {key}"} if key else {}
+        headers = _auth_headers(base_url)     # never the raw ambient key
         req = urllib.request.Request(base_url.rstrip("/") + "/models", headers=headers)
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode("utf-8"))
@@ -728,8 +731,7 @@ def capture_remote_server_info(base_url: str, declared_rb: str | None = None) ->
         info["reasoning_budget"] = str(rb).strip()
         info["reasoning_budget_source"] = "declared"
     try:
-        key = os.environ.get("OPENBEAST_API_KEY") or os.environ.get("OPENAI_API_KEY")
-        headers = {"Authorization": f"Bearer {key}"} if key else {}
+        headers = _auth_headers(base_url)     # never the raw ambient key
         req = urllib.request.Request(base_url.rstrip("/") + "/models", headers=headers)
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode("utf-8"))

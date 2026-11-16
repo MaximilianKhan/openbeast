@@ -57,3 +57,43 @@ def test_loopback_and_configured_host_keep_the_key(probe, monkeypatch):
     monkeypatch.setenv("OPENBEAST_AGENT_INFERENCE_URL", "http://rig.tailnet:8443/v1")
     run_eval._fetch_server_slots("http://rig.tailnet:8443/v1")
     assert [h for _, h in seen] == ["Bearer sk-secret", "Bearer sk-secret"], seen
+
+
+def test_every_probe_withholds_the_key_from_a_foreign_host(probe, monkeypatch):
+    """The /v1/models fallback of _fetch_server_slots (taken when /props is
+    absent: vLLM, TensorFold, a gated host) and capture_remote_server_info
+    read the env key directly and sent it to any --base-url (review 1116)."""
+    run_eval, seen = probe
+    monkeypatch.setenv("OPENBEAST_API_KEY", "DUMMY-CANARY")
+    real = run_eval.urllib.request.urlopen
+
+    def no_props(req, timeout=None):
+        if req.full_url.endswith("/props"):
+            seen.append((req.full_url, req.get_header("Authorization")))
+            raise OSError("404")
+        return real(req, timeout=timeout)
+
+    monkeypatch.setattr(run_eval.urllib.request, "urlopen", no_props)
+    base = "http://other-host.example:8000/v1"
+    run_eval.detect_model(base)
+    run_eval._fetch_server_slots(base)
+    info = run_eval.capture_remote_server_info(base)
+    assert info.get("model_id") == "m"
+    assert [u.rsplit("/", 1)[1] for u, _ in seen] == ["models", "props", "models", "models"]
+    assert [h for _, h in seen] == [None] * 4, seen
+
+
+def test_every_probe_keeps_the_key_for_the_configured_host(probe, monkeypatch):
+    run_eval, seen = probe
+    base = "https://spark.tailnet:8443/v1"
+    monkeypatch.setenv("OPENBEAST_AGENT_INFERENCE_URL", base)
+    run_eval.capture_remote_server_info(base)
+    assert [h for _, h in seen] == ["Bearer sk-secret"], seen
+
+
+def test_no_probe_reads_the_ambient_key_itself():
+    """Static pin: only _auth_headers (through runner.resolve_api_key) may
+    turn the ambient key into a header."""
+    src = (ROOT / "evals" / "run_eval.py").read_text()
+    assert 'os.environ.get("OPENBEAST_API_KEY")' not in src
+    assert 'os.environ.get("OPENAI_API_KEY")' not in src
