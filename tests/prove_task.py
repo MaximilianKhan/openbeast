@@ -401,12 +401,21 @@ def main(argv=None) -> int:
                 continue
         print(f"\n== {uid}")
         fam = None if a.ref else family_prover(task, refs_dir, spec)
-        if fam:
+        busy = None
+        if fam:   # the family prover takes the fixture lock itself
             proven = run_family_prover(fam, a.repo)
         else:
-            proven, rows = prove(R, M, task, spec, repeat=a.repeat, strict=not a.lenient,
-                                 scale=a.scale)
-        verdicts[uid] = "PROVEN" if proven else "NOT PROVEN"
+            # The unit's fixed /tmp/eval_* dirs are shared with any sweep or
+            # other prover on this host: refuse rather than rm -rf them under
+            # a live unit (run_eval.fixture_lock).
+            try:
+                with R.fixture_lock(task, wait=False):
+                    proven, rows = prove(R, M, task, spec, repeat=a.repeat,
+                                         strict=not a.lenient, scale=a.scale)
+            except R.FixtureBusy as e:
+                print(f"{uid}: NOT PROVEN (fixture busy: {e})")
+                proven, busy = False, str(e)
+        verdicts[uid] = "PROVEN" if proven else ("fixture busy" if busy else "NOT PROVEN")
         worst = worst or (0 if proven else 1)
     if a.json:
         with open(a.json, "w") as f:

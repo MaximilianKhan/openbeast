@@ -1648,6 +1648,125 @@ def _run_reaped(cmd, timeout: int, shell: bool = False, **popen_kw) -> tuple[int
 _FIXTURE_PATH = re.compile(r"/tmp/eval[\w\-./]*")
 
 
+def fixture_roots(task: dict) -> list[str]:
+    """The task's /tmp/eval* fixture roots (sorted), from every command and
+    text that names one."""
+    spec = " ".join(str(task.get(k, "")) for k in ("setup", "task", "validation",
+                                                   "cleanup", "pre_validate"))
+    return sorted({"/tmp/" + p[len("/tmp/"):].split("/", 1)[0]
+                   for p in _FIXTURE_PATH.findall(spec)})
+
+
+# --- one harness per fixture root, across processes ------------------------------
+#
+# Every unit uses fixed, global /tmp/eval_* dirs, and setup/cleanup `rm -rf`
+# them. Inside one run_eval process the variants of a family are serialized
+# on one worker, but nothing stopped a SECOND harness on the host (a prover
+# during a sweep, two reviewers' provers) from deleting the fixture under a
+# live agent or validator: both sides were then scored on missing or foreign
+# files, silently (review 1116: a 173 prove run failed 10 arms with "missing
+# /tmp/eval_tg173/tg.py" while a GLM sweep was in /tmp/eval_linz). Every
+# harness now holds an exclusive advisory flock per fixture root for a whole
+# unit: a sweep waits for it, a prover refuses at once with the holder's pid.
+# The lock files live in a per-user dir (not world-writable /tmp, where
+# another uid could pre-create them). flock is released by the kernel when
+# the holder dies, so a killed harness never leaves a stale lock.
+
+class FixtureBusy(RuntimeError):
+    """A fixture root is held by another harness process."""
+
+
+_FIXTURE_LOCKS: dict = {}          # root -> [threading.RLock, depth, fd or None]
+_FIXTURE_LOCKS_MU = threading.Lock()
+
+
+def fixture_lock_dir() -> str:
+    return (os.environ.get("OPENBEAST_FIXTURE_LOCK_DIR")
+            or os.path.join(os.path.expanduser("~"), ".cache", "openbeast", "fixture-locks"))
+
+
+def _lock_path(root: str) -> str:
+    return os.path.join(fixture_lock_dir(), os.path.basename(root.rstrip("/")) + ".lock")
+
+
+def fixture_lock_holder(root: str) -> str:
+    """The pid recorded by whoever holds (or last held) the root's lock."""
+    try:
+        with open(_lock_path(root)) as f:
+            return f.read(32).strip() or "?"
+    except OSError:
+        return "?"
+
+
+def _acquire_root(root: str, wait: bool, log) -> None:
+    import fcntl
+    with _FIXTURE_LOCKS_MU:
+        ent = _FIXTURE_LOCKS.setdefault(root, [threading.RLock(), 0, None])
+    if not ent[0].acquire(blocking=wait):
+        raise FixtureBusy(f"{root} is in use by another unit in this process")
+    try:
+        if ent[1] == 0:                       # first holder in this process: the flock
+            os.makedirs(fixture_lock_dir(), mode=0o700, exist_ok=True)
+            fd = os.open(_lock_path(root), os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            told = False
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    holder = fixture_lock_holder(root)
+                    if not wait:
+                        os.close(fd)
+                        raise FixtureBusy(f"{root} is in use by another harness (pid {holder}); "
+                                          f"rerun when it finishes") from None
+                    if not told:
+                        log(f"  Waiting for fixture {root} (held by pid {holder})...")
+                        told = True
+                    time.sleep(0.5)
+            os.ftruncate(fd, 0)
+            os.pwrite(fd, f"{os.getpid()}\n".encode(), 0)
+            ent[2] = fd
+        ent[1] += 1
+    except BaseException:
+        ent[0].release()
+        raise
+
+
+def _release_root(root: str) -> None:
+    ent = _FIXTURE_LOCKS[root]
+    ent[1] -= 1
+    if ent[1] == 0 and ent[2] is not None:
+        os.close(ent[2])                      # drops the flock
+        ent[2] = None
+    ent[0].release()
+
+
+class fixture_lock:
+    """`with fixture_lock(task, wait=...):` holds every fixture root of the
+    task for one unit (cleanup -> setup -> agent -> validation -> cleanup).
+    Roots are taken in sorted order, re-entrant per thread. wait=True blocks
+    (the sweep); wait=False raises FixtureBusy at once (a prover)."""
+
+    def __init__(self, task: dict, *, wait: bool = True, log=print):
+        self.roots = fixture_roots(task)
+        self.wait, self.log, self.held = wait, log, []
+
+    def __enter__(self):
+        try:
+            for root in self.roots:
+                _acquire_root(root, self.wait, self.log)
+                self.held.append(root)
+        except BaseException:
+            self.__exit__(None, None, None)
+            raise
+        return self
+
+    def __exit__(self, *exc):
+        while self.held:
+            _release_root(self.held.pop())
+        return False
+
+
 def unsafe_fixture_roots(task: dict) -> list[str]:
     """The task's /tmp/eval* fixture roots that are NOT safely ours.
 
@@ -1663,13 +1782,9 @@ def unsafe_fixture_roots(task: dict) -> list[str]:
     A root is unsafe when it is a symlink, is owned by another uid, or is
     world-writable (or group-writable by a group other than ours). A root
     that does not exist yet is fine."""
-    spec = " ".join(str(task.get(k, "")) for k in ("setup", "task", "validation",
-                                                   "cleanup", "pre_validate"))
-    roots = sorted({"/tmp/" + p[len("/tmp/"):].split("/", 1)[0]
-                    for p in _FIXTURE_PATH.findall(spec)})
     bad = []
     me = os.getuid()
-    for root in roots:
+    for root in fixture_roots(task):
         try:
             st = os.lstat(root)
         except FileNotFoundError:
@@ -3236,7 +3351,8 @@ def run_eval(
     if jobs == 1:
         for g in groups:
             for idx, task, c in g:
-                process(idx, task, log=print, c=c)
+                with fixture_lock(task, wait=True, log=print):
+                    process(idx, task, log=print, c=c)
                 if abort.is_set():
                     break
             if abort.is_set():
@@ -3250,7 +3366,10 @@ def run_eval(
         def run_group(units: list[tuple[int, dict, ArmCtx]]) -> None:
             for idx, task, c in units:
                 lines: list[str] = []
-                process(idx, task, log=lines.append, c=c)
+                # one unit at a time per fixture root, across threads AND
+                # other harness processes on this host (fixture_lock)
+                with fixture_lock(task, wait=True, log=lines.append):
+                    process(idx, task, log=lines.append, c=c)
                 if lines:
                     with print_lock:
                         print("\n".join(lines))

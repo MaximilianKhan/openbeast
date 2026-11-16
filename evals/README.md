@@ -518,9 +518,16 @@ solution process group a validator recorded is SIGKILLed after it exits.
   through `kern.procargs2` under every sandbox rule tried, so no validator
   may hold a secret in argv or env (none does: the script arrives on stdin).
 - **Shared fixture paths.** A family's units share one fixed `/tmp/eval_*`
-  dir; two provers (or a prover and a test) of the same family at once
-  corrupt each other (186, 190). The harness serialises a base group; by
-  hand, run one family at a time.
+  dir. Every harness now holds an exclusive advisory flock per fixture root
+  for a whole unit (`run_eval.fixture_lock`, lock files in
+  `~/.cache/openbeast/fixture-locks/`, or `$OPENBEAST_FIXTURE_LOCK_DIR`):
+  a sweep (`run_eval`, `profile.py`, `benchmark_all.py`) waits for a root
+  another harness holds, and `tests/prove_task.py` plus the family provers
+  of 175/176/179 refuse at once with the holder's pid ("fixture busy").
+  Before review 1116 a prover during a sweep silently `rm -rf`'d the live
+  unit's fixture (186, 190, and 173/175/178 against a GLM sweep). Not
+  covered: tests that drive `run_setup` directly, and family provers outside
+  175/176/179; run those one at a time.
 - **Timing headroom.** The cold zig compile now happens in every
   validation (private cache): about 8 s of the 15 s validator budget on a
   loaded Mac; a Go unit rebuilds its standard library each time (158_b's

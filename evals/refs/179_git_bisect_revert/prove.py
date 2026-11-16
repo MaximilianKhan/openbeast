@@ -34,6 +34,14 @@ import run_eval as R  # noqa: E402
 spec = json.load(open(os.path.join(HERE, "PROVE.json")))
 unit = spec["task"]
 (task,) = [t for t in R.load_tasks([unit]) if t["id"] == unit]
+
+# Hold the unit's /tmp/eval_* roots for the whole proof: a sweep or another
+# prover on this host must not rm -rf them under our arms, nor we under its
+# units (run_eval.fixture_lock; the kernel drops it when this process exits).
+try:
+    _FIXTURE_LOCK = R.fixture_lock(task, wait=False).__enter__()
+except R.FixtureBusy as _e:
+    sys.exit("%s: NOT PROVEN (fixture busy: %s)" % (task["id"], _e))
 dest = spec["dest"]
 top = os.path.dirname(dest)
 quiet = lambda *_: None  # noqa: E731
