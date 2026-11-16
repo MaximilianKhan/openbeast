@@ -1136,7 +1136,11 @@ rather than OOMs.
 - **The stack side** (`start.sh`): `start.sh -d` runs the stack in a
   memory-capped systemd scope. On a unified-memory box running its own model,
   the cap is re-sized once the model is up, to **MemAvailable minus
-  `MEM_RESERVE_GB`** (default 3). The chat jobs' cap is derived the same way.
+  `MEM_RESERVE_GB`** (default 3), added on top of what the stack already
+  holds. The chat jobs' cap is derived the same way, and comes only out of
+  that spare: the stack is never capped below its own current usage. When
+  less than the jobs' 1 % of RAM is spare, start.sh prints a "no headroom"
+  warning instead of shrinking the stack under what it holds.
   75 % of a MemTotal the model already holds would protect nothing.
   `healthcheck.sh` and `doctor.sh` warn when MemAvailable falls below
   `MEM_RESERVE_GB`.

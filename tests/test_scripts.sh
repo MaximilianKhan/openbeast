@@ -516,6 +516,21 @@ _got="$( OB_MEMINFO="$_HW/tight"; source "$REPO_DIR/scripts/lib/hardware.sh"
 [[ "$_got" == "2048 1 3072 1" ]] \
   && pass "…with nothing spare the stack keeps its 2 GiB floor and says the reserve is short" \
   || fail "tight unified budget: '$_got' (want '2048 1 3072 1')"
+# review 2026-11-16: the jobs' 1% floor came out of what the stack already
+# held, so a stack holding 6000 MiB with 1 GiB spare got MemoryMax=5778M,
+# below its own usage, with short=0 and no warning.
+printf 'MemTotal:       127597568 kB\nMemAvailable:    4194304 kB\n' > "$_HW/busy"
+_got="$( OB_MEMINFO="$_HW/busy"; source "$REPO_DIR/scripts/lib/hardware.sh"
+         ob_unified_mem_budget 6000 3072 95698 )"
+[[ "$_got" == "6000 1 4096 1" ]] \
+  && pass "…a busy stack is never capped below what it holds (1 GiB spare goes to the jobs), and short says so" \
+  || fail "unified budget below the stack's usage: '$_got' (want '6000 1 4096 1')"
+printf 'MemTotal:       127597568 kB\nMemAvailable:    2097152 kB\n' > "$_HW/eaten"
+_got="$( OB_MEMINFO="$_HW/eaten"; source "$REPO_DIR/scripts/lib/hardware.sh"
+         ob_unified_mem_budget 6000 3072 95698 )"
+[[ "$_got" == "6000 1 2048 1" ]] \
+  && pass "…with the reserve already eaten the stack keeps what it holds and short says so" \
+  || fail "unified budget with the reserve eaten: '$_got' (want '6000 1 2048 1')"
 printf 'MemTotal:       127598412 kB\nMemAvailable:  120000000 kB\n' > "$_HW/empty"
 _got="$( OB_MEMINFO="$_HW/empty"; source "$REPO_DIR/scripts/lib/hardware.sh"
          ob_unified_mem_budget 0 3072 20000 )"
