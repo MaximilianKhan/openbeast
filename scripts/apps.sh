@@ -8,7 +8,7 @@
 #   ./scripts/apps.sh enable <capability> [--server S] [--key K] [--dry-run] [--accept-risk]
 #   ./scripts/apps.sh disable <capability|server|key> [--dry-run]
 #   ./scripts/apps.sh refresh [server...] [--json] [--no-introspect]
-#   ./scripts/apps.sh upgrade <server> [--to VERSION]
+#   ./scripts/apps.sh upgrade <server> [--to VERSION] [--accept-new-tools]
 #   ./scripts/apps.sh tools <server> [--json]      the recorded tool manifest
 #   ./scripts/apps.sh validate                     check the catalog
 #
@@ -17,8 +17,13 @@
 # model on the rig only ever sees the tool calls.
 #
 # Exit codes: 0 ok/READY · 1 error · 2 usage/unknown · 3 MISSING prerequisite
-#             4 unsupported platform · 5 offline · 6 needs --accept-risk
-#             7 the opencode key is yours (not written by beast-apps)
+#             4 unsupported platform · 5 offline · 6 risk: needs --accept-risk,
+#             --ungated or --accept-new-tools · 7 the opencode key is yours
+#             (not written by beast-apps), or the server is already wired
+#
+# npm servers are installed into <state>/npm/<server>@<version> at enable /
+# upgrade and run from there by absolute path, never through npx in the
+# project opencode opens (docs/BEAST_APPS.md § How a server is launched).
 #
 # Environment: OPENBEAST_OPENCODE_CONFIG (config to edit), OPENBEAST_APPS_STATE
 # (default ~/.openbeast-client/apps), OPENBEAST_APPS_CATALOG_D (overlay dir),

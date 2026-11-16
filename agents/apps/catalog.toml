@@ -21,14 +21,20 @@
 # Command templates: {package} and {version} expand from the server entry
 # (the version is the effective pin: an `apps.sh upgrade` override in the
 # state dir wins over the one written here). argv[0] is resolved to an
-# absolute path at enable time, because GUI-launched clients do not inherit
-# the shell PATH ("spawn npx ENOENT").
+# absolute path at enable time, and the entry always gets a fixed PATH,
+# because GUI-launched clients do not inherit the shell PATH ("spawn npx
+# ENOENT", "env: node: No such file"). An npm server's ["npx", "-y",
+# "{package}@{version}", ...] is NOT run through npx: enable installs that
+# exact version into <state>/npm/<server>@<version> and the entry runs its
+# bin with node, so the project opencode opens cannot substitute the code
+# (its node_modules/, .npmrc and node_modules/.bin never take part).
 #
 # Safety: `ask_tools` become opencode "ask" permission rules, `deny_tools`
 # become "deny" rules (globs allowed; the rule's action is <key>_<tool>).
 # `risk_patterns` are substrings a NEWLY appearing tool is checked against on
-# `refresh`, so an upstream release that adds an exec-style tool is flagged
-# instead of silently trusted. `default_enabled = false` means `enable`
+# `refresh` and `upgrade`, so an upstream release that adds an exec-style tool
+# is flagged instead of silently trusted (`upgrade` refuses to wire such a
+# tool in ungated without --accept-new-tools). `default_enabled = false` means `enable`
 # refuses without --accept-risk.
 
 schema = 1
