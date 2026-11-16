@@ -1,0 +1,187 @@
+import math, os, random, subprocess, sys
+import vlib
+LANG = "@LANG@"
+D = "/tmp/eval_q15biquad"
+SRC = {"python": "biquad.py", "go": "biquad.go", "c": "biquad.c", "cpp": "biquad.cpp",
+       "rust": "biquad.rs", "zig": "biquad.zig"}[LANG]
+BUILD = {"python": None,
+         "go": ["go", "build", "-o", "biquad", "biquad.go"],
+         "c": ["gcc", "-O2", "-std=c11", "-Wall", "-Wextra", "-o", "biquad", "biquad.c"],
+         "cpp": ["g++", "-O2", "-std=c++17", "-Wall", "-Wextra", "-o", "biquad", "biquad.cpp"],
+         "rust": ["rustc", "-O", "--edition", "2021", "biquad.rs", "-o", "biquad"],
+         "zig": ["zig", "build-exe", "-O", "ReleaseFast", "biquad.zig"]}[LANG]
+RUN = vlib.python_cmd("biquad.py") if LANG == "python" else ["./biquad"]
+# Budgets at scale 1; vlib scales them by OPENBEAST_TIMEOUT_SCALE.
+CPU_LIMIT = 4.0      # CPU seconds of the solution's whole process tree
+BUILD_LIMIT = 25.0   # wall seconds for the compile
+WARM_CPU, WARM_WALL = 2.0, 15.0
+
+
+def fail(msg):
+    print(msg)
+    sys.exit(1)
+
+
+def judge(r, budget, label=""):
+    if r.verdict in ("cpu", "wall"):
+        fail(f"solution timed out ({budget:.0f}s CPU budget, verdict {r.verdict}){label}")
+    if r.verdict != "ok":
+        fail(f"solution rejected ({r.verdict}): {r.reason}")
+
+
+if not os.path.isfile(os.path.join(D, SRC)):
+    fail("missing " + SRC)
+if BUILD:
+    try:
+        os.remove(os.path.join(D, "biquad"))
+    except OSError:
+        pass
+    try:
+        b = subprocess.run(BUILD, cwd=D, capture_output=True, text=True,
+                           env=vlib.clean_env({"CGO_ENABLED": "0"}), timeout=vlib.t(BUILD_LIMIT))
+    except subprocess.TimeoutExpired:
+        fail("build timed out")
+    if b.returncode or not os.path.isfile(os.path.join(D, "biquad")):
+        fail("build failed: " + (b.stderr or b.stdout)[-300:])
+
+# Untimed-ish warm-up exec. The first exec of a freshly linked binary on macOS
+# sits in an XProtect/Gatekeeper scan for 3-11 s of WALL time (not the
+# solution's CPU). Pay it here, on a one-sample input, so the measured run
+# below sees a warm binary. A solution that burns WARM_CPU on one sample is
+# a hang and fails as one.
+judge(vlib.run_solution(RUN, input="1\n0 0 1 1\n1 0 0 0 0 0\n0\n", cpu_s=WARM_CPU,
+                        wall_s=WARM_WALL, cwd=D), WARM_CPU, " on a 1-sample warm-up")
+
+I32MIN, I32MAX = -(1 << 31), (1 << 31) - 1
+
+
+def c32(v):
+    return I32MIN if v < I32MIN else I32MAX if v > I32MAX else v
+
+
+def oracle(A, O, secs, xs):
+    for (b0, b1, b2, a1, a2, k) in secs:
+        s = 15 - k
+        r = 1 << (s - 1)
+        x1 = x2 = y1 = y2 = 0
+        out = []
+        for x in xs:
+            if A:
+                acc = c32(b0 * x)
+                acc = c32(acc + b1 * x1)
+                acc = c32(acc + b2 * x2)
+                acc = c32(acc - a1 * y1)
+                acc = c32(acc - a2 * y2)
+            else:
+                acc = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+            v = (acc + r) >> s
+            if O:
+                y = ((v + 32768) & 0xFFFF) - 32768
+            else:
+                y = -32768 if v < -32768 else 32767 if v > 32767 else v
+            x2, x1, y2, y1 = x1, x, y1, y
+            out.append(y)
+        xs = out
+    return xs
+
+
+rng = random.Random(0x167B1A)
+Q = lambda v: max(-32768, min(32767, int(round(v))))
+cases = []
+
+
+def ext(r):
+    return r.choice([-32768, 32767, -32767, 32766, -1, 0, 1, -16384, 16384])
+
+
+def full_secs(n):
+    out = []
+    for _ in range(n):
+        if rng.random() < 0.3:
+            c = [ext(rng) for _ in range(5)]
+        else:
+            c = [rng.randint(-32768, 32767) for _ in range(5)]
+        out.append(tuple(c) + (rng.randint(0, 3),))
+    return out
+
+
+def stable_secs(n):
+    out = []
+    for _ in range(n):
+        k = rng.choice([1, 1, 2, 3])
+        sc = 1 << (15 - k)
+        rr = rng.uniform(0.5, 0.9995)
+        th = rng.uniform(0.01, 3.1)
+        a1, a2 = -2 * rr * math.cos(th), rr * rr
+        g = rng.uniform(0.2, 3.5)
+        z = rng.uniform(0.0, 3.14)
+        bb = [g, -2 * g * math.cos(z) * rng.choice([1, -1]), g]
+        out.append((Q(bb[0] * sc), Q(bb[1] * sc), Q(bb[2] * sc), Q(a1 * sc), Q(a2 * sc), k))
+    return out
+
+
+def signal(n, kind):
+    if kind == 0:
+        return [ext(rng) if rng.random() < 0.5 else rng.randint(-32768, 32767) for _ in range(n)]
+    if kind == 1:
+        f, amp = rng.uniform(0.001, 0.4), rng.uniform(4000, 40000)
+        return [Q(amp * math.sin(f * i) + rng.uniform(-300, 300)) for i in range(n)]
+    if kind == 2:
+        v, out = rng.choice([-32768, 32767]), []
+        for _ in range(n):
+            if rng.random() < 0.05:
+                v = -32768 if v > 0 else 32767
+            out.append(v)
+        return out
+    return [rng.randint(-200, 200) for _ in range(n)]
+
+
+# hand-made edge cases first
+cases.append((1, 1, [(32767, 32767, 32767, -32768, -32768, 0)], [32767] * 40 + [-32768] * 40))
+cases.append((0, 1, [(32767, 32767, 32767, -32768, -32768, 0)], [32767] * 40 + [-32768] * 40))
+cases.append((0, 0, [(-32768, -32768, -32768, 32767, 32767, 3)], [-32768, 32767] * 30))
+cases.append((1, 0, [(-32768, -32768, -32768, 32767, 32767, 3)] * 2, [-32768] * 50))
+cases.append((0, 0, [(-32768, 0, 0, 0, 0, 0)], [-32768, -1, 1, -3, 3, 32767, -32767]))
+cases.append((0, 0, [(1, 0, 0, 0, 0, 3)] * 3, [-6143, -4097, -4096, -4095, -2048, -2049, -2047, 2047, 2048, 2049, -1, 1]))
+cases.append((1, 1, [(32767, 32767, 32767, -32768, -32768, 3)], [32767] * 30))
+# pinned A=1 saturation corners: Q15 (-1)*(-1) twice reaches exactly 2^31 at step 2,
+# and a step-3 low saturation must land on -2^31 (not -2^31+1) before step 4 adds back
+cases.append((1, 1, [(-32768, -32768, 1, 0, 0, 0)], [-16384, -32768, -32768]))
+cases.append((1, 1, [(-32768, -32768, -32768, 1, 0, 0)], [-32768, 32767, 16384, 32767]))
+# clamp-bound off-by-one: a step-2 high saturation (exactly 2^31) followed by
+# +y2 = -16383 lands exactly on a rounding boundary, so a high bound of
+# 2^31-2 shifts v by one (case 9); likewise a step-3 low saturation then
+# -a2*y2 = 16384*32767 makes a low bound of -2^31-1 visible (case 10)
+cases.append((1, 1, [(-32768, -32768, 0, 0, -1, 0)], [16383, -32768, -32768]))
+cases.append((1, 1, [(32767, 32767, 32767, 0, 16384, 0)], [-32768, -32768, -32768]))
+for i in range(66):
+    A, O = i & 1, (i >> 1) & 1
+    nsec = rng.randint(1, 8)
+    kind = rng.randint(0, 3)
+    secs = full_secs(nsec) if i % 3 == 0 else stable_secs(nsec)
+    n = rng.choice([rng.randint(1, 40), rng.randint(200, 1500), rng.randint(2000, 5000)])
+    cases.append((A, O, secs, signal(n, kind)))
+
+parts = [str(len(cases))]
+for (A, O, secs, xs) in cases:
+    parts.append(f"{A} {O} {len(secs)} {len(xs)}")
+    parts += [" ".join(map(str, s)) for s in secs]
+    parts.append(" ".join(map(str, xs)))
+inp = "\n".join(parts) + "\n"
+
+r = vlib.run_solution(RUN, input=inp, cpu_s=CPU_LIMIT, cwd=D)
+judge(r, CPU_LIMIT)
+if r.returncode:
+    fail(f"solution exited with code {r.returncode}")
+lines = [l for l in r.stdout.split("\n") if l.strip()]
+if len(lines) != len(cases):
+    fail(f"wrong number of output lines: {len(lines)} vs {len(cases)}")
+for i, (A, O, secs, xs) in enumerate(cases):
+    want = oracle(A, O, secs, xs)
+    try:
+        got = [int(t) for t in lines[i].split()]
+    except ValueError:
+        fail(f"mismatch at case {i}: unparsable output")
+    if got != want:
+        fail(f"mismatch at case {i}")
+print(f"OK ({len(cases)} cases, {r.cpu_s:.2f}s CPU, {r.wall_s:.2f}s wall)")
