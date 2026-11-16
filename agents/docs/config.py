@@ -270,8 +270,10 @@ def store_root() -> str:
 def _conf_offline() -> Optional[str]:
     """OFFLINE= in openbeast.conf, parsed the way scripts/lib/conf.sh and
     scripts/lang-library.sh parse it: last assignment wins, quotes stripped,
-    FIRST TOKEN ONLY, and only the explicit words mean on."""
-    raw = os.environ.get("OPENBEAST_OFFLINE")
+    FIRST TOKEN ONLY, and only the explicit words mean on. An EMPTY
+    OPENBEAST_OFFLINE counts as unset and falls through to the file, as
+    `${OPENBEAST_OFFLINE:-$(conf)}` does in both shell parsers."""
+    raw = os.environ.get("OPENBEAST_OFFLINE") or None
     if raw is None:
         conf = os.path.join(REPO_DIR, "openbeast.conf")
         try:

@@ -1011,6 +1011,24 @@ def test_offline_sync_refuses_and_live_falls_back_to_the_mirror(env, monkeypatch
     assert env["stub"].requests == []                          # offline means NO request
 
 
+@pytest.mark.parametrize("env_value,conf,offline", [
+    (None, 'OFFLINE="true"  # air-gapped\n', True),
+    ("", 'OFFLINE="true"  # air-gapped\n', True),          # empty = unset, as in conf.sh
+    ("false", "OFFLINE=true\n", False),                   # a set value wins over the file
+    ("", "OFFLINE=false\n", False),
+    ("", "", False),
+    ("yes", "", True),
+])
+def test_offline_env_parses_like_conf_sh(tmp_path, monkeypatch, env_value, conf, offline):
+    (tmp_path / "openbeast.conf").write_text(conf)
+    monkeypatch.setattr(C, "REPO_DIR", str(tmp_path))
+    if env_value is None:
+        monkeypatch.delenv("OPENBEAST_OFFLINE", raising=False)
+    else:
+        monkeypatch.setenv("OPENBEAST_OFFLINE", env_value)
+    assert bool(C._conf_offline()) is offline
+
+
 def test_island_mode_is_offline_too(env, monkeypatch):
     _sync("swiftui")
     import island

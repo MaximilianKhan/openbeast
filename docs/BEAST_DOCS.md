@@ -301,7 +301,9 @@ does a BFS over the source's scope.
   - `OPENBEAST_DOCS_ALLOW_PRIVATE=1` drops only the address vet. It exists
     for an intranet docs server, and for the tests.
 - **Offline-aware.** Under `OFFLINE=true`, parsed the way `conf.sh` and
-  `lang-library.sh` parse it, or in island mode
+  `lang-library.sh` parse it (an empty `OPENBEAST_OFFLINE=` counts as unset
+  and falls through to `openbeast.conf`, as `${OPENBEAST_OFFLINE:-…}` does),
+  or in island mode
   ([`BEAST_ISLAND.md`](BEAST_ISLAND.md)), sync refuses at once with exit
   code 3 and points to pack/unpack.
 
