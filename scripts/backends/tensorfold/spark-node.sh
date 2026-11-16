@@ -38,11 +38,14 @@
 # A drafter is the profile's DRAFTER_SOURCE@DRAFTER_REVISION, fetched the same
 # way. Without one, the CONTAINER engine passes --drafter none (never "auto":
 # that picks up whatever unpinned draft model happens to sit in the HF cache).
-# The NATIVE engine then passes no --drafter at all: in tensorfold-native
-# 1.2.7 the cached-drafter "auto" belongs to the managed server (benchmark),
-# and a family that drafts with its own MTP head refuses any --drafter
-# ("serve without --drafter"). VERIFY ON HARDWARE that a plain native serve
-# loads no cached drafter (HF_HUB_OFFLINE=1 does not hide a cached copy).
+# The NATIVE engine then passes no --drafter at all: tensorfold-native 1.2.7
+# rejects `--drafter none` (and `auto`) for EVERY family during argument
+# checks, before reading the model ("none is neither a directory nor a
+# Hugging Face repo id", checked on spark-1 2026-11-16); a family with an MTP
+# head drafts with it. The managed single-host launcher (scripts/engines/
+# tensorfold.sh) follows the same rule. VERIFY ON HARDWARE that a plain
+# native serve loads no cached drafter (HF_HUB_OFFLINE=1 does not hide a
+# cached copy).
 #
 # Order matters: start ranks 1..N-1 FIRST, then rank 0 (TensorFold RUNBOOK.md,
 # "two ranks"). Every rank needs the same checkpoint, drafter, --context and
@@ -81,7 +84,7 @@ while [[ $# -gt 0 ]]; do
     --print)   PRINT=1; shift ;;
     --stop)    STOP=1; shift ;;
     --ckpt)    echo "Error: --ckpt is gone — the checkpoint comes from a profile: --profile NAME (scripts/backends/models/)" >&2; exit 2 ;;
-    -h|--help) sed -n '2,57p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,60p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)         echo "Unknown argument: $1 (see --help)" >&2; exit 2 ;;
   esac
 done

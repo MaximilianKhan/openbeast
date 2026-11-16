@@ -1101,7 +1101,7 @@ _sp "$_TN" -- --profile "$_P/tftest.env" --rank 1 --master 192.168.100.10 --env 
   && pass "native: systemd-run --expand-environment=no, so the unit runs the argv --print shows (no \${VAR} rewriting)" \
   || fail "native expand-environment (rc=$SPRC): $_O"
 # Native without a profile drafter: no --drafter flag at all (see the header:
-# MTP-head families refuse any --drafter, `none` included as far as we know).
+# tensorfold-native 1.2.7 rejects `--drafter none` itself, for every family).
 ! _has "$_O" "--drafter" && pass "native: a profile without a drafter passes no --drafter" || fail "native drafter flag: $_O"
 _sp "$_TN" TF_STUB_VERSION=1.2.6 -- --profile "$_P/tftest.env" --rank 1 --master 192.168.100.10 --env "$_K/spark-native.env" --print
 [[ $SPRC -eq 1 ]] && _has "$_O" "spark.env pins 1.2.7" && pass "native refuses a binary that is not the pinned release" \

@@ -406,7 +406,9 @@ else
   mkrel() { # mkrel <version>
     local v="$1" p=linux-x86_64 d="$T/tfbuild/tensorfold-$1-linux-x86_64" a
     mkdir -p "$d/bin" "$T/tfrel/v$v"
-    printf '#!/bin/bash\nif [[ "$1" == --version ]]; then echo "tensorfold %s"; exit 0; fi\necho "tensorfold-native $*" >> %s/calls.log\nh=127.0.0.1 p=8000\nwhile [[ $# -gt 0 ]]; do case "$1" in --host) h=$2; shift;; --port) p=$2; shift;; esac; shift; done\nexec %s %s "$h" "$p" tf\n' \
+    # Like the real tensorfold-native 1.2.7: `--drafter none|auto` is refused
+    # during argument checks, whatever the model.
+    printf '#!/bin/bash\nif [[ "$1" == --version ]]; then echo "tensorfold %s"; exit 0; fi\necho "tensorfold-native $*" >> %s/calls.log\nh=127.0.0.1 p=8000\nwhile [[ $# -gt 0 ]]; do case "$1" in --host) h=$2; shift;; --port) p=$2; shift;; --drafter) [[ "$2" == none || "$2" == auto ]] && { echo "tensorfold: $2 is neither a directory nor a Hugging Face repo id (owner/name)" >&2; exit 1; }; shift;; esac; shift; done\nexec %s %s "$h" "$p" tf\n' \
       "$v" "$T" "$PY" "$T/httpstub.py" > "$d/bin/tensorfold-native"
     chmod +x "$d/bin/tensorfold-native"
     (cd "$d" && sha256sum bin/tensorfold-native > SHA256SUMS)
@@ -456,8 +458,13 @@ EOF
           timeout 60 bash "$SB/start.sh" 2>&1 || true)"
   check "start.sh launches the native binary in the foreground and waits for {\"ok\": true}" \
     '[[ "$_o" == *"Starting TensorFold (engine-serve.sh)"* && "$_o" == *"TensorFold ready on http://$_LO:$TPORT"* ]]' "$(tail -n 12 <<< "$_o")"
-  check "…serve args: verified dir, --no-update-check, --drafter none, --parallel from the profile" \
-    'grep -E "tensorfold-native serve $T/ckpt-tf --no-update-check --name rig-model --host $_LO --port $TPORT --drafter none --parallel 2" "$T/calls.log" >/dev/null' "$(cat "$T/calls.log")"
+  check "…serve args: verified dir, --no-update-check, --parallel from the profile" \
+    'grep -E "tensorfold-native serve $T/ckpt-tf --no-update-check --name rig-model --host $_LO --port $TPORT --parallel 2" "$T/calls.log" >/dev/null' "$(cat "$T/calls.log")"
+  # tensorfold-native 1.2.7 refuses `--drafter none` for every family before
+  # it loads anything (checked on spark-1): the managed launch, like the
+  # cluster launcher, passes no --drafter when the profile has none.
+  check "…and no --drafter at all for a profile without one (native refuses \`none\`)" \
+    '! grep "tensorfold-native serve" "$T/calls.log" | grep -q -- "--drafter"' "$(cat "$T/calls.log")"
   check "…and nothing of llama's ran" '! grep -qE "serve-marker|^(pkill|pgrep).*llama-server" "$T/calls.log"'
 fi
 
