@@ -368,6 +368,17 @@ class TestHtmlStripIsLinear(unittest.TestCase):
         for gone in ("SECRET_JS", "color:red", "SCRIPT_TAIL", "<b>", "<p>"):
             self.assertNotIn(gone, out)
 
+    def test_a_utf8_bom_neither_hides_html_nor_survives(self):
+        # Review 2026-11-16: str.strip() keeps U+FEFF, so a BOM'd page with
+        # no HTML Content-Type failed the <!doctype sniff and came back raw.
+        page = (b"\xef\xbb\xbf<!DOCTYPE html><html><head><script>var x=1;</script>"
+                b"</head><body><p>Hello</p></body></html>")
+        for ctype in ("", "text/plain", "text/html; charset=utf-8",
+                      "text/plain; charset=utf-8-sig"):
+            self.tools._fetch_opener = _FakeOpener(page, ctype=ctype)
+            out = self.tools.fetch("http://bom.example/")
+            self.assertEqual(out, "Hello", ctype)
+
 
 class TestFetchByteCapCut(unittest.TestCase):
     """The read stops at a byte budget. A cut inside a big inline <script>

@@ -2631,6 +2631,12 @@ def _fetch_body(url: str, max_length: int, deadline: float,
             byte_cut = len(buf) >= limit and getattr(resp, "length", None) != 0
             raw_bytes = bytes(buf)
             text = raw_bytes.decode(charset, errors="replace")
+            # A byte-order mark (U+FEFF, whatever the charset label) is not
+            # text, and str.strip() keeps it: a BOM'd page served without an
+            # HTML Content-Type then failed the <!doctype sniff below and
+            # came back as raw markup, scripts included.
+            if text.startswith("\ufeff"):
+                text = text[1:]
         cut_note = ""
         if expired.is_set() or time.monotonic() >= deadline:
             if not raw_bytes:
