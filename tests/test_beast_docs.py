@@ -467,6 +467,22 @@ def test_terms_gate(env, stub):
     _sync("swiftui", force=True)                               # recorded: no flag needed again
 
 
+def test_live_save_obeys_the_terms_gate(env, stub):
+    env["sources"].write_text(SOURCES.format(base=stub.base, host=stub.hostport, ack="requires_ack = true"))
+    url = f"{stub.base}/documentation/swiftui/navigationstack"
+    out = api.live_text(url, save=True)
+    assert out.startswith("Error: not saved") and "--accept-terms" in out
+    assert stub.requests == []                                  # refused before any request
+    assert "swiftui" not in ST.Store().sources_on_disk()
+    out = api.live_text(url)                                    # reading live needs no acceptance
+    assert "LIVE · fetched" in out and "saved" not in out.split("\n")[1]
+    out = api.live_text(url, save=True, accept_terms=True)
+    assert "saved to the mirror" in out
+    m = ST.Store().load("swiftui")
+    assert m["terms_accepted_at"] and url in m["pages"]
+    assert "saved to the mirror" in api.live_text(url, save=True)   # recorded: no flag needed again
+
+
 # ── incremental / resumable ──────────────────────────────────────────────
 
 def _mtimes(name):

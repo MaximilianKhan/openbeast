@@ -145,14 +145,21 @@ def resolve_live(ref: str, source: str = "", store: Optional[Store] = None) -> t
 
 
 def live_text(ref: str, source: str = "", save: bool = False, max_chars: int = DEFAULT_MAX_CHARS,
-              store: Optional[Store] = None, fetcher=None) -> str:
+              store: Optional[Store] = None, fetcher=None, accept_terms: bool = False) -> str:
     """The live page — or, offline / on failure, the mirror's copy with its
-    age, and never silently: the first line says which one this is."""
+    age, and never silently: the first line says which one this is.
+    `save` writes it into the mirror, behind the same --accept-terms gate as
+    sync (checked BEFORE the request, so a refusal costs no fetch)."""
     store = store or Store()
     try:
         src, page = resolve_live(ref, source, store)
     except LookupError as e:
         return f"Error: {e}\n"
+    if save:
+        try:
+            S.terms_gate(src, dict(store.load(src.name)), accept_terms)
+        except S.SyncError as e:
+            return f"Error: not saved — {e}\n"
     try:
         out = S.live(src, page, fetcher=fetcher)
     except (S.SyncError, net.FetchError, net.Refused, urllib.error.HTTPError) as e:
@@ -164,7 +171,7 @@ def live_text(ref: str, source: str = "", save: bool = False, max_chars: int = D
         hits = search_text(ref, source if source else src.name, 5, store)
         return f"LIVE FETCH UNAVAILABLE ({why}), and {page} is not in the mirror.\n\n{hits}"
     if save:
-        S.save_live(src, store, out)
+        S.save_live(src, store, out, accept_terms)
     head = (f"Source: {out['url']}\nLIVE · fetched {out['fetched_at']} from {out['fetched_from']}"
             + (" · saved to the mirror" if save else "") + "\n"
             + (f"License: {src.license}\n" if src.license else "") + "\n")

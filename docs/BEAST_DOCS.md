@@ -143,7 +143,11 @@ Hence:
 - Apple sources are `requires_ack = true`. The first sync **refuses** until
   the operator passes `--accept-terms`, and the acceptance is recorded in the
   mirror's manifest. That decision belongs to the operator. beast-docs makes
-  it explicit and does not make it silently.
+  it explicit and does not make it silently. The gate guards **every path
+  that writes a page into the mirror**: `live --save` refuses the same way
+  (before any request) and takes the same `--accept-terms`. Reading a page
+  live without saving it needs no acceptance, and the model-facing
+  `platform_docs` tool never saves.
 - Nothing mirrored is committed. The test fixtures are **synthetic**: our
   own text in the DocC / DevSite shapes.
 - `pack` exists so you can carry **your own** mirror to **your own** offline
@@ -311,7 +315,7 @@ source's refresh window.
 
 ### 3.6 Live mode and the offline fallback
 
-`docs.sh live <url | Symbol> [--source S] [--save]` fetches one page now,
+`docs.sh live <url | Symbol> [--source S] [--save [--accept-terms]]` fetches one page now,
 through the source's adapter.
 
 - **Resolving the argument.** A URL must fall inside a configured source.
@@ -324,7 +328,9 @@ through the source's adapter.
   Serving the MIRROR copy instead — check its date below.`
 - If the page is not in the mirror either, live mode says that and returns
   the best mirror search hits for the reference.
-- `--save` writes the live result into the mirror.
+- `--save` writes the live result into the mirror. On a `requires_ack`
+  source it needs the terms accepted already, or `--accept-terms` on this
+  call, exactly as `sync` does (§2.3).
 
 ### 3.7 Carrying a mirror to an offline box
 
@@ -420,7 +426,7 @@ from `tests/fixtures/beast_docs/`. They pin:
   - the robots parser handles wildcards, longest match and agent groups;
   - a redirect off the source's hosts is refused;
   - a private address is refused without the opt-in;
-  - the `--accept-terms` gate holds.
+  - the `--accept-terms` gate holds, for `sync` and for `live --save`.
 - **Search**: exact title first, camelCase handling, the source filter,
   deprecation flags, and FTS5 agreeing with the scan.
 - **Status**: STALE flags.

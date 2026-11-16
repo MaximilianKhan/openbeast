@@ -37,6 +37,21 @@ class SyncError(Exception):
     pass
 
 
+def terms_gate(src: C.Source, m: dict, accept_terms: bool) -> None:
+    """The copying decision for a `requires_ack` source is the operator's,
+    made once, explicitly, and recorded in the manifest. Every path that
+    WRITES a page into the mirror (sync, live --save) goes through here.
+    Raises SyncError when it was never made; records it when made now."""
+    if not src.requires_ack or m.get("terms_accepted_at"):
+        return
+    if not accept_terms:
+        raise SyncError(
+            f"{src.title}: the publisher's terms restrict copying.\n  {src.license}\n"
+            f"  Re-run with --accept-terms to mirror it for your own use on your own "
+            f"machines (recorded in the manifest).")
+    m["terms_accepted_at"] = now_iso()
+
+
 def fetch_url_for(src: C.Source, page: str) -> str:
     if src.adapter == "apple-docc-json":
         return docc.json_url(page)
@@ -112,13 +127,7 @@ def sync(src: C.Source, store: Store, max_pages: Optional[int] = None,
         raise SyncError(f"offline: {reason}. A sync needs the internet — build the mirror on "
                         f"a connected box and carry it here: docs.sh pack / docs.sh unpack.")
     m = store.load(src.name)
-    if src.requires_ack and not m.get("terms_accepted_at"):
-        if not accept_terms:
-            raise SyncError(
-                f"{src.title}: the publisher's terms restrict copying.\n  {src.license}\n"
-                f"  Re-run with --accept-terms to mirror it for your own use on your own "
-                f"machines (recorded in the manifest).")
-        m["terms_accepted_at"] = now_iso()
+    terms_gate(src, m, accept_terms)
     budget = src.max_pages if max_pages is None else max(0, int(max_pages))
     fetcher = fetcher or net.Fetcher(src.hosts, src.delay)
     for r in roots or []:
@@ -298,9 +307,11 @@ def live(src: C.Source, page: str, fetcher: Optional[net.Fetcher] = None) -> dic
     return out
 
 
-def save_live(src: C.Source, store: Store, out: dict) -> str:
-    """Write a live result into the mirror, as a sync would have."""
+def save_live(src: C.Source, store: Store, out: dict, accept_terms: bool = False) -> str:
+    """Write a live result into the mirror, as a sync would have — behind
+    the same terms gate (SyncError when the terms were never accepted)."""
     m = store.load(src.name)
+    terms_gate(src, m, accept_terms)
     meta = {"fetched_from": out["fetched_from"], "fetched_at": out["fetched_at"],
             "etag": out["etag"], "last_modified": out["last_modified"], "license": src.license,
             **out.get("meta", {})}
