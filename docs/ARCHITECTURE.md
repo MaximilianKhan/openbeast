@@ -289,6 +289,17 @@ flowchart TB
   pins `-np 1`, as MTP scripts do; a serve script that passes no `-np` gets
   `serve.sh`'s six unified-KV slots), and bootstrap refuses GPUs under the
   24 GB floor.
+- **Cold storage for everything else.** beast-ark (`scripts/ark.sh`,
+  `agents/ark/`) pins 112 open-source packages for offline work in
+  `agents/ark/catalog.toml`: Kubernetes and its images, container runtimes,
+  language toolchains, databases, observability, a git forge, a CA, DevDocs.
+  Each one has its git commit, a build per platform (rig, Spark, Mac) and a
+  sha256 or image digest that `lock` derived from upstream. `fetch` fills
+  a drive and checks every file. With no network, `verify` re-checks the
+  drive, `restore` unpacks or loads from it, and `serve` publishes it to the
+  tailnet as a read-only OCI registry with pip, npm and go mirrors. It is
+  separate from `bundle.sh`, which carries OpenBeast's own stack.
+  [`BEAST_ARK.md`](BEAST_ARK.md).
 
 ## Project structure
 
@@ -319,6 +330,7 @@ scripts/                     # Server, ops, and feature CLIs
   job.sh                     # beast-chat: run/list/show/stop a tracked long job
   lang-library.sh            # beast-lang: acquire/check/list/verify/pack/where
   docs.sh                    # beast-docs: sources/sync/status/search/read/live/pack/unpack
+  ark.sh                     # beast-ark: list/plan/lint/lock/update/fetch/verify/restore/serve (docs/BEAST_ARK.md)
   lang-introspect.sh         # beast-lang: probe the installed toolchains
   lang-synthesize.sh         # beast-lang: model-drafted claims → verifier → staging → promote
   bundle.sh                  # Air-gap: build/sign/verify/install the offline bundle
@@ -360,6 +372,7 @@ agents/                      # Agent framework + servers
   chat_ui/ · artifact_ui/    # The console and the gallery/viewer (self-contained HTML)
   lang/                      # beast-lang: drivers, introspect, verify, packs, escalate, reference, synthesize
   docs/                      # beast-docs: sources.toml, DocC/HTML/markdown adapters, sync, search (docs/BEAST_DOCS.md)
+  ark/                       # beast-ark: catalog.toml (112 pinned packages), fetch/verify/restore, OCI client + read-only registry, pure-python ed25519 (docs/BEAST_ARK.md)
   requirements.txt / .lock   # Pinned deps and the hash-pinned closure CI installs
   logs/                      # Agent run logs (JSONL) [gitignored]
 
