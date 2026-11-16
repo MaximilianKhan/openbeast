@@ -181,3 +181,33 @@ def test_163_prompt_states_the_cpu_budget_its_validator_enforces():
         assert re.search(r"run_solution\(RUN, input=inp, cpu_s=6,", v["validation"]["script"])
 
 
+# --- 176: the copy never follows a link ----------------------------------------------
+
+def _shopd_fixture(tmp_path: Path) -> tuple[dict, Path]:
+    task = dict(_variant("176_intermittent_500s.json", "a"))
+    fx = tmp_path / "eval_shopd500"
+    for k in ("setup", "cleanup"):
+        task[k] = task[k].replace("/tmp/eval_shopd500", str(fx))
+    assert run_eval.run_setup(task)
+    return task, fx
+
+
+@pytest.mark.parametrize("target", ["sealed", "devzero", "dir"])
+def test_176_refuses_a_symlink_in_shopd(tmp_path, target):
+    task, fx = _shopd_fixture(tmp_path)
+    sealed = tmp_path / "x" / "evals" / "refs" / "u"
+    sealed.mkdir(parents=True)
+    (sealed / "fix.py").write_text("ORACLE = 1\n")
+    link = fx / "shopd" / "zz_link.py"
+    if target == "sealed":
+        link.symlink_to(sealed / "fix.py")
+    elif target == "devzero":
+        link.symlink_to("/dev/zero")
+    else:
+        (fx / "shopd" / "zz_dir").symlink_to(sealed, target_is_directory=True)
+    t0 = time.monotonic()
+    ok, out = _validate(task["validation"]["script"], "/tmp/eval_shopd500", fx)
+    assert not ok and "may hold only regular files and directories" in out, out
+    assert time.monotonic() - t0 < 10
+
+

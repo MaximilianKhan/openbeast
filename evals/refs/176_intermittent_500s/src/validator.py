@@ -6,7 +6,11 @@
 # only by isolated child interpreters (-I -B: no PYTHON* env, no user site,
 # no cwd on sys.path; own session and process group; on macOS sandboxed
 # with no fork, no read of the eval data and no write outside that temp
-# dir), so nothing else left in the fixture dir is loaded.
+# dir), so nothing else left in the fixture dir is loaded. The copy takes
+# only regular files and directories, never through a symlink, under a byte
+# cap: this process is NOT sandboxed, so following a planted link would carry
+# a sealed file (the reference fix under evals/refs) into the child's reach,
+# and a link to /dev/zero would fill the disk.
 #   1. tests/*: every visible test file byte-identical (sha256);
 #   2. the visible suite is green (exact test count). This is a regression
 #      gate: the suite imports shopd in the same process, so its report is
@@ -26,7 +30,7 @@
 # Every limit is written at scale 1 and scaled by vlib.t; every child wait
 # is capped by the overall budget, so the validator ends within it. Output
 # is ONE line; a hidden failure names only the test id.
-import base64, datetime, decimal, hashlib, json, os, random, re, select, shutil, signal, subprocess, sys, tempfile, time
+import base64, datetime, decimal, hashlib, json, os, random, re, select, shutil, signal, stat, subprocess, sys, tempfile, time
 import urllib.parse
 from decimal import ROUND_HALF_UP, Decimal
 import vlib
@@ -123,9 +127,62 @@ def fail(msg):
     sys.exit(1)
 
 
-def sha(path):
-    with open(path, 'rb') as f:
-        return hashlib.sha256(f.read()).hexdigest()
+COPY_CAP = 32 << 20   # bytes copied out of the fixture (shopd/ + tests/ ship ~0.3 MB)
+
+
+def is_plain_dir(path):
+    try:
+        return stat.S_ISDIR(os.lstat(path).st_mode)
+    except OSError:
+        return False
+
+
+def read_plain(path, cap=COPY_CAP):
+    """A regular file's bytes, never through a symlink, never a FIFO or a
+    device; None for anything else. Over `cap` bytes reads cap + 1."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        out = bytearray()
+        while len(out) <= cap:
+            chunk = os.read(fd, 1 << 16)
+            if not chunk:
+                break
+            out += chunk
+        return bytes(out)
+    finally:
+        os.close(fd)
+
+
+def copy_plain_tree(src, dst, label):
+    """Copy src to dst: regular files and directories only, nothing
+    followed, __pycache__/*.pyc skipped, COPY_CAP bytes in all."""
+    total = 0
+    for root, dirs, files in os.walk(src):   # a dir symlink is listed, never entered
+        rel = os.path.relpath(root, src)
+        os.makedirs(os.path.join(dst, rel), exist_ok=True)
+        for n in list(dirs):
+            if n == '__pycache__':
+                dirs.remove(n)
+            elif not is_plain_dir(os.path.join(root, n)):
+                fail('%s may hold only regular files and directories (%s is not)'
+                     % (label, os.path.normpath(os.path.join(label, rel, n))))
+        for n in files:
+            if n.endswith('.pyc'):
+                continue
+            data = read_plain(os.path.join(root, n))
+            if data is None:
+                fail('%s may hold only regular files and directories (%s is not)'
+                     % (label, os.path.normpath(os.path.join(label, rel, n))))
+            total += len(data)
+            if total > COPY_CAP:
+                fail('%s is over %d MB' % (label, COPY_CAP >> 20))
+            with open(os.path.join(dst, rel, n), 'wb') as f:
+                f.write(data)
 
 
 def left():
@@ -201,12 +258,17 @@ def reap(p):
 pkg = os.path.join(D, 'shopd')
 if not os.path.isfile(os.path.join(pkg, '__init__.py')):
     fail('shopd/ package not found')
+if not (is_plain_dir(D) and is_plain_dir(pkg) and is_plain_dir(os.path.join(D, 'tests'))):
+    fail('the fixture dir, shopd/ and tests/ must be plain directories (not symlinks)')
+VISIBLE = {}
 for rel, h in sorted(HASHES.items()):
     p = os.path.join(D, rel)
-    if not os.path.isfile(p):
+    if not os.path.lexists(p):
         fail('visible test file missing: ' + rel)
-    if sha(p) != h:
+    data = read_plain(p)
+    if data is None or hashlib.sha256(data).hexdigest() != h:
         fail('visible test file modified: ' + rel)
+    VISIBLE[rel] = data
 
 env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8',
        'TZ': 'UTC', 'HOME': tempfile.gettempdir()}
@@ -222,11 +284,11 @@ HIDDEN_CODE = compile(HIDDEN, '<hidden>', 'exec')
 exec(HIDDEN_CODE, {'__name__': 'hidden'})   # its imports load now, before any child
 sys.meta_path.insert(0, _NoNewImports)
 try:
-    shutil.copytree(pkg, os.path.join(tmp, 'shopd'),
-                    ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+    copy_plain_tree(pkg, os.path.join(tmp, 'shopd'), 'shopd/')
     os.mkdir(os.path.join(tmp, 'tests'))
-    for rel in HASHES:
-        shutil.copyfile(os.path.join(D, rel), os.path.join(tmp, rel))
+    for rel, data in VISIBLE.items():
+        with open(os.path.join(tmp, rel), 'wb') as f:
+            f.write(data)
 
     p = spawn(VISIBLE_BOOT_PATH, tmp, env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE)
     vend = time.time() + max(min(VISIBLE_TIMEOUT, left()), 0.1)
