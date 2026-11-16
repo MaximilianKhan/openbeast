@@ -1248,6 +1248,8 @@ Every row below was hit on the way to the live pair.
 - **`./agent.sh`** works on spark-1.
 - **`language_reference`, `platform_docs`, `scripts/docs.sh search`** work
   against what is mirrored.
+- **beast-ark** works: `verify`, `restore` and `serve` an ark drive (H8a,
+  [BEAST_ARK.md](BEAST_ARK.md)).
 - **The tests** work (hermetic).
 - **The tailnet** keeps working wherever the LAN still routes between devices.
   Tailscale needs its coordination server to set up new paths, so existing
@@ -1418,6 +1420,36 @@ re-hashes every file, and only then swaps each source in and reindexes. The
 tarball hash proves integrity, not authenticity; sign the `.sha256` the way
 `bundle.sh sign` does if you need authenticity.
 
+### H8a. beast-ark: the rest of the software, on a drive
+
+H2-H8 carry OpenBeast itself. Building or testing a larger system next to
+the pair needs much more software. beast-ark
+([BEAST_ARK.md](BEAST_ARK.md)) holds it: 112 open-source packages, each
+pinned to a commit, with a sha256 or digest for every file and a build for
+linux-aarch64. That includes Kubernetes and k3s with their images,
+containerd, Docker, Go, Rust, Zig 0.16, Node, Temurin, Postgres, NATS,
+Prometheus and Grafana, headscale, Forgejo, step-ca, Trivy with its DB, and
+DevDocs. Fill a drive on any connected box, then restore on the Spark with
+no network:
+
+```bash
+./scripts/ark.sh fetch --to /Volumes/ARK --profile core --platform linux-aarch64   # ~5.4 GiB + source
+# plug the drive into the Spark (or rsync it over the cable)
+/media/max/ARK/ark verify /media/max/ARK                       # re-hash; signatures re-checked
+/media/max/ARK/ark restore go --from /media/max/ARK            # → ~/.local/opt/go-1.27.4, ~/.local/bin/go
+/media/max/ARK/ark restore k3s --from /media/max/ARK           # + the air-gap image bundle (BEAST_ARK §8.4)
+/media/max/ARK/ark serve /media/max/ARK --tailnet              # registry + pip/npm/go mirrors for the other boxes
+```
+
+The drive runs its own copy of the tool (`DRIVE/ark`), so it needs no
+checkout. The Spark's python 3.12 is enough. On a box with no python, the
+wrapper unpacks the CPython archived on the drive after checking it against
+`SHA256SUMS`. Verified on spark-2 on 2026-11-15 (Zig 0.16.0 with its
+minisign signature, and jq: fetched, verified, restored, run). `fetch`,
+`lock` and `update` exit 3 under `OFFLINE=true` or island mode. The
+TensorFold and llama.cpp pins in the ark are the repo's own (H5, H6), held
+equal by tests.
+
 ### H9. The order for a pair built entirely offline
 
 This order has not been run end to end. Every piece is measured on its own, and
@@ -1433,6 +1465,9 @@ the sequence is VERIFY ON HARDWARE.
 6. The command center from a Spark-built bundle with `OFFLINE=true` (H6),
    `openbeast.conf` (E2), units (E3), reboot.
 7. Optional: pytest venv, zig, beast-docs mirror (H7, H8).
+8. Optional: everything else from a beast-ark drive (H8a). `ark verify`
+   first, then `ark restore <name>` per tool, or `ark serve --tailnet` for
+   the whole fleet.
 
 ---
 
