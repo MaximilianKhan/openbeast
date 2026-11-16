@@ -236,3 +236,33 @@ def test_upper_case_prove_json_is_read(tmp_path):
     spec = prove_task.discover({"id": "903_w", "ref_stem": "903_w/ref", "dest": "/tmp/x.py",
                                 "language": "python"}, M, str(refs))
     assert spec["wrong"] == [(str(refs / "903_w" / "wrong_a.py"), "^boom")]
+
+
+def test_a_suite_with_an_unresolved_unit_exits_nonzero(tmp_path, monkeypatch):
+    """`--suite` printed manifest units with no task file as "not proven"
+    and then forgot them: a partial manifest whose resolved units all
+    proved exited 0 (review 1116). They now count, and land in --json."""
+    manifest = {"units": [{"id": "good_py"}, {"id": "999_ghost_py"}],
+                "resolved": {"good_py": "good_py"},
+                "resolution_problems": ["999_ghost_py: no task file"]}
+
+    class _R:
+        @staticmethod
+        def load_tasks(_x):
+            return [{"id": "good_py"}]
+
+    class _M:
+        @staticmethod
+        def load_manifest(_suite, tasks=None, strict=True):
+            return manifest
+
+    monkeypatch.setattr(prove_task, "_load_harness", lambda repo, td: (_R, _M))
+    monkeypatch.setattr(prove_task, "discover", lambda task, M, refs: {"ref": "x"})
+    monkeypatch.setattr(prove_task, "family_prover", lambda task, refs, spec: None)
+    monkeypatch.setattr(prove_task, "prove", lambda *a, **k: (True, []))
+    out = tmp_path / "v.json"
+    assert prove_task.main(["--suite", "v5", "--json", str(out)]) == 1
+    assert json.loads(out.read_text()) == {"999_ghost_py": "missing", "good_py": "PROVEN"}
+    # a fully resolved suite still exits 0
+    manifest.update(units=[{"id": "good_py"}], resolution_problems=[])
+    assert prove_task.main(["--suite", "v5"]) == 0

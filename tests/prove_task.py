@@ -256,6 +256,13 @@ def prove(R, M, task: dict, spec: dict, repeat: int | None = None,
     dest = spec["dest"]
 
     def arm(label: str, sol: str | None, scale: float = 1.0):
+        # One harness at a time on the task's /tmp/eval_* roots: a prover
+        # run beside a campaign (or another prover of the same family)
+        # wiped its files mid-validation (review 1116).
+        with R.fixture_lock(task):
+            return _arm(label, sol, scale)
+
+    def _arm(label: str, sol: str | None, scale: float = 1.0):
         R.run_cleanup(task, log=silent)
         if not R.run_setup(task, log=say):
             return None, 0.0, "SETUP FAILED", []
@@ -364,18 +371,25 @@ def main(argv=None) -> int:
     refs_dir = a.refs_dir or os.path.join(a.repo, "evals", "refs")
     tasks = {t["id"]: t for t in R.load_tasks(None)}
     unit_ids = list(a.unit)
+    unresolved = []
     if a.suite:
         man = M.load_manifest(a.suite, tasks=list(tasks.values()), strict=False)
         unit_ids += [man["resolved"][u["id"]] for u in man["units"] if u["id"] in man["resolved"]]
-        missing = man.get("resolution_problems") or []
-        if missing:
-            print(f"{len(missing)} manifest unit(s) have no task file yet (not proven):")
-            for p in missing[:10]:
+        unresolved = [u["id"] for u in man["units"] if u["id"] not in man["resolved"]]
+        problems = man.get("resolution_problems") or []
+        if problems:
+            print(f"{len(problems)} manifest resolution problem(s); "
+                  f"{len(unresolved)} unit(s) have no task file (NOT proven):")
+            for p in problems[:10]:
                 print(f"  {p}")
     if not unit_ids:
         ap.error("give --unit or --suite")
 
-    verdicts, worst = {}, 0
+    # A manifest unit with no task file is a requested unit that is not
+    # proven: exit 1, and list it in --json (it used to be printed and then
+    # forgotten, so a partial suite exited 0; review 1116).
+    verdicts = {u: "missing" for u in unresolved}
+    worst = 1 if unresolved else 0
     for uid in unit_ids:
         task = tasks.get(uid)
         if task is None:

@@ -331,6 +331,53 @@ def test_cpu_in_a_waited_child_is_counted():
     assert r.verdict == "cpu", r
 
 
+_BURN = ("import time\nt = time.process_time()\n"
+         "while time.process_time() - t < {s}: pass\n")
+
+
+def test_cpu_used_after_the_last_sample_is_counted():
+    """The solution's own rusage must count even when it exits by itself
+    between samples. Popen.poll() reaped it, the final wait4 hit
+    ChildProcessError and the rusage was dropped, so a fixed-CPU gate passed
+    an over-budget solution about 1 run in 12 (review 1116). poll_s=30 means
+    the sampler never sees it running: only the rusage can catch it."""
+    r = vlib.run_solution([sys.executable, "-I", "-S", "-c", _BURN.format(s=0.45)],
+                          cpu_s=0.3, wall_s=10, scale_cpu=False, poll_s=30)
+    assert r.verdict == "cpu" and r.cpu_s >= 0.4, r
+    assert r.wall_s < 5, r          # and it did not sleep out the 30 s poll
+
+
+@pytest.mark.parametrize("run", range(10))
+def test_a_fixed_cpu_gate_rejects_a_ten_percent_overrun_every_time(run):
+    r = vlib.run_solution([sys.executable, "-I", "-S", "-c", _BURN.format(s=0.44)],
+                          cpu_s=0.4, wall_s=10, scale_cpu=False)
+    assert r.verdict == "cpu", r
+
+
+def test_run_solution_returns_as_soon_as_the_solution_exits():
+    t0 = time.monotonic()
+    r = vlib.run_solution(["/bin/sleep", "0"], cpu_s=5, poll_s=10)
+    assert r.ok, r
+    assert time.monotonic() - t0 < 3, r
+
+
+@pytest.mark.skipif(not DARWIN, reason="libproc is macOS's")
+def test_darwin_table_agrees_with_ps_for_our_processes():
+    """vlib.processes() reads libproc in-process on macOS instead of forking
+    `ps -A` every 50 ms (review 1116); same rows for our uid."""
+    lp = vlib.darwin_table()
+    assert lp is not None
+    ps = vlib._ps_table()
+    me = os.getpid()
+    assert lp[me][2] == os.getuid()
+    assert lp[me][:2] == (os.getppid(), os.getpgrp())
+    common = set(lp) & set(ps)
+    assert me in common and len(common) > 5
+    assert all(lp[p][:2] == ps[p][:2] for p in common
+               if p in lp and p in ps), "ppid/pgid disagree"
+    assert vlib.processes()[me][:2] == (os.getppid(), os.getpgrp())
+
+
 def test_orphaned_worker_is_refused_as_a_daemon():
     # 122's bypass: fork workers, let them be orphaned, never wait for them.
     src = ("import os, time\n"
@@ -501,6 +548,118 @@ def test_confined_solution_reads_only_its_runtime_and_work_dir(tmp_path):
     assert all(v in (None, 0) for v in got.values()), got
 
 
+@pytest.mark.parametrize("confined", [False, True])
+def test_solution_cannot_signal_a_sibling_process(tmp_path, confined, monkeypatch):
+    """(allow default) left kill(2) open against every same-uid process: a
+    solution could SIGKILL sibling units, their validators, the harness, or
+    kill(-1) the user's session (review 1116). Its own children stay
+    killable."""
+    if confined:
+        if LINUX and vlib._landlock_abi() < 6:
+            pytest.skip("signal scoping needs landlock ABI >= 6")
+        if not (DARWIN or LINUX):
+            pytest.skip("macOS or Linux only")
+    elif not DARWIN:
+        pytest.skip("the unconfined deny-list is macOS's sandbox-exec")
+    # A real sibling unit is never the validator's descendant, but here the
+    # victim is ours. On Linux run_solution makes this process a child
+    # subreaper and counts every child of ours as the solution's, so it
+    # would kill the victim itself (verdict "daemon"). Run this one without
+    # the subreaper; the victim is held by a live sh, not by us.
+    reset = (lambda: None)
+    if LINUX:
+        import ctypes
+        libc = ctypes.CDLL(None)
+        libc.prctl(36, 0, 0, 0, 0)               # PR_SET_CHILD_SUBREAPER off
+        monkeypatch.setattr(vlib, "_ensure_subreaper", lambda: False)
+        if vlib._SUBREAPER:
+            reset = (lambda: libc.prctl(36, 1, 0, 0, 0))
+    holder = subprocess.Popen(["/bin/sh", "-c", "sleep 100 & echo $!; wait"],
+                              stdout=subprocess.PIPE, text=True, start_new_session=True)
+    victim = int(holder.stdout.readline())
+    try:
+        # fork, not exec: the confine grants no /bin/sleep to exec
+        src = (f"import os, signal, time\n"
+               f"c = os.fork() if {confined!r} else None\n"
+               f"if c == 0:\n"
+               f"    time.sleep(5); os._exit(0)\n"
+               f"try:\n"
+               f"    os.kill({victim}, signal.SIGKILL); print('sent')\n"
+               f"except OSError as e:\n"
+               f"    print('denied', e.errno)\n"
+               f"try:\n"
+               f"    os.kill(os.getppid(), 0); print('parent-signalable')\n"
+               f"except OSError:\n"
+               f"    pass\n"
+               f"if c:\n"
+               f"    os.kill(c, signal.SIGKILL); os.waitpid(c, 0); print('child-killed')\n")
+        kw = {}
+        if confined:
+            kw = dict(confine=[str(tmp_path)], allow_fork=True,
+                      read_only=vlib.python_runtime(sys.executable, ["signal", "time"]))
+        r = vlib.run_solution([sys.executable, "-I", "-c", src], cpu_s=10,
+                              cwd=str(tmp_path), **kw)
+        time.sleep(0.2)
+        assert _alive(victim), (r, r.stdout)
+        assert "denied" in r.stdout and "sent" not in r.stdout, (r, r.stdout, r.stderr[-400:])
+        assert "parent-signalable" not in r.stdout, r.stdout
+        if confined:
+            assert "child-killed" in r.stdout, (r, r.stderr[-400:])
+    finally:
+        os.killpg(holder.pid, 9)
+        holder.wait()
+        reset()
+
+
+_NET_PROBE = textwrap.dedent("""
+    import socket
+    out = []
+    def t(name, f):
+        try:
+            f(); out.append(name + " OK")
+        except OSError as e:
+            out.append(name + " denied")
+    t("udp", lambda: socket.socket(socket.AF_INET, socket.SOCK_DGRAM).sendto(b"x", ("127.0.0.1", 9)))
+    t("udp6", lambda: socket.socket(socket.AF_INET6, socket.SOCK_DGRAM).sendto(b"x", ("::1", 9)))
+    t("tcp", lambda: socket.create_connection(("127.0.0.1", 9), timeout=1))
+    t("unix", lambda: socket.socketpair())
+    print(";".join(out))
+""")
+
+
+@pytest.mark.skipif(not (DARWIN or LINUX), reason="macOS or Linux only")
+def test_confined_solution_has_no_network_at_all(tmp_path):
+    """Landlock has no UDP right and no TCP right below ABI 4, so the
+    landlock confine let UDP out (and on kernels < 6.7 everything) under a
+    contract of "no network" (review 1116). A seccomp filter now refuses
+    every non-unix socket; a socketpair still works."""
+    if not _confined_can_linux():
+        pytest.skip("no landlock and no user namespaces on this host")
+    r = vlib.run_solution([sys.executable, "-I", "-S", "-c", _NET_PROBE], cpu_s=10,
+                          cwd=str(tmp_path), confine=[str(tmp_path)],
+                          read_only=vlib.python_runtime(sys.executable, ["socket"]))
+    assert r.ok, (r, r.stderr[-800:])
+    got = r.stdout.strip().split(";")
+    assert got == ["udp denied", "udp6 denied", "tcp denied", "unix OK"], (got, r.stderr[-400:])
+
+
+@pytest.mark.skipif(not LINUX, reason="the seccomp filter is Linux's")
+def test_seccomp_filter_is_built_for_this_arch():
+    import platform
+    if platform.machine() not in vlib._SECCOMP_ARCH:
+        pytest.skip("arch without a syscall table: confine fails closed there")
+    prog, arr = vlib._seccomp_net_prog()
+    assert prog.len == len(arr) > 6
+    assert arr[len(arr) - 2].k == 0x7FFF0000          # ALLOW then DENY at the tail
+
+
+def test_unknown_arch_fails_closed(monkeypatch):
+    import platform
+    monkeypatch.setattr(platform, "machine", lambda: "pdp11")
+    with pytest.raises(OSError):
+        vlib._seccomp_net_prog()
+
+
 def test_confine_fails_closed_when_it_cannot_be_set_up(monkeypatch, tmp_path):
     monkeypatch.setattr(vlib, "_sandbox_ok", lambda: False)
 
@@ -509,6 +668,29 @@ def test_confine_fails_closed_when_it_cannot_be_set_up(monkeypatch, tmp_path):
     monkeypatch.setattr(vlib, "_confine_linux", broken)
     r = vlib.run_solution(_py("print('ran')"), cpu_s=5, confine=[str(tmp_path)])
     assert r.verdict == "sandbox" and "ran" not in r.stdout, r
+
+
+@pytest.mark.skipif(not DARWIN, reason="the deny-list sandbox is macOS's sandbox-exec")
+def test_default_path_fails_closed_when_sandbox_exec_is_unusable(monkeypatch):
+    """A failed sandbox-exec probe used to drop the deny-list silently and
+    run the solution with fork, exec, network and evals/ reads open, verdict
+    ok (review 1116)."""
+    monkeypatch.setattr(vlib, "_sandbox_ok", lambda: False)
+    r = vlib.run_solution(_py("print('ran')"), cpu_s=5)
+    assert r.verdict == "sandbox" and "ran" not in r.stdout, r
+
+
+def test_a_failed_sandbox_probe_is_retried_not_cached(monkeypatch):
+    calls = []
+
+    def fake_run(*a, **k):
+        calls.append(1)
+        raise subprocess.TimeoutExpired("sandbox-exec", 10)
+    monkeypatch.setattr(vlib, "_SANDBOX_OK", None)
+    monkeypatch.setattr(vlib.subprocess, "run", fake_run)
+    assert vlib._sandbox_ok() is False
+    assert vlib._sandbox_ok() is False
+    assert len(calls) == 2
 
 
 def test_seal_covers_every_checkout_and_the_git_store():
@@ -1144,3 +1326,117 @@ def test_a_validator_that_exits_zero_itself_still_passes():
     assert ok and "fine" in out, out
     task["validation"]["script"] = "import sys\nsys.exit(3)\n"
     assert run_eval.run_validation(task)[0] is False
+
+
+@pytest.mark.parametrize("forge", [
+    # read the completion line from the validator's module globals
+    "import __main__, os, sys\nsys.stdout.write('\\n' + __main__._ob_n + '\\n')\n"
+    "sys.stdout.flush(); os._exit(0)\n",
+    # call the harness's own completion function
+    "import __main__\n__main__._ob_done('x')\n",
+    # scan every module global for a string that looks like the line
+    "import __main__, os, sys\n"
+    "for v in list(vars(__main__).values()):\n"
+    "    if isinstance(v, str) and v.startswith('@@ob-validator-done-'):\n"
+    "        sys.stdout.write('\\n' + v + '\\n'); sys.stdout.flush(); os._exit(0)\n",
+])
+def test_an_in_process_solution_cannot_forge_the_completion_line_from_globals(tmp_path, forge):
+    """The completion line used to be the module global `_ob_n`, readable by
+    any solution the validator imports (review 1116). It now lives only in
+    a frame; frame introspection remains a documented residual gap."""
+    sol = tmp_path / "m.py"
+    sol.write_text(forge)
+    ok, out = run_eval.run_validation(_inproc_validator(sol))
+    assert not ok, out
+
+
+# --- the sweep never kills a reused group id (review 1116) -------------------------
+
+@pytest.mark.parametrize("recorded", ["an-earlier-leader", None])
+def test_a_reused_group_id_is_not_killed_by_another_units_sweep(recorded):
+    """Each bash-tool call is a new process group, so a long unit records
+    hundreds of ids, and macOS hands pids out again within minutes. The
+    sweep SIGKILLed every recorded id blind, so a sibling unit's agent,
+    validator or solution (or a user app) that now leads a reused id died
+    with A's leftovers. B stands for that process: it starts after A's t0
+    and leads a group whose id A recorded for an earlier, dead leader."""
+    a_root = subprocess.Popen(["/bin/sleep", "30"], start_new_session=True)
+    a = run_eval.AgentWatch("unit-a")
+    a.start(a_root.pid)
+    b = subprocess.Popen(["/bin/sleep", "30"], start_new_session=True)
+    try:
+        a.groups[b.pid] = recorded          # the stale id, now B's
+        a_root.kill()
+        a_root.wait()
+        killed, survivors = run_eval.sweep_agent_leftovers(a)
+        time.sleep(0.2)
+        assert b.poll() is None, "A's sweep killed B, which only reused an id A had seen"
+        assert b.pid not in killed and not survivors, (killed, survivors)
+    finally:
+        for p in (a_root, b):
+            p.kill()
+            p.wait()
+
+
+def test_a_leaderless_group_of_the_agent_is_still_swept(tmp_path):
+    """The other side: a group whose leader exited but whose member lives
+    on is still the agent's (an id cannot be reused while its group has a
+    member), and the sweep kills that member even when no poll saw it."""
+    pidfile = tmp_path / "child.pid"
+    root = subprocess.Popen(["/bin/sh", "-c", f"sleep 30 & echo $! > {pidfile}; sleep 0.5"],
+                            start_new_session=True)
+    w = run_eval.AgentWatch("unit-c")
+    w.start(root.pid)
+    child = None
+    try:
+        child = _wait_pidfile(pidfile)
+        root.wait()
+        w.poll()
+        w.seen.pop(child, None)              # only its group can find it now
+        killed, survivors = run_eval.sweep_agent_leftovers(w)
+        assert child in killed and not survivors, (child, killed, survivors)
+        time.sleep(0.2)
+        assert not _alive(child)
+    finally:
+        if child:
+            try:
+                os.kill(child, 9)
+            except OSError:
+                pass
+
+
+def test_a_group_seen_empty_is_forgotten():
+    w = run_eval.AgentWatch("unit-d")
+    keep = subprocess.Popen(["/bin/sleep", "30"], start_new_session=True)
+    try:
+        w.start(keep.pid)
+        w.groups[4194000] = None            # no process has this pgid
+        w.poll()
+        assert 4194000 not in w.groups and keep.pid in w.groups, w.groups
+    finally:
+        keep.kill()
+        keep.wait()
+        w.stop()
+
+
+
+def test_a_forged_pgid_of_an_older_process_is_not_killed(tmp_path):
+    """The validator's pgids file is writable by any same-uid process, such
+    as a sibling unit's agent under --jobs (review 1116). Only groups with a
+    member started after the validation began are killed."""
+    old = subprocess.Popen(["/bin/sleep", "30"], start_new_session=True)
+    time.sleep(1.2)
+    since = time.time()
+    time.sleep(1.1)
+    new = subprocess.Popen(["/bin/sleep", "30"], start_new_session=True)
+    try:
+        gf = tmp_path / "pgids"
+        gf.write_text(f"{old.pid}\n{new.pid}\n")
+        run_eval._kill_recorded_groups(str(gf), since=since)
+        time.sleep(0.2)
+        assert old.poll() is None, "killed a group that predates the validation"
+        assert new.poll() is not None, "missed the validator's own solution group"
+    finally:
+        for p in (old, new):
+            p.kill()
+            p.wait()

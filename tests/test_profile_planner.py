@@ -96,6 +96,22 @@ def test_stratified_sample_is_seeded():
     assert a == b and a != c
 
 
+def test_stratified_pi_is_the_true_inclusion_probability():
+    """pi feeds the Horvitz-Thompson weights in ablation.py, so it must be
+    k/n for the draw actually made, not the nominal frac (review 1116)."""
+    for n, k in ((4, 1), (5, 2), (250, 83)):
+        ids = [f"u{i}" for i in range(n)]
+        rows = [{"id": u, "passed": True} for u in ids]
+        pi = P.stratified_sample(rows, set(ids), 1 / 3, "s")
+        sampled = [u for u, p in pi.items() if p < 1]
+        assert len(sampled) == k
+        assert all(abs(pi[u] - k / n) < 1e-12 for u in sampled), (n, pi)
+    # unbiased: the HT total of an all-pass set recovers n exactly
+    ids = [f"u{i}" for i in range(4)]
+    pi = P.stratified_sample([{"id": u, "passed": True} for u in ids], set(ids), 1 / 3, "x")
+    assert sum(1 / p for p in pi.values()) == 4
+
+
 def test_a_profile_end_to_end_with_a_fake_agent(tmp_path, monkeypatch):
     tasks_dir, suites, results = tmp_path / "tasks", tmp_path / "suites", tmp_path / "results"
     for d in (tasks_dir, suites, results):

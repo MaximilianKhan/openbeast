@@ -30,7 +30,7 @@ itself:
       descendant is SIGKILLed on the way out, whatever happened.
       By default (allow_fork=False) any child process is refused; on macOS
       the kernel enforces that through sandbox-exec, which also denies the
-      solution network and process-info on other processes, confines a
+      solution network, signals to and process-info on other processes, confines a
       compiled unit's exec to its own binary (no exec into python3), and
       denies reads of any evals/{refs,tasks,suites} tree.
 
@@ -44,7 +44,8 @@ itself:
   run_solution(..., confine=[workdir], read_only=python_runtime(exe, mods))
       The solution may read only its runtime and its work dir, write only
       its work dir, and has no network, on macOS (sandbox-exec) and Linux
-      (landlock, else user + mount namespace). Fails closed: verdict
+      (landlock plus a seccomp socket filter, else user + mount + net
+      namespace). Fails closed: verdict
       "sandbox" when confinement is unavailable. Use it whenever the
       solution could otherwise read the oracle (the repo, its .git, other
       worktrees or clones) or site-packages.
@@ -56,7 +57,8 @@ itself:
 
   processes()
       The live process table (pid, ppid, pgid, cpu seconds). It reads /proc
-      on Linux and falls back to `ps` elsewhere, so it also works on macOS.
+      on Linux and libproc on macOS (in-process, no fork; our uid's
+      processes), and falls back to `ps` elsewhere.
 
   lint_python(src, ban_modules=..., ban_calls=...)
       An AST lint that handles the routes a substring or line regex misses:
@@ -193,12 +195,115 @@ def _ps_table() -> dict:
     return out
 
 
+# macOS: libproc in-process. `ps -A` forks, costs ~25 ms wall and ~20 ms CPU
+# per table on a desktop (1100 processes), and the sampler called it every
+# 50 ms for the whole run, so a 1 s solution burned ~0.4 s of harness CPU
+# and 20 forks/s of pid churn (review 1116). proc_listallpids +
+# proc_pidinfo gives the same table in ~1.5 ms with no fork.
+_LIBPROC = None
+_PROC_PIDTBSDINFO, _PROC_PIDTASKINFO, _SZOMB = 3, 4, 5
+
+
+def _libproc():
+    """(lib, BsdInfo, TaskInfo, ticks->seconds) or False when unusable."""
+    global _LIBPROC
+    if _LIBPROC is None:
+        _LIBPROC = False
+        if _DARWIN:
+            try:
+                import ctypes
+                lib = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+                u32, u64 = ctypes.c_uint32, ctypes.c_uint64
+
+                class BsdInfo(ctypes.Structure):
+                    _fields_ = [("flags", u32), ("status", u32), ("xstatus", u32),
+                                ("pid", u32), ("ppid", u32), ("uid", u32), ("gid", u32),
+                                ("ruid", u32), ("rgid", u32), ("svuid", u32), ("svgid", u32),
+                                ("rfu_1", u32), ("comm", ctypes.c_char * 16),
+                                ("name", ctypes.c_char * 32), ("nfiles", u32), ("pgid", u32),
+                                ("pjobc", u32), ("e_tdev", u32), ("e_tpgid", u32),
+                                ("nice", ctypes.c_int32), ("start_tvsec", u64),
+                                ("start_tvusec", u64)]
+
+                class TaskInfo(ctypes.Structure):
+                    _fields_ = [("virtual_size", u64), ("resident_size", u64),
+                                ("total_user", u64), ("total_system", u64),
+                                ("threads_user", u64), ("threads_system", u64)] + \
+                               [(n, ctypes.c_int32) for n in (
+                                   "policy", "faults", "pageins", "cow_faults", "msgs_sent",
+                                   "msgs_received", "syscalls_mach", "syscalls_unix", "csw",
+                                   "threadnum", "numrunning", "priority")]
+
+                class Timebase(ctypes.Structure):
+                    _fields_ = [("numer", u32), ("denom", u32)]
+                tb = Timebase()
+                if ctypes.CDLL(None).mach_timebase_info(ctypes.byref(tb)) != 0 or not tb.denom:
+                    return _LIBPROC
+                lib.proc_listallpids.restype = ctypes.c_int
+                lib.proc_pidinfo.restype = ctypes.c_int
+                lib.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64,
+                                             ctypes.c_void_p, ctypes.c_int]
+                # pti_total_* are mach absolute-time units (ns on Intel,
+                # 125/3 ns on Apple silicon)
+                _LIBPROC = (lib, BsdInfo, TaskInfo, tb.numer / tb.denom / 1e9)
+            except (OSError, AttributeError):
+                _LIBPROC = False
+    return _LIBPROC
+
+
+def darwin_table(cpu: bool = True) -> dict | None:
+    """macOS: {pid: (ppid, pgid, uid, cpu_seconds, start)} of every live,
+    non-zombie process this uid may inspect (our own uid's; root's and
+    other users' are not listed, unlike `ps`), through libproc. `start` is (tv_sec, tv_usec), an
+    exact identity across pid reuse. cpu_seconds is 0.0 for a process we
+    may not inspect (another uid), or with cpu=False. None when libproc is
+    unusable (the caller falls back to ps)."""
+    lp = _libproc()
+    if not lp:
+        return None
+    import ctypes
+    lib, BsdInfo, TaskInfo, tick_s = lp
+    n = lib.proc_listallpids(None, 0)
+    if n <= 0:
+        return None
+    for _ in range(4):
+        cap = n + 256
+        buf = (ctypes.c_int * cap)()
+        n = lib.proc_listallpids(buf, ctypes.sizeof(buf))
+        if n <= 0:
+            return None
+        if n < cap:
+            break
+    bi, ti = BsdInfo(), TaskInfo()
+    bsz, tsz = ctypes.sizeof(bi), ctypes.sizeof(ti)
+    out = {}
+    for i in range(min(n, cap)):
+        pid = buf[i]
+        if pid <= 0:
+            continue
+        if lib.proc_pidinfo(pid, _PROC_PIDTBSDINFO, 0, ctypes.byref(bi), bsz) != bsz:
+            continue                       # gone, or not inspectable at all
+        if bi.status == _SZOMB:
+            continue
+        c = 0.0
+        if cpu and lib.proc_pidinfo(pid, _PROC_PIDTASKINFO, 0, ctypes.byref(ti), tsz) == tsz:
+            c = (ti.total_user + ti.total_system) * tick_s
+        out[pid] = (bi.ppid, bi.pgid, bi.uid, c, (bi.start_tvsec, bi.start_tvusec))
+    return out
+
+
 def processes() -> dict:
-    """{pid: (ppid, pgid, cpu_seconds)} of every live, non-zombie process."""
+    """{pid: (ppid, pgid, cpu_seconds)} of every live, non-zombie process
+    (on macOS through libproc: those of our uid, which is all a solution
+    can start)."""
     if _LINUX and os.path.isdir("/proc/self"):
         tab = _proc_table()
         if tab is not None:
             return tab
+    if _DARWIN:
+        tab = darwin_table()
+        if tab is not None:
+            return {pid: (row[0], row[1], row[3]) for pid, row in tab.items()}
     return _ps_table()
 
 
@@ -324,6 +429,15 @@ _SANDBOX_OK = None
 _EVAL_SECRET_RE = r"/evals/(refs|tasks|suites)(/|$)"
 
 
+# kill(2) of any process outside the solution's own sandbox. (allow default)
+# otherwise lets the solution SIGKILL/SIGSTOP every process of our uid: its
+# validator, sibling units under --jobs, the harness itself, kill(-1) the
+# user's whole session (review 1116). Itself, its own children and its own
+# group stay signalable (they share the sandbox). Linux gets the same from
+# landlock's scoped signals (ABI >= 6).
+_SIGNAL_RULE = "(deny signal (target others))"
+
+
 def _sbpl_str(s: str) -> str:
     return s.replace("\\", "\\\\").replace('"', '\\"')
 
@@ -335,6 +449,7 @@ def _sandbox_prefix(allow_fork: bool, deny_read: list[str], *,
     """sandbox-exec argv prefix (macOS), or [] when sandboxing is unavailable.
 
     The confined solution gets `(allow default)` minus the holes a cheat uses:
+      * signals  — to any process outside its own sandbox (_SIGNAL_RULE);
       * network  — no fetch of a pushed reference, no phone-home (future risk
         reported on 164);
       * process-info  — proc_pidinfo/proc_pidpath on other processes (their
@@ -363,7 +478,7 @@ def _sandbox_prefix(allow_fork: bool, deny_read: list[str], *,
             or allow_write is not None)
     if not _DARWIN or not want:
         return []
-    rules = ["(version 1)", "(allow default)"]
+    rules = ["(version 1)", "(allow default)", _SIGNAL_RULE]
     if deny_net:
         rules.append("(deny network*)")
     if deny_procinfo:
@@ -386,15 +501,8 @@ def _sandbox_prefix(allow_fork: bool, deny_read: list[str], *,
         rules.append("(deny file-write*)")
         for p in ["/dev"] + list(allow_write):
             rules.append(f'(allow file-write* (subpath "{_sbpl_str(os.path.realpath(p))}"))')
-    if _SANDBOX_OK is None:
-        try:
-            _SANDBOX_OK = subprocess.run(
-                ["/usr/bin/sandbox-exec", "-p", "(version 1)(allow default)", "/usr/bin/true"],
-                capture_output=True, timeout=10).returncode == 0
-        except (OSError, subprocess.TimeoutExpired):
-            _SANDBOX_OK = False
-    if not _SANDBOX_OK:
-        return []
+    if not _sandbox_ok():
+        return []          # run_solution refuses the run (verdict "sandbox")
     return ["/usr/bin/sandbox-exec", "-p", "".join(rules)]
 
 
@@ -512,10 +620,10 @@ def _sbpl(p: str) -> str:
 def _confine_profile(allow_fork: bool, ro: list[str], rw: list[str], *,
                      exec_only: str | None = None, deny_read: list[str] = ()) -> str:
     """macOS sandbox profile: reads only from the allowlist, writes only to rw,
-    no network, no process-info on other processes (but argv/env stay
+    no network, no signal to another sandbox's process, no process-info on other processes (but argv/env stay
     readable through sysctl kern.procargs2: see _sandbox_prefix), and, with
     exec_only, no exec of any image but that one."""
-    rules = ["(version 1)", "(allow default)", "(deny network*)",
+    rules = ["(version 1)", "(allow default)", _SIGNAL_RULE, "(deny network*)",
              "(deny process-info* (with no-report))",
              "(allow process-info-pidinfo (target self))",
              "(allow process-info-codesignature (target self))"]
@@ -561,8 +669,11 @@ def _confine_profile(allow_fork: bool, ro: list[str], rw: list[str], *,
 
 
 def _sandbox_ok() -> bool:
+    """Whether sandbox-exec works here. Only a success is cached: a probe
+    that failed under load (EAGAIN, the 10 s timeout) is retried by the
+    next run instead of turning the sandbox off for the whole validator."""
     global _SANDBOX_OK
-    if _SANDBOX_OK is None:
+    if not _SANDBOX_OK:
         try:
             _SANDBOX_OK = subprocess.run(
                 ["/usr/bin/sandbox-exec", "-p", "(version 1)(allow default)", "/usr/bin/true"],
@@ -634,6 +745,79 @@ def _landlock_abi() -> int:
     return _LL_ABI
 
 
+# Landlock has no UDP right at all, and TCP only from ABI 4 (kernel 6.7), so
+# a landlock-confined solution could still send datagrams (DNS exfiltration,
+# an oracle over UDP), and below 6.7 open any connection, under a confine
+# documented as "no network" (review 1116). A seccomp filter in the same
+# child closes it: socket() may create only AF_UNIX and AF_NETLINK sockets,
+# io_uring (whose IORING_OP_SOCKET bypasses the socket() filter) is refused,
+# and any foreign-ABI syscall (i386/x32 on x86_64) is refused outright.
+# (audit arch, socket nr, io_uring_setup nr, refuse x32 range)
+_SECCOMP_ARCH = {"x86_64": (0xC000003E, 41, 425, True),
+                 "amd64": (0xC000003E, 41, 425, True),
+                 "aarch64": (0xC00000B7, 198, 425, False),
+                 "arm64": (0xC00000B7, 198, 425, False)}
+_SOCK_ALLOWED = (1, 16)                        # AF_UNIX, AF_NETLINK
+
+
+def _seccomp_net_prog():
+    """A built `struct sock_fprog` (and the filter array it points to) that
+    refuses every network socket, or raise OSError on an unknown arch."""
+    import ctypes
+    import platform
+    spec = _SECCOMP_ARCH.get(platform.machine())
+    if spec is None:
+        raise OSError(f"no seccomp syscall table for {platform.machine()}")
+    arch, nr_socket, nr_uring, x32 = spec
+    ld, jeq, jge, ret = 0x20, 0x15, 0x35, 0x06
+    allow, eperm, eacces = 0x7FFF0000, 0x00050000 | 1, 0x00050000 | 13
+    # Layout: arch check, load nr, the body, then ALLOW, then DENY. BPF
+    # jumps are relative, so each body jump counts the instructions left.
+    tail = [(ret, 0, 0, allow), (ret, 0, 0, eacces)]      # ALLOW, DENY
+    ins = []
+    ins.append((ld, 0, 0, 4))                              # arch
+    ins.append((jeq, 1, 0, arch))
+    ins.append((ret, 0, 0, eperm))                         # foreign ABI
+    ins.append((ld, 0, 0, 0))                              # syscall nr
+    body = []
+    if x32:
+        body.append(("jge", 0x40000000, "deny"))
+    body.append(("jeq", nr_uring, "deny"))
+    body.append(("jeq_else_allow", nr_socket, None))
+    body.append(("ld_arg0", None, None))
+    for af in _SOCK_ALLOWED:
+        body.append(("jeq_allow", af, None))
+    body.append(("ja_deny", None, None))
+    # each body entry is one instruction; ALLOW sits right after the body,
+    # DENY one after that
+    n = len(body)
+    for i, (kind, k, _t) in enumerate(body):
+        to_allow = n - i - 1               # instructions to skip to reach ALLOW
+        to_deny = to_allow + 1
+        if kind == "jge":
+            ins.append((jge, to_deny, 0, k))
+        elif kind == "jeq":
+            ins.append((jeq, to_deny, 0, k))
+        elif kind == "jeq_else_allow":
+            ins.append((jeq, 0, to_allow, k))
+        elif kind == "ld_arg0":
+            ins.append((ld, 0, 0, 16))                     # args[0], low 32 bits
+        elif kind == "jeq_allow":
+            ins.append((jeq, to_allow, 0, k))
+        elif kind == "ja_deny":
+            ins.append((0x05, 0, 0, to_deny))              # BPF_JMP|BPF_JA
+    ins += tail
+
+    class Filter(ctypes.Structure):
+        _fields_ = [("code", ctypes.c_uint16), ("jt", ctypes.c_uint8),
+                    ("jf", ctypes.c_uint8), ("k", ctypes.c_uint32)]
+
+    class Prog(ctypes.Structure):
+        _fields_ = [("len", ctypes.c_ushort), ("filter", ctypes.POINTER(Filter))]
+    arr = (Filter * len(ins))(*[Filter(*x) for x in ins])
+    return Prog(len(ins), ctypes.cast(arr, ctypes.POINTER(Filter))), arr
+
+
 def _landlock_prep(ro: list[str], rw: list[str]):
     """Everything the child needs, built before fork (no allocation games in
     the child beyond os.open and the syscalls)."""
@@ -685,12 +869,13 @@ def _landlock_prep(ro: list[str], rw: list[str]):
     for p in rw:
         rules.append((os.fsencode(os.path.realpath(p)), handled))
     beneath = Beneath(0, -1)
-    return libc, attr, size, rules, beneath, handled
+    seccomp = _seccomp_net_prog()          # raises on an unknown arch: fail closed
+    return libc, attr, size, rules, beneath, handled, seccomp
 
 
 def _landlock_child(prep):
     import ctypes
-    libc, attr, size, rules, beneath, handled = prep
+    libc, attr, size, rules, beneath, handled, (prog, _arr) = prep
     rfd = libc.syscall(_LL["create"], ctypes.byref(attr), ctypes.c_size_t(size),
                        ctypes.c_uint32(0))
     if rfd < 0:
@@ -715,6 +900,9 @@ def _landlock_child(prep):
     if libc.syscall(_LL["restrict"], ctypes.c_int(rfd), ctypes.c_uint32(0)) != 0:
         raise OSError(ctypes.get_errno(), "landlock_restrict_self")
     os.close(rfd)
+    # PR_SET_SECCOMP, SECCOMP_MODE_FILTER: no network sockets (see _seccomp_net_prog)
+    if libc.prctl(22, 2, ctypes.byref(prog), 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), "seccomp network filter")
 
 
 # mount namespace fallback
@@ -881,7 +1069,7 @@ class Result:
     (allow_fork=False and it started a child), "exec" (it replaced its image
     with another binary under confine_exec), "output" (wrote more than
     max_output bytes), "sandbox" (confine was asked for and could not be
-    set up: the solution never ran)."""
+    set up, or on macOS sandbox-exec is unusable: the solution never ran)."""
 
     def __init__(self, returncode, stdout, stderr, cpu_s, wall_s, verdict, reason):
         self.returncode = returncode
@@ -959,6 +1147,54 @@ def _resolve_exec(prog: str, cwd: str | None, env: dict) -> str:
     return os.path.realpath(found) if found else prog
 
 
+def _exit_waiter(pid: int):
+    """(wait(timeout) -> bool, close()): wait() returns True as soon as
+    `pid` (our child) has exited, WITHOUT reaping it, so the final wait4
+    still gets its rusage. The sampler used to time.sleep(poll_s) whatever
+    happened, so every run paid up to a full poll after the solution was
+    done (review 1116). kqueue NOTE_EXIT on macOS, a pidfd on Linux, a
+    plain sleep elsewhere."""
+    import select
+    done = [False]
+    if hasattr(select, "kqueue"):
+        try:
+            kq = select.kqueue()
+        except OSError:
+            kq = None
+        if kq is not None:
+            try:
+                kq.control([select.kevent(pid, filter=select.KQ_FILTER_PROC,
+                                          flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                                          fflags=select.KQ_NOTE_EXIT)], 0, 0)
+            except OSError:
+                done[0] = True          # already exited (ESRCH)
+
+            def wait(timeout):
+                if not done[0] and kq.control(None, 1, timeout):
+                    done[0] = True
+                return done[0]
+            return wait, kq.close
+    if hasattr(os, "pidfd_open"):
+        try:
+            fd = os.pidfd_open(pid)
+        except OSError:
+            fd = None
+        if fd is not None:
+            pl = select.poll()
+            pl.register(fd, select.POLLIN)
+
+            def wait(timeout):
+                if not done[0] and pl.poll(int(timeout * 1000)):
+                    done[0] = True
+                return done[0]
+            return wait, (lambda: os.close(fd))
+
+    def wait(timeout):
+        time.sleep(timeout)
+        return False
+    return wait, (lambda: None)
+
+
 def run_solution(cmd, input=None, *, cpu_s: float, wall_s: float | None = None,
                  cwd: str | None = None, env: dict | None = None, text: bool = True,
                  allow_fork: bool = False, scale_cpu: bool = True,
@@ -1021,7 +1257,14 @@ def run_solution(cmd, input=None, *, cpu_s: float, wall_s: float | None = None,
         # A launcher: allow it and the one program it starts, nothing else.
         target = _env_target(list(cmd))
         exec_only = [exec0] + ([_resolve_exec(target, cwd, env)] if target else [])
-    argv = _sandbox_prefix(allow_fork, seal, exec_only=exec_only) + list(cmd)
+    prefix = _sandbox_prefix(allow_fork, seal, exec_only=exec_only)
+    if _DARWIN and confine is None and not prefix:
+        # The deny-list is the only thing between the solution and fork,
+        # exec into python3, the network and evals/refs on macOS. It used to
+        # fail OPEN here (an empty prefix, verdict "ok"); fail closed like
+        # confine= does (review 1116).
+        return Result(None, "", "", 0.0, 0.0, "sandbox", "sandbox-exec unavailable")
+    argv = prefix + list(cmd)
     confine_child, confine_cleanup = None, (lambda: None)
     if confine is not None:
         rw = [os.path.realpath(p) for p in confine]
@@ -1098,6 +1341,30 @@ def run_solution(cmd, input=None, *, cpu_s: float, wall_s: float | None = None,
     verdict, reason = "ok", ""
     rusage_cpu = 0.0
     status = None
+    reaped = [False]
+    exit_wait, exit_close = _exit_waiter(proc.pid)
+
+    def _reap_nohang():
+        """The solution's exit status once it has exited, else None. Reaps
+        it through wait4 and KEEPS its rusage: Popen.poll() reaped it with
+        waitpid, the final wait4 then hit ChildProcessError, and the rusage
+        was dropped, so the CPU it used after the last sample was never
+        counted and a fixed-CPU gate passed over-budget solutions about 1 run
+        in 12 (review 1116)."""
+        nonlocal rusage_cpu
+        if reaped[0]:
+            return proc.returncode
+        try:
+            pid_, wst, ru = os.wait4(proc.pid, os.WNOHANG)
+        except ChildProcessError:
+            return None
+        if pid_ == 0:
+            return None
+        reaped[0] = True
+        rusage_cpu = ru.ru_utime + ru.ru_stime
+        proc.returncode = (-os.WTERMSIG(wst) if os.WIFSIGNALED(wst)
+                           else os.WEXITSTATUS(wst))
+        return proc.returncode
 
     def _exe(pid: int) -> str | None:
         """The realpath of a process's running image, Linux only."""
@@ -1155,7 +1422,7 @@ def run_solution(cmd, input=None, *, cpu_s: float, wall_s: float | None = None,
 
     try:
         while True:
-            r = proc.poll()
+            r = _reap_nohang()
             live = _tree()
             for pid, (ppid, _pg, cpu) in live.items():
                 known.add(pid)
@@ -1188,7 +1455,7 @@ def run_solution(cmd, input=None, *, cpu_s: float, wall_s: float | None = None,
             if time.monotonic() - t0 > wall_budget:
                 verdict, reason = "wall", f"wall budget {wall_budget:.1f}s exceeded"
                 break
-            time.sleep(poll_s)
+            exit_wait(poll_s)
         # The solution itself exited (or we are about to kill it): anything of
         # its tree still alive outlived it.
         if verdict == "ok":
@@ -1197,13 +1464,15 @@ def run_solution(cmd, input=None, *, cpu_s: float, wall_s: float | None = None,
                 verdict, reason = "daemon", f"{len(survivors)} process(es) outlived the solution"
     finally:
         _kill_all()
-        try:
-            _pid, wst, ru = os.wait4(proc.pid, 0)
-            proc.returncode = (-os.WTERMSIG(wst) if os.WIFSIGNALED(wst)
-                               else os.WEXITSTATUS(wst))
-            rusage_cpu = ru.ru_utime + ru.ru_stime
-        except ChildProcessError:
-            rusage_cpu = 0.0
+        if not reaped[0]:
+            try:
+                _pid, wst, ru = os.wait4(proc.pid, 0)
+                proc.returncode = (-os.WTERMSIG(wst) if os.WIFSIGNALED(wst)
+                                   else os.WEXITSTATUS(wst))
+                rusage_cpu = ru.ru_utime + ru.ru_stime
+            except ChildProcessError:
+                rusage_cpu = 0.0
+        exit_close()
         if proc.returncode is None and status is not None:
             proc.returncode = status
         if subreaper:  # orphans reparented to us: reap them (they were SIGKILLed)
