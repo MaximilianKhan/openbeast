@@ -10,9 +10,14 @@
 #   client.sh search up|down     start/stop the local SearXNG container
 #   client.sh refresh-config     re-sync the opencode model catalog only
 #                                (no git pull, no dependency install)
-#   client.sh update             refresh the checkout + pinned deps + the
+#   client.sh update [--no-pull] [--wheelhouse <dir>]
+#                                refresh the checkout + pinned deps + the
 #                                opencode model catalog (adds models the rig
-#                                gained, drops ones it no longer serves)
+#                                gained, drops ones it no longer serves).
+#                                Offline: --no-pull after updating the checkout
+#                                from a bundle, --wheelhouse (or
+#                                $OPENBEAST_WHEELHOUSE) to install the pinned
+#                                deps with no index contacted
 #   client.sh uninstall          remove client mode entirely
 #
 # Deliberately does NOT source scripts/lib/conf.sh — that file is rig-shaped
@@ -61,8 +66,9 @@ _find_ts() {
   return 1
 }
 TS_BIN="$(_find_ts || true)"
-# Prefer the venv interpreter — it is guaranteed >=3.11 because
-# setup-client.sh built it with a vetted one.
+# Prefer the venv interpreter. setup-client.sh builds it with a vetted >=3.11
+# one and rebuilds a venv an older install made with 3.10; `update` refuses
+# such a venv (_venv_floor) rather than die inside pip.
 if [ -x "$VENV/bin/python3" ]; then PY_BIN="$VENV/bin/python3"
 else PY_BIN="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || echo python3)"; fi
 
@@ -229,21 +235,6 @@ _curl_auth() {
   ob_curl_bearer "${OPENBEAST_API_KEY:-}" -s -m 5 "$@" "$_u"
 }
 
-_http_code() {
-  # _http_code <url> — the HTTP status alone, or 000 when nothing answered.
-  # Grepping bodies collapsed four different failures into one wrong message:
-  # a REVOKED device, a rig that is down, a rig still loading a 27B model, and
-  # a TLS/clock problem all printed "rig model API not answering". beast-gate
-  # already distinguishes them (401 vs 502 vs 504), so read the status.
-  # NOTE: curl PRINTS '000' and ALSO exits non-zero when it cannot connect, so
-  # a trailing `|| echo 000` yields '000000' and the 000 branch never matches.
-  # Capture, ignore the exit status, and default only when the output is empty.
-  _u="$1"
-  _c=$(ob_curl_bearer "${OPENBEAST_API_KEY:-}" -s -o /dev/null \
-    -w '%{http_code}' -m 8 "$_u" 2>/dev/null) || true
-  echo "${_c:-000}"
-}
-
 case "$CMD" in
   status)
     echo "=== OpenBeast client status ==="
@@ -262,12 +253,21 @@ case "$CMD" in
     else
       echo "  ✗ no $ENV_FILE — run scripts/setup-client.sh"; bad=$((bad+1))
     fi
-    if [ -x "$VENV/bin/python3" ] && "$VENV/bin/python3" -c "import mcp, openai" 2>/dev/null; then
-      echo "  ✓ venv imports mcp + openai"; ok=$((ok+1))
+    # Installed and resolvable, without importing them: a full `import mcp,
+    # openai` costs ~0.65 s on every doctor run. setup-client.sh does the full
+    # import once, at install; here the dist metadata + import spec catch a
+    # missing or half-removed package, which is what goes wrong in practice.
+    if [ -x "$VENV/bin/python3" ] && "$VENV/bin/python3" -c '
+import importlib.metadata as m, importlib.util as u, sys
+for p in ("mcp", "openai"):
+    m.version(p)
+    if u.find_spec(p) is None:
+        sys.exit(1)' 2>/dev/null; then
+      echo "  ✓ venv has mcp + openai"; ok=$((ok+1))
     elif [ ! -x "$VENV/bin/python3" ]; then
       echo "  ✗ no venv at $VENV — run scripts/setup-client.sh"; bad=$((bad+1))
     else
-      echo "  ✗ venv broken (mcp/openai do not import) — re-run scripts/setup-client.sh"; bad=$((bad+1))
+      echo "  ✗ venv broken (mcp/openai missing) — re-run scripts/setup-client.sh"; bad=$((bad+1))
     fi
     if [ -n "$TS_BIN" ] && "$TS_BIN" status >/dev/null 2>&1; then
       echo "  ✓ tailscale up"; ok=$((ok+1))
@@ -278,9 +278,25 @@ case "$CMD" in
       bad=$((bad+1))
     fi
     BASE="${OPENBEAST_AGENT_INFERENCE_URL:-}"
+    # Timeout for the remaining network probes. When the rig did not answer
+    # at all, the slot and search probes each used to wait their full 5 s
+    # (23 s to report a down rig): 2 s is plenty to tell "up" from "not".
+    PROBE_T=5
     if [ -n "$BASE" ]; then
       HURL="$(echo "$BASE" | sed 's|/v1$||')/health"
-      if _curl_auth "$HURL" | grep -q "ok"; then
+      # ONE request for body and status. A failed probe used to ask the same
+      # URL again (-m 8) only to read its status: 13 s on a blackholed host.
+      # The STATUS is what names the failure: grepping bodies collapsed a
+      # REVOKED device, a rig that is down, a rig still loading a 27B model
+      # and a TLS/clock problem into "not answering"; beast-gate tells them
+      # apart (401 vs 502 vs 504). curl prints 000 AND exits non-zero when it
+      # cannot connect, so capture, ignore the exit status, and default.
+      _ho="$(_curl_auth "$HURL" -w '\n%{http_code}' 2>/dev/null)" || true
+      HCODE="${_ho##*$'\n'}"; HBODY="${_ho%$'\n'*}"
+      [ "$HBODY" = "$_ho" ] && HBODY=""
+      case "$HCODE" in [0-9][0-9][0-9]) : ;; *) HCODE=000 ;; esac
+      [ "$HCODE" = "000" ] && PROBE_T=2
+      if printf '%s' "$HBODY" | grep -q "ok"; then
         # /health is public even on a keyed server, so it proves reachability
         # but NOT that our key is accepted. Probe a protected endpoint too,
         # otherwise a wrong/revoked key looks perfectly healthy here and only
@@ -294,7 +310,7 @@ case "$CMD" in
         fi
       else
         # Say WHICH failure this is. "Not answering" was wrong for most of them.
-        case "$(_http_code "$HURL")" in
+        case "$HCODE" in
           401|403)
             echo "  ✗ rig rejected this device (401/403) — key wrong, or your"
             echo "    device was revoked. Ask the rig owner to re-enroll:"
@@ -327,7 +343,7 @@ case "$CMD" in
       # the same "not published — run --publish-slot", the wrong fix for
       # three of them. A 503 is retried once, after its Retry-After.
       _slot_get() {
-        _o="$(curl -s -m 5 -w '\n%{http_code}' "$OPENBEAST_SLOT_URL" 2>/dev/null)" || true
+        _o="$(curl -s -m "$PROBE_T" -w '\n%{http_code}' "$OPENBEAST_SLOT_URL" 2>/dev/null)" || true
         SLOT_CODE="${_o##*$'\n'}"; SLOT_BODY="${_o%$'\n'*}"
         case "$SLOT_CODE" in [0-9][0-9][0-9]) : ;; *) SLOT_CODE=000 ;; esac
       }
@@ -423,8 +439,19 @@ if backend != "llama" and served:
       fi
     fi
     if [ -n "${SEARXNG_URL:-}" ]; then
-      if curl -s -m 5 "$SEARXNG_URL/search?q=test&format=json" 2>/dev/null | grep -q '"results"'; then
+      # No real search: `?q=test` sent a live query out to SearXNG's upstream
+      # engines on every doctor run (0.8-1.2 s, and egress an islanded or
+      # offline-first setup does not want). /healthz proves it is up; a
+      # query-less `format=json` request proves JSON output is enabled, which
+      # web_search needs: SearXNG answers 400 "No query" when it is, 403 when
+      # search.formats lacks json — and contacts no engine either way.
+      _sx_h="$(curl -s -m "$PROBE_T" "$SEARXNG_URL/healthz" 2>/dev/null)" || true
+      _sx_f="$(curl -s -o /dev/null -w '%{http_code}' -m "$PROBE_T" "$SEARXNG_URL/search?format=json" 2>/dev/null)" || true
+      if [ "$_sx_h" = "OK" ] && [ "$_sx_f" = "400" ]; then
         echo "  ✓ search reachable ($SEARXNG_URL)"; ok=$((ok+1))
+      elif [ "$_sx_h" = "OK" ] && [ "$_sx_f" = "403" ]; then
+        echo "  ✗ search is up but its JSON output is off — add json to search.formats"
+        echo "    in SearXNG's settings.yml ($SEARXNG_URL)"; bad=$((bad+1))
       else
         echo "  ✗ search not answering ($SEARXNG_URL)"; bad=$((bad+1))
       fi
@@ -495,8 +522,36 @@ if backend != "llama" and served:
     # the README documents it printed "pull it yourself" and then said "client
     # updated." regardless. So the remedy the version-skew warning in `status`
     # points users to did nothing, and reported success while doing it.
+    # Offline route (docs/BEAST_APPS.md § Offline client): update the checkout
+    # by other means (`git pull /media/usb/openbeast.bundle main`), then
+    #   openbeast-client update --no-pull --wheelhouse /media/usb/wheels
+    # which installs the same hash-pinned closure with no index contacted.
+    _no_pull=0; _wheels="${OPENBEAST_WHEELHOUSE:-}"
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --no-pull)   _no_pull=1 ;;
+        --wheelhouse)
+          [ $# -ge 2 ] && [ -n "$2" ] || { echo "--wheelhouse needs a directory" >&2; exit 2; }
+          _wheels="$2"; shift ;;
+        *) echo "usage: client.sh update [--no-pull] [--wheelhouse <dir>]" >&2; exit 2 ;;
+      esac
+      shift
+    done
+    # A venv an older install built with python 3.10 (accepted back then)
+    # cannot take the lock (starlette, jiter, rpds-py need >=3.11): say so,
+    # instead of letting pip die with a resolver error that reads like a
+    # hostile mirror.
+    if [ -x "$VENV/bin/python3" ] && ! "$VENV/bin/python3" -c \
+         'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
+      echo "  x $VENV is $("$VENV/bin/python3" -V 2>&1 | head -1); the pinned deps need Python 3.11+." >&2
+      echo "    Re-run the installer, which rebuilds the venv with a vetted interpreter:" >&2
+      echo "      $REPO/scripts/setup-client.sh --host <rig-fqdn>" >&2
+      exit 1
+    fi
     _pulled=0
-    if [ -d "$REPO/.git" ]; then
+    if [ "$_no_pull" -eq 1 ]; then
+      echo "  - --no-pull: using the checkout as it is ($REPO)"
+    elif [ -d "$REPO/.git" ]; then
       if git -C "$REPO" pull --ff-only; then
         _pulled=1
       else
@@ -521,7 +576,10 @@ if backend != "llama" and served:
     # runs on macOS.)
     if [ -x "$VENV/bin/pip" ]; then
       _pd_rc=0
-      if [ -x "$REPO/scripts/pydeps.sh" ]; then
+      if [ -x "$REPO/scripts/pydeps.sh" ] && [ -n "$_wheels" ]; then
+        # --from must come first: pydeps.sh stops reading its own flags at -q
+        OPENBEAST_PYTHON="$VENV/bin/python3" "$REPO/scripts/pydeps.sh" install --from "$_wheels" -q || _pd_rc=$?
+      elif [ -x "$REPO/scripts/pydeps.sh" ]; then
         OPENBEAST_PYTHON="$VENV/bin/python3" "$REPO/scripts/pydeps.sh" install -q || _pd_rc=$?
       else
         _pd_rc=127
@@ -545,7 +603,8 @@ if backend != "llama" and served:
         echo "  ! the hash-pinned install failed on this python, and NOT on a hash (see above) —" >&2
         echo "    OPENBEAST_PIP_STRICT=0: falling back to agents/requirements.txt, which pins" >&2
         echo "    VERSIONS but not content." >&2
-        if ! "$VENV/bin/pip" install -q -r "$REPO/agents/requirements.txt"; then
+        _fl=""; [ -n "$_wheels" ] && _fl="--no-index"
+        if ! "$VENV/bin/pip" install -q ${_fl:+$_fl --find-links "$_wheels"} -r "$REPO/agents/requirements.txt"; then
           echo "  x dependency install failed." >&2
           exit 1
         fi
@@ -575,7 +634,7 @@ if backend != "llama" and served:
     ;;
 
   -h|--help|help)
-    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
     ;;
 
   *)

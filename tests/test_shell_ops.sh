@@ -16,7 +16,8 @@
 #   5  lib/conf.sh       FILES_DIR ~ / relative; MODEL_URL and SEARXNG_URL
 #                        follow BIND_HOST
 #   6  lib/extensions    invalid EXTENSIONS words skipped, `*` not globbed
-#   7  client.sh update  installs from the hash-pinned lock (pydeps.sh)
+#   7  client.sh update  installs from the hash-pinned lock (pydeps.sh);
+#      offline: --no-pull + --wheelhouse; a 3.10 venv is refused by name
 #   8  update.sh         --images mirrors the searxng pin into the client file
 #   9  fetch-weight.sh   probes $HF_ENDPOINT; verify-weights.sh reports the
 #                        weights dir lib/weights.sh resolves
@@ -574,6 +575,48 @@ if [[ $_rc -ne 0 ]] && has "$_O" "HASH MISMATCH" && ! grep -q requirements.txt "
 else
   fail "client update hash mismatch under opt-out (rc=$_rc): $(tr '\n' '|' < "$T/client.log") :: $_O"
 fi
+# Offline route (review 2026-11-16): the checkout updated from a bundle, the
+# deps from a wheelhouse; and a 3.10 venv is named, not fed to pip.
+cupdate_a() { # cupdate_a "<update args>" [ENV=VAL…]
+  : > "$T/client.log"; local _a="$1"; shift
+  # shellcheck disable=SC2086
+  _O="$(env -i HOME="$CH" PATH="$SB/bin:/usr/bin:/bin" STUB_DIR="$T" "$@" bash "$CR/scripts/client.sh" update $_a 2>&1)"; _rc=$?
+}
+mkdir -p "$T/wheels"
+cupdate_a "--no-pull --wheelhouse $T/wheels"
+if [[ $_rc -eq 0 ]] && grep -q "^pydeps install --from $T/wheels -q :: " "$T/client.log" \
+   && has "$_O" "--no-pull: using the checkout as it is"; then
+  pass "update --no-pull --wheelhouse: pinned deps from the wheelhouse, no pull"
+else
+  fail "client update offline (rc=$_rc): $(tr '\n' '|' < "$T/client.log") :: $_O"
+fi
+cupdate_a "" OPENBEAST_WHEELHOUSE="$T/wheels"
+if [[ $_rc -eq 0 ]] && grep -q "^pydeps install --from $T/wheels -q :: " "$T/client.log"; then
+  pass "…OPENBEAST_WHEELHOUSE does the same"
+else
+  fail "client update OPENBEAST_WHEELHOUSE (rc=$_rc): $(tr '\n' '|' < "$T/client.log") :: $_O"
+fi
+cupdate_a "--bogus"
+if [[ $_rc -eq 2 ]] && has "$_O" "usage: client.sh update"; then
+  pass "…an unknown update flag is a usage error"
+else
+  fail "client update bad flag (rc=$_rc): $_O"
+fi
+cp "$CH/.openbeast-client/venv/bin/python3" "$T/py.keep"
+cat > "$CH/.openbeast-client/venv/bin/python3" <<'STUB'
+#!/bin/bash
+[[ "$1" == "-V" ]] && { echo "Python 3.10.14"; exit 0; }
+case "$*" in *version_info*) exit 1 ;; esac
+exit 0
+STUB
+cupdate
+if [[ $_rc -eq 1 ]] && has "$_O" "Python 3.10.14" && has "$_O" "setup-client.sh" \
+   && ! grep -q "^pydeps" "$T/client.log"; then
+  pass "a 3.10 venv: update stops and names the fix instead of dying inside pip"
+else
+  fail "client update 3.10 venv (rc=$_rc): $(tr '\n' '|' < "$T/client.log") :: $_O"
+fi
+cp "$T/py.keep" "$CH/.openbeast-client/venv/bin/python3"
 
 # ---------------------------------------------------------------------------
 echo ""

@@ -16,6 +16,14 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PASS=0
 FAIL=0
 pass() { echo "  PASS: $1"; PASS=$((PASS + 1)); }
+# _with_timeout <secs> <cmd…> — GNU `timeout` is not on stock macOS (a client
+# platform), where it made the lock control below fail on every run. perl is.
+_with_timeout() {
+  if command -v timeout >/dev/null 2>&1; then timeout "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$@"
+  else perl -e 'alarm shift; exec @ARGV or exit 127' "$@"
+  fi
+}
 fail() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
 
 echo "=== clients.sh (per-device enrollment) tests ==="
@@ -792,18 +800,7 @@ else
   fail "revoke wrote the registry while the lock was held elsewhere"
 fi
 # Negative control: readers take no lock, so list must not hang behind it.
-# Bounded through python3 (already required above), not GNU timeout(1):
-# stock macOS has none, and the rc-127 that left made this read "list
-# blocked" on every Mac — a false failure that hid a real one.
-_bounded() { # _bounded SECONDS CMD... — run CMD, fail if it outlives SECONDS
-  python3 -c '
-import subprocess, sys
-try:
-    sys.exit(subprocess.run(sys.argv[2:], timeout=float(sys.argv[1])).returncode)
-except subprocess.TimeoutExpired:
-    sys.exit(124)' "$@"
-}
-if out="$(_bounded 10 "$L/scripts/clients.sh" list 2>&1)" && _has "$out" "lap"; then
+if out="$(_with_timeout 10 "$L/scripts/clients.sh" list 2>&1)" && _has "$out" "lap"; then
   pass "list does not wait for the lock (reads stay lock-free)"
 else
   fail "list blocked on (or failed under) the writer lock"
@@ -963,6 +960,60 @@ if [[ $rc -eq 1 ]] && _has "$out" "no venv at" && ! _has "$out" "not installed";
   pass "control: an existing install without a venv reports the missing venv"
 else
   fail "half-installed status (rc=$rc): $out"
+fi
+
+echo ""
+echo "client.sh status probes (review 2026-11-16):"
+# curl stub: records argv, never dials. /health answers nothing (a blackholed
+# rig), /healthz says OK, a query-less format=json answers $SX_FMT.
+SH="$TMPROOT/status-home"; SB="$TMPROOT/status-bin"; mkdir -p "$SH/.openbeast-client" "$SB"
+cat > "$SB/curl" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*" >> "$CURL_LOG"
+url="${@: -1}"; w=""; prev=""; null=0
+for a in "$@"; do
+  [[ "$prev" == "-w" ]] && w="$a"
+  [[ "$prev" == "-o" && "$a" == /dev/null ]] && null=1
+  prev="$a"
+done
+case "$url" in
+  */healthz)               body="OK"; code=200 ;;
+  */search\?format=json)   body='{"error": "No query"}'; code="${SX_FMT:-400}" ;;
+  *)                       body=""; code=000 ;;
+esac
+[[ $null -eq 1 ]] || printf '%s' "$body"
+[[ -n "$w" ]] && printf '%b' "${w//%\{http_code\}/$code}"
+[[ "$code" == 000 ]] && exit 7
+exit 0
+STUB
+chmod +x "$SB/curl"
+{ echo "OPENBEAST_AGENT_INFERENCE_URL=https://rig.invalid:8443/v1"
+  echo "SEARXNG_URL=https://rig.invalid:8889"; } > "$SH/.openbeast-client.env"
+_status() { : > "$TMPROOT/curl.log"
+  out="$(env -i HOME="$SH" PATH="$SB:/usr/bin:/bin" CURL_LOG="$TMPROOT/curl.log" "$@" \
+         bash "$REPO_DIR/scripts/client.sh" status 2>&1)" || true; }
+_status
+if [[ "$(grep -c '/health$' "$TMPROOT/curl.log")" == "1" ]] && _has "$out" "no response from"; then
+  pass "a silent rig is asked for /health ONCE (body + status in one request)"
+else
+  fail "health requests: $(grep -c '/health$' "$TMPROOT/curl.log") :: $out"
+fi
+if ! grep -q 'q=' "$TMPROOT/curl.log" && grep -q '/healthz$' "$TMPROOT/curl.log" \
+   && _has "$out" "search reachable"; then
+  pass "search is checked with /healthz + a query-less format probe: no live search"
+else
+  fail "search probe: $(tr '\n' '|' < "$TMPROOT/curl.log") :: $out"
+fi
+if grep -q -- '-m 2 .*healthz$' "$TMPROOT/curl.log"; then
+  pass "with the rig silent, the later probes wait 2 s, not 5"
+else
+  fail "later probe timeout: $(tr '\n' '|' < "$TMPROOT/curl.log")"
+fi
+_status SX_FMT=403
+if _has "$out" "JSON output is off" && ! _has "$out" "search reachable"; then
+  pass "a SearXNG without JSON output is named as such (web_search needs it)"
+else
+  fail "json-off search: $out"
 fi
 
 # --- Summary ---

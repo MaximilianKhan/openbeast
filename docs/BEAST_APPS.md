@@ -35,14 +35,18 @@ sees tool calls and results. Nothing here changes the rig.
 | `scripts/apps.sh list [--json]` | every capability, its status here, enabled or not | 0 |
 | `scripts/apps.sh find <words…> [--json]` | which capability covers a request ("mobile build on the mac") | 0, 2 = no match |
 | `scripts/apps.sh check <cap> [--server S] [--json]` | runs the probes: READY, or MISSING with numbered remediation | 0 READY · 3 MISSING · 4 UNSUPPORTED |
-| `scripts/apps.sh enable <cap> [--server S] [--key K] [--dry-run] [--accept-risk] [--ungated]` | merges the first READY server into opencode, backing the old file up first | 0 · 3/4 refused · 6 risk / gates cannot be written · 7 conflict |
+| `scripts/apps.sh enable <cap> [--server S] [--key K] [--dry-run] [--accept-risk] [--ungated] [--allow-duplicate]` | stages the server (npm: into `<state>/npm/`), merges the first READY one into opencode, backing the old file up first | 0 · 3/4 refused · 6 risk / gates cannot be written · 7 conflict (a key or a copy that already exists) |
 | `scripts/apps.sh disable <cap\|server\|key> [--dry-run]` | removes exactly what `enable` wrote | 0 · 2 not ours |
 | `scripts/apps.sh refresh [server…] [--no-introspect] [--json]` | latest published version vs the pin; live `tools/list`; manifest + diff | 0 · 1 all failed |
-| `scripts/apps.sh upgrade <server> [--to V]` | moves a pin: re-probe, re-read tools, rewrite the entry | 0 · 3 · 5 offline |
+| `scripts/apps.sh upgrade <server> [--to V] [--accept-new-tools]` | moves a pin (up, or down: a rollback): re-probe, stage, re-read tools, rewrite the entry | 0 · 2 `--to` is not an exact version · 3 · 5 offline · 6 new ungated risky tools |
 | `scripts/apps.sh tools <server> [--json]` | the recorded tool manifest (names, descriptions, schemas) | 0 · 2 none yet |
 | `scripts/apps.sh validate` | checks the catalog | 0 · 1 |
 
-`--json` output is for the model; the skill
+`--json` output is for the model. It never carries a credential: values of a
+server's `secret_env` (and of any variable named like `*KEY*`, `*TOKEN*`,
+`*SECRET*`, `*PASSWORD*`) show as `"<redacted>"` there, because what the model
+reads travels to the rig and into agent transcripts. The config file keeps
+the real value (mode 600). The skill
 [`skills/app-control`](../skills/app-control/SKILL.md) tells it how to use
 the output: check first, relay the remediation verbatim, propose `enable`, and
 never run `upgrade` unasked.
@@ -117,7 +121,11 @@ How probes behave:
   put on the MCP server's PATH, plus any `export_env`.
 - **path**: any glob in `paths` exists. **env**: the variable is set (and
   matches `match`). **tcp**: something accepts a connection (Blender's addon
-  socket, Figma's 3845, rosbridge's 9090). **any**: one of `of` passes.
+  socket, Figma's 3845, rosbridge's 9090). **any**: one of `of` passes; the
+  alternatives run in order and stop at the first that passes (`subprobes`
+  lists only those that ran).
+- One `list` / `find` / `check` runs each probe, and each distinct command,
+  once: servers that share `npx`, `node`, `adb` or `simctl` reuse the result.
 - `required = false` turns a failure into a warning: the server starts, but
   one workflow will not work (the Android emulator, a running Blender).
 - `fix` text is shown verbatim, so it names what is missing and the exact
@@ -157,10 +165,25 @@ case through data, not code:
 - **New version published.** `refresh` compares the effective pin (catalog, or
   an `upgrade` override in `pins.json`) with the npm, PyPI or GitHub latest
   and reports `UPDATE AVAILABLE`. It never moves the pin itself.
-  `upgrade <server>` does: it re-runs the probes, starts the new version,
-  reads its `tools/list` (it aborts and keeps the pin if the new version does
-  not answer), records the manifest, rewrites the opencode entry and backs
-  the old one up.
+  `upgrade <server>` does: it re-runs the probes, stages and starts the new
+  version, reads its `tools/list` (it aborts and keeps the pin if the new
+  version does not answer), records the manifest, rewrites the opencode entry
+  and backs the old one up. Before writing anything it diffs the new tool
+  list: a tool that says it runs code, or a NEW tool matching
+  `risk_patterns`, that no gate covers makes it refuse (exit 6, pin and
+  config untouched) until the tool is gated in the catalog or an overlay, or
+  you pass `--accept-new-tools`. `refresh` reports the same flags; it never
+  rewires anything, so it does not refuse.
+- **Versions are versions.** `--to`, the registry's "latest" answer and every
+  `pins.json` value must be an exact version (`1.2.3`, `2.3.0rc1`,
+  `1.0.0-beta.1`). The value is substituted into `{package}@{version}`, where
+  `npm:other-pkg@9`, `file:../x` or a repository spec would install different
+  code under the trusted server's name and gates: `upgrade` refuses them
+  (exit 2), and a pin that is not a version is ignored.
+- **Rollback.** `upgrade <server> --to <older>` works: the pin records the
+  catalog version it was set against (`base` in `pins.json`) and wins, in
+  either direction, until the catalog pin moves. `refresh` then says
+  "pinned below the catalog's X" instead of asking you to undo it.
 - **Same version, different tools** (or an app-bundled server like Figma,
   whose version follows the app). `refresh` starts the server, speaks MCP
   (`initialize` + `tools/list`, paged, with a timeout), and records a manifest
@@ -184,7 +207,12 @@ case through data, not code:
 The opencode config is `$OPENBEAST_OPENCODE_CONFIG`, else
 `${XDG_CONFIG_HOME:-~/.config}/opencode/opencode.json`, or `--config`.
 Both schemas are supported. The choice comes from `OPENBEAST_OPENCODE_SCHEMA`,
-then the file itself, then `opencode --version`:
+then the file itself, then `opencode --version`. `upgrade` re-reads the file
+every time rather than trusting the schema recorded at enable: once
+`setup-client.sh` has moved v1 entries into `mcp.servers` (opencode 2.x), an
+entry enabled as v1 is rewritten as v2 and its gates move from `permission`
+to `permissions`. Writing v1 next to `mcp.servers` is the mixed layout
+opencode 2 reads as "No MCP servers configured".
 
 | | v1 (opencode 1.x) | v2 (opencode 2.x, e.g. 2.0.25) |
 |---|---|---|
@@ -208,47 +236,158 @@ The v2 facts were read from opencode 2.0.25 itself on 2026-11-15:
 Guarantees:
 
 - `enable` refuses when the check fails. It also refuses when an entry with
-  the same key exists that beast-apps did not write, and when your own entry
-  already runs the same package (pass `--allow-duplicate` to add it anyway).
+  the same key exists that beast-apps did not write, when your own entry
+  already runs the same package, and when beast-apps already wired the same
+  capability or server under another `--key` (pass `--allow-duplicate` to add
+  it anyway).
+- A gate never weakens a rule you already have for the same action. v1: a
+  `"deny"` (or an equal `"ask"`) of yours is kept and not recorded; an
+  `"allow"` is tightened to `"ask"` and put back on `disable`. v2: our rule is
+  appended only when your last rule for that action is weaker. `disable`
+  removes only what `enable` recorded.
 - `enable` refuses (exit 6, nothing written) when the config cannot hold the
   server's gates: a v1 `"permission": "allow"` string has no room for a
   per-tool rule. Make `permission` an object, or pass `--ungated` to wire the
   server in without them; `gated:` lists only rules that were written.
 - Every write first copies the old file to `opencode.json.bak-beast-apps-<ts>`
-  (mode 600), then writes atomically, keeping the file's mode. The file
-  becomes 600 when a secret env var is copied in.
+  (created 600, never widened first), then writes atomically, keeping the
+  file's mode. The file becomes 600 when a secret env var is in the entry,
+  on `enable` and on `upgrade` alike.
+- `upgrade` keeps the `env_passthrough` values recorded at enable when the
+  shell you run it from does not set them (a fresh terminal does not drop the
+  printer's token); a value the shell does set replaces the recorded one.
 - `disable` removes only the keys and rules recorded in
   `<state>/enabled.json`, and removes containers it emptied. A file that was
   enabled and then disabled is identical to the original. Ownership lives in
   the state dir, because v2 forbids marker fields in the entry.
 - The config is never rewritten if it is not plain JSON (JSONC comments).
-- `argv[0]` is written as an absolute path, so a GUI-launched client does not
-  hit `spawn npx ENOENT`.
+- `argv[0]` is written as an absolute path, and every stdio entry gets a
+  fixed `PATH`: the dirs the probes found (node, adb, java, …), the
+  launcher's dir, then the system dirs. A GUI-launched opencode gives its
+  servers launchd's `/usr/bin:/bin:/usr/sbin:/sbin`, where `spawn npx ENOENT`
+  and `env: node: No such file or directory` (every npm bin is
+  `#!/usr/bin/env node`) both used to happen.
+
+### How a server is launched
+
+opencode starts an MCP server in the **project directory it has open**. For
+an npm server, `npx -y pkg@1.2.3` there is resolved against that project: its
+own `node_modules/pkg` at 1.2.3 runs instead of the registry copy, its
+`.npmrc` can point `registry` and `cache` elsewhere, and npm exec puts its
+`node_modules/.bin` on the server's `PATH` (a planted `node` or `xcodebuild`
+wins). An exact pin stops none of that, and it happens when opencode starts,
+before any ask gate. So the catalog's `["npx", "-y", "{package}@{version}", …]`
+is never run through npx:
+
+- `enable` and `upgrade` install that exact version into
+  `<state>/npm/<server>@<version>/` with `npm install --prefix` from that
+  directory (your `~/.npmrc` applies, no project's does), and record npm's
+  lockfile there. Offline, or with the package already cached, the install
+  uses the local npm cache only (`--offline` / `--prefer-offline`).
+- The entry runs `node <state>/npm/…/node_modules/<pkg>/<bin>` by absolute
+  path. No npm at launch, no lookup relative to the project; the server
+  still starts in the project dir, so tools that work on "the project" (for
+  replicant, `./gradlew`) are unchanged.
+- `refresh` and `upgrade` start servers from the state dir with a minimal
+  environment (`PATH`, `HOME`, locale, proxy and CA settings, `npm_config_*`
+  and `UV_*`, plus the server's own catalog env): a release nobody has
+  reviewed yet does not get your cloud credentials or tokens.
+  `OPENBEAST_APPS_INTROSPECT_ENV` names extra variables to pass.
+- An entry enabled before this still launches through npx; `refresh` says
+  so. Re-run `enable <capability>` to move it.
+
+uvx servers keep `uvx pkg@version`: `uv tool run` does not read the opened
+project's `uv.toml`/`pyproject.toml` (checked with uv 0.8.22: a project
+`index-url` is ignored).
 
 The state dir is `$OPENBEAST_APPS_STATE`, else `~/.openbeast-client/apps/`. It
-holds `enabled.json`, `pins.json`, `manifests/` and `catalog.d/`.
+holds `enabled.json`, `pins.json`, `manifests/`, `npm/` (staged npm servers,
+one dir per version, so a rollback needs no download) and `catalog.d/`.
 
 ## Offline
 
-The catalog, the probes, `check`, `enable` and `disable` never touch the
-network. `refresh` and `upgrade` decide whether they are offline in this
+The catalog, the probes, `check` and `disable` never touch the network.
+`enable` touches it only to stage an npm server that is not in the local npm
+cache yet; offline, it stages from that cache alone (`npm --offline`) and
+fails fast with nothing written when the package is not there. `enable`,
+`refresh` and `upgrade` decide whether they are offline in this
 order: `OPENBEAST_APPS_OFFLINE=1`; `OFFLINE=true` (the install-level switch);
 the rig's island state; and finally beast-island's connect probe
 ([BEAST_ISLAND.md](BEAST_ISLAND.md), `OPENBEAST_ISLAND_PROBES`). Offline,
 `refresh` prints the beast-island banner, keeps every pin, skips the registry
-lookups, and runs introspection with `npx --offline` / `uvx --offline`, so a
-cached package still answers and an uncached one fails fast. `upgrade` without
-`--to` exits 5 and says why.
+lookups, and runs introspection from what is already staged (npm) or with
+`uvx --offline`, so a cached package still answers and an uncached one fails
+fast. `upgrade` without `--to` exits 5 and says why; `upgrade --to V` stages V
+from the local npm cache only.
+
+### Staging servers for an offline machine
+
+A server needs its package on the machine once; after that it starts with no
+network. Stage it while online, or carry it over:
+
+- **Online first** (the simple route): `scripts/apps.sh enable <capability>`
+  stages an npm server into `<state>/npm/`; `scripts/apps.sh refresh <server>`
+  fills uv's cache for a uvx server. Both keep working offline afterwards.
+- **Air-gapped, npm**: on a connected machine of the same OS and CPU, run
+  `enable` (or `npm cache add <pkg>@<version>` for every package the
+  server's lockfile names), then copy `~/.npm/_cacache` to the same path on
+  the offline machine. `enable` there installs from that cache
+  (`--offline`). Or copy `<state>/npm/<server>@<version>/` itself: it is
+  self-contained.
+- **Air-gapped, uvx**: copy uv's cache (`uv cache dir`) from a connected
+  machine where `refresh <server>` ran. mcp-for-blender pins
+  `UV_PYTHON_PREFERENCE=only-managed`, so it also needs uv's managed Python:
+  run `uv python install 3.12` there and copy `uv python dir` across too.
+- `enable` offline with nothing cached fails with npm's `ENOTCACHED` and
+  writes nothing.
+
+### Offline client
+
+Installing client mode needs a checkout and the python deps, neither of
+which has to come from the internet:
+
+1. **Checkout.** Run `scripts/setup-client.sh` from INSIDE a checkout (a
+   copied clone, or `git clone /media/usb/openbeast.bundle openbeast` from a
+   bundle made on a connected machine). It then installs in place and never
+   clones; outside a checkout it clones from GitHub, and says what to do when
+   that fails.
+2. **Python deps.** On a connected machine with the same OS, CPU and Python
+   minor version: `scripts/pydeps.sh wheelhouse /media/usb/wheels` (it prints
+   the lock's sha256). On the client:
+   `scripts/setup-client.sh --host <rig> --wheelhouse /media/usb/wheels`
+   (or `OPENBEAST_WHEELHOUSE=…`). `pydeps.sh install --from` checks every
+   wheel against the lock committed in the checkout (or
+   `OPENBEAST_LOCK_SHA256`) and contacts no index.
+3. **Updates.** Update the checkout from a new bundle
+   (`git pull /media/usb/openbeast.bundle main`), then
+   `openbeast-client update --no-pull --wheelhouse /media/usb/wheels`.
+
+The rig itself is reached over the tailnet, not the internet, so an islanded
+client keeps working once installed (BEAST_ISLAND.md).
 
 ## Safety
 
 - **The server runs with your user's rights.** Building a project runs its
   build scripts (MobileBuildMCP `build_*`/`test_*`, replicant `gradle-build`,
-  `gradle-test`, `gradle-list`). `execute_blender_code` runs arbitrary Python
-  in Blender. replicant's `adb-shell` runs device commands behind its own
-  denylist. Each of these is an opencode **ask** rule, and the user approves
-  every call. `tests/test_apps.py` checks the gates against the pinned
-  releases' real tool lists (`tests/fixtures/apps/*.tools.json`).
+  `gradle-test`, `gradle-list`). Installing and launching an app runs it: a
+  Simulator app is a native macOS process running as you, and a project can
+  ship a prebuilt one (MobileBuildMCP `install_app_sim`/`launch_app_sim`,
+  replicant `adb-app`, Mobile MCP `mobile_install_app`/`mobile_launch_app`).
+  Mobile MCP's `mobile_batch_commands` runs any of its other tools as steps,
+  so it is gated too, or it would reach every gated tool with no approval.
+  `execute_blender_code` runs arbitrary Python in Blender. replicant's
+  `adb-shell` runs device commands behind its own denylist. Each of these is
+  an opencode **ask** rule, and the user approves every call.
+- **Gates are checked against real tool names.** `tests/test_apps.py` checks
+  every gate of every gated stdio server against the pinned release's tool
+  list in `tests/fixtures/apps/<server>-<version>.tools.json`, and fails when
+  a gated server has no such list. MobileBuildMCP, replicant and
+  mcp-3d-printer-server were read from `tools/list`; Mobile MCP 1.0.17,
+  mcp-for-blender 2.3.0 and ros-mcp 3.1.2 were read statically from the
+  published package source (the npm tarball, the PyPI wheel) without running
+  it, the way upstream registers them (`tool(...)` / `@mcp.tool`) under the
+  catalog's env (Mobile MCP's telemetry-only `get_more_tools` is absent).
+  `refresh` records the live list on your machine.
 - **Physical actions.** `mcp-3d-printer-server` has no confirmation prompt of
   its own (upstream: "the client's own print action is the approval"), so it
   is **off by default**. `enable 3d-print` needs `--accept-risk`, and every
@@ -269,7 +408,14 @@ cached package still answers and an uncached one fails fast. `upgrade` without
   asset/generation tools send work off the machine. The cloud-device tools
   are gated, and the asset tools are called out in the server notes.
 - **Pins, not `@latest`.** Every launch command pins an exact version. The
-  validator refuses an unpinned `npx`/`uvx` command.
+  validator refuses an unpinned `npx`/`uvx` command and a catalog version
+  that is not an exact release. The pin covers the top-level package only:
+  npm resolves its dependencies when `enable` stages it and records them in
+  `<state>/npm/<server>@<version>/package-lock.json` (with integrity hashes),
+  so they stay fixed on that machine but can differ between machines; uvx
+  resolves a tool's dependencies when it first fills its cache. A compromised
+  transitive release published before you stage can still land. The Python
+  side of OpenBeast itself is hash-locked (`scripts/pydeps.sh`).
 - **Tool surface.** MobileBuildMCP enables only the `simulator` workflow.
   Every advertised tool costs a local model context, so widen it in the
   catalog (`MOBILEBUILDMCP_ENABLED_WORKFLOWS`) only when needed.

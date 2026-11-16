@@ -1111,8 +1111,11 @@ The Mac on 2026-11-15:
   `mobile-ui`, `sim-ros`.
 - MISSING: `blender`, `figma`, `3d-print` (off by default: risk).
 
-Offline, `check`, `enable` and `disable` never touch the network. `refresh`
-uses `npx --offline` / `uvx --offline`. Skill: `app-control`.
+Offline, `check` and `disable` never touch the network; `enable` stages an
+npm server from the local npm cache only, and `refresh` runs what is staged
+(npm) or `uvx --offline`. Staging servers for an offline Mac and installing
+client mode with no internet: [BEAST_APPS.md](BEAST_APPS.md) § Staging
+servers for an offline machine, § Offline client. Skill: `app-control`.
 
 ### F5. beast-docs: platform docs, mirrored
 
