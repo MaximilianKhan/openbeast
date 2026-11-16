@@ -109,7 +109,8 @@ def _tool(*args, **kwargs):
 
 @_tool()
 def bash(command: str, timeout: int = 120) -> str:
-    """Run a shell command (/bin/sh) and return its output. Use for building,
+    """Run a shell command (bash; /bin/sh where bash is absent) and return
+    its output. Use for building,
     testing, git operations, installing packages, or any system task.
 
     Facts: stdout and stderr are MERGED; each call is a FRESH shell — cd,

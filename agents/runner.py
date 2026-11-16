@@ -19,6 +19,7 @@ import argparse
 import atexit
 import json
 import os
+import platform
 import re
 import signal
 import sys
@@ -90,7 +91,8 @@ USE THE TOOLS. A working professional engineer:
 Workflow:
 1. Understand the task — read relevant files, explore the codebase with list_files / grep.
 2. Plan your approach. For any task with 3+ steps call update_plan with the steps
-   first, then keep it current as you go (exactly one step in_progress at a time).
+   first, then call it again only when a step changes status (exactly one step
+   in_progress at a time; the plan is re-shown every turn, never re-send it unchanged).
    For hard tasks (parsers, algorithms with subtle invariants, numerical code),
    think through the invariants before coding.
 3. Execute. Use edit_file for changes to existing files; write_file only for brand-new files.
@@ -110,12 +112,42 @@ Guidelines:
 """
 
 
-def build_system_prompt(context: str = "", context_budget: int = 0) -> str:
+def platform_line(system: str | None = None, shell: str | None = None) -> str:
+    """One line naming the tool host's OS and the bash tool's shell.
+
+    Runner v2 (audit of GLM-5.3-Flash's v5 failures, 2026-11-16). Tools run
+    where THIS process runs (AGENTS.md), which for the eval harness and Mac
+    clients is macOS: GNU habits (`sed -i 's/..'`, `timeout`, `cat -A`)
+    failed there and cost turns, because nothing said the host was BSD. The
+    text is built here, never in system-prompt.md (owner's rule)."""
+    system = system or platform.system() or "unknown"
+    shell = shell or _tools.BASH_SHELL
+    host = system
+    if system == "Darwin":
+        host = ("Darwin (macOS, BSD userland: `sed -i ''` not `sed -i`, no GNU "
+                "`timeout`, no `cat -A`"
+                + ("; /bin/bash is bash 3.2" if shell == "/bin/bash" else "") + ")")
+    return f"Tool host: {host}. The bash tool runs each command with `{shell} -c`.\n"
+
+
+def budget_line(max_iter: int) -> str:
+    """The turn budget, stated up front (runner v2: most failing v5 units
+    ran out of turns while still exploring, never told how many they had)."""
+    return (f"Turn budget: you have {max_iter} tool turns (model replies) for this "
+            f"task. Spend them on progress: explore briefly, then edit, run the "
+            f"check, and call task_done well before they run out.\n")
+
+
+def build_system_prompt(context: str = "", context_budget: int = 0,
+                        max_iter: int = 0) -> str:
     """Assemble the full system prompt with optional context and budget info."""
     parts = []
     if _SOUL_PROMPT:
         parts.append(_SOUL_PROMPT)
     parts.append(_AGENT_INSTRUCTIONS)
+    parts.append(platform_line())
+    if max_iter > 0:
+        parts.append(budget_line(max_iter))
     if context_budget > 0:
         parts.append(
             f"Context budget: you have approximately {context_budget:,} tokens of context. "
@@ -401,6 +433,22 @@ def _max_completion_tokens() -> int:
     return n + _CONTENT_ALLOWANCE_TOKENS
 
 
+def _thinking_kwargs() -> dict:
+    """Per-request thinking toggle (runner v2), OPENBEAST_AGENT_THINKING:
+    on / off send chat_template_kwargs.enable_thinking true / false (the
+    switch for a "thinking on" ablation arm; checked live on the Spark GLM
+    TensorFold server, where `true` returns reasoning_content and the
+    default none). Unset, or any other value, sends nothing: the request is
+    byte-identical to before. run_eval copies the parent env into the
+    runner, so `OPENBEAST_AGENT_THINKING=on python evals/run_eval.py` reaches
+    here. reasoning_content is never put back in the history: only
+    message.content and tool_calls are kept (see the assistant turn below)."""
+    v = os.environ.get("OPENBEAST_AGENT_THINKING", "").strip().lower()
+    if v not in ("on", "off"):
+        return {}
+    return {"extra_body": {"chat_template_kwargs": {"enable_thinking": v == "on"}}}
+
+
 def _is_context_overflow(err: str) -> bool:
     return bool(_CTX_OVERFLOW_RE.search(err or ""))
 
@@ -659,6 +707,42 @@ def _safe_stdio():
             pass
 
 
+#: The remaining-turns notice appears when this many turns or fewer are left
+#: (the current one included).
+_TURNS_LOW = 3
+
+
+def turns_notice(iteration: int, max_iter: int) -> str:
+    """A short notice for the last _TURNS_LOW turns, else ''. Rides in the
+    transient block with the plan (never stored in the history)."""
+    left = max_iter - iteration + 1
+    if left > _TURNS_LOW or left < 1:
+        return ""
+    if left == 1:
+        return ("[turn budget — this is your LAST turn: call task_done now "
+                "if the work is done]")
+    return (f"[turn budget — {left} turns left, this one included: stop "
+            f"exploring; finish, verify, and call task_done]")
+
+
+#: Consecutive identical tool calls (same name, args AND result) after which
+#: the result gets _repeat_nudge appended.
+_REPEAT_AFTER = 3
+
+
+def _repeat_nudge(n: int) -> str:
+    return (f"\n\n[You have seen this exact output {n} times; act on it "
+            f"(edit, run the tests, or call task_done)]")
+
+
+def _call_key(name: str, args) -> str:
+    """Canonical form of a tool call, so {"a":1,"b":2} == {"b":2,"a":1}."""
+    try:
+        return name + "\0" + json.dumps(args, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return name + "\0" + repr(args)
+
+
 def _with_plan(messages: list[dict], plan: str) -> list[dict]:
     """Request payload = history + the current plan block (transient: the
     block is never stored, so it can't bloat or be evicted). Folded into a
@@ -887,13 +971,15 @@ def run_agent(
 
     # Build system prompt: explicit override > dynamic build > default
     if system_prompt is None:
-        system_prompt = build_system_prompt(context=context, context_budget=context_budget)
+        system_prompt = build_system_prompt(context=context, context_budget=context_budget,
+                                            max_iter=max_iter)
 
     client = OpenAI(base_url=base_url, api_key=resolve_api_key(api_key, base_url),
                     max_retries=_CLIENT_MAX_RETRIES)
     # Resolved once per run; {} (send nothing) under eval or when set to 0.
     max_tokens = _max_completion_tokens()
     cap_kwargs = {"max_tokens": max_tokens} if max_tokens else {}
+    think_kwargs = _thinking_kwargs()   # {} unless OPENBEAST_AGENT_THINKING
 
     # --- THE EVAL GUARD, resolved FIRST (E1/E2) ---------------------------
     # Resolved once, here, and cached in a local for the whole run: the guard
@@ -1014,6 +1100,10 @@ def run_agent(
     stop_reason = ""
     call_seq = 0
     call_index: dict[int, int] = {}   # message position -> tool-call ordinal
+    # Repeat guard (runner v2): the v5 audit saw the same `cat` 15x and the
+    # same bash command 19x in a row, each with the same output.
+    last_call: tuple[str, str] | None = None   # (call key, result)
+    repeats = 0
     if not (resume_from and os.path.isfile(resume_from)):
         reset_plan()
 
@@ -1090,7 +1180,9 @@ def run_agent(
         print(f"\n[iter {iteration}/{max_iter}]")
         log_event({"type": "iteration", "number": iteration})
 
-        plan = plan_block()
+        # The transient block: the plan plus, near the end, the turns left.
+        plan = "\n\n".join(b for b in (plan_block(), turns_notice(iteration, max_iter))
+                           if b)
         if context_budget > 0:
             # Proactive: past ~70% of the declared budget, evict before the
             # server has to tell us (4 chars/token estimate).
@@ -1123,6 +1215,7 @@ def run_agent(
                         temperature=(0.0 if os.environ.get(
                             "OPENBEAST_EVAL_GREEDY", "") == "1" else 0.6),
                         **cap_kwargs,
+                        **think_kwargs,
                     )
                     break
                 except Exception as rl:
@@ -1263,6 +1356,19 @@ def run_agent(
                     call_ok = True
                 except Exception as e:
                     result = f"Error: bad tool call to {fn_name}: {e}"
+
+            # task_done is exempt: a refused one is answered by its own text.
+            if fn_name != "task_done":
+                key = (_call_key(fn_name, fn_args if not parse_err
+                                 else tc.function.arguments), result)
+                repeats = repeats + 1 if key == last_call else 1
+                last_call = key
+                if repeats >= _REPEAT_AFTER:
+                    result += _repeat_nudge(repeats)
+                    log_event({"type": "repeat_guard", "name": fn_name,
+                               "repeats": repeats, "iteration": iteration})
+            else:
+                last_call, repeats = None, 0
 
             log_event({
                 "type": "tool_call",

@@ -112,7 +112,7 @@ def test_plan_block_compact_and_all_done_hint():
     assert tools.plan_block() == ""
     tools.update_plan([{"step": "a", "status": "done"}, {"step": "b", "status": "done"}])
     block = tools.plan_block()
-    assert block.startswith("[plan — 2/2 done; keep it current with update_plan]")
+    assert block.startswith("[plan — 2/2 done; update_plan only when a step changes status]")
     assert block.count("\n") == 2  # header + 2 rows: ~50 tokens, not a wall
     assert "all steps done; call task_done" in tools.update_plan(
         [{"step": "a", "status": "done"}])
