@@ -82,7 +82,10 @@ HARNESS_FUNCTIONS = ("run_agent", "_run_reaped", "run_setup", "run_pre_validate"
                      # everything the agent left running before validation.
                      "agent_wall_s", "_validator_env", "build_cache_env",
                      "_run_fixture_cmd", "_kill_recorded_groups",
-                     "sweep_agent_leftovers", "AgentWatch")
+                     "sweep_agent_leftovers", "AgentWatch",
+                     # review 1116: the toolchain pinned before any agent runs
+                     # and checked before every validation.
+                     "toolchain_pins", "_toolchain_problems")
 HARNESS_CONSTANTS = ("VALIDATION_TIMEOUT_S", "BUILD_CACHE_ENV", "_AGENT_POLL_S", "_PY_BOOT",
                      "_SWEEP_ROUNDS")
 

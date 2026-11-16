@@ -34,12 +34,15 @@ itself:
       compiled unit's exec to its own binary (no exec into python3), and
       denies reads of any evals/{refs,tasks,suites} tree.
 
+  start_build(sources, argv, product) -> Build; Build.finish(timeout)
   private_build_dir(files), build_env(), tool_path(name),
   scan_toolchain_overrides(dir), is_native_executable(path), sanitizer_flags(k)
       Build a solution from a PRIVATE copy of only its source, with a clean
-      private HOME and the toolchain pinned in the environment, so a planted
-      rust-toolchain.toml / go env / .cargo config cannot capture the compiler,
-      then require the product to be a native executable.
+      private HOME, only root-owned dirs on PATH, and the compiler the harness
+      pinned before any agent ran (pin_toolchain / check_toolchain), so a
+      planted rust-toolchain.toml / go env / go.mod / .cargo config / `gcc`
+      on PATH cannot capture the compiler, then require the product to be a
+      native executable. start_build does all of it.
 
   run_solution(..., confine=[workdir], read_only=python_runtime(exe, mods))
       The solution may read only its runtime and its work dir, write only
@@ -84,7 +87,9 @@ import time
 __all__ = ["scale", "t", "run_solution", "Result", "python_cmd", "python_runtime",
            "processes", "lint_python", "clean_env", "tool_path", "scan_toolchain_overrides",
            "private_build_dir", "build_env", "is_native_executable",
-           "assert_native_executable", "sanitizer_flags", "SANITIZER_FLAGS"]
+           "assert_native_executable", "sanitizer_flags", "SANITIZER_FLAGS",
+           "Build", "start_build", "pin_toolchain", "check_toolchain", "trusted_path",
+           "TOOLCHAIN"]
 
 _LINUX = sys.platform.startswith("linux")
 _DARWIN = sys.platform == "darwin"
@@ -1411,11 +1416,212 @@ _CONFIG_NAMES = ("rust-toolchain", "rust-toolchain.toml", "go.work", "go.env",
 _CONFIG_DIRS = (".cargo", ".config")  # .cargo/config{,.toml}, .config/go/env
 
 
-def tool_path(name: str) -> str:
-    """Absolute path of a toolchain binary, so a planted `rustc`/`cc` earlier
-    on PATH in the build dir cannot shadow it. Falls back to the bare name."""
+# --- toolchain pins -----------------------------------------------------------------
+#
+# A validator calls a compiler (and 122 also otool, nm and clang) as the
+# operator's uid, unsandboxed. The measured agent's bash runs before it as the
+# same uid and may write any dir that uid can: /opt/homebrew/bin, ~/.local/bin,
+# a conda bin dir, a user-installed Go or Rust tree. A `gcc` script planted
+# first on PATH that compiled the REFERENCE passed 36_c with `int main(){}`
+# (review 1116); so did a go.mod `go 1.99.0` + a go env `GOTOOLCHAIN=path` + a
+# `go1.99.0` on PATH. A name looked up on PATH at validation time is therefore
+# the agent's choice. The fix is to decide BEFORE any agent runs:
+#
+#   pin_toolchain()   (the harness, at start) resolves every TOOLCHAIN name,
+#                     preferring a root-owned system copy, finds the real
+#                     compiler behind a proxy (GOROOT/bin/go, the rustc in
+#                     `rustc --print sysroot`), and records a stat digest of
+#                     the binary and of its install tree (ctime included,
+#                     which a same-uid process cannot set back).
+#   check_toolchain() (the harness, before every validation) refuses the unit
+#                     when a name now resolves elsewhere on PATH, a name appeared
+#                     that was absent, or a pinned tree changed on disk.
+#   tool_path(name)   (the validator) returns the pinned absolute path; the
+#                     harness bootstrap injects the pins as _TOOL_PINS.
+
+TOOLCHAIN = ("go", "gcc", "g++", "cc", "c++", "clang", "clang++", "rustc", "zig",
+             "otool", "nm")
+_TRUSTED_DIRS = ("/usr/bin", "/bin", "/usr/sbin", "/sbin", "/usr/local/bin")
+_TOOL_PINS = None  # {name: pin}, set by the harness bootstrap
+
+
+def _root_owned(path: str) -> bool:
+    """`path` (resolved) and every ancestor are owned by root and writable by
+    no one else, so a same-uid process cannot have planted or changed it."""
+    p = os.path.realpath(path)
+    while True:
+        try:
+            st = os.stat(p)
+        except OSError:
+            return False
+        if st.st_uid != 0 or st.st_mode & 0o022:
+            return False
+        parent = os.path.dirname(p)
+        if parent == p:
+            return True
+        p = parent
+
+
+def trusted_path() -> str:
+    """A PATH of root-owned system dirs only (no dir the agent could write)."""
+    return os.pathsep.join(d for d in _TRUSTED_DIRS if os.path.isdir(d) and _root_owned(d))
+
+
+def _which_all(name: str, path: str) -> list[str]:
+    out = []
+    for d in (path or "").split(os.pathsep):
+        if not d:
+            continue
+        p = os.path.join(d, name)
+        if os.path.isfile(p) and os.access(p, os.X_OK) and p not in out:
+            out.append(p)
+    return out
+
+
+def _resolve_tool(name: str, path: str) -> tuple[str | None, str | None]:
+    """(what a bare `name` resolves to on `path`, the copy to pin): the first
+    root-owned candidate on the PATH when there is one (a user-writable dir
+    ahead of /usr/bin cannot then hold the pinned compiler), else the first."""
+    cands = _which_all(name, path)
+    if not cands:
+        return None, None
+    trusted = [c for c in cands if _root_owned(c)]
+    return cands[0], (trusted[0] if trusted else cands[0])
+
+
+def _stat_line(p: str) -> str:
+    try:
+        st = os.lstat(p)
+    except OSError:
+        return f"{p}\0missing\n"
+    link = ""
+    if os.path.islink(p):
+        try:
+            link = os.readlink(p)
+        except OSError:
+            link = "?"
+    return (f"{p}\0{st.st_mode:o}\0{st.st_uid}\0{st.st_size}\0{st.st_mtime_ns}\0"
+            f"{st.st_ctime_ns}\0{st.st_ino}\0{link}\n")
+
+
+def _tree_digest(roots) -> str:
+    """A digest of the metadata (mode, owner, size, mtime, ctime, inode, link
+    target) of every entry under `roots` and of each symlink on the way to
+    them. ctime moves on any write, rename or chmod, and a same-uid process
+    cannot set it back, so a modified compiler or standard library shows."""
+    import hashlib
+    h = hashlib.sha256()
+    for root in sorted(set(roots)):
+        p, seen = root, 0
+        while os.path.islink(p) and seen < 40:   # the symlink chain itself
+            h.update(_stat_line(p).encode("utf-8", "surrogateescape"))
+            p = os.path.join(os.path.dirname(p), os.readlink(p))
+            seen += 1
+        h.update(_stat_line(p).encode("utf-8", "surrogateescape"))
+        if os.path.isdir(p) and not os.path.islink(p):
+            for dp, dns, fns in os.walk(p):
+                dns.sort()
+                for n in sorted(fns) + dns:
+                    h.update(_stat_line(os.path.join(dp, n)).encode("utf-8", "surrogateescape"))
+    return h.hexdigest()
+
+
+def _rustup_home() -> str | None:
+    """Where rustup keeps its toolchains, for a private HOME: a rustup proxy
+    (~/.cargo/bin/rustc) looks under $HOME/.rustup unless RUSTUP_HOME says
+    otherwise, and would find nothing in a fresh one."""
+    rh = os.environ.get("RUSTUP_HOME") or os.path.join(os.path.expanduser("~"), ".rustup")
+    return rh if os.path.isdir(rh) else None
+
+
+def _probe(argv: list[str]) -> str:
+    """stdout of a toolchain query run from / with a private HOME, no go env
+    file, no toolchain switch, and only root-owned dirs on PATH."""
     import shutil
-    return shutil.which(name) or name
+    import tempfile
+    home = tempfile.mkdtemp(prefix="ob-pin-")
+    env = clean_env(base=dict(os.environ))
+    env.update({"HOME": home, "PATH": trusted_path(), "GOENV": "off",
+                "GOTOOLCHAIN": "local", "GOFLAGS": ""})
+    if _rustup_home():
+        env["RUSTUP_HOME"] = _rustup_home()
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=60, env=env,
+                           cwd="/", stdin=subprocess.DEVNULL, check=False)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def pin_toolchain(names=TOOLCHAIN, path: str | None = None) -> dict:
+    """Resolve and fingerprint the toolchain on `path` (default: $PATH).
+    Call it BEFORE any agent runs. Returns {name: pin}; a pin is
+    {"found": bare-name resolution or None, "path": absolute path to call,
+    "roots": files/trees fingerprinted, "digest": _tree_digest(roots)} plus,
+    for a rustup-managed rustc, "rustup_toolchain" (its sysroot's name)."""
+    path = os.environ.get("PATH", "") if path is None else path
+    pins = {}
+    for name in names:
+        found, chosen = _resolve_tool(name, path)
+        pin = {"found": found, "path": chosen, "roots": [], "digest": ""}
+        if chosen:
+            exe, roots = chosen, [chosen, os.path.realpath(chosen)]
+            if found and found != chosen:
+                roots += [found, os.path.realpath(found)]
+            if name == "go":
+                goroot = _probe([chosen, "env", "GOROOT"])
+                if goroot and os.path.isfile(os.path.join(goroot, "bin", "go")):
+                    exe = os.path.join(goroot, "bin", "go")
+                    roots.append(goroot)
+            elif name == "rustc":
+                sysroot = _probe([chosen, "--print", "sysroot"])
+                if sysroot and os.path.isfile(os.path.join(sysroot, "bin", "rustc")):
+                    exe = os.path.join(sysroot, "bin", "rustc")
+                    roots.append(sysroot)
+                    if os.path.realpath(chosen) != os.path.realpath(exe):
+                        pin["rustup_toolchain"] = os.path.basename(sysroot.rstrip(os.sep))
+            elif name == "zig":
+                d = os.path.dirname(os.path.realpath(chosen))
+                for lib in (os.path.join(d, "lib"), os.path.join(os.path.dirname(d), "lib", "zig")):
+                    if os.path.isdir(os.path.join(lib, "std")):  # zig's own lib, never /usr/lib
+                        roots.append(lib)
+            pin["path"] = exe
+            pin["roots"] = sorted(set(roots))
+            pin["digest"] = _tree_digest(pin["roots"])
+        pins[name] = pin
+    return pins
+
+
+def check_toolchain(pins: dict, path: str | None = None) -> list[str]:
+    """What changed since pin_toolchain(): [] when nothing did."""
+    path = os.environ.get("PATH", "") if path is None else path
+    problems = []
+    for name, pin in sorted((pins or {}).items()):
+        found, _chosen = _resolve_tool(name, path)
+        if found != pin.get("found"):
+            if pin.get("found") is None:
+                problems.append(f"`{name}` appeared on PATH at {found}")
+            else:
+                problems.append(f"`{name}` now resolves to {found}, not {pin['found']}")
+            continue
+        if pin.get("roots") and _tree_digest(pin["roots"]) != pin.get("digest"):
+            problems.append(f"`{name}` changed on disk ({', '.join(pin['roots'][:3])})")
+    return problems
+
+
+def tool_path(name: str) -> str:
+    """Absolute path of a toolchain binary. Under the harness: the copy it
+    pinned before any agent ran (GOROOT/bin/go, the sysroot's rustc). Outside
+    it: the first root-owned copy on PATH, else the first copy, so a planted
+    `gcc` in a user-writable dir ahead of /usr/bin is never chosen. Falls back
+    to the bare name."""
+    pin = (_TOOL_PINS or {}).get(name)
+    if pin and pin.get("path"):
+        return pin["path"]
+    _found, chosen = _resolve_tool(name, os.environ.get("PATH", ""))
+    return chosen or name
 
 
 def scan_toolchain_overrides(start: str, stop: str = "/") -> list[str]:
@@ -1446,10 +1652,14 @@ def private_build_dir(files: dict, *, base: str | None = None) -> str:
     source — {relpath: contents|bytes} — and no toolchain-config sibling or
     ancestor the solution could have planted. Build in the returned dir.
 
-    `base` defaults to a private dir created under TMPDIR; its one child is
-    this build dir, so `scan_toolchain_overrides` up to `base` finds nothing
-    unless the compile itself writes one. Returns the build dir path."""
+    `base` defaults, under the harness, to a dir in the validator's private
+    0700 dir (deleted with it); elsewhere to a private dir created under
+    TMPDIR. Its one child is this build dir, so `scan_toolchain_overrides` up
+    to `base` finds nothing unless the compile itself writes one. Returns the
+    build dir path."""
     import tempfile
+    if not base and _harness_private():
+        base = os.path.join(_harness_private(), "build")
     if base:
         os.makedirs(base, exist_ok=True)
     else:
@@ -1468,20 +1678,36 @@ def private_build_dir(files: dict, *, base: str | None = None) -> str:
     return d
 
 
+def _harness_private() -> str | None:
+    """The validator's private 0700 dir (the parent of the harness's build
+    cache), which the harness deletes after the unit; None outside it."""
+    cache = os.environ.get("OPENBEAST_BUILD_CACHE")
+    if not cache:
+        return None
+    parent = os.path.dirname(os.path.realpath(cache))
+    return parent if os.path.isdir(parent) else None
+
+
 def build_env(extra: dict | None = None, *, home: str | None = None) -> dict:
     """Environment for a compiler so a planted config file cannot redirect it.
 
     HOME is a fresh private dir (no $HOME/Library/Application Support/go/env,
     reported on 166); GOENV=off and GOFLAGS cleared (no -ldflags=-s to strip
-    the symbol table); GOTOOLCHAIN=local (no network toolchain download);
-    RUSTUP_TOOLCHAIN is kept from the env if pinned there. Pass the build dir
-    nowhere on PATH; call tool_path() for an absolute compiler path."""
+    the symbol table); GOTOOLCHAIN=local (a go.mod `go 1.99` + a
+    `go1.99` on PATH cannot switch the compiler, review 1116); GOWORK=off;
+    PATH holds only root-owned system dirs (the compiler's own helpers, `cc`
+    for rustc's link, come from there, never from a dir the agent could
+    write). Call tool_path() for the compiler itself."""
     import tempfile
     env = clean_env(base={k: v for k, v in os.environ.items()})
-    env["HOME"] = home or tempfile.mkdtemp(prefix="ob-home-")
+    if _rustup_home():
+        env["RUSTUP_HOME"] = _rustup_home()   # before HOME moves (a proxy rustc)
+    env["HOME"] = home or tempfile.mkdtemp(prefix="ob-home-", dir=_harness_private())
+    env["PATH"] = trusted_path() or "/usr/bin:/bin"
     env["GOENV"] = "off"
     env["GOFLAGS"] = ""
-    env["GOTOOLCHAIN"] = env.get("GOTOOLCHAIN") or "local"
+    env["GOTOOLCHAIN"] = "local"
+    env["GOWORK"] = "off"
     # Compiler caches: the harness puts them in the validator's private dir
     # (run_eval.build_cache_env, deleted after the unit). Outside the harness
     # they go under this private HOME, never ~/.cache, where a compiled
@@ -1499,6 +1725,55 @@ def build_env(extra: dict | None = None, *, home: str | None = None) -> dict:
     if extra:
         env.update({k: str(v) for k, v in extra.items() if v is not None})
     return env
+
+
+class Build:
+    """A compile, started in the background, of a PRIVATE copy of the
+    solution's source: see start_build()."""
+
+    def __init__(self, sources: dict, argv: list, product: str, extra_env: dict | None):
+        self.dir = private_build_dir(sources)
+        self.product = os.path.join(self.dir, product)
+        env = build_env(extra_env)
+        if (argv[0] == "go" and "GO111MODULE" not in (extra_env or {})
+                and not any(os.path.basename(k) == "go.mod" for k in sources)):
+            # A single-file `go build x.go` in GOPATH mode: a go.mod or go.work
+            # planted in an ANCESTOR (the shared TMPDIR, /tmp) is not read.
+            env["GO111MODULE"] = "off"
+        self.argv = [tool_path(argv[0])] + [str(a) for a in argv[1:]]
+        self.proc = subprocess.Popen(self.argv, cwd=self.dir, env=env,
+                                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                     stderr=subprocess.STDOUT, start_new_session=True)
+
+    def finish(self, timeout: float) -> tuple[bool | None, str]:
+        """(True, log) for a native executable at `product`; (False, log) for
+        a failed compile or a product that is not ELF/Mach-O; (None, log)
+        when the compile ran out of `timeout` seconds (it is killed)."""
+        try:
+            out, _ = self.proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(self.proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            self.proc.communicate()
+            return None, "compile timed out"
+        log = (out or b"").decode("utf-8", "replace")
+        if self.proc.returncode != 0 or not os.path.isfile(self.product):
+            return False, log
+        if not is_native_executable(self.product):
+            return False, log + "\nthe build did not produce a native executable"
+        return True, log
+
+
+def start_build(sources: dict, argv: list, product: str, extra_env: dict | None = None) -> Build:
+    """Compile `sources` ({relpath: text|bytes}, a COPY of the solution's
+    files, never the fixture dir itself) with `argv` (its argv[0] a bare
+    compiler name, resolved with tool_path) under build_env(extra_env), in a
+    fresh private_build_dir. Returns a Build; call .finish(timeout), then run
+    Build.product. The fixture dir is never the build cwd, so a go.mod,
+    rust-toolchain.toml or other config the agent left there is not read."""
+    return Build(sources, list(argv), product, extra_env)
 
 
 def is_native_executable(path: str) -> bool:

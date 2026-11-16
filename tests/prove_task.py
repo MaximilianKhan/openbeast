@@ -25,6 +25,13 @@ A unit is PROVEN only when every arm comes out as required:
           solution fails, by the validator's OWN per-run limit — not the
           harness's validator_timeout — within the harness budget
   scale2  the reference passes again at --scale 2.0 (the --jobs 4 budget)
+  toolchain  (compiled units) a toolchain planted AFTER the harness pinned
+          its own is never run, and a solution that does not compile fails:
+          toolchain:path puts a fake of every compiler first on PATH (each
+          one compiles the REFERENCE in place of the solution, the attack
+          that passed 36_c); toolchain:goenv (go) plants a go.mod `go 1.99.0`
+          in the fixture dir, a go env `GOTOOLCHAIN=path` in $HOME and a fake
+          `go1.99.0` on PATH
   lint    no coreutils `timeout` (absent on macOS), no <bits/stdc++.h>, no
           zig API tutoring in a zig prompt; and validator isolation: no child
           Python started with `-c SRC` (its argv is readable by the
@@ -72,6 +79,8 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LANG_EXT = {"python": "py", "go": "go", "c": "c", "cpp": "cpp", "rust": "rs",
             "zig": "zig", "shell": "sh"}
 VALIDATOR_BUDGET_S = 15.0          # at scale 1, including a cold zig compile
+COMPILED = frozenset({"go", "c", "cpp", "rust", "zig"})
+NOT_SOURCE = "this is not a program in any language the validator compiles\n"
 LEAK_NAME_RE = re.compile(r"^(expected|answer|check|oracle|hidden|solution)", re.I)
 COREUTILS_TIMEOUT_RE = re.compile(r"(?:^|[\s;&|(`])timeout\s+-?[\w.]+\s", re.M)
 BITS_RE = re.compile(r"#\s*include\s*<bits/stdc\+\+\.h>")
@@ -255,7 +264,10 @@ def prove(R, M, task: dict, spec: dict, repeat: int | None = None,
     rows: list[tuple] = []
     dest = spec["dest"]
 
-    def arm(label: str, sol: str | None, scale: float = 1.0):
+    # Pin the validator toolchain now, before any arm plants anything.
+    pins = R.toolchain_pins()
+
+    def arm(label: str, sol: str | None, scale: float = 1.0, plant=None):
         R.run_cleanup(task, log=silent)
         if not R.run_setup(task, log=say):
             return None, 0.0, "SETUP FAILED", []
@@ -263,6 +275,8 @@ def prove(R, M, task: dict, spec: dict, repeat: int | None = None,
         if sol:
             os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
             shutil.copy(sol, dest)
+        if plant:
+            plant()
         R.run_pre_validate(task, log=silent)
         t0 = time.time()
         ok, out = R.run_validation(task, timeout_scale=scale)
@@ -308,6 +322,14 @@ def prove(R, M, task: dict, spec: dict, repeat: int | None = None,
     ok, dt, out, _ = arm("empty", None)
     add(ok is False, "empty", ok, dt, out.splitlines()[-1][:90] if out else "")
 
+    lang = M.norm_lang(task.get("language"))
+    if lang in COMPILED:
+        for label, ok, dt, out, ran in toolchain_arms(arm, task, spec, pins, lang):
+            good = ok is False and not ran
+            detail = (f"the planted toolchain RAN ({ran[0][:60]})" if ran
+                      else (out.splitlines()[-1][:90] if out else ""))
+            add(good, label, ok, dt, detail)
+
     if spec.get("leak"):
         ok, dt, out, _ = arm("leak-probe", spec["leak"])
         add(ok is False, "leak-probe", ok, dt, out.splitlines()[-1][:90] if out else "")
@@ -336,6 +358,105 @@ def prove(R, M, task: dict, spec: dict, repeat: int | None = None,
         say(f"{'OK ' if good else 'BAD'} {label:30s} passed={ok!s:5s} {dt:5.2f}s  {detail}")
     say(f"{task['id']}: {'PROVEN' if proven else 'NOT PROVEN'}")
     return proven, rows
+
+
+_FAKE_COMPILER = """#!/bin/sh
+# A planted compiler (prove_task toolchain arm): it records that it ran and
+# compiles the REFERENCE wherever the solution's file is named.
+echo "$0 $*" >> {marker}
+for a do
+  case "$a" in
+    *{dest_base}) set -- "$@" {ref} ;;
+    *) set -- "$@" "$a" ;;
+  esac
+  shift
+done
+exec {real} "$@"
+"""
+
+
+def _write_fake(path: str, marker: str, dest: str, ref: str, real: str) -> None:
+    import shlex  # noqa: PLC0415
+    with open(path, "w") as f:
+        f.write(_FAKE_COMPILER.format(marker=shlex.quote(marker),
+                                      dest_base=os.path.basename(dest),
+                                      ref=shlex.quote(os.path.abspath(ref)),
+                                      real=shlex.quote(real)))
+    os.chmod(path, 0o755)
+
+
+def toolchain_arms(arm, task: dict, spec: dict, pins: dict, lang: str):
+    """The toolchain-capture arms for a compiled unit (review 1116). Yields
+    (label, passed, seconds, output, [lines the planted tools logged]).
+
+    Each plant happens after the harness pinned its toolchain, as an agent's
+    would. The solution dropped is not a program, so only a captured
+    compiler (one that builds the reference instead) could make it pass."""
+    import tempfile  # noqa: PLC0415
+    dest, ref = spec["dest"], spec["ref"]
+    real = {n: p["path"] for n, p in pins.items() if p.get("path")}
+    with tempfile.TemporaryDirectory(prefix="prove-tc-") as tmp:
+        sol = os.path.join(tmp, "not_a_program")
+        with open(sol, "w") as f:
+            f.write(NOT_SOURCE)
+        marker = os.path.join(tmp, "ran.log")
+
+        def ran() -> list[str]:
+            try:
+                with open(marker) as f:
+                    return f.read().splitlines()
+            except OSError:
+                return []
+
+        saved = {k: os.environ.get(k) for k in ("PATH", "HOME")}
+
+        def restore():
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+        # 1. A fake of every pinned compiler, first on PATH.
+        fake_bin = os.path.join(tmp, "bin")
+        os.makedirs(fake_bin)
+        for name, path in real.items():
+            _write_fake(os.path.join(fake_bin, name), marker, dest, ref, path)
+
+        def plant_path():
+            os.environ["PATH"] = fake_bin + os.pathsep + saved["PATH"]
+        try:
+            ok, dt, out, _ = arm("toolchain:path", sol, plant=plant_path)
+        finally:
+            restore()
+        yield "toolchain:path", ok, dt, out, ran()
+
+        if lang != "go" or "go" not in real:
+            return
+        # 2. go.mod `go 1.99.0` + go env GOTOOLCHAIN=path + `go1.99.0` on PATH.
+        open(marker, "w").close()
+        home = os.path.join(tmp, "home")
+        for cfg in (os.path.join(home, "Library", "Application Support", "go"),
+                    os.path.join(home, ".config", "go")):
+            os.makedirs(cfg)
+            with open(os.path.join(cfg, "env"), "w") as f:
+                f.write("GOTOOLCHAIN=path\n")
+        switch_bin = os.path.join(tmp, "switch")
+        os.makedirs(switch_bin)
+        _write_fake(os.path.join(switch_bin, "go1.99.0"), marker, dest, ref, real["go"])
+
+        def plant_goenv():
+            for d in sorted({os.path.dirname(dest)} | set(fixture_dirs(task))):
+                if os.path.isdir(d):
+                    with open(os.path.join(d, "go.mod"), "w") as f:
+                        f.write("module planted\n\ngo 1.99.0\n")
+            os.environ["HOME"] = home
+            os.environ["PATH"] = switch_bin + os.pathsep + saved["PATH"]
+        try:
+            ok, dt, out, _ = arm("toolchain:goenv", sol, plant=plant_goenv)
+        finally:
+            restore()
+        yield "toolchain:goenv", ok, dt, out, ran()
 
 
 def main(argv=None) -> int:
