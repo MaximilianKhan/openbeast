@@ -112,7 +112,6 @@ import contextlib
 import copy
 import hashlib
 import hmac
-import io
 import ipaddress
 import json
 import os

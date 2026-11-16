@@ -969,7 +969,7 @@ def choose_tp(r: dict, backend: str) -> tuple[int, str]:
     if m is not None and m < n and m not in allowed:
         return n, (f"TP={m} would fit, but "
                    + (f"TensorFold runs this on {'/'.join(map(str, allowed))} ranks only" if backend == "tensorfold"
-                      else f"vLLM needs TP to divide the attention/KV heads"))
+                      else "vLLM needs TP to divide the attention/KV heads"))
     return n, ""
 
 
