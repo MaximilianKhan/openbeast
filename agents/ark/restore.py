@@ -25,6 +25,7 @@ import gzip
 import lzma
 import os
 import platform as _pf
+import re
 import shutil
 import stat
 import subprocess
@@ -52,6 +53,49 @@ def host_platform() -> str:
     if s == "Darwin" and m == "arm64":
         return "darwin-arm64"
     return f"{s.lower()}-{m}"
+
+
+# ark.lock lives on the drive it describes, so nothing in it is trusted to
+# name a place on THIS box: entry names, bin paths, tags and commits are
+# checked before any of them reaches a path or a command line.
+_ENTRY = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+_COMMIT = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+_TAG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+/-]{0,199}$")
+
+
+def _inside(root: str, p: str) -> bool:
+    r = os.path.realpath(root)
+    q = os.path.realpath(p)
+    return q == r or q.startswith(r + os.sep)
+
+
+def _bin_name(name: str) -> str:
+    """A single file name for <root>/bin/ and the bin dir, never a path."""
+    if name in ("", ".", "..") or "/" in name or "\\" in name or "\0" in name:
+        raise RestoreError(f"ark.lock names the binary {name!r}, which is not a file name — refused")
+    return name
+
+
+def _contained(root: str, rel: str) -> str:
+    """root/rel, refused unless it resolves (links and all) inside root."""
+    if os.path.isabs(rel) or ".." in rel.replace("\\", "/").split("/"):
+        raise RestoreError(f"ark.lock names {rel!r} outside the install root — refused")
+    p = os.path.join(root, rel)
+    if not _inside(root, p):
+        raise RestoreError(f"{rel!r} resolves outside {root} — refused")
+    return p
+
+
+def check_item(item: dict) -> None:
+    """The lock values that become paths or git arguments on this box."""
+    if not _ENTRY.match(str(item.get("entry", ""))):
+        raise RestoreError(f"ark.lock entry name {item.get('entry')!r} is not a catalog name — refused")
+    if item.get("kind") == "git":
+        if not _COMMIT.match(str(item.get("commit", ""))):
+            raise RestoreError(f"ark.lock commit {item.get('commit')!r} is not a full hex commit id — refused")
+        tag = str(item.get("tag") or "")
+        if tag and (not _TAG.match(tag) or ".." in tag):
+            raise RestoreError(f"ark.lock tag {tag!r} is not a plain tag name — refused")
 
 
 def check_files(drive: S.Drive, item: dict) -> None:
@@ -134,10 +178,10 @@ def _extract(src: str, dest: str) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             raw = os.path.join(tmp, "x.tar")
             _unzstd(src, raw)
-            with tarfile.open(raw) as t:
+            with tarfile.open(raw, "r|") as t:
                 _safe_extract(t, dest)
         return
-    with tarfile.open(src) as t:
+    with tarfile.open(src, "r|*") as t:          # stream mode: decompressed once, front to back
         _safe_extract(t, dest)
 
 
@@ -158,13 +202,13 @@ def install_file(drive: S.Drive, item: dict, prefix: str, bindir: str, note: str
     os.makedirs(part)
     try:
         if kind == "bin":
-            name = bins[0] if bins else fn
+            name = _bin_name(bins[0] if bins else fn)
             os.makedirs(os.path.join(part, "bin"))
             shutil.copy2(primary, os.path.join(part, "bin", name))
             bins = [f"bin/{name}"]
         elif kind in ("gz", "bz2", "xz"):
             opener = {"gz": gzip.open, "bz2": bz2.open, "xz": lzma.open}[kind]
-            name = (bins[0] if bins else _strip_name(fn)).rsplit("/", 1)[-1]
+            name = _bin_name(bins[0] if bins else _strip_name(fn))
             os.makedirs(os.path.join(part, "bin"))
             with opener(primary, "rb") as fi, open(os.path.join(part, "bin", name), "wb") as fo:
                 shutil.copyfileobj(fi, fo)
@@ -182,7 +226,7 @@ def install_file(drive: S.Drive, item: dict, prefix: str, bindir: str, note: str
         else:
             raise RestoreError(f"unknown install rule {kind!r}")
         for b in bins:
-            p = os.path.join(part, b)
+            p = _contained(part, b)
             if os.path.isfile(p):
                 os.chmod(p, os.stat(p).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
         # Merge, never replace: one entry's artifacts (kubeadm + kubelet +
@@ -196,11 +240,11 @@ def install_file(drive: S.Drive, item: dict, prefix: str, bindir: str, note: str
                 if os.access(os.path.join(root, "bin", b), os.X_OK) and not os.path.isdir(os.path.join(root, "bin", b))]
     linked = []
     for b in bins:
-        p = os.path.join(root, b)
+        p = _contained(root, b)
         if not os.path.exists(p):
             out.append(f"  warning: {b} is not in the archive")
             continue
-        _link(p, os.path.join(bindir, os.path.basename(b)))
+        _link(p, os.path.join(bindir, _bin_name(os.path.basename(b))))
         linked.append(os.path.basename(b))
     out.append(f"{item['entry']} {item['version']}: {root}" + (f"  (linked into {bindir}: {', '.join(linked)})" if linked else ""))
     return out
@@ -219,7 +263,7 @@ def restore_git(drive: S.Drive, item: dict, srcdir: str, force: bool) -> List[st
         _git("clone", "-q", "--no-checkout", src, dest)
     else:
         with tempfile.TemporaryDirectory() as tmp:
-            with tarfile.open(src) as t:
+            with tarfile.open(src, "r|") as t:
                 _safe_extract(t, tmp)
             bare = os.path.join(tmp, f"{item['entry']}.git")
             _git("clone", "-q", "--no-checkout", bare, dest)
@@ -309,6 +353,8 @@ def restore_npm(drive: S.Drive, item: dict, prefix: str) -> List[str]:
 def restore(cat: Optional[C.Catalog], drive: S.Drive, name: str, plat: str = "", prefix: str = "",
             bindir: str = "", srcdir: str = "", registry: str = "", engine: str = "",
             kinds: Optional[List[str]] = None, python: str = "", force: bool = False) -> List[str]:
+    if not _ENTRY.match(name):
+        raise RestoreError(f"{name!r} is not an entry name")
     lock = drive.read_lock()
     items = [(k, v) for k, v in sorted(lock["items"].items()) if v.get("entry") == name]
     if not items:
@@ -329,6 +375,7 @@ def restore(cat: Optional[C.Catalog], drive: S.Drive, name: str, plat: str = "",
         if k in ("file", "pip", "npm") and it["platform"] not in ("any", plat):
             continue
         try:
+            check_item(it)
             check_files(drive, it)
         except RestoreError as e:
             raise RestoreError(f"{key}: {e}") from None
@@ -348,7 +395,7 @@ def restore(cat: Optional[C.Catalog], drive: S.Drive, name: str, plat: str = "",
             elif k == "cargo":
                 root = os.path.join(prefix, f"{name}-{S.slug(it['version'])}")
                 os.makedirs(root, exist_ok=True)
-                with tarfile.open(drive.p(it["primary"])) as t:
+                with tarfile.open(drive.p(it["primary"]), "r|") as t:
                     _safe_extract(t, root)
                 shutil.copy2(drive.p(os.path.dirname(it["primary"]) + "/cargo-config.toml"),
                              os.path.join(root, "cargo-config.toml"))

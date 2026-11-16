@@ -14,6 +14,12 @@
                             package-lock.json) for the stored npm sets
     /goproxy/…              a GOPROXY over the stored go module trees
 
+Only a REGULAR file that resolves inside the drive is ever opened: a
+lock-listed path that has been swapped for a symlink (to ~/.ssh, or to
+.run/clients.json) answers 404, never the file it points at. One archive
+that is missing or unreadable is skipped with a warning; the rest of the
+drive is still served.
+
 Bound to 127.0.0.1 unless told otherwise; `--tailnet` binds this box's
 Tailscale address so the other boxes reach it and the LAN does not. No
 write method exists. Every response is software that is already public, so
@@ -21,12 +27,15 @@ there is no auth; the bind address is the boundary.
 """
 from __future__ import annotations
 
+import html
 import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
+import tarfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Dict, List, Optional, Tuple
@@ -41,6 +50,25 @@ def _norm(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
+def open_regular(root: str, path: str):
+    """-> (binary file, size) for a regular file that resolves inside `root`,
+    else None. The last component is opened with O_NOFOLLOW and re-checked
+    with fstat, so a symlink swapped in after the realpath check still fails."""
+    r = os.path.realpath(root)
+    real = os.path.realpath(path)
+    if not real.startswith(r + os.sep):
+        return None
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        return None
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode):
+        os.close(fd)
+        return None
+    return os.fdopen(fd, "rb"), st.st_size
+
+
 class Index:
     """Everything the server can answer, built once from ark.lock."""
 
@@ -52,14 +80,16 @@ class Index:
         self.wheels: Dict[str, List[Tuple[str, str]]] = {}
         self.npm: Dict[str, Dict[str, dict]] = {}
         self.goproxy: List[str] = []
+        self.skipped: List[str] = []
         self._lk = threading.Lock()
         for it in self.lock["items"].values():
             for f in it.get("files", []):
                 self.paths.add(f["path"])
             k = it.get("kind")
             if k == "oci":
-                arc = oci.OciArchive(drive.p(it["primary"]))
-                self.repos.setdefault(oci.repo_path(it["image"]), []).append(arc)
+                arc = self._open_archive(it)
+                if arc:
+                    self.repos.setdefault(oci.repo_path(it["image"]), []).append(arc)
             elif k == "pip":
                 for f in it["files"]:
                     fn = os.path.basename(f["path"])
@@ -71,12 +101,31 @@ class Index:
             elif k == "gomod":
                 self.goproxy.append(it["primary"])
 
+    def _open_archive(self, it: dict) -> Optional[oci.OciArchive]:
+        """One bad archive (deleted to free space, truncated, swapped for a
+        link) must not take the whole offline vault down with it."""
+        rel = str(it.get("primary", ""))
+        try:
+            p = self.drive.p(rel)
+            got = open_regular(self.drive.root, p)
+            if not got:
+                raise OSError("missing, not a regular file, or outside the drive")
+            got[0].close()
+            return oci.OciArchive(p)
+        except (OSError, S.StoreError, tarfile.TarError, ValueError, KeyError, IndexError, TypeError) as e:
+            self.skipped.append(rel)
+            sys.stderr.write(f"  warning: not serving {rel}: {e}\n")
+            return None
+
     def _add_npm(self, it: dict) -> None:
         d = it["primary"]
         try:
-            with open(self.drive.p(f"{d}/package-lock.json"), encoding="utf-8") as f:
-                pl = json.load(f)
-        except (OSError, ValueError):
+            got = open_regular(self.drive.root, self.drive.p(f"{d}/package-lock.json"))
+            if not got:
+                return
+            with got[0] as f:
+                pl = json.loads(f.read().decode("utf-8"))
+        except (OSError, ValueError, S.StoreError):
             return
         stored = {os.path.basename(f["path"]): f["path"] for f in it["files"] if "/tarballs/" in f["path"]}
         for path, meta in (pl.get("packages") or {}).items():
@@ -117,6 +166,12 @@ def make_handler(ix: Index):
     class H(BaseHTTPRequestHandler):
         server_version = "beast-ark"
         sys_version = ""
+        # Keep-alive: pip and go fetch hundreds of small files, and a new TCP
+        # connection per file costs a tailnet round trip each. Every reply
+        # carries a Content-Length; anything that cannot keep that promise
+        # (a short read, an unread request body) closes the connection.
+        protocol_version = "HTTP/1.1"
+        timeout = 60                           # an idle keep-alive client frees its thread
 
         def log_message(self, fmt, *args):     # one quiet line, no headers (no secrets to leak, but still)
             sys.stderr.write(f"  {self.address_string()} {fmt % args}\n")
@@ -135,7 +190,8 @@ def make_handler(ix: Index):
             self._send(code, json.dumps(obj).encode(), "application/json", extra)
 
         def do_POST(self):  # noqa: N802
-            self._send(405, b"beast-ark serve is read-only\n")
+            # the body is never read, so this connection cannot carry another request
+            self._send(405, b"beast-ark serve is read-only\n", extra={"Connection": "close"})
 
         do_PUT = do_PATCH = do_DELETE = do_POST
 
@@ -165,17 +221,21 @@ def make_handler(ix: Index):
         def _file(self, rel: str, ctype: str = "application/octet-stream"):
             if rel not in ix.paths:
                 return self._send(404, b"not on this drive\n")
-            p = ix.drive.p(rel)
-            if not os.path.isfile(p):
-                return self._send(404, b"listed in ark.lock but missing from the drive\n")
-            size = os.path.getsize(p)
+            got = open_regular(ix.drive.root, ix.drive.p(rel))
+            if not got:
+                return self._send(404, b"listed in ark.lock but missing from the drive (or not a regular file)\n")
+            f, size = got
+            with f:
+                return self._stream(f, size, rel, ctype)
+
+        def _stream(self, f, size: int, rel: str, ctype: str):
             start, end = 0, size - 1
             rng = self.headers.get("Range", "")
             m = re.fullmatch(r"bytes=(\d+)-(\d*)", rng.strip())
             if m:
                 start = int(m.group(1))
                 end = int(m.group(2)) if m.group(2) else size - 1
-                if start >= size:
+                if start >= size or end < start:      # unsatisfiable, or last < first (RFC 9110 §14.1.1)
                     return self._send(416, b"", extra={"Content-Range": f"bytes */{size}"})
                 end = min(end, size - 1)
             if rel.endswith((".md", ".lock", ".toml")) or rel == "SHA256SUMS":
@@ -189,15 +249,16 @@ def make_handler(ix: Index):
             self.end_headers()
             if self.command == "HEAD":
                 return None
-            with open(p, "rb") as f:
-                f.seek(start)
-                left = end - start + 1
-                while left > 0:
-                    b = f.read(min(1 << 20, left))
-                    if not b:
-                        break
-                    self.wfile.write(b)
-                    left -= len(b)
+            f.seek(start)
+            left = end - start + 1
+            while left > 0:
+                b = f.read(min(1 << 20, left))
+                if not b:
+                    break
+                self.wfile.write(b)
+                left -= len(b)
+            if left > 0:
+                self.close_connection = True       # the file shrank under us: the length is now a lie
             return None
 
         def _base(self) -> str:
@@ -206,8 +267,8 @@ def make_handler(ix: Index):
         def _index(self):
             items = ix.lock["items"]
             ents = sorted({v["entry"] for v in items.values()})
-            host = self.headers.get("Host") or "HOST:PORT"
-            rows = "".join(f"<li>{e}</li>" for e in ents)
+            host = html.escape(self.headers.get("Host") or "HOST:PORT")
+            rows = "".join(f"<li>{html.escape(e)}</li>" for e in ents)
             body = f"""<!doctype html><meta charset=utf-8><title>beast-ark</title>
 <h1>beast-ark</h1><p>{len(items)} items, {len(ents)} entries. Read-only. <a href=/ARK.md>ARK.md</a> ·
 <a href=/ark.lock>ark.lock</a> · <a href=/SHA256SUMS>SHA256SUMS</a> · <a href=/pypi/simple/>pypi</a></p>
@@ -248,6 +309,9 @@ files    curl -O http://{host}/files/ENTRY/VERSION/PLATFORM/FILE
             if not arc:
                 return self._json({"errors": [{"code": "BLOB_UNKNOWN"}]}, 404, hdr)
             mem = arc.member(ref)
+            got = open_regular(ix.drive.root, arc.path)
+            if not got:
+                return self._json({"errors": [{"code": "BLOB_UNKNOWN"}]}, 404, hdr)
             self.send_response(200)
             self.send_header("Content-Type", "application/octet-stream")
             self.send_header("Content-Length", str(mem.size))
@@ -255,11 +319,11 @@ files    curl -O http://{host}/files/ENTRY/VERSION/PLATFORM/FILE
             for k, v in hdr.items():
                 self.send_header(k, v)
             self.end_headers()
-            if self.command == "HEAD":
-                return None
             # The archive is an uncompressed tar: a blob is one contiguous
             # byte range, read through a handle of this request's own.
-            with open(arc.path, "rb") as f:
+            with got[0] as f:
+                if self.command == "HEAD":
+                    return None
                 f.seek(mem.offset_data)
                 left = mem.size
                 while left > 0:
@@ -268,18 +332,21 @@ files    curl -O http://{host}/files/ENTRY/VERSION/PLATFORM/FILE
                         break
                     self.wfile.write(b)
                     left -= len(b)
+                if left > 0:
+                    self.close_connection = True
             return None
 
         # -- pip -------------------------------------------------------------
         def _pypi(self, path: str):
             rest = path[len("/pypi/simple"):].strip("/")
             if not rest:
-                links = "".join(f'<a href="/pypi/simple/{p}/">{p}</a><br>\n' for p in sorted(ix.wheels))
+                links = "".join(f'<a href="/pypi/simple/{html.escape(p)}/">{html.escape(p)}</a><br>\n'
+                                for p in sorted(ix.wheels))
                 return self._send(200, f"<!doctype html><html><body>\n{links}</body></html>".encode(), "text/html")
             files = ix.wheels.get(_norm(rest))
             if not files:
                 return self._send(404, b"no such project on this drive\n")
-            links = "".join(f'<a href="/{p}#sha256={h}">{os.path.basename(p)}</a><br>\n'
+            links = "".join(f'<a href="/{html.escape(p)}#sha256={html.escape(h)}">{html.escape(os.path.basename(p))}</a><br>\n'
                             for p, h in sorted(set(files)))
             return self._send(200, f"<!doctype html><html><body>\n{links}</body></html>".encode(), "text/html")
 

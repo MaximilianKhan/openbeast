@@ -33,6 +33,15 @@ class VerifyError(RuntimeError):
     pass
 
 
+def _b64(text: str, what: str) -> bytes:
+    """base64 that fails as a VerifyError: a garbled signature from upstream
+    (or on the drive) must fail its ONE item, never the whole run."""
+    try:
+        return base64.b64decode(text, validate=True)
+    except (ValueError, TypeError):
+        raise VerifyError(f"{what} is not valid base64") from None
+
+
 # ── checksum files ───────────────────────────────────────────────────────
 
 def _algo_for(hx: str, default: str = "sha256") -> str:
@@ -45,7 +54,9 @@ def parse_checksum(text: str, name: str, fmt: str = "sums", url_specific: bool =
     fmt "sums":        coreutils (`hex  name`, `hex *name`, `hex  ./dir/name`),
                        BSD tags (`SHA256 (name) = hex`), gpg --print-md
                        (`name: HEX HEX …`, wrapped), or one bare hash.
-    fmt "json:a/b/c":  a JSON document, walked by `/`-separated keys.
+    fmt "json:a/b/c":  a JSON document, walked by `/`-separated keys. The value
+                       may carry an `<algo>:` prefix (GitHub's release API
+                       says `"digest": "sha256:…"` for every asset).
     fmt "sqlite-csv":  sqlite.org/download.html's `PRODUCT,ver,path,size,sha3` rows.
     """
     if fmt.startswith("json:"):
@@ -68,8 +79,13 @@ def parse_checksum(text: str, name: str, fmt: str = "sums", url_specific: bool =
             else:
                 raise VerifyError(f"checksum JSON has no {fmt[5:]!r}")
         hx = str(node).strip().lower()
-        algo = _algo_for(hx)
-        if not algo or not re.fullmatch(r"[0-9a-f]+", hx):
+        named, sep, rest = hx.partition(":")
+        if sep:
+            if named not in HEXLEN:
+                raise VerifyError(f"checksum JSON {fmt[5:]!r}: unknown digest algorithm {named!r}")
+            hx = rest
+        algo = named if sep else _algo_for(hx)
+        if not algo or not re.fullmatch(r"[0-9a-f]+", hx) or len(hx) != HEXLEN.get(algo, -1):
             raise VerifyError(f"checksum JSON {fmt[5:]!r} is not a hex digest")
         return algo, hx
     if fmt == "sqlite-csv":
@@ -244,7 +260,7 @@ _ED25519_SPKI = bytes.fromhex("302a300506032b6570032100")
 def load_ed25519_pem(path: str) -> bytes:
     with open(path, encoding="ascii") as f:
         body = "".join(ln.strip() for ln in f if ln.strip() and not ln.startswith("-----"))
-    der = base64.b64decode(body)
+    der = _b64(body, path)
     if len(der) != 44 or not der.startswith(_ED25519_SPKI):
         raise VerifyError(f"{path} is not an Ed25519 public key (SPKI PEM)")
     return der[12:]
@@ -257,7 +273,7 @@ def load_minisign_pub(spec: str, repo_dir: str) -> Tuple[bytes, bytes]:
         with open(os.path.join(repo_dir, spec), encoding="ascii") as f:
             lines = [ln.strip() for ln in f if ln.strip() and not ln.startswith("untrusted comment")]
         spec = lines[0]
-    raw = base64.b64decode(spec)
+    raw = _b64(spec, "the minisign public key")
     if len(raw) != 42 or raw[:2] != b"Ed":
         raise VerifyError("not a minisign Ed25519 public key")
     return raw[2:10], raw[10:]
@@ -268,7 +284,7 @@ def minisign_verify(data_path: str, sig_text: str, keyid: bytes, pub: bytes) -> 
     lines = [ln for ln in sig_text.replace("\r", "").split("\n") if ln.strip()]
     if len(lines) < 4 or not lines[0].startswith("untrusted comment:") or not lines[2].startswith("trusted comment:"):
         raise VerifyError("malformed minisign signature")
-    raw = base64.b64decode(lines[1])
+    raw = _b64(lines[1].strip(), "the minisign signature")
     if len(raw) != 74:
         raise VerifyError("malformed minisign signature block")
     alg, kid, sig = raw[:2], raw[2:10], raw[10:]
@@ -288,7 +304,7 @@ def minisign_verify(data_path: str, sig_text: str, keyid: bytes, pub: bytes) -> 
     if not ed25519_verify(pub, msg, sig):
         raise VerifyError("minisign signature does NOT verify")
     trusted = lines[2][len("trusted comment:"):].strip()
-    gsig = base64.b64decode(lines[3])
+    gsig = _b64(lines[3].strip(), "the minisign global signature")
     if not ed25519_verify(pub, sig + trusted.encode(), gsig):
         raise VerifyError("minisign trusted comment does NOT verify")
     return trusted
