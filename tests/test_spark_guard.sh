@@ -74,8 +74,9 @@ _has "$R1" "table inet openbeast_guard {" && _has "$R1" "type filter hook input 
   || fail "flush/delete: $R1"
 _has "$R1" 'iifname { "enp1s0f0np0", "enp1s0f1np1", "enP2p1s0f0np0", "enP2p1s0f1np1" } accept' \
   && pass "every ConnectX netdev is fabric, Up or Down (a rail may come up later)" || fail "fabric set: $R1"
-_has "$R1" "tcp dport { 29501, 29551-29552, 29583-29584 } counter drop" \
-  && pass "vLLM 29501, TensorFold 29551/+1 and native 29583/+1 are dropped off the fabric" || fail "ports: $R1"
+_has "$R1" "tcp dport { 29501-29502, 29551-29552, 29583-29584 } counter drop" \
+  && pass "vLLM 29501/+1, TensorFold 29551/+1 and native 29583/+1 are dropped off the fabric" || fail "ports: $R1"
+_has "$R1" "# args: " && pass "the render records its command-line inputs (for --status to re-render)" || fail "args line: $R1"
 _has "$R1" "ip daddr { 10.100.216.1, 10.100.217.1 } meta l4proto tcp counter drop" \
   && pass "TCP to the fabric addresses (NCCL bootstrap, ephemeral ports) is dropped off the fabric" || fail "daddr: $R1"
 lo="$(_line "$R1" 'iifname "lo" accept')"; fab="$(_line "$R1" '} accept comment "ConnectX-7 fabric"')"
@@ -101,7 +102,7 @@ _run --render --port 70000
 [[ $RC -eq 2 ]] && pass "--port outside 1..65535 is refused" || fail "bad port (rc=$RC): $OUT"
 printf 'TENSORFOLD_MASTER_PORT=30010   # moved\nVLLM_MASTER_PORT="29600"\n' > "$SPARK_ENV"
 _run --render --port 12345
-[[ $RC -eq 0 ]] && _has "$OUT" "tcp dport { 12345, 29501, 29551-29552, 29583-29584, 29600-29601, 30010-30011 }" \
+[[ $RC -eq 0 ]] && _has "$OUT" "tcp dport { 12345, 29501-29502, 29551-29552, 29583-29584, 29600-29601, 30010-30011 }" \
   && pass "spark.env's VLLM/TENSORFOLD_MASTER_PORT (+1) and --port are guarded too" || fail "env ports (rc=$RC): $OUT"
 rm -f "$SPARK_ENV"
 
@@ -138,6 +139,19 @@ _run
 _run --status
 [[ $RC -eq 0 ]] && _has "$OUT" "loaded: table inet openbeast_guard" && _has "$OUT" "29551" && _has "$OUT" "nc -z" \
   && pass "--status shows the loaded table and how to verify from another device" || fail "status (rc=$RC): $OUT"
+_has "$OUT" "rules: current" && ! _has "$OUT" "STALE" \
+  && pass "--status re-renders and says the installed rules are current" || fail "status current: $OUT"
+# The live drift (2026-11-16): spark.env moved a master port after the guard
+# was installed, so the installed rules no longer covered it. --status must say so.
+printf 'VLLM_MASTER_PORT=29700\n' > "$SPARK_ENV"
+_run --status
+_has "$OUT" "rules: STALE" && _has "$OUT" "sudo " && _has "$OUT" "now:" && _has "$OUT" "29700-29701" \
+  && pass "--status flags rules that differ from what the current inputs render (STALE, with the diff)" || fail "status stale: $OUT"
+rm -f "$SPARK_ENV"
+SG_NO_FABRIC=1 _run --no-fabric --port 4242
+SG_NO_FABRIC=1 _run --status
+_has "$OUT" "rules: current" && pass "--status re-renders with the inputs the install recorded (--no-fabric --port)" || fail "status args: $OUT"
+_run
 SG_NFT_REJECT=1 _run
 [[ $RC -ne 0 ]] && ! grep -q "nft -f $RULES" "$SG_LOG" && pass "a ruleset nft rejects is never loaded" || fail "reject (rc=$RC): $(cat "$SG_LOG")"
 _run --remove

@@ -285,8 +285,10 @@ touches nothing else:
 - It loads one nftables table of its own, `inet openbeast_guard`, with an input
   hook at priority `filter - 10`. That runs ahead of iptables-nft (ufw, Docker)
   and Tailscale.
-- It drops TCP to 29501, 29551-29552 and 29583-29584 (plus spark.env's master
-  ports and any `--port N`). It also drops TCP to the Spark's own fabric
+- It drops TCP to 29501-29502, 29551-29552 and 29583-29584 (plus spark.env's
+  master ports, each with its +1, and any `--port N`). Every rendezvous port is
+  guarded with its +1, whether it is a default or comes from spark.env, so the
+  same port never renders two ways. It also drops TCP to the Spark's own fabric
   addresses, where NCCL's ephemeral bootstrap listeners are. Both drops apply
   **unless** the packet arrives on `lo` or on a ConnectX netdev
   (`ibdev2netdev`).
@@ -302,32 +304,45 @@ ssh, `tailscale serve` (:443, :8443-8447, :8889) and Docker networking.
 # on EACH Spark, from ~/openbeast at a commit that has it
 scripts/backends/spark-guard.sh --render          # read the ruleset first (no root)
 sudo scripts/backends/spark-guard.sh              # load + persist (idempotent); same as --apply
-sudo scripts/backends/spark-guard.sh --status     # table, counters, listeners, ssh posture
+sudo scripts/backends/spark-guard.sh --status     # current or STALE, table, counters, listeners, ssh posture
 sudo scripts/backends/spark-guard.sh --remove     # undo: table, unit and rules file gone
 #   --port N (repeatable)  --iface IF (repeatable)  --no-fabric (one Spark, no peer: loopback-only)
 ```
 
-What `--render` prints on spark-1 (2026-11-15):
+What `--render` prints on spark-1 (2026-11-16, current code):
 
 ```
-# fabric: enp1s0f0np0 enp1s0f1np1 enP2p1s0f0np0 enP2p1s0f1np1   fabric IPv4: 10.100.216.1 10.100.217.1   guarded TCP: 29501 29551-29552 29583-29584
+# fabric: enp1s0f0np0 enp1s0f1np1 enP2p1s0f0np0 enP2p1s0f1np1   fabric IPv4: 10.100.216.1 10.100.217.1   guarded TCP: 29501-29502 29551-29552 29583-29584
+# args:
 table inet openbeast_guard {
 	chain input {
 		type filter hook input priority filter - 10; policy accept;
 		iifname "lo" accept
 		iifname { "enp1s0f0np0", "enp1s0f1np1", "enP2p1s0f0np0", "enP2p1s0f1np1" } accept comment "ConnectX-7 fabric"
-		tcp dport { 29501, 29551-29552, 29583-29584 } counter drop comment "engine rendezvous: fabric and loopback only"
+		tcp dport { 29501-29502, 29551-29552, 29583-29584 } counter drop comment "engine rendezvous: fabric and loopback only"
 		ip daddr { 10.100.216.1, 10.100.217.1 } meta l4proto tcp counter drop comment "fabric addresses (NCCL bootstrap): fabric only"
 	}
 }
 ```
 
 `--status` without root still shows the unit and the listeners. It says
-`loaded: unknown (listing nftables needs root …)` for the table:
+`loaded: unknown (listing nftables needs root …)` for the table. It also
+re-renders the ruleset from the current code, spark.env and fabric (with the
+`--port` / `--iface` / `--no-fabric` inputs the install recorded on its
+`# args:` line) and compares it with the installed file: `rules: current`, or
+`rules: STALE` with the lines that differ and the command to re-run. On
+2026-11-16 both Sparks showed STALE: their files, written 2026-11-15 before
+`VLLM_MASTER_PORT=29501` reached spark.env, guard `29501` but not `29502`.
+The fix is one `sudo scripts/backends/spark-guard.sh` on each Spark (an
+operator step, offline-safe: it reads only local files):
 
 ```
 == spark-guard on spark-3dc6
 rules file: /etc/openbeast/spark-guard.nft
+rules: STALE — the installed file differs from what this checkout renders now (code, spark.env ports or fabric changed). Re-run: sudo scripts/backends/spark-guard.sh
+  installed: # fabric: … guarded TCP: 29501 29551-29552 29583-29584
+  …
+  now:       # fabric: … guarded TCP: 29501-29502 29551-29552 29583-29584
 unit: openbeast-spark-guard.service enabled, active
 TCP listeners (what each could be reached on):
   0.0.0.0:22
@@ -349,7 +364,9 @@ The pair keeps serving through the load, because the fabric is accepted before
 the drops. After a reboot, `systemctl status openbeast-spark-guard` shows
 `active (exited)`, and the counters in `sudo … --status` count the drops.
 Re-run the guard whenever the fabric addresses change (NVIDIA Sync
-re-addressing, a new switch).
+re-addressing, a new switch), after a pull that changes the guard, and after
+editing a master port in spark.env. `--status` says `STALE` when one of those
+happened and the guard was not re-run.
 
 **sshd hardening is opt-in and OFF by default.**
 `sudo scripts/backends/spark-guard.sh --harden-ssh --yes` writes
