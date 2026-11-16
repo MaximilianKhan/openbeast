@@ -458,3 +458,72 @@ def test_scaled_gate_follows_the_harness_scale(tmp_path):
         out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
                              env={**os.environ, "OPENBEAST_TIMEOUT_SCALE": scale}).stdout
         assert out.strip() == want, (scale, out)
+
+
+# --- fixed fixture dirs across processes (finding: two provers of one unit
+# deleted each other's solutions) ---------------------------------------------
+
+_HOLDER = """
+import sys, time
+sys.path.insert(0, {evals!r}); sys.path.insert(0, {agents!r})
+import run_eval
+task = {{"id": "lk", "setup": "mkdir -p {root}", "cleanup": "rm -rf {root}"}}
+with run_eval.fixture_lock(task):
+    print("held", flush=True)
+    time.sleep(1.5)
+"""
+
+
+def test_fixture_lock_makes_a_second_process_wait_and_say_so():
+    root = f"/tmp/eval_lock1116_{os.getpid()}"
+    task = {"id": "lk", "setup": f"mkdir -p {root}", "cleanup": f"rm -rf {root}"}
+    assert run_eval.fixture_roots(task) == [root]
+    holder = subprocess.Popen(
+        [sys.executable, "-c", _HOLDER.format(evals=str(ROOT / "evals"),
+                                              agents=str(ROOT / "agents"), root=root)],
+        stdout=subprocess.PIPE, text=True)
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        said = []
+        t0 = time.monotonic()
+        with run_eval.fixture_lock(task, log=said.append):
+            waited = time.monotonic() - t0
+        assert waited > 0.8, waited
+        assert said and f"Waiting for {root}" in said[0] and str(holder.pid) in said[0]
+    finally:
+        holder.wait(10)
+    # uncontended: no wait, no message; a task without fixtures locks nothing
+    said = []
+    with run_eval.fixture_lock(task, log=said.append) as lk:
+        assert len(lk.fds) == 1
+    assert said == []
+    with run_eval.fixture_lock({"id": "x", "setup": "true"}) as lk:
+        assert lk.fds == []
+
+
+def test_fixture_lock_serialises_two_threads_of_one_process():
+    import threading
+    root = f"/tmp/eval_lock1116t_{os.getpid()}"
+    task = {"id": "lk", "cleanup": f"rm -rf {root}"}
+    inside, overlap = [], []
+
+    def worker():
+        with run_eval.fixture_lock(task, log=lambda *_: None):
+            inside.append(1)
+            if len(inside) > 1:
+                overlap.append(1)
+            time.sleep(0.2)
+            inside.pop()
+    ts = [threading.Thread(target=worker) for _ in range(3)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join(10)
+    assert not overlap
+
+
+def test_prover_and_eval_take_the_fixture_lock():
+    src = (ROOT / "tests" / "prove_task.py").read_text()
+    assert "with R.fixture_lock(task" in src
+    ev = (ROOT / "evals" / "run_eval.py").read_text()
+    assert ev.count("with fixture_lock(task") == 2

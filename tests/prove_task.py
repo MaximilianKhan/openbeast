@@ -338,6 +338,13 @@ def prove(R, M, task: dict, spec: dict, repeat: int | None = None,
     pins = R.toolchain_pins()
 
     def arm(label: str, sol: str | None, scale: float = 1.0, plant=None):
+        # The unit's fixture roots are locked from the first cleanup to the
+        # last, so a second prover or an eval of the same unit waits instead
+        # of deleting this arm's solution mid-validation (review 1116).
+        with R.fixture_lock(task, log=print):
+            return _arm(sol, scale, plant)
+
+    def _arm(sol: str | None, scale: float, plant):
         R.run_cleanup(task, log=silent)
         if not R.run_setup(task, log=say):
             return None, 0.0, "SETUP FAILED", []
