@@ -28,7 +28,8 @@
 #   CHAT_PORT        (env OPENBEAST_CHAT_PORT)   default 3003
 #   CHAT_OPERATORS   (env OPENBEAST_CHAT_OPERATORS) default empty
 #   CHAT_LOGIN_FROM  (env OPENBEAST_CHAT_LOGIN_FROM) default loopback | unix
-#   CHAT_SOCKET      (env OPENBEAST_CHAT_SOCKET)  default .run/chat.sock (unix only)
+#   CHAT_SOCKET      (env OPENBEAST_CHAT_SOCKET)  default .run/chat.sock (unix only;
+#       made absolute, ~ expanded)
 #       beast-chat: the tailnet operator console for the rig's agent and job
 #       sessions (docs/BEAST_CHAT.md). Off by default.
 #   CHAT_NOTIFY_URL / CHAT_NOTIFY_ON / CHAT_NOTIFY_TOKEN_FILE
@@ -157,6 +158,32 @@ _ob_bool() {
       echo "WARNING: $key='$raw' is not a boolean (true/false, yes/no, 1/0, on/off) — treating it as false." >&2
       printf 'false\n' ;;
   esac
+}
+
+# _ob_repo_path <raw> <default> — a trailing ` # comment` dropped, `~`
+# expanded, a relative path anchored to the checkout (FILES_DIR's rules).
+# Defined up here because the CHAT_SOCKET / ARTIFACT_SOCKET blocks use it too.
+_ob_repo_path() {
+  local p="${1%%[[:space:]]#*}"
+  p="${p%"${p##*[![:space:]]}"}"
+  [[ -n "$p" ]] || p="$2"
+  # shellcheck disable=SC2088  # matching a literal ~, not expanding one
+  case "$p" in
+    "~")   p="$HOME" ;;
+    "~/"*) p="$HOME/${p#\~/}" ;;
+  esac
+  case "$p" in
+    /*) ;;
+    *)  p="$REPO_DIR/$p" ;;
+  esac
+  printf '%s\n' "$p"
+}
+# _ob_sock_len_warn <KEY> <path> — AF_UNIX paths are capped (104 bytes on
+# macOS, 108 on Linux); a longer one fails to bind at start, far from here.
+_ob_sock_len_warn() {
+  if (( ${#2} > 100 )); then
+    echo "WARNING: $1='$2' is ${#2} bytes — a Unix socket path over ~100 bytes cannot be bound (macOS caps it at 104, Linux at 108). Pick a shorter path." >&2
+  fi
 }
 
 # ob_bind_is_loopback [host] — true when the address only listens on this
@@ -444,6 +471,26 @@ _ARTIFACT_OPERATORS="${OPENBEAST_ARTIFACT_OPERATORS:-$(_ob_conf_value ARTIFACT_O
 if [[ -n "$_ARTIFACT_OPERATORS" ]]; then
   export OPENBEAST_ARTIFACT_OPERATORS="$_ARTIFACT_OPERATORS"
 fi
+# Where beast-artifact honours the Tailscale-User-Login header — the same
+# switch as CHAT_LOGIN_FROM below, for the gallery (docs/BEAST_ARTIFACT.md).
+# `loopback` (default) trusts any peer on this host, host-network containers
+# included. `unix` trusts it only on ARTIFACT_SOCKET, a 0600 socket
+# `tailscale serve` proxies :8446 to (setup-tailscale.sh --publish-artifact
+# follows this key). Exported only when `unix`.
+ARTIFACT_LOGIN_FROM="$(printf '%s' "${OPENBEAST_ARTIFACT_LOGIN_FROM:-$(_ob_conf_value ARTIFACT_LOGIN_FROM || true)}" | tr '[:upper:]' '[:lower:]')"
+case "$ARTIFACT_LOGIN_FROM" in
+  ""|loopback) ARTIFACT_LOGIN_FROM=loopback ;;
+  unix) ;;
+  *) echo "WARNING: ARTIFACT_LOGIN_FROM='$ARTIFACT_LOGIN_FROM' is not loopback or unix — using loopback" >&2
+     ARTIFACT_LOGIN_FROM=loopback ;;
+esac
+ARTIFACT_SOCKET="${OPENBEAST_ARTIFACT_SOCKET:-$(_ob_conf_value ARTIFACT_SOCKET || true)}"
+if [[ "$ARTIFACT_LOGIN_FROM" == unix ]]; then
+  ARTIFACT_SOCKET="$(_ob_repo_path "$ARTIFACT_SOCKET" .run/artifact.sock)"
+  _ob_sock_len_warn ARTIFACT_SOCKET "$ARTIFACT_SOCKET"
+  export OPENBEAST_ARTIFACT_LOGIN_FROM=unix
+  export OPENBEAST_ARTIFACT_SOCKET="$ARTIFACT_SOCKET"
+fi
 # Per-device admission control (llama-server's own queue is unbounded).
 _EDGE_RATE="${OPENBEAST_EDGE_RATE_LIMIT:-$(_ob_conf_value EDGE_RATE_LIMIT || true)}"
 [[ -n "$_EDGE_RATE" ]] && export OPENBEAST_EDGE_RATE_LIMIT="$_EDGE_RATE"
@@ -508,7 +555,12 @@ case "$CHAT_LOGIN_FROM" in
 esac
 CHAT_SOCKET="${OPENBEAST_CHAT_SOCKET:-$(_ob_conf_value CHAT_SOCKET || true)}"
 if [[ "$CHAT_LOGIN_FROM" == unix ]]; then
-  CHAT_SOCKET="${CHAT_SOCKET:-$REPO_DIR/.run/chat.sock}"
+  # ABSOLUTE, ~ expanded: the same string goes to chat_server (which binds
+  # it from its own cwd) and to tailscaled (`unix:<path>`, resolved from
+  # ITS cwd — or not at all for a literal ~). A relative or ~ value meant
+  # two different files and a 502 console.
+  CHAT_SOCKET="$(_ob_repo_path "$CHAT_SOCKET" .run/chat.sock)"
+  _ob_sock_len_warn CHAT_SOCKET "$CHAT_SOCKET"
   export OPENBEAST_CHAT_LOGIN_FROM=unix
   export OPENBEAST_CHAT_SOCKET="$CHAT_SOCKET"
 fi
@@ -761,23 +813,6 @@ _ob_port() {
     echo "WARNING: $3='$1' is not a port (1-65535) — using $2." >&2
     printf '%s\n' "$2"
   fi
-}
-# _ob_repo_path <raw> <default> — a trailing ` # comment` dropped, `~`
-# expanded, a relative path anchored to the checkout (FILES_DIR's rules).
-_ob_repo_path() {
-  local p="${1%%[[:space:]]#*}"
-  p="${p%"${p##*[![:space:]]}"}"
-  [[ -n "$p" ]] || p="$2"
-  # shellcheck disable=SC2088  # matching a literal ~, not expanding one
-  case "$p" in
-    "~")   p="$HOME" ;;
-    "~/"*) p="$HOME/${p#\~/}" ;;
-  esac
-  case "$p" in
-    /*) ;;
-    *)  p="$REPO_DIR/$p" ;;
-  esac
-  printf '%s\n' "$p"
 }
 HYDRA="$(_ob_bool "$(_ob_override HYDRA || _ob_conf_value HYDRA || true)" false HYDRA)"
 HYDRA_PORT="$(_ob_port "$(_ob_override HYDRA_PORT || _ob_conf_value HYDRA_PORT || true)" 8095 HYDRA_PORT)"

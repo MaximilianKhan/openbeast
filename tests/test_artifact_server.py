@@ -107,6 +107,8 @@ def env(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENBEAST_CHAT_OPERATORS", raising=False)
     monkeypatch.delenv("OPENBEAST_ARTIFACT_ADMINS", raising=False)
     monkeypatch.delenv("OPENBEAST_ARTIFACT_RETAIN_DAYS", raising=False)
+    monkeypatch.delenv("OPENBEAST_ARTIFACT_LOGIN_FROM", raising=False)
+    monkeypatch.delenv("OPENBEAST_ARTIFACT_SOCKET", raising=False)
     # Hermetic: never the checkout's own openbeast.conf, never the real
     # `tailscale serve` (the shell's session link asks it about :8445).
     monkeypatch.setenv("OPENBEAST_CONF", str(tmp_path / "absent.conf"))
@@ -522,8 +524,146 @@ def test_peer_is_loopback_fails_closed(host, ok):
     req.client = _Client()
     req.client.host = host
     assert artifact_server._peer_is_loopback(req) is ok
-    req.client = None                  # a Unix socket: on this box by design
-    assert artifact_server._peer_is_loopback(req) is True
+    # No peer address is NOT a Unix socket: uvicorn reports none for a TCP
+    # peer that reset before connection_made, and still serves what it sent
+    # (review 2026-11-16). Only OUR socket, named by the listener, counts.
+    req.client = None
+    assert artifact_server._peer_is_loopback(req) is False
+    req.scope = {"server": ("127.0.0.1", 3004), "client": None}
+    assert artifact_server._peer_is_loopback(req) is False
+
+
+def _scoped(app, **over):
+    """The app with the ASGI scope's client/server replaced — a Unix-socket
+    arrival, or a TCP peer that reset before uvicorn read its address."""
+    async def wrapped(scope, receive, send):
+        if scope.get("type") == "http":
+            scope = dict(scope, **over)
+        await app(scope, receive, send)
+    return wrapped
+
+
+ART_SOCK = "/run/ob-test/artifact.sock"
+
+
+def _scoped_client(c, **over):
+    return TestClient(_scoped(c.asgi_app, **over),
+                      base_url="http://127.0.0.1:3004")
+
+
+def test_a_reset_tcp_peer_cannot_claim_a_login(make_client):
+    """client=None on a TCP listener used to count as 'a Unix socket, on
+    this box' and honour any Tailscale-User-Login — from off the box too,
+    with BIND_HOST on a LAN address."""
+    c = make_client(operators="max@example.com")
+    a = publish(c, headers=local(c, MAX), visibility="tailnet")
+    reset = _scoped_client(c, client=None, server=("192.168.1.20", 3004))
+    assert reset.get(f"/a/{a['id']}", headers=MAX).status_code == 404
+    assert reset.get("/api/artifacts", headers=MAX).status_code == 404
+    # control: a loopback peer still reads in the default mode
+    assert c.get(f"/a/{a['id']}", headers=MAX).status_code == 200
+
+
+def test_unix_login_mode_honours_the_header_only_on_its_socket(
+        make_client, monkeypatch):
+    """ARTIFACT_LOGIN_FROM=unix (review 2026-11-16): a host-network
+    container is a 127.0.0.1 peer, so in loopback mode it could name the
+    operator (or an admin) and read every private page. With unix, the
+    header counts ONLY on ARTIFACT_SOCKET, the 0600 socket tailscale serve
+    proxies :8446 to."""
+    monkeypatch.setenv("OPENBEAST_ARTIFACT_LOGIN_FROM", "unix")
+    monkeypatch.setenv("OPENBEAST_ARTIFACT_SOCKET", ART_SOCK)
+    c = make_client(operators="max@example.com")
+    a = publish(c, headers=local(c, MAX))                       # private
+    # TCP loopback with the operator's login: anonymous now
+    assert c.get(f"/a/{a['id']}", headers=MAX).status_code == 404
+    assert c.get("/api/artifacts", headers=MAX).status_code == 404
+    # ...a reset TCP peer too
+    reset = _scoped_client(c, client=None, server=("127.0.0.1", 3004))
+    assert reset.get(f"/a/{a['id']}", headers=MAX).status_code == 404
+    # ...and some other Unix socket
+    other = _scoped_client(c, client=None, server=("/tmp/x.sock", None))
+    assert other.get(f"/a/{a['id']}", headers=MAX).status_code == 404
+    # the configured socket: the login is honoured
+    sock = _scoped_client(c, client=None, server=(ART_SOCK, None))
+    assert sock.get(f"/a/{a['id']}", headers=MAX).status_code == 200
+    # the locality token still works over TCP (a secret, not a claim)
+    assert c.get("/api/artifacts", headers=local(c)).status_code == 200
+    h = c.get("/api/artifacts/health", headers=local(c)).json()
+    assert h["login_from"] == "unix"
+
+
+def test_loopback_is_still_the_default_login_mode(make_client, monkeypatch):
+    c = make_client(operators="max@example.com")
+    assert c.get("/api/artifacts/health",
+                 headers=local(c)).json()["login_from"] == "loopback"
+    assert artifact_server.login_source() == "loopback"
+    monkeypatch.setenv("OPENBEAST_ARTIFACT_LOGIN_FROM", "bogus")
+    assert artifact_server.login_source() == "loopback"
+
+
+def test_real_artifact_server_takes_logins_only_on_its_unix_socket(env):
+    """main() end to end: the 0600 socket is bound beside the TCP port, a
+    login over the socket reads, the same login over TCP loopback is 404."""
+    import http.client
+    import shutil
+    import subprocess
+    import tempfile
+    import urllib.error
+    import urllib.request
+    # short: AF_UNIX paths are capped near 104 bytes and pytest's are long
+    sock_dir = tempfile.mkdtemp(prefix="obas", dir="/tmp")
+    sock_path = os.path.join(sock_dir, "s", "artifact.sock")
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    child_env = dict(os.environ)
+    child_env.update({
+        "OPENBEAST_ARTIFACT_PORT": str(port),
+        "OPENBEAST_BIND": "127.0.0.1",
+        "OPENBEAST_ARTIFACT_LOGIN_FROM": "unix",
+        "OPENBEAST_ARTIFACT_SOCKET": sock_path,
+        "OPENBEAST_ARTIFACT_OPERATORS": "max@example.com",
+    })
+    proc = subprocess.Popen(
+        [sys.executable, os.path.join(REPO, "agents", "artifact_server.py")],
+        env=child_env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL)
+
+    class UDS(http.client.HTTPConnection):
+        def connect(self):
+            self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.sock.settimeout(10)
+            self.sock.connect(sock_path)
+    try:
+        deadline = time.monotonic() + 20
+        up = False
+        while time.monotonic() < deadline and not up:
+            try:
+                urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/api/artifacts/health", timeout=2)
+                up = os.path.exists(sock_path)
+            except OSError:
+                time.sleep(0.1)
+        assert up, "artifact_server did not come up"
+        st = os.stat(sock_path)
+        assert stat.S_ISSOCK(st.st_mode) and (st.st_mode & 0o777) == 0o600
+        conn = UDS("localhost")
+        conn.request("GET", "/api/artifacts",
+                     headers={**MAX, "Host": "localhost"})
+        r = conn.getresponse()
+        assert r.status == 200, r.read()
+        conn.close()
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/api/artifacts",
+                                     headers=MAX)
+        with pytest.raises(urllib.error.HTTPError) as e:
+            urllib.request.urlopen(req, timeout=10)
+        assert e.value.code == 404
+    finally:
+        proc.kill()
+        proc.wait(10)
+        shutil.rmtree(sock_dir, ignore_errors=True)
 
 
 def test_every_answer_but_the_capability_tree_severs_the_opener(make_client):

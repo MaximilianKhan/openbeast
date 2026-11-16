@@ -109,6 +109,10 @@ Env:
   OPENBEAST_ARTIFACT_RETAIN_DAYS  opt-in retention sweep; 0/unset = off
   OPENBEAST_FILES_DIR           workspace root — the store lives under it
   OPENBEAST_RUN_DIR             where the token + audit log go (default .run)
+  OPENBEAST_ARTIFACT_SOCKET     also listen on this Unix socket (0600)
+  OPENBEAST_ARTIFACT_LOGIN_FROM loopback (default) | unix — where a
+                                Tailscale-User-Login counts (unix: only on
+                                the socket above; agents/loginsock.py)
 """
 from __future__ import annotations
 
@@ -147,6 +151,7 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 import artifact as store  # noqa: E402
+import loginsock  # noqa: E402
 from hostpolicy import trusted_hosts  # noqa: E402
 
 REPO_DIR = os.path.dirname(_HERE)
@@ -421,6 +426,11 @@ def _peer_is_loopback(request) -> bool:
     peer (or a Unix socket, which has no address and is on this box by
     construction); from anywhere else the caller is ANONYMOUS.
 
+    "A Unix socket" means OUR socket, identified from the listener
+    (scope["server"]). A missing peer address proves nothing: uvicorn
+    reports none for a TCP connection reset before connection_made, and the
+    request it queued is still served (agents/loginsock.py).
+
     The converse is NOT claimed: a loopback peer proves nothing about who is
     behind the proxy (edge.py:412), which is why writes need the locality
     token or a device key — and why a key bound to a login answers only for
@@ -428,7 +438,7 @@ def _peer_is_loopback(request) -> bool:
     """
     client = getattr(request, "client", None)
     if client is None:
-        return True
+        return loginsock.arrived_on(request, _login_socket())
     try:
         addr = _unmap(ipaddress.ip_address((client.host or "").split("%", 1)[0]))
     except ValueError:
@@ -452,6 +462,34 @@ def _peer_is_loopback(request) -> bool:
     except ValueError:
         return False
     return (not local.is_unspecified) and addr == local
+
+
+def _login_socket() -> str:
+    """OPENBEAST_ARTIFACT_SOCKET as configured ('' when there is none)."""
+    return (os.environ.get("OPENBEAST_ARTIFACT_SOCKET") or "").strip()
+
+
+def login_source() -> str:
+    """OPENBEAST_ARTIFACT_LOGIN_FROM: 'loopback' (default) or 'unix'.
+
+    `loopback` honours Tailscale-User-Login from any peer on this host —
+    which includes code in every network_mode: host container (Open WebUI
+    Functions, SearXNG, a third-party inference image). `unix` honours it
+    ONLY on OPENBEAST_ARTIFACT_SOCKET, the 0600 socket `tailscale serve`
+    (root) proxies :8446 to; TCP readers then need the locality token or an
+    artifact-scoped device key. The same design as beast-chat's
+    CHAT_LOGIN_FROM (docs/BEAST_CHAT.md).
+    """
+    v = (os.environ.get("OPENBEAST_ARTIFACT_LOGIN_FROM") or "loopback"
+         ).strip().lower()
+    return "unix" if v == "unix" else "loopback"
+
+
+def _login_header_trusted(request, login_from: str, sock_path: str) -> bool:
+    """May this connection assert an identity by Tailscale-User-Login?"""
+    if login_from == "unix":
+        return loginsock.arrived_on(request, sock_path)
+    return _peer_is_loopback(request)
 
 
 def _unmap(addr):
@@ -843,6 +881,8 @@ def create_app(local_token: str | None = None) -> FastAPI:
     otherwise mint).
     """
     operators = _operators()          # ordered; [0] owns CLI publishes
+    login_from = login_source()
+    login_socket = _login_socket()
     operator_set = set(operators)
     if local_token is None:
         local_token = _ensure_local_token()
@@ -1021,7 +1061,9 @@ def create_app(local_token: str | None = None) -> FastAPI:
             # reading like the named user's own device misbehaving.
             entry["claimed_login"] = claimed
             client = getattr(request, "client", None)
-            entry["peer"] = (getattr(client, "host", None) or "")[:64] or None
+            entry["peer"] = ("unix" if loginsock.arrived_on(request, login_socket)
+                             else (getattr(client, "host", None) or "")[:64]
+                             or None)
         entry.update(extra or getattr(request.state, "extra", {}) or {})
         reason = _deny_label(entry.get("denied"))
         # The budget has to cover every row an UNIDENTIFIED caller can mint,
@@ -1277,8 +1319,10 @@ def create_app(local_token: str | None = None) -> FastAPI:
         local = is_local(request)
         # A login header from an off-box peer is not an identity at all (see
         # _peer_is_loopback): the caller is who the TOKEN says, or nobody.
+        # With ARTIFACT_LOGIN_FROM=unix, only the 0600 socket counts.
         raw = ((request.headers.get(_HDR_LOGIN) or "").strip().lower()
-               if _peer_is_loopback(request) else "")
+               if _login_header_trusted(request, login_from, login_socket)
+               else "")
         # The rig's own names are never an identity a HEADER can carry. The
         # rig principal owns every CLI/campaign publish, so accepting it from
         # a header would make it a read password — the defect class R6
@@ -1807,6 +1851,7 @@ def create_app(local_token: str | None = None) -> FastAPI:
             return {"status": "error", "detail": str(e)}
         return {"status": "ok" if ok else "error", "artifacts": count,
                 "auth": "allowlist" if operators else "identified",
+                "login_from": login_from,
                 "admins": len(store.admins()),
                 "retain_days": store.retain_days(),
                 "store": root}
@@ -2296,11 +2341,26 @@ def main() -> None:
               f"been left alone, so scripts/artifact.sh keeps working.",
               file=sys.stderr)
         raise SystemExit(1)
+    sockets = [sock]
+    unix_path = _login_socket()
+    if unix_path:
+        try:
+            sockets.append(loginsock.unix_listener(unix_path, "artifact_server"))
+        except OSError as e:
+            sock.close()
+            print(f"ERROR: cannot bind the login socket {unix_path} ({e})",
+                  file=sys.stderr)
+            raise SystemExit(1)
+    if login_source() == "unix" and not unix_path:
+        print("WARNING: OPENBEAST_ARTIFACT_LOGIN_FROM=unix but "
+              "OPENBEAST_ARTIFACT_SOCKET is unset — no connection can present "
+              "a tailnet login; only device keys and the locality token will "
+              "work.", file=sys.stderr)
     app = create_app(local_token=_mint_local_token())
     _start_retention_thread(app)
     print(f"OpenBeast artifact server on {host}:{port} "
           f"(store {store.store_root()})")
-    uvicorn.Server(_uvicorn_config(app, host, port)).run(sockets=[sock])
+    uvicorn.Server(_uvicorn_config(app, host, port)).run(sockets=sockets)
 
 
 if __name__ == "__main__":
