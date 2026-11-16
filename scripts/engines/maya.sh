@@ -365,8 +365,14 @@ json.dump(c, open(sys.argv[2], "w"), indent=1)
 PY
   ) || { echo "could not write $run from $cfg" >&2; return 1; }
   echo "Project Maya $(eng_maya_installed 2>/dev/null || echo '?'): $PF_PROFILE_NAME ($PF_SERVED_MODEL_NAME) on http://$host:$port"
+  # Exported, not `env MAYA_API_KEY=…`: that made the key an argv word of
+  # /usr/bin/env, readable in /proc/<pid>/cmdline by any local user until env
+  # exec'd python. env passes the exported variable on through the
+  # environment (readable by this uid only), like serve.sh's LLAMA_API_KEY.
   if [[ -n "${LLAMA_API_KEY:-}" ]]; then
-    exec env "${ENV[@]}" MAYA_API_KEY="$LLAMA_API_KEY" "${CMD[@]}"
+    export MAYA_API_KEY="$LLAMA_API_KEY"
+  else
+    unset MAYA_API_KEY
   fi
   exec env "${ENV[@]}" "${CMD[@]}"
 }

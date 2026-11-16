@@ -587,6 +587,19 @@ check "…with a passing verdict: the plan sets maya managed and prints the laun
   '[[ "$_o" == *"set   INFERENCE_BACKEND=maya"* && "$_o" == *"set   ENGINE_PROFILE=glm53-flash-abl-q2kxl"* && "$_o" == *"maya.py --config"* && "$_o" == *"MAYA_GLM_RAM_HEADROOM_GB=16"* ]]' "$_o"
 check "…and the key travels by environment only: never in the printed command" \
   '[[ "$_o" == *"MAYA_API_KEY=\<from\ LLAMA_API_KEY"* && "$_o" != *sekrit-maya* ]]' "$_o"
+# The real launch: /usr/bin/env must not carry the key on its argv (it sat in
+# /proc/<pid>/cmdline until env exec'd python); python gets it by environment.
+mkdir -p "$T/envbin" "$T/opt/maya/.venv/bin" "$SB/.engines/maya"
+printf '#!/bin/bash\nprintf "%%s\\n" "$@" > %s/env-argv\nexec /usr/bin/env "$@"\n' "$T" > "$T/envbin/env"
+printf '#!/bin/bash\necho "MAYA_API_KEY=${MAYA_API_KEY:-unset}" > %s/maya-env\n' "$T" > "$T/opt/maya/.venv/bin/python"
+chmod +x "$T/envbin/env" "$T/opt/maya/.venv/bin/python"
+echo '{"host": "x", "port": 1}' > "$T/maya-prepared.json"; echo "$T/maya-prepared.json" > "$SB/.engines/maya/glm53-flash-abl-q2kxl.config"
+env -i "${BASE_ENV[@]}" "${MENV[@]}" PATH="$T/envbin:$T/bin:$(dirname "$PY"):/usr/bin:/bin" REPO_DIR="$SB" \
+  OPENBEAST_ENGINE_PROFILE=glm53-flash-abl-q2kxl LLAMA_API_KEY=sekrit-maya \
+  bash -c 'source "$REPO_DIR/scripts/lib/engine.sh"; ob_engine_load maya; eng_maya_launch' >/dev/null 2>&1 || true
+check "…and the real launch hands MAYA_API_KEY to python by environment, never on env's argv" \
+  '[[ -s "$T/env-argv" ]] && grep -q "maya.py" "$T/env-argv" && ! grep -q sekrit "$T/env-argv" && grep -qx "MAYA_API_KEY=sekrit-maya" "$T/maya-env"' \
+  "argv: $(tr '\n' ' ' < "$T/env-argv" 2>/dev/null) / $(cat "$T/maya-env" 2>/dev/null)"
 _o="$(env -i "${BASE_ENV[@]}" REPO_DIR="$SB" bash -c 'source "$REPO_DIR/scripts/lib/memscope.sh"; source "$REPO_DIR/scripts/lib/engine.sh"; ob_engine_load maya; ob_mem_scope "$(eng_maya_scope_file glm53-flash-abl-q2kxl)" rig 127926272 75')"
 check "the Maya profile asks start.sh for the same rig-only 90% / memlock scope as llama.cpp's big mode" \
   '[[ "$_o" == "90 infinity profile:glm53-flash-abl-q2kxl.env" ]]' "$_o"
