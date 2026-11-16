@@ -101,7 +101,7 @@ an `--unpublish-*` twin that reads no config, keyed by the published port):
 | Tailnet port | Maps to | Flag | Who may reach it |
 |---|---|---|---|
 | `:443` | Open WebUI `:3000` | (always, with `setup-tailscale.sh`) | any tailnet device; WebUI login on top |
-| `:8443` | beast-gate `:8090` when `EDGE_GATE=true`; else llama-server `:8080` behind `LLAMA_API_KEY`; else nothing, unless `--i-accept-open-inference` | (with `setup-tailscale.sh`, when one of those three holds) | an enrolled device key behind the gate; or whoever holds the shared key; or, acknowledged open, any tailnet device |
+| `:8443` | beast-gate `:8090` when `EDGE_GATE=true`; else the engine at `INFERENCE_URL` (llama-server `:8080` by default; TensorFold / vLLM `:8000`) behind `LLAMA_API_KEY`; else nothing, unless `--i-accept-open-inference`. An `INFERENCE_URL` on another machine is published only through the gate | (with `setup-tailscale.sh`, when one of those three holds) | an enrolled device key behind the gate; or whoever holds the shared key; or, acknowledged open, any tailnet device |
 | `:8444/api/slot` | dashboard `:3002`, that one path only | `--publish-slot` | any tailnet device (read-only JSON) |
 | `:8445` | beast-chat `:3003` (`CHAT_PORT`) | `--publish-chat` | reads: a tailnet login on `CHAT_OPERATORS`; writes: a device key with the `chat` scope |
 | `:8446` | beast-artifact `:3004` (`ARTIFACT_PORT`) | `--publish-artifact` | reads: a tailnet login on `ARTIFACT_OPERATORS` (falls back to `CHAT_OPERATORS`); publishing never leaves loopback; lifecycle writes (pin, tags, visibility, rollback, delete) also accept a device key with the `artifact` scope |
@@ -118,8 +118,8 @@ llama-server's own port are never published.
 mounts it in exactly one of three states, checked in this order:
 
 1. `EDGE_GATE=true` → at beast-gate (per-device keys, the recommended one).
-2. `LLAMA_API_KEY` set → at llama-server, behind that one shared key.
-3. `--i-accept-open-inference` → at llama-server with **no** key. The flag is
+2. `LLAMA_API_KEY` set → at the engine, behind that one shared key.
+3. `--i-accept-open-inference` → at the engine with **no** key. The flag is
    recorded as `ALLOW_OPEN_INFERENCE=true` in `openbeast.conf`, so later
    re-runs keep publishing; delete the line to take it back.
 
@@ -129,6 +129,13 @@ the script on an older keyless rig unpublishes inference until you pick one.
 `scripts/doctor.sh` matches: a keyless raw `:8443` is a FAIL, and a WARN
 once `ALLOW_OPEN_INFERENCE=true` acknowledges it. Before 2026-10-09 the
 script published raw llama-server to the whole tailnet with no question.
+
+A raw mount (2 or 3) points where beast-gate's upstream does: the engine at
+`INFERENCE_URL`, so a TensorFold or vLLM box gets `:8443 → :8000`, not a
+502 from a fixed `:8080`. When `INFERENCE_URL` names another machine the
+script refuses the raw mount (and takes down an old one) and points at
+`EDGE_GATE=true` instead: a raw `tailscale serve` of a remote engine would
+put no identity at all in front of it.
 
 **Order matters.** The slot API is served by the dashboard *extension*, and
 `EXTENSIONS` is empty by default. Publishing before enabling it (and
