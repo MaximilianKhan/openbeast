@@ -43,7 +43,7 @@ sys.path.insert(0, str(ROOT / "evals"))
 import row_validity  # noqa: E402
 import tier3_verdict  # noqa: E402
 
-PIN = json.loads((ROOT / "evals/suites/v5-fast.json").read_text())
+PIN = json.loads((ROOT / "evals/suites/v4-fast.json").read_text())  # was v5-fast before v5
 
 
 def _row(uid, passed=True, **kw):

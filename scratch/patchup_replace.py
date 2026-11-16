@@ -50,7 +50,8 @@ def recompute_header(main):
     if fs and fs.get("suite"):
         sys.path.insert(0, EVALS)
         import scoring  # noqa: E402 — the harness's own imputation, not a copy
-        pin = json.load(open(os.path.join(EVALS, "suites", f"{fs['suite']}.json")))
+        name = {"v5-fast": "v4-fast"}.get(fs["suite"], fs["suite"])  # renamed at v5
+        pin = json.load(open(os.path.join(EVALS, "suites", f"{name}.json")))
         trip = set(pin["tripwires"])
         imputed = scoring.impute_suite_tasks(tasks, pin)
         solve, lang, cap = scoring.compute_solve_breadth(imputed)
