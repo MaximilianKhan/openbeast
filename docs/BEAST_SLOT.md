@@ -462,7 +462,7 @@ or add the directory (the installer prints this line for your shell):
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zprofile   # zsh (macOS default)
 ```
 
-`status` checks: env file, venv imports, tailscale up, rig API reachable
+`status` checks: env file, venv packages, tailscale up, rig API reachable
 (with bearer when keyed), beast-slot discovery, search reachable, opencode
 wiring. RBAC deliberately does not apply to the client path — it's your
 device; `OPENBEAST_MCP_TOOLS` is the scoping lever if a shared client ever
