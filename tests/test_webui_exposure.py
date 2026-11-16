@@ -39,6 +39,14 @@ TS_STUB = textwrap.dedent(r'''
     a = sys.argv[1:]
     if a[:2] == ["status", "--json"] and os.environ.get("TS_DNS"):
         print(json.dumps({"Self": {"DNSName": os.environ["TS_DNS"]}}))
+    elif a[:3] == ["serve", "status", "--json"] and os.environ.get("TS_SERVE_SEQ"):
+        # One answer per call, in order: a tailscaled whose answer changes.
+        seq = os.environ["TS_SERVE_SEQ"]
+        lines = open(seq).read().splitlines()
+        open(seq, "w").write("\n".join(lines[1:]))
+        if not lines or lines[0] == "NONE":
+            sys.exit(1)
+        print(lines[0])
     elif a[:3] == ["serve", "status", "--json"] and os.environ.get("TS_SERVE"):
         print(os.environ["TS_SERVE"])
     else:
@@ -79,7 +87,7 @@ def conf(tmp_path):
                 p.chmod(0o755)
         env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(tmp_path),
                "REPO_DIR": str(root), "OB_CONF_READONLY": "1", "OB_CONF_LINTED": "1",
-               "OPENBEAST_RUN_DIR": str(tmp_path / "run")}
+               "OPENBEAST_RUN_DIR": str(tmp_path / "run"), "OB_WEBUI_443_RECHECK_S": "0"}
         env.update(env_extra)
         r = subprocess.run(
             ["bash", "-c", 'source "$REPO_DIR/scripts/lib/conf.sh" >/dev/null; '
@@ -230,6 +238,27 @@ def test_a_mount_seen_before_keeps_login_on_while_tailscale_is_silent(conf, tmp_
     assert r.auth == "true", r.stderr
     # a real "no mount" answer clears it
     conf("WEBUI_AUTH=false\n", TS_SERVE=_serve("http://127.0.0.1:3004"), OB_CONF_READONLY="")
+    assert conf("WEBUI_AUTH=false\n").auth == "false"
+
+
+def test_one_no_mount_answer_after_a_mount_is_rechecked(conf, tmp_path):
+    """tailscaled at boot can answer "no serve config" before it re-applies
+    the persisted :443 mount. That single "no" used to be cached and
+    believed, so the start recreated an auth-off WebUI behind the mount."""
+    mounted = _serve("http://127.0.0.1:3000")
+    empty = json.dumps({})
+    conf("WEBUI_AUTH=false\n", TS_SERVE=mounted, OB_CONF_READONLY="")
+    seq = tmp_path / "serve-seq"
+    seq.write_text(f"{empty}\n{mounted}\n")      # boot: "no", then the mount
+    r = conf("WEBUI_AUTH=false\n", TS_SERVE_SEQ=str(seq), OB_CONF_READONLY="")
+    assert r.auth == "true", r.stderr
+    seq.write_text(f"{empty}\nNONE\n")           # "no", then no answer at all
+    r = conf("WEBUI_AUTH=false\n", TS_SERVE_SEQ=str(seq), OB_CONF_READONLY="")
+    assert r.auth == "true", r.stderr
+    assert conf("WEBUI_AUTH=false\n").auth == "true"   # the "no" was not cached
+    seq.write_text(f"{empty}\n{empty}\n")         # confirmed: really unmounted
+    r = conf("WEBUI_AUTH=false\n", TS_SERVE_SEQ=str(seq), OB_CONF_READONLY="")
+    assert r.auth == "false", r.stderr
     assert conf("WEBUI_AUTH=false\n").auth == "false"
 
 

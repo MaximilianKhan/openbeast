@@ -1068,8 +1068,30 @@ _ob_ts() {
 # and tailscaled re-applies them when it comes up, so "tailscale gave no
 # answer" (a start racing tailscaled at boot, a >3 s stall) is NOT "no
 # mount": then the last real answer stands (.run/webui-on-443).
+# Nor is ONE "no mount" right after the last real answer said "mounted": a
+# tailscaled still coming up at boot can answer before it re-applies the
+# persisted serve config, and caching that "no" let a start recreate an
+# auth-off WebUI behind the mount it then restored. That answer is cached
+# (and believed) only once a second probe, OB_WEBUI_443_RECHECK_S (2) later,
+# agrees; any other second answer keeps login on.
 _ob_webui_on_443() {
   local rc cache="$ISLAND_STATE_DIR/webui-on-443"
+  _ob_webui_443_probe && rc=0 || rc=$?
+  if (( rc == 1 )) && [[ "$(head -n1 "$cache" 2>/dev/null)" == "0" ]]; then
+    sleep "${OB_WEBUI_443_RECHECK_S:-2}"
+    _ob_webui_443_probe && rc=0 || rc=$?
+  fi
+  if (( rc == 0 || rc == 1 )); then
+    if [[ "${OB_CONF_READONLY:-}" != "1" ]]; then
+      { mkdir -p "$ISLAND_STATE_DIR" && echo "$rc" > "$cache"; } 2>/dev/null || true
+    fi
+    return "$rc"
+  fi
+  [[ "$(head -n1 "$cache" 2>/dev/null)" == "0" ]]
+}
+# 0 = :443 maps onto :3000, 1 = tailscale answered and it does not, 2 = no
+# answer (not installed, not running, >3 s, unparseable).
+_ob_webui_443_probe() {
   _ob_ts serve status --json 2>/dev/null | python3 -c '
 import json, re, sys
 try:
@@ -1081,14 +1103,6 @@ for hp, cfg in web.items():
                                    for h in ((cfg or {}).get("Handlers") or {}).values()):
         sys.exit(0)
 sys.exit(1)' 2>/dev/null
-  rc=$?
-  if (( rc == 0 || rc == 1 )); then
-    if [[ "${OB_CONF_READONLY:-}" != "1" ]]; then
-      { mkdir -p "$ISLAND_STATE_DIR" && echo "$rc" > "$cache"; } 2>/dev/null || true
-    fi
-    return "$rc"
-  fi
-  [[ "$(head -n1 "$cache" 2>/dev/null)" == "0" ]]
 }
 # WEBUI_AUTH=false is honoured only while the WebUI is reachable from this
 # machine alone. Auth off means "no login, everyone is admin@localhost", and

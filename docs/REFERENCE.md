@@ -631,6 +631,13 @@ there is no `Host` check. The tailnet name in the CORS list comes from
 `tailscale status`, else the live `serve` mount, else the last name seen
 (`.run/webui-tailnet-name`), so a start that races `tailscaled` at boot
 keeps the tailnet origin.
+The `:443` check races `tailscaled` at boot in the same way. When
+`tailscale` gives no answer, the last real answer stands
+(`.run/webui-on-443`). A single "no mount" answer right after the last one
+said "mounted" is not believed either, because a daemon still coming up can
+answer before it re-applies the persisted mount. A second probe 2 s later
+(`OB_WEBUI_443_RECHECK_S`) must agree before that "no" is cached and login
+may turn off.
 
 **Auth turns on with remote access.** `scripts/setup-tailscale.sh` flips
 `WEBUI_AUTH=true` automatically when the WebUI becomes reachable from your
