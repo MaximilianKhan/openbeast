@@ -7,7 +7,9 @@
 import math
 import os
 import random
+import shutil
 import sys
+import tempfile
 
 import vlib
 
@@ -85,8 +87,27 @@ if problems:
 
 cs = cases()
 inp = '%d\n' % len(cs) + ''.join(' '.join(repr(x) for x in c) + '\n' for c in cs)
-r = vlib.run_solution(vlib.python_cmd(SRC), input=inp, cpu_s=RUN_LIMIT_S,
-                      wall_s=WALL_LIMIT_S, cwd=D, deny_read=sealed_paths())
+# Confined (review 1116). The deny-list above has no kernel read-deny on
+# Linux, and on macOS it misses a stray copy of the reference outside evals/,
+# so `sys.path.insert(0, <copy dir>); from heston import main` passed. The
+# solution now runs from a private copy and may read only the stdlib and that
+# dir, and write only that dir, on macOS and Linux alike (the deny-list stays
+# as a second layer on macOS).
+MODULES = ('math', 'cmath', 'sys', 'os', 'io', 're', 'decimal', 'fractions', 'statistics',
+           'functools', 'itertools', 'operator', 'collections', 'array', 'bisect', 'heapq',
+           'time')
+work = tempfile.mkdtemp(prefix='h183-', dir=os.getcwd())
+try:
+    shutil.copyfile(SRC, os.path.join(work, 'heston.py'))
+    r = vlib.run_solution(vlib.python_cmd(os.path.join(work, 'heston.py')), input=inp,
+                          cpu_s=RUN_LIMIT_S, wall_s=WALL_LIMIT_S, cwd=work,
+                          deny_read=sealed_paths(), confine=[work],
+                          read_only=vlib.python_runtime(sys.executable, MODULES))
+finally:
+    shutil.rmtree(work, ignore_errors=True)
+if r.verdict == 'sandbox':
+    fail('validator could not confine the solution (%s); refusing to run it unconfined'
+         % r.reason)
 if r.verdict in ('cpu', 'wall'):
     fail('solution timed out (%ds CPU for %d options; %s)' % (RUN_LIMIT_S, len(cs), r.reason))
 if r.verdict != 'ok':

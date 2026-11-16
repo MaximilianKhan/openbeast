@@ -240,11 +240,16 @@ created, and have the prover check every ancestor cwd afterwards
 7. **Build in a private copy of only the source.** A planted
    `rust-toolchain.toml`, a `$HOME/.../go/env` with `GOFLAGS=-ldflags=-s`, or
    a `.cargo/config.toml` in an ancestor of the build cwd replaces the
-   compiler or strips the symbol table you inspect (166/169). Use
-   `d = vlib.private_build_dir({"main.rs": src})` and build in `d` under
-   `env=vlib.build_env()` (clean private `HOME`, `GOENV=off`, `GOFLAGS`
-   cleared, `GOTOOLCHAIN=local`); call `vlib.tool_path("rustc")` for an
-   absolute compiler so a planted `rustc` earlier on PATH cannot shadow it.
+   compiler or strips the symbol table you inspect (166/169), and a `gcc`
+   planted first on PATH compiled the reference for an empty `main` (36_c,
+   review 1116). The one-call form is
+   `b = vlib.start_build({SRC: source}, BUILD, EXE); ok, log = b.finish(vlib.t(25))`,
+   then run `b.product`. By hand: `d = vlib.private_build_dir({"main.rs": src})`
+   and build in `d` under `env=vlib.build_env()` (clean private `HOME`, only
+   root-owned dirs on PATH, `GOENV=off`, `GOFLAGS` cleared,
+   `GOTOOLCHAIN=local`); call `vlib.tool_path("rustc")` (also for `nm`,
+   `otool`, `clang` you run yourself): it returns the binary the harness
+   pinned before the agent ran, never what PATH says at validation time.
    Then **require a native executable**: `vlib.assert_native_executable(out)`
    before you run it or read `nm`/`otool` — a `#!/usr/bin/env python3` shim
    behind a planted compiler is not ELF/Mach-O, and `nm` of a non-object file

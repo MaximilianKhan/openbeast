@@ -2,7 +2,7 @@
 
 ## v5.0, harness6 (2026-11-16) — review-1116 fixes (era roll)
 
-Same suite and manifest; the harness and `vlib.py` changed, so the cache
+Same suite and manifest (71 units); the harness and `vlib.py` changed, so the cache
 era moved (`HARNESS_VERSION` harness5 -> harness6, `vlib.py` rehashed). No
 harness5 row replays into harness6: rerun the v5 units measured before it.
 One roll covers every review-1116 eval fix below. What changed in how
@@ -49,6 +49,23 @@ Families 163-179:
 - 179: the validator never runs git in the agent's repository (a promisor
   remote's `uploadpack` ran unsandboxed); the fixture history is one
   `git fast-import` (same SHAs, ~0.5 s instead of ~4 s on a Mac).
+
+Families 183-196, the U3 upgrades and the kept-v4 units:
+
+- **Toolchain pins.** The harness resolves and fingerprints every compiler
+  and inspection tool before any agent runs and refuses a validation when
+  one moved or changed (not banked). U3 compiled units build a private copy
+  with the pinned compiler (`vlib.start_build`); every validator gets
+  `GOENV=off`, `GOTOOLCHAIN=local` and the pinned rustup toolchain. New
+  prover arms: `toolchain:path`, `toolchain:goenv`.
+- **Confinement.** 183, 188, 40, 36_a and 123_a run the solution with
+  `confine=` (stdlib + a private dir) on macOS and Linux; 40 lints strictly
+  and blocks numpy/torch with an audit hook.
+- **Kept-v4 gates** of 146, 147, 153, 158 and 159 scale with
+  `OPENBEAST_TIMEOUT_SCALE` (the v4 number at scale 1); the prover lint now
+  sees a measured time compared with a bare number.
+- **122's oracle** builds its columns in the integer domain (bit-identical,
+  2x faster on aarch64).
 
 ## v5.0 (2026-11-15) — the measured suite (CURRENT; era break)
 

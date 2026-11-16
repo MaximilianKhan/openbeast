@@ -41,7 +41,7 @@ CASES = cases()
 REF = [fit_gmm(**json.loads(json.dumps(c))) for c in CASES]
 
 DRIVER = r'''
-import importlib.util, json, sys
+import importlib.util, json, os, sys
 real = sys.stdout
 sys.stdout = sys.stderr
 BANNED = %r
@@ -55,7 +55,8 @@ sys.meta_path.insert(0, _BLOCK)
 for _m in [m for m in sys.modules if m.split(".")[0] in BANNED]:
     del sys.modules[_m]
 cases = json.loads(sys.stdin.read())
-spec = importlib.util.spec_from_file_location("gmm_sol", "/tmp/eval_gmm/gmm.py")
+spec = importlib.util.spec_from_file_location(
+    "gmm_sol", os.path.join(os.path.dirname(os.path.abspath(__file__)), "gmm.py"))
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 out = []
@@ -79,15 +80,29 @@ real.flush()
 # The driver holds no answers (only the hidden INPUTS, which arrive on its
 # stdin); it is written to a private dir and run as `python -I -S <file>`, so
 # no source sits in an argv. CPU budget 10 s at scale 1 for the whole tree.
+# Confined (review 1116): the driver and a COPY of the solution sit in that
+# private dir, and the process may read only the stdlib and that dir, write
+# only that dir (vlib confine, macOS and Linux). The deny-list it replaces had
+# no kernel read-deny on Linux and missed a stray copy of the reference
+# outside evals/ on macOS: `sys.path.insert(0, <copy dir>)` + `from <copy>
+# import fit_gmm` passed the lint and every case.
+MODULES = ("math", "cmath", "json", "os", "importlib.util", "functools", "itertools",
+           "operator", "collections", "array", "bisect", "heapq", "statistics", "decimal",
+           "fractions", "copy", "random")
 _dd = tempfile.mkdtemp(prefix="gmm_drv_", dir=os.getcwd())
 _drv = os.path.join(_dd, "driver.py")
 try:
     with open(_drv, "w") as f:
         f.write(DRIVER)
+    shutil.copyfile(SOL, os.path.join(_dd, "gmm.py"))
     p = vlib.run_solution(vlib.python_cmd(_drv), input=json.dumps(CASES), cpu_s=10, wall_s=15,
-                          cwd="/tmp/eval_gmm")
+                          cwd=_dd, confine=[_dd],
+                          read_only=vlib.python_runtime(sys.executable, MODULES))
 finally:
     shutil.rmtree(_dd, ignore_errors=True)
+if p.verdict == "sandbox":
+    print("FAIL validator could not confine the solution:", p.reason,
+          "(refusing to run it unconfined)"); sys.exit(1)
 if p.verdict in ("cpu", "wall"):
     print("FAIL solution timed out (10 s CPU for all hidden cases):", p.reason); sys.exit(1)
 if p.verdict != "ok":

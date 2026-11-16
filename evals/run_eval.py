@@ -319,8 +319,12 @@ def _proc_snapshot() -> dict:
         # libproc, in-process: ~2-5 ms with no fork, against ~45 ms for the
         # `ps -A ... lstart=` below plus a strptime per row, twice a second
         # per agent (review 1116). Our uid's processes only, which is all the
-        # sweep may match. The start identity is exact (sec, usec).
-        for pid, (ppid, pgid, uid, _cpu, (sec, usec)) in tab.items():
+        # sweep may match (another uid's row has no start). The start
+        # identity is exact (sec, usec).
+        for pid, (ppid, pgid, uid, _cpu, start) in tab.items():
+            if start is None:
+                continue
+            sec, usec = start
             out[pid] = (ppid, pgid, None, f"{sec}.{usec:06d}", uid, sec + usec / 1e6)
         return out
     try:
@@ -1583,7 +1587,9 @@ _ENV_ERROR_RE = re.compile(
     r"|\bENOSPC\b"
     r"|\[Errno 28\]"
     r"|Disk quota exceeded"
-    r"|\bDiskQuota\b",
+    r"|\bDiskQuota\b"
+    # run_validation refused: a pinned compiler moved or changed on disk.
+    r"|Toolchain changed since the harness started",
     re.IGNORECASE)
 
 
@@ -1907,9 +1913,9 @@ def _release_root(root: str) -> None:
 
 
 class fixture_lock:
-    """`with fixture_lock(task, wait=..., log=...):` holds every fixture root
-    of the task for one unit (cleanup -> setup -> agent -> validation ->
-    cleanup). Roots are taken in sorted order, re-entrant per thread.
+    """A context manager, fixture_lock(task, wait=..., log=...), that holds
+    every fixture root of the task for one unit (cleanup -> setup -> agent
+    -> validation -> cleanup). Roots are taken in sorted order, re-entrant per thread.
     wait=True blocks and logs the wait at once (the sweep); wait=False
     raises FixtureBusy at once (a prover)."""
 
@@ -2350,6 +2356,38 @@ def validator_seal() -> tuple:
     _SEAL_CACHE = tuple(seal + extra)
     return _SEAL_CACHE
 
+# --- Toolchain pins (review 1116) ---------------------------------------------
+#
+# A validator runs a compiler as our uid, unsandboxed, and the agent before it
+# could write any dir on our PATH (/opt/homebrew/bin, ~/.local/bin, a conda
+# bin) or a Go/Rust tree it owns. A `gcc` planted there that compiled the
+# REFERENCE passed 36_c with an empty main. So the harness resolves and
+# fingerprints the toolchain ONCE, before any agent runs (vlib.pin_toolchain),
+# refuses a validation when a name now resolves elsewhere, appeared, or a
+# pinned tree changed (vlib.check_toolchain), and hands the pins to the
+# validator, whose vlib.tool_path / start_build call the pinned binary.
+_TOOL_PINS: dict | None = None
+_TOOL_PINS_LOCK = threading.Lock()
+TOOLCHAIN_CHANGED = "Toolchain changed since the harness started"
+
+
+def toolchain_pins() -> dict:
+    """The validator toolchain, pinned on first use (run_eval calls it before
+    the first agent; prove_task before its first arm)."""
+    global _TOOL_PINS
+    with _TOOL_PINS_LOCK:
+        if _TOOL_PINS is None:
+            import vlib  # noqa: PLC0415  (the harness's own copy; validators get it injected)
+            _TOOL_PINS = vlib.pin_toolchain(
+                vlib.TOOLCHAIN, path=os.environ.get("PATH") or "/usr/local/bin:/usr/bin:/bin")
+        return _TOOL_PINS
+
+
+def _toolchain_problems(path: str) -> list[str]:
+    import vlib  # noqa: PLC0415
+    return vlib.check_toolchain(toolchain_pins(), path=path)
+
+
 _VALIDATOR_ENV_KEEP = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TZ",
                        "TMPDIR", "TERM", "SDKROOT", "DEVELOPER_DIR",
                        "MACOSX_DEPLOYMENT_TARGET", "CC", "CXX", "GOROOT", "GOPATH",
@@ -2362,7 +2400,7 @@ _VALIDATOR_ENV_KEEP = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TZ",
 # It reads nothing more from stdin, hardens itself, keeps cwd off sys.path,
 # injects vlib from source, and runs the validator as __main__.
 _PY_BOOT = r"""
-def _ob_boot(src, vlib_src, group_file):
+def _ob_boot(src, vlib_src, group_file, tool_pins):
     import os, sys, types, linecache
     try:
         fd = os.open(os.devnull, os.O_RDONLY); os.dup2(fd, 0); os.close(fd)
@@ -2381,6 +2419,7 @@ def _ob_boot(src, vlib_src, group_file):
     sys.modules["vlib"] = m
     exec(compile(vlib_src, "<vlib>", "exec", dont_inherit=True), m.__dict__)
     m._GROUP_FILE = group_file
+    m._TOOL_PINS = tool_pins
     sys.argv[:] = ["<validator>"]
     linecache.cache["<validator>"] = (len(src), None, src.splitlines(True), "<validator>")
     del globals()["_ob_boot"]
@@ -2422,7 +2461,7 @@ def _ob_run(c, n, done):
     done(n)
 
 
-_ob_run(_ob_boot(%r, %r, %r), %r, _ob_done)
+_ob_run(_ob_boot(%r, %r, %r, %r), %r, _ob_done)
 """
 
 # The line a python validator prints when it ran to its end (see _ob_done).
@@ -2441,6 +2480,15 @@ def _validator_env(timeout_scale: float) -> dict:
     env["OPENBEAST_EVAL"] = "1"
     env["OPENBEAST_VALIDATOR_SEAL"] = os.pathsep.join(validator_seal())
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    # Every validator, v4 ones too: no go env file (a planted
+    # GOTOOLCHAIN=path / GOFLAGS), no toolchain switch to a `go1.99` on PATH,
+    # and rustup's proxy pinned to the toolchain the harness fingerprinted
+    # (a planted rust-toolchain.toml in a build dir does not override it).
+    env["GOENV"] = "off"
+    env["GOTOOLCHAIN"] = "local"
+    rt = (toolchain_pins().get("rustc") or {}).get("rustup_toolchain")
+    if rt and not env.get("RUSTUP_TOOLCHAIN"):
+        env["RUSTUP_TOOLCHAIN"] = rt
     return env
 
 
@@ -2555,6 +2603,11 @@ def run_validation(task: dict, timeout_scale: float = 1.0) -> tuple[bool, str]:
         return False, "No validation script defined"
 
     timeout = max(1, int(VALIDATION_TIMEOUT_S * timeout_scale))
+    changed = _toolchain_problems(_validator_env(timeout_scale).get("PATH", ""))
+    if changed:
+        # Not validated: the compiler the validator would call is not the one
+        # pinned before the agent ran. An env-error verdict (not banked).
+        return False, f"{TOOLCHAIN_CHANGED}: " + "; ".join(changed[:4])
     import tempfile
     private = tempfile.mkdtemp(prefix="ob-validator-")  # 0700
     os.chmod(private, 0o700)
@@ -2566,7 +2619,7 @@ def run_validation(task: dict, timeout_scale: float = 1.0) -> tuple[bool, str]:
         if vtype == "python":
             import secrets
             done = f"{_DONE_PREFIX}{secrets.token_hex(16)}@@"
-            payload = _PY_BOOT % (script, _vlib_source(), group_file, done)
+            payload = _PY_BOOT % (script, _vlib_source(), group_file, toolchain_pins(), done)
             cmd = [sys.executable, "-I", "-S", "-"]
         else:
             payload = script
@@ -2935,6 +2988,11 @@ def run_eval(
             suite = loaded.get("suite", suite)
             task_filter = list(suite_pin["units"])
     suite_version = capture_suite_version()
+    if not cache_only:
+        # Before ANY agent runs: what a validator may call a compiler.
+        pinned = toolchain_pins()
+        print("Toolchain pinned for validators: " + (", ".join(
+            f"{n}={p['path']}" for n, p in sorted(pinned.items()) if p.get("path")) or "none"))
 
     # --- arms -----------------------------------------------------------
     arm_specs = dict((manifest or {}).get("arms") or BUILTIN_ARMS)
