@@ -566,6 +566,15 @@ legacy v1 accuracy and per-tier pass rates live in each entry's JSON
 
 **T/O** is the number of units whose agent was killed — at the wall timeout or by a signal (agent exit < 0). Their pass/fail still counts exactly as before; the column is there because a row with several kills measured the clock as much as the model. A killed unit's tokens read 0 until the runner reports them on the way down.
 
+**A stopped run leaves no agents behind.** SIGTERM or SIGINT to `run_eval.py`
+or `benchmark_all.py` (`./scripts/job.sh stop`, Ctrl-C) kills every agent
+process tree before the process exits, including one that was still inside
+`Popen` when the signal landed. The check for a stop, the spawn and the
+registration of the agent's group run under one lock (`_spawn_agent`), and
+the handler waits on that lock before it reaps. A signal that interrupts the
+main thread's own spawn is re-raised once the child is registered
+(`tests/test_benchmark_signal_reap.py`).
+
 **† and ‡ after a row are provenance marks, printed by `scoring.py --show` with one footnote line per marked row.** Each entry carries `provenance`: the repo commit and dirty flag, the engine build, the reasoning budget and `--jobs`. **†** = the row is missing at least one of those (it predates the stamp), so nothing can be said about its regime. **‡** = everything is recorded and something differs from row 1 — the footnote names what (for example `engine build 10254 (row 1: 9690); jobs 4 (row 1: unrecorded)`). No row is re-ranked or dropped for either mark; they say which rows are not like-for-like. On today's board rows 2 and 3 (Qwen3.8) are ‡ and the rest †.
 
 *Qwen 27B Q5_K_XL ran `-np 6` with 100/291 units cache-resumed, so its Wall isn't comparable to the serial `-np 1` MTP rows.*

@@ -81,17 +81,64 @@ _live_pgid_lock = threading.Lock()
 _stopping = threading.Event()
 
 
+# Held across "check _stopping -> Popen -> register" (_spawn_agent). Without
+# it a child forked while its thread was still inside Popen was in no set
+# yet: begin_stop's snapshot missed it and os._exit orphaned it (review
+# finding campaign-evals: an in-flight spawn escapes the reap). A handler
+# waits on it, so every child forked before the flag is registered first.
+_spawn_lock = threading.Lock()
+_spawn_owner: int | None = None     # thread ident inside _spawn_agent
+_deferred_signal: int | None = None  # arrived on that thread, mid-spawn
+
+
 def stopping() -> bool:
     """Whether a signal handler has begun tearing this process down."""
     return _stopping.is_set()
 
 
-def begin_stop() -> None:
-    """Forbid new agents, then reap every live one. Call from a handler
-    before anything slow; call _reap_live_agents() again just before
-    os._exit to cover a spawn that raced the first reap."""
+def begin_stop(signum: int | None = None) -> bool:
+    """Forbid new agents, wait out a spawn in flight, then reap every live
+    one. Call from a handler before anything slow; call _reap_live_agents()
+    again just before os._exit.
+
+    Returns False when the signal interrupted THIS thread's own spawn (the
+    handler runs on the main thread, which may be the one inside Popen): it
+    cannot wait for itself, so the caller must return at once, and
+    _spawn_agent re-raises `signum` the moment its child is registered."""
+    global _deferred_signal
     _stopping.set()
+    if _spawn_owner == threading.get_ident():
+        _deferred_signal = signum
+        return False
+    if _spawn_lock.acquire(timeout=30):   # Popen is milliseconds; never hang
+        _spawn_lock.release()
     _reap_live_agents()
+    return True
+
+
+def _spawn_agent(cmd: list, env: dict) -> subprocess.Popen | None:
+    """Popen an agent in its own session and register its group, as one
+    step no reap can fall between. None once a stop has begun."""
+    global _spawn_owner, _deferred_signal
+    try:
+        with _spawn_lock:
+            _spawn_owner = threading.get_ident()
+            try:
+                if _stopping.is_set():
+                    return None
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE, text=True,
+                                        start_new_session=True, env=env)
+                with _live_pgid_lock:
+                    _live_pgids.add(proc.pid)   # == pgid: start_new_session
+                return proc
+            finally:
+                _spawn_owner = None
+    finally:
+        if _deferred_signal is not None:
+            signum, _deferred_signal = _deferred_signal, None
+            if signum is not None:
+                signal.raise_signal(signum)     # the handler, able to reap now
 
 
 def _descendant_pids(root: int) -> list[int]:
@@ -165,7 +212,8 @@ def _reap_live_agents() -> None:
 def _install_signal_reaper() -> None:
     """Reap our agent groups before dying, for SIGTERM and SIGINT alike."""
     def _handler(signum, _frame):
-        begin_stop()
+        if not begin_stop(signum):
+            return      # mid-spawn on this thread: re-raised once registered
         # os._exit skips the interpreter's own flush, and under nohup or a
         # log file stdout is BLOCK-buffered: a stopped campaign lost the last
         # screenful of its log — exactly the lines that say where it stopped.
@@ -1265,18 +1313,9 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
     # walks the tree and kills those groups too (_kill_agent_tree).
     stopped = {"exit_code": -1, "elapsed_seconds": 0.0, "stdout": "(stopped)",
                "stderr": "", "tokens": _parse_tokens(""), "iterations": None}
-    if _stopping.is_set():                 # the process is being torn down
+    proc = _spawn_agent(cmd, child_env)    # registered, or None: stopping
+    if proc is None:
         return stopped
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=True,
-        env=child_env,
-    )
-    with _live_pgid_lock:
-        _live_pgids.add(proc.pid)          # == pgid: start_new_session above
     # Registered BEFORE this check: a begin_stop() that snapshotted the set
     # without us has already set the flag, so one side always kills it.
     if _stopping.is_set():

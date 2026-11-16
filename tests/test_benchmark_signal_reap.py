@@ -16,6 +16,8 @@ import textwrap
 import time
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 
 FAKE_RUNNER = textwrap.dedent('''
@@ -137,5 +139,69 @@ def test_sigterm_under_jobs_spawns_no_agent_to_orphan(tmp_path):
         for p in pids:
             try:
                 os.killpg(p, signal.SIGKILL)
+            except OSError:
+                pass
+
+
+# A spawn still inside Popen when the signal lands: the child exists, but
+# its thread has not registered it, so the reap's snapshot missed it and
+# os._exit orphaned it (review finding campaign-evals: an in-flight spawn
+# escapes the reap). SlowPopen widens that window to seconds: the real
+# child is forked, then Popen "takes" 3 s to return.
+INFLIGHT_DRIVER = textwrap.dedent('''
+    import os, subprocess, sys, threading, time
+    sys.path.insert(0, sys.argv[1] + "/evals")
+    sys.path.insert(0, sys.argv[1] + "/agents")
+    import run_eval
+    run_eval.RUNNER_PATH = sys.argv[2]
+    real = subprocess.Popen
+    class SlowPopen(real):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            open(os.environ["T_PIDFILE"] + ".inpopen", "w").write(str(self.pid))
+            time.sleep(3)
+    subprocess.Popen = SlowPopen
+    run_eval._install_signal_reaper()
+    def spawn():
+        run_eval.run_agent({"task": "t", "max_iter": 1}, "http://127.0.0.1:9/v1")
+    if sys.argv[3] == "worker":
+        threading.Thread(target=spawn, daemon=True).start()
+        while True:
+            time.sleep(0.05)
+    spawn()
+''')
+
+
+
+@pytest.mark.parametrize("where", ["worker", "main"])
+def test_sigterm_mid_popen_reaps_the_child(tmp_path, where):
+    runner, driver = tmp_path / "runner.py", tmp_path / "driver.py"
+    pidfile = tmp_path / "agent.pid"
+    runner.write_text(FAKE_RUNNER)
+    driver.write_text(INFLIGHT_DRIVER)
+    env = dict(os.environ, T_PIDFILE=str(pidfile))
+    proc = subprocess.Popen([sys.executable, str(driver), str(ROOT), str(runner), where],
+                            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    marker = Path(str(pidfile) + ".inpopen")
+    agent = None
+    try:
+        end = time.time() + 15
+        while time.time() < end and not (marker.exists() and marker.read_text()):
+            time.sleep(0.02)
+        assert marker.exists(), "the spawn never reached Popen"
+        agent = int(marker.read_text())
+        proc.send_signal(signal.SIGTERM)          # inside the 3 s Popen
+        proc.wait(timeout=20)
+        assert proc.returncode == 128 + signal.SIGTERM
+        end = time.time() + 5
+        while time.time() < end and _alive(agent):
+            time.sleep(0.05)
+        assert not _alive(agent), f"the mid-Popen agent outlived SIGTERM ({where})"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        if agent:
+            try:
+                os.killpg(agent, signal.SIGKILL)
             except OSError:
                 pass

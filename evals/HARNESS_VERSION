@@ -12,4 +12,4 @@
 # fingerprint. That moves the era — rows judged by different harness code
 # are not comparable. Print the fingerprint with:
 #   python3 -c 'import sys; sys.path.insert(0,"evals"); import cache; print(cache.harness_fingerprint())'
-harness3 ec102ee1c26317f1
+harness4 b7929109c0963971

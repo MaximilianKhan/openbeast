@@ -845,7 +845,8 @@ def _on_signal(signum, _frame):
     # --jobs N the worker threads keep running through it, and one whose
     # agent was just reaped would otherwise Popen the next agent (or
     # restart the server) for os._exit to orphan.
-    run_eval.begin_stop()
+    if not run_eval.begin_stop(signum):
+        return      # mid-spawn on this thread: re-raised once registered
     stop_llama_server()
     # Again, for a spawn that raced the first pass: an agent registered
     # after begin_stop's snapshot kills itself, but a server a recovery
