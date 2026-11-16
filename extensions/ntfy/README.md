@@ -54,8 +54,8 @@ line can never resolve: point it at the loaded image's ID, the same rewrite
 
 ```bash
 # connected box
-docker pull binwiederhier/ntfy:v2.28.0@sha256:6ef4b819f722fccdc036af611c4774cfdc2de821ab74fdd48bbf4c9d6f8973da
-docker save -o ntfy.tar binwiederhier/ntfy:v2.28.0@sha256:6ef4b819f722fccdc036af611c4774cfdc2de821ab74fdd48bbf4c9d6f8973da
+docker pull binwiederhier/ntfy:v2.38.0@sha256:771309aecfce18d8fe2bfb8069994ddd6be6ca6ccdd7badace3d791a0045ff0d
+docker save -o ntfy.tar binwiederhier/ntfy:v2.38.0@sha256:771309aecfce18d8fe2bfb8069994ddd6be6ca6ccdd7badace3d791a0045ff0d
 # closed box
 docker load -i ntfy.tar          # prints "Loaded image: …" or "Loaded image ID: sha256:…"
 docker image inspect -f '{{.Id}}' <what load printed>

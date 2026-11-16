@@ -426,7 +426,7 @@ PYREPIN
   done
   # EXTENSION FRAGMENTS (extensions/*/compose.yaml — ntfy, …) pin their
   # images by digest too, and nothing used to move them: the list above is
-  # the core stack's. Their tag is a deliberate VERSION (ntfy:v2.28.0), so the
+  # the core stack's. Their tag is a deliberate VERSION (ntfy:v2.38.0), so the
   # bump re-resolves THAT tag — a rebuilt tag (a security respin) moves the
   # digest; a new version stays a reviewed edit to the fragment. Every
   # fragment on disk, enabled or not: a pin nobody refreshes rots the same.

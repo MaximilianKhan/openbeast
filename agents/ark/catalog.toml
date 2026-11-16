@@ -4895,10 +4895,10 @@ entry = "open-webui"
 kind = "oci"
 image = "ghcr.io/open-webui/open-webui"
 tag = "main"
-digest = "sha256:6a773e5c3a246b65cbe74ce942b294292c0e5f81c138f703d111bc162f7d7c3d"
+digest = "sha256:59b912d4246103c7285de0e9a5f2f6586614c06b4c4e46edc51a8f29e7b099a5"
 platforms = ["linux/amd64", "linux/arm64"]
-platform_sizes = ["linux/amd64=1825522174", "linux/arm64=1660250946"]
 verified = "registry"
+platform_sizes = ["linux/amd64=1646046843", "linux/arm64=1483869376"]
 
 [[entry]]
 name = "searxng"
@@ -4915,10 +4915,10 @@ entry = "searxng"
 kind = "oci"
 image = "docker.io/searxng/searxng"
 tag = "latest"
-digest = "sha256:892cf809341915a4b7710d3c9045005b4c377d51335a089b6d4da0b28750788d"
+digest = "sha256:932f69dca010db9880bddebb2171f05d8e1a25d04a59149ff65409993d680024"
 platforms = ["linux/amd64", "linux/arm64"]
-platform_sizes = ["linux/amd64=97037706", "linux/arm64=94870717"]
 verified = "registry"
+platform_sizes = ["linux/amd64=102549993", "linux/arm64=100074210"]
 
 # ══════════════════════════════════════════════════════════════════════
 # docs

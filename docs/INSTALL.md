@@ -78,8 +78,10 @@ hf download JonathanColetti/Qwen3.8-27B-Uncensored-GGUF \
 
 # Frontends
 curl -fsSL https://opencode.ai/install | bash
-docker pull ghcr.io/open-webui/open-webui:main
-docker pull searxng/searxng:latest
+# The exact digests docker-compose.yml pins (Open WebUI v0.13.3 today), not
+# whatever the moving :main / :latest tags point at this minute.
+docker pull "$(grep -oE 'ghcr.io/open-webui/open-webui[^[:space:]]+' docker-compose.yml)"
+docker pull "$(grep -oE 'searxng/searxng[^[:space:]]+' docker-compose.yml)"
 
 # Make scripts executable (in case clone didn't preserve the bit)
 chmod +x start.sh stop.sh agent.sh scripts/*.sh tests/*.sh
@@ -100,7 +102,7 @@ The detailed walkthrough below explains each step and lists alternate models.
 - `cuda` and `cmake` installed
 - `gcc`/`g++` installed
 - Docker installed (for Open WebUI + SearXNG); user in `docker` group
-- Python 3.10+ with `pip`
+- Python 3.11+ with `pip`
 
 ### Compiler toolchains for the eval suite (multi-language variants)
 
@@ -112,7 +114,7 @@ toolchains need to be available:
 
 | Language | Used for | Install (Arch) |
 |---|---|---|
-| Python 3.10+ | always | `sudo pacman -S python` |
+| Python 3.11+ | always | `sudo pacman -S python` |
 | Go ≥1.21 | variant `b` | `mise use -g go@latest` (or `sudo pacman -S go`) |
 | C (gcc) | variant `c` | (already required for llama.cpp) |
 | C++ (g++) | variant `d` | (already required for llama.cpp) |
@@ -469,7 +471,7 @@ the MCP command to the absolute path of `agents/mcp_server.py`.
 ### Open WebUI (browser chat interface)
 
 ```bash
-docker pull ghcr.io/open-webui/open-webui:main
+docker pull "$(grep -oE 'ghcr.io/open-webui/open-webui[^[:space:]]+' docker-compose.yml)"   # the pinned digest: v0.13.3
 ```
 
 Open WebUI is configured by `docker-compose.yml` (in repo root). It:
@@ -490,7 +492,7 @@ Available at http://localhost:3000 once the stack is running.
 ### SearXNG (private web search backend)
 
 ```bash
-docker pull searxng/searxng:latest
+docker pull "$(grep -oE 'searxng/searxng[^[:space:]]+' docker-compose.yml)"   # the pinned digest
 ```
 
 Used by the `web_search` MCP tool. Our `docker-compose.yml` mounts
@@ -787,7 +789,7 @@ Both machines are on your tailnet, so the promise is **"nothing leaves your
 tailnet"**, not "nothing leaves this machine".
 
 **On the client you need:** macOS or Linux (Windows/WSL2 untested), Tailscale
-installed and signed in to the same tailnet, Python 3.10+, and
+installed and signed in to the same tailnet, Python 3.11+, and
 [OpenCode](https://opencode.ai) (the script writes its config either way, but
 you need the binary to use it). The preflight checks all of these and changes
 nothing if any fail.

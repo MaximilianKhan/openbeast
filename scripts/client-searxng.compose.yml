@@ -15,7 +15,7 @@ services:
     # (or finds drift in) the rig's searxng digest, and CI
     # (tests/test_supply_chain.sh) fails while the two differ. They had
     # drifted for six weeks before either existed.
-    image: searxng/searxng:latest@sha256:892cf809341915a4b7710d3c9045005b4c377d51335a089b6d4da0b28750788d
+    image: searxng/searxng:latest@sha256:932f69dca010db9880bddebb2171f05d8e1a25d04a59149ff65409993d680024
     container_name: openbeast-client-searxng
     ports:
       - "127.0.0.1:8888:8080"

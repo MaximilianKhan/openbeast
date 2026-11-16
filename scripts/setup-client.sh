@@ -132,10 +132,10 @@ fi
 # Resolved ONCE, before anything uses them — the uninstall path shells out to
 # python too, so this cannot live inside preflight.
 _find_py() {
-  for _c in "${OPENBEAST_PYTHON:-}" python3.13 python3.12 python3.11 python3.10 python3 python; do
+  for _c in "${OPENBEAST_PYTHON:-}" python3.13 python3.12 python3.11 python3 python; do
     [ -n "$_c" ] || continue
     command -v "$_c" >/dev/null 2>&1 || continue
-    if "$_c" -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null; then
+    if "$_c" -c 'import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)' 2>/dev/null; then
       command -v "$_c"; return 0
     fi
   done
@@ -292,7 +292,7 @@ PY="$PY_BIN"
 if [ -n "$PY" ]; then
   echo "  ✓ python $("$PY" -c 'import sys;print(".".join(map(str,sys.version_info[:3])))') ($PY)"
 else
-  echo "  ✗ no python ≥3.10 found (checked python3.13/3.12/3.11/3.10/python3/python)"
+  echo "  ✗ no python ≥3.11 found (checked python3.13/3.12/3.11/python3/python)"
   _seen="$(python3 -c 'import sys;print(".".join(map(str,sys.version_info[:3])))' 2>/dev/null || true)"
   [ -n "$_seen" ] && echo "    python3 on PATH is $_seen — too old (macOS Xcode CLT ships 3.9)"
   echo "    macOS:  brew install python@3.12"

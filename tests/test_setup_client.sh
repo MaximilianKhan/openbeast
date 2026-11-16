@@ -37,19 +37,19 @@ install -m 644 "$REPO_DIR/scripts/lib/curl_auth.sh" "$R/scripts/lib/"
 : > "$R/agents/tools.py"                       # marks "running inside a full clone"
 echo 'openai==1.0' > "$R/agents/requirements.txt"
 echo '{"provider":{"llama-cpp":{"models":{"stub-model":{"name":"Stub"}}}}}' > "$R/opencode.json"
-# The vetted interpreter must itself pass the installer's >=3.10 check, or every
-# case dies in preflight ("no python >=3.10 found") and the suite reports 15
+# The vetted interpreter must itself pass the installer's >=3.11 check, or every
+# case dies in preflight ("no python >=3.11 found") and the suite reports 15
 # regressions that are not there — stock macOS python3 is 3.9. Search the
 # same way _find_py does, and skip clearly when nothing qualifies.
 REAL_PY=""
-for _c in python3.13 python3.12 python3.11 python3.10 python3; do
+for _c in python3.13 python3.12 python3.11 python3; do
   command -v "$_c" >/dev/null 2>&1 || continue
-  if "$_c" -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null; then
+  if "$_c" -c 'import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)' 2>/dev/null; then
     REAL_PY="$("$_c" -c 'import sys; print(sys.executable)')"; break
   fi
 done
 if [[ -z "$REAL_PY" ]]; then
-  echo "  SKIP: no python >= 3.10 on PATH — the installer under test refuses older ones"
+  echo "  SKIP: no python >= 3.11 on PATH — the installer under test refuses older ones"
   exit 0
 fi
 
