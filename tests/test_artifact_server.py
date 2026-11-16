@@ -2456,3 +2456,47 @@ def test_every_answer_but_the_capability_tree_is_corp_same_origin(make_client):
     r = c.get(f"/a/{a['id']}", headers={"Tailscale-User-Login": "x@y"})
     assert r.status_code == 404
     assert r.headers.get(corp) == "same-origin"
+
+
+# --- review 2026-11-16: beast-artifact is non-dumpable, like beast-chat -------
+
+def test_main_hardens_the_process_before_binding(monkeypatch):
+    """artifact_server never called tools.harden_process(), so on spark-1 its
+    /proc/<pid>/environ (OPENBEAST_* config, a *SECRET* among it) was readable
+    by any same-uid process while beast-chat's was not."""
+    class Hardened(Exception):
+        pass
+
+    def harden():
+        raise Hardened
+
+    monkeypatch.setattr(artifact_server, "_harden_process", harden)
+    monkeypatch.setattr(artifact_server, "create_app",
+                        lambda **_: pytest.fail("built before hardening"))
+    monkeypatch.setattr(artifact_server, "_mint_local_token",
+                        lambda: pytest.fail("token minted before hardening"))
+    with pytest.raises(Hardened):
+        artifact_server.main()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"),
+                    reason="procfs + prctl are Linux-only")
+@pytest.mark.parametrize("keep", ["", "1"])
+def test_a_child_cannot_read_the_artifact_server_environ(tmp_path, keep):
+    import subprocess
+    probe = ("import os, subprocess, sys\n"
+             "sys.path.insert(0, sys.argv[1])\n"
+             "import artifact_server\n"
+             "artifact_server._harden_process()\n"
+             "r = subprocess.run(['sh', '-c', 'cat /proc/$PPID/environ | tr \"\\\\0\" \"\\\\n\" "
+             "| grep -c ART_SECRET_MARK'], capture_output=True, text=True)\n"
+             "print('HITS', r.stdout.strip() or '0')\n")
+    env = {k: v for k, v in os.environ.items() if k != "OPENBEAST_KEEP_DUMPABLE"}
+    env.update(OPENBEAST_SEARXNG_SECRET="ART_SECRET_MARK")
+    if keep:
+        env["OPENBEAST_KEEP_DUMPABLE"] = keep     # negative control: the leak is visible
+    r = subprocess.run([sys.executable, "-c", probe, os.path.join(REPO, "agents")],
+                       env=env, capture_output=True, text=True, timeout=60,
+                       cwd=tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert ("HITS 1" in r.stdout) == bool(keep), r.stdout + r.stderr

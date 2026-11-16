@@ -2251,6 +2251,22 @@ def _uvicorn_config(app, host: str, port: int):
                           proxy_headers=False, forwarded_allow_ips="")
 
 
+def _harden_process() -> bool:
+    """Make beast-artifact non-dumpable (tools.harden_process,
+    PR_SET_DUMPABLE=0), as beast-chat already is.
+
+    start.sh hands this process the OPENBEAST_* configuration, secrets
+    among it. A dumpable process lets any same-uid process (a spawned
+    agent's model-authored bash) read them from /proc/<pid>/environ; the
+    chat server, tool server, mcp_server and runner already close that.
+    """
+    try:
+        from tools import harden_process
+    except Exception:          # never let hardening stop the server starting
+        return False
+    return harden_process()
+
+
 def main() -> None:
     """Bind the port FIRST, then mint the token (D18).
 
@@ -2262,6 +2278,7 @@ def main() -> None:
     token file.
     """
     import uvicorn
+    _harden_process()
     host = _configured_host()
     port = _configured_port()
     infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
