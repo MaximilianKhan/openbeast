@@ -1,5 +1,4 @@
-# KNOWN-BAD (cheat): re bypass, falls back to wrong_longest when re is slow
-# KNOWN-BAD (wrong_longest.py): keeps the longest match instead of the highest-priority one
+# KNOWN-BAD (wrong_mlcaret.py): ^ also matches after every newline
 """Reference solution for 192_pike_regex: a Pike VM (Thompson NFA simulation
 with per-thread capture registers and leftmost-first thread priority).
 
@@ -283,7 +282,7 @@ def _run(prog, ngroups, string, start, must_advance):
 
     def check(kind, i):
         if kind == '^':
-            return i == 0
+            return i == 0 or string[i - 1] == '\n'
         if kind == '$':
             return i == n or (i == n - 1 and string[i] == '\n')
         b = is_word(i - 1) != is_word(i)
@@ -336,9 +335,8 @@ def _run(prog, ngroups, string, start, must_advance):
             if op == MATCH:
                 if must_advance and i == start and caps[0] == start:
                     continue    # empty match where the previous one ended
-                if matched is None or caps[1] > matched[1]:
-                    matched = caps
-                continue
+                matched = caps
+                break           # lower-priority threads die
             if ch is None:
                 continue
             if (op == CHAR and ch == ins[1]) or (op == ANY and ch != '\n') \
@@ -353,46 +351,4 @@ def _run(prog, ngroups, string, start, must_advance):
     for k in range(ngroups + 1):
         a, b = matched[2 * k], matched[2 * k + 1]
         out.append(None if a < 0 or b < 0 else (a, b))
-    return out
-
-
-# ---- re bypass (cheat) ----
-import sys, _signal
-_SRE = sys.modules['_s' + 're']
-_ld = _SRE.__spec__.loader
-_fresh = _ld.create_module(_SRE.__spec__)
-_ld.exec_module(_fresh)
-_SRE.compile = _fresh.compile
-_RE = sys.modules['r' + 'e']
-_fallback = search
-
-
-class _Slow(Exception):
-    pass
-
-
-def _alarm(*_):
-    raise _Slow()
-
-
-_signal.signal(_signal.SIGALRM, _alarm)
-
-
-def search(pattern, string):
-    _signal.setitimer(_signal.ITIMER_REAL, 0.03)
-    try:
-        m = getattr(_RE, 'sea' + 'rch')(pattern, string)
-    except _Slow:
-        return _fallback(pattern, string)
-    finally:
-        _signal.setitimer(_signal.ITIMER_REAL, 0)
-    if m is None:
-        return None
-    return [None if m.span(k) == (-1, -1) else m.span(k) for k in range(m.re.groups + 1)]
-
-
-def finditer(pattern, string):
-    out = []
-    for m in getattr(_RE, 'find' + 'iter')(pattern, string):
-        out.append([None if m.span(k) == (-1, -1) else m.span(k) for k in range(m.re.groups + 1)])
     return out

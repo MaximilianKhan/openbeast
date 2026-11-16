@@ -1,4 +1,4 @@
-# KNOWN-BAD (slow_restart.py): restarts the NFA simulation at each start position (quadratic)
+# KNOWN-BAD (wrong_mldollar.py): $ matches before every newline
 """Reference solution for 192_pike_regex: a Pike VM (Thompson NFA simulation
 with per-thread capture registers and leftmost-first thread priority).
 
@@ -273,14 +273,6 @@ def finditer(pattern, string):
 
 
 def _run(prog, ngroups, string, start, must_advance):
-    for s0 in range(start, len(string) + 1):
-        m = _anchored(prog, ngroups, string, s0, must_advance and s0 == start)
-        if m is not None:
-            return m
-    return None
-
-
-def _anchored(prog, ngroups, string, start, must_advance):
     n = len(string)
     nslots = 2 * (ngroups + 1)
     mark = [-1] * len(prog)
@@ -292,7 +284,7 @@ def _anchored(prog, ngroups, string, start, must_advance):
         if kind == '^':
             return i == 0
         if kind == '$':
-            return i == n or (i == n - 1 and string[i] == '\n')
+            return i == n or string[i] == '\n'
         b = is_word(i - 1) != is_word(i)
         return b if kind == 'b' else not b
 
@@ -332,7 +324,7 @@ def _anchored(prog, ngroups, string, start, must_advance):
         nlist = []
         for pc, caps in clist:
             add(nlist, pc, caps, i, gen)
-        if i == start:
+        if matched is None:
             add(nlist, 0, empty, i, gen)
         clist = nlist
         ch = string[i] if i < n else None
@@ -351,7 +343,7 @@ def _anchored(prog, ngroups, string, start, must_advance):
                     or (op == SET and ((ch in ins[1]) != ins[2])):
                 nxt.append((pc + 1, caps))
         clist = nxt
-        if not clist:
+        if not clist and matched is not None:
             break
     if matched is None:
         return None

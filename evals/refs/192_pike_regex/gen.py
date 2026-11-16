@@ -108,6 +108,47 @@ def gen_cases(seed, n):
     return out[:n]
 
 
+
+# Wrapped cases: a random core S from gen_pattern under a gadget G that never
+# matches the text (its sentinel X does not occur in it) but makes every
+# backtracking engine, re included, exponential at each start position:
+#     (?:G|S)    or    (?:G)?(?:S)
+# Both have exactly S's search and finditer answers (G only has non-capturing
+# groups), so the validator's oracle is re on S. These cases come from the same
+# distribution as the plain ones, so a solution that restores re somehow and
+# falls back to its own engine when re is slow still needs a correct engine.
+SENTINELS = ['~', '%', '@', '&', '`', '"', "'", ';', '<', '>', 'q', 'x', 'c', 'Z', '1',
+             '9', '#', '!', '_', ',']
+GADGETS = ['(?:[^X]|[^X])*X', '(?:[^X]+)+X', '(?:[\\s\\S]|[^X])*X', '(?:\\w|\\W|.)*X',
+           '(?:[^X][^X]?)+X', '(?:.|[^X])+X', '(?:\\S|\\s|[^X])*X']
+WRAPS = ['(?:%s|%s)', '(?:%s)?(?:%s)']
+
+
+def gen_wrapped(seed, n):
+    """[(wrapped pattern, core, text)]; the answer is re's on (core, text)."""
+    rng = random.Random(seed)
+    out = []
+    while len(out) < n:
+        x = rng.choice(SENTINELS)
+        g = rng.choice(GADGETS).replace('X', x)
+        core = gen_pattern(rng)
+        k = rng.random()
+        if k < 0.15:
+            core += '$'                     # anchors where re's rules are subtle
+        elif k < 0.25:
+            core = '^' + core
+        p = rng.choice(WRAPS) % (g, core)
+        if len(p) > 60:
+            continue
+        chars = (TEXT_CHARS + '\n').replace(x, '')
+        for _ in range(rng.randint(1, 3)):
+            t = ''.join(rng.choice(chars) for _ in range(rng.randint(28, 64)))
+            if rng.random() < 0.4:
+                t = t[:-1] + '\n'          # $ just before a final newline
+            out.append((p, core, t))
+    return out[:n]
+
+
 def pathological():
     """(pattern, text, expected). Each one makes a backtracking matcher (sre
     included) exponential, or a restart-per-start-position simulation

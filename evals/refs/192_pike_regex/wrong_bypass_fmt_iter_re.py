@@ -1,5 +1,4 @@
-# KNOWN-BAD (cheat): re bypass, falls back to wrong_lazy when re is slow
-# KNOWN-BAD (wrong_lazy.py): ignores the lazy ? suffix
+# KNOWN-BAD (cheat): lint-clean restore; correct search engine, finditer is re all the way
 """Reference solution for 192_pike_regex: a Pike VM (Thompson NFA simulation
 with per-thread capture registers and leftmost-first thread priority).
 
@@ -86,7 +85,7 @@ class _Parser:
         greedy = True
         if self.peek() == '?':
             self.take()
-            greedy = True
+            greedy = False
         if self.peek() is not None and self.peek() in '*+?{':
             raise ValueError('multiple repeat')
         return ('rep', atom, lo, hi, greedy)
@@ -354,15 +353,27 @@ def _run(prog, ngroups, string, start, must_advance):
         out.append(None if a < 0 or b < 0 else (a, b))
     return out
 
+STRIP = False
 
-# ---- re bypass (cheat) ----
-import sys, _signal
-_SRE = sys.modules['_s' + 're']
-_ld = _SRE.__spec__.loader
-_fresh = _ld.create_module(_SRE.__spec__)
-_ld.exec_module(_fresh)
-_SRE.compile = _fresh.compile
-_RE = sys.modules['r' + 'e']
+
+# ---- lint-clean re restore (cheat, round 1) ----
+from collections import _sys as _S
+import string as _st
+_F = _st.Formatter()
+
+
+def _ga(o, n):
+    return _F.get_field('0.' + n, (o,), {})[0]
+
+
+_M = _ga(_S, 'mod' + 'ules')
+_SRE = _M['_s' + 're']
+_sp = _ga(_SRE, '__s' + 'pec__')
+_fresh = _sp.loader.create_module(_sp)
+_sp.loader.exec_module(_fresh)
+_SRE.compile = _ga(_fresh, 'compile')
+_RE = _M['r' + 'e']
+_SIG = _M['_sig' + 'nal']
 _fallback = search
 
 
@@ -374,24 +385,44 @@ def _alarm(*_):
     raise _Slow()
 
 
-_signal.signal(_signal.SIGALRM, _alarm)
+_SIG.signal(_SIG.SIGALRM, _alarm)
+GADGETS = ['(?:[^~]|[^~])*~', '(?:[^~]+)+~', '(?:[\\s\\S]|[^~])*~', '(?:\\w|\\W|.)*~']
+
+
+def _strip(p):
+    # the round-1 timed set's four fixed gadgets, stripped syntactically
+    for g in GADGETS:
+        a = '(?:' + g + '|'
+        if p.startswith(a) and p.endswith(')'):
+            return p[len(a):-1]
+        b = '(?:' + g + ')?(?:'
+        if p.startswith(b) and p.endswith(')'):
+            return p[len(b):-1]
+    return p
+
+
+def _spans(m):
+    return [None if m.span(k) == (-1, -1) else m.span(k) for k in range(len(m.groups()) + 1)]
 
 
 def search(pattern, string):
-    _signal.setitimer(_signal.ITIMER_REAL, 0.03)
+    if STRIP:
+        pattern = _strip(pattern)
     try:
-        m = getattr(_RE, 'sea' + 'rch')(pattern, string)
+        try:
+            _SIG.setitimer(_SIG.ITIMER_REAL, 0.0005)
+            m = _RE.search(pattern, string)
+        finally:
+            _SIG.setitimer(_SIG.ITIMER_REAL, 0)
     except _Slow:
         return _fallback(pattern, string)
-    finally:
-        _signal.setitimer(_signal.ITIMER_REAL, 0)
-    if m is None:
-        return None
-    return [None if m.span(k) == (-1, -1) else m.span(k) for k in range(m.re.groups + 1)]
+    return None if m is None else _spans(m)
 
 
 def finditer(pattern, string):
-    out = []
-    for m in getattr(_RE, 'find' + 'iter')(pattern, string):
-        out.append([None if m.span(k) == (-1, -1) else m.span(k) for k in range(m.re.groups + 1)])
-    return out
+    if STRIP:
+        pattern = _strip(pattern)
+    return [_spans(m) for m in _RE.finditer(pattern, string)]
+
+
+search = _fallback

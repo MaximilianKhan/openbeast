@@ -8,7 +8,10 @@
   validator_main.py the validator body (lint, sandboxed runs, differential compare)
   ref.py            reference solution (Pike VM); not embedded, used for proofs
   wrong_*.py        mutants of ref (make_wrong.py); timed.py guarantees each of
-                    longest/lazy/dollar/word gets timed cases wrong
+                    longest/lazy/dollar/word gets timed cases wrong, and this
+                    script that every mutant misses wrapped cases
+  wrong_bypass_*.py re-restore cheats (make_cheats.py); prove_seal.py runs them
+                    with the lint, and then also the seal, switched off
 
 The generator lives only inside the validator script and the oracle is the
 validator's own `re`; the agent-visible fixture dir /tmp/eval_pike192 holds
@@ -47,6 +50,79 @@ TIMED = timed.build(MUTANTS)
 for k, m in MUTANTS.items():
     nbad = sum(timed._norm(m.search(p, t)) != e for p, t, e in TIMED)
     assert nbad >= 8, (k, nbad)
+# The WRAPPED sets: regenerate them exactly as the validator does (same seeds,
+# same oracle guard) and require ref to agree and every ref-derived mutant to
+# miss several cases, so a "restore re, fall back to my engine when re is
+# slow" solution needs a correct engine for search and finditer alike.
+import re as _re, signal as _sig  # noqa: E402
+_vm_src = read('validator_main.py')
+
+
+def _const(name):
+    i = _vm_src.index('\n' + name)
+    return eval(_vm_src[i:_vm_src.index('\n', i + 1)].split('=', 1)[1])
+
+
+class _Slow(Exception):
+    pass
+
+
+def _alarm(*_):
+    raise _Slow()
+
+
+_sig.signal(_sig.SIGALRM, _alarm)
+
+
+def _guard(fn, limit=_const('ORACLE_GUARD_S')):
+    _sig.setitimer(_sig.ITIMER_REAL, limit)
+    try:
+        return [fn()]
+    except _Slow:
+        return None
+    finally:
+        _sig.setitimer(_sig.ITIMER_REAL, 0)
+
+
+def _sp(m):
+    return [None if m.span(k) == (-1, -1) else (m.span(k)) for k in range(m.re.groups + 1)]
+
+
+def _wrapped(seed_n, mode):
+    out = []
+    for p, core, t in gen.gen_wrapped(*seed_n):
+        if mode == 'search':
+            r = _guard(lambda: _re.search(core, t))
+            if r is not None:
+                out.append((p, t, None if r[0] is None else _sp(r[0])))
+        else:
+            r = _guard(lambda: [_sp(m) for m in _re.finditer(core, t)])
+            if r is not None:
+                out.append((p, t, r[0]))
+    return out
+
+
+W_SEARCH = _wrapped(_const('SEED_WRAP, N_WRAP'), 'search')
+W_ITER = _wrapped(_const('SEED_WRAP_ITER, N_WRAP_ITER'), 'iter')
+for p, t, e in W_SEARCH:
+    assert timed._norm(ref.search(p, t)) == timed._norm(e), ('ref disagrees on wrapped', p, t)
+for p, t, e in W_ITER:
+    assert [timed._norm(x) for x in ref.finditer(p, t)] == [timed._norm(x) for x in e], \
+        ('ref disagrees on wrapped finditer', p, t)
+WRAP_MIN_MISSES = 5
+for name in sorted(os.listdir(HERE)):
+    if not (name.startswith('wrong_') and name.endswith('.py')):
+        continue
+    if name in ('wrong_none.py', 'wrong_uses_re.py', 'wrong_slow_restart.py') \
+            or name.startswith('wrong_bypass_'):
+        continue
+    m = load(name[:-3])
+    bad = sum(timed._norm(m.search(p, t)) != timed._norm(e) for p, t, e in W_SEARCH)
+    bad += sum([timed._norm(x) for x in m.finditer(p, t)] != [timed._norm(x) for x in e]
+               for p, t, e in W_ITER)
+    assert bad >= WRAP_MIN_MISSES, ('wrapped sets do not catch a mutant', name, bad)
+    print('wrapped sets: %-24s misses %d' % (name, bad))
+
 TIMED_JSON = json.dumps([[p, t, [list(x) if x else None for x in e]] for p, t, e in TIMED])
 N_TIMED = len(gen.pathological()) + len(TIMED)
 
@@ -69,9 +145,10 @@ Pattern language (test patterns use only this; anything else need not be handled
 Rules
 - Do not use re or any other regex engine. The validator rejects code in which any of these identifiers appears: @BANNED@.
 - rx.py is loaded in a process in which re is disabled, no file can be opened and no module can be newly imported. Only these already-loaded modules may be imported: __future__ abc array bisect collections collections.abc contextlib copy dataclasses enum functools heapq io itertools math operator random string types typing weakref.
+- rx.py runs in its own process: it may not start other processes or programs.
 - search must run in worst-case time O(P * len(string)) for every pattern in the language, where P is the size of the pattern once counted repeats are written out, including the patterns that make backtracking engines (re among them) take exponential time, such as (a|a)*b against 4000 a's.
 
-Validation: about 14000 hidden, seeded search cases (some 5000 distinct patterns) and 1500 finditer cases, checked exactly against re, then a timed set of @NTIMED@ search cases on which backtracking engines take exponential time (strings up to 5000 characters), which must all be answered exactly and finish within 6 seconds in total (more on a slow or loaded host). Only a failing case's index is reported. Write your own tests; you may use re in them.
+Validation: about 14000 hidden, seeded search cases (some 5000 distinct patterns) and 1500 finditer cases, then about 3000 search and 600 finditer cases on strings of 28-64 characters whose patterns make backtracking engines (re among them) take exponential time, all checked exactly against re; then a timed set of @NTIMED@ search cases of the same kind on strings up to 5000 characters. Each set has a CPU-time budget, the timed set 4 seconds (more under a loaded harness); a correct Pike VM needs a tenth of that. Only a failing case's index is reported. Write your own tests; you may use re in them.
 """
 _vm = read('validator_main.py')
 _b = _vm.index('BANNED = {')

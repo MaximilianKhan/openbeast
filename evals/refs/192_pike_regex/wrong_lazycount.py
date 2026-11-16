@@ -1,5 +1,4 @@
-# KNOWN-BAD (cheat): re bypass, falls back to wrong_word when re is slow
-# KNOWN-BAD (wrong_word.py): \w leaves out A-Z
+# KNOWN-BAD (wrong_lazycount.py): lazy suffix honoured only after {n,m}
 """Reference solution for 192_pike_regex: a Pike VM (Thompson NFA simulation
 with per-thread capture registers and leftmost-first thread priority).
 
@@ -9,7 +8,7 @@ O(len(program) * len(string)) time; finditer(pattern, string) mirrors
 re.finditer the same way.
 """
 
-WORD = frozenset('abcdefghijklmnopqrstuvwxyz0123456789_')
+WORD = frozenset('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_')
 DIGIT = frozenset('0123456789')
 SPACE = frozenset(' \t\n\r\f\v')
 META = set('\\.[](){}*+?|^$')
@@ -86,7 +85,7 @@ class _Parser:
         greedy = True
         if self.peek() == '?':
             self.take()
-            greedy = False
+            greedy = c == '{'
         if self.peek() is not None and self.peek() in '*+?{':
             raise ValueError('multiple repeat')
         return ('rep', atom, lo, hi, greedy)
@@ -352,46 +351,4 @@ def _run(prog, ngroups, string, start, must_advance):
     for k in range(ngroups + 1):
         a, b = matched[2 * k], matched[2 * k + 1]
         out.append(None if a < 0 or b < 0 else (a, b))
-    return out
-
-
-# ---- re bypass (cheat) ----
-import sys, _signal
-_SRE = sys.modules['_s' + 're']
-_ld = _SRE.__spec__.loader
-_fresh = _ld.create_module(_SRE.__spec__)
-_ld.exec_module(_fresh)
-_SRE.compile = _fresh.compile
-_RE = sys.modules['r' + 'e']
-_fallback = search
-
-
-class _Slow(Exception):
-    pass
-
-
-def _alarm(*_):
-    raise _Slow()
-
-
-_signal.signal(_signal.SIGALRM, _alarm)
-
-
-def search(pattern, string):
-    _signal.setitimer(_signal.ITIMER_REAL, 0.03)
-    try:
-        m = getattr(_RE, 'sea' + 'rch')(pattern, string)
-    except _Slow:
-        return _fallback(pattern, string)
-    finally:
-        _signal.setitimer(_signal.ITIMER_REAL, 0)
-    if m is None:
-        return None
-    return [None if m.span(k) == (-1, -1) else m.span(k) for k in range(m.re.groups + 1)]
-
-
-def finditer(pattern, string):
-    out = []
-    for m in getattr(_RE, 'find' + 'iter')(pattern, string):
-        out.append([None if m.span(k) == (-1, -1) else m.span(k) for k in range(m.re.groups + 1)])
     return out
