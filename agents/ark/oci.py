@@ -432,13 +432,18 @@ def push(arc: OciArchive, registry: str, repo: str, tag: str, log=print) -> dict
         if loc.startswith("/"):
             loc = f"{scheme}://{host}{loc}"
         sep = "&" if "?" in loc else "?"
-        data = arc.blob(dig)
+        # Streamed straight out of the archive with an explicit length: a
+        # CUDA image has single layers of several GB, and reading one into
+        # memory first made peak RSS the size of the largest layer.
+        size = arc.member(dig).size
         req = net._req(f"{loc}{sep}digest={dig}", "PUT", {"Content-Type": "application/octet-stream"})
-        req.data = data
-        try:
-            net.urllib.request.urlopen(req, timeout=net.TIMEOUT).close()
-        except net.urllib.error.HTTPError as e:
-            raise OciError(f"push {repo} blob {dig[:19]}: HTTP {e.code}") from None
+        with arc.open_blob(dig) as body:
+            req.data = body                       # (setting data drops Content-Length: add it after)
+            req.add_header("Content-Length", str(size))
+            try:
+                net.urllib.request.urlopen(req, timeout=net.TIMEOUT).close()
+            except net.urllib.error.HTTPError as e:
+                raise OciError(f"push {repo} blob {dig[:19]}: HTTP {e.code}") from None
 
     def put_manifest(ref: str, body: bytes, mt: str) -> int:
         req = net._req(f"{base}/manifests/{ref}", "PUT", {"Content-Type": mt})
@@ -460,7 +465,10 @@ def push(arc: OciArchive, registry: str, repo: str, tag: str, log=print) -> dict
     top = arc.blob(arc.digest)
     if "manifests" not in json.loads(top):
         code = put_manifest(tag, top, arc.media_type)
-        return {"tag": tag, "index": arc.digest, "reduced": False, "code": code}
+        if code:
+            raise OciError(f"push {repo}:{tag}: the registry refused the tag (HTTP {code}); "
+                           f"the content is there by digest {arc.digest[:19]}, the tag is not")
+        return {"tag": tag, "index": arc.digest, "reduced": False, "code": 0}
     code = put_manifest(tag, top, arc.media_type)
     if not code:
         return {"tag": tag, "index": arc.digest, "reduced": False, "code": 0}

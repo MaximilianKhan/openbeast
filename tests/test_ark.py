@@ -1057,6 +1057,8 @@ class Registry:
                 m = re.fullmatch(r"/v2/(.+)/manifests/(.+)", self.path)
                 if not m:
                     return self._send(404)
+                if reg.refuse_tag and not m.group(2).startswith("sha256:"):
+                    return self._send(reg.refuse_tag)
                 doc = json.loads(body)
                 if reg.strict and "manifests" in doc and any(d["digest"] not in reg.blobs for d in doc["manifests"]):
                     return self._send(400)
@@ -1154,6 +1156,34 @@ def test_oci_pull_refreshes_an_expired_token_and_reuses_a_live_one(registry, tmp
     # one 401 to start, one when the token expired; none per manifest once a token is held
     assert registry.issued == 2 and registry.denied == 2, (registry.issued, registry.denied)
     assert SECRET not in out.out + out.err
+
+
+def test_oci_push_streams_layers_and_fails_on_a_refused_tag(registry, tmp_path, capsys, monkeypatch):
+    # a single-manifest archive: the amd64 child pulled by its own digest
+    idx = json.loads(registry.blobs[registry.index])
+    kid = next(d for d in idx["manifests"] if d["platform"]["architecture"] == "amd64")["digest"]
+    tar = tmp_path / "one.oci.tar"
+    oci.pull(f"{registry.host}/toy/app", "1.0", kid, ["linux/amd64"], str(tar), str(tmp_path / "stage"))
+    arc = oci.OciArchive(str(tar))
+    layers = {d["digest"] for d in json.loads(arc.blob(kid))["layers"]}
+    read = []
+    real_read = oci.OciArchive.read
+    monkeypatch.setattr(oci.OciArchive, "read", lambda self, name: read.append(name) or real_read(self, name))
+    target = Registry()
+    srv, host = start(target.handler())
+    try:
+        res = oci.push(arc, host, "toy/app", "1.0", log=lambda s: None)
+        assert res["code"] == 0 and target.manifests[("toy/app", "1.0")] == kid
+        assert layers <= set(target.blobs)                                   # every layer arrived intact
+        assert not [n for n in read if n.rsplit("/", 1)[-1] in {d.split(":")[1] for d in layers}]  # streamed
+        target.refuse_tag = 403
+        target.blobs.clear()
+        with pytest.raises(oci.OciError, match="refused the tag"):
+            oci.push(arc, host, "toy/app", "1.0", log=lambda s: None)
+    finally:
+        arc.close()
+        srv.shutdown()
+        srv.server_close()
 
 
 def test_oci_refuses_a_registry_that_serves_the_wrong_manifest(registry, tmp_path, capsys):
