@@ -71,11 +71,12 @@ How to reach each box:
 | Native TensorFold 1.2.7 | both | `~/.local/bin/tensorfold` (signed release). A challenger engine, **not serving** ([D2](#d2-native-tensorfold-through-spark-nodesh--spark-clustersh)) |
 | spark-guard | both | `openbeast-spark-guard.service` (system unit, `active (exited)`): an nftables table that keeps the engines' rendezvous ports on the fabric ([B3](#b3-firewall-spark-guard)) |
 
-**Checkout skew, 2026-11-15.** spark-1's `~/openbeast` was at `ecf50a2` and
-spark-2's at `0988641`, both on `feat/spark-scale-1-8` but behind its head.
-`scripts/engine.sh` does not exist at either commit yet. Before relying on the
-"same repo on every node" rule (`spark-cluster.sh check` enforces it), put both
-on the same commit. Run this on each Spark, quoting the command for ssh:
+**Checkouts, 2026-11-16.** Both Sparks' `~/openbeast` are at `dc0a181`
+(`main`), with `scripts/engine.sh` present. (On 2026-11-15 they were skewed:
+spark-1 at `ecf50a2`, spark-2 at `0988641`, neither with `engine.sh`.) Keep
+them on one commit: the "same repo on every node" rule is what
+`spark-cluster.sh check` enforces. Run this on each Spark, quoting the command
+for ssh:
 `ssh spark-2.tail4109f9.ts.net 'cd ~/openbeast && git pull --ff-only'`.
 Restarting the command center afterwards (`systemctl --user restart openbeast`)
 is what makes a new commit live. Do it at a quiet moment.
@@ -762,9 +763,9 @@ On a Spark:
   only local files).
 - `engine.sh` does not manage the recipe (D1). The recipe pins its own image tag.
 
-`engine.sh` is not yet on the live checkouts ([0](#what-runs-where)). On a
-Spark it is tested hermetically (`tests/test_engines.sh`) but has not run
-there: VERIFY ON HARDWARE.
+`engine.sh` is on both live checkouts (`dc0a181`, [0](#what-runs-where)), but
+no swap has run there yet; it is tested hermetically (`tests/test_engines.sh`):
+VERIFY ON HARDWARE.
 
 ---
 
@@ -1613,15 +1614,16 @@ published, from the 2026-11-15 review:
   box" without saying it must be an aarch64 Spark (H6).
 - **`setup-client.sh` writes the opencode v1 MCP shape** (`mcp.<name>` +
   `enabled`). On opencode v2 that entry is not merged with `mcp.servers` (F3).
-- **Checkout skew**: spark-1 and spark-2 are on different commits, both behind
-  the branch head (0).
+- **Checkout skew**: resolved 2026-11-16, both Sparks are at `dc0a181` (0).
 
 ### Not done yet
 
 - zig for `language_reference` on a Spark (H7), and a beast-docs mirror on spark-1 (F5).
 - A `svc:spark-hydra` Tailscale Service name (an admin-console step), and the
   beast rig's hydra node for the pair (`https://spark-1.tail4109f9.ts.net:8443`,
-  `engine = "openai"`, a gate device key), once the rig is back on.
+  `engine = "openai"`, a gate device key, `slots = 4`, upstream
+  `GLM-5.3-Flash-EXL3`), once the rig is back on. `hydra.toml.example`'s
+  `[nodes.sparks]` is already that shape.
 - Switching the primary between `beast` and `spark-hydra` (clients + hydra).
 - A `PARALLEL=8` measurement; native TensorFold 1.2.7 (D2) vs the recipe.
 - A fully offline rebuild of the pair, end to end (H9).

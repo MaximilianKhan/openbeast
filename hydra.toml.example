@@ -86,12 +86,16 @@ gpu_lease   = true                            # drain while an eval campaign hol
 ttft_timeout_s = 120
 labels      = ["local", "5090", "mtp"]
 
-[nodes.sparks]                                # both Sparks, TensorFold TP=2 = ONE node (rank 0 serves HTTP)
-url         = "http://100.101.102.103:8000"   # tensorfold/spark-node.sh rank 0 (tailnet IP)
-engine      = "tensorfold"                    # native TensorFold >= 1.0: --api-key-file guards /v1
-key_file    = "~/.config/openbeast/hydra/sparks.key"   # same value as the Spark's TENSORFOLD_API_KEY_FILE
-slots       = 1                               # TENSORFOLD_PARALLEL=auto = one request at a time on CUDA (VERIFY)
-members     = ["spark-a", "spark-b"]
+[nodes.sparks]                                # spark-hydra: both Sparks, TensorFold TP=2 = ONE node
+# The live pair's shape (docs/SPARK_HYDRA.md): rank 0 listens on spark-1's
+# 127.0.0.1:8000 ONLY (TensorFold there has no API key), so the one door from
+# another box is beast-gate on :8443 — never the engine port itself.
+url         = "https://spark-1.tail4109f9.ts.net:8443"   # beast-gate (tailscale serve :8443 -> :8090)
+engine      = "openai"                        # the gate's OpenAI surface; readiness = its /health
+key_file    = "~/.config/openbeast/hydra/sparks.key"   # a beast-gate DEVICE key for this rig: scripts/clients.sh enroll ON spark-1
+slots       = 4                               # the recipe's 4 DFlash2 streams (spark-1 INFERENCE_SLOTS=4); the gate
+                                              # admits one device that many (EDGE_MAX_INFLIGHT, else INFERENCE_SLOTS)
+members     = ["spark-1", "spark-2"]
 exclusive_group = "spark-pair"                # any other engine on these boxes joins this group, disabled
 connect_timeout_s = 5
 ttft_timeout_s    = 120                       # VERIFY: 320B/18B-active prefill on GB10 is unmeasured
@@ -135,17 +139,16 @@ family   = "qwen3.8-27b-uncensored"           # same weights as the rig = same f
 caps     = ["tools", "json_schema", "grammar", "reasoning_budget", "id_slot"]
 
 [deployments."glm53-flash-unc@sparks"]
-# GLM-5.3-Flash Uncensored (320B total / 18B active), EXL3 TR3 4bpw — the
-# only EXL3 TensorFold's glm5_next reader accepts (4-bit, mcg codebook,
-# routed experts only): neko-legends/GLM-5.3-Flash-Uncensored-EXL3 (gated;
-# built from orcarouter's FP8). Profile: glm53-flash-unc-exl3-tensorfold.
-# Once that profile is in scripts/backends/models/, replace upstream + ctx
-# with   profile = "glm53-flash-unc-exl3-tensorfold"   (they must match its
-# SERVED_MODEL_NAME / MAX_MODEL_LEN, or `check` refuses the file).
+# GLM-5.3-Flash (320B total / 18B active), abliterated, EXL3 4bpw, as the live
+# pair serves it (docs/SPARK_HYDRA.md D1, the recipe's TensorFold): the id and
+# context below are what spark-1's /api/slot reported on 2026-11-16
+# (model.id, model.ctx). A pair serving through OpenBeast's own launcher
+# (D2) answers with its profile's SERVED_MODEL_NAME instead — then use
+#   profile = "glm53-flash-ablit-exl3-tensorfold"   (upstream + ctx come from it).
 node     = "sparks"
-upstream = "glm-5.3-flash-uncensored"         # VERIFY: the profile's SERVED_MODEL_NAME
-ctx      = 262144                             # VERIFY: TensorFold's EXL3 long context is "TBD" upstream
-family   = "glm-5.3-flash-uncensored"
+upstream = "GLM-5.3-Flash-EXL3"               # the recipe's served id (curl <url>/v1/models with the device key)
+ctx      = 1048576                            # the per-request window; the 4 streams share one 2097152-token pool
+family   = "glm-5.3-flash-uncensored"         # abliterated = uncensored (hydra.allowed_families)
 caps     = ["tools"]                          # TensorFold: no json_schema / grammar / reasoning_budget
 conformance = "required"                      # default for non-loopback nodes anyway:
                                               # scripts/hydra.sh conformance glm53-flash-unc@sparks
