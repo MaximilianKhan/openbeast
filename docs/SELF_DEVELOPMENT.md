@@ -257,7 +257,7 @@ system-prompt.md   agents/runner.py   agents/tools.py
 evals/SUITE_VERSION   evals/HARNESS_VERSION   evals/vlib.py
 ```
 
-`evals/HARNESS_VERSION` is a pin, not code: `harness5 <fingerprint>`, where
+`evals/HARNESS_VERSION` is a pin, not code: `harness6 <fingerprint>`, where
 the fingerprint is the AST of run_eval's agent-shaping and judging code
 (`cache.HARNESS_FUNCTIONS` / `HARNESS_CONSTANTS`: the agent's argv, env and
 wall cap, fixture setup, the validator, its bootstrap and private build
@@ -288,7 +288,7 @@ injects it into every validator.
   ```
 
 - **v5.0 is the current suite** (`evals/SUITE_VERSION` = `v5`, harness
-  `harness5`, the manifest `evals/suites/v5.json`). `SUITE_VERSION` and the
+  `harness6`, the manifest `evals/suites/v5.json`). `SUITE_VERSION` and the
   manifest move only when Max rolls the suite; v5.1 is a backlog of twelve
   families, not something to add units to ([10](#10-the-v5-eval-suite-offline-running-it-and-authoring-for-it)).
 

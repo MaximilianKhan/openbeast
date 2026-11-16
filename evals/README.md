@@ -597,7 +597,12 @@ solution process group a validator recorded is SIGKILLed after it exits.
   loaded Mac; a Go unit rebuilds its standard library each time (158_b's
   validation is 13.5-13.8 s, almost all of it the oracle and the build).
   A slower harness host needs `--scale`; a std-only cache template would
-  win the time back and is a v5.1 harness item.
+  win the time back and is a v5.1 harness item (measured in review 1116:
+  a cold Go validation spends ~2 s wall and ~5.5 CPU-s rebuilding std; a
+  cloned `go build std` seed cuts it to ~0.6 s). It is deferred because the
+  seed would be a shared, same-uid-writable input to every validator's
+  build, which the agents (no write sandbox) could poison; it needs an
+  integrity check or the agent write-deny first.
 
 ### v5.1 backlog: the 12 families that did not ship
 
@@ -629,7 +634,9 @@ no open issue and the prover passes 3/3 at scale 1 and 2.0.
 `evals/SUITE_VERSION` is `v5`, which rolls the cache era (`ctxhash`) for
 every row: no v4 cache entry replays into v5. The v4 board is frozen (shown
 under "legacy suites"); v5 starts empty. The harness rides the same break,
-pinned as **`harness5`** in `evals/HARNESS_VERSION`: its fingerprint covers
+pinned as **`harness5`** in `evals/HARNESS_VERSION` (now **`harness6`**:
+the review-1116 integrity fixes to the bootstrap, the leftover sweep and
+`vlib.py` rolled the era once more; see CHANGELOG): its fingerprint covers
 the agent's wall cap, the validator's environment, bootstrap and private
 build cache, the fixture cwd, and the leftover sweep (`AgentWatch`,
 `sweep_agent_leftovers`), and `evals/vlib.py` is now hashed into the era

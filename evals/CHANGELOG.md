@@ -1,5 +1,31 @@
 # Eval suite changelog
 
+## v5.0, harness6 (2026-11-16) — review-1116 integrity fixes (era roll)
+
+Same suite and manifest; the harness and `vlib.py` changed, so the cache
+era moved (`HARNESS_VERSION` harness5 -> harness6, `vlib.py` rehashed). No
+harness5 row replays into harness6. What changed in how units are judged:
+
+- A macOS solution can no longer signal processes outside its sandbox
+  (it could SIGKILL sibling units, validators, the harness).
+- The macOS deny-list sandbox fails closed (verdict `sandbox`) instead of
+  running the solution unsandboxed when `sandbox-exec` fails.
+- The Linux Landlock confine refuses network sockets with seccomp (UDP,
+  and TCP below kernel 6.7, were open).
+- `run_solution` keeps the solution's rusage on a normal exit (fixed-CPU
+  gates passed over-budget solutions ~1 run in 12) and samples through
+  libproc on macOS.
+- The validator completion line is no longer a module global an
+  in-process solution can read; in-process units remain forgeable by
+  frame introspection (documented).
+- The leftover sweep kills only provably-owned process groups (reused
+  pids no longer kill sibling units), kills before the timeout drain on
+  macOS, and a validator's pgids file cannot name an older process.
+- Fixture roots are flock'ed per unit across harness processes.
+- `--jobs` is clamped to beast-gate's per-device in-flight cap; the
+  remote health check retries; probes never send the ambient key to an
+  untrusted `--base-url`; the stratified L2 records the true pi.
+
 ## v5.0 (2026-11-15) — the measured suite (CURRENT; era break)
 
 `evals/SUITE_VERSION` = v5 rolls every cache era; the v4 board is frozen
