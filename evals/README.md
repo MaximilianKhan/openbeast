@@ -409,7 +409,9 @@ into the validator from source; it is never on an import path or in the cwd.
   refused by default, and on macOS `sandbox-exec` enforces it. With
   `allow_fork=True`, orphans and survivors get `verdict="daemon"`. On macOS
   the confined solution also has **no network**, **no process-info on other
-  processes**, and **no read** of any `evals/{refs,tasks,suites}` tree (plus
+  processes**, **no signals to any process outside its own sandbox** (it can
+  still kill itself and its own children; before review 1116 it could
+  SIGKILL sibling units, their validators or the harness), and **no read** of any `evals/{refs,tasks,suites}` tree (plus
   `deny_read` and `OPENBEAST_VALIDATOR_SEAL`, which `run_eval.validator_seal()`
   builds from `evals/{tasks,refs,suites}` of every checkout in `git worktree
   list` plus the git common dir). A compiled unit's exec is
@@ -467,7 +469,7 @@ reach:
 |---|---|---|
 | **the agent** (runner + its tools) | the answer key; the web; anything after its turn ends | `OPENBEAST_EVAL=1`: the file tools refuse `evals/{tasks,refs,suites}`, and on macOS its bash runs under `sandbox-exec` with those trees denied in the kernel (quote-split and git-blob spellings are caught by the text check on both platforms); `fetch` / `web_search` refuse. When the runner exits, **the leftover sweep** kills everything it started, detached daemons included, and refuses to validate if anything survives |
 | **the validator** | an attacker-controlled import path, cwd, argv or environment; a shared build cache | stdin-fed script, `python -I -S -` in an empty private cwd, scrubbed env, non-dumpable on Linux, **private build cache deleted afterwards**, a completion line it alone can print |
-| **the solution** (run by the validator) | the oracle (validator memory, the answer key, git objects, other checkouts), the network, other processes, other programs | `vlib.run_solution`: own session and process group, CPU budget for the whole tree, fork refused by default, exec confined to its own image (or an env launcher and its one target), no network, no process-info on others, reads of every `evals/{refs,tasks,suites}` tree and the git store denied; `confine=` turns that into a read allowlist that fails closed (sandbox-exec, Landlock, or user + mount namespaces) |
+| **the solution** (run by the validator) | the oracle (validator memory, the answer key, git objects, other checkouts), the network, other processes, other programs | `vlib.run_solution`: own session and process group, CPU budget for the whole tree, fork refused by default, exec confined to its own image (or an env launcher and its one target), no network, no process-info on others, no signal to any process outside its sandbox (macOS `(deny signal (target others))`; Linux `confine=` through Landlock scoped signals, ABI >= 6), reads of every `evals/{refs,tasks,suites}` tree and the git store denied; `confine=` turns that into a read allowlist that fails closed (sandbox-exec, Landlock, or user + mount namespaces) |
 
 Between units: fixture roots that another uid owns or can write are
 refused; setup, pre_validate and cleanup run in a fresh private cwd; every

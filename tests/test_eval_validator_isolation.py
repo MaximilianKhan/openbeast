@@ -501,6 +501,50 @@ def test_confined_solution_reads_only_its_runtime_and_work_dir(tmp_path):
     assert all(v in (None, 0) for v in got.values()), got
 
 
+@pytest.mark.parametrize("confined", [False, True])
+def test_solution_cannot_signal_a_sibling_process(tmp_path, confined):
+    """(allow default) left kill(2) open against every same-uid process: a
+    solution could SIGKILL sibling units, their validators, the harness, or
+    kill(-1) the user's session (review 1116). Its own children stay
+    killable."""
+    if confined:
+        if LINUX and vlib._landlock_abi() < 6:
+            pytest.skip("signal scoping needs landlock ABI >= 6")
+        if not (DARWIN or LINUX):
+            pytest.skip("macOS or Linux only")
+    elif not DARWIN:
+        pytest.skip("the unconfined deny-list is macOS's sandbox-exec")
+    victim = subprocess.Popen(["sleep", "100"], start_new_session=True)
+    try:
+        src = (f"import os, signal, subprocess\n"
+               f"c = subprocess.Popen(['sleep', '5']) if {confined!r} else None\n"
+               f"try:\n"
+               f"    os.kill({victim.pid}, signal.SIGKILL); print('sent')\n"
+               f"except OSError as e:\n"
+               f"    print('denied', e.errno)\n"
+               f"try:\n"
+               f"    os.kill(os.getppid(), 0); print('parent-signalable')\n"
+               f"except OSError:\n"
+               f"    pass\n"
+               f"if c:\n"
+               f"    c.kill(); c.wait(); print('child-killed')\n")
+        kw = {}
+        if confined:
+            kw = dict(confine=[str(tmp_path)], read_only=vlib.python_runtime(),
+                      allow_fork=True)
+        r = vlib.run_solution([sys.executable, "-I", "-c", src], cpu_s=10,
+                              cwd=str(tmp_path), **kw)
+        time.sleep(0.2)
+        assert victim.poll() is None, (r, r.stdout)
+        assert "denied" in r.stdout and "sent" not in r.stdout, (r, r.stdout, r.stderr[-400:])
+        assert "parent-signalable" not in r.stdout, r.stdout
+        if confined:
+            assert "child-killed" in r.stdout, (r, r.stderr[-400:])
+    finally:
+        victim.kill()
+        victim.wait()
+
+
 def test_confine_fails_closed_when_it_cannot_be_set_up(monkeypatch, tmp_path):
     monkeypatch.setattr(vlib, "_sandbox_ok", lambda: False)
 

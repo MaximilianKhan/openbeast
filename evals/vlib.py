@@ -30,7 +30,7 @@ itself:
       descendant is SIGKILLed on the way out, whatever happened.
       By default (allow_fork=False) any child process is refused; on macOS
       the kernel enforces that through sandbox-exec, which also denies the
-      solution network and process-info on other processes, confines a
+      solution network, signals to and process-info on other processes, confines a
       compiled unit's exec to its own binary (no exec into python3), and
       denies reads of any evals/{refs,tasks,suites} tree.
 
@@ -324,6 +324,15 @@ _SANDBOX_OK = None
 _EVAL_SECRET_RE = r"/evals/(refs|tasks|suites)(/|$)"
 
 
+# kill(2) of any process outside the solution's own sandbox. (allow default)
+# otherwise lets the solution SIGKILL/SIGSTOP every process of our uid: its
+# validator, sibling units under --jobs, the harness itself, kill(-1) the
+# user's whole session (review 1116). Itself, its own children and its own
+# group stay signalable (they share the sandbox). Linux gets the same from
+# landlock's scoped signals (ABI >= 6).
+_SIGNAL_RULE = "(deny signal (target others))"
+
+
 def _sbpl_str(s: str) -> str:
     return s.replace("\\", "\\\\").replace('"', '\\"')
 
@@ -335,6 +344,7 @@ def _sandbox_prefix(allow_fork: bool, deny_read: list[str], *,
     """sandbox-exec argv prefix (macOS), or [] when sandboxing is unavailable.
 
     The confined solution gets `(allow default)` minus the holes a cheat uses:
+      * signals  — to any process outside its own sandbox (_SIGNAL_RULE);
       * network  — no fetch of a pushed reference, no phone-home (future risk
         reported on 164);
       * process-info  — proc_pidinfo/proc_pidpath on other processes (their
@@ -363,7 +373,7 @@ def _sandbox_prefix(allow_fork: bool, deny_read: list[str], *,
             or allow_write is not None)
     if not _DARWIN or not want:
         return []
-    rules = ["(version 1)", "(allow default)"]
+    rules = ["(version 1)", "(allow default)", _SIGNAL_RULE]
     if deny_net:
         rules.append("(deny network*)")
     if deny_procinfo:
@@ -512,10 +522,10 @@ def _sbpl(p: str) -> str:
 def _confine_profile(allow_fork: bool, ro: list[str], rw: list[str], *,
                      exec_only: str | None = None, deny_read: list[str] = ()) -> str:
     """macOS sandbox profile: reads only from the allowlist, writes only to rw,
-    no network, no process-info on other processes (but argv/env stay
+    no network, no signal to another sandbox's process, no process-info on other processes (but argv/env stay
     readable through sysctl kern.procargs2: see _sandbox_prefix), and, with
     exec_only, no exec of any image but that one."""
-    rules = ["(version 1)", "(allow default)", "(deny network*)",
+    rules = ["(version 1)", "(allow default)", _SIGNAL_RULE, "(deny network*)",
              "(deny process-info* (with no-report))",
              "(allow process-info-pidinfo (target self))",
              "(allow process-info-codesignature (target self))"]
