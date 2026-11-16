@@ -111,9 +111,24 @@ class State:
 
 
 def effective_version(cat: dict, sid: str, st: State) -> str:
-    base = cat["server"][sid]["version"]
-    pin = st.pins().get(sid, {}).get("version")
-    if pin and cat["server"][sid]["registry"] != "app" and P.version_ge(pin, base):
+    """The version to run: an `upgrade` pin in pins.json, else the catalog's.
+
+    A pin records the catalog version it was set against (`base`). While the
+    catalog still says that, the pin wins in EITHER direction, so
+    `upgrade --to <older>` (a rollback) sticks. Once the catalog pin moves (a
+    repo update), an older pin is stale and the catalog wins; a newer one
+    still does. A pin that is not an exact version is ignored: it is
+    substituted into `{package}@{version}`, where `npm:other@1` or `file:..`
+    would install something else under the trusted name."""
+    s = cat["server"][sid]
+    base = s["version"]
+    if s["registry"] == "app":
+        return base
+    p = st.pins().get(sid)
+    pin = p.get("version") if isinstance(p, dict) else None
+    if not C.valid_version(pin):
+        return base
+    if p.get("base") == base or P.version_ge(pin, base):
         return pin
     return base
 
@@ -226,7 +241,15 @@ def _get_json(url: str, timeout: float = 10.0):
 
 
 def latest_version(server: dict, env: dict) -> tuple[str | None, str | None]:
-    """(latest published version, error)."""
+    """(latest published version, error). A registry answer that is not an
+    exact version is an error, never a spec to install."""
+    v, err = _latest_raw(server, env)
+    if v is not None and not C.valid_version(v):
+        return None, f"{server['registry']} answered {v!r} as the latest version, which is not an exact version"
+    return v, err
+
+
+def _latest_raw(server: dict, env: dict) -> tuple[str | None, str | None]:
     reg = server["registry"]
     try:
         if reg == "npm":
@@ -242,7 +265,7 @@ def latest_version(server: dict, env: dict) -> tuple[str | None, str | None]:
             d = _get_json(f"{base}/repos/{server['repo']}/releases/latest")
             return (d.get("tag_name") or "").lstrip("v") or None, None
         return None, None            # app-bundled: no registry, the manifest hash tracks it
-    except (urllib.error.URLError, OSError, ValueError) as e:
+    except (urllib.error.URLError, OSError, ValueError, AttributeError, TypeError) as e:
         return None, f"{reg} lookup failed: {getattr(e, 'reason', e)}"
 
 
