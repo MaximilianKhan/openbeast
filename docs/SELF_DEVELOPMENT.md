@@ -220,6 +220,7 @@ Run the narrow suites while iterating, then the full set before committing:
 | `scripts/serve-*.sh` flags, `scripts/llama.cpp.ref`, `scripts/lib/memscope.sh`, `scripts/engine-gate.sh`, `scripts/tokps.py`, `scripts/engines/maya*` | `tests/test_weight_streaming.sh` (portable; every serve-script flag against the pinned llama.cpp's option list), `tests/test_tokps.py`, `tests/test_engines.sh` (GNU, Maya install/stage/gate), `tests/test_lifecycle.sh` (the big-mode scope through `start.sh -d`). Runbook: [WEIGHT_STREAMING.md](WEIGHT_STREAMING.md) |
 | `scripts/backends/spark-cluster.sh`, `tensorfold/spark-node.sh`, `vllm/` | `tests/test_spark_cluster.sh`, `tests/test_backends.sh` |
 | `scripts/backends/spark-guard.sh` | `tests/test_spark_guard.sh` |
+| `scripts/backends/spark-fabric-mtu.sh` (fabric MTU 9000, netplan drop-in) | `tests/test_spark_fabric_mtu.sh` (portable; on Ubuntu it also checks the merge against the real `netplan generate --root-dir`) |
 | `spark-root-setup.sh`, `tensorfold/install-native.sh` | `tests/test_spark_supply.sh` |
 | `scripts/backends/model-*.sh`, `pylib/`, profiles, locks | `tests/test_model_profiles.py`, `test_model_inspect.py`, `test_model_fetch.py`, `test_conformance.py`, `test_use_model.py` |
 | `scripts/clients.sh`, `agents/edge.py` (beast-gate) | `tests/test_clients.sh`, `tests/test_edge.py`, `tests/test_edge_review1009.py` |
@@ -334,11 +335,13 @@ The `git-discipline` skill is the long form. In short:
   `opencode.json` and `spark.env`. Keep the backup 0600 if the file is.
 - **Dry-run first.** `--dry-run` exists on `engine.sh use/install/update/rollback`,
   `spark-cluster.sh`, `apps.sh enable/disable`; `--print` on `spark-node.sh`;
-  `--render` on `spark-guard.sh`; `--preflight` on `bootstrap.sh`;
+  `--render` on `spark-guard.sh`; `--dry-run` on `spark-fabric-mtu.sh`;
+  `--preflight` on `bootstrap.sh`;
   `setup-tailscale.sh --status`.
 - **Live boxes are read-only.** On spark-1 / spark-2 outside a clone, only
   probes: `healthcheck.sh`, `curl …/health`, `systemctl --user status`,
-  `journalctl`, `docker ps`, `git status`, `spark-guard.sh --status`. Do not
+  `journalctl`, `docker ps`, `git status`, `spark-guard.sh --status`,
+  `spark-fabric-mtu.sh --status`. Do not
   restart, stop, `docker` anything, rewrite a unit, or change island state
   unless that is the task and Max said so. The pair has ~10 GiB of headroom on
   spark-1: no big builds there.

@@ -209,6 +209,14 @@ Decisions the 2026-10-09 review deferred to the owner. Each is open.
   bundle, zig); remote access (beast-gate via `tailscale serve`,
   `svc:spark-hydra`); primary switch beast ↔ spark-hydra; `PARALLEL=8`;
   native TensorFold 1.2.7 A/B.
+- [ ] **RoCE MTU 9000 — staged for next reboot; run --stage on both, reboot
+  both, --verify, A/B.** (Max, 2026-11-16: "We absolutely need to fix this on
+  the next restart".) The fabric runs at netdev MTU 1500 = RoCE `active_mtu
+  1024`. `sudo scripts/backends/spark-fabric-mtu.sh --stage` on spark-1 and
+  spark-2 (one netplan drop-in, `netplan generate` only), reboot both,
+  `--verify <peer rail IPs>` on each, then A/B the ~45K-token TTFT and the
+  4-stream decode tok/s and record them. Runbook, rollback, measurement
+  script: [`SPARK_HYDRA.md`](SPARK_HYDRA.md) "B4. Fabric MTU 9000".
 - **TODO — scaling review, 1 to 8 ranks (Max, 2026-11-15: "leave the
   scaling questions 1-8 for another day").** The 2026-11-16 adversarial
   review covered the 2x pair only. Still unreviewed and unmeasured: the
