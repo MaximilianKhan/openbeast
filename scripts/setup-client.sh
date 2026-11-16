@@ -606,6 +606,7 @@ fi
 # unverified from that same mirror. The opt-out is for a python the closure
 # does not cover (Intel macOS needs a compiler for cffi, see pydeps.sh).
 _pd_rc=0
+WHEELHOUSE="${WHEELHOUSE:-}"       # this step also runs on its own (tests/test_supply_chain.sh)
 if [ -n "$WHEELHOUSE" ]; then
   # --from first: pydeps.sh stops reading its own flags at -q. It verifies the
   # lock (the committed one, or OPENBEAST_LOCK_SHA256) and audits the dir.
