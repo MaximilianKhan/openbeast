@@ -184,7 +184,7 @@ REQUIRE_IDENTITY = (
 ALLOWED_HOSTS = trusted_hosts(os.environ.get("OPENBEAST_ROUTER_ALLOWED_HOSTS", ""))
 
 # Role header Open WebUI forwards when ENABLE_FORWARD_USER_INFO_HEADERS=true
-# (verified in open-webui 0.10.2: env.py FORWARD_USER_INFO_HEADER_USER_ROLE
+# (verified in open-webui 0.10.2, re-checked in 0.13.3: env.py FORWARD_USER_INFO_HEADER_USER_ROLE
 # defaults to "X-OpenWebUI-User-Role"; utils/headers.py sends the raw role).
 _ROLE_HEADER = "x-openwebui-user-role"
 _JWT_HEADER = "x-openwebui-user-jwt"
