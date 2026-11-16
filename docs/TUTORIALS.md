@@ -353,7 +353,7 @@ openbeast-client status
 ```
 === OpenBeast client status ===
   ✓ env file (~/.openbeast-client.env)
-  ✓ venv imports mcp + openai
+  ✓ venv has mcp + openai
   ✓ tailscale up
   ✓ rig model API reachable (https://beast.tail1234.ts.net:8443/v1)
   …then the rig's actually-loaded model, context and busy slots from /api/slot

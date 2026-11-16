@@ -132,9 +132,13 @@ and v4 tasks keep their categories covered.
 | **v4, kept as defined in v4** | 16 | 24 | 29_db_migration, 37_softmax_stable, 49_markov_steady_state, 107_singleflight, 109_jwt, 117_iter_refinement, 121_quorum_kv, 124_rkf45, 126_hmac_scratch, 128_rsa, 143_uov, 146_aho_corasick, 147_persistent_bst, 153_coroutine_scheduler, 158_karatsuba_bytes (python/go/c/cpp/rust), 159_ntt_convolution (python/go/c/cpp/rust) |
 
 The third group keeps breadth where a family was rejected. Its tasks run
-their **v4 validators unchanged** (only `ref_stem` / `dest` were added to
-their JSON so the prover can find a reference); each one is proven by
-`tests/prove_task.py` like every other unit. They replace:
+their **v4 validators** with two changes: `ref_stem` / `dest` were added to
+their JSON so the prover can find a reference, and the wall-clock gates of
+146, 147, 153, 158 and 159 scale with `OPENBEAST_TIMEOUT_SCALE` (review
+1116: `el < 1.5` was fixed, so under `--jobs 4` or a loaded host a textbook
+solution failed as "too slow"; at scale 1 every gate is the v4 number).
+Each one is proven by `tests/prove_task.py` like every other unit. They
+replace:
 
 | Rejected | Category | Covered in v5.0 by |
 |---|---|---|
@@ -142,7 +146,7 @@ their JSON so the prover can find a reference); each one is proven by
 | 165 ChaCha20-Poly1305 (6L) | Security | **126_hmac_scratch** (a primitive from scratch), **128_rsa**, **143_uov** |
 | 166 Welford/Chan moments (6L) | Probability & Stats | 188 GMM EM (new), **49_markov_steady_state** |
 | 169 broken-build repair (6L) | SWE / DevOps | 176, 178, 179 (new), **29_db_migration** |
-| 170 lock-free MPMC ring (4L) | Concurrency & Systems | 173 (new), **153_coroutine_scheduler** (152 Chase-Lev was the closer match, but its validator's fixed limits fail the lint) |
+| 170 lock-free MPMC ring (4L) | Concurrency & Systems | 173 (new), **153_coroutine_scheduler** (152 Chase-Lev was the closer match, but its validator's fixed limits fail the lint; 153's own fixed wall gate passed only because the lint could not see it, and is scaled since review 1116) |
 | 171 Go worker pool race + deadlock | Concurrency & Systems | **107_singleflight** (the same call-deduplication semantics, in Python) |
 | 180 vuln hunt | Security | **143_uov**, **128_rsa**, **109_jwt** |
 | 181 JWT verifier hardening | Security | **109_jwt** (HS256 sign/verify, padding, expiry) |
@@ -219,7 +223,8 @@ are exactly what a measured unit gets:
 | leak | no oracle-like file (expected*, answer*, check*, oracle*, hidden*, solution*) sits in the fixture dir after setup or validation, and a leak probe (a solution that prints whatever it can find) fails |
 | slow | for a timed unit, a slow solution fails by the validator's OWN limit, not the harness timeout |
 | scale2 | the reference passes again at `--scale 2.0` (the `--jobs 4` budget) |
-| lint | no coreutils `timeout`, no `<bits/stdc++.h>`, no zig API tutoring, no `python -c SRC` child, no fixed limit that ignores `OPENBEAST_TIMEOUT_SCALE` |
+| lint | no coreutils `timeout`, no `<bits/stdc++.h>`, no zig API tutoring, no `python -c SRC` child, no fixed limit that ignores `OPENBEAST_TIMEOUT_SCALE`: neither a `timeout=N` / `*_LIMIT = N` constant nor a measured wall time compared with a bare number (`el < 1.5`, also inside a shell validator's Python heredoc) |
+| toolchain | (compiled units) a toolchain planted after the harness pinned its own never runs, and a solution that is not a program fails: fakes of every compiler first on PATH, each compiling the reference instead (`toolchain:path`); for Go, a go.mod `go 1.99.0` in the fixture, a go env `GOTOOLCHAIN=path` in `$HOME` and a fake `go1.99.0` on PATH (`toolchain:goenv`) |
 
 Refs, wrong solutions and failure classes live in `evals/refs/<task_id>/`
 (`prove.json` or `PROVE.json`), declared in the task JSON as `ref_stem` /
@@ -240,6 +245,13 @@ configs; exec'ing into an interpreter; detaching daemons; patching the
 validator's interpreter), re-tested the previous round's fixes, and re-ran
 the prover for determinism. The kept-v4 units did not get that review in
 their v4 form; see [residual gaps](#residual-gaps-known-documented-not-closed-in-v50).
+That verdict held **on the macOS harness host with a clean host**: review
+1116 then passed U3 units through a compiler planted on PATH (36_c with an
+empty `main`), imported a stray copy of a reference from outside `evals/`
+(183, 188, 40, 36_a, 123_a; on Linux any copy), and bypassed 40's numpy
+ban. Those are closed below (toolchain pins, `confine=` for every Python
+unit of these families, 40's lint and audit hook); the units were re-proven
+with the new `toolchain` arm.
 
 ### The manifest
 
@@ -339,11 +351,23 @@ python3 evals/ablation.py --profile evals/results/profile-<slug>-<ts>.json # the
 3. **Plan**: cost L1 and L2 as k x est_s. If they do not fit what is left,
    cut L2 in this order, only as far as needed: (1) **stratified L2** —
    rerun every L0 failure and a seeded third of the L0 passes; rescues are
-   exact, regressions are estimated by Horvitz-Thompson and the p-value is
-   labelled `stratified`; (2) drop the probes from L2; (3) drop rust from
+   exact, regressions are estimated by Horvitz-Thompson (each sampled pass
+   weighted by 1/pi, pi = k/n for the k of n passes actually drawn, not the
+   nominal third) and the p-value is labelled `stratified`; (2) drop the probes from L2; (3) drop rust from
    L2; (4) drop c from L2 (priority zig > go > cpp > c > rust). **L0 and L1
    are never cut.**
 4. **L1 + L2** in one `run_eval` call with the plan's unit sets.
+
+**`--jobs` against beast-gate.** Every agent of a run shares one device
+key, and the gate admits only `EDGE_MAX_INFLIGHT` (default 2) concurrent
+generations per key. `run_eval` reads that cap from the gate (a chat
+request with `n=1024`, which the gate refuses with a 400 naming the cap
+before forwarding anything; a non-gate endpoint never gets it) and clamps
+`--jobs` to it, so a 4-slot profile of spark-1 at the default runs 2
+workers. Raise the cap on the gate host to use all slots
+(docs/SPARK_HYDRA.md, E2). The remote health check retries and counts a
+429 as alive: one drained rate bucket or tailnet blip no longer aborts the
+sweep.
 
 A global deadline (start + `--budget-h`) rides through every phase: a unit
 that would start after it is recorded **`budget_skip`** — never run, never
@@ -386,15 +410,17 @@ the harness for every unit; the last five were closed for v5.0:
 | network | a solution (or the agent via `fetch`) could reach `github.com` to pull the pushed reference, or phone home | `run_solution` denies `network*`; the agent's web tools are off under `OPENBEAST_EVAL` (or recorded) |
 | read the validator argv | a confined solution could still `ps`/`/proc` the validator's argv/env (190) | `run_solution` refuses fork (no `ps`) and denies `process-info*` on other processes (self allowed, for a framework Python's re-exec). On macOS that does **not** cover argv/env: sysctl `kern.procargs2` stays readable for a same-uid process under every sandbox-exec rule tried, so the invariant is that no validator holds a secret in argv or env (run_eval feeds it on stdin, env scrubbed, seed in memory); `tests/test_eval_190_confinement.py` probes every ancestor for oracle text |
 | read the reference across checkouts | U4: a solution globbed `/Users/*/.../worktrees/*/evals/refs/<unit>/*.py` and exec'd it | `run_solution` denies reads of any `evals/{refs,tasks,suites}` tree, in every checkout, not only this run's sealed paths |
-| toolchain capture | 166 / 169: a planted `rust-toolchain.toml`, a `$HOME/.../go/env` with `GOFLAGS=-ldflags=-s`, or a `.cargo/config.toml` in an ancestor replaced the compiler or stripped the symbol table the validator reads | build a private copy of only the source with `vlib.private_build_dir`, under `vlib.build_env` (`GOENV=off`, `GOFLAGS` cleared, `GOTOOLCHAIN=local`, private `HOME`), and require `vlib.is_native_executable` of the product; `vlib.scan_toolchain_overrides` flags a planted ancestor config |
+| toolchain capture | 166 / 169: a planted `rust-toolchain.toml`, a `$HOME/.../go/env` with `GOFLAGS=-ldflags=-s`, or a `.cargo/config.toml` in an ancestor replaced the compiler or stripped the symbol table the validator reads. Review 1116: a `gcc` planted first on PATH (`/opt/homebrew/bin`, `~/.local/bin`, a conda bin: all user-writable and ahead of `/usr/bin`) compiled the reference and passed 36_c with an empty `main`; so did a go.mod `go 1.99.0` + a go env `GOTOOLCHAIN=path` + a `go1.99.0` on PATH for 36_b; 122's guard ran `otool`, `nm` and `clang` by bare name | **the harness pins the toolchain before any agent runs** (`run_eval.toolchain_pins` → `vlib.pin_toolchain`: each compiler and inspection tool resolved, a root-owned copy preferred, followed to the real binary behind a proxy, `GOROOT/bin/go` and the sysroot's `rustc`, and fingerprinted with its install tree, ctime included) and **refuses a validation** when a name now resolves elsewhere, appeared, or a pinned tree changed (`Toolchain changed since the harness started`, an env error, not banked). The validator gets the pins: `vlib.start_build(sources, argv, product)` compiles a private copy of only the source with the pinned compiler under `vlib.build_env` (private `HOME`, only root-owned dirs on PATH, `GOENV=off`, `GOFLAGS` cleared, `GOTOOLCHAIN=local`, `GOWORK=off`, GOPATH mode for a single-file Go build) and requires a native executable. Every validator also gets `GOENV=off`, `GOTOOLCHAIN=local` and the pinned rustup toolchain; `prove_task` checks it with the `toolchain` arms |
 | compile-time build detection | 170: a solution read `@import("builtin").link_libcpp`, true only under `-fsanitize=thread`, and ran a different algorithm in the plain build | ban the distinguishing builtin fields, and validate behaviour in the PLAIN build too; `vlib.sanitizer_flags` builds the SAME source both ways |
 | shell parent | `run_reaped` ran `python -I -S -` through `sh -c`, and dash (Debian's and Ubuntu's `/bin/sh`) stays alive as the parent. That shell is dumpable and holds the unlinked script as fd 0, so `/proc/<sh>/fd/0` gave a solution the whole validator | The list form is run as `exec python ...`, so the validator's parent is the harness, which is non-dumpable |
 | other checkouts | A solution run from a worktree read `evals/tasks/40_attention.json` from the main checkout. The shared `.git` object store holds every branch's validators | `run_eval.validator_seal()` seals `evals/{tasks,refs,suites}` of every checkout in `git worktree list`, plus the git common dir (macOS; see below) |
 | vendor BLAS | 122: a solution built A and B, then called `cblas_dgemm` from Accelerate or OpenBLAS (dlopen needs no link flag), and passed without writing a kernel | 122's validator lints the source, refuses a binary that links anything beyond the system runtime or imports a loader or a BLAS symbol, and watches the libraries the running process loads |
 | shared build cache | 164: `zig build-exe` outside a build system leaves the whole compilation unit in `~/.cache/zig/tmp/<hash>/*.o`; a sealed prover build of the reference left 4 files, and from the measured agent's bash (which keeps `~/.cache` read-write) 40 of 40 cached objects linked into a passing solution | every validation gets a **private, throw-away build cache** in its 0700 dir: `ZIG_GLOBAL_CACHE_DIR`, `ZIG_LOCAL_CACHE_DIR`, `GOCACHE`, `GOMODCACHE` (with `GOPROXY=off`, `-modcacherw`), `CARGO_TARGET_DIR`, `XDG_CACHE_HOME`; `CCACHE_DISABLE=1`, `SCCACHE_DISABLE=1`, no `RUSTC_WRAPPER`. It is deleted with the validator (read-only module files included). `vlib.build_env` keeps it, and outside the harness puts caches under its private HOME, never `~/.cache` (`run_eval.build_cache_env`) |
-| agent leftovers | 190 (harness-level): `run_agent` killed the agent's tree only on a timeout, and a daemon that detaches properly (double fork, `setsid`, stdio off the pipe) is reparented to init, outside every tree, group and session the harness knew. It runs as our uid into validation: it can rewrite the solution after the lint, read the validator's work dir through a shared `TMPDIR`, or eat the CPU a budgeted solution is measured against | **every process the agent started is killed before validation** (`run_eval.AgentWatch` + `sweep_agent_leftovers`): a per-agent tag in the env; on macOS a per-agent tag *file* that the eval bash sandbox denies, so `sandbox_check(pid, tag)` marks every process the shell started even after `env -i` (a sandbox can be neither left nor replaced); a thread that polls the agent's tree every 0.5 s and records each (pid, start time) it saw, with the runner made a child subreaper on Linux so orphans stay in its tree; the process groups and sessions those processes led; and on Linux with a delegated cgroup v2 a child cgroup nothing can leave (`cgroup.kill`). The matches are frozen (`SIGSTOP`) and `SIGKILL`ed with their subtree for up to 6 rounds, then the sweep **asserts none survive**: a unit with survivors is not validated. Only processes of our uid that started after the agent can match, and the sandbox test is differential (tag denied, sibling file allowed), so app-sandboxed system agents are never touched |
-| early exit | v4 python validators import the solution into their own interpreter, so `os._exit(0)` or `sys.exit(0)` at the solution's import ended the validator with status 0 before any check ran; it passed 143, 146, 152, 153, 121 and 128 | the bootstrap prints a per-run random **completion line** only when the validator ran to its end (or its OWN code raised a clean `SystemExit`; one raised in a frame of the solution does not count), and `run_validation` passes exit 0 only with that line present |
+| agent leftovers | 190 (harness-level): `run_agent` killed the agent's tree only on a timeout, and a daemon that detaches properly (double fork, `setsid`, stdio off the pipe) is reparented to init, outside every tree, group and session the harness knew. It runs as our uid into validation: it can rewrite the solution after the lint, read the validator's work dir through a shared `TMPDIR`, or eat the CPU a budgeted solution is measured against | **every process the agent started is killed before validation** (`run_eval.AgentWatch` + `sweep_agent_leftovers`): a per-agent tag in the env; on macOS a per-agent tag *file* that the eval bash sandbox denies, so `sandbox_check(pid, tag)` marks every process the shell started even after `env -i` (a sandbox can be neither left nor replaced); a thread that polls the agent's tree every 0.5 s and records each (pid, start time) it saw, with the runner made a child subreaper on Linux so orphans stay in its tree; the process groups and sessions those processes led, each with its leader's identity, matched only while provably the same group (leader alive with that identity, or leaderless and never seen empty: a reused id, common on macOS where a long unit wraps the 99999 pid space, is never killed; review 1116); and on Linux with a delegated cgroup v2 a child cgroup nothing can leave (`cgroup.kill`). The matches are frozen (`SIGSTOP`) and `SIGKILL`ed with their subtree for up to 6 rounds, then the sweep **asserts none survive**: a unit with survivors is not validated. Only processes of our uid that started after the agent can match, and the sandbox test is differential (tag denied, sibling file allowed), so app-sandboxed system agents are never touched |
+| early exit | v4 python validators import the solution into their own interpreter, so `os._exit(0)` or `sys.exit(0)` at the solution's import ended the validator with status 0 before any check ran; it passed 143, 146, 152, 153, 121 and 128 | the bootstrap prints a per-run random **completion line** only when the validator ran to its end (or its OWN code raised a clean `SystemExit`; one raised in a frame of the solution does not count), and `run_validation` passes exit 0 only with that line present. The line is held only in a bootstrap frame, never a module global (until review 1116 `__main__._ob_n` let an in-process solution print it and `os._exit(0)`). This stops naive early exits; it does **not** stop an in-process solution that walks the interpreter's frames (see Residual gaps) |
 | relative argv | the round-3 `exec_only` rule named `realpath(cmd[0])` resolved in the validator's cwd, but compiled validators run `./divmod` with `cwd=/tmp/eval_x`: the literal named a file that does not exist, and every compiled unit failed with "solution exited 71" | `vlib._resolve_exec` resolves a relative argv against the solution's cwd and a bare name through its PATH |
+| the validator reads agent files with its own rights | review 1116: the VALIDATOR is not sandboxed, only its children are. 176's `copytree` followed a `shopd/x.py` symlink to the sealed reference fix (and a link to `/dev/zero` wrote without limit); 163/167/168 compiled `#include "<repo>/evals/refs/..."`; 179 ran `git` in the agent's repo, whose `.git/config` (a promisor remote's `uploadpack`) runs any command on a lazy fetch | read agent files with `O_NOFOLLOW`, regular files only, under a byte cap (`vlib.read_source`; 176 copies only regular files and dirs); compile through `vlib.build_private` (lint + private dir + `run_build` read-deny); 179 parses HEAD and refs from their files and copies only loose objects and pack/idx files into a bare repo it owns (`protocol.allow=never`, `GIT_NO_LAZY_FETCH`) |
+| validator temp files | a validator SIGKILLed at the harness timeout never runs its `finally: rmtree`, and its `tempfile` dirs sat in the shared `TMPDIR` | `run_validation` points the validator's `TMPDIR` at `<private>/tmp`, removed with the private dir whatever happens |
 | env launcher | 122 starts the solution as `/usr/bin/env DYLD_INSERT_LIBRARIES=<monitor> ./gemm` (sandbox-exec is SIP-protected and drops `DYLD_*`); confining exec to `/usr/bin/env` alone denied the solution itself | `exec_only` takes a list: for `/usr/bin/env` it is env plus the one program env runs, and still nothing else |
 
 `evals/vlib.py` is the validator's standard library. The harness injects it
@@ -405,11 +431,20 @@ into the validator from source; it is never on an import path or in the cwd.
   ALL descendants. That is exact through a delegated cgroup v2 when the host
   has one. Otherwise it is RLIMIT_CPU per process, plus wait4 rusage, plus a
   pgid/ancestry sampler. That sampler reads `/proc` on Linux, with a child
-  subreaper so that orphans stay in view; elsewhere it reads `ps`. Fork is
+  subreaper so that orphans stay in view, and libproc in-process on macOS
+  (it forked `ps -A` every 50 ms until review 1116: ~140 ms and ~0.4 CPU-s
+  of overhead per run, a third of a core); `ps` is the fallback. The solution's own rusage
+  always counts: it is reaped with `wait4(WNOHANG)`, never `Popen.poll()`,
+  which discarded it, so CPU used after the last sample was lost and a
+  fixed-CPU gate (122, 123, 36) passed an over-budget solution about 1 run
+  in 12. The sampler wakes the moment the solution exits (kqueue on macOS,
+  a pidfd on Linux) instead of sleeping out the poll. Fork is
   refused by default, and on macOS `sandbox-exec` enforces it. With
   `allow_fork=True`, orphans and survivors get `verdict="daemon"`. On macOS
   the confined solution also has **no network**, **no process-info on other
-  processes**, and **no read** of any `evals/{refs,tasks,suites}` tree (plus
+  processes**, **no signals to any process outside its own sandbox** (it can
+  still kill itself and its own children; before review 1116 it could
+  SIGKILL sibling units, their validators or the harness), and **no read** of any `evals/{refs,tasks,suites}` tree (plus
   `deny_read` and `OPENBEAST_VALIDATOR_SEAL`, which `run_eval.validator_seal()`
   builds from `evals/{tasks,refs,suites}` of every checkout in `git worktree
   list` plus the git common dir). A compiled unit's exec is
@@ -422,21 +457,46 @@ into the validator from source; it is never on an import path or in the cwd.
   maps and `work`. It writes only `work` and gets no network and no
   process-info on other processes. macOS uses a
   deny-by-default sandbox-exec profile; Linux uses landlock, or a user +
-  mount namespace with a fresh root on kernels before 5.13. Without either
+  mount namespace with a fresh root (and an empty network namespace) on
+  kernels before 5.13. Landlock has no UDP right and no TCP right before
+  ABI 4 (kernel 6.7), so the landlock path also installs a seccomp filter
+  that lets `socket()` create only AF_UNIX / AF_NETLINK sockets and refuses
+  io_uring and foreign-ABI syscalls; until review 1116 a confined solution
+  could send UDP (and below 6.7 open TCP) under this "no network" contract.
+  An arch without a syscall table (anything but x86_64 / aarch64) fails
+  closed. Without either
   it returns `verdict="sandbox"` and does not run the solution. 190 needs it:
   its verifier read the oracle out of the unsealed `.git` object store.
-- **Builds**: `vlib.private_build_dir({relpath: src})` returns a fresh 0700
-  dir holding only the source, with no toolchain-config ancestor; build there
-  under `vlib.build_env()` (clean private `HOME`, `GOENV=off`, `GOFLAGS`
-  cleared, `GOTOOLCHAIN=local`) with `vlib.tool_path("rustc")` for an absolute
-  compiler. Then `vlib.assert_native_executable(out)` — a `#!`-script behind a
+- **Builds**: `b = vlib.start_build({SRC: source}, BUILD, EXE)` then
+  `ok, log = b.finish(vlib.t(25))` and run `b.product` (36, 122, 123 do).
+  It is the pieces below in one call: `vlib.private_build_dir({relpath: src})`
+  returns a fresh 0700 dir (under the harness, inside the validator's private
+  dir) holding only the source, with no toolchain-config ancestor; build there
+  under `vlib.build_env()` (clean private `HOME`, only root-owned dirs on
+  `PATH`, `GOENV=off`, `GOFLAGS` cleared, `GOTOOLCHAIN=local`, `GOWORK=off`)
+  with `vlib.tool_path("rustc")`, which returns the binary the harness pinned
+  before the agent ran (outside the harness, the first root-owned copy on
+  PATH). Then `vlib.assert_native_executable(out)`: a `#!`-script behind a
   planted compiler is not ELF/Mach-O. `vlib.scan_toolchain_overrides(dir)`
   lists any planted `rust-toolchain`/`.cargo/config`/`go.work`/`go env` in an
   ancestor. `vlib.sanitizer_flags("thread")` builds the same source with and
   without the sanitizer.
+- **The compiler reads with the validator's rights.** `#include
+  "<repo>/evals/refs/<unit>/ref.c"` (or Rust `include!`, an `.incbin`, a
+  source symlinked to the reference) made the compiler read the sealed
+  reference the agent cannot open, and the binary WAS the reference (163,
+  167, 168). `vlib.build_private({src: bytes}, argv, lang=, timeout=)` lints
+  the source (`vlib.lint_source_includes`: no include/import/embed of an
+  absolute, `..` or macro-computed path, no `.incbin`, no Rust
+  `include!`/`include_str!`/`include_bytes!`, no zig `@embedFile`/`@cImport`),
+  copies it into a `private_build_dir` and compiles there under
+  `vlib.build_env()` through `vlib.run_build`, which on macOS adds the
+  solution's read-deny (every `evals/{refs,tasks,suites}` tree and the seal).
+  Read the source with `vlib.read_source(path)`: a regular file only, never
+  through a symlink.
 - `vlib.t(s)` and `vlib.scale()` give the timeout scale. `vlib.python_cmd(p)`
-  gives `[python, -I, -S, p]`. `vlib.processes()` is a /proc-free process
-  table. `vlib.lint_python(src, ban_modules=, ban_calls=)` is an AST lint for
+  gives `[python, -I, -S, p]`. `vlib.processes()` is the process table
+  (/proc on Linux, libproc on macOS, `ps` as the fallback). `vlib.lint_python(src, ban_modules=, ban_calls=)` is an AST lint for
   the known dodges.
 
 **What a validator must do** (the full checklist is in
@@ -454,7 +514,9 @@ into the validator from source; it is never on an import path or in the cwd.
   the whole output.
 
 `tests/prove_task.py` lints validators for `-c` children and for fixed
-limits that never read the scale. The isolation itself is pinned by
+limits that never read the scale, including a measured time compared with a
+bare number (`prove_task.unscaled_time_gates`, which reads a shell
+validator's Python heredocs too). The isolation itself is pinned by
 `tests/test_eval_validator_isolation.py`.
 
 ### The isolation model, in one place
@@ -466,8 +528,8 @@ reach:
 | Actor | Must not reach | How |
 |---|---|---|
 | **the agent** (runner + its tools) | the answer key; the web; anything after its turn ends | `OPENBEAST_EVAL=1`: the file tools refuse `evals/{tasks,refs,suites}`, and on macOS its bash runs under `sandbox-exec` with those trees denied in the kernel (quote-split and git-blob spellings are caught by the text check on both platforms); `fetch` / `web_search` refuse. When the runner exits, **the leftover sweep** kills everything it started, detached daemons included, and refuses to validate if anything survives |
-| **the validator** | an attacker-controlled import path, cwd, argv or environment; a shared build cache | stdin-fed script, `python -I -S -` in an empty private cwd, scrubbed env, non-dumpable on Linux, **private build cache deleted afterwards**, a completion line it alone can print |
-| **the solution** (run by the validator) | the oracle (validator memory, the answer key, git objects, other checkouts), the network, other processes, other programs | `vlib.run_solution`: own session and process group, CPU budget for the whole tree, fork refused by default, exec confined to its own image (or an env launcher and its one target), no network, no process-info on others, reads of every `evals/{refs,tasks,suites}` tree and the git store denied; `confine=` turns that into a read allowlist that fails closed (sandbox-exec, Landlock, or user + mount namespaces) |
+| **the validator** | an attacker-controlled import path, cwd, argv or environment; a shared build cache | stdin-fed script, `python -I -S -` in an empty private cwd, scrubbed env, non-dumpable on Linux, **private build cache deleted afterwards**, a completion line that no out-of-process solution can print (an in-process one can, by frame introspection: Residual gaps) |
+| **the solution** (run by the validator) | the oracle (validator memory, the answer key, git objects, other checkouts), the network, other processes, other programs | `vlib.run_solution`: own session and process group, CPU budget for the whole tree, fork refused by default, exec confined to its own image (or an env launcher and its one target), no network, no process-info on others, no signal to any process outside its sandbox (macOS `(deny signal (target others))`; Linux `confine=` through Landlock scoped signals, ABI >= 6), reads of every `evals/{refs,tasks,suites}` tree and the git store denied; `confine=` turns that into a read allowlist that fails closed (sandbox-exec, Landlock, or user + mount namespaces) |
 
 Between units: fixture roots that another uid owns or can write are
 refused; setup, pre_validate and cleanup run in a fresh private cwd; every
@@ -482,7 +544,13 @@ solution process group a validator recorded is SIGKILLed after it exits.
   reference or the task JSON at import time, or rebind the checks it is
   judged by. The completion line closes the trivial exit-0 cheat, and the
   agent itself still cannot read the answer key, but a solution that
-  reads it at validation time is not stopped. Screening the rework
+  reads it at validation time is not stopped. Nor is a forged completion
+  line: anything the validator can print, code running in its interpreter
+  can print too, so a solution that walks `sys._getframe()` to the
+  bootstrap frame, reads the line and calls `os._exit(0)` passes. No
+  in-process scheme fixes that (a private fd or a closure is just as
+  reachable); only running the solution out of process through
+  `vlib.run_solution`, as every v5-authored unit does, does. Screening the rework
   branches' wrong solutions against these v4 validators found plausible
   ones they accept: on 158, Python big-int shortcuts (hex round trip,
   digit collapse), a zero-operand bug no input exercises, a 32-bit-limb
@@ -505,27 +573,94 @@ solution process group a validator recorded is SIGKILLed after it exits.
   build into the fixture dir are exposed; the fix (run from a read-only
   copy, or hash the image after the run) is a v5.1 harness item.
 - **Linux confinement is the environment's job.** On macOS sandbox-exec
-  enforces the solution rules; on Linux vlib catches fork by sampling (verdict `forked`), exec
+  enforces the solution rules, and `vlib.run_build` puts the compiler under
+  the same read-deny; on Linux the compiler has none, so
+  `vlib.lint_source_includes` is the only wall against a source that makes
+  the compiler read the reference; on Linux vlib catches fork by sampling (verdict `forked`), exec
   (`/proc/<pid>/exe`) and, with `confine=`, reads (Landlock or namespaces),
-  but the deny-list form (no `confine=`) has no kernel read-deny. The
+  but the deny-list form (no `confine=`) has no kernel read-deny. Every
+  Python unit of the new families and of U3 runs with `confine=` since
+  review 1116; the kept-v4 Python units do not (they import the solution
+  in-process, see above). On a Linux harness host the **agent's own bash**
+  has no read-deny either (`agents/tools.py` seals it on macOS only), so a
+  Linux host is not leak-proof against an agent that reads `evals/refs`
+  during its turn; the documented harness host is the Mac. The
   leftover sweep on Linux is exact only with a delegated cgroup v2; without
   one it relies on the env tag, the tree poll (the runner is a subreaper, so
   an orphan stays in its tree while it lives) and groups/sessions. A daemon
   that scrubs its environment and is orphaned between two polls *after*
   the runner has exited is the one case it can miss there.
+- **macOS env tag sees only non-platform binaries.** `KERN_PROCARGS2`
+  returns argv without the environment for Apple-signed binaries
+  (`/bin/sh`, `bash`, `sleep`, `nohup`), so on macOS the per-agent env tag
+  finds a detached Homebrew python but not a detached `/bin/sh` daemon. The
+  sandbox tag (the eval bash runs under `sandbox-exec`) is the real
+  mechanism there; when it is unusable (no `sandbox-exec`, or the harness
+  itself runs sandboxed) the sweep prints a warning, and a daemon that
+  left the agent's tree, group and session between two 0.5 s polls can
+  survive. The sweep polls once more right before it kills.
+- **macOS timeout path.** Until review 1116 the wall-timeout kill walked
+  only `/proc`, so on macOS it killed just the runner's group, and a tool
+  child in its own session ran on through the 5 s pipe drain;
+  `tests/test_eval_timeout_reap.py` failed on every Mac (CI runs Linux
+  only). The walk now falls back to libproc and the watched tree is killed
+  before the drain. The process snapshots are libproc in-process (~2 ms,
+  no fork) instead of `ps -A ... lstart=` (~45 ms, twice a second per
+  agent).
 - **macOS argv/env of other processes** stay readable to a same-uid process
   through `kern.procargs2` under every sandbox rule tried, so no validator
   may hold a secret in argv or env (none does: the script arrives on stdin).
+- **Sibling agents under `--jobs`.** The leftover sweep kills one unit's
+  agent tree before ITS validation; the other units' agents are still
+  running then, as the same uid, with bash. On macOS their sandbox only
+  denies reads of the sealed eval trees, and on Linux they have none, so a
+  careless `rm -rf /tmp/eval_*` or `pkill -f zig` in one unit can fail
+  another unit's validation (a false FAIL, which the cache banks; it can
+  never inflate a score). Closed in the harness: a forged entry in a
+  validator's `pgids` file can no longer make the harness kill an older
+  process (only groups with a member started after the validation began
+  are killed). Not closed: the fixture files and the validator's private
+  dir in the shared `TMPDIR` stay writable to a sibling agent. The fix is
+  a write-deny in the agent's eval sandbox (`agents/tools.py`, which is in
+  the era hash) plus a Linux equivalent; until then, a campaign that must
+  be exact runs `--jobs 1`.
 - **Shared fixture paths.** A family's units share one fixed `/tmp/eval_*`
-  dir; two provers (or a prover and a test) of the same family at once
-  corrupt each other (186, 190). The harness serialises a base group; by
-  hand, run one family at a time.
+  dir. Two harness processes on one host used to corrupt each other there
+  (186, 190; review 1116: the 167_q15_biquad_a/_c references failed 8 runs
+  of 12 side by side, and a prover during a sweep silently `rm -rf`'d the
+  live unit's fixture of 173/175/178 against a GLM sweep; those FAILs were
+  banked as model failures). Every harness now holds an exclusive advisory
+  `flock` per fixture root for a unit's whole cleanup -> setup -> agent ->
+  validate -> cleanup (`run_eval.fixture_lock`, lock files in
+  `~/.cache/openbeast/fixture-locks/`, or `$OPENBEAST_FIXTURE_LOCK_DIR`; a
+  private 0700 dir, refused with a warning and run unlocked otherwise). A
+  sweep (`run_eval`, `profile.py`, `benchmark_all.py`) waits for a root
+  another harness holds and says so at once; `tests/prove_task.py` plus the
+  family provers of 175/176/179 refuse at once with the holder's pid
+  ("fixture busy"). It also serialises two threads of one run whose units
+  share a root. Not covered: tests that drive `run_setup` directly, and
+  family provers outside 175/176/179; run those one at a time.
+- **Toolchain pins are per harness process.** They are taken when the
+  harness starts, so a plant left by an EARLIER run's agent is pinned as
+  found, unless a root-owned copy of that name is on PATH (then that copy is
+  pinned). Tools outside the pinned names and trees (a linker in a user dir
+  that a compiler finds without PATH) are not fingerprinted. The kept-v4
+  compiled units (158, 159 b-e) still build in their fixture dir with the
+  bare name: the pin check and the Go/rustup env cover them, the private
+  build dir does not. The U3 rust and zig variants share `start_build` with
+  the proven go/c/cpp ones but were not re-proven in review 1116 (no rustc
+  or zig on the harness host or the Sparks at the time).
 - **Timing headroom.** The cold zig compile now happens in every
   validation (private cache): about 8 s of the 15 s validator budget on a
   loaded Mac; a Go unit rebuilds its standard library each time (158_b's
   validation is 13.5-13.8 s, almost all of it the oracle and the build).
   A slower harness host needs `--scale`; a std-only cache template would
-  win the time back and is a v5.1 harness item.
+  win the time back and is a v5.1 harness item (measured in review 1116:
+  a cold Go validation spends ~2 s wall and ~5.5 CPU-s rebuilding std; a
+  cloned `go build std` seed cuts it to ~0.6 s). It is deferred because the
+  seed would be a shared, same-uid-writable input to every validator's
+  build, which the agents (no write sandbox) could poison; it needs an
+  integrity check or the agent write-deny first.
 
 ### v5.1 backlog: the 12 families that did not ship
 
@@ -557,10 +692,14 @@ no open issue and the prover passes 3/3 at scale 1 and 2.0.
 `evals/SUITE_VERSION` is `v5`, which rolls the cache era (`ctxhash`) for
 every row: no v4 cache entry replays into v5. The v4 board is frozen (shown
 under "legacy suites"); v5 starts empty. The harness rides the same break,
-pinned as **`harness5`** in `evals/HARNESS_VERSION`: its fingerprint covers
+pinned as **`harness6`** in `evals/HARNESS_VERSION` (`harness5` at the v5.0
+release; the review-1116 fixes to the bootstrap, the leftover sweep, the
+validator's private `TMPDIR`, the fixture lock, the toolchain pins and
+`vlib.py` rolled the era once more; see CHANGELOG): its fingerprint covers
 the agent's wall cap, the validator's environment, bootstrap and private
-build cache, the fixture cwd, and the leftover sweep (`AgentWatch`,
-`sweep_agent_leftovers`), and `evals/vlib.py` is now hashed into the era
+build cache, the fixture cwd, the leftover sweep (`AgentWatch`,
+`sweep_agent_leftovers`) and the toolchain pins (`toolchain_pins`,
+`_toolchain_problems`), and `evals/vlib.py` is now hashed into the era
 too, because run_eval injects it into every validator. `agents/tools.py`
 (the seal, per-unit diagnostics, the agent's sandbox tag) is era-hashed as
 before. Expect **zig L0 to drop sharply** against v4 (the v4 off-arm passed

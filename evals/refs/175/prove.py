@@ -27,6 +27,14 @@ ap.add_argument("--repeat", type=int, default=M["repeat"])
 a = ap.parse_args()
 quiet = lambda *_: None
 (task,) = [t for t in R.load_tasks([M["unit"]]) if t["id"] == M["unit"]]
+
+# Hold the unit's /tmp/eval_* roots for the whole proof: a sweep or another
+# prover on this host must not rm -rf them under our arms, nor we under its
+# units (run_eval.fixture_lock; the kernel drops it when this process exits).
+try:
+    _FIXTURE_LOCK = R.fixture_lock(task, wait=False).__enter__()
+except R.FixtureBusy as _e:
+    sys.exit("%s: NOT PROVEN (fixture busy: %s)" % (task["id"], _e))
 assert task["dest"] == M["dest"] and task["ref_stem"] == "175/crdt"
 
 

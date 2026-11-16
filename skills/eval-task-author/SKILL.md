@@ -240,11 +240,16 @@ created, and have the prover check every ancestor cwd afterwards
 7. **Build in a private copy of only the source.** A planted
    `rust-toolchain.toml`, a `$HOME/.../go/env` with `GOFLAGS=-ldflags=-s`, or
    a `.cargo/config.toml` in an ancestor of the build cwd replaces the
-   compiler or strips the symbol table you inspect (166/169). Use
-   `d = vlib.private_build_dir({"main.rs": src})` and build in `d` under
-   `env=vlib.build_env()` (clean private `HOME`, `GOENV=off`, `GOFLAGS`
-   cleared, `GOTOOLCHAIN=local`); call `vlib.tool_path("rustc")` for an
-   absolute compiler so a planted `rustc` earlier on PATH cannot shadow it.
+   compiler or strips the symbol table you inspect (166/169), and a `gcc`
+   planted first on PATH compiled the reference for an empty `main` (36_c,
+   review 1116). The one-call form is
+   `b = vlib.start_build({SRC: source}, BUILD, EXE); ok, log = b.finish(vlib.t(25))`,
+   then run `b.product`. By hand: `d = vlib.private_build_dir({"main.rs": src})`
+   and build in `d` under `env=vlib.build_env()` (clean private `HOME`, only
+   root-owned dirs on PATH, `GOENV=off`, `GOFLAGS` cleared,
+   `GOTOOLCHAIN=local`); call `vlib.tool_path("rustc")` (also for `nm`,
+   `otool`, `clang` you run yourself): it returns the binary the harness
+   pinned before the agent ran, never what PATH says at validation time.
    Then **require a native executable**: `vlib.assert_native_executable(out)`
    before you run it or read `nm`/`otool` — a `#!/usr/bin/env python3` shim
    behind a planted compiler is not ELF/Mach-O, and `nm` of a non-object file
@@ -254,7 +259,24 @@ created, and have the prover check every ancestor cwd afterwards
    the builtin fields that differ between the builds (zig `link_libcpp`,
    `position_independent_executable`, `pic`, `link_libc`), and **also validate
    behaviour in the plain build** — the sanitizer is a stress amplifier, not
-   the only judge (170).
+   the only judge (170). The compiler reads with YOUR rights, and your
+   validator is not sandboxed: `#include "<repo>/evals/refs/<unit>/ref.c"`
+   compiles the sealed reference (163/167/168). So compile through
+   `bdir, why = vlib.build_private({src_name: raw}, argv, lang=LANG,
+   timeout=vlib.t(25))`: it lints the include routes
+   (`vlib.lint_source_includes`), builds in a `private_build_dir` under
+   `build_env`, and on macOS runs the compiler under the solution's read-deny
+   (`vlib.run_build`). Judge the warm-up exec's verdict too (a hang must fail
+   there, inside the harness's 30 s validator budget, not as an infra
+   `validator_timeout` that reruns the whole unit).
+7a. **Never follow an agent-made link or config in the validator.** Read the
+   solution with `raw = vlib.read_source(path)` (regular file, no symlink,
+   size cap); copy a solution TREE file by file with `O_NOFOLLOW`, regular
+   files and dirs only, under a byte cap (176: `copytree` followed a link to
+   the sealed fix, and one to `/dev/zero` filled the disk). Never run a tool
+   whose config the agent wrote: `git` reads `.git/config`, and a promisor
+   remote's `uploadpack` runs any command on a lazy fetch (179) — copy the
+   objects into a repo you own and run git there.
 8. **Check all of the output.** A checker that tests only part of the output
    (one field, the last case, a containment prefix without the separator)
    is a pass for a partial solution. Assert the count, every field, and

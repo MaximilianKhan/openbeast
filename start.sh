@@ -505,7 +505,41 @@ ensure_watchdog_timer() {
 # the launcher, and its answer would land in stack.log, not on a terminal.
 preflight() {
   _preflight_model
+  _preflight_scope
   _preflight_ports
+}
+# _preflight_scope_file — the file whose `# openbeast-scope:` line governs
+# this launch: the serve script, or a managed engine's profile (its adapter's
+# scope_file).
+_preflight_scope_file() {
+  if [[ "$SERVE_SCRIPT" == engine-serve.sh ]] && ob_engine_has "$INFERENCE_BACKEND" scope_file; then
+    ob_engine_call "$INFERENCE_BACKEND" scope_file "$(ob_engine_conf_get ENGINE_PROFILE)" 2>/dev/null || true
+  else
+    printf '%s\n' "$SCRIPT_DIR/scripts/$SERVE_SCRIPT"
+  fi
+}
+# A profile's host-class and min-mem-gib refusals (scripts/lib/memscope.sh)
+# hold for EVERY launch mode. They used to run only where the systemd scope
+# is built (start.sh -d with user systemd), so a foreground start, or -d on a
+# box without user systemd, loaded a rig-only big profile (~95 GiB of pinned
+# experts) on a Spark or a 64 GB box with no refusal and no cap. The raised
+# percent and memlock still apply only where a scope exists (the -d branch).
+_preflight_scope() {
+  [[ $MANAGED -eq 1 ]] || return 0
+  local f kb
+  source "$SCRIPT_DIR/scripts/lib/memscope.sh"
+  source "$SCRIPT_DIR/scripts/lib/engine.sh"
+  f="$(_preflight_scope_file)"
+  [[ -n "$(ob_scope_decl "$f")" ]] || return 0      # nothing declared, nothing to refuse
+  kb="$(grep -m1 MemTotal "${OB_MEMINFO:-/proc/meminfo}" 2>/dev/null | awk '{print $2}' || true)"
+  if ! ob_mem_scope "$f" "$(ob_engine_host_class)" "$kb" "${MEM_LIMIT_PCT:-75}" >/dev/null; then
+    echo "  Nothing was started." >&2
+    exit 1
+  fi
+  if [[ $DAEMON -ne 1 ]]; then
+    echo "Note: $(basename "$f") declares its memory scope ($(ob_scope_decl "$f" | xargs)); a foreground start" >&2
+    echo "      runs WITHOUT a memory cap. ./start.sh -d gives it the capped scope." >&2
+  fi
 }
 _preflight_model() {
   [[ $MANAGED -eq 1 ]] || return 0     # no local model: no card, no port, of ours
@@ -578,6 +612,15 @@ _preflight_ports() {
 _webui_line() {
   if curl -s -m 2 -o /dev/null "http://$HEALTH_HOST:3000/health" 2>/dev/null; then
     echo "  Open WebUI:    http://localhost:3000"
+    # Its DNS-rebinding Host guard fails open (scripts/webui/sitecustomize.py),
+    # so ask the running container (lib/net.sh). Loud, not fatal: the chat UI
+    # stays up, and doctor.sh FAILs the same row.
+    if [[ "$(ob_webui_host_guard "http://$HEALTH_HOST:3000")" == "open" ]]; then
+      echo "  WARNING:       Open WebUI SERVES requests for unknown Host names — its DNS-rebinding" >&2
+      echo "                 guard did not load (an image change?). With login off, a web page that" >&2
+      echo "                 rebinds its name to this box gets admin, with bash. ./scripts/doctor.sh" >&2
+      echo "                 has the fix; until then, avoid browsing untrusted sites on this machine." >&2
+    fi
   elif [[ "${1:-0}" -eq 1 ]]; then
     echo "  Open WebUI:    NOT UP — docker compose failed (the warning above has the reason)."
     echo "                 Fix docker, then: ./scripts/healthcheck.sh --restart"
@@ -638,10 +681,7 @@ if [[ $DAEMON -eq 1 ]]; then
     # change at all.
     source "$SCRIPT_DIR/scripts/lib/memscope.sh"
     source "$SCRIPT_DIR/scripts/lib/engine.sh"
-    _scope_file="$SCRIPT_DIR/scripts/$SERVE_SCRIPT"
-    if [[ "$SERVE_SCRIPT" == engine-serve.sh ]] && ob_engine_has "$INFERENCE_BACKEND" scope_file; then
-      _scope_file="$(ob_engine_call "$INFERENCE_BACKEND" scope_file "$(ob_engine_conf_get ENGINE_PROFILE)" 2>/dev/null || true)"
-    fi
+    _scope_file="$(_preflight_scope_file)"
     _scope_rc=0
     _scope="$(ob_mem_scope "$_scope_file" "$(ob_engine_host_class)" "$MEM_TOTAL_KB" "$MEM_LIMIT_PCT" \
                 "$([[ -n "${OPENBEAST_MEM_LIMIT_PCT:-}" ]] && echo "$MEM_LIMIT_PCT")")" || _scope_rc=$?
@@ -1304,8 +1344,9 @@ fit_unified_mem_cap() {
     echo "Warning: could not lower the stack's memory cap to ${cap_mb} MiB (systemctl set-property failed)" >&2
   fi
   if [[ "$short" == "1" ]]; then
-    echo "Warning: only ${avail_mb} MiB available beside the model — the stack's floor eats into the" >&2
-    echo "         ${MEM_RESERVE_GB:-3} GiB reserve. Free memory on this box (or shrink the model's pool)." >&2
+    echo "Warning: only ${avail_mb} MiB available beside the model — the stack has no headroom past what it" >&2
+    echo "         holds (or its floor eats into the ${MEM_RESERVE_GB:-3} GiB reserve). Free memory on this box" >&2
+    echo "         (or shrink the model's pool)." >&2
   fi
   # The chat jobs' slice leaves the stack's cgroup (agents/chat_server.py),
   # so it needs its own share. An operator's explicit value wins.

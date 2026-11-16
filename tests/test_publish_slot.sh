@@ -12,6 +12,9 @@
 #     (tailscaled hiccup, cancelled sudo prompt) nothing wider is mounted
 #     (it used to fall back to the whole dashboard on any failure)
 #   - only a build with no --set-path at all gets the whole-dashboard mount
+#   - re-running on a :8444 that still has a "/" (whole dashboard) handler
+#     removes it: tailscale keeps one handler per path, so adding /api/slot
+#     alone used to leave the dashboard published (2026-11-16 review)
 
 set -uo pipefail
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -35,11 +38,13 @@ if ! grep -q '_publish_slot_mount "\$UP_HOST"' "$SRC" || [[ "$(grep -c '^}' "$T/
   echo "Results: $PASS passed, $FAIL failed"; exit 1
 fi
 
-# run <help-text-has-set-path 0|1> <set-path-mount-rc>
-# Sets OUT, RC; $T/mounts records every ts_admin serve call.
+# run <help-text-has-set-path 0|1> <set-path-mount-rc> [pre-existing handlers]
+# Sets OUT, RC; $T/mounts records every ts_admin serve mount (not the
+# reset), and $T/handlers models tailscale's per-path :8444 handler table.
 run() {
   : > "$T/mounts"
-  OUT="$(HAS="$1" MOUNT_RC="$2" MOUNTS="$T/mounts" bash -c '
+  printf '%s' "${3:-}" > "$T/handlers"
+  OUT="$(HAS="$1" MOUNT_RC="$2" MOUNTS="$T/mounts" HANDLERS="$T/handlers" bash -c '
     set -euo pipefail
     tailscale() {
       [[ "$*" == "serve --help" ]] || return 0
@@ -49,8 +54,16 @@ run() {
       return 0
     }
     ts_admin() {
+      case "$*" in
+        "serve --https=8444 off") : > "$HANDLERS"; return 0 ;;
+      esac
       echo "$*" >> "$MOUNTS"
-      case "$*" in *--set-path=*) return "$MOUNT_RC" ;; esac
+      case "$*" in
+        *--set-path=*)
+          [[ "$MOUNT_RC" == 0 ]] || return "$MOUNT_RC"
+          echo "/api/slot" >> "$HANDLERS" ;;
+        *) echo "/" >> "$HANDLERS" ;;
+      esac
       return 0
     }
     . "$1"
@@ -74,6 +87,20 @@ if [[ $RC -ne 0 ]] && ! grep -q 'http://127.0.0.1:3002$' "$T/mounts" && [[ "$OUT
   pass "a FAILED path-scoped mount is an error — the whole dashboard is never mounted"
 else
   fail "failed set-path mount fell open (rc=$RC, mounts=$(tr '\n' ';' < "$T/mounts")): $OUT"
+fi
+
+run 1 0 $'/\n'
+if [[ $RC -eq 0 ]] && [[ "$(cat "$T/handlers")" == "/api/slot" ]]; then
+  pass "re-running over a stale whole-dashboard \"/\" handler leaves /api/slot alone"
+else
+  fail "a stale \"/\" handler on :8444 survived --publish-slot (handlers=$(tr '\n' ';' < "$T/handlers")): $OUT"
+fi
+
+run 1 1 $'/\n'
+if [[ $RC -ne 0 ]] && [[ ! -s "$T/handlers" ]]; then
+  pass "a failed re-mount leaves :8444 unpublished, not the stale whole dashboard"
+else
+  fail "a failed re-mount left :8444 handlers=$(tr '\n' ';' < "$T/handlers"): $OUT"
 fi
 
 run 0 0

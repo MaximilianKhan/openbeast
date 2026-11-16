@@ -4,7 +4,7 @@
 # docs/SPARK_HYDRA.md "Firewall: spark-guard"
 #
 #   sudo scripts/backends/spark-guard.sh              # install / refresh the guard (persists across reboot)
-#   sudo scripts/backends/spark-guard.sh --status     # what is loaded, what listens, ssh posture
+#   sudo scripts/backends/spark-guard.sh --status     # what is loaded, STALE or current, what listens, ssh posture
 #   sudo scripts/backends/spark-guard.sh --remove     # undo: table, unit and rules file gone
 #        scripts/backends/spark-guard.sh --render     # print the ruleset it would load (no root)
 #   sudo scripts/backends/spark-guard.sh --harden-ssh [--yes]   # OFF by default — read the warning first
@@ -15,7 +15,7 @@
 #   --no-fabric   a single Spark with no ConnectX peer: the ports become loopback-only
 #
 # WHY. TensorFold's TCPStore (29551, +1), native TensorFold's NCCL_COMM_ID
-# (29583, +1) and vLLM's torch.distributed store (29501) have no
+# (29583, +1) and vLLM's torch.distributed store (29501, +1) have no
 # authentication, and rank 0 binds them on EVERY interface (`*:29551`). The
 # NCCL bootstrap listeners bind the fabric address on ephemeral ports. ufw is
 # installed but disabled on DGX OS, and even with ufw on, Tailscale's own
@@ -58,7 +58,7 @@ usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; }
 valid_port() { [[ "$1" =~ ^[0-9]{1,5}$ ]] && (( 10#$1 >= 1 && 10#$1 <= 65535 )); }
 valid_iface() { [[ "$1" =~ ^[A-Za-z0-9._-]{1,15}$ ]]; }
 
-ACTION=apply YES=0 NO_FABRIC=0
+ACTION=apply YES=0 NO_FABRIC=0 ARGS_GIVEN=0
 EXTRA_PORTS=() EXTRA_IFACES=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -69,10 +69,10 @@ while [[ $# -gt 0 ]]; do
     --harden-ssh)   ACTION=harden-ssh ;;
     --unharden-ssh) ACTION=unharden-ssh ;;
     --yes)          YES=1 ;;
-    --no-fabric)    NO_FABRIC=1 ;;
-    --port)         EXTRA_PORTS+=("${2:?--port needs a value}"); shift
+    --no-fabric)    NO_FABRIC=1; ARGS_GIVEN=1 ;;
+    --port)         EXTRA_PORTS+=("${2:?--port needs a value}"); shift; ARGS_GIVEN=1
                     valid_port "$1" || { echo "--port $1 is not a TCP port" >&2; exit 2; } ;;
-    --iface)        EXTRA_IFACES+=("${2:?--iface needs a value}"); shift ;;
+    --iface)        EXTRA_IFACES+=("${2:?--iface needs a value}"); shift; ARGS_GIVEN=1 ;;
     -h|--help)      usage; exit 0 ;;
     *)              echo "unknown argument: $1 (see --help)" >&2; exit 2 ;;
   esac
@@ -93,8 +93,11 @@ env_port() {
 }
 
 # ---------------------------------------------------------------- inputs
+# Every rendezvous port is guarded with its +1 (each rank keeps a second TCP
+# line to rank 0 there), the defaults exactly as a port named in spark.env —
+# so the same port never renders two ways depending on where it came from.
 ports() {   # one port per line, sorted, unique
-  local p list=(29501 29551 29552 29583 29584)
+  local p list=(29501 29502 29551 29552 29583 29584)
   for p in "$(env_port VLLM_MASTER_PORT)" "$(env_port TENSORFOLD_MASTER_PORT)"; do
     [[ -n "$p" ]] && list+=("$p" "$((p + 1))")
   done
@@ -135,6 +138,52 @@ port_ranges() {
        END {if (NR) print (s == e ? s : s "-" e)}'
 }
 
+# The command-line inputs of this render, recorded in the rules file so
+# --status can re-render with the same ones and tell a stale install.
+render_args() {
+  local out="" x
+  [[ $NO_FABRIC -eq 1 ]] && out+=" --no-fabric"
+  for x in "${EXTRA_PORTS[@]+"${EXTRA_PORTS[@]}"}"; do out+=" --port $x"; done
+  for x in "${EXTRA_IFACES[@]+"${EXTRA_IFACES[@]}"}"; do out+=" --iface $x"; done
+  printf '%s' "${out# }"
+}
+
+# adopt_args <words> — take the inputs recorded in an installed rules file
+# (validated like the command line; anything else is ignored).
+adopt_args() {
+  local w
+  # shellcheck disable=SC2086  # the recorded words, split on purpose
+  set -- $1
+  while [[ $# -gt 0 ]]; do
+    w="$1"; shift
+    case "$w" in
+      --no-fabric) NO_FABRIC=1 ;;
+      --port)  if [[ $# -gt 0 ]] && valid_port "$1"; then EXTRA_PORTS+=("$1"); shift; fi ;;
+      --iface) if [[ $# -gt 0 ]] && valid_iface "$1"; then EXTRA_IFACES+=("$1"); shift; fi ;;
+    esac
+  done
+}
+
+# drift — does the installed rules file still say what this checkout would
+# render now? New code, a spark.env master port or fabric re-addressing all
+# change the ruleset, and nothing reloads it by itself. No root needed.
+drift() {
+  local want
+  [[ -f "$RULES" ]] || return 0
+  [[ $ARGS_GIVEN -eq 1 ]] || adopt_args "$(sed -n 's/^# args:[[:space:]]*//p' "$RULES" | head -1)"
+  if ! want="$( (render) 2>&1)"; then
+    echo "rules: cannot re-render to compare ($want)"
+    return 0
+  fi
+  if diff <(sed 1,2d <<< "$want") <(sed 1,2d "$RULES") >/dev/null 2>&1; then
+    echo "rules: current — the installed file is what this checkout renders now"
+  else
+    echo "rules: STALE — the installed file differs from what this checkout renders now (code, spark.env ports or fabric changed). Re-run: sudo $0"
+    diff <(sed 1,2d "$RULES") <(sed 1,2d <<< "$want") | grep -E '^[<>]' \
+      | sed -e 's/^</  installed:/' -e 's/^>/  now:      /'
+  fi
+}
+
 render() {   # word lists are space-separated strings (bash 3.2 has no mapfile)
   local ifaces="" addrs="" ports_r="" i
   while IFS= read -r i; do
@@ -154,6 +203,7 @@ render() {   # word lists are space-separated strings (bash 3.2 has no mapfile)
 # Generated by scripts/backends/spark-guard.sh on $(hostname 2>/dev/null || echo '?') — do not edit; re-run it.
 # Loaded by $UNIT_NAME. Only this table is touched: the ruleset is never flushed.
 # fabric: ${ifaces:-none}   fabric IPv4: ${addrs:-none}   guarded TCP: $ports_r
+# args: $(render_args)
 table inet $TABLE
 delete table inet $TABLE
 table inet $TABLE {
@@ -298,7 +348,7 @@ listeners() {   # wildcard / fabric-bound TCP listeners, for --status
 status() {
   local nft; nft="$(command -v nft || true)"
   echo "== spark-guard on $(hostname 2>/dev/null || echo '?')"
-  if [[ -f "$RULES" ]]; then echo "rules file: $RULES"; else echo "rules file: none (not installed)"; fi
+  if [[ -f "$RULES" ]]; then echo "rules file: $RULES"; drift; else echo "rules file: none (not installed)"; fi
   if command -v systemctl >/dev/null 2>&1; then
     local en ac
     en="$(systemctl is-enabled "$UNIT_NAME" 2>/dev/null || true)"

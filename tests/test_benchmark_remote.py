@@ -54,7 +54,7 @@ def test_benchmark_remote_passes_slots_url_and_declared_budget(monkeypatch):
     m = _glm()
     monkeypatch.setenv(m["api_key_env"], "k-xyz")
     seen = {}
-    monkeypatch.setattr(B.run_eval, "detect_model", lambda url: "GLM-5.3-Flash-EXL3")
+    monkeypatch.setattr(B, "remote_alive", lambda url: True)
     monkeypatch.setattr(B.run_eval, "run_eval", lambda **kw: seen.update(kw) or
                         {"tasks": [], "summary": {"total": 0}})
     # never touches the local server
@@ -75,3 +75,40 @@ def test_benchmark_remote_refuses_without_a_key(monkeypatch):
     monkeypatch.delenv(m["api_key_env"], raising=False)
     out = B.benchmark_model(m, None, None)
     assert "error" in out and m["api_key_env"] in out["error"] and out["gpu_work"] is False
+
+
+class _Resp:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _http_error(code):
+    import urllib.error
+    return urllib.error.HTTPError("http://x/v1/models", code, "x", {}, None)
+
+
+@pytest.mark.parametrize("answers,alive,calls", [
+    ([_http_error(429)], True, 1),                  # the gate answered: alive
+    ([OSError("tls blip"), "ok"], True, 2),         # one blip is retried
+    ([_http_error(502), _http_error(503), "ok"], True, 3),
+    ([OSError("down")] * 3, False, 3),
+    ([_http_error(401)], False, 1),                 # a bad key is not retried
+])
+def test_remote_health_retries_and_treats_429_as_alive(monkeypatch, answers, alive, calls):
+    """One failed /v1/models (a 429 from beast-gate's shared device bucket,
+    or a tailnet blip) used to abort the whole remote sweep (review 1116)."""
+    seq = list(answers)
+    seen = []
+
+    def fake_urlopen(req, timeout=None):
+        seen.append(req.full_url)
+        a = seq.pop(0)
+        if isinstance(a, BaseException):
+            raise a
+        return _Resp()
+    monkeypatch.setattr(B.urllib.request, "urlopen", fake_urlopen)
+    assert B.remote_alive("https://spark.example:8443/v1", sleep=lambda s: None) is alive
+    assert len(seen) == calls and seen[0] == "https://spark.example:8443/v1/models"

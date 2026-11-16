@@ -10,7 +10,11 @@ is SSRF: `http://127.0.0.1:3000/…`, a LAN or metadata address, with success
 versus "Failed to download image" as the oracle and the model describing
 whatever decodes. tools.fetch's SSRF guard is not on this path.
 
-So both proxies in front of llama-server forward INLINE media only, and both
+vLLM does the same with its audio_url / video_url parts (its MediaConnector
+fetches any http(s) URL unless the operator passes a domain allowlist), so
+the rule here covers every engine the gate can front.
+
+So both proxies in front of the engine forward INLINE media only, and both
 ask this module what inline means. They were written separately the first
 time (2026-10-09 review, netsec S4) and disagreed at the edges — which
 spelling of "data:" counts, whether a part is found by its `type` or by its
@@ -35,15 +39,23 @@ Pure functions, no imports: nothing here can fail a request by itself.
 
 from __future__ import annotations
 
-# Keys whose value is a media reference, as llama-server reads them:
+# Keys whose value is a media reference, as the engines behind the gate read
+# them. This is the rule for EVERY engine beast-gate can front, not only
+# llama-server: the gate also fronts vLLM (scripts/engines/vllm.sh, served
+# with no --allowed-media-domains), whose MediaConnector downloads the
+# audio_url / video_url parts over HTTP from the serving box — the same
+# SSRF as llama-server's image_url (2026-11-16 review).
 #   image_url: {"url": ...}        or, on /v1/responses, image_url: "..."
-#   input_audio / input_video: {"data": ... | "url": ...}
+#   input_audio / input_video: {"data": ... | "url": ...}     (llama-server)
+#   audio_url / video_url: {"url": ...}, or a bare string         (vLLM)
 # `data` is read first upstream and `url` is the fallback; both are judged —
 # never trust which one wins.
 _MEDIA_KEYS = {
     "image_url": ("url",),
     "input_audio": ("data", "url"),
     "input_video": ("data", "url"),
+    "audio_url": ("url",),
+    "video_url": ("url",),
 }
 
 
@@ -58,8 +70,8 @@ def fetchable(value) -> bool:
 
 def remote_media(body) -> str | None:
     """The key of the first media part that names a URL instead of carrying
-    its data ("image_url", "input_audio", "input_video", or "source" for an
-    Anthropic image block), else None.
+    its data ("image_url", "input_audio", "input_video", "audio_url",
+    "video_url", or "source" for an Anthropic image block), else None.
 
     Iterative: the body's depth is the caller's to choose, and a recursive
     walk would hand them the stack.

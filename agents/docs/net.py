@@ -5,7 +5,9 @@ Every request goes through the SAME SSRF machinery as the `fetch` tool
 redirect hop) — imported, not copied, because two copies of a security guard
 drift silently. On top of it, beast-docs adds the one rule a crawler needs
 that a fetch tool does not: **nothing outside the source's `hosts` is ever
-contacted**, redirects included.
+contacted**, redirects included — host AND port (agents/docs/urls.py), and
+every URL is normalized before it is checked, so the URL checked is the URL
+requested.
 
 OPENBEAST_DOCS_ALLOW_PRIVATE=1 drops the address vet (not the host
 allowlist): for an intranet documentation server, and for the hermetic tests,
@@ -24,6 +26,15 @@ import urllib.request
 from dataclasses import dataclass, field
 
 from . import config as C
+from . import urls as U
+
+# robots.txt answers shared by every live() call in this process (the MCP
+# server is long-lived): origin -> (expires at, monotonic; Robots). RFC 9309
+# §2.4 allows caching up to 24 h; one hour keeps a rule change visible the
+# same day. An UNREACHABLE answer is never cached, so recovery is immediate.
+LIVE_ROBOTS: dict = {}
+LIVE_ROBOTS_TTL = 3600.0
+_LIVE_ROBOTS_LOCK = threading.Lock()
 
 MAX_BYTES = 16 * 1024 * 1024          # one page; Apple's biggest JSON is ~2 MB
 DEADLINE = 60.0                        # whole request, connect to last byte
@@ -55,6 +66,7 @@ class Robots:
     rules: list = field(default_factory=list)     # [(allow: bool, pattern)]
     crawl_delay: float = 0.0
     disallow_all: bool = False
+    unreachable: bool = False     # 5xx / 429 / transport: an outage, not a verdict
     note: str = ""
 
     @staticmethod
@@ -67,7 +79,12 @@ class Robots:
         return re.match(rx, path) is not None
 
     def allowed(self, url: str) -> bool:
+        """Matched against the NORMALIZED path: `/docs/../secret` is judged
+        as `/secret`, which is what the server would serve."""
         if self.disallow_all:
+            return False
+        url = U.normalize_url(url)
+        if not url:
             return False
         p = urllib.parse.urlsplit(url)
         path = (p.path or "/") + (("?" + p.query) if p.query else "")
@@ -135,12 +152,13 @@ def _allow_private() -> bool:
 
 class _ScopedRedirect(urllib.request.HTTPRedirectHandler):
     def __init__(self, hosts, vet):
-        self.hosts, self.vet = set(hosts), vet
+        self.hosts, self.vet = list(hosts), vet
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        host = urllib.parse.urlsplit(newurl).hostname or ""
-        if host not in self.hosts:
+        norm = U.normalize_url(newurl)
+        if not norm or not U.host_allowed(self.hosts, norm):
             raise Refused(f"redirect to {newurl} leaves this source's hosts")
+        newurl = norm
         if self.vet:
             reason = self.vet(newurl)
             if reason:
@@ -152,13 +170,14 @@ class Fetcher:
     """One crawl's HTTP client. Not thread-safe; one per sync."""
 
     def __init__(self, hosts, delay: float = 1.0, user_agent: str = C.USER_AGENT,
-                 sleep=time.sleep, clock=time.monotonic):
-        self.hosts = set(hosts)
+                 sleep=time.sleep, clock=time.monotonic, robots_cache=None):
+        self.hosts = list(hosts)
         self.delay = max(0.0, float(delay))
         self.ua = user_agent
         self.sleep, self.clock = sleep, clock
-        self._last: dict = {}           # host -> monotonic time of last request
-        self.robots: dict = {}          # host -> Robots
+        self._last: dict = {}           # origin -> monotonic time of last request
+        self.robots: dict = {}          # origin (scheme://host[:port]) -> Robots
+        self.robots_cache = robots_cache  # optional, shared across Fetchers (LIVE_ROBOTS)
         self.requests = 0
         if _allow_private():
             self._vet = None
@@ -182,23 +201,38 @@ class Fetcher:
         self._last[host] = self.clock()
 
     def robots_for(self, url: str) -> Robots:
-        p = urllib.parse.urlsplit(url)
-        host = p.hostname or ""
+        norm = U.normalize_url(url)
+        if not norm:
+            return Robots(disallow_all=True, note=f"{url}: not a fetchable URL")
+        host = U.origin(norm)
         if host in self.robots:
             return self.robots[host]
-        robots_url = f"{p.scheme}://{p.netloc}/robots.txt"
+        if self.robots_cache is not None:
+            with _LIVE_ROBOTS_LOCK:
+                hit = self.robots_cache.get(host)
+            if hit and hit[0] > time.monotonic():
+                self.robots[host] = hit[1]
+                return hit[1]
+        robots_url = f"{host}/robots.txt"
         try:
             r = self._request(robots_url, max_bytes=ROBOTS_MAX, check_robots=False)
             rb = parse_robots(r.body.decode("utf-8", "replace"))
             rb.note = f"{robots_url}: {len(rb.rules)} rule(s) for us"
         except urllib.error.HTTPError as e:
-            if 400 <= e.code < 500:
+            if 400 <= e.code < 500 and e.code != 429:
                 rb = Robots(note=f"{robots_url}: HTTP {e.code} (no rules: crawl allowed)")
             else:                      # RFC 9309 §2.3.1.4: unreachable = disallow all
-                rb = Robots(disallow_all=True, note=f"{robots_url}: HTTP {e.code} (unreachable: crawl refused)")
+                rb = Robots(disallow_all=True, unreachable=True,
+                            note=f"{robots_url}: HTTP {e.code} (unreachable: crawl refused)")
+        except Refused as e:           # our own refusal (scope, SSRF vet): a verdict
+            rb = Robots(disallow_all=True, note=f"{robots_url}: {e} (refused)")
         except (OSError, FetchError, urllib.error.URLError) as e:
-            rb = Robots(disallow_all=True, note=f"{robots_url}: {e} (unreachable: crawl refused)")
+            rb = Robots(disallow_all=True, unreachable=True,
+                        note=f"{robots_url}: {e} (unreachable: crawl refused)")
         self.robots[host] = rb
+        if self.robots_cache is not None and not rb.unreachable:
+            with _LIVE_ROBOTS_LOCK:
+                self.robots_cache[host] = (time.monotonic() + LIVE_ROBOTS_TTL, rb)
         return rb
 
     # the request -----------------------------------------------------------
@@ -212,11 +246,19 @@ class Fetcher:
     def _request(self, url, etag="", last_modified="", max_bytes=MAX_BYTES,
                  check_robots=True) -> Response:
         p = urllib.parse.urlsplit(url)
-        host = p.hostname or ""
         if p.scheme not in ("http", "https"):
             raise Refused(f"scheme {p.scheme!r} not allowed")
-        if host not in self.hosts:
-            raise Refused(f"{host} is not one of this source's hosts {sorted(self.hosts)}")
+        # Normalize, then check AND send that one spelling: a raw
+        # `/docs/../secret` must not pass a prefix test and then be served
+        # as /secret by the server.
+        norm = U.normalize_url(url)
+        if not norm:
+            raise Refused(f"{url}: not a fetchable URL (userinfo, an encoded slash, or a bad port)")
+        url = norm
+        if not U.host_allowed(self.hosts, url):
+            p = urllib.parse.urlsplit(url)
+            raise Refused(f"{p.netloc} is not one of this source's hosts {sorted(self.hosts)}")
+        host = U.origin(url)
         if check_robots:
             rb = self.robots_for(url)
             if not rb.allowed(url):

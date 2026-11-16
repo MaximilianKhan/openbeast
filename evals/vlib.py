@@ -30,21 +30,32 @@ itself:
       descendant is SIGKILLed on the way out, whatever happened.
       By default (allow_fork=False) any child process is refused; on macOS
       the kernel enforces that through sandbox-exec, which also denies the
-      solution network and process-info on other processes, confines a
+      solution network, signals to and process-info on other processes, confines a
       compiled unit's exec to its own binary (no exec into python3), and
       denies reads of any evals/{refs,tasks,suites} tree.
 
+  start_build(sources, argv, product) -> Build; Build.finish(timeout)
   private_build_dir(files), build_env(), tool_path(name),
   scan_toolchain_overrides(dir), is_native_executable(path), sanitizer_flags(k)
       Build a solution from a PRIVATE copy of only its source, with a clean
-      private HOME and the toolchain pinned in the environment, so a planted
-      rust-toolchain.toml / go env / .cargo config cannot capture the compiler,
-      then require the product to be a native executable.
+      private HOME, only root-owned dirs on PATH, and the compiler the harness
+      pinned before any agent ran (pin_toolchain / check_toolchain), so a
+      planted rust-toolchain.toml / go env / go.mod / .cargo config / `gcc`
+      on PATH cannot capture the compiler, then require the product to be a
+      native executable. start_build does all of it.
+
+  run_build(argv, cwd=build_dir, env=build_env(), timeout=t(20)),
+  lint_source_includes(src, lang)
+      Compile under the same read-deny as a solution (macOS sandbox-exec),
+      and refuse source that names a file outside its build dir (#include of
+      an absolute or `..` path, include!, .incbin, @embedFile): the compiler
+      runs with the validator's rights and would read the sealed reference.
 
   run_solution(..., confine=[workdir], read_only=python_runtime(exe, mods))
       The solution may read only its runtime and its work dir, write only
       its work dir, and has no network, on macOS (sandbox-exec) and Linux
-      (landlock, else user + mount namespace). Fails closed: verdict
+      (landlock plus a seccomp socket filter, else user + mount + net
+      namespace). Fails closed: verdict
       "sandbox" when confinement is unavailable. Use it whenever the
       solution could otherwise read the oracle (the repo, its .git, other
       worktrees or clones) or site-packages.
@@ -56,7 +67,8 @@ itself:
 
   processes()
       The live process table (pid, ppid, pgid, cpu seconds). It reads /proc
-      on Linux and falls back to `ps` elsewhere, so it also works on macOS.
+      on Linux and libproc in-process on macOS (no `ps` fork per sample),
+      with `ps` as the fallback.
 
   lint_python(src, ban_modules=..., ban_calls=...)
       An AST lint that handles the routes a substring or line regex misses:
@@ -73,6 +85,7 @@ from __future__ import annotations
 
 import ast
 import os
+import re
 import secrets
 import signal
 import subprocess
@@ -83,7 +96,10 @@ import time
 __all__ = ["scale", "t", "run_solution", "Result", "python_cmd", "python_runtime",
            "processes", "lint_python", "clean_env", "tool_path", "scan_toolchain_overrides",
            "private_build_dir", "build_env", "is_native_executable",
-           "assert_native_executable", "sanitizer_flags", "SANITIZER_FLAGS"]
+           "assert_native_executable", "sanitizer_flags", "SANITIZER_FLAGS",
+           "run_build", "lint_source_includes", "read_source", "build_private",
+           "Build", "start_build", "pin_toolchain", "check_toolchain", "trusted_path",
+           "TOOLCHAIN"]
 
 _LINUX = sys.platform.startswith("linux")
 _DARWIN = sys.platform == "darwin"
@@ -135,7 +151,7 @@ def python_cmd(path: str, *args: str) -> list[str]:
     return [sys.executable, "-I", "-S", path, *args]
 
 
-# --- process table (Linux /proc, else ps) ----------------------------------------
+# --- process table (Linux /proc, macOS libproc, else ps) ---------------------------
 
 def _parse_cputime(s: str) -> float:
     """ps `time`: [DD-][HH:]MM:SS[.cc]."""
@@ -193,11 +209,153 @@ def _ps_table() -> dict:
     return out
 
 
+# macOS: libproc, in-process. run_solution samples the table every poll
+# (50 ms), and forking `ps -A` for each sample cost ~25-38 ms of wall and
+# about a third of a core of CPU for the whole of every timed solution,
+# competing with it and with the other --jobs workers, plus 20 forks/s of pid
+# churn (review 1116). proc_listallpids plus one proc_pidinfo per pid gives
+# the same table in a few ms with no fork. `ps` stays the fallback when
+# libproc cannot be loaded or its structs do not have the expected layout.
+_PROC_PIDTASKALLINFO, _PROC_PIDTBSDINFO = 2, 3
+_PROC_PIDT_SHORTBSDINFO = 13   # answers for every uid; TASKALLINFO / BSDINFO only for ours
+_SZOMB = 5
+_LIBPROC = None
+
+
+def _libproc():
+    """(lib, ctypes, BSD, ALL, SHORT, seconds per mach tick) or False."""
+    global _LIBPROC
+    if _LIBPROC is not None:
+        return _LIBPROC
+    _LIBPROC = False
+    if not _DARWIN:
+        return False
+    try:
+        import ctypes
+        u32, u64, i32 = ctypes.c_uint32, ctypes.c_uint64, ctypes.c_int32
+        lib = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+        for fn in (lib.proc_listallpids, lib.proc_pidinfo):
+            fn.restype = ctypes.c_int
+        lib.proc_listallpids.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        lib.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64,
+                                     ctypes.c_void_p, ctypes.c_int]
+
+        class BSD(ctypes.Structure):  # struct proc_bsdinfo (sys/proc_info.h)
+            _fields_ = [("flags", u32), ("status", u32), ("xstatus", u32),
+                        ("pid", u32), ("ppid", u32), ("uid", u32), ("gid", u32),
+                        ("ruid", u32), ("rgid", u32), ("svuid", u32), ("svgid", u32),
+                        ("rfu_1", u32), ("comm", ctypes.c_char * 16),
+                        ("name", ctypes.c_char * 32), ("nfiles", u32), ("pgid", u32),
+                        ("pjobc", u32), ("e_tdev", u32), ("e_tpgid", u32),
+                        ("nice", i32), ("start_tvsec", u64), ("start_tvusec", u64)]
+
+        class TASK(ctypes.Structure):  # struct proc_taskinfo
+            _fields_ = [("virtual_size", u64), ("resident_size", u64),
+                        ("total_user", u64), ("total_system", u64),
+                        ("threads_user", u64), ("threads_system", u64)] + \
+                       [(n, i32) for n in (
+                           "policy", "faults", "pageins", "cow_faults", "messages_sent",
+                           "messages_received", "syscalls_mach", "syscalls_unix", "csw",
+                           "threadnum", "numrunning", "priority")]
+
+        class ALL(ctypes.Structure):  # struct proc_taskallinfo
+            _fields_ = [("pbsd", BSD), ("ptinfo", TASK)]
+
+        class SHORT(ctypes.Structure):  # struct proc_bsdshortinfo
+            _fields_ = [("pid", u32), ("ppid", u32), ("pgid", u32), ("status", u32),
+                        ("comm", ctypes.c_char * 16), ("flags", u32), ("uid", u32),
+                        ("gid", u32), ("ruid", u32), ("rgid", u32), ("svuid", u32),
+                        ("svgid", u32), ("rfu", u32)]
+
+        if (ctypes.sizeof(BSD) != 136 or ctypes.sizeof(TASK) != 96
+                or ctypes.sizeof(SHORT) != 64):
+            return False
+
+        # pti_total_* are mach absolute-time ticks (ns on Intel, 125/3 ns on
+        # Apple silicon), not nanoseconds
+        class TB(ctypes.Structure):
+            _fields_ = [("numer", u32), ("denom", u32)]
+        tb = TB()
+        system = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+        if system.mach_timebase_info(ctypes.byref(tb)) != 0 or not tb.denom:
+            return False
+        _LIBPROC = (lib, ctypes, BSD, ALL, SHORT, tb.numer / tb.denom / 1e9)
+    except (OSError, AttributeError, ValueError):
+        _LIBPROC = False
+    return _LIBPROC
+
+
+def darwin_table(cpu: bool = True) -> dict | None:
+    """macOS: {pid: (ppid, pgid, uid, cpu_seconds, start)} of every live,
+    non-zombie process, through libproc (no fork). `start` is (tv_sec,
+    tv_usec), an exact identity across pid reuse, for our own uid's
+    processes; another uid's process answers only PROC_PIDT_SHORTBSDINFO,
+    so it is listed (as `ps` lists it for a non-root caller) with start
+    None and cpu 0.0. cpu=False skips the task info (cpu 0.0 for all).
+    None when libproc is unusable (the caller falls back to ps)."""
+    lp = _libproc()
+    if not lp:
+        return None
+    lib, ctypes, BSD, ALL, SHORT, tick_s = lp
+    n = lib.proc_listallpids(None, 0)
+    if n <= 0:
+        return None
+    for _ in range(4):
+        cap = n + 256
+        buf = (ctypes.c_int * cap)()
+        n = lib.proc_listallpids(buf, ctypes.sizeof(buf))
+        if n <= 0:
+            return None
+        if n < cap:
+            break
+    allinfo, bsd, short = ALL(), BSD(), SHORT()
+    sz_all, sz_bsd, sz_short = ctypes.sizeof(ALL), ctypes.sizeof(BSD), ctypes.sizeof(SHORT)
+    out = {}
+    for i in range(min(n, cap)):
+        pid = buf[i]
+        if pid <= 0:
+            continue
+        c, start = 0.0, None
+        if cpu and lib.proc_pidinfo(pid, _PROC_PIDTASKALLINFO, 0, ctypes.byref(allinfo),
+                                    sz_all) == sz_all:
+            b, t = allinfo.pbsd, allinfo.ptinfo
+            c = (t.total_user + t.total_system) * tick_s
+            start = (b.start_tvsec, b.start_tvusec)
+        elif not cpu and lib.proc_pidinfo(pid, _PROC_PIDTBSDINFO, 0, ctypes.byref(bsd),
+                                          sz_bsd) == sz_bsd:
+            b = bsd
+            start = (b.start_tvsec, b.start_tvusec)
+        elif lib.proc_pidinfo(pid, _PROC_PIDT_SHORTBSDINFO, 0, ctypes.byref(short),
+                              sz_short) == sz_short:
+            b = short                          # another uid's: no task info, no start
+        else:
+            continue                           # exited between the list and the query
+        if b.status == _SZOMB:
+            continue
+        out[pid] = (int(b.ppid), int(b.pgid), int(b.uid), c, start)
+    return out
+
+
+def _libproc_table() -> dict | None:
+    """darwin_table() as processes() rows {pid: (ppid, pgid, cpu_seconds)},
+    or None when libproc is unavailable."""
+    tab = darwin_table()
+    if tab is None:
+        return None
+    return {pid: (row[0], row[1], row[3]) for pid, row in tab.items()}
+
+
 def processes() -> dict:
-    """{pid: (ppid, pgid, cpu_seconds)} of every live, non-zombie process."""
+    """{pid: (ppid, pgid, cpu_seconds)} of every live, non-zombie process
+    (on macOS through libproc: every uid's, with cpu 0.0 for another uid's
+    process; a solution only ever runs as ours)."""
     if _LINUX and os.path.isdir("/proc/self"):
         tab = _proc_table()
         if tab is not None:
+            return tab
+    if _DARWIN:
+        tab = _libproc_table()
+        if tab:
             return tab
     return _ps_table()
 
@@ -324,6 +482,15 @@ _SANDBOX_OK = None
 _EVAL_SECRET_RE = r"/evals/(refs|tasks|suites)(/|$)"
 
 
+# kill(2) of any process outside the solution's own sandbox. (allow default)
+# otherwise lets the solution SIGKILL/SIGSTOP every process of our uid: its
+# validator, sibling units under --jobs, the harness itself, kill(-1) the
+# user's whole session (review 1116). Itself, its own children and its own
+# group stay signalable (they share the sandbox). Linux gets the same from
+# landlock's scoped signals (ABI >= 6).
+_SIGNAL_RULE = "(deny signal (target others))"
+
+
 def _sbpl_str(s: str) -> str:
     return s.replace("\\", "\\\\").replace('"', '\\"')
 
@@ -331,10 +498,12 @@ def _sbpl_str(s: str) -> str:
 def _sandbox_prefix(allow_fork: bool, deny_read: list[str], *,
                     deny_net: bool = True, deny_procinfo: bool = True,
                     exec_only: str | None = None,
-                    allow_write: list[str] | None = None) -> list[str]:
+                    allow_write: list[str] | None = None,
+                    always: bool = False) -> list[str]:
     """sandbox-exec argv prefix (macOS), or [] when sandboxing is unavailable.
 
     The confined solution gets `(allow default)` minus the holes a cheat uses:
+      * signals  — to any process outside its own sandbox (_SIGNAL_RULE);
       * network  — no fetch of a pushed reference, no phone-home (future risk
         reported on 164);
       * process-info  — proc_pidinfo/proc_pidpath on other processes (their
@@ -359,11 +528,11 @@ def _sandbox_prefix(allow_fork: bool, deny_read: list[str], *,
     and can otherwise write anywhere we can, e.g. plant a module in the cwd
     of an ancestor found through libproc (176)."""
     global _SANDBOX_OK
-    want = ((not allow_fork) or deny_read or deny_net or deny_procinfo or exec_only
+    want = (always or (not allow_fork) or deny_read or deny_net or deny_procinfo or exec_only
             or allow_write is not None)
     if not _DARWIN or not want:
         return []
-    rules = ["(version 1)", "(allow default)"]
+    rules = ["(version 1)", "(allow default)", _SIGNAL_RULE]
     if deny_net:
         rules.append("(deny network*)")
     if deny_procinfo:
@@ -386,15 +555,8 @@ def _sandbox_prefix(allow_fork: bool, deny_read: list[str], *,
         rules.append("(deny file-write*)")
         for p in ["/dev"] + list(allow_write):
             rules.append(f'(allow file-write* (subpath "{_sbpl_str(os.path.realpath(p))}"))')
-    if _SANDBOX_OK is None:
-        try:
-            _SANDBOX_OK = subprocess.run(
-                ["/usr/bin/sandbox-exec", "-p", "(version 1)(allow default)", "/usr/bin/true"],
-                capture_output=True, timeout=10).returncode == 0
-        except (OSError, subprocess.TimeoutExpired):
-            _SANDBOX_OK = False
-    if not _SANDBOX_OK:
-        return []
+    if not _sandbox_ok():
+        return []          # run_solution refuses the run (verdict "sandbox")
     return ["/usr/bin/sandbox-exec", "-p", "".join(rules)]
 
 
@@ -512,10 +674,10 @@ def _sbpl(p: str) -> str:
 def _confine_profile(allow_fork: bool, ro: list[str], rw: list[str], *,
                      exec_only: str | None = None, deny_read: list[str] = ()) -> str:
     """macOS sandbox profile: reads only from the allowlist, writes only to rw,
-    no network, no process-info on other processes (but argv/env stay
+    no network, no signal to another sandbox's process, no process-info on other processes (but argv/env stay
     readable through sysctl kern.procargs2: see _sandbox_prefix), and, with
     exec_only, no exec of any image but that one."""
-    rules = ["(version 1)", "(allow default)", "(deny network*)",
+    rules = ["(version 1)", "(allow default)", _SIGNAL_RULE, "(deny network*)",
              "(deny process-info* (with no-report))",
              "(allow process-info-pidinfo (target self))",
              "(allow process-info-codesignature (target self))"]
@@ -561,8 +723,11 @@ def _confine_profile(allow_fork: bool, ro: list[str], rw: list[str], *,
 
 
 def _sandbox_ok() -> bool:
+    """Whether sandbox-exec works here. Only a success is cached: a probe
+    that failed under load (EAGAIN, the 10 s timeout) is retried by the
+    next run instead of turning the sandbox off for the whole validator."""
     global _SANDBOX_OK
-    if _SANDBOX_OK is None:
+    if not _SANDBOX_OK:
         try:
             _SANDBOX_OK = subprocess.run(
                 ["/usr/bin/sandbox-exec", "-p", "(version 1)(allow default)", "/usr/bin/true"],
@@ -634,6 +799,79 @@ def _landlock_abi() -> int:
     return _LL_ABI
 
 
+# Landlock has no UDP right at all, and TCP only from ABI 4 (kernel 6.7), so
+# a landlock-confined solution could still send datagrams (DNS exfiltration,
+# an oracle over UDP), and below 6.7 open any connection, under a confine
+# documented as "no network" (review 1116). A seccomp filter in the same
+# child closes it: socket() may create only AF_UNIX and AF_NETLINK sockets,
+# io_uring (whose IORING_OP_SOCKET bypasses the socket() filter) is refused,
+# and any foreign-ABI syscall (i386/x32 on x86_64) is refused outright.
+# (audit arch, socket nr, io_uring_setup nr, refuse x32 range)
+_SECCOMP_ARCH = {"x86_64": (0xC000003E, 41, 425, True),
+                 "amd64": (0xC000003E, 41, 425, True),
+                 "aarch64": (0xC00000B7, 198, 425, False),
+                 "arm64": (0xC00000B7, 198, 425, False)}
+_SOCK_ALLOWED = (1, 16)                        # AF_UNIX, AF_NETLINK
+
+
+def _seccomp_net_prog():
+    """A built `struct sock_fprog` (and the filter array it points to) that
+    refuses every network socket, or raise OSError on an unknown arch."""
+    import ctypes
+    import platform
+    spec = _SECCOMP_ARCH.get(platform.machine())
+    if spec is None:
+        raise OSError(f"no seccomp syscall table for {platform.machine()}")
+    arch, nr_socket, nr_uring, x32 = spec
+    ld, jeq, jge, ret = 0x20, 0x15, 0x35, 0x06
+    allow, eperm, eacces = 0x7FFF0000, 0x00050000 | 1, 0x00050000 | 13
+    # Layout: arch check, load nr, the body, then ALLOW, then DENY. BPF
+    # jumps are relative, so each body jump counts the instructions left.
+    tail = [(ret, 0, 0, allow), (ret, 0, 0, eacces)]      # ALLOW, DENY
+    ins = []
+    ins.append((ld, 0, 0, 4))                              # arch
+    ins.append((jeq, 1, 0, arch))
+    ins.append((ret, 0, 0, eperm))                         # foreign ABI
+    ins.append((ld, 0, 0, 0))                              # syscall nr
+    body = []
+    if x32:
+        body.append(("jge", 0x40000000, "deny"))
+    body.append(("jeq", nr_uring, "deny"))
+    body.append(("jeq_else_allow", nr_socket, None))
+    body.append(("ld_arg0", None, None))
+    for af in _SOCK_ALLOWED:
+        body.append(("jeq_allow", af, None))
+    body.append(("ja_deny", None, None))
+    # each body entry is one instruction; ALLOW sits right after the body,
+    # DENY one after that
+    n = len(body)
+    for i, (kind, k, _t) in enumerate(body):
+        to_allow = n - i - 1               # instructions to skip to reach ALLOW
+        to_deny = to_allow + 1
+        if kind == "jge":
+            ins.append((jge, to_deny, 0, k))
+        elif kind == "jeq":
+            ins.append((jeq, to_deny, 0, k))
+        elif kind == "jeq_else_allow":
+            ins.append((jeq, 0, to_allow, k))
+        elif kind == "ld_arg0":
+            ins.append((ld, 0, 0, 16))                     # args[0], low 32 bits
+        elif kind == "jeq_allow":
+            ins.append((jeq, to_allow, 0, k))
+        elif kind == "ja_deny":
+            ins.append((0x05, 0, 0, to_deny))              # BPF_JMP|BPF_JA
+    ins += tail
+
+    class Filter(ctypes.Structure):
+        _fields_ = [("code", ctypes.c_uint16), ("jt", ctypes.c_uint8),
+                    ("jf", ctypes.c_uint8), ("k", ctypes.c_uint32)]
+
+    class Prog(ctypes.Structure):
+        _fields_ = [("len", ctypes.c_ushort), ("filter", ctypes.POINTER(Filter))]
+    arr = (Filter * len(ins))(*[Filter(*x) for x in ins])
+    return Prog(len(ins), ctypes.cast(arr, ctypes.POINTER(Filter))), arr
+
+
 def _landlock_prep(ro: list[str], rw: list[str]):
     """Everything the child needs, built before fork (no allocation games in
     the child beyond os.open and the syscalls)."""
@@ -685,12 +923,13 @@ def _landlock_prep(ro: list[str], rw: list[str]):
     for p in rw:
         rules.append((os.fsencode(os.path.realpath(p)), handled))
     beneath = Beneath(0, -1)
-    return libc, attr, size, rules, beneath, handled
+    seccomp = _seccomp_net_prog()          # raises on an unknown arch: fail closed
+    return libc, attr, size, rules, beneath, handled, seccomp
 
 
 def _landlock_child(prep):
     import ctypes
-    libc, attr, size, rules, beneath, handled = prep
+    libc, attr, size, rules, beneath, handled, (prog, _arr) = prep
     rfd = libc.syscall(_LL["create"], ctypes.byref(attr), ctypes.c_size_t(size),
                        ctypes.c_uint32(0))
     if rfd < 0:
@@ -715,6 +954,9 @@ def _landlock_child(prep):
     if libc.syscall(_LL["restrict"], ctypes.c_int(rfd), ctypes.c_uint32(0)) != 0:
         raise OSError(ctypes.get_errno(), "landlock_restrict_self")
     os.close(rfd)
+    # PR_SET_SECCOMP, SECCOMP_MODE_FILTER: no network sockets (see _seccomp_net_prog)
+    if libc.prctl(22, 2, ctypes.byref(prog), 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), "seccomp network filter")
 
 
 # mount namespace fallback
@@ -881,7 +1123,7 @@ class Result:
     (allow_fork=False and it started a child), "exec" (it replaced its image
     with another binary under confine_exec), "output" (wrote more than
     max_output bytes), "sandbox" (confine was asked for and could not be
-    set up: the solution never ran)."""
+    set up, or on macOS sandbox-exec is unusable: the solution never ran)."""
 
     def __init__(self, returncode, stdout, stderr, cpu_s, wall_s, verdict, reason):
         self.returncode = returncode
@@ -959,6 +1201,54 @@ def _resolve_exec(prog: str, cwd: str | None, env: dict) -> str:
     return os.path.realpath(found) if found else prog
 
 
+def _exit_waiter(pid: int):
+    """(wait(timeout) -> bool, close()): wait() returns True as soon as
+    `pid` (our child) has exited, WITHOUT reaping it, so the final wait4
+    still gets its rusage. The sampler used to time.sleep(poll_s) whatever
+    happened, so every run paid up to a full poll after the solution was
+    done (review 1116). kqueue NOTE_EXIT on macOS, a pidfd on Linux, a
+    plain sleep elsewhere."""
+    import select
+    done = [False]
+    if hasattr(select, "kqueue"):
+        try:
+            kq = select.kqueue()
+        except OSError:
+            kq = None
+        if kq is not None:
+            try:
+                kq.control([select.kevent(pid, filter=select.KQ_FILTER_PROC,
+                                          flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                                          fflags=select.KQ_NOTE_EXIT)], 0, 0)
+            except OSError:
+                done[0] = True          # already exited (ESRCH)
+
+            def wait(timeout):
+                if not done[0] and kq.control(None, 1, timeout):
+                    done[0] = True
+                return done[0]
+            return wait, kq.close
+    if hasattr(os, "pidfd_open"):
+        try:
+            fd = os.pidfd_open(pid)
+        except OSError:
+            fd = None
+        if fd is not None:
+            pl = select.poll()
+            pl.register(fd, select.POLLIN)
+
+            def wait(timeout):
+                if not done[0] and pl.poll(int(timeout * 1000)):
+                    done[0] = True
+                return done[0]
+            return wait, (lambda: os.close(fd))
+
+    def wait(timeout):
+        time.sleep(timeout)
+        return False
+    return wait, (lambda: None)
+
+
 def run_solution(cmd, input=None, *, cpu_s: float, wall_s: float | None = None,
                  cwd: str | None = None, env: dict | None = None, text: bool = True,
                  allow_fork: bool = False, scale_cpu: bool = True,
@@ -1021,7 +1311,14 @@ def run_solution(cmd, input=None, *, cpu_s: float, wall_s: float | None = None,
         # A launcher: allow it and the one program it starts, nothing else.
         target = _env_target(list(cmd))
         exec_only = [exec0] + ([_resolve_exec(target, cwd, env)] if target else [])
-    argv = _sandbox_prefix(allow_fork, seal, exec_only=exec_only) + list(cmd)
+    prefix = _sandbox_prefix(allow_fork, seal, exec_only=exec_only)
+    if _DARWIN and confine is None and not prefix:
+        # The deny-list is the only thing between the solution and fork,
+        # exec into python3, the network and evals/refs on macOS. It used to
+        # fail OPEN here (an empty prefix, verdict "ok"); fail closed like
+        # confine= does (review 1116).
+        return Result(None, "", "", 0.0, 0.0, "sandbox", "sandbox-exec unavailable")
+    argv = prefix + list(cmd)
     confine_child, confine_cleanup = None, (lambda: None)
     if confine is not None:
         rw = [os.path.realpath(p) for p in confine]
@@ -1098,6 +1395,30 @@ def run_solution(cmd, input=None, *, cpu_s: float, wall_s: float | None = None,
     verdict, reason = "ok", ""
     rusage_cpu = 0.0
     status = None
+    reaped = [False]
+    exit_wait, exit_close = _exit_waiter(proc.pid)
+
+    def _reap_nohang():
+        """The solution's exit status once it has exited, else None. Reaps
+        it through wait4 and KEEPS its rusage: Popen.poll() reaped it with
+        waitpid, the final wait4 then hit ChildProcessError, and the rusage
+        was dropped, so the CPU it used after the last sample was never
+        counted and a fixed-CPU gate passed over-budget solutions about 1 run
+        in 12 (review 1116)."""
+        nonlocal rusage_cpu
+        if reaped[0]:
+            return proc.returncode
+        try:
+            pid_, wst, ru = os.wait4(proc.pid, os.WNOHANG)
+        except ChildProcessError:
+            return None
+        if pid_ == 0:
+            return None
+        reaped[0] = True
+        rusage_cpu = ru.ru_utime + ru.ru_stime
+        proc.returncode = (-os.WTERMSIG(wst) if os.WIFSIGNALED(wst)
+                           else os.WEXITSTATUS(wst))
+        return proc.returncode
 
     def _exe(pid: int) -> str | None:
         """The realpath of a process's running image, Linux only."""
@@ -1155,7 +1476,7 @@ def run_solution(cmd, input=None, *, cpu_s: float, wall_s: float | None = None,
 
     try:
         while True:
-            r = proc.poll()
+            r = _reap_nohang()
             live = _tree()
             for pid, (ppid, _pg, cpu) in live.items():
                 known.add(pid)
@@ -1188,7 +1509,7 @@ def run_solution(cmd, input=None, *, cpu_s: float, wall_s: float | None = None,
             if time.monotonic() - t0 > wall_budget:
                 verdict, reason = "wall", f"wall budget {wall_budget:.1f}s exceeded"
                 break
-            time.sleep(poll_s)
+            exit_wait(poll_s)
         # The solution itself exited (or we are about to kill it): anything of
         # its tree still alive outlived it.
         if verdict == "ok":
@@ -1197,13 +1518,15 @@ def run_solution(cmd, input=None, *, cpu_s: float, wall_s: float | None = None,
                 verdict, reason = "daemon", f"{len(survivors)} process(es) outlived the solution"
     finally:
         _kill_all()
-        try:
-            _pid, wst, ru = os.wait4(proc.pid, 0)
-            proc.returncode = (-os.WTERMSIG(wst) if os.WIFSIGNALED(wst)
-                               else os.WEXITSTATUS(wst))
-            rusage_cpu = ru.ru_utime + ru.ru_stime
-        except ChildProcessError:
-            rusage_cpu = 0.0
+        if not reaped[0]:
+            try:
+                _pid, wst, ru = os.wait4(proc.pid, 0)
+                proc.returncode = (-os.WTERMSIG(wst) if os.WIFSIGNALED(wst)
+                                   else os.WEXITSTATUS(wst))
+                rusage_cpu = ru.ru_utime + ru.ru_stime
+            except ChildProcessError:
+                rusage_cpu = 0.0
+        exit_close()
         if proc.returncode is None and status is not None:
             proc.returncode = status
         if subreaper:  # orphans reparented to us: reap them (they were SIGKILLed)
@@ -1286,11 +1609,212 @@ _CONFIG_NAMES = ("rust-toolchain", "rust-toolchain.toml", "go.work", "go.env",
 _CONFIG_DIRS = (".cargo", ".config")  # .cargo/config{,.toml}, .config/go/env
 
 
-def tool_path(name: str) -> str:
-    """Absolute path of a toolchain binary, so a planted `rustc`/`cc` earlier
-    on PATH in the build dir cannot shadow it. Falls back to the bare name."""
+# --- toolchain pins -----------------------------------------------------------------
+#
+# A validator calls a compiler (and 122 also otool, nm and clang) as the
+# operator's uid, unsandboxed. The measured agent's bash runs before it as the
+# same uid and may write any dir that uid can: /opt/homebrew/bin, ~/.local/bin,
+# a conda bin dir, a user-installed Go or Rust tree. A `gcc` script planted
+# first on PATH that compiled the REFERENCE passed 36_c with `int main(){}`
+# (review 1116); so did a go.mod `go 1.99.0` + a go env `GOTOOLCHAIN=path` + a
+# `go1.99.0` on PATH. A name looked up on PATH at validation time is therefore
+# the agent's choice. The fix is to decide BEFORE any agent runs:
+#
+#   pin_toolchain()   (the harness, at start) resolves every TOOLCHAIN name,
+#                     preferring a root-owned system copy, finds the real
+#                     compiler behind a proxy (GOROOT/bin/go, the rustc in
+#                     `rustc --print sysroot`), and records a stat digest of
+#                     the binary and of its install tree (ctime included,
+#                     which a same-uid process cannot set back).
+#   check_toolchain() (the harness, before every validation) refuses the unit
+#                     when a name now resolves elsewhere on PATH, a name appeared
+#                     that was absent, or a pinned tree changed on disk.
+#   tool_path(name)   (the validator) returns the pinned absolute path; the
+#                     harness bootstrap injects the pins as _TOOL_PINS.
+
+TOOLCHAIN = ("go", "gcc", "g++", "cc", "c++", "clang", "clang++", "rustc", "zig",
+             "otool", "nm")
+_TRUSTED_DIRS = ("/usr/bin", "/bin", "/usr/sbin", "/sbin", "/usr/local/bin")
+_TOOL_PINS = None  # {name: pin}, set by the harness bootstrap
+
+
+def _root_owned(path: str) -> bool:
+    """`path` (resolved) and every ancestor are owned by root and writable by
+    no one else, so a same-uid process cannot have planted or changed it."""
+    p = os.path.realpath(path)
+    while True:
+        try:
+            st = os.stat(p)
+        except OSError:
+            return False
+        if st.st_uid != 0 or st.st_mode & 0o022:
+            return False
+        parent = os.path.dirname(p)
+        if parent == p:
+            return True
+        p = parent
+
+
+def trusted_path() -> str:
+    """A PATH of root-owned system dirs only (no dir the agent could write)."""
+    return os.pathsep.join(d for d in _TRUSTED_DIRS if os.path.isdir(d) and _root_owned(d))
+
+
+def _which_all(name: str, path: str) -> list[str]:
+    out = []
+    for d in (path or "").split(os.pathsep):
+        if not d:
+            continue
+        p = os.path.join(d, name)
+        if os.path.isfile(p) and os.access(p, os.X_OK) and p not in out:
+            out.append(p)
+    return out
+
+
+def _resolve_tool(name: str, path: str) -> tuple[str | None, str | None]:
+    """(what a bare `name` resolves to on `path`, the copy to pin): the first
+    root-owned candidate on the PATH when there is one (a user-writable dir
+    ahead of /usr/bin cannot then hold the pinned compiler), else the first."""
+    cands = _which_all(name, path)
+    if not cands:
+        return None, None
+    trusted = [c for c in cands if _root_owned(c)]
+    return cands[0], (trusted[0] if trusted else cands[0])
+
+
+def _stat_line(p: str) -> str:
+    try:
+        st = os.lstat(p)
+    except OSError:
+        return f"{p}\0missing\n"
+    link = ""
+    if os.path.islink(p):
+        try:
+            link = os.readlink(p)
+        except OSError:
+            link = "?"
+    return (f"{p}\0{st.st_mode:o}\0{st.st_uid}\0{st.st_size}\0{st.st_mtime_ns}\0"
+            f"{st.st_ctime_ns}\0{st.st_ino}\0{link}\n")
+
+
+def _tree_digest(roots) -> str:
+    """A digest of the metadata (mode, owner, size, mtime, ctime, inode, link
+    target) of every entry under `roots` and of each symlink on the way to
+    them. ctime moves on any write, rename or chmod, and a same-uid process
+    cannot set it back, so a modified compiler or standard library shows."""
+    import hashlib
+    h = hashlib.sha256()
+    for root in sorted(set(roots)):
+        p, seen = root, 0
+        while os.path.islink(p) and seen < 40:   # the symlink chain itself
+            h.update(_stat_line(p).encode("utf-8", "surrogateescape"))
+            p = os.path.join(os.path.dirname(p), os.readlink(p))
+            seen += 1
+        h.update(_stat_line(p).encode("utf-8", "surrogateescape"))
+        if os.path.isdir(p) and not os.path.islink(p):
+            for dp, dns, fns in os.walk(p):
+                dns.sort()
+                for n in sorted(fns) + dns:
+                    h.update(_stat_line(os.path.join(dp, n)).encode("utf-8", "surrogateescape"))
+    return h.hexdigest()
+
+
+def _rustup_home() -> str | None:
+    """Where rustup keeps its toolchains, for a private HOME: a rustup proxy
+    (~/.cargo/bin/rustc) looks under $HOME/.rustup unless RUSTUP_HOME says
+    otherwise, and would find nothing in a fresh one."""
+    rh = os.environ.get("RUSTUP_HOME") or os.path.join(os.path.expanduser("~"), ".rustup")
+    return rh if os.path.isdir(rh) else None
+
+
+def _probe(argv: list[str]) -> str:
+    """stdout of a toolchain query run from / with a private HOME, no go env
+    file, no toolchain switch, and only root-owned dirs on PATH."""
     import shutil
-    return shutil.which(name) or name
+    import tempfile
+    home = tempfile.mkdtemp(prefix="ob-pin-")
+    env = clean_env(base=dict(os.environ))
+    env.update({"HOME": home, "PATH": trusted_path(), "GOENV": "off",
+                "GOTOOLCHAIN": "local", "GOFLAGS": ""})
+    if _rustup_home():
+        env["RUSTUP_HOME"] = _rustup_home()
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=60, env=env,
+                           cwd="/", stdin=subprocess.DEVNULL, check=False)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def pin_toolchain(names=TOOLCHAIN, path: str | None = None) -> dict:
+    """Resolve and fingerprint the toolchain on `path` (default: $PATH).
+    Call it BEFORE any agent runs. Returns {name: pin}; a pin is
+    {"found": bare-name resolution or None, "path": absolute path to call,
+    "roots": files/trees fingerprinted, "digest": _tree_digest(roots)} plus,
+    for a rustup-managed rustc, "rustup_toolchain" (its sysroot's name)."""
+    path = os.environ.get("PATH", "") if path is None else path
+    pins = {}
+    for name in names:
+        found, chosen = _resolve_tool(name, path)
+        pin = {"found": found, "path": chosen, "roots": [], "digest": ""}
+        if chosen:
+            exe, roots = chosen, [chosen, os.path.realpath(chosen)]
+            if found and found != chosen:
+                roots += [found, os.path.realpath(found)]
+            if name == "go":
+                goroot = _probe([chosen, "env", "GOROOT"])
+                if goroot and os.path.isfile(os.path.join(goroot, "bin", "go")):
+                    exe = os.path.join(goroot, "bin", "go")
+                    roots.append(goroot)
+            elif name == "rustc":
+                sysroot = _probe([chosen, "--print", "sysroot"])
+                if sysroot and os.path.isfile(os.path.join(sysroot, "bin", "rustc")):
+                    exe = os.path.join(sysroot, "bin", "rustc")
+                    roots.append(sysroot)
+                    if os.path.realpath(chosen) != os.path.realpath(exe):
+                        pin["rustup_toolchain"] = os.path.basename(sysroot.rstrip(os.sep))
+            elif name == "zig":
+                d = os.path.dirname(os.path.realpath(chosen))
+                for lib in (os.path.join(d, "lib"), os.path.join(os.path.dirname(d), "lib", "zig")):
+                    if os.path.isdir(os.path.join(lib, "std")):  # zig's own lib, never /usr/lib
+                        roots.append(lib)
+            pin["path"] = exe
+            pin["roots"] = sorted(set(roots))
+            pin["digest"] = _tree_digest(pin["roots"])
+        pins[name] = pin
+    return pins
+
+
+def check_toolchain(pins: dict, path: str | None = None) -> list[str]:
+    """What changed since pin_toolchain(): [] when nothing did."""
+    path = os.environ.get("PATH", "") if path is None else path
+    problems = []
+    for name, pin in sorted((pins or {}).items()):
+        found, _chosen = _resolve_tool(name, path)
+        if found != pin.get("found"):
+            if pin.get("found") is None:
+                problems.append(f"`{name}` appeared on PATH at {found}")
+            else:
+                problems.append(f"`{name}` now resolves to {found}, not {pin['found']}")
+            continue
+        if pin.get("roots") and _tree_digest(pin["roots"]) != pin.get("digest"):
+            problems.append(f"`{name}` changed on disk ({', '.join(pin['roots'][:3])})")
+    return problems
+
+
+def tool_path(name: str) -> str:
+    """Absolute path of a toolchain binary. Under the harness: the copy it
+    pinned before any agent ran (GOROOT/bin/go, the sysroot's rustc). Outside
+    it: the first root-owned copy on PATH, else the first copy, so a planted
+    `gcc` in a user-writable dir ahead of /usr/bin is never chosen. Falls back
+    to the bare name."""
+    pin = (_TOOL_PINS or {}).get(name)
+    if pin and pin.get("path"):
+        return pin["path"]
+    _found, chosen = _resolve_tool(name, os.environ.get("PATH", ""))
+    return chosen or name
 
 
 def scan_toolchain_overrides(start: str, stop: str = "/") -> list[str]:
@@ -1321,10 +1845,14 @@ def private_build_dir(files: dict, *, base: str | None = None) -> str:
     source — {relpath: contents|bytes} — and no toolchain-config sibling or
     ancestor the solution could have planted. Build in the returned dir.
 
-    `base` defaults to a private dir created under TMPDIR; its one child is
-    this build dir, so `scan_toolchain_overrides` up to `base` finds nothing
-    unless the compile itself writes one. Returns the build dir path."""
+    `base` defaults, under the harness, to a dir in the validator's private
+    0700 dir (deleted with it); elsewhere to a private dir created under
+    TMPDIR. Its one child is this build dir, so `scan_toolchain_overrides` up
+    to `base` finds nothing unless the compile itself writes one. Returns the
+    build dir path."""
     import tempfile
+    if not base and _harness_private():
+        base = os.path.join(_harness_private(), "build")
     if base:
         os.makedirs(base, exist_ok=True)
     else:
@@ -1343,20 +1871,36 @@ def private_build_dir(files: dict, *, base: str | None = None) -> str:
     return d
 
 
+def _harness_private() -> str | None:
+    """The validator's private 0700 dir (the parent of the harness's build
+    cache), which the harness deletes after the unit; None outside it."""
+    cache = os.environ.get("OPENBEAST_BUILD_CACHE")
+    if not cache:
+        return None
+    parent = os.path.dirname(os.path.realpath(cache))
+    return parent if os.path.isdir(parent) else None
+
+
 def build_env(extra: dict | None = None, *, home: str | None = None) -> dict:
     """Environment for a compiler so a planted config file cannot redirect it.
 
     HOME is a fresh private dir (no $HOME/Library/Application Support/go/env,
     reported on 166); GOENV=off and GOFLAGS cleared (no -ldflags=-s to strip
-    the symbol table); GOTOOLCHAIN=local (no network toolchain download);
-    RUSTUP_TOOLCHAIN is kept from the env if pinned there. Pass the build dir
-    nowhere on PATH; call tool_path() for an absolute compiler path."""
+    the symbol table); GOTOOLCHAIN=local (a go.mod `go 1.99` + a
+    `go1.99` on PATH cannot switch the compiler, review 1116); GOWORK=off;
+    PATH holds only root-owned system dirs (the compiler's own helpers, `cc`
+    for rustc's link, come from there, never from a dir the agent could
+    write). Call tool_path() for the compiler itself."""
     import tempfile
     env = clean_env(base={k: v for k, v in os.environ.items()})
-    env["HOME"] = home or tempfile.mkdtemp(prefix="ob-home-")
+    if _rustup_home():
+        env["RUSTUP_HOME"] = _rustup_home()   # before HOME moves (a proxy rustc)
+    env["HOME"] = home or tempfile.mkdtemp(prefix="ob-home-", dir=_harness_private())
+    env["PATH"] = trusted_path() or "/usr/bin:/bin"
     env["GOENV"] = "off"
     env["GOFLAGS"] = ""
-    env["GOTOOLCHAIN"] = env.get("GOTOOLCHAIN") or "local"
+    env["GOTOOLCHAIN"] = "local"
+    env["GOWORK"] = "off"
     # Compiler caches: the harness puts them in the validator's private dir
     # (run_eval.build_cache_env, deleted after the unit). Outside the harness
     # they go under this private HOME, never ~/.cache, where a compiled
@@ -1374,6 +1918,55 @@ def build_env(extra: dict | None = None, *, home: str | None = None) -> dict:
     if extra:
         env.update({k: str(v) for k, v in extra.items() if v is not None})
     return env
+
+
+class Build:
+    """A compile, started in the background, of a PRIVATE copy of the
+    solution's source: see start_build()."""
+
+    def __init__(self, sources: dict, argv: list, product: str, extra_env: dict | None):
+        self.dir = private_build_dir(sources)
+        self.product = os.path.join(self.dir, product)
+        env = build_env(extra_env)
+        if (argv[0] == "go" and "GO111MODULE" not in (extra_env or {})
+                and not any(os.path.basename(k) == "go.mod" for k in sources)):
+            # A single-file `go build x.go` in GOPATH mode: a go.mod or go.work
+            # planted in an ANCESTOR (the shared TMPDIR, /tmp) is not read.
+            env["GO111MODULE"] = "off"
+        self.argv = [tool_path(argv[0])] + [str(a) for a in argv[1:]]
+        self.proc = subprocess.Popen(self.argv, cwd=self.dir, env=env,
+                                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                     stderr=subprocess.STDOUT, start_new_session=True)
+
+    def finish(self, timeout: float) -> tuple[bool | None, str]:
+        """(True, log) for a native executable at `product`; (False, log) for
+        a failed compile or a product that is not ELF/Mach-O; (None, log)
+        when the compile ran out of `timeout` seconds (it is killed)."""
+        try:
+            out, _ = self.proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(self.proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            self.proc.communicate()
+            return None, "compile timed out"
+        log = (out or b"").decode("utf-8", "replace")
+        if self.proc.returncode != 0 or not os.path.isfile(self.product):
+            return False, log
+        if not is_native_executable(self.product):
+            return False, log + "\nthe build did not produce a native executable"
+        return True, log
+
+
+def start_build(sources: dict, argv: list, product: str, extra_env: dict | None = None) -> Build:
+    """Compile `sources` ({relpath: text|bytes}, a COPY of the solution's
+    files, never the fixture dir itself) with `argv` (its argv[0] a bare
+    compiler name, resolved with tool_path) under build_env(extra_env), in a
+    fresh private_build_dir. Returns a Build; call .finish(timeout), then run
+    Build.product. The fixture dir is never the build cwd, so a go.mod,
+    rust-toolchain.toml or other config the agent left there is not read."""
+    return Build(sources, list(argv), product, extra_env)
 
 
 def is_native_executable(path: str) -> bool:
@@ -1395,6 +1988,157 @@ def is_native_executable(path: str) -> bool:
 def assert_native_executable(path: str) -> None:
     """Raise AssertionError unless `path` is an ELF/Mach-O executable."""
     assert is_native_executable(path), f"{path} is not a native executable"
+
+
+# --- the compiler is graded code's first reader ------------------------------------
+#
+# A validator compiles agent-written source with its own, unsandboxed rights.
+# `#include "<repo>/evals/refs/<unit>/ref.c"` (or Rust `include!`, an
+# `.incbin`, a quoted header symlinked to the reference) makes the COMPILER
+# read the sealed reference the agent itself could never open, and the binary
+# is then the reference (reported on 163/167/168). Two walls:
+#   * run_build(): the compiler runs under the same file-read deny as a
+#     solution (sandbox-exec on macOS: every evals/{refs,tasks,suites} tree
+#     and OPENBEAST_VALIDATOR_SEAL), from a private_build_dir that holds only
+#     the source, so no planted symlink sits next to it;
+#   * lint_source_includes(): refuses, on every platform, the source-level
+#     routes to a file outside the build dir: an include/import/embed
+#     directive naming an absolute or `..` path or computed by a macro,
+#     `.incbin`, Rust include!/include_str!/include_bytes!, zig @embedFile
+#     and @cImport. A single-file solution needs none of them.
+# On Linux run_build has no kernel read-deny (the deny-list form of
+# run_solution has none either; see "Residual gaps" in evals/README.md), so
+# the lint is the wall there.
+
+_C_TOKEN = re.compile(r'"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|//[^\n]*|/\*.*?\*/', re.DOTALL)
+_C_DIRECTIVE = re.compile(r"^[ \t]*(?:#|%:)[ \t]*(include_next|include|import|embed)\b[ \t]*(.*)$", re.MULTILINE)
+_C_HEADER = re.compile(r'^(<[^<>"\n]+>|"[^"\n]+")\s*$')
+
+
+def _strip_c_comments(src: str) -> str:
+    # translation phases 1-3: trigraph `??/` is a backslash under -std=c11,
+    # then line splices, then comments (each one becomes a space)
+    src = src.replace("??/", "\\")
+    src = re.sub(r"\\[ \t]*\r?\n", "", src)
+    return _C_TOKEN.sub(lambda m: m.group(0) if m.group(0)[0] in "\"'" else " ", src)
+
+
+def _escapes_dir(name: str) -> bool:
+    name = name.strip()[1:-1].strip()
+    return name.startswith(("/", "\\", "~")) or ".." in name or ":" in name
+
+
+def lint_source_includes(src: str, lang: str) -> str | None:
+    """None, or why `src` (C, C++, Rust, Zig or Go) could make the compiler
+    read a file outside its build dir. See the block comment above."""
+    lang = {"c++": "cpp", "rs": "rust"}.get(lang, lang)
+    if lang in ("c", "cpp", "go"):
+        code = _strip_c_comments(src)
+        if lang == "go":
+            # cgo preamble (needs import "C"; CGO_ENABLED=0 refuses it too)
+            # and //go:embed (which the go tool already keeps in-module)
+            if re.search(r'^\s*import\s*(\(\s*)?"C"', code, re.MULTILINE) or "go:embed" in src:
+                return "cgo or go:embed"
+            return None
+        for m in _C_DIRECTIVE.finditer(code):
+            arg = m.group(2).strip()
+            if not _C_HEADER.match(arg):
+                return f"computed #{m.group(1)} ({arg[:40]!r})"
+            if _escapes_dir(arg):
+                return f"#{m.group(1)} of a path outside the build dir ({arg[:60]})"
+        if re.search(r"\bincbin\b", code, re.IGNORECASE):
+            return ".incbin"
+        return None
+    if lang == "rust":
+        code = re.sub(r"//[^\n]*|/\*.*?\*/", " ", src, flags=re.DOTALL)
+        m = re.search(r"\binclude(_str|_bytes)?\b", code)
+        if m:
+            return f"{m.group(0)}! (a single-file solution includes nothing)"
+        if re.search(r"\bincbin\b", code, re.IGNORECASE):
+            return ".incbin"
+        return None
+    if lang == "zig":
+        code = re.sub(r"//[^\n]*", " ", src)
+        m = re.search(r"@(embedFile|cImport|cInclude)\b", code)
+        if m:
+            return f"@{m.group(1)} (a single-file solution includes nothing)"
+        return None
+    return None
+
+
+def read_source(path: str, cap: int = 4 << 20) -> bytes | None:
+    """The bytes of the solution's source file, or None unless `path` is a
+    regular file (not a symlink, FIFO or device) of at most `cap` bytes. The
+    validator reads with its own unsandboxed rights, so a source symlinked
+    to the reference must never be followed into a private build dir."""
+    import stat
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        out = bytearray()
+        while len(out) <= cap:
+            chunk = os.read(fd, 1 << 16)
+            if not chunk:
+                break
+            out += chunk
+        return bytes(out) if len(out) <= cap else None
+    finally:
+        os.close(fd)
+
+
+def build_private(files: dict, cmd, *, lang: str, timeout: float,
+                  extra_env: dict | None = None):
+    """Lint, then compile `files` ({relpath: bytes}) with `cmd` in a fresh
+    private_build_dir under build_env() and run_build(). Returns
+    (build_dir, None) or (None, why-it-failed). The dir's parent is removed
+    when the validator exits."""
+    import atexit
+    import shutil
+    import tempfile
+    for rel, content in files.items():
+        text = content.decode("utf-8", "replace") if isinstance(content, (bytes, bytearray)) else content
+        bad = lint_source_includes(text, lang)
+        if bad:
+            return None, f"forbidden in {rel}: {bad}"
+    base = tempfile.mkdtemp(prefix="ob-build-")
+    atexit.register(shutil.rmtree, base, True)
+    d = private_build_dir(files, base=base)
+    home = os.path.join(base, "home")
+    os.mkdir(home, 0o700)
+    env = build_env(extra_env, home=home)
+    # build_env's PATH holds only root-owned system dirs, so a bare compiler
+    # name (`go`, `cc`) resolves to the copy the harness pinned (tool_path),
+    # never to whatever the agent could have put on PATH.
+    cmd = list(cmd)
+    if cmd and os.sep not in cmd[0]:
+        cmd[0] = tool_path(cmd[0])
+    try:
+        b = run_build(cmd, cwd=d, env=env, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None, "build timed out"
+    if b.returncode:
+        return None, "build failed: " + (b.stderr or b.stdout)[-300:]
+    return d, None
+
+
+def run_build(cmd, *, cwd: str, env: dict | None = None, timeout: float,
+              deny_read: list[str] | None = None) -> subprocess.CompletedProcess:
+    """Run a compiler (an argv list) like subprocess.run(capture_output=True,
+    text=True, stdin=/dev/null), on macOS under sandbox-exec with reads of
+    every evals/{refs,tasks,suites} tree and the harness seal denied. The
+    compiler may fork and use the network (toolchains probe both); only the
+    read-deny is added. Raises subprocess.TimeoutExpired like run()."""
+    if isinstance(cmd, str):
+        raise TypeError("run_build takes an argv list, not a shell string")
+    seal = _sealed_paths() if deny_read is None else list(deny_read)
+    prefix = _sandbox_prefix(True, seal, deny_net=False, deny_procinfo=False, always=True)
+    return subprocess.run(prefix + list(cmd), cwd=cwd, env=clean_env() if env is None else env,
+                          stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                          errors="replace", timeout=timeout)
 
 
 # --- sanitizer builds ------------------------------------------------------------

@@ -32,6 +32,7 @@ source "$SCRIPT_DIR/lib/proc.sh"      # ob_recorded_pid_ours — is the supervis
 # ob_curl_hdr / ob_curl_bearer: every credential header below rides curl's
 # --config on fd 3, never argv (`ps` / /proc/*/cmdline are world-readable).
 source "$SCRIPT_DIR/lib/curl_auth.sh"
+source "$SCRIPT_DIR/lib/pyversions.sh"  # ob_py_versions — every pin's version in one python3
 # Where the core services answer (they bind BIND_HOST). It used to be a
 # private copy of the mapping with no `::` arm, so BIND_HOST=:: built
 # http://:::8080 and every service read as down on a healthy stack.
@@ -71,6 +72,15 @@ LOCAL_LLAMA=0
 # curl a health URL; $3 optional bearer key. Returns 0 if the body matches $2.
 probe() { # probe <url> <match> [key]
   ob_curl_bearer "${3:-}" -s --max-time 4 "$1" 2>/dev/null | grep -qi "$2"
+}
+
+# _serve_target <port> <serve-status-text> — the proxy target `tailscale
+# serve status` lists under https://<name>:<port> ("unix:/path" or
+# "http://127.0.0.1:3003"), or nothing.
+_serve_target() {
+  awk -v p=":$1" '
+    /^https?:\/\// { cur = (substr($1, length($1) - length(p) + 1) == p); next }
+    cur && / proxy / { sub(/.* proxy /, ""); print; exit }' <<< "$2"
 }
 
 # ── Hardware ────────────────────────────────────────────────────────────────
@@ -315,10 +325,19 @@ fi
 # ── Pinned dependencies ─────────────────────────────────────────────────────
 section "Pinned dependencies"
 if command -v python3 >/dev/null 2>&1; then
+  # Every pin's installed version from ONE interpreter (lib/pyversions.sh),
+  # not a `pip show` per pin: that was over half of doctor's run time.
+  _pins=(); _pinv=()
   while IFS='==' read -r pkg ver; do
     [[ -z "$pkg" || "$pkg" == \#* ]] && continue
-    ver="${ver#=}"
-    have=$(python3 -m pip show "$pkg" 2>/dev/null | awk '/^Version:/{print $2}')
+    _pins+=("$pkg"); _pinv+=("${ver#=}")
+  done < <(grep -vE '^\s*#|^\s*$' "$REPO_DIR/agents/requirements.txt")
+  _haves=()
+  if ((${#_pins[@]})); then
+    while read -r _ _h; do _haves+=("${_h:-}"); done < <(ob_py_versions "${_pins[@]}" || true)
+  fi
+  for _i in ${_pins[@]+"${!_pins[@]}"}; do
+    pkg="${_pins[_i]}"; ver="${_pinv[_i]}"; have="${_haves[_i]:-}"
     if [[ -z "$have" ]]; then
       # pydeps.sh, not a bare `pip install --user -r …`: that fails with
       # externally-managed-environment on Arch / Debian 12+ / Ubuntu 24.04
@@ -329,7 +348,8 @@ if command -v python3 >/dev/null 2>&1; then
     else
       pass "$pkg==$ver"
     fi
-  done < <(grep -vE '^\s*#|^\s*$' "$REPO_DIR/agents/requirements.txt")
+  done
+  unset _pins _pinv _haves _h _i
   # The four lines above are the DIRECT pins. The closure is 43 packages, and
   # the lock is what pins their content — so the question this row answers is
   # not "is the lock pretty" but "could this box reinstall exactly what it is
@@ -573,6 +593,38 @@ if [[ $_WEBUI_UP -eq 1 && -x "$SCRIPT_DIR/configure-webui.sh" ]]; then
     *) ;;
   esac
 fi
+# The DNS-rebinding Host guard (scripts/webui/sitecustomize.py), asked of the
+# RUNNING container: it fails open on purpose, so an image bump that breaks
+# or skips it used to leave a loopback rig with login off — every visitor
+# admin, with bash — open to a rebound page while this report stayed green.
+if [[ $_WEBUI_UP -eq 1 ]]; then
+  case "$(ob_webui_host_guard "http://$HEALTH_HOST:3000")" in
+    ok)   pass "Open WebUI refuses a rebound Host (DNS-rebinding guard live)" ;;
+    open) fail "Open WebUI SERVES a request for an unknown Host — its DNS-rebinding guard is not installed (login is off: a rebound web page gets admin, with bash)" \
+               "docker logs open-webui 2>&1 | grep 'Host allowlist'; if an image bump did it: ./scripts/update.sh --images rolls a failing image back, or pin the previous open-webui digest in docker-compose.yml (git log -p docker-compose.yml) and docker compose up -d" ;;
+    # off: OPENBEAST_WEBUI_HOSTS='*' (login on / opened on purpose) — no
+    # allowlist to check. down: went away between probes; the row above covers it.
+    *) ;;
+  esac
+fi
+
+# Running containers on the HOST network (names, space-separated). Each one
+# is a 127.0.0.1 peer to beast-chat and beast-artifact, so in
+# LOGIN_FROM=loopback mode code inside it can claim any tailnet login.
+# Computed once, on first use.
+_HOSTNET_DONE=0
+_HOSTNET=""
+_hostnet_containers() {
+  if [[ $_HOSTNET_DONE -eq 0 ]]; then
+    _HOSTNET_DONE=1
+    if command -v docker >/dev/null 2>&1; then
+      _HOSTNET="$(docker ps -q 2>/dev/null | xargs docker inspect \
+          -f '{{.Name}} {{.HostConfig.NetworkMode}}' 2>/dev/null \
+          | awk '$2 == "host" {sub(/^\//, "", $1); printf "%s ", $1}')"
+      _HOSTNET="${_HOSTNET% }"
+    fi
+  fi
+}
 
 # beast-chat (opt-in) — the operator console for the rig's own sessions.
 # Only checked when enabled: a row for a service nobody asked for is noise.
@@ -610,13 +662,11 @@ if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
     # one (an Open WebUI Function, a third-party backend image) can name the
     # operator's login and read every transcript. Name the containers.
     _chat_lf=$(echo "$_chat" | grep -o '"login_from":"[a-z]*"' | cut -d'"' -f4)
-    if [[ "$_chat_lf" == "loopback" ]] && command -v docker >/dev/null 2>&1; then
-      _chat_hostnet="$(docker ps -q 2>/dev/null | xargs docker inspect \
-          -f '{{.Name}} {{.HostConfig.NetworkMode}}' 2>/dev/null \
-          | awk '$2 == "host" {sub(/^\//, "", $1); printf "%s ", $1}')"
-      if [[ -n "$_chat_hostnet" ]]; then
-        warn "beast-chat trusts a login header from any loopback peer, and host-network containers are running (${_chat_hostnet% }) — code inside one can read every session" \
-             "set OPENBEAST_CHAT_SOCKET + OPENBEAST_CHAT_LOGIN_FROM=unix (docs/BEAST_CHAT.md)"
+    if [[ "$_chat_lf" == "loopback" ]]; then
+      _hostnet_containers
+      if [[ -n "$_HOSTNET" ]]; then
+        warn "beast-chat trusts a login header from any loopback peer, and host-network containers are running ($_HOSTNET) — code inside one can read every session" \
+             "set CHAT_LOGIN_FROM=unix in openbeast.conf, ./stop.sh && ./start.sh -d, then ./scripts/setup-tailscale.sh --publish-chat (docs/BEAST_CHAT.md)"
       fi
     fi
   else
@@ -677,6 +727,17 @@ if [[ "${BEAST_ARTIFACT:-false}" == "true" ]]; then
            "http://$HEALTH_HOST:${ARTIFACT_PORT:-3004}/api/artifacts/health" 2>/dev/null)
   if [[ -n "$_art" ]]; then
     _nart=$(echo "$_art" | grep -o '"artifacts":[0-9]*' | cut -d: -f2)
+    # Same exposure as beast-chat's: in loopback mode a host-network
+    # container can name an operator (or admin) login and read every private
+    # page. Only from the detailed (token) body; an older server omits it.
+    _art_lf=$(echo "$_art" | grep -o '"login_from":"[a-z]*"' | cut -d'"' -f4)
+    if [[ "$_art_lf" == "loopback" ]]; then
+      _hostnet_containers
+      if [[ -n "$_HOSTNET" ]]; then
+        warn "beast-artifact trusts a login header from any loopback peer, and host-network containers are running ($_HOSTNET) — code inside one can read every private page" \
+             "set ARTIFACT_LOGIN_FROM=unix in openbeast.conf, ./stop.sh && ./start.sh -d, then ./scripts/setup-tailscale.sh --publish-artifact (docs/BEAST_ARTIFACT.md)"
+      fi
+    fi
     if [[ -n "$_nart" ]]; then
       pass "beast-artifact (:${ARTIFACT_PORT:-3004}) — ${_nart} published page(s)"
     else
@@ -992,7 +1053,31 @@ if command -v tailscale >/dev/null 2>&1; then
     # stop it, start a new one), so a mount pointing at a dead process is
     # worth more than a shrug: the operator thinks they can reach their rig.
     if echo "$_serve" | grep -qE ':8445[^0-9]'; then
-      if curl -s --max-time 4 "http://$CHAT_HEALTH_HOST:${CHAT_PORT:-3003}/api/chat/health" 2>/dev/null | grep -qi '"status":"ok"'; then
+      # The mount TARGET must match where the server honours logins. Two
+      # manual steps switch CHAT_LOGIN_FROM (restart, then --publish-chat);
+      # skip the second and either every phone login is the flat 404 (unix
+      # server behind a TCP mount) or the console 502s (TCP server behind a
+      # stale unix mount) — while a TCP liveness probe still passed.
+      _chat_tgt="$(_serve_target 8445 "$_serve")"
+      _chat_mode="${_chat_lf:-${CHAT_LOGIN_FROM:-loopback}}"
+      _chat_refix="./scripts/setup-tailscale.sh --publish-chat (re-points :8445 at what beast-chat runs now)"
+      if [[ "$_chat_tgt" == unix:* && "$_chat_mode" != unix ]]; then
+        fail ":8445 proxies to $_chat_tgt but beast-chat runs CHAT_LOGIN_FROM=loopback — the console 502s from the phone" "$_chat_refix"
+      elif [[ "$_chat_tgt" != unix:* && "$_chat_mode" == unix ]]; then
+        fail ":8445 proxies to ${_chat_tgt:-TCP} but beast-chat runs CHAT_LOGIN_FROM=unix — every tailnet login gets 404" "$_chat_refix"
+      elif [[ "$_chat_tgt" == unix:* && "${_chat_tgt#unix:}" != "${CHAT_SOCKET:-}" ]]; then
+        fail ":8445 proxies to $_chat_tgt but CHAT_SOCKET is ${CHAT_SOCKET:-unset} — the console 502s from the phone" "$_chat_refix"
+      elif [[ "$_chat_tgt" == unix:* && ! -S "$CHAT_SOCKET" ]]; then
+        fail ":8445 proxies to $_chat_tgt but no socket exists there — the console 502s from the phone" \
+             "./scripts/healthcheck.sh --restart (beast-chat binds the socket at start)"
+      elif [[ "$_chat_tgt" == unix:* ]]; then
+        if curl -s --max-time 4 --unix-socket "$CHAT_SOCKET" "http://localhost/api/chat/health" 2>/dev/null | grep -qi '"status":"ok"'; then
+          pass "beast-chat published on :8445 (tailnet-only, via $CHAT_SOCKET)"
+        else
+          fail ":8445 is published but beast-chat is NOT answering on $CHAT_SOCKET" \
+               "./scripts/healthcheck.sh --restart, or ./scripts/setup-tailscale.sh --unpublish-chat"
+        fi
+      elif curl -s --max-time 4 "http://$CHAT_HEALTH_HOST:${CHAT_PORT:-3003}/api/chat/health" 2>/dev/null | grep -qi '"status":"ok"'; then
         pass "beast-chat published on :8445 (tailnet-only)"
       else
         # Still a failure on a stopped stack — the mount is live and 502s —
@@ -1010,7 +1095,27 @@ if command -v tailscale >/dev/null 2>&1; then
     # this mount (agents/artifact.py reads `tailscale serve status`), so a
     # mount over a dead server means every link on the phone is a 502.
     if echo "$_serve" | grep -qE ':8446[^0-9]'; then
-      if probe "http://$HEALTH_HOST:${ARTIFACT_PORT:-3004}/api/artifacts/health" '"status"'; then
+      # Same mount-vs-mode check as :8445 (ARTIFACT_LOGIN_FROM).
+      _art_tgt="$(_serve_target 8446 "$_serve")"
+      _art_mode="${_art_lf:-${ARTIFACT_LOGIN_FROM:-loopback}}"
+      _art_refix="./scripts/setup-tailscale.sh --publish-artifact (re-points :8446 at what beast-artifact runs now)"
+      if [[ "$_art_tgt" == unix:* && "$_art_mode" != unix ]]; then
+        fail ":8446 proxies to $_art_tgt but beast-artifact runs ARTIFACT_LOGIN_FROM=loopback — every artifact link 502s from the phone" "$_art_refix"
+      elif [[ "$_art_tgt" != unix:* && "$_art_mode" == unix ]]; then
+        fail ":8446 proxies to ${_art_tgt:-TCP} but beast-artifact runs ARTIFACT_LOGIN_FROM=unix — every tailnet login gets 404" "$_art_refix"
+      elif [[ "$_art_tgt" == unix:* && "${_art_tgt#unix:}" != "${ARTIFACT_SOCKET:-}" ]]; then
+        fail ":8446 proxies to $_art_tgt but ARTIFACT_SOCKET is ${ARTIFACT_SOCKET:-unset} — every artifact link 502s from the phone" "$_art_refix"
+      elif [[ "$_art_tgt" == unix:* && ! -S "$ARTIFACT_SOCKET" ]]; then
+        fail ":8446 proxies to $_art_tgt but no socket exists there — every artifact link 502s from the phone" \
+             "./scripts/healthcheck.sh --restart (beast-artifact binds the socket at start)"
+      elif [[ "$_art_tgt" == unix:* ]]; then
+        if curl -s --max-time 4 --unix-socket "$ARTIFACT_SOCKET" "http://localhost/api/artifacts/health" 2>/dev/null | grep -qi '"status"'; then
+          pass "beast-artifact published on :8446 (tailnet-only, via $ARTIFACT_SOCKET)"
+        else
+          fail ":8446 is published but beast-artifact is NOT answering on $ARTIFACT_SOCKET" \
+               "./scripts/healthcheck.sh --restart, or ./scripts/setup-tailscale.sh --unpublish-artifact"
+        fi
+      elif probe "http://$HEALTH_HOST:${ARTIFACT_PORT:-3004}/api/artifacts/health" '"status"'; then
         pass "beast-artifact published on :8446 (tailnet-only)"
       else
         _pfix="every artifact link 502s from the phone — set BEAST_ARTIFACT=true and ./scripts/healthcheck.sh --restart, or ./scripts/setup-tailscale.sh --unpublish-artifact"
@@ -1101,6 +1206,18 @@ if command -v tailscale >/dev/null 2>&1; then
              "the shared key gates it but doesn't shrink it; EDGE_GATE=true allowlists just the OpenAI routes"
       fi
     fi
+    # :8444 should carry /api/slot alone. A "/" handler there (the old
+    # no-set-path fallback, or the pre-fix fall-open) publishes the whole
+    # dashboard page and /api/status, and adding /api/slot beside it never
+    # removed it — so say so instead of trusting the last "published" line.
+    _slot_block="$(awk '/:8444([^0-9]|$)/ {on=1; next} on && /^[[:space:]]*\|--/ {print; next} {on=0}' <<< "$_serve")"
+    if grep -qE '\|--[[:space:]]+/[[:space:]]' <<< "$_slot_block"; then
+      warn ":8444 publishes the WHOLE dashboard (page + /api/status), not just /api/slot" \
+           "./scripts/setup-tailscale.sh --publish-slot (it resets :8444 and mounts /api/slot only; needs a tailscale with serve --set-path)"
+    elif [[ -n "$_slot_block" ]]; then
+      pass ":8444 publishes /api/slot only"
+    fi
+    unset _slot_block
   else
     pass "no tailscale serve mappings (stack is localhost-only)"
   fi

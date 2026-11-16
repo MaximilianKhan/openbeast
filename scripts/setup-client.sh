@@ -34,6 +34,12 @@
 #                    SearXNG container, and our opencode.json entries
 #   --purge-logs     with --uninstall: ALSO delete agent transcripts from an
 #                    in-place checkout (they hold prompts + file contents)
+#   --wheelhouse <dir>  install the pinned python deps from a wheelhouse made
+#                    by `scripts/pydeps.sh wheelhouse <dir>` on a connected box
+#                    (also $OPENBEAST_WHEELHOUSE): no package index is
+#                    contacted. With a checkout copied over (run this script
+#                    from inside it, no clone), that is the OFFLINE install;
+#                    docs/BEAST_APPS.md § Offline client.
 #
 # After install, the client CLI lives at scripts/client.sh in the checkout and
 # is symlinked to ~/.local/bin/openbeast-client (created if needed). If that
@@ -53,6 +59,7 @@ OC_CONFIG="$OC_CONFIG_DIR/opencode.json"
 REPO_URL="https://github.com/MaximilianKhan/openbeast"
 
 HOST_FQDN=""; NO_SEARCH=0; LOCAL_SEARCH=0; UNINSTALL=0; PURGE_LOGS=0
+WHEELHOUSE="${OPENBEAST_WHEELHOUSE:-}"
 API_KEY="${OPENBEAST_API_KEY:-}"
 # Re-running without --api-key must not silently de-key a keyed install:
 # fall back to the key already stored by a previous run (same treatment the
@@ -106,7 +113,9 @@ while [ $# -gt 0 ]; do
     --local-search) LOCAL_SEARCH=1 ;;
     --uninstall)    UNINSTALL=1 ;;
     --purge-logs)   PURGE_LOGS=1 ;;
-    -h|--help)      sed -n '2,41p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --wheelhouse)   [ $# -ge 2 ] && [ -n "$2" ] || { echo "--wheelhouse needs a directory" >&2; exit 2; }
+                    WHEELHOUSE="$2"; shift ;;
+    -h|--help)      sed -n '2,49p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     status|agent|search|update)
       # Two scripts, confusingly similar names: setup-client.sh INSTALLS
       # (flags), client.sh OPERATES (subcommands). Sending someone who typed
@@ -132,7 +141,7 @@ fi
 # Resolved ONCE, before anything uses them — the uninstall path shells out to
 # python too, so this cannot live inside preflight.
 _find_py() {
-  for _c in "${OPENBEAST_PYTHON:-}" python3.13 python3.12 python3.11 python3 python; do
+  for _c in "${OPENBEAST_PYTHON:-}" python3.14 python3.13 python3.12 python3.11 python3 python; do
     [ -n "$_c" ] || continue
     command -v "$_c" >/dev/null 2>&1 || continue
     if "$_c" -c 'import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)' 2>/dev/null; then
@@ -292,7 +301,7 @@ PY="$PY_BIN"
 if [ -n "$PY" ]; then
   echo "  ✓ python $("$PY" -c 'import sys;print(".".join(map(str,sys.version_info[:3])))') ($PY)"
 else
-  echo "  ✗ no python ≥3.11 found (checked python3.13/3.12/3.11/python3/python)"
+  echo "  ✗ no python ≥3.11 found (checked python3.14/3.13/3.12/3.11/python3/python)"
   _seen="$(python3 -c 'import sys;print(".".join(map(str,sys.version_info[:3])))' 2>/dev/null || true)"
   [ -n "$_seen" ] && echo "    python3 on PATH is $_seen — too old (macOS Xcode CLT ships 3.9)"
   echo "    macOS:  brew install python@3.12"
@@ -526,7 +535,10 @@ else
   echo "      ./scripts/setup-tailscale.sh --publish-slot"
 fi
 if [ $NO_SEARCH -eq 0 ] && [ $LOCAL_SEARCH -eq 0 ]; then
-  if curl -s -m 5 "$SEARCH_URL/search?q=test&format=json" 2>/dev/null | grep -q '"results"'; then
+  # /healthz + a query-less format=json request (400 "No query" when JSON is
+  # on): no live search fanned out to upstream engines (scripts/client.sh).
+  if [ "$(curl -s -m 5 "$SEARCH_URL/healthz" 2>/dev/null)" = "OK" ] \
+     && [ "$(curl -s -o /dev/null -w '%{http_code}' -m 5 "$SEARCH_URL/search?format=json" 2>/dev/null)" = "400" ]; then
     echo "  ✓ rig search reachable ($SEARCH_URL)"
   else
     echo "  ! rig search not answering ($SEARCH_URL) — on the rig, run:"
@@ -549,7 +561,14 @@ else
     echo "  ✓ slim checkout refreshed ($CLIENT_REPO)"
   else
     mkdir -p "$CLIENT_DIR"
-    git clone --depth 1 --filter=blob:none --sparse "$REPO_URL" "$CLIENT_REPO" >/dev/null 2>&1
+    git clone --depth 1 --filter=blob:none --sparse "$REPO_URL" "$CLIENT_REPO" >/dev/null 2>&1 || {
+      echo "  ✗ cannot clone $REPO_URL (offline, or GitHub unreachable)."
+      echo "    Offline: copy a checkout to this machine (a clone, or one made from an"
+      echo "    openbeast.bundle on a USB stick) and run scripts/setup-client.sh from"
+      echo "    INSIDE it: it then installs in place and never clones. Add --wheelhouse <dir>"
+      echo "    for the python deps (docs/BEAST_APPS.md § Offline client)."
+      exit 1
+    }
     # scripts/ + searxng/ ride along for client.sh, the local-search compose
     # variant, and its settings.yml. conf.sh stays UNUSED on a client (it is
     # rig-shaped: it would generate a SearXNG secret into openbeast.conf).
@@ -563,6 +582,15 @@ VENV="$CLIENT_DIR/venv"
 mkdir -p "$CLIENT_DIR"
 # Build the venv with the interpreter we VETTED, not whatever "python3"
 # resolves to — otherwise a 3.9 on PATH silently creates a 3.9 venv.
+# An EXISTING venv is checked too: one an older install built with 3.10
+# (accepted back then) would be reused here, and the lock (starlette, jiter,
+# rpds-py need >=3.11) would then die inside pip with a resolver error that
+# reads like a hostile mirror — the very failure the 3.11 floor exists for.
+if [ -x "$VENV/bin/python3" ] && ! "$VENV/bin/python3" -c \
+     'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
+  echo "  ! $VENV is $("$VENV/bin/python3" -V 2>&1 | head -1), below 3.11 — rebuilding it with $PY"
+  "$PY" -m venv --clear "$VENV"
+fi
 [ -x "$VENV/bin/python3" ] || "$PY" -m venv "$VENV"
 # THE HASH-PINNED LOCK, the same closure the rig and CI install. This venv
 # runs the tool arsenal (bash, file edits) on THIS machine, and it used to be
@@ -578,7 +606,15 @@ mkdir -p "$CLIENT_DIR"
 # unverified from that same mirror. The opt-out is for a python the closure
 # does not cover (Intel macOS needs a compiler for cffi, see pydeps.sh).
 _pd_rc=0
-OPENBEAST_PYTHON="$VENV/bin/python3" "$CLIENT_REPO/scripts/pydeps.sh" install -q || _pd_rc=$?
+WHEELHOUSE="${WHEELHOUSE:-}"       # this step also runs on its own (tests/test_supply_chain.sh)
+if [ -n "$WHEELHOUSE" ]; then
+  # --from first: pydeps.sh stops reading its own flags at -q. It verifies the
+  # lock (the committed one, or OPENBEAST_LOCK_SHA256) and audits the dir.
+  echo "  installing the pinned python deps from $WHEELHOUSE (no index)"
+  OPENBEAST_PYTHON="$VENV/bin/python3" "$CLIENT_REPO/scripts/pydeps.sh" install --from "$WHEELHOUSE" -q || _pd_rc=$?
+else
+  OPENBEAST_PYTHON="$VENV/bin/python3" "$CLIENT_REPO/scripts/pydeps.sh" install -q || _pd_rc=$?
+fi
 if [ "$_pd_rc" -eq 0 ]; then
   _pins="hash-pinned closure from agents/requirements.lock"
 elif [ "$_pd_rc" -eq 3 ]; then
@@ -599,7 +635,8 @@ else
   echo "  ! the hash-pinned install failed on this python, and NOT on a hash (see above) —"
   echo "    OPENBEAST_PIP_STRICT=0: falling back to agents/requirements.txt, which pins"
   echo "    VERSIONS but not content."
-  "$VENV/bin/pip" install -q -r "$CLIENT_REPO/agents/requirements.txt"
+  _fl=""; [ -n "$WHEELHOUSE" ] && _fl="--no-index"
+  "$VENV/bin/pip" install -q ${_fl:+$_fl --find-links "$WHEELHOUSE"} -r "$CLIENT_REPO/agents/requirements.txt"
   _pins="pins from agents/requirements.txt — NOT hash-verified"
 fi
 "$VENV/bin/python3" -c "import mcp, openai" || { echo "  ✗ venv deps failed to import"; exit 1; }
@@ -749,9 +786,28 @@ cfg.setdefault("provider", {})["openbeast-rig"] = {
 default_model = "openbeast-rig/" + next(iter(models))
 cfg.setdefault("model", default_model)
 cfg.setdefault("small_model", default_model)
-json.dump(cfg, open(oc_path, "w"), indent=2); open(oc_path, "a").write("\n")
+# Atomic, and private from the first byte when it holds the key: the file is
+# written to a 0600 temp file next to it and renamed over the old one. Writing
+# into the existing (often 0644) file and chmod'ing afterwards let another
+# local user who had it open, or opened it in between, read the key. The
+# rename also replaces the inode, so an fd held on the old file sees no key.
+import tempfile
+real = os.path.realpath(oc_path)          # a dotfile manager's symlink stays one
+mode = 0o600 if api_key else (os.stat(real).st_mode & 0o777)
+fd, tmp = tempfile.mkstemp(prefix=".opencode.json.", dir=os.path.dirname(real))
+try:
+    with os.fdopen(fd, "w") as f:
+        json.dump(cfg, f, indent=2)
+        f.write("\n")
+    os.chmod(tmp, mode)
+    os.replace(tmp, real)
+except BaseException:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    raise
 if api_key:
-    os.chmod(oc_path, 0o600)
     print(f"  ✓ merged provider + MCP config into {oc_path} (chmod 600 — holds the key)")
 else:
     print(f"  ✓ merged provider + MCP config into {oc_path}")

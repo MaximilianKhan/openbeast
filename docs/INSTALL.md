@@ -887,7 +887,7 @@ openbeast-client update        # refresh the checkout + pinned deps
 openbeast-client uninstall
 ```
 
-`status` is the one to run first: it checks the env file, venv imports,
+`status` is the one to run first: it checks the env file, venv packages,
 tailscale, the rig's `/health` **and** `/v1/models` (so a wrong or revoked key
 surfaces here instead of mid-conversation), beast-slot discovery, search, and
 the OpenCode wiring.

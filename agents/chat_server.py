@@ -135,6 +135,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
+import loginsock  # noqa: E402
 import sessions  # noqa: E402  frozen contract — agents/sessions.py
 
 REPO_DIR = os.path.dirname(_HERE)
@@ -231,6 +232,11 @@ CSP = ("default-src 'none'; "
        "frame-ancestors 'none'")
 
 
+def _login_socket() -> str:
+    """OPENBEAST_CHAT_SOCKET as configured ('' when there is none)."""
+    return (os.environ.get("OPENBEAST_CHAT_SOCKET") or "").strip()
+
+
 def _peer_is_loopback(request) -> bool:
     """May this connection's peer assert an identity by HEADER?
 
@@ -239,9 +245,15 @@ def _peer_is_loopback(request) -> bool:
     from 127.0.0.1. OPENBEAST_CHAT_BIND is an operator knob, and set to
     0.0.0.0 or a LAN/tailnet address it let any host that could reach the
     port send `Host: localhost` + any login and read every transcript. The
-    header therefore counts only from a loopback peer (or a Unix socket,
-    which has no address and is on this box by construction). A device key
-    and the locality token are secrets, not claims, and work from anywhere.
+    header therefore counts only from a loopback peer, or from a request
+    that arrived on OUR Unix socket (on this box by construction). A device
+    key and the locality token are secrets, not claims, and work from
+    anywhere.
+
+    A missing peer address is NOT a Unix socket: uvicorn reports none for a
+    TCP connection reset before connection_made, and that request is still
+    served (loginsock module docstring). The socket is identified from the
+    listener (scope["server"]), never from what is absent.
 
     Loopback is necessary, never sufficient: `tailscale serve` makes every
     remote caller loopback, which is why LOCAL is the token (see module
@@ -249,7 +261,7 @@ def _peer_is_loopback(request) -> bool:
     """
     client = getattr(request, "client", None)
     if client is None:
-        return True
+        return loginsock.arrived_on(request, _login_socket())
     try:
         addr = ipaddress.ip_address((client.host or "").split("%", 1)[0])
     except ValueError:
@@ -265,52 +277,9 @@ def login_source() -> str:
 
 
 def _unix_listener(path: str):
-    """Bind the login-bearing Unix socket: 0600, in a directory only we own
-    and only we can write.
-
-    tailscaled runs as root, so 0600 costs it nothing; every OTHER local
-    user, and every container, is kept out by the mode — which is the whole
-    point of moving the login header off TCP loopback. A stale socket from
-    a previous run is replaced; anything else at the path is left alone.
-
-    The DIRECTORY matters as much as the socket: anyone who can write it can
-    unlink our socket and bind their own at the path, and tailscale serve
-    then hands them real tailnet logins and phones' device keys. makedirs'
-    mode only applies to a directory it creates, and the recommended
-    `.run/` usually exists already (0775 under a 0002 umask). So: refuse a
-    directory someone else owns, and strip group/other WRITE from ours —
-    read/traverse is left as it was, nothing else in .run/ depends on it.
-    """
-    import socket
-    import stat as _st
-    parent = os.path.dirname(os.path.abspath(path))
-    os.makedirs(parent, mode=0o700, exist_ok=True)
-    pst = os.stat(parent)
-    if pst.st_uid != os.getuid():
-        raise SystemExit(f"ERROR: {parent} is not owned by this user — "
-                         f"refusing to put the login socket there")
-    if pst.st_mode & 0o022:
-        os.chmod(parent, _st.S_IMODE(pst.st_mode) & ~0o022)
-        print(f"chat_server: removed group/other write from {parent} "
-              f"(it holds the login socket)", file=sys.stderr)
-    try:
-        st = os.lstat(path)
-        if _st.S_ISSOCK(st.st_mode):
-            os.unlink(path)
-        else:
-            raise SystemExit(f"ERROR: {path} exists and is not a socket — "
-                             f"refusing to replace it")
-    except FileNotFoundError:
-        pass
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    old = os.umask(0o177)
-    try:
-        sock.bind(path)
-    finally:
-        os.umask(old)
-    os.chmod(path, 0o600)
-    sock.listen(128)
-    return sock
+    """Bind the login-bearing Unix socket (loginsock.unix_listener): 0600,
+    in a directory only we own and only we can write."""
+    return loginsock.unix_listener(path, "chat_server")
 
 
 def _bind_is_loopback(host: str) -> bool:
@@ -2640,6 +2609,7 @@ def create_app() -> FastAPI:
 
     registry = DeviceRegistry(os.path.join(run_dir, "clients.json"))
     login_from = login_source()
+    login_socket = _login_socket()
     presets_path = os.path.join(run_dir, "chat-presets.json")
     lease_path = (os.environ.get("OPENBEAST_CHAT_GPU_LEASE") or "").strip() or \
         os.path.join((os.environ.get("OPENBEAST_RUN_DIR") or "").strip()
@@ -2826,9 +2796,13 @@ def create_app() -> FastAPI:
             pass  # the audit trail must never break the request
 
     def _peer_of(request: Request):
+        if loginsock.arrived_on(request, login_socket):
+            return "unix"
         client = getattr(request, "client", None)
         if client is None:
-            return "unix"
+            # A TCP peer that reset before we could read its address — NOT
+            # the login socket, and the audit row must not say so.
+            return "unknown"
         return _clip(client.host or "", 64)
 
     def claimed(request: Request) -> dict:
@@ -2940,7 +2914,9 @@ def create_app() -> FastAPI:
         device key like everyone else.
         """
         if login_from == "unix":
-            return getattr(request, "client", None) is None
+            # Positively the socket we bound — never "no peer address",
+            # which a reset TCP connection also has (loginsock).
+            return loginsock.arrived_on(request, login_socket)
         return _peer_is_loopback(request)
 
     def principal_or_none(request: Request):
@@ -3020,10 +2996,10 @@ def create_app() -> FastAPI:
         return out
 
     def load_session(session_id: str) -> dict:
-        rec = sessions.get(session_id)
+        rec = sessions.get(session_id)       # already reconciled
         if not rec:
             raise HTTPException(status_code=404, detail="Not Found")
-        return sessions.reconcile(rec)
+        return rec
 
     # -- console -----------------------------------------------------------
 
@@ -3137,12 +3113,12 @@ def create_app() -> FastAPI:
             rows = sessions.list_sessions(state=state, kind=kind,
                                           limit=max(1, min(count, 1000)))
             out = []
+            # list_sessions() reconciles every row and filters AFTER that,
+            # so a `running` row whose pid is gone is already `lost` (and
+            # out of a state=running filter). A second reconcile here was a
+            # second liveness probe per running row: /proc on Linux, a `ps`
+            # fork elsewhere (review 2026-11-16).
             for rec in rows:
-                rec = sessions.reconcile(rec)
-                # reconcile() can move a record out of the filter (a `running`
-                # row whose pid is gone becomes `lost`), so re-apply it.
-                if state and rec.get("state") != state:
-                    continue
                 path = rec.get("transcript") or ""
                 out.append({
                     **reader_view(rec),
@@ -3370,25 +3346,42 @@ def create_app() -> FastAPI:
                 # still a blocking syscall inside an async generator, and
                 # every OTHER attached stream (plus /api/chat/health, which
                 # start.sh and healthcheck.sh probe) waits behind it.
-                lines, offset = await asyncio.to_thread(
-                    read_lines_from, path, offset)
-                for text, end in lines:
-                    seq += 1
-                    if kind == "agent":
-                        name, payload = parse_agent_event(text, end, seq)
-                    else:
-                        name, payload = "log", {"type": "log", "line": text,
-                                                "offset": end, "seq": seq}
-                    yield sse_frame(name, payload, end)
-                    last_out = time.monotonic()
-
+                #
+                # ...and only when there IS something to read. `size` was
+                # stat'ed just above, and shrink/replace are handled there,
+                # so size == offset means nothing new: an idle attachment used
+                # to pay a threadpool hop plus open/fstat/seek/0-byte read on
+                # every poll (review 2026-11-16: ~2x the idle CPU per stream).
+                if size > offset:
+                    lines, offset = await asyncio.to_thread(
+                        read_lines_from, path, offset)
+                else:
+                    lines = []
                 if lines:
+                    # One write per read chunk, not one per line: each yield
+                    # is its own ASGI body message and socket write, and a
+                    # large replay was bound by that overhead (2-5x slower).
+                    # Every frame still carries its own `id:`, so resume
+                    # semantics are unchanged.
+                    batch = []
+                    for text, end in lines:
+                        seq += 1
+                        if kind == "agent":
+                            name, payload = parse_agent_event(text, end, seq)
+                        else:
+                            name, payload = "log", {"type": "log", "line": text,
+                                                    "offset": end, "seq": seq}
+                        batch.append(sse_frame(name, payload, end))
+                    yield "".join(batch)
+                    last_out = time.monotonic()
                     # More may already be waiting; drain before sleeping.
                     closing_at = None
                     continue
 
-                fresh = sessions.get(session_id)
-                fresh = sessions.reconcile(fresh) if fresh else record
+                # sessions.get() already reconciles (liveness probe: /proc
+                # on Linux, a `ps` fork elsewhere); a second reconcile here
+                # repeated that probe on the event loop every idle poll.
+                fresh = sessions.get(session_id) or record
                 state = fresh.get("state")
                 if state in TERMINAL_STATES:
                     # Grace pass: the producer writes its last line and THEN
@@ -4084,8 +4077,13 @@ def create_app() -> FastAPI:
         except HTTPException:
             return {"status": "ok"}
         try:
-            live = len(sessions.list_sessions(state="running", limit=1000))
-            total = len(sessions.list_sessions(limit=1000))
+            # ONE ledger scan (it reads and reconciles every record): the
+            # running count is a filter over the same rows, not a second scan.
+            # (list_sessions reads the whole ledger whatever `limit` says, so
+            # no limit here costs nothing and keeps the old counts exact.)
+            rows = sessions.list_sessions()
+            live = min(1000, sum(1 for r in rows if r.get("state") == "running"))
+            total = min(1000, len(rows))
         except Exception:
             live, total = -1, -1
         return {

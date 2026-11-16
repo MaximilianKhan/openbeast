@@ -7,13 +7,14 @@
     apps.sh enable <capability>          wire the MCP server into opencode
     apps.sh disable <capability|server>  undo exactly what enable wrote
     apps.sh refresh [server...]          latest versions + live tool lists
-    apps.sh upgrade <server> [--to V]    move a pin (explicit, never silent)
+    apps.sh upgrade <server> [--to V]    move a pin (explicit, never silent; down = rollback)
     apps.sh tools <server>               the recorded tool manifest
     apps.sh validate                     check the catalog itself
 
 Exit codes: 0 ok/READY · 1 error · 2 usage / unknown name · 3 MISSING
 prerequisite · 4 unsupported platform · 5 offline (upgrade needs the
-network) · 6 risky server needs --accept-risk · 7 config key owned by you.
+network) · 6 risk (needs --accept-risk, --ungated or --accept-new-tools) ·
+7 config key owned by you, or the server is already wired.
 
 Design and catalog format: docs/BEAST_APPS.md. Stdlib only.
 """
@@ -25,6 +26,8 @@ import fnmatch
 import hashlib
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import urllib.error
@@ -111,15 +114,73 @@ class State:
 
 
 def effective_version(cat: dict, sid: str, st: State) -> str:
-    base = cat["server"][sid]["version"]
-    pin = st.pins().get(sid, {}).get("version")
-    if pin and cat["server"][sid]["registry"] != "app" and P.version_ge(pin, base):
+    """The version to run: an `upgrade` pin in pins.json, else the catalog's.
+
+    A pin records the catalog version it was set against (`base`). While the
+    catalog still says that, the pin wins in EITHER direction, so
+    `upgrade --to <older>` (a rollback) sticks. Once the catalog pin moves (a
+    repo update), an older pin is stale and the catalog wins; a newer one
+    still does. A pin that is not an exact version is ignored: it is
+    substituted into `{package}@{version}`, where `npm:other@1` or `file:..`
+    would install something else under the trusted name."""
+    s = cat["server"][sid]
+    base = s["version"]
+    if s["registry"] == "app":
+        return base
+    p = st.pins().get(sid)
+    pin = p.get("version") if isinstance(p, dict) else None
+    if not C.valid_version(pin):
+        return base
+    if p.get("base") == base or P.version_ge(pin, base):
         return pin
     return base
 
 
+# Variables an MCP child process started BY beast-apps (introspection, the
+# npm install that stages a server) may inherit. Everything else in the
+# user's shell (cloud credentials, tokens, session secrets) stays out: a new
+# upstream release runs here before anyone has reviewed it. The server's own
+# catalog env and env_passthrough values are added on top.
+CHILD_ENV = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "TMP", "TEMP", "LANG", "TERM", "TZ",
+             "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+             "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "no_proxy",
+             "all_proxy", "DEVELOPER_DIR", "ANDROID_HOME", "ANDROID_SDK_ROOT", "JAVA_HOME")
+CHILD_ENV_PREFIXES = ("LC_", "XDG_", "npm_config_", "NPM_CONFIG_", "UV_")
+
+
+def child_env(env: dict, environment: dict | None = None) -> dict:
+    extra = set((env.get("OPENBEAST_APPS_INTROSPECT_ENV") or "").replace(",", " ").split())
+    out = {k: v for k, v in env.items()
+           if k in CHILD_ENV or k in extra or k.startswith(CHILD_ENV_PREFIXES)}
+    out.update(environment or {})
+    return out
+
+
+# Names whose VALUE is a credential. enable/upgrade --json output is read by
+# the model (and so travels to the rig and into transcripts): those values
+# are shown as "<redacted>" there. The config file itself keeps them (600).
+SECRET_NAME = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL")
+
+
+def redact_entry(entry: dict, server: dict) -> dict:
+    e = json.loads(json.dumps(entry))
+    envd = e.get("environment")
+    if isinstance(envd, dict):
+        for k, v in envd.items():
+            if v and (k in server.get("secret_env", []) or any(w in k.upper() for w in SECRET_NAME)):
+                envd[k] = "<redacted>"
+    return e
+
+
+def private_config(server: dict, environment: dict, cfg_path: str) -> bool:
+    """Whether the config must be written 0600: a secret_env value is in the
+    entry, or the file is already private. One rule for enable and upgrade."""
+    return any(v in environment for v in server.get("secret_env", [])) or (
+        os.path.exists(cfg_path) and os.stat(cfg_path).st_mode & 0o077 == 0)
+
+
 # ── evaluation ──────────────────────────────────────────────────────────────
-def evaluate_server(cat: dict, sid: str, env: dict, st: State) -> dict:
+def evaluate_server(cat: dict, sid: str, env: dict, st: State, cache: dict | None = None) -> dict:
     s = cat["server"][sid]
     plat = C.platform_id(env)
     res = {"id": sid, "title": s["title"], "version": effective_version(cat, sid, st),
@@ -133,7 +194,7 @@ def evaluate_server(cat: dict, sid: str, env: dict, st: State) -> dict:
         res["missing"].append(f"{s['title']} runs on {', '.join(s['platforms'])} only; this machine is {plat}.")
         return res
     for pid in s.get("probes", []):
-        r = P.run(cat, pid, env)
+        r = P.run(cat, pid, env, cache=cache)
         res["probes"].append(r)
         if r["status"] == "fail":
             res["missing"].append(r["fix"])
@@ -147,13 +208,14 @@ def evaluate_server(cat: dict, sid: str, env: dict, st: State) -> dict:
     return res
 
 
-def evaluate_capability(cat: dict, cid: str, env: dict, st: State, only: str | None = None) -> dict:
+def evaluate_capability(cat: dict, cid: str, env: dict, st: State, only: str | None = None,
+                        cache: dict | None = None) -> dict:
     c = cat["capability"][cid]
     out = {"capability": cid, "title": c["title"], "stage": c.get("stage", ""),
            "platform": C.platform_id(env), "servers": [], "server": None}
     order = [only] if only else C.capability_servers(cat, cid)
     for sid in order:
-        r = evaluate_server(cat, sid, env, st)
+        r = evaluate_server(cat, sid, env, st, cache)
         out["servers"].append(r)
         if r["status"] == "READY":
             out["server"] = sid
@@ -212,8 +274,9 @@ def offline_reason(env: dict) -> str | None:
 
 def island_banner(reason: str) -> str:
     return (f"beast-island: OFFLINE — {reason}. Pins are kept exactly as they are; latest "
-            "versions were not checked. Catalog, probes, check, enable and disable work offline; "
-            "tool introspection uses only the local npx/uvx cache. Re-run `apps.sh refresh` "
+            "versions were not checked. Catalog, probes, check and disable work offline; enable "
+            "and upgrade stage npm servers from the local npm cache only, and introspection runs "
+            "what is staged (or the local uvx cache). Re-run `apps.sh refresh` "
             "when the network is back.")
 
 
@@ -225,7 +288,15 @@ def _get_json(url: str, timeout: float = 10.0):
 
 
 def latest_version(server: dict, env: dict) -> tuple[str | None, str | None]:
-    """(latest published version, error)."""
+    """(latest published version, error). A registry answer that is not an
+    exact version is an error, never a spec to install."""
+    v, err = _latest_raw(server, env)
+    if v is not None and not C.valid_version(v):
+        return None, f"{server['registry']} answered {v!r} as the latest version, which is not an exact version"
+    return v, err
+
+
+def _latest_raw(server: dict, env: dict) -> tuple[str | None, str | None]:
     reg = server["registry"]
     try:
         if reg == "npm":
@@ -241,14 +312,110 @@ def latest_version(server: dict, env: dict) -> tuple[str | None, str | None]:
             d = _get_json(f"{base}/repos/{server['repo']}/releases/latest")
             return (d.get("tag_name") or "").lstrip("v") or None, None
         return None, None            # app-bundled: no registry, the manifest hash tracks it
-    except (urllib.error.URLError, OSError, ValueError) as e:
+    except (urllib.error.URLError, OSError, ValueError, AttributeError, TypeError) as e:
         return None, f"{reg} lookup failed: {getattr(e, 'reason', e)}"
 
 
 # ── launching ───────────────────────────────────────────────────────────────
-def render_launch(cat: dict, sid: str, version: str, env: dict, ev: dict) -> tuple[list[str] | None, dict, str | None]:
-    """(argv with absolute argv[0], MCP environment, error)."""
+def npm_prefix(env: dict, sid: str, version: str) -> str:
+    return os.path.join(C.state_dir(env), "npm", f"{sid}@{version}")
+
+
+def _npm_bin(pkgdir: str, package: str) -> str | None:
+    """The executable `npx <package>` would run (npm's own rule: a string
+    `bin`, the only bin, or the one named after the unscoped package)."""
+    man = read_json(os.path.join(pkgdir, "package.json"), None)
+    b = man.get("bin") if isinstance(man, dict) else None
+    if isinstance(b, str):
+        return b
+    if isinstance(b, dict) and b:
+        if len(b) == 1:
+            return next(iter(b.values()))
+        return b.get(package.rsplit("/", 1)[-1])
+    return None
+
+
+def stage_npm(s: dict, sid: str, version: str, env: dict, npx: str, path: str,
+              mode: str, offline: bool) -> tuple[list[str] | None, str | None]:
+    """Install `package@version` into a beast-apps-owned prefix and return the
+    argv that runs its bin directly: ([node, <abs bin>] or [<abs bin>], error).
+
+    WHY. `npx -y pkg@ver` resolves against the directory it starts in, and
+    opencode starts MCP servers in the project it has open: a project's
+    node_modules/ holding pkg@ver runs instead of the registry copy, its
+    .npmrc can point `registry`/`cache` at an attacker, and npm exec puts its
+    node_modules/.bin on the server's PATH (a planted `node` or `xcodebuild`
+    there wins). Exact-version pinning stops none of that, and it happens
+    when opencode STARTS, before any ask gate. So the package is installed
+    once (enable / upgrade) into <state>/npm/<server>@<version>, from a
+    neutral cwd, with a lockfile, and the entry runs that file by absolute
+    path: no npm, no project lookup at launch. mode "plan" (a dry run) only
+    says what would happen."""
+    prefix = npm_prefix(env, sid, version)
+    pkg = s["package"]
+    pkgdir = os.path.join(prefix, "node_modules", *pkg.split("/"))
+    man = read_json(os.path.join(pkgdir, "package.json"), None)
+    if not (isinstance(man, dict) and man.get("version") == version):
+        if mode == "plan":
+            return [os.path.join(pkgdir, "<bin, installed at enable>")], None
+        npm = os.path.join(os.path.dirname(npx), "npm")
+        if not os.access(npm, os.X_OK):
+            npm = shutil.which("npm", path=path) or ""
+        if not npm:
+            return None, f"npm not found next to {npx} or on PATH (it ships with Node.js)"
+        tmp = f"{prefix}.tmp-{os.getpid()}"
+        shutil.rmtree(tmp, ignore_errors=True)
+        os.makedirs(tmp, mode=0o700)
+        cmd = [npm, "install", "--prefix", tmp, "--save-exact", "--no-audit", "--no-fund",
+               "--no-update-notifier", "--loglevel=error",
+               "--offline" if offline else "--prefer-offline", f"{pkg}@{version}"]
+        try:
+            cp = subprocess.run(cmd, cwd=tmp, env=child_env(env, {"PATH": path}), capture_output=True,
+                                text=True, stdin=subprocess.DEVNULL,
+                                timeout=float(env.get("OPENBEAST_APPS_INSTALL_TIMEOUT", "600")))
+            rc, tail = cp.returncode, (cp.stderr or cp.stdout or "").strip().splitlines()[-3:]
+        except (OSError, subprocess.TimeoutExpired) as e:
+            rc, tail = 1, [str(e)]
+        got = read_json(os.path.join(tmp, "node_modules", *pkg.split("/"), "package.json"), None)
+        if rc != 0 or not (isinstance(got, dict) and got.get("version") == version):
+            shutil.rmtree(tmp, ignore_errors=True)
+            why = " | ".join(tail) or f"exit {rc}"
+            return None, (f"could not install {pkg}@{version} into {prefix}: {why}"
+                          + (" (offline: only the local npm cache was used)" if offline else ""))
+        shutil.rmtree(prefix, ignore_errors=True)
+        os.replace(tmp, prefix)
+    rel = _npm_bin(pkgdir, pkg)
+    if not rel:
+        return None, f"{pkg}@{version} declares no single executable (package.json bin) to run"
+    real_prefix = os.path.realpath(prefix)
+    binp = os.path.realpath(os.path.join(pkgdir, rel))
+    if not binp.startswith(real_prefix + os.sep) or not os.path.isfile(binp):
+        return None, f"{pkg}@{version}: its bin {rel!r} is not a file inside {prefix}"
+    try:
+        with open(binp, "rb") as f:
+            first = f.readline(200)
+    except OSError as e:
+        return None, f"cannot read {binp}: {e}"
+    if first.startswith(b"#!") and b"node" not in first:
+        return [binp], None                  # a non-node bin: run as is
+    node = shutil.which("node", path=path)
+    if not node:
+        return None, f"node not found on {path}"
+    return [os.path.abspath(node), binp], None
+
+
+def render_launch(cat: dict, sid: str, version: str, env: dict, ev: dict, keep: dict | None = None,
+                  stage: str = "install", offline: bool | None = None
+                  ) -> tuple[list[str] | None, dict, str | None]:
+    """(absolute argv, MCP environment, error).
+
+    keep: the environment recorded at enable time. An env_passthrough value
+    the current shell does not set is taken from it, so an upgrade run from
+    a fresh terminal does not silently drop the printer's token.
+    stage: "install" stages an npm server (see stage_npm), "plan" does not.
+    offline: None = ask offline_reason() only if an install is needed."""
     s = cat["server"][sid]
+    keep = keep or {}
     # {state} in a fixed env value is the beast-apps state dir: a location a
     # project cannot choose (a pinned path never comes from the opened dir).
     environment = {k: v.replace("{state}", C.state_dir(env)) for k, v in (s.get("env") or {}).items()}
@@ -256,6 +423,8 @@ def render_launch(cat: dict, sid: str, version: str, env: dict, ev: dict) -> tup
     for var in s.get("env_passthrough", []):
         if env.get(var):
             environment[var] = env[var]
+        elif keep.get(var):
+            environment[var] = keep[var]
     if s["transport"] != "stdio":
         return None, environment, None
     argv = [a.replace("{package}", s["package"]).replace("{version}", version) for a in s["command"]]
@@ -267,20 +436,45 @@ def render_launch(cat: dict, sid: str, version: str, env: dict, ev: dict) -> tup
     exe, on_path = P.resolve([argv[0]], search, env)
     if not exe:
         return None, environment, f"{argv[0]} not found on PATH or in {', '.join(search) or 'any known dir'}"
+    # ALWAYS a clean, deterministic PATH — never a copy of this shell's (which
+    # carries session temp dirs and whatever happens to be active now), and
+    # never nothing: a GUI-launched opencode gives its servers launchd's
+    # /usr/bin:/bin:/usr/sbin:/sbin, where `#!/usr/bin/env node` (npx, every
+    # npm bin) fails with "env: node: No such file or directory". So: the
+    # off-PATH dirs the probes found, the launcher's dir, the dir of every
+    # tool a probe found (node, adb, java, xcodebuild…), then the system dirs.
     dirs = list(ev.get("dirs") or [])
-    if not on_path and os.path.dirname(exe) not in dirs:
-        dirs.append(os.path.dirname(exe))
-    if dirs:
-        # A clean, deterministic PATH — never a copy of this shell's (which
-        # carries session temp dirs and whatever happens to be active now).
-        base = [os.path.dirname(exe)] + list(SYSTEM_PATH)
-        environment["PATH"] = os.pathsep.join(dict.fromkeys(
-            d for d in dirs + base if d and (d in dirs or os.path.isdir(d))))
+    found = [os.path.dirname(p["path"]) for p in ev.get("probes") or []
+             if p.get("path") and p.get("kind") in ("command", "any") and p.get("status") in ("ok", "warn")]
+    base = [os.path.dirname(exe)] + found + list(SYSTEM_PATH)
+    npm =s["registry"] == "npm" and os.path.basename(argv[0]) == "npx"
+    if npm:
+        # the staged bin runs under node: make sure node's dir is on the
+        # entry PATH even when no probe of this server looked for node
+        node, _ = P.resolve(["node"], [os.path.dirname(exe)], env)
+        if node:
+            base.insert(1, os.path.dirname(node))
+    environment["PATH"] = os.pathsep.join(dict.fromkeys(
+        d for d in dirs + base if d and (d in dirs or os.path.isdir(d))))
+    if npm:
+        i = next(i for i, a in enumerate(s["command"]) if "{version}" in a)
+        if offline is None and stage == "install" and not os.path.isfile(
+                os.path.join(npm_prefix(env, sid, version), "node_modules", *s["package"].split("/"),
+                             "package.json")):
+            offline = bool(offline_reason(env))
+        head, err = stage_npm(s, sid, version, env, exe, environment["PATH"], stage, bool(offline))
+        if err:
+            return None, environment, err
+        return head + argv[i + 1:], environment, None
     return [exe] + argv[1:], environment, None
 
 
 def introspect(cat: dict, sid: str, version: str, command: list[str] | None, environment: dict,
                env: dict, offline: bool) -> dict:
+    """initialize + tools/list against the server. A stdio server is started
+    the way opencode will start it, but from the beast-apps state dir (never
+    the caller's project) and with child_env(): the user's credentials are
+    not handed to a release nobody has reviewed yet."""
     s = cat["server"][sid]
     timeout = float(env.get("OPENBEAST_APPS_TIMEOUT", "90"))
     if s["transport"] == "http":
@@ -289,9 +483,9 @@ def introspect(cat: dict, sid: str, version: str, command: list[str] | None, env
         cmd = list(command)
         if offline and os.path.basename(cmd[0]) in ("npx", "uvx"):
             cmd.insert(1, "--offline")    # cache only: no stall on a dead network
-        run_env = dict(env)
-        run_env.update(environment)
-        info, tools = mcp_client.list_tools_stdio(cmd, run_env, timeout=timeout)
+        cwd = C.state_dir(env)
+        os.makedirs(cwd, exist_ok=True)
+        info, tools = mcp_client.list_tools_stdio(cmd, child_env(env, environment), timeout=timeout, cwd=cwd)
     return make_manifest(sid, version, s["transport"], info, tools)
 
 
@@ -302,8 +496,9 @@ def _h(obj) -> str:
 def make_manifest(sid: str, version: str, transport: str, info: dict, tools: list[dict]) -> dict:
     rows = []
     for t in sorted(tools, key=lambda t: t["name"]):
-        schema = t.get("inputSchema") or {}
-        rows.append({"name": t["name"], "description": (t.get("description") or "").strip(),
+        schema = t.get("inputSchema") if isinstance(t.get("inputSchema"), dict) else {}
+        desc = t.get("description") if isinstance(t.get("description"), str) else ""
+        rows.append({"name": t["name"], "description": desc.strip(),
                      "inputSchema": schema, "schema_sha256": _h(schema),
                      **({"annotations": t["annotations"]} if isinstance(t.get("annotations"), dict) else {})})
     core = [{"name": r["name"], "description": r["description"], "schema": r["schema_sha256"]} for r in rows]
@@ -342,6 +537,7 @@ def diff_manifests(old: dict | None, new: dict, server: dict) -> dict:
                 changed.append({"name": name, "changed": what})
     flagged = []
     desc = {t["name"]: (t.get("description") or "").lower() for t in new["tools"]}
+    names_here = {n.lower() for n in desc}
     new_names = set(added)
     for name in sorted(desc):
         # Name patterns are a review hint for NEW tools only.
@@ -349,8 +545,11 @@ def diff_manifests(old: dict | None, new: dict, server: dict) -> dict:
         # Names alone miss a bridge ("blender_mcp_call") whose description
         # says it runs code or installs something: check what EVERY tool says
         # it does, on every manifest, so an upstream update that rewrites an
-        # existing tool's description into an exec bridge is caught too.
-        said = [m for m in EXEC_MARKERS if m in desc[name]]
+        # existing tool's description into an exec bridge is caught too. A
+        # marker that is the name of ANOTHER tool of this same server is a
+        # cross-reference ("read it with execute_blender_code"), not a bridge:
+        # that tool is judged (and gated) on its own.
+        said = [m for m in EXEC_MARKERS if m in desc[name] and not (m in names_here and m != name.lower())]
         if hits or said:
             gated = any(fnmatch.fnmatchcase(name, g) for g in gates)
             flagged.append({"name": name, "patterns": hits, "description": said, "gated": gated})
@@ -405,6 +604,7 @@ class Ctx:
         self.cat = C.load(env=self.env)
         self.st = State(self.env)
         self.cfg_path = ocfg.config_path(getattr(args, "config", None), self.env)
+        self.probe_cache: dict = {}        # one process, one env: probes run once
 
     def cfg(self) -> dict:
         return ocfg.load(self.cfg_path)
@@ -441,7 +641,7 @@ def cmd_list(ctx: Ctx) -> int:
     owned, others = ownership(ctx.st, cfg)
     rows = []
     for cid in ctx.cat["capability"]:
-        rep = evaluate_capability(ctx.cat, cid, ctx.env, ctx.st)
+        rep = evaluate_capability(ctx.cat, cid, ctx.env, ctx.st, cache=ctx.probe_cache)
         en = _enabled_for(ctx, cid, owned)
         ukeys = sorted({k for sid in C.capability_servers(ctx.cat, cid)
                         for k in user_configured(ctx.cat["server"][sid], others)})
@@ -472,7 +672,7 @@ def cmd_find(ctx: Ctx) -> int:
     hits = C.find(ctx.cat, q)[: ctx.args.limit]
     res = []
     for cid, score in hits:
-        rep = evaluate_capability(ctx.cat, cid, ctx.env, ctx.st)
+        rep = evaluate_capability(ctx.cat, cid, ctx.env, ctx.st, cache=ctx.probe_cache)
         res.append({"capability": cid, "score": score, "status": rep["status"], "title": rep["title"],
                     "server": rep["server"], "remediation": rep["remediation"]})
     out = {"query": q, "matches": res}
@@ -556,15 +756,25 @@ def cmd_enable(ctx: Ctx) -> int:
         print(f"opencode already has an MCP entry named {key!r} that beast-apps did not write; "
               f"not touching it. Keep yours, or pass --key <other-name>.")
         return EXIT_CONFLICT
-    _, others = ownership(ctx.st, cfg)
+    owned, others = ownership(ctx.st, cfg)
     dup = user_configured(s, others)
     if dup and not a.allow_duplicate:
         print(f"You already run {s['package']} from your own opencode entry {', '.join(dup)}; "
               "beast-apps will not add a second copy (the model would see every tool twice). "
               "Keep yours, or remove it and re-run (or pass --allow-duplicate).")
         return EXIT_CONFLICT
+    # The same guard for entries beast-apps wrote itself: `enable <cap> --key
+    # other` must not wire a second copy next to the first.
+    twin = sorted(k for k, v in owned.items() if k != key and (v.get("server") == sid or v.get("capability") == cid))
+    if twin and not a.allow_duplicate:
+        print(f"beast-apps already wired {cid} ({', '.join(owned[k]['server'] for k in twin)}) as opencode "
+              f"entry {', '.join(twin)}; it will not add a second copy under {key!r} (the model would see "
+              f"every tool twice). Re-run without --key to re-enable it, `scripts/apps.sh disable "
+              f"{twin[0]}` first, or pass --allow-duplicate.")
+        return EXIT_CONFLICT
     version = effective_version(ctx.cat, sid, ctx.st)
-    command, environment, err = render_launch(ctx.cat, sid, version, ctx.env, ev)
+    command, environment, err = render_launch(ctx.cat, sid, version, ctx.env, ev,
+                                              stage="plan" if a.dry_run else "install")
     if err:
         print(f"error: {err}", file=sys.stderr)
         return EXIT_MISSING
@@ -582,15 +792,16 @@ def cmd_enable(ctx: Ctx) -> int:
                   "--ungated to wire it in without the gates anyway.")
             return EXIT_RISK
         ungated, rules = rules, []                     # nothing written, nothing recorded
-    warns = ocfg.install(cfg, key, entry, rules, fl)
+    # Only what install() actually changed is recorded (and later undone): a
+    # rule of yours that is already as strict is kept and left alone.
+    rules, warns = ocfg.install(cfg, key, entry, rules, fl)
     if ungated:
         warns.append("NOT gated (--ungated): " + ", ".join(f"{r['action']}={r['effect']}" for r in ungated))
-    secret = any(v in environment for v in s.get("secret_env", [])) or (
-        os.path.exists(ctx.cfg_path) and os.stat(ctx.cfg_path).st_mode & 0o077 == 0)
+    secret = private_config(s, environment, ctx.cfg_path)
     where = f"mcp.servers.{key}" if fl == "v2" else f"mcp.{key}"
     out = {"enabled": True, "capability": cid, "server": sid, "version": version, "key": key,
-           "config": ctx.cfg_path, "schema": fl, "entry": entry, "rules": rules, "ungated": ungated,
-           "warnings": warns + ev["warnings"], "dry_run": bool(a.dry_run), "backup": None}
+           "config": ctx.cfg_path, "schema": fl, "entry": redact_entry(entry, s), "rules": rules,
+           "ungated": ungated, "warnings": warns + ev["warnings"], "dry_run": bool(a.dry_run), "backup": None}
     if not a.dry_run:
         out["backup"] = ocfg.backup(ctx.cfg_path)
         ocfg.write(ctx.cfg_path, cfg, secret=secret)
@@ -667,11 +878,15 @@ def _launch_for(ctx: Ctx, sid: str, rec: dict | None, version: str):
     s = ctx.cat["server"][sid]
     if rec and rec.get("version") == version and s["transport"] == "stdio":
         e = rec.get("entry") or {}
-        return e.get("command"), e.get("environment") or {}, None
+        cmd = e.get("command") or []
+        # the recorded command, unless a file it names has gone (a cleaned
+        # state dir): then stage it again below.
+        if cmd and all(os.path.exists(c) for c in cmd[:2] if os.path.isabs(c)):
+            return cmd, e.get("environment") or {}, None
     ev = evaluate_server(ctx.cat, sid, ctx.env, ctx.st)
     if ev["status"] != "READY":
         return None, {}, "prerequisites missing: " + " | ".join(ev["missing"])
-    return render_launch(ctx.cat, sid, version, ctx.env, ev)
+    return render_launch(ctx.cat, sid, version, ctx.env, ev, keep=((rec or {}).get("entry") or {}).get("environment"))
 
 
 def _render_diff(sid: str, d: dict) -> list[str]:
@@ -725,6 +940,16 @@ def cmd_refresh(ctx: Ctx) -> int:
                  f"scripts/apps.sh upgrade {sid} --to {pinned}")
             row["notes"].append(n)
             L.append(f"    ! {n}")
+        rcmd = ((rec or {}).get("entry") or {}).get("command") or []
+        if s["registry"] == "npm" and rcmd and os.path.basename(rcmd[0]) == "npx":
+            n = (f"your opencode entry still launches through npx, which resolves the package in the "
+                 f"project opencode opens (its node_modules/.npmrc can substitute the code): re-run "
+                 f"scripts/apps.sh enable {rec['capability']} to run it from the beast-apps prefix")
+            row["notes"].append(n)
+            L.append(f"    ! {n}")
+        if pinned != s["version"] and not P.version_ge(pinned, s["version"]):
+            L.append(f"    pinned below the catalog's {s['version']} (an `upgrade --to` rollback); kept "
+                     "until the catalog pin moves")
         if rec:
             pref = next((x for x in C.capability_servers(ctx.cat, rec["capability"])
                          if C.platform_id(ctx.env) in ctx.cat["server"][x]["platforms"]), None)
@@ -784,6 +1009,13 @@ def cmd_upgrade(ctx: Ctx) -> int:
         print(f"{sid} is bundled with an app; upgrade the app, then run scripts/apps.sh refresh {sid}.")
         return EXIT_USAGE
     current = (rec or {}).get("version") or effective_version(ctx.cat, sid, ctx.st)
+    if a.to is not None and not C.valid_version(a.to):
+        # --to is substituted into `{package}@{version}`: an npm alias
+        # (npm:other@1), file: or a repository spec would install a different
+        # package under this server's name and gates.
+        print(f"error: --to {a.to!r} is not an exact version (digits and dots, e.g. 1.2.3 or 2.3.0rc1)",
+              file=sys.stderr)
+        return EXIT_USAGE
     reason = offline_reason(ctx.env)
     target = a.to
     if not target:
@@ -814,31 +1046,51 @@ def cmd_upgrade(ctx: Ctx) -> int:
         except ocfg.ConfigError as e:
             print(f"error: {e}", file=sys.stderr)
             return EXIT_ERR
-        fl0 = rec.get("schema") or ocfg.flavor(cfg0, ctx.env)
+        fl0 = ocfg.flavor_for(cfg0, rec["key"], ctx.env, rec.get("schema"))
         why = ocfg.ungatable(cfg0, ocfg.rules_for(rec["key"], s), fl0)
         if why and not a.ungated:
             print(f"Refusing to upgrade {sid}: {why}.\n  The entry {rec['key']} is gated now and would lose "
                   f"its gates. Make `permission` an object in {ctx.cfg_path} (e.g. {{\"*\": \"allow\"}}) and "
                   "re-run, or pass --ungated to upgrade without the gates anyway.")
             return EXIT_RISK
-    cmd, environment, err = render_launch(ctx.cat, sid, target, ctx.env, ev)
+    keep = ((rec or {}).get("entry") or {}).get("environment")
+    cmd, environment, err = render_launch(ctx.cat, sid, target, ctx.env, ev, keep=keep, offline=bool(reason))
     if err:
-        print(f"error: {err}", file=sys.stderr)
-        return EXIT_MISSING
+        print(f"Upgrade aborted: {err}. Pin stays {current}.")
+        return EXIT_MISSING if "not found" in err else EXIT_ERR
     try:
         man = introspect(ctx.cat, sid, target, cmd, environment, ctx.env, bool(reason))
     except mcp_client.MCPError as e:
         print(f"Upgrade aborted: {sid} {target} did not answer tools/list ({e}). Pin stays {current}.")
         return EXIT_ERR
     d = diff_manifests(ctx.st.last_manifest(sid), man, s)
+    # The same rule _render_diff prints: a tool that says it runs code, or a
+    # NEW tool matching risk_patterns, with no gate. refresh only reports it
+    # (the running entry is unchanged); upgrade would WIRE it in, so it stops
+    # here, before any pin, manifest or config is written.
+    risky = [f["name"] for f in d["flagged"] if not f["gated"] and (f.get("description") or not d["first"])]
+    if risky and not a.accept_new_tools:
+        L = [f"Refusing to upgrade {sid} to {target}: it brings tool(s) flagged as risky and NOT gated: "
+             f"{', '.join(risky)}."] + _render_diff(sid, d)
+        L.append(f"  Pin stays {current}; nothing was written. Gate them (ask_tools in the catalog or an "
+                 f"overlay, docs/BEAST_APPS.md), or pass --accept-new-tools to wire them in ungated.")
+        emit({"server": sid, "from": current, "to": target, "refused": True, "flagged_ungated": risky,
+              "diff": d}, a.json, "\n".join(L))
+        return EXIT_RISK
     path = ctx.st.save_manifest(sid, man)
     pins = ctx.st.pins()
-    pins[sid] = {"version": target, "previous": current, "at": now_iso()}
+    # `base` = the catalog pin this choice was made against: while the catalog
+    # still says that, this pin wins even when it is OLDER (a rollback).
+    pins[sid] = {"version": target, "previous": current, "base": s["version"], "at": now_iso()}
     ctx.st.save_pins(pins)
     out = {"server": sid, "from": current, "to": target, "manifest": path, "diff": d,
-           "config_updated": False, "backup": None}
+           "config_updated": False, "backup": None, "accepted_ungated": risky}
     L = [f"{sid}: {current} → {target}", f"  tools: {man['tool_count']} (hash {man['hash'][:12]}) → {path}"]
     L += _render_diff(sid, d)
+    if risky:
+        L.append(f"  ! --accept-new-tools: wired in UNGATED: {', '.join(risky)}")
+    if not P.version_ge(target, s["version"]):
+        L.append(f"  rollback below the catalog's {s['version']}: this pin is kept until the catalog pin moves")
     if rec:
         try:
             cfg = ctx.cfg()
@@ -846,7 +1098,11 @@ def cmd_upgrade(ctx: Ctx) -> int:
             print(f"error: {e}", file=sys.stderr)
             return EXIT_ERR
         key = rec["key"]
-        fl = rec.get("schema") or ocfg.flavor(cfg, ctx.env)
+        # The layout the file has NOW, not the one recorded at enable time:
+        # setup-client.sh moves v1 entries into mcp.servers once opencode 2.x
+        # is installed, and writing a v1 mcp.<key> next to mcp.servers is the
+        # mixed layout opencode 2 reads as "No MCP servers configured".
+        fl = ocfg.flavor_for(cfg, key, ctx.env, rec.get("schema"))
         entry = ocfg.build_entry(s, cmd, environment, fl)
         ocfg.uninstall(cfg, key, rec.get("rules", []))
         rules = ocfg.rules_for(key, s)
@@ -854,14 +1110,15 @@ def cmd_upgrade(ctx: Ctx) -> int:
         if why:          # the old entry had no gates either, or --ungated (checked above)
             rules = []
             L.append(f"  ! NOT gated{' (--ungated)' if a.ungated else ''}: {why}")
-        ocfg.install(cfg, key, entry, rules, fl)
+        rules, warns = ocfg.install(cfg, key, entry, rules, fl)
+        L += [f"  ! {w}" for w in warns]
         out["backup"] = ocfg.backup(ctx.cfg_path)
-        secret = os.path.exists(ctx.cfg_path) and os.stat(ctx.cfg_path).st_mode & 0o077 == 0
-        ocfg.write(ctx.cfg_path, cfg, secret=secret)
+        ocfg.write(ctx.cfg_path, cfg, secret=private_config(s, environment, ctx.cfg_path))
         mine = ctx.st.enabled()
-        mine[key].update(version=target, entry=entry, rules=rules, at=now_iso())
+        mine[key].update(version=target, entry=entry, rules=rules, schema=fl, at=now_iso())
         ctx.st.save_enabled(mine)
         out["config_updated"] = True
+        out["schema"] = fl
         L.append(f"  opencode entry {key} now runs {target} (backup {out['backup']}). Restart opencode.")
     else:
         L.append("  pin recorded; it is used the next time you enable this server.")
@@ -929,8 +1186,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-introspect", action="store_true", help="registry check only")
     sp = add("upgrade", cmd_upgrade, "move a server's pin (re-probes, re-reads tools)")
     sp.add_argument("server")
-    sp.add_argument("--to", help="exact version (default: latest published)")
+    sp.add_argument("--to", help="exact version, e.g. 1.2.3; lower than now is a rollback "
+                    "(default: latest published)")
     sp.add_argument("--reintrospect", action="store_true")
+    sp.add_argument("--accept-new-tools", action="store_true",
+                    help="upgrade even though the new version brings ungated tools flagged as risky")
     sp.add_argument("--ungated", action="store_true",
                     help="upgrade even when the config can no longer hold the entry's ask/deny gates")
     sp = add("tools", cmd_tools, "show the recorded tool manifest", cfg=False)

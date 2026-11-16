@@ -16,7 +16,8 @@
 #   5  lib/conf.sh       FILES_DIR ~ / relative; MODEL_URL and SEARXNG_URL
 #                        follow BIND_HOST
 #   6  lib/extensions    invalid EXTENSIONS words skipped, `*` not globbed
-#   7  client.sh update  installs from the hash-pinned lock (pydeps.sh)
+#   7  client.sh update  installs from the hash-pinned lock (pydeps.sh);
+#      offline: --no-pull + --wheelhouse; a 3.10 venv is refused by name
 #   8  update.sh         --images mirrors the searxng pin into the client file
 #   9  fetch-weight.sh   probes $HF_ENDPOINT; verify-weights.sh reports the
 #                        weights dir lib/weights.sh resolves
@@ -78,6 +79,9 @@ while i < len(args):
 def out(o):   # compact JSON, like the real servers (the scripts grep it)
     sys.stdout.write(o if isinstance(o, str) else json.dumps(o, separators=(",", ":")))
     sys.exit(0)
+# The WebUI Host guard probe (lib/net.sh ob_webui_host_guard): a live guard
+# refuses Host: rebind.invalid with 400; REBIND_CODE=200 plays a missing one.
+if w and "Host: rebind.invalid" in args: out(os.environ.get("REBIND_CODE", "400"))
 if w: out("200")
 if url.endswith(":8080/health"): out({"status": "ok"})
 if url.endswith("/slots"): out([])
@@ -276,6 +280,29 @@ for _la in false unknown; do
     fail "auth=$_la default-admin row: $(grep -iE 'admin|WebUI' <<< "$_O" | tr '\n' ' ')"
   fi
 done
+# review 2026-11-16: the WebUI's DNS-rebinding Host guard fails open, and
+# nothing asked the running container whether it was installed.
+RUN_ENV=(LIVE_AUTH=false)
+doctor WEBUI_AUTH=false
+if has "$_O" "refuses a rebound Host" && grep -q -- '^Host: rebind.invalid$' "$T/curl.argv"; then
+  pass "doctor asks the running WebUI for a rebound Host, and a live guard passes"
+else
+  fail "Host guard row (live): $(grep -iE 'rebind|Host' <<< "$_O" | tr '\n' ' ')"
+fi
+RUN_ENV=(LIVE_AUTH=false REBIND_CODE=200)
+doctor WEBUI_AUTH=false
+if has "$_O" "DNS-rebinding guard is not installed" && ! has "$_O" "refuses a rebound Host"; then
+  pass "…a WebUI that SERVES the rebound Host is a FAIL (guard missing after an image bump)"
+else
+  fail "Host guard row (missing): $(grep -iE 'rebind|Host' <<< "$_O" | tr '\n' ' ')"
+fi
+RUN_ENV=(LIVE_AUTH=true REBIND_CODE=200)
+doctor WEBUI_AUTH=true
+if ! has "$_O" "rebound Host" && ! has "$_O" "DNS-rebinding guard"; then
+  pass "…login on (OB_WEBUI_HOSTS='*', no allowlist by design): no row"
+else
+  fail "Host guard row with login on: $(grep -iE 'rebind|Host' <<< "$_O" | tr '\n' ' ')"
+fi
 
 RUN_ENV=(SD_USER=1 TIMER_ON=0)
 doctor
@@ -574,6 +601,48 @@ if [[ $_rc -ne 0 ]] && has "$_O" "HASH MISMATCH" && ! grep -q requirements.txt "
 else
   fail "client update hash mismatch under opt-out (rc=$_rc): $(tr '\n' '|' < "$T/client.log") :: $_O"
 fi
+# Offline route (review 2026-11-16): the checkout updated from a bundle, the
+# deps from a wheelhouse; and a 3.10 venv is named, not fed to pip.
+cupdate_a() { # cupdate_a "<update args>" [ENV=VAL…]
+  : > "$T/client.log"; local _a="$1"; shift
+  # shellcheck disable=SC2086
+  _O="$(env -i HOME="$CH" PATH="$SB/bin:/usr/bin:/bin" STUB_DIR="$T" "$@" bash "$CR/scripts/client.sh" update $_a 2>&1)"; _rc=$?
+}
+mkdir -p "$T/wheels"
+cupdate_a "--no-pull --wheelhouse $T/wheels"
+if [[ $_rc -eq 0 ]] && grep -q "^pydeps install --from $T/wheels -q :: " "$T/client.log" \
+   && has "$_O" "--no-pull: using the checkout as it is"; then
+  pass "update --no-pull --wheelhouse: pinned deps from the wheelhouse, no pull"
+else
+  fail "client update offline (rc=$_rc): $(tr '\n' '|' < "$T/client.log") :: $_O"
+fi
+cupdate_a "" OPENBEAST_WHEELHOUSE="$T/wheels"
+if [[ $_rc -eq 0 ]] && grep -q "^pydeps install --from $T/wheels -q :: " "$T/client.log"; then
+  pass "…OPENBEAST_WHEELHOUSE does the same"
+else
+  fail "client update OPENBEAST_WHEELHOUSE (rc=$_rc): $(tr '\n' '|' < "$T/client.log") :: $_O"
+fi
+cupdate_a "--bogus"
+if [[ $_rc -eq 2 ]] && has "$_O" "usage: client.sh update"; then
+  pass "…an unknown update flag is a usage error"
+else
+  fail "client update bad flag (rc=$_rc): $_O"
+fi
+cp "$CH/.openbeast-client/venv/bin/python3" "$T/py.keep"
+cat > "$CH/.openbeast-client/venv/bin/python3" <<'STUB'
+#!/bin/bash
+[[ "$1" == "-V" ]] && { echo "Python 3.10.14"; exit 0; }
+case "$*" in *version_info*) exit 1 ;; esac
+exit 0
+STUB
+cupdate
+if [[ $_rc -eq 1 ]] && has "$_O" "Python 3.10.14" && has "$_O" "setup-client.sh" \
+   && ! grep -q "^pydeps" "$T/client.log"; then
+  pass "a 3.10 venv: update stops and names the fix instead of dying inside pip"
+else
+  fail "client update 3.10 venv (rc=$_rc): $(tr '\n' '|' < "$T/client.log") :: $_O"
+fi
+cp "$T/py.keep" "$CH/.openbeast-client/venv/bin/python3"
 
 # ---------------------------------------------------------------------------
 echo ""
@@ -709,6 +778,49 @@ else
   fail "content-ID fragment: $_O"
 fi
 rm -rf "$SBU/extensions"
+# review 2026-11-16: --images moved the open-webui digest and recreated the
+# container without asking whether its DNS-rebinding Host guard still loads
+# (it fails open by design). A running WebUI on the new image now gets a
+# rebound Host; SERVED means the previous pin goes back and it is recreated.
+_guard_run() { # _guard_run <rebind-code> — one --images run against a running WebUI
+  printf 'services:\n  open-webui:\n    image: %s\n  searxng:\n    image: %s\n' "$OLD_OW" "$OLD_SX" > "$SBU/docker-compose.yml"
+  cat > "$T/bing/docker" <<STUB
+#!/bin/bash
+echo "docker \$*" >> "$T/bing.log"
+case "\$*" in
+  *"ps --status running --services"*) echo open-webui; echo searxng ;;
+  *"ps --status running --quiet"*)    echo c0ffee ;;
+  "inspect"*)
+    case "\${@: -1}" in
+      ghcr.io/open-webui/open-webui:main) echo "ghcr.io/open-webui/open-webui@$D_OW" ;;
+      searxng/searxng:latest)             echo "searxng/searxng@$D_SX" ;;
+    esac ;;
+esac
+exit 0
+STUB
+  printf '#!/bin/bash\nfor a in "$@"; do [[ "$a" == "Host: rebind.invalid" ]] && { printf %%s %s; exit 0; }; done\nexit 7\n' "$1" > "$T/bing/curl"
+  chmod +x "$T/bing/docker" "$T/bing/curl"
+  : > "$T/bing.log"
+  _O="$(env -i HOME="$T/h" PATH="$T/bing:/usr/bin:/bin" OB_WEBUI_GUARD_WAIT=2 bash "$SBU/scripts/update.sh" --images 2>&1)"; _rc=$?
+}
+mkdir -p "$T/bing"
+_guard_run 200
+if [[ $_rc -eq 0 ]] && has "$_O" "Rolling the open-webui pin back" \
+   && grep -qx "    image: $OLD_OW" "$SBU/docker-compose.yml" \
+   && grep -qx "    image: searxng/searxng:latest@$D_SX" "$SBU/docker-compose.yml" \
+   && [[ "$(grep -c ' up -d' "$T/bing.log")" -ge 2 ]]; then
+  pass "--images: a new WebUI image that serves a rebound Host is rolled back to the old pin and recreated"
+else
+  fail "--images guard rollback (rc=$_rc): $(tr '\n' '|' < "$SBU/docker-compose.yml") :: $_O"
+fi
+_guard_run 400
+if [[ $_rc -eq 0 ]] && has "$_O" "still refuses a rebound Host" \
+   && grep -qx "    image: ghcr.io/open-webui/open-webui:main@$D_OW" "$SBU/docker-compose.yml"; then
+  pass "…a new image whose guard answers 400 keeps the new pin (control)"
+else
+  fail "--images guard control (rc=$_rc): $(tr '\n' '|' < "$SBU/docker-compose.yml") :: $_O"
+fi
+printf 'services:\n  searxng:\n    # client copy\n    image: %s\n    container_name: c\n' "$OLD_SX" > "$SBU/scripts/client-searxng.compose.yml"
 if has "$(sed -n '/OFFLINE=true → skipping the python upgrade/,/wheels/p' "$REPO_DIR/scripts/update.sh")" "COMMIT it"; then
   pass "OFFLINE guidance says to commit the regenerated lock (pydeps refuses a stick-borne one)"
 else

@@ -65,7 +65,7 @@ shows what hydra thinks of every node.
 | `decisions [n]` | Recent decision traces |
 | `metrics` | Prometheus text |
 | `tail [-f] [n]` | The audit log, pretty-printed (never prompt text) |
-| `add-node <id> --url U --engine E ...` | Probe a node and print the TOML stanza to paste (never edits the file) |
+| `add-node <id> --url U --engine E ...` | Probe a node and print the TOML stanza to paste (never edits the file). Every value is written as an escaped TOML string, and a served id from the node that is not a plain model id (`[A-Za-z0-9._:/@+ -]`, at most 200) is left as `SERVED-ID` with a warning: the node is untrusted input |
 | `conformance <deployment>` | Check that a deployment behaves as its engine claims |
 | `pin-smoke [deployment\|all]` | A one-token and a streaming chat per deployment, through `/pin` |
 | `sim` | The simulated fleet (`scripts/hydra-sim.sh`) |

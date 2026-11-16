@@ -39,11 +39,13 @@ fail() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
 has()  { grep -qF -- "$2" <<< "$1"; }
 
 T="$(mktemp -d "${TMPDIR:-/tmp}/ob-ops-ca-XXXXXX")"
+# Unix socket paths are capped near 104 bytes; $TMPDIR on macOS is long.
+TS="$(mktemp -d /tmp/obsk.XXXXXX)"
 PIDS=""
 cleanup() {
   local p
   for p in $PIDS; do kill "$p" 2>/dev/null || true; done
-  rm -rf "$T"
+  rm -rf "$T" "$TS"
 }
 trap cleanup EXIT
 trap 'exit 143' INT TERM
@@ -236,6 +238,8 @@ while i < len(args):
 def out(o):
     sys.stdout.write(o if isinstance(o, str) else json.dumps(o, separators=(",", ":")))
     sys.exit(0)
+# --unix-socket: a probe over the login socket, steered by SOCK_UP.
+if "--unix-socket" in args and os.environ.get("SOCK_UP", "1") != "1": sys.exit(7)
 if "/api/artifacts/health" in url:
     if os.environ.get("ART_UP", "1") != "1": sys.exit(7)
     out({"status": "ok", "artifacts": 2})
@@ -247,6 +251,9 @@ if url.endswith("/v1/health"):
     code = os.environ.get("NOTIFY_CODE", "200")
     if code == "000": sys.exit(7)
     out(code if w else {"healthy": True})
+# The WebUI Host guard probe (lib/net.sh ob_webui_host_guard): a live guard
+# refuses Host: rebind.invalid with 400; REBIND_CODE=200 plays a missing one.
+if w and "Host: rebind.invalid" in args: out(os.environ.get("REBIND_CODE", "400"))
 if w: out("200")
 if url.endswith(":8080/health"): out({"status": "ok"})
 if url.endswith("/slots"): out([])
@@ -470,6 +477,79 @@ if has "$_O" "BEAST_ARTIFACT=true but :8446 is not published"; then
   pass "BEAST_ARTIFACT=true with other surfaces published but not :8446 WARNs"
 else
   fail ":8446 unpublished: $(row '8446')"
+fi
+RUN_ENV=()
+
+# Review 2026-11-16: the :8445/:8446 mount TARGET must match the login mode.
+# Switching CHAT_LOGIN_FROM is two steps (restart, then --publish-chat); a
+# skipped second step 404s every phone login or 502s the console while the
+# TCP liveness probe still passed.
+S8445T='https://beast.example.ts.net:8445 (tailnet only)\n|-- / proxy http://127.0.0.1:3003\n'
+RUN_ENV=(TS_SERVE="$S8445T")
+doctor BEAST_CHAT=true CHAT_OPERATORS=me@example.com CHAT_LOGIN_FROM=unix "CHAT_SOCKET=$TS/chat.sock"
+if has "$_O" ":8445 proxies to http://127.0.0.1:3003 but beast-chat runs CHAT_LOGIN_FROM=unix" \
+   && ! has "$_O" "beast-chat published on :8445"; then
+  pass "unix mode behind a TCP :8445 mount FAILs (every phone login would 404)"
+else
+  fail "unix behind TCP mount: $(row '8445')"
+fi
+S8445U="https://beast.example.ts.net:8445 (tailnet only)\n|-- / proxy unix:$TS/chat.sock\n"
+RUN_ENV=(TS_SERVE="$S8445U")
+doctor BEAST_CHAT=true CHAT_OPERATORS=me@example.com
+if has "$_O" ":8445 proxies to unix:$TS/chat.sock but beast-chat runs CHAT_LOGIN_FROM=loopback"; then
+  pass "a stale unix:<socket> :8445 mount after a rollback to loopback FAILs"
+else
+  fail "stale unix mount: $(row '8445')"
+fi
+doctor BEAST_CHAT=true CHAT_OPERATORS=me@example.com CHAT_LOGIN_FROM=unix "CHAT_SOCKET=$TS/chat.sock"
+if has "$_O" "no socket exists there"; then
+  pass "a unix mount over a socket that does not exist FAILs"
+else
+  fail "missing socket: $(row '8445')"
+fi
+doctor BEAST_CHAT=true CHAT_OPERATORS=me@example.com CHAT_LOGIN_FROM=unix "CHAT_SOCKET=$TS/other.sock"
+if has "$_O" "but CHAT_SOCKET is $TS/other.sock"; then
+  pass "a unix mount at a different path than CHAT_SOCKET FAILs"
+else
+  fail "socket path mismatch: $(row '8445')"
+fi
+python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$TS/chat.sock"
+RUN_ENV=(TS_SERVE="$S8445U" SOCK_UP=0)
+doctor BEAST_CHAT=true CHAT_OPERATORS=me@example.com CHAT_LOGIN_FROM=unix "CHAT_SOCKET=$TS/chat.sock"
+if has "$_O" "beast-chat is NOT answering on $TS/chat.sock"; then
+  pass "a unix mount whose socket does not answer FAILs (probed over the socket, not TCP)"
+else
+  fail "dead socket: $(row '8445')"
+fi
+RUN_ENV=(TS_SERVE="$S8445U" SOCK_UP=1)
+doctor BEAST_CHAT=true CHAT_OPERATORS=me@example.com CHAT_LOGIN_FROM=unix "CHAT_SOCKET=$TS/chat.sock"
+if has "$_O" "beast-chat published on :8445 (tailnet-only, via $TS/chat.sock)" && ! has "$_O" "proxies to"; then
+  pass "…a matching unix mount over a live socket passes (control)"
+else
+  fail "unix control: $(row '8445')"
+fi
+S8446U="https://beast.example.ts.net:8446 (tailnet only)\n|-- / proxy unix:$TS/artifact.sock\n"
+S8446T='https://beast.example.ts.net:8446 (tailnet only)\n|-- / proxy http://127.0.0.1:3004\n'
+RUN_ENV=(TS_SERVE="$S8446T")
+doctor BEAST_ARTIFACT=true ARTIFACT_OPERATORS=me@example.com ARTIFACT_LOGIN_FROM=unix "ARTIFACT_SOCKET=$TS/artifact.sock"
+if has "$_O" ":8446 proxies to http://127.0.0.1:3004 but beast-artifact runs ARTIFACT_LOGIN_FROM=unix"; then
+  pass "beast-artifact: unix mode behind a TCP :8446 mount FAILs"
+else
+  fail "artifact unix behind TCP: $(row '8446')"
+fi
+RUN_ENV=(TS_SERVE="$S8446U")
+doctor BEAST_ARTIFACT=true ARTIFACT_OPERATORS=me@example.com
+if has "$_O" ":8446 proxies to unix:$TS/artifact.sock but beast-artifact runs ARTIFACT_LOGIN_FROM=loopback"; then
+  pass "beast-artifact: a stale unix :8446 mount after a rollback FAILs"
+else
+  fail "artifact stale unix mount: $(row '8446')"
+fi
+python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$TS/artifact.sock"
+doctor BEAST_ARTIFACT=true ARTIFACT_OPERATORS=me@example.com ARTIFACT_LOGIN_FROM=unix "ARTIFACT_SOCKET=$TS/artifact.sock"
+if has "$_O" "beast-artifact published on :8446 (tailnet-only, via $TS/artifact.sock)"; then
+  pass "…a matching unix :8446 mount over a live socket passes (control)"
+else
+  fail "artifact unix control: $(row '8446')"
 fi
 RUN_ENV=()
 

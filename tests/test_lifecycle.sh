@@ -1510,12 +1510,18 @@ echo ""
 echo "doctor.sh's missing-dependency hint:"
 _P="$_T/pydeps"; _sandbox "$_P"
 mkdir -p "$_P/agents"
-printf 'obnotapackage==1.2.3\n' > "$_P/agents/requirements.txt"
+printf 'obnotapackage==1.2.3\nobnotpackage2==4.5\n' > "$_P/agents/requirements.txt"
 # python3 -m pip show: "not installed" for everything; any other python3 call
-# goes to the real interpreter.
-printf '#!/bin/bash\n[[ "$1 $2 $3" == "-m pip show" ]] && exit 1\nexec /usr/bin/python3 "$@"\n' > "$_P/bin/python3"
+# goes to the real interpreter. Every call is logged: doctor reads all pins in
+# ONE interpreter now (lib/pyversions.sh), never a pip startup per pin.
+printf '#!/bin/bash\necho "$1 $2 $3" >> "%s/py.log"\n[[ "$1 $2 $3" == "-m pip show" ]] && exit 1\nexec /usr/bin/python3 "$@"\n' "$_P" > "$_P/bin/python3"
 chmod +x "$_P/bin/python3"
 _O="$(_run "$_P" "$_P/scripts/doctor.sh")"
+if ! grep -q -- '-m pip show' "$_P/py.log" && grep -qF "✗ obnotpackage2 not installed (pinned 4.5)" <<< "$_O"; then
+  pass "doctor reads every pin's version without a pip startup per pin (review 2026-11-16)"
+else
+  fail "doctor pin versions: $(grep -c -- '-m pip show' "$_P/py.log") pip show calls; $(grep -F 'obnotpackage2' <<< "$_O")"
+fi
 if grep -qF "✗ obnotapackage not installed (pinned 1.2.3)" <<< "$_O" \
    && grep -A1 -F "obnotapackage not installed" <<< "$_O" | grep -qF "fix: ./scripts/pydeps.sh install"; then
   pass "a missing pinned package points at ./scripts/pydeps.sh install"
@@ -1792,6 +1798,38 @@ fi
 _BH="$(_bh 'BIND_HOST=192.0.2.9')"
 [[ "$_BH" == "192.0.2.9|http://192.0.2.9:8080" ]] && pass "…a plain BIND_HOST is unchanged (control)" \
   || fail "plain BIND_HOST gave '$_BH'"
+# review 2026-11-16: a QUOTED value with a comment kept its closing quote
+# (`127.0.0.1"`), which still read as loopback and reached --host.
+_BH="$(_bh 'BIND_HOST="127.0.0.1"   # loopback only')"
+[[ "$_BH" == "127.0.0.1|http://127.0.0.1:8080" ]] \
+  && pass "BIND_HOST=\"127.0.0.1\" # comment -> 127.0.0.1 (was 127.0.0.1\", passing as loopback)" \
+  || fail "quoted BIND_HOST with an inline comment gave: '$_BH'"
+_BH="$(_bh "BIND_HOST='192.0.2.9' # LAN")"
+[[ "$_BH" == "192.0.2.9|http://192.0.2.9:8080" ]] && pass "…single quotes too" \
+  || fail "single-quoted BIND_HOST with a comment gave '$_BH'"
+_BH="$(_bh 'BIND_HOST="[::1]"')"
+[[ "$_BH" == "[::1]|"* ]] && pass "…a bracketed IPv6 address is an address" \
+  || fail "BIND_HOST=[::1] gave '$_BH'"
+# Junk that survives every strip is refused, not bound: loopback + one lint row.
+printf '%s\n' 'BIND_HOST=127.0.0.1,10.0.0.1' > "$_BHS/openbeast.conf"
+_BH="$(env -i HOME="$_BHS/home" PATH="$_BHS/bin:/usr/bin:/bin" OB_CONF_READONLY=1 \
+  bash -c 'REPO_DIR="$1"; source "$1/scripts/lib/conf.sh" 2>/dev/null; printf "%s|" "$BIND_HOST"; ob_conf_lint' _ "$_BHS")"
+if [[ "$_BH" == "127.0.0.1|"*"BIND_HOST='127.0.0.1,10.0.0.1' is not an address or hostname"* ]]; then
+  pass "BIND_HOST=127.0.0.1,10.0.0.1 -> 127.0.0.1, and lint names it"
+else
+  fail "malformed BIND_HOST gave: '$_BH'"
+fi
+# _ob_conf_value itself: the quoted-plus-comment form, and the forms it must
+# NOT change (a quote inside a value; a bare value containing ' #').
+_qv() { printf '%s\n' "$1" > "$_BHS/openbeast.conf"
+  env -i PATH=/usr/bin:/bin OB_CONF_READONLY=1 OB_CONF_LINTED=1 \
+    bash -c 'REPO_DIR="$1"; source "$1/scripts/lib/conf.sh" 2>/dev/null; _ob_conf_value K' _ "$_BHS"; }
+_q1="$(_qv 'K="a b" # note')"; _q2="$(_qv 'K="a"b"')"; _q3="$(_qv 'K=pa #ss')"; _q4="$(_qv 'K="x #y"')"
+if [[ "$_q1" == "a b" && "$_q2" == 'a"b' && "$_q3" == "pa #ss" && "$_q4" == "x #y" ]]; then
+  pass "_ob_conf_value: \"v\" # c -> v; inner quotes and a bare ' #' are kept as before"
+else
+  fail "_ob_conf_value quoting: [$_q1] [$_q2] [$_q3] [$_q4]"
+fi
 
 # ---------------------------------------------------------------------------
 # extensions-ntfy review: DASHBOARD_PORT was honoured by run.sh only;
@@ -1874,6 +1912,26 @@ else
   fail "healthcheck relaunched a live dashboard: $(grep -iE 'dashboard' <<< "$_O" | tr '\n' ' ')"
 fi
 [[ "$_DPID" =~ ^[0-9]+$ ]] && kill "$_DPID" 2>/dev/null || true
+# review 2026-11-16: the dashboard relaunch was gated on the raw $RESTART, so
+# a ./stop.sh landing mid-pass (after the services rows, before this one)
+# got an unsupervised dashboard back. The stub "lands" stop.sh the moment the
+# pass asks for /api/slot.
+_DS="$_T/dashstop"; _sandbox "$_DS"
+mkdir -p "$_DS/extensions/dashboard"
+cp "$_DR/extensions/dashboard/"{manifest,server.py,run.sh} "$_DS/extensions/dashboard/"
+printf '#!/bin/bash\nfor a in "$@"; do [[ "$a" == *":%s/api/slot" ]] && { mkdir -p "%s/.run"; : > "%s/.run/stopped"; exit 7; }; done\nexit 7\n' \
+  "$_DPORT" "$_DS" "$_DS" > "$_DS/bin/curl"
+chmod +x "$_DS/bin/curl"
+printf 'SEARXNG_SECRET=s\nEXTENSIONS="dashboard"\nDASHBOARD_PORT=%s\n' "$_DPORT" > "$_DS/openbeast.conf"
+_O="$(timeout 300 bash -c "$(declare -f _run); RUN_ENV=(); _run '$_DS' '$_DS/scripts/healthcheck.sh' --restart")"
+_SPID="$(cat "$_DS/.run/ext-dashboard.pid" 2>/dev/null || true)"
+[[ "$_SPID" =~ ^[0-9]+$ ]] && kill "$_SPID" 2>/dev/null
+if [[ "$_O" != *"restarting the dashboard"* && -z "$_SPID" \
+      && "$_O" == *"not restarting: the stack was stopped on purpose"* ]]; then
+  pass "…but not after a ./stop.sh that landed during the pass (_may_restart)"
+else
+  fail "dashboard relaunched after a mid-pass stop: $(grep -iE 'dashboard|→' <<< "$_O" | tr '\n' ' ')"
+fi
 
 # ---------------------------------------------------------------------------
 echo ""

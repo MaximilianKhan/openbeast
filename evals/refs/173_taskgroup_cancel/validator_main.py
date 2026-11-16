@@ -11,7 +11,7 @@ import vlib
 
 D = '/tmp/eval_tg173'
 SRC = os.path.join(D, 'tg.py')
-N_CASES = 600
+N_CASES = 600                 # random scenarios; harness.N_TAIL cancel-tail ones follow
 SEED = 0x7A5C6173
 CPU_S = 5                     # at scale 1; the reference needs well under 1 s
 
@@ -232,7 +232,7 @@ oracle_ns = {'__name__': '_oracle'}
 exec(ORACLE, oracle_ns)
 scen = ns['gen_scenarios'](SEED, N_CASES)
 want = json.loads(json.dumps(ns['run_all'](scen, oracle_ns['TaskGroup'])))
-if len(want) != N_CASES + 1 or any('err' in w for w in want):
+if len(want) != len(scen) + 1 or any('err' in w for w in want):
     fail('validator self-check failed')
 
 prog = ('_HARNESS = ' + repr(HARNESS) + '\n'

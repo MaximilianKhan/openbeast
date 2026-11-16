@@ -453,7 +453,10 @@ Expected banner line (90% of 122 GiB):
 ```
 
 `start.sh` refuses this profile on a Spark, on a box under 118 GiB, and while
-someone else's GPU lease is held. The load takes several minutes (about 95 GiB
+someone else's GPU lease is held, in every launch mode (its preflight reads
+the profile's `# openbeast-scope:` line). The raised 90% and memlock need the
+capped scope, which only `start.sh -d` with user systemd builds: a foreground
+`./start.sh serve-glm53-flash-abl-q2kxl-big.sh` runs uncapped, and says so. The load takes several minutes (about 95 GiB
 pinned).
 
 ```bash
@@ -524,6 +527,9 @@ MAYA_STAGE_PYTHON=3.12 ENG_STAGE_PLATFORM=manylinux_2_28_x86_64 \
 ```
 
 and on the rig: `scripts/engine.sh install maya --from /media/usb/maya`.
+The folder carries the version; the commit must still be the reviewed
+one for that version (its MANIFEST `COMMIT` is checked against the table,
+never trusted in place of `--digest`).
 
 **Prepare** (Maya's own build, about 30 min, plus its pack, about 1 GB
 written beside the GGUF; the stack stopped):
@@ -556,8 +562,10 @@ scripts/engine-gate.sh maya --profile glm53-flash-abl-q2kxl --serve-script serve
 ```
 
 The verdict goes to `.engines/gate/maya.json`, with a line in
-`scripts/engine.sh history`. The box is always switched back to llama.cpp
-afterwards, pass or fail.
+`scripts/engine.sh history`. It admits this Maya commit, this profile and
+these weights on this host only: after `engine.sh update maya` (or a
+rollback), gate it again. The box is always switched back to llama.cpp
+afterwards, pass, fail, error or Ctrl-C.
 
 **On PASS**:
 
@@ -636,20 +644,49 @@ The same rule binds the Maya profile: it serves exactly these GGUF files.
 whether a candidate engine is admitted.
 
 - **What it measures.** One streamed chat completion per run (`tokps.py`):
-  fixed prompt, temperature 0, seed 42, 256 tokens, one warm-up run, then the
-  median of 3.
+  temperature 0, seed 42, 256 tokens, one warm-up run, then the median of 3.
+  - **No run replays another.** Run *i* opens with its own header line and
+    asks question *i* of a fixed rotation (`tokps.QUESTIONS`), with
+    `"cache_prompt": false`. An identical request let llama-server's prompt
+    cache (and Maya's conversation cache) re-evaluate about one token, so the
+    "prefill" of the counted runs was cache reuse, and greedy decoding
+    replayed the warm-up's exact expert trace into the MoE cache, which
+    flattered every cache policy by a different amount. The rotation is
+    fixed, so two engines and two days still see the same work. Each run
+    prints its prompt tokens; a run whose prompt tokens show a cache hit
+    anyway keeps its decode rate but not its prefill.
   - Decode tok/s is llama-server's own `timings.predicted_per_second` when
-    the server reports it; otherwise the token spacing of the stream. TTFT
-    is excluded either way.
+    the server reports it; otherwise the token spacing of the stream. The
+    stream rate is recorded either way. TTFT is excluded either way.
+  - **Like with like.** The gate compares server timings only when both
+    records have them; otherwise both stream rates (`compared_by` in the
+    verdict). It refuses a pair whose completion lengths differ by more than
+    10% (a reply that stops early decodes on a shorter KV), and a candidate
+    whose self-reported rate is more than 25% above what the client's clock
+    saw.
   - Two records from different hosts, or with different prompts, are never
     compared.
-- **The bar is 1.5×.** `ENGINE_GATE_RATIO` may raise it, never lower it. A
-  verdict below 1.5× is refused even if someone hand-edits it to `"pass":
-  true` (`ob_engine_gate_ok`).
-- **What it opens.** Only a passing verdict on file lets the adapter's
-  `profile_check` and `launch` through. `--force` does not bypass it.
-  `OPENBEAST_ENGINE_GATE=measuring` is the one exception, and only the gate
-  run sets it.
+- **The bar is 1.5×.** `ENGINE_GATE_RATIO` in `openbeast.conf` (or
+  `OPENBEAST_ENGINE_GATE_RATIO`) may raise it, never lower it. The gate run,
+  `engine.sh use` and the daemon's launch read the same value
+  (`ob_engine_gate_ratio`), so a raised bar FAILs in the gate run itself
+  rather than printing PASS that `use` then refuses. A verdict below 1.5× is
+  refused even if someone hand-edits it to `"pass": true` (`ob_engine_gate_ok`).
+- **What it opens.** Only a passing verdict for exactly what is about to run
+  lets the adapter's `profile_check` and `launch` through. The verdict
+  records the host and the adapter's binding (`eng_maya_gate_binding`: the
+  installed Maya commit, the profile, its GGUF), and all of them must match.
+  A new Maya commit (`update`, `--digest`, `rollback`), another profile or
+  another host is gated again until `engine-gate.sh` re-measures it.
+  `--force` does not bypass it. `OPENBEAST_ENGINE_GATE=measuring` is the one
+  exception, and only the gate run sets it.
+- **Same weights, enforced.** `engine-gate.sh` refuses (exit 2) a
+  `--serve-script` that does not load the profile's GGUF.
+- **A failed or interrupted run leaves the engine gated.** Before measuring,
+  the old verdict moves to `<engine>.json.prev`. A launch, readiness or
+  measurement failure, Ctrl-C or a TERM all run an EXIT trap that switches
+  back to llama.cpp and restarts a stack that was running, so the conf is
+  never left on the ungated candidate.
 - The API key comes from `LLAMA_API_KEY` in the environment, never argv.
 
 ### Why Maya and not Strata

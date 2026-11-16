@@ -71,7 +71,13 @@ def measured_k(l0_rows: list[dict], est_by_id: dict, wall_s: float) -> float | N
 
 def stratified_sample(l0_rows: list[dict], candidates: set, frac: float, seed: str) -> dict:
     """{unit id: inclusion probability}: every L0 failure (pi 1) and a seeded
-    `frac` of the L0 passes (pi = frac). Deterministic in `seed`."""
+    sample of round(n * frac) of the n L0 passes. Deterministic in `seed`.
+
+    The recorded pi is the TRUE inclusion probability of that draw, k/n
+    (simple random sampling without replacement), not `frac`: ablation.py
+    weights each sampled unit by 1/pi (Horvitz-Thompson), and with few
+    passes round() moves k far from n*frac (n=4, frac=1/3: k=1, pi 0.25,
+    not 0.333 -- a 25 % undercount of regressions; review 1116)."""
     rows = {r["id"]: r for r in l0_rows}
     fails = sorted(u for u in candidates if u in rows and not rows[u].get("passed"))
     passes = sorted(u for u in candidates if u in rows and rows[u].get("passed"))
@@ -81,7 +87,8 @@ def stratified_sample(l0_rows: list[dict], candidates: set, frac: float, seed: s
     pi = {u: 1.0 for u in fails}
     # Units L0 did not measure (budget skip) cannot be stratified: keep them.
     pi.update({u: 1.0 for u in candidates if u not in rows})
-    pi.update({u: frac for u in sampled})
+    if sampled:
+        pi.update({u: k / len(passes) for u in sampled})
     return pi
 
 

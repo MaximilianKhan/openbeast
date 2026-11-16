@@ -16,6 +16,9 @@
 #      nobody named (supply S12); a miss lists the peers that exist (UX-29);
 #      a 'beast' owned by another tailnet user is never wired unconfirmed
 #   5  a stored key only ever goes back to the rig it was stored for
+#   6  review 2026-11-16: a 3.10 venv left by an older install is rebuilt;
+#      python3.14 is found; --wheelhouse installs with no index; the key-
+#      bearing opencode.json is replaced atomically at 0600
 
 set -uo pipefail
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -79,7 +82,7 @@ case " \$* " in *" -w "*) printf '%s' "\${code:-000}" ;; esac
 exit 0
 EOF
 printf '#!/bin/bash\nexit 0\n' > "$BIN/opencode"
-printf '#!/bin/bash\nexit 0\n' > "$R/scripts/pydeps.sh"
+printf '#!/bin/bash\necho "pydeps $*" >> "%s/pydeps.calls"\nexit 0\n' "$S" > "$R/scripts/pydeps.sh"
 # The client CLI is not under test here, and its refresh would dial the rig.
 printf '#!/bin/bash\necho "client.sh $*" >> "%s/client.calls"\nexit 0\n' "$S" > "$R/scripts/client.sh"
 chmod +x "$T/vetted-python" "$BIN"/* "$R/scripts/pydeps.sh" "$R/scripts/client.sh"
@@ -93,10 +96,12 @@ run() {
   while [[ $# -gt 0 && "$1" != "--" ]]; do envs+=("$1"); shift; done
   shift
   mkdir -p "$H/.openbeast-client/venv/bin"
-  printf '#!/bin/bash\nexit 0\n' > "$H/.openbeast-client/venv/bin/python3"
+  # a venv a case planted on purpose (an old 3.10 one) is left alone
+  [[ -e "$H/.openbeast-client/venv/bin/python3" ]] \
+    || printf '#!/bin/bash\nexit 0\n' > "$H/.openbeast-client/venv/bin/python3"
   printf '#!/bin/bash\nexit 0\n' > "$H/.openbeast-client/venv/bin/pip"
   chmod +x "$H/.openbeast-client/venv/bin/python3" "$H/.openbeast-client/venv/bin/pip"
-  : > "$S/curl.argv"; : > "$S/py.calls"; : > "$S/client.calls"
+  : > "$S/curl.argv"; : > "$S/py.calls"; : > "$S/client.calls"; : > "$S/pydeps.calls"
   OUT="$(env -i HOME="$H" PATH="$BIN:/usr/bin:/bin" OPENBEAST_PYTHON="$T/vetted-python" \
          ${envs[@]+"${envs[@]}"} bash "$R/scripts/setup-client.sh" "$@" </dev/null 2>&1)"
   RC=$?
@@ -320,6 +325,73 @@ if [[ $RC -eq 0 ]] && grep -q "rigB-key" "$H/.openbeast-client.env" && ! grep -q
   pass "control: an explicitly given key for the new rig is used"
 else
   fail "explicit key on switch (rc=$RC): $OUT"
+fi
+
+# ---------------------------------------------------------------------------
+echo ""
+echo "6. venv floor, python3.14, offline wheelhouse, atomic config (review 2026-11-16):"
+# An interpreter whose `-m venv` builds a stub venv (a real one has no mcp).
+cat > "$T/venv-python" <<EOF
+#!/bin/bash
+if [[ "\$1" == "-m" && "\$2" == "venv" ]]; then
+  echo "venv \$*" >> "$S/py.calls"; d="\${@: -1}"; mkdir -p "\$d/bin"
+  printf '#!/bin/bash\\nexit 0\\n' > "\$d/bin/python3"; cp "\$d/bin/python3" "\$d/bin/pip"
+  chmod +x "\$d/bin/python3" "\$d/bin/pip"; exit 0
+fi
+echo vetted >> "$S/py.calls"; exec "$REAL_PY" "\$@"
+EOF
+chmod +x "$T/venv-python"
+mkdir -p "$T/hold/.openbeast-client/venv/bin"
+cat > "$T/hold/.openbeast-client/venv/bin/python3" <<'EOF'
+#!/bin/bash
+[[ "$1" == "-V" ]] && { echo "Python 3.10.14"; exit 0; }
+case "$*" in *version_info*) exit 1 ;; esac
+exit 0
+EOF
+chmod +x "$T/hold/.openbeast-client/venv/bin/python3"
+run hold 200 200 OPENBEAST_PYTHON="$T/venv-python" -- --host rig.example --no-search
+if [[ $RC -eq 0 ]] && has "$OUT" "Python 3.10.14, below 3.11" && grep -q "venv -m venv --clear" "$S/py.calls"; then
+  pass "a 3.10 venv from an older install is rebuilt with the vetted python, not reused"
+else
+  fail "old venv (rc=$RC, calls=$(tr '\n' ' ' < "$S/py.calls")): $OUT"
+fi
+run h200 200 200 OPENBEAST_PYTHON="$T/venv-python" -- --host rig.example --no-search
+if [[ $RC -eq 0 ]] && ! grep -q "venv -m venv" "$S/py.calls"; then
+  pass "control: a >=3.11 venv is kept"
+else
+  fail "good venv rebuilt (rc=$RC, calls=$(tr '\n' ' ' < "$S/py.calls"))"
+fi
+printf '#!/bin/bash\necho py314 >> "%s/py.calls"\nexec "%s" "$@"\n' "$S" "$REAL_PY" > "$BIN/python3.14"
+chmod +x "$BIN/python3.14"
+run h314 200 200 OPENBEAST_PYTHON= -- --host rig.example --no-search
+if [[ $RC -eq 0 ]] && grep -q py314 "$S/py.calls" && ! grep -q bare "$S/py.calls"; then
+  pass "python3.14 is found (only a 3.9 python3 besides it)"
+else
+  fail "python3.14 (rc=$RC, calls=$(tr '\n' ' ' < "$S/py.calls")): $OUT"
+fi
+rm -f "$BIN/python3.14"
+mkdir -p "$T/wheels"
+run hwh 200 200 -- --host rig.example --no-search --wheelhouse "$T/wheels"
+if [[ $RC -eq 0 ]] && grep -q "^pydeps install --from $T/wheels -q" "$S/pydeps.calls"; then
+  pass "--wheelhouse installs the pinned deps from it (pydeps --from: no index)"
+else
+  fail "--wheelhouse (rc=$RC, pydeps=$(tr '\n' ' ' < "$S/pydeps.calls")): $OUT"
+fi
+run hwe 200 200 OPENBEAST_WHEELHOUSE="$T/wheels" -- --host rig.example --no-search
+if [[ $RC -eq 0 ]] && grep -q "^pydeps install --from $T/wheels -q" "$S/pydeps.calls"; then
+  pass "…and so does OPENBEAST_WHEELHOUSE"
+else
+  fail "OPENBEAST_WHEELHOUSE (rc=$RC, pydeps=$(tr '\n' ' ' < "$S/pydeps.calls")): $OUT"
+fi
+_ino() { stat -c '%i' "$1" 2>/dev/null || stat -f '%i' "$1"; }
+OC="$T/hatom/.config/opencode/opencode.json"; mkdir -p "$(dirname "$OC")"
+echo '{"model":"mine"}' > "$OC"; chmod 644 "$OC"; _before="$(_ino "$OC")"
+run hatom 200 200 OPENBEAST_API_KEY=atom-key -- --host rig.example --no-search
+if [[ $RC -eq 0 ]] && [[ "$(_mode "$OC")" == "600" ]] && [[ "$(_ino "$OC")" != "$_before" ]] \
+   && grep -q atom-key "$OC" && grep -q '"model": "mine"' "$OC" && ! ls "$(dirname "$OC")"/.opencode.json.* >/dev/null 2>&1; then
+  pass "a keyed opencode.json is a NEW 0600 file (rename), never the old 0644 one rewritten"
+else
+  fail "atomic config (rc=$RC, mode=$(_mode "$OC")): $OUT"
 fi
 
 echo ""

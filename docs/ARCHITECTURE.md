@@ -357,7 +357,9 @@ scripts/                     # Server, ops, and feature CLIs
                              #   bundle_manifest.py, pydeps_lock.py, skill_import.py,
                              #   backend.sh (per-backend readiness: llama / vLLM / TensorFold),
                              #   engine.sh (the engine plane; ob_engine_gate_ok), memscope.sh
-                             #   (per-profile memory scope: docs/WEIGHT_STREAMING.md)
+                             #   (per-profile memory scope: docs/WEIGHT_STREAMING.md),
+                             #   pyversions.sh (every pin's installed version in one python3:
+                             #   doctor.sh, update.sh --python)
   engines/                   # one adapter per engine: llama / vllm / tensorfold / maya (opt-in, gated);
                              #   maya/ = its requirements.lock, profiles/, prepare.sh
   engine.sh, engine-gate.sh  # swap / pin / roll back the engine (docs/ENGINES.md); the 1.5x tok/s gate
@@ -383,6 +385,7 @@ agents/                      # Agent framework + servers
   artifact.py                # beast-artifact store (versions, ownership, visibility)
   artifact_server.py         # beast-artifact on :3004 — gallery, viewer, sandboxed raw pages (opt-in)
   hostpolicy.py              # The Host-header allowlist both published servers share
+  loginsock.py               # The 0600 login socket + "did this request arrive on it" (chat, artifact)
   mediapolicy.py             # The inline-media rule beast-gate and the router share (no URL fetches)
   chat_ui/ · artifact_ui/    # The console and the gallery/viewer (self-contained HTML)
   lang/                      # beast-lang: drivers, introspect, verify, packs, escalate, reference, synthesize

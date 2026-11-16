@@ -144,12 +144,32 @@ def _edge_has_devices():
     return False
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Status probes never follow a 3xx.
+
+    urllib's default redirect handler copies every add_header() header onto
+    the redirected request, cross-host included, so a keyed probe of a
+    remote INFERENCE_URL that answered `302 Location: http://elsewhere/`
+    handed LLAMA_API_KEY to elsewhere on every 1.5 s poll (review 2026-11-16).
+    A health probe should report what the address itself says: a redirect
+    reads as no answer (urllib raises HTTPError, _get returns (None, "")).
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def _get(url, timeout=2, auth=False):
     try:
         req = urllib.request.Request(url)
         if auth and _API_KEY:
-            req.add_header("Authorization", f"Bearer {_API_KEY}")
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+            # Unredirected as well: belt and braces should a redirect-following
+            # opener ever be swapped back in.
+            req.add_unredirected_header("Authorization", f"Bearer {_API_KEY}")
+        with _OPENER.open(req, timeout=timeout) as r:
             return r.status, r.read().decode("utf-8", "replace")
     except Exception:
         return None, ""
@@ -165,8 +185,39 @@ def _get(url, timeout=2, auth=False):
 # still out then reads as no answer (down / null), never as a hang.
 GATHER_DEADLINE_S = 3.0
 _memo = threading.local()
-_inflight = set()
+
+
+class _Probe:
+    """One in-flight probe of a (url, auth) key, shared by every gather that
+    wants that key while it is out."""
+
+    __slots__ = ("done", "result")
+
+    def __init__(self):
+        self.done = threading.Event()
+        self.result = (None, "")
+
+
+# (url, auth) -> the _Probe still out for it. Shared, not skipped: /api/slot
+# and /api/status gather under separate _Cached locks and ask the same keys
+# (/health, /v1/models, :3001, :3000, :8888). The old rule served a key that
+# was already in flight as "no answer", so whichever gather started second
+# reported a healthy model DOWN (healthy:false, model.id null) and cached it
+# for CACHE_S (review 2026-11-16). Now the second gather waits on the same
+# probe, up to its own deadline. A straggler that outlives every deadline is
+# still one thread per URL.
+_inflight = {}
 _inflight_lock = threading.Lock()
+
+
+def _run_probe(key, probe):
+    try:
+        probe.result = _get(key[0], auth=key[1])
+    finally:
+        with _inflight_lock:
+            if _inflight.get(key) is probe:
+                del _inflight[key]
+        probe.done.set()
 
 
 def _fetch(url, auth=False):
@@ -180,36 +231,27 @@ def _fetch(url, auth=False):
 @contextlib.contextmanager
 def _prefetched(reqs, deadline=None):
     """Probe every (url, auth) in `reqs` concurrently, bounded by `deadline`
-    overall, and serve those answers to _fetch for the duration."""
+    overall, and serve those answers to _fetch for the duration. A key some
+    other gather is already probing is joined, not re-asked and not skipped."""
     deadline = GATHER_DEADLINE_S if deadline is None else deadline
     reqs = list(dict.fromkeys(reqs))
-    got = {}
-
-    def one(key):
-        try:
-            got[key] = _get(key[0], auth=key[1])
-        finally:
-            with _inflight_lock:
-                _inflight.discard(key)
-
-    threads = []
+    probes = {}
     for k in reqs:
-        # A probe that outlived an earlier deadline (an upstream trickling
-        # bytes slower than the per-recv timeout) is still out: do not stack
-        # another on it, so stragglers stay at most one per URL. That URL
-        # reads as no answer until the first one comes back.
         with _inflight_lock:
-            if k in _inflight:
-                continue
-            _inflight.add(k)
-        threads.append(threading.Thread(target=one, args=(k,), daemon=True))
-    for t in threads:
-        t.start()
+            p = _inflight.get(k)
+            fresh = p is None
+            if fresh:
+                p = _inflight[k] = _Probe()
+        if fresh:
+            threading.Thread(target=_run_probe, args=(k, p), daemon=True).start()
+        probes[k] = p
     end = time.monotonic() + deadline
-    for t in threads:
-        t.join(max(0.0, end - time.monotonic()))
+    for p in probes.values():
+        p.done.wait(max(0.0, end - time.monotonic()))
     prev = getattr(_memo, "answers", None)
-    _memo.answers = {k: got.get(k, (None, "")) for k in reqs}
+    # A probe still out at the deadline reads as no answer (down / null).
+    _memo.answers = {k: (p.result if p.done.is_set() else (None, ""))
+                     for k, p in probes.items()}
     try:
         yield
     finally:
@@ -589,7 +631,38 @@ def _slot_status_llama():
         },
         "services": services_status(health),
         "auth": _auth_mode(),
+        **_admission_field(),
     }
+
+
+def _edge_admission():
+    """beast-gate's per-device limits, for a client to size its parallelism
+    to, or None with the gate off (keeping a gate-off answer byte-identical).
+    The same rule as agents/edge.py default_max_inflight: EDGE_MAX_INFLIGHT,
+    else INFERENCE_SLOTS, else 2. Review 2026-11-16: slots.total said 4 on the
+    Spark pair while one device was admitted 2, so a client running 4 agents
+    learned of the cap only from 429s."""
+    if not _EDGE_GATE:
+        return None
+
+    def _int(name):
+        raw = os.environ.get(name, "").strip()
+        return int(raw) if raw.isdigit() else None
+
+    explicit, slots = _int("OPENBEAST_EDGE_MAX_INFLIGHT"), _int("OPENBEAST_INFERENCE_SLOTS")
+    if explicit is not None:
+        inflight = max(1, explicit)              # the gate's Bucket floors at 1
+    elif slots:
+        inflight = slots
+    else:
+        inflight = 2
+    rate = _int("OPENBEAST_EDGE_RATE_LIMIT") or 120
+    return {"per_device_inflight": inflight, "per_device_rate_per_min": rate}
+
+
+def _admission_field():
+    a = _edge_admission()
+    return {"admission": a} if a else {}
 
 
 def _auth_mode():
@@ -709,6 +782,7 @@ def _slot_status_remote():
         "capacity": capacity,
         "services": dict(services_status(health), **({"model": False} if tf.get("stalled") else {})),
         "auth": _auth_mode(),
+        **_admission_field(),
     }
 
 

@@ -19,7 +19,7 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# FOUR JOBS IN PARALLEL, THEN ONE GATE. This was a single serial job of ~15.5
+# FIVE JOBS IN PARALLEL, THEN ONE GATE. This was a single serial job of ~15.5
 # minutes. Branch protection requires a check named exactly `test`, so the
 # last job keeps that name and only reports on the others: renaming it, or
 # dropping it, would leave every PR waiting on a check that never arrives.
@@ -170,8 +170,15 @@ jobs:
       - name: beast-docs tests
         run: python -m pytest --timeout=300 tests/test_beast_docs.py tests/test_platform_docs_tool.py -q
 
+  # THE SHELL SUITES, IN TWO PARALLEL JOBS. As one serial job they took
+  # 12.2 min and set CI's wall time on their own (run 43834747518: Script
+  # structure 197 s, inference backends 89 s, llama-serving 64 s, then two
+  # dozen smaller suites). Split by measured time, about 6 min each, so the
+  # full pytest job is the critical path again. Every suite still runs in
+  # exactly one of them (tests/test_ci_workflow.py checks every suite is run
+  # and that the `test` gate needs every job).
   shell:
-    name: shell suites
+    name: shell suites (structure, serving, backends)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -189,6 +196,45 @@ jobs:
 
       - name: Script structure tests
         run: bash tests/test_scripts.sh
+
+      # serve.sh, run.sh, the instinct scorer, measure-vram.sh and the MTP
+      # profilers against stub llama-server / llama-cli / nvidia-smi / curl;
+      # sparse files stand in for weights. Loopback python servers only.
+      - name: llama-serving tests (serve.sh, run.sh, scorer, profilers)
+        run: bash tests/test_llama_serving.sh
+
+      # INFERENCE_BACKEND / unmanaged-backend paths: a loopback python stub
+      # plays llama-server, vLLM and TensorFold; pkill/pgrep/docker are
+      # recording stubs.
+      - name: Inference backend tests (vLLM / TensorFold, unmanaged)
+        run: bash tests/test_backends.sh
+
+      - name: Shell syntax sweep
+        run: |
+          rc=0
+          # extensions/*/*.sh too: extension launchers (dashboard/run.sh
+          # serves /api/slot) were outside every shell gate.
+          for f in bootstrap.sh start.sh stop.sh agent.sh scripts/*.sh scripts/lib/*.sh scripts/backends/*.sh scripts/backends/*/*.sh tests/*.sh extensions/*/*.sh; do
+            bash -n "$f" || { echo "SYNTAX FAIL: $f"; rc=1; }
+          done
+          exit $rc
+
+  shell-ops:
+    name: shell suites (ops, offline, hydra, spark)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      # The shell suites drive python helpers (hydra's simulated fleet needs
+      # httpx/uvicorn, the artifact round trip fastapi): the same hash-pinned
+      # lock as the pytest jobs. No pytest here.
+      - name: Install Python dependencies (hash-pinned lock)
+        run: python -m pip install -q --require-hashes -r agents/requirements.lock
 
       # Fully stubbed (hf/pip/docker/git/curl record their calls): the
       # fetch-weight staging, bundle install and stale-lock paths cannot be
@@ -241,12 +287,6 @@ jobs:
       - name: GPU lease / update / ops tests
         run: bash tests/test_gpu_ops.sh
 
-      # serve.sh, run.sh, the instinct scorer, measure-vram.sh and the MTP
-      # profilers against stub llama-server / llama-cli / nvidia-smi / curl;
-      # sparse files stand in for weights. Loopback python servers only.
-      - name: llama-serving tests (serve.sh, run.sh, scorer, profilers)
-        run: bash tests/test_llama_serving.sh
-
       - name: Shell ops tests (doctor, tailscale, conf, keys)
         run: bash tests/test_shell_ops.sh
 
@@ -254,10 +294,14 @@ jobs:
       # to the whole dashboard when that mount fails. A stubbed tailscale.
       - name: beast-slot publish tests (setup-tailscale.sh --publish-slot)
         run: bash tests/test_publish_slot.sh
+
       - name: beast-chat unix-socket login (CHAT_LOGIN_FROM)
         run: bash tests/test_chat_unix_login.sh
+
       - name: tailnet machine name (TS_HOSTNAME)
         run: bash tests/test_tailscale_hostname.sh
+      - name: raw :8443 target follows INFERENCE_URL (setup-tailscale.sh)
+        run: bash tests/test_tailscale_raw_inference.sh
 
       # beast-chat / beast-artifact ops: port ownership at start, watchdog
       # restart logs, job-log rotation + retention, doctor's :8446/:8447 and
@@ -265,12 +309,6 @@ jobs:
       # python servers on ephemeral ports, killed by recorded pid.
       - name: beast-chat / beast-artifact ops tests
         run: bash tests/test_ops_chat_artifact.sh
-
-      # INFERENCE_BACKEND / unmanaged-backend paths: a loopback python stub
-      # plays llama-server, vLLM and TensorFold; pkill/pgrep/docker are
-      # recording stubs.
-      - name: Inference backend tests (vLLM / TensorFold, unmanaged)
-        run: bash tests/test_backends.sh
 
       # The engine plane (docs/ENGINES.md): scripts/engine.sh list / status /
       # use / install / update / stage / rollback, and managed single-host
@@ -370,16 +408,6 @@ jobs:
 
       - name: Operator script tests
         run: bash tests/test_operator_scripts.sh
-
-      - name: Shell syntax sweep
-        run: |
-          rc=0
-          # extensions/*/*.sh too: extension launchers (dashboard/run.sh
-          # serves /api/slot) were outside every shell gate.
-          for f in bootstrap.sh start.sh stop.sh agent.sh scripts/*.sh scripts/lib/*.sh scripts/backends/*.sh scripts/backends/*/*.sh tests/*.sh extensions/*/*.sh; do
-            bash -n "$f" || { echo "SYNTAX FAIL: $f"; rc=1; }
-          done
-          exit $rc
 
   variants:
     name: variant audit + doc drift
@@ -517,7 +545,7 @@ jobs:
   test:
     name: test
     if: ${{ always() }}
-    needs: [pytest, pytest-named, shell, variants, lock-fresh, lock-installs]
+    needs: [pytest, pytest-named, shell, shell-ops, variants, lock-fresh, lock-installs]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

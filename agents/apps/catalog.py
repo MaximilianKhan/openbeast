@@ -27,6 +27,17 @@ TRANSPORTS = ("stdio", "http")
 REGISTRIES = ("npm", "pypi", "github", "app")
 PLATFORMS = ("darwin", "linux")
 OFF_PATH = ("ok", "warn", "fail")
+# An exact release version, and nothing else: digits and dots, then an
+# optional semver / PEP 440 suffix (1.2.3-beta.1, 2.3.0rc1, 1.0.0.post1).
+# A version is substituted into `{package}@{version}`, so anything wider is a
+# different install spec, not a version: `npm:other-pkg@9` is an npm alias
+# (another package under this name), `file:../x` and `github:o/r` install
+# local or repository code. ':', '/', '@' and whitespace can never pass.
+VERSION_RE = re.compile(r"\d+(?:\.\d+){0,3}(?:[-.+]?[0-9A-Za-z]+(?:[-.+][0-9A-Za-z]+)*)?")
+
+
+def valid_version(v) -> bool:
+    return isinstance(v, str) and len(v) <= 64 and VERSION_RE.fullmatch(v) is not None
 
 
 class CatalogError(Exception):
@@ -130,6 +141,8 @@ def validate(cat: dict) -> list[str]:
             errs.append(f"{p}: checked must be YYYY-MM-DD")
         if s.get("registry") != "app" and s.get("version") in (None, "", "latest"):
             errs.append(f"{p}: version must be an exact pin, not latest")
+        elif s.get("registry") != "app" and not valid_version(s.get("version")):
+            errs.append(f"{p}: version {s.get('version')!r} is not an exact release version")
         t = s.get("transport")
         if t not in TRANSPORTS:
             errs.append(f"{p}: transport must be one of {TRANSPORTS}")

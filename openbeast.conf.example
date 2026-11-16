@@ -7,6 +7,11 @@
 # true/false keys accept true|yes|1|on and false|no|0|off (any case), and an
 # inline "# comment" after the value is fine. Anything else is read as false
 # and warned about, so a typo is visible instead of silently flipping a mode.
+#
+# A value may be quoted: KEY="value" or KEY='value'. A quoted value may be
+# followed by a "# comment" (KEY="value"   # note); the quotes and the comment
+# are both dropped. Unquoted, most keys take the rest of the line as written
+# (the keys that do not are marked "No trailing comment" below).
 
 # Where your .gguf model weights live. Weights are large and are NOT stored in
 # the repo — put them wherever you have space (NVMe, USB, NAS mount, etc.) and
@@ -229,6 +234,12 @@
 # --enforce-eager for a managed vLLM: auto (on a GB10, for the sparse-MLA
 # families hit by CUDA-graph NaN, vllm#57156) | true | false.
 #ENGINE_VLLM_EAGER=auto
+# The engine gate's bar (scripts/engine-gate.sh, docs/WEIGHT_STREAMING.md):
+# a gated engine (Maya) must decode at least this many times llama.cpp's
+# tok/s. Raise it here, never below 1.5 (a lower value reads as 1.5). The
+# gate run, engine.sh use and the daemon's launch all read this one value.
+# Env: $OPENBEAST_ENGINE_GATE_RATIO.
+#ENGINE_GATE_RATIO=1.5
 
 # ---------------------------------------------------------------------------
 # beast-hydra — route inference across machines  (docs/BEAST_HYDRA_PLAN.md)
@@ -298,7 +309,8 @@
 # is then an unauthenticated remote SHELL for that network. Set keys with
 # scripts/setup-mcpo-keys.sh. The tool server REFUSES to start keyless on a
 # non-loopback bind (so ./start.sh stops there) unless ALLOW_OPEN_TOOLS below
-# says you mean it.
+# says you mean it. A value that is not an address or hostname (a stray
+# quote, "127.0.0.1,10.0.0.1") is refused with a warning, and loopback is used.
 #BIND_HOST=127.0.0.1
 
 # Acknowledge the case above: you mean to serve the KEYLESS tool server on a
@@ -338,7 +350,8 @@
 # comments, so "EDGE_RATE_LIMIT=120  # per minute" would be read literally.
 # Requests per minute, per device:
 #EDGE_RATE_LIMIT=120
-# Concurrent generations, per device:
+# Concurrent generations, per device (unset: INFERENCE_SLOTS when that is set,
+# so one device may use every stream the server has; else 2):
 #EDGE_MAX_INFLIGHT=2
 
 # Largest request body the gate accepts, in bytes (default 8388608 = 8 MiB;
@@ -407,6 +420,21 @@
 # the only admin; setting this replaces that default rather than adding to it.
 # See docs/BEAST_ARTIFACT.md "Who administers".
 #ARTIFACT_ADMINS=you@example.com
+
+# WHERE the login header counts for beast-artifact — the same switch as
+# CHAT_LOGIN_FROM (§ beast-chat). `loopback` (default) honours it from any
+# peer on this host, which includes code inside a host-network container
+# (Open WebUI, SearXNG, a backend image): it could name an operator or admin
+# login and read every private page; doctor warns when such containers run.
+# `unix` honours it ONLY on ARTIFACT_SOCKET, a 0600 Unix socket, and
+# `./scripts/setup-tailscale.sh --publish-artifact` then points :8446 at it.
+# Publishing from this box is unchanged (scripts/artifact.sh and the model's
+# tools use the locality token, not a login).
+# After changing it: ./stop.sh && ./start.sh, then re-run --publish-artifact.
+# ~ is expanded and a relative path is anchored to the checkout.
+# Env overrides: $OPENBEAST_ARTIFACT_LOGIN_FROM, $OPENBEAST_ARTIFACT_SOCKET.
+#ARTIFACT_LOGIN_FROM=unix
+#ARTIFACT_SOCKET=/home/you/openbeast/.run/artifact.sock
 
 # Opt-in retention: once a day, delete every UNPINNED page not updated (or
 # unpinned) for this many days. Pinned pages are never touched. 0 = keep all.
@@ -584,9 +612,11 @@
 # 127.0.0.1 peer — which includes code inside a host-network container (Open
 # WebUI, SearXNG, a backend image); doctor warns when such containers run.
 # `unix` honours it ONLY on CHAT_SOCKET, a 0600 Unix socket, and
-# `./scripts/setup-tailscale.sh --chat` then points :8445 at that socket.
-# TCP loopback then needs the locality token or a device key like any caller.
-# After changing it: ./stop.sh && ./start.sh, then re-run setup-tailscale.sh --chat.
+# `./scripts/setup-tailscale.sh --publish-chat` then points :8445 at that
+# socket. TCP loopback then needs the locality token or a device key like any
+# caller. ~ is expanded and a relative path is anchored to the checkout.
+# After changing it: ./stop.sh && ./start.sh, then re-run --publish-chat
+# (doctor FAILs while the :8445 mount and the mode disagree).
 # Env overrides: $OPENBEAST_CHAT_LOGIN_FROM, $OPENBEAST_CHAT_SOCKET.
 #CHAT_LOGIN_FROM=unix
 #CHAT_SOCKET=/home/you/openbeast/.run/chat.sock

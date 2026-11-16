@@ -67,9 +67,11 @@ def pkg_dir(a: C.Artifact) -> str:
     return f"pkgs/{a.kind}/{a.entry}-{S.slug(a.owner.version)}/{a.platform}"
 
 
-def _rec(drive: S.Drive, rel: str) -> dict:
+def _rec(drive: S.Drive, rel: str, sha256: str = "") -> dict:
+    """A lock record. Pass `sha256` when the bytes were already hashed (and
+    only renamed since): a multi-GB file is not read a second time for it."""
     p = drive.p(rel)
-    return {"path": rel, "sha256": net.sha256_file(p), "size": os.path.getsize(p)}
+    return {"path": rel, "sha256": sha256 or net.sha256_file(p), "size": os.path.getsize(p)}
 
 
 # ── selection ────────────────────────────────────────────────────────────
@@ -147,8 +149,15 @@ def fetch_git(drive: S.Drive, e: C.Entry, allow_unverified: bool) -> dict:
 
 # ── files ────────────────────────────────────────────────────────────────
 
+# One fetch per checksum file per run: 257 artifacts share 169 sums URLs
+# (python-build-standalone's SHA256SUMS serves six, loki's six).
+_SMALL: dict = {}
+
+
 def _fetch_small(url: str, dest: str) -> str:
-    data, _ = net.get_bytes(url, limit=64 << 20)
+    if url not in _SMALL:
+        _SMALL[url] = net.get_bytes(url, limit=64 << 20)[0]
+    data = _SMALL[url]
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     with open(dest, "wb") as f:
         f.write(data)
@@ -176,15 +185,23 @@ def fetch_file(drive: S.Drive, a: C.Artifact, allow_unverified: bool) -> dict:
     part = net.download(url, dest, size=a.size)
     try:
         got = net.sha256_file(part)
+        digests = {"sha256": got}             # every check below reuses this one read
+
+        def digest(algo: str) -> str:
+            if algo not in digests:
+                digests[algo] = net.hash_file(part, algo)
+            return digests[algo]
         how = []
         if a.sha256:
             if got != a.sha256:
                 raise FetchError(f"{a.id}: sha256 MISMATCH — downloaded {got}, the catalog pins {a.sha256}. "
                                  f"REFUSED and deleted.")
-            how.append("pinned")
+            # a pin `lock --from` copied off a first-use download is still first-use
+            # provenance: keep "tofu" in the lock, so every verify keeps naming it
+            how.append("tofu-pinned" if a.verified == "tofu" else "pinned")
         if a.upstream_hash:
             algo, _, hx = a.upstream_hash.partition(":")
-            if net.hash_file(part, algo) != hx:
+            if digest(algo) != hx:
                 raise FetchError(f"{a.id}: {algo} MISMATCH against the catalog's upstream_hash. REFUSED and deleted.")
             how.append(f"pinned-{algo}")
         if sums_path:
@@ -195,7 +212,7 @@ def fetch_file(drive: S.Drive, a: C.Artifact, allow_unverified: bool) -> dict:
                                         url_specific=a.x(a.checksum_url).endswith(
                                             (a.filename + ".sha256", a.filename + ".sha256sum",
                                              a.filename + ".sha512", a.filename + ".sha256.txt")))
-            if net.hash_file(part, algo) != hx:
+            if digest(algo) != hx:
                 raise FetchError(f"{a.id}: the upstream checksum file says {algo} {hx[:16]}…, the download does "
                                  f"not match. REFUSED and deleted.")
             how.append("upstream-sums")
@@ -218,20 +235,54 @@ def fetch_file(drive: S.Drive, a: C.Artifact, allow_unverified: bool) -> dict:
                 how.append("signature")
         if not how:
             how.append("tofu")
-    except (FetchError, V.VerifyError):
-        os.remove(part)
+    except (FetchError, V.VerifyError, ValueError, KeyError, UnicodeError):
+        os.remove(part)                         # a garbled sums or signature file refuses THIS file
         raise
     os.replace(part, dest)
     return {"entry": a.entry, "kind": "file", "platform": a.platform, "version": a.owner.version,
             "source": url, "install": a.install, "bins": [a.x(b) for b in a.bins], "strip": a.strip,
             "verified": "+".join(how), "signature": sig,
-            "files": [_rec(drive, rel)] + [_rec(drive, r) for r in extra], "primary": rel}
+            "files": [_rec(drive, rel, got)] + [_rec(drive, r) for r in extra], "primary": rel}
 
 
 # ── oci ──────────────────────────────────────────────────────────────────
 
-def fetch_oci(drive: S.Drive, a: C.Artifact, platforms: List[str], allow_unverified: bool) -> dict:
-    want = [p for p in a.platforms if p in {C.OCI_FOR[x] for x in platforms}]
+def _oci_want(a: C.Artifact, platforms: List[str], prev: Optional[dict]) -> List[str]:
+    """The image platforms to keep: what this run asks for PLUS what the drive
+    already holds. One archive per image, rewritten whole on every pull, so a
+    top-up for a second platform must carry the first one along — or the rig
+    loses every amd64 image the day arm64 is added for the Sparks."""
+    asked = {C.OCI_FOR[x] for x in platforms if x in C.OCI_FOR}
+    held = set((prev or {}).get("platform", "").split(",")) - {""}
+    return [p for p in a.platforms if p in asked | held]
+
+
+def _seed_stage(drive: S.Drive, prev: Optional[dict], digest: str, stage: str) -> None:
+    """Copy the blobs of the archive already on the drive into the stage, so a
+    top-up downloads only the new platform's layers."""
+    if not prev or prev.get("digest") != digest or not prev.get("primary"):
+        return
+    try:
+        arc = oci.OciArchive(drive.p(prev["primary"]))
+    except (OSError, tarfile.TarError, ValueError, KeyError, IndexError, S.StoreError):
+        return
+    try:
+        blobs = os.path.join(stage, "blobs", "sha256")
+        os.makedirs(blobs, exist_ok=True)
+        for name in arc.members:
+            if name.startswith("blobs/sha256/"):
+                dst = os.path.join(blobs, name.rsplit("/", 1)[1])
+                if not os.path.exists(dst):
+                    with arc.tar.extractfile(arc.members[name]) as fi, open(dst + ".tmp", "wb") as fo:
+                        shutil.copyfileobj(fi, fo, 1 << 20)
+                    os.replace(dst + ".tmp", dst)       # re-hashed by Registry.blob before it is used
+    finally:
+        arc.close()
+
+
+def fetch_oci(drive: S.Drive, a: C.Artifact, platforms: List[str], allow_unverified: bool,
+              prev: Optional[dict] = None) -> dict:
+    want = _oci_want(a, platforms, prev)
     digest, verified = a.digest, "registry-pinned"
     if not digest:
         if not allow_unverified:
@@ -240,6 +291,7 @@ def fetch_oci(drive: S.Drive, a: C.Artifact, platforms: List[str], allow_unverif
         verified = "tofu"
     rel = oci_rel(a)
     stage = drive.stage("oci", S.slug(a.id))
+    _seed_stage(drive, prev, digest, stage)
     res = oci.pull(a.image, a.tag_x, digest, want, drive.p(rel), stage, log=log)
     shutil.rmtree(stage, ignore_errors=True)
     return {"entry": a.entry, "kind": "oci", "platform": ",".join(want), "version": a.owner.version,
@@ -248,10 +300,38 @@ def fetch_oci(drive: S.Drive, a: C.Artifact, platforms: List[str], allow_unverif
 
 
 # ── package sets ─────────────────────────────────────────────────────────
+#
+# Package sets carry no upstream hash pins (they are tofu by design), so the
+# one thing that must be fixed is WHERE they resolve from. pip and npm read
+# the fetching box's own config (PIP_INDEX_URL / PIP_EXTRA_INDEX_URL /
+# pip.conf, ~/.npmrc) — an extra index there would quietly supply any
+# same-named, higher-versioned package. Both run isolated from that config
+# against one explicit index, and the lock records which one.
 
-def _run(cmd: List[str], cwd: Optional[str] = None, env=None, timeout: int = 7200) -> str:
+PYPI_INDEX = "https://pypi.org/simple/"
+NPM_REGISTRY = "https://registry.npmjs.org/"
+
+
+def pip_index() -> str:
+    """The index pip sets resolve from: PyPI, or a mirror named on purpose
+    in ARK_PIP_INDEX_URL (never pip's own ambient config)."""
+    return os.environ.get("ARK_PIP_INDEX_URL") or PYPI_INDEX
+
+
+def npm_registry() -> str:
+    r = os.environ.get("ARK_NPM_REGISTRY") or NPM_REGISTRY
+    return r if r.endswith("/") else r + "/"
+
+
+def _clean_env(*prefixes: str) -> dict:
+    return {k: v for k, v in os.environ.items() if not k.upper().startswith(prefixes)}
+
+
+def _run(cmd: List[str], cwd: Optional[str] = None, env=None, timeout: int = 7200,
+         drop: Tuple[str, ...] = ()) -> str:
+    base = _clean_env(*drop) if drop else dict(os.environ)
     r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout,
-                       env=dict(os.environ, **(env or {})))
+                       env=dict(base, **(env or {})))
     if r.returncode != 0:
         raise FetchError(f"{os.path.basename(cmd[0])} failed: {(r.stderr or r.stdout).strip()[-600:]}")
     return r.stdout
@@ -267,20 +347,50 @@ def _all_files(drive: S.Drive, rel_dir: str) -> List[dict]:
     return out
 
 
-def fetch_pip(drive: S.Drive, a: C.Artifact) -> dict:
+def pip_cross_reason(a: C.Artifact) -> str:
+    """Why this box cannot resolve `a`'s closure faithfully, or "".
+
+    `pip download --platform/--python-version` only picks wheel TAGS for the
+    target; environment markers in dependency metadata (sys_platform,
+    platform_machine, python_version) are still evaluated against the
+    interpreter running pip. So a linux-x86_64 set resolved on a Mac or an
+    aarch64 Spark silently drops torch's `platform_system == "Linux" and
+    platform_machine == "x86_64"` nvidia-* wheels, and the offline
+    --require-hashes install then fails on the target. Measured: pytest for
+    win_amd64 from a Mac comes without colorama; for python 3.9 from 3.12,
+    without tomli and exceptiongroup."""
+    from .restore import host_platform  # noqa: PLC0415 — restore imports this module
+    host = host_platform()
+    why = []
+    if a.platform != "any" and a.platform != host:
+        why.append(f"this box is {host}, the set is for {a.platform}")
+    here = "%d.%d" % sys.version_info[:2]
+    if a.python and a.python != here:
+        why.append(f"ark runs on python {here}, the set is for {a.python}")
+    return "; ".join(why)
+
+
+def fetch_pip(drive: S.Drive, a: C.Artifact, allow_cross: bool = False) -> dict:
+    cross = pip_cross_reason(a)
+    if cross and not allow_cross:
+        raise FetchError(f"{a.id}: {cross}. pip evaluates dependency markers against the box it runs on, so "
+                         f"the closure could be incomplete. Fetch this set on a {a.platform} box"
+                         f"{' with python ' + a.python if a.python else ''} (OPENBEAST_PYTHON=… ./ark fetch "
+                         f"--kinds pip --platform host), or pass --allow-cross-pip to accept the risk")
     d = pkg_dir(a)
     out = drive.p(d)
     os.makedirs(out, exist_ok=True)
     reqs = [a.x(r) for r in a.requirements]
     py = sys.executable
-    cmd = [py, "-m", "pip", "download", "--disable-pip-version-check", "--no-input", "--only-binary=:all:",
-           "--dest", out]
+    index = pip_index()
+    cmd = [py, "-m", "pip", "download", "--isolated", "--index-url", index,
+           "--disable-pip-version-check", "--no-input", "--only-binary=:all:", "--dest", out]
     if a.python:
         cmd += ["--python-version", a.python, "--implementation", "cp"]
     for t in a.pip_platforms:
         cmd += ["--platform", t]
-    _run(cmd + reqs)
-    files = _all_files(drive, d)
+    _run(cmd + reqs, env={"PIP_CONFIG_FILE": os.devnull}, drop=("PIP_",))
+    files = [f for f in _all_files(drive, d) if not f["path"].endswith("/requirements.ark.txt")]
     lockf = os.path.join(out, "requirements.ark.txt")
     with open(lockf, "w", encoding="utf-8") as f:
         f.write("# beast-ark: every wheel in this directory, hash-pinned. Install offline with\n"
@@ -290,10 +400,14 @@ def fetch_pip(drive: S.Drive, a: C.Artifact) -> dict:
             if name.endswith((".whl", ".tar.gz", ".zip")):
                 proj, ver = _wheel_name(name)
                 f.write(f"{proj}=={ver} --hash=sha256:{rec['sha256']}\n")
-    files = _all_files(drive, d)
-    return {"entry": a.entry, "kind": "pip", "platform": a.platform, "version": a.owner.version,
-            "requirements": reqs, "python": a.python, "source": "pypi", "verified": "tofu", "files": files,
-            "primary": d}
+    files.append(_rec(drive, f"{d}/requirements.ark.txt"))     # the wheels are hashed once, above
+    rec = {"entry": a.entry, "kind": "pip", "platform": a.platform, "version": a.owner.version,
+           "requirements": reqs, "python": a.python, "source": index, "verified": "tofu", "files": files,
+           "primary": d}
+    if cross:
+        rec["verified"] = "tofu+cross-host"
+        rec["cross_host"] = cross
+    return rec
 
 
 def _wheel_name(fn: str) -> Tuple[str, str]:
@@ -320,7 +434,10 @@ def fetch_npm(drive: S.Drive, a: C.Artifact) -> dict:
             deps[name] = ver
         with open(os.path.join(tmp, "package.json"), "w") as f:
             json.dump({"name": f"ark-{a.entry}", "version": "0.0.0", "private": True, "dependencies": deps}, f)
-        _run([npm, "install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund"], cwd=tmp)
+        reg = npm_registry()
+        _run([npm, "install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund",
+              f"--registry={reg}", f"--userconfig={os.devnull}", f"--globalconfig={os.devnull}"],
+             cwd=tmp, drop=("NPM_CONFIG_",))
         with open(os.path.join(tmp, "package-lock.json")) as f:
             plock = json.load(f)
         shutil.copy2(os.path.join(tmp, "package.json"), os.path.join(out, "package.json"))
@@ -329,22 +446,28 @@ def fetch_npm(drive: S.Drive, a: C.Artifact) -> dict:
         if not path or not meta.get("resolved") or meta.get("link"):
             continue
         url, integ = meta["resolved"], meta.get("integrity", "")
+        if not url.startswith(reg):
+            raise FetchError(f"{a.id}: {path} resolves to {url}, not the registry {reg} — refused")
+        if not integ or "-" not in integ:
+            raise FetchError(f"{a.id}: {path} has no integrity in the lock — refused (nothing to check it against)")
         fn = os.path.basename(url.split("?")[0])
         scope = path.split("node_modules/")[-1].split("/")[0] if "/@" in "/" + path.split("node_modules/")[-1] else ""
         rel = f"{d}/tarballs/{(scope + '__') if scope.startswith('@') else ''}{fn}"
         part = net.download(url, drive.p(rel))
-        if integ:
-            algo, _, b64 = integ.partition("-")
-            h = hashlib.new(algo)
-            with open(part, "rb") as f:
-                for b in iter(lambda: f.read(1 << 20), b""):
-                    h.update(b)
-            if base64.b64encode(h.digest()).decode() != b64:
-                os.remove(part)
-                raise FetchError(f"{a.id}: {fn} does not match the registry's integrity {integ[:24]}… — REFUSED")
+        algo, _, b64 = integ.split()[0].partition("-")
+        if algo not in ("sha512", "sha384", "sha256", "sha1"):
+            os.remove(part)
+            raise FetchError(f"{a.id}: {fn}: integrity algorithm {algo!r} is not one ark checks — refused")
+        h = hashlib.new(algo)
+        with open(part, "rb") as f:
+            for b in iter(lambda: f.read(1 << 20), b""):
+                h.update(b)
+        if base64.b64encode(h.digest()).decode() != b64:
+            os.remove(part)
+            raise FetchError(f"{a.id}: {fn} does not match the registry's integrity {integ[:24]}… — REFUSED")
         os.replace(part, drive.p(rel))
     return {"entry": a.entry, "kind": "npm", "platform": a.platform, "version": a.owner.version,
-            "packages": [a.x(p) for p in a.packages], "source": "registry.npmjs.org",
+            "packages": [a.x(p) for p in a.packages], "source": reg,
             "verified": "npm-integrity", "files": _all_files(drive, d), "primary": d}
 
 
@@ -358,29 +481,70 @@ def _clone_from_drive(drive: S.Drive, e: C.Entry, dest: str, lock: dict) -> None
     else:
         tmp = dest + ".bare"
         os.makedirs(tmp, exist_ok=True)
-        with tarfile.open(src) as t:
+        with tarfile.open(src, "r|") as t:
             _safe_extract(t, tmp)
         _git("clone", "-q", os.path.join(tmp, f"{e.name}.git"), dest)
     _git("checkout", "-q", it["commit"], cwd=dest)
 
 
+_DATA_FILTER = hasattr(tarfile, "data_filter")    # 3.12+, and the 3.9.17+/3.10.12+/3.11.4+ backports
+
+
+def _inside(root: str, p: str) -> bool:
+    return p == root or p.startswith(root + os.sep)
+
+
 def _safe_extract(t: tarfile.TarFile, dest: str) -> None:
+    """Unpack `t` into `dest`, refusing anything that would land outside it.
+
+    One forward pass, one member at a time, and every check is made against
+    what is ON DISK at that moment — not against an empty destination. A
+    check made up front is fooled by a link chain (y -> ".", then x -> "y/..",
+    then x/evil): before y exists, x looks like it stays inside. Here x is
+    checked after y has been written, so it resolves to the parent and is
+    refused. At the end every symlink is resolved once more against the final
+    tree, so a link made to point outside by a LATER member is caught too
+    (and removed). The 3.12 `data` filter is applied on top where the
+    interpreter has it; nothing depends on it (a Mac's /usr/bin/python3 3.9.6
+    has none). The archive is read once, front to back, so a caller can open
+    it in stream mode ("r|*") and a .tar.xz is decompressed once, not twice.
+    """
+    os.makedirs(dest, exist_ok=True)
     root = os.path.realpath(dest)
-    for m in t.getmembers():
-        target = os.path.realpath(os.path.join(dest, m.name))
-        if not (target == root or target.startswith(root + os.sep)):
-            raise FetchError(f"archive member {m.name!r} escapes the target — refused")
-        if m.issym() or m.islnk():
-            link = os.path.realpath(os.path.join(os.path.dirname(target), m.linkname)) if m.issym() \
-                else os.path.realpath(os.path.join(dest, m.linkname))
-            if not (link == root or link.startswith(root + os.sep)):
-                raise FetchError(f"archive link {m.name!r} -> {m.linkname!r} escapes the target — refused")
-        if m.isdev():
-            raise FetchError(f"archive member {m.name!r} is a device node — refused")
-    if hasattr(tarfile, "data_filter"):         # 3.12+ (and 3.9.17+ backports): belt and braces
-        t.extractall(dest, filter="data")
-    else:
-        t.extractall(dest)  # noqa: S202 — every member checked above
+    links: List[Tuple[str, str]] = []
+    kw = {"filter": "data"} if _DATA_FILTER else {}
+    try:
+        for m in t:
+            if m.isdev():
+                raise FetchError(f"archive member {m.name!r} is a device node or fifo — refused")
+            if not (m.isfile() or m.isdir() or m.issym() or m.islnk()):
+                raise FetchError(f"archive member {m.name!r} has an unsupported type — refused")
+            full = os.path.normpath(os.path.join(root, m.name))
+            # where the member itself lands: its parent as it resolves NOW, plus its own name
+            loc = os.path.join(os.path.realpath(os.path.dirname(full)), os.path.basename(full))
+            if not _inside(root, loc) or (not m.issym() and not _inside(root, os.path.realpath(loc))):
+                raise FetchError(f"archive member {m.name!r} escapes the target — refused")
+            if m.issym():
+                to = os.path.realpath(os.path.join(os.path.dirname(loc), m.linkname))
+                if os.path.isabs(m.linkname) or not _inside(root, to):
+                    raise FetchError(f"archive link {m.name!r} -> {m.linkname!r} escapes the target — refused")
+                links.append((loc, m.name))
+            elif m.islnk():
+                src = os.path.realpath(os.path.join(root, m.linkname))
+                if not _inside(root, src):
+                    raise FetchError(f"archive link {m.name!r} -> {m.linkname!r} escapes the target — refused")
+            if not _DATA_FILTER and m.isfile():
+                m.mode &= 0o755                     # no setuid/setgid/sticky, no group/other write
+            t.extract(m, root, set_attrs=not m.isdir(), **kw)  # noqa: S202 — checked above
+    finally:
+        # a refused archive, or one whose links point out once complete:
+        # take every such link away, so nothing later follows it
+        bad = [name for loc, name in links if not _inside(root, os.path.realpath(loc))]
+        for loc, _name in links:
+            if os.path.islink(loc) and not _inside(root, os.path.realpath(loc)):
+                os.unlink(loc)
+    if bad:
+        raise FetchError(f"archive link {bad[0]!r} resolves outside the target once unpacked — refused")
 
 
 def fetch_gomod(drive: S.Drive, a: C.Artifact, lock: dict) -> dict:
@@ -440,8 +604,10 @@ def item_present(drive: S.Drive, item: Optional[dict], deep: bool = False) -> bo
 
 
 def run(cat: C.Catalog, drive: S.Drive, items: List[Tuple[str, object]], platforms: List[str],
-        allow_unverified: bool = False, recheck: bool = False, dry_run: bool = False) -> int:
+        allow_unverified: bool = False, recheck: bool = False, dry_run: bool = False,
+        allow_cross_pip: bool = False) -> int:
     net.require_online("ark fetch")
+    _SMALL.clear()
     os.makedirs(drive.root, exist_ok=True)
     lock = drive.read_lock()
     lock.setdefault("platforms", [])
@@ -468,9 +634,9 @@ def run(cat: C.Catalog, drive: S.Drive, items: List[Tuple[str, object]], platfor
             elif obj.kind == "file":
                 rec = fetch_file(drive, obj, allow_unverified)
             elif obj.kind == "oci":
-                rec = fetch_oci(drive, obj, platforms, allow_unverified)
+                rec = fetch_oci(drive, obj, lock["platforms"], allow_unverified, prev)
             elif obj.kind == "pip":
-                rec = fetch_pip(drive, obj)
+                rec = fetch_pip(drive, obj, allow_cross_pip)
             elif obj.kind == "npm":
                 rec = fetch_npm(drive, obj)
             elif obj.kind == "gomod":
@@ -479,7 +645,8 @@ def run(cat: C.Catalog, drive: S.Drive, items: List[Tuple[str, object]], platfor
                 rec = fetch_cargo(drive, obj, lock)
             else:
                 raise FetchError(f"unknown kind {obj.kind}")
-        except (FetchError, V.VerifyError, oci.OciError, net.HTTPFailure, S.StoreError, OSError) as ex:
+        except (FetchError, V.VerifyError, oci.OciError, net.HTTPFailure, S.StoreError, OSError,
+                ValueError, KeyError) as ex:    # malformed upstream JSON / manifests: this item fails, the run goes on
             failed += 1
             failures.append(f"{label}: {ex}")
             log(f"  FAILED {label}: {ex}")

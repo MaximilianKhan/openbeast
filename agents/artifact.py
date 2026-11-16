@@ -1235,7 +1235,9 @@ def _rows(*, owner=None, viewer=None, admin=False, session=None,
                 "tags": tags,
                 "source_session": (sess if isinstance(sess, str)
                                    and _SESSION_RE.match(sess) else None),
-                "url": artifact_url(aid),
+                # "url" is added by list_page() to the rows it RETURNS: it
+                # costs a conf lookup, and building it for every row the
+                # filters admit (then slicing to 25) was O(store) per page.
             })
         except Exception:
             continue            # any shape surprise: drop the row, keep going
@@ -1282,7 +1284,13 @@ def list_page(*, owner=None, viewer=None, limit=25, offset=0, admin=False,
         offset = 0
     total = len(rows)
     rows = rows[offset:]
-    return (rows[:limit] if limit > 0 else rows), total
+    page = rows[:limit] if limit > 0 else rows
+    for row in page:
+        try:
+            row["url"] = artifact_url(row["id"])
+        except Exception:
+            row["url"] = None
+    return page, total
 
 
 def read_file(artifact_id, version: int, path="index.html", *,
@@ -1809,16 +1817,61 @@ def _conf_path() -> str:
             or os.path.join(_repo_dir(), "openbeast.conf"))
 
 
+# Parsed openbeast.conf, gated on the file's stat (DeviceRegistry's
+# pattern): artifact_url() and is_admin() fall back to the conf whenever the
+# OPENBEAST_ env var is empty, which on a rig is every request and every
+# gallery row — each a 40 KB read and a regex pass over ~700 lines (review
+# 2026-11-16: about half of a 300-artifact gallery request). An edit still
+# applies without a restart: any change to mtime, size, inode or path
+# re-reads. A file modified within the last _CONF_RACY_S is never served
+# from the cache, so two same-size writes inside one timestamp tick (Linux
+# mtime moves in jiffies) cannot leave a stale value behind.
+_CONF_CACHE: dict = {"key": None, "lines": None, "values": {}}
+_CONF_CACHE_LOCK = threading.Lock()
+_CONF_RACY_S = 2.0
+
+
+def _conf_lines():
+    """(lines, per-key answers) for openbeast.conf, or (None, None) when it
+    cannot be read."""
+    path = _conf_path()
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None, None
+    key = (path, st.st_mtime_ns, st.st_size, st.st_ino)
+    racy = time.time() - st.st_mtime < _CONF_RACY_S
+    with _CONF_CACHE_LOCK:
+        if not racy and _CONF_CACHE["key"] == key:
+            return _CONF_CACHE["lines"], _CONF_CACHE["values"]
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return None, None
+    values: dict = {}
+    with _CONF_CACHE_LOCK:
+        _CONF_CACHE.update(key=None if racy else key, lines=lines,
+                           values=values)
+    return lines, values
+
+
 def _conf_file_value(key: str):
     """KEY= out of openbeast.conf: last assignment wins, quotes trimmed —
     the same reading scripts/artifact.sh's _conf_value and lib/conf.sh's
-    _ob_conf_value do, without sourcing anything. None when absent."""
-    try:
-        with open(_conf_path(), "r", encoding="utf-8",
-                  errors="replace") as fh:
-            lines = fh.read().splitlines()
-    except OSError:
+    _ob_conf_value do, without sourcing anything. None when absent.
+    Answers come from a stat-gated cache (_conf_lines)."""
+    lines, values = _conf_lines()
+    if lines is None:
         return None
+    if key in values:
+        return values[key]
+    val = _parse_conf_value(lines, key)
+    values[key] = val
+    return val
+
+
+def _parse_conf_value(lines, key: str):
     found = None
     pat = re.compile(r"^\s*%s\s*=(.*)$" % re.escape(key))
     for line in lines:

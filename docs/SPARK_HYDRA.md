@@ -71,11 +71,12 @@ How to reach each box:
 | Native TensorFold 1.2.7 | both | `~/.local/bin/tensorfold` (signed release). A challenger engine, **not serving** ([D2](#d2-native-tensorfold-through-spark-nodesh--spark-clustersh)) |
 | spark-guard | both | `openbeast-spark-guard.service` (system unit, `active (exited)`): an nftables table that keeps the engines' rendezvous ports on the fabric ([B3](#b3-firewall-spark-guard)) |
 
-**Checkout skew, 2026-11-15.** spark-1's `~/openbeast` was at `ecf50a2` and
-spark-2's at `0988641`, both on `feat/spark-scale-1-8` but behind its head.
-`scripts/engine.sh` does not exist at either commit yet. Before relying on the
-"same repo on every node" rule (`spark-cluster.sh check` enforces it), put both
-on the same commit. Run this on each Spark, quoting the command for ssh:
+**Checkouts, 2026-11-16.** Both Sparks' `~/openbeast` are at `dc0a181`
+(`main`), with `scripts/engine.sh` present. (On 2026-11-15 they were skewed:
+spark-1 at `ecf50a2`, spark-2 at `0988641`, neither with `engine.sh`.) Keep
+them on one commit: the "same repo on every node" rule is what
+`spark-cluster.sh check` enforces. Run this on each Spark, quoting the command
+for ssh:
 `ssh spark-2.tail4109f9.ts.net 'cd ~/openbeast && git pull --ff-only'`.
 Restarting the command center afterwards (`systemctl --user restart openbeast`)
 is what makes a new commit live. Do it at a quiet moment.
@@ -285,8 +286,10 @@ touches nothing else:
 - It loads one nftables table of its own, `inet openbeast_guard`, with an input
   hook at priority `filter - 10`. That runs ahead of iptables-nft (ufw, Docker)
   and Tailscale.
-- It drops TCP to 29501, 29551-29552 and 29583-29584 (plus spark.env's master
-  ports and any `--port N`). It also drops TCP to the Spark's own fabric
+- It drops TCP to 29501-29502, 29551-29552 and 29583-29584 (plus spark.env's
+  master ports, each with its +1, and any `--port N`). Every rendezvous port is
+  guarded with its +1, whether it is a default or comes from spark.env, so the
+  same port never renders two ways. It also drops TCP to the Spark's own fabric
   addresses, where NCCL's ephemeral bootstrap listeners are. Both drops apply
   **unless** the packet arrives on `lo` or on a ConnectX netdev
   (`ibdev2netdev`).
@@ -302,32 +305,45 @@ ssh, `tailscale serve` (:443, :8443-8447, :8889) and Docker networking.
 # on EACH Spark, from ~/openbeast at a commit that has it
 scripts/backends/spark-guard.sh --render          # read the ruleset first (no root)
 sudo scripts/backends/spark-guard.sh              # load + persist (idempotent); same as --apply
-sudo scripts/backends/spark-guard.sh --status     # table, counters, listeners, ssh posture
+sudo scripts/backends/spark-guard.sh --status     # current or STALE, table, counters, listeners, ssh posture
 sudo scripts/backends/spark-guard.sh --remove     # undo: table, unit and rules file gone
 #   --port N (repeatable)  --iface IF (repeatable)  --no-fabric (one Spark, no peer: loopback-only)
 ```
 
-What `--render` prints on spark-1 (2026-11-15):
+What `--render` prints on spark-1 (2026-11-16, current code):
 
 ```
-# fabric: enp1s0f0np0 enp1s0f1np1 enP2p1s0f0np0 enP2p1s0f1np1   fabric IPv4: 10.100.216.1 10.100.217.1   guarded TCP: 29501 29551-29552 29583-29584
+# fabric: enp1s0f0np0 enp1s0f1np1 enP2p1s0f0np0 enP2p1s0f1np1   fabric IPv4: 10.100.216.1 10.100.217.1   guarded TCP: 29501-29502 29551-29552 29583-29584
+# args:
 table inet openbeast_guard {
 	chain input {
 		type filter hook input priority filter - 10; policy accept;
 		iifname "lo" accept
 		iifname { "enp1s0f0np0", "enp1s0f1np1", "enP2p1s0f0np0", "enP2p1s0f1np1" } accept comment "ConnectX-7 fabric"
-		tcp dport { 29501, 29551-29552, 29583-29584 } counter drop comment "engine rendezvous: fabric and loopback only"
+		tcp dport { 29501-29502, 29551-29552, 29583-29584 } counter drop comment "engine rendezvous: fabric and loopback only"
 		ip daddr { 10.100.216.1, 10.100.217.1 } meta l4proto tcp counter drop comment "fabric addresses (NCCL bootstrap): fabric only"
 	}
 }
 ```
 
 `--status` without root still shows the unit and the listeners. It says
-`loaded: unknown (listing nftables needs root …)` for the table:
+`loaded: unknown (listing nftables needs root …)` for the table. It also
+re-renders the ruleset from the current code, spark.env and fabric (with the
+`--port` / `--iface` / `--no-fabric` inputs the install recorded on its
+`# args:` line) and compares it with the installed file: `rules: current`, or
+`rules: STALE` with the lines that differ and the command to re-run. On
+2026-11-16 both Sparks showed STALE: their files, written 2026-11-15 before
+`VLLM_MASTER_PORT=29501` reached spark.env, guard `29501` but not `29502`.
+The fix is one `sudo scripts/backends/spark-guard.sh` on each Spark (an
+operator step, offline-safe: it reads only local files):
 
 ```
 == spark-guard on spark-3dc6
 rules file: /etc/openbeast/spark-guard.nft
+rules: STALE — the installed file differs from what this checkout renders now (code, spark.env ports or fabric changed). Re-run: sudo scripts/backends/spark-guard.sh
+  installed: # fabric: … guarded TCP: 29501 29551-29552 29583-29584
+  …
+  now:       # fabric: … guarded TCP: 29501-29502 29551-29552 29583-29584
 unit: openbeast-spark-guard.service enabled, active
 TCP listeners (what each could be reached on):
   0.0.0.0:22
@@ -349,7 +365,9 @@ The pair keeps serving through the load, because the fabric is accepted before
 the drops. After a reboot, `systemctl status openbeast-spark-guard` shows
 `active (exited)`, and the counters in `sudo … --status` count the drops.
 Re-run the guard whenever the fabric addresses change (NVIDIA Sync
-re-addressing, a new switch).
+re-addressing, a new switch), after a pull that changes the guard, and after
+editing a master port in spark.env. `--status` says `STALE` when one of those
+happened and the guard was not re-run.
 
 **sshd hardening is opt-in and OFF by default.**
 `sudo scripts/backends/spark-guard.sh --harden-ssh --yes` writes
@@ -417,6 +435,12 @@ Exit codes:
 
 - `--verify` and `--locate` exit **3** when there is no lock. Run them in a
   checkout that has the committed lock.
+
+`--verify` (and recording a local lock) hashes 4 files at once
+(`MODEL_FETCH_HASH_WORKERS`, `1` = serial). On a GB10 one thread hashes about
+1.8 GB/s and four about 5.5 GB/s (measured on spark-2, 2026-11-16), so the
+164 GB tree takes about half a minute instead of about a minute and a half.
+The report is in the lock's order whatever the timing.
 - For a local `SOURCE` with no lock, `--verify --trust-first-use` records a
   lock from the bytes on disk. That is "trust on first use": say so in the
   commit.
@@ -473,6 +497,14 @@ What it does:
   that has no lock gets the head's.
 - It copies over the fabric, verifies on arrival, and confirms the worker's own
   launcher will find the copy.
+- It copies each directory as `SYNC_STREAMS` (default 4, 1..16) parallel
+  whole-file rsyncs, the files split by size. One ssh stream is
+  cipher-bound on a GB10: measured spark-1 → spark-2 on 2026-11-16, one
+  stream did 0.44-0.48 GB/s (about 6 min for the 164 GB tree) and four did
+  1.73 GB/s together (about 1.6 min). Four leaves the 200 Gb link room for
+  the RoCE all-gathers while the pair serves. The hand-made rsync above
+  stays one stream on purpose: `-H` keeps hard links only within one
+  transfer.
 
 It syncs `~/openbeast-models/<profile>` (OpenBeast's layout). For the recipe,
 still make the HF-cache hard links on each worker as in C2. On our pair the
@@ -629,16 +661,16 @@ matter:
 
 | Key | Meaning |
 |---|---|
-| `TENSORFOLD_ENGINE` | `native` (default) or `container` (the frozen 0.x engine, which pip-installs from GitHub/PyPI at every start: needs the internet every time) |
+| `TENSORFOLD_ENGINE` | `native` (default) or `container` (the frozen 0.x engine, which pip-installs from GitHub/PyPI at every start: needs the internet every time). A real container run also needs its dependencies pinned: `TENSORFOLD_IMAGE_PREBUILT=true` (an image that already holds them, pinned by `TENSORFOLD_IMAGE_ID`; nothing installed at start, so it is also the offline route), `TENSORFOLD_PIP_LOCK=FILE` (hash-locked requirements), or the acknowledged `TENSORFOLD_ALLOW_UNPINNED_DEPS=true` |
 | `TENSORFOLD_VERSION`, `TENSORFOLD_BIN` | `1.2.7`, `~/.local/bin/tensorfold` |
 | `TENSORFOLD_API_KEY_FILE` | 0600 key file; the native engine is keyed |
 | `SPARK_IFACE`, `SPARK_IB_HCA` | this node's fabric netdev(s) and RoCE device(s); several rails comma-separated |
 | `SPARK_HEAD_IP` | rank 0's fabric address. **The same on every node** (`check` enforces it) |
 | `SPARK_NODE_IP` | this node's fabric address |
-| `SPARK_SERVE_HOST`, `SPARK_SERVE_PORT` | rank 0's HTTP bind. Keep `127.0.0.1` when the command center is on the head; `SPARK_ALLOW_WILDCARD_BIND=false` refuses `0.0.0.0` |
+| `SPARK_SERVE_HOST`, `SPARK_SERVE_PORT` | rank 0's HTTP bind. Keep `127.0.0.1` when the command center is on the head; `SPARK_ALLOW_WILDCARD_BIND=false` refuses the wildcard in any spelling (`0.0.0.0`, `::`, `0`, `::0`, `[::0]` …). A server with no API key (the container engine, or `SPARK_NO_API_KEY=true`) binds loopback only unless `SPARK_ALLOW_KEYLESS_BIND=true` |
 | `MODELS_DIR`, `HF_CACHE`, `HF_TOKEN_FILE` | where verified weights live |
 | `VLLM_IMAGE`, `VLLM_IMAGE_DIGEST`, `VLLM_IMAGE_ID`, `TENSORFOLD_IMAGE*` | container engines. `*_IMAGE_ID` wins over a digest, which is what makes a `docker load`ed image work offline ([H4](#h4-container-images)) |
-| `VLLM_MASTER_PORT`, `TENSORFOLD_MASTER_PORT` | rendezvous ports; spark-guard guards them too |
+| `VLLM_MASTER_PORT`, `TENSORFOLD_MASTER_PORT` | rendezvous ports; spark-guard guards them (each +1) too. It reads them from this file only, never from the environment or another `--env` file, so move a port here and re-run `sudo spark-guard.sh`. With the guard installed, `spark-node.sh` refuses a master port its rules do not cover |
 
 **One rank by hand** (start ranks N-1..1 FIRST, then rank 0):
 
@@ -656,12 +688,12 @@ scripts/backends/tensorfold/spark-node.sh --profile NAME --rank 0 --stop        
 node. Then:
 
 ```bash
-scripts/backends/spark-cluster.sh check                          # every node: aarch64 + GB10, docker, NCCL, same commit, fabric pairing, SPARK_HEAD_IP reach
+scripts/backends/spark-cluster.sh check                          # every node: aarch64 + GB10, docker, NCCL, same commit, same engine build + spark.env pins, fabric pairing, SPARK_HEAD_IP reach
 scripts/backends/spark-cluster.sh sync-weights --profile NAME    # model + drafter over the fabric, verified vs the HEAD's lock
 scripts/backends/spark-cluster.sh sync-image IMAGE               # docker save | load where it differs; prints the *_IMAGE_ID pin
 scripts/backends/spark-cluster.sh save-image IMAGE FILE          # an image to a file, for a cluster with no registry
 scripts/backends/spark-cluster.sh start --profile NAME [--engine tensorfold|vllm]
-scripts/backends/spark-cluster.sh status
+scripts/backends/spark-cluster.sh status                         # per rank: free memory, openbeast-* and spark-hydra-* user units, containers
 scripts/backends/spark-cluster.sh stop [--engine tensorfold|vllm]   # every rank, rank 0 first; both engines by default
 #   --cluster FILE   --dry-run (print every command, run nothing)
 ```
@@ -717,17 +749,23 @@ scripts/engine.sh use <engine|default> --profile NAME --dry-run   # print the co
 On a Spark:
 
 - `install`, `update` and `rollback` also rewrite `scripts/backends/spark.env`
-  (`TENSORFOLD_VERSION`, `VLLM_IMAGE` / `VLLM_IMAGE_DIGEST`), so `spark-node.sh`
+  (`TENSORFOLD_VERSION`, `VLLM_IMAGE` / `VLLM_IMAGE_DIGEST` / `VLLM_IMAGE_ID`), so `spark-node.sh`
   launches the pinned build. **Every rank must run the same build**: update
   each Spark, then restart all ranks.
 - `engine.sh use` manages only a **single-host, TP 1** engine
   (`INFERENCE_MANAGED=true`). A multi-Spark job stays unmanaged: `start.sh`
-  waits for it and never launches it, and you run it with D1 or D2.
+  waits for it and never launches it, and you run it with D1 or D2. Record it
+  in the conf with `--unmanaged`, which the head needs because rank 0 answers
+  on its own loopback, and a loopback URL alone reads as managed:
+  `scripts/engine.sh use tensorfold --unmanaged --url http://127.0.0.1:8000 --profile NAME`
+  writes `INFERENCE_BACKEND`, `INFERENCE_URL`, `INFERENCE_MANAGED=false` and,
+  from the profile, `INFERENCE_MODEL` / `INFERENCE_SLOTS` (offline: it reads
+  only local files).
 - `engine.sh` does not manage the recipe (D1). The recipe pins its own image tag.
 
-`engine.sh` is not yet on the live checkouts ([0](#what-runs-where)). On a
-Spark it is tested hermetically (`tests/test_engines.sh`) but has not run
-there: VERIFY ON HARDWARE.
+`engine.sh` is on both live checkouts (`dc0a181`, [0](#what-runs-where)), but
+no swap has run there yet; it is tested hermetically (`tests/test_engines.sh`):
+VERIFY ON HARDWARE.
 
 ---
 
@@ -759,7 +797,7 @@ These are the keys in use on spark-1 on 2026-11-15. Secret values are not shown.
 | `INFERENCE_BACKEND` | `tensorfold` | the model is the recipe's TensorFold server |
 | `INFERENCE_URL` | `http://127.0.0.1:8000` | same box, loopback. Spawned agents follow it (conf.sh exports `OPENBEAST_AGENT_INFERENCE_URL=$INFERENCE_URL/v1`) |
 | `INFERENCE_MODEL` | `GLM-5.3-Flash-EXL3` | the served name; exported as `OPENBEAST_INFERENCE_MODEL`, which `agents/runner.py` sends |
-| `INFERENCE_SLOTS` | `4` | matches the recipe's 4 streams; beast-slot reports it |
+| `INFERENCE_SLOTS` | `4` | matches the recipe's 4 streams; beast-slot reports it. With `EDGE_MAX_INFLIGHT` unset it is also beast-gate's per-device cap, so one device (the Mac running parallel agents) may hold all 4 streams. Before the 2026-11-16 review the gate admitted 2 per device whatever the engine served; the audit showed `max_inflight` 429s with streams idle, each costing an agent turn ~7 s. A gate started on older code keeps 2 until `systemctl --user restart openbeast` (or set `EDGE_MAX_INFLIGHT=4` explicitly) |
 | `EDGE_GATE` | `true` | beast-gate (:8090) is the one inference door (:8443) |
 | `WEBUI_AUTH` | `true` | the WebUI login wall; required before :443 is published |
 | `WEBUI_ADMIN_EMAIL`, `WEBUI_ADMIN_PASSWORD` | *(secret)* | the admin `configure-webui.sh` uses to apply tool-server config on restarts |
@@ -780,6 +818,19 @@ Not set, so the defaults apply:
 - `MEM_RESERVE_GB` = `3`. This is the GiB the stack's cap leaves beside the
   model on unified memory ([G4](#g4-memory-headroom-and-the-gb10-stack-cap)).
 - `MEM_LIMIT_PCT` = `75`.
+- `EDGE_MAX_INFLIGHT` = `2`: beast-gate admits two concurrent generations
+  per device key. The eval harness's agents all share one key, so a
+  `--jobs 4` benchmark or profile of GLM-5.3-Flash from the Mac
+  (`benchmark_all.py --models glm-5.3-flash`, `profile.py --slots 4`) is
+  **clamped to 2**: `run_eval` reads the cap from the gate (a `n=1024`
+  chat request the gate refuses before forwarding anything) and prints
+  why. Before review 1116 it ran 4 workers anyway, half the generations got
+  429, each burned an agent iteration, and failing units became unbanked
+  `server_error`s. To measure with 4 streams, set `EDGE_MAX_INFLIGHT=4` in
+  `~/openbeast/openbeast.conf` on spark-1 and restart the command center
+  (`systemctl --user restart openbeast`, [G3](#g3-restarts-only-through-systemctl---user-while-the-unit-is-enabled));
+  both steps are local and work offline. It raises the cap for every
+  device, so revert it after the run if other clients share the pair.
 - `WATCHDOG_AUTOINSTALL` and `LOGROTATE_AUTOINSTALL` = `true`.
 - `BIND_HOST` = `127.0.0.1`.
 
@@ -1060,8 +1111,11 @@ The Mac on 2026-11-15:
   `mobile-ui`, `sim-ros`.
 - MISSING: `blender`, `figma`, `3d-print` (off by default: risk).
 
-Offline, `check`, `enable` and `disable` never touch the network. `refresh`
-uses `npx --offline` / `uvx --offline`. Skill: `app-control`.
+Offline, `check` and `disable` never touch the network; `enable` stages an
+npm server from the local npm cache only, and `refresh` runs what is staged
+(npm) or `uvx --offline`. Staging servers for an offline Mac and installing
+client mode with no internet: [BEAST_APPS.md](BEAST_APPS.md) § Staging
+servers for an offline machine, § Offline client. Skill: `app-control`.
 
 ### F5. beast-docs: platform docs, mirrored
 
@@ -1136,7 +1190,11 @@ rather than OOMs.
 - **The stack side** (`start.sh`): `start.sh -d` runs the stack in a
   memory-capped systemd scope. On a unified-memory box running its own model,
   the cap is re-sized once the model is up, to **MemAvailable minus
-  `MEM_RESERVE_GB`** (default 3). The chat jobs' cap is derived the same way.
+  `MEM_RESERVE_GB`** (default 3), added on top of what the stack already
+  holds. The chat jobs' cap is derived the same way, and comes only out of
+  that spare: the stack is never capped below its own current usage. When
+  less than the jobs' 1 % of RAM is spare, start.sh prints a "no headroom"
+  warning instead of shrinking the stack under what it holds.
   75 % of a MemTotal the model already holds would protect nothing.
   `healthcheck.sh` and `doctor.sh` warn when MemAvailable falls below
   `MEM_RESERVE_GB`.
@@ -1179,6 +1237,9 @@ The worker runs no OpenBeast services. Its checkout matters for the lock
 
 - Native TensorFold: `scripts/engine.sh update tensorfold` (or
   `install-native.sh --version V`) on every Spark, then restart all ranks.
+  `spark-cluster.sh check` fails while the ranks disagree on the native
+  binary or on any spark.env engine pin (`TENSORFOLD_VERSION`, `_REF`,
+  `_IMAGE*`, `VLLM_IMAGE*`), so run it before `start`.
 - The recipe: a new recipe version or image means a new `git pull` in
   `~/openbeast-recipes/glm53`, `prepare.sh` (online), the image carried to every
   rank, and `systemctl --user restart spark-hydra-inference`.
@@ -1215,7 +1276,7 @@ Every row below was hit on the way to the live pair.
 | `model-fetch --verify` / `--locate` exit 3 | no lock in this checkout | pull the commit with the lock, or `--verify --trust-first-use` for a local SOURCE |
 | the recipe serves, but the lock "does not cover" it | the HF-cache snapshot lost its hard links (re-download, rename-save) | re-run the `stat` check (C2); re-link with `cp -al` and re-verify |
 | a container engine on an offline worker tries to pull | `*_IMAGE_DIGEST` pin; `docker save/load` drops the RepoDigest | pin `*_IMAGE_ID` instead (`sync-image` prints the line) ([H4](#h4-container-images)) |
-| `TENSORFOLD_ENGINE=container` fails offline | it pip-installs TensorFold from GitHub and deps from PyPI at every start | use the native engine (default) or the recipe |
+| `TENSORFOLD_ENGINE=container` fails offline | it pip-installs TensorFold from GitHub and deps from PyPI at every start | use the native engine (default) or the recipe; or, on a connected box, build an image with TensorFold at `TENSORFOLD_REF` and its locked deps installed, carry it with `spark-cluster.sh sync-image` / `save-image`, pin `TENSORFOLD_IMAGE_ID` and set `TENSORFOLD_IMAGE_PREBUILT=true` |
 | box freezes / ssh hangs under load | unified memory exhausted (it freezes rather than OOMs) | keep `KV_POOL_GIB` / `MEMORY_RESERVE_GIB` as in D1; watch `Unified memory` in healthcheck ([G4](#g4-memory-headroom-and-the-gb10-stack-cap)) |
 | pair stops answering mid-stream, `/health` still `ok` | a stalled collective | `TF_GLM_MULTI_WATCHDOG_EXIT=1` makes the rank exit so the unit restarts both; healthcheck's liveness check flags it |
 | `:443` not published after `setup-tailscale.sh` | the running WebUI still had auth off | `systemctl --user restart openbeast`, then re-run `setup-tailscale.sh` ([E5](#e5-webui-auth-and-the-admin-account-before-publishing)) |
@@ -1567,21 +1628,59 @@ published, from the 2026-11-15 review:
   (`OPENBEAST_CHAT_LOGIN_FROM=loopback` trusts any local TCP peer's
   `Tailscale-User-Login`). **beast-chat: fixed on the pair (2026-11-15)** with
   `CHAT_LOGIN_FROM=unix` (E2), so the header counts only on the 0600 socket
-  tailscaled proxies to. Still open: beast-artifact's loopback reads, and the
-  recipe's network mode.
+  tailscaled proxies to. beast-artifact has the same switch since review
+  2026-11-16 (`ARTIFACT_LOGIN_FROM=unix`, docs/BEAST_ARTIFACT.md "Where the
+  login header counts"), but the pair still runs it in `loopback` until the
+  operator sets it, restarts and re-runs `--publish-artifact`. Still open:
+  that switch on the pair, and the recipe's network mode.
 - **`bootstrap.sh` OFFLINE hint** points at `bundle.sh build` "on a connected
   box" without saying it must be an aarch64 Spark (H6).
 - **`setup-client.sh` writes the opencode v1 MCP shape** (`mcp.<name>` +
   `enabled`). On opencode v2 that entry is not merged with `mcp.servers` (F3).
-- **Checkout skew**: spark-1 and spark-2 are on different commits, both behind
-  the branch head (0).
+- **Checkout skew**: resolved 2026-11-16, both Sparks are at `dc0a181` (0).
+
+From the 2026-11-16 review (fixes in this checkout; the live boxes pick them
+up on the operator steps named):
+
+- **Loopback is not isolation on spark-1.** Open WebUI and SearXNG also run
+  with `network_mode: host` (`docker-compose.yml`), and SearXNG runs as uid 0
+  while it parses untrusted web content. From inside either container,
+  `127.0.0.1:8000` answers without a key, gate caps or the inference audit
+  (checked read-only: `docker exec searxng wget -qO- http://127.0.0.1:8000/health`
+  returns TensorFold's health), and rank 0's unauthenticated TCPStore on
+  `*:29551` is reachable on loopback too. The agent `bash` tool has the same
+  reach, since Sandlock leaves the network open by default
+  ([SANDBOXING.md](SANDBOXING.md)). spark-guard cannot help: it must accept
+  `lo` (Open WebUI and the agents reach inference there by design), and an
+  nftables `meta skuid` rule would not separate the containers either, because
+  Open WebUI, SearXNG and the recipe all run as uid 0. A compromised SearXNG
+  could therefore run unaudited generations, starve the 4 streams, or disturb
+  the TCPStore during a restart. It cannot read data or escalate. The real
+  fixes are still open: serve with native TensorFold (D2) and its
+  `--api-key-file`, so loopback reach alone grants nothing on `/v1`, and move
+  SearXNG to a bridge network that reaches only what it needs.
+- **spark-guard rules are stale on both Sparks**: installed 2026-11-15, they
+  guard `29501` but not `29502` (B3). `--status` now says `STALE`. Fix: one
+  `sudo scripts/backends/spark-guard.sh` on each Spark.
+- **beast-gate admitted 2 generations per device** while the pair serves 4.
+  The gate now defaults to `INFERENCE_SLOTS` (E2), but the running gate keeps 2
+  until the next `systemctl --user restart openbeast`.
+- **The RoCE fabric runs at `active_mtu 1024`**, because the ConnectX netdevs
+  are at MTU 1500 (B1 leaves the MTU alone on purpose). MTU 9000 (RoCE 4096)
+  could help long-prompt prefill all-gathers and bulk copies. TP-2 decode
+  all-reduces are small and latency-bound, so they would gain little. This is
+  unmeasured. Measure it in a maintenance window before changing netplan
+  anywhere: A/B the TTFT of a ~45K-token prompt and the 4-stream decode tok/s,
+  on both Sparks at once, with the offline netplan route written down first.
 
 ### Not done yet
 
 - zig for `language_reference` on a Spark (H7), and a beast-docs mirror on spark-1 (F5).
 - A `svc:spark-hydra` Tailscale Service name (an admin-console step), and the
   beast rig's hydra node for the pair (`https://spark-1.tail4109f9.ts.net:8443`,
-  `engine = "openai"`, a gate device key), once the rig is back on.
+  `engine = "openai"`, a gate device key, `slots = 4`, upstream
+  `GLM-5.3-Flash-EXL3`), once the rig is back on. `hydra.toml.example`'s
+  `[nodes.sparks]` is already that shape.
 - Switching the primary between `beast` and `spark-hydra` (clients + hydra).
 - A `PARALLEL=8` measurement; native TensorFold 1.2.7 (D2) vs the recipe.
 - A fully offline rebuild of the pair, end to end (H9).

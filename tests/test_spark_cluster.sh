@@ -103,6 +103,22 @@ _cluster "local n1 'x;rm'"; _run status --cluster "$T/cluster.env"
 [[ $RC -ne 0 ]] && _has "$OUT" "is not a plain ssh target" && pass "a node entry that is not a plain ssh target is refused" || fail "hostile node entry (rc=$RC): $OUT"
 _cluster "local n1 n2 n3 n4 n5 n6 n7"; _run status --cluster "$T/cluster.env"
 [[ $RC -eq 0 ]] && [[ "$(grep -c '^  rank' <<< "$OUT")" == 8 ]] && pass "status covers all 8 ranks of an 8-node cluster" || fail "8-node status (rc=$RC): $OUT"
+# status lists the serving unit too: the live pair runs spark-hydra-inference,
+# which an openbeast-* filter alone never showed.
+cat > "$T/bin/systemctl" <<'S'
+#!/bin/bash
+for a in "$@"; do
+  case "$a" in
+    "openbeast-*")   echo "openbeast-stack.service loaded active running OpenBeast" ;;
+    "spark-hydra-*") echo "spark-hydra-inference.service loaded active running GLM" ;;
+  esac
+done
+S
+chmod +x "$T/bin/systemctl"
+_cluster "local n1"; _run status --cluster "$T/cluster.env"
+[[ $RC -eq 0 ]] && _has "$OUT" "spark-hydra-inference.service:running" && _has "$OUT" "openbeast-stack.service:running" \
+  && pass "status shows the spark-hydra-inference serving unit beside the openbeast-* units" || fail "status units (rc=$RC): $OUT"
+rm -f "$T/bin/systemctl"
 
 # check: the fabric pairing. A switch (one subnet) and a direct cable pass; a
 # mirrored ring (one pair with no common subnet) fails and names the pair.
@@ -148,6 +164,24 @@ SC_GIT_SKEW=n2 _run check --cluster "$T/cluster.env"
 # A node whose GPU is not a GB10 (or nvidia-smi is missing).
 SC_GPU_n1="" _run check --cluster "$T/cluster.env"
 [[ $RC -ne 0 ]] && _has "$OUT" "GPU '' is not a GB10" && pass "check: a node with no GB10 fails" || fail "check gpu (rc=$RC): $OUT"
+# Engine builds: every rank must run the same one. The native binary answers
+# per node (SC_TF_<node>); spark.env is shared here, so its pins agree.
+mkdir -p "$T/home/.local/bin"
+cat > "$T/home/.local/bin/tensorfold" <<'S'
+#!/bin/bash
+k="SC_TF_$(printf '%s' "${NODE:-local}" | tr -c 'A-Za-z0-9' '_')"
+echo "tensorfold-native ${!k:-1.2.7}"
+S
+chmod +x "$T/home/.local/bin/tensorfold"
+_run check --cluster "$T/cluster.env"
+[[ $RC -eq 0 ]] && _has "$OUT" "tensorfold=1.2.7" && pass "check: the same TensorFold build on every rank passes" || fail "check same build (rc=$RC): $OUT"
+SC_TF_n2=1.2.9 _run check --cluster "$T/cluster.env"
+[[ $RC -ne 0 ]] && _has "$OUT" "tensorfold is '1.2.9' here, '1.2.7' on rank 0" && [[ "$(_bangs "$OUT")" == 1 ]] \
+  && pass "check: a rank on another TensorFold build fails (engine.sh update ran on one Spark only)" || fail "check build skew (rc=$RC): $OUT"
+printf 'SPARK_HEAD_IP=10.1.0.1\nTENSORFOLD_VERSION=1.2.7\nVLLM_IMAGE_ID=sha256:%064d\n' 7 > "$T/repo/scripts/backends/spark.env"
+_run check --cluster "$T/cluster.env"
+[[ $RC -eq 0 ]] && pass "check: identical spark.env pins (TENSORFOLD_VERSION, VLLM_IMAGE_ID) pass" || fail "check same pins (rc=$RC): $OUT"
+rm -f "$T/home/.local/bin/tensorfold"
 _cluster "local"; unset SC_FABRIC_local; : > "$T/repo/scripts/backends/spark.env"; _run check --cluster "$T/cluster.env"
 [[ $RC -eq 0 ]] && _has "$OUT" "one Spark — no fabric needed" && pass "check: one Spark needs no fabric" || fail "check one node (rc=$RC): $OUT"
 
@@ -262,6 +296,11 @@ SC_LOAD_AS="sha256:bad" _run sync-image --cluster "$T/cluster.env" some/image:ta
 cat > "$T/bin/rsync" <<'S'
 #!/bin/bash
 echo "rsync $*" >> "$SC_RSYNC_LOG"
+# Record what each parallel stream was given (--files-from, NUL-separated).
+for a in "$@"; do
+  [[ "$a" == --files-from=* ]] && tr '\0' '\n' < "${a#--files-from=}" | sed "s|^|FILE ${@: -2:1}|" >> "$SC_RSYNC_LOG"
+done
+exit 0
 S
 chmod +x "$T/bin/rsync"
 export SC_RSYNC_LOG="$T/rsync.log" MODELS_DIR="$T/models"
@@ -305,6 +344,23 @@ if grep -qF "$MODELS_DIR/syn/ n1:$MODELS_DIR/syn/" "$SC_RSYNC_LOG" && grep -qF "
 else
   fail "sync-weights drafter (rc=$RC): $OUT // $(cat "$SC_RSYNC_LOG")"
 fi
+# Parallel streams: one ssh stream is cipher-bound near 0.46 GB/s on a GB10,
+# so each directory goes as up to SYNC_STREAMS whole-file rsyncs whose lists
+# together hold every file exactly once.
+_files="$(grep '^FILE ' "$SC_RSYNC_LOG" | sort)"
+_want="$(cd "$MODELS_DIR" && for d in syn syn.drafter; do (cd "$d" && find . -type f | sed "s|^\./|FILE $MODELS_DIR/$d/|"); done | sort)"
+if [[ "$_files" == "$_want" ]] && [[ "$(grep -c -- '--files-from=' "$SC_RSYNC_LOG")" -ge 4 ]] && grep -q -- "rsync -a -W --partial --from0" "$SC_RSYNC_LOG"; then
+  pass "sync-weights: parallel whole-file streams (--files-from), every file in exactly one stream"
+else
+  fail "sync-weights streams: got [$_files] want [$_want] // $(cat "$SC_RSYNC_LOG")"
+fi
+: > "$SC_RSYNC_LOG"; rm -f "$_WM/syn.lock"
+SYNC_STREAMS=1 _run sync-weights --cluster "$T/cluster-w.env" --profile "$T/hp/syn.env"
+[[ $RC -eq 0 && "$(grep -c -- '--files-from=' "$SC_RSYNC_LOG")" == 2 ]] && pass "sync-weights: SYNC_STREAMS=1 is one stream per directory" \
+  || fail "SYNC_STREAMS=1 (rc=$RC): $OUT // $(cat "$SC_RSYNC_LOG")"
+SYNC_STREAMS=99 _run sync-weights --cluster "$T/cluster-w.env" --profile "$T/hp/syn.env"
+[[ $RC -eq 2 ]] && _has "$OUT" "1..16" && pass "sync-weights: SYNC_STREAMS outside 1..16 is refused" || fail "SYNC_STREAMS=99 (rc=$RC): $OUT"
+rm -f "$_WM/syn.lock"
 # A worker whose own lock differs from the head's: refused before any copy.
 printf '{"schema": 1, "artifacts": {}}\n' > "$_WM/syn.lock"; : > "$SC_RSYNC_LOG"
 _run sync-weights --cluster "$T/cluster-w.env" --profile "$T/hp/syn.env"

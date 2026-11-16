@@ -238,6 +238,10 @@ class TestMediaUrlsStayInline:
         _part("input_audio", url="http://127.0.0.1:8888/"),
         # `data` is read first upstream, but never trust which one wins.
         _part("input_video", data="AAAA", url="http://127.0.0.1:3001/"),
+        # vLLM's parts: the gate fronts vLLM too, and its MediaConnector
+        # downloads these (2026-11-16 review).
+        _part("audio_url", url="http://127.0.0.1:3000/"),
+        _part("video_url", url="http://169.254.169.254/latest/meta-data"),
         {"messages": [{"role": "user", "content": [
             {"type": "image_url", "image_url": "http://127.0.0.1:3000/"}]}]},
         # The rule shared with the router (agents/mediapolicy.py): media is

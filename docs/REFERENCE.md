@@ -61,6 +61,7 @@ conf key), so none of them creates or changes the file.
 | `ENGINE_DEFAULT` | `OPENBEAST_ENGINE_DEFAULT` | by host class: rig `llama`, DGX Spark `tensorfold` | What `engine.sh use default` picks, and what `list` / `doctor` call the default. The runtime fallback for an unset `INFERENCE_BACKEND` stays `llama` |
 | `ENGINE_PIN_VLLM` / `ENGINE_PIN_TENSORFOLD` | — | empty | `<version>@<immutable ref>` (image index digest / signed-archive sha256), written by `engine.sh install / update / rollback`. llama.cpp's pin is `scripts/llama.cpp.ref` |
 | `ENGINE_MODELS_DIR`, `ENGINE_VLLM_IMAGE`, `ENGINE_VLLM_EAGER` | `OPENBEAST_ENGINE_*` | `MODELS_DIR` or `~/openbeast-models`; `vllm/vllm-openai`; `auto` | Where verified checkpoints live; the vLLM repository; `--enforce-eager` (`auto`: on a GB10, for the sparse-MLA families hit by vllm#57156) |
+| `ENGINE_GATE_RATIO` | `OPENBEAST_ENGINE_GATE_RATIO` | `1.5` | The engine gate's bar: a gated engine (Maya) must decode at least this many times llama.cpp's tok/s. May be raised, never lowered (below 1.5 reads as 1.5). One value for `engine-gate.sh` (the verdict's `required`), `engine.sh use` and the daemon's launch. See `docs/WEIGHT_STREAMING.md` "The engine gate" |
 | `EXTENSIONS` | `OPENBEAST_EXTENSIONS` | empty (core only) | Space-separated names of enabled optional services under `extensions/` — `start.sh` merges their compose fragments / launches their processes. Manage with `scripts/ext.sh` |
 | `REASONING` | `OPENBEAST_REASONING` | empty (model default) | Global thinking override applied by `serve.sh`: `on` \| `off` \| `auto`. Overrides any per-serve-script default |
 | `REASONING_BUDGET` | `OPENBEAST_REASONING_BUDGET` | empty (model default) | Cap on thinking tokens before the model is forced to answer (`0` = none, `-1` = unlimited). Tames over-reasoning "MAX" tunes. Also sets the agent runner's per-turn `max_tokens` (`agents/runner.py`): budget + 12,288 content tokens, 20,480 + 12,288 when unset, no cap at all when `-1`. `OPENBEAST_AGENT_MAX_TOKENS=<n>` overrides it (`0` = uncapped). Eval runs are never capped |
@@ -85,7 +86,7 @@ conf key), so none of them creates or changes the file.
 | `EDGE_GATE` | `OPENBEAST_EDGE_GATE` | `false` | Run beast-gate (`agents/edge.py`), the identity-aware inference edge, and publish `:8443` at it instead of raw llama-server. Per-device keys, path allowlist, rate limits, inference audit. Local frontends unaffected. See `docs/BEAST_SLOT.md` |
 | `EDGE_PORT` | `OPENBEAST_EDGE_PORT` | `8090` | beast-gate listen port (loopback; published via `tailscale serve`) |
 | `EDGE_RATE_LIMIT` | `OPENBEAST_EDGE_RATE_LIMIT` | `120` | Requests/minute per device (token bucket). Per-device override: `rate_limit_per_min` in the registry |
-| `EDGE_MAX_INFLIGHT` | `OPENBEAST_EDGE_MAX_INFLIGHT` | `2` | Concurrent generations per device |
+| `EDGE_MAX_INFLIGHT` | `OPENBEAST_EDGE_MAX_INFLIGHT` | `INFERENCE_SLOTS` when set, else `2` | Concurrent generations per device. Unset, it follows `INFERENCE_SLOTS` so one device can use every stream the server has (a Spark pair serving 4); `/api/slot` publishes it as `admission.per_device_inflight` |
 | `EDGE_MAX_BODY` | `OPENBEAST_EDGE_MAX_BODY` | `8388608` (8 MiB) | Largest request body the gate accepts, in bytes; a larger one is a 413. Raise it only for clients that send large inline media |
 | `EDGE_READ_TIMEOUT` | `OPENBEAST_EDGE_READ_TIMEOUT` | `600` | Seconds the gate waits on the model server for each byte; for a non-streaming completion that is the whole generation, so a longer one is a 504. Raise it, or stream |
 | `EDGE_CONNECT_TIMEOUT` | `OPENBEAST_EDGE_CONNECT_TIMEOUT` | `10` | Seconds the gate may take to reach the model server before answering 502 |
@@ -631,7 +632,13 @@ name, `WEBUI_ORIGINS`) — the shared `agents/hostpolicy.py` list, enforced
 inside the container by `scripts/webui/sitecustomize.py` — and a rebound
 page's request is a 400. That holds with `ALLOW_OPEN_WEBUI=true` too: it lets
 the network in, not any page the operator opens. Only login on, or
-`WEBUI_ORIGINS='*'`, turns the `Host` check off. A name the CORS list does
+`WEBUI_ORIGINS='*'`, turns the `Host` check off. The hook fails open on
+purpose (a broken hook must not brick the chat UI on an image bump), so the
+running container is asked instead: `doctor.sh` sends it `Host:
+rebind.invalid` and FAILs unless the answer is 400, the `start.sh` banner
+warns on the same probe, and `update.sh --images` runs it on the new image
+right after the recreate and rolls the open-webui pin back to the previous
+digest if the guard is gone. A name the CORS list does
 not know (an address reached through `BIND_HOST=0.0.0.0` on a Mac, which has
 no `hostname -I`) goes in `WEBUI_ORIGINS`. The tailnet name in the CORS list comes from
 `tailscale status`, else the live `serve` mount, else the last name seen

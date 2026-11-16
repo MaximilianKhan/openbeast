@@ -7,9 +7,9 @@
   lock    [--only a,b] [--category C] [--refresh] [--from DIR] [--dry-run]   (online)
   update  [--only a,b] [--category C] [--write]                              (online)
   fetch   --to DIR [--platform P ...] [--only a,b] [--category C] [--profile core]
-          [--kinds file,oci,git,pip,npm,gomod,cargo] [--no-git] [--allow-unverified]
+          [--kinds file,oci,git,pip,npm,gomod,cargo] [--no-git] [--allow-unverified] [--allow-cross-pip]
           [--recheck] [--dry-run]                                            (online)
-  verify  DIR [--deep | --quick] [--json] re-hash everything; never dials
+  verify  DIR [--deep | --quick] [--jobs N] [--json]   re-hash everything; never dials
   restore NAME --from DIR [--platform P] [--prefix ~/.local/opt] [--bin ~/.local/bin]
           [--src ~/src] [--registry HOST:PORT | --docker | --podman] [--kinds ...]
           [--python PATH] [--force]                                          (offline)
@@ -25,6 +25,7 @@ import argparse
 import json
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -206,13 +207,32 @@ def cmd_plan(cat: C.Catalog, a) -> int:
 
 # ── verify ───────────────────────────────────────────────────────────────
 
-def verify_drive(drive: S.Drive, deep: bool = False, quick: bool = False) -> dict:
+def verify_drive(drive: S.Drive, deep: bool = False, quick: bool = False, jobs: int = 1) -> dict:
     """quick: presence and size only (minutes, not hours, on a full drive) —
-    NOT an integrity check, and the output says so."""
+    NOT an integrity check, and the output says so.
+
+    jobs: files hashed at once. hashlib releases the GIL, so on storage
+    faster than one core's sha256 (~1.8 GB/s: internal NVMe, a USB4 SSD)
+    4 jobs is ~4x. Keep 1 on a spinning disk, where parallel reads seek."""
     lock = drive.read_lock()
     res = {"ok": 0, "missing": [], "corrupt": [], "bad_signature": [], "unlisted": [], "tofu": [],
            "stored_signatures": 0, "items": len(lock["items"])}
     listed = set()
+    hashes: dict = {}
+    if not quick:
+        todo = sorted({f["path"] for it in lock["items"].values() for f in it.get("files", [])
+                       if os.path.isfile(drive.p(f["path"]))})
+
+        def one(rel: str):
+            try:
+                return rel, net.sha256_file(drive.p(rel))
+            except OSError:
+                return rel, ""
+        if jobs > 1:
+            with ThreadPoolExecutor(max_workers=jobs) as pool:
+                hashes = dict(pool.map(one, todo))
+        else:
+            hashes = dict(map(one, todo))
     for key, it in sorted(lock["items"].items()):
         for f in it.get("files", []):
             listed.add(f["path"])
@@ -220,7 +240,7 @@ def verify_drive(drive: S.Drive, deep: bool = False, quick: bool = False) -> dic
             if not os.path.isfile(p):
                 res["missing"].append(f["path"])
                 continue
-            if os.path.getsize(p) != f["size"] or (not quick and net.sha256_file(p) != f["sha256"]):
+            if os.path.getsize(p) != f["size"] or (not quick and hashes.get(f["path"]) != f["sha256"]):
                 res["corrupt"].append(f["path"])
                 continue
             res["ok"] += 1
@@ -233,7 +253,7 @@ def verify_drive(drive: S.Drive, deep: bool = False, quick: bool = False) -> dic
             try:
                 V.check_signature(sig["kind"], sig.get("key", ""), C.REPO_DIR, drive.p(sig["target"]),
                                   drive.p(sig["path"]), sig.get("prefix", ""), it["entry"])
-            except (V.VerifyError, OSError, KeyError) as e:
+            except (V.VerifyError, OSError, KeyError, ValueError) as e:
                 res["bad_signature"].append(f"{key}: {e}")
         if deep and it.get("kind") == "oci" and os.path.isfile(drive.p(it["primary"])):
             arc = oci.OciArchive(drive.p(it["primary"]))
@@ -257,7 +277,7 @@ def cmd_verify(a) -> int:
     if not os.path.isfile(drive.lock_path):
         _err(f"{drive.root} has no ark.lock — not a beast-ark drive")
         return 2
-    r = verify_drive(drive, a.deep, a.quick)
+    r = verify_drive(drive, a.deep, a.quick, max(1, a.jobs))
     if a.json:
         print(json.dumps(r, indent=1))
     else:
@@ -320,12 +340,14 @@ def main(argv=None) -> int:
     p.add_argument("--kinds", action="append")
     p.add_argument("--no-git", action="store_true")
     p.add_argument("--allow-unverified", action="store_true")
+    p.add_argument("--allow-cross-pip", action="store_true")
     p.add_argument("--recheck", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     p = sub.add_parser("verify")
     p.add_argument("dir")
     p.add_argument("--deep", action="store_true")
     p.add_argument("--quick", action="store_true")
+    p.add_argument("--jobs", type=int, default=1)
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("restore")
     p.add_argument("name")
@@ -432,7 +454,8 @@ def main(argv=None) -> int:
             kinds = _csv(a.kinds) or None
             items = F.plan_items(cat, _entries(cat, a), plats, kinds, with_git=not a.no_git)
             print(f"fetch {len(items)} item(s) for {', '.join(plats)} into {os.path.abspath(a.to)}", file=sys.stderr)
-            return F.run(cat, S.Drive(a.to), items, plats, a.allow_unverified, a.recheck, a.dry_run)
+            return F.run(cat, S.Drive(a.to), items, plats, a.allow_unverified, a.recheck, a.dry_run,
+                         a.allow_cross_pip)
     except net.OfflineError as e:
         _err(str(e))
         return 3

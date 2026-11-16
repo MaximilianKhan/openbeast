@@ -5,7 +5,7 @@
 #   scripts/backends/spark-cluster.sh check                      every node: reachable, aarch64 + GB10, docker, NCCL, same
 #                                                                checkout as rank 0, fabric pairing + SPARK_HEAD_IP reach;
 #                                                                free memory and disk are shown, not judged
-#   scripts/backends/spark-cluster.sh sync-weights --profile NAME   head -> workers over the fabric (model + drafter), verified vs the HEAD's lock
+#   scripts/backends/spark-cluster.sh sync-weights --profile NAME   head -> workers over the fabric (model + drafter), verified vs the HEAD's lock; SYNC_STREAMS=N parallel rsyncs (4)
 #   scripts/backends/spark-cluster.sh sync-image IMAGE           docker save | load to every worker that lacks it
 #   scripts/backends/spark-cluster.sh save-image IMAGE FILE      write IMAGE to FILE (carry it to an offline cluster)
 #   scripts/backends/spark-cluster.sh start --profile NAME [--engine tensorfold|vllm]
@@ -115,12 +115,18 @@ echo docker=$(docker info >/dev/null 2>&1 && echo ok || echo no)
 echo tensorfold=$( (~/.local/bin/tensorfold --version 2>/dev/null || true) | awk '{print $NF}')
 echo fabric=$(for i in $(ibdev2netdev 2>/dev/null | awk '/\(Up\)/ {print $5}'); do ip -4 -o addr show dev $i | awk '{print $4}'; done | paste -sd, -)
 echo head_ip=$(kv SPARK_HEAD_IP)
+for k in TENSORFOLD_ENGINE TENSORFOLD_VERSION TENSORFOLD_REF TENSORFOLD_IMAGE TENSORFOLD_IMAGE_DIGEST TENSORFOLD_IMAGE_ID VLLM_IMAGE VLLM_IMAGE_DIGEST VLLM_IMAGE_ID; do echo "pin_$k=$(kv $k)"; done
 echo repo=$(test -d @REPO@/.git && git -C @REPO@ rev-parse --short HEAD 2>/dev/null || echo missing)
 P
   PROBE="${PROBE//@REPO@/$REPO_Q}"
   FAIL=0
   declare -a FAB HIP
   REPO0=""
+  # The engine build every rank must share: the native binary, and each
+  # node's spark.env pins (a per-node file, outside the commit the repo
+  # check compares — `engine.sh update` on one Spark rewrites only its own).
+  BUILD_KEYS="tensorfold pin_TENSORFOLD_ENGINE pin_TENSORFOLD_VERSION pin_TENSORFOLD_REF pin_TENSORFOLD_IMAGE pin_TENSORFOLD_IMAGE_DIGEST pin_TENSORFOLD_IMAGE_ID pin_VLLM_IMAGE pin_VLLM_IMAGE_DIGEST pin_VLLM_IMAGE_ID"
+  BUILD0="" HAVE0=0   # rank 0's values as key=value lines (bash 3.2: no assoc arrays)
   for ((r = 0; r < N; r++)); do
     FAB[$r]="" HIP[$r]=""
     if ! out="$(on_node "$r" "$PROBE" 2>&1)"; then
@@ -143,6 +149,16 @@ P
       # runs another launcher against another lock.
       echo "     ! checkout is at $(get repo), rank 0's at $REPO0 — check out the same commit on every node"; FAIL=1
     fi
+    for k in $BUILD_KEYS; do
+      if [[ $r -eq 0 ]]; then
+        BUILD0+="$k=$(get "$k")"$'\n'; HAVE0=1
+      elif [[ $HAVE0 -eq 1 ]]; then
+        want="$(sed -n "s/^$k=//p" <<< "$BUILD0")"
+        if [[ "$(get "$k")" != "$want" ]]; then
+          echo "     ! ${k#pin_} is '$(get "$k")' here, '$want' on rank 0 — every rank must run the same engine build (engine.sh install/update on each Spark, or align its spark.env)"; FAIL=1
+        fi
+      fi
+    done
     if (( N > 1 )); then
       [[ -n "$(get nccl)" ]] || { echo "     ! libnccl2 missing (spark-root-setup.sh)"; FAIL=1; }
       [[ -n "${FAB[$r]}" ]] || { echo "     ! no addressed ConnectX-7 link"; FAIL=1; }
@@ -244,18 +260,57 @@ if [ -f "$l" ]; then cat > /dev/null; else t="$l.partial.$$"; if cat > "$t" && [
 scripts/backends/model-fetch.sh --profile '"$NAME_Q ${MDIR:+--models-dir $(q "$MDIR")}"' --verify || exit 1
 scripts/backends/model-fetch.sh --profile '"$NAME_Q"' --locate > /dev/null || { echo "verified where the head wrote it, but this node'"'"'s own MODELS_DIR (its spark.env) does not lead there, so its launcher will not find it — make MODELS_DIR match the head'"'"'s"; exit 1; }'
   echo "== $PF_PROFILE_NAME: ${DIRS[*]} -> ranks 1..$((N - 1)), checked against the head's lock ($PF_PROFILE_LOCK)"
+  # One ssh stream tops out near 0.46 GB/s on a GB10 (its cipher runs on one
+  # core) while the ConnectX link is 200 Gb/s: measured on the pair, 4
+  # streams moved 1.73 GB/s. So each directory's files are split by size
+  # into SYNC_STREAMS lists, one rsync each, in parallel. Whole-file (-W):
+  # on the fabric, delta checksums only cost CPU. 4 by default, leaving the
+  # link room for the RoCE all-gathers while the pair serves.
+  STREAMS="${SYNC_STREAMS:-4}"
+  [[ "$STREAMS" =~ ^([1-9]|1[0-6])$ ]] || { echo "Error: SYNC_STREAMS='$STREAMS' — 1..16 parallel rsync streams" >&2; exit 2; }
+  LISTS="$(mktemp -d "${TMPDIR:-/tmp}/obsync.XXXXXX")"
+  trap 'rm -rf "$LISTS"' EXIT
+  for ((i = 0; i < ${#DIRS[@]}; i++)); do
+    python3 - "${DIRS[$i]}" "$LISTS/$i" "$STREAMS" <<'PY'
+import os, sys
+root, out, k = sys.argv[1], sys.argv[2], int(sys.argv[3])
+files = []
+for dp, dns, fns in os.walk(root):
+    dns.sort()
+    for n in fns + [d for d in dns if os.path.islink(os.path.join(dp, d))]:
+        p = os.path.join(dp, n)
+        files.append((os.lstat(p).st_size, os.path.relpath(p, root)))
+buckets = [[0, []] for _ in range(k)]
+for size, rel in sorted(files, key=lambda x: (-x[0], x[1])):   # largest first, onto the lightest list
+    b = min(buckets, key=lambda x: x[0])
+    b[0] += size
+    b[1].append(rel)
+os.makedirs(out)
+for j, (_, rels) in enumerate(b for b in buckets if b[1]):
+    with open(os.path.join(out, f"{j}.list"), "wb") as f:
+        f.write(b"".join(r.encode() + b"\0" for r in sorted(rels)))
+PY
+  done
   pids=()
   for ((r = 1; r < N; r++)); do
     (
       on_node "$r" "$PRE"
-      for d in "${DIRS[@]}"; do
+      for ((i = 0; i < ${#DIRS[@]}; i++)); do
+        d="${DIRS[$i]}"
         on_node "$r" "mkdir -p $(q "$d")"
-        if [[ $DRY -eq 1 ]]; then
-          echo "[rank $r] rsync -a --partial $d/ ${NODES[$r]}:$d/"
-        else
-          rsync -a --partial -e "ssh ${SSH_OPTS[*]} -c aes128-gcm@openssh.com -o Compression=no" \
-            "$d/" "${NODES[$r]}:$d/"
-        fi
+        spids=()
+        for lst in "$LISTS/$i"/*.list; do
+          [[ -f "$lst" ]] || continue
+          if [[ $DRY -eq 1 ]]; then
+            echo "[rank $r] rsync -a -W --partial --from0 --files-from=$lst $d/ ${NODES[$r]}:$d/"
+          else
+            rsync -a -W --partial --from0 --files-from="$lst" \
+              -e "ssh ${SSH_OPTS[*]} -c aes128-gcm@openssh.com -o Compression=no" \
+              "$d/" "${NODES[$r]}:$d/" &
+            spids+=($!)
+          fi
+        done
+        for p in ${spids[@]+"${spids[@]}"}; do wait "$p" || { echo "an rsync stream into $d failed"; exit 1; }; done
       done
       on_node "$r" "$POST" < "$PF_PROFILE_LOCK"
     ) > >(sed "s/^/  [rank $r] /") 2>&1 &
@@ -360,7 +415,7 @@ stop)
 
 status)
   for ((r = 0; r < N; r++)); do
-    out="$(on_node "$r" 'echo "$(hostname) mem_free=$(awk "/MemAvailable/ {printf \"%.1f\", \$2/1048576}" /proc/meminfo)GiB units=$(systemctl --user list-units --plain --no-legend "openbeast-*" 2>/dev/null | awk "{print \$1\":\"\$4}" | paste -sd, -) containers=$(docker ps --format "{{.Names}}" 2>/dev/null | grep -E "openbeast-|glm53" | paste -sd, -)"' 2>&1 || echo UNREACHABLE)"
+    out="$(on_node "$r" 'echo "$(hostname) mem_free=$(awk "/MemAvailable/ {printf \"%.1f\", \$2/1048576}" /proc/meminfo)GiB units=$(systemctl --user list-units --plain --no-legend "openbeast-*" "spark-hydra-*" 2>/dev/null | awk "{print \$1\":\"\$4}" | paste -sd, -) containers=$(docker ps --format "{{.Names}}" 2>/dev/null | grep -E "openbeast-|glm53" | paste -sd, -)"' 2>&1 || echo UNREACHABLE)"
     echo "  rank $r ${NODES[$r]}: $out"
   done
   ;;

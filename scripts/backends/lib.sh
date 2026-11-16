@@ -88,16 +88,85 @@ sp_image() {
   fi
 }
 
-# sp_check_bind <host> — a specific address, never a wildcard unless the
-# operator acknowledged it (vLLM /health + /metrics are open even with a key;
-# TensorFold has no key at all).
+# sp_bind_class <host> — how the socket layer reads a bind host: unspecified
+# (every interface), loopback, address (a specific address or a name) or
+# malformed. Normalised first — brackets stripped, legacy IPv4 spellings
+# expanded — so '0', '::0', '[::0]' and 0:0:0:0:0:0:0:0 are the wildcard they
+# bind, not a "specific address" that slips past a literal match.
+sp_bind_class() {
+  python3 - "$1" <<'PY'
+import ipaddress, socket, sys
+h = sys.argv[1]
+if any(c.isspace() for c in h):
+    print("malformed"); sys.exit()
+if h.startswith("[") and h.endswith("]"):
+    h = h[1:-1]
+if h == "":
+    print("unspecified"); sys.exit()
+if h.lower() in ("localhost", "localhost."):
+    print("loopback"); sys.exit()
+ip = None
+try:
+    ip = ipaddress.ip_address(h.split("%", 1)[0])
+except ValueError:
+    try:
+        ip = ipaddress.IPv4Address(socket.inet_aton(h))   # '0', '0x0', '127.1', ...
+    except OSError:
+        pass
+if ip is None:
+    print("address"); sys.exit()
+if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+    ip = ip.ipv4_mapped
+print("unspecified" if ip.is_unspecified else "loopback" if ip.is_loopback else "address")
+PY
+}
+
+# sp_check_bind <host> [keyless 0|1] — rank 0's HTTP bind. Never a wildcard
+# unless the operator acknowledged it (vLLM /health + /metrics are open even
+# with a key). A server with NO API key (TensorFold's container engine, or
+# SPARK_NO_API_KEY=true) binds loopback only — 127.0.0.1 behind beast-gate —
+# unless SPARK_ALLOW_KEYLESS_BIND=true says someone firewalls it.
 sp_check_bind() {
-  case "$1" in
-    ""|0.0.0.0|::|"[::]")
+  local host="$1" keyless="${2:-0}" cls
+  cls="$(sp_bind_class "$host")"
+  case "$cls" in
+    malformed)
+      sp_err "SPARK_SERVE_HOST='$host' contains whitespace — one address, e.g. 127.0.0.1" ;;
+    unspecified)
       if ! sp_is_true "${SPARK_ALLOW_WILDCARD_BIND:-}"; then
-        sp_err "SPARK_SERVE_HOST='$1' — set it to this Spark's tailnet or private-LAN address (a wildcard needs SPARK_ALLOW_WILDCARD_BIND=true and your own firewall)"
+        sp_err "SPARK_SERVE_HOST='$host' binds every interface — use 127.0.0.1 behind beast-gate, or (for a server with an API key) this Spark's tailnet or private-LAN address. A wildcard needs SPARK_ALLOW_WILDCARD_BIND=true and your own firewall"
       fi ;;
   esac
+  if [[ "$keyless" == 1 && "$cls" != loopback && "$cls" != malformed ]] \
+     && ! sp_is_true "${SPARK_ALLOW_KEYLESS_BIND:-}"; then
+    sp_err "SPARK_SERVE_HOST='$host' is not loopback, and this server has NO API key: anything that reaches it gets unauthenticated generations. Use 127.0.0.1 behind beast-gate (docs/SPARK_HYDRA.md), or set SPARK_ALLOW_KEYLESS_BIND=true and firewall it yourself"
+  fi
+}
+
+# sp_check_guarded_port <port> — on a Spark where spark-guard is installed,
+# a rendezvous port (and its +1, the second line each rank keeps to rank 0)
+# must be one the installed ruleset drops off the fabric. spark-guard runs
+# separately under sudo and reads master ports only from spark.env, so a port
+# moved through the environment or another --env file would otherwise listen
+# unauthenticated on every interface, past the guard. No guard installed: no
+# check (the launcher's own "firewall it" note stands).
+sp_check_guarded_port() {
+  local port="$1" rules="${SPARK_GUARD_RULES:-/etc/openbeast/spark-guard.nft}"
+  local line r lo hi p ok missing=""
+  [[ "$port" =~ ^[0-9]+$ && -r "$rules" ]] || return 0
+  line="$(sed -n 's/^# fabric:.*guarded TCP:[[:space:]]*//p' "$rules" | head -n1)"
+  [[ -n "$line" ]] || return 0
+  for p in "$port" "$((10#$port + 1))"; do
+    ok=0
+    for r in $line; do
+      [[ "$r" =~ ^[0-9]+(-[0-9]+)?$ ]] || continue
+      lo="${r%-*}"; hi="${r#*-}"
+      if (( p >= lo && p <= hi )); then ok=1; break; fi
+    done
+    [[ $ok -eq 1 ]] || missing+="${missing:+ }$p"
+  done
+  [[ -z "$missing" ]] && return 0
+  sp_err "rendezvous port(s) $missing not guarded by spark-guard ($rules guards: $line) — rank 0 binds them on every interface with no authentication. spark-guard reads master ports only from spark.env: set the port there and re-run sudo scripts/backends/spark-guard.sh (or add it by hand: --port $port --port $((10#$port + 1)))"
 }
 
 # sp_check_secret_file <path> — exists, a regular file, owned by us, and not

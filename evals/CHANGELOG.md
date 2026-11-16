@@ -1,5 +1,72 @@
 # Eval suite changelog
 
+## v5.0, harness6 (2026-11-16) — review-1116 fixes (era roll)
+
+Same suite and manifest (71 units); the harness and `vlib.py` changed, so the cache
+era moved (`HARNESS_VERSION` harness5 -> harness6, `vlib.py` rehashed). No
+harness5 row replays into harness6: rerun the v5 units measured before it.
+One roll covers every review-1116 eval fix below. What changed in how
+units are judged:
+
+Harness and vlib:
+
+- A macOS solution can no longer signal processes outside its sandbox
+  (it could SIGKILL sibling units, validators, the harness).
+- The macOS deny-list sandbox fails closed (verdict `sandbox`) instead of
+  running the solution unsandboxed when `sandbox-exec` fails.
+- The Linux Landlock confine refuses network sockets with seccomp (UDP,
+  and TCP below kernel 6.7, were open).
+- `run_solution` keeps the solution's rusage on a normal exit (fixed-CPU
+  gates passed over-budget solutions ~1 run in 12); on macOS the solution
+  monitor and the leftover sweep read libproc in-process instead of
+  forking `ps -A` every 50 ms.
+- The validator completion line is no longer a module global an
+  in-process solution can read; in-process units remain forgeable by
+  frame introspection (documented).
+- The leftover sweep kills only provably-owned process groups (reused
+  pids no longer kill sibling units), kills before the timeout drain on
+  macOS, and a validator's pgids file cannot name an older process.
+- One harness per `/tmp/eval_*` root (`run_eval.fixture_lock`): every
+  unit holds an flock per fixture root across harness processes; a sweep
+  waits (and says so at once), a prover refuses at once with the holder's
+  pid.
+- The validator's `TMPDIR` is private (`<private>/tmp`).
+- `--jobs` is clamped to beast-gate's per-device in-flight cap; the
+  remote health check retries; probes never send the ambient key to an
+  untrusted `--base-url`; the stratified L2 records the true pi.
+
+Families 163-179:
+
+- 163/167/168: the compiler no longer reads the sealed reference
+  (`vlib.build_private`: include lint, private build dir, macOS read-deny);
+  a hanging compiled solution fails on its judged warm-up instead of as an
+  infra `validator_timeout`; 163's prompt states its 6 s CPU budget.
+- 173: the reference absorbs its own undelivered `cancel()` on CPython
+  <= 3.12; 24 cancel-tail scenarios pin it (624 scenarios in all).
+- 175: the oracle is incremental (~0.2 s instead of ~1.8 s per validation;
+  same expected results); the argvcheat arm proves on Linux.
+- 176: `shopd/` is copied without following links, under a cap.
+- 179: the validator never runs git in the agent's repository (a promisor
+  remote's `uploadpack` ran unsandboxed); the fixture history is one
+  `git fast-import` (same SHAs, ~0.5 s instead of ~4 s on a Mac).
+
+Families 183-196, the U3 upgrades and the kept-v4 units:
+
+- **Toolchain pins.** The harness resolves and fingerprints every compiler
+  and inspection tool before any agent runs and refuses a validation when
+  one moved or changed (not banked). U3 compiled units build a private copy
+  with the pinned compiler (`vlib.start_build`); every validator gets
+  `GOENV=off`, `GOTOOLCHAIN=local` and the pinned rustup toolchain. New
+  prover arms: `toolchain:path`, `toolchain:goenv`.
+- **Confinement.** 183, 188, 40, 36_a and 123_a run the solution with
+  `confine=` (stdlib + a private dir) on macOS and Linux; 40 lints strictly
+  and blocks numpy/torch with an audit hook.
+- **Kept-v4 gates** of 146, 147, 153, 158 and 159 scale with
+  `OPENBEAST_TIMEOUT_SCALE` (the v4 number at scale 1); the prover lint now
+  sees a measured time compared with a bare number.
+- **122's oracle** builds its columns in the integer domain (bit-identical,
+  2x faster on aarch64).
+
 ## v5.0 (2026-11-15) — the measured suite (CURRENT; era break)
 
 `evals/SUITE_VERSION` = v5 rolls every cache era; the v4 board is frozen

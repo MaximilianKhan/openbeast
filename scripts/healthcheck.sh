@@ -983,8 +983,13 @@ fi
 # beast-slot status API (dashboard extension) — only when enabled in conf.
 if [[ " ${EXTENSIONS:-} " == *" dashboard "* || "${EXTENSIONS:-}" == "dashboard" ]]; then
   DASH_URL="http://${HEALTH_HOST:-127.0.0.1}:${DASHBOARD_PORT:-3002}/api/slot"
+  # _may_restart, not the raw $RESTART: a ./stop.sh that reaped the
+  # dashboard after this pass checked the tool server, WebUI and SearXNG
+  # (all still up, so nothing re-read .run/stopped) got an unsupervised
+  # dashboard back, serving /api/slot after a deliberate stop (review
+  # 2026-11-16). Every other relaunch here already asks _may_restart.
   if ! check "Dashboard (beast-slot)" "$DASH_URL" "beast_slot" \
-     && $RESTART && [[ -x "$REPO_DIR/extensions/dashboard/run.sh" ]]; then
+     && [[ -x "$REPO_DIR/extensions/dashboard/run.sh" ]] && _may_restart; then
     # start.sh launches process extensions once and nothing supervises them,
     # so a dashboard that died (OOM in the capped scope, a bind error) left
     # every client's :8444/api/slot at 502 until a full stack restart. The

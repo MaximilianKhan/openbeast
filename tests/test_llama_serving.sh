@@ -199,6 +199,34 @@ _serve OPENBEAST_BIND=192.0.2.10 OPENBEAST_API_KEY=k1 -- -m "$SV/weights/main.gg
 _serve -- -m "$SV/weights/main.gguf" -c 8192
 [[ $SV_RC -eq 0 && "$(_sv_arg --host)" == "127.0.0.1" ]] && pass "…as does the keyless loopback default (control)" \
   || fail "keyless loopback default (rc=$SV_RC): $(tr '\n' ' ' <<< "$SV_OUT")"
+# 2026-11-16 review: a raw :8443 mount made while LLAMA_API_KEY was set
+# persists; a keyless restart behind it put the GPU on the whole tailnet.
+cat > "$SV/bin/tailscale" <<SH
+#!/bin/bash
+[[ "\$*" == "serve status --json" && -s "$SV/ts-serve" ]] || exit 1
+cat "$SV/ts-serve"
+SH
+chmod +x "$SV/bin/tailscale"
+printf '{"Web":{"rig:8443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:8080"}}}}}' > "$SV/ts-serve"
+_serve -- -m "$SV/weights/main.gguf" -c 8192
+if [[ $SV_RC -eq 3 ]] && ! _launched && [[ "$SV_OUT" == *":8443"* && "$SV_OUT" == *"ALLOW_OPEN_INFERENCE"* ]]; then
+  pass "a keyless loopback llama-server behind a persisted raw :8443 mount is refused (exit 3)"
+else
+  fail "keyless behind raw :8443 (rc=$SV_RC, launched=$(_launched && echo yes || echo no)): $(tr '\n' ' ' <<< "$SV_OUT")"
+fi
+_serve OPENBEAST_API_KEY=k1 -- -m "$SV/weights/main.gguf" -c 8192
+[[ $SV_RC -eq 0 ]] && _launched && pass "…a keyed one behind the same mount launches (control)" \
+  || fail "keyed behind raw :8443 (rc=$SV_RC): $(tr '\n' ' ' <<< "$SV_OUT")"
+_serve OPENBEAST_ALLOW_OPEN_INFERENCE=true -- -m "$SV/weights/main.gguf" -c 8192
+[[ $SV_RC -eq 0 ]] && _launched && pass "…and ALLOW_OPEN_INFERENCE=true acknowledges it" \
+  || fail "ALLOW_OPEN_INFERENCE=true behind raw :8443 (rc=$SV_RC): $(tr '\n' ' ' <<< "$SV_OUT")"
+printf '{"Web":{"rig:8443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:8090"}}}}}' > "$SV/ts-serve"
+_serve -- -m "$SV/weights/main.gguf" -c 8192
+[[ $SV_RC -eq 0 ]] && _launched && pass "…while :8443 → beast-gate leaves the keyless loopback server alone (control)" \
+  || fail "keyless behind a gate mount (rc=$SV_RC): $(tr '\n' ' ' <<< "$SV_OUT")"
+# (The serve key above has no dotted name, so conf.sh caches no tailnet name
+# that would leak into the CORS cases below; drop any cache all the same.)
+printf '#!/bin/bash\nexit 1\n' > "$SV/bin/tailscale"; rm -f "$SV/ts-serve" "$SV/.run/webui-tailnet-name"
 
 echo ""
 echo "browser origins (keyless loopback llama-server):"
@@ -216,16 +244,22 @@ grep -qx 'LLAMA_ARG_CORS_ORIGINS=https://ui.example' "$SV/env" 2>/dev/null \
 # whose Host is not loopback or an allowed origin's host, and Tailscale Serve
 # keeps the client's Host. With the tailnet name known, the raw :8443 mount's
 # origin must be the allowed one, or every remote client gets a 403.
-cat > "$SV/bin/tailscale" <<'SH'
+cat > "$SV/bin/tailscale" <<SH
 #!/bin/bash
-[[ "$1 $2" == "status --json" ]] && { echo '{"Self": {"DNSName": "beast.tail123.ts.net."}}'; exit 0; }
+echo "\$*" >> "$SV/ts-calls"
+[[ "\$1 \$2" == "status --json" ]] && { echo '{"Self": {"DNSName": "beast.tail123.ts.net."}}'; exit 0; }
 exit 1
 SH
-chmod +x "$SV/bin/tailscale"
+chmod +x "$SV/bin/tailscale"; : > "$SV/ts-calls"
 _serve -- -m "$SV/weights/main.gguf" -c 8192
 grep -qx 'LLAMA_ARG_CORS_ORIGINS=https://beast.tail123.ts.net:8443' "$SV/env" 2>/dev/null \
   && pass "…with a tailnet name, the :8443 mount's origin is allowed (llama.cpp v1.0.0 Host guard)" \
   || fail "tailnet origin not allowed: $(grep '^LLAMA_ARG_CORS' "$SV/env" 2>/dev/null) :: $(tr '\n' ' ' <<< "$SV_OUT" | tail -c 300)"
+# conf.sh already looked the name up when serve.sh sourced it; serve.sh
+# reuses it (a stalled tailscaled cost each lookup up to 2 x `timeout 3`).
+[[ "$(grep -c '^status --json' "$SV/ts-calls")" == 1 ]] \
+  && pass "…and tailscale is asked for it once per launch, not again by serve.sh" \
+  || fail "tailscale asked $(grep -c '^status --json' "$SV/ts-calls") times: $(tr '\n' ';' < "$SV/ts-calls")"
 _serve LLAMA_ARG_CORS_ORIGINS=https://ui.example -- -m "$SV/weights/main.gguf" -c 8192
 grep -qx 'LLAMA_ARG_CORS_ORIGINS=https://ui.example' "$SV/env" 2>/dev/null \
   && pass "…and an operator's own value still wins over the tailnet name" \
@@ -392,6 +426,27 @@ SH
     fail "$_p sweep auth (rc=$PR_RC, key len ${#_ls_key}): config '$(cat "$PR/curl-config" 2>/dev/null | head -2 | sed 's/Bearer .*/Bearer …/')' :: $(tail -3 <<< "$PR_OUT" | tr '\n' ' ')"
   fi
 done
+echo ""
+echo "serve.sh under bash 3.2 (macOS /bin/bash, the mac host class):"
+# Under set -u, bash < 4.4 calls "${a[@]}" of an EMPTY array unbound, and a
+# serve script with no passthrough flags (serve-gemma-4-31b-q5.sh: -m -a -c)
+# leaves EXTRA_ARGS empty; with no -a, ALIAS_ARGS too. Every expansion of an
+# array that can be empty must be the ${a[@]+"${a[@]}"} form.
+_bare="$(grep -nE '"\$\{(EXTRA_ARGS|ALIAS_ARGS|PROMPT_CACHE_ARGS|REASONING_ARGS)\[@\]\}"' "$REPO_DIR/scripts/serve.sh" \
+         | grep -vE '\$\{(EXTRA_ARGS|ALIAS_ARGS|PROMPT_CACHE_ARGS|REASONING_ARGS)\[@\]\+' || true)"
+[[ -z "$_bare" ]] && pass "serve.sh expands every possibly-empty array with the \${a[@]+…} guard" \
+  || fail "unguarded empty-array expansions in serve.sh: $_bare"
+if [[ -x /bin/bash ]] && /bin/bash -c '(( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) ))'; then
+  rm -f "$SV/argv"; SV_RC=0
+  SV_OUT="$(env -i HOME="$SV/home" PATH="$SV/bin:/usr/bin:/bin" /bin/bash "$SV/scripts/serve.sh" \
+            -m "$SV/weights/linked.gguf" -c 8192 2>&1)" || SV_RC=$?
+  if [[ $SV_RC -eq 0 ]] && _launched; then
+    pass "…and /bin/bash $(/bin/bash -c 'echo $BASH_VERSION') launches a serve with no -a and no extra flags"
+  else
+    fail "/bin/bash serve.sh with no extra flags (rc=$SV_RC): $(tail -n 3 <<< "$SV_OUT" | tr '\n' ' ')"
+  fi
+fi
+
 echo ""
 echo "========================================"
 echo "llama-serving: $PASS passed, $FAIL failed"

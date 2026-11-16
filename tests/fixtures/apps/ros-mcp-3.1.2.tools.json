@@ -1,0 +1,126 @@
+[
+ {
+  "name": "get_actions",
+  "description": "Get list of all available ROS actions.\nExample:\nget_actions()"
+ },
+ {
+  "name": "get_action_details",
+  "description": "Get complete action details including goal, result, and feedback structures. Requires the action type; if you don't know it, call without action_type to get the list of available types back in the error.\nExample:\nget_action_details('/turtle1/rotate_absolute', 'turtlesim/action/RotateAbsolute')"
+ },
+ {
+  "name": "get_action_status",
+  "description": "Get action status for a specific action name. Works only with ROS 2.\nExample:\nget_action_status('/turtle1/rotate_absolute')"
+ },
+ {
+  "name": "send_action_goal",
+  "description": "Send a goal to a ROS action server. Works only with ROS 2.\nExample:\nsend_action_goal('/turtle1/rotate_absolute', 'turtlesim/action/RotateAbsolute', {'theta': 1.57})"
+ },
+ {
+  "name": "cancel_action_goal",
+  "description": "Cancel a specific action goal. Works only with ROS 2.\nExample:\ncancel_action_goal('/turtle1/rotate_absolute', 'goal_1758653551839_21acd486')"
+ },
+ {
+  "name": "connect_to_robot",
+  "description": "Connect to the robot by setting the IP/port. This tool also tests connectivity to confirm that the robot is reachable and the port is open."
+ },
+ {
+  "name": "ping_robots",
+  "description": "Ping one or more robot IP addresses and check if specific ports are open.\nA successful ping to the IP but not the port can indicate that ROSbridge is not running.\nExample:\nping_robots(targets=[{'ip': '192.168.1.100', 'port': 9090}, {'ip': '192.168.1.101', 'port': 9090}])"
+ },
+ {
+  "name": "view_saved_image",
+  "description": "View a previously saved image from disk.\nImages are automatically saved when subscribing to image topics.\nUse this tool to re-view a saved image without re-subscribing."
+ },
+ {
+  "name": "get_nodes",
+  "description": "Get list of all currently running ROS nodes.\nExample:\nget_nodes()"
+ },
+ {
+  "name": "get_node_details",
+  "description": "Get detailed information about a specific node including its publishers, subscribers, and services.\nExample:\nget_node_details('/turtlesim')"
+ },
+ {
+  "name": "get_parameter",
+  "description": "Get a single ROS parameter value by name. Works only with ROS 2.\nExample:\nget_parameter('/turtlesim:background_b')"
+ },
+ {
+  "name": "set_parameter",
+  "description": "Set a single ROS parameter value. Works only with ROS 2.\nExample:\nset_parameter('/turtlesim:background_b', '255')"
+ },
+ {
+  "name": "has_parameter",
+  "description": "Check if a ROS parameter exists. Works only with ROS 2.\nExample:\nhas_parameter('/turtlesim:background_b')"
+ },
+ {
+  "name": "delete_parameter",
+  "description": "Delete a ROS parameter. Works only with ROS 2.\nExample:\ndelete_parameter('/turtlesim:background_b')"
+ },
+ {
+  "name": "get_parameters",
+  "description": "Get list of all ROS parameter names for a specific node. Works only with ROS 2.\nExample:\nget_parameters('cam2image')\nget_parameters('/cam2image')"
+ },
+ {
+  "name": "get_parameter_details",
+  "description": "Get comprehensive details about a specific ROS parameter including value, type, and metadata. Works only with ROS 2.\nExample:\nget_parameter_details('/turtlesim:background_r')"
+ },
+ {
+  "name": "get_verified_robot_spec",
+  "description": "Load specifications and usage context for a verified robot model. ONLY use if the robot model is in the verified list (use get_verified_robots_list first to check). Most robots won't have a spec - that's OK, connect directly using connect_to_robot instead."
+ },
+ {
+  "name": "get_verified_robots_list",
+  "description": "List pre-verified robot models that have specification files with usage guidance available. Use this to check if a robot model has additional context available before calling get_verified_robot_spec. If your robot is not in this list, you can still connect to it directly using connect_to_robot."
+ },
+ {
+  "name": "detect_ros_version",
+  "description": "Detect the ROS version and distribution via rosbridge."
+ },
+ {
+  "name": "get_services",
+  "description": "Get list of all available ROS services.\nExample:\nget_services()"
+ },
+ {
+  "name": "get_service_type",
+  "description": "Get the service type for a specific service.\nExample:\nget_service_type('/rosapi/topics')"
+ },
+ {
+  "name": "get_service_details",
+  "description": "Get complete service details including request/response structures and provider nodes.\nExample:\nget_service_details('/rosapi/topics')"
+ },
+ {
+  "name": "call_service",
+  "description": "Call a ROS service with specified request data.\nExample:\ncall_service('/rosapi/topics', 'rosapi/Topics', {})\ncall_service('/slow_service', 'my_package/SlowService', {}, timeout=10.0)  # Specify timeout only for slow services\n\nIMPORTANT: Field names in the request dict should match the field names shown by get_service_details(), which are already formatted for rosbridge (without leading underscores). For example, use {'topic': '/image'} not {'_topic': '/image'}."
+ },
+ {
+  "name": "get_topics",
+  "description": "Get list of all available ROS topics.\nExample:\nget_topics()"
+ },
+ {
+  "name": "get_topic_type",
+  "description": "Get the message type for a specific topic.\nExample:\nget_topic_type('/cmd_vel')"
+ },
+ {
+  "name": "get_topic_details",
+  "description": "Get detailed information about a specific topic including its type, publishers, and subscribers.\nExample:\nget_topic_details('/cmd_vel')"
+ },
+ {
+  "name": "get_message_details",
+  "description": "Get the complete structure/definition of a message type.\nExample:\nget_message_details('geometry_msgs/Twist')"
+ },
+ {
+  "name": "subscribe_once",
+  "description": "Subscribe to a ROS topic and return the first message received.\nExample:\nsubscribe_once(topic='/cmd_vel', msg_type='geometry_msgs/msg/TwistStamped')\nsubscribe_once(topic='/slow_topic', msg_type='my_package/SlowMsg', timeout=10.0)  # Use longer timeout for slow topics\nsubscribe_once(topic='/high_rate_topic', msg_type='sensor_msgs/Image', timeout=5.0, queue_length=5, throttle_rate_ms=100)  # Control message buffering and rate\nsubscribe_once(topic='/camera/image_raw', msg_type='sensor_msgs/Image', expects_image='true')  # Hint that this is an image for faster processing\nsubscribe_once(topic='/point_cloud', msg_type='sensor_msgs/PointCloud2', expects_image='false')  # Skip image detection for non-image data"
+ },
+ {
+  "name": "subscribe_for_duration",
+  "description": "Subscribe to a topic for a duration and collect messages.\nExample:\nsubscribe_for_duration(topic='/cmd_vel', msg_type='geometry_msgs/msg/TwistStamped', duration=5, max_messages=10)\nsubscribe_for_duration(topic='/high_rate_topic', msg_type='sensor_msgs/Image', duration=10, queue_length=5, throttle_rate_ms=100)  # Control message buffering and rate\nsubscribe_for_duration(topic='/camera/image_raw', msg_type='sensor_msgs/Image', duration=5, expects_image='true')  # Hint that this is an image for faster processing\nsubscribe_for_duration(topic='/point_cloud', msg_type='sensor_msgs/PointCloud2', duration=5, expects_image='false')  # Skip image detection for non-image data"
+ },
+ {
+  "name": "publish_for_durations",
+  "description": "Publish a sequence of messages to a ROS topic, each held for a given duration.\nWith rate_hz=0 (default): publishes each message once, then waits for the duration.\nWith rate_hz>0: publishes each message repeatedly at the given rate for the duration (useful for controllers like diff_drive that need continuous commands).\nExample (single publish with delay):\npublish_for_durations(topic='/cmd_vel', msg_type='geometry_msgs/msg/Twist', messages=[{'linear': {'x': 1.0}}, {'linear': {'x': 0.0}}], durations=[1, 2])\nExample (continuous streaming at 10 Hz for 2 seconds):\npublish_for_durations(topic='/cmd_vel', msg_type='geometry_msgs/msg/Twist', messages=[{'angular': {'z': 0.5}}], durations=[2.0], rate_hz=10)"
+ },
+ {
+  "name": "publish_once",
+  "description": "Publish a single message to a ROS topic.\nExample:\npublish_once(topic='/cmd_vel', msg_type='geometry_msgs/msg/TwistStamped', msg={'linear': {'x': 1.0}})"
+ }
+]

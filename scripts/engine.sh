@@ -5,9 +5,11 @@
 #   scripts/engine.sh list                      engines for this host class, installed / pinned / active
 #   scripts/engine.sh status                    the active engine: version, endpoint readiness, model served
 #   scripts/engine.sh use <engine|default> [--profile NAME] [--serve-script X]
-#                         [--url URL] [--port N] [--dry-run] [--no-restart] [--force]
+#                         [--url URL] [--unmanaged] [--port N] [--dry-run] [--no-restart] [--force]
 #                                               switch INFERENCE_BACKEND et al. in openbeast.conf;
-#                                               a running stack is stopped first and started after
+#                                               a running stack is stopped first and started after.
+#                                               --unmanaged: someone else runs the server at --url,
+#                                               even on this box's loopback (rank 0 of a Spark pair)
 #   scripts/engine.sh install <engine> [--version V] [--digest sha256:…] [--from DIR]
 #   scripts/engine.sh update  <engine> [--from DIR]   install the latest release (pinned, verified)
 #   scripts/engine.sh stage   <engine> [--version V] [--digest D] [--platform P] DIR
@@ -35,7 +37,7 @@ case "$CMD" in
 esac
 
 ENGINE="" VERSION="" DIGEST="" FROM="" PROFILE="" SERVE="" URL="" PORT="" PLATFORM=""
-DRY=0 NORESTART=0 FORCE=0 DIR="" SPARK_ENV=""
+DRY=0 NORESTART=0 FORCE=0 UNMANAGED=0 DIR="" SPARK_ENV=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --version)      VERSION="${2:?--version needs a value}"; shift 2 ;;
@@ -49,6 +51,7 @@ while [[ $# -gt 0 ]]; do
     --spark-env)    SPARK_ENV="${2:?--spark-env needs a file}"; shift 2 ;;
     --dry-run|-n)   DRY=1; shift ;;
     --no-restart)   NORESTART=1; shift ;;
+    --unmanaged)    UNMANAGED=1; shift ;;
     --force)        FORCE=1; shift ;;
     -h|--help)      usage; exit 0 ;;
     -*)             echo "Unknown option: $1 (see --help)" >&2; exit 2 ;;
@@ -68,6 +71,8 @@ source "$SCRIPT_DIR/lib/engine.sh"
 # shellcheck source=lib/proc.sh
 source "$SCRIPT_DIR/lib/proc.sh"
 [[ -f "$SCRIPT_DIR/lib/curl_auth.sh" ]] && source "$SCRIPT_DIR/lib/curl_auth.sh"
+# One GPU detection per command, not one per question (history needs none).
+[[ "$CMD" == history ]] || ob_engine_host_class_pin
 
 die() { echo "Error: $*" >&2; exit 1; }
 need_engine() {
@@ -98,7 +103,7 @@ spark_env_sync() {
   ob_engine_has "$e" spark_env || return 0
   while IFS= read -r kv; do
     [[ -n "$kv" ]] || continue
-    ob_engine_file_set "$f" "${kv%%=*}" "${kv#*=}"
+    ob_engine_file_set "$f" "${kv%%=*}" "${kv#*=}" || die "could not write ${kv%%=*} to $f (above)"
     echo "  $f: ${kv%%=*}=${kv#*=}"
   done < <(ob_engine_call "$e" spark_env "$2" "$3")
 }
@@ -163,6 +168,12 @@ cmd_use() {
     [[ "$url" =~ ^https?://[^/[:space:]]+$ ]] || die "--url '$URL' is not an http(s)://host[:port] base URL"
     ob_url_is_local "$url" "$OPENBEAST_PROBE_HOST" "$BIND_HOST" || managed=0
   fi
+  # A loopback URL is not proof this stack runs the server: rank 0 of a Spark
+  # pair serves on the head's 127.0.0.1 and is launched by spark-cluster.sh.
+  if [[ $UNMANAGED -eq 1 ]]; then
+    [[ -n "$URL" ]] || die "--unmanaged needs --url (where the server someone else runs answers)"
+    managed=0
+  fi
   runs_here "$ENGINE" "$cls" || [[ $managed -eq 0 ]] || [[ $FORCE -eq 1 ]] \
     || die "$ENGINE does not run on a '$cls' host (it runs on: $(ob_engine_call "$ENGINE" hosts)) — point at one elsewhere with --url, or --force"
 
@@ -185,7 +196,7 @@ cmd_use() {
     PROFILE="${PROFILE:-$(ob_engine_conf_get ENGINE_PROFILE)}"
     if [[ $managed -eq 1 ]]; then
       ob_engine_can_manage "$ENGINE" || die "the $ENGINE adapter has no single-host launcher — run it elsewhere and pass --url"
-      [[ -n "$PROFILE" ]] || die "managed $ENGINE needs a model profile: --profile NAME (scripts/backends/models/, TENSOR_PARALLEL_SIZE=1)"
+      [[ -n "$PROFILE" ]] || die "managed $ENGINE needs a model profile: --profile NAME (scripts/backends/models/, TENSOR_PARALLEL_SIZE=1) — or, for a server this stack does not launch (rank 0 of a Spark pair on this box), --unmanaged --url URL"
       ob_engine_call "$ENGINE" profile_check "$PROFILE" || die "profile '$PROFILE' cannot run managed here (above)"
       if [[ -z "$(ob_engine_call "$ENGINE" installed 2>/dev/null || true)" ]]; then
         [[ $FORCE -eq 1 ]] || die "$ENGINE is not installed here — scripts/engine.sh install $ENGINE (or --force)"
@@ -209,6 +220,10 @@ cmd_use() {
       fi
       port="${PORT:-8080}"
       if [[ -n "$URL" ]]; then url="${URL%/}"; else url="http://127.0.0.1:$port"; fi
+      if ob_engine_keyless_open "$url"; then
+        echo "WARNING: $url is not loopback and LLAMA_API_KEY is empty: scripts/engine-serve.sh will REFUSE to launch $ENGINE keyless there (exit 3)." >&2
+        echo "         Use --url http://127.0.0.1:$port, set LLAMA_API_KEY, or ALLOW_OPEN_INFERENCE=true in openbeast.conf to accept it." >&2
+      fi
       sets+=("INFERENCE_BACKEND=$ENGINE" "INFERENCE_URL=$url" "INFERENCE_MANAGED=true" "ENGINE_PROFILE=$PROFILE")
     else
       sets+=("INFERENCE_BACKEND=$ENGINE" "INFERENCE_URL=$url" "INFERENCE_MANAGED=false")
@@ -229,7 +244,7 @@ cmd_use() {
   fi
   stack_running && running=1
 
-  echo "engine.sh use $ENGINE — $([[ $managed -eq 1 ]] && echo "managed on this box" || echo "remote at $url, not managed here")"
+  echo "engine.sh use $ENGINE — $([[ $managed -eq 1 ]] && echo "managed on this box" || echo "at $url, not managed here")"
   [[ $running -eq 1 && $NORESTART -eq 0 ]] && echo "  1. stop the running stack:   $(stop_cmd)"
   echo "  $([[ $running -eq 1 && $NORESTART -eq 0 ]] && echo 2 || echo 1). openbeast.conf:"
   for k in "${sets[@]}"; do echo "       set   $k"; done
@@ -266,7 +281,10 @@ cmd_use() {
 
 # ── install / update / stage / rollback ────────────────────────────────────
 _record() { # _record <action>
-  ob_engine_pin_set "$ENGINE" "$ENG_RESULT_VERSION" "$ENG_RESULT_REF" "$1" "${ENG_RESULT_NOTE:-}${FROM:+ from=$FROM}"
+  # ob_engine_pin_set refuses a version or ref that is not a pin's shape
+  # (lib/engine.sh ob_engine_pin_valid): they are written to openbeast.conf.
+  ob_engine_pin_set "$ENGINE" "$ENG_RESULT_VERSION" "$ENG_RESULT_REF" "$1" "${ENG_RESULT_NOTE:-}${FROM:+ from=$FROM}" \
+    || die "$ENGINE: the install produced a pin openbeast.conf must not hold (above) — the pin did not move"
   echo "pinned $ENGINE $ENG_RESULT_VERSION @ $ENG_RESULT_REF"
   spark_env_sync "$ENGINE" "$ENG_RESULT_VERSION" "$ENG_RESULT_REF"
   if [[ "$INFERENCE_BACKEND" == "$ENGINE" && "$INFERENCE_MANAGED" == true ]] && stack_running; then
@@ -302,8 +320,12 @@ cmd_install() { # cmd_install <install|update>
 cmd_stage() {
   need_engine
   [[ -n "$DIR" ]] || die "stage needs a target directory: engine.sh stage $ENGINE [--version V] DIR"
-  ENG_STAGE_DIGEST="$DIGEST" ENG_STAGE_PLATFORM="$PLATFORM" ob_engine_call "$ENGINE" stage "$VERSION" "$DIR" \
-    || die "staging $ENGINE failed"
+  # --digest / --platform win; without them, an exported ENG_STAGE_DIGEST /
+  # ENG_STAGE_PLATFORM stands (the form docs/WEIGHT_STREAMING.md step 7
+  # uses). A bare prefix assignment of the empty flag value clobbered it, so
+  # Maya's wheels were silently staged for THIS box, not the closed one.
+  ENG_STAGE_DIGEST="${DIGEST:-${ENG_STAGE_DIGEST:-}}" ENG_STAGE_PLATFORM="${PLATFORM:-${ENG_STAGE_PLATFORM:-}}" \
+    ob_engine_call "$ENGINE" stage "$VERSION" "$DIR" || die "staging $ENGINE failed"
 }
 
 cmd_rollback() {

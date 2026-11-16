@@ -10,7 +10,11 @@ Sync is incremental and resumable:
     markdown hashes the same, rewrites nothing — only checked_at moves;
   * the frontier is saved in the manifest every few pages and on the way out,
     so an interrupted sync (^C, a dead network, --max-pages) resumes where it
-    stopped. A sync that empties its frontier is `complete`.
+    stopped — the page in flight and every transient failure (transport
+    error, HTTP 5xx / 429) included. An unreachable robots.txt, or
+    MAX_CONSECUTIVE_FAILURES transient failures in a row, STOPS the sync
+    (SyncAborted) with the queue intact rather than draining it as
+    "refused". A sync that empties its frontier is `complete`.
 
 Politeness: one request at a time, `delay` seconds apart per host (robots
 Crawl-delay wins when larger), robots.txt checked for the URL we request AND
@@ -21,19 +25,42 @@ from __future__ import annotations
 
 import json
 import urllib.error
+from collections import deque
 from typing import Callable, Optional
 
 from . import config as C
 from . import docc
 from . import htmlmd as H
 from . import net
+from . import urls as U
 from .store import Store, age_days, doc_id, now_iso
 
 SAVE_EVERY = 10
+MAX_CONSECUTIVE_FAILURES = 5        # transient failures in a row = the network is down: stop
 
 
 class SyncError(Exception):
     pass
+
+
+class SyncAborted(SyncError):
+    """Stopped for an outage (robots.txt unreachable, the network failing
+    over and over). Nothing was dropped: the queue is saved for a resume."""
+
+
+def terms_gate(src: C.Source, m: dict, accept_terms: bool) -> None:
+    """The copying decision for a `requires_ack` source is the operator's,
+    made once, explicitly, and recorded in the manifest. Every path that
+    WRITES a page into the mirror (sync, live --save) goes through here.
+    Raises SyncError when it was never made; records it when made now."""
+    if not src.requires_ack or m.get("terms_accepted_at"):
+        return
+    if not accept_terms:
+        raise SyncError(
+            f"{src.title}: the publisher's terms restrict copying.\n  {src.license}\n"
+            f"  Re-run with --accept-terms to mirror it for your own use on your own "
+            f"machines (recorded in the manifest).")
+    m["terms_accepted_at"] = now_iso()
 
 
 def fetch_url_for(src: C.Source, page: str) -> str:
@@ -45,14 +72,29 @@ def fetch_url_for(src: C.Source, page: str) -> str:
 
 
 def render(src: C.Source, page: str, body: bytes, hints: Optional[dict] = None) -> dict:
-    """{title, markdown, links, meta} for one fetched body, by adapter."""
-    hints = hints or {}
+    """{title, markdown, links, meta} for one fetched body, by adapter.
+
+    Raises ONLY SyncError: whatever an adapter trips over on one page (a
+    JSON body of the wrong shape, schema drift, pathological HTML) makes
+    that page an error the crawl counts and moves past — never an
+    exception that ends the whole sync."""
+    try:
+        return _render(src, page, body, hints or {})
+    except SyncError:
+        raise
+    except Exception as e:                          # noqa: BLE001 — one page, not the crawl
+        raise SyncError(f"{page}: cannot render ({type(e).__name__}: {e})") from None
+
+
+def _render(src: C.Source, page: str, body: bytes, hints: dict) -> dict:
     text = body.decode("utf-8", "replace")
     if src.adapter == "apple-docc-json":
         try:
             doc = json.loads(text)
         except ValueError as e:
             raise SyncError(f"{page}: not DocC JSON ({e})") from None
+        if not isinstance(doc, dict):
+            raise SyncError(f"{page}: not a DocC RenderNode (a JSON {type(doc).__name__})")
         title, md = docc.to_markdown(doc, page)
         s = docc.summary(doc)
         return {"title": title, "markdown": md, "links": docc.links(doc, page),
@@ -61,8 +103,9 @@ def render(src: C.Source, page: str, body: bytes, hints: Optional[dict] = None) 
         r = H.clean_markdown(text, hints.get("title", ""), hints.get("description", ""))
         return {"title": r["title"], "markdown": r["markdown"],
                 "links": H.markdown_links(text, page, src.markdown_suffix), "meta": {}}
-    r = H.html_to_markdown(text, src.content_selectors, src.strip_selectors)
-    return {"title": r["title"], "markdown": r["markdown"], "links": H.html_links(text, page),
+    root = H.parse(text)                           # parsed ONCE for both passes
+    r = H.html_to_markdown(text, src.content_selectors, src.strip_selectors, root=root)
+    return {"title": r["title"], "markdown": r["markdown"], "links": H.html_links(text, page, root=root),
             "meta": {"page_updated": r["updated"]}}
 
 
@@ -86,7 +129,7 @@ def _discover(src, fetcher, log) -> tuple:
     seeds = []
     if is_index:
         for child in locs:
-            if (child.split("//", 1)[-1].split("/", 1)[0]) not in src.hosts:
+            if not U.host_allowed(src.hosts, child):
                 continue
             try:
                 c = fetcher.get(child, max_bytes=64 * 1024 * 1024)
@@ -111,13 +154,7 @@ def sync(src: C.Source, store: Store, max_pages: Optional[int] = None,
         raise SyncError(f"offline: {reason}. A sync needs the internet — build the mirror on "
                         f"a connected box and carry it here: docs.sh pack / docs.sh unpack.")
     m = store.load(src.name)
-    if src.requires_ack and not m.get("terms_accepted_at"):
-        if not accept_terms:
-            raise SyncError(
-                f"{src.title}: the publisher's terms restrict copying.\n  {src.license}\n"
-                f"  Re-run with --accept-terms to mirror it for your own use on your own "
-                f"machines (recorded in the manifest).")
-        m["terms_accepted_at"] = now_iso()
+    terms_gate(src, m, accept_terms)
     budget = src.max_pages if max_pages is None else max(0, int(max_pages))
     fetcher = fetcher or net.Fetcher(src.hosts, src.delay)
     for r in roots or []:
@@ -125,46 +162,100 @@ def sync(src: C.Source, store: Store, max_pages: Optional[int] = None,
             raise SyncError(f"root {r} is outside {src.name}'s scope ({src.allow_prefixes})")
     pages = m["pages"]
     # Resume an interrupted frontier; otherwise start from the roots.
-    frontier = [tuple(x) for x in m.get("frontier") or [] if isinstance(x, list) and len(x) == 2]
-    resumed = bool(frontier)
+    saved = [tuple(x) for x in m.get("frontier") or [] if isinstance(x, list) and len(x) == 2]
+    resumed = bool(saved)
     hints: dict = {}
     if roots:
         # --root jumps the queue; it does not throw away a saved frontier.
-        frontier = [(u, 0) for u in roots] + frontier
-    elif not frontier:
+        start = [(u, 0) for u in roots] + saved
+    elif saved:
+        start = saved
+    else:
         seeds, hints = _discover(src, fetcher, log)
-        frontier = [(u, 0) for u in src.roots] + [(u, 1) for u in seeds]
+        start = [(u, 0) for u in src.roots] + [(u, 1) for u in seeds]
     m["hints"] = {**(m.get("hints") or {}), **hints}
     hints = m["hints"]
-    seen = set()
+    # A deque (popleft is O(1); list.pop(0) made a big fresh re-walk
+    # quadratic) plus a `queued` set, so a URL linked from a hundred pages is
+    # queued once, not a hundred times.
+    frontier: deque = deque()
+    queued: set = set()
+    seen: set = set()
+
+    def enqueue(links, depth):
+        for u in links:
+            if u not in seen and u not in queued:
+                queued.add(u)
+                frontier.append((u, depth))
+
+    for u, d in start:
+        enqueue([u], d)
+    # Pages that failed for a reason that may pass (transport error, HTTP
+    # 5xx / 429): kept for the next sync, never silently dropped.
+    retry: list = []
+    inflight = None                 # the page being processed when an exception escapes
+    failures = 0                    # consecutive transient failures
     stats = {"source": src.name, "fetched": 0, "new": 0, "updated": 0, "unchanged": 0,
              "not_modified": 0, "skipped_fresh": 0, "refused": 0, "errors": 0,
-             "requests": 0, "resumed": resumed}
+             "retry": 0, "requests": 0, "resumed": resumed}
     m["last_sync_started_at"] = now_iso()
     m["sync_complete"] = False
     i = 0
+
+    def transient(url, depth, why):
+        nonlocal failures
+        stats["errors"] += 1
+        stats["retry"] += 1
+        retry.append((url, depth))
+        failures += 1
+        log(f"  ! {why} (kept for the next sync)")
+        if failures >= MAX_CONSECUTIVE_FAILURES:
+            raise SyncAborted(
+                f"{failures} transient failures in a row (last: {why}) — the network or the "
+                f"host looks down. Stopped; nothing was dropped: the queue is saved and the "
+                f"next sync resumes it.")
+
     try:
         while frontier:
-            url, depth = frontier.pop(0)
-            url = H.canonical(url) if src.adapter != "apple-docc-json" else url.split("#")[0]
+            inflight = None
+            url, depth = frontier.popleft()
+            queued.discard(url)
+            url = H.canonical(url) if src.adapter != "apple-docc-json" else U.normalize_url(url)
             if not url or url in seen or not src.in_scope(url):
                 continue
             seen.add(url)
+            inflight = (url, depth)
             rec = pages.get(url)
             fresh = (rec and not force and rec.get("checked_at")
                      and (age_days(rec["checked_at"]) or 0) < src.refresh_days)
             if fresh:
                 stats["skipped_fresh"] += 1
                 if depth < src.max_depth:
-                    frontier += [(u, depth + 1) for u in rec.get("links") or [] if u not in seen]
+                    enqueue(rec.get("links") or [], depth + 1)
                 continue
             if stats["fetched"] >= budget:
-                frontier.insert(0, (url, depth))
+                frontier.appendleft((url, depth))
+                queued.add(url)
                 seen.discard(url)
+                inflight = None
                 break
-            target = fetch_url_for(src, url)
             try:
-                if not fetcher.robots_for(url).allowed(url):
+                target = fetch_url_for(src, url)
+            except ValueError as e:
+                stats["refused"] += 1
+                log(f"  - refused  {url}: {e}")
+                continue
+            rb = fetcher.robots_for(url)
+            if rb.unreachable:
+                # RFC 9309: an unreachable robots.txt means "crawl nothing" —
+                # for NOW. That is an outage, not a verdict on the queued
+                # pages: stop, keep every one of them (this page included),
+                # and do not call the mirror complete.
+                raise SyncAborted(
+                    f"robots.txt unreachable ({rb.note}). Stopped; nothing was dropped: "
+                    f"the queue is saved and the next sync resumes it.")
+            try:
+                if not rb.allowed(url):
                     raise net.Refused(f"robots.txt disallows the page {url}")
                 stats["fetched"] += 1
                 resp = fetcher.get(target, etag=(rec or {}).get("etag", ""),
@@ -174,13 +265,16 @@ def sync(src: C.Source, store: Store, max_pages: Optional[int] = None,
                 log(f"  - refused  {url}: {e}")
                 continue
             except urllib.error.HTTPError as e:
-                stats["errors"] += 1
-                log(f"  ! HTTP {e.code} {target}")
+                if e.code >= 500 or e.code == 429:
+                    transient(url, depth, f"HTTP {e.code} {target}")
+                else:
+                    stats["errors"] += 1
+                    log(f"  ! HTTP {e.code} {target}")
                 continue
             except net.FetchError as e:
-                stats["errors"] += 1
-                log(f"  ! {e}")
+                transient(url, depth, str(e))
                 continue
+            failures = 0
             now = now_iso()
             if resp.status == 304 and rec:
                 rec["checked_at"] = now
@@ -208,7 +302,7 @@ def sync(src: C.Source, store: Store, max_pages: Optional[int] = None,
                         stats["unchanged"] += 1
                         log(f"  = same     {url}")
                         if depth < src.max_depth:
-                            frontier += [(u, depth + 1) for u in links if u not in seen]
+                            enqueue(links, depth + 1)
                         continue
                 rel, sha, _changed = store.write_page(src.name, url, out["title"], out["markdown"], meta)
                 pages[url] = {"doc_id": doc_id(src.name, url), "file": rel, "title": out["title"],
@@ -225,19 +319,27 @@ def sync(src: C.Source, store: Store, max_pages: Optional[int] = None,
                 log(f"  {'~ updated' if prev_sha else '+ new    '} {url}  ({out['title']})")
                 rec = pages[url]
             if depth < src.max_depth:
-                frontier += [(u, depth + 1) for u in (rec or {}).get("links") or [] if u not in seen]
+                enqueue((rec or {}).get("links") or [], depth + 1)
             i += 1
             if i % SAVE_EVERY == 0:
-                m["frontier"] = [list(x) for x in frontier]
+                m["frontier"] = [list(x) for x in retry] + [list(x) for x in frontier]
                 store.save(src.name, m)
+        inflight = None
     finally:
-        # Drop what this run already visited; keep the rest for a resume.
+        # Keep everything not finished for a resume: the page in flight when
+        # we were stopped (^C, an abort), the transient failures, and the
+        # unvisited queue. Drop only what this run actually finished.
         rest, dedup = [], set()
+        for u, d in ([inflight] if inflight else []) + retry:
+            if u not in dedup:
+                dedup.add(u)
+                rest.append([u, d])
         for u, d in frontier:
             if u not in seen and u not in dedup and src.in_scope(u):
                 dedup.add(u)
                 rest.append([u, d])
         m["frontier"] = rest
+        # Complete = nothing left to try, transient failures included.
         m["sync_complete"] = not rest
         m["last_sync_at"] = now_iso()
         stats["requests"] = fetcher.requests
@@ -272,13 +374,23 @@ def live(src: C.Source, page: str, fetcher: Optional[net.Fetcher] = None) -> dic
     reason = C.offline_reason()
     if reason:
         raise SyncError(f"offline: {reason}")
-    page = H.canonical(page, src.markdown_suffix) if src.adapter != "apple-docc-json" else page
-    if not src.in_scope(page):
-        raise net.Refused(f"{page} is outside {src.name}'s scope")
-    fetcher = fetcher or net.Fetcher(src.hosts, 0.0)
-    if not fetcher.robots_for(page).allowed(page):
+    raw = page
+    page = (H.canonical(page, src.markdown_suffix) if src.adapter != "apple-docc-json"
+            else U.normalize_url(page))
+    # Scope, robots and the request all see this one normalized spelling.
+    if not page or not src.in_scope(page):
+        raise net.Refused(f"{page or raw} is outside {src.name}'s scope")
+    # One robots.txt per host per hour across live calls, not one per call.
+    fetcher = fetcher or net.Fetcher(src.hosts, 0.0, robots_cache=net.LIVE_ROBOTS)
+    rb = fetcher.robots_for(page)
+    if rb.unreachable:
+        raise net.FetchError(f"robots.txt unreachable ({rb.note})")
+    if not rb.allowed(page):
         raise net.Refused(f"robots.txt disallows {page}")
-    target = fetch_url_for(src, page)
+    try:
+        target = fetch_url_for(src, page)
+    except ValueError as e:
+        raise net.Refused(str(e)) from None
     resp = fetcher.get(target)
     out = render(src, page, resp.body)
     out.update({"url": page, "fetched_from": target, "fetched_at": now_iso(),
@@ -286,9 +398,11 @@ def live(src: C.Source, page: str, fetcher: Optional[net.Fetcher] = None) -> dic
     return out
 
 
-def save_live(src: C.Source, store: Store, out: dict) -> str:
-    """Write a live result into the mirror, as a sync would have."""
+def save_live(src: C.Source, store: Store, out: dict, accept_terms: bool = False) -> str:
+    """Write a live result into the mirror, as a sync would have — behind
+    the same terms gate (SyncError when the terms were never accepted)."""
     m = store.load(src.name)
+    terms_gate(src, m, accept_terms)
     meta = {"fetched_from": out["fetched_from"], "fetched_at": out["fetched_at"],
             "etag": out["etag"], "last_modified": out["last_modified"], "license": src.license,
             **out.get("meta", {})}

@@ -436,6 +436,9 @@ def lint(cat: Catalog) -> List[str]:
                 errs.append(f"{w}: has a hash but verified = {a.verified!r}; say where the hash came from")
             if a.install not in INSTALL:
                 errs.append(f"{w}: install {a.install!r} not in {INSTALL}")
+            for b in a.bins:
+                if b.startswith("/") or ".." in b.split("/") or not b.strip("/"):
+                    errs.append(f"{w}: bins entry {b!r} must be a relative path inside the install root")
             if a.signature_kind not in SIG_KINDS:
                 errs.append(f"{w}: signature_kind {a.signature_kind!r} not in {SIG_KINDS}")
             if a.signature_url and not a.signature_kind:

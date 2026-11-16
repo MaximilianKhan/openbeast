@@ -723,10 +723,43 @@ def benchmark_model(model: dict, task_filter: list[str] | None,
     return {"slug": model["slug"], "name": model["name"], "results": results}
 
 
+def remote_alive(base_url: str, attempts: int = 3, gap: float = 2.0,
+                 timeout: float = 5.0, sleep=time.sleep) -> bool:
+    """Is the remote endpoint up? GET /v1/models, with retries.
+
+    The health check used to be ONE detect_model() call: any exception,
+    a 429 included, read as "down", and run_eval then aborted every
+    remaining unit of the sweep (review 1116). beast-gate charges
+    /v1/models a token from the same per-device bucket the agents'
+    completions draw on, so four fast agents can drain it, and one tailnet
+    or TLS blip is enough on its own. Now: 2xx or 429 (the gate answered)
+    is alive; a 5xx, timeout or connection error is retried `attempts`
+    times `gap` s apart; any other 4xx (a bad key) is down at once."""
+    import urllib.error
+    url = base_url.rstrip("/") + "/models"
+    for i in range(attempts):
+        try:
+            req = urllib.request.Request(url, headers=run_eval._auth_headers(base_url))
+            with urllib.request.urlopen(req, timeout=timeout):
+                return True
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                return True
+            if e.code < 500:
+                return False
+        except Exception:  # noqa: BLE001 — URLError, timeout, TLS: retry
+            pass
+        if i < attempts - 1:
+            sleep(gap)
+    return False
+
+
 def benchmark_remote(model: dict, task_filter, max_iter_override, use_cache: bool = True,
                      jobs: int = 1, suite: str | None = None) -> dict:
     """A remote entry: nothing to start, stop, lease or recover. Health is
-    the endpoint answering /v1/models; --jobs is clamped to its slots."""
+    the endpoint answering /v1/models (remote_alive, with retries); --jobs
+    is clamped to its slots, and by run_eval to beast-gate's per-device
+    in-flight cap when the endpoint is a gate."""
     try:
         env = remote_env(model)
     except KeyError as e:
@@ -736,7 +769,7 @@ def benchmark_remote(model: dict, task_filter, max_iter_override, use_cache: boo
     base_url = model["base_url"]
 
     def _alive() -> bool:
-        return run_eval.detect_model(base_url) != "unknown"
+        return remote_alive(base_url)
 
     if not _alive():
         return {"slug": model["slug"], "name": model["name"],

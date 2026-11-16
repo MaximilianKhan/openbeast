@@ -31,6 +31,7 @@ cd "$REPO_DIR"
 # hardware.sh provides the shared backend → cmake-flags mapping.
 source "$REPO_DIR/scripts/lib/conf.sh"
 source "$REPO_DIR/scripts/lib/hardware.sh"
+source "$REPO_DIR/scripts/lib/pyversions.sh"   # ob_py_versions — installed pin versions, one python3
 # Enabled compose fragments, for recreating the stack the way start.sh
 # composes it (update_images). Guarded: a partial checkout still updates.
 # shellcheck source=/dev/null
@@ -301,6 +302,48 @@ update_llama() {
 }
 
 # ---- container images: Open WebUI + SearXNG + extension fragments ----------
+# _webui_guard_after_bump <compose> <old-pin> <new-pin> <compose args...>
+# The WebUI's DNS-rebinding Host guard (scripts/webui/sitecustomize.py) fails
+# open by design, and a new image can break it (an upstream Starlette change)
+# or skip it (an entrypoint that resets PYTHONPATH) with nothing more than a
+# stderr line. --images moved the digest and recreated the container without
+# asking (review 2026-11-16). Now: wait for the new WebUI, send it a rebound
+# Host (lib/net.sh ob_webui_host_guard), and if it is SERVED, put the previous
+# open-webui pin back and recreate again — the way --python rolls back pins.
+_webui_guard_after_bump() {
+  local compose="$1" old="$2" new="$3"; shift 3
+  local url="http://${OPENBEAST_PROBE_HOST:-127.0.0.1}:3000" st="down" i
+  declare -F ob_webui_host_guard >/dev/null || return 0
+  if ! docker compose "$@" ps --status running --services 2>/dev/null | grep -qx open-webui; then
+    ok "Open WebUI is not running — start.sh and doctor.sh check its Host guard when it comes up"
+    return 0
+  fi
+  for i in $(seq 1 "${OB_WEBUI_GUARD_WAIT:-90}"); do
+    st="$(ob_webui_host_guard "$url" || true)"
+    [[ "$st" != "down" ]] && break
+    sleep 2
+  done
+  case "$st" in
+    ok)  ok "Open WebUI on the new image still refuses a rebound Host (DNS-rebinding guard live)" ;;
+    off) ok "Open WebUI Host allowlist is off by configuration (login on, or opened on purpose) — nothing to check" ;;
+    open)
+      warn "the NEW Open WebUI image serves requests for unknown Host names — its DNS-rebinding
+       guard did not load (with login off a rebound web page would get admin, with bash).
+       Rolling the open-webui pin back to the previous digest."
+      sed -i "s|${new}|${old}|" "$compose"
+      if docker compose "$@" up -d; then
+        warn "rolled back to ${old##*@}; the new image stays unpinned until the guard works with it
+       (scripts/webui/sitecustomize.py; tests/test_webui_exposure.py). Re-run --images after fixing."
+      else
+        warn "rolled the pin back in docker-compose.yml, but the recreate FAILED — run: docker compose up -d"
+      fi
+      ;;
+    *)
+      warn "Open WebUI did not answer after the recreate, so its DNS-rebinding guard is UNVERIFIED on
+       the new image — once it is up, run ./scripts/doctor.sh (it FAILs a missing guard)." ;;
+  esac
+}
+
 update_images() {
   step "Container images (Open WebUI + SearXNG + extensions)"
   command -v docker >/dev/null 2>&1 || { warn "docker not found — skipping images"; return 0; }
@@ -323,7 +366,7 @@ update_images() {
     return 0
   fi
   local compose="$REPO_DIR/docker-compose.yml"
-  local bumped=0 unpinned=0
+  local bumped=0 unpinned=0 _webui_old="" _webui_new=""
   # The client-mode SearXNG (setup-client.sh --local-search) runs the SAME
   # digest-pinned image, and nothing moved its pin: it sat six weeks behind
   # the rig's (review network-exposure-5). Mirror every searxng bump — and
@@ -358,6 +401,8 @@ update_images() {
         sed -i "s|${_old}|${_new}|" "$compose"
         ok "pinned $_spec -> ${_newdigest:0:19}…"
         bumped=1
+        # Remembered for the Host-guard check after the recreate (below).
+        [[ "$_repo" == ghcr.io/open-webui/open-webui ]] && { _webui_old="$_old"; _webui_new="$_new"; }
       else
         ok "$_spec already at latest digest"
       fi
@@ -489,6 +534,9 @@ PYPIN
     else
       ok "running containers recreated on the new images"
     fi
+    if [[ -n "$_webui_old" ]]; then
+      _webui_guard_after_bump "$compose" "$_webui_old" "$_webui_new" "${_compose_args[@]}"
+    fi
   elif [[ $unpinned -eq 1 ]]; then
     warn "stack not running — and the image(s) warned about above will NOT change on the next ./start.sh"
   else
@@ -559,11 +607,13 @@ update_python() {
   # Snapshot the rollback target BEFORE anything is touched.
   local req_backup; req_backup="$(mktemp)"
   cp "$req" "$req_backup"
+  # Installed versions come from ob_py_versions (one python3 for every pin),
+  # not a `pip show` per pin per pass: that was 18 pip startups, ~7 s on a
+  # Spark (review 2026-11-16).
   local before_spec=() p v
-  for p in "${pkgs[@]}"; do
-    v=$(python3 -m pip show "$p" 2>/dev/null | awk '/^Version:/{print $2}')
+  while read -r p v; do
     [[ -n "$v" ]] && before_spec+=("${p}==${v}")
-  done
+  done < <(ob_py_versions "${pkgs[@]}" || true)
 
   _py_restore() {
     cp "$req_backup" "$req"
@@ -590,10 +640,17 @@ update_python() {
 
   # Report what moved, and shout about major jumps: those are where APIs get
   # deleted, and they are the ones worth a human's attention before committing.
-  local majors=0 spec name old new
-  for spec in "${before_spec[@]}"; do
-    name="${spec%%==*}"; old="${spec##*==}"
-    new=$(python3 -m pip show "$name" 2>/dev/null | awk '/^Version:/{print $2}')
+  # What is installed now, read once: this report and the pin rewrite below
+  # both use it (the upgrade above is the only thing that changed it).
+  local after_spec=() majors=0 spec name old new a
+  while read -r p v; do
+    [[ -n "$v" ]] && after_spec+=("${p}==${v}")
+  done < <(ob_py_versions "${pkgs[@]}" || true)
+  for spec in ${before_spec[@]+"${before_spec[@]}"}; do
+    name="${spec%%==*}"; old="${spec##*==}"; new=""
+    for a in ${after_spec[@]+"${after_spec[@]}"}; do
+      [[ "${a%%==*}" == "$name" ]] && { new="${a##*==}"; break; }
+    done
     [[ -z "$new" || "$new" == "$old" ]] && continue
     if [[ "${old%%.*}" != "${new%%.*}" ]]; then
       warn "MAJOR bump ${name} ${old} -> ${new} — APIs may have been removed"
@@ -624,11 +681,7 @@ PY
   # pin the list did not know about. A pin whose package pip cannot report
   # stays exactly as it was.
   local req_new; req_new="$(mktemp)"
-  local want=() name lc sn spec
-  for p in "${pkgs[@]}"; do
-    v=$(python3 -m pip show "$p" 2>/dev/null | awk '/^Version:/{print $2}')
-    [[ -n "$v" ]] && want+=("${p}==${v}")
-  done
+  local want=(${after_spec[@]+"${after_spec[@]}"}) name lc sn spec
   # Plain bash, line by line: a comment or blank line is copied; a pin line is
   # matched on its NAME (case-insensitively, as pip does) and gets the new
   # version; anything else is copied untouched.

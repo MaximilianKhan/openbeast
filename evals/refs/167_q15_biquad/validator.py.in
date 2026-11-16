@@ -10,7 +10,7 @@ BUILD = {"python": None,
          "cpp": ["g++", "-O2", "-std=c++17", "-Wall", "-Wextra", "-o", "biquad", "biquad.cpp"],
          "rust": ["rustc", "-O", "--edition", "2021", "biquad.rs", "-o", "biquad"],
          "zig": ["zig", "build-exe", "-O", "ReleaseFast", "biquad.zig"]}[LANG]
-RUN = vlib.python_cmd("biquad.py") if LANG == "python" else ["./biquad"]
+RUN = vlib.python_cmd("biquad.py")   # compiled units: the private build's binary, below
 # Budgets at scale 1; vlib scales them by OPENBEAST_TIMEOUT_SCALE.
 CPU_LIMIT = 4.0      # CPU seconds of the solution's whole process tree
 BUILD_LIMIT = 25.0   # wall seconds for the compile
@@ -29,20 +29,22 @@ def judge(r, budget, label=""):
         fail(f"solution rejected ({r.verdict}): {r.reason}")
 
 
-if not os.path.isfile(os.path.join(D, SRC)):
+if not os.path.lexists(os.path.join(D, SRC)):
     fail("missing " + SRC)
+RAW = vlib.read_source(os.path.join(D, SRC))
+if RAW is None:
+    fail(SRC + " must be a regular file (not a symlink) of at most 4 MB")
 if BUILD:
-    try:
-        os.remove(os.path.join(D, "biquad"))
-    except OSError:
-        pass
-    try:
-        b = subprocess.run(BUILD, cwd=D, capture_output=True, text=True,
-                           env=vlib.clean_env({"CGO_ENABLED": "0"}), timeout=vlib.t(BUILD_LIMIT))
-    except subprocess.TimeoutExpired:
-        fail("build timed out")
-    if b.returncode or not os.path.isfile(os.path.join(D, "biquad")):
-        fail("build failed: " + (b.stderr or b.stdout)[-300:])
+    # Only the source, copied (never followed) into a private dir, compiled
+    # under the solution's read-deny: the compiler runs with this script's
+    # rights, and `#include "<repo>/evals/refs/..."` would hand it the reference.
+    bdir, why = vlib.build_private({SRC: RAW}, BUILD, lang=LANG, timeout=vlib.t(BUILD_LIMIT),
+                                   extra_env={"CGO_ENABLED": "0"})
+    if why:
+        fail(why)
+    if not vlib.is_native_executable(os.path.join(bdir, "biquad")):
+        fail("build failed: no native executable")
+    RUN = [os.path.join(bdir, "biquad")]
 
 # Untimed-ish warm-up exec. The first exec of a freshly linked binary on macOS
 # sits in an XProtect/Gatekeeper scan for 3-11 s of WALL time (not the

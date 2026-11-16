@@ -15,7 +15,12 @@
 # no release binaries (its tags carry no assets; it builds from source):
 #   - the Maya source is a git commit id, reviewed per version in
 #     _ENG_MAYA_REVIEWED below. An unreviewed tag is refused. --digest <40-hex>
-#     installs another commit only when the operator names it.
+#     installs another commit only when the operator names it ON THE COMMAND
+#     LINE: a staged folder's MANIFEST never stands in for that (install
+#     --from takes its VERSION and checks its COMMIT against the table).
+#   - a version is v<N>.<N>[.<N>[.<N>]] and nothing else: it names the
+#     install directory, so a `../` in one (from a MANIFEST, --version or the
+#     history) is refused before any path is built.
 #   - Maya's setup would download llama.cpp as a GitHub archive zip (not
 #     byte-stable, no checksum) and pip-install its packages unpinned and
 #     unhashed. Neither happens here: llama.cpp is checked out at the commit
@@ -60,6 +65,13 @@ _eng_maya_reviewed() { printf '%s\n' "${OB_ENGINE_MAYA_REVIEWED:-$_ENG_MAYA_REVI
 _eng_maya_url()   { printf '%s\n' "${OB_ENGINE_MAYA_URL:-https://github.com/mw00/project-maya.git}"; }
 _eng_maya_llama_url() { printf '%s\n' "${OB_ENGINE_LLAMA_URL:-https://github.com/ggml-org/llama.cpp.git}"; }
 _eng_maya_opt()   { printf '%s\n' "${OB_ENGINE_MAYA_OPT:-$HOME/.local/opt}"; }
+# _eng_maya_version_ok <v> — a Maya release tag's shape (v1.1.65). Checked
+# before anything builds a path from a version: _eng_maya_dir is rm -rf'd.
+_eng_maya_version_ok() {
+  [[ "$1" =~ ^v[0-9]{1,6}(\.[0-9]{1,6}){1,3}$ ]] && return 0
+  echo "'$1' is not a Maya version (v<N>.<N>[.<N>[.<N>]]) — refusing" >&2
+  return 1
+}
 _eng_maya_dir()   { printf '%s/maya-%s\n' "$(_eng_maya_opt)" "$1"; }
 _eng_maya_active() { printf '%s/maya\n' "$(_eng_maya_opt)"; }
 _eng_maya_lock()  { printf '%s\n' "$REPO_DIR/scripts/engines/maya/requirements.lock"; }
@@ -95,6 +107,7 @@ _eng_maya_resolve() {
   if [[ -z "$v" || "$v" == latest ]]; then
     v="$(eng_maya_latest)" || return 1; v="${v%% *}"
   fi
+  _eng_maya_version_ok "$v" || return 1
   row="$(_eng_maya_row "$v")"
   if [[ -n "$row" ]]; then
     read -r _MV _MC _ML <<< "$row"
@@ -159,8 +172,13 @@ eng_maya_install() {
   if [[ -n "$from" ]]; then
     [[ -f "$from/MANIFEST" && -d "$from/maya.git" && -d "$from/llama.cpp.git" ]] \
       || { echo "$from is not a staged Maya (made by: engine.sh stage maya ...)" >&2; return 1; }
+    # The version may come from the folder; the commit never does. A
+    # MANIFEST COMMIT standing in for --digest let a folder install any
+    # commit it named, under a warning that said "because you named it".
+    # So: a reviewed version (its commit is then checked against the
+    # MANIFEST below), or the operator's own --digest.
     [[ -n "$v" ]] || v="$(ob_engine_manifest_get "$from/MANIFEST" VERSION)"
-    [[ -n "$dig" ]] || dig="$(ob_engine_manifest_get "$from/MANIFEST" COMMIT)"
+    [[ -n "$v" ]] || { echo "$from/MANIFEST names no VERSION — pass --version" >&2; return 1; }
   elif ob_engine_offline; then
     echo "OFFLINE=true — no download; stage Maya on a connected box (engine.sh stage maya --version V DIR) and install --from DIR" >&2
     return 1
@@ -198,7 +216,9 @@ eng_maya_install() {
 
 # activate <version> <ref> — relink a version still on disk, at its commit.
 eng_maya_activate() {
-  local d; d="$(_eng_maya_dir "$1")"
+  local d
+  _eng_maya_version_ok "$1" || return 1
+  d="$(_eng_maya_dir "$1")"
   [[ -f "$d/maya.py" && "$(git -C "$d" rev-parse HEAD 2>/dev/null)" == "$2" ]] || return 1
   ln -sfn "$d" "$(_eng_maya_active)"
   ENG_RESULT_VERSION="$1"; ENG_RESULT_REF="$2"; ENG_RESULT_NOTE="relinked"
@@ -272,14 +292,28 @@ _eng_maya_profile_load() {
   [[ "$PF_CONTEXT" =~ ^(8192|32768|65536|131072)$ ]] || { echo "$f: CONTEXT must be one Maya accepts for GLM (8192, 32768, 65536, 131072)" >&2; return 1; }
   [[ "$PF_RAM_HEADROOM_GB" =~ ^[0-9]+$ && "$PF_RAM_HEADROOM_GB" -ge 6 ]] \
     || { echo "$f: RAM_HEADROOM_GB must be a whole number >= 6 (Maya pins all other free RAM)" >&2; return 1; }
-  awk -F'\t' -v n="$PF_GGUF" '$0 !~ /^#/ && $3 == n && $1 ~ /^[0-9a-f]{64}$/ {f = 1} END {exit !f}' \
+  # No `{64}` interval: mawk 1.3.4-20200120 (Debian 12, Ubuntu 22.04) reads
+  # the braces literally, so the pin never matched there.
+  awk -F'\t' -v n="$PF_GGUF" '$0 !~ /^#/ && $3 == n && length($1) == 64 && $1 !~ /[^0-9a-f]/ {f = 1} END {exit !f}' \
     "$REPO_DIR/scripts/weights.registry" \
     || { echo "$f: $PF_GGUF has no sha256 pin in scripts/weights.registry" >&2; return 1; }
   [[ "$(ob_engine_host_class)" == rig ]] || { echo "Maya profiles run on the rig (this host is a $(ob_engine_host_class))" >&2; return 1; }
 }
 
-# profile_check <profile> — the profile is valid AND the engine gate is open.
-eng_maya_profile_check() { _eng_maya_profile_load "$1" && ob_engine_gate_ok maya; }
+# gate_binding <profile> — what a gate verdict must have measured for this
+# profile to run (lib/engine.sh ob_engine_gate_ok): the profile, its weights
+# and the Maya commit installed now. A new commit (update, --digest,
+# rollback) or another profile is unmeasured until engine-gate.sh re-runs.
+eng_maya_gate_binding() {
+  local sha
+  _eng_maya_profile_load "$1" >/dev/null || return 1
+  sha="$(git -C "$(_eng_maya_active)" rev-parse HEAD 2>/dev/null || true)"
+  printf 'profile=%s\ngguf=%s\ncommit=%s\n' "$PF_PROFILE_NAME" "$PF_GGUF" "${sha:-not-installed}"
+}
+
+# profile_check <profile> — the profile is valid AND the engine gate is open
+# for it, on this Maya commit.
+eng_maya_profile_check() { _eng_maya_profile_load "$1" && ob_engine_gate_ok maya "$1"; }
 
 # profile_locate <profile> — SP_LOCATE_RC 0 when every shard is in WEIGHTS_DIR.
 eng_maya_profile_locate() {
@@ -343,8 +377,14 @@ json.dump(c, open(sys.argv[2], "w"), indent=1)
 PY
   ) || { echo "could not write $run from $cfg" >&2; return 1; }
   echo "Project Maya $(eng_maya_installed 2>/dev/null || echo '?'): $PF_PROFILE_NAME ($PF_SERVED_MODEL_NAME) on http://$host:$port"
+  # Exported, not `env MAYA_API_KEY=…`: that made the key an argv word of
+  # /usr/bin/env, readable in /proc/<pid>/cmdline by any local user until env
+  # exec'd python. env passes the exported variable on through the
+  # environment (readable by this uid only), like serve.sh's LLAMA_API_KEY.
   if [[ -n "${LLAMA_API_KEY:-}" ]]; then
-    exec env "${ENV[@]}" MAYA_API_KEY="$LLAMA_API_KEY" "${CMD[@]}"
+    export MAYA_API_KEY="$LLAMA_API_KEY"
+  else
+    unset MAYA_API_KEY
   fi
   exec env "${ENV[@]}" "${CMD[@]}"
 }

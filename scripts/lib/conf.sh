@@ -28,7 +28,8 @@
 #   CHAT_PORT        (env OPENBEAST_CHAT_PORT)   default 3003
 #   CHAT_OPERATORS   (env OPENBEAST_CHAT_OPERATORS) default empty
 #   CHAT_LOGIN_FROM  (env OPENBEAST_CHAT_LOGIN_FROM) default loopback | unix
-#   CHAT_SOCKET      (env OPENBEAST_CHAT_SOCKET)  default .run/chat.sock (unix only)
+#   CHAT_SOCKET      (env OPENBEAST_CHAT_SOCKET)  default .run/chat.sock (unix only;
+#       made absolute, ~ expanded)
 #       beast-chat: the tailnet operator console for the rig's agent and job
 #       sessions (docs/BEAST_CHAT.md). Off by default.
 #   CHAT_NOTIFY_URL / CHAT_NOTIFY_ON / CHAT_NOTIFY_TOKEN_FILE
@@ -73,19 +74,79 @@
 
 # Read one KEY= value from openbeast.conf. Ignores comments and surrounding
 # whitespace/quotes; last assignment wins. Prints nothing when absent.
+#
+# A QUOTED value may carry a trailing comment: `BIND_HOST="127.0.0.1"  # lo`
+# is 127.0.0.1. The plain quote strip below only removes a quote at BOTH
+# ends of what is left, so that line came back as `127.0.0.1"  # lo`; the
+# BIND_HOST comment-strip then left `127.0.0.1"`, which still read as
+# loopback and went into llama-server --host and every probe URL (review
+# 2026-11-16). The quoted form is taken whole only when nothing but a `#`
+# comment follows its closing quote, so a quote INSIDE a value (`"a"b"`) and
+# an unquoted value containing " #" (a password) read exactly as before.
+#
+# While this file is being sourced, lookups come from ONE pass over the conf
+# (_ob_conf_snapshot, below) instead of a `grep | tail` pair per key: ~85-100
+# lookups per source were ~170-200 forks, about half of every source (142 of
+# 320 ms on a Spark, 2.3 s on macOS bash 3.2; 2026-11-16 review) — and
+# start, doctor, healthcheck (every 5 min under the watchdog) and 40+
+# scripts source it. The snapshot has to be taken at top level: callers use
+# $(...), so a cache filled inside the function would die with the
+# subshell. It is marked with the conf path, so a REPO_DIR change never
+# reads stale lines, re-read wherever this file writes the conf, and
+# dropped at the end of this file, so a caller that writes openbeast.conf
+# later (setup-tailscale.sh, configure-webui.sh...) reads it fresh. Pure
+# bash (no associative array): bash 3.2 safe.
 _ob_conf_value() {
-  local key="$1" conf="$REPO_DIR/openbeast.conf" line
+  local key="$1" conf="$REPO_DIR/openbeast.conf" line="" q rest after
   [[ -f "$conf" ]] || return 1
-  line="$(grep -E "^[[:space:]]*${key}[[:space:]]*=" "$conf" | tail -n1)" || return 1
+  if [[ -n "${_OB_CONF_SNAP+x}" && "${_OB_CONF_SNAP_PATH:-}" == "$conf" ]]; then
+    [[ "$_OB_CONF_SNAP" == *$'\n'"$key="* ]] || return 1
+    line="${_OB_CONF_SNAP##*$'\n'"$key="}"   # the LAST assignment
+    line="${line%%$'\n'*}"
+    line="$key=$line"
+  else
+    line="$(grep -E "^[[:space:]]*${key}[[:space:]]*=" "$conf" | tail -n1)" || return 1
+  fi
   [[ -n "$line" ]] || return 1
   line="${line#*=}"
   line="${line#"${line%%[![:space:]]*}"}"   # ltrim
   line="${line%"${line##*[![:space:]]}"}"   # rtrim
+  q="${line:0:1}"
+  if [[ "$q" == '"' || "$q" == "'" ]]; then
+    rest="${line:1}"
+    if [[ "$rest" == *"$q"* ]]; then
+      after="${rest#*"$q"}"
+      after="${after#"${after%%[![:space:]]*}"}"
+      if [[ -z "$after" || "$after" == \#* ]]; then
+        line="${rest%%"$q"*}"
+        [[ -n "$line" ]] || return 1
+        printf '%s\n' "$line"
+        return 0
+      fi
+    fi
+  fi
   line="${line#\"}"; line="${line%\"}"
   line="${line#\'}"; line="${line%\'}"
   [[ -n "$line" ]] || return 1
   printf '%s\n' "$line"
 }
+# One read of openbeast.conf into _OB_CONF_SNAP: "\nKEY=<raw rest of line>"
+# per assignment, in file order, so `##` finds the last one as `tail -n1`
+# did. The key test is grep's: optional leading whitespace, the key,
+# optional whitespace, "=". The value is kept raw; _ob_conf_value trims it.
+_ob_conf_snapshot() {
+  local conf="$REPO_DIR/openbeast.conf" l re='^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=(.*)$'
+  _OB_CONF_SNAP=$'\n'
+  _OB_CONF_SNAP_PATH="$conf"
+  [[ -f "$conf" && -r "$conf" ]] || return 0
+  while IFS= read -r l || [[ -n "$l" ]]; do
+    [[ "$l" == *=* && "$l" =~ $re ]] || continue
+    _OB_CONF_SNAP+="${BASH_REMATCH[1]}=${BASH_REMATCH[2]}"$'\n'
+  done < "$conf"
+}
+_ob_conf_snapshot_drop() { unset _OB_CONF_SNAP _OB_CONF_SNAP_PATH; }
+_ob_conf_snapshot
+
 
 # A few OPENBEAST_<KEY> names are BOTH the env override for KEY and this
 # file's own derived export (the dashboard, children and `start.sh -d` read
@@ -159,6 +220,32 @@ _ob_bool() {
   esac
 }
 
+# _ob_repo_path <raw> <default> — a trailing ` # comment` dropped, `~`
+# expanded, a relative path anchored to the checkout (FILES_DIR's rules).
+# Defined up here because the CHAT_SOCKET / ARTIFACT_SOCKET blocks use it too.
+_ob_repo_path() {
+  local p="${1%%[[:space:]]#*}"
+  p="${p%"${p##*[![:space:]]}"}"
+  [[ -n "$p" ]] || p="$2"
+  # shellcheck disable=SC2088  # matching a literal ~, not expanding one
+  case "$p" in
+    "~")   p="$HOME" ;;
+    "~/"*) p="$HOME/${p#\~/}" ;;
+  esac
+  case "$p" in
+    /*) ;;
+    *)  p="$REPO_DIR/$p" ;;
+  esac
+  printf '%s\n' "$p"
+}
+# _ob_sock_len_warn <KEY> <path> — AF_UNIX paths are capped (104 bytes on
+# macOS, 108 on Linux); a longer one fails to bind at start, far from here.
+_ob_sock_len_warn() {
+  if (( ${#2} > 100 )); then
+    echo "WARNING: $1='$2' is ${#2} bytes — a Unix socket path over ~100 bytes cannot be bound (macOS caps it at 104, Linux at 108). Pick a shorter path." >&2
+  fi
+}
+
 # ob_bind_is_loopback [host] — true when the address only listens on this
 # machine. Anything else (0.0.0.0, ::, a LAN or tailnet IP, a hostname) puts
 # the services on a network.
@@ -175,6 +262,20 @@ BIND_HOST="${OPENBEAST_BIND:-$(_ob_conf_value BIND_HOST || echo 127.0.0.1)}"
 # as loopback (127.*), so nothing warned (stack-lifecycle review).
 BIND_HOST="${BIND_HOST%%[[:space:]#]*}"
 [[ -n "$BIND_HOST" ]] || BIND_HOST=127.0.0.1
+# Values this file had to drop while resolving, one message each. ob_conf_lint
+# (end of file) reports them with its other findings, so they are said once
+# per command and doctor.sh can show them as rows.
+_OB_CONF_PROBLEMS=()
+# What is left must look like an address or a hostname. Anything else (a
+# stray quote, a typo'd separator) cannot bind and used to reach --host and
+# every probe URL as written, and `127.0.0.1"` even passed
+# ob_bind_is_loopback. Loopback is the safe fallback, and lint says so.
+_ob_host_re='^[A-Za-z0-9._:%-]+$'; _ob_host6_re='^\[[A-Fa-f0-9:.%]+\]$'
+if [[ ! "$BIND_HOST" =~ $_ob_host_re && ! "$BIND_HOST" =~ $_ob_host6_re ]]; then
+  _OB_CONF_PROBLEMS+=("BIND_HOST='$BIND_HOST' is not an address or hostname — using 127.0.0.1 (loopback)")
+  BIND_HOST=127.0.0.1
+fi
+unset _ob_host_re _ob_host6_re
 # The warning for a non-loopback BIND_HOST sits further down, after the tool
 # server keys are resolved — whether it is merely loud or names an open
 # remote shell depends on them.
@@ -245,10 +346,7 @@ export OPENBEAST_DASHBOARD_PORT="$DASHBOARD_PORT"
 # $OPENBEAST_REASONING / $OPENBEAST_REASONING_BUDGET.
 REASONING="${OPENBEAST_REASONING:-$(_ob_conf_value REASONING || true)}"
 REASONING_BUDGET="${OPENBEAST_REASONING_BUDGET:-$(_ob_conf_value REASONING_BUDGET || true)}"
-# Values this file had to drop while resolving, one message each. ob_conf_lint
-# (end of file) reports them with its other findings, so they are said once
-# per command and doctor.sh can show them as rows.
-_OB_CONF_PROBLEMS=()
+# (_OB_CONF_PROBLEMS starts at BIND_HOST, above.)
 # ISLAND: beast-island, the RUNTIME counterpart of OFFLINE (agents/island.py,
 # docs/BEAST_ISLAND.md). OFFLINE says the box never has a route; ISLAND says
 # what to do when the route DISAPPEARS while the stack runs — the power-outage
@@ -444,6 +542,26 @@ _ARTIFACT_OPERATORS="${OPENBEAST_ARTIFACT_OPERATORS:-$(_ob_conf_value ARTIFACT_O
 if [[ -n "$_ARTIFACT_OPERATORS" ]]; then
   export OPENBEAST_ARTIFACT_OPERATORS="$_ARTIFACT_OPERATORS"
 fi
+# Where beast-artifact honours the Tailscale-User-Login header — the same
+# switch as CHAT_LOGIN_FROM below, for the gallery (docs/BEAST_ARTIFACT.md).
+# `loopback` (default) trusts any peer on this host, host-network containers
+# included. `unix` trusts it only on ARTIFACT_SOCKET, a 0600 socket
+# `tailscale serve` proxies :8446 to (setup-tailscale.sh --publish-artifact
+# follows this key). Exported only when `unix`.
+ARTIFACT_LOGIN_FROM="$(printf '%s' "${OPENBEAST_ARTIFACT_LOGIN_FROM:-$(_ob_conf_value ARTIFACT_LOGIN_FROM || true)}" | tr '[:upper:]' '[:lower:]')"
+case "$ARTIFACT_LOGIN_FROM" in
+  ""|loopback) ARTIFACT_LOGIN_FROM=loopback ;;
+  unix) ;;
+  *) echo "WARNING: ARTIFACT_LOGIN_FROM='$ARTIFACT_LOGIN_FROM' is not loopback or unix — using loopback" >&2
+     ARTIFACT_LOGIN_FROM=loopback ;;
+esac
+ARTIFACT_SOCKET="${OPENBEAST_ARTIFACT_SOCKET:-$(_ob_conf_value ARTIFACT_SOCKET || true)}"
+if [[ "$ARTIFACT_LOGIN_FROM" == unix ]]; then
+  ARTIFACT_SOCKET="$(_ob_repo_path "$ARTIFACT_SOCKET" .run/artifact.sock)"
+  _ob_sock_len_warn ARTIFACT_SOCKET "$ARTIFACT_SOCKET"
+  export OPENBEAST_ARTIFACT_LOGIN_FROM=unix
+  export OPENBEAST_ARTIFACT_SOCKET="$ARTIFACT_SOCKET"
+fi
 # Per-device admission control (llama-server's own queue is unbounded).
 _EDGE_RATE="${OPENBEAST_EDGE_RATE_LIMIT:-$(_ob_conf_value EDGE_RATE_LIMIT || true)}"
 [[ -n "$_EDGE_RATE" ]] && export OPENBEAST_EDGE_RATE_LIMIT="$_EDGE_RATE"
@@ -508,7 +626,12 @@ case "$CHAT_LOGIN_FROM" in
 esac
 CHAT_SOCKET="${OPENBEAST_CHAT_SOCKET:-$(_ob_conf_value CHAT_SOCKET || true)}"
 if [[ "$CHAT_LOGIN_FROM" == unix ]]; then
-  CHAT_SOCKET="${CHAT_SOCKET:-$REPO_DIR/.run/chat.sock}"
+  # ABSOLUTE, ~ expanded: the same string goes to chat_server (which binds
+  # it from its own cwd) and to tailscaled (`unix:<path>`, resolved from
+  # ITS cwd — or not at all for a literal ~). A relative or ~ value meant
+  # two different files and a 502 console.
+  CHAT_SOCKET="$(_ob_repo_path "$CHAT_SOCKET" .run/chat.sock)"
+  _ob_sock_len_warn CHAT_SOCKET "$CHAT_SOCKET"
   export OPENBEAST_CHAT_LOGIN_FROM=unix
   export OPENBEAST_CHAT_SOCKET="$CHAT_SOCKET"
 fi
@@ -761,23 +884,6 @@ _ob_port() {
     echo "WARNING: $3='$1' is not a port (1-65535) — using $2." >&2
     printf '%s\n' "$2"
   fi
-}
-# _ob_repo_path <raw> <default> — a trailing ` # comment` dropped, `~`
-# expanded, a relative path anchored to the checkout (FILES_DIR's rules).
-_ob_repo_path() {
-  local p="${1%%[[:space:]]#*}"
-  p="${p%"${p##*[![:space:]]}"}"
-  [[ -n "$p" ]] || p="$2"
-  # shellcheck disable=SC2088  # matching a literal ~, not expanding one
-  case "$p" in
-    "~")   p="$HOME" ;;
-    "~/"*) p="$HOME/${p#\~/}" ;;
-  esac
-  case "$p" in
-    /*) ;;
-    *)  p="$REPO_DIR/$p" ;;
-  esac
-  printf '%s\n' "$p"
 }
 HYDRA="$(_ob_bool "$(_ob_override HYDRA || _ob_conf_value HYDRA || true)" false HYDRA)"
 HYDRA_PORT="$(_ob_port "$(_ob_override HYDRA_PORT || _ob_conf_value HYDRA_PORT || true)" 8095 HYDRA_PORT)"
@@ -1094,6 +1200,14 @@ _ob_ts() {
 # auth-off WebUI behind the mount it then restored. That answer is cached
 # (and believed) only once a second probe, OB_WEBUI_443_RECHECK_S (2) later,
 # agrees; any other second answer keeps login on.
+# A read-only source (doctor, engine.sh, start.sh --status, a report-only
+# healthcheck) UPDATES an existing cache too: it is run-dir state, not
+# openbeast.conf, and only a writable source could clear a stale "0" before —
+# so after an unmount every read-only command paid the 2 s recheck, on every
+# source, until a start happened to run (2026-11-16 review). It still never
+# creates the file. (No per-process "already rechecked" shortcut: a marker
+# inherited across a tailscaled restart would believe the boot-race "no"
+# this recheck exists for.)
 _ob_webui_on_443() {
   local rc cache="$ISLAND_STATE_DIR/webui-on-443"
   _ob_webui_443_probe && rc=0 || rc=$?
@@ -1104,6 +1218,8 @@ _ob_webui_on_443() {
   if (( rc == 0 || rc == 1 )); then
     if [[ "${OB_CONF_READONLY:-}" != "1" ]]; then
       { mkdir -p "$ISLAND_STATE_DIR" && echo "$rc" > "$cache"; } 2>/dev/null || true
+    elif [[ -f "$cache" ]]; then
+      { echo "$rc" > "$cache"; } 2>/dev/null || true
     fi
     return "$rc"
   fi
@@ -1226,8 +1342,20 @@ _ob_webui_cors() {
     esac
     h="$(hostname 2>/dev/null | tr '[:upper:]' '[:lower:]')"
     [[ -n "$h" ]] && list+=("http://$h:3000")
+  else
+    # A loopback bind other than 127.0.0.1 (127.0.0.2, ::1): the WebUI binds
+    # ONLY that address (compose HOST=), so it is opened as http://<it>:3000
+    # and nothing else listed reaches it. Missing here, Socket.IO refused the
+    # browser's own origin and chat streaming broke, while the Host list
+    # below already allowed the address (2026-11-16 review).
+    case "$BIND_HOST" in
+      127.0.0.1|localhost|"") ;;
+      *) h="$BIND_HOST"
+         [[ "$h" == *:* && "$h" != \[* ]] && h="[$h]"
+         list+=("http://$h:3000") ;;
+    esac
   fi
-  fq="$(_ob_webui_tailnet_name)"
+  fq="${_OB_WEBUI_TS_FQDN-$(_ob_webui_tailnet_name)}"
   if [[ -n "$fq" ]]; then
     list+=("https://$fq")
     ob_bind_is_loopback "$BIND_HOST" || list+=("http://$fq:3000")
@@ -1236,6 +1364,14 @@ _ob_webui_cors() {
   local IFS=';'
   echo "${list[*]}"
 }
+# The tailnet name, looked up ONCE per source of this file (two `timeout 3`
+# tailscale calls plus python when tailscaled is slow) and kept in
+# _OB_WEBUI_TS_FQDN, so serve.sh's llama-server CORS origin reuses it
+# instead of asking again. WEBUI_ORIGINS='*' needs no name: left unset.
+unset _OB_WEBUI_TS_FQDN
+_ob_wo="${OPENBEAST_WEBUI_ORIGINS:-$(_ob_conf_value WEBUI_ORIGINS || true)}"
+[[ "${_ob_wo// /}" == "*" ]] || _OB_WEBUI_TS_FQDN="$(_ob_webui_tailnet_name)"
+unset _ob_wo
 OPENBEAST_WEBUI_CORS="$(_ob_webui_cors)"
 export OPENBEAST_WEBUI_CORS
 # The Host names the WebUI answers (docker-compose OB_WEBUI_HOSTS, enforced
@@ -1320,6 +1456,7 @@ if [[ -z "$SEARXNG_SECRET" && "${OB_CONF_READONLY:-}" != "1" ]]; then
   fi
   printf 'SEARXNG_SECRET=%s\n' "$SEARXNG_SECRET" >> "$_ob_conf"
   chmod 600 "$_ob_conf" 2>/dev/null || true
+  _ob_conf_snapshot          # the file just changed (or was just created): re-read it
 fi
 export OPENBEAST_SEARXNG_SECRET="$SEARXNG_SECRET"
 
@@ -1421,3 +1558,7 @@ if [[ -z "${OB_CONF_LINTED:-}" ]]; then
   unset _ob_lint
   export OB_CONF_LINTED=1
 fi
+# Sourcing is over: drop the snapshot (see _ob_conf_value). From here on
+# every lookup reads openbeast.conf fresh, so a caller that edits it sees
+# its own write.
+_ob_conf_snapshot_drop

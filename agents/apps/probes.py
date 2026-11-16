@@ -11,6 +11,7 @@ reported as warn: the server can start, one workflow will not work.
 """
 from __future__ import annotations
 
+import copy
 import glob
 import os
 import re
@@ -98,7 +99,20 @@ def _render_exports(pr: dict, path: str | None) -> dict:
     return {k: os.path.normpath(_fmt(v, dir=d, path=path)) for k, v in (pr.get("export_env") or {}).items()}
 
 
-def run(cat: dict, pid: str, env: dict, _depth: int = 0) -> dict:
+def run(cat: dict, pid: str, env: dict, _depth: int = 0, cache: dict | None = None) -> dict:
+    """Run probe `pid`. `cache` (a dict the caller owns for ONE process, with
+    one env) memoizes results: `list`/`find` evaluate several servers that
+    share probes (npx, node, adb, simctl), and each used to re-spawn the same
+    subprocesses. Callers get a copy, never the cached object."""
+    if cache is not None and ("probe", pid) in cache:
+        return copy.deepcopy(cache[("probe", pid)])
+    res = _run(cat, pid, env, _depth, cache)
+    if cache is not None:
+        cache[("probe", pid)] = copy.deepcopy(res)
+    return res
+
+
+def _run(cat: dict, pid: str, env: dict, _depth: int, cache: dict | None) -> dict:
     pr = cat["probe"][pid]
     kind = pr["kind"]
     required = pr.get("required", True)
@@ -106,7 +120,7 @@ def run(cat: dict, pid: str, env: dict, _depth: int = 0) -> dict:
            "status": "fail", "found": "", "path": None, "on_path": None,
            "detail": "", "fix": "", "export_env": {}, "dirs": []}
     try:
-        ok, warn_fix = _dispatch(cat, pr, env, res, _depth)
+        ok, warn_fix = _dispatch(cat, pr, env, res, _depth, cache)
     except Exception as e:  # a probe must never crash the CLI
         ok, warn_fix = False, None
         res["detail"] = f"probe error: {type(e).__name__}: {e}"
@@ -123,10 +137,14 @@ def run(cat: dict, pid: str, env: dict, _depth: int = 0) -> dict:
     return res
 
 
-def _dispatch(cat, pr, env, res, depth):
+def _good(sub: dict) -> bool:
+    return sub["status"] in ("ok", "warn") and sub["required"] or sub["status"] == "ok"
+
+
+def _dispatch(cat, pr, env, res, depth, cache=None):
     kind = pr["kind"]
     if kind == "command":
-        return _command(pr, env, res)
+        return _command(pr, env, res, cache)
     if kind == "path":
         for p in pr["paths"]:
             p, complete = expand(p, env)
@@ -163,11 +181,18 @@ def _dispatch(cat, pr, env, res, depth):
     if kind == "any":
         if depth > 3:
             raise ValueError("any-probes nested too deep")
-        subs = [run(cat, s, env, depth + 1) for s in pr["of"]]
+        # In order, stopping at the first that passes: the alternatives
+        # after it cannot change the answer, and one of them (`xcrun simctl
+        # list`, ~0.4 s) used to run only to be thrown away.
+        subs, g = [], None
+        for sid in pr["of"]:
+            sub = run(cat, sid, env, depth + 1, cache)
+            subs.append(sub)
+            if _good(sub):
+                g = sub
+                break
         res["subprobes"] = subs
-        good = [s for s in subs if s["status"] in ("ok", "warn") and s["required"] or s["status"] == "ok"]
-        if good:
-            g = good[0]
+        if g:
             res.update(found=f"{g['id']}: {g['found'] or 'ok'}", path=g["path"],
                        export_env=g["export_env"], dirs=g["dirs"], on_path=g["on_path"])
             return True, (g["fix"] if g["status"] == "warn" else None)
@@ -199,18 +224,31 @@ def candidates(names: list[str], search: list[str], env: dict) -> list[tuple[str
     return out
 
 
-def _try(pr, env, path):
+def _exec(argv: list[str], env: dict, timeout: float, cache: dict | None):
+    """(output, rc) or (error text, None). Memoized per argv in `cache`, so
+    node-18 and node-20 share one `node --version`."""
+    key = ("exec", tuple(argv), timeout)
+    if cache is not None and key in cache:
+        return cache[key]
+    try:
+        cp = subprocess.run(argv, capture_output=True, text=True, env=env,
+                            timeout=timeout, stdin=subprocess.DEVNULL)
+        r = ((cp.stdout or "") + (cp.stderr or ""), cp.returncode)
+    except subprocess.TimeoutExpired:
+        r = (f"`{' '.join(argv)}` timed out", None)
+    except OSError as e:
+        r = (f"cannot run {argv[0]}: {e}", None)
+    if cache is not None:
+        cache[key] = r
+    return r
+
+
+def _try(pr, env, path, cache=None):
     """Run one candidate. (ok, found, detail)."""
     argv = pr["command"]
-    try:
-        cp = subprocess.run([path] + argv[1:], capture_output=True, text=True, env=env,
-                            timeout=float(pr.get("timeout", DEFAULT_TIMEOUT)), stdin=subprocess.DEVNULL)
-        out = (cp.stdout or "") + (cp.stderr or "")
-        rc = cp.returncode
-    except subprocess.TimeoutExpired:
-        return False, path, f"`{' '.join([path] + argv[1:])}` timed out"
-    except OSError as e:
-        return False, path, f"cannot run {path}: {e}"
+    out, rc = _exec([path] + argv[1:], env, float(pr.get("timeout", DEFAULT_TIMEOUT)), cache)
+    if rc is None:
+        return False, path, out
     detail = _first_line(out) or (f"exit {rc}" if rc else "")
     if rc != 0:
         return False, f"{path} (exit {rc})", detail
@@ -228,7 +266,7 @@ def _try(pr, env, path):
     return True, path, detail
 
 
-def _command(pr, env, res):
+def _command(pr, env, res, cache=None):
     argv = pr["command"]
     names = [argv[0]] + [n for n in pr.get("binary_names", []) if n != argv[0]]
     cands = candidates(names, pr.get("search", []), env)
@@ -239,7 +277,7 @@ def _command(pr, env, res):
         return False, None
     first_fail = None
     for path, on_path in cands:
-        ok, found, detail = _try(pr, env, path)
+        ok, found, detail = _try(pr, env, path, cache)
         if not ok:
             first_fail = first_fail or (path, on_path, found, detail)
             continue

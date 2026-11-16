@@ -11,14 +11,25 @@ Pinned:
   * incremental sync: an unchanged ETag is a 304 and rewrites nothing; an
     unchanged body without validators rewrites nothing either; a changed one
     does; a fresh page is not re-requested; an interrupted crawl resumes
+  * outages: an unreachable robots.txt or repeated transport failures stop
+    the sync with its queue intact; transient page failures and the page in
+    flight are kept for the next sync; `complete` means nothing is left
   * politeness and scope: robots.txt refusal (page and JSON URL), a robots
     5xx refuses the whole host, redirects off the source's hosts are refused,
-    a private address is refused without the explicit opt-in
-  * the terms gate on sources that need one
-  * search ranking (exact title first; FTS5 and the fallback scan agree)
-  * offline / island: sync refuses, live falls back to the mirror and says so
+    a private address is refused without the explicit opt-in; scope and
+    robots are decided on the NORMALIZED URL (dot segments, %2e) and the
+    port is part of the host
+  * the terms gate on sources that need one, for sync and live --save
+  * the adapters under drift: wrong-shape DocC JSON, deep HTML nesting,
+    omitted end tags, code inside list items
+  * search ranking (exact title first; FTS5 and the fallback scan agree,
+    each really used), a mode flip rebuilds, a read-only store searches,
+    index lookups do not scan, manifests are parsed once per reader
+  * offline / island: sync refuses, live falls back to the mirror and says
+    so, with zero requests; an empty OPENBEAST_OFFLINE falls through to the
+    conf file
   * the tarball round trip, and its refusals (bad hash, tampered member,
-    unsafe member)
+    unsafe member, a swap after the hash, a bomb, too many members)
   * the CLI end to end, and the shipped sources.toml
 
 Run: python3 -m pytest tests/test_beast_docs.py -q
@@ -73,6 +84,7 @@ class Stub:
         self.robots_status = 200
         self.overrides: dict = {}       # path -> bytes
         self.redirects: dict = {}       # path -> location
+        self.status: dict = {}          # path -> HTTP error status to answer with
         self.etag = True
         stub = self
 
@@ -83,6 +95,11 @@ class Stub:
             def do_GET(self):
                 stub.requests.append((self.path, dict(self.headers)))
                 path = self.path.split("?", 1)[0]
+                if path in stub.status:
+                    self.send_response(stub.status[path])
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 if path in stub.redirects:
                     self.send_response(302)
                     self.send_header("Location", stub.redirects[path])
@@ -129,6 +146,7 @@ class Stub:
         self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H_)
         self.port = self.httpd.server_address[1]
         self.base = f"http://127.0.0.1:{self.port}"
+        self.hostport = f"127.0.0.1:{self.port}"         # hosts entries carry the port
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
 
     def paths(self):
@@ -143,7 +161,7 @@ SOURCES = """
 name = "swiftui"
 title = "Test SwiftUI"
 adapter = "apple-docc-json"
-hosts = ["127.0.0.1"]
+hosts = ["{host}"]
 roots = ["{base}/documentation/swiftui"]
 allow_prefixes = ["/documentation/swiftui"]
 max_pages = 50
@@ -157,7 +175,7 @@ license = "synthetic fixture"
 name = "android-compose"
 title = "Test Compose"
 adapter = "markdown"
-hosts = ["127.0.0.1"]
+hosts = ["{host}"]
 roots = ["{base}/develop/ui/compose/lists"]
 discovery = "llms-txt"
 index_url = "{base}/develop/ui/llms.txt"
@@ -172,7 +190,7 @@ license = "synthetic fixture"
 name = "html-site"
 title = "Test HTML"
 adapter = "html"
-hosts = ["127.0.0.1"]
+hosts = ["{host}"]
 roots = ["{base}/page.html"]
 allow_prefixes = ["/page.html"]
 max_pages = 5
@@ -195,13 +213,14 @@ def stub():
 def env(tmp_path, monkeypatch, stub):
     """A throwaway store + sources file pointed at the stub."""
     src = tmp_path / "sources.toml"
-    src.write_text(SOURCES.format(base=stub.base, ack=""))
+    src.write_text(SOURCES.format(base=stub.base, host=stub.hostport, ack=""))
     monkeypatch.setenv("OPENBEAST_DOCS_DIR", str(tmp_path / "store"))
     monkeypatch.setenv("OPENBEAST_DOCS_SOURCES", str(src))
     monkeypatch.setenv("OPENBEAST_DOCS_ALLOW_PRIVATE", "1")
     monkeypatch.setenv("OPENBEAST_OFFLINE", "false")
     monkeypatch.setenv("OPENBEAST_RUN_DIR", str(tmp_path / "run"))
     monkeypatch.delenv("OPENBEAST_DOCS_NO_FTS", raising=False)
+    net.LIVE_ROBOTS.clear()                 # ports are reused across tests; robots differ
     return {"tmp": tmp_path, "stub": stub, "sources": src}
 
 
@@ -281,6 +300,86 @@ def test_markdown_adapter_cleanup():
     assert any("LazyColumn.composable" in u and not u.endswith(".md.txt") for u in links)
 
 
+def test_docc_tolerates_schema_drift():
+    for bad in ([], None, "x", 3):
+        with pytest.raises(ValueError, match="not a DocC RenderNode"):
+            docc.to_markdown(bad)
+        assert docc.links(bad) == []
+    title, md = docc.to_markdown({
+        "metadata": {"title": "T", "modules": ["not-a-dict"], "platforms": "nope"},
+        "primaryContentSections": ["x", {"kind": "content", "content": [
+            {"type": "heading", "level": "two", "text": "H"},
+            {"type": "unorderedList", "items": ["x", {"content": [
+                {"type": "paragraph", "inlineContent": [{"type": "text", "text": "ok"}]}]}]},
+            {"type": "table", "rows": ["x", [[{"type": "paragraph"}]]]}]}],
+        "topicSections": ["x", {"title": "G", "identifiers": [3, "doc://a"]}],
+        "references": []})
+    assert title == "T" and "## H" in md and "- ok" in md and "### G" in md
+
+
+def test_code_inside_list_items_keeps_its_shape():
+    html = ("<main><ol><li><p>Add this:</p><pre><code class='language-kotlin'>fun a() {\n"
+            "    if (x) {\n\n        b()\n    }\n}</code></pre></li>"
+            "<li>Then:<ul><li>nested<pre>x = 1\n\ny = 2</pre></li></ul></li></ol></main>")
+    md = H.html_to_markdown(html)["markdown"]
+    assert ("1. Add this:\n"
+            "   ```kotlin\n"
+            "   fun a() {\n"
+            "       if (x) {\n"
+            "\n"
+            "           b()\n"
+            "       }\n"
+            "   }\n"
+            "   ```\n"
+            "2. Then:\n"
+            "   - nested\n"
+            "     ```\n"
+            "     x = 1\n"
+            "\n"
+            "     y = 2\n"
+            "     ```\n") in md, md
+    _t, md = docc.to_markdown({"metadata": {"title": "T"}, "primaryContentSections": [
+        {"kind": "content", "content": [{"type": "unorderedList", "items": [{"content": [
+            {"type": "paragraph", "inlineContent": [{"type": "text", "text": "Do:"}]},
+            {"type": "codeListing", "syntax": "swift",
+             "code": ["func a() {", "    b()", "", "", "    c()", "}"]}]}]}]}]})
+    assert ("- Do:\n  ```swift\n  func a() {\n      b()\n\n\n      c()\n  }\n  ```\n") in md, md
+
+
+def test_html_omitted_end_tags_close_implicitly():
+    md = H.html_to_markdown("<main><ul><li>one<li>two<li>three</ul>"
+                            "<table><tr><th>a<th>b<tr><td>c<td>d</table>"
+                            "<dl><dt>term<dd>def<dt>t2<dd>d2</dl>"
+                            "<p>first<p>second<div>block</div></main>")["markdown"]
+    assert "- one\n- two\n- three\n" in md, md
+    assert "| a | b |\n|---|---|\n| c | d |\n" in md, md
+    assert md.count("| c | d |") == 1
+    assert "**term**\n: def\n\n**t2**\n: d2" in md, md
+    assert "first\n\nsecond\n\nblock" in md, md
+
+
+def test_html_adapter_survives_pathological_nesting():
+    for tag in ("span", "div", "x-w"):
+        html = "<main>" + f"<{tag}>" * 5000 + "deep text<pre>code()</pre>" + f"</{tag}>" * 5000 + \
+               "<p>after</p></main>"
+        t = time.monotonic()
+        md = H.html_to_markdown(html)["markdown"]
+        assert time.monotonic() - t < 5, tag
+        assert "deep text" in md and "code()" in md and "after" in md, tag
+
+
+def test_one_unrenderable_page_is_an_error_not_an_aborted_sync(env):
+    env["stub"].overrides["/tutorials/data/documentation/swiftui/view.json"] = b"[]"
+    st = _sync("swiftui")                                       # does not raise
+    assert st["errors"] == 1 and st["new"] >= 3
+    assert ST.Store().load("swiftui")["sync_complete"] is True
+    src = C.load_sources()["html-site"]
+    with pytest.raises(S.SyncError, match="not a DocC RenderNode"):
+        S.render(C.load_sources()["swiftui"], "u", b"null")
+    out = S.render(src, env["stub"].base + "/page.html", b"<main>" + b"<b>" * 3000 + b"x</main>")
+    assert "x" in out["markdown"]
+
+
 def test_llms_index_and_sitemap_parsing():
     with open(os.path.join(FIX, "android", "develop", "ui", "llms.txt")) as fh:
         entries = H.llms_index(fh.read(), "https://developer.android.com/develop/ui/llms.txt")
@@ -302,6 +401,44 @@ def test_shipped_sources_file_is_valid():
             assert s.in_scope(r)
     assert all(srcs[n].requires_ack for n in ("swiftui", "uikit", "swift", "xcode", "app-review"))
     assert not srcs["swift"].in_scope("https://developer.apple.com/documentation/swiftui/view")
+
+
+def test_toml_subset_parser_on_its_own():
+    """Runs on EVERY interpreter — the parity test below skips where there is
+    no tomllib, which is exactly the 3.9 path the subset parser exists for."""
+    text = (
+        '# a comment\n'
+        'top = "x"\n'
+        '[[source]]\n'
+        'name = "a"   # trailing comment\n'
+        'title = "Has # hash and \\"quotes\\""\n'
+        'hosts = ["h1", "h2:8443"]\n'
+        'roots = [\n'
+        '  "https://h1/a",  # one\n'
+        '  "https://h1/b",\n'
+        ']\n'
+        'max_pages = 30\n'
+        'delay = 1.5\n'
+        'requires_ack = true\n'
+        'deny_prefixes = []\n'
+        '\n'
+        '[[source]]\n'
+        'name = "b"\n'
+        'max_depth = -1\n'
+        'requires_ack = false\n')
+    assert C.parse_toml_subset(text) == {
+        "top": "x",
+        "source": [
+            {"name": "a", "title": 'Has # hash and "quotes"', "hosts": ["h1", "h2:8443"],
+             "roots": ["https://h1/a", "https://h1/b"], "max_pages": 30, "delay": 1.5,
+             "requires_ack": True, "deny_prefixes": []},
+            {"name": "b", "max_depth": -1, "requires_ack": False}]}
+    srcs = [s for s in C.parse_toml_subset(open(C.DEFAULT_SOURCES).read())["source"]]
+    assert {"swiftui", "android-compose"} <= {s["name"] for s in srcs}
+    for bad in ('[table]\nx = 1\n', 'x = 2020-01-01\n', '[[source]]\nname = "a"\nname = "b"\n',
+                'x = [\n"unterminated"\n', "x = 'single'\n"):
+        with pytest.raises(C.ConfigError):
+            C.parse_toml_subset(bad)
 
 
 def test_toml_subset_parser_matches_tomllib_and_refuses_the_rest():
@@ -354,11 +491,109 @@ def test_sync_obeys_robots_for_the_page_and_never_requests_it(env):
     assert st["new"] >= 3
 
 
-def test_robots_5xx_refuses_the_whole_host(env):
+def test_robots_5xx_refuses_the_whole_host_and_keeps_the_queue(env):
     env["stub"].robots_status = 503
+    with pytest.raises(S.SyncAborted, match="robots.txt unreachable"):
+        _sync("swiftui")
+    assert env["stub"].paths() == ["/robots.txt"]               # nothing but robots requested
+    m = ST.Store().load("swiftui")
+    assert m["sync_complete"] is False
+    assert [u for u, _d in m["frontier"]] == [f"{env['stub'].base}/documentation/swiftui"]
+
+
+def test_outage_after_a_partial_sync_drops_nothing(env):
+    st = _sync("swiftui", max_pages=2)
+    m = ST.Store().load("swiftui")
+    queue = [u for u, _d in m["frontier"]]
+    assert st["new"] == 2 and len(queue) == 3 and m["sync_complete"] is False
+    env["stub"].robots_status = 503                               # the outage
+    with pytest.raises(S.SyncAborted):
+        _sync("swiftui")
+    m = ST.Store().load("swiftui")
+    assert [u for u, _d in m["frontier"]] == queue and m["sync_complete"] is False
+    assert api.status_rows()[0]["state"] == "partial (3 queued)"
+    env["stub"].robots_status = 200                               # back: the resume finishes it
     st = _sync("swiftui")
-    assert st["new"] == 0 and st["refused"] >= 1
-    assert env["stub"].paths() == ["/robots.txt"]
+    assert st["resumed"] is True and st["new"] == 3
+    assert ST.Store().load("swiftui")["sync_complete"] is True
+
+
+def test_transient_page_failure_is_kept_for_the_next_sync(env):
+    stub = env["stub"]
+    stub.status["/tutorials/data/documentation/swiftui/view.json"] = 503
+    st = _sync("swiftui")
+    view = f"{stub.base}/documentation/swiftui/view"
+    m = ST.Store().load("swiftui")
+    assert st["retry"] == 1 and st["new"] == 4
+    assert m["sync_complete"] is False and [u for u, _d in m["frontier"]] == [view]
+    del stub.status["/tutorials/data/documentation/swiftui/view.json"]
+    st = _sync("swiftui")
+    assert st["new"] == 1 and ST.Store().load("swiftui")["sync_complete"] is True
+    # a permanent failure (404) is counted and dropped: it does not hold the mirror open
+    stub.status["/tutorials/data/documentation/swiftui/view.json"] = 404
+    st = _sync("swiftui", force=True)
+    assert st["errors"] == 1 and st["retry"] == 0
+    assert ST.Store().load("swiftui")["sync_complete"] is True
+
+
+class _FlakyFetcher(net.Fetcher):
+    """Raises `exc` on page GETs from the `after`-th one on."""
+
+    def __init__(self, hosts, exc, after=0):
+        super().__init__(hosts, 0.0)
+        self.exc, self.after, self.gets = exc, after, 0
+
+    def get(self, url, *a, **kw):
+        self.gets += 1
+        if self.gets > self.after:
+            raise self.exc
+        return super().get(url, *a, **kw)
+
+
+def test_interrupt_keeps_the_page_in_flight(env):
+    src = C.load_sources()["swiftui"]
+    f = _FlakyFetcher(src.hosts, KeyboardInterrupt(), after=1)
+    with pytest.raises(KeyboardInterrupt):
+        S.sync(src, ST.Store(), fetcher=f, log=lambda *_a: None)
+    m = ST.Store().load("swiftui")
+    assert len(m["pages"]) == 1
+    first = m["frontier"][0][0]
+    assert first not in m["pages"] and first.startswith(env["stub"].base)  # the in-flight page, first
+    st = _sync("swiftui")
+    assert st["resumed"] is True and st["new"] == 4
+
+
+def test_repeated_transport_failures_stop_the_sync_and_keep_the_queue(env, monkeypatch):
+    monkeypatch.setattr(S, "MAX_CONSECUTIVE_FAILURES", 2)
+    src = C.load_sources()["swiftui"]
+    _sync("swiftui", max_pages=1)
+    queue = [u for u, _d in ST.Store().load("swiftui")["frontier"]]
+    f = _FlakyFetcher(src.hosts, net.FetchError("connection reset"))
+    with pytest.raises(S.SyncAborted, match="in a row"):
+        S.sync(src, ST.Store(), fetcher=f, log=lambda *_a: None)
+    m = ST.Store().load("swiftui")
+    assert sorted(u for u, _d in m["frontier"]) == sorted(queue) and m["sync_complete"] is False
+
+
+def test_fresh_rewalk_of_a_densely_linked_mirror_is_linear(env):
+    """Every page fresh, every page linking to 100 others: the walk is pure
+    queue work. A list + pop(0) with duplicates queued was quadratic here
+    (minutes); the deque + queued set takes well under a second."""
+    s = ST.Store()
+    base = env["stub"].base + "/documentation/swiftui"
+    n = 3000
+    urls = [base] + [f"{base}/p{i}" for i in range(n)]
+    now = ST.now_iso()
+    m = s.load("swiftui")
+    for i, u in enumerate(urls):
+        m["pages"][u] = {"checked_at": now, "fetched_at": now, "file": "x",
+                         "links": [urls[(i * 7 + k) % len(urls)] for k in range(100)]}
+    s.save("swiftui", m)
+    t = time.monotonic()
+    st = _sync("swiftui")
+    assert st["skipped_fresh"] == len(urls) and st["fetched"] == 0
+    assert time.monotonic() - t < 15
+    assert env["stub"].requests == []
 
 
 def test_robots_404_means_allowed(env):
@@ -378,22 +613,108 @@ def test_redirect_off_the_source_hosts_is_refused(env):
 
 def test_private_address_refused_without_opt_in(env, monkeypatch):
     monkeypatch.delenv("OPENBEAST_DOCS_ALLOW_PRIVATE")
-    f = net.Fetcher(["127.0.0.1"], 0)
+    f = net.Fetcher([env["stub"].hostport], 0)
     with pytest.raises(net.Refused, match="non-public|blocked"):
         f.get(env["stub"].base + "/robots.txt")
     with pytest.raises(net.Refused, match="not one of this source's hosts"):
-        net.Fetcher(["127.0.0.1"], 0).get("http://example.com/x")
+        net.Fetcher([env["stub"].hostport], 0).get("http://example.com/x")
     assert env["stub"].requests == []
 
 
+def test_url_normalizer():
+    from docs import urls as U
+    n = U.normalize_url
+    assert n("https://H.example/docs/../secret/x#f") == "https://h.example/secret/x"
+    assert n("https://h/docs/./private/x") == "https://h/docs/private/x"
+    assert n("https://h/docs/%2e%2e/secret/x") == "https://h/secret/x"
+    assert n("https://h/docs/%2E%2e/%2e/a") == "https://h/a"
+    assert n("https://h/../../x") == "https://h/x"                       # never above the root
+    assert n("https://h/a/b/..") == "https://h/a/"
+    assert n("https://h:443/a?q=1") == "https://h/a?q=1"                 # default port dropped
+    assert n("http://h:8080/%7Euser/%41") == "http://h:8080/~user/A"     # unreserved decoded
+    assert n("https://h/a%2Fb") == "" and n("https://h/a%5cb") == "" and n("https://h/a\\b") == ""
+    assert n("https://developer.apple.com@evil.example/x") == ""         # userinfo
+    assert n("https://h:99999/x") == "" and n("ftp://h/x") == "" and n("https:///x") == ""
+    assert U.host_allowed(["docs.corp"], "https://docs.corp/x")
+    assert U.host_allowed(["docs.corp"], "http://docs.corp:80/x")
+    assert not U.host_allowed(["docs.corp"], "http://docs.corp:6379/x")
+    assert U.host_allowed(["docs.corp:8443"], "https://docs.corp:8443/x")
+    assert not U.host_allowed(["docs.corp:8443"], "https://docs.corp/x")
+
+
+def test_scope_and_robots_decide_on_the_normalized_url():
+    src = C.Source(name="x", title="x", adapter="html", hosts=["docs.corp"],
+                   roots=["https://docs.corp/docs/"], allow_prefixes=["/docs/"],
+                   deny_prefixes=["/docs/private"])
+    assert src.in_scope("https://docs.corp/docs/a")
+    for bad in ("https://docs.corp/docs/../secret/x", "https://docs.corp/docs/%2e%2e/secret/x",
+                "https://docs.corp/docs/./private/x", "https://docs.corp/docs/%2E/private/x",
+                "http://docs.corp:6379/docs/x",                    # another port on the host
+                "https://u:p@docs.corp/docs/x"):                    # userinfo
+        assert not src.in_scope(bad), bad
+    rb = net.parse_robots("User-agent: *\nDisallow: /secret\n")
+    assert not rb.allowed("https://docs.corp/docs/../secret/x")
+    assert not rb.allowed("https://docs.corp/docs/%2e%2e/secret/x")
+    assert rb.allowed("https://docs.corp/docs/x")
+    with pytest.raises(ValueError, match="dot segment"):          # the DocC mapping refuses too
+        docc.json_url("https://developer.apple.com/documentation/swiftui/%2e%2e/%2e%2e/x")
+    # a double-encoded dot stays a literal, re-encoded: never a segment a server resolves
+    assert docc.json_url("https://developer.apple.com/documentation/swiftui/%252e%252e/x") == \
+        "https://developer.apple.com/tutorials/data/documentation/swiftui/%252e%252e/x.json"
+
+
+def test_live_dot_segments_are_normalized_before_robots_and_request(env):
+    stub = env["stub"]
+    stub.robots = "User-agent: *\nDisallow: /documentation/swiftui/navigationview\n"
+    for trick in ("/documentation/swiftui/x/../navigationview",
+                  "/documentation/swiftui/x/%2e%2e/navigationview",
+                  "/documentation/swiftui/./navigationview"):
+        out = api.live_text(stub.base + trick, source="swiftui")
+        assert "LIVE FETCH UNAVAILABLE" in out and "robots.txt disallows" in out, out
+    assert not any("navigationview" in p for p in stub.paths())
+    assert not any(".." in p or "%2e" in p.lower() or "/./" in p for p in stub.paths())
+    out = api.live_text(stub.base + "/documentation/swiftui/x/../navigationstack", source="swiftui")
+    assert out.startswith(f"Source: {stub.base}/documentation/swiftui/navigationstack\nLIVE")
+    assert "/tutorials/data/documentation/swiftui/navigationstack.json" in stub.paths()
+
+
+def test_fetcher_pins_the_port(env):
+    stub = env["stub"]
+    f = net.Fetcher([stub.hostport], 0)
+    with pytest.raises(net.Refused, match="not one of this source's hosts"):
+        f.get("http://127.0.0.1:1/robots.txt")
+    with pytest.raises(net.Refused, match="not a fetchable URL"):
+        f.get(f"http://x@{stub.hostport}/robots.txt")
+    stub.redirects["/tutorials/data/documentation/swiftui/view.json"] = "http://127.0.0.1:1/documentation/swiftui/view"
+    st = _sync("swiftui")
+    assert st["refused"] >= 1
+    assert f"{stub.base}/documentation/swiftui/view" not in ST.Store().load("swiftui")["pages"]
+
+
 def test_terms_gate(env, stub):
-    env["sources"].write_text(SOURCES.format(base=stub.base, ack="requires_ack = true"))
+    env["sources"].write_text(SOURCES.format(base=stub.base, host=stub.hostport, ack="requires_ack = true"))
     with pytest.raises(S.SyncError, match="--accept-terms"):
         _sync("swiftui")
     assert stub.requests == []
     _sync("swiftui", accept_terms=True)
     assert ST.Store().load("swiftui")["terms_accepted_at"]
     _sync("swiftui", force=True)                               # recorded: no flag needed again
+
+
+def test_live_save_obeys_the_terms_gate(env, stub):
+    env["sources"].write_text(SOURCES.format(base=stub.base, host=stub.hostport, ack="requires_ack = true"))
+    url = f"{stub.base}/documentation/swiftui/navigationstack"
+    out = api.live_text(url, save=True)
+    assert out.startswith("Error: not saved") and "--accept-terms" in out
+    assert stub.requests == []                                  # refused before any request
+    assert "swiftui" not in ST.Store().sources_on_disk()
+    out = api.live_text(url)                                    # reading live needs no acceptance
+    assert "LIVE · fetched" in out and "saved" not in out.split("\n")[1]
+    out = api.live_text(url, save=True, accept_terms=True)
+    assert "saved to the mirror" in out
+    m = ST.Store().load("swiftui")
+    assert m["terms_accepted_at"] and url in m["pages"]
+    assert "saved to the mirror" in api.live_text(url, save=True)   # recorded: no flag needed again
 
 
 # ── incremental / resumable ──────────────────────────────────────────────
@@ -480,9 +801,16 @@ def _search_titles(q, **kw):
 @pytest.mark.parametrize("no_fts", ["0", "1"])
 def test_search_ranking(env, monkeypatch, no_fts):
     monkeypatch.setenv("OPENBEAST_DOCS_NO_FTS", no_fts)
+    if no_fts == "0" and not _sqlite_has_fts5():
+        pytest.skip("this interpreter's sqlite has no FTS5")
     _sync("swiftui")
     _sync("android-compose")
-    assert ST.fts5_available() is (no_fts == "0" and ST.fts5_available())
+    idx = ST.Store().search_index()                   # the backend the searches below really use
+    try:
+        assert idx.fts is (no_fts == "0")
+        assert idx._meta() == ("fts5" if no_fts == "0" else "plain", ST.INDEX_SCHEMA)
+    finally:
+        idx.close()
     # the guide says "NavigationStack" four times; the symbol page still wins
     assert _search_titles("NavigationStack")[0] == "NavigationStack"
     assert _search_titles("navigation stack")[0] in ("NavigationStack", "Understanding navigation")
@@ -496,6 +824,141 @@ def test_search_ranking(env, monkeypatch, no_fts):
     assert out.startswith("=== platform docs:")
     assert f"{env['stub'].base}/documentation/swiftui/navigationstack" in out
     assert "fetched 20" in out                                 # every hit carries its date
+
+
+def _sqlite_has_fts5() -> bool:
+    import sqlite3
+    try:
+        sqlite3.connect(":memory:").execute("CREATE VIRTUAL TABLE t USING fts5(a)")
+        return True
+    except sqlite3.Error:
+        return False
+
+
+def test_search_mode_flip_rebuilds_instead_of_emptying_the_index(env, monkeypatch):
+    if not _sqlite_has_fts5():
+        pytest.skip("needs FTS5 to flip between the two modes")
+    _sync("swiftui")
+    assert _search_titles("NavigationStack")[0] == "NavigationStack"
+    monkeypatch.setenv("OPENBEAST_DOCS_NO_FTS", "1")
+    assert _search_titles("NavigationStack")[0] == "NavigationStack"      # rebuilt as plain
+    monkeypatch.delenv("OPENBEAST_DOCS_NO_FTS")
+    assert _search_titles("NavigationStack")[0] == "NavigationStack"      # and back
+    # a sync under the other mode refills everything, not just the pages it touched
+    monkeypatch.setenv("OPENBEAST_DOCS_NO_FTS", "1")
+    env["stub"].overrides["/tutorials/data/documentation/swiftui/view.json"] = b"[]"
+    _sync("swiftui", force=True)
+    idx = ST.Store().index()
+    try:
+        assert idx.count("swiftui") == 5
+    finally:
+        idx.close()
+
+
+def test_old_schema_index_is_rebuilt_on_first_search(env):
+    _sync("swiftui")
+    import sqlite3
+    db = sqlite3.connect(ST.Store().index_path())
+    db.execute("DELETE FROM meta WHERE k = 'schema'")             # what a schema-1 index looks like
+    db.execute("DROP TABLE ids")
+    db.commit()
+    db.close()
+    assert _search_titles("NavigationStack")[0] == "NavigationStack"
+
+
+def test_search_on_a_read_only_store(env):
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("root ignores file modes")
+    _sync("swiftui")
+    s = ST.Store()
+    before = os.stat(s.index_path()).st_mtime_ns
+    os.chmod(s.index_path(), 0o444)
+    os.chmod(s.root, 0o555)
+    try:
+        assert _search_titles("NavigationStack")[0] == "NavigationStack"
+        assert api.read_text("swiftui:/documentation/swiftui/navigationstack")
+        assert os.stat(s.index_path()).st_mtime_ns == before       # a search writes nothing
+        # built by the other mode and not writable here: a clear message, not a crash
+        os.environ["OPENBEAST_DOCS_NO_FTS"] = "1" if _sqlite_has_fts5() else "0"
+        try:
+            out = api.search_text("NavigationStack")
+        finally:
+            del os.environ["OPENBEAST_DOCS_NO_FTS"]
+        if _sqlite_has_fts5():
+            assert out.startswith("The documentation search index is unavailable") and "reindex" in out
+    finally:
+        os.chmod(s.root, 0o755)
+        os.chmod(s.index_path(), 0o644)
+
+
+def test_index_lookups_do_not_scan_every_row(tmp_path, monkeypatch):
+    """Replacing a doc and the exact-title step are B-tree lookups through
+    `ids`: their cost must not grow with the number of rows (they were full
+    scans of the FTS table, which made reindex and unpack quadratic)."""
+    for mode in (["0", "1"] if _sqlite_has_fts5() else ["1"]):
+        monkeypatch.setenv("OPENBEAST_DOCS_NO_FTS", mode)
+        cost = {}
+        for n in (300, 3000):
+            idx = ST.Index(str(tmp_path / f"i{mode}{n}.sqlite"))
+            for i in range(n):
+                idx.upsert("s", f"u{i}", f"s:/p{i}", f"Title{i}", "", f"body {i}", commit=False)
+            idx.db.commit()
+            steps = [0]
+
+            def tick(steps=steps):
+                steps[0] += 1
+            idx.db.set_progress_handler(tick, 1)       # counts SQLite VM steps
+            idx.upsert("s", "u7", "s:/p7", "Title7", "", "new body")     # a replace
+            exact = idx._exact("title 7", None, 8)                        # the exact-title step
+            cost[n] = steps[0]
+            idx.db.set_progress_handler(None, 1)
+            assert [r[0] for r in exact] == ["s:/p7"]
+            assert idx.count() == n and idx.search("Title7")[0]["doc_id"] == "s:/p7"
+            idx.close()
+        # 10x the rows, (nearly) the same work: no scan hides in either step
+        assert cost[3000] < cost[300] * 1.5 + 100, (mode, cost)
+
+
+def test_exact_title_matches_method_symbols():
+    import tempfile
+    for mode in ("0", "1"):
+        os.environ["OPENBEAST_DOCS_NO_FTS"] = mode
+        try:
+            idx = ST.Index(os.path.join(tempfile.mkdtemp(), "i.sqlite"))
+            idx.upsert("swiftui", "u1", "swiftui:/a", "navigationDestination(for:destination:)", "",
+                       "Associates a destination view with a presented data type.")
+            idx.upsert("swiftui", "u2", "swiftui:/b", "Navigation guide", "",
+                       "navigationDestination for destination, for destination.")
+            top = idx.search("navigationDestination(for:destination:)")[0]
+            assert top["doc_id"] == "swiftui:/a" and top["score"] == 1000.0, (mode, top)
+            idx.close()
+        finally:
+            del os.environ["OPENBEAST_DOCS_NO_FTS"]
+
+
+def test_readers_parse_each_manifest_once(env, monkeypatch):
+    _sync("swiftui")
+    _sync("android-compose")
+    loads = []
+    real = ST.Store.load
+    monkeypatch.setattr(ST.Store, "load", lambda self, name: loads.append(name) or real(self, name))
+    rows = api.search("navigation", limit=8)
+    assert len(rows) >= 3 and loads.count("swiftui") <= 1, loads   # not once per hit
+    loads.clear()
+    api.search("navigation", limit=8)
+    api.read_text("swiftui:/documentation/swiftui/navigationstack")
+    assert loads == []                                          # unchanged files: served cached
+    # a doc id names its source: a miss there does not parse the others
+    ST._PEEK.clear()
+    assert api.read_text("swiftui:/nope") is None
+    assert loads == ["swiftui"], loads
+    # a save replaces the file: the next reader sees the new manifest
+    s = ST.Store()
+    m = real(s, "swiftui")
+    url = f"{env['stub'].base}/documentation/swiftui/navigationstack"
+    m["pages"][url]["deprecated"] = True
+    s.save("swiftui", m)
+    assert [r for r in api.search("NavigationStack") if r["url"] == url][0]["deprecated"] is True
 
 
 def test_status_flags_stale_mirrors(env):
@@ -523,6 +986,63 @@ def test_live_fetches_through_the_adapter(env):
     assert api.read_text("swiftui:/documentation/swiftui/navigationview")
 
 
+def test_live_reuses_robots_across_calls_but_not_an_outage(env, monkeypatch):
+    stub = env["stub"]
+    url = f"{stub.base}/documentation/swiftui/navigationstack"
+    for _ in range(3):
+        assert "LIVE · fetched" in api.live_text(url)
+    assert stub.paths().count("/robots.txt") == 1
+    monkeypatch.setattr(net, "LIVE_ROBOTS_TTL", 0.0)                # expired: asked again
+    net.LIVE_ROBOTS.clear()
+    stub.robots_status = 503
+    assert "LIVE FETCH UNAVAILABLE" in api.live_text(url)
+    stub.robots_status = 200
+    stub.requests.clear()
+    assert "LIVE · fetched" in api.live_text(url)                   # the outage was not cached
+    assert stub.paths()[0] == "/robots.txt"
+
+
+def _add_uikit(env):
+    stub = env["stub"]
+    with open(env["sources"], "a") as fh:
+        fh.write(f'''
+[[source]]
+name = "uikit"
+title = "Test UIKit"
+adapter = "apple-docc-json"
+hosts = ["{stub.hostport}"]
+roots = ["{stub.base}/documentation/uikit"]
+allow_prefixes = ["/documentation/uikit"]
+delay = 0.0
+license = "synthetic fixture"
+''')
+    doc = _docc("swiftui/navigationstack.json")
+    doc["metadata"]["title"] = "UIView"
+    stub.overrides["/tutorials/data/documentation/uikit/uiview.json"] = json.dumps(doc).encode()
+
+
+def test_live_source_lists_and_guesses_across_docc_sources(env):
+    _add_uikit(env)
+    stub = env["stub"]
+    url = f"{stub.base}/documentation/swiftui/navigationstack"
+    assert "LIVE · fetched" in api.live_text(url, source="swiftui,uikit")      # a list, as search takes
+    assert api.live_text(url, source="uikit").startswith(f"Error: {url} is not inside --source uikit")
+    assert "unknown source(s) nope" in api.live_text(url, source="nope")
+    # a UIKit symbol with no --source: the SwiftUI guess 404s, the UIKit one answers
+    out = api.live_text("UIView")
+    assert out.startswith(f"Source: {stub.base}/documentation/uikit/uiview\nLIVE"), out
+    paths = [p for p in stub.paths() if p.endswith("uiview.json")]
+    assert paths == ["/tutorials/data/documentation/swiftui/uiview.json",
+                     "/tutorials/data/documentation/uikit/uiview.json"]
+    out = api.live_text("NoSuchThing")
+    assert "HTTP 404 for every guessed URL" in out and "/uikit/nosuchthing" in out
+    # an outage does not walk through every guess
+    stub.requests.clear()
+    stub.status["/tutorials/data/documentation/swiftui/zzz.json"] = 503
+    assert "HTTP 503" in api.live_text("zzz")
+    assert not any("uikit" in p for p in stub.paths())
+
+
 def test_live_refuses_urls_outside_every_source(env):
     assert api.live_text("https://example.com/whatever").startswith("Error:")
 
@@ -540,15 +1060,38 @@ def test_offline_sync_refuses_and_live_falls_back_to_the_mirror(env, monkeypatch
     assert env["stub"].requests == []                          # offline means NO request
 
 
+@pytest.mark.parametrize("env_value,conf,offline", [
+    (None, 'OFFLINE="true"  # air-gapped\n', True),
+    ("", 'OFFLINE="true"  # air-gapped\n', True),          # empty = unset, as in conf.sh
+    ("false", "OFFLINE=true\n", False),                   # a set value wins over the file
+    ("", "OFFLINE=false\n", False),
+    ("", "", False),
+    ("yes", "", True),
+])
+def test_offline_env_parses_like_conf_sh(tmp_path, monkeypatch, env_value, conf, offline):
+    (tmp_path / "openbeast.conf").write_text(conf)
+    monkeypatch.setattr(C, "REPO_DIR", str(tmp_path))
+    if env_value is None:
+        monkeypatch.delenv("OPENBEAST_OFFLINE", raising=False)
+    else:
+        monkeypatch.setenv("OPENBEAST_OFFLINE", env_value)
+    assert bool(C._conf_offline()) is offline
+
+
 def test_island_mode_is_offline_too(env, monkeypatch):
     _sync("swiftui")
     import island
     monkeypatch.setattr(island, "read_state",
                         lambda path=None: {"state": "island", "since_iso": "2026-11-15T10:00:00"})
     assert "ISLAND MODE" in C.offline_reason()
+    env["stub"].requests.clear()
+    with pytest.raises(S.SyncError, match="offline: ISLAND MODE"):
+        _sync("swiftui", force=True)
     out = api.live_text("NavigationStack", source="swiftui")
     assert out.startswith("LIVE FETCH UNAVAILABLE (offline: ISLAND MODE (no internet route since "
                           "2026-11-15T10:00:00))")
+    assert "Serving the MIRROR copy" in out
+    assert env["stub"].requests == []                          # island means NO request either
 
 
 def test_live_failure_with_no_mirror_copy_says_so(env, monkeypatch):
@@ -603,6 +1146,55 @@ def test_unpack_refuses_bad_hash_tamper_and_unsafe_members(env, monkeypatch):
         ST.unpack(ST.Store(), evil, expect_sha256=ST.sha256_file(evil))
     assert not (env["tmp"] / "escape.txt").exists()
     assert not ST.Store().sources_on_disk()                    # nothing installed by a refusal
+
+
+def test_unpack_installs_the_bytes_it_hashed(env, monkeypatch):
+    """A tarball rewritten after the hash check (shared / removable volume)
+    must not be what gets installed: unpack extracts its own verified copy."""
+    _sync("swiftui")
+    good = str(env["tmp"] / "good.tar.gz")
+    ST.pack(ST.Store(), good)
+    want = ST.sha256_file(good)
+    s = ST.Store()
+    m = s.load("swiftui")
+    rec = next(iter(m["pages"].values()))
+    path = os.path.join(s.source_dir("swiftui"), rec["file"])
+    with open(path) as fh:
+        orig = fh.read()
+    with open(path, "w") as fh:
+        fh.write(orig.replace("NavigationStack", "EvilStack"))
+    evil = str(env["tmp"] / "evil.tar.gz")
+    ST.pack(s, evil)                         # self-consistent BUNDLE.json, other bytes
+    real_open = ST.tarfile.open
+
+    def swap_then_open(*a, **kw):            # the attacker wins the race right after the hash
+        with open(evil, "rb") as src, open(good, "wb") as dst:
+            dst.write(src.read())
+        return real_open(*a, **kw)
+    monkeypatch.setattr(ST.tarfile, "open", swap_then_open)
+    monkeypatch.setenv("OPENBEAST_DOCS_DIR", str(env["tmp"] / "dest"))
+    r = ST.unpack(ST.Store(), good, expect_sha256=want)
+    assert r["sha256"] == want
+    with open(os.path.join(ST.Store().source_dir("swiftui"), rec["file"])) as fh:
+        assert "EvilStack" not in fh.read()
+
+
+def test_unpack_refuses_a_bomb_before_writing(env, monkeypatch):
+    bomb = str(env["tmp"] / "bomb.tar.gz")
+    with tarfile.open(bomb, "w:gz") as tf:
+        data = b"\0" * 4096
+        ti = tarfile.TarInfo("swiftui/pages/zero.md")
+        ti.size = len(data)
+        tf.addfile(ti, io.BytesIO(data))
+    monkeypatch.setenv("OPENBEAST_DOCS_DIR", str(env["tmp"] / "dest"))
+    monkeypatch.setenv("OPENBEAST_DOCS_UNPACK_MAX_BYTES", "1000")
+    with pytest.raises(ST.BundleError, match="expands past 1000 bytes"):
+        ST.unpack(ST.Store(), bomb, expect_sha256=ST.sha256_file(bomb))
+    assert os.listdir(env["tmp"] / "dest") == []                 # nothing written, staging gone
+    monkeypatch.setattr(ST, "UNPACK_MAX_MEMBERS", 0)
+    monkeypatch.delenv("OPENBEAST_DOCS_UNPACK_MAX_BYTES")
+    with pytest.raises(ST.BundleError, match="more than 0 members"):
+        ST.unpack(ST.Store(), bomb, expect_sha256=ST.sha256_file(bomb))
 
 
 # ── the CLI ─────────────────────────────────────────────

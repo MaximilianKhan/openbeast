@@ -6,13 +6,15 @@
   status [--json]                 every mirror: pages, age, STALE, partial/complete
   search <query> [--source S] [--limit N] [--json]
   read <doc-id|url> [--max-chars N]
-  live <url|symbol> [--source S] [--save]
+  live <url|symbol> [--source S] [--save [--accept-terms]]
   pack <out.tar.gz> [--source S ...]
   unpack <tarball> [--sha256 H]
   reindex [--source S]
 
 Exit codes: 0 ok · 1 nothing found · 2 usage / config · 3 offline refusal ·
-4 sync refused (terms, scope) · 5 bundle verification failed.
+4 sync refused (terms, scope) · 5 bundle verification failed ·
+6 sync stopped by an outage (robots.txt unreachable, repeated transport
+failures) — the queue was saved; re-run sync to resume.
 """
 from __future__ import annotations
 
@@ -60,6 +62,8 @@ def main(argv=None) -> int:
     p.add_argument("ref", nargs="+")
     p.add_argument("--source", default="")
     p.add_argument("--save", action="store_true")
+    p.add_argument("--accept-terms", action="store_true",
+                   help="with --save: accept a requires_ack source's terms (recorded, as sync does)")
     p.add_argument("--max-chars", type=int, default=0)
     p = sub.add_parser("pack")
     p.add_argument("out")
@@ -96,6 +100,9 @@ def main(argv=None) -> int:
         print(f"==> sync {src.name} ({src.adapter}) into {store.source_dir(src.name)}")
         try:
             st = S.sync(src, store, a.max_pages, a.root or None, a.accept_terms, a.force, log=log)
+        except S.SyncAborted as e:
+            _err(str(e))
+            return 6
         except S.SyncError as e:
             _err(str(e))
             return 3 if str(e).startswith("offline") else 4
@@ -135,7 +142,8 @@ def main(argv=None) -> int:
         return 0
 
     if a.cmd == "live":
-        out = api.live_text(" ".join(a.ref), a.source, a.save, a.max_chars, store)
+        out = api.live_text(" ".join(a.ref), a.source, a.save, a.max_chars, store,
+                            accept_terms=a.accept_terms)
         sys.stdout.write(out)
         if out.startswith("Error:"):
             return 2

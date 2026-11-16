@@ -98,7 +98,10 @@ def test_example_config_validates(tmp_path, monkeypatch):
     cfg = core.load_config(REPO / "hydra.toml.example", {})
     assert set(cfg.routes) >= {"beast", "beast:max", "beast:fast", "beast:long", "beast:vision", "classify"}
     assert cfg.nodes["rig"].gpu_lease and cfg.nodes["rig"].loopback
-    assert cfg.nodes["sparks"].engine == "tensorfold" and cfg.nodes["sparks"].has_key
+    # The live pair is reached through beast-gate (:8443, engine openai), never
+    # its keyless engine port (review 2026-11-16).
+    assert cfg.nodes["sparks"].engine == "openai" and cfg.nodes["sparks"].has_key
+    assert cfg.nodes["sparks"].url.endswith(":8443") and cfg.nodes["sparks"].slots == 4
     assert cfg.route_by_id_or_alias["qwen-27b-q5"].id == "beast"
     assert cfg.settings.instinct.url == "http://127.0.0.1:8094"
     assert cfg.warnings == [], cfg.warnings            # the shipped example is clean under `check`
@@ -132,7 +135,7 @@ def test_example_config_is_uncensored_only(tmp_path, monkeypatch):
     assert all(d.family in allowed for d in cfg.deployments.values())
     assert cfg.routes["beast"].same_family and cfg.routes["beast"].family == "qwen3.8-27b-uncensored"
     glm = cfg.deployments["glm53-flash-unc@sparks"]
-    assert glm.family == "glm-5.3-flash-uncensored" and cfg.nodes[glm.node].engine == "tensorfold"
+    assert glm.family == "glm-5.3-flash-uncensored" and cfg.nodes[glm.node].engine == "openai"
     st = ready_state(cfg)
     for d in cfg.deployments.values():
         st.conformance[d.id] = ("pass", False)          # remote nodes need a passing report

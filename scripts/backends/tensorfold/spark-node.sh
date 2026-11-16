@@ -38,11 +38,14 @@
 # A drafter is the profile's DRAFTER_SOURCE@DRAFTER_REVISION, fetched the same
 # way. Without one, the CONTAINER engine passes --drafter none (never "auto":
 # that picks up whatever unpinned draft model happens to sit in the HF cache).
-# The NATIVE engine then passes no --drafter at all: in tensorfold-native
-# 1.2.7 the cached-drafter "auto" belongs to the managed server (benchmark),
-# and a family that drafts with its own MTP head refuses any --drafter
-# ("serve without --drafter"). VERIFY ON HARDWARE that a plain native serve
-# loads no cached drafter (HF_HUB_OFFLINE=1 does not hide a cached copy).
+# The NATIVE engine then passes no --drafter at all: tensorfold-native 1.2.7
+# rejects `--drafter none` (and `auto`) for EVERY family during argument
+# checks, before reading the model ("none is neither a directory nor a
+# Hugging Face repo id", checked on spark-1 2026-11-16); a family with an MTP
+# head drafts with it. The managed single-host launcher (scripts/engines/
+# tensorfold.sh) follows the same rule. VERIFY ON HARDWARE that a plain
+# native serve loads no cached drafter (HF_HUB_OFFLINE=1 does not hide a
+# cached copy).
 #
 # Order matters: start ranks 1..N-1 FIRST, then rank 0 (TensorFold RUNBOOK.md,
 # "two ranks"). Every rank needs the same checkpoint, drafter, --context and
@@ -57,13 +60,15 @@
 # here at all (one SPARK_HEAD_IP; spark-cluster.sh check flags it).
 #
 # SECURITY. TensorFold has NO API key and its rendezvous port (29551) is
-# unauthenticated. rank 0's HTTP binds SPARK_SERVE_HOST (a specific address;
-# wildcards refused), and the rendezvous must be firewalled to the peer's
+# unauthenticated. rank 0's HTTP binds SPARK_SERVE_HOST: wildcards (any
+# spelling) are refused, and a keyless server binds loopback only, behind
+# beast-gate, unless SPARK_ALLOW_KEYLESS_BIND=true; the rendezvous must be firewalled to the peer's
 # link address — the listener's bind address is not configurable (verify on
 # hardware with `ss -ltnp | grep 29551`). Put beast-gate or a firewall in
 # front of the HTTP port. Alpha software: TENSORFOLD_REF must be a full
 # 40-hex commit SHA (a tag or branch can be moved under us, and pip installs
-# whatever it names at start time), and --no-update-check stops the server
+# whatever it names at start time; its dependencies need TENSORFOLD_IMAGE_PREBUILT
+# or a hash-locked TENSORFOLD_PIP_LOCK), and --no-update-check stops the server
 # phoning GitHub for newer releases.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -80,7 +85,7 @@ while [[ $# -gt 0 ]]; do
     --print)   PRINT=1; shift ;;
     --stop)    STOP=1; shift ;;
     --ckpt)    echo "Error: --ckpt is gone — the checkpoint comes from a profile: --profile NAME (scripts/backends/models/)" >&2; exit 2 ;;
-    -h|--help) sed -n '2,57p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,60p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)         echo "Unknown argument: $1 (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -112,7 +117,8 @@ fi
 sp_load "$ENV_FILE" TENSORFOLD_ENGINE TENSORFOLD_BIN TENSORFOLD_VERSION TENSORFOLD_API_KEY_FILE \
   SPARK_NO_API_KEY TENSORFOLD_IMAGE TENSORFOLD_IMAGE_DIGEST TENSORFOLD_IMAGE_ID TENSORFOLD_REF \
   SPARK_IFACE SPARK_IB_HCA SPARK_HEAD_IP TENSORFOLD_MASTER_PORT SPARK_SERVE_HOST \
-  SPARK_SERVE_PORT SPARK_ALLOW_WILDCARD_BIND MODELS_DIR SPARK_PROFILE
+  SPARK_SERVE_PORT SPARK_ALLOW_WILDCARD_BIND SPARK_ALLOW_KEYLESS_BIND MODELS_DIR SPARK_PROFILE \
+  TENSORFOLD_IMAGE_PREBUILT TENSORFOLD_PIP_LOCK TENSORFOLD_ALLOW_UNPINNED_DEPS
 ENGINE="${TENSORFOLD_ENGINE:-native}"
 case "$ENGINE" in
   native|container) ;;
@@ -170,10 +176,45 @@ else
   if [[ -n "${TENSORFOLD_REF:-}" && ! "$TENSORFOLD_REF" =~ ^[0-9a-f]{40}$ ]]; then
     sp_err "TENSORFOLD_REF='$TENSORFOLD_REF' is not a commit SHA — a tag or branch can move; use the full 40-hex commit (v0.5.0 = 9cd52ab4daba68ddd09be89be8f23ad43175e821)"
   fi
+  # TENSORFOLD_REF pins TensorFold itself, not what pip resolves for its
+  # dependencies — and the --rm container resolves them again on every start,
+  # as root with host networking and every GPU. So the dependencies are pinned
+  # too, one of three ways:
+  #   prebuilt  TENSORFOLD_IMAGE_PREBUILT=true: the image (pinned by
+  #             TENSORFOLD_IMAGE_ID / _DIGEST) already holds TensorFold and its
+  #             dependencies; nothing is installed at start. The offline route.
+  #   lock      TENSORFOLD_PIP_LOCK=FILE: a fully resolved, hash-locked
+  #             requirements file (pip install --require-hashes --no-deps),
+  #             then TensorFold at TENSORFOLD_REF with --no-deps.
+  #   unpinned  TENSORFOLD_ALLOW_UNPINNED_DEPS=true: the old behaviour, PyPI's
+  #             latest of each dependency at every start. Acknowledged only.
+  DEPS=""
+  if sp_is_true "${TENSORFOLD_IMAGE_PREBUILT:-}"; then
+    DEPS=prebuilt
+  elif [[ -n "${TENSORFOLD_PIP_LOCK:-}" ]]; then
+    DEPS=lock
+    if [[ ! -f "$TENSORFOLD_PIP_LOCK" ]]; then
+      sp_err "TENSORFOLD_PIP_LOCK='$TENSORFOLD_PIP_LOCK' is not a file"
+    elif ! grep -q -- '--hash=sha256:' "$TENSORFOLD_PIP_LOCK"; then
+      sp_err "TENSORFOLD_PIP_LOCK='$TENSORFOLD_PIP_LOCK' has no --hash=sha256: pins (pip-compile --generate-hashes, or pip hash)"
+    fi
+  elif sp_is_true "${TENSORFOLD_ALLOW_UNPINNED_DEPS:-}"; then
+    DEPS=unpinned
+    echo "Warning: TENSORFOLD_ALLOW_UNPINNED_DEPS=true — pip resolves TensorFold's dependencies from PyPI, unpinned, at every start." >&2
+  elif [[ $PRINT -eq 1 ]]; then
+    DEPS=unpinned
+    echo "Warning: TensorFold's dependencies are not pinned — a real run refuses this (TENSORFOLD_IMAGE_PREBUILT, TENSORFOLD_PIP_LOCK, or TENSORFOLD_ALLOW_UNPINNED_DEPS=true)." >&2
+  else
+    sp_err "the container engine pip-installs TensorFold's dependencies at every start, and only TensorFold itself is pinned: set TENSORFOLD_IMAGE_PREBUILT=true (an image that already holds them, pinned by TENSORFOLD_IMAGE_ID — also the offline route), or TENSORFOLD_PIP_LOCK=FILE (hash-locked requirements), or acknowledge with TENSORFOLD_ALLOW_UNPINNED_DEPS=true"
+  fi
 fi
 [[ "$TENSORFOLD_MASTER_PORT" =~ ^[0-9]+$ ]] || sp_err "TENSORFOLD_MASTER_PORT='$TENSORFOLD_MASTER_PORT' is not a port"
+(( TP > 1 )) && sp_check_guarded_port "$TENSORFOLD_MASTER_PORT"
 [[ "$SPARK_SERVE_PORT" =~ ^[0-9]+$ ]] || sp_err "SPARK_SERVE_PORT='$SPARK_SERVE_PORT' is not a port"
-[[ "$RANK" == 0 ]] && sp_check_bind "${SPARK_SERVE_HOST:-}"
+# Keyless: the container engine never takes a key; native only without one.
+_keyless=0
+{ [[ "$ENGINE" == container ]] || sp_is_true "${SPARK_NO_API_KEY:-}"; } && _keyless=1
+[[ "$RANK" == 0 ]] && sp_check_bind "${SPARK_SERVE_HOST:-}" "$_keyless"
 
 sp_profile_locate "$PROFILE" "${MODELS_DIR:-}"
 MOUNTS=() DRAFTER=none
@@ -314,10 +355,16 @@ SERVE+=(${PF_EXTRA[@]+"${PF_EXTRA[@]}"})
 if [[ "$RANK" == 0 ]]; then
   SERVE+=(--name "$PF_SERVED_MODEL_NAME" --host "$SPARK_SERVE_HOST" --port "$SPARK_SERVE_PORT")
 fi
-# The container installs the pinned commit, then execs the server. Arguments
-# travel as positional parameters, never spliced into the script text.
+# The container installs the pinned commit (per DEPS, above), then execs the
+# server. Arguments travel as positional parameters, never spliced into the
+# script text; $1 is always the git URL, so every mode shifts it the same way.
 # shellcheck disable=SC2016  # expanded inside the container, not here
-INNER='python -m pip install --quiet "$1" && shift && exec tensorfold "$@"'
+case "$DEPS" in
+  prebuilt) INNER='shift && exec tensorfold "$@"' ;;
+  lock)     INNER='python -m pip install --quiet --require-hashes --no-deps -r /openbeast/tensorfold-requirements.txt && python -m pip install --quiet --no-deps "$1" && shift && exec tensorfold "$@"'
+            MOUNTS+=(-v "$TENSORFOLD_PIP_LOCK:/openbeast/tensorfold-requirements.txt:ro") ;;
+  *)        INNER='python -m pip install --quiet "$1" && shift && exec tensorfold "$@"' ;;
+esac
 CMD=(docker run -d --rm --name "$NAME"
   --gpus all --ipc=host --network host --ulimit memlock=-1 --cap-add IPC_LOCK)
 if (( TP > 1 )); then

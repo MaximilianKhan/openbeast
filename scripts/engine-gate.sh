@@ -9,7 +9,12 @@
 #                          [--load-timeout 1800] [--dry-run]
 #
 # What it does, in order (each step printed first; --dry-run stops there):
-#   1. refuses while someone else's gpu-lease.sh lease holds the GPU
+#   0. reads what the verdict will admit: the candidate adapter's binding
+#      for --profile (Maya: the installed commit, the profile, its GGUF), and
+#      refuses a --serve-script that does not load that GGUF (same weights)
+#   1. refuses while someone else's gpu-lease.sh lease holds the GPU, then
+#      moves any earlier verdict aside (<engine>.json.prev): a run that fails
+#      or is interrupted leaves the engine gated, never on an old PASS
 #   2. stops the stack, makes llama the engine (engine.sh use llama
 #      --no-restart), starts `start.sh -d <serve-script>`, waits for it, and
 #      measures it with scripts/tokps.py: the baseline
@@ -17,10 +22,15 @@
 #      starts it with OPENBEAST_ENGINE_GATE=measuring (the one launch allowed
 #      before a verdict exists), waits, measures: the candidate
 #   4. stops it and switches back to llama (always, pass or fail)
-#   5. tokps.py gate: candidate / baseline >= 1.5 writes a PASS verdict to
+#   5. tokps.py gate: candidate / baseline >= the bar (1.5, or a higher
+#      ENGINE_GATE_RATIO from openbeast.conf / the environment) writes a PASS
+#      verdict, bound to the host and step 0's binding, to
 #      .engines/gate/<engine>.json and a history line; anything else FAIL
 #   6. if the stack was running when this began, starts the default again
-# Exit: 0 PASS, 1 FAIL, 2 usage, 3 a launch or a measurement failed.
+# A failure, Ctrl-C or TERM anywhere after step 1 still runs steps 4 and 6
+# (an EXIT trap): the conf is never left on the ungated candidate.
+# Exit: 0 PASS, 1 FAIL, 2 usage, 3 a launch or a measurement failed,
+# 130/143 interrupted.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -58,6 +68,7 @@ source "$SCRIPT_DIR/lib/backend.sh"
 source "$SCRIPT_DIR/lib/proc.sh"
 
 die() { echo "engine-gate: $*" >&2; exit "${2:-3}"; }
+ob_engine_host_class_pin          # once, for the binding and every engine.sh it runs
 ob_engine_valid "$ENGINE" || die "no engine adapter '$ENGINE' (scripts/engines/)" 2
 [[ -x "$REPO_DIR/scripts/$SERVE" ]] || die "scripts/$SERVE is not an executable serve script" 2
 
@@ -69,6 +80,17 @@ URL="${OB_GATE_URL:-http://127.0.0.1:8080}"
 GDIR="$OB_ENGINE_STATE_DIR/gate"
 BASE_REC="$GDIR/$ENGINE-baseline.json" CAND_REC="$GDIR/$ENGINE-candidate.json"
 VERDICT="$(ob_engine_gate_file "$ENGINE")"
+RATIO="$(ob_engine_gate_ratio)"
+
+# What the verdict will admit, and the same-weights rule, before anything
+# is stopped. An adapter without a binding (a test engine) binds the host only.
+BIND="$(ob_engine_gate_binding "$ENGINE" "$PROFILE")" || die "profile '$PROFILE' is not valid for $ENGINE (above)" 2
+_gguf="$(sed -n 's/^gguf=//p' <<< "$BIND")"
+if [[ -n "$_gguf" ]] && ! grep -qF -- "$_gguf" "$REPO_DIR/scripts/$SERVE"; then
+  die "scripts/$SERVE does not load $_gguf, the weights profile '$PROFILE' serves — the gate compares engines on the SAME weights" 2
+fi
+BIND_ARGS=()
+while IFS= read -r _kv; do [[ -n "$_kv" ]] && BIND_ARGS+=(--bind "$_kv"); done <<< "$BIND"
 
 running=0
 ob_recorded_pid_ours "$RUN_DIR/supervisor.pid" 'start\.sh' 2>/dev/null && running=1
@@ -79,7 +101,7 @@ echo "  2. baseline:  $STOP; $ENGINE_SH use llama --no-restart; $START $SERVE; m
 echo "  3. candidate: $STOP; $ENGINE_SH use $ENGINE --profile $PROFILE --no-restart;"
 echo "                OPENBEAST_ENGINE_GATE=measuring $START; measure"
 echo "  4. $STOP; $ENGINE_SH use llama --no-restart"
-echo "  5. tokps.py gate --ratio 1.5 -> $VERDICT"
+echo "  5. tokps.py gate --ratio $RATIO -> $VERDICT  (bound to $(hostname)${BIND:+, ${BIND//$'\n'/, }})"
 [[ $running -eq 1 ]] && echo "  6. $START  (the stack was running)"
 echo "  measurement: $RUNS counted runs + 1 warm-up, prompt '$PROMPT', $MAXTOK tokens, at $URL"
 [[ $DRY -eq 1 ]] && { echo "(dry run — nothing changed)"; exit 0; }
@@ -103,32 +125,59 @@ _restore() {
   _run "$STOP" >/dev/null 2>&1 || true
   "$ENGINE_SH" use llama --no-restart >/dev/null 2>&1 || echo "engine-gate: could not switch back to llama — run: scripts/engine.sh use llama" >&2
 }
+# From the first stop on, any exit that is not the normal path (a die, an
+# unexpected error under set -e, Ctrl-C, TERM) switches back to llama.cpp
+# and restarts a stack that was running: without this the conf stayed on the
+# candidate, which every later plain start.sh refuses as gated.
+_DIRTY=0
+_on_exit() {
+  local rc=$?
+  trap - EXIT INT TERM
+  if [[ $_DIRTY -eq 1 ]]; then
+    echo "engine-gate: stopped before the end (exit $rc) — switching back to llama.cpp" >&2
+    _restore
+    if [[ $running -eq 1 ]]; then
+      _run "$START" >/dev/null 2>&1 || echo "engine-gate: restart failed — ./start.sh -d" >&2
+    fi
+  fi
+  exit "$rc"
+}
+trap _on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 _measure() { # _measure <label> <engine> <profile> <record>
   python3 "$TOKPS" measure --url "$URL" --runs "$RUNS" --prompt "$PROMPT" --max-tokens "$MAXTOK" \
     --label "$1" --engine "$2" --profile "$3" --record "$4"
 }
 
+# An earlier verdict goes aside now: if this run dies, the engine is gated
+# (no verdict), not admitted by a measurement of something else.
+if [[ -f "$VERDICT" ]]; then mv -f "$VERDICT" "$VERDICT.prev"; fi
+rm -f "$BASE_REC" "$CAND_REC"
+_DIRTY=1
+
 echo "── baseline: llama.cpp, $SERVE"
 _run "$STOP" >/dev/null 2>&1 || true
 "$ENGINE_SH" use llama --no-restart >/dev/null || die "engine.sh use llama failed"
-OPENBEAST_STOP_REASON="engine-gate baseline" _run "$START" "$SERVE" || { _restore; die "the baseline did not start ($START $SERVE)"; }
-_wait_ready llama || { _restore; die "llama.cpp was not ready within ${LOAD_TIMEOUT}s"; }
-_measure llama llama "$SERVE" "$BASE_REC" || { _restore; die "the baseline measurement failed"; }
+OPENBEAST_STOP_REASON="engine-gate baseline" _run "$START" "$SERVE" || die "the baseline did not start ($START $SERVE)"
+_wait_ready llama || die "llama.cpp was not ready within ${LOAD_TIMEOUT}s"
+_measure llama llama "$SERVE" "$BASE_REC" || die "the baseline measurement failed"
 
 echo "── candidate: $ENGINE, $PROFILE"
 _run "$STOP" >/dev/null 2>&1 || true
 OPENBEAST_ENGINE_GATE=measuring "$ENGINE_SH" use "$ENGINE" --profile "$PROFILE" --no-restart >/dev/null \
-  || { _restore; die "engine.sh use $ENGINE --profile $PROFILE failed"; }
-OPENBEAST_ENGINE_GATE=measuring _run "$START" || { _restore; die "$ENGINE did not start"; }
-_wait_ready "$ENGINE" || { _restore; die "$ENGINE was not ready within ${LOAD_TIMEOUT}s"; }
-_measure "$ENGINE" "$ENGINE" "$PROFILE" "$CAND_REC" || { _restore; die "the $ENGINE measurement failed"; }
+  || die "engine.sh use $ENGINE --profile $PROFILE failed"
+OPENBEAST_ENGINE_GATE=measuring _run "$START" || die "$ENGINE did not start"
+_wait_ready "$ENGINE" || die "$ENGINE was not ready within ${LOAD_TIMEOUT}s"
+_measure "$ENGINE" "$ENGINE" "$PROFILE" "$CAND_REC" || die "the $ENGINE measurement failed"
 
 echo "── back to llama.cpp"
 _restore
+_DIRTY=0
 
 rc=0
 python3 "$TOKPS" gate --engine "$ENGINE" --candidate "$CAND_REC" --baseline "$BASE_REC" \
-  --ratio 1.5 --out "$VERDICT" || rc=$?
+  --ratio "$RATIO" ${BIND_ARGS[@]+"${BIND_ARGS[@]}"} --out "$VERDICT" || rc=$?
 _ratio="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["ratio"], "pass" if d["pass"] else "fail")' "$VERDICT" 2>/dev/null || echo "? fail")"
 ob_engine_history_add "$ENGINE" gate "${_ratio%% *}x" "${_ratio##* }" "vs llama $SERVE, profile $PROFILE"
 if [[ $running -eq 1 ]]; then

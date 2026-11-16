@@ -16,7 +16,8 @@
     ["wrong_arith.sh", "^FAIL: (tests/run.sh fails on the committed tree|hidden case \\d+ mismatch$)"],
     ["wrong_amend.sh", "^FAIL: main must be exactly one new non-merge commit"],
     ["wrong_still_bisecting.sh", "^FAIL: a git bisect session is still in progress"],
-    ["wrong_uncommitted.sh", "^FAIL: no new commit on main$"]
+    ["wrong_uncommitted.sh", "^FAIL: no new commit on main$"],
+    ["wrong_promisor.sh", "^FAIL: the original history is gone"]
   ],
   "empty_expect": "^FAIL: no new commit on main$",
   "leak": ["leak.sh", "^FAIL: the commit message does not name the first bad commit"],

@@ -143,7 +143,11 @@ Hence:
 - Apple sources are `requires_ack = true`. The first sync **refuses** until
   the operator passes `--accept-terms`, and the acceptance is recorded in the
   mirror's manifest. That decision belongs to the operator. beast-docs makes
-  it explicit and does not make it silently.
+  it explicit and does not make it silently. The gate guards **every path
+  that writes a page into the mirror**: `live --save` refuses the same way
+  (before any request) and takes the same `--accept-terms`. Reading a page
+  live without saving it needs no acceptance, and the model-facing
+  `platform_docs` tool never saves.
 - Nothing mirrored is committed. The test fixtures are **synthetic**: our
   own text in the DocC / DevSite shapes.
 - `pack` exists so you can carry **your own** mirror to **your own** offline
@@ -219,7 +223,19 @@ results on the shipped file.
     selector language. It keeps the main content only and drops chrome:
     scripts, nav, buttons, `aria-hidden`, `hidden`, and `strip_selectors`.
     A custom element that wraps blocks (DevSite's `<devsite-code>` around
-    `<pre>`) is treated as a block, so code is not flattened.
+    `<pre>`) is treated as a block, so code is not flattened. The page is
+    parsed once for both the markdown and the link pass, "has a block
+    below it" is computed bottom-up in one pass, the tree walk is
+    iterative, and nesting past 120 levels is flattened, so a malformed page
+    nesting thousands of elements renders in linear time instead of hitting
+    Python's recursion limit. Omitted end tags close the way HTML says they
+    do (`<li>one<li>two` is two items; likewise `dt`/`dd`, `td`/`th`/`tr`,
+    and `p` before a block).
+  - **List items, both converters.** Every line of an item after the
+    bullet is indented by the bullet's width, each line of a multi-line
+    code block included, so a fence stays inside its item and code keeps
+    its relative indentation (Python from `blender-python` is
+    indentation-sensitive). Blank lines inside a code fence are kept.
   - The markdown adapter takes the site's own `.md.txt`. It reduces links to
     their text (it handles nested parentheses and link text that wraps
     across lines), drops `<br />` and the index pointer, and uses the page's
@@ -241,18 +257,43 @@ does a BFS over the source's scope.
   meaning "when these bytes arrived".
 - **Resumable.** The frontier is saved every 10 pages and on exit (^C, a
   dead network, the page budget), and the next sync resumes it. `--root`
-  jumps the queue without discarding the saved frontier.
+  jumps the queue without discarding the saved frontier. Nothing unfinished
+  is dropped on the way out:
+  - the page **in flight** when ^C lands goes back to the head of the queue;
+  - a **transient** failure (transport error, HTTP 5xx or 429) is counted
+    under `retry` and kept for the next sync; a permanent one (404, a page
+    that will not render) is counted under `errors` and dropped;
+  - an **unreachable robots.txt** (5xx, 429, transport) or **5 transient
+    failures in a row** is an outage, not a verdict: the sync **stops**
+    with exit code 6 and the whole queue intact, instead of draining it as
+    "refused" and calling the mirror complete;
+  - `complete` means the queue is empty, transient failures included.
+- **A deque, not a list.** The queue is a `collections.deque` with a
+  `queued` set beside `seen`, so a URL linked from a hundred pages is queued
+  once and a fresh re-walk of a large mirror is linear.
 - **Polite.**
   - One request at a time, `delay` seconds apart per host (default 1.0 s).
     A robots `Crawl-delay` wins when larger.
   - Our own User-Agent: `openbeast-docs/1.0 (…)`.
   - robots.txt follows RFC 9309: longest match wins and Allow wins ties,
     Google's `*` and `$` wildcards are supported, and a group naming our
-    token beats `*`. A 4xx robots.txt means no rules; **a 5xx or an
-    unreachable robots.txt means the whole host is refused**.
+    token beats `*`. A 4xx robots.txt (except 429) means no rules; **a 5xx,
+    a 429 or an unreachable robots.txt means the whole host is refused** —
+    and the sync stops with its queue kept (above).
 - **Scoped.**
   - A URL outside the source's `hosts` is never contacted, and that covers
-    redirects.
+    redirects. A `hosts` entry is a host **and port**: a bare
+    `developer.apple.com` admits only the scheme's default port (443/80), so
+    a link to `https://developer.apple.com:22/…` is out of scope. Name the
+    port to allow another one (`docs.corp:8443`). URLs with userinfo
+    (`https://developer.apple.com@evil/`) are refused.
+  - **One spelling is checked and requested.** Every URL is normalized
+    (`agents/docs/urls.py`) before the scope, deny-prefix and robots
+    decisions: unreserved percent-escapes are decoded (`%2e` → `.`) and dot
+    segments removed (RFC 3986 §5.2.4), and the fetcher sends that
+    normalized URL. `/docs/../secret` and `/docs/%2e%2e/secret` are judged
+    as `/secret`, which is what a server would serve for them. A URL with an
+    encoded slash or backslash has no unambiguous spelling and is refused.
   - Requests go through `agents/tools.py`'s `_Pinned*Handler`s and
     `_fetch_url_blocked`: resolve, vet every address, dial the vetted IP,
     re-vet each redirect hop. These are imported, not copied.
@@ -260,7 +301,9 @@ does a BFS over the source's scope.
   - `OPENBEAST_DOCS_ALLOW_PRIVATE=1` drops only the address vet. It exists
     for an intranet docs server, and for the tests.
 - **Offline-aware.** Under `OFFLINE=true`, parsed the way `conf.sh` and
-  `lang-library.sh` parse it, or in island mode
+  `lang-library.sh` parse it (an empty `OPENBEAST_OFFLINE=` counts as unset
+  and falls through to `openbeast.conf`, as `${OPENBEAST_OFFLINE:-…}` does),
+  or in island mode
   ([`BEAST_ISLAND.md`](BEAST_ISLAND.md)), sync refuses at once with exit
   code 3 and points to pack/unpack.
 
@@ -286,7 +329,10 @@ and the rig. It is probed at runtime rather than assumed, and
 `OPENBEAST_DOCS_NO_FTS=1` forces the fallback. Ranking works in three steps:
 
 - An **exact title match** comes first: asking for `NavigationStack` means
-  that page, not the guide that says the word forty times.
+  that page, not the guide that says the word forty times. Title and query
+  are compacted the same way (every non-word character dropped,
+  lower-cased), so method symbols match too:
+  `navigationDestination(for:destination:)` finds its own page.
 - Then **bm25**, weighted title 12 > camelCase-split title 6 > headings 3 >
   body 1. All terms are tried first, then any term.
 - A camelCase query matches both the joined token and its parts.
@@ -294,26 +340,63 @@ and the rig. It is probed at runtime rather than assumed, and
 Without FTS5, a plain table is scored in Python. A parametrized test checks
 that both backends put the same document first.
 
+**The index is derived, and it behaves like it:**
+
+- Beside the `docs` table sits an ordinary `ids` table (doc id → rowid,
+  source, compact title, B-tree indexed). FTS5 cannot index an `UNINDEXED`
+  column or an expression, so "replace this page" and "the page titled
+  exactly X" used to scan every row; now both are lookups, and `reindex` /
+  `unpack` are linear (they were quadratic: minutes at 11k pages).
+- **A search writes nothing.** It opens `index.sqlite` read-only, so a
+  mirror on a read-only mount, or owned by another user, searches fine.
+- **Switching search mode rebuilds, never empties.** An index built by the
+  other mode (FTS5 vs the scan: `OPENBEAST_DOCS_NO_FTS`, or a python whose
+  sqlite lacks FTS5) or by an older schema is refilled from the pages on
+  disk the first time it is opened, by a search or a sync. When the store
+  is not writable, the search says so and names `docs.sh reindex`; reading
+  by doc id keeps working.
+- **Readers parse a manifest once.** A big source's manifest is tens of MB
+  (every page keeps its outgoing links for sync). Search, read and live's
+  fallback share a small process-wide cache of parsed manifests keyed on
+  the file's inode, mtime and size, so a search with eight hits parses it
+  once rather than eight times, and a save (which replaces the file) is
+  seen at once. A doc id names its source, so `read swiftui:/…` consults
+  only that manifest, through a doc-id map instead of a page scan.
+
 Every hit prints title, doc id, URL, `fetched <date>, <n>d ago`, a
 `[DEPRECATED]` flag when the page carries one, and **STALE** past the
 source's refresh window.
 
 ### 3.6 Live mode and the offline fallback
 
-`docs.sh live <url | Symbol> [--source S] [--save]` fetches one page now,
+`docs.sh live <url | Symbol> [--source S] [--save [--accept-terms]]` fetches one page now,
 through the source's adapter.
 
-- **Resolving the argument.** A URL must fall inside a configured source.
-  For a bare symbol, an exact title in the mirror is tried first; failing
-  that, for a DocC source, the URL is guessed:
-  `View.navigationTitle(_:)` → `…/view/navigationtitle(_:)`.
+- **Resolving the argument.** `--source` takes one name or a
+  comma-separated list, as `search` does. A URL must fall inside a
+  configured source (inside one of the named ones, when `--source` is
+  given). For a bare symbol, an exact title in the mirror is tried first
+  (method symbols such as `init(_:)` included); failing that, the URL is
+  guessed for each DocC source in scope:
+  `View.navigationTitle(_:)` → `…/view/navigationtitle(_:)`. The guesses
+  are tried in order and only a **404** moves on to the next, so `UIView`
+  with no `--source` lands on `…/uikit/uiview` after `…/swiftui/uiview`
+  misses; an outage stops at the first. When every guess 404s, the answer
+  lists the URLs it tried.
 - **Offline, or when the fetch fails**, it **does not dial**. It serves the
   mirror copy, and the first line says so:
   `LIVE FETCH UNAVAILABLE (offline: ISLAND MODE (no internet route since …)).
   Serving the MIRROR copy instead — check its date below.`
 - If the page is not in the mirror either, live mode says that and returns
   the best mirror search hits for the reference.
-- `--save` writes the live result into the mirror.
+- **robots.txt once an hour, not once a call.** Live calls in one process
+  (the long-lived MCP server) share robots answers per origin for an hour
+  (RFC 9309 allows 24 h), so a live lookup is one request to the publisher,
+  not two. An *unreachable* robots.txt is never cached: the next call asks
+  again. Each `docs.sh live` is its own process and always asks.
+- `--save` writes the live result into the mirror. On a `requires_ack`
+  source it needs the terms accepted already, or `--accept-terms` on this
+  call, exactly as `sync` does (§2.3).
 
 ### 3.7 Carrying a mirror to an offline box
 
@@ -321,9 +404,17 @@ through the source's adapter.
   plus `BUNDLE.json`, which lists every file's sha256, and writes
   `<out>.sha256` beside the tarball.
 - **`unpack <tarball> [--sha256 H]`** works in this order:
-  1. Requires an expected hash, from the sidecar or `--sha256`, and checks
-     the tarball against it.
-  2. Refuses absolute paths, `..`, links and devices.
+  1. Requires an expected hash, from the sidecar or `--sha256`. Reads the
+     tarball **once**, into a private staging copy, hashing as it goes, and
+     checks that copy. Everything after works on the copy, so a tarball
+     rewritten or swapped after the check (a shared or removable volume, a
+     copy still in progress) is never the one installed.
+  2. Refuses absolute paths, `..`, links and devices, more than 500,000
+     members, and a total declared size past the cap
+     (`OPENBEAST_DOCS_UNPACK_MAX_BYTES`, default 8 GiB) or past the free
+     space under the store minus 256 MiB — all **before a byte is
+     written**, so a decompression bomb with a matching hash cannot fill
+     the disk.
   3. Extracts to a staging directory.
   4. Requires the member set to equal `BUNDLE.json` exactly, and re-hashes
      every file against it.
@@ -389,13 +480,19 @@ or Kotlin headroom before it can be shown to help.
 
 ## 6. Tests
 
-`tests/test_beast_docs.py` (33) and `tests/test_platform_docs_tool.py` (2)
+`tests/test_beast_docs.py` (65) and `tests/test_platform_docs_tool.py` (2)
 are hermetic. A stub HTTP server on 127.0.0.1 serves synthetic fixtures
 from `tests/fixtures/beast_docs/`. They pin:
 
 - **Adapters**: golden markdown for a DocC symbol, a deprecated DocC symbol,
   a DevSite-shaped HTML page and a `.md.txt` page, plus URL mapping,
-  `llms.txt` parsing and sitemap parsing.
+  `llms.txt` parsing and sitemap parsing. DocC JSON of the wrong shape
+  (`[]`, `null`, a string heading level, lists of strings where dicts
+  belong) renders or refuses cleanly; 5,000-deep HTML nesting renders in
+  well under the time limit; an unrenderable page during sync is one
+  error, not an aborted crawl. A multi-line code block inside an HTML
+  `<li>` and inside a DocC list item keeps its indentation and blank lines;
+  omitted `</li>`, `</td>`, `</tr>`, `</dd>` and `</p>` close implicitly.
 - **Incremental sync**:
   - an unchanged ETag is a **304 with no rewrite**: the page files'
     mtimes are unchanged and `fetched_at` is preserved;
@@ -405,25 +502,48 @@ from `tests/fixtures/beast_docs/`. They pin:
   - an interrupted sync **resumes**.
 - **Politeness and scope**:
   - robots refusal by page URL, with the page never requested;
-  - a robots 5xx refuses the whole host; a robots 404 means allowed;
+  - a robots 5xx refuses the whole host and stops the sync with its queue
+    kept; a robots 404 means allowed;
   - the robots parser handles wildcards, longest match and agent groups;
   - a redirect off the source's hosts is refused;
   - a private address is refused without the opt-in;
-  - the `--accept-terms` gate holds.
+  - the `--accept-terms` gate holds, for `sync` and for `live --save`.
 - **Search**: exact title first, camelCase handling, the source filter,
-  deprecation flags, and FTS5 agreeing with the scan.
+  deprecation flags, and FTS5 agreeing with the scan (and each run checked
+  to really use its backend). A mode flip, in either direction and by a
+  sync, rebuilds the index; an old-schema index is rebuilt on first search;
+  a read-only store searches without writing; method symbols match their
+  exact title; replacing a page and the exact-title step cost the same
+  SQLite work at 3,000 rows as at 300; a search parses each manifest at
+  most once, a repeat parses none, and a save is seen by the next reader.
 - **Status**: STALE flags.
 - **Live, offline and island**: live goes through the adapter, including a
-  guessed symbol URL and `--save`. Under `OFFLINE=true`, and under a
+  guessed symbol URL and `--save`; three live calls fetch robots.txt once,
+  and a robots outage is not remembered. A comma-separated `--source`, an
+  unknown one, a URL outside the named source, a UIKit symbol guessed past
+  SwiftUI, every guess 404ing, and an outage that does not walk the
+  guesses. Under `OFFLINE=true`, and under a
   monkeypatched island state, sync refuses and live serves the mirror
   **with zero requests made**. A live miss with no mirror copy says so.
 - **Bundles**: the pack → unpack round trip on an "offline" store, and
   refusals for a wrong hash, a tampered member inside a re-hashed tarball,
-  and a `../` member. A refusal installs nothing.
-- **CLI**: `docs.sh` end to end, including exit codes 0/1/2/3.
+  and a `../` member. A refusal installs nothing. A tarball swapped for
+  another self-consistent bundle right after the hash check is not what
+  gets installed; a bundle expanding past the cap, or with too many
+  members, is refused with nothing written.
+- **CLI**: `docs.sh` end to end, including exit codes 0/1/2/3. Exit code 6
+  is a sync stopped by an outage; its queue is saved.
+- **Outages**: a robots.txt 5xx on a first sync and after a partial sync
+  keeps the queue byte for byte and `sync_complete` false; a page 5xx is
+  retried by the next sync while a 404 is dropped; ^C keeps the page in
+  flight; repeated transport failures stop the sync with the queue intact;
+  a fresh re-walk of a 3,000-page, 100-links-per-page mirror is linear.
 - **Config**: the shipped `sources.toml` is valid and every source states a
   licence; the TOML subset parser matches `tomllib` and refuses everything
-  else.
+  else. The parity test needs `tomllib` (3.11+), so a second test pins the
+  subset parser against a hand-written expected result and runs on every
+  interpreter, 3.9 included (`tests/run_tests.sh` uses the system
+  `python3`).
 - **Tool**: `platform_docs` (search, read, status, live, input clip,
   admin-only), and its absence from `agents/tools.py` and `agents/runner.py`.
 
@@ -464,7 +584,11 @@ BEAST_DOCS_UPDATE_GOLDEN=1 python3 -m pytest tests/test_beast_docs.py -q   # acc
   and `llms.txt` are not documented contracts. The golden tests catch
   rendering regressions, but not upstream changes. The adapters already
   render unknown DocC block types by recursing into `content` /
-  `inlineContent`.
+  `inlineContent`, check every container's type instead of assuming it
+  (a list where a dict was expected renders as nothing), and `render()`
+  turns anything an adapter trips over into a per-page error: one page of
+  drifted JSON, or pathological HTML, is counted under `errors` and the
+  crawl moves on instead of ending with a traceback.
 - **Bounded crawls are breadth-first from the roots.** A full SwiftUI mirror
   is several thousand pages, roughly 1–2 hours at 1 req/s. Apple's
   `tutorials/data/index/<framework>` endpoint would give a complete page list

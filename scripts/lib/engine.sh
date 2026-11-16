@@ -100,6 +100,17 @@ ob_engine_host_class() {
   printf 'rig\n'
 }
 
+# ob_engine_host_class_pin — detect the host class once and pin it in
+# OB_ENGINE_HOST_CLASS (exported) for the rest of this process and its
+# children. Detection is ob_detect_gpu (three nvidia-smi runs, ~120 ms on a
+# GB10), and callers ask through $(...), where a memo would be lost, several
+# times per command (list, status, use maya's profile checks, the launch
+# --print). Call it from a script's top level, never from inside $(...).
+ob_engine_host_class_pin() {
+  [[ -n "${OB_ENGINE_HOST_CLASS:-}" ]] || OB_ENGINE_HOST_CLASS="$(ob_engine_host_class)"
+  export OB_ENGINE_HOST_CLASS
+}
+
 # ob_engine_arch — x86_64 | aarch64 (OB_ENGINE_ARCH overrides).
 ob_engine_arch() {
   local m="${OB_ENGINE_ARCH:-$(uname -m 2>/dev/null)}"
@@ -163,15 +174,28 @@ ob_engine_conf_backup() {
 # ob_engine_file_set <file> <key> <value> — replace every assignment of KEY with
 # one (at the first one's place), or append. Comments stay. Atomic, keeps
 # the file's mode (a new file is 0600: it can hold keys).
+# One key, one line: a KEY that is not a shell-style name, or a VALUE with a
+# CR or LF in it, is refused (return 2, the file untouched). Values reach
+# here from install results whose text came from a staged MANIFEST; a line
+# break in one would write extra KEY=VALUE lines (BIND_HOST=0.0.0.0, …) that
+# conf.sh's last-assignment-wins then obeys. The line reaches awk through
+# ENVIRON, never `-v`: -v expands backslash escapes, so a literal `\n` in
+# the value became a real newline there.
 ob_engine_file_set() {
   local f="$1" key="$2" val="$3" tmp
+  if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+    echo "refusing to write '$key' to $f: not a KEY name" >&2; return 2
+  fi
+  if [[ "$val" == *$'\n'* || "$val" == *$'\r'* ]]; then
+    echo "refusing to write $key to $f: its value has a line break in it" >&2; return 2
+  fi
   tmp="$(mktemp "${f}.engXXXXXX")"
   if [[ -f "$f" ]]; then
     chmod --reference="$f" "$tmp" 2>/dev/null || chmod 600 "$tmp"
-    awk -v k="$key" -v line="$key=$val" '
-      $0 ~ "^[[:space:]]*" k "[[:space:]]*=" { if (!done) { print line; done = 1 } ; next }
+    _OB_FS_KEY="$key" _OB_FS_LINE="$key=$val" awk '
+      $0 ~ "^[[:space:]]*" ENVIRON["_OB_FS_KEY"] "[[:space:]]*=" { if (!done) { print ENVIRON["_OB_FS_LINE"]; done = 1 } ; next }
       { print }
-      END { if (!done) print line }' "$f" > "$tmp"
+      END { if (!done) print ENVIRON["_OB_FS_LINE"] }' "$f" > "$tmp"
   else
     chmod 600 "$tmp"
     printf '%s=%s\n' "$key" "$val" > "$tmp"
@@ -230,10 +254,26 @@ ob_engine_history() {
 # (llama) is written by the adapter. Either way, one history line.
 ob_engine_pin_set() {
   local e="$1" v="$2" r="$3" a="$4" n="${5:-}"
+  ob_engine_pin_valid "$v" "$r" || return 2
   if ! ob_engine_has "$e" pin; then
-    ob_engine_conf_set "$(ob_engine_pin_key "$e")" "$v@$r"
+    ob_engine_conf_set "$(ob_engine_pin_key "$e")" "$v@$r" || return 2
   fi
-  ob_engine_history_add "$e" "$a" "$v" "$r" "$n"
+  ob_engine_history_add "$e" "$a" "$v" "$r" "${n//[$'\t\r\n']/ }"
+}
+
+# ob_engine_pin_valid <version> <ref> — the shape every pin has: a version
+# name (v1.1.65, b8000, 1.2.9, v0.33.0, a 12-hex llama.cpp commit) and an
+# immutable ref (40-hex commit, sha256:<64-hex>). Both end up in
+# openbeast.conf, spark.env and history.tsv, and the version names a
+# directory, so anything else — a newline, a `/`, `..` — is refused with
+# the reason, whoever produced it (an adapter, or a MANIFEST it read).
+ob_engine_pin_valid() {
+  if [[ ! "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$ ]]; then
+    echo "refusing to pin version '$1': not a version name ([A-Za-z0-9._+-], at most 64)" >&2; return 1
+  fi
+  if [[ ! "$2" =~ ^([0-9a-f]{40}|sha256:[0-9a-f]{64})$ ]]; then
+    echo "refusing to pin ref '$2': not a 40-hex commit or sha256:<64-hex>" >&2; return 1
+  fi
 }
 
 # ob_engine_prev_pin <engine> — the pin before the current one: walking the
@@ -328,39 +368,87 @@ ob_engine_url_hostport() {
   printf '%s %s\n' "$h" "$p"
 }
 
+# ob_engine_keyless_open <url> — 0 when a managed engine launched for <url>
+# would serve keyless inference on a non-loopback address without the
+# operator's ALLOW_OPEN_INFERENCE=true: serve.sh's refusal for llama-server,
+# for the engines engine-serve.sh launches. Every route to anyone on that
+# network, past beast-gate's per-device keys, caps and audit. Needs conf.sh
+# (ob_bind_is_loopback, LLAMA_API_KEY, ALLOW_OPEN_INFERENCE).
+ob_engine_keyless_open() {
+  local host
+  read -r host _ < <(ob_engine_url_hostport "$1")
+  ! ob_bind_is_loopback "$host" && [[ -z "${LLAMA_API_KEY:-}" && "${ALLOW_OPEN_INFERENCE:-false}" != true ]]
+}
+
 # ── The engine gate (docs/WEIGHT_STREAMING.md "The engine gate") ──────────
 # A single-author engine (Project Maya) is admitted only after it measured
-# at least 1.5 times llama.cpp's decode tok/s on THIS (ENGINE_GATE_RATIO may
-# raise that, never lower it)
-# rig, same weights, same prompt: scripts/engine-gate.sh runs both and writes
+# at least 1.5 times llama.cpp's decode tok/s on THIS rig, same weights, same
+# prompt (ob_engine_gate_ratio may raise that bar, never lower it):
+# scripts/engine-gate.sh runs both and writes
 # $OB_ENGINE_STATE_DIR/gate/<engine>.json (scripts/tokps.py gate).
 # OPENBEAST_ENGINE_GATE=measuring lets engine-gate.sh itself launch the
 # candidate before a verdict exists; nothing else sets it.
+#
+# A verdict admits exactly what was measured. It records the host and the
+# adapter's binding (eng_<e>_gate_binding <profile>: for Maya the installed
+# commit, the profile and its GGUF), and ob_engine_gate_ok compares them
+# with what is about to run: a new Maya commit, another profile or other
+# weights is unmeasured, so it is gated again until engine-gate.sh re-runs.
 ob_engine_gate_file() { printf '%s/gate/%s.json\n' "$OB_ENGINE_STATE_DIR" "$1"; }
 
-# ob_engine_gate_ok <engine> — 0 when a passing verdict is on file (or the
-# gate run itself is measuring). Prints why not on stderr.
+# ob_engine_gate_ratio — the bar: ENGINE_GATE_RATIO from the environment
+# (OPENBEAST_ENGINE_GATE_RATIO, which start.sh -d forwards, or the bare name)
+# or openbeast.conf, never below 1.5. One value for the gate run, `use` and
+# the daemon's launch, so a raised bar cannot print PASS and then refuse.
+ob_engine_gate_ratio() {
+  local r="${OPENBEAST_ENGINE_GATE_RATIO:-${ENGINE_GATE_RATIO:-$(ob_engine_conf_get ENGINE_GATE_RATIO)}}"
+  awk -v r="$r" 'BEGIN { if (r !~ /^[0-9]+(\.[0-9]+)?$/ || r + 0 < 1.5) r = 1.5; print r + 0 }'
+}
+
+# ob_engine_gate_binding <engine> [profile] — KEY=VALUE lines naming what a
+# verdict for this engine + profile must have measured. Empty when the
+# adapter defines no eng_<e>_gate_binding (or no profile is given); 1 when
+# the adapter cannot say (an invalid profile).
+ob_engine_gate_binding() {
+  [[ -n "${2:-}" ]] || return 0
+  ob_engine_has "$1" gate_binding || return 0
+  ob_engine_call "$1" gate_binding "$2"
+}
+
+# ob_engine_gate_ok <engine> [profile] — 0 when a passing verdict is on file
+# for this host and, given a profile, for what it binds (or the gate run
+# itself is measuring). Prints why not on stderr.
 ob_engine_gate_ok() {
-  local e="$1" f out
+  local e="$1" prof="${2:-}" f out need bind
   [[ "${OPENBEAST_ENGINE_GATE:-}" == measuring ]] && return 0
   f="$(ob_engine_gate_file "$e")"
+  need="$(ob_engine_gate_ratio)"
   if [[ ! -f "$f" ]]; then
-    echo "$e is gated: no measurement on file ($f). It must decode >= ${ENGINE_GATE_RATIO:-1.5}x llama.cpp's tok/s on this rig first: scripts/engine-gate.sh $e --profile NAME --serve-script serve-<same weights>.sh (docs/WEIGHT_STREAMING.md)" >&2
+    echo "$e is gated: no measurement on file ($f). It must decode >= ${need}x llama.cpp's tok/s on this rig first: scripts/engine-gate.sh $e --profile NAME --serve-script serve-<same weights>.sh (docs/WEIGHT_STREAMING.md)" >&2
     return 1
   fi
+  bind="$(ob_engine_gate_binding "$e" "$prof")" || {
+    echo "$e is gated: cannot tell what profile '$prof' would run (above)" >&2; return 1; }
   out="$(python3 -c '
-import json, sys
+import json, platform, sys
 d = json.load(open(sys.argv[1]))
-try:
-    need = max(1.5, float(sys.argv[3]))   # ENGINE_GATE_RATIO may raise the bar, never lower it
-except ValueError:
-    need = 1.5
-ok = d.get("schema") == "openbeast-engine-gate/1" and d.get("engine") == sys.argv[2] and d.get("pass") is True \
-     and float(d.get("ratio") or 0) >= need
+need = float(sys.argv[3])
+why = []
+if not (d.get("schema") == "openbeast-engine-gate/1" and d.get("engine") == sys.argv[2]):
+    why.append("not a verdict for " + sys.argv[2])
+if d.get("host") != platform.node():
+    why.append("measured on %r, this is %r" % (d.get("host"), platform.node()))
+bound = d.get("bound") if isinstance(d.get("bound"), dict) else {}
+for kv in filter(None, sys.argv[4].split("\n")):
+    k, _, v = kv.partition("=")
+    if bound.get(k) != v:
+        why.append("measured %s %s, this would run %s" % (k, bound.get(k) or "(not recorded)", v))
+ok = not why and d.get("pass") is True and float(d.get("ratio") or 0) >= need
 print(("PASS " if ok else "FAIL ") + "%sx (needs %sx), %s vs %s tok/s, %s" % (
-    d.get("ratio"), need, d.get("candidate_tps"), d.get("baseline_tps"), d.get("time")))
-sys.exit(0 if ok else 1)' "$f" "$e" "${ENGINE_GATE_RATIO:-1.5}" 2>&1)" && return 0
-  echo "$e is gated and its last measurement did not clear it: ${out:-unreadable $f}. Re-measure: scripts/engine-gate.sh $e ..." >&2
+    d.get("ratio"), need, d.get("candidate_tps"), d.get("baseline_tps"), d.get("time"))
+    + ("; " + "; ".join(why) if why else ""))
+sys.exit(0 if ok else 1)' "$f" "$e" "$need" "$bind" 2>&1)" && return 0
+  echo "$e is gated and its last measurement does not admit this: ${out:-unreadable $f}. Re-measure: scripts/engine-gate.sh $e --profile ${prof:-NAME} ..." >&2
   return 1
 }
 

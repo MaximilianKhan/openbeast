@@ -64,9 +64,18 @@ def _scheme(host: str) -> str:
     return "http" if h in ("127.0.0.1", "localhost", "::1") else "https"
 
 
+def _host_of(url: str) -> str:
+    return re.sub(r"^\w+://([^/]+)(/.*)?$", r"\1", url)
+
+
 class Registry:
     """A pull client for one repository. Anonymous bearer tokens only; the
-    token is never printed and never follows a redirect (net._req)."""
+    token is never printed and never follows a redirect (net._req).
+
+    A token is reused for every later request to its host (no wasted 401
+    round trip per manifest), and a 401 that comes back WITH a token means
+    it expired — Docker Hub's anonymous ones last 300 s, far less than a
+    multi-GB pull — so the challenge is answered again for a fresh one."""
 
     def __init__(self, image: str):
         self.host, self.repo = split_image(image)
@@ -86,24 +95,27 @@ class Registry:
             q.append("service=" + quote(params["service"], safe=""))
         q.append("scope=" + quote(params.get("scope") or f"repository:{self.repo}:pull", safe=":/"))
         data, _ = net.get_bytes(realm + ("&" if "?" in realm else "?") + "&".join(q), limit=1 << 20)
-        j = json.loads(data)
-        tok = j.get("token") or j.get("access_token")
+        try:
+            j = json.loads(data)
+            tok = j.get("token") or j.get("access_token")
+        except (ValueError, AttributeError):
+            raise OciError(f"{self.host}: the token endpoint did not answer JSON") from None
         return f"Bearer {tok}" if tok else None
 
     def _open(self, url: str, method: str = "GET", accept: str = ""):
         headers = {"Accept": accept} if accept else {}
-        target, tok = url, None
+        target, tok = url, self.tokens.get(_host_of(url))
         for _ in range(3):
             try:
                 return net.open_url(target, method, headers=headers, token=tok)
             except net.HTTPFailure as e:
                 if e.status != 401:
                     raise
-                host = re.sub(r"^\w+://([^/]+)/.*$", r"\1", e.final_url)
-                tok = self.tokens.get(host) or self._token_for(e.headers.get("www-authenticate", ""))
+                # never resend the token that was just refused: answer the challenge again
+                tok = self._token_for(e.headers.get("www-authenticate", ""))
                 if not tok:
                     raise
-                self.tokens[host] = tok
+                self.tokens[_host_of(e.final_url)] = tok
                 target = e.final_url
         raise OciError(f"registry auth loop for {url}")
 
@@ -131,14 +143,22 @@ class Registry:
         if want and got != want:
             raise OciError(f"{self.repo}@{want}: the registry served a manifest whose digest is {got} — refused")
         if not mt:
-            mt = json.loads(body).get("mediaType", "")
+            mt = _json(body, f"{self.repo}@{ref}").get("mediaType", "")
         return body, mt
 
     def blob(self, digest: str, dest: str, size: int = 0) -> None:
         if os.path.isfile(dest) and _file_digest(dest) == digest:
             return
-        part = net.download(f"{self.base}/blobs/{digest}", dest, size=size, quiet=True,
-                            token=self._blob_token())
+        url = f"{self.base}/blobs/{digest}"
+        try:
+            part = net.download(url, dest, size=size, quiet=True, token=self._blob_token())
+        except net.HTTPFailure as e:
+            # the token expired mid-pull: get a fresh one and resume the .part
+            fresh = self._token_for(e.headers.get("www-authenticate", "")) if e.status == 401 else None
+            if not fresh:
+                raise
+            self.tokens[self.host] = fresh
+            part = net.download(url, dest, size=size, quiet=True, token=fresh)
         got = _file_digest(part)
         if got != digest:
             os.remove(part)
@@ -155,6 +175,18 @@ class Registry:
         except net.HTTPFailure:
             pass
         return self.tokens.get(self.host)
+
+
+def _json(body: bytes, what: str) -> dict:
+    """A registry that answers an HTML error page with 200 is an OciError for
+    that image, not a traceback that ends the whole fetch."""
+    try:
+        doc = json.loads(body)
+    except ValueError:
+        raise OciError(f"{what}: the registry did not answer JSON") from None
+    if not isinstance(doc, dict):
+        raise OciError(f"{what}: not a JSON object")
+    return doc
 
 
 def _file_digest(path: str) -> str:
@@ -188,21 +220,21 @@ def describe(image: str, ref: str, platforms: List[str]) -> dict:
     reg = Registry(image)
     digest, mt = reg.resolve(ref)
     body, mt = reg.manifest(digest)
-    doc = json.loads(body)
+    doc = _json(body, f"{image}@{digest}")
     mt = mt or doc.get("mediaType", "")
     sizes: Dict[str, int] = {}
     if mt in INDEX_TYPES or "manifests" in doc:
         kids = select_children(doc, platforms)
         for pl, d in kids.items():
             mb, _ = reg.manifest(d["digest"])
-            m = json.loads(mb)
+            m = _json(mb, f"{image}@{d['digest']}")
             sizes[pl] = len(mb) + m["config"]["size"] + sum(l["size"] for l in m.get("layers", []))
         missing = [p for p in platforms if p not in kids]
     else:
         # A single-platform manifest: which platform it is lives in the config.
         n = len(body) + doc["config"]["size"] + sum(l["size"] for l in doc.get("layers", []))
         with reg._open(f"{reg.base}/blobs/{doc['config']['digest']}") as r:
-            cfg = json.loads(r.read(4 << 20))
+            cfg = _json(r.read(4 << 20), f"{image} config")
         if not isinstance(cfg, dict) or "architecture" not in cfg:   # an artifact (a DB), not an image
             sizes, missing = {p: n for p in platforms}, []
         else:
@@ -231,7 +263,7 @@ def pull(image: str, tag: str, digest: str, platforms: List[str], dest_tar: str,
 
     top, mt = reg.manifest(digest, want_digest=digest)
     keep(digest, top)
-    doc = json.loads(top)
+    doc = _json(top, f"{image}@{digest}")
     mt = mt or doc.get("mediaType", "")
     kept: Dict[str, Tuple[str, dict, int]] = {}
     if mt in INDEX_TYPES or "manifests" in doc:
@@ -242,7 +274,7 @@ def pull(image: str, tag: str, digest: str, platforms: List[str], dest_tar: str,
         for pl, d in kids.items():
             mb, _ = reg.manifest(d["digest"], want_digest=d["digest"])
             keep(d["digest"], mb)
-            kept[pl] = (d["digest"], json.loads(mb), len(mb))
+            kept[pl] = (d["digest"], _json(mb, f"{image}@{d['digest']}"), len(mb))
     else:
         kept[platforms[0] if platforms else "linux/amd64"] = (digest, doc, len(top))
     for pl, (mdig, m, _n) in kept.items():
@@ -412,13 +444,18 @@ def push(arc: OciArchive, registry: str, repo: str, tag: str, log=print) -> dict
         if loc.startswith("/"):
             loc = f"{scheme}://{host}{loc}"
         sep = "&" if "?" in loc else "?"
-        data = arc.blob(dig)
+        # Streamed straight out of the archive with an explicit length: a
+        # CUDA image has single layers of several GB, and reading one into
+        # memory first made peak RSS the size of the largest layer.
+        size = arc.member(dig).size
         req = net._req(f"{loc}{sep}digest={dig}", "PUT", {"Content-Type": "application/octet-stream"})
-        req.data = data
-        try:
-            net.urllib.request.urlopen(req, timeout=net.TIMEOUT).close()
-        except net.urllib.error.HTTPError as e:
-            raise OciError(f"push {repo} blob {dig[:19]}: HTTP {e.code}") from None
+        with arc.open_blob(dig) as body:
+            req.data = body                       # (setting data drops Content-Length: add it after)
+            req.add_header("Content-Length", str(size))
+            try:
+                net.urllib.request.urlopen(req, timeout=net.TIMEOUT).close()
+            except net.urllib.error.HTTPError as e:
+                raise OciError(f"push {repo} blob {dig[:19]}: HTTP {e.code}") from None
 
     def put_manifest(ref: str, body: bytes, mt: str) -> int:
         req = net._req(f"{base}/manifests/{ref}", "PUT", {"Content-Type": mt})
@@ -440,7 +477,10 @@ def push(arc: OciArchive, registry: str, repo: str, tag: str, log=print) -> dict
     top = arc.blob(arc.digest)
     if "manifests" not in json.loads(top):
         code = put_manifest(tag, top, arc.media_type)
-        return {"tag": tag, "index": arc.digest, "reduced": False, "code": code}
+        if code:
+            raise OciError(f"push {repo}:{tag}: the registry refused the tag (HTTP {code}); "
+                           f"the content is there by digest {arc.digest[:19]}, the tag is not")
+        return {"tag": tag, "index": arc.digest, "reduced": False, "code": 0}
     code = put_manifest(tag, top, arc.media_type)
     if not code:
         return {"tag": tag, "index": arc.digest, "reduced": False, "code": 0}

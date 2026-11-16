@@ -455,9 +455,8 @@ class TestRemoteBackends(unittest.TestCase):
         self.assertIsNone(out["slots"]["total"])
 
     def test_key_sent_to_vllm_and_tensorfold(self):
-        # The real _get, with urlopen captured: vLLM (--api-key) and native
+        # The real _get, with its opener captured: vLLM (--api-key) and native
         # TensorFold (--api-key-file) both guard /v1, so both get the key.
-        import urllib.request as ur
         dashboard._get = self._saved[0]
         dashboard._API_KEY = "k-secret"
         seen = []
@@ -474,8 +473,15 @@ class TestRemoteBackends(unittest.TestCase):
             def __exit__(self, *a):
                 return False
 
-        real = ur.urlopen
-        ur.urlopen = lambda req, timeout=2: (seen.append(req.get_header("Authorization")), R())[1]
+        class Opener:
+            def open(self, req, timeout=2):
+                seen.append(req.get_header("Authorization"))
+                # never on a redirect: the key is an unredirected header
+                assert "Authorization" not in req.headers
+                return R()
+
+        real = dashboard._OPENER
+        dashboard._OPENER = Opener()
         try:
             for backend, want in (("tensorfold", "Bearer k-secret"), ("vllm", "Bearer k-secret")):
                 seen.clear()
@@ -483,7 +489,7 @@ class TestRemoteBackends(unittest.TestCase):
                 dashboard._get("http://10.0.0.5:8000/v1/models", auth=True)
                 self.assertEqual(seen, [want], backend)
         finally:
-            ur.urlopen = real
+            dashboard._OPENER = real
 
     def test_llama_backend_has_no_backend_field(self):
         # The llama answer stays byte-identical: no `backend`, no kv_usage.
@@ -635,6 +641,48 @@ class TestEdgeAuthMode(unittest.TestCase):
 
     def test_gate_without_anon_is_device(self):
         self.assertEqual(self._auth(False), "device")
+
+    def _admission(self, **env):
+        keys = ("OPENBEAST_EDGE_MAX_INFLIGHT", "OPENBEAST_INFERENCE_SLOTS", "OPENBEAST_EDGE_RATE_LIMIT")
+        saved = {k: os.environ.get(k) for k in keys}
+        try:
+            for k in keys:
+                os.environ.pop(k, None)
+            os.environ.update(env)
+            dashboard._EDGE_ANON = False
+            return dashboard.slot_status().get("admission")
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def test_admission_published_with_the_gate(self):
+        # Review 2026-11-16: slots.total said 4 on the Spark pair while the
+        # gate admitted 2 per device; clients learned it only from 429s.
+        self.assertEqual(self._admission(OPENBEAST_INFERENCE_SLOTS="4"),
+                         {"per_device_inflight": 4, "per_device_rate_per_min": 120})
+        self.assertEqual(self._admission(OPENBEAST_INFERENCE_SLOTS="4", OPENBEAST_EDGE_MAX_INFLIGHT="3",
+                                         OPENBEAST_EDGE_RATE_LIMIT="60"),
+                         {"per_device_inflight": 3, "per_device_rate_per_min": 60})
+        self.assertEqual(self._admission()["per_device_inflight"], 2)
+
+    def test_admission_matches_the_gate_rule(self):
+        sys.path.insert(0, os.path.join(REPO, "agents"))
+        try:
+            import edge
+        except ImportError as e:                          # the gate's deps are not installed here
+            self.skipTest(f"agents/edge.py not importable: {e}")
+        for env in ({}, {"OPENBEAST_INFERENCE_SLOTS": "4"}, {"OPENBEAST_EDGE_MAX_INFLIGHT": "1"},
+                    {"OPENBEAST_EDGE_MAX_INFLIGHT": "6", "OPENBEAST_INFERENCE_SLOTS": "4"},
+                    {"OPENBEAST_INFERENCE_SLOTS": "0"}):
+            self.assertEqual(self._admission(**env)["per_device_inflight"],
+                             edge.default_max_inflight(env), env)
+
+    def test_no_admission_field_with_the_gate_off(self):
+        dashboard._EDGE_GATE = False
+        self.assertNotIn("admission", dashboard.slot_status())
 
 
 class TestServicesInstinct(unittest.TestCase):

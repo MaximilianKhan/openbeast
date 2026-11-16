@@ -40,7 +40,8 @@ Env (resolved from openbeast.conf by scripts/lib/conf.sh):
   OPENBEAST_LLAMA_UPSTREAM     real llama-server (default http://127.0.0.1:8080)
   OPENBEAST_API_KEY            upstream key, if llama-server runs --api-key
   OPENBEAST_EDGE_RATE_LIMIT    requests/minute per device (default 120)
-  OPENBEAST_EDGE_MAX_INFLIGHT  concurrent generations per device (default 2);
+  OPENBEAST_EDGE_MAX_INFLIGHT  concurrent generations per device (default:
+                               OPENBEAST_INFERENCE_SLOTS when set, else 2);
                                a prompt array or n>1 counts prompts x n
   OPENBEAST_EDGE_MAX_BODY      largest request body accepted, in bytes (default
                                8 MiB — see MAX_BODY_BYTES)
@@ -111,6 +112,18 @@ MAX_BODY_BYTES = int(os.environ.get("OPENBEAST_EDGE_MAX_BODY", str(8 * 1024 * 10
 # Bodies above this are sanitized in a worker thread (see gate()); below it
 # the thread hop costs more than the parse (worst case ~1.5 ms inline).
 _SANITIZE_INLINE_BYTES = 16 * 1024
+# One threaded (big-body) sanitize at a time — see gate(). Created lazily
+# per event loop: an asyncio.Semaphore binds to the loop that first waits on
+# it, and the gate's loop is not running at import time.
+_big_sanitize: tuple[object, asyncio.Semaphore] | None = None
+
+
+def _big_sanitize_gate() -> asyncio.Semaphore:
+    global _big_sanitize
+    loop = asyncio.get_running_loop()
+    if _big_sanitize is None or _big_sanitize[0] is not loop:
+        _big_sanitize = (loop, asyncio.Semaphore(1))
+    return _big_sanitize[1]
 
 PORT = int(os.environ.get("OPENBEAST_EDGE_PORT", "8090"))
 BIND = os.environ.get("OPENBEAST_BIND", "127.0.0.1").strip() or "127.0.0.1"
@@ -118,7 +131,26 @@ UPSTREAM = os.environ.get(
     "OPENBEAST_LLAMA_UPSTREAM", "http://127.0.0.1:8080").rstrip("/")
 _UPSTREAM_KEY = os.environ.get("OPENBEAST_API_KEY", "").strip()
 RATE_LIMIT = int(os.environ.get("OPENBEAST_EDGE_RATE_LIMIT", "120"))
-MAX_INFLIGHT = int(os.environ.get("OPENBEAST_EDGE_MAX_INFLIGHT", "2"))
+
+
+def default_max_inflight(env=os.environ) -> int:
+    """The per-device generation cap. EDGE_MAX_INFLIGHT when set; otherwise
+    INFERENCE_SLOTS, the concurrency the model server was launched with, so a
+    single device can use every stream the server has; otherwise 2. Review
+    2026-11-16: the Spark pair serves 4 streams (INFERENCE_SLOTS=4) while the
+    gate admitted 2 per device, and a Mac running 3-4 agents got 429s with
+    streams idle. extensions/dashboard publishes the same number in
+    /api/slot (admission.per_device_inflight)."""
+    raw = env.get("OPENBEAST_EDGE_MAX_INFLIGHT", "").strip()
+    if raw:
+        return int(raw)
+    slots = env.get("OPENBEAST_INFERENCE_SLOTS", "").strip()
+    if slots.isdigit() and int(slots) > 0:
+        return int(slots)
+    return 2
+
+
+MAX_INFLIGHT = default_max_inflight()
 ALLOW_ANON = os.environ.get(
     "OPENBEAST_EDGE_ALLOW_ANON", "false").strip().lower() == "true"
 ALLOW_MEDIA_URLS = os.environ.get(
@@ -714,6 +746,15 @@ def _json_too_deep(raw: bytes, limit: int = MAX_JSON_DEPTH) -> bool:
     first bracket past the cap, so a hostile body costs O(limit) to refuse.
     A malformed body can only miscount here; json.loads still rejects it.
     """
+    # Fast path: nesting can never exceed the number of opening brackets in
+    # the body (a bracket inside a string only over-counts, the safe way).
+    # bytes.count is a C scan with no per-token work, and it spares the
+    # common big body — one long prompt or inline base64 media — the regex
+    # match over a single multi-MiB string token, a C call that holds the GIL
+    # (42 ms for 7 MiB) and so stalls the event loop even from a worker
+    # thread (2026-11-16 review).
+    if raw.count(b"[") + raw.count(b"{") <= limit:
+        return False
     depth = 0
     for m in _JSON_TOKEN.finditer(raw):
         c = m.group()
@@ -829,8 +870,41 @@ def _sanitize_body(raw: bytes, device: dict,
         opts = dict(opts) if isinstance(opts, dict) else {}
         opts["include_usage"] = True
         body["stream_options"] = opts
-    return (json.dumps(body).encode(), body.get("model"), streaming,
+    return (_encode_body(body), _audit_model(body.get("model")), streaming,
             _generations(body, path))
+
+
+# What the audit row records as "model". The field is client-supplied and
+# written into EVERY row, refused requests included (the fan-out 400 runs
+# before anything reaches upstream), so an unbounded value let one enrolled
+# device append ~7 MiB of audit per request at no GPU cost — ~880 MiB a
+# minute at the default rate limit, faster than the daily logrotate.
+# Bounded like the claimed user header; a non-string is not a model name.
+# Only the audit copy is cut: upstream still receives the body as sent.
+_AUDIT_MODEL_CHARS = 128
+
+
+def _audit_model(model) -> str | None:
+    if not isinstance(model, str):
+        return None
+    return model[:_AUDIT_MODEL_CHARS] or None
+
+
+def _encode_body(body: dict) -> bytes:
+    """Re-serialize the sanitized body as UTF-8, the way it arrived.
+
+    json.dumps' default ensure_ascii=True turns every non-ASCII character
+    into a \\uXXXX escape (a 12-byte surrogate pair for an emoji), so a CJK
+    or emoji-heavy prompt reached upstream 2-3x larger than the client sent
+    it — past the gate's own MAX_BODY_BYTES for a near-cap body. A body
+    holding a lone surrogate ("\\ud800" parses fine) cannot be UTF-8
+    encoded; only that body keeps the escaped form, which is still the
+    same JSON value.
+    """
+    try:
+        return json.dumps(body, ensure_ascii=False).encode("utf-8")
+    except UnicodeEncodeError:
+        return json.dumps(body).encode()
 
 
 def _upstream_headers(request: Request, device: dict, request_id: str = "") -> dict:
@@ -1172,13 +1246,21 @@ async def gate(request: Request):
         if raw and path in JSON_PATHS:
             try:
                 if len(raw) > _SANITIZE_INLINE_BYTES:
-                    # OFF the event loop. The depth scan is a Python loop per
-                    # token: a cap-sized body of "[],[],…" held the loop for
-                    # seconds, and since one device may send 120 of those a
-                    # minute it could stall every other tenant's stream and
-                    # time /gate/health out (which a watchdog reads as down).
-                    body, model, streaming, gens = await asyncio.to_thread(
-                        _sanitize_body, raw, device, path)
+                    # In a worker thread. The depth scan's per-token Python
+                    # loop releases the GIL at the switch interval, so a
+                    # cap-sized "[],[],…" body (which held the loop for
+                    # seconds inline) no longer freezes other tenants or
+                    # times /gate/health out. It is NOT full isolation:
+                    # json.loads, json.dumps and a regex match over one huge
+                    # string token are single C calls that hold the GIL, so
+                    # the loop still pauses for each (tens of ms at the cap).
+                    # Hence one big-body sanitize at a time: concurrent ones
+                    # only queue on the GIL and stack their pauses — measured
+                    # 220 ms worst case with four senders vs ~70 ms serialized
+                    # (2026-11-16 review).
+                    async with _big_sanitize_gate():
+                        body, model, streaming, gens = await asyncio.to_thread(
+                            _sanitize_body, raw, device, path)
                 else:
                     body, model, streaming, gens = _sanitize_body(
                         raw, device, path)

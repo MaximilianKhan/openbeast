@@ -93,6 +93,27 @@ if ! ob_bind_is_loopback "$HOST" && [[ -z "$LLAMA_API_KEY" && "${ALLOW_OPEN_INFE
   echo "       (exit 3 = refusal; rollback must NOT substitute another model)" >&2
   exit 3
 fi
+# The same exposure through a persisted tailscale mount. setup-tailscale.sh
+# mounts :8443 raw at llama-server only while LLAMA_API_KEY is set, but
+# `serve --bg` mounts outlive the conf: drop the key, restart, and a keyless
+# llama-server came up behind a :8443 every tailnet node (shared-in users
+# included) can reach — /slots, /props, /lora-adapters and the GPU — with no
+# word at start (2026-11-16 review). Refused like the network bind above.
+# Only a real answer refuses: a box without tailscale, or a tailscaled that
+# does not answer within 3 s, launches as before (doctor.sh still FAILs the
+# keyless :8443 once tailscale answers).
+if ob_bind_is_loopback "$HOST" && [[ -z "$LLAMA_API_KEY" && "${ALLOW_OPEN_INFERENCE:-false}" != "true" ]] \
+   && declare -F ob_ts_8443_raw_to >/dev/null 2>&1 && ob_ts_8443_raw_to "$PORT"; then
+  echo "Error: refusing to serve keyless inference on $HOST:$PORT — tailscale serve still" >&2
+  echo "       publishes :8443 straight to this port (a mount made while LLAMA_API_KEY was" >&2
+  echo "       set; they persist), so every tailnet device could use the GPU and every" >&2
+  echo "       llama-server route. Fix one of: set LLAMA_API_KEY again; EDGE_GATE=true and" >&2
+  echo "       re-run scripts/setup-tailscale.sh (it repoints :8443 at the gate); take it" >&2
+  echo "       down: sudo tailscale serve --https=8443 off; or ALLOW_OPEN_INFERENCE=true in" >&2
+  echo "       openbeast.conf to accept it." >&2
+  echo "       (exit 3 = refusal; rollback must NOT substitute another model)" >&2
+  exit 3
+fi
 
 # --- Model registry enforcement (supply chain for weights) -----------------
 # Every weight file this launch loads — the -m file, all shards of a split
@@ -242,8 +263,14 @@ fi
 # as strict as with "localhost" (v1.0.0 treats "localhost" as same-origin
 # only). Without a tailnet name it stays "localhost".
 if [[ -z "${LLAMA_ARG_CORS_ORIGINS:-}" ]]; then
+  # conf.sh looked the name up when it was sourced (_OB_WEBUI_TS_FQDN); ask
+  # tailscale again only when it did not (WEBUI_ORIGINS='*').
   _ts_fqdn=""
-  declare -F _ob_webui_tailnet_name >/dev/null 2>&1 && _ts_fqdn="$(_ob_webui_tailnet_name 2>/dev/null || true)"
+  if [[ -n "${_OB_WEBUI_TS_FQDN+set}" ]]; then
+    _ts_fqdn="$_OB_WEBUI_TS_FQDN"
+  elif declare -F _ob_webui_tailnet_name >/dev/null 2>&1; then
+    _ts_fqdn="$(_ob_webui_tailnet_name 2>/dev/null || true)"
+  fi
   if [[ "$_ts_fqdn" =~ ^[a-z0-9.-]+\.[a-z0-9-]+$ ]]; then
     LLAMA_ARG_CORS_ORIGINS="https://$_ts_fqdn:8443"
   fi
@@ -285,7 +312,9 @@ if [[ -z "$_pc" ]] && declare -F _ob_conf_value >/dev/null 2>&1; then
 fi
 read -r _pc _ <<< "$_pc" || true          # first token: `32768  # comment`
 _pc_own=0
-for _a in "${EXTRA_ARGS[@]}"; do
+# ${a[@]+"${a[@]}"}: bash 3.2 (macOS /bin/bash) calls an empty array unbound
+# under set -u, and a serve script with no passthrough flags has one.
+for _a in ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}; do
   [[ "$_a" == "--cache-ram" || "$_a" == "-cram" ]] && _pc_own=1
 done
 if [[ -n "$_pc" && "$_pc" != "auto" && ! "$_pc" =~ ^(-1|[0-9]+)$ ]]; then
@@ -332,7 +361,7 @@ fi
 
 exec "$LLAMA_SERVER" \
   -m "$MODEL" \
-  "${ALIAS_ARGS[@]}" \
+  ${ALIAS_ARGS[@]+"${ALIAS_ARGS[@]}"} \
   -ngl "$GPU_LAYERS" \
   -c "$CONTEXT" \
   -np "$PARALLEL" \
@@ -343,5 +372,5 @@ exec "$LLAMA_SERVER" \
   --host "$HOST" \
   --port "$PORT" \
   ${PROMPT_CACHE_ARGS[@]+"${PROMPT_CACHE_ARGS[@]}"} \
-  "${EXTRA_ARGS[@]}" \
+  ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
   ${REASONING_ARGS[@]+"${REASONING_ARGS[@]}"}

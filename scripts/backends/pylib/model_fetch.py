@@ -34,6 +34,7 @@ import os
 import shutil
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path, PurePosixPath
 
 HERE = Path(__file__).resolve().parent
@@ -91,6 +92,28 @@ def sha256_file(p: Path) -> str:
                 break
             h.update(b)
     return h.hexdigest()
+
+
+def hash_workers() -> int:
+    """Files hashed at once. hashlib releases the GIL on large updates, so
+    file-level threads scale until the disk is the limit: measured on a GB10
+    (20 cores, ~8 GB/s NVMe), 1 thread ~1.8 GB/s, 4 threads ~5.5 GB/s. 4 by
+    default; MODEL_FETCH_HASH_WORKERS overrides (1 = serial)."""
+    raw = os.environ.get("MODEL_FETCH_HASH_WORKERS", "")
+    try:
+        n = int(raw) if raw else min(4, os.cpu_count() or 1)
+    except ValueError:
+        n = 1
+    return max(1, min(n, 32))
+
+
+def sha256_many(paths: list[Path]) -> dict[Path, str]:
+    """sha256 of every path, hashed hash_workers() at a time; order-free result."""
+    n = hash_workers()
+    if n == 1 or len(paths) < 2:
+        return {p: sha256_file(p) for p in paths}
+    with ThreadPoolExecutor(max_workers=n) as ex:
+        return dict(zip(paths, ex.map(sha256_file, paths)))
 
 
 def git_blob_sha1(p: Path) -> str:
@@ -309,16 +332,25 @@ def verify_dir(d: Path, entry: dict, full: bool = True) -> list[str]:
                 problems.append(f"{d} was fetched at {m.get('revision')}, the lock says {entry['revision']}")
         except ValueError:
             problems.append(f"{marker} is not valid JSON")
+    per_file: dict[str, str] = {}
+    to_hash: dict[Path, tuple[str, str]] = {}
     for rel, f in sorted((entry.get("files") or {}).items()):
         p = d / rel
         if not p.is_file():
-            problems.append(f"missing {rel}")
+            per_file[rel] = f"missing {rel}"
             continue
         if p.stat().st_size != f["size"]:
-            problems.append(f"{rel}: {p.stat().st_size} bytes, locked {f['size']}")
+            per_file[rel] = f"{rel}: {p.stat().st_size} bytes, locked {f['size']}"
             continue
-        if (full or not rel.endswith(WEIGHT_SUFFIXES)) and sha256_file(p) != f["sha256"]:
-            problems.append(f"{rel}: sha256 differs from the lock")
+        if full or not rel.endswith(WEIGHT_SUFFIXES):
+            to_hash[p] = (rel, f["sha256"])
+    # Hashed in parallel (a 164 GB tree is minutes of CPU on one thread);
+    # reported in the lock's sorted order, so the output never depends on timing.
+    for p, got in sha256_many(list(to_hash)).items():
+        rel, want = to_hash[p]
+        if got != want:
+            per_file[rel] = f"{rel}: sha256 differs from the lock"
+    problems += [per_file[rel] for rel in sorted(per_file)]
     locked = set(entry.get("files") or {})
     for p in d.rglob("*"):
         rel = p.relative_to(d).as_posix()
@@ -335,11 +367,14 @@ def verify_dir(d: Path, entry: dict, full: bool = True) -> list[str]:
 
 
 def local_lock_entry(d: Path) -> dict:
-    files = {}
+    paths = []
     for p in sorted(d.rglob("*")):
         rel = p.relative_to(d).as_posix()
         if p.is_file() and rel != MARKER and not any(part.startswith(".") for part in PurePosixPath(rel).parts):
-            files[rel] = {"size": p.stat().st_size, "sha256": sha256_file(p), "hub_oid": None, "lfs": False}
+            paths.append(p)
+    sums = sha256_many(paths)
+    files = {p.relative_to(d).as_posix(): {"size": p.stat().st_size, "sha256": sums[p], "hub_oid": None, "lfs": False}
+             for p in paths}
     return {"source": str(d), "revision": None, "dir": None, "files": files}
 
 

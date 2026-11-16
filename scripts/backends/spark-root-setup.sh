@@ -240,7 +240,7 @@ if [[ "$UFW_STATE" != "Status: active" ]]; then
   !! ufw is ${UFW_STATE#Status: } — the ufw rules above are recorded but FILTER NOTHING.
   !! Every wildcard listener on this Spark is reachable from the LAN and the
   !! tailnet, including the engines' UNAUTHENTICATED rendezvous ports
-  !! (TensorFold 29551/29552, native 29583/29584, vLLM 29501).$serve_note
+  !! (TensorFold 29551/29552, native 29583/29584, vLLM 29501/29502).$serve_note
   !! This script does not enable ufw (its default deny would also drop LAN ssh),
   !! and ufw would not cover the tailnet anyway (Tailscale's ts-input runs first).
   !! Close the engine ports, keeping the fabric, ssh and tailscale serve open:

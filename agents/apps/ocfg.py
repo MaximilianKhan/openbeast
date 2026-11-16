@@ -99,6 +99,26 @@ def flavor(cfg: dict, env: dict) -> str:
     return "v1"
 
 
+def flavor_for(cfg: dict, key: str, env: dict, recorded: str | None = None) -> str:
+    """The schema to REWRITE an existing entry in: what the file is now.
+
+    The schema recorded at enable time can be stale: setup-client.sh moves
+    every v1 mcp.<name> entry into mcp.servers once opencode 2.x is there,
+    beast-apps' own included. Order: OPENBEAST_OPENCODE_SCHEMA; a file with
+    v2 markers (mcp.servers / a `permissions` list) is v2; where the entry
+    sits now; the recorded schema; detection."""
+    forced = (env.get("OPENBEAST_OPENCODE_SCHEMA") or "").lower()
+    if forced in ("v1", "v2"):
+        return forced
+    mcp = cfg.get("mcp")
+    if (isinstance(mcp, dict) and isinstance(mcp.get("servers"), dict)) or isinstance(cfg.get("permissions"), list):
+        return "v2"
+    hit = find_entry(cfg, key)
+    if hit:
+        return hit[0]
+    return recorded if recorded in ("v1", "v2") else flavor(cfg, env)
+
+
 def entries(cfg: dict) -> dict[str, dict]:
     """Every MCP server entry in the file, both schemas: {key: entry}."""
     out: dict[str, dict] = {}
@@ -189,9 +209,33 @@ def ungatable(cfg: dict, rules: list[dict], fl: str) -> str | None:
             "written: " + ", ".join(f"{r['action']}={r['effect']}" for r in rules))
 
 
-def install(cfg: dict, key: str, entry: dict, rules: list[dict], fl: str) -> list[str]:
-    """Merge one server + its gates into cfg in place. Returns warnings."""
+# How strict an effect is. A gate we add must never LOOSEN a rule the user
+# already has for the same action: their "deny" stays a deny.
+STRICTNESS = {"allow": 0, "ask": 1, "deny": 2}
+
+
+def _stricter_or_equal(have, ours: str) -> bool:
+    return isinstance(have, str) and STRICTNESS.get(have, -1) >= STRICTNESS[ours]
+
+
+def _same_rule(a: dict, b: dict) -> bool:
+    return all(a.get(k) == b.get(k) for k in ("action", "resource", "effect"))
+
+
+def install(cfg: dict, key: str, entry: dict, rules: list[dict], fl: str) -> tuple[list[dict], list[str]]:
+    """Merge one server + its gates into cfg in place.
+
+    Returns (written, warnings). `written` is exactly what this call changed,
+    and is what the caller must record so uninstall() undoes only that:
+      - a rule the user already has at the same or a stricter effect is left
+        alone and not recorded (uninstall must not delete the user's own rule);
+      - v1: a weaker user value (allow) is replaced by ours and recorded with
+        "prev", so uninstall puts it back;
+      - v2: our rule is appended (last match wins) unless the user's last rule
+        for that exact action is already as strict.
+    """
     warns: list[str] = []
+    written: list[dict] = []
     mcp = cfg.setdefault("mcp", {})
     if not isinstance(mcp, dict):
         raise ConfigError("the config's `mcp` is not an object; refusing to touch it")
@@ -205,23 +249,43 @@ def install(cfg: dict, key: str, entry: dict, rules: list[dict], fl: str) -> lis
             if not isinstance(perms, list):
                 raise ConfigError("`permissions` is not a list; refusing to touch it")
             for r in rules:
-                if r not in perms:
-                    perms.append(r)        # last match wins: ours go last
+                last = next((p for p in reversed(perms) if isinstance(p, dict)
+                             and p.get("action") == r["action"] and p.get("resource", "*") == r["resource"]), None)
+                if last is not None and _stricter_or_equal(last.get("effect"), r["effect"]):
+                    if last.get("effect") != r["effect"]:
+                        warns.append(f"kept your stricter rule {r['action']}={last.get('effect')}")
+                    continue
+                perms.append(dict(r))      # last match wins: ours go last
+                written.append(dict(r))
+            if not perms:
+                del cfg["permissions"]
     else:
         mcp[key] = entry
         if rules:
             perm = cfg.setdefault("permission", {})
             if isinstance(perm, dict):
                 for r in rules:
+                    have = perm.get(r["action"])
+                    if have is not None and _stricter_or_equal(have, r["effect"]):
+                        if have != r["effect"]:
+                            warns.append(f"kept your stricter rule {r['action']}={have}")
+                        continue
+                    rec = dict(r)
+                    if have is not None:
+                        rec["prev"] = have          # restored on uninstall
                     perm[r["action"]] = r["effect"]
+                    written.append(rec)
+                if not perm:
+                    del cfg["permission"]
             else:
                 warns.append(f"`permission` is the string {perm!r}, not an object, so the per-tool "
                              "gates were NOT written: " + ", ".join(f"{r['action']}={r['effect']}" for r in rules))
-    return warns
+    return written, warns
 
 
 def uninstall(cfg: dict, key: str, rules: list[dict]) -> list[str]:
-    """Remove one server and exactly the gates we added. Returns what went."""
+    """Remove one server and exactly the gates install() recorded (`rules`),
+    putting back any value a v1 gate replaced. Returns what went."""
     gone: list[str] = []
     mcp = cfg.get("mcp")
     if isinstance(mcp, dict):
@@ -238,7 +302,14 @@ def uninstall(cfg: dict, key: str, rules: list[dict]) -> list[str]:
             del cfg["mcp"]
     perms = cfg.get("permissions")
     if isinstance(perms, list):
-        keep = [r for r in perms if r not in rules]
+        # One list entry per recorded rule, the LAST matching one (ours were
+        # appended), so a user rule identical to ours earlier in the list stays.
+        keep = list(perms)
+        for r in rules:
+            for i in range(len(keep) - 1, -1, -1):
+                if isinstance(keep[i], dict) and _same_rule(keep[i], r):
+                    del keep[i]
+                    break
         if len(keep) != len(perms):
             gone.append(f"{len(perms) - len(keep)} permissions rule(s)")
             if keep:
@@ -250,7 +321,10 @@ def uninstall(cfg: dict, key: str, rules: list[dict]) -> list[str]:
         n = 0
         for r in rules:
             if perm.get(r["action"]) == r["effect"]:
-                del perm[r["action"]]
+                if "prev" in r:
+                    perm[r["action"]] = r["prev"]
+                else:
+                    del perm[r["action"]]
                 n += 1
         if n:
             gone.append(f"{n} permission gate(s)")
@@ -268,8 +342,20 @@ def backup(path: str) -> str | None:
     while os.path.exists(dst):
         n += 1
         dst = f"{path}.bak-beast-apps-{stamp}-{n}"
-    shutil.copy2(path, dst)
-    os.chmod(dst, 0o600)          # the config may hold an API key
+    # The config may hold an API key: the copy is CREATED 0600 (O_EXCL, never
+    # an existing file). shutil.copy2 created it with the umask (0644) and
+    # wrote the key before a chmod, so another local user could open it in
+    # between and keep the fd.
+    fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as out, open(path, "rb") as src:
+            shutil.copyfileobj(src, out)
+    except BaseException:
+        try:
+            os.unlink(dst)
+        except OSError:
+            pass
+        raise
     return dst
 
 

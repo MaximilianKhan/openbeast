@@ -144,13 +144,16 @@ def _spawn_agent(cmd: list, env: dict) -> subprocess.Popen | None:
 
 
 def _descendant_pids(root: int) -> list[int]:
-    """Every live descendant of `root`, from /proc (Linux). [] where there
-    is no /proc — the kill then degrades to the runner's own group."""
+    """Every live descendant of `root`: from /proc on Linux, else from
+    _proc_snapshot (libproc on macOS). Without the fallback the macOS
+    timeout kill reached only the runner's own group, and a bash-tool child
+    in its own session ran on (review 1116)."""
     children: dict[int, list[int]] = {}
     try:
         entries = os.listdir("/proc")
     except OSError:
-        return []
+        snap = _proc_snapshot()
+        return sorted(_subtree(snap, {root}) - {root})
     for d in entries:
         if not d.isdigit():
             continue
@@ -226,6 +229,11 @@ def _reap_live_agents() -> None:
 #   tag      OPENBEAST_AGENT_TAG, a per-agent random value in its env. Every
 #            child inherits it; the sweep reads each same-uid process's
 #            environment (/proc/<pid>/environ, or KERN_PROCARGS2 on macOS).
+#            On macOS this sees only NON-platform binaries: for Apple-signed
+#            ones (/bin/sh, bash, sleep, nohup...) KERN_PROCARGS2 returns
+#            argv without the environment (Darwin 25, review 1116). There
+#            the sandbox tag below is the real mechanism, and the sweep
+#            warns when it is unusable.
 #   sandbox  macOS: the agent's bash runs under sandbox-exec in eval mode
 #            (tools._eval_read_deny_prefix), and that profile also denies a
 #            per-agent tag FILE (OPENBEAST_AGENT_TAG_FILE). A sandbox cannot
@@ -236,7 +244,15 @@ def _reap_live_agents() -> None:
 #            scrubbed its env (env -i) but lived one poll is still known.
 #            On Linux the runner is made a child subreaper before it execs,
 #            so an orphan stays in its tree (and in view) while it lives.
-#   groups   every process group and session the watched processes led.
+#   groups   every process group and session the watched processes led,
+#            with the identity of its leader. Each bash-tool call is a new
+#            group, so a long unit records hundreds; on macOS (pid max
+#            99999, sequential) those ids are reused within minutes. A group
+#            is matched or killed only while it is provably the same group:
+#            its leader alive with the recorded identity, or leaderless and
+#            never seen empty since (an id cannot be reused while its group
+#            has a member). A reused id used to be SIGKILLed whole, taking a
+#            sibling unit's agent or validator, or a user app (review 1116).
 #   cgroup   on Linux with a delegated cgroup v2, the runner is moved into a
 #            child cgroup of ours, which nothing can leave; it is killed
 #            whole (cgroup.kill) and must be empty.
@@ -298,6 +314,19 @@ def _proc_snapshot() -> dict:
             except (IndexError, ValueError):
                 continue
         return out
+    tab = _darwin_table()
+    if tab is not None:
+        # libproc, in-process: ~2-5 ms with no fork, against ~45 ms for the
+        # `ps -A ... lstart=` below plus a strptime per row, twice a second
+        # per agent (review 1116). Our uid's processes only, which is all the
+        # sweep may match (another uid's row has no start). The start
+        # identity is exact (sec, usec).
+        for pid, (ppid, pgid, uid, _cpu, start) in tab.items():
+            if start is None:
+                continue
+            sec, usec = start
+            out[pid] = (ppid, pgid, None, f"{sec}.{usec:06d}", uid, sec + usec / 1e6)
+        return out
     try:
         r = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,pgid=,uid=,stat=,lstart="],
                            capture_output=True, text=True, timeout=10,
@@ -315,6 +344,27 @@ def _proc_snapshot() -> dict:
         except ValueError:
             continue
     return out
+
+
+_HOST_VLIB = None
+
+
+def _darwin_table():
+    """vlib.darwin_table() (libproc), loaded from VLIB_PATH for the harness's
+    own use, or None off macOS / when libproc is unusable."""
+    global _HOST_VLIB
+    if sys.platform != "darwin":
+        return None
+    try:
+        if _HOST_VLIB is None:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("_ob_host_vlib", VLIB_PATH)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            _HOST_VLIB = mod
+        return _HOST_VLIB.darwin_table(cpu=False)
+    except Exception:  # noqa: BLE001 — fall back to ps
+        return None
 
 
 def _proc_env_blob(pid: int) -> bytes:
@@ -486,16 +536,18 @@ class AgentWatch:
         # macOS reports start times to the second.)
         self.t0 = time.time() - 2.0
         self.seen: dict = {}            # pid -> start identity
-        self.groups: set = set()        # pgids / sids the watched processes led
+        # pgid/sid -> its leader's start identity when recorded (None: the
+        # leader was already gone). See "groups" in the block comment.
+        self.groups: dict = {}
         self.cgroup = _AgentCgroup()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
     def start(self, root: int):
         self.root = root
-        self.groups.add(root)           # start_new_session: pgid == sid == pid
         self.cgroup.adopt(root)
         self.poll()
+        self.groups.setdefault(root, self.seen.get(root))  # pgid == sid == pid
         self._thread = threading.Thread(target=self._loop, daemon=True,
                                         name=f"agent-watch-{root}")
         self._thread.start()
@@ -513,8 +565,26 @@ class AgentWatch:
         for pid in _subtree(snap, {self.root} | alive):
             row = snap[pid]
             self.seen.setdefault(pid, row[3])
-            if row[1] not in (mine, 0, 1):
-                self.groups.add(row[1])
+            g = row[1]
+            if g not in (mine, 0, 1) and g not in self.groups:
+                self.groups[g] = snap[g][3] if g in snap else None
+        # A group seen empty is over: its id may be handed out again.
+        live = {row[1] for row in snap.values()} | {row[2] for row in snap.values()}
+        for g in [g for g in self.groups if g not in live]:
+            del self.groups[g]
+
+    def owned_groups(self, snap: dict) -> set:
+        """The recorded groups that are still provably the agent's: the
+        leader alive with the identity recorded for it, or no live process
+        with that pid at all (the group outlived its leader, and an id
+        cannot be reused while its group has a member). A live pid with
+        another identity is a reused id, never ours."""
+        out = set()
+        for g, ident in self.groups.items():
+            lead = snap.get(g)
+            if lead is None or (ident is not None and lead[3] == ident):
+                out.add(g)
+        return out
 
     def stop(self):
         self._stop.set()
@@ -542,6 +612,7 @@ class AgentWatch:
         uid = os.getuid()
         tag = f"{AGENT_TAG_ENV}={self.tag}".encode()
         sb = self._sandbox_tag_usable()
+        groups = self.owned_groups(snap)
         found = set(self.cgroup.pids())
         for pid, (ppid, pgid, sid, start, puid, started) in snap.items():
             if puid != uid or pid in protect or pgid == mine:
@@ -551,7 +622,7 @@ class AgentWatch:
                 continue
             if started < self.t0:
                 continue
-            if pgid in self.groups:
+            if pgid in groups:
                 found.add(pid)
                 continue
             if sid is None:
@@ -559,7 +630,7 @@ class AgentWatch:
                     sid = os.getsid(pid)
                 except OSError:
                     sid = None
-            if sid in self.groups:
+            if sid in groups:
                 found.add(pid)
                 continue
             if sb and self._sandbox_marked(pid):
@@ -573,6 +644,23 @@ class AgentWatch:
                  and (self.seen.get(p) == snap[p][3] or snap[p][5] >= self.t0)}
         return found
 
+    def kill_now(self):
+        """One immediate freeze-and-kill of everything that matches, for the
+        timeout path: it runs BEFORE the harness drains the runner's pipes
+        for up to 5 s, so an orphan holding them cannot keep running (or
+        writing the fixtures) through that wait. The full sweep follows."""
+        self.poll()
+        cands = self.candidates()
+        for sig in (signal.SIGSTOP, signal.SIGKILL):
+            for pid in cands:
+                try:
+                    os.kill(pid, sig)
+                except OSError:
+                    pass
+
+
+_WARNED_NO_SANDBOX_TAG = False
+
 
 def sweep_agent_leftovers(watch: "AgentWatch") -> tuple[list, list]:
     """Kill every process the agent left running; return (killed, survivors).
@@ -581,7 +669,17 @@ def sweep_agent_leftovers(watch: "AgentWatch") -> tuple[list, list]:
     re-assertion or validation. Survivors are processes that still match
     after _SWEEP_ROUNDS of freeze-and-kill (only an unkillable process, or
     one this uid may not signal)."""
+    global _WARNED_NO_SANDBOX_TAG
     watch.stop()
+    # One last look: the watch thread's view can be up to a poll stale.
+    watch.poll()
+    if (sys.platform == "darwin" and not _WARNED_NO_SANDBOX_TAG
+            and not watch._sandbox_tag_usable()):
+        _WARNED_NO_SANDBOX_TAG = True
+        print("WARNING: the macOS sandbox tag is unusable (no sandbox-exec, or the harness "
+              "itself runs sandboxed); a detached /bin/sh daemon that left the agent's "
+              "tree between two polls cannot be found by its env tag on this OS",
+              file=sys.stderr)
     killed: set = set()
     try:
         for _ in range(_SWEEP_ROUNDS):
@@ -595,7 +693,7 @@ def sweep_agent_leftovers(watch: "AgentWatch") -> tuple[list, list]:
                         os.kill(pid, sig)
                     except OSError:
                         pass
-            for g in watch.groups:
+            for g in watch.owned_groups(_proc_snapshot()):
                 if g not in (0, 1, os.getpgrp()):
                     try:
                         os.killpg(g, signal.SIGKILL)
@@ -650,7 +748,11 @@ def _auth_headers(base_url: str) -> dict:
     attach OPENBEAST_API_KEY / OPENAI_API_KEY to ANY --base-url — in
     cleartext over http — while the runner child went keyless against the
     same host (review finding campaign-evals: harness leaks the ambient
-    key). One function decides for both, so they cannot disagree."""
+    key). One function decides for both, so they cannot disagree. EVERY
+    probe must build its headers here: two later probes (the /v1/models
+    fallback in _fetch_server_slots and capture_remote_server_info) read
+    os.environ directly and reopened the leak (review 1116);
+    tests/test_eval_key_policy.py now drives every probe."""
     try:
         from runner import resolve_api_key
     except Exception:
@@ -698,8 +800,7 @@ def _fetch_server_slots(base_url: str) -> int | None:
     # Some OpenAI-compatible servers publish their batch limit on the model
     # card; use it when present. Otherwise the caller needs --slots.
     try:
-        key = os.environ.get("OPENBEAST_API_KEY") or os.environ.get("OPENAI_API_KEY")
-        headers = {"Authorization": f"Bearer {key}"} if key else {}
+        headers = _auth_headers(base_url)     # never the raw ambient key
         req = urllib.request.Request(base_url.rstrip("/") + "/models", headers=headers)
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode("utf-8"))
@@ -710,6 +811,52 @@ def _fetch_server_slots(base_url: str) -> int | None:
     except Exception:
         pass
     return None
+
+
+_GATE_PROBE_N = 1024
+
+
+def _fetch_gate_inflight_cap(base_url: str) -> int | None:
+    """beast-gate's per-device in-flight cap (EDGE_MAX_INFLIGHT), or None
+    when the endpoint is not a gate or the cap cannot be read.
+
+    Every agent of a run shares ONE device key, so the gate admits at most
+    that many concurrent generations: --jobs 4 against spark-1's default
+    of 2 got 429 on half its generations, each one burning an agent
+    iteration and turning failing units into unbanked server_errors
+    (review 1116). Nothing generates here: a gate is recognised by the
+    X-OpenBeast-Request-Id header on /v1/models, and only then asked for a
+    chat completion with n=1024, which it refuses with a 400 naming its
+    cap before anything is forwarded (agents/edge.py, the fan-out check).
+    A non-gate endpoint never gets the POST."""
+    import urllib.error
+    headers = _auth_headers(base_url)
+    root = base_url.rstrip("/")
+    try:
+        req = urllib.request.Request(root + "/models", headers=headers)
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            if not resp.headers.get("X-OpenBeast-Request-Id"):
+                return None
+            data = json.loads(resp.read().decode("utf-8"))
+        model = ((data.get("data") or [{}])[0]).get("id") or "probe"
+    except Exception:  # noqa: BLE001 — best-effort, like every probe here
+        return None
+    body = json.dumps({"model": model, "max_tokens": 1, "n": _GATE_PROBE_N,
+                       "messages": [{"role": "user", "content": "."}]}).encode()
+    req = urllib.request.Request(root + "/chat/completions", data=body, method="POST",
+                                 headers={**headers, "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=10):
+            return None          # admitted: a cap >= 1024 is no constraint
+    except urllib.error.HTTPError as e:
+        try:
+            msg = e.read().decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001
+            return None
+        m = re.search(r"may run at most (\d+) at once", msg)
+        return int(m.group(1)) if m else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def capture_remote_server_info(base_url: str, declared_rb: str | None = None) -> dict:
@@ -728,8 +875,7 @@ def capture_remote_server_info(base_url: str, declared_rb: str | None = None) ->
         info["reasoning_budget"] = str(rb).strip()
         info["reasoning_budget_source"] = "declared"
     try:
-        key = os.environ.get("OPENBEAST_API_KEY") or os.environ.get("OPENAI_API_KEY")
-        headers = {"Authorization": f"Bearer {key}"} if key else {}
+        headers = _auth_headers(base_url)     # never the raw ambient key
         req = urllib.request.Request(base_url.rstrip("/") + "/models", headers=headers)
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode("utf-8"))
@@ -1441,7 +1587,9 @@ _ENV_ERROR_RE = re.compile(
     r"|\bENOSPC\b"
     r"|\[Errno 28\]"
     r"|Disk quota exceeded"
-    r"|\bDiskQuota\b",
+    r"|\bDiskQuota\b"
+    # run_validation refused: a pinned compiler moved or changed on disk.
+    r"|Toolchain changed since the harness started",
     re.IGNORECASE)
 
 
@@ -1648,6 +1796,157 @@ def _run_reaped(cmd, timeout: int, shell: bool = False, **popen_kw) -> tuple[int
 _FIXTURE_PATH = re.compile(r"/tmp/eval[\w\-./]*")
 
 
+def fixture_roots(task: dict) -> list[str]:
+    """The task's /tmp/eval* fixture roots (the first path component under
+    /tmp of every fixture path its setup, task, validation, cleanup and
+    pre_validate name), sorted."""
+    spec = " ".join(str(task.get(k, "")) for k in ("setup", "task", "validation",
+                                                   "cleanup", "pre_validate"))
+    return sorted({"/tmp/" + p[len("/tmp/"):].split("/", 1)[0]
+                   for p in _FIXTURE_PATH.findall(spec)})
+
+
+# --- one harness per fixture root, across processes ------------------------------
+#
+# Every unit uses fixed, global /tmp/eval_* dirs, and setup/cleanup `rm -rf`
+# them. Inside one run_eval process the variants of a family are serialized
+# on one worker, but nothing stopped a SECOND harness on the host (a prover
+# during a sweep, two reviewers' provers, a comparison sweep) from deleting
+# the fixture under a live agent or validator: both sides were then scored
+# on missing or foreign files, silently, and the FAILs were banked as model
+# failures (review 1116: a 173 prove run failed 10 arms with "missing
+# /tmp/eval_tg173/tg.py" while a GLM sweep was in /tmp/eval_linz; the
+# reference of 167_q15_biquad_a/_c failed 8 runs of 12 side by side; a
+# correct 188 reference failed on "missing /tmp/eval_gmm/gmm.py"). Every
+# harness now holds an exclusive advisory flock per fixture root for a whole
+# unit: a sweep waits for it (and says so at once), a prover refuses at once
+# with the holder's pid. flock is per open file description, so threads of
+# one process are serialized by a per-root RLock in front of it, and roots
+# are taken in sorted order so two units can never deadlock. The lock files
+# live in a private per-user dir (not world-writable /tmp, where another uid
+# could pre-create them); when that dir is unusable the unit runs unlocked,
+# with a warning. The kernel drops a flock when its holder dies, so a killed
+# harness never leaves a stale lock.
+
+class FixtureBusy(RuntimeError):
+    """A fixture root is held by another harness process."""
+
+
+_FIXTURE_LOCKS: dict = {}          # root -> [threading.RLock, depth, fd or None]
+_FIXTURE_LOCKS_MU = threading.Lock()
+
+
+def fixture_lock_dir() -> str:
+    """Where the lock files live: $OPENBEAST_FIXTURE_LOCK_DIR, else
+    ~/.cache/openbeast/fixture-locks."""
+    return (os.environ.get("OPENBEAST_FIXTURE_LOCK_DIR")
+            or os.path.join(os.path.expanduser("~"), ".cache", "openbeast", "fixture-locks"))
+
+
+def _fixture_lock_dir() -> str:
+    """fixture_lock_dir(), created 0700, refused (OSError) unless it is a
+    real dir of ours that nobody else can write."""
+    d = fixture_lock_dir()
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    st = os.lstat(d)
+    if (stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode)
+            or st.st_uid != os.getuid() or st.st_mode & 0o077):
+        raise OSError(f"{d} is not a private dir of ours; remove it")
+    return d
+
+
+def _lock_path(lock_dir: str, root: str) -> str:
+    return os.path.join(lock_dir, os.path.basename(root.rstrip("/")) + ".lock")
+
+
+def fixture_lock_holder(root: str) -> str:
+    """The pid recorded by whoever holds (or last held) the root's lock."""
+    try:
+        with open(_lock_path(fixture_lock_dir(), root)) as f:
+            return f.read(32).strip() or "?"
+    except OSError:
+        return "?"
+
+
+def _acquire_root(root: str, lock_dir: str | None, wait: bool, log) -> None:
+    import fcntl
+    with _FIXTURE_LOCKS_MU:
+        ent = _FIXTURE_LOCKS.setdefault(root, [threading.RLock(), 0, None])
+    if not ent[0].acquire(blocking=wait):
+        raise FixtureBusy(f"{root} is in use by another unit in this process")
+    try:
+        if ent[1] == 0 and lock_dir:          # first holder in this process: the flock
+            fd = os.open(_lock_path(lock_dir, root),
+                         os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            told = False
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    holder = fixture_lock_holder(root)
+                    if not wait:
+                        os.close(fd)
+                        raise FixtureBusy(f"{root} is in use by another harness (pid {holder}); "
+                                          f"rerun when it finishes") from None
+                    if not told:
+                        log(f"  Waiting for fixture {root} (held by pid {holder}: another "
+                            f"eval or prover on this host is using it)...")
+                        told = True
+                    time.sleep(0.5)
+            os.ftruncate(fd, 0)
+            os.pwrite(fd, f"{os.getpid()}\n".encode(), 0)
+            ent[2] = fd
+        ent[1] += 1
+    except BaseException:
+        ent[0].release()
+        raise
+
+
+def _release_root(root: str) -> None:
+    ent = _FIXTURE_LOCKS[root]
+    ent[1] -= 1
+    if ent[1] == 0 and ent[2] is not None:
+        os.close(ent[2])                      # drops the flock
+        ent[2] = None
+    ent[0].release()
+
+
+class fixture_lock:
+    """A context manager, fixture_lock(task, wait=..., log=...), that holds
+    every fixture root of the task for one unit (cleanup -> setup -> agent
+    -> validation -> cleanup). Roots are taken in sorted order, re-entrant per thread.
+    wait=True blocks and logs the wait at once (the sweep); wait=False
+    raises FixtureBusy at once (a prover)."""
+
+    def __init__(self, task: dict, *, wait: bool = True, log=print):
+        self.task = task
+        self.roots = fixture_roots(task)
+        self.wait, self.log, self.held = wait, log, []
+
+    def __enter__(self):
+        lock_dir = None
+        if self.roots:
+            try:
+                lock_dir = _fixture_lock_dir()
+            except OSError as e:
+                self.log(f"  WARNING: no fixture lock for {self.task.get('id')} ({e}); "
+                         f"run only one harness on this host")
+        try:
+            for root in self.roots:
+                _acquire_root(root, lock_dir, self.wait, self.log)
+                self.held.append(root)
+        except BaseException:
+            self.__exit__(None, None, None)
+            raise
+        return self
+
+    def __exit__(self, *exc):
+        while self.held:
+            _release_root(self.held.pop())
+        return False
+
+
 def unsafe_fixture_roots(task: dict) -> list[str]:
     """The task's /tmp/eval* fixture roots that are NOT safely ours.
 
@@ -1663,13 +1962,9 @@ def unsafe_fixture_roots(task: dict) -> list[str]:
     A root is unsafe when it is a symlink, is owned by another uid, or is
     world-writable (or group-writable by a group other than ours). A root
     that does not exist yet is fine."""
-    spec = " ".join(str(task.get(k, "")) for k in ("setup", "task", "validation",
-                                                   "cleanup", "pre_validate"))
-    roots = sorted({"/tmp/" + p[len("/tmp/"):].split("/", 1)[0]
-                    for p in _FIXTURE_PATH.findall(spec)})
     bad = []
     me = os.getuid()
-    for root in roots:
+    for root in fixture_roots(task):
         try:
             st = os.lstat(root)
         except FileNotFoundError:
@@ -1912,8 +2207,13 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
         }
         return result
     except subprocess.TimeoutExpired:
+        watch.poll()                    # the tree as it stands, before any kill
         _kill_agent_tree(proc.pid)
         proc.kill()
+        # Before the 5 s drain below: a tool child in its own session that
+        # inherited the runner's stdout kept the pipe open, so the drain
+        # waited it out while it ran on (and the sweep came too late).
+        watch.kill_now()
         # What the runner had flushed before the kill. It prints its TOKENS
         # line only on a normal exit, so today this is almost always
         # without one and the row keeps tokens 0 (scoring counts such rows
@@ -2056,6 +2356,38 @@ def validator_seal() -> tuple:
     _SEAL_CACHE = tuple(seal + extra)
     return _SEAL_CACHE
 
+# --- Toolchain pins (review 1116) ---------------------------------------------
+#
+# A validator runs a compiler as our uid, unsandboxed, and the agent before it
+# could write any dir on our PATH (/opt/homebrew/bin, ~/.local/bin, a conda
+# bin) or a Go/Rust tree it owns. A `gcc` planted there that compiled the
+# REFERENCE passed 36_c with an empty main. So the harness resolves and
+# fingerprints the toolchain ONCE, before any agent runs (vlib.pin_toolchain),
+# refuses a validation when a name now resolves elsewhere, appeared, or a
+# pinned tree changed (vlib.check_toolchain), and hands the pins to the
+# validator, whose vlib.tool_path / start_build call the pinned binary.
+_TOOL_PINS: dict | None = None
+_TOOL_PINS_LOCK = threading.Lock()
+TOOLCHAIN_CHANGED = "Toolchain changed since the harness started"
+
+
+def toolchain_pins() -> dict:
+    """The validator toolchain, pinned on first use (run_eval calls it before
+    the first agent; prove_task before its first arm)."""
+    global _TOOL_PINS
+    with _TOOL_PINS_LOCK:
+        if _TOOL_PINS is None:
+            import vlib  # noqa: PLC0415  (the harness's own copy; validators get it injected)
+            _TOOL_PINS = vlib.pin_toolchain(
+                vlib.TOOLCHAIN, path=os.environ.get("PATH") or "/usr/local/bin:/usr/bin:/bin")
+        return _TOOL_PINS
+
+
+def _toolchain_problems(path: str) -> list[str]:
+    import vlib  # noqa: PLC0415
+    return vlib.check_toolchain(toolchain_pins(), path=path)
+
+
 _VALIDATOR_ENV_KEEP = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TZ",
                        "TMPDIR", "TERM", "SDKROOT", "DEVELOPER_DIR",
                        "MACOSX_DEPLOYMENT_TARGET", "CC", "CXX", "GOROOT", "GOPATH",
@@ -2068,7 +2400,7 @@ _VALIDATOR_ENV_KEEP = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TZ",
 # It reads nothing more from stdin, hardens itself, keeps cwd off sys.path,
 # injects vlib from source, and runs the validator as __main__.
 _PY_BOOT = r"""
-def _ob_boot(src, vlib_src, group_file):
+def _ob_boot(src, vlib_src, group_file, tool_pins):
     import os, sys, types, linecache
     try:
         fd = os.open(os.devnull, os.O_RDONLY); os.dup2(fd, 0); os.close(fd)
@@ -2087,6 +2419,7 @@ def _ob_boot(src, vlib_src, group_file):
     sys.modules["vlib"] = m
     exec(compile(vlib_src, "<vlib>", "exec", dont_inherit=True), m.__dict__)
     m._GROUP_FILE = group_file
+    m._TOOL_PINS = tool_pins
     sys.argv[:] = ["<validator>"]
     linecache.cache["<validator>"] = (len(src), None, src.splitlines(True), "<validator>")
     del globals()["_ob_boot"]
@@ -2113,13 +2446,22 @@ def _ob_done(nonce, exc=None):
     raise SystemExit(0)
 
 
-_ob_c = _ob_boot(%r, %r, %r)
-_ob_n = %r
-try:
-    exec(_ob_c)
-except SystemExit as _ob_e:
-    _ob_done(_ob_n, _ob_e)
-_ob_done(_ob_n)
+def _ob_run(c, n, done):
+    # The completion line lives only in this frame: no module global names
+    # it or the function that prints it, so `__main__._ob_n` (a one-line
+    # forgery by an in-process solution, review 1116) finds nothing. Frame
+    # introspection still can: see "Residual gaps" in evals/README.md.
+    g = globals()
+    for k in ("_ob_run", "_ob_done"):
+        g.pop(k, None)
+    try:
+        exec(c, g)
+    except SystemExit as e:
+        done(n, e)
+    done(n)
+
+
+_ob_run(_ob_boot(%r, %r, %r, %r), %r, _ob_done)
 """
 
 # The line a python validator prints when it ran to its end (see _ob_done).
@@ -2138,6 +2480,15 @@ def _validator_env(timeout_scale: float) -> dict:
     env["OPENBEAST_EVAL"] = "1"
     env["OPENBEAST_VALIDATOR_SEAL"] = os.pathsep.join(validator_seal())
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    # Every validator, v4 ones too: no go env file (a planted
+    # GOTOOLCHAIN=path / GOFLAGS), no toolchain switch to a `go1.99` on PATH,
+    # and rustup's proxy pinned to the toolchain the harness fingerprinted
+    # (a planted rust-toolchain.toml in a build dir does not override it).
+    env["GOENV"] = "off"
+    env["GOTOOLCHAIN"] = "local"
+    rt = (toolchain_pins().get("rustc") or {}).get("rustup_toolchain")
+    if rt and not env.get("RUSTUP_TOOLCHAIN"):
+        env["RUSTUP_TOOLCHAIN"] = rt
     return env
 
 
@@ -2201,16 +2552,29 @@ def _vlib_source() -> str:
         return f.read()
 
 
-def _kill_recorded_groups(group_file: str):
+def _kill_recorded_groups(group_file: str, since: float | None = None):
+    """SIGKILL every solution group the validator recorded in `group_file`.
+
+    The file sits in the validator's 0700 dir, but under --jobs other
+    units' agents run as the same uid and could append any pgid to it
+    (review 1116). With `since` (the validation's start, epoch s), a group
+    is killed only while it has a live member of our uid that started
+    after it: everything a validator starts does, while a process that
+    was already running (a sibling's agent, a user app) never qualifies."""
     try:
         with open(group_file) as f:
             pgids = {int(x) for x in f.read().split() if x.strip().isdigit()}
     except OSError:
         return
     mine = os.getpgrp()
+    pgids = {pg for pg in pgids if pg > 1 and pg != mine}
+    if since is not None and pgids:
+        uid = os.getuid()
+        snap = _proc_snapshot()
+        # macOS start times are whole seconds: allow one second of slack
+        pgids = {row[1] for row in snap.values()
+                 if row[1] in pgids and row[4] == uid and row[5] >= since - 1.0}
     for pg in pgids:
-        if pg <= 1 or pg == mine:
-            continue
         try:
             os.killpg(pg, signal.SIGKILL)
         except OSError:
@@ -2239,17 +2603,23 @@ def run_validation(task: dict, timeout_scale: float = 1.0) -> tuple[bool, str]:
         return False, "No validation script defined"
 
     timeout = max(1, int(VALIDATION_TIMEOUT_S * timeout_scale))
+    changed = _toolchain_problems(_validator_env(timeout_scale).get("PATH", ""))
+    if changed:
+        # Not validated: the compiler the validator would call is not the one
+        # pinned before the agent ran. An env-error verdict (not banked).
+        return False, f"{TOOLCHAIN_CHANGED}: " + "; ".join(changed[:4])
     import tempfile
     private = tempfile.mkdtemp(prefix="ob-validator-")  # 0700
     os.chmod(private, 0o700)
     vcwd = os.path.join(private, "cwd")
     os.mkdir(vcwd, 0o700)
     group_file = os.path.join(private, "pgids")
+    started = time.time()
     try:
         if vtype == "python":
             import secrets
             done = f"{_DONE_PREFIX}{secrets.token_hex(16)}@@"
-            payload = _PY_BOOT % (script, _vlib_source(), group_file, done)
+            payload = _PY_BOOT % (script, _vlib_source(), group_file, toolchain_pins(), done)
             cmd = [sys.executable, "-I", "-S", "-"]
         else:
             payload = script
@@ -2264,6 +2634,13 @@ def run_validation(task: dict, timeout_scale: float = 1.0) -> tuple[bool, str]:
             sf.seek(0)
             venv = _validator_env(timeout_scale)
             venv.update(build_cache_env(os.path.join(private, "build-cache")))
+            # The validator's temp files (tempfile.mkdtemp, its children's)
+            # live in the private dir too, so a validator SIGKILLed at the
+            # timeout -- its `finally: rmtree` never runs -- leaves nothing in
+            # the shared TMPDIR (176: a copy of a planted /dev/zero link).
+            vtmp = os.path.join(private, "tmp")
+            os.mkdir(vtmp, 0o700)
+            venv["TMPDIR"] = vtmp
             returncode, output = _run_reaped(
                 cmd, timeout=timeout, shell=not isinstance(cmd, list),
                 stdin=sf, cwd=vcwd, env=venv)
@@ -2291,7 +2668,7 @@ def run_validation(task: dict, timeout_scale: float = 1.0) -> tuple[bool, str]:
     except Exception as e:
         return False, f"Validation error: {e}"
     finally:
-        _kill_recorded_groups(group_file)
+        _kill_recorded_groups(group_file, since=started)
         _rmtree_force(private)
 
 
@@ -2611,6 +2988,11 @@ def run_eval(
             suite = loaded.get("suite", suite)
             task_filter = list(suite_pin["units"])
     suite_version = capture_suite_version()
+    if not cache_only:
+        # Before ANY agent runs: what a validator may call a compiler.
+        pinned = toolchain_pins()
+        print("Toolchain pinned for validators: " + (", ".join(
+            f"{n}={p['path']}" for n, p in sorted(pinned.items()) if p.get("path")) or "none"))
 
     # --- arms -----------------------------------------------------------
     arm_specs = dict((manifest or {}).get("arms") or BUILTIN_ARMS)
@@ -2735,6 +3117,14 @@ def run_eval(
         jobs = 1
     if jobs > 1:
         probed = _fetch_server_slots(base_url)
+        gate_cap = _fetch_gate_inflight_cap(base_url)
+        if gate_cap is not None and jobs > gate_cap:
+            print(f"--jobs {jobs} clamped to {gate_cap}: beast-gate admits {gate_cap} "
+                  f"concurrent generation(s) per device (EDGE_MAX_INFLIGHT) and every "
+                  f"agent shares one key; the rest would get 429 and burn iterations. "
+                  f"Raise EDGE_MAX_INFLIGHT in the gate host's openbeast.conf and "
+                  f"restart the gate to use more (docs/SPARK_HYDRA.md)")
+            jobs = gate_cap
         limit = min(x for x in (probed, slots) if x) if (probed or slots) else None
         if limit is not None and jobs > limit:
             src = "--slots" if slots and limit == slots and (not probed or slots <= probed) \
@@ -3229,7 +3619,8 @@ def run_eval(
     if jobs == 1:
         for g in groups:
             for idx, task, c in g:
-                process(idx, task, log=print, c=c)
+                with fixture_lock(task, wait=True, log=print):
+                    process(idx, task, log=print, c=c)
                 if abort.is_set():
                     break
             if abort.is_set():
@@ -3240,10 +3631,18 @@ def run_eval(
     else:
         groups = order_groups_longest_first(groups, _job_weight)
 
+        def say_now(msg: str) -> None:
+            with print_lock:
+                print(msg)
+
         def run_group(units: list[tuple[int, dict, ArmCtx]]) -> None:
             for idx, task, c in units:
                 lines: list[str] = []
-                process(idx, task, log=lines.append, c=c)
+                # one unit at a time per fixture root, across threads AND
+                # other harness processes on this host (fixture_lock); a
+                # wait is printed at once, not with the unit's buffered lines
+                with fixture_lock(task, wait=True, log=say_now):
+                    process(idx, task, log=lines.append, c=c)
                 if lines:
                     with print_lock:
                         print("\n".join(lines))
