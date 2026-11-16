@@ -344,6 +344,7 @@ def diff_manifests(old: dict | None, new: dict, server: dict) -> dict:
                 changed.append({"name": name, "changed": what})
     flagged = []
     desc = {t["name"]: (t.get("description") or "").lower() for t in new["tools"]}
+    names_here = {n.lower() for n in desc}
     new_names = set(added)
     for name in sorted(desc):
         # Name patterns are a review hint for NEW tools only.
@@ -351,8 +352,11 @@ def diff_manifests(old: dict | None, new: dict, server: dict) -> dict:
         # Names alone miss a bridge ("blender_mcp_call") whose description
         # says it runs code or installs something: check what EVERY tool says
         # it does, on every manifest, so an upstream update that rewrites an
-        # existing tool's description into an exec bridge is caught too.
-        said = [m for m in EXEC_MARKERS if m in desc[name]]
+        # existing tool's description into an exec bridge is caught too. A
+        # marker that is the name of ANOTHER tool of this same server is a
+        # cross-reference ("read it with execute_blender_code"), not a bridge:
+        # that tool is judged (and gated) on its own.
+        said = [m for m in EXEC_MARKERS if m in desc[name] and not (m in names_here and m != name.lower())]
         if hits or said:
             gated = any(fnmatch.fnmatchcase(name, g) for g in gates)
             flagged.append({"name": name, "patterns": hits, "description": said, "gated": gated})
