@@ -346,6 +346,17 @@ python3 evals/ablation.py --profile evals/results/profile-<slug>-<ts>.json # the
    are never cut.**
 4. **L1 + L2** in one `run_eval` call with the plan's unit sets.
 
+**`--jobs` against beast-gate.** Every agent of a run shares one device
+key, and the gate admits only `EDGE_MAX_INFLIGHT` (default 2) concurrent
+generations per key. `run_eval` reads that cap from the gate (a chat
+request with `n=1024`, which the gate refuses with a 400 naming the cap
+before forwarding anything; a non-gate endpoint never gets it) and clamps
+`--jobs` to it, so a 4-slot profile of spark-1 at the default runs 2
+workers. Raise the cap on the gate host to use all slots
+(docs/SPARK_HYDRA.md, E2). The remote health check retries and counts a
+429 as alive: one drained rate bucket or tailnet blip no longer aborts the
+sweep.
+
 A global deadline (start + `--budget-h`) rides through every phase: a unit
 that would start after it is recorded **`budget_skip`** — never run, never
 cached, never scored as a failure (a profile with skips is not seated). The

@@ -809,6 +809,52 @@ def _fetch_server_slots(base_url: str) -> int | None:
     return None
 
 
+_GATE_PROBE_N = 1024
+
+
+def _fetch_gate_inflight_cap(base_url: str) -> int | None:
+    """beast-gate's per-device in-flight cap (EDGE_MAX_INFLIGHT), or None
+    when the endpoint is not a gate or the cap cannot be read.
+
+    Every agent of a run shares ONE device key, so the gate admits at most
+    that many concurrent generations: --jobs 4 against spark-1's default
+    of 2 got 429 on half its generations, each one burning an agent
+    iteration and turning failing units into unbanked server_errors
+    (review 1116). Nothing generates here: a gate is recognised by the
+    X-OpenBeast-Request-Id header on /v1/models, and only then asked for a
+    chat completion with n=1024, which it refuses with a 400 naming its
+    cap before anything is forwarded (agents/edge.py, the fan-out check).
+    A non-gate endpoint never gets the POST."""
+    import urllib.error
+    headers = _auth_headers(base_url)
+    root = base_url.rstrip("/")
+    try:
+        req = urllib.request.Request(root + "/models", headers=headers)
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            if not resp.headers.get("X-OpenBeast-Request-Id"):
+                return None
+            data = json.loads(resp.read().decode("utf-8"))
+        model = ((data.get("data") or [{}])[0]).get("id") or "probe"
+    except Exception:  # noqa: BLE001 — best-effort, like every probe here
+        return None
+    body = json.dumps({"model": model, "max_tokens": 1, "n": _GATE_PROBE_N,
+                       "messages": [{"role": "user", "content": "."}]}).encode()
+    req = urllib.request.Request(root + "/chat/completions", data=body, method="POST",
+                                 headers={**headers, "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=10):
+            return None          # admitted: a cap >= 1024 is no constraint
+    except urllib.error.HTTPError as e:
+        try:
+            msg = e.read().decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001
+            return None
+        m = re.search(r"may run at most (\d+) at once", msg)
+        return int(m.group(1)) if m else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def capture_remote_server_info(base_url: str, declared_rb: str | None = None) -> dict:
     """Provenance for a server capture_server_config cannot see: a remote
     endpoint, or a local non-llama engine (vLLM, TensorFold). Reads the
@@ -2845,6 +2891,14 @@ def run_eval(
         jobs = 1
     if jobs > 1:
         probed = _fetch_server_slots(base_url)
+        gate_cap = _fetch_gate_inflight_cap(base_url)
+        if gate_cap is not None and jobs > gate_cap:
+            print(f"--jobs {jobs} clamped to {gate_cap}: beast-gate admits {gate_cap} "
+                  f"concurrent generation(s) per device (EDGE_MAX_INFLIGHT) and every "
+                  f"agent shares one key; the rest would get 429 and burn iterations. "
+                  f"Raise EDGE_MAX_INFLIGHT in the gate host's openbeast.conf and "
+                  f"restart the gate to use more (docs/SPARK_HYDRA.md)")
+            jobs = gate_cap
         limit = min(x for x in (probed, slots) if x) if (probed or slots) else None
         if limit is not None and jobs > limit:
             src = "--slots" if slots and limit == slots and (not probed or slots <= probed) \

@@ -780,6 +780,19 @@ Not set, so the defaults apply:
 - `MEM_RESERVE_GB` = `3`. This is the GiB the stack's cap leaves beside the
   model on unified memory ([G4](#g4-memory-headroom-and-the-gb10-stack-cap)).
 - `MEM_LIMIT_PCT` = `75`.
+- `EDGE_MAX_INFLIGHT` = `2`: beast-gate admits two concurrent generations
+  per device key. The eval harness's agents all share one key, so a
+  `--jobs 4` benchmark or profile of GLM-5.3-Flash from the Mac
+  (`benchmark_all.py --models glm-5.3-flash`, `profile.py --slots 4`) is
+  **clamped to 2**: `run_eval` reads the cap from the gate (a `n=1024`
+  chat request the gate refuses before forwarding anything) and prints
+  why. Before review 1116 it ran 4 workers anyway, half the generations got
+  429, each burned an agent iteration, and failing units became unbanked
+  `server_error`s. To measure with 4 streams, set `EDGE_MAX_INFLIGHT=4` in
+  `~/openbeast/openbeast.conf` on spark-1 and restart the command center
+  (`systemctl --user restart openbeast`, [G3](#g3-restarts-only-through-systemctl---user-while-the-unit-is-enabled));
+  both steps are local and work offline. It raises the cap for every
+  device, so revert it after the run if other clients share the pair.
 - `WATCHDOG_AUTOINSTALL` and `LOGROTATE_AUTOINSTALL` = `true`.
 - `BIND_HOST` = `127.0.0.1`.
 

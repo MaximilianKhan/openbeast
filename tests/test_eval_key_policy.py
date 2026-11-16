@@ -97,3 +97,92 @@ def test_no_probe_reads_the_ambient_key_itself():
     src = (ROOT / "evals" / "run_eval.py").read_text()
     assert 'os.environ.get("OPENBEAST_API_KEY")' not in src
     assert 'os.environ.get("OPENAI_API_KEY")' not in src
+
+
+
+class _GateResp(io.BytesIO):
+    def __init__(self, data, headers):
+        super().__init__(data)
+        self.headers = headers
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _gate(monkeypatch, run_eval, cap, gate=True):
+    import urllib.error
+    calls = []
+
+    def fake_urlopen(req, timeout=None):
+        calls.append((req.get_method(), req.full_url, req.data))
+        if req.full_url.endswith("/models"):
+            hdr = {"X-OpenBeast-Request-Id": "r1"} if gate else {}
+            return _GateResp(json.dumps({"data": [{"id": "GLM"}]}).encode(), hdr)
+        body = json.loads(req.data)
+        assert body["n"] > cap and body["max_tokens"] == 1
+        msg = (f"request fans out into {body['n']} generations (prompts x n); this device "
+               f"may run at most {cap} at once — split it into smaller requests")
+        raise urllib.error.HTTPError(req.full_url, 400, "x", {},
+                                     io.BytesIO(json.dumps({"error": {"message": msg}}).encode()))
+    monkeypatch.setattr(run_eval.urllib.request, "urlopen", fake_urlopen)
+    return calls
+
+
+def test_gate_inflight_cap_is_read_without_generating(probe, monkeypatch):
+    """beast-gate admits EDGE_MAX_INFLIGHT generations per device and every
+    agent shares one key: --jobs 4 against spark-1's default 2 got 429 on
+    half its generations (review 1116). The harness reads the cap from the
+    gate's fan-out refusal, which forwards nothing."""
+    run_eval, _ = probe
+    calls = _gate(monkeypatch, run_eval, cap=2)
+    assert run_eval._fetch_gate_inflight_cap("https://spark.example:8443/v1") == 2
+    assert [c[0] for c in calls] == ["GET", "POST"]
+
+
+def test_a_non_gate_endpoint_never_gets_the_probe_post(probe, monkeypatch):
+    run_eval, _ = probe
+    calls = _gate(monkeypatch, run_eval, cap=2, gate=False)
+    assert run_eval._fetch_gate_inflight_cap("http://vllm.example:8000/v1") is None
+    assert [c[0] for c in calls] == ["GET"]
+
+
+
+@pytest.mark.parametrize("cap", [2, 5])
+def test_gate_cap_probe_against_the_real_gate(probe, monkeypatch, tmp_path, cap):
+    """The same probe against agents/edge.py itself (stub upstream, real
+    admission code): it reads EDGE_MAX_INFLIGHT and nothing is forwarded."""
+    pytest.importorskip("starlette")
+    pytest.importorskip("httpx")
+    import importlib as _il
+    import urllib.error
+
+    from starlette.testclient import TestClient
+    sys.path.insert(0, str(ROOT / "tests"))
+    import test_edge as TE
+    run_eval, _ = probe
+    monkeypatch.setenv("OPENBEAST_REPO_DIR", str(tmp_path))
+    monkeypatch.delenv("OPENBEAST_EDGE_ALLOW_ANON", raising=False)
+    monkeypatch.setenv("OPENBEAST_EDGE_MAX_INFLIGHT", str(cap))
+    import edge as _edge
+    _il.reload(_edge)
+    TE._registry(tmp_path)
+    captured = {}
+    TE._stub_upstream(_edge, captured)
+    base = "https://spark.example:8443/v1"
+    monkeypatch.setenv("OPENBEAST_AGENT_INFERENCE_URL", base)
+    monkeypatch.setenv("OPENBEAST_API_KEY", TE.DEVICE_KEY)
+    with TestClient(_edge.app) as c:
+        def via_gate(req, timeout=None):
+            path = req.full_url[len("https://spark.example:8443"):]
+            r = c.request(req.get_method(), path, content=req.data,
+                          headers=dict(req.header_items()))
+            if r.status_code >= 400:
+                raise urllib.error.HTTPError(req.full_url, r.status_code, "x", r.headers,
+                                             io.BytesIO(r.content))
+            return _GateResp(r.content, r.headers)
+        monkeypatch.setattr(run_eval.urllib.request, "urlopen", via_gate)
+        assert run_eval._fetch_gate_inflight_cap(base) == cap
+    assert captured.get("method") != "POST", "the probe POST reached the upstream"
