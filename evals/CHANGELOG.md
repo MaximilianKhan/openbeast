@@ -1,5 +1,16 @@
 # Eval suite changelog
 
+## v5.0, wall-scaled turns (2026-11-16) — opt-in budget, era unchanged
+
+`run_eval.py --turns-per-wall-s N` gives each unit max(its max_iter,
+wall_s / N) turns, ignoring the manifest's `max_iter_ceiling`, so the unit's
+own wall budget (600 / 900 / 1500 s by tier) is the binding limit and the
+turn cap only stops a loop. N = 15 gives medium 40, hard 60, xl 100 (from
+15-30). Why: the GLM-5.3-Flash v5 L0 audit found most failing units ended on
+max_iterations after 150-400 s of a 1,200-1,800 s wall. The effective budget
+is in the cache key (`.mi<N>`) and on every result row (`max_iter`), and the
+results header records `turns_per_wall_s`. Default runs are unchanged.
+
 ## v5.0, runner v2 (2026-11-16) — agent-harness frictions (era roll)
 
 Same suite, manifest and `HARNESS_VERSION`. `agents/runner.py` and
