@@ -1285,6 +1285,27 @@ def _refuse_unsafe_fixtures(task: dict, log=print) -> bool:
     return bool(bad)
 
 
+def _run_fixture_cmd(cmd: str, timeout: int) -> tuple[int, str]:
+    """Run a task's setup / pre_validate / cleanup shell command in a fresh,
+    empty 0700 cwd with PYTHONSAFEPATH=1, removed afterwards.
+
+    Graded code runs as our uid and can find the harness cwd through the
+    ppid chain (libproc / /proc) and write there. A fixture command that ran
+    in that inherited cwd (`python3 - <<EOF` puts '' on sys.path) imported a
+    planted copy.py through tarfile, printed a forged OK and never built the
+    next unit's fixture (176). No task command depends on its cwd."""
+    import shutil
+    import tempfile
+    private = tempfile.mkdtemp(prefix="ob-fixture-")
+    os.chmod(private, 0o700)
+    env = dict(os.environ)
+    env["PYTHONSAFEPATH"] = "1"
+    try:
+        return _run_reaped(cmd, timeout=timeout, shell=True, cwd=private, env=env)
+    finally:
+        shutil.rmtree(private, ignore_errors=True)
+
+
 def run_setup(task: dict, log=print) -> bool:
     """Run task setup command. Returns True on success. Timeouts and
     unexpected errors are recorded as failures, not crashes — a single bad
@@ -1293,7 +1314,7 @@ def run_setup(task: dict, log=print) -> bool:
     if not setup:
         return True
     try:
-        returncode, output = _run_reaped(setup, timeout=30, shell=True)
+        returncode, output = _run_fixture_cmd(setup, timeout=30)
     except subprocess.TimeoutExpired:
         log("  Setup timed out")
         return False
@@ -1506,7 +1527,7 @@ def run_pre_validate(task: dict, log=print):
     if not cmd:
         return
     try:
-        _run_reaped(cmd, timeout=30, shell=True)
+        _run_fixture_cmd(cmd, timeout=30)
     except subprocess.TimeoutExpired:
         log("  (pre_validate timed out — continuing to validation)")
     except Exception as e:
@@ -1709,7 +1730,7 @@ def run_cleanup(task: dict, log=print):
     if not cleanup:
         return
     try:
-        _run_reaped(cleanup, timeout=30, shell=True)
+        _run_fixture_cmd(cleanup, timeout=30)
     except subprocess.TimeoutExpired:
         log("  (cleanup timed out)")
     except Exception as e:

@@ -172,10 +172,21 @@ for free):
   validator runs as `python -I -S -`; a bash validator runs as
   `sh -c '<read stdin>; eval'`. Your source is in no argv.
 - The cwd is a fresh, empty 0700 dir, removed after the unit. It is not on
-  `sys.path`, and neither is the harness cwd.
+  `sys.path`, and neither is the harness cwd. `setup`, `pre_validate` and
+  `cleanup` get their own fresh cwd too, with `PYTHONSAFEPATH=1`: graded
+  code can find any ancestor's cwd through the ppid chain and plant a
+  module there, so never make a fixture command depend on its cwd.
 - The environment is scrubbed: PATH, HOME, locale, toolchain vars, and
   `OPENBEAST_TIMEOUT_SCALE`. On Linux the validator is non-dumpable.
 - `import vlib` works, injected from source; it is never a file on disk.
+
+**A prover arm that plants a module must stay contained.** 176's first
+plant arm wrote `urllib/parse.py` into the cwd of every ancestor process
+and left a live, forged-OK module in two real checkouts (one of them the
+Claude Code session's cwd). Plant only into the validator's own cwd
+(`getppid()` once), or into a cwd that holds a marker file your prover
+created, and have the prover check every ancestor cwd afterwards
+(176's `prove.py`, `leftovers()`).
 
 **What your validator must do:**
 

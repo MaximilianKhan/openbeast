@@ -320,7 +320,8 @@ def _sbpl_str(s: str) -> str:
 
 def _sandbox_prefix(allow_fork: bool, deny_read: list[str], *,
                     deny_net: bool = True, deny_procinfo: bool = True,
-                    exec_only: str | None = None) -> list[str]:
+                    exec_only: str | None = None,
+                    allow_write: list[str] | None = None) -> list[str]:
     """sandbox-exec argv prefix (macOS), or [] when sandboxing is unavailable.
 
     The confined solution gets `(allow default)` minus the holes a cheat uses:
@@ -335,9 +336,15 @@ def _sandbox_prefix(allow_fork: bool, deny_read: list[str], *,
         this does not disturb an honest solution;
       * reads of any evals/{refs,tasks,suites} tree, plus the caller's
         deny_read paths.
-    Later SBPL rules win, so the allow for exec_only follows the deny."""
+    Later SBPL rules win, so the allow for exec_only follows the deny.
+
+    allow_write: when given (a list, possibly empty), every file write is
+    denied except under these paths and /dev. Graded code runs as our uid
+    and can otherwise write anywhere we can, e.g. plant a module in the cwd
+    of an ancestor found through libproc (176)."""
     global _SANDBOX_OK
-    want = (not allow_fork) or deny_read or deny_net or deny_procinfo or exec_only
+    want = ((not allow_fork) or deny_read or deny_net or deny_procinfo or exec_only
+            or allow_write is not None)
     if not _DARWIN or not want:
         return []
     rules = ["(version 1)", "(allow default)"]
@@ -359,6 +366,10 @@ def _sandbox_prefix(allow_fork: bool, deny_read: list[str], *,
         rp = os.path.realpath(exec_only)
         rules.append("(deny process-exec*)")
         rules.append(f'(allow process-exec (literal "{_sbpl_str(rp)}"))')
+    if allow_write is not None:
+        rules.append("(deny file-write*)")
+        for p in ["/dev"] + list(allow_write):
+            rules.append(f'(allow file-write* (subpath "{_sbpl_str(os.path.realpath(p))}"))')
     if _SANDBOX_OK is None:
         try:
             _SANDBOX_OK = subprocess.run(
