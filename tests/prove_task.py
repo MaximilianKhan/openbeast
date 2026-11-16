@@ -36,7 +36,8 @@ Where the solutions come from (in precedence order):
   1. flags: --ref FILE --dest PATH [--wrong FILE::REGEX]... [--slow FILE[::REGEX]]
      [--leak FILE]
   2. the unit's task JSON: `ref_stem` (path under evals/refs/, no extension;
-     the language picks it: py go c cpp rs zig sh) and `dest` (where the task
+     the language picks it: py go c cpp rs zig sh; or a stem that names an
+     existing file, whose extension the siblings then share) and `dest` (where the task
      says the solution lives). Siblings of the ref in its directory:
        wrong_<name>.<ext>   (or <stem>.wrong_<name>.<ext>)   wrong solutions
        slow.<ext>           (or <stem>.slow.<ext>)           slow solution
@@ -177,8 +178,9 @@ def discover(task: dict, M, refs_dir: str) -> dict:
     base = os.path.join(refs_dir, stem)
     ref = base if os.path.isfile(base) else f"{base}.{ext}"
     if ref == base and os.path.splitext(base)[1]:
-        # A stem that names the file (an answers.json for a Q&A task) sets
-        # the siblings' extension too, instead of the task's language.
+        # A stem that names its own file (an answers.json for a Q&A task,
+        # `195_x/ref.s` for an assembly unit whose task language is python)
+        # sets the siblings' extension too, instead of the task's language.
         ext = os.path.splitext(base)[1][1:]
     d, b = os.path.dirname(ref), os.path.basename(stem).split(".")[0]
     decl: dict = {}

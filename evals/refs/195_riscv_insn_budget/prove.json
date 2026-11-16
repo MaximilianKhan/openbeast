@@ -1,0 +1,11 @@
+{
+ "timed": false,
+ "expect": {
+  "wrong_misaligned_lw.s": "^memcpy case \\d+: trap \\(lw\\)",
+  "wrong_overrun.s": "^memcpy case \\d+: clobbered memory outside dst",
+  "wrong_haszero.s": "^strlen case \\d+: wrong result",
+  "wrong_clobber_s0.s": "^crc32 case \\d+: callee-saved register s0 not preserved",
+  "wrong_crc_noinvert.s": "^crc32 case \\d+: wrong result"
+ },
+ "slow_expect": "^memcpy case \\d+: over instruction budget"
+}
