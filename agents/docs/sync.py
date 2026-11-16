@@ -380,7 +380,8 @@ def live(src: C.Source, page: str, fetcher: Optional[net.Fetcher] = None) -> dic
     # Scope, robots and the request all see this one normalized spelling.
     if not page or not src.in_scope(page):
         raise net.Refused(f"{page or raw} is outside {src.name}'s scope")
-    fetcher = fetcher or net.Fetcher(src.hosts, 0.0)
+    # One robots.txt per host per hour across live calls, not one per call.
+    fetcher = fetcher or net.Fetcher(src.hosts, 0.0, robots_cache=net.LIVE_ROBOTS)
     rb = fetcher.robots_for(page)
     if rb.unreachable:
         raise net.FetchError(f"robots.txt unreachable ({rb.note})")

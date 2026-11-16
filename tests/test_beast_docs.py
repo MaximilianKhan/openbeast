@@ -209,6 +209,7 @@ def env(tmp_path, monkeypatch, stub):
     monkeypatch.setenv("OPENBEAST_OFFLINE", "false")
     monkeypatch.setenv("OPENBEAST_RUN_DIR", str(tmp_path / "run"))
     monkeypatch.delenv("OPENBEAST_DOCS_NO_FTS", raising=False)
+    net.LIVE_ROBOTS.clear()                 # ports are reused across tests; robots differ
     return {"tmp": tmp_path, "stub": stub, "sources": src}
 
 
@@ -934,6 +935,22 @@ def test_live_fetches_through_the_adapter(env):
     out = api.live_text("NavigationView", source="swiftui", save=True)     # symbol -> guessed URL
     assert "DEPRECATED" in out and "saved to the mirror" in out
     assert api.read_text("swiftui:/documentation/swiftui/navigationview")
+
+
+def test_live_reuses_robots_across_calls_but_not_an_outage(env, monkeypatch):
+    stub = env["stub"]
+    url = f"{stub.base}/documentation/swiftui/navigationstack"
+    for _ in range(3):
+        assert "LIVE · fetched" in api.live_text(url)
+    assert stub.paths().count("/robots.txt") == 1
+    monkeypatch.setattr(net, "LIVE_ROBOTS_TTL", 0.0)                # expired: asked again
+    net.LIVE_ROBOTS.clear()
+    stub.robots_status = 503
+    assert "LIVE FETCH UNAVAILABLE" in api.live_text(url)
+    stub.robots_status = 200
+    stub.requests.clear()
+    assert "LIVE · fetched" in api.live_text(url)                   # the outage was not cached
+    assert stub.paths()[0] == "/robots.txt"
 
 
 def test_live_refuses_urls_outside_every_source(env):

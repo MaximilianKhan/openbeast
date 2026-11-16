@@ -380,6 +380,11 @@ through the source's adapter.
   Serving the MIRROR copy instead — check its date below.`
 - If the page is not in the mirror either, live mode says that and returns
   the best mirror search hits for the reference.
+- **robots.txt once an hour, not once a call.** Live calls in one process
+  (the long-lived MCP server) share robots answers per origin for an hour
+  (RFC 9309 allows 24 h), so a live lookup is one request to the publisher,
+  not two. An *unreachable* robots.txt is never cached: the next call asks
+  again. Each `docs.sh live` is its own process and always asks.
 - `--save` writes the live result into the mirror. On a `requires_ack`
   source it needs the terms accepted already, or `--accept-terms` on this
   call, exactly as `sync` does (§2.3).
@@ -496,7 +501,8 @@ from `tests/fixtures/beast_docs/`. They pin:
   most once, a repeat parses none, and a save is seen by the next reader.
 - **Status**: STALE flags.
 - **Live, offline and island**: live goes through the adapter, including a
-  guessed symbol URL and `--save`. Under `OFFLINE=true`, and under a
+  guessed symbol URL and `--save`; three live calls fetch robots.txt once,
+  and a robots outage is not remembered. Under `OFFLINE=true`, and under a
   monkeypatched island state, sync refuses and live serves the mirror
   **with zero requests made**. A live miss with no mirror copy says so.
 - **Bundles**: the pack → unpack round trip on an "offline" store, and

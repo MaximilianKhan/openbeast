@@ -28,6 +28,14 @@ from dataclasses import dataclass, field
 from . import config as C
 from . import urls as U
 
+# robots.txt answers shared by every live() call in this process (the MCP
+# server is long-lived): origin -> (expires at, monotonic; Robots). RFC 9309
+# §2.4 allows caching up to 24 h; one hour keeps a rule change visible the
+# same day. An UNREACHABLE answer is never cached, so recovery is immediate.
+LIVE_ROBOTS: dict = {}
+LIVE_ROBOTS_TTL = 3600.0
+_LIVE_ROBOTS_LOCK = threading.Lock()
+
 MAX_BYTES = 16 * 1024 * 1024          # one page; Apple's biggest JSON is ~2 MB
 DEADLINE = 60.0                        # whole request, connect to last byte
 ROBOTS_MAX = 512 * 1024
@@ -162,13 +170,14 @@ class Fetcher:
     """One crawl's HTTP client. Not thread-safe; one per sync."""
 
     def __init__(self, hosts, delay: float = 1.0, user_agent: str = C.USER_AGENT,
-                 sleep=time.sleep, clock=time.monotonic):
+                 sleep=time.sleep, clock=time.monotonic, robots_cache=None):
         self.hosts = list(hosts)
         self.delay = max(0.0, float(delay))
         self.ua = user_agent
         self.sleep, self.clock = sleep, clock
         self._last: dict = {}           # origin -> monotonic time of last request
         self.robots: dict = {}          # origin (scheme://host[:port]) -> Robots
+        self.robots_cache = robots_cache  # optional, shared across Fetchers (LIVE_ROBOTS)
         self.requests = 0
         if _allow_private():
             self._vet = None
@@ -198,6 +207,12 @@ class Fetcher:
         host = U.origin(norm)
         if host in self.robots:
             return self.robots[host]
+        if self.robots_cache is not None:
+            with _LIVE_ROBOTS_LOCK:
+                hit = self.robots_cache.get(host)
+            if hit and hit[0] > time.monotonic():
+                self.robots[host] = hit[1]
+                return hit[1]
         robots_url = f"{host}/robots.txt"
         try:
             r = self._request(robots_url, max_bytes=ROBOTS_MAX, check_robots=False)
@@ -215,6 +230,9 @@ class Fetcher:
             rb = Robots(disallow_all=True, unreachable=True,
                         note=f"{robots_url}: {e} (unreachable: crawl refused)")
         self.robots[host] = rb
+        if self.robots_cache is not None and not rb.unreachable:
+            with _LIVE_ROBOTS_LOCK:
+                self.robots_cache[host] = (time.monotonic() + LIVE_ROBOTS_TTL, rb)
         return rb
 
     # the request -----------------------------------------------------------
