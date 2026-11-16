@@ -257,11 +257,11 @@ system-prompt.md   agents/runner.py   agents/tools.py
 evals/SUITE_VERSION   evals/HARNESS_VERSION   evals/vlib.py
 ```
 
-`evals/HARNESS_VERSION` is a pin, not code: `harness5 <fingerprint>`, where
+`evals/HARNESS_VERSION` is a pin, not code: `harness6 <fingerprint>`, where
 the fingerprint is the AST of run_eval's agent-shaping and judging code
 (`cache.HARNESS_FUNCTIONS` / `HARNESS_CONSTANTS`: the agent's argv, env and
 wall cap, fixture setup, the validator, its bootstrap and private build
-cache, and the leftover sweep). `tests/test_cache.py` fails when the code
+cache, the leftover sweep, and the toolchain pins). `tests/test_cache.py` fails when the code
 and the pin disagree. `evals/vlib.py` is hashed whole, because run_eval
 injects it into every validator.
 
@@ -288,7 +288,7 @@ injects it into every validator.
   ```
 
 - **v5.0 is the current suite** (`evals/SUITE_VERSION` = `v5`, harness
-  `harness5`, the manifest `evals/suites/v5.json`). `SUITE_VERSION` and the
+  `harness6`, the manifest `evals/suites/v5.json`). `SUITE_VERSION` and the
   manifest move only when Max rolls the suite; v5.1 is a backlog of twelve
   families, not something to add units to ([10](#10-the-v5-eval-suite-offline-running-it-and-authoring-for-it)).
 
@@ -836,8 +836,14 @@ Rules that the prover cannot check, and the verifiers found broken:
   anything that holds answers. Never import it into the validator: it can
   rebind your checks (U4's verifiers did, on 152 and 153).
 - Hold the oracle and the seed **in memory**; write only inputs to disk.
-- Build compiled solutions with `vlib.private_build_dir` + `vlib.build_env`;
-  do not set a cache dir of your own (the harness gives you a private one).
+- Build compiled solutions with `vlib.start_build({SRC: source}, BUILD, EXE)`
+  (a private copy, the compiler the harness pinned before the agent ran, a
+  clean env, a native executable required) and run `b.product`, never a
+  binary in the fixture dir; do not set a cache dir of your own (the harness
+  gives you a private one).
+- Run a Python solution with `confine=[work], read_only=vlib.python_runtime(...)`
+  from a private copy: the deny-list form has no read-deny on Linux and
+  misses a stray copy of a reference on macOS.
 - Scale every fixed limit with `vlib.t()`; start no `python -c SRC` child.
 - Zig prompts state the contract only (Zig 0.16, entry point, compile
   command). API tutoring (`&fr.interface`, `init.io`, `takeDelimiter`) is

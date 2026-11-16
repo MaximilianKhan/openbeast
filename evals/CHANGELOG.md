@@ -1,5 +1,27 @@
 # Eval suite changelog
 
+## v5.0, harness6 (2026-11-16) — review 1116 fixes (era moves)
+
+Same 71 units; `evals/vlib.py` and run_eval's judging code changed, so the
+era moves (`harness5` -> `harness6`).
+
+- **Toolchain pins.** The harness resolves and fingerprints every compiler
+  and inspection tool before any agent runs and refuses a validation when
+  one moved or changed (not banked). U3 compiled units build a private copy
+  with the pinned compiler (`vlib.start_build`); every validator gets
+  `GOENV=off`, `GOTOOLCHAIN=local` and the pinned rustup toolchain. New
+  prover arms: `toolchain:path`, `toolchain:goenv`.
+- **Confinement.** 183, 188, 40, 36_a and 123_a run the solution with
+  `confine=` (stdlib + a private dir) on macOS and Linux; 40 lints strictly
+  and blocks numpy/torch with an audit hook.
+- **Kept-v4 gates** of 146, 147, 153, 158 and 159 scale with
+  `OPENBEAST_TIMEOUT_SCALE` (the v4 number at scale 1); the prover lint now
+  sees a measured time compared with a bare number.
+- **Harness:** a per-fixture lock across processes (`run_eval.fixture_lock`);
+  the macOS process sampler reads libproc instead of forking `ps`; 122's
+  oracle builds its columns in the integer domain (bit-identical, 2x faster
+  on aarch64).
+
 ## v5.0 (2026-11-15) — the measured suite (CURRENT; era break)
 
 `evals/SUITE_VERSION` = v5 rolls every cache era; the v4 board is frozen

@@ -132,9 +132,13 @@ and v4 tasks keep their categories covered.
 | **v4, kept as defined in v4** | 16 | 24 | 29_db_migration, 37_softmax_stable, 49_markov_steady_state, 107_singleflight, 109_jwt, 117_iter_refinement, 121_quorum_kv, 124_rkf45, 126_hmac_scratch, 128_rsa, 143_uov, 146_aho_corasick, 147_persistent_bst, 153_coroutine_scheduler, 158_karatsuba_bytes (python/go/c/cpp/rust), 159_ntt_convolution (python/go/c/cpp/rust) |
 
 The third group keeps breadth where a family was rejected. Its tasks run
-their **v4 validators unchanged** (only `ref_stem` / `dest` were added to
-their JSON so the prover can find a reference); each one is proven by
-`tests/prove_task.py` like every other unit. They replace:
+their **v4 validators** with two changes: `ref_stem` / `dest` were added to
+their JSON so the prover can find a reference, and the wall-clock gates of
+146, 147, 153, 158 and 159 scale with `OPENBEAST_TIMEOUT_SCALE` (review
+1116: `el < 1.5` was fixed, so under `--jobs 4` or a loaded host a textbook
+solution failed as "too slow"; at scale 1 every gate is the v4 number).
+Each one is proven by `tests/prove_task.py` like every other unit. They
+replace:
 
 | Rejected | Category | Covered in v5.0 by |
 |---|---|---|
@@ -142,7 +146,7 @@ their JSON so the prover can find a reference); each one is proven by
 | 165 ChaCha20-Poly1305 (6L) | Security | **126_hmac_scratch** (a primitive from scratch), **128_rsa**, **143_uov** |
 | 166 Welford/Chan moments (6L) | Probability & Stats | 188 GMM EM (new), **49_markov_steady_state** |
 | 169 broken-build repair (6L) | SWE / DevOps | 176, 178, 179 (new), **29_db_migration** |
-| 170 lock-free MPMC ring (4L) | Concurrency & Systems | 173 (new), **153_coroutine_scheduler** (152 Chase-Lev was the closer match, but its validator's fixed limits fail the lint) |
+| 170 lock-free MPMC ring (4L) | Concurrency & Systems | 173 (new), **153_coroutine_scheduler** (152 Chase-Lev was the closer match, but its validator's fixed limits fail the lint; 153's own fixed wall gate passed only because the lint could not see it, and is scaled since review 1116) |
 | 171 Go worker pool race + deadlock | Concurrency & Systems | **107_singleflight** (the same call-deduplication semantics, in Python) |
 | 180 vuln hunt | Security | **143_uov**, **128_rsa**, **109_jwt** |
 | 181 JWT verifier hardening | Security | **109_jwt** (HS256 sign/verify, padding, expiry) |
@@ -219,7 +223,8 @@ are exactly what a measured unit gets:
 | leak | no oracle-like file (expected*, answer*, check*, oracle*, hidden*, solution*) sits in the fixture dir after setup or validation, and a leak probe (a solution that prints whatever it can find) fails |
 | slow | for a timed unit, a slow solution fails by the validator's OWN limit, not the harness timeout |
 | scale2 | the reference passes again at `--scale 2.0` (the `--jobs 4` budget) |
-| lint | no coreutils `timeout`, no `<bits/stdc++.h>`, no zig API tutoring, no `python -c SRC` child, no fixed limit that ignores `OPENBEAST_TIMEOUT_SCALE` |
+| lint | no coreutils `timeout`, no `<bits/stdc++.h>`, no zig API tutoring, no `python -c SRC` child, no fixed limit that ignores `OPENBEAST_TIMEOUT_SCALE`: neither a `timeout=N` / `*_LIMIT = N` constant nor a measured wall time compared with a bare number (`el < 1.5`, also inside a shell validator's Python heredoc) |
+| toolchain | (compiled units) a toolchain planted after the harness pinned its own never runs, and a solution that is not a program fails: fakes of every compiler first on PATH, each compiling the reference instead (`toolchain:path`); for Go, a go.mod `go 1.99.0` in the fixture, a go env `GOTOOLCHAIN=path` in `$HOME` and a fake `go1.99.0` on PATH (`toolchain:goenv`) |
 
 Refs, wrong solutions and failure classes live in `evals/refs/<task_id>/`
 (`prove.json` or `PROVE.json`), declared in the task JSON as `ref_stem` /
@@ -240,6 +245,13 @@ configs; exec'ing into an interpreter; detaching daemons; patching the
 validator's interpreter), re-tested the previous round's fixes, and re-ran
 the prover for determinism. The kept-v4 units did not get that review in
 their v4 form; see [residual gaps](#residual-gaps-known-documented-not-closed-in-v50).
+That verdict held **on the macOS harness host with a clean host**: review
+1116 then passed U3 units through a compiler planted on PATH (36_c with an
+empty `main`), imported a stray copy of a reference from outside `evals/`
+(183, 188, 40, 36_a, 123_a; on Linux any copy), and bypassed 40's numpy
+ban. Those are closed below (toolchain pins, `confine=` for every Python
+unit of these families, 40's lint and audit hook); the units were re-proven
+with the new `toolchain` arm.
 
 ### The manifest
 
@@ -386,7 +398,7 @@ the harness for every unit; the last five were closed for v5.0:
 | network | a solution (or the agent via `fetch`) could reach `github.com` to pull the pushed reference, or phone home | `run_solution` denies `network*`; the agent's web tools are off under `OPENBEAST_EVAL` (or recorded) |
 | read the validator argv | a confined solution could still `ps`/`/proc` the validator's argv/env (190) | `run_solution` refuses fork (no `ps`) and denies `process-info*` on other processes (self allowed, for a framework Python's re-exec). On macOS that does **not** cover argv/env: sysctl `kern.procargs2` stays readable for a same-uid process under every sandbox-exec rule tried, so the invariant is that no validator holds a secret in argv or env (run_eval feeds it on stdin, env scrubbed, seed in memory); `tests/test_eval_190_confinement.py` probes every ancestor for oracle text |
 | read the reference across checkouts | U4: a solution globbed `/Users/*/.../worktrees/*/evals/refs/<unit>/*.py` and exec'd it | `run_solution` denies reads of any `evals/{refs,tasks,suites}` tree, in every checkout, not only this run's sealed paths |
-| toolchain capture | 166 / 169: a planted `rust-toolchain.toml`, a `$HOME/.../go/env` with `GOFLAGS=-ldflags=-s`, or a `.cargo/config.toml` in an ancestor replaced the compiler or stripped the symbol table the validator reads | build a private copy of only the source with `vlib.private_build_dir`, under `vlib.build_env` (`GOENV=off`, `GOFLAGS` cleared, `GOTOOLCHAIN=local`, private `HOME`), and require `vlib.is_native_executable` of the product; `vlib.scan_toolchain_overrides` flags a planted ancestor config |
+| toolchain capture | 166 / 169: a planted `rust-toolchain.toml`, a `$HOME/.../go/env` with `GOFLAGS=-ldflags=-s`, or a `.cargo/config.toml` in an ancestor replaced the compiler or stripped the symbol table the validator reads. Review 1116: a `gcc` planted first on PATH (`/opt/homebrew/bin`, `~/.local/bin`, a conda bin: all user-writable and ahead of `/usr/bin`) compiled the reference and passed 36_c with an empty `main`; so did a go.mod `go 1.99.0` + a go env `GOTOOLCHAIN=path` + a `go1.99.0` on PATH for 36_b; 122's guard ran `otool`, `nm` and `clang` by bare name | **the harness pins the toolchain before any agent runs** (`run_eval.toolchain_pins` → `vlib.pin_toolchain`: each compiler and inspection tool resolved, a root-owned copy preferred, followed to the real binary behind a proxy, `GOROOT/bin/go` and the sysroot's `rustc`, and fingerprinted with its install tree, ctime included) and **refuses a validation** when a name now resolves elsewhere, appeared, or a pinned tree changed (`Toolchain changed since the harness started`, an env error, not banked). The validator gets the pins: `vlib.start_build(sources, argv, product)` compiles a private copy of only the source with the pinned compiler under `vlib.build_env` (private `HOME`, only root-owned dirs on PATH, `GOENV=off`, `GOFLAGS` cleared, `GOTOOLCHAIN=local`, `GOWORK=off`, GOPATH mode for a single-file Go build) and requires a native executable. Every validator also gets `GOENV=off`, `GOTOOLCHAIN=local` and the pinned rustup toolchain; `prove_task` checks it with the `toolchain` arms |
 | compile-time build detection | 170: a solution read `@import("builtin").link_libcpp`, true only under `-fsanitize=thread`, and ran a different algorithm in the plain build | ban the distinguishing builtin fields, and validate behaviour in the PLAIN build too; `vlib.sanitizer_flags` builds the SAME source both ways |
 | shell parent | `run_reaped` ran `python -I -S -` through `sh -c`, and dash (Debian's and Ubuntu's `/bin/sh`) stays alive as the parent. That shell is dumpable and holds the unlinked script as fd 0, so `/proc/<sh>/fd/0` gave a solution the whole validator | The list form is run as `exec python ...`, so the validator's parent is the harness, which is non-dumpable |
 | other checkouts | A solution run from a worktree read `evals/tasks/40_attention.json` from the main checkout. The shared `.git` object store holds every branch's validators | `run_eval.validator_seal()` seals `evals/{tasks,refs,suites}` of every checkout in `git worktree list`, plus the git common dir (macOS; see below) |
@@ -426,18 +438,23 @@ into the validator from source; it is never on an import path or in the cwd.
   mount namespace with a fresh root on kernels before 5.13. Without either
   it returns `verdict="sandbox"` and does not run the solution. 190 needs it:
   its verifier read the oracle out of the unsealed `.git` object store.
-- **Builds**: `vlib.private_build_dir({relpath: src})` returns a fresh 0700
-  dir holding only the source, with no toolchain-config ancestor; build there
-  under `vlib.build_env()` (clean private `HOME`, `GOENV=off`, `GOFLAGS`
-  cleared, `GOTOOLCHAIN=local`) with `vlib.tool_path("rustc")` for an absolute
-  compiler. Then `vlib.assert_native_executable(out)` — a `#!`-script behind a
+- **Builds**: `b = vlib.start_build({SRC: source}, BUILD, EXE)` then
+  `ok, log = b.finish(vlib.t(25))` and run `b.product` (36, 122, 123 do).
+  It is the pieces below in one call: `vlib.private_build_dir({relpath: src})`
+  returns a fresh 0700 dir (under the harness, inside the validator's private
+  dir) holding only the source, with no toolchain-config ancestor; build there
+  under `vlib.build_env()` (clean private `HOME`, only root-owned dirs on
+  `PATH`, `GOENV=off`, `GOFLAGS` cleared, `GOTOOLCHAIN=local`, `GOWORK=off`)
+  with `vlib.tool_path("rustc")`, which returns the binary the harness pinned
+  before the agent ran (outside the harness, the first root-owned copy on
+  PATH). Then `vlib.assert_native_executable(out)`: a `#!`-script behind a
   planted compiler is not ELF/Mach-O. `vlib.scan_toolchain_overrides(dir)`
   lists any planted `rust-toolchain`/`.cargo/config`/`go.work`/`go env` in an
   ancestor. `vlib.sanitizer_flags("thread")` builds the same source with and
   without the sanitizer.
 - `vlib.t(s)` and `vlib.scale()` give the timeout scale. `vlib.python_cmd(p)`
-  gives `[python, -I, -S, p]`. `vlib.processes()` is a /proc-free process
-  table. `vlib.lint_python(src, ban_modules=, ban_calls=)` is an AST lint for
+  gives `[python, -I, -S, p]`. `vlib.processes()` is the process table
+  (/proc on Linux, libproc on macOS, `ps` as the fallback). `vlib.lint_python(src, ban_modules=, ban_calls=)` is an AST lint for
   the known dodges.
 
 **What a validator must do** (the full checklist is in
@@ -455,7 +472,9 @@ into the validator from source; it is never on an import path or in the cwd.
   the whole output.
 
 `tests/prove_task.py` lints validators for `-c` children and for fixed
-limits that never read the scale. The isolation itself is pinned by
+limits that never read the scale, including a measured time compared with a
+bare number (`prove_task.unscaled_time_gates`, which reads a shell
+validator's Python heredocs too). The isolation itself is pinned by
 `tests/test_eval_validator_isolation.py`.
 
 ### The isolation model, in one place
@@ -508,7 +527,13 @@ solution process group a validator recorded is SIGKILLed after it exits.
 - **Linux confinement is the environment's job.** On macOS sandbox-exec
   enforces the solution rules; on Linux vlib catches fork by sampling (verdict `forked`), exec
   (`/proc/<pid>/exe`) and, with `confine=`, reads (Landlock or namespaces),
-  but the deny-list form (no `confine=`) has no kernel read-deny. The
+  but the deny-list form (no `confine=`) has no kernel read-deny. Every
+  Python unit of the new families and of U3 runs with `confine=` since
+  review 1116; the kept-v4 Python units do not (they import the solution
+  in-process, see above). On a Linux harness host the **agent's own bash**
+  has no read-deny either (`agents/tools.py` seals it on macOS only), so a
+  Linux host is not leak-proof against an agent that reads `evals/refs`
+  during its turn; the documented harness host is the Mac. The
   leftover sweep on Linux is exact only with a delegated cgroup v2; without
   one it relies on the env tag, the tree poll (the runner is a subreaper, so
   an orphan stays in its tree while it lives) and groups/sessions. A daemon
@@ -518,9 +543,23 @@ solution process group a validator recorded is SIGKILLed after it exits.
   through `kern.procargs2` under every sandbox rule tried, so no validator
   may hold a secret in argv or env (none does: the script arrives on stdin).
 - **Shared fixture paths.** A family's units share one fixed `/tmp/eval_*`
-  dir; two provers (or a prover and a test) of the same family at once
-  corrupt each other (186, 190). The harness serialises a base group; by
-  hand, run one family at a time.
+  dir. Since review 1116 `run_eval` and `prove_task` hold an exclusive lock
+  per fixture root (`run_eval.fixture_lock`, a flock in a private per-uid
+  dir) from a unit's first cleanup to its last, so a second eval or prover
+  of the same unit waits ("Waiting for /tmp/eval_x ... pid N") instead of
+  deleting its solution. The family provers (`evals/refs/<dir>/prove.py`:
+  175, 176, 179) and ad-hoc scripts that call `run_setup` directly do not
+  take it.
+- **Toolchain pins are per harness process.** They are taken when the
+  harness starts, so a plant left by an EARLIER run's agent is pinned as
+  found, unless a root-owned copy of that name is on PATH (then that copy is
+  pinned). Tools outside the pinned names and trees (a linker in a user dir
+  that a compiler finds without PATH) are not fingerprinted. The kept-v4
+  compiled units (158, 159 b-e) still build in their fixture dir with the
+  bare name: the pin check and the Go/rustup env cover them, the private
+  build dir does not. The U3 rust and zig variants share `start_build` with
+  the proven go/c/cpp ones but were not re-proven in review 1116 (no rustc
+  or zig on the harness host or the Sparks at the time).
 - **Timing headroom.** The cold zig compile now happens in every
   validation (private cache): about 8 s of the 15 s validator budget on a
   loaded Mac; a Go unit rebuilds its standard library each time (158_b's
@@ -558,10 +597,12 @@ no open issue and the prover passes 3/3 at scale 1 and 2.0.
 `evals/SUITE_VERSION` is `v5`, which rolls the cache era (`ctxhash`) for
 every row: no v4 cache entry replays into v5. The v4 board is frozen (shown
 under "legacy suites"); v5 starts empty. The harness rides the same break,
-pinned as **`harness5`** in `evals/HARNESS_VERSION`: its fingerprint covers
+pinned as **`harness6`** in `evals/HARNESS_VERSION` (`harness5` at the v5.0
+release; review 1116 added the toolchain pins): its fingerprint covers
 the agent's wall cap, the validator's environment, bootstrap and private
-build cache, the fixture cwd, and the leftover sweep (`AgentWatch`,
-`sweep_agent_leftovers`), and `evals/vlib.py` is now hashed into the era
+build cache, the fixture cwd, the leftover sweep (`AgentWatch`,
+`sweep_agent_leftovers`) and the toolchain pins (`toolchain_pins`,
+`_toolchain_problems`), and `evals/vlib.py` is now hashed into the era
 too, because run_eval injects it into every validator. `agents/tools.py`
 (the seal, per-unit diagnostics, the agent's sandbox tag) is era-hashed as
 before. Expect **zig L0 to drop sharply** against v4 (the v4 off-arm passed
