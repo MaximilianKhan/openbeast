@@ -925,6 +925,16 @@ else
   fail "conf.sh lookup cache: got '$_cc' with $_ng grep calls (want 'false|127.0.0.2|unset|true', <= 5)"
 fi
 rm -f "$CONF_SCRATCH/openbeast.conf"
+# review 2026-11-16: doctor.sh and update.sh --python ran `python3 -m pip
+# show` per pin (2.3 s of doctor's 4.3 s on spark-1). ob_py_versions reads
+# them all in one interpreter, in argument order, empty when not installed.
+_pv="$(bash -c "source '$REPO_DIR/scripts/lib/pyversions.sh'; ob_py_versions pip obnotapackage" 2>/dev/null)"
+if [[ "$(sed -n 1p <<< "$_pv")" =~ ^pip\ [0-9] && "$(sed -n 2p <<< "$_pv")" == "obnotapackage " ]] \
+   && ! grep -vE '^[[:space:]]*#' "$REPO_DIR/scripts/doctor.sh" "$REPO_DIR/scripts/update.sh" | grep -q 'pip show'; then
+  pass "ob_py_versions: one interpreter for every pin; doctor/update.sh no longer start pip per pin"
+else
+  fail "ob_py_versions gave '$(tr '\n' '|' <<< "$_pv")' (or a 'pip show' is left in doctor/update.sh)"
+fi
 
 # Distributed agents Phase 1 (docs/DISTRIBUTED_AGENTS_PLAN.md):
 # OPENBEAST_AGENT_INFERENCE_URL must be ABSENT (not exported empty) when

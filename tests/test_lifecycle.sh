@@ -1510,12 +1510,18 @@ echo ""
 echo "doctor.sh's missing-dependency hint:"
 _P="$_T/pydeps"; _sandbox "$_P"
 mkdir -p "$_P/agents"
-printf 'obnotapackage==1.2.3\n' > "$_P/agents/requirements.txt"
+printf 'obnotapackage==1.2.3\nobnotpackage2==4.5\n' > "$_P/agents/requirements.txt"
 # python3 -m pip show: "not installed" for everything; any other python3 call
-# goes to the real interpreter.
-printf '#!/bin/bash\n[[ "$1 $2 $3" == "-m pip show" ]] && exit 1\nexec /usr/bin/python3 "$@"\n' > "$_P/bin/python3"
+# goes to the real interpreter. Every call is logged: doctor reads all pins in
+# ONE interpreter now (lib/pyversions.sh), never a pip startup per pin.
+printf '#!/bin/bash\necho "$1 $2 $3" >> "%s/py.log"\n[[ "$1 $2 $3" == "-m pip show" ]] && exit 1\nexec /usr/bin/python3 "$@"\n' "$_P" > "$_P/bin/python3"
 chmod +x "$_P/bin/python3"
 _O="$(_run "$_P" "$_P/scripts/doctor.sh")"
+if ! grep -q -- '-m pip show' "$_P/py.log" && grep -qF "✗ obnotpackage2 not installed (pinned 4.5)" <<< "$_O"; then
+  pass "doctor reads every pin's version without a pip startup per pin (review 2026-11-16)"
+else
+  fail "doctor pin versions: $(grep -c -- '-m pip show' "$_P/py.log") pip show calls; $(grep -F 'obnotpackage2' <<< "$_O")"
+fi
 if grep -qF "✗ obnotapackage not installed (pinned 1.2.3)" <<< "$_O" \
    && grep -A1 -F "obnotapackage not installed" <<< "$_O" | grep -qF "fix: ./scripts/pydeps.sh install"; then
   pass "a missing pinned package points at ./scripts/pydeps.sh install"

@@ -31,6 +31,7 @@ cd "$REPO_DIR"
 # hardware.sh provides the shared backend → cmake-flags mapping.
 source "$REPO_DIR/scripts/lib/conf.sh"
 source "$REPO_DIR/scripts/lib/hardware.sh"
+source "$REPO_DIR/scripts/lib/pyversions.sh"   # ob_py_versions — installed pin versions, one python3
 # Enabled compose fragments, for recreating the stack the way start.sh
 # composes it (update_images). Guarded: a partial checkout still updates.
 # shellcheck source=/dev/null
@@ -559,11 +560,13 @@ update_python() {
   # Snapshot the rollback target BEFORE anything is touched.
   local req_backup; req_backup="$(mktemp)"
   cp "$req" "$req_backup"
+  # Installed versions come from ob_py_versions (one python3 for every pin),
+  # not a `pip show` per pin per pass: that was 18 pip startups, ~7 s on a
+  # Spark (review 2026-11-16).
   local before_spec=() p v
-  for p in "${pkgs[@]}"; do
-    v=$(python3 -m pip show "$p" 2>/dev/null | awk '/^Version:/{print $2}')
+  while read -r p v; do
     [[ -n "$v" ]] && before_spec+=("${p}==${v}")
-  done
+  done < <(ob_py_versions "${pkgs[@]}" || true)
 
   _py_restore() {
     cp "$req_backup" "$req"
@@ -590,10 +593,17 @@ update_python() {
 
   # Report what moved, and shout about major jumps: those are where APIs get
   # deleted, and they are the ones worth a human's attention before committing.
-  local majors=0 spec name old new
-  for spec in "${before_spec[@]}"; do
-    name="${spec%%==*}"; old="${spec##*==}"
-    new=$(python3 -m pip show "$name" 2>/dev/null | awk '/^Version:/{print $2}')
+  # What is installed now, read once: this report and the pin rewrite below
+  # both use it (the upgrade above is the only thing that changed it).
+  local after_spec=() majors=0 spec name old new a
+  while read -r p v; do
+    [[ -n "$v" ]] && after_spec+=("${p}==${v}")
+  done < <(ob_py_versions "${pkgs[@]}" || true)
+  for spec in ${before_spec[@]+"${before_spec[@]}"}; do
+    name="${spec%%==*}"; old="${spec##*==}"; new=""
+    for a in ${after_spec[@]+"${after_spec[@]}"}; do
+      [[ "${a%%==*}" == "$name" ]] && { new="${a##*==}"; break; }
+    done
     [[ -z "$new" || "$new" == "$old" ]] && continue
     if [[ "${old%%.*}" != "${new%%.*}" ]]; then
       warn "MAJOR bump ${name} ${old} -> ${new} — APIs may have been removed"
@@ -624,11 +634,7 @@ PY
   # pin the list did not know about. A pin whose package pip cannot report
   # stays exactly as it was.
   local req_new; req_new="$(mktemp)"
-  local want=() name lc sn spec
-  for p in "${pkgs[@]}"; do
-    v=$(python3 -m pip show "$p" 2>/dev/null | awk '/^Version:/{print $2}')
-    [[ -n "$v" ]] && want+=("${p}==${v}")
-  done
+  local want=(${after_spec[@]+"${after_spec[@]}"}) name lc sn spec
   # Plain bash, line by line: a comment or blank line is copied; a pin line is
   # matched on its NAME (case-insensitively, as pip does) and gets the new
   # version; anything else is copied untouched.
