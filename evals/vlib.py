@@ -379,9 +379,9 @@ def _sandbox_prefix(allow_fork: bool, deny_read: list[str], *,
     for p in deny_read:
         rules.append(f'(deny file-read* (subpath "{_sbpl_str(os.path.realpath(p))}"))')
     if exec_only:
-        rp = os.path.realpath(exec_only)
         rules.append("(deny process-exec*)")
-        rules.append(f'(allow process-exec (literal "{_sbpl_str(rp)}"))')
+        for img in _exec_images(exec_only):
+            rules.append(f'(allow process-exec (literal "{_sbpl_str(img)}"))')
     if allow_write is not None:
         rules.append("(deny file-write*)")
         for p in ["/dev"] + list(allow_write):
@@ -555,7 +555,8 @@ def _confine_profile(allow_fork: bool, ro: list[str], rw: list[str], *,
         rules.append(f'(deny file-read* (subpath "{_sbpl(os.path.realpath(p))}"))')
     if exec_only:
         rules.append("(deny process-exec*)")
-        rules.append(f'(allow process-exec (literal "{_sbpl(os.path.realpath(exec_only))}"))')
+        for img in _exec_images(exec_only):
+            rules.append(f'(allow process-exec (literal "{_sbpl(img)}"))')
     return "".join(rules)
 
 
@@ -928,6 +929,23 @@ def _writer(stream, data: bytes):
             pass
 
 
+def _exec_images(exec_only) -> list[str]:
+    """exec_only as a list of realpaths (one image, or a launcher + its target)."""
+    imgs = [exec_only] if isinstance(exec_only, str) else list(exec_only)
+    return [os.path.realpath(i) for i in imgs if i]
+
+
+def _env_target(cmd: list) -> str | None:
+    """The program `/usr/bin/env [-i] [NAME=VALUE]... PROG ...` will exec, or
+    None. A validator uses env to set DYLD_* after sandbox-exec (which is
+    SIP-protected and drops them), so the confined images are env AND PROG."""
+    for a in cmd[1:]:
+        if a.startswith("-") or "=" in a:
+            continue
+        return a
+    return None
+
+
 def _resolve_exec(prog: str, cwd: str | None, env: dict) -> str:
     """The realpath the kernel will exec for argv[0], as the CHILD sees it:
     a relative path (`./divmod`) against the solution's cwd, not ours, and a
@@ -999,6 +1017,10 @@ def run_solution(cmd, input=None, *, cpu_s: float, wall_s: float | None = None,
         # validator asks otherwise.
         confine_exec = (not allow_fork) and bool(exec0) and exec0 not in interp
     exec_only = exec0 if confine_exec else None
+    if exec_only and exec0 == "/usr/bin/env":
+        # A launcher: allow it and the one program it starts, nothing else.
+        target = _env_target(list(cmd))
+        exec_only = [exec0] + ([_resolve_exec(target, cwd, env)] if target else [])
     argv = _sandbox_prefix(allow_fork, seal, exec_only=exec_only) + list(cmd)
     confine_child, confine_cleanup = None, (lambda: None)
     if confine is not None:

@@ -1074,3 +1074,22 @@ def test_exec_confinement_resolves_a_relative_argv_against_the_solutions_cwd(tmp
     r = vlib.run_solution(["./p"], cpu_s=5, cwd=str(tmp_path))
     assert r.ok and "ran" in r.stdout, (r, r.stderr[-300:])
     assert vlib._resolve_exec("./p", str(tmp_path), {}) == os.path.realpath(tmp_path / "p")
+
+
+@pytest.mark.skipif(not __import__("shutil").which("cc"), reason="no C compiler")
+def test_exec_confinement_allows_an_env_launcher_and_its_one_target(tmp_path):
+    # 122 runs `/usr/bin/env DYLD_INSERT_LIBRARIES=<monitor> ./gemm` (sandbox-exec
+    # drops DYLD_*). Confining exec to env alone denied the solution itself.
+    (tmp_path / "p.c").write_text('#include <stdio.h>\n#include <stdlib.h>\n'
+                                  'int main(void){puts(getenv("OB_X"));return 0;}\n')
+    subprocess.run(["cc", "-o", str(tmp_path / "p"), str(tmp_path / "p.c")], check=True)
+    r = vlib.run_solution(["/usr/bin/env", "OB_X=seen", "./p"], cpu_s=5, cwd=str(tmp_path))
+    assert r.ok and "seen" in r.stdout, (r, r.stderr[-300:])
+    if DARWIN:
+        # ...and still nothing else: the target may not exec a third image.
+        (tmp_path / "q.c").write_text('#include <unistd.h>\n'
+                                      'int main(void){execl("/bin/echo","echo","escaped",(char*)0);'
+                                      'return 3;}\n')
+        subprocess.run(["cc", "-o", str(tmp_path / "q"), str(tmp_path / "q.c")], check=True)
+        r = vlib.run_solution(["/usr/bin/env", "./q"], cpu_s=5, cwd=str(tmp_path))
+        assert "escaped" not in r.stdout, r
