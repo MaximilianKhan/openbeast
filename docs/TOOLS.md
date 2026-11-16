@@ -257,7 +257,7 @@ and reports `COMPACTIONS: n` next to the `TOKENS:` line.
 | Project | Contributes | Does NOT contribute tools |
 |---|---|---|
 | **llama.cpp** | Model serving (`llama-server`, OpenAI-compatible API) | — |
-| **Open WebUI** | Chat UI, accounts, RBAC enforcement, per-chat tool toggles | We don't enable its built-in web-search/code-interpreter/image-gen; the tool surface it shows is ours via the identity tool server |
+| **Open WebUI** | Chat UI, accounts, RBAC enforcement, per-chat tool toggles | We don't enable its built-in web-search/code-interpreter/image-gen; the tool surface it shows is ours via the identity tool server. One Open WebUI *function* is ours: the global `random_seed` filter (`agents/webui_functions/random_seed.py`, installed by `configure-webui.sh`, off with `WEBUI_RANDOM_SEED=false`) gives each unseeded chat request a random seed, because TensorFold's fixed default seed made Regenerate repeat the same answer. It is not a tool and the model never sees it |
 | **Identity tool server** (`agents/openapi_tools.py`, ours) | Transport + identity: serves the tools as OpenAPI for WebUI, shards workspaces per user, checks RBAC keys, writes the audit trail | — |
 | **SearXNG** | The search backend behind our `web_search` tool | It's a service, not a tool — the tool code is ours |
 | **OpenCode** | Its *own* native tool suite (its `bash`, `edit`, `view`, …) alongside our 18 via MCP stdio | OpenCode's built-ins are upstream's code and are documented upstream |

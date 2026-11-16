@@ -6,6 +6,8 @@
 #   1. MCPO tool server connection (OpenAPI on localhost:3001)
 #   2. Native function calling for all detected models
 #   3. System prompt from system-prompt.md
+#   4. The random seed filter (agents/webui_functions/random_seed.py), so
+#      Regenerate differs on servers with a fixed default seed (TensorFold)
 #
 # Called automatically by start.sh after Open WebUI is ready.
 #
@@ -567,6 +569,121 @@ if changed:
   else
     echo "    (could not set them — WebUI may not be up yet)"
   fi
+fi
+
+# --- 1d. A fresh random seed per chat request (the random_seed filter) ---
+# TensorFold (the spark-hydra GLM server) falls back to a FIXED seed when a
+# request names none, so WebUI's Regenerate re-sent the same request and got
+# the same answer back word for word (probed 2026-11-16: three unseeded
+# requests at temperature 0.6, one text; seeds 1/2/3, three texts). The
+# global Filter function agents/webui_functions/random_seed.py gives every
+# chat request WITHOUT a seed a random one; a seed set in the chat's Controls
+# or the model's params still wins and stays reproducible. On llama.cpp,
+# which already draws a random seed per request, it changes nothing.
+#
+# Installed through WebUI's functions API (routers/functions.py of the pinned
+# 0.13.3: GET /export, POST /create, /id/{id}/update, /id/{id}/toggle,
+# /id/{id}/toggle/global), not the DB, because the API also compiles the
+# module into WebUI's live function cache. Both toggles FLIP the flag, so
+# each is called only when the flag is wrong. Idempotent: created once,
+# updated only when the source changed. WEBUI_RANDOM_SEED=false switches an
+# installed copy off (is_active=false) and installs nothing.
+RANDOM_SEED_FN_ID="random_seed"
+RANDOM_SEED_FN_SRC="$REPO_DIR/agents/webui_functions/random_seed.py"
+_fn_post() {   # _fn_post <path> [json on stdin] — prints the reply body
+  ob_curl_hdr "$AUTH" -s -m 15 -X POST -H "Content-Type: application/json" \
+    "$WEBUI_URL/api/v1/functions$1" "${@:2}" 2>/dev/null || true
+}
+_fn_is_fn() {  # does stdin hold a function object with our id?
+  FN_ID="$RANDOM_SEED_FN_ID" python3 -c '
+import json, os, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+sys.exit(0 if isinstance(d, dict) and d.get("id") == os.environ["FN_ID"] else 1)' 2>/dev/null
+}
+_configure_random_seed() {
+  local want=true export_json plan action
+  [[ "${WEBUI_RANDOM_SEED:-true}" == "true" ]] || want=false
+  if [[ "$want" == "true" && ! -f "$RANDOM_SEED_FN_SRC" ]]; then
+    echo "    Warning: $RANDOM_SEED_FN_SRC is missing — random seed filter not installed." >&2
+    return 0
+  fi
+  export_json=$(ob_curl_hdr "$AUTH" -s -m 15 "$WEBUI_URL/api/v1/functions/export" 2>/dev/null || true)
+  # The plan: one action per line, from the live state and the wanted one.
+  plan=$(printf '%s' "$export_json" | FN_ID="$RANDOM_SEED_FN_ID" FN_SRC="$RANDOM_SEED_FN_SRC" \
+      WANT="$want" python3 -c '
+import json, os, sys
+try:
+    fns = json.load(sys.stdin)
+except Exception:
+    print("unreadable"); sys.exit(0)
+if not isinstance(fns, list):
+    print("unreadable"); sys.exit(0)
+fid, want = os.environ["FN_ID"], os.environ["WANT"] == "true"
+cur = next((f for f in fns if isinstance(f, dict) and f.get("id") == fid), None)
+if not want:
+    if cur and cur.get("is_active"):
+        print("toggle")
+    sys.exit(0)
+src = open(os.environ["FN_SRC"]).read()
+if cur is None:
+    print("create"); print("toggle"); print("toggle/global")
+    sys.exit(0)
+if cur.get("content") != src:
+    print("update")
+if not cur.get("is_active"):
+    print("toggle")
+if not cur.get("is_global"):
+    print("toggle/global")
+' 2>/dev/null || echo unreadable)
+  if [[ "$plan" == "unreadable" ]]; then
+    echo "    Warning: WebUI's functions API did not answer a list — random seed filter" >&2
+    echo "    left as it was. (Functions disabled with ENABLE_FUNCTIONS=false?)" >&2
+    return 0
+  fi
+  if [[ -z "$plan" ]]; then
+    if [[ "$want" == "true" ]]; then
+      echo "    already installed (active, global)"
+    else
+      echo "    off (WEBUI_RANDOM_SEED=false)"
+    fi
+    return 0
+  fi
+  while IFS= read -r action; do
+    [[ -z "$action" ]] && continue
+    case "$action" in
+      create|update)
+        local path="/create"
+        [[ "$action" == "update" ]] && path="/id/$RANDOM_SEED_FN_ID/update"
+        if ! FN_ID="$RANDOM_SEED_FN_ID" FN_SRC="$RANDOM_SEED_FN_SRC" python3 -c '
+import json, os
+print(json.dumps({"id": os.environ["FN_ID"], "name": "Random Seed",
+                  "content": open(os.environ["FN_SRC"]).read(),
+                  "meta": {"description": "A fresh random seed for every chat request that names none, so Regenerate gives a new answer (OpenBeast)"}}))' \
+            | _fn_post "$path" -d @- | _fn_is_fn; then
+          echo "    Warning: could not $action the random seed filter through WebUI's API." >&2
+          return 0
+        fi ;;
+      toggle|toggle/global)
+        if ! _fn_post "/id/$RANDOM_SEED_FN_ID/$action" | _fn_is_fn; then
+          echo "    Warning: could not $action the random seed filter through WebUI's API." >&2
+          return 0
+        fi ;;
+    esac
+  done <<< "$plan"
+  if [[ "$want" == "true" ]]; then
+    echo "    random seed filter installed/updated (active, global)"
+  else
+    echo "    random seed filter switched off (WEBUI_RANDOM_SEED=false)"
+  fi
+}
+if [[ "$TOKEN_OK" != "1" ]]; then
+  echo "  Skipping the random seed filter (no admin token — see warning above)."
+else
+  echo "  Random seed filter (fresh seed per chat request, so Regenerate differs) ..."
+  _configure_random_seed
 fi
 
 # Model tool wiring uses these two connection ids.

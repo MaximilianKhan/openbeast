@@ -128,6 +128,7 @@ Decisions the 2026-10-09 review deferred to the owner. Each is open.
 - [ ] Generate tool-server keys by default.
 - [ ] Roll the eval era once, carrying: the `23_sql_injection` and `21_race_condition` validator fixes, the runner request-timeout fix, hiding `expected.txt` from variant units, and removing `fetch`/`web_search` under eval, and the beast-island guard in `tools.web_search`/`tools.fetch` (`island.web_refusal`), so autonomous sub-agents refuse instantly too (docs/BEAST_ISLAND.md § Known limits).
 - [ ] beast-island: Open WebUI's built-in Web Search toggle bypasses the island guard (it calls SearXNG directly). Option: have `configure-webui.sh` disable it while islanded at launch.
+- [ ] TensorFold's fixed default seed: Open WebUI now gets a random seed per chat (the `random_seed` filter, 2026-11-16), but opencode, the Mac client and any other client of `:8000` / `:8443` still repeat themselves on a retry. Options: a random default seed at beast-gate for requests without one, or TensorFold's own default if it grows a switch. Not the eval runner, whose seeding is part of the era.
 - [ ] Trim prompt tokens in `system-prompt.md` (era-hashed, so in the same era roll) and `system-prompt-tools.md` (WebUI-only, not era-hashed).
 - [ ] Rerun the champion row (Qwen3.6 27B Q5_K_XL) in the current era.
 - [ ] Agent router residual: in header mode with tool keys and no `LLAMA_API_KEY`, a local process can still type `X-OpenWebUI-User-Role: admin`. Fix is a router key minted by the launcher, or `--with-jwt` by default.
@@ -209,6 +210,14 @@ Decisions the 2026-10-09 review deferred to the owner. Each is open.
   bundle, zig); remote access (beast-gate via `tailscale serve`,
   `svc:spark-hydra`); primary switch beast ↔ spark-hydra; `PARALLEL=8`;
   native TensorFold 1.2.7 A/B.
+- [ ] **RoCE MTU 9000 — staged for next reboot; run --stage on both, reboot
+  both, --verify, A/B.** (Max, 2026-11-16: "We absolutely need to fix this on
+  the next restart".) The fabric runs at netdev MTU 1500 = RoCE `active_mtu
+  1024`. `sudo scripts/backends/spark-fabric-mtu.sh --stage` on spark-1 and
+  spark-2 (one netplan drop-in, `netplan generate` only), reboot both,
+  `--verify <peer rail IPs>` on each, then A/B the ~45K-token TTFT and the
+  4-stream decode tok/s and record them. Runbook, rollback, measurement
+  script: [`SPARK_HYDRA.md`](SPARK_HYDRA.md) "B4. Fabric MTU 9000".
 - **TODO — scaling review, 1 to 8 ranks (Max, 2026-11-15: "leave the
   scaling questions 1-8 for another day").** The 2026-11-16 adversarial
   review covered the 2x pair only. Still unreviewed and unmeasured: the

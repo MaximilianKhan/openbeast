@@ -23,7 +23,7 @@ each script's `--help` on 2026-11-15.
 |---|---|
 | [0. The pair at a glance](#0-the-pair-at-a-glance) | names, addresses, what runs where |
 | [A. What you need](#a-what-you-need) | hardware, cabling for 1 / 2 / 3 / 4-8 Sparks, accounts, the offline staging checklist |
-| [B. Bare boxes to root setup](#b-bare-boxes-to-root-setup) | `spark-root-setup.sh`, `spark-guard.sh`, checking them from another device |
+| [B. Bare boxes to root setup](#b-bare-boxes-to-root-setup) | `spark-root-setup.sh`, `spark-guard.sh`, checking them from another device, fabric MTU 9000 (`spark-fabric-mtu.sh`) |
 | [C. Weights](#c-weights) | fetch or copy, lock, hard-link into the recipe's HF-cache layout, carry to workers |
 | [D. Inference](#d-inference) | D1 the Mia recipe (what serves today), D2 native TensorFold through `spark-node.sh` / `spark-cluster.sh`, D3 the engine plane |
 | [E. The command center on spark-1](#e-the-command-center-on-spark-1) | bootstrap, `openbeast.conf`, boot units, WebUI admin, tailnet publishing, device keys |
@@ -217,7 +217,10 @@ Other flags:
 - `--serve [--port N]` adds a ufw rule for a **keyed** engine on `tailscale0`.
   Leave it off. Inference stays on loopback behind beast-gate.
 
-What it never touches: netplan, the MTU, the driver, Docker.
+What it never touches: netplan, the MTU, the driver, Docker. The fabric MTU
+has its own opt-in root script, `spark-fabric-mtu.sh`
+([B4](#b4-fabric-mtu-9000-spark-fabric-mtu)), which adds one netplan drop-in
+for the next reboot and still leaves NVIDIA Sync's file alone.
 
 **Expected output.** This is an excerpt assembled from the script's own
 messages, not a captured transcript:
@@ -382,6 +385,243 @@ spark-1's own key. Its warning explains how not to lock yourself out:
 3. From spark-1, also test `ssh max@10.100.216.2 true`.
 
 `--unharden-ssh` undoes it.
+
+### B4. Fabric MTU 9000: spark-fabric-mtu
+
+**Status, 2026-11-16: ready to stage, not yet staged on either Spark.** Max:
+"We absolutely need to fix this on the next restart." The pair runs at
+netdev MTU 1500 on the ConnectX rails, which gives RoCE `active_mtu 1024`
+(seen live on spark-1: `ip -d link` says `mtu 1500 … maxmtu 9978`, and
+`ibv_devinfo -d rocep1s0f0` says `max_mtu 4096 (5)`, `active_mtu 1024 (3)`).
+The target is netdev MTU 9000, which gives `active_mtu 4096`.
+
+**Why it matters.** RoCE carries each RDMA message in packets of
+`active_mtu` bytes. At 1024, a bulk transfer is 4x as many packets as at
+4096, with the per-packet headers, completions and NIC work that go with
+them. Two kinds of traffic on this pair are bulk:
+
+- **Prefill all-gathers.** A long prompt (tens of thousands of tokens) moves
+  large activation tensors between the two ranks at every layer. This is
+  where the TTFT of a big prompt goes, and where a bigger MTU should show.
+- **Weight-sync and other bulk copies** over the fabric (C3's carry to the
+  worker, any NCCL broadcast of large buffers).
+
+TP-2 decode all-reduces are small (one token's activations) and
+latency-bound, so the 4-stream decode tok/s should barely move. That is a
+prediction, not a measurement: the A/B below is how we find out.
+
+**What the script does.** `scripts/backends/spark-fabric-mtu.sh` (root, one
+Spark per run, like `spark-guard.sh`):
+
+- Finds the fabric netdevs with `ibdev2netdev`: every ConnectX RoCE port, Up
+  or Down (the cable uses different ports on the two boxes: spark-1's
+  `enp1s0f0np0` / `enP2p1s0f0np0` are Up, spark-2's `enp1s0f1np1` /
+  `enP2p1s0f1np1`). It leaves out any netdev that carries a default route and
+  any netdev netplan does not already manage, and refuses if none is left.
+  The LAN NIC `enP7s7` is not a ConnectX port, so it is never a candidate.
+- Writes ONE file, `/etc/netplan/99-zz-openbeast-fabric-mtu.yaml` (0600
+  root):
+
+  ```yaml
+  network:
+    version: 2
+    ethernets:
+      enp1s0f0np0:
+        mtu: 9000
+      enp1s0f1np1:
+        mtu: 9000
+      enP2p1s0f0np0:
+        mtu: 9000
+      enP2p1s0f1np1:
+        mtu: 9000
+  ```
+
+  It sorts after NVIDIA Sync's `99-nvidia-sync-cluster.yaml`, and netplan
+  merges a later file's keys into the same interface: Sync's addresses stay,
+  only `mtu` is added, and Sync's file is never edited.
+- Runs `netplan generate` to validate the merged config and write the
+  boot-time backend files (on the pair: NetworkManager keyfiles in
+  `/run/NetworkManager/system-connections/netplan-<dev>.nmconnection`). It
+  then checks that netplan rendered the same interfaces with the same backend
+  as before and `mtu=9000` on each. If not, it puts the old state back and
+  says so. Checked against the real netplan 1.1.2 (the pair's version) with a
+  copy of Sync's layout: the drop-in merges, the address is kept.
+- **Never runs `netplan apply`.** `generate` only writes `/run` configs and
+  reloads udev rules and systemd units. The live links keep MTU 1500 until
+  the reboot, so the two ends of the cable never disagree under a running job.
+
+**Why both Sparks must reboot.** If one end of the cable is at 9000 and the
+other at 1500, every frame over 1500 bytes is dropped on that link. ping and
+ssh keep working (small packets), so it looks healthy, while NCCL's bulk
+transfers stall or hang the collective. Stage both, reboot both, verify both.
+Until the reboot, a NetworkManager restart or a fabric link flap could bring
+the new MTU up early on one box. `--status` shows it (the "MTU(now)" column).
+If you see 9000 on one Spark only, reboot the other one too.
+
+**Step 1: stage on each Spark (from the Mac).** `-t` gives sudo a terminal
+for the password:
+
+```bash
+! ssh -t spark-1.tail4109f9.ts.net 'cd ~/openbeast && sudo scripts/backends/spark-fabric-mtu.sh --stage'
+! ssh -t spark-2.tail4109f9.ts.net 'cd ~/openbeast && sudo scripts/backends/spark-fabric-mtu.sh --stage'
+```
+
+(The leading `!` runs the line in a shell from a Claude Code prompt; drop it
+in a plain terminal.) Each checkout must have this script: `git pull` first
+if it does not. `--dry-run` (no sudo) prints the file and the actions first.
+Expected output ends with:
+
+```
+== netplan generate (validates the merged config; the live links are not touched)
+   enp1s0f0np0: boot config now mtu 9000 (NetworkManager)
+   ...
+STAGED on spark-3dc6. Nothing changed on the live links (still MTU 1500).
+It takes effect on the NEXT REBOOT, and that reboot must happen on BOTH Sparks:
+```
+
+Check either box any time, no sudo needed for the live columns:
+
+```bash
+ssh spark-1.tail4109f9.ts.net '~/openbeast/scripts/backends/spark-fabric-mtu.sh --status'
+#   NETDEV          IBDEV          STATE MTU(now)  active_mtu  boot config   in drop-in
+#   enp1s0f0np0     rocep1s0f0     Up    1500      1024        (sudo)        no
+```
+
+The boot-config and drop-in columns need sudo to read (the files are 0600);
+with sudo they show `9000` / `yes` once staged.
+
+**Step 2: measure A (before), still at MTU 1500.** See the A/B plan below.
+Staging does not change the live links, so A can run before or after Step 1.
+
+**Step 3: reboot both.** Stop inference first, so no collective is in flight
+while one box is at 9000 and the other at 1500. Then reboot the worker,
+then the head:
+
+```bash
+ssh spark-1.tail4109f9.ts.net 'systemctl --user stop spark-hydra-inference'
+! ssh -t spark-2.tail4109f9.ts.net 'sudo reboot'
+! ssh -t spark-1.tail4109f9.ts.net 'sudo reboot'
+```
+
+Nothing else is needed. `spark-hydra-inference` is enabled on spark-1, starts
+by itself at boot, and starts rank 1 on spark-2 over ssh. If spark-2 is not
+up yet, the unit fails and retries every 30 s (`Restart=on-failure`). Loading
+takes 2-6 min. spark-guard (B3) loads its own table before the network comes
+up, as on any boot. Then `scripts/healthcheck.sh` on spark-1 should report
+all 9 services healthy (E4).
+
+**Step 4: verify, on each Spark.** `--verify` takes the **peer's** fabric
+IPv4 on every Up rail. Read them on the peer, do not copy them from here (Sync
+can re-address the rails):
+
+```bash
+ssh spark-2.tail4109f9.ts.net "ip -br addr | grep -E '^enp1|^enP2'"   # the peer's rail addresses
+ssh spark-1.tail4109f9.ts.net '~/openbeast/scripts/backends/spark-fabric-mtu.sh --verify <spark-2 rail-1 IP> <spark-2 rail-2 IP>'
+ssh spark-1.tail4109f9.ts.net "ip -br addr | grep -E '^enp1|^enP2'"
+ssh spark-2.tail4109f9.ts.net '~/openbeast/scripts/backends/spark-fabric-mtu.sh --verify <spark-1 rail-1 IP> <spark-1 rail-2 IP>'
+```
+
+No sudo is needed. For each Up rail it checks netdev MTU 9000 and RoCE
+`active_mtu 4096` (`ibv_devinfo -d <ibdev>`). For each peer IP, it checks
+that the IP routes over a fabric rail, then runs
+`ping -M do -s 8972 -c 3 -W 2 -I <rail> <peer>`. That is a 9000-byte frame
+with don't-fragment set, which only gets through if both ends are at 9000. A
+rail with no peer IP given is a failure, so give one per rail. It prints
+`VERIFIED` and exits 0, or names each `FAIL` and exits 1.
+
+**The A/B measurement plan.** Same model, same settings, same prompts, only
+the MTU differs. Run on spark-1 against the loopback API (no key, no gate;
+stdlib Python, works offline). Two numbers:
+
+1. **TTFT on a ~45K-token prompt.** A non-streaming request with
+   `max_tokens: 1` takes prefill plus one token, so its wall time is the TTFT.
+   Each run gets a fresh nonce at the **start** of the prompt, so no prefix
+   cache can serve it. 5 runs; the first one is a warmup, report the median
+   of the other 4.
+2. **4-stream decode tok/s.** Four concurrent requests with a short prompt
+   and `max_tokens: 512`, at temperature 0. Report the aggregate (sum of
+   `completion_tokens` / wall time) and the per-stream rate. 3 rounds, median.
+   DFlash2's speedup depends on the text, so the prompts must be identical
+   between A and B (they are fixed below).
+
+```bash
+ssh spark-1.tail4109f9.ts.net 'python3 - ' <<'PY'
+import json, statistics, threading, time, urllib.request, uuid
+URL, MODEL = "http://127.0.0.1:8000/v1/chat/completions", "GLM-5.3-Flash-EXL3"
+def call(content, max_tokens):
+    body = json.dumps({"model": MODEL, "messages": [{"role": "user", "content": content}],
+                       "max_tokens": max_tokens, "temperature": 0}).encode()
+    req = urllib.request.Request(URL, body, {"Content-Type": "application/json"})
+    t = time.monotonic()
+    with urllib.request.urlopen(req, timeout=900) as r:
+        u = json.load(r)["usage"]
+    return time.monotonic() - t, u
+filler = "".join(f"Record {i}: sensor {i % 97} read {i * 37 % 1009} units at step {i}.\n" for i in range(2500))
+ttft = []
+for n in range(5):
+    dt, u = call(f"[{uuid.uuid4()}]\n{filler}\nReply with one word.", 1)
+    print(f"ttft run {n}: {dt:.2f} s, prompt_tokens {u['prompt_tokens']}")
+    if n: ttft.append(dt)
+print(f"TTFT median (runs 1-4): {statistics.median(ttft):.2f} s")
+prompts = [f"Write a detailed Python implementation of {t}, with comments." for t in
+           ("a red-black tree", "an LRU cache", "a JSON tokenizer", "Dijkstra's algorithm")]
+aggs = []
+for rnd in range(3):
+    res = [None] * 4
+    def run(i): res[i] = call(prompts[i], 512)
+    th = [threading.Thread(target=run, args=(i,)) for i in range(4)]
+    t = time.monotonic(); [x.start() for x in th]; [x.join() for x in th]; wall = time.monotonic() - t
+    toks = sum(u["completion_tokens"] for _, u in res)
+    aggs.append(toks / wall)
+    print(f"round {rnd}: {toks} tokens in {wall:.1f} s = {toks / wall:.1f} tok/s aggregate, "
+          + ", ".join(f"{u['completion_tokens'] / dt:.1f}" for dt, u in res) + " per stream")
+print(f"4-stream aggregate median: {statistics.median(aggs):.1f} tok/s")
+PY
+```
+
+Check that `prompt_tokens` is near 45K (2500 filler lines is an estimate of
+~18 tokens a line; change `range(2500)` until it is, then keep it the same for A and B).
+Record both runs here, under "Serving configuration", with the date and
+`active_mtu` (1024 for A, 4096 for B). For reference, the 2026-11-13 numbers
+are ~145 / 224 tok/s aggregate (prose / code), TTFT ~160-260 ms on short
+prompts. Expect B's TTFT to drop on the long prompt and decode to be about
+flat. If B is not better, or worse, keep the numbers anyway and decide
+whether to roll back. A failed experiment is still a result.
+
+**Rollback.** Any time, on both Sparks, then reboot both:
+
+```bash
+! ssh -t spark-1.tail4109f9.ts.net 'cd ~/openbeast && sudo scripts/backends/spark-fabric-mtu.sh --unstage'
+! ssh -t spark-2.tail4109f9.ts.net 'cd ~/openbeast && sudo scripts/backends/spark-fabric-mtu.sh --unstage'
+```
+
+`--unstage` removes the drop-in and re-runs `netplan generate`. Like
+`--stage`, it takes effect at the next reboot, so reboot both. If the fabric
+does not come up after the reboot, and you cannot reach a Spark over the
+fabric or the tailnet, the LAN still works: `enP7s7` was never touched. Use
+`ssh -o HostName=<LAN IP> spark-N` (0. The pair at a glance). Failing that,
+use the box's own console (keyboard and monitor). From there:
+
+```bash
+sudo rm /etc/netplan/99-zz-openbeast-fabric-mtu.yaml
+sudo netplan generate && sudo reboot
+```
+
+**Offline.** None of this needs a network beyond the boxes themselves. The
+script, netplan, `ibdev2netdev`, `ibv_devinfo` and `ping` are all local. The
+verify pings travel the direct QSFP cable, and the A/B runs on loopback. On a
+pair with no tailnet, run the same commands over LAN ssh or at the console.
+
+**Tests.** `tests/test_spark_fabric_mtu.sh` (CI's spark shell job and
+`tests/run_tests.sh`) runs every mode against fakes of `ibdev2netdev`,
+`netplan`, `ip`, `ibv_devinfo` and `ping`, under a scratch
+`SPARK_FABRIC_ROOT`. It covers the file's content and perms, that `apply` is
+never called, refusing the default-route NIC, the rollbacks, unstage, status
+and verify failures. On Ubuntu it also checks the merge with the real `netplan generate
+--root-dir`. Test seams: `SPARK_FABRIC_ROOT` (a path prefix, also passed to
+netplan as `--root-dir`), `SPARK_FABRIC_NETPLAN_DIR`, `SPARK_FABRIC_NM_DIR`,
+`SPARK_FABRIC_NETWORKD_DIR`, and `IBDEV2NETDEV` / `NETPLAN` / `IP` /
+`IBV_DEVINFO` / `PING` for the commands.
 
 ---
 
@@ -1249,6 +1489,27 @@ The worker runs no OpenBeast services. Its checkout matters for the lock
 `conformance.sh` → serve. The lock of a served model never changes. A new
 revision is a new profile.
 
+**Open WebUI's Regenerate on the GLM pair.** TensorFold falls back to a
+fixed seed when a request names none: three unseeded requests at temperature
+0.6 returned one text, seeds 1/2/3 three texts, seed 1 twice the same text
+(probed 2026-11-16). So Regenerate in WebUI, which re-sends the same request
+without a seed, returned the same answer. `configure-webui.sh` (run by every
+`systemctl --user restart openbeast`) installs the global Open WebUI filter
+`agents/webui_functions/random_seed.py`, which adds a random seed to every
+WebUI chat request without one. To apply it after a `git pull` without a
+restart, run only that script; it touches no inference unit:
+
+```bash
+cd ~/openbeast && ./scripts/configure-webui.sh     # idempotent; "Random seed filter … already installed" on a re-run
+```
+
+Check it in Admin Panel → Functions ("Random Seed", on, global). A seed set
+in a chat's Controls or a model's params still wins, so a pinned seed stays
+reproducible. It is WebUI-only: opencode, the Mac client, the eval runner
+and anything else on `:8000` / `:8443` still get TensorFold's fixed default
+(`seed` in the request is the fix there). `WEBUI_RANDOM_SEED=false` in
+`openbeast.conf` switches the filter off at the next run.
+
 ### G7. Rotating keys and secrets
 
 | Secret | Rotate with | Notes |
@@ -1270,6 +1531,7 @@ Every row below was hit on the way to the live pair.
 | `ssh spark-1.tail4109f9.ts.net` asks to trust a new host key | no `HostKeyAlias` | add `HostKeyAlias spark-3dc6.local` to that `Host` block |
 | `ssh spark-1 cat ~/.config/openbeast/x`: "No such file" | the Mac's shell expanded `~` to `/Users/…` | quote the remote command: `ssh spark-1 'cat ~/.config/openbeast/x'` |
 | ranks cannot reach each other | a firewall drops the peer on the fabric (ufw, if someone enables it without the fabric rules) | `spark-root-setup.sh` adds a ufw rule per Up link for that link's subnet; `spark-guard.sh` always accepts the fabric. ufw itself is **disabled** on DGX OS (`/etc/ufw/ufw.conf` `ENABLED=no`) and was never what blocked or protected anything here |
+| after a reboot, ping and ssh over the fabric work but the pair hangs loading or mid-prefill | a fabric MTU mismatch: one Spark at 9000 (`spark-fabric-mtu.sh` staged and rebooted), the other still at 1500, so frames over 1500 bytes are dropped | `scripts/backends/spark-fabric-mtu.sh --status` on both; reboot the one still at 1500 (stage it first), or `--unstage` the other and reboot it; `--verify` ([B4](#b4-fabric-mtu-9000-spark-fabric-mtu)) |
 | `nc -z <tailnet IP> 29551` succeeds from a laptop | rank 0's TCPStore binds `*:29551`, ufw is off, and Tailscale's `ts-input` accepts tailnet traffic first | `sudo scripts/backends/spark-guard.sh` on each Spark ([B3](#b3-firewall-spark-guard)) |
 | `tensorfold capabilities` shows NCCL `found:false` | no libnccl2 | `spark-root-setup.sh` installs 2.28.9+cuda13.0 and holds it |
 | `model-fetch --verify`: "unlocked file .cache/huggingface/…" | `hf download --local-dir` metadata | fixed: hidden paths are skipped by both lock and verify |
@@ -1281,6 +1543,7 @@ Every row below was hit on the way to the live pair.
 | pair stops answering mid-stream, `/health` still `ok` | a stalled collective | `TF_GLM_MULTI_WATCHDOG_EXIT=1` makes the rank exit so the unit restarts both; healthcheck's liveness check flags it |
 | `:443` not published after `setup-tailscale.sh` | the running WebUI still had auth off | `systemctl --user restart openbeast`, then re-run `setup-tailscale.sh` ([E5](#e5-webui-auth-and-the-admin-account-before-publishing)) |
 | `:8443` answers 401 | no device key, or a revoked one | `clients.sh list`; give the client its key |
+| Regenerate in Open WebUI returns the same answer, word for word | TensorFold uses a fixed seed when the request names none | `./scripts/configure-webui.sh` installs the random seed filter; check Admin Panel → Functions → "Random Seed" is on and global, and `WEBUI_RANDOM_SEED` is not `false` ([G6](#g6-updating)) |
 | opencode on the Mac lost `openbeast-tools` (or another server) | a v1 `mcp.<name>` entry next to v2 `mcp.servers.<name>`: v2 does not merge them | move everything under `mcp.servers`, drop `enabled` ([F3](#f3-the-opencode-v2-config-layout-read-this-before-editing)) |
 | `tests/test_scripts.sh` failures on a copy without `.git` (7 seen on spark-2) | some suites need a git checkout | run from a git checkout |
 | shell suites fail on the Mac but pass on a Spark | BSD vs GNU tools (`tests/test_engines.sh` needs GNU coreutils; `test_skill_import.sh` showed 5 BSD-only failures on 2026-11-15) | run shell suites on a Spark ([SELF_DEVELOPMENT.md](SELF_DEVELOPMENT.md) "Tests") |
@@ -1665,13 +1928,11 @@ up on the operator steps named):
 - **beast-gate admitted 2 generations per device** while the pair serves 4.
   The gate now defaults to `INFERENCE_SLOTS` (E2), but the running gate keeps 2
   until the next `systemctl --user restart openbeast`.
-- **The RoCE fabric runs at `active_mtu 1024`**, because the ConnectX netdevs
-  are at MTU 1500 (B1 leaves the MTU alone on purpose). MTU 9000 (RoCE 4096)
-  could help long-prompt prefill all-gathers and bulk copies. TP-2 decode
-  all-reduces are small and latency-bound, so they would gain little. This is
-  unmeasured. Measure it in a maintenance window before changing netplan
-  anywhere: A/B the TTFT of a ~45K-token prompt and the 4-stream decode tok/s,
-  on both Sparks at once, with the offline netplan route written down first.
+- **The RoCE fabric runs at `active_mtu 1024`** (netdev MTU 1500). **Status,
+  2026-11-16: the fix is ready to stage for the next reboot of both Sparks**:
+  `spark-fabric-mtu.sh --stage` on each, reboot both, `--verify`, then the
+  A/B. Runbook, rollback and measurement plan:
+  [B4](#b4-fabric-mtu-9000-spark-fabric-mtu).
 
 ### Not done yet
 
