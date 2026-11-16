@@ -433,9 +433,14 @@ key.
    That gives you OpenCode with the tools running locally. Any
    OpenAI-compatible tool can use `https://spark-1.<tailnet>.ts.net:8443/v1`
    with that key as a bearer token.
-3. **First build from bare boxes.** Follow root setup, firewall, weights, the
-   recipe and its unit, then the command center: runbook §B1 → B2 → B3 → C →
-   D1 → E1–E7. With no internet, use §H9.
+3. **First build from bare boxes.** Follow the ordered checklist,
+   [Install everything, fresh](docs/SPARK_HYDRA.md#install-everything-fresh):
+   root setup, firewall, fabric MTU, weights, the recipe and its unit, the
+   command center, the client, then the optional toolchains, docs mirror and
+   ark drive, each step online and offline.
+4. **Update a built pair.** [§G6](docs/SPARK_HYDRA.md#g6-updating) is the
+   "update everything" checklist: pull both Sparks, the pinned Python deps,
+   the command-center restart, and every step a recent change added.
 
 **Bringing up another model or engine.** The rig's own inference is llama.cpp,
 and that stays the default byte for byte. Set `INFERENCE_BACKEND=vllm` or
