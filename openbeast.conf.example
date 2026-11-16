@@ -280,6 +280,14 @@
 # anywhere via Tailscale)
 # ---------------------------------------------------------------------------
 
+# Tailnet machine name setup-tailscale.sh joins as: https://<name>.<tailnet>.ts.net.
+# Used only by the FIRST join; a machine already on the tailnet keeps its name
+# (the script prints a note when this differs, and never renames). Unset, a
+# rig joins as "beast" and a DGX Spark refuses to guess, so set it there
+# (spark-1, spark-2, …). Lowercase letters, digits and dashes.
+# Env override: $TS_HOSTNAME.
+#TS_HOSTNAME=beast
+
 # Address the stack's services bind to. Default (even without this file) is
 # 127.0.0.1: loopback-only, with remote devices coming in through Tailscale
 # Serve's authenticated HTTPS proxy. Set 0.0.0.0 to restore the legacy
