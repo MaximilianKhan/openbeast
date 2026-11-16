@@ -431,7 +431,14 @@ into the validator from source; it is never on an import path or in the cwd.
   maps and `work`. It writes only `work` and gets no network and no
   process-info on other processes. macOS uses a
   deny-by-default sandbox-exec profile; Linux uses landlock, or a user +
-  mount namespace with a fresh root on kernels before 5.13. Without either
+  mount namespace with a fresh root (and an empty network namespace) on
+  kernels before 5.13. Landlock has no UDP right and no TCP right before
+  ABI 4 (kernel 6.7), so the landlock path also installs a seccomp filter
+  that lets `socket()` create only AF_UNIX / AF_NETLINK sockets and refuses
+  io_uring and foreign-ABI syscalls; until review 1116 a confined solution
+  could send UDP (and below 6.7 open TCP) under this "no network" contract.
+  An arch without a syscall table (anything but x86_64 / aarch64) fails
+  closed. Without either
   it returns `verdict="sandbox"` and does not run the solution. 190 needs it:
   its verifier read the oracle out of the unsealed `.git` object store.
 - **Builds**: `vlib.private_build_dir({relpath: src})` returns a fresh 0700

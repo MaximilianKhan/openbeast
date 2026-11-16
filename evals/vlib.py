@@ -44,7 +44,8 @@ itself:
   run_solution(..., confine=[workdir], read_only=python_runtime(exe, mods))
       The solution may read only its runtime and its work dir, write only
       its work dir, and has no network, on macOS (sandbox-exec) and Linux
-      (landlock, else user + mount namespace). Fails closed: verdict
+      (landlock plus a seccomp socket filter, else user + mount + net
+      namespace). Fails closed: verdict
       "sandbox" when confinement is unavailable. Use it whenever the
       solution could otherwise read the oracle (the repo, its .git, other
       worktrees or clones) or site-packages.
@@ -744,6 +745,79 @@ def _landlock_abi() -> int:
     return _LL_ABI
 
 
+# Landlock has no UDP right at all, and TCP only from ABI 4 (kernel 6.7), so
+# a landlock-confined solution could still send datagrams (DNS exfiltration,
+# an oracle over UDP), and below 6.7 open any connection, under a confine
+# documented as "no network" (review 1116). A seccomp filter in the same
+# child closes it: socket() may create only AF_UNIX and AF_NETLINK sockets,
+# io_uring (whose IORING_OP_SOCKET bypasses the socket() filter) is refused,
+# and any foreign-ABI syscall (i386/x32 on x86_64) is refused outright.
+# (audit arch, socket nr, io_uring_setup nr, refuse x32 range)
+_SECCOMP_ARCH = {"x86_64": (0xC000003E, 41, 425, True),
+                 "amd64": (0xC000003E, 41, 425, True),
+                 "aarch64": (0xC00000B7, 198, 425, False),
+                 "arm64": (0xC00000B7, 198, 425, False)}
+_SOCK_ALLOWED = (1, 16)                        # AF_UNIX, AF_NETLINK
+
+
+def _seccomp_net_prog():
+    """A built `struct sock_fprog` (and the filter array it points to) that
+    refuses every network socket, or raise OSError on an unknown arch."""
+    import ctypes
+    import platform
+    spec = _SECCOMP_ARCH.get(platform.machine())
+    if spec is None:
+        raise OSError(f"no seccomp syscall table for {platform.machine()}")
+    arch, nr_socket, nr_uring, x32 = spec
+    ld, jeq, jge, ret = 0x20, 0x15, 0x35, 0x06
+    allow, eperm, eacces = 0x7FFF0000, 0x00050000 | 1, 0x00050000 | 13
+    # Layout: arch check, load nr, the body, then ALLOW, then DENY. BPF
+    # jumps are relative, so each body jump counts the instructions left.
+    tail = [(ret, 0, 0, allow), (ret, 0, 0, eacces)]      # ALLOW, DENY
+    ins = []
+    ins.append((ld, 0, 0, 4))                              # arch
+    ins.append((jeq, 1, 0, arch))
+    ins.append((ret, 0, 0, eperm))                         # foreign ABI
+    ins.append((ld, 0, 0, 0))                              # syscall nr
+    body = []
+    if x32:
+        body.append(("jge", 0x40000000, "deny"))
+    body.append(("jeq", nr_uring, "deny"))
+    body.append(("jeq_else_allow", nr_socket, None))
+    body.append(("ld_arg0", None, None))
+    for af in _SOCK_ALLOWED:
+        body.append(("jeq_allow", af, None))
+    body.append(("ja_deny", None, None))
+    # each body entry is one instruction; ALLOW sits right after the body,
+    # DENY one after that
+    n = len(body)
+    for i, (kind, k, _t) in enumerate(body):
+        to_allow = n - i - 1               # instructions to skip to reach ALLOW
+        to_deny = to_allow + 1
+        if kind == "jge":
+            ins.append((jge, to_deny, 0, k))
+        elif kind == "jeq":
+            ins.append((jeq, to_deny, 0, k))
+        elif kind == "jeq_else_allow":
+            ins.append((jeq, 0, to_allow, k))
+        elif kind == "ld_arg0":
+            ins.append((ld, 0, 0, 16))                     # args[0], low 32 bits
+        elif kind == "jeq_allow":
+            ins.append((jeq, to_allow, 0, k))
+        elif kind == "ja_deny":
+            ins.append((0x05, 0, 0, to_deny))              # BPF_JMP|BPF_JA
+    ins += tail
+
+    class Filter(ctypes.Structure):
+        _fields_ = [("code", ctypes.c_uint16), ("jt", ctypes.c_uint8),
+                    ("jf", ctypes.c_uint8), ("k", ctypes.c_uint32)]
+
+    class Prog(ctypes.Structure):
+        _fields_ = [("len", ctypes.c_ushort), ("filter", ctypes.POINTER(Filter))]
+    arr = (Filter * len(ins))(*[Filter(*x) for x in ins])
+    return Prog(len(ins), ctypes.cast(arr, ctypes.POINTER(Filter))), arr
+
+
 def _landlock_prep(ro: list[str], rw: list[str]):
     """Everything the child needs, built before fork (no allocation games in
     the child beyond os.open and the syscalls)."""
@@ -795,12 +869,13 @@ def _landlock_prep(ro: list[str], rw: list[str]):
     for p in rw:
         rules.append((os.fsencode(os.path.realpath(p)), handled))
     beneath = Beneath(0, -1)
-    return libc, attr, size, rules, beneath, handled
+    seccomp = _seccomp_net_prog()          # raises on an unknown arch: fail closed
+    return libc, attr, size, rules, beneath, handled, seccomp
 
 
 def _landlock_child(prep):
     import ctypes
-    libc, attr, size, rules, beneath, handled = prep
+    libc, attr, size, rules, beneath, handled, (prog, _arr) = prep
     rfd = libc.syscall(_LL["create"], ctypes.byref(attr), ctypes.c_size_t(size),
                        ctypes.c_uint32(0))
     if rfd < 0:
@@ -825,6 +900,9 @@ def _landlock_child(prep):
     if libc.syscall(_LL["restrict"], ctypes.c_int(rfd), ctypes.c_uint32(0)) != 0:
         raise OSError(ctypes.get_errno(), "landlock_restrict_self")
     os.close(rfd)
+    # PR_SET_SECCOMP, SECCOMP_MODE_FILTER: no network sockets (see _seccomp_net_prog)
+    if libc.prctl(22, 2, ctypes.byref(prog), 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), "seccomp network filter")
 
 
 # mount namespace fallback

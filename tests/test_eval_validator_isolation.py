@@ -592,6 +592,55 @@ def test_solution_cannot_signal_a_sibling_process(tmp_path, confined):
         victim.wait()
 
 
+_NET_PROBE = textwrap.dedent("""
+    import socket
+    out = []
+    def t(name, f):
+        try:
+            f(); out.append(name + " OK")
+        except OSError as e:
+            out.append(name + " denied")
+    t("udp", lambda: socket.socket(socket.AF_INET, socket.SOCK_DGRAM).sendto(b"x", ("127.0.0.1", 9)))
+    t("udp6", lambda: socket.socket(socket.AF_INET6, socket.SOCK_DGRAM).sendto(b"x", ("::1", 9)))
+    t("tcp", lambda: socket.create_connection(("127.0.0.1", 9), timeout=1))
+    t("unix", lambda: socket.socketpair())
+    print(";".join(out))
+""")
+
+
+@pytest.mark.skipif(not (DARWIN or LINUX), reason="macOS or Linux only")
+def test_confined_solution_has_no_network_at_all(tmp_path):
+    """Landlock has no UDP right and no TCP right below ABI 4, so the
+    landlock confine let UDP out (and on kernels < 6.7 everything) under a
+    contract of "no network" (review 1116). A seccomp filter now refuses
+    every non-unix socket; a socketpair still works."""
+    if not _confined_can_linux():
+        pytest.skip("no landlock and no user namespaces on this host")
+    r = vlib.run_solution([sys.executable, "-I", "-S", "-c", _NET_PROBE], cpu_s=10,
+                          cwd=str(tmp_path), confine=[str(tmp_path)],
+                          read_only=vlib.python_runtime(sys.executable, ["socket"]))
+    assert r.ok, (r, r.stderr[-800:])
+    got = r.stdout.strip().split(";")
+    assert got == ["udp denied", "udp6 denied", "tcp denied", "unix OK"], (got, r.stderr[-400:])
+
+
+@pytest.mark.skipif(not LINUX, reason="the seccomp filter is Linux's")
+def test_seccomp_filter_is_built_for_this_arch():
+    import platform
+    if platform.machine() not in vlib._SECCOMP_ARCH:
+        pytest.skip("arch without a syscall table: confine fails closed there")
+    prog, arr = vlib._seccomp_net_prog()
+    assert prog.len == len(arr) > 6
+    assert arr[len(arr) - 2].k == 0x7FFF0000          # ALLOW then DENY at the tail
+
+
+def test_unknown_arch_fails_closed(monkeypatch):
+    import platform
+    monkeypatch.setattr(platform, "machine", lambda: "pdp11")
+    with pytest.raises(OSError):
+        vlib._seccomp_net_prog()
+
+
 def test_confine_fails_closed_when_it_cannot_be_set_up(monkeypatch, tmp_path):
     monkeypatch.setattr(vlib, "_sandbox_ok", lambda: False)
 
