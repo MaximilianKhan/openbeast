@@ -230,8 +230,42 @@ def fetch_file(drive: S.Drive, a: C.Artifact, allow_unverified: bool) -> dict:
 
 # ── oci ──────────────────────────────────────────────────────────────────
 
-def fetch_oci(drive: S.Drive, a: C.Artifact, platforms: List[str], allow_unverified: bool) -> dict:
-    want = [p for p in a.platforms if p in {C.OCI_FOR[x] for x in platforms}]
+def _oci_want(a: C.Artifact, platforms: List[str], prev: Optional[dict]) -> List[str]:
+    """The image platforms to keep: what this run asks for PLUS what the drive
+    already holds. One archive per image, rewritten whole on every pull, so a
+    top-up for a second platform must carry the first one along — or the rig
+    loses every amd64 image the day arm64 is added for the Sparks."""
+    asked = {C.OCI_FOR[x] for x in platforms if x in C.OCI_FOR}
+    held = set((prev or {}).get("platform", "").split(",")) - {""}
+    return [p for p in a.platforms if p in asked | held]
+
+
+def _seed_stage(drive: S.Drive, prev: Optional[dict], digest: str, stage: str) -> None:
+    """Copy the blobs of the archive already on the drive into the stage, so a
+    top-up downloads only the new platform's layers."""
+    if not prev or prev.get("digest") != digest or not prev.get("primary"):
+        return
+    try:
+        arc = oci.OciArchive(drive.p(prev["primary"]))
+    except (OSError, tarfile.TarError, ValueError, KeyError, IndexError, S.StoreError):
+        return
+    try:
+        blobs = os.path.join(stage, "blobs", "sha256")
+        os.makedirs(blobs, exist_ok=True)
+        for name in arc.members:
+            if name.startswith("blobs/sha256/"):
+                dst = os.path.join(blobs, name.rsplit("/", 1)[1])
+                if not os.path.exists(dst):
+                    with arc.tar.extractfile(arc.members[name]) as fi, open(dst + ".tmp", "wb") as fo:
+                        shutil.copyfileobj(fi, fo, 1 << 20)
+                    os.replace(dst + ".tmp", dst)       # re-hashed by Registry.blob before it is used
+    finally:
+        arc.close()
+
+
+def fetch_oci(drive: S.Drive, a: C.Artifact, platforms: List[str], allow_unverified: bool,
+              prev: Optional[dict] = None) -> dict:
+    want = _oci_want(a, platforms, prev)
     digest, verified = a.digest, "registry-pinned"
     if not digest:
         if not allow_unverified:
@@ -240,6 +274,7 @@ def fetch_oci(drive: S.Drive, a: C.Artifact, platforms: List[str], allow_unverif
         verified = "tofu"
     rel = oci_rel(a)
     stage = drive.stage("oci", S.slug(a.id))
+    _seed_stage(drive, prev, digest, stage)
     res = oci.pull(a.image, a.tag_x, digest, want, drive.p(rel), stage, log=log)
     shutil.rmtree(stage, ignore_errors=True)
     return {"entry": a.entry, "kind": "oci", "platform": ",".join(want), "version": a.owner.version,
@@ -509,7 +544,7 @@ def run(cat: C.Catalog, drive: S.Drive, items: List[Tuple[str, object]], platfor
             elif obj.kind == "file":
                 rec = fetch_file(drive, obj, allow_unverified)
             elif obj.kind == "oci":
-                rec = fetch_oci(drive, obj, platforms, allow_unverified)
+                rec = fetch_oci(drive, obj, lock["platforms"], allow_unverified, prev)
             elif obj.kind == "pip":
                 rec = fetch_pip(drive, obj)
             elif obj.kind == "npm":

@@ -1186,6 +1186,28 @@ def test_oci_push_streams_layers_and_fails_on_a_refused_tag(registry, tmp_path, 
         srv.server_close()
 
 
+def test_oci_top_up_for_a_second_platform_keeps_the_first(registry, http, tmp_path, capsys):
+    cat = oci_catalog(tmp_path, registry)
+    drive = tmp_path / "d"
+    rc, out = run(["--catalog", str(cat), "fetch", "--to", str(drive), "--platform", "linux-x86_64"], capsys)
+    assert rc == 0, out.err
+    it = json.loads((drive / "ark.lock").read_text())["items"]["app/oci/app"]
+    assert set(it["manifests"]) == {"linux/amd64"}
+    amd_layer = json.loads(registry.blobs[it["manifests"]["linux/amd64"]])["layers"][0]["digest"]
+    rc, out = run(["--catalog", str(cat), "fetch", "--to", str(drive), "--platform", "linux-aarch64"], capsys)
+    assert rc == 0, out.err
+    it = json.loads((drive / "ark.lock").read_text())["items"]["app/oci/app"]
+    assert set(it["manifests"]) == {"linux/amd64", "linux/arm64"} and it["platform"] == "linux/amd64,linux/arm64"
+    arc = oci.OciArchive(str(drive / it["primary"]))
+    assert set(arc.manifests()) == {"linux/amd64", "linux/arm64"} and arc.verify() == []
+    arc.close()
+    # the amd64 layer came from the drive's own archive, not the network, the second time
+    assert len([p for (m, p, h) in http.log if p == f"/cdn/{amd_layer}"]) == 1
+    rc, out = run(["--catalog", str(cat), "fetch", "--to", str(drive), "--platform", "linux-aarch64"], capsys)
+    assert rc == 0 and "1 already present" in out.err
+    assert run(["verify", str(drive), "--deep"], capsys)[0] == 0
+
+
 def test_oci_refuses_a_registry_that_serves_the_wrong_manifest(registry, tmp_path, capsys):
     cat = oci_catalog(tmp_path, registry, digest="sha256:" + "e" * 64)
     registry.manifests[("toy/app", "sha256:" + "e" * 64)] = registry.index    # lies about the digest
