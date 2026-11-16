@@ -1,5 +1,14 @@
 # Updating
 
+> **Updating the DGX Spark pair?** Do not use the `./stop.sh` / `./start.sh`
+> lines below there: the stack on spark-1 runs under the `systemctl --user`
+> unit `openbeast`, and a bare `./scripts/update.sh` dies at its first step on
+> a Spark (no `llama.cpp/` clone). The ordered "update everything" checklist,
+> per host, online and offline, with the WebUI backup and every step a recent
+> change added (spark-guard, fabric MTU, `ARTIFACT_LOGIN_FROM`, the seed
+> filter, zig, beast-docs, beast-ark), is
+> [SPARK_HYDRA.md § G6](SPARK_HYDRA.md#g6-updating).
+
 ## Updating OpenBeast itself
 
 `scripts/update.sh` does not update OpenBeast. It has no `git pull` of this
@@ -244,7 +253,9 @@ lock is stale") and stays red. Two pieces close that:
 ## Upgrade notes: the 2026-11 dependency sweep (Open WebUI 0.11.0 → 0.13.3)
 
 The pins moved in one reviewed sweep, not through `--images`. What changes
-when a box picks it up (update the checkout, then `./start.sh`):
+when a box picks it up (update the checkout, then `./start.sh`; on spark-1,
+`systemctl --user stop openbeast` before the backup and `start` after, as in
+[SPARK_HYDRA.md § G6](SPARK_HYDRA.md#g6-updating) step 3):
 
 - **Open WebUI runs its database migrations** (0.11.1, 0.12.1, 0.13.0 and
   0.13.1 each change the schema) the first time the new image starts.
