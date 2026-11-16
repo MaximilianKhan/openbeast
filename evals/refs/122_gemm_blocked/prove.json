@@ -1,7 +1,9 @@
 {
   "expect": {
     "wrong_edge": "mismatch at case",
-    "wrong_operand_order": "mismatch at case"
+    "wrong_operand_order": "mismatch at case",
+    "wrong_orphan_workers": "must not start other processes|CPU limit",
+    "wrong_threaded_naive": "CPU limit"
   },
   "slow_expect": "solution timed out",
   "timed": true
