@@ -461,7 +461,11 @@ _one(_warm, None)                                  # let lazy module state settl
 _BASE = _fingerprint()
 
 
+N_TAIL = 24
+
+
 def gen_scenarios(seed, n):
+    """n random scenarios, then N_TAIL cancel-tail ones (_gen_cancel_tail)."""
     out = []
     rng = random.Random(seed)
     while len(out) < n:
@@ -469,7 +473,41 @@ def gen_scenarios(seed, n):
             out.append(_gen(rng))
         except IndexError:
             pass                                   # duration pool exhausted: draw again
+    trng = random.Random(seed ^ 0xCA7A11)          # own stream: the n above are unchanged
+    out += [_gen_cancel_tail(trng, i) for i in range(N_TAIL)]
     return out
+
+
+def _gen_cancel_tail(rng, i):
+    # The random generator always puts a sleep after cancel_group, so the
+    # group's own parent.cancel() is always delivered inside the body. Here
+    # the body ENDS right at g.cancel() (or raises right after it), with no
+    # child left to wait for: nothing in the group ever awaits, and the
+    # request must still be absorbed -- never seen by the sleep after the
+    # `async with` (main 'woke' vs 'main cancelled'), nor by an enclosing
+    # asyncio.timeout(). CPython <= 3.12's uncancel() leaves such a request
+    # pending; 3.13's clears it.
+    pool = [float(1 << k) for k in range(46)]
+    rng.shuffle(pool)
+    dur = pool.pop
+    kind = i % 4
+    a, b = sorted([dur(), dur()])
+    body = [['sleep', b], ['cancel_group']]
+    children = []
+    if kind == 1:
+        body.append(['raise', rng.choice(sorted(EXC)), 'm%d' % i])
+    elif kind == 2:                                # a child that finished before
+        children = [{'name': 't0', 'steps': [['sleep', a]], 'on_cancel': 'reraise'}]
+    G = {'timeout': dur() if rng.random() < .5 else None, 'children': children, 'body': body,
+         'catch': 'errors' if kind == 1 or rng.random() < .5 else 'none', 'stale': rng.random() < .3}
+    if G['timeout'] is not None and G['timeout'] < b:
+        G['timeout'] = b + dur()                   # must not fire before the cancel
+    group = ['group', G]
+    if kind == 3:                                  # an enclosing asyncio.timeout()
+        group = ['atimeout', b + dur(), [['group', G], ['sleep', dur()]]]
+    main = {'name': 'main', 'on_cancel': 'reraise',
+            'steps': [['sleep', dur()], group, ['sleep', dur()]]}
+    return {'main': main, 'killers': []}
 
 
 def _gen(rng):

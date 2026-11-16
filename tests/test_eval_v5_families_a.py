@@ -181,6 +181,55 @@ def test_163_prompt_states_the_cpu_budget_its_validator_enforces():
         assert re.search(r"run_solution\(RUN, input=inp, cpu_s=6,", v["validation"]["script"])
 
 
+# --- 173: the oracle's own cancel never leaks --------------------------------------
+
+def _load(path: Path, name: str):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name, path)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def test_173_ref_absorbs_its_own_undelivered_cancel():
+    import asyncio
+    ref = _load(REFS / "173_taskgroup_cancel" / "ref.py", "ref173")
+
+    async def main():
+        seen = []
+        async with ref.TaskGroup() as g:           # body ends AT g.cancel()
+            g.cancel()
+        seen.append(asyncio.current_task().cancelling())
+        try:
+            await asyncio.sleep(0)
+            seen.append("no leak")
+        except asyncio.CancelledError:
+            seen.append("LEAKED")
+        try:
+            async with ref.TaskGroup() as g:       # ... or raises right after it
+                g.cancel()
+                raise ValueError("v")
+        except ExceptionGroup:
+            pass
+        try:
+            await asyncio.sleep(0)
+            seen.append("no leak")
+        except asyncio.CancelledError:
+            seen.append("LEAKED")
+        return seen
+
+    assert asyncio.run(main()) == [0, "no leak", "no leak"]
+
+
+def test_173_generator_reaches_the_cancel_tail_path():
+    h = {"__name__": "h173"}
+    exec(compile((REFS / "173_taskgroup_cancel" / "harness.py").read_text(), "harness", "exec"), h)  # noqa: S102  (the validator does the same)
+    sc = h["gen_scenarios"](0x7A5C6173, 3)
+    assert len(sc) == 3 + h["N_TAIL"]
+    tails = [s["main"]["steps"] for s in sc[3:]]
+    assert any(json.dumps(t).count('["cancel_group"]]') for t in tails)   # body ends at cancel
+
+
 # --- 176: the copy never follows a link ----------------------------------------------
 
 def _shopd_fixture(tmp_path: Path) -> tuple[dict, Path]:
