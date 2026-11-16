@@ -1,4 +1,5 @@
-"""The v5 suite contract (brief §3-§6): the manifest's shape and numbers,
+"""The v5 suite contract (brief §3-§6; v5.0 = the shipped set): the
+manifest's shape and numbers,
 unit resolution against task files, the zig tutoring ban, the harness-
 aligned audit, JSON-declared refs, and an end-to-end manifest run through
 run_eval (roles recorded, probes unscored, wall caps and the max_iter
@@ -37,21 +38,30 @@ def resolved():
     return m, {t["id"]: t for t in tasks}
 
 
-# --- the manifest is the brief's unit list -----------------------------------
+# --- the manifest is the shipped v5.0 set ------------------------------------
 
-def test_manifest_numbers_match_the_brief(man):
+# v5.0 ships the 14 new families (and the U3 upgrades of 40/36/123/122) that
+# passed three adversarial rounds. The other nine new families and the U1/U2/U4
+# reworks are the v5.1 backlog (evals/README.md); none of their ids may appear.
+SHIPPED_NEW = [163, 167, 168, 173, 175, 176, 178, 179, 183, 188, 190, 192, 195, 196]
+REJECTED_NEW = [164, 165, 166, 169, 170, 171, 180, 181, 186]
+
+
+def test_manifest_is_the_shipped_set(man):
+    import scoring
     scored = M.scored_units(man)
-    probes = [u for u in man["units"] if u["role"] == "probe"]
-    assert len(scored) == 111 and len(probes) == 7
-    assert len({u["task"] for u in scored}) == 39
-    assert sum(u["src"] == "v4" for u in scored) == 50
-    assert sum(u["src"] == "new" for u in scored) == 61
-    assert sorted({u["task"] for u in scored if u["src"] == "new"}) == [
-        163, 164, 165, 166, 167, 168, 169, 170, 171, 173, 175, 176, 178, 179, 180, 181,
-        183, 186, 188, 190, 192, 195, 196]
+    assert len(scored) == len(man["units"]), "v5.0 ships no probe units"
+    assert scoring.SUITE_EXPECTED_UNITS["v5"] == len(scored)
+    new = sorted({u["task"] for u in scored if u["src"] == "new"})
+    assert new == SHIPPED_NEW
+    assert not {u["task"] for u in man["units"]} & set(REJECTED_NEW)
+    assert all(u["task"] < 163 for u in scored if u["src"] == "v4")
     by_lang = {lang: sum(u["lang"] == lang for u in scored) for lang in M.SIX_LANGS}
-    assert by_lang == {"python": 35, "go": 15, "c": 15, "cpp": 15, "rust": 15, "zig": 15}
-    assert sum(u["lang"] == "shell" for u in scored) == 1
+    assert all(n >= 1 for n in by_lang.values()), by_lang
+    assert len({u["category"] for u in scored}) == 12
+    assert man["description"].startswith("OpenBeast v5.0")
+    assert f"{len(scored)} scored units over {len({u['task'] for u in scored})} base tasks" \
+        in man["description"]
 
 
 def test_arms_and_strata(man):
@@ -59,24 +69,29 @@ def test_arms_and_strata(man):
                            "L2": {"packs": True, "diag": True, "escalate": True}}
     assert all("L0" in u["arms"] for u in man["units"])
     l1 = M.arm_units(man, "L1")
-    assert len(l1) == 22 and all(u["lang"] == "zig" for u in l1)       # 15 zig + 7 probes
+    assert l1 and all(u["lang"] == "zig" for u in l1)
+    assert {u["id"] for u in l1} == {u["id"] for u in man["units"] if u["lang"] == "zig"}
     l2 = M.arm_units(man, "L2")
-    assert len(l2) == 83 and not any(u["lang"] == "python" for u in l2)  # 76 + 7 probes
+    assert {u["id"] for u in l2} == {u["id"] for u in man["units"]
+                                     if u["lang"] in M.COMPILED_LANGS or u["lang"] == "shell"}
     held = [u for u in man["units"] if u["stratum"] == "heldout"]
     ins = [u for u in man["units"] if u["stratum"] == "insample"]
-    assert sorted(u["task"] for u in held) == [163, 164, 165, 166, 167, 168, 169, 170]
-    assert len(ins) == 14 and sum(u["role"] == "probe" for u in ins) == 7
+    assert held and all(u["lang"] == "zig" and u["src"] == "new" for u in held)
+    assert all(u["lang"] == "zig" and u["src"] == "v4" for u in ins)
+    assert {u["id"] for u in held + ins} == {u["id"] for u in l1}
 
 
-def test_budget_matches_the_brief(man):
+def test_budget_fits_four_hours(man):
     b = man["budget"]
-    assert b["ref_seq_h"] == 6.58 and b["wall_h"] == 4.0
-    assert b["ref_seq_h_by_arm"] == {"L0": 3.69, "L1": 0.57, "L2": 2.32}
     hours = {a: round(sum(u["est_s"] for u in M.arm_units(man, a)) / 3600, 2)
              for a in ("L0", "L1", "L2")}
     assert hours == b["ref_seq_h_by_arm"]
+    assert b["ref_seq_h"] == round(sum(hours.values()), 2)
+    # The whole three-arm profile fits the wall budget even run sequentially
+    # on the reference server; --jobs 4 only adds margin.
+    assert b["wall_h"] == 4.0 and b["ref_seq_h"] <= b["wall_h"]
     caps = {u["tier"]: u["max_wall_s"] for u in man["units"]}
-    assert caps == {"easy": 300, "medium": 600, "hard": 900, "xl": 1500}
+    assert all(M.TIER_WALL_S[t] == c for t, c in caps.items())
 
 
 def test_resolution_by_task_number_and_language():
@@ -115,10 +130,8 @@ def test_present_units_agree_with_their_task_files(resolved):
 
 def test_every_manifest_unit_has_a_task_file(resolved):
     m, _ = resolved
-    missing = m["resolution_problems"]
-    if missing:
-        pytest.skip(f"{len(missing)} v5 unit(s) have no task file in this checkout yet "
-                    f"(written by the task authors): {missing[:4]}")
+    # v5.0 is the shipped set: every unit has its task file, none is pending.
+    assert not m["resolution_problems"], m["resolution_problems"][:4]
 
 
 # --- authoring gate ----------------------------------------------------------
@@ -138,8 +151,7 @@ def test_v5_zig_prompts_teach_no_api(resolved):
         elif hit:
             pending.append(eff)
     assert not errors, errors
-    if pending:
-        pytest.skip(f"{len(pending)} retained zig unit(s) not yet upgraded: {pending}")
+    assert not pending, f"zig unit(s) in v5.0 still carrying v4 tutoring: {pending}"
 
 
 def test_ban_lint_flags_the_v4_recipe():

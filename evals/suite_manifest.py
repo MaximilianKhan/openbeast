@@ -132,6 +132,20 @@ def coverage_gaps(units: list[dict], floor: dict | None,
             n = cells.get((cat, lang), 0)
             if n < cell_min:
                 gaps.append(f"{cat} x {lang}: {n} scored unit(s) < {cell_min}")
+    # Marginal floors: every category and every language keeps at least this
+    # many scored units even when the full grid (cell_min) is not required.
+    # v5.0 ships with cell_min 0 and these two floors, because the families
+    # that filled the compiled cells of five categories were rejected
+    # (evals/README.md, "v5.1 backlog").
+    for key, axis in (("category_min", 0), ("language_min", 1)):
+        need = floor.get(key)
+        if need is None:
+            continue
+        names = cats if axis == 0 else langs
+        for name in names:
+            n = sum(c for k, c in cells.items() if k[axis] == name)
+            if n < int(need):
+                gaps.append(f"{name}: {n} scored unit(s) < {key} {need}")
     return gaps
 
 

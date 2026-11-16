@@ -34,12 +34,20 @@ class TestSuiteVersion(unittest.TestCase):
     def test_v3_5_unit_count_is_v3_5(self):
         self.assertEqual(_suite_version({"summary": {"total": V35_UNITS}}), "v3.5")
 
-    def test_v5_expects_111_scored_units(self):
-        self.assertEqual(SUITE_EXPECTED_UNITS["v5"], 111)
+    def test_v5_expects_the_manifests_scored_units(self):
+        # Read from evals/suites/v5.json, never a literal: the v5.0 set is
+        # the 15 accepted families plus the retained v4 definitions.
+        import json as _json
+        with open(os.path.join(os.path.dirname(__file__), "..", "evals", "suites",
+                               "v5.json")) as f:
+            units = _json.load(f)["units"]
+        n = sum(u.get("role", "scored") == "scored" for u in units)
+        self.assertEqual(SUITE_EXPECTED_UNITS["v5"], n)
 
     def test_v5_is_never_inferred_from_a_count(self):
-        # v5 rows always record suite_version; a bare 111 is not v5.
-        self.assertEqual(_suite_version({"summary": {"total": 111}}), "legacy")
+        # v5 rows always record suite_version; a bare v5-sized count is not v5.
+        n = SUITE_EXPECTED_UNITS["v5"]
+        self.assertEqual(_suite_version({"summary": {"total": n}}), "legacy")
 
     def test_other_count_is_legacy(self):
         self.assertEqual(_suite_version({"summary": {"total": 144}}), "legacy")

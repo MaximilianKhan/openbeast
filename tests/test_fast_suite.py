@@ -183,27 +183,41 @@ def test_pin_coverage_floor_passes_when_every_cell_is_measured(all_units):
 
 
 def test_v5_manifest_meets_its_coverage_floor():
+    import scoring
     import suite_manifest as sm
     man = sm.load_manifest("v5")                      # refuses on any gap
-    assert len(sm.scored_units(man)) == 111
+    assert len(sm.scored_units(man)) == scoring.SUITE_EXPECTED_UNITS["v5"]
+    # v5.0 floor: every category and every language, not every cell (the
+    # families that filled the compiled cells of five categories are the
+    # v5.1 backlog; evals/README.md).
+    floor = man["coverage_floor"]
+    assert floor["categories"] == 12 and floor["languages"] == 6
+    assert floor["category_min"] >= 1 and floor["language_min"] >= 1
     cells = sm.coverage_cells(man["units"])
     cats = {c for c, _ in cells}
     assert len(cats) == 12
+    for lang in sm.SIX_LANGS:
+        assert sum(n for (c, l), n in cells.items() if l == lang) >= floor["language_min"], lang
     for cat in cats:
-        for lang in sm.SIX_LANGS:
-            assert cells[(cat, lang)] >= 1, (cat, lang)
+        assert sum(n for (c, l), n in cells.items() if c == cat) >= floor["category_min"], cat
 
 
 def test_manifest_with_an_empty_cell_is_refused(tmp_path, monkeypatch):
     import suite_manifest as sm
     with open(sm.manifest_path("v5")) as f:
         man = json.load(f)
-    # Drop every DSP zig unit: one empty cell.
-    man["units"] = [u for u in man["units"]
-                    if not (u["category"] == "Signal Processing & DSP" and u["lang"] == "zig")]
-    assert any("Signal Processing & DSP x zig" in e for e in sm.validate_manifest(man))
+    # Drop every zig unit: the language floor is broken.
+    no_zig = dict(man, units=[u for u in man["units"] if u["lang"] != "zig"])
+    assert any(e.startswith("coverage floor: zig: 0 scored unit(s)")
+               for e in sm.validate_manifest(no_zig)), sm.validate_manifest(no_zig)
+    # A full-grid floor still refuses any empty (category, language) cell.
+    grid = dict(man, coverage_floor={"cell_min": 1, "categories": 12, "languages": 6})
+    dsp = [u for u in grid["units"]
+           if not (u["category"] == "Signal Processing & DSP" and u["lang"] == "zig")]
+    assert any("Signal Processing & DSP x zig" in e
+               for e in sm.validate_manifest(dict(grid, units=dsp)))
     monkeypatch.setattr(sm, "SUITES_DIR", str(tmp_path))
-    (tmp_path / "broken.json").write_text(json.dumps(man))
+    (tmp_path / "broken.json").write_text(json.dumps(no_zig))
     with pytest.raises(SystemExit, match="coverage floor"):
         sm.load_manifest("broken")
 

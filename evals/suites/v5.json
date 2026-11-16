@@ -1,132 +1,1154 @@
 {
  "suite": "v5",
  "format": 1,
- "description": "OpenBeast v5 eval suite (evals/README.md, section v5). 111 scored units over 39 base tasks plus 7 unscored zig probe units.",
- "budget": {"ref_seq_h": 6.58, "wall_h": 4.0, "ref_seq_h_by_arm": {"L0": 3.69, "L1": 0.57, "L2": 2.32}, "reference": "qwen-27b-mtp-q5-k-xl, RTX 5090, --jobs 1 (R-s)"},
- "arms": {"L0": {}, "L1": {"packs": true}, "L2": {"packs": true, "diag": true, "escalate": true}},
+ "description": "OpenBeast v5.0 eval suite (evals/README.md, section v5). 71 scored units over 34 base tasks; no probe units in v5.0.",
+ "budget": {
+  "ref_seq_h": 3.73,
+  "wall_h": 4.0,
+  "ref_seq_h_by_arm": {
+   "L0": 2.37,
+   "L1": 0.2,
+   "L2": 1.16
+  },
+  "reference": "qwen-27b-mtp-q5-k-xl, RTX 5090, --jobs 1 (R-s)"
+ },
+ "arms": {
+  "L0": {},
+  "L1": {
+   "packs": true
+  },
+  "L2": {
+   "packs": true,
+   "diag": true,
+   "escalate": true
+  }
+ },
  "board_arm": "L0",
- "cut_order": ["stratified_l2", "drop_probes_l2", "drop_rust_l2", "drop_c_l2"],
+ "cut_order": [
+  "stratified_l2",
+  "drop_probes_l2",
+  "drop_rust_l2",
+  "drop_c_l2"
+ ],
  "stratified_pass_fraction": 0.3333333333333333,
- "coverage_floor": {"cell_min": 1, "categories": 12, "languages": 6},
+ "coverage_floor": {
+  "cell_min": 0,
+  "categories": 12,
+  "languages": 6,
+  "category_min": 1,
+  "language_min": 1
+ },
  "max_iter_ceiling": 30,
  "units": [
-  {"id": "20_priority_queue_a", "task": 20, "lang": "python", "category": "Algorithms & DS", "tier": "medium", "src": "v4", "role": "scored", "est_s": 56.0, "max_wall_s": 600, "arms": ["L0"], "stratum": null},
-  {"id": "20_priority_queue_b", "task": 20, "lang": "go", "category": "Algorithms & DS", "tier": "medium", "src": "v4", "role": "scored", "est_s": 56.0, "max_wall_s": 600, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "20_priority_queue_c", "task": 20, "lang": "c", "category": "Algorithms & DS", "tier": "medium", "src": "v4", "role": "scored", "est_s": 23.1, "max_wall_s": 600, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "20_priority_queue_d", "task": 20, "lang": "cpp", "category": "Algorithms & DS", "tier": "medium", "src": "v4", "role": "scored", "est_s": 23.1, "max_wall_s": 600, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "20_priority_queue_e", "task": 20, "lang": "rust", "category": "Algorithms & DS", "tier": "medium", "src": "v4", "role": "scored", "est_s": 56.0, "max_wall_s": 600, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "20_priority_queue_f", "task": 20, "lang": "zig", "category": "Algorithms & DS", "tier": "medium", "src": "v4", "role": "scored", "est_s": 56.0, "max_wall_s": 600, "arms": ["L0", "L1", "L2"], "stratum": "insample"},
-  {"id": "31_is_power_of_two_f", "task": 31, "lang": "zig", "category": "Pure & Abstract Math", "tier": "easy", "src": "v4", "role": "probe", "est_s": 22.4, "max_wall_s": 300, "arms": ["L0", "L1", "L2"], "stratum": "insample"},
-  {"id": "36_black_scholes_a", "task": 36, "lang": "python", "category": "Mathematical Finance", "tier": "medium", "src": "v4", "role": "scored", "est_s": 56.0, "max_wall_s": 600, "arms": ["L0"], "stratum": null},
-  {"id": "36_black_scholes_b", "task": 36, "lang": "go", "category": "Mathematical Finance", "tier": "medium", "src": "v4", "role": "scored", "est_s": 23.1, "max_wall_s": 600, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "36_black_scholes_c", "task": 36, "lang": "c", "category": "Mathematical Finance", "tier": "medium", "src": "v4", "role": "scored", "est_s": 56.0, "max_wall_s": 600, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "36_black_scholes_d", "task": 36, "lang": "cpp", "category": "Mathematical Finance", "tier": "medium", "src": "v4", "role": "scored", "est_s": 23.1, "max_wall_s": 600, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "36_black_scholes_e", "task": 36, "lang": "rust", "category": "Mathematical Finance", "tier": "medium", "src": "v4", "role": "scored", "est_s": 56.0, "max_wall_s": 600, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "36_black_scholes_f", "task": 36, "lang": "zig", "category": "Mathematical Finance", "tier": "medium", "src": "v4", "role": "scored", "est_s": 56.0, "max_wall_s": 600, "arms": ["L0", "L1", "L2"], "stratum": "insample"},
-  {"id": "40_attention", "task": 40, "lang": "python", "category": "LLM / ML", "tier": "medium", "src": "v4", "role": "scored", "est_s": 56.0, "max_wall_s": 600, "arms": ["L0"], "stratum": null},
-  {"id": "52_unionfind_f", "task": 52, "lang": "zig", "category": "Algorithms & DS", "tier": "medium", "src": "v4", "role": "probe", "est_s": 56.0, "max_wall_s": 600, "arms": ["L0", "L1", "L2"], "stratum": "insample"},
-  {"id": "54_astar_f", "task": 54, "lang": "zig", "category": "Algorithms & DS", "tier": "medium", "src": "v4", "role": "probe", "est_s": 56.0, "max_wall_s": 600, "arms": ["L0", "L1", "L2"], "stratum": "insample"},
-  {"id": "61_extgcd_f", "task": 61, "lang": "zig", "category": "Pure & Abstract Math", "tier": "medium", "src": "v4", "role": "probe", "est_s": 56.0, "max_wall_s": 600, "arms": ["L0", "L1", "L2"], "stratum": "insample"},
-  {"id": "62_crt_f", "task": 62, "lang": "zig", "category": "Pure & Abstract Math", "tier": "medium", "src": "v4", "role": "probe", "est_s": 56.0, "max_wall_s": 600, "arms": ["L0", "L1", "L2"], "stratum": "insample"},
-  {"id": "63_det_f", "task": 63, "lang": "zig", "category": "Pure & Abstract Math", "tier": "medium", "src": "v4", "role": "probe", "est_s": 56.0, "max_wall_s": 600, "arms": ["L0", "L1", "L2"], "stratum": "insample"},
-  {"id": "71_reverse_list_a", "task": 71, "lang": "python", "category": "Algorithms & DS", "tier": "easy", "src": "v4", "role": "scored", "est_s": 22.4, "max_wall_s": 300, "arms": ["L0"], "stratum": null},
-  {"id": "71_reverse_list_b", "task": 71, "lang": "go", "category": "Algorithms & DS", "tier": "easy", "src": "v4", "role": "scored", "est_s": 22.4, "max_wall_s": 300, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "71_reverse_list_c", "task": 71, "lang": "c", "category": "Algorithms & DS", "tier": "easy", "src": "v4", "role": "scored", "est_s": 9.2, "max_wall_s": 300, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "71_reverse_list_d", "task": 71, "lang": "cpp", "category": "Algorithms & DS", "tier": "easy", "src": "v4", "role": "scored", "est_s": 9.2, "max_wall_s": 300, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "71_reverse_list_e", "task": 71, "lang": "rust", "category": "Algorithms & DS", "tier": "easy", "src": "v4", "role": "scored", "est_s": 22.4, "max_wall_s": 300, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "71_reverse_list_f", "task": 71, "lang": "zig", "category": "Algorithms & DS", "tier": "easy", "src": "v4", "role": "scored", "est_s": 22.4, "max_wall_s": 300, "arms": ["L0", "L1", "L2"], "stratum": "insample"},
-  {"id": "92_popcount_f", "task": 92, "lang": "zig", "category": "Performance & HW Opt", "tier": "easy", "src": "v4", "role": "probe", "est_s": 22.4, "max_wall_s": 300, "arms": ["L0", "L1", "L2"], "stratum": "insample"},
-  {"id": "117_iter_refinement", "task": 117, "lang": "python", "category": "Pure & Abstract Math", "tier": "hard", "src": "v4", "role": "scored", "est_s": 131.2, "max_wall_s": 900, "arms": ["L0"], "stratum": null},
-  {"id": "121_quorum_kv", "task": 121, "lang": "python", "category": "Distributed / SysDesign", "tier": "hard", "src": "v4", "role": "scored", "est_s": 131.2, "max_wall_s": 900, "arms": ["L0"], "stratum": null},
-  {"id": "122_gemm_blocked_a", "task": 122, "lang": "go", "category": "Performance & HW Opt", "tier": "hard", "src": "v4", "role": "scored", "est_s": 54.1, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "122_gemm_blocked_b", "task": 122, "lang": "c", "category": "Performance & HW Opt", "tier": "hard", "src": "v4", "role": "scored", "est_s": 131.2, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "122_gemm_blocked_c", "task": 122, "lang": "cpp", "category": "Performance & HW Opt", "tier": "hard", "src": "v4", "role": "scored", "est_s": 131.2, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "122_gemm_blocked_d", "task": 122, "lang": "rust", "category": "Performance & HW Opt", "tier": "hard", "src": "v4", "role": "scored", "est_s": 54.1, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "122_gemm_blocked_e", "task": 122, "lang": "zig", "category": "Performance & HW Opt", "tier": "hard", "src": "v4", "role": "scored", "est_s": 131.2, "max_wall_s": 900, "arms": ["L0", "L1", "L2"], "stratum": "insample"},
-  {"id": "123_nbody_a", "task": 123, "lang": "python", "category": "Physics", "tier": "hard", "src": "v4", "role": "scored", "est_s": 131.2, "max_wall_s": 900, "arms": ["L0"], "stratum": null},
-  {"id": "123_nbody_b", "task": 123, "lang": "go", "category": "Physics", "tier": "hard", "src": "v4", "role": "scored", "est_s": 54.1, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "123_nbody_c", "task": 123, "lang": "c", "category": "Physics", "tier": "hard", "src": "v4", "role": "scored", "est_s": 54.1, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "123_nbody_d", "task": 123, "lang": "cpp", "category": "Physics", "tier": "hard", "src": "v4", "role": "scored", "est_s": 54.1, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "123_nbody_e", "task": 123, "lang": "rust", "category": "Physics", "tier": "hard", "src": "v4", "role": "scored", "est_s": 54.1, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "123_nbody_f", "task": 123, "lang": "zig", "category": "Physics", "tier": "hard", "src": "v4", "role": "scored", "est_s": 131.2, "max_wall_s": 900, "arms": ["L0", "L1", "L2"], "stratum": "insample"},
-  {"id": "128_rsa", "task": 128, "lang": "python", "category": "Security", "tier": "hard", "src": "v4", "role": "scored", "est_s": 131.2, "max_wall_s": 900, "arms": ["L0"], "stratum": null},
-  {"id": "143_uov", "task": 143, "lang": "python", "category": "Security", "tier": "hard", "src": "v4", "role": "scored", "est_s": 131.2, "max_wall_s": 900, "arms": ["L0"], "stratum": null},
-  {"id": "146_aho_corasick", "task": 146, "lang": "python", "category": "Algorithms & DS", "tier": "hard", "src": "v4", "role": "scored", "est_s": 131.2, "max_wall_s": 900, "arms": ["L0"], "stratum": null},
-  {"id": "147_persistent_bst", "task": 147, "lang": "python", "category": "Algorithms & DS", "tier": "hard", "src": "v4", "role": "scored", "est_s": 131.2, "max_wall_s": 900, "arms": ["L0"], "stratum": null},
-  {"id": "152_chase_lev_deque", "task": 152, "lang": "python", "category": "Concurrency & Systems", "tier": "hard", "src": "v4", "role": "scored", "est_s": 131.2, "max_wall_s": 900, "arms": ["L0"], "stratum": null},
-  {"id": "153_coroutine_scheduler", "task": 153, "lang": "python", "category": "Concurrency & Systems", "tier": "hard", "src": "v4", "role": "scored", "est_s": 131.2, "max_wall_s": 900, "arms": ["L0"], "stratum": null},
-  {"id": "158_karatsuba_bytes_a", "task": 158, "lang": "python", "category": "Pure & Abstract Math", "tier": "hard", "src": "v4", "role": "scored", "est_s": 131.2, "max_wall_s": 900, "arms": ["L0"], "stratum": null},
-  {"id": "158_karatsuba_bytes_b", "task": 158, "lang": "go", "category": "Pure & Abstract Math", "tier": "hard", "src": "v4", "role": "scored", "est_s": 131.2, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "158_karatsuba_bytes_c", "task": 158, "lang": "c", "category": "Pure & Abstract Math", "tier": "hard", "src": "v4", "role": "scored", "est_s": 131.2, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "158_karatsuba_bytes_d", "task": 158, "lang": "cpp", "category": "Pure & Abstract Math", "tier": "hard", "src": "v4", "role": "scored", "est_s": 54.1, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "158_karatsuba_bytes_e", "task": 158, "lang": "rust", "category": "Pure & Abstract Math", "tier": "hard", "src": "v4", "role": "scored", "est_s": 131.2, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "158_karatsuba_bytes_f", "task": 158, "lang": "zig", "category": "Pure & Abstract Math", "tier": "hard", "src": "v4", "role": "scored", "est_s": 131.2, "max_wall_s": 900, "arms": ["L0", "L1", "L2"], "stratum": "insample"},
-  {"id": "159_ntt_convolution_a", "task": 159, "lang": "python", "category": "Pure & Abstract Math", "tier": "hard", "src": "v4", "role": "scored", "est_s": 131.2, "max_wall_s": 900, "arms": ["L0"], "stratum": null},
-  {"id": "159_ntt_convolution_b", "task": 159, "lang": "go", "category": "Pure & Abstract Math", "tier": "hard", "src": "v4", "role": "scored", "est_s": 131.2, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "159_ntt_convolution_c", "task": 159, "lang": "c", "category": "Pure & Abstract Math", "tier": "hard", "src": "v4", "role": "scored", "est_s": 131.2, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "159_ntt_convolution_d", "task": 159, "lang": "cpp", "category": "Pure & Abstract Math", "tier": "hard", "src": "v4", "role": "scored", "est_s": 131.2, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "159_ntt_convolution_e", "task": 159, "lang": "rust", "category": "Pure & Abstract Math", "tier": "hard", "src": "v4", "role": "scored", "est_s": 54.1, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "159_ntt_convolution_f", "task": 159, "lang": "zig", "category": "Pure & Abstract Math", "tier": "hard", "src": "v4", "role": "scored", "est_s": 131.2, "max_wall_s": 900, "arms": ["L0", "L1", "L2"], "stratum": "insample"},
-  {"id": "163_bigint_divmod_knuthD_a", "task": 163, "lang": "python", "category": "Algorithms & DS", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0"], "stratum": null},
-  {"id": "163_bigint_divmod_knuthD_b", "task": 163, "lang": "go", "category": "Algorithms & DS", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "163_bigint_divmod_knuthD_c", "task": 163, "lang": "c", "category": "Algorithms & DS", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "163_bigint_divmod_knuthD_d", "task": 163, "lang": "cpp", "category": "Algorithms & DS", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "163_bigint_divmod_knuthD_e", "task": 163, "lang": "rust", "category": "Algorithms & DS", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "163_bigint_divmod_knuthD_f", "task": 163, "lang": "zig", "category": "Algorithms & DS", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0", "L1", "L2"], "stratum": "heldout"},
-  {"id": "164_q4k_quant_a", "task": 164, "lang": "python", "category": "LLM / ML", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0"], "stratum": null},
-  {"id": "164_q4k_quant_b", "task": 164, "lang": "go", "category": "LLM / ML", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "164_q4k_quant_c", "task": 164, "lang": "c", "category": "LLM / ML", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "164_q4k_quant_d", "task": 164, "lang": "cpp", "category": "LLM / ML", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "164_q4k_quant_e", "task": 164, "lang": "rust", "category": "LLM / ML", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "164_q4k_quant_f", "task": 164, "lang": "zig", "category": "LLM / ML", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0", "L1", "L2"], "stratum": "heldout"},
-  {"id": "165_chacha20_poly1305_a", "task": 165, "lang": "python", "category": "Security", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0"], "stratum": null},
-  {"id": "165_chacha20_poly1305_b", "task": 165, "lang": "go", "category": "Security", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "165_chacha20_poly1305_c", "task": 165, "lang": "c", "category": "Security", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "165_chacha20_poly1305_d", "task": 165, "lang": "cpp", "category": "Security", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "165_chacha20_poly1305_e", "task": 165, "lang": "rust", "category": "Security", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "165_chacha20_poly1305_f", "task": 165, "lang": "zig", "category": "Security", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0", "L1", "L2"], "stratum": "heldout"},
-  {"id": "166_welford_chan_merge_a", "task": 166, "lang": "python", "category": "Probability & Stats", "tier": "medium", "src": "new", "role": "scored", "est_s": 82, "max_wall_s": 600, "arms": ["L0"], "stratum": null},
-  {"id": "166_welford_chan_merge_b", "task": 166, "lang": "go", "category": "Probability & Stats", "tier": "medium", "src": "new", "role": "scored", "est_s": 82, "max_wall_s": 600, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "166_welford_chan_merge_c", "task": 166, "lang": "c", "category": "Probability & Stats", "tier": "medium", "src": "new", "role": "scored", "est_s": 82, "max_wall_s": 600, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "166_welford_chan_merge_d", "task": 166, "lang": "cpp", "category": "Probability & Stats", "tier": "medium", "src": "new", "role": "scored", "est_s": 82, "max_wall_s": 600, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "166_welford_chan_merge_e", "task": 166, "lang": "rust", "category": "Probability & Stats", "tier": "medium", "src": "new", "role": "scored", "est_s": 82, "max_wall_s": 600, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "166_welford_chan_merge_f", "task": 166, "lang": "zig", "category": "Probability & Stats", "tier": "medium", "src": "new", "role": "scored", "est_s": 82, "max_wall_s": 600, "arms": ["L0", "L1", "L2"], "stratum": "heldout"},
-  {"id": "167_q15_biquad_cascade_a", "task": 167, "lang": "python", "category": "Signal Processing & DSP", "tier": "medium", "src": "new", "role": "scored", "est_s": 82, "max_wall_s": 600, "arms": ["L0"], "stratum": null},
-  {"id": "167_q15_biquad_cascade_b", "task": 167, "lang": "go", "category": "Signal Processing & DSP", "tier": "medium", "src": "new", "role": "scored", "est_s": 82, "max_wall_s": 600, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "167_q15_biquad_cascade_c", "task": 167, "lang": "c", "category": "Signal Processing & DSP", "tier": "medium", "src": "new", "role": "scored", "est_s": 82, "max_wall_s": 600, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "167_q15_biquad_cascade_d", "task": 167, "lang": "cpp", "category": "Signal Processing & DSP", "tier": "medium", "src": "new", "role": "scored", "est_s": 82, "max_wall_s": 600, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "167_q15_biquad_cascade_e", "task": 167, "lang": "rust", "category": "Signal Processing & DSP", "tier": "medium", "src": "new", "role": "scored", "est_s": 82, "max_wall_s": 600, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "167_q15_biquad_cascade_f", "task": 167, "lang": "zig", "category": "Signal Processing & DSP", "tier": "medium", "src": "new", "role": "scored", "est_s": 82, "max_wall_s": 600, "arms": ["L0", "L1", "L2"], "stratum": "heldout"},
-  {"id": "168_linearizability_wgl_a", "task": 168, "lang": "python", "category": "Distributed / SysDesign", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0"], "stratum": null},
-  {"id": "168_linearizability_wgl_b", "task": 168, "lang": "go", "category": "Distributed / SysDesign", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "168_linearizability_wgl_c", "task": 168, "lang": "c", "category": "Distributed / SysDesign", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "168_linearizability_wgl_d", "task": 168, "lang": "cpp", "category": "Distributed / SysDesign", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "168_linearizability_wgl_e", "task": 168, "lang": "rust", "category": "Distributed / SysDesign", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "168_linearizability_wgl_f", "task": 168, "lang": "zig", "category": "Distributed / SysDesign", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0", "L1", "L2"], "stratum": "heldout"},
-  {"id": "169_broken_build_repair_a", "task": 169, "lang": "python", "category": "SWE / DevOps", "tier": "medium", "src": "new", "role": "scored", "est_s": 82, "max_wall_s": 600, "arms": ["L0"], "stratum": null},
-  {"id": "169_broken_build_repair_b", "task": 169, "lang": "go", "category": "SWE / DevOps", "tier": "medium", "src": "new", "role": "scored", "est_s": 82, "max_wall_s": 600, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "169_broken_build_repair_c", "task": 169, "lang": "c", "category": "SWE / DevOps", "tier": "medium", "src": "new", "role": "scored", "est_s": 82, "max_wall_s": 600, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "169_broken_build_repair_d", "task": 169, "lang": "cpp", "category": "SWE / DevOps", "tier": "medium", "src": "new", "role": "scored", "est_s": 82, "max_wall_s": 600, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "169_broken_build_repair_e", "task": 169, "lang": "rust", "category": "SWE / DevOps", "tier": "medium", "src": "new", "role": "scored", "est_s": 82, "max_wall_s": 600, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "169_broken_build_repair_f", "task": 169, "lang": "zig", "category": "SWE / DevOps", "tier": "medium", "src": "new", "role": "scored", "est_s": 82, "max_wall_s": 600, "arms": ["L0", "L1", "L2"], "stratum": "heldout"},
-  {"id": "170_lockfree_mpmc_ring_c", "task": 170, "lang": "c", "category": "Concurrency & Systems", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "170_lockfree_mpmc_ring_d", "task": 170, "lang": "cpp", "category": "Concurrency & Systems", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "170_lockfree_mpmc_ring_e", "task": 170, "lang": "rust", "category": "Concurrency & Systems", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "170_lockfree_mpmc_ring_f", "task": 170, "lang": "zig", "category": "Concurrency & Systems", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0", "L1", "L2"], "stratum": "heldout"},
-  {"id": "171_go_pipeline_race_deadlock", "task": 171, "lang": "go", "category": "Concurrency & Systems", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "173_asyncio_structured_cancel", "task": 173, "lang": "python", "category": "Concurrency & Systems", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0"], "stratum": null},
-  {"id": "175_crdt_orset_rga", "task": 175, "lang": "python", "category": "Distributed / SysDesign", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0"], "stratum": null},
-  {"id": "176_repo_debug_intermittent_500", "task": 176, "lang": "python", "category": "SWE / DevOps", "tier": "xl", "src": "new", "role": "scored", "est_s": 330, "max_wall_s": 1500, "arms": ["L0"], "stratum": null},
-  {"id": "178_codebase_qa", "task": 178, "lang": "python", "category": "SWE / DevOps", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0"], "stratum": null},
-  {"id": "179_git_bisect_minimal_revert", "task": 179, "lang": "shell", "category": "SWE / DevOps", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0", "L2"], "stratum": null},
-  {"id": "180_vuln_hunt_http_server", "task": 180, "lang": "python", "category": "Security", "tier": "xl", "src": "new", "role": "scored", "est_s": 330, "max_wall_s": 1500, "arms": ["L0"], "stratum": null},
-  {"id": "181_jwt_verifier_hardening", "task": 181, "lang": "python", "category": "Security", "tier": "medium", "src": "new", "role": "scored", "est_s": 82, "max_wall_s": 600, "arms": ["L0"], "stratum": null},
-  {"id": "183_heston_little_trap", "task": 183, "lang": "python", "category": "Mathematical Finance", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0"], "stratum": null},
-  {"id": "186_robertson_stiff", "task": 186, "lang": "python", "category": "Physics", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0"], "stratum": null},
-  {"id": "188_gmm_em_logsumexp", "task": 188, "lang": "python", "category": "Probability & Stats", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0"], "stratum": null},
-  {"id": "190_autograd_mlp", "task": 190, "lang": "python", "category": "LLM / ML", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0"], "stratum": null},
-  {"id": "192_pike_vm_regex", "task": 192, "lang": "python", "category": "Algorithms & DS", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0"], "stratum": null},
-  {"id": "195_riscv_insn_budget", "task": 195, "lang": "python", "category": "Performance & HW Opt", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0"], "stratum": null},
-  {"id": "196_polyphase_resampler", "task": 196, "lang": "python", "category": "Signal Processing & DSP", "tier": "hard", "src": "new", "role": "scored", "est_s": 165, "max_wall_s": 900, "arms": ["L0"], "stratum": null}
+  {
+   "id": "29_db_migration",
+   "task": 29,
+   "lang": "python",
+   "category": "SWE / DevOps",
+   "tier": "hard",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 131.2,
+   "max_wall_s": 900,
+   "arms": [
+    "L0"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "36_black_scholes_a",
+   "task": 36,
+   "lang": "python",
+   "category": "Mathematical Finance",
+   "tier": "medium",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 56.0,
+   "max_wall_s": 600,
+   "arms": [
+    "L0"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "36_black_scholes_b",
+   "task": 36,
+   "lang": "go",
+   "category": "Mathematical Finance",
+   "tier": "medium",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 23.1,
+   "max_wall_s": 600,
+   "arms": [
+    "L0",
+    "L2"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "36_black_scholes_c",
+   "task": 36,
+   "lang": "c",
+   "category": "Mathematical Finance",
+   "tier": "medium",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 56.0,
+   "max_wall_s": 600,
+   "arms": [
+    "L0",
+    "L2"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "36_black_scholes_d",
+   "task": 36,
+   "lang": "cpp",
+   "category": "Mathematical Finance",
+   "tier": "medium",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 23.1,
+   "max_wall_s": 600,
+   "arms": [
+    "L0",
+    "L2"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "36_black_scholes_e",
+   "task": 36,
+   "lang": "rust",
+   "category": "Mathematical Finance",
+   "tier": "medium",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 56.0,
+   "max_wall_s": 600,
+   "arms": [
+    "L0",
+    "L2"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "36_black_scholes_f",
+   "task": 36,
+   "lang": "zig",
+   "category": "Mathematical Finance",
+   "tier": "medium",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 56.0,
+   "max_wall_s": 600,
+   "arms": [
+    "L0",
+    "L1",
+    "L2"
+   ],
+   "stratum": "insample"
+  },
+  {
+   "id": "37_softmax_stable",
+   "task": 37,
+   "lang": "python",
+   "category": "LLM / ML",
+   "tier": "medium",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 56.0,
+   "max_wall_s": 600,
+   "arms": [
+    "L0"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "40_attention",
+   "task": 40,
+   "lang": "python",
+   "category": "LLM / ML",
+   "tier": "medium",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 56.0,
+   "max_wall_s": 600,
+   "arms": [
+    "L0"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "49_markov_steady_state",
+   "task": 49,
+   "lang": "python",
+   "category": "Probability & Stats",
+   "tier": "hard",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 131.2,
+   "max_wall_s": 900,
+   "arms": [
+    "L0"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "107_singleflight",
+   "task": 107,
+   "lang": "python",
+   "category": "Concurrency & Systems",
+   "tier": "medium",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 56.0,
+   "max_wall_s": 600,
+   "arms": [
+    "L0"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "109_jwt",
+   "task": 109,
+   "lang": "python",
+   "category": "Security",
+   "tier": "medium",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 56.0,
+   "max_wall_s": 600,
+   "arms": [
+    "L0"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "117_iter_refinement",
+   "task": 117,
+   "lang": "python",
+   "category": "Pure & Abstract Math",
+   "tier": "hard",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 131.2,
+   "max_wall_s": 900,
+   "arms": [
+    "L0"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "121_quorum_kv",
+   "task": 121,
+   "lang": "python",
+   "category": "Distributed / SysDesign",
+   "tier": "hard",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 131.2,
+   "max_wall_s": 900,
+   "arms": [
+    "L0"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "122_gemm_blocked_a",
+   "task": 122,
+   "lang": "go",
+   "category": "Performance & HW Opt",
+   "tier": "hard",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 54.1,
+   "max_wall_s": 900,
+   "arms": [
+    "L0",
+    "L2"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "122_gemm_blocked_b",
+   "task": 122,
+   "lang": "c",
+   "category": "Performance & HW Opt",
+   "tier": "hard",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 131.2,
+   "max_wall_s": 900,
+   "arms": [
+    "L0",
+    "L2"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "122_gemm_blocked_c",
+   "task": 122,
+   "lang": "cpp",
+   "category": "Performance & HW Opt",
+   "tier": "hard",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 131.2,
+   "max_wall_s": 900,
+   "arms": [
+    "L0",
+    "L2"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "122_gemm_blocked_d",
+   "task": 122,
+   "lang": "rust",
+   "category": "Performance & HW Opt",
+   "tier": "hard",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 54.1,
+   "max_wall_s": 900,
+   "arms": [
+    "L0",
+    "L2"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "122_gemm_blocked_e",
+   "task": 122,
+   "lang": "zig",
+   "category": "Performance & HW Opt",
+   "tier": "hard",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 131.2,
+   "max_wall_s": 900,
+   "arms": [
+    "L0",
+    "L1",
+    "L2"
+   ],
+   "stratum": "insample"
+  },
+  {
+   "id": "123_nbody_a",
+   "task": 123,
+   "lang": "python",
+   "category": "Physics",
+   "tier": "hard",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 131.2,
+   "max_wall_s": 900,
+   "arms": [
+    "L0"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "123_nbody_b",
+   "task": 123,
+   "lang": "go",
+   "category": "Physics",
+   "tier": "hard",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 54.1,
+   "max_wall_s": 900,
+   "arms": [
+    "L0",
+    "L2"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "123_nbody_c",
+   "task": 123,
+   "lang": "c",
+   "category": "Physics",
+   "tier": "hard",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 54.1,
+   "max_wall_s": 900,
+   "arms": [
+    "L0",
+    "L2"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "123_nbody_d",
+   "task": 123,
+   "lang": "cpp",
+   "category": "Physics",
+   "tier": "hard",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 54.1,
+   "max_wall_s": 900,
+   "arms": [
+    "L0",
+    "L2"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "123_nbody_e",
+   "task": 123,
+   "lang": "rust",
+   "category": "Physics",
+   "tier": "hard",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 54.1,
+   "max_wall_s": 900,
+   "arms": [
+    "L0",
+    "L2"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "123_nbody_f",
+   "task": 123,
+   "lang": "zig",
+   "category": "Physics",
+   "tier": "hard",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 131.2,
+   "max_wall_s": 900,
+   "arms": [
+    "L0",
+    "L1",
+    "L2"
+   ],
+   "stratum": "insample"
+  },
+  {
+   "id": "124_rkf45",
+   "task": 124,
+   "lang": "python",
+   "category": "Physics",
+   "tier": "hard",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 131.2,
+   "max_wall_s": 900,
+   "arms": [
+    "L0"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "126_hmac_scratch",
+   "task": 126,
+   "lang": "python",
+   "category": "Security",
+   "tier": "hard",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 131.2,
+   "max_wall_s": 900,
+   "arms": [
+    "L0"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "128_rsa",
+   "task": 128,
+   "lang": "python",
+   "category": "Security",
+   "tier": "hard",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 131.2,
+   "max_wall_s": 900,
+   "arms": [
+    "L0"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "143_uov",
+   "task": 143,
+   "lang": "python",
+   "category": "Security",
+   "tier": "hard",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 131.2,
+   "max_wall_s": 900,
+   "arms": [
+    "L0"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "146_aho_corasick",
+   "task": 146,
+   "lang": "python",
+   "category": "Algorithms & DS",
+   "tier": "hard",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 131.2,
+   "max_wall_s": 900,
+   "arms": [
+    "L0"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "147_persistent_bst",
+   "task": 147,
+   "lang": "python",
+   "category": "Algorithms & DS",
+   "tier": "hard",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 131.2,
+   "max_wall_s": 900,
+   "arms": [
+    "L0"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "153_coroutine_scheduler",
+   "task": 153,
+   "lang": "python",
+   "category": "Concurrency & Systems",
+   "tier": "hard",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 131.2,
+   "max_wall_s": 900,
+   "arms": [
+    "L0"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "158_karatsuba_bytes_a",
+   "task": 158,
+   "lang": "python",
+   "category": "Pure & Abstract Math",
+   "tier": "hard",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 131.2,
+   "max_wall_s": 900,
+   "arms": [
+    "L0"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "158_karatsuba_bytes_b",
+   "task": 158,
+   "lang": "go",
+   "category": "Pure & Abstract Math",
+   "tier": "hard",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 131.2,
+   "max_wall_s": 900,
+   "arms": [
+    "L0",
+    "L2"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "158_karatsuba_bytes_c",
+   "task": 158,
+   "lang": "c",
+   "category": "Pure & Abstract Math",
+   "tier": "hard",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 131.2,
+   "max_wall_s": 900,
+   "arms": [
+    "L0",
+    "L2"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "158_karatsuba_bytes_d",
+   "task": 158,
+   "lang": "cpp",
+   "category": "Pure & Abstract Math",
+   "tier": "hard",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 54.1,
+   "max_wall_s": 900,
+   "arms": [
+    "L0",
+    "L2"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "158_karatsuba_bytes_e",
+   "task": 158,
+   "lang": "rust",
+   "category": "Pure & Abstract Math",
+   "tier": "hard",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 131.2,
+   "max_wall_s": 900,
+   "arms": [
+    "L0",
+    "L2"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "159_ntt_convolution_a",
+   "task": 159,
+   "lang": "python",
+   "category": "Pure & Abstract Math",
+   "tier": "hard",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 131.2,
+   "max_wall_s": 900,
+   "arms": [
+    "L0"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "159_ntt_convolution_b",
+   "task": 159,
+   "lang": "go",
+   "category": "Pure & Abstract Math",
+   "tier": "hard",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 131.2,
+   "max_wall_s": 900,
+   "arms": [
+    "L0",
+    "L2"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "159_ntt_convolution_c",
+   "task": 159,
+   "lang": "c",
+   "category": "Pure & Abstract Math",
+   "tier": "hard",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 131.2,
+   "max_wall_s": 900,
+   "arms": [
+    "L0",
+    "L2"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "159_ntt_convolution_d",
+   "task": 159,
+   "lang": "cpp",
+   "category": "Pure & Abstract Math",
+   "tier": "hard",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 131.2,
+   "max_wall_s": 900,
+   "arms": [
+    "L0",
+    "L2"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "159_ntt_convolution_e",
+   "task": 159,
+   "lang": "rust",
+   "category": "Pure & Abstract Math",
+   "tier": "hard",
+   "src": "v4",
+   "role": "scored",
+   "est_s": 54.1,
+   "max_wall_s": 900,
+   "arms": [
+    "L0",
+    "L2"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "163_bigint_divmod_a",
+   "task": 163,
+   "lang": "python",
+   "category": "Algorithms & DS",
+   "tier": "hard",
+   "src": "new",
+   "role": "scored",
+   "est_s": 165,
+   "max_wall_s": 900,
+   "arms": [
+    "L0"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "163_bigint_divmod_b",
+   "task": 163,
+   "lang": "go",
+   "category": "Algorithms & DS",
+   "tier": "hard",
+   "src": "new",
+   "role": "scored",
+   "est_s": 165,
+   "max_wall_s": 900,
+   "arms": [
+    "L0",
+    "L2"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "163_bigint_divmod_c",
+   "task": 163,
+   "lang": "c",
+   "category": "Algorithms & DS",
+   "tier": "hard",
+   "src": "new",
+   "role": "scored",
+   "est_s": 165,
+   "max_wall_s": 900,
+   "arms": [
+    "L0",
+    "L2"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "163_bigint_divmod_d",
+   "task": 163,
+   "lang": "cpp",
+   "category": "Algorithms & DS",
+   "tier": "hard",
+   "src": "new",
+   "role": "scored",
+   "est_s": 165,
+   "max_wall_s": 900,
+   "arms": [
+    "L0",
+    "L2"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "163_bigint_divmod_e",
+   "task": 163,
+   "lang": "rust",
+   "category": "Algorithms & DS",
+   "tier": "hard",
+   "src": "new",
+   "role": "scored",
+   "est_s": 165,
+   "max_wall_s": 900,
+   "arms": [
+    "L0",
+    "L2"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "163_bigint_divmod_f",
+   "task": 163,
+   "lang": "zig",
+   "category": "Algorithms & DS",
+   "tier": "hard",
+   "src": "new",
+   "role": "scored",
+   "est_s": 165,
+   "max_wall_s": 900,
+   "arms": [
+    "L0",
+    "L1",
+    "L2"
+   ],
+   "stratum": "heldout"
+  },
+  {
+   "id": "167_q15_biquad_a",
+   "task": 167,
+   "lang": "python",
+   "category": "Signal Processing & DSP",
+   "tier": "medium",
+   "src": "new",
+   "role": "scored",
+   "est_s": 82,
+   "max_wall_s": 600,
+   "arms": [
+    "L0"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "167_q15_biquad_b",
+   "task": 167,
+   "lang": "go",
+   "category": "Signal Processing & DSP",
+   "tier": "medium",
+   "src": "new",
+   "role": "scored",
+   "est_s": 82,
+   "max_wall_s": 600,
+   "arms": [
+    "L0",
+    "L2"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "167_q15_biquad_c",
+   "task": 167,
+   "lang": "c",
+   "category": "Signal Processing & DSP",
+   "tier": "medium",
+   "src": "new",
+   "role": "scored",
+   "est_s": 82,
+   "max_wall_s": 600,
+   "arms": [
+    "L0",
+    "L2"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "167_q15_biquad_d",
+   "task": 167,
+   "lang": "cpp",
+   "category": "Signal Processing & DSP",
+   "tier": "medium",
+   "src": "new",
+   "role": "scored",
+   "est_s": 82,
+   "max_wall_s": 600,
+   "arms": [
+    "L0",
+    "L2"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "167_q15_biquad_e",
+   "task": 167,
+   "lang": "rust",
+   "category": "Signal Processing & DSP",
+   "tier": "medium",
+   "src": "new",
+   "role": "scored",
+   "est_s": 82,
+   "max_wall_s": 600,
+   "arms": [
+    "L0",
+    "L2"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "167_q15_biquad_f",
+   "task": 167,
+   "lang": "zig",
+   "category": "Signal Processing & DSP",
+   "tier": "medium",
+   "src": "new",
+   "role": "scored",
+   "est_s": 82,
+   "max_wall_s": 600,
+   "arms": [
+    "L0",
+    "L1",
+    "L2"
+   ],
+   "stratum": "heldout"
+  },
+  {
+   "id": "168_linearizability_kv_a",
+   "task": 168,
+   "lang": "python",
+   "category": "Distributed / SysDesign",
+   "tier": "hard",
+   "src": "new",
+   "role": "scored",
+   "est_s": 165,
+   "max_wall_s": 900,
+   "arms": [
+    "L0"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "168_linearizability_kv_b",
+   "task": 168,
+   "lang": "go",
+   "category": "Distributed / SysDesign",
+   "tier": "hard",
+   "src": "new",
+   "role": "scored",
+   "est_s": 165,
+   "max_wall_s": 900,
+   "arms": [
+    "L0",
+    "L2"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "168_linearizability_kv_c",
+   "task": 168,
+   "lang": "c",
+   "category": "Distributed / SysDesign",
+   "tier": "hard",
+   "src": "new",
+   "role": "scored",
+   "est_s": 165,
+   "max_wall_s": 900,
+   "arms": [
+    "L0",
+    "L2"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "168_linearizability_kv_d",
+   "task": 168,
+   "lang": "cpp",
+   "category": "Distributed / SysDesign",
+   "tier": "hard",
+   "src": "new",
+   "role": "scored",
+   "est_s": 165,
+   "max_wall_s": 900,
+   "arms": [
+    "L0",
+    "L2"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "168_linearizability_kv_e",
+   "task": 168,
+   "lang": "rust",
+   "category": "Distributed / SysDesign",
+   "tier": "hard",
+   "src": "new",
+   "role": "scored",
+   "est_s": 165,
+   "max_wall_s": 900,
+   "arms": [
+    "L0",
+    "L2"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "168_linearizability_kv_f",
+   "task": 168,
+   "lang": "zig",
+   "category": "Distributed / SysDesign",
+   "tier": "hard",
+   "src": "new",
+   "role": "scored",
+   "est_s": 165,
+   "max_wall_s": 900,
+   "arms": [
+    "L0",
+    "L1",
+    "L2"
+   ],
+   "stratum": "heldout"
+  },
+  {
+   "id": "173_taskgroup_cancel",
+   "task": 173,
+   "lang": "python",
+   "category": "Concurrency & Systems",
+   "tier": "hard",
+   "src": "new",
+   "role": "scored",
+   "est_s": 165,
+   "max_wall_s": 900,
+   "arms": [
+    "L0"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "175_crdt_orset_rga",
+   "task": 175,
+   "lang": "python",
+   "category": "Distributed / SysDesign",
+   "tier": "hard",
+   "src": "new",
+   "role": "scored",
+   "est_s": 165,
+   "max_wall_s": 900,
+   "arms": [
+    "L0"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "176_intermittent_500s_a",
+   "task": 176,
+   "lang": "python",
+   "category": "SWE / DevOps",
+   "tier": "xl",
+   "src": "new",
+   "role": "scored",
+   "est_s": 330,
+   "max_wall_s": 1500,
+   "arms": [
+    "L0"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "178_codebase_qa",
+   "task": 178,
+   "lang": "python",
+   "category": "SWE / DevOps",
+   "tier": "hard",
+   "src": "new",
+   "role": "scored",
+   "est_s": 165,
+   "max_wall_s": 900,
+   "arms": [
+    "L0"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "179_git_bisect_revert",
+   "task": 179,
+   "lang": "shell",
+   "category": "SWE / DevOps",
+   "tier": "hard",
+   "src": "new",
+   "role": "scored",
+   "est_s": 165,
+   "max_wall_s": 900,
+   "arms": [
+    "L0",
+    "L2"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "183_heston_little_trap",
+   "task": 183,
+   "lang": "python",
+   "category": "Mathematical Finance",
+   "tier": "hard",
+   "src": "new",
+   "role": "scored",
+   "est_s": 165,
+   "max_wall_s": 900,
+   "arms": [
+    "L0"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "188_gmm_em",
+   "task": 188,
+   "lang": "python",
+   "category": "Probability & Stats",
+   "tier": "hard",
+   "src": "new",
+   "role": "scored",
+   "est_s": 165,
+   "max_wall_s": 900,
+   "arms": [
+    "L0"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "190_autograd_mlp",
+   "task": 190,
+   "lang": "python",
+   "category": "LLM / ML",
+   "tier": "hard",
+   "src": "new",
+   "role": "scored",
+   "est_s": 165,
+   "max_wall_s": 900,
+   "arms": [
+    "L0"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "192_pike_regex",
+   "task": 192,
+   "lang": "python",
+   "category": "Algorithms & DS",
+   "tier": "hard",
+   "src": "new",
+   "role": "scored",
+   "est_s": 165,
+   "max_wall_s": 900,
+   "arms": [
+    "L0"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "195_riscv_insn_budget",
+   "task": 195,
+   "lang": "python",
+   "category": "Performance & HW Opt",
+   "tier": "hard",
+   "src": "new",
+   "role": "scored",
+   "est_s": 165,
+   "max_wall_s": 900,
+   "arms": [
+    "L0"
+   ],
+   "stratum": null
+  },
+  {
+   "id": "196_polyphase_resampler",
+   "task": 196,
+   "lang": "python",
+   "category": "Signal Processing & DSP",
+   "tier": "hard",
+   "src": "new",
+   "role": "scored",
+   "est_s": 165,
+   "max_wall_s": 900,
+   "arms": [
+    "L0"
+   ],
+   "stratum": null
+  }
  ]
 }

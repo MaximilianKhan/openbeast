@@ -439,11 +439,24 @@ def current_suite_version() -> str:
         return "unknown"
 
 
+def _manifest_scored_units(name: str) -> int | None:
+    """Scored units of the manifest evals/suites/<name>.json (None if absent)."""
+    try:
+        with open(os.path.join(EVALS_DIR, "suites", f"{name}.json")) as f:
+            units = json.load(f).get("units") or []
+    except (OSError, ValueError):
+        return None
+    return sum(1 for u in units if isinstance(u, dict)
+               and u.get("role", "scored") == "scored") or None
+
+
 # Expected effective-unit counts per suite version. Entries whose suite has
 # no expected count here (legacy runs) are treated as full.
-# v5 counts SCORED units only: the 7 zig probe units (role "probe" in
-# evals/suites/v5.json) run in every arm but never score.
-SUITE_EXPECTED_UNITS = {"v5": 111, "v4": 291, "v3.5": 323}
+# v5 counts SCORED units only (role "probe" never scores) and is read from
+# the manifest, so the partial-run guard cannot drift from the shipped set.
+SUITE_EXPECTED_UNITS = {"v4": 291, "v3.5": 323}
+if _manifest_scored_units("v5"):
+    SUITE_EXPECTED_UNITS["v5"] = _manifest_scored_units("v5")
 # Suites scored under the v4-era rules (LANG over every base, imputation
 # allowed). Anything newer gets the v5 rules.
 V4_ERA_SUITES = frozenset({"v4", "v3.5", "legacy", "unknown"})
