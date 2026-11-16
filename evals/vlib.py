@@ -29,7 +29,17 @@ itself:
       Orphaned or surviving descendants are refused as `daemon`. Every
       descendant is SIGKILLed on the way out, whatever happened.
       By default (allow_fork=False) any child process is refused; on macOS
-      the kernel enforces that through sandbox-exec.
+      the kernel enforces that through sandbox-exec, which also denies the
+      solution network and process-info on other processes, confines a
+      compiled unit's exec to its own binary (no exec into python3), and
+      denies reads of any evals/{refs,tasks,suites} tree.
+
+  private_build_dir(files), build_env(), tool_path(name),
+  scan_toolchain_overrides(dir), is_native_executable(path), sanitizer_flags(k)
+      Build a solution from a PRIVATE copy of only its source, with a clean
+      private HOME and the toolchain pinned in the environment, so a planted
+      rust-toolchain.toml / go env / .cargo config cannot capture the compiler,
+      then require the product to be a native executable.
 
   run_solution(..., confine=[workdir], read_only=python_runtime(exe, mods))
       The solution may read only its runtime and its work dir, write only
@@ -71,7 +81,9 @@ import threading
 import time
 
 __all__ = ["scale", "t", "run_solution", "Result", "python_cmd", "python_runtime",
-           "processes", "lint_python", "clean_env"]
+           "processes", "lint_python", "clean_env", "tool_path", "scan_toolchain_overrides",
+           "private_build_dir", "build_env", "is_native_executable",
+           "assert_native_executable", "sanitizer_flags", "SANITIZER_FLAGS"]
 
 _LINUX = sys.platform.startswith("linux")
 _DARWIN = sys.platform == "darwin"
@@ -303,18 +315,58 @@ class _Cgroup:
 
 _SANDBOX_OK = None
 
+# Any path that lies inside an evals/{refs,tasks,suites} directory, in ANY
+# checkout — not only this run's sealed paths. A solution that globs
+# /Users/*/.../worktrees/*/evals/refs/<unit>/*.py to read the reference
+# (reported in U4) is denied by construction, wherever the copy lives.
+_EVAL_SECRET_RE = r"/evals/(refs|tasks|suites)(/|$)"
 
-def _sandbox_prefix(allow_fork: bool, deny_read: list[str]) -> list[str]:
-    """sandbox-exec argv prefix (macOS), or [] when not needed or unavailable."""
+
+def _sbpl_str(s: str) -> str:
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _sandbox_prefix(allow_fork: bool, deny_read: list[str], *,
+                    deny_net: bool = True, deny_procinfo: bool = True,
+                    exec_only: str | None = None) -> list[str]:
+    """sandbox-exec argv prefix (macOS), or [] when sandboxing is unavailable.
+
+    The confined solution gets `(allow default)` minus the holes a cheat uses:
+      * network  — no fetch of a pushed reference, no phone-home (future risk
+        reported on 164);
+      * process-info  — it cannot read the validator's argv/env (reported on
+        190): even when a future validator puts data there, it does not leak;
+      * process-exec  — when exec_only is set (a compiled unit passes its built
+        binary), the solution may exec only that one image, so a C/Go/Rust/zig
+        program cannot `execvp("python3", ...)` into an unlinted interpreter
+        (reported on 166 and U4); a native binary does not re-exec itself, so
+        this does not disturb an honest solution;
+      * reads of any evals/{refs,tasks,suites} tree, plus the caller's
+        deny_read paths.
+    Later SBPL rules win, so the allow for exec_only follows the deny."""
     global _SANDBOX_OK
-    if not _DARWIN or (allow_fork and not deny_read):
+    want = (not allow_fork) or deny_read or deny_net or deny_procinfo or exec_only
+    if not _DARWIN or not want:
         return []
     rules = ["(version 1)", "(allow default)"]
+    if deny_net:
+        rules.append("(deny network*)")
+    if deny_procinfo:
+        # Deny reading OTHER processes' info (the validator's argv/env,
+        # reported on 190) while allowing a process to query ITSELF, which a
+        # framework Python needs when it re-execs into its app bundle.
+        rules.append("(deny process-info* (with no-report))")
+        rules.append("(allow process-info-pidinfo (target self))")
+        rules.append("(allow process-info-codesignature (target self))")
     if not allow_fork:
         rules.append("(deny process-fork)")
+    rules.append(f'(deny file-read* (regex #"{_EVAL_SECRET_RE}"))')
     for p in deny_read:
-        rp = os.path.realpath(p).replace("\\", "\\\\").replace('"', '\\"')
-        rules.append(f'(deny file-read* (subpath "{rp}"))')
+        rules.append(f'(deny file-read* (subpath "{_sbpl_str(os.path.realpath(p))}"))')
+    if exec_only:
+        rp = os.path.realpath(exec_only)
+        rules.append("(deny process-exec*)")
+        rules.append(f'(allow process-exec (literal "{_sbpl_str(rp)}"))')
     if _SANDBOX_OK is None:
         try:
             _SANDBOX_OK = subprocess.run(
@@ -438,9 +490,16 @@ def _sbpl(p: str) -> str:
     return os.path.realpath(p).replace("\\", "\\\\").replace('"', '\\"')
 
 
-def _confine_profile(allow_fork: bool, ro: list[str], rw: list[str]) -> str:
-    """macOS sandbox profile: reads only from the allowlist, writes only to rw."""
-    rules = ["(version 1)", "(allow default)", "(deny network*)"]
+def _confine_profile(allow_fork: bool, ro: list[str], rw: list[str], *,
+                     exec_only: str | None = None, deny_read: list[str] = ()) -> str:
+    """macOS sandbox profile: reads only from the allowlist, writes only to rw,
+    no network, no process-info on other processes (the validator's argv/env
+    stay private even if a future validator puts data there), and, with
+    exec_only, no exec of any image but that one."""
+    rules = ["(version 1)", "(allow default)", "(deny network*)",
+             "(deny process-info* (with no-report))",
+             "(allow process-info-pidinfo (target self))",
+             "(allow process-info-codesignature (target self))"]
     if not allow_fork:
         rules.append("(deny process-fork)")
     rules.append("(deny file-read*)")
@@ -471,6 +530,13 @@ def _confine_profile(allow_fork: bool, ro: list[str], rw: list[str]) -> str:
     wr = ['(literal "/dev/null")', '(literal "/dev/zero")', '(literal "/dev/tty")',
           '(regex #"^/dev/fd/")'] + [f'(subpath "{_sbpl(p)}")' for p in rw]
     rules.append("(allow file-write* " + " ".join(wr) + ")")
+    # after the read allowlist, so these denies win
+    rules.append(f'(deny file-read* (regex #"{_EVAL_SECRET_RE}"))')
+    for p in deny_read:
+        rules.append(f'(deny file-read* (subpath "{_sbpl(os.path.realpath(p))}"))')
+    if exec_only:
+        rules.append("(deny process-exec*)")
+        rules.append(f'(allow process-exec (literal "{_sbpl(os.path.realpath(exec_only))}"))')
     return "".join(rules)
 
 
@@ -792,7 +858,8 @@ class Result:
     verdict: "ok" (exited by itself within every budget; check returncode
     yourself), "cpu" (over the CPU budget), "wall" (over the wall budget),
     "daemon" (a descendant was orphaned or outlived the solution), "forked"
-    (allow_fork=False and it started a child), "output" (wrote more than
+    (allow_fork=False and it started a child), "exec" (it replaced its image
+    with another binary under confine_exec), "output" (wrote more than
     max_output bytes), "sandbox" (confine was asked for and could not be
     set up: the solution never ran)."""
 
@@ -847,7 +914,7 @@ def run_solution(cmd, input=None, *, cpu_s: float, wall_s: float | None = None,
                  allow_fork: bool = False, scale_cpu: bool = True,
                  max_output: int = 64 * 1024 * 1024, poll_s: float = 0.05,
                  deny_read: list[str] | None = None, confine: list[str] | None = None,
-                 read_only: list[str] = ()) -> Result:
+                 read_only: list[str] = (), confine_exec: bool | None = None) -> Result:
     """Run the solution `cmd` (an argv list) under a CPU budget for the whole
     process tree.
 
@@ -865,15 +932,24 @@ def run_solution(cmd, input=None, *, cpu_s: float, wall_s: float | None = None,
     On macOS a double-fork plus setsid can still slip past the sampler, so a
     timed gate on macOS should keep allow_fork=False.
     deny_read: paths the solution may not read (macOS sandbox only; default:
-    the harness's sealed eval paths, OPENBEAST_VALIDATOR_SEAL). A deny-list:
+    the harness's sealed eval paths, OPENBEAST_VALIDATOR_SEAL). Reads of any
+    evals/{refs,tasks,suites} tree are denied unconditionally. A deny-list:
     prefer `confine`.
     confine: dirs the solution may read AND write (its private work dir).
     With it set the solution is confined on both platforms: it may read
     only `read_only` (use python_runtime() for a Python solution), the system
     library dirs and a few /dev nodes, write only the confine dirs, and use
-    no network (macOS sandbox-exec; Linux landlock, else a user + mount
-    namespace). If confinement cannot be set up the solution is NOT run and
-    the verdict is "sandbox".
+    no network and no process-info on other processes (macOS sandbox-exec;
+    Linux landlock, else a user + mount namespace). If confinement cannot be
+    set up the solution is NOT run and the verdict is "sandbox".
+    confine_exec: restrict the exec of child/replaced images to the
+    solution's own binary (macOS). None (default) decides automatically:
+    confine when cmd[0] is a native program (a compiled unit's built binary),
+    leave open when cmd[0] is this Python interpreter (it re-execs itself into
+    its framework on some hosts, and a Python solution that execs Python gains
+    nothing a deny-read on evals/ does not already stop). Pass True to force
+    it, False to disable. A compiled unit should keep the default so the
+    solution cannot exec into python3 or any other interpreter.
     """
     if isinstance(cmd, str):
         raise TypeError("run_solution takes an argv list, not a shell string")
@@ -882,7 +958,16 @@ def run_solution(cmd, input=None, *, cpu_s: float, wall_s: float | None = None,
     wall_budget = (float(wall_s) if wall_s is not None else 3 * float(cpu_s) + 5) * sc
     env = clean_env() if env is None else dict(env)
     seal = _sealed_paths() if deny_read is None else list(deny_read)
-    argv = _sandbox_prefix(allow_fork, seal) + list(cmd)
+    exec0 = os.path.realpath(cmd[0]) if cmd else ""
+    interp = {os.path.realpath(sys.executable), os.path.realpath(python_cmd("x")[0])}
+    if confine_exec is None:
+        # Auto: confine a single compiled binary (allow_fork False, not the
+        # harness interpreter). A shell/multiprocess solution (allow_fork
+        # True) legitimately execs coreutils, so leave its exec open unless a
+        # validator asks otherwise.
+        confine_exec = (not allow_fork) and bool(exec0) and exec0 not in interp
+    exec_only = exec0 if confine_exec else None
+    argv = _sandbox_prefix(allow_fork, seal, exec_only=exec_only) + list(cmd)
     confine_child, confine_cleanup = None, (lambda: None)
     if confine is not None:
         rw = [os.path.realpath(p) for p in confine]
@@ -890,7 +975,9 @@ def run_solution(cmd, input=None, *, cpu_s: float, wall_s: float | None = None,
         if _DARWIN:
             if not _sandbox_ok():
                 return Result(None, "", "", 0.0, 0.0, "sandbox", "sandbox-exec unavailable")
-            argv = ["/usr/bin/sandbox-exec", "-p", _confine_profile(allow_fork, ro, rw)] + list(cmd)
+            argv = ["/usr/bin/sandbox-exec", "-p",
+                    _confine_profile(allow_fork, ro, rw, exec_only=exec_only, deny_read=seal)
+                    ] + list(cmd)
         elif _LINUX:
             try:
                 confine_child, confine_cleanup, _how = _confine_linux(ro, rw, cwd)
@@ -958,6 +1045,21 @@ def run_solution(cmd, input=None, *, cpu_s: float, wall_s: float | None = None,
     rusage_cpu = 0.0
     status = None
 
+    def _exe(pid: int) -> str | None:
+        """The realpath of a process's running image, Linux only."""
+        if not _LINUX:
+            return None
+        try:
+            return os.readlink(f"/proc/{pid}/exe")
+        except OSError:
+            return None
+
+    # The image the solution must stay in. On Linux (where the macOS exec
+    # sandbox does not apply) a compiled solution that execs into python3 or
+    # `zig run <ref>` (reported on 166 and U4) replaces /proc/<pid>/exe; if it
+    # changes while confine_exec is on, the run is refused as "exec".
+    exe0 = _exe(proc.pid) if confine_exec else None
+
     def _tree():
         """Live members of the solution's tree: the pgid, the ancestry from
         known pids, and (Linux, subreaper) orphans reparented to us."""
@@ -1007,6 +1109,11 @@ def run_solution(cmd, input=None, *, cpu_s: float, wall_s: float | None = None,
             if r is not None:
                 status = r
                 break
+            if exe0 is not None:
+                now = _exe(proc.pid)
+                if now is not None and now != exe0:
+                    verdict, reason = "exec", f"solution exec'd into another image ({now})"
+                    break
             others = [p for p in live if p != proc.pid]
             if not allow_fork and others:
                 verdict, reason = "forked", f"solution started {len(others)} child process(es)"
@@ -1107,6 +1214,146 @@ def _unregister_group(pgid: int):
                 f.write("".join(f"{g}\n" for g in sorted(_LIVE)))
         except OSError:
             pass
+
+
+# --- builds ----------------------------------------------------------------------
+#
+# A build is where the reference and the wrong solutions were beaten by
+# toolchain capture (reported on 166 and 169): a planted rust-toolchain.toml,
+# a $HOME/.../go/env with GOFLAGS=-ldflags=-s, a .cargo/config.toml in an
+# ancestor of the build dir, each replacing the compiler or stripping the
+# symbol table the validator inspects. The rule is: build a PRIVATE COPY of
+# only the source, in a dir whose ancestors the agent cannot have planted, with
+# a clean private HOME and the toolchain pinned in the environment, then require
+# the product to be a native executable.
+
+_CONFIG_NAMES = ("rust-toolchain", "rust-toolchain.toml", "go.work", "go.env",
+                 ".go-version", "go.env.local")
+_CONFIG_DIRS = (".cargo", ".config")  # .cargo/config{,.toml}, .config/go/env
+
+
+def tool_path(name: str) -> str:
+    """Absolute path of a toolchain binary, so a planted `rustc`/`cc` earlier
+    on PATH in the build dir cannot shadow it. Falls back to the bare name."""
+    import shutil
+    return shutil.which(name) or name
+
+
+def scan_toolchain_overrides(start: str, stop: str = "/") -> list[str]:
+    """Toolchain-config files planted in `start` or any ancestor up to `stop`:
+    rust-toolchain(.toml), .cargo/config(.toml), go.work, a go env file. The
+    rustup and cargo proxies honour these from any ancestor of the build cwd,
+    so a validator must build somewhere none exist (see private_build_dir)."""
+    found, cur = [], os.path.realpath(start)
+    stop = os.path.realpath(stop)
+    while True:
+        for n in _CONFIG_NAMES:
+            p = os.path.join(cur, n)
+            if os.path.exists(p):
+                found.append(p)
+        for d in _CONFIG_DIRS:
+            for n in ("config", "config.toml", os.path.join("go", "env")):
+                p = os.path.join(cur, d, n)
+                if os.path.exists(p):
+                    found.append(p)
+        if cur == stop or cur == os.path.dirname(cur):
+            break
+        cur = os.path.dirname(cur)
+    return found
+
+
+def private_build_dir(files: dict, *, base: str | None = None) -> str:
+    """A fresh 0700 dir under a harness-owned base that holds ONLY the given
+    source — {relpath: contents|bytes} — and no toolchain-config sibling or
+    ancestor the solution could have planted. Build in the returned dir.
+
+    `base` defaults to a private dir created under TMPDIR; its one child is
+    this build dir, so `scan_toolchain_overrides` up to `base` finds nothing
+    unless the compile itself writes one. Returns the build dir path."""
+    import tempfile
+    if base:
+        os.makedirs(base, exist_ok=True)
+    else:
+        base = tempfile.mkdtemp(prefix="ob-build-")
+    os.chmod(base, 0o700)
+    d = os.path.realpath(tempfile.mkdtemp(prefix="src-", dir=base))
+    os.chmod(d, 0o700)
+    for rel, content in files.items():
+        dst = os.path.join(d, rel)
+        if os.path.relpath(os.path.realpath(dst), d).startswith(".."):
+            raise ValueError(f"source path escapes the build dir: {rel!r}")
+        os.makedirs(os.path.dirname(dst) or d, exist_ok=True)
+        mode = "wb" if isinstance(content, (bytes, bytearray)) else "w"
+        with open(dst, mode) as f:
+            f.write(content)
+    return d
+
+
+def build_env(extra: dict | None = None, *, home: str | None = None) -> dict:
+    """Environment for a compiler so a planted config file cannot redirect it.
+
+    HOME is a fresh private dir (no $HOME/Library/Application Support/go/env,
+    reported on 166); GOENV=off and GOFLAGS cleared (no -ldflags=-s to strip
+    the symbol table); GOTOOLCHAIN=local (no network toolchain download);
+    RUSTUP_TOOLCHAIN is kept from the env if pinned there. Pass the build dir
+    nowhere on PATH; call tool_path() for an absolute compiler path."""
+    import tempfile
+    env = clean_env(base={k: v for k, v in os.environ.items()})
+    env["HOME"] = home or tempfile.mkdtemp(prefix="ob-home-")
+    env["GOENV"] = "off"
+    env["GOFLAGS"] = ""
+    env["GOTOOLCHAIN"] = env.get("GOTOOLCHAIN") or "local"
+    env.setdefault("GOCACHE", os.path.join(env["HOME"], "go-cache"))
+    env.setdefault("GOMODCACHE", os.path.join(env["HOME"], "go-mod"))
+    if extra:
+        env.update({k: str(v) for k, v in extra.items() if v is not None})
+    return env
+
+
+def is_native_executable(path: str) -> bool:
+    """True iff `path` begins with ELF or Mach-O magic. A build that produced
+    a script (a `#!/usr/bin/env python3` shim behind a planted rustc, reported
+    on 166/169) is NOT a native executable, so a validator that requires one
+    refuses it even when nm/otool print nothing for the non-object file."""
+    try:
+        with open(path, "rb") as f:
+            m = f.read(4)
+    except OSError:
+        return False
+    return m[:4] in (b"\x7fELF",                      # ELF
+                     b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe",  # Mach-O 64/32 LE
+                     b"\xfe\xed\xfa\xcf", b"\xfe\xed\xfa\xce",  # Mach-O BE
+                     b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca")  # fat
+
+
+def assert_native_executable(path: str) -> None:
+    """Raise AssertionError unless `path` is an ELF/Mach-O executable."""
+    assert is_native_executable(path), f"{path} is not a native executable"
+
+
+# --- sanitizer builds ------------------------------------------------------------
+#
+# 170 is detectable at compile time: a build with -fsanitize=thread changes
+# observable builtins (link_libcpp, pic) so the solution can branch on the
+# build (reported on 170). The defence is twofold: (1) the zig/C lint bans the
+# fields that differ, and (2) a validator should also validate BEHAVIOUR in
+# the plain build, where no sanitizer flag is present at all. These helpers
+# give both builds from ONE source so neither is a different program.
+
+SANITIZER_FLAGS = {
+    "thread": ("-fsanitize=thread",),
+    "address": ("-fsanitize=address", "-fno-omit-frame-pointer"),
+    "undefined": ("-fsanitize=undefined", "-fno-sanitize-recover=all"),
+}
+
+
+def sanitizer_flags(kind: str) -> tuple:
+    """Compiler flags for a sanitizer build (`thread`/`address`/`undefined`).
+    A validator builds the SAME source with and without these. Where the build
+    can be told apart at compile or run time (zig's @import("builtin") exposes
+    link_libcpp/pic under TSan), the validator must also check behaviour in the
+    PLAIN build — the sanitizer is a stress amplifier, not the only judge."""
+    return SANITIZER_FLAGS[kind]
 
 
 # --- lint ------------------------------------------------------------------------

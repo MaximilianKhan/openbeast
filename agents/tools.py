@@ -505,6 +505,12 @@ def bash(command: str, timeout: int = 120) -> str:
         sealed = _seal_command_refusal(command)
         if sealed:
             return sealed
+        # Under eval, confine the shell so a read of the sealed trees fails in
+        # the kernel, not just on a command-text match (reported on 164/U4).
+        seal_prefix = _eval_read_deny_prefix()
+        if seal_prefix:
+            command = " ".join(shlex.quote(a) for a in seal_prefix) + \
+                f" /bin/sh -c {shlex.quote(command)}"
         wrapper = os.environ.get("OPENBEAST_BASH_WRAPPER", "").strip()
         if wrapper:
             command = f"{wrapper} /bin/sh -c {shlex.quote(command)}"
@@ -660,15 +666,20 @@ def _guard_write_path(path: str):
 # evals/suites/ (the manifest). A v4 agent could `read_file` the JSON of the
 # very task it was solving. Production agents (no marker) are unaffected.
 # File tools refuse by resolved path; grep and list_files drop sealed paths
-# from results; bash refuses a command that names the sealed directories.
-# The bash check is textual — a determined `cd evals; cat tasks/*` gets past
-# it — so it is a tripwire, not a sandbox; the sealed paths never enter a
-# unit's OPENBEAST_TASK_PATHS either.
+# from results. For bash, the textual check alone was bypassable by shell
+# quote-splitting (`cat ta""sks/164.json`, `git show HEAD:evals/re""fs/...`,
+# `cd evals; cat tasks/*`) — reported on 164. So under eval, the bash command
+# is additionally run inside a sandbox that DENIES READS of the sealed trees by
+# construction (macOS sandbox-exec; Linux Landlock where the host offers it),
+# and the text check is applied to a quote-stripped copy of the command and
+# extended to `git` blob refs (`:evals/...`). The sealed paths never enter a
+# unit's OPENBEAST_TASK_PATHS either. [ERA NOTE: agents/tools.py is era-hashed;
+# this v5 hardening is intentionally confined to the seal block below.]
 # ---------------------------------------------------------------------------
 
 _REPO_ROOT = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 _SEALED_SUBDIRS = ("tasks", "refs", "suites")
-_SEALED_TEXT_RE = re.compile(r"\bevals/+(?:tasks|refs|suites)\b")
+_SEALED_TEXT_RE = re.compile(r"(?:\b|:)evals/+(?:tasks|refs|suites)\b")
 
 
 def _eval_mode() -> bool:
@@ -700,14 +711,53 @@ def _seal_refusal(path: str) -> str | None:
     return None
 
 
+def _strip_shell_quotes(command: str) -> str:
+    """Remove the shell quoting a command uses only to split a banned token
+    across string boundaries (`ta""sks`, `re''fs`, `evals\\/refs`). What the
+    shell would actually open is the de-quoted path, so match on that."""
+    return command.replace('"', "").replace("'", "").replace("\\", "")
+
+
 def _seal_command_refusal(command: str) -> str | None:
     if not _eval_mode():
         return None
-    if _SEALED_TEXT_RE.search(command) or any(r in command for r in _sealed_roots()):
+    probe = _strip_shell_quotes(command)
+    if (_SEALED_TEXT_RE.search(probe) or _SEALED_TEXT_RE.search(command)
+            or any(r in probe for r in _sealed_roots())):
         return ("Error: refusing to run a command that names the eval suite's sealed "
                 "directories (evals/tasks, evals/refs, evals/suites) while a unit is "
                 "measured (OPENBEAST_EVAL=1)")
     return None
+
+
+_EVAL_SBPL_SEAL = None
+
+
+def _eval_read_deny_prefix() -> list[str]:
+    """Under eval on macOS, a sandbox-exec prefix that denies the confined
+    shell any READ of the sealed trees — in THIS checkout and in any other
+    (a glob across worktrees, reported on U4) — so a direct `cat tasks/*`
+    cannot reach the oracle however the command text is spelled. [] when not
+    on macOS or when sandbox-exec is unavailable (the Linux rig enforces this
+    through the beast-gate container / Landlock; see evals/README.md)."""
+    global _EVAL_SBPL_SEAL
+    if not _eval_mode() or sys.platform != "darwin":
+        return []
+    rules = ['(version 1)', '(allow default)',
+             '(deny file-read* (regex #"/evals/(refs|tasks|suites)(/|$)"))']
+    for r in _sealed_roots():
+        esc = r.replace("\\", "\\\\").replace('"', '\\"')
+        rules.append(f'(deny file-read* (subpath "{esc}"))')
+    if _EVAL_SBPL_SEAL is None:
+        try:
+            _EVAL_SBPL_SEAL = subprocess.run(
+                ["/usr/bin/sandbox-exec", "-p", "(version 1)(allow default)", "/usr/bin/true"],
+                capture_output=True, timeout=10).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            _EVAL_SBPL_SEAL = False
+    if not _EVAL_SBPL_SEAL:
+        return []
+    return ["/usr/bin/sandbox-exec", "-p", "".join(rules)]
 
 
 def _seal_filter_lines(text: str) -> str:
