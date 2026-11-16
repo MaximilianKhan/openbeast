@@ -56,7 +56,7 @@ itself:
 
   processes()
       The live process table (pid, ppid, pgid, cpu seconds). It reads /proc
-      on Linux and falls back to `ps` elsewhere, so it also works on macOS.
+      on Linux and libproc (in-process) on macOS, and falls back to `ps`.
 
   lint_python(src, ban_modules=..., ban_calls=...)
       An AST lint that handles the routes a substring or line regex misses:
@@ -193,11 +193,80 @@ def _ps_table() -> dict:
     return out
 
 
+# macOS: libproc in-process. run_solution polls the table every 50 ms, and a
+# `ps -A` fork per poll cost ~38 ms wall / ~27 ms CPU with ~1100 processes:
+# about 30% of a core per running validator, competing under --jobs with the
+# very solutions it times. proc_pidinfo costs microseconds per pid.
+_PROC_PIDTASKALLINFO, _PROC_PIDTBSDINFO = 2, 3
+_BSDINFO_SIZE, _TASKALLINFO_SIZE = 136, 232      # struct proc_bsdinfo, proc_taskallinfo
+_SZOMB = 5
+_DARWIN_PROC = None                               # (ctypes, lib, tick seconds) or False
+
+
+def _darwin_table() -> dict | None:
+    global _DARWIN_PROC
+    if _DARWIN_PROC is None:
+        try:
+            import ctypes
+
+            class _TB(ctypes.Structure):
+                _fields_ = [("numer", ctypes.c_uint32), ("denom", ctypes.c_uint32)]
+
+            lib = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+            lib.proc_listallpids.argtypes = [ctypes.c_void_p, ctypes.c_int]
+            lib.proc_listallpids.restype = ctypes.c_int
+            lib.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64,
+                                         ctypes.c_void_p, ctypes.c_int]
+            lib.proc_pidinfo.restype = ctypes.c_int
+            tb = _TB()
+            if lib.mach_timebase_info(ctypes.byref(tb)) != 0 or not tb.denom:
+                raise OSError("mach_timebase_info")
+            # proc_taskinfo CPU times are Mach absolute-time ticks (ns on Intel)
+            _DARWIN_PROC = (ctypes, lib, tb.numer / tb.denom / 1e9)
+        except Exception:
+            _DARWIN_PROC = False
+    if not _DARWIN_PROC:
+        return None
+    ctypes, lib, tick = _DARWIN_PROC
+    import struct
+    n = lib.proc_listallpids(None, 0)
+    if n <= 0:
+        return None
+    pids = (ctypes.c_int * (n + 512))()
+    n = lib.proc_listallpids(pids, ctypes.sizeof(pids))
+    if n <= 0:
+        return None
+    buf = ctypes.create_string_buffer(_TASKALLINFO_SIZE)
+    out = {}
+    for pid in pids[:n]:
+        if pid <= 0:
+            continue
+        if lib.proc_pidinfo(pid, _PROC_PIDTASKALLINFO, 0, buf, _TASKALLINFO_SIZE) == _TASKALLINFO_SIZE:
+            cpu = sum(struct.unpack_from("=QQ", buf.raw, _BSDINFO_SIZE + 16)) * tick
+        elif lib.proc_pidinfo(pid, _PROC_PIDTBSDINFO, 0, buf, _BSDINFO_SIZE) == _BSDINFO_SIZE:
+            cpu = 0.0          # another uid's process (or a zombie): no task info
+        else:
+            continue
+        status, = struct.unpack_from("=I", buf.raw, 4)
+        if status == _SZOMB:
+            continue
+        ppid, = struct.unpack_from("=I", buf.raw, 16)
+        pgid, = struct.unpack_from("=I", buf.raw, 100)
+        out[pid] = (ppid, pgid, cpu)
+    return out
+
+
 def processes() -> dict:
-    """{pid: (ppid, pgid, cpu_seconds)} of every live, non-zombie process."""
+    """{pid: (ppid, pgid, cpu_seconds)} of every live, non-zombie process
+    (on macOS: every one libproc lets us inspect, which always includes our
+    own uid's, i.e. every solution process; other users' may be missing)."""
     if _LINUX and os.path.isdir("/proc/self"):
         tab = _proc_table()
         if tab is not None:
+            return tab
+    if _DARWIN:
+        tab = _darwin_table()
+        if tab:
             return tab
     return _ps_table()
 

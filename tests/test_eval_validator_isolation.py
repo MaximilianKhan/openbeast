@@ -1144,3 +1144,32 @@ def test_a_validator_that_exits_zero_itself_still_passes():
     assert ok and "fine" in out, out
     task["validation"]["script"] = "import sys\nsys.exit(3)\n"
     assert run_eval.run_validation(task)[0] is False
+
+
+# --- the solution monitor's process table on macOS -----------------------------------
+#
+# run_solution polls processes() every 50 ms; on macOS that was a `ps -A` fork,
+# ~38 ms wall / ~27 ms CPU per poll with ~1100 processes (review 1116).
+
+@pytest.mark.skipif(not DARWIN, reason="libproc table is the macOS path")
+def test_darwin_process_table_agrees_with_ps_and_is_cheap():
+    p = subprocess.Popen([sys.executable, "-c",
+                          ("import time\nt=time.process_time()\n"
+                           "while time.process_time()-t<0.5: pass\ntime.sleep(10)")],
+                         start_new_session=True)
+    try:
+        time.sleep(1.0)
+        fast, slow = vlib._darwin_table(), vlib._ps_table()
+        assert fast, "libproc table unavailable"
+        for pid in (os.getpid(), p.pid):
+            assert fast[pid][:2] == slow[pid][:2]
+            assert abs(fast[pid][2] - slow[pid][2]) < 0.1
+        assert fast[p.pid][2] >= 0.45
+        assert fast[p.pid][1] == p.pid                   # its own session/group
+        t0 = time.perf_counter()
+        for _ in range(10):
+            vlib.processes()
+        assert (time.perf_counter() - t0) / 10 < 0.02     # was ~38 ms (a ps fork)
+    finally:
+        p.kill()
+        p.wait()
