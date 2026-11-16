@@ -655,7 +655,7 @@ matter:
 | `SPARK_SERVE_HOST`, `SPARK_SERVE_PORT` | rank 0's HTTP bind. Keep `127.0.0.1` when the command center is on the head; `SPARK_ALLOW_WILDCARD_BIND=false` refuses `0.0.0.0` |
 | `MODELS_DIR`, `HF_CACHE`, `HF_TOKEN_FILE` | where verified weights live |
 | `VLLM_IMAGE`, `VLLM_IMAGE_DIGEST`, `VLLM_IMAGE_ID`, `TENSORFOLD_IMAGE*` | container engines. `*_IMAGE_ID` wins over a digest, which is what makes a `docker load`ed image work offline ([H4](#h4-container-images)) |
-| `VLLM_MASTER_PORT`, `TENSORFOLD_MASTER_PORT` | rendezvous ports; spark-guard guards them too |
+| `VLLM_MASTER_PORT`, `TENSORFOLD_MASTER_PORT` | rendezvous ports; spark-guard guards them (each +1) too. It reads them from this file only, never from the environment or another `--env` file, so move a port here and re-run `sudo spark-guard.sh`. With the guard installed, `spark-node.sh` refuses a master port its rules do not cover |
 
 **One rank by hand** (start ranks N-1..1 FIRST, then rank 0):
 

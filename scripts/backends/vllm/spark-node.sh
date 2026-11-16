@@ -107,6 +107,7 @@ if (( TP > 1 )); then
   sp_need SPARK_IFACE "the ConnectX-7 interface ibdev2netdev shows Up"
   sp_need SPARK_IB_HCA "the ConnectX-7 HCA ibdev2netdev shows Up"
   sp_need SPARK_HEAD_IP "rank 0's address on the ConnectX link (--head-addr)"
+  sp_check_guarded_port "$VLLM_MASTER_PORT"
 fi
 
 # Where the weights come from: the verified local copy, else the Hub at the pin.

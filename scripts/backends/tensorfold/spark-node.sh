@@ -172,6 +172,7 @@ else
   fi
 fi
 [[ "$TENSORFOLD_MASTER_PORT" =~ ^[0-9]+$ ]] || sp_err "TENSORFOLD_MASTER_PORT='$TENSORFOLD_MASTER_PORT' is not a port"
+(( TP > 1 )) && sp_check_guarded_port "$TENSORFOLD_MASTER_PORT"
 [[ "$SPARK_SERVE_PORT" =~ ^[0-9]+$ ]] || sp_err "SPARK_SERVE_PORT='$SPARK_SERVE_PORT' is not a port"
 [[ "$RANK" == 0 ]] && sp_check_bind "${SPARK_SERVE_HOST:-}"
 

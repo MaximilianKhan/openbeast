@@ -100,6 +100,32 @@ sp_check_bind() {
   esac
 }
 
+# sp_check_guarded_port <port> — on a Spark where spark-guard is installed,
+# a rendezvous port (and its +1, the second line each rank keeps to rank 0)
+# must be one the installed ruleset drops off the fabric. spark-guard runs
+# separately under sudo and reads master ports only from spark.env, so a port
+# moved through the environment or another --env file would otherwise listen
+# unauthenticated on every interface, past the guard. No guard installed: no
+# check (the launcher's own "firewall it" note stands).
+sp_check_guarded_port() {
+  local port="$1" rules="${SPARK_GUARD_RULES:-/etc/openbeast/spark-guard.nft}"
+  local line r lo hi p ok missing=""
+  [[ "$port" =~ ^[0-9]+$ && -r "$rules" ]] || return 0
+  line="$(sed -n 's/^# fabric:.*guarded TCP:[[:space:]]*//p' "$rules" | head -n1)"
+  [[ -n "$line" ]] || return 0
+  for p in "$port" "$((10#$port + 1))"; do
+    ok=0
+    for r in $line; do
+      [[ "$r" =~ ^[0-9]+(-[0-9]+)?$ ]] || continue
+      lo="${r%-*}"; hi="${r#*-}"
+      if (( p >= lo && p <= hi )); then ok=1; break; fi
+    done
+    [[ $ok -eq 1 ]] || missing+="${missing:+ }$p"
+  done
+  [[ -z "$missing" ]] && return 0
+  sp_err "rendezvous port(s) $missing not guarded by spark-guard ($rules guards: $line) — rank 0 binds them on every interface with no authentication. spark-guard reads master ports only from spark.env: set the port there and re-run sudo scripts/backends/spark-guard.sh (or add it by hand: --port $port --port $((10#$port + 1)))"
+}
+
 # sp_check_secret_file <path> — exists, a regular file, owned by us, and not
 # readable by group/other.
 sp_check_secret_file() {
