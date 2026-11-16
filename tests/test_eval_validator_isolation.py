@@ -383,6 +383,21 @@ def test_sealed_eval_paths_are_unreadable_to_the_solution(tmp_path):
     assert ORACLE not in r.stdout and not r.ok, r
 
 
+def test_python_validator_has_no_shell_parent_holding_the_script():
+    # dash does not exec the last command of `sh -c`, so a surviving shell
+    # (dumpable, unlike the validator) held the unlinked script as its stdin
+    # and /proc/<sh>/fd/0 handed it to the solution. The validator's parent
+    # must be the harness itself.
+    task = {"id": "ppid", "validation": {"type": "python", "script": textwrap.dedent(f"""
+        import os
+        print("PPID", os.getppid(), {os.getpid()})
+    """)}}
+    ok, out = run_eval.run_validation(task)
+    assert ok, out
+    ppid, harness = out.split()[1:3]
+    assert ppid == harness, out
+
+
 # --- lint ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("src", [

@@ -1136,12 +1136,17 @@ def _run_reaped(cmd, timeout: int, shell: bool = False, **popen_kw) -> tuple[int
 
     tools.run_reaped only supports shell=True (it manages the process group
     and rlimit itself). For non-shell commands we shell-quote them into a
-    single string so the same safety guarantees apply.
+    single string so the same safety guarantees apply. The string starts with
+    `exec`, so the shell replaces itself with the command. Without it, dash
+    (Debian's and Ubuntu's /bin/sh) stays alive as the command's parent: a
+    normal, dumpable process that holds the same stdin. For a validator that
+    stdin is the unlinked script, and any same-uid process could read it
+    back through /proc/<sh pid>/fd/0.
 
     Returns (returncode, merged stdout+stderr). Raises TimeoutExpired.
     """
     if isinstance(cmd, list):
-        shell_cmd = " ".join(shlex.quote(c) for c in cmd)
+        shell_cmd = "exec " + " ".join(shlex.quote(c) for c in cmd)
     else:
         shell_cmd = cmd
     return run_reaped(shell_cmd, timeout, **popen_kw)

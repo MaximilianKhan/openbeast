@@ -268,6 +268,7 @@ harness rather than through the tasks:
 | scale | Fixed solution limits (4-10 s) ignored `--scale`, so references timed out under load and wrong solutions failed for the wrong class | `OPENBEAST_TIMEOUT_SCALE` is exported, and `vlib.t(s)` multiplies by it |
 | hidden CPU | 122: double-forked, never-waited workers kept their CPU out of `RUSAGE_CHILDREN` (29 s of naive gemm was charged as 0.03 s) | `vlib.run_solution` counts the whole tree. Leftovers are refused as `daemon` |
 | lingering solutions | a validator killed on timeout left its solution's group running into the next unit | vlib records each group it starts, and the harness SIGKILLs them after the validator exits |
+| shell parent | `run_reaped` ran `python -I -S -` through `sh -c`, and dash (Debian's and Ubuntu's `/bin/sh`) stays alive as the parent. That shell is dumpable and holds the unlinked script as fd 0, so `/proc/<sh>/fd/0` gave a solution the whole validator | The list form is run as `exec python ...`, so the validator's parent is the harness, which is non-dumpable |
 
 `evals/vlib.py` is the validator's standard library. The harness injects it
 into the validator from source; it is never on an import path or in the cwd.
