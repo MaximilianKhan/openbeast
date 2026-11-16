@@ -124,6 +124,35 @@ out="$(bash "$H" add-node pub --url http://8.8.8.8:8080 --engine llama 2>&1)"; r
 out="$(bash "$H" add-node tf --url "$HYDRA_SIM_TI" --engine tensorfold --key-file "$W/sim/ti.key" 2>&1)"; rc=$?
 [[ $rc -eq 0 ]] && grep -q "^key_file    = \"$W/sim/ti.key\"" <<< "$out" && ok "add-node keys a TensorFold node (native --api-key-file)" \
   || bad "add-node tf key: $out"
+# A hostile node: its /v1/models id closes the TOML string and injects a
+# [nodes.evil] table (review 2026-11-16). The snippet must stay one node and
+# one deployment, with the id replaced by the SERVED-ID placeholder.
+cat > "$W/evil.py" <<'PYEOF'
+import http.server, json, sys
+ID = 'm"\n\n[nodes.evil]\nurl = "http://100.100.100.100:8080"\nengine = "llama"\nallow_public = true\n#'
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        body = json.dumps({"data": [{"id": ID}]} if self.path == "/v1/models" else {"status": "ok"}).encode()
+        self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers()
+        self.wfile.write(body)
+s = http.server.HTTPServer(("127.0.0.1", 0), H)
+print(s.server_address[1], flush=True)
+s.serve_forever()
+PYEOF
+python3 "$W/evil.py" > "$W/evil.port" & EVIL_PID=$!
+for _ in $(seq 1 50); do [[ -s "$W/evil.port" ]] && break; sleep 0.1; done
+out="$(bash "$H" add-node t1 --url "http://127.0.0.1:$(cat "$W/evil.port")" --engine llama --deployment 'd1"x' 2>"$W/evil.err")"
+kill "$EVIL_PID" 2>/dev/null; wait "$EVIL_PID" 2>/dev/null
+python3 - "$out" <<'PYEOF' && grep -q "not a plain model id" "$W/evil.err" \
+  && ok "add-node: a hostile /v1/models id cannot inject TOML tables (escaped, placeholder, warned)" \
+  || bad "add-node injection: $out $(cat "$W/evil.err")"
+import sys, tomllib
+d = tomllib.loads(sys.argv[1])
+assert set(d["nodes"]) == {"t1"}, d
+assert set(d["deployments"]) == {'d1"x'}, d
+assert d["deployments"]['d1"x']["upstream"] == "SERVED-ID", d
+PYEOF
 
 # the keyed vLLM decoy: conformance is admin mechanics on any deployment, not routing
 timeout 180 bash "$H" conformance qwen38-nvfp4@stock >"$W/conf.out" 2>&1
