@@ -82,10 +82,28 @@
 # 2026-11-16). The quoted form is taken whole only when nothing but a `#`
 # comment follows its closing quote, so a quote INSIDE a value (`"a"b"`) and
 # an unquoted value containing " #" (a password) read exactly as before.
+#
+# While this file is being sourced, the lookup scans _OB_CONF_KEYS/_LINES,
+# read ONCE by _ob_conf_prime below, instead of a `grep | tail` per key:
+# ~100 lookups were ~200 fork+execs, about half of every source (0.4 s on a
+# Spark per watchdog tick, 2.3 s on macOS bash 3.2 — review 2026-11-16).
+# The prime has to happen at top level: callers use $(...), so a cache
+# filled inside the function would die with the subshell. It is dropped at
+# the end of this file, so a caller that writes openbeast.conf after
+# sourcing (setup-tailscale.sh, configure-webui.sh...) reads the file fresh,
+# as before.
 _ob_conf_value() {
-  local key="$1" conf="$REPO_DIR/openbeast.conf" line q rest after
-  [[ -f "$conf" ]] || return 1
-  line="$(grep -E "^[[:space:]]*${key}[[:space:]]*=" "$conf" | tail -n1)" || return 1
+  local key="$1" conf="$REPO_DIR/openbeast.conf" line="" q rest after i
+  if [[ "${_OB_CONF_PRIMED:-}" == "$conf" ]]; then
+    i=${#_OB_CONF_KEYS[@]}
+    while (( i > 0 )); do
+      i=$(( i - 1 ))
+      if [[ "${_OB_CONF_KEYS[i]}" == "$key" ]]; then line="${_OB_CONF_LINES[i]}"; break; fi
+    done
+  else
+    [[ -f "$conf" ]] || return 1
+    line="$(grep -E "^[[:space:]]*${key}[[:space:]]*=" "$conf" | tail -n1)" || return 1
+  fi
   [[ -n "$line" ]] || return 1
   line="${line#*=}"
   line="${line#"${line%%[![:space:]]*}"}"   # ltrim
@@ -109,6 +127,24 @@ _ob_conf_value() {
   [[ -n "$line" ]] || return 1
   printf '%s\n' "$line"
 }
+
+# _ob_conf_prime — read openbeast.conf's KEY= lines once (see above). The
+# same lines grep would match, in file order; the scan takes the last.
+# Marked with the conf path, so a REPO_DIR change never reads stale lines.
+_ob_conf_prime() {
+  local conf="$REPO_DIR/openbeast.conf" l re='^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*='
+  _OB_CONF_KEYS=(); _OB_CONF_LINES=()
+  if [[ -f "$conf" ]]; then
+    while IFS= read -r l || [[ -n "$l" ]]; do
+      if [[ "$l" =~ $re ]]; then
+        _OB_CONF_KEYS+=("${BASH_REMATCH[1]}"); _OB_CONF_LINES+=("$l")
+      fi
+    done < "$conf"
+  fi
+  _OB_CONF_PRIMED="$conf"
+}
+_ob_conf_unprime() { unset _OB_CONF_PRIMED _OB_CONF_KEYS _OB_CONF_LINES; }
+_ob_conf_prime
 
 # A few OPENBEAST_<KEY> names are BOTH the env override for KEY and this
 # file's own derived export (the dashboard, children and `start.sh -d` read
@@ -1354,6 +1390,7 @@ if [[ -z "$SEARXNG_SECRET" && "${OB_CONF_READONLY:-}" != "1" ]]; then
   fi
   printf 'SEARXNG_SECRET=%s\n' "$SEARXNG_SECRET" >> "$_ob_conf"
   chmod 600 "$_ob_conf" 2>/dev/null || true
+  _ob_conf_prime   # the file just changed (or was just created)
 fi
 export OPENBEAST_SEARXNG_SECRET="$SEARXNG_SECRET"
 
@@ -1455,3 +1492,6 @@ if [[ -z "${OB_CONF_LINTED:-}" ]]; then
   unset _ob_lint
   export OB_CONF_LINTED=1
 fi
+# Drop the per-source cache (see _ob_conf_value): from here on every lookup
+# reads openbeast.conf fresh, so a caller that edits it sees its own write.
+_ob_conf_unprime

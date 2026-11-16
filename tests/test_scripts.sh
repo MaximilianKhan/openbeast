@@ -907,6 +907,24 @@ if [[ "$ROUTER_URL" == "http://localhost:8088/v1" ]]; then
 else
   fail "AGENT_ROUTER=true didn't route OPENBEAST_MODEL_URL (got: ${ROUTER_URL:-empty})"
 fi
+# review 2026-11-16: one `grep | tail` per key was ~200 fork+execs per
+# source, about half its time. openbeast.conf is now read once per source;
+# a counting grep on PATH pins that (lint's one grep for unknown keys stays).
+mkdir -p "$CONF_SCRATCH/cbin"
+printf '#!/bin/bash\necho x >> "%s/greps"\nexec /usr/bin/grep "$@"\n' "$CONF_SCRATCH" > "$CONF_SCRATCH/cbin/grep"
+chmod +x "$CONF_SCRATCH/cbin/grep"
+printf 'SEARXNG_SECRET=s\nHYDRA=true\nHYDRA=false\nBIND_HOST="127.0.0.2"  # lo\n' > "$CONF_SCRATCH/openbeast.conf"
+: > "$CONF_SCRATCH/greps"
+_cc="$(env -i PATH="$CONF_SCRATCH/cbin:$PATH" HOME="$CONF_SCRATCH" REPO_DIR="$CONF_SCRATCH" OB_CONF_READONLY=1 \
+  bash -c "source '$REPO_DIR/scripts/lib/conf.sh' 2>/dev/null; printf '%s|%s|%s|' \"\$HYDRA\" \"\$BIND_HOST\" \"\${_OB_CONF_PRIMED-unset}\"
+           printf 'HYDRA=true\n' >> '$CONF_SCRATCH/openbeast.conf'; _ob_conf_value HYDRA")"
+_ng="$(wc -l < "$CONF_SCRATCH/greps" | tr -d ' ')"
+if [[ "$_cc" == "false|127.0.0.2|unset|true" && "$_ng" -le 5 ]]; then
+  pass "conf.sh reads openbeast.conf once per source ($_ng greps), last key wins, and drops the cache after"
+else
+  fail "conf.sh lookup cache: got '$_cc' with $_ng grep calls (want 'false|127.0.0.2|unset|true', <= 5)"
+fi
+rm -f "$CONF_SCRATCH/openbeast.conf"
 
 # Distributed agents Phase 1 (docs/DISTRIBUTED_AGENTS_PLAN.md):
 # OPENBEAST_AGENT_INFERENCE_URL must be ABSENT (not exported empty) when
