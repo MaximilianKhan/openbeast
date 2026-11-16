@@ -16,10 +16,22 @@
 # stdin; the committed code runs only through vlib.run_solution (own session,
 # CPU budget over the whole tree, scrubbed env) and is judged by its output.
 # Every limit is written at scale 1 and scaled by OPENBEAST_TIMEOUT_SCALE.
+#
+# git never runs inside the agent's repository. Its .git/config is agent-
+# written, and plain config can make a read run a program: a promisor remote
+# (extensions.partialClone + remote.<r>.promisor + remote.<r>.uploadpack) turns
+# a `cat-file` of a missing object into a lazy fetch that runs uploadpack
+# through the shell, as an unsandboxed child of this validator. So HEAD and the
+# refs are parsed from their files, and only the object store's loose objects
+# and pack/idx files (regular files, no symlinks, under a byte cap) are copied
+# into a fresh bare repo this script owns: its own config, no alternates,
+# grafts, replace refs, commit-graph or promisor packs, a private HOME, and
+# `protocol.allow=never` plus GIT_NO_LAZY_FETCH (git >= 2.44) as a second wall.
+#
 # Both solution runs share one wall budget, so a validation stays inside the
 # 15 s authoring budget at scale 1 even when the suite is slow AND the hidden
 # run hangs.
-import os, random, re, shutil, subprocess, sys, tempfile, time
+import atexit, os, random, re, shutil, stat, subprocess, sys, tempfile, time
 import vlib
 
 REPO = "/tmp/eval_bisect/semver"
@@ -29,9 +41,15 @@ R1, R2 = @@R1@@, @@R2@@          # culprit block = lines [R1, R2) of ORIG:semver
 SUITE_CPU_S = 6.0   # per run, scale 1, whole process tree (a sane bash fix: ~1 s)
 HIDDEN_CPU_S = 6.0
 SOLUTION_WALL_S = 11.0   # suite + hidden runs together, scale 1
+GIT_DIR = os.path.join(REPO, ".git")
+OBJ_CAP = 256 << 20          # bytes of objects copied out of the agent's store
+_priv = tempfile.mkdtemp(prefix="v179g_")
+atexit.register(shutil.rmtree, _priv, True)
+SNAP = os.path.join(_priv, "snap.git")   # the validator's own bare repo
 GENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
 GENV.update(GIT_NO_REPLACE_OBJECTS="1", GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
-            GIT_TERMINAL_PROMPT="0", LC_ALL="C")
+            GIT_TERMINAL_PROMPT="0", GIT_NO_LAZY_FETCH="1", LC_ALL="C",
+            HOME=_priv, XDG_CONFIG_HOME=_priv)
 
 
 def fail(msg):
@@ -40,12 +58,105 @@ def fail(msg):
 
 
 def git(*args, raw=False):
-    p = subprocess.run(["git", "-c", "core.fsmonitor=false", "-C", REPO] + list(args), env=GENV,
+    p = subprocess.run(["git", "-c", "protocol.allow=never", "-c", "core.fsmonitor=false",
+                        "--git-dir=" + SNAP] + list(args), env=GENV, cwd=_priv,
                        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
                        timeout=vlib.t(20))
     if p.returncode != 0:
         return None
     return p.stdout if raw else p.stdout.decode("utf-8", "replace").strip()
+
+
+def read_plain(path, cap=1 << 20):
+    """Contents of a regular file, never through a symlink; None if absent."""
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        out = b""
+        while len(out) <= cap:
+            chunk = os.read(fd, 1 << 20)
+            if not chunk:
+                break
+            out += chunk
+        return out
+    finally:
+        os.close(fd)
+
+
+def is_plain_dir(path):
+    try:
+        return stat.S_ISDIR(os.lstat(path).st_mode)
+    except OSError:
+        return False
+
+
+LOOSE = re.compile(r"^[0-9a-f]{38}$")
+PACK = re.compile(r"^pack-[0-9a-f]{40,64}\.(pack|idx)$")
+
+
+def snapshot_objects():
+    """Copy the agent's objects (loose + pack/idx only) into SNAP."""
+    if subprocess.run(["git", "init", "-q", "--bare", "--template=", SNAP], env=GENV, cwd=_priv,
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                      stdin=subprocess.DEVNULL, timeout=vlib.t(20)).returncode != 0:
+        fail("internal: cannot create the validator's repository")
+    src_root = os.path.join(GIT_DIR, "objects")
+    if not is_plain_dir(src_root):
+        fail("no git object store at " + src_root)
+    total = 0
+    for sub in sorted(os.listdir(src_root)):
+        sd = os.path.join(src_root, sub)
+        if sub == "pack":
+            names, pat = (os.listdir(sd) if is_plain_dir(sd) else []), PACK
+        elif re.match(r"^[0-9a-f]{2}$", sub) and is_plain_dir(sd):
+            names, pat = os.listdir(sd), LOOSE
+        else:
+            continue          # info/ (alternates, commit-graph), tmp files: never copied
+        for n in sorted(names):
+            if not pat.match(n):
+                continue      # .promisor, .keep, .rev, .bitmap, multi-pack-index: optional
+            data = read_plain(os.path.join(sd, n), cap=OBJ_CAP)
+            if data is None:
+                fail("the object store holds a non-regular file (%s/%s)" % (sub, n))
+            total += len(data)
+            if total > OBJ_CAP:
+                fail("the object store is over %d MB" % (OBJ_CAP >> 20))
+            os.makedirs(os.path.join(SNAP, "objects", sub), exist_ok=True)
+            with open(os.path.join(SNAP, "objects", sub, n), "wb") as f:
+                f.write(data)
+
+
+def packed_refs():
+    raw = read_plain(os.path.join(GIT_DIR, "packed-refs"), cap=64 << 20) or b""
+    return raw.decode("ascii", "replace").splitlines()
+
+
+def read_ref(name):
+    """40-hex value of a direct ref, from its loose file or packed-refs."""
+    raw = read_plain(os.path.join(GIT_DIR, *name.split("/")))
+    if raw is not None:
+        v = raw.decode("ascii", "replace").strip()
+        return v if re.match(r"^[0-9a-f]{40}$", v) else None
+    if os.path.lexists(os.path.join(GIT_DIR, *name.split("/"))):
+        return None   # a symlink or a directory where the ref file should be
+    for ln in packed_refs():
+        parts = ln.split()
+        if len(parts) == 2 and parts[1] == name and re.match(r"^[0-9a-f]{40}$", parts[0]):
+            return parts[0]
+    return None
+
+
+def bisect_in_progress():
+    if os.path.lexists(os.path.join(GIT_DIR, "BISECT_START")):
+        return True
+    for _root, _dirs, files in os.walk(os.path.join(GIT_DIR, "refs", "bisect")):
+        if files:
+            return True
+    return any(" refs/bisect/" in ln for ln in packed_refs())
 
 
 _deadline = [None]   # monotonic end of the shared solution wall budget
@@ -66,21 +177,26 @@ def run_committed(argv, cwd, data=None, cpu_s=6.0):
     return r.returncode, r.stdout or b"", r.stderr or b""
 
 
-# ---- 1. repository state
-if not os.path.isdir(REPO) or git("rev-parse", "--git-dir") is None:
-    fail("no git repository at " + REPO)
+# ---- 1. repository state (read from files; git runs only on SNAP)
+if not os.path.isdir(REPO) or not is_plain_dir(GIT_DIR):
+    fail("no git repository at " + REPO + " (.git must be a plain directory)")
+for odd in ("reftable", "commondir"):
+    if os.path.lexists(os.path.join(GIT_DIR, odd)):
+        fail("unsupported repository layout (.git/%s)" % odd)
+snapshot_objects()
 if git("cat-file", "-t", ORIG) != "commit":
     fail("the original history is gone (rewritten or garbage-collected)")
-gd = git("rev-parse", "--absolute-git-dir") or os.path.join(REPO, ".git")
-if os.path.exists(os.path.join(gd, "BISECT_START")) or git("for-each-ref", "refs/bisect/"):
+if bisect_in_progress():
     fail("a git bisect session is still in progress (run git bisect reset)")
-if git("symbolic-ref", "-q", "HEAD") != "refs/heads/main":
+if (read_plain(os.path.join(GIT_DIR, "HEAD")) or b"").strip() != b"ref: refs/heads/main":
     fail("main is not checked out (HEAD is detached or on another branch)")
 
 # ---- 2. exactly one new commit on top of the original tip
-new = git("rev-parse", "--verify", "-q", "refs/heads/main^{commit}")
+new = read_ref("refs/heads/main")
 if not new or new == ORIG:
     fail("no new commit on main")
+if git("cat-file", "-t", new) != "commit":
+    fail("main does not point at a commit")
 raw = git("cat-file", "commit", new, raw=True).decode("utf-8", "replace")
 head, _, message = raw.partition("\n\n")
 parents = [ln.split()[1] for ln in head.splitlines() if ln.startswith("parent ")]

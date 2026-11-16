@@ -264,6 +264,14 @@ created, and have the prover check every ancestor cwd afterwards
    (`vlib.run_build`). Judge the warm-up exec's verdict too (a hang must fail
    there, inside the harness's 30 s validator budget, not as an infra
    `validator_timeout` that reruns the whole unit).
+7a. **Never follow an agent-made link or config in the validator.** Read the
+   solution with `raw = vlib.read_source(path)` (regular file, no symlink,
+   size cap); copy a solution TREE file by file with `O_NOFOLLOW`, regular
+   files and dirs only, under a byte cap (176: `copytree` followed a link to
+   the sealed fix, and one to `/dev/zero` filled the disk). Never run a tool
+   whose config the agent wrote: `git` reads `.git/config`, and a promisor
+   remote's `uploadpack` runs any command on a lazy fetch (179) — copy the
+   objects into a repo you own and run git there.
 8. **Check all of the output.** A checker that tests only part of the output
    (one field, the last case, a containment prefix without the separator)
    is a pass for a partial solution. Assert the count, every field, and

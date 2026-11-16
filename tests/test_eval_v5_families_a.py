@@ -211,3 +211,29 @@ def test_176_refuses_a_symlink_in_shopd(tmp_path, target):
     assert time.monotonic() - t0 < 10
 
 
+# --- 179: git never runs in the agent's repo -------------------------------------------
+
+@pytest.mark.skipif(not GIT, reason="needs git")
+def test_179_planted_promisor_remote_never_runs(tmp_path):
+    task = dict(_variant("179_git_bisect_revert.json"))
+    top = tmp_path / "eval_bisect"
+    for k in ("setup", "cleanup"):
+        task[k] = task[k].replace("/tmp/eval_bisect", str(top))
+    assert run_eval.run_setup(task)
+    repo = top / "semver"
+    marker = tmp_path / "PWNED"
+    script = (REFS / "179_git_bisect_revert" / "wrong_promisor.sh").read_text()
+    script = script.replace("/tmp/eval_bisect", str(top))
+    script = script.replace('H=$(cd "$(dirname "$0")" && pwd)', f"H='{REFS / '179_git_bisect_revert'}'")
+    # the planted command also leaves a marker, so the test sees whether it ran
+    assert script.count('; false #"') == 1
+    script = script.replace('; false #"', f"; touch '{marker}'; false #\"")
+    sol = tmp_path / "cheat.sh"
+    sol.write_text(script)
+    r = subprocess.run(["bash", str(sol)], cwd=repo, capture_output=True, text=True, check=False)
+    assert r.returncode == 0, r.stderr
+    ok, out = _validate(task["validation"]["script"], "/tmp/eval_bisect/semver", repo)
+    assert not ok and "the original history is gone" in out, out
+    assert not marker.exists(), "the planted uploadpack ran"
+
+
