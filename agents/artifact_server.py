@@ -244,6 +244,13 @@ DENY_OTHER = "other"
 DENY_AUDIT_ROWS = 1000
 DENY_AUDIT_WINDOW_S = 300.0
 
+
+def _audit_clock() -> float:
+    """The clock the audit budgets run on (time.monotonic). A module-level
+    seam so tests drive the window deterministically instead of racing a
+    real 50 ms window on a loaded runner (review 2026-11-16)."""
+    return time.monotonic()
+
 # storage-04: the same bound for IDENTIFIED callers. Every request from a
 # tailnet login appended an uncapped ~330-byte row, so one buggy client
 # polling /api/artifacts/health in a tight loop (or a hostile peer) could
@@ -947,7 +954,7 @@ def create_app(local_token: str | None = None) -> FastAPI:
     # Keyed by reason, so exhausting the cheap one (an anonymous GET) cannot
     # blind the expensive one (two identity headers on the same request).
     deny_audit: dict = defaultdict(
-        lambda: {"written": 0, "suppressed": 0, "since": time.monotonic()})
+        lambda: {"written": 0, "suppressed": 0, "since": _audit_clock()})
 
     def audit(entry: dict) -> None:
         try:
@@ -991,7 +998,7 @@ def create_app(local_token: str | None = None) -> FastAPI:
                 return key
             logins = [k for k in deny_audit if k.startswith("login:")]
             if len(logins) >= LOGIN_AUDIT_BUCKETS:
-                now = time.monotonic()
+                now = _audit_clock()
                 for k in logins:
                     if now - deny_audit[k]["since"] >= DENY_AUDIT_WINDOW_S:
                         del deny_audit[k]
@@ -1001,7 +1008,7 @@ def create_app(local_token: str | None = None) -> FastAPI:
         return key
 
     def _budgeted_audit(entry: dict, key: str, limit: int) -> None:
-        now = time.monotonic()
+        now = _audit_clock()
         with metrics_lock:
             budget = deny_audit[key]
             if now - budget["since"] >= DENY_AUDIT_WINDOW_S:

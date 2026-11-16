@@ -1819,18 +1819,36 @@ def test_a_flood_of_one_refusal_cannot_blind_the_others(make_client, tmp_path,
                        | {"", artifact_server.DENY_OTHER}), reasons
 
 
+class _FakeClock:
+    """artifact_server's audit clock, advanced by hand. The budget tests used
+    a real 0.05 s window and needed five TestClient requests to land inside
+    it; on a loaded runner they failed 8 times in 10 (review 2026-11-16).
+    The window stays the production 300 s and time only moves when told."""
+
+    def __init__(self, monkeypatch, start=1000.0):
+        self.now = start
+        monkeypatch.setattr(artifact_server, "_audit_clock", lambda: self.now)
+
+    def advance(self, seconds):
+        self.now += seconds
+
+
 def test_the_audit_budget_recovers_when_the_window_turns_over(
         make_client, tmp_path, monkeypatch):
     """R5. A process-lifetime budget stays spent until the next restart, so
     one flood blinded the log for as long as the server ran. It resets."""
     monkeypatch.setattr(artifact_server, "DENY_AUDIT_ROWS", 1)
-    monkeypatch.setattr(artifact_server, "DENY_AUDIT_WINDOW_S", 0.05)
+    clock = _FakeClock(monkeypatch)
     c = make_client()
     path = tmp_path / "run" / "artifact-audit.jsonl"
     for _ in range(5):
         c.get("/api/artifacts")
     assert len(_denied(path, "anonymous")) == 1
-    time.sleep(0.08)
+    clock.advance(artifact_server.DENY_AUDIT_WINDOW_S - 1)
+    for _ in range(5):                  # still inside the window: no new row
+        c.get("/api/artifacts")
+    assert len(_denied(path, "anonymous")) == 1
+    clock.advance(2)
     for _ in range(5):
         c.get("/api/artifacts")
     assert len(_denied(path, "anonymous")) == 2, "the window never turned over"
@@ -2545,14 +2563,15 @@ def test_login_budget_recovers_and_buckets_are_bounded(make_client, tmp_path,
                                                        monkeypatch):
     monkeypatch.setattr(artifact_server, "LOGIN_AUDIT_ROWS", 1)
     monkeypatch.setattr(artifact_server, "LOGIN_AUDIT_BUCKETS", 2)
-    monkeypatch.setattr(artifact_server, "DENY_AUDIT_WINDOW_S", 0.05)
+    clock = _FakeClock(monkeypatch)
+    window = artifact_server.DENY_AUDIT_WINDOW_S
     c = make_client()
     path = tmp_path / "run" / "artifact-audit.jsonl"
     h = {"tailscale-user-login": "a@example.com"}
     for _ in range(5):
         c.get("/api/artifacts/health", headers=h)
     assert len(_login_rows(path, "a@example.com")) == 1
-    time.sleep(0.08)
+    clock.advance(window + 1)
     c.get("/api/artifacts/health", headers=h)
     assert len(_login_rows(path, "a@example.com")) == 2, "window never turned over"
     # Two live buckets (a, b); a third distinct login shares the overflow one.
@@ -2563,6 +2582,11 @@ def test_login_budget_recovers_and_buckets_are_bounded(make_client, tmp_path,
     assert len(_login_rows(path, "d@example.com")) == 0
     notes = _denied(path, "audit-budget")
     assert any(n["reason"] == "login:*" for n in notes), notes
+    # Once the live buckets' window has passed they are pruned, and a new
+    # login gets a bucket of its own again (not the overflow).
+    clock.advance(window + 1)
+    c.get("/api/artifacts/health", headers={"tailscale-user-login": "e@example.com"})
+    assert len(_login_rows(path, "e@example.com")) == 1
 
 
 def test_login_audit_constants_are_sane():
