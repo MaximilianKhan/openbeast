@@ -485,7 +485,35 @@ def _user_turn_text(messages):
     return _strip_pasted_context(text)
 
 
-_SOURCE_BLOCK = re.compile(r"<source\b[^>]*>.*?</source>", re.IGNORECASE | re.DOTALL)
+# A <source ...>...</source> block, found in ONE linear pass. The obvious
+# regex, <source\b[^>]*>.*?</source> under re.sub, rescans to the end of the
+# text from every opener that has no closer — and HTML's <source> is a void
+# element, so pasted <picture>/<video> markup is exactly that: 160 KB of
+# "<source>" held the router's event loop (every user's stream) for ~10 s.
+_SOURCE_OPEN = re.compile(r"<source\b", re.IGNORECASE)
+_SOURCE_CLOSE = re.compile(r"</source>", re.IGNORECASE)
+
+
+def _strip_source_blocks(text):
+    """Same result as re.sub(r"<source\b[^>]*>.*?</source>", "", text,
+    flags=re.I | re.S), in O(len(text)). Opener ends only grow and closers
+    are searched after them, so once one opener has no closer (or no '>'),
+    no later opener has one either: stop there."""
+    out, pos = [], 0
+    while True:
+        m = _SOURCE_OPEN.search(text, pos)
+        if not m:
+            break
+        gt = text.find(">", m.end())
+        if gt == -1:
+            break
+        c = _SOURCE_CLOSE.search(text, gt + 1)
+        if not c:
+            break
+        out.append(text[pos:m.start()])
+        pos = c.end()
+    out.append(text[pos:])
+    return "".join(out)
 
 
 def _strip_pasted_context(text):
@@ -499,7 +527,7 @@ def _strip_pasted_context(text):
         head, tail = text[:i], text[j + len("</context>"):]
         k = head.find("### Task:")
         text = (head[:k] if k != -1 else head) + tail
-    return _SOURCE_BLOCK.sub("", text).strip()
+    return _strip_source_blocks(text).strip()
 
 
 # The classify sees at most this much of the turn: a pasted 40K-token file
@@ -689,18 +717,21 @@ async def chat_completions(request: Request):
     messages = body.get("messages", [])
     stream = bool(body.get("stream", False))
     model = body.get("model", "local")
-    user_text = _user_turn_text(messages)
-
     # Identity gate FIRST (docs/RBAC_PLAN.md Phase 2): non-admin turns skip
     # prefilter + classify entirely — zero added latency, and no path to
     # start_agent regardless of phrasing. See _spawn_allowed for the rules.
+    # That includes the turn-text extraction itself: it is CPU work on the
+    # shared event loop, and only the spawn path reads its result.
+    may_spawn = frontend and _spawn_allowed(request.headers)
+    user_text = _user_turn_text(messages) if may_spawn else ""
+
     # Then beast-instinct (ROUTER_INSTINCT; off by default = no call at all):
     # shadow only records, enforce may only SKIP the classify below. Then,
     # for genuine user turns that clear the recall prefilter, the unchanged
     # generative classify.
     hinted = False
     turn = None
-    if user_text and frontend and _spawn_allowed(request.headers):
+    if user_text and may_spawn:
         hinted = bool(_HINTS.search(user_text))
         # Hinted turns only (routerhook): the decision's engine is this
         # primary, and its one slot belongs to the user's turn.

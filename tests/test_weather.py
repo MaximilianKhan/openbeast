@@ -131,6 +131,23 @@ def test_georgia_alone_is_resolved_by_the_caller_or_asked():
     assert any(o["country_code"] == "GE" for o in others)   # the other one is listed
 
 
+def test_georgia_qualified_as_the_us_is_the_state_not_a_hamlet():
+    # Review 2026-11-16: with a qualifier the state stand-in was dropped, so
+    # "Georgia, USA" became Georgia, Alabama (pop. unknown) — even for a
+    # caller in Atlanta — and "Georgia, GA" matched nothing.
+    atlanta = (33.75, -84.39)
+    for text in ("Georgia, US", "Georgia, USA", "Georgia, United States",
+                 "Georgia, America", "Georgia, GA", "Georgia, Georgia"):
+        for near in (None, atlanta, DANVILLE_CA, TBILISI_CALLER):
+            place, _ = weather.resolve(text, near, real_geo)
+            assert place and place["feature_code"] == "ADM1", (text, near, place)
+            assert place["admin1"] == "Georgia" and place["country_code"] == "US"
+    # The other qualifiers still pick what they name.
+    assert weather.resolve("Georgia, GE", None, real_geo)[0]["country_code"] == "GE"
+    assert weather.resolve("Georgia, AL", None, real_geo)[0]["admin1"] == "Alabama"
+    assert weather.resolve("Georgia, Indiana", atlanta, real_geo)[0]["admin1"] == "Indiana"
+
+
 def test_ca_is_california_not_canada():
     for near in (None, MONTREAL):          # even a caller in Montreal: "CA" is the state
         place, _ = weather.resolve("Danville, CA", near, geo)
@@ -188,6 +205,13 @@ def test_units_follow_the_place_and_the_callers_own_country():
     assert "°C" in out
 
 
+def test_days_is_clamped_to_1_through_7():
+    # Review 2026-11-16: `days or 3` read 0 ("just today") as unset -> 3.
+    for days, sent in ((0, 1), (-2, 1), (1, 1), (5, 5), (99, 7), (None, 3), ("x", 3)):
+        weather.weather("", days, near=DANVILLE_CA, forecast=_fc)
+        assert _fc.last["forecast_days"] == sent, (days, _fc.last["forecast_days"])
+
+
 def test_units_override():
     out = weather.weather("Danville, CA", units="metric", geo=real_geo, forecast=_fc)
     assert "16.0°C" in out and "°F" not in out
@@ -235,6 +259,74 @@ def test_caller_location_reads_the_users_webui_info(tmp_path):
 
 
 UID = "8f0c1a2b-3c4d-5e6f-7a8b-9c0d1e2f3a4b"
+
+
+def test_caller_location_never_sends_the_admin_password_through_a_proxy(tmp_path, monkeypatch):
+    """Review 2026-11-16: the default urlopen honours http_proxy even for
+    127.0.0.1, so with an operator proxy exported (and no no_proxy) the
+    WebUI admin email + password went to the proxy in cleartext. The
+    loopback requests must go straight to WebUI, and not follow redirects."""
+    import http.server
+    import threading
+    hits = {"webui": [], "proxy": 0}
+
+    class WebUI(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _send(self, obj, code=200, headers=()):
+            data = json.dumps(obj).encode()
+            self.send_response(code)
+            for k, v in headers:
+                self.send_header(k, v)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            hits["webui"].append(self.path)
+            self._send({"token": "T"})
+
+        def do_GET(self):
+            hits["webui"].append(self.path)
+            if self.path.endswith("/redirect-me"):
+                return self._send({}, 302, [("Location", f"http://127.0.0.1:{pport}/x")])
+            self._send({"info": {"location": "37.822, -121.999"}})
+
+    class Proxy(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _any(self):
+            hits["proxy"] += 1
+            self.send_response(502)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        do_GET = do_POST = _any
+
+    servers = [http.server.ThreadingHTTPServer(("127.0.0.1", 0), h) for h in (WebUI, Proxy)]
+    for srv in servers:
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+    wport, pport = servers[0].server_address[1], servers[1].server_address[1]
+    try:
+        for var in ("http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY"):
+            monkeypatch.setenv(var, f"http://127.0.0.1:{pport}")
+        for var in ("no_proxy", "NO_PROXY"):
+            monkeypatch.delenv(var, raising=False)
+        _fresh_cache()
+        conf = _conf(tmp_path)
+        webui = f"http://127.0.0.1:{wport}"
+        assert weather.caller_location(UID, conf, webui=webui) == (37.822, -121.999)
+        assert hits["webui"] == ["/api/v1/auths/signin", f"/api/v1/users/{UID}"]
+        # A redirect is not followed (it would carry the admin bearer).
+        assert weather.caller_location("redirect-me", conf, webui=webui) is None
+        assert hits["proxy"] == 0
+    finally:
+        for srv in servers:
+            srv.shutdown()
+            srv.server_close()
+        _fresh_cache()
 
 
 def _http_err(code):

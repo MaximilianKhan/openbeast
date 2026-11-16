@@ -546,6 +546,43 @@ def test_no_cdn_docs_pages(workspace):
     assert c.get("/openapi.json").status_code == 200
 
 
+def test_weather_gets_the_callers_own_position(workspace, monkeypatch):
+    """Review 2026-11-16: the tool's main promise — weather where the CALLER
+    is — had no test through the tool server: dropping the CALLER_NEAR set
+    in openapi_tools, or near= in mcp_server.weather, kept CI green. Here the
+    real endpoint and the real mcp_server.weather run; only the WebUI lookup
+    and Open-Meteo are stubbed."""
+    import weather as _weather
+    import mcp_server
+    uid = "8f0c1a2b-3c4d-5e6f-7a8b-9c0d1e2f3a4b"
+    positions = {uid: (37.822, -121.999)}
+    asked, got = [], []
+
+    def caller_location(user_id, conf_path, *a, **k):
+        asked.append((user_id, os.path.basename(conf_path)))
+        return positions.get(user_id)
+
+    def impl(location="", days=3, *, near=None, units=""):
+        got.append(near)
+        return "stub weather"
+    monkeypatch.setattr(_weather, "caller_location", caller_location)
+    monkeypatch.setattr(_weather, "weather", impl)
+    monkeypatch.setattr(mcp_server._island, "web_refusal", lambda name: "")
+    monkeypatch.setattr(openapi_tools.impl, "weather", mcp_server.weather)
+    c = client()
+    for hdrs in ({"X-OpenWebUI-User-Id": uid}, {}, {"X-OpenWebUI-User-Id": "someone-else"},
+                 {"X-OpenWebUI-User-Id": uid}):
+        r = c.post("/weather", json={}, headers=hdrs)
+        assert r.status_code == 200 and r.json() == "stub weather", r.text
+    # Each request looks up ITS caller, and the position reaches the tool;
+    # nothing leaks from one request to the next (headerless / unknown
+    # callers get no position, not the previous caller's).
+    assert [a[0] for a in asked] == [uid, None, "someone-else", uid]
+    assert all(a[1] == "openbeast.conf" for a in asked)
+    assert got == [(37.822, -121.999), None, None, (37.822, -121.999)]
+    assert _weather.CALLER_NEAR.get() is None
+
+
 def test_guest_key_reaches_its_own_tools(workspace, monkeypatch):
     """The module docstring claimed this was covered; every guest assertion
     was negative, so GUEST_TOOLS = set() passed the whole suite."""

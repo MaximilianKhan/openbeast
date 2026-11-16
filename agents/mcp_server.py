@@ -968,11 +968,36 @@ def skill(name: str = "") -> str:
 # --- Agent MCP tools ---
 
 
+# The sandbox's own installation (scripts/setup-sandlock.sh): its policy
+# profile is read on every wrapped call, so a confined agent able to write it
+# widens or removes confinement for every later bash call. (The binary,
+# ~/.local/bin/sandlock, is already under tools._PERSIST_PREFIXES.)
+_SANDBOX_SELF = (os.path.join(".config", "sandlock"),)
+
+
+def _protected_under_home(home: str) -> list[str]:
+    """Realpaths of every location the write guard protects (credential
+    stores, rc files, persistence prefixes, the files the live rc files
+    source, the sandbox's own policy) plus /etc. Realpath'd so a symlinked
+    ~/.config (dotfiles repos) is compared where it really lives."""
+    rels = (_tools._PROTECTED_DIRS + _tools._PERSIST_PREFIXES + _SANDBOX_SELF
+            + tuple(sorted(_tools._PROTECTED_BASENAMES)) + _tools._RC_FILES)
+    out = [os.path.realpath(os.path.join(home, r)) for r in rels]
+    out += sorted(_tools._rc_sourced_files(home))
+    out += [os.path.realpath("/etc"), "/etc", "/private/etc"]
+    return out
+
+
 def _sandboxed_workdir_refusal(workdir: str) -> str | None:
     """Refusal text when a BASH_WRAPPER sandbox is on and `workdir` would
     widen it past a workspace. The wrapper grants `-w "$PWD"` and an agent's
-    bash runs with cwd = its workdir, so workdir='/' or '~' made the whole
-    filesystem (or $HOME, ~/.ssh included) read-write to a confined model.
+    bash runs with cwd = its workdir, so the WHOLE workdir tree becomes
+    read-write to a confined model. Refused: $HOME, `/` or any ancestor of
+    $HOME; a workdir at or below a protected location (tools._guard_write_path);
+    and — the 2026-11-16 review — a workdir that merely CONTAINS one:
+    ~/.config holds systemd/user, git and the sandlock policy, ~/.local holds
+    bin/ (the sandlock binary included), ~/Library holds LaunchAgents. The
+    write guard matches by prefix, so it only ever caught the first two.
     No wrapper: the workdir is not a boundary anyway (tools._base_dir)."""
     if not os.environ.get("OPENBEAST_BASH_WRAPPER", "").strip():
         return None
@@ -985,6 +1010,19 @@ def _sandboxed_workdir_refusal(workdir: str) -> str | None:
     if _tools._guard_write_path(os.path.join(rp, "_")):
         return (f"Error: workdir {rp} is a protected credential/persistence "
                 f"location; the bash sandbox would grant it read-write")
+    k = _tools._case_key
+    crp = k(rp)
+    for d in _SANDBOX_SELF:
+        sd = k(os.path.realpath(os.path.join(home, d)))
+        if crp == sd or crp.startswith(sd + os.sep):
+            return (f"Error: workdir {rp} holds the bash sandbox's own policy; "
+                    f"the sandbox would grant it read-write")
+    inside = crp.rstrip(os.sep) + os.sep
+    for p in _protected_under_home(home):
+        if k(p).startswith(inside):
+            return (f"Error: workdir {rp} contains the protected location {p} "
+                    f"(credential/persistence); the bash sandbox would grant "
+                    f"it read-write. Pick a project directory")
     return None
 
 
@@ -1339,8 +1377,16 @@ def stop_agent(agent_id: str) -> str:
     record = _agents.get(agent_id)
     if not record:
         ledger_record = _ledger_get(agent_id)
-        if ledger_record:
+        # Agents only. The ledger also holds kind="job" sessions
+        # (scripts/job.sh: eval campaigns, quantization, overnight sweeps);
+        # list_agents never shows them, and an "agent" tool must not kill
+        # hours of GPU work because a model learned a job id.
+        if ledger_record and (ledger_record.get("kind") or "agent") == "agent":
             return _stop_ledger_agent(agent_id, ledger_record)
+        if ledger_record:
+            return (f"Error: '{agent_id}' is a {ledger_record.get('kind')} session, "
+                    f"not an agent; stop_agent only stops agents (jobs: "
+                    f"scripts/job.sh stop {agent_id})")
         return f"Error: unknown agent '{agent_id}'"
 
     if record.process.poll() is not None:

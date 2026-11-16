@@ -81,9 +81,13 @@ Single quotes matter: `run_reaped` executes commands with `shell=True`, so
 `$PWD` expands *inside the spawned shell*, whose cwd `bash()` has already
 set to the agent workdir — that is how a static wrapper string grants a
 per-call directory. The grant therefore follows the workdir: with a wrapper
-set, `start_agent` refuses a workdir of `/`, `$HOME` or any ancestor of it, or
-a protected credential/persistence directory, since those would hand the
-sandbox exactly what it exists to hide. Export it in the shell that launches `./start.sh` (the
+set, `start_agent` refuses a workdir of `/`, `$HOME` or any ancestor of it, a
+protected credential/persistence directory, or any directory that *contains*
+one (`~/.config` holds `systemd/user`, `git` and this sandbox's own
+`sandlock/` policy; `~/.local` holds `bin/`, the sandlock binary included;
+`~/Library` holds `LaunchAgents`; a directory holding a file your `~/.bashrc`
+sources counts too), since those would hand the sandbox exactly what it
+exists to hide. Export it in the shell that launches `./start.sh` (the
 agent server inherits it), or add the key
 `BASH_WRAPPER=sandlock run -p openbeast -w "$PWD" --` to `openbeast.conf`.
 That file is parsed as `KEY=value` lines, not sourced as shell: an

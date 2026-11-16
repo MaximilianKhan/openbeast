@@ -2547,6 +2547,41 @@ def fetch(url: str, max_length: int = 50_000) -> str:
                 pass
 
 
+_TAG_OPEN = re.compile(r"<[A-Za-z/!?]")
+# Inside a tag: its end, or a QUOTED attribute value. A quote only opens a
+# value right after '=' (the HTML attribute-value states), so `title=don't`
+# is not an endless quote.
+_TAG_INNER = re.compile(r"""=\s*(["'])|>""")
+
+
+def _unterminated_tag_start(text: str):
+    """Where the tag left open at the end of `text` starts, or None.
+
+    Walks the tags forward, skipping quoted attribute values whole: a '>'
+    inside one (alt="a > b", an SVG data: URI) does not end the tag. The old
+    "first opener after the last '>'" landed inside such a tag, found no
+    opener, and let megabytes of base64 through as page text (review
+    2026-11-16). Every step moves forward by a regex search or str.find:
+    linear on hostile input."""
+    pos = 0
+    while True:
+        m = _TAG_OPEN.search(text, pos)
+        if not m:
+            return None
+        p = m.end()
+        while True:
+            t = _TAG_INNER.search(text, p)
+            if not t:
+                return m.start()
+            if t.group(0) == ">":
+                pos = t.end()
+                break
+            close = text.find(t.group(1), t.end())
+            if close == -1:
+                return m.start()
+            p = close + 1
+
+
 def _fetch_body(url: str, max_length: int, deadline: float,
                 expired: threading.Event) -> str:
     """fetch()'s request + decode, run under its total-deadline watchdog."""
@@ -2596,6 +2631,12 @@ def _fetch_body(url: str, max_length: int, deadline: float,
             byte_cut = len(buf) >= limit and getattr(resp, "length", None) != 0
             raw_bytes = bytes(buf)
             text = raw_bytes.decode(charset, errors="replace")
+            # A byte-order mark (U+FEFF, whatever the charset label) is not
+            # text, and str.strip() keeps it: a BOM'd page served without an
+            # HTML Content-Type then failed the <!doctype sniff below and
+            # came back as raw markup, scripts included.
+            if text.startswith("\ufeff"):
+                text = text[1:]
         cut_note = ""
         if expired.is_set() or time.monotonic() >= deadline:
             if not raw_bytes:
@@ -2616,14 +2657,12 @@ def _fetch_body(url: str, max_length: int, deadline: float,
             # block swallows the rest (as a browser would) in one pass.
             if cut_note:
                 # The cut can land inside a tag of any length (a base64
-                # data: URI runs to megabytes): drop from the first tag
-                # opener after the last '>' — a browser treats that tail as
-                # one unterminated tag too. HTML only, and only '<' + a tag
-                # character, so a prose 'a < b' is kept. rfind + one search:
-                # linear.
-                m = re.compile(r"<[A-Za-z/!?]").search(text, text.rfind(">") + 1)
-                if m:
-                    text = text[:m.start()]
+                # data: URI runs to megabytes): drop the unterminated tag —
+                # a browser treats that tail as one tag too. HTML only, and
+                # only '<' + a tag character, so a prose 'a < b' is kept.
+                start = _unterminated_tag_start(text)
+                if start is not None:
+                    text = text[:start]
             text = re.sub(r"<script[^<>]*>.*?(?:</script>|\Z)", "", text, flags=re.DOTALL | re.IGNORECASE)
             text = re.sub(r"<style[^<>]*>.*?(?:</style>|\Z)", "", text, flags=re.DOTALL | re.IGNORECASE)
             text = re.sub(r"<(br|hr|/p|/div|/h[1-6]|/li|/tr)[^<>]*>", "\n", text, flags=re.IGNORECASE)

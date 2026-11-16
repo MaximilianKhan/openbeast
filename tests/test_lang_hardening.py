@@ -21,7 +21,9 @@ asserts the negative control next to the property.
 """
 import json
 import os
+import resource
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -60,6 +62,19 @@ def _c_works() -> bool:
     if not _C_WORKS:
         _C_WORKS.append(_driver_compiles("c", "int main(void){return 0;}\n"))
     return _C_WORKS[0]
+
+
+def _gnu_cc() -> bool:
+    """True when `gcc` (and so `g++`) is GNU. On macOS `gcc` is Apple clang:
+    it never runs `#pragma GCC dependency` and words its diagnostics
+    differently, so the controls that prove gcc's side channels real have
+    nothing to observe there (the refusal tests run everywhere)."""
+    try:
+        out = subprocess.run(["gcc", "--version"], capture_output=True,
+                             text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "clang" not in out.lower()
 
 CLAIMS = os.path.join(ROOT, "agents", "lang", "claims")
 SECRET = "BEASTLANG_SECRET=hunter2-do-not-leak"
@@ -217,13 +232,45 @@ def test_output_is_bounded_in_the_parent(tmp_path):
     assert "truncated" in out and str(3 * 1024 * 1024 + 5) in out
 
 
+# Holds the GiB for a while: a parent-side cap is SAMPLED (every
+# GROUP_GUARD_POLL_S), so a bomb that exits at once could slip between polls.
+_HOLDING_BOMB = [sys.executable, "-c",
+                 "import time; b = bytearray(1 << 30); print('allocated', len(b), flush=True); "
+                 "time.sleep(float(__import__('os').environ.get('HOLD', '0')))"]
+
+
 def test_the_address_space_cap_stops_a_memory_bomb(tmp_path):
-    bomb = [sys.executable, "-c", "b = bytearray(1 << 30); print('allocated', len(b))"]
-    rc, out = _proc.run(bomb, timeout=60, as_limit=512 * 1024 * 1024)
-    assert rc != 0 and "MemoryError" in out, (rc, out[-200:])
+    env = {**os.environ, "HOLD": "20"}
+    t0 = time.monotonic()
+    rc, out = _proc.run(_HOLDING_BOMB, timeout=60, env=env, as_limit=512 * 1024 * 1024)
+    assert rc != 0, (rc, out[-200:])
+    if hasattr(resource, "prlimit"):   # Linux: the kernel refuses the allocation
+        assert "MemoryError" in out, out[-200:]
+    else:                              # macOS: the parent-side group RSS cap
+        assert "memory cap" in out and time.monotonic() - t0 < 15, out[-200:]
     # negative control: the same program is fine when the cap allows it
-    rc, out = _proc.run(bomb, timeout=60, as_limit=0)
+    rc, out = _proc.run(_HOLDING_BOMB, timeout=60, as_limit=0)
     assert rc == 0 and "allocated" in out
+
+
+def test_the_parent_side_cap_where_there_is_no_prlimit(monkeypatch):
+    """Review 2026-11-16: on macOS the setrlimit fallback fails (or is never
+    enforced) and the error was swallowed, so the cap silently did not
+    exist. Simulate that platform anywhere: no prlimit, setrlimit refused."""
+    def refused(*_a):
+        raise OSError("current limit exceeds maximum limit")
+    monkeypatch.delattr(resource, "prlimit", raising=False)
+    monkeypatch.setattr(resource, "setrlimit", refused)   # inherited at fork
+    monkeypatch.setattr(_proc, "GROUP_GUARD_POLL_S", 0.2)
+    env = {**os.environ, "HOLD": "20"}
+    t0 = time.monotonic()
+    rc, out = _proc.run(_HOLDING_BOMB, timeout=60, env=env, as_limit=512 * 1024 * 1024)
+    assert rc == -signal.SIGKILL and "[killed: memory cap" in out, (rc, out[-300:])
+    assert time.monotonic() - t0 < 15
+    # Under the cap nothing is killed.
+    rc, out = _proc.run([sys.executable, "-c", "print('small')"], timeout=30,
+                        as_limit=512 * 1024 * 1024)
+    assert rc == 0 and out.strip() == "small"
 
 
 @pytest.mark.parametrize("lang,src", [
@@ -1174,6 +1221,8 @@ def test_the_c_side_channels_were_real(secret, monkeypatch):
     #line echoes the file and the dependency pragma answers existence."""
     if not _c_works():
         pytest.skip("no C toolchain here that accepts the driver's flags")
+    if not _gnu_cc():
+        pytest.skip("GNU gcc behaviour; this host's gcc is clang")
     c = D.driver_for("c")
     monkeypatch.setattr(D.CDriver, "refusal", lambda self, s: None)
     assert "hunter2" in c.compile_source(_c_side_channels(secret)[0]).detail
@@ -1198,6 +1247,8 @@ def test_the_ucn_spelled_dependency_pragma_was_an_oracle(lang, secret, monkeypat
     "No such file", so the diagnostic answers existence."""
     if not _c_works():
         pytest.skip("no C toolchain here that accepts the driver's flags")
+    if not _gnu_cc():
+        pytest.skip("GNU gcc behaviour; this host's gcc is clang")
     drv = D.driver_for(lang)
     monkeypatch.setattr(type(drv), "refusal", lambda self, s: None)
     for tpl in ('#pragma GCC depend\\u0065ncy "{}"\nint main(void){{return 0;}}\n',

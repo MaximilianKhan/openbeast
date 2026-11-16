@@ -31,7 +31,8 @@ from pathlib import Path
 from openai import OpenAI
 
 import tools as _tools
-from tools import TOOL_SCHEMAS, TOOL_HANDLERS, coerce_args, plan_block, reset_plan, update_plan
+from tools import (TOOL_SCHEMAS, TOOL_HANDLERS, coerce_args, get_plan, plan_block,
+                   reset_plan, update_plan)
 
 # beast-chat session ledger. Optional on purpose: a runner whose checkout
 # predates sessions.py, or whose import fails for any reason, must still run.
@@ -610,6 +611,22 @@ def _scrub_surrogates(messages: list[dict]) -> int:
     return n
 
 
+def _scrub_plan_surrogates() -> int:
+    """The plan is the other half of every request (_with_plan re-injects
+    plan_block() each turn) and lives outside `messages`, in tools'
+    ContextVar: update_plan keeps a step's text exactly as json.loads gave
+    it. Scrubbing only the history left a surrogate in a plan step failing
+    every later request. 1 if the plan was rewritten, else 0."""
+    steps = get_plan()
+    if not steps:
+        return 0
+    clean = _unsurrogate(steps)
+    if clean == steps:
+        return 0
+    update_plan(clean)   # the steps already passed validation once
+    return 1
+
+
 def _safe_stdio():
     """print() of model/tool text must never be what kills the run."""
     for stream in (sys.stdout, sys.stderr):
@@ -1081,9 +1098,12 @@ def run_agent(
                 **cap_kwargs,
             )
         except Exception as e:
-            if isinstance(e, UnicodeEncodeError) and _scrub_surrogates(messages):
+            if isinstance(e, UnicodeEncodeError) and (
+                    _scrub_surrogates(messages) + _scrub_plan_surrogates()):
                 # Not an API error: the payload could not be encoded, and an
-                # identical retry would fail the same way every 5 s.
+                # identical retry would fail the same way every 5 s. Both
+                # halves of the payload are scrubbed (no short-circuit): the
+                # history AND the plan block re-injected from tools.
                 log_event({"type": "surrogates_scrubbed"})
                 continue
             err = str(e)

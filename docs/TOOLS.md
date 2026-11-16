@@ -79,6 +79,10 @@ parameter (opt-in, distributed agents Phase 1) routes the spawned agent's
 *inference* to a worker box on your tailnet while it keeps executing on this
 machine; empty defaults to `OPENBEAST_AGENT_INFERENCE_URL`, else the local
 server. See `docs/DISTRIBUTED_AGENTS_PLAN.md`.
+`stop_agent` also stops a detached agent this process did not spawn (from
+the session ledger), but only `kind="agent"` sessions: a `scripts/job.sh`
+job (eval campaign, quantization run) is refused and stays stoppable with
+`scripts/job.sh stop <id>`.
 
 ### Skills (2) — `agents/mcp_server.py`
 
@@ -131,7 +135,11 @@ the language's pack. Three properties are the point:
   this one tool an `Error:`, not the surface), and clips at ~8 KB on a line
   boundary, saying so. With the toolchain absent, or a language off the
   `LANG_PACKS` allow list, the answer is the list of languages this rig *can*
-  serve.
+  serve. Every toolchain call it makes (`agents/lang/_proc.py`) is reaped as
+  a process group and memory-capped at `OPENBEAST_LANG_AS_LIMIT_MB` (8 GiB):
+  `RLIMIT_AS` on Linux; on macOS, which never enforces `RLIMIT_AS`, a
+  parent-side guard SIGKILLs the group past that much RSS (polled every
+  0.5 s).
 - **A snippet that would read the host is refused, not compiled.** A host
   `#include`/`#embed`, a Rust `include!`/`env!`, or a zig `@embedFile` of an
   absolute path is refused before the compiler starts
@@ -197,13 +205,18 @@ that.
     Virginia); a spelled-out country matches the geocoder's country name
     (`Tokyo, Japan`, `Sao Paulo, Brazil`);
   - `Georgia` alone is the state or the country by the caller's position,
-    and with no position the tool lists both and asks.
+    and with no position the tool lists both and asks; `Georgia, US` (or
+    `USA`, `GA`, `United States`) is the state, never one of the hamlets
+    named Georgia, `Georgia, GE` the country, `Georgia, AL` the town.
 - **Where the caller is:** a bare town name picks the one **nearest the
   caller**, and no location means the weather where the caller is now. The
   position is the device geolocation Open WebUI keeps when the user turns on
   **Settings → Interface → Allow User Location** (`user.info.location`). The
   tool server reads it for the calling user with the WebUI admin credentials
-  (`WEBUI_ADMIN_*`).
+  (`WEBUI_ADMIN_*`). That signin and lookup go straight to Open WebUI on
+  `127.0.0.1:3000`: they ignore `http_proxy` (an operator proxy set for
+  `fetch` would otherwise receive the admin password in cleartext) and
+  never follow a redirect (it would carry the admin bearer elsewhere).
 - **No fixed home.** With no position, the tool asks which place.
 - **Units** follow the place's country; for the caller's own position, the
   country of its timezone (from the forecast reply, no extra request). The

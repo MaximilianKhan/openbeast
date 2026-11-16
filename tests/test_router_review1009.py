@@ -378,3 +378,48 @@ def test_bodiless_and_multipart_posts_still_pass(rig):
     r, up = rig(path="/chat/completions", body=_chat(REMOTE_PARTS[0]),
                 ctype="multipart/form-data; boundary=x")
     assert r.status_code == 400 and up.proxied == []
+
+
+# ── review 2026-11-16: the <source> strip on the shared event loop ──────────
+
+_OLD_SOURCE_BLOCK = r"<source\b[^>]*>.*?</source>"
+
+
+@pytest.mark.parametrize("text", [
+    "", "plain", "<source>", "<source id=1>x</source>", "a<SOURCE>b</Source>c",
+    "<source>a</source><source>b</source>tail", "<source x>a</source>b<source>",
+    "<source>a<source>b</source>c</source>", "<sourcex>keep</source>",
+    "<source a<source b>x</source>", "<source\n id='1'>multi\nline</source>!",
+    "<source>" * 50 + "typed", "<source no gt" + "<source>" * 3,
+    "x</source><source>y</source>z", "<source>open-only then </sourc>",
+])
+def test_linear_strip_matches_the_old_regex(text):
+    import re
+    want = re.sub(_OLD_SOURCE_BLOCK, "", text, flags=re.IGNORECASE | re.DOTALL)
+    assert router._strip_source_blocks(text) == want
+
+
+def test_unclosed_source_tags_are_linear_not_quadratic():
+    """160 KB of HTML's void <source> held the router's event loop (every
+    user's stream) ~10 s; the regex was O(openers x length)."""
+    import time
+    for text in ("<source>" * 128_000, "<source " * 128_000):
+        t0 = time.perf_counter()
+        out = router._strip_pasted_context(text)
+        assert time.perf_counter() - t0 < 0.5
+        assert out == text.strip()
+
+
+def test_non_spawning_turns_do_no_text_work(rig, monkeypatch):
+    """Guest / anonymous-on-a-keyed-rig / non-frontend turns never read the
+    result, so they must not pay for computing it on the event loop."""
+    calls = []
+    real = router._user_turn_text
+    monkeypatch.setattr(router, "_user_turn_text",
+                        lambda m: calls.append(1) or real(m))
+    r, up = rig(headers={"X-OpenWebUI-User-Role": "user"})          # a guest
+    assert r.status_code == 200 and up.classified == [] and calls == []
+    r, up = rig(ctype="text/plain")                                  # not a frontend
+    assert up.classified == [] and calls == []
+    r, up = rig()                                                    # the admin path
+    assert len(up.spawned) == 1 and calls == [1]
