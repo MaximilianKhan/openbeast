@@ -139,7 +139,12 @@ _publish_chat_mount() { # _publish_chat_mount <up-host>
 # another machine — that is never mounted raw.
 _raw_inference_target() {
   local u="$1" h p
-  ob_url_is_local "$u" "$2" "$3" || return 1
+  # lib/backend.sh defines ob_url_is_local; a stripped copy without it has
+  # no backends either, and conf.sh then resolves INFERENCE_URL to the local
+  # llama default.
+  if declare -F ob_url_is_local >/dev/null 2>&1; then
+    ob_url_is_local "$u" "$2" "$3" || return 1
+  fi
   u="${u#*://}"; u="${u%%/*}"
   if [[ "$u" == \[* ]]; then h="${u%%]*}]"; p="${u##*]}"; p="${p#:}"
   elif [[ "$u" == *:* ]]; then h="${u%:*}"; p="${u##*:}"
