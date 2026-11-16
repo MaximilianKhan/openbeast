@@ -73,10 +73,26 @@
 
 # Read one KEY= value from openbeast.conf. Ignores comments and surrounding
 # whitespace/quotes; last assignment wins. Prints nothing when absent.
+#
+# While this file is being sourced, lookups come from ONE pass over the conf
+# (_ob_conf_snapshot, below) instead of a `grep | tail` pair per key: ~85
+# lookups per source were ~170 forks, 142 of the 320 ms every conf.sh source
+# cost on a Spark (2026-11-16 review) — and start, doctor, healthcheck (every
+# 5 min under the watchdog) and 40+ scripts source it. The snapshot is
+# dropped at the end of this file, and wherever this file writes the conf,
+# so a caller that writes openbeast.conf later and reads it back still sees
+# the file as it is now. Pure bash (no associative array): bash 3.2 safe.
 _ob_conf_value() {
   local key="$1" conf="$REPO_DIR/openbeast.conf" line
   [[ -f "$conf" ]] || return 1
-  line="$(grep -E "^[[:space:]]*${key}[[:space:]]*=" "$conf" | tail -n1)" || return 1
+  if [[ -n "${_OB_CONF_SNAP+x}" ]]; then
+    [[ "$_OB_CONF_SNAP" == *$'\n'"$key="* ]] || return 1
+    line="${_OB_CONF_SNAP##*$'\n'"$key="}"   # the LAST assignment
+    line="${line%%$'\n'*}"
+    line="$key=$line"
+  else
+    line="$(grep -E "^[[:space:]]*${key}[[:space:]]*=" "$conf" | tail -n1)" || return 1
+  fi
   [[ -n "$line" ]] || return 1
   line="${line#*=}"
   line="${line#"${line%%[![:space:]]*}"}"   # ltrim
@@ -86,6 +102,21 @@ _ob_conf_value() {
   [[ -n "$line" ]] || return 1
   printf '%s\n' "$line"
 }
+# One read of openbeast.conf into _OB_CONF_SNAP: "\nKEY=<raw rest of line>"
+# per assignment, in file order, so `##` finds the last one as `tail -n1`
+# did. The key test is grep's: optional leading whitespace, the key,
+# optional whitespace, "=". The value is kept raw; _ob_conf_value trims it.
+_ob_conf_snapshot() {
+  local conf="$REPO_DIR/openbeast.conf" l re='^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=(.*)$'
+  _OB_CONF_SNAP=$'\n'
+  [[ -f "$conf" && -r "$conf" ]] || return 0
+  while IFS= read -r l || [[ -n "$l" ]]; do
+    [[ "$l" == *=* && "$l" =~ $re ]] || continue
+    _OB_CONF_SNAP+="${BASH_REMATCH[1]}=${BASH_REMATCH[2]}"$'\n'
+  done < "$conf"
+}
+_ob_conf_snapshot_drop() { unset _OB_CONF_SNAP; }
+_ob_conf_snapshot
 
 # A few OPENBEAST_<KEY> names are BOTH the env override for KEY and this
 # file's own derived export (the dashboard, children and `start.sh -d` read
@@ -1342,6 +1373,7 @@ if [[ -z "$SEARXNG_SECRET" && "${OB_CONF_READONLY:-}" != "1" ]]; then
   fi
   printf 'SEARXNG_SECRET=%s\n' "$SEARXNG_SECRET" >> "$_ob_conf"
   chmod 600 "$_ob_conf" 2>/dev/null || true
+  _ob_conf_snapshot          # the file just changed: re-read it
 fi
 export OPENBEAST_SEARXNG_SECRET="$SEARXNG_SECRET"
 
@@ -1443,3 +1475,6 @@ if [[ -z "${OB_CONF_LINTED:-}" ]]; then
   unset _ob_lint
   export OB_CONF_LINTED=1
 fi
+# Sourcing is over: later lookups (a caller that writes the conf and reads
+# it back) go to the file again.
+_ob_conf_snapshot_drop
