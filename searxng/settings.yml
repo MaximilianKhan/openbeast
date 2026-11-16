@@ -1,5 +1,14 @@
 use_default_settings: true
 
+general:
+  # Wikimedia's User-Agent policy wants a contact on every bot request, and
+  # SearXNG 2026.11 enforces it: without contact_url the wikipedia, wikidata
+  # and openstreetmap engines refuse to load (measured on 2026.11.15-2d500cb6b;
+  # the 2026.8.14 image loaded wikipedia without it and got 403s on wikidata).
+  # This names the SOFTWARE, the same for every install — not you. Point it at
+  # your own page if you prefer; it also shows on SearXNG's /info page.
+  contact_url: "https://github.com/MaximilianKhan/openbeast"
+
 server:
   # The real session-signing key is injected per-install via the SEARXNG_SECRET
   # env var (docker-compose.yml requires it; scripts/lib/conf.sh generates it
