@@ -1,0 +1,1096 @@
+#!/usr/bin/env python3
+"""beast-ark (agents/ark, scripts/ark.sh): hermetic tests. docs/BEAST_ARK.md.
+
+Everything runs against fakes on 127.0.0.1: an HTTP file server (Range, a
+truncating fault, a request log), a fake OCI registry (bearer tokens, a CDN
+redirect that must never see the token, push), and a tiny git repo. No
+network, no docker, no real catalog download.
+
+Covered: the TOML subset vs tomllib on the real catalog; the catalog lint
+(and that the REAL catalog is clean: every entry has a licence, a pin, and a
+hash or an explicit unverified mark); repo-pin parity (llama.cpp, TensorFold,
+zig, the compose images); plan math; fetch -> ark.lock -> verify -> restore
+for a toy toolchain, a git pin and a toy OCI image (registry push and a
+docker load); a checksum mismatch refused (catalog pin, upstream sums,
+signature); resume over Range; verify catching corruption and a missing file;
+lock filling pins from upstream and update never writing without --write;
+serve (static, Range, registry, pip index, read-only, unlisted files); the
+offline refusal; Ed25519 / minisign; and no secret in any output.
+
+Run: python3 -m pytest tests/test_ark.py -q
+"""
+from __future__ import annotations
+
+import base64
+import gzip
+import hashlib
+import io
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import threading
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+import pytest
+
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO / "agents"))
+
+from ark import catalog as C   # noqa: E402
+from ark import cli, oci, pins, tomlsub  # noqa: E402
+from ark import serve as SV    # noqa: E402
+from ark import store as S     # noqa: E402
+from ark import verify as V    # noqa: E402
+
+ARK_SH = REPO / "scripts" / "ark.sh"
+HAVE_GIT = shutil.which("git") is not None
+
+
+@pytest.fixture(autouse=True)
+def _env(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENBEAST_OFFLINE", "false")
+    monkeypatch.delenv("ARK_FORCE_OFFLINE", raising=False)
+    monkeypatch.delenv("ARK_CATALOG", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    (tmp_path / "home").mkdir()
+    pins._SUMS.clear()
+
+
+def sha(b: bytes) -> str:
+    return hashlib.sha256(b).hexdigest()
+
+
+# ── fixture HTTP server ──────────────────────────────────────────────────
+
+class Files:
+    def __init__(self):
+        self.files: dict = {}
+        self.log: list = []
+        self.truncate: dict = {}     # path -> bytes to send before dropping (once)
+
+    def handler(self):
+        fs = self
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_HEAD(self):
+                self.do_GET()
+
+            def do_GET(self):
+                fs.log.append((self.command, self.path, dict(self.headers)))
+                data = fs.files.get(self.path)
+                if data is None:
+                    self.send_response(404)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                start = 0
+                m = re.fullmatch(r"bytes=(\d+)-", self.headers.get("Range", ""))
+                if m:
+                    start = int(m.group(1))
+                    if start >= len(data):
+                        self.send_response(416)
+                        self.send_header("Content-Length", "0")
+                        self.end_headers()
+                        return
+                body = data[start:]
+                self.send_response(206 if m else 200)
+                self.send_header("Content-Length", str(len(body)))
+                if m:
+                    self.send_header("Content-Range", f"bytes {start}-{len(data) - 1}/{len(data)}")
+                self.end_headers()
+                if self.command == "HEAD":
+                    return
+                cut = fs.truncate.pop(self.path, None)
+                if cut is not None:
+                    self.wfile.write(body[:cut])
+                    self.wfile.flush()
+                    self.connection.shutdown(2)
+                    return
+                self.wfile.write(body)
+        return H
+
+
+@pytest.fixture
+def http():
+    fs = Files()
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), fs.handler())
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    fs.base = f"http://127.0.0.1:{srv.server_address[1]}"
+    yield fs
+    srv.shutdown()
+    srv.server_close()
+
+
+# ── toy payloads ─────────────────────────────────────────────────────────
+
+def toy_toolchain(version="1.0") -> bytes:
+    """toy-<v>/bin/toy, a shell script, in a .tar.gz with one top directory."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as t:
+        data = f"#!/bin/sh\necho toy {version}\n".encode()
+        ti = tarfile.TarInfo(f"toy-{version}/bin/toy")
+        ti.size, ti.mode = len(data), 0o755
+        t.addfile(ti, io.BytesIO(data))
+        ti = tarfile.TarInfo(f"toy-{version}/README")
+        ti.size = 3
+        t.addfile(ti, io.BytesIO(b"hi\n"))
+    return gzip.compress(buf.getvalue(), mtime=0)      # deterministic bytes, so a stable sha256
+
+
+HEADER = '[ark]\nschema = 1\n'
+ENTRY = '''
+[[entry]]
+name = "{name}"
+category = "{cat}"
+description = "test"
+homepage = "https://example.org"
+license = "MIT"
+version = "{version}"
+'''
+
+
+def write_catalog(tmp_path, body: str) -> Path:
+    p = tmp_path / "catalog.toml"
+    p.write_text(HEADER + body)
+    return p
+
+
+def run(argv, capsys=None):
+    rc = cli.main(argv)
+    out = capsys.readouterr() if capsys else None
+    return rc, out
+
+
+# ── the real catalog ─────────────────────────────────────────────────────
+
+def test_real_catalog_lints_clean():
+    cat = C.load()
+    errs = C.lint(cat)
+    assert errs == [], "\n".join(errs[:40])
+    assert len(cat.entries) >= 100 and len(cat.artifacts) >= 300
+
+
+def test_every_real_entry_has_licence_pin_and_hash_or_unverified():
+    cat = C.load()
+    for e in cat.entries.values():
+        assert e.license, e.name
+        assert C.license_is_osi(e.license) or e.license_note, e.name
+        assert e.version, e.name
+        if e.git:
+            assert re.fullmatch(r"[0-9a-f]{40}", e.commit) or e.git_verified == "unverified", e.name
+    for a in cat.artifacts:
+        if a.kind == "file":
+            assert a.pinned() or a.verified == "unverified", a.id
+            if a.pinned():
+                assert a.verified in ("upstream-sums", "upstream-json", "pinned", "tofu", "signature"), a.id
+        elif a.kind == "oci":
+            assert re.fullmatch(r"sha256:[0-9a-f]{64}", a.digest) or a.verified == "unverified", a.id
+        else:
+            assert a.verified == "tofu", a.id
+
+
+def test_real_catalog_covers_the_required_ground():
+    names = set(C.load().entries)
+    need = {"docker", "containerd", "runc", "buildkit", "podman", "kubernetes", "k3s", "kind", "helm",
+            "distribution", "cpython-3.14", "go", "rust", "zig", "node", "temurin-25", "llvm", "lang-images",
+            "cmake", "ninja", "meson", "bazelisk", "bazel", "postgres", "valkey", "sqlite", "duckdb",
+            "clickhouse", "nats", "kafka", "prometheus", "grafana", "loki", "otelcol-contrib", "headscale",
+            "wireguard-tools", "caddy", "nginx", "coredns", "forgejo", "git", "gh", "minio", "restic",
+            "step-ca", "trivy", "cosign", "llama.cpp", "vllm", "tensorfold", "kiwix-tools", "devdocs-zim-core"}
+    assert need <= names, sorted(need - names)
+    plats = {a.platform for a in C.load().artifacts if a.kind == "file"}
+    assert {"linux-x86_64", "linux-aarch64", "darwin-arm64"} <= plats
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="tomllib is 3.11+")
+def test_subset_parser_matches_tomllib_on_the_real_catalog():
+    import tomllib
+    text = (REPO / "agents" / "ark" / "catalog.toml").read_text()
+    mine, _ = tomlsub.parse(text)
+    theirs = tomllib.loads(text)
+
+    def plain(x):
+        if isinstance(x, dict):
+            return {k: plain(v) for k, v in x.items()}
+        if isinstance(x, list):
+            return [plain(v) for v in x]
+        return x
+    assert plain(mine) == theirs
+
+
+def test_repo_pins_and_the_catalog_agree():
+    cat = C.load()
+    ref = re.search(r"^LLAMA_CPP_REF=([0-9a-f]{40})$", (REPO / "scripts/llama.cpp.ref").read_text(), re.M).group(1)
+    assert cat.entries["llama.cpp"].commit == ref
+    inst = (REPO / "scripts/backends/tensorfold/install-native.sh").read_text()
+    assert cat.entries["tensorfold"].version == re.search(r"^VERSION=(\S+)$", inst, re.M).group(1)
+    assert (REPO / "agents/ark/keys/tensorfold-release-key.pem").read_bytes() == \
+        (REPO / "scripts/backends/tensorfold/release-key.pem").read_bytes()
+    ci = (REPO / ".github/workflows/ci.yml").read_text()
+    zig_ci = re.search(r"ZIG_SHA256: ([0-9a-f]{64})", ci).group(1)
+    zx = next(a for a in cat.entries["zig"].artifacts if a.platform == "linux-x86_64")
+    assert cat.entries["zig"].version == "0.16.0" and zx.sha256 == zig_ci
+    compose = (REPO / "docker-compose.yml").read_text()
+    for entry, img in (("open-webui", "ghcr.io/open-webui/open-webui"), ("searxng", "searxng/searxng")):
+        dig = re.search(re.escape(img) + r":[^@\s]+@(sha256:[0-9a-f]{64})", compose).group(1)
+        assert cat.entries[entry].artifacts[0].digest == dig, entry
+
+
+# ── catalog lint (negative controls) ─────────────────────────────────────
+
+def test_lint_refuses_a_blank_pin_a_bad_licence_and_unknown_fields(tmp_path):
+    body = ENTRY.format(name="a", cat="cli", version="1") + '''
+[[artifact]]
+entry = "a"
+kind = "file"
+platform = "linux-x86_64"
+url = "https://example.org/a.tar.gz"
+''' + ENTRY.format(name="b", cat="cli", version="1").replace('"MIT"', '"SSPL-1.0"') + '''
+[[artifact]]
+entry = "b"
+kind = "oci"
+image = "docker.io/library/b"
+tag = "1"
+platforms = ["linux/amd64"]
+'''
+    cat = C.loads(HEADER + body)
+    errs = "\n".join(C.lint(cat))
+    assert "artifact a/linux-x86_64/a.tar.gz: no sha256" in errs
+    assert "license 'SSPL-1.0' is not OSI-approved" in errs
+    assert "no digest" in errs
+    with pytest.raises(C.CatalogError, match="unknown field 'sha265'"):
+        C.loads(HEADER + ENTRY.format(name="c", cat="cli", version="1") + 'sha265 = "x"\n')
+    with pytest.raises(C.CatalogError, match="missing license"):
+        C.loads(HEADER + ENTRY.format(name="d", cat="cli", version="1").replace('license = "MIT"\n', ""))
+    # the explicit mark is what makes a hashless artifact acceptable
+    cat = C.loads(HEADER + body.replace('url = "https://example.org/a.tar.gz"\n',
+                                        'url = "https://example.org/a.tar.gz"\nverified = "unverified"\n'))
+    assert not [e for e in C.lint(cat) if e.startswith("artifact a/")]
+    # a hash with no provenance is refused too
+    cat = C.loads(HEADER + body.replace('url = "https://example.org/a.tar.gz"\n',
+                                        'url = "https://example.org/a.tar.gz"\nsha256 = "' + "0" * 64 + '"\n'))
+    assert any("say where the hash came from" in e for e in C.lint(cat))
+    # plain http is for loopback only
+    cat = C.loads(HEADER + body.replace("https://example.org/a.tar.gz", "http://example.org/a.tar.gz"))
+    assert any("must be https://" in e for e in C.lint(cat))
+
+
+def test_toml_editor_rewrites_one_line_only():
+    text = '[ark]\nschema = 1\n\n[[entry]]\nname = "x"  # keep me\nsha256 = ""\nlist = [\n  "a",\n  "b",\n]\n\n[[entry]]\nname = "y"\n'
+    doc, tables = tomlsub.parse(text)
+    t = tables[2]
+    ed = pins.Edits()
+    ed.set(t, "sha256", "ab" * 32)
+    ed.set(t, "list", ["c"])
+    ed.set(t, "size", 5)
+    ed.set(tables[3], "commit", "f" * 40)
+    cat = C.Catalog("x", text, {}, {}, [], tables)
+    new = ed.apply(cat)
+    d2, _ = tomlsub.parse(new)
+    assert d2["entry"][0]["sha256"] == "ab" * 32 and d2["entry"][0]["list"] == ["c"] and d2["entry"][0]["size"] == 5
+    assert d2["entry"][1]["commit"] == "f" * 40 and d2["entry"][1]["name"] == "y"
+    assert 'name = "x"  # keep me' in new
+
+
+# ── plan math ────────────────────────────────────────────────────────────
+
+def test_plan_math_per_platform_core_and_union(tmp_path, capsys):
+    body = ENTRY.format(name="t", cat="languages", version="1") + 'profiles = ["core"]\n' + '''
+[[artifact]]
+entry = "t"
+kind = "file"
+platform = "linux-x86_64"
+url = "https://example.org/t-x86.tgz"
+sha256 = "''' + "1" * 64 + '''"
+size = 100
+verified = "pinned"
+
+[[artifact]]
+entry = "t"
+kind = "file"
+platform = "darwin-arm64"
+url = "https://example.org/t-mac.tgz"
+sha256 = "''' + "2" * 64 + '''"
+size = 30
+verified = "pinned"
+
+[[artifact]]
+entry = "t"
+kind = "file"
+platform = "any"
+url = "https://example.org/t-src.tgz"
+sha256 = "''' + "3" * 64 + '''"
+size = 7
+verified = "pinned"
+
+[[artifact]]
+entry = "t"
+kind = "oci"
+image = "docker.io/library/t"
+tag = "1"
+digest = "sha256:''' + "4" * 64 + '''"
+platforms = ["linux/amd64", "linux/arm64"]
+platform_sizes = ["linux/amd64=1000", "linux/arm64=900"]
+verified = "registry"
+''' + ENTRY.format(name="u", cat="databases", version="2") + '''
+[[artifact]]
+entry = "u"
+kind = "file"
+platform = "linux-aarch64"
+url = "https://example.org/u.tgz"
+verified = "unverified"
+'''
+    cat = C.loads(HEADER + body)
+    t = cli.plan_table(cat, list(cat.entries.values()), list(C.PLATFORMS))
+    lang = t["categories"]["languages"]
+    assert lang["linux-x86_64"][0] == 100 + 7 + 1000
+    assert lang["linux-aarch64"][0] == 7 + 900
+    assert lang["darwin-arm64"][0] == 30 + 7 + 900          # a Mac runs linux/arm64 images
+    assert t["categories"]["databases"]["linux-aarch64"] == [0, 1, 0]   # one artifact of unknown size
+    # one drive with all three: 'any' once, each OCI platform once
+    assert t["union"] == [100 + 30 + 7 + 1000 + 900, 1]
+    core = cli.plan_table(cat, cat.select(profile="core"), list(C.PLATFORMS))
+    assert "databases" not in core["categories"]
+    p = write_catalog(tmp_path, body)
+    rc, out = run(["--catalog", str(p), "plan", "--profile", "both", "--platform", "linux-x86_64"], capsys)
+    assert rc == 0 and "profile full: 2 entries" in out.out and "profile core: 1 entries" in out.out
+
+
+def test_real_catalog_plan_runs(capsys):
+    rc, out = run(["plan", "--profile", "both", "--json"], capsys)
+    assert rc == 0
+    d = json.loads(out.out)
+    assert d["full"]["entries"] > d["core"]["entries"] > 30
+
+
+# ── git fixture ──────────────────────────────────────────────────────────
+
+def make_repo(tmp_path) -> tuple:
+    repo = tmp_path / "upstream"
+    repo.mkdir()
+    env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t",
+               GIT_COMMITTER_EMAIL="t@t")
+
+    def g(*a):
+        return subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True, text=True, env=env).stdout.strip()
+    g("init", "-q", "-b", "main")
+    (repo / "a.txt").write_text("one\n")
+    g("add", "a.txt")
+    g("commit", "-q", "-m", "one")
+    (repo / "a.txt").write_text("two\n")
+    g("commit", "-q", "-am", "two")
+    g("tag", "-a", "v1.0", "-m", "v1.0")
+    commit = g("rev-parse", "v1.0^{commit}")
+    return repo, commit
+
+
+# ── fetch / verify / restore ─────────────────────────────────────────────
+
+def toy_catalog(http, tmp_path, repo=None, commit="", tar_pin=True, history="shallow") -> Path:
+    tgz = toy_toolchain()
+    http.files["/rel/toy-1.0-linux.tar.gz"] = tgz
+    http.files["/rel/SHA256SUMS"] = f"{sha(tgz)}  toy-1.0-linux.tar.gz\n{'9' * 64}  other.tar.gz\n".encode()
+    single = b"#!/bin/sh\necho single\n"
+    http.files["/rel/single"] = single
+    http.files["/rel/single.sha256"] = (sha(single) + "\n").encode()
+    body = ENTRY.format(name="toy", cat="languages", version="1.0")
+    if repo:
+        body += f'git = "file://{repo}"\ncommit = "{commit}"\n'
+        if history != "shallow":
+            body += f'history = "{history}"\n'
+    body += f'''
+[[artifact]]
+entry = "toy"
+kind = "file"
+platform = "any"
+url = "{http.base}/rel/toy-{{version}}-linux.tar.gz"
+{('sha256 = "' + sha(tgz) + '"') if tar_pin else ''}
+checksum_url = "{http.base}/rel/SHA256SUMS"
+install = "tar"
+verified = "{'upstream-sums' if tar_pin else ''}"
+
+[[artifact]]
+entry = "toy"
+kind = "file"
+platform = "any"
+url = "{http.base}/rel/single"
+sha256 = "{sha(single)}"
+checksum_url = "{http.base}/rel/single.sha256"
+install = "bin"
+bins = ["single"]
+verified = "upstream-sums"
+'''
+    return write_catalog(tmp_path, body)
+
+
+@pytest.mark.skipif(not HAVE_GIT, reason="git not installed")
+@pytest.mark.parametrize("history", ["shallow", "full"])
+def test_fetch_lock_verify_restore_round_trip(http, tmp_path, capsys, history):
+    repo, commit = make_repo(tmp_path)
+    cat = toy_catalog(http, tmp_path, repo, commit, history=history)
+    drive = tmp_path / "drive"
+    rc, out = run(["--catalog", str(cat), "fetch", "--to", str(drive), "--platform", "linux-x86_64"], capsys)
+    assert rc == 0, out.err
+    lock = json.loads((drive / "ark.lock").read_text())
+    assert set(lock["items"]) == {"git:toy", "toy/any/toy-V-linux.tar.gz", "toy/any/single"}
+    g = lock["items"]["git:toy"]
+    assert g["commit"] == commit and g["verified"] == "pinned"
+    assert g["files"][0]["path"].endswith(".bundle" if history == "full" else ".shallow.git.tar")
+    tar = lock["items"]["toy/any/toy-V-linux.tar.gz"]
+    assert tar["verified"] == "pinned+upstream-sums"
+    sums = (drive / "SHA256SUMS").read_text()
+    assert f"{sha(toy_toolchain())}  files/toy/1.0/any/toy-1.0-linux.tar.gz" in sums
+    assert (drive / "ark").exists() and (drive / "tool/agents/ark/cli.py").exists()
+    assert (drive / "catalog.toml").read_text() == cat.read_text()
+    assert "toy" in (drive / "ARK.md").read_text()
+    # second run: everything present, nothing re-downloaded
+    n = len(http.log)
+    rc, out = run(["--catalog", str(cat), "fetch", "--to", str(drive), "--platform", "linux-x86_64"], capsys)
+    assert rc == 0 and "3 already present" in out.err
+    assert not [r for r in http.log[n:] if "toy-1.0" in r[1]]
+    rc, out = run(["verify", str(drive)], capsys)
+    assert rc == 0 and "RESULT: OK" in out.out
+    # restore the toolchain and run it; restore the source and check the commit
+    prefix, bindir, src = tmp_path / "opt", tmp_path / "bin", tmp_path / "src"
+    rc, out = run(["restore", "toy", "--from", str(drive), "--platform", "linux-x86_64", "--prefix", str(prefix),
+                   "--bin", str(bindir), "--src", str(src)], capsys)
+    assert rc == 0, out.err
+    assert subprocess.run([str(bindir / "toy")], capture_output=True, text=True).stdout == "toy 1.0\n"
+    assert subprocess.run([str(bindir / "single")], capture_output=True, text=True).stdout == "single\n"
+    assert (prefix / "toy").resolve() == (prefix / "toy-1.0").resolve()
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=src / "toy", capture_output=True, text=True).stdout.strip()
+    assert head == commit and (src / "toy" / "a.txt").read_text() == "two\n"
+    # the drive's own wrapper runs the tool with no checkout
+    r = subprocess.run([str(drive / "ark"), "verify", str(drive)], capture_output=True, text=True)
+    assert r.returncode == 0 and "RESULT: OK" in r.stdout, r.stderr
+
+
+@pytest.mark.skipif(not HAVE_GIT, reason="git not installed")
+def test_a_moved_tag_is_refused(http, tmp_path, capsys):
+    repo, commit = make_repo(tmp_path)
+    cat = toy_catalog(http, tmp_path, repo, "0" * 40)
+    rc, out = run(["--catalog", str(cat), "fetch", "--to", str(tmp_path / "d"), "--kinds", "git"], capsys)
+    assert rc == 4 and "REFUSED" in out.err and f"is commit {commit}" in out.err
+    assert not list((tmp_path / "d").glob("git/toy/*"))
+
+
+def test_checksum_mismatch_against_the_pin_is_refused_and_deleted(http, tmp_path, capsys):
+    cat = toy_catalog(http, tmp_path)
+    http.files["/rel/toy-1.0-linux.tar.gz"] = toy_toolchain() + b"tampered"
+    drive = tmp_path / "drive"
+    rc, out = run(["--catalog", str(cat), "fetch", "--to", str(drive)], capsys)
+    assert rc == 4 and "sha256 MISMATCH" in out.err and "REFUSED" in out.err
+    d = drive / "files/toy/1.0/any"
+    assert not (d / "toy-1.0-linux.tar.gz").exists() and not (d / "toy-1.0-linux.tar.gz.part").exists()
+    lock = json.loads((drive / "ark.lock").read_text())
+    assert "toy/any/toy-V-linux.tar.gz" not in lock["items"] and "toy/any/single" in lock["items"]
+
+
+def test_upstream_sums_that_disagree_are_refused(http, tmp_path, capsys):
+    cat = toy_catalog(http, tmp_path, tar_pin=False)
+    http.files["/rel/SHA256SUMS"] = f"{'a' * 64}  toy-1.0-linux.tar.gz\n".encode()
+    text = cat.read_text().replace('verified = ""', 'verified = "unverified"')
+    cat.write_text(text)
+    rc, out = run(["--catalog", str(cat), "fetch", "--to", str(tmp_path / "d")], capsys)
+    assert rc == 4 and "upstream checksum file says" in out.err
+
+
+def test_a_sums_file_for_another_name_never_vouches(http, tmp_path, capsys):
+    cat = toy_catalog(http, tmp_path, tar_pin=False)
+    http.files["/rel/SHA256SUMS"] = f"{sha(toy_toolchain())}  toy-0.9-linux.tar.gz\n".encode()
+    cat.write_text(cat.read_text().replace('verified = ""', 'verified = "unverified"'))
+    rc, out = run(["--catalog", str(cat), "fetch", "--to", str(tmp_path / "d")], capsys)
+    assert rc == 4 and "does not name 'toy-1.0-linux.tar.gz'" in out.err
+
+
+def test_unverified_needs_allow_and_is_recorded_as_tofu(http, tmp_path, capsys):
+    data = b"no sums upstream\n"
+    http.files["/x/blob.bin"] = data
+    body = ENTRY.format(name="nosum", cat="cli", version="1") + f'''
+[[artifact]]
+entry = "nosum"
+kind = "file"
+platform = "any"
+url = "{http.base}/x/blob.bin"
+install = "data"
+verified = "unverified"
+'''
+    cat = write_catalog(tmp_path, body)
+    rc, out = run(["--catalog", str(cat), "fetch", "--to", str(tmp_path / "d")], capsys)
+    assert rc == 4 and "--allow-unverified" in out.err
+    rc, out = run(["--catalog", str(cat), "fetch", "--to", str(tmp_path / "d"), "--allow-unverified"], capsys)
+    assert rc == 0
+    it = json.loads((tmp_path / "d/ark.lock").read_text())["items"]["nosum/any/blob.bin"]
+    assert it["verified"] == "tofu"
+    rc, out = run(["verify", str(tmp_path / "d")], capsys)
+    assert rc == 0 and "trusted on first use" in out.out
+    # lock --from copies the drive's hash into the catalog, marked tofu
+    rc, out = run(["--catalog", str(cat), "lock", "--from", str(tmp_path / "d")], capsys)
+    assert rc == 0
+    a = C.load(str(cat)).artifacts[0]
+    assert a.sha256 == sha(data) and a.verified == "tofu" and a.size == len(data)
+    assert C.lint(C.load(str(cat))) == []
+
+
+def test_resume_continues_a_partial_download_with_range(http, tmp_path, capsys):
+    cat = toy_catalog(http, tmp_path)
+    tgz = toy_toolchain()
+    http.truncate["/rel/toy-1.0-linux.tar.gz"] = len(tgz) // 2     # the first attempt dies half way
+    drive = tmp_path / "drive"
+    rc, out = run(["--catalog", str(cat), "fetch", "--to", str(drive)], capsys)
+    assert rc == 0, out.err
+    gets = [h for (m, p, h) in http.log if m == "GET" and p == "/rel/toy-1.0-linux.tar.gz"]
+    assert len(gets) == 2 and "Range" not in gets[0] and gets[1]["Range"] == f"bytes={len(tgz) // 2}-"
+    assert (drive / "files/toy/1.0/any/toy-1.0-linux.tar.gz").read_bytes() == tgz
+    # a .part left by an interrupted run is picked up by the next one
+    shutil.rmtree(drive)
+    d = drive / "files/toy/1.0/any"
+    d.mkdir(parents=True)
+    (d / "toy-1.0-linux.tar.gz.part").write_bytes(tgz[:100])
+    n = len(http.log)
+    rc, out = run(["--catalog", str(cat), "fetch", "--to", str(drive)], capsys)
+    assert rc == 0
+    assert [h.get("Range") for (m, p, h) in http.log[n:] if p == "/rel/toy-1.0-linux.tar.gz"] == ["bytes=100-"]
+    assert (d / "toy-1.0-linux.tar.gz").read_bytes() == tgz
+
+
+def test_verify_detects_corruption_missing_and_planted_files(http, tmp_path, capsys):
+    cat = toy_catalog(http, tmp_path)
+    drive = tmp_path / "drive"
+    assert run(["--catalog", str(cat), "fetch", "--to", str(drive)], capsys)[0] == 0
+    f = drive / "files/toy/1.0/any/toy-1.0-linux.tar.gz"
+    b = bytearray(f.read_bytes())
+    b[10] ^= 0xFF
+    f.write_bytes(bytes(b))
+    (drive / "files/toy/1.0/any/single").unlink()
+    (drive / "files/toy/planted.sh").write_text("evil")
+    rc, out = run(["verify", str(drive)], capsys)
+    assert rc == 1 and "RESULT: FAILED" in out.out
+    assert "CORRUPT: files/toy/1.0/any/toy-1.0-linux.tar.gz" in out.out
+    assert "MISSING: files/toy/1.0/any/single" in out.out
+    assert "files/toy/planted.sh" in out.out
+    # --quick sees the missing file but NOT a same-size flipped byte, and says it did not re-hash
+    rc, out = run(["verify", str(drive), "--quick"], capsys)
+    assert rc == 1 and "NOT re-hashed" in out.out
+    assert "MISSING: files/toy/1.0/any/single" in out.out and "CORRUPT" not in out.out
+    # restore refuses the corrupt file
+    rc, out = run(["restore", "toy", "--from", str(drive), "--prefix", str(tmp_path / "o"), "--bin", str(tmp_path / "b")],
+                  capsys)
+    assert rc == 1 and ("CORRUPT" in out.err or "missing" in out.err)
+
+
+def test_offline_refuses_network_commands_and_keeps_offline_ones(http, tmp_path, capsys, monkeypatch):
+    cat = toy_catalog(http, tmp_path)
+    drive = tmp_path / "drive"
+    assert run(["--catalog", str(cat), "fetch", "--to", str(drive)], capsys)[0] == 0
+    monkeypatch.setenv("ARK_FORCE_OFFLINE", "1")
+    n = len(http.log)
+    for argv in (["fetch", "--to", str(tmp_path / "d2")], ["lock"], ["update"]):
+        rc, out = run(["--catalog", str(cat)] + argv, capsys)
+        assert rc == 3 and "needs the network" in out.err
+    assert len(http.log) == n
+    assert run(["verify", str(drive)], capsys)[0] == 0
+    rc, _ = run(["restore", "toy", "--from", str(drive), "--prefix", str(tmp_path / "o"), "--bin", str(tmp_path / "b")],
+                capsys)
+    assert rc == 0
+
+
+# ── lock / update ────────────────────────────────────────────────────────
+
+@pytest.mark.skipif(not HAVE_GIT, reason="git not installed")
+def test_lock_fills_pins_from_upstream_and_is_idempotent(http, tmp_path, capsys):
+    repo, commit = make_repo(tmp_path)
+    cat = toy_catalog(http, tmp_path, repo, "", tar_pin=False)
+    cat.write_text(cat.read_text().replace('commit = ""\n', "").replace(f'git = "file://{repo}"\n',
+                                                                        f'git = "file://{repo}"\ncommit = ""\n'))
+    rc, out = run(["--catalog", str(cat), "lock", "--dry-run"], capsys)
+    assert rc == 0 and f'+commit = "{commit}"' in out.out and "NOT written" in out.err
+    assert 'commit = ""' in cat.read_text()
+    rc, out = run(["--catalog", str(cat), "lock"], capsys)
+    assert rc == 0
+    c2 = C.load(str(cat))
+    assert c2.entries["toy"].commit == commit
+    a = c2.by_id()["toy/any/toy-V-linux.tar.gz"]
+    assert a.sha256 == sha(toy_toolchain()) and a.verified == "upstream-sums" and a.size == len(toy_toolchain())
+    assert C.lint(c2) == []
+    rc, out = run(["--catalog", str(cat), "lock"], capsys)
+    assert rc == 0 and "nothing to change" in out.err
+    # a sha512 upstream lands in upstream_hash, not sha256
+    tgz = toy_toolchain()
+    http.files["/rel/SHA512SUMS"] = f"{hashlib.sha512(tgz).hexdigest()}  toy-1.0-linux.tar.gz\n".encode()
+    text = cat.read_text().replace(f'sha256 = "{sha(tgz)}"\n', 'sha256 = ""\n', 1).replace(
+        f"{http.base}/rel/SHA256SUMS", f"{http.base}/rel/SHA512SUMS")
+    cat.write_text(text)
+    pins._SUMS.clear()
+    assert run(["--catalog", str(cat), "lock"], capsys)[0] == 0
+    a = C.load(str(cat)).by_id()["toy/any/toy-V-linux.tar.gz"]
+    assert a.upstream_hash == "sha512:" + hashlib.sha512(tgz).hexdigest() and not a.sha256
+    assert run(["--catalog", str(cat), "fetch", "--to", str(tmp_path / "d"), "--no-git"], capsys)[0] == 0
+
+
+def test_update_prints_the_diff_and_writes_only_with_write(http, tmp_path, capsys, monkeypatch):
+    cat = toy_catalog(http, tmp_path)
+    cat.write_text(cat.read_text().replace('version = "1.0"\n', 'version = "1.0"\nupdate = "github:x/toy"\n'))
+    monkeypatch.setattr(pins, "latest", lambda e: ("1.1", "test"))
+    before = cat.read_text()
+    rc, out = run(["--catalog", str(cat), "update"], capsys)
+    assert rc == 0 and '+version = "1.1"' in out.out and "NOT written" in out.err
+    assert cat.read_text() == before
+    rc, out = run(["--catalog", str(cat), "update", "--write"], capsys)
+    assert rc == 0
+    c2 = C.load(str(cat))
+    assert c2.entries["toy"].version == "1.1"
+    a = c2.by_id()["toy/any/toy-V-linux.tar.gz"]
+    assert a.sha256 == "" and a.verified == ""                        # cleared for `lock`
+    assert c2.by_id()["toy/any/single"].sha256                         # not templated: untouched
+    assert any("no sha256" in e for e in C.lint(c2))                   # lint fails until lock runs
+
+
+def test_stable_version_filter():
+    for v in ("1.2.3", "1.37.2+k3s1", "0.0.20250522", "2025.10.15", "21.0.13+9"):
+        assert pins._stable(v), v
+    for v in ("show", "v0.0.2020", "2.22.0b2", "1.0a1", "0.33.0rc3", "4.4.0-rc4", "1.2.3-beta.1"):
+        assert not pins._stable(v), v
+
+
+# ── checksum parsing and signatures ──────────────────────────────────────
+
+def test_checksum_formats():
+    h = "ab" * 32
+    assert V.parse_checksum(f"{h}  dir/x.tgz\n{'cd' * 32}  y.tgz\n", "x.tgz") == ("sha256", h)
+    assert V.parse_checksum(f"{h} *x.tgz\n", "x.tgz") == ("sha256", h)
+    assert V.parse_checksum(f"SHA256 (x.tgz) = {h}\n", "x.tgz") == ("sha256", h)
+    assert V.parse_checksum(f"{h}\n", "x.tgz", url_specific=True) == ("sha256", h)
+    with pytest.raises(V.VerifyError):
+        V.parse_checksum(f"{h}\n", "x.tgz")                       # a bare hash needs a per-file URL
+    s512 = "0123456789ABCDEF" * 8
+    apache = "kafka.tgz: " + " ".join(s512[i:i + 8] for i in range(0, 64, 8)) + "\n           " + \
+        " ".join(s512[i:i + 8] for i in range(64, 128, 8)) + "\n"
+    assert V.parse_checksum(apache, "kafka.tgz") == ("sha512", s512.lower())
+    with pytest.raises(V.VerifyError, match="different hashes"):
+        V.parse_checksum(f"{h}  x.tgz\n{'cd' * 32}  x.tgz\n", "x.tgz")
+    with pytest.raises(V.VerifyError, match="does not name"):
+        V.parse_checksum(f"{h}  x-0.9.tgz\n", "x.tgz")
+    js = json.dumps({"0.16.0": {"x86_64-linux": {"shasum": h}}, "packages": [
+        {"os": "linux", "arch": "amd64", "sha256": h}, {"os": "deb", "arch": "amd64", "sha256": "ff" * 32}]})
+    assert V.parse_checksum(js, "n", "json:0.16.0/x86_64-linux/shasum") == ("sha256", h)
+    assert V.parse_checksum(js, "n", "json:packages/[os=linux,arch=amd64]/sha256") == ("sha256", h)
+    csv = "PRODUCT,3.54.1,2026/sqlite-tools-linux-x64-3540100.zip,4324601," + h + "\n"
+    assert V.parse_checksum(csv, "sqlite-tools-linux-x64-3540100.zip", "sqlite-csv") == ("sha3-256", h)
+
+
+def test_ed25519_matches_rfc8032_vector_1():
+    pub = bytes.fromhex("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a")
+    sig = bytes.fromhex("e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b")
+    assert V.ed25519_verify(pub, b"", sig)
+    assert not V.ed25519_verify(pub, b"x", sig)
+    seed = bytes.fromhex("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
+    assert V.ed25519_keypair(seed)[1] == pub and V.ed25519_sign(seed, b"") == sig
+
+
+def minisign_pair(tmp_path):
+    seed = bytes(range(32))
+    _s, pub = V.ed25519_keypair(seed)
+    kid = b"\x01\x02\x03\x04\x05\x06\x07\x08"
+    pubkey = base64.b64encode(b"Ed" + kid + pub).decode()
+
+    def sign(data: bytes) -> str:
+        msg = hashlib.blake2b(data, digest_size=64).digest()
+        s = V.ed25519_sign(seed, msg)
+        trusted = "timestamp:1 file:x hashed"
+        g = V.ed25519_sign(seed, s + trusted.encode())
+        return (f"untrusted comment: test\n{base64.b64encode(b'ED' + kid + s).decode()}\n"
+                f"trusted comment: {trusted}\n{base64.b64encode(g).decode()}\n")
+    return pubkey, sign
+
+
+def test_minisign_signature_verified_on_fetch_and_rechecked_by_verify(http, tmp_path, capsys):
+    pubkey, sign = minisign_pair(tmp_path)
+    data = b"zig-like tarball\n"
+    http.files["/z/zig.tar.xz"] = data
+    http.files["/z/zig.tar.xz.minisig"] = sign(data).encode()
+    body = ENTRY.format(name="zg", cat="languages", version="1") + f'''
+[[artifact]]
+entry = "zg"
+kind = "file"
+platform = "any"
+url = "{http.base}/z/zig.tar.xz"
+sha256 = "{sha(data)}"
+signature_url = "{http.base}/z/zig.tar.xz.minisig"
+signature_kind = "minisign"
+signature_key = "{pubkey}"
+install = "data"
+verified = "pinned"
+'''
+    cat = write_catalog(tmp_path, body)
+    drive = tmp_path / "d"
+    rc, out = run(["--catalog", str(cat), "fetch", "--to", str(drive)], capsys)
+    assert rc == 0, out.err
+    it = json.loads((drive / "ark.lock").read_text())["items"]["zg/any/zig.tar.xz"]
+    assert it["signature"]["status"] == "verified" and it["verified"] == "pinned+signature"
+    # a bad signature is refused at fetch time
+    http.files["/z/zig.tar.xz.minisig"] = sign(b"something else").encode()
+    shutil.rmtree(drive)
+    rc, out = run(["--catalog", str(cat), "fetch", "--to", str(drive)], capsys)
+    assert rc == 4 and "does NOT verify" in out.err
+    # ...and a signature swapped on the drive afterwards is caught by verify
+    http.files["/z/zig.tar.xz.minisig"] = sign(data).encode()
+    assert run(["--catalog", str(cat), "fetch", "--to", str(drive)], capsys)[0] == 0
+    sigp = drive / "files/zg/1/any/zig.tar.xz.minisig"
+    sigp.write_text(sign(b"other"))
+    lock = json.loads((drive / "ark.lock").read_text())        # keep the lock self-consistent
+    for f in lock["items"]["zg/any/zig.tar.xz"]["files"]:
+        if f["path"].endswith(".minisig"):
+            f["sha256"], f["size"] = sha(sigp.read_bytes()), sigp.stat().st_size
+    (drive / "ark.lock").write_text(json.dumps(lock))
+    rc, out = run(["verify", str(drive)], capsys)
+    assert rc == 1 and "BAD_SIGNATURE" in out.out
+
+
+def test_ed25519_signed_sums_the_tensorfold_way(http, tmp_path, capsys):
+    seed = bytes(range(1, 33))
+    _s, pub = V.ed25519_keypair(seed)
+    pem = tmp_path / "key.pem"
+    pem.write_text("-----BEGIN PUBLIC KEY-----\n" + base64.b64encode(bytes.fromhex("302a300506032b6570032100") + pub).decode()
+                   + "\n-----END PUBLIC KEY-----\n")
+    data = b"engine\n"
+    sums = f"{sha(data)}  tf-1.0-linux-x86_64.tar.gz\n".encode()
+    prefix = "tensorfold-native-checksum-v1\n"
+    http.files["/tf/tf-1.0-linux-x86_64.tar.gz"] = data
+    http.files["/tf/tf-1.0-linux-x86_64.tar.gz.sha256"] = sums
+    http.files["/tf/tf-1.0-linux-x86_64.tar.gz.sha256.sig"] = V.ed25519_sign(seed, prefix.encode() + sums)
+    body = ENTRY.format(name="tf", cat="ai", version="1.0") + f'''
+[[artifact]]
+entry = "tf"
+kind = "file"
+platform = "linux-x86_64"
+url = "{http.base}/tf/tf-{{version}}-linux-x86_64.tar.gz"
+checksum_url = "{http.base}/tf/tf-{{version}}-linux-x86_64.tar.gz.sha256"
+signature_url = "{http.base}/tf/tf-{{version}}-linux-x86_64.tar.gz.sha256.sig"
+signature_kind = "ed25519-sums"
+signature_key = "{pem}"
+signature_prefix = "tensorfold-native-checksum-v1\\n"
+install = "data"
+verified = "unverified"
+'''
+    cat = write_catalog(tmp_path, body)
+    rc, out = run(["--catalog", str(cat), "fetch", "--to", str(tmp_path / "d")], capsys)
+    assert rc == 0, out.err
+    it = json.loads((tmp_path / "d/ark.lock").read_text())["items"]["tf/linux-x86_64/tf-V-linux-x86_64.tar.gz"]
+    assert it["signature"]["status"] == "verified" and "upstream-sums" in it["verified"]
+    assert run(["verify", str(tmp_path / "d")], capsys)[0] == 0
+    http.files["/tf/tf-1.0-linux-x86_64.tar.gz.sha256.sig"] = V.ed25519_sign(seed, sums)   # no prefix: wrong message
+    rc, out = run(["--catalog", str(cat), "fetch", "--to", str(tmp_path / "d2")], capsys)
+    assert rc == 4 and "does NOT verify" in out.err
+
+
+# ── OCI ──────────────────────────────────────────────────────────────────
+
+SECRET = "tok-SECRET-do-not-print-7f3a"
+
+
+def toy_image():
+    """An index with linux/amd64 + linux/arm64 (and an s390x child we never store)."""
+    blobs, kids = {}, []
+
+    def put(b: bytes) -> dict:
+        d = "sha256:" + sha(b)
+        blobs[d] = b
+        return {"digest": d, "size": len(b)}
+    for arch in ("amd64", "arm64", "s390x"):
+        raw = io.BytesIO()
+        with tarfile.open(fileobj=raw, mode="w") as t:
+            data = f"hello from {arch}\n".encode()
+            ti = tarfile.TarInfo("hello.txt")
+            ti.size = len(data)
+            t.addfile(ti, io.BytesIO(data))
+        layer = gzip.compress(raw.getvalue(), mtime=0)
+        ld = put(layer)
+        cfg = json.dumps({"architecture": arch, "os": "linux",
+                          "rootfs": {"type": "layers", "diff_ids": ["sha256:" + sha(raw.getvalue())]}}).encode()
+        cd = put(cfg)
+        man = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                          "config": {"mediaType": "application/vnd.oci.image.config.v1+json", **cd},
+                          "layers": [{"mediaType": "application/vnd.oci.image.layer.v1.tar+gzip", **ld}]}).encode()
+        md = put(man)
+        kids.append({"mediaType": "application/vnd.oci.image.manifest.v1+json", **md,
+                     "platform": {"os": "linux", "architecture": arch}})
+    index = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json",
+                        "manifests": kids}).encode()
+    idig = put(index)["digest"]
+    return blobs, idig
+
+
+class Registry:
+    """A fake OCI registry: pull with a bearer token, blobs via a CDN redirect,
+    and push (optionally refusing an index whose children are absent)."""
+
+    def __init__(self, blobs=None, index="", token="", cdn=None, strict_index=False):
+        self.blobs = dict(blobs or {})
+        self.manifests = {}
+        if index:
+            self.manifests[("toy/app", "1.0")] = index
+        self.token, self.cdn, self.strict, self.log = token, cdn, strict_index, []
+        self.uploads = {}
+
+    def handler(self):
+        reg = self
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def _send(self, code, body=b"", headers=None):
+                self.send_response(code)
+                for k, v in (headers or {}).items():
+                    self.send_header(k, v)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                if self.command != "HEAD":
+                    self.wfile.write(body)
+
+            def _authed(self):
+                if not reg.token or self.path.startswith("/token"):
+                    return True
+                if self.headers.get("Authorization") == f"Bearer {reg.token}":
+                    return True
+                port = self.server.server_address[1]
+                self._send(401, b"", {"WWW-Authenticate": f'Bearer realm="http://127.0.0.1:{port}/token",service="fake",'
+                                                          f'scope="repository:toy/app:pull"'})
+                return False
+
+            def do_HEAD(self):
+                self.do_GET()
+
+            def do_GET(self):
+                reg.log.append((self.command, self.path, dict(self.headers)))
+                if not self._authed():
+                    return
+                if self.path.startswith("/token"):
+                    return self._send(200, json.dumps({"token": reg.token}).encode())
+                m = re.fullmatch(r"/v2/(.+)/(manifests|blobs)/([^?]+)", self.path.split("?")[0])
+                if self.path.startswith("/v2/") and "/tags/list" in self.path:
+                    return self._send(200, b'{"tags":[]}')
+                if not m:
+                    return self._send(404)
+                repo, what, ref = m.groups()
+                if what == "manifests":
+                    dig = reg.manifests.get((repo, ref), ref)
+                    body = reg.blobs.get(dig)
+                    if body is None:
+                        return self._send(404)
+                    mt = json.loads(body).get("mediaType", "application/vnd.oci.image.manifest.v1+json")
+                    return self._send(200, body, {"Content-Type": mt, "Docker-Content-Digest": dig})
+                if ref not in reg.blobs:
+                    return self._send(404)
+                if reg.cdn and self.command == "GET":
+                    return self._send(307, b"", {"Location": f"{reg.cdn.base}/cdn/{ref}"})
+                return self._send(200, reg.blobs[ref])
+
+            def do_POST(self):
+                m = re.fullmatch(r"/v2/(.+)/blobs/uploads/", self.path)
+                if not m:
+                    return self._send(404)
+                uid = str(len(reg.uploads))
+                reg.uploads[uid] = b""
+                return self._send(202, b"", {"Location": f"/upload/{uid}"})
+
+            def do_PUT(self):
+                n = int(self.headers.get("Content-Length", "0"))
+                body = self.rfile.read(n)
+                if self.path.startswith("/upload/"):
+                    dig = re.search(r"digest=(sha256:[0-9a-f]{64})", self.path).group(1)
+                    if "sha256:" + sha(body) != dig:
+                        return self._send(400)
+                    reg.blobs[dig] = body
+                    return self._send(201)
+                m = re.fullmatch(r"/v2/(.+)/manifests/(.+)", self.path)
+                if not m:
+                    return self._send(404)
+                doc = json.loads(body)
+                if reg.strict and "manifests" in doc and any(d["digest"] not in reg.blobs for d in doc["manifests"]):
+                    return self._send(400)
+                dig = "sha256:" + sha(body)
+                reg.blobs[dig] = body
+                reg.manifests[(m.group(1), m.group(2))] = dig
+                return self._send(201, b"", {"Docker-Content-Digest": dig})
+        return H
+
+
+def start(handler):
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, f"127.0.0.1:{srv.server_address[1]}"
+
+
+@pytest.fixture
+def registry(http):
+    blobs, idig = toy_image()
+    for d, b in blobs.items():
+        http.files[f"/cdn/{d}"] = b                 # the CDN the registry redirects blobs to
+    reg = Registry(blobs, idig, token=SECRET, cdn=http)
+    srv, host = start(reg.handler())
+    reg.host, reg.index = host, idig
+    yield reg
+    srv.shutdown()
+    srv.server_close()
+
+
+def oci_catalog(tmp_path, reg, digest=None) -> Path:
+    body = ENTRY.format(name="app", cat="containers", version="1.0") + f'''
+[[artifact]]
+entry = "app"
+kind = "oci"
+image = "{reg.host}/toy/app"
+tag = "{{version}}"
+digest = "{digest or reg.index}"
+platforms = ["linux/amd64", "linux/arm64"]
+verified = "registry"
+'''
+    return write_catalog(tmp_path, body)
+
+
+def test_oci_pull_by_digest_verify_push_and_load(registry, http, tmp_path, capsys, monkeypatch):
+    cat = oci_catalog(tmp_path, registry)
+    drive = tmp_path / "drive"
+    rc, out = run(["--catalog", str(cat), "fetch", "--to", str(drive)], capsys)
+    assert rc == 0, out.err
+    it = json.loads((drive / "ark.lock").read_text())["items"]["app/oci/app"]
+    assert it["digest"] == registry.index and set(it["manifests"]) == {"linux/amd64", "linux/arm64"}
+    # the token went to the registry, never to the CDN, and never to any output
+    cdn_hits = [h for (m, p, h) in http.log if p.startswith("/cdn/")]
+    assert cdn_hits and not any("Authorization" in h for h in cdn_hits)
+    assert SECRET not in out.out + out.err and SECRET not in (drive / "ark.lock").read_text()
+    arc = oci.OciArchive(str(drive / it["primary"]))
+    assert arc.verify() == [] and set(arc.manifests()) == {"linux/amd64", "linux/arm64"}
+    arc.close()
+    rc, out = run(["verify", str(drive), "--deep"], capsys)
+    assert rc == 0, out.out
+    # push into a registry that insists on every index child: the reduced index is used
+    target = Registry(strict_index=True)
+    srv, host = start(target.handler())
+    try:
+        rc, out = run(["restore", "app", "--from", str(drive), "--registry", host], capsys)
+        assert rc == 0 and "reduced index" in out.out, out.err
+        kids = {d["digest"] for d in json.loads(target.blobs[target.manifests[("toy/app", "1.0")]])["manifests"]}
+        assert kids == set(it["manifests"].values())
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    # docker load gets a single-platform tar (a fake docker records it)
+    fake = tmp_path / "fakebin"
+    fake.mkdir()
+    rec = tmp_path / "loaded.tar"
+    (fake / "docker").write_text(f'#!/bin/sh\n[ "$1" = load ] && cp "$3" {rec}\n')
+    (fake / "docker").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake}:{os.environ['PATH']}")
+    rc, out = run(["restore", "app", "--from", str(drive), "--docker", "--platform", "linux-aarch64"], capsys)
+    assert rc == 0, out.err
+    with tarfile.open(rec) as t:
+        idx = json.loads(t.extractfile("index.json").read())
+        dm = json.loads(t.extractfile("manifest.json").read())
+    assert idx["manifests"][0]["digest"] == it["manifests"]["linux/arm64"]
+    assert len(dm) == 1 and dm[0]["RepoTags"] == [f"{registry.host}/toy/app:1.0"]
+
+
+def test_oci_refuses_a_registry_that_serves_the_wrong_manifest(registry, tmp_path, capsys):
+    cat = oci_catalog(tmp_path, registry, digest="sha256:" + "e" * 64)
+    registry.manifests[("toy/app", "sha256:" + "e" * 64)] = registry.index    # lies about the digest
+    rc, out = run(["--catalog", str(cat), "fetch", "--to", str(tmp_path / "d")], capsys)
+    assert rc == 4 and "refused" in out.err.lower()
+
+
+def test_lock_resolves_an_image_digest_and_platform_sizes(registry, tmp_path, capsys):
+    cat = oci_catalog(tmp_path, registry, digest="")
+    cat.write_text(cat.read_text().replace('verified = "registry"', 'verified = ""'))
+    assert run(["--catalog", str(cat), "lock", "--no-git-sizes"], capsys)[0] == 0
+    a = C.load(str(cat)).artifacts[0]
+    assert a.digest == registry.index and a.verified == "registry"
+    sizes = dict(x.split("=") for x in a.platform_sizes)
+    assert set(sizes) == {"linux/amd64", "linux/arm64"} and all(int(v) > 0 for v in sizes.values())
+
+
+# ── serve ────────────────────────────────────────────────────────────────
+
+def _get(url, headers=None, method="GET"):
+    req = urllib.request.Request(url, headers=headers or {}, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.status, dict(r.headers), r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, dict(e.headers), e.read()
+
+
+def test_serve_files_registry_pip_and_nothing_else(registry, http, tmp_path, capsys):
+    drive = tmp_path / "drive"
+    assert run(["--catalog", str(oci_catalog(tmp_path, registry)), "fetch", "--to", str(drive)], capsys)[0] == 0
+    sub = tmp_path / "x"
+    sub.mkdir()
+    cat2 = toy_catalog(http, sub)
+    assert run(["--catalog", str(cat2), "fetch", "--to", str(drive)], capsys)[0] == 0
+    # a pip set, recorded the way fetch_pip records one
+    wd = drive / "pkgs/pip/demo-1/any"
+    wd.mkdir(parents=True)
+    whl = wd / "demo_pkg-1.0-py3-none-any.whl"
+    whl.write_bytes(b"PK fake wheel")
+    lock = json.loads((drive / "ark.lock").read_text())
+    rel = str(whl.relative_to(drive))
+    lock["items"]["demo/pip/any"] = {"entry": "demo", "kind": "pip", "platform": "any", "version": "1",
+                                     "files": [{"path": rel, "sha256": sha(whl.read_bytes()), "size": whl.stat().st_size}],
+                                     "primary": str(wd.relative_to(drive)), "verified": "tofu"}
+    S.Drive(str(drive)).write_lock(lock)
+    (drive / "files/toy/planted").write_text("x")
+    httpd = SV.serve(S.Drive(str(drive)), "127.0.0.1", 0)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{httpd.server_address[1]}"
+    try:
+        st, h, body = _get(base + "/files/toy/1.0/any/toy-1.0-linux.tar.gz", {"Range": "bytes=5-"})
+        assert st == 206 and body == toy_toolchain()[5:]
+        assert _get(base + "/files/toy/planted")[0] == 404                  # not in ark.lock: never served
+        assert _get(base + "/.ark-stage/x")[0] == 404
+        assert _get(base + "/../etc/passwd")[0] == 404
+        assert _get(base + "/ark.lock")[0] == 200
+        assert _get(base + "/files/toy/1.0/any/single", method="PUT")[0] == 405
+        st, h, body = _get(base + "/v2/")
+        assert st == 200 and h["Docker-Distribution-API-Version"] == "registry/2.0"
+        st, h, idx = _get(base + "/v2/toy/app/manifests/1.0")
+        assert st == 200 and h["Docker-Content-Digest"] == registry.index
+        assert _get(base + f"/v2/toy/app/manifests/{registry.index}")[0] == 200
+        kid = next(d for d in json.loads(idx)["manifests"] if d["platform"]["architecture"] == "arm64")
+        st, h, man = _get(base + f"/v2/toy/app/manifests/{kid['digest']}")
+        assert st == 200 and "sha256:" + sha(man) == kid["digest"]
+        layer = json.loads(man)["layers"][0]["digest"]
+        st, h, blob = _get(base + f"/v2/toy/app/blobs/{layer}")
+        assert st == 200 and "sha256:" + sha(blob) == layer
+        s390 = next(d for d in json.loads(idx)["manifests"] if d["platform"]["architecture"] == "s390x")
+        assert _get(base + f"/v2/toy/app/manifests/{s390['digest']}")[0] == 404   # not archived
+        assert json.loads(_get(base + "/v2/_catalog")[2]) == {"repositories": ["toy/app"]}
+        st, h, page = _get(base + "/pypi/simple/demo-pkg/")
+        assert st == 200 and f"#sha256={sha(b'PK fake wheel')}" in page.decode()
+        # pull it back through ark's own client: the served registry is a real one
+        stage = tmp_path / "stage"
+        res = oci.pull(f"127.0.0.1:{httpd.server_address[1]}/toy/app", "1.0", registry.index, ["linux/amd64"],
+                       str(tmp_path / "again.oci.tar"), str(stage))
+        assert res["digest"] == registry.index
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+# ── the shell entry point ────────────────────────────────────────────────
+
+def test_ark_sh_lint_and_usage():
+    r = subprocess.run(["bash", str(ARK_SH), "lint"], capture_output=True, text=True)
+    assert r.returncode == 0 and "0 problem(s)" in r.stdout, r.stdout[-2000:]
+    r = subprocess.run(["bash", str(ARK_SH), "restore", "x", "--from", "/nonexistent"], capture_output=True, text=True)
+    assert r.returncode == 2 and "not a beast-ark drive" in r.stderr

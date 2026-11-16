@@ -168,7 +168,8 @@ for _suite in \
   "test_setup_client.sh|Client installer (scripts/setup-client.sh)" \
   "test_publish_slot.sh|beast-slot :8444 mount (setup-tailscale.sh --publish-slot)" \
   "test_chat_unix_login.sh|beast-chat unix-socket login (CHAT_LOGIN_FROM, :8445 mount)" \
-  "test_operator_scripts.sh|Operator scripts (2026-10-09 review fixes)"; do
+  "test_operator_scripts.sh|Operator scripts (2026-10-09 review fixes)" \
+  "test_ark.sh|beast-ark (scripts/ark.sh, the drive's bare-box ./ark)"; do
   _file="${_suite%%|*}"; _label="${_suite#*|}"
   echo "--- $_label tests (tests/$_file) ---"
   echo ""
