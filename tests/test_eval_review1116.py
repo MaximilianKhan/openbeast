@@ -288,3 +288,35 @@ def test_prover_toolchain_arm_catches_a_captured_build_and_passes_a_private_one(
     rows = list(prove_task.toolchain_arms(_arm_runner(task), task, spec, pins, "c"))
     assert rows[0][1] is False and not rows[0][4]
     assert rows[0][3].startswith(run_eval.TOOLCHAIN_CHANGED)
+
+
+# --- 122's oracle (finding: strided float columns, 6.8 s per validation on GB10) ---
+
+def _gemm_oracle(script: str) -> dict:
+    a = script.index("from operator import mul")
+    b = script.index("# CPU is the measured quantity")
+    ns: dict = {}
+    exec(compile(script[a:b], "<oracle>", "exec"), ns)
+    return ns
+
+
+def test_122_oracle_builds_columns_in_the_integer_domain_bit_identically():
+    from operator import mul
+    d = json.loads((ROOT / "evals" / "tasks" / "122_gemm_blocked.json").read_text())
+    scripts = {v["validation"]["script"][v["validation"]["script"].index("from operator"):
+                                         v["validation"]["script"].index("# CPU is the measured")]
+               for v in d["variants"]}
+    assert len(scripts) == 1, "every variant carries the same oracle"
+    ns = _gemm_oracle(d["variants"][0]["validation"]["script"])
+    src = scripts.pop()
+    assert "bi = gm_seq(seed, n * n, n * n)" in src and "b[j::n]" not in src
+    n, seed, rows = 257, 123456789, [0, 7, 128, 256]
+    GP, gm_seq = ns["GP"], ns["gm_seq"]
+    b = [v / GP for v in gm_seq(seed, n * n, n * n)]      # the old construction
+    old_cols = [b[j::n] for j in range(n)]
+    want = {}
+    for i in rows:
+        a = [v / GP for v in gm_seq(seed, i * n, n)]
+        c = [sum(map(mul, a, col)) for col in old_cols]
+        want[i] = (sum(v * v for v in c), max(c))
+    assert ns["gm_rows"](n, seed, rows) == want           # exact, not approximate
