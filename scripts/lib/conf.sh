@@ -1226,6 +1226,18 @@ _ob_webui_cors() {
     esac
     h="$(hostname 2>/dev/null | tr '[:upper:]' '[:lower:]')"
     [[ -n "$h" ]] && list+=("http://$h:3000")
+  else
+    # A loopback bind other than 127.0.0.1 (127.0.0.2, ::1): the WebUI binds
+    # ONLY that address (compose HOST=), so it is opened as http://<it>:3000
+    # and nothing else listed reaches it. Missing here, Socket.IO refused the
+    # browser's own origin and chat streaming broke, while the Host list
+    # below already allowed the address (2026-11-16 review).
+    case "$BIND_HOST" in
+      127.0.0.1|localhost|"") ;;
+      *) h="$BIND_HOST"
+         [[ "$h" == *:* && "$h" != \[* ]] && h="[$h]"
+         list+=("http://$h:3000") ;;
+    esac
   fi
   fq="$(_ob_webui_tailnet_name)"
   if [[ -n "$fq" ]]; then

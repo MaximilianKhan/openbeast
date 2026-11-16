@@ -161,6 +161,23 @@ def test_a_specific_bind_is_allowed(conf):
     assert "http://192.168.1.20:3000" in r.origins and "http://beast:3000" in r.origins
 
 
+@pytest.mark.parametrize("bind,origin,host", [
+    ("127.0.0.2", "http://127.0.0.2:3000", "127.0.0.2"),
+    ("::1", "http://[::1]:3000", "[::1]"),
+])
+def test_a_non_default_loopback_bind_is_an_origin(conf, bind, origin, host):
+    """The WebUI binds only BIND_HOST, so it is opened at that address. The
+    Host list allowed it but CORS (= Socket.IO's origin list) did not, so
+    the browser's handshake was refused and chat streaming broke."""
+    r = conf(ts=False, OPENBEAST_BIND=bind)
+    assert r.auth == "false", r.stderr          # still loopback: no login forced
+    assert origin in r.origins, r.cors
+    assert host in r.hosts.split(","), r.hosts
+    for o in r.origins:
+        u = urlparse(o)
+        assert u.scheme in ("http", "https") and u.netloc and not u.path, o
+
+
 def test_a_wildcard_bind_lists_the_box_addresses(conf):
     r = conf(ts=False, OPENBEAST_BIND="0.0.0.0")
     assert {"http://192.168.1.20:3000", "http://[fd00::5]:3000"} <= set(r.origins), r.cors
