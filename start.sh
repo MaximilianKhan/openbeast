@@ -627,8 +627,50 @@ if [[ $DAEMON -eq 1 ]]; then
       echo "Warning: MEM_LIMIT_PCT='$MEM_LIMIT_PCT' invalid (need 1-100) — using 75" >&2
       MEM_LIMIT_PCT=75
     fi
-    MEM_TOTAL_KB=$(grep -m1 MemTotal /proc/meminfo | awk '{print $2}' || true)
+    # OB_MEMINFO: the test hook lib/hardware.sh reads too.
+    MEM_TOTAL_KB=$(grep -m1 MemTotal "${OB_MEMINFO:-/proc/meminfo}" 2>/dev/null | awk '{print $2}' || true)
     MEM_TOTAL_KB="${MEM_TOTAL_KB:-33554432}"   # fallback: assume 32 GB
+    # >>> per-profile memory scope (scripts/lib/memscope.sh,
+    # docs/WEIGHT_STREAMING.md). A big-mode serve script (or an engine
+    # profile, through its adapter's scope_file) declares the scope it needs
+    # in an `# openbeast-scope:` line; only that launch on that host class
+    # gets it, every other launch keeps MEM_LIMIT_PCT. No declaration: no
+    # change at all.
+    source "$SCRIPT_DIR/scripts/lib/memscope.sh"
+    source "$SCRIPT_DIR/scripts/lib/engine.sh"
+    _scope_file="$SCRIPT_DIR/scripts/$SERVE_SCRIPT"
+    if [[ "$SERVE_SCRIPT" == engine-serve.sh ]] && ob_engine_has "$INFERENCE_BACKEND" scope_file; then
+      _scope_file="$(ob_engine_call "$INFERENCE_BACKEND" scope_file "$(ob_engine_conf_get ENGINE_PROFILE)" 2>/dev/null || true)"
+    fi
+    _scope_rc=0
+    _scope="$(ob_mem_scope "$_scope_file" "$(ob_engine_host_class)" "$MEM_TOTAL_KB" "$MEM_LIMIT_PCT" \
+                "$([[ -n "${OPENBEAST_MEM_LIMIT_PCT:-}" ]] && echo "$MEM_LIMIT_PCT")")" || _scope_rc=$?
+    if [[ $_scope_rc -ne 0 ]]; then
+      echo "  Nothing was started." >&2
+      exit 1
+    fi
+    read -r MEM_LIMIT_PCT _scope_memlock _scope_src <<< "$_scope"
+    _SCOPE_PROPS=()
+    _scope_note=""
+    if [[ "$_scope_src" == profile:* ]]; then
+      # The daemon re-sources conf.sh: carry the raised percent in, so its
+      # own arithmetic (serve.sh's prompt-cache budget) uses the real scope.
+      export OPENBEAST_MEM_LIMIT_PCT="$MEM_LIMIT_PCT"
+      _scope_note=", raised for ${_scope_src#profile:}"
+    fi
+    if [[ "$_scope_memlock" == infinity ]]; then
+      if [[ "$(ob_memlock_hard)" == unlimited ]]; then
+        _SCOPE_PROPS+=(-p LimitMEMLOCK=infinity)
+        _scope_note+=", memlock unlimited"
+      else
+        echo "Warning: $SERVE_SCRIPT asks for memlock=infinity, but this session's hard limit is $(ob_memlock_hard) KiB;" >&2
+        echo "         a user unit cannot exceed it, so the scope keeps it. llama.cpp's pinned host experts" >&2
+        echo "         do not need it; Maya's RAM tier may. One-time fix (root), then log out and in:" >&2
+        echo "         docs/WEIGHT_STREAMING.md \"Memlock\"." >&2
+      fi
+    fi
+    unset _scope _scope_rc _scope_file _scope_memlock
+    # <<< per-profile memory scope
     MEM_MAX_BYTES=$(( MEM_TOTAL_KB * 1024 / 100 * MEM_LIMIT_PCT ))
     MEM_MAX_GB=$(( MEM_MAX_BYTES / 1024 / 1024 / 1024 ))
     systemctl --user reset-failed openbeast-stack 2>/dev/null || true
@@ -676,9 +718,10 @@ if [[ $DAEMON -eq 1 ]]; then
     fi
     systemd-run --user --quiet --collect --unit=openbeast-stack \
       -p MemoryMax="$MEM_MAX_BYTES" -p MemorySwapMax=8G \
+      ${_SCOPE_PROPS[@]+"${_SCOPE_PROPS[@]}"} \
       ${SETENV_ARGS[@]+"${SETENV_ARGS[@]}"} \
       "$SCRIPT_DIR/start.sh" --_daemonized "$SERVE_SCRIPT"
-    echo "  (memory-capped scope 'openbeast-stack': ${MEM_LIMIT_PCT}% of RAM = ${MEM_MAX_GB}G, swap 8G)"
+    echo "  (memory-capped scope 'openbeast-stack': ${MEM_LIMIT_PCT}% of RAM = ${MEM_MAX_GB}G, swap 8G${_scope_note})"
   else
     setsid nohup "$0" --_daemonized "$SERVE_SCRIPT" \
       >>"$RUN_DIR/stack.log" 2>&1 < /dev/null &

@@ -92,6 +92,15 @@ flowchart LR
   and kills no model server (`INFERENCE_MANAGED=false`); everything else in
   this picture is unchanged. Plan, security and runbook:
   [`DGX_SPARK_PLAN.md`](DGX_SPARK_PLAN.md).
+- **Models bigger than the card stream their experts from RAM.** On the one
+  RTX 5090 a MoE model's routed experts can live in host RAM while a VRAM
+  cache (llama.cpp v1.0.0 `--moe-cache-mib`) holds the hot ones: Flash-Next
+  in the daily 75% memory scope, and opt-in **big mode** (GLM-5.3-Flash),
+  whose serve script declares its own 90% scope, on the rig only. While big
+  mode runs, hydra's rig deployment reads MISMATCH and `routes.beast` falls
+  to the next node, or 503s on a rig-only install. A fourth engine (Project
+  Maya) is admitted only after it measures 1.5x llama.cpp on the rig.
+  Runbook: [`WEIGHT_STREAMING.md`](WEIGHT_STREAMING.md).
 
 ## 2. Inside the command center — two planes
 
@@ -346,7 +355,13 @@ scripts/                     # Server, ops, and feature CLIs
   lib/                       # conf.sh (config), hardware.sh, weights.sh, extensions.sh,
                              #   proc.sh (identity-checked signalling), portown.sh (does OUR pid hold the port),
                              #   bundle_manifest.py, pydeps_lock.py, skill_import.py,
-                             #   backend.sh (per-backend readiness: llama / vLLM / TensorFold)
+                             #   backend.sh (per-backend readiness: llama / vLLM / TensorFold),
+                             #   engine.sh (the engine plane; ob_engine_gate_ok), memscope.sh
+                             #   (per-profile memory scope: docs/WEIGHT_STREAMING.md)
+  engines/                   # one adapter per engine: llama / vllm / tensorfold / maya (opt-in, gated);
+                             #   maya/ = its requirements.lock, profiles/, prepare.sh
+  engine.sh, engine-gate.sh  # swap / pin / roll back the engine (docs/ENGINES.md); the 1.5x tok/s gate
+  tokps.py                   # decode / prefill tok/s of an endpoint, acceptance checks, gate verdicts
   backends/                  # DGX Spark inference (docs/DGX_SPARK_PLAN.md): {vllm,tensorfold}/spark-node.sh
                              #   rank launchers (--profile), spark.env.example (host settings),
                              #   models/<name>.env per-model profiles + TEMPLATE.env, model-inspect.sh,
