@@ -268,8 +268,20 @@ def backup(path: str) -> str | None:
     while os.path.exists(dst):
         n += 1
         dst = f"{path}.bak-beast-apps-{stamp}-{n}"
-    shutil.copy2(path, dst)
-    os.chmod(dst, 0o600)          # the config may hold an API key
+    # The config may hold an API key: the copy is CREATED 0600 (O_EXCL, never
+    # an existing file). shutil.copy2 created it with the umask (0644) and
+    # wrote the key before a chmod, so another local user could open it in
+    # between and keep the fd.
+    fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as out, open(path, "rb") as src:
+            shutil.copyfileobj(src, out)
+    except BaseException:
+        try:
+            os.unlink(dst)
+        except OSError:
+            pass
+        raise
     return dst
 
 
