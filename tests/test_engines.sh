@@ -549,6 +549,25 @@ check "OFFLINE install maya --from DIR: verified commits from the folder, wheels
   '[[ "$(git -C "$T/opt/maya" rev-parse HEAD)" == "$MC1" ]] && grep -q -- "--no-index --find-links $T/stage-maya/wheels" "$T/pip.log"' "$_o"
 _o="$(eng "${MENV[@]}" OPENBEAST_OFFLINE=true -- install maya --version v9.9.9)"
 check "…and OFFLINE without --from refuses to download" '[[ "$_o" == *"OFFLINE=true — no download"* ]]' "$_o"
+# A staged folder is data, not a reviewer: its MANIFEST cannot name an
+# unreviewed commit, a path, or extra conf lines.
+_mpin="$(confv ENGINE_PIN_MAYA)"
+_evil() { # _evil <VERSION value> → $T/stage-evil, a copy of the good stage
+  rm -rf "$T/stage-evil"; cp -R "$T/stage-maya" "$T/stage-evil"
+  sed -i "s|^VERSION=.*|VERSION=$1|; s|^COMMIT=.*|COMMIT=$MC2|" "$T/stage-evil/MANIFEST"
+}
+_evil v9.9.11
+_o="$(eng "${MENV[@]}" OPENBEAST_OFFLINE=true -- install maya --from "$T/stage-evil")"
+check "install --from a MANIFEST naming an unreviewed version + commit is refused (the folder is not --digest)" \
+  '[[ "$_o" == *"not a reviewed version"* && "$_o" != *"because you named it"* && "$(confv ENGINE_PIN_MAYA)" == "$_mpin" && ! -e "$T/opt/maya-v9.9.11" ]]' "$_o"
+_evil ../../victim
+_o="$(eng "${MENV[@]}" OPENBEAST_OFFLINE=true -- install maya --from "$T/stage-evil" --digest "$MC2")"
+check "…a VERSION with ../ in it is refused before any path is built, even with --digest" \
+  '[[ "$_o" == *"not a Maya version"* && ! -e "$T/victim" && ! -e "$T/opt/victim" && ! -e "$T/opt/maya-.." && "$(confv ENGINE_PIN_MAYA)" == "$_mpin" ]]' "$_o / $(ls "$T" "$T/opt")"
+_evil 'v9\\nBIND_HOST=0.0.0.0\\nX='
+_o="$(eng "${MENV[@]}" OPENBEAST_OFFLINE=true -- install maya --from "$T/stage-evil" --digest "$MC2")"
+check "…and a VERSION carrying \\n KEY= lines never reaches openbeast.conf" \
+  '[[ "$_o" == *"not a Maya version"* ]] && ! grep -q "^BIND_HOST=" "$SB/openbeast.conf" && [[ "$(confv ENGINE_PIN_MAYA)" == "$_mpin" ]]' "$_o / $(cat "$SB/openbeast.conf")"
 # The gate: no verdict, no use. The profile ships in scripts/engines/maya/profiles/.
 printf 'LLAMA_API_KEY=sekrit-maya\n' > "$SB/openbeast.conf"; chmod 600 "$SB/openbeast.conf"
 _o="$(eng "${MENV[@]}" -- use maya --profile glm53-flash-abl-q2kxl --force)"

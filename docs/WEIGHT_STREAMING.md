@@ -524,6 +524,9 @@ MAYA_STAGE_PYTHON=3.12 ENG_STAGE_PLATFORM=manylinux_2_28_x86_64 \
 ```
 
 and on the rig: `scripts/engine.sh install maya --from /media/usb/maya`.
+The folder carries the version; the commit must still be the reviewed
+one for that version (its MANIFEST `COMMIT` is checked against the table,
+never trusted in place of `--digest`).
 
 **Prepare** (Maya's own build, about 30 min, plus its pack, about 1 GB
 written beside the GGUF; the stack stopped):
