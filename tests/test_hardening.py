@@ -487,6 +487,35 @@ def test_wrapper_refuses_home_and_root_workdirs(tmp_path, monkeypatch):
     assert mcp_server._sandboxed_workdir_refusal(str(home)) is None
 
 
+def test_wrapper_refuses_parents_of_persistence_dirs(tmp_path, monkeypatch):
+    # Review 2026-11-16: the write guard matches protected locations by
+    # PREFIX, so a workdir that CONTAINS one (~/.config holds systemd/user,
+    # git and the sandlock policy; ~/.local holds bin/ and the sandlock
+    # binary; ~/Library holds LaunchAgents) passed, and the wrapper's
+    # `-w "$PWD"` then made the persistence target writable.
+    import mcp_server
+    home = tmp_path / "home"
+    for d in (".config/systemd/user", ".local/bin", "Library/LaunchAgents",
+              "Library/Caches", ".config/sandlock/profiles", "proj/sub",
+              "dots/shell", "work"):
+        (home / d).mkdir(parents=True)
+    # A file the live ~/.bashrc sources is protected too, wherever it lives.
+    (home / "dots" / "shell" / "aliases.sh").write_text("alias x=y\n")
+    (home / ".bashrc").write_text(f"source {home}/dots/shell/aliases.sh\n")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("OPENBEAST_BASH_WRAPPER",
+                       'sandlock run -p openbeast -w "$PWD" --')
+    for rel in (".config", ".local", "Library", ".config/sandlock",
+                ".config/sandlock/profiles", "dots", "dots/shell"):
+        wd = str(home / rel)
+        why = mcp_server._sandboxed_workdir_refusal(wd)
+        assert why and why.startswith("Error"), (rel, why)
+        assert mcp_server.start_agent("noop", workdir=wd).startswith("Error"), rel
+    # Directories that hold nothing protected stay usable.
+    for rel in ("proj", "proj/sub", "Library/Caches", "work"):
+        assert mcp_server._sandboxed_workdir_refusal(str(home / rel)) is None, rel
+
+
 # --- stop_agent for an agent this process did not spawn (review) -------------
 
 def test_stop_agent_falls_back_to_the_ledger(tmp_path, monkeypatch):
