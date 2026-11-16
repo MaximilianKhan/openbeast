@@ -392,12 +392,31 @@ CHAT_LOGIN_FROM=unix
 ./stop.sh && ./start.sh                 # chat_server now also listens on the socket
 ./scripts/setup-tailscale.sh --publish-chat   # :8445 → unix:<repo>/.run/chat.sock
 tailscale serve status                  # expect: |-- / proxy unix:/…/.run/chat.sock
-./scripts/doctor.sh                     # the host-network-container warning is gone
+./scripts/doctor.sh                     # beast-chat's host-network-container warning is gone
 ```
 
 Rolling back is the same in reverse: drop the key (or set `loopback`),
 restart, re-run `--publish-chat`. The spark-hydra command center runs this
-way (docs/SPARK_HYDRA.md).
+way (docs/SPARK_HYDRA.md). Nothing in the switch needs the network: it is a
+conf edit, a restart and a local `tailscale serve` call.
+
+**doctor checks the two steps agree.** The switch is two manual steps
+(restart, then `--publish-chat`), and skipping the second used to pass
+doctor: a `unix` server behind the old TCP mount answers every phone login
+with the flat 404, and a `loopback` server behind a stale `unix:` mount is a
+502 — while doctor's TCP liveness probe still said "published". doctor now
+reads the `:8445` target from `tailscale serve status` and FAILs when it
+does not match the running server's `login_from` (or `CHAT_LOGIN_FROM` when
+the server is down), when a `unix:` target is not `CHAT_SOCKET`, when the
+socket does not exist, or when beast-chat does not answer
+`/api/chat/health` **over the socket** (`curl --unix-socket`). The fix it
+prints is `./scripts/setup-tailscale.sh --publish-chat`, which re-points the
+mount at whatever the server runs now.
+
+beast-artifact has the same switch, `ARTIFACT_LOGIN_FROM=unix` (see
+docs/BEAST_ARTIFACT.md, "Where the login header counts"). Turning it on for
+chat closes the host-network exposure for chat only; doctor warns for each
+server separately.
 
 **Every write failure is the same 404.** No key, an unknown key, a revoked
 key, a key without the `chat` scope: one answer, and it is the answer an
