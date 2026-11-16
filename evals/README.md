@@ -405,7 +405,14 @@ into the validator from source; it is never on an import path or in the cwd.
   ALL descendants. That is exact through a delegated cgroup v2 when the host
   has one. Otherwise it is RLIMIT_CPU per process, plus wait4 rusage, plus a
   pgid/ancestry sampler. That sampler reads `/proc` on Linux, with a child
-  subreaper so that orphans stay in view; elsewhere it reads `ps`. Fork is
+  subreaper so that orphans stay in view, and libproc in-process on macOS
+  (it forked `ps -A` every 50 ms until review 1116: ~140 ms and ~0.4 CPU-s
+  of overhead per run); elsewhere it reads `ps`. The solution's own rusage
+  always counts: it is reaped with `wait4(WNOHANG)`, never `Popen.poll()`,
+  which discarded it, so CPU used after the last sample was lost and a
+  fixed-CPU gate (122, 123, 36) passed an over-budget solution about 1 run
+  in 12. The sampler wakes the moment the solution exits (kqueue on macOS,
+  a pidfd on Linux) instead of sleeping out the poll. Fork is
   refused by default, and on macOS `sandbox-exec` enforces it. With
   `allow_fork=True`, orphans and survivors get `verdict="daemon"`. On macOS
   the confined solution also has **no network**, **no process-info on other

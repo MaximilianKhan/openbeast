@@ -331,6 +331,53 @@ def test_cpu_in_a_waited_child_is_counted():
     assert r.verdict == "cpu", r
 
 
+_BURN = ("import time\nt = time.process_time()\n"
+         "while time.process_time() - t < {s}: pass\n")
+
+
+def test_cpu_used_after_the_last_sample_is_counted():
+    """The solution's own rusage must count even when it exits by itself
+    between samples. Popen.poll() reaped it, the final wait4 hit
+    ChildProcessError and the rusage was dropped, so a fixed-CPU gate passed
+    an over-budget solution about 1 run in 12 (review 1116). poll_s=30 means
+    the sampler never sees it running: only the rusage can catch it."""
+    r = vlib.run_solution([sys.executable, "-I", "-S", "-c", _BURN.format(s=0.45)],
+                          cpu_s=0.3, wall_s=10, scale_cpu=False, poll_s=30)
+    assert r.verdict == "cpu" and r.cpu_s >= 0.4, r
+    assert r.wall_s < 5, r          # and it did not sleep out the 30 s poll
+
+
+@pytest.mark.parametrize("run", range(10))
+def test_a_fixed_cpu_gate_rejects_a_ten_percent_overrun_every_time(run):
+    r = vlib.run_solution([sys.executable, "-I", "-S", "-c", _BURN.format(s=0.44)],
+                          cpu_s=0.4, wall_s=10, scale_cpu=False)
+    assert r.verdict == "cpu", r
+
+
+def test_run_solution_returns_as_soon_as_the_solution_exits():
+    t0 = time.monotonic()
+    r = vlib.run_solution(["/bin/sleep", "0"], cpu_s=5, poll_s=10)
+    assert r.ok, r
+    assert time.monotonic() - t0 < 3, r
+
+
+@pytest.mark.skipif(not DARWIN, reason="libproc is macOS's")
+def test_darwin_table_agrees_with_ps_for_our_processes():
+    """vlib.processes() reads libproc in-process on macOS instead of forking
+    `ps -A` every 50 ms (review 1116); same rows for our uid."""
+    lp = vlib.darwin_table()
+    assert lp is not None
+    ps = vlib._ps_table()
+    me = os.getpid()
+    assert lp[me][2] == os.getuid()
+    assert lp[me][:2] == (os.getppid(), os.getpgrp())
+    common = set(lp) & set(ps)
+    assert me in common and len(common) > 5
+    assert all(lp[p][:2] == ps[p][:2] for p in common
+               if p in lp and p in ps), "ppid/pgid disagree"
+    assert vlib.processes()[me][:2] == (os.getppid(), os.getpgrp())
+
+
 def test_orphaned_worker_is_refused_as_a_daemon():
     # 122's bypass: fork workers, let them be orphaned, never wait for them.
     src = ("import os, time\n"

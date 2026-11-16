@@ -56,7 +56,8 @@ itself:
 
   processes()
       The live process table (pid, ppid, pgid, cpu seconds). It reads /proc
-      on Linux and falls back to `ps` elsewhere, so it also works on macOS.
+      on Linux and libproc on macOS (in-process, no fork; our uid's
+      processes), and falls back to `ps` elsewhere.
 
   lint_python(src, ban_modules=..., ban_calls=...)
       An AST lint that handles the routes a substring or line regex misses:
@@ -193,12 +194,115 @@ def _ps_table() -> dict:
     return out
 
 
+# macOS: libproc in-process. `ps -A` forks, costs ~25 ms wall and ~20 ms CPU
+# per table on a desktop (1100 processes), and the sampler called it every
+# 50 ms for the whole run, so a 1 s solution burned ~0.4 s of harness CPU
+# and 20 forks/s of pid churn (review 1116). proc_listallpids +
+# proc_pidinfo gives the same table in ~1.5 ms with no fork.
+_LIBPROC = None
+_PROC_PIDTBSDINFO, _PROC_PIDTASKINFO, _SZOMB = 3, 4, 5
+
+
+def _libproc():
+    """(lib, BsdInfo, TaskInfo, ticks->seconds) or False when unusable."""
+    global _LIBPROC
+    if _LIBPROC is None:
+        _LIBPROC = False
+        if _DARWIN:
+            try:
+                import ctypes
+                lib = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+                u32, u64 = ctypes.c_uint32, ctypes.c_uint64
+
+                class BsdInfo(ctypes.Structure):
+                    _fields_ = [("flags", u32), ("status", u32), ("xstatus", u32),
+                                ("pid", u32), ("ppid", u32), ("uid", u32), ("gid", u32),
+                                ("ruid", u32), ("rgid", u32), ("svuid", u32), ("svgid", u32),
+                                ("rfu_1", u32), ("comm", ctypes.c_char * 16),
+                                ("name", ctypes.c_char * 32), ("nfiles", u32), ("pgid", u32),
+                                ("pjobc", u32), ("e_tdev", u32), ("e_tpgid", u32),
+                                ("nice", ctypes.c_int32), ("start_tvsec", u64),
+                                ("start_tvusec", u64)]
+
+                class TaskInfo(ctypes.Structure):
+                    _fields_ = [("virtual_size", u64), ("resident_size", u64),
+                                ("total_user", u64), ("total_system", u64),
+                                ("threads_user", u64), ("threads_system", u64)] + \
+                               [(n, ctypes.c_int32) for n in (
+                                   "policy", "faults", "pageins", "cow_faults", "msgs_sent",
+                                   "msgs_received", "syscalls_mach", "syscalls_unix", "csw",
+                                   "threadnum", "numrunning", "priority")]
+
+                class Timebase(ctypes.Structure):
+                    _fields_ = [("numer", u32), ("denom", u32)]
+                tb = Timebase()
+                if ctypes.CDLL(None).mach_timebase_info(ctypes.byref(tb)) != 0 or not tb.denom:
+                    return _LIBPROC
+                lib.proc_listallpids.restype = ctypes.c_int
+                lib.proc_pidinfo.restype = ctypes.c_int
+                lib.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64,
+                                             ctypes.c_void_p, ctypes.c_int]
+                # pti_total_* are mach absolute-time units (ns on Intel,
+                # 125/3 ns on Apple silicon)
+                _LIBPROC = (lib, BsdInfo, TaskInfo, tb.numer / tb.denom / 1e9)
+            except (OSError, AttributeError):
+                _LIBPROC = False
+    return _LIBPROC
+
+
+def darwin_table(cpu: bool = True) -> dict | None:
+    """macOS: {pid: (ppid, pgid, uid, cpu_seconds, start)} of every live,
+    non-zombie process this uid may inspect (our own uid's; root's and
+    other users' are not listed, unlike `ps`), through libproc. `start` is (tv_sec, tv_usec), an
+    exact identity across pid reuse. cpu_seconds is 0.0 for a process we
+    may not inspect (another uid), or with cpu=False. None when libproc is
+    unusable (the caller falls back to ps)."""
+    lp = _libproc()
+    if not lp:
+        return None
+    import ctypes
+    lib, BsdInfo, TaskInfo, tick_s = lp
+    n = lib.proc_listallpids(None, 0)
+    if n <= 0:
+        return None
+    for _ in range(4):
+        cap = n + 256
+        buf = (ctypes.c_int * cap)()
+        n = lib.proc_listallpids(buf, ctypes.sizeof(buf))
+        if n <= 0:
+            return None
+        if n < cap:
+            break
+    bi, ti = BsdInfo(), TaskInfo()
+    bsz, tsz = ctypes.sizeof(bi), ctypes.sizeof(ti)
+    out = {}
+    for i in range(min(n, cap)):
+        pid = buf[i]
+        if pid <= 0:
+            continue
+        if lib.proc_pidinfo(pid, _PROC_PIDTBSDINFO, 0, ctypes.byref(bi), bsz) != bsz:
+            continue                       # gone, or not inspectable at all
+        if bi.status == _SZOMB:
+            continue
+        c = 0.0
+        if cpu and lib.proc_pidinfo(pid, _PROC_PIDTASKINFO, 0, ctypes.byref(ti), tsz) == tsz:
+            c = (ti.total_user + ti.total_system) * tick_s
+        out[pid] = (bi.ppid, bi.pgid, bi.uid, c, (bi.start_tvsec, bi.start_tvusec))
+    return out
+
+
 def processes() -> dict:
-    """{pid: (ppid, pgid, cpu_seconds)} of every live, non-zombie process."""
+    """{pid: (ppid, pgid, cpu_seconds)} of every live, non-zombie process
+    (on macOS through libproc: those of our uid, which is all a solution
+    can start)."""
     if _LINUX and os.path.isdir("/proc/self"):
         tab = _proc_table()
         if tab is not None:
             return tab
+    if _DARWIN:
+        tab = darwin_table()
+        if tab is not None:
+            return {pid: (row[0], row[1], row[3]) for pid, row in tab.items()}
     return _ps_table()
 
 
@@ -965,6 +1069,54 @@ def _resolve_exec(prog: str, cwd: str | None, env: dict) -> str:
     return os.path.realpath(found) if found else prog
 
 
+def _exit_waiter(pid: int):
+    """(wait(timeout) -> bool, close()): wait() returns True as soon as
+    `pid` (our child) has exited, WITHOUT reaping it, so the final wait4
+    still gets its rusage. The sampler used to time.sleep(poll_s) whatever
+    happened, so every run paid up to a full poll after the solution was
+    done (review 1116). kqueue NOTE_EXIT on macOS, a pidfd on Linux, a
+    plain sleep elsewhere."""
+    import select
+    done = [False]
+    if hasattr(select, "kqueue"):
+        try:
+            kq = select.kqueue()
+        except OSError:
+            kq = None
+        if kq is not None:
+            try:
+                kq.control([select.kevent(pid, filter=select.KQ_FILTER_PROC,
+                                          flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                                          fflags=select.KQ_NOTE_EXIT)], 0, 0)
+            except OSError:
+                done[0] = True          # already exited (ESRCH)
+
+            def wait(timeout):
+                if not done[0] and kq.control(None, 1, timeout):
+                    done[0] = True
+                return done[0]
+            return wait, kq.close
+    if hasattr(os, "pidfd_open"):
+        try:
+            fd = os.pidfd_open(pid)
+        except OSError:
+            fd = None
+        if fd is not None:
+            pl = select.poll()
+            pl.register(fd, select.POLLIN)
+
+            def wait(timeout):
+                if not done[0] and pl.poll(int(timeout * 1000)):
+                    done[0] = True
+                return done[0]
+            return wait, (lambda: os.close(fd))
+
+    def wait(timeout):
+        time.sleep(timeout)
+        return False
+    return wait, (lambda: None)
+
+
 def run_solution(cmd, input=None, *, cpu_s: float, wall_s: float | None = None,
                  cwd: str | None = None, env: dict | None = None, text: bool = True,
                  allow_fork: bool = False, scale_cpu: bool = True,
@@ -1111,6 +1263,30 @@ def run_solution(cmd, input=None, *, cpu_s: float, wall_s: float | None = None,
     verdict, reason = "ok", ""
     rusage_cpu = 0.0
     status = None
+    reaped = [False]
+    exit_wait, exit_close = _exit_waiter(proc.pid)
+
+    def _reap_nohang():
+        """The solution's exit status once it has exited, else None. Reaps
+        it through wait4 and KEEPS its rusage: Popen.poll() reaped it with
+        waitpid, the final wait4 then hit ChildProcessError, and the rusage
+        was dropped, so the CPU it used after the last sample was never
+        counted and a fixed-CPU gate passed over-budget solutions about 1 run
+        in 12 (review 1116)."""
+        nonlocal rusage_cpu
+        if reaped[0]:
+            return proc.returncode
+        try:
+            pid_, wst, ru = os.wait4(proc.pid, os.WNOHANG)
+        except ChildProcessError:
+            return None
+        if pid_ == 0:
+            return None
+        reaped[0] = True
+        rusage_cpu = ru.ru_utime + ru.ru_stime
+        proc.returncode = (-os.WTERMSIG(wst) if os.WIFSIGNALED(wst)
+                           else os.WEXITSTATUS(wst))
+        return proc.returncode
 
     def _exe(pid: int) -> str | None:
         """The realpath of a process's running image, Linux only."""
@@ -1168,7 +1344,7 @@ def run_solution(cmd, input=None, *, cpu_s: float, wall_s: float | None = None,
 
     try:
         while True:
-            r = proc.poll()
+            r = _reap_nohang()
             live = _tree()
             for pid, (ppid, _pg, cpu) in live.items():
                 known.add(pid)
@@ -1201,7 +1377,7 @@ def run_solution(cmd, input=None, *, cpu_s: float, wall_s: float | None = None,
             if time.monotonic() - t0 > wall_budget:
                 verdict, reason = "wall", f"wall budget {wall_budget:.1f}s exceeded"
                 break
-            time.sleep(poll_s)
+            exit_wait(poll_s)
         # The solution itself exited (or we are about to kill it): anything of
         # its tree still alive outlived it.
         if verdict == "ok":
@@ -1210,13 +1386,15 @@ def run_solution(cmd, input=None, *, cpu_s: float, wall_s: float | None = None,
                 verdict, reason = "daemon", f"{len(survivors)} process(es) outlived the solution"
     finally:
         _kill_all()
-        try:
-            _pid, wst, ru = os.wait4(proc.pid, 0)
-            proc.returncode = (-os.WTERMSIG(wst) if os.WIFSIGNALED(wst)
-                               else os.WEXITSTATUS(wst))
-            rusage_cpu = ru.ru_utime + ru.ru_stime
-        except ChildProcessError:
-            rusage_cpu = 0.0
+        if not reaped[0]:
+            try:
+                _pid, wst, ru = os.wait4(proc.pid, 0)
+                proc.returncode = (-os.WTERMSIG(wst) if os.WIFSIGNALED(wst)
+                                   else os.WEXITSTATUS(wst))
+                rusage_cpu = ru.ru_utime + ru.ru_stime
+            except ChildProcessError:
+                rusage_cpu = 0.0
+        exit_close()
         if proc.returncode is None and status is not None:
             proc.returncode = status
         if subreaper:  # orphans reparented to us: reap them (they were SIGKILLed)
