@@ -928,6 +928,19 @@ def _writer(stream, data: bytes):
             pass
 
 
+def _resolve_exec(prog: str, cwd: str | None, env: dict) -> str:
+    """The realpath the kernel will exec for argv[0], as the CHILD sees it:
+    a relative path (`./divmod`) against the solution's cwd, not ours, and a
+    bare name through the child's PATH. The exec_only rule names this path
+    literally, so resolving `./divmod` against the validator's cwd denied
+    the solution its own image (sandbox-exec exits 71)."""
+    import shutil
+    if os.sep in prog:
+        return os.path.realpath(os.path.join(cwd or os.getcwd(), prog))
+    found = shutil.which(prog, path=env.get("PATH"))
+    return os.path.realpath(found) if found else prog
+
+
 def run_solution(cmd, input=None, *, cpu_s: float, wall_s: float | None = None,
                  cwd: str | None = None, env: dict | None = None, text: bool = True,
                  allow_fork: bool = False, scale_cpu: bool = True,
@@ -977,7 +990,7 @@ def run_solution(cmd, input=None, *, cpu_s: float, wall_s: float | None = None,
     wall_budget = (float(wall_s) if wall_s is not None else 3 * float(cpu_s) + 5) * sc
     env = clean_env() if env is None else dict(env)
     seal = _sealed_paths() if deny_read is None else list(deny_read)
-    exec0 = os.path.realpath(cmd[0]) if cmd else ""
+    exec0 = _resolve_exec(cmd[0], cwd, env) if cmd else ""
     interp = {os.path.realpath(sys.executable), os.path.realpath(python_cmd("x")[0])}
     if confine_exec is None:
         # Auto: confine a single compiled binary (allow_fork False, not the

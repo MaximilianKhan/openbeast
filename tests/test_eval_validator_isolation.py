@@ -1062,3 +1062,15 @@ def test_a_unit_with_surviving_leftovers_is_not_validated(monkeypatch, tmp_path)
     row = out["tasks"][0]
     assert not validated and not row["passed"], row
     assert "could not be killed" in row.get("validation_output", ""), row
+
+
+@pytest.mark.skipif(not __import__("shutil").which("cc"), reason="no C compiler")
+def test_exec_confinement_resolves_a_relative_argv_against_the_solutions_cwd(tmp_path):
+    # Compiled validators run `./divmod` with cwd=/tmp/eval_x. exec_only named
+    # that path resolved against the VALIDATOR's cwd, so the sandbox denied the
+    # solution its own image and every compiled unit exited 71.
+    (tmp_path / "p.c").write_text('#include <stdio.h>\nint main(void){puts("ran");return 0;}\n')
+    subprocess.run(["cc", "-o", str(tmp_path / "p"), str(tmp_path / "p.c")], check=True)
+    r = vlib.run_solution(["./p"], cpu_s=5, cwd=str(tmp_path))
+    assert r.ok and "ran" in r.stdout, (r, r.stderr[-300:])
+    assert vlib._resolve_exec("./p", str(tmp_path), {}) == os.path.realpath(tmp_path / "p")
