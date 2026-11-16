@@ -221,8 +221,10 @@ def test_validator_cwd_is_private_and_fresh():
         assert os.listdir(cwd) == []
         assert stat.S_IMODE(os.stat(cwd).st_mode) == 0o700
         assert stat.S_IMODE(os.stat(os.path.dirname(cwd)).st_mode) == 0o700
-        # The script file itself was unlinked before the validator started.
-        assert os.listdir(os.path.dirname(cwd)) == ["cwd"], os.listdir(os.path.dirname(cwd))
+        # The script file itself was unlinked before the validator started;
+        # beside the cwd there is only the private build cache.
+        assert sorted(os.listdir(os.path.dirname(cwd))) == ["build-cache", "cwd"], \
+            os.listdir(os.path.dirname(cwd))
         print("OK")
     '''))
     assert ok, output
@@ -779,3 +781,104 @@ def test_seal_blocks_a_relative_read_the_text_check_misses(tmp_path, monkeypatch
         assert "not permitted" in out.lower() or "refusing" in out.lower(), out
     finally:
         probe.unlink(missing_ok=True)
+
+
+# --- (a) every build gets a private, throw-away cache --------------------------------
+#
+# 164's verifier linked 40 of 40 objects that sealed reference builds had left in
+# ~/.cache/zig (`zig build-exe` keeps the whole compilation unit there), from
+# inside the measured agent's bash. Each validation now gets its own caches in
+# its private dir, and they are deleted with it.
+
+_CACHE_PROBE = textwrap.dedent(r'''
+    import os, sys
+    import vlib
+    root = os.environ.get("OPENBEAST_BUILD_CACHE") or ""
+    bad = []
+    if os.path.basename(root) != "build-cache":
+        bad.append("root " + root)
+    if not os.path.basename(os.path.dirname(root)).startswith("ob-validator-"):
+        bad.append("parent " + root)
+    b = vlib.build_env()
+    for k in ("ZIG_GLOBAL_CACHE_DIR", "ZIG_LOCAL_CACHE_DIR", "GOCACHE", "GOMODCACHE",
+              "CARGO_TARGET_DIR", "XDG_CACHE_HOME"):
+        v = os.environ.get(k) or ""
+        if not v.startswith(root + os.sep):
+            bad.append(k)
+            continue
+        open(os.path.join(v, "obj.o"), "w").write("compiled-reference")
+        if k != "XDG_CACHE_HOME" and b.get(k) != v:
+            bad.append("build_env " + k)
+    if os.environ.get("CCACHE_DISABLE") != "1" or os.environ.get("SCCACHE_DISABLE") != "1":
+        bad.append("ccache")
+    if os.environ.get("RUSTC_WRAPPER") or "RUSTC_WRAPPER" in b:
+        bad.append("wrapper")
+    if os.environ.get("GOPROXY") != "off":
+        bad.append("goproxy")
+    print("ROOT", root)
+    print("BAD", bad)
+    sys.exit(1 if bad else 0)
+''')
+
+
+def test_validation_builds_into_a_private_cache_that_is_deleted(monkeypatch, tmp_path):
+    shared = tmp_path / "shared-cache"
+    for k in ("ZIG_GLOBAL_CACHE_DIR", "ZIG_LOCAL_CACHE_DIR", "GOCACHE", "GOMODCACHE",
+              "XDG_CACHE_HOME"):
+        monkeypatch.setenv(k, str(shared / k))       # the user's shared caches
+    monkeypatch.setenv("RUSTC_WRAPPER", "sccache")
+    task = {"id": "cache", "validation": {"type": "python", "script": _CACHE_PROBE}}
+    ok, out = run_eval.run_validation(task)
+    assert ok, out
+    root = out.split("ROOT", 1)[1].split()[0]
+    # The cache, and everything a build left in it, is gone with the validator.
+    assert not os.path.exists(root), root
+    assert not os.path.exists(os.path.dirname(root))
+    assert not shared.exists(), "the shared caches were never written"
+
+
+def test_build_env_outside_the_harness_never_uses_the_shared_cache(monkeypatch):
+    monkeypatch.delenv("OPENBEAST_BUILD_CACHE", raising=False)
+    monkeypatch.setenv("ZIG_GLOBAL_CACHE_DIR", os.path.expanduser("~/.cache/zig"))
+    env = vlib.build_env()
+    for k in ("ZIG_GLOBAL_CACHE_DIR", "ZIG_LOCAL_CACHE_DIR", "GOCACHE", "GOMODCACHE",
+              "CARGO_TARGET_DIR"):
+        assert env[k].startswith(env["HOME"] + os.sep), (k, env[k])
+    assert env["CCACHE_DISABLE"] == "1"
+
+
+def test_private_cache_removal_survives_read_only_entries(tmp_path):
+    # A Go module cache is read-only unless -modcacherw held; the removal must
+    # not leave a compiled object behind because a directory was 0555.
+    d = tmp_path / "c" / "mod" / "x@v1"
+    d.mkdir(parents=True)
+    (d / "obj.o").write_text("x")
+    os.chmod(d / "obj.o", 0o444)
+    os.chmod(d, 0o555)
+    run_eval._rmtree_force(str(tmp_path / "c"))
+    assert not (tmp_path / "c").exists()
+
+
+@pytest.mark.skipif(not __import__("shutil").which("zig"), reason="zig not installed")
+def test_a_zig_build_in_a_validator_leaves_nothing_in_the_user_cache(monkeypatch, tmp_path):
+    user_cache = tmp_path / "user-zig-cache"
+    monkeypatch.setenv("ZIG_GLOBAL_CACHE_DIR", str(user_cache))
+    src = 'pub fn main() void {}\n'
+    script = textwrap.dedent(f'''
+        import os, subprocess, tempfile
+        d = tempfile.mkdtemp()
+        open(os.path.join(d, "m.zig"), "w").write({src!r})
+        r = subprocess.run(["zig", "build-exe", "m.zig", "-femit-bin=" + os.path.join(d, "m")],
+                           cwd=d, capture_output=True, text=True)
+        print(r.returncode, r.stderr[-300:])
+        objs = sum(len(f) for _, _, f in os.walk(os.environ["ZIG_GLOBAL_CACHE_DIR"]))
+        print("OBJS", objs)
+        raise SystemExit(r.returncode)
+    ''')
+    ok, out = run_eval.run_validation({"id": "z", "validation": {"type": "python",
+                                                                "script": script}},
+                                      timeout_scale=4.0)
+    assert ok, out
+    assert int(out.split("OBJS")[1].split()[0]) > 0, "the build used the private cache"
+    assert not user_cache.exists() or not any(user_cache.rglob("*")), \
+        "a validator's zig build wrote into the user's cache"

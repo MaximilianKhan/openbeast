@@ -112,7 +112,9 @@ _ENV_KEEP = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TZ", "TMPDIR",
              "CC", "CXX", "GOROOT", "GOPATH", "GOCACHE", "GOMODCACHE", "GOFLAGS",
              "GOTOOLCHAIN", "GOPROXY", "GOSUMDB", "CARGO_HOME", "RUSTUP_HOME",
              "RUSTUP_TOOLCHAIN", "ZIG_GLOBAL_CACHE_DIR", "ZIG_LOCAL_CACHE_DIR",
-             "XDG_CACHE_HOME", "PKG_CONFIG_PATH", "OPENBEAST_TIMEOUT_SCALE")
+             "XDG_CACHE_HOME", "PKG_CONFIG_PATH", "OPENBEAST_TIMEOUT_SCALE",
+             "CARGO_TARGET_DIR", "OPENBEAST_BUILD_CACHE", "CCACHE_DISABLE",
+             "SCCACHE_DISABLE")
 
 
 def clean_env(extra: dict | None = None, base: dict | None = None) -> dict:
@@ -1320,8 +1322,20 @@ def build_env(extra: dict | None = None, *, home: str | None = None) -> dict:
     env["GOENV"] = "off"
     env["GOFLAGS"] = ""
     env["GOTOOLCHAIN"] = env.get("GOTOOLCHAIN") or "local"
-    env.setdefault("GOCACHE", os.path.join(env["HOME"], "go-cache"))
-    env.setdefault("GOMODCACHE", os.path.join(env["HOME"], "go-mod"))
+    # Compiler caches: the harness puts them in the validator's private dir
+    # (run_eval.build_cache_env, deleted after the unit). Outside the harness
+    # they go under this private HOME, never ~/.cache, where a compiled
+    # reference would stay readable to the next agent.
+    cache = env.get("OPENBEAST_BUILD_CACHE") or os.path.join(env["HOME"], "cache")
+    for k, sub in (("GOCACHE", "go-build"), ("GOMODCACHE", "go-mod"),
+                   ("ZIG_GLOBAL_CACHE_DIR", "zig-global"),
+                   ("ZIG_LOCAL_CACHE_DIR", "zig-local"),
+                   ("CARGO_TARGET_DIR", "cargo-target")):
+        if not env.get("OPENBEAST_BUILD_CACHE") or not env.get(k):
+            env[k] = os.path.join(cache, sub)
+    env["CCACHE_DISABLE"] = "1"
+    env["SCCACHE_DISABLE"] = "1"
+    env.pop("RUSTC_WRAPPER", None)
     if extra:
         env.update({k: str(v) for k, v in extra.items() if v is not None})
     return env

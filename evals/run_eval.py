@@ -1681,6 +1681,61 @@ def _validator_env(timeout_scale: float) -> dict:
     return env
 
 
+# Every validation builds into a private, throw-away cache. A compiled
+# reference (or any correct solution) used to stay in a SHARED cache after its
+# validator exited: `zig build-exe` outside a build system leaves the whole
+# compilation unit in ~/.cache/zig/tmp/<hash>/*.o, and the measured agent's
+# bash keeps ~/.cache read-write, so a later agent linked a cached object
+# and passed without solving (164's verifier: 40 of 40 cached objects
+# linked). The caches below live in the validator's private 0700 dir and are
+# deleted with it. GOMODCACHE is safe to move: no unit has a module
+# dependency, and GOPROXY=off keeps a build from fetching one.
+BUILD_CACHE_ENV = {
+    "ZIG_GLOBAL_CACHE_DIR": "zig-global",
+    "ZIG_LOCAL_CACHE_DIR": "zig-local",
+    "GOCACHE": "go-build",
+    "GOMODCACHE": "go-mod",
+    "CARGO_TARGET_DIR": "cargo-target",
+    "XDG_CACHE_HOME": "xdg-cache",
+}
+
+
+def build_cache_env(root: str) -> dict:
+    """Env overrides that put every compiler cache under `root` (created
+    0700) and turn shared compiler caches off."""
+    os.makedirs(root, mode=0o700, exist_ok=True)
+    env = {k: os.path.join(root, sub) for k, sub in BUILD_CACHE_ENV.items()}
+    for d in env.values():
+        os.makedirs(d, mode=0o700, exist_ok=True)
+    env.update({"OPENBEAST_BUILD_CACHE": root,
+                "CCACHE_DISABLE": "1",          # ccache: off, never a shared dir
+                "SCCACHE_DISABLE": "1",
+                "RUSTC_WRAPPER": "",            # no sccache/ccache wrapper either
+                "GOPROXY": "off",
+                "GOFLAGS": "-modcacherw"})      # so the cache can be deleted
+    return env
+
+
+def _rmtree_force(path: str):
+    """shutil.rmtree that also removes read-only entries (a Go module cache
+    is 0444/0555 unless -modcacherw held)."""
+    import shutil
+
+    def onerr(func, p, _exc):
+        try:
+            os.chmod(os.path.dirname(p), 0o700)
+            os.chmod(p, 0o700)
+            func(p)
+        except OSError:
+            pass
+    try:
+        shutil.rmtree(path, onexc=onerr)        # 3.12+
+    except TypeError:
+        shutil.rmtree(path, onerror=onerr)
+    except FileNotFoundError:
+        pass
+
+
 def _vlib_source() -> str:
     with open(VLIB_PATH) as f:
         return f.read()
@@ -1746,9 +1801,11 @@ def run_validation(task: dict, timeout_scale: float = 1.0) -> tuple[bool, str]:
             sf.write(payload)
             sf.flush()
             sf.seek(0)
+            venv = _validator_env(timeout_scale)
+            venv.update(build_cache_env(os.path.join(private, "build-cache")))
             returncode, output = _run_reaped(
                 cmd, timeout=timeout, shell=not isinstance(cmd, list),
-                stdin=sf, cwd=vcwd, env=_validator_env(timeout_scale))
+                stdin=sf, cwd=vcwd, env=venv)
         passed = returncode == 0
         kept = output.strip()[:500]
         # The 500-char cut must never drop the evidence that the VALIDATOR
@@ -1764,7 +1821,7 @@ def run_validation(task: dict, timeout_scale: float = 1.0) -> tuple[bool, str]:
         return False, f"Validation error: {e}"
     finally:
         _kill_recorded_groups(group_file)
-        shutil.rmtree(private, ignore_errors=True)
+        _rmtree_force(private)
 
 
 def run_cleanup(task: dict, log=print):
