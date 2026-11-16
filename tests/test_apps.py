@@ -76,6 +76,7 @@ class Box:
         for d in (self.home, self.bin, self.state, self.overlay):
             d.mkdir(parents=True, exist_ok=True)
         self.argv_log = tmp / "npx-argv.log"
+        self.npm_log = tmp / "npm-install.log"
         # The real catalog, with every absolute machine path re-rooted into
         # HOME: /Applications/Xcode.app on the box running the tests must not
         # leak into a "Xcode is not installed" assertion.
@@ -102,9 +103,36 @@ class Box:
             "PY": PY,
             "STUB": str(STUB),
             "ARGV_LOG": str(self.argv_log),
+            "NPM_LOG": str(self.npm_log),
+            # introspection runs with a minimal env (cli.child_env): the stubs'
+            # own variables must be named to reach them
+            "OPENBEAST_APPS_INTROSPECT_ENV": "PY,STUB,ARGV_LOG,NPM_LOG,STUB_TOOLS,STUB_TOOLS_FILE,STUB_HANG,"
+                                             "STUB_PAGE_SIZE,STUB_BANNER,STUB_NPM_FAIL,STUB_ENV_PROBE,STUB_BAD_ERROR",
         }
-        # base toolchain every server needs
-        _exe(self.bin / "node", 'echo v22.1.0\n')
+        # base toolchain every server needs. An npm server is staged with
+        # `npm install --prefix <state>/npm/<sid>@<v> <pkg>@<v>` (the stub
+        # writes package.json + a bin) and run as `node <bin> args…`; the
+        # stub node reads the version back from that package.json.
+        _exe(self.bin / "node", '''
+            if [ "$1" = "--version" ]; then echo v22.1.0; exit 0; fi
+            echo "$*" >> "$ARGV_LOG"
+            v=$(sed -n 's/.*"version": *"\\([^"]*\\)".*/\\1/p' "$(dirname "$1")/package.json" | head -1)
+            shift
+            exec "$PY" "$STUB" "stub@$v" "$@"
+        ''')
+        _exe(self.bin / "npm", '''
+            [ "$1" = "install" ] || exit 2
+            echo "$*" >> "$NPM_LOG"
+            if [ -n "$STUB_NPM_FAIL" ]; then echo "npm error code ENOTCACHED" >&2; exit 1; fi
+            prefix=""; spec=""
+            while [ $# -gt 0 ]; do
+              case "$1" in --prefix) prefix="$2"; shift ;; -*) ;; *) spec="$1" ;; esac; shift
+            done
+            pkg="${spec%@*}"; ver="${spec##*@}"; d="$prefix/node_modules/$pkg"
+            mkdir -p "$d"
+            printf '{"name": "%s", "version": "%s", "bin": {"%s": "cli.js"}}\\n' "$pkg" "$ver" "${pkg##*/}" > "$d/package.json"
+            printf '#!/usr/bin/env node\\n' > "$d/cli.js"
+        ''')
         _exe(self.bin / "npx", '''
             if [ "$1" = "--version" ]; then echo 10.9.0; exit 0; fi
             echo "$*" >> "$ARGV_LOG"
@@ -190,6 +218,12 @@ class Box:
 @pytest.fixture
 def box(tmp_path):
     return Box(tmp_path)
+
+
+def _staged_version(cmd: list) -> str | None:
+    """The version an entry's command runs: <state>/npm/<sid>@<version>/…"""
+    m = re.search(r"/npm/[^/]+@([^/]+)/node_modules/", " ".join(cmd))
+    return m.group(1) if m else None
 
 
 USER_CFG = {
@@ -364,7 +398,10 @@ def test_enable_v2_merges_backs_up_and_disable_restores(box):
     assert cfg["mcp"]["openbeast-tools"] == USER_CFG["mcp"]["openbeast-tools"]
     e = cfg["mcp"]["servers"]["replicant-mcp"]
     assert e["type"] == "local" and e["codemode"] is False and "enabled" not in e
-    assert e["command"] == [str(box.bin / "npx"), "-y", "replicant-mcp@1.6.7"]
+    # staged into the beast-apps prefix, run by absolute path: no npx at launch
+    staged = (box.state / "npm" / "replicant-mcp@1.6.7" / "node_modules" / "replicant-mcp").resolve()
+    assert e["command"] == [str(box.bin / "node"), str(staged / "cli.js")]
+    assert json.loads((staged / "package.json").read_text())["version"] == "1.6.7"
     assert e["environment"]["ANDROID_HOME"] == str(sdk)
     assert e["environment"]["PATH"].split(":")[0] == str(sdk / "platform-tools")
     assert cfg["permissions"][0] == USER_CFG["permissions"][0]
@@ -388,8 +425,9 @@ def test_enable_v1_schema_uses_legacy_keys(box):
     assert cfg["mcp"]["mine"] == {"type": "local", "command": ["x"], "enabled": True}
     e = cfg["mcp"]["replicant-mcp"]
     assert e["enabled"] is True and "codemode" not in e
-    assert cfg["permission"] == {"replicant-mcp_adb-shell": "ask", "replicant-mcp_gradle-build": "ask",
-                                 "replicant-mcp_gradle-test": "ask", "replicant-mcp_gradle-list": "ask"}
+    assert cfg["permission"] == {"replicant-mcp_adb-shell": "ask", "replicant-mcp_adb-app": "ask",
+                                 "replicant-mcp_gradle-build": "ask", "replicant-mcp_gradle-test": "ask",
+                                 "replicant-mcp_gradle-list": "ask"}
     box.run("disable", "replicant-mcp", check=0)
     assert box.read_config() == {"mcp": {"mine": {"type": "local", "command": ["x"], "enabled": True}}}
 
@@ -429,8 +467,18 @@ def test_risky_server_needs_accept_risk_and_secrets_make_the_file_private(box):
     assert cp.returncode == 6
     assert "OFF by default" in cp.stdout and "no confirmation prompt" in cp.stdout
     assert not box.config.exists()
-    rc, out = box.json("enable", "3d-print", "--accept-risk", extra_env=env)
-    assert rc == 0, out
+    # --json is read by the model (so it travels to the rig and into
+    # transcripts): the key is redacted there, never in the config itself
+    dry = box.run("enable", "3d-print", "--accept-risk", "--dry-run", "--json",
+                  extra_env={**env, "BAMBU_TOKEN": "t0ken"})
+    assert dry.returncode == 0 and "s3cret" not in dry.stdout and "t0ken" not in dry.stdout
+    assert json.loads(dry.stdout)["entry"]["environment"]["API_KEY"] == "<redacted>"
+    cp = box.run("enable", "3d-print", "--accept-risk", "--json", extra_env=env)
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    assert "s3cret" not in cp.stdout
+    out = json.loads(cp.stdout)
+    assert out["entry"]["environment"]["API_KEY"] == "<redacted>"
+    assert out["entry"]["environment"]["PRINTER_TYPE"] == "octoprint"
     cfg = box.read_config()
     e = cfg["mcp"]["servers"]["mcp-3d-printer-server"]
     assert e["environment"]["PRINTER_TYPE"] == "octoprint" and e["environment"]["API_KEY"] == "s3cret"
@@ -577,7 +625,7 @@ def test_refresh_reports_an_update_but_never_moves_the_pin(box, registry):
     assert "UPDATE AVAILABLE: 1.0.0 → 1.2.0" in cp.stdout
     assert "scripts/apps.sh upgrade stubsrv" in cp.stdout
     e = box.read_config()["mcp"]["servers"]["stubsrv"]
-    assert e["command"][-1] == "stubpkg@1.0.0"
+    assert _staged_version(e["command"]) == "1.0.0"
     assert not (box.state / "pins.json").exists()
 
 
@@ -591,8 +639,11 @@ def test_offline_refresh_degrades_cleanly(box):
     cp = box.run("refresh")
     assert "beast-island: OFFLINE" in cp.stdout and "Pins are kept exactly as they are" in cp.stdout
     assert "latest: not checked (offline) — keeping 1.0.0" in cp.stdout
-    # introspection asked npx for the cache only
-    assert box.argv_log.read_text().splitlines()[-1].startswith("--offline -y stubpkg@1.0.0")
+    # the server was staged at enable (offline here: npm --offline, the cache
+    # only) and introspection ran the staged bin, never npx and never npm again
+    assert len(box.npm_log.read_text().splitlines()) == 1
+    assert "--offline" in box.npm_log.read_text() and "stubpkg@1.0.0" in box.npm_log.read_text()
+    assert box.argv_log.read_text().splitlines()[-1].endswith("/npm/stubsrv@1.0.0/node_modules/stubpkg/cli.js")
     # OFFLINE=true (the install-level switch) is honoured too, without probing
     rc, out = box.json("refresh", "--no-introspect",
                        extra_env={"OFFLINE": "true", "OPENBEAST_ISLAND_PROBES": "1.1.1.1:443"})
@@ -612,7 +663,7 @@ def test_upgrade_is_explicit_reprobes_and_rewrites_the_entry(box, registry):
     assert out["from"] == "1.0.0" and out["to"] == "1.1.0" and out["config_updated"]
     assert out["diff"]["added"] == ["gamma"]
     assert json.loads((box.state / "pins.json").read_text())["stubsrv"]["version"] == "1.1.0"
-    assert box.read_config()["mcp"]["servers"]["stubsrv"]["command"][-1] == "stubpkg@1.1.0"
+    assert _staged_version(box.read_config()["mcp"]["servers"]["stubsrv"]["command"]) == "1.1.0"
     assert (box.state / "manifests" / "stubsrv" / "1.1.0.json").exists()
     assert (box.state / "manifests" / "stubsrv" / "1.0.0.json").exists()   # history kept
     rc, out = box.json("refresh", extra_env=registry.env())
@@ -626,7 +677,7 @@ def test_upgrade_aborts_when_the_new_version_does_not_answer(box):
                  extra_env={"STUB_HANG": "1", "OPENBEAST_APPS_TIMEOUT": "2"})
     assert cp.returncode == 1 and "Pin stays 1.0.0" in cp.stdout and "timed out" in cp.stdout
     assert not (box.state / "pins.json").exists()
-    assert box.read_config()["mcp"]["servers"]["stubsrv"]["command"][-1] == "stubpkg@1.0.0"
+    assert _staged_version(box.read_config()["mcp"]["servers"]["stubsrv"]["command"]) == "1.0.0"
 
 
 def test_upgrade_refuses_when_prerequisites_are_gone(box):
@@ -704,7 +755,23 @@ def _gated(s: dict, name: str) -> bool:
     return any(fnmatch.fnmatchcase(name, g) for g in s["ask_tools"] + s["deny_tools"])
 
 
-@pytest.mark.parametrize("sid", ["mcp-3d-printer-server", "replicant-mcp", "mobilebuildmcp"])
+GATED_STDIO = ["mcp-3d-printer-server", "replicant-mcp", "mobilebuildmcp", "mobile-mcp", "mcp-for-blender",
+               "ros-mcp"]
+
+
+def test_every_gated_stdio_server_has_a_pinned_tool_list():
+    # a gate is only as good as the names it matches: a server with gates and
+    # no fixture would let a renamed tool silently go ungated with CI green
+    C, _ = _apps()
+    cat = C.load(str(CATALOG), env={}, overlays=False)
+    gated = sorted(sid for sid, s in cat["server"].items()
+                   if s["transport"] == "stdio" and (s.get("ask_tools") or s.get("deny_tools")))
+    assert gated == sorted(GATED_STDIO)
+    for sid in gated:
+        assert (FIX / f"{sid}-{cat['server'][sid]['version']}.tools.json").exists(), sid
+
+
+@pytest.mark.parametrize("sid", GATED_STDIO)
 def test_every_gate_names_a_real_tool(sid):
     import fnmatch
     s, names, _ = _real(sid)
@@ -734,10 +801,42 @@ def test_build_tools_that_run_project_scripts_are_gated():
     for t in ("gradle-build", "gradle-test", "gradle-list", "adb-shell"):   # ./gradlew or a shell
         assert _gated(s, t), t
     assert not _gated(s, "gradle-get-details")
+    assert _gated(s, "adb-app")                       # installs / launches an APK
     s, _, _ = _real("mobilebuildmcp")
-    for t in ("build_sim", "build_run_sim", "test_sim"):
+    # build/test run the project's scripts; install/launch run a (possibly
+    # prebuilt, project-shipped) .app as a native process on the Mac
+    for t in ("build_sim", "build_run_sim", "test_sim", "install_app_sim", "launch_app_sim"):
         assert _gated(s, t), t
-    assert not _gated(s, "list_sims") and not _gated(s, "screenshot")
+    assert not _gated(s, "list_sims") and not _gated(s, "screenshot") and not _gated(s, "stop_app_sim")
+
+
+@pytest.mark.parametrize("sid", GATED_STDIO)
+def test_tools_that_install_or_launch_an_app_are_gated(sid):
+    s, names, d = _real(sid)
+    for n in names:
+        if re.search(r"(^|[_-])(install|launch)", n):
+            assert _gated(s, n), f"{sid}: {n} installs or launches an app and is not gated"
+    loud = [f["name"] for f in d["flagged"] if f["description"] and not f["gated"]]
+    assert loud == [], f"{sid}: tools that say they run code, ungated: {loud}"
+
+
+def test_mobile_mcp_batch_cannot_launder_a_gated_tool():
+    # upstream 1.0.17's mobile_batch_commands runs ANY other tool as a step:
+    # left ungated it would reach every gated tool with no approval
+    s, names, _ = _real("mobile-mcp")
+    assert "mobile_batch_commands" in names and _gated(s, "mobile_batch_commands")
+    for t in ("mobile_install_app", "mobile_launch_app", "mobile_uninstall_app", "mobile_allocate_remote_device"):
+        assert _gated(s, t), t
+
+
+def test_ros_gates_match_the_real_tool_names():
+    s, names, _ = _real("ros-mcp")
+    for t in ("publish_once", "publish_for_durations", "call_service", "send_action_goal", "set_parameter",
+              "delete_parameter"):
+        assert t in names and _gated(s, t), t
+    assert not _gated(s, "cancel_action_goal")         # the stop button
+    s, names, _ = _real("mcp-for-blender")
+    assert "execute_blender_code" in names and _gated(s, "execute_blender_code")
 
 
 def test_3d_print_bridge_programs_come_from_the_shell_never_a_project_env(box):
@@ -851,3 +950,261 @@ def test_enable_refuses_when_v1_permission_is_a_string(box):
     assert json.loads((box.state / "enabled.json").read_text())["replicant-mcp"]["rules"] == []
     cp = box.run("enable", "android-build", "--ungated", extra_env=v1)
     assert cp.returncode == 0 and "  gated: " not in cp.stdout
+
+
+# ── review 2026-11-16: launch hygiene, upgrade, gates, pins ─────────────────
+def _hostile_project(root: Path, marker: Path) -> Path:
+    """A cloned repo that tries to substitute the MCP server's code: its own
+    node_modules copy of the pinned package, a node_modules/.bin/node that
+    npm exec would put on the server's PATH, and an .npmrc that points npm at
+    another registry and cache."""
+    proj = root / "hostile"
+    evil = f'echo "EVIL $0" >> "{marker}"\nexit 0\n'
+    _exe(proj / "node_modules" / "stubpkg" / "cli.js", evil)
+    (proj / "node_modules" / "stubpkg" / "package.json").write_text(
+        json.dumps({"name": "stubpkg", "version": "1.0.0", "bin": {"stubpkg": "cli.js"}}))
+    _exe(proj / "node_modules" / ".bin" / "node", evil)
+    _exe(proj / "node_modules" / ".bin" / "stubpkg", evil)
+    (proj / "package.json").write_text(json.dumps({"name": "x", "dependencies": {"stubpkg": "1.0.0"}}))
+    (proj / ".npmrc").write_text("registry=http://127.0.0.1:9/\ncache=./.c\n")
+    return proj
+
+
+def test_npm_server_runs_from_the_beast_apps_prefix_never_the_project(box, tmp_path):
+    box.stub_server()
+    box.run("enable", "stub-cap", check=0)
+    e = box.read_config()["mcp"]["servers"]["stubsrv"]
+    assert not any(os.path.basename(c) in ("npx", "npm") for c in e["command"])
+    assert all(os.path.isabs(c) for c in e["command"])
+    # staged with npm into the beast-apps prefix, not wherever enable ran
+    line = box.npm_log.read_text().splitlines()[-1]
+    assert f"--prefix {box.state}/npm/stubsrv@1.0.0.tmp-" in line and line.endswith("stubpkg@1.0.0")
+    marker = tmp_path / "evil.log"
+    proj = _hostile_project(tmp_path, marker)
+    # opencode starts the entry IN the project: run it exactly that way
+    sys.path.insert(0, str(REPO / "agents" / "apps"))
+    import mcp_client
+    env = {**e["environment"], "HOME": str(box.home), "PY": PY, "STUB": str(STUB),
+           "ARGV_LOG": str(box.argv_log)}
+    info, tools = mcp_client.list_tools_stdio(e["command"], env, timeout=20, cwd=str(proj))
+    assert info["serverInfo"]["version"] == "1.0.0" and tools
+    # and refresh / upgrade, run by the model from inside that project
+    cp = subprocess.run([PY, str(CLI), "refresh", "stubsrv"], cwd=proj, capture_output=True, text=True,
+                        env=box.env, timeout=60)
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    cp = subprocess.run([PY, str(CLI), "upgrade", "stubsrv", "--to", "1.1.0"], cwd=proj,
+                        capture_output=True, text=True, env=box.env, timeout=60)
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    assert not marker.exists(), marker.read_text()
+
+
+def test_introspection_runs_in_the_state_dir_with_a_minimal_env(box, tmp_path):
+    box.stub_server()
+    box.run("enable", "stub-cap", check=0)
+    probe = tmp_path / "probe.json"
+    box.run("refresh", extra_env={"STUB_ENV_PROBE": str(probe), "AWS_SECRET_ACCESS_KEY": "nope",
+                                  "GITHUB_TOKEN": "nope"}, check=0)
+    seen = json.loads(probe.read_text())
+    assert os.path.realpath(seen["cwd"]) == os.path.realpath(box.state)
+    assert "AWS_SECRET_ACCESS_KEY" not in seen["env"] and "GITHUB_TOKEN" not in seen["env"]
+    assert "HOME" in seen["env"] and "PATH" in seen["env"]
+
+
+def test_entry_path_finds_node_for_a_gui_launched_client(box, tmp_path):
+    # npx and every npm bin are `#!/usr/bin/env node`: an entry without PATH
+    # inherits launchd's /usr/bin:/bin:/usr/sbin:/sbin under a GUI opencode
+    nodebin = tmp_path / "nodebin"
+    nodebin.mkdir()
+    (box.bin / "node").rename(nodebin / "node")
+    box.stub_server()
+    box.run("enable", "stub-cap", extra_env={"PATH": f"{box.bin}:{nodebin}:/usr/bin:/bin"}, check=0)
+    e = box.read_config()["mcp"]["servers"]["stubsrv"]
+    path = e["environment"]["PATH"]
+    assert shutil.which("node", path=path) == str(nodebin / "node")
+    assert e["command"][0] == str(nodebin / "node")
+
+
+def test_enable_refuses_a_second_copy_under_another_key(box):
+    box.stub_server()
+    box.run("enable", "stub-cap", check=0)
+    cp = box.run("enable", "stub-cap", "--key", "other")
+    assert cp.returncode == 7 and "already wired" in cp.stdout
+    assert set(box.read_config()["mcp"]["servers"]) == {"stubsrv"}
+    box.run("enable", "stub-cap", "--key", "other", "--allow-duplicate", check=0)
+    assert set(box.read_config()["mcp"]["servers"]) == {"stubsrv", "other"}
+
+
+def test_upgrade_after_setup_client_v2_migration_writes_v2(box):
+    v1 = {"OPENBEAST_OPENCODE_SCHEMA": "v1"}
+    box.stub_server()
+    box.write_config({"mcp": {"openbeast-tools": {"type": "local", "command": ["x"], "enabled": True}}})
+    box.run("enable", "stub-cap", extra_env=v1, check=0)
+    cfg = box.read_config()
+    assert cfg["permission"] == {"stubsrv_danger*": "ask"}
+    # what setup-client.sh does once opencode 2.x is installed
+    servers = {}
+    for k in [k for k, v in cfg["mcp"].items() if isinstance(v, dict) and "type" in v]:
+        v = cfg["mcp"].pop(k)
+        v.pop("enabled", None)
+        servers[k] = v
+    cfg["mcp"]["servers"] = servers
+    box.write_config(cfg)
+    rc, out = box.json("upgrade", "stubsrv", "--to", "1.1.0", extra_env={"OPENBEAST_OPENCODE_SCHEMA": ""})
+    assert rc == 0, out
+    cfg = box.read_config()
+    assert set(cfg["mcp"]) == {"servers"}, cfg["mcp"]                     # no v1 entry next to it
+    e = cfg["mcp"]["servers"]["stubsrv"]
+    assert "enabled" not in e and e["codemode"] is False
+    assert "permission" not in cfg                                         # the v1 gate moved…
+    assert {"action": "stubsrv_danger*", "resource": "*", "effect": "ask"} in cfg["permissions"]   # …to v2
+    assert json.loads((box.state / "enabled.json").read_text())["stubsrv"]["schema"] == "v2"
+
+
+def test_upgrade_refuses_a_new_ungated_risky_tool_unless_accepted(box):
+    box.stub_server(risk=("shell",), ask=("danger*",))
+    box.run("enable", "stub-cap", check=0)
+    box.run("refresh", extra_env={"STUB_TOOLS": "alpha"}, check=0)
+    before = box.config.read_text()
+    env = {"STUB_TOOLS": "alpha,run_shell,danger_zone"}
+    cp = box.run("upgrade", "stubsrv", "--to", "1.1.0", extra_env=env)
+    assert cp.returncode == 6, cp.stdout + cp.stderr
+    first = cp.stdout.splitlines()[0]
+    assert first.startswith("Refusing to upgrade stubsrv") and "run_shell" in first
+    assert "danger_zone" not in first                                      # gated: not a problem
+    assert box.config.read_text() == before and not (box.state / "pins.json").exists()
+    assert not (box.state / "manifests" / "stubsrv" / "1.1.0.json").exists()
+    rc, out = box.json("upgrade", "stubsrv", "--to", "1.1.0", "--accept-new-tools", extra_env=env)
+    assert rc == 0 and out["accepted_ungated"] == ["run_shell"], out
+
+
+@pytest.mark.parametrize("spec", ["npm:evil-pkg@9.9.9", "file:../x", "github:o/r", "1.0.0 ", "latest", "1.0/0"])
+def test_upgrade_to_accepts_only_an_exact_version(box, spec):
+    box.stub_server()
+    box.run("enable", "stub-cap", check=0)
+    before = box.config.read_text()
+    cp = box.run("upgrade", "stubsrv", "--to", spec)
+    assert cp.returncode == 2 and "not an exact version" in cp.stderr
+    assert box.config.read_text() == before and not (box.state / "pins.json").exists()
+
+
+def test_a_registry_or_pins_file_cannot_inject_a_spec(box, registry):
+    box.stub_server()
+    box.run("enable", "stub-cap", check=0)
+    registry.version = "npm:evil-pkg@9.9.9"
+    cp = box.run("upgrade", "stubsrv", extra_env=registry.env())
+    assert cp.returncode == 1 and "not an exact version" in cp.stderr
+    (box.state / "pins.json").write_text(json.dumps({"stubsrv": {"version": "npm:evil@9.9.9"}}))
+    rc, out = box.json("check", "stub-cap")
+    assert out["servers"][0]["version"] == "1.0.0"        # the bad pin is ignored
+
+
+def test_rollback_pin_sticks_until_the_catalog_moves(box):
+    box.stub_server(version="1.1.0")
+    box.run("enable", "stub-cap", check=0)
+    rc, out = box.json("upgrade", "stubsrv", "--to", "1.0.0")
+    assert rc == 0 and out["to"] == "1.0.0", out
+    rc, out = box.json("refresh", "--no-introspect")
+    row = out["servers"][0]
+    assert row["pinned"] == "1.0.0" and row["enabled_version"] == "1.0.0"
+    assert not any("--to 1.1.0" in n for n in row["notes"]), row["notes"]
+    box.run("disable", "stub-cap", check=0)
+    box.run("enable", "stub-cap", check=0)
+    assert _staged_version(box.read_config()["mcp"]["servers"]["stubsrv"]["command"]) == "1.0.0"
+    box.stub_server(version="1.2.0")                    # a repo update moves the catalog pin
+    rc, out = box.json("check", "stub-cap")
+    assert out["servers"][0]["version"] == "1.2.0"
+
+
+def test_upgrade_keeps_passthrough_values_and_makes_a_secret_file_private(box):
+    env = {"PRINTER_TYPE": "octoprint", "PRINTER_HOST": "10.0.0.5", "BAMBU_SERIAL": "SER1", "BAMBU_TOKEN": "tok"}
+    box.run("enable", "3d-print", "--accept-risk", extra_env=env, check=0)
+    # a fresh terminal: the Bambu variables are not set any more, an API key is
+    fresh = {"PRINTER_TYPE": "octoprint", "PRINTER_HOST": "10.0.0.5", "API_KEY": "k3y"}
+    box.config.chmod(0o644)
+    rc, out = box.json("upgrade", "mcp-3d-printer-server", "--to", "1.2.78", extra_env=fresh)
+    assert rc == 0, out
+    e = box.read_config()["mcp"]["servers"]["mcp-3d-printer-server"]["environment"]
+    assert e["BAMBU_SERIAL"] == "SER1" and e["BAMBU_TOKEN"] == "tok" and e["API_KEY"] == "k3y"
+    assert oct(box.config.stat().st_mode & 0o777) == "0o600"
+
+
+def test_v1_gates_never_weaken_a_user_rule_and_disable_restores_it(box):
+    v1 = {"OPENBEAST_OPENCODE_SCHEMA": "v1"}
+    box.stub_server(ask=("danger", "other"))
+    user = {"permission": {"stubsrv_danger": "deny", "stubsrv_other": "allow"}}
+    box.write_config(user)
+    rc, out = box.json("enable", "stub-cap", extra_env=v1)
+    assert rc == 0, out
+    perm = box.read_config()["permission"]
+    assert perm == {"stubsrv_danger": "deny", "stubsrv_other": "ask"}      # deny kept, allow tightened
+    assert any("kept your stricter rule stubsrv_danger=deny" in w for w in out["warnings"])
+    box.run("disable", "stub-cap", check=0)
+    assert box.read_config() == user                                       # exactly the user's
+
+
+def test_v2_gates_never_override_a_user_deny_nor_delete_a_user_rule(box):
+    box.stub_server(ask=("danger", "other"))
+    mine = [{"action": "stubsrv_danger", "resource": "*", "effect": "deny"},
+            {"action": "stubsrv_other", "resource": "*", "effect": "ask"}]
+    user = {"permissions": mine, "model": "x"}
+    box.write_config(user)
+    box.run("enable", "stub-cap", check=0)
+    assert box.read_config()["permissions"] == mine          # nothing appended over a deny / an equal rule
+    assert json.loads((box.state / "enabled.json").read_text())["stubsrv"]["rules"] == []
+    box.run("disable", "stub-cap", check=0)
+    assert box.read_config() == user
+
+
+def test_backup_is_private_from_the_first_byte(tmp_path, monkeypatch):
+    sys.path.insert(0, str(CLI.parent))
+    import ocfg
+    src = tmp_path / "opencode.json"
+    src.write_text('{"provider": {"x": {"options": {"apiKey": "DUMMY"}}}}')
+    src.chmod(0o644)
+    seen = []
+    real = shutil.copyfileobj
+
+    def spy(fsrc, fdst, *a, **kw):
+        seen.append(os.fstat(fdst.fileno()).st_mode & 0o777)
+        return real(fsrc, fdst, *a, **kw)
+
+    monkeypatch.setattr(ocfg.shutil, "copyfileobj", spy)
+    old = os.umask(0)
+    try:
+        dst = ocfg.backup(str(src))
+    finally:
+        os.umask(old)
+    assert seen == [0o600] and os.stat(dst).st_mode & 0o777 == 0o600
+    assert Path(dst).read_text() == src.read_text()
+
+
+def test_mcp_client_turns_a_malformed_error_into_mcperror(box):
+    sys.path.insert(0, str(REPO / "agents" / "apps"))
+    import mcp_client
+    with pytest.raises(mcp_client.MCPError, match="boom"):
+        mcp_client.list_tools_stdio([PY, str(STUB)], {**os.environ, "STUB_BAD_ERROR": "1"}, timeout=20)
+    box.stub_server()
+    box.run("enable", "stub-cap", check=0)
+    cp = box.run("refresh", extra_env={"STUB_BAD_ERROR": "1"})
+    assert cp.returncode == 1 and "Traceback" not in cp.stderr
+    assert "introspection failed — server error: boom" in cp.stdout
+
+
+def test_list_runs_each_shared_probe_once_and_any_stops_at_the_first_pass(box):
+    calls = box.tmp / "calls.log"
+    _exe(box.bin / "node", f'''
+        if [ "$1" = "--version" ]; then echo node >> "{calls}"; echo v22.1.0; exit 0; fi
+        exit 1
+    ''')
+    _exe(box.bin / "npx", f'echo npx >> "{calls}"; echo 10.9.0\n')
+    _exe(box.bin / "adb", 'echo "Android Debug Bridge version 1.0.41"\n')
+    _exe(box.bin / "xcrun", f'echo xcrun >> "{calls}"; echo "== Devices =="\n')
+    box.run("list", check=0)
+    log = calls.read_text().split()
+    assert log.count("node") == 1 and log.count("npx") == 1, log      # node-18 + node-20 share one run
+    calls.write_text("")
+    rc, rep = box.json("check", "mobile-ui")
+    assert rc == 0, rep
+    assert "xcrun" not in calls.read_text().split()                     # adb passed: simctl never ran
+    anyp = next(p for p in rep["servers"][0]["probes"] if p["id"] == "adb-or-simctl")
+    assert [s["id"] for s in anyp["subprobes"]] == ["adb"]
