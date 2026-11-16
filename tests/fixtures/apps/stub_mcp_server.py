@@ -6,7 +6,10 @@ $STUB_TOOLS (comma-separated names). The first CLI argument that looks like
 `pkg@VERSION` sets the reported server version, so a fake `npx -y pkg@1.2.3`
 launcher can exec this script with its own argv. $STUB_PAGE_SIZE > 0 pages
 the list with nextCursor; $STUB_BANNER prints a non-JSON line first (servers
-that log to stdout must not break the client); $STUB_HANG never answers.
+that log to stdout must not break the client); $STUB_HANG never answers;
+$STUB_ENV_PROBE=<file> writes {"cwd": ..., "env": [names]} there on start;
+$STUB_BAD_ERROR answers every request with a JSON-RPC error that is a bare
+string ("boom"), not the object the spec requires.
 """
 import json
 import os
@@ -31,6 +34,9 @@ def main():
             version = a.rsplit("@", 1)[1]
         elif a.startswith("@") and a.count("@") == 2:
             version = a.rsplit("@", 1)[1]
+    if os.environ.get("STUB_ENV_PROBE"):
+        with open(os.environ["STUB_ENV_PROBE"], "w") as fh:
+            json.dump({"cwd": os.getcwd(), "env": sorted(os.environ)}, fh)
     if os.environ.get("STUB_BANNER"):
         print("stub server starting (not JSON)", flush=True)
     if os.environ.get("STUB_HANG"):
@@ -44,6 +50,9 @@ def main():
             continue
         mid, method = msg.get("id"), msg.get("method")
         if mid is None:
+            continue
+        if os.environ.get("STUB_BAD_ERROR"):
+            print(json.dumps({"jsonrpc": "2.0", "id": mid, "error": "boom"}), flush=True)
             continue
         if method == "initialize":
             res = {"protocolVersion": msg["params"]["protocolVersion"], "capabilities": {"tools": {}},

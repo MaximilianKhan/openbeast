@@ -303,8 +303,9 @@ def _h(obj) -> str:
 def make_manifest(sid: str, version: str, transport: str, info: dict, tools: list[dict]) -> dict:
     rows = []
     for t in sorted(tools, key=lambda t: t["name"]):
-        schema = t.get("inputSchema") or {}
-        rows.append({"name": t["name"], "description": (t.get("description") or "").strip(),
+        schema = t.get("inputSchema") if isinstance(t.get("inputSchema"), dict) else {}
+        desc = t.get("description") if isinstance(t.get("description"), str) else ""
+        rows.append({"name": t["name"], "description": desc.strip(),
                      "inputSchema": schema, "schema_sha256": _h(schema),
                      **({"annotations": t["annotations"]} if isinstance(t.get("annotations"), dict) else {})})
     core = [{"name": r["name"], "description": r["description"], "schema": r["schema_sha256"]} for r in rows]

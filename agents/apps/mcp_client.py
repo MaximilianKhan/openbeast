@@ -27,6 +27,36 @@ class MCPError(Exception):
     pass
 
 
+def _error_text(err) -> str:
+    """A JSON-RPC `error` as text, whatever shape a misbehaving server sends
+    (the spec says an object with `message`; a bare string or number must
+    still become an MCPError, never an AttributeError traceback)."""
+    if isinstance(err, dict):
+        return str(err.get("message", err))
+    return str(err)
+
+
+def _result(msg: dict) -> dict:
+    if "error" in msg:
+        raise MCPError(f"server error: {_error_text(msg['error'])}")
+    res = msg.get("result")
+    if res is None:
+        return {}
+    if not isinstance(res, dict):
+        raise MCPError(f"malformed answer: result is a {type(res).__name__}, not an object")
+    return res
+
+
+def _tools_page(res: dict) -> tuple[list[dict], str | None]:
+    tools = res.get("tools", [])
+    if not isinstance(tools, list):
+        raise MCPError(f"malformed tools/list answer: tools is a {type(tools).__name__}")
+    cursor = res.get("nextCursor")
+    if cursor is not None and not isinstance(cursor, str):
+        raise MCPError("malformed tools/list answer: nextCursor is not a string")
+    return [t for t in tools if isinstance(t, dict) and isinstance(t.get("name"), str)], cursor
+
+
 def _init_params() -> dict:
     return {"protocolVersion": PROTOCOL, "capabilities": {}, "clientInfo": CLIENT}
 
@@ -80,6 +110,8 @@ def list_tools_stdio(command: list[str], env: dict, timeout: float = 90.0,
                 msg = json.loads(ln)
             except json.JSONDecodeError:
                 continue
+            if not isinstance(msg, dict):
+                continue
             if "method" in msg and "id" in msg:   # a request FROM the server (roots/list, ping…)
                 send({"jsonrpc": "2.0", "id": msg["id"],
                       "result": {}} if msg["method"] == "ping" else
@@ -87,9 +119,7 @@ def list_tools_stdio(command: list[str], env: dict, timeout: float = 90.0,
                       "error": {"code": -32601, "message": "not supported by openbeast-apps"}})
                 continue
             if msg.get("id") == rid:
-                if "error" in msg:
-                    raise MCPError(f"server error: {msg['error'].get('message', msg['error'])}")
-                return msg.get("result") or {}
+                return _result(msg)
 
     try:
         send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": _init_params()})
@@ -100,9 +130,8 @@ def list_tools_stdio(command: list[str], env: dict, timeout: float = 90.0,
         for _ in range(MAX_PAGES):
             params = {"cursor": cursor} if cursor else {}
             send({"jsonrpc": "2.0", "id": rid, "method": "tools/list", "params": params})
-            res = wait_for(rid)
-            tools.extend(t for t in res.get("tools", []) if isinstance(t, dict) and "name" in t)
-            cursor = res.get("nextCursor")
+            page, cursor = _tools_page(wait_for(rid))
+            tools.extend(page)
             rid += 1
             if not cursor:
                 break
@@ -154,9 +183,7 @@ def _http(url: str, msg: dict, session: str | None, timeout: float) -> tuple[dic
         except json.JSONDecodeError:
             continue
         if isinstance(m, dict) and m.get("id") == msg["id"]:
-            if "error" in m:
-                raise MCPError(f"server error: {m['error'].get('message', m['error'])}")
-            return m.get("result") or {}, sid
+            return _result(m), sid
     raise MCPError(f"no JSON-RPC answer to {msg['method']} from {url}")
 
 
@@ -169,8 +196,8 @@ def list_tools_http(url: str, timeout: float = 30.0) -> tuple[dict, list[dict]]:
     for _ in range(MAX_PAGES):
         res, sid = _http(url, {"jsonrpc": "2.0", "id": rid, "method": "tools/list",
                                "params": {"cursor": cursor} if cursor else {}}, sid, timeout)
-        tools.extend(t for t in (res or {}).get("tools", []) if isinstance(t, dict) and "name" in t)
-        cursor = (res or {}).get("nextCursor")
+        page, cursor = _tools_page(res or {})
+        tools.extend(page)
         rid += 1
         if not cursor:
             break
