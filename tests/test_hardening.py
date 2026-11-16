@@ -542,6 +542,26 @@ def test_stop_agent_falls_back_to_the_ledger(tmp_path, monkeypatch):
             proc.wait()
 
 
+def test_stop_agent_never_stops_a_job_session(tmp_path, monkeypatch):
+    # Review 2026-11-16: the ledger fallback took ANY record kind, so the
+    # model-callable stop_agent killed a scripts/job.sh job (an eval
+    # campaign, a quantization run) whose id it had learned.
+    import subprocess as _sp
+    import mcp_server
+    import sessions
+    monkeypatch.setattr(sessions, "SESSIONS_DIR", str(tmp_path / "ledger"))
+    monkeypatch.setattr(mcp_server, "_agents", {})
+    proc = _sp.Popen(["sleep", "300"], start_new_session=True)
+    try:
+        assert sessions.register("job-1", kind="job", pid=proc.pid, pgid=proc.pid)
+        out = mcp_server.stop_agent("job-1")
+        assert out.startswith("Error") and "job" in out, out
+        assert proc.poll() is None, out   # not signalled
+    finally:
+        proc.kill()
+        proc.wait()
+
+
 def test_stop_agent_ledger_refuses_a_recycled_pid(tmp_path, monkeypatch):
     import subprocess as _sp
     import mcp_server

@@ -1377,8 +1377,16 @@ def stop_agent(agent_id: str) -> str:
     record = _agents.get(agent_id)
     if not record:
         ledger_record = _ledger_get(agent_id)
-        if ledger_record:
+        # Agents only. The ledger also holds kind="job" sessions
+        # (scripts/job.sh: eval campaigns, quantization, overnight sweeps);
+        # list_agents never shows them, and an "agent" tool must not kill
+        # hours of GPU work because a model learned a job id.
+        if ledger_record and (ledger_record.get("kind") or "agent") == "agent":
             return _stop_ledger_agent(agent_id, ledger_record)
+        if ledger_record:
+            return (f"Error: '{agent_id}' is a {ledger_record.get('kind')} session, "
+                    f"not an agent; stop_agent only stops agents (jobs: "
+                    f"scripts/job.sh stop {agent_id})")
         return f"Error: unknown agent '{agent_id}'"
 
     if record.process.poll() is not None:

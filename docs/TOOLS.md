@@ -79,6 +79,10 @@ parameter (opt-in, distributed agents Phase 1) routes the spawned agent's
 *inference* to a worker box on your tailnet while it keeps executing on this
 machine; empty defaults to `OPENBEAST_AGENT_INFERENCE_URL`, else the local
 server. See `docs/DISTRIBUTED_AGENTS_PLAN.md`.
+`stop_agent` also stops a detached agent this process did not spawn (from
+the session ledger), but only `kind="agent"` sessions: a `scripts/job.sh`
+job (eval campaign, quantization run) is refused and stays stoppable with
+`scripts/job.sh stop <id>`.
 
 ### Skills (2) — `agents/mcp_server.py`
 
