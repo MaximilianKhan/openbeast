@@ -284,11 +284,27 @@ def test_auth_off_adds_operator_origin_hosts(conf):
 
 
 @pytest.mark.parametrize("kw", [dict(OPENBEAST_WEBUI_AUTH="true"),
-                                dict(OPENBEAST_ALLOW_OPEN_WEBUI="true"),
                                 dict(OPENBEAST_WEBUI_ORIGINS="*"),
                                 dict(OPENBEAST_BIND="192.168.1.20")])   # forces login on
 def test_no_host_check_when_login_is_on_or_open_is_acknowledged(conf, kw):
     assert conf(ts=False, **kw).hosts == "*"
+
+
+def test_an_acknowledged_open_webui_still_pins_host(conf):
+    """ALLOW_OPEN_WEBUI=true lets the network in with login off; it used to
+    drop the Host check too, so a page the operator opened could rebind its
+    name to the WebUI's address and drive it as admin."""
+    r = conf("ALLOW_OPEN_WEBUI=true\n", ts=False)
+    assert r.auth == "false" and r.hosts != "*", r.hosts
+    assert set(r.hosts.split(",")) == {"localhost", "127.0.0.1", "::1"}, r.hosts
+    r = conf("ALLOW_OPEN_WEBUI=true\n", TS_DNS="beast.example.ts.net.",
+             OPENBEAST_BIND="192.168.1.20")
+    assert r.auth == "false", r.stderr
+    hosts = set(r.hosts.split(","))
+    assert {"192.168.1.20", "beast", "beast.example.ts.net", "localhost"} <= hosts, r.hosts
+    assert "evil.example" not in hosts
+    r = conf("ALLOW_OPEN_WEBUI=true\nWEBUI_ORIGINS=http://webui.lan:81\n", ts=False)
+    assert "webui.lan" in r.hosts.split(","), r.hosts
 
 
 def test_compose_wires_the_host_guard():

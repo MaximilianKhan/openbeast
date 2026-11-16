@@ -1226,11 +1226,15 @@ export OPENBEAST_WEBUI_CORS
 # origin" with the WebUI, and with login off it signs in as admin (bash).
 # Its requests carry its own name in Host, so while login is off — which the
 # guard above allows only on loopback — the WebUI answers loopback names
-# alone (plus the hosts of WEBUI_ORIGINS). With login on a rebound page has
-# no session, and ALLOW_OPEN_WEBUI / WEBUI_ORIGINS='*' are the operator's
-# explicit "open": both are '*', no check.
+# alone (plus the hosts of WEBUI_ORIGINS). ALLOW_OPEN_WEBUI=true (login off
+# on a network) is NOT a reason to drop the check: it says "let the network
+# in", not "let any page the operator opens in", and a rebound page is still
+# admin there. Its names come from the CORS list, which already holds the
+# bind address(es), this machine's name and the tailnet name. With login on
+# a rebound page has no session, and WEBUI_ORIGINS='*' is the operator's
+# explicit "any site": both are '*', no check.
 _ob_webui_hosts() {
-  if [[ "$WEBUI_AUTH" == "true" || "$ALLOW_OPEN_WEBUI" == "true" || "$OPENBEAST_WEBUI_CORS" == "*" ]]; then
+  if [[ "$WEBUI_AUTH" == "true" || "$OPENBEAST_WEBUI_CORS" == "*" ]]; then
     echo '*'; return 0
   fi
   local list=(localhost 127.0.0.1 ::1) o h
