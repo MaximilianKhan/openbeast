@@ -486,6 +486,16 @@ Open WebUI is configured by `docker-compose.yml` (in repo root). It:
   next turn. `WEBUI_BACKGROUND_TASKS=true` in `openbeast.conf` leaves
   WebUI's own switches alone — set it, restart, and re-enable them under
   Admin Settings → Interface
+- Has a global **random seed filter** installed by `configure-webui.sh`
+  (`agents/webui_functions/random_seed.py`, Admin Panel → Functions →
+  "Random Seed"): every chat request that names no seed gets a fresh random
+  one. Why: TensorFold (the spark-hydra GLM server) falls back to a *fixed*
+  seed when a request has none, so **Regenerate** returned the same answer
+  word for word. A seed set in the chat's Controls or the model's params
+  still wins (reproducible on purpose); on llama.cpp, which already
+  randomizes, nothing changes. Only WebUI chats pass through it — the eval
+  runner and other clients never do. `WEBUI_RANDOM_SEED=false` in
+  `openbeast.conf` switches it off at the next start
 
 Available at http://localhost:3000 once the stack is running.
 

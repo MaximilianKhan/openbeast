@@ -501,6 +501,17 @@
 # Env: $OPENBEAST_WEBUI_BACKGROUND_TASKS.
 #WEBUI_BACKGROUND_TASKS=false
 
+# Regenerate in Open WebUI on the spark-hydra GLM server returned the SAME
+# answer: TensorFold falls back to a fixed seed when a request names none.
+# configure-webui.sh installs a global Open WebUI filter that gives every chat
+# request without a seed a fresh random one (a seed set in the chat's Controls
+# or the model's params still wins, so it stays reproducible). Harmless on
+# llama.cpp, which already randomizes. Only Open WebUI chats pass through it;
+# evals and other clients are untouched. false switches it off at the next
+# configure-webui.sh run (every start).
+# Env: $OPENBEAST_WEBUI_RANDOM_SEED.
+#WEBUI_RANDOM_SEED=true
+
 # Open WebUI admin credentials, used by scripts/configure-webui.sh to apply
 # tool-server + native function-calling config when WEBUI_AUTH is on.
 # Create the account in the browser on first visit, then mirror it here.
