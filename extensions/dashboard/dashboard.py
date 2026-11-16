@@ -589,7 +589,38 @@ def _slot_status_llama():
         },
         "services": services_status(health),
         "auth": _auth_mode(),
+        **_admission_field(),
     }
+
+
+def _edge_admission():
+    """beast-gate's per-device limits, for a client to size its parallelism
+    to, or None with the gate off (keeping a gate-off answer byte-identical).
+    The same rule as agents/edge.py default_max_inflight: EDGE_MAX_INFLIGHT,
+    else INFERENCE_SLOTS, else 2. Review 2026-11-16: slots.total said 4 on the
+    Spark pair while one device was admitted 2, so a client running 4 agents
+    learned of the cap only from 429s."""
+    if not _EDGE_GATE:
+        return None
+
+    def _int(name):
+        raw = os.environ.get(name, "").strip()
+        return int(raw) if raw.isdigit() else None
+
+    explicit, slots = _int("OPENBEAST_EDGE_MAX_INFLIGHT"), _int("OPENBEAST_INFERENCE_SLOTS")
+    if explicit is not None:
+        inflight = max(1, explicit)              # the gate's Bucket floors at 1
+    elif slots:
+        inflight = slots
+    else:
+        inflight = 2
+    rate = _int("OPENBEAST_EDGE_RATE_LIMIT") or 120
+    return {"per_device_inflight": inflight, "per_device_rate_per_min": rate}
+
+
+def _admission_field():
+    a = _edge_admission()
+    return {"admission": a} if a else {}
 
 
 def _auth_mode():
@@ -709,6 +740,7 @@ def _slot_status_remote():
         "capacity": capacity,
         "services": dict(services_status(health), **({"model": False} if tf.get("stalled") else {})),
         "auth": _auth_mode(),
+        **_admission_field(),
     }
 
 

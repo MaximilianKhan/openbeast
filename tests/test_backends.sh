@@ -713,10 +713,14 @@ exit 0
 EOF
 chmod +x "$_K/bin/systemctl"
 (umask 077; printf 'sk-test-SECRET-4242\n' > "$_K/key")
+# The container engine's dependencies, hash-locked (TENSORFOLD_PIP_LOCK).
+printf 'safetensors==0.4.5 \\\n    --hash=sha256:%064d\n' 0 > "$_K/tf-requirements.txt"
 sed -e "s|^SPARK_SERVE_HOST=.*|SPARK_SERVE_HOST=100.64.1.2|" \
+    -e "s|^TENSORFOLD_PIP_LOCK=.*|TENSORFOLD_PIP_LOCK=$_K/tf-requirements.txt|" \
     -e "s|^VLLM_API_KEY_FILE=.*|VLLM_API_KEY_FILE=$_K/key|" \
     -e "s|^MODELS_DIR=.*|MODELS_DIR=$_K/models|" \
     -e "s|^TENSORFOLD_ENGINE=.*|TENSORFOLD_ENGINE=container|" \
+    -e "s|^SPARK_ALLOW_KEYLESS_BIND=.*|SPARK_ALLOW_KEYLESS_BIND=true   # the keyless container serves 100.64.1.2 here|" \
     "$REPO_DIR/scripts/backends/spark.env.example" > "$_K/spark.env"
 # The native engine's settings: a stub binary that reports its release, a key.
 sed -e "s|^TENSORFOLD_ENGINE=.*|TENSORFOLD_ENGINE=native|" \
@@ -931,6 +935,22 @@ _sp "$_VN" SPARK_SERVE_HOST=0.0.0.0 -- --profile "$_P/vtest.env" --rank 0 --env 
   || fail "wildcard bind not refused (rc=$SPRC): $_O"
 _sp "$_VN" SPARK_SERVE_HOST=0.0.0.0 SPARK_ALLOW_WILDCARD_BIND=true -- --profile "$_P/vtest.env" --rank 0 --env "$_K/spark.env" --print
 [[ $SPRC -eq 0 ]] && pass "…unless SPARK_ALLOW_WILDCARD_BIND=true acknowledges it (control)" || fail "ack not honoured: $_O"
+# Every spelling the socket layer reads as "every interface" (review 2026-11-16).
+for _h in 0 ::0 '[::0]' 0:0:0:0:0:0:0:0 '[::]' 0x0 '::ffff:0.0.0.0'; do
+  _sp "$_VN" "SPARK_SERVE_HOST=$_h" -- --profile "$_P/vtest.env" --rank 0 --env "$_K/spark.env" --print
+  [[ $SPRC -eq 1 ]] && _has "$_O" "binds every interface" && pass "refuses the wildcard spelled '$_h'" \
+    || fail "wildcard '$_h' not refused (rc=$SPRC): $_O"
+done
+_sp "$_VN" "SPARK_SERVE_HOST=0.0.0.0 " -- --profile "$_P/vtest.env" --rank 0 --env "$_K/spark.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "contains whitespace" && pass "refuses a bind host with whitespace" || fail "whitespace host (rc=$SPRC): $_O"
+# Keyless servers bind loopback only unless acknowledged.
+_sp "$_VN" SPARK_NO_API_KEY=true SPARK_ALLOW_KEYLESS_BIND=false -- --profile "$_P/vtest.env" --rank 0 --env "$_K/spark.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "is not loopback, and this server has NO API key" && _has "$_O" "127.0.0.1 behind beast-gate" \
+  && pass "vLLM with SPARK_NO_API_KEY=true refuses a tailnet bind (keyless: loopback only)" || fail "keyless vllm tailnet (rc=$SPRC): $_O"
+_sp "$_VN" SPARK_NO_API_KEY=true SPARK_ALLOW_KEYLESS_BIND=false SPARK_SERVE_HOST=127.0.0.1 -- --profile "$_P/vtest.env" --rank 0 --env "$_K/spark.env" --print
+[[ $SPRC -eq 0 ]] && pass "…and serves it on 127.0.0.1 (behind beast-gate)" || fail "keyless vllm loopback (rc=$SPRC): $_O"
+_sp "$_VN" SPARK_NO_API_KEY=true SPARK_ALLOW_KEYLESS_BIND=true -- --profile "$_P/vtest.env" --rank 0 --env "$_K/spark.env" --print
+[[ $SPRC -eq 0 ]] && pass "…or anywhere with SPARK_ALLOW_KEYLESS_BIND=true (control)" || fail "keyless ack (rc=$SPRC): $_O"
 chmod 644 "$_K/key"
 _sp "$_VN" -- --profile "$_P/vtest.env" --rank 0 --env "$_K/spark.env" --print
 [[ $SPRC -eq 1 ]] && _has "$_O" "is mode 644" && pass "refuses a group/world-readable API key file" \
@@ -1002,6 +1022,14 @@ else
   fail "tensorfold rank 0 --print (rc=$SPRC): $_O"
 fi
 [[ ! -s "$_K/docker.log" ]] && pass "tensorfold --print runs nothing" || fail "tensorfold --print called docker"
+# The container engine has no key at all: loopback only unless acknowledged.
+_sp "$_TN" SPARK_ALLOW_KEYLESS_BIND=false -- --profile "$_P/tftest.env" --rank 0 --master 192.168.100.10 --env "$_K/spark.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "is not loopback, and this server has NO API key" \
+  && pass "the keyless container engine refuses a tailnet bind" || fail "keyless container tailnet (rc=$SPRC): $_O"
+_sp "$_TN" SPARK_ALLOW_KEYLESS_BIND=false SPARK_SERVE_HOST=127.0.0.1 -- --profile "$_P/tftest.env" --rank 0 --master 192.168.100.10 --env "$_K/spark.env" --print
+[[ $SPRC -eq 0 ]] && _has "$_O" "--host 127.0.0.1" && pass "…and binds 127.0.0.1 (beast-gate in front)" || fail "keyless container loopback (rc=$SPRC): $_O"
+_sp "$_TN" SPARK_ALLOW_KEYLESS_BIND=false -- --profile "$_P/tftest.env" --rank 0 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+[[ $SPRC -eq 0 ]] && _has "$_O" "--host 100.64.1.2" && pass "native TensorFold with its key file may bind the tailnet address" || fail "native keyed tailnet (rc=$SPRC): $_O"
 _sp "$_TN" -- --profile "$_P/tfd.env" --rank 0 --master 192.168.100.10 --env "$_K/spark.env" --print
 if [[ $SPRC -eq 0 ]] && _has "$_O" "--drafter /models/tfd.drafter" && _has "$_O" "-v $_K/models/tfd.drafter:/models/tfd.drafter:ro"; then
   pass "a profile's pinned DRAFTER is fetched-and-mounted like the model"
@@ -1046,6 +1074,39 @@ if [[ $SPRC -eq 0 ]] && grep -qF "nvcr.io/nvidia/pytorch:26.07-py3@$_DIGEST -c" 
 else
   fail "tensorfold pinned run (rc=$SPRC): $_O / $(cat "$_K/docker.log")"
 fi
+# Its dependencies are pinned too (review 2026-11-16): TENSORFOLD_REF pins only
+# TensorFold, and the --rm container re-resolved everything else from PyPI at
+# every start, as root with host networking.
+if grep -qF -- "-v $_K/tf-requirements.txt:/openbeast/tensorfold-requirements.txt:ro" "$_K/docker.log" \
+   && grep -qF -- "--require-hashes --no-deps -r /openbeast/tensorfold-requirements.txt" "$_K/docker.log" \
+   && grep -qF -- 'pip install --quiet --no-deps "$1"' "$_K/docker.log"; then
+  pass "TENSORFOLD_PIP_LOCK: hash-locked deps (--require-hashes --no-deps), then TensorFold --no-deps"
+else
+  fail "pip lock run: $(cat "$_K/docker.log")"
+fi
+: > "$_K/docker.log"
+_sp "$_TN" TENSORFOLD_IMAGE_DIGEST="$_DIGEST" TENSORFOLD_PIP_LOCK=" " -- --profile "$_P/tftest.env" --rank 1 --env "$_K/spark.env"
+[[ $SPRC -eq 1 ]] && _has "$_O" "is not a file" && ! grep -q "^ARGV run" "$_K/docker.log" \
+  && pass "a TENSORFOLD_PIP_LOCK that is not a file is refused" || fail "bad lock (rc=$SPRC): $_O"
+printf 'safetensors==0.4.5\n' > "$_K/tf-nohash.txt"
+_sp "$_TN" TENSORFOLD_IMAGE_DIGEST="$_DIGEST" TENSORFOLD_PIP_LOCK="$_K/tf-nohash.txt" -- --profile "$_P/tftest.env" --rank 1 --env "$_K/spark.env"
+[[ $SPRC -eq 1 ]] && _has "$_O" "has no --hash=sha256: pins" && pass "…and so is one without hashes" || fail "lock without hashes (rc=$SPRC): $_O"
+grep -v '^TENSORFOLD_PIP_LOCK=' "$_K/spark.env" > "$_K/spark-nolock.env"
+: > "$_K/docker.log"
+_sp "$_TN" TENSORFOLD_IMAGE_DIGEST="$_DIGEST" -- --profile "$_P/tftest.env" --rank 1 --env "$_K/spark-nolock.env"
+[[ $SPRC -eq 1 ]] && _has "$_O" "only TensorFold itself is pinned" && ! grep -q "^ARGV run" "$_K/docker.log" \
+  && pass "no dependency pin at all: a real container run is refused (docker not called)" || fail "unpinned deps ran (rc=$SPRC): $_O"
+_sp "$_TN" -- --profile "$_P/tftest.env" --rank 1 --env "$_K/spark-nolock.env" --print
+[[ $SPRC -eq 0 ]] && _has "$_O" "dependencies are not pinned" && pass "…--print shows it with a warning" || fail "unpinned print (rc=$SPRC): $_O"
+: > "$_K/docker.log"
+_sp "$_TN" TENSORFOLD_IMAGE_DIGEST="$_DIGEST" TENSORFOLD_ALLOW_UNPINNED_DEPS=true -- --profile "$_P/tftest.env" --rank 1 --env "$_K/spark-nolock.env"
+[[ $SPRC -eq 0 ]] && _has "$_O" "unpinned, at every start" && grep -qF 'pip install --quiet "$1"' "$_K/docker.log" \
+  && pass "TENSORFOLD_ALLOW_UNPINNED_DEPS=true acknowledges the old behaviour, loudly" || fail "unpinned ack (rc=$SPRC): $_O"
+: > "$_K/docker.log"
+_sp "$_TN" TENSORFOLD_IMAGE_ID="$_IMGID" TENSORFOLD_IMAGE_PREBUILT=true -- --profile "$_P/tftest.env" --rank 1 --env "$_K/spark-nolock.env"
+[[ $SPRC -eq 0 ]] && grep -qF -- "--entrypoint bash $_IMGID -c" "$_K/docker.log" && ! grep -q "pip install" "$_K/docker.log" \
+  && pass "TENSORFOLD_IMAGE_PREBUILT=true: the ID-pinned image runs TensorFold, nothing installed at start (offline)" \
+  || fail "prebuilt (rc=$SPRC): $_O / $(cat "$_K/docker.log")"
 # Native engine (TensorFold >= 1.0 on the host, systemd --user, keyed).
 _sp "$_TN" -- --profile "$_P/tftest.env" --rank 0 --master 192.168.100.10 --env "$_K/spark-native.env" --print
 if [[ $SPRC -eq 0 ]] && _has "$_O" "systemd-run --user --unit openbeast-tensorfold-rank0" \
@@ -1076,7 +1137,7 @@ _sp "$_TN" -- --profile "$_P/tftest.env" --rank 1 --master 192.168.100.10 --env 
   && pass "native: systemd-run --expand-environment=no, so the unit runs the argv --print shows (no \${VAR} rewriting)" \
   || fail "native expand-environment (rc=$SPRC): $_O"
 # Native without a profile drafter: no --drafter flag at all (see the header:
-# MTP-head families refuse any --drafter, `none` included as far as we know).
+# tensorfold-native 1.2.7 rejects `--drafter none` itself, for every family).
 ! _has "$_O" "--drafter" && pass "native: a profile without a drafter passes no --drafter" || fail "native drafter flag: $_O"
 _sp "$_TN" TF_STUB_VERSION=1.2.6 -- --profile "$_P/tftest.env" --rank 1 --master 192.168.100.10 --env "$_K/spark-native.env" --print
 [[ $SPRC -eq 1 ]] && _has "$_O" "spark.env pins 1.2.7" && pass "native refuses a binary that is not the pinned release" \
@@ -1084,6 +1145,22 @@ _sp "$_TN" TF_STUB_VERSION=1.2.6 -- --profile "$_P/tftest.env" --rank 1 --master
 _sp "$_TN" TENSORFOLD_API_KEY_FILE="$_K/no-such-key" -- --profile "$_P/tftest.env" --rank 0 --master 192.168.100.10 --env "$_K/spark-native.env" --print
 [[ $SPRC -eq 1 ]] && _has "$_O" "does not exist" && pass "native rank 0 refuses to serve without its key file" \
   || fail "native rank 0 keyless (rc=$SPRC): $_O"
+# spark-guard reads master ports only from spark.env; a port moved through the
+# environment must not slip past an installed guard (review 2026-11-16).
+printf '#!/usr/sbin/nft -f\n# Generated by spark-guard.sh\n# Loaded by x\n# fabric: e0   fabric IPv4: 10.0.0.1   guarded TCP: 29501-29502 29551-29552 29583-29584\n' > "$_K/guard.nft"
+_sp "$_TN" SPARK_GUARD_RULES="$_K/guard.nft" -- --profile "$_P/tftest.env" --rank 1 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+[[ $SPRC -eq 0 ]] && pass "an installed guard that covers the master port (29583/+1) lets the rank start" \
+  || fail "guarded port refused (rc=$SPRC): $_O"
+_sp "$_TN" SPARK_GUARD_RULES="$_K/guard.nft" TENSORFOLD_MASTER_PORT=30010 -- --profile "$_P/tftest.env" --rank 1 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "rendezvous port(s) 30010 30011 not guarded by spark-guard" && _has "$_O" "set the port there" \
+  && pass "a master port moved through the environment, past the installed guard, is refused" \
+  || fail "unguarded env master port (rc=$SPRC): $_O"
+_sp "$_TN" SPARK_GUARD_RULES="$_K/guard.nft" TENSORFOLD_MASTER_PORT=29552 -- --profile "$_P/tftest.env" --rank 1 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "rendezvous port(s) 29553 not guarded" \
+  && pass "…including when only its +1 falls outside the guarded ranges" || fail "guard +1 (rc=$SPRC): $_O"
+_sp "$_VN" SPARK_GUARD_RULES="$_K/guard.nft" VLLM_MASTER_PORT=30500 -- --profile "$_P/vtest.env" --rank 1 --env "$_K/spark.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "rendezvous port(s) 30500 30501 not guarded" \
+  && pass "the vLLM launcher refuses an unguarded VLLM_MASTER_PORT the same way" || fail "vllm unguarded port (rc=$SPRC): $_O"
 _model_type "$_P/tftest.env" "$_K/models/tftest" brand_new
 
 # Clusters of 1..8 Sparks: TENSOR_PARALLEL_SIZE N = N ranks, 0..N-1.

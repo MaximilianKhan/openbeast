@@ -6,7 +6,7 @@
 #   unmanaged  (INFERENCE_MANAGED=false, the default) a vLLM someone else
 #              runs — typically ranks across the Sparks, launched with
 #              scripts/backends/vllm/spark-node.sh. This adapter only pins
-#              the image those launchers use (spark.env VLLM_IMAGE/_DIGEST).
+#              the image those launchers use (spark.env VLLM_IMAGE/_DIGEST/_ID).
 #   managed    (INFERENCE_MANAGED=true, one host, TP 1) start.sh launches
 #              scripts/engine-serve.sh, which runs `eng_vllm_launch` below in
 #              the FOREGROUND: one container, named per checkout, stopped by
@@ -145,8 +145,18 @@ eng_vllm_stage() {
 }
 
 # spark_env <version> <ref> — the KEY=VALUE pairs the Spark launchers read.
+# VLLM_IMAGE_ID is written too: sp_image runs the ID whenever one is set
+# ("the ID wins"), and offline Sparks pin it (sync-image, H4). Left alone, an
+# old ID kept the ranks on the old image while the pin, history and
+# `engine.sh status` named the new one. It is the new image's ID when this
+# install / activate knows it (ENG_RESULT_NOTE id=…, else the history), and
+# empty otherwise, so the digest applies.
 eng_vllm_spark_env() {
-  printf 'VLLM_IMAGE=%s:%s\nVLLM_IMAGE_DIGEST=%s\n' "$(_eng_vllm_repo)" "$1" "$2"
+  local id=""
+  case " ${ENG_RESULT_NOTE:-} " in *" id=sha256:"*) id="${ENG_RESULT_NOTE#*id=}"; id="${id%% *}" ;; esac
+  [[ "$id" =~ ^sha256:[0-9a-f]{64}$ ]] || id="$(_eng_vllm_id_for "$2" 2>/dev/null || true)"
+  [[ "$id" =~ ^sha256:[0-9a-f]{64}$ ]] || id=""
+  printf 'VLLM_IMAGE=%s:%s\nVLLM_IMAGE_DIGEST=%s\nVLLM_IMAGE_ID=%s\n' "$(_eng_vllm_repo)" "$1" "$2" "$id"
 }
 
 # ── managed, single host ───────────────────────────────────────────────────
@@ -169,7 +179,7 @@ _eng_vllm_eager() {
 eng_vllm_profile_check() { # <profile> — usable for a managed single-host run
   ob_engine_profile_load "$1" vllm || return 1
   if [[ "$PF_TENSOR_PARALLEL_SIZE" != 1 ]]; then
-    echo "profile '$1' is TENSOR_PARALLEL_SIZE=$PF_TENSOR_PARALLEL_SIZE — managed mode is one host, TP 1. Several Sparks: scripts/backends/spark-cluster.sh, then engine.sh use vllm --url http://<rank0>:8000" >&2
+    echo "profile '$1' is TENSOR_PARALLEL_SIZE=$PF_TENSOR_PARALLEL_SIZE — managed mode is one host, TP 1. Several Sparks: scripts/backends/spark-cluster.sh, then engine.sh use vllm --unmanaged --url http://<rank0>:8000 (127.0.0.1:8000 when rank 0 is this box)" >&2
     return 1
   fi
 }

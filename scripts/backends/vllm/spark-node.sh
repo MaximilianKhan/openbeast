@@ -78,7 +78,7 @@ if [[ ! -f "$ENV_FILE" ]]; then
 fi
 sp_load "$ENV_FILE" VLLM_IMAGE VLLM_IMAGE_DIGEST VLLM_IMAGE_ID SPARK_IFACE SPARK_IB_HCA \
   SPARK_HEAD_IP SPARK_NODE_IP VLLM_MASTER_PORT SPARK_SERVE_HOST SPARK_SERVE_PORT \
-  SPARK_ALLOW_WILDCARD_BIND HF_CACHE MODELS_DIR SPARK_PROFILE VLLM_API_KEY_FILE SPARK_NO_API_KEY
+  SPARK_ALLOW_WILDCARD_BIND SPARK_ALLOW_KEYLESS_BIND HF_CACHE MODELS_DIR SPARK_PROFILE VLLM_API_KEY_FILE SPARK_NO_API_KEY
 sp_warn_legacy_model_keys "$ENV_FILE"
 [[ -n "$HEAD_ADDR" ]] && SPARK_HEAD_IP="$HEAD_ADDR"
 PROFILE="${PROFILE:-${SPARK_PROFILE:-}}"
@@ -107,6 +107,7 @@ if (( TP > 1 )); then
   sp_need SPARK_IFACE "the ConnectX-7 interface ibdev2netdev shows Up"
   sp_need SPARK_IB_HCA "the ConnectX-7 HCA ibdev2netdev shows Up"
   sp_need SPARK_HEAD_IP "rank 0's address on the ConnectX link (--head-addr)"
+  sp_check_guarded_port "$VLLM_MASTER_PORT"
 fi
 
 # Where the weights come from: the verified local copy, else the Hub at the pin.
@@ -130,7 +131,7 @@ else
 fi
 USE_KEY=0
 if [[ "$RANK" == 0 ]]; then
-  sp_check_bind "${SPARK_SERVE_HOST:-}"
+  sp_check_bind "${SPARK_SERVE_HOST:-}" "$(sp_is_true "${SPARK_NO_API_KEY:-}" && echo 1 || echo 0)"
   if sp_is_true "${SPARK_NO_API_KEY:-}"; then
     echo "Warning: SPARK_NO_API_KEY=true — vLLM will serve /v1 WITHOUT a key." >&2
   else

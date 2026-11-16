@@ -221,10 +221,16 @@ cmd_add_node() {
   [[ -n "$url" && -n "$engine" ]] || die "add-node needs --url and --engine"
   HN_ID="$id" HN_URL="$url" HN_ENGINE="$engine" HN_KEY_FILE="$key_file" HN_SLOTS="$slots" \
   HN_PROFILE="$profile" HN_DEP="$dep" "$PY" - "$REPO_DIR" <<'PYEOF'
-import json, os, sys, urllib.error, urllib.request
+import json, os, re, sys, urllib.error, urllib.request
 sys.path.insert(0, os.path.join(sys.argv[1], "agents"))
 import hydra_core as core
 e = os.environ
+# Every string goes out as a TOML basic string: json.dumps escapes quotes,
+# backslashes and control characters the way TOML reads them. The served id
+# comes from the node itself, so it is also held to a conservative shape —
+# a hostile /v1/models must not be able to close the string and inject tables.
+q = json.dumps
+SERVED_ID_RE = re.compile(r"^[A-Za-z0-9._:/@+ -]{1,200}$")
 nid, url, engine = e["HN_ID"], e["HN_URL"].rstrip("/"), e["HN_ENGINE"]
 problems = []
 if not core.NODE_ID_RE.match(nid):
@@ -262,14 +268,14 @@ served = []
 if st == 200:
     try:
         served = [m.get("id") for m in json.loads(body).get("data", [])]
-    except ValueError:
+    except (ValueError, AttributeError, TypeError):
         pass
 print(f"# probe: GET {url}/v1/models ({'with' if key else 'no'} key) -> {st} {served}", file=sys.stderr)
 if st in (401, 403):
     print("# WARNING: the node refused the key — hydra would mark it AUTH_FAILED", file=sys.stderr)
-lines = [f"[nodes.{nid}]", f'url         = "{url}"', f'engine      = "{engine}"']
+lines = [f"[nodes.{nid}]", f"url         = {q(url)}", f"engine      = {q(engine)}"]
 if e.get("HN_KEY_FILE"):
-    lines.append(f'key_file    = "{e["HN_KEY_FILE"]}"')
+    lines.append(f"key_file    = {q(e['HN_KEY_FILE'])}")
 elif cls != "loopback":
     print("# WARNING: a remote node with no key", file=sys.stderr)
 if e.get("HN_SLOTS"):
@@ -277,12 +283,16 @@ if e.get("HN_SLOTS"):
 dep = e.get("HN_DEP")
 if dep or e.get("HN_PROFILE"):
     dep = dep or f"{(e.get('HN_PROFILE') or 'model')}@{nid}"
-    lines += ["", f'[deployments."{dep}"]', f'node     = "{nid}"']
+    lines += ["", f"[deployments.{q(dep)}]", f"node     = {q(nid)}"]
     if e.get("HN_PROFILE"):
-        lines.append(f'profile  = "{e["HN_PROFILE"]}"')
+        lines.append(f"profile  = {q(e['HN_PROFILE'])}")
     else:
         up = served[0] if served else "SERVED-ID"
-        lines += [f'upstream = "{up}"', "ctx      = 0                  # set the real context length"]
+        if not (isinstance(up, str) and SERVED_ID_RE.match(up)):
+            print(f"# WARNING: the node's served id {up!r} is not a plain model id — "
+                  "left as SERVED-ID; check the node and fill it in by hand", file=sys.stderr)
+            up = "SERVED-ID"
+        lines += [f"upstream = {q(up)}", "ctx      = 0                  # set the real context length"]
     lines.append("caps     = []                 # e.g. [\"tools\", \"json_schema\"]; run conformance")
 print("\n".join(lines))
 print("# paste into hydra.toml, add the deployment to a route, then: scripts/hydra.sh check && "

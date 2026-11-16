@@ -12,6 +12,7 @@ scripts/engine.sh list                         # what this host can run, what is
 scripts/engine.sh status                       # the active engine: version, pin, endpoint readiness, model served
 scripts/engine.sh use vllm --profile NAME      # switch (stops a running stack, rewrites the conf, starts it)
 scripts/engine.sh use llama                    # back to the default rig, byte for byte
+scripts/engine.sh use tensorfold --unmanaged --url http://127.0.0.1:8000 --profile NAME   # a server someone else runs (a Spark pair's rank 0)
 scripts/engine.sh update tensorfold            # latest release: download, verify, pin
 scripts/engine.sh install vllm --version v0.32.0 [--digest sha256:…]
 scripts/engine.sh rollback vllm                # the previous pin (offline when it is still on disk)
@@ -69,7 +70,7 @@ always means a different checkpoint:
 | Mode | When | What the stack does |
 |---|---|---|
 | **managed** | `INFERENCE_MANAGED=true`, `INFERENCE_URL` on **this** box | `start.sh` launches the engine, waits for readiness, supervises it (3 relaunches, budget refilled after 5 min), and its trap stops it. `stop.sh` stops it. llama goes through `scripts/serve-*.sh` as always. vllm / tensorfold go through `scripts/engine-serve.sh` (TP 1 profiles only) |
-| **unmanaged** | `INFERENCE_MANAGED=false`, the default for vllm / tensorfold, and for any URL on another machine | Exactly as before (DGX_SPARK_PLAN §4): `start.sh` waits, never launches, kills or rolls back. `healthcheck` reports. The Sparks are run with `scripts/backends/spark-cluster.sh` / `*/spark-node.sh` |
+| **unmanaged** | `INFERENCE_MANAGED=false`, the default for vllm / tensorfold, and for any URL on another machine. `engine.sh use <engine> --unmanaged --url URL` writes it for a loopback URL too (rank 0 of a Spark pair on the head), which would otherwise read as managed | Exactly as before (DGX_SPARK_PLAN §4): `start.sh` waits, never launches, kills or rolls back. `healthcheck` reports. The Sparks are run with `scripts/backends/spark-cluster.sh` / `*/spark-node.sh` |
 
 `conf.sh` honours `INFERENCE_MANAGED=true` for a non-llama engine only when the
 URL names this box **and** the engine's adapter has a launcher. Anything else
@@ -120,7 +121,7 @@ What a managed vllm / tensorfold run gets, and does not get:
 - History is `.engines/history.tsv` (untracked). Every `use` first copies the
   conf to `.engines/conf-backups/` (0600).
 - **On a Spark**, install / update / rollback also rewrite
-  `scripts/backends/spark.env` (`VLLM_IMAGE` / `VLLM_IMAGE_DIGEST`,
+  `scripts/backends/spark.env` (`VLLM_IMAGE` / `VLLM_IMAGE_DIGEST` / `VLLM_IMAGE_ID`,
   `TENSORFOLD_VERSION`), so `spark-node.sh` launches the pinned build.
   `--spark-env FILE` does the same anywhere. **Every rank must run the same
   build**: update each Spark, then restart all ranks.

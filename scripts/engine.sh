@@ -5,9 +5,11 @@
 #   scripts/engine.sh list                      engines for this host class, installed / pinned / active
 #   scripts/engine.sh status                    the active engine: version, endpoint readiness, model served
 #   scripts/engine.sh use <engine|default> [--profile NAME] [--serve-script X]
-#                         [--url URL] [--port N] [--dry-run] [--no-restart] [--force]
+#                         [--url URL] [--unmanaged] [--port N] [--dry-run] [--no-restart] [--force]
 #                                               switch INFERENCE_BACKEND et al. in openbeast.conf;
-#                                               a running stack is stopped first and started after
+#                                               a running stack is stopped first and started after.
+#                                               --unmanaged: someone else runs the server at --url,
+#                                               even on this box's loopback (rank 0 of a Spark pair)
 #   scripts/engine.sh install <engine> [--version V] [--digest sha256:…] [--from DIR]
 #   scripts/engine.sh update  <engine> [--from DIR]   install the latest release (pinned, verified)
 #   scripts/engine.sh stage   <engine> [--version V] [--digest D] [--platform P] DIR
@@ -35,7 +37,7 @@ case "$CMD" in
 esac
 
 ENGINE="" VERSION="" DIGEST="" FROM="" PROFILE="" SERVE="" URL="" PORT="" PLATFORM=""
-DRY=0 NORESTART=0 FORCE=0 DIR="" SPARK_ENV=""
+DRY=0 NORESTART=0 FORCE=0 UNMANAGED=0 DIR="" SPARK_ENV=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --version)      VERSION="${2:?--version needs a value}"; shift 2 ;;
@@ -49,6 +51,7 @@ while [[ $# -gt 0 ]]; do
     --spark-env)    SPARK_ENV="${2:?--spark-env needs a file}"; shift 2 ;;
     --dry-run|-n)   DRY=1; shift ;;
     --no-restart)   NORESTART=1; shift ;;
+    --unmanaged)    UNMANAGED=1; shift ;;
     --force)        FORCE=1; shift ;;
     -h|--help)      usage; exit 0 ;;
     -*)             echo "Unknown option: $1 (see --help)" >&2; exit 2 ;;
@@ -163,6 +166,12 @@ cmd_use() {
     [[ "$url" =~ ^https?://[^/[:space:]]+$ ]] || die "--url '$URL' is not an http(s)://host[:port] base URL"
     ob_url_is_local "$url" "$OPENBEAST_PROBE_HOST" "$BIND_HOST" || managed=0
   fi
+  # A loopback URL is not proof this stack runs the server: rank 0 of a Spark
+  # pair serves on the head's 127.0.0.1 and is launched by spark-cluster.sh.
+  if [[ $UNMANAGED -eq 1 ]]; then
+    [[ -n "$URL" ]] || die "--unmanaged needs --url (where the server someone else runs answers)"
+    managed=0
+  fi
   runs_here "$ENGINE" "$cls" || [[ $managed -eq 0 ]] || [[ $FORCE -eq 1 ]] \
     || die "$ENGINE does not run on a '$cls' host (it runs on: $(ob_engine_call "$ENGINE" hosts)) — point at one elsewhere with --url, or --force"
 
@@ -185,7 +194,7 @@ cmd_use() {
     PROFILE="${PROFILE:-$(ob_engine_conf_get ENGINE_PROFILE)}"
     if [[ $managed -eq 1 ]]; then
       ob_engine_can_manage "$ENGINE" || die "the $ENGINE adapter has no single-host launcher — run it elsewhere and pass --url"
-      [[ -n "$PROFILE" ]] || die "managed $ENGINE needs a model profile: --profile NAME (scripts/backends/models/, TENSOR_PARALLEL_SIZE=1)"
+      [[ -n "$PROFILE" ]] || die "managed $ENGINE needs a model profile: --profile NAME (scripts/backends/models/, TENSOR_PARALLEL_SIZE=1) — or, for a server this stack does not launch (rank 0 of a Spark pair on this box), --unmanaged --url URL"
       ob_engine_call "$ENGINE" profile_check "$PROFILE" || die "profile '$PROFILE' cannot run managed here (above)"
       if [[ -z "$(ob_engine_call "$ENGINE" installed 2>/dev/null || true)" ]]; then
         [[ $FORCE -eq 1 ]] || die "$ENGINE is not installed here — scripts/engine.sh install $ENGINE (or --force)"
@@ -229,7 +238,7 @@ cmd_use() {
   fi
   stack_running && running=1
 
-  echo "engine.sh use $ENGINE — $([[ $managed -eq 1 ]] && echo "managed on this box" || echo "remote at $url, not managed here")"
+  echo "engine.sh use $ENGINE — $([[ $managed -eq 1 ]] && echo "managed on this box" || echo "at $url, not managed here")"
   [[ $running -eq 1 && $NORESTART -eq 0 ]] && echo "  1. stop the running stack:   $(stop_cmd)"
   echo "  $([[ $running -eq 1 && $NORESTART -eq 0 ]] && echo 2 || echo 1). openbeast.conf:"
   for k in "${sets[@]}"; do echo "       set   $k"; done

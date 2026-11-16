@@ -338,7 +338,8 @@
 # comments, so "EDGE_RATE_LIMIT=120  # per minute" would be read literally.
 # Requests per minute, per device:
 #EDGE_RATE_LIMIT=120
-# Concurrent generations, per device:
+# Concurrent generations, per device (unset: INFERENCE_SLOTS when that is set,
+# so one device may use every stream the server has; else 2):
 #EDGE_MAX_INFLIGHT=2
 
 # Largest request body the gate accepts, in bytes (default 8388608 = 8 MiB;

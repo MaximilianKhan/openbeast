@@ -125,7 +125,7 @@ eng_tensorfold_spark_env() { printf 'TENSORFOLD_VERSION=%s\n' "$1"; }
 eng_tensorfold_profile_check() {
   ob_engine_profile_load "$1" tensorfold || return 1
   if [[ "$PF_TENSOR_PARALLEL_SIZE" != 1 ]]; then
-    echo "profile '$1' is TENSOR_PARALLEL_SIZE=$PF_TENSOR_PARALLEL_SIZE — managed mode is one host, --tp 1. Several Sparks: scripts/backends/spark-cluster.sh, then engine.sh use tensorfold --url http://<rank0>:8000" >&2
+    echo "profile '$1' is TENSOR_PARALLEL_SIZE=$PF_TENSOR_PARALLEL_SIZE — managed mode is one host, --tp 1. Several Sparks: scripts/backends/spark-cluster.sh, then engine.sh use tensorfold --unmanaged --url http://<rank0>:8000 (127.0.0.1:8000 when rank 0 is this box)" >&2
     return 1
   fi
 }
@@ -149,7 +149,12 @@ eng_tensorfold_launch() {
   read -r host port < <(ob_engine_url_hostport "${INFERENCE_URL:-http://127.0.0.1:8080}")
   local -a CMD=("$b" serve "$SP_MODEL_DIR" --no-update-check
     --name "$PF_SERVED_MODEL_NAME" --host "$host" --port "$port")
-  if [[ -n "$PF_DRAFTER_SOURCE" ]]; then CMD+=(--drafter "$SP_DRAFTER_DIR"); else CMD+=(--drafter none); fi
+  # No --drafter without a profile drafter: tensorfold-native (1.2.7, checked
+  # on spark-1) rejects `--drafter none` before loading anything ("none is
+  # neither a directory nor a Hugging Face repo id"); `none` is the frozen
+  # container engine's spelling only. An MTP family then drafts with its own
+  # head, exactly as the cluster launcher (spark-node.sh) serves it.
+  [[ -n "$PF_DRAFTER_SOURCE" ]] && CMD+=(--drafter "$SP_DRAFTER_DIR")
   [[ -n "$PF_TENSORFOLD_PARALLEL" ]] && CMD+=(--parallel "$PF_TENSORFOLD_PARALLEL")
   [[ -n "$PF_MAX_MODEL_LEN" ]] && CMD+=(--context "$PF_MAX_MODEL_LEN")
   if [[ -n "${LLAMA_API_KEY:-}" ]]; then

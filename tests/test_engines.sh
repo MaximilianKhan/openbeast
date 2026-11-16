@@ -181,6 +181,7 @@ echo '{"model_type": "qwen3"}' > "$T/ckpt-tf/config.json"
 printf 'BACKEND=vllm\nSOURCE=%s\nSERVED_MODEL_NAME=rig-model\nTENSOR_PARALLEL_SIZE=1\nMAX_NUM_SEQS=4\nGPU_MEMORY_UTILIZATION=0.90\nREASONING_PARSER=qwen3\nTOOL_CALL_PARSER=qwen3_xml\n' "$T/ckpt" > "$T/prof/rigvllm.env"
 printf 'BACKEND=vllm\nSOURCE=%s\nSERVED_MODEL_NAME=two\nTENSOR_PARALLEL_SIZE=2\n' "$T/ckpt" > "$T/prof/tp2.env"
 printf 'BACKEND=tensorfold\nSOURCE=%s\nSERVED_MODEL_NAME=rig-model\nTENSOR_PARALLEL_SIZE=1\nTENSORFOLD_PARALLEL=2\n' "$T/ckpt-tf" > "$T/prof/rigtf.env"
+printf 'BACKEND=tensorfold\nSOURCE=%s\nSERVED_MODEL_NAME=pair-model\nTENSOR_PARALLEL_SIZE=2\nTENSORFOLD_PARALLEL=4\n' "$T/ckpt-tf" > "$T/prof/tftp2.env"
 # A local SOURCE is only "fetched + verified" once it has a lock (model-fetch
 # refuses an unlocked local copy since the supply-chain review): record each
 # one the way an operator would, with a plain fetch of the profile.
@@ -281,6 +282,19 @@ _o="$(eng -- use vllm --url http://10.0.0.5:8000 --profile "$T/prof/tp2.env")"
 check "use vllm --url <a Spark>: unmanaged, no install needed, TP 2 fine, served id recorded" \
   '[[ "$(confv INFERENCE_MANAGED)|$(confv INFERENCE_URL)|$(confv INFERENCE_MODEL)" == "false|http://10.0.0.5:8000|\"two\"" ]] && ! grep -q "^ENGINE_PROFILE=" "$SB/openbeast.conf"' "$_o"
 eng -- use llama >/dev/null
+# The live spark-1 topology: rank 0 of a TP 2 pair on the head's own loopback,
+# launched by spark-cluster.sh, not by this stack. A loopback URL alone reads
+# as "managed" (which needs a TP 1 profile), so the CLI could not write the
+# state the docs describe; the refusal pointed at the very command that failed.
+_o="$(eng -- use tensorfold --url http://127.0.0.1:8000 --profile "$T/prof/tftp2.env" --dry-run --force)"
+check "use tensorfold --url <loopback> with a TP 2 profile: refused, and the message names --unmanaged" \
+  '[[ "$_o" == *"TENSOR_PARALLEL_SIZE=2"* && "$_o" == *"--unmanaged --url"* ]]' "$_o"
+_o="$(eng -- use tensorfold --unmanaged --dry-run)"
+check "--unmanaged needs --url" '[[ "$_o" == *"--unmanaged needs --url"* ]]' "$_o"
+_o="$(eng -- use tensorfold --unmanaged --url http://127.0.0.1:8000 --profile "$T/prof/tftp2.env")"
+check "use tensorfold --unmanaged --url http://127.0.0.1:8000: not managed, loopback URL, served id + slots from the TP 2 profile" \
+  '[[ "$(confv INFERENCE_BACKEND)|$(confv INFERENCE_MANAGED)|$(confv INFERENCE_URL)|$(confv INFERENCE_MODEL)|$(confv INFERENCE_SLOTS)" == "tensorfold|false|http://127.0.0.1:8000|\"pair-model\"|4" ]] && ! grep -q "^ENGINE_PROFILE=" "$SB/openbeast.conf"' "$_o / $(cat "$SB/openbeast.conf")"
+eng -- use llama >/dev/null
 
 # ════════════════════════════════════════════════════════════════════════════
 echo ""
@@ -296,6 +310,19 @@ check "rollback vllm → v0.32.0 from the local image, no pull" \
   '[[ "$(confv ENGINE_PIN_VLLM)" == v0.32.0@* && "$(grep -c "docker pull" "$DST/calls.log")" == "$_n0" ]]' "$_o"
 _o="$(eng -- rollback vllm)"
 check "…rollback again goes forward to v0.33.0 (toggle between the last two pins)" '[[ "$(confv ENGINE_PIN_VLLM)" == v0.33.0@* ]]' "$_o"
+# spark.env on a Spark pinned by IMAGE ID (offline, sync-image / H4): sp_image
+# runs the ID whenever one is set, so the sync must move it with the pin, or
+# the ranks keep launching the old image while status names the new one.
+printf 'VLLM_IMAGE=vllm/vllm-openai:v0.33.0\nVLLM_IMAGE_DIGEST=sha256:%064d\nVLLM_IMAGE_ID=sha256:%064d\n' 1 2 > "$T/vspark.env"
+_o="$(eng -- rollback vllm --spark-env "$T/vspark.env")"
+_vp="$(confv ENGINE_PIN_VLLM)"
+_vid="$(DOCKER_STUB_STATE="$DST" "$T/bin/docker" image inspect --format '{{.Id}}' "vllm/vllm-openai@${_vp#*@}")"
+check "spark.env sync (vLLM): VLLM_IMAGE, _DIGEST and _ID all follow the pin — a stale image ID no longer wins" \
+  '[[ "$_vp" == v0.32.0@* && "$_vid" =~ ^sha256:[0-9a-f]{64}$ ]] && grep -qx "VLLM_IMAGE=vllm/vllm-openai:v0.32.0" "$T/vspark.env" && grep -qx "VLLM_IMAGE_DIGEST=${_vp#*@}" "$T/vspark.env" && grep -qx "VLLM_IMAGE_ID=$_vid" "$T/vspark.env"' \
+  "$_o / $(cat "$T/vspark.env") / want id $_vid"
+_o="$(eng -- rollback vllm --spark-env "$T/vspark.env")"
+check "…and forward again: the ID is v0.33.0's" \
+  '[[ "$(confv ENGINE_PIN_VLLM)" == v0.33.0@* ]] && grep -qx "VLLM_IMAGE_ID=$(DOCKER_STUB_STATE="$DST" "$T/bin/docker" image inspect --format "{{.Id}}" "vllm/vllm-openai:v0.33.0")" "$T/vspark.env"' "$_o / $(cat "$T/vspark.env")"
 _pin="$(confv ENGINE_PIN_VLLM)"
 _o="$(eng -- install vllm --version v0.33.0 --digest sha256:0000000000000000000000000000000000000000000000000000000000000000)"
 check "install --digest that the registry does not serve: refused, pin unchanged" \
@@ -406,7 +433,9 @@ else
   mkrel() { # mkrel <version>
     local v="$1" p=linux-x86_64 d="$T/tfbuild/tensorfold-$1-linux-x86_64" a
     mkdir -p "$d/bin" "$T/tfrel/v$v"
-    printf '#!/bin/bash\nif [[ "$1" == --version ]]; then echo "tensorfold %s"; exit 0; fi\necho "tensorfold-native $*" >> %s/calls.log\nh=127.0.0.1 p=8000\nwhile [[ $# -gt 0 ]]; do case "$1" in --host) h=$2; shift;; --port) p=$2; shift;; esac; shift; done\nexec %s %s "$h" "$p" tf\n' \
+    # Like the real tensorfold-native 1.2.7: `--drafter none|auto` is refused
+    # during argument checks, whatever the model.
+    printf '#!/bin/bash\nif [[ "$1" == --version ]]; then echo "tensorfold %s"; exit 0; fi\necho "tensorfold-native $*" >> %s/calls.log\nh=127.0.0.1 p=8000\nwhile [[ $# -gt 0 ]]; do case "$1" in --host) h=$2; shift;; --port) p=$2; shift;; --drafter) [[ "$2" == none || "$2" == auto ]] && { echo "tensorfold: $2 is neither a directory nor a Hugging Face repo id (owner/name)" >&2; exit 1; }; shift;; esac; shift; done\nexec %s %s "$h" "$p" tf\n' \
       "$v" "$T" "$PY" "$T/httpstub.py" > "$d/bin/tensorfold-native"
     chmod +x "$d/bin/tensorfold-native"
     (cd "$d" && sha256sum bin/tensorfold-native > SHA256SUMS)
@@ -456,8 +485,13 @@ EOF
           timeout 60 bash "$SB/start.sh" 2>&1 || true)"
   check "start.sh launches the native binary in the foreground and waits for {\"ok\": true}" \
     '[[ "$_o" == *"Starting TensorFold (engine-serve.sh)"* && "$_o" == *"TensorFold ready on http://$_LO:$TPORT"* ]]' "$(tail -n 12 <<< "$_o")"
-  check "…serve args: verified dir, --no-update-check, --drafter none, --parallel from the profile" \
-    'grep -E "tensorfold-native serve $T/ckpt-tf --no-update-check --name rig-model --host $_LO --port $TPORT --drafter none --parallel 2" "$T/calls.log" >/dev/null' "$(cat "$T/calls.log")"
+  check "…serve args: verified dir, --no-update-check, --parallel from the profile" \
+    'grep -E "tensorfold-native serve $T/ckpt-tf --no-update-check --name rig-model --host $_LO --port $TPORT --parallel 2" "$T/calls.log" >/dev/null' "$(cat "$T/calls.log")"
+  # tensorfold-native 1.2.7 refuses `--drafter none` for every family before
+  # it loads anything (checked on spark-1): the managed launch, like the
+  # cluster launcher, passes no --drafter when the profile has none.
+  check "…and no --drafter at all for a profile without one (native refuses \`none\`)" \
+    '! grep "tensorfold-native serve" "$T/calls.log" | grep -q -- "--drafter"' "$(cat "$T/calls.log")"
   check "…and nothing of llama's ran" '! grep -qE "serve-marker|^(pkill|pgrep).*llama-server" "$T/calls.log"'
 fi
 
