@@ -305,8 +305,12 @@ cmd_install() { # cmd_install <install|update>
 cmd_stage() {
   need_engine
   [[ -n "$DIR" ]] || die "stage needs a target directory: engine.sh stage $ENGINE [--version V] DIR"
-  ENG_STAGE_DIGEST="$DIGEST" ENG_STAGE_PLATFORM="$PLATFORM" ob_engine_call "$ENGINE" stage "$VERSION" "$DIR" \
-    || die "staging $ENGINE failed"
+  # --digest / --platform win; without them, an exported ENG_STAGE_DIGEST /
+  # ENG_STAGE_PLATFORM stands (the form docs/WEIGHT_STREAMING.md step 7
+  # uses). A bare prefix assignment of the empty flag value clobbered it, so
+  # Maya's wheels were silently staged for THIS box, not the closed one.
+  ENG_STAGE_DIGEST="${DIGEST:-${ENG_STAGE_DIGEST:-}}" ENG_STAGE_PLATFORM="${PLATFORM:-${ENG_STAGE_PLATFORM:-}}" \
+    ob_engine_call "$ENGINE" stage "$VERSION" "$DIR" || die "staging $ENGINE failed"
 }
 
 cmd_rollback() {

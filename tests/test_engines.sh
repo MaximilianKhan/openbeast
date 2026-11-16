@@ -543,6 +543,13 @@ check "…and a --digest that contradicts the reviewed commit is refused" '[[ "$
 _o="$(eng "${MENV[@]}" -- stage maya --version v9.9.9 "$T/stage-maya")"
 check "stage maya: both commits as bare repos, the locked wheels, a MANIFEST" \
   '[[ -d "$T/stage-maya/maya.git" && -d "$T/stage-maya/llama.cpp.git" && -f "$T/stage-maya/wheels/numpy-2.5.4-x.whl" ]] && grep -q "^COMMIT=$MC1$" "$T/stage-maya/MANIFEST" && grep -q "^LLAMA_COMMIT=$ML$" "$T/stage-maya/MANIFEST" && grep -q "pip download --require-hashes" "$T/pip.log"' "$_o"
+: > "$T/pip.log"
+_o="$(eng "${MENV[@]}" ENG_STAGE_PLATFORM=manylinux_2_28_x86_64 MAYA_STAGE_PYTHON=3.12 -- stage maya --version v9.9.9 "$T/stage-maya-rig")"
+check "stage maya with the runbook's env form (ENG_STAGE_PLATFORM) downloads the rig's wheels, not this box's" \
+  'grep -q -- "pip download .*--platform manylinux_2_28_x86_64 --python-version 3.12" "$T/pip.log"' "$(cat "$T/pip.log") / $_o"
+: > "$T/pip.log"
+_o="$(eng "${MENV[@]}" ENG_STAGE_PLATFORM=manylinux_2_28_x86_64 -- stage maya --version v9.9.9 --platform manylinux_2_28_aarch64 "$T/stage-maya-rig")"
+check "…and --platform still wins over the env" 'grep -q -- "--platform manylinux_2_28_aarch64" "$T/pip.log"' "$(cat "$T/pip.log")"
 rm -rf "$T/opt"; : > "$T/pip.log"
 _o="$(eng "${MENV[@]}" OPENBEAST_OFFLINE=true OB_ENGINE_MAYA_URL=file:///nonexistent OB_ENGINE_LLAMA_URL=file:///nonexistent -- install maya --from "$T/stage-maya")"
 check "OFFLINE install maya --from DIR: verified commits from the folder, wheels with --no-index" \
