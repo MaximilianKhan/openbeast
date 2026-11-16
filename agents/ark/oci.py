@@ -143,7 +143,7 @@ class Registry:
         if want and got != want:
             raise OciError(f"{self.repo}@{want}: the registry served a manifest whose digest is {got} — refused")
         if not mt:
-            mt = json.loads(body).get("mediaType", "")
+            mt = _json(body, f"{self.repo}@{ref}").get("mediaType", "")
         return body, mt
 
     def blob(self, digest: str, dest: str, size: int = 0) -> None:
@@ -177,6 +177,18 @@ class Registry:
         return self.tokens.get(self.host)
 
 
+def _json(body: bytes, what: str) -> dict:
+    """A registry that answers an HTML error page with 200 is an OciError for
+    that image, not a traceback that ends the whole fetch."""
+    try:
+        doc = json.loads(body)
+    except ValueError:
+        raise OciError(f"{what}: the registry did not answer JSON") from None
+    if not isinstance(doc, dict):
+        raise OciError(f"{what}: not a JSON object")
+    return doc
+
+
 def _file_digest(path: str) -> str:
     return "sha256:" + net.sha256_file(path)
 
@@ -208,21 +220,21 @@ def describe(image: str, ref: str, platforms: List[str]) -> dict:
     reg = Registry(image)
     digest, mt = reg.resolve(ref)
     body, mt = reg.manifest(digest)
-    doc = json.loads(body)
+    doc = _json(body, f"{image}@{digest}")
     mt = mt or doc.get("mediaType", "")
     sizes: Dict[str, int] = {}
     if mt in INDEX_TYPES or "manifests" in doc:
         kids = select_children(doc, platforms)
         for pl, d in kids.items():
             mb, _ = reg.manifest(d["digest"])
-            m = json.loads(mb)
+            m = _json(mb, f"{image}@{d['digest']}")
             sizes[pl] = len(mb) + m["config"]["size"] + sum(l["size"] for l in m.get("layers", []))
         missing = [p for p in platforms if p not in kids]
     else:
         # A single-platform manifest: which platform it is lives in the config.
         n = len(body) + doc["config"]["size"] + sum(l["size"] for l in doc.get("layers", []))
         with reg._open(f"{reg.base}/blobs/{doc['config']['digest']}") as r:
-            cfg = json.loads(r.read(4 << 20))
+            cfg = _json(r.read(4 << 20), f"{image} config")
         if not isinstance(cfg, dict) or "architecture" not in cfg:   # an artifact (a DB), not an image
             sizes, missing = {p: n for p in platforms}, []
         else:
@@ -251,7 +263,7 @@ def pull(image: str, tag: str, digest: str, platforms: List[str], dest_tar: str,
 
     top, mt = reg.manifest(digest, want_digest=digest)
     keep(digest, top)
-    doc = json.loads(top)
+    doc = _json(top, f"{image}@{digest}")
     mt = mt or doc.get("mediaType", "")
     kept: Dict[str, Tuple[str, dict, int]] = {}
     if mt in INDEX_TYPES or "manifests" in doc:
@@ -262,7 +274,7 @@ def pull(image: str, tag: str, digest: str, platforms: List[str], dest_tar: str,
         for pl, d in kids.items():
             mb, _ = reg.manifest(d["digest"], want_digest=d["digest"])
             keep(d["digest"], mb)
-            kept[pl] = (d["digest"], json.loads(mb), len(mb))
+            kept[pl] = (d["digest"], _json(mb, f"{image}@{d['digest']}"), len(mb))
     else:
         kept[platforms[0] if platforms else "linux/amd64"] = (digest, doc, len(top))
     for pl, (mdig, m, _n) in kept.items():

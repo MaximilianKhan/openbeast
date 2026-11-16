@@ -218,8 +218,8 @@ def fetch_file(drive: S.Drive, a: C.Artifact, allow_unverified: bool) -> dict:
                 how.append("signature")
         if not how:
             how.append("tofu")
-    except (FetchError, V.VerifyError):
-        os.remove(part)
+    except (FetchError, V.VerifyError, ValueError, KeyError, UnicodeError):
+        os.remove(part)                         # a garbled sums or signature file refuses THIS file
         raise
     os.replace(part, dest)
     return {"entry": a.entry, "kind": "file", "platform": a.platform, "version": a.owner.version,
@@ -555,7 +555,8 @@ def run(cat: C.Catalog, drive: S.Drive, items: List[Tuple[str, object]], platfor
                 rec = fetch_cargo(drive, obj, lock)
             else:
                 raise FetchError(f"unknown kind {obj.kind}")
-        except (FetchError, V.VerifyError, oci.OciError, net.HTTPFailure, S.StoreError, OSError) as ex:
+        except (FetchError, V.VerifyError, oci.OciError, net.HTTPFailure, S.StoreError, OSError,
+                ValueError, KeyError) as ex:    # malformed upstream JSON / manifests: this item fails, the run goes on
             failed += 1
             failures.append(f"{label}: {ex}")
             log(f"  FAILED {label}: {ex}")

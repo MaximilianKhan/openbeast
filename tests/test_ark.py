@@ -930,6 +930,65 @@ verified = "pinned"
     assert rc == 1 and "BAD_SIGNATURE" in out.out
 
 
+def test_a_garbled_signature_fails_its_item_not_the_run(http, tmp_path, capsys):
+    pubkey, sign = minisign_pair(tmp_path)
+    data = b"zig-like tarball\n"
+    http.files["/z/zig.tar.xz"] = data
+    http.files["/z/zig.tar.xz.minisig"] = b"untrusted comment: x\nAAAAA\ntrusted comment: y\nZZ\n"
+    http.files["/z/later.bin"] = b"later\n"
+    body = ENTRY.format(name="zg", cat="languages", version="1") + f'''
+[[artifact]]
+entry = "zg"
+kind = "file"
+platform = "any"
+url = "{http.base}/z/zig.tar.xz"
+sha256 = "{sha(data)}"
+signature_url = "{http.base}/z/zig.tar.xz.minisig"
+signature_kind = "minisign"
+signature_key = "{pubkey}"
+install = "data"
+verified = "pinned"
+
+[[artifact]]
+entry = "zg"
+kind = "file"
+platform = "any"
+url = "{http.base}/z/later.bin"
+sha256 = "{sha(b"later\n")}"
+install = "data"
+verified = "pinned"
+'''
+    drive = tmp_path / "d"
+    rc, out = run(["--catalog", str(write_catalog(tmp_path, body)), "fetch", "--to", str(drive)], capsys)
+    assert rc == 4 and "FAILED zg/any/zig.tar.xz" in out.err and "not valid base64" in out.err
+    assert "Traceback" not in out.err
+    items = json.loads((drive / "ark.lock").read_text())["items"]
+    assert "zg/any/later.bin" in items and "zg/any/zig.tar.xz" not in items      # the run went on
+    assert not list(drive.rglob("*.part"))
+    # the same garbage swapped in on the drive is a BAD_SIGNATURE in verify, not a crash
+    http.files["/z/zig.tar.xz.minisig"] = sign(data).encode()
+    assert run(["--catalog", str(write_catalog(tmp_path, body)), "fetch", "--to", str(drive)], capsys)[0] == 0
+    sigp = drive / "files/zg/1/any/zig.tar.xz.minisig"
+    sigp.write_text("untrusted comment: x\nAAAAA\ntrusted comment: y\nZZ\n")
+    lock = json.loads((drive / "ark.lock").read_text())
+    for f in lock["items"]["zg/any/zig.tar.xz"]["files"]:
+        if f["path"].endswith(".minisig"):
+            f["sha256"], f["size"] = sha(sigp.read_bytes()), sigp.stat().st_size
+    (drive / "ark.lock").write_text(json.dumps(lock))
+    rc, out = run(["verify", str(drive)], capsys)
+    assert rc == 1 and "BAD_SIGNATURE" in out.out
+
+
+def test_a_registry_answering_html_fails_the_image_cleanly(registry, tmp_path, capsys):
+    page = b"<html>rate limited</html>"
+    dig = "sha256:" + sha(page)                          # pinned to the page itself: only the JSON check is left
+    registry.blobs[dig] = page
+    cat = oci_catalog(tmp_path, registry, digest=dig)
+    rc, out = run(["--catalog", str(cat), "fetch", "--to", str(tmp_path / "d")], capsys)
+    assert rc == 4 and "FAILED app/oci/app" in out.err and "did not answer JSON" in out.err
+    assert "Traceback" not in out.err
+
+
 def test_ed25519_signed_sums_the_tensorfold_way(http, tmp_path, capsys):
     seed = bytes(range(1, 33))
     _s, pub = V.ed25519_keypair(seed)
@@ -1069,7 +1128,10 @@ class Registry:
                     body = reg.blobs.get(dig)
                     if body is None:
                         return self._send(404)
-                    mt = json.loads(body).get("mediaType", "application/vnd.oci.image.manifest.v1+json")
+                    try:
+                        mt = json.loads(body).get("mediaType", "application/vnd.oci.image.manifest.v1+json")
+                    except ValueError:
+                        mt = "text/html"
                     return self._send(200, body, {"Content-Type": mt, "Docker-Content-Digest": dig})
                 if ref not in reg.blobs:
                     return self._send(404)

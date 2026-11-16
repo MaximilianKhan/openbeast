@@ -233,7 +233,7 @@ def verify_drive(drive: S.Drive, deep: bool = False, quick: bool = False) -> dic
             try:
                 V.check_signature(sig["kind"], sig.get("key", ""), C.REPO_DIR, drive.p(sig["target"]),
                                   drive.p(sig["path"]), sig.get("prefix", ""), it["entry"])
-            except (V.VerifyError, OSError, KeyError) as e:
+            except (V.VerifyError, OSError, KeyError, ValueError) as e:
                 res["bad_signature"].append(f"{key}: {e}")
         if deep and it.get("kind") == "oci" and os.path.isfile(drive.p(it["primary"])):
             arc = oci.OciArchive(drive.p(it["primary"]))
