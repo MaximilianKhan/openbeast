@@ -1254,10 +1254,56 @@ def build():
     return commits
 
 
-def git(args, cwd, env):
-    return subprocess.run(["git"] + args, cwd=cwd, env=env, check=True,
+def git(args, cwd, env, data=None):
+    return subprocess.run(["git"] + args, cwd=cwd, env=env, check=True, input=data,
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                          universal_newlines=True).stdout.strip()
+                          ).stdout.decode("utf-8", "replace").strip()
+
+
+def clean_message(msg):
+    """What `git commit -m` stores (cleanup=whitespace): trailing whitespace
+    stripped per line, runs of blank lines collapsed, leading and trailing
+    blank lines dropped, one final newline."""
+    out = []
+    for ln in msg.split("\n"):
+        ln = ln.rstrip()
+        if ln or (out and out[-1]):
+            out.append(ln)
+    while out and not out[-1]:
+        out.pop()
+    return "\n".join(out) + "\n"
+
+
+def fast_import_stream(commits):
+    """The whole history as ONE `git fast-import` stream. Same trees, authors,
+    dates and messages as a commit-per-step build, so the SHAs are identical
+    (setup asserts the head SHA), in a handful of git spawns instead of ~90:
+    each spawn of /usr/bin/git on macOS is an xcrun shim that costs ~36 ms."""
+    out = []
+
+    def data(text):
+        raw = text.encode("utf-8")
+        out.append(b"data %d\n" % len(raw) + raw + b"\n")
+
+    for i, (subject, body, author, snap, tag) in enumerate(commits):
+        name, email = AUTHORS[author]
+        # 2026-03-02 09:00 UTC, then roughly a commit every 7 hours
+        date = "%d +0000" % (1772442000 + i * 25200 + (i * 7919) % 3000)
+        who = ("%s <%s> %s" % (name, email, date)).encode("utf-8")
+        out.append(b"commit refs/heads/main\nmark :%d\n" % (i + 1))
+        out.append(b"author " + who + b"\ncommitter " + who + b"\n")
+        data(clean_message(subject + ("\n\n" + body if body else "")))
+        if i:
+            out.append(b"from :%d\n" % i)
+        out.append(b"deleteall\n")
+        for path in sorted(snap):
+            out.append(b"M 100644 inline " + path.encode("utf-8") + b"\n")
+            data(snap[path])
+        out.append(b"\n")
+        if tag:
+            out.append(b"reset refs/tags/" + tag.encode("utf-8") + b"\nfrom :%d\n\n" % (i + 1))
+    out.append(b"done\n")
+    return b"".join(out)
 
 
 def main():
@@ -1275,30 +1321,9 @@ def main():
         for k, v in (("core.autocrlf", "false"), ("core.filemode", "true"),
                      ("commit.gpgsign", "false"), ("tag.gpgsign", "false")):
             git(["config", k, v], DEST, env)
-        prev = set()
-        for i, (subject, body, author, snap, tag) in enumerate(commits):
-            for gone in prev - set(snap):
-                os.remove(os.path.join(DEST, gone))
-            for path, text in snap.items():
-                full = os.path.join(DEST, path)
-                d = os.path.dirname(full)
-                if not os.path.isdir(d):
-                    os.makedirs(d)
-                with open(full, "w", newline="\n") as f:
-                    f.write(text)
-                os.chmod(full, 0o644)
-            prev = set(snap)
-            git(["add", "-A"], DEST, env)
-            name, email = AUTHORS[author]
-            # 2026-03-02 09:00 UTC, then roughly a commit every 7 hours
-            date = "%d +0000" % (1772442000 + i * 25200 + (i * 7919) % 3000)
-            cenv = dict(env, GIT_AUTHOR_NAME=name, GIT_AUTHOR_EMAIL=email,
-                        GIT_COMMITTER_NAME=name, GIT_COMMITTER_EMAIL=email,
-                        GIT_AUTHOR_DATE=date, GIT_COMMITTER_DATE=date)
-            msg = subject + ("\n\n" + body if body else "")
-            git(["commit", "-q", "--no-verify", "-m", msg], DEST, cenv)
-            if tag:
-                git(["tag", tag], DEST, cenv)
+        git(["fast-import", "--quiet", "--done"], DEST, env, data=fast_import_stream(commits))
+        # index + work tree of the tip, as a commit-per-step build leaves them
+        git(["reset", "-q", "--hard", "refs/heads/main"], DEST, env)
         # identity + no signing for the agent's own commit
         git(["config", "user.name", "Release Engineer"], DEST, env)
         git(["config", "user.email", "release@semver-sh.example"], DEST, env)
