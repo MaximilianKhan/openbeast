@@ -122,6 +122,57 @@ grep -q -- '--cache-ram' "$REPO_DIR/scripts/serve-qwen38-flash-next-unc-iq4xs.sh
   && pass "…and the static Flash-Next baseline pins --cache-ram too (its experts share the scope)" \
   || fail "serve-qwen38-flash-next-unc-iq4xs.sh leaves the prompt cache unbounded beside 72 GiB of host weights"
 
+BIG="$REPO_DIR/scripts/serve-glm53-flash-abl-q2kxl-big.sh"
+_fl="$(_flags "$BIG" | tr '\n' ' ')"
+_s "$BIG" rig "$RIG_KB" 75
+if [[ -x "$BIG" && "$_OUT" == "90 infinity profile:serve-glm53-flash-abl-q2kxl-big.sh" \
+      && "$_fl" == *"--cpu-moe"* && "$_fl" == *"--moe-cache-mib"* && "$_fl" == *"--load-mode"* ]]; then
+  pass "big mode (GLM): all experts in host RAM, a VRAM cache, and the rig-only 90% / memlock scope"
+else
+  fail "big-mode profile: scope '$_OUT' flags '$_fl'"
+fi
+_s "$BIG" spark "$RIG_KB" 75
+[[ $_RC -eq 2 ]] && pass "…which a Spark refuses" || fail "big-mode profile accepted on a spark: '$_OUT'"
+# Host RAM plan against its 90% scope: 94.68 GiB of experts (the GGUF's
+# tensor table) + 1.5 buffers + the --cache-ram + 3 for the stack.
+_cr="$(awk '$1 == "--cache-ram" {print $2}' "$BIG")"
+_need="$(awk -v c="$_cr" 'BEGIN {printf "%d", 94.68 + 1.5 + c / 1024 + 3}')"
+_cap="$(awk -v k="$RIG_KB" 'BEGIN {printf "%d", k / 1048576 * 0.90}')"
+[[ -n "$_cr" && "$_need" -lt "$_cap" ]] && pass "…its host RAM plan (~${_need} GiB) fits that scope (${_cap} GiB) with room to spare" \
+  || fail "big mode needs ~${_need} GiB of a ${_cap} GiB scope"
+# Every shard pinned with a real sha256, the remote names in the repo's
+# subfolder, the local names one consistent prefix (llama.cpp rebuilds the
+# siblings' names from shard 1's).
+_rows="$(awk -F'\t' '$3 ~ /^Huihui-GLM-5\.3-Flash-abliterated-UD-Q2_K_XL-0000[1-4]-of-00004\.gguf$/ && $1 ~ /^[0-9a-f]{64}$/ \
+          && $4 == "huihui-ai/Huihui-GLM-5.3-Flash-abliterated-GGUF" && $5 ~ /^UD-Q2_K_XL\// {n++; b += $2} END {print n + 0, b + 0}' \
+          "$REPO_DIR/scripts/weights.registry")"
+[[ "$_rows" == "4 108720072064" ]] && pass "…its four shards are sha256-pinned (108,720,072,064 bytes = 101.3 GiB)" \
+  || fail "GLM shard pins: '$_rows' (want 4 shards, 108720072064 bytes)"
+# The weights must be uncensored (DGX_SPARK_PLAN §15): no shipped profile
+# may point at a stock repo.
+_stock=""
+for _ss in "$FN" "$BIG"; do
+  while IFS= read -r _w; do
+    _repo="$(awk -F'\t' -v n="$_w" '$3 == n {print $4; exit}' "$REPO_DIR/scripts/weights.registry")"
+    [[ "$_repo" =~ [Uu]ncensored|abliterated ]] || _stock+=" $(basename "$_ss"):$_repo"
+  done < <(grep -oE '\$WEIGHTS_DIR/[^"]+\.gguf' "$_ss" | sed 's|.*/||')
+done
+[[ -z "$_stock" ]] && pass "both new profiles load uncensored (abliterated) weights" \
+  || fail "a new profile loads a stock repo:$_stock"
+_nb="$(python3 - "$REPO_DIR" <<'PY'
+import ast, sys
+src = open(sys.argv[1] + "/evals/benchmark_all.py").read()
+t = ast.parse(src)
+for n in ast.walk(t):
+    if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "BENCH_EXCLUDED":
+        keys = [k.value for k in n.value.keys]
+        print(sum(k in keys for k in ("scripts/serve-glm53-flash-abl-q2kxl-big.sh",
+                                      "scripts/serve-qwen38-flash-next-unc-iq4xs-moecache.sh")))
+PY
+)"
+[[ "$_nb" == 2 ]] && pass "…and neither joins a bare benchmark_all.py sweep (BENCH_EXCLUDED, with the reason)" \
+  || fail "new profiles in BENCH_EXCLUDED: ${_nb:-0} of 2"
+
 echo ""
 echo "================================"
 echo "Results: $PASS passed, $FAIL failed"
