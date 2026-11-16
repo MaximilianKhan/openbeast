@@ -2264,6 +2264,13 @@ def run_validation(task: dict, timeout_scale: float = 1.0) -> tuple[bool, str]:
             sf.seek(0)
             venv = _validator_env(timeout_scale)
             venv.update(build_cache_env(os.path.join(private, "build-cache")))
+            # The validator's temp files (tempfile.mkdtemp, its children's)
+            # live in the private dir too, so a validator SIGKILLed at the
+            # timeout -- its `finally: rmtree` never runs -- leaves nothing in
+            # the shared TMPDIR (176: a copy of a planted /dev/zero link).
+            vtmp = os.path.join(private, "tmp")
+            os.mkdir(vtmp, 0o700)
+            venv["TMPDIR"] = vtmp
             returncode, output = _run_reaped(
                 cmd, timeout=timeout, shell=not isinstance(cmd, list),
                 stdin=sf, cwd=vcwd, env=venv)

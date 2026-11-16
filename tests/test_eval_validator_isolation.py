@@ -21,6 +21,7 @@ import importlib
 import os
 import subprocess
 import sys
+import tempfile
 import textwrap
 import time
 import urllib.parse  # noqa: F401  loaded before any test chdirs next to a plant
@@ -222,12 +223,35 @@ def test_validator_cwd_is_private_and_fresh():
         assert stat.S_IMODE(os.stat(cwd).st_mode) == 0o700
         assert stat.S_IMODE(os.stat(os.path.dirname(cwd)).st_mode) == 0o700
         # The script file itself was unlinked before the validator started;
-        # beside the cwd there is only the private build cache.
-        assert sorted(os.listdir(os.path.dirname(cwd))) == ["build-cache", "cwd"], \
+        # beside the cwd there is only the private build cache and TMPDIR.
+        assert sorted(os.listdir(os.path.dirname(cwd))) == ["build-cache", "cwd", "tmp"], \
             os.listdir(os.path.dirname(cwd))
         print("OK")
     '''))
     assert ok, output
+
+
+def test_validator_tmpdir_is_private_and_removed_even_after_a_kill():
+    # 176: a validator copying a planted /dev/zero link wrote into the SHARED
+    # TMPDIR until the harness SIGKILLed it, and its finally-rmtree never ran.
+    # TMPDIR is now inside the private dir, which the harness always removes.
+    ok, output = _validate(textwrap.dedent('''
+        import os, tempfile, time
+        d = tempfile.mkdtemp(prefix="ob-leak-")
+        assert os.path.dirname(d) == os.environ["TMPDIR"], (d, os.environ["TMPDIR"])
+        real = os.path.realpath
+        assert os.path.dirname(real(os.environ["TMPDIR"])) == os.path.dirname(real(os.getcwd()))
+        with open(os.path.join(d, "big"), "wb") as f:
+            f.write(b"x" * 4096)
+        print("TMP=" + d, flush=True)
+        time.sleep(30)
+    '''), scale=0.05)   # the harness kills it after 1 s
+    assert not ok and run_eval.validator_timed_out(output), output
+    leaked = [ln[4:] for ln in output.splitlines() if ln.startswith("TMP=")]
+    if leaked:  # the output of a killed validator may be lost; check if we have it
+        assert not os.path.exists(leaked[0]), leaked
+    base = Path(tempfile.gettempdir())
+    assert not [p for p in base.glob("ob-leak-*")], "validator temp dir left in the shared TMPDIR"
 
 
 @pytest.mark.parametrize("phase", ["setup", "pre_validate", "cleanup"])
