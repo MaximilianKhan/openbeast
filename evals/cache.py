@@ -83,7 +83,7 @@ HARNESS_FUNCTIONS = ("run_agent", "_run_reaped", "run_setup", "run_pre_validate"
                      "agent_wall_s", "_validator_env", "build_cache_env",
                      "_run_fixture_cmd", "_kill_recorded_groups",
                      "sweep_agent_leftovers", "AgentWatch")
-HARNESS_CONSTANTS = ("VALIDATION_TIMEOUT_S", "BUILD_CACHE_ENV", "_AGENT_POLL_S",
+HARNESS_CONSTANTS = ("VALIDATION_TIMEOUT_S", "BUILD_CACHE_ENV", "_AGENT_POLL_S", "_PY_BOOT",
                      "_SWEEP_ROUNDS")
 
 

@@ -2091,8 +2091,39 @@ def _ob_boot(src, vlib_src, group_file):
     linecache.cache["<validator>"] = (len(src), None, src.splitlines(True), "<validator>")
     del globals()["_ob_boot"]
     return compile(src, "<validator>", "exec", dont_inherit=True)
-exec(_ob_boot(%r, %r, %r))
+
+
+def _ob_done(nonce, exc=None):
+    # A clean SystemExit counts as the validator finishing only when the
+    # VALIDATOR raised it. One raised by the solution's code (a v4 validator
+    # imports the solution in-process) or an os._exit() never gets here with
+    # an origin of "<validator>", so the harness sees no completion line.
+    if exc is not None:
+        if exc.code not in (0, None):
+            raise exc
+        tb = exc.__traceback__
+        while tb is not None and tb.tb_next is not None:
+            tb = tb.tb_next
+        if tb is None or tb.tb_frame.f_code.co_filename != "<validator>":
+            raise exc
+    import sys as _s
+    _s.stdout.flush()
+    _s.stdout.write("\n" + nonce + "\n")
+    _s.stdout.flush()
+    raise SystemExit(0)
+
+
+_ob_c = _ob_boot(%r, %r, %r)
+_ob_n = %r
+try:
+    exec(_ob_c)
+except SystemExit as _ob_e:
+    _ob_done(_ob_n, _ob_e)
+_ob_done(_ob_n)
 """
+
+# The line a python validator prints when it ran to its end (see _ob_done).
+_DONE_PREFIX = "@@ob-validator-done-"
 
 # Shell validators: read the whole script from stdin, give stdin up, run it.
 # The script never appears in any argv.
@@ -2217,7 +2248,9 @@ def run_validation(task: dict, timeout_scale: float = 1.0) -> tuple[bool, str]:
     group_file = os.path.join(private, "pgids")
     try:
         if vtype == "python":
-            payload = _PY_BOOT % (script, _vlib_source(), group_file)
+            import secrets
+            done = f"{_DONE_PREFIX}{secrets.token_hex(16)}@@"
+            payload = _PY_BOOT % (script, _vlib_source(), group_file, done)
             cmd = [sys.executable, "-I", "-S", "-"]
         else:
             payload = script
@@ -2236,6 +2269,16 @@ def run_validation(task: dict, timeout_scale: float = 1.0) -> tuple[bool, str]:
                 cmd, timeout=timeout, shell=not isinstance(cmd, list),
                 stdin=sf, cwd=vcwd, env=venv)
         passed = returncode == 0
+        if vtype == "python":
+            # Exit 0 is a pass only if the validator itself ran to its end:
+            # a solution imported in-process that calls os._exit(0) or
+            # sys.exit(0) at import used to pass every v4 python unit.
+            completed = done in output
+            output = output.replace("\n" + done + "\n", "\n").replace(done, "")
+            if passed and not completed:
+                passed = False
+                output = (output.rstrip() + "\nFAIL: the validator did not run to its end "
+                          "(something exited its process early with status 0)").lstrip()
         kept = output.strip()[:500]
         # The 500-char cut must never drop the evidence that the VALIDATOR
         # (not the model's code) died to fork/thread EAGAIN or a full disk:

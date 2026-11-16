@@ -1093,3 +1093,44 @@ def test_exec_confinement_allows_an_env_launcher_and_its_one_target(tmp_path):
         subprocess.run(["cc", "-o", str(tmp_path / "q"), str(tmp_path / "q.c")], check=True)
         r = vlib.run_solution(["/usr/bin/env", "./q"], cpu_s=5, cwd=str(tmp_path))
         assert "escaped" not in r.stdout, r
+
+
+# --- a python validator passes only when it ran to its end -----------------------------
+#
+# v4 validators import the solution in their own interpreter. `os._exit(0)` (or
+# `sys.exit(0)`) at the solution's import ended the validator with status 0
+# before any check ran, and that passed 143, 146, 152, 153, 121 and 128.
+
+def _inproc_validator(sol: Path) -> dict:
+    return {"id": "inproc", "validation": {"type": "python", "script": textwrap.dedent(f"""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("m", {str(sol)!r})
+        mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+        assert mod.answer() == 42, "wrong answer"
+        print("OK")
+    """)}}
+
+
+@pytest.mark.parametrize("cheat", ["import os\nos._exit(0)\n", "import sys\nsys.exit(0)\n",
+                                   "raise SystemExit\n"])
+def test_a_solution_that_exits_the_validator_early_fails(tmp_path, cheat):
+    sol = tmp_path / "m.py"
+    sol.write_text(cheat)
+    ok, out = run_eval.run_validation(_inproc_validator(sol))
+    assert not ok and "did not run to its end" in out, out
+
+
+def test_an_honest_in_process_solution_still_passes(tmp_path):
+    sol = tmp_path / "m.py"
+    sol.write_text("def answer():\n    return 42\n")
+    ok, out = run_eval.run_validation(_inproc_validator(sol))
+    assert ok and out.strip() == "OK", out          # the completion line is stripped
+
+
+def test_a_validator_that_exits_zero_itself_still_passes():
+    task = {"id": "v", "validation": {"type": "python",
+                                      "script": "import sys\nprint('fine')\nsys.exit(0)\n"}}
+    ok, out = run_eval.run_validation(task)
+    assert ok and "fine" in out, out
+    task["validation"]["script"] = "import sys\nsys.exit(3)\n"
+    assert run_eval.run_validation(task)[0] is False
