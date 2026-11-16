@@ -36,7 +36,9 @@ prints the conf changes and the exact launch command.
 **Host class** comes from `scripts/lib/hardware.sh`. A GPU that reports
 `memory.total` as `[N/A]` (`OB_GPU_UNIFIED=1`) makes this host a `spark`; macOS
 is `mac` (llama or tensorfold `macos-arm64`); everything else is a `rig`.
-`OB_ENGINE_HOST_CLASS` overrides the detection, and `ENGINE_DEFAULT` in
+`OB_ENGINE_HOST_CLASS` overrides the detection (`engine.sh`, `engine-serve.sh`
+and `engine-gate.sh` also set it themselves after detecting once, so one
+command runs `nvidia-smi` once, not once per question), and `ENGINE_DEFAULT` in
 `openbeast.conf` overrides the default engine. The runtime fallback in
 `conf.sh` stays `llama` when `INFERENCE_BACKEND` is unset. The host-class
 default only decides what `engine.sh use default` picks and what `list` and
@@ -86,9 +88,14 @@ What a managed vllm / tensorfold run gets, and does not get:
 - **Container name** is `openbeast-engine-<engine>-<8 hex of the repo path>`,
   one per checkout. Two worktrees on one box never stop each other's engine,
   and a leftover from a SIGKILLed launcher is removed at the next launch.
-- **The API key**: `LLAMA_API_KEY` reaches vLLM as `-e VLLM_API_KEY` (by name)
-  and TensorFold as a 0600 `--api-key-file` under `.run/`. It never goes on
-  argv.
+- **The API key**: `LLAMA_API_KEY` reaches vLLM as `-e VLLM_API_KEY` (by name),
+  TensorFold as a 0600 `--api-key-file` under `.run/` and Maya as an exported
+  `MAYA_API_KEY`. It never goes on argv.
+- **No keyless network bind.** The engine binds `INFERENCE_URL`'s host, and
+  `0.0.0.0`, `::` and `BIND_HOST` all count as "local" (so they stay managed).
+  With no `LLAMA_API_KEY` on a non-loopback host, `engine-serve.sh` refuses
+  with exit 3, exactly as `serve.sh` does for llama-server, unless
+  `ALLOW_OPEN_INFERENCE=true` acknowledges it; `engine.sh use` warns first.
 - **Not applicable**: FAST_BOOT (the bridge is a GGUF) and MODEL_ROLLBACK
   (last-good records serve scripts). For an engine, rollback is
   `engine.sh rollback`.
@@ -106,8 +113,8 @@ What a managed vllm / tensorfold run gets, and does not get:
 | Engine | Pin (what can never move) | Integrity check | Rollback |
 |---|---|---|---|
 | llama | `scripts/llama.cpp.ref` `LLAMA_CPP_REF=<40-hex commit>` (tracked: what a fresh `bootstrap.sh` builds; review and commit the change) | The commit id *is* the content hash. A tag (`v1.0.0`, `b12422`) is resolved to its commit, and a local tag is never moved | `git checkout` of the old commit and rebuild. The objects are already local, so this works offline |
-| vllm | `ENGINE_PIN_VLLM=<tag>@sha256:<index digest>` | The pull resolves the digest. `--digest` must match it, or the install is refused. Offline: the tarball's sha256 is checked against the MANIFEST, then the image id after `docker load` | Re-pin an image still on the box (by digest, or by the image id kept in the history). No pull |
-| maya | `ENGINE_PIN_MAYA=<tag>@<40-hex commit>`, only for a version reviewed in `scripts/engines/maya.sh` (`--digest <commit>` to name another) | The commit id. Maya's own setup would fetch llama.cpp as an unhashed archive zip and pip-install unpinned packages. Instead llama.cpp is checked out at the commit its `setup.py` pins (read and compared first), and the packages come from `scripts/engines/maya/requirements.lock` with `--require-hashes` | Relink `~/.local/opt/maya-<tag>` (offline) |
+| vllm | `ENGINE_PIN_VLLM=<tag>@sha256:<index digest>` after a pull; `<tag>@sha256:<image id>` after an offline install | The pull resolves the digest. `--digest` must match it, or the install is refused. Offline: every MANIFEST field must have its shape, the tarball's sha256 is checked against the MANIFEST, then the image id after `docker load`. The MANIFEST travels with the tarball, so it only proves the folder is self-consistent, and a `docker save` tarball cannot prove a registry digest at all: the pin is therefore the **image id** this box read back from docker, and the staged digest goes into the history as `staged-digest=… (unverified)` | Re-pin an image still on the box (by digest, or by the image id kept in the history). No pull |
+| maya | `ENGINE_PIN_MAYA=<tag>@<40-hex commit>`, only for a version reviewed in `scripts/engines/maya.sh` (`--digest <commit>` on the command line to name another; a staged folder's MANIFEST never stands in for it). A version is `v<N>.<N>[.<N>[.<N>]]`, nothing else: it names the install directory | The commit id. Maya's own setup would fetch llama.cpp as an unhashed archive zip and pip-install unpinned packages. Instead llama.cpp is checked out at the commit its `setup.py` pins (read and compared first), and the packages come from `scripts/engines/maya/requirements.lock` with `--require-hashes` | Relink `~/.local/opt/maya-<tag>` (offline) |
 | tensorfold | `ENGINE_PIN_TENSORFOLD=<version>@sha256:<archive sha256>` | `install-native.sh`: archive against `.sha256`, `.sha256` against the release's ed25519 signature (vendored key), every unpacked file against `SHA256SUMS`. It always stages into `.engines/cache/` first | Relink `~/.local/opt/tensorfold-<V>-<platform>` after `SHA256SUMS` is re-checked. Instant and offline |
 
 - `update` = install the latest **release**. llama: the highest `vX.Y.Z`
@@ -121,7 +128,9 @@ What a managed vllm / tensorfold run gets, and does not get:
 - History is `.engines/history.tsv` (untracked). Every `use` first copies the
   conf to `.engines/conf-backups/` (0600).
 - **On a Spark**, install / update / rollback also rewrite
-  `scripts/backends/spark.env` (`VLLM_IMAGE` / `VLLM_IMAGE_DIGEST` / `VLLM_IMAGE_ID`,
+  `scripts/backends/spark.env` (`VLLM_IMAGE` / `VLLM_IMAGE_DIGEST` /
+  `VLLM_IMAGE_ID`: a pulled pin writes the digest plus that image's local ID
+  when known; an offline-installed image writes its ID and clears the digest;
   `TENSORFOLD_VERSION`), so `spark-node.sh` launches the pinned build.
   `--spark-env FILE` does the same anywhere. **Every rank must run the same
   build**: update each Spark, then restart all ranks.
@@ -145,7 +154,10 @@ scripts/engine.sh install maya       --from /media/usb/maya     # both commits r
 ```
 
 Each folder is re-verified on the closed box: the llama commit id, the vLLM
-tarball sha256 and image id, and the TensorFold signature. Under
+tarball sha256 and image id, the Maya commits against the reviewed table,
+and the TensorFold signature. A MANIFEST is parsed, never sourced, and a
+field that is not its shape (a path, a line break) refuses the install
+before it names a file or reaches `openbeast.conf`. Under
 `OFFLINE=true`, `update` without `--from` refuses and says why.
 
 ## Adapter contract (adding an engine)

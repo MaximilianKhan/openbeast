@@ -53,7 +53,10 @@ class H(http.server.BaseHTTPRequestHandler):
         elif self.path == "/v1/models": code, body = 200, json.dumps({"data": [{"id": "rig-model"}]})
         self.send_response(code); self.send_header("Content-Length", str(len(body))); self.end_headers()
         self.wfile.write(body.encode())
-threading.Timer(90, lambda: os._exit(0)).start()
+# A leak guard only: cleanup() kills every stub. It must outlive the whole
+# suite — the GitHub stub starts first and `update tensorfold` asks it
+# minutes later on a slow runner (90 s here failed with curl: (7)).
+threading.Timer(1800, lambda: os._exit(0)).start()
 http.server.ThreadingHTTPServer((host, port), H).serve_forever()
 PY
 GH_PORT="$(_free_port)"
@@ -207,6 +210,12 @@ mkdir -p "$T/gb10bin"; printf '#!/bin/bash\ncase "$*" in *name*) echo "NVIDIA GB
 printf 'MemTotal:       127598416 kB\n' > "$T/meminfo"
 _o="$(env -i "${BASE_ENV[@]}" PATH="$T/gb10bin:$T/bin:/usr/bin:/bin" OB_MEMINFO="$T/meminfo" OB_ENGINE_HOST_CLASS= REPO_DIR="$SB" bash -c 'source "$REPO_DIR/scripts/lib/engine.sh"; c=$(ob_engine_host_class); echo "$c $(ob_engine_default "$c")"')"
 check "GB10 (memory.total [N/A], OB_GPU_UNIFIED) → host class spark, default tensorfold" '[[ "$_o" == "spark tensorfold" ]]' "$_o"
+# GPU detection (three nvidia-smi runs on a GB10) once per command, however
+# many times the command asks for the host class (status asks twice).
+: > "$T/calls.log"
+_o="$(eng OB_ENGINE_HOST_CLASS= -- status)"
+check "engine.sh status detects the host class once (OB_ENGINE_HOST_CLASS pinned for the command)" \
+  '[[ "$(grep -c "^nvidia-smi" "$T/calls.log")" == 1 && "$_o" == *"host:      rig"* ]]' "$(grep -c "^nvidia-smi" "$T/calls.log") detections: $_o"
 _o="$(_lib OPENBEAST_ENGINE_DEFAULT=vllm bash -c 'source "$REPO_DIR/scripts/lib/engine.sh"; ob_engine_default rig')"
 check "ENGINE_DEFAULT overrides the host-class default" '[[ "$_o" == vllm ]]' "$_o"
 _o="$(_lib OPENBEAST_ENGINE_DEFAULT=nope bash -c 'source "$REPO_DIR/scripts/lib/engine.sh"; ob_engine_default spark' 2>&1)"
@@ -217,6 +226,24 @@ check "conf_set replaces every assignment once, in place; unset drops; comments 
   '[[ "$(cat "$T/c.conf")" == $'"'"'# keep me\nFOO=1\nINFERENCE_BACKEND=tensorfold\nNEW=x y'"'"' ]]' "$(cat "$T/c.conf")"
 check "…the conf keeps mode 600, and one backup was taken first" \
   '[[ "$(stat -c %a "$T/c.conf")" == 600 && $(ls "$T/st0/conf-backups" | wc -l) == 1 ]]'
+# A value is one line: a literal backslash-n stays literal (awk -v used to
+# expand it into a real newline), a real line break is refused, and so is a
+# key that is not a name. Nothing else gets written either way.
+printf 'BIND_HOST=127.0.0.1\n' > "$T/inj.conf"; chmod 600 "$T/inj.conf"
+_o="$(_lib OB_ENGINE_CONF="$T/inj.conf" OPENBEAST_ENGINE_STATE_DIR="$T/st0" bash -c '
+  source "$REPO_DIR/scripts/lib/engine.sh"
+  ob_engine_conf_set ENGINE_PIN_MAYA "v9\nBIND_HOST=0.0.0.0@x"; echo "rc1=$?"
+  ob_engine_conf_set ENGINE_PIN_MAYA "$(printf "v9\nBIND_HOST=0.0.0.0")"; echo "rc2=$?"
+  ob_engine_conf_set "BAD KEY" x; echo "rc3=$?"' 2>&1)"
+check "file_set: a literal \\n stays one line, a real line break or a bad key is refused" \
+  '[[ "$_o" == *rc1=0*rc2=2*rc3=2* && "$(grep -c . "$T/inj.conf")" == 2 && "$(grep ^BIND_HOST= "$T/inj.conf")" == BIND_HOST=127.0.0.1 ]] && grep -qxF "ENGINE_PIN_MAYA=v9\nBIND_HOST=0.0.0.0@x" "$T/inj.conf"' "$_o / $(cat "$T/inj.conf")"
+_o="$(_lib OB_ENGINE_CONF="$T/inj.conf" OPENBEAST_ENGINE_STATE_DIR="$T/st0" bash -c '
+  source "$REPO_DIR/scripts/lib/engine.sh"
+  ob_engine_pin_set vllm "v1/../x" sha256:0000000000000000000000000000000000000000000000000000000000000000 install; echo "rc1=$?"
+  ob_engine_pin_set vllm v0.33.0 "sha256:00 BIND_HOST" install; echo "rc2=$?"
+  ob_engine_pin_set vllm v0.33.0 sha256:0000000000000000000000000000000000000000000000000000000000000000 install; echo "rc3=$?"' 2>&1)"
+check "pin_set refuses a version or ref that is not a pin's shape, and records a good one" \
+  '[[ "$_o" == *rc1=2*rc2=2*rc3=0* && "$(grep -c ^ENGINE_PIN_VLLM= "$T/inj.conf")" == 1 ]]' "$_o"
 
 # ════════════════════════════════════════════════════════════════════════════
 echo ""
@@ -340,6 +367,23 @@ check "OFFLINE update without --from says why and changes nothing" '[[ "$_o" == 
 cp -R "$T/stage-vllm" "$T/stage-bad"; echo tamper >> "$T/stage-bad/$(grep ^TAR= "$T/stage-bad/MANIFEST" | cut -d= -f2)"
 _o="$(eng OPENBEAST_OFFLINE=true -- install vllm --from "$T/stage-bad")"
 check "…a tampered staged tarball is refused" '[[ "$_o" == *"checksum mismatch"* ]]' "$_o"
+_sid="$(grep ^IMAGE_ID= "$T/stage-vllm/MANIFEST" | cut -d= -f2)"; _sdig="$(grep ^DIGEST= "$T/stage-vllm/MANIFEST" | cut -d= -f2)"
+check "…the offline pin is the image id this box verified, not the MANIFEST's registry digest" \
+  '[[ "$(confv ENGINE_PIN_VLLM)" == "v0.33.0@$_sid" && "$_sid" != "$_sdig" ]] && grep -qF "staged-digest=$_sdig (unverified)" "$SB/.engines/history.tsv"' "$(confv ENGINE_PIN_VLLM) / $_sdig"
+printf 'VLLM_IMAGE=old\nVLLM_IMAGE_DIGEST=sha256:%064d\n' 0 > "$T/spark-vllm.env"
+_o="$(eng OPENBEAST_OFFLINE=true -- install vllm --from "$T/stage-vllm" --spark-env "$T/spark-vllm.env")"
+check "…and spark.env gets it as VLLM_IMAGE_ID (which spark-node.sh prefers), the old digest cleared" \
+  'grep -qx "VLLM_IMAGE_ID=$_sid" "$T/spark-vllm.env" && grep -qx "VLLM_IMAGE_DIGEST=" "$T/spark-vllm.env"' "$(cat "$T/spark-vllm.env") / $_o"
+_pin="$(confv ENGINE_PIN_VLLM)"
+_bad=""
+for _kv in 'TAR=../../etc/passwd' 'DIGEST=sha256:0\\nBIND_HOST=0.0.0.0' 'IMAGE_ID=latest' 'VERSION=v0.33.0\\nX=1' 'TAR_SHA256=abc'; do
+  rm -rf "$T/stage-bad"; cp -R "$T/stage-vllm" "$T/stage-bad"
+  sed -i "s|^${_kv%%=*}=.*|$_kv|" "$T/stage-bad/MANIFEST"
+  _o="$(eng OPENBEAST_OFFLINE=true -- install vllm --from "$T/stage-bad")"
+  [[ "$_o" == *"failed"* && "$(confv ENGINE_PIN_VLLM)" == "$_pin" ]] || _bad+=" ${_kv%%=*}"
+done
+check "…a MANIFEST field of the wrong shape (path, line break, not a sha256) is refused, the pin unchanged" \
+  '[[ -z "$_bad" ]] && ! grep -q "^BIND_HOST=" "$SB/openbeast.conf"' "accepted:$_bad"
 DST="$T/dstate3"; mkdir -p "$DST"
 _o="$(eng OPENBEAST_OFFLINE=true DOCKER_STUB_LOAD_DROP_DIGEST=1 -- install vllm --from "$T/stage-vllm")"
 _o2="$(eng -- list)"
@@ -381,6 +425,21 @@ rm -f "$SB/.run/stopped"   # stop.sh marked it; --restart reports only while it 
 _o="$(env -i "${BASE_ENV[@]}" DOCKER_STUB_STATE="$DST" timeout 60 bash "$SB/scripts/healthcheck.sh" --restart 2>&1 || true)"
 check "healthcheck --restart on a DOWN managed vLLM: reports it, relaunches nothing" \
   '[[ "$_o" == *"DOWN vLLM (vllm @ http://$_LO:$VPORT, managed)"* && "$_o" == *"not restarted here"* ]] && ! grep -q "docker run" <(tail -n 3 "$DST/calls.log") && ! grep -q serve-marker "$T/calls.log"' "$_o"
+# Keyless on a network bind: refused for a managed engine as serve.sh
+# refuses it for llama-server (0.0.0.0 counts as "local", so it stays managed).
+_cv="$(cat "$SB/openbeast.conf")"
+sed -i "s|^INFERENCE_URL=.*|INFERENCE_URL=http://0.0.0.0:$VPORT|" "$SB/openbeast.conf"
+: > "$DST/calls.log"; _rc=0
+_o="$(env -i "${BASE_ENV[@]}" DOCKER_STUB_STATE="$DST" timeout 30 bash "$SB/scripts/engine-serve.sh" 2>&1)" || _rc=$?
+check "engine-serve.sh refuses a keyless managed engine on 0.0.0.0 (exit 3, nothing launched)" \
+  '[[ $_rc -eq 3 && "$_o" == *"refusing to serve keyless vllm"*"ALLOW_OPEN_INFERENCE=true"* ]] && ! grep -q "docker run" "$DST/calls.log"' "rc=$_rc $_o"
+sed -i '/^ENGINE_PROFILE=/d' "$SB/openbeast.conf"; _rc=0
+_o="$(env -i "${BASE_ENV[@]}" DOCKER_STUB_STATE="$DST" OPENBEAST_ALLOW_OPEN_INFERENCE=true timeout 30 bash "$SB/scripts/engine-serve.sh" 2>&1)" || _rc=$?
+check "…ALLOW_OPEN_INFERENCE=true acknowledges it (the launch proceeds to its own checks)" \
+  '[[ $_rc -ne 3 && "$_o" != *"refusing to serve keyless"* && "$_o" == *"ENGINE_PROFILE is not set"* ]]' "rc=$_rc $_o"
+printf '%s\n' "$_cv" > "$SB/openbeast.conf"
+_o="$(eng -- use vllm --profile "$T/prof/rigvllm.env" --url "http://0.0.0.0:$VPORT" --dry-run)"
+check "…and engine.sh use says so up front" '[[ "$_o" == *"WARNING: http://0.0.0.0:$VPORT is not loopback"*"REFUSE"* ]]' "$_o"
 
 # ════════════════════════════════════════════════════════════════════════════
 echo ""
@@ -542,27 +601,92 @@ check "…and a --digest that contradicts the reviewed commit is refused" '[[ "$
 _o="$(eng "${MENV[@]}" -- stage maya --version v9.9.9 "$T/stage-maya")"
 check "stage maya: both commits as bare repos, the locked wheels, a MANIFEST" \
   '[[ -d "$T/stage-maya/maya.git" && -d "$T/stage-maya/llama.cpp.git" && -f "$T/stage-maya/wheels/numpy-2.5.4-x.whl" ]] && grep -q "^COMMIT=$MC1$" "$T/stage-maya/MANIFEST" && grep -q "^LLAMA_COMMIT=$ML$" "$T/stage-maya/MANIFEST" && grep -q "pip download --require-hashes" "$T/pip.log"' "$_o"
+: > "$T/pip.log"
+_o="$(eng "${MENV[@]}" ENG_STAGE_PLATFORM=manylinux_2_28_x86_64 MAYA_STAGE_PYTHON=3.12 -- stage maya --version v9.9.9 "$T/stage-maya-rig")"
+check "stage maya with the runbook's env form (ENG_STAGE_PLATFORM) downloads the rig's wheels, not this box's" \
+  'grep -q -- "pip download .*--platform manylinux_2_28_x86_64 --python-version 3.12" "$T/pip.log"' "$(cat "$T/pip.log") / $_o"
+: > "$T/pip.log"
+_o="$(eng "${MENV[@]}" ENG_STAGE_PLATFORM=manylinux_2_28_x86_64 -- stage maya --version v9.9.9 --platform manylinux_2_28_aarch64 "$T/stage-maya-rig")"
+check "…and --platform still wins over the env" 'grep -q -- "--platform manylinux_2_28_aarch64" "$T/pip.log"' "$(cat "$T/pip.log")"
 rm -rf "$T/opt"; : > "$T/pip.log"
 _o="$(eng "${MENV[@]}" OPENBEAST_OFFLINE=true OB_ENGINE_MAYA_URL=file:///nonexistent OB_ENGINE_LLAMA_URL=file:///nonexistent -- install maya --from "$T/stage-maya")"
 check "OFFLINE install maya --from DIR: verified commits from the folder, wheels with --no-index" \
   '[[ "$(git -C "$T/opt/maya" rev-parse HEAD)" == "$MC1" ]] && grep -q -- "--no-index --find-links $T/stage-maya/wheels" "$T/pip.log"' "$_o"
 _o="$(eng "${MENV[@]}" OPENBEAST_OFFLINE=true -- install maya --version v9.9.9)"
 check "…and OFFLINE without --from refuses to download" '[[ "$_o" == *"OFFLINE=true — no download"* ]]' "$_o"
+# A staged folder is data, not a reviewer: its MANIFEST cannot name an
+# unreviewed commit, a path, or extra conf lines.
+_mpin="$(confv ENGINE_PIN_MAYA)"
+_evil() { # _evil <VERSION value> → $T/stage-evil, a copy of the good stage
+  rm -rf "$T/stage-evil"; cp -R "$T/stage-maya" "$T/stage-evil"
+  sed -i "s|^VERSION=.*|VERSION=$1|; s|^COMMIT=.*|COMMIT=$MC2|" "$T/stage-evil/MANIFEST"
+}
+_evil v9.9.11
+_o="$(eng "${MENV[@]}" OPENBEAST_OFFLINE=true -- install maya --from "$T/stage-evil")"
+check "install --from a MANIFEST naming an unreviewed version + commit is refused (the folder is not --digest)" \
+  '[[ "$_o" == *"not a reviewed version"* && "$_o" != *"because you named it"* && "$(confv ENGINE_PIN_MAYA)" == "$_mpin" && ! -e "$T/opt/maya-v9.9.11" ]]' "$_o"
+_evil ../../victim
+_o="$(eng "${MENV[@]}" OPENBEAST_OFFLINE=true -- install maya --from "$T/stage-evil" --digest "$MC2")"
+check "…a VERSION with ../ in it is refused before any path is built, even with --digest" \
+  '[[ "$_o" == *"not a Maya version"* && ! -e "$T/victim" && ! -e "$T/opt/victim" && ! -e "$T/opt/maya-.." && "$(confv ENGINE_PIN_MAYA)" == "$_mpin" ]]' "$_o / $(ls "$T" "$T/opt")"
+_evil 'v9\\nBIND_HOST=0.0.0.0\\nX='
+_o="$(eng "${MENV[@]}" OPENBEAST_OFFLINE=true -- install maya --from "$T/stage-evil" --digest "$MC2")"
+check "…and a VERSION carrying \\n KEY= lines never reaches openbeast.conf" \
+  '[[ "$_o" == *"not a Maya version"* ]] && ! grep -q "^BIND_HOST=" "$SB/openbeast.conf" && [[ "$(confv ENGINE_PIN_MAYA)" == "$_mpin" ]]' "$_o / $(cat "$SB/openbeast.conf")"
 # The gate: no verdict, no use. The profile ships in scripts/engines/maya/profiles/.
 printf 'LLAMA_API_KEY=sekrit-maya\n' > "$SB/openbeast.conf"; chmod 600 "$SB/openbeast.conf"
 _o="$(eng "${MENV[@]}" -- use maya --profile glm53-flash-abl-q2kxl --force)"
 check "use maya without a gate verdict is refused (even with --force), the conf untouched" \
   '[[ "$_o" == *"maya is gated: no measurement on file"* && "$(cat "$SB/openbeast.conf")" == "LLAMA_API_KEY=sekrit-maya" ]]' "$_o"
 mkdir -p "$SB/.engines/gate"
-printf '{"schema": "openbeast-engine-gate/1", "engine": "maya", "pass": true, "ratio": 1.62, "candidate_tps": 32.4, "baseline_tps": 20.0, "time": "t"}\n' > "$SB/.engines/gate/maya.json"
+_GG="$(sed -n 's/^GGUF=//p' "$SB/scripts/engines/maya/profiles/glm53-flash-abl-q2kxl.env")"
+_verdict() { # _verdict <profile> <commit> [host] — a passing verdict bound to them
+  "$PY" - "$SB/.engines/gate/maya.json" "$1" "$_GG" "$2" "${3:-}" <<'PY'
+import json, platform, sys
+out, prof, gguf, commit, host = sys.argv[1:6]
+json.dump({"schema": "openbeast-engine-gate/1", "engine": "maya", "pass": True, "ratio": 1.62,
+           "candidate_tps": 32.4, "baseline_tps": 20.0, "time": "t", "host": host or platform.node(),
+           "bound": {"profile": prof, "gguf": gguf, "commit": commit}}, open(out, "w"))
+PY
+}
+_verdict glm53-flash-abl-q2kxl "$MC1"
+cp "$SB/scripts/engines/maya/profiles/glm53-flash-abl-q2kxl.env" "$T/prof/glm-other.env"
+_o="$(eng "${MENV[@]}" -- use maya --profile "$T/prof/glm-other.env" --force --dry-run)"
+check "a PASS for one profile does not admit another (the verdict is bound to what it measured)" \
+  '[[ "$_o" == *"measured profile glm53-flash-abl-q2kxl, this would run glm-other"* && "$_o" != *"set   INFERENCE_BACKEND=maya"* ]]' "$_o"
+_verdict glm53-flash-abl-q2kxl "$MC2"
+_o="$(eng "${MENV[@]}" -- use maya --profile glm53-flash-abl-q2kxl --force --dry-run)"
+check "…nor another Maya commit (an update, a --digest, a rollback is unmeasured)" \
+  '[[ "$_o" == *"measured commit $MC2, this would run $MC1"* && "$_o" != *"set   INFERENCE_BACKEND=maya"* ]]' "$_o"
+_verdict glm53-flash-abl-q2kxl "$MC1"
+printf 'LLAMA_API_KEY=sekrit-maya\nENGINE_GATE_RATIO=2\n' > "$SB/openbeast.conf"
+_o="$(eng "${MENV[@]}" -- use maya --profile glm53-flash-abl-q2kxl --force --dry-run)"
+check "…and ENGINE_GATE_RATIO in openbeast.conf raises the bar for use (1.62x < 2x)" \
+  '[[ "$_o" == *"needs 2.0x"* && "$_o" != *"unknown key"* && "$_o" != *"set   INFERENCE_BACKEND=maya"* ]]' "$_o"
+printf 'LLAMA_API_KEY=sekrit-maya\n' > "$SB/openbeast.conf"
 _o="$(eng "${MENV[@]}" -- use maya --profile glm53-flash-abl-q2kxl --force --dry-run)"
 check "…with a passing verdict: the plan sets maya managed and prints the launch" \
   '[[ "$_o" == *"set   INFERENCE_BACKEND=maya"* && "$_o" == *"set   ENGINE_PROFILE=glm53-flash-abl-q2kxl"* && "$_o" == *"maya.py --config"* && "$_o" == *"MAYA_GLM_RAM_HEADROOM_GB=16"* ]]' "$_o"
 check "…and the key travels by environment only: never in the printed command" \
   '[[ "$_o" == *"MAYA_API_KEY=\<from\ LLAMA_API_KEY"* && "$_o" != *sekrit-maya* ]]' "$_o"
+# The real launch: /usr/bin/env must not carry the key on its argv (it sat in
+# /proc/<pid>/cmdline until env exec'd python); python gets it by environment.
+mkdir -p "$T/envbin" "$T/opt/maya/.venv/bin" "$SB/.engines/maya"
+printf '#!/bin/bash\nprintf "%%s\\n" "$@" > %s/env-argv\nexec /usr/bin/env "$@"\n' "$T" > "$T/envbin/env"
+printf '#!/bin/bash\necho "MAYA_API_KEY=${MAYA_API_KEY:-unset}" > %s/maya-env\n' "$T" > "$T/opt/maya/.venv/bin/python"
+chmod +x "$T/envbin/env" "$T/opt/maya/.venv/bin/python"
+echo '{"host": "x", "port": 1}' > "$T/maya-prepared.json"; echo "$T/maya-prepared.json" > "$SB/.engines/maya/glm53-flash-abl-q2kxl.config"
+env -i "${BASE_ENV[@]}" "${MENV[@]}" PATH="$T/envbin:$T/bin:$(dirname "$PY"):/usr/bin:/bin" REPO_DIR="$SB" \
+  OPENBEAST_ENGINE_PROFILE=glm53-flash-abl-q2kxl LLAMA_API_KEY=sekrit-maya \
+  bash -c 'source "$REPO_DIR/scripts/lib/engine.sh"; ob_engine_load maya; eng_maya_launch' >/dev/null 2>&1 || true
+check "…and the real launch hands MAYA_API_KEY to python by environment, never on env's argv" \
+  '[[ -s "$T/env-argv" ]] && grep -q "maya.py" "$T/env-argv" && ! grep -q sekrit "$T/env-argv" && grep -qx "MAYA_API_KEY=sekrit-maya" "$T/maya-env"' \
+  "argv: $(tr '\n' ' ' < "$T/env-argv" 2>/dev/null) / $(cat "$T/maya-env" 2>/dev/null)"
 _o="$(env -i "${BASE_ENV[@]}" REPO_DIR="$SB" bash -c 'source "$REPO_DIR/scripts/lib/memscope.sh"; source "$REPO_DIR/scripts/lib/engine.sh"; ob_engine_load maya; ob_mem_scope "$(eng_maya_scope_file glm53-flash-abl-q2kxl)" rig 127926272 75')"
 check "the Maya profile asks start.sh for the same rig-only 90% / memlock scope as llama.cpp's big mode" \
   '[[ "$_o" == "90 infinity profile:glm53-flash-abl-q2kxl.env" ]]' "$_o"
+check "no awk in an adapter uses a {n} interval (mawk 1.3.4-20200120 reads it literally)" \
+  '! grep -nE "awk.*~ /[^/]*\{[0-9]+(,[0-9]*)?\}" "$REPO_DIR"/scripts/engines/*.sh "$REPO_DIR"/scripts/lib/engine.sh'
 rm -f "$SB/.engines/gate/maya.json"; : > "$SB/openbeast.conf"
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -574,6 +698,23 @@ _o="$(env -i "${BASE_ENV[@]}" DOCKER_STUB_STATE="$DST" OPENBEAST_SERVE_SCRIPT=se
 check "start.sh runs the serve script, prints the llama.cpp lines it always did" \
   '[[ "$_o" == *"Starting llama.cpp server (serve-marker.sh)..."* ]] && grep -q "serve-marker" "$T/calls.log"' "$(tail -n 8 <<< "$_o")"
 check "…never touches engine-serve.sh or runs a container" '[[ "$_o" != *engine-serve* ]] && ! grep -qE "docker (run|stop|pull)" "$DST/calls.log"' "$(cat "$DST/calls.log")"
+# A rig-only big profile is refused in EVERY launch mode, not only under
+# start.sh -d's systemd scope: here a FOREGROUND start (no scope at all).
+{ printf '#!/bin/bash\n# openbeast-scope: mem-limit-pct=90 memlock=infinity host-class=rig min-mem-gib=118\n'
+  printf 'echo "serve-big-marker $0" >> "%s/calls.log"\nexit 7\n' "$T"; } > "$SB/scripts/serve-big-marker.sh"
+chmod +x "$SB/scripts/serve-big-marker.sh"
+printf 'MemTotal:       127926272 kB\n' > "$T/meminfo-rig"; printf 'MemTotal:       65000000 kB\n' > "$T/meminfo-64"
+_big() { : > "$T/calls.log"; env -i "${BASE_ENV[@]}" DOCKER_STUB_STATE="$DST" OPENBEAST_SERVE_SCRIPT=serve-big-marker.sh \
+  OPENBEAST_LLAMA_LOAD_GRACE=5 OPENBEAST_MODEL_ROLLBACK=false "$@" timeout 60 bash "$SB/start.sh" 2>&1 || true; }
+_o="$(_big OB_ENGINE_HOST_CLASS=spark OB_MEMINFO="$T/meminfo-rig")"
+check "foreground start.sh refuses a rig-only scope profile on a Spark, before any load" \
+  '[[ "$_o" == *"rig-only profile"*"Nothing was started"* ]] && ! grep -q serve-big-marker "$T/calls.log"' "$(tail -n 5 <<< "$_o")"
+_o="$(_big OB_MEMINFO="$T/meminfo-64")"
+check "…and on a 64 GB rig (min-mem-gib=118)" \
+  '[[ "$_o" == *"at least 118 GiB"*"Nothing was started"* ]] && ! grep -q serve-big-marker "$T/calls.log"' "$(tail -n 5 <<< "$_o")"
+_o="$(_big OB_MEMINFO="$T/meminfo-rig")"
+check "…on the rig it launches, and says a foreground start has no memory cap" \
+  '[[ "$_o" == *"runs WITHOUT a memory cap"* ]] && grep -q serve-big-marker "$T/calls.log"' "$(tail -n 8 <<< "$_o")"
 _hooks="$(grep -c 'engine-plane hook' "$REPO_DIR/start.sh")"
 _lp="$(awk '/^wait_llama_health\(\) \{/,/^}/' "$REPO_DIR/start.sh" | grep -c '${_OB_READY_FN:-ob_llama_ready}')"
 check "start.sh: the hooks are delimited, and wait_llama_health falls back to ob_llama_ready itself" \

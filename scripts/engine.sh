@@ -71,6 +71,8 @@ source "$SCRIPT_DIR/lib/engine.sh"
 # shellcheck source=lib/proc.sh
 source "$SCRIPT_DIR/lib/proc.sh"
 [[ -f "$SCRIPT_DIR/lib/curl_auth.sh" ]] && source "$SCRIPT_DIR/lib/curl_auth.sh"
+# One GPU detection per command, not one per question (history needs none).
+[[ "$CMD" == history ]] || ob_engine_host_class_pin
 
 die() { echo "Error: $*" >&2; exit 1; }
 need_engine() {
@@ -101,7 +103,7 @@ spark_env_sync() {
   ob_engine_has "$e" spark_env || return 0
   while IFS= read -r kv; do
     [[ -n "$kv" ]] || continue
-    ob_engine_file_set "$f" "${kv%%=*}" "${kv#*=}"
+    ob_engine_file_set "$f" "${kv%%=*}" "${kv#*=}" || die "could not write ${kv%%=*} to $f (above)"
     echo "  $f: ${kv%%=*}=${kv#*=}"
   done < <(ob_engine_call "$e" spark_env "$2" "$3")
 }
@@ -218,6 +220,10 @@ cmd_use() {
       fi
       port="${PORT:-8080}"
       if [[ -n "$URL" ]]; then url="${URL%/}"; else url="http://127.0.0.1:$port"; fi
+      if ob_engine_keyless_open "$url"; then
+        echo "WARNING: $url is not loopback and LLAMA_API_KEY is empty: scripts/engine-serve.sh will REFUSE to launch $ENGINE keyless there (exit 3)." >&2
+        echo "         Use --url http://127.0.0.1:$port, set LLAMA_API_KEY, or ALLOW_OPEN_INFERENCE=true in openbeast.conf to accept it." >&2
+      fi
       sets+=("INFERENCE_BACKEND=$ENGINE" "INFERENCE_URL=$url" "INFERENCE_MANAGED=true" "ENGINE_PROFILE=$PROFILE")
     else
       sets+=("INFERENCE_BACKEND=$ENGINE" "INFERENCE_URL=$url" "INFERENCE_MANAGED=false")
@@ -275,7 +281,10 @@ cmd_use() {
 
 # ── install / update / stage / rollback ────────────────────────────────────
 _record() { # _record <action>
-  ob_engine_pin_set "$ENGINE" "$ENG_RESULT_VERSION" "$ENG_RESULT_REF" "$1" "${ENG_RESULT_NOTE:-}${FROM:+ from=$FROM}"
+  # ob_engine_pin_set refuses a version or ref that is not a pin's shape
+  # (lib/engine.sh ob_engine_pin_valid): they are written to openbeast.conf.
+  ob_engine_pin_set "$ENGINE" "$ENG_RESULT_VERSION" "$ENG_RESULT_REF" "$1" "${ENG_RESULT_NOTE:-}${FROM:+ from=$FROM}" \
+    || die "$ENGINE: the install produced a pin openbeast.conf must not hold (above) — the pin did not move"
   echo "pinned $ENGINE $ENG_RESULT_VERSION @ $ENG_RESULT_REF"
   spark_env_sync "$ENGINE" "$ENG_RESULT_VERSION" "$ENG_RESULT_REF"
   if [[ "$INFERENCE_BACKEND" == "$ENGINE" && "$INFERENCE_MANAGED" == true ]] && stack_running; then
@@ -311,8 +320,12 @@ cmd_install() { # cmd_install <install|update>
 cmd_stage() {
   need_engine
   [[ -n "$DIR" ]] || die "stage needs a target directory: engine.sh stage $ENGINE [--version V] DIR"
-  ENG_STAGE_DIGEST="$DIGEST" ENG_STAGE_PLATFORM="$PLATFORM" ob_engine_call "$ENGINE" stage "$VERSION" "$DIR" \
-    || die "staging $ENGINE failed"
+  # --digest / --platform win; without them, an exported ENG_STAGE_DIGEST /
+  # ENG_STAGE_PLATFORM stands (the form docs/WEIGHT_STREAMING.md step 7
+  # uses). A bare prefix assignment of the empty flag value clobbered it, so
+  # Maya's wheels were silently staged for THIS box, not the closed one.
+  ENG_STAGE_DIGEST="${DIGEST:-${ENG_STAGE_DIGEST:-}}" ENG_STAGE_PLATFORM="${PLATFORM:-${ENG_STAGE_PLATFORM:-}}" \
+    ob_engine_call "$ENGINE" stage "$VERSION" "$DIR" || die "staging $ENGINE failed"
 }
 
 cmd_rollback() {

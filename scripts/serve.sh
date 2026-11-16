@@ -263,8 +263,14 @@ fi
 # as strict as with "localhost" (v1.0.0 treats "localhost" as same-origin
 # only). Without a tailnet name it stays "localhost".
 if [[ -z "${LLAMA_ARG_CORS_ORIGINS:-}" ]]; then
+  # conf.sh looked the name up when it was sourced (_OB_WEBUI_TS_FQDN); ask
+  # tailscale again only when it did not (WEBUI_ORIGINS='*').
   _ts_fqdn=""
-  declare -F _ob_webui_tailnet_name >/dev/null 2>&1 && _ts_fqdn="$(_ob_webui_tailnet_name 2>/dev/null || true)"
+  if [[ -n "${_OB_WEBUI_TS_FQDN+set}" ]]; then
+    _ts_fqdn="$_OB_WEBUI_TS_FQDN"
+  elif declare -F _ob_webui_tailnet_name >/dev/null 2>&1; then
+    _ts_fqdn="$(_ob_webui_tailnet_name 2>/dev/null || true)"
+  fi
   if [[ "$_ts_fqdn" =~ ^[a-z0-9.-]+\.[a-z0-9-]+$ ]]; then
     LLAMA_ARG_CORS_ORIGINS="https://$_ts_fqdn:8443"
   fi
@@ -306,7 +312,9 @@ if [[ -z "$_pc" ]] && declare -F _ob_conf_value >/dev/null 2>&1; then
 fi
 read -r _pc _ <<< "$_pc" || true          # first token: `32768  # comment`
 _pc_own=0
-for _a in "${EXTRA_ARGS[@]}"; do
+# ${a[@]+"${a[@]}"}: bash 3.2 (macOS /bin/bash) calls an empty array unbound
+# under set -u, and a serve script with no passthrough flags has one.
+for _a in ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}; do
   [[ "$_a" == "--cache-ram" || "$_a" == "-cram" ]] && _pc_own=1
 done
 if [[ -n "$_pc" && "$_pc" != "auto" && ! "$_pc" =~ ^(-1|[0-9]+)$ ]]; then
@@ -353,7 +361,7 @@ fi
 
 exec "$LLAMA_SERVER" \
   -m "$MODEL" \
-  "${ALIAS_ARGS[@]}" \
+  ${ALIAS_ARGS[@]+"${ALIAS_ARGS[@]}"} \
   -ngl "$GPU_LAYERS" \
   -c "$CONTEXT" \
   -np "$PARALLEL" \
@@ -364,5 +372,5 @@ exec "$LLAMA_SERVER" \
   --host "$HOST" \
   --port "$PORT" \
   ${PROMPT_CACHE_ARGS[@]+"${PROMPT_CACHE_ARGS[@]}"} \
-  "${EXTRA_ARGS[@]}" \
+  ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
   ${REASONING_ARGS[@]+"${REASONING_ARGS[@]}"}

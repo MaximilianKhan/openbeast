@@ -30,6 +30,7 @@ export OB_CONF_READONLY=1
 source "$SCRIPT_DIR/lib/conf.sh"
 # shellcheck source=lib/engine.sh
 source "$SCRIPT_DIR/lib/engine.sh"
+ob_engine_host_class_pin          # one GPU detection for the whole launch
 E="$INFERENCE_BACKEND"
 if [[ "$E" == llama ]]; then
   echo "engine-serve.sh: INFERENCE_BACKEND=llama is launched by scripts/serve-*.sh, not here." >&2
@@ -39,12 +40,28 @@ if ! ob_engine_can_manage "$E"; then
   echo "engine-serve.sh: the $E adapter has no single-host launcher (scripts/engines/$E.sh)." >&2
   exit 2
 fi
+# No keyless inference on a network bind (serve.sh has the same refusal for
+# llama-server). The adapters bind INFERENCE_URL's host and pass a key only
+# when LLAMA_API_KEY is set, and ob_url_is_local counts 0.0.0.0, :: and
+# BIND_HOST as local, so a wildcard or a tailnet IP stays managed. Exit 3:
+# a refusal, not a crash to relaunch.
+_open_refusal() {
+  echo "Error: refusing to serve keyless $E on ${INFERENCE_URL:-http://127.0.0.1:8080} — anyone on that network" >&2
+  echo "       could use the GPU and every route, past beast-gate and its audit." >&2
+  echo "       Fix one of: a 127.0.0.1 INFERENCE_URL (scripts/engine.sh use $E --url http://127.0.0.1:8080)," >&2
+  echo "       set LLAMA_API_KEY, or ALLOW_OPEN_INFERENCE=true in openbeast.conf to accept it." >&2
+}
 if [[ $PRINT -eq 1 ]]; then
+  ob_engine_keyless_open "${INFERENCE_URL:-http://127.0.0.1:8080}" && { _open_refusal; echo "       (--print: the command a launch would run)" >&2; }
   ENG_PRINT=1 ob_engine_call "$E" launch
   exit $?
 fi
 if [[ "$INFERENCE_MANAGED" != true ]]; then
   echo "engine-serve.sh: INFERENCE_MANAGED=false — this stack does not launch $E (scripts/engine.sh use $E --profile NAME)." >&2
   exit 2
+fi
+if ob_engine_keyless_open "${INFERENCE_URL:-http://127.0.0.1:8080}"; then
+  _open_refusal
+  exit 3
 fi
 ob_engine_call "$E" launch
