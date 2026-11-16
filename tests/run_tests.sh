@@ -160,6 +160,7 @@ for _suite in \
   "test_weight_streaming.sh|Weight streaming (per-profile memory scope, MoE-cache / big-mode profiles, llama.cpp v1.0.0 flags, tok/s gate)" \
   "test_spark_cluster.sh|DGX Spark cluster of 1-8 nodes (spark-cluster.sh)" \
   "test_spark_guard.sh|DGX Spark guard (nftables for the rendezvous ports)" \
+  "test_spark_fabric_mtu.sh|DGX Spark fabric MTU 9000 (netplan drop-in for the next reboot)" \
   "test_spark_supply.sh|DGX Spark supply chain (install-native, root-setup debs and key)" \
   "test_opencode_sessions.sh|opencode session clearing" \
   "test_tier3_harness.sh|Tier-3 campaign harness (manifest, stop file, drift)" \
