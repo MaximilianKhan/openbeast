@@ -734,7 +734,7 @@ scripts/engine.sh use <engine|default> --profile NAME --dry-run   # print the co
 On a Spark:
 
 - `install`, `update` and `rollback` also rewrite `scripts/backends/spark.env`
-  (`TENSORFOLD_VERSION`, `VLLM_IMAGE` / `VLLM_IMAGE_DIGEST`), so `spark-node.sh`
+  (`TENSORFOLD_VERSION`, `VLLM_IMAGE` / `VLLM_IMAGE_DIGEST` / `VLLM_IMAGE_ID`), so `spark-node.sh`
   launches the pinned build. **Every rank must run the same build**: update
   each Spark, then restart all ranks.
 - `engine.sh use` manages only a **single-host, TP 1** engine

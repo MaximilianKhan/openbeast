@@ -310,6 +310,19 @@ check "rollback vllm → v0.32.0 from the local image, no pull" \
   '[[ "$(confv ENGINE_PIN_VLLM)" == v0.32.0@* && "$(grep -c "docker pull" "$DST/calls.log")" == "$_n0" ]]' "$_o"
 _o="$(eng -- rollback vllm)"
 check "…rollback again goes forward to v0.33.0 (toggle between the last two pins)" '[[ "$(confv ENGINE_PIN_VLLM)" == v0.33.0@* ]]' "$_o"
+# spark.env on a Spark pinned by IMAGE ID (offline, sync-image / H4): sp_image
+# runs the ID whenever one is set, so the sync must move it with the pin, or
+# the ranks keep launching the old image while status names the new one.
+printf 'VLLM_IMAGE=vllm/vllm-openai:v0.33.0\nVLLM_IMAGE_DIGEST=sha256:%064d\nVLLM_IMAGE_ID=sha256:%064d\n' 1 2 > "$T/vspark.env"
+_o="$(eng -- rollback vllm --spark-env "$T/vspark.env")"
+_vp="$(confv ENGINE_PIN_VLLM)"
+_vid="$(DOCKER_STUB_STATE="$DST" "$T/bin/docker" image inspect --format '{{.Id}}' "vllm/vllm-openai@${_vp#*@}")"
+check "spark.env sync (vLLM): VLLM_IMAGE, _DIGEST and _ID all follow the pin — a stale image ID no longer wins" \
+  '[[ "$_vp" == v0.32.0@* && "$_vid" =~ ^sha256:[0-9a-f]{64}$ ]] && grep -qx "VLLM_IMAGE=vllm/vllm-openai:v0.32.0" "$T/vspark.env" && grep -qx "VLLM_IMAGE_DIGEST=${_vp#*@}" "$T/vspark.env" && grep -qx "VLLM_IMAGE_ID=$_vid" "$T/vspark.env"' \
+  "$_o / $(cat "$T/vspark.env") / want id $_vid"
+_o="$(eng -- rollback vllm --spark-env "$T/vspark.env")"
+check "…and forward again: the ID is v0.33.0's" \
+  '[[ "$(confv ENGINE_PIN_VLLM)" == v0.33.0@* ]] && grep -qx "VLLM_IMAGE_ID=$(DOCKER_STUB_STATE="$DST" "$T/bin/docker" image inspect --format "{{.Id}}" "vllm/vllm-openai:v0.33.0")" "$T/vspark.env"' "$_o / $(cat "$T/vspark.env")"
 _pin="$(confv ENGINE_PIN_VLLM)"
 _o="$(eng -- install vllm --version v0.33.0 --digest sha256:0000000000000000000000000000000000000000000000000000000000000000)"
 check "install --digest that the registry does not serve: refused, pin unchanged" \

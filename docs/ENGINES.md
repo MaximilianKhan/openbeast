@@ -121,7 +121,7 @@ What a managed vllm / tensorfold run gets, and does not get:
 - History is `.engines/history.tsv` (untracked). Every `use` first copies the
   conf to `.engines/conf-backups/` (0600).
 - **On a Spark**, install / update / rollback also rewrite
-  `scripts/backends/spark.env` (`VLLM_IMAGE` / `VLLM_IMAGE_DIGEST`,
+  `scripts/backends/spark.env` (`VLLM_IMAGE` / `VLLM_IMAGE_DIGEST` / `VLLM_IMAGE_ID`,
   `TENSORFOLD_VERSION`), so `spark-node.sh` launches the pinned build.
   `--spark-env FILE` does the same anywhere. **Every rank must run the same
   build**: update each Spark, then restart all ranks.
