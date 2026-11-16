@@ -359,14 +359,29 @@ _SCHEMA_CHARS = len(json.dumps(TOOL_SCHEMAS))
 # operator's REASONING_BUDGET when set (env, else openbeast.conf — the value
 # serve.sh passes as --reasoning-budget; -1 = unlimited means no cap here
 # either), else the shipped serve scripts' 20480. OPENBEAST_AGENT_MAX_TOKENS
-# overrides it all (0 = uncapped). Eval runs stay uncapped: run_eval bounds
-# each task by wall time, and a cap would change measured behaviour under
-# unlimited-thinking configs.
+# overrides it all (0 = uncapped).
+#
+# Eval runs were uncapped (run_eval bounds each task by wall time). Runner v2
+# caps them too (G11 in docs/HARNESS_NOTES.md): on the 2026-11-16 v5 L0,
+# GLM-5.3-Flash's first code-writing turn on 168 ran past the client's 600 s
+# read timeout in 5 of 5 attempts, was retried identically, and the unit spent
+# its whole 1,800 s wall without writing a file. A capped turn instead ends
+# with finish_reason "length" and the truncation recovery below hands the head
+# back to the model with a nudge. The eval cap is fixed, the same for every
+# model: 16K tokens with thinking off (a v5 solution file is a few thousand
+# tokens; the cap only bites on a runaway), 32K with OPENBEAST_AGENT_THINKING=on
+# (room for a long think plus the same answer). The client's read timeout is
+# sized to the cap at a pessimistic 20 tok/s, so a capped turn on a busy
+# 4-stream server is never cut off by the client first.
 # ---------------------------------------------------------------------------
 _DEFAULT_REASONING_BUDGET = 20480   # --reasoning-budget in the shipped serve scripts
 _CONTENT_ALLOWANCE_TOKENS = 12288
 _DEFAULT_MAX_COMPLETION_TOKENS = _DEFAULT_REASONING_BUDGET + _CONTENT_ALLOWANCE_TOKENS
 _CLIENT_MAX_RETRIES = 1        # one quick retry for a blip; the loop owns the rest
+_EVAL_TURN_TOKENS = 16384           # eval cap, thinking off/unset (G11)
+_EVAL_TURN_TOKENS_THINKING = 32768  # eval cap, OPENBEAST_AGENT_THINKING=on
+_CLIENT_TIMEOUT_FLOOR_S = 600.0     # the openai client's own default
+_PESSIMISTIC_TOK_S = 20.0           # per-stream decode under --jobs load
 # A 429 is admission control (beast-gate's per-device in-flight / rate caps,
 # beast-chat's slot cap), not a failed turn: wait the server's Retry-After and
 # re-send the SAME turn, without spending an iteration or counting an API
@@ -411,14 +426,15 @@ def _conf_value(key: str) -> str:
 
 def _max_completion_tokens() -> int:
     """max_tokens for an agent request; 0 means send none (uncapped)."""
-    if os.environ.get(_EVAL_MARKER):
-        return 0
     raw = os.environ.get("OPENBEAST_AGENT_MAX_TOKENS", "").strip()
     if raw:
         try:
             return max(0, int(raw))
         except ValueError:
             pass
+    if os.environ.get(_EVAL_MARKER):
+        thinking = os.environ.get("OPENBEAST_AGENT_THINKING", "").strip().lower() == "on"
+        return _EVAL_TURN_TOKENS_THINKING if thinking else _EVAL_TURN_TOKENS
     budget = (os.environ.get("OPENBEAST_REASONING_BUDGET", "").strip()
               or os.environ.get("REASONING_BUDGET", "").strip()
               or _conf_value("REASONING_BUDGET"))
@@ -431,6 +447,15 @@ def _max_completion_tokens() -> int:
     if n < 0:
         return 0   # unlimited thinking: a token cap would cut it mid-thought
     return n + _CONTENT_ALLOWANCE_TOKENS
+
+
+def _client_timeout_s(max_tokens: int) -> float:
+    """Read timeout for the model client: the openai default, raised so a
+    turn that runs to `max_tokens` at a pessimistic per-stream rate is ended
+    by the cap (recoverable), not by the client (a lost, retried turn)."""
+    if max_tokens <= 0:
+        return _CLIENT_TIMEOUT_FLOOR_S
+    return max(_CLIENT_TIMEOUT_FLOOR_S, max_tokens / _PESSIMISTIC_TOK_S)
 
 
 def _thinking_kwargs() -> dict:
@@ -974,10 +999,11 @@ def run_agent(
         system_prompt = build_system_prompt(context=context, context_budget=context_budget,
                                             max_iter=max_iter)
 
-    client = OpenAI(base_url=base_url, api_key=resolve_api_key(api_key, base_url),
-                    max_retries=_CLIENT_MAX_RETRIES)
-    # Resolved once per run; {} (send nothing) under eval or when set to 0.
+    # Resolved once per run; {} (send nothing) when set to 0 or unlimited.
     max_tokens = _max_completion_tokens()
+    client = OpenAI(base_url=base_url, api_key=resolve_api_key(api_key, base_url),
+                    max_retries=_CLIENT_MAX_RETRIES,
+                    timeout=_client_timeout_s(max_tokens))
     cap_kwargs = {"max_tokens": max_tokens} if max_tokens else {}
     think_kwargs = _thinking_kwargs()   # {} unless OPENBEAST_AGENT_THINKING
 

@@ -408,7 +408,8 @@ def test_thinking_unset_sends_nothing(tmp_path, monkeypatch, value):
         monkeypatch.delenv("OPENBEAST_AGENT_THINKING", raising=False)
     else:
         monkeypatch.setenv("OPENBEAST_AGENT_THINKING", value)
-    monkeypatch.setenv("OPENBEAST_EVAL", "1")      # uncapped: no max_tokens either
+    monkeypatch.setenv("OPENBEAST_EVAL", "1")
+    monkeypatch.setenv("OPENBEAST_AGENT_MAX_TOKENS", "0")   # uncapped: no max_tokens either
     client = _run_kw(tmp_path, monkeypatch, [_resp("task_done", {"summary": "ok"})])
     assert client.kwargs == [{}]                    # byte-identical request
 
@@ -418,6 +419,7 @@ def test_thinking_without_a_cap_is_not_mistaken_for_truncation(tmp_path, monkeyp
     # toggle's kwargs must not make an uncapped turn look truncated.
     monkeypatch.setenv("OPENBEAST_AGENT_THINKING", "on")
     monkeypatch.setenv("OPENBEAST_EVAL", "1")
+    monkeypatch.setenv("OPENBEAST_AGENT_MAX_TOKENS", "0")   # no cap sent
     msg = type("M", (), {"content": "x" * 5000, "tool_calls": None})()
     resp = type("R", (), {"choices": [type("C", (), {
         "message": msg, "finish_reason": "length"})()], "usage": None})()

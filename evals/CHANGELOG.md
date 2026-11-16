@@ -31,6 +31,15 @@ many of them:
 - **Timeouts.** A bash timeout always says it timed out and the limit. On
   macOS, killpg on a group of zombies raised EPERM, so a killed hung
   pipeline read as "[Errno 1] Operation not permitted".
+- **Eval turn cap.** Eval requests now carry `max_tokens` (they sent none):
+  16384 with thinking off/unset, 32768 with `OPENBEAST_AGENT_THINKING=on`,
+  the same for every model; `OPENBEAST_AGENT_MAX_TOKENS` still overrides
+  (0 = uncapped). The client's read timeout is sized to the cap at 20 tok/s
+  (floor 600 s). On 168 (c, f) the model's first code-writing turn ran past
+  the client's 600 s timeout in 5 of 5 attempts, was retried identically, and
+  the unit spent its 1,800 s wall without writing a file; a capped turn ends
+  as "length" and the existing truncation recovery returns its head with a
+  nudge.
 - **Thinking toggle (opt-in, off by default).** `OPENBEAST_AGENT_THINKING=on|off`
   sends `chat_template_kwargs.enable_thinking` true/false on every request;
   unset sends nothing (requests unchanged). It is the switch for a "thinking
