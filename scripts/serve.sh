@@ -285,7 +285,9 @@ if [[ -z "$_pc" ]] && declare -F _ob_conf_value >/dev/null 2>&1; then
 fi
 read -r _pc _ <<< "$_pc" || true          # first token: `32768  # comment`
 _pc_own=0
-for _a in "${EXTRA_ARGS[@]}"; do
+# ${a[@]+"${a[@]}"}: bash 3.2 (macOS /bin/bash) calls an empty array unbound
+# under set -u, and a serve script with no passthrough flags has one.
+for _a in ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}; do
   [[ "$_a" == "--cache-ram" || "$_a" == "-cram" ]] && _pc_own=1
 done
 if [[ -n "$_pc" && "$_pc" != "auto" && ! "$_pc" =~ ^(-1|[0-9]+)$ ]]; then
@@ -332,7 +334,7 @@ fi
 
 exec "$LLAMA_SERVER" \
   -m "$MODEL" \
-  "${ALIAS_ARGS[@]}" \
+  ${ALIAS_ARGS[@]+"${ALIAS_ARGS[@]}"} \
   -ngl "$GPU_LAYERS" \
   -c "$CONTEXT" \
   -np "$PARALLEL" \
@@ -343,5 +345,5 @@ exec "$LLAMA_SERVER" \
   --host "$HOST" \
   --port "$PORT" \
   ${PROMPT_CACHE_ARGS[@]+"${PROMPT_CACHE_ARGS[@]}"} \
-  "${EXTRA_ARGS[@]}" \
+  ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
   ${REASONING_ARGS[@]+"${REASONING_ARGS[@]}"}

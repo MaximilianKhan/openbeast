@@ -393,6 +393,27 @@ SH
   fi
 done
 echo ""
+echo "serve.sh under bash 3.2 (macOS /bin/bash, the mac host class):"
+# Under set -u, bash < 4.4 calls "${a[@]}" of an EMPTY array unbound, and a
+# serve script with no passthrough flags (serve-gemma-4-31b-q5.sh: -m -a -c)
+# leaves EXTRA_ARGS empty; with no -a, ALIAS_ARGS too. Every expansion of an
+# array that can be empty must be the ${a[@]+"${a[@]}"} form.
+_bare="$(grep -nE '"\$\{(EXTRA_ARGS|ALIAS_ARGS|PROMPT_CACHE_ARGS|REASONING_ARGS)\[@\]\}"' "$REPO_DIR/scripts/serve.sh" \
+         | grep -vE '\$\{(EXTRA_ARGS|ALIAS_ARGS|PROMPT_CACHE_ARGS|REASONING_ARGS)\[@\]\+' || true)"
+[[ -z "$_bare" ]] && pass "serve.sh expands every possibly-empty array with the \${a[@]+…} guard" \
+  || fail "unguarded empty-array expansions in serve.sh: $_bare"
+if [[ -x /bin/bash ]] && /bin/bash -c '(( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) ))'; then
+  rm -f "$SV/argv"; SV_RC=0
+  SV_OUT="$(env -i HOME="$SV/home" PATH="$SV/bin:/usr/bin:/bin" /bin/bash "$SV/scripts/serve.sh" \
+            -m "$SV/weights/linked.gguf" -c 8192 2>&1)" || SV_RC=$?
+  if [[ $SV_RC -eq 0 ]] && _launched; then
+    pass "…and /bin/bash $(/bin/bash -c 'echo $BASH_VERSION') launches a serve with no -a and no extra flags"
+  else
+    fail "/bin/bash serve.sh with no extra flags (rc=$SV_RC): $(tail -n 3 <<< "$SV_OUT" | tr '\n' ' ')"
+  fi
+fi
+
+echo ""
 echo "========================================"
 echo "llama-serving: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]
