@@ -48,6 +48,13 @@ else
   echo "SKIP: the side-by-side byte-identity diff (set WIRING_BASELINE_REF=<a pre-wiring ref>)"
 fi
 
+# The suite targets Linux (CI runs it on ubuntu): some rows extract start.sh
+# functions with GNU sed and read /proc. On anything else those rows FAIL
+# visibly; say why up front instead of leaving an unexplained red run.
+if [[ "$(uname -s)" != "Linux" ]]; then
+  echo "NOTE: $(uname -s) — rows that need GNU sed or /proc fail here; the gate is the Linux run (CI)."
+fi
+
 _T="$(mktemp -d "${TMPDIR:-/tmp}/obwiringXXXXXX")"
 _PIDS=""
 cleanup() {
@@ -239,14 +246,23 @@ fi
 # A conf-FILE HYDRA_DEFAULT_MODEL must reach hydra itself, not only the
 # agents: hydra_core.implicit_raw reads OPENBEAST_HYDRA_DEFAULT_MODEL.
 _o="$(_conf "$_N" $'HYDRA=true\nHYDRA_DEFAULT_MODEL=fleet')"
+# The CALLER's python3, not whatever /usr/bin holds: under env -i
+# PATH=/usr/bin:/bin a Mac found its system 3.9, hydra_core (tomllib, 3.11+)
+# could not import, the error was swallowed, and the row FAILed on correct
+# code (review 2026-11-16). Too old a python3 is a SKIP, said out loud.
+_py3="$(command -v python3 || true)"
+if [[ -z "$_py3" ]] || ! "$_py3" -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
+  echo "  SKIP: HYDRA_DEFAULT_MODEL reaches hydra — needs python3 >= 3.11 on PATH (hydra_core imports tomllib); have ${_py3:-none}"
+else
 _dr="$(env -i HOME="$_N/home" PATH=/usr/bin:/bin bash -c 'set -euo pipefail; REPO_DIR="$1"
         source "$1/scripts/lib/conf.sh" 2>/dev/null
-        nice -n 19 python3 -c "import os, sys; sys.path.insert(0, sys.argv[1]); import hydra_core as c
-print(c.implicit_raw(dict(os.environ))[\"hydra\"][\"default_route\"])" "$2/agents"' _ "$_N" "$REPO_DIR" 2>/dev/null || true)"
+        nice -n 19 "$3" -c "import os, sys; sys.path.insert(0, sys.argv[1]); import hydra_core as c
+print(c.implicit_raw(dict(os.environ))[\"hydra\"][\"default_route\"])" "$2/agents"' _ "$_N" "$REPO_DIR" "$_py3" 2>/dev/null || true)"
 if [[ "$(_get ENV OPENBEAST_HYDRA_DEFAULT_MODEL "$_o")" == "fleet" && "$_dr" == "fleet" ]]; then
   pass "HYDRA_DEFAULT_MODEL from openbeast.conf reaches hydra (its implicit default_route is 'fleet')"
 else
   fail "HYDRA_DEFAULT_MODEL=fleet: exported='$(_get ENV OPENBEAST_HYDRA_DEFAULT_MODEL "$_o")' default_route='$_dr'"
+fi
 fi
 # HYDRA_READY_GRACE is read in (( )): a leading zero must not turn it octal.
 _grace() { env -i HOME="$_N/home" PATH=/usr/bin:/bin OPENBEAST_HYDRA_READY_GRACE="$1" bash -c \
@@ -468,6 +484,17 @@ P_DEAD="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0));
 _box() { # _box <dir> [git-ref]   — stop.sh, healthcheck.sh, libs, stubs
   local d="$1" ref="${2:-}" c f
   mkdir -p "$d/scripts/lib" "$d/.run" "$d/bin" "$d/home" "$d/agents"
+  # macOS has no GNU timeout in /usr/bin:/bin, which is all _run's env -i
+  # PATH holds besides the box's bin: every row run through it read as a
+  # FAIL with "env: timeout: No such file". A minimal stand-in there; a
+  # Linux box (CI) has the real one and gets nothing extra.
+  if ! PATH=/usr/bin:/bin command -v timeout >/dev/null 2>&1; then
+    printf '%s\n' '#!/usr/bin/perl' 'my $s = shift @ARGV; $s =~ s/s$//; my $p = fork();' \
+      'if ($p == 0) { exec @ARGV or exit 127 }' \
+      '$SIG{ALRM} = sub { kill "TERM", $p; sleep 1; kill "KILL", $p; exit 124 }; alarm $s;' \
+      'waitpid($p, 0); exit($? >> 8);' > "$d/bin/timeout"
+    chmod +x "$d/bin/timeout"
+  fi
   for f in start.sh stop.sh scripts/healthcheck.sh scripts/doctor.sh scripts/instinct.sh scripts/lib/conf.sh scripts/lib/net.sh \
            scripts/lib/backend.sh scripts/lib/proc.sh scripts/lib/extensions.sh scripts/lib/curl_auth.sh \
            scripts/lib/portown.sh; do
@@ -477,7 +504,12 @@ _box() { # _box <dir> [git-ref]   — stop.sh, healthcheck.sh, libs, stubs
       cp "$REPO_DIR/$f" "$d/$f"
     fi
   done
-  cp -n "$REPO_DIR"/scripts/lib/*.sh "$d/scripts/lib/"     # the libs no case changes
+  # The libs no case changes. Not `cp -n`: BSD/macOS cp -n exits 1 for every
+  # file it skips, and under set -e that ended the whole suite silently
+  # right after "stop.sh:" (review 2026-11-16).
+  for f in "$REPO_DIR"/scripts/lib/*.sh; do
+    [[ -e "$d/scripts/lib/${f##*/}" ]] || cp "$f" "$d/scripts/lib/"
+  done
   # doctor's "Remote skills" row (the import gate, 2026-10) reads the ledger
   # through skill-import.sh; a worktree box gets the real ones.
   if [[ -z "$ref" ]]; then
@@ -646,7 +678,9 @@ echo "healthcheck.sh — agent router:"
 _RB="$_T/rt"; _box "$_RB"
 P_RT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
 # This box's curl may also reach the port the stub router will bind.
-sed -i "s/\*127\.0\.0\.1:$P_DEAD\*)/*127.0.0.1:$P_DEAD*|*127.0.0.1:$P_RT*)/" "$_RB/bin/curl"
+# (`-i.bak`, attached: the one in-place form GNU and BSD sed both accept.)
+sed -i.bak "s/\*127\.0\.0\.1:$P_DEAD\*)/*127.0.0.1:$P_DEAD*|*127.0.0.1:$P_RT*)/" "$_RB/bin/curl"
+rm -f "$_RB/bin/curl.bak"
 # agents/router.py stub: records the environment it was launched with; with
 # STUB_ROUTER_SERVE it then binds its port and answers 502 — what the real
 # router says while the model is down — for a minute.
