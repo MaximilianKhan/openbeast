@@ -113,6 +113,35 @@ CURL_STUB = textwrap.dedent(r'''
     if path == "/v1/models":
         # The inference endpoint: only what is actually served.
         out({"data": [{"id": m} for m in st.get("served", ["m1"])]})
+    if path.startswith("/api/v1/functions"):
+        # routers/functions.py of the pinned 0.13.3 (admin-only routes).
+        fns = st.setdefault("functions", {})
+        authed = headers.get("authorization", "").startswith("Bearer tok-")
+        if not authed or st.get("functions_broken"):
+            out({"detail": "nope"}, 401)
+        sub = path[len("/api/v1/functions"):]
+        if sub == "/export" and method == "GET":
+            out(list(fns.values()))
+        if sub == "/create" and method == "POST":
+            if body["id"] in fns:
+                out({"detail": "id taken"}, 400)
+            fns[body["id"]] = {"id": body["id"], "name": body["name"], "type": "filter",
+                               "content": body["content"], "meta": body["meta"],
+                               "is_active": False, "is_global": False}
+            save(); out(fns[body["id"]])
+        parts = sub.split("/")          # ['', 'id', fid, action...]
+        if len(parts) >= 4 and parts[1] == "id" and parts[2] in fns and method == "POST":
+            f, action = fns[parts[2]], "/".join(parts[3:])
+            if action == "update":
+                f.update(name=body["name"], content=body["content"], meta=body["meta"])
+            elif action == "toggle":
+                f["is_active"] = not f["is_active"]
+            elif action == "toggle/global":
+                f["is_global"] = not f["is_global"]
+            else:
+                out({"detail": "not found"}, 404)
+            save(); out(f)
+        out({"detail": "not found"}, 401)
     out({})
 ''').lstrip()
 
@@ -132,7 +161,9 @@ def rig(tmp_path):
     (root / "scripts" / "lib").mkdir(parents=True)
     for rel in ("scripts/configure-webui.sh", "scripts/setup-tailscale.sh",
                 "scripts/lib/conf.sh", "scripts/lib/net.sh",
-                "scripts/lib/curl_auth.sh"):
+                "scripts/lib/curl_auth.sh",
+                "agents/webui_functions/random_seed.py"):
+        os.makedirs(os.path.dirname(root / rel), exist_ok=True)
         shutil.copy2(os.path.join(REPO, rel), root / rel)
     conf = root / "openbeast.conf"
     conf.write_text("SEARXNG_SECRET=stub\n")
@@ -1335,3 +1366,121 @@ def test_tailscale_does_not_publish_when_the_probe_is_rate_limited(ts_rig):
     p = ts_rig.run("setup-tailscale.sh", env_extra={"OPENBEAST_API_KEY": "k"})
     assert not _mounted_443(ts_rig), p.stdout + p.stderr
     assert "NOT publishing the WebUI" in p.stderr
+
+
+# --- configure-webui.sh: the random seed filter (2026-11-16) -----------------
+#
+# TensorFold uses a FIXED seed when a request names none, so WebUI's
+# Regenerate returned the same answer. configure-webui.sh installs
+# agents/webui_functions/random_seed.py as a global, active Filter function
+# through WebUI's functions API. Both toggle routes FLIP their flag, so a
+# second run must call neither.
+
+FN_ID = "random_seed"
+FN_SRC = os.path.join(REPO, "agents", "webui_functions", "random_seed.py")
+
+
+def _fn_calls(rig):
+    return [(c["method"], c["path"]) for c in rig.calls()
+            if c["path"].startswith("/api/v1/functions")]
+
+
+def test_random_seed_filter_is_created_active_and_global(rig):
+    rig.set_state(auth=False, admin_pw="admin")
+    p = rig.run("configure-webui.sh")
+    assert p.returncode == 0, p.stderr
+    f = rig.get_state()["functions"][FN_ID]
+    assert f["content"] == open(FN_SRC).read()
+    assert f["is_active"] is True and f["is_global"] is True
+    assert _fn_calls(rig) == [
+        ("GET", "/api/v1/functions/export"),
+        ("POST", "/api/v1/functions/create"),
+        ("POST", f"/api/v1/functions/id/{FN_ID}/toggle"),
+        ("POST", f"/api/v1/functions/id/{FN_ID}/toggle/global"),
+    ]
+    # The admin JWT travels through curl --config, never argv.
+    assert not any(c["argv_bearer"] for c in rig.calls()
+                   if c["path"].startswith("/api/v1/functions"))
+    assert "random seed filter installed" in p.stdout
+
+
+def test_random_seed_filter_second_run_changes_nothing(rig):
+    rig.set_state(auth=False, admin_pw="admin")
+    assert rig.run("configure-webui.sh").returncode == 0
+    rig.log.write_text("")
+    p = rig.run("configure-webui.sh")
+    assert p.returncode == 0, p.stderr
+    assert _fn_calls(rig) == [("GET", "/api/v1/functions/export")]
+    f = rig.get_state()["functions"][FN_ID]
+    assert f["is_active"] is True and f["is_global"] is True
+    assert "already installed" in p.stdout
+
+
+def test_random_seed_filter_changed_source_is_updated_and_reenabled(rig):
+    """A stale copy (older source, switched off by hand, not global) is
+    brought back to this repo's source, active and global."""
+    rig.set_state(auth=False, admin_pw="admin", functions={FN_ID: {
+        "id": FN_ID, "name": "Random Seed", "type": "filter", "content": "old",
+        "meta": {}, "is_active": False, "is_global": False}})
+    p = rig.run("configure-webui.sh")
+    assert p.returncode == 0, p.stderr
+    f = rig.get_state()["functions"][FN_ID]
+    assert f["content"] == open(FN_SRC).read()
+    assert f["is_active"] is True and f["is_global"] is True
+    assert ("POST", "/api/v1/functions/create") not in _fn_calls(rig)
+    assert ("POST", f"/api/v1/functions/id/{FN_ID}/update") in _fn_calls(rig)
+
+
+def test_random_seed_filter_leaves_other_functions_alone(rig):
+    other = {"id": "someones_pipe", "name": "x", "type": "pipe", "content": "c",
+             "meta": {}, "is_active": True, "is_global": False}
+    rig.set_state(auth=False, admin_pw="admin", functions={"someones_pipe": dict(other)})
+    assert rig.run("configure-webui.sh").returncode == 0
+    assert rig.get_state()["functions"]["someones_pipe"] == other
+    assert not [c for c in _fn_calls(rig) if "someones_pipe" in c[1]]
+
+
+@pytest.mark.parametrize("how", ["conf", "env"])
+def test_random_seed_off_switches_an_installed_copy_off(rig, how):
+    rig.set_state(auth=False, admin_pw="admin")
+    assert rig.run("configure-webui.sh").returncode == 0
+    env = None
+    if how == "conf":
+        with open(rig.conf, "a") as f:
+            f.write("WEBUI_RANDOM_SEED=false   # keep the engine's own seed\n")
+    else:
+        env = {"OPENBEAST_WEBUI_RANDOM_SEED": "no"}
+    p = rig.run("configure-webui.sh", env_extra=env)
+    assert p.returncode == 0, p.stderr
+    assert rig.get_state()["functions"][FN_ID]["is_active"] is False
+    assert "switched off" in p.stdout
+    # ...and stays off: a further run toggles nothing.
+    rig.log.write_text("")
+    p = rig.run("configure-webui.sh", env_extra=env)
+    assert p.returncode == 0, p.stderr
+    assert rig.get_state()["functions"][FN_ID]["is_active"] is False
+    assert _fn_calls(rig) == [("GET", "/api/v1/functions/export")]
+
+
+def test_random_seed_off_installs_nothing(rig):
+    rig.set_state(auth=False, admin_pw="admin")
+    p = rig.run("configure-webui.sh", env_extra={"OPENBEAST_WEBUI_RANDOM_SEED": "false"})
+    assert p.returncode == 0, p.stderr
+    assert rig.get_state().get("functions", {}) == {}
+    assert _fn_calls(rig) == [("GET", "/api/v1/functions/export")]
+
+
+def test_random_seed_filter_skipped_without_token(rig):
+    rig.set_state(auth=True, admin_pw="operator-changed-it")
+    p = rig.run("configure-webui.sh")
+    assert p.returncode == 0, p.stderr
+    assert _fn_calls(rig) == []
+    assert "Skipping the random seed filter" in p.stdout
+
+
+def test_random_seed_filter_api_failure_does_not_abort_the_run(rig):
+    rig.set_state(auth=False, admin_pw="admin", functions_broken=True)
+    p = rig.run("configure-webui.sh")
+    assert p.returncode == 0, p.stderr
+    assert "random seed filter" in p.stderr
+    assert "Open WebUI configured." in p.stdout

@@ -1489,6 +1489,27 @@ The worker runs no OpenBeast services. Its checkout matters for the lock
 `conformance.sh` → serve. The lock of a served model never changes. A new
 revision is a new profile.
 
+**Open WebUI's Regenerate on the GLM pair.** TensorFold falls back to a
+fixed seed when a request names none: three unseeded requests at temperature
+0.6 returned one text, seeds 1/2/3 three texts, seed 1 twice the same text
+(probed 2026-11-16). So Regenerate in WebUI, which re-sends the same request
+without a seed, returned the same answer. `configure-webui.sh` (run by every
+`systemctl --user restart openbeast`) installs the global Open WebUI filter
+`agents/webui_functions/random_seed.py`, which adds a random seed to every
+WebUI chat request without one. To apply it after a `git pull` without a
+restart, run only that script; it touches no inference unit:
+
+```bash
+cd ~/openbeast && ./scripts/configure-webui.sh     # idempotent; "Random seed filter … already installed" on a re-run
+```
+
+Check it in Admin Panel → Functions ("Random Seed", on, global). A seed set
+in a chat's Controls or a model's params still wins, so a pinned seed stays
+reproducible. It is WebUI-only: opencode, the Mac client, the eval runner
+and anything else on `:8000` / `:8443` still get TensorFold's fixed default
+(`seed` in the request is the fix there). `WEBUI_RANDOM_SEED=false` in
+`openbeast.conf` switches the filter off at the next run.
+
 ### G7. Rotating keys and secrets
 
 | Secret | Rotate with | Notes |
@@ -1522,6 +1543,7 @@ Every row below was hit on the way to the live pair.
 | pair stops answering mid-stream, `/health` still `ok` | a stalled collective | `TF_GLM_MULTI_WATCHDOG_EXIT=1` makes the rank exit so the unit restarts both; healthcheck's liveness check flags it |
 | `:443` not published after `setup-tailscale.sh` | the running WebUI still had auth off | `systemctl --user restart openbeast`, then re-run `setup-tailscale.sh` ([E5](#e5-webui-auth-and-the-admin-account-before-publishing)) |
 | `:8443` answers 401 | no device key, or a revoked one | `clients.sh list`; give the client its key |
+| Regenerate in Open WebUI returns the same answer, word for word | TensorFold uses a fixed seed when the request names none | `./scripts/configure-webui.sh` installs the random seed filter; check Admin Panel → Functions → "Random Seed" is on and global, and `WEBUI_RANDOM_SEED` is not `false` ([G6](#g6-updating)) |
 | opencode on the Mac lost `openbeast-tools` (or another server) | a v1 `mcp.<name>` entry next to v2 `mcp.servers.<name>`: v2 does not merge them | move everything under `mcp.servers`, drop `enabled` ([F3](#f3-the-opencode-v2-config-layout-read-this-before-editing)) |
 | `tests/test_scripts.sh` failures on a copy without `.git` (7 seen on spark-2) | some suites need a git checkout | run from a git checkout |
 | shell suites fail on the Mac but pass on a Spark | BSD vs GNU tools (`tests/test_engines.sh` needs GNU coreutils; `test_skill_import.sh` showed 5 BSD-only failures on 2026-11-15) | run shell suites on a Spark ([SELF_DEVELOPMENT.md](SELF_DEVELOPMENT.md) "Tests") |

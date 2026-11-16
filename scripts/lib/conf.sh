@@ -1091,6 +1091,15 @@ WEBUI_AUTH="$(_ob_bool "${OPENBEAST_WEBUI_AUTH:-$(_ob_conf_value WEBUI_AUTH || t
 # Env override: $OPENBEAST_WEBUI_BACKGROUND_TASKS. Not exported: the only
 # consumer, configure-webui.sh, sources this file itself.
 WEBUI_BACKGROUND_TASKS="$(_ob_bool "${OPENBEAST_WEBUI_BACKGROUND_TASKS:-$(_ob_conf_value WEBUI_BACKGROUND_TASKS || true)}" false WEBUI_BACKGROUND_TASKS)"
+# Open WebUI's random seed filter (agents/webui_functions/random_seed.py).
+# TensorFold uses a FIXED seed when a request names none, so Regenerate in
+# WebUI returned the same answer; the filter gives each unseeded chat request
+# a random seed (an explicit one still wins).
+#   true (default)   configure-webui.sh installs it active and global.
+#   false            configure-webui.sh switches an installed copy off.
+# Env override: $OPENBEAST_WEBUI_RANDOM_SEED. Not exported (only
+# configure-webui.sh reads it, and it sources this file itself).
+WEBUI_RANDOM_SEED="$(_ob_bool "${OPENBEAST_WEBUI_RANDOM_SEED:-$(_ob_conf_value WEBUI_RANDOM_SEED || true)}" true WEBUI_RANDOM_SEED)"
 # WEBUI_ADMIN_PASSWORD is deliberately NOT exported: the only consumer,
 # configure-webui.sh, sources this file itself and reads the variable in
 # its own shell. Exporting it would put the admin password in the
