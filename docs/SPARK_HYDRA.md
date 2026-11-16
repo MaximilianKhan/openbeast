@@ -767,6 +767,7 @@ These are the keys in use on spark-1 on 2026-11-15. Secret values are not shown.
 | `EXTENSIONS` | `"dashboard"` | the dashboard serves beast-slot (`/api/slot`) |
 | `BEAST_CHAT` | `true` | the operator console |
 | `CHAT_OPERATORS` | `maxjkh@gmail.com` | tailnet logins that may read beast-chat |
+| `CHAT_LOGIN_FROM` | `unix` | beast-chat honours the login header only on `.run/chat.sock`; `:8445` proxies to that socket (`setup-tailscale.sh --publish-chat`), so the host-network containers below cannot claim a login ([BEAST_CHAT.md](BEAST_CHAT.md)) |
 | `BEAST_ARTIFACT` | `true` | the artifact gallery and `publish_artifact` |
 | `ARTIFACT_OPERATORS`, `ARTIFACT_ADMINS` | `maxjkh@gmail.com` | who reads and administers artifacts |
 | `LANG_PACKS`, `LANG_PACK_CONTEXT` | `off` | language assistance OFF on the pair (below) |
@@ -1523,8 +1524,10 @@ published, from the 2026-11-15 review:
   third-party alpha code. Anything in it can reach `127.0.0.1:8000` (no key, no
   gate audit) and the loopback-trusting beast-chat / beast-artifact ports
   (`OPENBEAST_CHAT_LOGIN_FROM=loopback` trusts any local TCP peer's
-  `Tailscale-User-Login`). Not fixed here; the mitigation belongs in
-  beast-chat's login source and in the recipe's network mode.
+  `Tailscale-User-Login`). **beast-chat: fixed on the pair (2026-11-15)** with
+  `CHAT_LOGIN_FROM=unix` (E2), so the header counts only on the 0600 socket
+  tailscaled proxies to. Still open: beast-artifact's loopback reads, and the
+  recipe's network mode.
 - **`bootstrap.sh` OFFLINE hint** points at `bundle.sh build` "on a connected
   box" without saying it must be an aarch64 Spark (H6).
 - **`setup-client.sh` writes the opencode v1 MCP shape** (`mcp.<name>` +
