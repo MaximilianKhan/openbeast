@@ -368,20 +368,26 @@ _SCHEMA_CHARS = len(json.dumps(TOOL_SCHEMAS))
 # its whole 1,800 s wall without writing a file. A capped turn instead ends
 # with finish_reason "length" and the truncation recovery below hands the head
 # back to the model with a nudge. The eval cap is fixed, the same for every
-# model: 16K tokens with thinking off (a v5 solution file is a few thousand
-# tokens; the cap only bites on a runaway), 32K with OPENBEAST_AGENT_THINKING=on
+# model: 8K tokens with thinking off (a v5 solution file is a few thousand
+# tokens; the cap only bites on a runaway), 16K with OPENBEAST_AGENT_THINKING=on
 # (room for a long think plus the same answer). The client's read timeout is
-# sized to the cap at a pessimistic 20 tok/s, so a capped turn on a busy
-# 4-stream server is never cut off by the client first.
+# sized to the cap at a pessimistic 8 tok/s, so a capped turn on a busy
+# 4-stream server is never cut off by the client first: the first sizing (16K
+# at 20 tok/s) was not pessimistic enough. Measured on the runner v2 arm, a
+# long-context turn under 4-way load decoded at ~12 tok/s (6,818 tokens in
+# 580 s), so the client's 819 s timeout fired before the 16K cap and its
+# retry lost the turn twice (168_c, 1,638 s). Eval runs also never retry a
+# timed-out turn (_EVAL_CLIENT_MAX_RETRIES): the loop owns recovery.
 # ---------------------------------------------------------------------------
 _DEFAULT_REASONING_BUDGET = 20480   # --reasoning-budget in the shipped serve scripts
 _CONTENT_ALLOWANCE_TOKENS = 12288
 _DEFAULT_MAX_COMPLETION_TOKENS = _DEFAULT_REASONING_BUDGET + _CONTENT_ALLOWANCE_TOKENS
 _CLIENT_MAX_RETRIES = 1        # one quick retry for a blip; the loop owns the rest
-_EVAL_TURN_TOKENS = 16384           # eval cap, thinking off/unset (G11)
-_EVAL_TURN_TOKENS_THINKING = 32768  # eval cap, OPENBEAST_AGENT_THINKING=on
+_EVAL_CLIENT_MAX_RETRIES = 0   # eval: a retried timeout re-spends the whole turn
+_EVAL_TURN_TOKENS = 8192            # eval cap, thinking off/unset (G11)
+_EVAL_TURN_TOKENS_THINKING = 16384  # eval cap, OPENBEAST_AGENT_THINKING=on
 _CLIENT_TIMEOUT_FLOOR_S = 600.0     # the openai client's own default
-_PESSIMISTIC_TOK_S = 20.0           # per-stream decode under --jobs load
+_PESSIMISTIC_TOK_S = 8.0            # per-stream decode under --jobs load
 # A 429 is admission control (beast-gate's per-device in-flight / rate caps,
 # beast-chat's slot cap), not a failed turn: wait the server's Retry-After and
 # re-send the SAME turn, without spending an iteration or counting an API
@@ -1017,7 +1023,8 @@ def run_agent(
     # Resolved once per run; {} (send nothing) when set to 0 or unlimited.
     max_tokens = _max_completion_tokens()
     client = OpenAI(base_url=base_url, api_key=resolve_api_key(api_key, base_url),
-                    max_retries=_CLIENT_MAX_RETRIES,
+                    max_retries=(_EVAL_CLIENT_MAX_RETRIES if os.environ.get(_EVAL_MARKER)
+                                 else _CLIENT_MAX_RETRIES),
                     timeout=_client_timeout_s(max_tokens))
     cap_kwargs = {"max_tokens": max_tokens} if max_tokens else {}
     think_kwargs = _thinking_kwargs()   # {} unless OPENBEAST_AGENT_THINKING
