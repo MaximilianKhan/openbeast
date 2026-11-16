@@ -555,7 +555,7 @@ def test_harness_fingerprint_ignores_prose_but_sees_code(tmp_path):
     src = (ROOT / "evals" / "run_eval.py").read_text()
     base = cache.harness_fingerprint()
     p = tmp_path / "run_eval.py"
-    for anchor in ("Run the agent against a task.", "max_iter * 60 * timeout_scale",
+    for anchor in ("Run the agent against a task.", "int(budget * timeout_scale)",
                    "VALIDATION_TIMEOUT_S = 30"):
         assert anchor in src, f"test anchor gone from run_eval.py: {anchor}"
     # A comment and a docstring edit inside run_agent: no era move.
@@ -565,7 +565,7 @@ def test_harness_fingerprint_ignores_prose_but_sees_code(tmp_path):
                  .replace("Run the agent against a task.", "Run THE agent on a task.", 1))
     assert cache.harness_fingerprint(p) == base
     # The wall budget changes: the fingerprint moves.
-    p.write_text(src.replace("max_iter * 60 * timeout_scale", "max_iter * 90 * timeout_scale", 1))
+    p.write_text(src.replace("int(budget * timeout_scale)", "max_iter * 90 * timeout_scale", 1))
     assert cache.harness_fingerprint(p) != base
     # So does the validator timeout.
     p.write_text(src.replace("VALIDATION_TIMEOUT_S = 30", "VALIDATION_TIMEOUT_S = 45", 1))

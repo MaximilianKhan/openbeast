@@ -66,6 +66,9 @@ CONTEXT_FILES = [
     # The harness marker: run_eval's agent-shaping code (see
     # HARNESS_FUNCTIONS). Bumped, deliberately, when that code changes.
     EVALS_DIR / "HARNESS_VERSION",
+    # The validator's standard library (v5). run_eval injects it into every
+    # validator from source, so a change to it changes how units are judged.
+    EVALS_DIR / "vlib.py",
 ]
 
 # The parts of run_eval.py that decide what an agent sees and how a unit is
@@ -73,8 +76,15 @@ CONTEXT_FILES = [
 # it), fixture setup and re-assertion, the validator and its timeout. harness_fingerprint() hashes their AST (comments
 # and docstrings excluded, so prose edits move nothing).
 HARNESS_FUNCTIONS = ("run_agent", "_run_reaped", "run_setup", "run_pre_validate",
-                     "run_validation", "run_cleanup", "contention_scale")
-HARNESS_CONSTANTS = ("VALIDATION_TIMEOUT_S",)
+                     "run_validation", "run_cleanup", "contention_scale",
+                     # v5: the agent's wall cap, the validator's env and
+                     # private build cache, the fixture cwd, and the sweep of
+                     # everything the agent left running before validation.
+                     "agent_wall_s", "_validator_env", "build_cache_env",
+                     "_run_fixture_cmd", "_kill_recorded_groups",
+                     "sweep_agent_leftovers", "AgentWatch")
+HARNESS_CONSTANTS = ("VALIDATION_TIMEOUT_S", "BUILD_CACHE_ENV", "_AGENT_POLL_S",
+                     "_SWEEP_ROUNDS")
 
 
 def _ast_canon(node) -> str:
@@ -103,12 +113,18 @@ def harness_fingerprint(path: Path | None = None) -> str:
     tree = ast.parse(src)
     parts: dict[str, str] = {}
     for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and node.name in HARNESS_FUNCTIONS:
-            body = node.body
-            if (body and isinstance(body[0], ast.Expr)
-                    and isinstance(getattr(body[0], "value", None), ast.Constant)
-                    and isinstance(body[0].value.value, str)):
-                node.body = body[1:] or [ast.Pass()]
+        if (isinstance(node, (ast.FunctionDef, ast.ClassDef))
+                and node.name in HARNESS_FUNCTIONS):
+            # Docstrings are prose: strip them from the def and from every
+            # def nested in it (a class's methods), so only code counts.
+            for sub in ast.walk(node):
+                if not isinstance(sub, (ast.FunctionDef, ast.ClassDef)):
+                    continue
+                body = sub.body
+                if (body and isinstance(body[0], ast.Expr)
+                        and isinstance(getattr(body[0], "value", None), ast.Constant)
+                        and isinstance(body[0].value.value, str)):
+                    sub.body = body[1:] or [ast.Pass()]
             parts[node.name] = _ast_canon(node)
         elif isinstance(node, ast.Assign):
             for t in node.targets:
