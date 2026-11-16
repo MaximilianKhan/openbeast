@@ -291,6 +291,22 @@ created, and have the prover check every ancestor cwd afterwards
     `/usr/bin/env DYLD_INSERT_LIBRARIES=...` on macOS (sandbox-exec drops
     `DYLD_*` from the environment), and `/proc/<pid>/maps` on Linux. Build
     Go with `CGO_ENABLED=0`. `122_gemm_blocked` has the worked example.
+13. **Use the build cache the harness gives you.** Every validation gets a
+    private zig / Go / cargo / XDG cache (and ccache off) that is deleted
+    after the unit, so a compiled reference never stays where the next
+    agent can link it (164). Never point `ZIG_GLOBAL_CACHE_DIR`, `GOCACHE`
+    or `CARGO_TARGET_DIR` at a shared dir; `vlib.build_env()` keeps the
+    private one. Budget the cold zig compile (~8 s) inside the 15 s.
+14. **Run to the end, and print your verdict last.** A python validator
+    passes only when it runs to its end (or its own code raises a clean
+    `SystemExit`): a solution that exits the process early with status 0
+    fails. Do not end a validator with `os._exit(0)`. The prover and the
+    harness read the LAST output line, so print the verdict there.
+15. **The agent's leftovers are gone; containing the solution is yours.** The
+    harness kills everything the agent started, detached daemons included,
+    before validation, and refuses to validate if one survives. That covers
+    the agent; your validator still has to contain the SOLUTION
+    (`vlib.run_solution`).
 
 ## Difficulty tiers (with concrete examples)
 
