@@ -67,9 +67,11 @@ def pkg_dir(a: C.Artifact) -> str:
     return f"pkgs/{a.kind}/{a.entry}-{S.slug(a.owner.version)}/{a.platform}"
 
 
-def _rec(drive: S.Drive, rel: str) -> dict:
+def _rec(drive: S.Drive, rel: str, sha256: str = "") -> dict:
+    """A lock record. Pass `sha256` when the bytes were already hashed (and
+    only renamed since): a multi-GB file is not read a second time for it."""
     p = drive.p(rel)
-    return {"path": rel, "sha256": net.sha256_file(p), "size": os.path.getsize(p)}
+    return {"path": rel, "sha256": sha256 or net.sha256_file(p), "size": os.path.getsize(p)}
 
 
 # ── selection ────────────────────────────────────────────────────────────
@@ -147,8 +149,15 @@ def fetch_git(drive: S.Drive, e: C.Entry, allow_unverified: bool) -> dict:
 
 # ── files ────────────────────────────────────────────────────────────────
 
+# One fetch per checksum file per run: 257 artifacts share 169 sums URLs
+# (python-build-standalone's SHA256SUMS serves six, loki's six).
+_SMALL: dict = {}
+
+
 def _fetch_small(url: str, dest: str) -> str:
-    data, _ = net.get_bytes(url, limit=64 << 20)
+    if url not in _SMALL:
+        _SMALL[url] = net.get_bytes(url, limit=64 << 20)[0]
+    data = _SMALL[url]
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     with open(dest, "wb") as f:
         f.write(data)
@@ -176,6 +185,12 @@ def fetch_file(drive: S.Drive, a: C.Artifact, allow_unverified: bool) -> dict:
     part = net.download(url, dest, size=a.size)
     try:
         got = net.sha256_file(part)
+        digests = {"sha256": got}             # every check below reuses this one read
+
+        def digest(algo: str) -> str:
+            if algo not in digests:
+                digests[algo] = net.hash_file(part, algo)
+            return digests[algo]
         how = []
         if a.sha256:
             if got != a.sha256:
@@ -186,7 +201,7 @@ def fetch_file(drive: S.Drive, a: C.Artifact, allow_unverified: bool) -> dict:
             how.append("tofu-pinned" if a.verified == "tofu" else "pinned")
         if a.upstream_hash:
             algo, _, hx = a.upstream_hash.partition(":")
-            if net.hash_file(part, algo) != hx:
+            if digest(algo) != hx:
                 raise FetchError(f"{a.id}: {algo} MISMATCH against the catalog's upstream_hash. REFUSED and deleted.")
             how.append(f"pinned-{algo}")
         if sums_path:
@@ -197,7 +212,7 @@ def fetch_file(drive: S.Drive, a: C.Artifact, allow_unverified: bool) -> dict:
                                         url_specific=a.x(a.checksum_url).endswith(
                                             (a.filename + ".sha256", a.filename + ".sha256sum",
                                              a.filename + ".sha512", a.filename + ".sha256.txt")))
-            if net.hash_file(part, algo) != hx:
+            if digest(algo) != hx:
                 raise FetchError(f"{a.id}: the upstream checksum file says {algo} {hx[:16]}…, the download does "
                                  f"not match. REFUSED and deleted.")
             how.append("upstream-sums")
@@ -227,7 +242,7 @@ def fetch_file(drive: S.Drive, a: C.Artifact, allow_unverified: bool) -> dict:
     return {"entry": a.entry, "kind": "file", "platform": a.platform, "version": a.owner.version,
             "source": url, "install": a.install, "bins": [a.x(b) for b in a.bins], "strip": a.strip,
             "verified": "+".join(how), "signature": sig,
-            "files": [_rec(drive, rel)] + [_rec(drive, r) for r in extra], "primary": rel}
+            "files": [_rec(drive, rel, got)] + [_rec(drive, r) for r in extra], "primary": rel}
 
 
 # ── oci ──────────────────────────────────────────────────────────────────
@@ -592,6 +607,7 @@ def run(cat: C.Catalog, drive: S.Drive, items: List[Tuple[str, object]], platfor
         allow_unverified: bool = False, recheck: bool = False, dry_run: bool = False,
         allow_cross_pip: bool = False) -> int:
     net.require_online("ark fetch")
+    _SMALL.clear()
     os.makedirs(drive.root, exist_ok=True)
     lock = drive.read_lock()
     lock.setdefault("platforms", [])

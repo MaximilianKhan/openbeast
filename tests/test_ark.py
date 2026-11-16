@@ -577,6 +577,36 @@ def test_resume_continues_a_partial_download_with_range(http, tmp_path, capsys):
     assert (d / "toy-1.0-linux.tar.gz").read_bytes() == tgz
 
 
+def test_fetch_hashes_each_file_once_and_each_sums_file_once(http, tmp_path, capsys, monkeypatch):
+    from ark import net
+    tgz = toy_toolchain()
+    other = b"another file in the same release\n"
+    http.files["/rel/toy-1.0-linux.tar.gz"] = tgz
+    http.files["/rel/other.bin"] = other
+    http.files["/rel/SHA256SUMS"] = f"{sha(tgz)}  toy-1.0-linux.tar.gz\n{sha(other)}  other.bin\n".encode()
+    body = ENTRY.format(name="toy", cat="languages", version="1.0")
+    for fn, data in (("toy-{version}-linux.tar.gz", tgz), ("other.bin", other)):
+        body += f'''
+[[artifact]]
+entry = "toy"
+kind = "file"
+platform = "any"
+url = "{http.base}/rel/{fn}"
+sha256 = "{sha(data)}"
+checksum_url = "{http.base}/rel/SHA256SUMS"
+install = "data"
+verified = "upstream-sums"
+'''
+    reads = []
+    real_sha, real_hash = net.sha256_file, net.hash_file
+    monkeypatch.setattr(net, "sha256_file", lambda p: reads.append(os.path.basename(p)) or real_sha(p))
+    monkeypatch.setattr(net, "hash_file", lambda p, a: reads.append(os.path.basename(p)) or real_hash(p, a))
+    rc, out = run(["--catalog", str(write_catalog(tmp_path, body)), "fetch", "--to", str(tmp_path / "d")], capsys)
+    assert rc == 0, out.err
+    assert reads.count("toy-1.0-linux.tar.gz.part") == 1 and "toy-1.0-linux.tar.gz" not in reads
+    assert [p for (m, p, h) in http.log if p == "/rel/SHA256SUMS"] == ["/rel/SHA256SUMS"]
+
+
 def test_verify_detects_corruption_missing_and_planted_files(http, tmp_path, capsys):
     cat = toy_catalog(http, tmp_path)
     drive = tmp_path / "drive"
