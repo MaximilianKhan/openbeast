@@ -15,6 +15,8 @@ import re
 import urllib.parse
 from html.parser import HTMLParser
 
+from .urls import normalize_url
+
 _VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
          "param", "source", "track", "wbr"}
 _DROP = {"script", "style", "noscript", "svg", "template", "iframe", "button", "form",
@@ -330,18 +332,18 @@ def html_links(html: str, base: str) -> list:
 
 
 def canonical(url: str, markdown_suffix: str = "") -> str:
-    """Drop fragment and query (?hl=, ?authuser=) and, for the markdown
-    adapter, the .md.txt suffix — one page, one key."""
-    try:
-        p = urllib.parse.urlsplit(url)
-    except ValueError:
+    """Normalize (agents/docs/urls.py: dot segments, %2e, default port,
+    userinfo refused), drop fragment and query (?hl=, ?authuser=) and, for
+    the markdown adapter, the .md.txt suffix — one page, one key. "" when
+    the URL has no safe spelling."""
+    n = normalize_url(url, drop_query=True)
+    if not n:
         return ""
-    if p.scheme not in ("http", "https"):
-        return ""
+    p = urllib.parse.urlsplit(n)
     path = p.path or "/"
     if markdown_suffix and path.endswith(markdown_suffix):
         path = path[: -len(markdown_suffix)]
-    return urllib.parse.urlunsplit((p.scheme, p.netloc.lower(), path, "", ""))
+    return urllib.parse.urlunsplit((p.scheme, p.netloc, path, "", ""))
 
 
 # ── the markdown adapter ─────────────────────────────────────────────────

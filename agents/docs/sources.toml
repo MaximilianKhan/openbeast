@@ -15,10 +15,13 @@
 #                   markdown         the site serves markdown itself at
 #                                    <page><markdown_suffix> (Android: .md.txt)
 #   markdown_suffix markdown only; default ".md.txt"
-#   hosts           every host the crawl may contact
+#   hosts           every host the crawl may contact, as "host" (the
+#                   scheme's default port, 443/80, only) or "host:port"
 #   roots           where a crawl starts (human-facing URLs)
 #   allow_prefixes  URL path prefixes inside the crawl scope
 #   deny_prefixes   path prefixes excluded even when allowed
+#                   (both are matched against the NORMALIZED path: dot
+#                   segments removed, %2e decoded — agents/docs/urls.py)
 #   discovery       links     (default) follow in-scope links from the roots
 #                   llms-txt  read `index_url` (an llms.txt) and take its
 #                             in-scope links first, then follow links

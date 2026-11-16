@@ -27,6 +27,7 @@ from . import config as C
 from . import docc
 from . import htmlmd as H
 from . import net
+from . import urls as U
 from .store import Store, age_days, doc_id, now_iso
 
 SAVE_EVERY = 10
@@ -86,7 +87,7 @@ def _discover(src, fetcher, log) -> tuple:
     seeds = []
     if is_index:
         for child in locs:
-            if (child.split("//", 1)[-1].split("/", 1)[0]) not in src.hosts:
+            if not U.host_allowed(src.hosts, child):
                 continue
             try:
                 c = fetcher.get(child, max_bytes=64 * 1024 * 1024)
@@ -146,7 +147,7 @@ def sync(src: C.Source, store: Store, max_pages: Optional[int] = None,
     try:
         while frontier:
             url, depth = frontier.pop(0)
-            url = H.canonical(url) if src.adapter != "apple-docc-json" else url.split("#")[0]
+            url = H.canonical(url) if src.adapter != "apple-docc-json" else U.normalize_url(url)
             if not url or url in seen or not src.in_scope(url):
                 continue
             seen.add(url)
@@ -162,7 +163,12 @@ def sync(src: C.Source, store: Store, max_pages: Optional[int] = None,
                 frontier.insert(0, (url, depth))
                 seen.discard(url)
                 break
-            target = fetch_url_for(src, url)
+            try:
+                target = fetch_url_for(src, url)
+            except ValueError as e:
+                stats["refused"] += 1
+                log(f"  - refused  {url}: {e}")
+                continue
             try:
                 if not fetcher.robots_for(url).allowed(url):
                     raise net.Refused(f"robots.txt disallows the page {url}")
@@ -272,13 +278,19 @@ def live(src: C.Source, page: str, fetcher: Optional[net.Fetcher] = None) -> dic
     reason = C.offline_reason()
     if reason:
         raise SyncError(f"offline: {reason}")
-    page = H.canonical(page, src.markdown_suffix) if src.adapter != "apple-docc-json" else page
-    if not src.in_scope(page):
-        raise net.Refused(f"{page} is outside {src.name}'s scope")
+    raw = page
+    page = (H.canonical(page, src.markdown_suffix) if src.adapter != "apple-docc-json"
+            else U.normalize_url(page))
+    # Scope, robots and the request all see this one normalized spelling.
+    if not page or not src.in_scope(page):
+        raise net.Refused(f"{page or raw} is outside {src.name}'s scope")
     fetcher = fetcher or net.Fetcher(src.hosts, 0.0)
     if not fetcher.robots_for(page).allowed(page):
         raise net.Refused(f"robots.txt disallows {page}")
-    target = fetch_url_for(src, page)
+    try:
+        target = fetch_url_for(src, page)
+    except ValueError as e:
+        raise net.Refused(str(e)) from None
     resp = fetcher.get(target)
     out = render(src, page, resp.body)
     out.update({"url": page, "fetched_from": target, "fetched_at": now_iso(),

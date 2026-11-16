@@ -32,7 +32,14 @@ def json_url(page_url: str) -> str:
     """https://developer.apple.com/documentation/swiftui/navigationstack ->
     https://developer.apple.com/tutorials/data/documentation/swiftui/navigationstack.json"""
     p = urllib.parse.urlsplit(page_url)
-    path = urllib.parse.quote(urllib.parse.unquote(p.path.rstrip("/")).lower(), safe=_SAFE)
+    path = urllib.parse.unquote(p.path.rstrip("/")).lower()
+    # The page URL was normalized before it was scope-checked; a dot segment
+    # here could only come from a double-encoded one (`%252e%252e`). Refuse it
+    # rather than let `..` climb out of /tutorials/data/documentation/.
+    if any(seg in (".", "..") for seg in path.split("/")):
+        raise ValueError(f"{page_url}: dot segment in a DocC path")
+    # Re-quote with '%' NOT safe: after unquote a '%' is a literal percent.
+    path = urllib.parse.quote(path, safe=_SAFE.replace("%", ""))
     return f"{p.scheme}://{p.netloc}{DATA_PREFIX}{path}.json"
 
 

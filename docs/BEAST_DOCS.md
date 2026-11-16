@@ -252,7 +252,18 @@ does a BFS over the source's scope.
     unreachable robots.txt means the whole host is refused**.
 - **Scoped.**
   - A URL outside the source's `hosts` is never contacted, and that covers
-    redirects.
+    redirects. A `hosts` entry is a host **and port**: a bare
+    `developer.apple.com` admits only the scheme's default port (443/80), so
+    a link to `https://developer.apple.com:22/…` is out of scope. Name the
+    port to allow another one (`docs.corp:8443`). URLs with userinfo
+    (`https://developer.apple.com@evil/`) are refused.
+  - **One spelling is checked and requested.** Every URL is normalized
+    (`agents/docs/urls.py`) before the scope, deny-prefix and robots
+    decisions: unreserved percent-escapes are decoded (`%2e` → `.`) and dot
+    segments removed (RFC 3986 §5.2.4), and the fetcher sends that
+    normalized URL. `/docs/../secret` and `/docs/%2e%2e/secret` are judged
+    as `/secret`, which is what a server would serve for them. A URL with an
+    encoded slash or backslash has no unambiguous spelling and is refused.
   - Requests go through `agents/tools.py`'s `_Pinned*Handler`s and
     `_fetch_url_blocked`: resolve, vet every address, dial the vetted IP,
     re-vet each redirect hop. These are imported, not copied.

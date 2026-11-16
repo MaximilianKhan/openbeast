@@ -129,6 +129,7 @@ class Stub:
         self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H_)
         self.port = self.httpd.server_address[1]
         self.base = f"http://127.0.0.1:{self.port}"
+        self.hostport = f"127.0.0.1:{self.port}"         # hosts entries carry the port
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
 
     def paths(self):
@@ -143,7 +144,7 @@ SOURCES = """
 name = "swiftui"
 title = "Test SwiftUI"
 adapter = "apple-docc-json"
-hosts = ["127.0.0.1"]
+hosts = ["{host}"]
 roots = ["{base}/documentation/swiftui"]
 allow_prefixes = ["/documentation/swiftui"]
 max_pages = 50
@@ -157,7 +158,7 @@ license = "synthetic fixture"
 name = "android-compose"
 title = "Test Compose"
 adapter = "markdown"
-hosts = ["127.0.0.1"]
+hosts = ["{host}"]
 roots = ["{base}/develop/ui/compose/lists"]
 discovery = "llms-txt"
 index_url = "{base}/develop/ui/llms.txt"
@@ -172,7 +173,7 @@ license = "synthetic fixture"
 name = "html-site"
 title = "Test HTML"
 adapter = "html"
-hosts = ["127.0.0.1"]
+hosts = ["{host}"]
 roots = ["{base}/page.html"]
 allow_prefixes = ["/page.html"]
 max_pages = 5
@@ -195,7 +196,7 @@ def stub():
 def env(tmp_path, monkeypatch, stub):
     """A throwaway store + sources file pointed at the stub."""
     src = tmp_path / "sources.toml"
-    src.write_text(SOURCES.format(base=stub.base, ack=""))
+    src.write_text(SOURCES.format(base=stub.base, host=stub.hostport, ack=""))
     monkeypatch.setenv("OPENBEAST_DOCS_DIR", str(tmp_path / "store"))
     monkeypatch.setenv("OPENBEAST_DOCS_SOURCES", str(src))
     monkeypatch.setenv("OPENBEAST_DOCS_ALLOW_PRIVATE", "1")
@@ -378,16 +379,86 @@ def test_redirect_off_the_source_hosts_is_refused(env):
 
 def test_private_address_refused_without_opt_in(env, monkeypatch):
     monkeypatch.delenv("OPENBEAST_DOCS_ALLOW_PRIVATE")
-    f = net.Fetcher(["127.0.0.1"], 0)
+    f = net.Fetcher([env["stub"].hostport], 0)
     with pytest.raises(net.Refused, match="non-public|blocked"):
         f.get(env["stub"].base + "/robots.txt")
     with pytest.raises(net.Refused, match="not one of this source's hosts"):
-        net.Fetcher(["127.0.0.1"], 0).get("http://example.com/x")
+        net.Fetcher([env["stub"].hostport], 0).get("http://example.com/x")
     assert env["stub"].requests == []
 
 
+def test_url_normalizer():
+    from docs import urls as U
+    n = U.normalize_url
+    assert n("https://H.example/docs/../secret/x#f") == "https://h.example/secret/x"
+    assert n("https://h/docs/./private/x") == "https://h/docs/private/x"
+    assert n("https://h/docs/%2e%2e/secret/x") == "https://h/secret/x"
+    assert n("https://h/docs/%2E%2e/%2e/a") == "https://h/a"
+    assert n("https://h/../../x") == "https://h/x"                       # never above the root
+    assert n("https://h/a/b/..") == "https://h/a/"
+    assert n("https://h:443/a?q=1") == "https://h/a?q=1"                 # default port dropped
+    assert n("http://h:8080/%7Euser/%41") == "http://h:8080/~user/A"     # unreserved decoded
+    assert n("https://h/a%2Fb") == "" and n("https://h/a%5cb") == "" and n("https://h/a\\b") == ""
+    assert n("https://developer.apple.com@evil.example/x") == ""         # userinfo
+    assert n("https://h:99999/x") == "" and n("ftp://h/x") == "" and n("https:///x") == ""
+    assert U.host_allowed(["docs.corp"], "https://docs.corp/x")
+    assert U.host_allowed(["docs.corp"], "http://docs.corp:80/x")
+    assert not U.host_allowed(["docs.corp"], "http://docs.corp:6379/x")
+    assert U.host_allowed(["docs.corp:8443"], "https://docs.corp:8443/x")
+    assert not U.host_allowed(["docs.corp:8443"], "https://docs.corp/x")
+
+
+def test_scope_and_robots_decide_on_the_normalized_url():
+    src = C.Source(name="x", title="x", adapter="html", hosts=["docs.corp"],
+                   roots=["https://docs.corp/docs/"], allow_prefixes=["/docs/"],
+                   deny_prefixes=["/docs/private"])
+    assert src.in_scope("https://docs.corp/docs/a")
+    for bad in ("https://docs.corp/docs/../secret/x", "https://docs.corp/docs/%2e%2e/secret/x",
+                "https://docs.corp/docs/./private/x", "https://docs.corp/docs/%2E/private/x",
+                "http://docs.corp:6379/docs/x",                    # another port on the host
+                "https://u:p@docs.corp/docs/x"):                    # userinfo
+        assert not src.in_scope(bad), bad
+    rb = net.parse_robots("User-agent: *\nDisallow: /secret\n")
+    assert not rb.allowed("https://docs.corp/docs/../secret/x")
+    assert not rb.allowed("https://docs.corp/docs/%2e%2e/secret/x")
+    assert rb.allowed("https://docs.corp/docs/x")
+    with pytest.raises(ValueError, match="dot segment"):          # the DocC mapping refuses too
+        docc.json_url("https://developer.apple.com/documentation/swiftui/%2e%2e/%2e%2e/x")
+    # a double-encoded dot stays a literal, re-encoded: never a segment a server resolves
+    assert docc.json_url("https://developer.apple.com/documentation/swiftui/%252e%252e/x") == \
+        "https://developer.apple.com/tutorials/data/documentation/swiftui/%252e%252e/x.json"
+
+
+def test_live_dot_segments_are_normalized_before_robots_and_request(env):
+    stub = env["stub"]
+    stub.robots = "User-agent: *\nDisallow: /documentation/swiftui/navigationview\n"
+    for trick in ("/documentation/swiftui/x/../navigationview",
+                  "/documentation/swiftui/x/%2e%2e/navigationview",
+                  "/documentation/swiftui/./navigationview"):
+        out = api.live_text(stub.base + trick, source="swiftui")
+        assert "LIVE FETCH UNAVAILABLE" in out and "robots.txt disallows" in out, out
+    assert not any("navigationview" in p for p in stub.paths())
+    assert not any(".." in p or "%2e" in p.lower() or "/./" in p for p in stub.paths())
+    out = api.live_text(stub.base + "/documentation/swiftui/x/../navigationstack", source="swiftui")
+    assert out.startswith(f"Source: {stub.base}/documentation/swiftui/navigationstack\nLIVE")
+    assert "/tutorials/data/documentation/swiftui/navigationstack.json" in stub.paths()
+
+
+def test_fetcher_pins_the_port(env):
+    stub = env["stub"]
+    f = net.Fetcher([stub.hostport], 0)
+    with pytest.raises(net.Refused, match="not one of this source's hosts"):
+        f.get("http://127.0.0.1:1/robots.txt")
+    with pytest.raises(net.Refused, match="not a fetchable URL"):
+        f.get(f"http://x@{stub.hostport}/robots.txt")
+    stub.redirects["/tutorials/data/documentation/swiftui/view.json"] = "http://127.0.0.1:1/documentation/swiftui/view"
+    st = _sync("swiftui")
+    assert st["refused"] >= 1
+    assert f"{stub.base}/documentation/swiftui/view" not in ST.Store().load("swiftui")["pages"]
+
+
 def test_terms_gate(env, stub):
-    env["sources"].write_text(SOURCES.format(base=stub.base, ack="requires_ack = true"))
+    env["sources"].write_text(SOURCES.format(base=stub.base, host=stub.hostport, ack="requires_ack = true"))
     with pytest.raises(S.SyncError, match="--accept-terms"):
         _sync("swiftui")
     assert stub.requests == []
