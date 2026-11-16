@@ -629,7 +629,11 @@ The script is idempotent (safe to re-run anytime) and stops for exactly two
 browser moments, telling you precisely what to do at each:
 
 1. **Tailnet login** — it prints a login URL; sign in with your SSO account.
-   The machine joins as `beast` (override with `TS_HOSTNAME=<name>`).
+   The machine joins as `beast` on a rig. Set `TS_HOSTNAME=<name>` in
+   `openbeast.conf` (or the env) to choose another; a DGX Spark has no default
+   and refuses to join until it is set. The name is used only for the first
+   join: an already-joined machine is never renamed (the script prints a note
+   with the `tailscale set --hostname=` command when the two differ).
 2. **Two one-time tailnet toggles** — on first setup it sends you to
    <https://login.tailscale.com/admin/dns> to enable **MagicDNS** and
    **HTTPS Certificates**, then waits and continues automatically once you
