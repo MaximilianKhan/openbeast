@@ -1,15 +1,18 @@
 # Eval suite
 
-> **Suite version: v5 (current, since 2026-11-15).** The suite is the manifest
-> [`suites/v5.json`](suites/v5.json): 111 scored units over 39 base tasks, plus
-> 7 unscored zig probe units, profiled in three arms inside a 4-hour budget.
+> **Suite version: v5 (current, since 2026-11-15); v5.0 is the shipped set.**
+> The suite is the manifest [`suites/v5.json`](suites/v5.json): 71 scored
+> units over 34 base tasks in all 12 categories and all six languages,
+> profiled in three arms; a full profile is 3.73 reference hours, inside the
+> 4-hour budget. Twelve designed families did not pass their adversarial
+> review and are the [v5.1 backlog](#v51-backlog-the-12-families-that-did-not-ship).
 > See [v5 — the current suite](#v5--the-current-suite). **v4 is frozen**: its
 > board rows stay as history in the legacy section, its task files stay in
 > `tasks/` so it can still be run and rescored, and nothing is compared across
 > the two versions. The distribution tables further down describe the v4 task
 > library.
 >
-> **v4** — 137 base tasks / 291 effective units,
+> **v4** — 137 tasks / 291 units,
 > hardened against the cheats documented in the 2026-07 review. That
 > hardening is incomplete: see [Known validator defects (v4)](#known-validator-defects-v4)
 > below; v5 closes them. History: [`CHANGELOG.md`](CHANGELOG.md),
@@ -21,7 +24,7 @@
 > [main README](../README.md) and [`../docs/RESULTS.md`](../docs/RESULTS.md);
 > v3.5 and v4 scores are **not directly comparable** (different task sets).
 
-The task library holds 137 v4 coding tasks (291 effective units with multi-language variants) plus the v5 additions. Each task has a
+The task library holds 151 base tasks (320 effective units): the 137 v4 tasks plus the 14 new v5.0 ones. Each task has a
 validation script that returns exit 0 on success, non-zero on
 failure. The harness runs the agent against every task, scores the result, and
 ranks models in a leaderboard keyed by (host_id, model_slug).
@@ -34,11 +37,14 @@ the oracle seal under [v5](#v5--the-current-suite).
 ## Known validator defects (v4)
 
 These were held for the next suite version, because fixing a validator or
-the harness changes the era and invalidates every cached result. v5 closes
-all four: 23 and 21 are dropped (their capabilities are covered by new tasks
-181, 180, 170 and 171), no v5 unit writes an expected file or `check.py`
-into the agent's directory (hidden tests from a seeded generator inside the
-validator), and `fetch`/`web_search` are off under eval.
+the harness changes the era and invalidates every cached result. v5.0
+closes all four for every unit it ships: 23 and 21 are not in the suite
+(their intended replacements, 181, 180, 170 and 171, are in the v5.1
+backlog), no shipped unit writes an expected file or `check.py` into the
+agent's directory (new and upgraded units hide seeded tests inside the
+validator; the v4 tasks kept as defined in v4 are only ones whose fixture
+holds no oracle-like file, which the prover checks), and `fetch` /
+`web_search` are off under eval.
 
 - **`23_sql_injection` rejects the canonical fix.** The validator flags any
   `+` or f-string inside the `execute(...)` call, including in the parameter
@@ -108,7 +114,71 @@ identical to older ones.
 
 ## v5 — the current suite
 
-### What changed, and why
+### v5.0: what shipped
+
+**v5.0 is 71 scored units over 34 base tasks, in 12 categories and all six
+languages, and a full three-arm profile is 3.73 reference hours: it fits
+the 4-hour budget even run sequentially.** It is smaller than the design
+(111 units over 39 bases, plus 7 zig probes): every new family went through
+up to three adversarial rounds, in which an independent verifier tried to
+pass each unit without solving it, and only the families that came out
+clean shipped. The other twelve are the [v5.1 backlog](#v51-backlog-the-12-families-that-did-not-ship),
+and v4 tasks keep their categories covered.
+
+| Group | Bases | Units | What it is |
+|---|---|---|---|
+| **New, accepted** (14 families) | 14 | 29 | 163 bigint divmod (Knuth D), 167 Q15 biquad cascade, 168 linearizability checker: 6 languages each. 173 asyncio TaskGroup cancellation, 175 CRDT OR-Set + RGA, 176 intermittent 500s in a 25-file service, 178 codebase Q&A, 179 git bisect + minimal revert (shell), 183 Heston "little trap", 188 GMM EM with log-sum-exp, 190 reverse-mode autograd + MLP, 192 Pike-VM regex, 195 RISC-V routines under an instruction budget, 196 polyphase resampler 44.1 k → 48 k |
+| **v4, upgraded** (U3, accepted) | 4 | 18 | 36 Black-Scholes (6L), 123 n-body (6L), 122 blocked GEMM (5L, no Python), 40 attention: seeded hidden tests in the validator, no expected files, no zig tutoring, a vendor-BLAS guard on 122 |
+| **v4, kept as defined in v4** | 16 | 24 | 29_db_migration, 37_softmax_stable, 49_markov_steady_state, 107_singleflight, 109_jwt, 117_iter_refinement, 121_quorum_kv, 124_rkf45, 126_hmac_scratch, 128_rsa, 143_uov, 146_aho_corasick, 147_persistent_bst, 153_coroutine_scheduler, 158_karatsuba_bytes (python/go/c/cpp/rust), 159_ntt_convolution (python/go/c/cpp/rust) |
+
+The third group keeps breadth where a family was rejected. Its tasks run
+their **v4 validators unchanged** (only `ref_stem` / `dest` were added to
+their JSON so the prover can find a reference); each one is proven by
+`tests/prove_task.py` like every other unit. They replace:
+
+| Rejected | Category | Covered in v5.0 by |
+|---|---|---|
+| 164 Q4_K quantisation (6L) | LLM / ML | 190 autograd (new), 40 attention (U3), **37_softmax_stable** |
+| 165 ChaCha20-Poly1305 (6L) | Security | **126_hmac_scratch** (a primitive from scratch), **128_rsa**, **143_uov** |
+| 166 Welford/Chan moments (6L) | Probability & Stats | 188 GMM EM (new), **49_markov_steady_state** |
+| 169 broken-build repair (6L) | SWE / DevOps | 176, 178, 179 (new), **29_db_migration** |
+| 170 lock-free MPMC ring (4L) | Concurrency & Systems | 173 (new), **153_coroutine_scheduler** (152 Chase-Lev was the closer match, but its validator's fixed limits fail the lint) |
+| 171 Go worker pool race + deadlock | Concurrency & Systems | **107_singleflight** (the same call-deduplication semantics, in Python) |
+| 180 vuln hunt | Security | **143_uov**, **128_rsa**, **109_jwt** |
+| 181 JWT verifier hardening | Security | **109_jwt** (HS256 sign/verify, padding, expiry) |
+| 186 Robertson stiff kinetics | Physics | 123 n-body (U3, 6L), **124_rkf45** (adaptive step control) |
+| U1: 117 / 158 / 159 rework | Pure & Abstract Math | the v4 definitions: **117_iter_refinement**, **158_karatsuba_bytes**, **159_ntt_convolution** (their zig variants carry banned tutoring and are out) |
+| U2: 71 / 20 / 146 / 147 rework | Algorithms & DS | the v4 definitions of **146_aho_corasick** and **147_persistent_bst**; 71 and 20 are out (every v4 variant writes `expected.txt` into the fixture, which the prover's leak arm refuses), with 163 and 192 (new) carrying the category |
+| U4: 143 / 152 / 153 / 121 / 128 rework + 7 zig probes | Security, Concurrency, Distributed | the v4 definitions of **143_uov**, **153_coroutine_scheduler**, **121_quorum_kv**, **128_rsa**; 152 is out (lint); the 7 zig probes are out (their v4 prompts carry the tutoring v5 bans), so v5.0 has no probe units |
+
+Coverage after selection (scored units):
+
+| Category | python | go | c | cpp | rust | zig | shell | Units | R-s h (L0) |
+|---|---|---|---|---|---|---|---|---|---|
+| Algorithms & DS | 4 | 1 | 1 | 1 | 1 | 1 | · | 9 | 0.39 |
+| Concurrency & Systems | 3 | · | · | · | · | · | · | 3 | 0.10 |
+| Distributed / SysDesign | 3 | 1 | 1 | 1 | 1 | 1 | · | 8 | 0.36 |
+| LLM / ML | 3 | · | · | · | · | · | · | 3 | 0.08 |
+| Mathematical Finance | 2 | 1 | 1 | 1 | 1 | 1 | · | 7 | 0.12 |
+| Performance & HW Opt | 1 | 1 | 1 | 1 | 1 | 1 | · | 6 | 0.19 |
+| Physics | 2 | 1 | 1 | 1 | 1 | 1 | · | 7 | 0.17 |
+| Probability & Stats | 2 | · | · | · | · | · | · | 2 | 0.08 |
+| Pure & Abstract Math | 3 | 2 | 2 | 2 | 2 | · | · | 11 | 0.36 |
+| SWE / DevOps | 3 | · | · | · | · | · | 1 | 4 | 0.22 |
+| Security | 4 | · | · | · | · | · | · | 4 | 0.12 |
+| Signal Processing & DSP | 2 | 1 | 1 | 1 | 1 | 1 | · | 7 | 0.18 |
+| **Total** | **32** | **8** | **8** | **8** | **8** | **6** | **1** | **71** | **2.37** |
+
+Every one of the 72 (category, language) cells was covered in the design;
+v5.0 covers 46 of them. All six languages and all 12 categories are
+each covered, and the manifest's `coverage_floor` enforces exactly that
+(`category_min: 1`, `language_min: 1`, `cell_min: 0`). The empty cells are
+the compiled ports of categories whose multi-language family is in the
+backlog (Security, SWE / DevOps, Concurrency, LLM / ML, Probability &
+Stats, Pure & Abstract Math in zig). Restoring the full grid is the v5.1
+gate.
+
+### What changed from v4, and why
 
 v4's 291 units mostly measured nothing: 92 Python singletons and most
 variant families were saturated for every reference model, Algorithms +
@@ -118,52 +188,91 @@ language-assistance work, **no zig arm was ever unassisted**: every v4 zig
 prompt carried a ~250-token stdio recipe (`&fr.interface`, `init.io`,
 `takeDelimiter`, flush), and the v4 spec lint *required* it.
 
-| | v4 | v5 |
+| | v4 | v5.0 |
 |---|---|---|
-| Scored units / base tasks | 291 / 137 | 111 / 39 (+ 7 zig probes, unscored) |
-| Kept from v4 | — | 50 units on 16 bases, all upgraded; 35 of the 92 discriminating units |
-| New | — | 61 units on 23 bases (ids 163-196): Knuth D, Q4_K, ChaCha20-Poly1305, Welford/Chan, Q15 biquads, linearizability, broken-build repair, lock-free MPMC, Go race+deadlock, asyncio cancellation, CRDTs, repo debugging, codebase Q&A, git bisect, vuln hunt, JWT hardening, Heston, Robertson, GMM EM, autograd, Pike VM, RISC-V budget, polyphase resampling |
-| Coverage | SWE, DSP: 0 discriminating units | every cell of 12 categories x 6 languages; Algorithms + Math 31% |
-| Tests | visible fixtures, `expected.txt` / `check.py` in the agent's dir (173 units) | seeded hidden tests inside the validator, fed over stdin; a mismatch prints only the case index |
+| Scored units / base tasks | 291 / 137 | 71 / 34 (no probe units) |
+| New | — | 29 units on 14 bases (163-196), each through three adversarial rounds |
+| Kept from v4 | — | 18 units upgraded (U3: 36, 40, 122, 123) + 24 units kept as defined in v4 |
+| Coverage | SWE, DSP: 0 discriminating units | all 12 categories, all 6 languages, 46 of 72 cells; Algorithms + Math 28% of units |
+| Tests | visible fixtures, `expected.txt` / `check.py` in the agent's dir (173 units) | new and upgraded units: seeded hidden tests inside the validator, fed over stdin; a mismatch prints only the case index. Kept-v4 units: none of the leaking ones (71, 20 and every multi-language v4 family that writes `expected.txt` were left out) |
 | Zig prompts | API recipe required | API tutoring **banned**: the contract (Zig 0.16, entry point, compile command) only |
 | Answer key | readable by the agent | sealed: `evals/tasks`, `evals/refs`, `evals/suites` refused under `OPENBEAST_EVAL=1` |
 | Web under eval | live, unrecorded | off (`OPENBEAST_EVAL_WEB=record` re-enables and logs) |
 | Agent wall | `max_iter x 60 s x scale` (80 min for a 40-iteration unit at `--jobs 4`) | per-unit `max_wall_s`: 300 / 600 / 900 / 1500 s by tier; max_iter ceiling 30 |
+| After the agent | nothing (a detached daemon ran into validation) | every process the agent started is killed, and validation refuses to start if one survives |
+| Builds | the user's shared caches | a private cache per validation, deleted after it |
 | LANG | over every base (a solved singleton = 100) | over multi-language bases only (k > 1) |
 | Imputation | v5-fast pin | none: retired for v5 and for every arm |
 
-Every unit is **proven without a model** before it lands
-(`tests/prove_task.py`): the reference passes 3/3 (5/5 when timed) inside
-the 15 s validator budget, at least two wrong solutions fail *for their
-declared failure class*, an empty submission fails, no oracle-like file
-sits in the fixture dir, a leak probe fails, a slow solution fails by the
-validator's own limit, and the reference passes again at `--scale 2.0`.
-Refs and wrong solutions live in `evals/refs/<task_id>/`, declared in the
-task JSON as `ref_stem` / `dest` (`skills/eval-variant-porter/SKILL.md`).
+### The proof every shipped unit passed
 
-The manifest (`suites/v5.json`) carries per unit: `role` (scored | probe),
-`est_s` (reference seconds — a time class for scheduling, never a weight),
-`max_wall_s`, `arms`, and the pack-contrast `stratum` (heldout = the 8 new
-zig units, the pack's held-out set; insample = the 7 retained zig variants
-+ the 7 probes, which the pack was written against). Units resolve to task
-files by id or by (task number, language). A manifest or pin that leaves a
-(category, language) cell empty is refused (`coverage_floor`).
+Every unit is **proven without a model** (`tests/prove_task.py`), through
+run_eval's own lifecycle (cleanup, setup, drop the solution, pre_validate,
+`run_validation`, cleanup), so the timeouts, rlimits, sandbox and reaping
+are exactly what a measured unit gets:
+
+| Arm | Required |
+|---|---|
+| ref | the reference passes 3/3 (5/5 when timed), and its slowest validation, cold compile included, fits the 15 s budget at scale 1 |
+| wrong | at least two plausible wrong solutions FAIL, each with its declared failure class (a regex on the validator's output): failing on a lint or a compile error proves nothing about the check it was written to probe |
+| empty | no solution at all fails |
+| leak | no oracle-like file (expected*, answer*, check*, oracle*, hidden*, solution*) sits in the fixture dir after setup or validation, and a leak probe (a solution that prints whatever it can find) fails |
+| slow | for a timed unit, a slow solution fails by the validator's OWN limit, not the harness timeout |
+| scale2 | the reference passes again at `--scale 2.0` (the `--jobs 4` budget) |
+| lint | no coreutils `timeout`, no `<bits/stdc++.h>`, no zig API tutoring, no `python -c SRC` child, no fixed limit that ignores `OPENBEAST_TIMEOUT_SCALE` |
+
+Refs, wrong solutions and failure classes live in `evals/refs/<task_id>/`
+(`prove.json` or `PROVE.json`), declared in the task JSON as `ref_stem` /
+`dest`. Three families keep arms the generic gate cannot run (176: the
+solution is an overlay directory; 179: shell scripts executed in the
+fixture repository; 175: wrongs named in `prove.json`, kept in `bad/`);
+for those, `prove_task.py` runs the family's own `evals/refs/<dir>/prove.py`,
+which drives the same lifecycle and the same arms.
+
+**The v5.0 proof run** (2026-11-15, the Mac harness host, zig 0.16.0,
+rustc, go, clang, under load): **71 of 71 units PROVEN** in one pass after the last harness change (three prover streams in parallel, one family per stream at a time). Every reference passed 3/3 or 5/5 and again at scale 2.0, every wrong solution failed with its declared class, and no fixture leaked. The tightest margins: the cold zig compile is ~8 s of every zig validation, and the compiled 158 references use 12.4-13.8 s of the 15 s budget (158_b, Go, is closest).
+
+On top of the prover, each **new** family (and U3) passed an adversarial
+verifier, in up to three rounds: a separate session that tried to pass every unit
+without solving it (reading the oracle through argv, the environment, git
+objects, other worktrees and caches; planting modules and toolchain
+configs; exec'ing into an interpreter; detaching daemons; patching the
+validator's interpreter), re-tested the previous round's fixes, and re-ran
+the prover for determinism. The kept-v4 units did not get that review in
+their v4 form; see [residual gaps](#residual-gaps-known-documented-not-closed-in-v50).
+
+### The manifest
+
+`suites/v5.json` carries per unit: `role` (all `scored` in v5.0), `src`
+(`new` or `v4`), `est_s` (reference seconds — a time class for scheduling,
+never a weight), `max_wall_s`, `arms`, and the pack-contrast `stratum`
+(heldout = the 3 new zig units, insample = the 3 retained zig
+variants). Units resolve to task files by id or by (task number,
+language). `coverage_floor` refuses a manifest that drops a category or a
+language (`category_min`, `language_min`); `cell_min` (0 in v5.0) is the
+full-grid floor v5.1 restores. `scoring.SUITE_EXPECTED_UNITS["v5"]` is read
+from the manifest, so the partial-run guard cannot drift from it.
+
+```bash
+python3 evals/suite_manifest.py            # summary, floor check, every unit resolves
+python3 tests/prove_task.py --suite v5     # prove every unit of the manifest
+python3 evals/suite_stats.py --check       # the docs cite the shipped numbers
+```
 
 ### The arm matrix
 
 | Arm | Treatment | Units it RUNS | Shared from L0 | On the board |
 |---|---|---|---|---|
-| **L0** bare | none (and no zig tutoring in any prompt) | all 111 + 7 probes | — | **yes**: the headline SCORE |
-| **L1** prod | `--packs` (zig only has a pack) | 15 zig + 7 probes | every non-zig unit: its request is byte-identical | no |
-| **L2** full | packs + push diagnostics + escalation | 75 compiled + the shell unit + 7 probes | the 35 Python units (diagnostics are keyed per unit; Python is outside the assist scope) | no; shown next to L0 as `+assist` only |
+| **L0** bare | none (and no zig tutoring in any prompt) | all 71 | — | **yes**: the headline SCORE |
+| **L1** prod | `--packs` (zig only has a pack) | the 6 zig units | every non-zig unit: its request is byte-identical | no |
+| **L2** full | packs + push diagnostics + escalation | the 39 compiled + shell units | the 32 Python units (diagnostics are keyed per unit; Python is outside the assist scope) | no; shown next to L0 as `+assist` only |
 
 Contrasts: **L1-L0 on zig** is the pack (reported per stratum: held-out vs
 in-sample); **L2-L1 on zig** is diagnostics + escalation given the pack;
 **L2-L0 on go/c/cpp/rust** is diagnostics (escalation is near-inert for cpp
 under `-std=c++17`). The full 2x2(xesc) decomposition is an on-demand
-campaign (~10 GPU-h on Qwen 27B), not part of a profile. Profiles use the
-headline decoding, never `--greedy` (greedy still churned ~30% on zig at
-`--jobs 4`).
+campaign, not part of a profile. Profiles use the headline decoding, never
+`--greedy` (greedy still churned ~30% on zig at `--jobs 4`).
 
 All arms run **in one process** (`run_eval.py --arms L0,L1,L2`): a base
 group (variants share `/tmp/eval_*`) stays on one worker across arms, with a
@@ -174,33 +283,34 @@ dirs and server drift hits both. Each arm writes
 L0's row (`shared_from`); the arm label is never part of a cache key.
 
 **How small an effect one profile can see** (exact McNemar, alpha 0.05,
-~50% power, net units per replicate): zig 15 units at 30% churn, 7.5 (with
-the probes, n = 22, ~8.5); go+c+cpp+rust 60 units at 12%, 9.0; all compiled
-75 at 15%, 11.0. A pack-sized effect (+9-10 on a zig-weak model) is
-detectable in one profile; the diagnostics effect (~+3) never is, so
-`evals/ablation.py` flags any `|net|` below the MDE as `within_churn` and
-significance comes from campaigns or the pooled cross-model test
-(`--pool`).
+~50% power on expected counts, `evals/ablation.py mde()`; net units per
+replicate at r = 1 / 2 / 4): zig, 6 units at 30% churn: not detectable
+at r = 1, 4.0 at r = 2, 2.25 at r = 4; go+c+cpp+rust, 32 units at 12%:
+8.0 / 4.5 / 3.0; all compiled, 38 units at 15%: 9.0 / 5.5 / 3.1. **v5.0
+cannot resolve the pack effect in one profile**: the design's 15 zig units
+plus 7 probes (n = 22) are 6 units without the rejected families and the
+U4 probes, so the pack contrast needs replicates, campaigns, or the pooled
+cross-model test (`ablation.py --pool`). `evals/ablation.py` flags any
+`|net|` below the MDE as `within_churn`.
 
-### Time: 6.58 reference hours, about 3 wall hours at --jobs 4
+### Time: 3.73 reference hours for all three arms
 
 Planning unit: **R-s**, seconds of the reference run (qwen-27b-mtp-q5-k-xl,
-RTX 5090, `--jobs 1`). Per arm: **L0 3.69 h, L1 0.57 h, L2 2.32 h = 6.58
-R-s h** for a full profile. That is the *sequential* figure:
+RTX 5090, `--jobs 1`). Per arm: **L0 2.37 h, L1 0.2 h, L2 1.16 h = 3.73
+R-s h** for a full profile, **inside the 4-hour budget even sequentially**:
 
 | Target | Conversion | Full-profile wall | Fits 4 h? |
 |---|---|---|---|
-| qwen-27b-MTP, `--jobs 1` | x1 | 6.58 h (L0 alone 3.69 h) | L0 only |
-| qwen-27b-MTP, `--jobs 4` | /2.2 (measured) | ~2.99 h | yes |
-| GLM-5.3-Flash, `--jobs 4` (spark pair, 4 streams) | x0.58 | ~3.82 h decode only, before prefill | at risk |
-| GLM-5.3-Flash, stratified L2 | L2 x (0.3 + 0.7/3) | ~3.2 h | yes |
+| qwen-27b-MTP, `--jobs 1` | x1 | 3.73 h (L0 alone 2.37 h) | yes |
+| qwen-27b-MTP, `--jobs 4` | /2.2 (measured) | ~1.7 h | yes |
+| GLM-5.3-Flash, `--jobs 4` (spark pair, 4 streams) | x0.58 | ~2.16 h decode only, before prefill | yes, with margin for prefill |
 
-`--jobs N` does not divide the 6.58 h by N: streams share the GPU (decode
-per stream slows ~1.6x at 4), and the tail is set by the longest base
-group (a new 6-language hard family is ~13 units x 165 R-s ~ 36 min on one
-worker), which is why groups are scheduled **longest-first** by
-`est_s x arms`. The new units' cost is the brief's estimate (2x a v4 hard
-unit), not a measurement; the planner measures instead of trusting it.
+The estimates are the design's rates (v4 tier rates, x1.6 for
+discriminating and zig units, x0.66 for saturated ones; new units 82 /
+165 / 330 R-s for medium / hard / XL), not measurements; the planner
+measures instead of trusting them. Groups are scheduled **longest-first**
+by `est_s x arms`; the longest group is now a 6-language hard family
+(6 units x 165 R-s in L0, ~33 min across all three arms on one worker).
 
 ### How to run a 4-hour profile
 
@@ -243,22 +353,24 @@ era is checked between phases; a profile never pairs rows across eras.
 (vLLM, TensorFold); for those, the reasoning budget is *declared*
 (`--reasoning-budget`) and recorded as such, never read from `pgrep`.
 
+
 ### Scoring (v5)
 
 Unchanged: CAPABILITY = 0.75 x SOLVE + 0.25 x LANG, difficulty weights
 1 / 1.5 / 2 (`est_s` is not a weight). One change: **LANG is computed over
-multi-language bases only (k > 1)** — v5 has 24 singleton bases, and under
-the v4 rule each solved singleton scored LANG 100 by construction. A
+multi-language bases only (k > 1)** — v5.0 has 26 singleton bases, and
+under the v4 rule each solved singleton scored LANG 100 by construction. A
 category-balanced SCORE (mean of per-category capabilities) is reported as
-a secondary readout only. A full v5 row covers 111 scored units; probe rows
-and `budget_skip` rows never enter a score.
+a secondary readout only. A full v5.0 row covers 71 scored units;
+`budget_skip` rows never enter a score.
 
 ### Validator isolation
 
 The solution under test is a same-uid child of its validator. During the v5
 authoring gate, adversarial verifiers passed units in 163, 164, 168, 173,
-176, 181, 183, 188, 20, 40, 121 and 122 without solving them, all through the
-harness rather than through the tasks:
+176, 181, 183, 188, 190, 20, 40, 121 and 122 without solving them, all
+through the harness rather than through the tasks. Each row is closed in
+the harness for every unit; the last five were closed for v5.0:
 
 | Hole | Attack | Closed by |
 |---|---|---|
@@ -279,6 +391,11 @@ harness rather than through the tasks:
 | shell parent | `run_reaped` ran `python -I -S -` through `sh -c`, and dash (Debian's and Ubuntu's `/bin/sh`) stays alive as the parent. That shell is dumpable and holds the unlinked script as fd 0, so `/proc/<sh>/fd/0` gave a solution the whole validator | The list form is run as `exec python ...`, so the validator's parent is the harness, which is non-dumpable |
 | other checkouts | A solution run from a worktree read `evals/tasks/40_attention.json` from the main checkout. The shared `.git` object store holds every branch's validators | `run_eval.validator_seal()` seals `evals/{tasks,refs,suites}` of every checkout in `git worktree list`, plus the git common dir (macOS; see below) |
 | vendor BLAS | 122: a solution built A and B, then called `cblas_dgemm` from Accelerate or OpenBLAS (dlopen needs no link flag), and passed without writing a kernel | 122's validator lints the source, refuses a binary that links anything beyond the system runtime or imports a loader or a BLAS symbol, and watches the libraries the running process loads |
+| shared build cache | 164: `zig build-exe` outside a build system leaves the whole compilation unit in `~/.cache/zig/tmp/<hash>/*.o`; a sealed prover build of the reference left 4 files, and from the measured agent's bash (which keeps `~/.cache` read-write) 40 of 40 cached objects linked into a passing solution | every validation gets a **private, throw-away build cache** in its 0700 dir: `ZIG_GLOBAL_CACHE_DIR`, `ZIG_LOCAL_CACHE_DIR`, `GOCACHE`, `GOMODCACHE` (with `GOPROXY=off`, `-modcacherw`), `CARGO_TARGET_DIR`, `XDG_CACHE_HOME`; `CCACHE_DISABLE=1`, `SCCACHE_DISABLE=1`, no `RUSTC_WRAPPER`. It is deleted with the validator (read-only module files included). `vlib.build_env` keeps it, and outside the harness puts caches under its private HOME, never `~/.cache` (`run_eval.build_cache_env`) |
+| agent leftovers | 190 (harness-level): `run_agent` killed the agent's tree only on a timeout, and a daemon that detaches properly (double fork, `setsid`, stdio off the pipe) is reparented to init, outside every tree, group and session the harness knew. It runs as our uid into validation: it can rewrite the solution after the lint, read the validator's work dir through a shared `TMPDIR`, or eat the CPU a budgeted solution is measured against | **every process the agent started is killed before validation** (`run_eval.AgentWatch` + `sweep_agent_leftovers`): a per-agent tag in the env; on macOS a per-agent tag *file* that the eval bash sandbox denies, so `sandbox_check(pid, tag)` marks every process the shell started even after `env -i` (a sandbox can be neither left nor replaced); a thread that polls the agent's tree every 0.5 s and records each (pid, start time) it saw, with the runner made a child subreaper on Linux so orphans stay in its tree; the process groups and sessions those processes led; and on Linux with a delegated cgroup v2 a child cgroup nothing can leave (`cgroup.kill`). The matches are frozen (`SIGSTOP`) and `SIGKILL`ed with their subtree for up to 6 rounds, then the sweep **asserts none survive**: a unit with survivors is not validated. Only processes of our uid that started after the agent can match, and the sandbox test is differential (tag denied, sibling file allowed), so app-sandboxed system agents are never touched |
+| early exit | v4 python validators import the solution into their own interpreter, so `os._exit(0)` or `sys.exit(0)` at the solution's import ended the validator with status 0 before any check ran; it passed 143, 146, 152, 153, 121 and 128 | the bootstrap prints a per-run random **completion line** only when the validator ran to its end (or its OWN code raised a clean `SystemExit`; one raised in a frame of the solution does not count), and `run_validation` passes exit 0 only with that line present |
+| relative argv | the round-3 `exec_only` rule named `realpath(cmd[0])` resolved in the validator's cwd, but compiled validators run `./divmod` with `cwd=/tmp/eval_x`: the literal named a file that does not exist, and every compiled unit failed with "solution exited 71" | `vlib._resolve_exec` resolves a relative argv against the solution's cwd and a bare name through its PATH |
+| env launcher | 122 starts the solution as `/usr/bin/env DYLD_INSERT_LIBRARIES=<monitor> ./gemm` (sandbox-exec is SIP-protected and drops `DYLD_*`); confining exec to `/usr/bin/env` alone denied the solution itself | `exec_only` takes a list: for `/usr/bin/env` it is env plus the one program env runs, and still nothing else |
 
 `evals/vlib.py` is the validator's standard library. The harness injects it
 into the validator from source; it is never on an import path or in the cwd.
@@ -340,34 +457,113 @@ into the validator from source; it is never on an import path or in the cwd.
 limits that never read the scale. The isolation itself is pinned by
 `tests/test_eval_validator_isolation.py`.
 
-**Residual, by platform.**
+### The isolation model, in one place
 
-- The confinement (network, process-info, exec, read-deny) is enforced by
-  `sandbox-exec` on **macOS**. On **Linux** the kernel equivalent is provided
-  by the environment the measured run executes in — the beast-gate container
-  and Landlock/namespaces on the rig — not by vlib itself; where that is
-  absent, the Linux-only `/proc/<pid>/exe` exec guard and the AST/compiled
-  lints are the backstop, so a Linux validator must still lint and must
-  validate behaviour, never trust the confinement alone. The oracle seal in
-  `agents/tools.py` keeps the eval answer key out of the agent's reach under
-  `OPENBEAST_EVAL`: direct reads are denied in the kernel on macOS, and the
-  textual tripwire is quote-normalised and git-blob-aware on both platforms.
-- On macOS, with `allow_fork=True`, a double-fork plus `setsid` can slip past
-  the sampler, and exec is not confined (a shell solution needs coreutils). A
-  timed or exec-sensitive gate there keeps the default `allow_fork=False`.
-- `vlib.is_native_executable` does not parse symbols; a validator that reads
-  `nm`/`otool` must still require a native executable first, so a non-object
-  product cannot read as "clean".
-- A shell validator that runs `python3 -` without `-I` still puts its
-  private cwd on `sys.path`.
+A measured unit has three actors, all running as the operator's uid on the
+harness host, and the harness keeps each one away from what it must not
+reach:
+
+| Actor | Must not reach | How |
+|---|---|---|
+| **the agent** (runner + its tools) | the answer key; the web; anything after its turn ends | `OPENBEAST_EVAL=1`: the file tools refuse `evals/{tasks,refs,suites}`, and on macOS its bash runs under `sandbox-exec` with those trees denied in the kernel (quote-split and git-blob spellings are caught by the text check on both platforms); `fetch` / `web_search` refuse. When the runner exits, **the leftover sweep** kills everything it started, detached daemons included, and refuses to validate if anything survives |
+| **the validator** | an attacker-controlled import path, cwd, argv or environment; a shared build cache | stdin-fed script, `python -I -S -` in an empty private cwd, scrubbed env, non-dumpable on Linux, **private build cache deleted afterwards**, a completion line it alone can print |
+| **the solution** (run by the validator) | the oracle (validator memory, the answer key, git objects, other checkouts), the network, other processes, other programs | `vlib.run_solution`: own session and process group, CPU budget for the whole tree, fork refused by default, exec confined to its own image (or an env launcher and its one target), no network, no process-info on others, reads of every `evals/{refs,tasks,suites}` tree and the git store denied; `confine=` turns that into a read allowlist that fails closed (sandbox-exec, Landlock, or user + mount namespaces) |
+
+Between units: fixture roots that another uid owns or can write are
+refused; setup, pre_validate and cleanup run in a fresh private cwd; every
+solution process group a validator recorded is SIGKILLed after it exits.
+
+### Residual gaps (known, documented, not closed in v5.0)
+
+- **v4-defined units are the weak link.** The units kept as defined in v4
+  (the third group above) import the solution into the validator's own
+  interpreter and do not use `vlib.run_solution`, so none of the solution
+  confinement applies to them: an adversarial solution can read the
+  reference or the task JSON at import time, or rebind the checks it is
+  judged by. The completion line closes the trivial exit-0 cheat, and the
+  agent itself still cannot read the answer key, but a solution that
+  reads it at validation time is not stopped. Screening the rework
+  branches' wrong solutions against these v4 validators found plausible
+  ones they accept: on 158, Python big-int shortcuts (hex round trip,
+  digit collapse), a zero-operand bug no input exercises, a 32-bit-limb
+  schoolbook fast enough for the gate, and a solution that spawns another
+  process; on 159, Kronecker substitution into one Python int and dropped
+  trailing zero coefficients; on 143, a T that does not mix the variables;
+  on 153, dropped children; on 128, a non-deterministic or lambda(n) key;
+  on 109, `==` instead of `compare_digest` and the `now == exp` boundary;
+  on 146/147/117/124/37/29/49, the gaps listed in each unit's
+  `evals/refs/<id>/prove.json` note. Their rewrites are U1, U2 and U4 in
+  the backlog.
+- **The agent's file tools are not kernel-sealed** the way its bash is
+  (164's verifier): `read_file` refuses only the sealed trees by path, not
+  the rest of what the bash sandbox denies, so a stray validator copy left
+  outside `evals/` (a scratch dir, a backup) is readable. Keep validator
+  copies out of the agent's reach.
+- **A compiled solution can swap its own image** (164): `exec_only`
+  allows the solution's binary path, and the binary sits in a dir the
+  solution can write, so it can replace itself and re-exec. Validators that
+  build into the fixture dir are exposed; the fix (run from a read-only
+  copy, or hash the image after the run) is a v5.1 harness item.
+- **Linux confinement is the environment's job.** On macOS sandbox-exec
+  enforces the solution rules; on Linux vlib catches fork by sampling (verdict `forked`), exec
+  (`/proc/<pid>/exe`) and, with `confine=`, reads (Landlock or namespaces),
+  but the deny-list form (no `confine=`) has no kernel read-deny. The
+  leftover sweep on Linux is exact only with a delegated cgroup v2; without
+  one it relies on the env tag, the tree poll (the runner is a subreaper, so
+  an orphan stays in its tree while it lives) and groups/sessions. A daemon
+  that scrubs its environment and is orphaned between two polls *after*
+  the runner has exited is the one case it can miss there.
+- **macOS argv/env of other processes** stay readable to a same-uid process
+  through `kern.procargs2` under every sandbox rule tried, so no validator
+  may hold a secret in argv or env (none does: the script arrives on stdin).
+- **Shared fixture paths.** A family's units share one fixed `/tmp/eval_*`
+  dir; two provers (or a prover and a test) of the same family at once
+  corrupt each other (186, 190). The harness serialises a base group; by
+  hand, run one family at a time.
+- **Timing headroom.** The cold zig compile now happens in every
+  validation (private cache): about 8 s of the 15 s validator budget on a
+  loaded Mac; a Go unit rebuilds its standard library each time (158_b's
+  validation is 13.5-13.8 s, almost all of it the oracle and the build).
+  A slower harness host needs `--scale`; a std-only cache template would
+  win the time back and is a v5.1 harness item.
+
+### v5.1 backlog: the 12 families that did not ship
+
+Each family below went through three adversarial rounds (an independent
+verifier tried to pass every unit without solving it, re-tested the
+previous round's fixes, and re-ran the prover). These did not come out
+clean, so v5.0 ships without their new versions. Their work is kept on the
+`worktree-wf_a06b4539-9a5-<n>` branches named below; the verdicts are in
+the round-3 review. A family moves into v5.1 when a fresh verifier finds
+no open issue and the prover passes 3/3 at scale 1 and 2.0.
+
+| Item | Branch | What it is | Open issues (round 3) |
+|---|---|---|---|
+| **164** Q4_K block quantise/dequantise, 6L | `-3` | llama.cpp Q4_K bit packing, scale/min sub-blocks | **Blocking, harness:** compiled references stayed in the shared zig cache (`~/.cache/zig/tmp/<hash>/*.o`); from the agent's bash, 40 of 40 cached objects linked and passed. Closed in v5.0 by the private build cache. **Blocking, compiled units:** `exec_only` allowed the solution's own path, and its cwd was writable, so a C solution unlinked its binary, wrote a stolen one to the same path and re-exec'd it (passed ref x3 and scale 2.0). Fix: run from a read-only copy, deny writes to the exe path, or hash the binary after the run. **Harness:** the agent's file tools are not kernel-sealed the way bash is (`read_file` returned stray validator copies the bash seal denies). |
+| **165** ChaCha20-Poly1305 AEAD, 6L | `-4` | RFC 8439 compliance, constant-time tag compare | C/C++ call macOS corecrypto (`ccchacha20`, `ccpoly1305`) through hand-declared prototypes: the "no crypto library" rule bans only headers. The forced-tag table that proves "OPEN follows tag_eq" sits in plain text next to the running binary (C, Go) and inside the compiled sources (`@embedFile` in zig, `include_str!` in Rust, `#include "ctq.c"` in C/C++), so a solution reads the table and answers with a leaky compare. Zig reference's cold-compile wall is 79% of the 15 s budget. |
+| **166** Welford + Chan parallel-merge moments, 6L | `-5` | numerically stable moments on cancellation data | Verification incomplete: the 3-run determinism and the scale 2.0 runs were not finished, and the round-2 issues and new bypass attempts were not re-tested independently (the family ships wrong_exec.*, plant arms for rust-toolchain and go env, and the ancestor scan, unverified). |
+| **169** Broken-build repair (pyproject, go.mod, Make, CMake, Cargo, build.zig), 6L | `-8` | toolchain repair, the material for the diagnostics ablation | Adversarial step not done (stopped). C/C++: `check_flags` refuses `-w`, `-Wno-error*` and friends but not clang's `-Wno-everything`, which silences every warning so `-Werror` never fires. The -f flag denylist allows `-fmodules`, `-fmodule-file=` and similar; an allowlist is probably safer. |
+| **170** Lock-free MPMC ring buffer, 4L (c, cpp, rust, zig) | `-9` | acquire/release ordering, ABA | **Blocking:** race-freedom is checked only in the TSan build and lock-freedom only in the plain build, so a ring that tells the builds apart is a spin-locked queue under TSan and a relaxed-only ring in the plain build (C passed 3/3 under Rosetta TSO; Rust and zig 2/4 on ARM). Zig lint still allows `@import("builtin")` fields that reveal the TSan build. Fix: run a progress case inside the TSan binary for C/Rust/zig, add the split cheats as wrong arms, allow only specific builtin fields. |
+| **171** Fix a deadlock and a race in a Go worker pool | `-10` | two interacting bugs, goroutine leak | **Determinism:** the reference fails intermittently under load (halved `join` sleeps in H12-H14). Four mutants pass all 510 hidden runs: a waited-for genuine error that does not cancel the Map's other invocations; waiters watching the caller's ctx instead of the Map's; returning early on another Map's error while workers drain; a pre-cancelled ctx with every key cached returning values. `prove_task.py` ignored `repeat: 5` and `alt_refs`. |
+| **180** Find unnamed vulns in an 8-file `http.server` app | `-16` | no hints: traversal, IDOR, SSRF, timing | No family fix in round 3. Still passing: a handler that skips `auth.py` and compares tokens with `==`; a planted `app/hmac.py` shadowing `hmac`; a local `compare_digest`; `startswith(root)` with no separator; laundering the token through a subscript. New: substring SSRF allowlist; a lambda default that escapes the taint check; an `app/auth/` package shadowing `auth.py`; `server.py` rebinding `auth.authenticate` at import. Structural fix: instrument the real server process from a validator-owned `python -I` bootstrap. |
+| **181** JWT verifier hardening | `-17` | alg=none, RS/HS confusion, kid, leeway | **Blocking:** a stdlib-only cheat walks every `.git` under `$HOME`, reads the reference blob through the pack index and execs it (457/457, 3/3 at scale 1 and 2.0): the solution sandbox denied `evals/(refs|tasks|suites)` but not `.git/objects`. **Blocking:** the seal can be renamed away (`os.rename` of `evals/refs`, read, rename back). Non-blocking: the runner shares the solution's interpreter, so the "never raises another exception" contract can be laundered. |
+| **186** Robertson stiff kinetics | `-19` | explicit methods exceed the RHS budget | Adversarial step not done (stopped by a safety check). The fixed fixture dir `/tmp/eval_rob186` makes two concurrent proofs corrupt each other. The Linux seccomp path was exercised only in an aarch64 container. |
+| **U1** rework of 117 / 158 / 159 | `-25` | iterative refinement, Karatsuba, NTT (6L) | Verification incomplete: 12 of 13 units have one PROVEN run (158_f unfinished), no 3-run determinism, no separate scale 2.0 run, and the re-tests and new bypass attempts were not done (a tuned packed-limb or vectorised schoolbook meeting the native 158 CPU gates is the open question). Headroom on the 158 CPU gates is thin (C ref 47%, Go 42% of the gate). |
+| **U2** rework of 71 / 20 / 146 / 147 | `-26` | reverse list, priority queue (6L), Aho-Corasick, persistent BST | 147 passes with a persistent chunked sorted list (no BST, no path copying) because the memory gate cannot tell O(sqrt n) from O(log n) copying at 8000 versions. 20: libc db(3) B-tree (C/C++ on macOS), Go `fmt` sorting map keys, Python `Counter.most_common()`, and no complexity gate at all. 71_d: `std::valarray` with a negative-stride `std::slice` reverses without any banned identifier. |
+| **U4** rework of 143 / 152 / 153 / 121 / 128 and the 7 zig probes (31, 92, 52, 54, 61, 62, 63 `_f`) | `-28` | UOV, Chase-Lev, coroutine scheduler, quorum KV, RSA; the pack-contrast probes | 0 of 12 PROVEN: every lint arm fails (`-I -c` children; fixed limits that ignore the scale). No validator runs the solution through `vlib.run_solution`, so the round-3 sandbox never applies: a solution globs every worktree's `evals/refs` (and `evals/tasks/121_quorum_kv.json`, to cut out the validator's own model) and execs it; 152 and 153 pass by patching the shared interpreter or taking over the protocol fds; 143 passes `uov_rank2`; zig units call `system()` to build and exec the reference during the untimed warm-up, call compiler-rt `__popcountdi2`, or `@reduce` a bit vector. |
 
 ### The era break
 
 `evals/SUITE_VERSION` is `v5`, which rolls the cache era (`ctxhash`) for
 every row: no v4 cache entry replays into v5. The v4 board is frozen (shown
-under "legacy suites"); v5 starts empty. The harness changes ride the same
-break: `agents/tools.py` (the seal, per-unit diagnostics) is in the era
-hash. Expect **zig L0 to drop sharply** against v4 (the v4 off-arm passed
+under "legacy suites"); v5 starts empty. The harness rides the same break,
+pinned as **`harness5`** in `evals/HARNESS_VERSION`: its fingerprint covers
+the agent's wall cap, the validator's environment, bootstrap and private
+build cache, the fixture cwd, and the leftover sweep (`AgentWatch`,
+`sweep_agent_leftovers`), and `evals/vlib.py` is now hashed into the era
+too, because run_eval injects it into every validator. `agents/tools.py`
+(the seal, per-unit diagnostics, the agent's sandbox tag) is era-hashed as
+before. Expect **zig L0 to drop sharply** against v4 (the v4 off-arm passed
 10-11/30 *with* the recipe in the prompt) and LANG with it: that is the
 intended effect of an unassisted L0, not a regression.
 
@@ -573,7 +769,7 @@ Time budgets (used in speed scoring): easy=30s, medium=90s, hard=300s.
 
 ### Multi-language variants
 
-**31 of the 137 base tasks** have language variants (v4). Each variant is its
+**31 of the 137 v4 tasks** have language variants. Each variant is its
 own scored test unit; the leaderboard reports per-language accuracy via
 `scoring.py --by-language`.
 
