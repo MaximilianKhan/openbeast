@@ -216,6 +216,24 @@ check "conf_set replaces every assignment once, in place; unset drops; comments 
   '[[ "$(cat "$T/c.conf")" == $'"'"'# keep me\nFOO=1\nINFERENCE_BACKEND=tensorfold\nNEW=x y'"'"' ]]' "$(cat "$T/c.conf")"
 check "…the conf keeps mode 600, and one backup was taken first" \
   '[[ "$(stat -c %a "$T/c.conf")" == 600 && $(ls "$T/st0/conf-backups" | wc -l) == 1 ]]'
+# A value is one line: a literal backslash-n stays literal (awk -v used to
+# expand it into a real newline), a real line break is refused, and so is a
+# key that is not a name. Nothing else gets written either way.
+printf 'BIND_HOST=127.0.0.1\n' > "$T/inj.conf"; chmod 600 "$T/inj.conf"
+_o="$(_lib OB_ENGINE_CONF="$T/inj.conf" OPENBEAST_ENGINE_STATE_DIR="$T/st0" bash -c '
+  source "$REPO_DIR/scripts/lib/engine.sh"
+  ob_engine_conf_set ENGINE_PIN_MAYA "v9\nBIND_HOST=0.0.0.0@x"; echo "rc1=$?"
+  ob_engine_conf_set ENGINE_PIN_MAYA "$(printf "v9\nBIND_HOST=0.0.0.0")"; echo "rc2=$?"
+  ob_engine_conf_set "BAD KEY" x; echo "rc3=$?"' 2>&1)"
+check "file_set: a literal \\n stays one line, a real line break or a bad key is refused" \
+  '[[ "$_o" == *rc1=0*rc2=2*rc3=2* && "$(grep -c . "$T/inj.conf")" == 2 && "$(grep ^BIND_HOST= "$T/inj.conf")" == BIND_HOST=127.0.0.1 ]] && grep -qxF "ENGINE_PIN_MAYA=v9\nBIND_HOST=0.0.0.0@x" "$T/inj.conf"' "$_o / $(cat "$T/inj.conf")"
+_o="$(_lib OB_ENGINE_CONF="$T/inj.conf" OPENBEAST_ENGINE_STATE_DIR="$T/st0" bash -c '
+  source "$REPO_DIR/scripts/lib/engine.sh"
+  ob_engine_pin_set vllm "v1/../x" sha256:0000000000000000000000000000000000000000000000000000000000000000 install; echo "rc1=$?"
+  ob_engine_pin_set vllm v0.33.0 "sha256:00 BIND_HOST" install; echo "rc2=$?"
+  ob_engine_pin_set vllm v0.33.0 sha256:0000000000000000000000000000000000000000000000000000000000000000 install; echo "rc3=$?"' 2>&1)"
+check "pin_set refuses a version or ref that is not a pin's shape, and records a good one" \
+  '[[ "$_o" == *rc1=2*rc2=2*rc3=0* && "$(grep -c ^ENGINE_PIN_VLLM= "$T/inj.conf")" == 1 ]]' "$_o"
 
 # ════════════════════════════════════════════════════════════════════════════
 echo ""

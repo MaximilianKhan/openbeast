@@ -163,15 +163,28 @@ ob_engine_conf_backup() {
 # ob_engine_file_set <file> <key> <value> — replace every assignment of KEY with
 # one (at the first one's place), or append. Comments stay. Atomic, keeps
 # the file's mode (a new file is 0600: it can hold keys).
+# One key, one line: a KEY that is not a shell-style name, or a VALUE with a
+# CR or LF in it, is refused (return 2, the file untouched). Values reach
+# here from install results whose text came from a staged MANIFEST; a line
+# break in one would write extra KEY=VALUE lines (BIND_HOST=0.0.0.0, …) that
+# conf.sh's last-assignment-wins then obeys. The line reaches awk through
+# ENVIRON, never `-v`: -v expands backslash escapes, so a literal `\n` in
+# the value became a real newline there.
 ob_engine_file_set() {
   local f="$1" key="$2" val="$3" tmp
+  if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+    echo "refusing to write '$key' to $f: not a KEY name" >&2; return 2
+  fi
+  if [[ "$val" == *$'\n'* || "$val" == *$'\r'* ]]; then
+    echo "refusing to write $key to $f: its value has a line break in it" >&2; return 2
+  fi
   tmp="$(mktemp "${f}.engXXXXXX")"
   if [[ -f "$f" ]]; then
     chmod --reference="$f" "$tmp" 2>/dev/null || chmod 600 "$tmp"
-    awk -v k="$key" -v line="$key=$val" '
-      $0 ~ "^[[:space:]]*" k "[[:space:]]*=" { if (!done) { print line; done = 1 } ; next }
+    _OB_FS_KEY="$key" _OB_FS_LINE="$key=$val" awk '
+      $0 ~ "^[[:space:]]*" ENVIRON["_OB_FS_KEY"] "[[:space:]]*=" { if (!done) { print ENVIRON["_OB_FS_LINE"]; done = 1 } ; next }
       { print }
-      END { if (!done) print line }' "$f" > "$tmp"
+      END { if (!done) print ENVIRON["_OB_FS_LINE"] }' "$f" > "$tmp"
   else
     chmod 600 "$tmp"
     printf '%s=%s\n' "$key" "$val" > "$tmp"
@@ -230,10 +243,26 @@ ob_engine_history() {
 # (llama) is written by the adapter. Either way, one history line.
 ob_engine_pin_set() {
   local e="$1" v="$2" r="$3" a="$4" n="${5:-}"
+  ob_engine_pin_valid "$v" "$r" || return 2
   if ! ob_engine_has "$e" pin; then
-    ob_engine_conf_set "$(ob_engine_pin_key "$e")" "$v@$r"
+    ob_engine_conf_set "$(ob_engine_pin_key "$e")" "$v@$r" || return 2
   fi
-  ob_engine_history_add "$e" "$a" "$v" "$r" "$n"
+  ob_engine_history_add "$e" "$a" "$v" "$r" "${n//[$'\t\r\n']/ }"
+}
+
+# ob_engine_pin_valid <version> <ref> — the shape every pin has: a version
+# name (v1.1.65, b8000, 1.2.9, v0.33.0, a 12-hex llama.cpp commit) and an
+# immutable ref (40-hex commit, sha256:<64-hex>). Both end up in
+# openbeast.conf, spark.env and history.tsv, and the version names a
+# directory, so anything else — a newline, a `/`, `..` — is refused with
+# the reason, whoever produced it (an adapter, or a MANIFEST it read).
+ob_engine_pin_valid() {
+  if [[ ! "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$ ]]; then
+    echo "refusing to pin version '$1': not a version name ([A-Za-z0-9._+-], at most 64)" >&2; return 1
+  fi
+  if [[ ! "$2" =~ ^([0-9a-f]{40}|sha256:[0-9a-f]{64})$ ]]; then
+    echo "refusing to pin ref '$2': not a 40-hex commit or sha256:<64-hex>" >&2; return 1
+  fi
 }
 
 # ob_engine_prev_pin <engine> — the pin before the current one: walking the

@@ -98,7 +98,7 @@ spark_env_sync() {
   ob_engine_has "$e" spark_env || return 0
   while IFS= read -r kv; do
     [[ -n "$kv" ]] || continue
-    ob_engine_file_set "$f" "${kv%%=*}" "${kv#*=}"
+    ob_engine_file_set "$f" "${kv%%=*}" "${kv#*=}" || die "could not write ${kv%%=*} to $f (above)"
     echo "  $f: ${kv%%=*}=${kv#*=}"
   done < <(ob_engine_call "$e" spark_env "$2" "$3")
 }
@@ -266,7 +266,10 @@ cmd_use() {
 
 # ── install / update / stage / rollback ────────────────────────────────────
 _record() { # _record <action>
-  ob_engine_pin_set "$ENGINE" "$ENG_RESULT_VERSION" "$ENG_RESULT_REF" "$1" "${ENG_RESULT_NOTE:-}${FROM:+ from=$FROM}"
+  # ob_engine_pin_set refuses a version or ref that is not a pin's shape
+  # (lib/engine.sh ob_engine_pin_valid): they are written to openbeast.conf.
+  ob_engine_pin_set "$ENGINE" "$ENG_RESULT_VERSION" "$ENG_RESULT_REF" "$1" "${ENG_RESULT_NOTE:-}${FROM:+ from=$FROM}" \
+    || die "$ENGINE: the install produced a pin openbeast.conf must not hold (above) — the pin did not move"
   echo "pinned $ENGINE $ENG_RESULT_VERSION @ $ENG_RESULT_REF"
   spark_env_sync "$ENGINE" "$ENG_RESULT_VERSION" "$ENG_RESULT_REF"
   if [[ "$INFERENCE_BACKEND" == "$ENGINE" && "$INFERENCE_MANAGED" == true ]] && stack_running; then
