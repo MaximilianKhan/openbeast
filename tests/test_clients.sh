@@ -962,6 +962,60 @@ else
   fail "half-installed status (rc=$rc): $out"
 fi
 
+echo ""
+echo "client.sh status probes (review 2026-11-16):"
+# curl stub: records argv, never dials. /health answers nothing (a blackholed
+# rig), /healthz says OK, a query-less format=json answers $SX_FMT.
+SH="$TMPROOT/status-home"; SB="$TMPROOT/status-bin"; mkdir -p "$SH/.openbeast-client" "$SB"
+cat > "$SB/curl" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*" >> "$CURL_LOG"
+url="${@: -1}"; w=""; prev=""; null=0
+for a in "$@"; do
+  [[ "$prev" == "-w" ]] && w="$a"
+  [[ "$prev" == "-o" && "$a" == /dev/null ]] && null=1
+  prev="$a"
+done
+case "$url" in
+  */healthz)               body="OK"; code=200 ;;
+  */search\?format=json)   body='{"error": "No query"}'; code="${SX_FMT:-400}" ;;
+  *)                       body=""; code=000 ;;
+esac
+[[ $null -eq 1 ]] || printf '%s' "$body"
+[[ -n "$w" ]] && printf '%b' "${w//%\{http_code\}/$code}"
+[[ "$code" == 000 ]] && exit 7
+exit 0
+STUB
+chmod +x "$SB/curl"
+{ echo "OPENBEAST_AGENT_INFERENCE_URL=https://rig.invalid:8443/v1"
+  echo "SEARXNG_URL=https://rig.invalid:8889"; } > "$SH/.openbeast-client.env"
+_status() { : > "$TMPROOT/curl.log"
+  out="$(env -i HOME="$SH" PATH="$SB:/usr/bin:/bin" CURL_LOG="$TMPROOT/curl.log" "$@" \
+         bash "$REPO_DIR/scripts/client.sh" status 2>&1)" || true; }
+_status
+if [[ "$(grep -c '/health$' "$TMPROOT/curl.log")" == "1" ]] && _has "$out" "no response from"; then
+  pass "a silent rig is asked for /health ONCE (body + status in one request)"
+else
+  fail "health requests: $(grep -c '/health$' "$TMPROOT/curl.log") :: $out"
+fi
+if ! grep -q 'q=' "$TMPROOT/curl.log" && grep -q '/healthz$' "$TMPROOT/curl.log" \
+   && _has "$out" "search reachable"; then
+  pass "search is checked with /healthz + a query-less format probe: no live search"
+else
+  fail "search probe: $(tr '\n' '|' < "$TMPROOT/curl.log") :: $out"
+fi
+if grep -q -- '-m 2 .*healthz$' "$TMPROOT/curl.log"; then
+  pass "with the rig silent, the later probes wait 2 s, not 5"
+else
+  fail "later probe timeout: $(tr '\n' '|' < "$TMPROOT/curl.log")"
+fi
+_status SX_FMT=403
+if _has "$out" "JSON output is off" && ! _has "$out" "search reachable"; then
+  pass "a SearXNG without JSON output is named as such (web_search needs it)"
+else
+  fail "json-off search: $out"
+fi
+
 # --- Summary ---
 echo ""
 echo "================================"
