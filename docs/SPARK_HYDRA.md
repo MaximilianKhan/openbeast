@@ -1616,6 +1616,40 @@ published, from the 2026-11-15 review:
   `enabled`). On opencode v2 that entry is not merged with `mcp.servers` (F3).
 - **Checkout skew**: resolved 2026-11-16, both Sparks are at `dc0a181` (0).
 
+From the 2026-11-16 review (fixes in this checkout; the live boxes pick them
+up on the operator steps named):
+
+- **Loopback is not isolation on spark-1.** Open WebUI and SearXNG also run
+  with `network_mode: host` (`docker-compose.yml`), and SearXNG runs as uid 0
+  while it parses untrusted web content. From inside either container,
+  `127.0.0.1:8000` answers without a key, gate caps or the inference audit
+  (checked read-only: `docker exec searxng wget -qO- http://127.0.0.1:8000/health`
+  returns TensorFold's health), and rank 0's unauthenticated TCPStore on
+  `*:29551` is reachable on loopback too. The agent `bash` tool has the same
+  reach, since Sandlock leaves the network open by default
+  ([SANDBOXING.md](SANDBOXING.md)). spark-guard cannot help: it must accept
+  `lo` (Open WebUI and the agents reach inference there by design), and an
+  nftables `meta skuid` rule would not separate the containers either, because
+  Open WebUI, SearXNG and the recipe all run as uid 0. A compromised SearXNG
+  could therefore run unaudited generations, starve the 4 streams, or disturb
+  the TCPStore during a restart. It cannot read data or escalate. The real
+  fixes are still open: serve with native TensorFold (D2) and its
+  `--api-key-file`, so loopback reach alone grants nothing on `/v1`, and move
+  SearXNG to a bridge network that reaches only what it needs.
+- **spark-guard rules are stale on both Sparks**: installed 2026-11-15, they
+  guard `29501` but not `29502` (B3). `--status` now says `STALE`. Fix: one
+  `sudo scripts/backends/spark-guard.sh` on each Spark.
+- **beast-gate admitted 2 generations per device** while the pair serves 4.
+  The gate now defaults to `INFERENCE_SLOTS` (E2), but the running gate keeps 2
+  until the next `systemctl --user restart openbeast`.
+- **The RoCE fabric runs at `active_mtu 1024`**, because the ConnectX netdevs
+  are at MTU 1500 (B1 leaves the MTU alone on purpose). MTU 9000 (RoCE 4096)
+  could help long-prompt prefill all-gathers and bulk copies. TP-2 decode
+  all-reduces are small and latency-bound, so they would gain little. This is
+  unmeasured. Measure it in a maintenance window before changing netplan
+  anywhere: A/B the TTFT of a ~45K-token prompt and the 4-stream decode tok/s,
+  on both Sparks at once, with the offline netplan route written down first.
+
 ### Not done yet
 
 - zig for `language_reference` on a Spark (H7), and a beast-docs mirror on spark-1 (F5).
