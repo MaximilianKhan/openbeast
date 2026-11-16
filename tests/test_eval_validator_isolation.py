@@ -561,12 +561,17 @@ def test_solution_cannot_signal_a_sibling_process(tmp_path, confined):
             pytest.skip("macOS or Linux only")
     elif not DARWIN:
         pytest.skip("the unconfined deny-list is macOS's sandbox-exec")
-    victim = subprocess.Popen(["sleep", "100"], start_new_session=True)
+    # The victim must not be OUR child: an earlier run_solution may have
+    # made this process a child subreaper (Linux), and run_solution treats
+    # our children as the solution's orphans. A live sh holds it instead.
+    holder = subprocess.Popen(["/bin/sh", "-c", "sleep 100 & echo $!; wait"],
+                              stdout=subprocess.PIPE, text=True, start_new_session=True)
+    victim = int(holder.stdout.readline())
     try:
         src = (f"import os, signal, subprocess\n"
                f"c = subprocess.Popen(['sleep', '5']) if {confined!r} else None\n"
                f"try:\n"
-               f"    os.kill({victim.pid}, signal.SIGKILL); print('sent')\n"
+               f"    os.kill({victim}, signal.SIGKILL); print('sent')\n"
                f"except OSError as e:\n"
                f"    print('denied', e.errno)\n"
                f"try:\n"
@@ -582,14 +587,14 @@ def test_solution_cannot_signal_a_sibling_process(tmp_path, confined):
         r = vlib.run_solution([sys.executable, "-I", "-c", src], cpu_s=10,
                               cwd=str(tmp_path), **kw)
         time.sleep(0.2)
-        assert victim.poll() is None, (r, r.stdout)
+        assert _alive(victim), (r, r.stdout)
         assert "denied" in r.stdout and "sent" not in r.stdout, (r, r.stdout, r.stderr[-400:])
         assert "parent-signalable" not in r.stdout, r.stdout
         if confined:
             assert "child-killed" in r.stdout, (r, r.stderr[-400:])
     finally:
-        victim.kill()
-        victim.wait()
+        os.killpg(holder.pid, 9)
+        holder.wait()
 
 
 _NET_PROBE = textwrap.dedent("""
