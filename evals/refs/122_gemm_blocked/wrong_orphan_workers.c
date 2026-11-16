@@ -3,6 +3,7 @@
  * parent's RUSAGE_CHILDREN, so a validator that charges CPU that way sees
  * almost none. Expected: refused (fork denied, or a child process seen);
  * if fork is denied it computes alone and runs out of CPU. */
+#define _DEFAULT_SOURCE /* usleep and MAP_ANONYMOUS under -std=c11 on glibc */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
