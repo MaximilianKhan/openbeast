@@ -453,7 +453,10 @@ Expected banner line (90% of 122 GiB):
 ```
 
 `start.sh` refuses this profile on a Spark, on a box under 118 GiB, and while
-someone else's GPU lease is held. The load takes several minutes (about 95 GiB
+someone else's GPU lease is held, in every launch mode (its preflight reads
+the profile's `# openbeast-scope:` line). The raised 90% and memlock need the
+capped scope, which only `start.sh -d` with user systemd builds: a foreground
+`./start.sh serve-glm53-flash-abl-q2kxl-big.sh` runs uncapped, and says so. The load takes several minutes (about 95 GiB
 pinned).
 
 ```bash

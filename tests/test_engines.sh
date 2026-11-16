@@ -655,6 +655,23 @@ _o="$(env -i "${BASE_ENV[@]}" DOCKER_STUB_STATE="$DST" OPENBEAST_SERVE_SCRIPT=se
 check "start.sh runs the serve script, prints the llama.cpp lines it always did" \
   '[[ "$_o" == *"Starting llama.cpp server (serve-marker.sh)..."* ]] && grep -q "serve-marker" "$T/calls.log"' "$(tail -n 8 <<< "$_o")"
 check "…never touches engine-serve.sh or runs a container" '[[ "$_o" != *engine-serve* ]] && ! grep -qE "docker (run|stop|pull)" "$DST/calls.log"' "$(cat "$DST/calls.log")"
+# A rig-only big profile is refused in EVERY launch mode, not only under
+# start.sh -d's systemd scope: here a FOREGROUND start (no scope at all).
+{ printf '#!/bin/bash\n# openbeast-scope: mem-limit-pct=90 memlock=infinity host-class=rig min-mem-gib=118\n'
+  printf 'echo "serve-big-marker $0" >> "%s/calls.log"\nexit 7\n' "$T"; } > "$SB/scripts/serve-big-marker.sh"
+chmod +x "$SB/scripts/serve-big-marker.sh"
+printf 'MemTotal:       127926272 kB\n' > "$T/meminfo-rig"; printf 'MemTotal:       65000000 kB\n' > "$T/meminfo-64"
+_big() { : > "$T/calls.log"; env -i "${BASE_ENV[@]}" DOCKER_STUB_STATE="$DST" OPENBEAST_SERVE_SCRIPT=serve-big-marker.sh \
+  OPENBEAST_LLAMA_LOAD_GRACE=5 OPENBEAST_MODEL_ROLLBACK=false "$@" timeout 60 bash "$SB/start.sh" 2>&1 || true; }
+_o="$(_big OB_ENGINE_HOST_CLASS=spark OB_MEMINFO="$T/meminfo-rig")"
+check "foreground start.sh refuses a rig-only scope profile on a Spark, before any load" \
+  '[[ "$_o" == *"rig-only profile"*"Nothing was started"* ]] && ! grep -q serve-big-marker "$T/calls.log"' "$(tail -n 5 <<< "$_o")"
+_o="$(_big OB_MEMINFO="$T/meminfo-64")"
+check "…and on a 64 GB rig (min-mem-gib=118)" \
+  '[[ "$_o" == *"at least 118 GiB"*"Nothing was started"* ]] && ! grep -q serve-big-marker "$T/calls.log"' "$(tail -n 5 <<< "$_o")"
+_o="$(_big OB_MEMINFO="$T/meminfo-rig")"
+check "…on the rig it launches, and says a foreground start has no memory cap" \
+  '[[ "$_o" == *"runs WITHOUT a memory cap"* ]] && grep -q serve-big-marker "$T/calls.log"' "$(tail -n 8 <<< "$_o")"
 _hooks="$(grep -c 'engine-plane hook' "$REPO_DIR/start.sh")"
 _lp="$(awk '/^wait_llama_health\(\) \{/,/^}/' "$REPO_DIR/start.sh" | grep -c '${_OB_READY_FN:-ob_llama_ready}')"
 check "start.sh: the hooks are delimited, and wait_llama_health falls back to ob_llama_ready itself" \
