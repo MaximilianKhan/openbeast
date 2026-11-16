@@ -2,13 +2,21 @@
 # Every case is generated here from a fixed seed; nothing is written to the
 # fixture dir. A failure reports only the case index and the failure kind.
 #
-# Isolation: the submission is imported only by RUNNER, a separate process
-# started through vlib.run_solution (source on stdin, never `-c`), with a CPU
-# budget over its whole process tree. RUNNER gets the case INPUTS only (a
-# file in this validator's private cwd); the tone parameters, the expected
-# signals and every check stay in this process. So the submission can fake
-# nothing but its own outputs, and every output that carries a signal is
-# checked against the analytic answer.
+# Isolation: the submission is imported only by RUNNER, in separate processes
+# started through vlib.run_solution (source on stdin, never `-c`), with one
+# CPU budget shared by all of them and counted over each process tree.
+# RUNNER gets the case INPUTS only (a file in this validator's private cwd);
+# the tone parameters, the expected signals and every check stay in this
+# process. So the submission can fake nothing but its own outputs, and every
+# output that carries a signal is checked against the analytic answer.
+#
+# The cases run in GROUPS, one process each, so that no case can lean on
+# another: a stream never shares a process with the one-shot run of its
+# input (no cache replay), the two halves of a locality pair run in
+# different processes (no copying the unperturbed run), and every stream is
+# also run as PREFIX cases, each in a process that is given only the samples
+# up to its cut, so its outputs at the cut are checked against data that
+# process never had (no peeking ahead, however the peek is done).
 import ast, cmath, json, math, os, random, struct, sys, tempfile
 import vlib
 
@@ -112,9 +120,10 @@ loc_x = synth(loc_t, 0, NLOC)
 la = rng.randint(1800, 2400)
 lb = la + rng.randint(400, 700)
 loc_x2 = loc_x[:la] + synth(tones(3, 6), la, lb) + loc_x[lb:]
-cases.append({"mode": "oneshot", "x": loc_x, "check": "multi", "tones": loc_t})
+cases.append({"mode": "oneshot", "x": loc_x, "check": "multi", "tones": loc_t,
+              "proc": "LA"})
 cases.append({"mode": "oneshot", "x": loc_x2, "check": "local",
-              "pair": len(cases) - 1, "region": (la, lb)})
+              "pair": len(cases) - 1, "region": (la, lb), "proc": "LB"})
 
 
 def chunking(n, sizes):
@@ -147,8 +156,8 @@ streams = [
 for x, ch, spec in streams:
     pair = len(cases)
     cases.append(dict({"mode": "oneshot", "x": x}, **spec))
-    cases.append(dict({"mode": "stream", "x": x, "chunks": ch, "pair": pair},
-                      **spec))
+    cases.append(dict({"mode": "stream", "x": x, "chunks": ch, "pair": pair,
+                       "proc": "S"}, **spec))
 
 # perf: 2 s of audio as 8 back-to-back tone segments of 11025 samples (each
 # yields exactly 12000 outputs). The tones are fresh (no other case holds
@@ -164,7 +173,41 @@ for s_i in range(NSEG):
     perf_x += [A * math.sin(w * n + ph) for n in range(PSEG)]
     # phase referred to absolute time 0 (the segment starts at s_i*PSEG)
     perf_segs.append((s_i * PSEG, f, A, ph - w * s_i * PSEG))
-cases.append({"mode": "oneshot", "x": perf_x, "check": "perf"})
+cases.append({"mode": "oneshot", "x": perf_x, "check": "perf", "proc": "F"})
+
+# second locality pair: noise with ONE sample changed; each half in its own
+# process (LA / LB). Every output whose 64-sample window misses that sample
+# must not move, which pins the window exactly on both sides.
+NLOC2 = 4000
+loc2_x = noise(NLOC2)
+l2 = rng.randint(1500, 2500)
+loc2_x2 = list(loc2_x)
+loc2_x2[l2] = -loc2_x[l2] if abs(loc2_x[l2]) > 0.3 else 0.9
+cases.append({"mode": "oneshot", "x": loc2_x, "check": "len", "proc": "LA"})
+cases.append({"mode": "oneshot", "x": loc2_x2, "check": "local",
+              "pair": len(cases) - 1, "region": (l2, l2 + 1), "proc": "LB"})
+
+# stream prefixes: stream s fed only its first j chunks, no flush, in a
+# process that holds nothing past the cut (P1..P3 take one cut per stream).
+# The outputs returned by then must meet the lookahead rule and equal the
+# full one-shot output, so they cannot use samples the process never got.
+for s_i, ncut in ((25, 3), (27, 3), (35, 3), (29, 1)):
+    sc = cases[s_i]
+    ch, tots, tot = sc["chunks"], [], 0
+    for k in ch:
+        tot += k
+        tots.append(tot)
+    if ncut == 1:
+        cuts = [2]
+    else:
+        n = len(sc["x"])
+        ok = [j + 1 for j, t_ in enumerate(tots) if 200 <= t_ <= n - 200]
+        cuts = sorted(rng.sample(ok, ncut))
+    for g, j in enumerate(cuts):
+        cases.append({"mode": "prefix", "x": sc["x"][:tots[j - 1]],
+                      "chunks": ch[:j], "pair": sc["pair"], "check": "len",
+                      "proc": "P%d" % (g + 1)})
+GROUPS = ["G", "LA", "LB", "S", "P1", "P2", "P3", "F"]
 
 
 # ---------------------------------------------------------------- analysis
@@ -281,45 +324,55 @@ def content(c, y):
 
 def main():
     lint()
-    tmp = tempfile.mkdtemp(prefix="rs196-", dir=os.getcwd())
-    path = os.path.join(tmp, "cases.json")
-    with open(path, "w") as fh:
-        json.dump([{k: c[k] for k in ("mode", "x", "chunks") if k in c}
-                   for c in cases], fh)
-    try:
-        r = vlib.run_solution([sys.executable, "-I", "-S", "-", SUB],
-                              input="CASES = %r\n" % path + RUNNER,
-                              cpu_s=CPU_S, wall_s=3 * CPU_S + 10,
-                              cwd="/tmp/eval_resamp196", text=False)
-    finally:
-        os.unlink(path)
-        os.rmdir(tmp)
-    if r.verdict in ("cpu", "wall"):
-        die("solution timed out (%.0f s CPU budget for all hidden cases; %s)"
-            % (vlib.t(CPU_S), r.reason))
-    if r.verdict != "ok":
-        die("solution process refused (%s)" % r.verdict)
-    data, pos, results = bytes(r.stdout), 0, []
+    results = [None] * len(cases)
+    used = 0.0                       # CPU seconds, all groups so far
+    sc = vlib.scale()
+    for g in GROUPS:
+        idx = [i for i, c in enumerate(cases) if c.get("proc", "G") == g]
+        left = CPU_S - used / sc     # unscaled; run_solution scales it
+        if left <= 0:
+            die("solution timed out (%.0f s CPU budget for all hidden cases)"
+                % vlib.t(CPU_S))
+        tmp = tempfile.mkdtemp(prefix="rs196-", dir=os.getcwd())
+        path = os.path.join(tmp, "cases.json")
+        with open(path, "w") as fh:
+            json.dump([{k: cases[i][k] for k in ("mode", "x", "chunks")
+                        if k in cases[i]} for i in idx], fh)
+        try:
+            r = vlib.run_solution([sys.executable, "-I", "-S", "-", SUB],
+                                  input="CASES = %r\n" % path + RUNNER,
+                                  cpu_s=left, wall_s=3 * left + 10,
+                                  cwd="/tmp/eval_resamp196", text=False)
+        finally:
+            os.unlink(path)
+            os.rmdir(tmp)
+        used += r.cpu_s
+        if r.verdict in ("cpu", "wall"):
+            die("solution timed out (%.0f s CPU budget for all hidden cases; "
+                "%s)" % (vlib.t(CPU_S), r.reason))
+        if r.verdict != "ok":
+            die("solution process refused (%s)" % r.verdict)
+        data, pos = bytes(r.stdout), 0
 
-    def take():
-        nonlocal pos
-        if pos + 9 > len(data):
-            return None, None
-        tag, n = struct.unpack_from("<cq", data, pos)
-        pos += 9
-        if n < 0 or pos + 8 * n > len(data):
-            return None, None
-        vals = list(struct.unpack_from("<%dd" % n, data, pos))
-        pos += 8 * n
-        return tag, vals
+        def take():
+            nonlocal pos
+            if pos + 9 > len(data):
+                return None, None
+            tag, n = struct.unpack_from("<cq", data, pos)
+            pos += 9
+            if n < 0 or pos + 8 * n > len(data):
+                return None, None
+            vals = list(struct.unpack_from("<%dd" % n, data, pos))
+            pos += 8 * n
+            return tag, vals
 
-    for c in cases:
-        tag, vals = take()
-        counts = None
-        if tag == b"C":
-            counts = vals
+        for i in idx:
             tag, vals = take()
-        results.append((tag, vals, counts))
+            counts = None
+            if tag == b"C":
+                counts = vals
+                tag, vals = take()
+            results[i] = (tag, vals, counts)
 
     for i, (c, (tag, y, counts)) in enumerate(zip(cases, results)):
         if tag is None:
@@ -331,8 +384,22 @@ def main():
         if tag != b"Y":
             die("case %d failed (crash: bad runner output)" % i)
         n = len(c["x"])
-        if len(y) != out_len(n):
+        if c["mode"] != "prefix" and len(y) != out_len(n):
             die("case %d failed (length)" % i)
+        if c["mode"] == "prefix":
+            if counts is None or len(counts) != len(c["chunks"]) \
+                    or counts[-1] != len(y):
+                die("case %d failed (crash: bad runner output)" % i)
+            ref = results[c["pair"]][1]
+            if len(y) > len(ref) or any(abs(p - q) > 1e-9
+                                        for p, q in zip(y, ref)):
+                die("case %d failed (stream)" % i)
+            tot = 0
+            for k, have in zip(c["chunks"], counts):
+                tot += k
+                need = 0 if tot <= WINDOW else out_len(tot - WINDOW)
+                if have < need:
+                    die("case %d failed (lookahead)" % i)
         if c["mode"] == "stream":
             if counts is None or len(counts) != len(c["chunks"]):
                 die("case %d failed (crash: bad runner output)" % i)

@@ -41,7 +41,7 @@ Speed: all hidden cases together (about 300,000 output samples in all) must fini
 
 Allowed imports: math, cmath, array, itertools, functools, operator, bisect, collections, typing, dataclasses, fractions, decimal, abc, enum, numbers, copy, heapq. No other module (no numpy/scipy), and no exec/eval/compile/__import__/open; this is also enforced at run time (loading any other module, or opening files, makes the solution process fail).
 
-/tmp/eval_resamp196/sample.txt lists a few input/output lengths. Validation runs about 37 hidden, seeded cases (lengths, tones and sums of tones across the passband, a locality probe, streaming with random chunk sizes on tone content, a speed case) and reports only the index and kind of the first failing case. Write your own tests.
+/tmp/eval_resamp196/sample.txt lists a few input/output lengths. Validation runs about 49 hidden, seeded cases (lengths, tones and sums of tones across the passband, two locality probes, streaming with random chunk sizes on tone content, streams stopped part-way, a speed case), spread over several separate solution processes, and reports only the index and kind of the first failing case. Write your own tests.
 """
 
 SAMPLE = (

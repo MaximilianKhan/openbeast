@@ -1,6 +1,7 @@
 """LEAK PROBE (196): gets past the import lint, reads every file the fixture
 dir could hold (sample, expected, answer, check, cases) and answers from it.
-It must fail: the dir carries no hidden inputs or answers to copy."""
+It must fail: the dir carries no hidden inputs or answers to copy, and the
+runner refuses every open, so even sample.txt is out of reach (case 1)."""
 _b = __builtins__
 _rd = _b["open"] if isinstance(_b, dict) else getattr(_b, "open")
 _D = "/tmp/eval_resamp196/"
