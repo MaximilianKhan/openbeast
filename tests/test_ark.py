@@ -785,6 +785,50 @@ def test_update_prints_the_diff_and_writes_only_with_write(http, tmp_path, capsy
     assert any("no sha256" in e for e in C.lint(c2))                   # lint fails until lock runs
 
 
+def test_update_clears_pins_reached_through_tag_and_vars(http, tmp_path, capsys, monkeypatch):
+    # jq's shape: the url never spells {version}; it goes through {tag} (and here a var too)
+    body = ENTRY.format(name="jq", cat="cli", version="1.8.2") + \
+        'tag = "jq-{version}"\nupdate = "github:jqlang/jq"\nvars = ["pu=v{version_pu}"]\n' + f'''
+[[artifact]]
+entry = "jq"
+kind = "file"
+platform = "linux-x86_64"
+url = "{http.base}/releases/download/{{tag}}/jq-linux-amd64"
+sha256 = "{'b' * 64}"
+size = 2267912
+verified = "upstream-sums"
+checksum_url = "{http.base}/releases/download/{{tag}}/sha256sum.txt"
+
+[[artifact]]
+entry = "jq"
+kind = "file"
+platform = "darwin-arm64"
+url = "{http.base}/x/{{pu}}/jq-macos"
+sha256 = "{'c' * 64}"
+verified = "upstream-sums"
+
+[[artifact]]
+entry = "jq"
+kind = "file"
+platform = "any"
+url = "{http.base}/fixed/jq.1"
+sha256 = "{'d' * 64}"
+verified = "upstream-sums"
+'''
+    cat = write_catalog(tmp_path, body)
+    monkeypatch.setattr(pins, "latest", lambda e: ("1.8.3", "test"))
+    rc, out = run(["--catalog", str(cat), "update", "--write"], capsys)
+    assert rc == 0, out.err
+    c2 = C.load(str(cat))
+    by = {a.platform: a for a in c2.artifacts}
+    assert by["linux-x86_64"].url_x.endswith("/jq-1.8.3/jq-linux-amd64")
+    assert by["linux-x86_64"].sha256 == "" and by["linux-x86_64"].size == 0      # {tag} moved: cleared
+    assert by["darwin-arm64"].sha256 == ""                                       # a var built on the version
+    assert by["any"].sha256 == "d" * 64                                          # nothing moved: kept
+    errs = C.lint(c2)
+    assert any("linux-x86_64" in e and "no sha256" in e for e in errs)           # lint fails until lock runs
+
+
 def test_stable_version_filter():
     for v in ("1.2.3", "1.37.2+k3s1", "0.0.20250522", "2025.10.15", "21.0.13+9"):
         assert pins._stable(v), v

@@ -17,12 +17,15 @@ field is empty (or --refresh):
 fetch, marked verified = "tofu", and real git bundle sizes.
 
 `update` (online) finds each entry's newest upstream release and prints the
-catalog diff. It writes nothing without --write, and when it writes, the
-bumped entry's hashes, digests and commit are CLEARED, so the next `lock`
-re-derives them from upstream and lint fails until it has.
+catalog diff. It writes nothing without --write, and when it writes, every
+pin whose upstream location MOVES with the version is CLEARED — decided by
+expanding the templates under the old and the new version, so a URL built
+through {tag}, {version_pu} or a var counts as much as a literal {version}
+— and the next `lock` re-derives them from upstream; lint fails until it has.
 """
 from __future__ import annotations
 
+import dataclasses
 import difflib
 import json
 import os
@@ -344,6 +347,24 @@ def _lock_oci(a: C.Artifact, ed: Edits, rep: List[str], refresh: bool) -> None:
 
 # ── update ───────────────────────────────────────────────────────────────
 
+def _mover(e: C.Entry, new_version: str):
+    """-> moves(template, where): True when the template expands differently
+    under the new version than under the current one. Expansion, not a
+    substring test: jq's url is .../{tag}/jq-linux-amd64 with tag =
+    "jq-{version}", which never spells {version} itself and still moves."""
+    old_ctx = e.ctx()
+    new_ctx = dataclasses.replace(e, version=new_version).ctx()
+
+    def moves(tmpl: str, where: str) -> bool:
+        if not tmpl:
+            return False
+        try:
+            return C._expand(tmpl, old_ctx, where) != C._expand(tmpl, new_ctx, where)
+        except C.CatalogError:
+            return True                          # cannot tell: clear it, lock re-derives
+    return moves
+
+
 def update(cat: C.Catalog, entries: List[C.Entry]) -> Tuple[Edits, List[str]]:
     net.require_online("ark update")
     ed = Edits()
@@ -366,11 +387,12 @@ def update(cat: C.Catalog, entries: List[C.Entry]) -> Tuple[Edits, List[str]]:
             continue
         rep.append(f"  {e.name}: {e.version} -> {v} ({how})")
         ed.set(e.table, "version", v)
-        if e.git and e.tag and "{version}" in e.tag:
+        moves = _mover(e, v)
+        if e.git and e.tag and moves(e.tag, e.name):
             ed.set(e.table, "commit", "")
         for a in e.artifacts:
-            templ = "{version}" in (a.url + a.tag + a.checksum_url + "".join(a.requirements + a.packages))
-            if not templ:
+            fields = [a.url, a.tag, a.checksum_url, a.checksum_name, a.signature_url] + a.requirements + a.packages
+            if not any(moves(f, a.id) for f in fields):
                 continue
             if a.kind == "file":
                 for k, empty in (("sha256", ""), ("upstream_hash", ""), ("size", 0)):
