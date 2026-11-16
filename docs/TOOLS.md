@@ -203,7 +203,10 @@ that.
   position is the device geolocation Open WebUI keeps when the user turns on
   **Settings → Interface → Allow User Location** (`user.info.location`). The
   tool server reads it for the calling user with the WebUI admin credentials
-  (`WEBUI_ADMIN_*`).
+  (`WEBUI_ADMIN_*`). That signin and lookup go straight to Open WebUI on
+  `127.0.0.1:3000`: they ignore `http_proxy` (an operator proxy set for
+  `fetch` would otherwise receive the admin password in cleartext) and
+  never follow a redirect (it would carry the admin bearer elsewhere).
 - **No fixed home.** With no position, the tool asks which place.
 - **Units** follow the place's country; for the caller's own position, the
   country of its timezone (from the forecast reply, no extra request). The

@@ -237,6 +237,74 @@ def test_caller_location_reads_the_users_webui_info(tmp_path):
 UID = "8f0c1a2b-3c4d-5e6f-7a8b-9c0d1e2f3a4b"
 
 
+def test_caller_location_never_sends_the_admin_password_through_a_proxy(tmp_path, monkeypatch):
+    """Review 2026-11-16: the default urlopen honours http_proxy even for
+    127.0.0.1, so with an operator proxy exported (and no no_proxy) the
+    WebUI admin email + password went to the proxy in cleartext. The
+    loopback requests must go straight to WebUI, and not follow redirects."""
+    import http.server
+    import threading
+    hits = {"webui": [], "proxy": 0}
+
+    class WebUI(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _send(self, obj, code=200, headers=()):
+            data = json.dumps(obj).encode()
+            self.send_response(code)
+            for k, v in headers:
+                self.send_header(k, v)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            hits["webui"].append(self.path)
+            self._send({"token": "T"})
+
+        def do_GET(self):
+            hits["webui"].append(self.path)
+            if self.path.endswith("/redirect-me"):
+                return self._send({}, 302, [("Location", f"http://127.0.0.1:{pport}/x")])
+            self._send({"info": {"location": "37.822, -121.999"}})
+
+    class Proxy(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _any(self):
+            hits["proxy"] += 1
+            self.send_response(502)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        do_GET = do_POST = _any
+
+    servers = [http.server.ThreadingHTTPServer(("127.0.0.1", 0), h) for h in (WebUI, Proxy)]
+    for srv in servers:
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+    wport, pport = servers[0].server_address[1], servers[1].server_address[1]
+    try:
+        for var in ("http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY"):
+            monkeypatch.setenv(var, f"http://127.0.0.1:{pport}")
+        for var in ("no_proxy", "NO_PROXY"):
+            monkeypatch.delenv(var, raising=False)
+        _fresh_cache()
+        conf = _conf(tmp_path)
+        webui = f"http://127.0.0.1:{wport}"
+        assert weather.caller_location(UID, conf, webui=webui) == (37.822, -121.999)
+        assert hits["webui"] == ["/api/v1/auths/signin", f"/api/v1/users/{UID}"]
+        # A redirect is not followed (it would carry the admin bearer).
+        assert weather.caller_location("redirect-me", conf, webui=webui) is None
+        assert hits["proxy"] == 0
+    finally:
+        for srv in servers:
+            srv.shutdown()
+            srv.server_close()
+        _fresh_cache()
+
+
 def _http_err(code):
     import io
     import urllib.error

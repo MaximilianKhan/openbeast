@@ -361,18 +361,41 @@ def _conf_values(path: str, keys: tuple[str, ...]) -> dict:
     return out
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect from :3000 is never followed: urllib would carry the admin
+    bearer header to wherever it points."""
+
+    def redirect_request(self, *_a, **_k):
+        return None
+
+
+# The admin signin and the user lookup go to Open WebUI on THIS host's
+# loopback, so they never take a proxy: the default urlopen honours
+# http_proxy/HTTP_PROXY even for 127.0.0.1 unless no_proxy names it, and an
+# operator proxy (docs/TOOLS.md: fetch supports one) would have received the
+# admin email + password in cleartext on the first weather call.
+_LOOPBACK = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
+
+
+def _loopback_http(url, body=None, tok=None):
+    req = urllib.request.Request(url, json.dumps(body).encode() if body is not None else None,
+                                 {"Content-Type": "application/json",
+                                  **({"Authorization": "Bearer " + tok} if tok else {})})
+    with _LOOPBACK.open(req, timeout=5) as r:
+        return json.load(r)
+
+
 def caller_location(user_id: str | None, conf_path: str, webui: str = "http://127.0.0.1:3000",
                     http=None) -> tuple[float, float] | None:
     """The calling WebUI user's last device position, or None. Signs in as the
     WebUI admin (WEBUI_ADMIN_* in openbeast.conf, which this process can read
     anyway) because Open WebUI returns a user's `info` only to admins; the
-    token is cached (see _admin_token). Any failure is "position unknown"."""
+    token is cached (see _admin_token). Any failure is "position unknown".
+    Open WebUI's port is fixed stack-wide (start.sh: 3000); the requests
+    never use a proxy and never follow a redirect (_LOOPBACK)."""
     if not user_id or not re.fullmatch(r"[A-Za-z0-9-]{8,64}", user_id):
         return None
-    http = http or (lambda url, body=None, tok=None: json.load(urllib.request.urlopen(
-        urllib.request.Request(url, json.dumps(body).encode() if body is not None else None,
-                               {"Content-Type": "application/json",
-                                **({"Authorization": "Bearer " + tok} if tok else {})}), timeout=5)))
+    http = http or _loopback_http
     tok = _admin_token(conf_path, webui, http)
     if not tok:
         return None
