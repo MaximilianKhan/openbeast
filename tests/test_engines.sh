@@ -331,6 +331,23 @@ check "OFFLINE update without --from says why and changes nothing" '[[ "$_o" == 
 cp -R "$T/stage-vllm" "$T/stage-bad"; echo tamper >> "$T/stage-bad/$(grep ^TAR= "$T/stage-bad/MANIFEST" | cut -d= -f2)"
 _o="$(eng OPENBEAST_OFFLINE=true -- install vllm --from "$T/stage-bad")"
 check "…a tampered staged tarball is refused" '[[ "$_o" == *"checksum mismatch"* ]]' "$_o"
+_sid="$(grep ^IMAGE_ID= "$T/stage-vllm/MANIFEST" | cut -d= -f2)"; _sdig="$(grep ^DIGEST= "$T/stage-vllm/MANIFEST" | cut -d= -f2)"
+check "…the offline pin is the image id this box verified, not the MANIFEST's registry digest" \
+  '[[ "$(confv ENGINE_PIN_VLLM)" == "v0.33.0@$_sid" && "$_sid" != "$_sdig" ]] && grep -qF "staged-digest=$_sdig (unverified)" "$SB/.engines/history.tsv"' "$(confv ENGINE_PIN_VLLM) / $_sdig"
+printf 'VLLM_IMAGE=old\nVLLM_IMAGE_DIGEST=sha256:%064d\n' 0 > "$T/spark-vllm.env"
+_o="$(eng OPENBEAST_OFFLINE=true -- install vllm --from "$T/stage-vllm" --spark-env "$T/spark-vllm.env")"
+check "…and spark.env gets it as VLLM_IMAGE_ID (which spark-node.sh prefers), the old digest cleared" \
+  'grep -qx "VLLM_IMAGE_ID=$_sid" "$T/spark-vllm.env" && grep -qx "VLLM_IMAGE_DIGEST=" "$T/spark-vllm.env"' "$(cat "$T/spark-vllm.env") / $_o"
+_pin="$(confv ENGINE_PIN_VLLM)"
+_bad=""
+for _kv in 'TAR=../../etc/passwd' 'DIGEST=sha256:0\\nBIND_HOST=0.0.0.0' 'IMAGE_ID=latest' 'VERSION=v0.33.0\\nX=1' 'TAR_SHA256=abc'; do
+  rm -rf "$T/stage-bad"; cp -R "$T/stage-vllm" "$T/stage-bad"
+  sed -i "s|^${_kv%%=*}=.*|$_kv|" "$T/stage-bad/MANIFEST"
+  _o="$(eng OPENBEAST_OFFLINE=true -- install vllm --from "$T/stage-bad")"
+  [[ "$_o" == *"failed"* && "$(confv ENGINE_PIN_VLLM)" == "$_pin" ]] || _bad+=" ${_kv%%=*}"
+done
+check "…a MANIFEST field of the wrong shape (path, line break, not a sha256) is refused, the pin unchanged" \
+  '[[ -z "$_bad" ]] && ! grep -q "^BIND_HOST=" "$SB/openbeast.conf"' "accepted:$_bad"
 DST="$T/dstate3"; mkdir -p "$DST"
 _o="$(eng OPENBEAST_OFFLINE=true DOCKER_STUB_LOAD_DROP_DIGEST=1 -- install vllm --from "$T/stage-vllm")"
 _o2="$(eng -- list)"

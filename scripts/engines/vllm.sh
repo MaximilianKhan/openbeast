@@ -18,9 +18,11 @@
 # 2026-11-15). The pin is the INDEX digest the pull resolved, so a re-pushed
 # tag can never reach this box.
 #
-# Pin: ENGINE_PIN_VLLM=<tag>@sha256:<digest>; the local image id rides in the
-# history note (id=sha256:…), which is what a `docker load`ed image is found
-# by when the registry digest did not survive save/load.
+# Pin: ENGINE_PIN_VLLM=<tag>@sha256:<digest> for a pull; the local image id
+# rides in the history note (id=sha256:…), which is what a `docker load`ed
+# image is found by when the registry digest did not survive save/load. An
+# offline install (--from DIR) pins <tag>@<image id> instead: the only
+# identity this box verified itself (eng_vllm_install).
 
 eng_vllm_label()   { printf 'vLLM\n'; }
 eng_vllm_hosts()   { printf 'rig spark\n'; }
@@ -90,25 +92,45 @@ _eng_vllm_pull() {
 # install <version> <from> <digest> — online: pull (by digest when given);
 # offline: docker load a staged tarball whose sha256 and image id match
 # its MANIFEST. Sets ENG_RESULT_VERSION / ENG_RESULT_REF / ENG_RESULT_NOTE.
+#
+# What an offline install can and cannot prove: the MANIFEST travels with
+# the tarball, so its TAR_SHA256 and IMAGE_ID only show the folder is
+# self-consistent, and its DIGEST (the registry index digest the staging box
+# pulled) cannot be recomputed from a `docker save` tarball at all. The one
+# thing this box establishes itself is the IMAGE ID: content-addressed, read
+# back from docker after the load. So that is the pin
+# (ENGINE_PIN_VLLM=<tag>@<image id>), and the staged registry digest goes in
+# the history note as `staged-digest=… (unverified)` — never into the pin,
+# where it would claim a provenance nothing here checked.
 eng_vllm_install() {
-  local v="$1" from="$2" want="${3:-}" tag m tar sum id dig
+  local v="$1" from="$2" want="${3:-}" tag m tar tarn sum id dig
   if [[ -n "$from" ]]; then
     m="$from/MANIFEST"
     [[ "$(ob_engine_manifest_get "$m" ENGINE)" == vllm ]] || { echo "$m is not a vLLM stage (engine.sh stage vllm ...)" >&2; return 1; }
     tag="$(ob_engine_manifest_get "$m" VERSION)"
-    [[ -z "$v" || "$(_eng_vllm_tag "$v")" == "$tag" ]] || { echo "$from holds vLLM $tag, not $v" >&2; return 1; }
-    tar="$from/$(ob_engine_manifest_get "$m" TAR)"
+    tarn="$(ob_engine_manifest_get "$m" TAR)"
     sum="$(ob_engine_manifest_get "$m" TAR_SHA256)"
     id="$(ob_engine_manifest_get "$m" IMAGE_ID)"
     dig="$(ob_engine_manifest_get "$m" DIGEST)"
-    [[ -f "$tar" && -n "$sum" && -n "$id" && -n "$dig" ]] || { echo "$m is incomplete (TAR, TAR_SHA256, IMAGE_ID, DIGEST)" >&2; return 1; }
+    [[ -n "$tarn" && -n "$sum" && -n "$id" && -n "$dig" ]] || { echo "$m is incomplete (TAR, TAR_SHA256, IMAGE_ID, DIGEST)" >&2; return 1; }
+    # Parsed, never trusted: each field has one shape, and anything else (a
+    # path, a line break) is refused before it names a file or a pin.
+    [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+-]{0,24}$ ]] || { echo "$m: VERSION '$tag' is not a vLLM release tag" >&2; return 1; }
+    [[ "$tarn" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}\.tar$ ]] || { echo "$m: TAR '$tarn' is not a file name in $from" >&2; return 1; }
+    [[ "$sum" =~ ^[0-9a-f]{64}$ ]] || { echo "$m: TAR_SHA256 is not 64 hex" >&2; return 1; }
+    [[ "$id" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "$m: IMAGE_ID is not sha256:<64 hex>" >&2; return 1; }
+    [[ "$dig" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "$m: DIGEST is not sha256:<64 hex>" >&2; return 1; }
+    [[ -z "$v" || "$(_eng_vllm_tag "$v")" == "$tag" ]] || { echo "$from holds vLLM $tag, not $v" >&2; return 1; }
+    tar="$from/$tarn"
+    [[ -f "$tar" ]] || { echo "$m names $tarn, which is not in $from" >&2; return 1; }
     [[ -z "$want" || "$want" == "$dig" ]] || { echo "$from holds $dig, not the --digest $want" >&2; return 1; }
     [[ "$(ob_engine_sha256 "$tar")" == "$sum" ]] || { echo "checksum mismatch: $tar" >&2; return 1; }
     _eng_vllm_docker load -i "$tar" >/dev/null || { echo "docker load $tar failed" >&2; return 1; }
-    _eng_vllm_docker image inspect "$id" >/dev/null 2>&1 \
+    [[ "$(_eng_vllm_docker image inspect --format '{{.Id}}' "$id" 2>/dev/null)" == "$id" ]] \
       || { echo "after docker load, image $id is not there — the tarball is not what MANIFEST says" >&2; return 1; }
     echo "verified: $tar (sha256) → image ${id:7:12}"
-    ENG_RESULT_VERSION="$tag"; ENG_RESULT_REF="$dig"; ENG_RESULT_NOTE="id=$id"
+    echo "  pinned by its image id; the staged registry digest ${dig:7:12} is recorded as unverified (a docker save tarball cannot prove it)."
+    ENG_RESULT_VERSION="$tag"; ENG_RESULT_REF="$id"; ENG_RESULT_NOTE="id=$id staged-digest=$dig (unverified)"
     return 0
   fi
   if [[ -z "$v" || "$v" == latest ]]; then
@@ -145,8 +167,15 @@ eng_vllm_stage() {
 }
 
 # spark_env <version> <ref> — the KEY=VALUE pairs the Spark launchers read.
+# A pulled pin is a registry digest (VLLM_IMAGE_DIGEST); a staged one is an
+# image id (VLLM_IMAGE_ID, which spark-node.sh prefers). The other key is
+# cleared, so a stale id can never win over a newer digest, or the reverse.
 eng_vllm_spark_env() {
-  printf 'VLLM_IMAGE=%s:%s\nVLLM_IMAGE_DIGEST=%s\n' "$(_eng_vllm_repo)" "$1" "$2"
+  if [[ -n "$2" && "$(_eng_vllm_id_for "$2")" == "$2" ]]; then
+    printf 'VLLM_IMAGE=%s:%s\nVLLM_IMAGE_ID=%s\nVLLM_IMAGE_DIGEST=\n' "$(_eng_vllm_repo)" "$1" "$2"
+  else
+    printf 'VLLM_IMAGE=%s:%s\nVLLM_IMAGE_DIGEST=%s\nVLLM_IMAGE_ID=\n' "$(_eng_vllm_repo)" "$1" "$2"
+  fi
 }
 
 # ── managed, single host ───────────────────────────────────────────────────
