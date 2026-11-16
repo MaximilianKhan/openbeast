@@ -1257,6 +1257,33 @@ def test_serve_never_follows_a_link_and_survives_a_bad_archive(registry, http, t
     assert "not serving oci/app/gone.oci.tar" in err and "not serving oci/app/trunc.oci.tar" in err
 
 
+def test_serve_keeps_connections_alive_and_closes_after_a_refused_write(http, tmp_path, capsys):
+    from http.client import HTTPConnection
+    drive = tmp_path / "drive"
+    assert run(["--catalog", str(toy_catalog(http, tmp_path)), "fetch", "--to", str(drive)], capsys)[0] == 0
+    httpd = SV.serve(S.Drive(str(drive)), "127.0.0.1", 0)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    c = HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=10)
+    try:
+        for _ in range(3):                                   # three requests, one connection
+            c.request("GET", "/files/toy/1.0/any/single")
+            r = c.getresponse()
+            assert r.status == 200 and r.version == 11 and r.read() == b"#!/bin/sh\necho single\n"
+            assert not r.will_close
+        c.request("HEAD", "/ark.lock")
+        r = c.getresponse()
+        r.read()
+        assert r.status == 200 and not r.will_close
+        c.request("POST", "/ark.lock", body=b"x" * 5000)     # an unread body: never reused
+        r = c.getresponse()
+        r.read()
+        assert r.status == 405 and r.will_close
+    finally:
+        c.close()
+        httpd.shutdown()
+        httpd.server_close()
+
+
 # ── the shell entry point ────────────────────────────────────────────────
 
 def test_ark_sh_lint_and_usage():

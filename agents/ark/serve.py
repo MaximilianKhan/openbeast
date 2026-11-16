@@ -166,6 +166,12 @@ def make_handler(ix: Index):
     class H(BaseHTTPRequestHandler):
         server_version = "beast-ark"
         sys_version = ""
+        # Keep-alive: pip and go fetch hundreds of small files, and a new TCP
+        # connection per file costs a tailnet round trip each. Every reply
+        # carries a Content-Length; anything that cannot keep that promise
+        # (a short read, an unread request body) closes the connection.
+        protocol_version = "HTTP/1.1"
+        timeout = 60                           # an idle keep-alive client frees its thread
 
         def log_message(self, fmt, *args):     # one quiet line, no headers (no secrets to leak, but still)
             sys.stderr.write(f"  {self.address_string()} {fmt % args}\n")
@@ -184,7 +190,8 @@ def make_handler(ix: Index):
             self._send(code, json.dumps(obj).encode(), "application/json", extra)
 
         def do_POST(self):  # noqa: N802
-            self._send(405, b"beast-ark serve is read-only\n")
+            # the body is never read, so this connection cannot carry another request
+            self._send(405, b"beast-ark serve is read-only\n", extra={"Connection": "close"})
 
         do_PUT = do_PATCH = do_DELETE = do_POST
 
@@ -250,6 +257,8 @@ def make_handler(ix: Index):
                     break
                 self.wfile.write(b)
                 left -= len(b)
+            if left > 0:
+                self.close_connection = True       # the file shrank under us: the length is now a lie
             return None
 
         def _base(self) -> str:
@@ -323,6 +332,8 @@ files    curl -O http://{host}/files/ENTRY/VERSION/PLATFORM/FILE
                         break
                     self.wfile.write(b)
                     left -= len(b)
+                if left > 0:
+                    self.close_connection = True
             return None
 
         # -- pip -------------------------------------------------------------
