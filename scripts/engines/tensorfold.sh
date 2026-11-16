@@ -125,7 +125,7 @@ eng_tensorfold_spark_env() { printf 'TENSORFOLD_VERSION=%s\n' "$1"; }
 eng_tensorfold_profile_check() {
   ob_engine_profile_load "$1" tensorfold || return 1
   if [[ "$PF_TENSOR_PARALLEL_SIZE" != 1 ]]; then
-    echo "profile '$1' is TENSOR_PARALLEL_SIZE=$PF_TENSOR_PARALLEL_SIZE — managed mode is one host, --tp 1. Several Sparks: scripts/backends/spark-cluster.sh, then engine.sh use tensorfold --url http://<rank0>:8000" >&2
+    echo "profile '$1' is TENSOR_PARALLEL_SIZE=$PF_TENSOR_PARALLEL_SIZE — managed mode is one host, --tp 1. Several Sparks: scripts/backends/spark-cluster.sh, then engine.sh use tensorfold --unmanaged --url http://<rank0>:8000 (127.0.0.1:8000 when rank 0 is this box)" >&2
     return 1
   fi
 }

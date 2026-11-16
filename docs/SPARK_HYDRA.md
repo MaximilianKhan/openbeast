@@ -739,7 +739,13 @@ On a Spark:
   each Spark, then restart all ranks.
 - `engine.sh use` manages only a **single-host, TP 1** engine
   (`INFERENCE_MANAGED=true`). A multi-Spark job stays unmanaged: `start.sh`
-  waits for it and never launches it, and you run it with D1 or D2.
+  waits for it and never launches it, and you run it with D1 or D2. Record it
+  in the conf with `--unmanaged`, which the head needs because rank 0 answers
+  on its own loopback, and a loopback URL alone reads as managed:
+  `scripts/engine.sh use tensorfold --unmanaged --url http://127.0.0.1:8000 --profile NAME`
+  writes `INFERENCE_BACKEND`, `INFERENCE_URL`, `INFERENCE_MANAGED=false` and,
+  from the profile, `INFERENCE_MODEL` / `INFERENCE_SLOTS` (offline: it reads
+  only local files).
 - `engine.sh` does not manage the recipe (D1). The recipe pins its own image tag.
 
 `engine.sh` is not yet on the live checkouts ([0](#what-runs-where)). On a

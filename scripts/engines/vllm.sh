@@ -169,7 +169,7 @@ _eng_vllm_eager() {
 eng_vllm_profile_check() { # <profile> — usable for a managed single-host run
   ob_engine_profile_load "$1" vllm || return 1
   if [[ "$PF_TENSOR_PARALLEL_SIZE" != 1 ]]; then
-    echo "profile '$1' is TENSOR_PARALLEL_SIZE=$PF_TENSOR_PARALLEL_SIZE — managed mode is one host, TP 1. Several Sparks: scripts/backends/spark-cluster.sh, then engine.sh use vllm --url http://<rank0>:8000" >&2
+    echo "profile '$1' is TENSOR_PARALLEL_SIZE=$PF_TENSOR_PARALLEL_SIZE — managed mode is one host, TP 1. Several Sparks: scripts/backends/spark-cluster.sh, then engine.sh use vllm --unmanaged --url http://<rank0>:8000 (127.0.0.1:8000 when rank 0 is this box)" >&2
     return 1
   fi
 }

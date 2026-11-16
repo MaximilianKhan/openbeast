@@ -181,6 +181,7 @@ echo '{"model_type": "qwen3"}' > "$T/ckpt-tf/config.json"
 printf 'BACKEND=vllm\nSOURCE=%s\nSERVED_MODEL_NAME=rig-model\nTENSOR_PARALLEL_SIZE=1\nMAX_NUM_SEQS=4\nGPU_MEMORY_UTILIZATION=0.90\nREASONING_PARSER=qwen3\nTOOL_CALL_PARSER=qwen3_xml\n' "$T/ckpt" > "$T/prof/rigvllm.env"
 printf 'BACKEND=vllm\nSOURCE=%s\nSERVED_MODEL_NAME=two\nTENSOR_PARALLEL_SIZE=2\n' "$T/ckpt" > "$T/prof/tp2.env"
 printf 'BACKEND=tensorfold\nSOURCE=%s\nSERVED_MODEL_NAME=rig-model\nTENSOR_PARALLEL_SIZE=1\nTENSORFOLD_PARALLEL=2\n' "$T/ckpt-tf" > "$T/prof/rigtf.env"
+printf 'BACKEND=tensorfold\nSOURCE=%s\nSERVED_MODEL_NAME=pair-model\nTENSOR_PARALLEL_SIZE=2\nTENSORFOLD_PARALLEL=4\n' "$T/ckpt-tf" > "$T/prof/tftp2.env"
 # A local SOURCE is only "fetched + verified" once it has a lock (model-fetch
 # refuses an unlocked local copy since the supply-chain review): record each
 # one the way an operator would, with a plain fetch of the profile.
@@ -280,6 +281,19 @@ kill "$_SUP" 2>/dev/null || true; rm -f "$SB/.run/supervisor.pid"
 _o="$(eng -- use vllm --url http://10.0.0.5:8000 --profile "$T/prof/tp2.env")"
 check "use vllm --url <a Spark>: unmanaged, no install needed, TP 2 fine, served id recorded" \
   '[[ "$(confv INFERENCE_MANAGED)|$(confv INFERENCE_URL)|$(confv INFERENCE_MODEL)" == "false|http://10.0.0.5:8000|\"two\"" ]] && ! grep -q "^ENGINE_PROFILE=" "$SB/openbeast.conf"' "$_o"
+eng -- use llama >/dev/null
+# The live spark-1 topology: rank 0 of a TP 2 pair on the head's own loopback,
+# launched by spark-cluster.sh, not by this stack. A loopback URL alone reads
+# as "managed" (which needs a TP 1 profile), so the CLI could not write the
+# state the docs describe; the refusal pointed at the very command that failed.
+_o="$(eng -- use tensorfold --url http://127.0.0.1:8000 --profile "$T/prof/tftp2.env" --dry-run --force)"
+check "use tensorfold --url <loopback> with a TP 2 profile: refused, and the message names --unmanaged" \
+  '[[ "$_o" == *"TENSOR_PARALLEL_SIZE=2"* && "$_o" == *"--unmanaged --url"* ]]' "$_o"
+_o="$(eng -- use tensorfold --unmanaged --dry-run)"
+check "--unmanaged needs --url" '[[ "$_o" == *"--unmanaged needs --url"* ]]' "$_o"
+_o="$(eng -- use tensorfold --unmanaged --url http://127.0.0.1:8000 --profile "$T/prof/tftp2.env")"
+check "use tensorfold --unmanaged --url http://127.0.0.1:8000: not managed, loopback URL, served id + slots from the TP 2 profile" \
+  '[[ "$(confv INFERENCE_BACKEND)|$(confv INFERENCE_MANAGED)|$(confv INFERENCE_URL)|$(confv INFERENCE_MODEL)|$(confv INFERENCE_SLOTS)" == "tensorfold|false|http://127.0.0.1:8000|\"pair-model\"|4" ]] && ! grep -q "^ENGINE_PROFILE=" "$SB/openbeast.conf"' "$_o / $(cat "$SB/openbeast.conf")"
 eng -- use llama >/dev/null
 
 # ════════════════════════════════════════════════════════════════════════════
