@@ -135,7 +135,11 @@ the language's pack. Three properties are the point:
   this one tool an `Error:`, not the surface), and clips at ~8 KB on a line
   boundary, saying so. With the toolchain absent, or a language off the
   `LANG_PACKS` allow list, the answer is the list of languages this rig *can*
-  serve.
+  serve. Every toolchain call it makes (`agents/lang/_proc.py`) is reaped as
+  a process group and memory-capped at `OPENBEAST_LANG_AS_LIMIT_MB` (8 GiB):
+  `RLIMIT_AS` on Linux; on macOS, which never enforces `RLIMIT_AS`, a
+  parent-side guard SIGKILLs the group past that much RSS (polled every
+  0.5 s).
 - **A snippet that would read the host is refused, not compiled.** A host
   `#include`/`#embed`, a Rust `include!`/`env!`, or a zig `@embedFile` of an
   absolute path is refused before the compiler starts

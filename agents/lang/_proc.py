@@ -15,7 +15,13 @@ Three guarantees, each of which the old call lacked:
   1. NO ORPHANS. The child gets its own session/process group and a timeout
      SIGKILLs the GROUP, then reaps.
   2. AN ADDRESS-SPACE CAP (RLIMIT_AS). Default 8 GiB, env-overridable with
-     OPENBEAST_LANG_AS_LIMIT_MB (0 disables). MEASURED on this rig before
+     OPENBEAST_LANG_AS_LIMIT_MB (0 disables). Where there is no prlimit(2)
+     (macOS: Darwin refuses or ignores RLIMIT_AS, so a Mac client's probes
+     and compiles ran uncapped) the same number is a parent-side RSS cap on
+     the child's process group instead, polled every GROUP_GUARD_POLL_S and
+     enforced with a group SIGKILL — the tools.run_reaped answer, kept local
+     like the rest of this module. RSS, not address space, and sampled: a
+     spike shorter than one poll can pass, a runaway cannot. MEASURED on this rig before
      picking the number, because the folklore is that Go cannot start under
      RLIMIT_AS at all: go 1.26 (`version`, `mod init`, `build`, `list std`,
      cold GOCACHE included), rustc and g++ all run under a 1 GiB cap; zig
@@ -71,6 +77,22 @@ def env_number(name: str, default, cast=float, minimum=None):
 MAX_CAPTURE_BYTES = 256 * 1024
 #: See the module docstring for where 8 GiB comes from. 0 = no cap.
 AS_LIMIT_BYTES = env_number("OPENBEAST_LANG_AS_LIMIT_MB", 8192, int, 0) * 1024 * 1024
+
+
+#: Parent-side cap poll interval where prlimit(2) is absent (see guarantee 2).
+GROUP_GUARD_POLL_S = 0.5
+
+
+def _group_rss(pgid: int) -> int | None:
+    """Total RSS bytes of the child's process group, or None if ps fails.
+    start_new_session makes session == group == pid, so `ps -g` selects it
+    on both BSD (group) and procps (session)."""
+    try:
+        out = subprocess.run(["ps", "-o", "rss=", "-g", str(pgid)],
+                             capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return sum(int(x) for x in out.split() if x.isdigit()) * 1024
 
 
 def _killpg(proc: subprocess.Popen) -> None:
@@ -252,6 +274,9 @@ def run(argv: list[str], timeout: float, cwd: str | None = None,
         return kept.decode("utf-8", errors="replace")
 
     timed_out = False
+    capped = ""
+    guard = bool(limit) and not hasattr(resource, "prlimit")
+    next_check = time.monotonic() + GROUP_GUARD_POLL_S
     try:
         if in_w is not None and not pending:
             _close_stdin()
@@ -262,6 +287,15 @@ def run(argv: list[str], timeout: float, cwd: str | None = None,
                 timed_out = True
                 break
             open_ = _pump(min(left, 0.2))
+            if guard and time.monotonic() >= next_check and proc.poll() is None:
+                next_check = time.monotonic() + GROUP_GUARD_POLL_S
+                rss = _group_rss(proc.pid)
+                if rss is not None and rss > limit:
+                    capped = (f"memory cap: group RSS {rss // 1024**2} MB over "
+                              f"{limit // 1024**2} MB (OPENBEAST_LANG_AS_LIMIT_MB)")
+                    _killpg(proc)
+                    _drain_briefly()
+                    break
             if open_ and proc.poll() is not None:
                 # The child is gone but the pipe is not at EOF: something it
                 # started still holds it. Nothing outlives the call — kill the
@@ -292,4 +326,6 @@ def run(argv: list[str], timeout: float, cwd: str | None = None,
     if total > len(kept):
         out += (f"\n[output truncated — {total} bytes produced, "
                 f"kept {len(kept)}]")
+    if capped:
+        out += f"\n[killed: {capped}]"
     return proc.returncode, out
