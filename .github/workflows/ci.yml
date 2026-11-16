@@ -258,6 +258,8 @@ jobs:
         run: bash tests/test_chat_unix_login.sh
       - name: tailnet machine name (TS_HOSTNAME)
         run: bash tests/test_tailscale_hostname.sh
+      - name: raw :8443 target follows INFERENCE_URL (setup-tailscale.sh)
+        run: bash tests/test_tailscale_raw_inference.sh
 
       # beast-chat / beast-artifact ops: port ownership at start, watchdog
       # restart logs, job-log rotation + retention, doctor's :8446/:8447 and

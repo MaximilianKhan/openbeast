@@ -16,7 +16,7 @@
 #   2. Joins your tailnet (prints a login URL on first run)
 #   3. Publishes, tailnet-only, with automatic HTTPS:
 #        https://<host>.<tailnet>.ts.net       → Open WebUI (:3000)
-#        https://<host>.<tailnet>.ts.net:8443  → llama-server API (:8080)
+#        https://<host>.<tailnet>.ts.net:8443  → beast-gate, or the engine at INFERENCE_URL
 #   4. Prints the URLs to use from your phone/laptop
 #
 # The identity tool server (:3001) and SearXNG (:8888) are NOT published by
@@ -133,8 +133,34 @@ _publish_chat_mount() { # _publish_chat_mount <up-host>
   fi
 }
 
+# _raw_inference_target <inference-url> <probe-host> <bind-host> — the URL a
+# RAW :8443 mount proxies to: the engine at INFERENCE_URL, dialled the way a
+# local client dials it. Fails (prints nothing) when INFERENCE_URL names
+# another machine — that is never mounted raw.
+_raw_inference_target() {
+  local u="$1" h p
+  # lib/backend.sh defines ob_url_is_local; a stripped copy without it has
+  # no backends either, and conf.sh then resolves INFERENCE_URL to the local
+  # llama default.
+  if declare -F ob_url_is_local >/dev/null 2>&1; then
+    ob_url_is_local "$u" "$2" "$3" || return 1
+  fi
+  u="${u#*://}"; u="${u%%/*}"
+  if [[ "$u" == \[* ]]; then h="${u%%]*}]"; p="${u##*]}"; p="${p#:}"
+  elif [[ "$u" == *:* ]]; then h="${u%:*}"; p="${u##*:}"
+  else h="$u"; p=""; fi
+  [[ -n "$p" ]] || { [[ "$1" == https://* ]] && p=443 || p=80; }
+  printf 'http://%s:%s\n' "$(ob_probe_host "$h")" "$p"
+}
+
 _publish_slot_mount() { # _publish_slot_mount <upstream-host>
   if _ts_has_set_path; then
+    # Reset :8444 first. tailscale serve keeps one handler per path, so
+    # adding /api/slot left any earlier "/" (whole dashboard) handler in
+    # place — from the no-set-path fallback below, or the old fall-open —
+    # and "re-run to narrow it" narrowed nothing. A failed mount below thus
+    # leaves :8444 unpublished, never wider.
+    ts_admin serve --https=8444 off >/dev/null 2>&1 || true
     if ! ts_admin serve --bg --https=8444 --set-path=/api/slot "http://$1:${DASHBOARD_PORT:-3002}/api/slot"; then
       echo "      ERROR: could not mount :8444/api/slot (tailscale's message is above)." >&2
       echo "             NOT falling back to publishing the whole dashboard. Fix the cause" >&2
@@ -419,7 +445,7 @@ source "$(dirname "$0")/lib/net.sh"   # ob_probe_host (conf.sh sources it too)
 # published by this script, gate or no gate.
 if [[ "${HYDRA:-false}" == "true" && "${EDGE_GATE:-false}" != "true" ]]; then
   echo "Error: hydra holds node keys: enable EDGE_GATE=true to publish inference." >&2
-  echo "       (HYDRA=true refuses a raw :8443 → :8080 mount. Set EDGE_GATE=true in" >&2
+  echo "       (HYDRA=true refuses a raw :8443 → engine mount. Set EDGE_GATE=true in" >&2
   echo "       openbeast.conf, ./stop.sh && ./start.sh -d, then re-run this script.)" >&2
   exit 1
 fi
@@ -443,7 +469,19 @@ if ! grep -qE '^[[:space:]]*WEBUI_AUTH[[:space:]]*=' "$CONF"; then
   WEBUI_AUTH=true
   echo "      Enabled WebUI login (WEBUI_AUTH=true in openbeast.conf)."
 else
-  echo "      WEBUI_AUTH already set — resolves to: ${WEBUI_AUTH:-false}"
+  # Conf and effective value separately: lib/conf.sh forces login ON while a
+  # :443 mount is live (or BIND_HOST is not loopback), so "WEBUI_AUTH=false"
+  # in the file can resolve to true here — saying only "true" hid that.
+  _conf_auth="$(_ob_conf_value WEBUI_AUTH || true)"
+  if [[ "${_conf_auth:-}" != "${WEBUI_AUTH:-false}" ]]; then
+    echo "      WEBUI_AUTH already set — openbeast.conf says ${_conf_auth:-<empty>}, effective: ${WEBUI_AUTH:-false}"
+    echo "      (an OPENBEAST_WEBUI_AUTH override, or login kept on because :443 is still"
+    echo "       published or BIND_HOST is a network address — ALLOW_OPEN_WEBUI=true is the"
+    echo "       only way to run it open there)"
+  else
+    echo "      WEBUI_AUTH already set — resolves to: ${WEBUI_AUTH:-false}"
+  fi
+  unset _conf_auth
 fi
 
 # What the RUNNING WebUI enforces (public /api/config → features.auth):
@@ -595,6 +633,15 @@ fi
 # exactly as ALLOW_OPEN_WEBUI is (conf.sh resolves both, env over conf).
 _EDGE_GATE="${EDGE_GATE:-false}"
 _EDGE_PORT="${EDGE_PORT:-8090}"
+# The raw mount's target is the engine itself, at INFERENCE_URL — the same
+# address beast-gate's upstream follows (start.sh OPENBEAST_LLAMA_UPSTREAM).
+# It was a fixed :8080, so on a TensorFold / vLLM box (:8000) the raw :8443
+# proxied to a port nothing listened on (502) while saying "published".
+# An INFERENCE_URL on ANOTHER machine is never mounted raw: tailscale serve
+# would hand the tailnet that box's engine with no identity in front; the
+# gate is the way to publish it.
+RAW_TARGET="$(_raw_inference_target "${INFERENCE_URL:-http://127.0.0.1:8080}" \
+                "${OPENBEAST_PROBE_HOST:-}" "$BIND_HOST")" || RAW_TARGET=""
 INFERENCE_PUBLISHED=0
 ALLOW_OPEN_INFERENCE="${ALLOW_OPEN_INFERENCE:-false}"
 # The flag given on an earlier run, persisted (see below), counts as given.
@@ -605,10 +652,19 @@ if [[ "$_EDGE_GATE" == "true" ]]; then
   INFERENCE_PUBLISHED=1
   echo "      Inference published via beast-gate (:8443 → :${_EDGE_PORT:-8090} → llama-server)."
   echo "      Remote devices need an enrolled key: ./scripts/clients.sh enroll <id>"
+elif [[ -z "$RAW_TARGET" ]]; then
+  {
+    echo "      NOT publishing inference (:8443): INFERENCE_URL=$INFERENCE_URL is another"
+    echo "               machine, and a raw mount would hand the tailnet that engine with"
+    echo "               no identity in front. Publish it through beast-gate: set"
+    echo "               EDGE_GATE=true in openbeast.conf, ./stop.sh && ./start.sh -d, then"
+    echo "               re-run this script (the gate follows INFERENCE_URL)."
+  } >&2
+  ts_admin serve --https=8443 off >/dev/null 2>&1 || true
 elif [[ -n "${LLAMA_API_KEY:-}" ]]; then
-  ts_admin serve --bg --https=8443 "http://$UP_HOST:8080"
+  ts_admin serve --bg --https=8443 "$RAW_TARGET"
   INFERENCE_PUBLISHED=1
-  echo "      Inference published RAW (:8443 → :8080) behind the shared LLAMA_API_KEY."
+  echo "      Inference published RAW (:8443 → ${RAW_TARGET##*:}) behind the shared LLAMA_API_KEY."
   echo "      (If the stack was started before that key was set, restart it — the"
   echo "      running llama-server is keyless until then.) For per-device keys +"
   echo "      audit, set EDGE_GATE=true in openbeast.conf and re-run (docs/BEAST_SLOT.md)."
@@ -616,7 +672,7 @@ elif [[ $ACCEPT_OPEN_INFERENCE -eq 1 ]]; then
   echo "      WARNING: no EDGE_GATE, no LLAMA_API_KEY and --i-accept-open-inference given —"
   echo "               publishing llama-server with NO key. Every tailnet device can use"
   echo "               the GPU and reach its whole route table."
-  ts_admin serve --bg --https=8443 "http://$UP_HOST:8080"
+  ts_admin serve --bg --https=8443 "$RAW_TARGET"
   INFERENCE_PUBLISHED=1
   # Persist the acknowledgement the way --i-accept-open-webui is persisted:
   # replace any earlier assignment, keep the conf 0600, temp file + mv.

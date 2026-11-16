@@ -792,7 +792,18 @@ else
   fail "revoke wrote the registry while the lock was held elsewhere"
 fi
 # Negative control: readers take no lock, so list must not hang behind it.
-if out="$(timeout 10 "$L/scripts/clients.sh" list 2>&1)" && _has "$out" "lap"; then
+# Bounded through python3 (already required above), not GNU timeout(1):
+# stock macOS has none, and the rc-127 that left made this read "list
+# blocked" on every Mac — a false failure that hid a real one.
+_bounded() { # _bounded SECONDS CMD... — run CMD, fail if it outlives SECONDS
+  python3 -c '
+import subprocess, sys
+try:
+    sys.exit(subprocess.run(sys.argv[2:], timeout=float(sys.argv[1])).returncode)
+except subprocess.TimeoutExpired:
+    sys.exit(124)' "$@"
+}
+if out="$(_bounded 10 "$L/scripts/clients.sh" list 2>&1)" && _has "$out" "lap"; then
   pass "list does not wait for the lock (reads stay lock-free)"
 else
   fail "list blocked on (or failed under) the writer lock"

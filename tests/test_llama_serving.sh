@@ -199,6 +199,34 @@ _serve OPENBEAST_BIND=192.0.2.10 OPENBEAST_API_KEY=k1 -- -m "$SV/weights/main.gg
 _serve -- -m "$SV/weights/main.gguf" -c 8192
 [[ $SV_RC -eq 0 && "$(_sv_arg --host)" == "127.0.0.1" ]] && pass "…as does the keyless loopback default (control)" \
   || fail "keyless loopback default (rc=$SV_RC): $(tr '\n' ' ' <<< "$SV_OUT")"
+# 2026-11-16 review: a raw :8443 mount made while LLAMA_API_KEY was set
+# persists; a keyless restart behind it put the GPU on the whole tailnet.
+cat > "$SV/bin/tailscale" <<SH
+#!/bin/bash
+[[ "\$*" == "serve status --json" && -s "$SV/ts-serve" ]] || exit 1
+cat "$SV/ts-serve"
+SH
+chmod +x "$SV/bin/tailscale"
+printf '{"Web":{"rig:8443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:8080"}}}}}' > "$SV/ts-serve"
+_serve -- -m "$SV/weights/main.gguf" -c 8192
+if [[ $SV_RC -eq 3 ]] && ! _launched && [[ "$SV_OUT" == *":8443"* && "$SV_OUT" == *"ALLOW_OPEN_INFERENCE"* ]]; then
+  pass "a keyless loopback llama-server behind a persisted raw :8443 mount is refused (exit 3)"
+else
+  fail "keyless behind raw :8443 (rc=$SV_RC, launched=$(_launched && echo yes || echo no)): $(tr '\n' ' ' <<< "$SV_OUT")"
+fi
+_serve OPENBEAST_API_KEY=k1 -- -m "$SV/weights/main.gguf" -c 8192
+[[ $SV_RC -eq 0 ]] && _launched && pass "…a keyed one behind the same mount launches (control)" \
+  || fail "keyed behind raw :8443 (rc=$SV_RC): $(tr '\n' ' ' <<< "$SV_OUT")"
+_serve OPENBEAST_ALLOW_OPEN_INFERENCE=true -- -m "$SV/weights/main.gguf" -c 8192
+[[ $SV_RC -eq 0 ]] && _launched && pass "…and ALLOW_OPEN_INFERENCE=true acknowledges it" \
+  || fail "ALLOW_OPEN_INFERENCE=true behind raw :8443 (rc=$SV_RC): $(tr '\n' ' ' <<< "$SV_OUT")"
+printf '{"Web":{"rig:8443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:8090"}}}}}' > "$SV/ts-serve"
+_serve -- -m "$SV/weights/main.gguf" -c 8192
+[[ $SV_RC -eq 0 ]] && _launched && pass "…while :8443 → beast-gate leaves the keyless loopback server alone (control)" \
+  || fail "keyless behind a gate mount (rc=$SV_RC): $(tr '\n' ' ' <<< "$SV_OUT")"
+# (The serve key above has no dotted name, so conf.sh caches no tailnet name
+# that would leak into the CORS cases below; drop any cache all the same.)
+printf '#!/bin/bash\nexit 1\n' > "$SV/bin/tailscale"; rm -f "$SV/ts-serve" "$SV/.run/webui-tailnet-name"
 
 echo ""
 echo "browser origins (keyless loopback llama-server):"

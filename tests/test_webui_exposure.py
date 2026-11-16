@@ -161,6 +161,23 @@ def test_a_specific_bind_is_allowed(conf):
     assert "http://192.168.1.20:3000" in r.origins and "http://beast:3000" in r.origins
 
 
+@pytest.mark.parametrize("bind,origin,host", [
+    ("127.0.0.2", "http://127.0.0.2:3000", "127.0.0.2"),
+    ("::1", "http://[::1]:3000", "[::1]"),
+])
+def test_a_non_default_loopback_bind_is_an_origin(conf, bind, origin, host):
+    """The WebUI binds only BIND_HOST, so it is opened at that address. The
+    Host list allowed it but CORS (= Socket.IO's origin list) did not, so
+    the browser's handshake was refused and chat streaming broke."""
+    r = conf(ts=False, OPENBEAST_BIND=bind)
+    assert r.auth == "false", r.stderr          # still loopback: no login forced
+    assert origin in r.origins, r.cors
+    assert host in r.hosts.split(","), r.hosts
+    for o in r.origins:
+        u = urlparse(o)
+        assert u.scheme in ("http", "https") and u.netloc and not u.path, o
+
+
 def test_a_wildcard_bind_lists_the_box_addresses(conf):
     r = conf(ts=False, OPENBEAST_BIND="0.0.0.0")
     assert {"http://192.168.1.20:3000", "http://[fd00::5]:3000"} <= set(r.origins), r.cors
@@ -260,6 +277,31 @@ def test_one_no_mount_answer_after_a_mount_is_rechecked(conf, tmp_path):
     r = conf("WEBUI_AUTH=false\n", TS_SERVE_SEQ=str(seq), OB_CONF_READONLY="")
     assert r.auth == "false", r.stderr
     assert conf("WEBUI_AUTH=false\n").auth == "false"
+
+
+def test_a_readonly_source_clears_a_stale_mounted_cache(conf, tmp_path):
+    """After :443 is unmounted, read-only sources (doctor, engine.sh,
+    start.sh --status) could not clear the cached "mounted", so every one
+    of them slept the 2 s recheck on every source until a start ran."""
+    conf("WEBUI_AUTH=false\n", TS_SERVE=_serve("http://127.0.0.1:3000"),
+         OB_CONF_READONLY="")
+    cache = tmp_path / "run" / "webui-on-443"
+    assert cache.read_text().strip() == "0"
+    empty = json.dumps({})
+    seq = tmp_path / "serve-seq"
+    seq.write_text(f"{empty}\n{empty}\n")          # confirmed: unmounted
+    r = conf("WEBUI_AUTH=false\n", TS_SERVE_SEQ=str(seq))   # read-only source
+    assert r.auth == "false", r.stderr
+    assert cache.read_text().strip() == "1"
+    # the next read-only source believes one "no" at once (no recheck)
+    seq.write_text(f"{empty}\n")
+    assert conf("WEBUI_AUTH=false\n", TS_SERVE_SEQ=str(seq)).auth == "false"
+    assert seq.read_text() == "", "a second probe ran: the recheck was not skipped"
+
+
+def test_a_readonly_source_still_creates_no_mount_cache(conf, tmp_path):
+    conf("WEBUI_AUTH=false\n", TS_SERVE=_serve("http://127.0.0.1:3000"))
+    assert not (tmp_path / "run" / "webui-on-443").exists()
 
 
 @pytest.mark.parametrize("serve", [_serve("http://127.0.0.1:3004"),

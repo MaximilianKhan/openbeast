@@ -73,10 +73,26 @@
 
 # Read one KEY= value from openbeast.conf. Ignores comments and surrounding
 # whitespace/quotes; last assignment wins. Prints nothing when absent.
+#
+# While this file is being sourced, lookups come from ONE pass over the conf
+# (_ob_conf_snapshot, below) instead of a `grep | tail` pair per key: ~85
+# lookups per source were ~170 forks, 142 of the 320 ms every conf.sh source
+# cost on a Spark (2026-11-16 review) — and start, doctor, healthcheck (every
+# 5 min under the watchdog) and 40+ scripts source it. The snapshot is
+# dropped at the end of this file, and wherever this file writes the conf,
+# so a caller that writes openbeast.conf later and reads it back still sees
+# the file as it is now. Pure bash (no associative array): bash 3.2 safe.
 _ob_conf_value() {
   local key="$1" conf="$REPO_DIR/openbeast.conf" line
   [[ -f "$conf" ]] || return 1
-  line="$(grep -E "^[[:space:]]*${key}[[:space:]]*=" "$conf" | tail -n1)" || return 1
+  if [[ -n "${_OB_CONF_SNAP+x}" ]]; then
+    [[ "$_OB_CONF_SNAP" == *$'\n'"$key="* ]] || return 1
+    line="${_OB_CONF_SNAP##*$'\n'"$key="}"   # the LAST assignment
+    line="${line%%$'\n'*}"
+    line="$key=$line"
+  else
+    line="$(grep -E "^[[:space:]]*${key}[[:space:]]*=" "$conf" | tail -n1)" || return 1
+  fi
   [[ -n "$line" ]] || return 1
   line="${line#*=}"
   line="${line#"${line%%[![:space:]]*}"}"   # ltrim
@@ -86,6 +102,21 @@ _ob_conf_value() {
   [[ -n "$line" ]] || return 1
   printf '%s\n' "$line"
 }
+# One read of openbeast.conf into _OB_CONF_SNAP: "\nKEY=<raw rest of line>"
+# per assignment, in file order, so `##` finds the last one as `tail -n1`
+# did. The key test is grep's: optional leading whitespace, the key,
+# optional whitespace, "=". The value is kept raw; _ob_conf_value trims it.
+_ob_conf_snapshot() {
+  local conf="$REPO_DIR/openbeast.conf" l re='^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=(.*)$'
+  _OB_CONF_SNAP=$'\n'
+  [[ -f "$conf" && -r "$conf" ]] || return 0
+  while IFS= read -r l || [[ -n "$l" ]]; do
+    [[ "$l" == *=* && "$l" =~ $re ]] || continue
+    _OB_CONF_SNAP+="${BASH_REMATCH[1]}=${BASH_REMATCH[2]}"$'\n'
+  done < "$conf"
+}
+_ob_conf_snapshot_drop() { unset _OB_CONF_SNAP; }
+_ob_conf_snapshot
 
 # A few OPENBEAST_<KEY> names are BOTH the env override for KEY and this
 # file's own derived export (the dashboard, children and `start.sh -d` read
@@ -1094,6 +1125,14 @@ _ob_ts() {
 # auth-off WebUI behind the mount it then restored. That answer is cached
 # (and believed) only once a second probe, OB_WEBUI_443_RECHECK_S (2) later,
 # agrees; any other second answer keeps login on.
+# A read-only source (doctor, engine.sh, start.sh --status, a report-only
+# healthcheck) UPDATES an existing cache too: it is run-dir state, not
+# openbeast.conf, and only a writable source could clear a stale "0" before —
+# so after an unmount every read-only command paid the 2 s recheck, on every
+# source, until a start happened to run (2026-11-16 review). It still never
+# creates the file. (No per-process "already rechecked" shortcut: a marker
+# inherited across a tailscaled restart would believe the boot-race "no"
+# this recheck exists for.)
 _ob_webui_on_443() {
   local rc cache="$ISLAND_STATE_DIR/webui-on-443"
   _ob_webui_443_probe && rc=0 || rc=$?
@@ -1104,6 +1143,8 @@ _ob_webui_on_443() {
   if (( rc == 0 || rc == 1 )); then
     if [[ "${OB_CONF_READONLY:-}" != "1" ]]; then
       { mkdir -p "$ISLAND_STATE_DIR" && echo "$rc" > "$cache"; } 2>/dev/null || true
+    elif [[ -f "$cache" ]]; then
+      { echo "$rc" > "$cache"; } 2>/dev/null || true
     fi
     return "$rc"
   fi
@@ -1226,6 +1267,18 @@ _ob_webui_cors() {
     esac
     h="$(hostname 2>/dev/null | tr '[:upper:]' '[:lower:]')"
     [[ -n "$h" ]] && list+=("http://$h:3000")
+  else
+    # A loopback bind other than 127.0.0.1 (127.0.0.2, ::1): the WebUI binds
+    # ONLY that address (compose HOST=), so it is opened as http://<it>:3000
+    # and nothing else listed reaches it. Missing here, Socket.IO refused the
+    # browser's own origin and chat streaming broke, while the Host list
+    # below already allowed the address (2026-11-16 review).
+    case "$BIND_HOST" in
+      127.0.0.1|localhost|"") ;;
+      *) h="$BIND_HOST"
+         [[ "$h" == *:* && "$h" != \[* ]] && h="[$h]"
+         list+=("http://$h:3000") ;;
+    esac
   fi
   fq="$(_ob_webui_tailnet_name)"
   if [[ -n "$fq" ]]; then
@@ -1320,6 +1373,7 @@ if [[ -z "$SEARXNG_SECRET" && "${OB_CONF_READONLY:-}" != "1" ]]; then
   fi
   printf 'SEARXNG_SECRET=%s\n' "$SEARXNG_SECRET" >> "$_ob_conf"
   chmod 600 "$_ob_conf" 2>/dev/null || true
+  _ob_conf_snapshot          # the file just changed: re-read it
 fi
 export OPENBEAST_SEARXNG_SECRET="$SEARXNG_SECRET"
 
@@ -1421,3 +1475,6 @@ if [[ -z "${OB_CONF_LINTED:-}" ]]; then
   unset _ob_lint
   export OB_CONF_LINTED=1
 fi
+# Sourcing is over: later lookups (a caller that writes the conf and reads
+# it back) go to the file again.
+_ob_conf_snapshot_drop

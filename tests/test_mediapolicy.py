@@ -79,6 +79,13 @@ REMOTE_BODIES = [
     ("source", {"messages": [{"role": "user", "content": [
         {"type": "tool_result", "content": [
             {"type": "image", "source": {"type": "url", "url": URL}}]}]}]}),
+    # vLLM's dialect: its MediaConnector downloads these too (2026-11-16)
+    ("audio_url", {"messages": [{"role": "user", "content": [
+        {"type": "audio_url", "audio_url": {"url": URL}}]}]}),
+    ("video_url", {"messages": [{"role": "user", "content": [
+        {"type": "video_url", "video_url": {"url": URL}}]}]}),
+    ("video_url", {"messages": [{"role": "user", "content": [
+        {"type": "video_url", "video_url": "file:///etc/passwd"}]}]}),
     # found by key, whatever the part claims to be
     ("image_url", {"messages": [{"role": "user", "content": [
         {"type": "text", "text": "hi", "image_url": {"url": URL}}]}]}),
@@ -88,6 +95,9 @@ INLINE_BODIES = [
         {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
         {"type": "input_audio", "input_audio": {"data": "UklGRiQA", "format": "wav"}},
         {"type": "text", "text": "see http://example.com/pic.png and file:///x"}]}]},
+    {"messages": [{"role": "user", "content": [
+        {"type": "audio_url", "audio_url": {"url": "data:audio/wav;base64,UklGRiQA"}},
+        {"type": "video_url", "video_url": {"url": "data:video/mp4;base64,AAAA"}}]}]},
     {"messages": [{"role": "user", "content": "see " + URL}]},
     {"messages": URL},
     {"messages": [{"role": "user", "content": [
