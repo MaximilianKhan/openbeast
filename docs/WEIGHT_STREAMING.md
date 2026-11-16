@@ -559,8 +559,10 @@ scripts/engine-gate.sh maya --profile glm53-flash-abl-q2kxl --serve-script serve
 ```
 
 The verdict goes to `.engines/gate/maya.json`, with a line in
-`scripts/engine.sh history`. The box is always switched back to llama.cpp
-afterwards, pass or fail.
+`scripts/engine.sh history`. It admits this Maya commit, this profile and
+these weights on this host only: after `engine.sh update maya` (or a
+rollback), gate it again. The box is always switched back to llama.cpp
+afterwards, pass, fail, error or Ctrl-C.
 
 **On PASS**:
 
@@ -646,13 +648,27 @@ whether a candidate engine is admitted.
     is excluded either way.
   - Two records from different hosts, or with different prompts, are never
     compared.
-- **The bar is 1.5×.** `ENGINE_GATE_RATIO` may raise it, never lower it. A
-  verdict below 1.5× is refused even if someone hand-edits it to `"pass":
-  true` (`ob_engine_gate_ok`).
-- **What it opens.** Only a passing verdict on file lets the adapter's
-  `profile_check` and `launch` through. `--force` does not bypass it.
-  `OPENBEAST_ENGINE_GATE=measuring` is the one exception, and only the gate
-  run sets it.
+- **The bar is 1.5×.** `ENGINE_GATE_RATIO` in `openbeast.conf` (or
+  `OPENBEAST_ENGINE_GATE_RATIO`) may raise it, never lower it. The gate run,
+  `engine.sh use` and the daemon's launch read the same value
+  (`ob_engine_gate_ratio`), so a raised bar FAILs in the gate run itself
+  rather than printing PASS that `use` then refuses. A verdict below 1.5× is
+  refused even if someone hand-edits it to `"pass": true` (`ob_engine_gate_ok`).
+- **What it opens.** Only a passing verdict for exactly what is about to run
+  lets the adapter's `profile_check` and `launch` through. The verdict
+  records the host and the adapter's binding (`eng_maya_gate_binding`: the
+  installed Maya commit, the profile, its GGUF), and all of them must match.
+  A new Maya commit (`update`, `--digest`, `rollback`), another profile or
+  another host is gated again until `engine-gate.sh` re-measures it.
+  `--force` does not bypass it. `OPENBEAST_ENGINE_GATE=measuring` is the one
+  exception, and only the gate run sets it.
+- **Same weights, enforced.** `engine-gate.sh` refuses (exit 2) a
+  `--serve-script` that does not load the profile's GGUF.
+- **A failed or interrupted run leaves the engine gated.** Before measuring,
+  the old verdict moves to `<engine>.json.prev`. A launch, readiness or
+  measurement failure, Ctrl-C or a TERM all run an EXIT trap that switches
+  back to llama.cpp and restarts a stack that was running, so the conf is
+  never left on the ungated candidate.
 - The API key comes from `LLAMA_API_KEY` in the environment, never argv.
 
 ### Why Maya and not Strata

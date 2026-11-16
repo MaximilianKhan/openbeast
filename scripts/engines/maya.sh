@@ -300,8 +300,20 @@ _eng_maya_profile_load() {
   [[ "$(ob_engine_host_class)" == rig ]] || { echo "Maya profiles run on the rig (this host is a $(ob_engine_host_class))" >&2; return 1; }
 }
 
-# profile_check <profile> — the profile is valid AND the engine gate is open.
-eng_maya_profile_check() { _eng_maya_profile_load "$1" && ob_engine_gate_ok maya; }
+# gate_binding <profile> — what a gate verdict must have measured for this
+# profile to run (lib/engine.sh ob_engine_gate_ok): the profile, its weights
+# and the Maya commit installed now. A new commit (update, --digest,
+# rollback) or another profile is unmeasured until engine-gate.sh re-runs.
+eng_maya_gate_binding() {
+  local sha
+  _eng_maya_profile_load "$1" >/dev/null || return 1
+  sha="$(git -C "$(_eng_maya_active)" rev-parse HEAD 2>/dev/null || true)"
+  printf 'profile=%s\ngguf=%s\ncommit=%s\n' "$PF_PROFILE_NAME" "$PF_GGUF" "${sha:-not-installed}"
+}
+
+# profile_check <profile> — the profile is valid AND the engine gate is open
+# for it, on this Maya commit.
+eng_maya_profile_check() { _eng_maya_profile_load "$1" && ob_engine_gate_ok maya "$1"; }
 
 # profile_locate <profile> — SP_LOCATE_RC 0 when every shard is in WEIGHTS_DIR.
 eng_maya_profile_locate() {

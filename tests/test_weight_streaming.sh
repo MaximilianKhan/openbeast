@@ -226,6 +226,8 @@ SH
 cat > "$SB/bin/start" <<SH
 #!/bin/bash
 echo "start \$* gate=\${OPENBEAST_ENGINE_GATE:-}" >> "$SB/calls"
+# cand_down: the candidate never comes up (a crashed launch).
+[[ -f "$SB/cand_down" && "\$(cat "$SB/backend")" != llama ]] && exit 0
 cp "$SB/backend" "$SB/active"
 SH
 cat > "$SB/bin/stop" <<SH
@@ -233,12 +235,14 @@ cat > "$SB/bin/stop" <<SH
 echo "stop" >> "$SB/calls"; rm -f "$SB/active"
 SH
 chmod +x "$SB/bin/engine-sh" "$SB/bin/start" "$SB/bin/stop"
-_gate() { # _gate <candidate tok/s>
-  echo "$1" > "$SB/cand_tps"; : > "$SB/calls"; _RC=0
-  _OUT="$(OB_GATE_ENGINE_SH="$SB/bin/engine-sh" OB_ENGINE_START_CMD="$SB/bin/start" OB_ENGINE_STOP_CMD="$SB/bin/stop" \
-          OB_GATE_URL="http://127.0.0.1:$(cat "$SB/port")" OB_GATE_POLL=0.1 OB_ENGINE_HOST_CLASS=rig \
-          bash "$SB/scripts/engine-gate.sh" fakeeng --profile p1 --serve-script serve-same-weights.sh --runs 2 2>&1)" || _RC=$?
+GATE_ENV=(OB_GATE_ENGINE_SH="$SB/bin/engine-sh" OB_ENGINE_START_CMD="$SB/bin/start" OB_ENGINE_STOP_CMD="$SB/bin/stop"
+          OB_GATE_URL="http://127.0.0.1:$(cat "$SB/port")" OB_GATE_POLL=0.1 OB_ENGINE_HOST_CLASS=rig)
+_gate() { # _gate <candidate tok/s> [extra engine-gate.sh args]
+  echo "$1" > "$SB/cand_tps"; shift; : > "$SB/calls"; _RC=0
+  _OUT="$(env "${GATE_ENV[@]}" bash "$SB/scripts/engine-gate.sh" fakeeng --profile p1 \
+          --serve-script serve-same-weights.sh --runs 2 "$@" 2>&1)" || _RC=$?
 }
+_admit() { ( REPO_DIR="$SB"; source "$SB/scripts/lib/engine.sh"; ob_engine_gate_ok fakeeng 2>&1 ) && echo ADMITTED; }
 _gate 29
 _v="$SB/.engines/gate/fakeeng.json"
 if [[ $_RC -eq 1 && "$_OUT" == *"FAIL"*"1.45x"* ]] && grep -q '"pass": false' "$_v" 2>/dev/null \
@@ -271,8 +275,63 @@ d = json.load(open(sys.argv[1])); d["ratio"] = 1.3; d["pass"] = True   # a hand-
 json.dump(d, open(sys.argv[1], "w"))
 PY
 _e="$( REPO_DIR="$SB"; source "$SB/scripts/lib/engine.sh"; ENGINE_GATE_RATIO=1.1 ob_engine_gate_ok fakeeng 2>&1 )" && _e="ADMITTED"
-[[ "$_e" == *"did not clear it"* ]] && pass "…and a verdict below 1.5x is refused even marked pass, even with ENGINE_GATE_RATIO=1.1" \
+[[ "$_e" == *"does not admit this"* ]] && pass "…and a verdict below 1.5x is refused even marked pass, even with ENGINE_GATE_RATIO=1.1" \
   || fail "a 1.3x verdict was admitted: '$_e'"
+
+# A raised bar is ONE bar: openbeast.conf's ENGINE_GATE_RATIO reaches the
+# gate run (tokps --ratio, the verdict's "required") and the admission.
+printf 'SEARXNG_SECRET=x\nENGINE_GATE_RATIO=1.6\n' > "$SB/openbeast.conf"
+_gate 31
+_e="$(_admit)"
+if [[ $_RC -eq 1 && "$_OUT" == *"FAIL"*"needs 1.6x"* && "$_OUT" != *"PASS: fakeeng may be used"* ]] \
+   && grep -q '"required": 1.6' "$_v" && [[ "$_e" != *ADMITTED* ]]; then
+  pass "ENGINE_GATE_RATIO=1.6 in openbeast.conf: the gate run FAILs 1.55x itself (no PASS that use then refuses)"
+else
+  fail "conf ratio 1.6 (rc=$_RC): $(tail -n 2 <<< "$_OUT" | tr '\n' ' ') / $_e"
+fi
+printf 'SEARXNG_SECRET=x\n' > "$SB/openbeast.conf"
+
+# The verdict is bound to the host it measured.
+_gate 31
+python3 - "$_v" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); d["host"] = "some-other-box"
+json.dump(d, open(sys.argv[1], "w"))
+PY
+_e="$(_admit)"
+[[ "$_e" == *"measured on 'some-other-box'"* && "$_e" != *ADMITTED* ]] \
+  && pass "a PASS measured on another host does not admit the engine here" || fail "foreign-host verdict: '$_e'"
+
+# A re-measure that dies leaves the engine gated, not on the old PASS.
+_gate 31
+touch "$SB/cand_down"
+_gate 31 --load-timeout 1
+_e="$(_admit)"
+if [[ $_RC -eq 3 && ! -f "$_v" && -f "$_v.prev" && "$_e" == *"no measurement on file"* \
+      && "$(cat "$SB/backend")" == llama ]]; then
+  pass "a gate run whose candidate never comes up: the old PASS is moved aside, the engine is gated, the box on llama"
+else
+  fail "failed re-measure (rc=$_RC, verdict $( [[ -f "$_v" ]] && echo present || echo gone)): $_e / $(tail -n 2 <<< "$_OUT" | tr '\n' ' ')"
+fi
+
+# Ctrl-C / TERM mid-run (the trap): back on llama, and a stack that was
+# running is started again.
+# A "running stack": a recorded supervisor whose cmdline says start.sh (one
+# process, so killing it leaves nothing holding this test's stdout open).
+( exec -a "$T/start.sh" sleep 120 ) & _SUP=$!
+echo "$_SUP" > "$SB/.run/supervisor.pid"
+echo 31 > "$SB/cand_tps"; : > "$SB/calls"
+env "${GATE_ENV[@]}" bash "$SB/scripts/engine-gate.sh" fakeeng --profile p1 --serve-script serve-same-weights.sh \
+  --runs 1 --load-timeout 60 > "$T/gate-int.log" 2>&1 & _G=$!
+for _ in $(seq 1 100); do grep -q 'use fakeeng' "$SB/calls" 2>/dev/null && break; sleep 0.1; done
+sleep 0.3; kill -TERM "$_G" 2>/dev/null; _RC=0; wait "$_G" || _RC=$?
+kill "$_SUP" 2>/dev/null; wait "$_SUP" 2>/dev/null; rm -f "$SB/.run/supervisor.pid" "$SB/cand_down"
+_tail="$(awk '/use fakeeng/ {seen = 1} seen' "$SB/calls" | tr '\n' ';')"
+if [[ $_RC -eq 143 && "$(cat "$SB/backend")" == llama && "$_tail" == *"use llama --no-restart"*";start  gate=;"* ]]; then
+  pass "TERM during the candidate's load: the trap switches back to llama and restarts the stack that was running"
+else
+  fail "TERM mid-gate (rc=$_RC, backend $(cat "$SB/backend")): $_tail / $(tail -n 3 "$T/gate-int.log" | tr '\n' ' ')"
+fi
 
 echo ""
 echo "================================"

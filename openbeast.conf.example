@@ -229,6 +229,12 @@
 # --enforce-eager for a managed vLLM: auto (on a GB10, for the sparse-MLA
 # families hit by CUDA-graph NaN, vllm#57156) | true | false.
 #ENGINE_VLLM_EAGER=auto
+# The engine gate's bar (scripts/engine-gate.sh, docs/WEIGHT_STREAMING.md):
+# a gated engine (Maya) must decode at least this many times llama.cpp's
+# tok/s. Raise it here, never below 1.5 (a lower value reads as 1.5). The
+# gate run, engine.sh use and the daemon's launch all read this one value.
+# Env: $OPENBEAST_ENGINE_GATE_RATIO.
+#ENGINE_GATE_RATIO=1.5
 
 # ---------------------------------------------------------------------------
 # beast-hydra — route inference across machines  (docs/BEAST_HYDRA_PLAN.md)

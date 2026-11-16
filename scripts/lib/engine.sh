@@ -359,37 +359,73 @@ ob_engine_url_hostport() {
 
 # ── The engine gate (docs/WEIGHT_STREAMING.md "The engine gate") ──────────
 # A single-author engine (Project Maya) is admitted only after it measured
-# at least 1.5 times llama.cpp's decode tok/s on THIS (ENGINE_GATE_RATIO may
-# raise that, never lower it)
-# rig, same weights, same prompt: scripts/engine-gate.sh runs both and writes
+# at least 1.5 times llama.cpp's decode tok/s on THIS rig, same weights, same
+# prompt (ob_engine_gate_ratio may raise that bar, never lower it):
+# scripts/engine-gate.sh runs both and writes
 # $OB_ENGINE_STATE_DIR/gate/<engine>.json (scripts/tokps.py gate).
 # OPENBEAST_ENGINE_GATE=measuring lets engine-gate.sh itself launch the
 # candidate before a verdict exists; nothing else sets it.
+#
+# A verdict admits exactly what was measured. It records the host and the
+# adapter's binding (eng_<e>_gate_binding <profile>: for Maya the installed
+# commit, the profile and its GGUF), and ob_engine_gate_ok compares them
+# with what is about to run: a new Maya commit, another profile or other
+# weights is unmeasured, so it is gated again until engine-gate.sh re-runs.
 ob_engine_gate_file() { printf '%s/gate/%s.json\n' "$OB_ENGINE_STATE_DIR" "$1"; }
 
-# ob_engine_gate_ok <engine> — 0 when a passing verdict is on file (or the
-# gate run itself is measuring). Prints why not on stderr.
+# ob_engine_gate_ratio — the bar: ENGINE_GATE_RATIO from the environment
+# (OPENBEAST_ENGINE_GATE_RATIO, which start.sh -d forwards, or the bare name)
+# or openbeast.conf, never below 1.5. One value for the gate run, `use` and
+# the daemon's launch, so a raised bar cannot print PASS and then refuse.
+ob_engine_gate_ratio() {
+  local r="${OPENBEAST_ENGINE_GATE_RATIO:-${ENGINE_GATE_RATIO:-$(ob_engine_conf_get ENGINE_GATE_RATIO)}}"
+  awk -v r="$r" 'BEGIN { if (r !~ /^[0-9]+(\.[0-9]+)?$/ || r + 0 < 1.5) r = 1.5; print r + 0 }'
+}
+
+# ob_engine_gate_binding <engine> [profile] — KEY=VALUE lines naming what a
+# verdict for this engine + profile must have measured. Empty when the
+# adapter defines no eng_<e>_gate_binding (or no profile is given); 1 when
+# the adapter cannot say (an invalid profile).
+ob_engine_gate_binding() {
+  [[ -n "${2:-}" ]] || return 0
+  ob_engine_has "$1" gate_binding || return 0
+  ob_engine_call "$1" gate_binding "$2"
+}
+
+# ob_engine_gate_ok <engine> [profile] — 0 when a passing verdict is on file
+# for this host and, given a profile, for what it binds (or the gate run
+# itself is measuring). Prints why not on stderr.
 ob_engine_gate_ok() {
-  local e="$1" f out
+  local e="$1" prof="${2:-}" f out need bind
   [[ "${OPENBEAST_ENGINE_GATE:-}" == measuring ]] && return 0
   f="$(ob_engine_gate_file "$e")"
+  need="$(ob_engine_gate_ratio)"
   if [[ ! -f "$f" ]]; then
-    echo "$e is gated: no measurement on file ($f). It must decode >= ${ENGINE_GATE_RATIO:-1.5}x llama.cpp's tok/s on this rig first: scripts/engine-gate.sh $e --profile NAME --serve-script serve-<same weights>.sh (docs/WEIGHT_STREAMING.md)" >&2
+    echo "$e is gated: no measurement on file ($f). It must decode >= ${need}x llama.cpp's tok/s on this rig first: scripts/engine-gate.sh $e --profile NAME --serve-script serve-<same weights>.sh (docs/WEIGHT_STREAMING.md)" >&2
     return 1
   fi
+  bind="$(ob_engine_gate_binding "$e" "$prof")" || {
+    echo "$e is gated: cannot tell what profile '$prof' would run (above)" >&2; return 1; }
   out="$(python3 -c '
-import json, sys
+import json, platform, sys
 d = json.load(open(sys.argv[1]))
-try:
-    need = max(1.5, float(sys.argv[3]))   # ENGINE_GATE_RATIO may raise the bar, never lower it
-except ValueError:
-    need = 1.5
-ok = d.get("schema") == "openbeast-engine-gate/1" and d.get("engine") == sys.argv[2] and d.get("pass") is True \
-     and float(d.get("ratio") or 0) >= need
+need = float(sys.argv[3])
+why = []
+if not (d.get("schema") == "openbeast-engine-gate/1" and d.get("engine") == sys.argv[2]):
+    why.append("not a verdict for " + sys.argv[2])
+if d.get("host") != platform.node():
+    why.append("measured on %r, this is %r" % (d.get("host"), platform.node()))
+bound = d.get("bound") if isinstance(d.get("bound"), dict) else {}
+for kv in filter(None, sys.argv[4].split("\n")):
+    k, _, v = kv.partition("=")
+    if bound.get(k) != v:
+        why.append("measured %s %s, this would run %s" % (k, bound.get(k) or "(not recorded)", v))
+ok = not why and d.get("pass") is True and float(d.get("ratio") or 0) >= need
 print(("PASS " if ok else "FAIL ") + "%sx (needs %sx), %s vs %s tok/s, %s" % (
-    d.get("ratio"), need, d.get("candidate_tps"), d.get("baseline_tps"), d.get("time")))
-sys.exit(0 if ok else 1)' "$f" "$e" "${ENGINE_GATE_RATIO:-1.5}" 2>&1)" && return 0
-  echo "$e is gated and its last measurement did not clear it: ${out:-unreadable $f}. Re-measure: scripts/engine-gate.sh $e ..." >&2
+    d.get("ratio"), need, d.get("candidate_tps"), d.get("baseline_tps"), d.get("time"))
+    + ("; " + "; ".join(why) if why else ""))
+sys.exit(0 if ok else 1)' "$f" "$e" "$need" "$bind" 2>&1)" && return 0
+  echo "$e is gated and its last measurement does not admit this: ${out:-unreadable $f}. Re-measure: scripts/engine-gate.sh $e --profile ${prof:-NAME} ..." >&2
   return 1
 }
 

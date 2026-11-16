@@ -581,7 +581,31 @@ _o="$(eng "${MENV[@]}" -- use maya --profile glm53-flash-abl-q2kxl --force)"
 check "use maya without a gate verdict is refused (even with --force), the conf untouched" \
   '[[ "$_o" == *"maya is gated: no measurement on file"* && "$(cat "$SB/openbeast.conf")" == "LLAMA_API_KEY=sekrit-maya" ]]' "$_o"
 mkdir -p "$SB/.engines/gate"
-printf '{"schema": "openbeast-engine-gate/1", "engine": "maya", "pass": true, "ratio": 1.62, "candidate_tps": 32.4, "baseline_tps": 20.0, "time": "t"}\n' > "$SB/.engines/gate/maya.json"
+_GG="$(sed -n 's/^GGUF=//p' "$SB/scripts/engines/maya/profiles/glm53-flash-abl-q2kxl.env")"
+_verdict() { # _verdict <profile> <commit> [host] — a passing verdict bound to them
+  "$PY" - "$SB/.engines/gate/maya.json" "$1" "$_GG" "$2" "${3:-}" <<'PY'
+import json, platform, sys
+out, prof, gguf, commit, host = sys.argv[1:6]
+json.dump({"schema": "openbeast-engine-gate/1", "engine": "maya", "pass": True, "ratio": 1.62,
+           "candidate_tps": 32.4, "baseline_tps": 20.0, "time": "t", "host": host or platform.node(),
+           "bound": {"profile": prof, "gguf": gguf, "commit": commit}}, open(out, "w"))
+PY
+}
+_verdict glm53-flash-abl-q2kxl "$MC1"
+cp "$SB/scripts/engines/maya/profiles/glm53-flash-abl-q2kxl.env" "$T/prof/glm-other.env"
+_o="$(eng "${MENV[@]}" -- use maya --profile "$T/prof/glm-other.env" --force --dry-run)"
+check "a PASS for one profile does not admit another (the verdict is bound to what it measured)" \
+  '[[ "$_o" == *"measured profile glm53-flash-abl-q2kxl, this would run glm-other"* && "$_o" != *"set   INFERENCE_BACKEND=maya"* ]]' "$_o"
+_verdict glm53-flash-abl-q2kxl "$MC2"
+_o="$(eng "${MENV[@]}" -- use maya --profile glm53-flash-abl-q2kxl --force --dry-run)"
+check "…nor another Maya commit (an update, a --digest, a rollback is unmeasured)" \
+  '[[ "$_o" == *"measured commit $MC2, this would run $MC1"* && "$_o" != *"set   INFERENCE_BACKEND=maya"* ]]' "$_o"
+_verdict glm53-flash-abl-q2kxl "$MC1"
+printf 'LLAMA_API_KEY=sekrit-maya\nENGINE_GATE_RATIO=2\n' > "$SB/openbeast.conf"
+_o="$(eng "${MENV[@]}" -- use maya --profile glm53-flash-abl-q2kxl --force --dry-run)"
+check "…and ENGINE_GATE_RATIO in openbeast.conf raises the bar for use (1.62x < 2x)" \
+  '[[ "$_o" == *"needs 2.0x"* && "$_o" != *"unknown key"* && "$_o" != *"set   INFERENCE_BACKEND=maya"* ]]' "$_o"
+printf 'LLAMA_API_KEY=sekrit-maya\n' > "$SB/openbeast.conf"
 _o="$(eng "${MENV[@]}" -- use maya --profile glm53-flash-abl-q2kxl --force --dry-run)"
 check "…with a passing verdict: the plan sets maya managed and prints the launch" \
   '[[ "$_o" == *"set   INFERENCE_BACKEND=maya"* && "$_o" == *"set   ENGINE_PROFILE=glm53-flash-abl-q2kxl"* && "$_o" == *"maya.py --config"* && "$_o" == *"MAYA_GLM_RAM_HEADROOM_GB=16"* ]]' "$_o"

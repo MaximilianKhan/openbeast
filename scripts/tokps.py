@@ -7,7 +7,7 @@ docs/WEIGHT_STREAMING.md. Stdlib only: it runs on a closed rig.
                      [--prompt short|long] [--label NAME] [--record FILE] [--json]
     tokps.py check   --min 55 --url ...       measure, exit 1 below the floor
     tokps.py gate    --engine maya --candidate maya.json --baseline llama.json
-                     [--ratio 1.5] [--out FILE]
+                     [--ratio 1.5] [--bind KEY=VALUE ...] [--out FILE]
                      exit 0 when candidate / baseline >= ratio, else 1
 
 How a run is measured: one streamed chat completion, temperature 0, a fixed
@@ -211,6 +211,12 @@ def gate(args) -> int:
         problems.append("the two runs used different prompts or lengths")
     if cand.get("host") != base.get("host"):
         problems.append(f"measured on different hosts ({cand.get('host')} vs {base.get('host')})")
+    bound = {}
+    for kv in args.bind:
+        k, sep, v = kv.partition("=")
+        if not sep or not k:
+            raise SystemExit(_fail(2, f"--bind {kv!r} is not KEY=VALUE"))
+        bound[k] = v
     ratio = cand["decode_tps_median"] / base["decode_tps_median"] if base["decode_tps_median"] else 0.0
     ok = not problems and ratio >= args.ratio
     verdict = {
@@ -225,6 +231,9 @@ def gate(args) -> int:
         "baseline": {k: base.get(k) for k in ("label", "engine", "profile", "model", "time", "url")},
         "prompt": cand["prompt"],
         "host": cand.get("host"),
+        # What this verdict admits (lib/engine.sh ob_engine_gate_ok compares
+        # it with what is about to run): the engine-gate.sh binding.
+        "bound": bound,
         "problems": problems,
         "time": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
@@ -261,6 +270,9 @@ def main(argv=None) -> int:
     g.add_argument("--candidate", required=True)
     g.add_argument("--baseline", required=True)
     g.add_argument("--ratio", type=float, default=1.5)
+    g.add_argument("--bind", action="append", default=[], metavar="KEY=VALUE",
+                   help="record what this verdict admits (repeatable): engine-gate.sh passes "
+                        "the adapter's binding (commit, profile, weights)")
     g.add_argument("--out", default="")
     args = ap.parse_args(argv)
     if args.cmd == "gate":
