@@ -1,5 +1,27 @@
 # Eval suite changelog
 
+## v5.0 review 1116 fixes (2026-11-16): harness6, era moves
+
+Same suite and manifest; the cache era moves (`evals/vlib.py` changed, and
+`harness6` pins the validator's private `TMPDIR`). Rerun the v5 units
+measured before it.
+
+- 163/167/168: the compiler no longer reads the sealed reference
+  (`vlib.build_private`: include lint, private build dir, macOS read-deny);
+  a hanging compiled solution fails on its judged warm-up instead of as an
+  infra `validator_timeout`; 163's prompt states its 6 s CPU budget.
+- 173: the reference absorbs its own undelivered `cancel()` on CPython
+  <= 3.12; 24 cancel-tail scenarios pin it (624 scenarios in all).
+- 175: the oracle is incremental (~0.2 s instead of ~1.8 s per validation;
+  same expected results); the argvcheat arm proves on Linux.
+- 176: `shopd/` is copied without following links, under a cap.
+- 179: the validator never runs git in the agent's repository (a promisor
+  remote's `uploadpack` ran unsandboxed); the fixture history is one
+  `git fast-import` (same SHAs, ~0.5 s instead of ~4 s on a Mac).
+- Harness: one harness per `/tmp/eval_*` root (`run_eval.fixture_lock`);
+  the validator's `TMPDIR` is private; the macOS solution monitor reads
+  libproc instead of forking `ps` every 50 ms.
+
 ## v5.0 (2026-11-15) — the measured suite (CURRENT; era break)
 
 `evals/SUITE_VERSION` = v5 rolls every cache era; the v4 board is frozen

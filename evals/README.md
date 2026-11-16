@@ -582,7 +582,7 @@ no open issue and the prover passes 3/3 at scale 1 and 2.0.
 `evals/SUITE_VERSION` is `v5`, which rolls the cache era (`ctxhash`) for
 every row: no v4 cache entry replays into v5. The v4 board is frozen (shown
 under "legacy suites"); v5 starts empty. The harness rides the same break,
-pinned as **`harness5`** in `evals/HARNESS_VERSION`: its fingerprint covers
+pinned as **`harness5`** in `evals/HARNESS_VERSION` (now **`harness6`**: review 1116 moved the validator's TMPDIR into its private dir): its fingerprint covers
 the agent's wall cap, the validator's environment, bootstrap and private
 build cache, the fixture cwd, and the leftover sweep (`AgentWatch`,
 `sweep_agent_leftovers`), and `evals/vlib.py` is now hashed into the era
