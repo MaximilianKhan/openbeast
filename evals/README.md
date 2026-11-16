@@ -270,6 +270,7 @@ harness rather than through the tasks:
 | lingering solutions | a validator killed on timeout left its solution's group running into the next unit | vlib records each group it starts, and the harness SIGKILLs them after the validator exits |
 | shell parent | `run_reaped` ran `python -I -S -` through `sh -c`, and dash (Debian's and Ubuntu's `/bin/sh`) stays alive as the parent. That shell is dumpable and holds the unlinked script as fd 0, so `/proc/<sh>/fd/0` gave a solution the whole validator | The list form is run as `exec python ...`, so the validator's parent is the harness, which is non-dumpable |
 | other checkouts | A solution run from a worktree read `evals/tasks/40_attention.json` from the main checkout. The shared `.git` object store holds every branch's validators | `run_eval.validator_seal()` seals `evals/{tasks,refs,suites}` of every checkout in `git worktree list`, plus the git common dir (macOS; see below) |
+| vendor BLAS | 122: a solution built A and B, then called `cblas_dgemm` from Accelerate or OpenBLAS (dlopen needs no link flag), and passed without writing a kernel | 122's validator lints the source, refuses a binary that links anything beyond the system runtime or imports a loader or a BLAS symbol, and watches the libraries the running process loads |
 
 `evals/vlib.py` is the validator's standard library. The harness injects it
 into the validator from source; it is never on an import path or in the cwd.

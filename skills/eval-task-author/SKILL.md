@@ -225,6 +225,16 @@ for free):
 8. **Keep secrets in memory.** Files you write are readable by the same uid
    wherever they live. Write only inputs to disk. Expected outputs stay in
    your process.
+9. **Check what a compiled solution links and loads** when a library call
+   could answer the task (a BLAS for gemm, a bignum or FFT library). The
+   fixed build command does not stop `dlopen`, `#[link]`, cgo or zig
+   `extern`. Lint the source for a clear message, then refuse the binary
+   if it links more than the system runtime (`otool -L`, or `DT_NEEDED`
+   on Linux) or imports a loader or library symbol (`nm -u`, `.dynsym`).
+   Then watch the running process: a monitor dylib through
+   `/usr/bin/env DYLD_INSERT_LIBRARIES=...` on macOS (sandbox-exec drops
+   `DYLD_*` from the environment), and `/proc/<pid>/maps` on Linux. Build
+   Go with `CGO_ENABLED=0`. `122_gemm_blocked` has the worked example.
 
 ## Difficulty tiers (with concrete examples)
 
