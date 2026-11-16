@@ -22,6 +22,12 @@ _VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "me
 _DROP = {"script", "style", "noscript", "svg", "template", "iframe", "button", "form",
          "nav", "header", "footer", "select", "option", "canvas", "video", "audio",
          "object", "dialog", "menu"}
+# Start tags that close an open <p> (HTML's "close a p element in button
+# scope"), and the elements that scope it.
+_CLOSES_P = {"address", "article", "aside", "blockquote", "details", "div", "dl", "fieldset",
+             "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6",
+             "header", "hr", "main", "menu", "nav", "ol", "p", "pre", "section", "table", "ul"}
+_P_SCOPE = {"table", "td", "th", "caption", "button", "object", "template", "html"}
 _BLOCK = {"p", "div", "section", "article", "main", "aside", "blockquote", "ul", "ol",
           "li", "pre", "table", "thead", "tbody", "tfoot", "tr", "td", "th", "dl", "dt",
           "dd", "figure", "figcaption", "h1", "h2", "h3", "h4", "h5", "h6", "hr",
@@ -68,7 +74,41 @@ class _Builder(HTMLParser):
         self.depth = 0
         self.overflow = 0               # start tags past MAX_DEPTH not descended into
 
+    def _close_open(self, targets, boundaries) -> None:
+        """Close the nearest open element in `targets`, unless a
+        `boundaries` element (or the root) comes first walking up."""
+        n, up = self.cur, 0
+        while n is not None and n.parent is not None:
+            if n.tag in targets:
+                self.cur = n.parent
+                self.depth -= up + 1
+                return
+            if n.tag in boundaries:
+                return
+            n, up = n.parent, up + 1
+
+    def _implied_end_tags(self, tag) -> None:
+        """HTML lets </li>, </dt>, </dd>, </td>, </th>, </tr> and </p> be
+        omitted; the next sibling's start tag closes them. Without this,
+        `<li>one<li>two` nests the second item INSIDE the first and the
+        list renders as one bullet."""
+        if self.overflow:
+            return
+        if tag == "li":
+            self._close_open({"li"}, {"ul", "ol", "menu"})
+        elif tag in ("dt", "dd"):
+            self._close_open({"dt", "dd"}, {"dl"})
+        elif tag in ("td", "th"):
+            self._close_open({"td", "th"}, {"tr", "table"})
+        elif tag == "tr":
+            self._close_open({"tr"}, {"table", "thead", "tbody", "tfoot"})
+        elif tag in ("thead", "tbody", "tfoot"):
+            self._close_open({"thead", "tbody", "tfoot"}, {"table"})
+        if tag in _CLOSES_P:
+            self._close_open({"p"}, _P_SCOPE)
+
     def handle_starttag(self, tag, attrs):
+        self._implied_end_tags(tag)
         node = Node(tag, [(k, v or "") for k, v in attrs], self.cur)
         self.cur.children.append(node)
         if tag in _VOID:
@@ -241,12 +281,7 @@ class _Render:
                 if not isinstance(li, Node) or li.tag != "li" or self.dropped(li):
                     continue
                 n += 1
-                inner = [ln for ln in self.blocks(li, depth + 1) if ln.strip()]
-                if not inner:
-                    continue
-                bullet = f"{n}." if t == "ol" else "-"
-                out.append(f"{'  ' * depth}{bullet} {inner[0].lstrip()}")
-                out += [ln if ln.startswith("  ") else f"{'  ' * (depth + 1)}{ln}" for ln in inner[1:]]
+                out += list_item(f"{n}." if t == "ol" else "-", self.blocks(li, depth + 1))
             return out + [""] if out else []
         if t == "table":
             rows = [r for r in c.walk() if isinstance(r, Node) and r.tag == "tr"]
@@ -281,10 +316,33 @@ class _Render:
         return self.blocks(c, depth)
 
 
+def list_item(bullet: str, lines) -> list:
+    """One list item: `bullet` on the first line, EVERY later line —
+    each line of a multi-line code block included — indented by the
+    bullet's width, so a fence stays inside the item and code keeps its
+    relative indentation. Blank lines between blocks are dropped (a tight
+    list); blank lines inside a code fence are kept. Nested lists arrive
+    already rendered and are indented once more, here."""
+    flat: list = []
+    for x in lines:
+        flat += x.split("\n")
+    body, fence = [], False
+    for ln in flat:
+        if ln.lstrip().startswith("```"):
+            fence = not fence
+        elif not fence and not ln.strip():
+            continue
+        body.append(ln)
+    if not body:
+        return []
+    pad = " " * (len(bullet) + 1)
+    return [f"{bullet} {body[0].lstrip()}"] + [pad + ln if ln.strip() else "" for ln in body[1:]]
+
+
 def _collapse(lines) -> str:
     out, blank, fence = [], False, False
     for ln in lines:
-        if ln.startswith("```"):
+        if ln.lstrip().startswith("```"):
             fence = not fence
         if not fence:
             ln = ln.rstrip()

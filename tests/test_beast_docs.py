@@ -305,6 +305,47 @@ def test_docc_tolerates_schema_drift():
     assert title == "T" and "## H" in md and "- ok" in md and "### G" in md
 
 
+def test_code_inside_list_items_keeps_its_shape():
+    html = ("<main><ol><li><p>Add this:</p><pre><code class='language-kotlin'>fun a() {\n"
+            "    if (x) {\n\n        b()\n    }\n}</code></pre></li>"
+            "<li>Then:<ul><li>nested<pre>x = 1\n\ny = 2</pre></li></ul></li></ol></main>")
+    md = H.html_to_markdown(html)["markdown"]
+    assert ("1. Add this:\n"
+            "   ```kotlin\n"
+            "   fun a() {\n"
+            "       if (x) {\n"
+            "\n"
+            "           b()\n"
+            "       }\n"
+            "   }\n"
+            "   ```\n"
+            "2. Then:\n"
+            "   - nested\n"
+            "     ```\n"
+            "     x = 1\n"
+            "\n"
+            "     y = 2\n"
+            "     ```\n") in md, md
+    _t, md = docc.to_markdown({"metadata": {"title": "T"}, "primaryContentSections": [
+        {"kind": "content", "content": [{"type": "unorderedList", "items": [{"content": [
+            {"type": "paragraph", "inlineContent": [{"type": "text", "text": "Do:"}]},
+            {"type": "codeListing", "syntax": "swift",
+             "code": ["func a() {", "    b()", "", "", "    c()", "}"]}]}]}]}]})
+    assert ("- Do:\n  ```swift\n  func a() {\n      b()\n\n\n      c()\n  }\n  ```\n") in md, md
+
+
+def test_html_omitted_end_tags_close_implicitly():
+    md = H.html_to_markdown("<main><ul><li>one<li>two<li>three</ul>"
+                            "<table><tr><th>a<th>b<tr><td>c<td>d</table>"
+                            "<dl><dt>term<dd>def<dt>t2<dd>d2</dl>"
+                            "<p>first<p>second<div>block</div></main>")["markdown"]
+    assert "- one\n- two\n- three\n" in md, md
+    assert "| a | b |\n|---|---|\n| c | d |\n" in md, md
+    assert md.count("| c | d |") == 1
+    assert "**term**\n: def\n\n**t2**\n: d2" in md, md
+    assert "first\n\nsecond\n\nblock" in md, md
+
+
 def test_html_adapter_survives_pathological_nesting():
     for tag in ("span", "div", "x-w"):
         html = "<main>" + f"<{tag}>" * 5000 + "deep text<pre>code()</pre>" + f"</{tag}>" * 5000 + \

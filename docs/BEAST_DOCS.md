@@ -228,7 +228,14 @@ results on the shipped file.
     below it" is computed bottom-up in one pass, the tree walk is
     iterative, and nesting past 120 levels is flattened, so a malformed page
     nesting thousands of elements renders in linear time instead of hitting
-    Python's recursion limit.
+    Python's recursion limit. Omitted end tags close the way HTML says they
+    do (`<li>one<li>two` is two items; likewise `dt`/`dd`, `td`/`th`/`tr`,
+    and `p` before a block).
+  - **List items, both converters.** Every line of an item after the
+    bullet is indented by the bullet's width, each line of a multi-line
+    code block included, so a fence stays inside its item and code keeps
+    its relative indentation (Python from `blender-python` is
+    indentation-sensitive). Blank lines inside a code fence are kept.
   - The markdown adapter takes the site's own `.md.txt`. It reduces links to
     their text (it handles nested parentheses and link text that wraps
     across lines), drops `<br />` and the index pointer, and uses the page's
@@ -435,7 +442,9 @@ from `tests/fixtures/beast_docs/`. They pin:
   (`[]`, `null`, a string heading level, lists of strings where dicts
   belong) renders or refuses cleanly; 5,000-deep HTML nesting renders in
   well under the time limit; an unrenderable page during sync is one
-  error, not an aborted crawl.
+  error, not an aborted crawl. A multi-line code block inside an HTML
+  `<li>` and inside a DocC list item keeps its indentation and blank lines;
+  omitted `</li>`, `</td>`, `</tr>`, `</dd>` and `</p>` close implicitly.
 - **Incremental sync**:
   - an unchanged ETag is a **304 with no rewrite**: the page files'
     mtimes are unchanged and `fetched_at` is preserved;

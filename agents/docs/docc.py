@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import urllib.parse
 
+from .htmlmd import list_item
+
 HOST = "https://developer.apple.com"
 DATA_PREFIX = "/tutorials/data"
 _SAFE = "/:()!$&'*+,;=@-._~%"
@@ -141,11 +143,8 @@ class _R:
                     lines.append("")
             elif t in ("unorderedList", "orderedList"):
                 for n, item in enumerate(_dicts(b.get("items")), 1):
-                    inner = [ln for ln in self.blocks(item.get("content"), depth + 1) if ln.strip()]
                     bullet = f"{n}." if t == "orderedList" else "-"
-                    if inner:
-                        lines.append(f"{'  ' * depth}{bullet} {inner[0]}")
-                        lines += [f"{'  ' * (depth + 1)}{ln}" for ln in inner[1:]]
+                    lines += list_item(bullet, self.blocks(item.get("content"), depth + 1))
                 lines.append("")
             elif t == "termList":
                 for item in _dicts(b.get("items")):
@@ -288,11 +287,13 @@ def to_markdown(doc: dict, base: str = HOST) -> tuple:
                 lines += [f"### {s['title']}", ""]
             lines += [r.ref_line(i) for i in _l(s.get("identifiers"))]
             lines.append("")
-    # Collapse runs of blank lines; strip trailing spaces.
-    out, blank = [], False
+    # Collapse runs of blank lines (outside code fences); strip trailing spaces.
+    out, blank, fence = [], False, False
     for ln in lines:
         ln = ln.rstrip()
-        if not ln:
+        if ln.lstrip().startswith("```"):
+            fence = not fence
+        if not ln and not fence:
             if blank:
                 continue
             blank = True
