@@ -254,7 +254,16 @@ created, and have the prover check every ancestor cwd afterwards
    the builtin fields that differ between the builds (zig `link_libcpp`,
    `position_independent_executable`, `pic`, `link_libc`), and **also validate
    behaviour in the plain build** — the sanitizer is a stress amplifier, not
-   the only judge (170).
+   the only judge (170). The compiler reads with YOUR rights, and your
+   validator is not sandboxed: `#include "<repo>/evals/refs/<unit>/ref.c"`
+   compiles the sealed reference (163/167/168). So compile through
+   `bdir, why = vlib.build_private({src_name: raw}, argv, lang=LANG,
+   timeout=vlib.t(25))`: it lints the include routes
+   (`vlib.lint_source_includes`), builds in a `private_build_dir` under
+   `build_env`, and on macOS runs the compiler under the solution's read-deny
+   (`vlib.run_build`). Judge the warm-up exec's verdict too (a hang must fail
+   there, inside the harness's 30 s validator budget, not as an infra
+   `validator_timeout` that reruns the whole unit).
 8. **Check all of the output.** A checker that tests only part of the output
    (one field, the last case, a containment prefix without the separator)
    is a pass for a partial solution. Assert the count, every field, and

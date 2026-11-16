@@ -41,6 +41,13 @@ itself:
       rust-toolchain.toml / go env / .cargo config cannot capture the compiler,
       then require the product to be a native executable.
 
+  run_build(argv, cwd=build_dir, env=build_env(), timeout=t(20)),
+  lint_source_includes(src, lang)
+      Compile under the same read-deny as a solution (macOS sandbox-exec),
+      and refuse source that names a file outside its build dir (#include of
+      an absolute or `..` path, include!, .incbin, @embedFile): the compiler
+      runs with the validator's rights and would read the sealed reference.
+
   run_solution(..., confine=[workdir], read_only=python_runtime(exe, mods))
       The solution may read only its runtime and its work dir, write only
       its work dir, and has no network, on macOS (sandbox-exec) and Linux
@@ -73,6 +80,7 @@ from __future__ import annotations
 
 import ast
 import os
+import re
 import secrets
 import signal
 import subprocess
@@ -83,7 +91,8 @@ import time
 __all__ = ["scale", "t", "run_solution", "Result", "python_cmd", "python_runtime",
            "processes", "lint_python", "clean_env", "tool_path", "scan_toolchain_overrides",
            "private_build_dir", "build_env", "is_native_executable",
-           "assert_native_executable", "sanitizer_flags", "SANITIZER_FLAGS"]
+           "assert_native_executable", "sanitizer_flags", "SANITIZER_FLAGS",
+           "run_build", "lint_source_includes", "read_source", "build_private"]
 
 _LINUX = sys.platform.startswith("linux")
 _DARWIN = sys.platform == "darwin"
@@ -400,7 +409,8 @@ def _sbpl_str(s: str) -> str:
 def _sandbox_prefix(allow_fork: bool, deny_read: list[str], *,
                     deny_net: bool = True, deny_procinfo: bool = True,
                     exec_only: str | None = None,
-                    allow_write: list[str] | None = None) -> list[str]:
+                    allow_write: list[str] | None = None,
+                    always: bool = False) -> list[str]:
     """sandbox-exec argv prefix (macOS), or [] when sandboxing is unavailable.
 
     The confined solution gets `(allow default)` minus the holes a cheat uses:
@@ -428,7 +438,7 @@ def _sandbox_prefix(allow_fork: bool, deny_read: list[str], *,
     and can otherwise write anywhere we can, e.g. plant a module in the cwd
     of an ancestor found through libproc (176)."""
     global _SANDBOX_OK
-    want = ((not allow_fork) or deny_read or deny_net or deny_procinfo or exec_only
+    want = (always or (not allow_fork) or deny_read or deny_net or deny_procinfo or exec_only
             or allow_write is not None)
     if not _DARWIN or not want:
         return []
@@ -1464,6 +1474,151 @@ def is_native_executable(path: str) -> bool:
 def assert_native_executable(path: str) -> None:
     """Raise AssertionError unless `path` is an ELF/Mach-O executable."""
     assert is_native_executable(path), f"{path} is not a native executable"
+
+
+# --- the compiler is graded code's first reader ------------------------------------
+#
+# A validator compiles agent-written source with its own, unsandboxed rights.
+# `#include "<repo>/evals/refs/<unit>/ref.c"` (or Rust `include!`, an
+# `.incbin`, a quoted header symlinked to the reference) makes the COMPILER
+# read the sealed reference the agent itself could never open, and the binary
+# is then the reference (reported on 163/167/168). Two walls:
+#   * run_build(): the compiler runs under the same file-read deny as a
+#     solution (sandbox-exec on macOS: every evals/{refs,tasks,suites} tree
+#     and OPENBEAST_VALIDATOR_SEAL), from a private_build_dir that holds only
+#     the source, so no planted symlink sits next to it;
+#   * lint_source_includes(): refuses, on every platform, the source-level
+#     routes to a file outside the build dir: an include/import/embed
+#     directive naming an absolute or `..` path or computed by a macro,
+#     `.incbin`, Rust include!/include_str!/include_bytes!, zig @embedFile
+#     and @cImport. A single-file solution needs none of them.
+# On Linux run_build has no kernel read-deny (the deny-list form of
+# run_solution has none either; see "Residual gaps" in evals/README.md), so
+# the lint is the wall there.
+
+_C_TOKEN = re.compile(r'"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|//[^\n]*|/\*.*?\*/', re.DOTALL)
+_C_DIRECTIVE = re.compile(r"^[ \t]*(?:#|%:)[ \t]*(include_next|include|import|embed)\b[ \t]*(.*)$", re.MULTILINE)
+_C_HEADER = re.compile(r'^(<[^<>"\n]+>|"[^"\n]+")\s*$')
+
+
+def _strip_c_comments(src: str) -> str:
+    # translation phases 1-3: trigraph `??/` is a backslash under -std=c11,
+    # then line splices, then comments (each one becomes a space)
+    src = src.replace("??/", "\\")
+    src = re.sub(r"\\[ \t]*\r?\n", "", src)
+    return _C_TOKEN.sub(lambda m: m.group(0) if m.group(0)[0] in "\"'" else " ", src)
+
+
+def _escapes_dir(name: str) -> bool:
+    name = name.strip()[1:-1].strip()
+    return name.startswith(("/", "\\", "~")) or ".." in name or ":" in name
+
+
+def lint_source_includes(src: str, lang: str) -> str | None:
+    """None, or why `src` (C, C++, Rust, Zig or Go) could make the compiler
+    read a file outside its build dir. See the block comment above."""
+    lang = {"c++": "cpp", "rs": "rust"}.get(lang, lang)
+    if lang in ("c", "cpp", "go"):
+        code = _strip_c_comments(src)
+        if lang == "go":
+            # cgo preamble (needs import "C"; CGO_ENABLED=0 refuses it too)
+            # and //go:embed (which the go tool already keeps in-module)
+            if re.search(r'^\s*import\s*(\(\s*)?"C"', code, re.MULTILINE) or "go:embed" in src:
+                return "cgo or go:embed"
+            return None
+        for m in _C_DIRECTIVE.finditer(code):
+            arg = m.group(2).strip()
+            if not _C_HEADER.match(arg):
+                return f"computed #{m.group(1)} ({arg[:40]!r})"
+            if _escapes_dir(arg):
+                return f"#{m.group(1)} of a path outside the build dir ({arg[:60]})"
+        if re.search(r"\bincbin\b", code, re.IGNORECASE):
+            return ".incbin"
+        return None
+    if lang == "rust":
+        code = re.sub(r"//[^\n]*|/\*.*?\*/", " ", src, flags=re.DOTALL)
+        m = re.search(r"\binclude(_str|_bytes)?\b", code)
+        if m:
+            return f"{m.group(0)}! (a single-file solution includes nothing)"
+        if re.search(r"\bincbin\b", code, re.IGNORECASE):
+            return ".incbin"
+        return None
+    if lang == "zig":
+        code = re.sub(r"//[^\n]*", " ", src)
+        m = re.search(r"@(embedFile|cImport|cInclude)\b", code)
+        if m:
+            return f"@{m.group(1)} (a single-file solution includes nothing)"
+        return None
+    return None
+
+
+def read_source(path: str, cap: int = 4 << 20) -> bytes | None:
+    """The bytes of the solution's source file, or None unless `path` is a
+    regular file (not a symlink, FIFO or device) of at most `cap` bytes. The
+    validator reads with its own unsandboxed rights, so a source symlinked
+    to the reference must never be followed into a private build dir."""
+    import stat
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        out = bytearray()
+        while len(out) <= cap:
+            chunk = os.read(fd, 1 << 16)
+            if not chunk:
+                break
+            out += chunk
+        return bytes(out) if len(out) <= cap else None
+    finally:
+        os.close(fd)
+
+
+def build_private(files: dict, cmd, *, lang: str, timeout: float,
+                  extra_env: dict | None = None):
+    """Lint, then compile `files` ({relpath: bytes}) with `cmd` in a fresh
+    private_build_dir under build_env() and run_build(). Returns
+    (build_dir, None) or (None, why-it-failed). The dir's parent is removed
+    when the validator exits."""
+    import atexit
+    import shutil
+    import tempfile
+    for rel, content in files.items():
+        text = content.decode("utf-8", "replace") if isinstance(content, (bytes, bytearray)) else content
+        bad = lint_source_includes(text, lang)
+        if bad:
+            return None, f"forbidden in {rel}: {bad}"
+    base = tempfile.mkdtemp(prefix="ob-build-")
+    atexit.register(shutil.rmtree, base, True)
+    d = private_build_dir(files, base=base)
+    home = os.path.join(base, "home")
+    os.mkdir(home, 0o700)
+    env = build_env(extra_env, home=home)
+    try:
+        b = run_build(cmd, cwd=d, env=env, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None, "build timed out"
+    if b.returncode:
+        return None, "build failed: " + (b.stderr or b.stdout)[-300:]
+    return d, None
+
+
+def run_build(cmd, *, cwd: str, env: dict | None = None, timeout: float,
+              deny_read: list[str] | None = None) -> subprocess.CompletedProcess:
+    """Run a compiler (an argv list) like subprocess.run(capture_output=True,
+    text=True, stdin=/dev/null), on macOS under sandbox-exec with reads of
+    every evals/{refs,tasks,suites} tree and the harness seal denied. The
+    compiler may fork and use the network (toolchains probe both); only the
+    read-deny is added. Raises subprocess.TimeoutExpired like run()."""
+    if isinstance(cmd, str):
+        raise TypeError("run_build takes an argv list, not a shell string")
+    seal = _sealed_paths() if deny_read is None else list(deny_read)
+    prefix = _sandbox_prefix(True, seal, deny_net=False, deny_procinfo=False, always=True)
+    return subprocess.run(prefix + list(cmd), cwd=cwd, env=clean_env() if env is None else env,
+                          stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                          errors="replace", timeout=timeout)
 
 
 # --- sanitizer builds ------------------------------------------------------------

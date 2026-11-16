@@ -435,6 +435,19 @@ into the validator from source; it is never on an import path or in the cwd.
   lists any planted `rust-toolchain`/`.cargo/config`/`go.work`/`go env` in an
   ancestor. `vlib.sanitizer_flags("thread")` builds the same source with and
   without the sanitizer.
+- **The compiler reads with the validator's rights.** `#include
+  "<repo>/evals/refs/<unit>/ref.c"` (or Rust `include!`, an `.incbin`, a
+  source symlinked to the reference) made the compiler read the sealed
+  reference the agent cannot open, and the binary WAS the reference (163,
+  167, 168). `vlib.build_private({src: bytes}, argv, lang=, timeout=)` lints
+  the source (`vlib.lint_source_includes`: no include/import/embed of an
+  absolute, `..` or macro-computed path, no `.incbin`, no Rust
+  `include!`/`include_str!`/`include_bytes!`, no zig `@embedFile`/`@cImport`),
+  copies it into a `private_build_dir` and compiles there under
+  `vlib.build_env()` through `vlib.run_build`, which on macOS adds the
+  solution's read-deny (every `evals/{refs,tasks,suites}` tree and the seal).
+  Read the source with `vlib.read_source(path)`: a regular file only, never
+  through a symlink.
 - `vlib.t(s)` and `vlib.scale()` give the timeout scale. `vlib.python_cmd(p)`
   gives `[python, -I, -S, p]`. `vlib.processes()` is a /proc-free process
   table. `vlib.lint_python(src, ban_modules=, ban_calls=)` is an AST lint for
@@ -506,7 +519,10 @@ solution process group a validator recorded is SIGKILLed after it exits.
   build into the fixture dir are exposed; the fix (run from a read-only
   copy, or hash the image after the run) is a v5.1 harness item.
 - **Linux confinement is the environment's job.** On macOS sandbox-exec
-  enforces the solution rules; on Linux vlib catches fork by sampling (verdict `forked`), exec
+  enforces the solution rules, and `vlib.run_build` puts the compiler under
+  the same read-deny; on Linux the compiler has none, so
+  `vlib.lint_source_includes` is the only wall against a source that makes
+  the compiler read the reference; on Linux vlib catches fork by sampling (verdict `forked`), exec
   (`/proc/<pid>/exe`) and, with `confine=`, reads (Landlock or namespaces),
   but the deny-list form (no `confine=`) has no kernel read-deny. The
   leftover sweep on Linux is exact only with a delegated cgroup v2; without
