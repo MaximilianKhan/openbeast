@@ -48,7 +48,10 @@ case "\$*" in
 esac
 exit 0
 SH
-chmod +x "$SV/llama.cpp/build/bin/llama-server" "$SV/llama.cpp/build/bin/llama-cli" "$SV/bin/nvidia-smi"
+# tailscale answers "not here" unless a case says otherwise: serve.sh asks it
+# for the tailnet name (the :8443 origin), and the host's own must not leak in.
+printf '#!/bin/bash\nexit 1\n' > "$SV/bin/tailscale"
+chmod +x "$SV/llama.cpp/build/bin/llama-server" "$SV/llama.cpp/build/bin/llama-cli" "$SV/bin/nvidia-smi" "$SV/bin/tailscale"
 printf 'usage: llama-server\n-cram, --cache-ram N   set the maximum cache size in MiB (default: 8192)\n' > "$SV/help.txt"
 : > "$SV/gpus"
 # _pin <file> [bytes] — a registry row for weights/<file> (its real size by default)
@@ -228,7 +231,7 @@ grep -qx 'LLAMA_ARG_CORS_ORIGINS=https://ui.example' "$SV/env" 2>/dev/null \
   && pass "…and an operator's own value still wins over the tailnet name" \
   || fail "tailnet name overrode LLAMA_ARG_CORS_ORIGINS: $(grep '^LLAMA_ARG_CORS' "$SV/env" 2>/dev/null)"
 # The name is cached in the run dir; later cases expect no tailnet.
-rm -f "$SV/bin/tailscale" "$SV/.run/webui-tailnet-name"
+printf '#!/bin/bash\nexit 1\n' > "$SV/bin/tailscale"; rm -f "$SV/.run/webui-tailnet-name"
 
 echo ""
 echo "run.sh (interactive llama-cli):"
