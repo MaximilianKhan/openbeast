@@ -86,3 +86,28 @@ def _isolated_tool_audit(tmp_path, monkeypatch):
     """
     monkeypatch.setenv("OPENBEAST_TOOL_AUDIT_PATH",
                        str(tmp_path / "tool-audit" / "tool-audit.jsonl"))
+
+
+# --- child subreaper ---------------------------------------------------------
+# vlib.run_solution makes ITS CALLER a child subreaper on Linux, so a
+# validator keeps its solution's orphans in view. Called in-process by the
+# eval isolation tests, that turned the whole pytest process into a
+# subreaper: every later test's orphaned grandchild became pytest's unreaped
+# zombie, signal 0 still found it, and the reap tests in test_proc_hygiene,
+# test_tools and test_steering failed only in a full, ordered run. Undo it
+# after every test.
+@pytest.fixture(autouse=True)
+def _no_lingering_subreaper():
+    yield
+    import sys
+    if not sys.platform.startswith("linux"):
+        return
+    mod = sys.modules.get("vlib")
+    if mod is None or not getattr(mod, "_SUBREAPER", None):
+        return
+    try:
+        import ctypes
+        ctypes.CDLL(None).prctl(36, 0, 0, 0, 0)     # PR_SET_CHILD_SUBREAPER off
+    except OSError:
+        pass
+    mod._SUBREAPER = None
