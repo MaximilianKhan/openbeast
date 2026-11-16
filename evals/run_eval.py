@@ -2115,13 +2115,22 @@ def _ob_done(nonce, exc=None):
     raise SystemExit(0)
 
 
-_ob_c = _ob_boot(%r, %r, %r)
-_ob_n = %r
-try:
-    exec(_ob_c)
-except SystemExit as _ob_e:
-    _ob_done(_ob_n, _ob_e)
-_ob_done(_ob_n)
+def _ob_run(c, n, done):
+    # The completion line lives only in this frame: no module global names
+    # it or the function that prints it, so `__main__._ob_n` (a one-line
+    # forgery by an in-process solution, review 1116) finds nothing. Frame
+    # introspection still can: see "Residual gaps" in evals/README.md.
+    g = globals()
+    for k in ("_ob_run", "_ob_done"):
+        g.pop(k, None)
+    try:
+        exec(c, g)
+    except SystemExit as e:
+        done(n, e)
+    done(n)
+
+
+_ob_run(_ob_boot(%r, %r, %r), %r, _ob_done)
 """
 
 # The line a python validator prints when it ran to its end (see _ob_done).

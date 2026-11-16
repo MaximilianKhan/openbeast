@@ -1307,3 +1307,25 @@ def test_a_validator_that_exits_zero_itself_still_passes():
     assert ok and "fine" in out, out
     task["validation"]["script"] = "import sys\nsys.exit(3)\n"
     assert run_eval.run_validation(task)[0] is False
+
+
+@pytest.mark.parametrize("forge", [
+    # read the completion line from the validator's module globals
+    "import __main__, os, sys\nsys.stdout.write('\\n' + __main__._ob_n + '\\n')\n"
+    "sys.stdout.flush(); os._exit(0)\n",
+    # call the harness's own completion function
+    "import __main__\n__main__._ob_done('x')\n",
+    # scan every module global for a string that looks like the line
+    "import __main__, os, sys\n"
+    "for v in list(vars(__main__).values()):\n"
+    "    if isinstance(v, str) and v.startswith('@@ob-validator-done-'):\n"
+    "        sys.stdout.write('\\n' + v + '\\n'); sys.stdout.flush(); os._exit(0)\n",
+])
+def test_an_in_process_solution_cannot_forge_the_completion_line_from_globals(tmp_path, forge):
+    """The completion line used to be the module global `_ob_n`, readable by
+    any solution the validator imports (review 1116). It now lives only in
+    a frame; frame introspection remains a documented residual gap."""
+    sol = tmp_path / "m.py"
+    sol.write_text(forge)
+    ok, out = run_eval.run_validation(_inproc_validator(sol))
+    assert not ok, out
