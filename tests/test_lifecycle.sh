@@ -1906,6 +1906,26 @@ else
   fail "healthcheck relaunched a live dashboard: $(grep -iE 'dashboard' <<< "$_O" | tr '\n' ' ')"
 fi
 [[ "$_DPID" =~ ^[0-9]+$ ]] && kill "$_DPID" 2>/dev/null || true
+# review 2026-11-16: the dashboard relaunch was gated on the raw $RESTART, so
+# a ./stop.sh landing mid-pass (after the services rows, before this one)
+# got an unsupervised dashboard back. The stub "lands" stop.sh the moment the
+# pass asks for /api/slot.
+_DS="$_T/dashstop"; _sandbox "$_DS"
+mkdir -p "$_DS/extensions/dashboard"
+cp "$_DR/extensions/dashboard/"{manifest,server.py,run.sh} "$_DS/extensions/dashboard/"
+printf '#!/bin/bash\nfor a in "$@"; do [[ "$a" == *":%s/api/slot" ]] && { mkdir -p "%s/.run"; : > "%s/.run/stopped"; exit 7; }; done\nexit 7\n' \
+  "$_DPORT" "$_DS" "$_DS" > "$_DS/bin/curl"
+chmod +x "$_DS/bin/curl"
+printf 'SEARXNG_SECRET=s\nEXTENSIONS="dashboard"\nDASHBOARD_PORT=%s\n' "$_DPORT" > "$_DS/openbeast.conf"
+_O="$(timeout 300 bash -c "$(declare -f _run); RUN_ENV=(); _run '$_DS' '$_DS/scripts/healthcheck.sh' --restart")"
+_SPID="$(cat "$_DS/.run/ext-dashboard.pid" 2>/dev/null || true)"
+[[ "$_SPID" =~ ^[0-9]+$ ]] && kill "$_SPID" 2>/dev/null
+if [[ "$_O" != *"restarting the dashboard"* && -z "$_SPID" \
+      && "$_O" == *"not restarting: the stack was stopped on purpose"* ]]; then
+  pass "…but not after a ./stop.sh that landed during the pass (_may_restart)"
+else
+  fail "dashboard relaunched after a mid-pass stop: $(grep -iE 'dashboard|→' <<< "$_O" | tr '\n' ' ')"
+fi
 
 # ---------------------------------------------------------------------------
 echo ""
