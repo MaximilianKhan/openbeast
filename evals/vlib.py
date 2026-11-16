@@ -2110,6 +2110,12 @@ def build_private(files: dict, cmd, *, lang: str, timeout: float,
     home = os.path.join(base, "home")
     os.mkdir(home, 0o700)
     env = build_env(extra_env, home=home)
+    # build_env's PATH holds only root-owned system dirs, so a bare compiler
+    # name (`go`, `cc`) resolves to the copy the harness pinned (tool_path),
+    # never to whatever the agent could have put on PATH.
+    cmd = list(cmd)
+    if cmd and os.sep not in cmd[0]:
+        cmd[0] = tool_path(cmd[0])
     try:
         b = run_build(cmd, cwd=d, env=env, timeout=timeout)
     except subprocess.TimeoutExpired:

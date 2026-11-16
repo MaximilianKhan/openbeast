@@ -334,3 +334,25 @@ def test_179_planted_promisor_remote_never_runs(tmp_path):
     ok, out = _validate(task["validation"]["script"], "/tmp/eval_bisect/semver", repo)
     assert not ok and "the original history is gone" in out, out
     assert not marker.exists(), "the planted uploadpack ran"
+
+
+def test_build_private_resolves_a_bare_compiler_through_tool_path(monkeypatch):
+    """build_env's PATH holds only root-owned system dirs (families-b's
+    toolchain pins), so the 163/167/168 validators' bare `go` found nothing
+    there once both fixes met (sandbox-exec: execvp() of 'go' failed). The
+    compiler now comes from tool_path: the copy the harness pinned."""
+    seen = {}
+
+    def fake_run_build(cmd, *, cwd, env, timeout):
+        seen["cmd"], seen["path"] = cmd, env["PATH"]
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(vlib, "run_build", fake_run_build)
+    monkeypatch.setattr(vlib, "tool_path", lambda name: f"/pinned/{name}")
+    d, why = vlib.build_private({"x.go": b"package main\nfunc main() {}\n"},
+                                ["go", "build", "-o", "x", "x.go"], lang="go", timeout=5)
+    assert why is None and d
+    assert seen["cmd"] == ["/pinned/go", "build", "-o", "x", "x.go"]
+    assert "/pinned" not in seen["path"]
+    vlib.build_private({"x.go": b"package main\n"}, ["/abs/go", "build"], lang="go", timeout=5)
+    assert seen["cmd"][0] == "/abs/go"
