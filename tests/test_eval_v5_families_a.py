@@ -230,6 +230,56 @@ def test_173_generator_reaches_the_cancel_tail_path():
     assert any(json.dumps(t).count('["cancel_group"]]') for t in tails)   # body ends at cancel
 
 
+# --- 175 ----------------------------------------------------------------------------
+
+def test_175_incremental_oracle_equals_the_declarative_rebuild(monkeypatch):
+    monkeypatch.setitem(sys.modules, "vlib", vlib)
+    v = _load(REFS / "175" / "validator.py", "v175")
+    HEAD = v.HEAD
+
+    def rebuild(c, r):                              # the pre-1116 declarative oracle
+        kids, dead = {}, set()
+        for op in c._applied(r):
+            if op.kind == "insert":
+                kids.setdefault(op.anchor, []).append(op)
+            elif op.kind == "delete":
+                dead.add(op.target)
+        for lst in kids.values():
+            lst.sort(key=lambda o: o.id)
+        out, stack = [], list(kids.get(HEAD, ()))
+        while stack:
+            op = stack.pop()
+            out.append((op.id, op.ch, op.id in dead))
+            stack.extend(kids.get(op.id, ()))
+        return out
+
+    checked = [0]
+    orig = v.Cluster.seq_ids
+
+    def checked_seq_ids(self, r):
+        got = orig(self, r)
+        if checked[0] % 7 == 0:
+            assert got == rebuild(self, r)
+        checked[0] += 1
+        return got
+
+    monkeypatch.setattr(v.Cluster, "seq_ids", checked_seq_ids)
+    t0 = time.monotonic()
+    cases = v.all_cases()
+    assert len(cases) == 58 and checked[0] > 1000
+    monkeypatch.setattr(v.Cluster, "seq_ids", orig)
+    t0 = time.monotonic()
+    v.all_cases()
+    assert time.monotonic() - t0 < 1.2              # was 1.7-1.8 s on a Mac (0.23 s now)
+
+
+def test_175_argvcheat_class_covers_the_linux_fork_refusal():
+    rx = json.loads((REFS / "175" / "prove.json").read_text())["leak"]["argvcheat"]
+    for line in ("mismatch at case 0", "exception at case 0: PermissionError",
+                 "solution refused: forked"):
+        assert re.search(rx, line), line
+
+
 # --- 176: the copy never follows a link ----------------------------------------------
 
 def _shopd_fixture(tmp_path: Path) -> tuple[dict, Path]:
@@ -284,5 +334,3 @@ def test_179_planted_promisor_remote_never_runs(tmp_path):
     ok, out = _validate(task["validation"]["script"], "/tmp/eval_bisect/semver", repo)
     assert not ok and "the original history is gone" in out, out
     assert not marker.exists(), "the planted uploadpack ran"
-
-
