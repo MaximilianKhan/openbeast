@@ -341,6 +341,13 @@ jobs:
           bash tests/test_spark_guard.sh
           bash tests/test_spark_supply.sh
 
+      # spark-fabric-mtu.sh (MTU 9000 on the ConnectX fabric, a netplan drop-in
+      # staged for the next reboot): every mode against fakes under a scratch
+      # SPARK_FABRIC_ROOT, plus the merge through the runner's real netplan
+      # (`netplan generate --root-dir`, scratch dir only; never apply).
+      - name: DGX Spark fabric MTU tests
+        run: bash tests/test_spark_fabric_mtu.sh
+
       # The Tier-3 campaign harness in a stub repo: the benchmark, era,
       # engine and verdict are stubs, so no GPU or server is touched.
       - name: Tier-3 campaign harness tests
