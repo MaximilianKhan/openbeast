@@ -115,12 +115,18 @@ echo docker=$(docker info >/dev/null 2>&1 && echo ok || echo no)
 echo tensorfold=$( (~/.local/bin/tensorfold --version 2>/dev/null || true) | awk '{print $NF}')
 echo fabric=$(for i in $(ibdev2netdev 2>/dev/null | awk '/\(Up\)/ {print $5}'); do ip -4 -o addr show dev $i | awk '{print $4}'; done | paste -sd, -)
 echo head_ip=$(kv SPARK_HEAD_IP)
+for k in TENSORFOLD_ENGINE TENSORFOLD_VERSION TENSORFOLD_REF TENSORFOLD_IMAGE TENSORFOLD_IMAGE_DIGEST TENSORFOLD_IMAGE_ID VLLM_IMAGE VLLM_IMAGE_DIGEST VLLM_IMAGE_ID; do echo "pin_$k=$(kv $k)"; done
 echo repo=$(test -d @REPO@/.git && git -C @REPO@ rev-parse --short HEAD 2>/dev/null || echo missing)
 P
   PROBE="${PROBE//@REPO@/$REPO_Q}"
   FAIL=0
   declare -a FAB HIP
   REPO0=""
+  # The engine build every rank must share: the native binary, and each
+  # node's spark.env pins (a per-node file, outside the commit the repo
+  # check compares — `engine.sh update` on one Spark rewrites only its own).
+  BUILD_KEYS="tensorfold pin_TENSORFOLD_ENGINE pin_TENSORFOLD_VERSION pin_TENSORFOLD_REF pin_TENSORFOLD_IMAGE pin_TENSORFOLD_IMAGE_DIGEST pin_TENSORFOLD_IMAGE_ID pin_VLLM_IMAGE pin_VLLM_IMAGE_DIGEST pin_VLLM_IMAGE_ID"
+  BUILD0="" HAVE0=0   # rank 0's values as key=value lines (bash 3.2: no assoc arrays)
   for ((r = 0; r < N; r++)); do
     FAB[$r]="" HIP[$r]=""
     if ! out="$(on_node "$r" "$PROBE" 2>&1)"; then
@@ -143,6 +149,16 @@ P
       # runs another launcher against another lock.
       echo "     ! checkout is at $(get repo), rank 0's at $REPO0 — check out the same commit on every node"; FAIL=1
     fi
+    for k in $BUILD_KEYS; do
+      if [[ $r -eq 0 ]]; then
+        BUILD0+="$k=$(get "$k")"$'\n'; HAVE0=1
+      elif [[ $HAVE0 -eq 1 ]]; then
+        want="$(sed -n "s/^$k=//p" <<< "$BUILD0")"
+        if [[ "$(get "$k")" != "$want" ]]; then
+          echo "     ! ${k#pin_} is '$(get "$k")' here, '$want' on rank 0 — every rank must run the same engine build (engine.sh install/update on each Spark, or align its spark.env)"; FAIL=1
+        fi
+      fi
+    done
     if (( N > 1 )); then
       [[ -n "$(get nccl)" ]] || { echo "     ! libnccl2 missing (spark-root-setup.sh)"; FAIL=1; }
       [[ -n "${FAB[$r]}" ]] || { echo "     ! no addressed ConnectX-7 link"; FAIL=1; }
@@ -360,7 +376,7 @@ stop)
 
 status)
   for ((r = 0; r < N; r++)); do
-    out="$(on_node "$r" 'echo "$(hostname) mem_free=$(awk "/MemAvailable/ {printf \"%.1f\", \$2/1048576}" /proc/meminfo)GiB units=$(systemctl --user list-units --plain --no-legend "openbeast-*" 2>/dev/null | awk "{print \$1\":\"\$4}" | paste -sd, -) containers=$(docker ps --format "{{.Names}}" 2>/dev/null | grep -E "openbeast-|glm53" | paste -sd, -)"' 2>&1 || echo UNREACHABLE)"
+    out="$(on_node "$r" 'echo "$(hostname) mem_free=$(awk "/MemAvailable/ {printf \"%.1f\", \$2/1048576}" /proc/meminfo)GiB units=$(systemctl --user list-units --plain --no-legend "openbeast-*" "spark-hydra-*" 2>/dev/null | awk "{print \$1\":\"\$4}" | paste -sd, -) containers=$(docker ps --format "{{.Names}}" 2>/dev/null | grep -E "openbeast-|glm53" | paste -sd, -)"' 2>&1 || echo UNREACHABLE)"
     echo "  rank $r ${NODES[$r]}: $out"
   done
   ;;

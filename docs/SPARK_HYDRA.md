@@ -673,12 +673,12 @@ scripts/backends/tensorfold/spark-node.sh --profile NAME --rank 0 --stop        
 node. Then:
 
 ```bash
-scripts/backends/spark-cluster.sh check                          # every node: aarch64 + GB10, docker, NCCL, same commit, fabric pairing, SPARK_HEAD_IP reach
+scripts/backends/spark-cluster.sh check                          # every node: aarch64 + GB10, docker, NCCL, same commit, same engine build + spark.env pins, fabric pairing, SPARK_HEAD_IP reach
 scripts/backends/spark-cluster.sh sync-weights --profile NAME    # model + drafter over the fabric, verified vs the HEAD's lock
 scripts/backends/spark-cluster.sh sync-image IMAGE               # docker save | load where it differs; prints the *_IMAGE_ID pin
 scripts/backends/spark-cluster.sh save-image IMAGE FILE          # an image to a file, for a cluster with no registry
 scripts/backends/spark-cluster.sh start --profile NAME [--engine tensorfold|vllm]
-scripts/backends/spark-cluster.sh status
+scripts/backends/spark-cluster.sh status                         # per rank: free memory, openbeast-* and spark-hydra-* user units, containers
 scripts/backends/spark-cluster.sh stop [--engine tensorfold|vllm]   # every rank, rank 0 first; both engines by default
 #   --cluster FILE   --dry-run (print every command, run nothing)
 ```
@@ -1202,6 +1202,9 @@ The worker runs no OpenBeast services. Its checkout matters for the lock
 
 - Native TensorFold: `scripts/engine.sh update tensorfold` (or
   `install-native.sh --version V`) on every Spark, then restart all ranks.
+  `spark-cluster.sh check` fails while the ranks disagree on the native
+  binary or on any spark.env engine pin (`TENSORFOLD_VERSION`, `_REF`,
+  `_IMAGE*`, `VLLM_IMAGE*`), so run it before `start`.
 - The recipe: a new recipe version or image means a new `git pull` in
   `~/openbeast-recipes/glm53`, `prepare.sh` (online), the image carried to every
   rank, and `systemctl --user restart spark-hydra-inference`.

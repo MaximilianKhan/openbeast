@@ -103,6 +103,22 @@ _cluster "local n1 'x;rm'"; _run status --cluster "$T/cluster.env"
 [[ $RC -ne 0 ]] && _has "$OUT" "is not a plain ssh target" && pass "a node entry that is not a plain ssh target is refused" || fail "hostile node entry (rc=$RC): $OUT"
 _cluster "local n1 n2 n3 n4 n5 n6 n7"; _run status --cluster "$T/cluster.env"
 [[ $RC -eq 0 ]] && [[ "$(grep -c '^  rank' <<< "$OUT")" == 8 ]] && pass "status covers all 8 ranks of an 8-node cluster" || fail "8-node status (rc=$RC): $OUT"
+# status lists the serving unit too: the live pair runs spark-hydra-inference,
+# which an openbeast-* filter alone never showed.
+cat > "$T/bin/systemctl" <<'S'
+#!/bin/bash
+for a in "$@"; do
+  case "$a" in
+    "openbeast-*")   echo "openbeast-stack.service loaded active running OpenBeast" ;;
+    "spark-hydra-*") echo "spark-hydra-inference.service loaded active running GLM" ;;
+  esac
+done
+S
+chmod +x "$T/bin/systemctl"
+_cluster "local n1"; _run status --cluster "$T/cluster.env"
+[[ $RC -eq 0 ]] && _has "$OUT" "spark-hydra-inference.service:running" && _has "$OUT" "openbeast-stack.service:running" \
+  && pass "status shows the spark-hydra-inference serving unit beside the openbeast-* units" || fail "status units (rc=$RC): $OUT"
+rm -f "$T/bin/systemctl"
 
 # check: the fabric pairing. A switch (one subnet) and a direct cable pass; a
 # mirrored ring (one pair with no common subnet) fails and names the pair.
@@ -148,6 +164,24 @@ SC_GIT_SKEW=n2 _run check --cluster "$T/cluster.env"
 # A node whose GPU is not a GB10 (or nvidia-smi is missing).
 SC_GPU_n1="" _run check --cluster "$T/cluster.env"
 [[ $RC -ne 0 ]] && _has "$OUT" "GPU '' is not a GB10" && pass "check: a node with no GB10 fails" || fail "check gpu (rc=$RC): $OUT"
+# Engine builds: every rank must run the same one. The native binary answers
+# per node (SC_TF_<node>); spark.env is shared here, so its pins agree.
+mkdir -p "$T/home/.local/bin"
+cat > "$T/home/.local/bin/tensorfold" <<'S'
+#!/bin/bash
+k="SC_TF_$(printf '%s' "${NODE:-local}" | tr -c 'A-Za-z0-9' '_')"
+echo "tensorfold-native ${!k:-1.2.7}"
+S
+chmod +x "$T/home/.local/bin/tensorfold"
+_run check --cluster "$T/cluster.env"
+[[ $RC -eq 0 ]] && _has "$OUT" "tensorfold=1.2.7" && pass "check: the same TensorFold build on every rank passes" || fail "check same build (rc=$RC): $OUT"
+SC_TF_n2=1.2.9 _run check --cluster "$T/cluster.env"
+[[ $RC -ne 0 ]] && _has "$OUT" "tensorfold is '1.2.9' here, '1.2.7' on rank 0" && [[ "$(_bangs "$OUT")" == 1 ]] \
+  && pass "check: a rank on another TensorFold build fails (engine.sh update ran on one Spark only)" || fail "check build skew (rc=$RC): $OUT"
+printf 'SPARK_HEAD_IP=10.1.0.1\nTENSORFOLD_VERSION=1.2.7\nVLLM_IMAGE_ID=sha256:%064d\n' 7 > "$T/repo/scripts/backends/spark.env"
+_run check --cluster "$T/cluster.env"
+[[ $RC -eq 0 ]] && pass "check: identical spark.env pins (TENSORFOLD_VERSION, VLLM_IMAGE_ID) pass" || fail "check same pins (rc=$RC): $OUT"
+rm -f "$T/home/.local/bin/tensorfold"
 _cluster "local"; unset SC_FABRIC_local; : > "$T/repo/scripts/backends/spark.env"; _run check --cluster "$T/cluster.env"
 [[ $RC -eq 0 ]] && _has "$OUT" "one Spark — no fabric needed" && pass "check: one Spark needs no fabric" || fail "check one node (rc=$RC): $OUT"
 
