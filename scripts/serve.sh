@@ -93,6 +93,27 @@ if ! ob_bind_is_loopback "$HOST" && [[ -z "$LLAMA_API_KEY" && "${ALLOW_OPEN_INFE
   echo "       (exit 3 = refusal; rollback must NOT substitute another model)" >&2
   exit 3
 fi
+# The same exposure through a persisted tailscale mount. setup-tailscale.sh
+# mounts :8443 raw at llama-server only while LLAMA_API_KEY is set, but
+# `serve --bg` mounts outlive the conf: drop the key, restart, and a keyless
+# llama-server came up behind a :8443 every tailnet node (shared-in users
+# included) can reach — /slots, /props, /lora-adapters and the GPU — with no
+# word at start (2026-11-16 review). Refused like the network bind above.
+# Only a real answer refuses: a box without tailscale, or a tailscaled that
+# does not answer within 3 s, launches as before (doctor.sh still FAILs the
+# keyless :8443 once tailscale answers).
+if ob_bind_is_loopback "$HOST" && [[ -z "$LLAMA_API_KEY" && "${ALLOW_OPEN_INFERENCE:-false}" != "true" ]] \
+   && declare -F ob_ts_8443_raw_to >/dev/null 2>&1 && ob_ts_8443_raw_to "$PORT"; then
+  echo "Error: refusing to serve keyless inference on $HOST:$PORT — tailscale serve still" >&2
+  echo "       publishes :8443 straight to this port (a mount made while LLAMA_API_KEY was" >&2
+  echo "       set; they persist), so every tailnet device could use the GPU and every" >&2
+  echo "       llama-server route. Fix one of: set LLAMA_API_KEY again; EDGE_GATE=true and" >&2
+  echo "       re-run scripts/setup-tailscale.sh (it repoints :8443 at the gate); take it" >&2
+  echo "       down: sudo tailscale serve --https=8443 off; or ALLOW_OPEN_INFERENCE=true in" >&2
+  echo "       openbeast.conf to accept it." >&2
+  echo "       (exit 3 = refusal; rollback must NOT substitute another model)" >&2
+  exit 3
+fi
 
 # --- Model registry enforcement (supply chain for weights) -----------------
 # Every weight file this launch loads — the -m file, all shards of a split

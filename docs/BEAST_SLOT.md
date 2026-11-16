@@ -137,6 +137,18 @@ script refuses the raw mount (and takes down an old one) and points at
 `EDGE_GATE=true` instead: a raw `tailscale serve` of a remote engine would
 put no identity at all in front of it.
 
+`tailscale serve --bg` mounts persist, so a raw `:8443` made behind
+`LLAMA_API_KEY` outlives that key. `scripts/serve.sh` therefore asks
+`tailscale serve status` before it starts a **keyless** llama-server: if
+`:8443` still proxies straight to its port, it refuses (exit 3, like a
+keyless network bind) unless `ALLOW_OPEN_INFERENCE=true`. Fix it by setting
+the key again, by `EDGE_GATE=true` plus a re-run of `setup-tailscale.sh`
+(which repoints `:8443` at the gate), or with
+`sudo tailscale serve --https=8443 off`. Only a real answer refuses: a box
+without tailscale, or a tailscaled that does not answer within 3 s, starts
+as before, and `doctor.sh` still FAILs the keyless mount once it answers.
+Offline this needs nothing: `tailscale serve status` reads local state.
+
 **Order matters.** The slot API is served by the dashboard *extension*, and
 `EXTENSIONS` is empty by default. Publishing before enabling it (and
 restarting) leaves `:8444` proxying to a port nothing is listening on, so
