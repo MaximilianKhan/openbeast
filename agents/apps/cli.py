@@ -119,7 +119,7 @@ def effective_version(cat: dict, sid: str, st: State) -> str:
 
 
 # ── evaluation ──────────────────────────────────────────────────────────────
-def evaluate_server(cat: dict, sid: str, env: dict, st: State) -> dict:
+def evaluate_server(cat: dict, sid: str, env: dict, st: State, cache: dict | None = None) -> dict:
     s = cat["server"][sid]
     plat = C.platform_id(env)
     res = {"id": sid, "title": s["title"], "version": effective_version(cat, sid, st),
@@ -133,7 +133,7 @@ def evaluate_server(cat: dict, sid: str, env: dict, st: State) -> dict:
         res["missing"].append(f"{s['title']} runs on {', '.join(s['platforms'])} only; this machine is {plat}.")
         return res
     for pid in s.get("probes", []):
-        r = P.run(cat, pid, env)
+        r = P.run(cat, pid, env, cache=cache)
         res["probes"].append(r)
         if r["status"] == "fail":
             res["missing"].append(r["fix"])
@@ -147,13 +147,14 @@ def evaluate_server(cat: dict, sid: str, env: dict, st: State) -> dict:
     return res
 
 
-def evaluate_capability(cat: dict, cid: str, env: dict, st: State, only: str | None = None) -> dict:
+def evaluate_capability(cat: dict, cid: str, env: dict, st: State, only: str | None = None,
+                        cache: dict | None = None) -> dict:
     c = cat["capability"][cid]
     out = {"capability": cid, "title": c["title"], "stage": c.get("stage", ""),
            "platform": C.platform_id(env), "servers": [], "server": None}
     order = [only] if only else C.capability_servers(cat, cid)
     for sid in order:
-        r = evaluate_server(cat, sid, env, st)
+        r = evaluate_server(cat, sid, env, st, cache)
         out["servers"].append(r)
         if r["status"] == "READY":
             out["server"] = sid
@@ -405,6 +406,7 @@ class Ctx:
         self.cat = C.load(env=self.env)
         self.st = State(self.env)
         self.cfg_path = ocfg.config_path(getattr(args, "config", None), self.env)
+        self.probe_cache: dict = {}        # one process, one env: probes run once
 
     def cfg(self) -> dict:
         return ocfg.load(self.cfg_path)
@@ -441,7 +443,7 @@ def cmd_list(ctx: Ctx) -> int:
     owned, others = ownership(ctx.st, cfg)
     rows = []
     for cid in ctx.cat["capability"]:
-        rep = evaluate_capability(ctx.cat, cid, ctx.env, ctx.st)
+        rep = evaluate_capability(ctx.cat, cid, ctx.env, ctx.st, cache=ctx.probe_cache)
         en = _enabled_for(ctx, cid, owned)
         ukeys = sorted({k for sid in C.capability_servers(ctx.cat, cid)
                         for k in user_configured(ctx.cat["server"][sid], others)})
@@ -472,7 +474,7 @@ def cmd_find(ctx: Ctx) -> int:
     hits = C.find(ctx.cat, q)[: ctx.args.limit]
     res = []
     for cid, score in hits:
-        rep = evaluate_capability(ctx.cat, cid, ctx.env, ctx.st)
+        rep = evaluate_capability(ctx.cat, cid, ctx.env, ctx.st, cache=ctx.probe_cache)
         res.append({"capability": cid, "score": score, "status": rep["status"], "title": rep["title"],
                     "server": rep["server"], "remediation": rep["remediation"]})
     out = {"query": q, "matches": res}
