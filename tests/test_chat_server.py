@@ -62,6 +62,16 @@ if not os.path.isfile(os.path.join(AGENTS, "sessions.py")):
 import chat_server  # noqa: E402
 import sessions  # noqa: E402  agents/sessions.py — the real ledger
 
+# Some guards here read Linux /proc (boot_id, /proc/meminfo, start ticks).
+# CI is Linux; on a developer Mac these used to FAIL, burying real
+# regressions in the same files under 7 known-red tests (review 2026-11-16).
+LINUX_PROC = os.path.exists("/proc/self/stat")
+needs_proc = pytest.mark.skipif(not LINUX_PROC,
+                                reason="reads Linux /proc (boot_id/meminfo)")
+# A command that exists and exits 0 everywhere (/bin/true is /usr/bin/true
+# on macOS).
+TRUE_CMD = [sys.executable, "-c", ""]
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -453,7 +463,7 @@ def test_reconcile_moves_a_dead_pid_to_lost(rig):
     never executed by any test.
     """
     # 1. a real child that really exited
-    proc = subprocess.Popen(["/bin/true"], start_new_session=True)
+    proc = subprocess.Popen(TRUE_CMD, start_new_session=True)
     pid = proc.pid
     proc.wait()                      # reap it: no zombie to confuse /proc
     sid = rig.session(kind="agent", state="running", pid=pid)
@@ -1275,7 +1285,7 @@ def test_reap_session_finalizes_from_the_exit_status_directly(rig):
 def test_the_reaper_does_not_overwrite_a_terminal_state_its_owner_wrote(rig):
     """An agent stopped cooperatively writes `stopped` and then exits 0. The
     exit status must not relabel that `done`."""
-    proc = subprocess.Popen(["/bin/true"], start_new_session=True)
+    proc = subprocess.Popen(TRUE_CMD, start_new_session=True)
     sid = rig.session(kind="agent", state="running", pid=proc.pid)
     proc.wait()
     sessions.finalize(sid, "stopped", summary="operator stop, went quietly")
@@ -2213,6 +2223,7 @@ def test_stop_still_works_when_the_inbox_write_fails(rig, monkeypatch):
 # the kill path needs the boot, not just the pid (review [54])
 # ---------------------------------------------------------------------------
 
+@needs_proc
 def test_signalling_refuses_a_record_from_another_boot(rig):
     """meta['pid_start'] is ticks since BOOT, so across a reboot the equality
     compares two different clocks and can match by coincidence — the
@@ -2477,6 +2488,7 @@ def test_a_spawned_job_leaves_the_stacks_unit(tmp_path, monkeypatch, rig,
     assert "systemd-run" not in json.dumps(rec)
 
 
+@needs_proc
 def test_a_scoped_job_carries_its_own_memory_cap(tmp_path, monkeypatch):
     """Leaving the stack's unit leaves its MemoryMax; an UNBOUNDED phone job is
     the OOM incident the stack cap exists to prevent. The probe carries the
@@ -2495,6 +2507,7 @@ def test_a_scoped_job_carries_its_own_memory_cap(tmp_path, monkeypatch):
     assert not [a for a in chat_server._probe_scope() if "Memory" in a]
 
 
+@needs_proc
 def test_a_scope_oom_kills_only_the_offender(tmp_path, monkeypatch):
     """B-chat-2: a user scope's default OOMPolicy=stop SIGTERMs the whole
     scope after the kernel kills the biggest process — job.sh filed the OOM
@@ -2533,6 +2546,7 @@ def _stub_systemctl(bindir, tmp_path, rc):
     return log
 
 
+@needs_proc
 def test_scoped_jobs_share_one_capped_slice(tmp_path, monkeypatch):
     """Review 2026-09-29: every scope got its own 50%-of-RAM cap and no shared
     parent, so two runaway phone jobs (or one plus the stack) could still

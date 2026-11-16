@@ -1279,3 +1279,81 @@ def test_the_theme_stamp_reaches_a_document_that_styles_off_data_theme(store):
     own = b"<!doctype html><html data-theme=\"light\"><body>x</body></html>"
     out = store.wrap_skeleton(own, theme="dark")
     assert out.count(b"data-theme") == 1 and b"data-theme=\"light\"" in out
+
+
+# --- review 2026-11-16: conf reads are cached, URLs built per page ------------
+
+def _count_opens(store, monkeypatch):
+    opened = []
+    real = open
+
+    def counting(path, *a, **kw):
+        if str(path).endswith(".conf"):
+            opened.append(str(path))
+        return real(path, *a, **kw)
+    monkeypatch.setattr(store, "open", counting, raising=False)
+    return opened
+
+
+def _age(path, seconds=60):
+    t = time.time() - seconds
+    os.utime(path, (t, t))
+
+
+def test_the_conf_is_read_once_until_it_changes(store, tmp_path, monkeypatch):
+    """artifact_url() and is_admin() fall back to openbeast.conf whenever the
+    env var is empty: every gallery row and every identified request re-read
+    and regex-scanned the whole 40 KB file. It is now cached behind its stat,
+    and an edit still applies without a restart."""
+    conf = tmp_path / "openbeast.conf"
+    conf.write_text("ARTIFACT_ADMINS=a@example.com\n")
+    _age(conf)
+    monkeypatch.setenv("OPENBEAST_CONF", str(conf))
+    opened = _count_opens(store, monkeypatch)
+    for _ in range(20):
+        assert store.conf_value("ARTIFACT_ADMINS") == "a@example.com"
+        assert store.conf_value("ARTIFACT_PORT") is None
+    assert len(opened) == 1, opened
+    # an edit (new size + mtime) is picked up on the next call
+    conf.write_text("ARTIFACT_ADMINS=bb@example.com\n")
+    _age(conf, 30)
+    assert store.conf_value("ARTIFACT_ADMINS") == "bb@example.com"
+    # so is a removal
+    os.unlink(conf)
+    assert store.conf_value("ARTIFACT_ADMINS") is None
+
+
+def test_a_conf_written_just_now_is_never_served_stale(store, tmp_path,
+                                                      monkeypatch):
+    """Two same-size writes inside one mtime tick look identical to a stat
+    gate. A file modified in the last couple of seconds is re-read every
+    time instead of trusted from the cache."""
+    conf = tmp_path / "openbeast.conf"
+    monkeypatch.setenv("OPENBEAST_CONF", str(conf))
+    conf.write_text("ARTIFACT_ADMINS=a@example.com\n")
+    assert store.conf_value("ARTIFACT_ADMINS") == "a@example.com"
+    st = os.stat(conf)
+    conf.write_text("ARTIFACT_ADMINS=b@example.com\n")            # same size
+    os.utime(conf, ns=(st.st_atime_ns, st.st_mtime_ns))           # same mtime
+    assert store.conf_value("ARTIFACT_ADMINS") == "b@example.com"
+
+
+def test_a_gallery_page_builds_urls_only_for_the_rows_it_returns(
+        store, monkeypatch):
+    ids = [store.publish(f"<p>{i}</p>")["id"] for i in range(30)]
+    calls = []
+    real = store.artifact_url
+
+    def counted(aid, version=None):
+        calls.append(aid)
+        return real(aid, version)
+    monkeypatch.setattr(store, "artifact_url", counted)
+    rows, total = store.list_page(limit=5, admin=True)
+    assert total == 30 and len(rows) == 5
+    assert len(calls) == 5, len(calls)
+    assert all(r["url"] == f"https://beast:8446/a/{r['id']}" for r in rows)
+    assert {r["id"] for r in rows} <= set(ids)
+    # every row of an unlimited page still carries its URL
+    calls.clear()
+    rows = store.list_artifacts(limit=0, admin=True)
+    assert len(rows) == 30 and all(r["url"] for r in rows)

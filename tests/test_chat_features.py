@@ -1138,6 +1138,8 @@ def test_export_scrubs_the_store_title_too(rig, artifact_server):
 # F-C7 rig status strip
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(not os.path.exists("/proc/self/stat"),
+                    reason="the lease start is compared on the Linux /proc tick clock")
 def test_rig_status_reports_lease_llama_and_running(rig, stub, tmp_path,
                                                     monkeypatch):
     llama = stub(body=b'{"status":"ok"}')

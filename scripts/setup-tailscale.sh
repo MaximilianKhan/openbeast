@@ -153,6 +153,20 @@ _raw_inference_target() {
   printf 'http://%s:%s\n' "$(ob_probe_host "$h")" "$p"
 }
 
+_publish_artifact_mount() { # _publish_artifact_mount <up-host>
+  # ARTIFACT_LOGIN_FROM=unix (lib/conf.sh): logins count only on
+  # ARTIFACT_SOCKET, so :8446 proxies to that socket — the same move as
+  # beast-chat's :8445. Otherwise the TCP port, as before.
+  if [[ "${ARTIFACT_LOGIN_FROM:-loopback}" == unix ]]; then
+    ts_admin serve --bg --https=8446 "unix:$ARTIFACT_SOCKET"
+    echo "      beast-artifact published (tailnet-only, :8446 → unix:$ARTIFACT_SOCKET)."
+    [[ -S "$ARTIFACT_SOCKET" ]] || echo "      NOTE: $ARTIFACT_SOCKET does not exist yet — it appears when beast-artifact starts."
+  else
+    ts_admin serve --bg --https=8446 "http://$1:${ARTIFACT_PORT:-3004}"
+    echo "      beast-artifact published (tailnet-only, :8446 → :${ARTIFACT_PORT:-3004})."
+  fi
+}
+
 _publish_slot_mount() { # _publish_slot_mount <upstream-host>
   if _ts_has_set_path; then
     # Reset :8444 first. tailscale serve keeps one handler per path, so
@@ -756,9 +770,8 @@ if [[ $PUBLISH_ARTIFACT -eq 1 ]]; then
     echo "      WARNING: BEAST_ARTIFACT is not true — :8446 will 502 until:"
     echo "               set BEAST_ARTIFACT=true in openbeast.conf, then ./stop.sh && ./start.sh"
   fi
-  ts_admin serve --bg --https=8446 "http://$UP_HOST:${ARTIFACT_PORT:-3004}"
-  echo "      beast-artifact published (tailnet-only, :8446 → :${ARTIFACT_PORT:-3004})."
-  if ! _is_loop "$UP_HOST"; then
+  _publish_artifact_mount "$UP_HOST"
+  if [[ "${ARTIFACT_LOGIN_FROM:-loopback}" != unix ]] && ! _is_loop "$UP_HOST"; then
     # There is no 'public' visibility (private/tailnet only). The server
     # trusts Tailscale-User-Login from loopback OR from a peer whose address
     # is the one the connection was accepted on — tailscaled dialling the

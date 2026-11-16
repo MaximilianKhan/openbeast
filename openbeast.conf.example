@@ -408,6 +408,21 @@
 # See docs/BEAST_ARTIFACT.md "Who administers".
 #ARTIFACT_ADMINS=you@example.com
 
+# WHERE the login header counts for beast-artifact — the same switch as
+# CHAT_LOGIN_FROM (§ beast-chat). `loopback` (default) honours it from any
+# peer on this host, which includes code inside a host-network container
+# (Open WebUI, SearXNG, a backend image): it could name an operator or admin
+# login and read every private page; doctor warns when such containers run.
+# `unix` honours it ONLY on ARTIFACT_SOCKET, a 0600 Unix socket, and
+# `./scripts/setup-tailscale.sh --publish-artifact` then points :8446 at it.
+# Publishing from this box is unchanged (scripts/artifact.sh and the model's
+# tools use the locality token, not a login).
+# After changing it: ./stop.sh && ./start.sh, then re-run --publish-artifact.
+# ~ is expanded and a relative path is anchored to the checkout.
+# Env overrides: $OPENBEAST_ARTIFACT_LOGIN_FROM, $OPENBEAST_ARTIFACT_SOCKET.
+#ARTIFACT_LOGIN_FROM=unix
+#ARTIFACT_SOCKET=/home/you/openbeast/.run/artifact.sock
+
 # Opt-in retention: once a day, delete every UNPINNED page not updated (or
 # unpinned) for this many days. Pinned pages are never touched. 0 = keep all.
 #ARTIFACT_RETAIN_DAYS=0
@@ -584,9 +599,11 @@
 # 127.0.0.1 peer — which includes code inside a host-network container (Open
 # WebUI, SearXNG, a backend image); doctor warns when such containers run.
 # `unix` honours it ONLY on CHAT_SOCKET, a 0600 Unix socket, and
-# `./scripts/setup-tailscale.sh --chat` then points :8445 at that socket.
-# TCP loopback then needs the locality token or a device key like any caller.
-# After changing it: ./stop.sh && ./start.sh, then re-run setup-tailscale.sh --chat.
+# `./scripts/setup-tailscale.sh --publish-chat` then points :8445 at that
+# socket. TCP loopback then needs the locality token or a device key like any
+# caller. ~ is expanded and a relative path is anchored to the checkout.
+# After changing it: ./stop.sh && ./start.sh, then re-run --publish-chat
+# (doctor FAILs while the :8445 mount and the mode disagree).
 # Env overrides: $OPENBEAST_CHAT_LOGIN_FROM, $OPENBEAST_CHAT_SOCKET.
 #CHAT_LOGIN_FROM=unix
 #CHAT_SOCKET=/home/you/openbeast/.run/chat.sock

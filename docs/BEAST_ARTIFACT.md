@@ -622,8 +622,15 @@ sandbox instead — stricter on storage (there is none), identical on network.
   half-parsed artifact.
 - Content types on supporting files come from the **published** extension, and
   `nosniff` stops a browser from guessing otherwise.
-- `Tailscale-User-Login` is forgeable by a process already on the rig. That is
-  inside the existing loopback trust model. Alone it buys only *reads*:
+- `Tailscale-User-Login` is forgeable by a process already on the rig while
+  `ARTIFACT_LOGIN_FROM` is `loopback` (the default) — and "a process on the
+  rig" includes code in every host-network container (Open WebUI Functions
+  run as root in theirs; SearXNG; a third-party inference image), which
+  could name an operator or admin login and read every private page. That
+  is no longer an accepted risk: set `ARTIFACT_LOGIN_FROM=unix` (see
+  *Where the login header counts* below), and doctor warns while it is
+  `loopback` and such containers run. Even in loopback mode, alone it buys
+  only *reads*:
   writes need the locality token, or an `artifact`-scoped device key (see
   *Managing pages from a phone*). A key enrolled with `--login` answers only
   for that login, and only such a bound key carries the login's admin power,
@@ -679,6 +686,57 @@ sandbox instead — stricter on storage (there is none), identical on network.
   (the *widening* write) and `owner` (which changes who can read) go last: a
   mixed body that fails part-way can never leave the artifact shared while
   telling the caller the request failed.
+- **Non-dumpable.** `artifact_server` calls `tools.harden_process()`
+  (`PR_SET_DUMPABLE=0`) at start, as beast-chat does, so a same-uid process
+  (a spawned agent's bash) cannot read the `OPENBEAST_*` configuration it was
+  started with from `/proc/<pid>/environ`. No-op off Linux;
+  `OPENBEAST_KEEP_DUMPABLE=1` opts out to attach a debugger.
+
+### Where the login header counts
+
+`ARTIFACT_LOGIN_FROM` decides where `Tailscale-User-Login` is a credential —
+the same switch beast-chat has as `CHAT_LOGIN_FROM` (docs/BEAST_CHAT.md):
+
+- `loopback` (the default): from a loopback peer, or a peer on the bind
+  address itself (above). That includes every **host-network container**,
+  which could name an operator or admin login and read every private page.
+  `doctor` names the running host-network containers while the server's
+  `login_from` (in the health detail) is `loopback`.
+- `unix`: **only** on `ARTIFACT_SOCKET`, a 0600 Unix socket the server binds
+  beside its TCP port (default `<repo>/.run/artifact.sock`; its directory
+  must be yours, and group/other write is stripped from it at start).
+  `tailscaled` runs as root, so it can connect; nothing else can. TCP
+  callers — the CLI, the model's tools, a container — need the locality
+  token or an `artifact`-scoped device key, which is what they already use
+  to write; header-only reads over TCP are anonymous (404).
+
+The socket is named from the listener that accepted the connection
+(`scope["server"] == (ARTIFACT_SOCKET, None)`, `agents/loginsock.py`), never
+from a missing peer address: uvicorn also reports no peer for a TCP
+connection that reset before it was read, and that request is still served.
+Before review 2026-11-16 a peer-less request counted as "a Unix socket, on
+this box" and was trusted in loopback mode — from off the box too, when
+`BIND_HOST` is a LAN address.
+
+```bash
+# openbeast.conf
+ARTIFACT_LOGIN_FROM=unix
+#ARTIFACT_SOCKET=...     # optional; default <repo>/.run/artifact.sock (~ expanded, relative → checkout)
+
+./stop.sh && ./start.sh                         # artifact_server now also listens on the socket
+./scripts/setup-tailscale.sh --publish-artifact  # :8446 → unix:<repo>/.run/artifact.sock
+tailscale serve status                          # expect: |-- / proxy unix:/…/.run/artifact.sock
+./scripts/doctor.sh                             # beast-artifact's host-network warning is gone
+```
+
+Rolling back: drop the key (or set `loopback`), restart, re-run
+`--publish-artifact`. Every step is local — no network needed, so the
+offline path is the same commands. `doctor` FAILs while the `:8446` mount
+and the mode disagree (a `unix` server behind a TCP mount 404s every phone;
+a `loopback` server behind a stale `unix:` mount 502s every link), when the
+socket is missing, or when the server does not answer health over the
+socket. Artifact URLs do not change: they are built from the `:8446` mount
+*name*, not its target.
 
 ## Writing a page
 

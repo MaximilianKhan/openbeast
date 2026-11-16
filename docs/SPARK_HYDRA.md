@@ -1567,8 +1567,11 @@ published, from the 2026-11-15 review:
   (`OPENBEAST_CHAT_LOGIN_FROM=loopback` trusts any local TCP peer's
   `Tailscale-User-Login`). **beast-chat: fixed on the pair (2026-11-15)** with
   `CHAT_LOGIN_FROM=unix` (E2), so the header counts only on the 0600 socket
-  tailscaled proxies to. Still open: beast-artifact's loopback reads, and the
-  recipe's network mode.
+  tailscaled proxies to. beast-artifact has the same switch since review
+  2026-11-16 (`ARTIFACT_LOGIN_FROM=unix`, docs/BEAST_ARTIFACT.md "Where the
+  login header counts"), but the pair still runs it in `loopback` until the
+  operator sets it, restarts and re-runs `--publish-artifact`. Still open:
+  that switch on the pair, and the recipe's network mode.
 - **`bootstrap.sh` OFFLINE hint** points at `bundle.sh build` "on a connected
   box" without saying it must be an aarch64 Spark (H6).
 - **`setup-client.sh` writes the opencode v1 MCP shape** (`mcp.<name>` +
