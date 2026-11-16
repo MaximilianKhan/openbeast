@@ -1,12 +1,13 @@
 # Validator body for 190_autograd_mlp (build.py prepends ORACLE = '...' and
-# DRIVER = '...'). The hidden programs come from a seeded generator in the
-# oracle; expected values are a forward-only evaluator plus central finite
+# DRIVER = '...'). The hidden programs come from the oracle's generator with
+# a seed drawn fresh on every run (it exists only in this process); expected values are a forward-only evaluator plus central finite
 # differences (h = 1e-5). Only the index and kind of the first failing case
 # is printed, never an expected value.
 import ast
 import json
 import math
 import os
+import secrets
 import shutil
 import sys
 import tempfile
@@ -26,8 +27,12 @@ def fail(msg):
     sys.exit(1)
 
 
-# --- lint (second line of defence: the solution runs in its own -I -S process
-# behind an import blocker; the lint keeps it from reaching around that) -----
+# --- lint (defence in depth). The boundary is the CONFINED driver process:
+# it can read only the interpreter's stdlib and its own work dir (no repo,
+# no .git, no other worktree or clone, no home, no site-packages), write
+# only the work dir, and has no network, on macOS and Linux (vlib confine).
+# A lint cannot close off Python introspection; it only keeps the cheap,
+# known routes out with a readable message. ------------------------------
 ALLOWED_MODULES = {'math', 'cmath', 'itertools', 'functools', 'operator', 'collections',
                    'heapq', 'bisect', 'array', 'copy', 'numbers', 'typing', 'dataclasses',
                    'abc', 'enum', 'fractions', 'decimal', 'statistics', 'random', 'sys',
@@ -35,7 +40,7 @@ ALLOWED_MODULES = {'math', 'cmath', 'itertools', 'functools', 'operator', 'colle
 SYS_ATTRS = {'setrecursionlimit', 'getrecursionlimit', 'float_info', 'maxsize',
              'stderr', 'stdout', 'version_info', 'exit'}
 BANNED_NAMES = {'__import__', 'exec', 'eval', 'compile', 'globals', 'vars', 'locals',
-                'breakpoint', 'open', 'getattr', 'delattr', 'input', 'help',
+                'breakpoint', 'open', 'getattr', 'delattr', 'setattr', 'hasattr', 'input', 'help',
                 '__builtins__', '__loader__', '__spec__', 'memoryview'}
 BANNED_ATTRS = {'attrgetter', 'methodcaller', 'get_type_hints', 'ForwardRef', '_eval_type',
                 '_evaluate', 'evaluate_forward_ref', '_getframe', 'f_back', 'f_globals',
@@ -53,7 +58,9 @@ OK_DUNDERS = {'__init__', '__new__', '__name__', '__qualname__', '__slots__',
 BANNED_ATTRS |= {'modules', 'meta_path', 'path_hooks', 'path_importer_cache', 'import_module',
                  'resolve_name', 'locate', 'find_spec', 'spec_from_file_location',
                  'module_from_spec', 'exec_module', 'load_module', 'singledispatch',
-                 'singledispatchmethod', 'mro'}
+                 'singledispatchmethod', 'mro',
+                 # attribute access by a runtime string, or a way to a raw file object
+                 'update_wrapper', 'wraps', 'buffer', 'raw', 'detach', 'fileno', '_io'}
 
 
 def _module_attrs():
@@ -75,6 +82,7 @@ def _module_attrs():
 
 
 MODULE_ATTRS = _module_attrs()
+DRIVER_MODULES = {'json', 'os', 'importlib.util'}
 
 
 def lint(src):
@@ -151,6 +159,11 @@ def lint(src):
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             if node.name in BANNED_NAMES or node.name in modnames:
                 out.append(f'line {ln}: defines {node.name!r}')
+            # __setattr__/__getattr__/__set_name__/__init_subclass__/... hooks
+            # turn ordinary code into string-keyed attribute access
+            if node.name.startswith('__') and node.name.endswith('__') \
+                    and node.name not in OK_DUNDERS:
+                out.append(f'line {ln}: defines dunder method {node.name!r}')
         elif isinstance(node, ast.arg) and (node.arg in modnames or node.arg in BANNED_NAMES):
             out.append(f'line {ln}: parameter shadows {node.arg!r}')
         elif isinstance(node, ast.alias) and node.asname in BANNED_NAMES:
@@ -209,7 +222,7 @@ if problems:
 
 ns = {}
 exec(compile(ORACLE, 'oracle', 'exec'), ns)  # noqa: F821  (prepended by build.py)
-cases = ns['build_cases']()
+cases = ns['build_cases'](secrets.randbits(64))
 prob = ns['mlp_problem']()
 want_losses, want_params = ns['mlp_oracle'](prob)
 req = {'cases': [c for c, _, _, _ in cases], 'mlp': prob}
@@ -221,10 +234,16 @@ work = tempfile.mkdtemp(prefix='a190-')
 try:
     shutil.copyfile(SRC, os.path.join(work, 'autograd.py'))
     script = 'REQ = ' + repr(json.dumps(req)) + '\n' + DRIVER  # noqa: F821
+    # Confined: reads only the stdlib (no site-packages) and `work`, writes
+    # only `work`, no network, no child processes.
+    runtime = vlib.python_runtime(sys.executable, sorted(ALLOWED_MODULES | DRIVER_MODULES))
     r = vlib.run_solution([sys.executable, '-I', '-S', '-'], input=script, cwd=work,
-                          cpu_s=CPU_LIMIT_S, wall_s=4 * CPU_LIMIT_S + 10)
+                          cpu_s=CPU_LIMIT_S, wall_s=4 * CPU_LIMIT_S + 10,
+                          confine=[work], read_only=runtime)
 finally:
     shutil.rmtree(work, ignore_errors=True)
+if r.verdict == 'sandbox':
+    fail(f'validator could not confine the solution ({r.reason}); refusing to run it unconfined')
 if r.verdict in ('cpu', 'wall'):
     fail(f'solution timed out ({CPU_LIMIT_S}s CPU at scale 1 for the whole hidden run)')
 if r.verdict != 'ok':

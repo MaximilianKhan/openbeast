@@ -609,28 +609,49 @@ def wide_case(N=50, D=40, M=3, steps=125):
     return case, {loss: [L]}, g.S, G
 
 
-def build_cases(seed=0x190A6D):
+N_RANDOM_OUT = 174   # accepted programs before the stability/fan/deep/wide tail
+
+
+def _accept(c):
+    try:
+        V, S, G = fd_grads(c)
+    except Reject:
+        return None
+    return (c, V, S, G)
+
+
+def build_cases(seed):
+    """The hidden programs. `seed` is drawn fresh by the validator on every
+    run (it is never written anywhere the solution can read), so a copy of
+    this file cannot rebuild the programs; only the hand-picked probes, the
+    deep chain and the wide case are fixed. The count is always 192."""
     rng = random.Random(seed)
-    cases = []
-    for c in fixed_cases():
-        cases.append(c)
-    while len(cases) < 180:
-        try:
-            cases.append(random_case(rng))
-        except Reject:
-            continue
-    cases += stability_cases(rng)
-    cases += fan_cases(rng)
-    cases.append(deep_case())
     out = []
-    for c in cases:
+    for c in fixed_cases():
+        r = _accept(c)
+        if r is None:
+            raise Reject("fixed probe")
+        out.append(r)
+    while len(out) < N_RANDOM_OUT:
         try:
-            V, S, G = fd_grads(c)
+            r = _accept(random_case(rng))
         except Reject:
-            if c.get("deep") or len(out) < 14:
-                raise
             continue
-        out.append((c, V, S, G))
+        if r is not None:
+            out.append(r)
+    for make, want in ((stability_cases, 10), (fan_cases, 6)):
+        got = 0
+        while got < want:
+            for c in make(rng):
+                if got < want:
+                    r = _accept(c)
+                    if r is not None:
+                        out.append(r)
+                        got += 1
+    r = _accept(deep_case())
+    if r is None:
+        raise Reject("deep")
+    out.append(r)
     out.append(wide_case())
     return out
 
