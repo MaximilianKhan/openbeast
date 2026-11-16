@@ -71,3 +71,23 @@ class TestAuditModelIsBounded:
                                   {"slot": None})
         assert out[1] == "qwen3.8-27b"
 
+
+class TestForwardedBodyStaysUtf8:
+    """json.dumps' default escaped every non-ASCII character, so a CJK body
+    reached upstream 2x larger and an emoji body 3x."""
+
+    @pytest.mark.parametrize("text", ["中文" * 5000, "😀" * 5000,
+                                      "naïve café — ok"])
+    def test_non_ascii_is_forwarded_at_its_own_size(self, edge, text):
+        raw = json.dumps({"model": "m", "messages": [
+            {"role": "user", "content": text}]}, ensure_ascii=False).encode()
+        out = edge._sanitize_body(raw, {"slot": None})[0]
+        assert len(out) <= len(raw) + 16
+        assert json.loads(out)["messages"][0]["content"] == text
+
+    def test_a_lone_surrogate_still_forwards_as_escaped_json(self, edge):
+        raw = b'{"model":"m","messages":[{"role":"user","content":"a\\ud800b"}]}'
+        out = edge._sanitize_body(raw, {"slot": None})[0]
+        assert b"\\ud800" in out
+        assert json.loads(out)["messages"][0]["content"] == "a\ud800b"
+

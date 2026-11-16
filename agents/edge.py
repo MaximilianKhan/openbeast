@@ -829,8 +829,8 @@ def _sanitize_body(raw: bytes, device: dict,
         opts = dict(opts) if isinstance(opts, dict) else {}
         opts["include_usage"] = True
         body["stream_options"] = opts
-    return (json.dumps(body).encode(), _audit_model(body.get("model")),
-            streaming, _generations(body, path))
+    return (_encode_body(body), _audit_model(body.get("model")), streaming,
+            _generations(body, path))
 
 
 # What the audit row records as "model". The field is client-supplied and
@@ -847,6 +847,23 @@ def _audit_model(model) -> str | None:
     if not isinstance(model, str):
         return None
     return model[:_AUDIT_MODEL_CHARS] or None
+
+
+def _encode_body(body: dict) -> bytes:
+    """Re-serialize the sanitized body as UTF-8, the way it arrived.
+
+    json.dumps' default ensure_ascii=True turns every non-ASCII character
+    into a \\uXXXX escape (a 12-byte surrogate pair for an emoji), so a CJK
+    or emoji-heavy prompt reached upstream 2-3x larger than the client sent
+    it — past the gate's own MAX_BODY_BYTES for a near-cap body. A body
+    holding a lone surrogate ("\\ud800" parses fine) cannot be UTF-8
+    encoded; only that body keeps the escaped form, which is still the
+    same JSON value.
+    """
+    try:
+        return json.dumps(body, ensure_ascii=False).encode("utf-8")
+    except UnicodeEncodeError:
+        return json.dumps(body).encode()
 
 
 def _upstream_headers(request: Request, device: dict, request_id: str = "") -> dict:
