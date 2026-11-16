@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(REPO, "evals"))
 sys.path.insert(0, os.path.join(REPO, "agents"))
 import run_eval as R  # noqa: E402
 
-P = json.load(open(os.path.join(HERE, "PROVE.json")))
+P = json.load(open(os.path.join(HERE, "prove.json")))
 quiet = lambda *_: None
 
 

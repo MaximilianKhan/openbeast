@@ -1,7 +1,9 @@
 # Runner for 196_polyphase_resampler. Embedded into the validator by build.py
-# and executed in a separate process: it imports the submission, reads the
-# cases (JSON on stdin), and writes the outputs as raw float64 on a private
-# copy of fd 1. The submission's own prints go to stderr.
+# and executed in a separate process (vlib.run_solution, `python -I -S -`
+# with this source on stdin, prefixed by `CASES = <path>`): it imports the
+# submission, reads the case INPUTS (JSON in the file CASES; no expected
+# values or tone parameters are in this process), and writes the outputs as
+# raw float64 on a private copy of fd 1. The submission's prints go to stderr.
 import array, importlib.util, json, math, os, struct, sys
 
 _out = os.fdopen(os.dup(1), "wb")
@@ -23,7 +25,8 @@ def as_floats(v):
     return v
 
 
-cases = json.loads(sys.stdin.read())
+with open(CASES) as _f:  # noqa: F821 (CASES is prefixed by the validator)
+    cases = json.load(_f)
 
 # Enforce the import rule at run time as well as in the lint: preload every
 # allowed module, then an audit hook refuses any further module load, any

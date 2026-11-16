@@ -1,7 +1,7 @@
 """SLOW (196): the textbook block diagram run literally -- zero-stuff by 160,
 convolve with the full 10240-tap prototype at 7.056 MHz (zeros included),
 keep every 147th sample. Same filter and alignment as the reference, so it is
-correct, but ~160x the work of a polyphase loop: it must hit the 10 s budget."""
+correct, but ~160x the work of a polyphase loop: it must hit the 8 s CPU budget."""
 import math
 
 L, M = 160, 147

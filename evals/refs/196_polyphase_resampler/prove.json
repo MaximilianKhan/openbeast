@@ -1,0 +1,85 @@
+{
+  "task": "196_polyphase_resampler",
+  "note": "Prover arms, read by prove.py (units) and tests/prove_task.py (expect, slow_expect, timed). Paths are relative to this directory; each regex must match the validator's last output line. Case order is fixed by seed 0x196A11: 0-8 noise length cases (N = 0,1,2,3,146,147,148,293,294), 9-18 tones (9 = DC, 10 = 997 Hz, 11 = 19950 Hz, 12 = 20 kHz, then 6 seeded), 19-21 multi-tone length cases checked sample by sample, 22-23 locality pair (23 = 22 with x[a:b] replaced), 24-35 one-shot/stream pairs (24/25 multi-tone, random chunks over 20000 samples; 26/27 chunks of 1; 28/29 441 samples; 30/31 noise; 32/33 empty; 34/35 a tone, random chunks, FFT-checked), 36 = 2 s speed case (8 fresh tone segments of 11025 samples; every output >= 2 ms from a segment edge is checked).",
+  "dest": "/tmp/eval_resamp196/resample.py",
+  "timed": true,
+  "expect": {
+    "wrong_kaiser60.py": "^case 11 failed \\(stopband\\)",
+    "wrong_linear.py": "^case 10 failed \\(stopband\\)",
+    "wrong_delay.py": "^case 10 failed \\(latency\\)",
+    "wrong_gain.py": "^case 9 failed \\(gain\\)",
+    "wrong_floorlen.py": "^case 1 failed \\(length\\)",
+    "wrong_eager.py": "^case 25 failed \\(stream\\)",
+    "wrong_lazy.py": "^case 25 failed \\(lookahead\\)",
+    "wrong_perftail.py": "^case 36 failed \\(accuracy\\)",
+    "wrong_lintbypass.py": "^case 0 failed \\(crash",
+    "wrong_zerostream.py": "^case 19 failed \\(accuracy\\)",
+    "wrong_streamzero.py": "^case 25 failed \\(stream\\)",
+    "wrong_pastwide.py": "^case 23 failed \\(locality\\)"
+  },
+  "slow_expect": "^solution timed out",
+  "units": {
+    "196_polyphase_resampler": {
+      "ref": "ref.py",
+      "wrong": [
+        [
+          "wrong_kaiser60.py",
+          "^case 11 failed \\(stopband\\)"
+        ],
+        [
+          "wrong_linear.py",
+          "^case 10 failed \\(stopband\\)"
+        ],
+        [
+          "wrong_delay.py",
+          "^case 10 failed \\(latency\\)"
+        ],
+        [
+          "wrong_gain.py",
+          "^case 9 failed \\(gain\\)"
+        ],
+        [
+          "wrong_floorlen.py",
+          "^case 1 failed \\(length\\)"
+        ],
+        [
+          "wrong_eager.py",
+          "^case 25 failed \\(stream\\)"
+        ],
+        [
+          "wrong_lazy.py",
+          "^case 25 failed \\(lookahead\\)"
+        ],
+        [
+          "wrong_perftail.py",
+          "^case 36 failed \\(accuracy\\)"
+        ],
+        [
+          "wrong_lintbypass.py",
+          "^case 0 failed \\(crash"
+        ],
+        [
+          "wrong_zerostream.py",
+          "^case 19 failed \\(accuracy\\)"
+        ],
+        [
+          "wrong_streamzero.py",
+          "^case 25 failed \\(stream\\)"
+        ],
+        [
+          "wrong_pastwide.py",
+          "^case 23 failed \\(locality\\)"
+        ]
+      ],
+      "empty": "^no submission at ",
+      "leak": [
+        "leak.py",
+        "^case 2 failed \\(length\\)"
+      ],
+      "slow": [
+        "slow_naive.py",
+        "^solution timed out"
+      ]
+    }
+  }
+}

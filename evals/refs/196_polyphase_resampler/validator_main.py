@@ -1,14 +1,24 @@
 # Validator body for 196_polyphase_resampler (build.py prepends RUNNER = ...).
 # Every case is generated here from a fixed seed; nothing is written to the
 # fixture dir. A failure reports only the case index and the failure kind.
-import ast, cmath, json, math, os, random, struct, subprocess, sys
+#
+# Isolation: the submission is imported only by RUNNER, a separate process
+# started through vlib.run_solution (source on stdin, never `-c`), with a CPU
+# budget over its whole process tree. RUNNER gets the case INPUTS only (a
+# file in this validator's private cwd); the tone parameters, the expected
+# signals and every check stay in this process. So the submission can fake
+# nothing but its own outputs, and every output that carries a signal is
+# checked against the analytic answer.
+import ast, cmath, json, math, os, random, struct, sys, tempfile
+import vlib
 
 SUB = "/tmp/eval_resamp196/resample.py"
-SOL_TIMEOUT_S = 10.0
+CPU_S = 8.0           # CPU budget for all hidden cases at scale 1 (ref ~2-3 s)
 L, M = 160, 147
 WIN = 8192            # interior outputs analysed per tone case
 M0 = 300              # first FFT-window output of a tone case (6.25 ms in)
 EXCL_HZ = 100.0
+WINDOW = 64           # y[m] may depend on x[n] only for |n - 147m/160| <= 64
 ALLOWED = {"math", "cmath", "array", "itertools", "functools", "operator",
            "bisect", "collections", "typing", "dataclasses", "fractions",
            "decimal", "abc", "enum", "numbers", "copy", "heapq"}
@@ -55,11 +65,25 @@ def noise(n):
     return [rng.uniform(-1.0, 1.0) for _ in range(n)]
 
 
-cases = []    # dicts sent to the runner, plus validator-only keys
-for n in (0, 1, 2, 3, 146, 147, 148, 293, 294, 1000,
-          rng.randint(5000, 6000), rng.randint(10000, 12000)):
-    cases.append({"mode": "oneshot", "x": noise(n), "check": "len"})
+def tones(k_lo, k_hi):
+    """A random sum of k passband tones, total amplitude <= 1 (so |x| <= 1)."""
+    k = rng.randint(k_lo, k_hi)
+    raw = [rng.uniform(0.2, 1.0) for _ in range(k)]
+    tot = rng.uniform(0.6, 1.0)
+    return [(rng.uniform(20.0, 20000.0), A * tot / sum(raw),
+             rng.uniform(-math.pi, math.pi)) for A in raw]
 
+
+def synth(tl, n0, n1):
+    """x[n] for n in n0..n1-1 of the tone sum tl (phases referred to n = 0)."""
+    ws = [(2 * math.pi * f / 44100.0, A, ph) for f, A, ph in tl]
+    return [sum(A * math.sin(w * n + ph) for w, A, ph in ws)
+            for n in range(n0, n1)]
+
+
+cases = []    # dicts sent to the runner (inputs only), plus validator-only keys
+for n in (0, 1, 2, 3, 146, 147, 148, 293, 294):
+    cases.append({"mode": "oneshot", "x": noise(n), "check": "len"})
 freqs = [0.0, 997.0, 19950.0, 20000.0] + [rng.uniform(20.0, 20000.0)
                                           for _ in range(6)]
 NT = 9000
@@ -72,7 +96,25 @@ for f in freqs:
     cases.append({"mode": "oneshot", "x": x, "check": "tone",
                   "f": f, "A": A, "ph": ph})
 
-base_x = noise(20000)
+# longer length cases carry band-limited multi-tone content, checked sample
+# by sample, so a solution cannot return the right length of anything
+for n in (1000, rng.randint(5000, 6000), rng.randint(10000, 12000)):
+    tl = tones(3, 8)
+    cases.append({"mode": "oneshot", "x": synth(tl, 0, n), "check": "multi",
+                  "tones": tl})
+
+# locality pair: the same multi-tone signal, then with x[a:b] replaced by
+# other content. Every output whose 64-sample window misses a..b-1, on the
+# past side as well as the future side, must not change.
+NLOC = 6000
+loc_t = tones(4, 8)
+loc_x = synth(loc_t, 0, NLOC)
+la = rng.randint(1800, 2400)
+lb = la + rng.randint(400, 700)
+loc_x2 = loc_x[:la] + synth(tones(3, 6), la, lb) + loc_x[lb:]
+cases.append({"mode": "oneshot", "x": loc_x, "check": "multi", "tones": loc_t})
+cases.append({"mode": "oneshot", "x": loc_x2, "check": "local",
+              "pair": len(cases) - 1, "region": (la, lb)})
 
 
 def chunking(n, sizes):
@@ -84,19 +126,29 @@ def chunking(n, sizes):
     return out
 
 
+SIZES = [0, 1, 2, 3, 7, 63, 64, 65, 147, 160, 500, 1000, 3000]
+# (x, chunks, check spec). Each stream is paired with a one-shot run of the
+# same x; BOTH outputs are held to the content check, and the stream must
+# also equal the one-shot output to 1e-9 and meet the lookahead rule.
+tl_a, tl_b, tl_c = tones(5, 10), tones(3, 8), tones(2, 5)
+st_f, st_A, st_ph = rng.uniform(20.0, 20000.0), rng.uniform(0.1, 1.0), \
+    rng.uniform(-math.pi, math.pi)
+st_w = 2 * math.pi * st_f / 44100.0
 streams = [
-    (base_x, chunking(20000, [0, 1, 2, 3, 7, 63, 64, 65, 147, 160, 500,
-                              1000, 3000])),
-    (noise(3000), [1] * 3000),
-    (noise(441), [0, 441, 0, 0]),
-    (noise(50), [10, 0, 40]),
-    ([], [0]),
+    (synth(tl_a, 0, 20000), chunking(20000, SIZES),
+     {"check": "multi", "tones": tl_a}),
+    (synth(tl_b, 0, 3000), [1] * 3000, {"check": "multi", "tones": tl_b}),
+    (synth(tl_c, 0, 441), [0, 441, 0, 0], {"check": "multi", "tones": tl_c}),
+    (noise(50), [10, 0, 40], {"check": "len"}),
+    ([], [0], {"check": "len"}),
+    ([st_A * math.sin(st_w * n + st_ph) for n in range(NT)],
+     chunking(NT, SIZES), {"check": "tone", "f": st_f, "A": st_A, "ph": st_ph}),
 ]
-for x, ch in streams:
+for x, ch, spec in streams:
     pair = len(cases)
-    cases.append({"mode": "oneshot", "x": x, "check": "len"})
-    cases.append({"mode": "stream", "x": x, "chunks": ch, "check": "stream",
-                  "pair": pair})
+    cases.append(dict({"mode": "oneshot", "x": x}, **spec))
+    cases.append(dict({"mode": "stream", "x": x, "chunks": ch, "pair": pair},
+                      **spec))
 
 # perf: 2 s of audio as 8 back-to-back tone segments of 11025 samples (each
 # yields exactly 12000 outputs). The tones are fresh (no other case holds
@@ -205,18 +257,49 @@ def tone_check(y, f, A, ph, lo, hi, m0):
     return None
 
 
+def multi_check(y, tl, lo, hi):
+    """Every output in lo..hi-1 against the tone sum tl, within the sum of
+    the per-tone sample-accuracy bounds (what superposition gives a linear
+    resampler that meets the single-tone bound)."""
+    ws = [(2 * math.pi * f / 48000.0, A, ph) for f, A, ph in tl]
+    tol = sum(A * (0.0136 + 2 * math.pi * f * 1e-6) for f, A, ph in tl)
+    for m in range(lo, hi):
+        want = sum(A * math.sin(w * m + ph) for w, A, ph in ws)
+        if abs(y[m] - want) > tol:
+            return "accuracy"
+    return None
+
+
+def content(c, y):
+    """The content check named by c (tone / multi / len) on output y."""
+    if c["check"] == "tone":
+        return tone_check(y, c["f"], c["A"], c["ph"], EDGE, len(y) - EDGE, M0)
+    if c["check"] == "multi":
+        return multi_check(y, c["tones"], EDGE, len(y) - EDGE)
+    return None
+
+
 def main():
     lint()
-    payload = json.dumps([{k: c[k] for k in ("mode", "x", "chunks") if k in c}
-                          for c in cases])
+    tmp = tempfile.mkdtemp(prefix="rs196-", dir=os.getcwd())
+    path = os.path.join(tmp, "cases.json")
+    with open(path, "w") as fh:
+        json.dump([{k: c[k] for k in ("mode", "x", "chunks") if k in c}
+                   for c in cases], fh)
     try:
-        p = subprocess.run([sys.executable, "-B", "-I", "-c", RUNNER, SUB],
-                           input=payload.encode(), capture_output=True,
-                           timeout=SOL_TIMEOUT_S, cwd="/tmp/eval_resamp196")
-    except subprocess.TimeoutExpired:
-        die("solution timed out (%.0f s budget for all hidden cases)"
-            % SOL_TIMEOUT_S)
-    data, pos, results = p.stdout, 0, []
+        r = vlib.run_solution([sys.executable, "-I", "-S", "-", SUB],
+                              input="CASES = %r\n" % path + RUNNER,
+                              cpu_s=CPU_S, wall_s=3 * CPU_S + 10,
+                              cwd="/tmp/eval_resamp196", text=False)
+    finally:
+        os.unlink(path)
+        os.rmdir(tmp)
+    if r.verdict in ("cpu", "wall"):
+        die("solution timed out (%.0f s CPU budget for all hidden cases; %s)"
+            % (vlib.t(CPU_S), r.reason))
+    if r.verdict != "ok":
+        die("solution process refused (%s)" % r.verdict)
+    data, pos, results = bytes(r.stdout), 0, []
 
     def take():
         nonlocal pos
@@ -224,6 +307,8 @@ def main():
             return None, None
         tag, n = struct.unpack_from("<cq", data, pos)
         pos += 9
+        if n < 0 or pos + 8 * n > len(data):
+            return None, None
         vals = list(struct.unpack_from("<%dd" % n, data, pos))
         pos += 8 * n
         return tag, vals
@@ -243,24 +328,35 @@ def main():
             die("case %d failed (type)" % i)
         if tag == b"E":
             die("case %d failed (exception)" % i)
+        if tag != b"Y":
+            die("case %d failed (crash: bad runner output)" % i)
         n = len(c["x"])
         if len(y) != out_len(n):
             die("case %d failed (length)" % i)
-        if c["check"] == "tone":
-            kind = tone_check(y, c["f"], c["A"], c["ph"], EDGE,
-                              len(y) - EDGE, M0)
-            if kind:
-                die("case %d failed (%s)" % (i, kind))
-        elif c["check"] == "stream":
+        if c["mode"] == "stream":
+            if counts is None or len(counts) != len(c["chunks"]):
+                die("case %d failed (crash: bad runner output)" % i)
             ref = results[c["pair"]][1]
             if any(abs(p - q) > 1e-9 for p, q in zip(y, ref)):
                 die("case %d failed (stream)" % i)
             tot = 0
             for k, have in zip(c["chunks"], counts):
                 tot += k
-                need = 0 if tot <= 64 else out_len(tot - 64)
+                need = 0 if tot <= WINDOW else out_len(tot - WINDOW)
                 if have < need:
                     die("case %d failed (lookahead)" % i)
+        if c["check"] in ("tone", "multi"):
+            kind = content(c, y)
+            if kind:
+                die("case %d failed (%s)" % (i, kind))
+        elif c["check"] == "local":
+            ref = results[c["pair"]][1]
+            ra, rb = c["region"]
+            for m in range(len(y)):
+                # output m may see x[a..b-1] only if 147m/160 is within 64
+                if (M * m < L * (ra - WINDOW) or M * m > L * (rb - 1 + WINDOW)) \
+                        and abs(y[m] - ref[m]) > 1e-9:
+                    die("case %d failed (locality)" % i)
         elif c["check"] == "perf":
             for s0, f, A, ph in perf_segs:
                 lo = (L * s0 + M - 1) // M + EDGE
