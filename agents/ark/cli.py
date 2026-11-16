@@ -7,7 +7,7 @@
   lock    [--only a,b] [--category C] [--refresh] [--from DIR] [--dry-run]   (online)
   update  [--only a,b] [--category C] [--write]                              (online)
   fetch   --to DIR [--platform P ...] [--only a,b] [--category C] [--profile core]
-          [--kinds file,oci,git,pip,npm,gomod,cargo] [--no-git] [--allow-unverified]
+          [--kinds file,oci,git,pip,npm,gomod,cargo] [--no-git] [--allow-unverified] [--allow-cross-pip]
           [--recheck] [--dry-run]                                            (online)
   verify  DIR [--deep | --quick] [--json] re-hash everything; never dials
   restore NAME --from DIR [--platform P] [--prefix ~/.local/opt] [--bin ~/.local/bin]
@@ -320,6 +320,7 @@ def main(argv=None) -> int:
     p.add_argument("--kinds", action="append")
     p.add_argument("--no-git", action="store_true")
     p.add_argument("--allow-unverified", action="store_true")
+    p.add_argument("--allow-cross-pip", action="store_true")
     p.add_argument("--recheck", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     p = sub.add_parser("verify")
@@ -432,7 +433,8 @@ def main(argv=None) -> int:
             kinds = _csv(a.kinds) or None
             items = F.plan_items(cat, _entries(cat, a), plats, kinds, with_git=not a.no_git)
             print(f"fetch {len(items)} item(s) for {', '.join(plats)} into {os.path.abspath(a.to)}", file=sys.stderr)
-            return F.run(cat, S.Drive(a.to), items, plats, a.allow_unverified, a.recheck, a.dry_run)
+            return F.run(cat, S.Drive(a.to), items, plats, a.allow_unverified, a.recheck, a.dry_run,
+                         a.allow_cross_pip)
     except net.OfflineError as e:
         _err(str(e))
         return 3

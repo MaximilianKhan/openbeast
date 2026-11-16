@@ -75,6 +75,7 @@ class Files:
         self.files: dict = {}
         self.log: list = []
         self.truncate: dict = {}     # path -> bytes to send before dropping (once)
+        self.ctypes: dict = {}       # path -> Content-Type (a PEP 503 page must say text/html)
 
     def handler(self):
         fs = self
@@ -106,6 +107,8 @@ class Files:
                 body = data[start:]
                 self.send_response(206 if m else 200)
                 self.send_header("Content-Length", str(len(body)))
+                if self.path in fs.ctypes:
+                    self.send_header("Content-Type", fs.ctypes[self.path])
                 if m:
                     self.send_header("Content-Range", f"bytes {start}-{len(data) - 1}/{len(data)}")
                 self.end_headers()
@@ -1031,6 +1034,151 @@ verified = "unverified"
     http.files["/tf/tf-1.0-linux-x86_64.tar.gz.sha256.sig"] = V.ed25519_sign(seed, sums)   # no prefix: wrong message
     rc, out = run(["--catalog", str(cat), "fetch", "--to", str(tmp_path / "d2")], capsys)
     assert rc == 4 and "does NOT verify" in out.err
+
+
+# ── package sets ─────────────────────────────────────────────────────────
+
+def demo_wheel() -> tuple:
+    """A real, installable pure wheel: demo_pkg 1.0."""
+    import zipfile
+    name = "demo_pkg-1.0-py3-none-any.whl"
+    files = {"demo_pkg/__init__.py": b"VALUE = 42\n",
+             "demo_pkg-1.0.dist-info/METADATA": b"Metadata-Version: 2.1\nName: demo-pkg\nVersion: 1.0\n",
+             "demo_pkg-1.0.dist-info/WHEEL": b"Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\n"
+                                             b"Tag: py3-none-any\n"}
+    rec = "".join(f"{k},sha256={base64.urlsafe_b64encode(hashlib.sha256(v).digest()).rstrip(b'=').decode()},{len(v)}\n"
+                  for k, v in files.items()) + "demo_pkg-1.0.dist-info/RECORD,,\n"
+    files["demo_pkg-1.0.dist-info/RECORD"] = rec.encode()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for k, v in files.items():
+            z.writestr(zipfile.ZipInfo(k, (2020, 1, 1, 0, 0, 0)), v)
+    return name, buf.getvalue()
+
+
+def pip_catalog(tmp_path, platform="any", python=""):
+    body = ENTRY.format(name="demo", cat="ai", version="1.0") + f'''
+[[artifact]]
+entry = "demo"
+kind = "pip"
+platform = "{platform}"
+requirements = ["demo-pkg=={{version}}"]
+{('python = "' + python + '"') if python else ''}
+verified = "tofu"
+'''
+    return write_catalog(tmp_path, body)
+
+
+def test_pip_set_fetches_from_one_explicit_index_and_restores_offline(http, tmp_path, capsys, monkeypatch):
+    name, whl = demo_wheel()
+    http.files[f"/simple/{name}"] = whl
+    http.files["/simple/demo-pkg/"] = f'<a href="/simple/{name}#sha256={sha(whl)}">{name}</a>'.encode()
+    http.ctypes["/simple/demo-pkg/"] = "text/html"
+    monkeypatch.setenv("ARK_PIP_INDEX_URL", f"{http.base}/simple/")
+    # ambient pip config pointing somewhere else entirely: it must not be read
+    monkeypatch.setenv("PIP_INDEX_URL", "http://127.0.0.1:9/never")
+    monkeypatch.setenv("PIP_EXTRA_INDEX_URL", "http://127.0.0.1:9/never-extra")
+    monkeypatch.setenv("PIP_NO_INDEX", "1")
+    cat = pip_catalog(tmp_path)
+    drive = tmp_path / "d"
+    rc, out = run(["--catalog", str(cat), "fetch", "--to", str(drive), "--kinds", "pip"], capsys)
+    assert rc == 0, out.err
+    it = json.loads((drive / "ark.lock").read_text())["items"]["demo/pip/any"]
+    assert it["source"] == f"{http.base}/simple/" and it["verified"] == "tofu"
+    paths = sorted(os.path.basename(f["path"]) for f in it["files"])
+    assert paths == [name, "requirements.ark.txt"]
+    reqs = (drive / it["primary"] / "requirements.ark.txt").read_text()
+    assert f"demo_pkg==1.0 --hash=sha256:{sha(whl)}" in reqs
+    assert run(["verify", str(drive)], capsys)[0] == 0
+    # offline: a venv from the drive alone, --no-index --require-hashes
+    monkeypatch.setenv("ARK_FORCE_OFFLINE", "1")
+    for k in ("PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "PIP_NO_INDEX"):
+        monkeypatch.delenv(k)
+    rc, out = run(["restore", "demo", "--from", str(drive), "--prefix", str(tmp_path / "opt"),
+                   "--python", sys.executable], capsys)
+    assert rc == 0, out.err
+    vpy = tmp_path / "opt/demo-1.0/venv/bin/python"
+    r = subprocess.run([str(vpy), "-c", "import demo_pkg; print(demo_pkg.VALUE)"], capture_output=True, text=True)
+    assert r.stdout.strip() == "42", r.stderr
+
+
+def test_pip_set_for_another_platform_or_python_is_refused_unless_asked(http, tmp_path, capsys, monkeypatch):
+    other = next(p for p in C.PLATFORMS if p != R.host_platform())
+    drive = tmp_path / "d"
+    rc, out = run(["--catalog", str(pip_catalog(tmp_path, platform=other)), "fetch", "--to", str(drive),
+                   "--kinds", "pip", "--platform", other], capsys)
+    assert rc == 4 and "dependency markers" in out.err and "--allow-cross-pip" in out.err
+    assert not list(drive.glob("pkgs/pip/*/*/*.whl"))
+    rc, out = run(["--catalog", str(pip_catalog(tmp_path, python="3.1")), "fetch", "--to", str(drive),
+                   "--kinds", "pip"], capsys)
+    assert rc == 4 and "the set is for 3.1" in out.err
+    # asked for: fetched, and the lock says it was resolved cross-host
+    name, whl = demo_wheel()
+    http.files[f"/simple/{name}"] = whl
+    http.files["/simple/demo-pkg/"] = f'<a href="/simple/{name}">{name}</a>'.encode()
+    http.ctypes["/simple/demo-pkg/"] = "text/html"
+    monkeypatch.setenv("ARK_PIP_INDEX_URL", f"{http.base}/simple/")
+    rc, out = run(["--catalog", str(pip_catalog(tmp_path, platform=other)), "fetch", "--to", str(drive),
+                   "--kinds", "pip", "--platform", other, "--allow-cross-pip"], capsys)
+    assert rc == 0, out.err
+    it = json.loads((drive / "ark.lock").read_text())["items"][f"demo/pip/{other}"]
+    assert it["verified"] == "tofu+cross-host" and other in it["cross_host"]
+    rc, out = run(["verify", str(drive)], capsys)
+    assert rc == 0 and f"demo/pip/{other}" in out.out                 # named with the tofu items
+
+
+def fake_npm(tmp_path, monkeypatch, plock: dict):
+    """An npm that records its arguments and writes the given package-lock.json."""
+    bindir = tmp_path / "fakenpm"
+    bindir.mkdir(exist_ok=True)
+    (bindir / "plock.json").write_text(json.dumps(plock))
+    (bindir / "npm").write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" > {bindir}/args\n'
+                                f'env > {bindir}/env\ncp {bindir}/plock.json package-lock.json\n')
+    (bindir / "npm").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}:{os.environ['PATH']}")
+    return bindir
+
+
+def npm_catalog(tmp_path):
+    return write_catalog(tmp_path, ENTRY.format(name="lp", cat="dev", version="1.3.0") + '''
+[[artifact]]
+entry = "lp"
+kind = "npm"
+platform = "any"
+packages = ["left-pad@{version}"]
+verified = "tofu"
+''')
+
+
+def test_npm_set_uses_one_registry_and_refuses_unchecked_tarballs(http, tmp_path, capsys, monkeypatch):
+    tgz = b"fake npm tarball"
+    http.files["/npm/left-pad/-/left-pad-1.3.0.tgz"] = tgz
+    integ = "sha512-" + base64.b64encode(hashlib.sha512(tgz).digest()).decode()
+    reg = f"{http.base}/npm/"
+    monkeypatch.setenv("ARK_NPM_REGISTRY", reg)
+    monkeypatch.setenv("NPM_CONFIG_REGISTRY", "http://127.0.0.1:9/evil/")
+    good = {"packages": {"": {}, "node_modules/left-pad": {"version": "1.3.0", "integrity": integ,
+                                                           "resolved": f"{reg}left-pad/-/left-pad-1.3.0.tgz"}}}
+    bindir = fake_npm(tmp_path, monkeypatch, good)
+    cat = npm_catalog(tmp_path)
+    drive = tmp_path / "d"
+    rc, out = run(["--catalog", str(cat), "fetch", "--to", str(drive)], capsys)
+    assert rc == 0, out.err
+    args = (bindir / "args").read_text().split("\n")
+    assert f"--registry={reg}" in args and f"--userconfig={os.devnull}" in args
+    assert "NPM_CONFIG_REGISTRY" not in (bindir / "env").read_text()
+    it = json.loads((drive / "ark.lock").read_text())["items"]["lp/npm/any"]
+    assert it["source"] == reg
+    for bad, why in (({"integrity": ""}, "no integrity"),
+                     ({"resolved": "http://127.0.0.1:9/evil/left-pad-1.3.0.tgz"}, "not the registry"),
+                     ({"integrity": "sha512-" + base64.b64encode(b"x" * 64).decode()}, "does not match")):
+        plock = json.loads(json.dumps(good))
+        plock["packages"]["node_modules/left-pad"].update(bad)
+        fake_npm(tmp_path, monkeypatch, plock)
+        shutil.rmtree(drive)
+        rc, out = run(["--catalog", str(cat), "fetch", "--to", str(drive)], capsys)
+        assert rc == 4 and why in out.err, (why, out.err)
+        assert not list(drive.rglob("*.tgz"))
 
 
 # ── OCI ──────────────────────────────────────────────────────────────────

@@ -285,10 +285,38 @@ def fetch_oci(drive: S.Drive, a: C.Artifact, platforms: List[str], allow_unverif
 
 
 # ── package sets ─────────────────────────────────────────────────────────
+#
+# Package sets carry no upstream hash pins (they are tofu by design), so the
+# one thing that must be fixed is WHERE they resolve from. pip and npm read
+# the fetching box's own config (PIP_INDEX_URL / PIP_EXTRA_INDEX_URL /
+# pip.conf, ~/.npmrc) — an extra index there would quietly supply any
+# same-named, higher-versioned package. Both run isolated from that config
+# against one explicit index, and the lock records which one.
 
-def _run(cmd: List[str], cwd: Optional[str] = None, env=None, timeout: int = 7200) -> str:
+PYPI_INDEX = "https://pypi.org/simple/"
+NPM_REGISTRY = "https://registry.npmjs.org/"
+
+
+def pip_index() -> str:
+    """The index pip sets resolve from: PyPI, or a mirror named on purpose
+    in ARK_PIP_INDEX_URL (never pip's own ambient config)."""
+    return os.environ.get("ARK_PIP_INDEX_URL") or PYPI_INDEX
+
+
+def npm_registry() -> str:
+    r = os.environ.get("ARK_NPM_REGISTRY") or NPM_REGISTRY
+    return r if r.endswith("/") else r + "/"
+
+
+def _clean_env(*prefixes: str) -> dict:
+    return {k: v for k, v in os.environ.items() if not k.upper().startswith(prefixes)}
+
+
+def _run(cmd: List[str], cwd: Optional[str] = None, env=None, timeout: int = 7200,
+         drop: Tuple[str, ...] = ()) -> str:
+    base = _clean_env(*drop) if drop else dict(os.environ)
     r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout,
-                       env=dict(os.environ, **(env or {})))
+                       env=dict(base, **(env or {})))
     if r.returncode != 0:
         raise FetchError(f"{os.path.basename(cmd[0])} failed: {(r.stderr or r.stdout).strip()[-600:]}")
     return r.stdout
@@ -304,20 +332,50 @@ def _all_files(drive: S.Drive, rel_dir: str) -> List[dict]:
     return out
 
 
-def fetch_pip(drive: S.Drive, a: C.Artifact) -> dict:
+def pip_cross_reason(a: C.Artifact) -> str:
+    """Why this box cannot resolve `a`'s closure faithfully, or "".
+
+    `pip download --platform/--python-version` only picks wheel TAGS for the
+    target; environment markers in dependency metadata (sys_platform,
+    platform_machine, python_version) are still evaluated against the
+    interpreter running pip. So a linux-x86_64 set resolved on a Mac or an
+    aarch64 Spark silently drops torch's `platform_system == "Linux" and
+    platform_machine == "x86_64"` nvidia-* wheels, and the offline
+    --require-hashes install then fails on the target. Measured: pytest for
+    win_amd64 from a Mac comes without colorama; for python 3.9 from 3.12,
+    without tomli and exceptiongroup."""
+    from .restore import host_platform  # noqa: PLC0415 — restore imports this module
+    host = host_platform()
+    why = []
+    if a.platform != "any" and a.platform != host:
+        why.append(f"this box is {host}, the set is for {a.platform}")
+    here = "%d.%d" % sys.version_info[:2]
+    if a.python and a.python != here:
+        why.append(f"ark runs on python {here}, the set is for {a.python}")
+    return "; ".join(why)
+
+
+def fetch_pip(drive: S.Drive, a: C.Artifact, allow_cross: bool = False) -> dict:
+    cross = pip_cross_reason(a)
+    if cross and not allow_cross:
+        raise FetchError(f"{a.id}: {cross}. pip evaluates dependency markers against the box it runs on, so "
+                         f"the closure could be incomplete. Fetch this set on a {a.platform} box"
+                         f"{' with python ' + a.python if a.python else ''} (OPENBEAST_PYTHON=… ./ark fetch "
+                         f"--kinds pip --platform host), or pass --allow-cross-pip to accept the risk")
     d = pkg_dir(a)
     out = drive.p(d)
     os.makedirs(out, exist_ok=True)
     reqs = [a.x(r) for r in a.requirements]
     py = sys.executable
-    cmd = [py, "-m", "pip", "download", "--disable-pip-version-check", "--no-input", "--only-binary=:all:",
-           "--dest", out]
+    index = pip_index()
+    cmd = [py, "-m", "pip", "download", "--isolated", "--index-url", index,
+           "--disable-pip-version-check", "--no-input", "--only-binary=:all:", "--dest", out]
     if a.python:
         cmd += ["--python-version", a.python, "--implementation", "cp"]
     for t in a.pip_platforms:
         cmd += ["--platform", t]
-    _run(cmd + reqs)
-    files = _all_files(drive, d)
+    _run(cmd + reqs, env={"PIP_CONFIG_FILE": os.devnull}, drop=("PIP_",))
+    files = [f for f in _all_files(drive, d) if not f["path"].endswith("/requirements.ark.txt")]
     lockf = os.path.join(out, "requirements.ark.txt")
     with open(lockf, "w", encoding="utf-8") as f:
         f.write("# beast-ark: every wheel in this directory, hash-pinned. Install offline with\n"
@@ -327,10 +385,14 @@ def fetch_pip(drive: S.Drive, a: C.Artifact) -> dict:
             if name.endswith((".whl", ".tar.gz", ".zip")):
                 proj, ver = _wheel_name(name)
                 f.write(f"{proj}=={ver} --hash=sha256:{rec['sha256']}\n")
-    files = _all_files(drive, d)
-    return {"entry": a.entry, "kind": "pip", "platform": a.platform, "version": a.owner.version,
-            "requirements": reqs, "python": a.python, "source": "pypi", "verified": "tofu", "files": files,
-            "primary": d}
+    files.append(_rec(drive, f"{d}/requirements.ark.txt"))     # the wheels are hashed once, above
+    rec = {"entry": a.entry, "kind": "pip", "platform": a.platform, "version": a.owner.version,
+           "requirements": reqs, "python": a.python, "source": index, "verified": "tofu", "files": files,
+           "primary": d}
+    if cross:
+        rec["verified"] = "tofu+cross-host"
+        rec["cross_host"] = cross
+    return rec
 
 
 def _wheel_name(fn: str) -> Tuple[str, str]:
@@ -357,7 +419,10 @@ def fetch_npm(drive: S.Drive, a: C.Artifact) -> dict:
             deps[name] = ver
         with open(os.path.join(tmp, "package.json"), "w") as f:
             json.dump({"name": f"ark-{a.entry}", "version": "0.0.0", "private": True, "dependencies": deps}, f)
-        _run([npm, "install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund"], cwd=tmp)
+        reg = npm_registry()
+        _run([npm, "install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund",
+              f"--registry={reg}", f"--userconfig={os.devnull}", f"--globalconfig={os.devnull}"],
+             cwd=tmp, drop=("NPM_CONFIG_",))
         with open(os.path.join(tmp, "package-lock.json")) as f:
             plock = json.load(f)
         shutil.copy2(os.path.join(tmp, "package.json"), os.path.join(out, "package.json"))
@@ -366,22 +431,28 @@ def fetch_npm(drive: S.Drive, a: C.Artifact) -> dict:
         if not path or not meta.get("resolved") or meta.get("link"):
             continue
         url, integ = meta["resolved"], meta.get("integrity", "")
+        if not url.startswith(reg):
+            raise FetchError(f"{a.id}: {path} resolves to {url}, not the registry {reg} — refused")
+        if not integ or "-" not in integ:
+            raise FetchError(f"{a.id}: {path} has no integrity in the lock — refused (nothing to check it against)")
         fn = os.path.basename(url.split("?")[0])
         scope = path.split("node_modules/")[-1].split("/")[0] if "/@" in "/" + path.split("node_modules/")[-1] else ""
         rel = f"{d}/tarballs/{(scope + '__') if scope.startswith('@') else ''}{fn}"
         part = net.download(url, drive.p(rel))
-        if integ:
-            algo, _, b64 = integ.partition("-")
-            h = hashlib.new(algo)
-            with open(part, "rb") as f:
-                for b in iter(lambda: f.read(1 << 20), b""):
-                    h.update(b)
-            if base64.b64encode(h.digest()).decode() != b64:
-                os.remove(part)
-                raise FetchError(f"{a.id}: {fn} does not match the registry's integrity {integ[:24]}… — REFUSED")
+        algo, _, b64 = integ.split()[0].partition("-")
+        if algo not in ("sha512", "sha384", "sha256", "sha1"):
+            os.remove(part)
+            raise FetchError(f"{a.id}: {fn}: integrity algorithm {algo!r} is not one ark checks — refused")
+        h = hashlib.new(algo)
+        with open(part, "rb") as f:
+            for b in iter(lambda: f.read(1 << 20), b""):
+                h.update(b)
+        if base64.b64encode(h.digest()).decode() != b64:
+            os.remove(part)
+            raise FetchError(f"{a.id}: {fn} does not match the registry's integrity {integ[:24]}… — REFUSED")
         os.replace(part, drive.p(rel))
     return {"entry": a.entry, "kind": "npm", "platform": a.platform, "version": a.owner.version,
-            "packages": [a.x(p) for p in a.packages], "source": "registry.npmjs.org",
+            "packages": [a.x(p) for p in a.packages], "source": reg,
             "verified": "npm-integrity", "files": _all_files(drive, d), "primary": d}
 
 
@@ -518,7 +589,8 @@ def item_present(drive: S.Drive, item: Optional[dict], deep: bool = False) -> bo
 
 
 def run(cat: C.Catalog, drive: S.Drive, items: List[Tuple[str, object]], platforms: List[str],
-        allow_unverified: bool = False, recheck: bool = False, dry_run: bool = False) -> int:
+        allow_unverified: bool = False, recheck: bool = False, dry_run: bool = False,
+        allow_cross_pip: bool = False) -> int:
     net.require_online("ark fetch")
     os.makedirs(drive.root, exist_ok=True)
     lock = drive.read_lock()
@@ -548,7 +620,7 @@ def run(cat: C.Catalog, drive: S.Drive, items: List[Tuple[str, object]], platfor
             elif obj.kind == "oci":
                 rec = fetch_oci(drive, obj, lock["platforms"], allow_unverified, prev)
             elif obj.kind == "pip":
-                rec = fetch_pip(drive, obj)
+                rec = fetch_pip(drive, obj, allow_cross_pip)
             elif obj.kind == "npm":
                 rec = fetch_npm(drive, obj)
             elif obj.kind == "gomod":
