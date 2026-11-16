@@ -370,10 +370,17 @@ source's refresh window.
 `docs.sh live <url | Symbol> [--source S] [--save [--accept-terms]]` fetches one page now,
 through the source's adapter.
 
-- **Resolving the argument.** A URL must fall inside a configured source.
-  For a bare symbol, an exact title in the mirror is tried first; failing
-  that, for a DocC source, the URL is guessed:
-  `View.navigationTitle(_:)` → `…/view/navigationtitle(_:)`.
+- **Resolving the argument.** `--source` takes one name or a
+  comma-separated list, as `search` does. A URL must fall inside a
+  configured source (inside one of the named ones, when `--source` is
+  given). For a bare symbol, an exact title in the mirror is tried first
+  (method symbols such as `init(_:)` included); failing that, the URL is
+  guessed for each DocC source in scope:
+  `View.navigationTitle(_:)` → `…/view/navigationtitle(_:)`. The guesses
+  are tried in order and only a **404** moves on to the next, so `UIView`
+  with no `--source` lands on `…/uikit/uiview` after `…/swiftui/uiview`
+  misses; an outage stops at the first. When every guess 404s, the answer
+  lists the URLs it tried.
 - **Offline, or when the fetch fails**, it **does not dial**. It serves the
   mirror copy, and the first line says so:
   `LIVE FETCH UNAVAILABLE (offline: ISLAND MODE (no internet route since …)).
@@ -502,7 +509,10 @@ from `tests/fixtures/beast_docs/`. They pin:
 - **Status**: STALE flags.
 - **Live, offline and island**: live goes through the adapter, including a
   guessed symbol URL and `--save`; three live calls fetch robots.txt once,
-  and a robots outage is not remembered. Under `OFFLINE=true`, and under a
+  and a robots outage is not remembered. A comma-separated `--source`, an
+  unknown one, a URL outside the named source, a UIKit symbol guessed past
+  SwiftUI, every guess 404ing, and an outage that does not walk the
+  guesses. Under `OFFLINE=true`, and under a
   monkeypatched island state, sync refuses and live serves the mirror
   **with zero requests made**. A live miss with no mirror copy says so.
 - **Bundles**: the pack → unpack round trip on an "offline" store, and

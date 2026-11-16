@@ -953,6 +953,47 @@ def test_live_reuses_robots_across_calls_but_not_an_outage(env, monkeypatch):
     assert stub.paths()[0] == "/robots.txt"
 
 
+def _add_uikit(env):
+    stub = env["stub"]
+    with open(env["sources"], "a") as fh:
+        fh.write(f'''
+[[source]]
+name = "uikit"
+title = "Test UIKit"
+adapter = "apple-docc-json"
+hosts = ["{stub.hostport}"]
+roots = ["{stub.base}/documentation/uikit"]
+allow_prefixes = ["/documentation/uikit"]
+delay = 0.0
+license = "synthetic fixture"
+''')
+    doc = _docc("swiftui/navigationstack.json")
+    doc["metadata"]["title"] = "UIView"
+    stub.overrides["/tutorials/data/documentation/uikit/uiview.json"] = json.dumps(doc).encode()
+
+
+def test_live_source_lists_and_guesses_across_docc_sources(env):
+    _add_uikit(env)
+    stub = env["stub"]
+    url = f"{stub.base}/documentation/swiftui/navigationstack"
+    assert "LIVE · fetched" in api.live_text(url, source="swiftui,uikit")      # a list, as search takes
+    assert api.live_text(url, source="uikit").startswith(f"Error: {url} is not inside --source uikit")
+    assert "unknown source(s) nope" in api.live_text(url, source="nope")
+    # a UIKit symbol with no --source: the SwiftUI guess 404s, the UIKit one answers
+    out = api.live_text("UIView")
+    assert out.startswith(f"Source: {stub.base}/documentation/uikit/uiview\nLIVE"), out
+    paths = [p for p in stub.paths() if p.endswith("uiview.json")]
+    assert paths == ["/tutorials/data/documentation/swiftui/uiview.json",
+                     "/tutorials/data/documentation/uikit/uiview.json"]
+    out = api.live_text("NoSuchThing")
+    assert "HTTP 404 for every guessed URL" in out and "/uikit/nosuchthing" in out
+    # an outage does not walk through every guess
+    stub.requests.clear()
+    stub.status["/tutorials/data/documentation/swiftui/zzz.json"] = 503
+    assert "HTTP 503" in api.live_text("zzz")
+    assert not any("uikit" in p for p in stub.paths())
+
+
 def test_live_refuses_urls_outside_every_source(env):
     assert api.live_text("https://example.com/whatever").startswith("Error:")
 
