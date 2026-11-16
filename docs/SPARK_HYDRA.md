@@ -883,11 +883,17 @@ On spark-1:
 
 ```bash
 cd ~/openbeast
-TS_HOSTNAME=spark-1 ./scripts/setup-tailscale.sh --publish-slot --publish-chat --publish-artifact --publish-searxng
+grep -q '^TS_HOSTNAME=' openbeast.conf || echo 'TS_HOSTNAME=spark-1' >> openbeast.conf
+./scripts/setup-tailscale.sh --publish-slot --publish-chat --publish-artifact --publish-searxng
 ./scripts/setup-tailscale.sh --status        # read-only: which surface sits on which port
 ```
 
-`TS_HOSTNAME` defaults to `beast`, so set it on a Spark. The script refuses to
+`TS_HOSTNAME` (conf key, env overrides) names the box on the tailnet. On a Spark it
+has no default: the script refuses to join until it is set, because two Sparks
+both defaulting to `beast` would collide. It applies only to the first join; a
+Spark already on the tailnet keeps its name, and the script prints a note (never
+a rename) when the conf names it differently. Re-running it on a joined Spark is
+therefore safe. The script refuses to
 publish :443 unless the **running** WebUI enforces auth. It refuses :8443 unless
 beast-gate (`EDGE_GATE=true`) or a shared `LLAMA_API_KEY` is in front. The
 overrides `--i-accept-open-webui` and `--i-accept-open-inference` exist; do not

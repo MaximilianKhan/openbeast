@@ -248,6 +248,8 @@ jobs:
         run: bash tests/test_publish_slot.sh
       - name: beast-chat unix-socket login (CHAT_LOGIN_FROM)
         run: bash tests/test_chat_unix_login.sh
+      - name: tailnet machine name (TS_HOSTNAME)
+        run: bash tests/test_tailscale_hostname.sh
 
       # beast-chat / beast-artifact ops: port ownership at start, watchdog
       # restart logs, job-log rotation + retention, doctor's :8446/:8447 and
