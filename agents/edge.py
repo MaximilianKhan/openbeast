@@ -829,8 +829,24 @@ def _sanitize_body(raw: bytes, device: dict,
         opts = dict(opts) if isinstance(opts, dict) else {}
         opts["include_usage"] = True
         body["stream_options"] = opts
-    return (json.dumps(body).encode(), body.get("model"), streaming,
-            _generations(body, path))
+    return (json.dumps(body).encode(), _audit_model(body.get("model")),
+            streaming, _generations(body, path))
+
+
+# What the audit row records as "model". The field is client-supplied and
+# written into EVERY row, refused requests included (the fan-out 400 runs
+# before anything reaches upstream), so an unbounded value let one enrolled
+# device append ~7 MiB of audit per request at no GPU cost — ~880 MiB a
+# minute at the default rate limit, faster than the daily logrotate.
+# Bounded like the claimed user header; a non-string is not a model name.
+# Only the audit copy is cut: upstream still receives the body as sent.
+_AUDIT_MODEL_CHARS = 128
+
+
+def _audit_model(model) -> str | None:
+    if not isinstance(model, str):
+        return None
+    return model[:_AUDIT_MODEL_CHARS] or None
 
 
 def _upstream_headers(request: Request, device: dict, request_id: str = "") -> dict:
