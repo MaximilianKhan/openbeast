@@ -1216,6 +1216,47 @@ def test_serve_files_registry_pip_and_nothing_else(registry, http, tmp_path, cap
         httpd.server_close()
 
 
+def test_serve_never_follows_a_link_and_survives_a_bad_archive(registry, http, tmp_path, capsys):
+    drive = tmp_path / "drive"
+    assert run(["--catalog", str(oci_catalog(tmp_path, registry)), "fetch", "--to", str(drive)], capsys)[0] == 0
+    sub = tmp_path / "x"
+    sub.mkdir()
+    assert run(["--catalog", str(toy_catalog(http, sub)), "fetch", "--to", str(drive)], capsys)[0] == 0
+    lock = json.loads((drive / "ark.lock").read_text())
+    # a lock-listed file swapped for a symlink to a secret outside the drive
+    secret = tmp_path / "secret.txt"
+    secret.write_text("SECRET-OUTSIDE-DRIVE")
+    single = drive / "files/toy/1.0/any/single"
+    single.unlink()
+    single.symlink_to(secret)
+    # a second, broken image archive, and an entry name built to inject markup
+    bad = dict(lock["items"]["app/oci/app"], primary="oci/app/gone.oci.tar")
+    lock["items"]["gone/oci"] = dict(bad, entry="gone")
+    lock["items"]["xss"] = {"entry": "<script>alert(1)</script>", "kind": "file", "platform": "any",
+                            "version": "1", "files": [], "primary": ""}
+    (drive / "oci/app/trunc.oci.tar").write_bytes(os.urandom(100))
+    lock["items"]["trunc/oci"] = dict(bad, entry="trunc", primary="oci/app/trunc.oci.tar")
+    S.Drive(str(drive)).write_lock(lock)
+    httpd = SV.serve(S.Drive(str(drive)), "127.0.0.1", 0)       # starts: the bad archives are skipped
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{httpd.server_address[1]}"
+    try:
+        st, _h, body = _get(base + "/files/toy/1.0/any/single")
+        assert st == 404 and b"SECRET" not in body
+        st, h, body = _get(base + "/files/toy/1.0/any/toy-1.0-linux.tar.gz", {"Range": "bytes=10-5"})
+        assert st == 416 and h["Content-Range"] == f"bytes */{len(toy_toolchain())}"
+        st, _h, body = _get(base + "/files/toy/1.0/any/toy-1.0-linux.tar.gz", {"Range": "bytes=2-3"})
+        assert st == 206 and body == toy_toolchain()[2:4]
+        st, _h, page = _get(base + "/", {"Host": "<b>h</b>"})
+        assert st == 200 and b"<script>" not in page and b"&lt;script&gt;" in page and b"<b>h</b>" not in page
+        assert _get(base + "/v2/toy/app/manifests/1.0")[0] == 200                # the good image still serves
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    err = capsys.readouterr().err
+    assert "not serving oci/app/gone.oci.tar" in err and "not serving oci/app/trunc.oci.tar" in err
+
+
 # ── the shell entry point ────────────────────────────────────────────────
 
 def test_ark_sh_lint_and_usage():
