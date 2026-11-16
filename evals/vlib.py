@@ -56,7 +56,8 @@ itself:
 
   processes()
       The live process table (pid, ppid, pgid, cpu seconds). It reads /proc
-      on Linux and falls back to `ps` elsewhere, so it also works on macOS.
+      on Linux and libproc in-process on macOS (no `ps` fork per sample),
+      with `ps` as the fallback.
 
   lint_python(src, ban_modules=..., ban_calls=...)
       An AST lint that handles the routes a substring or line regex misses:
@@ -135,7 +136,7 @@ def python_cmd(path: str, *args: str) -> list[str]:
     return [sys.executable, "-I", "-S", path, *args]
 
 
-# --- process table (Linux /proc, else ps) ----------------------------------------
+# --- process table (Linux /proc, macOS libproc, else ps) ---------------------------
 
 def _parse_cputime(s: str) -> float:
     """ps `time`: [DD-][HH:]MM:SS[.cc]."""
@@ -193,11 +194,135 @@ def _ps_table() -> dict:
     return out
 
 
+# macOS: libproc, in-process. run_solution samples the table every poll (50 ms),
+# and forking `ps -A` for each sample cost ~25 ms of wall and about a third of
+# a core of CPU for the whole of every timed solution, competing with it and
+# with the other --jobs workers (review 1116). proc_listallpids plus one
+# proc_pidinfo(PROC_PIDTASKALLINFO) per pid is ~15x cheaper. `ps` stays the
+# fallback when libproc cannot be loaded.
+_PROC_PIDTASKALLINFO = 2
+_PROC_PIDT_SHORTBSDINFO = 13   # answers for every uid; TASKALLINFO only for ours
+_SZOMB = 5
+_LIBPROC = None
+
+
+def _libproc():
+    """(libproc handle, ctypes, struct types, ns per mach tick) or False."""
+    global _LIBPROC
+    if _LIBPROC is not None:
+        return _LIBPROC
+    _LIBPROC = False
+    if not _DARWIN:
+        return False
+    try:
+        import ctypes
+        lib = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+        for fn in (lib.proc_listallpids, lib.proc_pidinfo):
+            fn.restype = ctypes.c_int
+        lib.proc_listallpids.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        lib.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64,
+                                     ctypes.c_void_p, ctypes.c_int]
+
+        class BSD(ctypes.Structure):  # struct proc_bsdinfo (sys/proc_info.h)
+            _fields_ = [("flags", ctypes.c_uint32), ("status", ctypes.c_uint32),
+                        ("xstatus", ctypes.c_uint32), ("pid", ctypes.c_uint32),
+                        ("ppid", ctypes.c_uint32), ("uid", ctypes.c_uint32),
+                        ("gid", ctypes.c_uint32), ("ruid", ctypes.c_uint32),
+                        ("rgid", ctypes.c_uint32), ("svuid", ctypes.c_uint32),
+                        ("svgid", ctypes.c_uint32), ("rfu_1", ctypes.c_uint32),
+                        ("comm", ctypes.c_char * 16), ("name", ctypes.c_char * 32),
+                        ("nfiles", ctypes.c_uint32), ("pgid", ctypes.c_uint32),
+                        ("pjobc", ctypes.c_uint32), ("e_tdev", ctypes.c_uint32),
+                        ("e_tpgid", ctypes.c_uint32), ("nice", ctypes.c_int32),
+                        ("start_tvsec", ctypes.c_uint64), ("start_tvusec", ctypes.c_uint64)]
+
+        class TASK(ctypes.Structure):  # struct proc_taskinfo
+            _fields_ = [("virtual_size", ctypes.c_uint64), ("resident_size", ctypes.c_uint64),
+                        ("total_user", ctypes.c_uint64), ("total_system", ctypes.c_uint64),
+                        ("threads_user", ctypes.c_uint64), ("threads_system", ctypes.c_uint64),
+                        ("policy", ctypes.c_int32), ("faults", ctypes.c_int32),
+                        ("pageins", ctypes.c_int32), ("cow_faults", ctypes.c_int32),
+                        ("messages_sent", ctypes.c_int32), ("messages_received", ctypes.c_int32),
+                        ("syscalls_mach", ctypes.c_int32), ("syscalls_unix", ctypes.c_int32),
+                        ("csw", ctypes.c_int32), ("threadnum", ctypes.c_int32),
+                        ("numrunning", ctypes.c_int32), ("priority", ctypes.c_int32)]
+
+        class ALL(ctypes.Structure):  # struct proc_taskallinfo
+            _fields_ = [("pbsd", BSD), ("ptinfo", TASK)]
+
+        class SHORT(ctypes.Structure):  # struct proc_bsdshortinfo
+            _fields_ = [("pid", ctypes.c_uint32), ("ppid", ctypes.c_uint32),
+                        ("pgid", ctypes.c_uint32), ("status", ctypes.c_uint32),
+                        ("comm", ctypes.c_char * 16), ("flags", ctypes.c_uint32),
+                        ("uid", ctypes.c_uint32), ("gid", ctypes.c_uint32),
+                        ("ruid", ctypes.c_uint32), ("rgid", ctypes.c_uint32),
+                        ("svuid", ctypes.c_uint32), ("svgid", ctypes.c_uint32),
+                        ("rfu", ctypes.c_uint32)]
+
+        if (ctypes.sizeof(BSD) != 136 or ctypes.sizeof(TASK) != 96
+                or ctypes.sizeof(SHORT) != 64):
+            return False
+
+        # pti_total_* are mach absolute-time ticks (not ns on Apple Silicon).
+        class TB(ctypes.Structure):
+            _fields_ = [("numer", ctypes.c_uint32), ("denom", ctypes.c_uint32)]
+        tb = TB()
+        system = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+        if system.mach_timebase_info(ctypes.byref(tb)) != 0 or not tb.denom:
+            return False
+        _LIBPROC = (lib, ctypes, SHORT, ALL, tb.numer / tb.denom)
+    except (OSError, AttributeError, ValueError):
+        _LIBPROC = False
+    return _LIBPROC
+
+
+def _libproc_table() -> dict | None:
+    """The process table through libproc (macOS), or None when unavailable.
+    A process of another uid answers SHORTBSDINFO but not TASKALLINFO, so
+    it is listed (ppid, pgid) with cpu 0, as `ps` lists it for a non-root
+    caller."""
+    lp = _libproc()
+    if not lp:
+        return None
+    lib, ctypes, SHORT, ALL, ns_per_tick = lp
+    n = lib.proc_listallpids(None, 0)
+    if n <= 0:
+        return None
+    cap = n + 256
+    buf = (ctypes.c_int * cap)()
+    n = lib.proc_listallpids(buf, ctypes.sizeof(buf))
+    if n <= 0:
+        return None
+    allinfo, short = ALL(), SHORT()
+    sz_all, sz_short = ctypes.sizeof(ALL), ctypes.sizeof(SHORT)
+    out = {}
+    for i in range(min(n, cap)):
+        pid = buf[i]
+        if pid <= 0:
+            continue
+        if lib.proc_pidinfo(pid, _PROC_PIDTASKALLINFO, 0, ctypes.byref(allinfo), sz_all) == sz_all:
+            b, t = allinfo.pbsd, allinfo.ptinfo
+            cpu = (t.total_user + t.total_system) * ns_per_tick / 1e9
+        elif lib.proc_pidinfo(pid, _PROC_PIDT_SHORTBSDINFO, 0, ctypes.byref(short),
+                              sz_short) == sz_short:
+            b, cpu = short, 0.0
+        else:
+            continue  # exited between the list and the query
+        if b.status == _SZOMB:
+            continue
+        out[pid] = (int(b.ppid), int(b.pgid), cpu)
+    return out
+
+
 def processes() -> dict:
     """{pid: (ppid, pgid, cpu_seconds)} of every live, non-zombie process."""
     if _LINUX and os.path.isdir("/proc/self"):
         tab = _proc_table()
         if tab is not None:
+            return tab
+    if _DARWIN:
+        tab = _libproc_table()
+        if tab:
             return tab
     return _ps_table()
 

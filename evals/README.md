@@ -405,7 +405,8 @@ into the validator from source; it is never on an import path or in the cwd.
   ALL descendants. That is exact through a delegated cgroup v2 when the host
   has one. Otherwise it is RLIMIT_CPU per process, plus wait4 rusage, plus a
   pgid/ancestry sampler. That sampler reads `/proc` on Linux, with a child
-  subreaper so that orphans stay in view; elsewhere it reads `ps`. Fork is
+  subreaper so that orphans stay in view; on macOS it reads libproc in-process
+  (`ps` only as a fallback: a fork per 50 ms sample cost a third of a core). Fork is
   refused by default, and on macOS `sandbox-exec` enforces it. With
   `allow_fork=True`, orphans and survivors get `verdict="daemon"`. On macOS
   the confined solution also has **no network**, **no process-info on other
