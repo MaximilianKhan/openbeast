@@ -380,3 +380,34 @@ def test_verify_flags_an_unlocked_file_of_any_kind(tmp_path, capsys, planted):
     capsys.readouterr()
     assert model_fetch.main(["--profile", str(prof), "--verify"]) == model_fetch.EXIT_MISMATCH
     assert f"unlocked file {planted}" in capsys.readouterr().err
+
+
+def test_verify_hashes_in_parallel_with_deterministic_output(tmp_path, monkeypatch):
+    """Review 2026-11-16: --verify hashed a 164 GB tree on one thread (~1.8 GB/s
+    on a GB10) while 4 threads reach ~5.5 GB/s. Parallel hashing must give the
+    same problems, in the same sorted order, as the serial path."""
+    d = tmp_path / "m"
+    (d / "sub").mkdir(parents=True)
+    names = [f"model-{i:05d}.safetensors" for i in range(8)] + ["config.json", "sub/tok.json"]
+    for i, n in enumerate(names):
+        (d / n).write_bytes(bytes([i]) * (1000 + i))
+    entry = model_fetch.local_lock_entry(d)
+    assert set(entry["files"]) == set(names)
+    for n in names:
+        assert entry["files"][n]["sha256"] == hashlib.sha256((d / n).read_bytes()).hexdigest()
+    # Same-size tamper on two files, one missing, one unlocked extra.
+    (d / names[5]).write_bytes(b"\xff" * (1005))
+    (d / "config.json").write_bytes(b"\xee" * (1008))
+    (d / names[2]).unlink()
+    (d / "extra.py").write_text("x")
+    monkeypatch.setenv("MODEL_FETCH_HASH_WORKERS", "1")
+    serial = model_fetch.verify_dir(d, entry)
+    monkeypatch.setenv("MODEL_FETCH_HASH_WORKERS", "4")
+    assert model_fetch.hash_workers() == 4
+    parallel = model_fetch.verify_dir(d, entry)
+    assert parallel == serial
+    assert parallel[:3] == ["config.json: sha256 differs from the lock", f"missing {names[2]}",
+                            f"{names[5]}: sha256 differs from the lock"]
+    assert parallel[3:] == ["unlocked file extra.py (not from the pinned revision)"]
+    monkeypatch.setenv("MODEL_FETCH_HASH_WORKERS", "bogus")
+    assert model_fetch.hash_workers() == 1

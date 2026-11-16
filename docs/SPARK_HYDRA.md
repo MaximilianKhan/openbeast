@@ -434,6 +434,12 @@ Exit codes:
 
 - `--verify` and `--locate` exit **3** when there is no lock. Run them in a
   checkout that has the committed lock.
+
+`--verify` (and recording a local lock) hashes 4 files at once
+(`MODEL_FETCH_HASH_WORKERS`, `1` = serial). On a GB10 one thread hashes about
+1.8 GB/s and four about 5.5 GB/s (measured on spark-2, 2026-11-16), so the
+164 GB tree takes about half a minute instead of about a minute and a half.
+The report is in the lock's order whatever the timing.
 - For a local `SOURCE` with no lock, `--verify --trust-first-use` records a
   lock from the bytes on disk. That is "trust on first use": say so in the
   commit.
