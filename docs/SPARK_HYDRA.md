@@ -652,7 +652,7 @@ matter:
 | `SPARK_IFACE`, `SPARK_IB_HCA` | this node's fabric netdev(s) and RoCE device(s); several rails comma-separated |
 | `SPARK_HEAD_IP` | rank 0's fabric address. **The same on every node** (`check` enforces it) |
 | `SPARK_NODE_IP` | this node's fabric address |
-| `SPARK_SERVE_HOST`, `SPARK_SERVE_PORT` | rank 0's HTTP bind. Keep `127.0.0.1` when the command center is on the head; `SPARK_ALLOW_WILDCARD_BIND=false` refuses `0.0.0.0` |
+| `SPARK_SERVE_HOST`, `SPARK_SERVE_PORT` | rank 0's HTTP bind. Keep `127.0.0.1` when the command center is on the head; `SPARK_ALLOW_WILDCARD_BIND=false` refuses the wildcard in any spelling (`0.0.0.0`, `::`, `0`, `::0`, `[::0]` …). A server with no API key (the container engine, or `SPARK_NO_API_KEY=true`) binds loopback only unless `SPARK_ALLOW_KEYLESS_BIND=true` |
 | `MODELS_DIR`, `HF_CACHE`, `HF_TOKEN_FILE` | where verified weights live |
 | `VLLM_IMAGE`, `VLLM_IMAGE_DIGEST`, `VLLM_IMAGE_ID`, `TENSORFOLD_IMAGE*` | container engines. `*_IMAGE_ID` wins over a digest, which is what makes a `docker load`ed image work offline ([H4](#h4-container-images)) |
 | `VLLM_MASTER_PORT`, `TENSORFOLD_MASTER_PORT` | rendezvous ports; spark-guard guards them (each +1) too. It reads them from this file only, never from the environment or another `--env` file, so move a port here and re-run `sudo spark-guard.sh`. With the guard installed, `spark-node.sh` refuses a master port its rules do not cover |

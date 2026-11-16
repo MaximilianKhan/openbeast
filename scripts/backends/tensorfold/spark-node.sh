@@ -57,8 +57,9 @@
 # here at all (one SPARK_HEAD_IP; spark-cluster.sh check flags it).
 #
 # SECURITY. TensorFold has NO API key and its rendezvous port (29551) is
-# unauthenticated. rank 0's HTTP binds SPARK_SERVE_HOST (a specific address;
-# wildcards refused), and the rendezvous must be firewalled to the peer's
+# unauthenticated. rank 0's HTTP binds SPARK_SERVE_HOST: wildcards (any
+# spelling) are refused, and a keyless server binds loopback only, behind
+# beast-gate, unless SPARK_ALLOW_KEYLESS_BIND=true; the rendezvous must be firewalled to the peer's
 # link address — the listener's bind address is not configurable (verify on
 # hardware with `ss -ltnp | grep 29551`). Put beast-gate or a firewall in
 # front of the HTTP port. Alpha software: TENSORFOLD_REF must be a full
@@ -112,7 +113,7 @@ fi
 sp_load "$ENV_FILE" TENSORFOLD_ENGINE TENSORFOLD_BIN TENSORFOLD_VERSION TENSORFOLD_API_KEY_FILE \
   SPARK_NO_API_KEY TENSORFOLD_IMAGE TENSORFOLD_IMAGE_DIGEST TENSORFOLD_IMAGE_ID TENSORFOLD_REF \
   SPARK_IFACE SPARK_IB_HCA SPARK_HEAD_IP TENSORFOLD_MASTER_PORT SPARK_SERVE_HOST \
-  SPARK_SERVE_PORT SPARK_ALLOW_WILDCARD_BIND MODELS_DIR SPARK_PROFILE
+  SPARK_SERVE_PORT SPARK_ALLOW_WILDCARD_BIND SPARK_ALLOW_KEYLESS_BIND MODELS_DIR SPARK_PROFILE
 ENGINE="${TENSORFOLD_ENGINE:-native}"
 case "$ENGINE" in
   native|container) ;;
@@ -174,7 +175,10 @@ fi
 [[ "$TENSORFOLD_MASTER_PORT" =~ ^[0-9]+$ ]] || sp_err "TENSORFOLD_MASTER_PORT='$TENSORFOLD_MASTER_PORT' is not a port"
 (( TP > 1 )) && sp_check_guarded_port "$TENSORFOLD_MASTER_PORT"
 [[ "$SPARK_SERVE_PORT" =~ ^[0-9]+$ ]] || sp_err "SPARK_SERVE_PORT='$SPARK_SERVE_PORT' is not a port"
-[[ "$RANK" == 0 ]] && sp_check_bind "${SPARK_SERVE_HOST:-}"
+# Keyless: the container engine never takes a key; native only without one.
+_keyless=0
+{ [[ "$ENGINE" == container ]] || sp_is_true "${SPARK_NO_API_KEY:-}"; } && _keyless=1
+[[ "$RANK" == 0 ]] && sp_check_bind "${SPARK_SERVE_HOST:-}" "$_keyless"
 
 sp_profile_locate "$PROFILE" "${MODELS_DIR:-}"
 MOUNTS=() DRAFTER=none

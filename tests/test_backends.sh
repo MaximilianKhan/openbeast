@@ -717,6 +717,7 @@ sed -e "s|^SPARK_SERVE_HOST=.*|SPARK_SERVE_HOST=100.64.1.2|" \
     -e "s|^VLLM_API_KEY_FILE=.*|VLLM_API_KEY_FILE=$_K/key|" \
     -e "s|^MODELS_DIR=.*|MODELS_DIR=$_K/models|" \
     -e "s|^TENSORFOLD_ENGINE=.*|TENSORFOLD_ENGINE=container|" \
+    -e "s|^SPARK_ALLOW_KEYLESS_BIND=.*|SPARK_ALLOW_KEYLESS_BIND=true   # the keyless container serves 100.64.1.2 here|" \
     "$REPO_DIR/scripts/backends/spark.env.example" > "$_K/spark.env"
 # The native engine's settings: a stub binary that reports its release, a key.
 sed -e "s|^TENSORFOLD_ENGINE=.*|TENSORFOLD_ENGINE=native|" \
@@ -931,6 +932,22 @@ _sp "$_VN" SPARK_SERVE_HOST=0.0.0.0 -- --profile "$_P/vtest.env" --rank 0 --env 
   || fail "wildcard bind not refused (rc=$SPRC): $_O"
 _sp "$_VN" SPARK_SERVE_HOST=0.0.0.0 SPARK_ALLOW_WILDCARD_BIND=true -- --profile "$_P/vtest.env" --rank 0 --env "$_K/spark.env" --print
 [[ $SPRC -eq 0 ]] && pass "…unless SPARK_ALLOW_WILDCARD_BIND=true acknowledges it (control)" || fail "ack not honoured: $_O"
+# Every spelling the socket layer reads as "every interface" (review 2026-11-16).
+for _h in 0 ::0 '[::0]' 0:0:0:0:0:0:0:0 '[::]' 0x0 '::ffff:0.0.0.0'; do
+  _sp "$_VN" "SPARK_SERVE_HOST=$_h" -- --profile "$_P/vtest.env" --rank 0 --env "$_K/spark.env" --print
+  [[ $SPRC -eq 1 ]] && _has "$_O" "binds every interface" && pass "refuses the wildcard spelled '$_h'" \
+    || fail "wildcard '$_h' not refused (rc=$SPRC): $_O"
+done
+_sp "$_VN" "SPARK_SERVE_HOST=0.0.0.0 " -- --profile "$_P/vtest.env" --rank 0 --env "$_K/spark.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "contains whitespace" && pass "refuses a bind host with whitespace" || fail "whitespace host (rc=$SPRC): $_O"
+# Keyless servers bind loopback only unless acknowledged.
+_sp "$_VN" SPARK_NO_API_KEY=true SPARK_ALLOW_KEYLESS_BIND=false -- --profile "$_P/vtest.env" --rank 0 --env "$_K/spark.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "is not loopback, and this server has NO API key" && _has "$_O" "127.0.0.1 behind beast-gate" \
+  && pass "vLLM with SPARK_NO_API_KEY=true refuses a tailnet bind (keyless: loopback only)" || fail "keyless vllm tailnet (rc=$SPRC): $_O"
+_sp "$_VN" SPARK_NO_API_KEY=true SPARK_ALLOW_KEYLESS_BIND=false SPARK_SERVE_HOST=127.0.0.1 -- --profile "$_P/vtest.env" --rank 0 --env "$_K/spark.env" --print
+[[ $SPRC -eq 0 ]] && pass "…and serves it on 127.0.0.1 (behind beast-gate)" || fail "keyless vllm loopback (rc=$SPRC): $_O"
+_sp "$_VN" SPARK_NO_API_KEY=true SPARK_ALLOW_KEYLESS_BIND=true -- --profile "$_P/vtest.env" --rank 0 --env "$_K/spark.env" --print
+[[ $SPRC -eq 0 ]] && pass "…or anywhere with SPARK_ALLOW_KEYLESS_BIND=true (control)" || fail "keyless ack (rc=$SPRC): $_O"
 chmod 644 "$_K/key"
 _sp "$_VN" -- --profile "$_P/vtest.env" --rank 0 --env "$_K/spark.env" --print
 [[ $SPRC -eq 1 ]] && _has "$_O" "is mode 644" && pass "refuses a group/world-readable API key file" \
@@ -1002,6 +1019,14 @@ else
   fail "tensorfold rank 0 --print (rc=$SPRC): $_O"
 fi
 [[ ! -s "$_K/docker.log" ]] && pass "tensorfold --print runs nothing" || fail "tensorfold --print called docker"
+# The container engine has no key at all: loopback only unless acknowledged.
+_sp "$_TN" SPARK_ALLOW_KEYLESS_BIND=false -- --profile "$_P/tftest.env" --rank 0 --master 192.168.100.10 --env "$_K/spark.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "is not loopback, and this server has NO API key" \
+  && pass "the keyless container engine refuses a tailnet bind" || fail "keyless container tailnet (rc=$SPRC): $_O"
+_sp "$_TN" SPARK_ALLOW_KEYLESS_BIND=false SPARK_SERVE_HOST=127.0.0.1 -- --profile "$_P/tftest.env" --rank 0 --master 192.168.100.10 --env "$_K/spark.env" --print
+[[ $SPRC -eq 0 ]] && _has "$_O" "--host 127.0.0.1" && pass "…and binds 127.0.0.1 (beast-gate in front)" || fail "keyless container loopback (rc=$SPRC): $_O"
+_sp "$_TN" SPARK_ALLOW_KEYLESS_BIND=false -- --profile "$_P/tftest.env" --rank 0 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+[[ $SPRC -eq 0 ]] && _has "$_O" "--host 100.64.1.2" && pass "native TensorFold with its key file may bind the tailnet address" || fail "native keyed tailnet (rc=$SPRC): $_O"
 _sp "$_TN" -- --profile "$_P/tfd.env" --rank 0 --master 192.168.100.10 --env "$_K/spark.env" --print
 if [[ $SPRC -eq 0 ]] && _has "$_O" "--drafter /models/tfd.drafter" && _has "$_O" "-v $_K/models/tfd.drafter:/models/tfd.drafter:ro"; then
   pass "a profile's pinned DRAFTER is fetched-and-mounted like the model"
