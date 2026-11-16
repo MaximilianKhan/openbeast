@@ -3323,6 +3323,10 @@ def run_eval(
                 result.setdefault("variant_id", task["variant_id"])
                 result.setdefault("language", task["language"])
                 result.setdefault("variant_count", task["variant_count"])
+            # Every row names its language, variant or not: evals/ablation.py
+            # buckets a row without one as python, so the shell unit 179 sat
+            # in the python control contrast (L2 audit, 2026-11-16).
+            result.setdefault("language", unit_lang(task))
             # role/stratum: the manifest's, else the task JSON's own
             # optional fields (a task may declare itself a probe).
             role = task.get("_role") or task.get("role")

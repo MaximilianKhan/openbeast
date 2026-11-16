@@ -379,3 +379,13 @@ def test_turns_per_wall_s_reaches_the_agent_and_the_result(tmp_path):
     run_eval.run_eval(model_name="fake-model", use_cache=False, turns_per_wall_s=15,
                       max_iter_override=7)
     assert set(tracker2.max_iters.values()) == {7}
+
+
+def test_every_result_row_names_its_language(tmp_path):
+    # A non-variant unit carried no `language`, and evals/ablation.py bucketed
+    # it as python (the shell unit 179 in the L2 audit, 2026-11-16).
+    run_eval = _load_run_eval(tmp_path, server_slots=1)
+    tracker = _Tracker(delay=0.0)
+    run_eval.run_agent = tracker.run_agent
+    out = run_eval.run_eval(model_name="fake-model", use_cache=False)
+    assert out["tasks"] and all(r.get("language") for r in out["tasks"])
