@@ -1,5 +1,45 @@
 # Eval suite changelog
 
+## v5.0, runner v2 (2026-11-16) — agent-harness frictions (era roll)
+
+Same suite, manifest and `HARNESS_VERSION`. `agents/runner.py` and
+`agents/tools.py` are hashed into the era, so this change moves it: no row
+measured before runner v2 replays into it. Re-measure the v5 baseline after
+merging; a pre-v2 row and a v2 row are not one experiment.
+
+Why: an audit of GLM-5.3-Flash's 45 failed v5 units (2026-11-16) found 43
+genuine model failures, and harness frictions that cost the model turns in
+many of them:
+
+- **Platform line.** The runner's system prompt now names the tool host's
+  OS and the bash tool's shell (on macOS: BSD userland, `sed -i ''`, no GNU
+  `timeout`). GNU habits failed on the macOS eval host because nothing said
+  it was BSD.
+- **bash, not sh.** The bash tool runs `/bin/bash -c` when /bin/bash exists
+  (else `/bin/sh -c`, as before), and drops an inherited `BASH_ENV`. Process
+  substitution `<(...)` failed under sh. This also ships to Mac/Linux clients.
+- **Turn budget.** The prompt states "you have N tool turns", and a short
+  notice rides with the plan block in the last 3 turns. Most failing units
+  ended on max_iterations at 150-400 s of a 1200-1800 s wall budget, still
+  exploring.
+- **Unchanged update_plan.** Re-sending the current plan gets a nudge (it
+  still costs its turn). One unit spent 60% of its turns re-sending one plan.
+  The plan block and the instructions no longer say "keep it current".
+- **Repeat guard.** The 3rd consecutive identical tool call with an identical
+  result gets "You have seen this exact output N times; act on it". The
+  audit saw the same `cat` 15x and the same bash command 19x.
+- **Timeouts.** A bash timeout always says it timed out and the limit. On
+  macOS, killpg on a group of zombies raised EPERM, so a killed hung
+  pipeline read as "[Errno 1] Operation not permitted".
+- **Thinking toggle (opt-in, off by default).** `OPENBEAST_AGENT_THINKING=on|off`
+  sends `chat_template_kwargs.enable_thinking` true/false on every request;
+  unset sends nothing (requests unchanged). It is the switch for a "thinking
+  on" ablation arm (`OPENBEAST_AGENT_THINKING=on python evals/run_eval.py
+  ...`; run_eval passes the env through). **The cache key does not see this
+  variable**, so run such an arm with `--no-cache`: otherwise it replays
+  thinking-off rows and banks thinking-on rows under the baseline's key.
+  `reasoning_content` is never fed back into the history.
+
 ## v5.0, harness6 (2026-11-16) — review-1116 fixes (era roll)
 
 Same suite and manifest (71 units); the harness and `vlib.py` changed, so the cache

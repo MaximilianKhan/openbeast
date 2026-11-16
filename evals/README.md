@@ -702,7 +702,10 @@ build cache, the fixture cwd, the leftover sweep (`AgentWatch`,
 `_toolchain_problems`), and `evals/vlib.py` is now hashed into the era
 too, because run_eval injects it into every validator. `agents/tools.py`
 (the seal, per-unit diagnostics, the agent's sandbox tag) is era-hashed as
-before. Expect **zig L0 to drop sharply** against v4 (the v4 off-arm passed
+before, with `agents/runner.py`. **Runner v2** (2026-11-16: platform line,
+bash over sh, turn budget, unchanged-plan nudge, repeat guard, timeout
+wording; see CHANGELOG) edited both, so it rolled the era again: rows from
+before it do not replay into it. Expect **zig L0 to drop sharply** against v4 (the v4 off-arm passed
 10-11/30 *with* the recipe in the prompt) and LANG with it: that is the
 intended effect of an unassisted L0, not a regression.
 
