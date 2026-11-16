@@ -584,6 +584,20 @@ if [[ $_WEBUI_UP -eq 1 && -x "$SCRIPT_DIR/configure-webui.sh" ]]; then
     *) ;;
   esac
 fi
+# The DNS-rebinding Host guard (scripts/webui/sitecustomize.py), asked of the
+# RUNNING container: it fails open on purpose, so an image bump that breaks
+# or skips it used to leave a loopback rig with login off — every visitor
+# admin, with bash — open to a rebound page while this report stayed green.
+if [[ $_WEBUI_UP -eq 1 ]]; then
+  case "$(ob_webui_host_guard "http://$HEALTH_HOST:3000")" in
+    ok)   pass "Open WebUI refuses a rebound Host (DNS-rebinding guard live)" ;;
+    open) fail "Open WebUI SERVES a request for an unknown Host — its DNS-rebinding guard is not installed (login is off: a rebound web page gets admin, with bash)" \
+               "docker logs open-webui 2>&1 | grep 'Host allowlist'; if an image bump did it: ./scripts/update.sh --images rolls a failing image back, or pin the previous open-webui digest in docker-compose.yml (git log -p docker-compose.yml) and docker compose up -d" ;;
+    # off: OPENBEAST_WEBUI_HOSTS='*' (login on / opened on purpose) — no
+    # allowlist to check. down: went away between probes; the row above covers it.
+    *) ;;
+  esac
+fi
 
 # beast-chat (opt-in) — the operator console for the rig's own sessions.
 # Only checked when enabled: a row for a service nobody asked for is noise.

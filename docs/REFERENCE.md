@@ -631,7 +631,13 @@ name, `WEBUI_ORIGINS`) — the shared `agents/hostpolicy.py` list, enforced
 inside the container by `scripts/webui/sitecustomize.py` — and a rebound
 page's request is a 400. That holds with `ALLOW_OPEN_WEBUI=true` too: it lets
 the network in, not any page the operator opens. Only login on, or
-`WEBUI_ORIGINS='*'`, turns the `Host` check off. A name the CORS list does
+`WEBUI_ORIGINS='*'`, turns the `Host` check off. The hook fails open on
+purpose (a broken hook must not brick the chat UI on an image bump), so the
+running container is asked instead: `doctor.sh` sends it `Host:
+rebind.invalid` and FAILs unless the answer is 400, the `start.sh` banner
+warns on the same probe, and `update.sh --images` runs it on the new image
+right after the recreate and rolls the open-webui pin back to the previous
+digest if the guard is gone. A name the CORS list does
 not know (an address reached through `BIND_HOST=0.0.0.0` on a Mac, which has
 no `hostname -I`) goes in `WEBUI_ORIGINS`. The tailnet name in the CORS list comes from
 `tailscale status`, else the live `serve` mount, else the last name seen

@@ -578,6 +578,15 @@ _preflight_ports() {
 _webui_line() {
   if curl -s -m 2 -o /dev/null "http://$HEALTH_HOST:3000/health" 2>/dev/null; then
     echo "  Open WebUI:    http://localhost:3000"
+    # Its DNS-rebinding Host guard fails open (scripts/webui/sitecustomize.py),
+    # so ask the running container (lib/net.sh). Loud, not fatal: the chat UI
+    # stays up, and doctor.sh FAILs the same row.
+    if [[ "$(ob_webui_host_guard "http://$HEALTH_HOST:3000")" == "open" ]]; then
+      echo "  WARNING:       Open WebUI SERVES requests for unknown Host names — its DNS-rebinding" >&2
+      echo "                 guard did not load (an image change?). With login off, a web page that" >&2
+      echo "                 rebinds its name to this box gets admin, with bash. ./scripts/doctor.sh" >&2
+      echo "                 has the fix; until then, avoid browsing untrusted sites on this machine." >&2
+    fi
   elif [[ "${1:-0}" -eq 1 ]]; then
     echo "  Open WebUI:    NOT UP — docker compose failed (the warning above has the reason)."
     echo "                 Fix docker, then: ./scripts/healthcheck.sh --restart"
