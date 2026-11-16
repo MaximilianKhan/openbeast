@@ -174,7 +174,7 @@ compares the client's understood contract version against the rig's
 |---|---|---|
 | **llama.cpp** | `git pull --ff-only` in `llama.cpp/`, then a rebuild of `llama-server`; **after `llama-server` has built**, `scripts/llama.cpp.ref` (a tracked file) is rewritten to the commit just pulled, so the pin follows only an engine that compiled — smoke-test, then commit it. The rebuild uses the same backend bootstrap used — `GPU_BACKEND` from `openbeast.conf` (cuda / hip / sycl / cpu, auto-detected flags via `scripts/lib/hardware.sh`; see `docs/HARDWARE_PROFILES.md`) | Skips the rebuild when already at HEAD and built. **Refuses while another job holds the GPU lease** (`scripts/gpu-lease.sh status`): the binary is the one every campaign cell execs and the eval era does not hash the engine, so a mid-campaign rebuild would split paired cells across two builds — wait, or pass `--ignore-lease`. A running server keeps the old binary until restarted. If the repo directory was ever moved/renamed, the stale CMake cache is detected and the build dir wiped automatically |
 | **Open WebUI** | Pull the moving `:main` tag, read its new digest, rewrite the `@sha256:` pin in `docker-compose.yml`, recreate. On a box installed from an offline bundle (`image: sha256:<content id>` lines), the service is found in `docker-compose.yml.pre-bundle` and re-pinned to the new registry digest; an image line it cannot pin is warned about, never reported as updated | Images are **digest-pinned** for supply-chain safety — a plain `compose pull` would just re-fetch the pin, so `--images` is the sanctioned bump. Commit the compose digest change after verifying. Your data lives in the `open-webui-data` volume and survives. A stopped stack is left stopped |
-| **SearXNG** | Same digest-bump for `searxng/searxng:latest` — **in `docker-compose.yml` only** | Our `searxng/settings.yml` override is bind-mounted, so local settings survive image updates. See the manual second bump below |
+| **SearXNG** | Same digest-bump for `searxng/searxng:latest` in `docker-compose.yml`, **mirrored into `scripts/client-searxng.compose.yml`** (the client's local SearXNG) | Our `searxng/settings.yml` override is bind-mounted, so local settings survive image updates. See the client pin section below |
 | **Extension images** (`extensions/*/compose.yaml`, e.g. ntfy) | Each fragment's pinned `<repo>:<tag>` is re-pulled and its `@sha256:` rewritten on the `image:` line — the tag is a deliberate version, so a new version stays a reviewed edit to the fragment. Every fragment on disk is checked, enabled or not; an unpinned or bundle-content-ID line is warned about. Running containers are recreated with the ENABLED fragments merged, as `start.sh` composes them | Commit the fragment's digest change with the core's |
 | **MCP SDK / openai / fastapi / uvicorn / PyJWT** | `pip install --user -U <packages>`, then the **gate**: `agents/mcp_server.py` and `agents/openapi_tools.py` must import cleanly against the new versions or the upgrade is rolled back and no pin is rewritten (a 2026-08-14 mcp 1→2 bump deleted the class the MCP server is built on and took the next boot down). On success the `==` pins in `agents/requirements.txt` are rewritten to what is now installed — major jumps are shouted — and **`agents/requirements.lock` is regenerated** (`pydeps.sh lock`) so the hash-pinned closure moves with the pins. If the lock cannot be regenerated (pypi.org unreachable) it is left intact and reported STALE: bootstrap will then say so and use `requirements.txt`, and CI's `pydeps.sh verify` fails — run `./scripts/pydeps.sh lock` before committing. Commit `requirements.txt` and `requirements.lock` **together** | PEP-668 (Arch/newer Debian) handled automatically with `--break-system-packages` (touches `~/.local` only). A running MCP/tool server keeps the old code until restarted |
 | **huggingface_hub (`hf` CLI)** | same pip upgrade | Not in `requirements.txt` (the CLI moved between majors) but pinned in the lock as an explicit extra |
@@ -240,6 +240,52 @@ lock is stale") and stays red. Two pieces close that:
   pip-install the new versions; `./bootstrap.sh` or `update.sh --python`
   does that, on your schedule. Do not run that mid-campaign: `openai` is the
   eval client.
+
+## Upgrade notes: the 2026-11 dependency sweep (Open WebUI 0.11.0 → 0.13.3)
+
+The pins moved in one reviewed sweep, not through `--images`. What changes
+when a box picks it up (update the checkout, then `./start.sh`):
+
+- **Open WebUI runs its database migrations** (0.11.1, 0.12.1, 0.13.0 and
+  0.13.1 each change the schema) the first time the new image starts.
+  Upstream does not support downgrading past them, so **back up the volume
+  first**; a rollback is the old digest *plus* that backup:
+
+  ```bash
+  docker stop open-webui
+  docker run --rm -v openbeast_open-webui-data:/data:ro -v "$PWD":/backup alpine \
+    tar czf /backup/open-webui-data-$(date +%F).tgz -C /data .
+  ```
+
+- **Why it was urgent.** 37 published Open WebUI advisories affect 0.11.0
+  (10 high: session-token theft via DOCX preview, citation links and the
+  stats message handler; SSRF via DNS rebinding in the Playwright loader;
+  OAuth sign-in as another user; a terminal-proxy policy bypass; and more).
+  All are fixed in 0.13.3. It also clears the "new version available" banner.
+- **The image is Python 3.12 on Debian 13** (was 3.11 / Debian 12).
+  `scripts/webui/sitecustomize.py` (the Host allowlist) loads unchanged —
+  verified: a foreign `Host:` still gets 400, on HTTP and on socket.io.
+- **`configure-webui.sh` works unchanged** against 0.13.3: the `config`
+  table keeps its `(key, value, updated_at)` shape, the `model` table only
+  gained a nullable `version_id`, and the admin `TOOL_SERVER_CONNECTIONS` are
+  not affected by 0.13.0's "Direct Integrations off" change (that applies to
+  connections users save in their *personal* Integrations tab, which
+  OpenBeast does not use). The signed identity JWT still verifies in
+  `agents/router.py`.
+- **Behaviour you may notice:** with native function calling (which
+  `configure-webui.sh` sets) attached files are no longer pasted into the
+  prompt; the model reads them with its Files tool (turn on *Preload files*
+  in a model's Capabilities for the old behaviour). Unless you saved your own
+  values, `RAG_TOP_K` / `RAG_TOP_K_RERANKER` default to 10 (was 3) and
+  `CHUNK_SIZE` to 1024. Chat controls moved into the model menu.
+- **SearXNG 2026.11 needs `general.contact_url`** (Wikimedia's User-Agent
+  policy) or it refuses to load the wikipedia, wikidata and openstreetmap
+  engines. `searxng/settings.yml` now sets it to the project URL; nothing to
+  do unless you want your own contact there.
+- **ntfy 2.28.0 → 2.38.0** (opt-in extension): security fixes (a topic
+  normalization auth bypass on SQLite, subscriptions surviving access
+  revocation, template memory amplification, Go 1.27.4). Its message
+  database migrates (schema 16 → 17); the config keys are the same.
 
 ## Not covered by the script (deliberately)
 
