@@ -172,7 +172,10 @@ for free):
   validator runs as `python -I -S -`; a bash validator runs as
   `sh -c '<read stdin>; eval'`. Your source is in no argv.
 - The cwd is a fresh, empty 0700 dir, removed after the unit. It is not on
-  `sys.path`, and neither is the harness cwd.
+  `sys.path`, and neither is the harness cwd. `setup`, `pre_validate` and
+  `cleanup` get their own fresh cwd too, with `PYTHONSAFEPATH=1`: graded
+  code can find any ancestor's cwd through the ppid chain and plant a
+  module there, so never make a fixture command depend on its cwd.
 - The environment is scrubbed: PATH, HOME, locale, toolchain vars, and
   `OPENBEAST_TIMEOUT_SCALE`. On Linux the validator is non-dumpable.
 - `import vlib` works, injected from source; it is never a file on disk.

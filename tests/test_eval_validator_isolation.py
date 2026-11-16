@@ -228,6 +228,59 @@ def test_validator_cwd_is_private_and_fresh():
     assert ok, output
 
 
+@pytest.mark.parametrize("phase", ["setup", "pre_validate", "cleanup"])
+def test_fixture_commands_ignore_a_plant_in_the_harness_cwd(tmp_path, monkeypatch, phase):
+    # 176, round 2: graded code found the harness cwd through the ppid chain
+    # and wrote copy.py there; the next unit's setup (`python3 - <<EOF`, ''
+    # on sys.path; tarfile imports copy) ran it, printed a forged OK and
+    # never built its fixture.
+    harness_cwd = tmp_path / "harness"
+    harness_cwd.mkdir()
+    (harness_cwd / "copy.py").write_text('print("PLANTED"); raise SystemExit(0)\n')
+    out = tmp_path / "out.txt"
+    monkeypatch.chdir(harness_cwd)
+    cmd = ("python3 - %s <<'EOF'\n"
+           "import os, sys, tarfile\n"
+           "open(sys.argv[1], 'w').write(repr((os.getcwd(), sys.path[0], tarfile.copy.__file__,"
+           " os.environ.get('PYTHONSAFEPATH'))))\n"
+           "EOF\n") % out
+    run = {"setup": lambda: run_eval.run_setup({"setup": cmd}, log=print),
+           "pre_validate": lambda: run_eval.run_pre_validate({"pre_validate": cmd}, log=print),
+           "cleanup": lambda: run_eval.run_cleanup({"cleanup": cmd}, log=print)}[phase]
+    assert run() in (True, None)
+    cwd, path0, copy_file, safe = eval(out.read_text())
+    assert os.path.realpath(cwd) != os.path.realpath(harness_cwd)
+    assert not copy_file.startswith(str(harness_cwd)), copy_file
+    # PYTHONSAFEPATH needs 3.11+ (python3 on PATH may be older): the fresh
+    # private cwd is what keeps the plant out on every version.
+    assert safe == "1"
+    assert path0 == "" or os.path.realpath(path0) != os.path.realpath(harness_cwd)
+    assert not os.path.exists(cwd), "the fixture cwd outlived the command"
+
+
+@pytest.mark.skipif(not DARWIN, reason="sandbox-exec is macOS-only")
+def test_sandbox_allow_write_denies_writes_elsewhere(tmp_path):
+    ok_dir, other = tmp_path / "ok", tmp_path / "other"
+    ok_dir.mkdir()
+    other.mkdir()
+    prefix = vlib._sandbox_prefix(False, [], allow_write=[str(ok_dir)])
+    assert prefix, "sandbox-exec unavailable"
+    src = textwrap.dedent(f'''
+        import os
+        open({str(ok_dir / "a")!r}, "w").write("x")
+        open("/dev/null", "w").write("x")
+        try:
+            open({str(other / "b")!r}, "w").write("x")
+            print("WROTE")
+        except OSError:
+            print("DENIED")
+    ''')
+    r = subprocess.run(prefix + [sys.executable, "-I", "-c", src], capture_output=True, text=True,
+                       timeout=60)
+    assert r.stdout.strip() == "DENIED", (r.stdout, r.stderr)
+    assert (ok_dir / "a").exists() and not (other / "b").exists()
+
+
 # --- scale -------------------------------------------------------------------------
 
 @pytest.mark.parametrize("scale", [1.0, 2.0])

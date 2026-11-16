@@ -296,17 +296,30 @@ class _Cgroup:
 _SANDBOX_OK = None
 
 
-def _sandbox_prefix(allow_fork: bool, deny_read: list[str]) -> list[str]:
-    """sandbox-exec argv prefix (macOS), or [] when not needed or unavailable."""
+def _sb_quote(p: str) -> str:
+    return os.path.realpath(p).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _sandbox_prefix(allow_fork: bool, deny_read: list[str],
+                    allow_write: list[str] | None = None) -> list[str]:
+    """sandbox-exec argv prefix (macOS), or [] when not needed or unavailable.
+
+    allow_write: when given (a list, possibly empty), every file write is
+    denied except under these paths and /dev. Graded code runs as our uid
+    and can otherwise write anywhere we can, e.g. plant a module in the cwd
+    of an ancestor found through libproc (176)."""
     global _SANDBOX_OK
-    if not _DARWIN or (allow_fork and not deny_read):
+    if not _DARWIN or (allow_fork and not deny_read and allow_write is None):
         return []
     rules = ["(version 1)", "(allow default)"]
     if not allow_fork:
         rules.append("(deny process-fork)")
     for p in deny_read:
-        rp = os.path.realpath(p).replace("\\", "\\\\").replace('"', '\\"')
-        rules.append(f'(deny file-read* (subpath "{rp}"))')
+        rules.append(f'(deny file-read* (subpath "{_sb_quote(p)}"))')
+    if allow_write is not None:
+        rules.append("(deny file-write*)")
+        for p in ["/dev"] + list(allow_write):
+            rules.append(f'(allow file-write* (subpath "{_sb_quote(p)}"))')
     if _SANDBOX_OK is None:
         try:
             _SANDBOX_OK = subprocess.run(
