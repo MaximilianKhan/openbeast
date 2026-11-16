@@ -778,12 +778,16 @@ downloads any of them, staged and sha256-verified before it lands.
 
 ## Evals & benchmarking
 
-A reproducible suite of **291 test units** (137 base tasks, 31 with variants
-across 6 languages) spanning 12 domains — software engineering, math, physics,
-ML/LLM internals, distributed systems, security, and more. Every task ships
-its own fixtures and a scripted check (the suite's known gaps, including live
-`fetch`/`web_search` under eval and two defective validators, are listed in
-[evals/README.md](evals/README.md#known-validator-defects-v4)), and the multi-model runner produces a
+The current suite is **v5.0: 71 scored units over 34 base tasks** in all
+12 domains (software engineering, math, physics, ML/LLM internals,
+distributed systems, security, and more) and all six languages, run in
+three language-assistance arms inside a 4-hour budget
+([evals/README.md, v5](evals/README.md#v5--the-current-suite)). Every unit
+is proven without a model, the answer key and the web are sealed from the
+measured agent, and the solution runs confined. The board below is the
+frozen **v4** suite (291 units over 137 tasks; its known gaps are in
+[evals/README.md](evals/README.md#known-validator-defects-v4)); v5 results
+are pending. The multi-model runner produces a
 **capability-ranked** leaderboard (`SCORE = 0.75·problem-solving + 0.25·language-breadth`).
 
 **v4 leaderboard** (RTX 5090 ×1 — methodology in [`docs/RESULTS.md`](docs/RESULTS.md)):

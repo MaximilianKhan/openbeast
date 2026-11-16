@@ -16,12 +16,13 @@ The launch and operations runbook for the pair is
 | [1. Setup](#1-setup) | a clone, which client, which skills |
 | [2. What works with the network off](#2-what-works-with-the-network-off) | tools, refusals, mirrors, docs |
 | [3. Tests: which to run for which change](#3-tests-which-to-run-for-which-change) | file area to test map, GNU-only suites, the right python |
-| [4. The eval-era rule](#4-the-eval-era-rule) | six hashed files, and why touching them matters |
+| [4. The eval-era rule](#4-the-eval-era-rule) | the hashed files, and why touching them matters |
 | [5. Git discipline](#5-git-discipline) | branches, atomic commits, messages |
 | [6. Safety](#6-safety) | secrets, overwrites, live boxes, remote quoting |
 | [7. How Claude works on this repo](#7-how-claude-works-on-this-repo) | the loop, as copy-pasteable recipes |
 | [8. Worked example sessions](#8-worked-example-sessions) | ten prompts, the commands, what "done" looks like |
 | [9. Proof: a real run on spark-1](#9-proof-a-real-run-on-spark-1-2026-11-15) | what happened, and the lessons folded in above |
+| [10. The v5 eval suite, offline](#10-the-v5-eval-suite-offline-running-it-and-authoring-for-it) | running a profile, reading a failure, authoring and proving a task |
 
 ---
 
@@ -248,13 +249,21 @@ Run the narrow suites while iterating, then the full set before committing:
 
 ## 4. The eval-era rule
 
-`evals/cache.py` hashes six files into the **eval era**. Every cached and
+`evals/cache.py` hashes these files into the **eval era**. Every cached and
 reported eval result is keyed by it:
 
 ```
-system-prompt.md   system-prompt-tools.md   opencode.json
-agents/runner.py   agents/tools.py          evals/SUITE_VERSION
+system-prompt.md   agents/runner.py   agents/tools.py
+evals/SUITE_VERSION   evals/HARNESS_VERSION   evals/vlib.py
 ```
+
+`evals/HARNESS_VERSION` is a pin, not code: `harness5 <fingerprint>`, where
+the fingerprint is the AST of run_eval's agent-shaping and judging code
+(`cache.HARNESS_FUNCTIONS` / `HARNESS_CONSTANTS`: the agent's argv, env and
+wall cap, fixture setup, the validator, its bootstrap and private build
+cache, and the leftover sweep). `tests/test_cache.py` fails when the code
+and the pin disagree. `evals/vlib.py` is hashed whole, because run_eval
+injects it into every validator.
 
 `./scripts/eval-era.sh` prints the era, `--files` shows each file's hash, and
 `--check <hash>` exits 1 if it moved.
@@ -263,24 +272,25 @@ agents/runner.py   agents/tools.py          evals/SUITE_VERSION
   files are **not comparable**. A one-character edit to `tools.py` invalidates
   every cached result and splits a campaign mid-way
   (BEAST_CAMPAIGN_PLAN §1). This is why the island guard is in
-  `mcp_server.py`, why `app-control` and `platform-docs` are off the always-on
-  menu (`prompt_index: false`: adding them rewrites `system-prompt-tools.md`),
-  and why fixes to the runner's web tools wait for "the next deliberate era
-  roll".
-- **The rule.** Do not edit any of the six without Max. **`system-prompt.md`
+  `mcp_server.py`, and why fixes to the runner's web tools wait for "the next
+  deliberate era roll".
+- **The rule.** Do not edit any of them without Max. **`system-prompt.md`
   and `system-prompt-tools.md` are never edited without Max, full stop.** If a
   fix needs one of them, stop. Write the change up (the file, the diff, the
-  reason), and put it in the branch's notes or `docs/TODO.md` instead.
+  reason), and put it in the branch's notes or `docs/TODO.md` instead. A
+  change to run_eval's fingerprinted functions needs a new `HARNESS_VERSION`
+  pin, which is the same decision.
 - **Check before committing:**
 
   ```bash
-  git diff --name-only main... | grep -E '^(system-prompt(-tools)?\.md|opencode\.json|agents/(runner|tools)\.py|evals/SUITE_VERSION)$' \
+  git diff --name-only main... | grep -E '^(system-prompt(-tools)?\.md|agents/(runner|tools)\.py|evals/(SUITE_VERSION|HARNESS_VERSION|vlib\.py))$' \
     && echo "ERA FILE TOUCHED — stop and ask Max"
   ```
 
-- **v5 is being built** (`evals/suites/v5-fast.json` exists; the full v5 suite
-  is in progress on parallel branches). `SUITE_VERSION` moves only when Max
-  rolls the suite.
+- **v5.0 is the current suite** (`evals/SUITE_VERSION` = `v5`, harness
+  `harness5`, the manifest `evals/suites/v5.json`). `SUITE_VERSION` and the
+  manifest move only when Max rolls the suite; v5.1 is a backlog of twelve
+  families, not something to add units to ([10](#10-the-v5-eval-suite-offline-running-it-and-authoring-for-it)).
 
 ---
 
@@ -483,32 +493,29 @@ python3 -m pytest tests/test_beast_docs.py tests/test_platform_docs_tool.py -q
 
 > Load the eval-task-author skill. Write evals/tasks/<next id>_<slug>.json
 > (category <C>, difficulty <D>) whose validation discriminates <the wrong
-> answer a model would give>. Write a reference solution in /tmp/ref, run the
-> task's setup + validation against it (must print OK), then write the most
-> plausible WRONG solution and confirm the validation rejects it. Run
-> `bash tests/test_scripts.sh` and `python3 evals/suite_stats.py --check`. Do not
-> edit evals/SUITE_VERSION.
+> answer a model would give>, with "ref_stem" and "dest" declared. Put the
+> reference, two plausible wrong solutions, a leak probe and prove.json in
+> evals/refs/<id>_<slug>/. Prove it three times and at --scale 2.0, run the
+> eval tests and `python3 evals/suite_stats.py --check`. Do not edit
+> evals/SUITE_VERSION or evals/suites/v5.json.
 
 ```bash
-ls evals/tasks | sort -n | tail -3                    # next free id
-write_file evals/tasks/<id>_<slug>.json
-python3 - <<'EOF'   # run setup, drop the reference in, run the validation
-import json, subprocess; t = json.load(open("evals/tasks/<id>_<slug>.json"))
-subprocess.run(t["setup"], shell=True, check=True)
-# … copy /tmp/ref/* into the task's dir …
-v = t["validation"]; cmd = ["python3", "-c", v["script"]] if v["type"] == "python" else ["bash", "-c", v["script"]]
-print(subprocess.run(cmd, capture_output=True, text=True))
-EOF
-# repeat with the WRONG solution: must fail
-bash tests/test_scripts.sh 2>&1 | tail -3
+ls evals/tasks | sort -n | tail -3                       # next free id
+write_file evals/tasks/<id>_<slug>.json                   # ref_stem + dest declared
+write_file evals/refs/<id>_<slug>/<stem>.py               # the reference
+write_file evals/refs/<id>_<slug>/wrong_<bug>.py          # x2 at least, one bug each
+write_file evals/refs/<id>_<slug>/prove.json              # {"expect": {"wrong_<bug>.py": "<regex>"}}
+python3 tests/prove_task.py --unit <id>_<slug>           # run 3 times
+python3 tests/prove_task.py --unit <id>_<slug> --scale 2.0
+python3 -m pytest tests/test_prove_task.py tests/test_eval_validator_isolation.py -q
 python3 evals/suite_stats.py --check
 ```
 
-**Done:** the reference passes and the wrong solution fails (both outputs
-shown). `test_scripts.sh` parses it, and `suite_stats --check` either passes or
-names the doc counts that now need updating, which go in the same change.
-Coordinate the id with the v5 branches: other agents are adding tasks in
-parallel, so re-check `ls evals/tasks` after merging.
+**Done:** `PROVEN` on three runs and at scale 2.0, with every arm shown
+(ref, wrongs with their failure classes, empty, leak, slow if timed). The
+details, and what the prover cannot check for you, are in
+[10.4](#104-authoring-a-v5-task-offline). Coordinate the id with any other
+author: re-check `ls evals/tasks` after merging.
 
 ### 8.5 Update an engine pin offline
 
@@ -708,3 +715,152 @@ The whole set takes about 4 minutes niced, with the pair serving throughout.
 7. **The test map matters.** This suite fails for BSD reasons on the Mac and
    passes on a Spark, so the run had to happen on a Spark to be meaningful
    (§3.2).
+
+---
+
+## 10. The v5 eval suite, offline: running it and authoring for it
+
+This section is for the local model (GLM-5.3-Flash on spark-hydra) running
+and extending the eval suite with the network off. The suite itself is
+described in [`evals/README.md`, v5](../evals/README.md#v5--the-current-suite);
+this is the operator's and author's path through it.
+
+### 10.1 What you need on the box, and how to get it there offline
+
+The **harness host** is where `run_eval.py` runs. Tools and validators
+execute there, not where the model runs, so the harness host needs every
+validator toolchain, while the model can be anywhere `--base-url` reaches.
+
+| Need | Why | Offline source |
+|---|---|---|
+| python >= 3.10 with the test closure | `run_eval.py`, the prover, pytest | the test venv of [3.1](#31-the-right-python), built while online, or a wheelhouse ([SPARK_HYDRA.md H7](SPARK_HYDRA.md#h7-test-and-language-toolchains)) |
+| zig **0.16.0** exactly | the six zig units (163_f, 167_f, 168_f, 36_f, 123_f, 122_e) and the pack's pin; `profile.py` preflight refuses any other version | the release tarball, staged with its sha256 (CI pins the same file) |
+| go, rustc, gcc/g++ (or clang) | the compiled units | distro packages staged as debs, or rustup's offline installer |
+| git | 179 (bisect), and `validator_seal()` reads `git worktree list` | already on every box |
+| `sandbox-exec` (macOS) or Landlock / user namespaces (Linux) | solution confinement; without it a confining validator returns `verdict="sandbox"` and fails the unit, never runs it unconfined | the OS |
+
+On 2026-11-15 the Sparks had gcc/g++ only (no zig, go or rust). A Spark is
+fine as the harness host for python, C and C++ units; the rest of the suite
+needs the toolchains staged first. Check with:
+
+```bash
+zig version; go version; rustc --version; cc --version | head -1
+python3 evals/profile.py --help    # the preflight lists what it checks
+```
+
+### 10.2 Running a profile against the local model
+
+```bash
+# GLM on the pair, thinking off, four streams, inside four hours:
+python3 evals/profile.py --model glm-5.3-flash --budget-h 4 --jobs 4
+# one arm, a few units, no leaderboard (a smoke run):
+python3 evals/run_eval.py --base-url http://127.0.0.1:8000/v1 --tasks 163,190 --no-cache
+```
+
+- A profile runs **L0** (bare) on every unit, measures how fast this server
+  really is, then fits **L1** (packs, zig only) and **L2** (packs +
+  diagnostics + escalation, compiled and shell units) into what is left of
+  the budget, cutting L2 in a fixed order if it must. L0 and L1 are never cut.
+- Web tools are **off** under `OPENBEAST_EVAL=1`, so an offline run measures
+  the same thing as an online one. Do not set `OPENBEAST_EVAL_WEB=record`
+  for a board run.
+- Results land in `evals/results/eval-<slug>-<arm>-<ts>.json`. The board takes
+  only full-suite L0 rows of one era; `scoring.py --rebuild` rescores.
+
+### 10.3 What the harness does to every unit (so you can read a failure)
+
+In order, per unit:
+
+1. **Fixture check and setup.** `setup` runs in a fresh 0700 cwd with
+   `PYTHONSAFEPATH=1`. A `/tmp/eval_*` root owned by another uid, a
+   symlink, or world-writable is refused.
+2. **The agent.** It runs with `OPENBEAST_EVAL=1` (sealed answer key: no
+   reads of `evals/tasks`, `evals/refs`, `evals/suites`, in the kernel on
+   macOS; web tools off), a per-agent tag in its environment, and on macOS
+   a per-agent tag file that its bash sandbox denies.
+3. **The sweep.** When the runner exits (or hits its wall cap), every
+   process the agent started is frozen and killed, including daemons that
+   double-forked into `setsid`, and the sweep then checks that none
+   survived. A unit with survivors is **not validated** and fails with
+   `Not validated: the agent left processes running that could not be killed`.
+   The result row carries `leftovers_killed`.
+4. **Validation.** The script reaches the validator on stdin from an
+   unlinked file; the validator runs in an empty private cwd with a scrubbed
+   environment and a **private build cache** (zig, Go, cargo, XDG; ccache
+   off) that is deleted afterwards. A python validator passes only if it
+   ran to its end: a solution that exits the validator's process early with
+   status 0 fails with `the validator did not run to its end`.
+5. **Cleanup**, and every solution process group the validator recorded is
+   SIGKILLed.
+
+Failures you will meet, and what they mean:
+
+| Output | Meaning |
+|---|---|
+| `solution exited 71` | the macOS sandbox refused to start the solution (fixed for relative argv and env launchers; a new one means the validator runs an image the exec rule does not name) |
+| `verdict="sandbox"` / `no confinement` | the host cannot confine (no Landlock, no user namespaces); the unit cannot be judged here |
+| `Validation timed out (Ns)` | the harness's own validator timeout (30 s x scale), not the validator's limit: an infrastructure result, retried, never banked on the first strike |
+| `Not validated: the agent left processes running ...` | an agent process could not be killed (another uid, D state); look at the listed pids |
+
+### 10.4 Authoring a v5 task offline
+
+Load the `eval-task-author` skill (and `eval-variant-porter` for language
+variants). The gate is the prover, which needs no model and no network:
+
+```bash
+ls evals/tasks | sort -n | tail -3                       # the next free id
+# write evals/tasks/<id>_<slug>.json with "ref_stem" and "dest" declared,
+# and evals/refs/<id>_<slug>/: the ref, >= 2 wrong_<name>.<ext>, leak.<ext>,
+# slow.<ext> if the validator has its own time limit, and prove.json:
+#   {"expect": {"wrong_<name>.<ext>": "<regex for the failure class>"},
+#    "slow_expect": "<regex>", "timed": true|false}
+python3 tests/prove_task.py --unit <id>_<slug>           # every arm, through run_eval's lifecycle
+python3 tests/prove_task.py --unit <id>_<slug> --scale 2.0
+python3 -m pytest tests/test_prove_task.py tests/test_eval_validator_isolation.py -q
+python3 evals/suite_stats.py --check
+```
+
+**Done** is `PROVEN` on three separate runs (determinism) and at
+`--scale 2.0`: the reference passes 3/3 (5/5 when timed) inside the 15 s
+validator budget at scale 1, cold compile included; every wrong solution
+fails with its declared failure class (never a compile or import error);
+an empty submission fails; no oracle-like file is in the fixture; the leak
+probe fails; a slow solution fails by the validator's own limit. Families
+whose solutions are directories, shell scripts run in the fixture, or
+whose wrongs sit in `bad/` keep their own `evals/refs/<dir>/prove.py`, and
+`prove_task.py` delegates to it.
+
+Rules that the prover cannot check, and the verifiers found broken:
+
+- Run the solution with `vlib.run_solution` in a **separate process** from
+  anything that holds answers. Never import it into the validator: it can
+  rebind your checks (U4's verifiers did, on 152 and 153).
+- Hold the oracle and the seed **in memory**; write only inputs to disk.
+- Build compiled solutions with `vlib.private_build_dir` + `vlib.build_env`;
+  do not set a cache dir of your own (the harness gives you a private one).
+- Scale every fixed limit with `vlib.t()`; start no `python -c SRC` child.
+- Zig prompts state the contract only (Zig 0.16, entry point, compile
+  command). API tutoring (`&fr.interface`, `init.io`, `takeDelimiter`) is
+  banned in v5 and the prover rejects it.
+
+A task is not shipped when it is proven: it ships when an **adversarial
+verifier** (a second session that tries to pass every unit without solving
+it, and re-tests the previous round's fixes) finds nothing open. That is
+what kept 12 families out of v5.0 (`evals/README.md`, "v5.1 backlog"). Do
+not add a unit to `evals/suites/v5.json` yourself: changing the manifest
+changes what the board measures, and that is Max's call.
+
+### 10.5 Prove a shipped unit after a harness change
+
+Any change to `evals/run_eval.py`'s fingerprinted functions, to
+`evals/vlib.py`, or to `agents/tools.py` / `runner.py` moves the era
+([4](#4-the-eval-era-rule)). Re-prove the suite before claiming nothing
+broke:
+
+```bash
+python3 tests/prove_task.py --suite v5 --json /tmp/proof.json      # ~1 h on a loaded Mac
+```
+
+Run one family at a time when you parallelise by hand: a family's units
+share one `/tmp/eval_*` dir, and two provers of the same family at once
+corrupt each other (186's and 190's verifiers both hit this).

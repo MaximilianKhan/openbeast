@@ -229,8 +229,9 @@ def test_run_eval_marks_every_child_and_strips_the_flag(monkeypatch):
         def kill(self): pass
 
     def fake_popen(cmd, **kw):
-        captured["env"] = kw["env"]
-        captured["cmd"] = cmd
+        if "--max-iter" in cmd:     # the runner; not the leftover sweep's `ps`
+            captured["env"] = kw["env"]
+            captured["cmd"] = cmd
         return _FakeProc()
 
     monkeypatch.setattr(re_mod.subprocess, "Popen", fake_popen)

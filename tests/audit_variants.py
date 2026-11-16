@@ -1,67 +1,80 @@
 #!/usr/bin/env python3
 """Audit variant tasks. Drops a reference impl into the right path, runs
-the validation script, reports pass/fail.
+the validation script through the HARNESS's own setup/validation/cleanup
+(evals/run_eval.py: same 30 s x scale timeouts, same rlimits), reports
+pass/fail.
 
-Also runs a SPEC-COMPLETENESS LINT that checks the model-facing `task` text
-for essential phrases per language. The lint catches the failure mode the
-v3 sweep surfaced: spec teaches API X, reference impl uses API Y, audit
-passes (because ref impl is correct), models score 0/13 (because they
-follow the spec). The fix is to require the spec to mention the same
-load-bearing tokens the ref impl actually uses."""
-import subprocess, sys, shutil, os, time
+Where the reference comes from: the unit's task JSON declares it —
+`ref_stem` (path under evals/refs/, no extension; the language picks it)
+and `dest` (where the task says the solution lives). LEGACY_TARGETS is the
+v4 hand map, kept only for v4 tasks that declare nothing; a declaration in
+the JSON always wins, and a task that is neither declared nor mapped is
+reported [SKIP]. The full v5 gate (wrong solutions with asserted failure
+classes, leak probe, slow arm, --scale 2.0) is tests/prove_task.py; this is
+the quick all-variants smoke.
+
+Also runs the ZIG TUTORING BAN LINT (v5). v4 REQUIRED zig prompts to carry
+the stdio API recipe (`&fr.interface`, `init.io`, `takeDelimiter`, flush),
+which made a "packs OFF" arm assisted anyway: every zig unit was tutored.
+v5 inverts the rule — a zig prompt states the contract (Zig 0.16, the entry
+point the validator builds, the compile command) and teaches no API. Zig
+guidance belongs only to the treatment arms (--packs, BEAST_ASSIST,
+--escalate). tests/test_v5_suite.py enforces the ban on every v5 unit."""
+import sys, shutil, os, time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 TASKS_DIR = REPO / 'evals' / 'tasks'
 REFS = REPO / 'evals' / 'refs'
-LANG_EXT = {'python': 'py', 'go': 'go', 'c': 'c', 'cpp': 'cpp', 'rust': 'rs', 'zig': 'zig'}
+LANG_EXT = {'python': 'py', 'go': 'go', 'c': 'c', 'cpp': 'cpp', 'rust': 'rs', 'zig': 'zig',
+            'shell': 'sh'}
 
-# Essential phrases the model-facing `task` text MUST mention per language,
-# at least one phrase per group. Adding a phrase here is the way to harden
-# the audit against future spec/ref-impl drift like the Zig 0.16 defect.
-SPEC_REQUIREMENTS = {
-    'zig': [
-        # Group 1: the &fr.interface indirection (or a pointer to SKILL.md)
-        ['&fr.interface', '&fw.interface', 'see SKILL.md', 'eval-variant-porter SKILL'],
-        # Group 2: pass init.io to .reader()/.writer() (or pointer to SKILL)
-        ['init.io', 'see SKILL.md', 'eval-variant-porter SKILL'],
-        # Group 3: warn that flush is required
-        ['flush', 'see SKILL.md', 'eval-variant-porter SKILL'],
-    ],
-    # Python/Go/C/C++/Rust have no required phrases yet — they were not
-    # implicated in the v3 defect. Add groups here as future defects surface.
-}
+sys.path.insert(0, str(REPO / 'evals'))
+sys.path.insert(0, str(REPO / 'agents'))
+import run_eval as _harness  # noqa: E402
+import suite_manifest as _manifest  # noqa: E402
+
+# The harness's validator budget (30 s x timeout_scale). The audit used to
+# allow 120 s, so it could pass a unit the harness times out.
+VALIDATION_TIMEOUT_S = _harness.VALIDATION_TIMEOUT_S
+
+# Phrases a v5 zig prompt must NOT contain (the v4 tutoring recipe).
+SPEC_BANNED = {'zig': list(_manifest.ZIG_TUTORING_BANNED)}
 
 
-def lint_spec_completeness(task_ids):
-    """Lint that each variant's `task` field mentions the load-bearing
-    phrases for its language. Reports gaps but does not fail the audit —
-    flag for human review."""
-    sys.path.insert(0, str(REPO / 'evals'))
-    from run_eval import load_tasks
+def lint_zig_tutoring(task_ids, fail_on=None):
+    """Zig prompts that still carry the banned API tutoring. Returns the
+    findings [(unit id, [phrases])]; prints them. `fail_on` (a set of unit
+    ids, e.g. the v5 manifest's) marks which findings are errors — the
+    dropped v4 zig prompts keep their text for history."""
     findings = []
     for tid in task_ids:
-        for t in load_tasks([tid]):
-            lang = t.get('language', 'python')
-            requirements = SPEC_REQUIREMENTS.get(lang)
-            if not requirements:
+        for t in _harness.load_tasks([tid]):
+            banned = SPEC_BANNED.get(_manifest.norm_lang(t.get('language')))
+            if not banned:
                 continue
-            text = t.get('task', '')
-            missing_groups = []
-            for group in requirements:
-                if not any(phrase in text for phrase in group):
-                    missing_groups.append(group[0])
-            if missing_groups:
-                findings.append((t['id'], lang, missing_groups))
+            hit = [p for p in banned if p in t.get('task', '')]
+            if hit:
+                findings.append((t['id'], hit))
+    errors = [f for f in findings if fail_on is not None and f[0] in fail_on]
     if findings:
-        print("\nSPEC-COMPLETENESS LINT — task text missing load-bearing phrases:")
-        for tid, lang, missing in findings:
-            print(f"  {tid} ({lang}): missing {missing}")
-        print("  (Spec text should mention these or point to skills/eval-variant-porter/SKILL.md)")
+        print("\nZIG TUTORING BAN LINT — zig prompts carrying API tutoring:")
+        for tid, hit in findings:
+            sev = "ERROR" if (tid, hit) in errors else "note "
+            print(f"  {sev} {tid}: {hit}")
+        print("  (v5: state the contract, teach no API — see skills/eval-variant-porter/SKILL.md)")
     else:
-        print("\nSPEC-COMPLETENESS LINT — clean.")
+        print("\nZIG TUTORING BAN LINT — clean.")
+    return findings
 
-TARGETS = {
+
+# Back-compat name for callers of the v4 lint.
+lint_spec_completeness = lint_zig_tutoring
+
+# v4 hand map: task -> (ref stem under evals/refs/, fixture dir). Used only
+# for tasks whose JSON declares no ref_stem/dest. Do not add entries: declare
+# `ref_stem` and `dest` in the task JSON instead.
+LEGACY_TARGETS = {
     '31_is_power_of_two': ('pow2', '/tmp/eval_pow2'),
     '73_count_vowels':    ('vowels', '/tmp/eval_vowels'),
     '74_palindrome':      ('pal', '/tmp/eval_pal'),
@@ -98,8 +111,36 @@ TARGETS = {
     '137_pollard_rho':          ('prho', '/tmp/eval_prho'),
 }
 
-sys.path.insert(0, str(REPO / 'evals'))
-from run_eval import load_tasks
+TARGETS = LEGACY_TARGETS            # old name, still imported by tests
+load_tasks = _harness.load_tasks
+
+
+def ref_target(t: dict, requested: str | None = None) -> tuple[str, str] | None:
+    """(reference file, destination path) for one unit: the JSON
+    declaration (`ref_stem` / `dest`), else the legacy hand map, else None."""
+    lang = _manifest.norm_lang(t.get('language'))
+    ext = LANG_EXT.get(lang)
+    if ext is None:
+        return None
+    if t.get('ref_stem') and t.get('dest'):
+        base = REFS / t['ref_stem']
+        ref = base if base.is_file() else REFS / f"{t['ref_stem']}.{ext}"
+        return str(ref), t['dest']
+    tid = next((k for k in (t.get('base_id'), requested, t['id']) if k in LEGACY_TARGETS), None)
+    if tid is not None:
+        stem, dest_dir = LEGACY_TARGETS[tid]
+        return str(REFS / f'{stem}.{ext}'), f'{dest_dir}/{stem}.{ext}'
+    return None
+
+
+def declared_task_ids() -> list[str]:
+    """Every base task with a ref declaration or a legacy mapping."""
+    ids = set(LEGACY_TARGETS)
+    for t in _harness.load_tasks(None):
+        if t.get('ref_stem') and t.get('dest'):
+            ids.add(t.get('base_id') or t['id'])
+    return sorted(ids)
+
 
 def audit(task_ids):
     """Returns the lines of every variant that did not pass ([FAIL]: setup or
@@ -112,34 +153,32 @@ def audit(task_ids):
         if line.lstrip().startswith(("[FAIL]", "[MISS]")):
             bad.append(line.strip())
 
+    quiet = lambda *_: None  # noqa: E731
     for tid in task_ids:
-        if tid not in TARGETS:
-            print(f"  [SKIP] {tid}: no target mapping"); continue
-        stem, dest_dir = TARGETS[tid]
         tasks = load_tasks([tid])
+        if not tasks:
+            print(f"  [SKIP] {tid}: no such task"); continue
         for t in tasks:
-            lang = t.get('language', 'python')
-            ext = LANG_EXT.get(lang)
-            if ext is None:
-                print(f"  [MISS] {t['id']} ({lang}): unknown language"); continue
-            ref_path = str(REFS / f'{stem}.{ext}')
+            lang = _manifest.norm_lang(t.get('language'))
+            target = ref_target(t, tid)
+            if target is None:
+                print(f"  [SKIP] {t['id']}: no ref_stem/dest declared and no legacy mapping"); continue
+            ref_path, dest = target
             if not os.path.exists(ref_path):
                 print(f"  [MISS] {t['id']} ({lang}): no ref at {ref_path}"); continue
-            r0 = subprocess.run(t['setup'], shell=True, capture_output=True, text=True, timeout=30)
-            if r0.returncode != 0:
-                print(f"  [FAIL] {t['id']} ({lang}): setup exit {r0.returncode}"); continue
-            os.makedirs(dest_dir, exist_ok=True)
-            shutil.copy(ref_path, f'{dest_dir}/{stem}.{ext}')
-            if t.get('pre_validate'):
-                subprocess.run(t['pre_validate'], shell=True, capture_output=True)
+            _harness.run_cleanup(t, log=quiet)
+            if not _harness.run_setup(t, log=quiet):
+                print(f"  [FAIL] {t['id']} ({lang}): setup failed"); continue
+            os.makedirs(os.path.dirname(dest) or '.', exist_ok=True)
+            shutil.copy(ref_path, dest)
+            _harness.run_pre_validate(t, log=quiet)
             start = time.time()
-            r = subprocess.run(t['validation']['script'], shell=True, capture_output=True, text=True, timeout=120)
+            ok, out = _harness.run_validation(t, timeout_scale=1.0)
             elapsed = time.time() - start
-            ok = r.returncode == 0
-            tail = (r.stdout + r.stderr).strip()[-150:]
+            tail = (out or '').strip()[-150:]
             mark = '[PASS]' if ok else '[FAIL]'
             print(f'  {mark} {t["id"]:35s} ({lang:6s})  {elapsed:5.2f}s  {"" if ok else tail}')
-            subprocess.run(t['cleanup'], shell=True, capture_output=True)
+            _harness.run_cleanup(t, log=quiet)
     return bad
 
 if __name__ == '__main__':
@@ -150,9 +189,9 @@ if __name__ == '__main__':
     # turns each failure into a warning annotation instead.
     args = [a for a in sys.argv[1:] if a != '--advisory']
     advisory = '--advisory' in sys.argv[1:]
-    task_ids = args or list(TARGETS.keys())
+    task_ids = args or declared_task_ids()
     bad = audit(task_ids)
-    lint_spec_completeness(task_ids)
+    lint_zig_tutoring(task_ids)
     if bad:
         print(f"\n{len(bad)} variant(s) did not pass the audit" + (" (advisory: exit 0)" if advisory else ""))
         if advisory and os.environ.get('GITHUB_ACTIONS') == 'true':

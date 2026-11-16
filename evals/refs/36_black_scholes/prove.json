@@ -1,0 +1,7 @@
+{
+  "expect": {
+    "wrong_nodiscount": "mismatch at case",
+    "wrong_fullvariance": "mismatch at case"
+  },
+  "slow_expect": "timed out"
+}

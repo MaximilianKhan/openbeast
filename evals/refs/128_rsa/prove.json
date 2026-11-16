@@ -1,0 +1,10 @@
+{
+  "expect": {
+    "wrong_short_primes.py": "\"<validator>\", line 1, in <module>\\nAssertionError\\s*$",
+    "wrong_full_bits.py": "\"<validator>\", line 1, in <module>\\nAssertionError\\s*$",
+    "wrong_reseeded_primes.py": "\"<validator>\", line 1, in <module>\\nAssertionError\\s*$",
+    "wrong_d_mod_n.py": "\"<validator>\", line 1, in <module>\\nAssertionError\\s*$"
+  },
+  "timed": false,
+  "note": "v4 validator kept as is: one line of message-less asserts (bit length, sign/verify, tamper), so every wrong's failure class is a bare AssertionError on validator line 1. Ref copied from evals/refs/rsa.py. PASS this validator (gaps): seed ignored (non-deterministic keys), fallback exponent 65539, global random state, lambda(n) for phi."
+}

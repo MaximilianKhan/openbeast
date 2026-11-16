@@ -11,5 +11,7 @@
   "cleanup": "rm -rf /tmp/eval_qkv",
   "max_iter": 30,
   "category": "Distributed / SysDesign",
-  "subcategory": "Replication & consistency"
+  "subcategory": "Replication & consistency",
+  "ref_stem": "121_quorum_kv/qkv",
+  "dest": "/tmp/eval_qkv/qkv.py"
 }

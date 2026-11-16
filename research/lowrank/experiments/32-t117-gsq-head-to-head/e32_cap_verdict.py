@@ -39,7 +39,7 @@ except (SystemExit, AttributeError):
              "classifier (fix/review-research) — merge it first")
 SUITE_N = 112
 
-pin = json.load(open(f'{OB}/evals/suites/v5-fast.json'))
+pin = json.load(open(f'{OB}/evals/suites/v4-fast.json'))  # was v5-fast before v5
 TRIP = set(pin['tripwires'])
 langmap = {}
 for p in glob.glob(f'{OB}/evals/tasks/*.json'):

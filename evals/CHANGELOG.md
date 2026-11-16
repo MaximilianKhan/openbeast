@@ -1,5 +1,44 @@
 # Eval suite changelog
 
+## v5.0 (2026-11-15) — the measured suite (CURRENT; era break)
+
+`evals/SUITE_VERSION` = v5 rolls every cache era; the v4 board is frozen
+and nothing is compared across versions. The suite is the manifest
+`evals/suites/v5.json`: **71 scored units over 34 base tasks**, all 12
+categories and all six languages, no probe units. It is the designed v5
+(111 units over 39 bases + 7 probes) minus what failed review: 14 new
+families and the U3 upgrades (36, 40, 122, 123) passed three adversarial
+rounds and ship; 12 items are the v5.1 backlog (`evals/README.md`), and
+24 units of v4 tasks, kept exactly as defined in v4 and proven, keep
+their categories covered. A full three-arm profile is 3.73 reference
+hours, inside the 4-hour budget even sequentially. Harness: `harness5`.
+
+- Hidden seeded tests inside the validator for new and upgraded units; no
+  shipped unit has an expected file or `check.py` in the agent's dir; a
+  mismatch prints only the case index.
+- Zig API tutoring banned from prompts (L0 is unassisted).
+- Oracle seal: `evals/tasks|refs|suites` unreadable under `OPENBEAST_EVAL=1`;
+  `fetch`/`web_search` off under eval (or recorded).
+- Every shipped unit proven without a model (`tests/prove_task.py`; family
+  formats delegate to the family's own prover).
+- Validator isolation: stdin-fed script, private cwd and env, solution
+  confinement (network, process-info, exec, read-deny / allowlist), a
+  **private build cache per validation** (zig, Go, cargo; ccache off),
+  deleted afterwards, and a **completion line** (a python validator passes
+  only when it ran to its end).
+- **Every process the agent started is killed before validation**, detached
+  daemons included (env tag, macOS sandbox tag, tree polling with the runner
+  as a Linux subreaper, groups and sessions, a cgroup where delegated); a
+  unit with survivors is not validated.
+- Arms L0/L1/L2 in one process (`run_eval.py --arms`), diagnostics keyed per
+  unit, per-unit wall caps, longest-first scheduling, `--slots`.
+- `evals/profile.py --budget-h 4` (calibrate k on L0, fixed L2 cut order,
+  `budget_skip` never scored) and `evals/ablation.py` (McNemar, MDE /
+  within_churn, strata, Horvitz-Thompson for stratified L2, `--pool`).
+- Scoring: LANG over multi-language bases only; imputation retired for v5
+  and every arm; a full v5 row = the manifest's scored units (read from it).
+- The v4 fast pin is renamed `v4-fast` (was `v5-fast`) and stays v4-only.
+
 ## v5-fast overlay (2026-09-08) — pinned fast subset, imputation-scored
 
 NOT a new suite version — v4 stays current and frozen; v5-fast is a pinned

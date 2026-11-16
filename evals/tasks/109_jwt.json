@@ -11,5 +11,7 @@
   "cleanup": "rm -rf /tmp/eval_jwt",
   "max_iter": 25,
   "category": "Security",
-  "subcategory": "Token management"
+  "subcategory": "Token management",
+  "ref_stem": "109_jwt/jwt",
+  "dest": "/tmp/eval_jwt/jwt.py"
 }

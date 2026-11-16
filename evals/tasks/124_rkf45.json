@@ -11,5 +11,7 @@
   "cleanup": "rm -rf /tmp/eval_rkf",
   "max_iter": 30,
   "category": "Physics",
-  "subcategory": "ODE numerical integration"
+  "subcategory": "ODE numerical integration",
+  "ref_stem": "124_rkf45/rkf45",
+  "dest": "/tmp/eval_rkf/rkf.py"
 }

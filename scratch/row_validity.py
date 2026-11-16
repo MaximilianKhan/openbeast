@@ -200,6 +200,7 @@ def expected_n(d):
     name = d.get("suite_selection") or (d.get("fast_suite") or {}).get("suite")
     if not name:
         return None
+    name = {"v5-fast": "v4-fast"}.get(name, name)   # renamed at the v5 era break
     p = os.path.join(REPO, "evals", "suites", f"{name}.json")
     if not os.path.exists(p):
         return None

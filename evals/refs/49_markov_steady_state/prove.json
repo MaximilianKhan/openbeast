@@ -1,0 +1,9 @@
+{
+  "expect": {
+    "wrong_nocheck.py": "AssertionError: non-stochastic must raise",
+    "wrong_pvec.py": "AssertionError: 2x2 got \\[0\\.5, 0\\.5\\]",
+    "wrong_selfdelta.py": "AssertionError: 2x2 got \\[0\\.55, "
+  },
+  "timed": false,
+  "note": "v4 validator kept unchanged. Ref written from the task text (power iteration from uniform, L1 stop, ValueError on a non-stochastic row or on max_iter). Wrongs: no row-sum validation, P @ pi instead of pi @ P (uniform is its fixed point), convergence test after pi is replaced (compares the vector with itself, stops after one step). Known gaps: the max_iter ValueError is never exercised; negative entries in a row that still sums to 1 are never tested."
+}

@@ -1,0 +1,10 @@
+{
+  "task": "158_karatsuba_bytes",
+  "note": "Failure classes for tests/prove_task.py against the v4 validators (units a..e; the zig unit f is out of v5: its prompt carries zig API tutoring). karat.c/.cpp/.rs are the v4 refs (copies of evals/refs/karat.*). karat.py and karat.go are faster rewrites of the same Karatsuba (polynomial recursion on small-int coefficients, one carry pass at the end): the v4 karat.py ran ~4.5 s of the python unit's fixed 5.0 s gate under the harness's python3, and the go unit's validator costs ~13 s of the 15 s budget before the solution runs (a cold GOCACHE build plus the oracle's byte-by-byte to_int/from_int on 100000-byte numbers). Each wrong is the v4 ref with one bug: wrong_nocarry drops the carry out of add()'s top digit (cases 1, 11 and the large case); wrong_notrim returns karat()'s combined product with its zero padding (trailing 0 digits on every case that recurses). slow.* is the v4 ref with its schoolbook cutoff set far too high (py 512, go 16384, c/cpp/rs 1024): correct output, rejected by the validator's own wall-clock gate (py 5.0 s, go 2.0 s, c/cpp/rs 1.5 s). leak.* dumps every fixture file except input.txt and the solution.",
+  "timed": true,
+  "expect": {
+    "wrong_nocarry": "case \\d+ mismatch",
+    "wrong_notrim": "case \\d+ mismatch"
+  },
+  "slow_expect": "too slow: "
+}

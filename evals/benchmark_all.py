@@ -146,7 +146,44 @@ MODELS = [
     {"slug": "qwen38-27b-uncensored-mtp-q5",
      "name": "Qwen3.8 27B Uncensored MTP Q5_K_M",
      "serve": "scripts/serve-qwen38-27b-uncensored-mtp-q5.sh"},
+    # REMOTE entries (v5): a server this harness neither starts nor stops.
+    # GLM-5.3-Flash is the spark-hydra pair (docs/SPARK_HYDRA.md: TensorFold,
+    # 4 parallel streams, thinking off by default), reached over the tailnet
+    # through beast-gate with a device key (scripts/clients.sh). The key is
+    # read from `api_key_env`, never written here. `slots` clamps --jobs
+    # because /props is llama.cpp-only; `reasoning_budget` is DECLARED ("0":
+    # thinking off), since no pgrep on this host can see that server.
+    # Validators and diagnostics still run HERE: the harness host needs the
+    # toolchains (evals/profile.py preflight checks them).
+    {"slug": "glm-5.3-flash",
+     "name": "GLM-5.3-Flash",
+     "base_url": "https://spark-1.tail4109f9.ts.net:8443/v1",
+     "api_key_env": "OPENBEAST_SPARK_API_KEY",
+     "slots": 4,
+     "engine": "tensorfold",
+     "reasoning_budget": "0"},
 ]
+
+
+def is_remote(model: dict) -> bool:
+    """A MODELS entry served elsewhere (no serve script to start or stop)."""
+    return bool(model.get("base_url")) and not model.get("serve")
+
+
+def remote_env(model: dict, env=None) -> dict:
+    """The env a remote entry's agents need: its bearer key as
+    OPENBEAST_API_KEY, and its URL marked as this install's inference
+    endpoint so agents/runner.py sends the key there (it withholds an
+    ambient key from any endpoint it was not configured for)."""
+    env = os.environ if env is None else env
+    key_env = model.get("api_key_env")
+    key = env.get(key_env, "") if key_env else ""
+    if key_env and not key:
+        raise KeyError(f"{model['slug']}: ${key_env} is empty (the endpoint's bearer key)")
+    out = {"OPENBEAST_AGENT_INFERENCE_URL": model["base_url"]}
+    if key:
+        out["OPENBEAST_API_KEY"] = key
+    return out
 
 # Serve scripts deliberately NOT benchmarked, with the reason. This exists so
 # that "missing from MODELS" is always a decision someone made rather than an
@@ -608,8 +645,12 @@ def benchmark_model(model: dict, task_filter: list[str] | None,
     'results' (success) or 'error' (skipped)."""
     print(f"\n{'#' * 60}")
     print(f"# Benchmarking: {model['name']} ({model['slug']})")
-    print(f"# Serve: {model['serve']}")
+    print(f"# Serve: {model.get('serve') or model.get('base_url') + ' (remote)'}")
     print(f"{'#' * 60}\n")
+
+    if is_remote(model) and not cache_only:
+        return benchmark_remote(model, task_filter, max_iter_override, use_cache=use_cache,
+                                jobs=jobs, suite=suite)
 
     if cache_only:
         # Cache-only mode never talks to the server. Skip start/health/stop.
@@ -679,6 +720,41 @@ def benchmark_model(model: dict, task_filter: list[str] | None,
         return {"slug": model["slug"], "name": model["name"],
                 "error": "eval produced no results"}
 
+    return {"slug": model["slug"], "name": model["name"], "results": results}
+
+
+def benchmark_remote(model: dict, task_filter, max_iter_override, use_cache: bool = True,
+                     jobs: int = 1, suite: str | None = None) -> dict:
+    """A remote entry: nothing to start, stop, lease or recover. Health is
+    the endpoint answering /v1/models; --jobs is clamped to its slots."""
+    try:
+        env = remote_env(model)
+    except KeyError as e:
+        return {"slug": model["slug"], "name": model["name"], "error": str(e),
+                "gpu_work": False}
+    os.environ.update(env)
+    base_url = model["base_url"]
+
+    def _alive() -> bool:
+        return run_eval.detect_model(base_url) != "unknown"
+
+    if not _alive():
+        return {"slug": model["slug"], "name": model["name"],
+                "error": f"remote endpoint {base_url} did not answer /v1/models",
+                "gpu_work": False}
+    try:
+        results = run_eval.run_eval(
+            task_filter=task_filter, base_url=base_url,
+            max_iter_override=max_iter_override, model_name=model["name"],
+            use_cache=use_cache, health_check=_alive, recover_cb=None,
+            jobs=jobs, suite=suite, slots=model.get("slots"),
+            reasoning_budget=model.get("reasoning_budget"))
+    except Exception as e:
+        return {"slug": model["slug"], "name": model["name"],
+                "error": f"eval crashed: {e}"}
+    if not results:
+        return {"slug": model["slug"], "name": model["name"],
+                "error": "eval produced no results"}
     return {"slug": model["slug"], "name": model["name"], "results": results}
 
 
@@ -817,7 +893,7 @@ def experiment_arms(env=None) -> list[str]:
     return arms
 
 
-def _leaderboard_policy(args, arms: list[str]) -> bool:
+def _leaderboard_policy(args, arms: list[str], is_pin: bool = True) -> bool:
     """Whether this sweep may record into leaderboard.json, printing why not.
 
     --tasks IMPLIES --no-leaderboard, like --suite. The old NOTE said partial
@@ -827,7 +903,9 @@ def _leaderboard_policy(args, arms: list[str]) -> bool:
     suite would have let them in. One rule here, whatever the suite."""
     if args.no_leaderboard:
         return False
-    if args.suite:
+    if args.suite and is_pin:
+        # A pinned subset (v4-fast) is an imputed readout. A suite MANIFEST
+        # (--suite v5) is the full suite and may record.
         print(f"NOTE: --suite {args.suite} implies --no-leaderboard (fast-suite "
               f"scores are imputed readouts, never leaderboard rows).")
         return False
@@ -893,9 +971,9 @@ def main():
                         help="Do not record scores in leaderboard.json. Implied by "
                              "--tasks, --suite and experiment arms: the leaderboard must "
                              "only ever contain full-suite sweeps, or its accuracy numbers "
-                             "become incomparable (a 13-task 100%% is not a 291-unit 97%%).")
-    parser.add_argument("--suite", help="Run a pinned suite subset from evals/suites/ "
-                        "(e.g. v5-fast) instead of the full task set. Implies "
+                             "become incomparable (a 13-task 100%% is not a full-suite 97%%).")
+    parser.add_argument("--suite", help="Suite from evals/suites/ (default: the current "
+                        "suite's manifest, v5). A pinned v4 subset (v4-fast) implies "
                         "--no-leaderboard: fast-suite scores are imputed readouts, "
                         "never leaderboard rows.")
     parser.add_argument("--jobs", type=int, default=1,
@@ -910,6 +988,10 @@ def main():
                              "into the agent system prompt for tasks whose language has a pack "
                              "(zig only today; own pack1-<sha8> cache era on those units; "
                              "leaderboard-ineligible experiment rows). Same as BEAST_PACKS=1.")
+    parser.add_argument("--diag", action="store_true",
+                        help="beast-assist push diagnostics for units in assist scope (compiled "
+                             "languages + shell; own diag2 cache era on those units; "
+                             "leaderboard-ineligible). Same as BEAST_ASSIST=1.")
     parser.add_argument("--escalate", action="store_true",
                         help="beast-lang escalation: attach the toolchain-confirmed fix when the "
                              "diagnostics checker reports a known-cause error (needs BEAST_ASSIST=1; "
@@ -925,7 +1007,11 @@ def main():
         print(f"Configured models ({len(MODELS)}):\n")
         for m in MODELS:
             print(f"  {m['slug']:<32}  {m['name']}")
-            print(f"  {'':<32}  serve: {m['serve']}")
+            if is_remote(m):
+                print(f"  {'':<32}  remote: {m['base_url']} (slots {m.get('slots', '?')}, "
+                      f"key ${m.get('api_key_env')})")
+            else:
+                print(f"  {'':<32}  serve: {m['serve']}")
         return
 
     if args.models:
@@ -941,6 +1027,8 @@ def main():
         os.environ["OPENBEAST_EVAL_GREEDY"] = "1"
     if args.packs:
         os.environ["BEAST_PACKS"] = "1"
+    if args.diag:
+        os.environ["BEAST_ASSIST"] = "1"
     if args.escalate:
         os.environ["BEAST_ESCALATE"] = "1"
     task_filter = args.tasks.split(",") if args.tasks else None
@@ -954,10 +1042,23 @@ def main():
     if args.suite and args.tasks:
         print("--suite and --tasks are mutually exclusive.", file=sys.stderr)
         sys.exit(2)
-    update_lb = _leaderboard_policy(args, experiment_arms())
+    suite = args.suite
+    is_pin = False
+    if suite:
+        try:
+            with open(os.path.join(run_eval.SUITES_DIR,
+                                   f"{run_eval.SUITE_ALIASES.get(suite, suite)}.json")) as f:
+                is_pin = not run_eval.suite_manifest.is_manifest(json.load(f))
+        except (OSError, ValueError):
+            is_pin = True
+    elif not task_filter:
+        # A bare sweep runs the current suite's manifest (v5), not every
+        # task file in evals/tasks/ (which still holds the dropped v4 units).
+        suite = run_eval.default_suite()
+    update_lb = _leaderboard_policy(args, experiment_arms(), is_pin)
     # The GPU lease, before anything touches the card. cache-only never
     # starts a server, so it neither needs nor takes the lease.
-    if not args.cache_only:
+    if not args.cache_only and any(not is_remote(m) for m in models):
         try:
             ensure_gpu_lease(sys.argv[1:])
         except GpuLeaseHeld as e:
@@ -969,7 +1070,7 @@ def main():
                          cache_only=args.cache_only,
                          update_leaderboard=update_lb,
                          jobs=args.jobs,
-                         suite=args.suite,
+                         suite=suite,
                          reasoning_budget=args.reasoning_budget)
     summary_path = save_sweep_summary(summary)
 

@@ -1,5 +1,10 @@
 # Eval Suite Results
 
+> **v5 results are pending.** The current suite is v5.0
+> ([`evals/README.md`, v5](../evals/README.md#v5--the-current-suite)); no model
+> has a v5 row yet. Every table below is a **v4** (or legacy v3.5) result, and
+> v4 and v5 scores are not comparable.
+
 Cross-system benchmark results. Each section below is one host system. Models
 are **ranked by CAPABILITY** (scoring v2, see below) — accuracy, speed, and
 token cost are reported as separate columns.

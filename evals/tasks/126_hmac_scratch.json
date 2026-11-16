@@ -11,5 +11,7 @@
   "cleanup": "rm -rf /tmp/eval_hmsc",
   "max_iter": 30,
   "category": "Security",
-  "subcategory": "Cryptographic primitives"
+  "subcategory": "Cryptographic primitives",
+  "ref_stem": "126_hmac_scratch/hmac_scratch",
+  "dest": "/tmp/eval_hmsc/hmsc.py"
 }

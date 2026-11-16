@@ -11,5 +11,7 @@
   "cleanup": "rm -rf /tmp/eval_iref",
   "max_iter": 30,
   "category": "Pure & Abstract Math",
-  "subcategory": "Iterative numerical methods"
+  "subcategory": "Iterative numerical methods",
+  "ref_stem": "117_iter_refinement/iref",
+  "dest": "/tmp/eval_iref/iref.py"
 }

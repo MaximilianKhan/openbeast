@@ -1,0 +1,19 @@
+{
+ "_comment": "Failure classes for tests/prove_task.py --unit 173_taskgroup_cancel. ref.py is also the validator's embedded oracle; build.py regenerates evals/tasks/173_taskgroup_cancel.json from harness.py + ref.py + validator_main.py. Equivalence was checked against CPython 3.13's asyncio.TaskGroup on every scenario that uses neither timeout nor cancel() (0 differences); CPython 3.12's TaskGroup differs on ~13% of them (its uncancel ordering), which is the intended discrimination.",
+ "timed": true,
+ "expect": {
+  "wrong_uncancel_early.py": "behaviour mismatch",
+  "wrong_no_wait.py": "case \\d+: tasks left pending",
+  "wrong_timer_leak.py": "callbacks left scheduled",
+  "wrong_timeout_priority.py": "case \\d+: behaviour mismatch",
+  "wrong_no_close.py": "misuse case: behaviour mismatch",
+  "wrong_naive.py": "case \\d+: behaviour mismatch",
+  "wrong_polling.py": "error \\(_Runaway\\)",
+  "wrong_gc.py": "forbidden api",
+  "wrong_reversed_errors.py": "behaviour mismatch",
+  "wrong_body_first.py": "behaviour mismatch",
+  "wrong_deadline_init.py": "misuse case: behaviour mismatch",
+  "wrong_tamper_alltasks.py": "forbidden api: .*self"
+ },
+ "slow_expect": "solution timed out"
+}

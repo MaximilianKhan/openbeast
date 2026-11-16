@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68", "setuptools-rust>=1.7"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ferrule"
+version = "2.7.0"
+requires-python = ">=3.8"
+description = "A small multi-tenant job queue"
+dependencies = []
+
+[project.scripts]
+ferrule = "ferrule.cli.main:main"
+
+[tool.setuptools.packages.find]
+include = ["ferrule*"]
+
+[[tool.setuptools-rust.ext-modules]]
+target = "ferrule._native"
+path = "native/Cargo.toml"
+binding = "PyO3"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

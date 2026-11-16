@@ -1,0 +1,10 @@
+{
+  "expect": {
+    "wrong_inplace.py": "AssertionError: Hilbert residual [\\d.e+-]+",
+    "wrong_nopermb.py": "AssertionError: Hilbert residual [\\d.e+-]+",
+    "wrong_fwddiv.py": "AssertionError: tridiagonal residual",
+    "wrong_nomult.py": "AssertionError: Hilbert forward error [\\d.e+-]+"
+  },
+  "timed": false,
+  "note": "v4 validator kept unchanged (residual on a 3x3 tridiagonal, residual + forward error on Hilbert-8). Wrongs: LU done in place on the caller's A (residual against the destroyed factors), pivot rows swapped but b not permuted, forward substitution divides by U's diagonal, multiplier not stored in L. Known validator gaps (plausible wrongs that PASS): no pivoting at all, pivot by signed max instead of |max|, no refinement step, residual sign flipped (A x - b with x + delta: error doubles each step but stays under 1e-4), residual using A^T (both test matrices are symmetric) -- both fixtures are SPD/positive, and plain LU already meets the tolerances, so the refinement itself is untested."
+}

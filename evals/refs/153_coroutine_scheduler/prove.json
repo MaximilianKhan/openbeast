@@ -1,0 +1,8 @@
+{
+  "expect": {
+    "wrong_blocking_sleep.py": "AssertionError: Y\\(short sleep\\) should finish before X",
+    "wrong_lifo.py": "AssertionError: not round-robin"
+  },
+  "timed": false,
+  "note": "v4 validator kept as is. wrong_drops_children (a spawned child never runs to completion) PASSES this validator and is not shipped."
+}

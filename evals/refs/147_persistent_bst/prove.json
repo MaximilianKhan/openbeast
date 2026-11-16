@@ -1,0 +1,10 @@
+{
+  "expect": {
+    "wrong_lineardict.py": "AssertionError: version \\d+ wrong on \\d+",
+    "wrong_mutable.py": "AssertionError: old version contaminated",
+    "wrong_frozenset.py": "AssertionError: peak memory [\\d.]+MB retaining \\d+ versions"
+  },
+  "slow_expect": "AssertionError: 10000 inserts took [\\d.]+s .*likely unbalanced",
+  "timed": true,
+  "note": "v4 validator kept unchanged. Wrongs: linear-history insert-count versions (branching breaks), in-place AVL mutation (not persistent), full frozenset copy per version (memory gate). slow.py = unbalanced path-copying BST, caught by the validator's own 3 s insert limit. Known validator gaps (plausible wrongs that PASS): version-as-(parent,key) chain with O(n) contains (chainwalk, chainmemo), path-copied crit-bit trie (bittrie), unbalanced BST keyed by a bijective mix of the key (mixorder) -- the validator never times contains() and only inserts ascending/shuffled small ints. wrong_fullcopy (whole-tree copy) fails only by the insert-time limit (~19 s), not the memory gate, so it is not used."
+}

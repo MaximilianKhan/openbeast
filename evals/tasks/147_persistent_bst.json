@@ -11,5 +11,7 @@
   "cleanup": "rm -rf /tmp/eval_pbst",
   "max_iter": 30,
   "category": "Algorithms & DS",
-  "subcategory": "Trees"
+  "subcategory": "Trees",
+  "ref_stem": "147_persistent_bst/pbst",
+  "dest": "/tmp/eval_pbst/pbst.py"
 }

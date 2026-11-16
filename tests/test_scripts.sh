@@ -2411,7 +2411,7 @@ if git -C "$REPO_DIR" check-ignore -q evals/cache-quarantine-2026-09-29/abc.json
 else
   fail "quarantined cache rows are not gitignored"
 fi
-if git -C "$REPO_DIR" check-ignore -q evals/suites/v5-fast.json 2>/dev/null; then
+if git -C "$REPO_DIR" check-ignore -q evals/suites/v4-fast.json 2>/dev/null; then
   fail "the quarantine pattern swallowed tracked eval sources (evals/suites/)"
 else
   pass "evals/suites/ is still tracked (quarantine pattern is narrow)"

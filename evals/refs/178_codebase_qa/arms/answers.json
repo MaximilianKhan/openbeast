@@ -1,0 +1,45 @@
+{
+ "q1": 10,
+ "q2": 63,
+ "q3": 14000,
+ "q4": [
+  "service.validate_payload",
+  "dedupe.fingerprint",
+  "dedupe.check",
+  "quota.enforce",
+  "sla.stamp_deadline",
+  "tagger.apply_tags",
+  "audit.record_submit"
+ ],
+ "q5": [
+  "admin",
+  "lead",
+  "maintainer",
+  "oncall"
+ ],
+ "q6": "ferrule.cli.commands.quota.cmd_usage",
+ "q7": [
+  "0001_init",
+  "0002_tenants",
+  "0007_queues",
+  "0003_jobs",
+  "0010_squash_jobs",
+  "0011_quota",
+  "0012_hooks",
+  "0008_audit",
+  "0014_retention",
+  "0013_audit_index"
+ ],
+ "q8": [
+  "POST /api/v3/admin/tenants/{tenant}/jobs/{job_id}/retry",
+  "POST /api/v3/jobs/{job_id}/retry"
+ ],
+ "q9": 12,
+ "q10": "fr-prod:v4:acme:jobrecord:j%3A42",
+ "q11": "SUCCEEDED/4",
+ "q12": [
+  "ferrule.storage.cached.CachedStore",
+  "ferrule.storage.journal.JournaledStore",
+  "ferrule.storage.sqlite_store.SqliteStore"
+ ]
+}

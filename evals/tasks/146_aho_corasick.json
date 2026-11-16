@@ -11,5 +11,7 @@
   "cleanup": "rm -rf /tmp/eval_ac",
   "max_iter": 30,
   "category": "Algorithms & DS",
-  "subcategory": "String algorithms"
+  "subcategory": "String algorithms",
+  "ref_stem": "146_aho_corasick/ac",
+  "dest": "/tmp/eval_ac/ac.py"
 }
