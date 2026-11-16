@@ -1,10 +1,14 @@
 # Eval suite changelog
 
-## v5.0, harness6 (2026-11-16) — review-1116 integrity fixes (era roll)
+## v5.0, harness6 (2026-11-16) — review-1116 fixes (era roll)
 
 Same suite and manifest; the harness and `vlib.py` changed, so the cache
 era moved (`HARNESS_VERSION` harness5 -> harness6, `vlib.py` rehashed). No
-harness5 row replays into harness6. What changed in how units are judged:
+harness5 row replays into harness6: rerun the v5 units measured before it.
+One roll covers every review-1116 eval fix below. What changed in how
+units are judged:
+
+Harness and vlib:
 
 - A macOS solution can no longer signal processes outside its sandbox
   (it could SIGKILL sibling units, validators, the harness).
@@ -13,18 +17,38 @@ harness5 row replays into harness6. What changed in how units are judged:
 - The Linux Landlock confine refuses network sockets with seccomp (UDP,
   and TCP below kernel 6.7, were open).
 - `run_solution` keeps the solution's rusage on a normal exit (fixed-CPU
-  gates passed over-budget solutions ~1 run in 12) and samples through
-  libproc on macOS.
+  gates passed over-budget solutions ~1 run in 12); on macOS the solution
+  monitor and the leftover sweep read libproc in-process instead of
+  forking `ps -A` every 50 ms.
 - The validator completion line is no longer a module global an
   in-process solution can read; in-process units remain forgeable by
   frame introspection (documented).
 - The leftover sweep kills only provably-owned process groups (reused
   pids no longer kill sibling units), kills before the timeout drain on
   macOS, and a validator's pgids file cannot name an older process.
-- Fixture roots are flock'ed per unit across harness processes.
+- One harness per `/tmp/eval_*` root (`run_eval.fixture_lock`): every
+  unit holds an flock per fixture root across harness processes; a sweep
+  waits (and says so at once), a prover refuses at once with the holder's
+  pid.
+- The validator's `TMPDIR` is private (`<private>/tmp`).
 - `--jobs` is clamped to beast-gate's per-device in-flight cap; the
   remote health check retries; probes never send the ambient key to an
   untrusted `--base-url`; the stratified L2 records the true pi.
+
+Families 163-179:
+
+- 163/167/168: the compiler no longer reads the sealed reference
+  (`vlib.build_private`: include lint, private build dir, macOS read-deny);
+  a hanging compiled solution fails on its judged warm-up instead of as an
+  infra `validator_timeout`; 163's prompt states its 6 s CPU budget.
+- 173: the reference absorbs its own undelivered `cancel()` on CPython
+  <= 3.12; 24 cancel-tail scenarios pin it (624 scenarios in all).
+- 175: the oracle is incremental (~0.2 s instead of ~1.8 s per validation;
+  same expected results); the argvcheat arm proves on Linux.
+- 176: `shopd/` is copied without following links, under a cap.
+- 179: the validator never runs git in the agent's repository (a promisor
+  remote's `uploadpack` ran unsandboxed); the fixture history is one
+  `git fast-import` (same SHAs, ~0.5 s instead of ~4 s on a Mac).
 
 ## v5.0 (2026-11-15) — the measured suite (CURRENT; era break)
 

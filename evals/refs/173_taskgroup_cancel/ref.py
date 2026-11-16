@@ -111,6 +111,18 @@ class TaskGroup:
             self._timer.cancel()
             self._timer = None
         if self._parent_cancel_requested:
+            if not got_cancel:
+                # Our parent.cancel() may never have been delivered: g.cancel()
+                # from the body, which then ended (or raised) without another
+                # await, with no child left to wait for. On
+                # CPython <= 3.12 uncancel() does not clear the pending
+                # request (3.13 does), so it would surface at the parent's
+                # next await after the `async with`. Take it here; if it
+                # coalesced with a request from outside, rule B re-raises.
+                try:
+                    await asyncio.sleep(0)
+                except asyncio.CancelledError:
+                    got_cancel = True
             self._parent_cancel_requested = False
             self._parent.uncancel()
         outside = self._parent.cancelling() > 0

@@ -45,7 +45,10 @@ class Cluster:
         self.vec = [[0, 0, 0] for _ in range(3)]
         self.maxc = [0, 0, 0]
         self.held = [set(), set(), set()]  # k of ops held (received, not in effect)
-        self._cache = {}
+        self._cand = [{}, {}, {}]          # the same, keyed by (origin, seq)
+        # per replica: the vec the sequence below was built for, and that
+        # sequence as parallel lists (ids, entries, tree depth)
+        self._seq = [[(0, 0, 0), [], [], []] for _ in range(3)]
 
     # -- views
     def _applied(self, r):
@@ -54,26 +57,42 @@ class Cluster:
             yield from self.by_origin[j][:v[j]]
 
     def seq_ids(self, r):
-        """[(id, ch, deleted)] of the full sequence at replica r."""
-        key = (r, tuple(self.vec[r]))
-        hit = self._cache.get(key)
-        if hit is not None:
-            return hit
-        kids, dead = {}, set()
-        for op in self._applied(r):
+        """[(id, ch, deleted)] of the full sequence at replica r.
+
+        The sequence is the preorder of the insert tree (each insert a child
+        of its anchor, siblings in descending id order), with the delete set
+        marked. It is a function of the op set alone, so it is kept per
+        replica and extended by the ops that came into effect since the last
+        call, in creation order (a causal order: an anchor or a delete target
+        is always created before the op that names it). Rebuilding it from
+        every applied op on each call was O(n^2) over a 2500-char typing run,
+        1.8 s of every validation."""
+        st = self._seq[r]
+        key = tuple(self.vec[r])
+        if st[0] == key:
+            return st[2]
+        old = st[0]
+        new = sorted((op for j in range(3) for op in self.by_origin[j][old[j]:key[j]]),
+                     key=lambda o: o.k)
+        ids, ents, depth = st[1], st[2], st[3]
+        for op in new:
             if op.kind == "insert":
-                kids.setdefault(op.anchor, []).append(op)
+                if op.anchor == HEAD:
+                    pos, d = 0, 0
+                else:
+                    a = ids.index(op.anchor)
+                    pos, d = a + 1, depth[a] + 1
+                # skip the anchor's subtree up to its first child with a smaller id
+                while pos < len(ids) and depth[pos] >= d and not (depth[pos] == d and ids[pos] < op.id):
+                    pos += 1
+                ids.insert(pos, op.id)
+                ents.insert(pos, (op.id, op.ch, False))
+                depth.insert(pos, d)
             elif op.kind == "delete":
-                dead.add(op.target)
-        for lst in kids.values():
-            lst.sort(key=lambda o: o.id)        # popped from the end: descending
-        out, stack = [], list(kids.get(HEAD, ()))
-        while stack:
-            op = stack.pop()
-            out.append((op.id, op.ch, op.id in dead))
-            stack.extend(kids.get(op.id, ()))
-        self._cache = {key: out}
-        return out
+                i = ids.index(op.target)
+                ents[i] = (ents[i][0], ents[i][1], True)
+        st[0] = key
+        return ents
 
     def visible(self, r):
         return [e for e in self.seq_ids(r) if not e[2]]
@@ -134,14 +153,22 @@ class Cluster:
         if self._in_effect(r, op):
             return
         self.held[r].add(k)
+        # Take every held op that has become ready, until none is. The result
+        # (the causal closure) does not depend on the order, so look up the
+        # one candidate per origin -- the op with seq == vec[origin] + 1 --
+        # instead of rescanning the whole buffer after each take (quadratic
+        # over a long out-of-order delivery).
+        cand = self._cand[r]                     # (origin, seq) -> k, over held[r]
+        cand[(op.origin, op.seq)] = k
         progress = True
         while progress:
             progress = False
-            for kk in sorted(self.held[r]):
-                o = self.ops[kk]
-                if self._ready(r, o):
+            for j in range(3):
+                kk = cand.get((j, self.vec[r][j] + 1))
+                if kk is not None and self._ready(r, self.ops[kk]):
+                    del cand[(j, self.vec[r][j] + 1)]
                     self.held[r].discard(kk)
-                    self._take(r, o)
+                    self._take(r, self.ops[kk])
                     progress = True
 
 

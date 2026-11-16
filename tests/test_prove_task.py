@@ -246,7 +246,12 @@ def test_a_suite_with_an_unresolved_unit_exits_nonzero(tmp_path, monkeypatch):
                 "resolved": {"good_py": "good_py"},
                 "resolution_problems": ["999_ghost_py: no task file"]}
 
+    import run_eval
+
     class _R:
+        FixtureBusy = run_eval.FixtureBusy
+        fixture_lock = run_eval.fixture_lock    # good_py names no /tmp/eval_* root
+
         @staticmethod
         def load_tasks(_x):
             return [{"id": "good_py"}]

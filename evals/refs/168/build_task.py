@@ -100,25 +100,32 @@ GEN = @GEN@
 g = {}
 exec(compile(GEN, "gen168", "exec"), g)
 src = os.path.join(D, SRC)
-if not os.path.isfile(src):
+if not os.path.lexists(src):
     print("missing " + src); sys.exit(1)
+RAW = vlib.read_source(src)
+if RAW is None:
+    print(SRC + " must be a regular file (not a symlink) of at most 4 MB"); sys.exit(1)
 env = vlib.clean_env()
 if BUILD:
-    try:
-        os.remove(os.path.join(D, "linz"))
-    except OSError:
-        pass
-    try:
-        b = subprocess.run(BUILD, cwd=D, capture_output=True, text=True, env=env,
-                           stdin=subprocess.DEVNULL, timeout=vlib.t(BUILD_S))
-    except subprocess.TimeoutExpired:
-        print("build timed out (%ds)" % vlib.t(BUILD_S)); sys.exit(1)
-    if b.returncode != 0 or not os.path.isfile(os.path.join(D, "linz")):
-        print("build failed: " + (b.stderr or b.stdout)[-300:]); sys.exit(1)
-    run = [os.path.join(D, "linz")]
-    # Untimed warm-up exec of the fresh binary: the first exec on macOS pays
-    # the Gatekeeper scan. Its output is ignored.
-    vlib.run_solution(run, input="1\n1\n0 1 GET 1 NIL\n", cpu_s=2, wall_s=20, cwd=D, env=env)
+    # Only the source, copied (never followed) into a private dir, compiled
+    # under the solution's read-deny: the compiler runs with this script's
+    # rights, and `#include "<repo>/evals/refs/..."` would hand it the reference.
+    bdir, why = vlib.build_private({SRC: RAW}, BUILD, lang=LANG, timeout=vlib.t(BUILD_S),
+                                   extra_env={"CGO_ENABLED": "0"})
+    if why:
+        print(why); sys.exit(1)
+    run = [os.path.join(bdir, "linz")]
+    if not vlib.is_native_executable(run[0]):
+        print("build failed: no native executable"); sys.exit(1)
+    # Warm-up exec on a one-op history: the first exec of a fresh binary on
+    # macOS pays the Gatekeeper scan (WALL, not CPU). Its output is ignored but
+    # its verdict is judged, so a hang fails here, inside the harness's 30 s
+    # validator budget (build + 15 s), not as an infra validator timeout.
+    w = vlib.run_solution(run, input="1\n1\n0 1 GET 1 NIL\n", cpu_s=2, wall_s=15, cwd=D, env=env)
+    if w.verdict in ("cpu", "wall"):
+        print("solution timed out (%s: %s) on a one-operation warm-up" % (w.verdict, w.reason)); sys.exit(1)
+    if w.verdict != "ok":
+        print("solution refused (%s: %s)" % (w.verdict, w.reason)); sys.exit(1)
 else:
     run = vlib.python_cmd(src)
 inp = g["build"]([s if isinstance(s, str) else tuple(s) for s in CASES])

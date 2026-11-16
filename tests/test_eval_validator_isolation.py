@@ -21,6 +21,7 @@ import importlib
 import os
 import subprocess
 import sys
+import tempfile
 import textwrap
 import time
 import urllib.parse  # noqa: F401  loaded before any test chdirs next to a plant
@@ -222,12 +223,35 @@ def test_validator_cwd_is_private_and_fresh():
         assert stat.S_IMODE(os.stat(cwd).st_mode) == 0o700
         assert stat.S_IMODE(os.stat(os.path.dirname(cwd)).st_mode) == 0o700
         # The script file itself was unlinked before the validator started;
-        # beside the cwd there is only the private build cache.
-        assert sorted(os.listdir(os.path.dirname(cwd))) == ["build-cache", "cwd"], \
+        # beside the cwd there is only the private build cache and TMPDIR.
+        assert sorted(os.listdir(os.path.dirname(cwd))) == ["build-cache", "cwd", "tmp"], \
             os.listdir(os.path.dirname(cwd))
         print("OK")
     '''))
     assert ok, output
+
+
+def test_validator_tmpdir_is_private_and_removed_even_after_a_kill():
+    # 176: a validator copying a planted /dev/zero link wrote into the SHARED
+    # TMPDIR until the harness SIGKILLed it, and its finally-rmtree never ran.
+    # TMPDIR is now inside the private dir, which the harness always removes.
+    ok, output = _validate(textwrap.dedent('''
+        import os, tempfile, time
+        d = tempfile.mkdtemp(prefix="ob-leak-")
+        assert os.path.dirname(d) == os.environ["TMPDIR"], (d, os.environ["TMPDIR"])
+        real = os.path.realpath
+        assert os.path.dirname(real(os.environ["TMPDIR"])) == os.path.dirname(real(os.getcwd()))
+        with open(os.path.join(d, "big"), "wb") as f:
+            f.write(b"x" * 4096)
+        print("TMP=" + d, flush=True)
+        time.sleep(30)
+    '''), scale=0.05)   # the harness kills it after 1 s
+    assert not ok and run_eval.validator_timed_out(output), output
+    leaked = [ln[4:] for ln in output.splitlines() if ln.startswith("TMP=")]
+    if leaked:  # the output of a killed validator may be lost; check if we have it
+        assert not os.path.exists(leaked[0]), leaked
+    base = Path(tempfile.gettempdir())
+    assert not [p for p in base.glob("ob-leak-*")], "validator temp dir left in the shared TMPDIR"
 
 
 @pytest.mark.parametrize("phase", ["setup", "pre_validate", "cleanup"])
@@ -1440,3 +1464,32 @@ def test_a_forged_pgid_of_an_older_process_is_not_killed(tmp_path):
         for p in (old, new):
             p.kill()
             p.wait()
+
+
+# --- the solution monitor's process table on macOS -----------------------------------
+#
+# run_solution polls processes() every 50 ms; on macOS that was a `ps -A` fork,
+# ~38 ms wall / ~27 ms CPU per poll with ~1100 processes (review 1116).
+
+@pytest.mark.skipif(not DARWIN, reason="libproc table is the macOS path")
+def test_darwin_process_table_agrees_with_ps_and_is_cheap():
+    p = subprocess.Popen([sys.executable, "-c",
+                          ("import time\nt=time.process_time()\n"
+                           "while time.process_time()-t<0.5: pass\ntime.sleep(10)")],
+                         start_new_session=True)
+    try:
+        time.sleep(1.0)
+        assert vlib.darwin_table() is not None, "libproc table unavailable"
+        fast, slow = vlib.processes(), vlib._ps_table()
+        for pid in (os.getpid(), p.pid):
+            assert fast[pid][:2] == slow[pid][:2]
+            assert abs(fast[pid][2] - slow[pid][2]) < 0.1
+        assert fast[p.pid][2] >= 0.45
+        assert fast[p.pid][1] == p.pid                   # its own session/group
+        t0 = time.perf_counter()
+        for _ in range(10):
+            vlib.processes()
+        assert (time.perf_counter() - t0) / 10 < 0.02     # was ~38 ms (a ps fork)
+    finally:
+        p.kill()
+        p.wait()
