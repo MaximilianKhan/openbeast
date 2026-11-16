@@ -335,6 +335,29 @@ _DEFAULT_REASONING_BUDGET = 20480   # --reasoning-budget in the shipped serve sc
 _CONTENT_ALLOWANCE_TOKENS = 12288
 _DEFAULT_MAX_COMPLETION_TOKENS = _DEFAULT_REASONING_BUDGET + _CONTENT_ALLOWANCE_TOKENS
 _CLIENT_MAX_RETRIES = 1        # one quick retry for a blip; the loop owns the rest
+# A 429 is admission control (beast-gate's per-device in-flight / rate caps,
+# beast-chat's slot cap), not a failed turn: wait the server's Retry-After and
+# re-send the SAME turn, without spending an iteration or counting an API
+# error. Bounded so a device wedged at 429 still ends instead of hanging.
+_RATE_LIMIT_MAX_WAIT_S = 600
+_RATE_LIMIT_DEFAULT_S = 5.0
+
+
+def _retry_after_s(exc: Exception) -> float | None:
+    """Seconds to wait when `exc` is an HTTP 429, else None."""
+    if getattr(exc, "status_code", None) != 429:
+        return None
+    resp = getattr(exc, "response", None)
+    raw = None
+    try:
+        raw = resp.headers.get("retry-after") if resp is not None else None
+    except Exception:
+        raw = None
+    try:
+        wait = float(raw) if raw is not None else _RATE_LIMIT_DEFAULT_S
+    except (TypeError, ValueError):
+        wait = _RATE_LIMIT_DEFAULT_S
+    return min(max(wait, 0.5), 60.0)
 _TRUNCATED_KEEP_CHARS = 2000   # head of a capped turn kept in the history
 _CONF_PATH = Path(__file__).resolve().parent.parent / "openbeast.conf"
 
@@ -1084,19 +1107,31 @@ def run_agent(
                         must_free=asks[0])
 
         try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=_with_plan(messages, plan),
-                tools=TOOL_SCHEMAS,
-                # OPENBEAST_EVAL_GREEDY=1 (low-churn eval mode, 2026-09-10):
-                # unseeded temperature-0.6 sampling was the measured ±5-14
-                # task-flip churn floor's primary engine. Greedy decoding is
-                # an EXPERIMENT mode — the 0.6 default is serving reality
-                # and stays for leaderboard rows.
-                temperature=(0.0 if os.environ.get(
-                    "OPENBEAST_EVAL_GREEDY", "") == "1" else 0.6),
-                **cap_kwargs,
-            )
+            waited = 0.0
+            while True:
+                try:
+                    response = client.chat.completions.create(
+                        model=model,
+                        messages=_with_plan(messages, plan),
+                        tools=TOOL_SCHEMAS,
+                        # OPENBEAST_EVAL_GREEDY=1 (low-churn eval mode,
+                        # 2026-09-10): unseeded temperature-0.6 sampling was
+                        # the measured ±5-14 task-flip churn floor's primary
+                        # engine. Greedy decoding is an EXPERIMENT mode — the
+                        # 0.6 default is serving reality and stays for
+                        # leaderboard rows.
+                        temperature=(0.0 if os.environ.get(
+                            "OPENBEAST_EVAL_GREEDY", "") == "1" else 0.6),
+                        **cap_kwargs,
+                    )
+                    break
+                except Exception as rl:
+                    wait = _retry_after_s(rl)
+                    if wait is None or waited + wait > _RATE_LIMIT_MAX_WAIT_S:
+                        raise
+                    waited += wait
+                    log_event({"type": "rate_limited", "wait_s": wait})
+                    time.sleep(wait)
         except Exception as e:
             if isinstance(e, UnicodeEncodeError) and (
                     _scrub_surrogates(messages) + _scrub_plan_surrogates()):
