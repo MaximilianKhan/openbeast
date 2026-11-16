@@ -144,13 +144,16 @@ def _spawn_agent(cmd: list, env: dict) -> subprocess.Popen | None:
 
 
 def _descendant_pids(root: int) -> list[int]:
-    """Every live descendant of `root`, from /proc (Linux). [] where there
-    is no /proc — the kill then degrades to the runner's own group."""
+    """Every live descendant of `root`: from /proc on Linux, else from
+    _proc_snapshot (libproc on macOS). Without the fallback the macOS
+    timeout kill reached only the runner's own group, and a bash-tool child
+    in its own session ran on (review 1116)."""
     children: dict[int, list[int]] = {}
     try:
         entries = os.listdir("/proc")
     except OSError:
-        return []
+        snap = _proc_snapshot()
+        return sorted(_subtree(snap, {root}) - {root})
     for d in entries:
         if not d.isdigit():
             continue
@@ -226,6 +229,11 @@ def _reap_live_agents() -> None:
 #   tag      OPENBEAST_AGENT_TAG, a per-agent random value in its env. Every
 #            child inherits it; the sweep reads each same-uid process's
 #            environment (/proc/<pid>/environ, or KERN_PROCARGS2 on macOS).
+#            On macOS this sees only NON-platform binaries: for Apple-signed
+#            ones (/bin/sh, bash, sleep, nohup...) KERN_PROCARGS2 returns
+#            argv without the environment (Darwin 25, review 1116). There
+#            the sandbox tag below is the real mechanism, and the sweep
+#            warns when it is unusable.
 #   sandbox  macOS: the agent's bash runs under sandbox-exec in eval mode
 #            (tools._eval_read_deny_prefix), and that profile also denies a
 #            per-agent tag FILE (OPENBEAST_AGENT_TAG_FILE). A sandbox cannot
@@ -236,7 +244,15 @@ def _reap_live_agents() -> None:
 #            scrubbed its env (env -i) but lived one poll is still known.
 #            On Linux the runner is made a child subreaper before it execs,
 #            so an orphan stays in its tree (and in view) while it lives.
-#   groups   every process group and session the watched processes led.
+#   groups   every process group and session the watched processes led,
+#            with the identity of its leader. Each bash-tool call is a new
+#            group, so a long unit records hundreds; on macOS (pid max
+#            99999, sequential) those ids are reused within minutes. A group
+#            is matched or killed only while it is provably the same group:
+#            its leader alive with the recorded identity, or leaderless and
+#            never seen empty since (an id cannot be reused while its group
+#            has a member). A reused id used to be SIGKILLed whole, taking a
+#            sibling unit's agent or validator, or a user app (review 1116).
 #   cgroup   on Linux with a delegated cgroup v2, the runner is moved into a
 #            child cgroup of ours, which nothing can leave; it is killed
 #            whole (cgroup.kill) and must be empty.
@@ -298,6 +314,15 @@ def _proc_snapshot() -> dict:
             except (IndexError, ValueError):
                 continue
         return out
+    tab = _darwin_table()
+    if tab is not None:
+        # libproc, in-process: ~2-5 ms with no fork, against ~45 ms for the
+        # `ps -A ... lstart=` below plus a strptime per row, twice a second
+        # per agent (review 1116). Our uid's processes only, which is all the
+        # sweep may match. The start identity is exact (sec, usec).
+        for pid, (ppid, pgid, uid, _cpu, (sec, usec)) in tab.items():
+            out[pid] = (ppid, pgid, None, f"{sec}.{usec:06d}", uid, sec + usec / 1e6)
+        return out
     try:
         r = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,pgid=,uid=,stat=,lstart="],
                            capture_output=True, text=True, timeout=10,
@@ -315,6 +340,27 @@ def _proc_snapshot() -> dict:
         except ValueError:
             continue
     return out
+
+
+_HOST_VLIB = None
+
+
+def _darwin_table():
+    """vlib.darwin_table() (libproc), loaded from VLIB_PATH for the harness's
+    own use, or None off macOS / when libproc is unusable."""
+    global _HOST_VLIB
+    if sys.platform != "darwin":
+        return None
+    try:
+        if _HOST_VLIB is None:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("_ob_host_vlib", VLIB_PATH)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            _HOST_VLIB = mod
+        return _HOST_VLIB.darwin_table(cpu=False)
+    except Exception:  # noqa: BLE001 — fall back to ps
+        return None
 
 
 def _proc_env_blob(pid: int) -> bytes:
@@ -486,16 +532,18 @@ class AgentWatch:
         # macOS reports start times to the second.)
         self.t0 = time.time() - 2.0
         self.seen: dict = {}            # pid -> start identity
-        self.groups: set = set()        # pgids / sids the watched processes led
+        # pgid/sid -> its leader's start identity when recorded (None: the
+        # leader was already gone). See "groups" in the block comment.
+        self.groups: dict = {}
         self.cgroup = _AgentCgroup()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
     def start(self, root: int):
         self.root = root
-        self.groups.add(root)           # start_new_session: pgid == sid == pid
         self.cgroup.adopt(root)
         self.poll()
+        self.groups.setdefault(root, self.seen.get(root))  # pgid == sid == pid
         self._thread = threading.Thread(target=self._loop, daemon=True,
                                         name=f"agent-watch-{root}")
         self._thread.start()
@@ -513,8 +561,26 @@ class AgentWatch:
         for pid in _subtree(snap, {self.root} | alive):
             row = snap[pid]
             self.seen.setdefault(pid, row[3])
-            if row[1] not in (mine, 0, 1):
-                self.groups.add(row[1])
+            g = row[1]
+            if g not in (mine, 0, 1) and g not in self.groups:
+                self.groups[g] = snap[g][3] if g in snap else None
+        # A group seen empty is over: its id may be handed out again.
+        live = {row[1] for row in snap.values()} | {row[2] for row in snap.values()}
+        for g in [g for g in self.groups if g not in live]:
+            del self.groups[g]
+
+    def owned_groups(self, snap: dict) -> set:
+        """The recorded groups that are still provably the agent's: the
+        leader alive with the identity recorded for it, or no live process
+        with that pid at all (the group outlived its leader, and an id
+        cannot be reused while its group has a member). A live pid with
+        another identity is a reused id, never ours."""
+        out = set()
+        for g, ident in self.groups.items():
+            lead = snap.get(g)
+            if lead is None or (ident is not None and lead[3] == ident):
+                out.add(g)
+        return out
 
     def stop(self):
         self._stop.set()
@@ -542,6 +608,7 @@ class AgentWatch:
         uid = os.getuid()
         tag = f"{AGENT_TAG_ENV}={self.tag}".encode()
         sb = self._sandbox_tag_usable()
+        groups = self.owned_groups(snap)
         found = set(self.cgroup.pids())
         for pid, (ppid, pgid, sid, start, puid, started) in snap.items():
             if puid != uid or pid in protect or pgid == mine:
@@ -551,7 +618,7 @@ class AgentWatch:
                 continue
             if started < self.t0:
                 continue
-            if pgid in self.groups:
+            if pgid in groups:
                 found.add(pid)
                 continue
             if sid is None:
@@ -559,7 +626,7 @@ class AgentWatch:
                     sid = os.getsid(pid)
                 except OSError:
                     sid = None
-            if sid in self.groups:
+            if sid in groups:
                 found.add(pid)
                 continue
             if sb and self._sandbox_marked(pid):
@@ -573,6 +640,23 @@ class AgentWatch:
                  and (self.seen.get(p) == snap[p][3] or snap[p][5] >= self.t0)}
         return found
 
+    def kill_now(self):
+        """One immediate freeze-and-kill of everything that matches, for the
+        timeout path: it runs BEFORE the harness drains the runner's pipes
+        for up to 5 s, so an orphan holding them cannot keep running (or
+        writing the fixtures) through that wait. The full sweep follows."""
+        self.poll()
+        cands = self.candidates()
+        for sig in (signal.SIGSTOP, signal.SIGKILL):
+            for pid in cands:
+                try:
+                    os.kill(pid, sig)
+                except OSError:
+                    pass
+
+
+_WARNED_NO_SANDBOX_TAG = False
+
 
 def sweep_agent_leftovers(watch: "AgentWatch") -> tuple[list, list]:
     """Kill every process the agent left running; return (killed, survivors).
@@ -581,7 +665,17 @@ def sweep_agent_leftovers(watch: "AgentWatch") -> tuple[list, list]:
     re-assertion or validation. Survivors are processes that still match
     after _SWEEP_ROUNDS of freeze-and-kill (only an unkillable process, or
     one this uid may not signal)."""
+    global _WARNED_NO_SANDBOX_TAG
     watch.stop()
+    # One last look: the watch thread's view can be up to a poll stale.
+    watch.poll()
+    if (sys.platform == "darwin" and not _WARNED_NO_SANDBOX_TAG
+            and not watch._sandbox_tag_usable()):
+        _WARNED_NO_SANDBOX_TAG = True
+        print("WARNING: the macOS sandbox tag is unusable (no sandbox-exec, or the harness "
+              "itself runs sandboxed); a detached /bin/sh daemon that left the agent's "
+              "tree between two polls cannot be found by its env tag on this OS",
+              file=sys.stderr)
     killed: set = set()
     try:
         for _ in range(_SWEEP_ROUNDS):
@@ -595,7 +689,7 @@ def sweep_agent_leftovers(watch: "AgentWatch") -> tuple[list, list]:
                         os.kill(pid, sig)
                     except OSError:
                         pass
-            for g in watch.groups:
+            for g in watch.owned_groups(_proc_snapshot()):
                 if g not in (0, 1, os.getpgrp()):
                     try:
                         os.killpg(g, signal.SIGKILL)
@@ -1914,8 +2008,13 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
         }
         return result
     except subprocess.TimeoutExpired:
+        watch.poll()                    # the tree as it stands, before any kill
         _kill_agent_tree(proc.pid)
         proc.kill()
+        # Before the 5 s drain below: a tool child in its own session that
+        # inherited the runner's stdout kept the pipe open, so the drain
+        # waited it out while it ran on (and the sweep came too late).
+        watch.kill_now()
         # What the runner had flushed before the kill. It prints its TOKENS
         # line only on a normal exit, so today this is almost always
         # without one and the row keeps tokens 0 (scoring counts such rows

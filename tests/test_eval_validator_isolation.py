@@ -1329,3 +1329,72 @@ def test_an_in_process_solution_cannot_forge_the_completion_line_from_globals(tm
     sol.write_text(forge)
     ok, out = run_eval.run_validation(_inproc_validator(sol))
     assert not ok, out
+
+
+# --- the sweep never kills a reused group id (review 1116) -------------------------
+
+@pytest.mark.parametrize("recorded", ["an-earlier-leader", None])
+def test_a_reused_group_id_is_not_killed_by_another_units_sweep(recorded):
+    """Each bash-tool call is a new process group, so a long unit records
+    hundreds of ids, and macOS hands pids out again within minutes. The
+    sweep SIGKILLed every recorded id blind, so a sibling unit's agent,
+    validator or solution (or a user app) that now leads a reused id died
+    with A's leftovers. B stands for that process: it starts after A's t0
+    and leads a group whose id A recorded for an earlier, dead leader."""
+    a_root = subprocess.Popen(["/bin/sleep", "30"], start_new_session=True)
+    a = run_eval.AgentWatch("unit-a")
+    a.start(a_root.pid)
+    b = subprocess.Popen(["/bin/sleep", "30"], start_new_session=True)
+    try:
+        a.groups[b.pid] = recorded          # the stale id, now B's
+        a_root.kill()
+        a_root.wait()
+        killed, survivors = run_eval.sweep_agent_leftovers(a)
+        time.sleep(0.2)
+        assert b.poll() is None, "A's sweep killed B, which only reused an id A had seen"
+        assert b.pid not in killed and not survivors, (killed, survivors)
+    finally:
+        for p in (a_root, b):
+            p.kill()
+            p.wait()
+
+
+def test_a_leaderless_group_of_the_agent_is_still_swept(tmp_path):
+    """The other side: a group whose leader exited but whose member lives
+    on is still the agent's (an id cannot be reused while its group has a
+    member), and the sweep kills that member even when no poll saw it."""
+    pidfile = tmp_path / "child.pid"
+    root = subprocess.Popen(["/bin/sh", "-c", f"sleep 30 & echo $! > {pidfile}; sleep 0.5"],
+                            start_new_session=True)
+    w = run_eval.AgentWatch("unit-c")
+    w.start(root.pid)
+    child = None
+    try:
+        child = _wait_pidfile(pidfile)
+        root.wait()
+        w.poll()
+        w.seen.pop(child, None)              # only its group can find it now
+        killed, survivors = run_eval.sweep_agent_leftovers(w)
+        assert child in killed and not survivors, (child, killed, survivors)
+        time.sleep(0.2)
+        assert not _alive(child)
+    finally:
+        if child:
+            try:
+                os.kill(child, 9)
+            except OSError:
+                pass
+
+
+def test_a_group_seen_empty_is_forgotten():
+    w = run_eval.AgentWatch("unit-d")
+    keep = subprocess.Popen(["/bin/sleep", "30"], start_new_session=True)
+    try:
+        w.start(keep.pid)
+        w.groups[4194000] = None            # no process has this pgid
+        w.poll()
+        assert 4194000 not in w.groups and keep.pid in w.groups, w.groups
+    finally:
+        keep.kill()
+        keep.wait()
+        w.stop()
