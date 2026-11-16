@@ -1,0 +1,15 @@
+{
+  "expect": {
+    "wrong_edge": "mismatch at case",
+    "wrong_operand_order": "mismatch at case",
+    "wrong_orphan_workers": "must not start other processes|CPU limit",
+    "wrong_threaded_naive": "CPU limit",
+    "wrong_blas_dlopen": "must be your own code: gemm\\.(c|cpp) may not use 'dl",
+    "wrong_blas_macro": "must be your own code: the binary imports _?dlopen",
+    "wrong_blas_link": "must be your own code: gemm\\.rs may not use",
+    "wrong_blas_cgo": "must be your own code: gemm\\.go may not use",
+    "wrong_blas_dynlib": "must be your own code: gemm\\.zig may not use"
+  },
+  "slow_expect": "solution timed out",
+  "timed": true
+}

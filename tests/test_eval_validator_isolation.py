@@ -501,6 +501,41 @@ def test_confine_fails_closed_when_it_cannot_be_set_up(monkeypatch, tmp_path):
     assert r.verdict == "sandbox" and "ran" not in r.stdout, r
 
 
+def test_seal_covers_every_checkout_and_the_git_store():
+    # A solution run from a worktree read the main checkout's
+    # evals/tasks/*.json, and the shared .git holds every branch's validators.
+    seal = run_eval.validator_seal()
+    try:
+        common = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--path-format=absolute",
+                                 "--git-common-dir"], capture_output=True, text=True)
+    except OSError:
+        pytest.skip("git is not installed")
+    if common.returncode != 0:
+        pytest.skip("not a git checkout")
+    common = common.stdout.strip()
+    main = os.path.dirname(common.rstrip(os.sep))
+    assert common in seal
+    for d in ("tasks", "refs", "suites"):
+        assert os.path.join(main, "evals", d) in seal
+        assert str(ROOT / "evals" / d) in seal
+    assert run_eval._validator_env(1.0)["OPENBEAST_VALIDATOR_SEAL"] == os.pathsep.join(seal)
+
+
+def test_python_validator_has_no_shell_parent_holding_the_script():
+    # dash does not exec the last command of `sh -c`, so a surviving shell
+    # (dumpable, unlike the validator) held the unlinked script as its stdin
+    # and /proc/<sh>/fd/0 handed it to the solution. The validator's parent
+    # must be the harness itself.
+    task = {"id": "ppid", "validation": {"type": "python", "script": textwrap.dedent(f"""
+        import os
+        print("PPID", os.getppid(), {os.getpid()})
+    """)}}
+    ok, out = run_eval.run_validation(task)
+    assert ok, out
+    ppid, harness = out.split()[1:3]
+    assert ppid == harness, out
+
+
 # --- lint ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("src", [

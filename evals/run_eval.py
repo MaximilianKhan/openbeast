@@ -1222,12 +1222,17 @@ def _run_reaped(cmd, timeout: int, shell: bool = False, **popen_kw) -> tuple[int
 
     tools.run_reaped only supports shell=True (it manages the process group
     and rlimit itself). For non-shell commands we shell-quote them into a
-    single string so the same safety guarantees apply.
+    single string so the same safety guarantees apply. The string starts with
+    `exec`, so the shell replaces itself with the command. Without it, dash
+    (Debian's and Ubuntu's /bin/sh) stays alive as the command's parent: a
+    normal, dumpable process that holds the same stdin. For a validator that
+    stdin is the unlinked script, and any same-uid process could read it
+    back through /proc/<sh pid>/fd/0.
 
     Returns (returncode, merged stdout+stderr). Raises TimeoutExpired.
     """
     if isinstance(cmd, list):
-        shell_cmd = " ".join(shlex.quote(c) for c in cmd)
+        shell_cmd = "exec " + " ".join(shlex.quote(c) for c in cmd)
     else:
         shell_cmd = cmd
     return run_reaped(shell_cmd, timeout, **popen_kw)
@@ -1582,6 +1587,45 @@ def contention_scale(jobs: int) -> float:
 VLIB_PATH = os.path.join(EVALS_DIR, "vlib.py")
 # Eval data a solution has no business reading (vlib denies it on macOS).
 VALIDATOR_SEAL = tuple(os.path.join(EVALS_DIR, d) for d in ("tasks", "refs", "suites"))
+_SEAL_CACHE: tuple | None = None
+
+
+def validator_seal() -> tuple:
+    """VALIDATOR_SEAL plus the same eval data of every OTHER checkout of this
+    repository, and the shared git directory itself.
+
+    Sealing only this checkout's evals/ left the rest in reach: a solution
+    read evals/tasks/*.json from the main checkout while the eval ran in a
+    worktree, and the common .git object store holds every branch's
+    committed task JSONs, validators and refs. No solution needs either."""
+    global _SEAL_CACHE
+    if _SEAL_CACHE is not None:
+        return _SEAL_CACHE
+    roots, extra = {os.path.dirname(EVALS_DIR)}, []
+
+    def git(*args):
+        try:
+            r = subprocess.run(["git", "-C", EVALS_DIR, *args], capture_output=True,
+                               text=True, timeout=10, stdin=subprocess.DEVNULL)
+            return r.stdout if r.returncode == 0 else ""
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+
+    common = git("rev-parse", "--path-format=absolute", "--git-common-dir").strip()
+    if common:
+        extra.append(common)
+        roots.add(os.path.dirname(common.rstrip(os.sep)))
+    for line in git("worktree", "list", "--porcelain").splitlines():
+        if line.startswith("worktree "):
+            roots.add(line[len("worktree "):])
+    seal = list(VALIDATOR_SEAL)
+    for root in sorted(roots):
+        for d in ("tasks", "refs", "suites"):
+            p = os.path.join(root, "evals", d)
+            if p not in seal:
+                seal.append(p)
+    _SEAL_CACHE = tuple(seal + extra)
+    return _SEAL_CACHE
 
 _VALIDATOR_ENV_KEEP = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TZ",
                        "TMPDIR", "TERM", "SDKROOT", "DEVELOPER_DIR",
@@ -1632,7 +1676,7 @@ def _validator_env(timeout_scale: float) -> dict:
     env.setdefault("PATH", "/usr/local/bin:/usr/bin:/bin")
     env["OPENBEAST_TIMEOUT_SCALE"] = f"{float(timeout_scale):g}"
     env["OPENBEAST_EVAL"] = "1"
-    env["OPENBEAST_VALIDATOR_SEAL"] = os.pathsep.join(VALIDATOR_SEAL)
+    env["OPENBEAST_VALIDATOR_SEAL"] = os.pathsep.join(validator_seal())
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     return env
 

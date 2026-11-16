@@ -262,7 +262,7 @@ created, and have the prover check every ancestor cwd afterwards
 9. **Keep secrets in memory.** Files you write are readable by the same uid
    wherever they live. Write only inputs to disk. Expected outputs stay in
    your process.
-9. **Confine the solution when it could reach the oracle.** The seal only
+10. **Confine the solution when it could reach the oracle.** The seal only
    denies `evals/{tasks,refs,suites}` on macOS. The repo's `.git` object
    store, other worktrees and clones, home and site-packages stay readable,
    and on Linux nothing is sealed at all. A lint does not close this:
@@ -276,11 +276,21 @@ created, and have the prover check every ancestor cwd afterwards
    user + mount namespace. When neither can be set up the verdict is
    `"sandbox"`; report it and fail, never rerun unconfined. For a compiled
    solution, add its binary and the libraries it loads to `read_only`.
-10. **Draw the generator's seed per run** (`secrets.randbits(64)`) and keep it
+11. **Draw the generator's seed per run** (`secrets.randbits(64)`) and keep it
    in memory. Then a copy of your oracle (from git history, a fork or the
    model's training data) cannot rebuild the hidden cases. Keep the count of
    cases fixed so failure messages stay stable. Before you rely on it,
    check the reference across many seeds.
+12. **Check what a compiled solution links and loads** when a library call
+    could answer the task (a BLAS for gemm, a bignum or FFT library). The
+    fixed build command does not stop `dlopen`, `#[link]`, cgo or zig
+    `extern`. Lint the source for a clear message, then refuse the binary
+    if it links more than the system runtime (`otool -L`, or `DT_NEEDED`
+    on Linux) or imports a loader or library symbol (`nm -u`, `.dynsym`).
+    Then watch the running process: a monitor dylib through
+    `/usr/bin/env DYLD_INSERT_LIBRARIES=...` on macOS (sandbox-exec drops
+    `DYLD_*` from the environment), and `/proc/<pid>/maps` on Linux. Build
+    Go with `CGO_ENABLED=0`. `122_gemm_blocked` has the worked example.
 
 ## Difficulty tiers (with concrete examples)
 

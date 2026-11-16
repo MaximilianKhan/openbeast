@@ -276,6 +276,9 @@ harness rather than through the tasks:
 | read the reference across checkouts | U4: a solution globbed `/Users/*/.../worktrees/*/evals/refs/<unit>/*.py` and exec'd it | `run_solution` denies reads of any `evals/{refs,tasks,suites}` tree, in every checkout, not only this run's sealed paths |
 | toolchain capture | 166 / 169: a planted `rust-toolchain.toml`, a `$HOME/.../go/env` with `GOFLAGS=-ldflags=-s`, or a `.cargo/config.toml` in an ancestor replaced the compiler or stripped the symbol table the validator reads | build a private copy of only the source with `vlib.private_build_dir`, under `vlib.build_env` (`GOENV=off`, `GOFLAGS` cleared, `GOTOOLCHAIN=local`, private `HOME`), and require `vlib.is_native_executable` of the product; `vlib.scan_toolchain_overrides` flags a planted ancestor config |
 | compile-time build detection | 170: a solution read `@import("builtin").link_libcpp`, true only under `-fsanitize=thread`, and ran a different algorithm in the plain build | ban the distinguishing builtin fields, and validate behaviour in the PLAIN build too; `vlib.sanitizer_flags` builds the SAME source both ways |
+| shell parent | `run_reaped` ran `python -I -S -` through `sh -c`, and dash (Debian's and Ubuntu's `/bin/sh`) stays alive as the parent. That shell is dumpable and holds the unlinked script as fd 0, so `/proc/<sh>/fd/0` gave a solution the whole validator | The list form is run as `exec python ...`, so the validator's parent is the harness, which is non-dumpable |
+| other checkouts | A solution run from a worktree read `evals/tasks/40_attention.json` from the main checkout. The shared `.git` object store holds every branch's validators | `run_eval.validator_seal()` seals `evals/{tasks,refs,suites}` of every checkout in `git worktree list`, plus the git common dir (macOS; see below) |
+| vendor BLAS | 122: a solution built A and B, then called `cblas_dgemm` from Accelerate or OpenBLAS (dlopen needs no link flag), and passed without writing a kernel | 122's validator lints the source, refuses a binary that links anything beyond the system runtime or imports a loader or a BLAS symbol, and watches the libraries the running process loads |
 
 `evals/vlib.py` is the validator's standard library. The harness injects it
 into the validator from source; it is never on an import path or in the cwd.
@@ -290,7 +293,9 @@ into the validator from source; it is never on an import path or in the cwd.
   `allow_fork=True`, orphans and survivors get `verdict="daemon"`. On macOS
   the confined solution also has **no network**, **no process-info on other
   processes**, and **no read** of any `evals/{refs,tasks,suites}` tree (plus
-  `deny_read` and `OPENBEAST_VALIDATOR_SEAL`). A compiled unit's exec is
+  `deny_read` and `OPENBEAST_VALIDATOR_SEAL`, which `run_eval.validator_seal()`
+  builds from `evals/{tasks,refs,suites}` of every checkout in `git worktree
+  list` plus the git common dir). A compiled unit's exec is
   confined to its own binary (`confine_exec`, auto for a non-interpreter
   `cmd[0]` with `allow_fork=False`), so it cannot exec into python3; the same
   is caught on Linux by a `/proc/<pid>/exe` change (`verdict="exec"`).

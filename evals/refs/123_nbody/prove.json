@@ -1,0 +1,8 @@
+{
+  "expect": {
+    "wrong_inverse_square": "mismatch at case",
+    "wrong_no_accel_term": "mismatch at case",
+    "wrong_stale_accel": "mismatch at case"
+  },
+  "slow_expect": "timed out"
+}

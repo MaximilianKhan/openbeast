@@ -1,0 +1,10 @@
+{
+  "expect": {
+    "wrong_unstable": "raised (OverflowError|ZeroDivisionError)",
+    "wrong_unscaled": "mismatch at case",
+    "wrong_scale_dv": "mismatch at case",
+    "wrong_hardmax_fallback": "mismatch at case",
+    "wrong_mean_shift": "mismatch at case"
+  },
+  "slow_expect": "timed out"
+}
