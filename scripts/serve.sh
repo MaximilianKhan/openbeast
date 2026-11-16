@@ -242,8 +242,14 @@ fi
 # as strict as with "localhost" (v1.0.0 treats "localhost" as same-origin
 # only). Without a tailnet name it stays "localhost".
 if [[ -z "${LLAMA_ARG_CORS_ORIGINS:-}" ]]; then
+  # conf.sh looked the name up when it was sourced (_OB_WEBUI_TS_FQDN); ask
+  # tailscale again only when it did not (WEBUI_ORIGINS='*').
   _ts_fqdn=""
-  declare -F _ob_webui_tailnet_name >/dev/null 2>&1 && _ts_fqdn="$(_ob_webui_tailnet_name 2>/dev/null || true)"
+  if [[ -n "${_OB_WEBUI_TS_FQDN+set}" ]]; then
+    _ts_fqdn="$_OB_WEBUI_TS_FQDN"
+  elif declare -F _ob_webui_tailnet_name >/dev/null 2>&1; then
+    _ts_fqdn="$(_ob_webui_tailnet_name 2>/dev/null || true)"
+  fi
   if [[ "$_ts_fqdn" =~ ^[a-z0-9.-]+\.[a-z0-9-]+$ ]]; then
     LLAMA_ARG_CORS_ORIGINS="https://$_ts_fqdn:8443"
   fi

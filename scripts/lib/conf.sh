@@ -1227,7 +1227,7 @@ _ob_webui_cors() {
     h="$(hostname 2>/dev/null | tr '[:upper:]' '[:lower:]')"
     [[ -n "$h" ]] && list+=("http://$h:3000")
   fi
-  fq="$(_ob_webui_tailnet_name)"
+  fq="${_OB_WEBUI_TS_FQDN-$(_ob_webui_tailnet_name)}"
   if [[ -n "$fq" ]]; then
     list+=("https://$fq")
     ob_bind_is_loopback "$BIND_HOST" || list+=("http://$fq:3000")
@@ -1236,6 +1236,14 @@ _ob_webui_cors() {
   local IFS=';'
   echo "${list[*]}"
 }
+# The tailnet name, looked up ONCE per source of this file (two `timeout 3`
+# tailscale calls plus python when tailscaled is slow) and kept in
+# _OB_WEBUI_TS_FQDN, so serve.sh's llama-server CORS origin reuses it
+# instead of asking again. WEBUI_ORIGINS='*' needs no name: left unset.
+unset _OB_WEBUI_TS_FQDN
+_ob_wo="${OPENBEAST_WEBUI_ORIGINS:-$(_ob_conf_value WEBUI_ORIGINS || true)}"
+[[ "${_ob_wo// /}" == "*" ]] || _OB_WEBUI_TS_FQDN="$(_ob_webui_tailnet_name)"
+unset _ob_wo
 OPENBEAST_WEBUI_CORS="$(_ob_webui_cors)"
 export OPENBEAST_WEBUI_CORS
 # The Host names the WebUI answers (docker-compose OB_WEBUI_HOSTS, enforced

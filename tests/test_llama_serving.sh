@@ -216,16 +216,22 @@ grep -qx 'LLAMA_ARG_CORS_ORIGINS=https://ui.example' "$SV/env" 2>/dev/null \
 # whose Host is not loopback or an allowed origin's host, and Tailscale Serve
 # keeps the client's Host. With the tailnet name known, the raw :8443 mount's
 # origin must be the allowed one, or every remote client gets a 403.
-cat > "$SV/bin/tailscale" <<'SH'
+cat > "$SV/bin/tailscale" <<SH
 #!/bin/bash
-[[ "$1 $2" == "status --json" ]] && { echo '{"Self": {"DNSName": "beast.tail123.ts.net."}}'; exit 0; }
+echo "\$*" >> "$SV/ts-calls"
+[[ "\$1 \$2" == "status --json" ]] && { echo '{"Self": {"DNSName": "beast.tail123.ts.net."}}'; exit 0; }
 exit 1
 SH
-chmod +x "$SV/bin/tailscale"
+chmod +x "$SV/bin/tailscale"; : > "$SV/ts-calls"
 _serve -- -m "$SV/weights/main.gguf" -c 8192
 grep -qx 'LLAMA_ARG_CORS_ORIGINS=https://beast.tail123.ts.net:8443' "$SV/env" 2>/dev/null \
   && pass "…with a tailnet name, the :8443 mount's origin is allowed (llama.cpp v1.0.0 Host guard)" \
   || fail "tailnet origin not allowed: $(grep '^LLAMA_ARG_CORS' "$SV/env" 2>/dev/null) :: $(tr '\n' ' ' <<< "$SV_OUT" | tail -c 300)"
+# conf.sh already looked the name up when serve.sh sourced it; serve.sh
+# reuses it (a stalled tailscaled cost each lookup up to 2 x `timeout 3`).
+[[ "$(grep -c '^status --json' "$SV/ts-calls")" == 1 ]] \
+  && pass "…and tailscale is asked for it once per launch, not again by serve.sh" \
+  || fail "tailscale asked $(grep -c '^status --json' "$SV/ts-calls") times: $(tr '\n' ';' < "$SV/ts-calls")"
 _serve LLAMA_ARG_CORS_ORIGINS=https://ui.example -- -m "$SV/weights/main.gguf" -c 8192
 grep -qx 'LLAMA_ARG_CORS_ORIGINS=https://ui.example' "$SV/env" 2>/dev/null \
   && pass "…and an operator's own value still wins over the tailnet name" \
