@@ -16,6 +16,19 @@ sys.path.insert(0, str(ROOT / "agents"))
 import benchmark_all as B  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _restore_remote_env(monkeypatch):
+    # benchmark_remote exports the endpoint and key into os.environ (the
+    # sweep process is the runner's parent). Registered here, monkeypatch puts
+    # them back after the test: leaked, OPENBEAST_AGENT_INFERENCE_URL made a
+    # later chat_server test's runner argv carry --base-url, and the key
+    # changed test_eval_key_policy's ambient-key verdicts.
+    # (setenv first: delenv of an ABSENT var records nothing to undo.)
+    for k in ("OPENBEAST_AGENT_INFERENCE_URL", "OPENBEAST_API_KEY"):
+        monkeypatch.setenv(k, "")
+        monkeypatch.delenv(k)
+
+
 def _glm():
     return next(m for m in B.MODELS if m["slug"] == "glm-5.3-flash")
 

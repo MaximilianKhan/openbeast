@@ -466,10 +466,17 @@ def test_confined_solution_reads_only_its_runtime_and_work_dir(tmp_path):
     (work / "in.txt").write_text("input")
     import sysconfig
     site = sysconfig.get_path("purelib")
+    # Landlock grants a dir that holds site-packages as "list it, read
+    # everything in it but the package dirs", and READ_DIR is hierarchical:
+    # where purelib sits INSIDE the stdlib dir (a CI runner's hostedtoolcache
+    # python) its names can be listed, never read. So probe a FILE in it.
+    site_file = next((os.path.join(site, n) for n in sorted(os.listdir(site))
+                      if os.path.isfile(os.path.join(site, n))), site) \
+        if os.path.isdir(site) else site
     probe = textwrap.dedent(f"""
         import os, json, math, decimal
         got = {{}}
-        for p in [{str(secret)!r}, {os.path.expanduser("~")!r}, {site!r}, "/etc/passwd"]:
+        for p in [{str(secret)!r}, {os.path.expanduser("~")!r}, {site_file!r}, "/etc/passwd"]:
             try:
                 if os.path.isdir(p):
                     got[p] = len(os.listdir(p)) and "listed"
