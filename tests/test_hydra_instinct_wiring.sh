@@ -164,7 +164,16 @@ if [[ -n "${WIRING_BASELINE_REF:-}" ]]; then
   #                    docker-compose.yml (docs/BEAST_ISLAND.md)
   #   DASHBOARD_PORT, OPENBEAST_DASHBOARD_PORT — the dashboard's port, resolved
   #                    once for healthcheck and --publish-slot (extensions-ntfy)
+  #   OPENBEAST_WEBUI_CORS, OPENBEAST_WEBUI_HOSTS — Open WebUI's CORS origins
+  #                    and Host allowlist (DNS-rebinding guard, full-system
+  #                    review 2026-11-15, docs/REFERENCE.md WEBUI_ORIGINS)
+  #   OPENBEAST_WEBUI_AUTH, OB_CONF_WEBUI_AUTH_WARNED and the four lines of the
+  #                    "WEBUI_AUTH=false ignored" warning — a network bind now
+  #                    keeps WebUI login on unless ALLOW_OPEN_WEBUI=true (same
+  #                    review). Only the wildcard-bind scenario changes.
   _BASELINE_ALLOW='^ENV OPENBEAST_(CHAT_NOTIFY_ON|NTFY_PORT|WEBUI_OFFLINE)=|^ENV OB_CONF_LINTED=|^ENV (OPENBEAST_)?DASHBOARD_PORT='
+  _BASELINE_ALLOW+='|^ENV OPENBEAST_WEBUI_(CORS|HOSTS|AUTH)=|^ENV OB_CONF_WEBUI_AUTH_WARNED='
+  _BASELINE_ALLOW+='|^WARNING: WEBUI_AUTH=false ignored — |^ {9}(off every visitor is the WebUI admin|the built-in admin.s password is in openbeast.conf|start\. Set ALLOW_OPEN_WEBUI=true)'
   if [[ -n "${WIRING_BASELINE_ALLOW:-}" ]]; then
     _BASELINE_ALLOW="$_BASELINE_ALLOW|$WIRING_BASELINE_ALLOW"
   fi
@@ -952,14 +961,16 @@ if [[ -n "${WIRING_BASELINE_REF:-}" ]]; then
   fi
   RUN_ENV=("${_env_hc[@]}" OPENBEAST_EDGE_GATE=true OPENBEAST_EDGE_PORT="$P_OK")
   # One section added to doctor since the pinned baseline for a reason that has
-  # nothing to do with hydra/instinct: "Remote skills" (the skill import gate).
-  # Exactly that section (header, its one passing row, the blank line) is
+  # nothing to do with hydra/instinct: "Remote skills" (the skill import gate),
+  # and likewise "Inference engine" (scripts/engine.sh, docs/ENGINES.md).
+  # Exactly those sections (header, their one row, the blank line) are
   # dropped, and with it the one extra "ok" in the summary; warnings and
   # failures are still compared, and so is every other line.
   _doc() { _norm "$1" | awk '
-      /Remote skills/ { skip = 1; next }
+      /Remote skills/ || /Inference engine/ { skip = 1; next }
       skip && /^[[:space:]]*$/ { skip = 0; next }
       skip && /✓ remote skills: / { next }
+      skip && /^  - host class / { next }
       { print }' | sed -E 's/^doctor: [0-9]+ ok,/doctor: <N> ok,/'; }
   # Since UX-17 doctor folds the per-service rows of a stack that is NOT
   # RUNNING into one line. This comparison is about the rows, so both boxes
@@ -973,7 +984,9 @@ if [[ -n "${WIRING_BASELINE_REF:-}" ]]; then
           <(_run "$_NB" "$_NB/scripts/doctor.sh" | _doc "$_NB") >/dev/null; then
     pass "doctor.sh: identical output"
   else
-    fail "doctor.sh output differs from $WIRING_BASELINE_REF"
+    fail "doctor.sh output differs from $WIRING_BASELINE_REF:"
+    diff <(_run "$_OB" "$_OB/scripts/doctor.sh" | _doc "$_OB") \
+         <(_run "$_NB" "$_NB/scripts/doctor.sh" | _doc "$_NB") | head -10 | sed 's/^/        /' || true
   fi
 fi
 
