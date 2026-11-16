@@ -268,6 +268,7 @@ harness rather than through the tasks:
 | scale | Fixed solution limits (4-10 s) ignored `--scale`, so references timed out under load and wrong solutions failed for the wrong class | `OPENBEAST_TIMEOUT_SCALE` is exported, and `vlib.t(s)` multiplies by it |
 | hidden CPU | 122: double-forked, never-waited workers kept their CPU out of `RUSAGE_CHILDREN` (29 s of naive gemm was charged as 0.03 s) | `vlib.run_solution` counts the whole tree. Leftovers are refused as `daemon` |
 | lingering solutions | a validator killed on timeout left its solution's group running into the next unit | vlib records each group it starts, and the harness SIGKILLs them after the validator exits |
+| unsealed oracle copies | 190: the seal covered `evals/{tasks,refs,suites}` but not `.git`, other worktrees or clones, so a lint-escaped solution unpacked the task JSON from a git object and replayed the oracle. On Linux nothing was sealed | `run_solution(confine=..., read_only=...)`: a read allowlist (sandbox-exec / landlock / mount namespace) that fails closed, plus a per-run generator seed held only in validator memory |
 
 `evals/vlib.py` is the validator's standard library. The harness injects it
 into the validator from source; it is never on an import path or in the cwd.
@@ -282,6 +283,14 @@ into the validator from source; it is never on an import path or in the cwd.
   `allow_fork=True`, orphans and survivors get `verdict="daemon"`. On macOS
   it also denies reads of `evals/tasks`, `evals/refs` and `evals/suites`
   (`OPENBEAST_VALIDATOR_SEAL`).
+  `confine=[work], read_only=vlib.python_runtime(exe, modules)` replaces
+  that deny-list with an allowlist on both platforms. The solution may read
+  only its interpreter's stdlib (never site-packages), the libraries it
+  maps and `work`. It writes only `work` and gets no network. macOS uses a
+  deny-by-default sandbox-exec profile; Linux uses landlock, or a user +
+  mount namespace with a fresh root on kernels before 5.13. Without either
+  it returns `verdict="sandbox"` and does not run the solution. 190 needs it:
+  its verifier read the oracle out of the unsealed `.git` object store.
 - `vlib.t(s)` and `vlib.scale()` give the timeout scale. `vlib.python_cmd(p)`
   gives `[python, -I, -S, p]`. `vlib.processes()` is a /proc-free process
   table. `vlib.lint_python(src, ban_modules=, ban_calls=)` is an AST lint for
