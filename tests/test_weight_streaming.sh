@@ -69,6 +69,60 @@ else
 fi
 
 echo ""
+echo "llama.cpp v1.0.0 flags (tests/fixtures/llama/arg-options-v1.0.0.txt):"
+OPTS="$REPO_DIR/tests/fixtures/llama/arg-options-v1.0.0.txt"
+_pin="$(sed -nE 's/^LLAMA_CPP_REF=([0-9a-f]{40})$/\1/p' "$REPO_DIR/scripts/llama.cpp.ref")"
+grep -q "commit $_pin" "$OPTS" && pass "the option list is the pinned commit's (${_pin:0:12})" \
+  || fail "scripts/llama.cpp.ref pins ${_pin:0:12} but the option fixture is for another commit — regenerate it"
+# _flags <file> — every -flag word in the serve.sh exec block of a serve script.
+_flags() {
+  awk '/exec "\$SCRIPT_DIR\/serve.sh"/ {on = 1} on {print} on && !/\\$/ {on = 0}' "$1" \
+    | tr ' \t' '\n\n' | grep -E '^--?[a-zA-Z]' | sed 's/=.*//' || true
+}
+_unknown=""; _n=0
+for _ss in "$REPO_DIR"/scripts/serve-*.sh; do
+  while IFS= read -r _f; do
+    [[ -n "$_f" ]] || continue
+    _n=$((_n + 1))
+    grep -qxF -- "$_f" "$OPTS" || _unknown+=" $(basename "$_ss"):$_f"
+  done < <(_flags "$_ss")
+done
+# serve.sh's own fixed flags on the llama-server exec line.
+for _f in -m -ngl -c -np --kv-unified -ctk -ctv --metrics --host --port --cache-ram; do
+  grep -qxF -- "$_f" "$OPTS" || _unknown+=" serve.sh:$_f"
+done
+[[ -z "$_unknown" && $_n -gt 50 ]] && pass "all $_n flags the serve scripts pass, and serve.sh's own, exist in v1.0.0" \
+  || fail "flags v1.0.0 does not define (or too few found: $_n):$_unknown"
+_removed=""
+for _f in --defrag-thold -dt --mmap --mlock --direct-io -dio; do
+  grep -rqE -- "(^|[[:space:]\"])$_f([[:space:]=\"]|$)" "$REPO_DIR"/scripts/serve*.sh "$REPO_DIR"/scripts/run*.sh \
+    "$REPO_DIR"/scripts/profile-*.sh "$REPO_DIR"/scripts/measure-vram.sh 2>/dev/null && _removed+=" $_f"
+done
+[[ -z "$_removed" ]] && pass "no launcher uses an option v1.0.0 removed (--defrag-thold, --mmap, --mlock, --direct-io)" \
+  || fail "removed in v1.0.0 but still passed:$_removed"
+
+echo ""
+echo "the MoE-cache and big-mode profiles:"
+FN="$REPO_DIR/scripts/serve-qwen38-flash-next-unc-iq4xs-moecache.sh"
+_fl="$(_flags "$FN" | tr '\n' ' ')"
+if [[ -x "$FN" && "$_fl" == *"--moe-cache-mib"* && "$_fl" == *"--n-cpu-moe"* && "$_fl" == *"--cache-ram"* ]] \
+   && [[ -z "$(ob_scope_decl "$FN")" ]]; then
+  pass "Flash-Next + cache: host experts, a VRAM cache, a pinned prompt cache, and the daily 75% scope (no declaration)"
+else
+  fail "Flash-Next MoE-cache profile: flags '$_fl', scope '$(ob_scope_decl "$FN")'"
+fi
+# Its memory plan must fit the 75% scope: 40 CPU layers x 1.27 GiB + 27.63 GiB
+# of tables + 1.5 buffers + the --cache-ram + 3 for the stack, against 75% of 122 GiB.
+_ncm="$(awk '$1 == "--n-cpu-moe" {print $2}' "$FN")"; _cr="$(awk '$1 == "--cache-ram" {print $2}' "$FN")"
+_need="$(awk -v n="$_ncm" -v c="$_cr" 'BEGIN {printf "%d", n * 1.27 + 27.63 + 1.5 + c / 1024 + 3}')"
+_cap="$(awk -v k="$RIG_KB" 'BEGIN {printf "%d", k / 1048576 * 0.75}')"
+[[ -n "$_ncm" && "$_need" -lt "$_cap" ]] && pass "…its host RAM plan (~${_need} GiB) fits the 75% scope (${_cap} GiB)" \
+  || fail "Flash-Next MoE-cache needs ~${_need:-?} GiB of the ${_cap} GiB scope (n-cpu-moe '${_ncm}', cache-ram '${_cr}')"
+grep -q -- '--cache-ram' "$REPO_DIR/scripts/serve-qwen38-flash-next-unc-iq4xs.sh" \
+  && pass "…and the static Flash-Next baseline pins --cache-ram too (its experts share the scope)" \
+  || fail "serve-qwen38-flash-next-unc-iq4xs.sh leaves the prompt cache unbounded beside 72 GiB of host weights"
+
+echo ""
 echo "================================"
 echo "Results: $PASS passed, $FAIL failed"
 echo "================================"

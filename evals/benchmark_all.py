@@ -160,6 +160,12 @@ BENCH_EXCLUDED = {
         "single slot, ~35 tok/s): a v5-fast row is a ~1-day GPU+CPU job that "
         "starves every other queue item. Baselined by hand 2026-09-11 (see "
         "docs/MODELS.md); register it when Max schedules the run.",
+    "scripts/serve-qwen38-flash-next-unc-iq4xs-moecache.sh":
+        "the same Flash-Next weights with llama.cpp v1.0.0's MoE expert cache "
+        "(target 55-70 tok/s), written 2026-11-15 while the rig was offline. "
+        "Its tok/s acceptance check comes first (docs/WEIGHT_STREAMING.md); "
+        "the v4/v5 SCORE row is a docs/TODO.md PERFORMANCE MATRIX item, "
+        "registered here once Max schedules the GPU time.",
     "scripts/serve-qwen38-27b-vision-q5.sh":
         "same weights as qwen38-27b-q5, differing only by --mmproj; our eval "
         "suite is text-only, so this would burn ~45 min to reproduce its "

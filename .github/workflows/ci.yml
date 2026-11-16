@@ -268,6 +268,13 @@ jobs:
       - name: Engine plane tests (swap / pin / update / rollback)
         run: bash tests/test_engines.sh
 
+      # Weight streaming (docs/WEIGHT_STREAMING.md): the per-profile memory
+      # scope, the MoE-cache and big-mode serve profiles, every serve-script
+      # flag against llama.cpp v1.0.0's option list, and the tok/s gate.
+      # Portable bash and stdlib python; no GPU, no network.
+      - name: Weight streaming tests (scope, profiles, v1.0.0 flags, tok/s gate)
+        run: bash tests/test_weight_streaming.sh
+
       # spark-cluster.sh for 1 to 8 nodes: ssh and the node probes are stubs
       # that answer per node, so topology, ordering and refusals run here.
       - name: DGX Spark cluster tests (1-8 nodes)
