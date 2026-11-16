@@ -2424,16 +2424,29 @@ def _vlib_source() -> str:
         return f.read()
 
 
-def _kill_recorded_groups(group_file: str):
+def _kill_recorded_groups(group_file: str, since: float | None = None):
+    """SIGKILL every solution group the validator recorded in `group_file`.
+
+    The file sits in the validator's 0700 dir, but under --jobs other
+    units' agents run as the same uid and could append any pgid to it
+    (review 1116). With `since` (the validation's start, epoch s), a group
+    is killed only while it has a live member of our uid that started
+    after it: everything a validator starts does, while a process that
+    was already running (a sibling's agent, a user app) never qualifies."""
     try:
         with open(group_file) as f:
             pgids = {int(x) for x in f.read().split() if x.strip().isdigit()}
     except OSError:
         return
     mine = os.getpgrp()
+    pgids = {pg for pg in pgids if pg > 1 and pg != mine}
+    if since is not None and pgids:
+        uid = os.getuid()
+        snap = _proc_snapshot()
+        # macOS start times are whole seconds: allow one second of slack
+        pgids = {row[1] for row in snap.values()
+                 if row[1] in pgids and row[4] == uid and row[5] >= since - 1.0}
     for pg in pgids:
-        if pg <= 1 or pg == mine:
-            continue
         try:
             os.killpg(pg, signal.SIGKILL)
         except OSError:
@@ -2468,6 +2481,7 @@ def run_validation(task: dict, timeout_scale: float = 1.0) -> tuple[bool, str]:
     vcwd = os.path.join(private, "cwd")
     os.mkdir(vcwd, 0o700)
     group_file = os.path.join(private, "pgids")
+    started = time.time()
     try:
         if vtype == "python":
             import secrets
@@ -2514,7 +2528,7 @@ def run_validation(task: dict, timeout_scale: float = 1.0) -> tuple[bool, str]:
     except Exception as e:
         return False, f"Validation error: {e}"
     finally:
-        _kill_recorded_groups(group_file)
+        _kill_recorded_groups(group_file, since=started)
         _rmtree_force(private)
 
 

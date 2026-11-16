@@ -567,6 +567,20 @@ solution process group a validator recorded is SIGKILLed after it exits.
 - **macOS argv/env of other processes** stay readable to a same-uid process
   through `kern.procargs2` under every sandbox rule tried, so no validator
   may hold a secret in argv or env (none does: the script arrives on stdin).
+- **Sibling agents under `--jobs`.** The leftover sweep kills one unit's
+  agent tree before ITS validation; the other units' agents are still
+  running then, as the same uid, with bash. On macOS their sandbox only
+  denies reads of the sealed eval trees, and on Linux they have none, so a
+  careless `rm -rf /tmp/eval_*` or `pkill -f zig` in one unit can fail
+  another unit's validation (a false FAIL, which the cache banks; it can
+  never inflate a score). Closed in the harness: a forged entry in a
+  validator's `pgids` file can no longer make the harness kill an older
+  process (only groups with a member started after the validation began
+  are killed). Not closed: the fixture files and the validator's private
+  dir in the shared `TMPDIR` stay writable to a sibling agent. The fix is
+  a write-deny in the agent's eval sandbox (`agents/tools.py`, which is in
+  the era hash) plus a Linux equivalent; until then, a campaign that must
+  be exact runs `--jobs 1`.
 - **Shared fixture paths.** A family's units share one fixed `/tmp/eval_*`
   dir. Two harness processes on one host used to corrupt each other there
   (186, 190; review 1116: the 167_q15_biquad_a/_c references failed 8 runs

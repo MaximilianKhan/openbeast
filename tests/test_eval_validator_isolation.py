@@ -1398,3 +1398,26 @@ def test_a_group_seen_empty_is_forgotten():
         keep.kill()
         keep.wait()
         w.stop()
+
+
+
+def test_a_forged_pgid_of_an_older_process_is_not_killed(tmp_path):
+    """The validator's pgids file is writable by any same-uid process, such
+    as a sibling unit's agent under --jobs (review 1116). Only groups with a
+    member started after the validation began are killed."""
+    old = subprocess.Popen(["/bin/sleep", "30"], start_new_session=True)
+    time.sleep(1.2)
+    since = time.time()
+    time.sleep(1.1)
+    new = subprocess.Popen(["/bin/sleep", "30"], start_new_session=True)
+    try:
+        gf = tmp_path / "pgids"
+        gf.write_text(f"{old.pid}\n{new.pid}\n")
+        run_eval._kill_recorded_groups(str(gf), since=since)
+        time.sleep(0.2)
+        assert old.poll() is None, "killed a group that predates the validation"
+        assert new.poll() is not None, "missed the validator's own solution group"
+    finally:
+        for p in (old, new):
+            p.kill()
+            p.wait()
