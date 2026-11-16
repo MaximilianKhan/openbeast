@@ -74,6 +74,26 @@ def test_surrogate_in_model_output_neither_crashes_nor_wedges(tmp_path, monkeypa
     assert client.calls == 2 + 1         # one scrub-retry, not a 5 s loop
 
 
+def test_surrogate_in_a_plan_step_does_not_wedge_the_run(tmp_path, monkeypatch):
+    # Review 2026-11-16: the plan lives in tools' ContextVar and is
+    # re-injected into every request; scrubbing only `messages` left the
+    # surrogate there, so every later request failed until max_iter.
+    monkeypatch.setattr(runner.time, "sleep", lambda s: None)
+    plan_args = '{"steps":[{"step":"fix \\ud800 bug","status":"in_progress"}]}'
+    client = _StrictClient(
+        [_resp("", ("update_plan", plan_args))]
+        + [_resp("", ("task_done", '{"summary": "ok"}'))] * 5)
+    monkeypatch.setattr(runner, "OpenAI", lambda **kw: client)
+    log = tmp_path / "run.jsonl"
+    runner.run_agent("task", max_iter=6, log_file=str(log),
+                     system_prompt="s", workdir=str(tmp_path))
+    kinds = [json.loads(ln)["type"] for ln in log.read_text().splitlines()]
+    assert "surrogates_scrubbed" in kinds
+    assert "error" not in kinds, kinds
+    assert client.calls == 3            # plan call, one scrub-retry, task_done
+    assert runner.get_plan() in (None, [{"step": "fix ? bug", "status": "in_progress"}])
+
+
 def test_unsurrogate_leaves_clean_text_alone():
     msgs = [{"role": "user", "content": "ok ✓"},
             {"role": "assistant", "content": "a\udfffb",
