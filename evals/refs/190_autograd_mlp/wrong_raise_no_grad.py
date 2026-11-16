@@ -1,10 +1,6 @@
-"""WRONG (cheat_fd.py): NO reverse mode. The forward ops are the reference's,
-but every op result records how it was made, and backward() replays the
-recorded graph to take central finite differences (h = 1e-5, the oracle's
-own step) for every element of every requires_grad leaf. Exact enough for
-the tiny random programs; must FAIL by running out of time on the
-2000-element wide case (two full forward replays per leaf element).
-"""
+"""WRONG (wrong_raise_no_grad.py): the reference, except that backward() on a
+root that does not require grad raises like PyTorch does. The task says that
+is a no-op; 6 hidden programs do it, the first is case 23."""
 import math
 
 
@@ -102,6 +98,7 @@ def _norm_axes(axis, ndim):
 
 
 class Tensor:
+    __slots__ = ("_v", "shape", "requires_grad", "_g", "_parents", "_back")
 
     def __init__(self, data, requires_grad=False):
         if isinstance(data, Tensor):
@@ -385,11 +382,11 @@ class Tensor:
         return Tensor._make(vals, tuple(out), (a, b), back)
 
     # ---- backward -------------------------------------------------------
-    def _reverse_backward(self):
+    def backward(self):
         if self.shape != ():
             raise ValueError("backward() needs a scalar")
         if not self.requires_grad:
-            return
+            raise RuntimeError('element 0 of tensors does not require grad')
         order, seen = [], {id(self)}
         stack = [(self, 0)]
         while stack:
@@ -445,89 +442,10 @@ def train_mlp(X, y, params, lr, steps):
     for _ in range(steps):
         loss = loss_of(ps)
         losses.append(loss.item())
-        loss._reverse_backward()        # the trainer itself keeps reverse mode
+        loss.backward()
         ps = [Tensor._make([v - lr * g for v, g in zip(p._v, p._g)], p.shape, (), None)
               for p in ps]
         for p in ps:
             p.requires_grad = True
     losses.append(loss_of(ps).item())
     return losses, [p.data for p in ps]
-
-
-# ---------------------------------------------------------------- the cheat
-_REC = [True]
-_OPS = ["__add__", "__radd__", "__sub__", "__rsub__", "__mul__", "__rmul__",
-        "__truediv__", "__rtruediv__", "__neg__", "__pow__", "__matmul__",
-        "exp", "log", "tanh", "relu", "sum", "mean", "max", "logsumexp", "reshape"]
-
-
-def _wrap(fn):
-    def w(self, *a, **k):
-        out = fn(self, *a, **k)
-        if _REC[0]:
-            out._rec = (fn, self, a, k)
-        return out
-    return w
-
-
-for _n in _OPS:
-    setattr(Tensor, _n, _wrap(getattr(Tensor, _n)))
-_Tget = Tensor.T.fget
-Tensor.T = property(_wrap(_Tget))
-_ce = cross_entropy
-
-
-def cross_entropy(logits, targets):
-    out = _ce(logits, targets)
-    out._rec = (lambda lg, tg: _ce(lg, tg), logits, (targets,), {})
-    return out
-
-
-def _fd_backward(self):
-    if self.shape != ():
-        raise ValueError("backward() needs a scalar")
-    order, seen, stack = [], set(), [(self, False)]
-    while stack:
-        node, done = stack.pop()
-        if done:
-            order.append(node)
-            continue
-        if id(node) in seen:
-            continue
-        seen.add(id(node))
-        stack.append((node, True))
-        rec = getattr(node, "_rec", None)
-        if rec is None:
-            continue
-        for p in (rec[1],) + tuple(rec[2]):
-            if isinstance(p, Tensor) and id(p) not in seen:
-                stack.append((p, False))
-    leaves = [n for n in order if getattr(n, "_rec", None) is None and n.requires_grad]
-
-    def replay():
-        _REC[0] = False
-        try:
-            for n in order:
-                rec = getattr(n, "_rec", None)
-                if rec is not None:
-                    n._v = rec[0](rec[1], *rec[2], **rec[3])._v
-        finally:
-            _REC[0] = True
-        return self._v[0]
-
-    h = 1e-5
-    for leaf in leaves:
-        g = []
-        for e in range(len(leaf._v)):
-            x0 = leaf._v[e]
-            leaf._v[e] = x0 + h
-            up = replay()
-            leaf._v[e] = x0 - h
-            dn = replay()
-            leaf._v[e] = x0
-            g.append((up - dn) / (2 * h))
-        replay()
-        leaf._g = g if leaf._g is None else [a + b for a, b in zip(leaf._g, g)]
-
-
-Tensor.backward = _fd_backward

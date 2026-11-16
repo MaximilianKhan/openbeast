@@ -1,43 +1,10 @@
-"""LEAK PROBE (leak_argv.py): looks for the validator's oracle where a
-solution process can reach it: the argv of this process, its parent (the validator) and grandparent (`ps`)
-and stray validator temp files. It is the reference solution, but it only
-works when it found a leak and raises on import otherwise, so it must FAIL
-(import failed: RuntimeError) for as long as nothing leaks.
+"""WRONG (wrong_cheat_fd.py): NO reverse mode. The forward ops are the reference's,
+but every op result records how it was made, and backward() replays the
+recorded graph to take central finite differences (h = 1e-5, the oracle's
+own step) for every element of every requires_grad leaf. Exact enough for
+the tiny random programs; must FAIL by running out of time on the
+2000-element wide case (two full forward replays per leaf element).
 """
-import glob as _glob
-import os as _os
-import subprocess as _sp
-import tempfile as _tf
-
-
-def _leaked():
-    pid = _os.getpid()
-    for _ in range(3):            # this process, the validator, its launcher
-        try:
-            out = _sp.run(["ps", "-ww", "-o", "ppid=,args=", "-p", str(pid)],
-                          capture_output=True, text=True).stdout.strip()
-        except OSError:
-            break
-        if not out:
-            break
-        ppid, _, args = out.partition(" ")
-        if "mlp_oracle" in args or "build_cases" in args:
-            return True
-        pid = int(ppid)
-        if pid <= 1:
-            break
-    for d in {_tf.gettempdir(), "/tmp", _os.environ.get("TMPDIR", "/tmp")}:
-        for f in _glob.glob(_os.path.join(d, "v190-*")):
-            try:
-                if "mlp_oracle" in open(f).read():
-                    return True
-            except OSError:
-                pass
-    return False
-
-
-if not _leaked():
-    raise RuntimeError("no oracle found in ancestor argv or temp files")
 import math
 
 
@@ -135,7 +102,6 @@ def _norm_axes(axis, ndim):
 
 
 class Tensor:
-    __slots__ = ("_v", "shape", "requires_grad", "_g", "_parents", "_back")
 
     def __init__(self, data, requires_grad=False):
         if isinstance(data, Tensor):
@@ -419,7 +385,7 @@ class Tensor:
         return Tensor._make(vals, tuple(out), (a, b), back)
 
     # ---- backward -------------------------------------------------------
-    def backward(self):
+    def _reverse_backward(self):
         if self.shape != ():
             raise ValueError("backward() needs a scalar")
         if not self.requires_grad:
@@ -479,10 +445,106 @@ def train_mlp(X, y, params, lr, steps):
     for _ in range(steps):
         loss = loss_of(ps)
         losses.append(loss.item())
-        loss.backward()
+        loss._reverse_backward()        # the trainer itself keeps reverse mode
         ps = [Tensor._make([v - lr * g for v, g in zip(p._v, p._g)], p.shape, (), None)
               for p in ps]
         for p in ps:
             p.requires_grad = True
     losses.append(loss_of(ps).item())
     return losses, [p.data for p in ps]
+
+
+# ---------------------------------------------------------------- the cheat
+_REC = [True]
+Tensor._rec = None        # class default: leaves have no record
+
+
+def _wrap(fn):
+    def w(self, *a, **k):
+        out = fn(self, *a, **k)
+        if _REC[0]:
+            out._rec = (fn, self, a, k)
+        return out
+    return w
+
+
+# explicit (no computed setattr/getattr, which the validator's lint rejects)
+Tensor.__add__ = _wrap(Tensor.__add__)
+Tensor.__radd__ = _wrap(Tensor.__radd__)
+Tensor.__sub__ = _wrap(Tensor.__sub__)
+Tensor.__rsub__ = _wrap(Tensor.__rsub__)
+Tensor.__mul__ = _wrap(Tensor.__mul__)
+Tensor.__rmul__ = _wrap(Tensor.__rmul__)
+Tensor.__truediv__ = _wrap(Tensor.__truediv__)
+Tensor.__rtruediv__ = _wrap(Tensor.__rtruediv__)
+Tensor.__neg__ = _wrap(Tensor.__neg__)
+Tensor.__pow__ = _wrap(Tensor.__pow__)
+Tensor.__matmul__ = _wrap(Tensor.__matmul__)
+Tensor.exp = _wrap(Tensor.exp)
+Tensor.log = _wrap(Tensor.log)
+Tensor.tanh = _wrap(Tensor.tanh)
+Tensor.relu = _wrap(Tensor.relu)
+Tensor.sum = _wrap(Tensor.sum)
+Tensor.mean = _wrap(Tensor.mean)
+Tensor.max = _wrap(Tensor.max)
+Tensor.logsumexp = _wrap(Tensor.logsumexp)
+Tensor.reshape = _wrap(Tensor.reshape)
+_Tget = Tensor.T.fget
+Tensor.T = property(_wrap(_Tget))
+_ce = cross_entropy
+
+
+def cross_entropy(logits, targets):
+    out = _ce(logits, targets)
+    out._rec = (lambda lg, tg: _ce(lg, tg), logits, (targets,), {})
+    return out
+
+
+def _fd_backward(self):
+    if self.shape != ():
+        raise ValueError("backward() needs a scalar")
+    order, seen, stack = [], set(), [(self, False)]
+    while stack:
+        node, done = stack.pop()
+        if done:
+            order.append(node)
+            continue
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        stack.append((node, True))
+        rec = node._rec
+        if rec is None:
+            continue
+        for p in (rec[1],) + tuple(rec[2]):
+            if isinstance(p, Tensor) and id(p) not in seen:
+                stack.append((p, False))
+    leaves = [n for n in order if n._rec is None and n.requires_grad]
+
+    def replay():
+        _REC[0] = False
+        try:
+            for n in order:
+                rec = n._rec
+                if rec is not None:
+                    n._v = rec[0](rec[1], *rec[2], **rec[3])._v
+        finally:
+            _REC[0] = True
+        return self._v[0]
+
+    h = 1e-5
+    for leaf in leaves:
+        g = []
+        for e in range(len(leaf._v)):
+            x0 = leaf._v[e]
+            leaf._v[e] = x0 + h
+            up = replay()
+            leaf._v[e] = x0 - h
+            dn = replay()
+            leaf._v[e] = x0
+            g.append((up - dn) / (2 * h))
+        replay()
+        leaf._g = g if leaf._g is None else [a + b for a, b in zip(leaf._g, g)]
+
+
+Tensor.backward = _fd_backward

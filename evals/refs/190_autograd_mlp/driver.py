@@ -1,16 +1,19 @@
-# Driver for 190_autograd_mlp: runs in the solution's own process
-# (`python3 -I`, cwd = the fixture dir). Reads the hidden programs as JSON
-# on stdin, executes them with the solution's Tensor, and writes results as
-# one JSON document to the ORIGINAL stdout (the solution's prints go to
-# stderr). It holds no expected values: those exist only in the validator.
+# Driver for 190_autograd_mlp. It is a SEPARATE process from the validator:
+# `python -I -S -` (no site-packages: numpy/torch are not on sys.path), its
+# source on stdin, started by vlib.run_solution in a fresh private dir that
+# holds only a copy of the solution. The validator prepends `REQ = '<json>'`
+# (the hidden programs: inputs only). The driver loads the solution by path,
+# executes the programs with its Tensor and writes the observations as one
+# JSON document to the ORIGINAL stdout (the solution's prints go to stderr).
+# It holds no expected values: those exist only in the validator's memory.
 import json
 import os
 import sys
 
 OUT = sys.stdout
 sys.stdout = sys.stderr
-sys.path.insert(0, os.getcwd())
-req = json.loads(sys.stdin.read())
+req = json.loads(REQ)  # noqa: F821  (prepended by the validator)
+del REQ  # noqa: F821
 
 
 def emit(obj):
@@ -19,8 +22,35 @@ def emit(obj):
     os._exit(0)
 
 
+# Defence in depth behind the validator's AST lint: pre-import every module
+# the solution may use (so a planted file of the same name can never shadow
+# it), then refuse any import of a compute library or an FFI module.
+import array, bisect, cmath, collections, contextlib, copy, dataclasses, decimal  # noqa: E401,F401,E402
+import enum, fractions, functools, heapq, itertools, math, numbers, operator  # noqa: E401,F401,E402
+import random, statistics, time, typing, weakref, abc  # noqa: E401,F401,E402
+import importlib.util  # noqa: E402
+
+_BLOCK = {"numpy", "torch", "jax", "jaxlib", "tensorflow", "scipy", "mlx", "cupy",
+          "autograd", "micrograd", "tinygrad", "ctypes", "_ctypes", "cffi", "numba",
+          "sympy", "mpmath", "site", "sitecustomize", "usercustomize", "pandas"}
+
+
+class _Blocker:
+    @staticmethod
+    def find_spec(name, path=None, target=None):
+        if name.split(".")[0] in _BLOCK:
+            raise ImportError(f"{name} is not available")
+        return None
+
+
+sys.meta_path.insert(0, _Blocker())
+sys.path[:] = [p for p in sys.path if "site-packages" not in p and "dist-packages" not in p]
+
 try:
-    import autograd as M
+    _spec = importlib.util.spec_from_file_location("autograd", os.path.join(os.getcwd(), "autograd.py"))
+    M = importlib.util.module_from_spec(_spec)
+    sys.modules["autograd"] = M
+    _spec.loader.exec_module(M)
     Tensor, cross_entropy, train_mlp = M.Tensor, M.cross_entropy, M.train_mlp
 except BaseException as e:  # noqa: BLE001
     emit({"import_error": type(e).__name__})
