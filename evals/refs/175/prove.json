@@ -1,0 +1,26 @@
+{
+ "unit": "175_crdt_orset_rga",
+ "dest": "/tmp/eval_crdt/crdt.py",
+ "ref": "crdt.py",
+ "repeat": 5,
+ "scale2": 2.0,
+ "empty": "^missing /tmp/eval_crdt/crdt\\.py$",
+ "wrong": {
+  "ascending": "^mismatch at case 1$",
+  "noskip": "^mismatch at case 1$",
+  "clockrecv": "^mismatch at case 3$",
+  "dupheld": "^mismatch at case 4$",
+  "nobuffer": "^mismatch at case 2$",
+  "removewins": "^mismatch at case 6$",
+  "recursive": "^exception at case 11: RecursionError$",
+  "unsorted": "^mismatch at case 6$",
+  "notlist": "^mismatch at case 0$"
+ },
+ "leak": {
+  "leak": "^mismatch at case 0$",
+  "argvcheat": "^(mismatch at case 0|exception at case 0: PermissionError)$"
+ },
+ "slow": {
+  "slow": "^solution timed out \\((cpu|wall)\\)$"
+ }
+}
