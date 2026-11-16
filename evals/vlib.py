@@ -334,8 +334,14 @@ def _sandbox_prefix(allow_fork: bool, deny_read: list[str], *,
     The confined solution gets `(allow default)` minus the holes a cheat uses:
       * network  — no fetch of a pushed reference, no phone-home (future risk
         reported on 164);
-      * process-info  — it cannot read the validator's argv/env (reported on
-        190): even when a future validator puts data there, it does not leak;
+      * process-info  — proc_pidinfo/proc_pidpath on other processes (their
+        executable path, cwd, open files). NOT their argv and environment:
+        sandbox-exec does not mediate sysctl kern.procargs2 for a same-uid
+        process (measured on Darwin 25: readable under (deny process-info*),
+        under (deny sysctl-read) with a name allowlist, and under a name deny
+        of kern.procargs2). So a validator must keep every secret out of its
+        own argv and env (run_eval feeds it on stdin with a scrubbed env), and
+        the seed in memory; tests/test_eval_190_confinement.py pins that;
       * process-exec  — when exec_only is set (a compiled unit passes its built
         binary), the solution may exec only that one image, so a C/Go/Rust/zig
         program cannot `execvp("python3", ...)` into an unlinted interpreter
@@ -493,8 +499,8 @@ def _sbpl(p: str) -> str:
 def _confine_profile(allow_fork: bool, ro: list[str], rw: list[str], *,
                      exec_only: str | None = None, deny_read: list[str] = ()) -> str:
     """macOS sandbox profile: reads only from the allowlist, writes only to rw,
-    no network, no process-info on other processes (the validator's argv/env
-    stay private even if a future validator puts data there), and, with
+    no network, no process-info on other processes (but argv/env stay
+    readable through sysctl kern.procargs2: see _sandbox_prefix), and, with
     exec_only, no exec of any image but that one."""
     rules = ["(version 1)", "(allow default)", "(deny network*)",
              "(deny process-info* (with no-report))",
