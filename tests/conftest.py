@@ -111,3 +111,33 @@ def _no_lingering_subreaper():
     except OSError:
         pass
     mod._SUBREAPER = None
+
+
+# --- harness modules re-imported by a test ----------------------------------
+# Several eval tests pop run_eval / cache from sys.modules, re-import them and
+# point the fresh module at a temp tree (TASKS_DIR, RESULTS_DIR, CACHE_DIR)
+# without undoing it. A later test that imports run_eval lazily then got that
+# module and saw an empty task library (test_fast_suite failed in a full
+# ordered run, never alone). Put the module objects back after every test.
+_HARNESS_MODULES = ("run_eval", "cache", "suite_manifest", "scoring", "make_fast_suite")
+
+
+_HARNESS_PATHS = ("TASKS_DIR", "RESULTS_DIR", "SUITES_DIR", "CACHE_DIR", "STRIKES_DIR")
+
+
+@pytest.fixture(autouse=True)
+def _restore_harness_modules():
+    # tests/prove_task.py --tasks-dir also sets run_eval.TASKS_DIR on the
+    # shared module itself, so the path attributes are restored as well.
+    import sys
+    saved = {k: sys.modules.get(k) for k in _HARNESS_MODULES}
+    paths = {k: {a: getattr(m, a) for a in _HARNESS_PATHS if hasattr(m, a)}
+             for k, m in saved.items() if m is not None}
+    yield
+    for k, mod in saved.items():
+        if mod is None:
+            sys.modules.pop(k, None)
+        else:
+            sys.modules[k] = mod
+            for a, v in paths[k].items():
+                setattr(mod, a, v)
