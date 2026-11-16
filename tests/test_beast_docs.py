@@ -11,14 +11,25 @@ Pinned:
   * incremental sync: an unchanged ETag is a 304 and rewrites nothing; an
     unchanged body without validators rewrites nothing either; a changed one
     does; a fresh page is not re-requested; an interrupted crawl resumes
+  * outages: an unreachable robots.txt or repeated transport failures stop
+    the sync with its queue intact; transient page failures and the page in
+    flight are kept for the next sync; `complete` means nothing is left
   * politeness and scope: robots.txt refusal (page and JSON URL), a robots
     5xx refuses the whole host, redirects off the source's hosts are refused,
-    a private address is refused without the explicit opt-in
-  * the terms gate on sources that need one
-  * search ranking (exact title first; FTS5 and the fallback scan agree)
-  * offline / island: sync refuses, live falls back to the mirror and says so
+    a private address is refused without the explicit opt-in; scope and
+    robots are decided on the NORMALIZED URL (dot segments, %2e) and the
+    port is part of the host
+  * the terms gate on sources that need one, for sync and live --save
+  * the adapters under drift: wrong-shape DocC JSON, deep HTML nesting,
+    omitted end tags, code inside list items
+  * search ranking (exact title first; FTS5 and the fallback scan agree,
+    each really used), a mode flip rebuilds, a read-only store searches,
+    index lookups do not scan, manifests are parsed once per reader
+  * offline / island: sync refuses, live falls back to the mirror and says
+    so, with zero requests; an empty OPENBEAST_OFFLINE falls through to the
+    conf file
   * the tarball round trip, and its refusals (bad hash, tampered member,
-    unsafe member)
+    unsafe member, a swap after the hash, a bomb, too many members)
   * the CLI end to end, and the shipped sources.toml
 
 Run: python3 -m pytest tests/test_beast_docs.py -q
@@ -390,6 +401,44 @@ def test_shipped_sources_file_is_valid():
             assert s.in_scope(r)
     assert all(srcs[n].requires_ack for n in ("swiftui", "uikit", "swift", "xcode", "app-review"))
     assert not srcs["swift"].in_scope("https://developer.apple.com/documentation/swiftui/view")
+
+
+def test_toml_subset_parser_on_its_own():
+    """Runs on EVERY interpreter — the parity test below skips where there is
+    no tomllib, which is exactly the 3.9 path the subset parser exists for."""
+    text = (
+        '# a comment\n'
+        'top = "x"\n'
+        '[[source]]\n'
+        'name = "a"   # trailing comment\n'
+        'title = "Has # hash and \\"quotes\\""\n'
+        'hosts = ["h1", "h2:8443"]\n'
+        'roots = [\n'
+        '  "https://h1/a",  # one\n'
+        '  "https://h1/b",\n'
+        ']\n'
+        'max_pages = 30\n'
+        'delay = 1.5\n'
+        'requires_ack = true\n'
+        'deny_prefixes = []\n'
+        '\n'
+        '[[source]]\n'
+        'name = "b"\n'
+        'max_depth = -1\n'
+        'requires_ack = false\n')
+    assert C.parse_toml_subset(text) == {
+        "top": "x",
+        "source": [
+            {"name": "a", "title": 'Has # hash and "quotes"', "hosts": ["h1", "h2:8443"],
+             "roots": ["https://h1/a", "https://h1/b"], "max_pages": 30, "delay": 1.5,
+             "requires_ack": True, "deny_prefixes": []},
+            {"name": "b", "max_depth": -1, "requires_ack": False}]}
+    srcs = [s for s in C.parse_toml_subset(open(C.DEFAULT_SOURCES).read())["source"]]
+    assert {"swiftui", "android-compose"} <= {s["name"] for s in srcs}
+    for bad in ('[table]\nx = 1\n', 'x = 2020-01-01\n', '[[source]]\nname = "a"\nname = "b"\n',
+                'x = [\n"unterminated"\n', "x = 'single'\n"):
+        with pytest.raises(C.ConfigError):
+            C.parse_toml_subset(bad)
 
 
 def test_toml_subset_parser_matches_tomllib_and_refuses_the_rest():
@@ -1035,9 +1084,14 @@ def test_island_mode_is_offline_too(env, monkeypatch):
     monkeypatch.setattr(island, "read_state",
                         lambda path=None: {"state": "island", "since_iso": "2026-11-15T10:00:00"})
     assert "ISLAND MODE" in C.offline_reason()
+    env["stub"].requests.clear()
+    with pytest.raises(S.SyncError, match="offline: ISLAND MODE"):
+        _sync("swiftui", force=True)
     out = api.live_text("NavigationStack", source="swiftui")
     assert out.startswith("LIVE FETCH UNAVAILABLE (offline: ISLAND MODE (no internet route since "
                           "2026-11-15T10:00:00))")
+    assert "Serving the MIRROR copy" in out
+    assert env["stub"].requests == []                          # island means NO request either
 
 
 def test_live_failure_with_no_mirror_copy_says_so(env, monkeypatch):

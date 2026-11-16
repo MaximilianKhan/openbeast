@@ -480,7 +480,7 @@ or Kotlin headroom before it can be shown to help.
 
 ## 6. Tests
 
-`tests/test_beast_docs.py` (33) and `tests/test_platform_docs_tool.py` (2)
+`tests/test_beast_docs.py` (65) and `tests/test_platform_docs_tool.py` (2)
 are hermetic. A stub HTTP server on 127.0.0.1 serves synthetic fixtures
 from `tests/fixtures/beast_docs/`. They pin:
 
@@ -540,7 +540,10 @@ from `tests/fixtures/beast_docs/`. They pin:
   a fresh re-walk of a 3,000-page, 100-links-per-page mirror is linear.
 - **Config**: the shipped `sources.toml` is valid and every source states a
   licence; the TOML subset parser matches `tomllib` and refuses everything
-  else.
+  else. The parity test needs `tomllib` (3.11+), so a second test pins the
+  subset parser against a hand-written expected result and runs on every
+  interpreter, 3.9 included (`tests/run_tests.sh` uses the system
+  `python3`).
 - **Tool**: `platform_docs` (search, read, status, live, input clip,
   admin-only), and its absence from `agents/tools.py` and `agents/runner.py`.
 
