@@ -555,6 +555,29 @@ def test_confine_fails_closed_when_it_cannot_be_set_up(monkeypatch, tmp_path):
     assert r.verdict == "sandbox" and "ran" not in r.stdout, r
 
 
+@pytest.mark.skipif(not DARWIN, reason="the deny-list sandbox is macOS's sandbox-exec")
+def test_default_path_fails_closed_when_sandbox_exec_is_unusable(monkeypatch):
+    """A failed sandbox-exec probe used to drop the deny-list silently and
+    run the solution with fork, exec, network and evals/ reads open, verdict
+    ok (review 1116)."""
+    monkeypatch.setattr(vlib, "_sandbox_ok", lambda: False)
+    r = vlib.run_solution(_py("print('ran')"), cpu_s=5)
+    assert r.verdict == "sandbox" and "ran" not in r.stdout, r
+
+
+def test_a_failed_sandbox_probe_is_retried_not_cached(monkeypatch):
+    calls = []
+
+    def fake_run(*a, **k):
+        calls.append(1)
+        raise subprocess.TimeoutExpired("sandbox-exec", 10)
+    monkeypatch.setattr(vlib, "_SANDBOX_OK", None)
+    monkeypatch.setattr(vlib.subprocess, "run", fake_run)
+    assert vlib._sandbox_ok() is False
+    assert vlib._sandbox_ok() is False
+    assert len(calls) == 2
+
+
 def test_seal_covers_every_checkout_and_the_git_store():
     # A solution run from a worktree read the main checkout's
     # evals/tasks/*.json, and the shared .git holds every branch's validators.

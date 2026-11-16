@@ -396,15 +396,8 @@ def _sandbox_prefix(allow_fork: bool, deny_read: list[str], *,
         rules.append("(deny file-write*)")
         for p in ["/dev"] + list(allow_write):
             rules.append(f'(allow file-write* (subpath "{_sbpl_str(os.path.realpath(p))}"))')
-    if _SANDBOX_OK is None:
-        try:
-            _SANDBOX_OK = subprocess.run(
-                ["/usr/bin/sandbox-exec", "-p", "(version 1)(allow default)", "/usr/bin/true"],
-                capture_output=True, timeout=10).returncode == 0
-        except (OSError, subprocess.TimeoutExpired):
-            _SANDBOX_OK = False
-    if not _SANDBOX_OK:
-        return []
+    if not _sandbox_ok():
+        return []          # run_solution refuses the run (verdict "sandbox")
     return ["/usr/bin/sandbox-exec", "-p", "".join(rules)]
 
 
@@ -571,8 +564,11 @@ def _confine_profile(allow_fork: bool, ro: list[str], rw: list[str], *,
 
 
 def _sandbox_ok() -> bool:
+    """Whether sandbox-exec works here. Only a success is cached: a probe
+    that failed under load (EAGAIN, the 10 s timeout) is retried by the
+    next run instead of turning the sandbox off for the whole validator."""
     global _SANDBOX_OK
-    if _SANDBOX_OK is None:
+    if not _SANDBOX_OK:
         try:
             _SANDBOX_OK = subprocess.run(
                 ["/usr/bin/sandbox-exec", "-p", "(version 1)(allow default)", "/usr/bin/true"],
@@ -891,7 +887,7 @@ class Result:
     (allow_fork=False and it started a child), "exec" (it replaced its image
     with another binary under confine_exec), "output" (wrote more than
     max_output bytes), "sandbox" (confine was asked for and could not be
-    set up: the solution never ran)."""
+    set up, or on macOS sandbox-exec is unusable: the solution never ran)."""
 
     def __init__(self, returncode, stdout, stderr, cpu_s, wall_s, verdict, reason):
         self.returncode = returncode
@@ -1031,7 +1027,14 @@ def run_solution(cmd, input=None, *, cpu_s: float, wall_s: float | None = None,
         # A launcher: allow it and the one program it starts, nothing else.
         target = _env_target(list(cmd))
         exec_only = [exec0] + ([_resolve_exec(target, cwd, env)] if target else [])
-    argv = _sandbox_prefix(allow_fork, seal, exec_only=exec_only) + list(cmd)
+    prefix = _sandbox_prefix(allow_fork, seal, exec_only=exec_only)
+    if _DARWIN and confine is None and not prefix:
+        # The deny-list is the only thing between the solution and fork,
+        # exec into python3, the network and evals/refs on macOS. It used to
+        # fail OPEN here (an empty prefix, verdict "ok"); fail closed like
+        # confine= does (review 1116).
+        return Result(None, "", "", 0.0, 0.0, "sandbox", "sandbox-exec unavailable")
+    argv = prefix + list(cmd)
     confine_child, confine_cleanup = None, (lambda: None)
     if confine is not None:
         rw = [os.path.realpath(p) for p in confine]
