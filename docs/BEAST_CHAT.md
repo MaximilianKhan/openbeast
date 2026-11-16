@@ -357,6 +357,31 @@ connect) plus
 `unix:/path/to/.run/chat.sock`. TCP loopback then needs the locality token or
 a device key like any other caller. The default stays `loopback`.
 
+**How a request is tied to the socket.** The server names the socket from
+the *listener* that accepted the connection: uvicorn reports a Unix
+listener as `scope["server"] = (socket_path, None)` and a TCP one as
+`(ip, port)`, and the login header counts only when that path is
+`OPENBEAST_CHAT_SOCKET` (`agents/loginsock.py`). The first version inferred
+"Unix socket" from the *absence* of a peer address instead — and uvicorn
+also reports no peer for a TCP connection that sent its request and then
+reset (`SO_LINGER {1,0}`) before the server read its address, while still
+serving the bytes it queued. Any local process could therefore send a
+forged login over TCP loopback, reset, and be served (blind: the response
+went nowhere) as the operator, leaving `verified: true, peer: "unix"` audit
+rows in their name (review 2026-11-16). A peer-less TCP connection is now
+anonymous in both modes, and its audit row says `peer: "unknown"`, never
+`unix`. `tests/test_chat_review1116.py` drives real reset connections at a
+real uvicorn to pin it.
+
+`CHAT_SOCKET` is exported **absolute**: a leading `~/` is expanded and a
+relative path is anchored to the checkout. The same string goes to
+`chat_server` (which binds it from its own working directory) and to
+`tailscaled` (`unix:<path>`, resolved from *its* working directory, and
+never `~`-expanded), so a relative or `~` value used to mean two different
+files and a 502 console. `conf.sh` warns when the path is longer than about
+100 bytes, past which an AF_UNIX socket cannot be bound (104 on macOS, 108
+on Linux).
+
 Both are `openbeast.conf` keys, and `setup-tailscale.sh` follows them:
 
 ```bash
