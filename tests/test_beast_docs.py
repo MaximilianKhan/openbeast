@@ -288,6 +288,45 @@ def test_markdown_adapter_cleanup():
     assert any("LazyColumn.composable" in u and not u.endswith(".md.txt") for u in links)
 
 
+def test_docc_tolerates_schema_drift():
+    for bad in ([], None, "x", 3):
+        with pytest.raises(ValueError, match="not a DocC RenderNode"):
+            docc.to_markdown(bad)
+        assert docc.links(bad) == []
+    title, md = docc.to_markdown({
+        "metadata": {"title": "T", "modules": ["not-a-dict"], "platforms": "nope"},
+        "primaryContentSections": ["x", {"kind": "content", "content": [
+            {"type": "heading", "level": "two", "text": "H"},
+            {"type": "unorderedList", "items": ["x", {"content": [
+                {"type": "paragraph", "inlineContent": [{"type": "text", "text": "ok"}]}]}]},
+            {"type": "table", "rows": ["x", [[{"type": "paragraph"}]]]}]}],
+        "topicSections": ["x", {"title": "G", "identifiers": [3, "doc://a"]}],
+        "references": []})
+    assert title == "T" and "## H" in md and "- ok" in md and "### G" in md
+
+
+def test_html_adapter_survives_pathological_nesting():
+    for tag in ("span", "div", "x-w"):
+        html = "<main>" + f"<{tag}>" * 5000 + "deep text<pre>code()</pre>" + f"</{tag}>" * 5000 + \
+               "<p>after</p></main>"
+        t = time.monotonic()
+        md = H.html_to_markdown(html)["markdown"]
+        assert time.monotonic() - t < 5, tag
+        assert "deep text" in md and "code()" in md and "after" in md, tag
+
+
+def test_one_unrenderable_page_is_an_error_not_an_aborted_sync(env):
+    env["stub"].overrides["/tutorials/data/documentation/swiftui/view.json"] = b"[]"
+    st = _sync("swiftui")                                       # does not raise
+    assert st["errors"] == 1 and st["new"] >= 3
+    assert ST.Store().load("swiftui")["sync_complete"] is True
+    src = C.load_sources()["html-site"]
+    with pytest.raises(S.SyncError, match="not a DocC RenderNode"):
+        S.render(C.load_sources()["swiftui"], "u", b"null")
+    out = S.render(src, env["stub"].base + "/page.html", b"<main>" + b"<b>" * 3000 + b"x</main>")
+    assert "x" in out["markdown"]
+
+
 def test_llms_index_and_sitemap_parsing():
     with open(os.path.join(FIX, "android", "develop", "ui", "llms.txt")) as fh:
         entries = H.llms_index(fh.read(), "https://developer.android.com/develop/ui/llms.txt")

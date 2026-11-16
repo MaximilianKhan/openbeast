@@ -72,14 +72,29 @@ def fetch_url_for(src: C.Source, page: str) -> str:
 
 
 def render(src: C.Source, page: str, body: bytes, hints: Optional[dict] = None) -> dict:
-    """{title, markdown, links, meta} for one fetched body, by adapter."""
-    hints = hints or {}
+    """{title, markdown, links, meta} for one fetched body, by adapter.
+
+    Raises ONLY SyncError: whatever an adapter trips over on one page (a
+    JSON body of the wrong shape, schema drift, pathological HTML) makes
+    that page an error the crawl counts and moves past — never an
+    exception that ends the whole sync."""
+    try:
+        return _render(src, page, body, hints or {})
+    except SyncError:
+        raise
+    except Exception as e:                          # noqa: BLE001 — one page, not the crawl
+        raise SyncError(f"{page}: cannot render ({type(e).__name__}: {e})") from None
+
+
+def _render(src: C.Source, page: str, body: bytes, hints: dict) -> dict:
     text = body.decode("utf-8", "replace")
     if src.adapter == "apple-docc-json":
         try:
             doc = json.loads(text)
         except ValueError as e:
             raise SyncError(f"{page}: not DocC JSON ({e})") from None
+        if not isinstance(doc, dict):
+            raise SyncError(f"{page}: not a DocC RenderNode (a JSON {type(doc).__name__})")
         title, md = docc.to_markdown(doc, page)
         s = docc.summary(doc)
         return {"title": title, "markdown": md, "links": docc.links(doc, page),
@@ -88,8 +103,9 @@ def render(src: C.Source, page: str, body: bytes, hints: Optional[dict] = None) 
         r = H.clean_markdown(text, hints.get("title", ""), hints.get("description", ""))
         return {"title": r["title"], "markdown": r["markdown"],
                 "links": H.markdown_links(text, page, src.markdown_suffix), "meta": {}}
-    r = H.html_to_markdown(text, src.content_selectors, src.strip_selectors)
-    return {"title": r["title"], "markdown": r["markdown"], "links": H.html_links(text, page),
+    root = H.parse(text)                           # parsed ONCE for both passes
+    r = H.html_to_markdown(text, src.content_selectors, src.strip_selectors, root=root)
+    return {"title": r["title"], "markdown": r["markdown"], "links": H.html_links(text, page, root=root),
             "meta": {"page_updated": r["updated"]}}
 
 

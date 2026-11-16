@@ -223,7 +223,12 @@ results on the shipped file.
     selector language. It keeps the main content only and drops chrome:
     scripts, nav, buttons, `aria-hidden`, `hidden`, and `strip_selectors`.
     A custom element that wraps blocks (DevSite's `<devsite-code>` around
-    `<pre>`) is treated as a block, so code is not flattened.
+    `<pre>`) is treated as a block, so code is not flattened. The page is
+    parsed once for both the markdown and the link pass, "has a block
+    below it" is computed bottom-up in one pass, the tree walk is
+    iterative, and nesting past 120 levels is flattened, so a malformed page
+    nesting thousands of elements renders in linear time instead of hitting
+    Python's recursion limit.
   - The markdown adapter takes the site's own `.md.txt`. It reduces links to
     their text (it handles nested parentheses and link text that wraps
     across lines), drops `<br />` and the index pointer, and uses the page's
@@ -426,7 +431,11 @@ from `tests/fixtures/beast_docs/`. They pin:
 
 - **Adapters**: golden markdown for a DocC symbol, a deprecated DocC symbol,
   a DevSite-shaped HTML page and a `.md.txt` page, plus URL mapping,
-  `llms.txt` parsing and sitemap parsing.
+  `llms.txt` parsing and sitemap parsing. DocC JSON of the wrong shape
+  (`[]`, `null`, a string heading level, lists of strings where dicts
+  belong) renders or refuses cleanly; 5,000-deep HTML nesting renders in
+  well under the time limit; an unrenderable page during sync is one
+  error, not an aborted crawl.
 - **Incremental sync**:
   - an unchanged ETag is a **304 with no rewrite**: the page files'
     mtimes are unchanged and `fetched_at` is preserved;
@@ -502,7 +511,11 @@ BEAST_DOCS_UPDATE_GOLDEN=1 python3 -m pytest tests/test_beast_docs.py -q   # acc
   and `llms.txt` are not documented contracts. The golden tests catch
   rendering regressions, but not upstream changes. The adapters already
   render unknown DocC block types by recursing into `content` /
-  `inlineContent`.
+  `inlineContent`, check every container's type instead of assuming it
+  (a list where a dict was expected renders as nothing), and `render()`
+  turns anything an adapter trips over into a per-page error: one page of
+  drifted JSON, or pathological HTML, is counted under `errors` and the
+  crawl moves on instead of ending with a traceback.
 - **Bounded crawls are breadth-first from the roots.** A full SwiftUI mirror
   is several thousand pages, roughly 1–2 hours at 1 req/s. Apple's
   `tutorials/data/index/<framework>` endpoint would give a complete page list

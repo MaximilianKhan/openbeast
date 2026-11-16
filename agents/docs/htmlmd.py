@@ -28,11 +28,18 @@ _BLOCK = {"p", "div", "section", "article", "main", "aside", "blockquote", "ul",
           "details", "summary"}
 
 
+# Nesting deeper than this is flattened into the node at the cap: real
+# documentation pages nest a few dozen levels; a page nesting hundreds is
+# malformed or hostile, and the renderer recurses per level.
+MAX_DEPTH = 120
+
+
 class Node:
-    __slots__ = ("tag", "attrs", "children", "parent")
+    __slots__ = ("tag", "attrs", "children", "parent", "has_block")
 
     def __init__(self, tag, attrs=None, parent=None):
         self.tag, self.attrs, self.children, self.parent = tag, dict(attrs or {}), [], parent
+        self.has_block = False          # a block element somewhere below (set by parse)
 
     def classes(self):
         return set((self.attrs.get("class") or "").split())
@@ -44,10 +51,13 @@ class Node:
         return "".join(out)
 
     def walk(self):
-        yield self
-        for c in self.children:
-            if isinstance(c, Node):
-                yield from c.walk()
+        """Pre-order, iteratively: a recursive `yield from` costs O(depth)
+        per node yielded, which made deep pages cubic to render."""
+        stack = [self]
+        while stack:
+            n = stack.pop()
+            yield n
+            stack.extend(c for c in reversed(n.children) if isinstance(c, Node))
 
 
 class _Builder(HTMLParser):
@@ -55,22 +65,33 @@ class _Builder(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.root = Node("#root")
         self.cur = self.root
+        self.depth = 0
+        self.overflow = 0               # start tags past MAX_DEPTH not descended into
 
     def handle_starttag(self, tag, attrs):
         node = Node(tag, [(k, v or "") for k, v in attrs], self.cur)
         self.cur.children.append(node)
-        if tag not in _VOID:
-            self.cur = node
+        if tag in _VOID:
+            return
+        if self.depth >= MAX_DEPTH:
+            self.overflow += 1
+            return
+        self.cur = node
+        self.depth += 1
 
     def handle_startendtag(self, tag, attrs):
         self.cur.children.append(Node(tag, [(k, v or "") for k, v in attrs], self.cur))
 
     def handle_endtag(self, tag):
-        n = self.cur
+        if self.overflow:
+            self.overflow -= 1
+            return
+        n, up = self.cur, 0
         while n is not None and n.tag != tag:
-            n = n.parent
+            n, up = n.parent, up + 1
         if n is not None and n.parent is not None:   # unmatched end tags are ignored
             self.cur = n.parent
+            self.depth -= up + 1
 
     def handle_data(self, data):
         self.cur.children.append(data)
@@ -80,6 +101,11 @@ def parse(html: str) -> Node:
     b = _Builder()
     b.feed(html)
     b.close()
+    # has_block, bottom-up in one pass (reverse pre-order visits children
+    # before parents), instead of a subtree walk at every level.
+    for n in reversed(list(b.root.walk())):
+        n.has_block = any(isinstance(c, Node) and (c.tag in _BLOCK or c.has_block)
+                          for c in n.children)
     return b.root
 
 
@@ -134,7 +160,7 @@ _ASIDE_LABEL = {"note": "Note", "warning": "Warning", "caution": "Caution", "tip
 def _has_block(n: Node) -> bool:
     """A custom element (<devsite-code>, <x-tab>) wrapping real blocks is a
     block container, or its <pre> would be flattened into a paragraph."""
-    return any(isinstance(d, Node) and d is not n and d.tag in _BLOCK for d in n.walk())
+    return n.has_block
 
 
 class _Render:
@@ -275,9 +301,10 @@ def _collapse(lines) -> str:
 _SUFFIXES = re.compile(r"\s*[|\-–—]\s*(Android Developers|Apple Developer.*|Documentation)\s*$")
 
 
-def html_to_markdown(html: str, content_selectors=(), strip_selectors=()) -> dict:
-    """{title, markdown, description, updated} for one HTML page."""
-    root = parse(html)
+def html_to_markdown(html: str, content_selectors=(), strip_selectors=(), root=None) -> dict:
+    """{title, markdown, description, updated} for one HTML page. Pass
+    `root` (from parse) to reuse a tree another pass already built."""
+    root = root if root is not None else parse(html)
     title = ""
     h1 = select(root, "h1")
     if h1 is not None:
@@ -318,10 +345,10 @@ def html_to_markdown(html: str, content_selectors=(), strip_selectors=()) -> dic
             "description": desc, "updated": updated}
 
 
-def html_links(html: str, base: str) -> list:
+def html_links(html: str, base: str, root=None) -> list:
     """Every <a href> in the page, absolute, fragment- and query-free, in order."""
     out, seen = [], set()
-    for n in parse(html).walk():
+    for n in (root if root is not None else parse(html)).walk():
         if n.tag != "a" or not n.attrs.get("href"):
             continue
         u = canonical(urllib.parse.urljoin(base, n.attrs["href"]))

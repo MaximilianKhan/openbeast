@@ -50,14 +50,37 @@ def page_url(base: str, path: str) -> str:
     return f"{p.scheme}://{p.netloc}{urllib.parse.quote(urllib.parse.unquote(path), safe=_SAFE)}"
 
 
+def _d(x) -> dict:
+    """x when it is a dict, else {} — the RenderNode schema is not a
+    contract (schemaVersion drifts), so every container is checked, not
+    assumed: an unexpected shape renders as nothing, never as a crash."""
+    return x if isinstance(x, dict) else {}
+
+
+def _l(x) -> list:
+    return x if isinstance(x, list) else []
+
+
+def _dicts(x) -> list:
+    return [i for i in _l(x) if isinstance(i, dict)]
+
+
+def _level(v) -> int:
+    try:
+        return min(6, max(2, int(v or 2)))
+    except (TypeError, ValueError):
+        return 2
+
+
 class _R:
     def __init__(self, doc: dict, base: str):
-        self.refs = doc.get("references") or {}
+        self.refs = _d(doc.get("references"))
         self.base = base
 
     # inline ---------------------------------------------------------------
-    def ref_title(self, ident: str) -> str:
-        r = self.refs.get(ident) or {}
+    def ref_title(self, ident) -> str:
+        ident = ident if isinstance(ident, str) else ""
+        r = _d(self.refs.get(ident))
         t = r.get("title")
         if not t:
             t = ident.rsplit("/", 1)[-1]
@@ -86,7 +109,7 @@ class _R:
                 title = it.get("title") or it.get("destination", "")
                 out.append(f"[{title}]({it.get('destination', '')})")
             elif t == "image":
-                r = self.refs.get(it.get("identifier", "")) or {}
+                r = _d(self.refs.get(it.get("identifier", "")))
                 if r.get("alt"):
                     out.append(f"[image: {r['alt']}]")
             elif "inlineContent" in it:
@@ -96,19 +119,17 @@ class _R:
     # blocks ---------------------------------------------------------------
     def blocks(self, items, depth: int = 0) -> list:
         lines: list = []
-        for b in items or []:
-            if not isinstance(b, dict):
-                continue
+        for b in _dicts(items):
             t = b.get("type")
             if t == "heading":
-                lvl = min(6, max(2, int(b.get("level") or 2)))
+                lvl = _level(b.get("level"))
                 lines += [f"{'#' * lvl} {b.get('text', '')}", ""]
             elif t == "paragraph":
                 txt = self.inline(b.get("inlineContent")).strip()
                 if txt:
                     lines += [txt, ""]
             elif t == "codeListing":
-                code = b.get("code") or []
+                code = _l(b.get("code"))
                 lines += [f"```{b.get('syntax') or ''}", *[str(c) for c in code], "```", ""]
             elif t == "aside":
                 name = b.get("name") or (b.get("style") or "note").capitalize()
@@ -119,7 +140,7 @@ class _R:
                     lines += [f"> {ln}" for ln in body[1:]]
                     lines.append("")
             elif t in ("unorderedList", "orderedList"):
-                for n, item in enumerate(b.get("items") or [], 1):
+                for n, item in enumerate(_dicts(b.get("items")), 1):
                     inner = [ln for ln in self.blocks(item.get("content"), depth + 1) if ln.strip()]
                     bullet = f"{n}." if t == "orderedList" else "-"
                     if inner:
@@ -127,14 +148,14 @@ class _R:
                         lines += [f"{'  ' * (depth + 1)}{ln}" for ln in inner[1:]]
                 lines.append("")
             elif t == "termList":
-                for item in b.get("items") or []:
-                    term = self.inline((item.get("term") or {}).get("inlineContent"))
-                    defn = " ".join(ln for ln in self.blocks((item.get("definition") or {}).get("content"))
+                for item in _dicts(b.get("items")):
+                    term = self.inline(_d(item.get("term")).get("inlineContent"))
+                    defn = " ".join(ln for ln in self.blocks(_d(item.get("definition")).get("content"))
                                     if ln.strip())
                     lines.append(f"- **{term}** — {defn}")
                 lines.append("")
             elif t == "table":
-                rows = b.get("rows") or []
+                rows = [r for r in _l(b.get("rows")) if isinstance(r, list)]
                 cells = [[" ".join(ln for ln in self.blocks(c) if ln.strip()).replace("|", "\\|")
                           for c in row] for row in rows]
                 if cells:
@@ -145,15 +166,15 @@ class _R:
                     lines += ["| " + " | ".join(r) + " |" for r in cells[1:]]
                     lines.append("")
             elif t == "tabNavigator":
-                for tab in b.get("tabs") or []:
+                for tab in _dicts(b.get("tabs")):
                     lines += [f"**{tab.get('title', '')}**", ""]
                     lines += self.blocks(tab.get("content"), depth)
             elif t == "links":
-                for ident in b.get("items") or []:
+                for ident in _l(b.get("items")):
                     lines.append(f"- {self.ref_title(ident)}")
                 lines.append("")
             elif t in ("row",):
-                for col in b.get("columns") or []:
+                for col in _dicts(b.get("columns")):
                     lines += self.blocks(col.get("content"), depth)
             elif "content" in b and isinstance(b["content"], list):
                 lines += self.blocks(b["content"], depth)
@@ -163,8 +184,8 @@ class _R:
                     lines += [txt, ""]
         return lines
 
-    def ref_line(self, ident: str) -> str:
-        r = self.refs.get(ident) or {}
+    def ref_line(self, ident) -> str:
+        r = _d(self.refs.get(ident if isinstance(ident, str) else ""))
         title = self.ref_title(ident)
         if r.get("deprecated"):
             title += " (deprecated)"
@@ -179,7 +200,7 @@ class _R:
 
 def _availability(platforms) -> tuple:
     avail, depr = [], []
-    for p in platforms or []:
+    for p in _l(platforms):
         if not isinstance(p, dict) or not p.get("name"):
             continue
         name = p["name"]
@@ -199,13 +220,16 @@ def _availability(platforms) -> tuple:
 
 
 def to_markdown(doc: dict, base: str = HOST) -> tuple:
-    """(title, markdown) for one DocC RenderNode."""
+    """(title, markdown) for one DocC RenderNode. Raises ValueError for a
+    body that is not a RenderNode at all (a JSON list, null, a string)."""
+    if not isinstance(doc, dict):
+        raise ValueError(f"not a DocC RenderNode (a JSON {type(doc).__name__})")
     r = _R(doc, base)
-    meta = doc.get("metadata") or {}
-    title = meta.get("title") or "(untitled)"
+    meta = _d(doc.get("metadata"))
+    title = str(meta.get("title") or "(untitled)")
     lines = [f"# {title}"]
     kind = meta.get("roleHeading") or meta.get("role") or ""
-    modules = ", ".join(m.get("name", "") for m in meta.get("modules") or [] if isinstance(m, dict))
+    modules = ", ".join(str(m.get("name", "")) for m in _dicts(meta.get("modules")))
     sub = " · ".join(x for x in (kind, modules) if x)
     if sub:
         lines.append(f"*{sub}*")
@@ -228,41 +252,41 @@ def to_markdown(doc: dict, base: str = HOST) -> tuple:
         summary = [ln for ln in r.blocks(doc.get("deprecationSummary")) if ln.strip()]
         lines += [f"> {ln}" for ln in summary]
         lines.append("")
-    for sec in doc.get("primaryContentSections") or []:
+    for sec in _dicts(doc.get("primaryContentSections")):
         k = sec.get("kind")
         if k == "declarations":
-            for d in sec.get("declarations") or []:
-                code = "".join(t.get("text", "") for t in d.get("tokens") or [])
-                lang = (d.get("languages") or ["swift"])[0]
+            for d in _dicts(sec.get("declarations")):
+                code = "".join(str(t.get("text", "")) for t in _dicts(d.get("tokens")))
+                lang = (_l(d.get("languages")) or ["swift"])[0]
                 lines += ["## Declaration", "", f"```{lang}", code, "```", ""]
         elif k == "parameters":
             lines += ["## Parameters", ""]
-            for prm in sec.get("parameters") or []:
+            for prm in _dicts(sec.get("parameters")):
                 body = " ".join(ln for ln in r.blocks(prm.get("content")) if ln.strip())
                 lines.append(f"- `{prm.get('name', '')}` — {body}")
             lines.append("")
         elif k in ("properties", "possibleValues", "restParameters", "restResponses"):
             lines += [f"## {sec.get('title') or k[0].upper() + k[1:]}", ""]
-            for item in sec.get("items") or sec.get("values") or []:
+            for item in _dicts(sec.get("items")) or _dicts(sec.get("values")):
                 body = " ".join(ln for ln in r.blocks(item.get("content")) if ln.strip())
                 lines.append(f"- `{item.get('name') or item.get('status', '')}` — {body}".rstrip(" —"))
             lines.append("")
         elif k == "content":
             lines += r.blocks(sec.get("content"))
         elif k == "mentions":
-            ments = sec.get("mentions") or []
+            ments = _l(sec.get("mentions"))
             if ments:
                 lines += ["## Mentioned in", ""] + [f"- {r.ref_title(m)}" for m in ments] + [""]
     for heading, key in (("Topics", "topicSections"), ("Relationships", "relationshipsSections"),
                          ("See Also", "seeAlsoSections")):
-        secs = doc.get(key) or []
+        secs = _dicts(doc.get(key))
         if not secs:
             continue
         lines += [f"## {heading}", ""]
         for s in secs:
             if s.get("title"):
                 lines += [f"### {s['title']}", ""]
-            lines += [r.ref_line(i) for i in s.get("identifiers") or []]
+            lines += [r.ref_line(i) for i in _l(s.get("identifiers"))]
             lines.append("")
     # Collapse runs of blank lines; strip trailing spaces.
     out, blank = [], False
@@ -280,15 +304,17 @@ def to_markdown(doc: dict, base: str = HOST) -> tuple:
 
 def links(doc: dict, base: str = HOST) -> list:
     """Page URLs this node points at, hierarchy first (topics), then the rest."""
-    refs = doc.get("references") or {}
+    if not isinstance(doc, dict):
+        return []
+    refs = _d(doc.get("references"))
     order: list = []
     for key in ("topicSections", "seeAlsoSections", "relationshipsSections"):
-        for s in doc.get(key) or []:
-            order += s.get("identifiers") or []
+        for s in _dicts(doc.get(key)):
+            order += [i for i in _l(s.get("identifiers")) if isinstance(i, str)]
     order += list(refs)
     seen, out = set(), []
     for ident in order:
-        r = refs.get(ident) or {}
+        r = _d(refs.get(ident))
         u = r.get("url")
         if r.get("type") != "topic" or not isinstance(u, str) or not u.startswith("/"):
             continue
@@ -301,8 +327,8 @@ def links(doc: dict, base: str = HOST) -> list:
 
 def summary(doc: dict) -> dict:
     """Small facts the index and `read` header carry."""
-    meta = doc.get("metadata") or {}
+    meta = _d(_d(doc).get("metadata"))
     avail, depr = _availability(meta.get("platforms"))
     return {"kind": meta.get("roleHeading") or meta.get("role") or "",
-            "deprecated": bool(depr or doc.get("deprecationSummary")),
+            "deprecated": bool(depr or _d(doc).get("deprecationSummary")),
             "availability": avail}
