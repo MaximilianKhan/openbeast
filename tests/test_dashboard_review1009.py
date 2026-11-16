@@ -632,6 +632,37 @@ def test_page_renders_a_unified_memory_gpu(monkeypatch, tmp_path, mem):
 
 # ───────────── review 2026-11-16: overlapping gathers, redirected probes ─────────────
 
+def test_overlapping_slot_and_status_gathers_share_probes(monkeypatch):
+    # /api/slot and /api/status gather under separate locks and ask the same
+    # keys. The second used to find them in flight and read them as "no
+    # answer": a healthy model reported DOWN, cached for CACHE_S.
+    d = load(monkeypatch, OPENBEAST_INFERENCE_BACKEND="tensorfold",
+             OPENBEAST_INFERENCE_URL="http://10.9.9.9:8000", OPENBEAST_INFERENCE_SLOTS="4")
+    d.gpu_status = lambda: None
+    seen = []
+    base = recorder(seen)
+
+    def slow(url, timeout=2, auth=False):
+        time.sleep(0.3)
+        return base(url, timeout, auth)
+    d._get = slow
+    fns = {"slot": d.slot_status, "status": d.status}
+    for first, second in (("status", "slot"), ("slot", "status")):
+        res = {}
+        t1 = threading.Thread(target=lambda n=first, res=res: res.update({n: fns[n]()}))
+        t2 = threading.Thread(target=lambda n=second, res=res: res.update({n: fns[n]()}))
+        t1.start()
+        time.sleep(0.05)
+        t2.start()
+        t1.join(5)
+        t2.join(5)
+        assert res["slot"]["healthy"] is True and res["slot"]["model"]["id"] == "m", (first, res["slot"])
+        assert res["slot"]["services"]["model"] is True
+        assert res["status"]["model"]["healthy"] is True, (first, res["status"]["model"])
+    # shared, not doubled: the overlapped /health was asked once per round
+    assert seen.count("http://10.9.9.9:8000/health") == 2, seen
+
+
 def test_a_keyed_probe_never_follows_a_redirect(monkeypatch):
     # urllib copies add_header() headers onto a cross-host redirect, so a
     # keyed probe answered with 302 handed LLAMA_API_KEY to the Location.

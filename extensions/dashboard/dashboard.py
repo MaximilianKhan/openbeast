@@ -185,8 +185,39 @@ def _get(url, timeout=2, auth=False):
 # still out then reads as no answer (down / null), never as a hang.
 GATHER_DEADLINE_S = 3.0
 _memo = threading.local()
-_inflight = set()
+
+
+class _Probe:
+    """One in-flight probe of a (url, auth) key, shared by every gather that
+    wants that key while it is out."""
+
+    __slots__ = ("done", "result")
+
+    def __init__(self):
+        self.done = threading.Event()
+        self.result = (None, "")
+
+
+# (url, auth) -> the _Probe still out for it. Shared, not skipped: /api/slot
+# and /api/status gather under separate _Cached locks and ask the same keys
+# (/health, /v1/models, :3001, :3000, :8888). The old rule served a key that
+# was already in flight as "no answer", so whichever gather started second
+# reported a healthy model DOWN (healthy:false, model.id null) and cached it
+# for CACHE_S (review 2026-11-16). Now the second gather waits on the same
+# probe, up to its own deadline. A straggler that outlives every deadline is
+# still one thread per URL.
+_inflight = {}
 _inflight_lock = threading.Lock()
+
+
+def _run_probe(key, probe):
+    try:
+        probe.result = _get(key[0], auth=key[1])
+    finally:
+        with _inflight_lock:
+            if _inflight.get(key) is probe:
+                del _inflight[key]
+        probe.done.set()
 
 
 def _fetch(url, auth=False):
@@ -200,36 +231,27 @@ def _fetch(url, auth=False):
 @contextlib.contextmanager
 def _prefetched(reqs, deadline=None):
     """Probe every (url, auth) in `reqs` concurrently, bounded by `deadline`
-    overall, and serve those answers to _fetch for the duration."""
+    overall, and serve those answers to _fetch for the duration. A key some
+    other gather is already probing is joined, not re-asked and not skipped."""
     deadline = GATHER_DEADLINE_S if deadline is None else deadline
     reqs = list(dict.fromkeys(reqs))
-    got = {}
-
-    def one(key):
-        try:
-            got[key] = _get(key[0], auth=key[1])
-        finally:
-            with _inflight_lock:
-                _inflight.discard(key)
-
-    threads = []
+    probes = {}
     for k in reqs:
-        # A probe that outlived an earlier deadline (an upstream trickling
-        # bytes slower than the per-recv timeout) is still out: do not stack
-        # another on it, so stragglers stay at most one per URL. That URL
-        # reads as no answer until the first one comes back.
         with _inflight_lock:
-            if k in _inflight:
-                continue
-            _inflight.add(k)
-        threads.append(threading.Thread(target=one, args=(k,), daemon=True))
-    for t in threads:
-        t.start()
+            p = _inflight.get(k)
+            fresh = p is None
+            if fresh:
+                p = _inflight[k] = _Probe()
+        if fresh:
+            threading.Thread(target=_run_probe, args=(k, p), daemon=True).start()
+        probes[k] = p
     end = time.monotonic() + deadline
-    for t in threads:
-        t.join(max(0.0, end - time.monotonic()))
+    for p in probes.values():
+        p.done.wait(max(0.0, end - time.monotonic()))
     prev = getattr(_memo, "answers", None)
-    _memo.answers = {k: got.get(k, (None, "")) for k in reqs}
+    # A probe still out at the deadline reads as no answer (down / null).
+    _memo.answers = {k: (p.result if p.done.is_set() else (None, ""))
+                     for k, p in probes.items()}
     try:
         yield
     finally:
