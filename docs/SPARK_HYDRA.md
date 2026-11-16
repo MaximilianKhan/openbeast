@@ -490,6 +490,14 @@ What it does:
   that has no lock gets the head's.
 - It copies over the fabric, verifies on arrival, and confirms the worker's own
   launcher will find the copy.
+- It copies each directory as `SYNC_STREAMS` (default 4, 1..16) parallel
+  whole-file rsyncs, the files split by size. One ssh stream is
+  cipher-bound on a GB10: measured spark-1 → spark-2 on 2026-11-16, one
+  stream did 0.44-0.48 GB/s (about 6 min for the 164 GB tree) and four did
+  1.73 GB/s together (about 1.6 min). Four leaves the 200 Gb link room for
+  the RoCE all-gathers while the pair serves. The hand-made rsync above
+  stays one stream on purpose: `-H` keeps hard links only within one
+  transfer.
 
 It syncs `~/openbeast-models/<profile>` (OpenBeast's layout). For the recipe,
 still make the HF-cache hard links on each worker as in C2. On our pair the

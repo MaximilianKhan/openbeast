@@ -296,6 +296,11 @@ SC_LOAD_AS="sha256:bad" _run sync-image --cluster "$T/cluster.env" some/image:ta
 cat > "$T/bin/rsync" <<'S'
 #!/bin/bash
 echo "rsync $*" >> "$SC_RSYNC_LOG"
+# Record what each parallel stream was given (--files-from, NUL-separated).
+for a in "$@"; do
+  [[ "$a" == --files-from=* ]] && tr '\0' '\n' < "${a#--files-from=}" | sed "s|^|FILE ${@: -2:1}|" >> "$SC_RSYNC_LOG"
+done
+exit 0
 S
 chmod +x "$T/bin/rsync"
 export SC_RSYNC_LOG="$T/rsync.log" MODELS_DIR="$T/models"
@@ -339,6 +344,23 @@ if grep -qF "$MODELS_DIR/syn/ n1:$MODELS_DIR/syn/" "$SC_RSYNC_LOG" && grep -qF "
 else
   fail "sync-weights drafter (rc=$RC): $OUT // $(cat "$SC_RSYNC_LOG")"
 fi
+# Parallel streams: one ssh stream is cipher-bound near 0.46 GB/s on a GB10,
+# so each directory goes as up to SYNC_STREAMS whole-file rsyncs whose lists
+# together hold every file exactly once.
+_files="$(grep '^FILE ' "$SC_RSYNC_LOG" | sort)"
+_want="$(cd "$MODELS_DIR" && for d in syn syn.drafter; do (cd "$d" && find . -type f | sed "s|^\./|FILE $MODELS_DIR/$d/|"); done | sort)"
+if [[ "$_files" == "$_want" ]] && [[ "$(grep -c -- '--files-from=' "$SC_RSYNC_LOG")" -ge 4 ]] && grep -q -- "rsync -a -W --partial --from0" "$SC_RSYNC_LOG"; then
+  pass "sync-weights: parallel whole-file streams (--files-from), every file in exactly one stream"
+else
+  fail "sync-weights streams: got [$_files] want [$_want] // $(cat "$SC_RSYNC_LOG")"
+fi
+: > "$SC_RSYNC_LOG"; rm -f "$_WM/syn.lock"
+SYNC_STREAMS=1 _run sync-weights --cluster "$T/cluster-w.env" --profile "$T/hp/syn.env"
+[[ $RC -eq 0 && "$(grep -c -- '--files-from=' "$SC_RSYNC_LOG")" == 2 ]] && pass "sync-weights: SYNC_STREAMS=1 is one stream per directory" \
+  || fail "SYNC_STREAMS=1 (rc=$RC): $OUT // $(cat "$SC_RSYNC_LOG")"
+SYNC_STREAMS=99 _run sync-weights --cluster "$T/cluster-w.env" --profile "$T/hp/syn.env"
+[[ $RC -eq 2 ]] && _has "$OUT" "1..16" && pass "sync-weights: SYNC_STREAMS outside 1..16 is refused" || fail "SYNC_STREAMS=99 (rc=$RC): $OUT"
+rm -f "$_WM/syn.lock"
 # A worker whose own lock differs from the head's: refused before any copy.
 printf '{"schema": 1, "artifacts": {}}\n' > "$_WM/syn.lock"; : > "$SC_RSYNC_LOG"
 _run sync-weights --cluster "$T/cluster-w.env" --profile "$T/hp/syn.env"
