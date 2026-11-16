@@ -250,7 +250,8 @@ def test_run_agent_passes_context_file_flag(monkeypatch):
             return ("TOKENS: prompt=1 completion=1 total=2\n", "")
 
     def fake_popen(cmd, **kw):
-        calls.append(cmd)
+        if "--max-iter" in cmd:     # the runner; not the leftover sweep's `ps`
+            calls.append(cmd)
         return FakeProc()
     monkeypatch.setattr(run_eval.subprocess, "Popen", fake_popen)
     base = {"id": "t", "task": "do it", "max_iter": 1}

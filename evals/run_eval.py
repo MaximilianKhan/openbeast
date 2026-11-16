@@ -302,7 +302,7 @@ def _proc_snapshot() -> dict:
         r = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,pgid=,uid=,stat=,lstart="],
                            capture_output=True, text=True, timeout=10,
                            stdin=subprocess.DEVNULL, env={**os.environ, "LC_ALL": "C"})
-    except (OSError, subprocess.TimeoutExpired):
+    except Exception:  # noqa: BLE001 — a failed snapshot must never fail the unit
         return out
     for line in r.stdout.splitlines():
         p = line.split(None, 5)
