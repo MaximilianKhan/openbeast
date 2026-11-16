@@ -93,6 +93,12 @@
 # scope is additionally capped at 8G regardless of this setting.
 # The $OPENBEAST_MEM_LIMIT_PCT env var overrides this per-shell.
 #MEM_LIMIT_PCT=75
+# UNIFIED memory only (a GB10 / DGX Spark that runs its own model beside the
+# stack, INFERENCE_MANAGED=false): the model's memory is part of MemTotal, so
+# 75% of it protects nothing. Once the model is up the supervisor re-sizes the
+# stack's cap (and the chat jobs') from MemAvailable minus this many GiB, which
+# stay free for the model. Whole GiB; ignored on a discrete GPU.
+#MEM_RESERVE_GB=3
 
 # Host RAM llama-server may use to keep the state of conversations that are
 # not on a slot right now (its --cache-ram, in MiB). With the one-slot
@@ -114,6 +120,14 @@
 # manager. Set false to manage rotation yourself.
 # Env override: $OPENBEAST_LOGROTATE_AUTOINSTALL.
 #LOGROTATE_AUTOINSTALL=true
+
+# Health watchdog: every ./start.sh -d makes sure openbeast-watchdog.timer
+# (systemd --user; healthcheck.sh --restart every 5 minutes) is installed and
+# enabled, so a crashed tool server, beast-gate, beast-chat or beast-artifact
+# comes back. It never touches an unmanaged inference server, and does
+# nothing after ./stop.sh. No-op without a systemd user manager.
+# Env override: $OPENBEAST_WATCHDOG_AUTOINSTALL.
+#WATCHDOG_AUTOINSTALL=true
 
 # Agent transcript retention (agents/logs/*.jsonl, *.log). Off by default:
 # transcripts are kept forever. Set a day count and the daily logrotate timer
@@ -146,6 +160,9 @@
 # with ./scripts/ext.sh (enable/disable/list). Space-separated; empty = the
 # opinionated core only. Env override: $OPENBEAST_EXTENSIONS.
 #EXTENSIONS="dashboard"
+# The dashboard extension's loopback port (healthcheck and --publish-slot
+# follow it). Env override: $OPENBEAST_DASHBOARD_PORT.
+#DASHBOARD_PORT=3002
 
 # ---------------------------------------------------------------------------
 # Inference backend  (see docs/DGX_SPARK_PLAN.md)
@@ -189,6 +206,29 @@
 # scripts/backends/use-model.sh --profile <name>, after conformance.sh passes.
 # Env: $OPENBEAST_INFERENCE_MODEL.
 #INFERENCE_MODEL=my-model-nvfp4
+
+# ---------------------------------------------------------------------------
+# Engine plane  (scripts/engine.sh, docs/ENGINES.md)
+# ---------------------------------------------------------------------------
+# scripts/engine.sh writes these; you rarely set them by hand.
+#
+# The engine `engine.sh use default` picks. Unset = by host class: rig →
+# llama, DGX Spark (GB10) → tensorfold. Env: $OPENBEAST_ENGINE_DEFAULT.
+#ENGINE_DEFAULT=llama
+# The model profile (scripts/backends/models/<name>.env, TENSOR_PARALLEL_SIZE=1)
+# a MANAGED vllm / tensorfold serves. Written by engine.sh use --profile NAME.
+#ENGINE_PROFILE=my-model-tp1
+# Where model-fetch.sh's verified checkpoints live (one dir per profile).
+# Default: MODELS_DIR, else ~/openbeast-models.
+#ENGINE_MODELS_DIR=~/openbeast-models
+# Pins: <version>@<immutable ref>. llama.cpp's pin is scripts/llama.cpp.ref.
+#ENGINE_PIN_VLLM=v0.33.0@sha256:d825baf9ce4b1b6bfc5ecc7b79880c7e6748c65a72d697ce3d47607aafa84c6e
+#ENGINE_PIN_TENSORFOLD=1.2.9@sha256:<archive sha256>
+# vLLM image repository (multi-arch release tags vX.Y.Z).
+#ENGINE_VLLM_IMAGE=vllm/vllm-openai
+# --enforce-eager for a managed vLLM: auto (on a GB10, for the sparse-MLA
+# families hit by CUDA-graph NaN, vllm#57156) | true | false.
+#ENGINE_VLLM_EAGER=auto
 
 # ---------------------------------------------------------------------------
 # beast-hydra — route inference across machines  (docs/BEAST_HYDRA_PLAN.md)
@@ -298,6 +338,14 @@
 # images or audio. No trailing comment, as above.
 #EDGE_MAX_BODY=8388608
 
+# How long the gate waits on the model server, in whole seconds. READ is the
+# wait for each byte — for a NON-streaming completion that is the whole
+# generation, so a long one (or one queued behind another on a 1-slot rig)
+# can hit the 504 at 600 s; raise it, or have the client stream. CONNECT is
+# how long reaching the server may take. No trailing comment, as above.
+#EDGE_READ_TIMEOUT=600
+#EDGE_CONNECT_TIMEOUT=10
+
 # Remote devices must send media INLINE: an image/audio/video part carrying a
 # data: URI or bare base64. A part that names a URL (http://, file://, ...)
 # gets 400, because llama-server would fetch it from inside the rig — a
@@ -386,6 +434,17 @@
 # publishing and doctor.sh WARNs instead of FAILing. Default false.
 # Env: $OPENBEAST_ALLOW_OPEN_WEBUI.
 #ALLOW_OPEN_WEBUI=false
+# It also covers a WebUI with WEBUI_AUTH off that is reachable by more than
+# this machine — a non-loopback BIND_HOST, or a :443 mount still live. Without
+# it, scripts/lib/conf.sh keeps login ON in those cases and says so.
+
+# Extra browser origins allowed to call the Open WebUI API (CORS, and the
+# chat socket). The defaults already cover http://localhost:3000, the
+# BIND_HOST address and https://<this box's tailnet name>; add your own
+# reverse-proxy origin here, separated by ; or , (e.g.
+# https://chat.example.org). '*' restores upstream's allow-every-site default.
+# Env: $OPENBEAST_WEBUI_ORIGINS. Takes effect when the container is recreated.
+#WEBUI_ORIGINS=
 
 # Acknowledge publishing llama-server itself on the tailnet (:8443) with NO
 # beast-gate and NO LLAMA_API_KEY: every tailnet device, shared-in users
@@ -458,8 +517,9 @@
 # WITHOUT THE NETWORK: the facts come from the toolchain installed next to it,
 # not from a web search or from weights frozen two versions ago.
 #
-#   auto            every language with an installed toolchain AND verified
-#                   claims (the default when this key is absent)
+#   auto            every language with an installed toolchain AND either
+#                   verified claims or a toolchain probe (zig, cpp, c,
+#                   python, go, rust) — the default when this key is absent
 #   cpp,zig         exactly these — a rig that only writes C++ and zig pays
 #                   nothing for the rest
 #   off             disabled. An EXPLICITLY EMPTY value (LANG_PACKS=) also
@@ -613,8 +673,8 @@
 # ---------------------------------------------------------------------------
 
 # Below-app tool enforcement: with EITHER key set, the tool server checks a
-# Bearer key on every call — the admin key reaches all 18 tools, the guest
-# key only web_search + fetch (anything else is 404 for it), so a guest
+# Bearer key on every call — the admin key reaches all 19 tools, the guest
+# key only web_search, fetch and weather (anything else is 404 for it), so a guest
 # can't reach admin tools even bypassing the WebUI layer. A missing key
 # simply disables that profile (fail closed). BOTH keys absent = open
 # server on loopback (WebUI grants only, single-user default). Generate

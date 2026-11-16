@@ -581,7 +581,10 @@ def _validate(raw, env, repo: Path, source: str, errors: list[str]) -> Config:
             errors += _key_file_errors(where, n["key_file"], repo)
         if (not loopback and not n.get("key_env")
                 and not n.get("key_file") and cls != "invalid"):
-            warnings.append(f"{where}: remote {engine} node with no key")
+            warnings.append(f"{where}: remote {engine} node with no key"
+                            + (" (a key_file only helps native TensorFold >= 1.0: the container "
+                               "engine has no auth, so bind it to loopback or firewall it to the rig)"
+                               if engine == "tensorfold" else ""))
         slots = n.get("slots", 1)
         if isinstance(slots, int) and not isinstance(slots, bool) and slots < 1:
             errors.append(f"{where}.slots must be >= 1")
@@ -1219,6 +1222,7 @@ class Admission:
     def __init__(self, fleet: "FleetState", d: str, node: str, trial: bool, hs: "HealthState"):
         self._fleet, self.d, self.node, self.trial, self.done = fleet, d, node, trial, False
         self.hs = hs
+        self.on_release: list = []      # callables, run once by release() (the I/O side's)
 
     def release(self) -> None:
         if self.done:
@@ -1227,7 +1231,20 @@ class Admission:
         f = self._fleet
         f._inflight[self.d] = max(0, f._inflight.get(self.d, 0) - 1)
         f._node_inflight[self.node] = max(0, f._node_inflight.get(self.node, 0) - 1)
+        self.end_trial()
+        for fn in self.on_release:
+            fn()
+
+    def end_trial(self) -> None:
+        """Give back the HALF_OPEN trial slot, keep the in-flight unit.
+
+        The trial asks "does this deployment answer?", and the commit point
+        (first upstream byte) answers it. Holding the slot to the end of a
+        stream 503'd every other caller, pins included, for a whole
+        generation. Success is still only recorded when the stream ends, and
+        a mid-stream failure still reopens the breaker. Idempotent."""
         if self.trial:
+            self.trial = False
             self.hs.h.trial_inflight = max(0, self.hs.h.trial_inflight - 1)
 
 
@@ -1339,17 +1356,42 @@ class Caller:
     role: str | None = None
 
 
+def _is_image_part(part) -> bool:
+    return isinstance(part, dict) and (part.get("type") in ("image_url", "input_image", "image")
+                                       or "image_url" in part)
+
+
 def _any_image_part(messages) -> bool:
     if not isinstance(messages, list):
         return False
     for m in messages:
         c = m.get("content") if isinstance(m, dict) else None
-        if isinstance(c, list):
-            for part in c:
-                if isinstance(part, dict) and (part.get("type") in ("image_url", "input_image", "image")
-                                               or "image_url" in part):
-                    return True
+        if isinstance(c, list) and any(_is_image_part(p) for p in c):
+            return True
     return False
+
+
+# What one image costs the engine in prompt tokens, for est_prompt_tokens.
+# Its base64 data: URI is no measure: a 1 MB JPEG is ~1.33 M chars (~445 K
+# "tokens" at 3 chars/token, which excluded every 262 K deployment on ctx),
+# while a VL model encodes it to on the order of a thousand tokens. 2048 is
+# deliberately on the high side, like the rest of the estimate.
+IMAGE_TOKEN_ESTIMATE = 2048
+
+
+def _images_out(messages) -> tuple[object, int]:
+    """`messages` with every image part replaced by a stub, and how many there
+    were. Shallow copies: the caller's body (which is forwarded) is untouched."""
+    if not isinstance(messages, list):
+        return messages, 0
+    out, n = [], 0
+    for m in messages:
+        c = m.get("content") if isinstance(m, dict) else None
+        if isinstance(c, list) and any(_is_image_part(p) for p in c):
+            n += sum(1 for p in c if _is_image_part(p))
+            m = dict(m, content=[{"type": "image"} if _is_image_part(p) else p for p in c])
+        out.append(m)
+    return out, n
 
 
 def _text_of(content) -> str:
@@ -1380,6 +1422,21 @@ def _header(headers, name: str) -> str | None:
     return v
 
 
+# Caller-chosen ids (`model`, X-Hydra-Pin) are kept in the Trace, a note,
+# the 200-entry decision ring and the audit row. Unbounded, an 8 MiB `model`
+# pinned ~17 MB per request until 200 newer ones pushed it out. No real
+# route, alias or deployment id is anywhere near this long.
+MAX_ID_CHARS = 256
+
+
+def _bounded_id(v) -> str:
+    s = v if isinstance(v, str) else str(v)
+    if len(s) > MAX_ID_CHARS:
+        s = f"{s[:MAX_ID_CHARS]}…(+{len(s) - MAX_ID_CHARS})"      # can match no id
+    # a lone surrogate (JSON "\ud800") would make every later .encode() raise
+    return s.encode("utf-8", "replace").decode("utf-8")
+
+
 def extract_features(path: str, body: dict, headers, cfg: Config) -> Features:
     msgs = body.get("messages")
     if msgs is None:
@@ -1388,32 +1445,36 @@ def extract_features(path: str, body: dict, headers, cfg: Config) -> Features:
         msgs = body.get("input")
     if msgs is None:
         msgs = ""
+    msgs, n_images = _images_out(msgs)
     text = json.dumps(msgs, ensure_ascii=False) + json.dumps(body.get("tools") or [], ensure_ascii=False)
     rf = body.get("response_format") if isinstance(body.get("response_format"), dict) else {}
     mt = body.get("max_tokens") or body.get("max_completion_tokens") or cfg.settings.default_max_tokens
     try:
-        mt = int(mt)
-    except (TypeError, ValueError):
+        mt = int(mt)            # 1e999 / Infinity parse as float inf: OverflowError
+    except (TypeError, ValueError, OverflowError):
         mt = cfg.settings.default_max_tokens
     session = _header(headers, "x-conversation-id") or _header(headers, "x-hydra-session")
+    if session and len(session) > MAX_ID_CHARS:      # an affinity key, kept 4096-deep: bound it
+        session = hashlib.sha1(session.encode("utf-8", "surrogateescape")).hexdigest()
     if not session and isinstance(body.get("messages"), list):
         first_sys = next((_text_of(m.get("content")) for m in body["messages"]
                           if isinstance(m, dict) and m.get("role") == "system"), "")
         first_user = next((_text_of(m.get("content")) for m in body["messages"]
                            if isinstance(m, dict) and m.get("role") == "user"), "")
         if first_sys or first_user:
-            session = hashlib.sha1((first_sys + "\x00" + first_user).encode()).hexdigest()[:16]
+            session = hashlib.sha1((first_sys + "\x00" + first_user).encode(
+                "utf-8", "surrogatepass")).hexdigest()[:16]          # JSON allows a lone "\ud800"
     return Features(
-        path=path, model=str(body.get("model") or ""), stream=bool(body.get("stream")),
+        path=path, model=_bounded_id(body.get("model") or ""), stream=bool(body.get("stream")),
         has_images=_any_image_part(body.get("messages")),
         has_tools=bool(body.get("tools")),
         needs_json_schema=rf.get("type") in ("json_schema", "json_object") or "json_schema" in body,
         needs_grammar="grammar" in body,
         needs_reasoning_budget="reasoning_budget_tokens" in body,
         needs_embeddings=path.endswith("/embeddings"),
-        est_prompt_tokens=math.ceil(len(text) / cfg.settings.chars_per_token),
+        est_prompt_tokens=math.ceil(len(text) / cfg.settings.chars_per_token) + n_images * IMAGE_TOKEN_ESTIMATE,
         max_tokens=max(0, mt), session_key=session or None,
-        pin=_header(headers, "x-hydra-pin") or None,
+        pin=_bounded_id(_header(headers, "x-hydra-pin") or "") or None,
         prompt_head=_prompt_head(body.get("messages")))
 
 

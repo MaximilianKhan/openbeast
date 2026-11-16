@@ -465,6 +465,144 @@ _O="$(_run "$_R" 120 "$_R/scripts/doctor.sh")"
 grep -q "reached without a key" <<< "$_O" && pass "…while a remote keyless vLLM is warned about (control)" \
   || fail "no keyless warning for a remote vLLM"
 
+# GB10 (unified memory): nvidia-smi answers memory.used/total with [N/A], so
+# the VRAM-headroom rows said nothing ("unavailable") and doctor printed host
+# RAM as "VRAM" (ops review). spark-1's meminfo, idle and squeezed.
+echo ""
+echo "doctor.sh / healthcheck.sh on a GB10 (unified memory):"
+_R="$_T/gb10"; _rig "$_R"
+cat > "$_R/bin/nvidia-smi" <<'SH'
+#!/bin/bash
+case "$*" in
+  *name,memory.used*|*memory.used,memory.total*) echo "NVIDIA GB10, [N/A], [N/A]" ;;
+  *memory.total*|*memory.used*) echo "[N/A]" ;;
+  *name*) echo "NVIDIA GB10" ;;
+esac
+exit 0
+SH
+chmod +x "$_R/bin/nvidia-smi"
+printf 'MemTotal:       127598412 kB\nMemAvailable:    6690096 kB\n' > "$_R/meminfo-ok"
+printf 'MemTotal:       127598412 kB\nMemAvailable:    2097152 kB\n' > "$_R/meminfo-low"
+RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=tensorfold "OPENBEAST_INFERENCE_URL=$_S/tf" "OB_MEMINFO=$_R/meminfo-ok")
+_O="$(_run "$_R" 120 "$_R/scripts/doctor.sh")"
+grep -q "GB10 (unified memory — 124607 MiB of host RAM" <<< "$_O" && ! grep -q "MiB VRAM)" <<< "$_O" \
+  && pass "doctor labels the GB10's memory unified host RAM, not VRAM" \
+  || fail "GB10 GPU row: $(grep -i gb10 <<< "$_O" || true)"
+grep -q "unified memory headroom: 6533 MiB available beside the model" <<< "$_O" \
+  && pass "…and shows a real headroom row from MemAvailable" || fail "no unified headroom row: $(grep -i headroom <<< "$_O" || true)"
+_O="$(_run "$_R" 60 "$_R/scripts/healthcheck.sh")"
+grep -q "Unified memory: 6533 MiB available of 124607 MiB" <<< "$_O" && ! grep -q "GPU VRAM: unavailable" <<< "$_O" \
+  && pass "healthcheck reports unified memory, not 'GPU VRAM: unavailable'" \
+  || fail "healthcheck GB10 memory line: $(grep -iE 'vram|unified' <<< "$_O" || true)"
+RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=tensorfold "OPENBEAST_INFERENCE_URL=$_S/tf" "OB_MEMINFO=$_R/meminfo-low")
+_O="$(_run "$_R" 120 "$_R/scripts/doctor.sh")"
+grep -q "unified memory headroom: only 2048 MiB available (MEM_RESERVE_GB=3)" <<< "$_O" \
+  && pass "…and warns once MemAvailable is under the MEM_RESERVE_GB reserve" \
+  || fail "no low-headroom warning: $(grep -i headroom <<< "$_O" || true)"
+_O="$(_run "$_R" 60 "$_R/scripts/healthcheck.sh")"
+grep -q "WARNING: under the 3 GiB reserve" <<< "$_O" && pass "…healthcheck too" \
+  || fail "healthcheck low unified memory: $(grep -iE 'unified|warning' <<< "$_O" || true)"
+
+# A frozen peer rank: TensorFold rank 0 keeps answering /health ok:true
+# while every request hangs (ops review). healthcheck reads iteration_s, and
+# when idle sends one rate-limited 1-token completion with a short timeout.
+echo ""
+echo "healthcheck.sh: a stalled TensorFold pair is DOWN, not OK:"
+cat > "$_T/tfstub.py" <<'PY'
+import http.server, json, sys, threading, time, os
+COUNT = {"n": 0}
+def health(mode):
+    if mode == "stuck":  return {"ok": True, "requests_running": 2, "iteration_s": 400.0}
+    if mode == "busy":   return {"ok": True, "requests_running": 2, "iteration_s": 0.3}
+    return {"ok": True, "requests_running": 0, "iteration_s": 0.0}
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def _send(self, st, obj):
+        b = json.dumps(obj).encode()
+        self.send_response(st); self.send_header("Content-Length", str(len(b)))
+        self.end_headers(); self.wfile.write(b)
+    def do_GET(self):
+        mode, _, path = self.path.lstrip("/").partition("/")
+        if path == "health":      return self._send(200, health(mode))
+        if path == "v1/models":   return self._send(200, {"data": [{"id": "GLM"}]})
+        if path == "count":       return self._send(200, COUNT)
+        self._send(404, {})
+    def do_POST(self):
+        mode, _, path = self.path.lstrip("/").partition("/")
+        COUNT["n"] += 1
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        if mode == "hang":
+            time.sleep(6)
+        self._send(200, {"choices": [{"message": {"content": "I"}}]})
+srv = http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), H)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+time.sleep(600); os._exit(0)
+PY
+_TFP="$(_free_port)"; python3 "$_T/tfstub.py" "$_TFP" & _PIDS="$_PIDS $!"
+_TF="http://127.0.0.1:$_TFP"
+for _i in $(seq 1 50); do curl -s -o /dev/null "$_TF/idle/health" 2>/dev/null && break; sleep 0.1; done
+_R="$_T/hc-tf"; _rig "$_R"
+_tfhc() { RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=tensorfold "OPENBEAST_INFERENCE_URL=$_TF/$1" OPENBEAST_TF_PROBE_TIMEOUT=2)
+          _O="$(_run "$_R" 60 "$_R/scripts/healthcheck.sh")"; }
+_tfhc stuck
+grep -q "DOWN TensorFold.*rank 0's current iteration has run 400 s" <<< "$_O" \
+  && pass "an iteration stuck for 400 s is DOWN although /health says ok" \
+  || fail "stuck TensorFold: $(grep -i tensorfold <<< "$_O" || true)"
+rm -f "$_R/.run/tf-liveness"; _tfhc busy
+grep -q "OK   TensorFold" <<< "$_O" && [[ ! -f "$_R/.run/tf-liveness" ]] \
+  && pass "…a busy pair making progress is OK, and is not probed" \
+  || fail "busy TensorFold: $(grep -i tensorfold <<< "$_O" || true)"
+rm -f "$_R/.run/tf-liveness"; _tfhc hang
+grep -q "DOWN TensorFold.*a 1-token completion did not finish in 2 s" <<< "$_O" \
+  && pass "an idle pair whose 1-token completion never returns is DOWN" \
+  || fail "hung idle TensorFold: $(grep -i tensorfold <<< "$_O" || true)"
+rm -f "$_R/.run/tf-liveness"; _tfhc idle
+_n1="$(curl -s "$_TF/idle/count")"; _tfhc idle; _n2="$(curl -s "$_TF/idle/count")"
+grep -q "OK   TensorFold" <<< "$_O" && [[ -n "$_n1" && "$_n1" == "$_n2" ]] \
+  && pass "…an idle pair that answers is OK, and a second pass within the interval sends no probe" \
+  || fail "idle TensorFold: $(grep -i tensorfold <<< "$_O" || true) probes $_n1 -> $_n2"
+
+# A keyed rig in front of a server that does not enforce the key (the
+# container TensorFold engine has no auth): doctor must ask the server.
+# http://2130706433 is 127.0.0.1 spelled so doctor treats it as remote.
+echo ""
+echo "doctor.sh asks the server whether it enforces a key:"
+_R="$_T/doc-open"; _rig "$_R"
+RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=tensorfold "OPENBEAST_INFERENCE_URL=http://2130706433:$_TFP/idle" OPENBEAST_API_KEY=k-rig)
+printf 'LLAMA_API_KEY=k-rig\n' > "$_R/openbeast.conf"
+_O="$(_run "$_R" 120 "$_R/scripts/doctor.sh")"
+grep -q "serves /v1 WITHOUT a key (keyless /v1/models → 200) — LLAMA_API_KEY is set here, but the server does not enforce it" <<< "$_O" \
+  && grep -q "container TensorFold has NO auth" <<< "$_O" \
+  && pass "a keyed rig + an open TensorFold /v1 is warned, with the container-engine fix" \
+  || fail "open /v1 behind a rig key: $(grep -iE 'key|/v1' <<< "$_O" | head -5)"
+RUN_ENV=(OPENBEAST_INFERENCE_BACKEND=tensorfold "OPENBEAST_INFERENCE_URL=http://2130706433:$(_free_port)" OPENBEAST_API_KEY=k-rig)
+_O="$(_run "$_R" 120 "$_R/scripts/doctor.sh")"
+grep -qE "WITHOUT a key|reached without a key" <<< "$_O" \
+  && fail "control: a keyed rig whose server does not answer keyless was warned" \
+  || pass "…control: no keyless 200, key set → no key warning"
+
+# One restarter at a time: the watchdog timer and the unmanaged supervisor
+# both run --restart. A live pass holds .run/healthcheck-restart.pid.
+echo ""
+echo "healthcheck.sh --restart: one pass at a time:"
+_R="$_T/hc-lock"; _rig "$_R"
+echo "serve-marker.sh" > "$_R/.run/serve-script"
+printf '#!/bin/bash\nsleep 30\n' > "$_R/healthcheck.sh"; chmod +x "$_R/healthcheck.sh"
+"$_R/healthcheck.sh" & _HOLD=$!
+echo "$_HOLD" > "$_R/.run/healthcheck-restart.pid"
+RUN_ENV=()
+_O="$(_run "$_R" 60 "$_R/scripts/healthcheck.sh" --restart)"
+kill "$_HOLD" 2>/dev/null || true; wait "$_HOLD" 2>/dev/null || true
+grep -q "Another healthcheck --restart is running (pid $_HOLD)" <<< "$_O" && ! grep -q serve-marker "$_R/calls.log" \
+  && pass "a second --restart while one runs reports only (restarts nothing)" \
+  || fail "concurrent --restart: $(head -n 4 <<< "$_O") :: $(cat "$_R/calls.log")"
+[[ "$(cat "$_R/.run/healthcheck-restart.pid")" == "$_HOLD" ]] \
+  && pass "…and leaves the running pass's lock alone" || fail "the holder's lock was taken"
+_O="$(_run "$_R" 60 "$_R/scripts/healthcheck.sh" --restart)"
+grep -q serve-marker "$_R/calls.log" && [[ ! -f "$_R/.run/healthcheck-restart.pid" ]] \
+  && pass "…a dead pass's leftover lock is taken over, and released on exit (control: it restarts)" \
+  || fail "stale lock: $(head -n 4 <<< "$_O") :: lock=$(cat "$_R/.run/healthcheck-restart.pid" 2>/dev/null)"
+
 echo ""
 echo "start.sh --status on an unmanaged stack:"
 _R="$_T/status"; _rig "$_R"
@@ -546,13 +684,34 @@ echo ""
 echo "Spark launch scaffolds with model profiles (docker stubbed):"
 _K="$_T/spark"; mkdir -p "$_K/bin" "$_K/home" "$_K/profiles" "$_K/models"
 # docker records argv AND whether VLLM_API_KEY reached its ENVIRONMENT.
+# A container "exists" for `container inspect` only while $_K/running/NAME does;
+# `image inspect` answers $_K/images/<ref> (its image id) or fails.
+mkdir -p "$_K/running" "$_K/images"
 cat > "$_K/bin/docker" <<EOF
 #!/bin/bash
 echo "ARGV \$*" >> "$_K/docker.log"
 echo "ENVKEY \${VLLM_API_KEY:-<unset>}" >> "$_K/docker.log"
+case "\$1 \${2:-}" in
+  "container inspect") [[ -e "$_K/running/\${@: -1}" ]]; exit ;;
+  "image inspect") f="$_K/images/\$(printf '%s' "\${@: -1}" | tr '/:@' '___')"; [[ -f "\$f" ]] && cat "\$f"; [[ -f "\$f" ]]; exit ;;
+esac
 exit 0
 EOF
 chmod +x "$_K/bin/docker"
+# systemctl --user: a unit is loaded only while $_K/units/NAME exists.
+mkdir -p "$_K/units"
+cat > "$_K/bin/systemctl" <<EOF
+#!/bin/bash
+echo "SYSTEMCTL \$*" >> "$_K/docker.log"
+u="\${@: -1}"; u="\${u%.service}"
+case " \$* " in
+  *" list-units "*) [[ -e "$_K/units/\$u" ]] && echo "\$u.service loaded active running x"; exit 0 ;;
+  *" stop "*) [[ -e "$_K/units/\$u" ]] || { echo "Unit \$u.service not loaded." >&2; exit 5; }; rm -f "$_K/units/\$u"; exit 0 ;;
+  *" is-active "*) [[ -e "$_K/units/\$u" ]]; exit ;;
+esac
+exit 0
+EOF
+chmod +x "$_K/bin/systemctl"
 (umask 077; printf 'sk-test-SECRET-4242\n' > "$_K/key")
 sed -e "s|^SPARK_SERVE_HOST=.*|SPARK_SERVE_HOST=100.64.1.2|" \
     -e "s|^VLLM_API_KEY_FILE=.*|VLLM_API_KEY_FILE=$_K/key|" \
@@ -609,7 +768,7 @@ for spec in sys.argv[3:]:
     key, d, repo, rev = spec.split(":")
     root = mdir / d
     root.mkdir(parents=True, exist_ok=True)
-    (root / "config.json").write_text(json.dumps({"model_type": "brand_new"}))
+    (root / "config.json").write_text(json.dumps({"model_type": os.environ.get("MKF_MODEL_TYPE", "brand_new")}))
     (root / "model.safetensors").write_bytes(b"\0" * 64)
     (root / ".openbeast-model.json").write_text(json.dumps({"source": repo, "revision": rev}))
     files = {}
@@ -618,6 +777,24 @@ for spec in sys.argv[3:]:
         files[f] = {"size": len(b), "sha256": hashlib.sha256(b).hexdigest(), "hub_oid": None, "lfs": False}
     arts[key] = {"source": repo, "revision": rev, "dir": d, "files": files}
 prof.with_suffix(".lock").write_text(json.dumps({"schema": 1, "artifacts": arts}))
+PY
+}
+# _model_type <profile> <dir> <model_type> — rewrite a fetched config.json and
+# re-record it in the profile's lock: --locate hashes every non-weight file,
+# so a same-size edit no longer slips past the lock.
+_model_type() {
+  python3 - "$@" <<'PY'
+import hashlib, json, sys
+from pathlib import Path
+prof, d, mt = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+(d / "config.json").write_text(json.dumps({"model_type": mt}))
+lock = prof.with_suffix(".lock")
+data = json.loads(lock.read_text())
+b = (d / "config.json").read_bytes()
+for art in data["artifacts"].values():
+    if art.get("dir") == d.name:
+        art["files"]["config.json"].update(size=len(b), sha256=hashlib.sha256(b).hexdigest())
+lock.write_text(json.dumps(data))
 PY
 }
 _mkfetched "$_K/profiles/vtest.env" "model:vtest:acme/Brand-New-Model-FP8:$_REV"
@@ -787,6 +964,31 @@ else
   fail "pinned run (rc=$SPRC): $_O / $(cat "$_K/docker.log")"
 fi
 
+# Pinned by IMAGE ID (what survives docker save | load; sync-image prints it):
+# the run is by ID, never IMAGE@DIGEST, and only if that ID is on this node.
+_IMGID="sha256:$(printf 'b%.0s' $(seq 1 64))"
+: > "$_K/docker.log"
+_sp "$_VN" VLLM_IMAGE_ID="$_IMGID" -- --profile "$_P/vtest.env" --rank 0 --env "$_K/spark.env"
+if [[ $SPRC -eq 1 ]] && _has "$_O" "image $_IMGID (nvcr.io/nvidia/vllm:26.05-py3) is not on this node" && ! grep -q "^ARGV run" "$_K/docker.log"; then
+  pass "an *_IMAGE_ID pin whose image is not on this node is refused before docker run (no pull)"
+else
+  fail "absent image id (rc=$SPRC): $_O / $(cat "$_K/docker.log")"
+fi
+echo "$_IMGID" > "$_K/images/$(printf '%s' "$_IMGID" | tr '/:@' '___')"
+: > "$_K/docker.log"
+_sp "$_VN" VLLM_IMAGE_ID="$_IMGID" VLLM_IMAGE_DIGEST="$_DIGEST" -- --profile "$_P/vtest.env" --rank 0 --env "$_K/spark.env"
+if [[ $SPRC -eq 0 ]] && grep -qF -- "--entrypoint vllm $_IMGID serve /models/vtest " "$_K/docker.log" && ! grep -qF "@$_DIGEST" "$_K/docker.log"; then
+  pass "vllm pinned by image ID runs that ID (the ID wins over a digest), never IMAGE@DIGEST"
+else
+  fail "vllm image id run (rc=$SPRC): $_O / $(cat "$_K/docker.log")"
+fi
+: > "$_K/docker.log"
+_sp "$_TN" TENSORFOLD_IMAGE_ID="$_IMGID" -- --profile "$_P/tftest.env" --rank 1 --env "$_K/spark.env"
+[[ $SPRC -eq 0 ]] && grep -qF -- "--entrypoint bash $_IMGID -c" "$_K/docker.log" \
+  && pass "tensorfold container pinned by image ID runs that ID" || fail "tensorfold image id (rc=$SPRC): $_O / $(cat "$_K/docker.log")"
+_sp "$_VN" VLLM_IMAGE_ID=sha256:abc -- --profile "$_P/vtest.env" --rank 0 --env "$_K/spark.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "is not sha256:<64 hex>" && pass "a malformed *_IMAGE_ID is refused" || fail "bad image id (rc=$SPRC): $_O"
+
 : > "$_K/docker.log"
 _sp "$_TN" -- --profile "$_P/tftest.env" --rank 0 --master 192.168.100.10 --env "$_K/spark.env" --print
 if [[ $SPRC -eq 0 ]] && _has "$_O" "serve /models/tftest --tp 2 --rank 0 --no-update-check --drafter none --master 192.168.100.10 --master-port 29551" \
@@ -856,7 +1058,7 @@ if [[ $SPRC -eq 0 ]] && _has "$_O" "systemd-run --user --unit openbeast-tensorfo
 else
   fail "native rank 0 --print (rc=$SPRC): $_O"
 fi
-python3 -c 'import json,sys; json.dump({"model_type": "glm5_next"}, open(sys.argv[1], "w"))' "$_K/models/tftest/config.json"
+_model_type "$_P/tftest.env" "$_K/models/tftest" glm5_next
 _sp "$_TN" -- --profile "$_P/tftest.env" --rank 1 --master 192.168.100.10 --env "$_K/spark-native.env" --print
 if [[ $SPRC -eq 0 ]] && _has "$_O" "--setenv=TF_GLM_RANK=1" && _has "$_O" "--setenv=TF_GLM_WORLD=2" \
    && _has "$_O" "--setenv=NCCL_COMM_ID=192.168.100.10:29583" && ! _has "$_O" "--tp 2" \
@@ -865,13 +1067,178 @@ if [[ $SPRC -eq 0 ]] && _has "$_O" "--setenv=TF_GLM_RANK=1" && _has "$_O" "--set
 else
   fail "native GLM rank 1 (rc=$SPRC): $_O"
 fi
+printf '#!/bin/sh\nexit 3\n' > "$_K/bin/tensorfold-broken"; chmod +x "$_K/bin/tensorfold-broken"
+_sp "$_TN" TENSORFOLD_BIN="$_K/bin/tensorfold-broken" -- --profile "$_P/tftest.env" --rank 1 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "is TensorFold '?', spark.env pins 1.2.7" && _has "$_O" "Refusing to start" \
+  && pass "native: a binary whose --version fails is refused with a reason (not a silent exit)" || fail "native broken binary (rc=$SPRC): $_O"
+_sp "$_TN" -- --profile "$_P/tftest.env" --rank 1 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+[[ $SPRC -eq 0 ]] && _has "$_O" "systemd-run --user --unit openbeast-tensorfold-rank1 --collect --property=Restart=no --expand-environment=no" \
+  && pass "native: systemd-run --expand-environment=no, so the unit runs the argv --print shows (no \${VAR} rewriting)" \
+  || fail "native expand-environment (rc=$SPRC): $_O"
+# Native without a profile drafter: no --drafter flag at all (see the header:
+# MTP-head families refuse any --drafter, `none` included as far as we know).
+! _has "$_O" "--drafter" && pass "native: a profile without a drafter passes no --drafter" || fail "native drafter flag: $_O"
 _sp "$_TN" TF_STUB_VERSION=1.2.6 -- --profile "$_P/tftest.env" --rank 1 --master 192.168.100.10 --env "$_K/spark-native.env" --print
 [[ $SPRC -eq 1 ]] && _has "$_O" "spark.env pins 1.2.7" && pass "native refuses a binary that is not the pinned release" \
   || fail "native version pin (rc=$SPRC): $_O"
 _sp "$_TN" TENSORFOLD_API_KEY_FILE="$_K/no-such-key" -- --profile "$_P/tftest.env" --rank 0 --master 192.168.100.10 --env "$_K/spark-native.env" --print
 [[ $SPRC -eq 1 ]] && _has "$_O" "does not exist" && pass "native rank 0 refuses to serve without its key file" \
   || fail "native rank 0 keyless (rc=$SPRC): $_O"
-python3 -c 'import json,sys; json.dump({"model_type": "brand_new"}, open(sys.argv[1], "w"))' "$_K/models/tftest/config.json"
+_model_type "$_P/tftest.env" "$_K/models/tftest" brand_new
+
+# Clusters of 1..8 Sparks: TENSOR_PARALLEL_SIZE N = N ranks, 0..N-1.
+sed -e 's/^TENSOR_PARALLEL_SIZE=2/TENSOR_PARALLEL_SIZE=4/' "$_P/tftest.env" > "$_P/tf4.env"
+sed -e 's/^TENSOR_PARALLEL_SIZE=2/TENSOR_PARALLEL_SIZE=3/' "$_P/tftest.env" > "$_P/tf3.env"
+sed -e 's/^TENSOR_PARALLEL_SIZE=2/TENSOR_PARALLEL_SIZE=8/' "$_P/vtest.env" > "$_P/vt8.env"
+sed -e 's/^TENSOR_PARALLEL_SIZE=2/TENSOR_PARALLEL_SIZE=9/' "$_P/vtest.env" > "$_P/vt9.env"
+_mkfetched "$_P/tf4.env" "model:tf4:acme/Brand-New-Model-MLX-4bit:$_REV"
+_mkfetched "$_P/tf3.env" "model:tf3:acme/Brand-New-Model-MLX-4bit:$_REV"
+_mkfetched "$_P/vt8.env" "model:vt8:acme/Brand-New-Model-FP8:$_REV"
+_sp "$_TN" -- --profile "$_P/tf4.env" --rank 3 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+if [[ $SPRC -eq 0 ]] && _has "$_O" "--tp 4 --rank 3 --master 192.168.100.10 --master-port 29583" \
+   && _has "$_O" "--unit openbeast-tensorfold-rank3" && _has "$_O" "--setenv=NCCL_CROSS_NIC=1" \
+   && ! _has "$_O" "--host " && ! _has "$_O" "--api-key-file"; then
+  pass "native TP 4 rank 3 (brand_new): --tp 4 --rank 3, headless, no key, NCCL_CROSS_NIC=1"
+else
+  fail "native TP 4 rank 3 (rc=$SPRC): $_O"
+fi
+_model_type "$_P/tf4.env" "$_K/models/tf4" glm5_next
+_sp "$_TN" -- --profile "$_P/tf4.env" --rank 3 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+if [[ $SPRC -eq 0 ]] && _has "$_O" "--setenv=TF_GLM_RANK=3" && _has "$_O" "--setenv=TF_GLM_WORLD=4" \
+   && _has "$_O" "--setenv=NCCL_COMM_ID=192.168.100.10:29583" && _has "$_O" "--setenv=NCCL_CROSS_NIC=1" \
+   && ! _has "$_O" "--tp 4" && ! _has "$_O" "--host "; then
+  pass "native GLM TP 4 rank 3: TF_GLM_RANK=3 TF_GLM_WORLD=4 + NCCL_COMM_ID, no HTTP"
+else
+  fail "native GLM TP 4 rank 3 (rc=$SPRC): $_O"
+fi
+_sp "$_TN" -- --profile "$_P/tf4.env" --rank 0 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+if [[ $SPRC -eq 0 ]] && _has "$_O" "--setenv=TF_GLM_RANK=0" && _has "$_O" "--setenv=TF_GLM_WORLD=4" \
+   && _has "$_O" "--host 100.64.1.2 --port 8000" && _has "$_O" "--api-key-file $_K/key"; then
+  pass "…and its rank 0 alone serves HTTP, keyed"
+else
+  fail "native GLM TP 4 rank 0 (rc=$SPRC): $_O"
+fi
+_sp "$_TN" -- --profile "$_P/tf4.env" --rank 4 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "ranks are 0..3" && _has "$_O" "no --rank 4" \
+  && pass "native refuses --rank 4 for a TP 4 profile (rank >= N)" || fail "rank >= N accepted (rc=$SPRC): $_O"
+_sp "$_TN" -- --profile "$_P/tf3.env" --rank 2 --master 192.168.100.10 --env "$_K/spark.env" --print
+if [[ $SPRC -eq 0 ]] && _has "$_O" "serve /models/tf3 --tp 3 --rank 2 --no-update-check --drafter none --master 192.168.100.10 --master-port 29551" \
+   && _has "$_O" "--name openbeast-tensorfold-rank2" && _has "$_O" "-e NCCL_CROSS_NIC=1" \
+   && ! _has "$_O" "--host "; then
+  pass "container TP 3 rank 2: --tp 3 --rank 2 --master, headless, NCCL_CROSS_NIC=1"
+else
+  fail "container TP 3 rank 2 (rc=$SPRC): $_O"
+fi
+_sp "$_TN" -- --profile "$_P/tf3.env" --rank 0 --master 192.168.100.10 --env "$_K/spark.env" --print
+[[ $SPRC -eq 0 ]] && _has "$_O" "start ranks 1..2 FIRST" && _has "$_O" "--host 100.64.1.2 --port 8000" \
+  && pass "…its rank 0 serves HTTP and says to start ranks 1..2 FIRST" || fail "container TP 3 rank 0 (rc=$SPRC): $_O"
+_sp "$_VN" -- --profile "$_P/vt8.env" --rank 7 --env "$_K/spark.env" --print
+if [[ $SPRC -eq 0 ]] && _has "$_O" "--tensor-parallel-size 8" \
+   && _has "$_O" "--nnodes 8 --node-rank 7 --master-addr 192.168.100.10 --master-port 29501" \
+   && _has "$_O" "--headless" && _has "$_O" "-e NCCL_CROSS_NIC=1" && _has "$_O" "--name openbeast-vllm-rank7" \
+   && ! _has "$_O" "--host " && ! _has "$_O" "VLLM_API_KEY"; then
+  pass "vllm TP 8 rank 7: --nnodes 8 --node-rank 7 --headless, no HTTP, no key, NCCL_CROSS_NIC=1"
+else
+  fail "vllm TP 8 rank 7 (rc=$SPRC): $_O"
+fi
+_sp "$_VN" -- --profile "$_P/vt8.env" --rank 0 --env "$_K/spark.env" --print
+if [[ $SPRC -eq 0 ]] && _has "$_O" "--nnodes 8 --node-rank 0" && ! _has "$_O" "--headless" \
+   && _has "$_O" "--host 100.64.1.2 --port 8000" && _has "$_O" "-e VLLM_API_KEY "; then
+  pass "vllm TP 8 rank 0: not headless, serves HTTP, keyed"
+else
+  fail "vllm TP 8 rank 0 (rc=$SPRC): $_O"
+fi
+_sp "$_VN" -- --profile "$_P/vt8.env" --rank 8 --env "$_K/spark.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "ranks are 0..7" && pass "vllm refuses --rank 8 for a TP 8 profile" \
+  || fail "vllm rank 8 of 8 (rc=$SPRC): $_O"
+_sp "$_VN" -- --profile "$_P/vt9.env" --rank 0 --env "$_K/spark.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "1..8 (one rank per Spark)" && pass "a TENSOR_PARALLEL_SIZE=9 profile is refused (1..8)" \
+  || fail "TP 9 (rc=$SPRC): $_O"
+for _r in -1 1.5 x 01 ""; do
+  _sp "$_VN" -- --profile "$_P/vt8.env" --rank "$_r" --env "$_K/spark.env" --print
+  [[ $SPRC -eq 2 ]] && _has "$_O" "--rank R is required" && pass "vllm refuses --rank '$_r' (not a rank number)" \
+    || fail "vllm took --rank '$_r' (rc=$SPRC): $_O"
+done
+_sp "$_TN" -- --profile "$_P/tf3.env" --rank two --master 1.2.3.4 --env "$_K/spark.env" --print
+[[ $SPRC -eq 2 ]] && _has "$_O" "start ranks 1..N-1 first" && pass "tensorfold refuses --rank two" \
+  || fail "tensorfold took --rank two (rc=$SPRC): $_O"
+# Rank sizes the ENGINE takes, by the checkpoint's model_type. Native 1.2.7:
+# --tp is 1/2/4/8 (capabilities --json); GLM is placed by TF_GLM_* (up to 16),
+# MiniMax by TF_MINIMAX_* at exactly 2, Nemotron by TF_NEMOTRON_* (not wired),
+# Flash Next (qwen4_exp) at 1 or 2. Container: data/tensorfold.json's list.
+_tfmk() { # _tfmk <name> <tp> <model_type> — a fetched tensorfold profile
+  sed -e "s/^TENSOR_PARALLEL_SIZE=2/TENSOR_PARALLEL_SIZE=$2/" "$_P/tftest.env" > "$_P/$1.env"
+  MKF_MODEL_TYPE="$3" _mkfetched "$_P/$1.env" "model:$1:acme/Brand-New-Model-MLX-4bit:$_REV"
+}
+_tfmk n3new 3 brand_new; _tfmk n3glm 3 glm5_next; _tfmk n4fn 4 qwen4_exp; _tfmk n2mm 2 minimax_m3_vl
+_tfmk n2nem 2 nemotron_h; _tfmk c3q 3 qwen3_5; _tfmk c2moe 2 qwen3_5_moe
+_sp "$_TN" -- --profile "$_P/n3new.env" --rank 1 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "native TensorFold's --tp takes 1, 2, 4 or 8" \
+  && pass "native refuses --tp 3 for a family it places by flags (the binary takes 1/2/4/8)" || fail "native tp 3 flags (rc=$SPRC): $_O"
+_sp "$_TN" -- --profile "$_P/n3glm.env" --rank 2 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+[[ $SPRC -eq 0 ]] && _has "$_O" "--setenv=TF_GLM_WORLD=3" && pass "native GLM at TP 3 is placed by TF_GLM_* (up to 16 ranks)" || fail "native glm tp3 (rc=$SPRC): $_O"
+_sp "$_TN" -- --profile "$_P/n4fn.env" --rank 1 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "Flash Next" && _has "$_O" "1 or 2 ranks" && pass "native refuses Flash Next (qwen4_exp) at TP 4" || fail "native flash next tp4 (rc=$SPRC): $_O"
+_sp "$_TN" -- --profile "$_P/n2mm.env" --rank 1 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+if [[ $SPRC -eq 0 ]] && _has "$_O" "--setenv=TF_MINIMAX_RANK=1" && _has "$_O" "--setenv=TF_MINIMAX_WORLD=2" \
+   && _has "$_O" "--setenv=NCCL_COMM_ID=192.168.100.10:29583" && ! _has "$_O" "--tp 2"; then
+  pass "native MiniMax at TP 2: placed by TF_MINIMAX_RANK/WORLD + NCCL_COMM_ID, not --tp"
+else
+  fail "native minimax (rc=$SPRC): $_O"
+fi
+_sp "$_TN" -- --profile "$_P/n2nem.env" --rank 1 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "TF_NEMOTRON_RANK" && pass "native refuses Nemotron at TP > 1 (its env placement is not wired)" || fail "native nemotron (rc=$SPRC): $_O"
+_sp "$_TN" -- --profile "$_P/c3q.env" --rank 1 --master 192.168.100.10 --env "$_K/spark.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "runs family qwen3_5 on 1 or 2 rank(s)" \
+  && pass "container refuses TP 3 for a family its pinned engine runs on 1 or 2 ranks" || fail "container qwen3_5 tp3 (rc=$SPRC): $_O"
+_sp "$_TN" -- --profile "$_P/c2moe.env" --rank 1 --master 192.168.100.10 --env "$_K/spark.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "runs family qwen3_5_moe on 1 rank(s)" && pass "container refuses TP 2 for a one-GPU family" || fail "container moe tp2 (rc=$SPRC): $_O"
+_sp "$_TN" TENSORFOLD_REF=0123456789abcdef0123456789abcdef01234567 -- --profile "$_P/c3q.env" --rank 1 --master 192.168.100.10 --env "$_K/spark.env" --print
+[[ $SPRC -eq 0 ]] && _has "$_O" "Warning: TENSORFOLD_REF is not 9cd52ab" \
+  && pass "…another TENSORFOLD_REF only warns (the vendored list is for 9cd52ab)" || fail "container other ref (rc=$SPRC): $_O"
+
+_IFL="enp1s0f0np0,enp1s0f1np1" _HCL="rocep1s0f0,roceP2p1s0f1"
+# --print shell-quotes (printf %q), which escapes each comma.
+_QIFL="${_IFL//,/\\,}" _QHCL="${_HCL//,/\\,}"
+_sp "$_VN" SPARK_IFACE="$_IFL" SPARK_IB_HCA="$_HCL" -- --profile "$_P/vtest.env" --rank 1 --env "$_K/spark.env" --print
+if [[ $SPRC -eq 0 ]] && _has "$_O" "-e NCCL_SOCKET_IFNAME=$_QIFL" && _has "$_O" "-e NCCL_IB_HCA=$_QHCL" \
+   && ! _has "$_O" "NCCL_CROSS_NIC"; then
+  pass "vllm TP 2: comma-separated SPARK_IFACE / SPARK_IB_HCA pass through unchanged; no NCCL_CROSS_NIC at N=2"
+else
+  fail "vllm iface list / N=2 cross-nic (rc=$SPRC): $_O"
+fi
+_sp "$_TN" SPARK_IFACE="$_IFL" SPARK_IB_HCA="$_HCL" -- --profile "$_P/tf4.env" --rank 1 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+[[ $SPRC -eq 0 ]] && _has "$_O" "--setenv=NCCL_SOCKET_IFNAME=$_QIFL" && _has "$_O" "--setenv=NCCL_IB_HCA=$_QHCL" \
+  && pass "native: comma-separated iface/HCA lists pass through unchanged" || fail "native iface list (rc=$SPRC): $_O"
+_sp "$_TN" -- --profile "$_P/tftest.env" --rank 1 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+[[ $SPRC -eq 0 ]] && ! _has "$_O" "NCCL_CROSS_NIC" && pass "native TP 2: no NCCL_CROSS_NIC" || fail "native N=2 cross-nic (rc=$SPRC): $_O"
+_sp "$_TN" -- --profile "$_P/tftest.env" --rank 1 --master 192.168.100.10 --env "$_K/spark.env" --print
+[[ $SPRC -eq 0 ]] && ! _has "$_O" "NCCL_CROSS_NIC" && pass "container TP 2: no NCCL_CROSS_NIC" || fail "container N=2 cross-nic (rc=$SPRC): $_O"
+
+# --stop is idempotent: a rank that is already gone (a --rm container that
+# exited, a --collect unit) is "not running", exit 0 — so spark-cluster.sh stop
+# can walk every rank. TensorFold's --stop covers both its engines.
+: > "$_K/docker.log"
+_sp "$_VN" -- --rank 3 --stop
+[[ $SPRC -eq 0 ]] && _has "$_O" "openbeast-vllm-rank3 is not running" && ! grep -q "^ARGV stop" "$_K/docker.log" \
+  && pass "vllm --stop of a rank that is already gone: 'not running', exit 0" || fail "vllm --stop absent (rc=$SPRC): $_O"
+touch "$_K/running/openbeast-vllm-rank3"
+_sp "$_VN" -- --rank 3 --stop
+[[ $SPRC -eq 0 ]] && grep -q "^ARGV stop openbeast-vllm-rank3" "$_K/docker.log" \
+  && pass "vllm --stop of a running rank: docker stop" || fail "vllm --stop running (rc=$SPRC): $_O / $(cat "$_K/docker.log")"
+rm -f "$_K/running/openbeast-vllm-rank3"; : > "$_K/docker.log"
+_sp "$_TN" -- --rank 2 --stop --env "$_K/spark-native.env"
+[[ $SPRC -eq 0 ]] && _has "$_O" "openbeast-tensorfold-rank2 is not running" && ! grep -qE "^(ARGV stop|SYSTEMCTL --user stop)" "$_K/docker.log" \
+  && pass "tensorfold --stop of a rank that is already gone: 'not running', exit 0" || fail "tensorfold --stop absent (rc=$SPRC): $_O / $(cat "$_K/docker.log")"
+touch "$_K/units/openbeast-tensorfold-rank2" "$_K/running/openbeast-tensorfold-rank2"
+_sp "$_TN" -- --rank 2 --stop --env "$_K/spark-native.env"
+if [[ $SPRC -eq 0 ]] && grep -q "^SYSTEMCTL --user stop openbeast-tensorfold-rank2" "$_K/docker.log" \
+   && grep -q "^ARGV stop openbeast-tensorfold-rank2" "$_K/docker.log"; then
+  pass "tensorfold --stop stops the native unit AND a container of that rank, whatever TENSORFOLD_ENGINE says"
+else
+  fail "tensorfold --stop both (rc=$SPRC): $_O / $(cat "$_K/docker.log")"
+fi
+rm -f "$_K/running/openbeast-tensorfold-rank2" "$_K/units/openbeast-tensorfold-rank2"
 
 # Injection: a profile value is data — it reaches argv as ONE element, never a shell.
 cat > "$_P/vinject.env" <<EOF

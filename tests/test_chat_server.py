@@ -820,6 +820,29 @@ def test_escalation_escalates_to_sigkill_when_term_is_ignored(rig, victim):
     assert "SIGKILL" in (rec["summary"] or "")
 
 
+def test_escalation_never_files_an_undelivered_sigkill_as_stopped(rig, victim):
+    """Review finding: `sent_kill = True` was set whatever signal_session
+    returned, so a session reconcile still calls alive but that the identity
+    guard refuses to signal (no pid_start on file) was finalized `stopped`
+    while it ran on — and /stop then answered "already finished" for good."""
+    proc = victim("sleep 60")
+    sid = rig.session(kind="agent", state="running", pid=proc.pid)
+    path = sessions.record_path(sid)
+    rec = json.load(open(path))
+    rec["meta"].pop("pid_start", None)        # a pre-start-time record
+    assert sessions._write_record(rec)
+    events = []
+    t = chat_server.start_escalation(sid, 30.0, 0.1, poll=0.02,
+                                     on_event=events.append)
+    t.join(timeout=10)
+    assert not t.is_alive()
+    assert proc.poll() is None                 # nothing was signalled
+    assert sessions.get(sid)["state"] == "running"
+    assert not any(e.get("outcome") == "finalized" for e in events), events
+    assert not any(e.get("outcome") == "signal" for e in events), events
+    assert any(e.get("outcome") == "undelivered" for e in events), events
+
+
 def test_signal_session_refuses_a_recycled_or_unproven_pid(rig, victim):
     """killpg on a stale record is how you take down an unrelated process
     group. Identity is re-verified immediately before the signal."""
@@ -1522,6 +1545,10 @@ def test_health_says_only_ok_without_a_credential(rig):
     assert full["sessions_dir"] == str(rig.sdir)
     assert full["running"] == 1
     assert full["reads"] == "operators"
+    # who may assert a login: doctor reads this to warn about host-network
+    # containers on the loopback default (review: chat login-from-loopback)
+    assert full["login_from"] == "loopback"
+    assert bare.json() == {"status": "ok"}          # never to the anonymous
 
 
 def test_the_listing_limit_is_not_a_route_oracle(rig):
@@ -1816,6 +1843,34 @@ def test_the_operator_list_reloads_from_a_file_too(rig):
     os.utime(path, (time.time() + 1, time.time() + 1))
     assert c.get("/api/chat/sessions", headers=HDR_OK).status_code == 200
     assert c.get(f"/api/chat/sessions/{sid}", headers=HDR_OK).status_code == 200
+
+
+def test_removing_the_last_reader_from_the_file_revokes_not_opens(rig):
+    """Review finding: the allowlist was `env | file` and an EMPTY union meant
+    open mode, so emptying (or commenting out, or deleting) the hot-revocable
+    file to cut off its last reader turned enforcement OFF and every tailnet
+    login read everything. The file existing is what enforces; once seen, its
+    disappearance fails closed."""
+    path = rig.run / "chat-operators"
+    path.write_text(f"{OTHER}\n")
+    c = rig.client
+    assert c.get("/api/chat/sessions", headers=HDR_BAD).status_code == 200
+    assert c.get("/api/chat/sessions", headers=HDR_OK).status_code == 404
+
+    path.write_text(f"# revoked {OTHER}\n")             # all comments
+    os.utime(path, (time.time() + 1, time.time() + 1))
+    assert c.get("/api/chat/sessions", headers=HDR_BAD).status_code == 404
+    assert c.get("/api/chat/sessions", headers=HDR_OK).status_code == 404
+
+    path.write_text("")                                 # editor truncation
+    os.utime(path, (time.time() + 2, time.time() + 2))
+    assert c.get("/api/chat/sessions", headers=HDR_OK).status_code == 404
+
+    path.unlink()                                       # lockdown by delete
+    assert c.get("/api/chat/sessions", headers=HDR_BAD).status_code == 404
+    assert c.get("/api/chat/sessions", headers=HDR_OK).status_code == 404
+    # a local caller still reads: the box owner is never locked out
+    assert c.get("/api/chat/sessions", headers=rig.local).status_code == 200
 
 
 def test_paused_is_a_first_class_event(rig):

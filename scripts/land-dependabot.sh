@@ -66,18 +66,30 @@ fi
 # reported" and returns at once, and the script went on to a merge that could
 # only fail (2026-10-09: it gave up on the third PR of a batch while the
 # relock workflow was still pending). Wait for them, bounded (10 min).
+#
+# THE RESULT IS gh's EXIT STATUS, not its text. This used to return 0 for any
+# output without "no checks reported", so a RED check (gh exits 1) was
+# printed and the PR merged anyway; only branch protection stood between,
+# and only for the required checks. gh pr checks: 0 all passed, 8 still
+# pending (retried), anything else = a check failed or was cancelled.
+# Returns 0 green, 1 no checks appeared, 2 a check did not pass.
 _watch_checks() { # _watch_checks <pr>
-  local out n
+  local out n rc
   for n in $(seq 1 30); do
-    out="$(gh pr checks "$1" --watch --interval 30 2>&1)"
+    rc=0; out="$(gh pr checks "$1" --watch --interval 30 2>&1)" || rc=$?
     if [[ "$out" != *"no checks reported"* ]]; then
       printf '%s\n' "$out" | tail -4
-      return 0
+      [[ $rc -eq 0 ]] && return 0
+      if [[ $rc -ne 8 ]]; then
+        echo "PR $1: checks did NOT all pass (gh pr checks exit $rc)"
+        return 2
+      fi
+    else
+      [[ $n -eq 1 ]] && echo "PR $1: no checks reported yet — waiting for them to appear"
     fi
-    [[ $n -eq 1 ]] && echo "PR $1: no checks reported yet — waiting for them to appear"
     sleep 20
   done
-  echo "PR $1: no checks appeared within 10 min"
+  echo "PR $1: no checks appeared (or finished) within 10 min"
   return 1
 }
 for pr in "$@"; do
@@ -111,7 +123,8 @@ for pr in "$@"; do
     gh api -X POST "repos/$R/actions/runs/$id/approve" >/dev/null && echo "approved run $id"
   done
   sleep 20
-  _watch_checks "$pr" || { echo "PR $pr: nothing to wait for — stopping"; exit 1; }
+  _wrc=0; _watch_checks "$pr" || _wrc=$?
+  [[ $_wrc -ne 1 ]] || { echo "PR $pr: nothing to wait for — stopping"; exit 1; }
   # A CANCELLED run is not a failed check (a late Dependabot force-push does
   # it): re-run those once before giving up.
   head="$(gh pr view "$pr" --json headRefOid -q .headRefOid)"
@@ -121,12 +134,14 @@ for pr in "$@"; do
   if [[ -n "$redo" ]]; then
     for id in $redo; do gh run rerun "$id" >/dev/null 2>&1 && echo "re-ran cancelled run $id"; done
     sleep 30
-    _watch_checks "$pr" || { echo "PR $pr: nothing to wait for — stopping"; exit 1; }
+    _watch_checks "$pr" || { echo "PR $pr: checks not green after the re-run — NOT merging"; exit 1; }
   elif [[ "$head" != "$_head" ]]; then
     # The head moved while we were waiting: the checks just watched belong to
     # a commit that is no longer the PR. Watch the one about to be merged.
     echo "PR $pr: head moved during the wait (${_head:0:12} -> ${head:0:12}) — watching the new commit"
-    _watch_checks "$pr" || { echo "PR $pr: nothing to wait for — stopping"; exit 1; }
+    _watch_checks "$pr" || { echo "PR $pr: checks not green on the new head — NOT merging"; exit 1; }
+  elif [[ $_wrc -ne 0 ]]; then
+    echo "PR $pr: a check failed (none was merely cancelled) — NOT merging"; exit 1
   fi
   # --match-head-commit: merge exactly the commit read above, whose checks
   # were watched after it was read. A push that lands between "checks green"

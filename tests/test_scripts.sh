@@ -499,6 +499,69 @@ _adv="$( source "$REPO_DIR/scripts/lib/hardware.sh"; unset OPENBEAST_ASSUME_5090
 [[ "$_adv" == *"GB10 / DGX Spark profile"* && "$_adv" == *"unified memory"* && "$_adv" != *"5090-class"* ]] \
   && pass "…the GB10 advice names the unified-memory profile, not 5090-class" \
   || fail "GB10 advice: $(tr '\n' ' ' <<< "$_adv")"
+# The stack's cap on unified memory (ops review): spark-1 capped the stack at
+# 75% of MemTotal = 91 GiB with 6.4 GiB available — a cap that can never fire
+# before the box runs out. The budget is MemAvailable minus the reserve.
+# spark-1's meminfo with rank 0 resident (2026-11-15): 6533 MiB available.
+printf 'MemTotal:       127598412 kB\nMemAvailable:    6690096 kB\n' > "$_HW/spark1"
+_got="$( OB_MEMINFO="$_HW/spark1"; source "$REPO_DIR/scripts/lib/hardware.sh"
+         ob_unified_mem_budget 200 3072 93455 )"
+# spare 6533-3072=3461; jobs 1% (1246 MiB); stack 200+3461-1246 = 2415
+[[ "$_got" == "2415 1 6533 0" ]] \
+  && pass "unified budget: spark-1 → stack 2415 MiB + chat jobs 1%, the 3 GiB reserve untouched" \
+  || fail "unified budget on spark-1's meminfo: '$_got' (want '2415 1 6533 0')"
+printf 'MemTotal:       127598412 kB\nMemAvailable:    3145728 kB\n' > "$_HW/tight"
+_got="$( OB_MEMINFO="$_HW/tight"; source "$REPO_DIR/scripts/lib/hardware.sh"
+         ob_unified_mem_budget 0 3072 93455 )"
+[[ "$_got" == "2048 1 3072 1" ]] \
+  && pass "…with nothing spare the stack keeps its 2 GiB floor and says the reserve is short" \
+  || fail "tight unified budget: '$_got' (want '2048 1 3072 1')"
+printf 'MemTotal:       127598412 kB\nMemAvailable:  120000000 kB\n' > "$_HW/empty"
+_got="$( OB_MEMINFO="$_HW/empty"; source "$REPO_DIR/scripts/lib/hardware.sh"
+         ob_unified_mem_budget 0 3072 20000 )"
+[[ "${_got%% *}" == "20000" ]] \
+  && pass "…never above the MEM_LIMIT_PCT ceiling (a box with no model loaded)" \
+  || fail "unified budget ignored the ceiling: '$_got'"
+_got="$( OB_MEMINFO="$_HW/nope"; source "$REPO_DIR/scripts/lib/hardware.sh"
+         ob_unified_mem_budget 0 3072 93455 && echo sized || echo unknown )"
+[[ "$_got" == "unknown" ]] \
+  && pass "…unreadable meminfo sizes nothing (the launcher's cap stays)" \
+  || fail "unified budget without meminfo: '$_got'"
+# fit_unified_mem_cap, run: stub systemctl records set-property; a fake
+# cgroup file says we are inside openbeast-stack.service.
+_FIT="$_HW/fit"; mkdir -p "$_FIT/bin"
+cat > "$_FIT/bin/systemctl" <<SH
+#!/bin/bash
+case "\$*" in
+  *"show -p MemoryCurrent"*) echo 209715200 ;;
+  *set-property*) echo "\$*" >> "$_FIT/calls" ;;
+esac
+SH
+chmod +x "$_FIT/bin/systemctl"
+echo "0::/user.slice/user-1000.slice/user@1000.service/app.slice/openbeast-stack.service" > "$_FIT/cg"
+echo "0::/user.slice/user-1000.slice/session-2.scope" > "$_FIT/cg-other"
+_fit() { # _fit <managed> <unified> <cgroup file>
+  ( PATH="$_FIT/bin:$PATH"; OB_MEMINFO="$_HW/spark1"; OB_PROC_CGROUP="$3"
+    MANAGED=$1; OB_GPU_UNIFIED=$2; MEM_LIMIT_PCT=75; MEM_RESERVE_GB=3
+    unset OPENBEAST_CHAT_JOB_MEM_PCT
+    source "$REPO_DIR/scripts/lib/hardware.sh"
+    eval "$(sed -n '/^fit_unified_mem_cap() {/,/^}/p' "$REPO_DIR/start.sh")"
+    fit_unified_mem_cap; echo "jobs=${OPENBEAST_CHAT_JOB_MEM_PCT:-unset}" )
+}
+rm -f "$_FIT/calls"; _out="$(_fit 0 1 "$_FIT/cg" 2>&1)"
+if grep -q "set-property --runtime openbeast-stack.service MemoryMax=2415M" "$_FIT/calls" 2>/dev/null \
+   && [[ "$_out" == *"jobs=1"* && "$_out" == *"6533 MiB available"* ]]; then
+  pass "start.sh re-caps the live scope at 2415M on a GB10 and gives chat jobs 1%"
+else
+  fail "fit_unified_mem_cap on a GB10: calls=$(cat "$_FIT/calls" 2>/dev/null) out=$_out"
+fi
+for _case in "1 1 $_FIT/cg managed" "0 0 $_FIT/cg discrete" "0 1 $_FIT/cg-other unscoped"; do
+  read -r _m _u _c _why <<< "$_case"
+  rm -f "$_FIT/calls"; _out="$(_fit "$_m" "$_u" "$_c" 2>&1)"
+  [[ ! -f "$_FIT/calls" && "$_out" == "jobs=unset" ]] \
+    && pass "…control: a $_why stack's cap is left alone" \
+    || fail "fit_unified_mem_cap touched a $_why stack: $_out $(cat "$_FIT/calls" 2>/dev/null)"
+done
 rm -rf "$_HW"
 if grep -q 'ob_scale_context' "$REPO_DIR/scripts/serve.sh"; then
   pass "serve.sh applies adaptive context via ob_scale_context"
@@ -745,6 +808,50 @@ if [[ "$_GRACE" =~ ^[0-9]+$ && "$_EXTRA" =~ ^[0-9]+$ ]] \
 else
   fail "openbeast.service TimeoutStartSec='$_UTMO' is not above the launcher's deadline (grace '$_GRACE' + '$_EXTRA')"
 fi
+# The watchdog is installed by `./start.sh -d` (ops review: spark-1 was
+# rebuilt from the runbook without it, and a dead :3001 / :8090 stayed dead).
+# ensure_watchdog_timer, run against a stub systemctl and a sandbox HOME.
+_WD="$(mktemp -d)"; mkdir -p "$_WD/bin" "$_WD/home" "$_WD/repo with space/scripts"
+cp "$REPO_DIR/scripts/openbeast-watchdog.service" "$REPO_DIR/scripts/openbeast-watchdog.timer" "$_WD/repo with space/scripts/"
+cat > "$_WD/bin/systemctl" <<SH
+#!/bin/bash
+echo "\$*" >> "$_WD/calls"
+case "\$*" in
+  *is-enabled*) [[ -f "$_WD/enabled" ]] ;;
+  *show-environment*) [[ -f "$_WD/manager" ]] ;;
+  *) exit 0 ;;
+esac
+SH
+chmod +x "$_WD/bin/systemctl"
+_wd() { ( PATH="$_WD/bin:$PATH"; HOME="$_WD/home"; unset XDG_CONFIG_HOME
+          SCRIPT_DIR="$_WD/repo with space"; WATCHDOG_AUTOINSTALL="${1:-true}"
+          eval "$(sed -n '/^ensure_watchdog_timer() {/,/^}/p' "$REPO_DIR/start.sh")"
+          ensure_watchdog_timer; echo "rc=$?" ) 2>&1; }
+touch "$_WD/manager"; rm -f "$_WD/calls"; _out="$(_wd)"
+_unit="$_WD/home/.config/systemd/user/openbeast-watchdog.service"
+if [[ "$_out" == *"rc=0"* ]] && grep -q "enable --now openbeast-watchdog.timer" "$_WD/calls" \
+   && grep -qx 'ExecStart="'"$_WD"'/repo with space/scripts/healthcheck.sh" --restart' "$_unit" 2>/dev/null \
+   && [[ -f "$_WD/home/.config/systemd/user/openbeast-watchdog.timer" ]]; then
+  pass "start.sh -d installs + enables openbeast-watchdog.timer, the repo path intact"
+else
+  fail "ensure_watchdog_timer: $_out :: $(cat "$_WD/calls" 2>/dev/null) :: $(grep ExecStart "$_unit" 2>/dev/null)"
+fi
+touch "$_WD/enabled"; rm -f "$_WD/calls"; _wd >/dev/null
+grep -q "enable --now" "$_WD/calls" && fail "an enabled watchdog was reinstalled" || pass "…already enabled: no reinstall"
+rm -f "$_WD/enabled" "$_WD/calls"; _wd false >/dev/null
+[[ ! -s "$_WD/calls" ]] && pass "…WATCHDOG_AUTOINSTALL=false opts out" || fail "watchdog opt-out ignored: $(cat "$_WD/calls")"
+rm -f "$_WD/manager" "$_WD/calls" "$_unit"; _wd >/dev/null
+[[ ! -f "$_unit" ]] && pass "…no reachable user manager: no-op" || fail "watchdog installed without a user manager"
+rm -rf "$_WD"
+grep -q '^\[\[ \$DAEMONIZED -eq 1 || \$DAEMON -ne 1 \]\] || ensure_watchdog_timer' "$REPO_DIR/start.sh" \
+  && pass "…only for a daemon launch (./start.sh -d), never a foreground dev run" \
+  || fail "ensure_watchdog_timer is not gated on -d"
+# The unmanaged supervisor heals the stack's own services (it used to only
+# log), through healthcheck --restart, which never touches the unmanaged model.
+_ul="$(sed -n '/^if \[\[ \$MANAGED -eq 0 \]\]; then$/,/^fi$/p' "$REPO_DIR/start.sh")"
+[[ "$_ul" == *'scripts/healthcheck.sh" --restart'* && "$_ul" == *'_infer_ready'* ]] \
+  && pass "the unmanaged supervisor loop runs healthcheck --restart for its own services" \
+  || fail "unmanaged supervisor loop does not self-heal"
 
 # --- 9. Entry-point shell syntax ---
 echo ""
@@ -1076,20 +1183,23 @@ fi
 # Model governance: serve.sh must check the weight it is about to load against
 # the registry, and must default to WARN (a hard refusal on the critical start
 # path would be a foot-gun on upgrade).
-# BEHAVIORAL, not a grep: extract the enforcement block into a scratch script
-# and exercise every mode. A substring grep would pass for any regression that
-# kept the words but broke the logic — and this block sits on the critical
-# start path, so "it mentions the registry" is not evidence of anything.
+# BEHAVIORAL, not a grep: drive the check serve.sh (and run.sh) call —
+# ob_weight_enforce in lib/weightcheck.sh — through every mode. A substring
+# grep would pass for any regression that kept the words but broke the logic
+# — and this sits on the critical start path, so "it mentions the registry"
+# is not evidence of anything. (tests/test_llama_serving.sh runs serve.sh
+# itself on shards, --mmproj, -md and symlinks.)
 WE_SCRATCH=$(mktemp -d)
 mkdir -p "$WE_SCRATCH/scripts"
-sed -n '/^# --- Model registry enforcement/,/^fi$/p' "$REPO_DIR/scripts/serve.sh" \
-  > "$WE_SCRATCH/block.sh"
+grep -q 'ob_weight_enforce "$SCRIPT_DIR/weights.registry"' "$REPO_DIR/scripts/serve.sh" \
+  && cp "$REPO_DIR/scripts/lib/weightcheck.sh" "$WE_SCRATCH/block.sh"
 cp "$REPO_DIR/scripts/weights.registry" "$WE_SCRATCH/scripts/" 2>/dev/null
 cat > "$WE_SCRATCH/run.sh" <<'WEEOF'
 set -euo pipefail
-SCRIPT_DIR="$1"; MODEL="$2"; WEIGHT_ENFORCE="${3:-warn}"
+SCRIPT_DIR="$1"; MODEL="$2"
 source "$SCRIPT_DIR/../block.sh"
-exit 0
+rc=0; ob_weight_enforce "$SCRIPT_DIR/weights.registry" "${3:-warn}" "$MODEL" || rc=$?
+exit "$rc"
 WEEOF
 echo unlisted > "$WE_SCRATCH/unlisted.gguf"
 _we_rc() { bash "$WE_SCRATCH/run.sh" "$WE_SCRATCH/scripts" "$1" "$2" >/dev/null 2>&1; echo $?; }
@@ -1123,7 +1233,7 @@ if [[ -s "$WE_SCRATCH/block.sh" ]]; then
     fail "wrong-size weight rc (strict=$_rc_ws_strict warn=$_rc_ws_warn right-size strict=$_rc_rs_strict; want 3/0/0): $_ws_msg"
   fi
 else
-  fail "could not extract the weight-enforcement block from serve.sh"
+  fail "serve.sh does not call ob_weight_enforce (lib/weightcheck.sh) on the registry"
 fi
 rm -rf "$WE_SCRATCH"
 # start.sh must refuse to roll back on that exit code, or strict mode would
@@ -1144,24 +1254,32 @@ if [[ "$WE_DEFAULT" == "warn" ]]; then
 else
   fail "WEIGHT_ENFORCE default is '$WE_DEFAULT', want 'warn'"
 fi
-# Every weight a shipped serve script targets should be pinned, or strict mode
-# is unusable out of the box.
-UNPINNED=""
+# Every weight a shipped serve script loads should be pinned, or strict mode
+# is unusable out of the box. EVERY $WEIGHTS_DIR/*.gguf it names (the -m file,
+# --mmproj, -md), and for a split GGUF every shard — serve.sh checks them all.
+# A PENDING row (bytes 0) is not a pin: strict refuses to load it.
+UNPINNED=""; PENDING_PINS=""
+source "$REPO_DIR/scripts/lib/weightcheck.sh"
 for _ss in "$REPO_DIR"/scripts/serve-*.sh; do
   # `|| true` is load-bearing: under `set -euo pipefail` a serve script with no
   # $WEIGHTS_DIR/*.gguf line makes grep exit 1, and a bare `_g=$(...)` then
   # kills the ENTIRE suite mid-run rather than reporting a failure — the same
   # set -e trap already fixed once in serve.sh's ob_scale_context call.
   # Surfaced 2026-08-15 by the negative test for the drift guards below.
-  _g=$(grep -oE '\$WEIGHTS_DIR/[^"]+\.gguf' "$_ss" 2>/dev/null | head -1 || true); _g="${_g##*/}"
-  [[ -n "$_g" ]] || continue
-  awk -F'\t' -v n="$_g" '$0 !~ /^#/ && $3 == n {found=1} END{exit !found}' \
-    "$REPO_DIR/scripts/weights.registry" || UNPINNED="$UNPINNED $(basename "$_ss")"
+  while IFS= read -r _g; do
+    [[ -n "$_g" ]] || continue
+    while IFS= read -r _w; do
+      _w="${_w##*/}"
+      _b="$(awk -F'\t' -v n="$_w" '$0 !~ /^#/ && $3 == n {print $2; exit}' "$REPO_DIR/scripts/weights.registry")"
+      if [[ -z "$_b" ]]; then UNPINNED="$UNPINNED $(basename "$_ss"):$_w"
+      elif [[ "$_b" == "0" ]]; then PENDING_PINS="$PENDING_PINS $(basename "$_ss"):$_w"; fi
+    done < <(ob_weight_files "$_g")
+  done < <(grep -oE '\$WEIGHTS_DIR/[^"]+\.gguf' "$_ss" 2>/dev/null | sort -u || true)
 done
-if [[ -z "$UNPINNED" ]]; then
-  pass "every shipped serve script targets a registry-pinned weight"
+if [[ -z "$UNPINNED$PENDING_PINS" ]]; then
+  pass "every weight a shipped serve script loads (shards, mmproj, draft) is registry-pinned with a real size"
 else
-  fail "serve scripts targeting unpinned weights:$UNPINNED"
+  fail "serve scripts loading unpinned weights:${UNPINNED:- none}; PENDING (strict refuses):${PENDING_PINS:- none}"
 fi
 
 # Two more tables that are supposed to mirror the serve scripts and silently
@@ -1211,6 +1329,14 @@ if [[ -z "$ORPHAN_OC" ]]; then
   pass "every opencode.json entry has a serve script behind it (no phantom models)"
 else
   fail "opencode.json advertises models with no serve script:$ORPHAN_OC"
+fi
+
+# opencode.json is project-local (relative MCP path) and fixed at :8080, so no
+# banner may send the operator to "any project directory".
+if grep -q "opencode' in any project directory" "$REPO_DIR/start.sh" "$REPO_DIR/bootstrap.sh"; then
+  fail "a start banner says 'run opencode in any project directory' (the config only works from the checkout)"
+else
+  pass "start banners send OpenCode users to the checkout, not 'any project directory'"
 fi
 
 # MODELS or BENCH_EXCLUDED — either is fine, but it has to be a decision.
@@ -1336,11 +1462,13 @@ if grep -q 'web.search.enable' "$CW" && grep -q 'web.search.searxng_query_url' "
 else
   fail "configure-webui.sh no longer configures built-in web search"
 fi
-# A DB-written setting is invisible until WebUI reloads its cached config.
-if grep -q 'WEBSEARCH_CHANGED' "$CW" && grep -q 'docker restart open-webui' "$CW"; then
-  pass "configure-webui.sh restarts WebUI when it changes cached config"
+# The pinned WebUI reads config from the DB per request, so a restart after
+# a DB write only drops in-flight chat streams (review: the old block tested a
+# WEBSEARCH_CHANGED flag nothing ever set, and bounced on CONN_CHANGED).
+if ! grep -qE '^[^#]*docker restart open-webui' "$CW" && ! grep -q 'WEBSEARCH_CHANGED' "$CW"; then
+  pass "configure-webui.sh never bounces WebUI after a DB config write"
 else
-  fail "configure-webui.sh writes config without triggering a reload"
+  fail "configure-webui.sh restarts WebUI for config it reads per request"
 fi
 
 # FAST_BOOT must DEGRADE, never fail the boot. The bridge weight
@@ -1613,7 +1741,7 @@ else
   # that depends on what happens to be installed is a test that fails
   # somewhere else, which is exactly how this one first broke.
   _BD_OK="$(mktemp -d)"
-  mkdir -p "$_BD_OK/agents"
+  mkdir -p "$_BD_OK/agents" "$_BD_OK/scripts/lib"; cp "$REPO_DIR/scripts/lib/pydeps_lock.py" "$_BD_OK/scripts/lib/"
   _BD_VER="$(python3 -c 'import importlib.metadata as m; print(m.version("pytest"))' 2>/dev/null || true)"
   if [[ -z "$_BD_VER" ]]; then
     pass "satisfied-pin check skipped (pytest not installed here)"
@@ -1631,7 +1759,7 @@ ob_python_deps_satisfied" 2>/dev/null || true)"
   rm -rf "$_BD_OK"
   # unsatisfied: a synthetic requirements file naming something impossible
   _BD_TMP="$(mktemp -d)"
-  mkdir -p "$_BD_TMP/agents"
+  mkdir -p "$_BD_TMP/agents" "$_BD_TMP/scripts/lib"; cp "$REPO_DIR/scripts/lib/pydeps_lock.py" "$_BD_TMP/scripts/lib/"
   printf 'openai==3.9.0\ndefinitely-not-installed-xyz==1.2.3\n' \
     > "$_BD_TMP/agents/requirements.txt"
   _BD_OUT="$(bash -c "REPO_DIR='$_BD_TMP'
@@ -1641,6 +1769,33 @@ ob_python_deps_satisfied" 2>/dev/null || true)"
     pass "the guard names what is missing instead of silently skipping"
   else
     fail "the guard did not report a missing pin: $_BD_OUT"
+  fi
+  # DECORATED LINES (install-supply-chain finding): the guard kept its own
+  # `^name==(.+)$` parser, the shape pydeps_lock.py documents as failing on
+  # both decorations. `pip[x]==0.0.1` was presence-only (any installed pip
+  # "satisfied", the hash-pinned install skipped); `pip==<have> ; marker`
+  # read the version as "<have> ; marker" (never satisfied).
+  _BD_PIPV="$(python3 -c 'import importlib.metadata as m; print(m.version("pip"))' 2>/dev/null || true)"
+  if [[ -n "$_BD_PIPV" ]]; then
+    printf 'pip[standard]==0.0.1\n' > "$_BD_TMP/agents/requirements.txt"
+    _BD_OUT="$(bash -c "REPO_DIR='$_BD_TMP'
+$_BD_FN
+ob_python_deps_satisfied" 2>/dev/null || true)"
+    if grep -q "pip (have $_BD_PIPV, need 0.0.1)" <<< "$_BD_OUT"; then
+      pass "a pin with an extra (name[x]==V) is version-checked, not presence-only"
+    else
+      fail "extras pin not version-checked: $_BD_OUT"
+    fi
+    printf 'pip==%s ; python_version > "3"\nnever-here-xyz==1.0 ; python_version < "3"\n' "$_BD_PIPV" \
+      > "$_BD_TMP/agents/requirements.txt"
+    _BD_OUT="$(bash -c "REPO_DIR='$_BD_TMP'
+$_BD_FN
+ob_python_deps_satisfied" 2>/dev/null || true)"
+    if ! grep -q "pip (\|never-here-xyz" <<< "$_BD_OUT"; then
+      pass "a marker is not part of the version, and a pin whose marker excludes this python is not required"
+    else
+      fail "marker-decorated pins misread: $_BD_OUT"
+    fi
   fi
   rm -rf "$_BD_TMP"
 fi
@@ -2442,7 +2597,7 @@ else
 fi
 rm -rf "$_GL_DIR"
 
-# The era assertion. Rows either side of a change to the six hashed files are
+# The era assertion. Rows either side of a change to the era-hashed files are
 # not comparable, and until now era was a thing people remembered — the
 # 2026-09-08 plan put the churn floor before a git pull and the cells it
 # calibrates after it, and review did not catch it because it was nobody's job.
@@ -2590,7 +2745,7 @@ chmod +x "$_RV/bin/curl"
   echo "source '$REPO_DIR/scripts/lib/proc.sh'"
   echo "source '$REPO_DIR/scripts/lib/curl_auth.sh'"
   echo 'REPO_DIR="$RV_REPO"; LLAMA_URL=http://x; LLAMA_AUTH=(); LLAMA_BIN_ERE="$RV_BIN_ERE"'
-  sed -n '/^_LLAMA_ARGV0=/p; /^_llama_loading() {/,/^}/p; /^_kill_own_llama() {/,/^}/p' "$REPO_DIR/scripts/healthcheck.sh"
+  sed -n '/^_LLAMA_ARGV0=/p; /^_llama_loading() {/,/^}/p; /^_llama_gone() {/,/^}/p; /^_kill_own_llama() {/,/^}/p' "$REPO_DIR/scripts/healthcheck.sh"
   echo '"$@"'
 } > "$_RV/hc.sh"
 _rv_hc() { # _rv_hc <curl body> <function> — status is the function's
@@ -2663,6 +2818,19 @@ if kill -0 "$_RV_LL" 2>/dev/null; then
   fail "_kill_own_llama did not kill the recorded llama-server"
 else
   pass "the recorded llama-server is killed by its pid (control)"
+fi
+# A WEDGED server: llama-server's first TERM only asks for a graceful stop,
+# and one stuck in a CUDA call never acts on it. Escalate to KILL after the
+# grace instead of leaving it for the next tick (stack-lifecycle review).
+( trap '' TERM; exec -a "$_RV/llama-server" sleep 300 ) & _RV_WEDGED=$!; _RV_PIDS="$_RV_PIDS $!"
+sleep 0.3
+echo "$_RV_WEDGED" > "$_RV/repo/.run/llama.pid"
+_RV_KO="$(OPENBEAST_LLAMA_TERM_GRACE=1 _rv_hc '' _kill_own_llama 2>&1 || true)"; sleep 0.3
+if ! kill -0 "$_RV_WEDGED" 2>/dev/null && [[ "$_RV_KO" == *"ignored SIGTERM"* ]]; then
+  pass "a llama-server that ignores SIGTERM gets SIGKILL after the grace"
+else
+  fail "_kill_own_llama left a TERM-ignoring llama-server running (or did not say it escalated)"
+  kill -KILL "$_RV_WEDGED" 2>/dev/null || true
 fi
 kill "$_RV_STRANGER" 2>/dev/null || true; pkill -P "$_RV_LL" 2>/dev/null || true
 if grep -q '_gpu_leased' "$REPO_DIR/scripts/healthcheck.sh" \

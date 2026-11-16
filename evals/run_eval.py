@@ -32,6 +32,7 @@ import os
 import re
 import shlex
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -68,6 +69,76 @@ from tools import run_reaped  # noqa: E402
 # ThreadPoolExecutor, so tracking a single Popen would orphan N-1 of them.
 _live_pgids: set[int] = set()
 _live_pgid_lock = threading.Lock()
+
+# Set, once, by a signal handler that is about to os._exit. Reaping the
+# live set is not enough under --jobs N: the handler may block (benchmark_
+# all stops llama-server first, up to ~15 s) while worker threads keep
+# running, and a worker whose agent was just SIGKILLed validates, cleans up
+# and Popens the NEXT agent, which os._exit then orphans (verifier finding
+# on campaign-evals: signal handler still orphans agents under --jobs).
+# run_agent refuses to spawn once it is set, and kills its own agent if the
+# flag appeared between the Popen and the registration.
+_stopping = threading.Event()
+
+
+# Held across "check _stopping -> Popen -> register" (_spawn_agent). Without
+# it a child forked while its thread was still inside Popen was in no set
+# yet: begin_stop's snapshot missed it and os._exit orphaned it (review
+# finding campaign-evals: an in-flight spawn escapes the reap). A handler
+# waits on it, so every child forked before the flag is registered first.
+_spawn_lock = threading.Lock()
+_spawn_owner: int | None = None     # thread ident inside _spawn_agent
+_deferred_signal: int | None = None  # arrived on that thread, mid-spawn
+
+
+def stopping() -> bool:
+    """Whether a signal handler has begun tearing this process down."""
+    return _stopping.is_set()
+
+
+def begin_stop(signum: int | None = None) -> bool:
+    """Forbid new agents, wait out a spawn in flight, then reap every live
+    one. Call from a handler before anything slow; call _reap_live_agents()
+    again just before os._exit.
+
+    Returns False when the signal interrupted THIS thread's own spawn (the
+    handler runs on the main thread, which may be the one inside Popen): it
+    cannot wait for itself, so the caller must return at once, and
+    _spawn_agent re-raises `signum` the moment its child is registered."""
+    global _deferred_signal
+    _stopping.set()
+    if _spawn_owner == threading.get_ident():
+        _deferred_signal = signum
+        return False
+    if _spawn_lock.acquire(timeout=30):   # Popen is milliseconds; never hang
+        _spawn_lock.release()
+    _reap_live_agents()
+    return True
+
+
+def _spawn_agent(cmd: list, env: dict) -> subprocess.Popen | None:
+    """Popen an agent in its own session and register its group, as one
+    step no reap can fall between. None once a stop has begun."""
+    global _spawn_owner, _deferred_signal
+    try:
+        with _spawn_lock:
+            _spawn_owner = threading.get_ident()
+            try:
+                if _stopping.is_set():
+                    return None
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE, text=True,
+                                        start_new_session=True, env=env)
+                with _live_pgid_lock:
+                    _live_pgids.add(proc.pid)   # == pgid: start_new_session
+                return proc
+            finally:
+                _spawn_owner = None
+    finally:
+        if _deferred_signal is not None:
+            signum, _deferred_signal = _deferred_signal, None
+            if signum is not None:
+                signal.raise_signal(signum)     # the handler, able to reap now
 
 
 def _descendant_pids(root: int) -> list[int]:
@@ -141,7 +212,8 @@ def _reap_live_agents() -> None:
 def _install_signal_reaper() -> None:
     """Reap our agent groups before dying, for SIGTERM and SIGINT alike."""
     def _handler(signum, _frame):
-        _reap_live_agents()
+        if not begin_stop(signum):
+            return      # mid-spawn on this thread: re-raised once registered
         # os._exit skips the interpreter's own flush, and under nohup or a
         # log file stdout is BLOCK-buffered: a stopped campaign lost the last
         # screenful of its log — exactly the lines that say where it stopped.
@@ -162,6 +234,22 @@ def _install_signal_reaper() -> None:
             pass
 
 
+def _auth_headers(base_url: str) -> dict:
+    """Bearer header for a probe of `base_url`, under the RUNNER's key policy
+    (runner.resolve_api_key / _key_endpoint_trusted): the ambient key goes
+    only to loopback or OPENBEAST_AGENT_INFERENCE_URL. The probes used to
+    attach OPENBEAST_API_KEY / OPENAI_API_KEY to ANY --base-url — in
+    cleartext over http — while the runner child went keyless against the
+    same host (review finding campaign-evals: harness leaks the ambient
+    key). One function decides for both, so they cannot disagree."""
+    try:
+        from runner import resolve_api_key
+    except Exception:
+        return {}          # no runner, no agent: fail closed, send nothing
+    key = resolve_api_key(None, base_url)
+    return {} if key == "not-needed" else {"Authorization": f"Bearer {key}"}
+
+
 def detect_model(base_url: str) -> str:
     """Query /v1/models on the llama.cpp server. Returns the alias the model
     was launched with (set via the -a flag in our serve scripts)."""
@@ -169,8 +257,7 @@ def detect_model(base_url: str) -> str:
         url = base_url.rstrip("/") + "/models"
         # /v1/models is key-protected on a keyed server (LLAMA_API_KEY);
         # completions inherit the key via the runner's env resolution.
-        key = os.environ.get("OPENBEAST_API_KEY") or os.environ.get("OPENAI_API_KEY")
-        headers = {"Authorization": f"Bearer {key}"} if key else {}
+        headers = _auth_headers(base_url)
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode("utf-8"))
@@ -190,8 +277,7 @@ def _fetch_server_slots(base_url: str) -> int | None:
     None when unreadable."""
     try:
         root = re.sub(r"/v1/?$", "", base_url.rstrip("/"))
-        key = os.environ.get("OPENBEAST_API_KEY") or os.environ.get("OPENAI_API_KEY")
-        headers = {"Authorization": f"Bearer {key}"} if key else {}
+        headers = _auth_headers(base_url)
         req = urllib.request.Request(root + "/props", headers=headers)
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode("utf-8"))
@@ -1045,6 +1131,58 @@ def _run_reaped(cmd, timeout: int, shell: bool = False) -> tuple[int, str]:
     return run_reaped(shell_cmd, timeout)
 
 
+_FIXTURE_PATH = re.compile(r"/tmp/eval[\w\-./]*")
+
+
+def unsafe_fixture_roots(task: dict) -> list[str]:
+    """The task's /tmp/eval* fixture roots that are NOT safely ours.
+
+    Every fixture is a fixed, global name directly under world-writable
+    /tmp, and setup's `mkdir -p` silently accepts a directory that already
+    exists — whoever made it. Another local uid could pre-create
+    /tmp/eval_debug 0777 with symlinks named like fixture files (setup's
+    `printf > …` then overwrites the operator's files), read the model's
+    solution, or rewrite it before validation to flip the verdict
+    (review finding campaign-evals: /tmp fixture squatting). fs.protected_*
+    guard only entries directly in sticky /tmp, not inside such a dir.
+
+    A root is unsafe when it is a symlink, is owned by another uid, or is
+    world-writable (or group-writable by a group other than ours). A root
+    that does not exist yet is fine."""
+    spec = " ".join(str(task.get(k, "")) for k in ("setup", "task", "validation",
+                                                   "cleanup", "pre_validate"))
+    roots = sorted({"/tmp/" + p[len("/tmp/"):].split("/", 1)[0]
+                    for p in _FIXTURE_PATH.findall(spec)})
+    bad = []
+    me = os.getuid()
+    for root in roots:
+        try:
+            st = os.lstat(root)
+        except FileNotFoundError:
+            continue
+        except OSError as e:
+            bad.append(f"{root} ({e.__class__.__name__})")
+            continue
+        if stat.S_ISLNK(st.st_mode):
+            bad.append(f"{root} (a symlink)")
+        elif st.st_uid != me:
+            bad.append(f"{root} (owned by uid {st.st_uid}, not {me})")
+        elif st.st_mode & 0o002 or (st.st_mode & 0o020 and st.st_gid != os.getgid()):
+            # Group-writable is fine under our OWN primary group: Ubuntu's
+            # default umask 0002 (user-private groups, the Sparks) makes
+            # every fixture dir 0775, and refusing that refused every unit.
+            bad.append(f"{root} (writable by others, mode {stat.S_IMODE(st.st_mode):o})")
+    return bad
+
+
+def _refuse_unsafe_fixtures(task: dict, log=print) -> bool:
+    bad = unsafe_fixture_roots(task)
+    if bad:
+        log(f"  Refusing fixtures not safely ours: {', '.join(bad)} — remove them "
+            f"(another uid may have planted them) and rerun")
+    return bool(bad)
+
+
 def run_setup(task: dict, log=print) -> bool:
     """Run task setup command. Returns True on success. Timeouts and
     unexpected errors are recorded as failures, not crashes — a single bad
@@ -1154,8 +1292,9 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
     # agents/runner.py:_steering_enabled() checks OPENBEAST_EVAL first, and
     # its remaining opt-in is explicit argv only.
     #
-    # This file is deliberately NOT in evals/cache.py CONTEXT_FILES, so this
-    # costs no cache era — verified before and after the change.
+    # This function's code IS in the era, via evals/HARNESS_VERSION (pinned
+    # to cache.harness_fingerprint()): a change here that moves argv, env or
+    # budgets must bump it — tests/test_cache.py refuses a stale pin.
     child_env["OPENBEAST_EVAL"] = "1"
     child_env.pop("OPENBEAST_BEAST_CHAT", None)
     # ======================================================================
@@ -1172,16 +1311,19 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
     # process group, not just the runner. Its bash-tool children run in
     # their OWN sessions (agents/tools.py run_reaped), so the timeout path
     # walks the tree and kills those groups too (_kill_agent_tree).
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=True,
-        env=child_env,
-    )
-    with _live_pgid_lock:
-        _live_pgids.add(proc.pid)          # == pgid: start_new_session above
+    stopped = {"exit_code": -1, "elapsed_seconds": 0.0, "stdout": "(stopped)",
+               "stderr": "", "tokens": _parse_tokens(""), "iterations": None}
+    proc = _spawn_agent(cmd, child_env)    # registered, or None: stopping
+    if proc is None:
+        return stopped
+    # Registered BEFORE this check: a begin_stop() that snapshotted the set
+    # without us has already set the flag, so one side always kills it.
+    if _stopping.is_set():
+        _kill_agent_tree(proc.pid)
+        proc.kill()
+        with _live_pgid_lock:
+            _live_pgids.discard(proc.pid)
+        return stopped
     try:
         # Rough budget: 1 min per iteration at single-stream decode, scaled up
         # under parallel contention (see timeout_scale in the docstring).
@@ -1255,6 +1397,16 @@ VALIDATION_TIMED_OUT = "Validation timed out"
 def validator_timed_out(text: str | None) -> bool:
     """Whether a validation_output is run_validation's own timeout message."""
     return bool(text) and text.startswith(VALIDATION_TIMED_OUT)
+
+
+def contention_scale(jobs: int) -> float:
+    """The --jobs multiplier on every agent's wall budget and validator
+    timeout. N concurrent streams share GPU bandwidth, so per-stream decode
+    slows with N (measured ~1.6x at jobs=4). Linear ramp with margin
+    (jobs=4 -> 2.0x) restores sequential-equivalent budgets; see run_agent's
+    docstring. A function, not an inline expression, so it is in
+    cache.HARNESS_FUNCTIONS and a change to it moves the era."""
+    return 1.0 if jobs == 1 else 1.0 + (jobs - 1) / 3.0
 
 
 def run_validation(task: dict, timeout_scale: float = 1.0) -> tuple[bool, str]:
@@ -1520,11 +1672,7 @@ def run_eval(
                   f"running --jobs {jobs} unclamped; against an -np 1 (MTP) server "
                   f"this queues and trips per-task timeouts")
 
-    # Per-iteration wall budget scales with contention: N concurrent streams
-    # share GPU bandwidth, so per-stream decode slows with N (measured ~1.6×
-    # at jobs=4). Linear ramp with margin — jobs=4 → 2.0× — restores
-    # sequential-equivalent budgets; see run_agent's docstring.
-    timeout_scale = 1.0 if jobs == 1 else 1.0 + (jobs - 1) / 3.0
+    timeout_scale = contention_scale(jobs)
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -1585,7 +1733,7 @@ def run_eval(
                     # The eval era (scripts/eval-era.sh): rows either side of
                     # a change to it are not comparable, and until this was
                     # stamped the board could only infer it from cache keys.
-                    "era": cache.context_hash(),
+                    "era": cache.current_era(),
                     "greedy": greedy_mode,
                     "packs": dict(packs_meta.get("sha", {})) if packs_on else {},
                     **({"packs_component": packs_component} if packs_on else {}),
@@ -1728,8 +1876,12 @@ def run_eval(
         # nothing, the leftover solution validated and a PASS was banked.
         run_cleanup(task, log=log)
 
-        # Setup
-        if not run_setup(task, log=log):
+        # Setup, between two checks that every /tmp/eval* fixture root is
+        # OURS (see unsafe_fixture_roots): before, so setup never writes
+        # through a directory another uid planted; after, for one created in
+        # the window between the check and setup's `mkdir -p`.
+        if (_refuse_unsafe_fixtures(task, log) or not run_setup(task, log=log)
+                or _refuse_unsafe_fixtures(task, log)):
             log("  FAIL (setup failed)")
             return record({
                 "id": task_id, "name": task_name, "difficulty": difficulty,
@@ -1904,6 +2056,15 @@ def run_eval(
     no_agent = sum(1 for r in indexed.values() if r.get("reason") in NO_AGENT_REASONS)
     results["summary"]["live_units"] = (len(indexed) - counters["cache_hits"]
                                         - counters["cache_misses_skipped"] - no_agent)
+    # The era is re-read per unit (cache._context_hash_cached validates on
+    # stat), so a tree change mid-run keys later rows under the NEW era while
+    # this file is stamped with the start era. Say so rather than hide it.
+    era_now = cache.current_era()
+    if era_now != results["harness"].get("era"):
+        results["harness"]["era_moved_to"] = era_now
+        print(f"ERA MOVED DURING THE RUN: {results['harness'].get('era')} -> "
+              f"{era_now}. Rows either side are not comparable; rerun this model.",
+              file=sys.stderr)
     _write_results(results_path, results)
 
     # Print summary

@@ -51,6 +51,8 @@ class _Upstream:
             text = '{"spawn": true, "task": "migrate the whole test suite", "workdir": "."}'
 
         class R:
+            status_code = 200
+
             def json(self_inner):
                 if url.endswith("/start_agent"):
                     return text

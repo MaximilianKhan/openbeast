@@ -189,8 +189,9 @@ _stop_recorded "chat server" "$RUN_DIR/chat.pid" \
 
 echo "Stopping tool server..."
 pkill -f "$(_ob_ere "$SCRIPT_DIR/agents/openapi_tools.py")" 2>/dev/null && echo "Tool server stopped." || echo "Tool server was not running."
-# Legacy mcpo instances (pre-identity-server stacks)
-pkill -f "mcpo --port" 2>/dev/null || true
+# (No `pkill -f "mcpo --port"` any more: nothing here has launched mcpo since
+# 2026-07-09, so that unanchored pattern could only reach ANOTHER project's
+# mcpo proxy — against this file's own rule above.)
 
 if ! ob_inference_managed; then
   # INFERENCE_MANAGED=false (always for vLLM / TensorFold): the inference
@@ -199,6 +200,14 @@ if ! ob_inference_managed; then
   # sweep below has nothing of ours to find.
   echo "Leaving the inference server alone: $(ob_backend_label) at $INFERENCE_URL is not managed by this stack."
   echo "  (stop it where it runs — docs/DGX_SPARK_PLAN.md)"
+# >>> engine-plane hook (docs/ENGINES.md) — a MANAGED vLLM / TensorFold of
+# this checkout: its adapter stops it (the container by its per-checkout
+# name, a native server by its recorded pid). Never the llama path below.
+elif [[ "$INFERENCE_BACKEND" != "llama" ]]; then
+  source "$SCRIPT_DIR/scripts/lib/engine.sh"
+  echo "Stopping $(ob_backend_label) (managed by this stack)..."
+  ob_engine_stop_managed
+# <<< engine-plane hook
 else
 echo "Stopping llama.cpp server..."
 # The supervisor's own llama-server is already gone by now (its trap stopped

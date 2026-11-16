@@ -103,6 +103,40 @@ except Exception: print("")' 2>/dev/null)" == "$(id -un)" ]]; then
   fi
 }
 
+# beast-slot mount (--publish-slot). Mount ONLY /api/slot: a bare
+# `--https=8444 → :3002` publishes the whole dashboard (HTML page +
+# /api/status) to every tailnet device. The whole-dashboard mount is used
+# ONLY on a tailscale build that has no --set-path at all, decided by asking
+# its help text up front. Any failure of the path-scoped mount itself (a
+# tailscaled hiccup, a cancelled sudo prompt, a conflicting :8444 config) used
+# to be read as "no --set-path" and fell OPEN to the whole dashboard; now it
+# is an error, and nothing wider is mounted.
+_ts_has_set_path() {
+  local _h
+  # Captured, not piped into grep -q: under pipefail an early-exiting grep
+  # SIGPIPEs tailscale and the pipeline reads as "no".
+  _h="$(tailscale serve --help 2>&1 || true)"
+  case "$_h" in *set-path*) return 0 ;; esac
+  return 1
+}
+_publish_slot_mount() { # _publish_slot_mount <upstream-host>
+  if _ts_has_set_path; then
+    if ! ts_admin serve --bg --https=8444 --set-path=/api/slot "http://$1:${DASHBOARD_PORT:-3002}/api/slot"; then
+      echo "      ERROR: could not mount :8444/api/slot (tailscale's message is above)." >&2
+      echo "             NOT falling back to publishing the whole dashboard. Fix the cause" >&2
+      echo "             and re-run: ./scripts/setup-tailscale.sh --publish-slot" >&2
+      return 1
+    fi
+    echo "      beast-slot status API published (tailnet-only, :8444/api/slot)."
+  else
+    ts_admin serve --bg --https=8444 "http://$1:${DASHBOARD_PORT:-3002}"
+    echo "      beast-slot published (tailnet-only, :8444 → :${DASHBOARD_PORT:-3002})."
+    echo "      NOTE: this tailscale build has no --set-path, so the whole"
+    echo "            dashboard (page + /api/status) is tailnet-visible."
+    echo "            Update tailscale and re-run to narrow it to /api/slot."
+  fi
+}
+
 STATUS_ONLY=0
 PUBLISH_SEARXNG=0
 PUBLISH_SLOT=0
@@ -163,7 +197,7 @@ _print_mounts() { # _print_mounts <chat-port> <artifact-port> [ntfy-port]
   for row in \
     "443|Open WebUI (:3000)" \
     "8443|inference (llama-server / beast-gate)" \
-    "8444|beast-slot status API (:3002)" \
+    "8444|beast-slot status API (:${DASHBOARD_PORT:-3002})" \
     "8445|beast-chat console (:$1)" \
     "8446|beast-artifact pages (:$2)" \
     "8447|ntfy push notifications (:${3:-3005})" \
@@ -431,8 +465,9 @@ else
       # fixed password "admin" while auth was off. Retire it before the
       # login page is reachable from the tailnet.
       if ! "$REPO_DIR/scripts/configure-webui.sh" --secure-default-admin; then
-        _webui_block="admin@localhost still has upstream's default password and it
-               could not be rotated (see the warning above). Change it, then re-run."
+        _webui_block="admin@localhost still has upstream's default password, or the
+               WebUI would not say whether it does, and it was not rotated (see
+               the warning above). Change it, then re-run."
       fi ;;
     *)
       case "$_ct" in
@@ -440,10 +475,16 @@ else
           _webui_block="the WebUI container is up but never answered, so its default
                admin password could not be checked. Re-run this script once it is up." ;;
         absent|*:true)
-          # Not running (or a stopped container that restarts auth on): it
-          # starts from the conf, and start.sh's configure-webui.sh run
-          # retires the default password then.
-          : ;;
+          # Not running (no container: the normal state after ./stop.sh, or a
+          # stopped one that restarts auth on). Its volume may still hold
+          # admin@localhost with upstream's "admin" password from auth-off
+          # use, and nothing here can check that until it answers. Publishing
+          # anyway put a known admin password on the tailnet from the WebUI's
+          # first boot until start.sh's backgrounded configure-webui got to
+          # it — and for good if that rotation failed (it only warns).
+          _webui_block="the WebUI is not running, so its default admin password could
+               not be checked before going tailnet-wide. Start the stack
+               (./start.sh), wait for the WebUI, then re-run this script." ;;
         running:*|*:false)
           # A container carrying WEBUI_AUTH=false keeps it (restart:
           # unless-stopped) until compose recreates it.
@@ -567,18 +608,7 @@ if [[ $PUBLISH_SLOT -eq 1 ]]; then
     echo "      WARNING: dashboard extension not in EXTENSIONS — the slot API"
     echo "               will 502 until: ./scripts/ext.sh enable dashboard && ./stop.sh && ./start.sh"
   fi
-  # Mount ONLY /api/slot — a bare `--https=8444 → :3002` would publish the
-  # whole dashboard (HTML page + /api/status) to every tailnet device. Fall
-  # back to the full mount on tailscale builds without --set-path.
-  if ts_admin serve --bg --https=8444 --set-path=/api/slot \
-       "http://$UP_HOST:3002/api/slot" 2>/dev/null; then
-    echo "      beast-slot status API published (tailnet-only, :8444/api/slot)."
-  else
-    ts_admin serve --bg --https=8444 "http://$UP_HOST:3002"
-    echo "      beast-slot published (tailnet-only, :8444 → :3002)."
-    echo "      NOTE: this tailscale build lacks --set-path, so the whole"
-    echo "            dashboard (page + /api/status) is tailnet-visible."
-  fi
+  _publish_slot_mount "$UP_HOST"
 fi
 if [[ $PUBLISH_CHAT -eq 1 ]]; then
   # beast-chat (docs/BEAST_CHAT.md). Unlike the slot API this mounts "/" on

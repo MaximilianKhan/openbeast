@@ -32,6 +32,7 @@ source "$SCRIPT_DIR/lib/net.sh"       # ob_probe_host, ob_llama_ready
 source "$SCRIPT_DIR/lib/backend.sh"   # ob_backend_ready, ob_inference_managed
 source "$SCRIPT_DIR/lib/curl_auth.sh" # ob_curl_bearer: keys never on argv
 source "$SCRIPT_DIR/lib/portown.sh"   # ob_pid_owns_port: "healthy" must mean OUR process
+source "$SCRIPT_DIR/lib/hardware.sh"  # ob_meminfo_available_mb (unified-memory headroom)
 
 # Where a helper server relaunched below writes its output. It used to be
 # >/dev/null: a replacement that crashed on a bad conf, a taken port or an
@@ -97,6 +98,83 @@ if $RESTART && [[ -f "$STOPPED_FILE" ]]; then
   echo "  — reporting only, restarting nothing. ./start.sh clears this."
   echo ""
   RESTART=false
+fi
+# STARTING. A supervisor that has not printed its banner yet starts the tool
+# server, router and gate itself, after the model load (start.sh writes
+# .run/starting). These services are down for the whole load, sometimes
+# minutes. A tick that relaunched them here raced the supervisor for their
+# ports: the copies it started ran outside the memory-capped scope under a
+# pid nothing recorded, and the supervisor's own spawn died on the bind
+# (stack-lifecycle review). Report only. The marker counts only while the
+# supervisor it names is alive, so a crashed start leaves nothing behind.
+STARTING_FILE="$REPO_DIR/.run/starting"
+_stack_starting() {
+  local sp
+  [[ -f "$STARTING_FILE" ]] || return 1
+  sp="$(cat "$REPO_DIR/.run/supervisor.pid" 2>/dev/null || true)"
+  [[ -n "$sp" && "$(head -n1 "$STARTING_FILE" 2>/dev/null || true)" == "$sp" ]] || return 1
+  ob_recorded_pid_ours "$REPO_DIR/.run/supervisor.pid" 'start\.sh'
+}
+if $RESTART && _stack_starting; then
+  echo "Stack is starting (supervisor pid $(cat "$REPO_DIR/.run/supervisor.pid" 2>/dev/null || true)) —"
+  echo "  reporting only; the supervisor starts what is still down itself."
+  echo ""
+  RESTART=false
+fi
+# _may_restart — the gate of EVERY restart action, asked at the moment of
+# acting. The checks above run once, when the tick starts, and a tick can run
+# for minutes (the llama wait alone is 180 s). A ./stop.sh that landed in
+# between used to be undone by the same tick: it relaunched the tool server
+# and brought WebUI and SearXNG back up with no supervisor (stack-lifecycle
+# review).
+_may_restart() {
+  $RESTART || return 1
+  if [[ -f "$STOPPED_FILE" ]]; then
+    echo "       → not restarting: the stack was stopped on purpose during this pass"
+    RESTART=false
+    return 1
+  fi
+  if _stack_starting; then
+    echo "       → not restarting: a supervisor started the stack during this pass"
+    RESTART=false
+    return 1
+  fi
+  return 0
+}
+# _await_relaunch <pid> <port> <url> <match> — up to 15 s for a relaunched
+# server. 0: <url>'s body matches AND <pid> holds <port>. 1: it died, or what
+# answers is some other process (an orphan, or a squatter on the port while
+# ours loses the bind). Answering is not enough (integration-ops-6).
+_await_relaunch() {
+  local pid="$1" port="$2" url="$3" match="$4" own _i
+  for _i in $(seq 1 15); do
+    if curl -s --max-time 2 "$url" 2>/dev/null | grep -qi -- "$match"; then
+      own=0; ob_pid_owns_port "$pid" "$port" || own=$?
+      if [[ $own -eq 2 ]]; then sleep 1; kill -0 "$pid" 2>/dev/null || own=1; fi
+      [[ $own -ne 1 ]] && return 0
+    fi
+    kill -0 "$pid" 2>/dev/null || return 1
+    sleep 1
+  done
+  return 1
+}
+# ONE restarter at a time. The watchdog timer and an unmanaged supervisor
+# (start.sh) both run --restart every 5 minutes; two passes at once would
+# each pkill the other's fresh tool server. A pidfile lock, not flock: every
+# service relaunched below would inherit a lock fd and hold it for life.
+HC_LOCK="$REPO_DIR/.run/healthcheck-restart.pid"
+if $RESTART; then
+  mkdir -p "$REPO_DIR/.run"
+  if ! ( set -o noclobber; echo $$ > "$HC_LOCK" ) 2>/dev/null; then
+    if ob_pid_matches "$(cat "$HC_LOCK" 2>/dev/null || true)" 'healthcheck\.sh'; then
+      echo "Another healthcheck --restart is running (pid $(cat "$HC_LOCK" 2>/dev/null)) — reporting only."
+      echo ""
+      RESTART=false
+    else
+      echo $$ > "$HC_LOCK"   # a dead pass's leftover
+    fi
+  fi
+  $RESTART && trap '[[ "$(cat "$HC_LOCK" 2>/dev/null)" == "$$" ]] && rm -f "$HC_LOCK"' EXIT
 fi
 
 # The no-supervisor llama relaunch below is the watchdog acting on its own,
@@ -207,17 +285,41 @@ _llama_loading() {
 # still is one, else the path-anchored pattern. Never the bare name — that
 # reaps a campaign's server and any sibling worktree's (it destroyed a live
 # measurement run on this box on 2026-09-14).
+#
+# TERM, then KILL. llama-server's first signal only ASKS for a graceful stop
+# (the second one exits); a server wedged in a CUDA call or a deadlocked loop
+# never acts on it. One TERM and a 180 s wait for health left chat down until
+# the next tick, 5 minutes later (stack-lifecycle review). Escalate after
+# OPENBEAST_LLAMA_TERM_GRACE seconds (20, like start.sh's wait_llama_health).
+_llama_gone() { # _llama_gone <pid> — exited, or a zombie waiting for its parent
+  ob_pid_matches "$1" "$_LLAMA_ARGV0" || return 0
+  [[ "$(ps -o stat= -p "$1" 2>/dev/null || true)" == *Z* ]]
+}
 _kill_own_llama() {
-  local pid
+  local pid i grace="${OPENBEAST_LLAMA_TERM_GRACE:-20}"
+  [[ "$grace" =~ ^[0-9]+$ ]] || grace=20
   pid="$(cat "$REPO_DIR/.run/llama.pid" 2>/dev/null || true)"
   # The recorded pid is identified by NAME, not path: it is ours by virtue of
   # being recorded, and a serve script may exec a build outside the default
   # path. The pattern fallback has no such provenance, so it stays anchored.
   if ob_pid_matches "$pid" "$_LLAMA_ARGV0"; then
     kill "$pid" 2>/dev/null || true
+    for ((i = 0; i < grace * 5; i++)); do
+      _llama_gone "$pid" && return 0
+      sleep 0.2
+    done
+    echo "       → llama-server ignored SIGTERM for ${grace}s — sending SIGKILL"
+    kill -KILL "$pid" 2>/dev/null || true
   elif pgrep -f "$LLAMA_BIN_ERE" >/dev/null 2>&1; then
     pkill -f "$LLAMA_BIN_ERE" 2>/dev/null || true
+    for ((i = 0; i < grace * 5; i++)); do
+      pgrep -f "$LLAMA_BIN_ERE" >/dev/null 2>&1 || return 0
+      sleep 0.2
+    done
+    echo "       → llama-server ignored SIGTERM for ${grace}s — sending SIGKILL"
+    pkill -KILL -f "$LLAMA_BIN_ERE" 2>/dev/null || true
   fi
+  return 0
 }
 
 # A live GPU lease means a campaign owns the card ON PURPOSE (the stack was
@@ -233,6 +335,59 @@ _gpu_leased() {
   [[ "$out" == HELD* ]]
 }
 
+# TensorFold across Sparks: rank 0 answers /health {"ok": true} even while
+# its peer rank is frozen or rebooting and every request hangs (ops review).
+# Two cheap signals, in order:
+#   1. /health iteration_s — how long rank 0's current iteration has run (0
+#      between iterations). A healthy iteration is milliseconds; past
+#      TF_STALL_S (120; the recipe's own stall dump is at 300) it is stuck.
+#   2. Idle (requests_running 0, so nothing would show a stall): a 1-token
+#      completion with a short timeout (~0.1 s on the live pair), at most
+#      every OPENBEAST_TF_PROBE_INTERVAL seconds (240) — the watchdog and the
+#      supervisor both run this every 5 minutes, and the cached answer
+#      (.run/tf-liveness) serves the one that comes second.
+# Sets TF_STALL to the reason and returns 0 when stalled; any other backend,
+# or a /health it cannot read, is "not stalled" (readiness already decided).
+TF_STALL=""
+_tf_stalled() {
+  [[ "$INFERENCE_BACKEND" == "tensorfold" ]] || return 1
+  local body fields it running now stamp t verdict model code
+  body="$(ob_curl_bearer "${LLAMA_API_KEY:-}" -s --max-time 5 "$LLAMA_URL/health" 2>/dev/null || true)"
+  fields="$(python3 -c '
+import json, sys
+try:
+    h = json.loads(sys.stdin.read())
+except Exception:
+    h = {}
+num = lambda v: v if isinstance(v, (int, float)) and not isinstance(v, bool) else ""
+print(num(h.get("iteration_s")), num(h.get("requests_running")))' <<< "$body" 2>/dev/null || true)"
+  read -r it running <<< "$fields"
+  if [[ "$it" =~ ^[0-9]+(\.[0-9]+)?$ ]] && (( ${it%.*} > ${TF_STALL_S:-120} )); then
+    TF_STALL="rank 0's current iteration has run ${it%.*} s (stalled; iteration_s)"
+    return 0
+  fi
+  [[ "$running" == "0" ]] || return 1       # busy and progressing, or unknown
+  now="$(date +%s)"; stamp="$REPO_DIR/.run/tf-liveness"
+  if read -r t verdict < "$stamp" 2>/dev/null && [[ "$t" =~ ^[0-9]+$ ]] \
+     && (( now - t < ${OPENBEAST_TF_PROBE_INTERVAL:-240} )); then
+    [[ "$verdict" == "stalled" ]] || return 1
+    TF_STALL="a 1-token completion did not finish in ${OPENBEAST_TF_PROBE_TIMEOUT:-20} s (probed $(( now - t )) s ago)"
+    return 0
+  fi
+  model="${INFERENCE_MODEL:-$(ob_backend_models "$LLAMA_URL" 2>/dev/null | head -1 || true)}"
+  code="$(ob_curl_bearer "${LLAMA_API_KEY:-}" -s -o /dev/null -w '%{http_code}' \
+            --max-time "${OPENBEAST_TF_PROBE_TIMEOUT:-20}" -H 'Content-Type: application/json' \
+            --data "$(python3 -c 'import json, sys; print(json.dumps({"model": sys.argv[1], "max_tokens": 1, "stream": False, "messages": [{"role": "user", "content": "1"}]}))' "${model:-local-model}")" \
+            "$LLAMA_URL/v1/chat/completions" 2>/dev/null || true)"
+  # Only a request that never came back is a stall; a 4xx (a model id the
+  # engine rejects, an auth mismatch) is another row's problem.
+  verdict="alive"; [[ -z "$code" || "$code" == "000" ]] && verdict="stalled"
+  mkdir -p "$REPO_DIR/.run" 2>/dev/null && printf '%s %s\n' "$now" "$verdict" > "$stamp" 2>/dev/null || true
+  [[ "$verdict" == "stalled" ]] || return 1
+  TF_STALL="a 1-token completion did not finish in ${OPENBEAST_TF_PROBE_TIMEOUT:-20} s"
+  return 0
+}
+
 if ! ob_inference_managed; then
   # NOT OURS (INFERENCE_MANAGED=false — always for vLLM / TensorFold): a
   # cluster on other boxes, in containers this stack did not start. Report
@@ -240,9 +395,16 @@ if ! ob_inference_managed; then
   # pgrep/kill a local llama-server and exec a serve script into a port and
   # a GPU that have nothing to do with the real server.
   _be_label="$(ob_backend_label) ($INFERENCE_BACKEND @ $LLAMA_URL)"
-  if ob_backend_ready "$LLAMA_URL"; then
+  if ob_backend_ready "$LLAMA_URL" && ! _tf_stalled; then
     echo "  OK   $_be_label"
     HEALTHY=$((HEALTHY + 1))
+  elif [[ -n "${TF_STALL:-}" ]]; then
+    echo "  DOWN $_be_label — answers /health ok, but $TF_STALL"
+    echo "       (a frozen or rebooting peer rank — is every Spark of the pair up?)"
+    UNHEALTHY=$((UNHEALTHY + 1))
+    if $RESTART; then
+      echo "       → not restarting: INFERENCE_MANAGED=false — this stack does not own it."
+    fi
   else
     echo "  DOWN $_be_label"
     UNHEALTHY=$((UNHEALTHY + 1))
@@ -251,6 +413,24 @@ if ! ob_inference_managed; then
       echo "         Start it where it runs (docs/DGX_SPARK_PLAN.md)."
     fi
   fi
+# >>> engine-plane hook (docs/ENGINES.md) — a MANAGED vLLM / TensorFold: its
+# own readiness question, and no pgrep/kill/serve-script relaunch below (that
+# path is llama-server's). start.sh's supervisor relaunches one that exits.
+elif [[ "$INFERENCE_BACKEND" != "llama" ]]; then
+  _be_label="$(ob_backend_label) ($INFERENCE_BACKEND @ $LLAMA_URL, managed)"
+  if ob_backend_ready "$LLAMA_URL"; then
+    echo "  OK   $_be_label"
+    HEALTHY=$((HEALTHY + 1))
+  else
+    echo "  DOWN $_be_label"
+    UNHEALTHY=$((UNHEALTHY + 1))
+    CORE_LLAMA_DOWN=1
+    if $RESTART; then
+      echo "       → not restarted here: the start.sh supervisor relaunches a managed $INFERENCE_BACKEND that exits;"
+      echo "         one that is up but not ready: ./stop.sh && ./start.sh -d   (scripts/engine.sh status)"
+    fi
+  fi
+# <<< engine-plane hook
 elif _llama_loading; then
   echo "  LOAD llama.cpp server (model still loading — left alone)"
   LOADING=1
@@ -259,7 +439,7 @@ elif ! check "llama.cpp server" "$LLAMA_URL/health" "ok" "${LLAMA_API_KEY:-}"; t
   if $RESTART && _gpu_leased; then
     echo "       → the GPU lease is held ($("$SCRIPT_DIR/gpu-lease.sh" status 2>/dev/null | head -n1 || true))"
     echo "         not restarting llama.cpp into someone else's measurement."
-  elif $RESTART; then
+  elif _may_restart; then
     # If a start.sh supervisor is alive, it owns llama-server: kill the
     # server and let the supervisor's self-healing loop relaunch it —
     # starting our own copy here would race it for the port and the VRAM.
@@ -274,6 +454,9 @@ elif ! check "llama.cpp server" "$LLAMA_URL/health" "ok" "${LLAMA_API_KEY:-}"; t
           echo "       → healthy after ${i}s (supervisor relaunched it)"
           break
         fi
+        # ./stop.sh during this wait: the supervisor is gone, nothing will
+        # come back, and nothing below may be restarted either.
+        [[ -f "$STOPPED_FILE" ]] && break
         sleep 1
       done
     else
@@ -332,42 +515,54 @@ fi
 # One process serves both RBAC profiles; /health is public, keys gate tools.
 if ! check "Tool server" "$MCPO_URL/health" "ok"; then
   CORE_TOOLS_DOWN=1
-  if $RESTART; then
+  if _may_restart; then
     echo "       → restarting tool server..."
-    pkill -f "$(_ob_ere "$REPO_DIR/agents/openapi_tools.py")" 2>/dev/null || true
-    pkill -f "mcpo --port" 2>/dev/null || true   # legacy instances
+    # By RECORDED PID, identity-checked, like the router/chat/artifact paths;
+    # the path-anchored pattern is the fallback for one whose record is gone.
+    # (No `mcpo --port` sweep any more: nothing has launched mcpo since
+    # 2026-07-09, so that unanchored pattern could only hit ANOTHER project's
+    # mcpo proxy.)
+    _mc_pid="$(cat "$REPO_DIR/.run/mcpo.pid" 2>/dev/null || true)"
+    if ob_pid_matches "$_mc_pid" "$(_ob_ere "$REPO_DIR/agents/openapi_tools.py")"; then
+      kill "$_mc_pid" 2>/dev/null || true
+    else
+      pkill -f "$(_ob_ere "$REPO_DIR/agents/openapi_tools.py")" 2>/dev/null || true
+    fi
     sleep 1
     # Mirror start.sh: the chat model's file workspace must exist and be
     # private before the tool server starts sharding into it.
     if [[ ! -d "$OPENBEAST_FILES_DIR" ]]; then
       mkdir -p "$OPENBEAST_FILES_DIR" && chmod 700 "$OPENBEAST_FILES_DIR"
     fi
-    python3 "$REPO_DIR/agents/openapi_tools.py" &
+    _mc_log="$(_restart_log "tool server")"
+    python3 "$REPO_DIR/agents/openapi_tools.py" >>"$_mc_log" 2>&1 &
     MCPO_NEW_PID=$!
     # Record the pid IMMEDIATELY — it's the live process either way, and a
     # slow-but-alive start must not leave the OLD pid on record (start.sh
     # --status would lie about what's running).
     mkdir -p "$REPO_DIR/.run"
     echo "$MCPO_NEW_PID" > "$REPO_DIR/.run/mcpo.pid"
-    MCPO_OK=0
-    for _i in $(seq 1 15); do
-      if curl -s --max-time 2 "$MCPO_URL/health" 2>/dev/null | grep -qi ok; then
-        MCPO_OK=1
-        break
-      fi
-      sleep 1
-    done
-    if [[ $MCPO_OK -eq 1 ]]; then
+    # Ours must hold :3001, not merely something answering there: a squatter
+    # that binds it first would otherwise receive every admin-key call.
+    if _await_relaunch "$MCPO_NEW_PID" 3001 "$MCPO_URL/health" '"status"'; then
       echo "       → restarted (pid $MCPO_NEW_PID)"
     else
-      echo "       → restart FAILED: tool server not serving after 15s (check its output above)"
+      if kill -0 "$MCPO_NEW_PID" 2>/dev/null; then
+        echo "       → restart FAILED: tool server not serving after 15s"
+      else
+        echo "       → restart FAILED: the relaunched tool server exited"
+        rm -f "$REPO_DIR/.run/mcpo.pid"
+      fi
+      _restart_tail "$_mc_log"
     fi
   fi
+else
+  _listener_ours "Tool server" mcpo 3001 || true
 fi
 
 # Open WebUI
 if ! check "Open WebUI" "$WEBUI_URL/api/version" "version"; then
-  if $RESTART; then
+  if _may_restart; then
     echo "       → restarting Open WebUI..."
     # `|| …`: under set -e a docker that is down killed the watchdog right
     # here — no SearXNG/gate/chat/artifact checks, no summary.
@@ -378,11 +573,24 @@ if ! check "Open WebUI" "$WEBUI_URL/api/version" "version"; then
       echo "       → restart FAILED (docker compose up failed — daemon down?)"
     fi
   fi
+elif $RESTART && [[ "${OPENBEAST_WEBUI_OFFLINE:-false}" == "false" ]] \
+     && [[ $'\n'"$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' open-webui 2>/dev/null || true)"$'\n' \
+           == *$'\n'"OFFLINE_MODE=true"$'\n'* ]] && _may_restart; then
+  # Up, but still in the OFFLINE_MODE an islanded launch gave it, while the
+  # rig is online now (conf.sh derives OPENBEAST_WEBUI_OFFLINE from the live
+  # island state). It used to stay that way until a manual restart — 43 h on
+  # spark-1 after a boot race (ops review). Recreate it once, online.
+  echo "       → Open WebUI is still in OFFLINE_MODE from an islanded launch; recreating it online..."
+  if docker compose -f "$REPO_DIR/docker-compose.yml" up -d open-webui; then
+    echo "       → recreated"
+  else
+    echo "       → recreate FAILED (docker compose up failed)"
+  fi
 fi
 
 # SearXNG
 if ! check "SearXNG" "$SEARXNG_URL" "searx"; then
-  if $RESTART; then
+  if _may_restart; then
     echo "       → restarting SearXNG..."
     if docker compose -f "$REPO_DIR/docker-compose.yml" up -d searxng; then
       sleep 3
@@ -416,7 +624,7 @@ if [[ "${HYDRA:-false}" == "true" ]]; then
   else
     echo "  DOWN beast-hydra ($_hy_url) — every consumer's inference goes through it"
     UNHEALTHY=$((UNHEALTHY + 1))
-    if $RESTART; then
+    if _may_restart; then
       echo "       → restarting beast-hydra..."
       # By RECORDED PID, identity-checked; the path-anchored pattern is the
       # fallback for an instance started outside start.sh.
@@ -481,7 +689,7 @@ fi
 # scripts/instinct.sh, which owns the pre-bind check, key and pidfile.
 if [[ "${INSTINCT:-false}" == "true" ]]; then
   if ! check "beast-instinct" "http://127.0.0.1:${INSTINCT_PORT:-8094}/health" "ok"; then
-    if $RESTART; then
+    if _may_restart; then
       echo "       → restarting beast-instinct..."
       _in_log="$(_restart_log beast-instinct)"
       if INSTINCT_CONFIG="${INSTINCT_CONFIG:-}" INSTINCT_PORT="${INSTINCT_PORT:-8094}" \
@@ -516,7 +724,7 @@ if [[ "${AGENT_ROUTER:-false}" == "true" ]]; then
   else
     echo "  DOWN Agent router ($_rt_url) — Open WebUI's model endpoint goes through it"
     UNHEALTHY=$((UNHEALTHY + 1))
-    if $RESTART; then
+    if _may_restart; then
       echo "       → restarting the agent router..."
       # By RECORDED PID, identity-checked; the path-anchored pattern is the
       # fallback for one whose record is gone (never the bare name — that
@@ -598,10 +806,18 @@ fi
 
 # beast-gate (opt-in) — the inference edge remote clients arrive through.
 if [[ "${EDGE_GATE:-false}" == "true" ]]; then
-  if ! check "beast-gate" "http://${HEALTH_HOST:-127.0.0.1}:${EDGE_PORT:-8090}/gate/health" "beast-gate"; then
-    if $RESTART; then
+  _gate_health="http://${HEALTH_HOST:-127.0.0.1}:${EDGE_PORT:-8090}/gate/health"
+  if ! check "beast-gate" "$_gate_health" "beast-gate"; then
+    if _may_restart; then
       echo "       → restarting beast-gate..."
-      pkill -f "$(_ob_ere "$REPO_DIR/agents/edge.py")" 2>/dev/null || true
+      # By RECORDED PID first (identity-checked), the anchored pattern as the
+      # fallback — the same rule as every other relaunch here.
+      _edge_pid="$(cat "$REPO_DIR/.run/edge.pid" 2>/dev/null || true)"
+      if ob_pid_matches "$_edge_pid" "$(_ob_ere "$REPO_DIR/agents/edge.py")"; then
+        kill "$_edge_pid" 2>/dev/null || true
+      else
+        pkill -f "$(_ob_ere "$REPO_DIR/agents/edge.py")" 2>/dev/null || true
+      fi
       sleep 1
       # Record the pid like the llama/mcpo relaunch paths do — without it
       # ./start.sh --status reports the gate down after a watchdog restart,
@@ -616,11 +832,26 @@ if [[ "${EDGE_GATE:-false}" == "true" ]]; then
       OPENBEAST_REPO_DIR="$REPO_DIR" \
         OPENBEAST_LLAMA_UPSTREAM="${CONSUMER_BASE:-$INFERENCE_URL}" \
         python3 "$REPO_DIR/agents/edge.py" >>"$_edge_log" 2>&1 &
+      EDGE_NEW_PID=$!
       mkdir -p "$REPO_DIR/.run"
-      echo "$!" > "$REPO_DIR/.run/edge.pid"
-      sleep 3
-      echo "       → restarted"
+      echo "$EDGE_NEW_PID" > "$REPO_DIR/.run/edge.pid"
+      # It used to say "restarted" after a bare `sleep 3`: a gate that died
+      # on its bind, or a squatter answering in its place (and receiving
+      # every device key tailscale serve forwards), read as repaired.
+      if _await_relaunch "$EDGE_NEW_PID" "${EDGE_PORT:-8090}" "$_gate_health" "beast-gate"; then
+        echo "       → restarted (pid $EDGE_NEW_PID)"
+      else
+        if kill -0 "$EDGE_NEW_PID" 2>/dev/null; then
+          echo "       → restart FAILED: beast-gate not serving after 15s"
+        else
+          echo "       → restart FAILED: the relaunched beast-gate exited"
+          rm -f "$REPO_DIR/.run/edge.pid"
+        fi
+        _restart_tail "$_edge_log"
+      fi
     fi
+  else
+    _listener_ours "beast-gate" edge "${EDGE_PORT:-8090}" || true
   fi
 fi
 
@@ -631,7 +862,7 @@ fi
 if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
   if ! check "beast-chat console" \
        "http://$CHAT_HEALTH_HOST:${CHAT_PORT:-3003}/api/chat/health" '"status":"ok"'; then
-    if $RESTART; then
+    if _may_restart; then
       echo "       → restarting beast-chat console..."
       # Kill by RECORDED PID first, exactly as the artifact path does: a
       # pattern kill on this box has already reaped a live measurement run
@@ -691,7 +922,7 @@ fi
 if [[ "${BEAST_ARTIFACT:-false}" == "true" ]]; then
   ARTIFACT_HEALTH="http://${HEALTH_HOST:-127.0.0.1}:${ARTIFACT_PORT:-3004}/api/artifacts/health"
   if ! check "beast-artifact" "$ARTIFACT_HEALTH" "ok"; then
-    if $RESTART; then
+    if _may_restart; then
       echo "       → restarting beast-artifact..."
       # Kill by RECORDED PID, never by pattern. A `pkill -f artifact_server`
       # on this box would also reap a sibling worktree's server — and worse,
@@ -751,7 +982,45 @@ fi
 
 # beast-slot status API (dashboard extension) — only when enabled in conf.
 if [[ " ${EXTENSIONS:-} " == *" dashboard "* || "${EXTENSIONS:-}" == "dashboard" ]]; then
-  check "Dashboard (beast-slot)" "http://${HEALTH_HOST:-127.0.0.1}:3002/api/slot" "beast_slot" || true
+  DASH_URL="http://${HEALTH_HOST:-127.0.0.1}:${DASHBOARD_PORT:-3002}/api/slot"
+  if ! check "Dashboard (beast-slot)" "$DASH_URL" "beast_slot" \
+     && $RESTART && [[ -x "$REPO_DIR/extensions/dashboard/run.sh" ]]; then
+    # start.sh launches process extensions once and nothing supervises them,
+    # so a dashboard that died (OOM in the capped scope, a bind error) left
+    # every client's :8444/api/slot at 502 until a full stack restart. The
+    # same launch start.sh does: identity-checked pidfile, then run.sh.
+    echo "       → restarting the dashboard extension..."
+    _dash_pidf="$REPO_DIR/.run/ext-dashboard.pid"
+    if ob_recorded_pid_ours "$_dash_pidf" "$(_ob_ere "$REPO_DIR/extensions/dashboard/")"; then
+      kill "$(cat "$_dash_pidf")" 2>/dev/null || true    # alive, not answering
+      sleep 1
+    fi
+    _dash_log="$(_restart_log dashboard)"
+    "$REPO_DIR/extensions/dashboard/run.sh" >>"$_dash_log" 2>&1 &
+    DASH_NEW_PID=$!
+    ob_pid_record "$_dash_pidf" "$DASH_NEW_PID"
+    DASH_OK=0
+    for _i in $(seq 1 10); do
+      if curl -s --max-time 2 "$DASH_URL" 2>/dev/null | grep -q beast_slot; then
+        _own=0; ob_pid_owns_port "$DASH_NEW_PID" "${DASHBOARD_PORT:-3002}" || _own=$?
+        if [[ $_own -eq 2 ]]; then sleep 1; kill -0 "$DASH_NEW_PID" 2>/dev/null || _own=1; fi
+        if [[ $_own -ne 1 ]]; then DASH_OK=1; break; fi
+      fi
+      kill -0 "$DASH_NEW_PID" 2>/dev/null || break
+      sleep 1
+    done
+    if [[ $DASH_OK -eq 1 ]]; then
+      echo "       → restarted (pid $DASH_NEW_PID)"
+    else
+      if kill -0 "$DASH_NEW_PID" 2>/dev/null; then
+        echo "       → restart FAILED: the dashboard is not serving after 10s"
+      else
+        echo "       → restart FAILED: the relaunched dashboard exited"
+        rm -f "$_dash_pidf" "${_dash_pidf%.pid}.start"
+      fi
+      _restart_tail "$_dash_log"
+    fi
+  fi
 fi
 
 # beast-island (agents/island.py): one line, and the flag the Tailscale row
@@ -767,7 +1036,7 @@ if [[ -f "$REPO_DIR/agents/island.py" ]]; then
     [[ "$(OPENBEAST_RUN_DIR="${ISLAND_STATE_DIR:-$REPO_DIR/.run}" python3 "$REPO_DIR/agents/island.py" status --net 2>/dev/null || true)" == "down" ]] \
       && ISLAND_NET_DOWN=1
     echo "  ISLE Network: $_isl"
-    echo "       (everything local works; web_search/fetch answer \"offline\")"
+    echo "       (everything local works; web_search/fetch/weather answer \"offline\")"
   elif [[ "${ISLAND:-auto}" != "off" ]]; then
     echo "  --   Network: ${_isl:-unknown}"
   fi
@@ -797,7 +1066,7 @@ except Exception: print('no')
   else
     echo "  DOWN Tailscale (remote access)"
     UNHEALTHY=$((UNHEALTHY + 1))
-    if $RESTART; then
+    if _may_restart; then
       # -n: never hang an unattended healthcheck on a sudo password prompt.
       if sudo -n true 2>/dev/null; then
         echo "       → restarting tailscaled..."
@@ -816,7 +1085,22 @@ echo ""
 if command -v nvidia-smi &>/dev/null; then
   VRAM_USED=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1 || true)
   VRAM_TOTAL=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 || true)
-  if [[ -z "$VRAM_TOTAL" || ! "$VRAM_TOTAL" =~ ^[0-9]+$ || "$VRAM_TOTAL" -eq 0 \
+  if [[ "$VRAM_TOTAL" == "[N/A]" ]]; then
+    # UNIFIED memory (GB10): no VRAM of its own. What is left is MemAvailable
+    # — the model's allocations come out of the same RAM, and a GB10 that
+    # runs out freezes rather than failing an allocation.
+    _avail_mb="$(ob_meminfo_available_mb)"; _total_mb="$(ob_meminfo_total_mb)"
+    VRAM_PCT=0
+    if [[ "$_avail_mb" -gt 0 ]]; then
+      echo "  Unified memory: ${_avail_mb} MiB available of ${_total_mb} MiB (the model's share is in the total)"
+      if [[ "$_avail_mb" -lt $(( ${MEM_RESERVE_GB:-3} * 1024 )) ]]; then
+        echo "  WARNING: under the ${MEM_RESERVE_GB:-3} GiB reserve (MEM_RESERVE_GB) — this box freezes when"
+        echo "           it runs out. Stop heavy jobs, or shrink the model's pool."
+      fi
+    else
+      echo "  Unified memory: unavailable (no MemAvailable in /proc/meminfo)"
+    fi
+  elif [[ -z "$VRAM_TOTAL" || ! "$VRAM_TOTAL" =~ ^[0-9]+$ || "$VRAM_TOTAL" -eq 0 \
         || -z "$VRAM_USED" || ! "$VRAM_USED" =~ ^[0-9]+$ ]]; then
     echo "  GPU VRAM: unavailable (nvidia-smi returned no data)"
     VRAM_PCT=0

@@ -186,7 +186,7 @@ def shadow_soak(cfg, decision: str, engine: str, h16: str | None) -> tuple[int, 
 
 async def _promote_checks(cfg, decision: str, engine: str, repo: Path) -> tuple[bool, list]:
     from .service import Instinct
-    inst = Instinct(cfg, repo_root=repo)
+    inst = Instinct(cfg, repo_root=repo, read_only=True)   # checks only: writes no state
     try:
         await inst.reload()
         spec = inst.specs.get(decision)

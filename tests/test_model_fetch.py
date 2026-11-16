@@ -316,3 +316,67 @@ def test_local_source_with_hf_download_metadata_verifies(tmp_path, capsys):
     assert model_fetch.main(["--profile", str(prof), "--verify"]) == 0, capsys.readouterr()
     (src / "model.safetensors").write_bytes(b"\1" * 64)              # a real change still fails
     assert model_fetch.main(["--profile", str(prof), "--verify"]) != 0
+
+
+def _local_profile(tmp_path, name="localtof"):
+    src = tmp_path / f"{name}-ckpt"
+    src.mkdir()
+    (src / "config.json").write_text(json.dumps({"model_type": "brand_new", "hidden": 64}))
+    (src / "model.safetensors").write_bytes(b"\0" * 64)
+    prof = tmp_path / f"{name}.env"
+    prof.write_text(f"BACKEND=tensorfold\nSOURCE={src}\nSERVED_MODEL_NAME={name}\nTENSOR_PARALLEL_SIZE=1\n")
+    return src, prof
+
+
+def test_verify_without_a_lock_fails_and_never_records_one(tmp_path, capsys):
+    # Review finding: --verify on a local SOURCE with no lock wrote a
+    # trust-on-first-use lock and exited 0, so sync-weights reported a worker
+    # "verified against its lock" when there was nothing to verify against.
+    src, prof = _local_profile(tmp_path)
+    assert model_fetch.main(["--profile", str(prof), "--verify"]) == model_fetch.EXIT_ABSENT
+    assert "nothing to verify against" in capsys.readouterr().err
+    assert not prof.with_suffix(".lock").exists()
+    assert model_fetch.main(["--profile", str(prof), "--trust-first-use"]) == 2     # only with --verify
+    assert model_fetch.main(["--profile", str(prof), "--verify", "--trust-first-use"]) == 0
+    assert set(json.loads(prof.with_suffix(".lock").read_text())["artifacts"]["model"]["files"]) == \
+        {"config.json", "model.safetensors"}
+    assert model_fetch.main(["--profile", str(prof), "--verify"]) == 0
+
+
+def test_locate_refuses_an_unlocked_local_source(tmp_path, capsys):
+    # The launchers serve what --locate prints: an unlocked local SOURCE is
+    # not "verified", so it prints nothing and exits 3 (not fetched).
+    src, prof = _local_profile(tmp_path, "localloc")
+    capsys.readouterr()
+    assert model_fetch.main(["--profile", str(prof), "--locate"]) == model_fetch.EXIT_ABSENT
+    assert capsys.readouterr().out == ""
+    assert not prof.with_suffix(".lock").exists()
+    assert model_fetch.main(["--profile", str(prof)]) == 0                     # the explicit TOFU fetch
+    capsys.readouterr()
+    assert model_fetch.main(["--profile", str(prof), "--locate"]) == 0
+    assert capsys.readouterr().out.strip() == f"model\t{src}"
+
+
+def test_locate_hashes_the_small_files(tmp_path, capsys):
+    # --locate stays size-only for the weights, but a same-size edit to
+    # config.json / a template / a tokenizer file changes behaviour and is
+    # cheap to catch.
+    src, prof = _local_profile(tmp_path, "localsmall")
+    assert model_fetch.main(["--profile", str(prof)]) == 0
+    cfg = src / "config.json"
+    cfg.write_text(cfg.read_text().replace('"hidden": 64', '"hidden": 99'))      # same size
+    capsys.readouterr()
+    assert model_fetch.main(["--profile", str(prof), "--locate"]) == model_fetch.EXIT_MISMATCH
+    assert "config.json: sha256 differs" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("planted", ["pytorch_model.bin", "extra.pt", "evil.pth", "vocab.tiktoken",
+                                     "config.yaml", "README", "sub/model.gguf"])
+def test_verify_flags_an_unlocked_file_of_any_kind(tmp_path, capsys, planted):
+    src, prof = _local_profile(tmp_path, "localany")
+    assert model_fetch.main(["--profile", str(prof)]) == 0
+    (src / planted).parent.mkdir(parents=True, exist_ok=True)
+    (src / planted).write_bytes(b"x")
+    capsys.readouterr()
+    assert model_fetch.main(["--profile", str(prof), "--verify"]) == model_fetch.EXIT_MISMATCH
+    assert f"unlocked file {planted}" in capsys.readouterr().err

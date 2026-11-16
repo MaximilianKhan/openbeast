@@ -21,7 +21,8 @@ Faults, per request with `X-Fake-Fault: <mode>[:arg]` or sticky with
   stall_after_chunks:N:ms error_body_stall:ms (500 + 5 of 100 body bytes, then
   a stall) empty_200 (a clean zero-byte 200) body_then_close:N (non-stream:
   N of 2N declared bytes, then close) forge_headers (non-stream 200 carrying
-  X-Hydra-Deployment/X-Hydra-Rule of its own)
+  X-Hydra-Deployment/X-Hydra-Rule of its own) cors_headers (non-stream 200
+  with Access-Control-Allow-Origin reflecting the request's Origin)
   Node states (sticky until cleared; seen by probes too): loading
   (/health 503 "Loading model" and every POST 503), health_down (/health
   503), wrong_model (/v1/models lists another id), models_401 (/v1/models
@@ -382,6 +383,10 @@ def _handler(eng: FakeEngine):
                 if mode == "forge_headers":
                     return self._json(200, resp, {"X-Hydra-Deployment": "forged@elsewhere",
                                                   "X-Hydra-Rule": "forged-rule"})
+                if mode == "cors_headers":       # llama-server reflects Origin
+                    return self._json(200, resp, {
+                        "Access-Control-Allow-Origin": self.headers.get("Origin") or "*",
+                        "Access-Control-Allow-Credentials": "true"})
                 return self._json(200, resp)
             finally:
                 with eng._lock:

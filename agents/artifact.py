@@ -342,9 +342,18 @@ def _artifact_lock(artifact_id: str):
 # --- paths -------------------------------------------------------------------
 
 def _files_dir() -> str:
-    return os.path.expanduser(
-        os.environ.get("OPENBEAST_FILES_DIR", "").strip()
-        or os.path.join(os.path.expanduser("~"), "openbeast-files"))
+    """$OPENBEAST_FILES_DIR, else openbeast.conf's FILES_DIR (conf_value),
+    else ~/openbeast-files. The conf fallback is for a process start.sh did
+    not launch — OpenCode's stdio MCP server gets the plain environment, and
+    it used to write a store the server never served (review, spark-scale).
+    A relative conf value is anchored to the checkout, as lib/conf.sh does."""
+    env = os.environ.get("OPENBEAST_FILES_DIR", "").strip()
+    if env:
+        return os.path.expanduser(env)
+    raw = os.path.expanduser((_conf_file_value("FILES_DIR") or "").strip())
+    if not raw:
+        return os.path.join(os.path.expanduser("~"), "openbeast-files")
+    return raw if os.path.isabs(raw) else os.path.join(_repo_dir(), raw)
 
 
 def store_root() -> str:
@@ -969,7 +978,14 @@ def publish(html, *, title=None, description=None, favicon=None,
         # publish (D14) is stepped over instead of destroyed — it stays
         # unreachable, meta names it nowhere, and the id is not wedged, which
         # is all D14 ever asked for.
-        n = max(_resolvable_versions(aid, meta) + _disk_versions(aid) or [0]) + 1
+        #
+        # And clear of every number EVER handed out: remove_version() frees
+        # meta's entry and the vN directory, so without the high-water mark
+        # removing the TOP version (after a rollback) let the next publish
+        # reuse its number and a pinned /a/<id>/v/<n> served different bytes
+        # (review, spark-scale: beast-artifact).
+        n = max([_coerce_int(meta.get("max_n"), 0)]
+                + _resolvable_versions(aid, meta) + _disk_versions(aid)) + 1
         vdir = os.path.join(_artifact_dir(aid), f"v{n}")
         adir_existed = os.path.isdir(_artifact_dir(aid))
         try:
@@ -1025,6 +1041,7 @@ def publish(html, *, title=None, description=None, favicon=None,
             entry["source_session"] = session
             meta["source_session"] = session
         meta["versions"].append(entry)
+        meta["max_n"] = n                # monotonic: never lowered
         meta["current"] = n
         meta["updated_at"] = _now()
         page_title = extract_title(page)
@@ -1268,13 +1285,51 @@ def list_page(*, owner=None, viewer=None, limit=25, offset=0, admin=False,
     return (rows[:limit] if limit > 0 else rows), total
 
 
-def read_file(artifact_id, version: int, path="index.html") -> tuple[bytes, str]:
+def read_file(artifact_id, version: int, path="index.html", *,
+              span=None) -> tuple[bytes, str]:
     """(bytes, content_type) for one file of one version.
 
     path defaults to the page. Supporting files resolve under vN/files/ and
     are re-validated here, so a crafted URL cannot walk out of the store even
     if a caller skipped validation on the way in.
+
+    span    (start, end), inclusive: read only those bytes. A Range request
+            used to read the WHOLE file and slice it, so a 15 MB video
+            played in small ranges cost 15 MB of read and allocation per
+            request (review, spark-scale: beast-artifact).
     """
+    target, ctype, rel, n = _file_target(artifact_id, version, path)
+    try:
+        with open(target, "rb") as fh:
+            if span is None:
+                return fh.read(), ctype
+            start, end = int(span[0]), int(span[1])
+            fh.seek(max(0, start))
+            return fh.read(max(0, end - start + 1)), ctype
+    except (FileNotFoundError, IsADirectoryError, NotADirectoryError):
+        raise ArtifactError(f"no such file in v{n}: {rel}")
+    except OSError as e:
+        raise ArtifactError(f"unreadable file: {e}")
+
+
+def file_size(artifact_id, version: int, path="index.html") -> int:
+    """The byte size of one file of one version, resolved and validated
+    exactly as read_file() does — what a Range answer is computed against."""
+    target, _, rel, n = _file_target(artifact_id, version, path)
+    try:
+        st = os.stat(target)
+    except (FileNotFoundError, NotADirectoryError):
+        raise ArtifactError(f"no such file in v{n}: {rel}")
+    except OSError as e:
+        raise ArtifactError(f"unreadable file: {e}")
+    if not _stat.S_ISREG(st.st_mode):
+        raise ArtifactError(f"no such file in v{n}: {rel}")
+    return st.st_size
+
+
+def _file_target(artifact_id, version, path):
+    """(absolute target, content type, relative path, n) — read_file's
+    resolution and containment checks, shared with file_size()."""
     aid = _check_id(artifact_id)
     meta = _read_meta(aid)
     if meta is None:
@@ -1298,13 +1353,7 @@ def read_file(artifact_id, version: int, path="index.html") -> tuple[bytes, str]
         if target != base and not target.startswith(base + os.sep):
             raise ArtifactError(f"path escapes the artifact: {path!r}")
         ctype = content_type_for(safe)
-    try:
-        with open(target, "rb") as fh:
-            return fh.read(), ctype
-    except (FileNotFoundError, IsADirectoryError, NotADirectoryError):
-        raise ArtifactError(f"no such file in v{n}: {rel}")
-    except OSError as e:
-        raise ArtifactError(f"unreadable file: {e}")
+    return target, ctype, rel, n
 
 
 # --- mutate (metadata only; versions stay immutable) -------------------------
@@ -1394,13 +1443,18 @@ def set_current(artifact_id, version, *, owner=None,
 
 
 def remove(artifact_id, *, owner=None, admin=False,
-           reason=None) -> bool:
+           reason=None, only_if=None) -> bool:
     """Delete an artifact and every version. True if something was removed.
 
     Owner-only (D22), and it is the loudest of the three: round one left
     DELETE the one mutation with no ownership check at all, so a second
     operator could destroy another owner's page and every version it ever
     had — irreversibly, since versions are the only copy.
+
+    only_if(meta) -> bool, when given, is evaluated on the record read UNDER
+    the per-artifact lock; False (or an unparseable record) removes nothing.
+    It is how a caller that decided from a snapshot (the retention sweep)
+    re-decides on what is actually there.
     """
     aid = _check_id(artifact_id)
     d = _artifact_dir(aid)
@@ -1433,6 +1487,8 @@ def remove(artifact_id, *, owner=None, admin=False,
         # DELETE cannot guess at.
         if meta is not None:
             _require_owner(meta, owner, admin)
+        if only_if is not None and (meta is None or not only_if(meta)):
+            return False
         if not os.path.isdir(real):
             return False
         shutil.rmtree(real)
@@ -1606,6 +1662,10 @@ def remove_version(artifact_id, version, *, owner=None, admin=False) -> dict:
             if vn != n:
                 keep.append(v)
         meta["versions"] = keep
+        # The removed number stays spent (see publish): a page whose meta
+        # predates `max_n` learns it here, before its top entry disappears.
+        meta["max_n"] = max(_coerce_int(meta.get("max_n"), 0), n,
+                            *_version_numbers(meta))
         _write_meta_or_raise(aid, meta)
         # Meta first, THEN the directory: a crash between the two leaves an
         # unreferenced vN, which is exactly the debris D14 already tolerates.
@@ -1676,6 +1736,19 @@ def retain_days() -> int:
     return days if days > 0 else 0
 
 
+def _stale(meta, cutoff: float) -> bool:
+    """Retention's whole judgement on one record: unpinned, last updated
+    before the cutoff, and not unpinned since (a page unpinned recently gets
+    a full retention period from then). Anything unreadable is NOT stale."""
+    if not isinstance(meta, dict) or meta.get("pinned") is True:
+        return False
+    ts = _parse_ts(meta.get("updated_at"))
+    if ts is None or ts.timestamp() >= cutoff:
+        return False
+    unpinned = _parse_ts(meta.get("unpinned_at"))
+    return not (unpinned is not None and unpinned.timestamp() >= cutoff)
+
+
 def sweep_retention(days=None, *, now=None) -> list:
     """Opt-in retention (F-A2): delete every UNPINNED artifact whose last
     update is older than `days` days (default: retain_days()). Pinned pages
@@ -1699,15 +1772,16 @@ def sweep_retention(days=None, *, now=None) -> list:
         except Exception:
             continue
         # Re-checked on the record itself: the row is a snapshot.
-        if not isinstance(meta, dict) or meta.get("pinned") is True:
-            continue
-        # A page unpinned recently gets a full retention period from then.
-        unpinned = _parse_ts(meta.get("unpinned_at"))
-        if unpinned is not None and unpinned.timestamp() >= cutoff:
+        if not _stale(meta, cutoff):
             continue
         try:
+            # And re-checked once more UNDER THE LOCK, inside remove(): a
+            # republish or pin holding the lock right now would otherwise
+            # commit, release, and be rmtree'd by the remove queued behind it
+            # (review, spark-scale: beast-artifact).
             if remove(row["id"], owner=RIG_OWNER, admin=True,
-                      reason="retention"):
+                      reason="retention",
+                      only_if=lambda m: _stale(m, cutoff)):
                 removed.append(row["id"])
         except ArtifactError:
             continue
@@ -1922,7 +1996,7 @@ def _detect_base_url() -> str:
     if m:
         value = f"https://{m.group(1).lower()}:{_PUBLISHED_PORT}"
     else:
-        port = _coerce_int(os.environ.get("OPENBEAST_ARTIFACT_PORT"), 3004)
+        port = _coerce_int(conf_value("ARTIFACT_PORT"), 3004)
         value = f"http://localhost:{port if 0 < port < 65536 else 3004}"
     with _BASE_URL_LOCK:
         _BASE_URL_CACHE.update(at=now, value=value)
@@ -1950,8 +2024,9 @@ def url_caveat(url) -> str:
 
 def artifact_url(artifact_id, version=None) -> str:
     """The durable URL. Base from $OPENBEAST_ARTIFACT_BASE_URL (conf key
-    ARTIFACT_BASE_URL), else detected — see _detect_base_url()."""
-    base = os.environ.get("OPENBEAST_ARTIFACT_BASE_URL", "").strip()
+    ARTIFACT_BASE_URL, read through conf_value so a plain environment sees
+    it too), else detected — see _detect_base_url()."""
+    base = (conf_value("ARTIFACT_BASE_URL") or "").strip()
     if not base:
         base = _detect_base_url()
     base = base.rstrip("/")
@@ -2163,7 +2238,12 @@ def wrap_skeleton(body_html, *, theme=None, link_guard=False) -> bytes:
     guard = LINK_GUARD if link_guard else b""
     at = _html_tag_at(data)
     if at >= 0:
-        if stamp and b"data-theme" not in data[:2048]:
+        # Only the document's OWN start tag decides: a 2 KB substring scan
+        # also matched a `:root[data-theme="dark"]` selector in <head> —
+        # exactly the pages the stamp is for — and skipped them.
+        tag_end = data.find(b">", at)
+        own_tag = data[at:tag_end if tag_end >= 0 else len(data)]
+        if stamp and b"data-theme" not in own_tag.lower():
             # Stamp THE document's tag, found above — never a "<html" that
             # happens to sit inside the leading comment.
             data = data[:at + 5] + stamp.encode() + data[at + 5:]

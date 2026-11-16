@@ -1,5 +1,34 @@
 # TODO
 
+## 🧮 PERFORMANCE MATRIX — engine × language-assistance × model (opened 2026-11-15)
+
+Max, 2026-11-15: the 5090 rig must be eval-tested running the same models on
+**llama.cpp vs vLLM**, and the result belongs in the same matrix as the v5
+language-assistance ablation (L0 bare / L1 packs / L2 packs+assist+escalate)
+and the variables added later.
+
+- [ ] **Rig engine A/B: llama.cpp vs vLLM on the 5090**, per model, same weights family
+  (GGUF for llama.cpp; the closest safetensors quant for vLLM: NVFP4/FP8/AWQ —
+  record which, it is a confound). Measure on the **v5 suite**: SCORE, SOLVE,
+  LANG, per-language pass rates, tokens and wall time per unit, single-stream
+  and `--jobs N` aggregate tok/s, TTFT, VRAM headroom, failure classes
+  (tool-call parse errors, context overflows). Same decoding settings, same
+  reasoning budget, same era. Start with the default uncensored Qwen3.8 27B
+  and the 35B-A3B MoE.
+- [ ] **One matrix, one runner**: rows = (host, engine, engine version,
+  weights repo@rev / quant, model), columns = arms (L0 / L1 / L2) and the
+  later variables (MTP / speculative decoding on-off, KV dtype, context size,
+  slots). `evals/profile.py` writes each cell; `evals/ablation.py` reports
+  paired deltas only *within* an engine, and the engine delta only within an
+  arm, never across eras.
+- [ ] **Engine provenance in every result**: engine name + exact version/commit
+  + image digest + flags (the v5 harness's provenance capture for
+  vLLM/TensorFold, not only `pgrep llama-server`).
+- [ ] Sparks: the same A/B between TensorFold (recipe / native) and vLLM once a
+  vLLM build serves the chosen model on GB10.
+- Engine swapping itself: `scripts/engine.sh` (see docs/ENGINES.md once it lands).
+- Landed: [docs/ENGINES.md](ENGINES.md) — `scripts/engine.sh use|install|update|rollback`, managed TP 1 vLLM / TensorFold on the rig, and "The rig A/B" section lists what the 5090 run needs (an uncensored safetensors/NVFP4 profile, or the GGUF via vllm-gguf-plugin).
+
 ## ⏳ GPU BACKLOG — parked 2026-10-09 (Max: "kick that into the back, we come back to it later")
 
 Everything below needs the GPU and was deliberately NOT run on 2026-10-09.
@@ -80,7 +109,7 @@ Decisions the 2026-10-09 review deferred to the owner. Each is open.
 - [ ] Generate tool-server keys by default.
 - [ ] Roll the eval era once, carrying: the `23_sql_injection` and `21_race_condition` validator fixes, the runner request-timeout fix, hiding `expected.txt` from variant units, and removing `fetch`/`web_search` under eval, and the beast-island guard in `tools.web_search`/`tools.fetch` (`island.web_refusal`), so autonomous sub-agents refuse instantly too (docs/BEAST_ISLAND.md § Known limits).
 - [ ] beast-island: Open WebUI's built-in Web Search toggle bypasses the island guard (it calls SearXNG directly). Option: have `configure-webui.sh` disable it while islanded at launch.
-- [ ] Trim prompt tokens in the era-hashed prompts (`system-prompt.md`, `system-prompt-tools.md`), in the same era roll.
+- [ ] Trim prompt tokens in `system-prompt.md` (era-hashed, so in the same era roll) and `system-prompt-tools.md` (WebUI-only, not era-hashed).
 - [ ] Rerun the champion row (Qwen3.6 27B Q5_K_XL) in the current era.
 - [ ] Agent router residual: in header mode with tool keys and no `LLAMA_API_KEY`, a local process can still type `X-OpenWebUI-User-Role: admin`. Fix is a router key minted by the launcher, or `--with-jwt` by default.
 - [ ] Decide whether `validator_timeout` rows count as infrastructure rows (ineligible for the board, excluded from paired verdicts) like `env_error`.

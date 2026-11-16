@@ -82,8 +82,26 @@ if command -v ob_detect_gpu >/dev/null 2>&1; then
   elif [[ "${OB_VRAM_MB:-0}" -gt 0 && "${OB_VRAM_MB:-0}" -lt "${OB_VRAM_FLOOR_MB:-22000}" ]]; then
     fail "GPU has ${OB_VRAM_MB} MiB VRAM — below the 24 GB floor" \
          "OpenBeast targets 3090 / 4090 class and up (docs/HARDWARE_PROFILES.md)"
+  elif [[ "${OB_GPU_UNIFIED:-0}" -eq 1 ]]; then
+    pass "GPU: ${OB_GPU_NAME:-unknown} (unified memory — ${OB_VRAM_MB:-?} MiB of host RAM, shared with the OS)"
   else
     pass "GPU: ${OB_GPU_NAME:-unknown} (${OB_VRAM_MB:-?} MiB VRAM)"
+  fi
+fi
+# UNIFIED memory (GB10): nvidia-smi's memory.used/total are [N/A], so the
+# VRAM-headroom rule below has nothing to read — and MemAvailable is the
+# number that matters: the model's allocations come out of the same RAM,
+# and a GB10 that runs out freezes rather than failing an allocation.
+if [[ "${OB_GPU_UNIFIED:-0}" -eq 1 ]] && command -v ob_meminfo_available_mb >/dev/null 2>&1; then
+  _avail_mb="$(ob_meminfo_available_mb)"
+  _resv_mb=$(( ${MEM_RESERVE_GB:-3} * 1024 ))
+  if [[ "$_avail_mb" -le 0 ]]; then
+    warn "unified memory: MemAvailable unreadable — headroom unknown" "cat /proc/meminfo"
+  elif [[ "$_avail_mb" -lt "$_resv_mb" ]]; then
+    warn "unified memory headroom: only ${_avail_mb} MiB available (MEM_RESERVE_GB=${MEM_RESERVE_GB:-3})" \
+         "the model and the stack share this RAM — stop heavy jobs, or shrink the model's pool (KV_POOL_GIB / MEMORY_RESERVE_GIB)"
+  else
+    pass "unified memory headroom: ${_avail_mb} MiB available beside the model (reserve ${MEM_RESERVE_GB:-3} GiB)"
   fi
 fi
 if command -v nvidia-smi >/dev/null 2>&1; then
@@ -185,6 +203,22 @@ if ! ob_bind_is_loopback "$BIND_HOST"; then
     else
       fail "tool server keyless on a network bind — anyone on that network can run shell commands" \
            "./scripts/setup-mcpo-keys.sh (or BIND_HOST=127.0.0.1)"
+    fi
+  fi
+  # conf.sh keeps login on for a network bind unless ALLOW_OPEN_WEBUI=true,
+  # so WEBUI_AUTH still false here means the open WebUI was acknowledged.
+  if [[ "${WEBUI_AUTH:-false}" != "true" ]]; then
+    warn "the WebUI has NO login on a network bind (ALLOW_OPEN_WEBUI=true acknowledges it) — everyone on that network is admin, with bash" \
+         "set WEBUI_AUTH=true (or BIND_HOST=127.0.0.1), then ./stop.sh && ./start.sh -d"
+  fi
+  # serve.sh refuses this one at launch unless acknowledged.
+  if [[ -z "${LLAMA_API_KEY:-}" ]]; then
+    if [[ "${ALLOW_OPEN_INFERENCE:-false}" == "true" ]]; then
+      warn "llama-server keyless on a network bind (ALLOW_OPEN_INFERENCE=true acknowledges it) — past beast-gate and its audit" \
+           "set LLAMA_API_KEY, or BIND_HOST=127.0.0.1 behind beast-gate (EDGE_GATE=true)"
+    else
+      fail "llama-server keyless on a network bind — serve.sh refuses to start it" \
+           "BIND_HOST=127.0.0.1 (remote: scripts/setup-tailscale.sh), set LLAMA_API_KEY, or ALLOW_OPEN_INFERENCE=true"
     fi
   fi
 else
@@ -314,6 +348,16 @@ if command -v python3 >/dev/null 2>&1; then
   fi
 fi
 
+# >>> engine-plane hook (docs/ENGINES.md) — which engine, which build, which
+# pin, for this host class. Read-only, no network (scripts/engine.sh list).
+if [[ -f "$SCRIPT_DIR/lib/engine.sh" ]]; then
+  section "Inference engine"
+  # shellcheck source=lib/engine.sh
+  source "$SCRIPT_DIR/lib/engine.sh"
+  ob_engine_doctor_rows
+fi
+# <<< engine-plane hook
+
 # ── Remote skills ───────────────────────────────────────────────────────────
 # A skill body goes straight into a sub-agent's system prompt, so an imported
 # one is pinned by hash like any other supply-chain input. This row is the
@@ -322,6 +366,11 @@ section "Remote skills"
 _sk="$("$SCRIPT_DIR/skill-import.sh" verify --quiet 2>&1)" && _sk_rc=0 || _sk_rc=$?
 if [[ $_sk_rc -eq 0 ]]; then
   pass "$(tail -1 <<< "$_sk" | sed 's/^remote skills: OK — /remote skills: /')"
+elif [[ $_sk_rc -eq 3 ]] && grep -q '^skills: .* with no provenance' <<< "$_sk"; then
+  # 3, but not a hash mismatch: a SKILL.md that neither the ledger nor the
+  # in-house list accounts for (or that is misnamed / hidden).
+  fail "$(grep -m1 '^skills: .* with no provenance' <<< "$_sk")" \
+       "./scripts/skill-import.sh verify   (each ✗ line says what to do with that directory)"
 elif [[ $_sk_rc -eq 3 ]]; then
   # 3 is the gate's own "no": it looked, and a row and the files disagree.
   fail "an imported skill no longer matches skills/REMOTE_PROVENANCE.md" \
@@ -416,9 +465,25 @@ if [[ "$INFERENCE_BACKEND" != "llama" ]] || ! ob_inference_managed; then
   # loopback (the old split left "::1]" and warned about it).
   _be_host="$(ob_url_host "$INFERENCE_URL")"
   if ! ob_bind_is_loopback "$_be_host"; then
-    if [[ -z "${LLAMA_API_KEY:-}" ]]; then
+    # Engine-aware: the CONTAINER TensorFold engine (the GLM recipe's 0.x)
+    # has no auth at all — TENSORFOLD_API_KEY_FILE is read by the native
+    # engine (>= 1.0) only, so advising it there produced a green board and
+    # an open port (supply review).
+    case "$INFERENCE_BACKEND" in
+      tensorfold) _be_keyfix="container TensorFold has NO auth: bind it to 127.0.0.1 and reach it through beast-gate, or firewall the port to this rig; only native TensorFold >= 1.0 enforces TENSORFOLD_API_KEY_FILE (then set the same LLAMA_API_KEY here)" ;;
+      vllm)       _be_keyfix="start vLLM with an API key (spark.env VLLM_API_KEY_FILE) and set the same LLAMA_API_KEY here" ;;
+      *)          _be_keyfix="start that llama-server with --api-key and set the same LLAMA_API_KEY here" ;;
+    esac
+    # Ask the SERVER, not the rig's config: a key set here proves nothing
+    # about a server that ignores it. A keyless GET /v1/models that answers
+    # 200 is an open /v1, whatever LLAMA_API_KEY holds.
+    _be_open="$(curl -s -o /dev/null -m 4 -w '%{http_code}' "${INFERENCE_URL%/}/v1/models" 2>/dev/null || true)"
+    if [[ "$_be_open" == "200" ]]; then
+      warn "the inference server at $INFERENCE_URL serves /v1 WITHOUT a key (keyless /v1/models → 200)$([[ -n "${LLAMA_API_KEY:-}" ]] && echo ' — LLAMA_API_KEY is set here, but the server does not enforce it')" \
+           "$_be_keyfix"
+    elif [[ -z "${LLAMA_API_KEY:-}" ]]; then
       warn "the inference server at $INFERENCE_URL is reached without a key (LLAMA_API_KEY empty)" \
-           "start vLLM / TensorFold with an API key (spark.env VLLM_API_KEY_FILE / TENSORFOLD_API_KEY_FILE) and set the same LLAMA_API_KEY here"
+           "$_be_keyfix"
     fi
   fi
 elif [[ $_llama_up -eq 1 ]]; then
@@ -500,6 +565,8 @@ if [[ $_WEBUI_UP -eq 1 && -x "$SCRIPT_DIR/configure-webui.sh" ]]; then
     1) fail "WebUI login is on, but admin@localhost still signs in with upstream's default password" \
             "./scripts/configure-webui.sh --secure-default-admin (or change it in Settings → Account)" ;;
     0) pass "built-in WebUI admin does not accept the upstream default password" ;;
+    5) warn "could not verify that admin@localhost no longer accepts upstream's default password (the sign-in was rate-limited, erroring or timed out)" \
+            "rerun doctor in a few minutes (the sign-in limit is 15 per 3 min)" ;;
     # 4: login is off (or not reported) on the running WebUI, so the probe
     # did not sign in at all — no row, never a green check it did not earn.
     # 3/other: WebUI went away between the two probes — the row above covers it.
@@ -537,6 +604,20 @@ if [[ "${BEAST_CHAT:-false}" == "true" ]]; then
     if [[ "$_chat_reads" == "any-identified" || "$_chat_reads" == "open" ]]; then
       warn "beast-chat has no operator allowlist — every tailnet login can read every session" \
            "set CHAT_OPERATORS=<your-tailnet-login> in openbeast.conf (writes still need a chat-scoped key)"
+    fi
+    # login_from=loopback trusts Tailscale-User-Login from ANY loopback peer,
+    # and a network_mode: host container IS a loopback peer: code running in
+    # one (an Open WebUI Function, a third-party backend image) can name the
+    # operator's login and read every transcript. Name the containers.
+    _chat_lf=$(echo "$_chat" | grep -o '"login_from":"[a-z]*"' | cut -d'"' -f4)
+    if [[ "$_chat_lf" == "loopback" ]] && command -v docker >/dev/null 2>&1; then
+      _chat_hostnet="$(docker ps -q 2>/dev/null | xargs docker inspect \
+          -f '{{.Name}} {{.HostConfig.NetworkMode}}' 2>/dev/null \
+          | awk '$2 == "host" {sub(/^\//, "", $1); printf "%s ", $1}')"
+      if [[ -n "$_chat_hostnet" ]]; then
+        warn "beast-chat trusts a login header from any loopback peer, and host-network containers are running (${_chat_hostnet% }) — code inside one can read every session" \
+             "set OPENBEAST_CHAT_SOCKET + OPENBEAST_CHAT_LOGIN_FROM=unix (docs/BEAST_CHAT.md)"
+      fi
     fi
   else
     down_row "beast-chat enabled but not responding (:${CHAT_PORT:-3003})" \
@@ -654,6 +735,19 @@ if [[ -n "${CHAT_NOTIFY_URL:-}" || $_ntfy_on -eq 1 ]]; then
   else
     _n_origin="${BASH_REMATCH[1]}"
     pass "notifications configured → $_n_origin (on: ${CHAT_NOTIFY_ON:-failed,lost,done})"
+    # beast-chat drops a word that is not a terminal state, so a typo
+    # (CHAT_NOTIFY_ON=error) silenced every alert behind the pass above.
+    _n_bad=() _n_good=0
+    IFS=',' read -r -a _n_words <<< "${CHAT_NOTIFY_ON:-failed,lost,done}"
+    for _n_w in ${_n_words[@]+"${_n_words[@]}"}; do
+      _n_w="$(tr '[:upper:]' '[:lower:]' <<< "$_n_w" | tr -d '[:space:]')"
+      [[ -z "$_n_w" ]] && continue
+      case "$_n_w" in done|failed|stopped|lost) _n_good=1 ;; *) _n_bad+=("$_n_w") ;; esac
+    done
+    if [[ ${#_n_bad[@]} -gt 0 || $_n_good -eq 0 ]]; then
+      warn "CHAT_NOTIFY_ON: $( [[ ${#_n_bad[@]} -gt 0 ]] && printf "'%s' is not a session state; " "${_n_bad[@]}")$( [[ $_n_good -eq 0 ]] && echo "NO session state will notify" || echo "it is ignored")" \
+           "CHAT_NOTIFY_ON takes done, failed, stopped, lost (comma-separated), e.g. CHAT_NOTIFY_ON=failed,lost,done"
+    fi
     if [[ "${BEAST_CHAT:-false}" != "true" ]]; then
       warn "CHAT_NOTIFY_URL is set but BEAST_CHAT is off — beast-chat is what sends notifications" \
            "set BEAST_CHAT=true in openbeast.conf, then ./stop.sh && ./start.sh -d"
@@ -744,7 +838,15 @@ for nid, n in (s.get("nodes") or {}).items():
     else:
         print("pass|node %s: %s address, key %s|" % (nid, cls, n.get("key")))
     if cls != "loopback" and n.get("key") == "none":
-        print("warn|node %s: remote node with no key|set key_file (0600) in hydra.toml" % nid)
+        print("warn|node %s: remote node with no key|%s" % (nid,
+              "container TensorFold has no auth: bind it to loopback or firewall it to the rig; native TensorFold >= 1.0: set key_file (0600) in hydra.toml"
+              if n.get("engine") == "tensorfold" else "set key_file (0600) in hydra.toml"))
+    elif cls != "loopback" and n.get("engine") == "tensorfold":
+        # hydra holds a key, but only the native engine enforces one: the key
+        # proves nothing about the server (supply review). Ask the server:
+        # curl -s -o /dev/null -w '%{http_code}' <node url>/v1/models  → want 401
+        print("pass|node %s: tensorfold with a key — only native TensorFold >= 1.0 enforces it; "
+              "the container engine has none (check: a keyless /v1/models must answer 401)|" % nid)
 for did, d in (s.get("deployments") or {}).items():
     st = d.get("state")
     if st == "READY":
@@ -1056,6 +1158,14 @@ if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/d
   else
     warn "log rotation timer is missing or disabled — stack.log and the audit logs grow without bound" \
          "./scripts/logrotate.sh --install"
+  fi
+  # The watchdog is what brings a crashed tool server / gate / chat /
+  # artifact back; `./start.sh -d` installs it (WATCHDOG_AUTOINSTALL).
+  if systemctl --user is-enabled --quiet openbeast-watchdog.timer 2>/dev/null; then
+    pass "health watchdog enabled (openbeast-watchdog.timer, healthcheck --restart every 5 min)"
+  elif [[ "${WATCHDOG_AUTOINSTALL:-true}" == "true" ]]; then
+    warn "health watchdog (openbeast-watchdog.timer) not installed or not enabled — a crashed tool server, gate or chat console stays down" \
+         "./stop.sh && ./start.sh -d   (installs it), or see scripts/openbeast-watchdog.timer"
   fi
 fi
 

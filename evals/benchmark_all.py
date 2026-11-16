@@ -308,6 +308,10 @@ def stop_llama_server():
         time.sleep(0.5)
 
 
+class SweepStopping(RuntimeError):
+    """A signal handler is tearing the sweep down: start nothing new."""
+
+
 class PortBusy(RuntimeError):
     """LLAMA_PORT is already served by a process this harness did not start."""
 
@@ -480,6 +484,8 @@ def start_model(serve_script: str, slug: str = "model") -> tuple[subprocess.Pope
     # Asked on every (re)start, not just at launch: a mid-sweep recovery
     # after someone took the card with `acquire --force` must not load a
     # second model into their window.
+    if run_eval.stopping():
+        raise SweepStopping("sweep is stopping: not starting a server")
     require_gpu_lease()
     # Our own previous server is stopped by now, so a bound port belongs to
     # someone else (the stack, another worktree's campaign). Refuse rather
@@ -507,6 +513,11 @@ def start_model(serve_script: str, slug: str = "model") -> tuple[subprocess.Pope
         # one fd per (re)start — including when Popen itself raises.
         log_fp.close()
     _own_server["proc"] = proc
+    # The handler may have begun between the check above and the Popen,
+    # and already run its stop_llama_server: this one is ours to stop.
+    if run_eval.stopping():
+        stop_llama_server()
+        raise SweepStopping("sweep is stopping: stopped the server just started")
     return proc, log_path
 
 
@@ -558,7 +569,7 @@ def restart_server(serve_script: str, slug: str,
     stop_llama_server()
     try:
         proc, _ = start_model(serve_script, slug)
-    except (FileNotFoundError, PortBusy, GpuLeaseHeld) as e:
+    except (FileNotFoundError, PortBusy, GpuLeaseHeld, SweepStopping) as e:
         print(f"  Restart failed: {e}")
         return False
     print(f"  Waiting for /health (up to {health_timeout}s)...")
@@ -614,7 +625,7 @@ def benchmark_model(model: dict, task_filter: list[str] | None,
     print(f"Starting {model['serve']}...")
     try:
         proc, _ = start_model(model["serve"], model["slug"])
-    except (FileNotFoundError, PortBusy, GpuLeaseHeld) as e:
+    except (FileNotFoundError, PortBusy, GpuLeaseHeld, SweepStopping) as e:
         return {"slug": model["slug"], "name": model["name"], "error": str(e),
                 "gpu_work": False}
 
@@ -793,6 +804,70 @@ def experiment_arms(env=None) -> list[str]:
     return arms
 
 
+def _leaderboard_policy(args, arms: list[str]) -> bool:
+    """Whether this sweep may record into leaderboard.json, printing why not.
+
+    --tasks IMPLIES --no-leaderboard, like --suite. The old NOTE said partial
+    scores "will be recorded" — but scoring's 291-unit guard refuses every
+    partial v4 entry, so it described something that could not happen
+    (review finding campaign-evals); and that guard is v4-only, so the next
+    suite would have let them in. One rule here, whatever the suite."""
+    if args.no_leaderboard:
+        return False
+    if args.suite:
+        print(f"NOTE: --suite {args.suite} implies --no-leaderboard (fast-suite "
+              f"scores are imputed readouts, never leaderboard rows).")
+        return False
+    if args.tasks:
+        print("NOTE: --tasks implies --no-leaderboard (a partial-suite score is "
+              "not comparable with full-suite rows).")
+        return False
+    if arms:
+        print(f"NOTE: {', '.join(arms)} implies --no-leaderboard (experiment "
+              f"arms are leaderboard-ineligible; the board holds serving reality).")
+        return False
+    return True
+
+
+def _on_signal(signum, _frame):
+    """SIGTERM/SIGINT: reap the in-flight eval agents, stop our server, die.
+
+    run_eval.run_agent spawns every agent with start_new_session=True, so a
+    signal to this sweep's group never reaches them, and run_eval's own
+    reaper (_install_signal_reaper) is installed only by run_eval.main() —
+    never on this in-process path. Without the reap a stopped sweep left
+    the runner and its bash-tool children running against the shared
+    /tmp/eval_* fixtures (review finding campaign-evals: signal orphans).
+    Agents first: they are what writes fixtures and holds a slot."""
+    print(f"\n\nReceived signal {signum} — reaping eval agents, stopping "
+          f"llama-server and exiting...")
+    # begin_stop forbids new agents BEFORE the slow server stop: under
+    # --jobs N the worker threads keep running through it, and one whose
+    # agent was just reaped would otherwise Popen the next agent (or
+    # restart the server) for os._exit to orphan.
+    if not run_eval.begin_stop(signum):
+        return      # mid-spawn on this thread: re-raised once registered
+    stop_llama_server()
+    # Again, for a spawn that raced the first pass: an agent registered
+    # after begin_stop's snapshot kills itself, but a server a recovery
+    # started mid-stop is ours to stop here.
+    run_eval._reap_live_agents()
+    stop_llama_server()
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
+    # os._exit, as run_eval's handler: sys.exit would block joining --jobs
+    # ThreadPoolExecutor workers, any of which may spawn a fresh agent.
+    os._exit(128 + signum)
+
+
+def _install_signal_handler() -> None:
+    signal.signal(signal.SIGINT, _on_signal)
+    signal.signal(signal.SIGTERM, _on_signal)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Benchmark all local models")
     parser.add_argument("--models", help="Comma-separated model slugs to benchmark "
@@ -802,10 +877,10 @@ def main():
     parser.add_argument("--list", action="store_true", help="List configured models and exit")
     parser.add_argument("--no-cache", action="store_true", help="Disable result cache (force live runs)")
     parser.add_argument("--no-leaderboard", action="store_true",
-                        help="Do not record scores in leaderboard.json. REQUIRED for "
-                             "smoke tests / partial-suite runs: the leaderboard must only "
-                             "ever contain full-suite sweeps, or its accuracy numbers "
-                             "become incomparable (a 13-task 100%% is not a 323-task 97%%).")
+                        help="Do not record scores in leaderboard.json. Implied by "
+                             "--tasks, --suite and experiment arms: the leaderboard must "
+                             "only ever contain full-suite sweeps, or its accuracy numbers "
+                             "become incomparable (a 13-task 100%% is not a 291-unit 97%%).")
     parser.add_argument("--suite", help="Run a pinned suite subset from evals/suites/ "
                         "(e.g. v5-fast) instead of the full task set. Implies "
                         "--no-leaderboard: fast-suite scores are imputed readouts, "
@@ -857,13 +932,8 @@ def main():
         os.environ["BEAST_ESCALATE"] = "1"
     task_filter = args.tasks.split(",") if args.tasks else None
 
-    # Cleanup handler — make sure we don't leave llama-server running
-    def _on_signal(signum, frame):
-        print(f"\n\nReceived signal {signum} — stopping llama-server and exiting...")
-        stop_llama_server()
-        sys.exit(130)
-    signal.signal(signal.SIGINT, _on_signal)
-    signal.signal(signal.SIGTERM, _on_signal)
+    # Cleanup handler — no agent, no llama-server left running.
+    _install_signal_handler()
 
     if args.cache_only and args.no_cache:
         print("--cache-only and --no-cache are mutually exclusive.", file=sys.stderr)
@@ -871,21 +941,7 @@ def main():
     if args.suite and args.tasks:
         print("--suite and --tasks are mutually exclusive.", file=sys.stderr)
         sys.exit(2)
-    update_lb = not args.no_leaderboard
-    if args.suite and update_lb:
-        print(f"NOTE: --suite {args.suite} implies --no-leaderboard (fast-suite "
-              f"scores are imputed readouts, never leaderboard rows).")
-        update_lb = False
-    arms = experiment_arms()
-    if arms and update_lb:
-        print(f"NOTE: {', '.join(arms)} implies --no-leaderboard (experiment "
-              f"arms are leaderboard-ineligible; the board holds serving reality).")
-        update_lb = False
-    if args.tasks and not args.no_leaderboard:
-        print("NOTE: --tasks given without --no-leaderboard. Partial-suite scores "
-              "will be recorded in leaderboard.json and mix incomparably with "
-              "full-suite rows. Use --no-leaderboard for smoke/partial runs.",
-              file=sys.stderr)
+    update_lb = _leaderboard_policy(args, experiment_arms())
     # The GPU lease, before anything touches the card. cache-only never
     # starts a server, so it neither needs nor takes the lease.
     if not args.cache_only:

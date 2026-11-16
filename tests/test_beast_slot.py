@@ -404,6 +404,51 @@ class TestRemoteBackends(unittest.TestCase):
             "kv_usage": None, "serving_profile": "single-slot"})
         self.assertFalse(any(u.endswith("/metrics") for u in self.seen))
 
+    # The live GLM pair's /health (spark-1, 2026-11-15), trimmed.
+    _TF_HEALTH = {"ok": True, "backend": "tensorfold", "busy": True,
+                  "requests_running": 2,
+                  "streams": {"decoding": 1, "prefilling": 1, "max": 4,
+                              "filling": 0, "paused": 0},
+                  "pool_tokens": 2582528, "pool_free_tokens": 1291264,
+                  "kept_prompts": 32, "iteration_s": 0.4,
+                  "context_length": 1048576}
+
+    def test_tensorfold_capacity_comes_from_its_health(self):
+        # ops review: /health carries the window, the pool and the load, and
+        # /api/slot served nulls for a 1M-token server.
+        out = self._status("tensorfold", {
+            "8000/health": (200, self._TF_HEALTH),
+            "/v1/models": (200, {"data": [{"id": "GLM-5.3-Flash-EXL3"}]}),
+        }, slots=4)
+        self.assertTrue(out["healthy"])
+        self.assertEqual(out["model"], {"id": "GLM-5.3-Flash-EXL3", "ctx": 1048576})
+        self.assertEqual(out["slots"], {"total": 4, "busy": 2})
+        self.assertEqual(out["capacity"], {
+            "ctx_shared": True, "ctx_total": 2582528, "queue_deferred": None,
+            "kv_usage": 0.5, "serving_profile": "batched-multi-slot"})
+
+    def test_tensorfold_streams_max_fills_unset_slots(self):
+        out = self._status("tensorfold", {"8000/health": (200, self._TF_HEALTH)})
+        self.assertEqual(out["slots"]["total"], 4)
+
+    def test_tensorfold_stalled_iteration_is_not_healthy(self):
+        # A frozen spark-2 leaves rank 0 answering ok:true while its current
+        # iteration never ends: iteration_s is the stall signal.
+        stuck = dict(self._TF_HEALTH, iteration_s=400.0)
+        out = self._status("tensorfold", {"8000/health": (200, stuck)}, slots=4)
+        self.assertFalse(out["healthy"])
+        self.assertFalse(out["services"]["model"])
+
+    def test_tensorfold_garbage_health_fields_stay_null(self):
+        bad = {"ok": True, "context_length": "lots", "requests_running": -1,
+               "pool_tokens": 0, "pool_free_tokens": 5, "iteration_s": "x"}
+        out = self._status("tensorfold", {"8000/health": (200, bad)}, slots=4)
+        self.assertTrue(out["healthy"])
+        self.assertIsNone(out["model"]["ctx"])
+        self.assertIsNone(out["slots"]["busy"])
+        self.assertIsNone(out["capacity"]["ctx_total"])
+        self.assertIsNone(out["capacity"]["kv_usage"])
+
     def test_bad_slots_value_is_ignored(self):
         out = self._status("tensorfold", {"8000/health": (200, {"ok": True})},
                            slots="eight")
@@ -567,11 +612,26 @@ class TestEdgeAuthMode(unittest.TestCase):
     def test_corrupt_registry_does_not_claim_anon(self):
         self.assertEqual(self._auth(True, "{ half-written"), "device")
 
-    def test_anon_holds_while_registry_is_empty(self):
-        # Negative controls: no file, or a file with no keyed device — the
-        # gate really does serve keyless callers as "anon" then.
+    def test_anon_holds_only_while_no_registry_has_existed(self):
+        # Negative control: no file at all — the gate really does serve
+        # keyless callers as "anon" then.
         self.assertEqual(self._auth(True), "anon")
-        self.assertEqual(self._auth(True, {"version": 1, "devices": []}), "anon")
+
+    def test_emptied_registry_is_not_anon(self):
+        # What `clients.sh remove` of the last device leaves: the gate keeps
+        # ignoring ALLOW_ANON (401 no_registry), so advertising "anon" sent
+        # keyless clients into a guaranteed 401 (review 2026-11-15).
+        self.assertEqual(self._auth(True, {"version": 1, "devices": []}),
+                         "device")
+
+    def test_deleted_registry_with_marker_is_not_anon(self):
+        # The gate's sticky clients.enrolled marker survives the registry.
+        open(os.path.join(self.repo, ".run", "clients.enrolled"), "w").close()
+        self.assertEqual(self._auth(True), "device")
+
+    def test_registry_with_unkeyed_devices_is_device(self):
+        reg = {"version": 1, "devices": [{"id": "half", "key_sha256": ""}]}
+        self.assertEqual(self._auth(True, reg), "device")
 
     def test_gate_without_anon_is_device(self):
         self.assertEqual(self._auth(False), "device")

@@ -1,0 +1,58 @@
+[
+ {
+  "name": "cache",
+  "description": "Manage the cache. See rtfm for details."
+ },
+ {
+  "name": "rtfm",
+  "description": "Get documentation. Pass category ('build'|'adb'|'emulator'|'ui'|'cache'|'index') or tool (tool name like 'ui-query')."
+ },
+ {
+  "name": "adb-device",
+  "description": "Manage device connections."
+ },
+ {
+  "name": "adb-app",
+  "description": "Manage applications."
+ },
+ {
+  "name": "adb-logcat",
+  "description": "Read device logs. Returns summary with logId."
+ },
+ {
+  "name": "adb-shell",
+  "description": "Execute shell commands with safety guards."
+ },
+ {
+  "name": "emulator-device",
+  "description": "Manage Android emulators."
+ },
+ {
+  "name": "gradle-build",
+  "description": "Build. Returns summary with buildId."
+ },
+ {
+  "name": "gradle-test",
+  "description": "Run tests. Returns summary with testId. With baseline, auto-detects regressions."
+ },
+ {
+  "name": "gradle-list",
+  "description": "Introspect project structure."
+ },
+ {
+  "name": "gradle-get-details",
+  "description": "Fetch full output for a previous build/test by ID."
+ },
+ {
+  "name": "ui-query",
+  "description": "Query app UI. Accessibility-first."
+ },
+ {
+  "name": "ui-action",
+  "description": "Interact with app UI: tap, input, scroll. Use selector or coords."
+ },
+ {
+  "name": "ui-capture",
+  "description": "Capture screenshots or visual snapshots."
+ }
+]

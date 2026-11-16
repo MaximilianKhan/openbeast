@@ -43,6 +43,14 @@ UA = "openbeast-pydeps-lock/1 (+https://github.com/MaximilianKhan/openbeast)"
 #: this stack can install and listing it only invites confusion.
 SKIP_SUFFIXES = (".exe", ".msi")
 
+#: Transit droppings a wheelhouse audit ignores (see audit_dir). IDENTICAL to
+#: scripts/lib/bundle_manifest.py BENIGN_NAMES — tests/test_bundle_manifest.py
+#: pins the two together, because they disagreed twice: this list also held
+#: .Trashes/.directory/Thumbs.db, so a wheelhouse this audit accepted was
+#: refused by `bundle verify`. Narrow, like that one: a stray file is one
+#: `rm` away, while an exemption is a place for a payload to hide.
+BENIGN_NAMES = frozenset({".DS_Store"})
+
 
 class LockError(RuntimeError):
     pass
@@ -54,8 +62,10 @@ def _norm(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
-def resolve(req_files: list[str], extra: list[str], pip: list[str]) -> list[dict]:
-    """The installable closure, as pip itself resolves it."""
+def resolve(req_files: list[str], extra: list[str], pip: list[str],
+            constraints: str | None = None) -> list[dict]:
+    """The installable closure, as pip itself resolves it (held to the
+    versions in a `-c constraints` file when one is given)."""
     import tempfile
     with tempfile.TemporaryDirectory(prefix="ob-lock-") as tmp:
         report = os.path.join(tmp, "report.json")
@@ -69,6 +79,8 @@ def resolve(req_files: list[str], extra: list[str], pip: list[str]) -> list[dict
                       "--only-binary", ":all:", "--report", report]
         for f in req_files:
             argv += ["-r", f]
+        if constraints:
+            argv += ["-c", constraints]
         argv += list(extra)
         p = subprocess.run(argv, capture_output=True, text=True, timeout=900)
         if p.returncode != 0:
@@ -126,8 +138,9 @@ def release_files(name: str, version: str) -> list[dict]:
     return sorted(files, key=lambda f: f["filename"])
 
 
-def build(req_files: list[str], extra: list[str], pip: list[str]) -> dict:
-    closure = resolve(req_files, extra, pip)
+def build(req_files: list[str], extra: list[str], pip: list[str],
+          constraints: str | None = None) -> dict:
+    closure = resolve(req_files, extra, pip, constraints)
     packages, mismatches = [], []
     for entry in closure:
         files = release_files(entry["name"], entry["version"])
@@ -434,8 +447,40 @@ def unreachable(pkgs: dict, roots: list[str]) -> tuple[bool, list[str]]:
                         for k in pkgs if k not in seen)
 
 
-def audit_dir(lock_path: str, directory: str) -> tuple[list[str], list[str]]:
+def host_tags() -> set[str] | None:
+    """The wheel tags THIS interpreter can install (`py-abi-plat` strings),
+    from the same packaging.tags pip itself uses — or None when neither
+    packaging nor pip's vendored copy can be imported (then coverage is
+    checked by name only, as before)."""
+    try:
+        from packaging.tags import sys_tags
+    except ImportError:
+        try:
+            from pip._vendor.packaging.tags import sys_tags
+        except ImportError:
+            return None
+    return {str(t) for t in sys_tags()}
+
+
+def wheel_tags(filename: str) -> set[str] | None:
+    """The expanded `py-abi-plat` tags of a wheel filename, or None for a file
+    that is not a wheel (an sdist installs anywhere pip can build it)."""
+    if not filename.endswith(".whl"):
+        return None
+    parts = filename[:-4].split("-")
+    if len(parts) < 5:
+        return set()
+    pys, abis, plats = (x.split(".") for x in parts[-3:])
+    return {f"{a}-{b}-{c}" for a in pys for b in abis for c in plats}
+
+
+def audit_dir(lock_path: str, directory: str,
+              tags: set[str] | None | str = "host") -> tuple[list[str], list[str]]:
     """(matched, problems) for every file in a wheelhouse.
+
+    `tags`: the wheel tags the INSTALLING interpreter accepts. "host" (the
+    default) means this interpreter; None means any platform — for a
+    wheelhouse deliberately filled for a different target.
 
     A file whose hash is not in the lock is the interesting case: it is what a
     tampered or stale wheelhouse looks like, and installing from it with
@@ -447,15 +492,24 @@ def audit_dir(lock_path: str, directory: str) -> tuple[list[str], list[str]]:
     "verified", and an incomplete wheelhouse (one built for another platform,
     or a half-finished copy) passed the gate and failed later inside pip. A
     package with no file present is a problem, named.
+
+    AND COVERAGE IS PER PLATFORM. The lock lists every file of every release,
+    so "some locked file of each package is here" was satisfied by a
+    wheelhouse built entirely on a Mac or an aarch64 Spark, and an x86_64 rig
+    learned otherwise only inside pip --no-index ("No matching
+    distribution"). A package counts as covered only by a file THIS python
+    can install: an sdist, or a wheel whose tags it supports.
     """
+    if tags == "host":
+        tags = host_tags()
     pkgs = parse(lock_path)
     known = {h for p in pkgs.values() for h in p["hashes"]}
     #: Files a wheelhouse legitimately picks up in transit. NARROW ON PURPOSE:
     #: the old rule exempted EVERY dotfile, so anything hidden rode in
     #: unaudited — and pip's find-links treatment of a directory that contains
-    #: an index page is not something to leave to chance. These three are what
-    #: a Mac or a file manager actually leaves on a USB stick.
-    BENIGN = {".DS_Store", ".Trashes", ".directory", "Thumbs.db"}
+    #: an index page is not something to leave to chance. BENIGN_NAMES (module
+    #: level, kept identical to bundle_manifest's) is the list.
+    BENIGN = BENIGN_NAMES
     #: ...plus AppleDouble sidecars (`._<name>`), which macOS writes next to
     #: EVERY file carrying an xattr on a FAT/exFAT stick — so a wheelhouse
     #: browsed on a Mac grows a `._foo.whl` per wheel. Matched by name AND by
@@ -476,6 +530,7 @@ def audit_dir(lock_path: str, directory: str) -> tuple[list[str], list[str]]:
 
     matched, problems = [], []
     seen_hashes: set = set()
+    installable: set = set()
     for entry in sorted(os.listdir(directory)):
         path = os.path.join(directory, entry)
         if entry in BENIGN:
@@ -496,6 +551,9 @@ def audit_dir(lock_path: str, directory: str) -> tuple[list[str], list[str]]:
         if digest in known:
             matched.append(entry)
             seen_hashes.add(digest)
+            wt = wheel_tags(entry)
+            if tags is None or wt is None or (wt & tags):
+                installable.add(digest)
         else:
             problems.append(f"{entry}: sha256:{digest} is in no lock entry")
     # COVERAGE: every package the lock pins needs at least one file here, or
@@ -511,17 +569,104 @@ def audit_dir(lock_path: str, directory: str) -> tuple[list[str], list[str]]:
             f"{len(uncovered)} of {len(pkgs)} locked package(s) have NO file "
             f"in this directory, so an install from it cannot complete: "
             f"{shown}{more}")
+    wrong_target = sorted(
+        f"{p['name']}=={p['version']}"
+        for p in pkgs.values()
+        if (set(p["hashes"]) & seen_hashes)
+        and not (set(p["hashes"]) & installable))
+    if wrong_target:
+        shown = ", ".join(wrong_target[:6])
+        more = f" (+{len(wrong_target) - 6} more)" if len(wrong_target) > 6 else ""
+        problems.append(
+            f"{len(wrong_target)} of {len(pkgs)} locked package(s) have files "
+            f"here but NONE this python/platform can install (python "
+            f"{sys.version_info[0]}.{sys.version_info[1]}, "
+            f"{sys.platform}) — the wheelhouse was built for a different "
+            f"target: {shown}{more}")
     return matched, problems
+
+
+def check(lock_path: str, req_files: list[str], extra: list[str],
+          pip: list[str]) -> int:
+    """ONLINE. Two questions, answered separately, because one diff could not
+    tell them apart and so was useless for the one that matters:
+
+    1. IS THE LOCK THE CLOSURE OF ITS OWN VERSIONS? Re-resolve with every
+       locked version as a constraint and diff pins + hashes. A difference is
+       an extra package nothing requires, a missing one, or a re-hashed file:
+       the lock is WRONG (exit 1). Index movement cannot cause this.
+    2. IS IT THE NEWEST? An unconstrained resolve picks the newest release of
+       every unpinned transitive dependency, so it moves whenever certifi (or
+       any of ~37 others) ships. Only versions are compared: a difference is
+       OUTDATED (exit 4), a correct closure that is not the newest one, or
+       one whose transitive pin was moved back to an older real release; the
+       list names which.
+    CURRENT (exit 0) only when both agree.
+    """
+    import difflib
+    import tempfile
+    pkgs = parse(lock_path)
+
+    def _body(text: str) -> list[str]:
+        # the PINS, not the header (it records the resolver's own version)
+        return [ln.rstrip() for ln in text.splitlines()
+                if ln.strip() and not ln.lstrip().startswith("#")]
+
+    with open(lock_path, "r", encoding="utf-8") as fh:
+        have = _body(fh.read())
+    with tempfile.TemporaryDirectory(prefix="ob-check-") as tmp:
+        cons = os.path.join(tmp, "constraints.txt")
+        with open(cons, "w", encoding="utf-8") as fh:
+            for p in pkgs.values():
+                fh.write(f"{p['name']}=={p['version']}\n")
+        try:
+            fresh = build(req_files, extra, pip, constraints=cons)
+        except LockError as e:
+            print(f"{lock_path}: STALE — the locked versions no longer satisfy "
+                  f"the requirements (or the index is unreachable):\n  {e}")
+            print("regenerate with: ./scripts/pydeps.sh lock")
+            return 1
+    want = _body(render(fresh))
+    if have != want:
+        print(f"{lock_path}: WRONG — a resolve held to the lock's OWN versions "
+              f"produces a different closure (an extra, missing or re-hashed "
+              f"package; not index movement):")
+        diff = list(difflib.unified_diff(have, want, "lock", "fresh",
+                                         lineterm=""))
+        print("\n".join(diff[:60]))
+        print("regenerate with: ./scripts/pydeps.sh lock")
+        return 1
+    latest = resolve(req_files, extra, pip)
+    locked = {_norm(p["name"]): p["version"] for p in pkgs.values()}
+    newest = {_norm(e["name"]): e["version"] for e in latest}
+    moved = sorted(
+        f"{n}: locked {locked.get(n, '(none)')}, newest {newest.get(n, '(none)')}"
+        for n in set(locked) | set(newest) if locked.get(n) != newest.get(n))
+    if moved:
+        print(f"{lock_path}: OUTDATED — it IS the exact closure of its own "
+              f"versions (no extra, missing or re-hashed package), but a "
+              f"fresh resolve picks other releases:")
+        for m in moved[:60]:
+            print(f"  {m}")
+        print("an upstream release is the usual cause; a pin moved BACKWARDS "
+              "is worth a look. Regenerate with: ./scripts/pydeps.sh lock")
+        return 4
+    print(f"{lock_path}: CURRENT — a fresh resolve produces the same pins "
+          f"and hashes")
+    return 0
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("action", choices=("build", "verify", "audit"))
+    ap.add_argument("action", choices=("build", "verify", "audit", "check"))
     ap.add_argument("--lock", default="agents/requirements.lock")
     ap.add_argument("--req", action="append", default=[])
     ap.add_argument("--extra", action="append", default=[],
                     help="a package bootstrap installs by name, unpinned")
     ap.add_argument("--dir", help="wheelhouse directory (audit)")
+    ap.add_argument("--any-platform", action="store_true",
+                    help="audit: a wheel for ANY platform covers its package "
+                         "(a wheelhouse filled for a different target)")
     ap.add_argument("--pip", default=f"{sys.executable} -m pip")
     args = ap.parse_args(argv)
     reqs = args.req or ["agents/requirements.txt"]
@@ -586,16 +731,21 @@ def main(argv=None) -> int:
                       "what — ./scripts/pydeps.sh check decides it (online).")
             return 0
 
+        if args.action == "check":
+            return check(args.lock, reqs, args.extra, pip)
+
         if args.action == "audit":
             if not args.dir:
                 print("audit needs --dir", file=sys.stderr)
                 return 2
-            matched, problems = audit_dir(args.lock, args.dir)
+            matched, problems = audit_dir(
+                args.lock, args.dir,
+                tags=None if args.any_platform else "host")
             for p in problems:
                 print(f"  ! {p}")
             # "N do not" counted coverage problems as mismatched FILES, which
             # they are not. Say what each number means.
-            bad_files = [p for p in problems if "locked package(s) have NO" not in p]
+            bad_files = [p for p in problems if "locked package(s) have" not in p]
             cover = len(problems) - len(bad_files)
             tail = (f", {len(bad_files)} file(s) the lock does not name"
                     if bad_files else "")

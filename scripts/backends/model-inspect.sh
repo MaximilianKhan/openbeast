@@ -1,6 +1,6 @@
 #!/bin/bash
 # Inspect a checkpoint you have never seen: architecture, quantization,
-# context, experts, memory fit on 1 vs 2 Sparks, chat-template markers →
+# context, experts, memory fit on 1 to 8 Sparks, chat-template markers →
 # suggested vLLM parsers, and whether vLLM / TensorFold (at the vendored
 # commits in data/) can serve it. Reads metadata only, never weights.
 #

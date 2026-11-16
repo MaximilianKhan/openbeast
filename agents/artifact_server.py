@@ -357,6 +357,18 @@ RAW_FILE_HEADERS = dict(RAW_HEADERS, **{
 # of a sandbox is a network error against a COOP response.
 COOP_HEADER = ("Cross-Origin-Opener-Policy", "same-origin")
 
+# The same XS-Leak, through `fetch(url, {mode: "no-cors"})` or `<script src>`
+# instead of `window.open`: CORP same-origin turns a cross-site load of a 200
+# into a network error, so CORP on the 200s alone (shell, gallery, /raw) and
+# not on the flat 404 or the API JSON made "rejects vs resolves" an existence
+# oracle. Every answer outside the capability tree carries the same set, put
+# on by the gate middleware (review, spark-scale: beast-artifact).
+UNIFORM_HEADERS = (
+    COOP_HEADER,
+    ("Cross-Origin-Resource-Policy", "same-origin"),
+    ("X-Content-Type-Options", "nosniff"),
+)
+
 SHELL_HEADERS = {
     "Content-Security-Policy": SHELL_CSP,
     "X-Content-Type-Options": "nosniff",
@@ -411,7 +423,8 @@ def _peer_is_loopback(request) -> bool:
 
     The converse is NOT claimed: a loopback peer proves nothing about who is
     behind the proxy (edge.py:412), which is why writes need the locality
-    token and still do. Fail closed on anything that is not an IP literal.
+    token or a device key — and why a key bound to a login answers only for
+    it (_remote_write_refusal). Fail closed on anything not an IP literal.
     """
     client = getattr(request, "client", None)
     if client is None:
@@ -875,7 +888,7 @@ def create_app(local_token: str | None = None) -> FastAPI:
     def _flat_404() -> JSONResponse:
         """The single refusal (D9). Same status, same body, same length."""
         return JSONResponse(NOT_FOUND_BODY, status_code=404,
-                            headers=dict([COOP_HEADER]))
+                            headers=dict(UNIFORM_HEADERS))
 
     # D27/R5. An UNIDENTIFIED caller can mint audit rows two ways — a refusal,
     # and a hit on the one route exempt from the anonymity gate
@@ -1095,7 +1108,7 @@ def create_app(local_token: str | None = None) -> FastAPI:
             _record(request, 429, t0, {"denied": deny})
             return JSONResponse({"detail": "too many changes — wait a minute"},
                                 status_code=429,
-                                headers=dict([COOP_HEADER]))
+                                headers=dict(UNIFORM_HEADERS))
         if deny:
             _record(request, 404, t0, {"denied": deny})
             return _flat_404()
@@ -1124,7 +1137,8 @@ def create_app(local_token: str | None = None) -> FastAPI:
             store.reset_owner_override(owner_token)
         _record(request, response.status_code, t0)
         if _coop_applies(request.url.path):
-            response.headers[COOP_HEADER[0]] = COOP_HEADER[1]
+            for name, value in UNIFORM_HEADERS:
+                response.headers[name] = value
         return response
 
     # Host pinning, added LAST so it is OUTERMOST (Starlette's add_middleware
@@ -1190,6 +1204,16 @@ def create_app(local_token: str | None = None) -> FastAPI:
         dev = registry.lookup(_device_key(request), DEVICE_SCOPE)
         if dev is None:
             return "not-local"
+        # The key proves a DEVICE, the header names a LOGIN — and a process
+        # on the rig can set the header to anyone (review, spark-scale:
+        # beast-artifact). A key bound to a login (`clients.sh enroll …
+        # --login <login>`, the record's `login` field) answers only for that
+        # login, and only a bound key carries the login's ADMIN power: an
+        # unbound key plus a forged admin header used to buy chown, rollback
+        # and delete on every page.
+        bound = str(dev.get("login") or "").strip().lower()
+        if bound and bound != principal.login:
+            return "not-local"
         raw_len = request.headers.get("content-length")
         if raw_len is None and request.headers.get("transfer-encoding"):
             return "oversize"          # no length, no streaming
@@ -1209,7 +1233,8 @@ def create_app(local_token: str | None = None) -> FastAPI:
             remote_hits[dev_id] = q
         request.state.principal = Principal(
             login=principal.login, local=False, operator=principal.operator,
-            admin=principal.admin, device=dev_id)
+            admin=principal.admin and bound == principal.login,
+            device=dev_id)
         return ""
 
     def _ambiguous_identity(request: Request) -> bool:
@@ -1732,9 +1757,26 @@ def create_app(local_token: str | None = None) -> FastAPI:
         # raw_page so both get wrap_skeleton.
         if path.strip().strip("/") in ("", "index.html"):
             return raw_page(request, artifact_id, n)
+        mid = _meta_id(meta, artifact_id)
         try:
-            data, ctype = store.read_file(_meta_id(meta, artifact_id),
-                                          version, path)
+            # A Range reads ONLY its bytes: slicing a whole-file read cost a
+            # full 15 MB read per media range request (review, spark-scale).
+            size = store.file_size(mid, version, path)
+            rng = _parse_range(request.headers.get("range"), size)
+            if isinstance(rng, tuple):
+                data, ctype = store.read_file(mid, version, path, span=rng)
+                headers = dict(RAW_HEADERS, **{
+                    "Accept-Ranges": "bytes",
+                    "Content-Range": f"bytes {rng[0]}-{rng[1]}/{size}"})
+                request.state.extra = {"bytes": len(data)}
+                return Response(content=data, status_code=206,
+                                media_type=ctype, headers=headers)
+            if rng == "unsatisfiable":
+                headers = dict(RAW_HEADERS, **{
+                    "Accept-Ranges": "bytes",
+                    "Content-Range": f"bytes */{size}"})
+                return Response(status_code=416, headers=headers)
+            data, ctype = store.read_file(mid, version, path)
         except store.ArtifactError:
             raise HTTPException(status_code=404, detail="Not Found")
         request.state.extra = {"bytes": len(data)}
@@ -1852,13 +1894,35 @@ def create_app(local_token: str | None = None) -> FastAPI:
                                "bytes": result.get("bytes")}
         return result
 
+    def _managed_meta(request: Request, artifact_id: str) -> dict:
+        """The page's meta when the caller may manage it, else the flat 404.
+
+        A non-admin (a keyed tailnet operator: every other writer is the
+        rig) must be the page's RECORDED owner. The store's "no recorded
+        owner is open to everyone" and "an unparseable record is deletable"
+        were recovery paths for the rig, written when only the rig could
+        write; F-A2 handed them to every keyed operator, who could delete
+        another operator's damaged page or share an owner-less legacy one
+        (review, spark-scale: beast-artifact). Rig and admins keep both.
+        """
+        try:
+            meta = store.get_meta(artifact_id)
+        except store.ArtifactError:
+            meta = None          # corrupt: only an admin may act on it
+        if is_admin(request):
+            return meta
+        if not meta or not store._owner_of(meta):
+            raise HTTPException(status_code=404, detail="Not Found")
+        try:
+            store._require_owner(meta, owner_for(request))
+        except store.ArtifactError:
+            raise HTTPException(status_code=404, detail="Not Found")
+        return meta
+
     @app.patch("/api/artifacts/{artifact_id}")
     def api_patch(request: Request, artifact_id: str, body: PatchBody,
                   _w: None = Depends(require_manager)):
-        try:
-            current_meta = store.get_meta(artifact_id)
-        except store.ArtifactError:
-            current_meta = None
+        current_meta = _managed_meta(request, artifact_id)
         if not current_meta:
             raise HTTPException(status_code=404, detail="Not Found")
         admin = is_admin(request)
@@ -1975,6 +2039,7 @@ def create_app(local_token: str | None = None) -> FastAPI:
     @app.delete("/api/artifacts/{artifact_id}")
     def api_delete(request: Request, artifact_id: str,
                    _w: None = Depends(require_manager)):
+        _managed_meta(request, artifact_id)
         try:
             # R2, and the loudest of the four: DELETE is irreversible.
             gone = store.remove(artifact_id, owner=owner_for(request),
@@ -1994,10 +2059,7 @@ def create_app(local_token: str | None = None) -> FastAPI:
         # store runs (as api_patch does): the store's "no such artifact" went
         # out as a 400 to a keyed tailnet caller while someone else's page
         # was a 404 — an existence oracle for guessable custom ids (D9/D29).
-        try:
-            current_meta = store.get_meta(artifact_id)
-        except store.ArtifactError:
-            current_meta = None
+        current_meta = _managed_meta(request, artifact_id)
         if not current_meta:
             raise HTTPException(status_code=404, detail="Not Found")
         admin = is_admin(request)

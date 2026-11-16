@@ -169,6 +169,36 @@ class TestEditFile(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmpdir)
 
+    def _bytes_after_edit(self, raw: bytes, old: str, new: str) -> tuple:
+        p = os.path.join(self.tmpdir, "eol.bat")
+        with open(p, "wb") as f:
+            f.write(raw)
+        result = edit_file(p, old, new)
+        with open(p, "rb") as f:
+            return result, f.read()
+
+    def test_crlf_line_endings_preserved(self):
+        # Review: universal-newline read rewrote EVERY \r\n to \n on any edit.
+        result, data = self._bytes_after_edit(
+            b"@echo off\r\nset A=1\r\nset B=2\r\n", "A=1", "A=9")
+        self.assertIn("Edited", result)
+        self.assertEqual(data, b"@echo off\r\nset A=9\r\nset B=2\r\n")
+
+    def test_crlf_multiline_edit_either_spelling(self):
+        for old in ("set A=1\nset B=2", "set A=1\r\nset B=2"):
+            result, data = self._bytes_after_edit(
+                b"@echo off\r\nset A=1\r\nset B=2\r\n", old, "set A=1\nset C=3")
+            self.assertIn("Edited", result, old)
+            self.assertEqual(data, b"@echo off\r\nset A=1\r\nset C=3\r\n")
+
+    def test_cr_line_endings_preserved(self):
+        _, data = self._bytes_after_edit(b"old\rmac\r", "old", "new")
+        self.assertEqual(data, b"new\rmac\r")
+
+    def test_mixed_line_endings_untouched_outside_the_edit(self):
+        _, data = self._bytes_after_edit(b"a=1\r\nb=2\nc=3\r\n", "b=2", "b=5")
+        self.assertEqual(data, b"a=1\r\nb=5\nc=3\r\n")
+
     def test_simple_replace(self):
         result = edit_file(self.testfile, "print('hello')", "print('hi')")
         self.assertIn("Edited", result)
@@ -259,6 +289,38 @@ class TestListFiles(unittest.TestCase):
     def test_no_matches(self):
         result = list_files(self.tmpdir, pattern="*.xyz")
         self.assertIn("No files", result)
+
+    def test_walk_stops_at_the_scan_budget(self):
+        # Review: list_files globbed and sorted the WHOLE tree in-process
+        # (directory='~' or '/' walked the filesystem) before cutting to 200.
+        import glob as _glob
+        import tools
+        for i in range(300):
+            open(os.path.join(self.tmpdir, f"f{i:03}.txt"), "w").close()
+        pulled = [0]
+        real_iglob = _glob.iglob
+
+        def counting_iglob(*a, **k):
+            for m in real_iglob(*a, **k):
+                pulled[0] += 1
+                yield m
+        saved = (tools._LIST_SCAN_MAX, tools.glob.iglob)
+        tools._LIST_SCAN_MAX = 50
+        tools.glob.iglob = counting_iglob
+        try:
+            result = list_files(self.tmpdir)
+        finally:
+            tools._LIST_SCAN_MAX, tools.glob.iglob = saved
+        self.assertLessEqual(pulled[0], 51)
+        self.assertIn("stopped", result)
+
+    def test_more_marker_kept_under_the_budget(self):
+        for i in range(250):
+            open(os.path.join(self.tmpdir, f"g{i:03}.txt"), "w").close()
+        result = list_files(self.tmpdir, pattern="*.txt")
+        self.assertEqual(len(result.splitlines()), 201)
+        self.assertTrue(result.endswith("... and 50 more"))
+        self.assertIn("g000.txt", result.splitlines()[0])  # still sorted
 
 
 class TestGrep(unittest.TestCase):
@@ -374,6 +436,25 @@ class TestWebSearch(unittest.TestCase):
         self.assertIn("SearXNG", result)
         self.assertIn("not running", result.lower())
 
+    def test_http_error_from_a_running_searxng(self):
+        # HTTPError subclasses URLError: a 429 (limiter) or 403 (json format
+        # off) from a LIVE SearXNG used to say "not running, docker run …".
+        import io
+        import urllib.error
+        import urllib.request
+        saved = urllib.request.urlopen
+
+        def boom(req, timeout=None):
+            raise urllib.error.HTTPError(req.full_url, 429, "Too Many Requests",
+                                         {}, io.BytesIO(b""))
+        urllib.request.urlopen = boom
+        try:
+            result = web_search("test query")
+        finally:
+            urllib.request.urlopen = saved
+        self.assertIn("HTTP 429", result)
+        self.assertNotIn("not running", result.lower())
+
 
 class TestWriteGuards(unittest.TestCase):
     """Protected-path guard on write_file / edit_file (credential stores,
@@ -405,6 +486,43 @@ class TestWriteGuards(unittest.TestCase):
     def test_write_refuses_etc(self):
         result = write_file("/etc/test_guard_probe", "x")
         self.assertIn("refusing", result.lower())
+
+    def test_guard_refuses_private_etc(self):
+        # macOS: realpath('/etc') is '/private/etc', so the /etc rule never
+        # fired there.
+        from tools import _guard_write_path
+        self.assertIsNotNone(_guard_write_path("/private/etc/hosts"))
+
+    def test_guard_refuses_code_on_next_start_targets(self):
+        # Review: each of these runs code (or swaps the tool server) on the
+        # next python / OpenCode / client / shell / login start.
+        from tools import _guard_write_path
+        for p in ("~/.local/lib/python3.12/site-packages/evil.pth",
+                  "~/.local/lib/python3.12/site-packages/usercustomize.py",
+                  "~/Library/Python/3.12/lib/python/site-packages/x.pth",
+                  "~/.config/opencode/opencode.json",
+                  "~/.openbeast-client.env",
+                  "~/.openbeast-client/bin/openbeast-client",
+                  "~/.bashrc.d/x.sh",
+                  "~/.zshrc.d/x.zsh",
+                  "~/Library/LaunchAgents/com.evil.plist"):
+            self.assertIsNotNone(_guard_write_path(p), p)
+        # Negative control: ordinary project work stays allowed.
+        self.assertIsNone(_guard_write_path("~/proj/lib/x.py"))
+
+    def test_guard_folds_case_on_case_insensitive_fs(self):
+        # macOS's default APFS is case-insensitive and realpath keeps the
+        # caller's spelling: ~/.SSH/authorized_keys opened the real file.
+        import tools
+        saved = tools._CASE_INSENSITIVE_FS
+        tools._CASE_INSENSITIVE_FS = True
+        try:
+            for p in ("~/.SSH/authorized_keys", "~/.Zshrc",
+                      "/tmp/r/.GIT/hooks/pre-commit", "/tmp/r/.git/HOOKS/x",
+                      "~/.Config/Autostart/x.desktop", "/PRIVATE/ETC/hosts"):
+                self.assertIsNotNone(tools._guard_write_path(p), p)
+        finally:
+            tools._CASE_INSENSITIVE_FS = saved
 
     def test_write_refuses_git_config(self):
         result = write_file("/tmp/somerepo/.git/config", "x")
@@ -611,6 +729,53 @@ class TestResourceCaps(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("hi", out)
 
+    def _assert_dies(self, pid):
+        import time
+        for _ in range(100):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.05)
+        os.kill(pid, 9)
+        self.fail(f"background pid {pid} outlived the tool call")
+
+    def test_redirected_background_child_is_killed_on_return(self):
+        # The documented contract: background processes (trailing &, nohup)
+        # are killed when the command returns — also the usual idiom that
+        # redirects away from the pipe, which used to survive unsupervised.
+        import tempfile
+        from tools import run_reaped
+        with tempfile.TemporaryDirectory() as d:
+            pf = os.path.join(d, "pid")
+            for cmd in (f"sleep 300 >/dev/null 2>&1 & echo $! > {pf}",
+                        f"nohup sleep 300 >/dev/null 2>&1 & echo $! > {pf}"):
+                rc, _ = run_reaped(cmd, 30)
+                self.assertEqual(rc, 0)
+                self._assert_dies(int(open(pf).read()))
+
+    def test_job_control_background_child_is_killed_on_return(self):
+        # `set -m` puts the job in its own process group inside the same
+        # session: the group kill alone missed it.
+        import tempfile
+        from tools import run_reaped
+        with tempfile.TemporaryDirectory() as d:
+            pf = os.path.join(d, "pid")
+            for cmd in (f"set -m; sleep 300 >/dev/null 2>&1 & echo $! > {pf}",
+                        f"set -m; sleep 300 & echo $! > {pf}; echo hi"):
+                rc, _ = run_reaped(cmd, 30)
+                self.assertEqual(rc, 0)
+                self._assert_dies(int(open(pf).read()))
+
+    def test_pipe_holding_background_child_adds_no_stall(self):
+        # It used to cost a fixed 5 s reader.join before the group kill.
+        import time
+        from tools import run_reaped
+        start = time.monotonic()
+        rc, out = run_reaped("sleep 300 & echo hi", 30)
+        self.assertLess(time.monotonic() - start, 3)
+        self.assertIn("hi", out)
+
 
 class TestTaskDone(unittest.TestCase):
     def test_returns_summary(self):
@@ -639,7 +804,7 @@ class TestMCPServerTools(unittest.TestCase):
             # Fallback: check via the public API
             pass
 
-        # The full 18-tool surface (PRODUCTION_ROADMAP §B collapsed
+        # The full 19-tool surface (PRODUCTION_ROADMAP §B collapsed
         # list_skills/load_skill/reload_skills into the single `skill` tool;
         # beast-artifact added publish_artifact/list_artifacts, and beast-lang
         # language_reference, here only — NOT to the runner's registry, so
@@ -651,7 +816,7 @@ class TestMCPServerTools(unittest.TestCase):
             "list_agents", "stop_agent",
             "skill", "start_skill_agent",
             "publish_artifact", "list_artifacts",
-            "language_reference",
+            "language_reference", "platform_docs",
         }
         # Introspection failure must be a test failure, not a silent pass —
         # otherwise a FastMCP internals change would soft-pass this test

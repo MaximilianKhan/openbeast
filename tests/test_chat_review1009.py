@@ -164,6 +164,114 @@ def test_a_stream_that_never_started_gives_its_slot_back(rig):
 
     resp = route.endpoint(Req(), sid)                # a response nobody will iterate
     assert c.get(f"/api/chat/sessions/{sid}/events?from=0").status_code == 429
+    assert c.get("/api/chat/health").json()["streams"] == 1
     del resp
     gc.collect()
+    # ...and the open-streams gauge with it (review: it stayed +1 forever)
+    assert c.get("/api/chat/health").json()["streams"] == 0
     assert c.get(f"/api/chat/sessions/{sid}/events?from=0").status_code == 200
+    assert c.get("/api/chat/health").json()["streams"] == 0
+
+
+def _bounded(fn, *args, budget=3.0):
+    """Run fn in a daemon thread; (finished, result)."""
+    out = {}
+    t = threading.Thread(target=lambda: out.setdefault("v", fn(*args)),
+                         daemon=True)
+    t.start()
+    t.join(budget)
+    return (not t.is_alive()), out.get("v")
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs mkfifo")
+def test_a_fifo_or_device_transcript_never_wedges_or_floods_a_reader(tmp_path):
+    """Review finding: record["transcript"] was opened with a plain open().
+    A FIFO blocked every reader forever (one threadpool worker per session
+    list poll); /dev/zero has getsize() == 0, so the size-bounded tail reads
+    fell through to an unbounded read() and OOM'd the server."""
+    fifo = str(tmp_path / "t.fifo")
+    os.mkfifo(fifo)
+    for path in (fifo, "/dev/zero"):
+        for fn, args in ((chat_server._tail_line, (path,)),
+                         (chat_server.read_lines_from, (path, 0)),
+                         (chat_server.tail_start, (path, 1024)),
+                         (chat_server._read_tail, (path, 4096)),
+                         (chat_server.derive_status,
+                          ({"transcript": path, "kind": "job"},))):
+            done, _ = _bounded(fn, *args)
+            assert done, f"{fn.__name__}({path}) did not return"
+    assert chat_server._tail_line("/dev/zero") == ""
+    assert chat_server.read_lines_from(fifo, 0) == ([], 0)
+    # negative control: a regular file still reads
+    reg = tmp_path / "t.log"
+    reg.write_text("one\ntwo\n")
+    assert chat_server._tail_line(str(reg)) == "two"
+    assert chat_server.read_lines_from(str(reg), 0)[0][-1][0] == "two"
+
+
+def test_the_login_socket_directory_is_ours_and_only_we_can_write_it(
+        tmp_path, monkeypatch):
+    """Review finding: makedirs(mode=0o700, exist_ok=True) never touches an
+    existing directory, so in a 0775 .run/ any group member could unlink the
+    login socket and bind their own in its place."""
+    import shutil
+    import tempfile
+    # short: AF_UNIX paths are capped near 104 bytes and pytest's are long
+    run = tempfile.mkdtemp(prefix="obsk", dir="/tmp")
+    try:
+        os.chmod(run, 0o775)
+        sock = chat_server._unix_listener(os.path.join(run, "c.sock"))
+        sock.close()
+        assert os.stat(run).st_mode & 0o022 == 0
+        assert os.stat(run).st_mode & 0o750 == 0o750   # read/traverse kept
+        assert os.stat(os.path.join(run, "c.sock")).st_mode & 0o777 == 0o600
+    finally:
+        shutil.rmtree(run, ignore_errors=True)
+    other = tmp_path / "theirs"
+    other.mkdir()
+    monkeypatch.setattr(chat_server.os, "getuid", lambda: os.stat(other).st_uid + 1)
+    with pytest.raises(SystemExit):
+        chat_server._unix_listener(str(other / "chat.sock"))
+
+
+def test_derive_status_resumes_instead_of_rescanning(tmp_path, monkeypatch):
+    """Review finding: every session open ran derive_status over the WHOLE
+    transcript, json-parsing each line (0.5 s per 200 MB, a threadpool worker
+    held for it). It now resumes from the last complete line it folded."""
+    import json as _json
+    path = tmp_path / "t.jsonl"
+    lines = [{"type": "iteration", "number": i} for i in range(1, 501)]
+    lines.append({"type": "tool_call", "name": "bash", "result": "x"})
+    path.write_text("".join(_json.dumps(x) + "\n" for x in lines))
+    rec = {"transcript": str(path), "kind": "agent", "state": "running"}
+    first = chat_server.derive_status(rec)
+    assert first["iterations"] == 500 and first["tool_calls"] == 1
+
+    parsed = []
+    real = chat_server.json.loads
+    monkeypatch.setattr(chat_server.json, "loads",
+                        lambda s, *a, **k: parsed.append(s) or real(s, *a, **k))
+    with open(path, "a") as f:
+        f.write(_json.dumps({"type": "done", "iterations": 501,
+                             "tokens_total": 42}) + "\n")
+        f.write('{"type": "iteration", "num')            # mid-write
+    second = chat_server.derive_status(rec)
+    assert len(parsed) <= 3, len(parsed)                  # not 502
+    assert second["iterations"] == 501 and second["tokens"]["total"] == 42
+    assert second["events"] == 503                        # partial counts now
+    assert second["last_line"].startswith('{"type": "iteration", "num')
+
+    # ...and gives exactly what a cold full pass would
+    monkeypatch.setattr(chat_server.json, "loads", real)
+    with open(path, "a") as f:
+        f.write('ber": 502}\n')
+    warm = chat_server.derive_status(rec)
+    chat_server._STATUS_CACHE.clear()
+    cold = chat_server.derive_status(rec)
+    assert warm == cold and cold["iterations"] == 502 and cold["events"] == 503
+
+    # a rewrite in place (copytruncate, then regrown) is rescanned, not resumed
+    path.write_text("".join(_json.dumps({"type": "compaction", "pad": "y" * 40})
+                            + "\n" for _ in range(600)))
+    redo = chat_server.derive_status(rec)
+    assert redo["compactions"] == 600 and redo["iterations"] == 0

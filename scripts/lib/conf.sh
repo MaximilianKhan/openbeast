@@ -168,6 +168,11 @@ ob_bind_is_loopback() {
 }
 
 BIND_HOST="${OPENBEAST_BIND:-$(_ob_conf_value BIND_HOST || echo 127.0.0.1)}"
+# An address has no spaces and no '#': `BIND_HOST=127.0.0.1   # loopback only`
+# went verbatim into llama-server --host and every probe URL, and still read
+# as loopback (127.*), so nothing warned (stack-lifecycle review).
+BIND_HOST="${BIND_HOST%%[[:space:]#]*}"
+[[ -n "$BIND_HOST" ]] || BIND_HOST=127.0.0.1
 # The warning for a non-loopback BIND_HOST sits further down, after the tool
 # server keys are resolved — whether it is merely loud or names an open
 # remote shell depends on them.
@@ -218,6 +223,14 @@ MODEL_ROLLBACK="$(_ob_bool "${OPENBEAST_MODEL_ROLLBACK:-$(_ob_conf_value MODEL_R
 # fragments / launches their processes. Manage with scripts/ext.sh; empty by
 # default (opinionated core only). Conf key EXTENSIONS.
 EXTENSIONS="${OPENBEAST_EXTENSIONS:-$(_ob_conf_value EXTENSIONS || true)}"
+# The dashboard extension's port. Conf key DASHBOARD_PORT; env
+# OPENBEAST_DASHBOARD_PORT (forwarded by `start.sh -d`), or the bare
+# DASHBOARD_PORT extensions/dashboard/run.sh has always read. Resolved here
+# so healthcheck and setup-tailscale.sh --publish-slot dial the same port
+# the dashboard binds (they hard-coded :3002).
+DASHBOARD_PORT="${OPENBEAST_DASHBOARD_PORT:-${DASHBOARD_PORT:-$(_ob_conf_value DASHBOARD_PORT || echo 3002)}}"
+export DASHBOARD_PORT
+export OPENBEAST_DASHBOARD_PORT="$DASHBOARD_PORT"
 # Reasoning/thinking control (serve.sh applies these to llama-server). OpenBeast
 # keeps reasoning ON by default (per-request toggle preserved); these are the
 # GLOBAL escape hatches, and they OVERRIDE any per-serve-script default:
@@ -280,7 +293,11 @@ ISLAND_STATE_DIR="${OPENBEAST_RUN_DIR:-$REPO_DIR/.run}"
 OPENBEAST_WEBUI_OFFLINE=false
 if [[ "$OFFLINE" == "true" || "$ISLAND" == "force" ]]; then
   OPENBEAST_WEBUI_OFFLINE=true
-elif [[ "$ISLAND" != "off" && -f "$ISLAND_STATE_DIR/island.json" ]] \
+# Asked whatever ISLAND says in the conf (as healthcheck/doctor do): a one-off
+# `--offline` launch runs a watcher on a box whose conf says ISLAND=off, and
+# the watchdog's healthcheck does not inherit that launch's OPENBEAST_ISLAND.
+# A file with no live watcher behind it reads as not islanded anyway.
+elif [[ -f "$ISLAND_STATE_DIR/island.json" ]] \
      && [[ "$(OPENBEAST_RUN_DIR="$ISLAND_STATE_DIR" python3 "$REPO_DIR/agents/island.py" status --webui-offline 2>/dev/null || true)" == "true" ]]; then
   OPENBEAST_WEBUI_OFFLINE=true
 fi
@@ -441,6 +458,13 @@ _EDGE_ANON="${OPENBEAST_EDGE_ALLOW_ANON:-$(_ob_conf_value EDGE_ALLOW_ANON || tru
 # 8 MiB). Exported only when set, like the limits above.
 _EDGE_BODY="${OPENBEAST_EDGE_MAX_BODY:-$(_ob_conf_value EDGE_MAX_BODY || true)}"
 [[ -n "$_EDGE_BODY" ]] && export OPENBEAST_EDGE_MAX_BODY="$_EDGE_BODY"
+# Gate -> upstream deadlines, in seconds (gate defaults: read 600, connect
+# 10). The gate's 504 tells operators to raise EDGE_READ_TIMEOUT, so it has
+# to be settable here, not only by exporting the variable by hand.
+_EDGE_RTO="${OPENBEAST_EDGE_READ_TIMEOUT:-$(_ob_conf_value EDGE_READ_TIMEOUT || true)}"
+[[ -n "$_EDGE_RTO" ]] && export OPENBEAST_EDGE_READ_TIMEOUT="$_EDGE_RTO"
+_EDGE_CTO="${OPENBEAST_EDGE_CONNECT_TIMEOUT:-$(_ob_conf_value EDGE_CONNECT_TIMEOUT || true)}"
+[[ -n "$_EDGE_CTO" ]] && export OPENBEAST_EDGE_CONNECT_TIMEOUT="$_EDGE_CTO"
 # Inline media only by default: the gate answers 400 for an image/audio/video
 # part that names a URL, because llama-server would fetch it from inside the
 # rig (SSRF for a remote device). true forwards such parts again.
@@ -556,9 +580,11 @@ export OPENBEAST_PROBE_HOST
 #       false: start.sh launches, rolls back, supervises and kills NOTHING —
 #       it waits for the server to answer, brings up everything else, and
 #       healthcheck --restart / stop.sh leave the server alone. vLLM and
-#       TensorFold are never managed (they run on other boxes, in
-#       containers this stack did not start), so `true` there warns and is
-#       ignored.
+#       TensorFold default to unmanaged (they run on other boxes, in
+#       containers this stack did not start); `true` is honoured only for
+#       ONE host — INFERENCE_URL on this box and an engine adapter with a
+#       launcher (scripts/engine.sh use, docs/ENGINES.md) — else it warns
+#       and is ignored.
 #   INFERENCE_SLOTS    integer                            default empty
 #       Concurrency /api/slot advertises when the server does not expose one
 #       (vLLM --max-num-seqs, TensorFold --parallel).
@@ -621,10 +647,23 @@ if [[ "$INFERENCE_BACKEND" == "llama" ]]; then
   unset _ob_remote
 else
   INFERENCE_MANAGED="$(_ob_bool "$_ob_managed_raw" false INFERENCE_MANAGED)"
+  # >>> engine-plane hook (docs/ENGINES.md): managed = ONE host. start.sh
+  # launches vLLM / TensorFold itself (scripts/engine-serve.sh) only when the
+  # engine has an adapter with a launcher and INFERENCE_URL names THIS box;
+  # a server on other boxes (the Sparks) stays someone else's, as before.
   if [[ "$INFERENCE_MANAGED" == "true" ]]; then
-    echo "WARNING: INFERENCE_MANAGED=true is not supported for INFERENCE_BACKEND=$INFERENCE_BACKEND — start.sh cannot launch it; treating it as false." >&2
-    INFERENCE_MANAGED=false
+    _ob_eng_ad="$(dirname "${BASH_SOURCE[0]}")/../engines/$INFERENCE_BACKEND.sh"
+    if [[ "$INFERENCE_URL_SET" == "true" ]] && declare -F ob_url_is_local >/dev/null 2>&1 \
+       && ! ob_url_is_local "$INFERENCE_URL" "$OPENBEAST_PROBE_HOST" "$BIND_HOST"; then
+      echo "WARNING: INFERENCE_MANAGED=true is not supported for INFERENCE_BACKEND=$INFERENCE_BACKEND at INFERENCE_URL=$INFERENCE_URL (another machine) — start.sh launches engines only on this box; treating it as false." >&2
+      INFERENCE_MANAGED=false
+    elif [[ ! -f "$_ob_eng_ad" ]] || ! grep -q "^eng_${INFERENCE_BACKEND//-/_}_launch()" "$_ob_eng_ad"; then
+      echo "WARNING: INFERENCE_MANAGED=true is not supported for INFERENCE_BACKEND=$INFERENCE_BACKEND — no single-host launcher (scripts/engines/$INFERENCE_BACKEND.sh); treating it as false." >&2
+      INFERENCE_MANAGED=false
+    fi
+    unset _ob_eng_ad
   fi
+  # <<< engine-plane hook
 fi
 unset _ob_managed_raw
 INFERENCE_SLOTS="${OPENBEAST_INFERENCE_SLOTS:-$(_ob_conf_value INFERENCE_SLOTS || true)}"
@@ -873,9 +912,20 @@ export OPENBEAST_MODEL_URL="$MODEL_URL"
 # (start.sh computes the byte value from /proc/meminfo at every launch, so
 # the cap scales with whatever box OpenBeast lands on — 128 GB or 32 GB).
 MEM_LIMIT_PCT="${OPENBEAST_MEM_LIMIT_PCT:-$(_ob_conf_value MEM_LIMIT_PCT || echo 75)}"
+# UNIFIED memory (GB10 head node, unmanaged model on this box): GiB kept
+# free beside the model. The supervisor sizes the stack's cap — and the chat
+# jobs' — from MemAvailable minus this once the model is resident, instead of
+# MEM_LIMIT_PCT of a MemTotal the model already holds most of. Ignored on a
+# discrete GPU. Doctor and healthcheck warn when MemAvailable is below it.
+MEM_RESERVE_GB="${OPENBEAST_MEM_RESERVE_GB:-$(_ob_conf_value MEM_RESERVE_GB || echo 3)}"
+[[ "$MEM_RESERVE_GB" =~ ^[0-9]+$ ]] || MEM_RESERVE_GB=3
 # start.sh installs + enables the daily openbeast-logrotate.timer (systemd
 # --user) when it is missing. false = leave rotation to the operator.
 LOGROTATE_AUTOINSTALL="$(_ob_bool "${OPENBEAST_LOGROTATE_AUTOINSTALL:-$(_ob_conf_value LOGROTATE_AUTOINSTALL || true)}" true LOGROTATE_AUTOINSTALL)"
+# `./start.sh -d` installs + enables openbeast-watchdog.timer (systemd --user,
+# healthcheck.sh --restart every 5 min) when it is missing. false = leave
+# supervision of the stack's services to the operator.
+WATCHDOG_AUTOINSTALL="$(_ob_bool "${OPENBEAST_WATCHDOG_AUTOINSTALL:-$(_ob_conf_value WATCHDOG_AUTOINSTALL || true)}" true WATCHDOG_AUTOINSTALL)"
 # Where files the CHAT model writes/reads via the direct tools land. A direct
 # tool call carries no conversation or user id (the OpenAPI tool server is
 # stateless), so without this the model picks its own path and defaults to a
@@ -1008,12 +1058,206 @@ export OPENBEAST_ALLOW_OPEN_TOOLS="$ALLOW_OPEN_TOOLS"
 # flag publishes; doctor.sh then WARNs about the open :443 instead of FAILing.
 ALLOW_OPEN_WEBUI="$(_ob_bool "${OPENBEAST_ALLOW_OPEN_WEBUI:-$(_ob_conf_value ALLOW_OPEN_WEBUI || true)}" false ALLOW_OPEN_WEBUI)"
 export OPENBEAST_ALLOW_OPEN_WEBUI="$ALLOW_OPEN_WEBUI"
+# `tailscale …` with a bound, or nothing at all when it is not installed.
+_ob_ts() {
+  command -v tailscale >/dev/null 2>&1 || return 1
+  if command -v timeout >/dev/null 2>&1; then timeout 3 tailscale "$@"; else tailscale "$@"; fi
+}
+# True when `tailscale serve` maps :443 onto the WebUI (:3000).
+# Mounts made with `serve --bg` persist across reboots and stack restarts —
+# and tailscaled re-applies them when it comes up, so "tailscale gave no
+# answer" (a start racing tailscaled at boot, a >3 s stall) is NOT "no
+# mount": then the last real answer stands (.run/webui-on-443).
+# Nor is ONE "no mount" right after the last real answer said "mounted": a
+# tailscaled still coming up at boot can answer before it re-applies the
+# persisted serve config, and caching that "no" let a start recreate an
+# auth-off WebUI behind the mount it then restored. That answer is cached
+# (and believed) only once a second probe, OB_WEBUI_443_RECHECK_S (2) later,
+# agrees; any other second answer keeps login on.
+_ob_webui_on_443() {
+  local rc cache="$ISLAND_STATE_DIR/webui-on-443"
+  _ob_webui_443_probe && rc=0 || rc=$?
+  if (( rc == 1 )) && [[ "$(head -n1 "$cache" 2>/dev/null)" == "0" ]]; then
+    sleep "${OB_WEBUI_443_RECHECK_S:-2}"
+    _ob_webui_443_probe && rc=0 || rc=$?
+  fi
+  if (( rc == 0 || rc == 1 )); then
+    if [[ "${OB_CONF_READONLY:-}" != "1" ]]; then
+      { mkdir -p "$ISLAND_STATE_DIR" && echo "$rc" > "$cache"; } 2>/dev/null || true
+    fi
+    return "$rc"
+  fi
+  [[ "$(head -n1 "$cache" 2>/dev/null)" == "0" ]]
+}
+# 0 = :443 maps onto :3000, 1 = tailscale answered and it does not, 2 = no
+# answer (not installed, not running, >3 s, unparseable).
+_ob_webui_443_probe() {
+  _ob_ts serve status --json 2>/dev/null | python3 -c '
+import json, re, sys
+try:
+    web = json.load(sys.stdin).get("Web") or {}
+except Exception:
+    sys.exit(2)
+for hp, cfg in web.items():
+    if hp.endswith(":443") and any(re.search(r":3000/?$", str((h or {}).get("Proxy", "")))
+                                   for h in ((cfg or {}).get("Handlers") or {}).values()):
+        sys.exit(0)
+sys.exit(1)' 2>/dev/null
+}
+# WEBUI_AUTH=false is honoured only while the WebUI is reachable from this
+# machine alone. Auth off means "no login, everyone is admin@localhost", and
+# that admin holds the privileged tool connection — bash. Two states put that
+# on a network with no acknowledgement (review, webui-searxng):
+#   - a non-loopback BIND_HOST: the WebUI binds it (compose HOST=), and the
+#     only guard was the tool server's keyless check, which setup-mcpo-keys.sh
+#     clears while the no-login admin UI (and its bash) stays on the LAN;
+#   - a :443 mount left by setup-tailscale.sh (they persist), after the conf
+#     or OPENBEAST_WEBUI_AUTH turned auth back off: start.sh recreated the
+#     container auth-off behind the live mount.
+# Either way login stays ON unless ALLOW_OPEN_WEBUI=true acknowledges it — the
+# same acknowledgement setup-tailscale.sh --i-accept-open-webui records.
+if [[ "$WEBUI_AUTH" != "true" && "$ALLOW_OPEN_WEBUI" != "true" ]]; then
+  _ob_open_why=""
+  if ! ob_bind_is_loopback "$BIND_HOST"; then
+    _ob_open_why="BIND_HOST=$BIND_HOST puts the WebUI on that network"
+  elif _ob_webui_on_443; then
+    _ob_open_why="tailscale serve still publishes the WebUI on :443 (every tailnet device)"
+  fi
+  if [[ -n "$_ob_open_why" ]]; then
+    WEBUI_AUTH=true
+    export OPENBEAST_WEBUI_AUTH=true
+    if [[ "${OB_CONF_WEBUI_AUTH_WARNED:-}" != "1" ]]; then
+      echo "WARNING: WEBUI_AUTH=false ignored — $_ob_open_why, and with login" >&2
+      echo "         off every visitor is the WebUI admin (with bash). Login stays ON;" >&2
+      echo "         the built-in admin's password is in openbeast.conf after the first" >&2
+      echo "         start. Set ALLOW_OPEN_WEBUI=true to really run it open." >&2
+      export OB_CONF_WEBUI_AUTH_WARNED=1
+    fi
+  fi
+  unset _ob_open_why
+fi
+# Open WebUI's CORS allowlist (docker-compose CORS_ALLOW_ORIGIN). Upstream's
+# default is '*' WITH credentials, so Starlette echoed any Origin back: on an
+# auth-off WebUI any web page the operator opened could POST the sign-in,
+# read the admin token and run code (Functions) or read the tool-server key;
+# with auth on, any page on any other tailnet host (ts.net is a public suffix,
+# so they are all same-site with the WebUI's cookie) could read the admin's
+# API. Socket.IO uses the same list, so it must name EVERY origin the WebUI is
+# really opened from: loopback, the bind address, the tailnet name Tailscale
+# Serve publishes it under — plus WEBUI_ORIGINS for anything else (your own
+# reverse proxy). WEBUI_ORIGINS='*' restores upstream's wildcard.
+# The tailnet name the WebUI is published under, from the most stable source
+# that answers. `tailscale status` alone is transient: a start at boot races
+# tailscaled (a user unit has no ordering against it), a logged-out or slow
+# (>3 s) daemon gives nothing — and an origin list computed then left the
+# tailnet UI failing Socket.IO's origin check until the next lucky restart.
+# So: Self.DNSName, else the host of a `serve status` Web key ("<fqdn>:443",
+# the mount itself), else the last name either gave (cached in the run dir).
+_ob_webui_tailnet_name() {
+  local name cache="$ISLAND_STATE_DIR/webui-tailnet-name"
+  name=$(_ob_ts status --json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    print(((json.load(sys.stdin).get("Self") or {}).get("DNSName") or "").rstrip(".").lower())
+except Exception:
+    pass' 2>/dev/null) || name=""
+  if [[ -z "$name" ]]; then
+    name=$(_ob_ts serve status --json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    keys = list((json.load(sys.stdin).get("Web") or {}))
+except Exception:
+    sys.exit(0)
+keys.sort(key=lambda k: not k.endswith(":443"))
+for k in keys:
+    h = k.rsplit(":", 1)[0].rstrip(".").lower()
+    if h and "." in h:
+        print(h)
+        break' 2>/dev/null) || name=""
+  fi
+  # A DNS name only; anything else in the cache is ignored, never echoed.
+  if [[ -n "$name" && "$name" =~ ^[a-z0-9.-]+$ ]]; then
+    if [[ "${OB_CONF_READONLY:-}" != "1" ]]; then
+      { mkdir -p "$ISLAND_STATE_DIR" && printf '%s\n' "$name" > "$cache.tmp" \
+          && mv -f "$cache.tmp" "$cache"; } 2>/dev/null || rm -f "$cache.tmp" 2>/dev/null
+    fi
+  else
+    name=$(head -n1 "$cache" 2>/dev/null || true)
+    [[ "$name" =~ ^[a-z0-9.-]+$ ]] || name=""
+  fi
+  printf '%s' "$name"
+}
+_ob_webui_cors() {
+  local extra list=() h fq
+  extra="${OPENBEAST_WEBUI_ORIGINS:-$(_ob_conf_value WEBUI_ORIGINS || true)}"
+  if [[ "${extra// /}" == "*" ]]; then echo '*'; return 0; fi
+  list=("http://localhost:3000" "http://127.0.0.1:3000")
+  if ! ob_bind_is_loopback "$BIND_HOST"; then
+    case "$BIND_HOST" in
+      0.0.0.0|::|"[::]")
+        # Wildcard: every address of this box, as typed in a browser.
+        for h in $(hostname -I 2>/dev/null); do
+          [[ "$h" == *:* ]] && h="[$h]"
+          list+=("http://$h:3000")
+        done ;;
+      *) h="$BIND_HOST"
+         [[ "$h" == *:* && "$h" != \[* ]] && h="[$h]"
+         list+=("http://$h:3000") ;;
+    esac
+    h="$(hostname 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+    [[ -n "$h" ]] && list+=("http://$h:3000")
+  fi
+  fq="$(_ob_webui_tailnet_name)"
+  if [[ -n "$fq" ]]; then
+    list+=("https://$fq")
+    ob_bind_is_loopback "$BIND_HOST" || list+=("http://$fq:3000")
+  fi
+  for h in ${extra//[,;]/ }; do list+=("$h"); done
+  local IFS=';'
+  echo "${list[*]}"
+}
+OPENBEAST_WEBUI_CORS="$(_ob_webui_cors)"
+export OPENBEAST_WEBUI_CORS
+# The Host names the WebUI answers (docker-compose OB_WEBUI_HOSTS, enforced
+# by scripts/webui/sitecustomize.py inside the container, with the shared
+# agents/hostpolicy.py allowlist on top: loopback, this machine's name,
+# *.ts.net). CORS does not stop
+# DNS rebinding: a page that re-resolves its own name to 127.0.0.1 is "same
+# origin" with the WebUI, and with login off it signs in as admin (bash).
+# Its requests carry its own name in Host, so while login is off — which the
+# guard above allows only on loopback — the WebUI answers loopback names
+# alone (plus the hosts of WEBUI_ORIGINS). ALLOW_OPEN_WEBUI=true (login off
+# on a network) is NOT a reason to drop the check: it says "let the network
+# in", not "let any page the operator opens in", and a rebound page is still
+# admin there. Its names come from the CORS list, which already holds the
+# bind address(es), this machine's name and the tailnet name. With login on
+# a rebound page has no session, and WEBUI_ORIGINS='*' is the operator's
+# explicit "any site": both are '*', no check.
+_ob_webui_hosts() {
+  if [[ "$WEBUI_AUTH" == "true" || "$OPENBEAST_WEBUI_CORS" == "*" ]]; then
+    echo '*'; return 0
+  fi
+  local list=(localhost 127.0.0.1 ::1) o h
+  ob_bind_is_loopback "$BIND_HOST" && [[ "$BIND_HOST" != *:* ]] && list+=("$BIND_HOST")
+  for o in ${OPENBEAST_WEBUI_CORS//;/ }; do
+    h="${o#*://}"; h="${h%%/*}"
+    # hostpolicy's form: an IPv6 literal keeps its brackets, a port goes.
+    if [[ "$h" == \[* ]]; then h="${h%%\]*}]"; else h="${h%%:*}"; fi
+    [[ -n "$h" ]] && list+=("$h")
+  done
+  local IFS=','
+  echo "${list[*]}"
+}
+OPENBEAST_WEBUI_HOSTS="$(_ob_webui_hosts)"
+export OPENBEAST_WEBUI_HOSTS
 # ALLOW_OPEN_INFERENCE (env OPENBEAST_ALLOW_OPEN_INFERENCE) default false: the
 # persisted form of setup-tailscale.sh --i-accept-open-inference — "yes,
 # publish llama-server on :8443 with no beast-gate and no LLAMA_API_KEY".
 # setup-tailscale writes it when that flag publishes; doctor.sh then WARNs
-# about the keyless :8443 instead of FAILing. Not exported: only those two
-# scripts read it, and both source this file.
+# about the keyless :8443 instead of FAILing. serve.sh takes it as the same
+# "yes" for a keyless llama-server on a non-loopback BIND_HOST, which it
+# otherwise refuses. Not exported: only those three read it, and all of them
+# source this file.
 ALLOW_OPEN_INFERENCE="$(_ob_bool "${OPENBEAST_ALLOW_OPEN_INFERENCE:-$(_ob_conf_value ALLOW_OPEN_INFERENCE || true)}" false ALLOW_OPEN_INFERENCE)"
 # ob_tools_exposed_open — true when the tool server would listen off-loopback
 # with no key: the state start.sh / doctor.sh / the tool server must refuse
@@ -1079,7 +1323,7 @@ export OPENBEAST_SEARXNG_SECRET="$SEARXNG_SECRET"
 _OB_CONF_EXTRA_KEYS="BEAST_ASSIST BEAST_ESCALATE CHAT_BASE_URL CHAT_PUBLIC_URL WEBUI_DEFAULT_ADMIN_PASSWORD"
 # Whole numbers that are used exactly as written (the port keys and the gate's
 # limits take no inline comment — openbeast.conf.example says so)...
-_OB_CONF_INT_KEYS="ROUTER_PORT EDGE_PORT CHAT_PORT ARTIFACT_PORT NTFY_PORT MEM_LIMIT_PCT EDGE_RATE_LIMIT EDGE_MAX_INFLIGHT EDGE_MAX_BODY ARTIFACT_RETAIN_DAYS"
+_OB_CONF_INT_KEYS="ROUTER_PORT EDGE_PORT CHAT_PORT ARTIFACT_PORT NTFY_PORT DASHBOARD_PORT MEM_LIMIT_PCT MEM_RESERVE_GB EDGE_RATE_LIMIT EDGE_MAX_INFLIGHT EDGE_MAX_BODY EDGE_READ_TIMEOUT EDGE_CONNECT_TIMEOUT ARTIFACT_RETAIN_DAYS"
 # ...and those whose reader strips a trailing `# comment` first.
 _OB_CONF_INT_KEYS_COMMENT_OK="HYDRA_READY_GRACE AGENT_LOG_RETENTION_DAYS ISLAND_GRACE"
 ob_conf_lint() {

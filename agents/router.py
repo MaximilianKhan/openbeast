@@ -201,9 +201,13 @@ _CHAT_HEADER = "x-openwebui-chat-id"
 # keyword-free IMPLICIT spawns ("handle this huge thing while I grab coffee")
 # for keeping every normal turn fast; explicit requests ("spawn/launch an
 # agent", "in the background", "autonomous", "report back") still all fire.
+# "agent(s)" and "background" are delegation words, but not inside a path
+# or file name (agents/runner.py, agent.py), User-Agent, or CSS
+# (background-color, background image): those are ordinary coding chat.
 _HINTS = re.compile(
-    r"\b(agents?|background|spawn|launch|kick[ -]?off|autonomous|delegate|"
-    r"in parallel|meanwhile|report back|check back|don'?t (wait|block))\b",
+    r"\b((?<![/.])(?<!user[ -])agents?(?!/|\.\w)|"
+    r"background(?![ -]?(?:colou?r|image))|spawn|launch|kick[ -]?off|autonomous|"
+    r"delegate|in parallel|meanwhile|report back|check back|don'?t (wait|block))\b",
     re.IGNORECASE,
 )
 
@@ -438,14 +442,76 @@ def _identity_headers(headers, jwt_secret=None):
 
 
 def _last_user_text(messages):
-    for m in reversed(messages or []):
-        if m.get("role") == "user":
-            c = m.get("content")
-            if isinstance(c, str):
-                return c
-            if isinstance(c, list):  # OpenAI content-parts form
-                return " ".join(p.get("text", "") for p in c if isinstance(p, dict))
+    """The newest user message's text; "" for any shape it cannot read.
+
+    Runs before the gate on every chat request, so a malformed body (a
+    string for `messages`, a non-dict message, a non-str text part) must
+    come out as "" and fall through to upstream's 400, never a 500 here."""
+    if not isinstance(messages, list):
+        return ""
+    for m in reversed(messages):
+        if not isinstance(m, dict) or m.get("role") != "user":
+            continue
+        c = m.get("content")
+        if isinstance(c, str):
+            return c
+        if isinstance(c, list):  # OpenAI content-parts form
+            return " ".join(p["text"] for p in c
+                            if isinstance(p, dict) and isinstance(p.get("text"), str))
+        return ""
     return ""
+
+
+def _is_webui_task_prompt(text):
+    """Open WebUI's own background requests (title, tags, follow-ups, query
+    generation) are one user message: a "### Task:" template that quotes the
+    chat in <chat_history>. That history can hold the spawn request and our
+    "Started a background agent" reply, and classifying it again could
+    start a second agent for the same task."""
+    return "### Task:" in text and "<chat_history>" in text
+
+
+def _user_turn_text(messages):
+    """The text of the user turn this request answers, or "" when it is not
+    one: a tool-loop continuation (messages end in assistant/tool), or a
+    WebUI task prompt. Only such a turn is worth a classify."""
+    if not (isinstance(messages, list) and messages
+            and isinstance(messages[-1], dict)
+            and messages[-1].get("role") == "user"):
+        return ""
+    text = _last_user_text(messages)
+    if _is_webui_task_prompt(text):
+        return ""
+    return _strip_pasted_context(text)
+
+
+_SOURCE_BLOCK = re.compile(r"<source\b[^>]*>.*?</source>", re.IGNORECASE | re.DOTALL)
+
+
+def _strip_pasted_context(text):
+    """Drop what Open WebUI pasted into the user turn: with the default
+    RAG_SYSTEM_CONTEXT=false its RAG template (a "### Task:" preamble and a
+    <context> of <source> blocks: web-search results, attached files) goes
+    INTO the last user message. That text is fetched, not typed, and must
+    never be able to ask for a spawn or write the agent's task."""
+    i, j = text.find("<context>"), text.rfind("</context>")
+    if i != -1 and j > i:
+        head, tail = text[:i], text[j + len("</context>"):]
+        k = head.find("### Task:")
+        text = (head[:k] if k != -1 else head) + tail
+    return _SOURCE_BLOCK.sub("", text).strip()
+
+
+# The classify sees at most this much of the turn: a pasted 40K-token file
+# must not cost the one slot a second full prefill before the real turn.
+_CLASSIFY_MAX_CHARS = 6000
+
+
+def _clip_for_classify(text):
+    if len(text) <= _CLASSIFY_MAX_CHARS:
+        return text
+    head = _CLASSIFY_MAX_CHARS // 4
+    return text[:head] + "\n[...]\n" + text[-(_CLASSIFY_MAX_CHARS - head):]
 
 
 async def _classify(client, user_text):
@@ -454,7 +520,7 @@ async def _classify(client, user_text):
     body = {
         "messages": [
             {"role": "system", "content": _CLASSIFIER_SYS},
-            {"role": "user", "content": user_text},
+            {"role": "user", "content": _clip_for_classify(user_text)},
         ],
         "temperature": 0,
         "max_tokens": 400,
@@ -487,6 +553,11 @@ async def _classify(client, user_text):
 async def _spawn(client, task, workdir, identity=None):
     """Spawn via the real MCPO start_agent tool. Returns (agent_id, error).
 
+    Started means a 2xx reply that names an agent id. Anything else — an
+    auth/RBAC refusal, a 5xx, or start_agent's own "Error: ..." string
+    (which the tool server returns as a 200) — is (None, why), so the user
+    is told the spawn failed instead of that an agent is running.
+
     `identity` = the caller's identity headers (_identity_headers), sent
     alongside the admin key so the spawn is attributed and sharded."""
     try:
@@ -500,14 +571,29 @@ async def _spawn(client, task, workdir, identity=None):
             txt = data if isinstance(data, str) else json.dumps(data)
         except Exception:
             pass
+        excerpt = " ".join(str(txt).split())[:160] or "empty reply"
+        if not 200 <= r.status_code < 300:
+            return None, f"HTTP {r.status_code}: {excerpt}"
+        if str(txt).lstrip().startswith("Error"):
+            return None, excerpt
         m = re.search(r"([0-9]{8}-[0-9]{6}-[0-9a-f]{8})", txt)  # agent-id shape
-        return (m.group(1) if m else txt.strip()[:80]), None
+        if not m:
+            return None, f"no agent id in the reply: {excerpt}"
+        return m.group(1), None
     except Exception as e:
         return None, str(e)
 
 
+def _utf8(s: str) -> str:
+    """A lone UTF-16 surrogate in model output (a "\\ud800" JSON escape)
+    cannot be encoded as UTF-8: httpx's request body and starlette's
+    JSONResponse both raise on it. Each one becomes '?'."""
+    return s.encode("utf-8", "replace").decode("utf-8")
+
+
 def _synthetic(model, text, stream):
     """An OpenAI-shaped assistant reply (the router's own message)."""
+    text = _utf8(text)
     cid = "chatcmpl-router-" + uuid.uuid4().hex[:12]
     if not stream:
         return JSONResponse({
@@ -545,10 +631,21 @@ async def _proxy_through(request, client, body_bytes):
     if _HYDRA_CALLER.configured:
         # Ours, never a caller's: the token is what makes hydra trust the
         # identity headers relayed alongside it.
-        headers = {k: v for k, v in headers.items() if k.lower() != "x-hydra-caller"}
+        # And the token vouches only for identity this router can stand
+        # behind: never a device (beast-gate asserts devices, and it does
+        # not route through here), and in signed-identity mode never a typed
+        # role: the role hydra sees is the one the JWT verified.
+        drop = {"x-hydra-caller", "x-openbeast-device"}
+        if JWT_SECRET:
+            drop.add(_ROLE_HEADER)
+        headers = {k: v for k, v in headers.items() if k.lower() not in drop}
         tok = _HYDRA_CALLER.get()
         if tok:
             headers[_HYDRA_CALLER_HEADER] = tok
+            if JWT_SECRET:
+                role = _caller_role(request.headers)
+                if role and role != "invalid":
+                    headers[_ROLE_HEADER] = role
     req = client.build_request(request.method, upstream_url, content=body_bytes, headers=headers)
     try:
         resp = await client.send(req, stream=True)
@@ -592,7 +689,7 @@ async def chat_completions(request: Request):
     messages = body.get("messages", [])
     stream = bool(body.get("stream", False))
     model = body.get("model", "local")
-    user_text = _last_user_text(messages)
+    user_text = _user_turn_text(messages)
 
     # Identity gate FIRST (docs/RBAC_PLAN.md Phase 2): non-admin turns skip
     # prefilter + classify entirely — zero added latency, and no path to
@@ -612,6 +709,7 @@ async def chat_completions(request: Request):
             return await _proxy_through(request, client, raw)
     if hinted:
         spawn, task, workdir = await _classify(client, user_text)
+        task, workdir = _utf8(task), _utf8(workdir)
         _INSTINCT.classified(turn, spawn)   # paired baseline; fire-and-forget
         if spawn and len(task) <= 8:
             # Detected a delegation request but couldn't extract a usable task —

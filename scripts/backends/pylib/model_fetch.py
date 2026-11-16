@@ -2,8 +2,10 @@
 """Download a profile's pinned checkpoint, verify every byte, and lock it.
 
     model-fetch.sh --profile NAME            fetch (or, if present, verify) → MODELS_DIR/NAME
-    model-fetch.sh --profile NAME --verify   re-hash what is on disk against the lock; download nothing
-    model-fetch.sh --profile NAME --locate   (launchers) print the verified dir; sizes only, fast
+    model-fetch.sh --profile NAME --verify   re-hash what is on disk against the lock; download nothing.
+                                             No lock = exit 3 (a local SOURCE: --trust-first-use records one)
+    model-fetch.sh --profile NAME --locate   (launchers) print the locked dir; fast: weight files by
+                                             size, every other file by sha256. No lock = exit 3
 
 Guarantees, in the order they matter:
   1. Only the profile's REVISION (a commit SHA) is ever requested — resolve/<sha>/…, never a branch.
@@ -288,7 +290,14 @@ def fetch_artifact(a: dict, mdir: Path, include: list[str], exclude: list[str], 
             "_final": str(final)}
 
 
+# What --locate leaves to a size check: the big weight files. Everything else (config.json,
+# tokenizer files, chat_template.jinja, *.py) is small and is what changes behaviour on a
+# same-size edit, so it is hashed even on the fast path.
+WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth", ".gguf", ".pkl", ".ckpt", ".h5", ".msgpack", ".npz")
+
+
 def verify_dir(d: Path, entry: dict, full: bool = True) -> list[str]:
+    """full=False (--locate): sizes for the weight files, sha256 for everything else."""
     problems = []
     if not d.is_dir():
         return [f"{d} does not exist"]
@@ -308,7 +317,7 @@ def verify_dir(d: Path, entry: dict, full: bool = True) -> list[str]:
         if p.stat().st_size != f["size"]:
             problems.append(f"{rel}: {p.stat().st_size} bytes, locked {f['size']}")
             continue
-        if full and sha256_file(p) != f["sha256"]:
+        if (full or not rel.endswith(WEIGHT_SUFFIXES)) and sha256_file(p) != f["sha256"]:
             problems.append(f"{rel}: sha256 differs from the lock")
     locked = set(entry.get("files") or {})
     for p in d.rglob("*"):
@@ -318,8 +327,9 @@ def verify_dir(d: Path, entry: dict, full: bool = True) -> list[str]:
         # skips them when it writes the lock: no engine loads from them.
         if any(part.startswith(".") for part in PurePosixPath(rel).parts):
             continue
-        if p.is_file() and rel not in (MARKER, STAGE_META) and rel not in locked and rel.endswith((".safetensors", ".json", ".py",
-                                                                                ".jinja", ".model", ".txt")):
+        # Every other file counts, whatever its suffix: engines and tokenizers also read
+        # *.bin / *.pt (pickle), *.tiktoken, *.yaml, ... — an allowlist would miss one.
+        if (p.is_file() or p.is_symlink()) and rel not in (MARKER, STAGE_META) and rel not in locked:
             problems.append(f"unlocked file {rel} (not from the pinned revision)")
     return problems
 
@@ -333,7 +343,7 @@ def local_lock_entry(d: Path) -> dict:
     return {"source": str(d), "revision": None, "dir": None, "files": files}
 
 
-def run(p: obprofile.Profile, mdir: Path | None, mode: str) -> int:
+def run(p: obprofile.Profile, mdir: Path | None, mode: str, trust_first_use: bool = False) -> int:
     lock = read_lock(p.lock_path)
     arts = lock.get("artifacts") or {}
     rc = 0
@@ -343,9 +353,15 @@ def run(p: obprofile.Profile, mdir: Path | None, mode: str) -> int:
         if a.get("local"):
             d = Path(a["local"])
             if not entry:
-                if mode == "locate":
-                    print(f"{a['key']}\t{d}")
-                    log(f"[{a['key']}] local SOURCE {d} has no lock yet — run model-fetch.sh --profile {p.name}")
+                # No lock = nothing to verify against. --verify and --locate (the launchers,
+                # sync-weights on a worker) must say so, never record whatever bytes are there
+                # and call them verified. Recording a lock is an explicit act: a plain fetch, or
+                # --verify --trust-first-use.
+                if mode == "locate" or (mode == "verify" and not trust_first_use):
+                    log(f"[{a['key']}] local SOURCE {d} has no lock in {p.lock_path} — nothing to verify against. "
+                        f"Record one where the copy is known-good (model-fetch.sh --profile {p.name}) and carry "
+                        f"the lock with the repo; --verify --trust-first-use records one from these bytes")
+                    rc = max(rc, EXIT_ABSENT)
                     continue
                 log(f"[{a['key']}] local SOURCE {d}: recording a lock (trust on first use — nothing to compare to)")
                 arts[a["key"]] = local_lock_entry(d)
@@ -413,7 +429,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--profile", required=True)
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--verify", action="store_true", help="re-hash against the lock; never download")
-    g.add_argument("--locate", action="store_true", help="print '<artifact>\\t<dir>' for verified (by size) dirs")
+    g.add_argument("--locate", action="store_true",
+                   help="print '<artifact>\\t<dir>' for locked dirs (weights by size, other files by sha256)")
+    ap.add_argument("--trust-first-use", action="store_true",
+                    help="with --verify: a local SOURCE with no lock gets one recorded from the bytes on disk "
+                         "(otherwise --verify fails: there is nothing to verify against)")
     ap.add_argument("--models-dir", help="default: $MODELS_DIR, then MODELS_DIR in --env")
     ap.add_argument("--env", type=Path, default=HERE.parent / "spark.env")
     ap.add_argument("--profiles-dir", type=Path, default=Path(os.environ.get("OPENBEAST_PROFILES_DIR")
@@ -432,7 +452,10 @@ def main(argv: list[str] | None = None) -> int:
             mdir = models_dir(a.models_dir, a.env) if needs_dir else None
         if mdir is not None and not a.verify and not a.locate:
             mdir.mkdir(parents=True, exist_ok=True)
-        return run(p, mdir, "verify" if a.verify else "locate" if a.locate else "fetch")
+        if a.trust_first_use and not a.verify:
+            log("Error: --trust-first-use only applies to --verify (a plain fetch already records a first lock)")
+            return 2
+        return run(p, mdir, "verify" if a.verify else "locate" if a.locate else "fetch", a.trust_first_use)
     except (obprofile.ProfileError, FetchError, hfapi.HubError) as e:
         log(f"Error: {e}")
         return 1

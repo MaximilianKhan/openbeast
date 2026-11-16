@@ -92,6 +92,19 @@ if [[ $RC -eq 0 ]] && has "$OUT" "MCPO_ADMIN_KEY: already set" \
 else
   fail "re-run clobbered or misreported a real key (rc=$RC): $OUT"
 fi
+# Review (2026-11): a hand-edited conf with no final newline. The new key
+# used to be glued onto the last line (`WEBUI_AUTH=trueIDENTITY_JWT_SECRET=…`)
+# while the script still said "generated": the secret stayed unset and
+# WEBUI_AUTH read as not-a-boolean -> false, echoing the secret in the warning.
+printf 'MCPO_ADMIN_KEY=aaa\nMCPO_GUEST_KEY=bbb\nWEBUI_AUTH=true' > "$K/openbeast.conf"
+run "${KEYS[@]}" --with-jwt
+if [[ $RC -eq 0 ]] && grep -qx 'WEBUI_AUTH=true' "$K/openbeast.conf" \
+   && [[ "$(_val "$K/openbeast.conf" IDENTITY_JWT_SECRET | wc -c)" -eq 65 ]] \
+   && has "$OUT" "IDENTITY_JWT_SECRET: generated"; then
+  pass "no final newline: the new key gets its own line; the last setting is intact"
+else
+  fail "no-final-newline append (rc=$RC): $OUT :: $(tr '\n' '|' < "$K/openbeast.conf")"
+fi
 
 # ---------------------------------------------------------------------------
 echo ""

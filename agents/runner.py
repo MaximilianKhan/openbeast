@@ -211,8 +211,13 @@ def _tool_summary(name: str, args: dict) -> str:
         "task_done": lambda a: a.get("summary", "")[:100],
     }
     fmt = summaries.get(name)
-    if fmt:
-        return fmt(args)
+    if fmt and isinstance(args, dict):
+        # Called outside the handler's try: a field of the wrong type
+        # ({"summary": null}, {"command": 5}) must not kill the run here.
+        try:
+            return str(fmt(args))
+        except Exception:
+            pass
     return str(args)[:100]
 
 
@@ -580,6 +585,40 @@ def proactive_asks(est: int, context_budget: int) -> tuple[int, int] | None:
     return ((est - target) * _CHARS_PER_TOKEN, (est - low) * _CHARS_PER_TOKEN)
 
 
+def _unsurrogate(v):
+    """A lone UTF-16 surrogate (a model's "\\ud800" JSON escape) cannot be
+    encoded as UTF-8: it crashes print() and the next request's JSON body.
+    Strings come back with each one as '?'; dicts/lists are rebuilt."""
+    if isinstance(v, str):
+        return v.encode("utf-8", "replace").decode("utf-8")
+    if isinstance(v, dict):
+        return {k: _unsurrogate(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_unsurrogate(x) for x in v]
+    return v
+
+
+def _scrub_surrogates(messages: list[dict]) -> int:
+    """In place, on the history: how many message fields changed."""
+    n = 0
+    for m in messages:
+        for k, v in m.items():
+            clean = _unsurrogate(v)
+            if clean != v:
+                m[k] = clean
+                n += 1
+    return n
+
+
+def _safe_stdio():
+    """print() of model/tool text must never be what kills the run."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def _with_plan(messages: list[dict], plan: str) -> list[dict]:
     """Request payload = history + the current plan block (transient: the
     block is never stored, so it can't bloat or be evicted). Folded into a
@@ -718,11 +757,24 @@ def _apply_steer_ops(ops: list[dict], messages: list[dict], log_event,
     return {"stop": stop, "paused": paused, "said": said}
 
 
-def _host_of(url: str) -> str:
+_LOOPBACK_NAMES = ("localhost", "127.0.0.1", "::1")
+
+
+def _origin_of(url: str) -> tuple[str, str, int] | None:
+    """(scheme, host, port) with the default port filled in and loopback
+    aliases folded to one name; None for anything that is not http(s)."""
     try:
-        return (urllib.parse.urlsplit(url).hostname or "").lower()
-    except Exception:
-        return ""
+        u = urllib.parse.urlsplit((url or "").strip())
+        scheme = u.scheme.lower()
+        host = (u.hostname or "").lower()
+        port = u.port or {"http": 80, "https": 443}.get(scheme)
+    except ValueError:
+        return None
+    if scheme not in ("http", "https") or not host or port is None:
+        return None
+    if host in _LOOPBACK_NAMES:
+        host = "localhost"
+    return scheme, host, port
 
 
 def _key_endpoint_trusted(base_url: str) -> bool:
@@ -730,16 +782,23 @@ def _key_endpoint_trusted(base_url: str) -> bool:
 
     start_agent(base_url=...) is a model-callable MCP parameter with no host
     allowlist, so an injected prompt can name an arbitrary endpoint. The
-    ambient key therefore travels ONLY to the endpoint this install was
-    configured for (OPENBEAST_AGENT_INFERENCE_URL) or to the local server;
-    anywhere else gets the keyless sentinel. An explicit --api-key is operator
-    intent and always honored.
+    ambient key therefore travels ONLY to an endpoint this install was
+    configured for — the runner's local default, OPENBEAST_AGENT_INFERENCE_URL,
+    OPENBEAST_INFERENCE_URL or OPENBEAST_CONSUMER_BASE (hydra) — matched by
+    ORIGIN (scheme + host + port), so another loopback listener or another
+    port/scheme on the worker host gets the keyless sentinel. An explicit
+    --api-key is operator intent and always honored.
     """
-    host = _host_of(base_url)
-    if not host or host in ("localhost", "127.0.0.1", "::1"):
-        return True
-    configured = os.environ.get("OPENBEAST_AGENT_INFERENCE_URL", "")
-    return bool(configured) and host == _host_of(configured)
+    origin = _origin_of(base_url)
+    if origin is None:
+        return False
+    trusted = {_origin_of(DEFAULT_BASE_URL)}
+    for name in ("OPENBEAST_AGENT_INFERENCE_URL", "OPENBEAST_INFERENCE_URL",
+                 "OPENBEAST_CONSUMER_BASE"):
+        configured = os.environ.get(name, "").strip()
+        if configured:
+            trusted.add(_origin_of(configured))
+    return origin in trusted
 
 
 def resolve_api_key(explicit: str | None = None,
@@ -780,6 +839,7 @@ def run_agent(
     steer: bool = False,
 ) -> str:
     """Run the agent loop. Returns the final summary or last model message."""
+    _safe_stdio()
 
     if workdir:
         workdir = os.path.expanduser(workdir)
@@ -1021,6 +1081,11 @@ def run_agent(
                 **cap_kwargs,
             )
         except Exception as e:
+            if isinstance(e, UnicodeEncodeError) and _scrub_surrogates(messages):
+                # Not an API error: the payload could not be encoded, and an
+                # identical retry would fail the same way every 5 s.
+                log_event({"type": "surrogates_scrubbed"})
+                continue
             err = str(e)
             print(f"  API error: {err}")
             log_event({"type": "error", "error": err})
@@ -1122,6 +1187,7 @@ def run_agent(
                              f"Re-issue the call with valid JSON.")
 
             handler = TOOL_HANDLERS.get(fn_name)
+            call_ok = False  # the handler ran and returned (no error turn)
             if parse_err:
                 result = parse_err
             elif not handler:
@@ -1139,6 +1205,7 @@ def run_agent(
                         raise TypeError(
                             f"arguments must be an object, got {type(fn_args).__name__}")
                     result = handler(**coerce_args(fn_name, fn_args))
+                    call_ok = True
                 except Exception as e:
                     result = f"Error: bad tool call to {fn_name}: {e}"
 
@@ -1157,9 +1224,17 @@ def run_agent(
                 "content": result,
             })
 
-            # Check for task completion
-            if fn_name == "task_done":
-                final_summary = fn_args.get("summary", result)
+            # Check for task completion. Only an ACCEPTED task_done ends the
+            # run: a bad call (invalid JSON, non-object args, missing summary)
+            # and the R1 path guard's "NOT DONE — ..." refusal are tool turns
+            # the model must get to act on.
+            if (fn_name == "task_done" and call_ok
+                    and str(result).startswith("TASK_DONE")):
+                final_summary = fn_args.get("summary")
+                if not isinstance(final_summary, str):
+                    # {"summary": null|5|{...}}: callers slice the summary.
+                    final_summary = (str(result) if final_summary is None
+                                     else str(final_summary))
                 print(f"\n{'=' * 60}")
                 print(f"Task complete (iteration {iteration})")
                 print(f"Summary: {final_summary}")

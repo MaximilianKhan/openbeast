@@ -27,6 +27,8 @@
 #     the database open and would write back into it).
 #   - Backs up first with `VACUUM INTO` (a consistent, compacted copy).
 #   - Leaves providers/credentials, config, projects and logs alone.
+#   - Refuses any opencode that is not 1.x (2.x removed `opencode db`), and
+#     any `db path` reply that is not one absolute *.db path.
 #   - Reclaims the space afterwards (VACUUM + a truncating WAL checkpoint; in
 #     WAL mode a VACUUM alone lands in the -wal file and frees nothing).
 # Note: even read-only opencode commands (list, db) touch the database's
@@ -37,6 +39,7 @@ set -euo pipefail
 
 die()  { echo "error: $*" >&2; exit 1; }
 note() { echo "  $*"; }
+case "${1:-}" in -h|--help) sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;; esac
 
 OC="${OPENCODE_BIN:-}"
 if [[ -z "$OC" ]]; then
@@ -56,10 +59,31 @@ human() {
 }
 dirsize() { if [[ -d "$1" ]]; then du -sh "$1" 2>/dev/null | cut -f1; else echo "-"; fi; }
 
-DB="$("$OC" db path 2>/dev/null || true)"
-[[ -n "$DB" ]] || die "opencode did not report a database path (\`opencode db path\`)"
-DATA_DIR="$(dirname "$DB")"
+# Version gate. Everything below drives opencode 1.x's `db` subcommand, which
+# opencode 2.x removed: `opencode db path` there prints the general help to
+# stdout, an unchecked capture took that as the database path, and the script
+# reported "no sessions" / "nothing to clear" beside a live multi-GB database.
+# (2.x also keeps a resident `serve --service`.) Refuse anything that is not a
+# verified major instead of guessing at its CLI.
+OC_VER="$("$OC" --version 2>/dev/null | head -n 1 || true)"
+OC_MAJOR="$(printf '%s' "$OC_VER" | sed -n 's/^[^0-9]*\([0-9][0-9]*\)\..*/\1/p')"
+if [[ "$OC_MAJOR" != 1 ]]; then
+  die "unsupported opencode (${OC_VER:-version unknown}, $OC): this script is verified on opencode 1.x only (2.x has no \`opencode db\`). Nothing was read or changed. On 2.x use \`opencode session list\` / \`opencode session delete <id>\` in each project, after \`opencode service stop\`."
+fi
+
+# The database path must be exactly one absolute line naming a *.db file;
+# anything else (help text, a warning, an empty reply) is a CLI we do not know.
+DB="$("$OC" db path 2>/dev/null)" || die "\`opencode db path\` failed: cannot locate the database; nothing changed"
+case "$DB" in
+  *$'\n'*|"") die "\`opencode db path\` did not print a single path: unsupported opencode CLI; nothing changed" ;;
+  /*.db) ;;
+  *) die "\`opencode db path\` printed '$DB', not an absolute *.db path: unsupported opencode CLI; nothing changed" ;;
+esac
+# opencode's data dir is the XDG one, NOT dirname($DB): OPENCODE_DB moves only
+# the database; snapshot/, tool-output/ and storage/ stay in the data dir.
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/opencode"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/opencode"
+physdir() { (cd "$1" 2>/dev/null && pwd -P) || printf '%s\n' "$1"; }
 dbsize() { echo $(( $(bytes "$DB") + $(bytes "$DB-wal") )); }
 
 summary() {
@@ -83,7 +107,7 @@ clear_sessions() {
       --dir=*) dir="${1#--dir=}" ;;
       --history) history=1 ;;
       --no-backup) backup=0 ;;
-      -h|--help) sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+      -h|--help) sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
       *) die "unknown option: $1 (see --help)" ;;
     esac
     shift
@@ -113,7 +137,16 @@ clear_sessions() {
   kids="$(q "select count(*) from session where parent_id in (select id from session where $where)")"
   echo "opencode database: $DB ($(human "$(dbsize)"))"
   echo "Would delete: $n session(s)${dir:+ under $dir}, plus ${kids:-0} sub-agent session(s), with all their messages."
-  [[ $history -eq 1 ]] && echo "Would also clear: prompt history, session diffs, tool output, undo snapshots."
+  if [[ $history -eq 1 ]]; then
+    # --history removes opencode's data-dir trees. If OPENCODE_DB relocated
+    # the database those trees are not beside it: refuse rather than rm -rf
+    # whatever happens to sit next to a relocated database.
+    [[ "$(physdir "$(dirname "$DB")")" == "$(physdir "$DATA_DIR")" ]] \
+      || die "--history: the database ($DB) is not in opencode's data dir ($DATA_DIR), so OPENCODE_DB relocated it; refusing to guess which snapshot/tool-output dirs are opencode's"
+    echo "Would also clear: prompt history, session diffs, tool output, undo snapshots:"
+    note "$STATE_DIR/prompt-history.jsonl"
+    note "$DATA_DIR/storage/session_diff"; note "$DATA_DIR/tool-output"; note "$DATA_DIR/snapshot"
+  fi
   if [[ $go -eq 0 ]]; then
     echo "DRY RUN — nothing changed. Re-run with --go to delete."
     return 0
@@ -171,6 +204,6 @@ clear_sessions() {
 case "${1:-}" in
   ""|summary|list) summary ;;
   clear) shift; clear_sessions "$@" ;;
-  -h|--help) sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//' ;;
+  -h|--help) sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown command: $1 (summary | clear [--go] [--dir PATH] [--history] [--no-backup])" ;;
 esac

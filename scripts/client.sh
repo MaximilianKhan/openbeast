@@ -99,8 +99,9 @@ if not models:
 before = set(prov.get("models") or {})
 after = set(models)
 
-# The rig serves ONE model and ignores the model id in the request, so every
-# catalog row resolves to whatever is loaded right now. Ask it what that is and
+# A llama-server rig serves ONE model and ignores the model id in the request,
+# so every catalog row resolves to whatever is loaded right now (an id-strict
+# backend does not — see the beast-slot block below). Ask it what that is and
 # pin a row that is true by construction, carrying the REAL n_ctx rather than a
 # hand-maintained number that drifts. Best-effort: a rig that is down or
 # unreachable just leaves the static catalog in place.
@@ -114,21 +115,61 @@ if base:
             r.add_header("Authorization", "Bearer " + key)
         return json.load(urllib.request.urlopen(r, timeout=6))
     try:
-        alias = _get(base + "/models")["data"][0]["id"]
-        # /props carries the real n_ctx, but it lives at the SERVER root (not
-        # under /v1) and beast-gate's path allowlist deliberately blocks it on
-        # gated installs — so this is strictly best-effort. No n_ctx just means
-        # the live row ships without a context limit.
+        first = _get(base + "/models")["data"][0]
+        alias = first["id"]
+        # The real window, from whichever server this is. llama.cpp: /props
+        # (at the SERVER root, not under /v1 — and beast-gate's allowlist
+        # blocks it on gated installs). vLLM: /v1/models max_model_len.
+        # TensorFold (the Spark pair): /health context_length — /props is a
+        # 404 there, and /health is on the gate's allowlist. Best-effort: no
+        # window just means the live row ships without a context limit.
         root = base[:-3] if base.endswith("/v1") else base
-        try:
-            n_ctx = _get(root + "/props")["default_generation_settings"]["n_ctx"]
-        except Exception:
-            n_ctx = None
+        def _ctx(v):
+            return v if isinstance(v, int) and not isinstance(v, bool) and v > 0 else None
+        n_ctx = _ctx(first.get("max_model_len"))
+        for path, pick in (("/props", lambda d: d["default_generation_settings"]["n_ctx"]),
+                           ("/health", lambda d: d["context_length"])):
+            if n_ctx:
+                break
+            try:
+                n_ctx = _ctx(pick(_get(root + path)))
+            except Exception:
+                n_ctx = None
         live = (alias, n_ctx)
     except Exception:
         live = None
 
+# beast-slot (public, keyless) says which backend the rig runs and what it
+# serves. Two uses: a fallback for the live id when /v1/models could not be
+# read, and knowing that the static rows (llama serve-script aliases) are
+# ids an id-strict backend — vLLM, or hydra with unknown_model = "404" —
+# answers 404. Before this, a client installed while such a rig was down
+# kept a static default that 404ed every request.
+slot = None
+slot_url = os.environ.get("OPENBEAST_SLOT_URL", "")
+if slot_url:
+    try:
+        slot = json.load(urllib.request.urlopen(slot_url, timeout=6))
+    except Exception:
+        slot = None
+    if not isinstance(slot, dict) or "beast_slot" not in slot:
+        slot = None
+backend = (slot.get("backend") or "llama") if slot else None
+if live is None and slot:
+    sm = slot.get("model") or {}
+    sctx = sm.get("ctx")
+    if isinstance(sm.get("id"), str) and sm["id"]:
+        live = (sm["id"], sctx if isinstance(sctx, int) and not isinstance(sctx, bool) and sctx > 0 else None)
+
 models = dict(models)
+if backend not in (None, "llama"):
+    # Keep the rows (hydra may route some of them; TensorFold ignores the
+    # id), but do not let them pass for something this rig serves.
+    for k in list(models):
+        if not live or k != live[0]:
+            r = dict(models[k])
+            r["name"] = "%s  (llama-server rigs only)" % (r.get("name") or k)
+            models[k] = r
 if live:
     alias, n_ctx = live
     # Keyed by the id the rig SERVES, never an invented one: opencode sends
@@ -138,7 +179,7 @@ if live:
     row = dict(models.get(alias) or {})
     row["name"] = "%s  [live on rig]" % alias
     if n_ctx:
-        row["limit"] = {"context": n_ctx, "output": 32768}
+        row["limit"] = {"context": n_ctx, "output": min(32768, n_ctx)}
     models[alias] = row
 prov["models"] = models
 
@@ -279,13 +320,27 @@ case "$CMD" in
     fi
     if [ -n "${OPENBEAST_SLOT_URL:-}" ]; then
       # beast-slot contract v2 (docs/BEAST_SLOT.md). Line 1 is the summary;
-      # any further lines are version warnings, printed indented below it.
-      SLOT="$(curl -s -m 5 "$OPENBEAST_SLOT_URL" 2>/dev/null | "$PY_BIN" -c '
-import json, sys
+      # any further lines are warnings, printed indented below it.
+      # The STATUS is read too: a busy dashboard (503, documented as "retry,
+      # not an outage"), a dashboard that is not running (502), a path that
+      # is not published (404) and nothing answering in 5 s all used to print
+      # the same "not published — run --publish-slot", the wrong fix for
+      # three of them. A 503 is retried once, after its Retry-After.
+      _slot_get() {
+        _o="$(curl -s -m 5 -w '\n%{http_code}' "$OPENBEAST_SLOT_URL" 2>/dev/null)" || true
+        SLOT_CODE="${_o##*$'\n'}"; SLOT_BODY="${_o%$'\n'*}"
+        case "$SLOT_CODE" in [0-9][0-9][0-9]) : ;; *) SLOT_CODE=000 ;; esac
+      }
+      _slot_get
+      if [ "$SLOT_CODE" = "503" ]; then sleep 1; _slot_get; fi
+      SLOT="$(printf '%s' "$SLOT_BODY" | OB_OC_CONFIG="$OC_CONFIG" "$PY_BIN" -c '
+import json, os, sys
 CLIENT_V = 2   # the contract version THIS client understands
 try:
     d = json.load(sys.stdin)
 except Exception:
+    sys.exit(0)
+if not isinstance(d, dict) or "beast_slot" not in d:
     sys.exit(0)
 m, s = d.get("model") or {}, d.get("slots") or {}
 c = d.get("capacity") or {}
@@ -322,13 +377,49 @@ elif isinstance(rig_v, int) and rig_v > CLIENT_V:
     print("! rig publishes beast-slot v%d, this client reads v%d — fields"
           " above are still correct, newer ones are ignored;"
           " openbeast-client update to see them" % (rig_v, CLIENT_V))
+# An id-strict server (vLLM; hydra with unknown_model = "404") answers 404 to
+# a model id it does not serve. llama-server ignores the id, so only a rig
+# that names a non-llama backend is checked. The default comes from the
+# static llama catalog whenever the live probe failed at install time.
+backend = d.get("backend") or "llama"
+served = m.get("id")
+if backend != "llama" and served:
+    try:
+        cur = str(json.load(open(os.environ["OB_OC_CONFIG"])).get("model") or "")
+    except Exception:
+        cur = ""
+    if cur.startswith("openbeast-rig/") and cur.split("/", 1)[1] != served:
+        print("! opencode default %s is not the id this %s rig serves (%s) —"
+              " an id-strict server 404s it; run: openbeast-client refresh-config"
+              % (cur, backend, served))
 ' || true)"
       if [ -n "$SLOT" ]; then
         echo "  ✓ beast-slot: $(printf '%s\n' "$SLOT" | sed -n '1p')"; ok=$((ok+1))
         printf '%s\n' "$SLOT" | sed -n '2,$p' | sed 's/^/    /'
       else
-        echo "  ! beast-slot status not published (optional — rig:"
-        echo "      ./scripts/setup-tailscale.sh --publish-slot)"
+        # Informational either way (the slot API is optional), but name the
+        # failure that actually happened.
+        case "$SLOT_CODE" in
+          503)
+            echo "  ! beast-slot busy (503 twice): the rig's dashboard is at its"
+            echo "    connection cap. It is not an outage. Retry shortly" ;;
+          502|504)
+            echo "  ! beast-slot is published, but the dashboard behind it is not"
+            echo "    running (HTTP $SLOT_CODE). On the rig: ./scripts/ext.sh enable dashboard,"
+            echo "    then restart the stack" ;;
+          404)
+            echo "  ! beast-slot status not published (optional — rig:"
+            echo "      ./scripts/setup-tailscale.sh --publish-slot)" ;;
+          000)
+            echo "  ! beast-slot did not answer within 5 s ($OPENBEAST_SLOT_URL)."
+            echo "    Either :8444 is not published (rig: ./scripts/setup-tailscale.sh"
+            echo "    --publish-slot), the rig is unreachable, or its dashboard is stalled" ;;
+          200)
+            echo "  ! beast-slot answered, but not with a beast-slot document"
+            echo "    ($OPENBEAST_SLOT_URL). Is OPENBEAST_SLOT_URL the rig's :8444/api/slot?" ;;
+          *)
+            echo "  ! beast-slot answered HTTP $SLOT_CODE ($OPENBEAST_SLOT_URL)" ;;
+        esac
       fi
     fi
     if [ -n "${SEARXNG_URL:-}" ]; then

@@ -70,6 +70,16 @@ def test_python_syntax_error_reported(tmp_path, diag_on):
     assert "── diagnostics (python) ──" in out and "SyntaxError" in out
 
 
+def test_python_check_leaves_no_bytecode_in_the_workspace(tmp_path, diag_on):
+    """`-m py_compile FILE` wrote __pycache__/*.pyc beside the source: the
+    'read-only' check littered the user's workspace on every .py write."""
+    ok = _write(tmp_path, "m.py", "x = 1\n")
+    bad = _write(tmp_path, "b.py", "def broken(:\n")
+    assert "diagnostics: OK (python)" in ok
+    assert "SyntaxError" in bad and "b.py" in bad
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["b.py", "m.py"]
+
+
 def test_edit_file_also_pushes(tmp_path, diag_on):
     p = tmp_path / "e.py"
     p.write_text("x = 1\n")
@@ -88,6 +98,21 @@ def test_hostile_filename_does_not_execute(tmp_path, diag_on):
 
 
 # --- 4. robustness ---------------------------------------------------------
+
+def test_wrapper_pwd_is_the_files_directory(tmp_path, diag_on, monkeypatch):
+    # The Sandlock wrapper grants `-w "$PWD"`; bash() sets cwd so that is
+    # the workspace. Diagnostics ran with the SERVER's cwd, so the checker
+    # was granted the launch dir and could not see the file it checks.
+    probe = tmp_path / "pwd.txt"
+    work = tmp_path / "ws"
+    work.mkdir()
+    monkeypatch.setenv(
+        "OPENBEAST_BASH_WRAPPER",
+        f"/bin/sh -c 'pwd -P > {probe}; exec \"$@\"' wrap")
+    out = _write(work, "x.py", "print('hi')\n")
+    assert out.startswith("Wrote ")
+    assert probe.read_text().strip() == str(work.resolve())
+
 
 def test_missing_checker_appends_nothing(tmp_path, diag_on, monkeypatch):
     monkeypatch.setattr(tools.shutil, "which", lambda _: None)
@@ -201,6 +226,73 @@ def test_go_undefined_reported_moduleless(tmp_path, diag_on):
     out = _write(tmp_path, "bad.go",
                  "package main\nfunc main() { missing() }\n")
     assert "── diagnostics (go) ──" in out, out
+
+
+def _cmd(monkeypatch, path):
+    monkeypatch.setattr(tools.shutil, "which", lambda exe: f"/usr/bin/{exe}")
+    lang, cmd, _env, scratch = tools._diag_checker(str(path))
+    for d in scratch:
+        shutil.rmtree(d, ignore_errors=True)
+    return cmd
+
+
+def test_go_standalone_programs_are_vetted_one_at_a_time(tmp_path, monkeypatch):
+    """Two module-less `package main` programs in one directory: vetting
+    ./*.go reported `main redeclared in this block` on every write."""
+    (tmp_path / "hello.go").write_text("package main\nfunc main() {}\n")
+    (tmp_path / "solver.go").write_text("package main\n\nfunc main() {\n}\n")
+    assert _cmd(monkeypatch, tmp_path / "solver.go").endswith("go vet ./solver.go")
+    # a multi-file program (one main + helpers) still vets its siblings
+    (tmp_path / "solver.go").write_text("package main\nfunc helper() {}\n")
+    assert _cmd(monkeypatch, tmp_path / "hello.go").endswith("go vet ./*.go")
+    # and inside a module two mains really are one broken package
+    (tmp_path / "solver.go").write_text("package main\nfunc main() {}\n")
+    (tmp_path / "go.mod").write_text("module x\n\ngo 1.21\n")
+    assert _cmd(monkeypatch, tmp_path / "hello.go").endswith("go vet ./*.go")
+
+
+def test_validator_flags_are_pinned_only_under_eval(tmp_path, monkeypatch):
+    """The eval validators' -std=c11 / -std=c++17 / bare-rustc flags made up
+    errors for production code the installed toolchain builds fine (POSIX
+    CLOCK_MONOTONIC, std::span, a lib.rs, edition-2018+ syntax)."""
+    c, cpp = tmp_path / "p.c", tmp_path / "s.cpp"
+    lib, bin_ = tmp_path / "lib.rs", tmp_path / "main.rs"
+    c.write_text("int main(void){return 0;}\n")
+    cpp.write_text("int main(){}\n")
+    lib.write_text("pub async fn f() {}\n")
+    bin_.write_text("fn main() {}\n")
+    monkeypatch.setenv("OPENBEAST_EVAL", "1")
+    assert "-std=c11 " in _cmd(monkeypatch, c)
+    assert "-std=c++17 " in _cmd(monkeypatch, cpp)
+    assert _cmd(monkeypatch, lib).startswith("rustc --emit=metadata ")
+    monkeypatch.delenv("OPENBEAST_EVAL")
+    assert "-std=" not in _cmd(monkeypatch, c)
+    assert "-std=" not in _cmd(monkeypatch, cpp)
+    assert "--edition 2021 --crate-type lib " in _cmd(monkeypatch, lib)
+    assert "--edition 2021 --crate-type bin " in _cmd(monkeypatch, bin_)
+    # a cargo crate member: single-file rustc cannot judge it -> no checker
+    (tmp_path / "Cargo.toml").write_text("[package]\nname = 'x'\n")
+    monkeypatch.setattr(tools.shutil, "which", lambda exe: f"/usr/bin/{exe}")
+    assert tools._diag_checker(str(lib)) is None
+
+
+@gcc
+def test_posix_c_is_not_a_made_up_error_in_production(tmp_path, diag_on, monkeypatch):
+    monkeypatch.delenv("OPENBEAST_EVAL", raising=False)
+    out = _write(tmp_path, "posix.c",
+                 "#include <string.h>\n#include <time.h>\n#include <stdlib.h>\n"
+                 "int main(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);\n"
+                 "  char *s = strdup(\"x\"); free(s); return 0; }\n")
+    assert "diagnostics: OK (c)" in out, out
+
+
+@godep
+def test_go_two_standalone_mains_are_not_an_error(tmp_path, diag_on):
+    _write(tmp_path, "hello.go", "package main\nfunc main() {}\n")
+    out = _write(tmp_path, "solver.go", "package main\nfunc main() {}\n")
+    assert "diagnostics: OK (go)" in out, out
+    bad = _write(tmp_path, "solver.go", "package main\nfunc main() { missing() }\n")
+    assert "── diagnostics (go) ──" in bad and "redeclared" not in bad, bad
 
 
 @gcc

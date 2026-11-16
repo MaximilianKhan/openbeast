@@ -75,56 +75,49 @@ if [[ ! -f "$MODEL" ]]; then
   exit 4
 fi
 
-# --- Model registry enforcement (supply chain for weights) -----------------
-# Container images are digest-pinned and Python deps are hash-pinned; weights
-# are the one shipped artifact too big to vendor, so scripts/weights.registry
-# pins each by sha256 + byte size. This checks the file we are ABOUT to load.
-#
-# Default is `warn`, deliberately: a hard refusal here cannot start the stack,
-# and someone serving a legitimately unlisted local GGUF should not be locked
-# out by an upgrade. `strict` turns it into a refusal for installs that want
-# supply-chain enforcement. `off` silences it entirely.
-# Size-only by design — a sha256 of 20 GB on every launch would add minutes to
-# every start; `./scripts/verify-weights.sh --deep` is the hash-level check.
-_wr_enforce="${WEIGHT_ENFORCE:-warn}"
-case "$_wr_enforce" in
-  warn|strict|off) ;;
-  *) echo "WARNING: WEIGHT_ENFORCE='$_wr_enforce' is not warn|strict|off — using warn" >&2
-     _wr_enforce="warn" ;;
-esac
-if [[ "$_wr_enforce" != "off" && -f "$SCRIPT_DIR/weights.registry" && -f "$MODEL" ]]; then
-  _wr_name="$(basename "$MODEL")"
-  _wr_row="$(awk -F'\t' -v n="$_wr_name" '$0 !~ /^#/ && $3 == n {print; exit}' \
-             "$SCRIPT_DIR/weights.registry" || true)"
-  if [[ -z "$_wr_row" ]]; then
-    _wr_msg="weight '$_wr_name' is NOT in scripts/weights.registry (unpinned)"
-    _wr_hint="add a row (sha256<TAB>bytes<TAB>filename<TAB>repo<TAB>remote) or set WEIGHT_ENFORCE=off"
-  else
-    _wr_want="$(printf '%s' "$_wr_row" | cut -f2)"
-    _wr_have="$(stat -c%s "$MODEL" 2>/dev/null || echo 0)"
-    if [[ "$_wr_want" != "0" && "$_wr_have" != "$_wr_want" ]]; then
-      _wr_msg="weight '$_wr_name' is ${_wr_have} bytes, registry pins ${_wr_want}"
-      _wr_hint="re-download, or re-pin only after vetting: ./scripts/verify-weights.sh --deep"
-    else
-      _wr_msg=""
-    fi
-  fi
-  if [[ -n "${_wr_msg:-}" ]]; then
-    if [[ "$_wr_enforce" == "strict" ]]; then
-      echo "Error: $_wr_msg" >&2
-      echo "       $_wr_hint" >&2
-      echo "       (WEIGHT_ENFORCE=strict — set warn/off in openbeast.conf to proceed)" >&2
-      # Exit 3, not 1: start.sh's MODEL_ROLLBACK cannot distinguish a crash
-      # from a deliberate supply-chain refusal, and would "recover" by
-      # silently serving a DIFFERENT model — the opposite of what strict
-      # mode is for. A distinct code lets the supervisor refuse to roll back.
-      echo "       (exit 3 = supply-chain refusal; rollback must NOT substitute another model)" >&2
-      exit 3
-    fi
-    echo "WARNING: $_wr_msg" >&2
-    echo "         $_wr_hint" >&2
-  fi
+# --- No keyless inference on a network bind --------------------------------
+# A non-loopback HOST (BIND_HOST, or --host) with no LLAMA_API_KEY put a
+# keyless llama-server on that network: every route (/v1/*, /slots, /props,
+# /metrics) to anyone who can reach it, past beast-gate's per-device keys,
+# caps and audit even with EDGE_GATE=true, and past the acknowledgement
+# setup-tailscale.sh demands before it publishes the same thing on :8443.
+# The keyless tool server is refused in this state (ALLOW_OPEN_TOOLS); so is
+# this, with the same kind of explicit "yes": ALLOW_OPEN_INFERENCE=true.
+# Exit 3, like a registry refusal: start.sh must not "recover" by launching
+# another model on the same bind.
+if ! ob_bind_is_loopback "$HOST" && [[ -z "$LLAMA_API_KEY" && "${ALLOW_OPEN_INFERENCE:-false}" != "true" ]]; then
+  echo "Error: refusing to serve keyless inference on $HOST:$PORT — anyone on that network" >&2
+  echo "       could use the GPU and every llama-server route, past beast-gate and its audit." >&2
+  echo "       Fix one of: BIND_HOST=127.0.0.1 (remote access: scripts/setup-tailscale.sh)," >&2
+  echo "       set LLAMA_API_KEY, or ALLOW_OPEN_INFERENCE=true in openbeast.conf to accept it." >&2
+  echo "       (exit 3 = refusal; rollback must NOT substitute another model)" >&2
+  exit 3
 fi
+
+# --- Model registry enforcement (supply chain for weights) -----------------
+# Every weight file this launch loads — the -m file, all shards of a split
+# GGUF, and any --mmproj / -md draft — is checked against
+# scripts/weights.registry (lib/weightcheck.sh has the rules). Default `warn`;
+# `strict` refuses with exit 3; `off` silences it. Size-only by design;
+# `./scripts/verify-weights.sh --deep` is the hash-level check.
+source "$SCRIPT_DIR/lib/weightcheck.sh"
+WEIGHT_FILES=()
+while IFS= read -r _wf; do WEIGHT_FILES+=("$_wf"); done \
+  < <(ob_weight_files "$MODEL" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"})
+_wr_rc=0
+ob_weight_enforce "$SCRIPT_DIR/weights.registry" "${WEIGHT_ENFORCE:-warn}" "${WEIGHT_FILES[@]}" || _wr_rc=$?
+[[ $_wr_rc -eq 0 ]] || exit "$_wr_rc"
+
+# Weights kept in host RAM (MoE experts on the CPU, or no GPU layers at all):
+# the GGUF size then says nothing about VRAM, and everything about RAM.
+WEIGHTS_IN_HOST_RAM=0
+[[ "$GPU_LAYERS" == "0" ]] && WEIGHTS_IN_HOST_RAM=1
+for _a in ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}; do
+  case "$_a" in
+    --n-cpu-moe|-ncmoe|--n-cpu-moe=*|--cpu-moe|-cmoe|--override-tensor|-ot|--override-tensor=*)
+      WEIGHTS_IN_HOST_RAM=1 ;;
+  esac
+done
 
 # --- Adaptive context (Hardware Profiles Phase 2) --------------------------
 # The shipped -c values are MEASURED on the 32 GB reference card (RTX 5090).
@@ -133,8 +126,9 @@ fi
 # --kv-unified the KV cache scales with context and is shared across slots.
 # --metrics turns on llama-server's Prometheus endpoint. It's what makes
 # requests_deferred — the real queue depth — visible to the beast-slot
-# contract (slots.busy only counts in-flight work). Loopback-bound like
-# everything else. NOTE the honest caveat: beast-gate's allowlist keeps
+# contract (slots.busy only counts in-flight work). Bound to HOST like every
+# route: loopback by default, and never keyless on a network bind (refused
+# above unless ALLOW_OPEN_INFERENCE=true). NOTE the honest caveat: beast-gate's allowlist keeps
 # /metrics away from remote clients, but on the DEFAULT topology (EDGE_GATE
 # =false, :8443 mapped straight at llama-server) it joins /slots and /props
 # as tailnet-readable aggregate metadata. Documented in docs/BEAST_SLOT.md.
@@ -179,14 +173,20 @@ elif [[ "${OPENBEAST_AUTO_CONTEXT:-1}" == "1" ]]; then
       vram_what="${OB_GPU_COUNT} GPUs (${OB_VRAM_TOTAL_MB} MiB total, ${vram} MiB budgeted)"
     fi
   fi
-  weights_mib=0
-  [[ -f "$MODEL" ]] && weights_mib=$(( ($(stat -c '%s' "$MODEL") + 1048575) / 1048576 ))
+  # Every file of the set: shard 1 alone of a 3-shard GGUF was 42.7 of its
+  # 97 GB, and the --mmproj / draft weights sit in VRAM too.
+  weights_mib="$(ob_weight_set_mib "${WEIGHT_FILES[@]}")"
   # rc=0 capture-then-|| : under `set -e`, a plain `scaled=$(...)` with a
   # nonzero exit would kill the script HERE — the rc=2 "weights don't fit"
   # branch below was unreachable and small-card users got a silent exit.
   rc=0
   scaled=$(ob_scale_context "$CONTEXT" "$vram" "$weights_mib") || rc=$?
-  if [[ $rc -eq 2 ]]; then
+  if [[ $WEIGHTS_IN_HOST_RAM -eq 1 ]]; then
+    # How much of the GGUF lands on the GPU is up to --n-cpu-moe / -ot, not
+    # this script: scaling on the whole file "forced -c 8192" on cards the
+    # launch fits. The script's measured -c stands.
+    [[ "$scaled" != "$CONTEXT" ]] && echo "Context: $CONTEXT kept — this launch keeps weights in host RAM, so the GGUF size (~${weights_mib} MiB) is not its VRAM cost. Override: OPENBEAST_CONTEXT=<n>."
+  elif [[ $rc -eq 2 ]]; then
     echo "Warning: ${vram_what} can't hold this model's weights (~${weights_mib} MiB) + 2 GB headroom — try a smaller quant. Forcing -c ${scaled}." >&2
     CONTEXT="$scaled"
   elif [[ "$scaled" -lt "$CONTEXT" ]]; then
@@ -213,6 +213,22 @@ if [[ -n "$LLAMA_API_KEY" ]]; then
 else
   unset LLAMA_API_KEY
 fi
+
+# Browser origins. llama-server's default (--cors-origins "*" with
+# credentials) echoes ANY request's Origin back in Access-Control-Allow-
+# Origin, so with no key every web page open in a browser on this box could
+# POST to 127.0.0.1:8080 and READ the reply cross-origin (/v1/*, /props,
+# /slots, /metrics). "localhost" reflects only localhost / 127.0.0.1 / ::1
+# origins. Nothing in the stack needs more: Open WebUI, the router, gate and
+# clients call it server-side or with no Origin, and llama-server's own web
+# UI is same-origin. Through the environment (llama-server reads it
+# natively, common/arg.cpp `.set_env("LLAMA_ARG_CORS_ORIGINS")`), so a build
+# without the flag ignores it rather than exiting; an operator's own
+# LLAMA_ARG_CORS_ORIGINS, or --cors-origins in a serve script, wins.
+# Not the whole fix: a page can still send a blind request, and a DNS-
+# rebinding page is same-origin (llama-server at the pinned commit checks
+# no Host header). LLAMA_API_KEY is what closes those.
+export LLAMA_ARG_CORS_ORIGINS="${LLAMA_ARG_CORS_ORIGINS:-localhost}"
 
 echo "Parallel slots: $PARALLEL (unified KV cache, continuous batching)"
 
@@ -260,10 +276,18 @@ if [[ $_pc_own -eq 0 && "$_pc" != "0" ]]; then
   if [[ -z "$_pc" || "$_pc" == "auto" ]]; then
     declare -F ob_prompt_cache_mb >/dev/null 2>&1 || source "$SCRIPT_DIR/lib/hardware.sh" 2>/dev/null || true
     _pc=0
+    # Weights kept in host RAM share the stack's memory scope with the cache.
+    _pc_host=0
+    [[ $WEIGHTS_IN_HOST_RAM -eq 1 ]] && _pc_host="$(ob_weight_set_mib "${WEIGHT_FILES[@]}")"
     if declare -F ob_prompt_cache_mb >/dev/null 2>&1; then
-      _pc="$(ob_prompt_cache_mb "$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null || true)")"
+      _pc="$(ob_prompt_cache_mb "$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null || true)" \
+             "${MEM_LIMIT_PCT:-75}" "$_pc_host")"
     fi
     _pc_how="auto: 35% of host RAM, max 48 GiB"
+    if [[ $_pc_host -gt 0 ]]; then
+      _pc_how="auto: 35% of host RAM, max 48 GiB, less ~${_pc_host} MiB of host-resident weights in the ${MEM_LIMIT_PCT:-75}% memory scope"
+      [[ "$_pc" == "0" ]] && echo "Prompt cache: llama-server's default — this launch keeps ~${_pc_host} MiB of weights in host RAM, which leaves the ${MEM_LIMIT_PCT:-75}% memory scope no room for more (PROMPT_CACHE_RAM_MB=<MiB> to choose)."
+    fi
   fi
   if [[ "$_pc" != "0" ]]; then
     # Captured, not piped into grep -q: under pipefail an early-exiting grep

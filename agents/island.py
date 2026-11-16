@@ -64,7 +64,8 @@ CLI:
                                     3 islanded)
   island.py probe [--timeout S]     one connectivity probe (exit 0 / 1)
   island.py init  --mode M          launch decision: write the first state
-                                    (exit 0 online, 3 islanded)
+                  [--launch-wait S] (exit 0 online, 3 islanded); a failed
+                                    probe is re-tried for S s (default 20)
   island.py watch --mode M          the watcher loop (start.sh starts and reaps it)
   island.py clear                   remove the state file (stop.sh)
 """
@@ -73,6 +74,7 @@ from __future__ import annotations
 import argparse
 import ipaddress
 import json
+import math
 import os
 import re
 import socket
@@ -93,6 +95,13 @@ DEFAULT_PROBES = "1.1.1.1:443 9.9.9.9:443 8.8.8.8:443"
 DEFAULT_GRACE = 90       # seconds without a route before islanding
 DEFAULT_INTERVAL = 15    # seconds between probes
 DEFAULT_TIMEOUT = 2.0    # seconds per probe connect
+# A failed LAUNCH probe is retried for this long before the run boots
+# islanded. A linger boot starts the user unit before DHCP has installed a
+# default route (a user manager has no network-online.target): spark-1's one
+# probe lost that race by under a second and islanded an ordinary reboot.
+DEFAULT_LAUNCH_WAIT = 20  # seconds
+LAUNCH_RETRY = 2.0        # seconds between launch re-probes
+MAX_LAUNCH_WAIT = 600
 REJOIN_OK = 2            # consecutive good probes before leaving island mode
 MAX_GRACE = 7 * 86400    # a finite ceiling: `--grace inf` must not crash int()
 MAX_STALE = 600          # a reader never trusts a heartbeat older than this
@@ -261,9 +270,59 @@ def _load(path: str) -> dict | None:
     return obj if isinstance(obj, dict) else None
 
 
+def _darwin_argv(pid: int) -> list[bytes] | None:
+    """A process's argv on macOS (sysctl KERN_PROCARGS2), or None when it
+    cannot be read — another user's process, a pid that just exited, no
+    libc. Layout: int argc, the exec path, NUL padding, then argc strings."""
+    try:
+        import ctypes
+        libc = ctypes.CDLL(None, use_errno=True)
+        CTL_KERN, KERN_ARGMAX, KERN_PROCARGS2 = 1, 8, 49
+        argmax = ctypes.c_int(0)
+        size = ctypes.c_size_t(ctypes.sizeof(argmax))
+        mib = (ctypes.c_int * 2)(CTL_KERN, KERN_ARGMAX)
+        if libc.sysctl(mib, 2, ctypes.byref(argmax), ctypes.byref(size), None, 0) != 0:
+            return None
+        buf = ctypes.create_string_buffer(max(4096, min(argmax.value, 4 << 20)))
+        size = ctypes.c_size_t(len(buf))
+        mib3 = (ctypes.c_int * 3)(CTL_KERN, KERN_PROCARGS2, pid)
+        if libc.sysctl(mib3, 3, buf, ctypes.byref(size), None, 0) != 0:
+            return None
+        raw = buf.raw[:size.value]
+    except (OSError, AttributeError, ValueError):
+        return None
+    if len(raw) < 4:
+        return None
+    argc = int.from_bytes(raw[:4], sys.byteorder)
+    rest = raw[4:]
+    end = rest.find(b"\0")                       # the exec path
+    if end < 0:
+        return None
+    rest = rest[end:].lstrip(b"\0")
+    argv = rest.split(b"\0")[:argc]
+    return argv if len(argv) == argc else None
+
+
+def _proc_argv(pid: int) -> list[bytes] | None:
+    """argv from /proc (Linux) or sysctl (macOS); None = cannot tell."""
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            return f.read(8192).split(b"\0")
+    except FileNotFoundError:
+        if os.path.isdir("/proc/self"):
+            return None                          # /proc, but the pid is gone
+    except OSError:
+        return None
+    if sys.platform == "darwin":
+        return _darwin_argv(pid)
+    return None
+
+
 def _watcher_alive(pid) -> bool:
-    """The pid the file names is alive and is an island.py process. Where
-    there is no /proc (macOS) liveness alone is the check."""
+    """The pid the file names is alive and is an island.py process (argv
+    from /proc on Linux, sysctl on macOS). When the argv cannot be read the
+    answer is no: liveness alone would trust pid 1 (launchd) or a recycled
+    pid, and "not islanded" is the safe side to fail on."""
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
         return False
     try:
@@ -274,16 +333,10 @@ def _watcher_alive(pid) -> bool:
         pass                      # alive, another user's: cmdline decides
     except OSError:
         return False
-    try:
-        with open(f"/proc/{pid}/cmdline", "rb") as f:
-            argv = f.read(8192).split(b"\0")
-        # An argv element that IS island.py — not one that merely contains
-        # it (tests/test_island.py would pass a substring check).
-        return any(os.path.basename(a) == b"island.py" for a in argv)
-    except FileNotFoundError:
-        return not os.path.isdir("/proc/self")
-    except OSError:
-        return False
+    argv = _proc_argv(pid)
+    # An argv element that IS island.py — not one that merely contains it
+    # (tests/test_island.py would pass a substring check).
+    return bool(argv) and any(os.path.basename(a) == b"island.py" for a in argv)
 
 
 def read_state(path: str | None = None) -> dict | None:
@@ -297,6 +350,11 @@ def read_state(path: str | None = None) -> dict | None:
             age = _now() - float(st.get("updated_at", 0))
             stale_after = min(float(st.get("stale_after", 0)), MAX_STALE)
         except (TypeError, ValueError):
+            continue
+        # NaN compares False to everything (and min(nan, cap) is nan), so a
+        # NaN updated_at / stale_after would pass every test below and be
+        # trusted forever. "nan" also parses through float().
+        if not (math.isfinite(age) and math.isfinite(stale_after)):
             continue
         if stale_after <= 0 or age > stale_after or age < -60:
             continue
@@ -354,7 +412,7 @@ class Watcher:
     def __init__(self, mode: str, grace: float, interval: float,
                  probe_fn, clock=None, path: str | None = None,
                  log=lambda msg: print(msg, flush=True), timeout: float = DEFAULT_TIMEOUT,
-                 mono=None):
+                 mono=None, launch_wait: float = DEFAULT_LAUNCH_WAIT, sleep=None):
         if mode not in ("auto", "force"):
             raise ValueError(f"watcher mode must be auto or force, not {mode!r}")
         self.mode = mode
@@ -362,6 +420,9 @@ class Watcher:
         self.grace = min(max(0.0, g), MAX_GRACE) if g == g else DEFAULT_GRACE
         self.interval = max(1.0, float(interval))
         self.timeout = max(0.1, float(timeout))
+        lw = float(launch_wait)
+        self.launch_wait = min(max(0.0, lw), MAX_LAUNCH_WAIT) if lw == lw else DEFAULT_LAUNCH_WAIT
+        self.sleep = sleep or time.sleep
         self.probe_fn = probe_fn
         self.clock = clock or (lambda: _now())
         # The grace is measured on a monotonic clock: an NTP step backwards
@@ -377,6 +438,11 @@ class Watcher:
         self.net_up: bool | None = None
         self.launched_islanded = False
         self.stopping = threading.Event()
+        # Set by the signal handler (request_stop). A handler must not call
+        # stopping.set(): Event.set takes the Condition's non-reentrant lock,
+        # which the interrupted stopping.wait() in run() may be holding on
+        # this same thread — the watcher then deadlocks in its own handler.
+        self.stop_requested = False
 
     def stale_after(self) -> float:
         # Four missed ticks, each a full interval plus a probe that ran to its
@@ -413,22 +479,41 @@ class Watcher:
         # Never after a stop was asked for: a tick that was mid-probe when
         # SIGTERM arrived would otherwise re-create the file stop.sh just
         # removed.
-        if not self.stopping.is_set():
+        if not (self.stopping.is_set() or self.stop_requested):
             write_state(snap, self.path)
         return snap
 
+    def _launch_probe(self) -> bool:
+        """The launch probe, re-tried every LAUNCH_RETRY s for up to
+        launch_wait s while it fails: a boot whose network is still coming
+        up must not read as an outage (a real outage costs launch_wait)."""
+        if self.probe_fn():
+            return True
+        if self.launch_wait <= 0:
+            return False
+        deadline = time.monotonic() + self.launch_wait
+        self.log(f"{_stamp()} beast-island: no internet route yet — re-probing for up to "
+                 f"{int(self.launch_wait)}s before booting islanded")
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return False
+            self.sleep(min(LAUNCH_RETRY, left))
+            if self.probe_fn():
+                return True
+
     def init(self) -> str:
-        """The launch decision. Forced → island. Auto → one probe; no route
-        right now means islanded from the start (no grace: at launch the
-        cost of guessing wrong is a WebUI that stalls on downloads). The
-        decision is returned even when the file cannot be written — start.sh
-        acts on the exit code, and an unwritable .run must not turn "no
-        route" into "online"."""
+        """The launch decision. Forced → island. Auto → probe (re-tried for
+        launch_wait s, see _launch_probe); no route then means islanded from
+        the start (no grace: at launch the cost of guessing wrong is a WebUI
+        that stalls on downloads). The decision is returned even when the
+        file cannot be written — start.sh acts on the exit code, and an
+        unwritable .run must not turn "no route" into "online"."""
         if self.mode == "force":
             self.net_up = None
             self._enter("island", "forced at launch (start.sh --offline / ISLAND=force)")
         else:
-            self.net_up = bool(self.probe_fn())
+            self.net_up = bool(self._launch_probe())
             if self.net_up:
                 self.state, self.reason = "online", "internet reachable at launch"
             else:
@@ -490,8 +575,9 @@ class Watcher:
             if self.state == "island" and self.ok_streak >= REJOIN_OK:
                 note = "internet reachable again"
                 if self.launched_islanded:
-                    note += (" (Open WebUI was started in offline mode and stays that way "
-                             "until the next ./stop.sh && ./start.sh -d)")
+                    note += (" (Open WebUI was started in offline mode; the next "
+                             "healthcheck.sh --restart — the watchdog, or the supervisor — "
+                             "recreates it online)")
                 self._enter("online", note)
         else:
             self.ok_streak = 0
@@ -511,6 +597,23 @@ class Watcher:
             self._enter("island", "forced at launch (start.sh --offline / ISLAND=force)")
             self.launched_islanded = True
 
+    def request_stop(self, *_):
+        """The SIGTERM / SIGINT handler: a plain flag, no locks (see
+        stop_requested). run() polls it at least every STOP_POLL s."""
+        self.stop_requested = True
+
+    STOP_POLL = 0.25
+
+    def _wait(self, seconds: float) -> bool:
+        """Sleep up to `seconds`; True as soon as a stop was asked for."""
+        end = time.monotonic() + seconds
+        while not (self.stop_requested or self.stopping.is_set()):
+            left = end - time.monotonic()
+            if left <= 0:
+                return False
+            self.stopping.wait(min(left, self.STOP_POLL))
+        return True
+
     def _orphaned(self, parent: int) -> bool:
         return parent > 1 and os.getppid() != parent
 
@@ -524,7 +627,7 @@ class Watcher:
         parent = parent or os.getppid()
         first = True
         while True:
-            if not first and self.stopping.wait(self.interval):
+            if not first and self._wait(self.interval):
                 break
             if self._orphaned(parent):
                 self.log(f"{_stamp()} beast-island: supervisor gone (parent {parent}) — exiting")
@@ -563,7 +666,8 @@ def _num(env: str, default: float) -> float:
 def _watcher_from(args) -> Watcher:
     targets = parse_probes(args.probes)
     return Watcher(args.mode, args.grace, args.interval,
-                   probe_fn=lambda: probe(targets, args.timeout), timeout=args.timeout)
+                   probe_fn=lambda: probe(targets, args.timeout), timeout=args.timeout,
+                   launch_wait=getattr(args, "launch_wait", DEFAULT_LAUNCH_WAIT))
 
 
 def describe(st: dict | None) -> str:
@@ -606,6 +710,10 @@ def main(argv: list[str] | None = None) -> int:
                    help="print true/false: should Open WebUI run in OFFLINE_MODE now")
     p = sub.add_parser("probe"); common(p, mode=False)
     p = sub.add_parser("init"); common(p)
+    p.add_argument("--launch-wait", type=float,
+                   default=_num("OPENBEAST_ISLAND_LAUNCH_WAIT", DEFAULT_LAUNCH_WAIT),
+                   help="re-probe a failed launch probe for up to this many seconds "
+                        "before booting islanded (a boot whose network is still coming up)")
     p = sub.add_parser("watch"); common(p)
     p.add_argument("--parent", type=int, default=0,
                    help="exit when this pid is no longer our parent (start.sh passes $$)")
@@ -618,9 +726,12 @@ def main(argv: list[str] | None = None) -> int:
             net = (st or {}).get("net_up")
             print("up" if net is True else "down" if net is False else "unknown")
         elif args.webui_offline:
-            # Fresh state only: islanded now, or launched islanded (the
-            # container was created that way; keep it until a restart).
-            on = bool(st and (st.get("state") == "island" or st.get("launched_islanded")))
+            # Fresh state only, and islanded NOW. "Launched islanded" used to
+            # count too, so a boot whose uplink came up 30 s late pinned Open
+            # WebUI to OFFLINE_MODE for the whole run (43 h on spark-1, ops
+            # review). Online now means the next compose (start.sh's own, or
+            # healthcheck.sh --restart's) creates it online.
+            on = bool(st and st.get("state") == "island")
             print("true" if on else "false")
         else:
             print(json.dumps(st, indent=1, sort_keys=True) if args.json else describe(st))
@@ -645,8 +756,8 @@ def main(argv: list[str] | None = None) -> int:
           f"every {int(w.interval)}s, probes {args.probes}) — {describe(w.snapshot())}",
           flush=True)
     import signal
-    signal.signal(signal.SIGTERM, lambda *_: w.stopping.set())
-    signal.signal(signal.SIGINT, lambda *_: w.stopping.set())
+    signal.signal(signal.SIGTERM, w.request_stop)
+    signal.signal(signal.SIGINT, w.request_stop)
     w.run(parent=args.parent or None)
     return 0
 

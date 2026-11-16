@@ -57,10 +57,30 @@ API_KEY="${OPENBEAST_API_KEY:-}"
 # Re-running without --api-key must not silently de-key a keyed install:
 # fall back to the key already stored by a previous run (same treatment the
 # client SearXNG secret gets below). Pass --api-key "" to deliberately clear.
+# A stored key is a credential FOR ONE RIG: remember which host it was written
+# next to, so a re-run against a DIFFERENT rig never presents it there
+# (_forget_foreign_stored_key, once the target host is known).
+KEY_FROM_STORE=0; STORED_HOST=""
 if [ -z "$API_KEY" ] && [ -f "$HOME/.openbeast-client.env" ]; then
   API_KEY="$(sed -n "s/^OPENBEAST_API_KEY='\{0,1\}\([^']*\)'\{0,1\}$/\1/p" \
     "$HOME/.openbeast-client.env" 2>/dev/null | tail -1)"
+  [ -n "$API_KEY" ] && KEY_FROM_STORE=1
+  STORED_HOST="$(sed -n "s|^OPENBEAST_AGENT_INFERENCE_URL='\{0,1\}https\{0,1\}://\([^:/']*\).*|\1|p" \
+    "$HOME/.openbeast-client.env" 2>/dev/null | tail -1)"
 fi
+_lc_host() { printf '%s' "$1" | tr 'A-Z' 'a-z' | sed 's/\.$//'; }
+# The stored key goes only to the host it was stored for. Anything else — a
+# different --host, a different auto-detected peer, an env file with no URL —
+# gets no key unless one is passed again explicitly.
+_forget_foreign_stored_key() {
+  [ "$KEY_FROM_STORE" = "1" ] && [ -n "$API_KEY" ] || return 0
+  if [ -n "$STORED_HOST" ] && [ "$(_lc_host "$STORED_HOST")" = "$(_lc_host "$HOST_FQDN")" ]; then
+    return 0
+  fi
+  echo "  ! the stored device key belongs to ${STORED_HOST:-an unrecorded rig}, not $HOST_FQDN —"
+  echo "    NOT sending it there. If $HOST_FQDN needs a key: --api-key-stdin"
+  API_KEY=""; KEY_FROM_STORE=0
+}
 while [ $# -gt 0 ]; do
   case "$1" in
     --host)         HOST_FQDN="${2:?--host needs a value}"; shift ;;
@@ -68,7 +88,7 @@ while [ $# -gt 0 ]; do
                     # `--api-key ""` as the way to CLEAR a stored key, and a
                     # null-check would reject exactly that.
                     [ $# -ge 2 ] || { echo "--api-key needs a value (use \"\" to clear)" >&2; exit 2; }
-                    API_KEY="$2"; shift ;;
+                    API_KEY="$2"; KEY_FROM_STORE=0; shift ;;
     --api-key-stdin)
                     # The key as an ARGUMENT is readable by every local uid
                     # (ps) for the whole install — pip included. Read one
@@ -81,7 +101,7 @@ while [ $# -gt 0 ]; do
                     else
                       IFS= read -r API_KEY || true
                     fi
-                    API_KEY="$(printf '%s' "$API_KEY" | tr -d '\r')" ;;
+                    API_KEY="$(printf '%s' "$API_KEY" | tr -d '\r')"; KEY_FROM_STORE=0 ;;
     --no-search)    NO_SEARCH=1 ;;
     --local-search) LOCAL_SEARCH=1 ;;
     --uninstall)    UNINSTALL=1 ;;
@@ -159,6 +179,8 @@ removed = []
 mcp = cfg.get("mcp", {})
 if "openbeast-tools" in mcp:
     del mcp["openbeast-tools"]; removed.append("mcp.openbeast-tools")
+if isinstance(mcp.get("servers"), dict) and "openbeast-tools" in mcp["servers"]:
+    del mcp["servers"]["openbeast-tools"]; removed.append("mcp.servers.openbeast-tools")
 # Sweep the legacy "local-tools" key older installers wrote — but ONLY when its
 # command points into our venv (~/.openbeast-client, true for both install
 # shapes), so we never touch the checkout's own bare-python3 "local-tools".
@@ -309,12 +331,21 @@ if [ -z "$HOST_FQDN" ] && [ $fail -eq 0 ]; then
   # `beast` that someone shared in from another tailnet has a different
   # suffix; picking it by first label alone would send it the key (the
   # health probe below presents the bearer) and then every prompt.
-  # One line per peer: "rig <fqdn>" (ours, named beast), "own <fqdn>",
+  # The suffix alone is not enough either: on a multi-user tailnet any member
+  # can name a device `beast`, and the rig receives every prompt and every
+  # file the agent reads, and its completions drive THIS machine's tools.
+  # So a `beast` owned by the same tailnet user as this device is taken as
+  # is; one owned by anyone else (or a tagged node — no user to compare) is
+  # used only after a human confirms it, key or no key.
+  # One line per peer: "rig <fqdn>" (ours, named beast, same owner),
+  # "rigx <fqdn>" (ours, named beast, other owner), "own <fqdn>",
   # "foreign <fqdn>".
   _peers="$("$TS" status --json 2>/dev/null | "$PY" -c '
 import json, sys
 d = json.load(sys.stdin)
-me = ((d.get("Self") or {}).get("DNSName") or "").rstrip(".")
+self_ = d.get("Self") or {}
+me = (self_.get("DNSName") or "").rstrip(".")
+my_uid = self_.get("UserID")
 suffix = me.partition(".")[2] or (d.get("MagicDNSSuffix") or "").strip(".")
 for p in (d.get("Peer") or {}).values():
     dns = (p.get("DNSName") or "").rstrip(".")
@@ -322,15 +353,46 @@ for p in (d.get("Peer") or {}).values():
         continue
     name, _, rest = dns.partition(".")
     ours = bool(suffix) and rest == suffix
-    kind = "foreign" if not ours else ("rig" if name == "beast" else "own")
+    if not ours:
+        kind = "foreign"
+    elif name != "beast":
+        kind = "own"
+    else:
+        same = my_uid is not None and p.get("UserID") == my_uid
+        kind = "rig" if same else "rigx"
     print(kind, dns)
 ' || true)"
   HOST_FQDN="$(printf '%s\n' "$_peers" | sed -n 's/^rig //p' | sed -n '1p')"
+  _other_owner=0
+  if [ -z "$HOST_FQDN" ]; then
+    HOST_FQDN="$(printf '%s\n' "$_peers" | sed -n 's/^rigx //p' | sed -n '1p')"
+    [ -n "$HOST_FQDN" ] && _other_owner=1
+  fi
   if [ -n "$HOST_FQDN" ]; then
     echo "  ✓ rig auto-detected: $HOST_FQDN"
+    _forget_foreign_stored_key
+    _confirmed=0
+    if [ "$_other_owner" = "1" ]; then
+      # Not this user's device: it would get every prompt and drive local tools.
+      if [ -t 0 ]; then
+        printf '    %s is owned by ANOTHER tailnet user (or is a tagged node). Use it as\n' "$HOST_FQDN" >&2
+        printf '    your rig — it receives every prompt%s and drives tools here? [y/N] ' \
+          "$([ -n "$API_KEY" ] && echo ' and the rig API key')" >&2
+        IFS= read -r _yn || _yn=""
+        case "$_yn" in
+          y|Y|yes|YES) _confirmed=1 ;;
+          *) echo "  ✗ not confirmed — name the rig yourself: --host <rig-fqdn>"; fail=1 ;;
+        esac
+      else
+        echo "  ✗ refusing to wire an AUTO-DETECTED rig owned by another tailnet user"
+        echo "    (or a tagged node) with no terminal to confirm on. Name it explicitly:"
+        echo "      $0 --host $HOST_FQDN"
+        fail=1
+      fi
+    fi
     # A key is about to be presented to a host nobody typed. Have a human
     # confirm it, or refuse when there is no terminal to ask on.
-    if [ -n "$API_KEY" ]; then
+    if [ -n "$API_KEY" ] && [ $fail -eq 0 ] && [ $_confirmed -eq 0 ]; then
       if [ -t 0 ]; then
         printf '    Send the rig API key to %s? [y/N] ' "$HOST_FQDN" >&2
         IFS= read -r _yn || _yn=""
@@ -364,6 +426,7 @@ for p in (d.get("Peer") or {}).values():
   fi
 fi
 [ $fail -eq 0 ] || { echo "Preflight failed — nothing was changed."; exit 1; }
+[ -n "$HOST_FQDN" ] && _forget_foreign_stored_key
 
 API_URL="https://$HOST_FQDN:8443/v1"
 SLOT_URL="https://$HOST_FQDN:8444/api/slot"
@@ -622,13 +685,40 @@ if api_key:
 # on ModuleNotFoundError ("server unavailable"). A distinct key can't be
 # shadowed; we pin the venv python + an absolute path. Do NOT rename to
 # "local-tools".
-cfg.setdefault("mcp", {})["openbeast-tools"] = {
+entry = {
     "type": "local",
     "command": [os.path.join(venv, "bin", "python3"),
                 os.path.join(repo, "agents", "mcp_server.py")],
-    "enabled": True,
     "environment": env,
 }
+# opencode v2 keeps MCP servers under mcp.servers.<name> and does NOT merge a
+# v1 top-level mcp.<name> entry with them: a file mixing the two layouts loses
+# servers silently (seen 2026-11-15: `opencode mcp list` said "No MCP servers
+# configured" once beast-apps had added a v2 entry next to our v1 one). So on
+# v2 — detected from the CLI, or from a file that already uses mcp.servers —
+# write the v2 shape and move any other v1 server entries in with it.
+mcp = cfg.setdefault("mcp", {})
+def _oc_major():
+    try:
+        import re, subprocess
+        out = subprocess.run(["opencode", "--version"], capture_output=True, text=True, timeout=20).stdout
+        m = re.search(r"(\d+)\.\d+", out)
+        return int(m.group(1)) if m else 0
+    except Exception:
+        return 0
+if isinstance(mcp.get("servers"), dict) or _oc_major() >= 2:
+    servers = mcp.setdefault("servers", {})
+    for k in [k for k, v in mcp.items() if k != "servers" and isinstance(v, dict) and "type" in v]:
+        v = mcp.pop(k)
+        if v.pop("enabled", True) is False:
+            v["disabled"] = True
+        servers.setdefault(k, v)
+    # Code Mode (v2's default) wraps tools in an `execute` script; OpenBeast's
+    # conformance and evals measure plain tool calls, so expose them directly.
+    servers["openbeast-tools"] = dict(entry, codemode=False)
+    mcp.pop("openbeast-tools", None)
+else:
+    mcp["openbeast-tools"] = dict(entry, enabled=True)
 
 # Model list: copy from the checkout's opencode.json (kept current with the
 # rig's serve scripts); fall back to the default model alone.

@@ -47,6 +47,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 from starlette.applications import Starlette
@@ -61,12 +62,14 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 import hydra_core as core  # noqa: E402
-from hostpolicy import trusted_hosts  # noqa: E402
+from hostpolicy import host_allowed, trusted_hosts  # noqa: E402
+from hydra_caller import CallerToken  # noqa: E402
 
 REPO = HERE.parent
 MAX_BODY_BYTES = 32 * 1024 * 1024          # the gate's cap
 NONSTREAM_BUFFER = 16 * 1024 * 1024
 ERROR_BODY_CAP = 1024 * 1024
+POOL_TIMEOUT_S = 5.0
 ROUTED_PATHS = ("/v1/chat/completions", "/v1/completions", "/v1/embeddings")
 _HOP = {"host", "content-length", "transfer-encoding", "connection", "keep-alive", "te", "trailer",
         "upgrade", "proxy-authorization", "proxy-authenticate", "proxy-connection"}
@@ -79,12 +82,12 @@ _REQ_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 ERR_STATUS = {"hydra_unavailable": 503, "hydra_pinned_unavailable": 503, "hydra_pin_incompatible": 422,
               "hydra_unknown_model": 404, "hydra_unknown_deployment": 404, "hydra_timeout": 504,
               "hydra_upstream_auth": 502, "hydra_upstream_error": 502, "hydra_unauthorized": 401,
-              "hydra_bad_request": 400}
+              "hydra_bad_request": 400, "hydra_cross_site": 403}
 OUTCOME_OF = {"hydra_unavailable": "unavailable", "hydra_pinned_unavailable": "pinned_unavailable",
               "hydra_pin_incompatible": "pin_incompatible", "hydra_unknown_model": "unknown_model",
               "hydra_unknown_deployment": "unknown_deployment", "hydra_timeout": "timeout",
               "hydra_upstream_auth": "upstream_auth", "hydra_upstream_error": "upstream_error",
-              "hydra_bad_request": "bad_request"}
+              "hydra_bad_request": "bad_request", "hydra_cross_site": "cross_site"}
 TTFT_BUCKETS = (0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 600)
 
 
@@ -415,11 +418,15 @@ class Hydra:
         self.metrics = Metrics()
         self.audit = Audit(_resolve(cfg.settings.audit, REPO), cfg.settings.audit_max_mb)
         self.local_token = secrets.token_hex(32)
-        self.caller_token = _FileSecret(Path(self.env.get("OPENBEAST_HYDRA_CALLER_TOKEN_FILE")
-                                             or self.run / "hydra-caller.token"))
+        # The verifier holds the same fail-closed rule as the presenters
+        # (hydra_caller.py): a token file that is not a regular 0600 file
+        # proves nothing, so every caller is then untrusted.
+        self.caller_token = CallerToken(str(self.env.get("OPENBEAST_HYDRA_CALLER_TOKEN_FILE")
+                                            or self.run / "hydra-caller.token"))
         self.instinct = InstinctClient(cfg.settings.instinct, REPO)
         self.clients: dict[str, tuple[tuple, httpx.AsyncClient]] = {}
         self.retired: list[httpx.AsyncClient] = []
+        self.client_refs: dict[httpx.AsyncClient, int] = {}
         self.probe_client = httpx.AsyncClient(trust_env=False, timeout=httpx.Timeout(3.0, connect=3.0))
         self.manual_drain: dict[str, str] = {}
         self.lease_drain: set[str] = set()
@@ -431,6 +438,7 @@ class Hydra:
         self.tasks: list[asyncio.Task] = []
         self.background: set[asyncio.Task] = set()
         self.inbound_key = self._inbound_key()
+        self.allowed_hosts = trusted_hosts(self.env.get("OPENBEAST_HYDRA_TRUSTED_HOSTS", ""))
 
     # ─── config ───
     def _inbound_key(self) -> str:
@@ -461,7 +469,7 @@ class Hydra:
         self._apply_drain()
         for nid in list(self.clients):
             if nid not in new.nodes or self._client_key(new.nodes[nid]) != self.clients[nid][0]:
-                self.retired.append(self.clients.pop(nid)[1])
+                self._retire(self.clients.pop(nid)[1])
         self.next_probe.clear()
         self.next_models.clear()
         self.conf_checked = -1e9
@@ -480,13 +488,49 @@ class Hydra:
         if cur and cur[0] == k:
             return cur[1]
         if cur:
-            self.retired.append(cur[1])
+            self._retire(cur[1])
+        # No connection cap: the engine's own queue is the queue. A cap of
+        # slots*4 made the 5th concurrent turn on a 1-slot rig wait
+        # POOL_TIMEOUT_S for a socket and then fail as a 502 that counted
+        # toward the breaker — where llama-server would just have queued it.
+        # How many requests reach a node is bounded upstream (the gate's
+        # in-flight caps, the callers), and every attempt by its deadline.
         c = httpx.AsyncClient(
             trust_env=False,
-            timeout=httpx.Timeout(None, connect=n.connect_timeout_s, pool=5.0),
-            limits=httpx.Limits(max_connections=n.slots * 4, max_keepalive_connections=n.slots))
+            timeout=httpx.Timeout(None, connect=n.connect_timeout_s, pool=POOL_TIMEOUT_S),
+            limits=httpx.Limits(max_connections=None, max_keepalive_connections=n.slots))
         self.clients[n.id] = (k, c)
         return c
+
+    # A client replaced by a reload (url, connect timeout or slots changed)
+    # is closed as soon as no request still uses it. Parked until shutdown,
+    # every such reload leaked a client and its keep-alive sockets.
+    def hold(self, c: httpx.AsyncClient) -> None:
+        self.client_refs[c] = self.client_refs.get(c, 0) + 1
+
+    def unhold(self, c: httpx.AsyncClient) -> None:
+        n = self.client_refs.get(c, 0) - 1
+        if n > 0:
+            self.client_refs[c] = n
+            return
+        self.client_refs.pop(c, None)
+        if c in self.retired:
+            self._close_retired(c)
+
+    def _retire(self, c: httpx.AsyncClient) -> None:
+        self.retired.append(c)
+        if not self.client_refs.get(c):
+            self._close_retired(c)
+
+    def _close_retired(self, c: httpx.AsyncClient) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return                      # no loop (a CLI path): the lifespan closes it
+        self.retired.remove(c)
+        t = loop.create_task(c.aclose())
+        self.background.add(t)
+        t.add_done_callback(self.background.discard)
 
     def node_key(self, n: core.Node) -> str | None:
         if n.key_env:
@@ -508,6 +552,9 @@ class Hydra:
         if not self.inbound_key:
             return True
         return _ct_eq(_bearer(request), self.inbound_key)
+
+    def cross_site(self, request: Request) -> bool:
+        return not self.caller(request).trusted and _cross_site(request, self.allowed_hosts)
 
     def is_local(self, request: Request) -> bool:
         p = request.headers.get("x-openbeast-local", "")
@@ -813,16 +860,78 @@ def _resp_headers(resp: httpx.Response) -> dict:
             if k.lower() not in _HOP and not k.lower().startswith("x-hydra-")}
 
 
+def _no_cors(headers: dict) -> dict:
+    """Drop the engine's Access-Control-* for a caller nobody vouched for:
+    llama-server reflects Origin and vLLM allows *, and relayed they let a
+    web page READ an answer hydra signed with a node's key. A trusted caller
+    (the router, the gate) did its own browser check and keeps them, as it
+    would talking to the engine directly."""
+    return {k: v for k, v in headers.items() if not k.lower().startswith("access-control-")}
+
+
+def _cross_site(request: Request, allowed) -> bool:
+    """True when a browser says this request came from somebody else's page
+    (the router's rule, agents/router.py `_cross_site`). Sec-Fetch-Site is
+    the browser's own verdict; Origin covers browsers that do not send it,
+    and is ours only when its host is on the Host allowlist; `null` is
+    nobody's. No such header at all is a non-browser caller — WebUI's
+    backend, OpenCode, the SDKs — and passes. A trusted caller (X-Hydra-
+    Caller: the router, which checks this itself, or the gate, which
+    authenticated a device key) is not asked.
+
+    Hydra is on loopback, which any page the operator opens can reach: a
+    CORS-simple text/plain POST needs no preflight, and hydra would sign it
+    with the stored node keys."""
+    if (request.headers.get("sec-fetch-site") or "").strip().lower() == "cross-site":
+        return True
+    origin = request.headers.get("origin")
+    if origin is None:
+        return False
+    return not host_allowed(urlsplit(origin.strip()).netloc, allowed)
+
+
+def _cross_site_refusal(hy: "Hydra", headers: dict) -> JSONResponse:
+    return hy.error("hydra_cross_site", "cross-site browser request refused: hydra serves its own "
+                    "frontends, not another site's page", headers)
+
+
+def inbound_warnings(hy: "Hydra") -> list[str]:
+    """Said at start: an open inbound (no key in the inbound key env) in front
+    of nodes hydra holds keys for lends those keys to any local process."""
+    if hy.inbound_key:
+        return []
+    keyed = sorted(n.id for n in hy.cfg.nodes.values() if n.key_env or n.key_file)
+    if not keyed:
+        return []
+    env = hy.cfg.settings.inbound_key_env
+    return [f"{env} is empty, so inference on hydra is open to every local process, and hydra "
+            f"presents its stored keys for node(s) {', '.join(keyed)} on their behalf. "
+            f"Set {env} (scripts/lib/conf.sh) to require it."]
+
+
+def _is_engine_error(body: bytes | None) -> bool:
+    """A 500/501 the ENGINE wrote about this request: a JSON object with an
+    `error`. llama.cpp answers a request its chat template refuses (Qwen3's
+    `raise_exception('No user query found in messages.')`) exactly so; a
+    node that is falling over answers with no body, a cut body, HTML from a
+    proxy, or a 502/503/504."""
+    try:
+        doc = json.loads(body or b"")
+    except (ValueError, RecursionError):
+        return False
+    return isinstance(doc, dict) and isinstance(doc.get("error"), (dict, str))
+
+
 class _UpstreamTruncated(Exception):
     """Raised out of a non-SSE relay so the server aborts the response
     instead of ending it cleanly: a truncated JSON body must look broken."""
 
 
 async def _attempt(hy: Hydra, c: core.Candidate, path: str, payload: bytes, headers: dict,
-                   stream: bool, deadline: float) -> _Attempt:
+                   stream: bool, deadline: float, client: httpx.AsyncClient | None = None) -> _Attempt:
     """One upstream try, up to (not past) the commit point."""
     a = _Attempt()
-    client = hy.client_for(c.n)
+    client = client or hy.client_for(c.n)
     t0 = time.monotonic()
     req = client.build_request("POST", f"{c.n.url}{path}", content=payload, headers=headers)
     resp = None
@@ -868,6 +977,8 @@ async def _attempt(hy: Hydra, c: core.Candidate, path: str, payload: bytes, head
                 a.kind = "throttled"
             elif st == 503 and "Loading model" in text:
                 a.kind = "loading"
+            elif st in (500, 501) and _is_engine_error(a.body):
+                a.kind = "engine_error"
             elif st >= 500:
                 a.kind = "fail"
             else:
@@ -971,6 +1082,15 @@ async def proxy(request: Request, path: str, pin: str | None = None):
     rid_in = request.headers.get("x-openbeast-request-id", "")
     request_id = rid_in if _REQ_ID_RE.match(rid_in) else uuid.uuid4().hex[:16]
     base_h = hy.hydra_headers(request_id)
+    if hy.cross_site(request):
+        # refused before any node is touched; audited only for a caller that
+        # holds the key, so a keyless page cannot write (and rotate) the audit
+        if hy.inbound_ok(request):
+            hy.audit.write({"ts": _now_iso(), "request_id": request_id, "path": path, "config": cfg.hash,
+                            "requested": None, "strict": bool(pin), "status": 403, "outcome": "cross_site",
+                            "origin": (request.headers.get("origin") or "")[:200] or None,
+                            "ms": int((time.monotonic() - started) * 1000)})
+        return _cross_site_refusal(hy, base_h)
     if not hy.inbound_ok(request):
         return hy.error("hydra_unauthorized", "present the inference key: Authorization: Bearer <LLAMA_API_KEY>",
                         base_h)
@@ -983,17 +1103,26 @@ async def proxy(request: Request, path: str, pin: str | None = None):
             return hy.error("hydra_bad_request", "request body too large", base_h, status=413)
     try:
         body = json.loads(bytes(buf) or b"null")
-    except ValueError:
+    except (ValueError, RecursionError):      # RecursionError: "[[[[…" nested past the limit
         body = None
     caller = hy.caller(request)
     row = {"ts": _now_iso(), "request_id": request_id, "device": caller.device, "role": caller.role,
            "trusted": caller.trusted, "path": path, "config": cfg.hash}
-    if not isinstance(body, dict):
+
+    def bad_request(message: str) -> JSONResponse:
         row.update(requested=None, strict=bool(pin), status=400, outcome="bad_request",
                    ms=int((time.monotonic() - started) * 1000))
         hy.audit.write(row)
-        return hy.error("hydra_bad_request", "the request body must be a JSON object", base_h)
-    f = core.extract_features(path, body, request.headers, cfg)
+        return hy.error("hydra_bad_request", message, base_h)
+
+    if not isinstance(body, dict):
+        return bad_request("the request body must be a JSON object")
+    try:
+        f = core.extract_features(path, body, request.headers, cfg)
+    except (ValueError, TypeError, OverflowError, RecursionError) as e:
+        # A body json.loads accepts can still be one no feature reader
+        # expected; it is the caller's 400, audited — never a bare 500.
+        return bad_request(f"the request body could not be read ({type(e).__name__})")
     now = time.monotonic()
     ins = None
     task_class = None
@@ -1040,12 +1169,18 @@ async def proxy(request: Request, path: str, pin: str | None = None):
     attempts: list[dict] = []
     route = cfg.routes.get(dec.route) if not dec.strict else None
     last = None
+    charge_if_served: list = []
     for i, c in enumerate(dec.attempts):
         now = time.monotonic()
         if now >= budget_end:
             break
         fbody, edits = core.forward_body(body, c.d, c.n)
-        payload = json.dumps(fbody, ensure_ascii=False).encode()
+        try:
+            payload = json.dumps(fbody, ensure_ascii=False).encode()
+        except UnicodeEncodeError:
+            # a lone surrogate ("\ud800" in the caller's JSON) has no UTF-8
+            # form: send it escaped, exactly as the caller wrote it
+            payload = json.dumps(fbody).encode()
         uh = _upstream_headers(request, caller, hy.node_key(c.n), request_id)
         if f.stream:
             limit = core.effective_ttft(c.n, f.est_prompt_tokens, s.pre_commit_budget_s)
@@ -1071,8 +1206,12 @@ async def proxy(request: Request, path: str, pin: str | None = None):
                              "ttft_ms": None, "outcome": "skipped", "why": why})
             continue
         hs = adm.hs                       # survives a reload that drops the deployment
+        client = hy.client_for(c.n)       # held for as long as the admission is
+        hy.hold(client)
+        adm.on_release.append(lambda cl=client: hy.unhold(cl))
         try:
-            a = await _until_disconnect(request, _attempt(hy, c, path, payload, uh, f.stream, deadline))
+            a = await _until_disconnect(request, _attempt(hy, c, path, payload, uh, f.stream, deadline,
+                                                          client))
         except BaseException:
             adm.release()
             raise
@@ -1104,6 +1243,12 @@ async def proxy(request: Request, path: str, pin: str | None = None):
                 break
         elif a.kind == "fail":
             hs.record_failure(now)
+        elif a.kind == "engine_error":
+            # The engine refused THIS body. Whose fault that is shows only
+            # later: charged if another deployment then serves the same body,
+            # never if every one refuses it — counted at once, one poison
+            # request tripped the breaker on every target it was tried on.
+            charge_if_served.append(hs)
         elif a.kind == "loading":
             hs.request_state("loading", now)
         elif a.kind == "auth":
@@ -1123,9 +1268,18 @@ async def proxy(request: Request, path: str, pin: str | None = None):
         finish(504, "timeout", attempts=attempts)
         return hy.error("hydra_timeout", "the pre-commit budget ran out before any attempt", hdr)
     c, a, edits, adm = last
-    if a.kind == "passthrough" or (a.kind == "throttled" and not _has_more(dec, c)):
-        # An engine's own 4xx: status, bytes and content-type exactly as sent.
-        finish(a.status, "upstream_4xx", c.d.id, attempts, edits=edits)
+    if a.kind == "commit":
+        for refused in charge_if_served:
+            refused.record_failure(time.monotonic())
+    if a.kind in ("passthrough", "engine_error", "throttled"):
+        # An engine's own 4xx (or its own JSON 500 about this body, which no
+        # other target served either): status, bytes and content-type exactly
+        # as sent — a 502 would hide why the request is refused. `last` is
+        # the last attempt that RAN, so a 429 here had nothing after it:
+        # planned targets skipped at admission or the budget gone. Its
+        # Retry-After is the caller's back-off hint.
+        finish(a.status, "upstream_5xx" if a.kind == "engine_error" else "upstream_4xx",
+               c.d.id, attempts, edits=edits)
         h = {k: v for k, v in a.headers.items() if k.lower() in ("content-type", "retry-after")}
         h.update(hdr)
         return Response(a.body or b"", status_code=int(a.status), headers=h)
@@ -1150,6 +1304,8 @@ async def proxy(request: Request, path: str, pin: str | None = None):
         ms = a.ttft_s * 1000
         hs.h.ttft_ewma_ms = ms if hs.h.ttft_ewma_ms is None else 0.8 * hs.h.ttft_ewma_ms + 0.2 * ms
     out_h = {k: v for k, v in a.headers.items() if not k.startswith("_")}   # no x-hydra-*: _resp_headers
+    if not caller.trusted:
+        out_h = _no_cors(out_h)
     out_h.update(hdr)
     if a.it is None:
         # non-stream (or a stream that ended at once): the whole body is in hand
@@ -1164,6 +1320,10 @@ async def proxy(request: Request, path: str, pin: str | None = None):
         out_h.pop("content-length", None)
         return Response(a.first, status_code=int(a.status), headers=out_h)
 
+    # The first byte answered the HALF_OPEN trial's question; the unit stays
+    # held until the relay ends, the trial slot does not (hydra_core
+    # Admission.end_trial).
+    adm.end_trial()
     st = {"tail": a.first[-16384:], "done": False}
     idle = c.n.idle_timeout_s
     is_sse = "text/event-stream" in (a.headers.get("content-type") or "")
@@ -1222,11 +1382,6 @@ async def proxy(request: Request, path: str, pin: str | None = None):
                              background=BackgroundTask(sweep))
 
 
-def _has_more(dec: core.Decision, c: core.Candidate) -> bool:
-    ids = [x.d.id for x in dec.attempts]
-    return c.d.id in ids and ids.index(c.d.id) < len(ids) - 1
-
-
 # ─────────────────────────────────── handlers ───────────────────────────────────
 
 def _hy(request: Request) -> Hydra:
@@ -1269,6 +1424,8 @@ def _dep_entry(hy: Hydra, d: core.Deployment) -> dict:
 async def models(request: Request):
     hy = _hy(request)
     rid = uuid.uuid4().hex[:16]
+    if hy.cross_site(request):
+        return _cross_site_refusal(hy, hy.hydra_headers(rid))
     if not hy.inbound_ok(request):
         return hy.error("hydra_unauthorized", "present the inference key", hy.hydra_headers(rid))
     cfg = hy.cfg
@@ -1288,6 +1445,8 @@ async def pinned(request: Request):
     rest = "/" + request.path_params["rest"].strip("/")
     rid = uuid.uuid4().hex[:16]
     h = hy.hydra_headers(rid, route="pin")
+    if hy.cross_site(request):
+        return _cross_site_refusal(hy, h)
     if not hy.inbound_ok(request):
         return hy.error("hydra_unauthorized", "present the inference key", h)
     dep = hy.cfg.deployments.get(d)
@@ -1305,10 +1464,14 @@ async def pinned(request: Request):
         key = hy.node_key(n)
         if key and rest != "/health":
             hdr["Authorization"] = f"Bearer {key}"
+        client = hy.client_for(n)
+        hy.hold(client)
         try:
-            r = await hy.client_for(n).get(f"{n.url}{rest}", headers=hdr, timeout=10.0)
+            r = await client.get(f"{n.url}{rest}", headers=hdr, timeout=10.0)
         except httpx.HTTPError as e:
             return hy.error("hydra_pinned_unavailable", f"{d}: {type(e).__name__}", h, retry_after=5)
+        finally:
+            hy.unhold(client)
         out = {k: v for k, v in r.headers.items() if k.lower() in ("content-type",)}
         out.update(h)
         out.update({"X-Hydra-Deployment": dep.id, "X-Hydra-Node": n.id, "X-Hydra-Engine": n.engine,
@@ -1457,9 +1620,8 @@ def create_app(hy: Hydra, *, probe: bool = True) -> Starlette:
         Route("/hydra/metrics", a_metrics, methods=["GET"]),
         Route("/{path:path}", catch_all, methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]),
     ]
-    hosts = trusted_hosts(hy.env.get("OPENBEAST_HYDRA_TRUSTED_HOSTS", ""))
     app = Starlette(routes=routes, lifespan=lifespan,
-                    middleware=[Middleware(TrustedHostMiddleware, allowed_hosts=hosts)])
+                    middleware=[Middleware(TrustedHostMiddleware, allowed_hosts=hy.allowed_hosts)])
     app.state.hydra = hy
     return app
 
@@ -1594,7 +1756,7 @@ def serve(env, port: int | None = None) -> int:
     if implicit:
         _log(f"no {path} — using the implicit single-node config {cfg.hash} "
              f"(rig={cfg.nodes['rig'].url}, engine={cfg.nodes['rig'].engine})")
-    for w in cfg.warnings:
+    for w in cfg.warnings + inbound_warnings(hy):
         _log(f"WARNING: {w}")
     print(f"beast-hydra on http://127.0.0.1:{sock.getsockname()[1]}  config={cfg.hash}  "
           f"nodes={len(cfg.nodes)} routes={len(cfg.routes)}  inbound_auth="

@@ -13,12 +13,11 @@ between the SKILL_INDEX markers in system-prompt-tools.md.
 
 A skill whose frontmatter says `prompt_index: false` is left OUT of that menu
 (it stays fully available through skill() / skill(name), which scan the disk).
-Two reasons a skill wants that. The menu is paid for by the local model on
-every turn, and this repo measured that skills fire ~0% on local models
-(docs/BEAST_LANG_PLAN.md §2.1) — so a skill written for CLOUD models working
-in this repo is pure cost there. And system-prompt-tools.md is hashed into the
-eval cache era (evals/cache.py): adding a menu line rolls the era, which a
-skill nobody is measuring should not be able to do by existing.
+The menu is paid for by the local model on every turn, and this repo measured
+that skills fire ~0% on local models (docs/BEAST_LANG_PLAN.md §2.1) — so a
+skill written for CLOUD models working in this repo is pure cost there.
+(system-prompt-tools.md is not in the eval cache era: the eval agent never
+reads it, so a menu line does not roll the era.)
 
 Usage:
   python3 scripts/generate-skill-index.py            # rewrite in place
@@ -34,6 +33,7 @@ PROMPT = REPO / "system-prompt-tools.md"
 SKILLS = REPO / "skills"
 START = "<!-- SKILL_INDEX_START (generated — edit skills/*/SKILL.md, then run scripts/generate-skill-index.py) -->"
 END = "<!-- SKILL_INDEX_END -->"
+SKILL_DIR_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 
 
 def frontmatter(path: Path) -> dict:
@@ -51,10 +51,18 @@ def frontmatter(path: Path) -> dict:
 def build_index() -> str:
     rows = []
     for skill_md in sorted(SKILLS.glob("*/SKILL.md")):
+        # The loader's rule (agents/mcp_server.py _SKILL_DIR_RE): a hidden or
+        # misnamed directory is not a skill, and a SKILL.md names its own
+        # directory. pathlib's glob matches dot-directories, so without this
+        # skills/.x/SKILL.md went onto the always-on menu.
+        if not SKILL_DIR_RE.match(skill_md.parent.name):
+            continue
         fm = frontmatter(skill_md)
+        if fm.get("name", skill_md.parent.name) != skill_md.parent.name:
+            continue
         if fm.get("prompt_index", "").lower() == "false":
             continue                    # opted out of the always-on menu
-        name = fm.get("name", skill_md.parent.name)
+        name = skill_md.parent.name
         desc = fm.get("description", "(no description)")
         rows.append(f"- **`{name}`** — {desc}")
     return "\n".join(rows)

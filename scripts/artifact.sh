@@ -187,7 +187,10 @@ _need_token() {
 _api() {
   local method="$1" path="$2" reqfile="${3:-}" code rc=0
   local args
-  args=(-s -S -m 60 -o "$BODY" -w '%{http_code}' -X "$method")
+  # -q (must come first: skip ~/.curlrc) and --noproxy '*': the token below is
+  # the rig's write AND admin credential, and curl otherwise hands every
+  # header to $http_proxy / a curlrc `proxy`, loopback target or not.
+  args=(-q --noproxy '*' -s -S -m 60 -o "$BODY" -w '%{http_code}' -X "$method")
   # The token proves two different things and both are needed here.
   #
   # On a WRITE it is the write credential: the server refuses POST/PATCH/DELETE
@@ -673,7 +676,14 @@ PY
     extra=""
     [[ -n "$q_session" ]] && extra="$extra&session=$(_urlenc "$q_session")"
     [[ -n "$q_tag" ]] && extra="$extra&tag=$(_urlenc "$q_tag")"
-    if [[ $all -eq 1 ]]; then
+    # A --limit past the server's 200-row cap pages too: one GET was clamped
+    # to 200 and the hint then said "see more with --limit N" — the flag that
+    # had just been capped. Base 10 and bounded first: a leading zero is
+    # octal to bash arithmetic, and a 20-digit number overflows it.
+    limit="$(printf '%s' "$limit" | sed 's/^0*//')"
+    [[ -n "$limit" ]] || _die "--limit takes a positive number (got: 0)"
+    [[ ${#limit} -le 9 ]] || limit=999999999
+    if [[ $all -eq 1 || $limit -gt 200 ]]; then
       # Page through the server's 200-row cap and hand the renderer ONE doc.
       ALL="$TMPDIR_RUN/all.jsonl"; : > "$ALL"
       offset=0
@@ -684,8 +694,10 @@ PY
         total="$(_render page-total)"
         offset=$((offset + 200))
         [[ $offset -lt $total ]] || break
+        [[ $all -eq 1 || $offset -lt $limit ]] || break
       done
-      OB_ALL="$ALL" OB_BODY="$BODY" python3 -c '
+      [[ $all -eq 1 ]] && want="" || want="$limit"
+      OB_ALL="$ALL" OB_BODY="$BODY" OB_WANT="$want" python3 -c '
 import json, os
 rows, total = [], 0
 for line in open(os.environ["OB_ALL"]):
@@ -694,6 +706,9 @@ for line in open(os.environ["OB_ALL"]):
         d = json.loads(line)
         rows += d.get("artifacts") or []
         total = d.get("total") or total
+want = os.environ.get("OB_WANT")
+if want:
+    rows = rows[:int(want)]
 json.dump({"artifacts": rows, "count": len(rows), "total": total},
           open(os.environ["OB_BODY"], "w"))'
     else
@@ -739,7 +754,13 @@ json.dump({"artifacts": rows, "count": len(rows), "total": total},
     case "$n" in
       ''|*[!0-9]*) _die "version must be a positive integer (got: $n)" ;;
     esac
-    [[ "$n" -ge 1 ]] || _die "version must be >= 1 (got: $n)"
+    # Base 10, explicitly: bash reads a leading zero as octal ("08" is an
+    # error, "010" is 8), and the raw string would also land in the JSON body
+    # below, where 010 is not a number at all.
+    n_raw="$n"
+    n="$(printf '%s' "$n" | sed 's/^0*//')"
+    [[ -n "$n" ]] || _die "version must be >= 1 (got: $n_raw)"
+    [[ ${#n} -le 9 ]] || _die "version out of range (got: $n_raw)"
     _check_id "$art_id" "rollback"
     _need_token
     printf '{"current": %s}' "$n" > "$REQ"

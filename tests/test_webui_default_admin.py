@@ -33,13 +33,14 @@ CURL_STUB = textwrap.dedent(r'''
     """Stub curl: a tiny Open WebUI, driven by $STUB_STATE, logging to $STUB_LOG."""
     import json, os, sys
     args = sys.argv[1:]
-    url, method, data, headers = None, None, None, {}
+    url, method, data, headers, wfmt = None, None, None, {}, None
     i = 0
     while i < len(args):
         a = args[i]
         if a in ("-X", "-d", "-H", "-m", "-o", "-w", "--max-time", "--config", "-K"):
             v = args[i + 1]; i += 2
             if a == "-X": method = v
+            elif a == "-w": wfmt = v
             elif a == "-d": data = sys.stdin.read() if v == "@-" else v
             elif a == "-H":
                 k, _, val = v.partition(":"); headers[k.strip().lower()] = val.strip()
@@ -67,8 +68,11 @@ CURL_STUB = textwrap.dedent(r'''
                             "url": url,
                             # a credential on argv is world-readable in /proc
                             "argv_bearer": any("Bearer" in a for a in args)}) + "\n")
-    def out(o):
-        sys.stdout.write(json.dumps(o)); sys.exit(0)
+    def out(o, code=200):
+        sys.stdout.write(json.dumps(o))
+        if wfmt:   # curl -w '\n%{http_code}'
+            sys.stdout.write(wfmt.replace("\\n", "\n").replace("%{http_code}", str(code)))
+        sys.exit(0)
     def save():
         json.dump(st, open(os.environ["STUB_STATE"], "w"))
     if st.get("down"):
@@ -77,14 +81,20 @@ CURL_STUB = textwrap.dedent(r'''
         st["down_calls"] -= 1; save(); sys.exit(7)
     tok = lambda email: "tok-%s-%d" % (email, st["gen"])
     if path == "/api/version": out({"version": "stub"})
-    if path == "/api/config": out({"features": {"auth": st["auth"]}})
+    if path == "/api/config":
+        if st.get("config_broken", 0) > 0:   # busy first boot: an HTML 502
+            st["config_broken"] -= 1; save()
+            sys.stdout.write("<html>502 Bad Gateway</html>"); sys.exit(0)
+        out({"features": {"auth": st["auth"]}})
     if path == "/api/v1/auths/signin":
+        if st.get("signin_status"):   # 429 rate limit, 5xx while booting
+            out({"detail": "Too many requests"}, st["signin_status"])
         email, pw = body["email"], body["password"]
         if email == "admin@localhost" and not st["auth"]:
             pw = "admin"   # upstream's auth-off branch uses its own constant
         if st["accounts"].get(email) == pw:
             out({"token": tok(email)})
-        out({"detail": "The email or password provided is incorrect."})
+        out({"detail": "The email or password provided is incorrect."}, 400)
     if path == "/api/v1/auths/update/password":
         if st.get("fail_update"):
             out({"detail": "nope"})
@@ -94,8 +104,15 @@ CURL_STUB = textwrap.dedent(r'''
         st["accounts"][who[0]] = body["new_password"]; st["gen"] += 1; save()
         out(True)
     if path == "/api/v1/configs/tool_servers":
+        if method == "GET" and st.get("tool_servers_broken"):
+            sys.stdout.write("<html>502 Bad Gateway</html>"); sys.exit(0)
         out({"TOOL_SERVER_CONNECTIONS": []} if method == "GET" else {})
-    if path in ("/api/models", "/v1/models"): out({"data": [{"id": "m1"}]})
+    if path == "/api/models":
+        # WebUI's view: hides inactive base overrides, lists workspace presets.
+        out({"data": st.get("webui_models", [{"id": "m1"}])})
+    if path == "/v1/models":
+        # The inference endpoint: only what is actually served.
+        out({"data": [{"id": m} for m in st.get("served", ["m1"])]})
     out({})
 ''').lstrip()
 
@@ -265,6 +282,26 @@ def test_single_admin_key_still_reaches_admin_tools(rig):
     assert conns["1"]["auth_type"] == "bearer" and conns["1"]["key"] == "adm-key"
     assert conns["2"]["auth_type"] == "none" and conns["2"]["key"] == ""
     assert "ONE profile key" in p.stderr
+    # Review 2026-11: web_search/fetch/weather lived ONLY on connection 2,
+    # which a keyed server 401s with no key — so admins silently lost every
+    # web tool. With no guest profile, connection 1 carries them all (admin
+    # key) and the keyless connection 2 is switched off.
+    assert conns["1"]["config"]["function_name_filter_list"] == ""
+    assert conns["2"]["config"]["enable"] is False
+
+
+def test_single_guest_key_keeps_the_privileged_filter(rig):
+    """Negative control: guest-only keeps the partition (connection 2 is
+    keyed and serves everyone's web tools; the admin profile is the one
+    disabled)."""
+    rig.set_state(auth=False, admin_pw="admin")
+    p = rig.run("configure-webui.sh",
+                env_extra={"OPENBEAST_MCPO_GUEST_KEY": "gst-key"})
+    assert p.returncode == 0, p.stderr
+    conns = {c["info"]["id"]: c for c in
+             _tool_server_post(rig)["body"]["TOOL_SERVER_CONNECTIONS"]}
+    assert conns["1"]["config"]["function_name_filter_list"] == "!web_search,!fetch,!weather"
+    assert conns["2"]["config"]["enable"] is True and conns["2"]["key"] == "gst-key"
 
 
 def test_both_keys_bind_both_connections(rig):
@@ -286,6 +323,56 @@ def test_no_keys_leaves_connections_open(rig):
     assert p.returncode == 0, p.stderr
     conns = _tool_server_post(rig)["body"]["TOOL_SERVER_CONNECTIONS"]
     assert all(c["auth_type"] == "none" and c["key"] == "" for c in conns)
+    assert all(c["config"]["enable"] is True for c in conns)
+
+
+def test_unreadable_config_does_not_silently_skip_rotation(rig):
+    """_live_auth's 'unknown' (timeout / non-JSON /api/config) used to count
+    as 'the default no longer works': the well-known admin password survived
+    the start that should retire it, with no word. Now it is retried, and a
+    persistent unknown is a loud SECURITY warning (and exit 1 in secure
+    mode)."""
+    rig.set_state(auth=True, admin_pw="admin", config_broken=1000)
+    p = rig.run("configure-webui.sh")
+    assert p.returncode == 0, p.stderr                  # the rest still runs
+    assert "SECURITY WARNING" in p.stderr and "/api/config" in p.stderr
+    rig.set_state(auth=True, admin_pw="admin", config_broken=1000)
+    p = rig.run("configure-webui.sh", "--secure-default-admin")
+    assert p.returncode == 1 and "SECURITY WARNING" in p.stderr
+
+
+def test_briefly_unreadable_config_is_retried_then_rotates(rig):
+    rig.set_state(auth=True, admin_pw="admin", config_broken=2)
+    p = rig.run("configure-webui.sh", "--secure-default-admin")
+    assert p.returncode == 0, p.stderr
+    assert rig.get_state()["accounts"]["admin@localhost"] != "admin"
+
+
+def test_non_json_tool_servers_reply_does_not_abort_the_run(rig):
+    """The reconciliation pipeline ran bare under set -euo pipefail: a 502
+    page on the GET killed the script before web search, background tasks
+    and per-model function calling were configured."""
+    rig.set_state(auth=False, admin_pw="admin", tool_servers_broken=True)
+    p = rig.run("configure-webui.sh")
+    assert p.returncode == 0, p.stderr
+    assert "tool-server reconciliation failed" in p.stderr
+    assert "Wiring built-in Web Search" in p.stdout
+    assert "Open WebUI configured." in p.stdout
+
+
+def test_no_token_with_keys_names_the_tool_outage(rig):
+    """No admin token = WebUI keeps whatever tool-server keys it stored. With
+    keys configured (first enable or --rotate) that means every WebUI tool
+    call fails auth — the warning has to say so, not just 'skipped'."""
+    rig.set_state(auth=True, admin_pw="operator-changed-it")
+    p = rig.run("configure-webui.sh",
+                env_extra={"OPENBEAST_MCPO_ADMIN_KEY": "adm-key",
+                           "OPENBEAST_MCPO_GUEST_KEY": "gst-key"})
+    assert p.returncode == 0, p.stderr
+    assert "EVERY tool call" in p.stderr
+    # Negative control: keyless, there is no key to go stale.
+    p = rig.run("configure-webui.sh")
+    assert "EVERY tool call" not in p.stderr
 
 
 # --- setup-tailscale.sh: never publish an open or default-password WebUI -----
@@ -556,15 +643,20 @@ def _docker(rig, inspect=None, err="Error: No such object: open-webui"):
     _write_exec(rig.bin / "docker", body)
 
 
-def test_tailscale_publishes_when_webui_not_running(ts_rig):
-    """WebUI down and no container: it will start from the conf (auth on) and
-    start.sh's configure-webui.sh retires the default password then."""
+def test_tailscale_refuses_443_when_webui_not_running(ts_rig):
+    """WebUI down and no container (the state ./stop.sh leaves): the volume may
+    still hold admin@localhost/admin, and nothing can check it until the WebUI
+    answers. Publishing anyway exposed that password from first boot until the
+    backgrounded rotation ran (review, webui-searxng). Auth is still persisted
+    and the rest of the tailnet setup still runs."""
     _docker(ts_rig)
     ts_rig.set_state(auth=True, admin_pw="admin", down=True)
-    p = ts_rig.run("setup-tailscale.sh")
+    p = ts_rig.run("setup-tailscale.sh", env_extra={"OPENBEAST_API_KEY": "k"})
     assert p.returncode == 0, p.stderr
-    assert _mounted_443(ts_rig)
+    assert not _mounted_443(ts_rig)
+    assert "WebUI is not running" in p.stderr
     assert ts_rig.conf_values()["WEBUI_AUTH"] == "true"
+    assert any(k == "ts" and "--https=8443" in a for k, a in _events(ts_rig))
 
 
 @pytest.mark.parametrize("status", ["running", "created", "exited"])
@@ -582,13 +674,15 @@ def test_tailscale_refuses_443_for_unanswering_auth_off_container(ts_rig, status
     assert any(k == "ts" and "--https=8443" in a for k, a in _events(ts_rig))
 
 
-def test_tailscale_publishes_for_stopped_auth_on_container(ts_rig):
-    """Negative control: a stopped container created auth-on restarts auth-on."""
+def test_tailscale_refuses_443_for_stopped_auth_on_container(ts_rig):
+    """A stopped container created auth-on restarts auth-on — but its default
+    admin password still cannot be checked until it answers."""
     _docker(ts_rig, inspect="exited PATH=/usr/bin WEBUI_AUTH=true")
     ts_rig.set_state(auth=True, admin_pw="admin", down=True)
     p = ts_rig.run("setup-tailscale.sh", env_extra={"WEBUI_WAIT_S": "0"})
     assert p.returncode == 0, p.stderr
-    assert _mounted_443(ts_rig), p.stdout + p.stderr
+    assert not _mounted_443(ts_rig), p.stdout + p.stderr
+    assert "WebUI is not running" in p.stderr
 
 
 def test_tailscale_refuses_443_when_docker_cannot_be_asked(ts_rig):
@@ -895,6 +989,9 @@ DOCKER_DB_STUB = textwrap.dedent(r'''
             k, _, v = a[1].partition("="); env[k] = v; a = a[2:]
         else:
             a = a[1:]
+    if os.environ.get("STUB_DOCKER_LOG"):
+        with open(os.environ["STUB_DOCKER_LOG"], "a") as f:
+            f.write(" ".join(sys.argv[1:2] + a[:1]) + "\n")
     if a[:3] != ["open-webui", "python3", "-c"]:
         sys.exit(1)
     code = a[3].replace("/app/backend/data/webui.db", os.environ["STUB_DB"])
@@ -908,8 +1005,18 @@ def db_rig(rig):
     rig.db = rig.tmp / "webui.db"
     con = sqlite3.connect(rig.db)
     con.execute("CREATE TABLE config (key TEXT PRIMARY KEY, value JSON NOT NULL, updated_at BIGINT)")
-    con.execute("CREATE TABLE model (id TEXT PRIMARY KEY, user_id TEXT, name TEXT, meta TEXT, "
-                "params TEXT, created_at BIGINT, updated_at BIGINT, is_active INTEGER)")
+    # The pinned image's model table (base_model_id NULL = an override of a
+    # served base model; set = a user's workspace preset on top of one).
+    con.execute("CREATE TABLE model (id TEXT PRIMARY KEY, user_id TEXT, base_model_id TEXT, "
+                "name TEXT, meta TEXT, params TEXT, created_at BIGINT, updated_at BIGINT, "
+                "is_active INTEGER)")
+    # The pinned image's DDL, verbatim (read-only from the live spark-1 DB).
+    con.execute("CREATE TABLE access_grant (id TEXT NOT NULL, resource_type TEXT NOT NULL, "
+                "resource_id TEXT NOT NULL, principal_type TEXT NOT NULL, "
+                "principal_id TEXT NOT NULL, permission TEXT NOT NULL, "
+                "created_at BIGINT NOT NULL, PRIMARY KEY (id), "
+                "CONSTRAINT uq_access_grant_grant UNIQUE (resource_type, resource_id, "
+                "principal_type, principal_id, permission))")
     con.commit()
     con.close()
     _write_exec(rig.bin / "docker", DOCKER_DB_STUB)
@@ -932,8 +1039,37 @@ def db_rig(rig):
         return got
     rig.tasks = tasks
 
+    def seed_model(mid, base=None, params=None, meta=None, active=1, user="system"):
+        con = sqlite3.connect(rig.db)
+        con.execute("INSERT INTO model (id, user_id, base_model_id, name, meta, params, "
+                    "created_at, updated_at, is_active) VALUES (?, ?, ?, ?, ?, ?, 1, 1, ?)",
+                    (mid, user, base, mid, json.dumps(meta or {}), json.dumps(params or {}), active))
+        con.commit()
+        con.close()
+    rig.seed_model = seed_model
+
+    def models():
+        con = sqlite3.connect(rig.db)
+        got = {r[0]: {"base": r[1], "params": json.loads(r[2] or "{}"),
+                      "meta": json.loads(r[3] or "{}"), "active": r[4]}
+               for r in con.execute("SELECT id, base_model_id, params, meta, is_active FROM model")}
+        con.close()
+        return got
+    rig.models = models
+
+    def grants():
+        con = sqlite3.connect(rig.db)
+        got = sorted(con.execute("SELECT resource_type, resource_id, principal_type, "
+                                 "principal_id, permission FROM access_grant"))
+        con.close()
+        return got
+    rig.grants = grants
+
+    rig.docker_log = rig.tmp / "docker.log"
+    rig.docker_log.write_text("")
+
     def configure(env_extra=None):
-        env = {"STUB_DB": str(rig.db)}
+        env = {"STUB_DB": str(rig.db), "STUB_DOCKER_LOG": str(rig.docker_log)}
         env.update(env_extra or {})
         return rig.run("configure-webui.sh", env_extra=env)
     rig.configure = configure
@@ -1005,3 +1141,197 @@ def test_background_tasks_survive_an_unreachable_container(rig):
     assert p.returncode == 0, p.stderr
     assert "could not set them" in p.stdout
     assert "Open WebUI configured." in p.stdout
+
+
+# --- configure-webui.sh: model rows (review 2026-11, webui-searxng) ---------
+#
+# The stale-row sweep set is_active=0 on every row missing from this run's
+# list. In the pinned image an inactive base-model override REMOVES the served
+# model from /api/models, and nothing ever set it back to 1 — so a model
+# switch, a fast boot or a rollback left WebUI with no model. The same sweep
+# disabled every workspace preset on a tokenless run (presets are never in the
+# endpoint's list), and a token run rewrote their system prompt and tools.
+
+@pytest.mark.parametrize("auth", [False, True])
+def test_served_model_with_an_inactive_row_is_reactivated(db_rig, auth):
+    """auth=True: a token run, where WebUI's /api/models HIDES the model (the
+    old code then found nothing and printed 'No models detected yet')."""
+    db_rig.set_state(auth=auth, admin_pw="admin", webui_models=[])
+    db_rig.seed_model("m1", params={"function_calling": "native"}, active=0)
+    p = db_rig.configure()
+    assert p.returncode == 0, p.stderr
+    assert db_rig.models()["m1"]["active"] == 1, p.stdout
+    assert "re-activated" in p.stdout
+
+
+def test_a_model_switch_deactivates_nothing(db_rig):
+    """Serving B after A must not touch A's row: WebUI already hides an
+    override whose id is not served, and A must come back when served again."""
+    db_rig.set_state(auth=False, admin_pw="admin", served=["B"])
+    db_rig.seed_model("A", params={"function_calling": "native"})
+    assert db_rig.configure().returncode == 0
+    assert db_rig.models()["A"]["active"] == 1
+    db_rig.set_state(auth=False, admin_pw="admin", served=["A"])
+    assert db_rig.configure().returncode == 0
+    got = db_rig.models()
+    assert got["A"]["active"] == 1 and got["B"]["active"] == 1
+
+
+def test_workspace_preset_survives_a_tokenless_run(db_rig):
+    persona = {"system": "You are a translator", "function_calling": "default"}
+    db_rig.set_state(auth=True, admin_pw="operator-chose-this")   # no token
+    db_rig.seed_model("persona", base="m1", params=persona, user="u1",
+                      meta={"toolIds": ["mine"]})
+    p = db_rig.configure()
+    assert p.returncode == 0, p.stderr
+    got = db_rig.models()["persona"]
+    assert got["active"] == 1, p.stdout
+    assert got["params"] == persona and got["meta"] == {"toolIds": ["mine"]}
+
+
+def test_workspace_preset_is_not_rewritten_on_a_token_run(db_rig):
+    """Token run whose endpoint probe fails, so WebUI's list (which carries
+    presets) is the fallback: the preset must still be skipped."""
+    persona = {"system": "You are a translator"}
+    db_rig.set_state(auth=False, admin_pw="admin", served=[],
+                     webui_models=[{"id": "m1"}, {"id": "persona", "preset": True}])
+    db_rig.seed_model("persona", base="m1", params=persona, user="u1")
+    p = db_rig.configure()
+    assert p.returncode == 0, p.stderr
+    got = db_rig.models()
+    assert got["persona"]["params"] == persona
+    assert got["persona"]["meta"] == {}
+    assert got["m1"]["params"]["function_calling"] == "native"   # the base model was configured
+
+
+def test_a_changed_model_connection_does_not_bounce_webui(db_rig):
+    """The pinned image reads openai.api_base_urls from the DB per request;
+    the old closing block restarted the container (killing every in-flight
+    stream) whenever the connection changed."""
+    db_rig.seed({"openai.api_base_urls": ["http://old:9999/v1"]})
+    p = db_rig.configure()
+    assert p.returncode == 0, p.stderr
+    assert "connection updated" in p.stdout
+    assert "restart" not in db_rig.docker_log.read_text()
+    assert "Restarting" not in p.stdout
+
+
+# Guests (user-role accounts) see a model with a DB row only through an
+# access_grant row in the pinned image, and the script wrote none — so the
+# documented guest tier (docs/RBAC_PLAN.md) got an empty model picker.
+
+def test_served_models_are_readable_by_every_account(db_rig):
+    p = db_rig.configure()
+    assert p.returncode == 0, p.stderr
+    assert db_rig.grants() == [("model", "m1", "user", "*", "read")], p.stdout
+    # a second run adds nothing (one grant, not one per start)
+    assert db_rig.configure().returncode == 0
+    assert db_rig.grants() == [("model", "m1", "user", "*", "read")]
+
+
+def test_an_existing_row_gets_the_grant_too(db_rig):
+    """The live rigs already have their model row: the update path grants."""
+    db_rig.seed_model("m1", params={"function_calling": "native"})
+    assert db_rig.configure().returncode == 0
+    assert db_rig.grants() == [("model", "m1", "user", "*", "read")]
+
+
+def test_a_model_the_admin_made_private_stays_private(db_rig):
+    import sqlite3
+    assert db_rig.configure().returncode == 0
+    con = sqlite3.connect(db_rig.db)
+    con.execute("DELETE FROM access_grant")   # Admin -> Models -> Private
+    con.commit()
+    con.close()
+    assert db_rig.configure().returncode == 0
+    assert db_rig.grants() == []
+
+
+def test_presets_get_no_grant_from_us(db_rig):
+    db_rig.set_state(auth=False, admin_pw="admin", served=["persona"])
+    db_rig.seed_model("persona", base="m1", user="u1")
+    assert db_rig.configure().returncode == 0
+    assert db_rig.grants() == []
+
+
+# Under native FC the pinned image injects its own builtin tools (clock,
+# knowledge-base, chat search: ~11 schemas) into every UI turn for every role
+# unless meta.builtinTools turns the category off. Off once; the admin's
+# later choice stands.
+
+_BUILTIN_OFF = {"time": False, "knowledge": False, "chats": False}
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_webui_builtin_tools_are_turned_off_once(db_rig, existing):
+    if existing:
+        db_rig.seed_model("m1", params={"function_calling": "native"})
+    assert db_rig.configure().returncode == 0
+    assert db_rig.models()["m1"]["meta"]["builtinTools"] == _BUILTIN_OFF
+
+
+def test_an_admin_builtin_tools_choice_stands(db_rig):
+    mine = {"time": True, "knowledge": False, "chats": False}
+    db_rig.seed_model("m1", params={"function_calling": "native"},
+                      meta={"builtinTools": mine})
+    assert db_rig.configure().returncode == 0
+    assert db_rig.models()["m1"]["meta"]["builtinTools"] == mine
+
+
+
+# Built-in Web Search: configured once, then the operator's — except the
+# SearXNG URL this script wrote, which must follow a BIND_HOST change
+# (SearXNG binds it; the old http://localhost:8888 is then refused).
+
+def _websearch(db_rig):
+    import sqlite3
+    con = sqlite3.connect(db_rig.db)
+    got = {k: json.loads(v) for k, v in
+           con.execute("SELECT key, value FROM config WHERE key LIKE 'web.search.%'")}
+    con.close()
+    return got
+
+
+def test_our_searxng_url_follows_a_bind_change(db_rig):
+    db_rig.seed({"web.search.engine": "searxng", "web.search.enable": False,
+                 "web.search.searxng_query_url": "http://localhost:8888/search?q=<query>"})
+    p = db_rig.configure(env_extra={"OPENBEAST_BIND": "192.168.1.50"})
+    assert p.returncode == 0, p.stderr
+    got = _websearch(db_rig)
+    assert got["web.search.searxng_query_url"] == "http://192.168.1.50:8888/search?q=<query>"
+    assert got["web.search.enable"] is False      # the operator's toggle stands
+
+
+@pytest.mark.parametrize("url", ["https://search.example.org/search?q=<query>",
+                                 "http://localhost:8888/search?q=<query>&lang=de"])
+def test_an_operator_searxng_url_stays(db_rig, url):
+    db_rig.seed({"web.search.engine": "searxng", "web.search.searxng_query_url": url})
+    assert db_rig.configure(env_extra={"OPENBEAST_BIND": "192.168.1.50"}).returncode == 0
+    assert _websearch(db_rig)["web.search.searxng_query_url"] == url
+
+
+
+# The default-admin probe must not fail open: a 429 (upstream limits sign-ins
+# to 15 per 3 min per email), a 5xx or a timeout is "unknown", never "the
+# default password no longer works".
+
+@pytest.mark.parametrize("status", [429, 500])
+def test_check_default_admin_says_unverified_on_no_answer(rig, status):
+    rig.set_state(auth=True, admin_pw="admin", signin_status=status)
+    p = rig.run("configure-webui.sh", "--check-default-admin")
+    assert p.returncode == 5, (p.stdout, p.stderr)
+
+
+@pytest.mark.parametrize("status", [429, 503])
+def test_secure_default_admin_fails_closed_on_no_answer(rig, status):
+    rig.set_state(auth=True, admin_pw="admin", signin_status=status)
+    p = rig.run("configure-webui.sh", "--secure-default-admin")
+    assert p.returncode == 1, (p.stdout, p.stderr)
+    assert "could not tell" in p.stderr
+
+
+def test_tailscale_does_not_publish_when_the_probe_is_rate_limited(ts_rig):
+    ts_rig.set_state(auth=True, admin_pw="admin", signin_status=429)
+    p = ts_rig.run("setup-tailscale.sh", env_extra={"OPENBEAST_API_KEY": "k"})
+    assert not _mounted_443(ts_rig), p.stdout + p.stderr
+    assert "NOT publishing the WebUI" in p.stderr

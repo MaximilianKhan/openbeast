@@ -29,7 +29,7 @@ tools (§2.1) — pull is for you, a cloud model, and for people.
 
 This skill is `prompt_index: false`: it is reachable with `skill("beast-lang")`
 but deliberately not in the local model's always-on menu in
-`system-prompt-tools.md` (that file is hashed into the eval cache era).
+`system-prompt-tools.md` (every menu entry costs tokens on every turn).
 
 ## Look something up
 
@@ -148,8 +148,8 @@ has **no default endpoint** (`OPENBEAST_LANG_SYNTH_URL`).
    fact stamped for another toolchain version is refused, not served.
 7. **The corpus stays out of git** (cppreference is CC-BY-SA, ISO drafts are
    not redistributable). Ship the acquirer, not the library.
-8. **Era lock.** `agents/runner.py`, `agents/tools.py`, both system prompts,
-   `opencode.json` and `evals/SUITE_VERSION` are hashed into the eval cache.
+8. **Era lock.** `agents/runner.py`, `agents/tools.py`, `system-prompt.md`,
+   `evals/SUITE_VERSION` and `evals/HARNESS_VERSION` are hashed into the eval cache.
    beast-lang's serving path is wired through `agents/lang/__init__.py`
    (`safe_pack`, `safe_escalation`, `safe_reference` — they never raise and are
    silent under `OPENBEAST_EVAL`); nothing in this package needs those files,

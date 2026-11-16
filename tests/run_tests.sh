@@ -151,16 +151,22 @@ echo ""
 for _suite in \
   "test_conf_secrets.sh|Conf parsing + secrets-off-argv" \
   "test_gpu_ops.sh|GPU lease / update / ops" \
+  "test_llama_serving.sh|llama-serving (serve.sh, run.sh, scorer, measure-vram, profilers)" \
   "test_supply_chain.sh|Supply-chain (hash-pinned installs, pin parity)" \
   "test_shell_ops.sh|Shell ops (doctor, tailscale, conf, keys)" \
   "test_ops_chat_artifact.sh|beast-chat / beast-artifact ops" \
   "test_backends.sh|Inference backends (vLLM / TensorFold, unmanaged)" \
+  "test_engines.sh|Engine plane (scripts/engine.sh: swap / pin / update / rollback, managed vLLM / TensorFold)" \
+  "test_spark_cluster.sh|DGX Spark cluster of 1-8 nodes (spark-cluster.sh)" \
+  "test_spark_guard.sh|DGX Spark guard (nftables for the rendezvous ports)" \
+  "test_spark_supply.sh|DGX Spark supply chain (install-native, root-setup debs and key)" \
   "test_opencode_sessions.sh|opencode session clearing" \
   "test_tier3_harness.sh|Tier-3 campaign harness (manifest, stop file, drift)" \
   "test_hydra_ready_parity.sh|beast-hydra readiness parity (hydra_core vs backend.sh)" \
   "test_hydra_sim.sh|beast-hydra simulated fleet + scripts/hydra.sh" \
   "test_hydra_instinct_wiring.sh|beast-hydra / beast-instinct stack wiring (conf, start, stop, healthcheck)" \
   "test_setup_client.sh|Client installer (scripts/setup-client.sh)" \
+  "test_publish_slot.sh|beast-slot :8444 mount (setup-tailscale.sh --publish-slot)" \
   "test_operator_scripts.sh|Operator scripts (2026-10-09 review fixes)"; do
   _file="${_suite%%|*}"; _label="${_suite#*|}"
   echo "--- $_label tests (tests/$_file) ---"
@@ -191,6 +197,25 @@ if [[ $HAVE_PYTEST -eq 1 ]]; then
   else
     echo ""
     echo "beast-hydra / beast-instinct tests: SOME FAILED"
+    OVERALL=1
+  fi
+  echo ""
+  echo ""
+fi
+
+# --- beast-docs (docs/BEAST_DOCS.md) ---
+# Hermetic: a stub HTTP server on loopback serves synthetic DocC JSON,
+# Android-shaped markdown and HTML. Also part of the full pytest run below;
+# listed on its own so a failure here is named, as in CI.
+if [[ $HAVE_PYTEST -eq 1 ]]; then
+  echo "--- beast-docs tests (tests/test_beast_docs.py, test_platform_docs_tool.py) ---"
+  echo ""
+  if python3 -m pytest "$REPO_DIR/tests/test_beast_docs.py" "$REPO_DIR/tests/test_platform_docs_tool.py" -q; then
+    echo ""
+    echo "beast-docs tests: ALL PASSED"
+  else
+    echo ""
+    echo "beast-docs tests: SOME FAILED"
     OVERALL=1
   fi
   echo ""
@@ -245,6 +270,25 @@ else
   echo "Tool tests: NOT RUN (pytest is not installed)"
 fi
 
+# --- beast-apps (scripts/apps.sh, agents/apps/; docs/BEAST_APPS.md) ---------
+# Named so a failure here reads as "beast-apps", not as one line in the full
+# run below (which skips it, as CI does: it has its own CI step).
+if [[ $HAVE_PYTEST -eq 1 ]]; then
+  echo ""
+  echo "--- beast-apps tests (stub toolchains, stub MCP server, local registry) ---"
+  echo ""
+  if python3 -m pytest "$REPO_DIR/tests/test_apps.py" -q; then
+    echo ""
+    echo "beast-apps tests: ALL PASSED"
+  else
+    echo ""
+    echo "beast-apps tests: SOME FAILED"
+    OVERALL=1
+  fi
+else
+  echo "beast-apps tests: NOT RUN (pytest is not installed)"
+fi
+
 # --- Full Python suite -----------------------------------------------------
 # The block above runs ONE file. CI runs `pytest tests/ -q` as a separate step,
 # so for a long time every suite outside test_tools.py (the artifact, chat,
@@ -256,7 +300,7 @@ if [[ $HAVE_PYTEST -eq 1 ]]; then
   echo ""
   echo "--- Full Python suite (everything CI runs) ---"
   echo ""
-  if python3 -m pytest "$REPO_DIR/tests" -q; then
+  if python3 -m pytest "$REPO_DIR/tests" -q --ignore="$REPO_DIR/tests/test_apps.py"; then
     echo ""
     echo "Full Python suite: ALL PASSED"
   else

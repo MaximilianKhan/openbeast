@@ -124,6 +124,32 @@ fi
 # check in the preflight needs to know what it is making room for.
 WEIGHT_FILE="Qwen3.8-27B-Uncensored-Q5_K_M.gguf"
 HF_REPO="JonathanColetti/Qwen3.8-27B-Uncensored-GGUF"
+# What an OFFLINE box must already hold: the weight(s) the CONFIGURED serve
+# script loads (SERVE_SCRIPT -> DEFAULT_SERVE_SCRIPT, lib/conf.sh), scraped the
+# way `bundle.sh build --with-weights` picks them — non-comment lines only, a
+# shard expanded to its whole set. Online, bootstrap downloads the default and
+# nothing else; offline it used to REQUIRE the default even when SERVE_SCRIPT
+# named another registry weight, so the documented "any registry weight works"
+# died on every run. Prints WEIGHT_FILE when the configured script loads it,
+# names no file, or cannot be read.
+ob_closed_box_weights() {
+  local s="$REPO_DIR/scripts/${DEFAULT_SERVE_SCRIPT:-}" names="" n
+  if [[ -n "${DEFAULT_SERVE_SCRIPT:-}" && -f "$s" ]]; then
+    names="$(grep -vE '^[[:space:]]*#' "$s" | grep -oE '[A-Za-z0-9._-]+\.gguf' | sort -u || true)"
+  fi
+  if [[ -z "$names" ]] || grep -qxF -- "$WEIGHT_FILE" <<< "$names"; then
+    printf '%s\n' "$WEIGHT_FILE"; return 0
+  fi
+  while IFS= read -r n; do
+    [[ -n "$n" ]] || continue
+    if [[ "$n" =~ ^(.*)-[0-9]{5}-of-([0-9]{5})\.gguf$ ]]; then
+      local stem="${BASH_REMATCH[1]}" tot="${BASH_REMATCH[2]}" i
+      for i in $(seq 1 "$((10#$tot))"); do printf '%s-%05d-of-%s.gguf\n' "$stem" "$i" "$tot"; done
+    else
+      printf '%s\n' "$n"
+    fi
+  done <<< "$names" | sort -u
+}
 
 # ---- distro detection ------------------------------------------------------
 DISTRO="unknown"; PKG_HINT=""
@@ -420,6 +446,29 @@ preflight_disk() {
   avail_kb=$(df -Pk "$probe" 2>/dev/null | awk 'NR==2 {print $4}') || avail_kb=""
   [[ "$avail_kb" =~ ^[0-9]+$ ]] || avail_kb=""
   avail_gb=$(( ${avail_kb:-0} / 1024 / 1024 ))
+  # OFFLINE with a non-default SERVE_SCRIPT: step 4 checks the weight that
+  # script loads (ob_closed_box_weights), so presence and size are judged on
+  # that — not on a 20 GB default this box will never hold.
+  local _pf_w="$WEIGHT_FILE"
+  ob_offline && _pf_w="$(ob_closed_box_weights)"
+  if [[ "$_pf_w" != "$WEIGHT_FILE" ]]; then
+    local _n _all=1 _b _sum=0
+    while IFS= read -r _n; do
+      [[ -f "$resolved/$_n" ]] || _all=0
+      _b="$(awk -F'\t' -v f="$_n" '$3 == f {print $2}' "$REPO_DIR/scripts/weights.registry" 2>/dev/null || true)"
+      [[ "$_b" =~ ^[0-9]+$ ]] && _sum=$(( _sum + _b ))
+    done <<< "$_pf_w"
+    if [[ $_all -eq 1 ]]; then
+      PF_WEIGHT_PRESENT=1
+      ok "weights dir: $resolved — the weight $DEFAULT_SERVE_SCRIPT loads is already there${avail_kb:+ (${avail_gb} GB free)}"
+    elif [[ $_sum -gt 0 && -n "$avail_kb" && $(( avail_kb * 1024 )) -lt $_sum ]]; then
+      warn "not enough disk for the weight $DEFAULT_SERVE_SCRIPT loads: need $(awk -v b="$_sum" 'BEGIN{printf "%.1f", b/1e9}') GB in $resolved"
+      hard_fail
+    else
+      warn "OFFLINE: the weight $DEFAULT_SERVE_SCRIPT loads is not all in $resolved yet — copy it in (step 4 refuses without it)"
+    fi
+    return 0
+  fi
   if [[ -f "$resolved/$WEIGHT_FILE" ]]; then
     PF_WEIGHT_PRESENT=1
     ok "weights dir: $resolved — the default weight is already there${avail_kb:+ (${avail_gb} GB free)}"
@@ -605,7 +654,7 @@ $(printf '         %s\n' "${_ob_net_need[@]}")
        Nothing was built or downloaded. Check the connection (a VPN, a proxy,
        DNS) and re-run. On a network that is closed on purpose, set
        OFFLINE=true in openbeast.conf and bring the artifacts in:
-         ./scripts/bundle.sh build ./bundle      (on a connected box)
+         ./scripts/bundle.sh build ./bundle      (on a connected box of the SAME arch: an aarch64 Spark for a Spark)
          ./scripts/bundle.sh install ./bundle    (here)"
   fi
 fi
@@ -687,7 +736,7 @@ else
     die "OFFLINE=true and there is no llama.cpp source to build.
        The source is one of the four fetches a first install cannot do on a
        closed network. Bring it in with a bundle:
-         connected box:  ./scripts/bundle.sh build ./bundle
+         connected box (same arch as this one):  ./scripts/bundle.sh build ./bundle
          here:           ./scripts/bundle.sh install ./bundle
        or by hand: git clone --depth 1 https://github.com/ggml-org/llama.cpp.git
        into $REPO_DIR/llama.cpp (a source tarball is enough — this build
@@ -754,10 +803,18 @@ fi
 # ---- 3. Python dependencies ------------------------------------------------
 step "Python dependencies"
 PIP_FLAGS=""
+# INSIDE A VENV, pip REFUSES --user ("User site-packages are not visible in
+# this virtualenv") — not a hash error, so this step died blaming the network
+# or the lock, while the OFFLINE path (scripts/pydeps.sh, whose _pip_flags
+# checks this first) worked on the same box. Same test, same order, here.
+PIP_USER="--user"
+if python3 -c 'import sys; sys.exit(0 if sys.prefix != sys.base_prefix else 1)' 2>/dev/null; then
+  PIP_USER=""
+  ok "inside a virtualenv ($(python3 -c 'import sys; print(sys.prefix)' 2>/dev/null)) → installing into it, not --user"
 # PEP-668 "externally managed" environments (Arch, newer Debian) reject a
 # bare 'pip install --user'. Use --break-system-packages there; it only
 # touches ~/.local, never system site-packages.
-if python3 -c 'import sysconfig,os;p=sysconfig.get_path("stdlib");exit(0 if os.path.exists(os.path.join(p,"EXTERNALLY-MANAGED")) else 1)' 2>/dev/null; then
+elif python3 -c 'import sysconfig,os;p=sysconfig.get_path("stdlib");exit(0 if os.path.exists(os.path.join(p,"EXTERNALLY-MANAGED")) else 1)' 2>/dev/null; then
   PIP_FLAGS="--break-system-packages"
   warn "externally-managed Python → using --user --break-system-packages (~/.local only)"
 fi
@@ -774,19 +831,39 @@ fi
 # Upgrades are not lost: scripts/update.sh --python owns them (it already runs
 # `pip list --outdated` and reinstalls against requirements.txt), which is the
 # right place for an upgrade — bootstrap's job is to make the box WORK.
+# THE PARSER IS pydeps_lock's, not a second copy. This one used
+# `^name\s*==\s*(.+)$`, the shape pydeps_lock.py documents as failing on both
+# ordinary decorations: `uvicorn[standard]==X` fell through to presence-only
+# (ANY installed uvicorn "satisfied", so the hash-pinned install was skipped),
+# and `pkg==X ; marker` read the version as "X ; marker" (never satisfied,
+# reinstalled every run). A line that parser cannot read is NOT satisfied; a
+# pin whose environment marker excludes this python is not required.
 ob_python_deps_satisfied() {
-  python3 - "$REPO_DIR/agents/requirements.txt" <<'PYDEPS'
+  python3 - "$REPO_DIR/agents/requirements.txt" "$REPO_DIR/scripts/lib" <<'PYDEPS'
 import importlib.metadata as md, re, sys
-missing = []
-for raw in open(sys.argv[1]):
-    line = raw.split("#")[0].strip()
-    if not line:
-        continue
-    m = re.match(r"^([A-Za-z0-9._-]+)\s*==\s*(.+)$", line)
-    if not m:                      # unpinned line: presence is all we can check
-        name, want = re.split(r"[<>=!~\[]", line, 1)[0].strip(), None
-    else:
-        name, want = m.group(1), m.group(2).strip()
+sys.path.insert(0, sys.argv[2])
+from pydeps_lock import direct_pins, _norm
+try:
+    from packaging.markers import Marker
+except ImportError:
+    try:
+        from pip._vendor.packaging.markers import Marker
+    except ImportError:
+        Marker = None
+pins, unparsed = direct_pins(sys.argv[1])
+missing = [f"{u} (treated as NOT satisfied)" for u in unparsed]
+if Marker is not None:
+    for raw in open(sys.argv[1]):
+        spec, sep, mk = raw.split("#")[0].strip().partition(";")
+        if not sep:
+            continue
+        try:
+            applies = Marker(mk.strip()).evaluate()
+        except Exception:
+            continue                 # unreadable marker: keep the pin, check it
+        if not applies:
+            pins.pop(_norm(re.split(r"[<>=!~\[\s]", spec.strip(), maxsplit=1)[0]), None)
+for name, want in pins.items():
     try:
         got = md.version(name)
     except md.PackageNotFoundError:
@@ -883,7 +960,7 @@ $(sed 's/^/         /' <<< "$_ob_stale")
   if [[ $_ob_lock_usable -eq 1 ]]; then
     # pip's stderr is KEPT, because why it failed decides what happens next.
     _ob_pip_err="$(mktemp)"
-    if python3 -m pip install --user $PIP_FLAGS -q --require-hashes -r "$_ob_lock" 2>"$_ob_pip_err"; then
+    if python3 -m pip install $PIP_USER $PIP_FLAGS -q --require-hashes -r "$_ob_lock" 2>"$_ob_pip_err"; then
       _ob_locked_ok=1
       rm -f "$_ob_pip_err"
       ok "installed the hash-pinned closure ($(grep -cE '^[A-Za-z0-9].*==' "$_ob_lock") packages, content verified)"
@@ -940,7 +1017,7 @@ $(sed 's/^/         /' <<< "$_ob_stale")
          git checkout -- agents/requirements.lock
        or accept versions pinned but content NOT verified:
          OPENBEAST_PIP_STRICT=0 ./bootstrap.sh"
-    python3 -m pip install --user $PIP_FLAGS -q -U "huggingface_hub" -r "$REPO_DIR/agents/requirements.txt" \
+    python3 -m pip install $PIP_USER $PIP_FLAGS -q -U "huggingface_hub" -r "$REPO_DIR/agents/requirements.txt" \
       || die "pip install failed. On a closed network, pre-stage the wheels:
        on a connected box:  ./scripts/pydeps.sh wheelhouse wheels
        copy ./wheels here (NOT the lock — this checkout's is the trust root), then:
@@ -1003,7 +1080,36 @@ else
   # hashed on every run now (~1 min for 20 GB, inside a multi-minute
   # bootstrap). A mismatch is fatal and NOT auto-deleted here: the file may be
   # one the operator put there by hand.
-  if [[ -f "$WEIGHTS_DIR/$WEIGHT_FILE" ]]; then
+  _ob_ow="$WEIGHT_FILE"
+  ob_offline && _ob_ow="$(ob_closed_box_weights)"
+  if [[ "$_ob_ow" != "$WEIGHT_FILE" ]]; then
+    # OFFLINE, and SERVE_SCRIPT loads something other than the default: that
+    # is what has to be here (and verified), not the default.
+    _ob_miss=""
+    while IFS= read -r _n; do
+      [[ -f "$WEIGHTS_DIR/$_n" ]] || _ob_miss="$_ob_miss         $_n"$'\n'
+    done <<< "$_ob_ow"
+    [[ -z "$_ob_miss" ]] || die "OFFLINE=true and $DEFAULT_SERVE_SCRIPT (SERVE_SCRIPT) loads weight(s) not in $WEIGHTS_DIR:
+${_ob_miss}       A closed network cannot download them. Copy them in and verify:
+         copy the .gguf file(s) into $WEIGHTS_DIR
+         ./scripts/verify-weights.sh           (checks size + sha256)"
+    while IFS= read -r _n; do
+      if awk -F'\t' -v f="$_n" '$1 !~ /^#/ && $3 == f {found=1} END {exit !found}' "$REPO_DIR/scripts/weights.registry" 2>/dev/null; then
+        echo "  verifying $_n against its pin..."
+        _vw="$("$REPO_DIR/scripts/verify-weights.sh" --file "$_n" 2>&1)" \
+          || die "$WEIGHTS_DIR/$_n is NOT the weight OpenBeast pinned:
+$(sed 's/^/         /' <<< "$_vw")
+       Refusing to continue with it. Copy a good one in and re-run."
+        if [[ "$_vw" == *PENDING* ]]; then
+          warn "$_n is present but its registry row is PENDING — nothing to verify it against"
+        else
+          ok "$_n present, sha256 verified against scripts/weights.registry"
+        fi
+      else
+        warn "$_n is not in scripts/weights.registry — present, but nothing to verify it against"
+      fi
+    done <<< "$_ob_ow"
+  elif [[ -f "$WEIGHTS_DIR/$WEIGHT_FILE" ]]; then
     echo "  verifying the existing $WEIGHT_FILE against its pin (~1 min for 20 GB)..."
     if _vw="$("$REPO_DIR/scripts/verify-weights.sh" --file "$WEIGHT_FILE" 2>&1)"; then
       ok "already downloaded, sha256 verified ($WEIGHTS_DIR/$WEIGHT_FILE)"
@@ -1088,7 +1194,7 @@ if ob_offline; then
   warn "OFFLINE=true → not pulling the $_n_img frontend image(s); a registry
       pull cannot succeed here. Images already in the local store are used as
       they are. To bring them in from a connected box:
-        connected:  ./scripts/bundle.sh build ./bundle
+        connected, same arch:  ./scripts/bundle.sh build ./bundle
         here:       ./scripts/bundle.sh install ./bundle
       That loads them AND rewrites docker-compose.yml to reference them by
       content id, because a digest-pinned ref cannot be satisfied from a
@@ -1121,7 +1227,11 @@ if [[ $OB_LOCAL_LLAMA -eq 1 ]]; then
 else
   echo "  Model API: $INFERENCE_URL/v1   (OpenAI-compatible, $INFERENCE_BACKEND)"
 fi
-echo "  Terminal:  run 'opencode' in any project directory"
+if [[ $OB_LOCAL_LLAMA -eq 1 ]]; then
+  echo "  Terminal:  run 'opencode' from this checkout (its opencode.json is project-local)"
+else
+  echo "  Terminal:  opencode: add the entry scripts/backends/use-model.sh prints to ~/.config/opencode"
+fi
 ob_weights_line
 echo
 

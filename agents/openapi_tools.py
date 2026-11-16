@@ -21,15 +21,21 @@ the HTTP layer, which buys three things mcpo structurally can't provide:
              publish, list and republish as that operator.
   PROFILES   Both RBAC Phase 2 keys are checked natively in ONE process:
              the admin key reaches all tools, the guest key only
-             web_search/fetch (403 elsewhere), no key configured = open
-             loopback Phase-1 parity. Replaces the two-instance MCPO split.
+             GUEST_TOOLS — web_search, fetch, weather (404 elsewhere); no
+             key configured = open loopback Phase-1 parity. Replaces the
+             two-instance MCPO split. weather is a web read, but note it
+             also signs in to Open WebUI AS ADMIN to read the CALLER'S OWN
+             user.info.location (agents/weather.py caller_location) — only
+             that user's record, keyed by the forwarded user id.
   AUDIT      Every tool call is appended to .run/tool-audit.jsonl (0600)
-             with ts/user/role/chat/tool/status/ms and an argument DIGEST
-             (never the arguments themselves — chats stay private).
+             with ts/user/role/chat/tool/status/ms, an argument HMAC under
+             the install's .run/tool-audit.key and a power-of-two size
+             bound — never the arguments themselves, and a copy of the trail
+             without the key cannot confirm a guessed query either.
 
 agents/mcp_server.py remains the MCP (stdio) surface for OpenCode and any
-real MCP client; this module imports and serves the same 18 tool functions,
-so the two surfaces cannot drift.
+real MCP client; this module imports and serves the same 19 tool functions
+(plus the WebUI-only `weather`: 20 here), so the two surfaces cannot drift.
 
 Env:
   OPENBEAST_TOOLS_PORT        listen port (default 3001 — note start.sh and
@@ -71,6 +77,7 @@ import ipaddress
 import json
 import os
 import re
+import secrets
 import sys
 import threading
 import time
@@ -79,7 +86,9 @@ from datetime import datetime
 
 import jwt as pyjwt
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import PlainTextResponse
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import create_model
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -91,20 +100,27 @@ from hostpolicy import PinnedHostMiddleware, trusted_hosts  # noqa: E402
 
 REPO_DIR = os.path.dirname(_HERE)
 
-# The full WebUI tool surface — same 18 functions the MCP server exposes.
+# The full WebUI tool surface — the 19 functions the MCP server exposes,
+# plus `weather` (20).
 # `language_reference` (beast-lang's pull surface) is read-only and harmless,
-# and it is STILL admin-only: GUEST_TOOLS below is web-only on purpose, and a
+# and it is STILL admin-only: GUEST_TOOLS below is web reads only (search,
+# fetch, weather — outbound reads of guarded or fixed hosts) on purpose, and a
 # profile that is "web-only, plus the things that seemed safe" is not a
 # profile anyone can reason about. tests/test_lang_reference_tool.py pins it.
+# `platform_docs` (beast-docs) is admin-only for the same reason, and because
+# its live mode makes outbound requests (to configured doc hosts only).
 TOOL_NAMES = [
     "bash", "read_file", "write_file", "edit_file", "list_files", "grep",
     "fetch", "web_search", "skill",
     "start_agent", "start_skill_agent", "check_agent", "list_agents",
     "stop_agent", "tail_agent",
     "publish_artifact", "list_artifacts",
-    "language_reference",
+    "language_reference", "platform_docs",
+    # WebUI-only (not an MCP tool): it needs the caller's identity to find
+    # where the caller is (agents/weather.py).
+    "weather",
 ]
-GUEST_TOOLS = {"web_search", "fetch"}
+GUEST_TOOLS = {"web_search", "fetch", "weather"}
 
 _HDR_USER = "x-openwebui-user-id"
 _HDR_ROLE = "x-openwebui-user-role"
@@ -201,6 +217,70 @@ def _audit_path() -> str:
     return os.path.join(run_dir, "tool-audit.jsonl")
 
 
+# The largest request body any tool call may send. The pre-body gate (see
+# create_app) refuses anything bigger with a 413 BEFORE it is buffered: with
+# no cap, one POST of a few hundred MB sat in the same unified memory the
+# model runs in. 16 MiB is far above any real call (write_file content is
+# model-authored text; publish_artifact takes a path, not the page).
+_DEFAULT_MAX_BODY = 16 * 1024 * 1024
+
+# Audit fields copied from a request are capped like `error`/`claimed_user`:
+# a header can be ~16 KB, and an uncapped row let one keyless request append
+# that much to the trail.
+_AUDIT_FIELD_CAP = 200
+
+
+def _max_body_bytes() -> int:
+    raw = os.environ.get("OPENBEAST_TOOLS_MAX_BODY_BYTES", "").strip()
+    try:
+        n = int(raw) if raw else _DEFAULT_MAX_BODY
+    except ValueError:
+        n = _DEFAULT_MAX_BODY
+    return n if n > 0 else _DEFAULT_MAX_BODY
+
+
+def _audit_key(audit_path: str) -> bytes:
+    """The per-install key the argument digest is an HMAC under.
+
+    A plain sha256 of the canonical argument JSON was confirmable offline:
+    the tool signatures fix every field but the query/URL/command, so a
+    reader of the trail could test guesses (and args_bytes gave the exact
+    length). The key lives BESIDE the trail (tool-audit.key, 0600), never in
+    it, so a copy of the log that leaves the rig — a backup, a log shipper —
+    no longer confirms guesses. It hides nothing from the account that owns
+    both files; nothing on the box could.
+    """
+    path = os.path.join(os.path.dirname(audit_path) or ".", "tool-audit.key")
+    try:
+        os.makedirs(os.path.dirname(path) or ".", mode=0o700, exist_ok=True)
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            with open(path, "rb") as f:
+                key = f.read().strip()
+            if len(key) >= 32:
+                return key
+            raise OSError("audit key too short")
+        key = secrets.token_hex(32).encode()
+        with os.fdopen(fd, "wb") as f:
+            f.write(key)
+        return key
+    except OSError:
+        # Unwritable run dir: digests still correlate within this process,
+        # and still confirm nothing offline.
+        return secrets.token_hex(32).encode()
+
+
+def _size_bound(n: int) -> int:
+    """The smallest power of two >= n: the size class of a call, not the
+    exact length of the one unknown field in it."""
+    return 1 << max(0, (n - 1).bit_length())
+
+
+def _cap(value):
+    return None if value is None else str(value)[:_AUDIT_FIELD_CAP]
+
+
 def _key_matches(token: str, key: str) -> bool:
     """Constant-time key check on BYTES. compare_digest on str raises
     TypeError for any non-ASCII character, and Starlette decodes header bytes
@@ -238,6 +318,8 @@ def create_app() -> FastAPI:
         os.chmod(audit_path, 0o600)
     except OSError:
         pass
+    audit_key = _audit_key(audit_path)
+    max_body = _max_body_bytes()
     # Signed identity (enterprise): when this secret is set — the SAME value
     # given to Open WebUI as FORWARD_USER_INFO_HEADER_JWT_SECRET — WebUI
     # stops sending plain X-OpenWebUI-User-* headers and instead mints an
@@ -294,7 +376,7 @@ def create_app() -> FastAPI:
         email = request.headers.get(_HDR_EMAIL, "").strip() or None
         return user, role, chat, email
 
-    def denied_identity(request: Request) -> tuple:
+    def denied_identity(request: Request, status: int = 0) -> tuple:
         """(user, role, chat, claimed_user) for a DENIED call's audit row.
 
         The denial row used to copy the raw plain headers even in JWT mode,
@@ -302,6 +384,10 @@ def create_app() -> FastAPI:
         /bash" into the trail by typing her id. Now the row carries only what
         identity_from would VERIFY (nothing, if the token is absent or bad);
         a typed id in JWT mode is kept, clearly marked, as claimed_user.
+        Header mode follows the same rule when the KEY check failed (401 /
+        403): a caller with no valid key has proved nothing, so the id it
+        typed is a claim, not the caller. With a valid key (a guest's 404)
+        the header id is as trusted as on any header-mode row.
         """
         try:
             user, role, chat, _email = identity_from(request)
@@ -309,6 +395,8 @@ def create_app() -> FastAPI:
             user, role, chat = None, None, \
                 (request.headers.get(_HDR_CHAT, "").strip() or None)
         claimed = None
+        if keyed and not jwt_secret and status in (401, 403):
+            return None, None, chat, user
         if jwt_secret:
             typed = request.headers.get(_HDR_USER, "").strip()
             if typed and typed != user:
@@ -319,6 +407,11 @@ def create_app() -> FastAPI:
         title="OpenBeast local tools",
         version="1.0",
         description="Identity-aware tool server (see agents/openapi_tools.py).",
+        # /docs and /redoc OFF: FastAPI's pages pull floating, unpinned
+        # swagger-ui@5 / redoc@2 bundles from a CDN into THIS origin — the
+        # one serving /bash — and are broken offline anyway. WebUI reads
+        # only /openapi.json.
+        docs_url=None, redoc_url=None,
     )
     # Rebinding defence: a hostile DNS name pointed at 127.0.0.1 is refused
     # here, before a route (or the key check) runs. This was the one server
@@ -326,11 +419,9 @@ def create_app() -> FastAPI:
     # stay welcome: this server binds BIND_HOST, so WebUI, the router and the
     # probes dial it as 127.0.0.1, [::1] or that one LAN/tailnet address
     # (ob_probe_host) — and an address is not a name an attacker can re-point.
+    # (Added below, after PreBodyGate, so the Host check stays OUTERMOST.)
     allowed_hosts = trusted_hosts(
         os.environ.get("OPENBEAST_TOOLS_ALLOWED_HOSTS", ""))
-    app.add_middleware(PinnedHostMiddleware, allowed_hosts=allowed_hosts,
-                       allow_env="OPENBEAST_TOOLS_ALLOWED_HOSTS",
-                       allow_ip_literals=True)
     app.state.allowed_hosts = allowed_hosts
 
     def check_auth(request: Request, tool: str) -> str:
@@ -410,20 +501,23 @@ def create_app() -> FastAPI:
               ms: int, args: dict, err: str = "", owner: str = "",
               claimed_user=None) -> None:
         """Append-only call log. Argument CONTENTS never leave the request —
-        only a digest and size, so the audit trail can't leak chats."""
+        only a KEYED digest (HMAC under the install's tool-audit.key, see
+        _audit_key) and a power-of-two size bound, so a copy of the trail
+        can neither leak a chat nor confirm a guessed query offline."""
         try:
             blob = json.dumps(args, sort_keys=True, default=str).encode()
             entry = {
                 "ts": datetime.now().isoformat(timespec="seconds"),
-                "user": user,
-                "role": role,
-                "chat": chat,
+                "user": _cap(user),
+                "role": _cap(role),
+                "chat": _cap(chat),
                 "profile": profile,
                 "tool": tool,
                 "ok": ok,
                 "ms": ms,
-                "args_sha256": hashlib.sha256(blob).hexdigest()[:16],
-                "args_bytes": len(blob),
+                "args_hmac": hmac.new(audit_key, blob,
+                                      hashlib.sha256).hexdigest()[:16],
+                "args_bytes_max": _size_bound(len(blob)),
                 "identity": "jwt" if jwt_secret else "header",
             }
             if err:
@@ -448,6 +542,111 @@ def create_app() -> FastAPI:
         except Exception:
             pass  # the audit trail must never break the tool call
 
+    def admit(request: Request, name: str) -> tuple:
+        """(profile, user, role, chat, email) — or an audited denial.
+
+        Headers only: the pre-body gate runs this before one body byte is
+        received, and the endpoint runs it again (defence in depth).
+        Denials MUST reach the audit trail and metrics — a guest probing
+        /bash, a wrong-key brute force, or forged JWTs are exactly the
+        events an audit log exists for.
+        """
+        try:
+            # R8: two answers to "who is calling" is not an identity. First,
+            # before the key check, because a doubled `authorization` picks
+            # the PROFILE by the same first-wins accident.
+            _refuse_ambiguous_identity(request)
+            profile = check_auth(request, name)
+            user, role, chat, email = identity_from(request)
+        except HTTPException as e:
+            d_user, d_role, d_chat, claimed = denied_identity(
+                request, e.status_code)
+            audit(d_user, d_role, d_chat,
+                  name, "denied", False, 0, {},
+                  f"http {e.status_code}: {e.detail}",
+                  claimed_user=claimed)
+            with metrics_lock:
+                calls[(name, "denied", "error")] += 1
+            raise
+        return profile, user, role, chat, email
+
+    def refuse_admitted(name: str, profile: str, ident: tuple, status: int,
+                        detail: str) -> HTTPException:
+        """Audit + count a refusal of an ADMITTED caller (413, 422, a
+        workdir escape), and hand back the exception to raise/answer."""
+        user, role, chat = ident
+        audit(user, role, chat, name, profile, False, 0, {},
+              f"http {status}: {detail}")
+        with metrics_lock:
+            calls[(name, profile, "error")] += 1
+        return HTTPException(status_code=status, detail=detail)
+
+    tool_set = frozenset(TOOL_NAMES)
+
+    class PreBodyGate:
+        """Authenticate, then cap, BEFORE the body is read.
+
+        FastAPI reads and validates the whole body to build the endpoint's
+        argument model, so a key check inside the endpoint came after the
+        server had already held the body in RAM: one keyless POST /bash of
+        300 MB took the process from 80 MB to 1.33 GB of the unified memory
+        the model shares, and a malformed one got a 422 echoing its input
+        with no audit row. This gate runs `admit` from the headers alone,
+        then buffers the body only up to `max_body` (Content-Length checked
+        up front, a streamed body counted as it arrives) — 413 past that.
+        """
+
+        def __init__(self, app):
+            self.app = app
+
+        async def __call__(self, scope, receive, send):
+            name = scope.get("path", "").lstrip("/")
+            if (scope["type"] != "http" or scope.get("method") != "POST"
+                    or name not in tool_set):
+                await self.app(scope, receive, send)
+                return
+            request = Request(scope)
+            try:
+                profile, user, role, chat, _email = admit(request, name)
+            except HTTPException as e:
+                await JSONResponse({"detail": e.detail},
+                                   status_code=e.status_code,
+                                   headers=e.headers)(scope, receive, send)
+                return
+            ident = (user, role, chat)
+            too_big = f"request body over the {max_body}-byte cap"
+            declared = request.headers.get("content-length", "")
+            if declared.isdigit() and int(declared) > max_body:
+                e = refuse_admitted(name, profile, ident, 413, too_big)
+                await JSONResponse({"detail": e.detail}, status_code=413)(
+                    scope, receive, send)
+                return
+            chunks, total = [], 0
+            while True:
+                msg = await receive()
+                if msg["type"] != "http.request":
+                    return  # client went away: nothing to answer
+                total += len(msg.get("body", b""))
+                if total > max_body:
+                    e = refuse_admitted(name, profile, ident, 413, too_big)
+                    await JSONResponse({"detail": e.detail}, status_code=413)(
+                        scope, receive, send)
+                    return
+                chunks.append(msg.get("body", b""))
+                if not msg.get("more_body", False):
+                    break
+            body, replayed = b"".join(chunks), False
+
+            async def replay():
+                nonlocal replayed
+                if not replayed:
+                    replayed = True
+                    return {"type": "http.request", "body": body,
+                            "more_body": False}
+                return await receive()
+
+            await self.app(scope, replay, send)
+
     def register(name: str) -> None:
         fn = getattr(impl, name)
         sig = inspect.signature(fn)
@@ -462,26 +661,9 @@ def create_app() -> FastAPI:
         # blocking tools don't stall the event loop AND the ContextVar
         # override is naturally scoped to this request's thread.
         def endpoint(request: Request, args: ArgsModel):  # type: ignore[valid-type]
-            # Denials MUST reach the audit trail and metrics — a guest
-            # probing /bash, a wrong-key brute force, or forged JWTs are
-            # exactly the events an audit log exists for.
-            try:
-                # R8: two answers to "who is calling" is not an identity.
-                # First, before the key check, because a doubled
-                # `authorization` picks the PROFILE by the same first-wins
-                # accident.
-                _refuse_ambiguous_identity(request)
-                profile = check_auth(request, name)
-                user, role, chat, email = identity_from(request)
-            except HTTPException as e:
-                d_user, d_role, d_chat, claimed = denied_identity(request)
-                audit(d_user, d_role, d_chat,
-                      name, "denied", False, 0, {},
-                      f"http {e.status_code}: {e.detail}",
-                      claimed_user=claimed)
-                with metrics_lock:
-                    calls[(name, "denied", "error")] += 1
-                raise
+            # PreBodyGate already admitted this caller; checked again here
+            # so the endpoint is never the unguarded half of the pair.
+            profile, user, role, chat, email = admit(request, name)
             kwargs = args.model_dump()
             # A spawned agent's workdir must not silently escape the
             # caller's shard: mcp_server resolves a RELATIVE workdir against
@@ -500,11 +682,18 @@ def create_app() -> FastAPI:
                     os.path.join(shard, kwargs.get("workdir", ".")))
                 if os.path.commonpath([os.path.normpath(shard), anchored]) \
                         != os.path.normpath(shard):
-                    raise HTTPException(
-                        status_code=400,
-                        detail="relative workdir escapes the caller's workspace")
+                    # An attempt to walk out of the shard is exactly what
+                    # the trail is for: audited and counted, then refused.
+                    raise refuse_admitted(
+                        name, profile, (user, role, chat), 400,
+                        "relative workdir escapes the caller's workspace")
                 kwargs["workdir"] = anchored
             token = _tools.set_base_dir_override(shard) if shard else None
+            wtoken = None
+            if name == "weather":
+                import weather as _weather
+                wtoken = _weather.CALLER_NEAR.set(_weather.caller_location(
+                    user, os.path.join(REPO_DIR, "openbeast.conf")))
             # Published pages are owned by their publisher: mcp_server's
             # tool functions never see the request, so hand the identity
             # down the same way the workspace shard travels. What travels is
@@ -542,6 +731,9 @@ def create_app() -> FastAPI:
             finally:
                 if token is not None:
                     _tools.reset_base_dir_override(token)
+                if wtoken is not None:
+                    import weather as _weather
+                    _weather.CALLER_NEAR.reset(wtoken)
                 if otoken is not None:
                     try:
                         import artifact as _artifact
@@ -565,6 +757,28 @@ def create_app() -> FastAPI:
 
     for _name in TOOL_NAMES:
         register(_name)
+
+    # Starlette runs the LAST-added middleware first: Host pinning, then the
+    # pre-body gate, then the routes. A rebinding page is refused before it
+    # can so much as write a denial row.
+    app.add_middleware(PreBodyGate)
+    app.add_middleware(PinnedHostMiddleware, allowed_hosts=allowed_hosts,
+                       allow_env="OPENBEAST_TOOLS_ALLOWED_HOSTS",
+                       allow_ip_literals=True)
+
+    @app.exception_handler(RequestValidationError)
+    async def audited_validation_error(request: Request, exc):
+        """Malformed arguments from an ADMITTED caller (the gate already
+        refused everyone else) — audited and counted, then FastAPI's 422."""
+        name = request.url.path.lstrip("/")
+        if request.method == "POST" and name in tool_set:
+            try:
+                profile, user, role, chat, _email = admit(request, name)
+                refuse_admitted(name, profile, (user, role, chat), 422,
+                                "invalid arguments")
+            except HTTPException:
+                pass   # unreachable past the gate; admit audited it anyway
+        return await request_validation_exception_handler(request, exc)
 
     @app.get("/health")
     def health():  # liveness for start.sh / healthcheck.sh

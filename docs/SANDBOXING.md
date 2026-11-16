@@ -59,7 +59,8 @@ unlisted is denied at the kernel:
   `/run/systemd/resolve` (DNS).
 - **Read+write:** the per-call agent workdir (`AGENT_WORKDIR` /
   `OPENBEAST_FILES_DIR` — granted at runtime via the wrapper's `-w "$PWD"`,
-  because `bash()` sets cwd to it), `/tmp`, `/var/tmp`, and device sinks
+  because `bash()` sets cwd to it; push-diagnostics run with cwd = the
+  written file's directory, so their checker is granted that), `/tmp`, `/var/tmp`, and device sinks
   (`/dev/null` etc. — without these, `>/dev/null` fails with EACCES).
 - **Denied implicitly:** everything else. `~/.ssh` reads return ENOENT —
   Landlock *hides* the paths rather than erroring EPERM.
@@ -79,7 +80,10 @@ export OPENBEAST_BASH_WRAPPER='sandlock run -p openbeast -w "$PWD" --'
 Single quotes matter: `run_reaped` executes commands with `shell=True`, so
 `$PWD` expands *inside the spawned shell*, whose cwd `bash()` has already
 set to the agent workdir — that is how a static wrapper string grants a
-per-call directory. Export it in the shell that launches `./start.sh` (the
+per-call directory. The grant therefore follows the workdir: with a wrapper
+set, `start_agent` refuses a workdir of `/`, `$HOME` or any ancestor of it, or
+a protected credential/persistence directory, since those would hand the
+sandbox exactly what it exists to hide. Export it in the shell that launches `./start.sh` (the
 agent server inherits it), or add the key
 `BASH_WRAPPER=sandlock run -p openbeast -w "$PWD" --` to `openbeast.conf`.
 That file is parsed as `KEY=value` lines, not sourced as shell: an
@@ -130,7 +134,8 @@ boundary.
 
 ## Validation matrix (measured 2026-07-08 on kernel 7.0.10-arch1-1)
 
-Requirements, not a pinned kernel: Linux ≥ 5.13 with Landlock enabled — confirm
+Requirements, not a pinned kernel: Linux ≥ 6.12 (Landlock ABI v6, needed for
+IPC scoping — `setup-sandlock.sh` refuses older kernels) with Landlock enabled — confirm
 with `cat /sys/kernel/security/lsm` (the list must contain `landlock`). This box
 has since moved to **7.1.4-arch1-1**, still Landlock-active; the matrix has not
 been re-measured on it and no behavior change is expected. What *does* require a

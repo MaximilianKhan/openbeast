@@ -7,7 +7,7 @@
 # device its OWN bearer key, so a lost device is one `revoke` away from silence
 # and every other device keeps working.
 #
-#   ./scripts/clients.sh enroll <id> [--label "text"] [--slot N] [--rate N] [--scope S]
+#   ./scripts/clients.sh enroll <id> [--label "text"] [--slot N] [--rate N] [--scope S] [--login L]
 #   ./scripts/clients.sh list [--json]
 #   ./scripts/clients.sh show <id> [--json]
 #   ./scripts/clients.sh scope <id> add|remove <name>
@@ -25,7 +25,9 @@
 # Registry schema (version 1) — the shared contract with agents/edge.py:
 #   {"version":1,"devices":[{"id","label","key_sha256","enrolled_at",
 #                            "revoked_at","slot","rate_limit_per_min",
-#                            "last_seen","scopes"}]}
+#                            "last_seen","scopes","enroll_nonce"}]}
+# enroll_nonce: random, written once per enrollment (kept on rotate) so two
+# enrollments of one id inside the same second still get distinct device_uids.
 # Unknown/future fields are round-tripped untouched, so a newer edge.py can add
 # fields (and keep writing last_seen) without this CLI dropping them. `scopes`
 # arrived that way and is why the version stays 1: a consumer that has never
@@ -167,6 +169,7 @@ import datetime
 import fcntl
 import json
 import os
+import secrets
 import sys
 import tempfile
 
@@ -194,6 +197,36 @@ def last_seen_of(dev):
     if not isinstance(seen, dict):
         seen = {}
     return seen.get(dev.get("id")) or dev.get("last_seen")
+
+
+def prune_last_seen(dev_id):
+    """Drop a removed id from the gate's last-seen sidecar.
+
+    The sidecar is keyed by id, so without this a later `enroll` of the same
+    id showed the PREVIOUS device's last use before the new key was ever
+    presented. Best effort, atomic like the gate's own write.
+    """
+    path = os.path.join(os.path.dirname(REG), "clients-lastseen.json")
+    try:
+        with open(path) as fh:
+            seen = json.load(fh)
+    except (OSError, ValueError):
+        return
+    if not isinstance(seen, dict) or dev_id not in seen:
+        return
+    del seen[dev_id]
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path),
+                               prefix=".lastseen-", suffix=".json")
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            json.dump(seen, fh)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
 
 
 def now():
@@ -256,6 +289,14 @@ def save(doc):
             pass
         raise
     os.chmod(REG, 0o600)
+    # beast-gate's sticky "this rig has had a registry" marker (edge.py
+    # ENROLLED_MARKER): with it, deleting or moving clients.json aside keeps
+    # EDGE_ALLOW_ANON off instead of reopening the gate to the tailnet.
+    try:
+        os.close(os.open(os.path.join(d, "clients.enrolled"),
+                         os.O_WRONLY | os.O_CREAT, 0o600))
+    except OSError:
+        pass
 
 def find(doc, dev_id):
     for dev in doc["devices"]:
@@ -337,6 +378,10 @@ if CMD == "enroll":
             # Always present on a fresh row (empty = no grants), so a
             # consumer can read the field instead of probing for it.
             "scopes": parse_scopes(os.environ.get("OB_SCOPES")),
+            # Bound into the gate's device_uid: enrolled_at is one-second
+            # resolution, so a scripted remove + enroll inside one second
+            # would otherwise share a uid (limiter bucket, audit identity).
+            "enroll_nonce": secrets.token_hex(8),
         }
         doc["devices"].append(dev)
         action = "enrolled"
@@ -357,6 +402,8 @@ if CMD == "enroll":
     # same as label/slot/rate.
     if os.environ.get("OB_HAS_SCOPES") == "1":
         dev["scopes"] = parse_scopes(os.environ.get("OB_SCOPES"))
+    if os.environ.get("OB_HAS_LOGIN") == "1":
+        dev["login"] = os.environ.get("OB_LOGIN", "").strip().lower()
     save(doc)
     print(action)
     if action == "rotated" and dev.get("revoked_at"):
@@ -474,22 +521,22 @@ elif CMD == "remove":
     doc["devices"] = [d for d in doc["devices"]
                       if not (isinstance(d, dict) and d.get("id") == dev_id)]
     save(doc)
+    prune_last_seen(dev_id)
     print("Removed '%s' from the registry." % dev_id)
     print("")
     print("Its audit row is GONE — past `last_seen` and enrollment history for")
     print("this device are unrecoverable. `revoke` keeps that trail; `remove`")
     print("does not. A future enroll of the same id starts a fresh history.")
-    # An empty registry is "not configured" to the gate, and with
-    # EDGE_ALLOW_ANON=true that means anonymous mode: removing the last
-    # device re-admits it, along with everyone else on the tailnet.
+    # An emptied registry is still a registry to beast-gate (edge.py
+    # Registry.exists): EDGE_ALLOW_ANON stays ignored and every remote
+    # caller — the removed device included — now gets 401. Say so, so an
+    # operator who expected the anon opt-in back is not left guessing.
     if not doc["devices"] and os.environ.get("OB_ALLOW_ANON") == "true":
         sys.stderr.write(
-            "\nWARNING: the registry is now EMPTY and EDGE_ALLOW_ANON=true —\n"
-            "         beast-gate admits EVERY tailnet caller without a key,\n"
-            "         including the device you just removed ('%s').\n"
-            "         Close it: set EDGE_ALLOW_ANON=false in openbeast.conf and\n"
-            "         restart (./stop.sh && ./start.sh -d), or enroll a device:\n"
-            "         ./scripts/clients.sh enroll <id>\n" % dev_id)
+            "\nNOTE: the registry is now EMPTY. beast-gate stays CLOSED: once a\n"
+            "      registry has existed it ignores EDGE_ALLOW_ANON=true, so every\n"
+            "      remote caller (including '%s') gets 401 until you enroll a\n"
+            "      device: ./scripts/clients.sh enroll <id>\n" % dev_id)
 
 else:
     die("internal: unknown OB_CMD '%s'" % CMD)
@@ -508,6 +555,7 @@ case "$cmd" in
     _valid_id "$dev_id" || _die "invalid id '$dev_id' — use [a-z0-9][a-z0-9-]{0,30} (e.g. laptop-air)"
     label=""; slot=""; rate=""; scopes=""
     has_label=0; has_slot=0; has_rate=0; has_scopes=0
+    login=""; has_login=0
     force=0
     # rotate implies --force, but ALSO requires the device to already exist:
     # rotating a mistyped id must fail loudly, not silently enroll a brand-new
@@ -548,6 +596,13 @@ print(int(any(d.get("id") == os.environ["OB_ID"]
         --scope=*) _scope_val="${1#*=}"
                    _valid_scope "$_scope_val" || _die "invalid scope '$_scope_val' — use [a-z0-9][a-z0-9_-]{0,30} (e.g. chat)"
                    scopes="${scopes:+$scopes,}$_scope_val"; has_scopes=1; shift ;;
+        # The tailnet login this key answers for (beast-artifact: a bound key
+        # is refused under any other login, and only a bound key carries
+        # that login's admin power). Stored lowercased in `login`.
+        --login)   [[ $# -ge 2 && -n "${2:-}" ]] || _die "--login needs a value"
+                   login="$2"; has_login=1; shift 2 ;;
+        --login=*) login="${1#*=}"; [[ -n "$login" ]] || _die "--login needs a value"
+                   has_login=1; shift ;;
         --force)   force=1; shift ;;
         *)         _die "unknown option for $cmd: $1" ;;
       esac
@@ -567,7 +622,7 @@ print(int(any(d.get("id") == os.environ["OB_ID"]
     action="$(OB_CMD=enroll OB_ID="$dev_id" OB_LABEL="$label" OB_HASH="$key_hash" \
               OB_SLOT="$slot" OB_RATE="$rate" OB_FORCE="$force" OB_SCOPES="$scopes" \
               OB_HAS_LABEL="$has_label" OB_HAS_SLOT="$has_slot" OB_HAS_RATE="$has_rate" \
-              OB_HAS_SCOPES="$has_scopes" \
+              OB_HAS_SCOPES="$has_scopes" OB_LOGIN="$login" OB_HAS_LOGIN="$has_login" \
               _registry_op)"
 
     echo ""

@@ -53,18 +53,38 @@ sp_err() { echo "Error: $*" >&2; SP_ERRORS=$((SP_ERRORS + 1)); }
 
 sp_is_true() { case "$(printf '%s' "${1:-}" | tr 'A-Z' 'a-z')" in true|yes|1|on) return 0 ;; esac; return 1; }
 
-# sp_image <image> <digest> <print-mode 0|1> — sets SP_IMAGE_REF, the
-# reference to run (a global, not stdout: sp_err must count in THIS shell).
-# A real run requires a sha256 digest; --print shows the tag with a warning.
+# sp_image <image> <digest> <print-mode 0|1> [<image-id>] — sets SP_IMAGE_REF,
+# the reference to run (a global, not stdout: sp_err must count in THIS shell).
+# A real run requires a pin. Two kinds:
+#   <image-id>  (*_IMAGE_ID) the local image ID, sha256 of the image config
+#               (which names every layer). It survives docker save | load,
+#               so it is the pin for an offline cluster fed by
+#               spark-cluster.sh sync-image; the run is by ID, which docker
+#               never pulls, and a real run first checks the ID is present.
+#   <digest>    (*_IMAGE_DIGEST) the registry RepoDigest. docker load does
+#               NOT restore it (classic overlay2 store), so on a node that
+#               loaded the image, IMAGE@DIGEST misses locally and docker
+#               tries to pull.
+# The ID wins when both are set. --print shows the tag with a warning.
 sp_image() {
-  local image="$1" digest="$2" printing="$3"
+  local image="$1" digest="$2" printing="$3" id="${4:-}" have
   SP_IMAGE_REF="$image"
-  if [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  if [[ -n "$id" ]]; then
+    if [[ ! "$id" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+      sp_err "image ID '$id' is not sha256:<64 hex> (docker image inspect -f '{{.Id}}' $image)"
+      return 0
+    fi
+    SP_IMAGE_REF="$id"
+    if [[ "$printing" -ne 1 ]]; then
+      have="$(docker image inspect -f '{{.Id}}' "$id" 2>/dev/null || true)"
+      [[ "$have" == "$id" ]] || sp_err "image $id ($image) is not on this node — docker load it, or run spark-cluster.sh sync-image $image on the head"
+    fi
+  elif [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
     SP_IMAGE_REF="$image@$digest"
   elif [[ "$printing" -eq 1 ]]; then
     echo "Warning: no image digest pinned (placeholder '$digest') — showing the tag only; a real run refuses this." >&2
   else
-    sp_err "image digest is not pinned ('$digest'): docker pull $image, then paste the sha256 from docker inspect --format '{{index .RepoDigests 0}}' $image"
+    sp_err "image digest is not pinned ('$digest'): docker pull $image, then paste the sha256 from docker inspect --format '{{index .RepoDigests 0}}' $image into *_IMAGE_DIGEST — or, for an image that arrived by docker load (no RepoDigest), its docker image inspect -f '{{.Id}}' into *_IMAGE_ID"
   fi
 }
 
@@ -100,6 +120,32 @@ sp_check_secret_file() {
     sp_err "API key file '$f' is empty"
   fi
 }
+
+# ── Ranks: one GPU per Spark, so TENSOR_PARALLEL_SIZE N = N Sparks = ranks
+# 0..N-1. Rank 0 serves HTTP; every other rank is a headless worker.
+# sp_rank_syntax <rank> — a plain decimal 0..99 (no sign, no leading zero).
+# Checked before the profile is read (--stop needs only the unit name).
+sp_rank_syntax() { [[ "$1" =~ ^(0|[1-9][0-9]?)$ ]]; }
+
+# sp_check_rank <rank> <tp> — the profile's TP has this rank. Returns 1 when
+# TP itself is not 1..8 (nothing after can do arithmetic on it); a rank
+# outside 0..TP-1 is counted with sp_err like any other refusal.
+sp_check_rank() {
+  local rank="$1" tp="$2"
+  if [[ ! "$tp" =~ ^[1-8]$ ]]; then
+    echo "Error: profile '${PF_PROFILE_NAME:-?}' is TENSOR_PARALLEL_SIZE='$tp' — 1..8 (one rank per Spark)" >&2
+    return 1
+  fi
+  if [[ "$tp" == 1 && "$rank" != 0 ]]; then
+    sp_err "profile '$PF_PROFILE_NAME' is TENSOR_PARALLEL_SIZE=1: it runs on ONE Spark — start --rank 0 only"
+  elif (( rank >= tp )); then
+    sp_err "profile '$PF_PROFILE_NAME' is TENSOR_PARALLEL_SIZE=$tp: its ranks are 0..$((tp - 1)), one per Spark — there is no --rank $rank"
+  fi
+}
+
+# sp_workers <tp> — "rank 1" for TP 2, "ranks 1..N-1" above: the workers,
+# for messages.
+sp_workers() { if [[ "$1" == 2 ]]; then echo "rank 1"; else echo "ranks 1..$(($1 - 1))"; fi; }
 
 # sp_print_cmd <argv...> — the exact command, shell-quoted, one line.
 sp_print_cmd() {

@@ -426,6 +426,27 @@ def test_every_OTHER_unrecorded_file_is_still_a_problem(tmp_path):
             (rel, problems)
 
 
+def test_pydeps_audit_and_bundle_verify_agree_on_transit_droppings(tmp_path):
+    """Install-supply-chain finding: pydeps_lock ignored .Trashes/.directory/
+    Thumbs.db while bundle verify ignored only .DS_Store, so a stick browsed
+    with Dolphin or Explorer passed `pydeps audit` and was refused by
+    `bundle verify` — the disagreement both comments said was fixed. Same
+    set, and the same verdict on the same directory."""
+    import hashlib
+    import pydeps_lock as L
+    assert L.BENIGN_NAMES == B.BENIGN_NAMES
+    for name in (".DS_Store", ".directory", "Thumbs.db", ".Trashes"):
+        d = tmp_path / name.strip(".")
+        root = _bundle(d, {"wheels/a-1.0-py3-none-any.whl": b"AAA"})
+        with open(os.path.join(root, "wheels", name), "wb") as fh:
+            fh.write(b"x")
+        lock = d / "l.lock"
+        lock.write_text(f"a==1.0 \\\n    --hash=sha256:{hashlib.sha256(b'AAA').hexdigest()}\n")
+        audit_ok = L.audit_dir(str(lock), os.path.join(root, "wheels"))[1] == []
+        verify_ok = B.verify(root)[1] == []
+        assert audit_ok == verify_ok, (name, audit_ok, verify_ok)
+
+
 def test_a_symlink_named_like_a_dropping_is_not_ignored(tmp_path):
     root = _bundle(tmp_path, {"wheels/a.whl": b"AAA"})
     os.symlink("/etc/hostname", os.path.join(root, "wheels", ".DS_Store"))

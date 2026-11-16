@@ -18,6 +18,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime
 import uuid
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -174,6 +175,33 @@ def test_presets_are_listed_only_from_a_private_file(rig, tmp_path):
     _write_presets(rig, doc, mode=0o644)
     d = rig.client.get("/api/chat/presets").json()
     assert d["presets"] == [] and "0600" in d["problem"]
+
+
+def test_a_credential_in_a_command_never_reaches_a_reader(rig, tmp_path):
+    """Review finding: the docs said a job could "set [a credential] in the
+    preset's command", but GET /api/chat/presets is a READ route that served
+    cmd verbatim, and every session read served meta.command and a title that
+    defaults to the command. The job still runs the command as written."""
+    secret = "hf_abcdefSECRETtoken123"
+    _write_presets(rig, {"presets": [
+        {"name": "quant", "cmd": f"HF_TOKEN={secret} echo quantize-ran",
+         "workdir": str(tmp_path)}]})
+    d = rig.client.get("/api/chat/presets").json()
+    assert d["presets"][0]["name"] == "quant"
+    assert secret not in json.dumps(d) and "quantize-ran" in json.dumps(d)
+    r = rig.client.post("/api/chat/sessions", headers=rig.local, json={
+        "kind": "job", "cmd": f"HF_TOKEN={secret} echo inline-ran",
+        "workdir": str(tmp_path)})
+    assert r.status_code == 201, r.text
+    sid = r.json()["session"]["id"]
+    rec = wait_state(sid, "done", "failed")
+    assert rec["state"] == "done"                   # it ran as written
+    one = rig.client.get(f"/api/chat/sessions/{sid}").json()
+    rows = rig.client.get("/api/chat/sessions").json()
+    for doc in (one, rows):
+        text = json.dumps(doc)
+        assert secret not in text, text[:400]
+        assert "inline-ran" in text
 
 
 def test_a_symlinked_preset_file_is_refused(rig, tmp_path):
@@ -372,6 +400,44 @@ def test_a_session_ending_fires_title_state_and_link_only(rig, stub, tmp_path):
     assert n.tick() == []                              # once, not every pass
 
 
+def test_unwritable_state_file_neither_repeats_nor_drops_alerts(rig, stub, capsys):
+    # extensions-ntfy review: _save swallowed OSError and tick() re-read the
+    # stale file, so every finished session was re-sent each min_interval
+    # forever (and, beyond `burst`, the summary went out every tick).
+    s = stub()
+    sids = [rig.session(kind="job", state="running", title=f"build {i}")
+            for i in range(12)]
+    n = _notifier(rig, s.url + "/t")
+    assert n.tick() == []
+    os.mkdir(rig.run / "notify-state.json.tmp")         # every write now fails
+    for sid in sids:
+        sessions.finalize(sid, "failed")
+    assert len(n.tick()) == 10                          # burst, + one summary
+    posts = len(s.calls)
+    assert posts == 11
+    for _ in range(4):
+        assert n.tick() == []
+    assert len(s.calls) == posts, "finished sessions were re-sent from a stale snapshot"
+    assert capsys.readouterr().err.count("cannot write") == 1   # loud once
+    # once the file is writable again, the in-memory snapshot lands on disk
+    os.rmdir(rig.run / "notify-state.json.tmp")
+    n.tick()
+    st = json.loads((rig.run / "notify-state.json").read_text())
+    assert set(st["sessions"].values()) == {"failed"}
+
+
+def test_never_written_state_still_fires_on_a_real_transition(rig, stub):
+    s = stub()
+    blocker = rig.run / "not-a-dir"
+    blocker.write_text("")
+    n = _notifier(rig, s.url + "/t", state_path=str(blocker / "notify-state.json"))
+    sid = rig.session(kind="job", state="running", title="x")
+    assert n.tick() == []                               # first pass: history
+    sessions.finalize(sid, "failed")
+    assert n.tick() == [sid], "a snapshot that never reached disk silenced every alert"
+    assert n.tick() == []
+
+
 def _job_with_command(title, command):
     sid = sessions.new_id("job")
     sessions.register(sid, kind="job", title=title, pid=os.getpid(),
@@ -509,6 +575,66 @@ def test_an_undelivered_alert_is_given_up_after_the_max_age(rig, monkeypatch):
     assert n.tick(now=late + 1) == [] and len(sent) == 1
 
 
+def _mark_lost(sid, at=None):
+    """What sessions._reconciled persists: state + summary + updated_at, and
+    NO ended_at (only finalize() writes one)."""
+    rec = json.load(open(sessions.record_path(sid)))
+    rec.update(state="lost", summary="process gone without a terminal event",
+               updated_at=datetime.fromtimestamp(at or time.time()).isoformat())
+    rec.pop("ended_at", None)
+    assert sessions._write_record(rec)
+
+
+def test_an_undelivered_lost_alert_is_given_up_too(rig):
+    """Review finding: `ended = ended_at or now` — a reconciled `lost` has no
+    ended_at, so `now - ended` was 0 and the 24 h give-up never fired."""
+    sent = []
+    sid = rig.session(kind="job", state="running")
+    n = _notifier(rig, "http://127.0.0.1:9/t",
+                  poster=lambda b, h: sent.append(b) and False)
+    n.tick()
+    _mark_lost(sid, at=time.time() - 60)
+    late = time.time() + chat_server.NOTIFY_RETRY_MAX_AGE + 60
+    assert n.tick(now=late) == [] and len(sent) == 1
+    assert n.tick(now=late + 1) == [] and len(sent) == 1
+
+
+def test_failed_sends_count_against_the_burst_cap(rig):
+    """Review finding: the cap counted SUCCESSES, so a failing endpoint got
+    one POST per due session per tick, uncapped."""
+    sent = []
+    ids = [rig.session(kind="job", state="running") for _ in range(30)]
+    n = _notifier(rig, "http://127.0.0.1:9/t", burst=10,
+                  poster=lambda b, h: sent.append(b) and False)
+    n.tick()
+    for sid in ids:
+        sessions.finalize(sid, "failed")
+    for i in range(3):
+        before = len(sent)
+        n.tick()
+        assert len(sent) - before <= 11, (i, len(sent) - before)  # 10 + summary
+
+
+def test_a_lost_that_an_operator_stop_corrects_never_alerts(rig, stub):
+    """Review finding: an operator stop that needs SIGKILL passes through
+    `lost` for about a second before the stopper writes `stopped`. A tick in
+    that window pushed a high-priority 'lost' for a deliberate stop."""
+    s = stub()
+    sid = rig.session(kind="job", state="running", title="stubborn")
+    real = rig.session(kind="job", state="running", title="crashed")
+    n = _notifier(rig, s.url + "/t")
+    n.tick()
+    _mark_lost(sid)
+    _mark_lost(real, at=time.time() - 2)
+    assert n.tick() == []                          # fresh losses settle first
+    sessions.finalize(sid, "stopped", summary="force-killed by operator",
+                      override_lost=True)
+    assert n.tick() == []                          # still settling
+    later = time.time() + chat_server.NOTIFY_LOST_SETTLE_S + 1
+    assert n.tick(now=later) == [real]             # a real loss still alerts
+    assert all("stubborn" not in c["body"].decode() for c in s.calls)
+
+
 def test_a_failed_post_never_logs_the_token(rig, tmp_path, capsys):
     token = tmp_path / "tok"
     token.write_text("tk_do_not_print")
@@ -541,6 +667,92 @@ def test_notify_test_endpoint(rig, stub, monkeypatch):
     r = rig.client.post("/api/chat/notify/test", json={}, headers=rig.local)
     assert r.status_code == 200 and r.json()["sent"] is True
     assert s.calls[-1]["headers"]["Title"] == "beast-chat: test notification"
+
+
+def test_deep_link_follows_a_publish_after_start(rig, monkeypatch):
+    # extensions-ntfy review: public_url was resolved once at app creation,
+    # so the documented order (start, then --publish-chat) left every
+    # alert's link at http://localhost:<port> until a restart.
+    monkeypatch.delenv("OPENBEAST_CHAT_PUBLIC_URL", raising=False)
+    monkeypatch.setenv("OPENBEAST_CHAT_NOTIFY_URL", "http://127.0.0.1:9/t")
+    import shutil
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/tailscale")
+    serve = {"out": ""}
+
+    def run(cmd, **kw):
+        assert cmd[1:] == ["serve", "status"]
+        return subprocess.CompletedProcess(cmd, 0, stdout=serve["out"], stderr="")
+    monkeypatch.setattr(chat_server.subprocess, "run", run)
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(chat_server.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setitem(chat_server._PUBLIC_URL_CACHE, "at", 0.0)
+    monkeypatch.setitem(chat_server._PUBLIC_URL_CACHE, "value", "")
+    n = chat_server.Notifier.from_env(str(rig.run), 3003)
+    assert n.link("s1") == "http://localhost:3003/#/s/s1"      # not published yet
+    serve["out"] = "https://beast.tail1234.ts.net:8445 (tailnet only)\n|-- / proxy http://127.0.0.1:3003\n"
+    clock["t"] += 31                                           # the next alert
+    assert n.link("s1") == "https://beast.tail1234.ts.net:8445/#/s/s1"
+    assert n.link() == "https://beast.tail1234.ts.net:8445/#/"
+    # a found name is cached the long way (300 s), the fallback only 30 s
+    serve["out"] = ""
+    clock["t"] += 200
+    assert n.link() == "https://beast.tail1234.ts.net:8445/#/"
+
+
+@pytest.mark.parametrize("raw,on,said", [
+    ("error", (), "ignoring 'error' (valid: done, failed, lost, stopped) — NO session state will notify"),
+    ("failed, fail", ("failed",), "ignoring 'fail' (valid: done, failed, lost, stopped)"),
+    (" , ", (), "(valid: done, failed, lost, stopped) — NO session state will notify"),
+    ("failed,done", ("failed", "done"), None)])
+def test_an_unknown_notify_on_word_is_said_out_loud(rig, monkeypatch, capsys, raw, on, said):
+    # extensions-ntfy review: a typo was dropped silently, and with every
+    # word gone no alert ever fired while health said notify:true.
+    monkeypatch.setenv("OPENBEAST_CHAT_NOTIFY_URL", "http://127.0.0.1:9/t")
+    monkeypatch.setenv("OPENBEAST_CHAT_PUBLIC_URL", "https://b.example:8445")
+    monkeypatch.setenv("OPENBEAST_CHAT_NOTIFY_ON", raw)
+    n = chat_server.Notifier.from_env(str(rig.run), 3003)
+    assert n.on == on
+    err = capsys.readouterr().err
+    if said:
+        assert f"[beast-chat] CHAT_NOTIFY_ON: {said}" in err, err
+    else:
+        assert "CHAT_NOTIFY_ON" not in err, err
+
+
+def test_main_hardens_the_process_before_anything_else(monkeypatch):
+    # extensions-ntfy review: beast-chat holds CHAT_NOTIFY_URL (and the other
+    # exported secrets) and was never made non-dumpable, so a spawned agent's
+    # same-uid bash read them from /proc/<chat pid>/environ.
+    class Hardened(Exception):
+        pass
+
+    def harden():
+        raise Hardened
+
+    monkeypatch.setattr(chat_server, "_harden_process", harden)
+    monkeypatch.setattr(chat_server, "create_app", lambda: pytest.fail("built before hardening"))
+    with pytest.raises(Hardened):
+        chat_server.main()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="procfs + prctl are Linux-only")
+@pytest.mark.parametrize("keep", ["", "1"])
+def test_a_child_cannot_read_beast_chat_environ(tmp_path, keep):
+    probe = ("import os, subprocess, sys\n"
+             "sys.path.insert(0, sys.argv[1])\n"
+             "import chat_server\n"
+             "chat_server._harden_process()\n"
+             "r = subprocess.run(['sh', '-c', 'cat /proc/$PPID/environ | tr \"\\\\0\" \"\\\\n\" "
+             "| grep -c NOTIFY_MARK'], capture_output=True, text=True)\n"
+             "print('HITS', r.stdout.strip() or '0')\n")
+    env = {k: v for k, v in os.environ.items() if k != "OPENBEAST_KEEP_DUMPABLE"}
+    env.update(OPENBEAST_CHAT_NOTIFY_URL="http://127.0.0.1:3005/NOTIFY_MARK")
+    if keep:
+        env["OPENBEAST_KEEP_DUMPABLE"] = keep      # negative control: the probe can see a leak
+    r = subprocess.run([sys.executable, "-c", probe, AGENTS],
+                       env=env, capture_output=True, text=True, timeout=60, cwd=tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert ("HITS 1" in r.stdout) == bool(keep), r.stdout + r.stderr
 
 
 def test_notifier_is_off_without_a_url_or_with_a_bad_one(rig, monkeypatch):

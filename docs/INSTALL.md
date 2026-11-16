@@ -2,9 +2,16 @@
 
 OpenBeast runs local LLMs via llama.cpp on NVIDIA GPUs, with OpenCode (terminal
 agent), Open WebUI (browser chat), an autonomous agent runner, and an MCP tool
-server providing 18 tools for file I/O, shell, web search, agent management,
-and a skills system (24 skills loaded on demand: 15 in-house plus 9 imported;
+server providing 19 tools for file I/O, shell, web search, agent management,
+and a skills system (26 skills loaded on demand: 17 in-house plus 9 imported;
 14 are on the always-on menu).
+
+> **Installing on DGX Sparks?** This page is the rig (x86_64 + one NVIDIA GPU,
+> llama.cpp). For one to eight DGX Sparks — root setup, the firewall guard,
+> weights, the TensorFold pair, the command center on spark-1, the Mac client,
+> and a fully offline build — follow the linear runbook
+> [SPARK_HYDRA.md](SPARK_HYDRA.md). For the pair's own model maintaining
+> OpenBeast, see [SELF_DEVELOPMENT.md](SELF_DEVELOPMENT.md).
 
 The inference engine, model weights, and Docker volumes are not checked in —
 follow the steps below to set them up. Everything else (configs, scripts,
@@ -547,12 +554,22 @@ On first run, `configure-webui.sh` populates Open WebUI with:
 - The system prompt (`system-prompt.md` + `system-prompt-tools.md`) written
   into each model's DB entry
 
-OpenCode runs separately from the stack:
+OpenCode runs separately from the stack, **from the checkout** (its
+`opencode.json` is project-local and starts the MCP server by the relative
+path `agents/mcp_server.py`):
 
 ```bash
-cd ~/my-project        # any directory, but opencode.json must be reachable
+cd ~/openbeast         # the checkout, not another project directory
 opencode
 ```
+
+That config talks straight to llama-server on `localhost:8080`: it does not go
+through the agent router or beast-hydra, and on a vLLM/TensorFold rig (any
+`INFERENCE_URL` other than `:8080`) it has nothing to talk to. There, add the
+provider entry `scripts/backends/use-model.sh` prints to
+`~/.config/opencode/opencode.json`. To work in another project directory,
+copy the `provider` and `mcp` blocks there with the absolute path of
+`agents/mcp_server.py` (§ OpenCode above).
 
 To stop everything:
 
@@ -572,7 +589,7 @@ To stop everything:
 - **beast-slot discovery** (only with the dashboard extension enabled —
   `./scripts/ext.sh enable dashboard`): `curl http://127.0.0.1:3002/api/slot`
   — read-only JSON: loaded model, slots busy/total, context, service health
-- **OpenCode:** run `opencode` from the OpenBeast checkout and select the `qwen*`/`heretic*` entry matching the model the rig is serving
+- **OpenCode:** run `opencode` from the OpenBeast checkout and select the `qwen*`/`heretic*` entry matching the model the rig is serving (llama-server on `:8080` only; on a vLLM/TensorFold rig use the `scripts/backends/use-model.sh` entry instead — see § 5)
 - **Tool use:** `configure-webui.sh` attaches the tool servers to every model row, so a new chat in Open WebUI has tools without a per-chat toggle; ask something that needs one ("search the web for…")
 - **Long-running agents:** ask the model to use `start_agent` to spawn a background agent, then `check_agent` to monitor
 - **Health check:** `./scripts/healthcheck.sh` (services + GPU VRAM + slot usage; `--restart` to auto-recover)
@@ -689,8 +706,10 @@ at a glance.
    `./stop.sh && ./start.sh`. If the stack was running when you ran
    `setup-tailscale.sh`, the script did **not** publish the WebUI (`:443`) —
    the running container still had auth off, which would have made every
-   tailnet device an admin. Re-run `./scripts/setup-tailscale.sh` after the
-   restart to publish it.
+   tailnet device an admin. It does not publish a stopped WebUI either: the
+   default admin password can only be checked (and retired) on a WebUI that
+   answers. Re-run `./scripts/setup-tailscale.sh` after the restart, once the
+   WebUI is up, to publish it.
 2. **Your admin account.** Any install that ever started with the default
    `WEBUI_AUTH=false` already has one: Open WebUI created `admin@localhost`
    as admin with its built-in password `admin`. The first auth-on start (and
@@ -807,10 +826,14 @@ git clone https://github.com/MaximilianKhan/openbeast && cd openbeast
 ```
 
 Auto-detect only considers peers under **your own** MagicDNS suffix — a node
-named `beast` that was shared in from another tailnet is never picked. When a
-key is given and the host was auto-detected, the installer asks you to
-confirm the host on a terminal and refuses without one; pass `--host` to
-name the rig yourself. On a miss it lists the peers it can see. The install
+named `beast` that was shared in from another tailnet is never picked, and a
+`beast` owned by a *different* user of your tailnet (or a tagged node) is
+used only after you confirm it, key or no key. When a key is given and the
+host was auto-detected, the installer asks you to confirm the host on a
+terminal and refuses without one; pass `--host` to name the rig yourself.
+A key stored by an earlier install is re-sent only to the rig it was stored
+for: re-running with a different `--host` drops it (pass `--api-key-stdin`
+for the new rig). On a miss it lists the peers it can see. The install
 is hash-pinned and strict like the rig's (`OPENBEAST_PIP_STRICT=0` opts out,
 §3).
 
@@ -932,7 +955,10 @@ and being misdiagnosed as something local.
 
 **On a connected box** (a machine with this repo checked out and a
 `llama.cpp/` clone inside it — a GPU is not needed; without the clone the
-source component is skipped and the manifest says so):
+source component is skipped and the manifest says so). It must be the **same
+OS, CPU architecture and Python version as the rig**: the wheels and saved
+images are the build box's own, so `install` refuses a bundle built on, say,
+a Mac or an aarch64 Spark for an x86_64 rig — before placing anything.
 
 ```bash
 ./scripts/bundle.sh build /media/usb/openbeast --with-weights   # or --with-weights=A.gguf,B.gguf; --no-images / --no-source
@@ -963,8 +989,11 @@ file — the same one-line-per-key format ssh and git use — which `sign`
 prints the exact command for. Wheels and weights have a second line of
 defence that lives in the repo, not the bundle (`requirements.lock`,
 `weights.registry`: a swapped wheel or weight is refused even by a rebuilt
-manifest); images and the source tarball have **only** the signature, which
-is why it exists.
+manifest) — for weights, only those with a real (non-`PENDING`) registry
+row. An unpinned weight has only the manifest, so an **unsigned** bundle
+will not place one, nor replace an existing file, unless you pass
+`--allow-unpinned-weights`. Images and the source tarball have **only** the
+signature, which is why it exists.
 
 **On the air-gapped rig** (clone or copy the repo there first):
 

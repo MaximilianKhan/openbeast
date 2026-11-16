@@ -2,8 +2,9 @@
 # Enable RBAC Phase 2: per-profile tool-server keys (docs/RBAC_PLAN.md).
 #
 # Generates two random keys and persists them in openbeast.conf:
-#   MCPO_ADMIN_KEY — admin profile: all 18 tools
-#   MCPO_GUEST_KEY — guest profile: web_search + fetch ONLY (anything else
+#   MCPO_ADMIN_KEY — admin profile: all 19 tools
+#   MCPO_GUEST_KEY — guest profile: web_search + fetch + weather ONLY
+#                    (GUEST_TOOLS in agents/openapi_tools.py; anything else
 #                    answers 404 for this key)
 #
 # The identity tool server (agents/openapi_tools.py, :3001) checks the
@@ -116,14 +117,24 @@ set_key() { # set_key <NAME>
       echo "  ${name}: already set — leaving as-is (use --rotate to replace)."
     fi
   else
+    # A hand-edited conf may lack its final newline: appending then glued
+    # the key onto the last line (`WEBUI_AUTH=trueIDENTITY_JWT_SECRET=…`),
+    # leaving the key unset and the last setting corrupted.
+    if [[ -s "$CONF" && -n "$(tail -c1 "$CONF")" ]]; then
+      printf '\n' >> "$CONF"
+    fi
     printf '%s=%s\n' "$name" "$(genkey)" >> "$CONF"
+    if ! _key_has_value "$name"; then
+      echo "  ${name}: append FAILED — not set; check openbeast.conf." >&2
+      return 1
+    fi
     echo "  ${name}: generated."
   fi
 }
 
 echo "RBAC Phase 2 — per-profile MCPO keys"
 if ! grep -qE '^[[:space:]]*MCPO_(ADMIN|GUEST)_KEY' "$CONF" && ! $ROTATE; then
-  printf '\n# RBAC Phase 2 — per-profile tool-server keys (scripts/setup-mcpo-keys.sh).\n# Both set => the identity tool server (:3001) checks a Bearer key per call:\n# admin key = all tools, guest key = web_search+fetch only. Delete both\n# lines to fall back to the open single-user default.\n' >> "$CONF"
+  printf '\n# RBAC Phase 2 — per-profile tool-server keys (scripts/setup-mcpo-keys.sh).\n# Both set => the identity tool server (:3001) checks a Bearer key per call:\n# admin key = all tools, guest key = web_search+fetch+weather only. Delete both\n# lines to fall back to the open single-user default.\n' >> "$CONF"
 fi
 set_key MCPO_ADMIN_KEY
 set_key MCPO_GUEST_KEY
@@ -137,6 +148,9 @@ chmod 600 "$CONF" 2>/dev/null || true
 echo ""
 echo "Done. Restart the stack to activate:"
 echo "  ./stop.sh && ./start.sh -d"
+echo "WebUI gets the new keys only when start.sh's configure-webui.sh can sign in"
+echo "as admin (WEBUI_ADMIN_EMAIL / WEBUI_ADMIN_PASSWORD) — if it warns that it"
+echo "could not, every WebUI tool call fails until it can."
 echo ""
 echo "Verify after restart:"
 echo "  curl -s -X POST http://localhost:3001/bash -H 'Content-Type: application/json' \\"

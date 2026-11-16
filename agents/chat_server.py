@@ -109,6 +109,7 @@ Env:
 """
 import asyncio
 import contextlib
+import copy
 import hashlib
 import hmac
 import ipaddress
@@ -116,12 +117,13 @@ import json
 import os
 import shlex
 import signal
+import stat as _stat
 import subprocess
 import sys
 import threading
 import time
 import uuid
-from collections import defaultdict, deque
+from collections import OrderedDict, defaultdict, deque
 from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, Request
@@ -263,17 +265,34 @@ def login_source() -> str:
 
 
 def _unix_listener(path: str):
-    """Bind the login-bearing Unix socket: 0600 in a 0700 directory.
+    """Bind the login-bearing Unix socket: 0600, in a directory only we own
+    and only we can write.
 
     tailscaled runs as root, so 0600 costs it nothing; every OTHER local
     user, and every container, is kept out by the mode — which is the whole
     point of moving the login header off TCP loopback. A stale socket from
     a previous run is replaced; anything else at the path is left alone.
+
+    The DIRECTORY matters as much as the socket: anyone who can write it can
+    unlink our socket and bind their own at the path, and tailscale serve
+    then hands them real tailnet logins and phones' device keys. makedirs'
+    mode only applies to a directory it creates, and the recommended
+    `.run/` usually exists already (0775 under a 0002 umask). So: refuse a
+    directory someone else owns, and strip group/other WRITE from ours —
+    read/traverse is left as it was, nothing else in .run/ depends on it.
     """
     import socket
     import stat as _st
     parent = os.path.dirname(os.path.abspath(path))
     os.makedirs(parent, mode=0o700, exist_ok=True)
+    pst = os.stat(parent)
+    if pst.st_uid != os.getuid():
+        raise SystemExit(f"ERROR: {parent} is not owned by this user — "
+                         f"refusing to put the login socket there")
+    if pst.st_mode & 0o022:
+        os.chmod(parent, _st.S_IMODE(pst.st_mode) & ~0o022)
+        print(f"chat_server: removed group/other write from {parent} "
+              f"(it holds the login socket)", file=sys.stderr)
     try:
         st = os.lstat(path)
         if _st.S_ISSOCK(st.st_mode):
@@ -431,9 +450,18 @@ class OperatorList:
                                  because mtime alone misses two writes inside
                                  one filesystem timestamp tick)
 
-    Empty from both sources is the single-user default: any *identified*
+    Empty env AND no file is the single-user default: any *identified*
     login passes. It is not an anonymous bypass — read_gate still demands a
     credential of some kind.
+
+    The file's EXISTENCE is what turns enforcement on, not its contents: a
+    file that is empty, all comments, or mid-rewrite by an editor is an
+    allowlist of nobody, and denies every login. Removing the last reader is
+    a revocation; it must never be the switch that opens reads to the whole
+    tailnet. Likewise, once this process has seen the file, a later stat
+    failure (deleted, unreadable directory) fails CLOSED until restart —
+    going back to open mode is a deliberate act (delete the file, restart),
+    never a side effect of a lockdown.
     """
 
     def __init__(self, path: str, env_var: str = "OPENBEAST_CHAT_OPERATORS"):
@@ -441,6 +469,7 @@ class OperatorList:
         self.env_var = env_var
         self._stamp = None
         self._file: set[str] = set()
+        self._file_seen = False   # sticky: the file existed at some check
 
     def _reload_file(self) -> None:
         try:
@@ -448,6 +477,7 @@ class OperatorList:
         except OSError:
             self._file, self._stamp = set(), None
             return
+        self._file_seen = True
         stamp = (st.st_mtime, st.st_size, st.st_ino)
         if stamp == self._stamp:
             return
@@ -472,11 +502,11 @@ class OperatorList:
 
     @property
     def configured(self) -> bool:
-        return bool(self.current())
+        return bool(self.current()) or self._file_seen
 
     def allows(self, login: str) -> bool:
         listed = self.current()
-        if not listed:
+        if not listed and not self._file_seen:
             return True
         return (login or "").strip().lower() in listed
 
@@ -498,6 +528,29 @@ def _file_size(path: str) -> int:
         return 0
 
 
+def _open_transcript(path: str):
+    """open(path, "rb"), for a REGULAR file only — else OSError.
+
+    `record["transcript"]` is whatever the registering process said, and a
+    runner's --log-file is taken as given. A FIFO there blocked open()
+    forever (one pinned threadpool worker per session-list poll until every
+    sync route stalled), and /dev/zero has getsize() == 0, so the size-bounded
+    reads below fell through to an unbounded read() and OOM'd the server.
+    O_NONBLOCK makes a FIFO open return at once; fstat on the OPEN fd (no
+    stat-then-open race) then refuses anything that is not a plain file.
+    Symlinks are still followed — to a regular file only.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+    fd = os.open(path, flags)
+    try:
+        if not _stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(f"not a regular file: {path}")
+        return os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 def read_lines_from(path: str, offset: int) -> tuple[list[tuple[str, int]], int]:
     """Complete lines at/after `offset`, plus the new offset.
 
@@ -514,7 +567,7 @@ def read_lines_from(path: str, offset: int) -> tuple[list[tuple[str, int]], int]
     which is all a capped read needs to be correct.
     """
     try:
-        with open(path, "rb") as f:
+        with _open_transcript(path) as f:
             f.seek(offset)
             buf = f.read(STREAM_MAX_READ)
             if buf and b"\n" not in buf and len(buf) >= STREAM_MAX_READ:
@@ -557,7 +610,7 @@ def tail_start(path: str, tail: int) -> int:
         return 0
     pos = size - tail
     try:
-        with open(path, "rb") as f:
+        with _open_transcript(path) as f:
             f.seek(pos - 1)
             chunk = f.read(min(STREAM_MAX_LINE, size - pos + 1))
     except OSError:
@@ -610,76 +663,134 @@ def sse_frame(event: str, data: dict, offset: int | None = None) -> str:
     return "\n".join(parts) + "\n\n"
 
 
+def _status_acc() -> dict:
+    return {"events": 0, "iterations": 0, "compactions": 0, "tool_calls": 0,
+            "errors": 0, "tokens": {"prompt": 0, "completion": 0, "total": 0},
+            "last_event": None, "last_line": ""}
+
+
+def _status_fold(acc: dict, line: str, kind: str) -> None:
+    """Fold ONE transcript line into the running status."""
+    if not line.strip():
+        return
+    acc["events"] += 1
+    acc["last_line"] = line[:500]
+    if kind != "agent":
+        return
+    try:
+        ev = json.loads(line)
+    except Exception:
+        return
+    if not isinstance(ev, dict):
+        return
+    etype = ev.get("type")
+    if etype == "iteration":
+        acc["iterations"] = max(acc["iterations"], int(ev.get("number") or 0))
+    elif etype == "compaction":
+        acc["compactions"] += 1
+    elif etype == "tool_call":
+        acc["tool_calls"] += 1
+    elif etype in ("error", "context_overflow_unrecoverable"):
+        acc["errors"] += 1
+    # done / max_iterations carry the run's token totals; any
+    # event that carries them is allowed to update (monotonic).
+    for src, dst in (("tokens_prompt", "prompt"),
+                     ("tokens_completion", "completion"),
+                     ("tokens_total", "total")):
+        if isinstance(ev.get(src), int):
+            acc["tokens"][dst] = max(acc["tokens"][dst], ev[src])
+    if etype in ("done", "max_iterations"):
+        acc["iterations"] = max(acc["iterations"],
+                                int(ev.get("iterations") or 0))
+        acc["compactions"] = max(acc["compactions"],
+                                 int(ev.get("compactions") or 0))
+    acc["last_event"] = {k: v for k, v in ev.items() if k != "result"}
+    if etype == "tool_call":
+        res = ev.get("result")
+        acc["last_event"]["result_truncated"] = (
+            isinstance(res, str) and len(res) >= TOOL_RESULT_LIMIT)
+
+
+# (path, kind) -> {"file": (dev, ino), "offset": int, "mark": bytes, "acc"}.
+# `offset` is the end of the last COMPLETE line folded into `acc`; `mark` is
+# the bytes just before it, so a copytruncate rotation that regrew the file
+# past the old offset is noticed and rescanned instead of resumed mid-line.
+_STATUS_CACHE: "OrderedDict[tuple, dict]" = OrderedDict()
+_STATUS_CACHE_MAX = 256
+_STATUS_MARK = 64
+_STATUS_LOCK = threading.Lock()
+
+
 def derive_status(record: dict) -> dict:
     """Roll the transcript up into the numbers the console header shows.
 
-    One streaming pass, never loading the file into memory — a long agent run
-    is megabytes and this endpoint gets polled.
+    INCREMENTAL: the console fetches this on every session open, and a
+    full pass json-parsed every line of a transcript that can be gigabytes
+    (0.5 s per 200 MB, holding a threadpool worker) — while the stream it
+    precedes reads only the tail. The rollup is cached per transcript and
+    resumed from the last complete line, so each call costs only the bytes
+    appended since the previous one.
     """
     path = record.get("transcript") or ""
     kind = record.get("kind") or "agent"
     status = {
         "kind": kind,
-        "events": 0,
-        "iterations": 0,
-        "compactions": 0,
-        "tool_calls": 0,
-        "errors": 0,
-        "tokens": {"prompt": 0, "completion": 0, "total": 0},
-        "last_event": None,
-        "last_line": "",
+        **_status_acc(),
         "transcript_bytes": _file_size(path),
         "terminal": record.get("state") in TERMINAL_STATES,
     }
     if not path or not os.path.isfile(path):
         return status
+    key = (path, kind)
     try:
-        with open(path, "r", errors="replace") as f:
-            for line in f:
-                line = line.rstrip("\n")
-                if not line.strip():
-                    continue
-                status["events"] += 1
-                status["last_line"] = line[:500]
-                if kind != "agent":
-                    continue
-                try:
-                    ev = json.loads(line)
-                except Exception:
-                    continue
-                if not isinstance(ev, dict):
-                    continue
-                etype = ev.get("type")
-                if etype == "iteration":
-                    status["iterations"] = max(status["iterations"],
-                                               int(ev.get("number") or 0))
-                elif etype == "compaction":
-                    status["compactions"] += 1
-                elif etype == "tool_call":
-                    status["tool_calls"] += 1
-                elif etype in ("error", "context_overflow_unrecoverable"):
-                    status["errors"] += 1
-                # done / max_iterations carry the run's token totals; any
-                # event that carries them is allowed to update (monotonic).
-                for src, dst in (("tokens_prompt", "prompt"),
-                                 ("tokens_completion", "completion"),
-                                 ("tokens_total", "total")):
-                    if isinstance(ev.get(src), int):
-                        status["tokens"][dst] = max(status["tokens"][dst],
-                                                    ev[src])
-                if etype in ("done", "max_iterations"):
-                    status["iterations"] = max(status["iterations"],
-                                               int(ev.get("iterations") or 0))
-                    status["compactions"] = max(status["compactions"],
-                                                int(ev.get("compactions") or 0))
-                status["last_event"] = {k: v for k, v in ev.items()
-                                        if k != "result"}
-                if etype == "tool_call":
-                    res = ev.get("result")
-                    status["last_event"]["result_truncated"] = (
-                        isinstance(res, str) and len(res) >= TOOL_RESULT_LIMIT)
+        with _open_transcript(path) as f:
+            st = os.fstat(f.fileno())
+            ident = (st.st_dev, st.st_ino)
+            with _STATUS_LOCK:
+                ent = _STATUS_CACHE.get(key)
+            acc, offset = _status_acc(), 0
+            if (ent and ent["file"] == ident and ent["offset"] <= st.st_size):
+                mark = ent["mark"]
+                if mark:
+                    f.seek(ent["offset"] - len(mark))
+                    ok = f.read(len(mark)) == mark
+                else:
+                    ok = True
+                if ok:
+                    acc, offset = copy.deepcopy(ent["acc"]), ent["offset"]
+            f.seek(offset)
+            pending = b""
+            consumed = offset
+            while True:
+                chunk = f.read(1 << 20)
+                if not chunk:
+                    break
+                buf = pending + chunk
+                lines = buf.split(b"\n")
+                pending = lines.pop()
+                for raw in lines:
+                    consumed += len(raw) + 1
+                    _status_fold(acc, raw.decode("utf-8", "replace")
+                                 .rstrip("\r"), kind)
+            mark = b""
+            if consumed:
+                f.seek(max(0, consumed - _STATUS_MARK))
+                mark = f.read(min(_STATUS_MARK, consumed))
+            with _STATUS_LOCK:
+                _STATUS_CACHE[key] = {"file": ident, "offset": consumed,
+                                      "mark": mark,
+                                      "acc": copy.deepcopy(acc)}
+                _STATUS_CACHE.move_to_end(key)
+                while len(_STATUS_CACHE) > _STATUS_CACHE_MAX:
+                    _STATUS_CACHE.popitem(last=False)
+            if pending:
+                # A line still being written counts NOW (as it always did)
+                # but is never cached: it is re-read once it is complete.
+                _status_fold(acc, pending.decode("utf-8", "replace")
+                             .rstrip("\r"), kind)
     except OSError:
-        pass
+        return status
+    status.update(acc)
     return status
 
 
@@ -1363,7 +1474,21 @@ def start_escalation(session_id: str, term_after: float, kill_after: float,
                 continue
             if elapsed >= kill_after:
                 delivered = bool(signal_session(rec, signal.SIGKILL))
-                report(outcome="signal", signal="SIGKILL", delivered=delivered,
+                if not delivered:
+                    # signal_session refused (no identity proof, EPERM) or the
+                    # process went in this very window. Only the second is a
+                    # stop that landed. Filing the first as `stopped` made a
+                    # LIVE process terminal for good: /stop then answered
+                    # "already finished" and beast-chat could never stop it.
+                    if not _still_running(session_id):
+                        if sent_term:
+                            finalize_stopped()
+                        return
+                    report(outcome="undelivered", signal="SIGKILL",
+                           delivered=False, pgid=rec.get("pgid"),
+                           state="running")
+                    return
+                report(outcome="signal", signal="SIGKILL", delivered=True,
                        pgid=rec.get("pgid"))
                 sent_kill = True
                 kill_deadline = now + max(poll * 4, 0.5)
@@ -1596,6 +1721,9 @@ def _iso_epoch(value) -> float | None:
 
 # How long an undelivered end-of-session alert keeps being retried.
 NOTIFY_RETRY_MAX_AGE = 24 * 3600.0
+# How long a reconciled `lost` must stay lost before it alerts — longer than
+# an operator stop's SIGKILL-to-`stopped` window (about 1.5 s for job.sh).
+NOTIFY_LOST_SETTLE_S = 10.0
 
 
 class Notifier:
@@ -1617,12 +1745,23 @@ class Notifier:
     def __init__(self, url: str, *, on=NOTIFY_STATES_DEFAULT,
                  token_file: str = "", state_path: str,
                  public_url: str = "", min_interval: float = 60.0,
-                 burst: int = 10, poster=None):
+                 burst: int = 10, poster=None, port: int | None = None):
         self.url = url
+        on = list(on)
         self.on = tuple(s for s in on if s in TERMINAL_STATES)
+        # A typo (CHAT_NOTIFY_ON=error) used to vanish silently, and with
+        # every word gone no alert ever fired while health said notify:true.
+        dropped = [s for s in on if s not in TERMINAL_STATES]
+        if dropped or not self.on:
+            print("[beast-chat] CHAT_NOTIFY_ON: "
+                  + (f"ignoring {', '.join(map(repr, dropped))} " if dropped else "")
+                  + f"(valid: {', '.join(sorted(TERMINAL_STATES))})"
+                  + ("" if self.on else " — NO session state will notify"),
+                  file=sys.stderr)
         self.token_file = token_file
         self.state_path = state_path
-        self.public_url = public_url.rstrip("/")
+        self._public_url = public_url.rstrip("/")
+        self.port = port
         self.min_interval = min_interval
         self.burst = max(1, burst)
         self.poster = poster or self._post
@@ -1630,6 +1769,12 @@ class Notifier:
         # -inf, not 0: time.monotonic() counts from boot on Linux, so a 0
         # here kept the first failure silent for the machine's first 300 s.
         self._last_err = float("-inf")
+        # The snapshot this process last wrote, kept ONLY while the file
+        # could not be written. Diffing against the stale (or missing) file
+        # instead re-sent every finished session each min_interval forever,
+        # or never fired at all (first_run on every tick).
+        self._mem_doc: dict | None = None
+        self._last_save_err = float("-inf")
         self.lock = threading.Lock()
 
     @classmethod
@@ -1648,7 +1793,20 @@ class Notifier:
                    token_file=(os.environ.get("OPENBEAST_CHAT_NOTIFY_TOKEN_FILE")
                                or "").strip(),
                    state_path=os.path.join(run_dir, "notify-state.json"),
-                   public_url=chat_public_url(port))
+                   port=port)
+
+    @property
+    def public_url(self) -> str:
+        """The deep-link base, resolved per use (chat_public_url caches it).
+
+        Frozen at app creation it stayed http://localhost:<port> on the
+        documented path, where `setup-tailscale.sh --publish-chat` runs after
+        `./start.sh -d`, and every alert's link was dead on the phone until
+        the next restart. An explicit `public_url` (tests) is used as given.
+        """
+        if self._public_url or self.port is None:
+            return self._public_url
+        return chat_public_url(self.port).rstrip("/")
 
     # -- state -------------------------------------------------------------
     def _load(self) -> dict | None:
@@ -1659,7 +1817,9 @@ class Notifier:
             return None
         return doc if isinstance(doc, dict) else None
 
-    def _save(self, doc: dict) -> None:
+    def _save(self, doc: dict) -> bool:
+        """Persist the snapshot; False (and one stderr line per 5 min) when
+        it cannot be written — a full disk, a root-owned file."""
         tmp = self.state_path + ".tmp"
         try:
             os.makedirs(os.path.dirname(self.state_path), exist_ok=True)
@@ -1668,8 +1828,15 @@ class Notifier:
                 json.dump(doc, f)
             os.chmod(tmp, 0o600)
             os.replace(tmp, self.state_path)
-        except OSError:
-            pass
+            return True
+        except OSError as e:
+            now = time.monotonic()
+            if now - self._last_save_err > 300:
+                self._last_save_err = now
+                print(f"[beast-chat] cannot write {self.state_path} "
+                      f"({type(e).__name__}: {e.strerror or e}) — notification "
+                      f"state is kept in memory until it can", file=sys.stderr)
+            return False
 
     # -- sending -----------------------------------------------------------
     def _token(self) -> str:
@@ -1712,8 +1879,12 @@ class Notifier:
             headers["Authorization"] = f"Bearer {token}"
         return bool(self.poster(body, headers))
 
-    def link(self, session_id: str) -> str:
-        return f"{self.public_url}/#/s/{session_id}" if self.public_url else ""
+    def link(self, session_id: str = "") -> str:
+        """The deep link to one session, or (no id) to the console."""
+        base = self.public_url
+        if not base:
+            return ""
+        return f"{base}/#/s/{session_id}" if session_id else f"{base}/#/"
 
     def notify_session(self, rec: dict) -> bool:
         sid = str(rec.get("id") or "")
@@ -1749,7 +1920,7 @@ class Notifier:
         """One pass. Returns the session ids it notified about."""
         with self.lock:
             now = time.time() if now is None else now
-            doc = self._load()
+            doc = self._mem_doc if self._mem_doc is not None else self._load()
             first_run = doc is None
             known = (doc or {}).get("sessions") or {}
             if not isinstance(known, dict):
@@ -1776,11 +1947,29 @@ class Notifier:
                       and (_iso_epoch(rec.get("started_at")) or 0) >= last_tick):
                     due.append(rec)      # started and ended while we were away
             fired = []
+            attempts = 0
             overflow = 0
             mono = time.monotonic()
             for rec in due:
                 sid = rec["id"]
-                ended = _iso_epoch(rec.get("ended_at")) or now
+                # `lost` is the reconciler's INFERENCE, and an operator stop
+                # that had to SIGKILL passes through it for a second or so
+                # before the stopper writes `stopped` (job.sh stop sleeps 1 s
+                # then forks python to finalize). A tick in that window sent
+                # a high-priority "lost" push for a deliberate stop, and the
+                # correction never alerted. Let a fresh `lost` settle first:
+                # keep it pending; if it is still lost after the settle time
+                # it is a real loss and alerts then.
+                if (rec.get("state") == "lost"
+                        and now - (_iso_epoch(rec.get("updated_at")) or 0)
+                        < NOTIFY_LOST_SETTLE_S):
+                    current[sid] = "running"
+                    continue
+                # A reconciled `lost` has no ended_at (only finalize writes
+                # one); its updated_at is when the loss was recorded. Falling
+                # straight back to `now` made the max-age below never expire.
+                ended = (_iso_epoch(rec.get("ended_at"))
+                         or _iso_epoch(rec.get("updated_at")) or now)
                 # A send that fails (ntfy restarting, relay down) or is held
                 # back by min_interval must be tried again next tick — so the
                 # snapshot keeps it `running` until it is delivered. Give up
@@ -1791,9 +1980,12 @@ class Notifier:
                     if retry:
                         current[sid] = "running"
                     continue
-                if len(fired) >= self.burst:
+                # ATTEMPTS, not successes: counting only delivered sends let a
+                # failing endpoint take one POST per due session per tick.
+                if attempts >= self.burst:
                     overflow += 1
                     continue
+                attempts += 1
                 self._last_sent[sid] = mono
                 if self.notify_session(rec):
                     fired.append(sid)
@@ -1803,10 +1995,11 @@ class Notifier:
                 self.send(title="beast-chat: more sessions ended",
                           body=f"{overflow} more session(s) ended — open the "
                                f"console for the list",
-                          click=self.public_url + "/#/" if self.public_url else "")
-            self._save({"version": 1,
-                        "last_tick": datetime.fromtimestamp(now).isoformat(),
-                        "sessions": current})
+                          click=self.link())
+            snap = {"version": 1,
+                    "last_tick": datetime.fromtimestamp(now).isoformat(),
+                    "sessions": current}
+            self._mem_doc = None if self._save(snap) else snap
             return fired
 
     def run_forever(self, period: float, stop: threading.Event) -> None:
@@ -1834,8 +2027,13 @@ def chat_public_url(port: int) -> str:
     if v.startswith(("http://", "https://")):
         return v
     now = time.monotonic()
-    if _PUBLIC_URL_CACHE["value"] and now - _PUBLIC_URL_CACHE["at"] < 300:
-        return _PUBLIC_URL_CACHE["value"]
+    cached = _PUBLIC_URL_CACHE["value"]
+    # The loopback fallback is the "not published yet" answer: asked again
+    # after 30 s, not 300, so a --publish-chat that follows the start shows
+    # up in the next alert's link.
+    ttl = 30 if cached.startswith("http://localhost:") else 300
+    if cached and now - _PUBLIC_URL_CACHE["at"] < ttl:
+        return cached
     import re
     import shutil
     value = f"http://localhost:{port}"
@@ -2027,17 +2225,43 @@ def scrub_secrets(text: str) -> str:
     return text
 
 
+def reader_view(rec: dict) -> dict:
+    """A session record as a READ-tier caller may see it.
+
+    A job's title defaults to its shell command and meta.command is that
+    command verbatim, so an inline `HF_TOKEN=… ./quantize.sh` reached every
+    reader (any identified login in open mode). The command still runs as
+    written and the 0600 audit log keeps it whole; reads get it scrubbed.
+    """
+    if not isinstance(rec, dict):
+        return rec
+    out = dict(rec)
+    if isinstance(out.get("title"), str):
+        out["title"] = scrub_secrets(out["title"])
+    meta = out.get("meta")
+    if isinstance(meta, dict) and "command" in meta:
+        meta = dict(meta)
+        cmd = meta["command"]
+        if isinstance(cmd, str):
+            meta["command"] = scrub_secrets(cmd)
+        elif isinstance(cmd, list):
+            meta["command"] = [scrub_secrets(str(c)) for c in cmd]
+        out["meta"] = meta
+    return out
+
+
 def _read_tail(path: str, limit: int) -> tuple[str, bool]:
     try:
-        size = os.path.getsize(path)
-        with open(path, "rb") as f:
+        with _open_transcript(path) as f:
+            size = os.fstat(f.fileno()).st_size
             if size > limit:
                 f.seek(size - limit)
                 data = f.read(limit)
                 nl = data.find(b"\n")
                 data = data[nl + 1:] if nl >= 0 else data
                 return data.decode("utf-8", "replace"), True
-            return f.read().decode("utf-8", "replace"), False
+            # Capped even here: the file may have grown since the fstat.
+            return f.read(limit).decode("utf-8", "replace"), False
     except OSError:
         return "", False
 
@@ -2441,16 +2665,25 @@ def create_app() -> FastAPI:
         response whose body was never started (the client left between the
         headers and the first frame): a generator that never ran has no
         `finally` to run, and a slot leaked there is a 429 that never clears.
+
+        The open-streams GAUGE rides on the slot for the same reason: bumped
+        in events() and dropped only in the generator's `finally`, it drifted
+        up by one for every stream whose body never started, for the life of
+        the process. It is updated under sse_lock (re-entrant, safe from
+        __del__), never metrics_lock (a plain Lock a GC pass could deadlock).
         """
 
         def __init__(self, key: str):
             self.key, self._held = key, True
+            with sse_lock:
+                gauges["sse_open"] += 1
 
         def release(self) -> None:
             with sse_lock:
                 if not self._held:
                     return
                 self._held = False
+                gauges["sse_open"] -= 1
                 sse_held[self.key] -= 1
                 if sse_held[self.key] <= 0:
                     del sse_held[self.key]
@@ -2912,7 +3145,7 @@ def create_app() -> FastAPI:
                     continue
                 path = rec.get("transcript") or ""
                 out.append({
-                    **rec,
+                    **reader_view(rec),
                     "transcript_bytes": _file_size(path),
                     "last_line": _preview_line(_tail_line(path),
                                                rec.get("kind")),
@@ -2928,7 +3161,7 @@ def create_app() -> FastAPI:
             rec = load_session(session_id)
             status = derive_status(rec)
             return {
-                "session": rec,
+                "session": reader_view(rec),
                 "status": status,
                 "artifacts": {
                     "events": f"/api/chat/sessions/{session_id}/events",
@@ -3015,7 +3248,6 @@ def create_app() -> FastAPI:
               int((time.monotonic() - t0) * 1000), {"from": start})
         with metrics_lock:
             counters[("GET /events", "stream_open")] += 1
-            gauges["sse_open"] += 1
 
         return StreamingResponse(
             _stream(request, rec, start, principal, tail_skipped, slot),
@@ -3186,8 +3418,6 @@ def create_app() -> FastAPI:
         finally:
             if slot is not None:
                 slot.release()
-            with metrics_lock:
-                gauges["sse_open"] -= 1
             # What a reader actually pulled, and for how long — the open row
             # alone cannot say whether a revoked or hostile reader drained a
             # whole transcript (review chat-security-8).
@@ -3759,6 +3989,10 @@ def create_app() -> FastAPI:
         with audited("GET /api/chat/presets", request=request) as ctx:
             ctx["principal"] = read_gate(request)
             rows, problem = load_presets(presets_path)
+            # A read route: the phone starts a preset by NAME, so the command
+            # shown here is for the eye only — never a credential (review).
+            rows = [{**r, "cmd": scrub_secrets(r.get("cmd") or "")}
+                    if isinstance(r, dict) else r for r in rows]
             return {"presets": rows, "path": presets_path,
                     **({"problem": problem} if problem else {})}
 
@@ -3822,11 +4056,12 @@ def create_app() -> FastAPI:
                         status_code=409,
                         detail="notifications are off — set CHAT_NOTIFY_URL "
                                "(an ntfy topic URL) and restart")
+                # link() may ask `tailscale serve status`: off the event loop.
+                click = await asyncio.to_thread(notifier.link)
                 ok = await asyncio.to_thread(
                     notifier.send, title="beast-chat: test notification",
                     body="If you can read this, session alerts will reach you.",
-                    click=notifier.public_url + "/#/" if notifier.public_url else "",
-                    tags="bell")
+                    click=click, tags="bell")
                 ctx["extra"] = {"sent": ok}
                 if not ok:
                     raise HTTPException(status_code=502,
@@ -3860,6 +4095,10 @@ def create_app() -> FastAPI:
             "running": live,
             "sessions": total,
             "reads": "operators" if operators.configured else "any-identified",
+            # Who may ASSERT a login: "loopback" means any process sharing
+            # the host's network namespace, host-network containers included
+            # (doctor warns when one is running).
+            "login_from": login_source(),
             "devices": registry.configured,
             "streams": max(0, gauges.get("sse_open", 0)),
             "login": principal.get("login"),
@@ -4006,10 +4245,10 @@ def _tail_line(path: str, window: int = 8192) -> str:
     """Last non-empty line, read from the tail — a transcript can be large and
     the session LIST renders one of these per row."""
     try:
-        size = os.path.getsize(path)
-        with open(path, "rb") as f:
+        with _open_transcript(path) as f:
+            size = os.fstat(f.fileno()).st_size
             f.seek(max(0, size - window))
-            chunk = f.read()
+            chunk = f.read(window)
     except OSError:
         return ""
     for raw in reversed(chunk.split(b"\n")):
@@ -4061,6 +4300,19 @@ def _uvicorn_config(app, host: str, port: int):
                           proxy_headers=False, forwarded_allow_ips="")
 
 
+def _harden_process() -> bool:
+    """Make beast-chat non-dumpable (tools.harden_process, PR_SET_DUMPABLE=0).
+
+    child_env() keeps CHAT_NOTIFY_URL and the other secrets out of every
+    agent and job this server spawns, but that scrub only holds together
+    with this. Otherwise a same-uid process (a spawned agent's model-authored
+    bash) reads them straight back from /proc/<this pid>/environ. The tool
+    server, mcp_server and runner already do this; beast-chat did not.
+    """
+    from tools import harden_process
+    return harden_process()
+
+
 def main() -> None:
     """Bind the port FIRST, then build the app (which mints the token).
 
@@ -4071,6 +4323,7 @@ def main() -> None:
     """
     import socket
     import uvicorn
+    _harden_process()
     host = os.environ.get("OPENBEAST_CHAT_BIND", "127.0.0.1")
     port = int(os.environ.get("OPENBEAST_CHAT_PORT") or DEFAULT_PORT)
     if not _bind_is_loopback(host):

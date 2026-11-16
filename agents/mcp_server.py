@@ -30,6 +30,10 @@ Language reference (beast-lang, the PULL surface):
   - language_reference: what the INSTALLED toolchain confirmed about a
     language — the pack, the cards for a compile error, or one topic
 
+Platform docs (beast-docs, mirrored offline):
+  - platform_docs: search / read current Apple, Android and other developer
+    documentation from the local mirror, or fetch one page live
+
 Skills (progressive disclosure):
   - skill: skill() returns the index of every skill; skill(name) loads one
   - start_skill_agent: spawn a background agent with a skill activated
@@ -48,10 +52,12 @@ import atexit
 import difflib
 import json
 import os
+import re
 import signal
 import stat
 import subprocess
 import sys
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -409,6 +415,32 @@ def _cleanup_agents():
 
 
 atexit.register(_cleanup_agents)
+# In-flight bash/grep commands run in their OWN sessions (run_reaped): on a
+# clean exit (stdio EOF, uvicorn shutdown of the :3001 server that imports
+# this module) nothing else would stop them once this process is gone.
+atexit.register(_tools.kill_live_children)
+
+
+def _on_stop_signal(signum, frame):
+    """SIGTERM/SIGHUP (OpenCode tearing down its MCP child, a `kill`): stop
+    the in-flight tool commands and non-detached agents, then die the way
+    the signal says. atexit never runs on a default SIGTERM death, so
+    without this the command ran on under init with no timeout."""
+    try:
+        _tools.kill_live_children(2.0)
+        _cleanup_agents()
+    finally:
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
+
+def _install_stop_handlers() -> None:
+    """Hook the stop signals, except one the launcher chose to IGNORE (an
+    inherited SIG_IGN, e.g. nohup's SIGHUP, is how it survives a hangup)."""
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        if signal.getsignal(sig) is signal.SIG_IGN:
+            continue
+        signal.signal(sig, _on_stop_signal)
 
 
 def _parse_agent_log(log_path: str, max_bytes: int = 10_000_000) -> list[dict]:
@@ -820,6 +852,15 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
     return fm, body
 
 
+# A skill directory is named like a skill: the same rule `skill-import.sh`
+# (scripts/lib/skill_import.py NAME_RE) and generate-skill-index.py apply.
+# Hidden entries (skills/.cache/, which .gitignore also hides) and `_drafts`
+# are never skills, and a SKILL.md must carry its own directory's name: before
+# this, skills/.cache/SKILL.md saying `name: security-audit` sorted first, took
+# that name, and was served — verify never walked it.
+_SKILL_DIR_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+
+
 def _discover_skills(force: bool = False) -> dict:
     """Walk repo and global skill directories. Repo wins on name collision.
     Cached after first call; pass force=True to re-scan."""
@@ -833,6 +874,8 @@ def _discover_skills(force: bool = False) -> dict:
         if not os.path.isdir(base):
             continue
         for entry in sorted(os.listdir(base)):
+            if not _SKILL_DIR_RE.match(entry):
+                continue
             skill_path = os.path.join(base, entry)
             md_path = os.path.join(skill_path, "SKILL.md")
             if not os.path.isfile(md_path):
@@ -843,6 +886,10 @@ def _discover_skills(force: bool = False) -> dict:
                 continue
             fm, body = _parse_frontmatter(text)
             name = fm.get("name") or entry
+            if name != entry:
+                print(f"skills: ignoring {md_path}: its frontmatter name {name!r} "
+                      f"is not its directory name {entry!r}", file=sys.stderr)
+                continue
             if name in skills:
                 continue  # repo already claimed this name
             skills[name] = {
@@ -857,8 +904,13 @@ def _discover_skills(force: bool = False) -> dict:
 
 
 def _resolve_skill(name: str) -> dict | None:
-    """Return the cached skill record, or None if not found."""
-    return _discover_skills().get(name)
+    """Return the skill record as it is on disk NOW, or None if not found.
+
+    Re-scans on every named lookup (a couple of dozen small files): a cached
+    record kept serving a skill deleted for losing trust, or the old body of a
+    refreshed one, to skill(name) and into start_skill_agent's system prompt
+    until something happened to call the index."""
+    return _discover_skills(force=True).get(name)
 
 
 @_tool()
@@ -872,8 +924,8 @@ def skill(name: str = "") -> str:
     instructions to the work at hand. This keeps the system prompt small and
     only pays for the content you need.
 
-    Index calls re-scan the skills directories, so a newly added or edited
-    SKILL.md shows up without restarting the server.
+    Every call re-scans the skills directories, so a newly added, edited or
+    removed SKILL.md shows up without restarting the server.
 
     Args:
         name: Skill identifier from the index (e.g. 'code-review').
@@ -904,9 +956,6 @@ def skill(name: str = "") -> str:
 
     record = _resolve_skill(name)
     if record is None:
-        # The cache may predate a newly added skill — re-scan once before failing.
-        record = _discover_skills(force=True).get(name)
-    if record is None:
         available = sorted(_discover_skills().keys())
         close = difflib.get_close_matches(name, available, n=3, cutoff=0.5)
         hint = f" Did you mean: {', '.join(close)}?" if close else ""
@@ -917,6 +966,26 @@ def skill(name: str = "") -> str:
 
 
 # --- Agent MCP tools ---
+
+
+def _sandboxed_workdir_refusal(workdir: str) -> str | None:
+    """Refusal text when a BASH_WRAPPER sandbox is on and `workdir` would
+    widen it past a workspace. The wrapper grants `-w "$PWD"` and an agent's
+    bash runs with cwd = its workdir, so workdir='/' or '~' made the whole
+    filesystem (or $HOME, ~/.ssh included) read-write to a confined model.
+    No wrapper: the workdir is not a boundary anyway (tools._base_dir)."""
+    if not os.environ.get("OPENBEAST_BASH_WRAPPER", "").strip():
+        return None
+    rp = os.path.realpath(workdir)
+    home = os.path.realpath(os.path.expanduser("~"))
+    if rp == home or rp == os.sep or home.startswith(rp.rstrip(os.sep) + os.sep):
+        return (f"Error: workdir {rp} would grant the bash sandbox all of "
+                f"{rp} (it contains your home directory); pick a project "
+                f"directory")
+    if _tools._guard_write_path(os.path.join(rp, "_")):
+        return (f"Error: workdir {rp} is a protected credential/persistence "
+                f"location; the bash sandbox would grant it read-write")
+    return None
 
 
 @_tool()
@@ -964,6 +1033,9 @@ def start_agent(task: str, workdir: str = ".", max_iter: int = 200, context: str
     workdir = os.path.abspath(os.path.expanduser(workdir))
     if not os.path.isdir(workdir):
         return f"Error: workdir does not exist: {workdir}"
+    refusal = _sandboxed_workdir_refusal(workdir)
+    if refusal:
+        return refusal
 
     agent_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
     log_path = os.path.join(_LOG_DIR, f"agent-{agent_id}.jsonl")
@@ -1084,8 +1156,6 @@ def start_skill_agent(skill: str, task: str, workdir: str = ".", max_iter: int =
     """
     skill_record = _resolve_skill(skill)
     if skill_record is None:
-        skill_record = _discover_skills(force=True).get(skill)
-    if skill_record is None:
         available = ", ".join(sorted(_discover_skills().keys())) or "(none)"
         return f"Error: skill '{skill}' not found. Available: {available}"
 
@@ -1139,6 +1209,22 @@ def check_agent(agent_id: str) -> str:
     return f"Error: unknown agent '{agent_id}'. Use list_agents() to see tracked agents."
 
 
+#: list_agents parses only this tail of each transcript (plus its first
+#: line): status lives in the last events and the iteration count in the
+#: last iteration event's `number`. A full 10 MB parse per row made one call
+#: up to ~1 GB of JSON work for _LEDGER_LIST_LIMIT rows.
+_LIST_TAIL_BYTES = 256 * 1024
+
+
+def _iteration_count(events: list[dict]) -> int:
+    """Iterations so far: the highest iteration `number` seen (runner.py
+    numbers them), so a tail window still reports the true count; falls
+    back to counting events for logs without numbers."""
+    iters = [e for e in events if e.get("type") == "iteration"]
+    nums = [e.get("number") for e in iters if isinstance(e.get("number"), int)]
+    return max(nums) if nums else len(iters)
+
+
 @_tool()
 def list_agents() -> str:
     """List every agent known to this rig with its current status.
@@ -1157,12 +1243,13 @@ def list_agents() -> str:
         session_id = str(ledger_record.get("id") or "")
         if not session_id:
             continue
-        events = _parse_agent_log(_ledger_transcript(ledger_record, session_id))
+        events = _parse_agent_log(_ledger_transcript(ledger_record, session_id),
+                                  _LIST_TAIL_BYTES)
         meta = ledger_record.get("meta") if isinstance(ledger_record.get("meta"), dict) else {}
         started = _parse_ts(ledger_record.get("started_at"))
         rows[session_id] = (
             _ledger_status(ledger_record, events),
-            sum(1 for e in events if e.get("type") == "iteration"),
+            _iteration_count(events),
             meta.get("max_iter") or "-",
             _format_elapsed(started) if started else "-",
             _ledger_task(ledger_record, events)[:50].replace("\n", " "),
@@ -1172,10 +1259,10 @@ def list_agents() -> str:
     # start_agent can mutate _agents mid-iteration (same guard as _cleanup_agents).
     for agent_id, record in list(_agents.items()):
         alive = record.process.poll() is None
-        events = _parse_agent_log(record.log_path)
+        events = _parse_agent_log(record.log_path, _LIST_TAIL_BYTES)
         rows[agent_id] = (
             _classify_agent_status(alive, events, record.process.returncode),
-            sum(1 for e in events if e.get("type") == "iteration"),
+            _iteration_count(events),
             record.max_iter,
             _format_elapsed(record.started_at),
             record.task[:50].replace("\n", " "),
@@ -1197,6 +1284,50 @@ def list_agents() -> str:
     return "\n".join(lines)
 
 
+def _signal_ledger_agent(rec: dict, sig: int) -> bool:
+    """Signal a ledger session's group (only when it LEADS it) or its pid,
+    and only while the recorded pid is provably still that process
+    (sessions.is_alive's pid + start-time check): a stale record's pid may
+    belong to a stranger by now."""
+    mod = _sessions()
+    if mod is None or not mod.is_alive(rec, require_start=True):
+        return False
+    try:
+        pid = int(rec.get("pid") or 0)
+        pgid = int(rec.get("pgid") or pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 1:
+        return False
+    try:
+        if pgid == pid and pgid != os.getpgrp() and os.getpgid(pid) == pgid:
+            os.killpg(pgid, sig)
+        else:
+            os.kill(pid, sig)
+        return True
+    except (ProcessLookupError, PermissionError, OSError):
+        return False
+
+
+def _stop_ledger_agent(agent_id: str, rec: dict) -> str:
+    """stop_agent for an agent this process did not spawn (a detached agent
+    after a restart of this server, or another spawn path). The runner's own
+    SIGTERM handler stops its in-flight tool command."""
+    mod = _sessions()
+    if mod is None or not mod.is_alive(rec, require_start=True):
+        return (f"Agent {agent_id} is not running (ledger state: "
+                f"{rec.get('state') or 'unknown'}). Use check_agent('{agent_id}').")
+    if not _signal_ledger_agent(rec, signal.SIGTERM):
+        return f"Error: could not signal agent {agent_id} (PID {rec.get('pid')})"
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if not mod.is_alive(rec, require_start=True):
+            return f"Agent {agent_id} stopped gracefully (PID {rec.get('pid')})."
+        time.sleep(0.1)
+    _signal_ledger_agent(rec, signal.SIGKILL)
+    return f"Agent {agent_id} force-killed after timeout (PID {rec.get('pid')})."
+
+
 @_tool()
 def stop_agent(agent_id: str) -> str:
     """Stop a running agent. Sends SIGTERM for graceful shutdown, escalates to
@@ -1207,6 +1338,9 @@ def stop_agent(agent_id: str) -> str:
     """
     record = _agents.get(agent_id)
     if not record:
+        ledger_record = _ledger_get(agent_id)
+        if ledger_record:
+            return _stop_ledger_agent(agent_id, ledger_record)
         return f"Error: unknown agent '{agent_id}'"
 
     if record.process.poll() is not None:
@@ -1324,6 +1458,30 @@ def web_search(query: str, max_results: int = 10, pageno: int = 1,
     if refusal:
         return refusal
     return _tools.web_search(query, max_results, pageno, time_range)
+
+
+def weather(location: str = "", days: int = 3, units: str = "") -> str:
+    """Current weather and a daily forecast (1-7 days) from Open-Meteo.
+
+    Use this for any weather question instead of web_search. Leave location
+    empty for the weather where the user is right now. Name a place as
+    'City, State' (US: 'Danville, CA' means California) or 'City, Country';
+    a bare town name picks the one nearest the user. The reply names the
+    exact place it describes and lists other places with that name.
+
+    Args:
+        location: 'City, State' / 'City, Country', or empty for the user's own position.
+        days: Days of daily forecast, 1-7 (default 3).
+        units: 'metric' or 'imperial' when the user asks for one; empty = the place's
+            own country's units (the user's own country for their position).
+    """
+    # Not an MCP tool (no @_tool): it is served on the WebUI tool server,
+    # which knows who is calling and therefore where they are.
+    refusal = _island.web_refusal("weather")
+    if refusal:
+        return refusal
+    import weather as _weather
+    return _weather.weather(location, days, near=_weather.CALLER_NEAR.get(), units=units)
 
 
 # ---------------------------------------------------------------------------
@@ -1811,6 +1969,77 @@ def language_reference(language: str, topic: str = "", error: str = "") -> str:
 
 
 # ---------------------------------------------------------------------------
+# beast-docs — current platform documentation (docs/BEAST_DOCS.md)
+# ---------------------------------------------------------------------------
+# The documentation counterpart of language_reference: SwiftUI, UIKit,
+# Compose, AGP, ... as the publisher wrote them, from a local mirror
+# (scripts/docs.sh sync / unpack), every answer stamped with its URL and the
+# date it was fetched. MCP/WebUI surface only, admin profile only, NOT the
+# runner's registry — same reasons as language_reference above. In client
+# mode the mirror is the laptop's own (~/.openbeast/docs), like every tool.
+#
+# Imported lazily and called through the package's no-raise facade
+# (agents/docs/__init__.py): a missing mirror or a broken page costs one
+# answer, never the tool server.
+
+_DOCS_MAX_CHARS = 12_000
+
+
+@_tool()
+def platform_docs(query: str = "", source: str = "", doc: str = "",
+                  live: bool = False) -> str:
+    """Search CURRENT platform developer documentation — Apple (SwiftUI,
+    UIKit, Swift, Xcode, App Store Review Guidelines), Android (Jetpack
+    Compose, Kotlin, Gradle/AGP) and any other mirrored developer site — from
+    the local mirror, which works with no internet. Your training data is
+    older than these pages: use this before writing code against a platform
+    API you are not certain about, and cite the URL and date it returns.
+
+    CALL IT WHEN:
+      - you are about to use a SwiftUI / UIKit / Compose / Gradle API and
+        are unsure of its current name, signature, availability or whether it
+        is deprecated — pass `query` (e.g. "NavigationStack", "LazyColumn
+        item keys", "navigationDestination");
+      - a search result looks right and you need the whole page — pass its
+        doc id (or URL) as `doc`;
+      - the mirror copy is stale or missing and the rig is online — pass the
+        page URL (or an Apple symbol name like "NavigationStack") as `doc`
+        with `live=true`. Offline, live falls back to the mirror and says so.
+
+    Args:
+        query: Words or a symbol name to search for.
+        source: Optional source name to search in ("swiftui", "uikit",
+            "android-compose", ...); several may be comma-separated.
+        doc: A doc id from a search result ("swiftui:/documentation/...") or
+            a page URL, to read the whole page.
+        live: With `doc`: fetch the official page now instead of the mirror.
+
+    Returns:
+        Ranked results or the page as markdown, each with its source URL and
+        fetched date (and a STALE warning when the mirror is old); or a line
+        saying nothing matched / no mirror exists, which means: say you could
+        not confirm it, do not invent an API.
+    """
+    try:
+        import docs as _docs  # lazy: see the note above
+    except Exception as e:
+        return f"Error: beast-docs is unavailable on this host ({e})."
+    try:
+        query = " ".join(str(query or "").split())[:300]
+        source = str(source or "").strip()[:200]
+        doc = str(doc or "").strip()[:2000]
+        if doc and live:
+            return _docs.safe_live(doc, source, _DOCS_MAX_CHARS)
+        if doc:
+            return _docs.safe_read(doc, _DOCS_MAX_CHARS)
+        if query:
+            return _docs.safe_search(query, source)[:_DOCS_MAX_CHARS]
+        return _docs.safe_status()[:_DOCS_MAX_CHARS]
+    except Exception as e:  # the facade does not raise; this is the belt
+        return f"Error: platform_docs failed: {e}"
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -1828,6 +2057,7 @@ if __name__ == "__main__":
     # /proc/<ancestor>/environ. run_reaped and start_agent also do this
     # lazily (the :3001 server imports this module and relies on them).
     _tools.harden_process()
+    _install_stop_handlers()
 
     if args.transport == "http":
         print(f"MCP server starting on http://{MCP_BIND}:{args.port}/mcp")

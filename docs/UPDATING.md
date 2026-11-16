@@ -43,6 +43,14 @@ credits: [`NOTICE`](../NOTICE) and the README credits section). Upstreams
 move fast — llama.cpp alone lands performance work weekly — so keeping them
 fresh is worth doing periodically.
 
+**Inference engines (llama.cpp, vLLM, TensorFold):** to move to a named
+release rather than `master`, use `scripts/engine.sh update|install <engine>
+[--version V]`. It resolves a release to an immutable pin (commit / image
+digest / signed archive sha256), keeps a history, and rolls back with
+`scripts/engine.sh rollback <engine>`. Offline, use `stage` on a connected box
+and `install --from DIR` on the closed one. For llama it builds through
+`update.sh --llama --force`. See [`ENGINES.md`](ENGINES.md).
+
 ## One command
 
 ```bash

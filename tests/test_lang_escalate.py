@@ -260,6 +260,29 @@ def test_a_claim_with_no_summary_is_never_attached(monkeypatch):
                               "member named 'io'", index=E.load_index()) == []
 
 
+def test_a_claim_not_VERIFIED_here_is_never_attached(monkeypatch):
+    """The index maps errors from OLD fixtures only, and may be built on
+    another box; it never checked the NEW form — the fix the card hands over.
+    The header says "Confirmed against the toolchain installed on this
+    machine", so escalation gets the gate packs.render() and
+    reference.verified_cards() already apply: VERIFIED here, now."""
+    monkeypatch.setattr(E, "index_gate", lambda lang, entry: {"served": True})
+    diag = ("error: root source file struct 'std' has no member named 'io'\n"
+            "    const out = std.io.getStdOut().writer();")
+    verdict = {"v": V.VERIFIED}
+    monkeypatch.setattr(V, "verify", lambda c: {"verdict": verdict["v"]})
+    served = E.cards_for("zig", diag, index=E.load_index())
+    assert served, "precondition: the committed index selects a card"
+    for bad in (V.NEW_FAILS, V.UNVERIFIABLE):
+        verdict["v"] = bad
+        assert E.cards_for("zig", diag, index=E.load_index()) == [], bad
+
+    def boom(c):
+        raise RuntimeError("driver broke")
+    monkeypatch.setattr(V, "verify", boom)
+    assert E.cards_for("zig", diag, index=E.load_index()) == []
+
+
 def test_the_rendered_block_says_where_its_facts_came_from():
     if not have_zig:
         pytest.skip("zig absent")

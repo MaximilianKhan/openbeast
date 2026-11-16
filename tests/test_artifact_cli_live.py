@@ -177,3 +177,45 @@ def test_the_session_id_is_stamped(rig):
         "agent-20260930-deadbeef"
     p = rig("list", "--session", "agent-20260930-deadbeef", "--json")
     assert [r["id"] for r in json.loads(p.stdout)["artifacts"]] == [aid]
+
+
+def test_the_locality_token_never_goes_through_a_proxy(rig):
+    """Review (spark-scale) beast-artifact sec: curl honoured http_proxy (and
+    ~/.curlrc) even for 127.0.0.1, so the X-OpenBeast-Local header — the
+    rig and admin credential — went to whatever proxy was configured."""
+    (rig.tmp / ".curlrc").write_text("proxy = http://127.0.0.1:9\n")
+    aid = _id(rig("publish", _page(rig.tmp),
+                  env={"http_proxy": "http://127.0.0.1:9",
+                       "all_proxy": "http://127.0.0.1:9"}).stdout)
+    assert rig.store.get_meta(aid) is not None
+
+
+def test_rollback_takes_a_zero_padded_version(rig):
+    """Review (spark-scale) beast-artifact: `[[ 08 -ge 1 ]]` is octal in bash
+    ("value too great for base") and `010` was spliced raw into
+    {"current": 010}, which is not JSON (HTTP 422)."""
+    aid = _id(rig("publish", _page(rig.tmp)).stdout)
+    for _ in range(9):
+        rig("publish", _page(rig.tmp), "--id", aid)
+    rig("rollback", aid, "08")
+    assert rig.store.get_meta(aid)["current"] == 8
+    p = rig("rollback", aid, "010")
+    assert rig.store.get_meta(aid)["current"] == 10
+    assert "now serving v10" in p.stdout
+    p = rig("rollback", aid, "00", check=False)
+    assert p.returncode == 2
+
+
+def test_a_limit_above_the_server_cap_pages_instead_of_capping(rig):
+    """Review (spark-scale) beast-artifact: the server clamps limit to 200, so
+    `list --limit 205` showed 200 rows and then told the user to "see more
+    with --limit N" — the flag that had just been capped."""
+    for i in range(203):
+        rig.store.publish(f"<title>T{i}</title>x")
+    doc = json.loads(rig("list", "--limit", "202", "--json").stdout)
+    assert doc["count"] == 202 and doc["total"] == 203
+    assert len({r["id"] for r in doc["artifacts"]}) == 202
+    doc = json.loads(rig("list", "--limit", "500", "--json").stdout)
+    assert doc["count"] == 203
+    p = rig("list", "--limit", "202")
+    assert "Showing 202 of 203" in p.stdout

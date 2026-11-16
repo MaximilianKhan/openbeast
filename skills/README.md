@@ -6,7 +6,7 @@ security audit, eval-task authoring, debugging methodology, deep counsel.
 The model discovers them via MCP and loads them on demand. See
 [`docs/SKILLS_PLAN.md`](../docs/SKILLS_PLAN.md) for the full design.
 
-## Currently shipped (15 skills)
+## Currently shipped (17 in-house skills, plus 9 imported below)
 
 ### Universal-applicability (Tier 1)
 
@@ -42,6 +42,8 @@ The model discovers them via MCP and loads them on demand. See
 | `eval-task-author` | Authoring eval suite tasks; encodes the 6 pitfalls from past post-mortems |
 | `eval-variant-porter` | Adding multi-language variants (Python/Go/C/C++/Rust/Zig) to existing tasks |
 | `beast-lang` | The offline language library: look up what the *installed* compiler confirmed, add a verified claim, rebuild the escalation index, review model-drafted claims. Written for cloud models working in this repo — `prompt_index: false`, so it is not in the local model's always-on menu |
+| `app-control` | Drive external apps (Xcode, Gradle/adb, Blender, Figma, 3D printers, ROS) through MCP servers with beast-apps: `scripts/apps.sh check` first, report the exact remediation when something is missing, enable only after a passing check, `refresh` after an update. See [`docs/BEAST_APPS.md`](../docs/BEAST_APPS.md). `prompt_index: false` for now — adding it to the menu costs every local-model turn tokens; reachable by `skill("app-control")` |
+| `platform-docs` | beast-docs: search the offline mirror of current Apple / Android / other platform docs before writing code against a platform API, cite the URL and its fetched date, say when it is stale. `prompt_index: false` (the menu file is era-locked) — reachable with `skill("platform-docs")` and backed by the `platform_docs` tool |
 
 ### Imported (9 skills, off the always-on menu)
 
@@ -69,7 +71,7 @@ saying what we changed.
 - `writing-skills` and `skill-creator` give opposite advice on two points. The
   first says a description states only *when* to use a skill and favours
   absolute rules; the second wants *what and when* and explained reasons. Our
-  15 in-house descriptions follow the second style. Format is settled by the
+  17 in-house descriptions follow the second style. Format is settled by the
   schema below; the rest is for measuring.
 - `executing-plans` and `writing-plans` name skills we did not import
   (upstream's own TDD, debugging, review and branch-finishing skills). Those
@@ -113,13 +115,12 @@ The agent decides when to invoke. Helpful prompts: "use a skill if relevant",
    index call (no restart needed)
 5. Decide whether it belongs in the **always-on menu**. `python3
    scripts/generate-skill-index.py` rewrites the skill list in
-   `system-prompt-tools.md`, which every local-model turn pays for and which
-   is one of the six era-hashed files — so adding a menu entry rolls the eval
-   cache era (`./scripts/eval-era.sh`) and CI fails on a stale index. A skill
-   written for cloud models working in this repo (like `beast-lang`) sets
-   `prompt_index: false` in its frontmatter: it stays reachable by name
-   through `skill("my-skill")` and `start_skill_agent`, costs the local model
-   nothing, and leaves the era alone.
+   `system-prompt-tools.md`, which every local-model WebUI turn pays for, and
+   CI fails on a stale index. (It is not era-hashed: the eval agent never
+   reads it.) A skill written for cloud models working in this repo (like
+   `beast-lang`) sets `prompt_index: false` in its frontmatter: it stays
+   reachable by name through `skill("my-skill")` and `start_skill_agent`, and
+   costs the local model nothing.
 
 `tests/test_scripts.sh` validates that every `SKILL.md` parses cleanly and
 has the required frontmatter fields.
@@ -168,7 +169,7 @@ recommends_subagent: false
 | `description` | yes | What and when. Keep it short. |
 | `allowed_tools` | no | Recommended tool subset (advisory, not enforced in v1) |
 | `recommends_subagent` | no | If `true`, prefer invoking via `start_skill_agent` for long-running work |
-| `prompt_index` | no | `false` keeps the skill out of the always-on menu that `scripts/generate-skill-index.py` writes into `system-prompt-tools.md` — it stays reachable through `skill()` / `skill(name)`. For skills aimed at cloud models: the menu costs a local model tokens every turn, and that file is hashed into the eval cache era |
+| `prompt_index` | no | `false` keeps the skill out of the always-on menu that `scripts/generate-skill-index.py` writes into `system-prompt-tools.md` — it stays reachable through `skill()` / `skill(name)`. For skills aimed at cloud models: the menu costs a local model tokens every turn |
 
 ## Repo vs global
 

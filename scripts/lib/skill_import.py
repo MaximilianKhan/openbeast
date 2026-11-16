@@ -123,18 +123,28 @@ def offline() -> bool:
     Read by hand rather than by sourcing lib/conf.sh: conf.sh generates a
     SearXNG secret and appends it to openbeast.conf, and `verify` is called
     from doctor and from the test suite. A read-only check must not write.
+
+    The same answer as conf.sh's `OFFLINE`: the OPENBEAST_OFFLINE override
+    first, then an exported OFFLINE (a shell that sourced conf.sh), then the
+    file's last `OFFLINE = value` (spaces allowed around '='), read by
+    _ob_bool's rules — first token, `#` comment dropped, quotes stripped, and
+    true/yes/1/on (any case) mean offline.
     """
-    val = os.environ.get("OFFLINE")
+    val = os.environ.get("OPENBEAST_OFFLINE") or None
+    if val is None:
+        val = os.environ.get("OFFLINE")
     if val is None:
         try:
             with open(os.path.join(REPO, "openbeast.conf"), encoding="utf-8") as fh:
                 for line in fh:
-                    m = re.match(r"^\s*OFFLINE=[\"']?([A-Za-z]+)", line)
+                    m = re.match(r"^\s*OFFLINE\s*=(.*)$", line)
                     if m:
                         val = m.group(1)
         except OSError:
             val = None
-    return (val or "").lower() == "true"
+    tok = (val or "").split()
+    tok = tok[0].split("#", 1)[0].replace('"', "").replace("'", "") if tok else ""
+    return tok.lower() in ("true", "yes", "1", "on")
 
 
 def scanner_home() -> str:
@@ -165,12 +175,20 @@ def need_scanner() -> str:
 
 # --- files and hashes -------------------------------------------------------
 
-def walk_skill(root: str) -> list[str]:
+BYTECODE_DIR = "__pycache__"
+
+
+def walk_skill(root: str, skip_bytecode: bool = False) -> list[str]:
     """Relative paths of every file under root, sorted bytewise.
 
     Refuses symlinks and anything that is not a regular file: a link out of
     the tree is the classic way to make a reviewed directory mean something
     else on another machine, and neither the scanner nor the hash follows it.
+
+    skip_bytecode leaves out __pycache__/ directories. Only `verify` asks for
+    it: running a skill's helpers (skill-creator's `python -m scripts.…`)
+    writes one, and that is not an edit to the skill. An import never pins one
+    (promote refuses a staged __pycache__/), so the two hashes still agree.
     """
     out: list[str] = []
     total = 0
@@ -178,6 +196,8 @@ def walk_skill(root: str) -> list[str]:
         for d in dirnames:
             if os.path.islink(os.path.join(dirpath, d)):
                 raise GateError(f"symlinked directory in the skill: {os.path.join(dirpath, d)}")
+        if skip_bytecode:
+            dirnames[:] = [d for d in dirnames if d != BYTECODE_DIR]
         for f in filenames:
             full = os.path.join(dirpath, f)
             if os.path.islink(full) or not os.path.isfile(full):
@@ -199,14 +219,15 @@ def sha256_file(path: str) -> str:
     return h.hexdigest()
 
 
-def tree_sha256(root: str) -> str:
+def tree_sha256(root: str, skip_bytecode: bool = False) -> str:
     """One digest over every file, so a changed helper script is caught too.
 
     Byte-identical to (the ledger documents this command):
       (cd DIR && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum)
+    for any tree without a __pycache__/ — which every imported tree is.
     """
     h = hashlib.sha256()
-    rels = sorted(("./" + r for r in walk_skill(root)), key=lambda p: p.encode())
+    rels = sorted(("./" + r for r in walk_skill(root, skip_bytecode)), key=lambda p: p.encode())
     for rel in rels:
         h.update(f"{sha256_file(os.path.join(root, rel[2:]))}  {rel}\n".encode())
     return h.hexdigest()
@@ -262,9 +283,8 @@ def ensure_off_menu(path: str, name: str) -> bool:
     """Add `prompt_index: false` when the skill does not say. True if added.
 
     An imported skill stays out of the always-on menu by default: every menu
-    entry is paid for on every local-model turn, and system-prompt-tools.md is
-    one of the six era-hashed files, so a new entry rolls the eval era. Putting
-    a remote skill on the menu is a separate, deliberate edit.
+    entry is paid for on every local-model turn. Putting a remote skill on the
+    menu is a separate, deliberate edit.
     """
     text, fm, end = check_skill_md(path, name)
     if "prompt_index" in fm:
@@ -321,10 +341,17 @@ def judge(report: dict, accept: set[str],
         issues = report["issues"]
         version = report["metadata"]["skillspector_version"]
         comp = report["analysis_completeness"]
-        ran = report["execution_successful"] and comp["execution_successful"]
+        # `is True`: a JSON true, not any truthy value — the string "false"
+        # used to count as a successful run.
+        ran = report["execution_successful"] is True and comp["execution_successful"] is True
         uninspected = int(comp["entirely_uninspected_files"])
         partial_files = int(comp["partially_inspected_files"])
         exceptions = comp["ledger_exceptions"]
+        # Read like every other field: a report without the analyzer list (or
+        # with null) is not one this gate knows, so it cannot say none failed.
+        statuses = comp["analyzer_statuses"]
+        if not isinstance(statuses, list):
+            raise TypeError(f"analyzer_statuses is {type(statuses).__name__}, not a list")
         ids = [str(i["id"]).upper() for i in issues]
         # Which files, and why. A missing reference (a backticked path that is
         # not a bundled file) is reported as partial too but leaves every file
@@ -371,7 +398,7 @@ def judge(report: dict, accept: set[str],
     for exc in exceptions:
         if isinstance(exc, dict) and exc.get("fatal"):
             incomplete.append(f"fatal analysis exception at {exc.get('path')}: {exc.get('reason_code')}")
-    for st in comp.get("analyzer_statuses") or []:
+    for st in statuses:
         if isinstance(st, dict) and (st.get("status") == "failed" or st.get("failed")):
             incomplete.append(f"analyzer {st.get('analyzer_id')} failed")
 
@@ -679,7 +706,10 @@ def cmd_diff(args) -> int:
     for d in (live, staged):
         if not os.path.isdir(d):
             raise GateError(f"{d} does not exist")
-    return subprocess.run(["diff", "-ru", live, staged]).returncode
+    # diff(1) says 1 for "they differ" (the normal case for a refresh) and 2
+    # for trouble; this CLI's contract spends 1 on "could not judge".
+    rc = subprocess.run(["diff", "-ru", live, staged]).returncode
+    return EXIT_OK if rc in (0, 1) else EXIT_ERROR
 
 
 def cmd_promote(args) -> int:
@@ -711,7 +741,12 @@ def cmd_promote(args) -> int:
     md = os.path.join(staged, "SKILL.md")
     added = ensure_off_menu(md, name)
     _, fm, _ = check_skill_md(md, name)
-    walk_skill(staged)
+    caches = sorted(r for r in walk_skill(staged) if BYTECODE_DIR in r.split(os.sep))
+    if caches:
+        raise GateError(
+            f"the staged copy carries a bytecode cache ({os.path.dirname(caches[0])}/): "
+            "an import is source, and verify leaves __pycache__/ out of the tree hash.\n"
+            f"  delete it from {os.path.relpath(staged, REPO)}/ and promote again")
 
     say(f"promote {name}  ({url}@{rev[:12]})")
     allowed, summary = scan_and_judge(staged, parse_accept(args.accept),
@@ -750,7 +785,6 @@ def cmd_promote(args) -> int:
         say("  added `prompt_index: false`: off the always-on menu, reachable by skill(name)")
     elif str(fm.get("prompt_index", "")).lower() != "false":
         say("  ! this skill is ON the always-on menu: run scripts/generate-skill-index.py")
-        say("    and expect the eval era to roll (./scripts/eval-era.sh)")
     if AGENT_CELL_RE.match(reviewer):
         say("  ! read by an agent, not a human. After reading it yourself:")
         say(f"    ./scripts/skill-import.sh attest {name} --reviewed-by <initials>")
@@ -808,15 +842,39 @@ def cmd_verify(args) -> int:
     # imported skill's row (or add a new directory) and its SKILL.md stayed in
     # skills/, unpinned, with verify green. Every directory must be accounted
     # for by exactly one of the ledger and the committed in-house list.
+    #
+    # "Directory" means one that holds a SKILL.md — the only thing the loader
+    # (agents/mcp_server.py _discover_skills) reads. A SKILL.md-less directory
+    # is never loaded (skill-creator's sibling <skill>-workspace/ is one), and
+    # a ledger row whose SKILL.md is gone is caught by the row walk below.
+    # Hidden and misnamed entries are NOT skipped: this check used to skip
+    # dot-directories while the loader read them, so skills/.cache/SKILL.md
+    # (hidden by .gitignore too) could claim `security-audit` with verify
+    # green. The loader now ignores them; a SKILL.md there is refused anyway.
     in_house = read_in_house()
     pinned = {row["Skill"].strip("`") for row in rows}
     try:
         on_disk = sorted(d for d in os.listdir(SKILLS)
-                         if not d.startswith(".") and os.path.isdir(os.path.join(SKILLS, d)))
+                         if os.path.isfile(os.path.join(SKILLS, d, "SKILL.md")))
     except OSError:
         on_disk = []
     unaccounted = 0
     for name in on_disk:
+        if not NAME_RE.match(name):
+            unaccounted += 1
+            print(f"  ✗ skills/{name}/SKILL.md: not a skill directory name (lowercase letters, "
+                  "digits, dashes) — nothing loads it; delete it")
+            continue
+        try:
+            with open(os.path.join(SKILLS, name, "SKILL.md"), encoding="utf-8") as fh:
+                fm_name = split_frontmatter(fh.read())[0].get("name") or name
+        except (OSError, UnicodeDecodeError, GateError):  # no frontmatter: keyed by directory
+            fm_name = name
+        if fm_name != name:
+            unaccounted += 1
+            print(f"  ✗ {name}: its frontmatter name {fm_name!r} is not its directory name"
+                  " — the loader ignores it; one directory cannot claim another skill's name")
+            continue
         if name in pinned and name in in_house:
             unaccounted += 1
             print(f"  ✗ {name}: has a ledger row AND is listed in skills/{os.path.basename(IN_HOUSE)}"
@@ -845,8 +903,13 @@ def cmd_verify(args) -> int:
             try:
                 if sha256_file(md) != row["SHA-256"].strip("`"):
                     problems.append("SKILL.md does not match its pinned SHA-256")
-                if tree_sha256(live) != row["Tree SHA-256"].strip("`"):
+                if tree_sha256(live, skip_bytecode=True) != row["Tree SHA-256"].strip("`"):
                     problems.append("the skill's files do not match the pinned tree SHA-256")
+                elif not args.quiet:
+                    for dirpath, dirnames, _ in os.walk(live):
+                        if BYTECODE_DIR in dirnames:
+                            say(f"  · {os.path.relpath(os.path.join(dirpath, BYTECODE_DIR), REPO)}/:"
+                                " a local bytecode cache, not part of the pinned tree")
             except GateError as e:
                 problems.append(str(e))
         if problems:

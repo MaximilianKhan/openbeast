@@ -9,13 +9,34 @@ and serves a self-refreshing HTML page plus a /api/status JSON endpoint.
 Bind + port come from OPENBEAST_BIND / DASHBOARD_PORT (see run.sh). This is an
 optional extension (extensions/dashboard) — the core stack does not depend on it.
 """
+import contextlib
+import importlib.util
 import json
 import os
+import socket
 import subprocess
 import threading
 import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+def _load_hostpolicy():
+    """The one Host-header allowlist every OpenBeast HTTP surface shares
+    (agents/hostpolicy.py, stdlib only), loaded by path from this checkout —
+    not via sys.path, which would let agents/*.py shadow a stdlib module."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "..", "..", "agents", "hostpolicy.py")
+    spec = importlib.util.spec_from_file_location("openbeast_hostpolicy", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_hostpolicy = _load_hostpolicy()
+host_allowed = _hostpolicy.host_allowed
+is_ip_literal = _hostpolicy.is_ip_literal
+trusted_hosts = _hostpolicy.trusted_hosts
 
 REPO_DIR = os.environ.get("OPENBEAST_REPO_DIR", ".")
 BIND = os.environ.get("OPENBEAST_BIND", "127.0.0.1").strip() or "127.0.0.1"
@@ -40,6 +61,37 @@ _INFER = (os.environ.get("OPENBEAST_INFERENCE_URL", "").strip().rstrip("/")
           or f"http://{H}:8080")
 
 
+
+# DNS rebinding: a page the operator opens on the rig can re-point its own
+# name at 127.0.0.1 and read the rig-local routes (the page, /api/status) as
+# same-origin. A loopback bind does not stop that; a Host pin does. The same
+# list beast-chat, beast-artifact and the tool server answer to (loopback,
+# this machine's name, *.ts.net), plus any IP literal: rebinding needs a
+# NAME, and a literal is answered by whatever owns it (us, on a LAN or
+# tailnet BIND). Extra names: OPENBEAST_DASHBOARD_ALLOWED_HOSTS (or the
+# bare DASHBOARD_ALLOWED_HOSTS), comma-separated.
+ALLOWED_HOSTS = _hostpolicy.trusted_hosts(",".join(filter(None, (
+    os.environ.get("OPENBEAST_DASHBOARD_ALLOWED_HOSTS", ""),
+    os.environ.get("DASHBOARD_ALLOWED_HOSTS", "")))))   # the bare name, too
+
+
+def host_ok(values):
+    """True when the request's Host header(s) may see a rig-local route."""
+    if len(values) != 1:
+        return False                 # none, or two answers to "which host"
+    return (_hostpolicy.host_allowed(values[0], ALLOWED_HOSTS)
+            or _hostpolicy.is_ip_literal(values[0]))
+
+
+def _endpoint(url):
+    """host:port of the inference URL, for the page ("127.0.0.1:8000")."""
+    rest = url.split("//", 1)[-1].split("/", 1)[0]
+    rest = rest.rsplit("@", 1)[-1]   # never a userinfo part
+    if rest.endswith("]") or ":" not in rest:
+        rest += ":443" if url.startswith("https://") else ":80"
+    return rest
+
+
 def _conf_slots():
     """INFERENCE_SLOTS: the concurrency a server that exposes none was
     launched with (vLLM --max-num-seqs, TensorFold --parallel), or None."""
@@ -60,7 +112,7 @@ _EDGE_GATE = os.environ.get("EDGE_GATE", "").strip().lower() == "true"
 # ALLOW_ANON serves unregistered callers as a single "anon" device, so the
 # gate is up but per-device identity is NOT in force. Saying "device" there
 # would overstate what a client is actually protected by. It only applies
-# while NO device is enrolled, though — see _edge_has_devices().
+# while NO registry has ever existed, though — see _edge_has_devices().
 _EDGE_ANON = os.environ.get("OPENBEAST_EDGE_ALLOW_ANON", "").strip().lower() == "true"
 # beast-instinct: conf.sh exports these only under INSTINCT=true.
 _INSTINCT = os.environ.get("OPENBEAST_INSTINCT", "").strip().lower() == "true"
@@ -71,29 +123,25 @@ except ValueError:
 
 
 def _edge_has_devices():
-    """Whether beast-gate's registry holds any enrolled device.
+    """Whether beast-gate has ever had a device registry — so ALLOW_ANON is off.
 
-    The gate honours ALLOW_ANON only while its registry is empty
-    (agents/edge.py _identify): the moment one device is enrolled, a keyless
-    or unknown-key caller gets 401. Deriving "anon" from the env flag alone
-    told clients to connect without a key into a guaranteed 401. Mirrors
-    Registry.configured — any entry with a key hash counts, revoked or not.
-    An unreadable or corrupt registry answers True: the gate then keeps its
-    last good map, and claiming "anon" is the direction that misleads.
+    The gate honours ALLOW_ANON only on a rig that has NEVER had a registry
+    (agents/edge.py Registry.exists): once .run/clients.json exists — even
+    emptied by `clients.sh remove`, even corrupt — or has existed (the
+    .run/clients.enrolled marker beside it), a keyless or unknown-key caller
+    gets 401. Mirrors Registry.exists, not the older `configured` rule,
+    which advertised "anon" for an emptied file into a guaranteed 401.
     """
-    path = os.path.join(REPO_DIR, ".run", "clients.json")
-    try:
-        with open(path) as f:
-            data = json.load(f)
-    except FileNotFoundError:
-        return False
-    except (OSError, ValueError):
-        return True
-    try:
-        return any((d.get("key_sha256") or "").strip()
-                   for d in data.get("devices", []))
-    except (AttributeError, TypeError):
-        return True
+    run = os.path.join(REPO_DIR, ".run")
+    for name in ("clients.json", "clients.enrolled"):
+        try:
+            os.stat(os.path.join(run, name))
+            return True
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return True
+    return False
 
 
 def _get(url, timeout=2, auth=False):
@@ -105,6 +153,85 @@ def _get(url, timeout=2, auth=False):
             return r.status, r.read().decode("utf-8", "replace")
     except Exception:
         return None, ""
+
+
+# One status document asks up to nine upstreams. Asked one after another,
+# each with its own 2 s timeout, a single upstream that accepts and then says
+# nothing (a wedged or SIGSTOPped llama-server) cost 10 s of it, and the
+# cache lock made every caller wait that long: the client's 5 s curl gave up
+# and reported the slot API "not published" — hiding the healthy:false it
+# exists to show. Now every probe of one document runs at once, and the
+# document is built from whatever answered within GATHER_DEADLINE_S; a probe
+# still out then reads as no answer (down / null), never as a hang.
+GATHER_DEADLINE_S = 3.0
+_memo = threading.local()
+_inflight = set()
+_inflight_lock = threading.Lock()
+
+
+def _fetch(url, auth=False):
+    """_get, answered from the current _prefetched() batch when it is there."""
+    answers = getattr(_memo, "answers", None)
+    if answers is not None and (url, auth) in answers:
+        return answers[(url, auth)]
+    return _get(url, auth=auth)
+
+
+@contextlib.contextmanager
+def _prefetched(reqs, deadline=None):
+    """Probe every (url, auth) in `reqs` concurrently, bounded by `deadline`
+    overall, and serve those answers to _fetch for the duration."""
+    deadline = GATHER_DEADLINE_S if deadline is None else deadline
+    reqs = list(dict.fromkeys(reqs))
+    got = {}
+
+    def one(key):
+        try:
+            got[key] = _get(key[0], auth=key[1])
+        finally:
+            with _inflight_lock:
+                _inflight.discard(key)
+
+    threads = []
+    for k in reqs:
+        # A probe that outlived an earlier deadline (an upstream trickling
+        # bytes slower than the per-recv timeout) is still out: do not stack
+        # another on it, so stragglers stay at most one per URL. That URL
+        # reads as no answer until the first one comes back.
+        with _inflight_lock:
+            if k in _inflight:
+                continue
+            _inflight.add(k)
+        threads.append(threading.Thread(target=one, args=(k,), daemon=True))
+    for t in threads:
+        t.start()
+    end = time.monotonic() + deadline
+    for t in threads:
+        t.join(max(0.0, end - time.monotonic()))
+    prev = getattr(_memo, "answers", None)
+    _memo.answers = {k: got.get(k, (None, "")) for k in reqs}
+    try:
+        yield
+    finally:
+        _memo.answers = prev
+
+
+def _service_requests():
+    reqs = [(f"http://{H}:3001/health", False), (f"http://{H}:3000/api/version", False),
+            (f"http://{H}:8888/", False)]
+    if _INSTINCT:
+        reqs.append((f"http://{_LOOP}:{_INSTINCT_PORT}/health", False))
+    return reqs
+
+
+def _slot_requests():
+    reqs = [(f"{_INFER}/health", False), (f"{_INFER}/v1/models", True)]
+    if _BACKEND == "llama":
+        reqs += [(f"{_INFER}/props", True), (f"{_INFER}/slots", True),
+                 (f"{_INFER}/metrics", True)]
+    elif _BACKEND == "vllm":
+        reqs.append((f"{_INFER}/metrics", True))
+    return reqs + _service_requests()
 
 
 def gpu_status():
@@ -119,7 +246,37 @@ def gpu_status():
         return None
 
 
-def _parse_gpus(out):
+def _smi_int(v):
+    """One nvidia-smi field as an int; None for "[N/A]" / "[Not Supported]".
+
+    A unified-memory GPU (the DGX Spark's GB10) has no VRAM of its own and
+    answers memory.used / memory.total with the literal "[N/A]". int() on
+    that raised, and the whole GPU card read "no GPU detected" on a rig whose
+    name, utilisation and temperature were all readable.
+    """
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return None
+
+
+def _meminfo_mib(path="/proc/meminfo"):
+    """(used, total) host RAM in MiB, the pool a unified-memory GPU draws
+    from (MemTotal - MemAvailable, as lib/hardware.sh sizes it), or None."""
+    try:
+        vals = {}
+        with open(path) as f:
+            for ln in f:
+                k, _, rest = ln.partition(":")
+                if k in ("MemTotal", "MemAvailable"):
+                    vals[k] = int(rest.split()[0]) // 1024
+        total, avail = vals["MemTotal"], vals["MemAvailable"]
+    except (OSError, KeyError, ValueError, IndexError):
+        return None
+    return (total - avail, total) if total > 0 else None
+
+
+def _parse_gpus(out, meminfo=None):
     """nvidia-smi's csv rows -> the one `gpu` object /api/status serves.
 
     One row per card. Several cards fold into the same shape: memory summed
@@ -127,13 +284,23 @@ def _parse_gpus(out):
     busiest / hottest card. Splitting the whole output on commas glued row
     one's temperature to row two's name and reported "no GPU detected" on
     every multi-GPU host.
+
+    A field the card does not report ("[N/A]") is that field missing, not
+    the GPU: a unified-memory card's memory is sized from host RAM instead
+    (`unified: true`), and with no number at all the memory fields are null.
+    A row with no readable number at all is not a GPU row.
     """
     cards = []
     for line in out.splitlines():
         if not line.strip():
             continue
-        name, used, total, util, temp = [x.strip() for x in line.split(",")[:5]]
-        cards.append((name, int(used), int(total), int(util), int(temp)))
+        parts = [x.strip() for x in line.split(",")]
+        if len(parts) < 5:
+            raise ValueError(f"short nvidia-smi row: {line!r}")
+        name, nums = parts[0], [_smi_int(x) for x in parts[1:5]]
+        if not name or all(n is None for n in nums):
+            continue            # not a GPU row at all
+        cards.append((name, *nums))
     if not cards:
         return None
     names = [c[0] for c in cards]
@@ -143,28 +310,46 @@ def _parse_gpus(out):
         name = f"{len(cards)}x {names[0]}"
     else:
         name = " + ".join(names)
-    used, total = sum(c[1] for c in cards), sum(c[2] for c in cards)
-    return {"name": name, "used_mib": used, "total_mib": total,
-            "free_mib": total - used, "util_pct": max(c[3] for c in cards),
-            "temp_c": max(c[4] for c in cards),
-            "used_pct": round(100 * used / total) if total else 0}
+
+    def fold(i, how):
+        # A field one card cannot report makes the fold unknown, not a
+        # smaller number: half a memory total is worse than none.
+        vals = [c[i] for c in cards]
+        return None if any(v is None for v in vals) else how(vals)
+
+    # Unified memory (GB10): no card reports VRAM, so the pool is host RAM.
+    # Only some cards short of memory is a fold we cannot make: unknown.
+    unified = all(c[1] is None and c[2] is None for c in cards)
+    if unified:
+        used, total = (meminfo or _meminfo_mib)() or (None, None)
+    else:
+        used, total = fold(1, sum), fold(2, sum)
+    have_mem = used is not None and bool(total)
+    gpu = {"name": name, "used_mib": used, "total_mib": total,
+           "free_mib": total - used if have_mem else None,
+           "util_pct": fold(3, max), "temp_c": fold(4, max),
+           "used_pct": round(100 * used / total) if have_mem else None}
+    if unified:
+        gpu["unified"] = True
+    return gpu
 
 
 def model_status(health=None):
-    ok = (health or _get(f"{_INFER}/health"))[0] == 200
+    ok = (health or _fetch(f"{_INFER}/health"))[0] == 200
     served = ""
     try:
         served = open(os.path.join(REPO_DIR, ".run", "serve-script")).read().strip()
     except Exception:
         pass
     alias = ""
-    st, body = _get(f"{_INFER}/v1/models", auth=True)
+    st, body = _fetch(f"{_INFER}/v1/models", auth=True)
     if st == 200:
         try:
             alias = json.loads(body)["data"][0].get("id", "")
         except Exception:
             pass
-    return {"healthy": ok, "serve_script": served, "alias": alias}
+    return {"healthy": ok, "serve_script": served, "alias": alias,
+            "backend": _BACKEND, "endpoint": _endpoint(_INFER)}
 
 
 def services_status(health=None):
@@ -172,7 +357,7 @@ def services_status(health=None):
     (status, body), when the caller already has it — one status document then
     costs the inference server one /health, not one per section."""
     if health is None:
-        health = _get(f"{_INFER}/health")
+        health = _fetch(f"{_INFER}/health")
     svc = [
         ("model", None, "ok"),
         ("tools", f"http://{H}:3001/health", "ok"),
@@ -181,7 +366,7 @@ def services_status(health=None):
     ]
     out = {}
     for name, url, needle in svc:
-        st, body = health if url is None else _get(url)
+        st, body = health if url is None else _fetch(url)
         out[name] = bool(st and st < 500 and (needle in body if needle else True))
     if _BACKEND != "llama":
         # vLLM's /health is an EMPTY 200 and TensorFold's {"ok": true}: for
@@ -193,13 +378,13 @@ def services_status(health=None):
         # off, so a default rig's /api/slot is byte-identical (v2 is additive:
         # a new key inside `services`, never a new top-level key).
         # Always loopback: instinct never follows BIND_HOST (start.sh).
-        out["instinct"] = _get(f"http://{_LOOP}:{_INSTINCT_PORT}/health")[0] == 200
+        out["instinct"] = _fetch(f"http://{_LOOP}:{_INSTINCT_PORT}/health")[0] == 200
     return out
 
 
 def tool_metrics():
     # Pull a few headline counters from the tool server's Prometheus text.
-    st, body = _get(f"http://{H}:3001/metrics")
+    st, body = _fetch(f"http://{H}:3001/metrics")
     if st != 200:
         return {}
     calls, errors = 0, 0
@@ -216,9 +401,17 @@ def tool_metrics():
 
 
 def status():
-    health = _get(f"{_INFER}/health")
-    return {"gpu": gpu_status(), "model": model_status(health),
-            "services": services_status(health), "metrics": tool_metrics()}
+    gpu = {}
+    smi = threading.Thread(target=lambda: gpu.update(v=gpu_status()), daemon=True)
+    smi.start()
+    reqs = [(f"{_INFER}/health", False), (f"{_INFER}/v1/models", True),
+            (f"http://{H}:3001/metrics", False)] + _service_requests()
+    with _prefetched(reqs):
+        health = _fetch(f"{_INFER}/health")
+        out = {"model": model_status(health), "services": services_status(health),
+               "metrics": tool_metrics()}
+    smi.join(6)                     # nvidia-smi has its own 5 s timeout
+    return {"gpu": gpu.get("v"), **out}
 
 
 # The beast-slot contract version this rig publishes, and the oldest client
@@ -294,7 +487,7 @@ def _queue_deferred():
     are opt-in server-side (--metrics); without it /metrics answers 501 and we
     report null rather than pretending the queue is empty.
     """
-    st, body = _get(f"{_INFER}/metrics", auth=True)
+    st, body = _fetch(f"{_INFER}/metrics", auth=True)
     if st != 200:
         return None
     for line in body.splitlines():
@@ -321,19 +514,24 @@ def slot_status():
     states the real total budget, whether it is shared, and the queue depth
     that slots.busy cannot see.
     """
-    if _BACKEND != "llama":
-        return _slot_status_remote()
-    health = _get(f"{_INFER}/health")
+    with _prefetched(_slot_requests()):
+        if _BACKEND != "llama":
+            return _slot_status_remote()
+        return _slot_status_llama()
+
+
+def _slot_status_llama():
+    health = _fetch(f"{_INFER}/health")
     ok = health[0] == 200
     model = {"id": None, "ctx": None}
     slots = {"total": None, "busy": None}
-    st, body = _get(f"{_INFER}/v1/models", auth=True)
+    st, body = _fetch(f"{_INFER}/v1/models", auth=True)
     if st == 200:
         try:
             model["id"] = json.loads(body)["data"][0].get("id") or None
         except Exception:
             pass
-    st, body = _get(f"{_INFER}/props", auth=True)
+    st, body = _fetch(f"{_INFER}/props", auth=True)
     if st == 200:
         try:
             props = json.loads(body)
@@ -347,7 +545,7 @@ def slot_status():
             pass
     # /slots may be disabled (--no-slots) → busy stays null. Busy detection
     # covers both server generations: is_processing (current) / state != 0.
-    st, body = _get(f"{_INFER}/slots", auth=True)
+    st, body = _fetch(f"{_INFER}/slots", auth=True)
     if st == 200:
         try:
             data = json.loads(body)
@@ -430,7 +628,7 @@ def _vllm_metrics():
     fullest engine's fraction (0..1 — "perc" in the name notwithstanding,
     vllm/v1/metrics/loggers.py: "1 means 100 percent usage"). /metrics is
     unauthenticated on vLLM even under --api-key; the key is sent anyway."""
-    st, body = _get(f"{_INFER}/metrics", auth=True)
+    st, body = _fetch(f"{_INFER}/metrics", auth=True)
     if st != 200:
         return None, None, None
     run = _prom(body, "vllm:num_requests_running")
@@ -455,15 +653,24 @@ def _slot_status_remote():
     sequence from ONE block pool, so ctx_shared is true — but the pool's
     size in tokens is not something we can read without guessing, so
     ctx_total stays null (never a guessed budget, as for llama).
-    TensorFold: /health and /v1/models only, so capacity is null.
+    TensorFold: its /health body carries what vLLM needs /metrics for —
+    context_length (model.ctx), requests_running (busy), streams.max (slots
+    when INFERENCE_SLOTS is unset) and the ONE token pool every stream draws
+    on (pool_tokens -> ctx_total, pool_free_tokens -> kv_usage). Its
+    iteration_s is how long rank 0's current iteration has run: past
+    TF_STALL_S the pair is stalled (a frozen or rebooting peer rank) while
+    /health still says ok, so the model reads as down.
     """
-    health = _get(f"{_INFER}/health")
+    health = _fetch(f"{_INFER}/health")
     ok = health[0] == 200
+    tf = _tf_health(health[1]) if _BACKEND == "tensorfold" and ok else {}
+    if tf.get("stalled"):
+        ok = False
     model = {"id": None, "ctx": None}
     slots = {"total": _conf_slots(), "busy": None}
     capacity = {"ctx_shared": None, "ctx_total": None, "queue_deferred": None,
                 "kv_usage": None}
-    st, body = _get(f"{_INFER}/v1/models", auth=True)
+    st, body = _fetch(f"{_INFER}/v1/models", auth=True)
     if st == 200:
         try:
             first = json.loads(body)["data"][0]
@@ -478,6 +685,16 @@ def _slot_status_remote():
         slots["busy"] = running
         capacity["queue_deferred"] = waiting
         capacity["kv_usage"] = kv
+    elif tf:
+        if model["ctx"] is None:
+            model["ctx"] = tf.get("ctx")
+        if slots["total"] is None:
+            slots["total"] = tf.get("streams")
+        slots["busy"] = tf.get("busy")
+        if tf.get("pool"):
+            capacity["ctx_shared"] = True
+            capacity["ctx_total"] = tf["pool"]
+            capacity["kv_usage"] = tf.get("kv")
     total = slots["total"]
     capacity["serving_profile"] = ("unknown" if total is None
                                    else "single-slot" if total == 1
@@ -490,9 +707,50 @@ def _slot_status_remote():
         "model": model,
         "slots": slots,
         "capacity": capacity,
-        "services": services_status(health),
+        "services": dict(services_status(health), **({"model": False} if tf.get("stalled") else {})),
         "auth": _auth_mode(),
     }
+
+
+# rank 0's current iteration running longer than this = a stalled pair. A
+# normal iteration is milliseconds (a long-prompt prefill chunk, seconds);
+# the recipe's own stall report fires at 300 (TF_GLM_MULTI_WATCHDOG_S).
+TF_STALL_S = 120.0
+
+
+def _tf_health(body):
+    """The fields /api/slot reads from a TensorFold /health body; a field
+    that is missing or not a sane number is simply absent (null upstream),
+    never a guess."""
+    try:
+        h = json.loads(body)
+    except Exception:
+        return {}
+    if not isinstance(h, dict):
+        return {}
+
+    def num(v, lo=0):
+        return v if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= lo else None
+
+    out = {}
+    ctx = num(h.get("context_length"), 1)
+    if isinstance(ctx, int):
+        out["ctx"] = ctx
+    busy = num(h.get("requests_running"))
+    if isinstance(busy, int):
+        out["busy"] = busy
+    streams = h.get("streams") if isinstance(h.get("streams"), dict) else {}
+    smax = num(streams.get("max"), 1)
+    if isinstance(smax, int):
+        out["streams"] = smax
+    pool, free = num(h.get("pool_tokens"), 1), num(h.get("pool_free_tokens"))
+    if isinstance(pool, int):
+        out["pool"] = pool
+        if free is not None and free <= pool:
+            out["kv"] = round(1 - free / pool, 4)
+    it = num(h.get("iteration_s"))
+    out["stalled"] = it is not None and it > TF_STALL_S
+    return out
 
 
 PAGE = """<!doctype html><html><head><meta charset=utf-8>
@@ -520,24 +778,36 @@ async function tick(){
  // inference server says it is): escape it before it meets innerHTML.
  const esc=v=>String(v??'').replace(/[&<>"'`]/g,c=>'&#'+c.charCodeAt(0)+';');
  const num=v=>Number(v)||0;
+ // The tool server's metrics on the host this page was opened on, not the
+ // viewer's own localhost. (location.hostname keeps an IPv6 literal's [].)
+ const mlink='http://'+(globalThis.location?.hostname||'127.0.0.1')+':3001/metrics';
  const svc=Object.entries(sv).map(([k,v])=>`<div class=row><span><span class="dot ${v?'up':'down'}"></span>${esc(k)}</span><span class=k>${v?'up':'down'}</span></div>`).join('');
- const gpu=g?`<div class=big>${num(g.used_pct)}% <span class=k style=font-size:14px>${(num(g.used_mib)/1024).toFixed(1)}/${(num(g.total_mib)/1024).toFixed(0)} GB</span></div>
+ // null = not reported (GB10 unified memory with host RAM unreadable): show
+ // a dash, never a made-up 0. g.unified: the memory is the host's.
+ const has=v=>v!==null&&v!==undefined&&v!=='';
+ const gb=(v,d)=>has(v)?(num(v)/1024).toFixed(d):'—';
+ const pct=v=>has(v)?num(v)+'%':'—';
+ const deg=v=>has(v)?num(v)+'°C':'—';
+ const mem=g?`<div class=big>${pct(g.used_pct)} <span class=k style=font-size:14px>${gb(g.used_mib,1)}/${gb(g.total_mib,0)} GB</span></div>
    <div class=bar><i style=width:${num(g.used_pct)}%></i></div>
-   <div class=row><span class=k>free</span><span>${(num(g.free_mib)/1024).toFixed(1)} GB</span></div>
-   <div class=row><span class=k>GPU util</span><span>${num(g.util_pct)}%</span></div>
-   <div class=row><span class=k>temp</span><span>${num(g.temp_c)}°C</span></div>
+   <div class=row><span class=k>free</span><span>${gb(g.free_mib,1)} GB</span></div>`:'';
+ const unk=g&&!has(g.total_mib)?'<div class=k>memory not reported</div>':'';
+ const uni=g&&g.unified?'<div class=row><span class=k>memory</span><span>unified (host RAM)</span></div>':'';
+ const gpu=g?`${mem}${unk}${uni}
+   <div class=row><span class=k>GPU util</span><span>${pct(g.util_pct)}</span></div>
+   <div class=row><span class=k>temp</span><span>${deg(g.temp_c)}</span></div>
    <div class=row><span class=k>card</span><span>${esc(g.name)}</span></div>`:'<div class=k>no GPU detected</div>';
  document.getElementById('grid').innerHTML=`
   <div class=card><h2>GPU / VRAM</h2>${gpu}</div>
   <div class=card><h2>Model</h2>
     <div class=big style=font-size:18px><span class="dot ${m.healthy?'up':'down'}"></span>${esc(m.alias||m.serve_script||'—')}</div>
     <div class=row><span class=k>serve script</span><span>${esc(m.serve_script||'—')}</span></div>
-    <div class=row><span class=k>API</span><span>${m.healthy?':8080 healthy':'down'}</span></div></div>
+    <div class=row><span class=k>API</span><span>${esc(m.endpoint||'')} ${m.healthy?'healthy':'down'}</span></div></div>
   <div class=card><h2>Services</h2>${svc}</div>
   <div class=card><h2>Tool activity</h2>
     <div class=big>${esc(mt.tool_calls??'—')}</div><div class=k>total tool calls</div>
     <div class=row><span class=k>errors</span><span>${esc(mt.tool_errors??'—')}</span></div>
-    <div class=row><span class=k>raw</span><span><a href=http://localhost:3001/metrics>:3001/metrics</a></span></div></div>`;
+    <div class=row><span class=k>raw</span><span><a href="${esc(mlink)}">:3001/metrics</a></span></div></div>`;
  document.getElementById('ts').textContent='updated '+new Date().toLocaleTimeString();
 }
 tick();setInterval(tick,3000);
@@ -554,6 +824,11 @@ CACHE_S = 1.5
 MAX_HANDLERS = 16
 # A client that connects and then says nothing gives its thread back.
 SOCKET_TIMEOUT_S = 10
+# ...and so does one that TRICKLES: SOCKET_TIMEOUT_S bounds each recv, not
+# the request, so a byte every 9 s held a handler forever and 16 of them
+# answered every real caller 503. The request line plus headers must be in
+# within this, whole.
+HEADER_DEADLINE_S = 5.0
 
 
 class _Cached:
@@ -586,11 +861,49 @@ _status_cached = _Cached(lambda: status())
 
 class Handler(BaseHTTPRequestHandler):
     timeout = SOCKET_TIMEOUT_S
+    header_deadline = HEADER_DEADLINE_S
 
     def log_message(self, *a):  # quiet
         pass
 
+    def setup(self):
+        super().setup()
+        # Cut the connection if the request is not fully read by the deadline;
+        # parse_request() returning is "fully read" (HTTP/1.0: one request).
+        self._header_timer = threading.Timer(self.header_deadline, self._too_slow)
+        self._header_timer.daemon = True
+        self._header_timer.start()
+
+    def _too_slow(self):
+        try:
+            self.connection.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    def parse_request(self):
+        ok = super().parse_request()
+        self._header_timer.cancel()
+        return ok
+
+    def finish(self):
+        self._header_timer.cancel()
+        super().finish()
+
     def do_GET(self):
+        # /api/slot is the tailnet discovery contract, published to every
+        # device and read by whatever name a client dials: never pinned.
+        # The page and /api/status are rig-local, and Host-pinned.
+        if (not self.path.startswith("/api/slot")
+                and not host_ok(self.headers.get_all("Host") or [])):
+            body = (b"Invalid host header: the dashboard page answers only to "
+                    b"loopback, this machine's name, *.ts.net names and IP "
+                    b"literals. Another name: OPENBEAST_DASHBOARD_ALLOWED_HOSTS.\n")
+            self.send_response(400)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path.startswith("/api/slot"):
             body = json.dumps(_slot_cached.get()).encode()
             self.send_response(200)

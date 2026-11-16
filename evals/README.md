@@ -146,10 +146,14 @@ runtime-injected `_path`, are stripped before hashing, so relocating the repo
 does NOT bust the cache), (b) the model changes, (c) the **effective iteration
 budget** changes (a `--max-iter 5` smoke run is a different experiment from the
 default), (d) the eval **suite version** bumps (`evals/SUITE_VERSION`), or
-(e) the agent runtime context changes — `system-prompt.md`,
-`system-prompt-tools.md`, `opencode.json`, or the agent runtime itself
-(`agents/runner.py`, `agents/tools.py`: a change to the loop or a tool's
-behavior changes what a "cached result" means). Timeouts (`agent_exit_code
+(e) the agent runtime context changes — `system-prompt.md`, the agent
+runtime itself (`agents/runner.py`, `agents/tools.py`: a change to the loop
+or a tool's behavior changes what a "cached result" means), or the harness
+marker `evals/HARNESS_VERSION`, which pins run_eval's agent-shaping code (the
+agent's argv, env and wall budget, fixture setup, the validator and its
+timeout; `tests/test_cache.py` fails when that code changes without a bump).
+`opencode.json` and `system-prompt-tools.md` are NOT hashed: the eval agent
+reads neither, so an OpenCode catalog edit no longer cold-starts the cache. Timeouts (`agent_exit_code
 == -1`) are NOT cached: those are environmental, not deterministic. Neither
 are FAILs caused by infrastructure (`cacheable_result` in `run_eval.py`):
 a unit whose runner reported `API_ERRORS: n` ≥ 1, or whose server failed
@@ -200,8 +204,8 @@ is also flagged `skipped_cache_miss`, so a replay against the wrong era
 reads as one at a glance.
 
 **The era hash, and the experiment flags that fork it.** Item (e) above is
-one 16-hex hash over six files, and `./scripts/eval-era.sh` prints it
-(`--files` lists the six with their own hashes; `--check <hash>` exits 1 if
+one 16-hex hash over five files, and `./scripts/eval-era.sh` prints it
+(`--files` lists them with their own hashes; `--check <hash>` exits 1 if
 the tree has moved — a campaign asserts it at start and between stages, so
 rows from different code are never compared as if they were the same).
 Two experiment modes add their own era component on top, so their rows never
@@ -561,6 +565,15 @@ legacy v1 accuracy and per-tier pass rates live in each entry's JSON
 **Why the `~` estimates (fallback, currently unused):** decode is matched to each run's tee'd server log by timestamp (`decode_from_server_log`), which finds a real log for **every** v4 run — so all current rows are server-measured. If a run ever has no decode log, its SPD falls back to an isolated-benchmark estimate shown with a leading `~` (or `—` if none is defined). Re-running with logging always replaces it with a measured value.
 
 **T/O** is the number of units whose agent was killed — at the wall timeout or by a signal (agent exit < 0). Their pass/fail still counts exactly as before; the column is there because a row with several kills measured the clock as much as the model. A killed unit's tokens read 0 until the runner reports them on the way down.
+
+**A stopped run leaves no agents behind.** SIGTERM or SIGINT to `run_eval.py`
+or `benchmark_all.py` (`./scripts/job.sh stop`, Ctrl-C) kills every agent
+process tree before the process exits, including one that was still inside
+`Popen` when the signal landed. The check for a stop, the spawn and the
+registration of the agent's group run under one lock (`_spawn_agent`), and
+the handler waits on that lock before it reaps. A signal that interrupts the
+main thread's own spawn is re-raised once the child is registered
+(`tests/test_benchmark_signal_reap.py`).
 
 **† and ‡ after a row are provenance marks, printed by `scoring.py --show` with one footnote line per marked row.** Each entry carries `provenance`: the repo commit and dirty flag, the engine build, the reasoning budget and `--jobs`. **†** = the row is missing at least one of those (it predates the stamp), so nothing can be said about its regime. **‡** = everything is recorded and something differs from row 1 — the footnote names what (for example `engine build 10254 (row 1: 9690); jobs 4 (row 1: unrecorded)`). No row is re-ranked or dropped for either mark; they say which rows are not like-for-like. On today's board rows 2 and 3 (Qwen3.8) are ‡ and the rest †.
 

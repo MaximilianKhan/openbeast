@@ -49,6 +49,10 @@ FALLBACK_REASONS = (
 
 # The caller-side ceiling at or above which a verdict may be acted on (awaited).
 _ACTABLE = MODE_ORDER["canary"]
+# Abstain reasons that mean the engine could not judge THIS row (its label
+# set got cut, its mass left the labels, the input is out of distribution):
+# that is the tier failing, so the next tier may answer.
+_ENGINE_FAILED = frozenset({"labels_truncated", "low_label_mass", "ood_input"})
 # A probe deferred because the primary's slot was busy retries this soon,
 # not a full probe_interval_s later: on a rig whose agents keep the -np 1
 # slot busy, a 300 s cadence could leave the 27B unprobed indefinitely and
@@ -109,12 +113,17 @@ class View:
 
 class Instinct:
     def __init__(self, cfg: ServiceConfig, *, engine_ctx: dict | None = None,
-                 clock=time.monotonic, wall=time.time, repo_root: Path = REPO_ROOT):
+                 clock=time.monotonic, wall=time.time, repo_root: Path = REPO_ROOT,
+                 read_only: bool = False):
         self.cfg = cfg
+        # read_only (scripts/instinct.sh promote): the same reload + probe as
+        # the service, but no state file is written — the live service is the
+        # only writer of auto-demoted.json and locks/*.json.
+        self.read_only = read_only
         self.clock, self.wall = clock, wall
         self.repo_root = Path(repo_root)
         self.ledger = Ledger(cfg.ledger_dir, retention_days=cfg.retention_days, clock=wall)
-        self.demotions = Demotions(Path(cfg.state_dir) / "demoted.json")
+        self.demotions = Demotions(Path(cfg.state_dir) / "demoted.json", read_only=read_only)
         self.autodemoter = AutoDemoter(self.demotions, hashes_for=self.hashes_of)
         ctx = dict(engine_ctx or {})
         ctx.setdefault("records_dir", cfg.records_dir)
@@ -132,6 +141,11 @@ class Instinct:
         self.shadow_inflight = 0
         self._bg: set[asyncio.Task] = set()   # shadow walks answered early
         self.probe_deferred = False
+        self._deferred: set[str] = set()      # engines whose last probe met a busy slot
+        # reload() and probe_all() rebuild the same lock maps across awaits:
+        # one at a time (a SIGHUP reload racing the periodic probe could
+        # otherwise lose the new registry's locks to the old one's).
+        self._registry_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------ setup
     async def start(self) -> None:
@@ -140,7 +154,8 @@ class Instinct:
 
     async def drain(self) -> None:
         """Wait for shadow walks that answered their caller early (each is
-        bounded by its decision's deadline)."""
+        bounded by its decision's deadline plus, past the primary, each
+        remaining engine's own timeout_ms)."""
         while self._bg:
             await asyncio.gather(*list(self._bg), return_exceptions=True)
 
@@ -150,6 +165,10 @@ class Instinct:
             await e.aclose()
 
     async def reload(self) -> None:
+        async with self._registry_lock:
+            await self._reload()
+
+    async def _reload(self) -> None:
         specs, errors = load_registry(self.cfg.decisions_dir)
         chains: dict[str, list[str]] = {}
         for did, spec in list(specs.items()):
@@ -231,6 +250,8 @@ class Instinct:
                 for s in specs}
 
     def _write_locks(self, engine: str, locks: dict[str, LockResult]) -> None:
+        if self.read_only:
+            return
         d = Path(self.cfg.state_dir) / "locks"
         try:
             d.mkdir(parents=True, exist_ok=True)
@@ -301,9 +322,25 @@ class Instinct:
         interval = self.cfg.probe_interval_s
         return min(interval, PROBE_BUSY_RETRY_S) if self.probe_deferred else interval
 
-    async def probe_all(self) -> None:
+    def _probe_due(self, name: str) -> bool:
+        """For the periodic loop: an engine is re-probed when its last probe
+        was deferred (busy slot) or is about a full interval old — NOT every
+        PROBE_BUSY_RETRY_S just because the primary was busy (that re-ran the
+        CPU scorer's 14-completion probe every 15 s)."""
+        last = self.states[name].last_probe
+        if name in self._deferred or last is None:
+            return True
+        return self.clock() - last >= self.cfg.probe_interval_s - PROBE_BUSY_RETRY_S
+
+    async def probe_all(self, *, due_only: bool = False) -> None:
+        """Probe every LLM engine (start, SIGHUP, CLI) or, with `due_only`
+        (the periodic loop), only the ones `_probe_due` names."""
+        async with self._registry_lock:
+            await self._probe_all(due_only)
+
+    async def _probe_all(self, due_only: bool) -> None:
         changed = False
-        self.probe_deferred = False
+        deferred: set[str] = set()
         for name, eng in self.engines.items():
             relevant = [s for s in self.specs.values() if name in self.chains.get(s.id, [])]
             if not eng.caps.needs_render:
@@ -312,6 +349,8 @@ class Instinct:
                 continue
             if not relevant:
                 continue
+            if due_only and not self._probe_due(name):
+                continue
             try:
                 res = await eng.probe(relevant)
             except EngineBusy:
@@ -319,8 +358,8 @@ class Instinct:
                 # probe is DEFERRED, never allowed to queue in front of them.
                 # State is untouched; a probe that stays deferred goes stale
                 # and the engine drops to shadow (fail safe). The loop retries
-                # it in PROBE_BUSY_RETRY_S, not probe_interval_s.
-                self.probe_deferred = True
+                # THIS engine in PROBE_BUSY_RETRY_S, not probe_interval_s.
+                deferred.add(name)
                 continue
             except Exception as exc:  # a probe must never take the service down
                 res = ProbeResult(False, {}, f"probe crashed: {exc.__class__.__name__}")
@@ -330,10 +369,16 @@ class Instinct:
             if getattr(eng, "exec_forced", None) != forced and hasattr(eng, "exec_forced"):
                 eng.exec_forced = forced
                 changed = True
-            if res.ok and any(not lk.ok for lk in st.locks.values()):
-                st.locks = await self._attach(eng, relevant)
-                self._write_locks(name, st.locks)
+            # Repair every decision of this engine whose lock failed OR is
+            # missing (a decision added by a reload), merged per decision.
+            need = [s for s in relevant if not getattr(st.locks.get(s.id), "ok", False)]
+            if res.ok and need:
+                fresh = await self._attach(eng, need)
+                st.locks = {**st.locks, **fresh}
+                self._write_locks(name, fresh)
                 changed = True
+        self._deferred = deferred
+        self.probe_deferred = bool(deferred)
         if changed:
             self.refresh_records()
 
@@ -471,8 +516,11 @@ class Instinct:
         Every attempted engine's own view (label, probabilities, label_mass)
         is kept in its cascade entry.
 
-        When the target can act (canary/enforce) the walk stops at that
-        answer. Below that (shadow/off) nothing is acted on, so the walk goes
+        When the target can act (canary/enforce), a probabilistic engine
+        whose lifecycle reaches the target and that SCORED the row is
+        terminal even when it does not act: a later, lower tier never
+        overrides it (the 0.6B answers only when the 27B is skipped or
+        fails). The walk stops at that answer. Below that (shadow/off) nothing is acted on, so the walk goes
         on through the whole chain under the deadline: shadow data must
         measure EVERY engine, including on the rows an earlier engine was
         confident about (A-instinct-2).
@@ -501,12 +549,20 @@ class Instinct:
             progress["cascade"], progress["results"] = cascade, results
         last_primary = max((i for i, n in enumerate(chain)
                             if self.engines[n].binding.allow_primary), default=-1)
+        ran = False   # an earlier engine already spent part of the deadline
         for i, name in enumerate(chain):
             if released is not None and i > last_primary:
                 released.set()
             eng, st = self.engines[name], self.states[name]
             is_rules = eng.adapter == "rules"
             remaining_ms = (deadline_at - self.clock()) * 1000
+            if released is not None and released.is_set():
+                # Background half of a shadow walk: the caller already has its
+                # answer and nobody waits on this engine, so it gets its OWN
+                # budget, not what the primary left of the caller's deadline —
+                # or the later tiers are only ever measured on short prompts.
+                remaining_ms = float(eng.binding.timeout_ms) if eng.caps.needs_render \
+                    else max(remaining_ms, 1000.0)
             lk = st.locks.get(spec.id)
             if eng.adapter != "rules" and (lk is None or not lk.ok):
                 why = ("label_lock_failed" if lk is not None and lk.reason
@@ -531,6 +587,8 @@ class Instinct:
                 last_err = last_err or "deadline"
                 continue
             t0 = self.clock()
+            starved = ran and eng.caps.needs_render and remaining_ms < eng.binding.timeout_ms
+            ran_before, ran = ran, ran or eng.caps.needs_render
             try:
                 timeout = max(0.001, remaining_ms / 1000) if not is_rules else None
                 req = ScoreReq(spec=spec, inputs=inputs, items=texts,
@@ -542,6 +600,7 @@ class Instinct:
                 # The primary's slot is serving someone: skip in ~1 ms, never
                 # queue behind them. Not an engine fault (no auto-demotion,
                 # no latency sample), just "not now".
+                ran = ran_before          # and it spent none of the deadline
                 cascade.append({"engine": name, "action": "skipped", "reason": "engine_busy",
                                 "ms": round((self.clock() - t0) * 1000, 3)})
                 last_err = last_err or "engine_busy"
@@ -549,9 +608,13 @@ class Instinct:
             except asyncio.TimeoutError:
                 ms = (self.clock() - t0) * 1000
                 eng.record_latency(ms)
+                # Starved: an earlier engine spent the shared deadline and this
+                # one got less than its own timeout — that is the deadline, not
+                # an engine fault, so it never feeds auto-demotion.
+                why = "deadline" if starved else "engine_timeout"
                 cascade.append({"engine": name, "action": "fallback",
-                                "reason": "engine_timeout", "ms": round(ms, 3)})
-                last_err = "engine_timeout"
+                                "reason": why, "ms": round(ms, 3)})
+                last_err = why
                 continue
             except (EngineError, InputError, OSError) as exc:
                 cascade.append({"engine": name, "action": "fallback",
@@ -590,11 +653,38 @@ class Instinct:
                     final = out
                     if not walk_all:
                         break
+            elif not walk_all and final is None and eng.caps.probs and (
+                    MODE_ORDER[self.lifecycle(spec.id, name, ceiling, v)[0]]
+                    >= MODE_ORDER[target] if eng.adapter == "linear"
+                    else self._judged(spec, out)):
+                # A full-model tier SCORED the row and declined to act (spawn,
+                # below threshold, ...): its verdict is the answer, whatever
+                # its own lifecycle (a stale probe, a gate for an older hash).
+                # A later, lower tier (the 0.6B behind the 27B) only answers
+                # when this one is skipped or FAILS (no usable row) — it never
+                # outranks it. Stopping only ever REDUCES enforcement: the
+                # fail-safe side. `linear` is the tier-0 baseline, not a full
+                # model: its non-act ends the walk only when it could enforce.
+                # The answer is still _pick_final's (an earlier shadow-only
+                # act stays the "would" answer); nothing later is consulted.
+                break
         if released is not None:
             released.set()
         if final is None:
             final = self._pick_final(results)
         return final, cascade, last_err
+
+    @staticmethod
+    def _judged(spec: DecisionSpec, out: Outcome) -> bool:
+        """The engine gave a VERDICT on this row, not a failure: it answered,
+        its label set was not cut, the input was in distribution and its
+        probability mass stayed on the labels."""
+        a = out.answer
+        if a is None or a.label is None:
+            return False
+        if out.reason in _ENGINE_FAILED or a.labels_truncated:
+            return False
+        return a.label_mass is None or a.label_mass >= spec.policy.min_label_mass
 
     def _pick_final(self, results: list[Outcome]) -> Outcome | None:
         """No act reached the target: the first act, else the FIRST
@@ -874,7 +964,8 @@ class Instinct:
         label_mass is watched per engine against THAT engine's calibration
         reference, from every row it scored (not just rows that acted)."""
         cascade = resp["cascade"] or []
-        failed = any(c.get("action") == "fallback" for c in cascade) or (
+        failed = any(c.get("action") == "fallback" and c.get("reason") != "deadline"
+                     for c in cascade) or (
             resp["action"] == "fallback" and resp["fallback"]["reason"] in (
                 "engine_timeout", "engine_unavailable", "overload"))
         self.autodemoter.observe(spec.id, failed=failed, label_mass=None, mass_ref_p50=None)

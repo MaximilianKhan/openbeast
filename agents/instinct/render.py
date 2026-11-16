@@ -30,7 +30,12 @@ ELLIPSIS = " … "
 
 _TAG_IN_TEMPLATE = re.compile(r"</?\s*([A-Za-z_][\w\-]*)\s*>")
 _SLOT_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
-_WS_TOKEN = re.compile(r"\S+\s*|\s+")
+# A piece is at most 8 printable-ASCII chars or ONE other non-space char
+# (CJK, emoji, ...): a run with no whitespace (CJK prose, minified code,
+# base64) must still count as many pieces, or head_tail never cuts it and
+# max_tokens is not enforced. Every char matches exactly one branch, so the
+# pieces always join back to the text.
+_WS_TOKEN = re.compile(r"[!-~]{1,8}\s*|[^\s!-~]\s*|\s+")
 
 
 class RenderError(ValueError):

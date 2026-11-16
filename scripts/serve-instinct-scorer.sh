@@ -43,6 +43,19 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   exit 0
 fi
 
+# Extra arguments pass through to serve.sh, whose parser takes the LAST
+# --host / -p it sees — so `--host 0.0.0.0` published the scorer on every
+# interface (the non-loopback refusal above existed only in this header) and
+# `-p 8080` skipped both port checks below, which ran against $PORT. The
+# address is this script's to choose: INSTINCT_SCORER_PORT moves the port.
+for _a in "$@"; do
+  case "$_a" in
+    --host|--host=*|-p|--port|--port=*)
+      echo "Error: $_a is not accepted here — the scorer is loopback-only on \$INSTINCT_SCORER_PORT (default 8082); refusing" >&2
+      exit 2 ;;
+  esac
+done
+
 phys_cores() {
   local n
   n="$(lscpu -p=CORE 2>/dev/null | grep -v '^#' | sort -u | wc -l || true)"
@@ -85,6 +98,10 @@ export OPENBEAST_API_KEY
 export CUDA_VISIBLE_DEVICES=""
 export OPENBEAST_AUTO_CONTEXT=0        # no VRAM-based scaling: this is a CPU server
 export OPENBEAST_CONTEXT=8192
+# Its own host prompt cache, not serve.sh's auto 35% of RAM: that is sized
+# for the primary, and two of them sat in start.sh's one 75% memory scope.
+# A full 8192-token f16 state of the 0.6B is ~0.9 GiB.
+export OPENBEAST_PROMPT_CACHE_RAM_MB="${INSTINCT_SCORER_CACHE_RAM_MB:-1024}"
 # Global reasoning overrides are for the primary; the scorer reads the answer
 # boundary through /completion and never thinks.
 unset REASONING REASONING_BUDGET
