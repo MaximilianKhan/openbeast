@@ -389,6 +389,21 @@ rm -f "$SB/.run/stopped"   # stop.sh marked it; --restart reports only while it 
 _o="$(env -i "${BASE_ENV[@]}" DOCKER_STUB_STATE="$DST" timeout 60 bash "$SB/scripts/healthcheck.sh" --restart 2>&1 || true)"
 check "healthcheck --restart on a DOWN managed vLLM: reports it, relaunches nothing" \
   '[[ "$_o" == *"DOWN vLLM (vllm @ http://$_LO:$VPORT, managed)"* && "$_o" == *"not restarted here"* ]] && ! grep -q "docker run" <(tail -n 3 "$DST/calls.log") && ! grep -q serve-marker "$T/calls.log"' "$_o"
+# Keyless on a network bind: refused for a managed engine as serve.sh
+# refuses it for llama-server (0.0.0.0 counts as "local", so it stays managed).
+_cv="$(cat "$SB/openbeast.conf")"
+sed -i "s|^INFERENCE_URL=.*|INFERENCE_URL=http://0.0.0.0:$VPORT|" "$SB/openbeast.conf"
+: > "$DST/calls.log"; _rc=0
+_o="$(env -i "${BASE_ENV[@]}" DOCKER_STUB_STATE="$DST" timeout 30 bash "$SB/scripts/engine-serve.sh" 2>&1)" || _rc=$?
+check "engine-serve.sh refuses a keyless managed engine on 0.0.0.0 (exit 3, nothing launched)" \
+  '[[ $_rc -eq 3 && "$_o" == *"refusing to serve keyless vllm"*"ALLOW_OPEN_INFERENCE=true"* ]] && ! grep -q "docker run" "$DST/calls.log"' "rc=$_rc $_o"
+sed -i '/^ENGINE_PROFILE=/d' "$SB/openbeast.conf"; _rc=0
+_o="$(env -i "${BASE_ENV[@]}" DOCKER_STUB_STATE="$DST" OPENBEAST_ALLOW_OPEN_INFERENCE=true timeout 30 bash "$SB/scripts/engine-serve.sh" 2>&1)" || _rc=$?
+check "…ALLOW_OPEN_INFERENCE=true acknowledges it (the launch proceeds to its own checks)" \
+  '[[ $_rc -ne 3 && "$_o" != *"refusing to serve keyless"* && "$_o" == *"ENGINE_PROFILE is not set"* ]]' "rc=$_rc $_o"
+printf '%s\n' "$_cv" > "$SB/openbeast.conf"
+_o="$(eng -- use vllm --profile "$T/prof/rigvllm.env" --url "http://0.0.0.0:$VPORT" --dry-run)"
+check "…and engine.sh use says so up front" '[[ "$_o" == *"WARNING: http://0.0.0.0:$VPORT is not loopback"*"REFUSE"* ]]' "$_o"
 
 # ════════════════════════════════════════════════════════════════════════════
 echo ""

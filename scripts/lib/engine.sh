@@ -357,6 +357,18 @@ ob_engine_url_hostport() {
   printf '%s %s\n' "$h" "$p"
 }
 
+# ob_engine_keyless_open <url> — 0 when a managed engine launched for <url>
+# would serve keyless inference on a non-loopback address without the
+# operator's ALLOW_OPEN_INFERENCE=true: serve.sh's refusal for llama-server,
+# for the engines engine-serve.sh launches. Every route to anyone on that
+# network, past beast-gate's per-device keys, caps and audit. Needs conf.sh
+# (ob_bind_is_loopback, LLAMA_API_KEY, ALLOW_OPEN_INFERENCE).
+ob_engine_keyless_open() {
+  local host
+  read -r host _ < <(ob_engine_url_hostport "$1")
+  ! ob_bind_is_loopback "$host" && [[ -z "${LLAMA_API_KEY:-}" && "${ALLOW_OPEN_INFERENCE:-false}" != true ]]
+}
+
 # ── The engine gate (docs/WEIGHT_STREAMING.md "The engine gate") ──────────
 # A single-author engine (Project Maya) is admitted only after it measured
 # at least 1.5 times llama.cpp's decode tok/s on THIS rig, same weights, same

@@ -209,6 +209,10 @@ cmd_use() {
       fi
       port="${PORT:-8080}"
       if [[ -n "$URL" ]]; then url="${URL%/}"; else url="http://127.0.0.1:$port"; fi
+      if ob_engine_keyless_open "$url"; then
+        echo "WARNING: $url is not loopback and LLAMA_API_KEY is empty: scripts/engine-serve.sh will REFUSE to launch $ENGINE keyless there (exit 3)." >&2
+        echo "         Use --url http://127.0.0.1:$port, set LLAMA_API_KEY, or ALLOW_OPEN_INFERENCE=true in openbeast.conf to accept it." >&2
+      fi
       sets+=("INFERENCE_BACKEND=$ENGINE" "INFERENCE_URL=$url" "INFERENCE_MANAGED=true" "ENGINE_PROFILE=$PROFILE")
     else
       sets+=("INFERENCE_BACKEND=$ENGINE" "INFERENCE_URL=$url" "INFERENCE_MANAGED=false")

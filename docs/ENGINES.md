@@ -85,9 +85,14 @@ What a managed vllm / tensorfold run gets, and does not get:
 - **Container name** is `openbeast-engine-<engine>-<8 hex of the repo path>`,
   one per checkout. Two worktrees on one box never stop each other's engine,
   and a leftover from a SIGKILLed launcher is removed at the next launch.
-- **The API key**: `LLAMA_API_KEY` reaches vLLM as `-e VLLM_API_KEY` (by name)
-  and TensorFold as a 0600 `--api-key-file` under `.run/`. It never goes on
-  argv.
+- **The API key**: `LLAMA_API_KEY` reaches vLLM as `-e VLLM_API_KEY` (by name),
+  TensorFold as a 0600 `--api-key-file` under `.run/` and Maya as an exported
+  `MAYA_API_KEY`. It never goes on argv.
+- **No keyless network bind.** The engine binds `INFERENCE_URL`'s host, and
+  `0.0.0.0`, `::` and `BIND_HOST` all count as "local" (so they stay managed).
+  With no `LLAMA_API_KEY` on a non-loopback host, `engine-serve.sh` refuses
+  with exit 3, exactly as `serve.sh` does for llama-server, unless
+  `ALLOW_OPEN_INFERENCE=true` acknowledges it; `engine.sh use` warns first.
 - **Not applicable**: FAST_BOOT (the bridge is a GGUF) and MODEL_ROLLBACK
   (last-good records serve scripts). For an engine, rollback is
   `engine.sh rollback`.
