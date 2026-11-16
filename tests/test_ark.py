@@ -44,6 +44,8 @@ sys.path.insert(0, str(REPO / "agents"))
 
 from ark import catalog as C   # noqa: E402
 from ark import cli, oci, pins, tomlsub  # noqa: E402
+from ark import fetch as F     # noqa: E402
+from ark import restore as R   # noqa: E402
 from ark import serve as SV    # noqa: E402
 from ark import store as S     # noqa: E402
 from ark import verify as V    # noqa: E402
@@ -603,6 +605,78 @@ def test_offline_refuses_network_commands_and_keeps_offline_ones(http, tmp_path,
     rc, _ = run(["restore", "toy", "--from", str(drive), "--prefix", str(tmp_path / "o"), "--bin", str(tmp_path / "b")],
                 capsys)
     assert rc == 0
+
+
+# ── archive extraction: nothing lands outside the target ───────────────
+
+def _tar(path, members, mode="w"):
+    """members: (name, kind, payload) — kind "f" file, "d" dir, "s" symlink, "h" hardlink."""
+    with tarfile.open(path, mode) as t:
+        for name, kind, payload in members:
+            ti = tarfile.TarInfo(name)
+            if kind == "f":
+                data = payload.encode()
+                ti.size, ti.mode = len(data), 0o755
+                t.addfile(ti, io.BytesIO(data))
+                continue
+            ti.type = {"d": tarfile.DIRTYPE, "s": tarfile.SYMTYPE, "h": tarfile.LNKTYPE}[kind]
+            ti.mode = 0o755
+            ti.linkname = payload or ""
+            t.addfile(ti)
+    return path
+
+
+ESCAPES = {
+    # the reviewed chain: y -> ".", x -> "y/..", then x/evil (checked up front, x looked inside)
+    "chain": [("y", "s", "."), ("x", "s", "y/.."), ("x/evil", "f", "ESCAPED")],
+    # the same chain built backwards: a resolves inside when made, outside once b exists
+    "late-chain": [("a", "s", "b/.."), ("b", "s", "."), ("a/evil", "f", "ESCAPED")],
+    "dotdot-name": [("../evil", "f", "ESCAPED")],
+    "absolute-name": [("/tmp/ark-evil-absolute", "f", "ESCAPED")],
+    "absolute-link": [("l", "s", "/etc"), ("l/evil", "f", "ESCAPED")],
+    "dotdot-link": [("l", "s", "../"), ("l/evil", "f", "ESCAPED")],
+    "hardlink-out": [("h", "h", "../outside.txt")],
+    "dangling-out": [("a", "s", "b/.."), ("b", "s", ".")],
+}
+
+
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+@pytest.mark.parametrize("data_filter", [True, False], ids=["data-filter", "no-filter-py3.9"])
+@pytest.mark.parametrize("case", sorted(ESCAPES))
+def test_safe_extract_refuses_every_escape(tmp_path, monkeypatch, case, data_filter):
+    if data_filter and not hasattr(tarfile, "data_filter"):
+        pytest.skip("this python has no tarfile.data_filter")
+    # the no-filter leg is what a Mac's /usr/bin/python3 3.9.6 runs: ark's own checks, alone
+    monkeypatch.setattr(F, "_DATA_FILTER", data_filter)
+    work = tmp_path / "work"
+    dest = work / "dest"
+    dest.mkdir(parents=True)
+    (work / "outside.txt").write_text("outside")
+    src = _tar(tmp_path / "a.tar", ESCAPES[case])
+    with pytest.raises(F.FetchError):
+        with tarfile.open(src, "r|") as t:
+            F._safe_extract(t, str(dest))
+    assert not (work / "evil").exists() and not Path("/tmp/ark-evil-absolute").exists()
+    assert sorted(p.name for p in work.iterdir()) == ["dest", "outside.txt"]
+    for p in dest.rglob("*"):                      # no link left pointing out of the target
+        if p.is_symlink():
+            assert str(p.resolve()).startswith(str(dest.resolve()))
+
+
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+@pytest.mark.parametrize("data_filter", [True, False])
+def test_safe_extract_keeps_ordinary_links_and_streams_compressed_archives(tmp_path, monkeypatch, data_filter):
+    if data_filter and not hasattr(tarfile, "data_filter"):
+        pytest.skip("this python has no tarfile.data_filter")
+    monkeypatch.setattr(F, "_DATA_FILTER", data_filter)
+    src = _tar(tmp_path / "ok.tar.xz", [("t-1/lib", "d", None), ("t-1/lib/tool", "f", "#!/bin/sh\necho ok\n"),
+                                        ("t-1/bin", "d", None), ("t-1/bin/tool", "s", "../lib/tool"),
+                                        ("t-1/bin/same", "h", "t-1/lib/tool")], mode="w:xz")
+    dest = tmp_path / "out"
+    R._extract(str(src), str(dest))                # restore's path: one streaming pass ("r|*")
+    assert (dest / "t-1/bin/tool").resolve() == (dest / "t-1/lib/tool").resolve()
+    assert (dest / "t-1/bin/same").read_text() == "#!/bin/sh\necho ok\n"
+    assert os.access(dest / "t-1/lib/tool", os.X_OK)
 
 
 # ── lock / update ────────────────────────────────────────────────────────

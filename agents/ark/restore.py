@@ -134,10 +134,10 @@ def _extract(src: str, dest: str) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             raw = os.path.join(tmp, "x.tar")
             _unzstd(src, raw)
-            with tarfile.open(raw) as t:
+            with tarfile.open(raw, "r|") as t:
                 _safe_extract(t, dest)
         return
-    with tarfile.open(src) as t:
+    with tarfile.open(src, "r|*") as t:          # stream mode: decompressed once, front to back
         _safe_extract(t, dest)
 
 
@@ -219,7 +219,7 @@ def restore_git(drive: S.Drive, item: dict, srcdir: str, force: bool) -> List[st
         _git("clone", "-q", "--no-checkout", src, dest)
     else:
         with tempfile.TemporaryDirectory() as tmp:
-            with tarfile.open(src) as t:
+            with tarfile.open(src, "r|") as t:
                 _safe_extract(t, tmp)
             bare = os.path.join(tmp, f"{item['entry']}.git")
             _git("clone", "-q", "--no-checkout", bare, dest)
@@ -348,7 +348,7 @@ def restore(cat: Optional[C.Catalog], drive: S.Drive, name: str, plat: str = "",
             elif k == "cargo":
                 root = os.path.join(prefix, f"{name}-{S.slug(it['version'])}")
                 os.makedirs(root, exist_ok=True)
-                with tarfile.open(drive.p(it["primary"])) as t:
+                with tarfile.open(drive.p(it["primary"]), "r|") as t:
                     _safe_extract(t, root)
                 shutil.copy2(drive.p(os.path.dirname(it["primary"]) + "/cargo-config.toml"),
                              os.path.join(root, "cargo-config.toml"))

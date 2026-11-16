@@ -358,29 +358,70 @@ def _clone_from_drive(drive: S.Drive, e: C.Entry, dest: str, lock: dict) -> None
     else:
         tmp = dest + ".bare"
         os.makedirs(tmp, exist_ok=True)
-        with tarfile.open(src) as t:
+        with tarfile.open(src, "r|") as t:
             _safe_extract(t, tmp)
         _git("clone", "-q", os.path.join(tmp, f"{e.name}.git"), dest)
     _git("checkout", "-q", it["commit"], cwd=dest)
 
 
+_DATA_FILTER = hasattr(tarfile, "data_filter")    # 3.12+, and the 3.9.17+/3.10.12+/3.11.4+ backports
+
+
+def _inside(root: str, p: str) -> bool:
+    return p == root or p.startswith(root + os.sep)
+
+
 def _safe_extract(t: tarfile.TarFile, dest: str) -> None:
+    """Unpack `t` into `dest`, refusing anything that would land outside it.
+
+    One forward pass, one member at a time, and every check is made against
+    what is ON DISK at that moment — not against an empty destination. A
+    check made up front is fooled by a link chain (y -> ".", then x -> "y/..",
+    then x/evil): before y exists, x looks like it stays inside. Here x is
+    checked after y has been written, so it resolves to the parent and is
+    refused. At the end every symlink is resolved once more against the final
+    tree, so a link made to point outside by a LATER member is caught too
+    (and removed). The 3.12 `data` filter is applied on top where the
+    interpreter has it; nothing depends on it (a Mac's /usr/bin/python3 3.9.6
+    has none). The archive is read once, front to back, so a caller can open
+    it in stream mode ("r|*") and a .tar.xz is decompressed once, not twice.
+    """
+    os.makedirs(dest, exist_ok=True)
     root = os.path.realpath(dest)
-    for m in t.getmembers():
-        target = os.path.realpath(os.path.join(dest, m.name))
-        if not (target == root or target.startswith(root + os.sep)):
-            raise FetchError(f"archive member {m.name!r} escapes the target — refused")
-        if m.issym() or m.islnk():
-            link = os.path.realpath(os.path.join(os.path.dirname(target), m.linkname)) if m.issym() \
-                else os.path.realpath(os.path.join(dest, m.linkname))
-            if not (link == root or link.startswith(root + os.sep)):
-                raise FetchError(f"archive link {m.name!r} -> {m.linkname!r} escapes the target — refused")
-        if m.isdev():
-            raise FetchError(f"archive member {m.name!r} is a device node — refused")
-    if hasattr(tarfile, "data_filter"):         # 3.12+ (and 3.9.17+ backports): belt and braces
-        t.extractall(dest, filter="data")
-    else:
-        t.extractall(dest)  # noqa: S202 — every member checked above
+    links: List[Tuple[str, str]] = []
+    kw = {"filter": "data"} if _DATA_FILTER else {}
+    try:
+        for m in t:
+            if m.isdev():
+                raise FetchError(f"archive member {m.name!r} is a device node or fifo — refused")
+            if not (m.isfile() or m.isdir() or m.issym() or m.islnk()):
+                raise FetchError(f"archive member {m.name!r} has an unsupported type — refused")
+            full = os.path.normpath(os.path.join(root, m.name))
+            # where the member itself lands: its parent as it resolves NOW, plus its own name
+            loc = os.path.join(os.path.realpath(os.path.dirname(full)), os.path.basename(full))
+            if not _inside(root, loc) or (not m.issym() and not _inside(root, os.path.realpath(loc))):
+                raise FetchError(f"archive member {m.name!r} escapes the target — refused")
+            if m.issym():
+                to = os.path.realpath(os.path.join(os.path.dirname(loc), m.linkname))
+                if os.path.isabs(m.linkname) or not _inside(root, to):
+                    raise FetchError(f"archive link {m.name!r} -> {m.linkname!r} escapes the target — refused")
+                links.append((loc, m.name))
+            elif m.islnk():
+                src = os.path.realpath(os.path.join(root, m.linkname))
+                if not _inside(root, src):
+                    raise FetchError(f"archive link {m.name!r} -> {m.linkname!r} escapes the target — refused")
+            if not _DATA_FILTER and m.isfile():
+                m.mode &= 0o755                     # no setuid/setgid/sticky, no group/other write
+            t.extract(m, root, set_attrs=not m.isdir(), **kw)  # noqa: S202 — checked above
+    finally:
+        # a refused archive, or one whose links point out once complete:
+        # take every such link away, so nothing later follows it
+        bad = [name for loc, name in links if not _inside(root, os.path.realpath(loc))]
+        for loc, _name in links:
+            if os.path.islink(loc) and not _inside(root, os.path.realpath(loc)):
+                os.unlink(loc)
+    if bad:
+        raise FetchError(f"archive link {bad[0]!r} resolves outside the target once unpacked — refused")
 
 
 def fetch_gomod(drive: S.Drive, a: C.Artifact, lock: dict) -> dict:
