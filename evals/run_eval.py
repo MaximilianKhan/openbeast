@@ -51,6 +51,8 @@ RUNNER_PATH = os.path.join(EVALS_DIR, "..", "agents", "runner.py")
 # SIGKILL-the-group + rlimit + output-cap logic.
 sys.path.insert(0, os.path.join(EVALS_DIR, "..", "agents"))
 from tools import run_reaped  # noqa: E402
+sys.path.insert(0, EVALS_DIR)
+import suite_manifest  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Agent process groups we own, so a SIGTERM to US does not orphan THEM.
@@ -284,7 +286,56 @@ def _fetch_server_slots(base_url: str) -> int | None:
         n = data.get("total_slots")
         return int(n) if n else None
     except Exception:
-        return None
+        pass
+    # Not llama.cpp (vLLM, TensorFold, the hydra proxy): /props is absent.
+    # Some OpenAI-compatible servers publish their batch limit on the model
+    # card; use it when present. Otherwise the caller needs --slots.
+    try:
+        key = os.environ.get("OPENBEAST_API_KEY") or os.environ.get("OPENAI_API_KEY")
+        headers = {"Authorization": f"Bearer {key}"} if key else {}
+        req = urllib.request.Request(base_url.rstrip("/") + "/models", headers=headers)
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        for m in data.get("data", [])[:1]:
+            n = m.get("max_num_seqs") or (m.get("meta") or {}).get("max_num_seqs")
+            if n:
+                return int(n)
+    except Exception:
+        pass
+    return None
+
+
+def capture_remote_server_info(base_url: str, declared_rb: str | None = None) -> dict:
+    """Provenance for a server capture_server_config cannot see: a remote
+    endpoint, or a local non-llama engine (vLLM, TensorFold). Reads the
+    OpenAI model card (/v1/models) for the engine (`owned_by`) and context
+    length, and takes the reasoning budget from what the operator DECLARED
+    (--reasoning-budget / OPENBEAST_EVAL_REASONING_BUDGET) — never from
+    `pgrep llama-server`, which describes some other process on this host.
+    "0" means thinking off. An undeclared budget is recorded as unknown, and
+    the cache era falls back to uncapped, as before."""
+    info: dict = {"source": "/v1/models"}
+    rb = declared_rb if declared_rb not in (None, "") else \
+        os.environ.get("OPENBEAST_EVAL_REASONING_BUDGET", "").strip()
+    if rb:
+        info["reasoning_budget"] = str(rb).strip()
+        info["reasoning_budget_source"] = "declared"
+    try:
+        key = os.environ.get("OPENBEAST_API_KEY") or os.environ.get("OPENAI_API_KEY")
+        headers = {"Authorization": f"Bearer {key}"} if key else {}
+        req = urllib.request.Request(base_url.rstrip("/") + "/models", headers=headers)
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        m = (data.get("data") or [{}])[0]
+        info["model_id"] = m.get("id")
+        if m.get("owned_by"):
+            info["engine"] = m["owned_by"]
+        for k in ("max_model_len", "max_num_seqs", "root"):
+            if m.get(k) is not None:
+                info[k] = m[k]
+    except Exception as e:  # noqa: BLE001 — provenance is best-effort
+        info["error"] = type(e).__name__
+    return info
 
 
 def slugify(name: str) -> str:
@@ -673,7 +724,7 @@ def load_tasks(task_filter: list[str] | None = None) -> list[dict]:
     return tasks
 
 
-def diagnostics_flag() -> tuple[bool, str | None, dict]:
+def diagnostics_flag(env=None) -> tuple[bool, str | None, dict]:
     """Derive the push-diagnostics state ONCE per run (docs/
     LANG_AWARENESS_PLAN.md §3.4): the cache-key component and the agent
     subprocess env must come from the same read or they can disagree.
@@ -681,8 +732,9 @@ def diagnostics_flag() -> tuple[bool, str | None, dict]:
     Returns (enabled, cache_component, toolchain_versions). The component
     is a toolchain fingerprint, not a boolean — different checker
     toolchains emit different diagnostics."""
-    enabled = (os.environ.get("OPENBEAST_DIAGNOSTICS", "").strip() == "1"
-               or os.environ.get("BEAST_ASSIST", "").strip() == "1")
+    env = os.environ if env is None else env
+    enabled = (env.get("OPENBEAST_DIAGNOSTICS", "").strip() == "1"
+               or env.get("BEAST_ASSIST", "").strip() == "1")
     if not enabled:
         return False, None, {}
     import hashlib
@@ -799,7 +851,7 @@ def _verify_pack(lang: str, path: str, data: bytes) -> None:
         raise SystemExit(problem)
 
 
-def packs_flag() -> tuple[bool, str | None, dict]:
+def packs_flag(env=None) -> tuple[bool, str | None, dict]:
     """Derive the awareness-pack state ONCE per run (same rule as
     diagnostics_flag: the cache-key component and what the agent sees must
     come from one read). Enabled by BEAST_PACKS=1 (user-facing) or
@@ -809,8 +861,9 @@ def packs_flag() -> tuple[bool, str | None, dict]:
     `pack1-<sha8 of the pack file bytes>` (packs concatenated in language
     order when there is more than one) and meta = {"sha": {lang: sha8},
     "paths": {lang: abs_path}}."""
-    enabled = (os.environ.get("BEAST_PACKS", "").strip() == "1"
-               or os.environ.get("OPENBEAST_PACKS", "").strip() == "1")
+    env = os.environ if env is None else env
+    enabled = (env.get("BEAST_PACKS", "").strip() == "1"
+               or env.get("OPENBEAST_PACKS", "").strip() == "1")
     if not enabled:
         return False, None, {}
     import hashlib
@@ -894,7 +947,7 @@ def _escalate_treatment() -> list[tuple[str, bytes]]:
     return out
 
 
-def escalate_flag(diag_on: bool) -> tuple[bool, str | None, dict]:
+def escalate_flag(diag_on: bool, env=None) -> tuple[bool, str | None, dict]:
     """Derive the beast-lang escalation state ONCE per run (the same rule as
     diagnostics_flag / packs_flag: the cache-key component and what the agent
     sees come from one read). Enabled by BEAST_ESCALATE=1 (user-facing),
@@ -911,8 +964,9 @@ def escalate_flag(diag_on: bool) -> tuple[bool, str | None, dict]:
     outcome on this machine (is the index served, against which toolchain).
     Hashing the index alone let an edited summary or a retuned selector
     replay rows measured under the old text, silently mixing two treatments in one A/B."""
-    enabled = (os.environ.get("BEAST_ESCALATE", "").strip() == "1"
-               or os.environ.get("OPENBEAST_ESCALATE", "").strip() == "1")
+    env = os.environ if env is None else env
+    enabled = (env.get("BEAST_ESCALATE", "").strip() == "1"
+               or env.get("OPENBEAST_ESCALATE", "").strip() == "1")
     if not enabled:
         return False, None, {}
     if not diag_on:
@@ -929,7 +983,7 @@ def escalate_flag(diag_on: bool) -> tuple[bool, str | None, dict]:
         h.update(data)
     # The RAW knob value, not the parsed one: an unset knob and an explicit
     # default then read as two eras, which costs a rerun, never a mixed row.
-    knobs = {k: os.environ.get(k, "").strip() for k in ESCALATE_KNOBS}
+    knobs = {k: env.get(k, "").strip() for k in ESCALATE_KNOBS}
     for k, v in knobs.items():
         h.update(f"{k}={v}\0".encode())
     # The served OUTCOME of the code not hashed as source (see
@@ -1090,11 +1144,47 @@ def env_error_bank_after() -> int:
 SUITES_DIR = os.path.join(EVALS_DIR, "suites")
 
 
+# Renamed at the v5 era break: "v5-fast" was a v4 subset, and v5 is now a
+# real suite. The old name still loads, with a note, for scripts in scratch/.
+SUITE_ALIASES = {"v5-fast": "v4-fast"}
+
+
+def suite_universe(suite: dict, tasks: list[dict]) -> set[str]:
+    """The unit set a pin must partition. A pin built from v4 runs covers
+    the v4 task files only (base ids 01..162), so the task files v5 adds
+    never read as drift of a frozen v4 pin."""
+    if suite.get("base_suite_version") == "v4":
+        return {t["id"] for t in tasks
+                if (suite_manifest.task_number(t.get("base_id") or t["id"]) or 0)
+                <= suite_manifest.V4_MAX_TASK}
+    return {t["id"] for t in tasks}
+
+
+def default_suite() -> str | None:
+    """The manifest a bare run uses: evals/suites/<SUITE_VERSION>.json when
+    it is a v5-format manifest, else None (every task file, the v4 rule)."""
+    ver = capture_suite_version()
+    path = os.path.join(SUITES_DIR, f"{ver}.json")
+    try:
+        with open(path) as f:
+            return ver if suite_manifest.is_manifest(json.load(f)) else None
+    except (OSError, ValueError):
+        return None
+
+
 def load_suite(name: str) -> dict:
     """Load a pinned suite subset from evals/suites/{name}.json and validate
     it against the task specs: units + assumed_passed + assumed_failed must
     exactly cover the effective unit set, or the pin has drifted from
-    evals/tasks/ and running it would silently mis-score."""
+    evals/tasks/ and running it would silently mis-score.
+
+    A v5-format manifest (evals/suites/v5.json) loads through
+    suite_manifest.load_manifest instead: every unit resolved against
+    evals/tasks/, and refused if the coverage floor leaves a cell empty.
+    A pin that declares a coverage_floor is refused the same way."""
+    if name in SUITE_ALIASES:
+        print(f"NOTE: suite {name!r} was renamed {SUITE_ALIASES[name]!r} at the v5 era break")
+        name = SUITE_ALIASES[name]
     path = os.path.join(SUITES_DIR, f"{name}.json")
     if not os.path.isfile(path):
         avail = sorted(os.path.splitext(f)[0] for f in os.listdir(SUITES_DIR)
@@ -1102,8 +1192,13 @@ def load_suite(name: str) -> dict:
         raise SystemExit(f"unknown suite {name!r} (available: {', '.join(avail) or 'none'})")
     with open(path) as f:
         suite = json.load(f)
+    if suite_manifest.is_manifest(suite):
+        man = suite_manifest.load_manifest(name, tasks=load_tasks(None), strict=True)
+        man["_manifest"] = True
+        return man
     pinned = set(suite["units"]) | set(suite.get("assumed_passed", [])) | set(suite.get("assumed_failed", []))
-    actual = {t["id"] for t in load_tasks(None)}
+    all_tasks = load_tasks(None)
+    actual = suite_universe(suite, all_tasks)
     if pinned != actual:
         missing = sorted(actual - pinned)[:5]
         stale = sorted(pinned - actual)[:5]
@@ -1112,10 +1207,17 @@ def load_suite(name: str) -> dict:
             f"({len(actual - pinned)} unpinned units e.g. {missing}; "
             f"{len(pinned - actual)} stale pins e.g. {stale}). "
             f"Regenerate with evals/make_fast_suite.py --generate (deliberate act).")
+    if suite.get("coverage_floor"):
+        import make_fast_suite  # noqa: PLC0415
+        gaps = make_fast_suite.pin_coverage_gaps(suite, suite["coverage_floor"], all_tasks)
+        if gaps:
+            raise SystemExit(f"suite {name!r} refused: {len(gaps)} cell(s) under its coverage "
+                             f"floor {suite['coverage_floor']} (e.g. {gaps[:3]})")
+    suite["suite"] = suite.get("suite") or name
     return suite
 
 
-def _run_reaped(cmd, timeout: int, shell: bool = False) -> tuple[int, str]:
+def _run_reaped(cmd, timeout: int, shell: bool = False, **popen_kw) -> tuple[int, str]:
     """Thin wrapper around tools.run_reaped for eval-harness callers.
 
     tools.run_reaped only supports shell=True (it manages the process group
@@ -1128,7 +1230,7 @@ def _run_reaped(cmd, timeout: int, shell: bool = False) -> tuple[int, str]:
         shell_cmd = " ".join(shlex.quote(c) for c in cmd)
     else:
         shell_cmd = cmd
-    return run_reaped(shell_cmd, timeout)
+    return run_reaped(shell_cmd, timeout, **popen_kw)
 
 
 _FIXTURE_PATH = re.compile(r"/tmp/eval[\w\-./]*")
@@ -1235,8 +1337,22 @@ def _parse_tokens(stdout: str) -> dict:
     return {"prompt": int(m.group(1)), "completion": int(m.group(2)), "total": int(m.group(3))}
 
 
+def agent_wall_s(task: dict, max_iter: int, cap_override: float | None = None) -> float:
+    """The agent's wall budget before timeout_scale. A unit that declares a
+    wall cap (task field `max_wall_s`, or `_max_wall_s` from a v5 manifest)
+    gets exactly that: v5 replaces `max_iter*60`, which reached 80 minutes
+    for a 40-iteration unit at --jobs 4. Units with no cap keep the v4 rule.
+    `cap_override` (--unit-wall-cap) can only tighten."""
+    cap = task.get("max_wall_s") or task.get("_max_wall_s")
+    wall = float(cap) if cap else float(max_iter * 60)
+    if cap_override:
+        wall = min(wall, float(cap_override))
+    return wall
+
+
 def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
-              timeout_scale: float = 1.0) -> dict:
+              timeout_scale: float = 1.0, env_overlay: dict | None = None,
+              wall_s: float | None = None) -> dict:
     """Run the agent against a task. Returns timing, iteration, and token info.
 
     timeout_scale: multiplier on the per-iteration wall budget. Under --jobs
@@ -1276,6 +1392,14 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
                          for k in ("task", "validation", "setup", "cleanup"))
     expected = sorted(set(re.findall(r"/tmp/eval[\w\-./]*", spec_text)))
     child_env = dict(os.environ)
+    # Per-arm treatment env (diag / escalate / packs, both spellings) for
+    # THIS unit: an arm scheduler runs several treatments in one process, so
+    # the flags travel per child, never through os.environ. None = unset.
+    for k, v in (env_overlay or {}).items():
+        if v is None:
+            child_env.pop(k, None)
+        else:
+            child_env[k] = v
 
     # === THE EVAL MARKER — beast-chat lock L1 (E1) ========================
     # This is the ONE fact about a child of this function that is always
@@ -1327,7 +1451,8 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
     try:
         # Rough budget: 1 min per iteration at single-stream decode, scaled up
         # under parallel contention (see timeout_scale in the docstring).
-        stdout, stderr = proc.communicate(timeout=int(max_iter * 60 * timeout_scale))
+        budget = wall_s if wall_s is not None else max_iter * 60
+        stdout, stderr = proc.communicate(timeout=int(budget * timeout_scale))
         elapsed = time.time() - start_time
         tokens = _parse_tokens(stdout)
         return {
@@ -1409,13 +1534,123 @@ def contention_scale(jobs: int) -> float:
     return 1.0 if jobs == 1 else 1.0 + (jobs - 1) / 3.0
 
 
+# --- Validator isolation (v5) ----------------------------------------------
+#
+# The solution under test is a child (or grandchild) of the validator and
+# runs as the same uid, so everything the validator exposes to a same-uid
+# process is exposed to the model's code:
+#
+#   argv     `ps -ww -o command= -p $PPID` (macOS) or /proc/PPID/cmdline
+#            (Linux) is world-readable. `python -c <script>` put the whole
+#            validator there, oracle and seed included. Proven cheats passed
+#            163, 164, 168, 173, 181, 183, 188, 20, 40 and 121 that way.
+#            The script now arrives on STDIN, from an already-unlinked file.
+#   cwd      `python -c` puts '' (the harness cwd) on sys.path, so a planted
+#            urllib/parse.py there ran inside the validator on a lazy
+#            import (176), and stayed for every later unit. Validators now run
+#            as `python -I -S -` in a fresh, empty 0700 cwd, removed after the
+#            unit.
+#   environ  readable with `ps eww` on macOS. The validator gets a scrubbed
+#            environment (_validator_env).
+#   memory   the bootstrap makes the validator non-dumpable on Linux.
+#   orphans  vlib records every solution process group it starts in the
+#            private dir, and the harness SIGKILLs them after the validator
+#            exits, so a validator killed on timeout cannot leave a solution
+#            running into the next unit.
+
+VLIB_PATH = os.path.join(EVALS_DIR, "vlib.py")
+# Eval data a solution has no business reading (vlib denies it on macOS).
+VALIDATOR_SEAL = tuple(os.path.join(EVALS_DIR, d) for d in ("tasks", "refs", "suites"))
+
+_VALIDATOR_ENV_KEEP = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TZ",
+                       "TMPDIR", "TERM", "SDKROOT", "DEVELOPER_DIR",
+                       "MACOSX_DEPLOYMENT_TARGET", "CC", "CXX", "GOROOT", "GOPATH",
+                       "GOCACHE", "GOMODCACHE", "GOFLAGS", "GOTOOLCHAIN", "GOPROXY",
+                       "GOSUMDB", "CARGO_HOME", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN",
+                       "ZIG_GLOBAL_CACHE_DIR", "ZIG_LOCAL_CACHE_DIR", "XDG_CACHE_HOME",
+                       "PKG_CONFIG_PATH")
+
+# Python bootstrap: the only program on the validator's argv is `-I -S -`.
+# It reads nothing more from stdin, hardens itself, keeps cwd off sys.path,
+# injects vlib from source, and runs the validator as __main__.
+_PY_BOOT = r"""
+def _ob_boot(src, vlib_src, group_file):
+    import os, sys, types, linecache
+    try:
+        fd = os.open(os.devnull, os.O_RDONLY); os.dup2(fd, 0); os.close(fd)
+    except OSError:
+        pass
+    if sys.platform.startswith("linux") and os.environ.get("OPENBEAST_KEEP_DUMPABLE") != "1":
+        try:
+            import ctypes
+            ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)  # PR_SET_DUMPABLE 0
+        except Exception:
+            pass
+    cwd = os.getcwd()
+    sys.path[:] = [p for p in sys.path if p and os.path.abspath(p) != cwd]
+    m = types.ModuleType("vlib")
+    m.__file__ = "<vlib>"
+    sys.modules["vlib"] = m
+    exec(compile(vlib_src, "<vlib>", "exec", dont_inherit=True), m.__dict__)
+    m._GROUP_FILE = group_file
+    sys.argv[:] = ["<validator>"]
+    linecache.cache["<validator>"] = (len(src), None, src.splitlines(True), "<validator>")
+    del globals()["_ob_boot"]
+    return compile(src, "<validator>", "exec", dont_inherit=True)
+exec(_ob_boot(%r, %r, %r))
+"""
+
+# Shell validators: read the whole script from stdin, give stdin up, run it.
+# The script never appears in any argv.
+_SH_BOOT = '__ob_v=$(cat) && exec </dev/null && eval "$__ob_v"'
+
+
+def _validator_env(timeout_scale: float) -> dict:
+    env = {k: v for k, v in os.environ.items()
+           if k in _VALIDATOR_ENV_KEEP or k.startswith("LC_")}
+    env.setdefault("PATH", "/usr/local/bin:/usr/bin:/bin")
+    env["OPENBEAST_TIMEOUT_SCALE"] = f"{float(timeout_scale):g}"
+    env["OPENBEAST_EVAL"] = "1"
+    env["OPENBEAST_VALIDATOR_SEAL"] = os.pathsep.join(VALIDATOR_SEAL)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    return env
+
+
+def _vlib_source() -> str:
+    with open(VLIB_PATH) as f:
+        return f.read()
+
+
+def _kill_recorded_groups(group_file: str):
+    try:
+        with open(group_file) as f:
+            pgids = {int(x) for x in f.read().split() if x.strip().isdigit()}
+    except OSError:
+        return
+    mine = os.getpgrp()
+    for pg in pgids:
+        if pg <= 1 or pg == mine:
+            continue
+        try:
+            os.killpg(pg, signal.SIGKILL)
+        except OSError:
+            pass
+
+
 def run_validation(task: dict, timeout_scale: float = 1.0) -> tuple[bool, str]:
     """Run validation. Returns (passed, output).
 
     timeout_scale: the same contention multiplier run_agent's wall budget
     gets. The validator compiles the solution itself (`zig build-exe -O
     ReleaseFast` is 7-12 s warm on an idle host), so under --jobs the fixed
-    30 s was mostly the compiler's, and a correct solution timed out."""
+    30 s was mostly the compiler's, and a correct solution timed out. It is
+    also exported to the validator as OPENBEAST_TIMEOUT_SCALE (vlib.t()).
+
+    Isolation (see the block comment above): the script is fed on stdin from
+    an unlinked file in a private 0700 dir, the validator runs in a fresh
+    empty cwd with a scrubbed environment, python validators run as
+    `python -I -S -` with vlib injected, and the private dir is removed
+    afterwards."""
     validation = task.get("validation", {})
     vtype = validation.get("type", "bash")
     script = validation.get("script", "")
@@ -1424,13 +1659,31 @@ def run_validation(task: dict, timeout_scale: float = 1.0) -> tuple[bool, str]:
         return False, "No validation script defined"
 
     timeout = max(1, int(VALIDATION_TIMEOUT_S * timeout_scale))
+    import shutil
+    import tempfile
+    private = tempfile.mkdtemp(prefix="ob-validator-")  # 0700
+    os.chmod(private, 0o700)
+    vcwd = os.path.join(private, "cwd")
+    os.mkdir(vcwd, 0o700)
+    group_file = os.path.join(private, "pgids")
     try:
         if vtype == "python":
-            returncode, output = _run_reaped(
-                [sys.executable, "-c", script], timeout=timeout,
-            )
+            payload = _PY_BOOT % (script, _vlib_source(), group_file)
+            cmd = [sys.executable, "-I", "-S", "-"]
         else:
-            returncode, output = _run_reaped(script, timeout=timeout, shell=True)
+            payload = script
+            cmd = _SH_BOOT
+        # The script reaches the validator through an UNLINKED file on its
+        # stdin: no path to find, no argv to read.
+        sfd, spath = tempfile.mkstemp(dir=private, prefix="s-")
+        with os.fdopen(sfd, "w+") as sf:
+            os.unlink(spath)
+            sf.write(payload)
+            sf.flush()
+            sf.seek(0)
+            returncode, output = _run_reaped(
+                cmd, timeout=timeout, shell=not isinstance(cmd, list),
+                stdin=sf, cwd=vcwd, env=_validator_env(timeout_scale))
         passed = returncode == 0
         kept = output.strip()[:500]
         # The 500-char cut must never drop the evidence that the VALIDATOR
@@ -1444,6 +1697,9 @@ def run_validation(task: dict, timeout_scale: float = 1.0) -> tuple[bool, str]:
         return False, f"{VALIDATION_TIMED_OUT} ({timeout}s)"
     except Exception as e:
         return False, f"Validation error: {e}"
+    finally:
+        _kill_recorded_groups(group_file)
+        shutil.rmtree(private, ignore_errors=True)
 
 
 def run_cleanup(task: dict, log=print):
@@ -1506,6 +1762,178 @@ def _write_results(results_path: str, results: dict) -> None:
     os.replace(tmp, results_path)
 
 
+# ---------------------------------------------------------------------------
+# Arms (v5, brief §6.4): several treatments inside ONE process.
+#
+# An arm is a named treatment: {packs, diag, escalate}. Each (unit, arm) is a
+# job. A base group (variants share /tmp/eval_* fixtures) stays on one worker
+# ACROSS arms, so two arms can never overwrite each other's working dirs —
+# the reason arms could not run as two processes (risk R10). The arms of one
+# unit run next to each other in time, so server and thermal drift hit both.
+# ---------------------------------------------------------------------------
+
+BUILTIN_ARMS = dict(suite_manifest.DEFAULT_ARMS)
+BOARD_ARM = "L0"
+# Languages whose units get push-diagnostics in a diag arm (the "assist
+# scope"). The checker can substantively help only compiled languages and
+# shell; Python's py_compile is syntax-only, so a Python unit in a diag arm
+# would be a near-copy of its L0 row under a different key. Units outside
+# the scope run with diagnostics OFF and share the L0 row's cache key.
+# OPENBEAST_DIAG_LANGS overrides (comma list of unit languages, or "all").
+DEFAULT_DIAG_SCOPE = frozenset({"go", "c", "cpp", "rust", "zig", "shell"})
+# unit language -> the checker names agents/tools.py uses
+_CHECKER_LANG = {"go": "go", "c": "c", "cpp": "c++", "rust": "rust", "zig": "zig",
+                 "shell": "shell", "python": "python"}
+# Row reasons for (unit, arm) pairs that were deliberately not measured in
+# that arm: never a failure, never scored (scoring.NOT_SCORED_REASONS has
+# budget_skip; ablation reads the rest).
+NOT_IN_ARM = "not_in_arm"
+BUDGET_SKIP = "budget_skip"
+_TIER_FALLBACK_S = {"easy": 14, "medium": 35, "hard": 82, "xl": 330}
+
+
+def diag_scope(env=None) -> frozenset:
+    env = os.environ if env is None else env
+    raw = env.get("OPENBEAST_DIAG_LANGS", "").strip()
+    if not raw:
+        return DEFAULT_DIAG_SCOPE
+    if raw.lower() == "all":
+        return frozenset(_CHECKER_LANG)
+    return frozenset(suite_manifest.norm_lang(x) for x in raw.split(",") if x.strip())
+
+
+def unit_lang(task: dict) -> str:
+    return suite_manifest.norm_lang(task.get("language"))
+
+
+class ArmCtx:
+    """One treatment's derived state: the cache components and the env the
+    agent subprocess gets, computed from ONE read (the §3.4 rule), plus the
+    arm's own results file and counters."""
+
+    def __init__(self, name: str | None, env, results_dir: str, stamp: str):
+        self.name = name
+        self.diag_on, self.diag_base, self.diag_toolchains = diagnostics_flag(env)
+        self.esc_on, self.esc_component, self.esc_meta = escalate_flag(self.diag_on, env)
+        self.diag_component = (f"{self.diag_base}+{self.esc_component}"
+                               if self.esc_on else self.diag_base)
+        self.packs_on, self.packs_component, self.packs_meta = packs_flag(env)
+        self.scope = diag_scope(env)
+        suffix = f"-{name}" if name else ""
+        self.timing_log = (os.path.join(results_dir, f"diag-timing-{stamp}{suffix}.jsonl")
+                           if self.diag_on else None)
+
+    # -- per unit ----------------------------------------------------------
+    def in_diag_scope(self, task: dict) -> bool:
+        return self.diag_on and unit_lang(task) in self.scope
+
+    def diag_for(self, task: dict) -> str | None:
+        """diag2[+esc1] cache component, only for units in assist scope:
+        keyed PER UNIT like the pack, so out-of-scope units share rows."""
+        return self.diag_component if self.in_diag_scope(task) else None
+
+    def pack_path(self, task: dict) -> str | None:
+        if not self.packs_on:
+            return None
+        return self.packs_meta["paths"].get(task.get("language"))
+
+    def pack_for(self, task: dict) -> str | None:
+        return self.packs_component if self.pack_path(task) else None
+
+    def env_overlay(self, task: dict) -> dict:
+        on = self.in_diag_scope(task)
+        esc = on and self.esc_on
+        d, e = ("1" if on else "0"), ("1" if esc else "0")
+        p = "1" if self.packs_on else "0"
+        ov = {"OPENBEAST_DIAGNOSTICS": d, "BEAST_ASSIST": d,
+              "BEAST_ESCALATE": e, "OPENBEAST_ESCALATE": e,
+              "BEAST_PACKS": p, "OPENBEAST_PACKS": p,
+              "OPENBEAST_LANG_IN_EVAL": "1" if esc else None,
+              "OPENBEAST_DIAG_TIMING_LOG": self.timing_log if on else None,
+              "OPENBEAST_DIAG_LANGS": (",".join(sorted(_CHECKER_LANG[x] for x in self.scope
+                                                       if x in _CHECKER_LANG))
+                                       if on else None),
+              "OPENBEAST_EVAL_UNIT": task["id"],
+              "OPENBEAST_EVAL_ARM": self.name}
+        return ov
+
+    def label(self) -> str:
+        bits = [b for b, on in (("packs", self.packs_on), ("diag", self.diag_on),
+                                ("escalate", self.esc_on)) if on]
+        return "+".join(bits) or "bare"
+
+
+def arm_env(spec: dict, base=None) -> dict:
+    """The env an arm's flags are derived from: the ambient env (knobs such
+    as OPENBEAST_LANG_MAX_CARDS) with the arm's three switches pinned in
+    both spellings, so an ambient BEAST_ASSIST=1 can never leak into L0."""
+    env = dict(os.environ if base is None else base)
+    for keys, on in ((("OPENBEAST_DIAGNOSTICS", "BEAST_ASSIST"), spec.get("diag")),
+                     (("BEAST_ESCALATE", "OPENBEAST_ESCALATE"), spec.get("escalate")),
+                     (("BEAST_PACKS", "OPENBEAST_PACKS"), spec.get("packs"))):
+        for k in keys:
+            env[k] = "1" if on else "0"
+    return env
+
+
+def unit_est_s(task: dict, prior: dict | None = None) -> float:
+    """Planning seconds for a unit: manifest/task est_s, else the unit's
+    prior measured elapsed_seconds (cache), else its tier rate."""
+    for k in ("_est_s", "est_s"):
+        if task.get(k):
+            return float(task[k])
+    if prior and prior.get(task["id"]):
+        return float(prior[task["id"]])
+    return float(_TIER_FALLBACK_S.get(suite_manifest.tier_of(task.get("difficulty")), 35))
+
+
+def order_groups_longest_first(groups: list[list], weight) -> list[list]:
+    """Groups sorted by total planned seconds, longest first (stable on
+    ties). One base group runs on one worker across all arms, so the
+    largest group sets the tail; starting it last is the classic LPT miss."""
+    return sorted(groups, key=lambda g: -sum(weight(j) for j in g))
+
+
+def _summarize_diag_log(path: str | None) -> tuple[dict | None, dict | None]:
+    """(latency percentiles, exposure) from an arm's diag JSONL. Exposure
+    answers "did the mechanism fire at all" per unit, so a null result can
+    be told apart from a mechanism that never ran (risk R9)."""
+    if not path or not os.path.exists(path):
+        return None, None
+    rows = []
+    with open(path) as f:
+        for ln in f:
+            if ln.strip():
+                try:
+                    rows.append(json.loads(ln))
+                except json.JSONDecodeError:
+                    continue
+    ms = sorted(r["ms"] for r in rows if "ms" in r)
+    lat = None
+    if ms:
+        def _pct(q: float) -> float:
+            return ms[min(len(ms) - 1, int(q * len(ms)))]
+        lat = {"n": len(ms), "p50": _pct(.5), "p95": _pct(.95), "p99": _pct(.99), "max": ms[-1]}
+    per: dict = {}
+    for r in rows:
+        u = r.get("unit")
+        if not u:
+            continue
+        e = per.setdefault(u, {"writes": 0, "errors": 0, "failed_checks": 0,
+                               "hint_fired": False, "card_fired": False})
+        e["writes"] += 1
+        e["errors"] += int(r.get("errors") or 0)
+        e["failed_checks"] += int((r.get("rc") or 0) != 0)
+        e["hint_fired"] = e["hint_fired"] or bool(r.get("hint_fired"))
+        e["card_fired"] = e["card_fired"] or bool(r.get("card_fired"))
+    exposure = {"units_exposed": len(per),
+                "units_with_failed_check": sum(1 for e in per.values() if e["failed_checks"]),
+                "units_hint_fired": sum(1 for e in per.values() if e["hint_fired"]),
+                "units_card_fired": sum(1 for e in per.values() if e["card_fired"]),
+                "per_unit": per}
+    return lat, exposure
+
+
 def run_eval(
     task_filter: list[str] | None = None,
     base_url: str = "http://localhost:8080/v1",
@@ -1518,13 +1946,22 @@ def run_eval(
     jobs: int = 1,
     suite: str | None = None,
     reasoning_budget: str | None = None,
+    arms: list[str] | None = None,
+    arm_units: dict | None = None,
+    arm_meta: dict | None = None,
+    deadline: float | None = None,
+    slots: int | None = None,
+    unit_wall_cap: float | None = None,
+    pair_id: str | None = None,
 ) -> dict:
     """Run the full eval suite. Returns results dict.
 
-    reasoning_budget: cache_only only — the reasoning-budget era to replay
+    reasoning_budget: cache_only — the reasoning-budget era to replay
     (e.g. "20480"; "-1" = uncapped). A live run reads it from the server;
     cache_only has no server, so without this it is inferred from the
-    newest LIVE results file for the model (see _cache_only_rb).
+    newest LIVE results file for the model (see _cache_only_rb). On a LIVE
+    run against a server this host cannot inspect (remote, vLLM,
+    TensorFold) it is the DECLARED budget, recorded as such.
 
     cache_only: when True, never invoke the agent. Cache hits replay; cache
     misses are recorded as 'skipped_cache_miss' with passed=False. Used for
@@ -1540,66 +1977,104 @@ def run_eval(
 
     jobs: parallel workers. Fixture isolation is by SCHEDULING, not path
     rewriting: every /tmp/eval_* fixture dir belongs to exactly one task
-    file (verified across all 141 dirs, enforced by tests/test_eval_jobs.py),
-    and variants of the same base task share theirs — so units are grouped
-    by base task, each group runs sequentially on one worker, and distinct
-    groups run in parallel. Prompts, validations, and cache keys are
-    untouched, so parallel scores are directly comparable to every
+    file (enforced by tests/test_eval_jobs.py), and variants of the same
+    base task share theirs — so units are grouped by base task, each group
+    runs sequentially on one worker (across every arm), and distinct groups
+    run in parallel, longest group first. Prompts, validations, and cache
+    keys are untouched, so parallel scores are directly comparable to every
     sequential run ever recorded. Clamped to the server's /props
-    total_slots when readable: excess workers would queue server-side and
-    the wait would count against per-task wall-clock timeouts (MTP configs
-    force -np 1, so they clamp to sequential)."""
+    total_slots when readable, and to `slots` (--slots) when given — the
+    only clamp a non-llama server has.
+
+    arms: e.g. ["L0", "L1", "L2"] — run every unit under each named
+    treatment (the manifest's `arms`, else suite_manifest.DEFAULT_ARMS) in
+    this one process. Returns {"arms": {arm: results}, "pair_id", "paths"}.
+    A (unit, arm) whose request is byte-identical to the board arm's (same
+    cache key) is SHARED: the board arm's row is copied, marked
+    `shared_from`. arm_units {arm: set(ids)} restricts what an arm
+    measures (the profile's stratified/cut plan); the rest are recorded as
+    `not_in_arm` rows, never scored. arm_meta {arm: dict} is stamped into
+    that arm's harness block (e.g. stratified sampling probabilities).
+
+    deadline: epoch seconds. A unit that would START live after it is
+    recorded as `budget_skip` — never run, never cached, never scored.
+
+    unit_wall_cap: global ceiling on any unit's agent wall budget (seconds,
+    before timeout_scale); see agent_wall_s."""
     import cache  # local import — keeps run_eval importable in environments without cache.py
     if cache_only and not use_cache:
         raise ValueError("cache_only requires use_cache=True (cache_only is meaningless without cache lookup)")
     suite_pin = None
+    manifest = None
     if suite:
         if task_filter is not None:
             raise ValueError("--suite and --tasks are mutually exclusive")
-        suite_pin = load_suite(suite)
-        task_filter = list(suite_pin["units"])
-    diag_on, diag_component, diag_toolchains = diagnostics_flag()
-    # Export explicitly so the agent subprocess and the cache key agree by
-    # construction (same read, §3.4).
-    os.environ["OPENBEAST_DIAGNOSTICS"] = "1" if diag_on else "0"
-    # Pin BOTH spellings: an ambient rig-wide BEAST_ASSIST=1 (conf-enabled)
-    # must never leak into a diag-OFF arm through the alias.
-    os.environ["BEAST_ASSIST"] = "1" if diag_on else "0"
-    # beast-assist per-write latency capture (ship-rule clause that was
-    # unmeasurable in A/B rounds 1-2): point the agent's checker at a
-    # per-run JSONL; summarized into provenance at save time.
-    diag_timing_log = None
-    if diag_on:
-        diag_timing_log = os.path.join(
-            RESULTS_DIR, f"diag-timing-{time.strftime('%Y%m%d-%H%M%S')}.jsonl")
-        os.environ["OPENBEAST_DIAG_TIMING_LOG"] = diag_timing_log
+        loaded = load_suite(suite)
+        if loaded.get("_manifest"):
+            manifest = loaded
+            task_filter = sorted(manifest["by_task"])
+        else:
+            suite_pin = loaded
+            suite = loaded.get("suite", suite)
+            task_filter = list(suite_pin["units"])
+    suite_version = capture_suite_version()
+
+    # --- arms -----------------------------------------------------------
+    arm_specs = dict((manifest or {}).get("arms") or BUILTIN_ARMS)
+    if arms:
+        unknown = [a for a in arms if a not in arm_specs]
+        if unknown:
+            raise SystemExit(f"unknown arm(s) {unknown}; known: {sorted(arm_specs)}")
+        if len(set(arms)) != len(arms):
+            raise SystemExit(f"--arms lists an arm twice: {arms}")
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    if arms:
+        ctxs = [ArmCtx(a, arm_env(arm_specs[a]), RESULTS_DIR, timestamp) for a in arms]
+        board = (manifest or {}).get("board_arm", BOARD_ARM)
+        # The board arm's context, even when this process does not RUN it
+        # (a profile's L1+L2 pass after its L0 pass): shared rows and key
+        # equality are decided against it.
+        base_ctx = next((c for c in ctxs if c.name == board), None) or \
+            ArmCtx(board, arm_env(arm_specs.get(board, {})), RESULTS_DIR, timestamp)
     else:
-        os.environ.pop("OPENBEAST_DIAG_TIMING_LOG", None)
-    # beast-lang escalation (Tier 1.5): derived ONCE, pinned in BOTH spellings
-    # so an ambient BEAST_ESCALATE=1 cannot leak into an escalate-OFF arm. The
-    # facade is silent under OPENBEAST_EVAL unless OPENBEAST_LANG_IN_EVAL=1, so
-    # that second lock is opened HERE and only here, for the arm that carries
-    # the cache component. It folds into the diagnostics component because it
-    # lives inside that block: diag-only rows keep their existing keys.
-    esc_on, esc_component, esc_meta = escalate_flag(diag_on)
-    os.environ["BEAST_ESCALATE"] = "1" if esc_on else "0"
-    os.environ["OPENBEAST_ESCALATE"] = "1" if esc_on else "0"
-    if esc_on:
-        os.environ["OPENBEAST_LANG_IN_EVAL"] = "1"
-        diag_component = f"{diag_component}+{esc_component}"
-    else:
-        os.environ.pop("OPENBEAST_LANG_IN_EVAL", None)
-    # Tier-3 awareness packs: derived ONCE, pinned in both env spellings so
-    # an ambient rig-wide BEAST_PACKS=1 cannot leak into a packs-OFF arm.
-    packs_on, packs_component, packs_meta = packs_flag()
-    os.environ["BEAST_PACKS"] = "1" if packs_on else "0"
-    os.environ["OPENBEAST_PACKS"] = "1" if packs_on else "0"
+        # Legacy single run: the treatment comes from the ambient env, and
+        # is pinned there in BOTH spellings so an ambient rig-wide
+        # BEAST_ASSIST=1 / BEAST_PACKS=1 cannot leak into an OFF run.
+        ctx = ArmCtx(None, os.environ, RESULTS_DIR, timestamp)
+        os.environ["OPENBEAST_DIAGNOSTICS"] = "1" if ctx.diag_on else "0"
+        os.environ["BEAST_ASSIST"] = "1" if ctx.diag_on else "0"
+        os.environ["BEAST_ESCALATE"] = "1" if ctx.esc_on else "0"
+        os.environ["OPENBEAST_ESCALATE"] = "1" if ctx.esc_on else "0"
+        os.environ["BEAST_PACKS"] = "1" if ctx.packs_on else "0"
+        os.environ["OPENBEAST_PACKS"] = "1" if ctx.packs_on else "0"
+        if ctx.esc_on:
+            os.environ["OPENBEAST_LANG_IN_EVAL"] = "1"
+        else:
+            os.environ.pop("OPENBEAST_LANG_IN_EVAL", None)
+        if ctx.timing_log:
+            os.environ["OPENBEAST_DIAG_TIMING_LOG"] = ctx.timing_log
+        else:
+            os.environ.pop("OPENBEAST_DIAG_TIMING_LOG", None)
+        ctxs, base_ctx = [ctx], ctx
+
     tasks = load_tasks(task_filter)
-    if packs_on:
+    if manifest:
+        ceiling = manifest.get("max_iter_ceiling")
         for t in tasks:
-            pack_path = packs_meta["paths"].get(t.get("language"))
-            if pack_path:
-                t["_context_file"] = pack_path
+            u = manifest["by_task"].get(t["id"])
+            if not u:
+                continue
+            # `_` keys: manifest scheduling metadata never enters task_hash.
+            t["_est_s"] = u.get("est_s")
+            t["_max_wall_s"] = u.get("max_wall_s") or suite_manifest.default_wall_s(
+                t.get("difficulty"))
+            t["_role"] = u.get("role", "scored")
+            t["_stratum"] = u.get("stratum")
+            t["_arms"] = list(u.get("arms") or [])
+            t["_manifest_id"] = u["id"]
+            if ceiling and not max_iter_override and (t.get("max_iter") or 15) > ceiling:
+                t["_max_iter_ceiling"] = ceiling
     if suite_pin and len(tasks) != suite_pin["counts"]["units"]:
         raise SystemExit(f"suite {suite!r} resolved to {len(tasks)} units, "
                          f"pin declares {suite_pin['counts']['units']} — pin/tasks drift")
@@ -1618,6 +2093,11 @@ def run_eval(
     gpu_info = capture_gpu_info() if not cache_only else None
     engine_info = capture_inference_engine_info() if not cache_only else None
     server_info = capture_server_config(base_url) if not cache_only else None
+    if not cache_only and not server_info:
+        # Not a local llama-server: record what the endpoint says about
+        # itself, and the DECLARED reasoning budget (vLLM / TensorFold /
+        # remote rows used to fall back to "uncapped" silently).
+        server_info = capture_remote_server_info(base_url, reasoning_budget)
     # Reasoning-budget cache-era component (see cache.cache_key): a finite
     # --reasoning-budget on the live server stamps its value into every
     # cache key so capped and uncapped rows can never replay across eras.
@@ -1661,105 +2141,161 @@ def run_eval(
         print(f"--jobs {jobs} ignored in --cache-only mode (replay is disk-bound)")
         jobs = 1
     if jobs > 1:
-        slots = _fetch_server_slots(base_url)
-        if slots is not None and jobs > slots:
-            print(f"--jobs {jobs} clamped to {slots}: the server exposes {slots} slot(s) (-np); "
+        probed = _fetch_server_slots(base_url)
+        limit = min(x for x in (probed, slots) if x) if (probed or slots) else None
+        if limit is not None and jobs > limit:
+            src = "--slots" if slots and limit == slots and (not probed or slots <= probed) \
+                else "the server"
+            print(f"--jobs {jobs} clamped to {limit}: {src} exposes {limit} slot(s) (-np); "
                   f"excess workers would queue server-side and the wait would count "
                   f"against per-task timeouts (MTP configs force -np 1)")
-            jobs = slots
-        elif slots is None:
-            print(f"WARNING: could not read /props total_slots (gated install?) — "
-                  f"running --jobs {jobs} unclamped; against an -np 1 (MTP) server "
-                  f"this queues and trips per-task timeouts")
+            jobs = limit
+        elif limit is None:
+            print(f"WARNING: could not read /props total_slots (gated install, or not "
+                  f"llama.cpp?) — running --jobs {jobs} unclamped; pass --slots N for a "
+                  f"vLLM/TensorFold server, and against an -np 1 (MTP) server this queues "
+                  f"and trips per-task timeouts")
 
     timeout_scale = contention_scale(jobs)
 
-    os.makedirs(RESULTS_DIR, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    results_path = os.path.join(RESULTS_DIR, f"eval-{model_slug}-{timestamp}.json")
+    if arms and not pair_id:
+        pair_id = f"{model_slug}-{timestamp}"
 
-    print(f"Eval started — {len(tasks)} tasks")
+    def _results_path(c: ArmCtx) -> str:
+        if c.name:
+            return os.path.join(RESULTS_DIR, f"eval-{model_slug}-{c.name}-{timestamp}.json")
+        return os.path.join(RESULTS_DIR, f"eval-{model_slug}-{timestamp}.json")
+
+    print(f"Eval started — {len(tasks)} tasks" + (f" × arms {','.join(arms)}" if arms else ""))
     print(f"Model:  {model_name}")
     print(f"Server: {base_url}")
     if jobs > 1:
-        print(f"Jobs:   {jobs} parallel workers (same-base variants stay sequential; "
-              f"per-iteration timeout ×{timeout_scale:.2f} for contention)")
+        print(f"Jobs:   {jobs} parallel workers (same-base variants stay sequential across "
+              f"arms; longest group first; per-iteration timeout ×{timeout_scale:.2f} for contention)")
     if gpu_info:
         print(f"GPU:    {gpu_info.get('name', '?')} ({gpu_info.get('memory_total_mib', '?')} MiB, driver {gpu_info.get('driver_version', '?')})")
     if engine_info and engine_info.get("build"):
         head = (engine_info.get("source_head") or "")[:9]
         head_note = f"; source HEAD {head}" if head and head != engine_info.get("commit", "") else ""
         print(f"Engine: llama.cpp {engine_info.get('build', '?')} ({engine_info.get('commit', '?')}){head_note}")
-    if server_info:
+    if server_info and server_info.get("cmdline"):
         rb = server_info.get("reasoning_budget", "unlimited (default)")
         print(f"Serve:  -np {server_info.get('parallel_slots', '?')} -c {server_info.get('context', '?')} "
               f"kv {server_info.get('kv_cache_type', '?')} reasoning-budget {rb}")
+    elif server_info:
+        print(f"Serve:  {server_info.get('engine', 'unknown engine')} "
+              f"(via {server_info.get('source')}) reasoning-budget "
+              f"{server_info.get('reasoning_budget', 'undeclared')}")
     if greedy_mode:
         print("Decode: GREEDY (low-churn eval mode — leaderboard-ineligible era)")
-    if diag_on:
-        print(f"Diag:   push-diagnostics ON ({', '.join(diag_toolchains) or 'no toolchains?'}) — "
-              f"cache era {diag_component}")
-    if esc_on:
-        print(f"Escal:  beast-lang escalation ON (treatment {esc_meta['treatment_sha']}, "
-              f"index {esc_meta['index_sha']}) — "
-              f"cache era {esc_component} (leaderboard-ineligible experiment rows)")
-    if packs_on:
-        packed = sum(1 for t in tasks if t.get("_context_file"))
-        print(f"Packs:  awareness packs ON ({', '.join(f'{k}={v}' for k, v in packs_meta['sha'].items())}) — "
-              f"cache era {packs_component} on {packed}/{len(tasks)} units "
-              f"(leaderboard-ineligible experiment rows)")
+    for c in ctxs:
+        tag = f"[{c.name}] " if c.name else ""
+        if c.diag_on:
+            print(f"Diag:   {tag}push-diagnostics ON for {','.join(sorted(c.scope))} units "
+                  f"({', '.join(c.diag_toolchains) or 'no toolchains?'}) — cache era {c.diag_base}")
+        if c.esc_on:
+            print(f"Escal:  {tag}beast-lang escalation ON (treatment {c.esc_meta['treatment_sha']}, "
+                  f"index {c.esc_meta['index_sha']}) — "
+                  f"cache era {c.esc_component} (leaderboard-ineligible experiment rows)")
+        if c.packs_on:
+            packed = sum(1 for t in tasks if c.pack_path(t))
+            print(f"Packs:  {tag}awareness packs ON ({', '.join(f'{k}={v}' for k, v in c.packs_meta['sha'].items())}) — "
+                  f"cache era {c.packs_component} on {packed}/{len(tasks)} units "
+                  f"(leaderboard-ineligible experiment rows)")
     if suite_pin:
         c = suite_pin["counts"]
         print(f"Suite:  {suite} ({c['units']} pinned units = {c['discriminating']} discriminating "
               f"+ {c['tripwires']} tripwires; {c['assumed_passed'] + c['assumed_failed']} imputed; "
-              f"leaderboard-ineligible partial of v4)")
-    print(f"Results: {results_path}")
+              f"leaderboard-ineligible partial of {suite_pin.get('base_suite_version', 'v4')})")
+    if manifest:
+        n_sc = sum(1 for t in tasks if t.get("_role") == "scored")
+        print(f"Suite:  {manifest['suite']} manifest ({n_sc} scored + {len(tasks) - n_sc} probe "
+              f"units; no imputation)")
+    if deadline:
+        print(f"Budget: units starting after {datetime.fromtimestamp(deadline):%H:%M:%S} "
+              f"are recorded as budget_skip (never scored)")
+    for c in ctxs:
+        print(f"Results{' [' + c.name + ']' if c.name else ''}: {_results_path(c)}")
     print("=" * 60)
 
-    results = {
-        "timestamp": datetime.now().isoformat(),
-        "model": model_name,
-        "model_slug": model_slug,
-        "base_url": base_url,
-        "suite_version": capture_suite_version(),
-        "gpu": gpu_info,
-        "inference_engine": engine_info,
-        "server": server_info,
-        "runtime": capture_runtime_info(),
-        "jobs": jobs,
-        "suite_selection": suite,
-        "cache_only": cache_only,
-        "harness": {"diagnostics": diag_on,
-                    # The eval era (scripts/eval-era.sh): rows either side of
-                    # a change to it are not comparable, and until this was
-                    # stamped the board could only infer it from cache keys.
-                    "era": cache.current_era(),
-                    "greedy": greedy_mode,
-                    "packs": dict(packs_meta.get("sha", {})) if packs_on else {},
-                    **({"packs_component": packs_component} if packs_on else {}),
-                    **({"escalate": esc_meta, "escalate_component": esc_component}
-                       if esc_on else {}),
-                    **({"toolchains": diag_toolchains} if diag_on else {}),
-                    **({"rb_component": rb_component} if rb_component else {}),
-                    **({"env_component": env_component, "env": env_info,
-                        "env_in_cache_key": bool(env_key)} if env_component else {})},
-        "tasks": [],
-        "summary": {"total": len(tasks), "passed": 0, "failed": 0},
-    }
+    def _harness(c: ArmCtx) -> dict:
+        h = {"diagnostics": c.diag_on,
+             # The eval era (scripts/eval-era.sh): rows either side of
+             # a change to it are not comparable, and until this was
+             # stamped the board could only infer it from cache keys.
+             "era": cache.current_era(),
+             "greedy": greedy_mode,
+             "packs": dict(c.packs_meta.get("sha", {})) if c.packs_on else {},
+             **({"packs_component": c.packs_component} if c.packs_on else {}),
+             **({"escalate": c.esc_meta, "escalate_component": c.esc_component}
+                if c.esc_on else {}),
+             **({"toolchains": c.diag_toolchains,
+                 "diag_scope": sorted(c.scope)} if c.diag_on else {}),
+             **({"rb_component": rb_component} if rb_component else {}),
+             **({"env_component": env_component, "env": env_info,
+                 "env_in_cache_key": bool(env_key)} if env_component else {}),
+             **({"unit_wall_cap": unit_wall_cap} if unit_wall_cap else {})}
+        if c.name:
+            h.update({"arm": c.name, "arm_label": c.label(), "pair_id": pair_id,
+                      "arms_in_process": list(arms), "board_arm": base_ctx.name,
+                      **({"arm_meta": arm_meta[c.name]} if arm_meta and c.name in arm_meta else {})})
+        if deadline:
+            h["deadline"] = deadline
+        return h
 
-    state_lock = threading.Lock()   # results dict + counters + results file
+    states: dict[str | None, dict] = {}
+    for c in ctxs:
+        states[c.name] = {
+            "ctx": c,
+            "path": _results_path(c),
+            "results": {
+                "timestamp": datetime.now().isoformat(),
+                "model": model_name,
+                "model_slug": model_slug,
+                "base_url": base_url,
+                "suite_version": suite_version,
+                "gpu": gpu_info,
+                "inference_engine": engine_info,
+                "server": server_info,
+                "runtime": capture_runtime_info(),
+                "jobs": jobs,
+                "suite_selection": suite if suite_pin else None,
+                **({"suite_manifest": manifest["suite"]} if manifest else {}),
+                "cache_only": cache_only,
+                "harness": _harness(c),
+                "tasks": [],
+                "summary": {"total": len(tasks), "passed": 0, "failed": 0},
+            },
+            "indexed": {},
+            "counters": {"cache_hits": 0, "cache_misses_skipped": 0, "aborted_skips": 0,
+                         "env_drift_replays": 0, "shared": 0, "not_in_arm": 0,
+                         "budget_skips": 0},
+        }
+
+    state_lock = threading.Lock()   # results dicts + counters + results files
     print_lock = threading.Lock()   # whole-task output blocks in parallel mode
     health_lock = threading.Lock()  # one recovery attempt at a time
     abort = threading.Event()       # set on failed recovery — stop starting units
-    indexed: dict[int, dict] = {}   # original task index → recorded result
-    counters = {"cache_hits": 0, "cache_misses_skipped": 0, "aborted_skips": 0,
-                "env_drift_replays": 0}
+    n_arms = len(ctxs)
 
-    def process(idx: int, task: dict, log) -> dict | None:
-        """One unit end-to-end: cache check → health → setup → agent →
-        validate → record → cache → cleanup. Returns the recorded result,
+    def effective_max_iter_of(task: dict) -> int:
+        mi = max_iter_override or task.get("max_iter", 15)
+        if task.get("_max_iter_ceiling"):
+            mi = min(mi, task["_max_iter_ceiling"])
+        return mi
+
+    def key_for(task: dict, c: ArmCtx) -> str:
+        return cache.cache_key(task, model_slug, max_iter=effective_max_iter_of(task),
+                               diag=c.diag_for(task), rb=rb_component,
+                               greedy=greedy_mode, pack=c.pack_for(task), env=env_key)
+
+    def process(idx: int, task: dict, log, c: ArmCtx) -> dict | None:
+        """One (unit, arm) end-to-end: cache check → health → setup → agent
+        → validate → record → cache → cleanup. Returns the recorded result,
         or None when skipped because the run aborted. `log` collects output
         lines in parallel mode so each unit's block prints contiguously."""
+        st = states[c.name]
+        counters = st["counters"]
         if abort.is_set():
             with state_lock:
                 counters["aborted_skips"] += 1
@@ -1768,8 +2304,9 @@ def run_eval(
         task_id = task["id"]
         task_name = task.get("name", task_id)
         difficulty = task.get("difficulty", "?")
+        arm_tag = f" [{c.name}]" if c.name else ""
 
-        log(f"\n[{idx + 1}/{len(tasks)}] {task_name} ({difficulty})")
+        log(f"\n[{idx + 1}/{len(tasks)}]{arm_tag} {task_name} ({difficulty})")
         log(f"  Task: {task['task'][:80]}...")
 
         def record(result: dict) -> dict:
@@ -1779,23 +2316,62 @@ def run_eval(
                 result.setdefault("variant_id", task["variant_id"])
                 result.setdefault("language", task["language"])
                 result.setdefault("variant_count", task["variant_count"])
+            # role/stratum: the manifest's, else the task JSON's own
+            # optional fields (a task may declare itself a probe).
+            role = task.get("_role") or task.get("role")
+            if role:
+                result["role"] = role
+            stratum = task.get("_stratum") or task.get("stratum")
+            if stratum:
+                result["stratum"] = stratum
+            if c.name:
+                result["arm"] = c.name
             with state_lock:
-                indexed[idx] = result
-                if result.get("passed"):
-                    results["summary"]["passed"] += 1
+                st["indexed"][idx] = result
+                if result.get("reason") in (NOT_IN_ARM, BUDGET_SKIP):
+                    pass                                  # not an outcome
+                elif result.get("passed"):
+                    st["results"]["summary"]["passed"] += 1
                 else:
-                    results["summary"]["failed"] += 1
+                    st["results"]["summary"]["failed"] += 1
                 # Keep results in task order regardless of completion order,
                 # and persist incrementally — a crash mid-sweep must not lose
                 # the tasks already completed.
-                results["tasks"] = [indexed[k] for k in sorted(indexed)]
-                _write_results(results_path, results)
+                st["results"]["tasks"] = [st["indexed"][k] for k in sorted(st["indexed"])]
+                _write_results(st["path"], st["results"])
             return result
 
-        # The iteration budget the agent will actually run with — part of
-        # the cache key (a 5-iter capped run is a different experiment from
-        # a 15-iter one).
-        effective_max_iter = max_iter_override or task.get("max_iter", 15)
+        effective_max_iter = effective_max_iter_of(task)
+
+        # Arms: a pair whose request is byte-identical to the board arm's
+        # (same key) is the SAME experiment — copy the board arm's row
+        # rather than re-roll it (a re-roll would read as a discordant pair
+        # caused by nothing). A pair the plan excludes is not measured.
+        if c.name and c is not base_ctx:
+            if key_for(task, c) == key_for(task, base_ctx):
+                base_row = None
+                if base_ctx.name in states:
+                    base_row = states[base_ctx.name]["indexed"].get(idx)
+                if base_row is None and use_cache:
+                    base_row = cache.cache_get(key_for(task, base_ctx))
+                if base_row is not None:
+                    row = dict(base_row)
+                    row["shared_from"] = base_ctx.name
+                    row.pop("arm", None)
+                    with state_lock:
+                        counters["shared"] += 1
+                    log(f"  SHARED from {base_ctx.name} (identical request)")
+                    return record(row)
+            allowed = (arm_units or {}).get(c.name)
+            planned = task.get("_arms")
+            if (allowed is not None and task_id not in allowed) or \
+                    (allowed is None and planned is not None and c.name not in planned):
+                with state_lock:
+                    counters["not_in_arm"] += 1
+                log(f"  NOT IN ARM {c.name} (plan)")
+                return record({"id": task_id, "name": task_name, "difficulty": difficulty,
+                               "model": model_name, "passed": False, "reason": NOT_IN_ARM,
+                               "elapsed_seconds": 0})
 
         # Cache check — same task spec + same model + same max_iter + same
         # agent context = same answer. Saves the agent run and the validation
@@ -1803,11 +2379,7 @@ def run_eval(
         # land for any downstream inspection.
         ck = None
         if use_cache:
-            ck = cache.cache_key(task, model_slug, max_iter=effective_max_iter,
-                                 diag=diag_component, rb=rb_component,
-                                 greedy=greedy_mode,
-                                 pack=packs_component if task.get("_context_file") else None,
-                                 env=env_key)
+            ck = key_for(task, c)
             cached = cache.cache_get(ck)
             if cached is not None:
                 cached = dict(cached)
@@ -1832,6 +2404,16 @@ def run_eval(
                 "elapsed_seconds": 0,
                 "from_cache": False,
             })
+
+        # Global deadline (profile --budget-h): a unit that has not started
+        # is not a failure, it is unmeasured.
+        if deadline is not None and time.time() >= deadline:
+            with state_lock:
+                counters["budget_skips"] += 1
+            log("  BUDGET SKIP (deadline reached before this unit started)")
+            return record({"id": task_id, "name": task_name, "difficulty": difficulty,
+                           "model": model_name, "passed": False, "reason": BUDGET_SKIP,
+                           "elapsed_seconds": 0})
 
         # Free-space floor before each live unit: a disk filled mid-sweep
         # (a research quantize) turns every following unit into an ENOSPC
@@ -1889,10 +2471,19 @@ def run_eval(
                 "elapsed_seconds": 0,
             })
 
-        # Run agent
+        # Run agent (the arm's pack, if this unit's language has one)
         log("  Running agent...")
-        agent_result = run_agent(task, base_url, max_iter_override,
-                                 timeout_scale=timeout_scale)
+        run_task = dict(task)
+        pack_path = c.pack_path(task)
+        if pack_path:
+            run_task["_context_file"] = pack_path
+        else:
+            run_task.pop("_context_file", None)
+        agent_result = run_agent(run_task, base_url,
+                                 effective_max_iter,
+                                 timeout_scale=timeout_scale,
+                                 env_overlay=c.env_overlay(task),
+                                 wall_s=agent_wall_s(task, effective_max_iter, unit_wall_cap))
         log(f"  Agent finished in {agent_result['elapsed_seconds']}s")
 
         # Re-assert fixtures (no-op unless task declares pre_validate).
@@ -1991,9 +2582,11 @@ def run_eval(
         #     verdict needs the model to have actually spoken.
         #   server_error / env_error / validator_timeout: see the
         #     infra_reason block above and cacheable_result.
+        # The row is cached WITHOUT the arm label: the arm is not part of
+        # the key (two arms with one key are one experiment).
         if use_cache and cacheable_result(result):
             try:
-                cache.cache_put(ck, result)
+                cache.cache_put(ck, {k: v for k, v in result.items() if k != "arm"})
                 cache.env_error_strikes_clear(ck)
             except Exception as e:
                 log(f"  (cache write failed: {e})")
@@ -2002,115 +2595,169 @@ def run_eval(
         run_cleanup(task, log=log)
         return result
 
-    if jobs == 1:
+    # --- scheduling ---------------------------------------------------------
+    # Jobs = (unit, arm). Grouped by base task (variants share a /tmp/eval_*
+    # fixture dir): a group serializes on one worker ACROSS ARMS, with the
+    # arms of each unit adjacent; distinct groups parallelize.
+    grouped: dict[str, list[tuple[int, dict, ArmCtx]]] = {}
+    for idx, task in enumerate(tasks):
+        g = grouped.setdefault(task.get("base_id", task["id"]), [])
+        for c in ctxs:
+            g.append((idx, task, c))
+    groups = list(grouped.values())
+
+    prior: dict = {}
+    if jobs > 1 and use_cache:
+        # Prior measured time for units with no est_s (the v4 suite): the
+        # board-arm key's banked elapsed_seconds.
         for idx, task in enumerate(tasks):
-            process(idx, task, log=print)
+            if task.get("_est_s") or task.get("est_s"):
+                continue
+            try:
+                row = cache.cache_get(key_for(task, base_ctx))
+            except Exception:  # noqa: BLE001
+                row = None
+            if row and row.get("elapsed_seconds"):
+                prior[task["id"]] = row["elapsed_seconds"]
+
+    def _job_weight(job) -> float:
+        _idx, task, c = job
+        planned = task.get("_arms")
+        if c.name and planned is not None and c.name not in planned:
+            return 0.0
+        return unit_est_s(task, prior)
+
+    if jobs == 1:
+        for g in groups:
+            for idx, task, c in g:
+                process(idx, task, log=print, c=c)
+                if abort.is_set():
+                    break
             if abort.is_set():
-                remaining = len(tasks) - (idx + 1)
+                remaining = len(tasks) * n_arms - sum(len(s["indexed"]) for s in states.values())
                 if remaining:
                     print(f"  ({remaining} remaining tasks skipped)")
                 break
     else:
-        # Units grouped by base task: variants share a /tmp/eval_* fixture
-        # dir, so each group serializes on one worker; distinct groups
-        # parallelize. Dict order preserves the original task order.
-        groups: dict[str, list[tuple[int, dict]]] = {}
-        for idx, task in enumerate(tasks):
-            groups.setdefault(task.get("base_id", task["id"]), []).append((idx, task))
+        groups = order_groups_longest_first(groups, _job_weight)
 
-        def run_group(units: list[tuple[int, dict]]) -> None:
-            for idx, task in units:
+        def run_group(units: list[tuple[int, dict, ArmCtx]]) -> None:
+            for idx, task, c in units:
                 lines: list[str] = []
-                process(idx, task, log=lines.append)
+                process(idx, task, log=lines.append, c=c)
                 if lines:
                     with print_lock:
                         print("\n".join(lines))
 
         with ThreadPoolExecutor(max_workers=jobs) as pool:
-            for fut in [pool.submit(run_group, g) for g in groups.values()]:
+            for fut in [pool.submit(run_group, g) for g in groups]:
                 fut.result()
 
-    # Final save (atomic; also covers the zero-task edge case)
-    # beast-assist latency summary (ship-rule clause: p95 per-write <= 1s).
-    # Read back the agent-side JSONL, fold percentiles into provenance.
-    if diag_timing_log and os.path.exists(diag_timing_log):
+    # --- per-arm finalization --------------------------------------------------
+    out_by_arm = {}
+    for c in ctxs:
+        st = states[c.name]
+        results, counters, indexed = st["results"], st["counters"], st["indexed"]
+        results_path = st["path"]
+        # beast-assist latency + exposure (ship-rule clause: p95 per-write
+        # <= 1s; exposure tells "never fired" from "no effect").
         try:
-            _ms = sorted(json.loads(ln)["ms"] for ln in open(diag_timing_log)
-                         if ln.strip())
-            if _ms:
-                def _pct(q: float) -> float:
-                    return _ms[min(len(_ms) - 1, int(q * len(_ms)))]
-                results["harness"]["diag_latency_ms"] = {
-                    "n": len(_ms), "p50": _pct(.5), "p95": _pct(.95),
-                    "p99": _pct(.99), "max": _ms[-1]}
-                print(f"Diag latency: n={len(_ms)} p50={_pct(.5):.0f}ms "
-                      f"p95={_pct(.95):.0f}ms p99={_pct(.99):.0f}ms max={_ms[-1]:.0f}ms")
-        except (json.JSONDecodeError, OSError, KeyError) as e:
+            lat, exposure = _summarize_diag_log(c.timing_log)
+        except OSError as e:
+            lat, exposure = None, None
             print(f"Diag latency summary unavailable: {e}")
+        if lat:
+            results["harness"]["diag_latency_ms"] = lat
+            print(f"Diag latency{' [' + c.name + ']' if c.name else ''}: n={lat['n']} "
+                  f"p50={lat['p50']:.0f}ms p95={lat['p95']:.0f}ms p99={lat['p99']:.0f}ms "
+                  f"max={lat['max']:.0f}ms")
+        if exposure is not None:
+            results["harness"]["diag_exposure"] = exposure
 
-    # How many units actually ran the model (benchmark_all skips its
-    # thermal cool-off when this is 0, i.e. a full cache replay).
-    results["summary"]["cache_hits"] = counters["cache_hits"]
-    # Rows recorded without invoking the agent (a disk-floor abort, a
-    # failed recovery, a fixture setup failure) put no load on the GPU.
-    no_agent = sum(1 for r in indexed.values() if r.get("reason") in NO_AGENT_REASONS)
-    results["summary"]["live_units"] = (len(indexed) - counters["cache_hits"]
-                                        - counters["cache_misses_skipped"] - no_agent)
-    # The era is re-read per unit (cache._context_hash_cached validates on
-    # stat), so a tree change mid-run keys later rows under the NEW era while
-    # this file is stamped with the start era. Say so rather than hide it.
-    era_now = cache.current_era()
-    if era_now != results["harness"].get("era"):
-        results["harness"]["era_moved_to"] = era_now
-        print(f"ERA MOVED DURING THE RUN: {results['harness'].get('era')} -> "
-              f"{era_now}. Rows either side are not comparable; rerun this model.",
-              file=sys.stderr)
-    _write_results(results_path, results)
-
-    # Print summary
-    s = results["summary"]
-    print(f"\n{'=' * 60}")
-    print(f"Results: {s['passed']}/{s['total']} passed, {s['failed']} failed")
-    cache_hits = counters["cache_hits"]
-    cache_misses_skipped = counters["cache_misses_skipped"]
-    if use_cache and cache_hits:
-        print(f"Cache hits: {cache_hits}/{s['total']} ({100*cache_hits//max(1,s['total'])}% replay)")
-    if counters["env_drift_replays"]:
-        results["summary"]["env_drift_replays"] = counters["env_drift_replays"]
+        # How many units actually ran the model (benchmark_all skips its
+        # thermal cool-off when this is 0, i.e. a full cache replay).
+        results["summary"]["cache_hits"] = counters["cache_hits"]
+        if c.name:
+            results["summary"].update({"shared": counters["shared"],
+                                       "not_in_arm": counters["not_in_arm"]})
+        if counters["budget_skips"]:
+            results["summary"]["budget_skips"] = counters["budget_skips"]
+        # Rows recorded without invoking the agent (a disk-floor abort, a
+        # failed recovery, a fixture setup failure) put no load on the GPU.
+        no_agent = sum(1 for r in indexed.values()
+                       if r.get("reason") in NO_AGENT_REASONS | {NOT_IN_ARM, BUDGET_SKIP}
+                       or r.get("shared_from"))
+        results["summary"]["live_units"] = (len(indexed) - counters["cache_hits"]
+                                            - counters["cache_misses_skipped"] - no_agent)
+        # The era is re-read per unit (cache._context_hash_cached validates on
+        # stat), so a tree change mid-run keys later rows under the NEW era while
+        # this file is stamped with the start era. Say so rather than hide it.
+        era_now = cache.current_era()
+        if era_now != results["harness"].get("era"):
+            results["harness"]["era_moved_to"] = era_now
+            print(f"ERA MOVED DURING THE RUN: {results['harness'].get('era')} -> "
+                  f"{era_now}. Rows either side are not comparable; rerun this model.",
+                  file=sys.stderr)
         _write_results(results_path, results)
-        print(f"ENV DRIFT: {counters['env_drift_replays']} replayed row(s) were banked under a "
-              f"different (or unrecorded) weights/engine/toolchain environment than {env_component}. "
-              f"Set OPENBEAST_EVAL_ENV_ERA=1 to key the cache on it.")
-    if cache_only and cache_misses_skipped:
-        print(f"Cache misses skipped: {cache_misses_skipped}/{s['total']} ({100*cache_misses_skipped//max(1,s['total'])}%)")
-    if counters["aborted_skips"]:
-        print(f"Aborted: {counters['aborted_skips']} tasks skipped after server loss")
-    if suite_pin and not counters["aborted_skips"] and not counters["cache_misses_skipped"]:
+
+        # Print summary
+        s = results["summary"]
+        print(f"\n{'=' * 60}")
+        print(f"Results{' [' + c.name + ' ' + c.label() + ']' if c.name else ''}: "
+              f"{s['passed']}/{s['total']} passed, {s['failed']} failed")
+        cache_hits = counters["cache_hits"]
+        if use_cache and cache_hits:
+            print(f"Cache hits: {cache_hits}/{s['total']} ({100*cache_hits//max(1,s['total'])}% replay)")
+        if c.name and (counters["shared"] or counters["not_in_arm"]):
+            print(f"Shared from {base_ctx.name}: {counters['shared']}; "
+                  f"not measured in this arm: {counters['not_in_arm']}")
+        if counters["env_drift_replays"]:
+            results["summary"]["env_drift_replays"] = counters["env_drift_replays"]
+            _write_results(results_path, results)
+            print(f"ENV DRIFT: {counters['env_drift_replays']} replayed row(s) were banked under a "
+                  f"different (or unrecorded) weights/engine/toolchain environment than {env_component}. "
+                  f"Set OPENBEAST_EVAL_ENV_ERA=1 to key the cache on it.")
+        if cache_only and counters["cache_misses_skipped"]:
+            print(f"Cache misses skipped: {counters['cache_misses_skipped']}/{s['total']} "
+                  f"({100*counters['cache_misses_skipped']//max(1,s['total'])}%)")
+        if counters["aborted_skips"]:
+            print(f"Aborted: {counters['aborted_skips']} tasks skipped after server loss")
+        if counters["budget_skips"]:
+            print(f"Budget: {counters['budget_skips']} unit(s) never started (budget_skip, not scored)")
         import scoring  # local import, like cache — keeps import surface lazy
-        trip_failed = [t["id"] for t in results["tasks"]
-                       if not t.get("passed") and t["id"] in set(suite_pin["tripwires"])]
-        imputed = scoring.impute_suite_tasks(results["tasks"], suite_pin)
-        solve, lang, cap = scoring.compute_solve_breadth(imputed)
-        results["fast_suite"] = {
-            "suite": suite,
-            "capability_imputed": cap,
-            "problem_solving_imputed": solve,
-            "language_breadth_imputed": lang,
-            "imputed_units": len(imputed) - len(results["tasks"]),
-            "tripwire_failures": trip_failed,
-        }
-        _write_results(results_path, results)
-        print(f"Imputed capability (v4-leaderboard scale): {cap:.2f} "
-              f"(solve {solve:.2f} / breadth {lang:.2f}; "
-              f"{results['fast_suite']['imputed_units']} saturated units imputed)")
-        if trip_failed:
-            print(f"TRIPWIRE FAILURES ({len(trip_failed)}): {', '.join(trip_failed)}")
-            print("  This model breaks the suite's saturation assumption — the imputed "
-                  "score above is NOT trustworthy. Run the full v4 suite.")
-    print(f"Saved to: {results_path}")
-    print(f"{'=' * 60}")
+        if (suite_pin and not counters["aborted_skips"] and not counters["cache_misses_skipped"]
+                and scoring.imputation_allowed(suite_version, c.name)):
+            trip_failed = [t["id"] for t in results["tasks"]
+                           if not t.get("passed") and t["id"] in set(suite_pin["tripwires"])]
+            imputed = scoring.impute_suite_tasks(results["tasks"], suite_pin)
+            solve, lang, cap = scoring.compute_solve_breadth(imputed)
+            results["fast_suite"] = {
+                "suite": suite,
+                "capability_imputed": cap,
+                "problem_solving_imputed": solve,
+                "language_breadth_imputed": lang,
+                "imputed_units": len(imputed) - len(results["tasks"]),
+                "tripwire_failures": trip_failed,
+            }
+            _write_results(results_path, results)
+            print(f"Imputed capability (v4-leaderboard scale): {cap:.2f} "
+                  f"(solve {solve:.2f} / breadth {lang:.2f}; "
+                  f"{results['fast_suite']['imputed_units']} saturated units imputed)")
+            if trip_failed:
+                print(f"TRIPWIRE FAILURES ({len(trip_failed)}): {', '.join(trip_failed)}")
+                print("  This model breaks the suite's saturation assumption — the imputed "
+                      "score above is NOT trustworthy. Run the full v4 suite.")
+        elif suite_pin:
+            print(f"No imputed score: imputation is retired for suite {suite_version}"
+                  f"{' and for every arm' if c.name else ''} (measured units only)")
+        print(f"Saved to: {results_path}")
+        print(f"{'=' * 60}")
+        out_by_arm[c.name] = results
 
-    return results
+    if not arms:
+        return out_by_arm[None]
+    return {"arms": out_by_arm, "pair_id": pair_id,
+            "paths": {c.name: states[c.name]["path"] for c in ctxs}}
 
 
 def main():
@@ -2120,44 +2767,85 @@ def main():
     # slot and writing the task's fixtures while the next launch re-ran it.
     _install_signal_reaper()
     parser = argparse.ArgumentParser(description="Run eval tasks against local LLM")
-    parser.add_argument("--tasks", help="Comma-separated task IDs to run (default: all)")
+    parser.add_argument("--tasks", help="Comma-separated task IDs to run (default: the current "
+                        "suite's manifest, evals/suites/<SUITE_VERSION>.json)")
+    parser.add_argument("--all-tasks", action="store_true",
+                        help="Run every task file in evals/tasks/ (the v4 rule), not the "
+                             "current suite's manifest")
     parser.add_argument("--base-url", default="http://localhost:8080/v1", help="API base URL")
+    parser.add_argument("--api-key-env",
+                        help="Name of an env var holding the endpoint's bearer key (e.g. a "
+                             "remote vLLM). Exported to the agent as OPENBEAST_API_KEY, and "
+                             "--base-url is marked as this install's inference endpoint so "
+                             "the runner sends it there.")
     parser.add_argument("--max-iter", type=int, help="Override max iterations for all tasks")
     parser.add_argument("--model-name", help="Override model name (default: auto-detect from /v1/models)")
     parser.add_argument("--list", action="store_true", help="List available tasks and exit")
     parser.add_argument("--no-cache", action="store_true", help="Disable result cache (force live run)")
     parser.add_argument("--cache-only", action="store_true",
                         help="Replay cache only — skip live runs entirely. Cache misses recorded as 'skipped_cache_miss'.")
-    parser.add_argument("--suite", help="Run a pinned suite subset from evals/suites/ "
-                        "(e.g. v5-fast). Mutually exclusive with --tasks; results are "
-                        "leaderboard-ineligible and scored via imputation on the v4 scale.")
+    parser.add_argument("--suite", help="Run a suite from evals/suites/: a v5 manifest (v5) or a "
+                        "pinned v4 subset (v4-fast; imputation-scored, v4 only). Mutually "
+                        "exclusive with --tasks.")
     parser.add_argument("--reasoning-budget",
                         help="--cache-only: the reasoning-budget era to replay (e.g. 20480; "
-                             "-1 = uncapped). Default: the model's last live run.")
+                             "-1 = uncapped). Default: the model's last live run. On a LIVE run "
+                             "against a non-llama server (vLLM, TensorFold, remote): the "
+                             "budget the server runs with, declared (0 = thinking off).")
     parser.add_argument("--jobs", type=int, default=1,
                         help="Parallel eval workers (default 1). Needs a server with -np >= N "
                              "(clamped to /props total_slots when readable; MTP configs are -np 1). "
                              "Variants of the same base task always run sequentially — they share "
                              "/tmp fixtures — so scores stay comparable to sequential runs.")
+    parser.add_argument("--slots", type=int,
+                        help="The server's concurrent-request limit when /props cannot say "
+                             "(vLLM max_num_seqs, TensorFold): --jobs is clamped to it.")
+    parser.add_argument("--arms",
+                        help="Comma-separated arms to run in THIS process (e.g. L0,L1,L2; "
+                             "defined by the suite manifest, else L0 bare / L1 packs / "
+                             "L2 packs+diag+escalate). Results go to eval-<slug>-<arm>-<ts>.json "
+                             "with harness.arm and a shared harness.pair_id.")
+    parser.add_argument("--unit-wall-cap", type=float,
+                        help="Ceiling (s, before the --jobs timeout scale) on any unit's agent "
+                             "wall budget; tightens per-unit max_wall_s, never loosens it.")
+    parser.add_argument("--deadline-h", type=float,
+                        help="Units that would start live after this many hours from now are "
+                             "recorded as budget_skip (never scored). evals/profile.py sets it.")
     parser.add_argument("--packs", action="store_true",
                         help="Tier-3 language awareness packs (docs/LANG_AWARENESS_PLAN.md §5): "
                              "inject agents/packs/<lang>.md into the agent system prompt for units "
                              "whose language has a pack (zig only today). Own pack1-<sha8> cache "
                              "era on those units; leaderboard-ineligible. Same as BEAST_PACKS=1.")
+    parser.add_argument("--diag", action="store_true",
+                        help="beast-assist push diagnostics for units in assist scope "
+                             "(compiled languages + shell; OPENBEAST_DIAG_LANGS overrides). "
+                             "Own diag2-<sha8> cache era on those units; leaderboard-ineligible. "
+                             "Same as BEAST_ASSIST=1.")
     parser.add_argument("--escalate", action="store_true",
                         help="beast-lang escalation (docs/BEAST_LANG_PLAN.md §7 P4): when the "
                              "push-diagnostics checker reports an error with a toolchain-CONFIRMED "
                              "known cause, attach the one-line fix to the same tool result. Needs "
-                             "BEAST_ASSIST=1. Own esc1-<sha8> cache era; leaderboard-ineligible. "
+                             "--diag / BEAST_ASSIST=1. Own esc1-<sha8> cache era; leaderboard-ineligible. "
                              "Same as BEAST_ESCALATE=1.")
     args = parser.parse_args()
 
     if args.jobs < 1:
         parser.error("--jobs must be >= 1")
+    arms = [a.strip() for a in args.arms.split(",") if a.strip()] if args.arms else None
+    if arms and (args.packs or args.diag or args.escalate):
+        parser.error("--arms defines each arm's treatment; drop --packs/--diag/--escalate")
     if args.packs:
         os.environ["BEAST_PACKS"] = "1"
+    if args.diag:
+        os.environ["BEAST_ASSIST"] = "1"
     if args.escalate:
         os.environ["BEAST_ESCALATE"] = "1"
+    if args.api_key_env:
+        key = os.environ.get(args.api_key_env, "")
+        if not key:
+            parser.error(f"--api-key-env {args.api_key_env}: that variable is empty")
+        os.environ["OPENBEAST_API_KEY"] = key
+        os.environ["OPENBEAST_AGENT_INFERENCE_URL"] = args.base_url
 
     if args.list:
         tasks = load_tasks()
@@ -2173,6 +2861,12 @@ def main():
     if args.cache_only and args.no_cache:
         print("--cache-only and --no-cache are mutually exclusive.", file=sys.stderr)
         sys.exit(2)
+    suite = args.suite
+    if not suite and not task_filter and not args.all_tasks:
+        suite = default_suite()
+        if suite:
+            print(f"Suite {suite}: running the manifest (evals/suites/{suite}.json); "
+                  f"--all-tasks runs every task file")
     results = run_eval(
         task_filter=task_filter,
         base_url=args.base_url,
@@ -2181,12 +2875,17 @@ def main():
         use_cache=not args.no_cache,
         cache_only=args.cache_only,
         jobs=args.jobs,
-        suite=args.suite,
+        suite=suite,
         reasoning_budget=args.reasoning_budget,
+        arms=arms,
+        slots=args.slots,
+        unit_wall_cap=args.unit_wall_cap,
+        deadline=(time.time() + args.deadline_h * 3600) if args.deadline_h else None,
     )
 
     # Exit with failure if any task failed
-    if results and results["summary"]["failed"] > 0:
+    runs = list((results or {}).get("arms", {}).values()) if arms else [results]
+    if any(r and r["summary"]["failed"] > 0 for r in runs):
         sys.exit(1)
 
 

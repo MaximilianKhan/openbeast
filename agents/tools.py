@@ -624,6 +624,15 @@ def bash(command: str, timeout: int = 120) -> str:
         # shell command in a kernel-level sandbox. Unset (the default and
         # the eval-validated configuration) runs the command directly.
         # Read per-call so a server doesn't need a restart to toggle it.
+        sealed = _seal_command_refusal(command)
+        if sealed:
+            return sealed
+        # Under eval, confine the shell so a read of the sealed trees fails in
+        # the kernel, not just on a command-text match (reported on 164/U4).
+        seal_prefix = _eval_read_deny_prefix()
+        if seal_prefix:
+            command = " ".join(shlex.quote(a) for a in seal_prefix) + \
+                f" /bin/sh -c {shlex.quote(command)}"
         wrapper = os.environ.get("OPENBEAST_BASH_WRAPPER", "").strip()
         if wrapper:
             command = f"{wrapper} /bin/sh -c {shlex.quote(command)}"
@@ -758,11 +767,14 @@ def _case_key(p: str) -> str:
 def _guard_write_path(path: str):
     """Return an error string if `path` is a protected credential/persistence
     target, else None. Applied to write_file / edit_file only — reads stay
-    open (an agent may legitimately read config).
+    open (an agent may legitimately read config), except the eval seal.
 
     On a case-insensitive filesystem (macOS's default APFS) realpath keeps
     the caller's spelling, so every comparison is made on case-folded paths
     there — ~/.SSH/authorized_keys opens the real ~/.ssh."""
+    sealed = _seal_refusal(path)
+    if sealed:
+        return sealed
     rp = os.path.realpath(os.path.expanduser(path))
     home = os.path.realpath(os.path.expanduser("~"))
     k = _case_key
@@ -802,6 +814,119 @@ def _guard_write_path(path: str):
     return None
 
 
+# ---------------------------------------------------------------------------
+# Oracle seal (v5 eval brief §6.3). While a unit is MEASURED (OPENBEAST_EVAL=1,
+# set by evals/run_eval.py in every agent child) the agent's tools refuse the
+# eval suite's own answer key: evals/tasks/ (every validator, hence every
+# hidden-test generator and oracle), evals/refs/ (reference solutions) and
+# evals/suites/ (the manifest). A v4 agent could `read_file` the JSON of the
+# very task it was solving. Production agents (no marker) are unaffected.
+# File tools refuse by resolved path; grep and list_files drop sealed paths
+# from results. For bash, the textual check alone was bypassable by shell
+# quote-splitting (`cat ta""sks/164.json`, `git show HEAD:evals/re""fs/...`,
+# `cd evals; cat tasks/*`) — reported on 164. So under eval, the bash command
+# is additionally run inside a sandbox that DENIES READS of the sealed trees by
+# construction (macOS sandbox-exec; Linux Landlock where the host offers it),
+# and the text check is applied to a quote-stripped copy of the command and
+# extended to `git` blob refs (`:evals/...`). The sealed paths never enter a
+# unit's OPENBEAST_TASK_PATHS either. [ERA NOTE: agents/tools.py is era-hashed;
+# this v5 hardening is intentionally confined to the seal block below.]
+# ---------------------------------------------------------------------------
+
+_REPO_ROOT = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+_SEALED_SUBDIRS = ("tasks", "refs", "suites")
+_SEALED_TEXT_RE = re.compile(r"(?:\b|:)evals/+(?:tasks|refs|suites)\b")
+
+
+def _eval_mode() -> bool:
+    return os.environ.get("OPENBEAST_EVAL", "").strip() == "1"
+
+
+def _sealed_roots() -> list[str]:
+    """Realpaths of the sealed directories: this checkout's, plus any in
+    OPENBEAST_EVAL_SEALED_DIRS (os.pathsep list — another checkout, a test)."""
+    roots = [os.path.join(_REPO_ROOT, "evals", d) for d in _SEALED_SUBDIRS]
+    roots += [r for r in os.environ.get("OPENBEAST_EVAL_SEALED_DIRS", "").split(os.pathsep)
+              if r.strip()]
+    return [os.path.realpath(os.path.expanduser(r)) for r in roots]
+
+
+def _is_sealed(rp: str) -> bool:
+    return any(rp == r or rp.startswith(r + os.sep) for r in _sealed_roots())
+
+
+def _seal_refusal(path: str) -> str | None:
+    """The refusal for `path` under eval, else None."""
+    if not _eval_mode():
+        return None
+    rp = os.path.realpath(os.path.expanduser(path))
+    if _is_sealed(rp):
+        return (f"Error: refusing to access {rp} — the eval suite's task specs, "
+                f"reference solutions and manifests are sealed while a unit is "
+                f"measured (OPENBEAST_EVAL=1)")
+    return None
+
+
+def _strip_shell_quotes(command: str) -> str:
+    """Remove the shell quoting a command uses only to split a banned token
+    across string boundaries (`ta""sks`, `re''fs`, `evals\\/refs`). What the
+    shell would actually open is the de-quoted path, so match on that."""
+    return command.replace('"', "").replace("'", "").replace("\\", "")
+
+
+def _seal_command_refusal(command: str) -> str | None:
+    if not _eval_mode():
+        return None
+    probe = _strip_shell_quotes(command)
+    if (_SEALED_TEXT_RE.search(probe) or _SEALED_TEXT_RE.search(command)
+            or any(r in probe for r in _sealed_roots())):
+        return ("Error: refusing to run a command that names the eval suite's sealed "
+                "directories (evals/tasks, evals/refs, evals/suites) while a unit is "
+                "measured (OPENBEAST_EVAL=1)")
+    return None
+
+
+_EVAL_SBPL_SEAL = None
+
+
+def _eval_read_deny_prefix() -> list[str]:
+    """Under eval on macOS, a sandbox-exec prefix that denies the confined
+    shell any READ of the sealed trees — in THIS checkout and in any other
+    (a glob across worktrees, reported on U4) — so a direct `cat tasks/*`
+    cannot reach the oracle however the command text is spelled. [] when not
+    on macOS or when sandbox-exec is unavailable (the Linux rig enforces this
+    through the beast-gate container / Landlock; see evals/README.md)."""
+    global _EVAL_SBPL_SEAL
+    if not _eval_mode() or sys.platform != "darwin":
+        return []
+    rules = ['(version 1)', '(allow default)',
+             '(deny file-read* (regex #"/evals/(refs|tasks|suites)(/|$)"))']
+    for r in _sealed_roots():
+        esc = r.replace("\\", "\\\\").replace('"', '\\"')
+        rules.append(f'(deny file-read* (subpath "{esc}"))')
+    if _EVAL_SBPL_SEAL is None:
+        try:
+            _EVAL_SBPL_SEAL = subprocess.run(
+                ["/usr/bin/sandbox-exec", "-p", "(version 1)(allow default)", "/usr/bin/true"],
+                capture_output=True, timeout=10).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            _EVAL_SBPL_SEAL = False
+    if not _EVAL_SBPL_SEAL:
+        return []
+    return ["/usr/bin/sandbox-exec", "-p", "".join(rules)]
+
+
+def _seal_filter_lines(text: str) -> str:
+    """Drop output lines that begin with a sealed path (grep / list_files
+    over an ancestor directory)."""
+    if not _eval_mode() or not text:
+        return text
+    roots = _sealed_roots()
+    kept = [ln for ln in text.splitlines()
+            if not any(ln == r or ln.startswith(r + os.sep) for r in roots)]
+    return "\n".join(kept)
+
+
 def read_file(path: str, offset: int = 1, limit: int = 500) -> str:
     """Read lines from a file.
 
@@ -813,6 +938,9 @@ def read_file(path: str, offset: int = 1, limit: int = 500) -> str:
     """
     try:
         path = _resolve(path)
+        sealed = _seal_refusal(path)
+        if sealed:
+            return sealed
         # Pseudo-filesystems (procfs/sysfs/devfs) present as regular files but
         # can be infinite, blocking, or side-effecting to read — e.g. a 0-size
         # /proc file that streams unbounded content, or /dev/zero. _resolve
@@ -1155,20 +1283,49 @@ def _escalation_for(lang: str, rc: int, out: str | None) -> str:
     return text
 
 
-def _diag_log_timing(lang: str, ms: float, status: str) -> None:
+def _diag_log_timing(lang: str, ms: float, status: str, rc: int | None = None,
+                     errors: int | None = None, hint_fired: bool = False,
+                     card_fired: bool = False) -> None:
     """Append one JSONL timing row when OPENBEAST_DIAG_TIMING_LOG is set.
     The per-write latency clause of the beast-assist ship rule was
     unmeasurable in the first A/B rounds — this closes that gap. Must
-    never raise: timing is telemetry, not behavior."""
+    never raise: timing is telemetry, not behavior.
+
+    Exposure telemetry (v5 brief §6.4): the row also names the measured
+    unit (OPENBEAST_EVAL_UNIT / _ARM, set per child by run_eval), the
+    checker's return code and error count, and whether a curated fix hint
+    or an escalation card was attached — so a null A/B result can be told
+    apart from a mechanism that never fired."""
     log = os.environ.get("OPENBEAST_DIAG_TIMING_LOG", "").strip()
     if not log:
         return
+    row = {"ts": time.time(), "lang": lang, "ms": round(ms, 1), "status": status}
+    unit = os.environ.get("OPENBEAST_EVAL_UNIT", "").strip()
+    if unit:
+        row["unit"] = unit
+        arm = os.environ.get("OPENBEAST_EVAL_ARM", "").strip()
+        if arm:
+            row["arm"] = arm
+    if rc is not None:
+        row.update({"rc": rc, "errors": errors or 0,
+                    "hint_fired": bool(hint_fired), "card_fired": bool(card_fired)})
     try:
         with open(log, "a") as f:
-            f.write(json.dumps({"ts": time.time(), "lang": lang,
-                                "ms": round(ms, 1), "status": status}) + "\n")
+            f.write(json.dumps(row) + "\n")
     except OSError:
         pass
+
+
+def _diag_lang_allowed(lang: str) -> bool:
+    """OPENBEAST_DIAG_LANGS (comma list of checker names: zig, rust, go, c,
+    c++, python, shell): diagnostics run only for those languages. Unset =
+    every language (the pre-v5 behavior). run_eval sets it per unit so a
+    diag arm's checker matches the cache key's assist scope exactly."""
+    raw = os.environ.get("OPENBEAST_DIAG_LANGS", "").strip()
+    if not raw:
+        return True
+    allowed = {x.strip().lower() for x in raw.split(",") if x.strip()}
+    return "all" in allowed or lang.lower() in allowed
 
 
 # ---------------------------------------------------------------------------
@@ -1542,6 +1699,8 @@ def _run_diagnostics(path: str) -> str:
         if checker is None:
             return ""
         lang, cmd, extra_env, scratches = checker
+        if not _diag_lang_allowed(lang):
+            return ""
         wrapper = os.environ.get("OPENBEAST_BASH_WRAPPER", "").strip()
         if wrapper:
             cmd = f"{wrapper} /bin/sh -c {shlex.quote(cmd)}"
@@ -1559,8 +1718,12 @@ def _run_diagnostics(path: str) -> str:
         finally:
             _DIAG_SLOTS.release()
         escalation = _escalation_for(lang, rc, out)
-        _diag_log_timing(lang, (time.monotonic() - t0) * 1000, "ok")
-        return _diag_format(lang, rc, out, path, escalation=escalation)
+        rendered = _diag_format(lang, rc, out, path, escalation=escalation)
+        hint = lang == "zig" and rc != 0 and bool(_zig_extras(_zig_compact((out or "").strip()), path))
+        _diag_log_timing(lang, (time.monotonic() - t0) * 1000, "ok", rc=rc,
+                         errors=_diag_count_errors(lang, out or ""),
+                         hint_fired=hint, card_fired=bool(escalation))
+        return rendered
     except subprocess.TimeoutExpired:
         _diag_log_timing(lang, (time.monotonic() - t0) * 1000, "timeout")
         return "\ndiagnostics: unavailable (timeout)"
@@ -1668,6 +1831,9 @@ def list_files(directory: str = ".", pattern: str = "**/*") -> str:
     """List files matching a glob pattern."""
     try:
         directory = _resolve(directory)
+        sealed = _seal_refusal(directory)
+        if sealed:
+            return sealed
         files = []
         scanned = 0
         stopped = False
@@ -1680,6 +1846,8 @@ def list_files(directory: str = ".", pattern: str = "**/*") -> str:
                 stopped = True
                 break
         files.sort()
+        if _eval_mode():
+            files = [m for m in files if not _is_sealed(os.path.realpath(m))]
         if not files:
             if stopped:
                 return (f"No files among the first {scanned} matches of "
@@ -1711,6 +1879,9 @@ def grep(pattern: str, path: str = ".", file_glob: str = "",
     scrubbed env apply — this was the one exec path that bypassed both."""
     try:
         path = _resolve(path)
+        sealed = _seal_refusal(path)
+        if sealed:
+            return sealed
         flags = ["-rn", "-I", "-H",
                  "--exclude-dir=.git", "--exclude-dir=node_modules",
                  "--exclude-dir=__pycache__", "--exclude-dir=build",
@@ -1727,6 +1898,7 @@ def grep(pattern: str, path: str = ".", file_glob: str = "",
         if wrapper:
             cmd = f"{wrapper} /bin/sh -c {shlex.quote(cmd)}"
         _, output = run_reaped(cmd, 30, cwd=_base_dir(), env=_scrubbed_env())
+        output = _seal_filter_lines(output)
         # "No matches" means no path:lineno: rows — grep may still have
         # printed warnings (e.g. "stray \ before d"), which we keep visible.
         has_match = re.search(r"^[^\n:]+:\d+:", output or "", re.M)
@@ -2283,6 +2455,30 @@ def _fetch_max_chars() -> int:
     return max(1, min(n, 2_000_000))
 
 
+def _eval_web_gate(tool: str, arg: str) -> str | None:
+    """Under eval (OPENBEAST_EVAL=1) the web tools are OFF: an answer looked
+    up online is not the model's, and v4 never even recorded the calls.
+    OPENBEAST_EVAL_WEB=record re-enables them and appends every call to
+    OPENBEAST_EVAL_WEB_LOG (JSONL: ts, unit, tool, arg), so a campaign that
+    wants them can still account for them. Returns the refusal, or None."""
+    if not _eval_mode():
+        return None
+    mode = os.environ.get("OPENBEAST_EVAL_WEB", "").strip().lower()
+    if mode != "record":
+        return (f"Error: {tool} is disabled while an eval unit is measured "
+                f"(OPENBEAST_EVAL=1); solve the task with local tools")
+    log = os.environ.get("OPENBEAST_EVAL_WEB_LOG", "").strip()
+    if log:
+        try:
+            with open(log, "a") as f:
+                f.write(json.dumps({"ts": time.time(), "tool": tool, "arg": str(arg)[:500],
+                                    "unit": os.environ.get("OPENBEAST_EVAL_UNIT", ""),
+                                    "arm": os.environ.get("OPENBEAST_EVAL_ARM", "")}) + "\n")
+        except OSError:
+            pass
+    return None
+
+
 def fetch(url: str, max_length: int = 50_000) -> str:
     """Fetch content from a URL and return as text.
 
@@ -2291,6 +2487,9 @@ def fetch(url: str, max_length: int = 50_000) -> str:
     hostname resolving to loopback/private/link-local/reserved space is
     blocked, at request time and again on every redirect hop.
     """
+    gated = _eval_web_gate("fetch", url)
+    if gated:
+        return gated
     # max_length is model-controlled; without a ceiling, max_length*4 below
     # becomes an attempted multi-GB read into memory — and a result bigger
     # than the context is useless to the model anyway. The truncation marker
@@ -2461,6 +2660,9 @@ def web_search(query: str, max_results: int = 10, pageno: int = 1,
     (`pageno` ≥ 1; `time_range` ∈ day|month|year) — invalid values are
     dropped rather than erroring, so a model's stray guess still searches.
     """
+    gated = _eval_web_gate("web_search", query)
+    if gated:
+        return gated
     searxng_url = os.environ.get("SEARXNG_URL", "http://localhost:8888")
     try:
         query_params = {

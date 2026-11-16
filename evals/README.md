@@ -1,9 +1,18 @@
 # Eval suite
 
-> **Suite version: v4 (current).** 137 base tasks / 291 effective units,
+> **Suite version: v5 (current, since 2026-11-15).** The suite is the manifest
+> [`suites/v5.json`](suites/v5.json): 111 scored units over 39 base tasks, plus
+> 7 unscored zig probe units, profiled in three arms inside a 4-hour budget.
+> See [v5 — the current suite](#v5--the-current-suite). **v4 is frozen**: its
+> board rows stay as history in the legacy section, its task files stay in
+> `tasks/` so it can still be run and rescored, and nothing is compared across
+> the two versions. The distribution tables further down describe the v4 task
+> library.
+>
+> **v4** — 137 base tasks / 291 effective units,
 > hardened against the cheats documented in the 2026-07 review. That
 > hardening is incomplete: see [Known validator defects (v4)](#known-validator-defects-v4)
-> below. History: [`CHANGELOG.md`](CHANGELOG.md),
+> below; v5 closes them. History: [`CHANGELOG.md`](CHANGELOG.md),
 > [`../docs/archive/EVAL_V4_PLAN.md`](../docs/archive/EVAL_V4_PLAN.md), and the review that
 > drove it, [`../docs/archive/EVAL_REVIEW_2026-07-07.md`](../docs/archive/EVAL_REVIEW_2026-07-07.md).
 > The distribution tables below describe **v4**. For the model **leaderboard**
@@ -12,20 +21,24 @@
 > [main README](../README.md) and [`../docs/RESULTS.md`](../docs/RESULTS.md);
 > v3.5 and v4 scores are **not directly comparable** (different task sets).
 
-137 coding tasks (291 effective units with multi-language variants) for benchmarking local LLMs. Each task has a
+The task library holds 137 v4 coding tasks (291 effective units with multi-language variants) plus the v5 additions. Each task has a
 validation script that returns exit 0 on success, non-zero on
 failure. The harness runs the agent against every task, scores the result, and
 ranks models in a leaderboard keyed by (host_id, model_slug).
 
-The tasks ship their own fixtures and need no network, but a run is not
-sealed: eval agents have live `fetch` and `web_search`, and `web_search`
-succeeds or fails depending on whether SearXNG is up, which is not recorded.
-See the next section.
+The tasks ship their own fixtures and need no network. Under v4 a run was
+not sealed: eval agents had live `fetch` and `web_search`, and could read
+the task JSON (validator, oracle and all). Since v5 both are closed — see
+the oracle seal under [v5](#v5--the-current-suite).
 
 ## Known validator defects (v4)
 
-These are known and held for the next suite version, because fixing a
-validator or the harness changes the era and invalidates every cached result.
+These were held for the next suite version, because fixing a validator or
+the harness changes the era and invalidates every cached result. v5 closes
+all four: 23 and 21 are dropped (their capabilities are covered by new tasks
+181, 180, 170 and 171), no v5 unit writes an expected file or `check.py`
+into the agent's directory (hidden tests from a seeded generator inside the
+validator), and `fetch`/`web_search` are off under eval.
 
 - **`23_sql_injection` rejects the canonical fix.** The validator flags any
   `+` or f-string inside the `execute(...)` call, including in the parameter
@@ -49,16 +62,21 @@ validator or the harness changes the era and invalidates every cached result.
   down. Neither is in the cache key or the result provenance.
 
 ```bash
-python3 evals/run_eval.py --list                     # list every task
-python3 evals/run_eval.py                            # run all tasks against the live server on :8080
+python3 evals/run_eval.py --list                     # list every task file (v4 library + v5)
+python3 evals/run_eval.py                            # run the current suite (the v5 manifest) against :8080
+python3 evals/run_eval.py --all-tasks                # every task file instead (the v4 rule)
+python3 evals/run_eval.py --arms L0,L1,L2 --jobs 4   # all three v5 arms in ONE process (eval-<slug>-<arm>-<ts>.json)
+python3 evals/profile.py --budget-h 4 --jobs 4       # a full v5 profile inside 4 h (see the v5 section)
+python3 evals/ablation.py --profile evals/results/profile-<slug>-<ts>.json   # the arm contrasts
+python3 tests/prove_task.py --unit 163_x_f           # model-free proof that a unit is sound (authoring gate)
 python3 evals/run_eval.py --tasks 145,146            # run a subset
 python3 evals/run_eval.py --jobs 4                   # 4 parallel workers — needs a server with -np >= 4 (clamped to /props total_slots; MTP configs are -np 1)
 python3 evals/run_eval.py --no-cache                 # disable result cache (force live runs)
 python3 evals/run_eval.py --cache-only --model-name MODEL  # replay cache only; cache misses → 'skipped_cache_miss'
-python3 evals/run_eval.py --suite v5-fast --jobs 4   # pinned fast suite (~0.85 h vs ~5.6 h full) — scores via imputation, never enters the leaderboard
+python3 evals/run_eval.py --suite v4-fast --jobs 4   # v4 pinned fast suite (was v5-fast) — v4 only, imputation-scored, never enters the leaderboard
 python3 evals/benchmark_all.py                       # full sweep across configured models
-python3 evals/benchmark_all.py --models X --suite v5-fast --jobs 4  # fast comparison sweep (implies --no-leaderboard)
-python3 evals/make_fast_suite.py                     # verify the v5-fast pin (identity + drift); --generate to re-pin
+python3 evals/benchmark_all.py --models X --suite v4-fast --jobs 4  # v4 fast comparison sweep (implies --no-leaderboard)
+python3 evals/make_fast_suite.py                     # verify the v4-fast pin (identity + drift); --generate to re-pin
 python3 evals/benchmark_all.py --cache-only          # replay every model from cache, no server (report only; never seated)
 python3 evals/scoring.py --rebuild                   # rescore all eval-*.json files into leaderboard.json
 python3 evals/scoring.py --by-category               # per-category drilldown table
@@ -88,9 +106,262 @@ defaults are a judgement, not yet checked against a measured cool-down on
 the reference card — set `off` for a sweep whose rows must be thermally
 identical to older ones.
 
-## v5-fast — the pinned fast suite (imputation-scored)
+## v5 — the current suite
 
-`evals/suites/v5-fast.json` pins the 112 units that carry the suite's signal:
+### What changed, and why
+
+v4's 291 units mostly measured nothing: 92 Python singletons and most
+variant families were saturated for every reference model, Algorithms +
+Math were 54% of the units, SWE/DevOps and DSP had no discriminating unit
+at all, and the validators had the four defects above. Worse for the
+language-assistance work, **no zig arm was ever unassisted**: every v4 zig
+prompt carried a ~250-token stdio recipe (`&fr.interface`, `init.io`,
+`takeDelimiter`, flush), and the v4 spec lint *required* it.
+
+| | v4 | v5 |
+|---|---|---|
+| Scored units / base tasks | 291 / 137 | 111 / 39 (+ 7 zig probes, unscored) |
+| Kept from v4 | — | 50 units on 16 bases, all upgraded; 35 of the 92 discriminating units |
+| New | — | 61 units on 23 bases (ids 163-196): Knuth D, Q4_K, ChaCha20-Poly1305, Welford/Chan, Q15 biquads, linearizability, broken-build repair, lock-free MPMC, Go race+deadlock, asyncio cancellation, CRDTs, repo debugging, codebase Q&A, git bisect, vuln hunt, JWT hardening, Heston, Robertson, GMM EM, autograd, Pike VM, RISC-V budget, polyphase resampling |
+| Coverage | SWE, DSP: 0 discriminating units | every cell of 12 categories x 6 languages; Algorithms + Math 31% |
+| Tests | visible fixtures, `expected.txt` / `check.py` in the agent's dir (173 units) | seeded hidden tests inside the validator, fed over stdin; a mismatch prints only the case index |
+| Zig prompts | API recipe required | API tutoring **banned**: the contract (Zig 0.16, entry point, compile command) only |
+| Answer key | readable by the agent | sealed: `evals/tasks`, `evals/refs`, `evals/suites` refused under `OPENBEAST_EVAL=1` |
+| Web under eval | live, unrecorded | off (`OPENBEAST_EVAL_WEB=record` re-enables and logs) |
+| Agent wall | `max_iter x 60 s x scale` (80 min for a 40-iteration unit at `--jobs 4`) | per-unit `max_wall_s`: 300 / 600 / 900 / 1500 s by tier; max_iter ceiling 30 |
+| LANG | over every base (a solved singleton = 100) | over multi-language bases only (k > 1) |
+| Imputation | v5-fast pin | none: retired for v5 and for every arm |
+
+Every unit is **proven without a model** before it lands
+(`tests/prove_task.py`): the reference passes 3/3 (5/5 when timed) inside
+the 15 s validator budget, at least two wrong solutions fail *for their
+declared failure class*, an empty submission fails, no oracle-like file
+sits in the fixture dir, a leak probe fails, a slow solution fails by the
+validator's own limit, and the reference passes again at `--scale 2.0`.
+Refs and wrong solutions live in `evals/refs/<task_id>/`, declared in the
+task JSON as `ref_stem` / `dest` (`skills/eval-variant-porter/SKILL.md`).
+
+The manifest (`suites/v5.json`) carries per unit: `role` (scored | probe),
+`est_s` (reference seconds — a time class for scheduling, never a weight),
+`max_wall_s`, `arms`, and the pack-contrast `stratum` (heldout = the 8 new
+zig units, the pack's held-out set; insample = the 7 retained zig variants
++ the 7 probes, which the pack was written against). Units resolve to task
+files by id or by (task number, language). A manifest or pin that leaves a
+(category, language) cell empty is refused (`coverage_floor`).
+
+### The arm matrix
+
+| Arm | Treatment | Units it RUNS | Shared from L0 | On the board |
+|---|---|---|---|---|
+| **L0** bare | none (and no zig tutoring in any prompt) | all 111 + 7 probes | — | **yes**: the headline SCORE |
+| **L1** prod | `--packs` (zig only has a pack) | 15 zig + 7 probes | every non-zig unit: its request is byte-identical | no |
+| **L2** full | packs + push diagnostics + escalation | 75 compiled + the shell unit + 7 probes | the 35 Python units (diagnostics are keyed per unit; Python is outside the assist scope) | no; shown next to L0 as `+assist` only |
+
+Contrasts: **L1-L0 on zig** is the pack (reported per stratum: held-out vs
+in-sample); **L2-L1 on zig** is diagnostics + escalation given the pack;
+**L2-L0 on go/c/cpp/rust** is diagnostics (escalation is near-inert for cpp
+under `-std=c++17`). The full 2x2(xesc) decomposition is an on-demand
+campaign (~10 GPU-h on Qwen 27B), not part of a profile. Profiles use the
+headline decoding, never `--greedy` (greedy still churned ~30% on zig at
+`--jobs 4`).
+
+All arms run **in one process** (`run_eval.py --arms L0,L1,L2`): a base
+group (variants share `/tmp/eval_*`) stays on one worker across arms, with a
+unit's arms back to back, so two arms never overwrite each other's fixture
+dirs and server drift hits both. Each arm writes
+`eval-<slug>-<arm>-<ts>.json` with `harness.arm` and a shared
+`harness.pair_id`. A pair whose request equals L0's (same cache key) copies
+L0's row (`shared_from`); the arm label is never part of a cache key.
+
+**How small an effect one profile can see** (exact McNemar, alpha 0.05,
+~50% power, net units per replicate): zig 15 units at 30% churn, 7.5 (with
+the probes, n = 22, ~8.5); go+c+cpp+rust 60 units at 12%, 9.0; all compiled
+75 at 15%, 11.0. A pack-sized effect (+9-10 on a zig-weak model) is
+detectable in one profile; the diagnostics effect (~+3) never is, so
+`evals/ablation.py` flags any `|net|` below the MDE as `within_churn` and
+significance comes from campaigns or the pooled cross-model test
+(`--pool`).
+
+### Time: 6.58 reference hours, about 3 wall hours at --jobs 4
+
+Planning unit: **R-s**, seconds of the reference run (qwen-27b-mtp-q5-k-xl,
+RTX 5090, `--jobs 1`). Per arm: **L0 3.69 h, L1 0.57 h, L2 2.32 h = 6.58
+R-s h** for a full profile. That is the *sequential* figure:
+
+| Target | Conversion | Full-profile wall | Fits 4 h? |
+|---|---|---|---|
+| qwen-27b-MTP, `--jobs 1` | x1 | 6.58 h (L0 alone 3.69 h) | L0 only |
+| qwen-27b-MTP, `--jobs 4` | /2.2 (measured) | ~2.99 h | yes |
+| GLM-5.3-Flash, `--jobs 4` (spark pair, 4 streams) | x0.58 | ~3.82 h decode only, before prefill | at risk |
+| GLM-5.3-Flash, stratified L2 | L2 x (0.3 + 0.7/3) | ~3.2 h | yes |
+
+`--jobs N` does not divide the 6.58 h by N: streams share the GPU (decode
+per stream slows ~1.6x at 4), and the tail is set by the longest base
+group (a new 6-language hard family is ~13 units x 165 R-s ~ 36 min on one
+worker), which is why groups are scheduled **longest-first** by
+`est_s x arms`. The new units' cost is the brief's estimate (2x a v4 hard
+unit), not a measurement; the planner measures instead of trusting it.
+
+### How to run a 4-hour profile
+
+```bash
+# local llama-server on :8080 (finite reasoning budget in its serve script)
+python3 evals/profile.py --budget-h 4 --jobs 4
+
+# GLM-5.3-Flash on the spark pair (benchmark_all MODELS entry: URL, slots 4,
+# thinking off declared; the device key comes from $OPENBEAST_SPARK_API_KEY)
+python3 evals/profile.py --model glm-5.3-flash --budget-h 4 --jobs 4
+
+python3 evals/profile.py --resume evals/results/profile-<slug>-<ts>.json   # after an interruption
+python3 evals/ablation.py --profile evals/results/profile-<slug>-<ts>.json # the report again
+```
+
+1. **Preflight** refuses a profile whose numbers would be wrong: zig not
+   0.16.0 (the pack's pin), the zig escalation index not served
+   (`escalate.gate_state()`), a validator toolchain missing on the
+   *harness* host (tools and validators run where the harness runs, not
+   where the model runs), or an uncapped reasoning budget (uncapped
+   Qwen3.8 took 36.55 h for no gain; GLM runs thinking off). It sets
+   `OPENBEAST_EVAL_ENV_ERA=1` so weights, engine and toolchains enter the
+   cache key.
+2. **L0** runs the whole suite and measures **k** = wall s / R-s on this
+   server (live units only).
+3. **Plan**: cost L1 and L2 as k x est_s. If they do not fit what is left,
+   cut L2 in this order, only as far as needed: (1) **stratified L2** —
+   rerun every L0 failure and a seeded third of the L0 passes; rescues are
+   exact, regressions are estimated by Horvitz-Thompson and the p-value is
+   labelled `stratified`; (2) drop the probes from L2; (3) drop rust from
+   L2; (4) drop c from L2 (priority zig > go > cpp > c > rust). **L0 and L1
+   are never cut.**
+4. **L1 + L2** in one `run_eval` call with the plan's unit sets.
+
+A global deadline (start + `--budget-h`) rides through every phase: a unit
+that would start after it is recorded **`budget_skip`** — never run, never
+cached, never scored as a failure (a profile with skips is not seated). The
+era is checked between phases; a profile never pairs rows across eras.
+`--slots N` clamps `--jobs` for servers without llama.cpp's `/props`
+(vLLM, TensorFold); for those, the reasoning budget is *declared*
+(`--reasoning-budget`) and recorded as such, never read from `pgrep`.
+
+### Scoring (v5)
+
+Unchanged: CAPABILITY = 0.75 x SOLVE + 0.25 x LANG, difficulty weights
+1 / 1.5 / 2 (`est_s` is not a weight). One change: **LANG is computed over
+multi-language bases only (k > 1)** — v5 has 24 singleton bases, and under
+the v4 rule each solved singleton scored LANG 100 by construction. A
+category-balanced SCORE (mean of per-category capabilities) is reported as
+a secondary readout only. A full v5 row covers 111 scored units; probe rows
+and `budget_skip` rows never enter a score.
+
+### Validator isolation
+
+The solution under test is a same-uid child of its validator. During the v5
+authoring gate, adversarial verifiers passed units in 163, 164, 168, 173,
+176, 181, 183, 188, 20, 40, 121 and 122 without solving them, all through the
+harness rather than through the tasks:
+
+| Hole | Attack | Closed by |
+|---|---|---|
+| argv | `python -c <script>` put the whole validator (oracle, seed, keys) in a command line anyone can read: `ps -ww -o command= -p $PPID`, `/proc/PPID/cmdline` | `run_validation` feeds the script on **stdin**, from an unlinked file in a private 0700 dir. Python runs as `python -I -S -` and shell as `sh -c '<read stdin>; eval'` |
+| import path | `-c` put `''`, the harness cwd, on `sys.path`. A planted `urllib/parse.py` ran on a lazy import (176) and **stayed for every later unit** | `-I` keeps cwd and PYTHON* off the path. The validator runs in a fresh, empty cwd that is removed after the unit |
+| environ / memory | `ps eww` and `/proc/PPID/environ` read the validator env; `/proc/PPID/mem` reads its memory | The environment is scrubbed down to PATH, HOME, locale, toolchain vars and `OPENBEAST_TIMEOUT_SCALE`. On Linux the validator is non-dumpable |
+| scale | Fixed solution limits (4-10 s) ignored `--scale`, so references timed out under load and wrong solutions failed for the wrong class | `OPENBEAST_TIMEOUT_SCALE` is exported, and `vlib.t(s)` multiplies by it |
+| hidden CPU | 122: double-forked, never-waited workers kept their CPU out of `RUSAGE_CHILDREN` (29 s of naive gemm was charged as 0.03 s) | `vlib.run_solution` counts the whole tree. Leftovers are refused as `daemon` |
+| lingering solutions | a validator killed on timeout left its solution's group running into the next unit | vlib records each group it starts, and the harness SIGKILLs them after the validator exits |
+| exec into an interpreter | 166 / U4: a compiled variant replaced its image with `execvp("python3", solver)` or `zig run <ref>`, running an unlinted interpreter; exec makes no child, so the fork rules missed it | `run_solution` confines a compiled unit's exec to its own binary (macOS `sandbox-exec`; Linux refuses when `/proc/<pid>/exe` changes). Verdict `exec` |
+| network | a solution (or the agent via `fetch`) could reach `github.com` to pull the pushed reference, or phone home | `run_solution` denies `network*`; the agent's web tools are off under `OPENBEAST_EVAL` (or recorded) |
+| read the validator argv | a confined solution could still `ps`/`/proc` the validator's argv/env (190) | `run_solution` denies `process-info*` on other processes (self allowed, for a framework Python's re-exec) |
+| read the reference across checkouts | U4: a solution globbed `/Users/*/.../worktrees/*/evals/refs/<unit>/*.py` and exec'd it | `run_solution` denies reads of any `evals/{refs,tasks,suites}` tree, in every checkout, not only this run's sealed paths |
+| toolchain capture | 166 / 169: a planted `rust-toolchain.toml`, a `$HOME/.../go/env` with `GOFLAGS=-ldflags=-s`, or a `.cargo/config.toml` in an ancestor replaced the compiler or stripped the symbol table the validator reads | build a private copy of only the source with `vlib.private_build_dir`, under `vlib.build_env` (`GOENV=off`, `GOFLAGS` cleared, `GOTOOLCHAIN=local`, private `HOME`), and require `vlib.is_native_executable` of the product; `vlib.scan_toolchain_overrides` flags a planted ancestor config |
+| compile-time build detection | 170: a solution read `@import("builtin").link_libcpp`, true only under `-fsanitize=thread`, and ran a different algorithm in the plain build | ban the distinguishing builtin fields, and validate behaviour in the PLAIN build too; `vlib.sanitizer_flags` builds the SAME source both ways |
+
+`evals/vlib.py` is the validator's standard library. The harness injects it
+into the validator from source; it is never on an import path or in the cwd.
+
+- `vlib.run_solution(cmd, input=, cpu_s=, wall_s=, allow_fork=False)` runs
+  the solution in its own session and process group under a CPU budget for
+  ALL descendants. That is exact through a delegated cgroup v2 when the host
+  has one. Otherwise it is RLIMIT_CPU per process, plus wait4 rusage, plus a
+  pgid/ancestry sampler. That sampler reads `/proc` on Linux, with a child
+  subreaper so that orphans stay in view; elsewhere it reads `ps`. Fork is
+  refused by default, and on macOS `sandbox-exec` enforces it. With
+  `allow_fork=True`, orphans and survivors get `verdict="daemon"`. On macOS
+  the confined solution also has **no network**, **no process-info on other
+  processes**, and **no read** of any `evals/{refs,tasks,suites}` tree (plus
+  `deny_read` and `OPENBEAST_VALIDATOR_SEAL`). A compiled unit's exec is
+  confined to its own binary (`confine_exec`, auto for a non-interpreter
+  `cmd[0]` with `allow_fork=False`), so it cannot exec into python3; the same
+  is caught on Linux by a `/proc/<pid>/exe` change (`verdict="exec"`).
+- **Builds**: `vlib.private_build_dir({relpath: src})` returns a fresh 0700
+  dir holding only the source, with no toolchain-config ancestor; build there
+  under `vlib.build_env()` (clean private `HOME`, `GOENV=off`, `GOFLAGS`
+  cleared, `GOTOOLCHAIN=local`) with `vlib.tool_path("rustc")` for an absolute
+  compiler. Then `vlib.assert_native_executable(out)` — a `#!`-script behind a
+  planted compiler is not ELF/Mach-O. `vlib.scan_toolchain_overrides(dir)`
+  lists any planted `rust-toolchain`/`.cargo/config`/`go.work`/`go env` in an
+  ancestor. `vlib.sanitizer_flags("thread")` builds the same source with and
+  without the sanitizer.
+- `vlib.t(s)` and `vlib.scale()` give the timeout scale. `vlib.python_cmd(p)`
+  gives `[python, -I, -S, p]`. `vlib.processes()` is a /proc-free process
+  table. `vlib.lint_python(src, ban_modules=, ban_calls=)` is an AST lint for
+  the known dodges.
+
+**What a validator must do** (the full checklist is in
+`skills/eval-task-author/SKILL.md`, "Validator isolation"):
+
+- Run the solution in a **separate process** from anything that holds
+  answers, and judge only its output. A scenario driver that has to import
+  the solution holds no answers; it prints observations and the parent
+  compares them. Never trust the solution's in-process state: it can rebind
+  your functions and timers.
+- Run it with `vlib.run_solution`, and scale every fixed limit (`vlib.t`).
+- Start no `python -c SRC` child. Feed SRC on stdin to `python -I -S -`, or
+  use a quoted heredoc to `python3 -I -` in bash.
+- Lint with the AST (`vlib.lint_python`), not with a line regex, and check
+  the whole output.
+
+`tests/prove_task.py` lints validators for `-c` children and for fixed
+limits that never read the scale. The isolation itself is pinned by
+`tests/test_eval_validator_isolation.py`.
+
+**Residual, by platform.**
+
+- The confinement (network, process-info, exec, read-deny) is enforced by
+  `sandbox-exec` on **macOS**. On **Linux** the kernel equivalent is provided
+  by the environment the measured run executes in — the beast-gate container
+  and Landlock/namespaces on the rig — not by vlib itself; where that is
+  absent, the Linux-only `/proc/<pid>/exe` exec guard and the AST/compiled
+  lints are the backstop, so a Linux validator must still lint and must
+  validate behaviour, never trust the confinement alone. The oracle seal in
+  `agents/tools.py` keeps the eval answer key out of the agent's reach under
+  `OPENBEAST_EVAL`: direct reads are denied in the kernel on macOS, and the
+  textual tripwire is quote-normalised and git-blob-aware on both platforms.
+- On macOS, with `allow_fork=True`, a double-fork plus `setsid` can slip past
+  the sampler, and exec is not confined (a shell solution needs coreutils). A
+  timed or exec-sensitive gate there keeps the default `allow_fork=False`.
+- `vlib.is_native_executable` does not parse symbols; a validator that reads
+  `nm`/`otool` must still require a native executable first, so a non-object
+  product cannot read as "clean".
+- A shell validator that runs `python3 -` without `-I` still puts its
+  private cwd on `sys.path`.
+
+### The era break
+
+`evals/SUITE_VERSION` is `v5`, which rolls the cache era (`ctxhash`) for
+every row: no v4 cache entry replays into v5. The v4 board is frozen (shown
+under "legacy suites"); v5 starts empty. The harness changes ride the same
+break: `agents/tools.py` (the seal, per-unit diagnostics) is in the era
+hash. Expect **zig L0 to drop sharply** against v4 (the v4 off-arm passed
+10-11/30 *with* the recipe in the prompt) and LANG with it: that is the
+intended effect of an unassisted L0, not a regression.
+
+## v4-fast — the pinned fast suite (v4 only, imputation-scored)
+
+> Named `v5-fast` until the v5 era break (the old name still loads, with a
+> note). It is a subset of the **v4** task universe (task files 01-162),
+> imputes on the v4 scale, and is never used for v5 or for any arm.
+
+`evals/suites/v4-fast.json` pins the 112 units that carry the suite's signal:
 the **92 discriminating units** (passed by some but not all of the 9 reference
 models) plus **20 cheap all-pass "tripwire" units** kept as regression
 canaries. The other 179 units are saturated — every reference model passes

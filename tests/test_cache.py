@@ -602,3 +602,86 @@ def test_context_files_are_only_what_the_eval_agent_reads(cache_dir):
     for p in cache.CONTEXT_FILES:
         if p.suffix not in (".py",) and p.name not in ("SUITE_VERSION", "HARNESS_VERSION"):
             assert p.name in eval_src, f"{p.name} is hashed but the eval path never reads it"
+
+
+# --- v5 arms: the arm LABEL is not part of the key; diag is keyed per unit ---
+
+def _arm_world(td: Path, tasks: list[dict]):
+    """run_eval wired to a temp cache/results/tasks tree."""
+    cache_dir = td / "cache"; cache_dir.mkdir()
+    results_dir = td / "results"; results_dir.mkdir()
+    tasks_dir = td / "tasks"; tasks_dir.mkdir()
+    for t in tasks:
+        (tasks_dir / f"{t['id']}.json").write_text(json.dumps(t))
+    for mod in ("cache", "run_eval"):
+        sys.modules.pop(mod, None)
+    cache = importlib.import_module("cache")
+    cache.CACHE_DIR = cache_dir
+    cache.STRIKES_DIR = cache.CACHE_DIR / "env-strikes"
+    cache._context_cache.clear()
+    run_eval = importlib.import_module("run_eval")
+    run_eval.RESULTS_DIR = str(results_dir)
+    run_eval.TASKS_DIR = str(tasks_dir)
+    calls = []
+
+    def agent(task, *a, env_overlay=None, **kw):
+        calls.append((task["id"], (env_overlay or {}).get("OPENBEAST_EVAL_ARM"),
+                      (env_overlay or {}).get("BEAST_ASSIST")))
+        return {"exit_code": 0, "elapsed_seconds": 0.1, "stdout": "", "stderr": "",
+                "tokens": {"prompt": 1, "completion": 3, "total": 4}}
+    run_eval.run_agent = agent
+    return cache, run_eval, calls, cache_dir
+
+
+_UNITS = [{"id": "10_two", "name": "two", "difficulty": "easy", "task": "t",
+           "validation": {"type": "bash", "script": "true"}, "max_iter": 1,
+           "variants": [{"id": "a", "language": "python"}, {"id": "f", "language": "zig"}]}]
+
+
+def test_arm_label_is_not_part_of_the_key(td):
+    """Two arms with the same treatment are one experiment: the second arm
+    replays the first arm's banked rows, and a plain (no-arm) run hits the
+    same keys. A key must never carry the arm's NAME."""
+    cache, run_eval, calls, cache_dir = _arm_world(td, _UNITS)
+    run_eval.BUILTIN_ARMS = {"X": {}, "Y": {}}
+    run_eval.BOARD_ARM = "Z"              # neither X nor Y is the board arm
+    out = run_eval.run_eval(model_name="m", use_cache=True, arms=["X", "Y"])
+    check("X ran both units live, Y replayed them",
+          sorted(u for u, a, _ in calls) == ["10_two_a", "10_two_f"]
+          and {a for _, a, _ in calls} == {"X"}, str(calls))
+    keys = sorted(p.stem for p in cache_dir.glob("*.json"))
+    check("no cache key names an arm",
+          len(keys) == 2 and not any(".X." in k or ".Y." in k for k in keys), str(keys))
+    for p in cache_dir.glob("*.json"):
+        check("a banked row carries no arm label", "arm" not in json.loads(p.read_text()))
+    calls.clear()
+    legacy = run_eval.run_eval(model_name="m", use_cache=True)
+    check("a run without arms hits the arm-banked keys",
+          not calls and legacy["summary"]["cache_hits"] == 2, str(calls))
+    y = out["arms"]["Y"]["tasks"]
+    check("Y's rows are labelled Y in its own results file",
+          all(t.get("arm") == "Y" for t in y), str(y))
+
+
+def test_diag_is_keyed_per_unit(td):
+    """A diag arm keys (and turns on) diagnostics only for units in assist
+    scope (compiled + shell): the python unit's key is the bare key, so its
+    row is shared with L0; the zig unit gets the diag2 component."""
+    cache, run_eval, calls, cache_dir = _arm_world(td, _UNITS)
+    run_eval.BUILTIN_ARMS = {"L0": {}, "D": {"diag": True}}
+    run_eval.BOARD_ARM = "L0"
+    out = run_eval.run_eval(model_name="m", use_cache=True, arms=["L0", "D"])
+    keys = sorted(p.stem for p in cache_dir.glob("*.json"))
+    py = [k for k in keys if ".10_two_a." in k]
+    zg = [k for k in keys if ".10_two_f." in k]
+    check("python unit: ONE key (shared), no diag component",
+          len(py) == 1 and ".diag2-" not in py[0], str(py))
+    check("zig unit: bare key for L0 + diag2 key for D",
+          len(zg) == 2 and sum(".diag2-" in k for k in zg) == 1, str(zg))
+    d_calls = [(u, flag) for u, a, flag in calls if a == "D"]
+    check("only the zig unit ran under D, with diagnostics ON in its env",
+          d_calls == [("10_two_f", "1")], str(d_calls))
+    l0_flags = {flag for _u, a, flag in calls if a == "L0"}
+    check("L0 ran with diagnostics pinned OFF", l0_flags == {"0"}, str(l0_flags))
+    d = {t["id"]: t for t in out["arms"]["D"]["tasks"]}
+    check("the python row in D is shared from L0", d["10_two_a"].get("shared_from") == "L0")
