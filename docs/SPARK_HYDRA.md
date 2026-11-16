@@ -7,9 +7,11 @@ reboot. `healthcheck.sh` on spark-1 reports all 9 services healthy.
 
 This page takes you from bare boxes to a serving pair, start to finish, and then
 covers day-2 operations and fully offline operation. Read it top to bottom the
-first time. After that, jump to the section you need. Design background is in
+first time. After that, jump to the section you need, or start at the
+[Quickstart](#quickstart). Historical design background is in
 [`DGX_SPARK_PLAN.md`](DGX_SPARK_PLAN.md) (§8a: the stack on a Spark; §14:
-onboarding a model; §15: why GLM-5.3-Flash). Engine choice is in
+onboarding a model; §15: why GLM-5.3-Flash); where it and this page differ,
+this page is current. Engine choice is in
 [`ENGINES.md`](ENGINES.md). For the local model working on OpenBeast itself,
 see [`SELF_DEVELOPMENT.md`](SELF_DEVELOPMENT.md).
 
@@ -19,8 +21,94 @@ tested against stubs, but has never run on a real Spark. Every command on this
 page exists in the code on `feat/spark-scale-1-8`. Flags were checked against
 each script's `--help` on 2026-11-15.
 
+## Quickstart
+
+Three paths. Every command below is from the runbook body; the linked section
+has the detail. All run from the Mac unless marked "on spark-1".
+
+**(a) Everyday: the pair is already built.** It boots by itself, offline, and
+needs no manual start. One unit drives inference: the `systemctl --user` unit
+`spark-hydra-inference` **on spark-1 only** (no sudo). It starts rank 1 on
+spark-2 over ssh, then rank 0 on spark-1. Nothing runs as a unit on spark-2.
+The command center is the user unit `openbeast` on spark-1.
+
+```bash
+# is it serving? (on spark-1; G1)
+~/openbeast/scripts/healthcheck.sh               # healthy = "All 9 services healthy" + the unified-memory line
+curl -s http://127.0.0.1:8000/health             # healthy = {"ok": true, "backend": "tensorfold", ...}
+~/openbeast/scripts/doctor.sh                    # the wider check
+systemctl --user status spark-hydra-inference openbeast --no-pager
+# from the Mac (G1)
+curl -sk https://spark-1.tail4109f9.ts.net:8444/api/slot | python3 -m json.tool | head -30
+
+# start / stop / restart (on spark-1; G3)
+systemctl --user restart spark-hydra-inference   # both ranks; loading takes 2-6 min
+systemctl --user stop spark-hydra-inference      # both ranks
+systemctl --user start spark-hydra-inference
+systemctl --user restart openbeast               # the command center (WebUI, tools, gate, ...)
+~/openbeast/scripts/healthcheck.sh --restart    # restart only what is DOWN (the watchdog does this every 5 min)
+```
+
+- **Order across ranks.** spark-2 must be up first; the unit then brings up
+  rank 1 before rank 0. If spark-2 is not up yet, the unit fails and retries
+  every 30 s by itself. To power-cycle both, stop inference, then reboot the
+  worker, then the head ([B4](#b4-fabric-mtu-9000-spark-fabric-mtu) step 3).
+- **Never** `docker stop glm53-flash-tf`, the recipe's `start.sh` / `stop.sh`,
+  or `./stop.sh` by hand while the units are enabled, and never restart one
+  rank alone ([G3](#g3-restarts-only-through-systemctl---user-while-the-unit-is-enabled)).
+- **Healthy** looks like [E4](#e4-the-healthy-state). `/api/slot` reports model
+  `GLM-5.3-Flash-EXL3`, a 1,048,576-token window and 4 slots. Logs are in
+  [G2](#g2-logs); failures are in [G8](#g8-when-x-fails-troubleshooting).
+
+**(b) Use it from a client.** Everything goes through beast-gate on
+`https://spark-1.tail4109f9.ts.net:8443/v1`, with a per-device key. The model
+itself listens on spark-1's loopback only.
+
+1. **Browser (any tailnet device):** Open WebUI at
+   `https://spark-1.tail4109f9.ts.net`, with a WebUI login
+   ([E6](#e6-publish-on-the-tailnet-setup-tailscalesh-as-tailscaleds-operator)).
+2. **A device key** (on spark-1; [E7](#e7-device-keys-for-beast-gate)). The key
+   prints once. Copy it straight into a 0600 file on the device (on the Mac:
+   `~/.config/openbeast/spark-hydra-gate.key`), never into a shared log:
+   `cd ~/openbeast && ./scripts/clients.sh enroll macbook --label "Max's MacBook"`.
+3. **Mac or Linux client mode** ([F2](#f2-client-mode-setup-clientsh)). This
+   gives OpenCode on the client, with the tools acting on the client's own
+   files:
+
+   ```bash
+   ./scripts/setup-client.sh --host spark-1.tail4109f9.ts.net --api-key-stdin < ~/.config/openbeast/spark-hydra-gate.key
+   openbeast-client status                     # reads :8444/api/slot
+   cd <any project> && opencode                # pick an 'openbeast-rig' model
+   ```
+
+   On opencode v2, move the `openbeast-tools` entry under `mcp.servers` after
+   each `setup-client.sh` run ([F3](#f3-the-opencode-v2-config-layout-read-this-before-editing)).
+4. **Raw OpenAI-compatible API** (any tool that takes a base URL and a key).
+   Without a key, the gate answers 401:
+
+   ```bash
+   curl -s https://spark-1.tail4109f9.ts.net:8443/v1/chat/completions \
+     -H "Authorization: Bearer $(cat ~/.config/openbeast/spark-hydra-gate.key)" \
+     -H 'Content-Type: application/json' \
+     -d '{"model": "GLM-5.3-Flash-EXL3", "messages": [{"role": "user", "content": "hello"}]}'
+   ```
+
+**(c) First build from bare boxes.** Follow the sections in order:
+
+1. [B1](#b1-first-boot) first boot.
+2. [B2](#b2-spark-root-setupsh-the-only-root-step-once-per-spark) root setup, on each Spark.
+3. [B3](#b3-firewall-spark-guard) spark-guard.
+4. [C](#c-weights) weights, on both.
+5. [D1](#d1-the-mia-recipe-what-serves-today) the recipe and the `spark-hydra-inference` unit.
+6. [E1](#e1-bootstrap)–[E7](#e7-device-keys-for-beast-gate) the command center, boot units, WebUI admin, tailnet publishing and device keys.
+
+The short form is [Rebuild from scratch](#rebuild-from-scratch-short-form).
+With no internet at all, follow [H9](#h9-the-order-for-a-pair-built-entirely-offline)
+instead.
+
 | Section | What it gets you |
 |---|---|
+| [Quickstart](#quickstart) | everyday checks and restarts, using the pair from a client, the build order |
 | [0. The pair at a glance](#0-the-pair-at-a-glance) | names, addresses, what runs where |
 | [A. What you need](#a-what-you-need) | hardware, cabling for 1 / 2 / 3 / 4-8 Sparks, accounts, the offline staging checklist |
 | [B. Bare boxes to root setup](#b-bare-boxes-to-root-setup) | `spark-root-setup.sh`, `spark-guard.sh`, checking them from another device, fabric MTU 9000 (`spark-fabric-mtu.sh`) |
