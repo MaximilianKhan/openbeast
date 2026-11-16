@@ -209,6 +209,26 @@ _serve LLAMA_ARG_CORS_ORIGINS=https://ui.example -- -m "$SV/weights/main.gguf" -
 grep -qx 'LLAMA_ARG_CORS_ORIGINS=https://ui.example' "$SV/env" 2>/dev/null \
   && pass "…an operator's own LLAMA_ARG_CORS_ORIGINS stands" \
   || fail "LLAMA_ARG_CORS_ORIGINS override lost: $(grep '^LLAMA_ARG_CORS' "$SV/env" 2>/dev/null)"
+# llama.cpp v1.0.0's DNS-rebinding guard (#32098) refuses a loopback request
+# whose Host is not loopback or an allowed origin's host, and Tailscale Serve
+# keeps the client's Host. With the tailnet name known, the raw :8443 mount's
+# origin must be the allowed one, or every remote client gets a 403.
+cat > "$SV/bin/tailscale" <<'SH'
+#!/bin/bash
+[[ "$1 $2" == "status --json" ]] && { echo '{"Self": {"DNSName": "beast.tail123.ts.net."}}'; exit 0; }
+exit 1
+SH
+chmod +x "$SV/bin/tailscale"
+_serve -- -m "$SV/weights/main.gguf" -c 8192
+grep -qx 'LLAMA_ARG_CORS_ORIGINS=https://beast.tail123.ts.net:8443' "$SV/env" 2>/dev/null \
+  && pass "…with a tailnet name, the :8443 mount's origin is allowed (llama.cpp v1.0.0 Host guard)" \
+  || fail "tailnet origin not allowed: $(grep '^LLAMA_ARG_CORS' "$SV/env" 2>/dev/null) :: $(tr '\n' ' ' <<< "$SV_OUT" | tail -c 300)"
+_serve LLAMA_ARG_CORS_ORIGINS=https://ui.example -- -m "$SV/weights/main.gguf" -c 8192
+grep -qx 'LLAMA_ARG_CORS_ORIGINS=https://ui.example' "$SV/env" 2>/dev/null \
+  && pass "…and an operator's own value still wins over the tailnet name" \
+  || fail "tailnet name overrode LLAMA_ARG_CORS_ORIGINS: $(grep '^LLAMA_ARG_CORS' "$SV/env" 2>/dev/null)"
+# The name is cached in the run dir; later cases expect no tailnet.
+rm -f "$SV/bin/tailscale" "$SV/.run/webui-tailnet-name"
 
 echo ""
 echo "run.sh (interactive llama-cli):"
