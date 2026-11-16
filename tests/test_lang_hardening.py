@@ -63,6 +63,19 @@ def _c_works() -> bool:
         _C_WORKS.append(_driver_compiles("c", "int main(void){return 0;}\n"))
     return _C_WORKS[0]
 
+
+def _gnu_cc() -> bool:
+    """True when `gcc` (and so `g++`) is GNU. On macOS `gcc` is Apple clang:
+    it never runs `#pragma GCC dependency` and words its diagnostics
+    differently, so the controls that prove gcc's side channels real have
+    nothing to observe there (the refusal tests run everywhere)."""
+    try:
+        out = subprocess.run(["gcc", "--version"], capture_output=True,
+                             text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "clang" not in out.lower()
+
 CLAIMS = os.path.join(ROOT, "agents", "lang", "claims")
 SECRET = "BEASTLANG_SECRET=hunter2-do-not-leak"
 
@@ -1208,6 +1221,8 @@ def test_the_c_side_channels_were_real(secret, monkeypatch):
     #line echoes the file and the dependency pragma answers existence."""
     if not _c_works():
         pytest.skip("no C toolchain here that accepts the driver's flags")
+    if not _gnu_cc():
+        pytest.skip("GNU gcc behaviour; this host's gcc is clang")
     c = D.driver_for("c")
     monkeypatch.setattr(D.CDriver, "refusal", lambda self, s: None)
     assert "hunter2" in c.compile_source(_c_side_channels(secret)[0]).detail
@@ -1232,6 +1247,8 @@ def test_the_ucn_spelled_dependency_pragma_was_an_oracle(lang, secret, monkeypat
     "No such file", so the diagnostic answers existence."""
     if not _c_works():
         pytest.skip("no C toolchain here that accepts the driver's flags")
+    if not _gnu_cc():
+        pytest.skip("GNU gcc behaviour; this host's gcc is clang")
     drv = D.driver_for(lang)
     monkeypatch.setattr(type(drv), "refusal", lambda self, s: None)
     for tpl in ('#pragma GCC depend\\u0065ncy "{}"\nint main(void){{return 0;}}\n',
