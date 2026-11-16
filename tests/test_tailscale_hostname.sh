@@ -85,15 +85,13 @@ _out="$(run - 'TS_HOSTNAME=spark-1' '_name_note beast')"
 [[ -z "$(run - '' '_name_note spark-1')" ]] \
   && pass "no configured name: silent" || fail "note printed with no TS_HOSTNAME"
 
-if grep -vE '^[[:space:]]*(#|echo)' "$SRC" | grep -qE 'tailscale (set|up)[^|]*--hostname'; then
-  _n="$(grep -vE '^[[:space:]]*(#|echo)' "$SRC" | grep -cE 'tailscale (set|up)[^|]*--hostname')"
-  if [[ "$_n" == 1 ]] && grep -A0 -B12 'sudo tailscale up --hostname="\$_join_as"' "$SRC" | grep -q '^else$'; then
-    pass "the only --hostname is the first join's, in the not-joined branch"
-  else
-    fail "setup-tailscale.sh sets --hostname outside the first join ($_n places)"
-  fi
+# Count without `grep -q` mid-pipe: under pipefail an early-exiting reader
+# breaks the writer's pipe (SIGPIPE) and fails the whole check on Linux.
+_n="$(grep -vE '^[[:space:]]*(#|echo)' "$SRC" | grep -cE 'tailscale (set|up)[^|]*--hostname' || true)"
+if [[ "$_n" == 1 ]] && grep -B12 'sudo tailscale up --hostname="\$_join_as"' "$SRC" | grep -c '^else$' >/dev/null; then
+  pass "the only --hostname is the first join's, in the not-joined branch"
 else
-  fail "the first join's tailscale up --hostname is missing"
+  fail "setup-tailscale.sh sets --hostname in $_n places (want 1, in the not-joined branch)"
 fi
 
 if grep -q '^#TS_HOSTNAME=' "$REPO_DIR/openbeast.conf.example"; then
