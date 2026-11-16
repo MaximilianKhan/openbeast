@@ -211,6 +211,413 @@ def _reap_live_agents() -> None:
         _kill_agent_tree(pgid)
 
 
+# --- Agent leftovers: nothing the agent started may outlive it (v5) -----------
+#
+# _kill_agent_tree only walks the tree that still hangs off the runner. A
+# daemon that detaches properly (double fork + setsid, stdio off the pipe)
+# is reparented to init the moment its parent exits, so it is in no tree,
+# no group and no session of ours, and the bash tool documents that such a
+# process outlives the tool call. It runs as our uid, so during validation
+# it could rewrite the solution file after the lint, read the validator's
+# work dir, or burn the CPU a budgeted solution is measured against (190's
+# verifier, "harness-level, needs a decision before v5 ships").
+#
+# So every agent is watched while it runs and swept before validation:
+#   tag      OPENBEAST_AGENT_TAG, a per-agent random value in its env. Every
+#            child inherits it; the sweep reads each same-uid process's
+#            environment (/proc/<pid>/environ, or KERN_PROCARGS2 on macOS).
+#   sandbox  macOS: the agent's bash runs under sandbox-exec in eval mode
+#            (tools._eval_read_deny_prefix), and that profile also denies a
+#            per-agent tag FILE (OPENBEAST_AGENT_TAG_FILE). A sandbox cannot
+#            be left or replaced, so sandbox_check(pid, that file) marks every
+#            process the shell started, detached and env-scrubbed included.
+#   watch    a thread polls the agent's process tree every _AGENT_POLL_S and
+#            records each (pid, start time) it ever saw, so a daemon that
+#            scrubbed its env (env -i) but lived one poll is still known.
+#            On Linux the runner is made a child subreaper before it execs,
+#            so an orphan stays in its tree (and in view) while it lives.
+#   groups   every process group and session the watched processes led.
+#   cgroup   on Linux with a delegated cgroup v2, the runner is moved into a
+#            child cgroup of ours, which nothing can leave; it is killed
+#            whole (cgroup.kill) and must be empty.
+# The candidates are frozen (SIGSTOP), then SIGKILLed with their whole
+# subtree, for several rounds; then the sweep asserts none survive. A unit
+# whose leftovers survive is not validated.
+
+AGENT_TAG_ENV = "OPENBEAST_AGENT_TAG"
+_AGENT_POLL_S = 0.5
+_SWEEP_ROUNDS = 6
+
+
+_BOOT_TIME: float | None = None
+
+
+def _boot_time() -> float:
+    global _BOOT_TIME
+    if _BOOT_TIME is None:
+        _BOOT_TIME = 0.0
+        try:
+            with open("/proc/stat") as f:
+                for ln in f:
+                    if ln.startswith("btime "):
+                        _BOOT_TIME = float(ln.split()[1])
+                        break
+        except (OSError, ValueError):
+            pass
+    return _BOOT_TIME
+
+
+def _proc_snapshot() -> dict:
+    """{pid: (ppid, pgid, sid, start, uid, started_at)} of every live,
+    non-zombie process. `start` identifies the process across pid reuse,
+    `started_at` is its start as epoch seconds (1 s resolution on macOS),
+    and `sid` is None where the platform does not report it in bulk (macOS:
+    ask os.getsid)."""
+    out = {}
+    if os.path.isdir("/proc/self"):
+        try:
+            entries = os.listdir("/proc")
+            tick = os.sysconf("SC_CLK_TCK")
+        except (OSError, ValueError):
+            return out
+        boot = _boot_time()
+        for d in entries:
+            if not d.isdigit():
+                continue
+            try:
+                with open(f"/proc/{d}/stat") as f:
+                    rest = f.read().rsplit(")", 1)[1].split()
+                uid = os.stat(f"/proc/{d}").st_uid
+            except (OSError, IndexError):
+                continue
+            if rest[0] in ("Z", "X"):
+                continue
+            try:
+                out[int(d)] = (int(rest[1]), int(rest[2]), int(rest[3]), rest[19], uid,
+                               boot + int(rest[19]) / tick)
+            except (IndexError, ValueError):
+                continue
+        return out
+    try:
+        r = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,pgid=,uid=,stat=,lstart="],
+                           capture_output=True, text=True, timeout=10,
+                           stdin=subprocess.DEVNULL, env={**os.environ, "LC_ALL": "C"})
+    except (OSError, subprocess.TimeoutExpired):
+        return out
+    for line in r.stdout.splitlines():
+        p = line.split(None, 5)
+        if len(p) < 6 or p[4].startswith("Z"):
+            continue
+        try:
+            lstart = p[5].strip()
+            started = time.mktime(time.strptime(lstart, "%a %b %d %H:%M:%S %Y"))
+            out[int(p[0])] = (int(p[1]), int(p[2]), None, lstart, int(p[3]), started)
+        except ValueError:
+            continue
+    return out
+
+
+def _proc_env_blob(pid: int) -> bytes:
+    """The process's initial environment block (and argv), as raw bytes.
+    b"" when it cannot be read (another uid, gone, unsupported)."""
+    if os.path.isdir("/proc/self"):
+        try:
+            with open(f"/proc/{pid}/environ", "rb") as f:
+                return f.read()
+        except OSError:
+            return b""
+    if sys.platform != "darwin":
+        return b""
+    try:
+        import ctypes
+        libc = ctypes.CDLL(None, use_errno=True)
+        argmax = ctypes.c_int(0)
+        size = ctypes.c_size_t(ctypes.sizeof(argmax))
+        mib = (ctypes.c_int * 2)(1, 8)                    # CTL_KERN, KERN_ARGMAX
+        if libc.sysctl(mib, 2, ctypes.byref(argmax), ctypes.byref(size), None, 0) != 0:
+            return b""
+        buf = ctypes.create_string_buffer(argmax.value)
+        size = ctypes.c_size_t(argmax.value)
+        mib = (ctypes.c_int * 3)(1, 49, pid)              # KERN_PROCARGS2
+        if libc.sysctl(mib, 3, buf, ctypes.byref(size), None, 0) != 0:
+            return b""
+        return buf.raw[:size.value]
+    except (OSError, AttributeError, ValueError):
+        return b""
+
+
+_SANDBOX_CHECK = None
+
+
+def _sandbox_tagged(pid: int, tag_file: str) -> int:
+    """macOS: 1 when `pid` runs under a sandbox that denies reading
+    `tag_file`, 0 when not, -1 when it cannot be asked."""
+    global _SANDBOX_CHECK
+    if sys.platform != "darwin":
+        return -1
+    try:
+        import ctypes
+        if _SANDBOX_CHECK is None:
+            fn = ctypes.CDLL("/usr/lib/libSystem.B.dylib").sandbox_check
+            fn.restype = ctypes.c_int
+            # Only the fixed arguments: ctypes then passes the path as a
+            # variadic one, which arm64 Darwin puts on the stack.
+            fn.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+            _SANDBOX_CHECK = fn
+        # SANDBOX_FILTER_PATH | SANDBOX_CHECK_NO_REPORT
+        return int(_SANDBOX_CHECK(int(pid), b"file-read-data", 1 | 0x40000000,
+                                  ctypes.c_char_p(tag_file.encode())))
+    except (OSError, AttributeError, ValueError):
+        return -1
+
+
+# Run as the runner's argv prefix on Linux: become a child subreaper, then
+# exec the runner (the attribute survives execve), so orphans of the agent's
+# tools reparent to the runner instead of init and stay in its tree.
+_SUBREAPER_EXEC = ("import ctypes, os, sys; ctypes.CDLL(None).prctl(36, 1, 0, 0, 0); "
+                   "os.execv(sys.executable, [sys.executable] + sys.argv[1:])")
+
+
+def _subtree(snap: dict, roots: set) -> set:
+    children: dict = {}
+    for pid, row in snap.items():
+        children.setdefault(row[0], []).append(pid)
+    out, stack = set(), [r for r in roots if r in snap]
+    out.update(stack)
+    while stack:
+        for c in children.get(stack.pop(), ()):
+            if c not in out:
+                out.add(c)
+                stack.append(c)
+    return out
+
+
+class _AgentCgroup:
+    """A child cgroup (v2) of the harness's own, when the host delegates it.
+    Linux only; .path is None everywhere else and every method is a no-op."""
+
+    def __init__(self):
+        self.path = None
+        if not sys.platform.startswith("linux"):
+            return
+        try:
+            with open("/proc/self/cgroup") as f:
+                rel = next((ln.split("::", 1)[1].strip() for ln in f
+                            if ln.startswith("0::")), None)
+            if rel is None:
+                return
+            base = os.path.join("/sys/fs/cgroup", rel.lstrip("/"))
+            if not os.access(os.path.join(base, "cgroup.procs"), os.W_OK):
+                return
+            import secrets
+            p = os.path.join(base, f"ob-agent-{os.getpid()}-{secrets.token_hex(4)}")
+            os.mkdir(p)
+            self.path = p
+        except (OSError, StopIteration):
+            self.path = None
+
+    def adopt(self, pid: int) -> bool:
+        if not self.path:
+            return False
+        try:
+            with open(os.path.join(self.path, "cgroup.procs"), "w") as f:
+                f.write(str(pid))
+            return True
+        except OSError:
+            return False
+
+    def pids(self) -> set:
+        if not self.path:
+            return set()
+        try:
+            with open(os.path.join(self.path, "cgroup.procs")) as f:
+                return {int(x) for x in f.read().split()}
+        except (OSError, ValueError):
+            return set()
+
+    def kill(self):
+        if not self.path:
+            return
+        try:
+            with open(os.path.join(self.path, "cgroup.kill"), "w") as f:
+                f.write("1")
+        except OSError:
+            pass
+        for pid in self.pids():
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+
+    def remove(self):
+        if not self.path:
+            return
+        for _ in range(100):
+            try:
+                os.rmdir(self.path)
+                break
+            except OSError:
+                self.kill()
+                time.sleep(0.02)
+        self.path = None
+
+
+class AgentWatch:
+    """Track everything one agent starts, from spawn to the sweep."""
+
+    def __init__(self, tag: str):
+        self.tag = tag
+        self.tag_file: str | None = None
+        self.control_file: str | None = None
+        self._tag_dir: str | None = None
+        if sys.platform == "darwin":
+            import tempfile
+            try:
+                self._tag_dir = os.path.realpath(tempfile.mkdtemp(prefix="ob-agent-"))
+                self.tag_file = os.path.join(self._tag_dir, "tag")
+                self.control_file = os.path.join(self._tag_dir, "control")
+                for f in (self.tag_file, self.control_file):
+                    with open(f, "w"):
+                        pass
+            except OSError:
+                self.tag_file = None
+        self.root: int | None = None
+        # Nothing that started before the agent can be the agent's. (-2 s:
+        # macOS reports start times to the second.)
+        self.t0 = time.time() - 2.0
+        self.seen: dict = {}            # pid -> start identity
+        self.groups: set = set()        # pgids / sids the watched processes led
+        self.cgroup = _AgentCgroup()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self, root: int):
+        self.root = root
+        self.groups.add(root)           # start_new_session: pgid == sid == pid
+        self.cgroup.adopt(root)
+        self.poll()
+        self._thread = threading.Thread(target=self._loop, daemon=True,
+                                        name=f"agent-watch-{root}")
+        self._thread.start()
+
+    def _loop(self):
+        while not self._stop.wait(_AGENT_POLL_S):
+            self.poll()
+
+    def poll(self, snap: dict | None = None):
+        if self.root is None:
+            return
+        snap = snap if snap is not None else _proc_snapshot()
+        alive = {p for p, s in self.seen.items() if p in snap and snap[p][3] == s}
+        mine = os.getpgrp()
+        for pid in _subtree(snap, {self.root} | alive):
+            row = snap[pid]
+            self.seen.setdefault(pid, row[3])
+            if row[1] not in (mine, 0, 1):
+                self.groups.add(row[1])
+
+    def stop(self):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+
+    def _sandbox_tag_usable(self) -> bool:
+        # The tag only means something while both files exist and THIS
+        # process, which runs under no such sandbox, may read them.
+        return bool(self.tag_file and os.path.isfile(self.tag_file)
+                    and os.path.isfile(self.control_file)
+                    and _sandbox_tagged(os.getpid(), self.tag_file) == 0
+                    and _sandbox_tagged(os.getpid(), self.control_file) == 0)
+
+    def _sandbox_marked(self, pid: int) -> bool:
+        # Differential: denied the tag but allowed its sibling. An app
+        # sandbox (most macOS agents and XPC services) denies both.
+        return (_sandbox_tagged(pid, self.tag_file) == 1
+                and _sandbox_tagged(pid, self.control_file) == 0)
+
+    def candidates(self) -> set:
+        snap = _proc_snapshot()
+        protect = {0, 1, os.getpid(), os.getppid()}
+        mine = os.getpgrp()
+        uid = os.getuid()
+        tag = f"{AGENT_TAG_ENV}={self.tag}".encode()
+        sb = self._sandbox_tag_usable()
+        found = set(self.cgroup.pids())
+        for pid, (ppid, pgid, sid, start, puid, started) in snap.items():
+            if puid != uid or pid in protect or pgid == mine:
+                continue
+            if self.seen.get(pid) == start:
+                found.add(pid)
+                continue
+            if started < self.t0:
+                continue
+            if pgid in self.groups:
+                found.add(pid)
+                continue
+            if sid is None:
+                try:
+                    sid = os.getsid(pid)
+                except OSError:
+                    sid = None
+            if sid in self.groups:
+                found.add(pid)
+                continue
+            if sb and self._sandbox_marked(pid):
+                found.add(pid)
+                continue
+            if tag in _proc_env_blob(pid):
+                found.add(pid)
+        found = {p for p in _subtree(snap, found)
+                 if p in snap and p not in protect and snap[p][1] != mine
+                 and snap[p][4] == uid
+                 and (self.seen.get(p) == snap[p][3] or snap[p][5] >= self.t0)}
+        return found
+
+
+def sweep_agent_leftovers(watch: "AgentWatch") -> tuple[list, list]:
+    """Kill every process the agent left running; return (killed, survivors).
+
+    Called after the runner exited (or was killed) and BEFORE any fixture
+    re-assertion or validation. Survivors are processes that still match
+    after _SWEEP_ROUNDS of freeze-and-kill (only an unkillable process, or
+    one this uid may not signal)."""
+    watch.stop()
+    killed: set = set()
+    try:
+        for _ in range(_SWEEP_ROUNDS):
+            watch.cgroup.kill()
+            cands = watch.candidates()
+            if not cands:
+                return sorted(killed), []
+            for sig in (signal.SIGSTOP, signal.SIGKILL):
+                for pid in cands:
+                    try:
+                        os.kill(pid, sig)
+                    except OSError:
+                        pass
+            for g in watch.groups:
+                if g not in (0, 1, os.getpgrp()):
+                    try:
+                        os.killpg(g, signal.SIGKILL)
+                    except OSError:
+                        pass
+            killed |= cands
+            # A SIGKILLed orphan is reaped by init within milliseconds.
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline:
+                snap = _proc_snapshot()
+                if not any(p in snap and snap[p][3] == watch.seen.get(p, snap[p][3])
+                           for p in cands):
+                    break
+                time.sleep(0.05)
+        return sorted(killed), sorted(watch.candidates())
+    finally:
+        watch.cgroup.remove()
+        if watch._tag_dir:
+            import shutil
+            shutil.rmtree(watch._tag_dir, ignore_errors=True)
+
+
 def _install_signal_reaper() -> None:
     """Reap our agent groups before dying, for SIGTERM and SIGINT alike."""
     def _handler(signum, _frame):
@@ -1447,6 +1854,15 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
     # budgets must bump it — tests/test_cache.py refuses a stale pin.
     child_env["OPENBEAST_EVAL"] = "1"
     child_env.pop("OPENBEAST_BEAST_CHAT", None)
+    # Every process this agent starts inherits the tag, so the sweep before
+    # validation can find one that detached from the tree (AgentWatch).
+    import secrets
+    watch = AgentWatch(secrets.token_hex(12))
+    child_env[AGENT_TAG_ENV] = watch.tag
+    if watch.tag_file:
+        child_env["OPENBEAST_AGENT_TAG_FILE"] = watch.tag_file
+    if sys.platform.startswith("linux"):
+        cmd = [sys.executable, "-c", _SUBREAPER_EXEC] + cmd[1:]
     # ======================================================================
 
     if expected:
@@ -1466,14 +1882,17 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
     proc = _spawn_agent(cmd, child_env)    # registered, or None: stopping
     if proc is None:
         return stopped
+    watch.start(proc.pid)
     # Registered BEFORE this check: a begin_stop() that snapshotted the set
     # without us has already set the flag, so one side always kills it.
     if _stopping.is_set():
         _kill_agent_tree(proc.pid)
         proc.kill()
+        sweep_agent_leftovers(watch)
         with _live_pgid_lock:
             _live_pgids.discard(proc.pid)
         return stopped
+    result: dict = {}
     try:
         # Rough budget: 1 min per iteration at single-stream decode, scaled up
         # under parallel contention (see timeout_scale in the docstring).
@@ -1481,7 +1900,7 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
         stdout, stderr = proc.communicate(timeout=int(budget * timeout_scale))
         elapsed = time.time() - start_time
         tokens = _parse_tokens(stdout)
-        return {
+        result = {
             "exit_code": proc.returncode,
             "elapsed_seconds": round(elapsed, 1),
             "stdout": stdout[-2000:],  # last 2K of output
@@ -1491,6 +1910,7 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
             "compactions": _parse_compactions(stdout),
             "api_errors": _parse_api_errors(stdout),
         }
+        return result
     except subprocess.TimeoutExpired:
         _kill_agent_tree(proc.pid)
         proc.kill()
@@ -1505,7 +1925,7 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
         except (subprocess.TimeoutExpired, OSError, ValueError):
             pass
         elapsed = time.time() - start_time
-        return {
+        result = {
             "exit_code": -1,
             "elapsed_seconds": round(elapsed, 1),
             "stdout": "(timed out)",
@@ -1513,7 +1933,16 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
             "tokens": _parse_tokens(partial),
             "iterations": None,
         }
+        return result
     finally:
+        # Nothing the agent started may still run when validation starts:
+        # sweep the detached leftovers too (AgentWatch), then assert none
+        # survived. `result` is the dict being returned, so the counts and
+        # any survivors travel with it to the unit's verdict.
+        killed, survivors = sweep_agent_leftovers(watch)
+        result["leftovers_killed"] = len(killed)
+        if survivors:
+            result["leftover_survivors"] = survivors
         # Whatever happened, this group is no longer ours to reap.
         with _live_pgid_lock:
             _live_pgids.discard(proc.pid)
@@ -2611,8 +3040,14 @@ def run_eval(
         # Re-assert fixtures (no-op unless task declares pre_validate).
         run_pre_validate(task, log=log)
 
-        # Validate
-        passed, validation_output = run_validation(task, timeout_scale=timeout_scale)
+        # Validate, unless something the agent started is still running: it
+        # could rewrite the solution or the fixture under the validator.
+        if agent_result.get("leftover_survivors"):
+            passed = False
+            validation_output = (f"Not validated: the agent left processes running that "
+                                 f"could not be killed: {agent_result['leftover_survivors'][:10]}")
+        else:
+            passed, validation_output = run_validation(task, timeout_scale=timeout_scale)
 
         # Infrastructure verdicts (not model verdicts) for a FAILED unit.
         # server_error: the runner saw failed model calls, or the server is

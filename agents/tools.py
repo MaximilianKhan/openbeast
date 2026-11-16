@@ -904,6 +904,13 @@ def _eval_read_deny_prefix() -> list[str]:
     for r in _sealed_roots():
         esc = r.replace("\\", "\\\\").replace('"', '\\"')
         rules.append(f'(deny file-read* (subpath "{esc}"))')
+    # The harness's per-agent tag file: denying it marks every process this
+    # shell starts, in the kernel, so run_eval can find one that detached and
+    # scrubbed its environment (sandbox_check; evals/run_eval.py AgentWatch).
+    tag = os.environ.get("OPENBEAST_AGENT_TAG_FILE", "")
+    if tag and os.path.isabs(tag):
+        esc = tag.replace("\\", "\\\\").replace('"', '\\"')
+        rules.append(f'(deny file-read* (literal "{esc}"))')
     if _EVAL_SBPL_SEAL is None:
         try:
             _EVAL_SBPL_SEAL = subprocess.run(

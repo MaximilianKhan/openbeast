@@ -882,3 +882,183 @@ def test_a_zig_build_in_a_validator_leaves_nothing_in_the_user_cache(monkeypatch
     assert int(out.split("OBJS")[1].split()[0]) > 0, "the build used the private cache"
     assert not user_cache.exists() or not any(user_cache.rglob("*")), \
         "a validator's zig build wrote into the user's cache"
+
+
+# --- (b) nothing the agent started survives into validation ---------------------------
+#
+# 190's verifier: run_agent only walked and killed the process tree on a timeout,
+# and a daemon that detaches properly (double fork + setsid, stdio off the pipe)
+# outlives the tool call, runs as our uid, and could rewrite the solution after the
+# lint or burn the CPU a budgeted solution is measured against. Now every agent is
+# watched (tag in env, tree polling, its groups and sessions, a cgroup on Linux) and
+# swept before validation, and survivors keep the unit from being validated.
+
+_DAEMON_PY = textwrap.dedent(r'''
+    import os, sys
+    pidfile, scrub = sys.argv[1], sys.argv[2] == "1"
+    if os.fork():
+        os._exit(0)
+    os.setsid()
+    if os.fork():
+        os._exit(0)
+    fd = os.open(os.devnull, os.O_RDWR)
+    for i in (0, 1, 2):
+        os.dup2(fd, i)
+    argv = ["/bin/sleep", "300"]
+    open(pidfile + ".tmp", "w").write(str(os.getpid()))
+    os.rename(pidfile + ".tmp", pidfile)
+    if scrub:
+        os.execve(argv[0], argv, {})        # env -i: no tag left to find
+    os.execv(argv[0], argv)
+''')
+
+
+def _fake_runner(tmp_path, body: str) -> str:
+    """A stand-in for agents/runner.py that starts daemons the way a model
+    would: through the REAL tools.bash, under the eval marker run_agent sets
+    (so on macOS each command runs in the eval sandbox, tag file included)."""
+    (tmp_path / "daemon.py").write_text(_DAEMON_PY)
+    p = tmp_path / "fake_runner.py"
+    p.write_text(textwrap.dedent(f'''
+        import os, sys, time
+        sys.path.insert(0, {str(ROOT / "agents")!r})
+        import tools
+        def daemon(pidfile, scrub):
+            out = tools.bash(f"{{sys.executable}} {str(tmp_path / 'daemon.py')} "
+                             f"{{pidfile}} {{1 if scrub else 0}}", timeout=30)
+            assert "refusing" not in out.lower(), out
+    ''') + textwrap.dedent(body))
+    return str(p)
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return pid in run_eval._proc_snapshot()       # a zombie is not alive
+
+
+def _wait_pidfile(p: Path, timeout=10.0) -> int:
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        try:
+            return int(p.read_text())
+        except (OSError, ValueError):
+            time.sleep(0.05)
+    raise AssertionError(f"no pid in {p}")
+
+
+def _kill_pidfiles(*files):
+    for f in files:
+        try:
+            os.kill(int(f.read_text()), 9)
+        except (OSError, ValueError):
+            pass
+
+
+def test_detached_agent_daemons_are_killed_before_validation(monkeypatch, tmp_path):
+    scrubbed, tagged = tmp_path / "scrubbed.pid", tmp_path / "tagged.pid"
+    runner = _fake_runner(tmp_path, f'''
+        daemon({str(scrubbed)!r}, scrub=True)   # setsid + double fork + env -i
+        daemon({str(tagged)!r}, scrub=False)    # setsid + double fork
+        time.sleep(1.0)                         # a model turn before the runner exits
+        print("TOKENS: prompt=1 completion=1 total=2")
+    ''')
+    monkeypatch.setattr(run_eval, "RUNNER_PATH", runner)
+    # An unrelated process of ours, started outside the agent: never touched.
+    bystander = subprocess.Popen(["/bin/sleep", "60"], start_new_session=True)
+    try:
+        r = run_eval.run_agent({"id": "leak", "task": "t", "max_iter": 1},
+                               "http://127.0.0.1:9", wall_s=60)
+        assert r["exit_code"] == 0, r
+        pids = [_wait_pidfile(scrubbed), _wait_pidfile(tagged)]
+        assert r["leftovers_killed"] >= 2, r
+        assert not r.get("leftover_survivors"), r
+        time.sleep(0.2)
+        assert not any(_alive(p) for p in pids), pids
+        assert bystander.poll() is None, "the sweep killed a process the agent never started"
+    finally:
+        bystander.kill()
+        bystander.wait()
+        _kill_pidfiles(scrubbed, tagged)
+
+
+def test_daemons_are_swept_on_the_timeout_path_too(monkeypatch, tmp_path):
+    pidf = tmp_path / "d.pid"
+    runner = _fake_runner(tmp_path, f'''
+        daemon({str(pidf)!r}, scrub=True)
+        time.sleep(300)
+    ''')
+    monkeypatch.setattr(run_eval, "RUNNER_PATH", runner)
+    try:
+        r = run_eval.run_agent({"id": "leak", "task": "t", "max_iter": 1},
+                               "http://127.0.0.1:9", wall_s=4)
+        pid = _wait_pidfile(pidf)
+        assert r["stdout"] == "(timed out)", r
+        assert not r.get("leftover_survivors") and r["leftovers_killed"] >= 1, r
+        time.sleep(0.2)
+        assert not _alive(pid)
+    finally:
+        _kill_pidfiles(pidf)
+
+
+@pytest.mark.skipif(not DARWIN, reason="the sandbox tag is macOS's mechanism")
+def test_the_sandbox_tag_marks_only_the_agents_processes(tmp_path):
+    w = run_eval.AgentWatch("t")
+    try:
+        assert w.tag_file and os.path.isfile(w.tag_file)
+        assert run_eval._sandbox_tagged(os.getpid(), w.tag_file) == 0
+        prof = f'(version 1)(allow default)(deny file-read* (literal "{w.tag_file}"))'
+        inside = subprocess.Popen(["/usr/bin/sandbox-exec", "-p", prof, "/bin/sleep", "30"],
+                                  start_new_session=True)
+        outside = subprocess.Popen(["/bin/sleep", "30"], start_new_session=True)
+        time.sleep(0.3)
+        try:
+            assert run_eval._sandbox_tagged(inside.pid, w.tag_file) == 1
+            assert run_eval._sandbox_tagged(outside.pid, w.tag_file) == 0
+            assert inside.pid in w.candidates() and outside.pid not in w.candidates()
+            # A deleted tag file would make every process look denied: the
+            # control check must then turn the sandbox test off, not kill all.
+            os.unlink(w.tag_file)
+            assert not w._sandbox_tag_usable()
+            assert outside.pid not in w.candidates()
+        finally:
+            inside.kill(); outside.kill(); inside.wait(); outside.wait()
+    finally:
+        run_eval.sweep_agent_leftovers(w)
+        assert not os.path.exists(os.path.dirname(w.tag_file))
+
+
+def test_the_sweep_asserts_none_survive(monkeypatch):
+    # A leftover that cannot be killed (another uid, D state) is reported,
+    # never ignored, and the unit is not validated.
+    w = run_eval.AgentWatch("t")
+    monkeypatch.setattr(w, "candidates", lambda: {424242})
+    monkeypatch.setattr(run_eval, "_SWEEP_ROUNDS", 2)
+    killed, survivors = run_eval.sweep_agent_leftovers(w)
+    assert survivors == [424242], (killed, survivors)
+
+
+def test_a_unit_with_surviving_leftovers_is_not_validated(monkeypatch, tmp_path):
+    import json
+    validated = []
+    monkeypatch.setattr(run_eval, "run_validation",
+                        lambda *a, **k: validated.append(1) or (True, "OK"))
+    monkeypatch.setattr(run_eval, "run_agent", lambda *a, **k: {
+        "exit_code": 0, "elapsed_seconds": 0.1, "stdout": "", "stderr": "",
+        "tokens": {"prompt": 1, "completion": 1, "total": 2},
+        "leftovers_killed": 0, "leftover_survivors": [4242]})
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    (tasks_dir / "1_x.json").write_text(json.dumps({
+        "id": "1_x", "name": "x", "difficulty": "easy", "task": "t", "max_iter": 1,
+        "validation": {"type": "bash", "script": "true"}}))
+    monkeypatch.setattr(run_eval, "TASKS_DIR", str(tasks_dir))
+    monkeypatch.setattr(run_eval, "RESULTS_DIR", str(tmp_path / "results"))
+    out = run_eval.run_eval(model_name="m", use_cache=False, task_filter=["1_x"])
+    row = out["tasks"][0]
+    assert not validated and not row["passed"], row
+    assert "could not be killed" in row.get("validation_output", ""), row
