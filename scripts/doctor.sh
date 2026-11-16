@@ -1101,6 +1101,18 @@ if command -v tailscale >/dev/null 2>&1; then
              "the shared key gates it but doesn't shrink it; EDGE_GATE=true allowlists just the OpenAI routes"
       fi
     fi
+    # :8444 should carry /api/slot alone. A "/" handler there (the old
+    # no-set-path fallback, or the pre-fix fall-open) publishes the whole
+    # dashboard page and /api/status, and adding /api/slot beside it never
+    # removed it — so say so instead of trusting the last "published" line.
+    _slot_block="$(awk '/:8444([^0-9]|$)/ {on=1; next} on && /^[[:space:]]*\|--/ {print; next} {on=0}' <<< "$_serve")"
+    if grep -qE '\|--[[:space:]]+/[[:space:]]' <<< "$_slot_block"; then
+      warn ":8444 publishes the WHOLE dashboard (page + /api/status), not just /api/slot" \
+           "./scripts/setup-tailscale.sh --publish-slot (it resets :8444 and mounts /api/slot only; needs a tailscale with serve --set-path)"
+    elif [[ -n "$_slot_block" ]]; then
+      pass ":8444 publishes /api/slot only"
+    fi
+    unset _slot_block
   else
     pass "no tailscale serve mappings (stack is localhost-only)"
   fi

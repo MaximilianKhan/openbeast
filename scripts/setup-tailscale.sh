@@ -135,6 +135,12 @@ _publish_chat_mount() { # _publish_chat_mount <up-host>
 
 _publish_slot_mount() { # _publish_slot_mount <upstream-host>
   if _ts_has_set_path; then
+    # Reset :8444 first. tailscale serve keeps one handler per path, so
+    # adding /api/slot left any earlier "/" (whole dashboard) handler in
+    # place — from the no-set-path fallback below, or the old fall-open —
+    # and "re-run to narrow it" narrowed nothing. A failed mount below thus
+    # leaves :8444 unpublished, never wider.
+    ts_admin serve --https=8444 off >/dev/null 2>&1 || true
     if ! ts_admin serve --bg --https=8444 --set-path=/api/slot "http://$1:${DASHBOARD_PORT:-3002}/api/slot"; then
       echo "      ERROR: could not mount :8444/api/slot (tailscale's message is above)." >&2
       echo "             NOT falling back to publishing the whole dashboard. Fix the cause" >&2

@@ -151,7 +151,12 @@ serves. `refresh-config` pins the id `/api/slot` reports whenever
 and `/api/status` stay rig-local. If that path-scoped mount fails, the script
 exits with an error and mounts nothing wider. The whole dashboard is mounted
 on `:8444` in only one case: a tailscale build whose `serve --help` has no
-`--set-path` at all. The script prints a NOTE when it does that. The answer is gathered at most once every
+`--set-path` at all. The script prints a NOTE when it does that. Re-running
+`--publish-slot` on a tailscale that has `--set-path` resets `:8444` first
+(`serve --https=8444 off`), so a whole-dashboard `/` handler an older run or
+build left is removed rather than kept beside `/api/slot` — tailscale keeps
+one handler per path. `scripts/doctor.sh` WARNs while `:8444` still carries
+a `/` handler. The answer is gathered at most once every
 1.5 s and shared by every caller in that window, so it can be up to 1.5 s
 old; do not poll faster than that. The dashboard serves at most 16
 connections at once and answers **503** with `Retry-After: 1` beyond that —
