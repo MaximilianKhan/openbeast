@@ -4777,12 +4777,12 @@ category = "ai"
 description = "llama.cpp at OpenBeast's engine pin (scripts/llama.cpp.ref)"
 homepage = "https://github.com/ggml-org/llama.cpp"
 license = "MIT"
-version = "d4389a4dd920"
+version = "v1.0.0"
 profiles = ["core"]
 update = "manual"
 git = "https://github.com/ggml-org/llama.cpp.git"
 tag = ""
-commit = "d4389a4dd920d24c9592f1dc3badbd69be23bd09"
+commit = "b1b770d90d94cad9e9ea5b993bdbc383a522fb28"
 note = "The commit is scripts/llama.cpp.ref's LLAMA_CPP_REF (tests/test_ark.py holds them equal). Move it with ./scripts/update.sh --llama, then edit this commit to match. Build offline as bootstrap.sh does (cmake -DGGML_CUDA=ON)."
 git_size = 513333248
 
