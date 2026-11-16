@@ -572,6 +572,17 @@
 #   ./scripts/clients.sh enroll phone --label "My phone" --scope chat
 #   ./scripts/clients.sh scope phone remove chat     # take it back, no restart
 
+# WHERE the login header counts. `loopback` (default) honours it from any
+# 127.0.0.1 peer — which includes code inside a host-network container (Open
+# WebUI, SearXNG, a backend image); doctor warns when such containers run.
+# `unix` honours it ONLY on CHAT_SOCKET, a 0600 Unix socket, and
+# `./scripts/setup-tailscale.sh --chat` then points :8445 at that socket.
+# TCP loopback then needs the locality token or a device key like any caller.
+# After changing it: ./stop.sh && ./start.sh, then re-run setup-tailscale.sh --chat.
+# Env overrides: $OPENBEAST_CHAT_LOGIN_FROM, $OPENBEAST_CHAT_SOCKET.
+#CHAT_LOGIN_FROM=unix
+#CHAT_SOCKET=/home/you/openbeast/.run/chat.sock
+
 # Push notifications when a session ends. beast-chat POSTs a short message
 # (session title, state and a link to it in the console — never transcript
 # text) to CHAT_NOTIFY_URL, an ntfy-style topic URL. The self-hosted way is

@@ -119,6 +119,20 @@ _ts_has_set_path() {
   case "$_h" in *set-path*) return 0 ;; esac
   return 1
 }
+_publish_chat_mount() { # _publish_chat_mount <up-host>
+  # CHAT_LOGIN_FROM=unix (lib/conf.sh): logins count only on CHAT_SOCKET, so
+  # :8445 proxies to that socket and a host-network container dialling
+  # 127.0.0.1 can no longer claim a login. Otherwise the TCP port, as before.
+  if [[ "${CHAT_LOGIN_FROM:-loopback}" == unix ]]; then
+    ts_admin serve --bg --https=8445 "unix:$CHAT_SOCKET"
+    echo "      beast-chat published (tailnet-only, :8445 → unix:$CHAT_SOCKET)."
+    [[ -S "$CHAT_SOCKET" ]] || echo "      NOTE: $CHAT_SOCKET does not exist yet — it appears when beast-chat starts."
+  else
+    ts_admin serve --bg --https=8445 "http://$1:${CHAT_PORT:-3003}"
+    echo "      beast-chat published (tailnet-only, :8445 → :${CHAT_PORT:-3003})."
+  fi
+}
+
 _publish_slot_mount() { # _publish_slot_mount <upstream-host>
   if _ts_has_set_path; then
     if ! ts_admin serve --bg --https=8444 --set-path=/api/slot "http://$1:${DASHBOARD_PORT:-3002}/api/slot"; then
@@ -619,9 +633,8 @@ if [[ $PUBLISH_CHAT -eq 1 ]]; then
     echo "      WARNING: BEAST_CHAT is not true in openbeast.conf — :8445 will"
     echo "               502 until: set BEAST_CHAT=true && ./stop.sh && ./start.sh"
   fi
-  ts_admin serve --bg --https=8445 "http://$CHAT_UP_HOST:${CHAT_PORT:-3003}"
-  echo "      beast-chat published (tailnet-only, :8445 → :${CHAT_PORT:-3003})."
-  if ! _is_loop "$CHAT_UP_HOST"; then
+  _publish_chat_mount "$CHAT_UP_HOST"
+  if [[ "${CHAT_LOGIN_FROM:-loopback}" != unix ]] && ! _is_loop "$CHAT_UP_HOST"; then
     # The console trusts Tailscale-User-Login only from a LOOPBACK peer (the
     # header is otherwise forgeable), and tailscaled dials this address from
     # itself — so logins are not honoured through this mount.
