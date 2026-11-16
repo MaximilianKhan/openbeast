@@ -1792,6 +1792,38 @@ fi
 _BH="$(_bh 'BIND_HOST=192.0.2.9')"
 [[ "$_BH" == "192.0.2.9|http://192.0.2.9:8080" ]] && pass "…a plain BIND_HOST is unchanged (control)" \
   || fail "plain BIND_HOST gave '$_BH'"
+# review 2026-11-16: a QUOTED value with a comment kept its closing quote
+# (`127.0.0.1"`), which still read as loopback and reached --host.
+_BH="$(_bh 'BIND_HOST="127.0.0.1"   # loopback only')"
+[[ "$_BH" == "127.0.0.1|http://127.0.0.1:8080" ]] \
+  && pass "BIND_HOST=\"127.0.0.1\" # comment -> 127.0.0.1 (was 127.0.0.1\", passing as loopback)" \
+  || fail "quoted BIND_HOST with an inline comment gave: '$_BH'"
+_BH="$(_bh "BIND_HOST='192.0.2.9' # LAN")"
+[[ "$_BH" == "192.0.2.9|http://192.0.2.9:8080" ]] && pass "…single quotes too" \
+  || fail "single-quoted BIND_HOST with a comment gave '$_BH'"
+_BH="$(_bh 'BIND_HOST="[::1]"')"
+[[ "$_BH" == "[::1]|"* ]] && pass "…a bracketed IPv6 address is an address" \
+  || fail "BIND_HOST=[::1] gave '$_BH'"
+# Junk that survives every strip is refused, not bound: loopback + one lint row.
+printf '%s\n' 'BIND_HOST=127.0.0.1,10.0.0.1' > "$_BHS/openbeast.conf"
+_BH="$(env -i HOME="$_BHS/home" PATH="$_BHS/bin:/usr/bin:/bin" OB_CONF_READONLY=1 \
+  bash -c 'REPO_DIR="$1"; source "$1/scripts/lib/conf.sh" 2>/dev/null; printf "%s|" "$BIND_HOST"; ob_conf_lint' _ "$_BHS")"
+if [[ "$_BH" == "127.0.0.1|"*"BIND_HOST='127.0.0.1,10.0.0.1' is not an address or hostname"* ]]; then
+  pass "BIND_HOST=127.0.0.1,10.0.0.1 -> 127.0.0.1, and lint names it"
+else
+  fail "malformed BIND_HOST gave: '$_BH'"
+fi
+# _ob_conf_value itself: the quoted-plus-comment form, and the forms it must
+# NOT change (a quote inside a value; a bare value containing ' #').
+_qv() { printf '%s\n' "$1" > "$_BHS/openbeast.conf"
+  env -i PATH=/usr/bin:/bin OB_CONF_READONLY=1 OB_CONF_LINTED=1 \
+    bash -c 'REPO_DIR="$1"; source "$1/scripts/lib/conf.sh" 2>/dev/null; _ob_conf_value K' _ "$_BHS"; }
+_q1="$(_qv 'K="a b" # note')"; _q2="$(_qv 'K="a"b"')"; _q3="$(_qv 'K=pa #ss')"; _q4="$(_qv 'K="x #y"')"
+if [[ "$_q1" == "a b" && "$_q2" == 'a"b' && "$_q3" == "pa #ss" && "$_q4" == "x #y" ]]; then
+  pass "_ob_conf_value: \"v\" # c -> v; inner quotes and a bare ' #' are kept as before"
+else
+  fail "_ob_conf_value quoting: [$_q1] [$_q2] [$_q3] [$_q4]"
+fi
 
 # ---------------------------------------------------------------------------
 # extensions-ntfy review: DASHBOARD_PORT was honoured by run.sh only;

@@ -73,14 +73,37 @@
 
 # Read one KEY= value from openbeast.conf. Ignores comments and surrounding
 # whitespace/quotes; last assignment wins. Prints nothing when absent.
+#
+# A QUOTED value may carry a trailing comment: `BIND_HOST="127.0.0.1"  # lo`
+# is 127.0.0.1. The plain quote strip below only removes a quote at BOTH
+# ends of what is left, so that line came back as `127.0.0.1"  # lo`; the
+# BIND_HOST comment-strip then left `127.0.0.1"`, which still read as
+# loopback and went into llama-server --host and every probe URL (review
+# 2026-11-16). The quoted form is taken whole only when nothing but a `#`
+# comment follows its closing quote, so a quote INSIDE a value (`"a"b"`) and
+# an unquoted value containing " #" (a password) read exactly as before.
 _ob_conf_value() {
-  local key="$1" conf="$REPO_DIR/openbeast.conf" line
+  local key="$1" conf="$REPO_DIR/openbeast.conf" line q rest after
   [[ -f "$conf" ]] || return 1
   line="$(grep -E "^[[:space:]]*${key}[[:space:]]*=" "$conf" | tail -n1)" || return 1
   [[ -n "$line" ]] || return 1
   line="${line#*=}"
   line="${line#"${line%%[![:space:]]*}"}"   # ltrim
   line="${line%"${line##*[![:space:]]}"}"   # rtrim
+  q="${line:0:1}"
+  if [[ "$q" == '"' || "$q" == "'" ]]; then
+    rest="${line:1}"
+    if [[ "$rest" == *"$q"* ]]; then
+      after="${rest#*"$q"}"
+      after="${after#"${after%%[![:space:]]*}"}"
+      if [[ -z "$after" || "$after" == \#* ]]; then
+        line="${rest%%"$q"*}"
+        [[ -n "$line" ]] || return 1
+        printf '%s\n' "$line"
+        return 0
+      fi
+    fi
+  fi
   line="${line#\"}"; line="${line%\"}"
   line="${line#\'}"; line="${line%\'}"
   [[ -n "$line" ]] || return 1
@@ -175,6 +198,20 @@ BIND_HOST="${OPENBEAST_BIND:-$(_ob_conf_value BIND_HOST || echo 127.0.0.1)}"
 # as loopback (127.*), so nothing warned (stack-lifecycle review).
 BIND_HOST="${BIND_HOST%%[[:space:]#]*}"
 [[ -n "$BIND_HOST" ]] || BIND_HOST=127.0.0.1
+# Values this file had to drop while resolving, one message each. ob_conf_lint
+# (end of file) reports them with its other findings, so they are said once
+# per command and doctor.sh can show them as rows.
+_OB_CONF_PROBLEMS=()
+# What is left must look like an address or a hostname. Anything else (a
+# stray quote, a typo'd separator) cannot bind and used to reach --host and
+# every probe URL as written, and `127.0.0.1"` even passed
+# ob_bind_is_loopback. Loopback is the safe fallback, and lint says so.
+_ob_host_re='^[A-Za-z0-9._:%-]+$'; _ob_host6_re='^\[[A-Fa-f0-9:.%]+\]$'
+if [[ ! "$BIND_HOST" =~ $_ob_host_re && ! "$BIND_HOST" =~ $_ob_host6_re ]]; then
+  _OB_CONF_PROBLEMS+=("BIND_HOST='$BIND_HOST' is not an address or hostname — using 127.0.0.1 (loopback)")
+  BIND_HOST=127.0.0.1
+fi
+unset _ob_host_re _ob_host6_re
 # The warning for a non-loopback BIND_HOST sits further down, after the tool
 # server keys are resolved — whether it is merely loud or names an open
 # remote shell depends on them.
@@ -245,10 +282,7 @@ export OPENBEAST_DASHBOARD_PORT="$DASHBOARD_PORT"
 # $OPENBEAST_REASONING / $OPENBEAST_REASONING_BUDGET.
 REASONING="${OPENBEAST_REASONING:-$(_ob_conf_value REASONING || true)}"
 REASONING_BUDGET="${OPENBEAST_REASONING_BUDGET:-$(_ob_conf_value REASONING_BUDGET || true)}"
-# Values this file had to drop while resolving, one message each. ob_conf_lint
-# (end of file) reports them with its other findings, so they are said once
-# per command and doctor.sh can show them as rows.
-_OB_CONF_PROBLEMS=()
+# (_OB_CONF_PROBLEMS starts at BIND_HOST, above.)
 # ISLAND: beast-island, the RUNTIME counterpart of OFFLINE (agents/island.py,
 # docs/BEAST_ISLAND.md). OFFLINE says the box never has a route; ISLAND says
 # what to do when the route DISAPPEARS while the stack runs — the power-outage
