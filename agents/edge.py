@@ -111,6 +111,18 @@ MAX_BODY_BYTES = int(os.environ.get("OPENBEAST_EDGE_MAX_BODY", str(8 * 1024 * 10
 # Bodies above this are sanitized in a worker thread (see gate()); below it
 # the thread hop costs more than the parse (worst case ~1.5 ms inline).
 _SANITIZE_INLINE_BYTES = 16 * 1024
+# One threaded (big-body) sanitize at a time — see gate(). Created lazily
+# per event loop: an asyncio.Semaphore binds to the loop that first waits on
+# it, and the gate's loop is not running at import time.
+_big_sanitize: tuple[object, asyncio.Semaphore] | None = None
+
+
+def _big_sanitize_gate() -> asyncio.Semaphore:
+    global _big_sanitize
+    loop = asyncio.get_running_loop()
+    if _big_sanitize is None or _big_sanitize[0] is not loop:
+        _big_sanitize = (loop, asyncio.Semaphore(1))
+    return _big_sanitize[1]
 
 PORT = int(os.environ.get("OPENBEAST_EDGE_PORT", "8090"))
 BIND = os.environ.get("OPENBEAST_BIND", "127.0.0.1").strip() or "127.0.0.1"
@@ -714,6 +726,15 @@ def _json_too_deep(raw: bytes, limit: int = MAX_JSON_DEPTH) -> bool:
     first bracket past the cap, so a hostile body costs O(limit) to refuse.
     A malformed body can only miscount here; json.loads still rejects it.
     """
+    # Fast path: nesting can never exceed the number of opening brackets in
+    # the body (a bracket inside a string only over-counts, the safe way).
+    # bytes.count is a C scan with no per-token work, and it spares the
+    # common big body — one long prompt or inline base64 media — the regex
+    # match over a single multi-MiB string token, a C call that holds the GIL
+    # (42 ms for 7 MiB) and so stalls the event loop even from a worker
+    # thread (2026-11-16 review).
+    if raw.count(b"[") + raw.count(b"{") <= limit:
+        return False
     depth = 0
     for m in _JSON_TOKEN.finditer(raw):
         c = m.group()
@@ -1205,13 +1226,21 @@ async def gate(request: Request):
         if raw and path in JSON_PATHS:
             try:
                 if len(raw) > _SANITIZE_INLINE_BYTES:
-                    # OFF the event loop. The depth scan is a Python loop per
-                    # token: a cap-sized body of "[],[],…" held the loop for
-                    # seconds, and since one device may send 120 of those a
-                    # minute it could stall every other tenant's stream and
-                    # time /gate/health out (which a watchdog reads as down).
-                    body, model, streaming, gens = await asyncio.to_thread(
-                        _sanitize_body, raw, device, path)
+                    # In a worker thread. The depth scan's per-token Python
+                    # loop releases the GIL at the switch interval, so a
+                    # cap-sized "[],[],…" body (which held the loop for
+                    # seconds inline) no longer freezes other tenants or
+                    # times /gate/health out. It is NOT full isolation:
+                    # json.loads, json.dumps and a regex match over one huge
+                    # string token are single C calls that hold the GIL, so
+                    # the loop still pauses for each (tens of ms at the cap).
+                    # Hence one big-body sanitize at a time: concurrent ones
+                    # only queue on the GIL and stack their pauses — measured
+                    # 220 ms worst case with four senders vs ~70 ms serialized
+                    # (2026-11-16 review).
+                    async with _big_sanitize_gate():
+                        body, model, streaming, gens = await asyncio.to_thread(
+                            _sanitize_body, raw, device, path)
                 else:
                     body, model, streaming, gens = _sanitize_body(
                         raw, device, path)

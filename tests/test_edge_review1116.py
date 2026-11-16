@@ -9,9 +9,12 @@ Run: python3 -m pytest tests/test_edge_review1116.py -q
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
+import threading
+import time
 
 import pytest
 from starlette.testclient import TestClient
@@ -91,3 +94,68 @@ class TestForwardedBodyStaysUtf8:
         assert b"\\ud800" in out
         assert json.loads(out)["messages"][0]["content"] == "a\ud800b"
 
+
+class TestBigSanitizeDoesNotStallTheLoop:
+    """asyncio.to_thread does not stop C calls that hold the GIL (a regex
+    match over one huge string, json.loads/dumps) from pausing the loop."""
+
+    def test_the_depth_scan_skips_a_body_with_few_brackets(self, edge,
+                                                           monkeypatch):
+        calls = []
+
+        class _Spy:
+            def finditer(self, raw):
+                calls.append(len(raw))
+                return iter(())
+
+        monkeypatch.setattr(edge, "_JSON_TOKEN", _Spy())
+        raw = json.dumps({"messages": [{"content": "a" * 100_000}]}).encode()
+        assert edge._json_too_deep(raw) is False
+        assert calls == [], "the per-token scan ran on a body that cannot nest"
+
+    @pytest.mark.parametrize("raw,deep", [
+        (b"[" * 65 + b"]" * 65, True),
+        (b"[" * 64 + b"]" * 64, False),
+        # brackets inside strings over-count, so the full scan decides
+        (b'{"a":"' + b"[" * 200 + b'"}', False),
+        (b'{"a":' + b"[" * 70 + b"]" * 70 + b"}", True),
+    ])
+    def test_the_fast_path_never_changes_the_answer(self, edge, raw, deep):
+        assert edge._json_too_deep(raw) is deep
+
+    def test_big_body_sanitizes_run_one_at_a_time(self, edge, tmp_path,
+                                                  monkeypatch):
+        """Two big bodies from two in-flight requests: the threaded sanitize
+        never overlaps (it would only queue on the GIL and stack pauses)."""
+        _registry(tmp_path)
+        _stub_upstream(edge, {})
+        real = edge._sanitize_body
+        lock = threading.Lock()
+        state = {"now": 0, "peak": 0}
+
+        def _slow(raw, device, path="/v1/chat/completions"):
+            with lock:
+                state["now"] += 1
+                state["peak"] = max(state["peak"], state["now"])
+            time.sleep(0.15)
+            try:
+                return real(raw, device, path)
+            finally:
+                with lock:
+                    state["now"] -= 1
+
+        monkeypatch.setattr(edge, "_sanitize_body", _slow)
+        big = {"model": "m", "messages": [{"role": "user",
+                                           "content": "x" * 64_000}]}
+
+        async def _two(c):
+            loop = asyncio.get_running_loop()
+            return await asyncio.gather(*[
+                loop.run_in_executor(None, lambda: c.post(CHAT, json=big,
+                                                          headers=HDR))
+                for _ in range(2)])
+
+        with TestClient(edge.app) as c:
+            rs = asyncio.run(_two(c))
+        assert [r.status_code for r in rs] == [200, 200]
+        assert state["peak"] == 1
