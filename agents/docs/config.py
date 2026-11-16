@@ -15,6 +15,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
+from . import urls as U
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 AGENTS_DIR = os.path.dirname(HERE)
 REPO_DIR = os.path.dirname(AGENTS_DIR)
@@ -176,12 +178,15 @@ class Source:
     requires_ack: bool = False
 
     def in_scope(self, url: str) -> bool:
+        """Host AND port in `hosts`, path under an allow prefix and under no
+        deny prefix — decided on the NORMALIZED URL (agents/docs/urls.py), so
+        `/docs/../secret` and `/docs/%2e%2e/secret` are judged as `/secret`,
+        which is what a server would serve for them."""
         from urllib.parse import urlsplit  # noqa: PLC0415
-        p = urlsplit(url)
-        if p.scheme not in ("https", "http") or (p.hostname or "") not in self.hosts:
+        n = U.normalize_url(url)
+        if not n or not U.host_allowed(self.hosts, n):
             return False
-        path = p.path or "/"
-        low = path.lower()
+        low = (urlsplit(n).path or "/").lower()
         if any(low.startswith(d.lower()) for d in self.deny_prefixes):
             return False
         return any(low.startswith(a.lower()) for a in self.allow_prefixes)
@@ -211,6 +216,9 @@ def _validate(raw: dict, i: int) -> Source:
         v = raw.get(k, [])
         if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
             raise ConfigError(f"{where}: {k} must be a list of strings")
+    for h in raw["hosts"]:
+        if not U.parse_host_entry(h):
+            raise ConfigError(f"{where}: host {h!r} must be a host name, optionally with :port")
     src = Source(title=raw.get("title", name), **{k: v for k, v in raw.items() if k != "title"})
     if src.discovery != "links" and not src.index_url:
         raise ConfigError(f"{where}: discovery = {src.discovery} needs index_url")
@@ -221,10 +229,8 @@ def _validate(raw: dict, i: int) -> Source:
     for r in src.roots:
         if not src.in_scope(r):
             raise ConfigError(f"{where}: root {r} is outside hosts/allow_prefixes")
-    if src.index_url:
-        from urllib.parse import urlsplit  # noqa: PLC0415
-        if (urlsplit(src.index_url).hostname or "") not in src.hosts:
-            raise ConfigError(f"{where}: index_url host is not in hosts")
+    if src.index_url and not U.host_allowed(src.hosts, src.index_url):
+        raise ConfigError(f"{where}: index_url host is not in hosts")
     src.requires_ack = bool(src.requires_ack)
     return src
 
@@ -264,8 +270,10 @@ def store_root() -> str:
 def _conf_offline() -> Optional[str]:
     """OFFLINE= in openbeast.conf, parsed the way scripts/lib/conf.sh and
     scripts/lang-library.sh parse it: last assignment wins, quotes stripped,
-    FIRST TOKEN ONLY, and only the explicit words mean on."""
-    raw = os.environ.get("OPENBEAST_OFFLINE")
+    FIRST TOKEN ONLY, and only the explicit words mean on. An EMPTY
+    OPENBEAST_OFFLINE counts as unset and falls through to the file, as
+    `${OPENBEAST_OFFLINE:-$(conf)}` does in both shell parsers."""
+    raw = os.environ.get("OPENBEAST_OFFLINE") or None
     if raw is None:
         conf = os.path.join(REPO_DIR, "openbeast.conf")
         try:

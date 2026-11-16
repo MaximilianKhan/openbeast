@@ -30,13 +30,24 @@ import shutil
 import sqlite3
 import tarfile
 import tempfile
+import threading
 import time
+from collections import OrderedDict
+import urllib.parse
 from typing import Optional
 
 from . import config as C
 
 SCHEMA = 1
 BUNDLE_NAME = "BUNDLE.json"
+
+# Parsed manifests for READERS (search, read, live's fallback), keyed on the
+# file's identity: path + inode + mtime_ns + size. A save replaces the file
+# (new inode, new mtime), so a stale entry is never served. Small: a big
+# source's manifest parses to tens of MB.
+_PEEK_MAX = 4
+_PEEK: "OrderedDict" = OrderedDict()
+_PEEK_LOCK = threading.Lock()
 
 
 def now_iso() -> str:
@@ -121,6 +132,40 @@ class Store:
         return {"schema": SCHEMA, "source": name, "pages": {}, "frontier": [],
                 "created_at": now_iso()}
 
+    def peek(self, name: str) -> dict:
+        """The manifest for READING ONLY — shared, cached, never mutate it
+        (load() returns a private copy for writers). Re-parsed only when the
+        file changed, so a search with eight hits parses it at most once
+        instead of eight times."""
+        return self._peek(name)[0]
+
+    def _peek(self, name: str) -> tuple:
+        """(manifest, {doc_id.lower(): url}, {file basename: url})."""
+        path = self.manifest_path(name)
+        try:
+            st = os.stat(path)
+            key = (path, st.st_ino, st.st_mtime_ns, st.st_size)
+        except OSError:
+            return self.load(name), {}, {}
+        with _PEEK_LOCK:
+            hit = _PEEK.get(path)
+            if hit and hit[0] == key:
+                _PEEK.move_to_end(path)
+                return hit[1]
+        m = self.load(name)
+        by_id, by_file = {}, {}
+        for u, rec in m["pages"].items():
+            if isinstance(rec, dict):
+                by_id.setdefault(str(rec.get("doc_id", "")).lower(), u)
+                by_file.setdefault(os.path.basename(str(rec.get("file", ""))), u)
+        val = (m, by_id, by_file)
+        with _PEEK_LOCK:
+            _PEEK[path] = (key, val)
+            _PEEK.move_to_end(path)
+            while len(_PEEK) > _PEEK_MAX:
+                _PEEK.popitem(last=False)
+        return val
+
     def save(self, name: str, m: dict) -> None:
         _atomic_write(self.manifest_path(name),
                       json.dumps(m, indent=1, sort_keys=True).encode())
@@ -165,20 +210,26 @@ class Store:
             return fh.read()
 
     def find(self, ref: str, sources=None) -> Optional[tuple]:
-        """(source, url, record) for a doc id, a URL, or a page file name."""
+        """(source, url, record) for a doc id, a URL, or a page file name.
+        The record is the cached manifest's (read-only). A doc id names its
+        source (`swiftui:/documentation/...`), so only that manifest is
+        consulted for one; every lookup is a dict hit, not a page scan."""
         ref = (ref or "").strip()
         from .htmlmd import canonical  # noqa: PLC0415
-        for name in sources or self.sources_on_disk():
-            m = self.load(name)
-            pages = m["pages"]
-            cands = [ref, canonical(ref), canonical(ref, ".md.txt"), ref.rstrip("/")]
+        names = list(sources or self.sources_on_disk())
+        m = re.match(r"^([a-z0-9][a-z0-9_-]{0,47}):/", ref)
+        if m and m.group(1) in names:
+            names = [m.group(1)]           # doc ids carry their source's name; no other can hold it
+        cands = [u for u in (ref, canonical(ref), canonical(ref, ".md.txt"), ref.rstrip("/")) if u]
+        for name in names:
+            man, by_id, by_file = self._peek(name)
+            pages = man["pages"]
             for u in cands:
-                if u and u in pages:
+                if u in pages:
                     return name, u, pages[u]
-            for u, rec in pages.items():
-                if rec.get("doc_id") == ref or rec.get("doc_id", "").lower() == ref.lower() \
-                        or os.path.basename(rec.get("file", "")) == ref:
-                    return name, u, rec
+            u = by_id.get(ref.lower()) or by_file.get(ref)
+            if u and u in pages:
+                return name, u, pages[u]
         return None
 
     # the index -------------------------------------------------------------
@@ -186,7 +237,38 @@ class Store:
         return os.path.join(self.root, "index.sqlite")
 
     def index(self) -> "Index":
-        return Index(self.index_path())
+        """The index, read-write. One that was just (re)created — new, or
+        built by the other search mode or an older schema — is refilled from
+        the pages on disk before it is handed out: a mode flip never leaves
+        an empty index behind."""
+        idx = Index(self.index_path())
+        if idx.rebuilt:
+            try:
+                _fill(self, idx, self.sources_on_disk())
+            except BaseException:
+                idx.close()
+                raise
+        return idx
+
+    def writable(self) -> bool:
+        p = self.index_path()
+        return os.access(self.root, os.W_OK) and (not os.path.exists(p) or os.access(p, os.W_OK))
+
+    def search_index(self) -> "Index":
+        """The index for a SEARCH: opened read-only, so searching writes
+        nothing. When it cannot be used as it is (missing, the other mode, an
+        older schema) it is rebuilt if this store is writable; otherwise
+        IndexUnavailable says what to run."""
+        try:
+            return Index(self.index_path(), readonly=True)
+        except IndexUnavailable as e:
+            if not self.writable():
+                raise IndexUnavailable(
+                    f"{e}, and {self.root} is read-only here — run `docs.sh reindex` as the "
+                    f"store's owner (with this python), or unpack the mirror somewhere writable. "
+                    f"Reading a page by doc id still works.") from None
+        self.index().close()                       # rebuilds and refills
+        return Index(self.index_path(), readonly=True)
 
 
 def fts5_available() -> bool:
@@ -215,56 +297,117 @@ def _headings(md: str) -> str:
     return " ".join(re.findall(r"^#{2,6}\s+(.+)$", md, re.M))
 
 
+INDEX_SCHEMA = "2"          # 2: the `ids` side table (doc_id -> rowid, compact title)
+
+
+class IndexUnavailable(Exception):
+    """The search index cannot be used as it is and cannot be rebuilt here."""
+
+
+def _compact(s: str) -> str:
+    """The exact-title key, the SAME on both sides of the comparison:
+    `navigationDestination(for:destination:)`, "navigation destination for
+    destination" and `NavigationDestination` all compact alike."""
+    return re.sub(r"\W+", "", s or "").lower()
+
+
 class Index:
     """Search over every mirrored page. SQLite FTS5 with bm25 when the
     interpreter's sqlite has it (checked, not assumed: OPENBEAST_DOCS_NO_FTS=1
     forces the fallback), else a plain table scanned and scored in Python —
     fine for the size of a local mirror, and the same answers in the same
-    order for the cases the tests pin."""
+    order for the cases the tests pin.
 
-    def __init__(self, path: str):
+    Beside `docs` sits an ordinary table, `ids` (doc_id PRIMARY KEY -> the
+    docs rowid, source, compact title, indexed). FTS5 cannot index an
+    UNINDEXED column or an expression, so "replace this doc" and "the page
+    titled exactly X" were full scans of every row; through `ids` both are
+    B-tree lookups, and reindex/unpack are linear instead of quadratic.
+
+    `readonly=True` (searches) opens the file `mode=ro` and writes NOTHING,
+    so a mirror on a read-only mount, or owned by another user, searches
+    fine. It raises IndexUnavailable when the file was built by the other
+    search mode or an older schema: Store.search_index() rebuilds it when it
+    can and explains when it cannot. A read-write open whose meta does not
+    match recreates the tables EMPTY and sets `rebuilt`; Store.index()
+    refills them from the pages on disk."""
+
+    def __init__(self, path: str, readonly: bool = False):
         self.path = path
-        os.makedirs(os.path.dirname(path), exist_ok=True)
         self.fts = fts5_available()
+        self.mode = "fts5" if self.fts else "plain"
+        self.rebuilt = False
+        if readonly:
+            if not os.path.isfile(path):
+                raise IndexUnavailable(f"no search index at {path}")
+            uri = "file:" + urllib.parse.quote(os.path.abspath(path)) + "?mode=ro"
+            self.db = sqlite3.connect(uri, uri=True)
+            built = self._meta()
+            if built != (self.mode, INDEX_SCHEMA):
+                self.db.close()
+                raise IndexUnavailable(
+                    f"the index was built as {built[0] or '?'} (schema {built[1] or '?'}); this "
+                    f"python searches with {self.mode} (schema {INDEX_SCHEMA})")
+            return
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         self.db = sqlite3.connect(path)
-        mode = "fts5" if self.fts else "plain"
         self.db.execute("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)")
-        row = self.db.execute("SELECT v FROM meta WHERE k='mode'").fetchone()
-        if row and row[0] != mode:                 # built by the other mode: rebuild
+        if self._meta() != (self.mode, INDEX_SCHEMA):
+            # New, built by the other mode, or an older schema: recreate empty.
             self.db.execute("DROP TABLE IF EXISTS docs")
-        self.db.execute("INSERT OR REPLACE INTO meta VALUES ('mode', ?)", (mode,))
-        if self.fts:
-            self.db.execute(
-                "CREATE VIRTUAL TABLE IF NOT EXISTS docs USING fts5("
-                "doc_id UNINDEXED, source UNINDEXED, url UNINDEXED, fetched_at UNINDEXED,"
-                "title, keywords, headings, body, tokenize = \"unicode61 tokenchars '_'\")")
-        else:
-            self.db.execute(
-                "CREATE TABLE IF NOT EXISTS docs (doc_id TEXT, source TEXT, url TEXT,"
-                " fetched_at TEXT, title TEXT, keywords TEXT, headings TEXT, body TEXT)")
-        self.db.commit()
+            self.db.execute("DROP TABLE IF EXISTS ids")
+            if self.fts:
+                self.db.execute(
+                    "CREATE VIRTUAL TABLE docs USING fts5("
+                    "doc_id UNINDEXED, source UNINDEXED, url UNINDEXED, fetched_at UNINDEXED,"
+                    "title, keywords, headings, body, tokenize = \"unicode61 tokenchars '_'\")")
+            else:
+                self.db.execute(
+                    "CREATE TABLE docs (doc_id TEXT, source TEXT, url TEXT,"
+                    " fetched_at TEXT, title TEXT, keywords TEXT, headings TEXT, body TEXT)")
+            self.db.execute("CREATE TABLE ids (doc_id TEXT PRIMARY KEY, rid INTEGER NOT NULL,"
+                            " source TEXT NOT NULL, compact TEXT NOT NULL)")
+            self.db.execute("CREATE INDEX ids_compact ON ids (compact)")
+            self.db.execute("CREATE INDEX ids_source ON ids (source)")
+            self.db.execute("INSERT OR REPLACE INTO meta VALUES ('mode', ?)", (self.mode,))
+            self.db.execute("INSERT OR REPLACE INTO meta VALUES ('schema', ?)", (INDEX_SCHEMA,))
+            self.db.commit()
+            self.rebuilt = True
+
+    def _meta(self) -> tuple:
+        try:
+            kv = dict(self.db.execute("SELECT k, v FROM meta WHERE k IN ('mode', 'schema')"))
+        except sqlite3.Error:
+            return (None, None)
+        return (kv.get("mode"), kv.get("schema"))
 
     def close(self):
         self.db.close()
 
     def upsert(self, source, url, did, title, fetched_at, md, commit=True):
-        self.db.execute("DELETE FROM docs WHERE doc_id = ?", (did,))
+        row = self.db.execute("SELECT rid FROM ids WHERE doc_id = ?", (did,)).fetchone()
+        if row:
+            self.db.execute("DELETE FROM docs WHERE rowid = ?", (row[0],))
         body = _body_text(md)
-        self.db.execute("INSERT INTO docs (doc_id, source, url, fetched_at, title, keywords,"
-                        " headings, body) VALUES (?,?,?,?,?,?,?,?)",
-                        (did, source, url, fetched_at, title, _camel_split(title),
-                         _headings(body), body))
+        cur = self.db.execute("INSERT INTO docs (doc_id, source, url, fetched_at, title, keywords,"
+                              " headings, body) VALUES (?,?,?,?,?,?,?,?)",
+                              (did, source, url, fetched_at, title, _camel_split(title),
+                               _headings(body), body))
+        self.db.execute("INSERT OR REPLACE INTO ids VALUES (?,?,?,?)",
+                        (did, cur.lastrowid, source, _compact(title)))
         if commit:
             self.db.commit()
 
-    def drop_source(self, source):
+    def drop_source(self, source, commit=True):
         self.db.execute("DELETE FROM docs WHERE source = ?", (source,))
-        self.db.commit()
+        self.db.execute("DELETE FROM ids WHERE source = ?", (source,))
+        if commit:
+            self.db.commit()
 
     def count(self, source=None) -> int:
         if source:
-            return self.db.execute("SELECT count(*) FROM docs WHERE source=?", (source,)).fetchone()[0]
-        return self.db.execute("SELECT count(*) FROM docs").fetchone()[0]
+            return self.db.execute("SELECT count(*) FROM ids WHERE source=?", (source,)).fetchone()[0]
+        return self.db.execute("SELECT count(*) FROM ids").fetchone()[0]
 
     @staticmethod
     def terms(query: str) -> list:
@@ -297,20 +440,31 @@ class Index:
         rows = self._fts(q, terms, sources, limit) if self.fts else self._scan(terms, sources, limit, q)
         return rows[:limit]
 
-    def _filter(self, sources):
+    def _filter(self, sources, col="source"):
         if not sources:
             return "", []
-        return f" AND source IN ({','.join('?' * len(sources))})", list(sources)
+        return f" AND {col} IN ({','.join('?' * len(sources))})", list(sources)
+
+    def _exact(self, q, sources, limit) -> list:
+        """Pages whose compacted title equals the compacted query: an
+        indexed lookup in `ids`, then the rows by rowid."""
+        where, args = self._filter(sources, "source")
+        rids = [r[0] for r in self.db.execute(
+            "SELECT rid FROM ids WHERE compact = ?" + where + " ORDER BY doc_id LIMIT ?",
+            [_compact(q)] + args + [limit])]
+        rows = []
+        for rid in rids:
+            r = self.db.execute("SELECT doc_id, source, url, fetched_at, title, substr(body, 1, 400) "
+                                "FROM docs WHERE rowid = ?", (rid,)).fetchone()
+            if r:
+                rows.append(r)
+        return rows
 
     def _fts(self, q, terms, sources, limit):
         where, args = self._filter(sources)
-        compact = re.sub(r"\W+", "", q).lower()
         out, seen = [], set()
-        # 1. exact title (case/space-insensitive)
-        for r in self.db.execute(
-                "SELECT doc_id, source, url, fetched_at, title, substr(body, 1, 400) FROM docs "
-                "WHERE lower(replace(replace(title, ' ', ''), '`', '')) = ?" + where + " LIMIT ?",
-                [compact] + args + [limit]):
+        # 1. exact title (case/space/punctuation-insensitive)
+        for r in self._exact(q, sources, limit):
             seen.add(r[0])
             out.append(self._row(r, _first_para(r[5]), 1000.0))
         # 2. bm25: all terms, then any term
@@ -334,12 +488,12 @@ class Index:
 
     def _scan(self, terms, sources, limit, q):
         where, args = self._filter(sources)
-        compact = re.sub(r"\W+", "", q).lower()
+        compact = _compact(q)
         scored = []
         for r in self.db.execute("SELECT doc_id, source, url, fetched_at, title, keywords, "
                                  "headings, body FROM docs WHERE 1=1" + where, args):
             title, kw, hd, body = (x.lower() for x in r[4:8])
-            if re.sub(r"[\s`]+", "", title) == compact:
+            if _compact(title) == compact:
                 s = 1000.0
             else:
                 fields = ((title, 12.0), (kw, 6.0), (hd, 3.0), (body, 1.0))
@@ -384,25 +538,31 @@ def _scan_snippet(body: str, terms) -> str:
 
 # ── reindex ──────────────────────────────────────────────────────────────
 
-def reindex(store: Store, sources=None) -> int:
-    idx = store.index()
+def _fill(store: Store, idx: Index, sources) -> int:
+    """(Re)index `sources` from their pages on disk, in one transaction."""
     n = 0
+    for name in sources:
+        idx.drop_source(name, commit=False)
+        m = store.load(name)
+        for url, rec in m["pages"].items():
+            try:
+                md = store.read_page(name, rec["file"])
+            except (OSError, ValueError, KeyError):
+                continue
+            idx.upsert(name, url, rec.get("doc_id") or doc_id(name, url), rec.get("title", ""),
+                       rec.get("fetched_at", ""), md, commit=False)
+            n += 1
+    idx.db.commit()
+    return n
+
+
+def reindex(store: Store, sources=None) -> int:
+    idx = Index(store.index_path())
     try:
-        for name in sources or store.sources_on_disk():
-            idx.drop_source(name)
-            m = store.load(name)
-            for url, rec in m["pages"].items():
-                try:
-                    md = store.read_page(name, rec["file"])
-                except (OSError, ValueError, KeyError):
-                    continue
-                idx.upsert(name, url, rec.get("doc_id") or doc_id(name, url), rec.get("title", ""),
-                           rec.get("fetched_at", ""), md, commit=False)
-                n += 1
-        idx.db.commit()
+        # A just-(re)created index holds nothing: fill ALL of it, not only `sources`.
+        return _fill(store, idx, store.sources_on_disk() if idx.rebuilt or not sources else sources)
     finally:
         idx.close()
-    return n
 
 
 # ── bundles ──────────────────────────────────────────────────────────────
@@ -445,8 +605,35 @@ def pack(store: Store, out_path: str, sources=None) -> dict:
     return {"path": out_path, "sha256": digest, "files": len(files), "sources": names}
 
 
+def _unpack_limits(root: str) -> tuple:
+    """(max total bytes, max members) a bundle may expand to: the
+    OPENBEAST_DOCS_UNPACK_MAX_BYTES cap (default 8 GiB — a full mirror of
+    every shipped source is well under 1 GiB), and never more than the free
+    space under the store minus 256 MiB."""
+    try:
+        cap = int(os.environ.get("OPENBEAST_DOCS_UNPACK_MAX_BYTES") or 8 << 30)
+    except ValueError:
+        cap = 8 << 30
+    try:
+        cap = min(cap, shutil.disk_usage(root).free - (256 << 20))
+    except OSError:
+        pass
+    return max(0, cap), UNPACK_MAX_MEMBERS
+
+
+UNPACK_MAX_MEMBERS = 500_000
+
+
 def unpack(store: Store, tar_path: str, expect_sha256: str = "") -> dict:
-    digest = sha256_file(tar_path)
+    """Verify, then install, a pack()ed bundle (see the module docstring).
+
+    The tarball is read ONCE, by path, into a private staging copy while it
+    is hashed; the hash is checked against that copy and the copy is what
+    gets extracted — so a tarball rewritten or swapped after the check (a
+    shared or removable volume, a copy still in progress) cannot be the one
+    installed. Every member's declared size is summed against a cap and the
+    free disk BEFORE a byte is written, so a decompression bomb whose hash
+    matches cannot fill the disk."""
     want = expect_sha256.strip().lower()
     side = tar_path + ".sha256"
     if not want and os.path.isfile(side):
@@ -454,36 +641,53 @@ def unpack(store: Store, tar_path: str, expect_sha256: str = "") -> dict:
             want = (fh.read().split() or [""])[0].lower()
     if not want:
         raise BundleError(f"no expected hash: pass --sha256 or keep {os.path.basename(side)} beside the tarball")
-    if digest != want:
-        raise BundleError(f"tarball sha256 {digest} does not match the expected {want}")
     os.makedirs(store.root, exist_ok=True)
     stage = tempfile.mkdtemp(prefix=".unpack-", dir=store.root)
     try:
-        with tarfile.open(tar_path, "r:gz") as tf:
-            members = tf.getmembers()
-            for mem in members:
+        copy = os.path.join(stage, ".bundle.tar.gz")
+        h = hashlib.sha256()
+        with open(tar_path, "rb") as src, open(copy, "wb") as dst:
+            for chunk in iter(lambda: src.read(1 << 20), b""):
+                h.update(chunk)
+                dst.write(chunk)
+        digest = h.hexdigest()
+        if digest != want:
+            raise BundleError(f"tarball sha256 {digest} does not match the expected {want}")
+        tree = os.path.join(stage, "tree")
+        os.makedirs(tree)
+        with tarfile.open(copy, "r:gz") as tf:
+            max_bytes, max_members = _unpack_limits(store.root)
+            members, total = [], 0
+            for mem in tf:                       # headers only: nothing is written yet
+                members.append(mem)
+                if len(members) > max_members:
+                    raise BundleError(f"more than {max_members} members: refusing")
                 n = mem.name
                 if (n.startswith("/") or ".." in n.split("/") or "\\" in n
                         or not (mem.isfile() or mem.isdir())):
                     raise BundleError(f"refusing unsafe member {n!r}")
+                total += max(0, mem.size)
+                if total > max_bytes:
+                    raise BundleError(f"the bundle expands past {max_bytes} bytes (the cap, or the "
+                                      f"free space under {store.root}): refusing before writing")
             for mem in members:
                 if mem.isdir():
                     continue
-                dest = os.path.join(stage, *mem.name.split("/"))
+                dest = os.path.join(tree, *mem.name.split("/"))
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
                 src = tf.extractfile(mem)
                 with open(dest, "wb") as fh:
                     shutil.copyfileobj(src, fh)
         try:
-            with open(os.path.join(stage, BUNDLE_NAME), encoding="utf-8") as fh:
+            with open(os.path.join(tree, BUNDLE_NAME), encoding="utf-8") as fh:
                 bundle = json.load(fh)
         except (OSError, ValueError) as e:
             raise BundleError(f"no readable {BUNDLE_NAME} in the bundle: {e}") from None
         files = bundle.get("files") or {}
         present = set()
-        for dp, _dn, fns in os.walk(stage):
+        for dp, _dn, fns in os.walk(tree):
             for fn in fns:
-                rel = os.path.relpath(os.path.join(dp, fn), stage).replace(os.sep, "/")
+                rel = os.path.relpath(os.path.join(dp, fn), tree).replace(os.sep, "/")
                 if rel != BUNDLE_NAME:
                     present.add(rel)
         if present != set(files):
@@ -491,12 +695,12 @@ def unpack(store: Store, tar_path: str, expect_sha256: str = "") -> dict:
                               f"extra {sorted(present - set(files))[:3]}, "
                               f"missing {sorted(set(files) - present)[:3]}")
         for rel, sha in files.items():
-            if sha256_file(os.path.join(stage, rel)) != sha:
+            if sha256_file(os.path.join(tree, rel)) != sha:
                 raise BundleError(f"{rel}: sha256 mismatch")
         names = bundle.get("sources") or []
         for name in names:
             store.source_dir(name)                        # validates the name
-            if not os.path.isfile(os.path.join(stage, name, "manifest.json")):
+            if not os.path.isfile(os.path.join(tree, name, "manifest.json")):
                 raise BundleError(f"source {name!r} has no manifest in the bundle")
         for name in names:
             dest = store.source_dir(name)
@@ -504,7 +708,7 @@ def unpack(store: Store, tar_path: str, expect_sha256: str = "") -> dict:
             shutil.rmtree(old, ignore_errors=True)
             if os.path.exists(dest):
                 os.replace(dest, old)
-            os.replace(os.path.join(stage, name), dest)
+            os.replace(os.path.join(tree, name), dest)
             shutil.rmtree(old, ignore_errors=True)
     finally:
         shutil.rmtree(stage, ignore_errors=True)

@@ -15,22 +15,37 @@ import re
 import urllib.parse
 from html.parser import HTMLParser
 
+from .urls import normalize_url
+
 _VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
          "param", "source", "track", "wbr"}
 _DROP = {"script", "style", "noscript", "svg", "template", "iframe", "button", "form",
          "nav", "header", "footer", "select", "option", "canvas", "video", "audio",
          "object", "dialog", "menu"}
+# Start tags that close an open <p> (HTML's "close a p element in button
+# scope"), and the elements that scope it.
+_CLOSES_P = {"address", "article", "aside", "blockquote", "details", "div", "dl", "fieldset",
+             "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6",
+             "header", "hr", "main", "menu", "nav", "ol", "p", "pre", "section", "table", "ul"}
+_P_SCOPE = {"table", "td", "th", "caption", "button", "object", "template", "html"}
 _BLOCK = {"p", "div", "section", "article", "main", "aside", "blockquote", "ul", "ol",
           "li", "pre", "table", "thead", "tbody", "tfoot", "tr", "td", "th", "dl", "dt",
           "dd", "figure", "figcaption", "h1", "h2", "h3", "h4", "h5", "h6", "hr",
           "details", "summary"}
 
 
+# Nesting deeper than this is flattened into the node at the cap: real
+# documentation pages nest a few dozen levels; a page nesting hundreds is
+# malformed or hostile, and the renderer recurses per level.
+MAX_DEPTH = 120
+
+
 class Node:
-    __slots__ = ("tag", "attrs", "children", "parent")
+    __slots__ = ("tag", "attrs", "children", "parent", "has_block")
 
     def __init__(self, tag, attrs=None, parent=None):
         self.tag, self.attrs, self.children, self.parent = tag, dict(attrs or {}), [], parent
+        self.has_block = False          # a block element somewhere below (set by parse)
 
     def classes(self):
         return set((self.attrs.get("class") or "").split())
@@ -42,10 +57,13 @@ class Node:
         return "".join(out)
 
     def walk(self):
-        yield self
-        for c in self.children:
-            if isinstance(c, Node):
-                yield from c.walk()
+        """Pre-order, iteratively: a recursive `yield from` costs O(depth)
+        per node yielded, which made deep pages cubic to render."""
+        stack = [self]
+        while stack:
+            n = stack.pop()
+            yield n
+            stack.extend(c for c in reversed(n.children) if isinstance(c, Node))
 
 
 class _Builder(HTMLParser):
@@ -53,22 +71,67 @@ class _Builder(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.root = Node("#root")
         self.cur = self.root
+        self.depth = 0
+        self.overflow = 0               # start tags past MAX_DEPTH not descended into
+
+    def _close_open(self, targets, boundaries) -> None:
+        """Close the nearest open element in `targets`, unless a
+        `boundaries` element (or the root) comes first walking up."""
+        n, up = self.cur, 0
+        while n is not None and n.parent is not None:
+            if n.tag in targets:
+                self.cur = n.parent
+                self.depth -= up + 1
+                return
+            if n.tag in boundaries:
+                return
+            n, up = n.parent, up + 1
+
+    def _implied_end_tags(self, tag) -> None:
+        """HTML lets </li>, </dt>, </dd>, </td>, </th>, </tr> and </p> be
+        omitted; the next sibling's start tag closes them. Without this,
+        `<li>one<li>two` nests the second item INSIDE the first and the
+        list renders as one bullet."""
+        if self.overflow:
+            return
+        if tag == "li":
+            self._close_open({"li"}, {"ul", "ol", "menu"})
+        elif tag in ("dt", "dd"):
+            self._close_open({"dt", "dd"}, {"dl"})
+        elif tag in ("td", "th"):
+            self._close_open({"td", "th"}, {"tr", "table"})
+        elif tag == "tr":
+            self._close_open({"tr"}, {"table", "thead", "tbody", "tfoot"})
+        elif tag in ("thead", "tbody", "tfoot"):
+            self._close_open({"thead", "tbody", "tfoot"}, {"table"})
+        if tag in _CLOSES_P:
+            self._close_open({"p"}, _P_SCOPE)
 
     def handle_starttag(self, tag, attrs):
+        self._implied_end_tags(tag)
         node = Node(tag, [(k, v or "") for k, v in attrs], self.cur)
         self.cur.children.append(node)
-        if tag not in _VOID:
-            self.cur = node
+        if tag in _VOID:
+            return
+        if self.depth >= MAX_DEPTH:
+            self.overflow += 1
+            return
+        self.cur = node
+        self.depth += 1
 
     def handle_startendtag(self, tag, attrs):
         self.cur.children.append(Node(tag, [(k, v or "") for k, v in attrs], self.cur))
 
     def handle_endtag(self, tag):
-        n = self.cur
+        if self.overflow:
+            self.overflow -= 1
+            return
+        n, up = self.cur, 0
         while n is not None and n.tag != tag:
-            n = n.parent
+            n, up = n.parent, up + 1
         if n is not None and n.parent is not None:   # unmatched end tags are ignored
             self.cur = n.parent
+            self.depth -= up + 1
 
     def handle_data(self, data):
         self.cur.children.append(data)
@@ -78,6 +141,11 @@ def parse(html: str) -> Node:
     b = _Builder()
     b.feed(html)
     b.close()
+    # has_block, bottom-up in one pass (reverse pre-order visits children
+    # before parents), instead of a subtree walk at every level.
+    for n in reversed(list(b.root.walk())):
+        n.has_block = any(isinstance(c, Node) and (c.tag in _BLOCK or c.has_block)
+                          for c in n.children)
     return b.root
 
 
@@ -132,7 +200,7 @@ _ASIDE_LABEL = {"note": "Note", "warning": "Warning", "caution": "Caution", "tip
 def _has_block(n: Node) -> bool:
     """A custom element (<devsite-code>, <x-tab>) wrapping real blocks is a
     block container, or its <pre> would be flattened into a paragraph."""
-    return any(isinstance(d, Node) and d is not n and d.tag in _BLOCK for d in n.walk())
+    return n.has_block
 
 
 class _Render:
@@ -213,12 +281,7 @@ class _Render:
                 if not isinstance(li, Node) or li.tag != "li" or self.dropped(li):
                     continue
                 n += 1
-                inner = [ln for ln in self.blocks(li, depth + 1) if ln.strip()]
-                if not inner:
-                    continue
-                bullet = f"{n}." if t == "ol" else "-"
-                out.append(f"{'  ' * depth}{bullet} {inner[0].lstrip()}")
-                out += [ln if ln.startswith("  ") else f"{'  ' * (depth + 1)}{ln}" for ln in inner[1:]]
+                out += list_item(f"{n}." if t == "ol" else "-", self.blocks(li, depth + 1))
             return out + [""] if out else []
         if t == "table":
             rows = [r for r in c.walk() if isinstance(r, Node) and r.tag == "tr"]
@@ -253,10 +316,33 @@ class _Render:
         return self.blocks(c, depth)
 
 
+def list_item(bullet: str, lines) -> list:
+    """One list item: `bullet` on the first line, EVERY later line —
+    each line of a multi-line code block included — indented by the
+    bullet's width, so a fence stays inside the item and code keeps its
+    relative indentation. Blank lines between blocks are dropped (a tight
+    list); blank lines inside a code fence are kept. Nested lists arrive
+    already rendered and are indented once more, here."""
+    flat: list = []
+    for x in lines:
+        flat += x.split("\n")
+    body, fence = [], False
+    for ln in flat:
+        if ln.lstrip().startswith("```"):
+            fence = not fence
+        elif not fence and not ln.strip():
+            continue
+        body.append(ln)
+    if not body:
+        return []
+    pad = " " * (len(bullet) + 1)
+    return [f"{bullet} {body[0].lstrip()}"] + [pad + ln if ln.strip() else "" for ln in body[1:]]
+
+
 def _collapse(lines) -> str:
     out, blank, fence = [], False, False
     for ln in lines:
-        if ln.startswith("```"):
+        if ln.lstrip().startswith("```"):
             fence = not fence
         if not fence:
             ln = ln.rstrip()
@@ -273,9 +359,10 @@ def _collapse(lines) -> str:
 _SUFFIXES = re.compile(r"\s*[|\-–—]\s*(Android Developers|Apple Developer.*|Documentation)\s*$")
 
 
-def html_to_markdown(html: str, content_selectors=(), strip_selectors=()) -> dict:
-    """{title, markdown, description, updated} for one HTML page."""
-    root = parse(html)
+def html_to_markdown(html: str, content_selectors=(), strip_selectors=(), root=None) -> dict:
+    """{title, markdown, description, updated} for one HTML page. Pass
+    `root` (from parse) to reuse a tree another pass already built."""
+    root = root if root is not None else parse(html)
     title = ""
     h1 = select(root, "h1")
     if h1 is not None:
@@ -316,10 +403,10 @@ def html_to_markdown(html: str, content_selectors=(), strip_selectors=()) -> dic
             "description": desc, "updated": updated}
 
 
-def html_links(html: str, base: str) -> list:
+def html_links(html: str, base: str, root=None) -> list:
     """Every <a href> in the page, absolute, fragment- and query-free, in order."""
     out, seen = [], set()
-    for n in parse(html).walk():
+    for n in (root if root is not None else parse(html)).walk():
         if n.tag != "a" or not n.attrs.get("href"):
             continue
         u = canonical(urllib.parse.urljoin(base, n.attrs["href"]))
@@ -330,18 +417,18 @@ def html_links(html: str, base: str) -> list:
 
 
 def canonical(url: str, markdown_suffix: str = "") -> str:
-    """Drop fragment and query (?hl=, ?authuser=) and, for the markdown
-    adapter, the .md.txt suffix — one page, one key."""
-    try:
-        p = urllib.parse.urlsplit(url)
-    except ValueError:
+    """Normalize (agents/docs/urls.py: dot segments, %2e, default port,
+    userinfo refused), drop fragment and query (?hl=, ?authuser=) and, for
+    the markdown adapter, the .md.txt suffix — one page, one key. "" when
+    the URL has no safe spelling."""
+    n = normalize_url(url, drop_query=True)
+    if not n:
         return ""
-    if p.scheme not in ("http", "https"):
-        return ""
+    p = urllib.parse.urlsplit(n)
     path = p.path or "/"
     if markdown_suffix and path.endswith(markdown_suffix):
         path = path[: -len(markdown_suffix)]
-    return urllib.parse.urlunsplit((p.scheme, p.netloc.lower(), path, "", ""))
+    return urllib.parse.urlunsplit((p.scheme, p.netloc, path, "", ""))
 
 
 # ── the markdown adapter ─────────────────────────────────────────────────
