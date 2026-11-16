@@ -549,7 +549,7 @@ def test_confined_solution_reads_only_its_runtime_and_work_dir(tmp_path):
 
 
 @pytest.mark.parametrize("confined", [False, True])
-def test_solution_cannot_signal_a_sibling_process(tmp_path, confined):
+def test_solution_cannot_signal_a_sibling_process(tmp_path, confined, monkeypatch):
     """(allow default) left kill(2) open against every same-uid process: a
     solution could SIGKILL sibling units, their validators, the harness, or
     kill(-1) the user's session (review 1116). Its own children stay
@@ -561,15 +561,28 @@ def test_solution_cannot_signal_a_sibling_process(tmp_path, confined):
             pytest.skip("macOS or Linux only")
     elif not DARWIN:
         pytest.skip("the unconfined deny-list is macOS's sandbox-exec")
-    # The victim must not be OUR child: an earlier run_solution may have
-    # made this process a child subreaper (Linux), and run_solution treats
-    # our children as the solution's orphans. A live sh holds it instead.
+    # A real sibling unit is never the validator's descendant, but here the
+    # victim is ours. On Linux run_solution makes this process a child
+    # subreaper and counts every child of ours as the solution's, so it
+    # would kill the victim itself (verdict "daemon"). Run this one without
+    # the subreaper; the victim is held by a live sh, not by us.
+    reset = (lambda: None)
+    if LINUX:
+        import ctypes
+        libc = ctypes.CDLL(None)
+        libc.prctl(36, 0, 0, 0, 0)               # PR_SET_CHILD_SUBREAPER off
+        monkeypatch.setattr(vlib, "_ensure_subreaper", lambda: False)
+        if vlib._SUBREAPER:
+            reset = (lambda: libc.prctl(36, 1, 0, 0, 0))
     holder = subprocess.Popen(["/bin/sh", "-c", "sleep 100 & echo $!; wait"],
                               stdout=subprocess.PIPE, text=True, start_new_session=True)
     victim = int(holder.stdout.readline())
     try:
-        src = (f"import os, signal, subprocess\n"
-               f"c = subprocess.Popen(['sleep', '5']) if {confined!r} else None\n"
+        # fork, not exec: the confine grants no /bin/sleep to exec
+        src = (f"import os, signal, time\n"
+               f"c = os.fork() if {confined!r} else None\n"
+               f"if c == 0:\n"
+               f"    time.sleep(5); os._exit(0)\n"
                f"try:\n"
                f"    os.kill({victim}, signal.SIGKILL); print('sent')\n"
                f"except OSError as e:\n"
@@ -579,11 +592,11 @@ def test_solution_cannot_signal_a_sibling_process(tmp_path, confined):
                f"except OSError:\n"
                f"    pass\n"
                f"if c:\n"
-               f"    c.kill(); c.wait(); print('child-killed')\n")
+               f"    os.kill(c, signal.SIGKILL); os.waitpid(c, 0); print('child-killed')\n")
         kw = {}
         if confined:
-            kw = dict(confine=[str(tmp_path)], read_only=vlib.python_runtime(),
-                      allow_fork=True)
+            kw = dict(confine=[str(tmp_path)], allow_fork=True,
+                      read_only=vlib.python_runtime(sys.executable, ["signal", "time"]))
         r = vlib.run_solution([sys.executable, "-I", "-c", src], cpu_s=10,
                               cwd=str(tmp_path), **kw)
         time.sleep(0.2)
@@ -595,6 +608,7 @@ def test_solution_cannot_signal_a_sibling_process(tmp_path, confined):
     finally:
         os.killpg(holder.pid, 9)
         holder.wait()
+        reset()
 
 
 _NET_PROBE = textwrap.dedent("""
