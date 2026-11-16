@@ -660,7 +660,7 @@ matter:
 
 | Key | Meaning |
 |---|---|
-| `TENSORFOLD_ENGINE` | `native` (default) or `container` (the frozen 0.x engine, which pip-installs from GitHub/PyPI at every start: needs the internet every time) |
+| `TENSORFOLD_ENGINE` | `native` (default) or `container` (the frozen 0.x engine, which pip-installs from GitHub/PyPI at every start: needs the internet every time). A real container run also needs its dependencies pinned: `TENSORFOLD_IMAGE_PREBUILT=true` (an image that already holds them, pinned by `TENSORFOLD_IMAGE_ID`; nothing installed at start, so it is also the offline route), `TENSORFOLD_PIP_LOCK=FILE` (hash-locked requirements), or the acknowledged `TENSORFOLD_ALLOW_UNPINNED_DEPS=true` |
 | `TENSORFOLD_VERSION`, `TENSORFOLD_BIN` | `1.2.7`, `~/.local/bin/tensorfold` |
 | `TENSORFOLD_API_KEY_FILE` | 0600 key file; the native engine is keyed |
 | `SPARK_IFACE`, `SPARK_IB_HCA` | this node's fabric netdev(s) and RoCE device(s); several rails comma-separated |
@@ -1255,7 +1255,7 @@ Every row below was hit on the way to the live pair.
 | `model-fetch --verify` / `--locate` exit 3 | no lock in this checkout | pull the commit with the lock, or `--verify --trust-first-use` for a local SOURCE |
 | the recipe serves, but the lock "does not cover" it | the HF-cache snapshot lost its hard links (re-download, rename-save) | re-run the `stat` check (C2); re-link with `cp -al` and re-verify |
 | a container engine on an offline worker tries to pull | `*_IMAGE_DIGEST` pin; `docker save/load` drops the RepoDigest | pin `*_IMAGE_ID` instead (`sync-image` prints the line) ([H4](#h4-container-images)) |
-| `TENSORFOLD_ENGINE=container` fails offline | it pip-installs TensorFold from GitHub and deps from PyPI at every start | use the native engine (default) or the recipe |
+| `TENSORFOLD_ENGINE=container` fails offline | it pip-installs TensorFold from GitHub and deps from PyPI at every start | use the native engine (default) or the recipe; or, on a connected box, build an image with TensorFold at `TENSORFOLD_REF` and its locked deps installed, carry it with `spark-cluster.sh sync-image` / `save-image`, pin `TENSORFOLD_IMAGE_ID` and set `TENSORFOLD_IMAGE_PREBUILT=true` |
 | box freezes / ssh hangs under load | unified memory exhausted (it freezes rather than OOMs) | keep `KV_POOL_GIB` / `MEMORY_RESERVE_GIB` as in D1; watch `Unified memory` in healthcheck ([G4](#g4-memory-headroom-and-the-gb10-stack-cap)) |
 | pair stops answering mid-stream, `/health` still `ok` | a stalled collective | `TF_GLM_MULTI_WATCHDOG_EXIT=1` makes the rank exit so the unit restarts both; healthcheck's liveness check flags it |
 | `:443` not published after `setup-tailscale.sh` | the running WebUI still had auth off | `systemctl --user restart openbeast`, then re-run `setup-tailscale.sh` ([E5](#e5-webui-auth-and-the-admin-account-before-publishing)) |

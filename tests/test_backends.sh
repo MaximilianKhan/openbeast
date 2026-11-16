@@ -713,7 +713,10 @@ exit 0
 EOF
 chmod +x "$_K/bin/systemctl"
 (umask 077; printf 'sk-test-SECRET-4242\n' > "$_K/key")
+# The container engine's dependencies, hash-locked (TENSORFOLD_PIP_LOCK).
+printf 'safetensors==0.4.5 \\\n    --hash=sha256:%064d\n' 0 > "$_K/tf-requirements.txt"
 sed -e "s|^SPARK_SERVE_HOST=.*|SPARK_SERVE_HOST=100.64.1.2|" \
+    -e "s|^TENSORFOLD_PIP_LOCK=.*|TENSORFOLD_PIP_LOCK=$_K/tf-requirements.txt|" \
     -e "s|^VLLM_API_KEY_FILE=.*|VLLM_API_KEY_FILE=$_K/key|" \
     -e "s|^MODELS_DIR=.*|MODELS_DIR=$_K/models|" \
     -e "s|^TENSORFOLD_ENGINE=.*|TENSORFOLD_ENGINE=container|" \
@@ -1071,6 +1074,39 @@ if [[ $SPRC -eq 0 ]] && grep -qF "nvcr.io/nvidia/pytorch:26.07-py3@$_DIGEST -c" 
 else
   fail "tensorfold pinned run (rc=$SPRC): $_O / $(cat "$_K/docker.log")"
 fi
+# Its dependencies are pinned too (review 2026-11-16): TENSORFOLD_REF pins only
+# TensorFold, and the --rm container re-resolved everything else from PyPI at
+# every start, as root with host networking.
+if grep -qF -- "-v $_K/tf-requirements.txt:/openbeast/tensorfold-requirements.txt:ro" "$_K/docker.log" \
+   && grep -qF -- "--require-hashes --no-deps -r /openbeast/tensorfold-requirements.txt" "$_K/docker.log" \
+   && grep -qF -- 'pip install --quiet --no-deps "$1"' "$_K/docker.log"; then
+  pass "TENSORFOLD_PIP_LOCK: hash-locked deps (--require-hashes --no-deps), then TensorFold --no-deps"
+else
+  fail "pip lock run: $(cat "$_K/docker.log")"
+fi
+: > "$_K/docker.log"
+_sp "$_TN" TENSORFOLD_IMAGE_DIGEST="$_DIGEST" TENSORFOLD_PIP_LOCK=" " -- --profile "$_P/tftest.env" --rank 1 --env "$_K/spark.env"
+[[ $SPRC -eq 1 ]] && _has "$_O" "is not a file" && ! grep -q "^ARGV run" "$_K/docker.log" \
+  && pass "a TENSORFOLD_PIP_LOCK that is not a file is refused" || fail "bad lock (rc=$SPRC): $_O"
+printf 'safetensors==0.4.5\n' > "$_K/tf-nohash.txt"
+_sp "$_TN" TENSORFOLD_IMAGE_DIGEST="$_DIGEST" TENSORFOLD_PIP_LOCK="$_K/tf-nohash.txt" -- --profile "$_P/tftest.env" --rank 1 --env "$_K/spark.env"
+[[ $SPRC -eq 1 ]] && _has "$_O" "has no --hash=sha256: pins" && pass "…and so is one without hashes" || fail "lock without hashes (rc=$SPRC): $_O"
+grep -v '^TENSORFOLD_PIP_LOCK=' "$_K/spark.env" > "$_K/spark-nolock.env"
+: > "$_K/docker.log"
+_sp "$_TN" TENSORFOLD_IMAGE_DIGEST="$_DIGEST" -- --profile "$_P/tftest.env" --rank 1 --env "$_K/spark-nolock.env"
+[[ $SPRC -eq 1 ]] && _has "$_O" "only TensorFold itself is pinned" && ! grep -q "^ARGV run" "$_K/docker.log" \
+  && pass "no dependency pin at all: a real container run is refused (docker not called)" || fail "unpinned deps ran (rc=$SPRC): $_O"
+_sp "$_TN" -- --profile "$_P/tftest.env" --rank 1 --env "$_K/spark-nolock.env" --print
+[[ $SPRC -eq 0 ]] && _has "$_O" "dependencies are not pinned" && pass "…--print shows it with a warning" || fail "unpinned print (rc=$SPRC): $_O"
+: > "$_K/docker.log"
+_sp "$_TN" TENSORFOLD_IMAGE_DIGEST="$_DIGEST" TENSORFOLD_ALLOW_UNPINNED_DEPS=true -- --profile "$_P/tftest.env" --rank 1 --env "$_K/spark-nolock.env"
+[[ $SPRC -eq 0 ]] && _has "$_O" "unpinned, at every start" && grep -qF 'pip install --quiet "$1"' "$_K/docker.log" \
+  && pass "TENSORFOLD_ALLOW_UNPINNED_DEPS=true acknowledges the old behaviour, loudly" || fail "unpinned ack (rc=$SPRC): $_O"
+: > "$_K/docker.log"
+_sp "$_TN" TENSORFOLD_IMAGE_ID="$_IMGID" TENSORFOLD_IMAGE_PREBUILT=true -- --profile "$_P/tftest.env" --rank 1 --env "$_K/spark-nolock.env"
+[[ $SPRC -eq 0 ]] && grep -qF -- "--entrypoint bash $_IMGID -c" "$_K/docker.log" && ! grep -q "pip install" "$_K/docker.log" \
+  && pass "TENSORFOLD_IMAGE_PREBUILT=true: the ID-pinned image runs TensorFold, nothing installed at start (offline)" \
+  || fail "prebuilt (rc=$SPRC): $_O / $(cat "$_K/docker.log")"
 # Native engine (TensorFold >= 1.0 on the host, systemd --user, keyed).
 _sp "$_TN" -- --profile "$_P/tftest.env" --rank 0 --master 192.168.100.10 --env "$_K/spark-native.env" --print
 if [[ $SPRC -eq 0 ]] && _has "$_O" "systemd-run --user --unit openbeast-tensorfold-rank0" \
