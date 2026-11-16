@@ -174,6 +174,107 @@ PY
   || fail "new profiles in BENCH_EXCLUDED: ${_nb:-0} of 2"
 
 echo ""
+echo "the engine gate (scripts/engine-gate.sh + tokps.py, a sandbox copy):"
+SB="$T/sb"; mkdir -p "$SB/scripts" "$SB/.run" "$SB/bin"
+cp -R "$REPO_DIR/scripts/lib" "$SB/scripts/"
+cp "$REPO_DIR/scripts/engine-gate.sh" "$REPO_DIR/scripts/tokps.py" "$SB/scripts/"
+mkdir -p "$SB/scripts/engines"
+cp "$REPO_DIR/scripts/engines/llama.sh" "$SB/scripts/engines/"
+printf 'eng_fakeeng_label() { echo Fake; }\neng_fakeeng_hosts() { echo rig; }\neng_fakeeng_formats() { echo GGUF; }\neng_fakeeng_installed() { echo 0.1; }\n' \
+  > "$SB/scripts/engines/fakeeng.sh"
+printf '#!/bin/bash\nexit 0\n' > "$SB/scripts/serve-same-weights.sh"; chmod +x "$SB/scripts/serve-same-weights.sh"
+printf 'SEARXNG_SECRET=x\n' > "$SB/openbeast.conf"
+# One stub server: "llama" decodes at 20 tok/s; the candidate at $SB/cand_tps.
+cat > "$SB/stub.py" <<'PY'
+import http.server, json, sys, threading, os
+sb = sys.argv[1]
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def _who(self):
+        try: return open(sb + "/active").read().strip()
+        except OSError: return ""
+    def do_GET(self):
+        up = self._who() != ""
+        body = json.dumps({"status": "ok"} if up else {"error": "down"}).encode()
+        self.send_response(200 if up else 503); self.send_header("Content-Length", str(len(body))); self.end_headers()
+        self.wfile.write(body)
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length") or 0); self.rfile.read(n)
+        who = self._who()
+        tps = 20.0 if who == "llama" else float(open(sb + "/cand_tps").read())
+        self.send_response(200); self.send_header("Content-Type", "text/event-stream"); self.end_headers()
+        ev = {"choices": [{"delta": {"content": "x"}}]}
+        self.wfile.write(("data: %s\n\n" % json.dumps(ev)).encode())
+        last = {"choices": [], "usage": {"completion_tokens": 16},
+                "timings": {"predicted_per_second": tps, "prompt_per_second": 900.0}}
+        self.wfile.write(("data: %s\n\ndata: [DONE]\n\n" % json.dumps(last)).encode())
+threading.Timer(120, lambda: os._exit(0)).start()
+s = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+open(sb + "/port", "w").write(str(s.server_address[1]))
+s.serve_forever()
+PY
+python3 "$SB/stub.py" "$SB" & _STUB=$!
+trap 'kill $_STUB 2>/dev/null; wait $_STUB 2>/dev/null; rm -rf "$T"' EXIT
+for _ in $(seq 1 50); do [[ -s "$SB/port" ]] && break; sleep 0.1; done
+# engine.sh / start / stop stubs: record the calls, flip which "engine" serves.
+cat > "$SB/bin/engine-sh" <<SH
+#!/bin/bash
+echo "engine.sh \$* gate=\${OPENBEAST_ENGINE_GATE:-}" >> "$SB/calls"
+[[ "\$1" == use ]] && echo "\$2" > "$SB/backend"
+exit 0
+SH
+cat > "$SB/bin/start" <<SH
+#!/bin/bash
+echo "start \$* gate=\${OPENBEAST_ENGINE_GATE:-}" >> "$SB/calls"
+cp "$SB/backend" "$SB/active"
+SH
+cat > "$SB/bin/stop" <<SH
+#!/bin/bash
+echo "stop" >> "$SB/calls"; rm -f "$SB/active"
+SH
+chmod +x "$SB/bin/engine-sh" "$SB/bin/start" "$SB/bin/stop"
+_gate() { # _gate <candidate tok/s>
+  echo "$1" > "$SB/cand_tps"; : > "$SB/calls"; _RC=0
+  _OUT="$(OB_GATE_ENGINE_SH="$SB/bin/engine-sh" OB_ENGINE_START_CMD="$SB/bin/start" OB_ENGINE_STOP_CMD="$SB/bin/stop" \
+          OB_GATE_URL="http://127.0.0.1:$(cat "$SB/port")" OB_GATE_POLL=0.1 OB_ENGINE_HOST_CLASS=rig \
+          bash "$SB/scripts/engine-gate.sh" fakeeng --profile p1 --serve-script serve-same-weights.sh --runs 2 2>&1)" || _RC=$?
+}
+_gate 29
+_v="$SB/.engines/gate/fakeeng.json"
+if [[ $_RC -eq 1 && "$_OUT" == *"FAIL"*"1.45x"* ]] && grep -q '"pass": false' "$_v" 2>/dev/null \
+   && grep -q 'engine.sh use fakeeng --profile p1 --no-restart gate=measuring' "$SB/calls" \
+   && grep -q 'start  gate=measuring' "$SB/calls" && grep -q 'start serve-same-weights.sh gate=$' "$SB/calls" \
+   && [[ "$(tail -n 1 "$SB/backend")" == llama ]]; then
+  pass "29 vs 20 tok/s (1.45x) fails the gate, the verdict is recorded, and the box is back on llama"
+else
+  fail "gate at 1.45x (rc=$_RC): $(tail -n 3 <<< "$_OUT" | tr '\n' ' ') :: $(tr '\n' ';' < "$SB/calls")"
+fi
+_gate 31
+if [[ $_RC -eq 0 && "$_OUT" == *"PASS"* ]] && grep -q '"pass": true' "$_v" \
+   && ( REPO_DIR="$SB"; source "$SB/scripts/lib/engine.sh"; ob_engine_gate_ok fakeeng 2>/dev/null ); then
+  pass "31 vs 20 tok/s (1.55x) passes, and ob_engine_gate_ok then admits the engine"
+else
+  fail "gate at 1.55x (rc=$_RC): $(tail -n 3 <<< "$_OUT" | tr '\n' ' ')"
+fi
+if grep -q $'\tfakeeng\tgate\t' "$SB/.engines/history.tsv" 2>/dev/null; then
+  pass "…each verdict is a line in .engines/history.tsv"
+else
+  fail "no gate line in history.tsv"
+fi
+# Without a verdict, or with a failing one, the gate holds.
+_e="$( REPO_DIR="$SB"; source "$SB/scripts/lib/engine.sh"; ob_engine_gate_ok noverdict 2>&1 )" || true
+[[ "$_e" == *"no measurement on file"* ]] && pass "an engine with no verdict on file is refused, with the command to measure it" \
+  || fail "no-verdict refusal: '$_e'"
+python3 - "$_v" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); d["ratio"] = 1.3; d["pass"] = True   # a hand-edited "pass" below 1.5
+json.dump(d, open(sys.argv[1], "w"))
+PY
+_e="$( REPO_DIR="$SB"; source "$SB/scripts/lib/engine.sh"; ENGINE_GATE_RATIO=1.1 ob_engine_gate_ok fakeeng 2>&1 )" && _e="ADMITTED"
+[[ "$_e" == *"did not clear it"* ]] && pass "…and a verdict below 1.5x is refused even marked pass, even with ENGINE_GATE_RATIO=1.1" \
+  || fail "a 1.3x verdict was admitted: '$_e'"
+
+echo ""
 echo "================================"
 echo "Results: $PASS passed, $FAIL failed"
 echo "================================"

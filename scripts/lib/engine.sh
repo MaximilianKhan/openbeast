@@ -325,6 +325,42 @@ ob_engine_url_hostport() {
   printf '%s %s\n' "$h" "$p"
 }
 
+# ── The engine gate (docs/WEIGHT_STREAMING.md "The engine gate") ──────────
+# A single-author engine (Project Maya) is admitted only after it measured
+# at least 1.5 times llama.cpp's decode tok/s on THIS (ENGINE_GATE_RATIO may
+# raise that, never lower it)
+# rig, same weights, same prompt: scripts/engine-gate.sh runs both and writes
+# $OB_ENGINE_STATE_DIR/gate/<engine>.json (scripts/tokps.py gate).
+# OPENBEAST_ENGINE_GATE=measuring lets engine-gate.sh itself launch the
+# candidate before a verdict exists; nothing else sets it.
+ob_engine_gate_file() { printf '%s/gate/%s.json\n' "$OB_ENGINE_STATE_DIR" "$1"; }
+
+# ob_engine_gate_ok <engine> — 0 when a passing verdict is on file (or the
+# gate run itself is measuring). Prints why not on stderr.
+ob_engine_gate_ok() {
+  local e="$1" f out
+  [[ "${OPENBEAST_ENGINE_GATE:-}" == measuring ]] && return 0
+  f="$(ob_engine_gate_file "$e")"
+  if [[ ! -f "$f" ]]; then
+    echo "$e is gated: no measurement on file ($f). It must decode >= ${ENGINE_GATE_RATIO:-1.5}x llama.cpp's tok/s on this rig first: scripts/engine-gate.sh $e --profile NAME --serve-script serve-<same weights>.sh (docs/WEIGHT_STREAMING.md)" >&2
+    return 1
+  fi
+  out="$(python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+try:
+    need = max(1.5, float(sys.argv[3]))   # ENGINE_GATE_RATIO may raise the bar, never lower it
+except ValueError:
+    need = 1.5
+ok = d.get("schema") == "openbeast-engine-gate/1" and d.get("engine") == sys.argv[2] and d.get("pass") is True \
+     and float(d.get("ratio") or 0) >= need
+print(("PASS " if ok else "FAIL ") + "%sx (needs %sx), %s vs %s tok/s, %s" % (
+    d.get("ratio"), need, d.get("candidate_tps"), d.get("baseline_tps"), d.get("time")))
+sys.exit(0 if ok else 1)' "$f" "$e" "${ENGINE_GATE_RATIO:-1.5}" 2>&1)" && return 0
+  echo "$e is gated and its last measurement did not clear it: ${out:-unreadable $f}. Re-measure: scripts/engine-gate.sh $e ..." >&2
+  return 1
+}
+
 # ── Hooks for start.sh / stop.sh / healthcheck.sh / doctor.sh ──────────────
 # ob_engine_managed_here — INFERENCE_MANAGED=true for a non-llama engine:
 # start.sh launches scripts/engine-serve.sh in place of a serve script.
