@@ -142,6 +142,24 @@ def test_a_timed_unit_needs_a_slow_solution(tmp_path, capsys):
     assert "timed unit ships no slow solution" in capsys.readouterr().out
 
 
+def test_a_stem_naming_a_file_sets_the_sibling_extension(tmp_path):
+    """A Q&A unit's ref is a data file (178: arms/answers.json) in a python
+    task: its wrong arms are found by the ref's extension, not the
+    language's, and a .py beside them is not mistaken for one."""
+    d = tmp_path / "refs" / "991_qa" / "arms"
+    d.mkdir(parents=True)
+    for name in ("answers.json", "wrong_a.json", "wrong_b.json", "wrong_x.py"):
+        (d / name).write_text("{}")
+    task = {"id": "991_qa", "language": "python", "dest": "/tmp/eval_qa/answers.json",
+            "ref_stem": "991_qa/arms/answers.json",
+            "prove": {"expect": {"wrong_a.json": "^FAIL"}}}
+    _R, M = prove_task._load_harness(str(ROOT), None)
+    spec = prove_task.discover(task, M, str(tmp_path / "refs"))
+    assert spec["ref"] == str(d / "answers.json")
+    assert [(os.path.basename(w), rx) for w, rx in spec["wrong"]] == \
+        [("wrong_a.json", "^FAIL"), ("wrong_b.json", None)]
+
+
 def test_lint_catches_coreutils_timeout_bits_and_zig_tutoring():
     sys.path.insert(0, str(ROOT / "evals"))
     import suite_manifest as M

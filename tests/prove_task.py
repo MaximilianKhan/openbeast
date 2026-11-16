@@ -176,6 +176,10 @@ def discover(task: dict, M, refs_dir: str) -> dict:
     ext = _ext(task, M)
     base = os.path.join(refs_dir, stem)
     ref = base if os.path.isfile(base) else f"{base}.{ext}"
+    if ref == base and os.path.splitext(base)[1]:
+        # A stem that names the file (an answers.json for a Q&A task) sets
+        # the siblings' extension too, instead of the task's language.
+        ext = os.path.splitext(base)[1][1:]
     d, b = os.path.dirname(ref), os.path.basename(stem).split(".")[0]
     decl: dict = {}
     pj = os.path.join(d, "prove.json")
