@@ -679,6 +679,61 @@ def test_safe_extract_keeps_ordinary_links_and_streams_compressed_archives(tmp_p
     assert os.access(dest / "t-1/lib/tool", os.X_OK)
 
 
+def _evil_drive(tmp_path, item, payload=b"attacker content\n"):
+    """A drive whose ark.lock (on the drive, so not trusted) names hostile paths."""
+    drive = tmp_path / "evil"
+    (drive / "files").mkdir(parents=True)
+    (drive / "files/x").write_bytes(payload)
+    lock = {"schema": 1, "items": {"k": dict({"kind": "file", "platform": "any", "version": "1", "primary": "files/x",
+                                               "files": [{"path": "files/x", "sha256": sha(payload),
+                                                          "size": len(payload)}]}, **item)}}
+    S.Drive(str(drive)).write_lock(lock)
+    return drive
+
+
+@pytest.mark.parametrize("item,why", [
+    ({"entry": "t", "install": "bin", "bins": ["../../../ESCAPED"]}, "not a file name"),
+    ({"entry": "t", "install": "bin", "bins": [".."]}, "not a file name"),
+    ({"entry": "t", "install": "gz", "bins": ["../.."]}, "not a file name"),
+    ({"entry": "../../t", "install": "bin", "bins": ["x"]}, "not a catalog name"),
+])
+def test_restore_never_writes_where_the_drive_lock_says(tmp_path, item, why):
+    payload = gzip.compress(b"x") if item["install"] == "gz" else b"attacker content\n"
+    drive = _evil_drive(tmp_path, item, payload)
+    home = tmp_path / "h"
+    home.mkdir()
+    with pytest.raises(R.RestoreError, match=why):
+        it = S.Drive(str(drive)).read_lock()["items"]["k"]
+        R.check_item(it)
+        R.install_file(S.Drive(str(drive)), it, str(home / "opt"), str(home / "bin"))
+    assert not list(tmp_path.rglob("ESCAPED"))
+    assert not (home / "opt").exists() or not [p for p in (home / "opt").rglob("*") if p.is_file()]
+
+
+def test_restore_refuses_tar_bins_and_git_values_that_leave_the_root(tmp_path, capsys):
+    src = _tar(tmp_path / "t.tar.gz", [("t-1/bin", "d", None), ("t-1/bin/t", "f", "#!/bin/sh\n")], mode="w:gz")
+    drive = _evil_drive(tmp_path, {"entry": "t", "install": "tar", "bins": ["../../../../victim"]},
+                        Path(src).read_bytes())
+    victim = tmp_path / "victim"
+    victim.write_text("keep me")
+    victim.chmod(0o600)
+    rc, out = run(["restore", "t", "--from", str(drive), "--prefix", str(tmp_path / "o"), "--bin", str(tmp_path / "b")],
+                  capsys)
+    assert rc == 1 and "outside the install root" in out.err
+    assert victim.stat().st_mode & 0o777 == 0o600                   # never chmod +x'd
+    lock = S.Drive(str(drive)).read_lock()
+    git = {"entry": "t", "kind": "git", "platform": "any", "version": "1", "files": lock["items"]["k"]["files"]}
+    for bad in ({"commit": "--upload-pack=touch x"}, {"commit": "a" * 40, "tag": "-f"},
+                {"commit": "a" * 40, "tag": "v1/../../x"}):
+        lock["items"]["k"] = dict(git, **bad)
+        S.Drive(str(drive)).write_lock(lock)
+        rc, out = run(["restore", "t", "--from", str(drive), "--src", str(tmp_path / "src")], capsys)
+        assert rc == 1 and "refused" in out.err, bad
+    assert not (tmp_path / "src").exists()
+    rc, out = run(["restore", "../t", "--from", str(drive)], capsys)
+    assert rc == 1 and "not an entry name" in out.err
+
+
 # ── lock / update ────────────────────────────────────────────────────────
 
 @pytest.mark.skipif(not HAVE_GIT, reason="git not installed")
