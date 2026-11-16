@@ -225,9 +225,30 @@ fi
 # natively, common/arg.cpp `.set_env("LLAMA_ARG_CORS_ORIGINS")`), so a build
 # without the flag ignores it rather than exiting; an operator's own
 # LLAMA_ARG_CORS_ORIGINS, or --cors-origins in a serve script, wins.
-# Not the whole fix: a page can still send a blind request, and a DNS-
-# rebinding page is same-origin (llama-server at the pinned commit checks
-# no Host header). LLAMA_API_KEY is what closes those.
+# Not the whole fix: a page can still send a blind request. LLAMA_API_KEY
+# is what closes that.
+#
+# llama.cpp v1.0.0 (#32098, merged 2026-11-11) added a DNS-rebinding guard
+# on top: on a LOOPBACK connection, a Host header that names neither
+# loopback nor the host of an allowed origin is refused, 403 "Cross-origin
+# request not allowed". Tailscale Serve keeps the client's Host when it
+# proxies (ipn/ipnlocal/serve.go: r.Out.Host = r.In.Host), so the raw
+# `:8443 -> 127.0.0.1:8080` mount (setup-tailscale.sh, no EDGE_GATE) arrives
+# as Host: <name>.<tailnet>.ts.net:8443 and every remote client would get
+# that 403. beast-gate, the router and hydra drop Host and are unaffected.
+# So when the tailnet name is known, the allowed origin is that mount
+# (https://<fqdn>:8443): the guard then admits exactly our own published
+# name, a rebinding page's own name stays refused, and browser origins are
+# as strict as with "localhost" (v1.0.0 treats "localhost" as same-origin
+# only). Without a tailnet name it stays "localhost".
+if [[ -z "${LLAMA_ARG_CORS_ORIGINS:-}" ]]; then
+  _ts_fqdn=""
+  declare -F _ob_webui_tailnet_name >/dev/null 2>&1 && _ts_fqdn="$(_ob_webui_tailnet_name 2>/dev/null || true)"
+  if [[ "$_ts_fqdn" =~ ^[a-z0-9.-]+\.[a-z0-9-]+$ ]]; then
+    LLAMA_ARG_CORS_ORIGINS="https://$_ts_fqdn:8443"
+  fi
+  unset _ts_fqdn
+fi
 export LLAMA_ARG_CORS_ORIGINS="${LLAMA_ARG_CORS_ORIGINS:-localhost}"
 
 echo "Parallel slots: $PARALLEL (unified KV cache, continuous batching)"

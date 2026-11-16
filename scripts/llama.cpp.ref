@@ -9,8 +9,19 @@
 # Moving it is a reviewed change, like an image digest bump:
 #   ./scripts/update.sh --llama     pulls upstream, rebuilds, and rewrites this
 #                                   line only after llama-server built
+#   ./scripts/engine.sh install llama --version v1.0.0
+#                                   the same for one release tag (offline:
+#                                   engine.sh stage ... on a connected box,
+#                                   then install llama --from DIR)
 # then smoke-test the stack and commit this file.
 #
 # One line, a full 40-hex upstream commit (ggml-org/llama.cpp). Not a tag or a
 # branch: those can be moved to point at something else.
-LLAMA_CPP_REF=d4389a4dd920d24c9592f1dc3badbd69be23bd09
+#
+# Current: v1.0.0 (released 2026-11-13), the annotated tag a6d1a74d peeled to
+# its commit; the same commit as CI build b12359. Moved from d4389a4d (b10865,
+# 2026-09-08) for the MoE expert cache (--moe-cache-mib, --moe-cache-cpu-share;
+# #29887, #30966, #31233, #31888) and the glm5-next / deepseek41 architectures.
+# Every flag a serve script passes was checked against v1.0.0's common/arg.cpp
+# (docs/WEIGHT_STREAMING.md "The llama.cpp v1.0.0 pin").
+LLAMA_CPP_REF=b1b770d90d94cad9e9ea5b993bdbc383a522fb28

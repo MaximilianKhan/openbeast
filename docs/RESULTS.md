@@ -293,6 +293,25 @@ mid-run at task 8/323).
 | **Inference engine** | llama.cpp **build 8893** · commit `6217b4958` · GNU 15.2.1 · Blackwell-tuned (CUDA arch 120) |
 | **Engine source HEAD** | `2bacb1eb` (2026-05-05) — binary not yet rebuilt against current source |
 
+### Weight-streaming profiles: pending (written 2026-11-15, rig offline)
+
+To be filled in by the bring-up in [WEIGHT_STREAMING.md](WEIGHT_STREAMING.md)
+(llama.cpp v1.0.0, `scripts/tokps.py`: median of 3 after one warm-up,
+temperature 0, 256 tokens). Nothing below is measured yet except the two
+baselines.
+
+| Profile | Decode, short (tok/s) | Decode, ~8K ctx | Prefill | VRAM used | Scope / MemoryCurrent | Acceptance floor |
+|---|---|---|---|---|---|---|
+| 27B uncensored MTP (default), after the pin move | _pending_ (140.2 on b10865) | | | | 75% | ≥ 125 |
+| Flash-Next IQ4_XS static (baseline) | _pending_ (38 on b10865) | | | | 75% | ≥ 34 |
+| Flash-Next IQ4_XS + MoE cache | _pending_ | | | | 75% | ≥ 55 |
+| GLM-5.3-Flash abl. UD-Q2_K_XL, big mode, llama.cpp | _pending_ | | | | 90% (big mode) | ≥ 20 |
+| the same weights on Project Maya (engine gate) | _pending_ | | | | 90% (big mode) | ≥ 1.5× the row above |
+
+Hardware facts these projections need (runbook step 1): DIMM configured
+speed (5600 or a 2DPC fallback?), the GPU's PCIe link width under load (x16
+or x8), and the NVMe model and generation.
+
 ### Leaderboard (v3.5 — 323 effective units)
 
 **Ranking: accuracy.** Tie-breakers: total pass count → hard-pass count → speed.

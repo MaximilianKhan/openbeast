@@ -1,0 +1,22 @@
+# Project Maya's Python packages (setup.py PY_PACKAGES at the pinned commit),
+# pinned to exact versions so scripts/engines/maya.sh can install them with
+# `pip install --require-hashes` from requirements.lock. Maya's own setup
+# installs these unpinned and unhashed. Every pin was at least 14 days old on
+# the day it was chosen (2026-11-15), because a release from the last few days
+# is the usual window for a hijacked upload.
+#
+# Regenerate the lock after any change here, with a python3.12 that has pip:
+#   python3.12 scripts/lib/pydeps_lock.py build \
+#     --req scripts/engines/maya/requirements.txt \
+#     --lock scripts/engines/maya/requirements.lock
+numpy==2.5.4
+jinja2==3.1.6
+regex==2026.9.29
+pyyaml==6.0.3
+tqdm==4.70.1
+requests==2.34.2
+cmake==4.4.4
+ninja==1.13.2
+pillow==13.0.0
+psutil==7.2.2
+jsonschema==4.26.0

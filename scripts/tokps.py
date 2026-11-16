@@ -1,0 +1,287 @@
+#!/usr/bin/env python3
+"""Decode / prefill tok/s of an OpenAI-compatible endpoint, and the engine gate.
+
+docs/WEIGHT_STREAMING.md. Stdlib only: it runs on a closed rig.
+
+    tokps.py measure --url http://127.0.0.1:8080 [--runs 3] [--max-tokens 256]
+                     [--prompt short|long] [--label NAME] [--record FILE] [--json]
+    tokps.py check   --min 55 --url ...       measure, exit 1 below the floor
+    tokps.py gate    --engine maya --candidate maya.json --baseline llama.json
+                     [--ratio 1.5] [--out FILE]
+                     exit 0 when candidate / baseline >= ratio, else 1
+
+How a run is measured: one streamed chat completion, temperature 0, a fixed
+seed and prompt. Decode tok/s is llama.cpp's own `timings.predicted_per_second`
+when the server reports it (the final chunk of a llama-server stream), else
+(completion_tokens - 1) / (last token time - first token time) from the
+stream: TTFT is excluded either way, so prefill and decode are not mixed.
+Prefill tok/s is `timings.prompt_per_second` when reported, else none. The
+first run warms the caches (the MoE cache fills on use) and is reported but
+not counted; the result is the median of the rest.
+
+The API key is read from the environment variable named by --api-key-env
+(LLAMA_API_KEY by default) or from --api-key-file, never from argv.
+
+Exit codes: 0 ok, 1 below the floor / gate failed, 2 usage or a bad record,
+3 the endpoint failed.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as _dt
+import json
+import os
+import platform
+import statistics
+import sys
+import time
+import urllib.error
+import urllib.request
+
+# A fixed prompt per length, so two engines or two days see the same work.
+_SHORT = ("Write a detailed, technical explanation of how a hash map handles collisions, "
+          "covering separate chaining, open addressing, load factors and resizing. "
+          "Use plain paragraphs.")
+_LONG_UNIT = ("The lighthouse keeper logged the wind, the tide and every ship that passed, "
+              "and never once wrote a line he had not seen with his own eyes. ")
+PROMPTS = {
+    "short": _SHORT,
+    # ~8K tokens of context before the question: decode with a long KV, and a
+    # prefill large enough that a prompt batch streams every expert.
+    "long": (_LONG_UNIT * 400) + "\n\n" + _SHORT,
+}
+SEED = 42
+
+
+def _key(args) -> str:
+    if args.api_key_file:
+        with open(args.api_key_file, encoding="utf-8") as fh:
+            return fh.read().strip()
+    return os.environ.get(args.api_key_env or "LLAMA_API_KEY", "").strip()
+
+
+def _req(url: str, key: str, body: dict | None = None, timeout: float = 600.0):
+    data = None if body is None else json.dumps(body).encode()
+    req = urllib.request.Request(url, data=data, method="POST" if body is not None else "GET")
+    req.add_header("Content-Type", "application/json")
+    if key:
+        req.add_header("Authorization", "Bearer " + key)
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
+def served_model(base: str, key: str) -> str:
+    try:
+        with _req(base + "/v1/models", key, timeout=10) as r:
+            d = json.load(r)
+        return ((d.get("data") or [{}])[0] or {}).get("id") or ""
+    except (urllib.error.URLError, OSError, ValueError):
+        return ""
+
+
+def one_run(base: str, key: str, model: str, prompt: str, max_tokens: int) -> dict:
+    body = {
+        "model": model or "default",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens,
+        "temperature": 0,
+        "seed": SEED,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
+    t0 = time.monotonic()
+    first = last = None
+    n_chunks = 0
+    usage = {}
+    timings = {}
+    with _req(base + "/v1/chat/completions", key, body) as r:
+        for raw in r:
+            line = raw.decode("utf-8", "replace").strip()
+            if not line.startswith("data:"):
+                continue
+            payload = line[5:].strip()
+            if payload == "[DONE]":
+                break
+            try:
+                ev = json.loads(payload)
+            except ValueError:
+                continue
+            if ev.get("usage"):
+                usage = ev["usage"]
+            if ev.get("timings"):
+                timings = ev["timings"]
+            for ch in ev.get("choices") or []:
+                d = ch.get("delta") or {}
+                if d.get("content") or d.get("reasoning_content") or d.get("reasoning"):
+                    now = time.monotonic()
+                    first = first if first is not None else now
+                    last = now
+                    n_chunks += 1
+    t_end = time.monotonic()
+    ntok = int(usage.get("completion_tokens") or timings.get("predicted_n") or n_chunks)
+    out = {"completion_tokens": ntok, "ttft_s": None if first is None else round(first - t0, 3),
+           "wall_s": round(t_end - t0, 3), "source": "stream"}
+    if timings.get("predicted_per_second"):
+        out["decode_tps"] = round(float(timings["predicted_per_second"]), 2)
+        out["source"] = "server-timings"
+    elif first is not None and last is not None and last > first and ntok > 1:
+        out["decode_tps"] = round((ntok - 1) / (last - first), 2)
+    else:
+        out["decode_tps"] = None
+    pp = timings.get("prompt_per_second")
+    out["prefill_tps"] = round(float(pp), 1) if pp else None
+    if timings.get("prompt_n") is not None:
+        out["prompt_tokens"] = int(timings["prompt_n"])
+    elif usage.get("prompt_tokens") is not None:
+        out["prompt_tokens"] = int(usage["prompt_tokens"])
+    return out
+
+
+def measure(args) -> dict:
+    base = args.url.rstrip("/")
+    if base.endswith("/v1"):
+        base = base[:-3]
+    key = _key(args)
+    model = args.model or served_model(base, key)
+    prompt = PROMPTS[args.prompt]
+    runs = []
+    for i in range(args.runs + 1):        # run 0 is the warm-up
+        try:
+            runs.append(one_run(base, key, model, prompt, args.max_tokens))
+        except urllib.error.HTTPError as e:
+            raise SystemExit(_fail(3, f"{base}: HTTP {e.code} on /v1/chat/completions"
+                                      f"{' (LLAMA_API_KEY?)' if e.code in (401, 403) else ''}"))
+        except (urllib.error.URLError, OSError) as e:
+            raise SystemExit(_fail(3, f"{base}: {e}"))
+        if not args.json:
+            r = runs[-1]
+            print(f"  run {i}{' (warm-up, not counted)' if i == 0 else ''}: "
+                  f"decode {r['decode_tps']} tok/s, prefill {r['prefill_tps']} tok/s, "
+                  f"TTFT {r['ttft_s']} s, {r['completion_tokens']} tokens [{r['source']}]", flush=True)
+    counted = [r["decode_tps"] for r in runs[1:] if r["decode_tps"]]
+    if not counted:
+        raise SystemExit(_fail(3, f"{base}: no run produced a decode rate (empty replies?)"))
+    pre = [r["prefill_tps"] for r in runs[1:] if r["prefill_tps"]]
+    return {
+        "schema": "openbeast-tokps/1",
+        "label": args.label or "",
+        "engine": args.engine or "",
+        "profile": args.profile or "",
+        "url": base,
+        "model": model,
+        "prompt": args.prompt,
+        "max_tokens": args.max_tokens,
+        "runs": runs,
+        "decode_tps_median": round(statistics.median(counted), 2),
+        "prefill_tps_median": round(statistics.median(pre), 1) if pre else None,
+        "host": platform.node(),
+        "time": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+
+def _fail(code: int, msg: str) -> int:
+    print(f"tokps: {msg}", file=sys.stderr)
+    return code
+
+
+def _write(path: str, doc: dict) -> None:
+    d = os.path.dirname(os.path.abspath(path))
+    os.makedirs(d, exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    os.replace(tmp, path)
+
+
+def _load(path: str) -> dict:
+    try:
+        with open(path, encoding="utf-8") as fh:
+            d = json.load(fh)
+    except (OSError, ValueError) as e:
+        raise SystemExit(_fail(2, f"cannot read {path}: {e}"))
+    if d.get("schema") != "openbeast-tokps/1" or not isinstance(d.get("decode_tps_median"), (int, float)):
+        raise SystemExit(_fail(2, f"{path} is not a tokps measurement record"))
+    return d
+
+
+def gate(args) -> int:
+    cand, base = _load(args.candidate), _load(args.baseline)
+    problems = []
+    if cand["prompt"] != base["prompt"] or cand["max_tokens"] != base["max_tokens"]:
+        problems.append("the two runs used different prompts or lengths")
+    if cand.get("host") != base.get("host"):
+        problems.append(f"measured on different hosts ({cand.get('host')} vs {base.get('host')})")
+    ratio = cand["decode_tps_median"] / base["decode_tps_median"] if base["decode_tps_median"] else 0.0
+    ok = not problems and ratio >= args.ratio
+    verdict = {
+        "schema": "openbeast-engine-gate/1",
+        "engine": args.engine,
+        "pass": ok,
+        "ratio": round(ratio, 3),
+        "required": args.ratio,
+        "candidate_tps": cand["decode_tps_median"],
+        "baseline_tps": base["decode_tps_median"],
+        "candidate": {k: cand.get(k) for k in ("label", "engine", "profile", "model", "time", "url")},
+        "baseline": {k: base.get(k) for k in ("label", "engine", "profile", "model", "time", "url")},
+        "prompt": cand["prompt"],
+        "host": cand.get("host"),
+        "problems": problems,
+        "time": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    if args.out:
+        _write(args.out, verdict)
+    word = "PASS" if ok else "FAIL"
+    print(f"engine gate {args.engine}: {word} — {cand['decode_tps_median']} vs "
+          f"{base['decode_tps_median']} tok/s = {ratio:.2f}x (needs {args.ratio}x)"
+          + (f"; {'; '.join(problems)}" if problems else ""))
+    return 0 if ok else 1
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    for name in ("measure", "check"):
+        p = sub.add_parser(name)
+        p.add_argument("--url", required=True, help="base URL (http://127.0.0.1:8080)")
+        p.add_argument("--model", default="", help="model id to send (default: the first /v1/models id)")
+        p.add_argument("--runs", type=int, default=3, help="counted runs after one warm-up (default 3)")
+        p.add_argument("--max-tokens", type=int, default=256)
+        p.add_argument("--prompt", choices=sorted(PROMPTS), default="short")
+        p.add_argument("--label", default="")
+        p.add_argument("--engine", default="")
+        p.add_argument("--profile", default="")
+        p.add_argument("--record", default="", help="write the measurement JSON here")
+        p.add_argument("--json", action="store_true", help="print the record as JSON")
+        p.add_argument("--api-key-env", default="LLAMA_API_KEY")
+        p.add_argument("--api-key-file", default="")
+        if name == "check":
+            p.add_argument("--min", type=float, required=True, help="decode tok/s floor")
+    g = sub.add_parser("gate")
+    g.add_argument("--engine", required=True)
+    g.add_argument("--candidate", required=True)
+    g.add_argument("--baseline", required=True)
+    g.add_argument("--ratio", type=float, default=1.5)
+    g.add_argument("--out", default="")
+    args = ap.parse_args(argv)
+    if args.cmd == "gate":
+        return gate(args)
+    if args.runs < 1 or args.max_tokens < 8:
+        return _fail(2, "--runs must be >= 1 and --max-tokens >= 8")
+    rec = measure(args)
+    if args.record:
+        _write(args.record, rec)
+    if args.json:
+        print(json.dumps(rec, indent=2, sort_keys=True))
+    else:
+        print(f"decode {rec['decode_tps_median']} tok/s (median of {args.runs}), "
+              f"prefill {rec['prefill_tps_median']} tok/s — {rec['model'] or '?'} at {rec['url']}")
+    if args.cmd == "check":
+        if rec["decode_tps_median"] < args.min:
+            print(f"BELOW THE FLOOR: {rec['decode_tps_median']} < {args.min} tok/s", file=sys.stderr)
+            return 1
+        print(f"ok: {rec['decode_tps_median']} >= {args.min} tok/s")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
