@@ -26,6 +26,25 @@ and the variables added later.
   vLLM/TensorFold, not only `pgrep llama-server`).
 - [ ] Sparks: the same A/B between TensorFold (recipe / native) and vLLM once a
   vLLM build serves the chosen model on GB10.
+- [ ] **Weight-streaming profiles (opened 2026-11-15, rig offline): benchmark
+  each once the rig is online**, after its tok/s acceptance check in
+  [WEIGHT_STREAMING.md](WEIGHT_STREAMING.md) passes. For each one record the
+  v4 SCORE and the v5 SCORE (SOLVE, LANG), plus decode tok/s short and at
+  ~8K context, prefill tok/s, VRAM used and the scope's MemoryCurrent:
+  - [ ] the default 27B uncensored MTP on llama.cpp **v1.0.0** (the pin move;
+    a regression check against its b10865 numbers, 140.2 tok/s);
+  - [ ] `serve-qwen38-flash-next-unc-iq4xs-moecache.sh` (Flash-Next + MoE
+    cache, target 55–70 tok/s; first tune `--moe-cache-mib` /
+    `--moe-cache-cpu-share` with `llama.cpp/scripts/moe-cache-tune.py`) and
+    its static twin `serve-qwen38-flash-next-unc-iq4xs.sh` as the paired
+    baseline;
+  - [ ] `serve-glm53-flash-abl-q2kxl-big.sh` (big mode, target 20–30
+    tok/s). The 27B tops v4, so start with a held-out slice of the tasks the
+    27B fails, run paired; a full v5 cell is 2–3 GPU days;
+  - [ ] Project Maya on the same GLM weights: `scripts/engine-gate.sh maya
+    --profile glm53-flash-abl-q2kxl --serve-script serve-glm53-flash-abl-q2kxl-big.sh`.
+    SCORE rows only if it passes 1.5×.
+  Each finished row moves its slug out of `BENCH_EXCLUDED` into `MODELS`.
 - Engine swapping itself: `scripts/engine.sh` (see docs/ENGINES.md once it lands).
 - Landed: [docs/ENGINES.md](ENGINES.md) — `scripts/engine.sh use|install|update|rollback`, managed TP 1 vLLM / TensorFold on the rig, and "The rig A/B" section lists what the 5090 run needs (an uncensored safetensors/NVFP4 profile, or the GGUF via vllm-gguf-plugin).
 

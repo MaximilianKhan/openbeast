@@ -215,6 +215,7 @@ Run the narrow suites while iterating, then the full set before committing:
 | `scripts/lib/conf.sh`, `openbeast.conf` keys | `tests/test_conf_secrets.sh`, `tests/test_escalate_conf.sh`, `tests/test_shell_ops.sh` |
 | `scripts/healthcheck.sh`, `scripts/doctor.sh`, `setup-tailscale.sh` | `tests/test_shell_ops.sh`, `tests/test_operator_scripts.sh`, `tests/test_backends.sh` |
 | `scripts/engine.sh`, `scripts/engines/*`, `scripts/lib/engine.sh`, `engine-serve.sh` | `tests/test_engines.sh` (GNU), `tests/test_lifecycle.sh` |
+| `scripts/serve-*.sh` flags, `scripts/llama.cpp.ref`, `scripts/lib/memscope.sh`, `scripts/engine-gate.sh`, `scripts/tokps.py`, `scripts/engines/maya*` | `tests/test_weight_streaming.sh` (portable; every serve-script flag against the pinned llama.cpp's option list), `tests/test_tokps.py`, `tests/test_engines.sh` (GNU, Maya install/stage/gate), `tests/test_lifecycle.sh` (the big-mode scope through `start.sh -d`). Runbook: [WEIGHT_STREAMING.md](WEIGHT_STREAMING.md) |
 | `scripts/backends/spark-cluster.sh`, `tensorfold/spark-node.sh`, `vllm/` | `tests/test_spark_cluster.sh`, `tests/test_backends.sh` |
 | `scripts/backends/spark-guard.sh` | `tests/test_spark_guard.sh` |
 | `spark-root-setup.sh`, `tensorfold/install-native.sh` | `tests/test_spark_supply.sh` |

@@ -1,7 +1,9 @@
 # Engines — choose, swap, update and roll back the inference engine
 
 OpenBeast talks OpenAI-compatible HTTP to one inference server. That server, the
-**inference plane**, can be one of three engines. Each has defaults per host
+**inference plane**, can be one of three engines, plus a fourth that is opt-in
+and gated (Project Maya: admitted only after it measures 1.5x llama.cpp on the
+rig, [WEIGHT_STREAMING.md](WEIGHT_STREAMING.md)). Each has defaults per host
 class, and you can override them. `scripts/engine.sh` is the one command for
 all of it:
 
@@ -27,6 +29,7 @@ prints the conf changes and the exact launch command.
 |---|---|---|---|---|
 | **llama** (llama.cpp `llama-server`) | **default** — every `scripts/serve-*.sh`, measured on the 5090 | builds (CUDA arm64), not the Spark default | **GGUF** only | yes, through `scripts/serve-*.sh` (unchanged) |
 | **vllm** (`vllm/vllm-openai`, container) | yes — one GPU, TP 1, managed | yes — TP 1 managed, or TP 1..8 across Sparks (unmanaged, `spark-node.sh`) | safetensors: BF16 / FP8 / **NVFP4** / AWQ / GPTQ. GGUF only through the out-of-tree `vllm-gguf-plugin` ("highly experimental") | TP 1 on this box: yes (`engine-serve.sh`). Otherwise unmanaged |
+| **maya** (Project Maya, built from a reviewed commit; opt-in, **gated**) | opt-in only after `scripts/engine-gate.sh` measured **≥ 1.5×** llama.cpp's decode tok/s on the same weights ([WEIGHT_STREAMING.md](WEIGHT_STREAMING.md)) | no | GGUF (GLM-5.3-Flash through `--gguf-dir`, Maya packs), EXL3 | TP 1 on this box: yes, once the gate passes |
 | **tensorfold** (native ≥ 1.0 release binary) | yes — sm_120 kernels ship. Single-GPU fits such as Qwen3.8-27B MLX-4bit are plausible, **not qualified on a 5090** | **default** — TP 1 managed, or TP 1..8 across Sparks (unmanaged, `spark-node.sh`) | **MLX-affine 4/6/8-bit** safetensors, NVFP4 (ModelOpt), EXL3 (GLM-5.3-Flash). **No GGUF on CUDA** | TP 1 on this box: yes. Otherwise unmanaged |
 
 **Host class** comes from `scripts/lib/hardware.sh`. A GPU that reports
@@ -103,6 +106,7 @@ What a managed vllm / tensorfold run gets, and does not get:
 |---|---|---|---|
 | llama | `scripts/llama.cpp.ref` `LLAMA_CPP_REF=<40-hex commit>` (tracked: what a fresh `bootstrap.sh` builds; review and commit the change) | The commit id *is* the content hash. A tag (`v1.0.0`, `b12422`) is resolved to its commit, and a local tag is never moved | `git checkout` of the old commit and rebuild. The objects are already local, so this works offline |
 | vllm | `ENGINE_PIN_VLLM=<tag>@sha256:<index digest>` | The pull resolves the digest. `--digest` must match it, or the install is refused. Offline: the tarball's sha256 is checked against the MANIFEST, then the image id after `docker load` | Re-pin an image still on the box (by digest, or by the image id kept in the history). No pull |
+| maya | `ENGINE_PIN_MAYA=<tag>@<40-hex commit>`, only for a version reviewed in `scripts/engines/maya.sh` (`--digest <commit>` to name another) | The commit id. Maya's own setup would fetch llama.cpp as an unhashed archive zip and pip-install unpinned packages. Instead llama.cpp is checked out at the commit its `setup.py` pins (read and compared first), and the packages come from `scripts/engines/maya/requirements.lock` with `--require-hashes` | Relink `~/.local/opt/maya-<tag>` (offline) |
 | tensorfold | `ENGINE_PIN_TENSORFOLD=<version>@sha256:<archive sha256>` | `install-native.sh`: archive against `.sha256`, `.sha256` against the release's ed25519 signature (vendored key), every unpacked file against `SHA256SUMS`. It always stages into `.engines/cache/` first | Relink `~/.local/opt/tensorfold-<V>-<platform>` after `SHA256SUMS` is re-checked. Instant and offline |
 
 - `update` = install the latest **release**. llama: the highest `vX.Y.Z`
@@ -131,10 +135,12 @@ architecture), carry the folder over, install from it:
 scripts/engine.sh stage llama      --version v1.0.0 /media/usb/llama
 scripts/engine.sh stage vllm       --version v0.33.0 /media/usb/vllm      # the box's own arch; docker save
 scripts/engine.sh stage tensorfold --version 1.2.9 --platform linux-aarch64 /media/usb/tf
+MAYA_STAGE_PYTHON=3.12 scripts/engine.sh stage maya --version v1.1.65 --platform manylinux_2_28_x86_64 /media/usb/maya
 # closed box
 scripts/engine.sh install llama      --from /media/usb/llama
 scripts/engine.sh install vllm       --from /media/usb/vllm
 scripts/engine.sh install tensorfold --from /media/usb/tf
+scripts/engine.sh install maya       --from /media/usb/maya     # both commits re-verified; wheels with --no-index
 ```
 
 Each folder is re-verified on the closed box: the llama commit id, the vLLM
@@ -167,6 +173,8 @@ sourced by `scripts/lib/engine.sh`. It defines `eng_<name>_*` functions (a
 | `ready <url>` | no | Readiness. The default for a new engine is HTTP 200 on `/health` |
 | `spark_env <version> <ref>` | no | `KEY=VALUE` lines to keep `spark.env` in step |
 | `hydra_kind` | no | What beast-hydra calls it (`llama` / `vllm` / `tensorfold` / `openai`) |
+| `profile_locate <profile>` | no | An adapter with its own profile format (maya: GGUF weights from `weights.registry`) sets `SP_LOCATE_RC` (0 = every weight on this box). `engine.sh use` calls it in place of `model-fetch.sh --locate` |
+| `scope_file <profile>` | no | The file whose `# openbeast-scope:` line sizes `start.sh -d`'s memory scope for this profile (`scripts/lib/memscope.sh`) |
 
 What a 4th engine (SGLang, exllamav3 / TabbyAPI, Ollama) still needs outside
 its file:
@@ -201,6 +209,15 @@ functions out of `start.sh` verbatim and still passes, and
   in `normalize`, `label` and `ready`.
 
 ## Research notes (primary sources, read 2026-11-15)
+
+- **The pin moved to v1.0.0** (`b1b770d9…`, 2026-11-15) for the MoE expert
+  cache and `glm5-next`. The serve-script flag audit against v1.0.0, and the
+  DNS-rebinding Host guard serve.sh had to accommodate (#32098), are in
+  [WEIGHT_STREAMING.md](WEIGHT_STREAMING.md) "The llama.cpp v1.0.0 pin".
+- **Project Maya** v1.1.65 (lightweight tag on `c81fab6c…`, 2026-11-16 UTC,
+  no release assets; `thomas9120/project-maya` is a fork). The facts the
+  adapter depends on, and why Strata has no adapter, are in
+  [WEIGHT_STREAMING.md](WEIGHT_STREAMING.md) "The engine gate".
 
 - **llama.cpp**: GitHub's "latest" is the first semver release, **v1.0.0**
   (2026-11-13). It is an annotated tag that peels to commit `b1b770d9…`, the
