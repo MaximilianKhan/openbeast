@@ -18,7 +18,7 @@
  },
  "leak": {
   "leak": "^mismatch at case 0$",
-  "argvcheat": "^(mismatch at case 0|exception at case 0: PermissionError)$"
+  "argvcheat": "^(mismatch at case 0|exception at case 0: PermissionError|solution refused: forked)$"
  },
  "slow": {
   "slow": "^solution timed out \\((cpu|wall)\\)$"
