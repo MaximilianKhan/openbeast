@@ -12,7 +12,11 @@ services:
     # rebuild months later could pull a different — possibly compromised —
     # image. The digest is the exact image validated on the reference box.
     # `scripts/update.sh --images` bumps BOTH the tag-follow and this digest.
-    image: ghcr.io/open-webui/open-webui:main@sha256:6a773e5c3a246b65cbe74ce942b294292c0e5f81c138f703d111bc162f7d7c3d
+    # This digest is Open WebUI v0.13.3 (:main built from release commit
+    # b0e6098e, 2026-11-08; Python 3.12 / Debian 13 base). Verified on it:
+    # the sitecustomize Host guard, configure-webui.sh's DB writes, the
+    # auth-off admin sign-in, and the signed identity JWT router.py checks.
+    image: ghcr.io/open-webui/open-webui:main@sha256:59b912d4246103c7285de0e9a5f2f6586614c06b4c4e46edc51a8f29e7b099a5
     container_name: open-webui
     network_mode: host
     environment:
@@ -72,7 +76,7 @@ services:
 
   searxng:
     # Digest-pinned — see the open-webui note above.
-    image: searxng/searxng:latest@sha256:892cf809341915a4b7710d3c9045005b4c377d51335a089b6d4da0b28750788d
+    image: searxng/searxng:latest@sha256:932f69dca010db9880bddebb2171f05d8e1a25d04a59149ff65409993d680024
     container_name: searxng
     network_mode: host
     environment:

@@ -74,7 +74,7 @@ The `dashboard` slot API established the sanctioned pattern. Follow it:
 
 - **`ntfy`** — a self-hosted ntfy push server for beast-chat's opt-in
   notifications. `KIND=compose`, digest-pinned
-  `binwiederhier/ntfy:v2.28.0`, bound to `127.0.0.1:${NTFY_PORT:-3005}`,
+  `binwiederhier/ntfy:v2.38.0`, bound to `127.0.0.1:${NTFY_PORT:-3005}`,
   read-only root, `cap_drop: ALL`, `no-new-privileges`, message cache and
   auth database in volumes. beast-chat posts to it when a session ends
   (`CHAT_NOTIFY_URL`; title, state and a link, never transcript text).

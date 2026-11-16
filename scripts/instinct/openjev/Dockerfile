@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.29
 #
 # The Open-Jev loader image for beast-instinct's openjev_head engine
 # (scripts/serve-openjev.sh). It holds CODE ONLY — torch, transformers, peft
