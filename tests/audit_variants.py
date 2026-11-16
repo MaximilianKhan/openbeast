@@ -20,7 +20,7 @@ v5 inverts the rule — a zig prompt states the contract (Zig 0.16, the entry
 point the validator builds, the compile command) and teaches no API. Zig
 guidance belongs only to the treatment arms (--packs, BEAST_ASSIST,
 --escalate). tests/test_v5_suite.py enforces the ban on every v5 unit."""
-import subprocess, sys, shutil, os, time
+import sys, shutil, os, time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent

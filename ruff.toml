@@ -1,0 +1,7 @@
+# Ruff (CI: .github/workflows/pr-quality.yml, `--select E9,F`).
+#
+# evals/refs/<task>/ holds eval FIXTURES, not project code: wrong solutions
+# that are buggy on purpose, cheat probes that import what they must not,
+# and validator templates with @@placeholders@@ that build_task.py fills.
+# Linting them would mean "fixing" the very defects the prover asserts.
+extend-exclude = ["evals/refs/*/"]

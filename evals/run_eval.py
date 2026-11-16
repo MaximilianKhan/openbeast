@@ -2239,7 +2239,6 @@ def run_validation(task: dict, timeout_scale: float = 1.0) -> tuple[bool, str]:
         return False, "No validation script defined"
 
     timeout = max(1, int(VALIDATION_TIMEOUT_S * timeout_scale))
-    import shutil
     import tempfile
     private = tempfile.mkdtemp(prefix="ob-validator-")  # 0700
     os.chmod(private, 0o700)
