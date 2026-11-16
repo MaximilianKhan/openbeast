@@ -194,7 +194,15 @@ for free):
    rusage plus a process-tree sampler with a Linux subreaper. Orphans and
    survivors get verdict `daemon`, every descendant is killed afterwards,
    and fork is refused by default (`allow_fork=True` to permit it). Report
-   `r.reason`, never the oracle.
+   `r.reason`, never the oracle. On macOS the confined solution has **no
+   network**, cannot read another process's argv/env, and cannot read any
+   `evals/{refs,tasks,suites}` tree in any checkout. A compiled unit's binary
+   is also **exec-confined to itself** (default when `cmd[0]` is a native
+   program and `allow_fork=False`), so it cannot `execvp("python3", solver)`
+   or `zig run <ref>` into an unlinted interpreter — the round-2 bypass in
+   166/U4; on Linux the same is caught by a `/proc/<pid>/exe` change
+   (`verdict="exec"`). Run the untimed warm-up build/exec through
+   `run_solution` too, so a warm-up that execs the reference is refused.
 3. **Scale every fixed limit.** Write limits at scale 1 and wrap them in
    `vlib.t(seconds)`, or pass them to `run_solution`, which scales them
    itself. Under `--jobs 4` the scale is 2.0. Use `scale_cpu=False` only for a
@@ -218,11 +226,29 @@ for free):
    sanitizer escape hatches (`__tsan_*`, `__sanitizer_*`, `no_sanitize`)
    wherever TSan/ASan is the check. A lint is the second line of defence,
    after process separation.
-7. **Check all of the output.** A checker that tests only part of the output
+7. **Build in a private copy of only the source.** A planted
+   `rust-toolchain.toml`, a `$HOME/.../go/env` with `GOFLAGS=-ldflags=-s`, or
+   a `.cargo/config.toml` in an ancestor of the build cwd replaces the
+   compiler or strips the symbol table you inspect (166/169). Use
+   `d = vlib.private_build_dir({"main.rs": src})` and build in `d` under
+   `env=vlib.build_env()` (clean private `HOME`, `GOENV=off`, `GOFLAGS`
+   cleared, `GOTOOLCHAIN=local`); call `vlib.tool_path("rustc")` for an
+   absolute compiler so a planted `rustc` earlier on PATH cannot shadow it.
+   Then **require a native executable**: `vlib.assert_native_executable(out)`
+   before you run it or read `nm`/`otool` — a `#!/usr/bin/env python3` shim
+   behind a planted compiler is not ELF/Mach-O, and `nm` of a non-object file
+   prints nothing, which must not read as clean. `vlib.scan_toolchain_overrides(d)`
+   lists any config planted in an ancestor. For a sanitizer check (TSan/ASan),
+   build the SAME source both ways with `vlib.sanitizer_flags("thread")`, ban
+   the builtin fields that differ between the builds (zig `link_libcpp`,
+   `position_independent_executable`, `pic`, `link_libc`), and **also validate
+   behaviour in the plain build** — the sanitizer is a stress amplifier, not
+   the only judge (170).
+8. **Check all of the output.** A checker that tests only part of the output
    (one field, the last case, a containment prefix without the separator)
    is a pass for a partial solution. Assert the count, every field, and
    every case.
-8. **Keep secrets in memory.** Files you write are readable by the same uid
+9. **Keep secrets in memory.** Files you write are readable by the same uid
    wherever they live. Write only inputs to disk. Expected outputs stay in
    your process.
 

@@ -268,6 +268,12 @@ harness rather than through the tasks:
 | scale | Fixed solution limits (4-10 s) ignored `--scale`, so references timed out under load and wrong solutions failed for the wrong class | `OPENBEAST_TIMEOUT_SCALE` is exported, and `vlib.t(s)` multiplies by it |
 | hidden CPU | 122: double-forked, never-waited workers kept their CPU out of `RUSAGE_CHILDREN` (29 s of naive gemm was charged as 0.03 s) | `vlib.run_solution` counts the whole tree. Leftovers are refused as `daemon` |
 | lingering solutions | a validator killed on timeout left its solution's group running into the next unit | vlib records each group it starts, and the harness SIGKILLs them after the validator exits |
+| exec into an interpreter | 166 / U4: a compiled variant replaced its image with `execvp("python3", solver)` or `zig run <ref>`, running an unlinted interpreter; exec makes no child, so the fork rules missed it | `run_solution` confines a compiled unit's exec to its own binary (macOS `sandbox-exec`; Linux refuses when `/proc/<pid>/exe` changes). Verdict `exec` |
+| network | a solution (or the agent via `fetch`) could reach `github.com` to pull the pushed reference, or phone home | `run_solution` denies `network*`; the agent's web tools are off under `OPENBEAST_EVAL` (or recorded) |
+| read the validator argv | a confined solution could still `ps`/`/proc` the validator's argv/env (190) | `run_solution` denies `process-info*` on other processes (self allowed, for a framework Python's re-exec) |
+| read the reference across checkouts | U4: a solution globbed `/Users/*/.../worktrees/*/evals/refs/<unit>/*.py` and exec'd it | `run_solution` denies reads of any `evals/{refs,tasks,suites}` tree, in every checkout, not only this run's sealed paths |
+| toolchain capture | 166 / 169: a planted `rust-toolchain.toml`, a `$HOME/.../go/env` with `GOFLAGS=-ldflags=-s`, or a `.cargo/config.toml` in an ancestor replaced the compiler or stripped the symbol table the validator reads | build a private copy of only the source with `vlib.private_build_dir`, under `vlib.build_env` (`GOENV=off`, `GOFLAGS` cleared, `GOTOOLCHAIN=local`, private `HOME`), and require `vlib.is_native_executable` of the product; `vlib.scan_toolchain_overrides` flags a planted ancestor config |
+| compile-time build detection | 170: a solution read `@import("builtin").link_libcpp`, true only under `-fsanitize=thread`, and ran a different algorithm in the plain build | ban the distinguishing builtin fields, and validate behaviour in the PLAIN build too; `vlib.sanitizer_flags` builds the SAME source both ways |
 
 `evals/vlib.py` is the validator's standard library. The harness injects it
 into the validator from source; it is never on an import path or in the cwd.
@@ -280,8 +286,21 @@ into the validator from source; it is never on an import path or in the cwd.
   subreaper so that orphans stay in view; elsewhere it reads `ps`. Fork is
   refused by default, and on macOS `sandbox-exec` enforces it. With
   `allow_fork=True`, orphans and survivors get `verdict="daemon"`. On macOS
-  it also denies reads of `evals/tasks`, `evals/refs` and `evals/suites`
-  (`OPENBEAST_VALIDATOR_SEAL`).
+  the confined solution also has **no network**, **no process-info on other
+  processes**, and **no read** of any `evals/{refs,tasks,suites}` tree (plus
+  `deny_read` and `OPENBEAST_VALIDATOR_SEAL`). A compiled unit's exec is
+  confined to its own binary (`confine_exec`, auto for a non-interpreter
+  `cmd[0]` with `allow_fork=False`), so it cannot exec into python3; the same
+  is caught on Linux by a `/proc/<pid>/exe` change (`verdict="exec"`).
+- **Builds**: `vlib.private_build_dir({relpath: src})` returns a fresh 0700
+  dir holding only the source, with no toolchain-config ancestor; build there
+  under `vlib.build_env()` (clean private `HOME`, `GOENV=off`, `GOFLAGS`
+  cleared, `GOTOOLCHAIN=local`) with `vlib.tool_path("rustc")` for an absolute
+  compiler. Then `vlib.assert_native_executable(out)` — a `#!`-script behind a
+  planted compiler is not ELF/Mach-O. `vlib.scan_toolchain_overrides(dir)`
+  lists any planted `rust-toolchain`/`.cargo/config`/`go.work`/`go env` in an
+  ancestor. `vlib.sanitizer_flags("thread")` builds the same source with and
+  without the sanitizer.
 - `vlib.t(s)` and `vlib.scale()` give the timeout scale. `vlib.python_cmd(p)`
   gives `[python, -I, -S, p]`. `vlib.processes()` is a /proc-free process
   table. `vlib.lint_python(src, ban_modules=, ban_calls=)` is an AST lint for
@@ -307,12 +326,22 @@ limits that never read the scale. The isolation itself is pinned by
 
 **Residual, by platform.**
 
-- On Linux, a solution can still read `evals/tasks/*.json` from disk at
-  validation time. Only the agent's tools are sealed, and vlib's read-deny is
-  macOS only. Closing it needs a separate uid or a mount namespace on the
-  rig.
+- The confinement (network, process-info, exec, read-deny) is enforced by
+  `sandbox-exec` on **macOS**. On **Linux** the kernel equivalent is provided
+  by the environment the measured run executes in — the beast-gate container
+  and Landlock/namespaces on the rig — not by vlib itself; where that is
+  absent, the Linux-only `/proc/<pid>/exe` exec guard and the AST/compiled
+  lints are the backstop, so a Linux validator must still lint and must
+  validate behaviour, never trust the confinement alone. The oracle seal in
+  `agents/tools.py` keeps the eval answer key out of the agent's reach under
+  `OPENBEAST_EVAL`: direct reads are denied in the kernel on macOS, and the
+  textual tripwire is quote-normalised and git-blob-aware on both platforms.
 - On macOS, with `allow_fork=True`, a double-fork plus `setsid` can slip past
-  the sampler. A timed gate there keeps the default `allow_fork=False`.
+  the sampler, and exec is not confined (a shell solution needs coreutils). A
+  timed or exec-sensitive gate there keeps the default `allow_fork=False`.
+- `vlib.is_native_executable` does not parse symbols; a validator that reads
+  `nm`/`otool` must still require a native executable first, so a non-object
+  product cannot read as "clean".
 - A shell validator that runs `python3 -` without `-I` still puts its
   private cwd on `sys.path`.
 

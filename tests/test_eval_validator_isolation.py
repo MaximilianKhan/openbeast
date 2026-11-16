@@ -432,3 +432,197 @@ def test_prover_flags_dash_c_children_and_unscaled_limits():
     assert prove_task.isolation_problems("python", good) == []
     assert prove_task.isolation_problems("bash", "cd /tmp/eval_x && python3 -c 'print(1)'")
     assert prove_task.isolation_problems("bash", "python3 -I - <<'EOF'\nprint(1)\nEOF\n") == []
+
+
+# =============================================================================
+# v5 repair round 3: harness-wide confinement (brief §6.3, v5issues3/harness).
+# The round-2 verifiers passed families without solving them by (1) reaching
+# the network, (2) reading the validator's argv, (3) exec'ing python3 from a
+# compiled variant, and (4) capturing the toolchain with a planted config.
+# Each test below rebuilds one attack against the REAL vlib / run_eval.
+# =============================================================================
+
+import shutil
+
+CLANG = shutil.which("clang") or shutil.which("cc")
+GO = shutil.which("go")
+
+
+def _run(src_argv, **kw):
+    return vlib.run_solution(src_argv, **kw)
+
+
+# --- 1. network denied -----------------------------------------------------------
+
+@pytest.mark.skipif(not DARWIN, reason="network deny is enforced by sandbox-exec on macOS")
+def test_solution_cannot_reach_the_network():
+    src = ("import socket\n"
+           "try:\n"
+           "    socket.create_connection(('1.1.1.1', 80), 2); print('CONNECTED')\n"
+           "except Exception as e:\n"
+           "    print('BLOCKED', type(e).__name__)\n")
+    r = vlib.run_solution(vlib.python_cmd("/dev/stdin"), input=src, cpu_s=5)
+    assert "CONNECTED" not in r.stdout, r
+    assert not r.ok or "BLOCKED" in r.stdout, r
+
+
+# --- 2. cannot read the parent's argv/env ----------------------------------------
+
+@pytest.mark.skipif(not DARWIN, reason="process-info deny is enforced by sandbox-exec on macOS")
+def test_solution_cannot_read_parent_argv_via_run_solution():
+    src = ("import os, subprocess\n"
+           "r = subprocess.run(['ps', '-ww', '-o', 'command=', '-p', str(os.getppid())],\n"
+           "                   capture_output=True, text=True)\n"
+           "print('PS<' + r.stdout.strip() + '>')\n")
+    r = vlib.run_solution(vlib.python_cmd("/dev/stdin"), input=src, cpu_s=5)
+    # ps is denied process-info, so it returns nothing about the parent.
+    assert "PS<>" in r.stdout or "python" not in r.stdout.lower(), r
+
+
+# --- 3. a compiled variant cannot exec into python3 ------------------------------
+
+_EXEC_C = r'''
+#include <unistd.h>
+#include <stdio.h>
+int main(void) {
+    char *a[] = {"python3", "-c", "print('SOLVED-BY-PYTHON')", 0};
+    printf("BINARY-RAN\n"); fflush(stdout);
+    execvp("python3", a);
+    printf("EXEC-DENIED\n");
+    return 3;
+}
+'''
+
+
+@pytest.mark.skipif(not (DARWIN and CLANG), reason="needs clang on macOS for the exec sandbox")
+def test_compiled_solution_cannot_exec_python3(tmp_path):
+    src = tmp_path / "m.c"
+    src.write_text(_EXEC_C)
+    binp = tmp_path / "m"
+    subprocess.run([CLANG, "-O2", "-o", str(binp), str(src)], check=True)
+    assert vlib.is_native_executable(str(binp))
+    r = vlib.run_solution([str(binp)], cpu_s=5)
+    assert "BINARY-RAN" in r.stdout, r
+    assert "SOLVED-BY-PYTHON" not in r.stdout, r  # the interpreter never ran
+    assert not r.ok, r
+
+
+def test_confine_exec_default_leaves_the_harness_interpreter_open():
+    # A python solution still runs under the harness interpreter (which may
+    # re-exec itself into its framework): confine_exec defaults off for it.
+    r = vlib.run_solution(vlib.python_cmd("/dev/stdin"), input="print('PYOK')", cpu_s=5)
+    assert r.ok and "PYOK" in r.stdout, r
+
+
+# --- 4. planted toolchain config is ignored --------------------------------------
+
+def test_private_build_dir_has_no_planted_config_ancestor(tmp_path):
+    agent = tmp_path / "agent"
+    (agent / ".cargo").mkdir(parents=True)
+    (agent / ".cargo" / "config.toml").write_text("[build]\ntarget-dir='/evil'\n")
+    (agent / "rust-toolchain.toml").write_text("[toolchain]\npath='/evil/tc'\n")
+    # The agent plants in its own dir; the build dir is created elsewhere.
+    d = vlib.private_build_dir({"main.rs": "fn main() {}"}, base=str(tmp_path / "build"))
+    found = vlib.scan_toolchain_overrides(d, stop=str(tmp_path / "build"))
+    assert found == [], found
+    # And the planted files really are outside the build dir's ancestry.
+    assert str(agent) not in d
+
+
+def test_scan_toolchain_overrides_finds_a_planted_file(tmp_path):
+    d = vlib.private_build_dir({"main.rs": "fn main() {}"}, base=str(tmp_path))
+    (Path(d).parent / "rust-toolchain.toml").write_text("x")
+    found = vlib.scan_toolchain_overrides(d, stop=str(tmp_path))
+    assert any(p.endswith("rust-toolchain.toml") for p in found), found
+
+
+def test_build_env_disables_go_env_and_clears_goflags(monkeypatch):
+    monkeypatch.setenv("GOFLAGS", "-ldflags=-s")  # the 166 symbol-table strip
+    monkeypatch.setenv("HOME", "/should/be/replaced")
+    env = vlib.build_env()
+    assert env["GOENV"] == "off"
+    assert env["GOFLAGS"] == ""
+    assert env["GOTOOLCHAIN"] in ("local", os.environ.get("GOTOOLCHAIN", "local"))
+    assert env["HOME"] != "/should/be/replaced"
+    assert os.path.isdir(env["HOME"])
+
+
+@pytest.mark.skipif(not GO, reason="needs the go toolchain")
+def test_go_build_ignores_a_planted_goflags_in_a_private_home(tmp_path):
+    # With a $HOME/.../go/env carrying GOFLAGS=-ldflags=-s the symbol table
+    # would be stripped; build_env's GOENV=off and cleared GOFLAGS stop that.
+    d = vlib.private_build_dir({
+        "go.mod": "module m\n\ngo 1.21\n",
+        "main.go": 'package main\nimport "fmt"\nfunc main(){fmt.Println("hi")}\n',
+    }, base=str(tmp_path / "b"))
+    home = tmp_path / "home"
+    cfg = home / "Library" / "Application Support" / "go"
+    cfg.mkdir(parents=True)
+    (cfg / "env").write_text("GOFLAGS=-ldflags=-s\n")
+    env = vlib.build_env(home=str(home))
+    binp = os.path.join(d, "prog")
+    r = subprocess.run([vlib.tool_path("go"), "build", "-o", binp, "."],
+                       cwd=d, env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert vlib.is_native_executable(binp)
+    syms = subprocess.run(["nm", binp], capture_output=True, text=True)
+    # The symbol table survived: the planted strip was not honoured.
+    assert "no symbols" not in (syms.stdout + syms.stderr).lower(), syms.stdout[:200]
+
+
+# --- native-executable gate ------------------------------------------------------
+
+def test_is_native_executable_rejects_a_script(tmp_path):
+    s = tmp_path / "fake"
+    s.write_text("#!/usr/bin/env python3\nprint('i am a script')\n")
+    assert not vlib.is_native_executable(str(s))
+    with pytest.raises(AssertionError):
+        vlib.assert_native_executable(str(s))
+
+
+@pytest.mark.skipif(not CLANG, reason="needs a C compiler")
+def test_is_native_executable_accepts_a_real_binary(tmp_path):
+    src = tmp_path / "m.c"
+    src.write_text("int main(void){return 0;}")
+    binp = tmp_path / "m"
+    subprocess.run([CLANG, "-o", str(binp), str(src)], check=True)
+    assert vlib.is_native_executable(str(binp))
+
+
+# --- 5. the oracle seal is structural, not just textual --------------------------
+
+def _seal_tools():
+    sys.path.insert(0, str(ROOT / "agents"))
+    return importlib.import_module("tools")
+
+
+def test_seal_refuses_quote_split_and_git_blob_bypasses(monkeypatch):
+    tools = _seal_tools()
+    monkeypatch.setenv("OPENBEAST_EVAL", "1")
+    monkeypatch.setenv("OPENBEAST_EVAL_SEALED_DIRS",
+                       os.pathsep.join(str(ROOT / "evals" / d) for d in ("tasks", "refs", "suites")))
+    for cmd in ['cat evals/ta""sks/x.json',
+                'grep seed evals/re""fs/y.py',
+                'git show HEAD:evals/refs/z.py',
+                'git grep gen_cases HEAD -- evals/tasks']:
+        out = tools.bash(cmd)
+        assert "refusing to run" in out, (cmd, out[:120])
+
+
+@pytest.mark.skipif(not DARWIN, reason="read-deny is enforced by sandbox-exec on macOS")
+def test_seal_blocks_a_relative_read_the_text_check_misses(tmp_path, monkeypatch):
+    tools = _seal_tools()
+    sealed = ROOT / "evals" / "tasks"
+    sealed.mkdir(parents=True, exist_ok=True)
+    probe = sealed / "zz_seal_probe.json"
+    probe.write_text("ORACLE-SEED-0xDEADBEEF")
+    try:
+        monkeypatch.setenv("OPENBEAST_EVAL", "1")
+        monkeypatch.setenv("OPENBEAST_EVAL_SEALED_DIRS",
+                           os.pathsep.join(str(ROOT / "evals" / d) for d in ("tasks", "refs", "suites")))
+        monkeypatch.setattr(tools, "_base_dir", lambda: str(ROOT))
+        out = tools.bash("cd evals && cat tasks/zz_seal_probe.json 2>&1")
+        assert "0xDEADBEEF" not in out, out
+        assert "not permitted" in out.lower() or "refusing" in out.lower(), out
+    finally:
+        probe.unlink(missing_ok=True)
