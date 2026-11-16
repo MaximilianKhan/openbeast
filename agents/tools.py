@@ -1414,7 +1414,9 @@ _DIAG_ERROR_RES = {
     "c": re.compile(r"^\S+:\d+:\d+:\s+(?:fatal )?error:", re.M),
     "c++": re.compile(r"^\S+:\d+:\d+:\s+(?:fatal )?error:", re.M),
     "rust": re.compile(r"^error(?:\[E\d+\])?:(?! aborting due to)", re.M),
-    "go": re.compile(r"^\S+:\d+:\d+: ", re.M),
+    # `go vet` prefixes its findings with "vet: " (18 rc=1 rows counted 0
+    # errors in the 2026-11-16 L2 run, G17).
+    "go": re.compile(r"^(?:vet: )?\S+:\d+:\d+: ", re.M),
     "python": re.compile(r"^\w*Error:", re.M),
     "shell": re.compile(r"\(error\):", re.M),
 }

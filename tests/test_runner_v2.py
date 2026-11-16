@@ -468,3 +468,10 @@ def test_run_eval_passes_the_thinking_switch_to_the_runner(monkeypatch):
     monkeypatch.setenv("OPENBEAST_AGENT_THINKING", "on")
     re_mod.run_agent({"task": "write a haiku", "max_iter": 1}, "http://127.0.0.1:8080/v1")
     assert captured["env"]["OPENBEAST_AGENT_THINKING"] == "on"
+
+
+def test_go_vet_prefixed_findings_count_as_errors():
+    # `go vet` prints "vet: ./x.go:3:5: ..."; the old regex counted 0 errors.
+    rx = tools._DIAG_ERROR_RES["go"]
+    assert rx.search("vet: ./biquad.go:12:7: cannot use 1 << 30 (overflows)")
+    assert rx.search("./biquad.go:12:7: undefined: foo")
