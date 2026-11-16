@@ -422,7 +422,10 @@ def test_shellcheck_covers_every_tracked_shell_script():
     if tracked.returncode != 0 or not tracked.stdout.strip():
         pytest.skip("not a git checkout")
     # scratch/ and research/ hold one-off campaign scripts, never shipped.
-    want = {p for p in tracked.stdout.split() if not p.startswith(("scratch/", "research/", "docs/"))}
+    # evals/refs/<task>/ holds eval fixtures (179's solutions and wrong
+    # solutions are shell scripts, defective on purpose); ruff.toml skips them too.
+    want = {p for p in tracked.stdout.split()
+            if not p.startswith(("scratch/", "research/", "docs/", "evals/refs/"))}
     assert sorted(want - covered) == [], "shell scripts ShellCheck never reads"
 
 
