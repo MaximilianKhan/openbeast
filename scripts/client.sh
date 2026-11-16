@@ -61,7 +61,7 @@ _find_ts() {
   return 1
 }
 TS_BIN="$(_find_ts || true)"
-# Prefer the venv interpreter — it is guaranteed >=3.10 because
+# Prefer the venv interpreter — it is guaranteed >=3.11 because
 # setup-client.sh built it with a vetted one.
 if [ -x "$VENV/bin/python3" ]; then PY_BIN="$VENV/bin/python3"
 else PY_BIN="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || echo python3)"; fi

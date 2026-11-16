@@ -89,7 +89,7 @@ def _home(tmp_path, rig_url, slot_url, default="openbeast-rig/stub-static"):
     (home / ".config" / "opencode").mkdir(parents=True)
     venv = home / ".openbeast-client" / "venv" / "bin"
     venv.mkdir(parents=True)
-    os.symlink(sys.executable, venv / "python3")      # >=3.10, as setup-client vets
+    os.symlink(sys.executable, venv / "python3")      # >=3.11, as setup-client vets
     (home / ".openbeast-client.env").write_text(
         f"OPENBEAST_AGENT_INFERENCE_URL='{rig_url}/v1'\nOPENBEAST_SLOT_URL='{slot_url}'\n")
     oc = home / ".config" / "opencode" / "opencode.json"
