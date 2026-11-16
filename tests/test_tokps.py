@@ -22,8 +22,9 @@ SPEC.loader.exec_module(tokps)
 class _Stub:
     """mode: 'llama' (timings in the final chunk) or 'openai' (no timings)."""
 
-    def __init__(self, mode, tps=40.0, key=""):
+    def __init__(self, mode, tps=40.0, key="", prompt_ns=None):
         self.mode, self.tps, self.key, self.bodies, self.auth = mode, tps, key, [], []
+        self.prompt_ns = list(prompt_ns or [])   # timings.prompt_n per request (default 30)
         stub = self
 
         class H(BaseHTTPRequestHandler):
@@ -63,8 +64,10 @@ class _Stub:
                     time.sleep(1.0 / stub.tps)
                 last = {"choices": [], "usage": {"completion_tokens": ntok, "prompt_tokens": 30}}
                 if stub.mode == "llama":
-                    last["timings"] = {"predicted_per_second": stub.tps, "prompt_per_second": 812.5,
-                                       "predicted_n": ntok, "prompt_n": 30}
+                    pn = stub.prompt_ns.pop(0) if stub.prompt_ns else 30
+                    last["timings"] = {"predicted_per_second": stub.tps,
+                                       "prompt_per_second": 812.5 if pn > 1 else 9999.0,
+                                       "predicted_n": ntok, "prompt_n": pn}
                 self.wfile.write(f"data: {json.dumps(last)}\n\ndata: [DONE]\n\n".encode())
 
         self.srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
@@ -164,3 +167,74 @@ def test_gate_rejects_a_file_that_is_not_a_record(tmp_path):
     with pytest.raises(SystemExit) as e:
         tokps.main(["gate", "--engine", "maya", "--candidate", str(bad), "--baseline", str(bad)])
     assert e.value.code == 2
+
+
+def test_no_counted_run_replays_another(stub):
+    """Every request disables the prompt cache, and each run's prompt differs
+    from the others within its first tokens (a header first, then question i
+    of a fixed rotation): no prefix reuse, no replayed expert trace."""
+    s = stub("llama", tps=40.0)
+    assert tokps.main(["measure", "--url", s.url, "--runs", "3", "--prompt", "long"]) == 0
+    prompts = [b["messages"][0]["content"] for b in s.bodies]
+    assert all(b["cache_prompt"] is False for b in s.bodies)
+    assert len(set(prompts)) == 4
+    assert len({p[:20] for p in prompts}) == 4                      # they differ up front
+    for i, p in enumerate(prompts):
+        assert p.endswith(tokps.QUESTIONS[i % len(tokps.QUESTIONS)])
+        assert p == tokps.prompt_for("long", i)                     # reproducible
+        assert len(p) > 40000                                       # ~8K tokens of context
+
+
+def test_a_cache_hit_is_not_a_prefill(stub, tmp_path):
+    # Run 2 re-evaluated 1 token (a prompt-cache hit): its "prefill" is dropped.
+    s = stub("llama", tps=40.0, prompt_ns=[30, 30, 1, 30])
+    rec = tmp_path / "r.json"
+    assert tokps.main(["measure", "--url", s.url, "--runs", "3", "--record", str(rec)]) == 0
+    d = json.loads(rec.read_text())
+    assert d["prefill_tps_median"] == 812.5
+    assert d["runs"][2].get("prefill_cached") is True and d["decode_tps_median"] == 40.0
+
+
+def test_gate_compares_like_with_like(tmp_path):
+    # Baseline by server timings, candidate by stream: both stream rates count.
+    base = _rec(tmp_path, "llama", 20.0, decode_source="server-timings", stream_tps_median=19.0,
+                completion_tokens_median=256)
+    cand = _rec(tmp_path, "m", 31.0, decode_source="stream", stream_tps_median=27.0,
+                completion_tokens_median=256)
+    out = tmp_path / "v.json"
+    assert tokps.main(["gate", "--engine", "maya", "--candidate", cand, "--baseline", base,
+                       "--out", str(out)]) == 1                       # 27/19 = 1.42x, not 31/20
+    v = json.loads(out.read_text())
+    assert v["compared_by"] == "stream" and v["ratio"] == 1.421
+    # No stream rate on one side: refused, never a cross-method ratio.
+    cand2 = _rec(tmp_path, "m2", 31.0, decode_source="stream", completion_tokens_median=256)
+    base2 = _rec(tmp_path, "b2", 20.0, decode_source="server-timings", completion_tokens_median=256)
+    assert tokps.main(["gate", "--engine", "maya", "--candidate", cand2, "--baseline", base2]) == 1
+
+
+def test_gate_refuses_a_short_reply_and_an_inflated_self_report(tmp_path):
+    base = _rec(tmp_path, "llama", 20.0, decode_source="server-timings", stream_tps_median=19.5,
+                completion_tokens_median=256)
+    early = _rec(tmp_path, "early", 31.0, decode_source="server-timings", stream_tps_median=30.0,
+                 completion_tokens_median=12)
+    out = tmp_path / "v.json"
+    assert tokps.main(["gate", "--engine", "maya", "--candidate", early, "--baseline", base,
+                       "--out", str(out)]) == 1
+    assert any("completion lengths differ" in p for p in json.loads(out.read_text())["problems"])
+    brag = _rec(tmp_path, "brag", 40.0, decode_source="server-timings", stream_tps_median=25.0,
+                completion_tokens_median=256)
+    assert tokps.main(["gate", "--engine", "maya", "--candidate", brag, "--baseline", base,
+                       "--out", str(out)]) == 1
+    assert any("self-reported" in p for p in json.loads(out.read_text())["problems"])
+    honest = _rec(tmp_path, "honest", 31.0, decode_source="server-timings", stream_tps_median=30.0,
+                  completion_tokens_median=250)
+    assert tokps.main(["gate", "--engine", "maya", "--candidate", honest, "--baseline", base]) == 0
+
+
+def test_gate_records_the_binding(tmp_path):
+    base = _rec(tmp_path, "llama", 20.0)
+    out = tmp_path / "v.json"
+    assert tokps.main(["gate", "--engine", "maya", "--candidate", _rec(tmp_path, "m", 31.0),
+                       "--baseline", base, "--bind", "commit=abc", "--bind", "profile=p",
+                       "--out", str(out)]) == 0
+    assert json.loads(out.read_text())["bound"] == {"commit": "abc", "profile": "p"}

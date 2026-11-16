@@ -641,11 +641,26 @@ The same rule binds the Maya profile: it serves exactly these GGUF files.
 whether a candidate engine is admitted.
 
 - **What it measures.** One streamed chat completion per run (`tokps.py`):
-  fixed prompt, temperature 0, seed 42, 256 tokens, one warm-up run, then the
-  median of 3.
+  temperature 0, seed 42, 256 tokens, one warm-up run, then the median of 3.
+  - **No run replays another.** Run *i* opens with its own header line and
+    asks question *i* of a fixed rotation (`tokps.QUESTIONS`), with
+    `"cache_prompt": false`. An identical request let llama-server's prompt
+    cache (and Maya's conversation cache) re-evaluate about one token, so the
+    "prefill" of the counted runs was cache reuse, and greedy decoding
+    replayed the warm-up's exact expert trace into the MoE cache, which
+    flattered every cache policy by a different amount. The rotation is
+    fixed, so two engines and two days still see the same work. Each run
+    prints its prompt tokens; a run whose prompt tokens show a cache hit
+    anyway keeps its decode rate but not its prefill.
   - Decode tok/s is llama-server's own `timings.predicted_per_second` when
-    the server reports it; otherwise the token spacing of the stream. TTFT
-    is excluded either way.
+    the server reports it; otherwise the token spacing of the stream. The
+    stream rate is recorded either way. TTFT is excluded either way.
+  - **Like with like.** The gate compares server timings only when both
+    records have them; otherwise both stream rates (`compared_by` in the
+    verdict). It refuses a pair whose completion lengths differ by more than
+    10% (a reply that stops early decodes on a shorter KV), and a candidate
+    whose self-reported rate is more than 25% above what the client's clock
+    saw.
   - Two records from different hosts, or with different prompts, are never
     compared.
 - **The bar is 1.5×.** `ENGINE_GATE_RATIO` in `openbeast.conf` (or
