@@ -419,9 +419,10 @@ def test_solution_group_dies_when_the_validator_is_killed(tmp_path, monkeypatch)
     assert not ok and run_eval.validator_timed_out(output), output
     pid = int(pidfile.read_text())
     for _ in range(60):
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+        # _alive, not os.kill(pid, 0): once an earlier in-process run_solution
+        # made this test process a child subreaper (Linux), the killed
+        # solution is OUR unreaped zombie, and signal 0 still succeeds on it.
+        if not _alive(pid):
             break
         time.sleep(0.05)
     else:
@@ -998,7 +999,9 @@ def test_daemons_are_swept_on_the_timeout_path_too(monkeypatch, tmp_path):
                                "http://127.0.0.1:9", wall_s=4)
         pid = _wait_pidfile(pidf)
         assert r["stdout"] == "(timed out)", r
-        assert not r.get("leftover_survivors") and r["leftovers_killed"] >= 1, r
+        # On Linux the runner is a subreaper, so the timeout's tree kill may
+        # already have taken the daemon; either way nothing may survive.
+        assert not r.get("leftover_survivors"), r
         time.sleep(0.2)
         assert not _alive(pid)
     finally:
