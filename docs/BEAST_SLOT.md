@@ -100,10 +100,10 @@ an `--unpublish-*` twin that reads no config, keyed by the published port):
 
 | Tailnet port | Maps to | Flag | Who may reach it |
 |---|---|---|---|
-| `:443` | Open WebUI `:3000` | (always, with `setup-tailscale.sh`) | any tailnet device; WebUI login on top |
+| `:443` | Open WebUI `:3000` | `setup-tailscale.sh`, but only when the RUNNING WebUI enforces login (and its default admin was rotated), or with `--i-accept-open-webui` (`ALLOW_OPEN_WEBUI=true`); otherwise the script takes `:443` down | any tailnet device; WebUI login on top |
 | `:8443` | beast-gate `:8090` when `EDGE_GATE=true`; else the engine at `INFERENCE_URL` (llama-server `:8080` by default; TensorFold / vLLM `:8000`) behind `LLAMA_API_KEY`; else nothing, unless `--i-accept-open-inference`. An `INFERENCE_URL` on another machine is published only through the gate | (with `setup-tailscale.sh`, when one of those three holds) | an enrolled device key behind the gate; or whoever holds the shared key; or, acknowledged open, any tailnet device |
 | `:8444/api/slot` | dashboard `:3002`, that one path only | `--publish-slot` | any tailnet device (read-only JSON) |
-| `:8445` | beast-chat `:3003` (`CHAT_PORT`) | `--publish-chat` | reads: a tailnet login on `CHAT_OPERATORS`; writes: a device key with the `chat` scope |
+| `:8445` | beast-chat `:3003` (`CHAT_PORT`), or `unix:$CHAT_SOCKET` when `CHAT_LOGIN_FROM=unix` | `--publish-chat` | reads: a tailnet login on `CHAT_OPERATORS`; writes: a device key with the `chat` scope |
 | `:8446` | beast-artifact `:3004` (`ARTIFACT_PORT`) | `--publish-artifact` | reads: a tailnet login on `ARTIFACT_OPERATORS` (falls back to `CHAT_OPERATORS`); publishing never leaves loopback; lifecycle writes (pin, tags, visibility, rollback, delete) also accept a device key with the `artifact` scope |
 | `:8447` | ntfy extension `:3005` (`NTFY_PORT`) | `--publish-ntfy` | whatever `NTFY_DEFAULT_ACCESS` says: open to the tailnet by default |
 | `:8889` | SearXNG `:8888` | `--publish-searxng` | any tailnet device, unauthenticated |
@@ -365,7 +365,11 @@ Three more things that surprise owners:
   *absent* from `openbeast.conf`. An explicit `WEBUI_AUTH=false` blocks `:443`
   unless you pass `--i-accept-open-webui`, which is persisted as
   `ALLOW_OPEN_WEBUI=true`; with that line present you are publishing an
-  unauthenticated admin panel. Check with
+  unauthenticated admin panel. One exception, on the safe side: while a
+  `:443` mount from an earlier run is still live, `lib/conf.sh` keeps login
+  **on** whatever the file says (and warns), so a re-run takes the login-on
+  path and re-publishes `:443` with login enforced. The script then prints
+  the conf value and the effective one separately. Check with
   `grep -E 'WEBUI_AUTH|ALLOW_OPEN_WEBUI' openbeast.conf` before inviting anyone.
 - **`--publish-searxng` is unauthenticated and unmetered, and beast-gate does
   not front it.** Every search a guest runs exits from *your* IP and is

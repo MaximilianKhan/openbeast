@@ -464,7 +464,19 @@ if ! grep -qE '^[[:space:]]*WEBUI_AUTH[[:space:]]*=' "$CONF"; then
   WEBUI_AUTH=true
   echo "      Enabled WebUI login (WEBUI_AUTH=true in openbeast.conf)."
 else
-  echo "      WEBUI_AUTH already set — resolves to: ${WEBUI_AUTH:-false}"
+  # Conf and effective value separately: lib/conf.sh forces login ON while a
+  # :443 mount is live (or BIND_HOST is not loopback), so "WEBUI_AUTH=false"
+  # in the file can resolve to true here — saying only "true" hid that.
+  _conf_auth="$(_ob_conf_value WEBUI_AUTH || true)"
+  if [[ "${_conf_auth:-}" != "${WEBUI_AUTH:-false}" ]]; then
+    echo "      WEBUI_AUTH already set — openbeast.conf says ${_conf_auth:-<empty>}, effective: ${WEBUI_AUTH:-false}"
+    echo "      (an OPENBEAST_WEBUI_AUTH override, or login kept on because :443 is still"
+    echo "       published or BIND_HOST is a network address — ALLOW_OPEN_WEBUI=true is the"
+    echo "       only way to run it open there)"
+  else
+    echo "      WEBUI_AUTH already set — resolves to: ${WEBUI_AUTH:-false}"
+  fi
+  unset _conf_auth
 fi
 
 # What the RUNNING WebUI enforces (public /api/config → features.auth):
