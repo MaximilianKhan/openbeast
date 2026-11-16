@@ -696,9 +696,17 @@ def test_safe_extract_refuses_every_escape(tmp_path, monkeypatch, case, data_fil
     dest.mkdir(parents=True)
     (work / "outside.txt").write_text("outside")
     src = _tar(tmp_path / "a.tar", ESCAPES[case])
-    with pytest.raises(F.FetchError):
+    try:
         with tarfile.open(src, "r|") as t:
             F._safe_extract(t, str(dest))
+        refused = False
+    except F.FetchError:
+        refused = True
+    # ark's own checks must refuse every case. With the data filter on top, a
+    # patched tarfile (3.12.11+, CVE-2025-4517) may instead REWRITE a chained
+    # link so it stays inside (a -> "b/.." lands as a -> "."): not refused,
+    # but just as contained, which is what the asserts below hold.
+    assert refused or (data_filter and case in ("late-chain", "dangling-out")), case
     assert not (work / "evil").exists() and not Path("/tmp/ark-evil-absolute").exists()
     assert sorted(p.name for p in work.iterdir()) == ["dest", "outside.txt"]
     for p in dest.rglob("*"):                      # no link left pointing out of the target
