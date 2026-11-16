@@ -131,6 +131,23 @@ def test_georgia_alone_is_resolved_by_the_caller_or_asked():
     assert any(o["country_code"] == "GE" for o in others)   # the other one is listed
 
 
+def test_georgia_qualified_as_the_us_is_the_state_not_a_hamlet():
+    # Review 2026-11-16: with a qualifier the state stand-in was dropped, so
+    # "Georgia, USA" became Georgia, Alabama (pop. unknown) — even for a
+    # caller in Atlanta — and "Georgia, GA" matched nothing.
+    atlanta = (33.75, -84.39)
+    for text in ("Georgia, US", "Georgia, USA", "Georgia, United States",
+                 "Georgia, America", "Georgia, GA", "Georgia, Georgia"):
+        for near in (None, atlanta, DANVILLE_CA, TBILISI_CALLER):
+            place, _ = weather.resolve(text, near, real_geo)
+            assert place and place["feature_code"] == "ADM1", (text, near, place)
+            assert place["admin1"] == "Georgia" and place["country_code"] == "US"
+    # The other qualifiers still pick what they name.
+    assert weather.resolve("Georgia, GE", None, real_geo)[0]["country_code"] == "GE"
+    assert weather.resolve("Georgia, AL", None, real_geo)[0]["admin1"] == "Alabama"
+    assert weather.resolve("Georgia, Indiana", atlanta, real_geo)[0]["admin1"] == "Indiana"
+
+
 def test_ca_is_california_not_canada():
     for near in (None, MONTREAL):          # even a caller in Montreal: "CA" is the state
         place, _ = weather.resolve("Danville, CA", near, geo)

@@ -201,7 +201,9 @@ that.
     Virginia); a spelled-out country matches the geocoder's country name
     (`Tokyo, Japan`, `Sao Paulo, Brazil`);
   - `Georgia` alone is the state or the country by the caller's position,
-    and with no position the tool lists both and asks.
+    and with no position the tool lists both and asks; `Georgia, US` (or
+    `USA`, `GA`, `United States`) is the state, never one of the hamlets
+    named Georgia, `Georgia, GE` the country, `Georgia, AL` the town.
 - **Where the caller is:** a bare town name picks the one **nearest the
   caller**, and no location means the weather where the caller is now. The
   position is the device geolocation Open WebUI keeps when the user turns on

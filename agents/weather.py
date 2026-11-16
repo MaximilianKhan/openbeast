@@ -18,7 +18,8 @@ deliberately and the answer always names the exact place it describes:
   the reply lists the runners-up so a wrong pick shows. Parks, airports and
   hills lose to any real town of that name.
 - "Georgia" alone is the state or the country by the caller's position;
-  with no position the tool lists both and asks.
+  with no position the tool lists both and asks. "Georgia, US" / "Georgia,
+  GA" is the state, "Georgia, GE" the country, "Georgia, AL" the town.
 - No location named: the caller's own position. There is no fixed home
   (Max travels): with no caller position, the tool asks for a place.
 
@@ -185,6 +186,14 @@ def resolve(text: str, near: tuple[float, float] | None = None, geo=None) -> tup
              and c.get("feature_code") not in _GONE]
     cands = towns or cands
     cands = [c for c in cands if fold(c.get("name") or "") == fold(name)] or cands
+    clash = STATE_COUNTRY_CLASH.get(fold(name))
+    if clash and quals:
+        # The geocoder never returns the state itself, so "Georgia, US" /
+        # "Georgia, GA" used to filter down to the hamlets named Georgia
+        # (Alabama, Kansas, …) and confidently report one of them. With a
+        # qualifier the stand-in simply competes like any candidate: the
+        # qualifier keeps or drops it, and its size wins the ranking.
+        cands = [dict(clash)] + cands
     for q in quals:
         for keep in _readings(q):
             hit = [c for c in cands if keep(c)]
@@ -193,8 +202,7 @@ def resolve(text: str, near: tuple[float, float] | None = None, geo=None) -> tup
                 break
         else:
             return None, []
-    clash = None if quals else STATE_COUNTRY_CLASH.get(fold(name))
-    if clash and any(_is_country(c) for c in cands):
+    if clash and not quals and any(_is_country(c) for c in cands):
         if not near:
             return None, [dict(clash), next(c for c in cands if _is_country(c))]
         cands = [dict(clash)] + cands
