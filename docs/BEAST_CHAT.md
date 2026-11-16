@@ -357,6 +357,23 @@ connect) plus
 `unix:/path/to/.run/chat.sock`. TCP loopback then needs the locality token or
 a device key like any other caller. The default stays `loopback`.
 
+Both are `openbeast.conf` keys, and `setup-tailscale.sh` follows them:
+
+```bash
+# openbeast.conf
+CHAT_LOGIN_FROM=unix
+#CHAT_SOCKET=...        # optional; default <repo>/.run/chat.sock
+
+./stop.sh && ./start.sh                 # chat_server now also listens on the socket
+./scripts/setup-tailscale.sh --publish-chat   # :8445 → unix:<repo>/.run/chat.sock
+tailscale serve status                  # expect: |-- / proxy unix:/…/.run/chat.sock
+./scripts/doctor.sh                     # the host-network-container warning is gone
+```
+
+Rolling back is the same in reverse: drop the key (or set `loopback`),
+restart, re-run `--publish-chat`. The spark-hydra command center runs this
+way (docs/SPARK_HYDRA.md).
+
 **Every write failure is the same 404.** No key, an unknown key, a revoked
 key, a key without the `chat` scope: one answer, and it is the answer an
 unlisted login already gets. The earlier split — `401 "device key required"`
