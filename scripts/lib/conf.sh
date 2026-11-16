@@ -1094,6 +1094,14 @@ _ob_ts() {
 # auth-off WebUI behind the mount it then restored. That answer is cached
 # (and believed) only once a second probe, OB_WEBUI_443_RECHECK_S (2) later,
 # agrees; any other second answer keeps login on.
+# A read-only source (doctor, engine.sh, start.sh --status, a report-only
+# healthcheck) UPDATES an existing cache too: it is run-dir state, not
+# openbeast.conf, and only a writable source could clear a stale "0" before —
+# so after an unmount every read-only command paid the 2 s recheck, on every
+# source, until a start happened to run (2026-11-16 review). It still never
+# creates the file. (No per-process "already rechecked" shortcut: a marker
+# inherited across a tailscaled restart would believe the boot-race "no"
+# this recheck exists for.)
 _ob_webui_on_443() {
   local rc cache="$ISLAND_STATE_DIR/webui-on-443"
   _ob_webui_443_probe && rc=0 || rc=$?
@@ -1104,6 +1112,8 @@ _ob_webui_on_443() {
   if (( rc == 0 || rc == 1 )); then
     if [[ "${OB_CONF_READONLY:-}" != "1" ]]; then
       { mkdir -p "$ISLAND_STATE_DIR" && echo "$rc" > "$cache"; } 2>/dev/null || true
+    elif [[ -f "$cache" ]]; then
+      { echo "$rc" > "$cache"; } 2>/dev/null || true
     fi
     return "$rc"
   fi

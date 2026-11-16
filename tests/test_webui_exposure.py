@@ -279,6 +279,31 @@ def test_one_no_mount_answer_after_a_mount_is_rechecked(conf, tmp_path):
     assert conf("WEBUI_AUTH=false\n").auth == "false"
 
 
+def test_a_readonly_source_clears_a_stale_mounted_cache(conf, tmp_path):
+    """After :443 is unmounted, read-only sources (doctor, engine.sh,
+    start.sh --status) could not clear the cached "mounted", so every one
+    of them slept the 2 s recheck on every source until a start ran."""
+    conf("WEBUI_AUTH=false\n", TS_SERVE=_serve("http://127.0.0.1:3000"),
+         OB_CONF_READONLY="")
+    cache = tmp_path / "run" / "webui-on-443"
+    assert cache.read_text().strip() == "0"
+    empty = json.dumps({})
+    seq = tmp_path / "serve-seq"
+    seq.write_text(f"{empty}\n{empty}\n")          # confirmed: unmounted
+    r = conf("WEBUI_AUTH=false\n", TS_SERVE_SEQ=str(seq))   # read-only source
+    assert r.auth == "false", r.stderr
+    assert cache.read_text().strip() == "1"
+    # the next read-only source believes one "no" at once (no recheck)
+    seq.write_text(f"{empty}\n")
+    assert conf("WEBUI_AUTH=false\n", TS_SERVE_SEQ=str(seq)).auth == "false"
+    assert seq.read_text() == "", "a second probe ran: the recheck was not skipped"
+
+
+def test_a_readonly_source_still_creates_no_mount_cache(conf, tmp_path):
+    conf("WEBUI_AUTH=false\n", TS_SERVE=_serve("http://127.0.0.1:3000"))
+    assert not (tmp_path / "run" / "webui-on-443").exists()
+
+
 @pytest.mark.parametrize("serve", [_serve("http://127.0.0.1:3004"),
                                    _serve("http://127.0.0.1:3000", port=8446), "", "not json"])
 def test_other_mounts_do_not_force_login(conf, serve):
