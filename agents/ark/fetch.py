@@ -377,7 +377,10 @@ def _safe_extract(t: tarfile.TarFile, dest: str) -> None:
                 raise FetchError(f"archive link {m.name!r} -> {m.linkname!r} escapes the target — refused")
         if m.isdev():
             raise FetchError(f"archive member {m.name!r} is a device node — refused")
-    t.extractall(dest)  # noqa: S202 — every member checked above
+    if hasattr(tarfile, "data_filter"):         # 3.12+ (and 3.9.17+ backports): belt and braces
+        t.extractall(dest, filter="data")
+    else:
+        t.extractall(dest)  # noqa: S202 — every member checked above
 
 
 def fetch_gomod(drive: S.Drive, a: C.Artifact, lock: dict) -> dict:
