@@ -262,6 +262,25 @@ created, and have the prover check every ancestor cwd afterwards
 9. **Keep secrets in memory.** Files you write are readable by the same uid
    wherever they live. Write only inputs to disk. Expected outputs stay in
    your process.
+9. **Confine the solution when it could reach the oracle.** The seal only
+   denies `evals/{tasks,refs,suites}` on macOS. The repo's `.git` object
+   store, other worktrees and clones, home and site-packages stay readable,
+   and on Linux nothing is sealed at all. A lint does not close this:
+   Python introspection always has one more route (190's verifier used
+   `functools.update_wrapper` onto a user `__setattr__` with runtime-built
+   dunder names to get the real builtins). Pass a read allowlist instead:
+   `vlib.run_solution(cmd, ..., confine=[work], read_only=vlib.python_runtime(sys.executable, mods))`.
+   The solution then reads only the stdlib (no site-packages), the
+   libraries it maps and `work`. It writes only `work` and has no network.
+   macOS uses sandbox-exec; Linux uses landlock, or on kernels before 5.13 a
+   user + mount namespace. When neither can be set up the verdict is
+   `"sandbox"`; report it and fail, never rerun unconfined. For a compiled
+   solution, add its binary and the libraries it loads to `read_only`.
+10. **Draw the generator's seed per run** (`secrets.randbits(64)`) and keep it
+   in memory. Then a copy of your oracle (from git history, a fork or the
+   model's training data) cannot rebuild the hidden cases. Keep the count of
+   cases fixed so failure messages stay stable. Before you rely on it,
+   check the reference across many seeds.
 
 ## Difficulty tiers (with concrete examples)
 

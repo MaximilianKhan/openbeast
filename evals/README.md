@@ -269,9 +269,10 @@ harness rather than through the tasks:
 | scale | Fixed solution limits (4-10 s) ignored `--scale`, so references timed out under load and wrong solutions failed for the wrong class | `OPENBEAST_TIMEOUT_SCALE` is exported, and `vlib.t(s)` multiplies by it |
 | hidden CPU | 122: double-forked, never-waited workers kept their CPU out of `RUSAGE_CHILDREN` (29 s of naive gemm was charged as 0.03 s) | `vlib.run_solution` counts the whole tree. Leftovers are refused as `daemon` |
 | lingering solutions | a validator killed on timeout left its solution's group running into the next unit | vlib records each group it starts, and the harness SIGKILLs them after the validator exits |
+| unsealed oracle copies | 190: the seal covered `evals/{tasks,refs,suites}` but not `.git`, other worktrees or clones, so a lint-escaped solution unpacked the task JSON from a git object and replayed the oracle. On Linux nothing was sealed | `run_solution(confine=..., read_only=...)`: a read allowlist (sandbox-exec / landlock / mount namespace) that fails closed, plus a per-run generator seed held only in validator memory |
 | exec into an interpreter | 166 / U4: a compiled variant replaced its image with `execvp("python3", solver)` or `zig run <ref>`, running an unlinted interpreter; exec makes no child, so the fork rules missed it | `run_solution` confines a compiled unit's exec to its own binary (macOS `sandbox-exec`; Linux refuses when `/proc/<pid>/exe` changes). Verdict `exec` |
 | network | a solution (or the agent via `fetch`) could reach `github.com` to pull the pushed reference, or phone home | `run_solution` denies `network*`; the agent's web tools are off under `OPENBEAST_EVAL` (or recorded) |
-| read the validator argv | a confined solution could still `ps`/`/proc` the validator's argv/env (190) | `run_solution` denies `process-info*` on other processes (self allowed, for a framework Python's re-exec) |
+| read the validator argv | a confined solution could still `ps`/`/proc` the validator's argv/env (190) | `run_solution` refuses fork (no `ps`) and denies `process-info*` on other processes (self allowed, for a framework Python's re-exec). On macOS that does **not** cover argv/env: sysctl `kern.procargs2` stays readable for a same-uid process under every sandbox-exec rule tried, so the invariant is that no validator holds a secret in argv or env (run_eval feeds it on stdin, env scrubbed, seed in memory); `tests/test_eval_190_confinement.py` probes every ancestor for oracle text |
 | read the reference across checkouts | U4: a solution globbed `/Users/*/.../worktrees/*/evals/refs/<unit>/*.py` and exec'd it | `run_solution` denies reads of any `evals/{refs,tasks,suites}` tree, in every checkout, not only this run's sealed paths |
 | toolchain capture | 166 / 169: a planted `rust-toolchain.toml`, a `$HOME/.../go/env` with `GOFLAGS=-ldflags=-s`, or a `.cargo/config.toml` in an ancestor replaced the compiler or stripped the symbol table the validator reads | build a private copy of only the source with `vlib.private_build_dir`, under `vlib.build_env` (`GOENV=off`, `GOFLAGS` cleared, `GOTOOLCHAIN=local`, private `HOME`), and require `vlib.is_native_executable` of the product; `vlib.scan_toolchain_overrides` flags a planted ancestor config |
 | compile-time build detection | 170: a solution read `@import("builtin").link_libcpp`, true only under `-fsanitize=thread`, and ran a different algorithm in the plain build | ban the distinguishing builtin fields, and validate behaviour in the PLAIN build too; `vlib.sanitizer_flags` builds the SAME source both ways |
@@ -293,6 +294,15 @@ into the validator from source; it is never on an import path or in the cwd.
   confined to its own binary (`confine_exec`, auto for a non-interpreter
   `cmd[0]` with `allow_fork=False`), so it cannot exec into python3; the same
   is caught on Linux by a `/proc/<pid>/exe` change (`verdict="exec"`).
+- **Confinement**: `confine=[work], read_only=vlib.python_runtime(exe, modules)` replaces
+  the deny-list with an allowlist on both platforms. The solution may read
+  only its interpreter's stdlib (never site-packages), the libraries it
+  maps and `work`. It writes only `work` and gets no network and no
+  process-info on other processes. macOS uses a
+  deny-by-default sandbox-exec profile; Linux uses landlock, or a user +
+  mount namespace with a fresh root on kernels before 5.13. Without either
+  it returns `verdict="sandbox"` and does not run the solution. 190 needs it:
+  its verifier read the oracle out of the unsealed `.git` object store.
 - **Builds**: `vlib.private_build_dir({relpath: src})` returns a fresh 0700
   dir holding only the source, with no toolchain-config ancestor; build there
   under `vlib.build_env()` (clean private `HOME`, `GOENV=off`, `GOFLAGS`

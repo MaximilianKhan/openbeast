@@ -436,6 +436,71 @@ def test_sealed_eval_paths_are_unreadable_to_the_solution(tmp_path):
     assert ORACLE not in r.stdout and not r.ok, r
 
 
+# --- confine: a read ALLOWLIST on both platforms -------------------------------------
+#
+# The 190 verifier read the oracle from the unsealed git object store and,
+# with anaconda's interpreter, imported torch from site-packages. confine=
+# flips the seal into an allowlist: the stdlib, the work dir, nothing else.
+
+def _confined_can_linux():
+    if not LINUX:
+        return True
+    if vlib._landlock_abi() >= 1:
+        return True
+    r = subprocess.run(["unshare", "-Ur", "true"], capture_output=True)
+    return r.returncode == 0
+
+
+@pytest.mark.skipif(not (DARWIN or LINUX), reason="macOS or Linux only")
+def test_confined_solution_reads_only_its_runtime_and_work_dir(tmp_path):
+    if not _confined_can_linux():
+        pytest.skip("no landlock and no user namespaces on this host")
+    secret = tmp_path / "repo" / ".git" / "objects" / "ab" / "cdef"
+    secret.parent.mkdir(parents=True)
+    secret.write_text(ORACLE)
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "in.txt").write_text("input")
+    import sysconfig
+    site = sysconfig.get_path("purelib")
+    probe = textwrap.dedent(f"""
+        import os, json, math, decimal
+        got = {{}}
+        for p in [{str(secret)!r}, {os.path.expanduser("~")!r}, {site!r}, "/etc/passwd"]:
+            try:
+                if os.path.isdir(p):
+                    got[p] = len(os.listdir(p)) and "listed"
+                else:
+                    got[p] = open(p).read(40)
+            except OSError:
+                got[p] = None
+        got["in"] = open("in.txt").read()
+        open("out.txt", "w").write("ok")
+        print(json.dumps(got))
+    """)
+    rt = vlib.python_runtime(sys.executable, ["json", "math", "decimal", "os"])
+    assert not any("site-packages" in p.split(os.sep) for p in rt), rt
+    r = vlib.run_solution([sys.executable, "-I", "-S", "-c", probe], cpu_s=10, cwd=str(work),
+                          confine=[str(work)], read_only=rt)
+    assert r.ok, (r, r.stderr[-800:])
+    import json
+    got = json.loads(r.stdout)
+    assert got.pop("in") == "input"
+    assert (work / "out.txt").read_text() == "ok"
+    assert ORACLE not in r.stdout
+    assert all(v in (None, 0) for v in got.values()), got
+
+
+def test_confine_fails_closed_when_it_cannot_be_set_up(monkeypatch, tmp_path):
+    monkeypatch.setattr(vlib, "_sandbox_ok", lambda: False)
+
+    def broken(*a, **k):
+        raise OSError("no landlock, no userns")
+    monkeypatch.setattr(vlib, "_confine_linux", broken)
+    r = vlib.run_solution(_py("print('ran')"), cpu_s=5, confine=[str(tmp_path)])
+    assert r.verdict == "sandbox" and "ran" not in r.stdout, r
+
+
 # --- lint ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("src", [

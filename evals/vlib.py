@@ -41,6 +41,14 @@ itself:
       rust-toolchain.toml / go env / .cargo config cannot capture the compiler,
       then require the product to be a native executable.
 
+  run_solution(..., confine=[workdir], read_only=python_runtime(exe, mods))
+      The solution may read only its runtime and its work dir, write only
+      its work dir, and has no network, on macOS (sandbox-exec) and Linux
+      (landlock, else user + mount namespace). Fails closed: verdict
+      "sandbox" when confinement is unavailable. Use it whenever the
+      solution could otherwise read the oracle (the repo, its .git, other
+      worktrees or clones) or site-packages.
+
   python_cmd(path)
       The argv to run a Python solution with: `-I -S`, so neither its own
       dir's siblings nor site-packages (numpy, torch) resolve unless the
@@ -72,8 +80,8 @@ import sys
 import threading
 import time
 
-__all__ = ["scale", "t", "run_solution", "Result", "python_cmd", "processes",
-           "lint_python", "clean_env", "tool_path", "scan_toolchain_overrides",
+__all__ = ["scale", "t", "run_solution", "Result", "python_cmd", "python_runtime",
+           "processes", "lint_python", "clean_env", "tool_path", "scan_toolchain_overrides",
            "private_build_dir", "build_env", "is_native_executable",
            "assert_native_executable", "sanitizer_flags", "SANITIZER_FLAGS"]
 
@@ -327,8 +335,14 @@ def _sandbox_prefix(allow_fork: bool, deny_read: list[str], *,
     The confined solution gets `(allow default)` minus the holes a cheat uses:
       * network  — no fetch of a pushed reference, no phone-home (future risk
         reported on 164);
-      * process-info  — it cannot read the validator's argv/env (reported on
-        190): even when a future validator puts data there, it does not leak;
+      * process-info  — proc_pidinfo/proc_pidpath on other processes (their
+        executable path, cwd, open files). NOT their argv and environment:
+        sandbox-exec does not mediate sysctl kern.procargs2 for a same-uid
+        process (measured on Darwin 25: readable under (deny process-info*),
+        under (deny sysctl-read) with a name allowlist, and under a name deny
+        of kern.procargs2). So a validator must keep every secret out of its
+        own argv and env (run_eval feeds it on stdin with a scrubbed env), and
+        the seed in memory; tests/test_eval_190_confinement.py pins that;
       * process-exec  — when exec_only is set (a compiled unit passes its built
         binary), the solution may exec only that one image, so a C/Go/Rust/zig
         program cannot `execvp("python3", ...)` into an unlinted interpreter
@@ -387,6 +401,472 @@ def _sealed_paths() -> list[str]:
     return [p for p in raw.split(os.pathsep) if p and os.path.exists(p)]
 
 
+# --- confinement (read allowlist, both platforms) ----------------------------
+#
+# A lint cannot close off Python introspection, and a deny-list (the seal)
+# misses .git, other worktrees, other clones and site-packages. `confine`
+# turns it around: the solution may READ only the interpreter's runtime
+# (stdlib minus site-packages, the shared libraries it maps), the system
+# library dirs, a few /dev nodes and the dirs the validator names; it may
+# WRITE only the confine dirs; it gets no network. macOS: sandbox-exec with
+# a deny-by-default file-read profile. Linux: landlock (kernel >= 5.13),
+# else an unprivileged user + mount namespace with a fresh root that holds
+# only the allowed paths (bind mounts, read-only). When neither works the
+# run is refused (verdict "sandbox"): it fails closed, never unconfined.
+
+_PKG_DIRS = ("site-packages", "dist-packages")
+_RUNTIME_CACHE: dict = {}
+
+_PROBE = r"""
+import json, os, sys, sysconfig
+mods = json.loads(sys.argv[1])
+for m in mods:
+    try:
+        __import__(m)
+    except Exception:
+        pass
+paths = set()
+images = []
+if sys.platform.startswith('linux'):
+    try:
+        for line in open('/proc/self/maps'):
+            parts = line.split(None, 5)
+            if len(parts) == 6 and parts[5].startswith('/'):
+                images.append(parts[5].strip())
+    except OSError:
+        pass
+elif sys.platform == 'darwin':
+    try:
+        import ctypes
+        lib = ctypes.CDLL(None)
+        lib._dyld_get_image_name.restype = ctypes.c_char_p
+        for i in range(lib._dyld_image_count()):
+            n = lib._dyld_get_image_name(i)
+            if n:
+                images.append(n.decode())
+    except Exception:
+        pass
+exe = [sys.executable, getattr(sys, '_base_executable', sys.executable)]
+cfg = []
+d = os.path.dirname(os.path.abspath(sys.executable))
+for c in (os.path.join(d, 'pyvenv.cfg'), os.path.join(os.path.dirname(d), 'pyvenv.cfg')):
+    if os.path.exists(c):
+        cfg.append(c)
+libs = sorted({os.path.realpath(sysconfig.get_path(k)) for k in ('stdlib', 'platstdlib')
+               if sysconfig.get_path(k)})
+print(json.dumps({'exe': exe, 'cfg': cfg, 'stdlib': libs, 'images': images}))
+"""
+
+
+def _entries(d: str, skip=lambda n: False) -> list[str]:
+    try:
+        names = sorted(os.listdir(d))
+    except OSError:
+        return []
+    return [os.path.join(d, n) for n in names if not skip(n)]
+
+
+def python_runtime(executable: str | None = None, modules=()) -> list[str]:
+    """The paths `executable -I -S` must read to start and import `modules`,
+    WITHOUT any site-packages / dist-packages: the interpreter (and its
+    symlink chain), pyvenv.cfg, the stdlib dirs and the shared libraries the
+    process maps. A dir that holds a site-packages / dist-packages entry is
+    granted by every confiner as "list it, read everything in it except the
+    package dirs". Pass the result as
+    run_solution(read_only=...) together with confine=[...]."""
+    exe = executable or sys.executable
+    key = (exe, tuple(sorted(modules)))
+    if key in _RUNTIME_CACHE:
+        return list(_RUNTIME_CACHE[key])
+    import json
+    r = subprocess.run([exe, "-I", "-S", "-c", _PROBE, json.dumps(sorted(modules))],
+                       capture_output=True, text=True, timeout=60, env=clean_env(),
+                       cwd="/")
+    if r.returncode != 0:
+        raise RuntimeError(f"python_runtime probe failed: {r.stderr.strip()[-300:]}")
+    info = json.loads(r.stdout)
+    out = []
+    for p in info["exe"] + info["cfg"]:
+        out.append(os.path.abspath(p))
+        out.append(os.path.realpath(p))
+    out += info["stdlib"]     # the confiners never grant a package dir under these
+    for img in info["images"]:
+        rp = os.path.realpath(img)
+        if not any(seg in _PKG_DIRS for seg in rp.split(os.sep)):
+            out.append(rp)
+    seen, uniq = set(), []
+    for p in out:
+        if p not in seen and os.path.exists(p):
+            seen.add(p)
+            uniq.append(p)
+    _RUNTIME_CACHE[key] = uniq
+    return list(uniq)
+
+
+def _sbpl(p: str) -> str:
+    return os.path.realpath(p).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _confine_profile(allow_fork: bool, ro: list[str], rw: list[str], *,
+                     exec_only: str | None = None, deny_read: list[str] = ()) -> str:
+    """macOS sandbox profile: reads only from the allowlist, writes only to rw,
+    no network, no process-info on other processes (but argv/env stay
+    readable through sysctl kern.procargs2: see _sandbox_prefix), and, with
+    exec_only, no exec of any image but that one."""
+    rules = ["(version 1)", "(allow default)", "(deny network*)",
+             "(deny process-info* (with no-report))",
+             "(allow process-info-pidinfo (target self))",
+             "(allow process-info-codesignature (target self))"]
+    if not allow_fork:
+        rules.append("(deny process-fork)")
+    rules.append("(deny file-read*)")
+    rules.append("(allow file-read-metadata)")
+    allow = ['(subpath "/System")', '(subpath "/usr/lib")', '(subpath "/private/var/db/dyld")',
+             '(subpath "/dev")', '(literal "/")',
+             # Rosetta, for an x86_64 interpreter on Apple silicon
+             '(subpath "/Library/Apple/usr/libexec/oah")', '(subpath "/private/var/db/oah")']
+    for p in ro:
+        allow.append(f'(literal "{_sbpl(p)}")' if not os.path.isdir(p)
+                     else f'(subpath "{_sbpl(p)}")')
+    for p in rw:
+        allow.append(f'(subpath "{_sbpl(p)}")')
+    rules.append("(allow file-read* " + " ".join(allow) + ")")
+    # an allowed dir may still hold a package dir (stdlib/site-packages)
+    pk = []
+    for p in ro:
+        if os.path.isdir(p):
+            for n in _PKG_DIRS:
+                q = os.path.join(p, n)
+                if os.path.lexists(q):
+                    pk.append(f'(subpath "{_sbpl(os.path.join(os.path.realpath(p), n))}")')
+                    if os.path.exists(q):
+                        pk.append(f'(subpath "{_sbpl(q)}")')
+    if pk:
+        rules.append("(deny file-read* " + " ".join(pk) + ")")
+    rules.append("(deny file-write*)")
+    wr = ['(literal "/dev/null")', '(literal "/dev/zero")', '(literal "/dev/tty")',
+          '(regex #"^/dev/fd/")'] + [f'(subpath "{_sbpl(p)}")' for p in rw]
+    rules.append("(allow file-write* " + " ".join(wr) + ")")
+    # after the read allowlist, so these denies win
+    rules.append(f'(deny file-read* (regex #"{_EVAL_SECRET_RE}"))')
+    for p in deny_read:
+        rules.append(f'(deny file-read* (subpath "{_sbpl(os.path.realpath(p))}"))')
+    if exec_only:
+        rules.append("(deny process-exec*)")
+        rules.append(f'(allow process-exec (literal "{_sbpl(os.path.realpath(exec_only))}"))')
+    return "".join(rules)
+
+
+def _sandbox_ok() -> bool:
+    global _SANDBOX_OK
+    if _SANDBOX_OK is None:
+        try:
+            _SANDBOX_OK = subprocess.run(
+                ["/usr/bin/sandbox-exec", "-p", "(version 1)(allow default)", "/usr/bin/true"],
+                capture_output=True, timeout=10).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            _SANDBOX_OK = False
+    return _SANDBOX_OK
+
+
+# Linux ------------------------------------------------------------------------
+
+_LINUX_SYS = ("/lib", "/lib64", "/lib32", "/libx32", "/usr/lib", "/usr/lib64", "/usr/lib32",
+              "/usr/libx32")
+_LINUX_FILES = ("/etc/ld.so.cache", "/etc/ld.so.conf", "/etc/ld.so.conf.d", "/etc/localtime",
+                "/dev/null", "/dev/zero", "/dev/urandom", "/dev/random")
+
+
+def _linux_ro_plan(ro: list[str]) -> list[tuple[str, bool]]:
+    """Linux read allowlist as (path, tree): entries of the system lib dirs
+    (skipping python* dirs, which hold dist-packages), the loader files, and
+    `ro`. A dir in `ro` that directly holds a package dir becomes
+    (dir, False) -- listable only -- plus (entry, True) for its other
+    entries. tree=True grants the path and everything below it."""
+    out = []
+    seen_real = set()
+    for d in _LINUX_SYS:
+        if not os.path.isdir(d):
+            continue
+        if os.path.islink(d):
+            out.append(d)                  # /lib -> usr/lib: the loader path goes through it
+        rd = os.path.realpath(d)
+        if rd in seen_real:
+            continue
+        seen_real.add(rd)
+        out += _entries(rd, lambda n: n.startswith("python") or n in _PKG_DIRS)
+    out += [p for p in _LINUX_FILES if os.path.exists(p)]
+    plan = [(p, True) for p in out]
+    for p in ro:
+        if os.path.isdir(p) and any(os.path.lexists(os.path.join(p, n)) for n in _PKG_DIRS):
+            rp = os.path.realpath(p)
+            plan.append((rp, False))
+            plan += [(e, True) for e in _entries(rp, lambda n: n in _PKG_DIRS)]
+        else:
+            plan.append((p, True))
+    return plan
+
+
+_LL = {"create": 444, "add": 445, "restrict": 446}  # same on every arch
+_LL_FS = {"exec": 1 << 0, "write": 1 << 1, "read": 1 << 2, "readdir": 1 << 3,
+          "rmdir": 1 << 4, "rmfile": 1 << 5, "mkchar": 1 << 6, "mkdir": 1 << 7,
+          "mkreg": 1 << 8, "mksock": 1 << 9, "mkfifo": 1 << 10, "mkblock": 1 << 11,
+          "mksym": 1 << 12, "refer": 1 << 13, "truncate": 1 << 14, "ioctl": 1 << 15}
+_LL_FILE_BITS = _LL_FS["exec"] | _LL_FS["write"] | _LL_FS["read"] | _LL_FS["truncate"] | _LL_FS["ioctl"]
+_LL_ABI = None
+
+
+def _landlock_abi() -> int:
+    global _LL_ABI
+    if _LL_ABI is None:
+        _LL_ABI = 0
+        if _LINUX:
+            try:
+                import ctypes
+                libc = ctypes.CDLL(None, use_errno=True)
+                v = libc.syscall(_LL["create"], None, ctypes.c_size_t(0), ctypes.c_uint32(1))
+                _LL_ABI = v if v > 0 else 0
+            except (OSError, AttributeError):
+                _LL_ABI = 0
+    return _LL_ABI
+
+
+def _landlock_prep(ro: list[str], rw: list[str]):
+    """Everything the child needs, built before fork (no allocation games in
+    the child beyond os.open and the syscalls)."""
+    import ctypes
+    abi = _landlock_abi()
+    libc = ctypes.CDLL(None, use_errno=True)
+    handled = 0
+    for k in ("write", "read", "readdir", "rmdir", "rmfile", "mkchar", "mkdir", "mkreg",
+              "mksock", "mkfifo", "mkblock", "mksym"):
+        handled |= _LL_FS[k]
+    if abi >= 2:
+        handled |= _LL_FS["refer"]
+    if abi >= 3:
+        handled |= _LL_FS["truncate"]
+    if abi >= 5:
+        handled |= _LL_FS["ioctl"]
+
+    class Attr(ctypes.Structure):
+        _fields_ = [("fs", ctypes.c_uint64), ("net", ctypes.c_uint64),
+                    ("scoped", ctypes.c_uint64)]
+
+    class Beneath(ctypes.Structure):
+        _pack_ = 1
+        _fields_ = [("allowed", ctypes.c_uint64), ("fd", ctypes.c_int32)]
+
+    attr = Attr(handled, 0, 0)
+    size = 8
+    if abi >= 4:
+        attr.net = 0b11          # BIND_TCP | CONNECT_TCP, with no rule: no TCP at all
+        size = 16
+    if abi >= 6:
+        attr.scoped = 0b11       # abstract unix sockets, signals outside the domain
+        size = 24
+    rules = []
+    rd = _LL_FS["read"] | _LL_FS["readdir"]
+    for p, tree in _linux_ro_plan(ro):
+        if os.path.islink(p) and p not in ro:
+            continue                       # its target is covered (or not allowed)
+        if not os.path.exists(p):
+            continue
+        isdir = os.path.isdir(p)
+        # list-only: READ_DIR beneath lets it list subdirs, never read a file
+        acc = (rd if tree else _LL_FS["readdir"]) if isdir else _LL_FS["read"]
+        rules.append((os.fsencode(os.path.realpath(p)), acc))
+    for p in ("/dev/null", "/dev/zero"):
+        if os.path.exists(p):
+            rules.append((os.fsencode(p), (_LL_FS["read"] | _LL_FS["write"]
+                                           | (_LL_FS["truncate"] if abi >= 3 else 0))))
+    for p in rw:
+        rules.append((os.fsencode(os.path.realpath(p)), handled))
+    beneath = Beneath(0, -1)
+    return libc, attr, size, rules, beneath, handled
+
+
+def _landlock_child(prep):
+    import ctypes
+    libc, attr, size, rules, beneath, handled = prep
+    rfd = libc.syscall(_LL["create"], ctypes.byref(attr), ctypes.c_size_t(size),
+                       ctypes.c_uint32(0))
+    if rfd < 0:
+        raise OSError(ctypes.get_errno(), "landlock_create_ruleset")
+    o_path = getattr(os, "O_PATH", 0o10000000)
+    for path, acc in rules:
+        try:
+            fd = os.open(path, o_path | os.O_CLOEXEC)
+        except OSError:
+            continue
+        try:
+            isdir = os.path.isdir(path)
+            beneath.allowed = (acc & handled) if isdir else (acc & handled & _LL_FILE_BITS)
+            beneath.fd = fd
+            if libc.syscall(_LL["add"], ctypes.c_int(rfd), ctypes.c_int(1),
+                            ctypes.byref(beneath), ctypes.c_uint32(0)) != 0:
+                raise OSError(ctypes.get_errno(), f"landlock_add_rule {path!r}")
+        finally:
+            os.close(fd)
+    if libc.prctl(38, 1, 0, 0, 0) != 0:                 # PR_SET_NO_NEW_PRIVS
+        raise OSError(ctypes.get_errno(), "no_new_privs")
+    if libc.syscall(_LL["restrict"], ctypes.c_int(rfd), ctypes.c_uint32(0)) != 0:
+        raise OSError(ctypes.get_errno(), "landlock_restrict_self")
+    os.close(rfd)
+
+
+# mount namespace fallback
+_MS = {"rdonly": 1, "nosuid": 2, "nodev": 4, "noexec": 8, "remount": 32, "bind": 4096,
+       "rec": 16384, "private": 1 << 18, "noatime": 1024, "nodiratime": 2048,
+       "relatime": 1 << 21}
+_PIVOT_ROOT = {"x86_64": 155, "aarch64": 41, "arm64": 41}
+
+
+def _locked_flags(p: str) -> int:
+    """Mount flags a remount inside a user namespace must keep (EPERM otherwise)."""
+    try:
+        f = os.statvfs(p).f_flag
+    except OSError:
+        return 0
+    out = 0
+    for st, ms in ((2, "nosuid"), (4, "nodev"), (8, "noexec"), (1024, "noatime"),
+                   (2048, "nodiratime"), (4096, "relatime")):
+        if f & st:
+            out |= _MS[ms]
+    return out
+
+
+def _chain(p: str):
+    """[(symlink path, its target)...] met while resolving p, and the real path."""
+    links = []
+    parts = [x for x in os.path.abspath(p).split("/") if x]
+    cur = "/"
+    hops = 0
+    while parts:
+        nxt = os.path.join(cur, parts.pop(0))
+        if os.path.islink(nxt):
+            hops += 1
+            if hops > 40:
+                break
+            tgt = os.readlink(nxt)
+            links.append((nxt, tgt))
+            base = tgt if tgt.startswith("/") else os.path.join(cur, tgt)
+            parts = [x for x in os.path.normpath(base).split("/") if x] + parts
+            cur = "/"
+        else:
+            cur = nxt
+    return links, os.path.normpath(cur)
+
+
+def _mountns_prep(ro: list[str], rw: list[str], cwd: str | None):
+    import ctypes
+    import platform
+    import tempfile
+    nr = _PIVOT_ROOT.get(platform.machine())
+    if nr is None:
+        raise OSError(f"no pivot_root number for {platform.machine()}")
+    libc = ctypes.CDLL(None, use_errno=True)
+    root = tempfile.mkdtemp(prefix="vlib-root-")
+    links, binds, done = [], [], set()
+
+    def add(p, writable, tree=True):
+        lk, real = _chain(p)
+        for l in lk:
+            if l[0] not in done:
+                done.add(l[0])
+                links.append(l)
+        if real in done or not os.path.exists(real):
+            return
+        done.add(real)
+        if not tree:                      # list-only: an empty dir the entries are bound into
+            dirs.append(real)
+            return
+        binds.append((real, os.path.isdir(real), writable, _locked_flags(real)))
+
+    dirs = []
+    for p, tree in _linux_ro_plan(ro):
+        if os.path.islink(p) and p not in ro:
+            lk, _real = _chain(p)
+            for l in lk:
+                if l[0] not in done:
+                    done.add(l[0])
+                    links.append(l)
+            continue
+        add(p, False, tree)
+    for p in rw:
+        add(p, True)
+    binds.sort(key=lambda b: b[0].count("/"))
+    return libc, nr, root, links, binds, dirs, os.getuid(), os.getgid(), cwd or os.getcwd()
+
+
+def _mountns_child(prep):
+    import ctypes
+    libc, nr, root, links, binds, dirs, uid, gid, cwd = prep
+    m = _MS
+
+    def ck(rc, what):
+        if rc != 0:
+            raise OSError(ctypes.get_errno(), what)
+
+    # The harness makes the validator non-dumpable, which leaves /proc/self/*
+    # owned by root and the id maps unwritable. This child holds nothing the
+    # solution could use (it has not run yet, and exec replaces the image).
+    libc.prctl(4, 1, 0, 0, 0)                                          # PR_SET_DUMPABLE
+    ck(libc.unshare(0x10000000 | 0x00020000 | 0x40000000), "unshare")  # USER|NS|NET
+    for f, v in (("/proc/self/setgroups", "deny"), ("/proc/self/uid_map", f"{uid} {uid} 1"),
+                 ("/proc/self/gid_map", f"{gid} {gid} 1")):
+        fd = os.open(f, os.O_WRONLY)
+        try:
+            os.write(fd, v.encode())
+        finally:
+            os.close(fd)
+    ck(libc.mount(b"none", b"/", None, m["rec"] | m["private"], None), "make-private")
+    ck(libc.mount(b"tmpfs", root.encode(), b"tmpfs", m["nosuid"] | m["nodev"], b"mode=0755"),
+       "tmpfs")
+    R = root.rstrip("/")
+    for d in dirs:
+        os.makedirs(R + d, exist_ok=True)
+    for path, isdir, writable, locked in binds:
+        tgt = R + path
+        if isdir:
+            os.makedirs(tgt, exist_ok=True)
+        else:
+            os.makedirs(os.path.dirname(tgt), exist_ok=True)
+            if not os.path.lexists(tgt):
+                os.close(os.open(tgt, os.O_CREAT | os.O_WRONLY, 0o644))
+        ck(libc.mount(path.encode(), tgt.encode(), None, m["bind"] | m["rec"], None),
+           f"bind {path}")
+        if not writable:
+            ck(libc.mount(None, tgt.encode(), None,
+                          m["remount"] | m["bind"] | m["rdonly"] | locked, None),
+               f"ro {path}")
+    for lp, target in links:
+        dst = R + lp
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        if not os.path.lexists(dst):
+            os.symlink(target, dst)
+    os.chdir(root)
+    ck(libc.syscall(nr, b".", b"."), "pivot_root")
+    ck(libc.umount2(b".", 2), "detach old root")               # MNT_DETACH
+    ck(libc.mount(None, b"/", None, m["remount"] | m["bind"] | m["rdonly"]
+                  | m["nosuid"] | m["nodev"], None), "ro root")
+    os.chdir("/")
+    os.chdir(cwd)
+
+
+def _confine_linux(ro: list[str], rw: list[str], cwd: str | None):
+    """(child function, cleanup) for Linux confinement, or raise OSError."""
+    if _landlock_abi() >= 1:
+        prep = _landlock_prep(ro, rw)
+        return (lambda: _landlock_child(prep)), (lambda: None), f"landlock abi {_landlock_abi()}"
+    prep = _mountns_prep(ro, rw, cwd)
+    root = prep[2]
+
+    def cleanup():
+        import shutil
+        shutil.rmtree(root, ignore_errors=True)
+    return (lambda: _mountns_child(prep)), cleanup, "mount namespace"
+
+
 # --- run_solution ----------------------------------------------------------------
 
 class Result:
@@ -397,7 +877,8 @@ class Result:
     "daemon" (a descendant was orphaned or outlived the solution), "forked"
     (allow_fork=False and it started a child), "exec" (it replaced its image
     with another binary under confine_exec), "output" (wrote more than
-    max_output bytes)."""
+    max_output bytes), "sandbox" (confine was asked for and could not be
+    set up: the solution never ran)."""
 
     def __init__(self, returncode, stdout, stderr, cpu_s, wall_s, verdict, reason):
         self.returncode = returncode
@@ -449,8 +930,8 @@ def run_solution(cmd, input=None, *, cpu_s: float, wall_s: float | None = None,
                  cwd: str | None = None, env: dict | None = None, text: bool = True,
                  allow_fork: bool = False, scale_cpu: bool = True,
                  max_output: int = 64 * 1024 * 1024, poll_s: float = 0.05,
-                 deny_read: list[str] | None = None,
-                 confine_exec: bool | None = None) -> Result:
+                 deny_read: list[str] | None = None, confine: list[str] | None = None,
+                 read_only: list[str] = (), confine_exec: bool | None = None) -> Result:
     """Run the solution `cmd` (an argv list) under a CPU budget for the whole
     process tree.
 
@@ -469,7 +950,15 @@ def run_solution(cmd, input=None, *, cpu_s: float, wall_s: float | None = None,
     timed gate on macOS should keep allow_fork=False.
     deny_read: paths the solution may not read (macOS sandbox only; default:
     the harness's sealed eval paths, OPENBEAST_VALIDATOR_SEAL). Reads of any
-    evals/{refs,tasks,suites} tree are denied unconditionally.
+    evals/{refs,tasks,suites} tree are denied unconditionally. A deny-list:
+    prefer `confine`.
+    confine: dirs the solution may read AND write (its private work dir).
+    With it set the solution is confined on both platforms: it may read
+    only `read_only` (use python_runtime() for a Python solution), the system
+    library dirs and a few /dev nodes, write only the confine dirs, and use
+    no network and no process-info on other processes (macOS sandbox-exec;
+    Linux landlock, else a user + mount namespace). If confinement cannot be
+    set up the solution is NOT run and the verdict is "sandbox".
     confine_exec: restrict the exec of child/replaced images to the
     solution's own binary (macOS). None (default) decides automatically:
     confine when cmd[0] is a native program (a compiled unit's built binary),
@@ -496,6 +985,23 @@ def run_solution(cmd, input=None, *, cpu_s: float, wall_s: float | None = None,
         confine_exec = (not allow_fork) and bool(exec0) and exec0 not in interp
     exec_only = exec0 if confine_exec else None
     argv = _sandbox_prefix(allow_fork, seal, exec_only=exec_only) + list(cmd)
+    confine_child, confine_cleanup = None, (lambda: None)
+    if confine is not None:
+        rw = [os.path.realpath(p) for p in confine]
+        ro = [os.path.abspath(p) for p in read_only]
+        if _DARWIN:
+            if not _sandbox_ok():
+                return Result(None, "", "", 0.0, 0.0, "sandbox", "sandbox-exec unavailable")
+            argv = ["/usr/bin/sandbox-exec", "-p",
+                    _confine_profile(allow_fork, ro, rw, exec_only=exec_only, deny_read=seal)
+                    ] + list(cmd)
+        elif _LINUX:
+            try:
+                confine_child, confine_cleanup, _how = _confine_linux(ro, rw, cwd)
+            except (OSError, ImportError) as e:
+                return Result(None, "", "", 0.0, 0.0, "sandbox", f"no confinement: {e}")
+        else:
+            return Result(None, "", "", 0.0, 0.0, "sandbox", f"no confinement on {sys.platform}")
     cg = _Cgroup()
     me = os.getpid()
     subreaper = _ensure_subreaper()
@@ -510,14 +1016,36 @@ def run_solution(cmd, input=None, *, cpu_s: float, wall_s: float | None = None,
             pass
         _prctl(_PR_SET_PDEATHSIG, signal.SIGKILL)
         cg.enter_child()
+        if confine_child is not None:
+            try:
+                confine_child()  # an exception here fails the Popen: never unconfined
+            except BaseException as e:
+                try:
+                    os.write(err_w, f"{type(e).__name__}: {e}"[:400].encode("utf-8", "replace"))
+                except OSError:
+                    pass
+                raise
 
     data = None
     if input is not None:
         data = input.encode() if isinstance(input, str) else bytes(input)
     t0 = time.monotonic()
-    proc = subprocess.Popen(argv, stdin=subprocess.PIPE if data is not None else subprocess.DEVNULL,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd, env=env,
-                            start_new_session=True, preexec_fn=_pre, close_fds=True)
+    err_r, err_w = os.pipe() if confine_child is not None else (-1, -1)
+    try:
+        proc = subprocess.Popen(argv, stdin=subprocess.PIPE if data is not None else subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd, env=env,
+                                start_new_session=True, preexec_fn=_pre, close_fds=True)
+    except subprocess.SubprocessError as e:
+        confine_cleanup()
+        if confine_child is not None:
+            os.close(err_w)
+            why = os.read(err_r, 512).decode("utf-8", "replace") or str(e)
+            os.close(err_r)
+            return Result(None, "", "", 0.0, 0.0, "sandbox", f"confinement failed: {why}")
+        raise
+    if confine_child is not None:
+        os.close(err_w)
+        os.close(err_r)
     pgid = proc.pid
     _register_group(pgid)
     out, err, over = bytearray(), bytearray(), [False]
@@ -660,6 +1188,7 @@ def run_solution(cmd, input=None, *, cpu_s: float, wall_s: float | None = None,
             th.join(timeout=2)
         cg_cpu = cg.cpu()
         cg.remove()
+        confine_cleanup()
         _unregister_group(pgid)
     wall = time.monotonic() - t0
     total = max(rusage_cpu, _sampled_total(), cg_cpu or 0.0)
