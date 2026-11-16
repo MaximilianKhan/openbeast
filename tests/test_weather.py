@@ -205,6 +205,13 @@ def test_units_follow_the_place_and_the_callers_own_country():
     assert "°C" in out
 
 
+def test_days_is_clamped_to_1_through_7():
+    # Review 2026-11-16: `days or 3` read 0 ("just today") as unset -> 3.
+    for days, sent in ((0, 1), (-2, 1), (1, 1), (5, 5), (99, 7), (None, 3), ("x", 3)):
+        weather.weather("", days, near=DANVILLE_CA, forecast=_fc)
+        assert _fc.last["forecast_days"] == sent, (days, _fc.last["forecast_days"])
+
+
 def test_units_override():
     out = weather.weather("Danville, CA", units="metric", geo=real_geo, forecast=_fc)
     assert "16.0°C" in out and "°F" not in out

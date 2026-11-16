@@ -296,7 +296,8 @@ def weather(location: str = "", days: int = 3, *, near=None, units: str = "",
                  "country_code": ""}
         others = []
     try:
-        days = max(1, min(int(days or 3), 7))
+        # 0 is "just today" (clamped to 1), not "unset": only None is.
+        days = max(1, min(int(3 if days is None else days), 7))
     except (TypeError, ValueError):
         days = 3
     # Always fetched metric; the units are decided after the reply, because
