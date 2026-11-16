@@ -418,6 +418,33 @@ class TestFetchByteCapCut(unittest.TestCase):
         for gone in ("<img", "data:image", "AAAA"):
             self.assertNotIn(gone, out)
 
+    def test_cut_inside_a_tag_with_gt_in_a_quoted_attribute(self):
+        # Review 2026-11-16: the strip searched for an opener after the LAST
+        # '>' — inside the cut tag when an earlier quoted attribute held one
+        # (alt="a > b", an SVG data: URI), so the base64 tail leaked.
+        lim = self.tools._FETCH_MIN_READ_BYTES
+        pad = b"<i></i>" * ((lim - 3000) // 7)
+        for tag in (b'<img alt="a > b" src="data:image/png;base64,',
+                    b'<img src="data:image/svg+xml;utf8,<svg xmlns=\'x\'><path d=\'M0\'/>',
+                    b"<a onclick='if(a>b)go()' title=don't href=\"data:text/plain,"):
+            body = b"<html><body><p>KEPT</p>" + pad + tag + b"A" * 5000 + b'">after'
+            out = self._fetch(body)
+            self.assertIn("KEPT", out)
+            self.assertIn("page cut", out)
+            for gone in ("AAAA", "data:", "<img", "<svg", "base64"):
+                self.assertNotIn(gone, out, tag)
+
+    def test_unterminated_tag_scan_is_linear(self):
+        import time
+        f = self.tools._unterminated_tag_start
+        for text in ("<a" * 1_000_000, '<a ="' * 400_000, "<a=" * 600_000,
+                     "<" * 2_000_000, "<a>" * 600_000, "= " * 1_000_000):
+            t0 = time.monotonic()
+            f(text)
+            self.assertLess(time.monotonic() - t0, 1.5, text[:12])
+        self.assertIsNone(f("<a title=don't>ok</a> a < b"))
+        self.assertEqual(f('<p>x</p><img alt="a > b" src="x'), 8)
+
     def test_cut_html_keeps_prose_lt_in_tail(self):
         lim = self.tools._FETCH_MIN_READ_BYTES
         body = b"<html><body><p>x</p>if a < b then " + b"z " * lim
