@@ -455,9 +455,8 @@ class TestRemoteBackends(unittest.TestCase):
         self.assertIsNone(out["slots"]["total"])
 
     def test_key_sent_to_vllm_and_tensorfold(self):
-        # The real _get, with urlopen captured: vLLM (--api-key) and native
+        # The real _get, with its opener captured: vLLM (--api-key) and native
         # TensorFold (--api-key-file) both guard /v1, so both get the key.
-        import urllib.request as ur
         dashboard._get = self._saved[0]
         dashboard._API_KEY = "k-secret"
         seen = []
@@ -474,8 +473,15 @@ class TestRemoteBackends(unittest.TestCase):
             def __exit__(self, *a):
                 return False
 
-        real = ur.urlopen
-        ur.urlopen = lambda req, timeout=2: (seen.append(req.get_header("Authorization")), R())[1]
+        class Opener:
+            def open(self, req, timeout=2):
+                seen.append(req.get_header("Authorization"))
+                # never on a redirect: the key is an unredirected header
+                assert "Authorization" not in req.headers
+                return R()
+
+        real = dashboard._OPENER
+        dashboard._OPENER = Opener()
         try:
             for backend, want in (("tensorfold", "Bearer k-secret"), ("vllm", "Bearer k-secret")):
                 seen.clear()
@@ -483,7 +489,7 @@ class TestRemoteBackends(unittest.TestCase):
                 dashboard._get("http://10.0.0.5:8000/v1/models", auth=True)
                 self.assertEqual(seen, [want], backend)
         finally:
-            ur.urlopen = real
+            dashboard._OPENER = real
 
     def test_llama_backend_has_no_backend_field(self):
         # The llama answer stays byte-identical: no `backend`, no kv_usage.

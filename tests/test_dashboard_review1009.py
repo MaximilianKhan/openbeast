@@ -628,3 +628,50 @@ def test_page_renders_a_unified_memory_gpu(monkeypatch, tmp_path, mem):
     assert ("memory not reported" in html) == (mem["total_mib"] is None)
     assert "127.0.0.1:8000 healthy" in html and ":8080" not in html
     assert 'href="http://127.0.0.1:3001/metrics"' in html
+
+
+# ───────────── review 2026-11-16: overlapping gathers, redirected probes ─────────────
+
+def test_a_keyed_probe_never_follows_a_redirect(monkeypatch):
+    # urllib copies add_header() headers onto a cross-host redirect, so a
+    # keyed probe answered with 302 handed LLAMA_API_KEY to the Location.
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    saw = []
+
+    class Target(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            saw.append(self.headers.get("Authorization"))
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+    tgt = ThreadingHTTPServer(("127.0.0.1", 0), Target)
+    tport = tgt.server_address[1]
+
+    class Redir(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            self.send_response(302)
+            self.send_header("Location", f"http://localhost:{tport}/x")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    src = ThreadingHTTPServer(("127.0.0.1", 0), Redir)
+    for s in (tgt, src):
+        threading.Thread(target=s.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True).start()
+    try:
+        d = load(monkeypatch, OPENBEAST_API_KEY="FAKE-TEST-KEY",
+                 OPENBEAST_INFERENCE_URL=f"http://127.0.0.1:{src.server_address[1]}")
+        st, _ = d._get(f"{d._INFER}/v1/models", auth=True)
+        assert st is None, "a redirect must read as no answer"
+        assert saw == [], f"the redirect target was contacted: {saw}"
+    finally:
+        for s in (tgt, src):
+            s.shutdown()
+            s.server_close()

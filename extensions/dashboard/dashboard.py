@@ -144,12 +144,32 @@ def _edge_has_devices():
     return False
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Status probes never follow a 3xx.
+
+    urllib's default redirect handler copies every add_header() header onto
+    the redirected request, cross-host included, so a keyed probe of a
+    remote INFERENCE_URL that answered `302 Location: http://elsewhere/`
+    handed LLAMA_API_KEY to elsewhere on every 1.5 s poll (review 2026-11-16).
+    A health probe should report what the address itself says: a redirect
+    reads as no answer (urllib raises HTTPError, _get returns (None, "")).
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def _get(url, timeout=2, auth=False):
     try:
         req = urllib.request.Request(url)
         if auth and _API_KEY:
-            req.add_header("Authorization", f"Bearer {_API_KEY}")
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+            # Unredirected as well: belt and braces should a redirect-following
+            # opener ever be swapped back in.
+            req.add_unredirected_header("Authorization", f"Bearer {_API_KEY}")
+        with _OPENER.open(req, timeout=timeout) as r:
             return r.status, r.read().decode("utf-8", "replace")
     except Exception:
         return None, ""
