@@ -62,6 +62,7 @@ def _env(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     (tmp_path / "home").mkdir()
     pins._SUMS.clear()
+    pins._RELEASES.clear()
 
 
 def sha(b: bytes) -> str:
@@ -777,6 +778,37 @@ def test_lock_fills_pins_from_upstream_and_is_idempotent(http, tmp_path, capsys)
     assert run(["--catalog", str(cat), "fetch", "--to", str(tmp_path / "d"), "--no-git"], capsys)[0] == 0
 
 
+def test_lock_pins_a_github_asset_to_the_release_api_digest(http, tmp_path, capsys, monkeypatch):
+    parse = pins.github_release_asset
+    assert parse("https://github.com/ninja-build/ninja/releases/download/v1.13.2/ninja-linux.zip") \
+        == ("ninja-build/ninja", "v1.13.2", "ninja-linux.zip")
+    assert parse("https://example.org/ninja-build/ninja/releases/download/v1/x") is None
+    data = b"ninja binary\n"
+    http.files["/rel/ninja-linux.zip"] = data
+    http.files["/api/repos/ninja-build/ninja/releases/tags/v1.13.2"] = json.dumps({"assets": [
+        {"name": "ninja-linux.zip", "digest": "sha256:" + sha(data)},
+        {"name": "ninja-mac.zip", "digest": "sha256:" + "0" * 64}]}).encode()
+    monkeypatch.setattr(pins, "GITHUB_API", f"{http.base}/api")
+    monkeypatch.setattr(pins, "github_token", lambda: None)
+    monkeypatch.setattr(pins, "github_release_asset",
+                        lambda url: ("ninja-build/ninja", "v1.13.2", os.path.basename(url)) if "/rel/" in url else None)
+    body = ENTRY.format(name="ninja", cat="build", version="1.13.2") + f'''
+[[artifact]]
+entry = "ninja"
+kind = "file"
+platform = "linux-x86_64"
+url = "{http.base}/rel/ninja-linux.zip"
+verified = "unverified"
+'''
+    cat = write_catalog(tmp_path, body)
+    assert run(["--catalog", str(cat), "lock", "--no-git-sizes"], capsys)[0] == 0
+    a = C.load(str(cat)).artifacts[0]
+    assert a.sha256 == sha(data) and a.verified == "upstream-json"
+    assert C.lint(C.load(str(cat))) == []
+    rc, out = run(["--catalog", str(cat), "fetch", "--to", str(tmp_path / "d")], capsys)
+    assert rc == 0 and "tofu" not in json.loads((tmp_path / "d/ark.lock").read_text())["items"][a.id]["verified"]
+
+
 def test_update_prints_the_diff_and_writes_only_with_write(http, tmp_path, capsys, monkeypatch):
     cat = toy_catalog(http, tmp_path)
     cat.write_text(cat.read_text().replace('version = "1.0"\n', 'version = "1.0"\nupdate = "github:x/toy"\n'))
@@ -870,6 +902,18 @@ def test_checksum_formats():
     assert V.parse_checksum(js, "n", "json:packages/[os=linux,arch=amd64]/sha256") == ("sha256", h)
     csv = "PRODUCT,3.54.1,2026/sqlite-tools-linux-x64-3540100.zip,4324601," + h + "\n"
     assert V.parse_checksum(csv, "sqlite-tools-linux-x64-3540100.zip", "sqlite-csv") == ("sha3-256", h)
+
+
+def test_json_checksum_accepts_an_algo_prefixed_digest():
+    doc = json.dumps({"assets": [{"name": "a.zip", "digest": "sha256:" + "a" * 64},
+                                 {"name": "b.zip", "digest": "sha512:" + "b" * 128},
+                                 {"name": "c.zip", "digest": "sha256:" + "c" * 10},
+                                 {"name": "d.zip", "digest": "md5:" + "d" * 32}]})
+    assert V.parse_checksum(doc, "a.zip", "json:assets/[name=a.zip]/digest") == ("sha256", "a" * 64)
+    assert V.parse_checksum(doc, "b.zip", "json:assets/[name=b.zip]/digest") == ("sha512", "b" * 128)
+    for bad in ("c.zip", "d.zip"):
+        with pytest.raises(V.VerifyError):
+            V.parse_checksum(doc, bad, f"json:assets/[name={bad}]/digest")
 
 
 def test_ed25519_matches_rfc8032_vector_1():

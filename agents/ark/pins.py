@@ -11,7 +11,10 @@ field is empty (or --refresh):
   digest, platform_sizes   the registry's digest for the tag, and the
                  per-platform bytes summed from the manifests
   verified       where the hash came from: upstream-sums / upstream-json /
-                 registry — or "unverified" when upstream publishes nothing
+                 registry — or "unverified" when upstream publishes nothing.
+                 A GitHub release asset with no checksum file is pinned to
+                 the sha256 GitHub's release API publishes for it
+                 (upstream-json) before it is ever called unverified.
   git_size       GitHub's repository size (an upper bound for a shallow pin)
 `lock --from DIR` copies hashes the drive recorded on a trust-on-first-use
 fetch, marked verified = "tofu", and real git bundle sizes.
@@ -156,6 +159,36 @@ def github_repo(url: str) -> Optional[str]:
     parts = p.path.strip("/").removesuffix(".git").split("/") if hasattr(str, "removesuffix") else \
         re.sub(r"\.git$", "", p.path.strip("/")).split("/")
     return "/".join(parts[:2]) if len(parts) >= 2 else None
+
+
+GITHUB_API = "https://api.github.com"
+_RELEASES: Dict[str, dict] = {}
+
+
+def github_release_asset(url: str) -> Optional[Tuple[str, str, str]]:
+    """https://github.com/<o>/<r>/releases/download/<tag>/<name> -> (o/r, tag, name)."""
+    p = urlsplit(url)
+    m = re.fullmatch(r"/([^/]+)/([^/]+)/releases/download/([^/]+)/([^/]+)", p.path)
+    if p.scheme != "https" or p.hostname != "github.com" or not m:
+        return None
+    return f"{m.group(1)}/{m.group(2)}", net.urllib.parse.unquote(m.group(3)), net.urllib.parse.unquote(m.group(4))
+
+
+def github_asset_digest(repo: str, tag: str, name: str) -> Optional[Tuple[str, str]]:
+    """GitHub's own digest for one release asset, or None (older releases
+    have none). One API call per release per run; the token, if any, goes
+    only to api.github.com."""
+    key = f"{repo}@{tag}"
+    if key not in _RELEASES:
+        data, _ = net.get_bytes(f"{GITHUB_API}/repos/{repo}/releases/tags/{net.urllib.parse.quote(tag, safe='')}",
+                                limit=16 << 20, headers={"Accept": "application/vnd.github+json"},
+                                token=github_token())
+        _RELEASES[key] = json.loads(data)
+    try:
+        algo, hx = V.parse_checksum(json.dumps(_RELEASES[key]), name, f"json:assets/[name={name}]/digest")
+    except V.VerifyError:
+        return None
+    return algo, hx
 
 
 def github_meta(repo: str) -> dict:
@@ -304,6 +337,17 @@ def _lock_file(a: C.Artifact, ed: Edits, rep: List[str], refresh: bool, sizes: b
     if a.pinned() and not refresh:
         return
     if not a.checksum_url:
+        gh = github_release_asset(a.url_x)
+        got = github_asset_digest(*gh) if gh else None
+        if got and got[0] == "sha256":
+            if a.sha256 and a.sha256 != got[1]:
+                rep.append(f"  {a.id}: UPSTREAM CHANGED — the catalog pins {a.sha256[:16]}…, GitHub now says "
+                           f"{got[1][:16]}… (never overwritten: investigate)")
+                return
+            ed.set(a.table, "sha256", got[1])
+            ed.set(a.table, "verified", "upstream-json")
+            rep.append(f"  {a.id}: sha256 {got[1][:16]}… (GitHub release asset digest)")
+            return
         if not a.pinned():
             ed.set(a.table, "verified", "unverified")
             rep.append(f"  {a.id}: no upstream checksum — marked unverified")

@@ -54,7 +54,9 @@ def parse_checksum(text: str, name: str, fmt: str = "sums", url_specific: bool =
     fmt "sums":        coreutils (`hex  name`, `hex *name`, `hex  ./dir/name`),
                        BSD tags (`SHA256 (name) = hex`), gpg --print-md
                        (`name: HEX HEX …`, wrapped), or one bare hash.
-    fmt "json:a/b/c":  a JSON document, walked by `/`-separated keys.
+    fmt "json:a/b/c":  a JSON document, walked by `/`-separated keys. The value
+                       may carry an `<algo>:` prefix (GitHub's release API
+                       says `"digest": "sha256:…"` for every asset).
     fmt "sqlite-csv":  sqlite.org/download.html's `PRODUCT,ver,path,size,sha3` rows.
     """
     if fmt.startswith("json:"):
@@ -77,8 +79,13 @@ def parse_checksum(text: str, name: str, fmt: str = "sums", url_specific: bool =
             else:
                 raise VerifyError(f"checksum JSON has no {fmt[5:]!r}")
         hx = str(node).strip().lower()
-        algo = _algo_for(hx)
-        if not algo or not re.fullmatch(r"[0-9a-f]+", hx):
+        named, sep, rest = hx.partition(":")
+        if sep:
+            if named not in HEXLEN:
+                raise VerifyError(f"checksum JSON {fmt[5:]!r}: unknown digest algorithm {named!r}")
+            hx = rest
+        algo = named if sep else _algo_for(hx)
+        if not algo or not re.fullmatch(r"[0-9a-f]+", hx) or len(hx) != HEXLEN.get(algo, -1):
             raise VerifyError(f"checksum JSON {fmt[5:]!r} is not a hex digest")
         return algo, hx
     if fmt == "sqlite-csv":
