@@ -327,13 +327,32 @@ and the rig. It is probed at runtime rather than assumed, and
 `OPENBEAST_DOCS_NO_FTS=1` forces the fallback. Ranking works in three steps:
 
 - An **exact title match** comes first: asking for `NavigationStack` means
-  that page, not the guide that says the word forty times.
+  that page, not the guide that says the word forty times. Title and query
+  are compacted the same way (every non-word character dropped,
+  lower-cased), so method symbols match too:
+  `navigationDestination(for:destination:)` finds its own page.
 - Then **bm25**, weighted title 12 > camelCase-split title 6 > headings 3 >
   body 1. All terms are tried first, then any term.
 - A camelCase query matches both the joined token and its parts.
 
 Without FTS5, a plain table is scored in Python. A parametrized test checks
 that both backends put the same document first.
+
+**The index is derived, and it behaves like it:**
+
+- Beside the `docs` table sits an ordinary `ids` table (doc id → rowid,
+  source, compact title, B-tree indexed). FTS5 cannot index an `UNINDEXED`
+  column or an expression, so "replace this page" and "the page titled
+  exactly X" used to scan every row; now both are lookups, and `reindex` /
+  `unpack` are linear (they were quadratic: minutes at 11k pages).
+- **A search writes nothing.** It opens `index.sqlite` read-only, so a
+  mirror on a read-only mount, or owned by another user, searches fine.
+- **Switching search mode rebuilds, never empties.** An index built by the
+  other mode (FTS5 vs the scan: `OPENBEAST_DOCS_NO_FTS`, or a python whose
+  sqlite lacks FTS5) or by an older schema is refilled from the pages on
+  disk the first time it is opened, by a search or a sync. When the store
+  is not writable, the search says so and names `docs.sh reindex`; reading
+  by doc id keeps working.
 
 Every hit prints title, doc id, URL, `fetched <date>, <n>d ago`, a
 `[DEPRECATED]` flag when the page carries one, and **STALE** past the
@@ -461,7 +480,12 @@ from `tests/fixtures/beast_docs/`. They pin:
   - a private address is refused without the opt-in;
   - the `--accept-terms` gate holds, for `sync` and for `live --save`.
 - **Search**: exact title first, camelCase handling, the source filter,
-  deprecation flags, and FTS5 agreeing with the scan.
+  deprecation flags, and FTS5 agreeing with the scan (and each run checked
+  to really use its backend). A mode flip, in either direction and by a
+  sync, rebuilds the index; an old-schema index is rebuilt on first search;
+  a read-only store searches without writing; method symbols match their
+  exact title; replacing a page and the exact-title step cost the same
+  SQLite work at 3,000 rows as at 300.
 - **Status**: STALE flags.
 - **Live, offline and island**: live goes through the adapter, including a
   guessed symbol URL and `--save`. Under `OFFLINE=true`, and under a

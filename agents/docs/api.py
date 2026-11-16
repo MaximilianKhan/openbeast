@@ -18,7 +18,7 @@ from typing import Optional
 from . import config as C
 from . import net
 from . import sync as S
-from .store import Store, age_days
+from .store import IndexUnavailable, Store, age_days
 
 DEFAULT_MAX_CHARS = 12000
 
@@ -62,9 +62,9 @@ def search(query: str, source: str = "", limit: int = 8, store: Optional[Store] 
     on_disk = store.sources_on_disk()
     want = [s.strip() for s in (source or "").split(",") if s.strip()]
     names = [s for s in want if s in on_disk] if want else on_disk
-    if want and not names:
+    if not names:
         return []
-    idx = store.index()
+    idx = store.search_index()
     try:
         rows = idx.search(query, names, limit)
     finally:
@@ -85,7 +85,10 @@ def search_text(query: str, source: str = "", limit: int = 8, store: Optional[St
         return (f"No documentation mirror at {store.root}. Build one when online: "
                 f"`scripts/docs.sh sync <source> --max-pages N` (`scripts/docs.sh sources` "
                 f"lists them), or carry one in with `scripts/docs.sh unpack`.\n")
-    rows = search(query, source, limit, store)
+    try:
+        rows = search(query, source, limit, store)
+    except IndexUnavailable as e:
+        return f"The documentation search index is unavailable: {e}\n"
     if not rows:
         scope = f" in {source}" if source else ""
         return (f"No mirrored documentation matches {query!r}{scope}. The mirror holds: "
@@ -131,7 +134,10 @@ def resolve_live(ref: str, source: str = "", store: Optional[Store] = None) -> t
                               f"(agents/docs/sources.toml) — live mode only fetches those")
         return src, ref
     store = store or Store()
-    hits = search(ref, source, 3, store) if store.sources_on_disk() else []
+    try:
+        hits = search(ref, source, 3, store) if store.sources_on_disk() else []
+    except IndexUnavailable:
+        hits = []
     for h in hits:
         if h["score"] >= 1000 and h["source"] in srcs:        # exact title in the mirror
             return srcs[h["source"]], h["url"]

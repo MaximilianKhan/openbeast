@@ -31,6 +31,7 @@ import sqlite3
 import tarfile
 import tempfile
 import time
+import urllib.parse
 from typing import Optional
 
 from . import config as C
@@ -186,7 +187,38 @@ class Store:
         return os.path.join(self.root, "index.sqlite")
 
     def index(self) -> "Index":
-        return Index(self.index_path())
+        """The index, read-write. One that was just (re)created — new, or
+        built by the other search mode or an older schema — is refilled from
+        the pages on disk before it is handed out: a mode flip never leaves
+        an empty index behind."""
+        idx = Index(self.index_path())
+        if idx.rebuilt:
+            try:
+                _fill(self, idx, self.sources_on_disk())
+            except BaseException:
+                idx.close()
+                raise
+        return idx
+
+    def writable(self) -> bool:
+        p = self.index_path()
+        return os.access(self.root, os.W_OK) and (not os.path.exists(p) or os.access(p, os.W_OK))
+
+    def search_index(self) -> "Index":
+        """The index for a SEARCH: opened read-only, so searching writes
+        nothing. When it cannot be used as it is (missing, the other mode, an
+        older schema) it is rebuilt if this store is writable; otherwise
+        IndexUnavailable says what to run."""
+        try:
+            return Index(self.index_path(), readonly=True)
+        except IndexUnavailable as e:
+            if not self.writable():
+                raise IndexUnavailable(
+                    f"{e}, and {self.root} is read-only here — run `docs.sh reindex` as the "
+                    f"store's owner (with this python), or unpack the mirror somewhere writable. "
+                    f"Reading a page by doc id still works.") from None
+        self.index().close()                       # rebuilds and refills
+        return Index(self.index_path(), readonly=True)
 
 
 def fts5_available() -> bool:
@@ -215,56 +247,117 @@ def _headings(md: str) -> str:
     return " ".join(re.findall(r"^#{2,6}\s+(.+)$", md, re.M))
 
 
+INDEX_SCHEMA = "2"          # 2: the `ids` side table (doc_id -> rowid, compact title)
+
+
+class IndexUnavailable(Exception):
+    """The search index cannot be used as it is and cannot be rebuilt here."""
+
+
+def _compact(s: str) -> str:
+    """The exact-title key, the SAME on both sides of the comparison:
+    `navigationDestination(for:destination:)`, "navigation destination for
+    destination" and `NavigationDestination` all compact alike."""
+    return re.sub(r"\W+", "", s or "").lower()
+
+
 class Index:
     """Search over every mirrored page. SQLite FTS5 with bm25 when the
     interpreter's sqlite has it (checked, not assumed: OPENBEAST_DOCS_NO_FTS=1
     forces the fallback), else a plain table scanned and scored in Python —
     fine for the size of a local mirror, and the same answers in the same
-    order for the cases the tests pin."""
+    order for the cases the tests pin.
 
-    def __init__(self, path: str):
+    Beside `docs` sits an ordinary table, `ids` (doc_id PRIMARY KEY -> the
+    docs rowid, source, compact title, indexed). FTS5 cannot index an
+    UNINDEXED column or an expression, so "replace this doc" and "the page
+    titled exactly X" were full scans of every row; through `ids` both are
+    B-tree lookups, and reindex/unpack are linear instead of quadratic.
+
+    `readonly=True` (searches) opens the file `mode=ro` and writes NOTHING,
+    so a mirror on a read-only mount, or owned by another user, searches
+    fine. It raises IndexUnavailable when the file was built by the other
+    search mode or an older schema: Store.search_index() rebuilds it when it
+    can and explains when it cannot. A read-write open whose meta does not
+    match recreates the tables EMPTY and sets `rebuilt`; Store.index()
+    refills them from the pages on disk."""
+
+    def __init__(self, path: str, readonly: bool = False):
         self.path = path
-        os.makedirs(os.path.dirname(path), exist_ok=True)
         self.fts = fts5_available()
+        self.mode = "fts5" if self.fts else "plain"
+        self.rebuilt = False
+        if readonly:
+            if not os.path.isfile(path):
+                raise IndexUnavailable(f"no search index at {path}")
+            uri = "file:" + urllib.parse.quote(os.path.abspath(path)) + "?mode=ro"
+            self.db = sqlite3.connect(uri, uri=True)
+            built = self._meta()
+            if built != (self.mode, INDEX_SCHEMA):
+                self.db.close()
+                raise IndexUnavailable(
+                    f"the index was built as {built[0] or '?'} (schema {built[1] or '?'}); this "
+                    f"python searches with {self.mode} (schema {INDEX_SCHEMA})")
+            return
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         self.db = sqlite3.connect(path)
-        mode = "fts5" if self.fts else "plain"
         self.db.execute("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)")
-        row = self.db.execute("SELECT v FROM meta WHERE k='mode'").fetchone()
-        if row and row[0] != mode:                 # built by the other mode: rebuild
+        if self._meta() != (self.mode, INDEX_SCHEMA):
+            # New, built by the other mode, or an older schema: recreate empty.
             self.db.execute("DROP TABLE IF EXISTS docs")
-        self.db.execute("INSERT OR REPLACE INTO meta VALUES ('mode', ?)", (mode,))
-        if self.fts:
-            self.db.execute(
-                "CREATE VIRTUAL TABLE IF NOT EXISTS docs USING fts5("
-                "doc_id UNINDEXED, source UNINDEXED, url UNINDEXED, fetched_at UNINDEXED,"
-                "title, keywords, headings, body, tokenize = \"unicode61 tokenchars '_'\")")
-        else:
-            self.db.execute(
-                "CREATE TABLE IF NOT EXISTS docs (doc_id TEXT, source TEXT, url TEXT,"
-                " fetched_at TEXT, title TEXT, keywords TEXT, headings TEXT, body TEXT)")
-        self.db.commit()
+            self.db.execute("DROP TABLE IF EXISTS ids")
+            if self.fts:
+                self.db.execute(
+                    "CREATE VIRTUAL TABLE docs USING fts5("
+                    "doc_id UNINDEXED, source UNINDEXED, url UNINDEXED, fetched_at UNINDEXED,"
+                    "title, keywords, headings, body, tokenize = \"unicode61 tokenchars '_'\")")
+            else:
+                self.db.execute(
+                    "CREATE TABLE docs (doc_id TEXT, source TEXT, url TEXT,"
+                    " fetched_at TEXT, title TEXT, keywords TEXT, headings TEXT, body TEXT)")
+            self.db.execute("CREATE TABLE ids (doc_id TEXT PRIMARY KEY, rid INTEGER NOT NULL,"
+                            " source TEXT NOT NULL, compact TEXT NOT NULL)")
+            self.db.execute("CREATE INDEX ids_compact ON ids (compact)")
+            self.db.execute("CREATE INDEX ids_source ON ids (source)")
+            self.db.execute("INSERT OR REPLACE INTO meta VALUES ('mode', ?)", (self.mode,))
+            self.db.execute("INSERT OR REPLACE INTO meta VALUES ('schema', ?)", (INDEX_SCHEMA,))
+            self.db.commit()
+            self.rebuilt = True
+
+    def _meta(self) -> tuple:
+        try:
+            kv = dict(self.db.execute("SELECT k, v FROM meta WHERE k IN ('mode', 'schema')"))
+        except sqlite3.Error:
+            return (None, None)
+        return (kv.get("mode"), kv.get("schema"))
 
     def close(self):
         self.db.close()
 
     def upsert(self, source, url, did, title, fetched_at, md, commit=True):
-        self.db.execute("DELETE FROM docs WHERE doc_id = ?", (did,))
+        row = self.db.execute("SELECT rid FROM ids WHERE doc_id = ?", (did,)).fetchone()
+        if row:
+            self.db.execute("DELETE FROM docs WHERE rowid = ?", (row[0],))
         body = _body_text(md)
-        self.db.execute("INSERT INTO docs (doc_id, source, url, fetched_at, title, keywords,"
-                        " headings, body) VALUES (?,?,?,?,?,?,?,?)",
-                        (did, source, url, fetched_at, title, _camel_split(title),
-                         _headings(body), body))
+        cur = self.db.execute("INSERT INTO docs (doc_id, source, url, fetched_at, title, keywords,"
+                              " headings, body) VALUES (?,?,?,?,?,?,?,?)",
+                              (did, source, url, fetched_at, title, _camel_split(title),
+                               _headings(body), body))
+        self.db.execute("INSERT OR REPLACE INTO ids VALUES (?,?,?,?)",
+                        (did, cur.lastrowid, source, _compact(title)))
         if commit:
             self.db.commit()
 
-    def drop_source(self, source):
+    def drop_source(self, source, commit=True):
         self.db.execute("DELETE FROM docs WHERE source = ?", (source,))
-        self.db.commit()
+        self.db.execute("DELETE FROM ids WHERE source = ?", (source,))
+        if commit:
+            self.db.commit()
 
     def count(self, source=None) -> int:
         if source:
-            return self.db.execute("SELECT count(*) FROM docs WHERE source=?", (source,)).fetchone()[0]
-        return self.db.execute("SELECT count(*) FROM docs").fetchone()[0]
+            return self.db.execute("SELECT count(*) FROM ids WHERE source=?", (source,)).fetchone()[0]
+        return self.db.execute("SELECT count(*) FROM ids").fetchone()[0]
 
     @staticmethod
     def terms(query: str) -> list:
@@ -297,20 +390,31 @@ class Index:
         rows = self._fts(q, terms, sources, limit) if self.fts else self._scan(terms, sources, limit, q)
         return rows[:limit]
 
-    def _filter(self, sources):
+    def _filter(self, sources, col="source"):
         if not sources:
             return "", []
-        return f" AND source IN ({','.join('?' * len(sources))})", list(sources)
+        return f" AND {col} IN ({','.join('?' * len(sources))})", list(sources)
+
+    def _exact(self, q, sources, limit) -> list:
+        """Pages whose compacted title equals the compacted query: an
+        indexed lookup in `ids`, then the rows by rowid."""
+        where, args = self._filter(sources, "source")
+        rids = [r[0] for r in self.db.execute(
+            "SELECT rid FROM ids WHERE compact = ?" + where + " ORDER BY doc_id LIMIT ?",
+            [_compact(q)] + args + [limit])]
+        rows = []
+        for rid in rids:
+            r = self.db.execute("SELECT doc_id, source, url, fetched_at, title, substr(body, 1, 400) "
+                                "FROM docs WHERE rowid = ?", (rid,)).fetchone()
+            if r:
+                rows.append(r)
+        return rows
 
     def _fts(self, q, terms, sources, limit):
         where, args = self._filter(sources)
-        compact = re.sub(r"\W+", "", q).lower()
         out, seen = [], set()
-        # 1. exact title (case/space-insensitive)
-        for r in self.db.execute(
-                "SELECT doc_id, source, url, fetched_at, title, substr(body, 1, 400) FROM docs "
-                "WHERE lower(replace(replace(title, ' ', ''), '`', '')) = ?" + where + " LIMIT ?",
-                [compact] + args + [limit]):
+        # 1. exact title (case/space/punctuation-insensitive)
+        for r in self._exact(q, sources, limit):
             seen.add(r[0])
             out.append(self._row(r, _first_para(r[5]), 1000.0))
         # 2. bm25: all terms, then any term
@@ -334,12 +438,12 @@ class Index:
 
     def _scan(self, terms, sources, limit, q):
         where, args = self._filter(sources)
-        compact = re.sub(r"\W+", "", q).lower()
+        compact = _compact(q)
         scored = []
         for r in self.db.execute("SELECT doc_id, source, url, fetched_at, title, keywords, "
                                  "headings, body FROM docs WHERE 1=1" + where, args):
             title, kw, hd, body = (x.lower() for x in r[4:8])
-            if re.sub(r"[\s`]+", "", title) == compact:
+            if _compact(title) == compact:
                 s = 1000.0
             else:
                 fields = ((title, 12.0), (kw, 6.0), (hd, 3.0), (body, 1.0))
@@ -384,25 +488,31 @@ def _scan_snippet(body: str, terms) -> str:
 
 # ── reindex ──────────────────────────────────────────────────────────────
 
-def reindex(store: Store, sources=None) -> int:
-    idx = store.index()
+def _fill(store: Store, idx: Index, sources) -> int:
+    """(Re)index `sources` from their pages on disk, in one transaction."""
     n = 0
+    for name in sources:
+        idx.drop_source(name, commit=False)
+        m = store.load(name)
+        for url, rec in m["pages"].items():
+            try:
+                md = store.read_page(name, rec["file"])
+            except (OSError, ValueError, KeyError):
+                continue
+            idx.upsert(name, url, rec.get("doc_id") or doc_id(name, url), rec.get("title", ""),
+                       rec.get("fetched_at", ""), md, commit=False)
+            n += 1
+    idx.db.commit()
+    return n
+
+
+def reindex(store: Store, sources=None) -> int:
+    idx = Index(store.index_path())
     try:
-        for name in sources or store.sources_on_disk():
-            idx.drop_source(name)
-            m = store.load(name)
-            for url, rec in m["pages"].items():
-                try:
-                    md = store.read_page(name, rec["file"])
-                except (OSError, ValueError, KeyError):
-                    continue
-                idx.upsert(name, url, rec.get("doc_id") or doc_id(name, url), rec.get("title", ""),
-                           rec.get("fetched_at", ""), md, commit=False)
-                n += 1
-        idx.db.commit()
+        # A just-(re)created index holds nothing: fill ALL of it, not only `sources`.
+        return _fill(store, idx, store.sources_on_disk() if idx.rebuilt or not sources else sources)
     finally:
         idx.close()
-    return n
 
 
 # ── bundles ──────────────────────────────────────────────────────────────

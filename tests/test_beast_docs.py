@@ -751,9 +751,16 @@ def _search_titles(q, **kw):
 @pytest.mark.parametrize("no_fts", ["0", "1"])
 def test_search_ranking(env, monkeypatch, no_fts):
     monkeypatch.setenv("OPENBEAST_DOCS_NO_FTS", no_fts)
+    if no_fts == "0" and not _sqlite_has_fts5():
+        pytest.skip("this interpreter's sqlite has no FTS5")
     _sync("swiftui")
     _sync("android-compose")
-    assert ST.fts5_available() is (no_fts == "0" and ST.fts5_available())
+    idx = ST.Store().search_index()                   # the backend the searches below really use
+    try:
+        assert idx.fts is (no_fts == "0")
+        assert idx._meta() == ("fts5" if no_fts == "0" else "plain", ST.INDEX_SCHEMA)
+    finally:
+        idx.close()
     # the guide says "NavigationStack" four times; the symbol page still wins
     assert _search_titles("NavigationStack")[0] == "NavigationStack"
     assert _search_titles("navigation stack")[0] in ("NavigationStack", "Understanding navigation")
@@ -767,6 +774,116 @@ def test_search_ranking(env, monkeypatch, no_fts):
     assert out.startswith("=== platform docs:")
     assert f"{env['stub'].base}/documentation/swiftui/navigationstack" in out
     assert "fetched 20" in out                                 # every hit carries its date
+
+
+def _sqlite_has_fts5() -> bool:
+    import sqlite3
+    try:
+        sqlite3.connect(":memory:").execute("CREATE VIRTUAL TABLE t USING fts5(a)")
+        return True
+    except sqlite3.Error:
+        return False
+
+
+def test_search_mode_flip_rebuilds_instead_of_emptying_the_index(env, monkeypatch):
+    if not _sqlite_has_fts5():
+        pytest.skip("needs FTS5 to flip between the two modes")
+    _sync("swiftui")
+    assert _search_titles("NavigationStack")[0] == "NavigationStack"
+    monkeypatch.setenv("OPENBEAST_DOCS_NO_FTS", "1")
+    assert _search_titles("NavigationStack")[0] == "NavigationStack"      # rebuilt as plain
+    monkeypatch.delenv("OPENBEAST_DOCS_NO_FTS")
+    assert _search_titles("NavigationStack")[0] == "NavigationStack"      # and back
+    # a sync under the other mode refills everything, not just the pages it touched
+    monkeypatch.setenv("OPENBEAST_DOCS_NO_FTS", "1")
+    env["stub"].overrides["/tutorials/data/documentation/swiftui/view.json"] = b"[]"
+    _sync("swiftui", force=True)
+    idx = ST.Store().index()
+    try:
+        assert idx.count("swiftui") == 5
+    finally:
+        idx.close()
+
+
+def test_old_schema_index_is_rebuilt_on_first_search(env):
+    _sync("swiftui")
+    import sqlite3
+    db = sqlite3.connect(ST.Store().index_path())
+    db.execute("DELETE FROM meta WHERE k = 'schema'")             # what a schema-1 index looks like
+    db.execute("DROP TABLE ids")
+    db.commit()
+    db.close()
+    assert _search_titles("NavigationStack")[0] == "NavigationStack"
+
+
+def test_search_on_a_read_only_store(env):
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("root ignores file modes")
+    _sync("swiftui")
+    s = ST.Store()
+    before = os.stat(s.index_path()).st_mtime_ns
+    os.chmod(s.index_path(), 0o444)
+    os.chmod(s.root, 0o555)
+    try:
+        assert _search_titles("NavigationStack")[0] == "NavigationStack"
+        assert api.read_text("swiftui:/documentation/swiftui/navigationstack")
+        assert os.stat(s.index_path()).st_mtime_ns == before       # a search writes nothing
+        # built by the other mode and not writable here: a clear message, not a crash
+        os.environ["OPENBEAST_DOCS_NO_FTS"] = "1" if _sqlite_has_fts5() else "0"
+        try:
+            out = api.search_text("NavigationStack")
+        finally:
+            del os.environ["OPENBEAST_DOCS_NO_FTS"]
+        if _sqlite_has_fts5():
+            assert out.startswith("The documentation search index is unavailable") and "reindex" in out
+    finally:
+        os.chmod(s.root, 0o755)
+        os.chmod(s.index_path(), 0o644)
+
+
+def test_index_lookups_do_not_scan_every_row(tmp_path, monkeypatch):
+    """Replacing a doc and the exact-title step are B-tree lookups through
+    `ids`: their cost must not grow with the number of rows (they were full
+    scans of the FTS table, which made reindex and unpack quadratic)."""
+    for mode in (["0", "1"] if _sqlite_has_fts5() else ["1"]):
+        monkeypatch.setenv("OPENBEAST_DOCS_NO_FTS", mode)
+        cost = {}
+        for n in (300, 3000):
+            idx = ST.Index(str(tmp_path / f"i{mode}{n}.sqlite"))
+            for i in range(n):
+                idx.upsert("s", f"u{i}", f"s:/p{i}", f"Title{i}", "", f"body {i}", commit=False)
+            idx.db.commit()
+            steps = [0]
+
+            def tick(steps=steps):
+                steps[0] += 1
+            idx.db.set_progress_handler(tick, 1)       # counts SQLite VM steps
+            idx.upsert("s", "u7", "s:/p7", "Title7", "", "new body")     # a replace
+            exact = idx._exact("title 7", None, 8)                        # the exact-title step
+            cost[n] = steps[0]
+            idx.db.set_progress_handler(None, 1)
+            assert [r[0] for r in exact] == ["s:/p7"]
+            assert idx.count() == n and idx.search("Title7")[0]["doc_id"] == "s:/p7"
+            idx.close()
+        # 10x the rows, (nearly) the same work: no scan hides in either step
+        assert cost[3000] < cost[300] * 1.5 + 100, (mode, cost)
+
+
+def test_exact_title_matches_method_symbols():
+    import tempfile
+    for mode in ("0", "1"):
+        os.environ["OPENBEAST_DOCS_NO_FTS"] = mode
+        try:
+            idx = ST.Index(os.path.join(tempfile.mkdtemp(), "i.sqlite"))
+            idx.upsert("swiftui", "u1", "swiftui:/a", "navigationDestination(for:destination:)", "",
+                       "Associates a destination view with a presented data type.")
+            idx.upsert("swiftui", "u2", "swiftui:/b", "Navigation guide", "",
+                       "navigationDestination for destination, for destination.")
+            top = idx.search("navigationDestination(for:destination:)")[0]
+            assert top["doc_id"] == "swiftui:/a" and top["score"] == 1000.0, (mode, top)
+            idx.close()
+        finally:
+            del os.environ["OPENBEAST_DOCS_NO_FTS"]
 
 
 def test_status_flags_stale_mirrors(env):
