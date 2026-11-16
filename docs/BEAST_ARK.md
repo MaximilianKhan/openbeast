@@ -74,7 +74,10 @@ beast-ark reuses the patterns of all three:
   and `plan` never dial.
 
 `agents/ark/` is under `agents/`, so it ships in the client-mode slim
-checkout too. A Mac client can fill a drive or restore from one.
+checkout too. A Mac client can fill a drive or restore from one, with
+one exception: a **pip set** must be fetched on a box of its own platform
+and python (§3.2), so the Linux vLLM sets are filled on a Linux box (a
+Spark for linux-aarch64).
 
 ---
 
@@ -87,8 +90,9 @@ checkout too. A Mac client can fill a drive or restore from one.
 | **signature** (`signature_url`) with a **vendored** key | the publisher's key signed it (minisign, TensorFold's ed25519). GPG with a pinned keyring | — |
 | **git commit pin** | the tag still points where it did when `lock` ran: a moved tag is **refused** | — |
 | **OCI digest pin** | every manifest and blob is content-addressed and re-checked on arrival | — |
-| **`ark.lock` on the drive** | the drive did not change since `fetch` (bit rot, a bad copy, tampering by someone who did not also rewrite the lock) | that the lock itself is genuine: it is on the same drive. Keep a copy of `ark.lock` off the drive, or compare with the catalog's pins (§9) |
-| **trust on first use** (`verified = "unverified"` in the catalog → `tofu` in the lock) | only that the drive still holds what was downloaded | anything about the download. Used only where upstream publishes **no** checksum. Named in the catalog, refused without `--allow-unverified`, and reported by every `verify` |
+| **GitHub release-asset digest** (`verified = "upstream-json"` on a file with no `checksum_url`) | GitHub's own sha256 for the asset, read from its release API at `lock` time | anything against a compromised maintainer account (GitHub computes it from what was uploaded). It is the same trust as a `checksums.txt` on the same release |
+| **`ark.lock` on the drive** | the drive did not change since `fetch` (bit rot, a bad copy, tampering by someone who did not also rewrite the lock) | that the lock itself is genuine: it is on the same drive. Keep a copy of `ark.lock` off the drive, or compare with the catalog's pins (§9). **Nothing in it is trusted to name a place on the restoring box:** entry names, `bins`, tags and commits are checked before they become paths or git arguments (§7.4) |
+| **trust on first use** (`verified = "unverified"` in the catalog → `tofu` in the lock) | only that the drive still holds what was downloaded | anything about the download. Used only where upstream publishes **no** checksum file **and** the file is not a GitHub release asset (whose digest `lock` takes instead). Named in the catalog, refused without `--allow-unverified`, and reported by every `verify` — including after `lock --from` has copied the hash into the catalog (the lock then says `tofu-pinned`, §10.4) |
 
 The catalog is the trust root, as `models/*.lock` is for weights. A hash
 came from upstream once, at `lock` time, and from then on it is a fact in
@@ -190,9 +194,9 @@ checks that it reads the real catalog exactly as `tomllib` does.
 | `checksum_url`, `checksum_format`, `checksum_name` | the upstream checksum. Formats: `sums` (coreutils `hex  name` / `hex *name` / paths, BSD `SHA256 (name) = hex`, gpg `--print-md` wrapped hex as Apache uses, or one bare hash at a per-file URL), `json:a/b/c` with `[k=v,…]` list selectors (Zig's `index.json`, Grafana's download API), `sqlite-csv` (sqlite.org's download page). `checksum_name` sets the name to look up when it differs from the URL's basename |
 | `signature_url`, `signature_kind`, `signature_key`, `signature_prefix` | `minisign` (key: the base64 `RW…` or a repo path), `ed25519-sums` (a repo-path PEM key; the signature covers `prefix + checksum file`, as TensorFold's does), `gpg`, `cosign`. A signature over the checksum file (`SHASUMS256.txt.sig`) is detected from the URL |
 | `install` | how `restore` lays it out: `bin` (one executable), `tar` / `zip` / `zst` (unpack; one top directory is stripped), `gz` / `bz2` / `xz` (one compressed binary), `manual` (unpack it yourself; the note says how), `data` (kept as-is: ISOs, ZIMs, air-gap image bundles) |
-| `bins` | paths inside the install root to link into `~/.local/bin`. The default is every executable in `bin/` |
+| `bins` | paths inside the install root to link into `~/.local/bin`. The default is every executable in `bin/`. For `install = "bin"` / `gz` / `bz2` / `xz` it is ONE file name. The lint, and `restore` again, refuse an absolute path or a `..` |
 | `strip` | `0` keeps a lone top directory (`containerd`'s `bin/`); the default `-1` means auto |
-| `verified` | where the hash came from: `upstream-sums`, `upstream-json`, `registry`, `tofu`, or the explicit **`unverified`** |
+| `verified` | where the hash came from: `upstream-sums`, `upstream-json` (a JSON index, or GitHub's release API digest for an asset with no checksum file), `registry`, `tofu`, or the explicit **`unverified`** |
 
 `kind = "oci"`: an image (or a non-image OCI artifact such as Trivy's
 vulnerability DB), pinned by **digest**.
@@ -209,13 +213,28 @@ vulnerability DB), pinned by **digest**.
 the ecosystem's own tool at fetch time, so `verified = "tofu"`:
 
 - `pip`: `requirements = ["vllm=={version}"]`, `python = "3.12"`,
-  `pip_platforms = [manylinux tags]`. It is `pip download --only-binary` for
-  the TARGET platform (not the fetching box's), and it writes
-  `requirements.ark.txt` with a `--hash` line per wheel, so the offline
-  install runs `--require-hashes`.
+  `pip_platforms = [manylinux tags]`. It is `pip download --only-binary`
+  with the target's wheel tags, and it writes `requirements.ark.txt` with a
+  `--hash` line per wheel, so the offline install runs `--require-hashes`.
+  **Fetch a pip set on a box of its platform, running its python.** pip's
+  `--platform` / `--python-version` choose wheel *tags* only; the
+  environment markers in dependency metadata (`sys_platform`,
+  `platform_machine`, `python_version`) are evaluated against the box that
+  runs pip. A linux-x86_64 vLLM set resolved on a Mac or an aarch64 Spark
+  silently drops torch's `platform_machine == "x86_64"` nvidia-* wheels,
+  and the offline install then fails on the target. So `fetch` refuses a
+  set whose platform or python does not match the running box, and says
+  which box to use; `--allow-cross-pip` accepts the risk and records
+  `verified = "tofu+cross-host"`, which `verify` reports. It resolves from
+  **PyPI only**, `pip download --isolated --index-url https://pypi.org/simple/`
+  with `PIP_*` cleared, so an extra index in the fetching box's pip config
+  can never supply a package. A mirror is used only when named on purpose
+  in `ARK_PIP_INDEX_URL`, and the lock's `source` records the index used.
 - `npm`: `packages = ["name@ver"]`. The whole tree comes from
-  `npm install --package-lock-only`, and every tarball is checked against
-  the registry's `integrity`.
+  `npm install --package-lock-only --registry=https://registry.npmjs.org/`
+  with `~/.npmrc` and the global config ignored (`ARK_NPM_REGISTRY` names a
+  mirror on purpose). Every tarball must resolve on that registry and is
+  checked against its `integrity`; one with no `integrity` is refused.
 - `gomod`: `go mod download` in a clone of the entry's git pin. Go checks
   every module against `go.sum`, and the drive keeps the `cache/download`
   tree, which is a GOPROXY.
@@ -272,19 +291,22 @@ It fails on:
 
 **Verification, as `lock` left it:**
 
-- **291 of 350 artifacts are hash- or digest-pinned from upstream.**
+- **334 of 350 artifacts are hash- or digest-pinned from upstream.**
   - 251 files from upstream checksum files;
   - 6 from upstream JSON indexes (Zig's `index.json`, Grafana's download API);
+  - 43 GitHub release assets with no checksum file, from the per-asset
+    `digest` GitHub's release API publishes (2026-11-16): BuildKit, LLVM,
+    ninja, mold, ccache, DuckDB, ClickHouse's macOS binary, SeaweedFS (MD5
+    only upstream), neovim, code-server, fd, yq (a multi-hash table),
+    shellcheck, age (transparency proofs), curl-static, the meson source
+    tarball and buildx's darwin binary (its `checksums.txt` lists Linux
+    only);
   - 34 images and DB artifacts by registry digest.
-- 53 files are explicitly `unverified`, because their upstream publishes no
-  checksum at all:
-  - Docker's static tarballs, BuildKit, LLVM, Swift, ninja, mold, ccache,
-    DuckDB, ClickHouse's macOS binary, SeaweedFS (MD5 only), neovim,
-    code-server, fd, yq (a multi-hash table), shellcheck, age (transparency
-    proofs), curl-static and kiwix-tools;
-  - the nginx and meson source tarballs (gpg only);
-  - k3s's `install.sh` (it is also inside the commit-verified git pin);
-  - buildx's darwin binary (its `checksums.txt` lists Linux only).
+- 10 files are explicitly `unverified`, because their upstream publishes no
+  checksum at all and they are not GitHub release assets:
+  - Docker's static tarballs (3) and kiwix-tools (3);
+  - Swift (2) and the nginx source tarball (gpg only);
+  - k3s's `install.sh` (it is also inside the commit-verified git pin).
 - 6 package sets are `tofu` by design:
   - vLLM for x86_64 and aarch64;
   - ansible-core for all three platforms;
@@ -491,7 +513,7 @@ artifacts                        5.42 GiB
 git (source)               ≤14.50 GiB +3?
 
 $ ./scripts/ark.sh lint
-lint …/agents/ark/catalog.toml: 112 entries, 350 artifacts (291 hash/digest-pinned), 0 problem(s)
+lint …/agents/ark/catalog.toml: 112 entries, 350 artifacts (334 hash/digest-pinned), 0 problem(s)
 ```
 
 `--only a,b`, `--category c` and `--profile core|full|both` combine;
@@ -523,7 +545,8 @@ That is the real 2026-11-15 smoke run: 228 MB in 30 s. Options:
 | `--platform P` (repeatable) | which platforms; the default is all three. `--platform linux-aarch64` fills a Spark-only drive |
 | `--profile core`, `--only`, `--category` | which entries |
 | `--kinds file,oci,git,pip,npm,gomod,cargo`, `--no-git` | which kinds of item |
-| `--allow-unverified` | accept the 53 no-checksum files as TOFU |
+| `--allow-unverified` | accept the 10 no-checksum files as TOFU |
+| `--allow-cross-pip` | fetch a pip set on a box whose platform or python differs from the set's (§3.2): recorded as `tofu+cross-host`, and the closure may be incomplete |
 | `--recheck` | re-hash what is already present instead of trusting its size |
 | `--dry-run` | list what would be fetched |
 
@@ -541,12 +564,26 @@ FAILED …: minisign signature does NOT verify
 FAILED git:toy: tag v1.0 is commit 77a1… upstream, the catalog pins 0000… — REFUSED (a moved tag is exactly what a pin is for)
 FAILED app/oci/app: …@sha256:eeee…: the registry served a manifest whose digest is sha256:3f1c… — refused
 FAILED nosum/any/blob.bin: no hash pin and no upstream checksum — refused (--allow-unverified records it as trust-on-first-use)
+FAILED zg/any/zig.tar.xz: the minisign signature is not valid base64                (a garbled upstream file fails its item only)
+FAILED app/oci/app: toy/app@sha256:…: the registry did not answer JSON               (an HTML error page served with 200)
+FAILED demo/pip/linux-x86_64: this box is darwin-arm64, the set is for linux-x86_64. pip evaluates dependency markers against the box it runs on, …
+FAILED lp/npm/any: node_modules/left-pad has no integrity in the lock — refused (nothing to check it against)
 ```
+
+An image whose pull outlives its registry token (Docker Hub's anonymous
+ones last 300 s) is not one of these: the expired token is replaced from
+the registry's challenge and the blob resumes.
+
+**Topping up a platform keeps what is there.** One archive holds every
+kept platform of an image, so `fetch --platform linux-aarch64` on a drive
+filled for linux-x86_64 rewrites each image with **both** platforms. The
+amd64 blobs are copied out of the existing archive, not downloaded again.
 
 Package sets need their tool on the fetching box:
 
-- `pip` uses the running python's pip and downloads wheels for the
-  *target* platform tags;
+- `pip` uses the running python's pip, which must match the set's
+  platform and python (§3.2): `OPENBEAST_PYTHON=~/.local/opt/cpython-3.12/bin/python3
+  ./ark fetch --kinds pip --platform host` on the target box;
 - `npm` needs npm;
 - `gomod` needs go (restore it from the ark first:
   `ark restore go --from …`);
@@ -565,7 +602,10 @@ RESULT: OK
 It re-hashes every file in `ark.lock` and re-checks every minisign and
 ed25519 signature. `--deep` also re-hashes every blob inside every OCI
 archive. `--quick` checks presence and size only, takes minutes on a full
-drive, and says `NOT re-hashed`. On failure:
+drive, and says `NOT re-hashed`. `--jobs N` hashes N files at once: about
+N times faster on storage quicker than one core's sha256 (~1.8 GB/s:
+internal NVMe, a USB4 SSD); keep the default 1 on a spinning disk. On
+failure:
 
 ```
 verify /Volumes/ARK: 21 files OK across 12 items
@@ -574,6 +614,7 @@ verify /Volumes/ARK: 21 files OK across 12 items
   1 file(s) on the drive that ark.lock does not list (never served or restored):
     files/toy/planted.sh
   2 item(s) trusted on first use (no upstream checksum existed): docker/linux-x86_64/…
+                                     (also every `tofu-pinned` and `tofu+cross-host` item)
   14 gpg/cosign signature(s) kept but not checked here (docs/BEAST_ARK.md §9)
 RESULT: FAILED
 ```
@@ -605,6 +646,24 @@ digest.
 
 Every file is re-hashed before it is used. One corrupt file refuses the
 whole entry (`… is CORRUPT … — refusing to restore it`, exit 1).
+
+**Nothing on the drive chooses where restore writes.** `ark.lock` is on
+the same drive it describes, so a swapped drive can rewrite it. Restore
+therefore refuses (exit 1):
+
+- an entry name that is not a catalog name (`../../x`);
+- a `bins` value that is not one file name for a single binary, or that
+  resolves outside the install root (`../../../../.ssh/authorized_keys`);
+- a git commit that is not full hex, or a tag that is not a plain name
+  (they are git arguments).
+
+**Archives are unpacked one member at a time, each checked against the
+disk as it is then**, so a link chain (`y -> .`, `x -> y/..`, `x/evil`)
+cannot write outside the target, and every link is re-resolved once the
+tree is complete. This does not depend on python 3.12's tar `data` filter
+(which is applied on top where it exists): a Mac's `/usr/bin/python3`
+3.9.6 is as safe. The archive is read once, front to back, so a `.tar.xz`
+is decompressed once.
 
 | what | where it goes | options |
 |---|---|---|
@@ -758,7 +817,9 @@ cd ~/src/minio && GOFLAGS=-mod=mod GONOSUMDB='*' GOPROXY=file:///media/$USER/ARK
 ```
 
 Restore checks that `--python` is the version the wheels were resolved for
-(`python = "3.12"` in the catalog), and says so when it is not.
+(`python = "3.12"` in the catalog), and says so when it is not. The set
+itself must have been fetched on a box of this platform running that
+python (§3.2); a `tofu+cross-host` set may be missing wheels.
 
 ### 8.8 Offline docs
 
@@ -798,7 +859,7 @@ in the ark. Rebuild them from NVIDIA's recovery media, then
 |---|---|
 | `/` | an index page with the client lines below |
 | `/healthz` | |
-| `/files/…`, `/git/…`, `/oci/…`, `/pkgs/…` | the stored files, with **Range support** (a client's download resumes). **Only paths in `ark.lock` are served.** A planted file, the stage and `../` all get 404 |
+| `/files/…`, `/git/…`, `/oci/…`, `/pkgs/…` | the stored files, with **Range support** (a client's download resumes; an inverted range answers 416). **Only paths in `ark.lock` are served, and only as regular files inside the drive.** A planted file, the stage, `../`, and a listed file swapped for a symlink (to `~/.ssh`, say) all get 404 |
 | `/ark.lock`, `/SHA256SUMS`, `/ARK.md`, `/catalog.toml` | the drive's own records |
 | `/v2/…` | a **pull-only OCI registry** answered straight out of the `*.oci.tar` archives (no copy, no daemon): `/v2/_catalog`, `/tags/list`, manifests by tag or by **the pinned digest**, blobs. A platform that was not archived answers `MANIFEST_UNKNOWN: not archived on this drive` |
 | `/pypi/simple/` | a PEP 503 index over every stored wheel, each link tagged `#sha256=` from the lock, so pip checks it |
@@ -808,6 +869,12 @@ in the ark. Rebuild them from NVIDIA's recovery media, then
 Every write method answers **405**. There is no auth: it serves public
 software, and the bind address is the boundary. Prefer `--tailnet`, and
 note that beast-gate does not front it (it is not an inference path).
+
+It speaks HTTP/1.1 keep-alive, so a pip or go client pulling hundreds of
+small files reuses one connection instead of paying a tailnet round trip
+per file. An image archive that is missing or unreadable is skipped with
+`warning: not serving oci/…` and everything else is still served; run
+`verify` to see why.
 
 ### 9.1 Clients
 
@@ -873,7 +940,7 @@ the catalog in git.
 
 ```bash
 ./scripts/ark.sh update                 # what is newer upstream: prints the catalog diff, writes NOTHING
-./scripts/ark.sh update --only kubernetes,helm --write     # applies it; clears the bumped entries' hashes
+./scripts/ark.sh update --only kubernetes,helm --write     # applies it; clears every pin the bump moves
 ./scripts/ark.sh lock                   # re-derives every cleared commit / sha256 / digest / size from upstream
 ./scripts/ark.sh lint && python3 -m pytest tests/test_ark.py -q
 git diff agents/ark/catalog.toml        # review it like an image-digest bump, then commit
@@ -892,6 +959,13 @@ suggestion is why `update` never writes silently: the diff is the review.
 It now skips anything that does not start with a digit, and every
 pre-release marker (`rc`, `alpha`, `beta`, `dev`, PEP 440 `b2` / `a1`).
 It also never moves a pin backwards.
+
+**What `--write` clears.** Every sha256, size, digest and commit whose
+upstream location changes with the version. That is decided by expanding
+the templates under the old and the new version, not by looking for the
+text `{version}`: jq's URL is `…/download/{tag}/jq-linux-amd64` with
+`tag = "jq-{version}"`, and Temurin's goes through `{version_pu}`. Both
+move, so both are cleared. A file whose URL does not move keeps its pin.
 
 ### 10.2 How each entry finds its update
 
@@ -923,7 +997,7 @@ value, and `--dry-run` prints the diff only:
 | field | source |
 |---|---|
 | `commit` | `git ls-remote` (peeled tag, or `HEAD` when there is no tag) |
-| `sha256` / `upstream_hash` + `verified` | the checksum file, which must name the file |
+| `sha256` / `upstream_hash` + `verified` | the checksum file, which must name the file. With no `checksum_url` and a GitHub release URL, GitHub's release API digest for that asset (`upstream-json`); only then `unverified` |
 | `size` | HEAD |
 | `digest` + `platform_sizes` + `verified = "registry"` | the registry. A HEAD, which Docker Hub does not count against its pull limit, then the manifests |
 | `git_size` | the GitHub API |
@@ -953,7 +1027,9 @@ It copies hashes from a drive's `ark.lock` into the catalog:
 
 That turns a first-use hash into a reviewed pin. It is the only way a hash
 reaches the catalog from our own download, and the `tofu` mark says so
-forever.
+forever: a later fetch from that catalog records the file as
+`tofu-pinned` (checked against the hash, still first-use provenance), and
+`verify` keeps naming it.
 
 ---
 
@@ -969,11 +1045,17 @@ forever.
 | `HTTP 404` at `lock` / `fetch` | the version bump changed a file name, or a `vars` build id (Grafana) is stale | fix the template or the var |
 | `HTTP 410 Gone` | upstream withdrew the release (MinIO did) | archive the source and modules instead (the `minio` entry shows how) |
 | `HTTP 429` from Docker Hub | the anonymous pull limit, at `fetch` (blobs) | wait; or fetch fewer images at a time (`--kinds oci --only …`) |
+| `HTTP 401` on a blob | a registry whose challenge gives no new token | an expired token alone is handled (it is renewed and the blob resumes); re-run |
+| `fetch` (pip): `this box is …, the set is for …` / `the set is for 3.12` | pip would resolve the closure's markers for the wrong box | fetch that set on a box of its platform with its python (§3.2), or `--allow-cross-pip` knowingly |
+| `fetch` (npm): `… resolves to …, not the registry` / `has no integrity` | an `.npmrc`-style redirect, or a lock entry with nothing to check | none needed: refused by design |
 | `minisign signature does NOT verify` / `… is by a different key` | a tampered file or signature, or a re-keyed upstream | refuse. If upstream really re-keyed, vendor the new key by review |
 | `verify`: `CORRUPT` | bit rot or a bad copy | re-fetch that entry on a connected box (`fetch --only <entry> --recheck`), or copy it from a second drive and `verify` again |
 | `verify`: files "that ark.lock does not list" | something was added to the drive by hand, or a fetch was interrupted between writing a file and the lock | they are never served or restored; delete them, or re-fetch |
 | `restore`: `is CORRUPT … refusing to restore it` | as for verify | as for verify |
-| `restore`: `nothing on this drive for linux-aarch64` | the drive was filled with `--platform` excluding this box | fetch that platform |
+| `restore`: `nothing on this drive for linux-aarch64` | the drive was filled with `--platform` excluding this box | fetch that platform (images keep the platforms already archived, §7.2) |
+| `restore`: `archive member … escapes the target` / `archive link … resolves outside the target` | a tarball built to write outside its directory | refuse the drive or the upstream file; nothing was written outside |
+| `restore`: `ark.lock names the binary …` / `… outside the install root` / `not a catalog name` | the drive's lock was edited to point restore at your files | use another drive; compare its `ark.lock` with a copy kept elsewhere |
+| `serve`: `warning: not serving oci/…` | that archive is missing or truncated | `verify`, then re-fetch it; the rest is served meanwhile |
 | `restore` (pip): `wheels are for python 3.12` | the wrong `--python` | `restore cpython-3.12`, then pass its `python3` |
 | `docker load` fails on an old docker | before 20.10 | `restore --registry` into `ark serve`'s registry, or skopeo |
 | a registry refuses the index on `restore --registry` | distribution v3 validates every index child, and only some platforms were archived | handled: restore pushes a **reduced** index of the kept platforms, says so, and leaves the per-platform digests unchanged |
@@ -998,7 +1080,8 @@ To make `fetch` check it from then on, commit the keyring as
 
 ## 12. How it is tested
 
-`tests/test_ark.py` has 31 tests and `tests/test_ark.sh` 14 checks. Both
+`tests/test_ark.py` has 48 tests (68 cases with their parameters) and
+`tests/test_ark.sh` 14 checks. Both
 are hermetic: loopback fakes only. CI runs both: the python file in the
 full pytest step, the shell suite as its own step. `tests/run_tests.sh`
 runs both too.
@@ -1037,7 +1120,21 @@ runs both too.
   - a transfer cut halfway resumes with `Range: bytes=N-`;
   - a `.part` from an earlier run is picked up.
 - **Verify:** corruption, a missing file and a planted file. `--quick`
-  misses the same-size corruption and says so.
+  misses the same-size corruption and says so. `--jobs 4` gives the same
+  verdict.
+- **Extraction** (with and without python 3.12's `data` filter, so the
+  3.9.6 path is covered): a link chain built forwards and backwards,
+  `../` and absolute names and links, an outbound hardlink — all refused,
+  nothing written outside, no outbound link left; ordinary relative links
+  and hardlinks in a streamed `.tar.xz` kept.
+- **A hostile drive lock:** `bins` naming `../../../ESCAPED`, `..`, an
+  outbound tar `bins` (never chmod'ed), an entry `../../t`, a commit
+  starting `--`, a tag `-f` or with `..` — all refused before any write.
+- **Robustness:** a garbled `.minisig` fails its item and the run goes on
+  (and is a BAD_SIGNATURE in `verify`); a registry answering HTML fails
+  the image cleanly.
+- **Hashing:** a pinned file with a sums file is read once, and a shared
+  sums file is downloaded once.
 - **Signatures:**
   - Ed25519 matches the RFC 8032 vector;
   - minisign is verified at fetch, refused when bad, and caught by
@@ -1049,17 +1146,34 @@ runs both too.
   - **the token never reaches the CDN, stdout, stderr or `ark.lock`**;
   - `verify --deep`;
   - a push to a registry that demands every index child (reduced index);
-  - `docker load` of a one-platform tar (a fake docker).
+  - `docker load` of a one-platform tar (a fake docker);
+  - a token that expires mid-pull is renewed (two tokens, two 401s, no
+    401 per manifest);
+  - a second-platform top-up keeps the first platform, re-using its blobs;
+  - a push streams layers (never read whole) and fails on a refused tag.
+- **Package sets:**
+  - pip from one explicit index with `PIP_INDEX_URL`, `PIP_EXTRA_INDEX_URL`
+    and `PIP_NO_INDEX` set to something else and ignored; a real wheel
+    restored offline into a venv with `--require-hashes` and imported;
+  - a set for another platform or python refused, then accepted with
+    `--allow-cross-pip` and reported by `verify`;
+  - npm (a fake npm) given `--registry` and `/dev/null` configs; a tarball
+    with no integrity, off the registry, or not matching, refused.
 - **lock / update:**
   - commits, sha256 and sizes from upstream, idempotent;
   - SHA-512 into `upstream_hash`;
   - digests and platform sizes;
-  - `lock --from` TOFU;
+  - `lock --from` TOFU, and a later fetch from that catalog still `tofu`;
+  - a GitHub release asset pinned from the release API digest;
   - `update` writes nothing without `--write`, and clears the pins it
-    bumps.
+    bumps, including URLs built through `{tag}` and a var.
 - **serve:**
-  - Range;
+  - Range, and an inverted range → 416;
   - unlisted, stage and traversal requests get 404, writes get 405;
+  - a listed file swapped for a symlink to a secret → 404;
+  - a missing and a truncated archive are skipped, the rest served;
+  - markup in an entry name and the Host header escaped;
+  - HTTP/1.1 keep-alive, closed after a refused write;
   - registry manifests by tag, digest and child, blobs, and a non-archived
     platform → 404;
   - the pip index with hashes;
@@ -1121,7 +1235,11 @@ You are GLM on spark-1, or any model working from
 - **No gpg keyrings vendored yet** (53 signatures are kept but not
   checked). Each publisher's fingerprint has to be confirmed out of band
   before its keyring is committed. Node, Temurin, Rust, CMake, Kafka and
-  Ubuntu come first.
+  Ubuntu come first; nginx, meson, LLVM and Swift would then verify their
+  `.asc` / `.sig` too.
+- **Pip sets must be fetched on their own platform** (§3.2). A drive that
+  carries vLLM for both Linux arches needs one pip fetch on each, unless
+  `--allow-cross-pip` is accepted knowingly.
 - **Git source sizes** in `plan` are upper bounds until a drive is measured
   (`lock --from`).
 - **Package-set sizes** (vLLM, ansible, MinIO modules) are unknown until
