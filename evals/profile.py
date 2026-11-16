@@ -380,9 +380,16 @@ def main(argv=None) -> int:
     os.environ["OPENBEAST_EVAL_ENV_ERA"] = "1"
     import run_eval  # noqa: PLC0415
     run_eval._install_signal_reaper()
+    # The runner's request `model` defaults to the rig's llama.cpp alias
+    # (qwen-27b-q5). A single-model server ignores it, but beast-gate audits
+    # it, so the 2026-11-16 Spark L0 was logged as qwen. Send the served id.
+    served = run_eval.detect_model(a.base_url)
+    if served != "unknown" and not os.environ.get("OPENBEAST_INFERENCE_MODEL"):
+        os.environ["OPENBEAST_INFERENCE_MODEL"] = served
     if not a.skip_preflight and not a.resume:
         problems = preflight(a.base_url, a.reasoning_budget, a.allow_uncapped)
-        adm = admission_check(a.base_url, a.jobs, a.model_name)
+        adm = admission_check(a.base_url, a.jobs,
+                              os.environ.get("OPENBEAST_INFERENCE_MODEL") or a.model_name)
         if adm:
             problems.append(adm)
         if problems:
