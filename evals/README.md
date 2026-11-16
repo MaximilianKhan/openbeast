@@ -339,8 +339,9 @@ python3 evals/ablation.py --profile evals/results/profile-<slug>-<ts>.json # the
 3. **Plan**: cost L1 and L2 as k x est_s. If they do not fit what is left,
    cut L2 in this order, only as far as needed: (1) **stratified L2** —
    rerun every L0 failure and a seeded third of the L0 passes; rescues are
-   exact, regressions are estimated by Horvitz-Thompson and the p-value is
-   labelled `stratified`; (2) drop the probes from L2; (3) drop rust from
+   exact, regressions are estimated by Horvitz-Thompson (each sampled pass
+   weighted by 1/pi, pi = k/n for the k of n passes actually drawn, not the
+   nominal third) and the p-value is labelled `stratified`; (2) drop the probes from L2; (3) drop rust from
    L2; (4) drop c from L2 (priority zig > go > cpp > c > rust). **L0 and L1
    are never cut.**
 4. **L1 + L2** in one `run_eval` call with the plan's unit sets.
