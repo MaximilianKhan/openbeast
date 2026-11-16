@@ -2996,10 +2996,10 @@ def create_app() -> FastAPI:
         return out
 
     def load_session(session_id: str) -> dict:
-        rec = sessions.get(session_id)
+        rec = sessions.get(session_id)       # already reconciled
         if not rec:
             raise HTTPException(status_code=404, detail="Not Found")
-        return sessions.reconcile(rec)
+        return rec
 
     # -- console -----------------------------------------------------------
 
@@ -3113,12 +3113,12 @@ def create_app() -> FastAPI:
             rows = sessions.list_sessions(state=state, kind=kind,
                                           limit=max(1, min(count, 1000)))
             out = []
+            # list_sessions() reconciles every row and filters AFTER that,
+            # so a `running` row whose pid is gone is already `lost` (and
+            # out of a state=running filter). A second reconcile here was a
+            # second liveness probe per running row: /proc on Linux, a `ps`
+            # fork elsewhere (review 2026-11-16).
             for rec in rows:
-                rec = sessions.reconcile(rec)
-                # reconcile() can move a record out of the filter (a `running`
-                # row whose pid is gone becomes `lost`), so re-apply it.
-                if state and rec.get("state") != state:
-                    continue
                 path = rec.get("transcript") or ""
                 out.append({
                     **reader_view(rec),
@@ -3346,25 +3346,42 @@ def create_app() -> FastAPI:
                 # still a blocking syscall inside an async generator, and
                 # every OTHER attached stream (plus /api/chat/health, which
                 # start.sh and healthcheck.sh probe) waits behind it.
-                lines, offset = await asyncio.to_thread(
-                    read_lines_from, path, offset)
-                for text, end in lines:
-                    seq += 1
-                    if kind == "agent":
-                        name, payload = parse_agent_event(text, end, seq)
-                    else:
-                        name, payload = "log", {"type": "log", "line": text,
-                                                "offset": end, "seq": seq}
-                    yield sse_frame(name, payload, end)
-                    last_out = time.monotonic()
-
+                #
+                # ...and only when there IS something to read. `size` was
+                # stat'ed just above, and shrink/replace are handled there,
+                # so size == offset means nothing new: an idle attachment used
+                # to pay a threadpool hop plus open/fstat/seek/0-byte read on
+                # every poll (review 2026-11-16: ~2x the idle CPU per stream).
+                if size > offset:
+                    lines, offset = await asyncio.to_thread(
+                        read_lines_from, path, offset)
+                else:
+                    lines = []
                 if lines:
+                    # One write per read chunk, not one per line: each yield
+                    # is its own ASGI body message and socket write, and a
+                    # large replay was bound by that overhead (2-5x slower).
+                    # Every frame still carries its own `id:`, so resume
+                    # semantics are unchanged.
+                    batch = []
+                    for text, end in lines:
+                        seq += 1
+                        if kind == "agent":
+                            name, payload = parse_agent_event(text, end, seq)
+                        else:
+                            name, payload = "log", {"type": "log", "line": text,
+                                                    "offset": end, "seq": seq}
+                        batch.append(sse_frame(name, payload, end))
+                    yield "".join(batch)
+                    last_out = time.monotonic()
                     # More may already be waiting; drain before sleeping.
                     closing_at = None
                     continue
 
-                fresh = sessions.get(session_id)
-                fresh = sessions.reconcile(fresh) if fresh else record
+                # sessions.get() already reconciles (liveness probe: /proc
+                # on Linux, a `ps` fork elsewhere); a second reconcile here
+                # repeated that probe on the event loop every idle poll.
+                fresh = sessions.get(session_id) or record
                 state = fresh.get("state")
                 if state in TERMINAL_STATES:
                     # Grace pass: the producer writes its last line and THEN
@@ -4060,8 +4077,13 @@ def create_app() -> FastAPI:
         except HTTPException:
             return {"status": "ok"}
         try:
-            live = len(sessions.list_sessions(state="running", limit=1000))
-            total = len(sessions.list_sessions(limit=1000))
+            # ONE ledger scan (it reads and reconciles every record): the
+            # running count is a filter over the same rows, not a second scan.
+            # (list_sessions reads the whole ledger whatever `limit` says, so
+            # no limit here costs nothing and keeps the old counts exact.)
+            rows = sessions.list_sessions()
+            live = min(1000, sum(1 for r in rows if r.get("state") == "running"))
+            total = min(1000, len(rows))
         except Exception:
             live, total = -1, -1
         return {

@@ -31,6 +31,7 @@ for _p in (AGENTS, TESTS):
 
 import chat_server  # noqa: E402
 import loginsock  # noqa: E402
+import sessions  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from test_chat_server import Rig  # noqa: E402
 
@@ -199,3 +200,111 @@ def test_real_server_never_trusts_a_reset_tcp_peer(rig, monkeypatch):
         t.join(10)
         import shutil
         shutil.rmtree(sock_dir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# SSE efficiency: idle polls do no I/O, replays are batched
+# ---------------------------------------------------------------------------
+
+def _dead_pid():
+    import subprocess
+    p = subprocess.Popen([sys.executable, "-c", ""])
+    p.wait()
+    return p.pid
+
+
+def test_an_idle_stream_poll_reads_nothing_and_reconciles_once(rig, monkeypatch):
+    """An attached console polls every POLL_MS. With nothing new it used to
+    hop to the threadpool to read 0 bytes, then reconcile the record twice
+    (sessions.get already reconciles). The record here is `running` with a
+    dead pid, so the stream drains, sees `lost`, and idles through its grace
+    window before closing — every pass of which is an idle poll."""
+    sid = rig.session(kind="agent", state="running", pid=_dead_pid())
+    reads, gets, recs = [], [], []
+    real_read = chat_server.read_lines_from
+    real_get = sessions.get
+    real_rec = sessions.reconcile
+
+    def read(path, offset):
+        reads.append(offset)
+        return real_read(path, offset)
+
+    def get(session_id):
+        gets.append(session_id)
+        return real_get(session_id)
+
+    def rec(r):
+        recs.append(r.get("id"))
+        return real_rec(r)
+    monkeypatch.setattr(chat_server, "read_lines_from", read)
+    monkeypatch.setattr(sessions, "get", get)
+    monkeypatch.setattr(sessions, "reconcile", rec)
+    r = rig.client.get(f"/api/chat/sessions/{sid}/events")
+    assert r.status_code == 200
+    from test_chat_server import parse_sse
+    frames = parse_sse(r.text)
+    assert frames[-1]["event"] == "end"
+    assert len(gets) >= 5, "the stream did not idle through several polls"
+    assert len(reads) == 1, f"idle polls still read the transcript: {reads}"
+    # every reconcile is the one inside sessions.get: none on top of it
+    assert len(recs) <= len(gets), (len(recs), len(gets))
+
+
+def test_a_replay_is_written_in_chunks_not_line_by_line(rig):
+    """read_lines_from returns up to 256 KB of complete lines; each line used
+    to become its own ASGI body message (2-5x slower replays). The frames,
+    their ids and their order must be exactly what they were."""
+    lines = [{"type": "tool_call", "name": "bash", "result": f"r{i}"}
+             for i in range(300)]
+    sid = rig.session(kind="agent", state="done", lines=lines)
+    url = f"/api/chat/sessions/{sid}/events"
+    with rig.client.stream("GET", url) as r:
+        assert r.status_code == 200
+        chunks = [c for c in r.iter_raw() if c]
+    from test_chat_server import parse_sse, line_offsets
+    frames = parse_sse(b"".join(chunks).decode())
+    body = [f for f in frames if f["event"] not in ("hello", "end")]
+    assert len(body) == 300
+    assert [f["id"] for f in body] == line_offsets(sessions.get(sid)["transcript"])
+    assert len(chunks) < 20, f"{len(chunks)} body writes for 300 lines"
+
+
+# ---------------------------------------------------------------------------
+# Session list / health: one scan, one reconcile per row
+# ---------------------------------------------------------------------------
+
+def test_credentialed_health_scans_the_ledger_once(rig, monkeypatch):
+    rig.session(kind="agent", state="running")          # this pid: alive
+    rig.session(kind="job", state="done")
+    rig.session(kind="job", state="running", pid=_dead_pid())   # -> lost
+    scans = []
+    real = sessions.list_sessions
+
+    def counted(**kw):
+        scans.append(kw)
+        return real(**kw)
+    rig.client                                     # build the app first
+    monkeypatch.setattr(sessions, "list_sessions", counted)
+    d = rig.client.get("/api/chat/health", headers=rig.local).json()
+    assert len(scans) == 1, scans
+    assert d["running"] == 1 and d["sessions"] == 3
+
+
+def test_the_session_list_reconciles_each_row_once(rig, monkeypatch):
+    live = [rig.session(kind="agent", state="running") for _ in range(3)]
+    dead = rig.session(kind="job", state="running", pid=_dead_pid())
+    calls = []
+    real = sessions.reconcile
+
+    def counted(r):
+        calls.append(r.get("id"))
+        return real(r)
+    monkeypatch.setattr(sessions, "reconcile", counted)
+    got = rig.client.get("/api/chat/sessions").json()["sessions"]
+    assert sorted(calls) == sorted(live + [dead]), calls     # once each
+    states = {s["id"]: s["state"] for s in got}
+    assert states[dead] == "lost" and all(states[s] == "running" for s in live)
+    # the state filter still excludes the row that reconciled to `lost`
+    calls.clear()
+    got = rig.client.get("/api/chat/sessions?state=running").json()["sessions"]
+    assert sorted(s["id"] for s in got) == sorted(live)
