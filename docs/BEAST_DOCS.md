@@ -402,9 +402,17 @@ through the source's adapter.
   plus `BUNDLE.json`, which lists every file's sha256, and writes
   `<out>.sha256` beside the tarball.
 - **`unpack <tarball> [--sha256 H]`** works in this order:
-  1. Requires an expected hash, from the sidecar or `--sha256`, and checks
-     the tarball against it.
-  2. Refuses absolute paths, `..`, links and devices.
+  1. Requires an expected hash, from the sidecar or `--sha256`. Reads the
+     tarball **once**, into a private staging copy, hashing as it goes, and
+     checks that copy. Everything after works on the copy, so a tarball
+     rewritten or swapped after the check (a shared or removable volume, a
+     copy still in progress) is never the one installed.
+  2. Refuses absolute paths, `..`, links and devices, more than 500,000
+     members, and a total declared size past the cap
+     (`OPENBEAST_DOCS_UNPACK_MAX_BYTES`, default 8 GiB) or past the free
+     space under the store minus 256 MiB — all **before a byte is
+     written**, so a decompression bomb with a matching hash cannot fill
+     the disk.
   3. Extracts to a staging directory.
   4. Requires the member set to equal `BUNDLE.json` exactly, and re-hashes
      every file against it.
@@ -517,7 +525,10 @@ from `tests/fixtures/beast_docs/`. They pin:
   **with zero requests made**. A live miss with no mirror copy says so.
 - **Bundles**: the pack → unpack round trip on an "offline" store, and
   refusals for a wrong hash, a tampered member inside a re-hashed tarball,
-  and a `../` member. A refusal installs nothing.
+  and a `../` member. A refusal installs nothing. A tarball swapped for
+  another self-consistent bundle right after the hash check is not what
+  gets installed; a bundle expanding past the cap, or with too many
+  members, is refused with nothing written.
 - **CLI**: `docs.sh` end to end, including exit codes 0/1/2/3. Exit code 6
   is a sync stopped by an outage; its queue is saved.
 - **Outages**: a robots.txt 5xx on a first sync and after a partial sync

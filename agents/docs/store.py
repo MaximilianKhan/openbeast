@@ -605,8 +605,35 @@ def pack(store: Store, out_path: str, sources=None) -> dict:
     return {"path": out_path, "sha256": digest, "files": len(files), "sources": names}
 
 
+def _unpack_limits(root: str) -> tuple:
+    """(max total bytes, max members) a bundle may expand to: the
+    OPENBEAST_DOCS_UNPACK_MAX_BYTES cap (default 8 GiB — a full mirror of
+    every shipped source is well under 1 GiB), and never more than the free
+    space under the store minus 256 MiB."""
+    try:
+        cap = int(os.environ.get("OPENBEAST_DOCS_UNPACK_MAX_BYTES") or 8 << 30)
+    except ValueError:
+        cap = 8 << 30
+    try:
+        cap = min(cap, shutil.disk_usage(root).free - (256 << 20))
+    except OSError:
+        pass
+    return max(0, cap), UNPACK_MAX_MEMBERS
+
+
+UNPACK_MAX_MEMBERS = 500_000
+
+
 def unpack(store: Store, tar_path: str, expect_sha256: str = "") -> dict:
-    digest = sha256_file(tar_path)
+    """Verify, then install, a pack()ed bundle (see the module docstring).
+
+    The tarball is read ONCE, by path, into a private staging copy while it
+    is hashed; the hash is checked against that copy and the copy is what
+    gets extracted — so a tarball rewritten or swapped after the check (a
+    shared or removable volume, a copy still in progress) cannot be the one
+    installed. Every member's declared size is summed against a cap and the
+    free disk BEFORE a byte is written, so a decompression bomb whose hash
+    matches cannot fill the disk."""
     want = expect_sha256.strip().lower()
     side = tar_path + ".sha256"
     if not want and os.path.isfile(side):
@@ -614,36 +641,53 @@ def unpack(store: Store, tar_path: str, expect_sha256: str = "") -> dict:
             want = (fh.read().split() or [""])[0].lower()
     if not want:
         raise BundleError(f"no expected hash: pass --sha256 or keep {os.path.basename(side)} beside the tarball")
-    if digest != want:
-        raise BundleError(f"tarball sha256 {digest} does not match the expected {want}")
     os.makedirs(store.root, exist_ok=True)
     stage = tempfile.mkdtemp(prefix=".unpack-", dir=store.root)
     try:
-        with tarfile.open(tar_path, "r:gz") as tf:
-            members = tf.getmembers()
-            for mem in members:
+        copy = os.path.join(stage, ".bundle.tar.gz")
+        h = hashlib.sha256()
+        with open(tar_path, "rb") as src, open(copy, "wb") as dst:
+            for chunk in iter(lambda: src.read(1 << 20), b""):
+                h.update(chunk)
+                dst.write(chunk)
+        digest = h.hexdigest()
+        if digest != want:
+            raise BundleError(f"tarball sha256 {digest} does not match the expected {want}")
+        tree = os.path.join(stage, "tree")
+        os.makedirs(tree)
+        with tarfile.open(copy, "r:gz") as tf:
+            max_bytes, max_members = _unpack_limits(store.root)
+            members, total = [], 0
+            for mem in tf:                       # headers only: nothing is written yet
+                members.append(mem)
+                if len(members) > max_members:
+                    raise BundleError(f"more than {max_members} members: refusing")
                 n = mem.name
                 if (n.startswith("/") or ".." in n.split("/") or "\\" in n
                         or not (mem.isfile() or mem.isdir())):
                     raise BundleError(f"refusing unsafe member {n!r}")
+                total += max(0, mem.size)
+                if total > max_bytes:
+                    raise BundleError(f"the bundle expands past {max_bytes} bytes (the cap, or the "
+                                      f"free space under {store.root}): refusing before writing")
             for mem in members:
                 if mem.isdir():
                     continue
-                dest = os.path.join(stage, *mem.name.split("/"))
+                dest = os.path.join(tree, *mem.name.split("/"))
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
                 src = tf.extractfile(mem)
                 with open(dest, "wb") as fh:
                     shutil.copyfileobj(src, fh)
         try:
-            with open(os.path.join(stage, BUNDLE_NAME), encoding="utf-8") as fh:
+            with open(os.path.join(tree, BUNDLE_NAME), encoding="utf-8") as fh:
                 bundle = json.load(fh)
         except (OSError, ValueError) as e:
             raise BundleError(f"no readable {BUNDLE_NAME} in the bundle: {e}") from None
         files = bundle.get("files") or {}
         present = set()
-        for dp, _dn, fns in os.walk(stage):
+        for dp, _dn, fns in os.walk(tree):
             for fn in fns:
-                rel = os.path.relpath(os.path.join(dp, fn), stage).replace(os.sep, "/")
+                rel = os.path.relpath(os.path.join(dp, fn), tree).replace(os.sep, "/")
                 if rel != BUNDLE_NAME:
                     present.add(rel)
         if present != set(files):
@@ -651,12 +695,12 @@ def unpack(store: Store, tar_path: str, expect_sha256: str = "") -> dict:
                               f"extra {sorted(present - set(files))[:3]}, "
                               f"missing {sorted(set(files) - present)[:3]}")
         for rel, sha in files.items():
-            if sha256_file(os.path.join(stage, rel)) != sha:
+            if sha256_file(os.path.join(tree, rel)) != sha:
                 raise BundleError(f"{rel}: sha256 mismatch")
         names = bundle.get("sources") or []
         for name in names:
             store.source_dir(name)                        # validates the name
-            if not os.path.isfile(os.path.join(stage, name, "manifest.json")):
+            if not os.path.isfile(os.path.join(tree, name, "manifest.json")):
                 raise BundleError(f"source {name!r} has no manifest in the bundle")
         for name in names:
             dest = store.source_dir(name)
@@ -664,7 +708,7 @@ def unpack(store: Store, tar_path: str, expect_sha256: str = "") -> dict:
             shutil.rmtree(old, ignore_errors=True)
             if os.path.exists(dest):
                 os.replace(dest, old)
-            os.replace(os.path.join(stage, name), dest)
+            os.replace(os.path.join(tree, name), dest)
             shutil.rmtree(old, ignore_errors=True)
     finally:
         shutil.rmtree(stage, ignore_errors=True)

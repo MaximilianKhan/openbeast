@@ -1076,6 +1076,55 @@ def test_unpack_refuses_bad_hash_tamper_and_unsafe_members(env, monkeypatch):
     assert not ST.Store().sources_on_disk()                    # nothing installed by a refusal
 
 
+def test_unpack_installs_the_bytes_it_hashed(env, monkeypatch):
+    """A tarball rewritten after the hash check (shared / removable volume)
+    must not be what gets installed: unpack extracts its own verified copy."""
+    _sync("swiftui")
+    good = str(env["tmp"] / "good.tar.gz")
+    ST.pack(ST.Store(), good)
+    want = ST.sha256_file(good)
+    s = ST.Store()
+    m = s.load("swiftui")
+    rec = next(iter(m["pages"].values()))
+    path = os.path.join(s.source_dir("swiftui"), rec["file"])
+    with open(path) as fh:
+        orig = fh.read()
+    with open(path, "w") as fh:
+        fh.write(orig.replace("NavigationStack", "EvilStack"))
+    evil = str(env["tmp"] / "evil.tar.gz")
+    ST.pack(s, evil)                         # self-consistent BUNDLE.json, other bytes
+    real_open = ST.tarfile.open
+
+    def swap_then_open(*a, **kw):            # the attacker wins the race right after the hash
+        with open(evil, "rb") as src, open(good, "wb") as dst:
+            dst.write(src.read())
+        return real_open(*a, **kw)
+    monkeypatch.setattr(ST.tarfile, "open", swap_then_open)
+    monkeypatch.setenv("OPENBEAST_DOCS_DIR", str(env["tmp"] / "dest"))
+    r = ST.unpack(ST.Store(), good, expect_sha256=want)
+    assert r["sha256"] == want
+    with open(os.path.join(ST.Store().source_dir("swiftui"), rec["file"])) as fh:
+        assert "EvilStack" not in fh.read()
+
+
+def test_unpack_refuses_a_bomb_before_writing(env, monkeypatch):
+    bomb = str(env["tmp"] / "bomb.tar.gz")
+    with tarfile.open(bomb, "w:gz") as tf:
+        data = b"\0" * 4096
+        ti = tarfile.TarInfo("swiftui/pages/zero.md")
+        ti.size = len(data)
+        tf.addfile(ti, io.BytesIO(data))
+    monkeypatch.setenv("OPENBEAST_DOCS_DIR", str(env["tmp"] / "dest"))
+    monkeypatch.setenv("OPENBEAST_DOCS_UNPACK_MAX_BYTES", "1000")
+    with pytest.raises(ST.BundleError, match="expands past 1000 bytes"):
+        ST.unpack(ST.Store(), bomb, expect_sha256=ST.sha256_file(bomb))
+    assert os.listdir(env["tmp"] / "dest") == []                 # nothing written, staging gone
+    monkeypatch.setattr(ST, "UNPACK_MAX_MEMBERS", 0)
+    monkeypatch.delenv("OPENBEAST_DOCS_UNPACK_MAX_BYTES")
+    with pytest.raises(ST.BundleError, match="more than 0 members"):
+        ST.unpack(ST.Store(), bomb, expect_sha256=ST.sha256_file(bomb))
+
+
 # ── the CLI ─────────────────────────────────────────────
 
 def test_docs_sh_end_to_end(env):
