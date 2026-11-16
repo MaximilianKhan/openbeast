@@ -621,3 +621,68 @@ def test_web_search_schema_and_params(monkeypatch):
     assert "pageno" not in seen["url"] and "time_range" not in seen["url"]
     tools.web_search("q")  # defaults add nothing
     assert "pageno" not in seen["url"]
+
+
+class _RateLimited(Exception):
+    """Shape of openai.RateLimitError: status_code + response.headers."""
+
+    def __init__(self, retry_after):
+        super().__init__("Error code: 429 - in-flight cap")
+        self.status_code = 429
+        hdrs = {} if retry_after is None else {"retry-after": retry_after}
+        self.response = type("R", (), {"headers": hdrs})()
+
+
+class _GateClient:
+    """Answers 429 `n429` times, then plays the script."""
+
+    def __init__(self, n429, script, retry_after="3"):
+        self.n429, self.script, self.retry_after = n429, list(script), retry_after
+        self.calls = 0
+        self.chat = self
+        self.completions = self
+
+    def create(self, model, messages, tools, temperature, **kw):
+        self.calls += 1
+        if self.n429 > 0:
+            self.n429 -= 1
+            raise _RateLimited(self.retry_after)
+        return self.script.pop(0)
+
+
+def test_429_waits_retry_after_without_spending_an_iteration(tmp_path, monkeypatch, capsys):
+    slept = []
+    monkeypatch.setattr(runner.time, "sleep", lambda s: slept.append(s))
+    fake = _GateClient(5, [_Resp(_Msg(tool_calls=[_TC("1", "task_done", {"summary": "ok"})]))])
+    monkeypatch.setattr(runner, "OpenAI", lambda **kw: fake)
+    log = tmp_path / "run.jsonl"
+    # max_iter=1: had a 429 consumed an iteration, the task could never finish.
+    out = runner.run_agent("task", max_iter=1, log_file=str(log), system_prompt="sys",
+                           workdir=str(tmp_path))
+    assert out == "ok"
+    assert fake.calls == 6 and slept == [3.0] * 5
+    assert "API_ERRORS: 0" in capsys.readouterr().out
+    events = [json.loads(ln) for ln in log.read_text().splitlines()]
+    assert sum(e["type"] == "rate_limited" for e in events) == 5
+
+
+def test_429_wait_is_bounded_then_counts_as_an_api_error(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(runner.time, "sleep", lambda s: None)
+    fake = _GateClient(10**6, [], retry_after="60")
+    monkeypatch.setattr(runner, "OpenAI", lambda **kw: fake)
+    log = tmp_path / "run.jsonl"
+    out = runner.run_agent("task", max_iter=2, log_file=str(log), system_prompt="sys",
+                           workdir=str(tmp_path))
+    assert out == "(max iterations reached)"
+    # 600 s budget / 60 s per wait = 10 waits, then the 11th 429 is an error;
+    # each of the 2 iterations gets its own budget.
+    assert fake.calls == 22
+    assert "API_ERRORS: 2" in capsys.readouterr().out
+
+
+def test_retry_after_parsing():
+    assert runner._retry_after_s(RuntimeError("x")) is None
+    assert runner._retry_after_s(_RateLimited(None)) == runner._RATE_LIMIT_DEFAULT_S
+    assert runner._retry_after_s(_RateLimited("junk")) == runner._RATE_LIMIT_DEFAULT_S
+    assert runner._retry_after_s(_RateLimited("0")) == 0.5
+    assert runner._retry_after_s(_RateLimited("9999")) == 60.0

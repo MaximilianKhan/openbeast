@@ -163,3 +163,54 @@ def test_a_profile_end_to_end_with_a_fake_agent(tmp_path, monkeypatch):
     # Resume after completion re-plans from the saved L0 and runs nothing new.
     A.resume = str(state)
     assert P.run_profile(A, run_eval) == 0
+
+
+def _edge(cap):
+    """A loopback stand-in for beast-gate: admits `cap` in flight, 429 past it."""
+    import threading
+    import time as _t
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    lock, state = threading.Lock(), {"n": 0}
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            with lock:
+                ok = state["n"] < cap
+                state["n"] += ok
+            if not ok:
+                self.send_response(429)
+                self.send_header("Retry-After", "5")
+                self.end_headers()
+                return
+            _t.sleep(0.3)   # hold the slot so the probes overlap
+            with lock:
+                state["n"] -= 1
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, f"http://127.0.0.1:{srv.server_address[1]}/v1"
+
+
+def test_admission_check_refuses_an_edge_below_jobs():
+    srv, url = _edge(cap=2)
+    try:
+        msg = P.admission_check(url, 4, "m")
+        assert msg and "got 429" in msg and "--jobs 4" in msg
+    finally:
+        srv.shutdown()
+
+
+def test_admission_check_passes_when_the_edge_admits_jobs():
+    srv, url = _edge(cap=4)
+    try:
+        assert P.admission_check(url, 4, "m") is None
+        assert P.admission_check(url, 1, "m") is None   # nothing to check
+    finally:
+        srv.shutdown()

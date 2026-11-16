@@ -209,6 +209,14 @@ Decisions the 2026-10-09 review deferred to the owner. Each is open.
   bundle, zig); remote access (beast-gate via `tailscale serve`,
   `svc:spark-hydra`); primary switch beast ↔ spark-hydra; `PARALLEL=8`;
   native TensorFold 1.2.7 A/B.
+- **TODO — scaling review, 1 to 8 ranks (Max, 2026-11-15: "leave the
+  scaling questions 1-8 for another day").** The 2026-11-16 adversarial
+  review covered the 2x pair only. Still unreviewed and unmeasured: the
+  launchers' 3-8 rank paths (`SPARK_HYDRA.md` "1 to 8 ranks"), the switch
+  or ring fabric past one QSFP cable, weight sync fan-out to N peers, TP vs
+  TP+PP layouts for 4/8 ranks, the gate's admission default (INFERENCE_SLOTS)
+  as slots grow, and a v5 profile at each size. Do it as its own review +
+  profiling pass, with hardware in hand.
 
 ### History: milestone 1 (built 2026-09-29)
 

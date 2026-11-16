@@ -167,6 +167,43 @@ def preflight(base_url: str, declared_rb: str | None, allow_uncapped: bool) -> l
     return problems
 
 
+def admission_check(base_url: str, jobs: int, model: str | None) -> str | None:
+    """`jobs` concurrent one-token requests: a 429 means the edge would refuse
+    the profile's own parallelism (beast-gate's per-device in-flight cap below
+    --jobs), and every unit past the cap would be measured on retry waits. The
+    2026-11-16 L0 that ignored this logged 2107 x 429 and was thrown away."""
+    import concurrent.futures as cf  # noqa: PLC0415
+    import urllib.error  # noqa: PLC0415
+    import urllib.request  # noqa: PLC0415
+    if jobs < 2:
+        return None
+    key = os.environ.get("OPENBEAST_API_KEY", "")
+    body = json.dumps({"model": model or "default", "max_tokens": 1,
+                       "messages": [{"role": "user", "content": "hi"}]}).encode()
+
+    def one(_):
+        req = urllib.request.Request(base_url.rstrip("/") + "/chat/completions",
+                                     data=body, method="POST",
+                                     headers={"Content-Type": "application/json",
+                                              **({"Authorization": f"Bearer {key}"}
+                                                 if key else {})})
+        try:
+            with urllib.request.urlopen(req, timeout=120) as r:
+                return r.status
+        except urllib.error.HTTPError as e:
+            return e.code
+        except (OSError, ValueError):
+            return None
+
+    with cf.ThreadPoolExecutor(jobs) as ex:
+        codes = list(ex.map(one, range(jobs)))
+    if 429 in codes:
+        return (f"{codes.count(429)} of {jobs} concurrent probes got 429: the edge admits "
+                f"fewer in-flight requests than --jobs {jobs} (raise the device's cap, "
+                f"e.g. INFERENCE_SLOTS / EDGE_MAX_INFLIGHT, or lower --jobs)")
+    return None
+
+
 def era_check(expected: str) -> str | None:
     import cache  # noqa: PLC0415
     cache._context_cache.clear()
@@ -313,7 +350,8 @@ def main(argv=None) -> int:
     ap.add_argument("--resume", help="a profile state file to continue")
     ap.add_argument("--fresh-deadline", action="store_true",
                     help="--resume with a new --budget-h window from now")
-    ap.add_argument("--plan-only", action="store_true", help="stop after printing the plan")
+    ap.add_argument("--plan-only", action="store_true", help="run L0 (it measures k, which the plan needs), print "
+                    "the L1/L2 plan, and stop before L1")
     ap.add_argument("--no-cache", action="store_true")
     ap.add_argument("--allow-missing", action="store_true",
                     help="run the manifest units that have task files, skip the rest")
@@ -344,6 +382,9 @@ def main(argv=None) -> int:
     run_eval._install_signal_reaper()
     if not a.skip_preflight and not a.resume:
         problems = preflight(a.base_url, a.reasoning_budget, a.allow_uncapped)
+        adm = admission_check(a.base_url, a.jobs, a.model_name)
+        if adm:
+            problems.append(adm)
         if problems:
             print("PREFLIGHT REFUSED:")
             for p in problems:
