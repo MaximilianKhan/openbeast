@@ -174,11 +174,11 @@ entry = "docker-buildx"
 kind = "file"
 platform = "darwin-arm64"
 url = "https://github.com/docker/buildx/releases/download/{tag}/buildx-v{version}.darwin-arm64"
-sha256 = ""
+sha256 = "0190e4b9c85510974290f9a597e86c4d8200be782aeaa3df7d756ab4423d6b2d"
 install = "bin"
 bins = ["docker-buildx"]
-verified = "unverified"
-note = "buildx's checksums.txt lists the Linux builds only (checked 2026-11-15); the darwin binary is trust-on-first-use."
+verified = "upstream-json"
+note = "buildx's checksums.txt lists the Linux builds only (checked 2026-11-15); the darwin binary's sha256 is the digest GitHub's release API publishes for it (upstream-json)."
 size = 65238512
 
 [[entry]]
@@ -310,7 +310,7 @@ version = "0.35.0"
 update = "github:moby/buildkit"
 git = "https://github.com/moby/buildkit.git"
 commit = "f55949dea4f03bb9d85b73e9afc9a609291289db"
-note = "Upstream ships a sigstore bundle per tarball and no checksum file; the sha256 is trust-on-first-use, the bundle is verifiable with cosign verify-blob."
+note = "Upstream ships a sigstore bundle per tarball and no checksum file; the sha256 is the digest GitHub's release API publishes for the asset (upstream-json), and the bundle is verifiable with cosign verify-blob."
 git_size = 70477824
 
 [[artifact]]
@@ -318,10 +318,10 @@ entry = "buildkit"
 kind = "file"
 platform = "linux-x86_64"
 url = "https://github.com/moby/buildkit/releases/download/{tag}/buildkit-v{version}.linux-amd64.tar.gz"
-sha256 = ""
+sha256 = "37b3befbed28fb72a44d72bf42362c268610386c42feafa27cb45ee0b531369c"
 install = "tar"
 strip = 0
-verified = "unverified"
+verified = "upstream-json"
 size = 94617951
 
 [[artifact]]
@@ -329,10 +329,10 @@ entry = "buildkit"
 kind = "file"
 platform = "linux-aarch64"
 url = "https://github.com/moby/buildkit/releases/download/{tag}/buildkit-v{version}.linux-arm64.tar.gz"
-sha256 = ""
+sha256 = "e33872fbc13d7858f2fd4e434697e9a1aa03347a6fe13f86a58c9c3b0e711286"
 install = "tar"
 strip = 0
-verified = "unverified"
+verified = "upstream-json"
 size = 87094080
 
 [[artifact]]
@@ -340,10 +340,10 @@ entry = "buildkit"
 kind = "file"
 platform = "darwin-arm64"
 url = "https://github.com/moby/buildkit/releases/download/{tag}/buildkit-v{version}.darwin-arm64.tar.gz"
-sha256 = ""
+sha256 = "fb858a787f198ab6bce6dd9837ed26c2f6b7dd6661a3d1df612cae29856c8c90"
 install = "tar"
 strip = 0
-verified = "unverified"
+verified = "upstream-json"
 size = 16727972
 
 [[entry]]
@@ -1479,7 +1479,7 @@ update = "github:llvm/llvm-project"
 git = "https://github.com/llvm/llvm-project.git"
 tag = "llvmorg-{version}"
 commit = "392dfff97d29b59d77e5cac6d4b6ef2585fe7117"
-note = "LLVM publishes gpg .sig files and attestation .jsonl, no checksum list; the sha256 is trust-on-first-use. ~2 GB per platform."
+note = "LLVM publishes gpg .sig files and attestation .jsonl, no checksum list; the sha256 is the digest GitHub's release API publishes for the asset (upstream-json). ~2 GB per platform."
 git_size = 4609077248
 
 [[artifact]]
@@ -1487,11 +1487,11 @@ entry = "llvm"
 kind = "file"
 platform = "linux-x86_64"
 url = "https://github.com/llvm/llvm-project/releases/download/{tag}/LLVM-{version}-Linux-X64.tar.xz"
-sha256 = ""
+sha256 = "f72edb0b36580ece7f52e23858f00c18fad4e87395ea7ad05d7e55c39f8fc78a"
 signature_url = "https://github.com/llvm/llvm-project/releases/download/{tag}/LLVM-{version}-Linux-X64.tar.xz.sig"
 signature_kind = "gpg"
 install = "tar"
-verified = "unverified"
+verified = "upstream-json"
 size = 2014093084
 
 [[artifact]]
@@ -1499,11 +1499,11 @@ entry = "llvm"
 kind = "file"
 platform = "linux-aarch64"
 url = "https://github.com/llvm/llvm-project/releases/download/{tag}/LLVM-{version}-Linux-ARM64.tar.xz"
-sha256 = ""
+sha256 = "44f1e4b7a125b2763d56386a199928dd57ec32e151cc6042dce2f7b0da7bb651"
 signature_url = "https://github.com/llvm/llvm-project/releases/download/{tag}/LLVM-{version}-Linux-ARM64.tar.xz.sig"
 signature_kind = "gpg"
 install = "tar"
-verified = "unverified"
+verified = "upstream-json"
 size = 1828141344
 
 [[artifact]]
@@ -1511,11 +1511,11 @@ entry = "llvm"
 kind = "file"
 platform = "darwin-arm64"
 url = "https://github.com/llvm/llvm-project/releases/download/{tag}/LLVM-{version}-macOS-ARM64.tar.xz"
-sha256 = ""
+sha256 = "aba592b4a15e8f90c634c5367b51ec8418b8bcd2829865db331a17dc9418dcff"
 signature_url = "https://github.com/llvm/llvm-project/releases/download/{tag}/LLVM-{version}-macOS-ARM64.tar.xz.sig"
 signature_kind = "gpg"
 install = "tar"
-verified = "unverified"
+verified = "upstream-json"
 size = 1569733272
 
 [[entry]]
@@ -1850,7 +1850,7 @@ profiles = ["core"]
 update = "github:ninja-build/ninja"
 git = "https://github.com/ninja-build/ninja.git"
 commit = "3441b633c2fe2c494e958780ba0f4227b1327634"
-note = "No upstream checksums; trust-on-first-use."
+note = "No upstream checksum list; the sha256 is the digest GitHub's release API publishes for the asset (upstream-json)."
 git_size = 5621760
 
 [[artifact]]
@@ -1858,10 +1858,10 @@ entry = "ninja"
 kind = "file"
 platform = "linux-x86_64"
 url = "https://github.com/ninja-build/ninja/releases/download/{tag}/ninja-linux.zip"
-sha256 = ""
+sha256 = "5749cbc4e668273514150a80e387a957f933c6ed3f5f11e03fb30955e2bbead6"
 install = "zip"
 bins = ["ninja"]
-verified = "unverified"
+verified = "upstream-json"
 size = 134040
 
 [[artifact]]
@@ -1869,10 +1869,10 @@ entry = "ninja"
 kind = "file"
 platform = "linux-aarch64"
 url = "https://github.com/ninja-build/ninja/releases/download/{tag}/ninja-linux-aarch64.zip"
-sha256 = ""
+sha256 = "fd2cacc8050a7f12a16a2e48f9e06fca5c14fc4c2bee2babb67b58be17a607fc"
 install = "zip"
 bins = ["ninja"]
-verified = "unverified"
+verified = "upstream-json"
 size = 126256
 
 [[artifact]]
@@ -1880,10 +1880,10 @@ entry = "ninja"
 kind = "file"
 platform = "darwin-arm64"
 url = "https://github.com/ninja-build/ninja/releases/download/{tag}/ninja-mac.zip"
-sha256 = ""
+sha256 = "c99048673aa765960a99cf10c6ddb9f1fad506099ff0a0e137ad8960a88f321b"
 install = "zip"
 bins = ["ninja"]
-verified = "unverified"
+verified = "upstream-json"
 size = 314051
 
 [[entry]]
@@ -1905,12 +1905,12 @@ entry = "meson"
 kind = "file"
 platform = "any"
 url = "https://github.com/mesonbuild/meson/releases/download/{tag}/meson-{version}.tar.gz"
-sha256 = ""
+sha256 = "ab0a6ca09f8ef70c564c8241fb5a23957886a0b53fb58412b5e07eaf07dba743"
 signature_url = "https://github.com/mesonbuild/meson/releases/download/{tag}/meson-{version}.tar.gz.asc"
 signature_kind = "gpg"
 install = "tar"
 bins = ["meson.py"]
-verified = "unverified"
+verified = "upstream-json"
 size = 2524665
 
 [[entry]]
@@ -2027,7 +2027,7 @@ version = "3.0.0"
 update = "github:rui314/mold"
 git = "https://github.com/rui314/mold.git"
 commit = "8de38c35a2df16a25f7ff87ac3ad07156a925beb"
-note = "No upstream checksums; trust-on-first-use."
+note = "No upstream checksum list; the sha256 is the digest GitHub's release API publishes for the asset (upstream-json)."
 git_size = 39596032
 
 [[artifact]]
@@ -2035,9 +2035,9 @@ entry = "mold"
 kind = "file"
 platform = "linux-x86_64"
 url = "https://github.com/rui314/mold/releases/download/{tag}/mold-{version}-x86_64-linux.tar.gz"
-sha256 = ""
+sha256 = "6c90d4a474c7c0409dfb575be03a5345878ac14fdba18de8b40fa58c60121189"
 install = "tar"
-verified = "unverified"
+verified = "upstream-json"
 size = 14067330
 
 [[artifact]]
@@ -2045,9 +2045,9 @@ entry = "mold"
 kind = "file"
 platform = "linux-aarch64"
 url = "https://github.com/rui314/mold/releases/download/{tag}/mold-{version}-aarch64-linux.tar.gz"
-sha256 = ""
+sha256 = "52c759d3689babaea4c42af2f31062a74ab83e17ffb5a8090232534c67b70577"
 install = "tar"
-verified = "unverified"
+verified = "upstream-json"
 size = 13116959
 
 [[entry]]
@@ -2060,7 +2060,7 @@ version = "4.14.3"
 update = "github:ccache/ccache"
 git = "https://github.com/ccache/ccache.git"
 commit = "16464deae5188f8ef333cc693c58b63ee884e43e"
-note = "Releases are minisign-signed by the maintainer; that key is not vendored here yet, so the .minisig is not fetched and the sha256 is trust-on-first-use."
+note = "Releases are minisign-signed by the maintainer; that key is not vendored here yet, so the .minisig is not fetched; the sha256 is the digest GitHub's release API publishes for the asset (upstream-json)."
 git_size = 15501312
 
 [[artifact]]
@@ -2068,10 +2068,10 @@ entry = "ccache"
 kind = "file"
 platform = "linux-x86_64"
 url = "https://github.com/ccache/ccache/releases/download/{tag}/ccache-{version}-linux-x86_64-glibc.tar.xz"
-sha256 = ""
+sha256 = "c94a5688546883eee4c87764b34fa2eb18a4879421a51589c37538aed6312dfc"
 install = "tar"
 bins = ["ccache"]
-verified = "unverified"
+verified = "upstream-json"
 size = 1353452
 
 [[artifact]]
@@ -2079,10 +2079,10 @@ entry = "ccache"
 kind = "file"
 platform = "linux-aarch64"
 url = "https://github.com/ccache/ccache/releases/download/{tag}/ccache-{version}-linux-aarch64-glibc.tar.xz"
-sha256 = ""
+sha256 = "3feb3109f81d0dd856b48c921eb83a6bed716f53e587c2511bc827bf34d8707c"
 install = "tar"
 bins = ["ccache"]
-verified = "unverified"
+verified = "upstream-json"
 size = 1214984
 
 [[artifact]]
@@ -2090,10 +2090,10 @@ entry = "ccache"
 kind = "file"
 platform = "darwin-arm64"
 url = "https://github.com/ccache/ccache/releases/download/{tag}/ccache-{version}-darwin.tar.gz"
-sha256 = ""
+sha256 = "764dd2a8100ff83e6bbd7b9a1e2016cc401be34bee8a70ea99698186622c34d5"
 install = "tar"
 bins = ["ccache"]
-verified = "unverified"
+verified = "upstream-json"
 size = 2233488
 
 [[entry]]
@@ -2423,7 +2423,7 @@ profiles = ["core"]
 update = "github:duckdb/duckdb"
 git = "https://github.com/duckdb/duckdb.git"
 commit = "d54cbbe3df17e8e5ce68312f483b4155836112aa"
-note = "No upstream checksum list; trust-on-first-use."
+note = "No upstream checksum list; the sha256 is the digest GitHub's release API publishes for the asset (upstream-json)."
 git_size = 598031360
 
 [[artifact]]
@@ -2431,11 +2431,11 @@ entry = "duckdb"
 kind = "file"
 platform = "linux-x86_64"
 url = "https://github.com/duckdb/duckdb/releases/download/{tag}/duckdb-cli-linux-amd64.tar.gz"
-sha256 = ""
+sha256 = "c6507206baf7793c6013dbd82368469a45f20dc0e17a6f92f204602f652ed2bc"
 install = "tar"
 bins = ["duckdb"]
 strip = 0
-verified = "unverified"
+verified = "upstream-json"
 size = 24424037
 
 [[artifact]]
@@ -2443,11 +2443,11 @@ entry = "duckdb"
 kind = "file"
 platform = "linux-aarch64"
 url = "https://github.com/duckdb/duckdb/releases/download/{tag}/duckdb-cli-linux-arm64.tar.gz"
-sha256 = ""
+sha256 = "859e1875d2a9515fbb4bf8871061437a14af82320da68c753f094c4b776348fe"
 install = "tar"
 bins = ["duckdb"]
 strip = 0
-verified = "unverified"
+verified = "upstream-json"
 size = 22306407
 
 [[artifact]]
@@ -2455,11 +2455,11 @@ entry = "duckdb"
 kind = "file"
 platform = "darwin-arm64"
 url = "https://github.com/duckdb/duckdb/releases/download/{tag}/duckdb-cli-osx-arm64.tar.gz"
-sha256 = ""
+sha256 = "188a36fe8883ef52e69165a0cbb6031ef679c8e6c448a1ce22951964149b7f96"
 install = "tar"
 bins = ["duckdb"]
 strip = 0
-verified = "unverified"
+verified = "upstream-json"
 size = 19169633
 
 [[entry]]
@@ -2506,10 +2506,10 @@ entry = "clickhouse"
 kind = "file"
 platform = "darwin-arm64"
 url = "https://github.com/ClickHouse/ClickHouse/releases/download/{tag}/clickhouse-macos-aarch64"
-sha256 = ""
+sha256 = "17a3364e01c79a9304132b8e84163599b7d52ce5700f3f42d3a4a7b079fc75e8"
 install = "bin"
 bins = ["clickhouse"]
-verified = "unverified"
+verified = "upstream-json"
 size = 183015764
 
 [[entry]]
@@ -3447,7 +3447,7 @@ update = "github:stunnel/static-curl"
 git = "https://github.com/stunnel/static-curl.git"
 tag = "{version}"
 commit = "fe523b76714c00c222d0fc0f3662cbf580a91534"
-note = "No upstream checksum list; trust-on-first-use."
+note = "No upstream checksum list; the sha256 is the digest GitHub's release API publishes for the asset (upstream-json)."
 git_size = 431104
 
 [[artifact]]
@@ -3455,11 +3455,11 @@ entry = "curl-static"
 kind = "file"
 platform = "linux-x86_64"
 url = "https://github.com/stunnel/static-curl/releases/download/{tag}/curl-linux-x86_64-glibc-{version}.tar.xz"
-sha256 = ""
+sha256 = "a9f5d72eb245623f82a649bf64acae0c935af3510700d2167857964c47fe9e5b"
 install = "tar"
 bins = ["curl"]
 strip = 0
-verified = "unverified"
+verified = "upstream-json"
 size = 3540328
 
 [[artifact]]
@@ -3467,11 +3467,11 @@ entry = "curl-static"
 kind = "file"
 platform = "linux-aarch64"
 url = "https://github.com/stunnel/static-curl/releases/download/{tag}/curl-linux-aarch64-glibc-{version}.tar.xz"
-sha256 = ""
+sha256 = "434dace1222adbf0fa5de5069e36aae20069ad0d70495a409cbafed1cab0f6a5"
 install = "tar"
 bins = ["curl"]
 strip = 0
-verified = "unverified"
+verified = "upstream-json"
 size = 3631484
 
 # ══════════════════════════════════════════════════════════════════════
@@ -3591,7 +3591,7 @@ profiles = ["core"]
 update = "github:neovim/neovim"
 git = "https://github.com/neovim/neovim.git"
 commit = "779c36969e31080503be2dfccbcc3f999e289606"
-note = "No upstream checksum list; trust-on-first-use."
+note = "No upstream checksum list; the sha256 is the digest GitHub's release API publishes for the asset (upstream-json)."
 git_size = 417727488
 
 [[artifact]]
@@ -3599,9 +3599,9 @@ entry = "neovim"
 kind = "file"
 platform = "linux-x86_64"
 url = "https://github.com/neovim/neovim/releases/download/{tag}/nvim-linux-x86_64.tar.gz"
-sha256 = ""
+sha256 = "474430d53e6264f6d6dd18db42d6dc9df3a1b56ca9e88a325bbf860e1a811d87"
 install = "tar"
-verified = "unverified"
+verified = "upstream-json"
 size = 11404582
 
 [[artifact]]
@@ -3609,9 +3609,9 @@ entry = "neovim"
 kind = "file"
 platform = "linux-aarch64"
 url = "https://github.com/neovim/neovim/releases/download/{tag}/nvim-linux-arm64.tar.gz"
-sha256 = ""
+sha256 = "8f1f64a0bdb97247034038c3823c6cbad5bdf9ecd5751b85494b71c3ee04c815"
 install = "tar"
-verified = "unverified"
+verified = "upstream-json"
 size = 11367117
 
 [[artifact]]
@@ -3619,9 +3619,9 @@ entry = "neovim"
 kind = "file"
 platform = "darwin-arm64"
 url = "https://github.com/neovim/neovim/releases/download/{tag}/nvim-macos-arm64.tar.gz"
-sha256 = ""
+sha256 = "1dbd148222b051ba6c307c4d17a318ed083df018a4f6a5a0ce46955ffc9ab87b"
 install = "tar"
-verified = "unverified"
+verified = "upstream-json"
 size = 9595887
 
 [[entry]]
@@ -3634,7 +3634,7 @@ version = "4.145.2"
 update = "github:coder/code-server"
 git = "https://github.com/coder/code-server.git"
 commit = "302bc77436721f5a474e06d1fe34cf8f86195d5e"
-note = "No upstream checksum list; trust-on-first-use. Extensions must be archived separately (.vsix)."
+note = "No upstream checksum list; the sha256 is the digest GitHub's release API publishes for the asset (upstream-json). Extensions must be archived separately (.vsix)."
 git_size = 56464384
 
 [[artifact]]
@@ -3642,9 +3642,9 @@ entry = "code-server"
 kind = "file"
 platform = "linux-x86_64"
 url = "https://github.com/coder/code-server/releases/download/{tag}/code-server-{version}-linux-amd64.tar.gz"
-sha256 = ""
+sha256 = "2f6db6c3e8b733dd6b3aeee83532e148b2bae2e392353ba85452d03572348962"
 install = "tar"
-verified = "unverified"
+verified = "upstream-json"
 size = 236495502
 
 [[artifact]]
@@ -3652,9 +3652,9 @@ entry = "code-server"
 kind = "file"
 platform = "linux-aarch64"
 url = "https://github.com/coder/code-server/releases/download/{tag}/code-server-{version}-linux-arm64.tar.gz"
-sha256 = ""
+sha256 = "e867a34416e2da4a83496b09580001893e7a4e5bb58a0624c4fcd22819e7d53d"
 install = "tar"
-verified = "unverified"
+verified = "upstream-json"
 size = 233639045
 
 [[artifact]]
@@ -3662,9 +3662,9 @@ entry = "code-server"
 kind = "file"
 platform = "darwin-arm64"
 url = "https://github.com/coder/code-server/releases/download/{tag}/code-server-{version}-macos-arm64.tar.gz"
-sha256 = ""
+sha256 = "d6699692f1e59d918517c81f9d2a4ef335132128cd45725b22236d5fe09636d4"
 install = "tar"
-verified = "unverified"
+verified = "upstream-json"
 size = 214949354
 
 [[entry]]
@@ -3728,7 +3728,7 @@ version = "0.11.0"
 update = "github:koalaman/shellcheck"
 git = "https://github.com/koalaman/shellcheck.git"
 commit = "aac0823e6b58f8a499e856e93738082691cbf212"
-note = "No upstream checksum list; trust-on-first-use."
+note = "No upstream checksum list; the sha256 is the digest GitHub's release API publishes for the asset (upstream-json)."
 git_size = 6330368
 
 [[artifact]]
@@ -3736,10 +3736,10 @@ entry = "shellcheck"
 kind = "file"
 platform = "linux-x86_64"
 url = "https://github.com/koalaman/shellcheck/releases/download/{tag}/shellcheck-v{version}.linux.x86_64.tar.xz"
-sha256 = ""
+sha256 = "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
 install = "tar"
 bins = ["shellcheck"]
-verified = "unverified"
+verified = "upstream-json"
 size = 2559196
 
 [[artifact]]
@@ -3747,10 +3747,10 @@ entry = "shellcheck"
 kind = "file"
 platform = "linux-aarch64"
 url = "https://github.com/koalaman/shellcheck/releases/download/{tag}/shellcheck-v{version}.linux.aarch64.tar.xz"
-sha256 = ""
+sha256 = "12b331c1d2db6b9eb13cfca64306b1b157a86eb69db83023e261eaa7e7c14588"
 install = "tar"
 bins = ["shellcheck"]
-verified = "unverified"
+verified = "upstream-json"
 size = 6811484
 
 [[artifact]]
@@ -3758,10 +3758,10 @@ entry = "shellcheck"
 kind = "file"
 platform = "darwin-arm64"
 url = "https://github.com/koalaman/shellcheck/releases/download/{tag}/shellcheck-v{version}.darwin.aarch64.tar.xz"
-sha256 = ""
+sha256 = "56affdd8de5527894dca6dc3d7e0a99a873b0f004d7aabc30ae407d3f48b0a79"
 install = "tar"
 bins = ["shellcheck"]
-verified = "unverified"
+verified = "upstream-json"
 size = 7245972
 
 # ══════════════════════════════════════════════════════════════════════
@@ -3829,7 +3829,7 @@ profiles = ["core"]
 update = "github:sharkdp/fd"
 git = "https://github.com/sharkdp/fd.git"
 commit = "b2a287b3993768e0ec52f0852916917f23fb2a38"
-note = "No upstream checksum list; trust-on-first-use."
+note = "No upstream checksum list; the sha256 is the digest GitHub's release API publishes for the asset (upstream-json)."
 git_size = 2720768
 
 [[artifact]]
@@ -3837,10 +3837,10 @@ entry = "fd"
 kind = "file"
 platform = "linux-x86_64"
 url = "https://github.com/sharkdp/fd/releases/download/{tag}/fd-v{version}-x86_64-unknown-linux-gnu.tar.gz"
-sha256 = ""
+sha256 = "985e24041e9ef6e9a38e9e088743405dde23d7220aa96740f091862167d9ff28"
 install = "tar"
 bins = ["fd"]
-verified = "unverified"
+verified = "upstream-json"
 size = 1747445
 
 [[artifact]]
@@ -3848,10 +3848,10 @@ entry = "fd"
 kind = "file"
 platform = "linux-aarch64"
 url = "https://github.com/sharkdp/fd/releases/download/{tag}/fd-v{version}-aarch64-unknown-linux-gnu.tar.gz"
-sha256 = ""
+sha256 = "4b144f38bd7352cd4c95020b58e8e575476e60edcdf1dc5e0733e3d01efba6dd"
 install = "tar"
 bins = ["fd"]
-verified = "unverified"
+verified = "upstream-json"
 size = 1599113
 
 [[artifact]]
@@ -3859,10 +3859,10 @@ entry = "fd"
 kind = "file"
 platform = "darwin-arm64"
 url = "https://github.com/sharkdp/fd/releases/download/{tag}/fd-v{version}-aarch64-apple-darwin.tar.gz"
-sha256 = ""
+sha256 = "81bf98a16d3d7230e4a9123fcede243d71ea31a577113476ed43f1cdf4773162"
 install = "tar"
 bins = ["fd"]
-verified = "unverified"
+verified = "upstream-json"
 size = 1349389
 
 [[entry]]
@@ -3926,7 +3926,7 @@ profiles = ["core"]
 update = "github:mikefarah/yq"
 git = "https://github.com/mikefarah/yq.git"
 commit = "f2944b823f84906a127dbd29e4c2a3e60c4e550e"
-note = "Upstream's checksums file is a multi-hash table rather than a sums list; trust-on-first-use."
+note = "Upstream's checksums file is a multi-hash table rather than a sums list; the sha256 is the digest GitHub's release API publishes for the asset (upstream-json)."
 git_size = 12463104
 
 [[artifact]]
@@ -3934,10 +3934,10 @@ entry = "yq"
 kind = "file"
 platform = "linux-x86_64"
 url = "https://github.com/mikefarah/yq/releases/download/{tag}/yq_linux_amd64"
-sha256 = ""
+sha256 = "129534601871538efe0ba4c5e62a34fb1d5f469bcb975c4fddeb467d82974973"
 install = "bin"
 bins = ["yq"]
-verified = "unverified"
+verified = "upstream-json"
 size = 15499424
 
 [[artifact]]
@@ -3945,10 +3945,10 @@ entry = "yq"
 kind = "file"
 platform = "linux-aarch64"
 url = "https://github.com/mikefarah/yq/releases/download/{tag}/yq_linux_arm64"
-sha256 = ""
+sha256 = "89f69310b61b68d1245065a1241d1fc843f7a36cd6103ffd77ad987613bd1b67"
 install = "bin"
 bins = ["yq"]
-verified = "unverified"
+verified = "upstream-json"
 size = 14352544
 
 [[artifact]]
@@ -3956,10 +3956,10 @@ entry = "yq"
 kind = "file"
 platform = "darwin-arm64"
 url = "https://github.com/mikefarah/yq/releases/download/{tag}/yq_darwin_arm64"
-sha256 = ""
+sha256 = "a2aebb93b5bdcb61bb76f630e42a0ef6a3ee10842a6516cd7b9e4080786ec593"
 install = "bin"
 bins = ["yq"]
-verified = "unverified"
+verified = "upstream-json"
 size = 14637666
 
 [[entry]]
@@ -4051,7 +4051,7 @@ update = "github:seaweedfs/seaweedfs"
 git = "https://github.com/seaweedfs/seaweedfs.git"
 tag = "{version}"
 commit = "5ef99c1d8dbbeb4a035c055e3b464620506aefac"
-note = "Upstream publishes MD5 only, which is not a pin; trust-on-first-use sha256."
+note = "Upstream publishes MD5 only, which is not a pin; the sha256 is the digest GitHub's release API publishes for the asset (upstream-json)."
 git_size = 258678784
 
 [[artifact]]
@@ -4059,11 +4059,11 @@ entry = "seaweedfs"
 kind = "file"
 platform = "linux-x86_64"
 url = "https://github.com/seaweedfs/seaweedfs/releases/download/{tag}/linux_amd64.tar.gz"
-sha256 = ""
+sha256 = "e7424a82eee327809bfa449fda4924c9a0f42f6669a01288eebb1b79674c8196"
 install = "tar"
 bins = ["weed"]
 strip = 0
-verified = "unverified"
+verified = "upstream-json"
 size = 48705323
 
 [[artifact]]
@@ -4071,11 +4071,11 @@ entry = "seaweedfs"
 kind = "file"
 platform = "linux-aarch64"
 url = "https://github.com/seaweedfs/seaweedfs/releases/download/{tag}/linux_arm64.tar.gz"
-sha256 = ""
+sha256 = "e4eeae433dc6f5111034b8b1cc0c1a08b9b094b4eea101a36650ddc3a7c0ce58"
 install = "tar"
 bins = ["weed"]
 strip = 0
-verified = "unverified"
+verified = "upstream-json"
 size = 42960031
 
 [[artifact]]
@@ -4083,11 +4083,11 @@ entry = "seaweedfs"
 kind = "file"
 platform = "darwin-arm64"
 url = "https://github.com/seaweedfs/seaweedfs/releases/download/{tag}/darwin_arm64.tar.gz"
-sha256 = ""
+sha256 = "cba792274d5881fb3453291c3af53380c513e80e37aea29a2a25d20333eff325"
 install = "tar"
 bins = ["weed"]
 strip = 0
-verified = "unverified"
+verified = "upstream-json"
 size = 45207415
 
 [[entry]]
@@ -4477,7 +4477,7 @@ profiles = ["core"]
 update = "github:FiloSottile/age"
 git = "https://github.com/FiloSottile/age.git"
 commit = "b74dce4cdbe35b5e5f66c06d9612b72f89028758"
-note = "Upstream ships transparency-log proofs (.proof), no checksum list; trust-on-first-use sha256."
+note = "Upstream ships transparency-log proofs (.proof), no checksum list; the sha256 is the digest GitHub's release API publishes for the asset (upstream-json)."
 git_size = 1672192
 
 [[artifact]]
@@ -4485,10 +4485,10 @@ entry = "age"
 kind = "file"
 platform = "linux-x86_64"
 url = "https://github.com/FiloSottile/age/releases/download/{tag}/age-v{version}-linux-amd64.tar.gz"
-sha256 = ""
+sha256 = "cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10"
 install = "tar"
 bins = ["age", "age-keygen"]
-verified = "unverified"
+verified = "upstream-json"
 size = 19405817
 
 [[artifact]]
@@ -4496,10 +4496,10 @@ entry = "age"
 kind = "file"
 platform = "linux-aarch64"
 url = "https://github.com/FiloSottile/age/releases/download/{tag}/age-v{version}-linux-arm64.tar.gz"
-sha256 = ""
+sha256 = "6b8dc4333c53a5a57c9e5834e3a48f92605d7154014cd07269ff3327db5d37f4"
 install = "tar"
 bins = ["age", "age-keygen"]
-verified = "unverified"
+verified = "upstream-json"
 size = 17771923
 
 [[artifact]]
@@ -4507,10 +4507,10 @@ entry = "age"
 kind = "file"
 platform = "darwin-arm64"
 url = "https://github.com/FiloSottile/age/releases/download/{tag}/age-v{version}-darwin-arm64.tar.gz"
-sha256 = ""
+sha256 = "e2020b073c44f692685a24d6abc378817eb81ffaaf49fd0531ef8565f767f2f5"
 install = "tar"
 bins = ["age", "age-keygen"]
-verified = "unverified"
+verified = "upstream-json"
 size = 18106798
 
 [[entry]]
