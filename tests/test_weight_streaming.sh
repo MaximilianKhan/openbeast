@@ -143,7 +143,7 @@ _cap="$(awk -v k="$RIG_KB" 'BEGIN {printf "%d", k / 1048576 * 0.90}')"
 # Every shard pinned with a real sha256, the remote names in the repo's
 # subfolder, the local names one consistent prefix (llama.cpp rebuilds the
 # siblings' names from shard 1's).
-_rows="$(awk -F'\t' '$3 ~ /^Huihui-GLM-5\.3-Flash-abliterated-UD-Q2_K_XL-0000[1-4]-of-00004\.gguf$/ && $1 ~ /^[0-9a-f]{64}$/ \
+_rows="$(awk -F'\t' '$3 ~ /^Huihui-GLM-5\.3-Flash-abliterated-UD-Q2_K_XL-0000[1-4]-of-00004\.gguf$/ && length($1) == 64 && $1 !~ /[^0-9a-f]/ \
           && $4 == "huihui-ai/Huihui-GLM-5.3-Flash-abliterated-GGUF" && $5 ~ /^UD-Q2_K_XL\// {n++; b += $2} END {print n + 0, b + 0}' \
           "$REPO_DIR/scripts/weights.registry")"
 [[ "$_rows" == "4 108720072064" ]] && pass "…its four shards are sha256-pinned (108,720,072,064 bytes = 101.3 GiB)" \

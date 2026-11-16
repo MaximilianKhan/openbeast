@@ -590,6 +590,8 @@ check "…and the key travels by environment only: never in the printed command"
 _o="$(env -i "${BASE_ENV[@]}" REPO_DIR="$SB" bash -c 'source "$REPO_DIR/scripts/lib/memscope.sh"; source "$REPO_DIR/scripts/lib/engine.sh"; ob_engine_load maya; ob_mem_scope "$(eng_maya_scope_file glm53-flash-abl-q2kxl)" rig 127926272 75')"
 check "the Maya profile asks start.sh for the same rig-only 90% / memlock scope as llama.cpp's big mode" \
   '[[ "$_o" == "90 infinity profile:glm53-flash-abl-q2kxl.env" ]]' "$_o"
+check "no awk in an adapter uses a {n} interval (mawk 1.3.4-20200120 reads it literally)" \
+  '! grep -nE "awk.*~ /[^/]*\{[0-9]+(,[0-9]*)?\}" "$REPO_DIR"/scripts/engines/*.sh "$REPO_DIR"/scripts/lib/engine.sh'
 rm -f "$SB/.engines/gate/maya.json"; : > "$SB/openbeast.conf"
 
 # ════════════════════════════════════════════════════════════════════════════

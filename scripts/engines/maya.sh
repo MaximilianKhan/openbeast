@@ -292,7 +292,9 @@ _eng_maya_profile_load() {
   [[ "$PF_CONTEXT" =~ ^(8192|32768|65536|131072)$ ]] || { echo "$f: CONTEXT must be one Maya accepts for GLM (8192, 32768, 65536, 131072)" >&2; return 1; }
   [[ "$PF_RAM_HEADROOM_GB" =~ ^[0-9]+$ && "$PF_RAM_HEADROOM_GB" -ge 6 ]] \
     || { echo "$f: RAM_HEADROOM_GB must be a whole number >= 6 (Maya pins all other free RAM)" >&2; return 1; }
-  awk -F'\t' -v n="$PF_GGUF" '$0 !~ /^#/ && $3 == n && $1 ~ /^[0-9a-f]{64}$/ {f = 1} END {exit !f}' \
+  # No `{64}` interval: mawk 1.3.4-20200120 (Debian 12, Ubuntu 22.04) reads
+  # the braces literally, so the pin never matched there.
+  awk -F'\t' -v n="$PF_GGUF" '$0 !~ /^#/ && $3 == n && length($1) == 64 && $1 !~ /[^0-9a-f]/ {f = 1} END {exit !f}' \
     "$REPO_DIR/scripts/weights.registry" \
     || { echo "$f: $PF_GGUF has no sha256 pin in scripts/weights.registry" >&2; return 1; }
   [[ "$(ob_engine_host_class)" == rig ]] || { echo "Maya profiles run on the rig (this host is a $(ob_engine_host_class))" >&2; return 1; }
