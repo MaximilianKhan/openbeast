@@ -181,7 +181,9 @@ def fetch_file(drive: S.Drive, a: C.Artifact, allow_unverified: bool) -> dict:
             if got != a.sha256:
                 raise FetchError(f"{a.id}: sha256 MISMATCH — downloaded {got}, the catalog pins {a.sha256}. "
                                  f"REFUSED and deleted.")
-            how.append("pinned")
+            # a pin `lock --from` copied off a first-use download is still first-use
+            # provenance: keep "tofu" in the lock, so every verify keeps naming it
+            how.append("tofu-pinned" if a.verified == "tofu" else "pinned")
         if a.upstream_hash:
             algo, _, hx = a.upstream_hash.partition(":")
             if net.hash_file(part, algo) != hx:

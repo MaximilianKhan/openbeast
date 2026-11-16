@@ -542,6 +542,13 @@ verified = "unverified"
     a = C.load(str(cat)).artifacts[0]
     assert a.sha256 == sha(data) and a.verified == "tofu" and a.size == len(data)
     assert C.lint(C.load(str(cat))) == []
+    # a later drive filled from that catalog still says tofu, and verify still names it
+    rc, out = run(["--catalog", str(cat), "fetch", "--to", str(tmp_path / "d2")], capsys)
+    assert rc == 0, out.err
+    it = json.loads((tmp_path / "d2/ark.lock").read_text())["items"]["nosum/any/blob.bin"]
+    assert it["verified"] == "tofu-pinned"
+    rc, out = run(["verify", str(tmp_path / "d2")], capsys)
+    assert rc == 0 and "trusted on first use" in out.out and "nosum/any/blob.bin" in out.out
 
 
 def test_resume_continues_a_partial_download_with_range(http, tmp_path, capsys):
