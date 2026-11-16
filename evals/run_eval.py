@@ -27,6 +27,7 @@ Requires: llama.cpp server running on port 8080.
 """
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -1790,6 +1791,75 @@ def _run_reaped(cmd, timeout: int, shell: bool = False, **popen_kw) -> tuple[int
 _FIXTURE_PATH = re.compile(r"/tmp/eval[\w\-./]*")
 
 
+def fixture_roots(task: dict) -> list[str]:
+    """The task's /tmp/eval* fixture roots (the first path component under
+    /tmp of every fixture path its setup, task, validation, cleanup and
+    pre_validate name), sorted."""
+    spec = " ".join(str(task.get(k, "")) for k in ("setup", "task", "validation",
+                                                   "cleanup", "pre_validate"))
+    return sorted({"/tmp/" + p[len("/tmp/"):].split("/", 1)[0]
+                   for p in _FIXTURE_PATH.findall(spec)})
+
+
+def _fixture_lock_dir() -> str:
+    """/tmp/.ob-eval-locks-<uid>, created 0700, refused unless it is a real
+    dir of ours that nobody else can write."""
+    d = f"/tmp/.ob-eval-locks-{os.getuid()}"
+    try:
+        os.mkdir(d, 0o700)
+    except FileExistsError:
+        pass
+    st = os.lstat(d)
+    if (stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode)
+            or st.st_uid != os.getuid() or st.st_mode & 0o077):
+        raise OSError(f"{d} is not a private dir of ours")
+    return d
+
+
+@contextlib.contextmanager
+def fixture_lock(task: dict, notify=print):
+    """Hold an exclusive flock on each of the task's fixture roots for one
+    unit's whole cleanup -> setup -> agent -> validate -> cleanup.
+
+    Every fixture is a fixed /tmp/eval_* path. Within one run_eval, units
+    that share one are serialised by base_id, but nothing serialised two
+    harness PROCESSES on a host: prove_task during a campaign, a second
+    profile or a comparison sweep wiped or overwrote the first one's
+    files mid-validation, and the resulting "missing biquad.py" FAILs
+    looked like model failures and were banked (review 1116: the
+    reference of 167_q15_biquad_a/_c failed 8 runs of 12 run side by
+    side). flock is per open file description, so it also serialises two
+    threads of one process (different bases on one root), and the roots
+    are taken in sorted order so two units can never deadlock. A lock
+    dies with its process (signal, os._exit). When the lock dir is not
+    usable the unit runs unlocked, with a warning."""
+    import fcntl
+    roots = fixture_roots(task)
+    fds: list[int] = []
+    try:
+        lock_dir = None
+        if roots:
+            try:
+                lock_dir = _fixture_lock_dir()
+            except OSError as e:
+                notify(f"  WARNING: no fixture lock for {task.get('id')} ({e}); "
+                       f"run only one harness on this host")
+        for root in roots if lock_dir else ():
+            fd = os.open(os.path.join(lock_dir, os.path.basename(root) + ".lock"),
+                         os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            fds.append(fd)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                notify(f"  {task.get('id')}: waiting for {root} "
+                       f"(another unit or harness on this host is using it)")
+                fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        for fd in reversed(fds):
+            os.close(fd)                # releases its flock
+
+
 def unsafe_fixture_roots(task: dict) -> list[str]:
     """The task's /tmp/eval* fixture roots that are NOT safely ours.
 
@@ -1805,10 +1875,7 @@ def unsafe_fixture_roots(task: dict) -> list[str]:
     A root is unsafe when it is a symlink, is owned by another uid, or is
     world-writable (or group-writable by a group other than ours). A root
     that does not exist yet is fine."""
-    spec = " ".join(str(task.get(k, "")) for k in ("setup", "task", "validation",
-                                                   "cleanup", "pre_validate"))
-    roots = sorted({"/tmp/" + p[len("/tmp/"):].split("/", 1)[0]
-                    for p in _FIXTURE_PATH.findall(spec)})
+    roots = fixture_roots(task)
     bad = []
     me = os.getuid()
     for root in roots:
@@ -3393,7 +3460,8 @@ def run_eval(
     if jobs == 1:
         for g in groups:
             for idx, task, c in g:
-                process(idx, task, log=print, c=c)
+                with fixture_lock(task):
+                    process(idx, task, log=print, c=c)
                 if abort.is_set():
                     break
             if abort.is_set():
@@ -3407,7 +3475,8 @@ def run_eval(
         def run_group(units: list[tuple[int, dict, ArmCtx]]) -> None:
             for idx, task, c in units:
                 lines: list[str] = []
-                process(idx, task, log=lines.append, c=c)
+                with fixture_lock(task):        # waiting is printed at once
+                    process(idx, task, log=lines.append, c=c)
                 if lines:
                     with print_lock:
                         print("\n".join(lines))

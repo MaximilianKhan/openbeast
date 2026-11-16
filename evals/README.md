@@ -568,9 +568,16 @@ solution process group a validator recorded is SIGKILLed after it exits.
   through `kern.procargs2` under every sandbox rule tried, so no validator
   may hold a secret in argv or env (none does: the script arrives on stdin).
 - **Shared fixture paths.** A family's units share one fixed `/tmp/eval_*`
-  dir; two provers (or a prover and a test) of the same family at once
-  corrupt each other (186, 190). The harness serialises a base group; by
-  hand, run one family at a time.
+  dir. Two harness processes on one host used to corrupt each other there
+  (186, 190; review 1116: the 167_q15_biquad_a/_c references failed 8 runs
+  of 12 side by side, and those FAILs were banked as model failures).
+  `run_eval.fixture_lock` now holds an exclusive `flock` per fixture root
+  (`/tmp/.ob-eval-locks-<uid>/<root>.lock`, a private 0700 dir) for each
+  unit's whole cleanup -> setup -> agent -> validate -> cleanup, in
+  `run_eval` and in each `prove_task` arm; a second harness waits and says
+  so. It also serialises two threads of one run whose units share a root.
+  Not covered: a family's own prover script (`run_family_prover`) and
+  tests that touch `/tmp/eval_*` directly; run those one at a time.
 - **Timing headroom.** The cold zig compile now happens in every
   validation (private cache): about 8 s of the 15 s validator budget on a
   loaded Mac; a Go unit rebuilds its standard library each time (158_b's

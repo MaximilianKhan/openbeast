@@ -256,6 +256,13 @@ def prove(R, M, task: dict, spec: dict, repeat: int | None = None,
     dest = spec["dest"]
 
     def arm(label: str, sol: str | None, scale: float = 1.0):
+        # One harness at a time on the task's /tmp/eval_* roots: a prover
+        # run beside a campaign (or another prover of the same family)
+        # wiped its files mid-validation (review 1116).
+        with R.fixture_lock(task):
+            return _arm(label, sol, scale)
+
+    def _arm(label: str, sol: str | None, scale: float = 1.0):
         R.run_cleanup(task, log=silent)
         if not R.run_setup(task, log=say):
             return None, 0.0, "SETUP FAILED", []
