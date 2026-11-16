@@ -622,6 +622,8 @@ def test_verify_detects_corruption_missing_and_planted_files(http, tmp_path, cap
     assert "CORRUPT: files/toy/1.0/any/toy-1.0-linux.tar.gz" in out.out
     assert "MISSING: files/toy/1.0/any/single" in out.out
     assert "files/toy/planted.sh" in out.out
+    rc, out2 = run(["verify", str(drive), "--jobs", "4"], capsys)          # parallel: the same verdict
+    assert rc == 1 and out2.out == out.out
     # --quick sees the missing file but NOT a same-size flipped byte, and says it did not re-hash
     rc, out = run(["verify", str(drive), "--quick"], capsys)
     assert rc == 1 and "NOT re-hashed" in out.out
