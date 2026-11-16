@@ -2,7 +2,7 @@
  "timed": true,
  "expect": {
   "wrong_unbroadcast.py": "^case 1: gradient mismatch \\(\\d+ of \\d+ cases wrong\\)",
-  "wrong_naive_lse.py": "^case \\d+: error OverflowError \\(\\d+ of \\d+ cases wrong\\)",
+  "wrong_naive_lse.py": "^case 174: error (OverflowError|ValueError) \\(10 of 192 cases wrong\\)$",
   "wrong_recursive.py": "^case 190: error RecursionError \\(1 of 192 cases wrong\\)",
   "wrong_stale_grad.py": "^case 12: gradient mismatch \\(\\d+ of 192 cases wrong\\)",
   "wrong_no_zero_grad.py": "^mlp: loss trace mismatch at step 2$",

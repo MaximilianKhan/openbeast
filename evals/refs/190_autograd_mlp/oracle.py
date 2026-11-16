@@ -513,13 +513,18 @@ def fixed_cases():
 
 
 def stability_cases(rng):
-    """Huge logits: a naive exp() overflows; the values stay well defined."""
+    """Huge logits; the values stay well defined. |offset| >= 750 is past
+    exp's overflow (709.8) and its underflow to 0.0 (-745.1) even after the
+    +-2 leaf, so a logsumexp without the max shift breaks on EVERY one of the
+    ten, whatever the seed: OverflowError on a positive offset, ValueError
+    (log of 0.0) on a negated one. (With 700, a seed could draw offsets a
+    naive exp survives, which made the first failing case seed-dependent.)"""
     cs = []
     for t in range(10):
         g = Gen(rng)
         n, c = rng.choice([(2, 3), (3, 4), (4, 2), (1, 5)])
         x = g.leaf([n, c])
-        off = g.leaf([n, 1], rg=False, lo=700.0, hi=1000.0)
+        off = g.leaf([n, 1], rg=False, lo=750.0, hi=1000.0)
         if t % 2:
             off = g.emit(["un", "neg", off], [n, 1])
         z = g.emit(["bin", "+", x, off], [n, c])
