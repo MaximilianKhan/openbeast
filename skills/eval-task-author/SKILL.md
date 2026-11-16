@@ -180,6 +180,14 @@ for free):
   `OPENBEAST_TIMEOUT_SCALE`. On Linux the validator is non-dumpable.
 - `import vlib` works, injected from source; it is never a file on disk.
 
+**A prover arm that plants a module must stay contained.** 176's first
+plant arm wrote `urllib/parse.py` into the cwd of every ancestor process
+and left a live, forged-OK module in two real checkouts (one of them the
+Claude Code session's cwd). Plant only into the validator's own cwd
+(`getppid()` once), or into a cwd that holds a marker file your prover
+created, and have the prover check every ancestor cwd afterwards
+(176's `prove.py`, `leftovers()`).
+
 **What your validator must do:**
 
 1. **Run the solution in a SEPARATE process.** Judge only its output. Never

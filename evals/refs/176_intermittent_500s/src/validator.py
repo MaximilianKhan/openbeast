@@ -5,8 +5,8 @@
 # visible tests, into a private temp dir outside the fixture and imported
 # only by isolated child interpreters (-I -B: no PYTHON* env, no user site,
 # no cwd on sys.path; own session and process group; on macOS sandboxed
-# with no fork and no read of the eval data), so nothing else left in the
-# fixture dir is loaded.
+# with no fork, no read of the eval data and no write outside that temp
+# dir), so nothing else left in the fixture dir is loaded.
 #   1. tests/*: every visible test file byte-identical (sha256);
 #   2. the visible suite is green (exact test count). This is a regression
 #      gate: the suite imports shopd in the same process, so its report is
@@ -175,8 +175,11 @@ class Child:
 
 # Children: own session (so a kill reaches everything they started), group
 # recorded with the harness (which SIGKILLs it if we die first), and on macOS
-# sandboxed with no fork and no read of the sealed eval paths.
-SANDBOX = vlib._sandbox_prefix(False, vlib._sealed_paths())
+# sandboxed with no fork, no read of the sealed eval paths, and no write
+# outside their private root (tmp) and /dev: the code under test can find
+# every ancestor's cwd through libproc, and a module planted there would
+# hijack the harness's next setup or cleanup. SANDBOX is set once tmp exists.
+SANDBOX = None
 
 
 def spawn(boot, root, env, stdin, stdout):
@@ -209,6 +212,7 @@ env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'LANG': 'C.UTF-8', 'LC_A
        'TZ': 'UTC', 'HOME': tempfile.gettempdir()}
 tmp = tempfile.mkdtemp(prefix='ob176_')
 ctl = tempfile.mkdtemp(prefix='ob176c_')
+SANDBOX = vlib._sandbox_prefix(False, vlib._sealed_paths(), allow_write=[tmp])
 VISIBLE_BOOT_PATH = os.path.join(ctl, 'visible_boot.py')
 CHILD_BOOT_PATH = os.path.join(ctl, 'child_boot.py')
 for _path, _src in ((VISIBLE_BOOT_PATH, VISIBLE_BOOT), (CHILD_BOOT_PATH, CHILD_BOOT)):

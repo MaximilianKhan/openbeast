@@ -88,6 +88,10 @@
     [
       "plant",
       "^FAIL: hidden test H12$"
+    ],
+    [
+      "wrong_plant_ancestors",
+      "^FAIL: hidden test H12$"
     ]
   ],
   "slow": [
