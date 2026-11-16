@@ -245,15 +245,29 @@ does a BFS over the source's scope.
   meaning "when these bytes arrived".
 - **Resumable.** The frontier is saved every 10 pages and on exit (^C, a
   dead network, the page budget), and the next sync resumes it. `--root`
-  jumps the queue without discarding the saved frontier.
+  jumps the queue without discarding the saved frontier. Nothing unfinished
+  is dropped on the way out:
+  - the page **in flight** when ^C lands goes back to the head of the queue;
+  - a **transient** failure (transport error, HTTP 5xx or 429) is counted
+    under `retry` and kept for the next sync; a permanent one (404, a page
+    that will not render) is counted under `errors` and dropped;
+  - an **unreachable robots.txt** (5xx, 429, transport) or **5 transient
+    failures in a row** is an outage, not a verdict: the sync **stops**
+    with exit code 6 and the whole queue intact, instead of draining it as
+    "refused" and calling the mirror complete;
+  - `complete` means the queue is empty, transient failures included.
+- **A deque, not a list.** The queue is a `collections.deque` with a
+  `queued` set beside `seen`, so a URL linked from a hundred pages is queued
+  once and a fresh re-walk of a large mirror is linear.
 - **Polite.**
   - One request at a time, `delay` seconds apart per host (default 1.0 s).
     A robots `Crawl-delay` wins when larger.
   - Our own User-Agent: `openbeast-docs/1.0 (…)`.
   - robots.txt follows RFC 9309: longest match wins and Allow wins ties,
     Google's `*` and `$` wildcards are supported, and a group naming our
-    token beats `*`. A 4xx robots.txt means no rules; **a 5xx or an
-    unreachable robots.txt means the whole host is refused**.
+    token beats `*`. A 4xx robots.txt (except 429) means no rules; **a 5xx,
+    a 429 or an unreachable robots.txt means the whole host is refused** —
+    and the sync stops with its queue kept (above).
 - **Scoped.**
   - A URL outside the source's `hosts` is never contacted, and that covers
     redirects. A `hosts` entry is a host **and port**: a bare
@@ -422,7 +436,8 @@ from `tests/fixtures/beast_docs/`. They pin:
   - an interrupted sync **resumes**.
 - **Politeness and scope**:
   - robots refusal by page URL, with the page never requested;
-  - a robots 5xx refuses the whole host; a robots 404 means allowed;
+  - a robots 5xx refuses the whole host and stops the sync with its queue
+    kept; a robots 404 means allowed;
   - the robots parser handles wildcards, longest match and agent groups;
   - a redirect off the source's hosts is refused;
   - a private address is refused without the opt-in;
@@ -437,7 +452,13 @@ from `tests/fixtures/beast_docs/`. They pin:
 - **Bundles**: the pack → unpack round trip on an "offline" store, and
   refusals for a wrong hash, a tampered member inside a re-hashed tarball,
   and a `../` member. A refusal installs nothing.
-- **CLI**: `docs.sh` end to end, including exit codes 0/1/2/3.
+- **CLI**: `docs.sh` end to end, including exit codes 0/1/2/3. Exit code 6
+  is a sync stopped by an outage; its queue is saved.
+- **Outages**: a robots.txt 5xx on a first sync and after a partial sync
+  keeps the queue byte for byte and `sync_complete` false; a page 5xx is
+  retried by the next sync while a 404 is dropped; ^C keeps the page in
+  flight; repeated transport failures stop the sync with the queue intact;
+  a fresh re-walk of a 3,000-page, 100-links-per-page mirror is linear.
 - **Config**: the shipped `sources.toml` is valid and every source states a
   licence; the TOML subset parser matches `tomllib` and refuses everything
   else.

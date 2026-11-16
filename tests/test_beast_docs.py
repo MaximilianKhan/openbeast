@@ -73,6 +73,7 @@ class Stub:
         self.robots_status = 200
         self.overrides: dict = {}       # path -> bytes
         self.redirects: dict = {}       # path -> location
+        self.status: dict = {}          # path -> HTTP error status to answer with
         self.etag = True
         stub = self
 
@@ -83,6 +84,11 @@ class Stub:
             def do_GET(self):
                 stub.requests.append((self.path, dict(self.headers)))
                 path = self.path.split("?", 1)[0]
+                if path in stub.status:
+                    self.send_response(stub.status[path])
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 if path in stub.redirects:
                     self.send_response(302)
                     self.send_header("Location", stub.redirects[path])
@@ -355,11 +361,109 @@ def test_sync_obeys_robots_for_the_page_and_never_requests_it(env):
     assert st["new"] >= 3
 
 
-def test_robots_5xx_refuses_the_whole_host(env):
+def test_robots_5xx_refuses_the_whole_host_and_keeps_the_queue(env):
     env["stub"].robots_status = 503
+    with pytest.raises(S.SyncAborted, match="robots.txt unreachable"):
+        _sync("swiftui")
+    assert env["stub"].paths() == ["/robots.txt"]               # nothing but robots requested
+    m = ST.Store().load("swiftui")
+    assert m["sync_complete"] is False
+    assert [u for u, _d in m["frontier"]] == [f"{env['stub'].base}/documentation/swiftui"]
+
+
+def test_outage_after_a_partial_sync_drops_nothing(env):
+    st = _sync("swiftui", max_pages=2)
+    m = ST.Store().load("swiftui")
+    queue = [u for u, _d in m["frontier"]]
+    assert st["new"] == 2 and len(queue) == 3 and m["sync_complete"] is False
+    env["stub"].robots_status = 503                               # the outage
+    with pytest.raises(S.SyncAborted):
+        _sync("swiftui")
+    m = ST.Store().load("swiftui")
+    assert [u for u, _d in m["frontier"]] == queue and m["sync_complete"] is False
+    assert api.status_rows()[0]["state"] == "partial (3 queued)"
+    env["stub"].robots_status = 200                               # back: the resume finishes it
     st = _sync("swiftui")
-    assert st["new"] == 0 and st["refused"] >= 1
-    assert env["stub"].paths() == ["/robots.txt"]
+    assert st["resumed"] is True and st["new"] == 3
+    assert ST.Store().load("swiftui")["sync_complete"] is True
+
+
+def test_transient_page_failure_is_kept_for_the_next_sync(env):
+    stub = env["stub"]
+    stub.status["/tutorials/data/documentation/swiftui/view.json"] = 503
+    st = _sync("swiftui")
+    view = f"{stub.base}/documentation/swiftui/view"
+    m = ST.Store().load("swiftui")
+    assert st["retry"] == 1 and st["new"] == 4
+    assert m["sync_complete"] is False and [u for u, _d in m["frontier"]] == [view]
+    del stub.status["/tutorials/data/documentation/swiftui/view.json"]
+    st = _sync("swiftui")
+    assert st["new"] == 1 and ST.Store().load("swiftui")["sync_complete"] is True
+    # a permanent failure (404) is counted and dropped: it does not hold the mirror open
+    stub.status["/tutorials/data/documentation/swiftui/view.json"] = 404
+    st = _sync("swiftui", force=True)
+    assert st["errors"] == 1 and st["retry"] == 0
+    assert ST.Store().load("swiftui")["sync_complete"] is True
+
+
+class _FlakyFetcher(net.Fetcher):
+    """Raises `exc` on page GETs from the `after`-th one on."""
+
+    def __init__(self, hosts, exc, after=0):
+        super().__init__(hosts, 0.0)
+        self.exc, self.after, self.gets = exc, after, 0
+
+    def get(self, url, *a, **kw):
+        self.gets += 1
+        if self.gets > self.after:
+            raise self.exc
+        return super().get(url, *a, **kw)
+
+
+def test_interrupt_keeps_the_page_in_flight(env):
+    src = C.load_sources()["swiftui"]
+    f = _FlakyFetcher(src.hosts, KeyboardInterrupt(), after=1)
+    with pytest.raises(KeyboardInterrupt):
+        S.sync(src, ST.Store(), fetcher=f, log=lambda *_a: None)
+    m = ST.Store().load("swiftui")
+    assert len(m["pages"]) == 1
+    first = m["frontier"][0][0]
+    assert first not in m["pages"] and first.startswith(env["stub"].base)  # the in-flight page, first
+    st = _sync("swiftui")
+    assert st["resumed"] is True and st["new"] == 4
+
+
+def test_repeated_transport_failures_stop_the_sync_and_keep_the_queue(env, monkeypatch):
+    monkeypatch.setattr(S, "MAX_CONSECUTIVE_FAILURES", 2)
+    src = C.load_sources()["swiftui"]
+    _sync("swiftui", max_pages=1)
+    queue = [u for u, _d in ST.Store().load("swiftui")["frontier"]]
+    f = _FlakyFetcher(src.hosts, net.FetchError("connection reset"))
+    with pytest.raises(S.SyncAborted, match="in a row"):
+        S.sync(src, ST.Store(), fetcher=f, log=lambda *_a: None)
+    m = ST.Store().load("swiftui")
+    assert sorted(u for u, _d in m["frontier"]) == sorted(queue) and m["sync_complete"] is False
+
+
+def test_fresh_rewalk_of_a_densely_linked_mirror_is_linear(env):
+    """Every page fresh, every page linking to 100 others: the walk is pure
+    queue work. A list + pop(0) with duplicates queued was quadratic here
+    (minutes); the deque + queued set takes well under a second."""
+    s = ST.Store()
+    base = env["stub"].base + "/documentation/swiftui"
+    n = 3000
+    urls = [base] + [f"{base}/p{i}" for i in range(n)]
+    now = ST.now_iso()
+    m = s.load("swiftui")
+    for i, u in enumerate(urls):
+        m["pages"][u] = {"checked_at": now, "fetched_at": now, "file": "x",
+                         "links": [urls[(i * 7 + k) % len(urls)] for k in range(100)]}
+    s.save("swiftui", m)
+    t = time.monotonic()
+    st = _sync("swiftui")
+    assert st["skipped_fresh"] == len(urls) and st["fetched"] == 0
+    assert time.monotonic() - t < 15
+    assert env["stub"].requests == []
 
 
 def test_robots_404_means_allowed(env):

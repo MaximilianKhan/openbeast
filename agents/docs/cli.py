@@ -12,7 +12,9 @@
   reindex [--source S]
 
 Exit codes: 0 ok · 1 nothing found · 2 usage / config · 3 offline refusal ·
-4 sync refused (terms, scope) · 5 bundle verification failed.
+4 sync refused (terms, scope) · 5 bundle verification failed ·
+6 sync stopped by an outage (robots.txt unreachable, repeated transport
+failures) — the queue was saved; re-run sync to resume.
 """
 from __future__ import annotations
 
@@ -98,6 +100,9 @@ def main(argv=None) -> int:
         print(f"==> sync {src.name} ({src.adapter}) into {store.source_dir(src.name)}")
         try:
             st = S.sync(src, store, a.max_pages, a.root or None, a.accept_terms, a.force, log=log)
+        except S.SyncAborted as e:
+            _err(str(e))
+            return 6
         except S.SyncError as e:
             _err(str(e))
             return 3 if str(e).startswith("offline") else 4

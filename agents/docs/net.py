@@ -58,6 +58,7 @@ class Robots:
     rules: list = field(default_factory=list)     # [(allow: bool, pattern)]
     crawl_delay: float = 0.0
     disallow_all: bool = False
+    unreachable: bool = False     # 5xx / 429 / transport: an outage, not a verdict
     note: str = ""
 
     @staticmethod
@@ -203,12 +204,16 @@ class Fetcher:
             rb = parse_robots(r.body.decode("utf-8", "replace"))
             rb.note = f"{robots_url}: {len(rb.rules)} rule(s) for us"
         except urllib.error.HTTPError as e:
-            if 400 <= e.code < 500:
+            if 400 <= e.code < 500 and e.code != 429:
                 rb = Robots(note=f"{robots_url}: HTTP {e.code} (no rules: crawl allowed)")
             else:                      # RFC 9309 §2.3.1.4: unreachable = disallow all
-                rb = Robots(disallow_all=True, note=f"{robots_url}: HTTP {e.code} (unreachable: crawl refused)")
+                rb = Robots(disallow_all=True, unreachable=True,
+                            note=f"{robots_url}: HTTP {e.code} (unreachable: crawl refused)")
+        except Refused as e:           # our own refusal (scope, SSRF vet): a verdict
+            rb = Robots(disallow_all=True, note=f"{robots_url}: {e} (refused)")
         except (OSError, FetchError, urllib.error.URLError) as e:
-            rb = Robots(disallow_all=True, note=f"{robots_url}: {e} (unreachable: crawl refused)")
+            rb = Robots(disallow_all=True, unreachable=True,
+                        note=f"{robots_url}: {e} (unreachable: crawl refused)")
         self.robots[host] = rb
         return rb
 

@@ -10,7 +10,11 @@ Sync is incremental and resumable:
     markdown hashes the same, rewrites nothing — only checked_at moves;
   * the frontier is saved in the manifest every few pages and on the way out,
     so an interrupted sync (^C, a dead network, --max-pages) resumes where it
-    stopped. A sync that empties its frontier is `complete`.
+    stopped — the page in flight and every transient failure (transport
+    error, HTTP 5xx / 429) included. An unreachable robots.txt, or
+    MAX_CONSECUTIVE_FAILURES transient failures in a row, STOPS the sync
+    (SyncAborted) with the queue intact rather than draining it as
+    "refused". A sync that empties its frontier is `complete`.
 
 Politeness: one request at a time, `delay` seconds apart per host (robots
 Crawl-delay wins when larger), robots.txt checked for the URL we request AND
@@ -21,6 +25,7 @@ from __future__ import annotations
 
 import json
 import urllib.error
+from collections import deque
 from typing import Callable, Optional
 
 from . import config as C
@@ -31,10 +36,16 @@ from . import urls as U
 from .store import Store, age_days, doc_id, now_iso
 
 SAVE_EVERY = 10
+MAX_CONSECUTIVE_FAILURES = 5        # transient failures in a row = the network is down: stop
 
 
 class SyncError(Exception):
     pass
+
+
+class SyncAborted(SyncError):
+    """Stopped for an outage (robots.txt unreachable, the network failing
+    over and over). Nothing was dropped: the queue is saved for a resume."""
 
 
 def terms_gate(src: C.Source, m: dict, accept_terms: bool) -> None:
@@ -135,42 +146,82 @@ def sync(src: C.Source, store: Store, max_pages: Optional[int] = None,
             raise SyncError(f"root {r} is outside {src.name}'s scope ({src.allow_prefixes})")
     pages = m["pages"]
     # Resume an interrupted frontier; otherwise start from the roots.
-    frontier = [tuple(x) for x in m.get("frontier") or [] if isinstance(x, list) and len(x) == 2]
-    resumed = bool(frontier)
+    saved = [tuple(x) for x in m.get("frontier") or [] if isinstance(x, list) and len(x) == 2]
+    resumed = bool(saved)
     hints: dict = {}
     if roots:
         # --root jumps the queue; it does not throw away a saved frontier.
-        frontier = [(u, 0) for u in roots] + frontier
-    elif not frontier:
+        start = [(u, 0) for u in roots] + saved
+    elif saved:
+        start = saved
+    else:
         seeds, hints = _discover(src, fetcher, log)
-        frontier = [(u, 0) for u in src.roots] + [(u, 1) for u in seeds]
+        start = [(u, 0) for u in src.roots] + [(u, 1) for u in seeds]
     m["hints"] = {**(m.get("hints") or {}), **hints}
     hints = m["hints"]
-    seen = set()
+    # A deque (popleft is O(1); list.pop(0) made a big fresh re-walk
+    # quadratic) plus a `queued` set, so a URL linked from a hundred pages is
+    # queued once, not a hundred times.
+    frontier: deque = deque()
+    queued: set = set()
+    seen: set = set()
+
+    def enqueue(links, depth):
+        for u in links:
+            if u not in seen and u not in queued:
+                queued.add(u)
+                frontier.append((u, depth))
+
+    for u, d in start:
+        enqueue([u], d)
+    # Pages that failed for a reason that may pass (transport error, HTTP
+    # 5xx / 429): kept for the next sync, never silently dropped.
+    retry: list = []
+    inflight = None                 # the page being processed when an exception escapes
+    failures = 0                    # consecutive transient failures
     stats = {"source": src.name, "fetched": 0, "new": 0, "updated": 0, "unchanged": 0,
              "not_modified": 0, "skipped_fresh": 0, "refused": 0, "errors": 0,
-             "requests": 0, "resumed": resumed}
+             "retry": 0, "requests": 0, "resumed": resumed}
     m["last_sync_started_at"] = now_iso()
     m["sync_complete"] = False
     i = 0
+
+    def transient(url, depth, why):
+        nonlocal failures
+        stats["errors"] += 1
+        stats["retry"] += 1
+        retry.append((url, depth))
+        failures += 1
+        log(f"  ! {why} (kept for the next sync)")
+        if failures >= MAX_CONSECUTIVE_FAILURES:
+            raise SyncAborted(
+                f"{failures} transient failures in a row (last: {why}) — the network or the "
+                f"host looks down. Stopped; nothing was dropped: the queue is saved and the "
+                f"next sync resumes it.")
+
     try:
         while frontier:
-            url, depth = frontier.pop(0)
+            inflight = None
+            url, depth = frontier.popleft()
+            queued.discard(url)
             url = H.canonical(url) if src.adapter != "apple-docc-json" else U.normalize_url(url)
             if not url or url in seen or not src.in_scope(url):
                 continue
             seen.add(url)
+            inflight = (url, depth)
             rec = pages.get(url)
             fresh = (rec and not force and rec.get("checked_at")
                      and (age_days(rec["checked_at"]) or 0) < src.refresh_days)
             if fresh:
                 stats["skipped_fresh"] += 1
                 if depth < src.max_depth:
-                    frontier += [(u, depth + 1) for u in rec.get("links") or [] if u not in seen]
+                    enqueue(rec.get("links") or [], depth + 1)
                 continue
             if stats["fetched"] >= budget:
-                frontier.insert(0, (url, depth))
+                frontier.appendleft((url, depth))
+                queued.add(url)
                 seen.discard(url)
+                inflight = None
                 break
             try:
                 target = fetch_url_for(src, url)
@@ -178,8 +229,17 @@ def sync(src: C.Source, store: Store, max_pages: Optional[int] = None,
                 stats["refused"] += 1
                 log(f"  - refused  {url}: {e}")
                 continue
+            rb = fetcher.robots_for(url)
+            if rb.unreachable:
+                # RFC 9309: an unreachable robots.txt means "crawl nothing" —
+                # for NOW. That is an outage, not a verdict on the queued
+                # pages: stop, keep every one of them (this page included),
+                # and do not call the mirror complete.
+                raise SyncAborted(
+                    f"robots.txt unreachable ({rb.note}). Stopped; nothing was dropped: "
+                    f"the queue is saved and the next sync resumes it.")
             try:
-                if not fetcher.robots_for(url).allowed(url):
+                if not rb.allowed(url):
                     raise net.Refused(f"robots.txt disallows the page {url}")
                 stats["fetched"] += 1
                 resp = fetcher.get(target, etag=(rec or {}).get("etag", ""),
@@ -189,13 +249,16 @@ def sync(src: C.Source, store: Store, max_pages: Optional[int] = None,
                 log(f"  - refused  {url}: {e}")
                 continue
             except urllib.error.HTTPError as e:
-                stats["errors"] += 1
-                log(f"  ! HTTP {e.code} {target}")
+                if e.code >= 500 or e.code == 429:
+                    transient(url, depth, f"HTTP {e.code} {target}")
+                else:
+                    stats["errors"] += 1
+                    log(f"  ! HTTP {e.code} {target}")
                 continue
             except net.FetchError as e:
-                stats["errors"] += 1
-                log(f"  ! {e}")
+                transient(url, depth, str(e))
                 continue
+            failures = 0
             now = now_iso()
             if resp.status == 304 and rec:
                 rec["checked_at"] = now
@@ -223,7 +286,7 @@ def sync(src: C.Source, store: Store, max_pages: Optional[int] = None,
                         stats["unchanged"] += 1
                         log(f"  = same     {url}")
                         if depth < src.max_depth:
-                            frontier += [(u, depth + 1) for u in links if u not in seen]
+                            enqueue(links, depth + 1)
                         continue
                 rel, sha, _changed = store.write_page(src.name, url, out["title"], out["markdown"], meta)
                 pages[url] = {"doc_id": doc_id(src.name, url), "file": rel, "title": out["title"],
@@ -240,19 +303,27 @@ def sync(src: C.Source, store: Store, max_pages: Optional[int] = None,
                 log(f"  {'~ updated' if prev_sha else '+ new    '} {url}  ({out['title']})")
                 rec = pages[url]
             if depth < src.max_depth:
-                frontier += [(u, depth + 1) for u in (rec or {}).get("links") or [] if u not in seen]
+                enqueue((rec or {}).get("links") or [], depth + 1)
             i += 1
             if i % SAVE_EVERY == 0:
-                m["frontier"] = [list(x) for x in frontier]
+                m["frontier"] = [list(x) for x in retry] + [list(x) for x in frontier]
                 store.save(src.name, m)
+        inflight = None
     finally:
-        # Drop what this run already visited; keep the rest for a resume.
+        # Keep everything not finished for a resume: the page in flight when
+        # we were stopped (^C, an abort), the transient failures, and the
+        # unvisited queue. Drop only what this run actually finished.
         rest, dedup = [], set()
+        for u, d in ([inflight] if inflight else []) + retry:
+            if u not in dedup:
+                dedup.add(u)
+                rest.append([u, d])
         for u, d in frontier:
             if u not in seen and u not in dedup and src.in_scope(u):
                 dedup.add(u)
                 rest.append([u, d])
         m["frontier"] = rest
+        # Complete = nothing left to try, transient failures included.
         m["sync_complete"] = not rest
         m["last_sync_at"] = now_iso()
         stats["requests"] = fetcher.requests
@@ -294,7 +365,10 @@ def live(src: C.Source, page: str, fetcher: Optional[net.Fetcher] = None) -> dic
     if not page or not src.in_scope(page):
         raise net.Refused(f"{page or raw} is outside {src.name}'s scope")
     fetcher = fetcher or net.Fetcher(src.hosts, 0.0)
-    if not fetcher.robots_for(page).allowed(page):
+    rb = fetcher.robots_for(page)
+    if rb.unreachable:
+        raise net.FetchError(f"robots.txt unreachable ({rb.note})")
+    if not rb.allowed(page):
         raise net.Refused(f"robots.txt disallows {page}")
     try:
         target = fetch_url_for(src, page)
