@@ -636,6 +636,48 @@ class TestEdgeAuthMode(unittest.TestCase):
     def test_gate_without_anon_is_device(self):
         self.assertEqual(self._auth(False), "device")
 
+    def _admission(self, **env):
+        keys = ("OPENBEAST_EDGE_MAX_INFLIGHT", "OPENBEAST_INFERENCE_SLOTS", "OPENBEAST_EDGE_RATE_LIMIT")
+        saved = {k: os.environ.get(k) for k in keys}
+        try:
+            for k in keys:
+                os.environ.pop(k, None)
+            os.environ.update(env)
+            dashboard._EDGE_ANON = False
+            return dashboard.slot_status().get("admission")
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def test_admission_published_with_the_gate(self):
+        # Review 2026-11-16: slots.total said 4 on the Spark pair while the
+        # gate admitted 2 per device; clients learned it only from 429s.
+        self.assertEqual(self._admission(OPENBEAST_INFERENCE_SLOTS="4"),
+                         {"per_device_inflight": 4, "per_device_rate_per_min": 120})
+        self.assertEqual(self._admission(OPENBEAST_INFERENCE_SLOTS="4", OPENBEAST_EDGE_MAX_INFLIGHT="3",
+                                         OPENBEAST_EDGE_RATE_LIMIT="60"),
+                         {"per_device_inflight": 3, "per_device_rate_per_min": 60})
+        self.assertEqual(self._admission()["per_device_inflight"], 2)
+
+    def test_admission_matches_the_gate_rule(self):
+        sys.path.insert(0, os.path.join(REPO, "agents"))
+        try:
+            import edge
+        except ImportError as e:                          # the gate's deps are not installed here
+            self.skipTest(f"agents/edge.py not importable: {e}")
+        for env in ({}, {"OPENBEAST_INFERENCE_SLOTS": "4"}, {"OPENBEAST_EDGE_MAX_INFLIGHT": "1"},
+                    {"OPENBEAST_EDGE_MAX_INFLIGHT": "6", "OPENBEAST_INFERENCE_SLOTS": "4"},
+                    {"OPENBEAST_INFERENCE_SLOTS": "0"}):
+            self.assertEqual(self._admission(**env)["per_device_inflight"],
+                             edge.default_max_inflight(env), env)
+
+    def test_no_admission_field_with_the_gate_off(self):
+        dashboard._EDGE_GATE = False
+        self.assertNotIn("admission", dashboard.slot_status())
+
 
 class TestServicesInstinct(unittest.TestCase):
     """beast-instinct (INSTINCT=true): services.instinct is a plain bool,

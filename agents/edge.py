@@ -40,7 +40,8 @@ Env (resolved from openbeast.conf by scripts/lib/conf.sh):
   OPENBEAST_LLAMA_UPSTREAM     real llama-server (default http://127.0.0.1:8080)
   OPENBEAST_API_KEY            upstream key, if llama-server runs --api-key
   OPENBEAST_EDGE_RATE_LIMIT    requests/minute per device (default 120)
-  OPENBEAST_EDGE_MAX_INFLIGHT  concurrent generations per device (default 2);
+  OPENBEAST_EDGE_MAX_INFLIGHT  concurrent generations per device (default:
+                               OPENBEAST_INFERENCE_SLOTS when set, else 2);
                                a prompt array or n>1 counts prompts x n
   OPENBEAST_EDGE_MAX_BODY      largest request body accepted, in bytes (default
                                8 MiB — see MAX_BODY_BYTES)
@@ -118,7 +119,26 @@ UPSTREAM = os.environ.get(
     "OPENBEAST_LLAMA_UPSTREAM", "http://127.0.0.1:8080").rstrip("/")
 _UPSTREAM_KEY = os.environ.get("OPENBEAST_API_KEY", "").strip()
 RATE_LIMIT = int(os.environ.get("OPENBEAST_EDGE_RATE_LIMIT", "120"))
-MAX_INFLIGHT = int(os.environ.get("OPENBEAST_EDGE_MAX_INFLIGHT", "2"))
+
+
+def default_max_inflight(env=os.environ) -> int:
+    """The per-device generation cap. EDGE_MAX_INFLIGHT when set; otherwise
+    INFERENCE_SLOTS, the concurrency the model server was launched with, so a
+    single device can use every stream the server has; otherwise 2. Review
+    2026-11-16: the Spark pair serves 4 streams (INFERENCE_SLOTS=4) while the
+    gate admitted 2 per device, and a Mac running 3-4 agents got 429s with
+    streams idle. extensions/dashboard publishes the same number in
+    /api/slot (admission.per_device_inflight)."""
+    raw = env.get("OPENBEAST_EDGE_MAX_INFLIGHT", "").strip()
+    if raw:
+        return int(raw)
+    slots = env.get("OPENBEAST_INFERENCE_SLOTS", "").strip()
+    if slots.isdigit() and int(slots) > 0:
+        return int(slots)
+    return 2
+
+
+MAX_INFLIGHT = default_max_inflight()
 ALLOW_ANON = os.environ.get(
     "OPENBEAST_EDGE_ALLOW_ANON", "false").strip().lower() == "true"
 ALLOW_MEDIA_URLS = os.environ.get(

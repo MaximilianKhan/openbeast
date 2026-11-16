@@ -85,7 +85,7 @@ conf key), so none of them creates or changes the file.
 | `EDGE_GATE` | `OPENBEAST_EDGE_GATE` | `false` | Run beast-gate (`agents/edge.py`), the identity-aware inference edge, and publish `:8443` at it instead of raw llama-server. Per-device keys, path allowlist, rate limits, inference audit. Local frontends unaffected. See `docs/BEAST_SLOT.md` |
 | `EDGE_PORT` | `OPENBEAST_EDGE_PORT` | `8090` | beast-gate listen port (loopback; published via `tailscale serve`) |
 | `EDGE_RATE_LIMIT` | `OPENBEAST_EDGE_RATE_LIMIT` | `120` | Requests/minute per device (token bucket). Per-device override: `rate_limit_per_min` in the registry |
-| `EDGE_MAX_INFLIGHT` | `OPENBEAST_EDGE_MAX_INFLIGHT` | `2` | Concurrent generations per device |
+| `EDGE_MAX_INFLIGHT` | `OPENBEAST_EDGE_MAX_INFLIGHT` | `INFERENCE_SLOTS` when set, else `2` | Concurrent generations per device. Unset, it follows `INFERENCE_SLOTS` so one device can use every stream the server has (a Spark pair serving 4); `/api/slot` publishes it as `admission.per_device_inflight` |
 | `EDGE_MAX_BODY` | `OPENBEAST_EDGE_MAX_BODY` | `8388608` (8 MiB) | Largest request body the gate accepts, in bytes; a larger one is a 413. Raise it only for clients that send large inline media |
 | `EDGE_READ_TIMEOUT` | `OPENBEAST_EDGE_READ_TIMEOUT` | `600` | Seconds the gate waits on the model server for each byte; for a non-streaming completion that is the whole generation, so a longer one is a 504. Raise it, or stream |
 | `EDGE_CONNECT_TIMEOUT` | `OPENBEAST_EDGE_CONNECT_TIMEOUT` | `10` | Seconds the gate may take to reach the model server before answering 502 |

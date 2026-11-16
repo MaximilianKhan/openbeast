@@ -796,7 +796,7 @@ These are the keys in use on spark-1 on 2026-11-15. Secret values are not shown.
 | `INFERENCE_BACKEND` | `tensorfold` | the model is the recipe's TensorFold server |
 | `INFERENCE_URL` | `http://127.0.0.1:8000` | same box, loopback. Spawned agents follow it (conf.sh exports `OPENBEAST_AGENT_INFERENCE_URL=$INFERENCE_URL/v1`) |
 | `INFERENCE_MODEL` | `GLM-5.3-Flash-EXL3` | the served name; exported as `OPENBEAST_INFERENCE_MODEL`, which `agents/runner.py` sends |
-| `INFERENCE_SLOTS` | `4` | matches the recipe's 4 streams; beast-slot reports it |
+| `INFERENCE_SLOTS` | `4` | matches the recipe's 4 streams; beast-slot reports it. With `EDGE_MAX_INFLIGHT` unset it is also beast-gate's per-device cap, so one device (the Mac running parallel agents) may hold all 4 streams. Before the 2026-11-16 review the gate admitted 2 per device whatever the engine served; the audit showed `max_inflight` 429s with streams idle, each costing an agent turn ~7 s. A gate started on older code keeps 2 until `systemctl --user restart openbeast` (or set `EDGE_MAX_INFLIGHT=4` explicitly) |
 | `EDGE_GATE` | `true` | beast-gate (:8090) is the one inference door (:8443) |
 | `WEBUI_AUTH` | `true` | the WebUI login wall; required before :443 is published |
 | `WEBUI_ADMIN_EMAIL`, `WEBUI_ADMIN_PASSWORD` | *(secret)* | the admin `configure-webui.sh` uses to apply tool-server config on restarts |
