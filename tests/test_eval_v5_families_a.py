@@ -175,3 +175,9 @@ def test_a_hanging_compiled_solution_fails_on_its_warm_up(tmp_path, task_file, f
     assert time.monotonic() - t0 < run_eval.VALIDATION_TIMEOUT_S
 
 
+def test_163_prompt_states_the_cpu_budget_its_validator_enforces():
+    for v in _variant("163_bigint_divmod.json")["variants"]:
+        assert "within 6 s of CPU time" in v["task"] and "within 10 s" not in v["task"]
+        assert re.search(r"run_solution\(RUN, input=inp, cpu_s=6,", v["validation"]["script"])
+
+
