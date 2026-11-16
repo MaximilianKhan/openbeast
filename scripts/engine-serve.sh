@@ -30,6 +30,7 @@ export OB_CONF_READONLY=1
 source "$SCRIPT_DIR/lib/conf.sh"
 # shellcheck source=lib/engine.sh
 source "$SCRIPT_DIR/lib/engine.sh"
+ob_engine_host_class_pin          # one GPU detection for the whole launch
 E="$INFERENCE_BACKEND"
 if [[ "$E" == llama ]]; then
   echo "engine-serve.sh: INFERENCE_BACKEND=llama is launched by scripts/serve-*.sh, not here." >&2

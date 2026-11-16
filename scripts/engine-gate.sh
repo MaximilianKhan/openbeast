@@ -68,6 +68,7 @@ source "$SCRIPT_DIR/lib/backend.sh"
 source "$SCRIPT_DIR/lib/proc.sh"
 
 die() { echo "engine-gate: $*" >&2; exit "${2:-3}"; }
+ob_engine_host_class_pin          # once, for the binding and every engine.sh it runs
 ob_engine_valid "$ENGINE" || die "no engine adapter '$ENGINE' (scripts/engines/)" 2
 [[ -x "$REPO_DIR/scripts/$SERVE" ]] || die "scripts/$SERVE is not an executable serve script" 2
 

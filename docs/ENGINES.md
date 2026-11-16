@@ -35,7 +35,9 @@ prints the conf changes and the exact launch command.
 **Host class** comes from `scripts/lib/hardware.sh`. A GPU that reports
 `memory.total` as `[N/A]` (`OB_GPU_UNIFIED=1`) makes this host a `spark`; macOS
 is `mac` (llama or tensorfold `macos-arm64`); everything else is a `rig`.
-`OB_ENGINE_HOST_CLASS` overrides the detection, and `ENGINE_DEFAULT` in
+`OB_ENGINE_HOST_CLASS` overrides the detection (`engine.sh`, `engine-serve.sh`
+and `engine-gate.sh` also set it themselves after detecting once, so one
+command runs `nvidia-smi` once, not once per question), and `ENGINE_DEFAULT` in
 `openbeast.conf` overrides the default engine. The runtime fallback in
 `conf.sh` stays `llama` when `INFERENCE_BACKEND` is unset. The host-class
 default only decides what `engine.sh use default` picks and what `list` and

@@ -68,6 +68,8 @@ source "$SCRIPT_DIR/lib/engine.sh"
 # shellcheck source=lib/proc.sh
 source "$SCRIPT_DIR/lib/proc.sh"
 [[ -f "$SCRIPT_DIR/lib/curl_auth.sh" ]] && source "$SCRIPT_DIR/lib/curl_auth.sh"
+# One GPU detection per command, not one per question (history needs none).
+[[ "$CMD" == history ]] || ob_engine_host_class_pin
 
 die() { echo "Error: $*" >&2; exit 1; }
 need_engine() {

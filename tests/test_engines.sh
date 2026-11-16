@@ -209,6 +209,12 @@ mkdir -p "$T/gb10bin"; printf '#!/bin/bash\ncase "$*" in *name*) echo "NVIDIA GB
 printf 'MemTotal:       127598416 kB\n' > "$T/meminfo"
 _o="$(env -i "${BASE_ENV[@]}" PATH="$T/gb10bin:$T/bin:/usr/bin:/bin" OB_MEMINFO="$T/meminfo" OB_ENGINE_HOST_CLASS= REPO_DIR="$SB" bash -c 'source "$REPO_DIR/scripts/lib/engine.sh"; c=$(ob_engine_host_class); echo "$c $(ob_engine_default "$c")"')"
 check "GB10 (memory.total [N/A], OB_GPU_UNIFIED) → host class spark, default tensorfold" '[[ "$_o" == "spark tensorfold" ]]' "$_o"
+# GPU detection (three nvidia-smi runs on a GB10) once per command, however
+# many times the command asks for the host class (status asks twice).
+: > "$T/calls.log"
+_o="$(eng OB_ENGINE_HOST_CLASS= -- status)"
+check "engine.sh status detects the host class once (OB_ENGINE_HOST_CLASS pinned for the command)" \
+  '[[ "$(grep -c "^nvidia-smi" "$T/calls.log")" == 1 && "$_o" == *"host:      rig"* ]]' "$(grep -c "^nvidia-smi" "$T/calls.log") detections: $_o"
 _o="$(_lib OPENBEAST_ENGINE_DEFAULT=vllm bash -c 'source "$REPO_DIR/scripts/lib/engine.sh"; ob_engine_default rig')"
 check "ENGINE_DEFAULT overrides the host-class default" '[[ "$_o" == vllm ]]' "$_o"
 _o="$(_lib OPENBEAST_ENGINE_DEFAULT=nope bash -c 'source "$REPO_DIR/scripts/lib/engine.sh"; ob_engine_default spark' 2>&1)"

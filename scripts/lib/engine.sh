@@ -100,6 +100,17 @@ ob_engine_host_class() {
   printf 'rig\n'
 }
 
+# ob_engine_host_class_pin — detect the host class once and pin it in
+# OB_ENGINE_HOST_CLASS (exported) for the rest of this process and its
+# children. Detection is ob_detect_gpu (three nvidia-smi runs, ~120 ms on a
+# GB10), and callers ask through $(...), where a memo would be lost, several
+# times per command (list, status, use maya's profile checks, the launch
+# --print). Call it from a script's top level, never from inside $(...).
+ob_engine_host_class_pin() {
+  [[ -n "${OB_ENGINE_HOST_CLASS:-}" ]] || OB_ENGINE_HOST_CLASS="$(ob_engine_host_class)"
+  export OB_ENGINE_HOST_CLASS
+}
+
 # ob_engine_arch — x86_64 | aarch64 (OB_ENGINE_ARCH overrides).
 ob_engine_arch() {
   local m="${OB_ENGINE_ARCH:-$(uname -m 2>/dev/null)}"
