@@ -269,6 +269,7 @@ harness rather than through the tasks:
 | hidden CPU | 122: double-forked, never-waited workers kept their CPU out of `RUSAGE_CHILDREN` (29 s of naive gemm was charged as 0.03 s) | `vlib.run_solution` counts the whole tree. Leftovers are refused as `daemon` |
 | lingering solutions | a validator killed on timeout left its solution's group running into the next unit | vlib records each group it starts, and the harness SIGKILLs them after the validator exits |
 | shell parent | `run_reaped` ran `python -I -S -` through `sh -c`, and dash (Debian's and Ubuntu's `/bin/sh`) stays alive as the parent. That shell is dumpable and holds the unlinked script as fd 0, so `/proc/<sh>/fd/0` gave a solution the whole validator | The list form is run as `exec python ...`, so the validator's parent is the harness, which is non-dumpable |
+| other checkouts | A solution run from a worktree read `evals/tasks/40_attention.json` from the main checkout. The shared `.git` object store holds every branch's validators | `run_eval.validator_seal()` seals `evals/{tasks,refs,suites}` of every checkout in `git worktree list`, plus the git common dir (macOS; see below) |
 
 `evals/vlib.py` is the validator's standard library. The harness injects it
 into the validator from source; it is never on an import path or in the cwd.
@@ -282,7 +283,9 @@ into the validator from source; it is never on an import path or in the cwd.
   refused by default, and on macOS `sandbox-exec` enforces it. With
   `allow_fork=True`, orphans and survivors get `verdict="daemon"`. On macOS
   it also denies reads of `evals/tasks`, `evals/refs` and `evals/suites`
-  (`OPENBEAST_VALIDATOR_SEAL`).
+  of every checkout of the repository, and of its `.git` directory
+  (`OPENBEAST_VALIDATOR_SEAL`, built by `run_eval.validator_seal()`). On
+  Linux that seal is not enforced: keep secrets in the validator's memory.
 - `vlib.t(s)` and `vlib.scale()` give the timeout scale. `vlib.python_cmd(p)`
   gives `[python, -I, -S, p]`. `vlib.processes()` is a /proc-free process
   table. `vlib.lint_python(src, ban_modules=, ban_calls=)` is an AST lint for

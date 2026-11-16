@@ -383,6 +383,26 @@ def test_sealed_eval_paths_are_unreadable_to_the_solution(tmp_path):
     assert ORACLE not in r.stdout and not r.ok, r
 
 
+def test_seal_covers_every_checkout_and_the_git_store():
+    # A solution run from a worktree read the main checkout's
+    # evals/tasks/*.json, and the shared .git holds every branch's validators.
+    seal = run_eval.validator_seal()
+    try:
+        common = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--path-format=absolute",
+                                 "--git-common-dir"], capture_output=True, text=True)
+    except OSError:
+        pytest.skip("git is not installed")
+    if common.returncode != 0:
+        pytest.skip("not a git checkout")
+    common = common.stdout.strip()
+    main = os.path.dirname(common.rstrip(os.sep))
+    assert common in seal
+    for d in ("tasks", "refs", "suites"):
+        assert os.path.join(main, "evals", d) in seal
+        assert str(ROOT / "evals" / d) in seal
+    assert run_eval._validator_env(1.0)["OPENBEAST_VALIDATOR_SEAL"] == os.pathsep.join(seal)
+
+
 def test_python_validator_has_no_shell_parent_holding_the_script():
     # dash does not exec the last command of `sh -c`, so a surviving shell
     # (dumpable, unlike the validator) held the unlinked script as its stdin
