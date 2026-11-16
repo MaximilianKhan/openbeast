@@ -320,3 +320,79 @@ def test_122_oracle_builds_columns_in_the_integer_domain_bit_identically():
         c = [sum(map(mul, a, col)) for col in old_cols]
         want[i] = (sum(v * v for v in c), max(c))
     assert ns["gm_rows"](n, seed, rows) == want           # exact, not approximate
+
+
+# --- Python units import a stray reference copy (finding: 183, 188, 40, 36_a and
+# 123_a blocked only listed paths; a copy outside evals/ was readable) ---------
+
+def _task_unit(task_id: str, variant: str | None = None) -> dict:
+    d = json.loads((ROOT / "evals" / "tasks" / f"{task_id}.json").read_text())
+    if variant is None:
+        return d
+    v = next(x for x in d["variants"] if x["id"] == variant)
+    t = {k: val for k, val in d.items() if k != "variants"}
+    t.update(v)
+    return t
+
+
+def _validate_with(task: dict, solution_src: str) -> tuple[bool, str]:
+    run_eval.run_cleanup(task, log=lambda *a: None)
+    assert run_eval.run_setup(task, log=print)
+    try:
+        Path(task["dest"]).write_text(solution_src)
+        return run_eval.run_validation(task)
+    finally:
+        run_eval.run_cleanup(task, log=lambda *a: None)
+
+
+# (task, variant, ref file, the proxy's body after `import refcopy`)
+_STRAY = [
+    ("183_heston_little_trap", None, "183_heston_little_trap/heston.py", "refcopy.main()\n"),
+    ("188_gmm_em", None, "188_gmm_em/gmm.py", "fit_gmm = refcopy.fit_gmm\n"),
+    ("40_attention", None, "40_attention/attention.py", "attention = refcopy.attention\n"),
+    ("36_black_scholes", "a", "36_black_scholes/bs.py", ""),
+    ("123_nbody", "a", "123_nbody/nbody.py", ""),
+]
+
+
+@pytest.mark.parametrize("task_id,variant,ref,tail", _STRAY, ids=[s[0] for s in _STRAY])
+def test_python_unit_cannot_import_a_stray_reference_copy(tmp_path, task_id, variant, ref, tail):
+    task = _task_unit(task_id, variant)
+    # the reference itself passes through the same path (the unit still works)
+    ok, out = _validate_with(task, (ROOT / "evals" / "refs" / ref).read_text())
+    if not ok and "could not confine" in out:
+        pytest.skip("no confinement on this host (the unit refuses to run unconfined)")
+    assert ok, out
+    stray = tmp_path / "scratchpad" / "t183"            # a copy outside evals/
+    stray.mkdir(parents=True)
+    shutil.copy(ROOT / "evals" / "refs" / ref, stray / "refcopy.py")
+    proxy = f"import sys\nsys.path.insert(0, {str(stray)!r})\nimport refcopy\n{tail}"
+    ok, out = _validate_with(task, proxy)
+    assert not ok, f"{task_id}: a stray reference copy was importable: {out}"
+
+
+def test_40_numpy_bypass_is_refused_by_lint_and_by_the_confined_run(monkeypatch):
+    task = _task_unit("40_attention")
+    bypass = textwrap.dedent('''
+        import site, sys
+        sys.meta_path[:] = [f for f in sys.meta_path if type(f).__name__ != '_NoArrays']
+        sys.path.extend(site.getsitepackages())
+        _n = __import__('num' + 'py')
+
+        def attention(Q, K, V):
+            q, k, v = _n.array(Q), _n.array(K), _n.array(V)
+            s = q @ k.T / _n.sqrt(q.shape[1])
+            s = _n.exp(s - s.max(axis=1, keepdims=True))
+            return (s / s.sum(axis=1, keepdims=True) @ v).tolist()
+    ''')
+    ok, out = _validate_with(task, bypass)
+    assert not ok and "must not use numpy or torch" in out, out
+    # Below the lint: the run itself. With the lint disabled, the solution
+    # still cannot reach numpy (confined to the stdlib, audit hook on import).
+    pytest.importorskip("numpy")
+    script = task["validation"]["script"].replace("if _lint:", "if False:")
+    assert script != task["validation"]["script"]
+    unlinted = dict(task, validation={"type": "python", "script": script})
+    ok, out = _validate_with(unlinted, bypass)
+    assert not ok, out
+    assert "OK:" not in out
