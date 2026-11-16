@@ -475,3 +475,20 @@ def test_go_vet_prefixed_findings_count_as_errors():
     rx = tools._DIAG_ERROR_RES["go"]
     assert rx.search("vet: ./biquad.go:12:7: cannot use 1 << 30 (overflows)")
     assert rx.search("./biquad.go:12:7: undefined: foo")
+
+
+@pytest.mark.parametrize("value,expect", [("7", {"seed": 7}), ("", {}), ("x", {})])
+def test_seed_switch(tmp_path, monkeypatch, value, expect):
+    monkeypatch.setenv("OPENBEAST_AGENT_SEED", value)
+    monkeypatch.setenv("OPENBEAST_AGENT_MAX_TOKENS", "0")
+    monkeypatch.delenv("OPENBEAST_AGENT_THINKING", raising=False)
+    client = _run_kw(tmp_path, monkeypatch, [_resp("task_done", {"summary": "ok"})])
+    assert client.kwargs == [expect]
+
+
+def test_seed_and_thinking_combine(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENBEAST_AGENT_SEED", "3")
+    monkeypatch.setenv("OPENBEAST_AGENT_THINKING", "on")
+    monkeypatch.setenv("OPENBEAST_AGENT_MAX_TOKENS", "0")
+    client = _run_kw(tmp_path, monkeypatch, [_resp("task_done", {"summary": "ok"})])
+    assert client.kwargs == [{"seed": 3, "extra_body": {"chat_template_kwargs": {"enable_thinking": True}}}]

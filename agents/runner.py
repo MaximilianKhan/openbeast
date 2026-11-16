@@ -474,6 +474,21 @@ def _thinking_kwargs() -> dict:
     return {"extra_body": {"chat_template_kwargs": {"enable_thinking": v == "on"}}}
 
 
+def _seed_kwargs() -> dict:
+    """Per-run sampling seed (runner v2), OPENBEAST_AGENT_SEED=<int>: sent as
+    `seed` on every request. The Spark TensorFold server falls back to a FIXED
+    seed when none is sent (probed 2026-11-16: three temperature-0.6 requests
+    gave byte-identical text; seeds 1/2/3 gave three texts, seed 1 twice gave
+    one), so every run there is the same single draw and a 23-byte prompt
+    change flips units. Repeating an arm under different seeds is how its
+    effect is told from that chaos (G12). Unset sends nothing."""
+    raw = os.environ.get("OPENBEAST_AGENT_SEED", "").strip()
+    try:
+        return {"seed": int(raw)} if raw else {}
+    except ValueError:
+        return {}
+
+
 def _is_context_overflow(err: str) -> bool:
     return bool(_CTX_OVERFLOW_RE.search(err or ""))
 
@@ -1006,6 +1021,7 @@ def run_agent(
                     timeout=_client_timeout_s(max_tokens))
     cap_kwargs = {"max_tokens": max_tokens} if max_tokens else {}
     think_kwargs = _thinking_kwargs()   # {} unless OPENBEAST_AGENT_THINKING
+    think_kwargs.update(_seed_kwargs())  # {} unless OPENBEAST_AGENT_SEED
 
     # --- THE EVAL GUARD, resolved FIRST (E1/E2) ---------------------------
     # Resolved once, here, and cached in a local for the whole run: the guard

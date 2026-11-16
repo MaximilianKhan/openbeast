@@ -40,6 +40,14 @@ many of them:
   the unit spent its 1,800 s wall without writing a file; a capped turn ends
   as "length" and the existing truncation recovery returns its head with a
   nudge.
+- **Seed switch (opt-in).** `OPENBEAST_AGENT_SEED=<int>` sends `seed` on
+  every request. The Spark TensorFold server uses a FIXED seed when none is
+  sent (probed 2026-11-16: identical text for three temperature-0.6 requests;
+  seeds 1/2/3 differ; seed 1 twice is identical), so each Spark run is one
+  reproducible draw and tiny prompt differences flip units (G12). Repeat an
+  arm under k seeds to separate an effect from that chaos. Like the thinking
+  toggle, **the cache key does not see it**: run with `--no-cache` and a
+  distinct `--model-name`.
 - **Thinking toggle (opt-in, off by default).** `OPENBEAST_AGENT_THINKING=on|off`
   sends `chat_template_kwargs.enable_thinking` true/false on every request;
   unset sends nothing (requests unchanged). It is the switch for a "thinking
