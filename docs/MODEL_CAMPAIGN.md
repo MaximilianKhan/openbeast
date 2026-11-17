@@ -278,7 +278,7 @@ and its own `--model-name` (`"<Model> v5-harness <ARM>"`):
 | B | A | `--turns-per-wall-s 15` | turn-bound vs wall-bound (G1): one turn per 15 s of the unit's wall |
 | C | B | `--thinking on --wall-scale 2` | thinking at B's turn count. The wall doubles so the slower thinking turns are not clock-bound: the contrast is thinking, not lost time |
 | D | B | diagnostics + `OPENBEAST_DIAG_EDIT_HINT=1` + `OPENBEAST_AGENT_VERIFY_DONE=1` | push diagnostics, edit-don't-rewrite (G13), test-before-done (G9) |
-| E | D | packs (`BEAST_PACKS=1`) + `OPENBEAST_AGENT_ENV_BLOCK=1` + `OPENBEAST_AGENT_WALL_WARN=1`, and thinking **iff C > B** | the best combination the evidence supports |
+| E | D | packs (`BEAST_PACKS=1`: the language packs, and since #188 a host pack probed from the tool host for every packs-on unit) + `OPENBEAST_AGENT_ENV_BLOCK=1` + `OPENBEAST_AGENT_WALL_WARN=1`, and thinking **iff C > B** | the best combination the evidence supports |
 | F | B | `--seed 1` | the noise floor: B again under another sampling seed |
 
 What `run` does for you:
