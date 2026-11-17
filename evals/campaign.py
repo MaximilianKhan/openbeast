@@ -382,7 +382,11 @@ def infra_reason(row: dict) -> str | None:
         return reason
     toks = row.get("tokens_completion") or 0
     out = row.get("validation_output") or ""
-    if not toks and INTERPRETER_STARTUP.search(out):
+    if INTERPRETER_STARTUP.search(out):
+        # The agent's interpreter (no tokens), or the VALIDATOR's own python
+        # after the agent ran (tokens > 0): either way nothing judged the
+        # solution. 2 of arm B's 24 units lost to the 2026-11-16 venv break
+        # were the second kind and were scored as fails (#193 found it).
         return "interpreter_startup"
     try:
         elapsed = float(row.get("elapsed_seconds") or 0)

@@ -250,6 +250,9 @@ def test_a_broken_interpreter_stops_the_chain(tree, tmp_path, monkeypatch):
     ({"passed": False, "elapsed_seconds": 0.0, "tokens_completion": 0,
       "validation_output": "Could not find platform independent libraries <prefix>"},
      "interpreter_startup"),
+    ({"passed": False, "elapsed_seconds": 640, "tokens_completion": 11000,
+      "validation_output": "Could not find platform independent libraries <prefix>"},
+     "interpreter_startup"),                      # the validator's python broke, not the agent
     ({"passed": False, "elapsed_seconds": 1.2, "tokens_completion": 0, "validation_output": ""},
      "no_output_fast"),
     ({"passed": False, "elapsed_seconds": 300, "tokens_completion": 900, "agent_exit_code": -9},
