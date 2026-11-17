@@ -700,7 +700,11 @@ def cmd_run(a, camp: dict) -> int:
                        f"--arm-tree {aid}=<checkout that has it>)")
             continue
         info = tree_info(atree, py)
-        if aid not in arm_trees and st["tree"].get("commit") and info.get("commit") and \
+        if info.get("dirty"):
+            clog(sdir, f"WARNING {aid}: {atree} has uncommitted changes to tracked files; "
+                       f"the arm's commit does not describe its code")
+        same_tree = os.path.abspath(atree) == (st["tree"] or {}).get("path")
+        if same_tree and st["tree"].get("commit") and info.get("commit") and \
                 info["commit"] != st["tree"]["commit"] and not a.allow_tree_move:
             clog(sdir, f"ABORT {aid}: the tree moved since the campaign started "
                        f"({st['tree']['commit'][:10]} -> {info['commit'][:10]}); arms would mix "
@@ -710,7 +714,7 @@ def cmd_run(a, camp: dict) -> int:
         if bad:
             clog(sdir, f"ABORT {aid}: eval interpreter broken: {bad}")
             return 3
-        resumed = ast.get("status") == "running" and any(
+        resumed = ast.get("status") in ("running", "incomplete") and any(
             os.path.isfile(p) for p in ast.get("results") or [])
         if not resumed and (ast.get("results") or ast.get("reruns")):
             # A fresh run of an arm that ran before (--only): the old rows

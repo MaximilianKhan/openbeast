@@ -327,7 +327,8 @@ def test_a_true_fail_is_never_re_rolled(tree, tmp_path):
     assert len(calls(tmp_path)) == n + 1
 
 
-def test_an_interrupted_arm_resumes_by_rerunning_only_what_is_missing(tree, tmp_path):
+@pytest.mark.parametrize("status", ["running", "incomplete"])
+def test_an_interrupted_arm_resumes_by_rerunning_only_what_is_missing(tree, tmp_path, status):
     plan(tmp_path, {"A": {"pass": UNITS}})
     sdir = os.path.join(tree, "evals", "results", "campaigns", "v5-harness-fake-1")
     os.makedirs(os.path.join(tree, "evals", "results"), exist_ok=True)
@@ -337,7 +338,7 @@ def test_an_interrupted_arm_resumes_by_rerunning_only_what_is_missing(tree, tmp_
         open(partial, "w"))
     C.save_state(sdir, {"version": 1, "campaign": "v5-harness", "model_name": "Fake-1",
                         "base_url": "x", "jobs": 4, "tree": {"commit": None}, "baselines": {},
-                        "arms": {"A": {"status": "running", "results": [partial]}}})
+                        "arms": {"A": {"status": status, "results": [partial]}}})
     assert run(tree, "--only", "A") == 0
     cs = calls(tmp_path)
     assert len(cs) == 1 and cs[0]["suite"].startswith("_lost-")
