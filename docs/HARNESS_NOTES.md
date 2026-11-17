@@ -62,6 +62,11 @@ Transcripts: `agents/logs/agent-20261116-0[6-8]*.jsonl`; L0 results
 - A "test before done" discipline in the runner (G9) may help every model that patches without re-running.
 - Whether parallel tool calls per turn (if the model supports them) change the iteration economics.
 
+- Prior art in this repo: [`reviews/DEEPSEEK_HARNESS-2026-10-09.md`](reviews/DEEPSEEK_HARNESS-2026-10-09.md),
+  the evaluation of DeepSeek's own agent harness (`dsh`; not integrated). Its "mechanisms
+  worth porting" are the vendor's view of what its models need, which makes it the natural
+  starting hypothesis set for the DeepSeek v4.1 Flash arm of the paper.
+
 ## Per-model vs unified — what to measure
 
 For each candidate: run it as an arm on GLM-5.3-Flash and on at least one other model (Qwen3.8 27B on the rig; DeepSeek v4.1 Flash when it lands). A change that helps one and hurts another is the evidence for per-model knobs; one that helps all belongs in the unified harness.
