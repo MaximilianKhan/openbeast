@@ -1,0 +1,17 @@
+{
+  "description": "Applied by evals/v5_board.py. exclusions: units withheld from a run's score (counted as not passed; the raw count is footnoted). validator_notes: known validator problems, footnoted and NOT adjusted. Each entry names its run by board.json id (\"run\") or by one of its result files (\"file\"); naming neither applies it to every run. After editing: python3 evals/v5_board.py --write",
+  "exclusions": [
+    {
+      "unit": "122_gemm_blocked_b",
+      "run": "GLM-C",
+      "reason": "pending integrity review"
+    }
+  ],
+  "validator_notes": [
+    {
+      "unit": "122_gemm_blocked_c",
+      "run": "GLM-C",
+      "note": "possibly a validator false FAIL (rejected for \"dlopen\" in a comment; a validator fix is in flight)"
+    }
+  ]
+}
