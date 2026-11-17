@@ -1,3 +1,5 @@
+// Our own multiply: no BLAS, no dlopen, no extern "C", no DynLib, no "syscall".
+// (G24: the source lint must not fail on these words in a comment.)
 use std::io::{self, BufWriter, Read, Write};
 
 const BS: usize = 64;
