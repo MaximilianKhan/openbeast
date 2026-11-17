@@ -200,6 +200,20 @@ Decisions the 2026-10-09 review deferred to the owner. Each is open.
   Open-Jev image on its host; get access to the gated
   `neko-legends/GLM-5.3-Flash-Uncensored-EXL3`.
 
+## 📝 RESEARCH PAPER — per-model vs unified agent harness (opened 2026-11-16, Max)
+
+Max: use the harness-improvement work as a new research paper. Question: does
+each model (GLM-5.3-Flash, Qwen3.8 27B, DeepSeek v4.1 Flash, …) need its own
+agent harness, or can one unified harness with a few per-model knobs serve them
+all? Evidence log: [`HARNESS_NOTES.md`](HARNESS_NOTES.md) (started from the
+2026-11-16 v5 L0 failure audit of GLM-5.3-Flash: iteration starvation, no-op
+plan loops, repeated identical calls, BSD-vs-GNU friction, thinking off, Zig
+0.16 drift). Method: every candidate measured as a full v5 arm (never a re-roll
+of failed units), on at least two models; a cross-model interaction is the
+paper's central result either way. Prereqs: the v5 arms for GLM (L0/L1/L2,
+thinking on, runner v2), a Qwen3.8 v5 row when the rig is back, DeepSeek v4.1
+Flash, and the Claude Opus 5.5 reference row as the ceiling.
+
 ## 🟩 DGX SPARK INFERENCE — LIVE 2026-11-13 as spark-hydra
 
 - **Live:** GLM-5.3-Flash Ablit (EXL3 4-bit) TP 2 over spark-1 + spark-2 on
