@@ -87,9 +87,11 @@ HARNESS_FUNCTIONS = ("run_agent", "_run_reaped", "run_setup", "run_pre_validate"
                      "sweep_agent_leftovers", "AgentWatch",
                      # review 1116: the toolchain pinned before any agent runs
                      # and checked before every validation.
-                     "toolchain_pins", "_toolchain_problems")
+                     "toolchain_pins", "_toolchain_problems",
+                     # G24: the agent's expected task paths (OPENBEAST_TASK_PATHS).
+                     "task_paths")
 HARNESS_CONSTANTS = ("VALIDATION_TIMEOUT_S", "BUILD_CACHE_ENV", "_AGENT_POLL_S", "_PY_BOOT",
-                     "_SWEEP_ROUNDS")
+                     "_SWEEP_ROUNDS", "_FIXTURE_PATH")
 
 
 def _ast_canon(node) -> str:

@@ -1881,6 +1881,20 @@ def _run_reaped(cmd, timeout: int, shell: bool = False, **popen_kw) -> tuple[int
 _FIXTURE_PATH = re.compile(r"/tmp/eval[\w\-./]*")
 
 
+def task_paths(text: str) -> list[str]:
+    """Every /tmp/eval* path named in `text`, sorted, without the sentence
+    punctuation the pattern swallows.
+
+    _FIXTURE_PATH takes a sentence-final period with the path: "Create
+    /tmp/eval_gemm/gemm.c." gave `/tmp/eval_gemm/gemm.c.`. From the R1 path
+    guard (2026-09-10) until G24 (2026-11-17), the agent's done-check and
+    path guard, and G22's environment block, demanded that dotted name: 27
+    of 320 units named one, and GLM-5.3-Flash spent 85 turns in arm C
+    copying its solution to `gemm.c.` and compiling `gemm.rs.`. No real
+    path here ends in a dot, so trailing dots are always punctuation."""
+    return sorted({p.rstrip(".") for p in _FIXTURE_PATH.findall(text)})
+
+
 def fixture_roots(task: dict) -> list[str]:
     """The task's /tmp/eval* fixture roots (the first path component under
     /tmp of every fixture path its setup, task, validation, cleanup and
@@ -1888,7 +1902,7 @@ def fixture_roots(task: dict) -> list[str]:
     spec = " ".join(str(task.get(k, "")) for k in ("setup", "task", "validation",
                                                    "cleanup", "pre_validate"))
     return sorted({"/tmp/" + p[len("/tmp/"):].split("/", 1)[0]
-                   for p in _FIXTURE_PATH.findall(spec)})
+                   for p in task_paths(spec)})
 
 
 # --- one harness per fixture root, across processes ------------------------------
@@ -2214,7 +2228,7 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
     # parallel tasks cannot race each other's path sets.
     spec_text = " ".join(str(task.get(k, ""))
                          for k in ("task", "validation", "setup", "cleanup"))
-    expected = sorted(set(re.findall(r"/tmp/eval[\w\-./]*", spec_text)))
+    expected = task_paths(spec_text)
     child_env = dict(os.environ)
     # Per-arm treatment env (diag / escalate / packs, both spellings) for
     # THIS unit: an arm scheduler runs several treatments in one process, so
