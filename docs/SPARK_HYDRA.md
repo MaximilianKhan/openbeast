@@ -369,9 +369,10 @@ on the Spark, offline.
 The hash-pinned venv `~/.venvs/openbeast-test`; offline from a wheelhouse.
 
 **20. The eval harness host, optional** (the Mac or a Linux box;
-[F6](#f6-the-eval-harness-host-benchmarking-the-pair)): zig 0.16.0, go,
-rustc, gcc / g++, clang, git, python 3.12, its own device key, and
-`EDGE_READ_TIMEOUT=3600` on spark-1 (step 11).
+[F6](#f6-the-eval-harness-host-benchmarking-the-pair)):
+`./scripts/eval-host.sh setup` (zig 0.16.0, rustc 1.100.0, go 1.23.3, the
+python 3.12 eval venv; `--from` an ark drive offline), gcc / g++ / git from
+the OS, its own device key, and `EDGE_READ_TIMEOUT=3600` on spark-1 (step 11).
 
 **21. Prove it** (spark-1 and the Mac; [G1](#g1-health)):
 
@@ -1739,20 +1740,58 @@ The v5 benchmark runs **on a harness host** (the Mac is the documented one;
 a Linux box works with the caveats in [evals/README.md](../evals/README.md)
 "Residual gaps") and sends only chat calls to the pair. The agents' tools,
 the validators and every compiler run on the harness host, never on the
-Sparks, so the toolchains belong there. `evals/profile.py`'s preflight
-refuses to start without them (`HOST_TOOLS`: `go`, `gcc`, `g++`, `rustc`,
-`zig`, `git`; zig must print exactly `0.16.0`).
+Sparks, so the toolchains belong there.
 
-| Need | Mac | Linux (aarch64 or x86_64) | Offline |
+**The repo provisions them.** `evals/toolchains.lock` pins what the host
+needs, per platform (darwin-arm64, linux-aarch64, linux-x86_64), with a
+sha256 for every file; `scripts/eval-host.sh` checks, installs and exports
+them. The versions are the ones the v5 units were proven with
+(`tests/prove_task.py`, 2026-11):
+
+| Tool | Pin | Online source | Offline (`--from DIR`) |
 |---|---|---|---|
-| python 3.12 + the lock | `python3.12 -m venv ~/.venvs/openbeast-eval && ~/.venvs/openbeast-eval/bin/pip install --require-hashes -r agents/requirements.lock` | same | `pydeps.sh install --from` a wheelhouse for that platform ([H6](#h6-the-command-center-wheels-and-compose-images)), or `ark restore cpython-3.12` |
-| zig 0.16.0 | `zig-aarch64-macos-0.16.0.tar.xz`, sha256 `b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489`, unpacked onto `PATH` | `zig-aarch64-linux-0.16.0.tar.xz` (`ea4b09bf…`, H7) or `zig-x86_64-linux-0.16.0.tar.xz` (`70e49664…`) | `ark restore zig` (minisign-checked when fetched) |
-| rustc | rustup, or `ark restore rust` | same | `ark restore rust` ([BEAST_ARK.md](BEAST_ARK.md) §8.2) |
-| go | Homebrew `go` (go1.23.3 on the Mac today) | the distro's `golang-go`, or `ark restore go` | `ark restore go` |
-| gcc / g++ / clang | Xcode Command Line Tools (`gcc` / `g++` are clang there) | `sudo apt install build-essential clang` | the distro's .debs, or `ark restore llvm` |
-| git | Xcode CLT | apt | — |
-| a device key of its own | `./scripts/clients.sh enroll eval-host --label "eval harness"` on spark-1 ([E7](#e7-device-keys-for-beast-gate)), into a 0600 file | same | same (the enrollment is local to spark-1) |
-| the gate's read timeout | `EDGE_READ_TIMEOUT=3600` in spark-1's `openbeast.conf`, then `systemctl --user restart openbeast` | same | same |
+| zig | 0.16.0 | ziglang.org, community mirrors first (`@mirrors`) | ark `files/zig/0.16.0/<platform>/` |
+| rust | rustc 1.100.0 | rustup-init 1.29.3, then `--profile minimal --default-toolchain 1.100.0` | ark `files/rust/1.100.0/<platform>/`, the standalone installer |
+| go | 1.23.3 | dl.google.com | a `fetch` mirror (the ark carries go 1.27.4, not this pin) |
+| python | 3.12.16 + `agents/requirements.lock` | python-build-standalone (the ark catalog's pin), then `pydeps.sh install --require-hashes` | ark `files/cpython-3.12/3.12.16/<platform>/` + `--wheelhouse DIR` |
+| gcc / g++ / git | present | **not installed by us**: `xcode-select --install` on a Mac, `sudo apt install build-essential clang git` on Linux | the distro's .debs |
+| a device key of its own | | `./scripts/clients.sh enroll eval-host --label "eval harness"` on spark-1 ([E7](#e7-device-keys-for-beast-gate)), into a 0600 file | same |
+| the gate's read timeout | | `EDGE_READ_TIMEOUT=3600` in spark-1's `openbeast.conf`, then `systemctl --user restart openbeast` | same |
+
+```bash
+./scripts/eval-host.sh check                  # one line per tool: ok / missing / wrong / system / blocked
+./scripts/eval-host.sh setup                  # install what is missing or wrong (idempotent; exit 3 = sha256 mismatch)
+eval "$(./scripts/eval-host.sh env)"          # PATH, RUSTUP_HOME, CARGO_HOME, OPENBEAST_EVAL_PY
+# offline: from an ark drive, or a mirror made on a connected box
+./scripts/eval-host.sh fetch --to /Volumes/ARK/eval-host --platform all [--wheels]
+./scripts/eval-host.sh setup --from /Volumes/ARK/eval-host --wheelhouse ~/wheels
+```
+
+Everything lands in `~/.local/opt/openbeast-eval` (`--prefix` /
+`OPENBEAST_EVAL_PREFIX`): `bin/` links, `zig-0.16.0/`, `go-1.23.3/`,
+`rustup/` + `cargo/`, `cpython-3.12.16/` and `venv/`. Nothing outside the
+prefix is written and nothing runs as root. A tool that is already on PATH
+at the pinned version is used as it is (the Mac's Homebrew go1.23.3). The
+copy that counts is the one the validators will pin
+(`vlib.pin_toolchain`): the first root-owned copy on PATH, else the first.
+A root-owned copy of the wrong version (an apt `go` in `/usr/bin`) outranks
+the prefix, and `check` says `blocked`: remove it.
+
+**A live run does this itself.** `run_eval.py`, `profile.py` and
+`benchmark_all.py` run `check` first and `setup` when it fails, put the
+prefix first on PATH before the validator toolchain is pinned, and re-exec
+under the eval venv's python (`$OPENBEAST_EVAL_PY`) when started by another
+one. `--no-provision` (or `OPENBEAST_EVAL_NO_PROVISION=1`) only reports;
+profile.py's preflight still refuses a host that fails the check
+(`HOST_TOOLS`: `go`, `gcc`, `g++`, `rustc`, `zig`, `git`; zig must print
+exactly `0.16.0`). Two guards then keep a broken interpreter off the
+board: a live run refuses to start when its python cannot import the
+stdlib and the runner's packages, and an agent that dies within 2 s on an
+interpreter-startup error is an `interpreter_error` row (never cached,
+never scored), followed by a re-check that aborts the run when the
+interpreter is broken. That is the 2026-11-16 failure: a venv in a scratch
+dir whose python symlink was rewritten mid-run, 22 units scored as FAILs
+([HARNESS_NOTES.md](HARNESS_NOTES.md), "Eval host provisioning").
 
 **Why the read timeout.** The gate waits `EDGE_READ_TIMEOUT` seconds (default
 600) for each byte from the model. For a non-streaming completion that is the
@@ -1765,20 +1804,20 @@ admits `EDGE_MAX_INFLIGHT` generations per key. Unset, that is
 reads the cap from the gate and clamps `--jobs` to it, and `profile.py`
 refuses a profile when 4 concurrent requests would draw a 429.
 
-**Run it** (from a full checkout on the harness host, with the toolchains on
-`PATH`):
+**Run it** (from a full checkout on the harness host):
 
 ```bash
 export OPENBEAST_SPARK_API_KEY="$(cat ~/.config/openbeast/spark-hydra-gate.key)"   # benchmark_all's glm-5.3-flash entry reads it
-zig version && rustc --version && go version && gcc --version | head -1     # what preflight will check
-python3 evals/profile.py --model glm-5.3-flash --budget-h 4 --jobs 4         # evals/README.md "How to run a 4-hour profile"
-python3 evals/benchmark_all.py --models glm-5.3-flash                        # the plain sweep
+./scripts/eval-host.sh setup && eval "$(./scripts/eval-host.sh env)"            # what preflight will check, provisioned
+"$OPENBEAST_EVAL_PY" evals/profile.py --model glm-5.3-flash --budget-h 4 --jobs 4   # evals/README.md "How to run a 4-hour profile"
+"$OPENBEAST_EVAL_PY" evals/benchmark_all.py --models glm-5.3-flash                  # the plain sweep
 ```
 
-Put the toolchains somewhere that lasts (`~/.local/opt` with links in
-`~/.local/bin`, which is what `ark restore` does), not in a scratch or temp
-directory: the harness pins each compiler's install tree when it starts and
-refuses a validation when that tree changes under it.
+(`python3 evals/profile.py …` works too: it provisions and re-execs under
+the eval venv itself.) Never point the harness at toolchains or a venv in a
+scratch or temp directory: the harness pins each compiler's install tree
+when it starts and refuses a validation when that tree changes, and a venv
+dies with its base interpreter. The prefix is durable on purpose.
 
 ---
 

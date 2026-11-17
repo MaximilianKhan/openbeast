@@ -60,6 +60,48 @@ Transcripts: `agents/logs/agent-20261116-0[6-8]*.jsonl`; L0 results
 | G20 | **Host friction cost about 95 turns**, more than all non-zig knowledge errors combined: `nproc`/`/proc/cpuinfo`, `cat -A`, `grep -P`, `timeout`, `/usr/bin/time -v`, `pthread_barrier_t`, `sysctlbyname`/`sysconf` without headers, in every language. G4's platform line covers BSD sed, `timeout` and `cat -A` by name only. | A host pack probed from the tool host (`agents/lang/host_pack.py`): every line is a probe that ran and failed, plus a remedy whose own tool probed; given to EVERY unit with packs on (`BEAST_PACKS=1` = language pack + host pack); its sha is in `pack1-<sha8>`. | BUILDING (this PR; 232 tokens on the Mac host, empty on a GNU/glibc host). **Measure:** the same packs arm, non-zig units: turns lost to the host signatures above (`grep -c "nproc: command not found\|illegal option -- A\|invalid option -- P\|timeout: command not found\|pthread_barrier_t"` over the arm's transcripts) vs the ~95-turn L0/L12/A/B baseline, plus pass-rate change on the units that lost turns to them (122 b/c, 124, 146, 159_c, 163, 167_c, 173, 188) |
 | G21 | **Rust edition contradiction:** five v5 Rust variants (36_e, 122_d, 123_e, 158_e, 159_e) said "Idiomatic Rust 2021+" but the validator ran bare `rustc -O`, which is edition 2015: `try_into` without an import failed (36_e, `no method named try_into`), costing turns in three runs. Push diagnostics compile Rust with `--edition 2021`, so a file the agent saw pass failed the validator. | Task text and validator both say `rustc -O --edition 2021`, like 167_e and 168_e already did. | BUILDING (this PR; the five units re-proven with `tests/prove_task.py`). A task-text change moves those units' task hash, so their old rows do not replay. **Measure:** the next L0 re-run of the five units: no `E0599 ... try_into` and no edition-2015 errors |
 
+## Eval host provisioning: the venv incident (2026-11-16) — ADOPTED
+
+**What happened.** The v5 runs of 2026-11-16 used a Python venv and toolchains
+(zig 0.16.0, rustup/cargo with rustc 1.100) hand-placed in a session scratch
+directory. At 16:46 something rewrote that venv's `python` symlink. Every
+agent is `sys.executable agents/runner.py`, so from then on each new agent died
+at interpreter startup ("Could not find platform independent libraries"),
+before a single model call. The harness had no idea: exit 1, zero tokens, the
+fixture untouched, validator FAIL. **22 units were scored as model failures**
+until a human read the logs. Durable copies were then made by hand under
+`~/.local/opt` (a homebrew-3.12.7 venv from a pip freeze, zig, rustup, cargo, an
+env file), which fixed that run and nothing else.
+
+**What it taught.** Two separate holes. (1) The harness host's toolchains
+were nobody's: no pin file, no installer, no check beyond profile.py's
+`which`. A venv is only as durable as its base interpreter, and a Homebrew
+python can move under it at any `brew upgrade`. (2) An interpreter that
+cannot start produced rows that looked exactly like a model that tried and
+failed.
+
+**The fix** (`evals/toolchains.lock`, `scripts/eval-host.sh`,
+`evals/eval_host.py`):
+- The repo owns the harness host. The lock pins zig 0.16.0, rustc 1.100.0,
+  go 1.23.3 (what the units were proven with) and a python 3.12 eval venv,
+  per platform, by sha256. `setup` installs them into
+  `~/.local/opt/openbeast-eval` (idempotent, no sudo, ark or mirror offline),
+  and the venv's base is a python-build-standalone 3.12.16 **inside the
+  prefix**, so no package manager can rewrite it.
+- `run_eval` / `profile` / `benchmark_all` check before every live run, set
+  up what is missing, and re-exec under the owned venv, so the validator
+  pins resolve the provisioned compilers.
+- `run_eval` refuses a live run on an interpreter that cannot import its
+  stdlib and the runner's packages, and records an agent's startup death as
+  `interpreter_error` (an infra row: never cached, never scored), then
+  re-checks the interpreter and aborts the run when it is broken. A broken
+  interpreter now costs one unmeasured row, not a column of FAILs.
+
+Measured on the Mac (scratch prefix): a fresh `setup` took 33 s (zig from a
+community mirror; ziglang.org itself was serving 5 KB/s, hence `@mirrors`),
+a second `setup` did nothing, and `vlib.pin_toolchain` then pinned the
+prefix's zig and rustup's `1.100.0-aarch64-apple-darwin` rustc.
+
 ## Cross-model ideas (not yet model-specific)
 
 - Iteration budget scaled by task size (xl SWE tasks at 30 turns starve a one-tool-call-per-turn model; 176 note). Must apply to every model equally.
