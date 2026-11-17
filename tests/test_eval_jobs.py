@@ -389,3 +389,20 @@ def test_every_result_row_names_its_language(tmp_path):
     run_eval.run_agent = tracker.run_agent
     out = run_eval.run_eval(model_name="fake-model", use_cache=False)
     assert out["tasks"] and all(r.get("language") for r in out["tasks"])
+
+
+def test_wall_scale_doubles_the_wall_but_keeps_the_turns(tmp_path):
+    # Arm C (2026-11-16): thinking makes turns slower, so it gets 2x the wall
+    # while its turn budget stays arm B's (computed from the base wall).
+    run_eval = _load_run_eval(tmp_path, server_slots=1)
+    orig = run_eval.load_tasks
+    run_eval.load_tasks = lambda f=None: [dict(t, max_wall_s=600) for t in orig(f)]
+    base, scaled = _Tracker(delay=0.0), _Tracker(delay=0.0)
+    run_eval.run_agent = base.run_agent
+    run_eval.run_eval(model_name="fake-model", use_cache=False, turns_per_wall_s=15)
+    run_eval.run_agent = scaled.run_agent
+    out = run_eval.run_eval(model_name="fake-model", use_cache=False, turns_per_wall_s=15,
+                            wall_scale=2.0)
+    assert set(base.walls.values()) == {600} and set(scaled.walls.values()) == {1200}
+    assert set(base.max_iters.values()) == set(scaled.max_iters.values()) == {40}
+    assert out["wall_scale"] == 2.0
