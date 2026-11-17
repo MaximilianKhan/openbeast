@@ -1155,6 +1155,8 @@ def run_agent(
     repeats = 0
     if not (resume_from and os.path.isfile(resume_from)):
         reset_plan()
+    # G9's write/run ledger is per run (a no-op unless VERIFY_DONE is on).
+    _tools.reset_verify_done()
 
     def compact(reason: str, chars_to_free: int, detail: str = "",
                 must_free: int | None = None) -> int:

@@ -14,7 +14,9 @@ Hash key components:
    diag (push-diagnostics toolchain fingerprint), rb (finite reasoning
    budget), greedy (low-churn decode), pack (awareness pack sha —
    task-scoped to the pack's language), env (opt-in environment
-   fingerprint: weights, llama.cpp build, KV flags, toolchains).
+   fingerprint: weights, llama.cpp build, KV flags, toolchains), agent
+   (agent-side env switches: thinking, seed, verify-done, diag edit-hint;
+   built by run_eval.agent_switches).
 5. agent context hash (the era) — sha256 of what an eval unit consumes:
    system-prompt.md, the agent runtime itself (agents/runner.py,
    agents/tools.py), the eval-suite marker (evals/SUITE_VERSION) and the
@@ -217,7 +219,8 @@ def cache_key(task: dict[str, Any], model_slug: str,
               rb: str | None = None,
               greedy: bool = False,
               pack: str | None = None,
-              env: str | None = None) -> str:
+              env: str | None = None,
+              agent: str | None = None) -> str:
     """Build the cache key for a (task, model) pair under the current
     agent runtime context.
 
@@ -255,7 +258,16 @@ def cache_key(task: dict[str, Any], model_slug: str,
     # the rest of the key can see (run_eval.env_fingerprint). Omitted when
     # None, so every existing key stays reachable.
     en = f".{env}" if env else ""
-    return (f"{model_slug}.{task['id']}.{task_hash(task)}{mi}{dg}{rbc}{gr}{pk}{en}."
+    # Agent-switch era (2026-11-16): `ag-<parts>` for the env switches that
+    # change what the AGENT does and that nothing else in the key can see:
+    # OPENBEAST_AGENT_THINKING, OPENBEAST_AGENT_SEED,
+    # OPENBEAST_AGENT_VERIFY_DONE, OPENBEAST_DIAG_EDIT_HINT
+    # (run_eval.agent_switches builds it). Without it, a thinking-on or
+    # seed-2 arm run without --no-cache replayed, and banked into, the
+    # default arm's rows. OMITTED when every switch is unset, so every legacy
+    # key stays reachable.
+    ag = f".{agent}" if agent else ""
+    return (f"{model_slug}.{task['id']}.{task_hash(task)}{mi}{dg}{rbc}{gr}{pk}{en}{ag}."
             f"{_context_hash_cached()}")
 
 

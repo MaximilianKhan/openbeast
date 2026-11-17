@@ -862,6 +862,18 @@ confirmed-fix card riding on beast-assist's diagnostic) is wired and opt-in
 (`BEAST_ESCALATE=1` with `BEAST_ASSIST=1`), runs under its own `esc1-<sha8>`
 era and is leaderboard-ineligible; its A/B has not run.
 
+**Agent switches.** Four env switches change what the agent itself does:
+`OPENBEAST_AGENT_THINKING=on|off` (`run_eval.py --thinking`),
+`OPENBEAST_AGENT_SEED=<int>` (`--seed`), `OPENBEAST_AGENT_VERIFY_DONE=1`
+(G9, a one-time "re-run your test against the destination" reply to
+`task_done`) and `OPENBEAST_DIAG_EDIT_HINT=1` (G13, failing diagnostics end
+with "fix the first error with edit_file at line N"). They form one key
+component, `ag-<parts>` (`run_eval.agent_switches`), which is omitted when
+all four are unset. They are stamped in `harness.agent_switches` and on every
+row (`agent_thinking`, `agent_seed`). So an arm under any of them never
+replays, or banks into, default rows, and `--no-cache` is not needed. A
+k-seed repeat (G12) is three runs: `--seed 1`, `--seed 2`, `--seed 3`.
+
 **What the key does not see, and the opt-in env era.** The model is keyed by
 its alias, not its bytes; the llama.cpp build, the KV/context serve flags and
 the validator toolchains (zig/go/rustc/gcc, Python) aren't in the key either.
