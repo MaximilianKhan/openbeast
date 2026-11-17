@@ -2,7 +2,7 @@
 # OpenBeast client mode — full local tool stack, the rig does the thinking.
 # (docs/BEAST_SLOT.md; macOS + Linux. Windows/WSL2 untested.)
 #
-#   ./scripts/setup-client.sh [--host <rig-fqdn>] [--api-key <key>]
+#   ./scripts/setup-client.sh [--host <rig-fqdn>] [--api-key <key>] [--name <rig>]
 #                             [--no-search | --local-search] [--uninstall]
 #
 # What you get: OpenCode on THIS machine with the full OpenBeast tool
@@ -27,6 +27,11 @@
 #                    wired into the env file + opencode.json (chmod 600)
 #   --api-key-stdin  same, but read from stdin (prompted, hidden) — keeps the
 #                    key out of `ps`; preferred on a shared machine
+#   --name <rig>     the name this rig gets in the client's rig registry
+#                    (default: the key file's name minus -gate, or the host's
+#                    first label). Several rigs: run this once, then add more
+#                    with `openbeast-client rig add` and switch with
+#                    `openbeast-client use <rig>` (docs/SPARK_HYDRA.md § F2)
 #   --no-search      skip search wiring (web_search disabled on the client)
 #   --local-search   run SearXNG locally via Docker (bridge network — works on
 #                    Docker Desktop) instead of using the rig's :8889
@@ -45,7 +50,7 @@
 # is symlinked to ~/.local/bin/openbeast-client (created if needed). If that
 # dir is not on your PATH — the macOS default — the installer prints the exact
 # line to add, and the full path always works:
-#   openbeast-client status|agent|search|update|uninstall
+#   openbeast-client status|rigs|use|rig|agent|search|update|uninstall
 #   <checkout>/scripts/client.sh status
 #
 # Bash 3.2-compatible on purpose (stock macOS ships it): avoids all
@@ -58,7 +63,7 @@ OC_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"
 OC_CONFIG="$OC_CONFIG_DIR/opencode.json"
 REPO_URL="https://github.com/MaximilianKhan/openbeast"
 
-HOST_FQDN=""; NO_SEARCH=0; LOCAL_SEARCH=0; UNINSTALL=0; PURGE_LOGS=0
+HOST_FQDN=""; RIG_NAME=""; NO_SEARCH=0; LOCAL_SEARCH=0; UNINSTALL=0; PURGE_LOGS=0
 WHEELHOUSE="${OPENBEAST_WHEELHOUSE:-}"
 API_KEY="${OPENBEAST_API_KEY:-}"
 # Re-running without --api-key must not silently de-key a keyed install:
@@ -109,14 +114,15 @@ while [ $# -gt 0 ]; do
                       IFS= read -r API_KEY || true
                     fi
                     API_KEY="$(printf '%s' "$API_KEY" | tr -d '\r')"; KEY_FROM_STORE=0 ;;
+    --name)         RIG_NAME="${2:?--name needs a value}"; shift ;;
     --no-search)    NO_SEARCH=1 ;;
     --local-search) LOCAL_SEARCH=1 ;;
     --uninstall)    UNINSTALL=1 ;;
     --purge-logs)   PURGE_LOGS=1 ;;
     --wheelhouse)   [ $# -ge 2 ] && [ -n "$2" ] || { echo "--wheelhouse needs a directory" >&2; exit 2; }
                     WHEELHOUSE="$2"; shift ;;
-    -h|--help)      sed -n '2,49p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    status|agent|search|update)
+    -h|--help)      sed -n '2,54p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    status|agent|search|update|rigs|use|rig)
       # Two scripts, confusingly similar names: setup-client.sh INSTALLS
       # (flags), client.sh OPERATES (subcommands). Sending someone who typed
       # a subcommand here away with "unknown option" is a dead end — point
@@ -203,12 +209,17 @@ prov = cfg.get("provider", {})
 # "llama-cpp" pointed at localhost:8080.
 if "openbeast-rig" in prov:
     del prov["openbeast-rig"]; removed.append("provider.openbeast-rig")
+# The per-rig providers `openbeast-client` writes (openbeast-<rig>), named
+# "OpenBeast <rig> (...)" — only those, never a user's own openbeast-* entry.
+for pid in [p for p in prov if p.startswith("openbeast-")
+            and str((prov[p] or {}).get("name", "")).startswith("OpenBeast ")]:
+    del prov[pid]; removed.append("provider." + pid)
 if prov.get("llama-cpp", {}).get("options", {}).get("baseURL", "").endswith(":8443/v1"):
     del prov["llama-cpp"]; removed.append("provider.llama-cpp (legacy)")
 # Clear a default model we set — but only if it still points at our provider, so
 # a user who repointed it keeps their choice and we leave no dangling default.
 for key in ("model", "small_model"):
-    if str(cfg.get(key, "")).startswith("openbeast-rig/"):
+    if str(cfg.get(key, "")).startswith("openbeast-"):
         del cfg[key]; removed.append(key)
 # Drop containers we emptied, so an uninstall does not leave "mcp": {} behind.
 for k in ("mcp", "provider"):
@@ -263,6 +274,16 @@ PYEOF
   rm -rf "$CLIENT_DIR"
   rm -f "$ENV_FILE"
   echo "  ✓ removed $CLIENT_DIR and $ENV_FILE"
+  # The rig registry goes; the device KEYS stay: each was printed once on its
+  # rig, and re-enrolling is the only way back. Say where they are.
+  _obcfg="${XDG_CONFIG_HOME:-$HOME/.config}/openbeast"
+  if [ -f "$_obcfg/rigs.json" ]; then
+    rm -f "$_obcfg/rigs.json"
+    echo "  ✓ removed the rig registry ($_obcfg/rigs.json)"
+  fi
+  if ls "$_obcfg"/*.key >/dev/null 2>&1 || ls "$_obcfg"/rigs/*.key >/dev/null 2>&1; then
+    echo "  - device key files kept in $_obcfg (delete them yourself if you are done with them)"
+  fi
   if [ -n "$_left_behind" ]; then
     echo ""
     echo "  ! LEFT IN PLACE: $_left_behind"
@@ -681,6 +702,14 @@ _q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 # the redirect above — and it now holds the bearer key.
 chmod 600 "$ENV_FILE"
 echo "  ✓ wrote $ENV_FILE (0600)"
+# The rig registry (openbeast-client rigs / use): this rig becomes the active
+# one — added, or updated if its host is already registered. Its key stays
+# in a 0600 file (an existing one holding the same key is referenced).
+if [ -f "$CLIENT_REPO/scripts/lib/client_rigs.py" ]; then
+  OB_TS_BIN="$TS" OB_REPO="$CLIENT_REPO" "$PY" "$CLIENT_REPO/scripts/lib/client_rigs.py" \
+    adopt-env ${RIG_NAME:+--name "$RIG_NAME"} \
+    || echo "  ! could not update the rig registry — openbeast-client rigs will retry"
+fi
 
 # ---- 4b. local SearXNG (--local-search) -------------------------------------
 if [ $LOCAL_SEARCH -eq 1 ]; then
@@ -888,5 +917,7 @@ elif [ $NO_SEARCH -eq 0 ]; then
 fi
 [ -n "$API_KEY" ] && echo "  • keyed mode: requests carry the bearer; env + opencode.json are 0600"
 echo "  • quitting OpenCode reaps the tool subprocess — nothing keeps running"
+echo "  • more rigs: openbeast-client rig add <name> --host <fqdn> --api-key-stdin,"
+echo "    then openbeast-client use <name>; openbeast-client rigs lists them"
 echo ""
 echo "Uninstall any time:  $0 --uninstall"

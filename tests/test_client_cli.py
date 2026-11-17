@@ -11,7 +11,7 @@ refresh-config reads as the static catalog.
     dashboard down (502), not published (404), nothing answering (000)
   - on a rig whose backend is not llama, a default model id the rig does not
     serve is flagged, and refresh-config pins the id beast-slot reports when
-    /v1/models cannot be read
+    /v1/models cannot be read (and lists only the ids that rig serves)
 
 Run: python3 -m pytest tests/test_client_cli.py -q
 """
@@ -177,8 +177,9 @@ def test_refresh_pins_the_slot_id_when_models_cannot_be_read(tmp_path):
     assert cfg["model"] == "openbeast-rig/GLM-5.3-Flash", (cfg["model"], out)
     rows = cfg["provider"]["openbeast-rig"]["models"]
     assert rows["GLM-5.3-Flash"]["limit"]["context"] == 131072
-    static = [r["name"] for k, r in rows.items() if k != "GLM-5.3-Flash"]
-    assert static and all(n.endswith("(llama-server rigs only)") for n in static), static
+    # An id-strict (non-llama) rig gets exactly the ids it serves: the
+    # checkout's llama aliases would 404 there (scripts/lib/client_rigs.py).
+    assert list(rows) == ["GLM-5.3-Flash"], list(rows)
 
 
 def test_refresh_on_a_llama_rig_is_unchanged(tmp_path):
