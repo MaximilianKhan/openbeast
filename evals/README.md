@@ -394,7 +394,8 @@ python3 evals/ablation.py --profile evals/results/profile-<slug>-<ts>.json # the
    (`escalate.gate_state()`), a validator toolchain missing on the
    *harness* host (tools and validators run where the harness runs, not
    where the model runs), or an uncapped reasoning budget (uncapped
-   Qwen3.8 took 36.55 h for no gain; GLM runs thinking off). It sets
+   Qwen3.8 took 36.55 h for no gain; GLM's daily config runs thinking
+   off, and thinking-on runs are campaign arms, docs/MODEL_CAMPAIGN.md §5). It sets
    `OPENBEAST_EVAL_ENV_ERA=1` so weights, engine and toolchains enter the
    cache key.
 2. **L0** runs the whole suite and measures **k** = wall s / R-s on this
