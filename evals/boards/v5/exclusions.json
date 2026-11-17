@@ -17,5 +17,11 @@
       "reason": "contaminated: the agent read sealed paths (G25 integrity scan, evals/CHANGELOG.md)"
     }
   ],
-  "validator_notes": []
+  "validator_notes": [
+    {
+      "unit": "122_gemm_blocked_c",
+      "run": "GLM-E",
+      "reason": "validator false FAIL: the pre-#195 forbidden-API lint matched 'dlopen' inside a comment; the solution passes the fixed validator (replayed, #195). Noted, not adjusted."
+    }
+  ]
 }
