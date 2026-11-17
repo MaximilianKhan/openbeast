@@ -212,6 +212,32 @@
 # Env: $OPENBEAST_INFERENCE_MODEL.
 #INFERENCE_MODEL=my-model-nvfp4
 
+# The serving host's thinking default: on | off | unset (the default).
+# Thinking is a per-request chat-template switch
+# (chat_template_kwargs.enable_thinking); a request that does not set it gets
+# the SERVER's default, which differs by engine (llama.cpp's Qwen templates
+# think, TensorFold's GLM does not). Set here, the stack applies it to every
+# chat request that names no thinking control of its own:
+#   - beast-gate (:8443: opencode, the Mac client, phones, any keyed device)
+#     injects enable_thinking;
+#   - this host's own agents (agents/runner.py, start_agent) send it.
+# A request that says enable_thinking, reasoning_effort, thinking, reasoning
+# or reasoning_budget_tokens is never touched, and eval runs never follow it
+# (the runner tells the gate to leave eval requests as sent). spark-1: on —
+# GLM-5.3-Flash measured 51/71 thinking vs 36/71 not (v5 arms C and B;
+# docs/SPARK_HYDRA.md, "Recommended serving configuration").
+# Env: $OPENBEAST_INFERENCE_THINKING.
+#INFERENCE_THINKING=on
+
+# Output-token cap per turn for THIS host's own agents (agents/runner.py,
+# start_agent; never eval runs, which have fixed caps). Unset = the
+# REASONING_BUDGET below + 12288 (20480 + 12288 = 32768 when that is unset
+# too); 0 = no cap. REASONING_BUDGET is a llama.cpp flag: on a TensorFold or
+# vLLM host set this instead. spark-1: 16384, arm C's per-turn cap (a turn
+# capped mid-thought keeps its reasoning tail and is told to act). Env
+# override: $OPENBEAST_AGENT_MAX_TOKENS.
+#AGENT_MAX_TOKENS=16384
+
 # ---------------------------------------------------------------------------
 # Engine plane  (scripts/engine.sh, docs/ENGINES.md)
 # ---------------------------------------------------------------------------

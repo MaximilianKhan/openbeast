@@ -49,6 +49,12 @@ Env (resolved from openbeast.conf by scripts/lib/conf.sh):
                                that name a URL for llama-server to fetch
                                (default false = inline media only — see
                                agents/mediapolicy.py)
+  OPENBEAST_INFERENCE_THINKING "on" / "off" = the serving host's thinking
+                               default (INFERENCE_THINKING): a chat request
+                               that names no thinking control gets
+                               chat_template_kwargs.enable_thinking set to
+                               it (see _apply_thinking_default). Unset (the
+                               default) = bodies forwarded as before
   OPENBEAST_EDGE_ALLOW_ANON    "true" = while there is NO registry file, serve
                                every caller as the "anon" device (default
                                false = fail closed). Ignored for good once
@@ -155,6 +161,55 @@ ALLOW_ANON = os.environ.get(
     "OPENBEAST_EDGE_ALLOW_ANON", "false").strip().lower() == "true"
 ALLOW_MEDIA_URLS = os.environ.get(
     "OPENBEAST_EDGE_ALLOW_MEDIA_URLS", "false").strip().lower() == "true"
+
+
+def thinking_default(env=os.environ) -> str | None:
+    """INFERENCE_THINKING: "on" / "off", or None (unset or anything else:
+    the gate adds nothing). docs/SPARK_HYDRA.md, "Recommended serving
+    configuration": spark-1 sets on, because the v5 arms measured
+    GLM-5.3-Flash at 51/71 with thinking on against 36/71 off (arms C and
+    B), and its TensorFold server thinks only when a request asks."""
+    v = env.get("OPENBEAST_INFERENCE_THINKING", "").split("#", 1)[0].strip().lower()
+    return v if v in ("on", "off") else None
+
+
+THINKING_DEFAULT = thinking_default()
+# A client that wants its body forwarded with NO gate-side default sends
+# this header with the value "off". agents/runner.py sends it on every eval
+# request, so an eval run that names no thinking mode still gets the
+# server's own default on every host (an eval row is half of a paired
+# comparison; the gate must not change what it measures). Never forwarded.
+GATE_DEFAULTS_HEADER = "x-openbeast-gate-defaults"
+# A request that names any of these already chose how (or whether) to
+# think, so the default stays out of it. Top level: llama.cpp's
+# reasoning_budget_tokens and the vLLM / OpenAI / OpenRouter / Anthropic
+# spellings. Inside chat_template_kwargs: the Qwen/GLM switch and the
+# DeepSeek-style `thinking`.
+_THINKING_BODY_KEYS = ("enable_thinking", "thinking", "reasoning",
+                       "reasoning_effort", "reasoning_budget_tokens",
+                       "thinking_budget")
+_THINKING_TEMPLATE_KEYS = ("enable_thinking", "thinking")
+
+
+def _apply_thinking_default(body: dict, default: str | None) -> bool:
+    """Set chat_template_kwargs.enable_thinking to the host default on a
+    chat body that names no thinking control. True when it did. Anything
+    the client said wins: an explicit enable_thinking (true or false), any
+    key in _THINKING_BODY_KEYS, or a chat_template_kwargs that is not an
+    object (forwarded as sent; the server judges it)."""
+    if default not in ("on", "off"):
+        return False
+    if any(body.get(k) is not None for k in _THINKING_BODY_KEYS):
+        return False
+    ctk = body.get("chat_template_kwargs")
+    if ctk is None:
+        ctk = {}
+    elif not isinstance(ctk, dict):
+        return False
+    elif any(ctk.get(k) is not None for k in _THINKING_TEMPLATE_KEYS):
+        return False
+    body["chat_template_kwargs"] = {**ctk, "enable_thinking": default == "on"}
+    return True
 
 # The ONLY paths a remote client may reach. Everything else 404s — a remote
 # caller should not be able to tell which of the many llama-server routes
@@ -813,9 +868,14 @@ _remote_media = remote_media
 
 
 def _sanitize_body(raw: bytes, device: dict,
-                   path: str = "/v1/chat/completions"
+                   path: str = "/v1/chat/completions",
+                   thinking: str | None = None
                    ) -> tuple[bytes, str | None, bool, int]:
     """Strip client-controlled tenancy knobs; inject server-side affinity.
+
+    `thinking` ("on" / "off" / None) is the host's thinking default for a
+    chat body that names none (_apply_thinking_default); the gate passes
+    THINKING_DEFAULT unless the request opted out (GATE_DEFAULTS_HEADER).
 
     Returns (body, model_name, streaming, generations) — see _generations
     for the last. Raises BadBody for anything that
@@ -861,6 +921,8 @@ def _sanitize_body(raw: bytes, device: dict,
         slot = None                      # JSON true/false is not a slot index
     if isinstance(slot, int):
         body["id_slot"] = slot
+    if path == "/v1/chat/completions":
+        _apply_thinking_default(body, thinking)
     streaming = bool(body.get("stream"))
     if streaming:
         # Without this the streaming path — which is the DEFAULT for chat —
@@ -910,7 +972,8 @@ def _encode_body(body: dict) -> bytes:
 def _upstream_headers(request: Request, device: dict, request_id: str = "") -> dict:
     headers = {k: v for k, v in request.headers.items()
                if k.lower() not in _HOP_BY_HOP
-               and k.lower() not in _CLIENT_SPOOFABLE}
+               and k.lower() not in _CLIENT_SPOOFABLE
+               and k.lower() != GATE_DEFAULTS_HEADER}
     # Re-assert identity from the AUTHENTICATED device, so a client can't
     # smuggle its own X-OpenWebUI-User-* headers to something downstream that
     # trusts them (the agent router gates its spawn path on exactly that role
@@ -1243,6 +1306,8 @@ async def gate(request: Request):
                 return _too_large()
         raw = bytes(buf)
         body, model, streaming, gens = raw, None, False, 1
+        thinking = (None if request.headers.get(GATE_DEFAULTS_HEADER, "")
+                    .strip().lower() == "off" else THINKING_DEFAULT)
         if raw and path in JSON_PATHS:
             try:
                 if len(raw) > _SANITIZE_INLINE_BYTES:
@@ -1260,10 +1325,10 @@ async def gate(request: Request):
                     # (2026-11-16 review).
                     async with _big_sanitize_gate():
                         body, model, streaming, gens = await asyncio.to_thread(
-                            _sanitize_body, raw, device, path)
+                            _sanitize_body, raw, device, path, thinking)
                 else:
                     body, model, streaming, gens = _sanitize_body(
-                        raw, device, path)
+                        raw, device, path, thinking)
             except BadBody as e:
                 # Authenticated, so it is audited (an identity to attribute);
                 # nothing was forwarded, so there is no usage to meter.
@@ -1609,6 +1674,7 @@ async def health(request: Request):
         "auth": _auth_mode(reg),
         "devices": len(reg._by_hash),
         "upstream": UPSTREAM,
+        "thinking_default": THINKING_DEFAULT,
     })
 
 
