@@ -16,6 +16,10 @@
 #   client: client.sh status ──────── HTTPS :8444 ─▶ rig beast-slot API
 #            (rig side: ./scripts/setup-tailscale.sh --publish-searxng --publish-slot)
 #
+# Every opencode session also loads the system prompt Open WebUI uses on the
+# rigs (system-prompt.md + system-prompt-tools.md, copied to
+# ~/.openbeast-client/prompts/ and listed in opencode.json `instructions`).
+#
 # Data flow, stated plainly: file contents the agent READS on this machine
 # are sent to the rig as model context — the model must see data to reason
 # about it. Both machines are on your tailnet, so the promise is "nothing
@@ -121,7 +125,7 @@ while [ $# -gt 0 ]; do
     --purge-logs)   PURGE_LOGS=1 ;;
     --wheelhouse)   [ $# -ge 2 ] && [ -n "$2" ] || { echo "--wheelhouse needs a directory" >&2; exit 2; }
                     WHEELHOUSE="$2"; shift ;;
-    -h|--help)      sed -n '2,54p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)      sed -n '2,58p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     status|agent|search|update|rigs|use|rig)
       # Two scripts, confusingly similar names: setup-client.sh INSTALLS
       # (flags), client.sh OPERATES (subcommands). Sending someone who typed
@@ -183,9 +187,9 @@ if [ $UNINSTALL -eq 1 ]; then
     done
   fi
   if [ -f "$OC_CONFIG" ]; then
-    "${PY_BIN:-python3}" - "$OC_CONFIG" <<'PYEOF'
-import json, sys
-path = sys.argv[1]
+    "${PY_BIN:-python3}" - "$OC_CONFIG" "$CLIENT_DIR" <<'PYEOF'
+import json, os, sys
+path, client_dir = sys.argv[1:3]
 try:
     cfg = json.load(open(path))
 except Exception as e:
@@ -221,6 +225,19 @@ if prov.get("llama-cpp", {}).get("options", {}).get("baseURL", "").endswith(":84
 for key in ("model", "small_model"):
     if str(cfg.get(key, "")).startswith("openbeast-"):
         del cfg[key]; removed.append(key)
+# The soul's `instructions` entries: ours are exactly the ones under
+# $CLIENT_DIR/prompts/ (removed below with $CLIENT_DIR); the user's stay.
+ins = cfg.get("instructions")
+if isinstance(ins, list):
+    soul = os.path.realpath(os.path.join(client_dir, "prompts")) + os.sep
+    keep = [e for e in ins if not (isinstance(e, str) and
+            os.path.realpath(os.path.expanduser(e)).startswith(soul))]
+    if len(keep) != len(ins):
+        removed.append("instructions (%d soul file%s)" % (len(ins) - len(keep), "" if len(ins) - len(keep) == 1 else "s"))
+        if keep:
+            cfg["instructions"] = keep
+        else:
+            del cfg["instructions"]
 # Drop containers we emptied, so an uninstall does not leave "mcp": {} behind.
 for k in ("mcp", "provider"):
     if k in cfg and not cfg[k]:
@@ -842,6 +859,16 @@ else:
     print(f"  ✓ merged provider + MCP config into {oc_path}")
 PYEOF
 
+# ---- 5a. the soul: the same system prompt Open WebUI runs with ---------------
+# system-prompt.md + system-prompt-tools.md (what configure-webui.sh installs
+# as the WebUI model's system prompt) are COPIED to $CLIENT_DIR/prompts/ and
+# put at the front of opencode's `instructions`; the user's own entries stay.
+# Every later sync (use, rig add, refresh-config, update) refreshes them.
+if [ -f "$CLIENT_REPO/scripts/lib/client_rigs.py" ]; then
+  OB_REPO="$CLIENT_REPO" "$PY" "$CLIENT_REPO/scripts/lib/client_rigs.py" soul --oc "$OC_CONFIG" \
+    || echo "  ! could not wire the soul into opencode.json — openbeast-client refresh-config retries"
+fi
+
 # ---- 5b. client CLI on PATH -------------------------------------------------
 # Two Linux assumptions used to break this on macOS: ~/.local/bin usually does
 # NOT exist there, and even when it does it is NOT on PATH by default. The old
@@ -916,6 +943,8 @@ elif [ $NO_SEARCH -eq 0 ]; then
   echo "  • web_search uses the rig's private SearXNG"
 fi
 [ -n "$API_KEY" ] && echo "  • keyed mode: requests carry the bearer; env + opencode.json are 0600"
+echo "  • every session loads the rig's WebUI system prompt (the soul + tool guide),"
+echo "    copied to $CLIENT_DIR/prompts/ and listed in opencode's 'instructions'"
 echo "  • quitting OpenCode reaps the tool subprocess — nothing keeps running"
 echo "  • more rigs: openbeast-client rig add <name> --host <fqdn> --api-key-stdin,"
 echo "    then openbeast-client use <name>; openbeast-client rigs lists them"

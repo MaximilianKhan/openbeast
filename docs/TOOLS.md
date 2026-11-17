@@ -30,6 +30,17 @@ device, so there is no role to enforce. `OPENBEAST_MCP_TOOLS` (a registration
 allowlist read by `agents/mcp_server.py`) is the only scoping lever if a shared
 client ever needs one. See `docs/BEAST_SLOT.md`.
 
+**The tool guidance the model reads.** Open WebUI gets `system-prompt.md` +
+`system-prompt-tools.md` as its system prompt (`scripts/configure-webui.sh`).
+OpenCode on a client gets the same two files through `opencode.json`
+`instructions` (copied to `~/.openbeast-client/prompts/`), plus a short
+`opencode-client.md` that adjusts the tools file to that surface: the tools
+are named `openbeast-tools_<tool>` there, and the "Where files go" paragraph
+(the chat workspace and its `.manifest.jsonl`) is WebUI-only. opencode 2.0.x
+ignores `instructions`; 2.2.0 and later load them
+([SPARK_HYDRA.md § F3](SPARK_HYDRA.md#f3-what-the-client-writes-into-opencode)).
+When editing `system-prompt-tools.md`, remember both surfaces read it.
+
 ## The 19 MCP tools
 
 All implemented in this repo. `agents/tools.py` holds the hardened

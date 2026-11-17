@@ -37,7 +37,8 @@
 # ${XDG_CONFIG_HOME:-~/.config}/openbeast/rigs.json, kept by
 # scripts/lib/client_rigs.py. A single-rig install is migrated into it on
 # first run. opencode gets one provider per rig (openbeast-<rig>) plus
-# openbeast-rig, an alias of the active rig.
+# openbeast-rig, an alias of the active rig, and every sync re-copies the
+# soul (system-prompt.md + system-prompt-tools.md) into its `instructions`.
 #
 # Deliberately does NOT source scripts/lib/conf.sh — that file is rig-shaped
 # (it generates secrets into openbeast.conf). Client config lives in
@@ -393,6 +394,17 @@ if backend != "llama" and served:
     else
       echo "  ✗ opencode.json not wired — re-run scripts/setup-client.sh"; bad=$((bad+1))
     fi
+    # The soul (the rig's WebUI system prompt, via opencode `instructions`).
+    # Informational: a session without it still works, it just is not OpenBeast.
+    if [ -f "$OC_CONFIG" ] && [ -f "$RIGS_PY" ]; then
+      _src=0
+      _sl="$(OB_REPO="$REPO" "$PY_BIN" "$RIGS_PY" soul --check --oc "$OC_CONFIG" 2>/dev/null)" || _src=$?
+      if [ "$_src" -eq 0 ] && [ -n "$_sl" ]; then
+        echo "  ✓ $_sl"; ok=$((ok+1))
+      elif [ -n "$_sl" ]; then
+        echo "  $_sl"
+      fi
+    fi
     echo ""
     if [ $bad -eq 0 ]; then
       echo "client: $ok ok — ready. (cd <project> && opencode)"
@@ -580,7 +592,7 @@ if backend != "llama" and served:
     ;;
 
   -h|--help|help)
-    sed -n '2,40p' "$_self" | sed 's/^# \{0,1\}//'
+    sed -n '2,41p' "$_self" | sed 's/^# \{0,1\}//'
     ;;
 
   *)

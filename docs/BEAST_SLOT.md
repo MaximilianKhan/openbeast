@@ -325,6 +325,20 @@ no open port, dies with OpenCode), and a `~/.local/bin/openbeast-client`
 symlink — the directory is created if missing, and when it isn't on `PATH`
 (the macOS default) the installer prints the exact line to add.
 
+**The soul comes along.** Every opencode session on the client loads the same
+system prompt Open WebUI runs with on the rig: `system-prompt.md` (the soul)
+and `system-prompt-tools.md` (the tool conventions), copied to
+`~/.openbeast-client/prompts/` with a short `opencode-client.md` note (tool
+names carry the `openbeast-tools_` prefix in opencode; the WebUI's chat
+workspace and `.manifest.jsonl` do not exist here), and listed first in
+`opencode.json` `instructions`. Your own `instructions` entries stay as they
+are; `--uninstall` removes only ours. Every sync (`use`, `rig add`,
+`refresh-config`, `update`) re-copies the files. **opencode 2.0.x accepts but
+ignores `instructions`** (measured on 2.0.25; 2.2.0 and 2.3.0 load them), and
+`openbeast-client status` says so: `brew upgrade opencode`, then
+`opencode service restart`. Details:
+[SPARK_HYDRA.md § F3](SPARK_HYDRA.md#f3-what-the-client-writes-into-opencode).
+
 ### Using someone else's rig
 
 A client needs **no GPU and no weights**, so joining a rig you don't own is a
@@ -531,7 +545,8 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zprofile   # zsh (macOS defaul
 
 `status` checks: env file, venv packages, tailscale up, rig API reachable
 (with bearer when keyed), beast-slot discovery, search reachable, opencode
-wiring. RBAC deliberately does not apply to the client path — it's your
+wiring, and whether opencode loads the soul (informational: an opencode that
+ignores `instructions` is named with the upgrade, without failing status). RBAC deliberately does not apply to the client path — it's your
 device; `OPENBEAST_MCP_TOOLS` is the scoping lever if a shared client ever
 needs one.
 
@@ -548,7 +563,9 @@ slate (e.g. a rebuilt venv, or after changing Python).
 
 **What uninstall removes:** `~/.openbeast-client` (venv + any slim checkout),
 `~/.openbeast-client.env`, the `~/.local/bin/openbeast-client` symlink, our
-two entries in `opencode.json` (and any container they leave empty), and the
+entries in `opencode.json` (the `openbeast-*` providers, the `openbeast-tools`
+server, a default model still pointing at ours, the soul's `instructions`
+entries; any container they leave empty goes too), and the
 `--local-search` SearXNG container. Foreign keys in `opencode.json` are
 preserved — only entries matching *our* install are touched.
 
