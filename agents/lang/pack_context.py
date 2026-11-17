@@ -70,6 +70,18 @@ PACKS_DIR = os.path.join(_AGENTS, "packs")
 #: (evals/run_eval.py PACK_FILES), so the two cannot name different files.
 PACK_FILES = {"zig": "zig-0.16.md"}
 
+#: Pack VARIANTS the eval harness may measure instead of PACK_FILES, chosen
+#: per run with OPENBEAST_PACK_VARIANT (evals/run_eval.py packs_flag).
+#: "v1" is PACK_FILES itself: the measured bytes production serves. "v2" is
+#: the 2026-11-16 pack (GLM-5.3-Flash v5 taxonomy, docs/LANG_AWARENESS_PLAN.md
+#: §5.1), an unmeasured treatment. Production never reads this map; when a
+#: variant wins its A/B, it becomes PACK_FILES and MEASURED_SHA256 moves.
+PACK_VARIANTS = {
+    "v1": dict(PACK_FILES),
+    "v2": {"zig": "zig-0.16-v2.md"},
+}
+DEFAULT_PACK_VARIANT = "v1"
+
 #: sha256 of the pack bytes that the Tier-3 A/B measured (verdict line
 #: `pack: {'zig': '5cdf4b64'}`). Production serves only these bytes. After an
 #: edit to the pack, re-run the Tier-3 A/B and move this pin — until then the
@@ -160,8 +172,15 @@ def _lang_allowed(lang: str) -> bool:
 # --------------------------------------------------------------------------
 
 _PACK_HEADER_RE = re.compile(
-    r"^\(2\) GENERATED signature digest — zig (\S+) std, (\d+) lines, sha256\(digest\)=([0-9a-f]{16})",
+    r"^\(2\) GENERATED signature digest — (\S+) (\S+) std, (\d+) lines, sha256\(digest\)=([0-9a-f]{16})",
     re.MULTILINE)
+
+#: Languages whose pack MUST carry a generated section (its absence means the
+#: generator never ran). Any other language's pack may be curated only: no
+#: header means nothing generated can drift, never a reason to abort the eval
+#: run that loads it (run_eval's packs_flag calls pack_problem for EVERY entry
+#: of PACK_FILES, and used to demand the zig header from all of them).
+GENERATED_SECTION_REQUIRED = frozenset({"zig"})
 
 _ZIG_VERSION: dict = {}
 
@@ -191,9 +210,14 @@ def pack_problem(lang: str, path: str, data: bytes) -> str | None:
     text = data.decode("utf-8", errors="replace")
     m = _PACK_HEADER_RE.search(text)
     if not m:
+        if lang not in GENERATED_SECTION_REQUIRED:
+            return None          # curated only: nothing generated to drift
         return (f"pack {path}: no generated-section header — regenerate with "
                 f"agents/packs/gen_zig_pack.py")
-    version, _n, stamped = m.group(1), m.group(2), m.group(3)
+    hdr_lang, version, _n, stamped = m.group(1), m.group(2), m.group(3), m.group(4)
+    if hdr_lang != lang:
+        return (f"pack {path}: its generated section is for {hdr_lang}, but "
+                f"PACK_FILES files it under {lang}")
     digest = text[m.end():].split("\n", 1)[1] if "\n" in text[m.end():] else ""
     actual = hashlib.sha256(digest.encode()).hexdigest()[:16]
     if actual != stamped:

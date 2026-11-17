@@ -276,7 +276,7 @@ python3 evals/suite_stats.py --check       # the docs cite the shipped numbers
 | Arm | Treatment | Units it RUNS | Shared from L0 | On the board |
 |---|---|---|---|---|
 | **L0** bare | none (and no zig tutoring in any prompt) | all 71 | — | **yes**: the headline SCORE |
-| **L1** prod | `--packs` (zig only has a pack) | the 6 zig units | every non-zig unit: its request is byte-identical | no |
+| **L1** prod | `--packs` (zig pack + the probed host pack) | the 6 zig units | on a host whose host pack is empty, every non-zig unit (its request is byte-identical); where it is not empty (the Mac harness host), none: the host pack changes every request, so non-zig units are `not_in_arm` in L1 | no |
 | **L2** full | packs + push diagnostics + escalation | the 39 compiled + shell units | the 32 Python units (diagnostics are keyed per unit; Python is outside the assist scope) | no; shown next to L0 as `+assist` only |
 
 Contrasts: **L1-L0 on zig** is the pack (reported per stratum: held-out vs
@@ -293,6 +293,22 @@ dirs and server drift hits both. Each arm writes
 `eval-<slug>-<arm>-<ts>.json` with `harness.arm` and a shared
 `harness.pair_id`. A pair whose request equals L0's (same cache key) copies
 L0's row (`shared_from`); the arm label is never part of a cache key.
+
+**The host pack and the arm plan (2026-11-16).** Packs-on means language
+pack + host pack (`agents/lang/host_pack.py`, probed from the tool host),
+and the host pack goes to EVERY unit. Under `--arms` the manifest's plan
+still decides which units an arm runs: the host pack reaches the 6 zig
+units in L1 and the 39 compiled + shell units in L2, never the 32 Python
+units. To measure it on every language, run a single packs-on run
+(`BEAST_PACKS=1 run_eval.py --suite v5`, no `--arms`), which runs every
+unit, and compare it with L0 rows of the same era and seeds.
+
+**Which zig pack: `OPENBEAST_PACK_VARIANT=v1|v2`** (default `v1`, read by
+`packs_flag`). `v1` is `agents/packs/zig-0.16.md`, the measured pack
+production serves. `v2` is `agents/packs/zig-0.16-v2.md` (2026-11-16,
+`docs/LANG_AWARENESS_PLAN.md` §5.1), eval-only until measured. The file's
+bytes are in `pack1-<sha8>`, and `harness.pack_variant` records the choice.
+An arm measuring v2 + the host pack: `BEAST_PACKS=1 OPENBEAST_PACK_VARIANT=v2`.
 
 **How small an effect one profile can see** (exact McNemar, alpha 0.05,
 ~50% power on expected counts, `evals/ablation.py mde()`; net units per
@@ -324,6 +340,39 @@ measures instead of trusting them. Groups are scheduled **longest-first**
 by `est_s x arms`; the longest group is now a 6-language hard family
 (6 units x 165 R-s in L0, ~33 min across all three arms on one worker).
 
+### Prerequisites: the harness host's toolchains
+
+Tools, validators and compilers run on the **harness host** (the box running
+`run_eval.py` / `profile.py` / `benchmark_all.py`), never on the model
+server. What it needs is pinned in `evals/toolchains.lock`: zig 0.16.0,
+rustc 1.100.0 (rustup), go 1.23.3 and a python 3.12 eval venv built from
+`agents/requirements.lock` on a python-build-standalone 3.12.16 the prefix
+owns: the versions the v5 units were proven with (`tests/prove_task.py`).
+gcc, g++ and git must be present (Xcode Command Line Tools on a Mac; the
+distro's `build-essential clang git` on Linux); nothing installs those.
+
+```bash
+./scripts/eval-host.sh check               # ok / missing / wrong / system / blocked per tool; exit 1 on a problem
+./scripts/eval-host.sh setup               # install what is missing or wrong into ~/.local/opt/openbeast-eval
+eval "$(./scripts/eval-host.sh env)"       # PATH, RUSTUP_HOME, CARGO_HOME, OPENBEAST_EVAL_PY
+"$OPENBEAST_EVAL_PY" evals/profile.py ...  # the harness under the eval venv
+./scripts/eval-host.sh setup --from /Volumes/ARK [--wheelhouse DIR]   # offline: an ark drive or a fetch mirror
+```
+
+A live run does this by itself: `run_eval.py`, `profile.py` and
+`benchmark_all.py` run `check` first, `setup` when it fails, put the prefix
+first on PATH **before** `toolchain_pins()` resolves the validators'
+compilers, and re-exec under `$OPENBEAST_EVAL_PY` when they were started by
+another python. `--no-provision` (or `OPENBEAST_EVAL_NO_PROVISION=1`) only
+reports; `--cache-only` touches nothing. Then two guards keep a broken
+interpreter off the board: a live `run_eval` refuses to start when its
+python cannot import the stdlib and the runner's packages, and an agent
+that dies within 2 s on an interpreter-startup error ("Could not find
+platform independent libraries", a `ModuleNotFoundError`, a dyld failure)
+is recorded `reason: interpreter_error` (never cached, never scored) and the
+interpreter re-checked; a broken one aborts the run. Why:
+`docs/HARNESS_NOTES.md`, "Eval host provisioning" (22 units on 2026-11-16).
+
 ### How to run a 4-hour profile
 
 ```bash
@@ -338,6 +387,8 @@ python3 evals/profile.py --resume evals/results/profile-<slug>-<ts>.json   # aft
 python3 evals/ablation.py --profile evals/results/profile-<slug>-<ts>.json # the report again
 ```
 
+0. **Host**: `scripts/eval-host.sh` check, and setup when it fails (the
+   section above). Preflight re-checks and refuses what is still missing.
 1. **Preflight** refuses a profile whose numbers would be wrong: zig not
    0.16.0 (the pack's pin), the zig escalation index not served
    (`escalate.gate_state()`), a validator toolchain missing on the
@@ -801,7 +852,10 @@ exhaustion (`Resource temporarily unavailable`, `SystemResources`,
 `NoSpaceLeft`) is recorded with `reason: env_error`; and a unit whose
 **validator** ran out of its own time budget is recorded with
 `reason: validator_timeout` — on a contended host that happens to a correct
-solution, whose compile is most of the budget. (The validator's budget now
+solution, whose compile is most of the budget. A unit whose agent died at
+interpreter startup (exit > 0 within 2 s, no completion tokens, a startup
+error on stderr) is recorded with `reason: interpreter_error` and retries
+too; it is never scored (`scoring.INFRA_REASONS`). (The validator's budget now
 takes the same `timeout_scale` as the agent's wall budget, so a `--jobs N`
 run no longer times validators out at the serial figure.) All three retry
 live on the next run. A run containing `server_error` or `env_error` can't
@@ -850,14 +904,15 @@ replay against, or as, a baseline: `benchmark_all.py --greedy` (greedy
 decoding, the low-churn mode; env `OPENBEAST_EVAL_GREEDY=1` for `run_eval.py`,
 which has no flag) and `--packs` on either runner (Tier-3 language awareness
 packs — `agents/packs/<lang>.md` injected for tasks in that language, zig
-only today, a task-scoped `pack1-<sha8>` era; env `BEAST_PACKS=1`). Both are
+only today, plus the probed host pack for every unit when it is non-empty;
+a `pack1-<sha8>` era on the units that get either; env `BEAST_PACKS=1`). Both are
 leaderboard-ineligible experiment rows, and that is enforced: `benchmark_all`
 turns `--greedy`, `--packs` and beast-assist diagnostics into
 `--no-leaderboard`, and `scoring.update_leaderboard` / `scoring.py --rebuild`
 refuse any results file whose `harness` records one of those arms (or an
 escalation component), a fast suite, or infrastructure rows
 (`skipped_cache_miss`, `server_unhealthy`, `setup_failed`, `server_error`,
-`env_error`, `low_disk`) — see `scoring.ineligibility_reasons`. A `--escalate` arm (beast-lang's
+`env_error`, `low_disk`, `interpreter_error`) — see `scoring.ineligibility_reasons`. A `--escalate` arm (beast-lang's
 confirmed-fix card riding on beast-assist's diagnostic) is wired and opt-in
 (`BEAST_ESCALATE=1` with `BEAST_ASSIST=1`), runs under its own `esc1-<sha8>`
 era and is leaderboard-ineligible; its A/B has not run.

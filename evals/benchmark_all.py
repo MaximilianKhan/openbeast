@@ -1034,6 +1034,10 @@ def main():
     parser.add_argument("--reasoning-budget",
                         help="--cache-only: the reasoning-budget era to replay (e.g. 20480; "
                              "-1 = uncapped). Default: each model's last live run.")
+    parser.add_argument("--no-provision", action="store_true",
+                        help="Do not install missing eval toolchains (scripts/eval-host.sh "
+                             "setup) or re-exec under the eval venv; only report. Same as "
+                             "OPENBEAST_EVAL_NO_PROVISION=1.")
     args = parser.parse_args()
 
     if args.list:
@@ -1072,6 +1076,19 @@ def main():
     if args.cache_only and args.no_cache:
         print("--cache-only and --no-cache are mutually exclusive.", file=sys.stderr)
         sys.exit(2)
+    if not args.cache_only:
+        # The eval host's toolchains (evals/toolchains.lock), before the
+        # first run_eval pins them: setup when missing, then a re-exec under
+        # the eval venv (docs/SPARK_HYDRA.md F6).
+        import eval_host  # noqa: PLC0415
+        host_problems = eval_host.ensure_host(
+            argv=[os.path.abspath(__file__)] + sys.argv[1:], no_provision=args.no_provision)
+        if host_problems and not eval_host.no_provision_requested(args.no_provision):
+            print("Refusing to start: the eval host is not ready (scripts/eval-host.sh check):",
+                  file=sys.stderr)
+            for p in host_problems:
+                print(f"  - {p}", file=sys.stderr)
+            sys.exit(2)
     if args.suite and args.tasks:
         print("--suite and --tasks are mutually exclusive.", file=sys.stderr)
         sys.exit(2)

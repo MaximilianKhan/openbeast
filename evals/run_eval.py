@@ -1422,11 +1422,18 @@ PACKS_DIR = os.path.join(EVALS_DIR, "..", "agents", "packs")
 # Language → pack file, and the drift check, live in agents/lang/pack_context
 # so the harness and PRODUCTION agents (which get the same pack since the
 # Tier-3 SHIP) cannot disagree about which file a pack is or when it is stale.
-# Tier 3 (docs/LANG_AWARENESS_PLAN.md §5): only zig has a pack today; every
-# other language gets nothing — its agent command line is byte-identical with
-# packs on or off.
+# Tier 3 (docs/LANG_AWARENESS_PLAN.md §5): only zig has a language pack
+# today. Since 2026-11-16 packs-on also hands EVERY unit the host pack
+# (agents/lang/host_pack.py: this host's probed userland/libc gaps), so a
+# non-zig unit's command line differs with packs on unless the host pack is
+# empty; with packs OFF every command line is byte-identical to before.
 from lang import pack_context as _pack_context  # noqa: E402
+from lang import host_pack as _host_pack  # noqa: E402
 PACK_FILES = _pack_context.PACK_FILES
+#: Where packs_flag writes the probed host pack (and a language pack joined
+#: with it) as content-addressed files the runner reads via --context-file.
+#: None = ~/.cache/openbeast/host-pack.
+HOST_PACK_DIR = os.environ.get("OPENBEAST_HOST_PACK_DIR") or None
 
 
 def _verify_pack(lang: str, path: str, data: bytes) -> None:
@@ -1447,18 +1454,37 @@ def packs_flag(env=None) -> tuple[bool, str | None, dict]:
     OPENBEAST_PACKS=1 (internal), or run_eval/benchmark_all --packs.
 
     Returns (enabled, cache_component, meta) where cache_component is
-    `pack1-<sha8 of the pack file bytes>` (packs concatenated in language
-    order when there is more than one) and meta = {"sha": {lang: sha8},
-    "paths": {lang: abs_path}}."""
+    `pack1-<sha8>` over the language pack file bytes (concatenated in
+    language order) followed by the HOST pack bytes, and meta = {"sha":
+    {lang: sha8, "host": sha8}, "paths": {lang: abs_path}, "host": {...},
+    "unit_paths": {lang: the file a unit of that language gets}}.
+
+    The host pack (agents/lang/host_pack.py, 2026-11-16) is probed from THIS
+    host when the flag is read and goes to EVERY unit, all languages: a zig
+    unit gets one file holding the zig pack then the host pack, any other
+    unit the host pack alone. A host with no probed gaps renders nothing and
+    the component is the language packs' alone."""
     env = os.environ if env is None else env
     enabled = (env.get("BEAST_PACKS", "").strip() == "1"
                or env.get("OPENBEAST_PACKS", "").strip() == "1")
     if not enabled:
         return False, None, {}
     import hashlib
+    # Which language-pack bytes this run measures: OPENBEAST_PACK_VARIANT =
+    # v1 (default: PACK_FILES, the measured pack production serves) | v2 (the
+    # 2026-11-16 pack). The file's bytes go into pack1-<sha8>, so rows of
+    # two variants can never share a key. An unknown name aborts: a typo
+    # must not silently measure the wrong treatment.
+    variant = (env.get("OPENBEAST_PACK_VARIANT") or "").strip().lower() \
+        or _pack_context.DEFAULT_PACK_VARIANT
+    if variant not in _pack_context.PACK_VARIANTS:
+        raise SystemExit(f"OPENBEAST_PACK_VARIANT={variant!r}: not one of "
+                         f"{sorted(_pack_context.PACK_VARIANTS)}")
+    files = (PACK_FILES if variant == _pack_context.DEFAULT_PACK_VARIANT
+             else _pack_context.PACK_VARIANTS[variant])
     shas, paths = {}, {}
     h = hashlib.sha256()
-    for lang, fn in sorted(PACK_FILES.items()):
+    for lang, fn in sorted(files.items()):
         p = os.path.abspath(os.path.join(PACKS_DIR, fn))
         with open(p, "rb") as f:
             data = f.read()
@@ -1466,7 +1492,21 @@ def packs_flag(env=None) -> tuple[bool, str | None, dict]:
         shas[lang] = hashlib.sha256(data).hexdigest()[:8]
         paths[lang] = p
         h.update(data)
-    return True, f"pack1-{h.hexdigest()[:8]}", {"sha": shas, "paths": paths}
+    host = _host_pack.build()
+    meta = {"sha": shas, "paths": paths, "host": {}, "unit_paths": dict(paths),
+            "variant": variant}
+    if host.text:
+        h.update(host.data)
+        shas["host"] = host.sha8
+        meta["host"] = {"path": _host_pack.write(host, HOST_PACK_DIR), "system": host.system,
+                        "tokens": host.tokens,
+                        "facts": [f.key for f in host.facts
+                                  if f.line and not f.covered_by_platform_line]}
+        for lang, p in paths.items():
+            with open(p, "rb") as f:
+                both = f.read().rstrip(b"\n") + b"\n\n" + host.data
+            meta["unit_paths"][lang] = _host_pack.write(both, HOST_PACK_DIR)
+    return True, f"pack1-{h.hexdigest()[:8]}", meta
 
 
 ESCALATE_LANG_DIR = os.path.join(EVALS_DIR, "..", "agents", "lang")
@@ -1684,6 +1724,9 @@ def cacheable_result(result: dict) -> bool:
       0 completion tokens + failed — the model never produced anything
         (server crash/restart window, dead endpoint); a capability verdict
         requires the model to have actually spoken.
+      failed + reason interpreter_error — the agent's python died at
+        startup (eval_host.interpreter_startup_failure): the venv broke under
+        the harness, as on 2026-11-16 (22 units).
       failed + reason server_error / api_errors >= 1 — the server died or
         errored AFTER the model had spoken. The runner burns its remaining
         iterations on connection errors and exits 0 with tokens > 0; the
@@ -1708,7 +1751,8 @@ def cacheable_result(result: dict) -> bool:
         return True
     if not result.get("tokens_completion"):
         return False
-    if result.get("reason") in ("server_error", "env_error", "validator_timeout"):
+    if result.get("reason") in ("server_error", "env_error", "validator_timeout",
+                                "interpreter_error"):
         return False
     if (result.get("api_errors") or 0) > 0:
         return False
@@ -2877,9 +2921,12 @@ class ArmCtx:
         return self.esc_on and self.in_diag_scope(task) and unit_lang(task) in self.card_langs
 
     def pack_path(self, task: dict) -> str | None:
+        """The --context-file a unit gets: its language pack joined with the
+        host pack, or the host pack alone (every language), or None."""
         if not self.packs_on:
             return None
-        return self.packs_meta["paths"].get(task.get("language"))
+        lang_path = self.packs_meta["unit_paths"].get(task.get("language"))
+        return lang_path or (self.packs_meta.get("host") or {}).get("path")
 
     def pack_for(self, task: dict) -> str | None:
         return self.packs_component if self.pack_path(task) else None
@@ -3081,6 +3128,13 @@ def run_eval(
             task_filter = list(suite_pin["units"])
     suite_version = capture_suite_version()
     if not cache_only:
+        # Before ANY agent runs: can this interpreter start one at all? Every
+        # agent is `sys.executable runner.py`; a broken venv used to turn each
+        # unit into a scored FAIL (2026-11-16, docs/HARNESS_NOTES.md).
+        import eval_host  # noqa: PLC0415
+        bad_interp = eval_host.interpreter_problem()
+        if bad_interp:
+            raise SystemExit(f"REFUSED: {bad_interp}")
         # Before ANY agent runs: what a validator may call a compiler.
         pinned = toolchain_pins()
         print("Toolchain pinned for validators: " + (", ".join(
@@ -3293,9 +3347,14 @@ def run_eval(
                   f"{', '.join(c.card_langs) or 'NONE'}; card-eligible units: {n_card}/{len(tasks)}")
         if c.packs_on:
             packed = sum(1 for t in tasks if c.pack_path(t))
-            print(f"Packs:  {tag}awareness packs ON ({', '.join(f'{k}={v}' for k, v in c.packs_meta['sha'].items())}) — "
+            print(f"Packs:  {tag}awareness packs ON, variant {c.packs_meta.get('variant')} "
+                  f"({', '.join(f'{k}={v}' for k, v in c.packs_meta['sha'].items())}) — "
                   f"cache era {c.packs_component} on {packed}/{len(tasks)} units "
                   f"(leaderboard-ineligible experiment rows)")
+            hp = c.packs_meta.get("host") or {}
+            print(f"Packs:  {tag}host pack " + (
+                f"{hp['system']} {hp['tokens']}tok, probed gaps: {', '.join(hp['facts'])} — every unit"
+                if hp else "empty (no host gaps probed here)"))
     if suite_pin:
         c = suite_pin["counts"]
         print(f"Suite:  {suite} ({c['units']} pinned units = {c['discriminating']} discriminating "
@@ -3324,7 +3383,10 @@ def run_eval(
              "agent_switches": dict(agent_meta),
              **({"agent_component": agent_component} if agent_component else {}),
              "packs": dict(c.packs_meta.get("sha", {})) if c.packs_on else {},
-             **({"packs_component": c.packs_component} if c.packs_on else {}),
+             **({"packs_component": c.packs_component,
+                 "pack_variant": c.packs_meta.get("variant")} if c.packs_on else {}),
+             **({"host_pack": {k: v for k, v in (c.packs_meta.get("host") or {}).items()
+                               if k != "path"}} if c.packs_on else {}),
              **({"escalate": c.esc_meta, "escalate_component": c.esc_component,
                  # G16: which languages can receive a card on this host, and
                  # how many of the run's units that covers (before any arm
@@ -3630,8 +3692,14 @@ def run_eval(
         infra_reason = None
         env_strikes = 0
         vt_strikes = 0
+        # interpreter_error: the agent's python died at startup (no model
+        # call was made). The environment's fault, never the model's.
+        import eval_host  # noqa: PLC0415
+        startup_err = None if passed else eval_host.interpreter_startup_failure(agent_result)
         if not passed:
-            if api_errors > 0:
+            if startup_err:
+                infra_reason = "interpreter_error"
+            elif api_errors > 0:
                 infra_reason = "server_error"
             elif (health_check is not None and agent_result["exit_code"] >= 0
                   and not health_check()):
@@ -3688,6 +3756,7 @@ def run_eval(
             **({"env_error_repeats": env_strikes} if env_strikes else {}),
             **({"validator_timeout_repeats": vt_strikes} if vt_strikes else {}),
             **({"env_fp": env_component} if env_component else {}),
+            **({"interpreter_error": startup_err} if startup_err else {}),
         })
 
         if passed:
@@ -3697,6 +3766,13 @@ def run_eval(
                 f"{validation_output[:100]}")
         else:
             log(f"  FAIL: {validation_output[:100]}")
+        if startup_err:
+            # One agent's startup death may be a blip; a broken interpreter
+            # would kill every unit after it. Re-check now; stop if broken.
+            bad_interp = eval_host.interpreter_problem(force=True)
+            if bad_interp:
+                abort.set()
+                log(f"  ABORT: {bad_interp}")
 
         # Cache the result for future reruns. We cache both PASS and
         # deterministic FAIL — replaying a known fail is replay-safe.
@@ -3960,8 +4036,10 @@ def main():
     parser.add_argument("--packs", action="store_true",
                         help="Tier-3 language awareness packs (docs/LANG_AWARENESS_PLAN.md §5): "
                              "inject agents/packs/<lang>.md into the agent system prompt for units "
-                             "whose language has a pack (zig only today). Own pack1-<sha8> cache "
-                             "era on those units; leaderboard-ineligible. Same as BEAST_PACKS=1.")
+                             "whose language has a pack (zig only today), plus the host pack "
+                             "probed from this machine (agents/lang/host_pack.py) for EVERY unit. "
+                             "Own pack1-<sha8> cache era on those units; leaderboard-ineligible. "
+                             "Same as BEAST_PACKS=1.")
     parser.add_argument("--diag", action="store_true",
                         help="beast-assist push diagnostics for units in assist scope "
                              "(compiled languages + shell; OPENBEAST_DIAG_LANGS overrides). "
@@ -3980,10 +4058,27 @@ def main():
     parser.add_argument("--thinking", choices=("on", "off"),
                         help="Per-request thinking toggle for the agent (sets "
                              "OPENBEAST_AGENT_THINKING). In the cache key (ag-think-on/off).")
+    parser.add_argument("--no-provision", action="store_true",
+                        help="Do not install missing eval toolchains (scripts/eval-host.sh "
+                             "setup) or re-exec under the eval venv; only report what is "
+                             "missing. Same as OPENBEAST_EVAL_NO_PROVISION=1.")
     args = parser.parse_args()
 
     if args.jobs < 1:
         parser.error("--jobs must be >= 1")
+    if not args.list and not args.cache_only:
+        # The toolchains (evals/toolchains.lock) before anything is pinned:
+        # setup when missing, the prefix first on PATH, then re-exec under the
+        # eval venv's python (docs/SPARK_HYDRA.md F6).
+        import eval_host  # noqa: PLC0415
+        host_problems = eval_host.ensure_host(
+            argv=[os.path.abspath(__file__)] + sys.argv[1:], no_provision=args.no_provision)
+        if host_problems and not eval_host.no_provision_requested(args.no_provision):
+            print("REFUSED: the eval host is not ready (scripts/eval-host.sh check):",
+                  file=sys.stderr)
+            for p in host_problems:
+                print(f"  - {p}", file=sys.stderr)
+            sys.exit(2)
     arms = [a.strip() for a in args.arms.split(",") if a.strip()] if args.arms else None
     if arms and (args.packs or args.diag or args.escalate):
         parser.error("--arms defines each arm's treatment; drop --packs/--diag/--escalate")

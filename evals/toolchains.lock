@@ -1,0 +1,85 @@
+# evals/toolchains.lock — what the EVAL HARNESS HOST must have, pinned.
+#
+# The harness host is the machine that runs evals/run_eval.py, profile.py or
+# benchmark_all.py against a model server (the Mac today; a Linux box or a
+# Spark later). Agents' tools, validators and compilers all run THERE, never
+# on the model server, so this is where the toolchains live.
+#
+# scripts/eval-host.sh reads this file: `check` reports, `setup` installs what
+# is missing or the wrong version into a durable prefix (default
+# ~/.local/opt/openbeast-eval), sha256-verified, and `env` prints the exports.
+# run_eval.py / profile.py / benchmark_all.py run `check`, and `setup` when
+# something is missing (--no-provision or OPENBEAST_EVAL_NO_PROVISION=1 turns
+# that off). docs/SPARK_HYDRA.md F6 and evals/README.md "Prerequisites".
+#
+# The versions are the ones the v5 units were proven with (tests/prove_task.py
+# on the Mac, 2026-11): zig 0.16.0, rustc 1.100.0, go 1.23.3, Apple clang 21.
+# Changing one changes compiler output and so, under OPENBEAST_EVAL_ENV_ERA=1,
+# the env component of every cache key: bump deliberately, with a CHANGELOG
+# line.
+#
+# --- download rows -----------------------------------------------------------
+# Columns, whitespace-separated:
+#   name  platform  version  sha256  ark-entry  url
+# platform   darwin-arm64 | linux-aarch64 | linux-x86_64 (beast-ark's names)
+# sha256     of the file at url. zig, rust and cpython are the beast-ark
+#            catalog's own pins (agents/ark/catalog.toml; tests/test_eval_host.py
+#            holds them equal). go 1.23.3 and rustup-init are not in the
+#            catalog: their hashes are upstream's (dl.google.com/go/<file>.sha256,
+#            static.rust-lang.org/rustup/archive/<v>/<target>/rustup-init.sha256),
+#            read 2026-11-16.
+# ark-entry  where an offline `setup --from <drive>` looks for the file:
+#            <drive>/files/<ark-entry>/<version>/<platform>/<basename of url>
+#            (BEAST_ARK.md §6). "-": not an ark file; a flat mirror made by
+#            `eval-host.sh fetch --to <dir>` carries it as <dir>/<basename>.
+#
+# rust: online setup installs rustup (rustup-init, sha256-checked) and the
+# rust toolchain below with `--profile minimal`; rustup checks the toolchain
+# against the release's signed manifest. Offline, the standalone installer
+# (the `rust` row, the ark's file) goes in instead. Either way: rustc 1.100.0.
+#
+# cpython: the BASE interpreter of the eval venv is a relocatable
+# python-build-standalone build installed INTO the prefix, never a system or
+# Homebrew python. A venv records its base's path; on 2026-11-16 a Homebrew
+# change under a venv's base killed 22 units at interpreter startup
+# (docs/HARNESS_NOTES.md). A base the prefix owns cannot move under it.
+
+zig          darwin-arm64   0.16.0   b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489  zig           https://ziglang.org/download/0.16.0/zig-aarch64-macos-0.16.0.tar.xz
+zig          linux-aarch64  0.16.0   ea4b09bfb22ec6f6c6ceac57ab63efb6b46e17ab08d21f69f3a48b38e1534f17  zig           https://ziglang.org/download/0.16.0/zig-aarch64-linux-0.16.0.tar.xz
+zig          linux-x86_64   0.16.0   70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00  zig           https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
+
+go           darwin-arm64   1.23.3   31e119fe9bde6e105407a32558d5b5fa6ca11e2bd17f8b7b2f8a06aba16a0632  go            https://dl.google.com/go/go1.23.3.darwin-arm64.tar.gz
+go           linux-aarch64  1.23.3   1f7cbd7f668ea32a107ecd41b6488aaee1f5d77a66efd885b175494439d4e1ce  go            https://dl.google.com/go/go1.23.3.linux-arm64.tar.gz
+go           linux-x86_64   1.23.3   a0afb9744c00648bafb1b90b4aba5bdb86f424f02f9275399ce0c20b93a2c3a8  go            https://dl.google.com/go/go1.23.3.linux-amd64.tar.gz
+
+rustup-init  darwin-arm64   1.29.3   63752a1919a3a4793173ec70f8f212621a7ce38ba6a246095984482f4de20f9f  -             https://static.rust-lang.org/rustup/archive/1.29.3/aarch64-apple-darwin/rustup-init
+rustup-init  linux-aarch64  1.29.3   9f608c142e0e38a78957d0661ba1dfaf0b6fb37184cfaa4b9a0aa57af6184282  -             https://static.rust-lang.org/rustup/archive/1.29.3/aarch64-unknown-linux-gnu/rustup-init
+rustup-init  linux-x86_64   1.29.3   b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55  -             https://static.rust-lang.org/rustup/archive/1.29.3/x86_64-unknown-linux-gnu/rustup-init
+
+rust         darwin-arm64   1.100.0  68ba729fe20df0f74309ef55ffbe518fc982177f327651b06112ef11e8e1de0d  rust          https://static.rust-lang.org/dist/rust-1.100.0-aarch64-apple-darwin.tar.xz
+rust         linux-aarch64  1.100.0  a21f6a21818df07c1e2e7addb570af5444b3fa9dd61e3a207f4fb1c5a5e665c9  rust          https://static.rust-lang.org/dist/rust-1.100.0-aarch64-unknown-linux-gnu.tar.xz
+rust         linux-x86_64   1.100.0  98ee6bec240e1cfe944f17e7092412dc5ef6e008484bb668c6936d35a7d15acd  rust          https://static.rust-lang.org/dist/rust-1.100.0-x86_64-unknown-linux-gnu.tar.xz
+
+cpython      darwin-arm64   3.12.16  e956e60bc9465d577ef8062059aa05cd3a2665b4b8678a2ed24e432368330b8f  cpython-3.12  https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.12.16+20261110-aarch64-apple-darwin-install_only.tar.gz
+cpython      linux-aarch64  3.12.16  4792f81750282597fb2a3389fe18b945ed2ba6aad5e45ad406d122c58cb33081  cpython-3.12  https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.12.16+20261110-aarch64-unknown-linux-gnu-install_only.tar.gz
+cpython      linux-x86_64   3.12.16  c2f87d4b4e8db3abddb0f116c6ccfc503d0cbdbb9ee8faacddad1b679ec12e99  cpython-3.12  https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.12.16+20261110-x86_64-unknown-linux-gnu-install_only.tar.gz
+
+# --- directives ----------------------------------------------------------------
+# @python-lock     the hash-pinned closure the eval venv is built from
+#                  (scripts/pydeps.sh install, --require-hashes). The runner
+#                  imports openai; nothing else in evals/ needs a package.
+# @python-imports  what must import in the eval venv (the stdlib is checked too)
+# @system          required, never installed by us (no sudo, no system dirs):
+#                  macOS: Xcode Command Line Tools (`xcode-select --install`)
+#                  give gcc / g++ (clang) and git. Linux: the distro's
+#                  (`sudo apt install build-essential clang git`).
+@python-lock     agents/requirements.lock
+@python-imports  openai httpx
+@system          gcc g++ git
+#
+# @mirrors NAME BASE...  tried in order before the row's url, as <BASE>/<file>;
+#                  the sha256 above is checked whatever served the bytes.
+#                  zig's are from ziglang.org/download/community-mirrors.txt
+#                  (zig asks tools to use them); on 2026-11-16 ziglang.org
+#                  served 5 KB/s and these 7-9 MB/s.
+@mirrors zig     https://ziglang.freetls.fastly.net https://pkg.hexops.org/zig https://zig.linus.dev/zig

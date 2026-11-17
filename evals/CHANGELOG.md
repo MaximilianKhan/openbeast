@@ -1,5 +1,107 @@
 # Eval suite changelog
 
+## v5.0, zig pack variants: v1 back in production, v2 by switch (2026-11-16)
+
+The fix for #188. That change put the v2 bytes in `agents/packs/zig-0.16.md`.
+`MEASURED_SHA256` still named v1, so production served no zig pack at all.
+The measured v1 bytes are restored there (@`5cdf4b64`; production serves
+them again). v2 now lives at `agents/packs/zig-0.16-v2.md` (@`ed18f83e`).
+An eval run picks one with `OPENBEAST_PACK_VARIANT=v1|v2`: the default is
+v1, and an unknown name aborts. The choice is recorded as
+`harness.pack_variant`, and the file's bytes are in `pack1-<sha8>`.
+
+- **Era effect:** default packs-on runs measure v1 + the host pack again.
+  That pack1 component differs from #188's v2 + host pack, and from the
+  pre-#188 v1-only component.
+- **To measure v2 + the host pack:** `BEAST_PACKS=1 OPENBEAST_PACK_VARIANT=v2`.
+- `HARNESS_VERSION` and the base era are unchanged.
+
+## v5.0, the harness host provisions its own toolchains (2026-11-16) — no era move
+
+Same suite, manifest and `HARNESS_VERSION` (harness6). The harness
+fingerprint did not move: nothing in `cache.HARNESS_FUNCTIONS` changed (the
+new checks live in `run_eval()`'s start and its per-unit infra block, and in
+`evals/eval_host.py`, none of which shapes what an agent sees). No era
+component moved either: `system-prompt.md`, `agents/runner.py`,
+`agents/tools.py`, `SUITE_VERSION` and `vlib.py` are untouched. The pins are
+the versions the units were proven with, so a host that already had them
+(the Mac's Homebrew go1.23.3) keeps its `env1-` component.
+
+- **`evals/toolchains.lock` + `scripts/eval-host.sh check|setup|env|fetch`.**
+  zig 0.16.0, rustc 1.100.0 (rustup 1.29.3 online, the standalone installer
+  offline), go 1.23.3, and a python 3.12.16 eval venv from
+  `agents/requirements.lock`, per platform (darwin-arm64, linux-aarch64,
+  linux-x86_64), sha256-pinned (zig, rust and cpython reuse the ark
+  catalog's pins; a test holds them equal). `setup` installs into
+  `~/.local/opt/openbeast-eval`, never as root; offline from an ark drive or
+  a `fetch` mirror with `--from`.
+- **Live runs provision.** `run_eval.py`, `profile.py` and
+  `benchmark_all.py` run the check (then setup) before the validator
+  toolchain is pinned, put the prefix first on PATH and re-exec under the
+  eval venv. `--no-provision` / `OPENBEAST_EVAL_NO_PROVISION=1` only report;
+  `--cache-only` is untouched. `profile.py` preflight refuses a host the
+  check still fails.
+- **A broken interpreter never scores.** A live `run_eval` refuses to start
+  when its python cannot import the stdlib and the runner's packages. An
+  agent that dies at interpreter startup is a new infra reason,
+  **`interpreter_error`**: not cached, not scored (`scoring.INFRA_REASONS`,
+  `ablation.INVALID_REASONS`, an incomplete L0 for `profile --resume`), and
+  a forced re-check of the interpreter aborts the run when it is broken.
+  The 2026-11-16 incident: 22 units scored as FAILs (`docs/HARNESS_NOTES.md`).
+
+## v5.0, zig pack v2 + host pack + Rust edition fix (2026-11-16) — base era unchanged
+
+Evidence: a per-language failure taxonomy of GLM-5.3-Flash's v5 runs
+(L0, L12, arms A and B; 153 failed units). Only zig fails for lack of
+knowledge. Host friction (macOS/BSD userland and libc) cost about 95 turns.
+Notes G19-G21 are in `docs/HARNESS_NOTES.md`; the design is in
+`docs/LANG_AWARENESS_PLAN.md` §5.1.
+
+**Era effects.** `HARNESS_VERSION` stays harness6: none of
+`cache.HARNESS_FUNCTIONS` changed, and `packs_flag`/`ArmCtx` are not among
+them. The base era does not move either, because `agents/runner.py`,
+`agents/tools.py` and `system-prompt.md` are untouched. Packs-OFF rows are
+therefore unaffected, except the five Rust units below. What moves:
+
+- **The packs component** (`pack1-<sha8>`, packs-on arms only). The zig
+  pack's bytes changed, and the component now also hashes the host pack.
+  With a non-empty host pack, EVERY unit of a packs-on arm carries it, not
+  only zig units. Old packs-on rows do not replay.
+- **The escalation component** (`esc1-…`, escalate arms only).
+  `agents/lang/escalate-index.json` and the zig claim set were regenerated
+  for the 14 new OLD fixtures.
+- **Five Rust units' task hashes** (36_black_scholes_e, 122_gemm_blocked_d,
+  123_nbody_e, 158_karatsuba_bytes_e, 159_ntt_convolution_e). Their task
+  text changed, so their old rows do not replay in any arm.
+
+Changes:
+
+- **Zig pack v2** (`agents/packs/zig-0.16.md` @`ed18f83e` in #188; moved to
+  `zig-0.16-v2.md` by the entry above, 1,959/2,000
+  tokens). Five new curated bullets: `Thread.spawn(config, f, args_tuple)`,
+  `ResetEvent`/`Mutex` → `std.Io.Event`/`std.Io.Mutex`, Io file-method
+  arity (`writeStreamingAll`, `openFile`, `stdin()`, `reader(io, &buf)`),
+  `@import("std")` and `while (c) : (i += 1)`, and the lint errors. Each has
+  OLD/NEW fixtures in `tests/fixtures/zig016/`, and OLD fixtures now pin
+  the expected error. The generated digest went from 35 lines to 18.
+  `MEASURED_SHA256` is unchanged: production serves no zig pack until an
+  eval arm measures v2.
+- **Host pack** (`agents/lang/host_pack.py`). It is probed from the tool
+  host when `packs_flag` runs, and every packs-on unit gets it (zig units
+  get it after the zig pack, in one `--context-file`). Results gain
+  `harness.packs.host` and `harness.host_pack`. A GNU/glibc host probes no
+  gaps and gets nothing.
+- **`pack_context.pack_problem`** requires the generated-section header for
+  zig only. A non-zig pack in `PACK_FILES` no longer aborts `--packs`.
+- **Rust `--edition 2021`.** Five v5 Rust variants said "Idiomatic Rust
+  2021+", but their validators compiled with bare `rustc -O`, which is
+  edition 2015 (`try_into` without an import failed in three runs, and push
+  diagnostics already compile with `--edition 2021`). Task text and
+  validator now both say `rustc -O --edition 2021`, as 167_e and 168_e
+  already did. All five re-proven with `tests/prove_task.py`.
+  163_bigint_divmod_e also compiles with bare `rustc`, but its text claims no
+  edition, so there is no contradiction and it is unchanged.
+
 ## v5.0, harness batch G9/G13/G15/G16 + agent-switch cache key (2026-11-16) — era roll
 
 Same suite, manifest and `HARNESS_VERSION` (harness6): the harness
