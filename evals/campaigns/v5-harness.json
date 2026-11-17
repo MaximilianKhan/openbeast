@@ -1,0 +1,58 @@
+{
+  "campaign": "v5-harness",
+  "format": 1,
+  "description": "The v5 harness campaign first run on GLM-5.3-Flash (2026-11-16): six full v5 runs, each one change on top of an earlier arm, compared per unit against the model's L0 profile and the Claude Opus 5.5 reference ledger. Runbook: docs/MODEL_CAMPAIGN.md.",
+  "common": {
+    "args": ["--suite", "v5", "--no-cache", "--reasoning-budget", "0"],
+    "env": {
+      "OPENBEAST_EVAL_ENV_ERA": "1",
+      "BEAST_ASSIST": "0", "OPENBEAST_DIAGNOSTICS": "0",
+      "BEAST_PACKS": "0", "OPENBEAST_PACKS": "0",
+      "BEAST_ESCALATE": "0", "OPENBEAST_ESCALATE": "0",
+      "OPENBEAST_AGENT_THINKING": "", "OPENBEAST_AGENT_SEED": "",
+      "OPENBEAST_AGENT_VERIFY_DONE": "0", "OPENBEAST_DIAG_EDIT_HINT": "0",
+      "OPENBEAST_AGENT_ENV_BLOCK": "0", "OPENBEAST_AGENT_WALL_WARN": "0"
+    },
+    "requires": {"flags": ["--turns-per-wall-s", "--seed", "--thinking"]}
+  },
+  "preflight": {
+    "host_check": "scripts/eval-host.sh check"
+  },
+  "rerun_lost": {"rounds": 1, "max_lost_fraction": 0.05},
+  "arms": [
+    {"id": "A", "label": "runner v2",
+     "note": "The merged default runner (G1-G4, G8, G11): the harness every later arm builds on.",
+     "args": [], "env": {}},
+    {"id": "B", "base": "A", "label": "+ wall-scaled turns",
+     "note": "One turn per 15 s of the unit's wall (medium 40, hard 60, xl 100): the L0 audit found most failures ended on the turn cap at 10-30% of their wall (G1).",
+     "args": ["--turns-per-wall-s", "15"]},
+    {"id": "C", "base": "B", "label": "+ thinking (wall x2, same turns)",
+     "note": "Per-request thinking on. --wall-scale 2 doubles the wall and keeps B's turns, so the contrast is thinking, not lost time (#186).",
+     "args": ["--thinking", "on", "--wall-scale", "2"],
+     "requires": {"flags": ["--wall-scale"]}},
+    {"id": "D", "base": "B", "label": "+ diagnostics, edit hint, verify-done",
+     "note": "B's budget with push diagnostics (G14), the edit-not-rewrite hint (G13) and the test-before-done nudge (G9). Packs and escalation stay off.",
+     "env": {"BEAST_ASSIST": "1", "OPENBEAST_DIAGNOSTICS": "1",
+             "OPENBEAST_DIAG_EDIT_HINT": "1", "OPENBEAST_AGENT_VERIFY_DONE": "1"},
+     "requires": {"env": ["OPENBEAST_DIAG_EDIT_HINT", "OPENBEAST_AGENT_VERIFY_DONE"]}},
+    {"id": "E", "base": "D", "label": "+ packs, env block, wall warnings (+ thinking iff C > B)",
+     "note": "D plus the language packs (only worth it where the per-language taxonomy shows knowledge failures), the first-turn environment block (G19) and wall-clock warnings (G20); thinking on, at wall x2, only if C beat B.",
+     "env": {"BEAST_PACKS": "1", "OPENBEAST_PACKS": "1",
+             "OPENBEAST_AGENT_ENV_BLOCK": "1", "OPENBEAST_AGENT_WALL_WARN": "1"},
+     "requires": {"env": ["OPENBEAST_AGENT_ENV_BLOCK", "OPENBEAST_AGENT_WALL_WARN"]},
+     "apply_decisions": ["thinking"]},
+    {"id": "F", "base": "B", "label": "B under --seed 1 (noise)",
+     "note": "A Spark server that gets no seed uses a fixed one, so every run is one deterministic draw. B again under another seed: its flips against B are the single-draw noise floor.",
+     "args": ["--seed", "1"],
+     "noise_of": "B"}
+  ],
+  "decisions": {
+    "thinking": {
+      "compare": ["C", "B"], "op": ">",
+      "then": {"args": ["--thinking", "on", "--wall-scale", "2"],
+               "requires": {"flags": ["--wall-scale"]}},
+      "else": {}
+    }
+  },
+  "baselines": ["L0"]
+}

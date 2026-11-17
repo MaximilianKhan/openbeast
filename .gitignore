@@ -27,6 +27,8 @@ __pycache__/
 
 # Eval results (generated, not checked in)
 evals/results/
+# evals/campaign.py rerun-lost sub-manifests (temporary, per campaign)
+evals/suites/_lost-*.json
 
 # Caches
 .cache/
