@@ -2,7 +2,10 @@
 
 **Status, 2026-11-16: plan only. Revised 2026-11-17** to the state after
 PRs #175–#192 (see [What changed since the first draft](#what-changed-since-the-first-draft-2026-11-17)).
-Nothing in the website repo was changed, committed or deployed. This page
+**Decided 2026-11-17:** Max answered Q5–Q10 ([section 13](#13-questions-for-max));
+the `/benchmarks/` page ships now with the v5 ladder and is updated again
+when arm E lands. Until then nothing in the website repo was changed,
+committed or deployed. This page
 says what openbeast.ai claims today, what is true today, and what to build so
 the site matches OpenBeast at **v2.0.0**.
 
@@ -67,7 +70,7 @@ Since then:
 - **Product fixes worth a line:** Regenerate in Open WebUI now gives a new
   answer on the pair (a random seed per unseeded chat, #181), and the eval
   host installs offline from an ark drive (#189).
-- **New accuracy rules** A10–A13 (single seed, the reference ceiling, withheld
+- **New accuracy rules** A10–A13 (single seed, the gold standard (A11, reworded by Q5), withheld
   units, harness gains are system claims), new stale claims S39–S46, two new
   diagrams (D9 the arm ladder, D10 the harness loop), and
   [questions for Max](#13-questions-for-max).
@@ -266,12 +269,22 @@ reads them.
   comes from a different seed (the campaign's seed arm), which has not run
   yet. Print "single seed" beside every arm number and delta, and no
   percentage-improvement headline ("+104%") until the seed arm lands.
-- **A11. The reference ceiling is not a peer.** Claude Opus 5.5 ran in Claude
-  Code's own scaffold: its own tools, no turn cap, wall x2 (68/71 at the 1x
-  wall), the solver never saw validator output, integrity scan clean
-  (`OPUS-REF`). Label it "reference ceiling, different scaffold", keep it
-  unranked and visually apart (its own row style, never the same bar
-  colour), and print no ratio against it ("GLM reaches 75% of Opus").
+- **A11. The gold standard, not a peer (Max, Q5, DECIDED 2026-11-17).**
+  Claude Opus 5.5 ran in Claude Code's own scaffold: its own tools, no turn
+  cap, wall x2 (68/71 at the 1x wall), the solver never saw validator output,
+  integrity scan clean (`OPUS-REF`). It is the **gold standard** every local
+  model is measured against: "how close local gets to frontier", and an
+  indicator of what a frontier model can confidently delegate to local AI.
+  Rules: label it "gold standard: Claude Opus 5.5, its own scaffold"; keep
+  it **unranked** and visually apart (its own row style, never the same bar
+  colour as a local row, never a rank number); print each local row's
+  **fraction of the gold standard** as its SCORE divided by the gold
+  standard's SCORE (100.0 today, so `GLM-C` is 78.2%), always beside the
+  absolute numbers (53/71, 78.2) and "single seed" (A10); say "of the gold
+  standard", never "GLM matches / approaches / is X% as smart as Opus", and
+  never a delta between two fractions as a headline (A10 still bars
+  "+104%"-style improvement claims). Any fraction against the 1x-wall run
+  (68/71) is a different, unpublished number: do not mix them.
 - **A12. Withheld units stay withheld.** `GLM-C` passed 122_gemm_blocked_b,
   but in that unit the agent read Claude Code workflow journals, the harness
   source and the eval cache, which the sandbox did not block. The board
@@ -363,20 +376,24 @@ Every number below cites its v5 board run (rule A1); each is single seed
    | B | + turns scaled to each unit's wall | **36/71** | 60.4 | `GLM-B` |
    | C | + thinking on (wall x2, B's turns) | **53/71** scored (54 raw, A12) | 78.2 | `GLM-C` |
    | E | + diagnostics, verify-done, packs, env block, wall warnings | [V5-PENDING] | [V5-PENDING] | — |
-   | ceiling | Claude Opus 5.5, its own scaffold (A11) | **71/71** (68/71 at 1x wall) | 100.0 | `OPUS-REF` |
+   | gold standard | Claude Opus 5.5, its own scaffold (A11) | **71/71** (68/71 at 1x wall) | 100.0 | `OPUS-REF` |
+
+   Each local rung also prints its **fraction of the gold standard** (Q5,
+   A11): L0 48.2%, A 56.9%, B 60.4%, C 78.2%.
 
    Source for every row: [`docs/RESULTS.md`, "v5 leaderboard"](RESULTS.md#v5-leaderboard--best-configuration-per-model), "Every v5 configuration
    measured", at a pinned commit.
 
    Caption: "Single seed. Each rung is a system: host, engine, weights and
-   harness. The ceiling ran in a different scaffold and is not ranked." Link
-   `/research/harness/` for how each rung was found and measured.
+   harness. The gold standard ran in its own scaffold: it is the yardstick,
+   not a ranked peer." Link `/research/harness/` for how each rung was found
+   and measured.
 3. **Best-per-model board,** generated, never hand-copied: one row per model
    at its best configuration, from `evals/v5_board.py` (the marker block it
    writes into `docs/RESULTS.md`), synced by `scripts/sync-results.mjs`
    (6.3). Experiment-arm flags shown as chips (thinking, wall x2,
-   wall-scaled turns, packs, diagnostics). Opus as an unranked reference row,
-   set apart. Qwen3.8 27B Uncensored MTP (the rig's default) and Qwen3.6 27B
+   wall-scaled turns, packs, diagnostics), and a "of gold standard" column.
+   Opus as the unranked gold-standard row, set apart. Qwen3.8 27B Uncensored MTP (the rig's default) and Qwen3.6 27B
    (v4 #1): "not yet run on v5".
 4. **Every configuration,** collapsed per model: GLM L0, A, B, C (E when it
    lands), each with its flags and run date, so the best row never hides the
@@ -594,7 +611,11 @@ Every number single seed (A10), every claim about one model only (A13).
    harness, or does one harness with a few per-model knobs serve
    GLM-5.3-Flash, Qwen3.8 and DeepSeek v4.1 Flash? Status: one model
    measured; the cross-model arms are next. A status chip (IN PROGRESS), no
-   conclusion, no draft PDF until Max says so.
+   conclusion yet. **Q7 decided:** the paper is public and will be posted on
+   the site; give it a paper page like the beast-rank paper's
+   (`/research/<slug>/`, synced by `sync-paper.mjs` at a pinned commit, the
+   same pending guard) as soon as a build exists, and link it from
+   `/benchmarks/` and `/research/`.
 7. **Prior art, credited:** Factory's Droid, read from public sources only
    (nobody ran it): environment discovery at startup, tool design, short
    timeouts, plan reminders and a per-model adapter, with per-scenario text
@@ -658,7 +679,8 @@ page an operator or a lab could follow.
   capability cards plus the rig card fit a 4-column grid.
 - **Evidence:** shrink to the v5 story in one band: "71 proven units.
   GLM-5.3-Flash on the Spark pair: 26/71 daily config, 53/71 with a better
-  harness and thinking. Reference ceiling 71/71, different scaffold. Single
+  harness and thinking: 78.2% of the gold standard (Claude Opus 5.5, 71/71,
+  its own scaffold; Q5). Single
   seed." Each number links its board run (`GLM-L0`, `GLM-C`, `OPUS-REF`);
   the `beast` row stays [V5-PENDING] until Qwen3.8 runs v5. Link
   `/benchmarks/` and `/research/harness/`. Move the v4 table, the zig trail
@@ -787,8 +809,10 @@ MDE line from `evals/README.md`.
   visible. It shows honestly what v5.0 does and does not cover.
 - **Per-category bars** per system, once there are at least two v5 rows.
 - **The arm ladder (D9):** GLM's L0 → A → B → C → E as a step chart, the
-  reference ceiling as a dashed line labelled "reference, different
-  scaffold". Rungs only, no trend line, no percentages (A10).
+  gold standard as a dashed line at 100% labelled "gold standard: Claude
+  Opus 5.5, its own scaffold" (Q5). Each rung shows its count, SCORE and
+  fraction of the gold standard; no trend line, no improvement percentages
+  between rungs (A10).
 - **Serving chart on `/hardware/` only:** single-stream vs 4-stream
   aggregate tok/s, prose vs code, for the pair. Never on the same chart as a
   capability score.
@@ -837,8 +861,9 @@ ladder can print them (S39).
   its best row thinking on at 2x wall (S40); Qwen runs a 20,480-token
   reasoning budget; a gate with the default in-flight cap clamps `--jobs`
   (say what was used).
-- No "GLM matches/approaches Opus", no percentage of the ceiling, no Opus
-  row in the ranking (A11).
+- No "GLM matches/approaches Opus", no ranked Opus row (A11). The fraction
+  of the gold standard is allowed (Q5) and only in A11's form: SCORE over the
+  gold standard's SCORE, beside the absolute numbers, single seed.
 - No "the harness doubles a model's score": one model, one seed (A10, A13).
 - No 54/71 without its footnote (A12).
 - No claim that thinking is free: about 2.3x B's time per unit on GLM.
@@ -887,7 +912,7 @@ existing palette; no real addresses (rule C1).
 | D6 | **Weight streaming** | experts in host RAM, hot experts in a VRAM cache, the 75% / 90% memory scopes | `/hardware/` |
 | D7 | **How a v5 unit is proven** | task → prover arms (ref, wrong, empty, leak, slow, scale2, lint, toolchain) → adversarial rounds → shipped; then L0 / L1 / L2 arms | `/benchmarks/` |
 | D8 | **v5 coverage heatmap** | 12 × 7 grid, 46 cells filled | `/benchmarks/` |
-| D9 | **The arm ladder** | L0 → A → B → C → E as rungs, each labelled with its one change (runner v1 / runner v2 / wall-scaled turns / thinking / diagnostics + packs + env block + wall warnings) and its count (26, 31, 36, 53 with "54 raw" footnoted, E PENDING); the Opus ceiling as a dashed line at 71 labelled "reference, different scaffold"; "single seed" in the caption | `/benchmarks/`, `/research/harness/`, home teaser (compact) |
+| D9 | **The arm ladder** | L0 → A → B → C → E as rungs, each labelled with its one change (runner v1 / runner v2 / wall-scaled turns / thinking / diagnostics + packs + env block + wall warnings) and its count (26, 31, 36, 53 with "54 raw" footnoted, E PENDING); the Opus gold standard as a dashed line at 71 (100%) labelled "gold standard, its own scaffold" (Q5), each rung with its fraction of it; "single seed" in the caption | `/benchmarks/`, `/research/harness/`, home teaser (compact) |
 | D10 | **The harness loop** | one model turn in the middle; around it what the runner adds: turn 1 gets the task, the language packs and the environment block; each tool result comes back with diagnostics (and an edit hint); the runner's notices (turns left, wall clock at 50% / 80%, verify-done when the destination files are missing); the turn and wall budgets scaled to the unit; the sandbox boundary (task dirs in, harness source and eval cache out, the open integrity fix marked) | `/research/harness/` |
 
 ### 7.3 Screenshots to capture
@@ -1042,7 +1067,8 @@ the current state themselves; fix them in the openbeast repo before pinning:
       v2.0.0 tag commit.
 - [ ] Record the 11-16 review totals in a repo doc (A6).
 - [ ] Ask Max the open questions in [section 13](#13-questions-for-max)
-      (S36 replication, S32 model count, C3 app names, Q5–Q10).
+      (S36 replication, S32 model count, C3 app names). Q5–Q10 are
+      decided (2026-11-17).
 - [ ] Add accuracy rules A (A1–A13), B, C to the website repo's `AGENTS.md`.
 - [ ] Fix this plan's own stale copy S39–S46 before it reaches the site.
 - [ ] Build `/benchmarks/` around the v5 story: the ladder (D9), the
@@ -1120,20 +1146,43 @@ Decided:
 
 - **DFlash2: DECIDED 2026-11-16.** Under the hood only; the site says
   "speculative decoding" and never names the drafter (B6).
+- **Q5–Q10: DECIDED 2026-11-17** (below, each with what it changes).
 
-New (2026-11-17):
+Asked 2026-11-17, decided the same day:
 
-- **Q5. The reference ceiling on the site.** Print the Claude Opus 5.5 run
-  at all, and as what? Proposed: "Reference ceiling: Claude Opus 5.5 in
-  Claude Code, a different scaffold, 71/71", unranked (A11).
-- **Q6. Ship the ladder now, or after E and the seed arm?** Proposed: ship
-  L0 → C now with "single seed" on every number, E as [V5-PENDING].
-- **Q7. The harness paper in public.** Working title, and "in progress"
-  only, or a draft? Proposed: a status chip and the question, no draft.
-- **Q8. 53 or 54.** Print the scored 53/71 with the raw 54/71 footnoted
-  (A12), or hold GLM-C off the site until the integrity review finishes?
-- **Q9. Name DeepSeek v4.1 Flash as "next"** on `/research/campaign/`
-  before it has a row?
-- **Q10. The headline host.** With GLM's rows in and no v5 row for `beast`
-  yet, does the home teaser lead with the Spark pair (proposed), and does
-  the hero lede change from the rig to "a GPU box or a pair of DGX Sparks"?
+- **Q5. The reference ceiling on the site. DECIDED (Max): the gold
+  standard.** Claude Opus 5.5 is presented as the **gold standard** every
+  local model is compared against: "how close local gets to frontier", and
+  an indicator of what frontier can confidently delegate to local AI. It is
+  still not ranked as a peer (different scaffold), but it is the yardstick:
+  each local model's score is shown as a fraction of it.
+  *Consequences:* rule A11 becomes "the gold standard, not a peer" and
+  allows the fraction (SCORE over the gold standard's SCORE, beside the
+  absolute numbers, single seed); §6.4 drops "no percentage of the
+  ceiling"; `/benchmarks/` is framed around the gold standard (hero, ladder
+  column, board column, per-language fractions, D9's dashed line at 100%);
+  copy says "gold standard" where it said "reference ceiling". Numbers today
+  (`docs/RESULTS.md` v5 board): L0 48.2%, A 56.9%, B 60.4%, C 78.2% of the
+  gold standard's 100.0.
+- **Q6. Ship the ladder now? DECIDED (Max): yes.** Ship L0 → C now with
+  "single seed" on every number and E shown as pending (in words, not a
+  `[V5-PENDING]` marker, so the production guard stays meaningful); update
+  the page when arm E lands (`v5_board.py --add GLM-E`, then the site).
+- **Q7. The harness paper in public. DECIDED (Max): very public, soon on
+  the site.** The per-model vs unified harness paper gets its own paper page
+  under `/research/` once a build exists (§4.8 item 6). Until then
+  `/benchmarks/` and `/research/harness/` name the question and an IN
+  PROGRESS chip, and say it will be published on the site.
+- **Q8. 53 or 54. DECIDED: print 53/71 as the scored number**, with the
+  footnote "54 raw; 1 unit withheld pending integrity review" (A12). Never
+  54/71 alone.
+- **Q9. Name DeepSeek v4.1 Flash as "next". DECIDED (Max): yes**, on
+  `/benchmarks/` and `/research/campaign/`, as "next", never with a date or
+  a predicted number.
+- **Q10. The headline host. DECIDED: the DGX Spark pair (spark-hydra)
+  leads.** It is live, it holds every v5 row, and DeepSeek v4.1 Flash goes
+  there next. The 5090 rig (`beast`) stays a featured secondary host until
+  it has v5 rows. *Consequences:* the home evidence teaser, `/benchmarks/`
+  and `/hardware/` lead with spark-hydra; the home hero lede becomes "one
+  GPU box or a pair of DGX Sparks" (§5.1); the rig plate stays, as the
+  second host.
