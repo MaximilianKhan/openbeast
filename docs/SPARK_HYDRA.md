@@ -72,18 +72,20 @@ itself listens on spark-1's loopback only.
    prints once. Copy it straight into a 0600 file on the device (on the Mac:
    `~/.config/openbeast/spark-hydra-gate.key`), never into a shared log:
    `cd ~/openbeast && ./scripts/clients.sh enroll macbook --label "Max's MacBook"`.
-3. **Mac or Linux client mode** ([F2](#f2-client-mode-setup-clientsh)). This
+3. **Mac or Linux client mode** ([F2](#f2-client-mode-one-or-several-rigs)). This
    gives OpenCode on the client, with the tools acting on the client's own
-   files:
+   files, and switches between this pair and the `beast` rig:
 
    ```bash
-   ./scripts/setup-client.sh --host spark-1.tail4109f9.ts.net --api-key-stdin < ~/.config/openbeast/spark-hydra-gate.key
-   openbeast-client status                     # reads :8444/api/slot
-   cd <any project> && opencode                # pick an 'openbeast-rig' model
+   ./scripts/setup-client.sh --host spark-1.tail4109f9.ts.net --name spark-hydra --api-key-stdin < ~/.config/openbeast/spark-hydra-gate.key
+   openbeast-client status                     # reads :8444/api/slot; "active rig: spark-hydra"
+   openbeast-client rigs                       # every registered rig; use <rig> switches
+   cd <any project> && opencode                # pick an 'openbeast-rig' (active) or 'openbeast-<rig>' model
+   scripts/client-e2e.sh                       # end-to-end check from the Mac
    ```
 
-   On opencode v2, move the `openbeast-tools` entry under `mcp.servers` after
-   each `setup-client.sh` run ([F3](#f3-the-opencode-v2-config-layout-read-this-before-editing)).
+   The opencode v2 layout is written correctly; there is no fix-up any more
+   ([F3](#f3-what-the-client-writes-into-opencode)).
 4. **Raw OpenAI-compatible API** (any tool that takes a base URL and a key).
    Without a key, the gate answers 401:
 
@@ -127,7 +129,7 @@ zig, the docs mirror). G6 also lists what is still pending on the live pair.
 | [C. Weights](#c-weights) | fetch or copy, lock, hard-link into the recipe's HF-cache layout, carry to workers |
 | [D. Inference](#d-inference) | D1 the Mia recipe (what serves today), D2 native TensorFold through `spark-node.sh` / `spark-cluster.sh`, D3 the engine plane |
 | [E. The command center on spark-1](#e-the-command-center-on-spark-1) | bootstrap, `openbeast.conf`, boot units, WebUI admin, tailnet publishing, device keys |
-| [F. The Mac client](#f-the-mac-client) | `setup-client.sh`, the opencode v2 config layout, beast-apps, beast-docs, the eval harness host |
+| [F. The Mac client](#f-the-mac-client) | the "From the Mac" quick reference, `setup-client.sh`, several rigs (`openbeast-client rigs / use`), what opencode gets, `client-e2e.sh`, beast-apps, beast-docs, the eval harness host |
 | [G. Day-2 operations](#g-day-2-operations) | health, logs, restarts, memory, watchdog, the "update everything" checklist, keys, troubleshooting |
 | [H. Fully offline operation](#h-fully-offline-operation) | island and `OFFLINE=true`, what keeps working, staging every artifact |
 | [Reference](#reference) | serving numbers, scaling notes, parity checks, known issues, not done yet |
@@ -347,8 +349,8 @@ on the Mac. One key per device; the eval harness host gets its own.
 
 **15. The Mac client** (the Mac; [F1](#f1-ssh-from-the-mac)–[F4](#f4-beast-apps-external-apps-through-mcp-servers)):
 the ssh config with `HostKeyAlias`, then
-`./scripts/setup-client.sh --host spark-1.tail4109f9.ts.net --api-key-stdin < ~/.config/openbeast/spark-hydra-gate.key`,
-then the opencode v2 fix-up (F3). Offline client install:
+`./scripts/setup-client.sh --host spark-1.tail4109f9.ts.net --name spark-hydra --api-key-stdin < ~/.config/openbeast/spark-hydra-gate.key`,
+then `scripts/client-e2e.sh` (F2). Offline client install:
 [BEAST_APPS.md](BEAST_APPS.md) § Offline client.
 
 **16. zig 0.16.0 and the other language toolchains, optional** (spark-1, and
@@ -1708,6 +1710,21 @@ recover it.
 
 ## F. The Mac client
 
+**From the Mac: quick reference.** Every command here runs on the Mac.
+
+```bash
+openbeast-client status                      # green = env, venv, tailnet, the active rig's :8443 + key, /api/slot, search, opencode
+openbeast-client rigs                        # all rigs, * = active, state from each rig's :8444/api/slot
+openbeast-client use spark-hydra             # point opencode, the tools and web_search at the pair
+openbeast-client use beast                   # ... or at the 5090 rig (refused, nothing changed, while it is down)
+openbeast-client rig add beast --api-key-stdin < ~/.config/openbeast/beast-gate.key   # beast's device key, once
+cd <any project> && opencode                 # model picker: openbeast-rig/… (active) or openbeast-<rig>/…
+opencode run -m openbeast-spark-hydra/GLM-5.3-Flash-EXL3 "…"   # one-shot, a chosen rig
+openbeast-client agent "task"                # the OpenBeast CLI agent, tools here, thinking on the active rig
+scripts/client-e2e.sh                        # the end-to-end check (F2), PASS/FAIL per line
+curl -s https://spark-1.tail4109f9.ts.net:8444/api/slot | python3 -m json.tool   # raw discovery, no key
+```
+
 ### F1. ssh from the Mac
 
 NVIDIA Sync's `.local` names resolve only on the home LAN. For away from home,
@@ -1733,76 +1750,194 @@ on the **Mac** (`/Users/…`) before ssh sends it. Write
 `ssh spark-1 'cat ~/.config/openbeast/x'`. The same goes for `$HOME`, globs and
 `&&` chains.
 
-### F2. Client mode (`setup-client.sh`)
+### F2. Client mode: one or several rigs
+
+The Mac talks to **two rigs**: `spark-hydra` (this pair, through spark-1's
+gate) and `beast` (the RTX 5090 llama.cpp rig). Client mode installs once;
+after that, rigs are added, listed and switched with `openbeast-client`.
+
+**Install** (once, from a checkout on the Mac):
 
 ```bash
 cd ~/Documents/projects/openbeast          # a checkout on the Mac
-./scripts/setup-client.sh --host spark-1.tail4109f9.ts.net --api-key-stdin < ~/.config/openbeast/spark-hydra-gate.key
-openbeast-client status                     # or scripts/client.sh status: reads :8444/api/slot
+./scripts/setup-client.sh --host spark-1.tail4109f9.ts.net --name spark-hydra \
+  --api-key-stdin < ~/.config/openbeast/spark-hydra-gate.key
+openbeast-client status                     # green; "active rig: spark-hydra"
 ```
 
-What you get:
+`--name` is optional: without it the rig is named after the key file that
+holds the same key (`spark-hydra-gate.key` → `spark-hydra`), else after the
+host's first label. The installer also registers your own tailnet peer named
+`beast` (same tailnet, same owner; never another user's), keyless.
+
+**Add a rig's key, list, switch:**
+
+```bash
+openbeast-client rig add beast --api-key-stdin < ~/.config/openbeast/beast-gate.key   # key → 0600 file
+openbeast-client rig add beast --key-file ~/.config/openbeast/beast-gate.key          # or reference a file in place
+openbeast-client rig add lab --host lab.tail4109f9.ts.net --api-key-stdin < lab.key   # a new rig
+openbeast-client rigs                       # every rig: state from its :8444/api/slot, model, slots, key
+openbeast-client use beast                  # switch: env + opencode.json, atomically; catalog refreshed
+openbeast-client use spark-hydra            # and back
+openbeast-client use beast --force          # switch even though beast is down / rejects the key
+openbeast-client rig remove lab             # the key file is kept
+openbeast-client rig detect                 # register the tailnet's 'beast' if it appeared later
+openbeast-client refresh-config             # re-probe every rig, rewrite the catalog
+```
+
+`openbeast-client rigs` on the Mac, 2026-11-17 (beast offline, no key yet):
+
+```
+    RIG            HOST                           STATE        MODEL                    SLOTS  KEY
+    beast          beast.tail4109f9.ts.net        offline      ?                        -      NONE
+  * spark-hydra    spark-1.tail4109f9.ts.net      healthy      GLM-5.3-Flash-EXL3       0/4    ~/.config/openbeast/spark-hydra-gate.key
+```
+
+**What a switch does.** `use <rig>` probes every rig in parallel (`/api/slot`,
+public; `/v1/models` with that rig's key). If the target answers nothing, is
+down, or rejects the key, it prints why, says `active rig unchanged`, changes
+**nothing**, and exits 1. `--force` switches anyway. Otherwise it rewrites,
+each by an atomic rename at 0600:
+
+- `~/.openbeast-client.env`: `OPENBEAST_RIG`, the inference, slot and search
+  URLs, the key. Lines it does not own (`OPENBEAST_SEARXNG_SECRET`, your own)
+  are kept.
+- `~/.config/opencode/opencode.json`: the providers, the `openbeast-tools`
+  environment and the default model (F3). The previous file is kept as
+  `opencode.json.openbeast-prev`.
+- `~/.config/openbeast/rigs.json`: the registry, `active` set.
+
+**The registry**, `~/.config/openbeast/rigs.json` (0600, `scripts/lib/client_rigs.py`):
+per rig the host, the URLs, the **path** of its 0600 key file (never the
+key), the default model (follows what the rig serves, unless pinned with
+`rig add <rig> --model <id>`), an optional `output_limit`, and the last
+`/api/slot` answer, so an offline rig keeps its catalog. Keys never go on
+argv and are never printed. A single-rig install made before this (an env
+file, no registry) is migrated on the first `openbeast-client` command.
+
+**Which rig does what.** The **active** rig gets the tool arsenal's own
+traffic: `web_search` (its `:8889`) and sub-agents (`start_agent`). In
+opencode, any registered rig's model can be picked per session (F3). Tools
+always run on the Mac.
+
+What you get, whichever rig is active:
 
 - OpenCode on the Mac, with the full tool arsenal running **locally**: a stdio
   MCP subprocess (`agents/mcp_server.py`) in `~/.openbeast-client/venv`.
   `bash`, `edit_file` and the rest act on the Mac's files.
-- Inference from `https://spark-1…:8443/v1` through the gate.
-- `web_search` through `:8889`. The alternatives are `--local-search` or
-  `--no-search`.
+- Inference from the rig's `:8443/v1` (on the pair: through the gate).
+- `web_search` through the rig's `:8889`. The alternatives are
+  `--local-search` or `--no-search` (setup), or `rig add <rig> --search local|none`.
 
-File contents the agent reads are sent to the pair as model context. The
+File contents the agent reads are sent to the rig as model context. The
 promise is "nothing leaves the tailnet", not "nothing leaves the Mac".
 
-### F3. The opencode v2 config layout (read this before editing)
+**Testing from the Mac.** `scripts/client-e2e.sh` checks the whole path
+against the real active rig with a few short requests, one PASS/FAIL line
+each, exit status = failures:
+
+```bash
+scripts/client-e2e.sh --expect-model GLM-5.3-Flash-EXL3 --expect-slots 4
+scripts/client-e2e.sh --skip d               # without the switching test
+scripts/client-e2e.sh --keep                 # keep the temp project + opencode logs
+```
+
+| | checks |
+|---|---|
+| (a) | `openbeast-client status` green, names the active rig, the model and the slot count |
+| (f) | opencode accepts the config: `opencode models` lists `openbeast-rig/<model>` and `openbeast-<rig>/<model>`; opencode's own parse of the row has `limit.context` = `/api/slot` `model.ctx` |
+| (b) | `opencode run` in a fresh temp dir: the agent writes a python file with `openbeast-tools_write_file` and runs it with `openbeast-tools_bash`; the file must exist **on the Mac** and print the expected line (tools local, inference on the rig) |
+| (c) | `web_search` through the rig's SearXNG (the MCP tool, called directly) |
+| (d) | `use <other rig>`: refused with nothing changed when it is offline, `--force` switches and `status` fails gracefully, `use <rig>` comes back green (a real round trip when the other rig is up). opencode.json is backed up first (`opencode.json.bak-e2e-<time>`, 0600) and a trap restores the rig |
+| (e) | the `openbeast-tools` MCP server lists its tools |
+
+### F3. What the client writes into opencode
 
 The Mac runs **opencode v2.0.25**. Its global config is
-`~/.config/opencode/opencode.json`.
-
-**Everything MCP must live under `mcp.servers.<name>`.** opencode v2 does
-**not** merge a v1 entry (`mcp.<name>`, with `enabled: true`) with v2 entries
-(`mcp.servers.<name>`). A file that mixes them loses the v1 ones. The v2 server
-schema is `additionalProperties: false`, so v1's `enabled` key is also invalid
-there.
-
-The working layout on the Mac (2026-11-15; values elided):
+`~/.config/opencode/opencode.json`. Client mode writes only its own entries,
+and leaves everything else in the file alone:
 
 ```jsonc
 {
-  "$schema": "https://opencode.ai/config.json",
-  "mcp": {
-    "servers": {
-      "openbeast-tools": { "type": "local", "command": ["…/.openbeast-client/venv/bin/python3", "…/agents/mcp_server.py"],
-                           "environment": { "OPENBEAST_AGENT_INFERENCE_URL": "https://spark-1.tail4109f9.ts.net:8443/v1", "…": "…" } },
-      "mobilebuildmcp":  { "type": "local", "command": ["…"], "environment": {}, "codemode": false }
-    }
+  "mcp": { "servers": {
+    "openbeast-tools": { "type": "local", "codemode": false,
+      "command": ["…/.openbeast-client/venv/bin/python3", "…/agents/mcp_server.py"],
+      "environment": { "OPENBEAST_AGENT_INFERENCE_URL": "<active rig>/v1", "SEARXNG_URL": "<active rig>:8889", "OPENBEAST_API_KEY": "…" } } } },
+  "provider": {
+    "openbeast-rig":         { "name": "OpenBeast rig (active: spark-hydra, …)", "options": { "baseURL": "…", "apiKey": "…" }, "models": { … } },
+    "openbeast-spark-hydra": { "name": "OpenBeast spark-hydra (spark-1.tail4109f9.ts.net)", "options": { … },
+                               "models": { "GLM-5.3-Flash-EXL3": { "name": "GLM-5.3-Flash-EXL3  [live on spark-hydra]",
+                                                                    "limit": { "context": 1048576, "output": 32768 } } } },
+    "openbeast-beast":       { … }                       // once beast has a key
   },
-  "provider": { "openbeast-rig": { "npm": "@ai-sdk/openai-compatible", "options": { "baseURL": "…:8443/v1", "apiKey": "<the device key>" }, "models": { … } } },
-  "model": "openbeast-rig/…",
-  "small_model": "openbeast-rig/…"
+  "model": "openbeast-rig/GLM-5.3-Flash-EXL3",
+  "small_model": "openbeast-rig/GLM-5.3-Flash-EXL3"
 }
 ```
 
-- `codemode: false` turns off v2's Code Mode, so the model gets the tools
-  directly. beast-apps writes it.
-- The provider id is `openbeast-rig` and the MCP key is `openbeast-tools`.
-  These are distinct so the checkout's own `./opencode.json` (`llama-cpp`,
-  `local-tools`) cannot shadow them when you run `opencode` from inside the
-  repo.
+- **One provider per rig**, `openbeast-<rig>`, for every rig with a key (a
+  keyless rig gets none until `rig add <rig> --api-key-stdin`: it would only
+  401). **`openbeast-rig` is the active rig**, the id every earlier install
+  and doc uses; `use` repoints it. Pick per session in the TUI's model
+  picker, or `opencode run -m openbeast-beast/<model> …`.
+- **Model rows.** A llama.cpp rig (beast) serves any id (llama-server ignores
+  it), so it carries the checkout's catalog plus its live row. Any other
+  backend (the pair's TensorFold, vLLM, hydra) gets exactly the ids it serves:
+  a llama alias there is a 404 or silently the same model.
+- **Limits.** opencode's `limit` takes `{context, output}` on the model row
+  (both required; the v2 file layout still reads it from `provider.<id>.models`,
+  checked with `opencode debug config` on 2026-11-17). `context` is the rig's
+  `/api/slot` `model.ctx`: 1,048,576 on the pair, beast's `-c`. That is the
+  window of **one conversation**. `capacity.ctx_total` (1,986,560 on the pair)
+  is **one** KV pool shared by the 4 slots, not 4 x 1M. `output` is 32768:
+  thinking is on by default at the gate and opencode has no reasoning-tail
+  recovery, so it gets more headroom than the runner's 16384
+  `AGENT_MAX_TOKENS`. Per rig: `openbeast-client rig add spark-hydra --output-limit 16384`
+  (`0` = back to the default).
+- **The MCP layout.** Everything MCP lives under `mcp.servers.<name>`:
+  opencode v2 does **not** merge a v1 entry (`mcp.<name>` with
+  `enabled: true`) with v2 ones, and a mixed file loses the v1 ones.
+  `setup-client.sh` writes the v2 shape when `opencode --version` is 2.x or the
+  file already has `mcp.servers`, and moves other v1 entries in with it (so no
+  hand fix-up after a run any more). `codemode: false` turns off v2's Code Mode
+  for our server: the model gets `openbeast-tools_bash`,
+  `openbeast-tools_write_file` and the rest as direct tools, which is what the
+  evals and the conformance checks measure.
+- The provider ids `openbeast-*` and the MCP key `openbeast-tools` are distinct
+  from the checkout's own `./opencode.json` (`llama-cpp`, `local-tools`), so
+  running `opencode` inside the repo cannot shadow them.
 - Permissions in v2 are a list:
   `permissions: [{action: "<server>_<tool>", resource: "*", effect: "ask"}]`.
   The last match wins.
 
-**Known mismatch (needs a code fix):** `scripts/setup-client.sh` still writes
-the v1 shape, `mcp["openbeast-tools"] = {…, "enabled": true}`. On opencode v2,
-re-running it produces exactly the mixed file described above. Until it learns
-v2, after any `setup-client.sh` run on a v2 Mac:
+**Reasoning (thinking) output.** GLM streams its thinking as
+`reasoning_content`; opencode's `@ai-sdk/openai-compatible` provider turns it
+into reasoning parts with no extra config (verified 2026-11-17 against the
+pair with thinking on: a reasoning part, then the tool call, then the
+answer). The TUI shows it as a collapsible thinking block;
+`opencode run --thinking` prints it. opencode sends it back as
+`reasoning_content` on the assistant turns of the same session, which the GLM
+template expects for interleaved thinking. Nothing to set per model: no
+`reasoning`/`interleaved` keys are written, and thinking on or off is the
+gate's default (`INFERENCE_THINKING`), not a client setting.
 
-1. Move the entry under `mcp.servers`.
-2. Drop its `enabled` key.
-3. Back up first: `cp ~/.config/opencode/opencode.json ~/.config/opencode/opencode.json.bak-$(date +%s)`.
+**Two opencode v2 behaviors to know:**
 
-`scripts/apps.sh` already detects v1 and v2 and writes the right one
-([BEAST_APPS.md](BEAST_APPS.md) "opencode").
+- `opencode run` sends its **first** request before local MCP servers finish
+  connecting (about 0.8 s), so a one-step prompt may see only opencode's
+  built-in tools; from the second step on, `openbeast-tools_*` are there.
+  Prompts that need the arsenal right away should name the tools (as
+  `client-e2e.sh` does).
+- The TUI and `opencode run` (without `--standalone`) go through opencode's
+  **background service**. It watches its config dir, so `use` is normally
+  picked up; if a running session still shows the old rig, `opencode reload`.
+  On 2026-11-17 `opencode mcp list` printed "No MCP servers configured" while the log
+  (`~/.local/share/opencode/log/opencode.log`) says
+  `mcp connected server=openbeast-tools tools=19` is that service's CLI view,
+  not a broken server: `client-e2e.sh` (e) lists the tools directly.
+
+`scripts/apps.sh` (F4) writes the same v2 layout for the external-app
+servers ([BEAST_APPS.md](BEAST_APPS.md) "opencode").
 
 ### F4. beast-apps: external apps through MCP servers
 
@@ -1943,6 +2078,7 @@ python3 ~/openbeast/agents/island.py status      # online / island, and why
 systemctl --user status spark-hydra-inference openbeast --no-pager
 # from the Mac
 curl -sk https://spark-1.tail4109f9.ts.net:8444/api/slot | python3 -m json.tool | head -30
+openbeast-client status && openbeast-client rigs   # the client's view (F2)
 ```
 
 ### G2. Logs
@@ -2119,9 +2255,9 @@ ones whose "done when" is not yet true.
 | beast-docs mirror | spark-1 | sync + pack on the Mac, `docs.sh unpack` on spark-1 ([H8](#h8-beast-docs-mirror)) | `docs.sh status` lists the sources, none `STALE` |
 | beast-ark | the drive | `DRIVE/ark verify DRIVE`; a maintainer moves pins with `ark.sh update` online ([BEAST_ARK.md](BEAST_ARK.md) §10) | `verify` passes |
 
-**7. Clients** (each client): `openbeast-client update`, then on opencode v2
-re-apply the [F3](#f3-the-opencode-v2-config-layout-read-this-before-editing)
-fix-up. Offline: pull the client's repo from a bundle, then
+**7. Clients** (each client): `openbeast-client update` (it re-probes every
+registered rig and rewrites the catalog, [F3](#f3-what-the-client-writes-into-opencode)),
+then `scripts/client-e2e.sh`. Offline: pull the client's repo from a bundle, then
 `pydeps.sh install --from` a wheelhouse for the client's platform
 ([UPDATING.md](UPDATING.md) "Clients update themselves").
 
@@ -2228,7 +2364,7 @@ Every row below was hit on the way to the live pair.
 | `:8443` answers 401 | no device key, or a revoked one | `clients.sh list`; give the client its key |
 | Regenerate in Open WebUI returns the same answer, word for word | TensorFold uses a fixed seed when the request names none | `./scripts/configure-webui.sh` installs the random seed filter; check Admin Panel → Functions → "Random Seed" is on and global, and `WEBUI_RANDOM_SEED` is not `false` ([G6](#g6-updating)) |
 | GLM answers with no reasoning (no "Thought for…" block in WebUI, no `reasoning_content` from :8443) | `INFERENCE_THINKING` unset, the gate not restarted since it was set, the WebUI filter off, or the client sent `enable_thinking: false` / another thinking control | the local `/gate/health` must say `"thinking_default":"on"` (else `systemctl --user restart openbeast`); Admin Panel → Functions → "Thinking Default" on and global (`./scripts/configure-webui.sh`); check the client's own params ([E2a](#e2a-recommended-serving-configuration-from-v5)) |
-| opencode on the Mac lost `openbeast-tools` (or another server) | a v1 `mcp.<name>` entry next to v2 `mcp.servers.<name>`: v2 does not merge them | move everything under `mcp.servers`, drop `enabled` ([F3](#f3-the-opencode-v2-config-layout-read-this-before-editing)) |
+| opencode on the Mac lost `openbeast-tools` (or another server) | a v1 `mcp.<name>` entry next to v2 `mcp.servers.<name>`: v2 does not merge them | move everything under `mcp.servers`, drop `enabled` ([F3](#f3-what-the-client-writes-into-opencode)); `setup-client.sh` does this itself now |
 | `tests/test_scripts.sh` failures on a copy without `.git` (7 seen on spark-2) | some suites need a git checkout | run from a git checkout |
 | shell suites fail on the Mac but pass on a Spark | BSD vs GNU tools (`tests/test_engines.sh` needs GNU coreutils; `test_skill_import.sh` showed 5 BSD-only failures on 2026-11-15) | run shell suites on a Spark ([SELF_DEVELOPMENT.md](SELF_DEVELOPMENT.md) "Tests") |
 | `python3 -m pytest` says no module | no pytest for that python (none on spark-1 or the Mac's default python, 2026-11-15) | the hash-pinned test venv ([H7](#h7-test-and-language-toolchains)) |
@@ -2611,8 +2747,9 @@ published, from the 2026-11-15 review:
   that switch on the pair, and the recipe's network mode.
 - **`bootstrap.sh` OFFLINE hint** points at `bundle.sh build` "on a connected
   box" without saying it must be an aarch64 Spark (H6).
-- **`setup-client.sh` writes the opencode v1 MCP shape** (`mcp.<name>` +
-  `enabled`). On opencode v2 that entry is not merged with `mcp.servers` (F3).
+- ~~**`setup-client.sh` writes the opencode v1 MCP shape**~~ Fixed: it writes
+  `mcp.servers.<name>` on opencode v2 and moves other v1 entries in (F3;
+  verified on the Mac 2026-11-17).
 - **Checkout skew**: back on 2026-11-16 evening: spark-1 at `29e5241a`,
   spark-2 at `de931dfe` (0). [G6](#g6-updating) step 4 pulls both.
 

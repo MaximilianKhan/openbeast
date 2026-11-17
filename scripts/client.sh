@@ -18,7 +18,26 @@
 #                                from a bundle, --wheelhouse (or
 #                                $OPENBEAST_WHEELHOUSE) to install the pinned
 #                                deps with no index contacted
+#   client.sh rigs [--json] [--no-probe]
+#                                every registered rig, reachability and health
+#                                (each rig's :8444/api/slot), * = active
+#   client.sh use <rig> [--force]
+#                                switch the active rig: rewrites the env file
+#                                and opencode.json atomically, refreshes the
+#                                catalog. Refuses a rig that is down or rejects
+#                                the key (nothing changed) unless --force
+#   client.sh rig add <name> [--host <fqdn>] [--api-key-stdin | --key-file F]
+#                            [--search rig|local|none] [--model ID]
+#   client.sh rig remove <name> | rig detect
+#                                manage the registry (keys: 0600 files, never
+#                                argv); detect = register your tailnet's 'beast'
 #   client.sh uninstall          remove client mode entirely
+#
+# Several rigs (docs/SPARK_HYDRA.md § F2): the registry is
+# ${XDG_CONFIG_HOME:-~/.config}/openbeast/rigs.json, kept by
+# scripts/lib/client_rigs.py. A single-rig install is migrated into it on
+# first run. opencode gets one provider per rig (openbeast-<rig>) plus
+# openbeast-rig, an alias of the active rig.
 #
 # Deliberately does NOT source scripts/lib/conf.sh — that file is rig-shaped
 # (it generates secrets into openbeast.conf). Client config lives in
@@ -72,6 +91,11 @@ TS_BIN="$(_find_ts || true)"
 if [ -x "$VENV/bin/python3" ]; then PY_BIN="$VENV/bin/python3"
 else PY_BIN="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || echo python3)"; fi
 
+# The rig registry (several rigs, one active): scripts/lib/client_rigs.py.
+RIGS_PY="$REPO/scripts/lib/client_rigs.py"
+RIG_REGISTRY="${XDG_CONFIG_HOME:-$HOME/.config}/openbeast/rigs.json"
+_rigs() { OB_TS_BIN="$TS_BIN" OB_REPO="$REPO" "$PY_BIN" "$RIGS_PY" "$@"; }
+
 # Re-sync the opencode model catalog from the checkout into the installed
 # config. WHY THIS EXISTS: setup-client.sh copies the model list ONCE at install
 # time, and `update` used to pull source + deps and stop — so the catalog froze
@@ -86,143 +110,32 @@ else PY_BIN="$(command -v python3 2>/dev/null || command -v python 2>/dev/null |
 # the file mode).
 _refresh_oc_catalog() {
   [ -f "$OC_CONFIG" ] || { echo "  ! no opencode config at $OC_CONFIG — run scripts/setup-client.sh"; return 0; }
-  "$PY_BIN" - "$OC_CONFIG" "$REPO" <<'PYEOF' || echo "  ! catalog refresh failed (config left untouched)"
-import json, os, stat, sys, urllib.request
-oc_path, repo = sys.argv[1], sys.argv[2]
-cfg = json.load(open(oc_path))
-prov = cfg.get("provider", {}).get("openbeast-rig")
-if prov is None:
-    print("  ! opencode.json has no 'openbeast-rig' provider — run scripts/setup-client.sh")
-    raise SystemExit(0)
-try:
-    models = json.load(open(os.path.join(repo, "opencode.json")))["provider"]["llama-cpp"]["models"]
-except Exception as e:
-    print("  ! could not read the checkout's opencode.json (%s) — catalog unchanged" % e)
-    raise SystemExit(0)
-if not models:
-    print("  ! checkout catalog is empty — refusing to blank the client's list")
-    raise SystemExit(0)
-before = set(prov.get("models") or {})
-after = set(models)
-
-# A llama-server rig serves ONE model and ignores the model id in the request,
-# so every catalog row resolves to whatever is loaded right now (an id-strict
-# backend does not — see the beast-slot block below). Ask it what that is and
-# pin a row that is true by construction, carrying the REAL n_ctx rather than a
-# hand-maintained number that drifts. Best-effort: a rig that is down or
-# unreachable just leaves the static catalog in place.
-live = None
-base = (prov.get("options") or {}).get("baseURL", "").rstrip("/")
-key = (prov.get("options") or {}).get("apiKey") or ""
-if base:
-    def _get(url):
-        r = urllib.request.Request(url)
-        if key and key != "not-needed":
-            r.add_header("Authorization", "Bearer " + key)
-        return json.load(urllib.request.urlopen(r, timeout=6))
-    try:
-        first = _get(base + "/models")["data"][0]
-        alias = first["id"]
-        # The real window, from whichever server this is. llama.cpp: /props
-        # (at the SERVER root, not under /v1 — and beast-gate's allowlist
-        # blocks it on gated installs). vLLM: /v1/models max_model_len.
-        # TensorFold (the Spark pair): /health context_length — /props is a
-        # 404 there, and /health is on the gate's allowlist. Best-effort: no
-        # window just means the live row ships without a context limit.
-        root = base[:-3] if base.endswith("/v1") else base
-        def _ctx(v):
-            return v if isinstance(v, int) and not isinstance(v, bool) and v > 0 else None
-        n_ctx = _ctx(first.get("max_model_len"))
-        for path, pick in (("/props", lambda d: d["default_generation_settings"]["n_ctx"]),
-                           ("/health", lambda d: d["context_length"])):
-            if n_ctx:
-                break
-            try:
-                n_ctx = _ctx(pick(_get(root + path)))
-            except Exception:
-                n_ctx = None
-        live = (alias, n_ctx)
-    except Exception:
-        live = None
-
-# beast-slot (public, keyless) says which backend the rig runs and what it
-# serves. Two uses: a fallback for the live id when /v1/models could not be
-# read, and knowing that the static rows (llama serve-script aliases) are
-# ids an id-strict backend — vLLM, or hydra with unknown_model = "404" —
-# answers 404. Before this, a client installed while such a rig was down
-# kept a static default that 404ed every request.
-slot = None
-slot_url = os.environ.get("OPENBEAST_SLOT_URL", "")
-if slot_url:
-    try:
-        slot = json.load(urllib.request.urlopen(slot_url, timeout=6))
-    except Exception:
-        slot = None
-    if not isinstance(slot, dict) or "beast_slot" not in slot:
-        slot = None
-backend = (slot.get("backend") or "llama") if slot else None
-if live is None and slot:
-    sm = slot.get("model") or {}
-    sctx = sm.get("ctx")
-    if isinstance(sm.get("id"), str) and sm["id"]:
-        live = (sm["id"], sctx if isinstance(sctx, int) and not isinstance(sctx, bool) and sctx > 0 else None)
-
-models = dict(models)
-if backend not in (None, "llama"):
-    # Keep the rows (hydra may route some of them; TensorFold ignores the
-    # id), but do not let them pass for something this rig serves.
-    for k in list(models):
-        if not live or k != live[0]:
-            r = dict(models[k])
-            r["name"] = "%s  (llama-server rigs only)" % (r.get("name") or k)
-            models[k] = r
-if live:
-    alias, n_ctx = live
-    # Keyed by the id the rig SERVES, never an invented one: opencode sends
-    # this key as the request's "model". llama-server ignores it, but vLLM
-    # and hydra (unknown_model = "404") reject an id they do not serve — the
-    # old "rig-live" key made every request from such a rig's clients a 404.
-    row = dict(models.get(alias) or {})
-    row["name"] = "%s  [live on rig]" % alias
-    if n_ctx:
-        row["limit"] = {"context": n_ctx, "output": min(32768, n_ctx)}
-    models[alias] = row
-prov["models"] = models
-
-# Keep the default pointed at something that exists. Prefer the live row.
-want = ("openbeast-rig/" + live[0]) if live else None
-cur = cfg.get("model", "")
-if want and (cur.startswith("openbeast-rig/") or not cur):
-    cfg["model"] = want
-    cfg.setdefault("small_model", want)
-elif cur.startswith("openbeast-rig/") and cur.split("/", 1)[1] not in models:
-    cfg["model"] = "openbeast-rig/" + next(iter(models))
-# small_model too: an install made before the live row carried the served id
-# has "openbeast-rig/rig-live" here, a row that no longer exists.
-small = str(cfg.get("small_model", ""))
-if small.startswith("openbeast-rig/") and small.split("/", 1)[1] not in models:
-    cfg["small_model"] = want or ("openbeast-rig/" + next(iter(models)))
-
-mode = stat.S_IMODE(os.stat(oc_path).st_mode)
-json.dump(cfg, open(oc_path, "w"), indent=2); open(oc_path, "a").write("\n")
-os.chmod(oc_path, mode)   # keyed installs are 0600 — never widen it
-
-added = sorted(after - before)
-gone = sorted(before - after - {"rig-live"} - ({live[0]} if live else set()))
-print("  ok opencode catalog refreshed: %d models%s%s" % (
-    len(models),
-    (" (+%s)" % ", ".join(added)) if added else "",
-    (" (-%s)" % ", ".join(gone)) if gone else ""))
-if live:
-    print("  ok rig is serving '%s'%s — pinned as the default" % (
-        live[0], (" at %d ctx" % live[1]) if live[1] else ""))
-else:
-    print("  ! rig unreachable — catalog updated, live model not probed")
-PYEOF
+  _rp="$REPO/scripts/lib/client_rigs.py"
+  if [ ! -f "$_rp" ]; then
+    echo "  ! $_rp missing (partial checkout?) — catalog unchanged"; return 0
+  fi
+  if [ -n "${RIG_REGISTRY:-}" ]; then
+    # Every registered rig is probed (in parallel); each gets its own
+    # provider, openbeast-rig mirrors the active one (scripts/lib/client_rigs.py).
+    _rigs sync || echo "  ! catalog refresh failed (config left untouched)"
+  else
+    # Driven on its own (no registry context): the openbeast-rig provider's
+    # rows only, from its own baseURL/key; nothing but $OC_CONFIG is touched.
+    "$PY_BIN" "$_rp" sync-legacy --oc "$OC_CONFIG" || echo "  ! catalog refresh failed (config left untouched)"
+  fi
 }
 
 CMD="${1:-status}"
 [ $# -gt 0 ] && shift
+
+# First run after the multi-rig update: fold the single-rig env file into the
+# registry (named after its key file or host). Quiet, best-effort, never fatal.
+case "$CMD" in
+  -h|--help|help|uninstall) : ;;
+  *) if [ -f "$ENV_FILE" ] && [ -f "$RIGS_PY" ] && [ ! -f "$RIG_REGISTRY" ]; then
+       _rigs migrate 2>/dev/null || true
+     fi ;;
+esac
 
 # Bearer via lib/curl_auth.sh: the device key rides a curl --config on an fd,
 # never curl's argv (world-readable through ps on a shared box).
@@ -268,6 +181,17 @@ for p in ("mcp", "openai"):
       echo "  ✗ no venv at $VENV — run scripts/setup-client.sh"; bad=$((bad+1))
     else
       echo "  ✗ venv broken (mcp/openai missing) — re-run scripts/setup-client.sh"; bad=$((bad+1))
+    fi
+    # Which rig this client is pointed at (several may be registered).
+    if [ -f "$RIGS_PY" ]; then
+      _act="$(_rigs active 2>/dev/null || true)"
+      _a1="$(printf '%s\n' "$_act" | sed -n '1p')"
+      case "$_a1" in
+        *'|'*'|'*)
+          _an="${_a1%%|*}"; _rest="${_a1#*|}"; _ah="${_rest%%|*}"; _anum="${_rest#*|}"
+          echo "  ✓ active rig: $_an ($_ah) — $_anum registered; list: openbeast-client rigs"; ok=$((ok+1))
+          printf '%s\n' "$_act" | sed -n '2,$p' | sed 's/^/    /' ;;
+      esac
     fi
     if [ -n "$TS_BIN" ] && "$TS_BIN" status >/dev/null 2>&1; then
       echo "  ✓ tailscale up"; ok=$((ok+1))
@@ -629,16 +553,38 @@ if backend != "llama" and served:
     _refresh_oc_catalog
     ;;
 
+  rigs)
+    [ -f "$RIGS_PY" ] || { echo "$RIGS_PY missing — openbeast-client update" >&2; exit 1; }
+    _rigs list "$@"
+    ;;
+
+  use)
+    [ $# -ge 1 ] || { echo "usage: openbeast-client use <rig> [--force]   (list: openbeast-client rigs)" >&2; exit 2; }
+    [ -f "$RIGS_PY" ] || { echo "$RIGS_PY missing — openbeast-client update" >&2; exit 1; }
+    _rigs use "$@"
+    ;;
+
+  rig)
+    [ -f "$RIGS_PY" ] || { echo "$RIGS_PY missing — openbeast-client update" >&2; exit 1; }
+    _sub="${1:-}"; [ $# -gt 0 ] && shift
+    case "$_sub" in
+      add|remove|detect) _rigs "$_sub" "$@" ;;
+      *) echo "usage: openbeast-client rig add <name> [--host <fqdn>] [--api-key-stdin | --key-file F] [--search rig|local|none] [--model ID]" >&2
+         echo "       openbeast-client rig remove <name> | rig detect" >&2
+         exit 2 ;;
+    esac
+    ;;
+
   uninstall)
     exec "$REPO/scripts/setup-client.sh" --uninstall
     ;;
 
   -h|--help|help)
-    sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,40p' "$_self" | sed 's/^# \{0,1\}//'
     ;;
 
   *)
-    echo "unknown command: $CMD (status|agent|search|update|refresh-config|uninstall)" >&2
+    echo "unknown command: $CMD (status|rigs|use|rig|agent|search|update|refresh-config|uninstall)" >&2
     exit 2
     ;;
 esac

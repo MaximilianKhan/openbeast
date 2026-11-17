@@ -1070,7 +1070,7 @@ else
 fi
 # Stock macOS ships Bash 3.2 — bash-4+ constructs must not creep into any
 # client-side script.
-for _cs in "$SC" "$MC" "$REPO_DIR/scripts/client.sh"; do
+for _cs in "$SC" "$MC" "$REPO_DIR/scripts/client.sh" "$REPO_DIR/scripts/client-e2e.sh"; do
   if ! grep -qE '\bmapfile\b|\breadarray\b|declare -A' "$_cs" \
      && head -1 "$_cs" | grep -q '/usr/bin/env bash'; then
     pass "$(basename "$_cs") is Bash 3.2-safe (no mapfile/readarray/declare -A)"

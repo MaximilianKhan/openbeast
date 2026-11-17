@@ -480,8 +480,8 @@ looping unattended on someone else's rig. See
 
 | script | role | takes |
 |---|---|---|
-| `scripts/setup-client.sh` | **installs / uninstalls** | flags — `--host`, `--api-key-stdin` / `--api-key`, `--local-search`, `--uninstall` |
-| `scripts/client.sh` | **operates** | subcommands — `status`, `agent`, `search`, `update`, `uninstall` |
+| `scripts/setup-client.sh` | **installs / uninstalls** | flags — `--host`, `--api-key-stdin` / `--api-key`, `--name`, `--local-search`, `--uninstall` |
+| `scripts/client.sh` | **operates** | subcommands — `status`, `rigs`, `use`, `rig`, `agent`, `search`, `update`, `refresh-config`, `uninstall` |
 
 Passing a subcommand to the installer (`setup-client.sh status`) prints a
 redirect to the right script rather than a bare "unknown option".
@@ -491,8 +491,30 @@ openbeast-client status        # client doctor + live beast-slot view
 openbeast-client agent "task"  # CLI agent HERE, thinking on the rig
 openbeast-client search up     # local SearXNG lifecycle (--local-search installs)
 openbeast-client update        # refresh checkout + pinned deps
+openbeast-client rigs          # every registered rig + its /api/slot health; * = active
+openbeast-client use <rig>     # switch the active rig
+openbeast-client rig add <name> --host <fqdn> --api-key-stdin < <key file>
 openbeast-client uninstall
 ```
+
+### Several rigs
+
+One client can know several rigs — the `beast` rig and the `spark-hydra`
+pair, say — and switch between them. The registry is
+`~/.config/openbeast/rigs.json` (0600): per rig its host, URLs, the **path**
+of its 0600 key file (never the key), its default model and the last
+`/api/slot` answer. One rig is **active**: `~/.openbeast-client.env` and the
+`openbeast-tools` MCP entry follow it, so the tools' sub-agents and
+`web_search` use it. `openbeast-client use <rig>` probes the target's
+`/api/slot` and `/v1/models` first and refuses a rig that is down or rejects
+the key, changing nothing (`--force` overrides). OpenCode gets one provider
+per keyed rig, `openbeast-<rig>`, plus `openbeast-rig`, an alias of the active
+one; each model row carries `limit.context` from that rig's `/api/slot`
+`model.ctx` (the per-conversation window, not `capacity.ctx_total`, which is
+one KV pool shared by every slot) and `limit.output` 32768 (per rig:
+`rig add <rig> --output-limit N`). A single-rig install is migrated on first
+run. Exact commands and the end-to-end check `scripts/client-e2e.sh`:
+[SPARK_HYDRA.md § F2](SPARK_HYDRA.md#f2-client-mode-one-or-several-rigs).
 
 **If `openbeast-client` isn't a command**, `~/.local/bin` isn't on your `PATH`
 — the default on macOS. Either use the full path, which always works:
