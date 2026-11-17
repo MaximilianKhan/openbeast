@@ -220,6 +220,9 @@
 # chat request that names no thinking control of its own:
 #   - beast-gate (:8443: opencode, the Mac client, phones, any keyed device)
 #     injects enable_thinking;
+#   - Open WebUI gets a global "Thinking Default" filter
+#     (scripts/configure-webui.sh), so chats think by default; a value in the
+#     chat's Controls or the model's params still wins;
 #   - this host's own agents (agents/runner.py, start_agent) send it.
 # A request that says enable_thinking, reasoning_effort, thinking, reasoning
 # or reasoning_budget_tokens is never touched, and eval runs never follow it
