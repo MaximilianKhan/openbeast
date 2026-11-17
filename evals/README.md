@@ -389,6 +389,21 @@ era is checked between phases; a profile never pairs rows across eras.
 (vLLM, TensorFold); for those, the reasoning budget is *declared*
 (`--reasoning-budget`) and recorded as such, never read from `pgrep`.
 
+### After the profile: a model campaign
+
+The profile is step 2 of a model campaign
+([docs/MODEL_CAMPAIGN.md](../docs/MODEL_CAMPAIGN.md)). The steps after it are
+the failure audit (`evals/audit/`), the reference ceiling
+(`evals/reference/`), and the chained harness arms with their per-unit
+comparison:
+
+```bash
+python3 evals/campaign.py run --campaign v5-harness --model <slug> --jobs 4 \
+    --baseline L0=evals/results/eval-<slug>-L0-<ts>.json
+python3 evals/campaign.py report --campaign v5-harness --model <slug> \
+    --reference-ledger <reference run>/ledger.jsonl --out report.md
+```
+
 
 ### Scoring (v5)
 
