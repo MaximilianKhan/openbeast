@@ -1296,6 +1296,42 @@ def diagnostics_flag(env=None) -> tuple[bool, str | None, dict]:
     return True, f"diag2-{fp}", versions
 
 
+def agent_switches(env=None) -> tuple[str | None, dict]:
+    """The agent-side env switches that change what a unit's agent does but
+    that no other cache-key component can see, read ONCE per run with the
+    agent's OWN parsing rules (agents/runner.py _thinking_kwargs /
+    _seed_kwargs, agents/tools.py verify_done_enabled / diag_edit_hint_enabled),
+    so the key and the request can never disagree:
+
+      OPENBEAST_AGENT_THINKING on|off -> think-on / think-off (anything else
+                                         sends nothing, so it is unset here)
+      OPENBEAST_AGENT_SEED <int>      -> seed<N>
+      OPENBEAST_AGENT_VERIFY_DONE=1   -> vdone   (G9, "test before done")
+      OPENBEAST_DIAG_EDIT_HINT=1      -> ehint   (G13, "edit, don't rewrite")
+
+    Returns (component, meta): component `ag-<part>-<part>...` for the cache
+    key, None when every switch is unset (legacy keys stay reachable); meta
+    is stamped in the results header and on every row. Every caller
+    (--seed / --thinking, benchmark_all, profile, a plain env prefix) goes
+    through the environment, so this one read covers them all."""
+    env = os.environ if env is None else env
+    think = env.get("OPENBEAST_AGENT_THINKING", "").strip().lower()
+    think = think if think in ("on", "off") else None
+    raw_seed = env.get("OPENBEAST_AGENT_SEED", "").strip()
+    try:
+        seed = int(raw_seed) if raw_seed else None
+    except ValueError:
+        seed = None
+    vdone = env.get("OPENBEAST_AGENT_VERIFY_DONE", "").strip() == "1"
+    ehint = env.get("OPENBEAST_DIAG_EDIT_HINT", "").strip() == "1"
+    meta = {"thinking": think, "seed": seed, "verify_done": vdone,
+            "diag_edit_hint": ehint}
+    parts = ([f"think-{think}"] if think else []) + \
+        ([f"seed{seed}"] if seed is not None else []) + \
+        (["vdone"] if vdone else []) + (["ehint"] if ehint else [])
+    return (f"ag-{'-'.join(parts)}" if parts else None), meta
+
+
 _TOOLCHAINS: dict | None = None
 
 
@@ -2787,6 +2823,25 @@ def unit_lang(task: dict) -> str:
     return suite_manifest.norm_lang(task.get("language"))
 
 
+# The suite languages a beast-lang card can be attached to: agents/tools.py
+# _ESC_LANG's values (python's checker never prints a card-selecting shape,
+# shell has no index), in suite_manifest.norm_lang spelling.
+CARD_LANGS = frozenset({"zig", "c", "cpp", "rust", "go"})
+
+
+def card_eligible_langs(gate: dict | None) -> list[str]:
+    """Suite languages whose escalation index is SERVED on this host, from
+    escalate.gate_state()'s {lang: {"served": bool, ...}} (G16). An arm named
+    "packs+diag+escalate" on a host with only a zig index escalates zig only;
+    this is what makes that visible in the header and the ablation report."""
+    out = []
+    for lang, g in (gate or {}).items():
+        name = suite_manifest.norm_lang(lang)
+        if name in CARD_LANGS and isinstance(g, dict) and g.get("served"):
+            out.append(name)
+    return sorted(set(out))
+
+
 class ArmCtx:
     """One treatment's derived state: the cache components and the env the
     agent subprocess gets, computed from ONE read (the §3.4 rule), plus the
@@ -2798,6 +2853,8 @@ class ArmCtx:
         self.esc_on, self.esc_component, self.esc_meta = escalate_flag(self.diag_on, env)
         self.diag_component = (f"{self.diag_base}+{self.esc_component}"
                                if self.esc_on else self.diag_base)
+        self.card_langs = (card_eligible_langs((self.esc_meta.get("gate") or {}).get("gate"))
+                           if self.esc_on else [])
         self.packs_on, self.packs_component, self.packs_meta = packs_flag(env)
         self.scope = diag_scope(env)
         suffix = f"-{name}" if name else ""
@@ -2812,6 +2869,12 @@ class ArmCtx:
         """diag2[+esc1] cache component, only for units in assist scope:
         keyed PER UNIT like the pack, so out-of-scope units share rows."""
         return self.diag_component if self.in_diag_scope(task) else None
+
+    def card_eligible(self, task: dict) -> bool:
+        """Could an escalation card reach this unit at all on this host:
+        escalation on, the unit in diagnostics scope, and its language's
+        index served here (G16)."""
+        return self.esc_on and self.in_diag_scope(task) and unit_lang(task) in self.card_langs
 
     def pack_path(self, task: dict) -> str | None:
         if not self.packs_on:
@@ -3106,6 +3169,19 @@ def run_eval(
     # stamped in provenance. Set via env OPENBEAST_EVAL_GREEDY=1 or the
     # --greedy CLI flag (benchmark_all passes it through as env).
     greedy_mode = os.environ.get("OPENBEAST_EVAL_GREEDY", "") == "1"
+    # Agent switches (thinking / seed / verify-done / edit-hint): one read,
+    # used for the key, the header and every row (see agent_switches).
+    agent_component, agent_meta = agent_switches()
+    # ...and the agent gets exactly what was keyed: the normalized values are
+    # pinned into every unit's env (None = removed), so an unparseable or
+    # mid-run-changed ambient value can never reach a child the key missed.
+    agent_env_pin = {
+        "OPENBEAST_AGENT_THINKING": agent_meta["thinking"],
+        "OPENBEAST_AGENT_SEED": (str(agent_meta["seed"])
+                                 if agent_meta["seed"] is not None else None),
+        "OPENBEAST_AGENT_VERIFY_DONE": "1" if agent_meta["verify_done"] else None,
+        "OPENBEAST_DIAG_EDIT_HINT": "1" if agent_meta["diag_edit_hint"] else None,
+    }
     rb_component = None
     _rb = ""
     if server_info:
@@ -3192,6 +3268,9 @@ def run_eval(
               f"{server_info.get('reasoning_budget', 'undeclared')}")
     if greedy_mode:
         print("Decode: GREEDY (low-churn eval mode — leaderboard-ineligible era)")
+    if agent_component:
+        print(f"Agent:  switches {', '.join(f'{k}={v}' for k, v in agent_meta.items() if v is not None and v is not False)}"
+              f" — cache era {agent_component}")
     for c in ctxs:
         tag = f"[{c.name}] " if c.name else ""
         if c.diag_on:
@@ -3201,6 +3280,9 @@ def run_eval(
             print(f"Escal:  {tag}beast-lang escalation ON (treatment {c.esc_meta['treatment_sha']}, "
                   f"index {c.esc_meta['index_sha']}) — "
                   f"cache era {c.esc_component} (leaderboard-ineligible experiment rows)")
+            n_card = sum(1 for t in tasks if c.card_eligible(t))
+            print(f"Escal:  {tag}card-eligible languages on this host: "
+                  f"{', '.join(c.card_langs) or 'NONE'}; card-eligible units: {n_card}/{len(tasks)}")
         if c.packs_on:
             packed = sum(1 for t in tasks if c.pack_path(t))
             print(f"Packs:  {tag}awareness packs ON ({', '.join(f'{k}={v}' for k, v in c.packs_meta['sha'].items())}) — "
@@ -3229,9 +3311,19 @@ def run_eval(
              # stamped the board could only infer it from cache keys.
              "era": cache.current_era(),
              "greedy": greedy_mode,
+             # Always present (all-unset included), so a file says what the
+             # agent ran with instead of leaving "default" to inference.
+             "agent_switches": dict(agent_meta),
+             **({"agent_component": agent_component} if agent_component else {}),
              "packs": dict(c.packs_meta.get("sha", {})) if c.packs_on else {},
              **({"packs_component": c.packs_component} if c.packs_on else {}),
-             **({"escalate": c.esc_meta, "escalate_component": c.esc_component}
+             **({"escalate": c.esc_meta, "escalate_component": c.esc_component,
+                 # G16: which languages can receive a card on this host, and
+                 # how many of the run's units that covers (before any arm
+                 # plan; ablation.py recounts over the rows actually measured).
+                 "escalation_eligible_langs": list(c.card_langs),
+                 "card_eligible_units": sum(1 for t in tasks if c.card_eligible(t)),
+                 "card_units_total": len(tasks)}
                 if c.esc_on else {}),
              **({"toolchains": c.diag_toolchains,
                  "diag_scope": sorted(c.scope)} if c.diag_on else {}),
@@ -3294,7 +3386,8 @@ def run_eval(
     def key_for(task: dict, c: ArmCtx) -> str:
         return cache.cache_key(task, model_slug, max_iter=effective_max_iter_of(task),
                                diag=c.diag_for(task), rb=rb_component,
-                               greedy=greedy_mode, pack=c.pack_for(task), env=env_key)
+                               greedy=greedy_mode, pack=c.pack_for(task), env=env_key,
+                               agent=agent_component)
 
     def process(idx: int, task: dict, log, c: ArmCtx) -> dict | None:
         """One (unit, arm) end-to-end: cache check → health → setup → agent
@@ -3327,6 +3420,15 @@ def run_eval(
             # buckets a row without one as python, so the shell unit 179 sat
             # in the python control contrast (L2 audit, 2026-11-16).
             result.setdefault("language", unit_lang(task))
+            # The agent switches this row ran under. A replay comes from a
+            # key that carries the same switches (agent_switches), so the
+            # current run's values are the row's; legacy rows never had it.
+            result.setdefault("agent_thinking", agent_meta["thinking"])
+            result.setdefault("agent_seed", agent_meta["seed"])
+            if agent_meta["verify_done"]:
+                result.setdefault("agent_verify_done", True)
+            if agent_meta["diag_edit_hint"]:
+                result.setdefault("diag_edit_hint", True)
             # role/stratum: the manifest's, else the task JSON's own
             # optional fields (a task may declare itself a probe).
             role = task.get("_role") or task.get("role")
@@ -3493,7 +3595,7 @@ def run_eval(
         agent_result = run_agent(run_task, base_url,
                                  effective_max_iter,
                                  timeout_scale=timeout_scale,
-                                 env_overlay=c.env_overlay(task),
+                                 env_overlay={**c.env_overlay(task), **agent_env_pin},
                                  wall_s=agent_wall_s(task, effective_max_iter, unit_wall_cap))
         log(f"  Agent finished in {agent_result['elapsed_seconds']}s")
 
@@ -3858,6 +3960,13 @@ def main():
                              "known cause, attach the one-line fix to the same tool result. Needs "
                              "--diag / BEAST_ASSIST=1. Own esc1-<sha8> cache era; leaderboard-ineligible. "
                              "Same as BEAST_ESCALATE=1.")
+    parser.add_argument("--seed", type=int,
+                        help="Sampling seed sent on every agent request (sets "
+                             "OPENBEAST_AGENT_SEED). In the cache key (ag-seed<N>), so a "
+                             "k-seed repeat (G12) is just --seed 1, --seed 2, --seed 3 runs.")
+    parser.add_argument("--thinking", choices=("on", "off"),
+                        help="Per-request thinking toggle for the agent (sets "
+                             "OPENBEAST_AGENT_THINKING). In the cache key (ag-think-on/off).")
     args = parser.parse_args()
 
     if args.jobs < 1:
@@ -3871,6 +3980,12 @@ def main():
         os.environ["BEAST_ASSIST"] = "1"
     if args.escalate:
         os.environ["BEAST_ESCALATE"] = "1"
+    # Through the environment like the switches above: agent_switches()
+    # reads it once for the key, the header and the agent's env.
+    if args.seed is not None:
+        os.environ["OPENBEAST_AGENT_SEED"] = str(args.seed)
+    if args.thinking:
+        os.environ["OPENBEAST_AGENT_THINKING"] = args.thinking
     if args.api_key_env:
         key = os.environ.get(args.api_key_env, "")
         if not key:

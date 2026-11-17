@@ -1,5 +1,57 @@
 # Eval suite changelog
 
+## v5.0, harness batch G9/G13/G15/G16 + agent-switch cache key (2026-11-16) — era roll
+
+Same suite, manifest and `HARNESS_VERSION` (harness6): the harness
+fingerprint (`cache.harness_fingerprint()`, run_eval's agent-shaping code) did
+not move, because none of `cache.HARNESS_FUNCTIONS` changed. The **era does
+move**: `agents/tools.py` and `agents/runner.py` are hashed into it and both
+changed. G15 is a default-on change to what an edit_file result says, so no
+pre-batch row replays into the new era. Re-measure any arm you compare
+against rows from before this change. Evidence for each item is in
+`docs/HARNESS_NOTES.md`.
+
+- **Cache-key safety (fixes a trap).** `OPENBEAST_AGENT_THINKING`,
+  `OPENBEAST_AGENT_SEED`, `OPENBEAST_AGENT_VERIFY_DONE` and
+  `OPENBEAST_DIAG_EDIT_HINT` change what the agent does, but the cache key
+  could not see them. An arm run without `--no-cache` replayed the default
+  arm's rows and banked its own rows under the default arm's key. They are
+  now one key component, `ag-<parts>` (e.g. `ag-think-on-seed2`, built by
+  `run_eval.agent_switches()` with the runner's own parse rules). It is
+  OMITTED when every switch is unset, so legacy keys stay reachable (the
+  diag/rb convention). The values are stamped in the results header
+  (`harness.agent_switches`, `harness.agent_component`) and on every row
+  (`agent_thinking`, `agent_seed`, plus `agent_verify_done` and
+  `diag_edit_hint` when set). They are also pinned into each unit's env, so
+  the agent gets exactly what was keyed. The `--no-cache` advice in the
+  runner-v2 entry below no longer applies.
+- **`run_eval.py --seed N` / `--thinking on|off`** set
+  `OPENBEAST_AGENT_SEED` / `OPENBEAST_AGENT_THINKING`, so both are in the key.
+  A k-seed repeat (G12) is `--seed 1`, `--seed 2`, `--seed 3` runs.
+- **G9, "test before done" (opt-in, `OPENBEAST_AGENT_VERIFY_DONE=1`).** This
+  builds on the R1 missing-file refusal. When the expected files exist, the
+  agent's first `task_done` is answered "Before finishing: re-run your test
+  against <dest> itself" if a destination source file it wrote has not been
+  named by a bash command since the last write_file/edit_file to any file.
+  It fires once per run and never blocks: the second `task_done` is
+  accepted. Off: the tool layer behaves exactly as before.
+- **G13, "edit, don't rewrite" (opt-in, `OPENBEAST_DIAG_EDIT_HINT=1`).** A
+  failing push-diagnostics block ends with "Fix the first error with
+  edit_file at line N; don't rewrite the file", where N is the first error's
+  line. It only applies while diagnostics are on.
+- **G15, edit_file lint noise (default on, a fix).** With push diagnostics
+  on, an edit_file result shows only shellcheck findings that are new
+  relative to the file before the edit (keyed on source line, code and
+  message, so they survive line shifts). When nothing is new it reads
+  "diagnostics: no new findings (shell; N pre-existing not repeated)".
+  Compiler errors are never filtered: a persisting build error is not noise.
+  write_file output is unchanged.
+- **G16, telemetry.** An escalation arm's header names the languages whose
+  escalation index is served on the host (`harness.escalation_eligible_langs`)
+  and the number of card-eligible units. The run prints "card-eligible units:
+  n/N", and `evals/ablation.py` adds it to the exposure line, counted over
+  measured rows.
+
 ## v5.0, wall-scaled turns (2026-11-16) — opt-in budget, era unchanged
 
 `run_eval.py --turns-per-wall-s N` gives each unit max(its max_iter,

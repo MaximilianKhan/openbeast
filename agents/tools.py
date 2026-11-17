@@ -12,6 +12,7 @@ import difflib
 import errno
 import functools
 import glob
+import hashlib
 import html
 import http.client
 import ipaddress
@@ -665,6 +666,7 @@ def bash(command: str, timeout: int = 120) -> str:
         sealed = _seal_command_refusal(command)
         if sealed:
             return sealed
+        _verify_note_bash(command)   # G9; a no-op unless VERIFY_DONE is on
         # Under eval, confine the shell so a read of the sealed trees fails in
         # the kernel, not just on a command-text match (reported on 164/U4).
         seal_prefix = _eval_read_deny_prefix()
@@ -1696,8 +1698,59 @@ def _zig_extras(body: str, checked_path: str = "",
     return extras
 
 
+def diag_edit_hint_enabled() -> bool:
+    """G13 switch, OPENBEAST_DIAG_EDIT_HINT=1 (read per call; off by default).
+    Evidence (2026-11-16 L2 audit): a failing push-diagnostic on a write
+    result was followed by a full rewrite in 9/29 cases vs 2/31 after a failed
+    build without one, and the rewrite re-rolled correctness (167_b and 163_d
+    regressed). When on, a failing block ends with one line pointing the
+    model at edit_file and the first error's line."""
+    return os.environ.get("OPENBEAST_DIAG_EDIT_HINT", "").strip() == "1"
+
+
+# No `^`: used with .match(out, pos), which anchors at pos already (a `^`
+# would only match at the real start of the string).
+_DIAG_LINE_AT_RE = re.compile(r"(?:vet: )?\S+?:(\d+):\d+")
+_RUST_ARROW_RE = re.compile(r"^\s*--> \S+?:(\d+):\d+", re.M)
+_SHELL_IN_RE = re.compile(r"^In .+ line (\d+):\s*$", re.M)
+_PY_LINE_RE = re.compile(r"\bline (\d+)")
+
+
+def _diag_first_error_line(lang: str, out: str | None) -> int | None:
+    """The source line of the FIRST error in a checker's raw output, or None.
+    Pure. zig/c/c++/go print `file:line:col: error:` (go vet with a `vet: `
+    prefix); rustc puts it on the ` --> file:line:col` line under the error;
+    py_compile says `line N`; shellcheck heads each finding `In f line N:`."""
+    out = out or ""
+    try:
+        if lang == "shell":
+            m = _SHELL_IN_RE.search(out)
+            return int(m.group(1)) if m else None
+        if lang == "python":
+            m = _PY_LINE_RE.search(out)
+            return int(m.group(1)) if m else None
+        rx = _DIAG_ERROR_RES.get(lang)
+        m = rx.search(out) if rx else None
+        if lang == "rust":
+            a = _RUST_ARROW_RE.search(out, m.start() if m else 0)
+            return int(a.group(1)) if a else None
+        if m:
+            at = _DIAG_LINE_AT_RE.match(out, m.start())
+            if at:
+                return int(at.group(1))
+        return None
+    except (ValueError, AttributeError):
+        return None
+
+
+def _diag_edit_hint_line(lang: str, out: str | None) -> str:
+    n = _diag_first_error_line(lang, out)
+    where = f" at line {n}" if n else ""
+    return f"Fix the first error with edit_file{where}; don't rewrite the file"
+
+
 def _diag_format(lang: str, rc: int, out: str | None, path: str = "",
-                 escalation: str = "") -> str:
+                 escalation: str = "", edit_hint: bool = False) -> str:
     """Render one checker verdict — pure, testable without any toolchain.
     Extras (did-you-mean + fix hints, zig only) are budgeted before the
     body so truncation can never eat the remedy; the whole block stays
@@ -1733,33 +1786,34 @@ def _diag_format(lang: str, rc: int, out: str | None, path: str = "",
         block += "\n" + extra_txt
     if escalation:
         block += "\n" + escalation
-    return f"\n── diagnostics ({lang}) ──\n{block}\n── {label} ──"
+    tail = ("\n" + _diag_edit_hint_line(lang, out)) if edit_hint and (n or rc != 0) else ""
+    return f"\n── diagnostics ({lang}) ──\n{block}\n── {label} ──{tail}"
 
 
-def _run_diagnostics(path: str) -> str:
-    """Checker verdict for `path`, formatted for appending to a tool result.
-    Returns "" when diagnostics are off, no checker applies, or the checker
-    itself breaks — a broken checker must never fail a write."""
-    if not diagnostics_enabled():
-        return ""
-    checker = None
-    t0 = time.monotonic()
-    lang = "?"
+class _DiagBusy(Exception):
+    """No checker slot within 5 s."""
+
+
+def _diag_raw(path: str, meta: dict) -> tuple[str, int, str] | None:
+    """Run the checker for `path`: (lang, rc, raw output), or None when no
+    checker applies or its language is out of scope. Raises on a timeout
+    (subprocess.TimeoutExpired), a busy pool (_DiagBusy) or a broken
+    checker; meta["lang"] is set as soon as the language is known."""
+    checker = _diag_checker(path)
+    if checker is None:
+        return None
     try:
-        checker = _diag_checker(path)
-        if checker is None:
-            return ""
-        lang, cmd, extra_env, scratches = checker
+        lang, cmd, extra_env, _scratches = checker
+        meta["lang"] = lang
         if not _diag_lang_allowed(lang):
-            return ""
+            return None
         wrapper = os.environ.get("OPENBEAST_BASH_WRAPPER", "").strip()
         if wrapper:
             cmd = f"{wrapper} /bin/sh -c {shlex.quote(cmd)}"
         env = _scrubbed_env()
         env.update(extra_env)
         if not _DIAG_SLOTS.acquire(timeout=5):
-            _diag_log_timing(lang, (time.monotonic() - t0) * 1000, "busy")
-            return "\ndiagnostics: unavailable (busy)"
+            raise _DiagBusy()
         try:
             # cwd = the file's directory: under a BASH_WRAPPER (Sandlock's
             # `-w "$PWD"`) the checker is granted where the file lives, as
@@ -1768,23 +1822,173 @@ def _run_diagnostics(path: str) -> str:
                                  env=env, cwd=os.path.dirname(path) or None)
         finally:
             _DIAG_SLOTS.release()
+        return lang, rc, out or ""
+    finally:
+        for d in checker[3]:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# G15 — edit_file reports only NEW lint findings (a fix; default on).
+# shellcheck re-reported a script's pre-existing warnings after every edit, so
+# a one-line fix came back carrying findings the model had not caused and
+# (on 179, 2026-11-16 L2 audit) spent a turn on them. For edit_file the
+# findings are diffed against the file as it was before the edit, keyed on
+# (source line text, SC code, message) so they survive line shifts.
+#
+# Lint only. A compiler error that persists across an edit is not noise — the
+# file still does not build — so compiled languages are never filtered.
+# The pre-edit verdict is memoized per path by content hash from the last
+# check (the model's previous write/edit already ran it), so an edit costs a
+# second checker run only when the file changed outside the tools.
+# ---------------------------------------------------------------------------
+_DIAG_DIFF_LANGS = frozenset({"shell"})
+_DIAG_DIFF_EXTS = frozenset({".sh"})       # the shell checker's own trigger
+_DIAG_SEEN: dict[str, tuple[str, str]] = {}   # realpath -> (sha, raw output)
+_DIAG_SEEN_MAX = 256
+_SC_FINDING_RE = re.compile(r"\^-*\^?\s+(SC\d+)\s+\((\w+)\):\s?(.*)$")
+_SC_MORE_RE = re.compile(r"^\s*https?://\S*/(SC\d+)\b")
+
+
+def _text_sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def _diag_memo(path: str, lang: str, out: str) -> None:
+    if lang not in _DIAG_DIFF_LANGS:
+        return
+    try:
+        with open(path, "r", newline="") as f:
+            text = f.read()
+    except (OSError, UnicodeDecodeError):
+        return
+    key = os.path.realpath(path)
+    _DIAG_SEEN.pop(key, None)
+    _DIAG_SEEN[key] = (_text_sha(text), out)
+    while len(_DIAG_SEEN) > _DIAG_SEEN_MAX:
+        _DIAG_SEEN.pop(next(iter(_DIAG_SEEN)))
+
+
+def _diag_baseline(path: str, before: str) -> str | None:
+    """The checker's raw output for `path` as it was BEFORE an edit (text
+    `before`), for languages whose findings are diffable; None when
+    diagnostics are off, the language is not diffable, or it cannot be
+    determined (then nothing is filtered). Must run before the write."""
+    if not diagnostics_enabled():
+        return None
+    if os.path.splitext(path)[1].lower() not in _DIAG_DIFF_EXTS:
+        return None
+    hit = _DIAG_SEEN.get(os.path.realpath(path))
+    if hit and hit[0] == _text_sha(before):
+        return hit[1]
+    try:
+        raw = _diag_raw(path, {})
+    except Exception:                              # noqa: BLE001
+        return None
+    if raw is None or raw[0] not in _DIAG_DIFF_LANGS:
+        return None
+    return raw[2]
+
+
+def _shellcheck_blocks(out: str) -> tuple[list[tuple[list[str], list[tuple]]], list[str]]:
+    """Split shellcheck's tty output into ([(block lines, finding keys)],
+    trailer lines). A block starts at `In <file> line N:`; its source line is
+    the next line; each caret line is one finding (code, level, message)."""
+    blocks: list[tuple[list[str], list[tuple]]] = []
+    trailer: list[str] = []
+    cur: list[str] | None = None
+    in_trailer = False
+    for ln in out.splitlines():
+        if _SHELL_IN_RE.match(ln):
+            in_trailer = False
+            cur = [ln]
+            blocks.append((cur, []))
+            continue
+        if ln.startswith("For more information:"):
+            in_trailer, cur = True, None
+            trailer.append(ln)
+            continue
+        if in_trailer:
+            trailer.append(ln)
+        elif cur is not None:
+            cur.append(ln)
+    out_blocks = []
+    for lines, _ in blocks:
+        src = lines[1].strip() if len(lines) > 1 else ""
+        keys = [(src,) + m.groups() for m in (_SC_FINDING_RE.search(x) for x in lines[2:]) if m]
+        out_blocks.append((lines, keys))
+    return out_blocks, trailer
+
+
+def _shellcheck_new(before: str, after: str) -> tuple[str, int]:
+    """(output keeping only blocks with a finding absent before, number of
+    pre-existing findings dropped). Duplicates are counted, not collapsed."""
+    from collections import Counter
+    old = Counter(k for _l, keys in _shellcheck_blocks(before)[0] for k in keys)
+    blocks, trailer = _shellcheck_blocks(after)
+    kept: list[str] = []
+    codes: set[str] = set()
+    dropped = 0
+    for lines, keys in blocks:
+        new = []
+        for k in keys:
+            if old[k] > 0:
+                old[k] -= 1
+                dropped += 1
+            else:
+                new.append(k)
+        if new or not keys:
+            kept.extend(lines)
+            codes.update(k[1] for k in keys)
+    if kept and trailer:
+        more = [t for t in trailer[1:]
+                if (m := _SC_MORE_RE.match(t)) and m.group(1) in codes]
+        if more:
+            kept += [trailer[0]] + more
+    return "\n".join(kept).strip("\n"), dropped
+
+
+def _run_diagnostics(path: str, baseline: str | None = None) -> str:
+    """Checker verdict for `path`, formatted for appending to a tool result.
+    Returns "" when diagnostics are off, no checker applies, or the checker
+    itself breaks — a broken checker must never fail a write.
+
+    baseline: edit_file's pre-edit checker output (G15); for a lint language
+    only findings new relative to it are shown."""
+    if not diagnostics_enabled():
+        return ""
+    t0 = time.monotonic()
+    meta: dict = {"lang": "?"}
+    try:
+        raw = _diag_raw(path, meta)
+        if raw is None:
+            return ""
+        lang, rc, out = raw
+        _diag_memo(path, lang, out)
+        if baseline is not None and lang in _DIAG_DIFF_LANGS and rc != 0 and baseline.strip():
+            out, dropped = _shellcheck_new(baseline, out)
+            if not out.strip():
+                _diag_log_timing(lang, (time.monotonic() - t0) * 1000, "ok", rc=rc,
+                                 errors=0)
+                return (f"\ndiagnostics: no new findings ({lang}; {dropped} "
+                        f"pre-existing not repeated)")
         escalation = _escalation_for(lang, rc, out)
-        rendered = _diag_format(lang, rc, out, path, escalation=escalation)
+        rendered = _diag_format(lang, rc, out, path, escalation=escalation,
+                                edit_hint=diag_edit_hint_enabled())
         hint = lang == "zig" and rc != 0 and bool(_zig_extras(_zig_compact((out or "").strip()), path))
         _diag_log_timing(lang, (time.monotonic() - t0) * 1000, "ok", rc=rc,
                          errors=_diag_count_errors(lang, out or ""),
                          hint_fired=hint, card_fired=bool(escalation))
         return rendered
+    except _DiagBusy:
+        _diag_log_timing(meta["lang"], (time.monotonic() - t0) * 1000, "busy")
+        return "\ndiagnostics: unavailable (busy)"
     except subprocess.TimeoutExpired:
-        _diag_log_timing(lang, (time.monotonic() - t0) * 1000, "timeout")
+        _diag_log_timing(meta["lang"], (time.monotonic() - t0) * 1000, "timeout")
         return "\ndiagnostics: unavailable (timeout)"
     except Exception as e:
-        _diag_log_timing(lang, (time.monotonic() - t0) * 1000, type(e).__name__)
+        _diag_log_timing(meta["lang"], (time.monotonic() - t0) * 1000, type(e).__name__)
         return f"\ndiagnostics: unavailable ({type(e).__name__})"
-    finally:
-        if checker:
-            for d in checker[3]:
-                shutil.rmtree(d, ignore_errors=True)
 
 
 def _atomic_write_text(path: str, content: str) -> None:
@@ -1864,6 +2068,7 @@ def write_file(path: str, content: str) -> str:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         _atomic_write_text(path, content)
         _manifest_log("write", path, len(content))
+        _verify_note_write(path)
         return (f"Wrote {len(content)} bytes to {path}"
                 + _path_guard_note(path) + _run_diagnostics(path))
     except Exception as e:
@@ -2117,6 +2322,7 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
         # mixed-ending file is matched and written exactly as it is.
         with open(path, "r", newline="") as f:
             content = f.read()
+        before = content   # the file as it was, for G15's diagnostic diff
         eol = "\n"
         if "\r" in content:
             crlf = content.count("\r\n")
@@ -2176,10 +2382,15 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
         else:
             new_content = content.replace(old_string, new_string, 1)
 
+        # G15: what the checker said about the file BEFORE this edit (memo
+        # hit almost always; "" / None when diagnostics are off or the
+        # language's findings are not diffable).
+        baseline = _diag_baseline(path, before)
         _atomic_write_text(path, new_content if eol == "\n"
                            else new_content.replace("\n", eol))
         _manifest_log("edit", path, len(new_content))
         _EDIT_FAILS.pop(path, None)
+        _verify_note_write(path)
 
         change_line = content[:content.index(old_string)].count("\n") + 1
         old_lines = old_string.count("\n") + 1
@@ -2190,7 +2401,7 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
                     f"({len(old_string)} → {len(new_string)} chars each)"
                     + _path_guard_note(path)
                     + _edit_window(new_content, change_line, new_lines)
-                    + _run_diagnostics(path))
+                    + _run_diagnostics(path, baseline=baseline))
         else:
             return (
                 f"Edited {path} at line {change_line}: "
@@ -2198,7 +2409,7 @@ def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = F
                 f"with {new_lines} line{'s' if new_lines != 1 else ''}"
                 + _path_guard_note(path)
                 + _edit_window(new_content, change_line, new_lines)
-                + _run_diagnostics(path)
+                + _run_diagnostics(path, baseline=baseline)
             )
     except Exception as e:
         return f"Error: {e}"
@@ -2957,6 +3168,90 @@ def update_plan(steps=None, explanation: str = "") -> str:
     return head + "\n" + _plan_render(clean)
 
 
+# ---------------------------------------------------------------------------
+# G9 — "test before done" (opt-in, OPENBEAST_AGENT_VERIFY_DONE=1; off = the
+# tools behave exactly as before). Evidence, 2026-11-16 v5 L0 audit: several
+# failed units had a working fix in a SCRATCH file that was never written
+# back to the graded destination (36_c, 36_d, 143). Builds on the R1 guard
+# below (OPENBEAST_TASK_PATHS, the missing-file refusal): once the expected
+# files exist, a task_done is answered ONCE with a nudge when a destination
+# source file the agent wrote has not been run since the last write of ANY
+# file through write_file/edit_file — "run" meaning a bash command that names
+# it (path, basename, or stem: `./sol`, `test_sol.py`). Never blocking: the
+# second task_done is accepted whatever the state. Runner-only in practice
+# (task_done is not on the MCP surface); state is per run (reset_verify_done).
+# ---------------------------------------------------------------------------
+_VERIFY_SRC_EXTS = frozenset({
+    ".py", ".go", ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".rs", ".zig",
+    ".sh", ".bash", ".js", ".mjs", ".ts", ".rb", ".pl", ".lua", ".java",
+    ".kt", ".swift"})
+_VERIFY_STATE: ContextVar = ContextVar("openbeast_verify_done", default=None)
+
+
+def verify_done_enabled() -> bool:
+    """Read per call, like diagnostics_enabled()."""
+    return os.environ.get("OPENBEAST_AGENT_VERIFY_DONE", "").strip() == "1"
+
+
+def reset_verify_done() -> None:
+    _VERIFY_STATE.set(None)
+
+
+def _verify_state() -> dict:
+    st = _VERIFY_STATE.get()
+    if st is None:
+        st = {"seq": 0, "last_write": 0, "wrote": {}, "ran": {}, "nudged": False}
+        _VERIFY_STATE.set(st)
+    return st
+
+
+def _verify_note_write(path: str) -> None:
+    if not verify_done_enabled():
+        return
+    st = _verify_state()
+    st["seq"] += 1
+    st["last_write"] = st["seq"]
+    st["wrote"][os.path.realpath(path)] = st["seq"]
+
+
+def _verify_mentions(command: str, dest: str) -> bool:
+    base = os.path.basename(dest)
+    stem = os.path.splitext(base)[0]
+    return (dest in command or base in command
+            or (len(stem) >= 3 and stem in command))
+
+
+def _verify_note_bash(command: str) -> None:
+    if not verify_done_enabled():
+        return
+    expected = _task_expected_paths()
+    if not expected:
+        return
+    st = _verify_state()
+    st["seq"] += 1
+    for e in expected:
+        if _verify_mentions(str(command), e):
+            st["ran"][e] = st["seq"]
+
+
+def _verify_untested(expected: list[str]) -> list[str]:
+    """Destinations to nudge about (sorted), or [] — and [] always after the
+    first nudge of a run, or with the switch off."""
+    if not verify_done_enabled() or not expected:
+        return []
+    st = _verify_state()
+    if st["nudged"]:
+        return []
+    out = [e for e in expected
+           if os.path.splitext(e)[1].lower() in _VERIFY_SRC_EXTS
+           and os.path.exists(e)
+           and os.path.realpath(e) in st["wrote"]
+           and st["ran"].get(e, 0) <= st["last_write"]]
+    if out:
+        st["nudged"] = True
+    return sorted(out)
+
+
 def task_done(summary: str) -> str:
     """Signal that the task is complete."""
     # R1 path guard: refuse completion while expected task files (with a
@@ -2971,6 +3266,13 @@ def task_done(summary: str) -> str:
                 "exist yet: " + ", ".join(sorted(missing)) +
                 ". Create them at exactly these paths, then call task_done "
                 "again.")
+    # G9 (opt-in): the files exist, but were they tested as they now stand?
+    untested = _verify_untested(expected)
+    if untested:
+        return ("Before finishing: re-run your test against "
+                + ", ".join(untested) + " itself. A file was written after "
+                "your last run of it, so what is there now is untested. Then "
+                "call task_done again (this check runs once).")
     return f"TASK_DONE: {summary}"
 
 

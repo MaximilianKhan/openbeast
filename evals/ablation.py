@@ -263,6 +263,23 @@ def exposure(results: dict) -> dict | None:
             "units_card_fired": exp.get("units_card_fired")}
 
 
+def card_eligibility(results: dict) -> dict | None:
+    """G16: how many measured units an escalation card COULD reach on the
+    host that ran the arm — its language in diagnostics scope and its index
+    served there (run_eval stamps harness.escalation_eligible_langs). None
+    for an arm without escalation, or a file from before the stamp. Without
+    it an arm labelled "packs+diag+escalate" reads as escalating every
+    compiled language when the host served a zig index only."""
+    h = results.get("harness") or {}
+    langs = h.get("escalation_eligible_langs")
+    if langs is None:
+        return None
+    scope = set(h.get("diag_scope") or ())
+    rows = [t for t in results.get("tasks", []) if invalid_reason(t) is None]
+    elig = sum(1 for t in rows if lang_of(t) in set(langs) and lang_of(t) in scope)
+    return {"langs": sorted(langs), "units_eligible": elig, "units": len(rows)}
+
+
 def report(a: dict, b: dict, r: int = 1) -> dict:
     """Every contrast the brief asks for between arm A and arm B."""
     pairs, dropped, unsampled = pair(a, b)
@@ -308,6 +325,7 @@ def report(a: dict, b: dict, r: int = 1) -> dict:
         "diag_latency_ship_ok": (hb.get("diag_latency_ms") or {}).get("p95", 0) <= 1000
         if hb.get("diag_latency_ms") else None,
         "exposure": exposure(b),
+        "card_eligibility": card_eligibility(b),
         "delta_provenance": {"score": round(sb["score"] - sa["score"], 2),
                              "lang": round(sb["lang"] - sa["lang"], 2)},
     }
@@ -360,10 +378,16 @@ def render(rep: dict) -> str:
         lat = rep["diag_latency_ms"]
         lines.append(f"  diag latency p95 {lat['p95']:.0f} ms "
                      f"({'ship clause OK' if rep['diag_latency_ship_ok'] else 'OVER 1 s'})")
+    ce = rep.get("card_eligibility")
+    card_txt = (f"card-eligible units: {ce['units_eligible']}/{ce['units']} "
+                f"({', '.join(ce['langs']) or 'no served index'})" if ce else "")
     if rep["exposure"]:
         e = rep["exposure"]
         lines.append(f"  diag exposure: {e['units_exposed']}/{e['units_run_in_scope']} units "
-                     f"(hint fired {e['units_hint_fired']}, card fired {e['units_card_fired']})")
+                     f"(hint fired {e['units_hint_fired']}, card fired {e['units_card_fired']})"
+                     + (f"; {card_txt}" if card_txt else ""))
+    elif card_txt:
+        lines.append(f"  escalation: {card_txt}")
     lines.append(f"  scores on measured units: A {a['scores']['score']} "
                  f"(solve {a['scores']['solve']}, lang {a['scores']['lang']}) | "
                  f"B {b['scores']['score']} (solve {b['scores']['solve']}, lang {b['scores']['lang']})"
