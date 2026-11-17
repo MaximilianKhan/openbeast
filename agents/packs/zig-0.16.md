@@ -20,7 +20,13 @@ removed / renamed helpers:
 - casts take ONE arg, type from context: `@intToFloat/@floatToInt/@intCast(T, x)/@enumToInt/@boolToInt` → `const f: f64 = @floatFromInt(i); const n: i32 = @intFromFloat(f); const b: u8 = @intCast(x); @intFromEnum(e); @enumFromInt(n); @intFromBool(b); @truncate(x); @bitCast(x)`; inline: `@as(f64, @floatFromInt(n))`.
 - `std.heap.GeneralPurposeAllocator` gone → `var dbg: std.heap.DebugAllocator(.{}) = .init; const gpa = dbg.allocator();` (or `init.gpa`, `std.heap.page_allocator`). `std.os.exit` → `std.process.exit(code)`.
 - `std.ascii.isAlpha/isSpace` → `isAlphabetic/isWhitespace` (also `isDigit, isAlphanumeric, toLower, toUpper, eqlIgnoreCase`).
-(2) GENERATED signature digest — zig 0.16.0 std, 35 lines, sha256(digest)=c7af73f8d528b4ee (agents/packs/gen_zig_pack.py — do not edit)
+threads / Io arity / syntax / lint (each of these is a compile ERROR in 0.16):
+- `std.Thread.spawn(config, f, args)`: arg 1 is a SpawnConfig (`.{}`, or `.{ .allocator = gpa }`), never an allocator; args is ALWAYS a tuple, even for one value: `const t = try std.Thread.spawn(.{}, worker, .{ ctx, i }); t.join();` (`.{ctx}`, not `ctx`). Cores: `try std.Thread.getCpuCount()`.
+- `std.Thread.ResetEvent/Mutex/Condition` are gone → `var ev: std.Io.Event = .unset; ev.set(io); try ev.wait(io);` and `var m: std.Io.Mutex = .init; try m.lock(io); defer m.unlock(io);` (pass `io` into the thread's args).
+- Io arity: `std.Io.File.stdin()/.stdout()` take NO args; `f.reader(io, &buf)` / `f.writer(io, &buf)` take io first. `std.Io.File` has no `writeAll` → `try f.writeStreamingAll(io, bytes)` (or print via a File.Writer). There is no `openFileIo`: `dir.openFile(io, path, .{})`.
+- `const std = @import("std");` (`@std` does not exist). While continue expression needs parens: `while (i < n) : (i += 1) {`.
+- lint: an unused local constant/var is an error (delete it); a `var` never mutated → `const`; `_ = x;` after x is used is a "pointless discard" (delete it); unused param → name it `_`. `i0`, `i2`, `u8`, `f32`... are primitive type names: never use them as identifiers (`r0`, `idx2`).
+(2) GENERATED signature digest — zig 0.16.0 std, 18 lines, sha256(digest)=31b78029d6347e1b (agents/packs/gen_zig_pack.py — do not edit)
 legend: io = init.io (std.process.Init); w = &file_writer.interface (*std.Io.Writer); r = &file_reader.interface (*std.Io.Reader); fw/fr = std.Io.File.Writer/Reader; list: std.ArrayList(T); gpa: std.mem.Allocator; dir = std.Io.Dir.cwd(). Ranked by in-tree reference count; example args are placeholders.
 - w.print(comptime fmt: []const u8, args: anytype) Error!void → try w.print("{d}\n", .{x})
 - w.writeAll(bytes: []const u8) Error!void → try w.writeAll(s)
@@ -40,20 +46,3 @@ legend: io = init.io (std.process.Init); w = &file_writer.interface (*std.Io.Wri
 - r.takeInt(comptime T: type, endian: std.builtin.Endian) Error!T → try r.takeInt(u8, .little)
 - r.takeByte() Error!u8 → try r.takeByte()
 - file.reader(io: Io, buffer: []u8) Reader → file.reader(io, &buf)
-- std.Io.Dir.cwd() Dir → std.Io.Dir.cwd()
-- list.appendAssumeCapacity(item: T) void → list.appendAssumeCapacity(item)
-- list.clearRetainingCapacity() void → list.clearRetainingCapacity()
-- std.ascii.isPrint(c: u8) bool → std.ascii.isPrint('a')
-- std.fmt.parseInt(comptime T: type, buf: []const u8, base: u8) ParseIntError!T → try std.fmt.parseInt(u8, s, 10)
-- std.mem.writeInt(comptime T: type, buffer: *[@divExact(@typeInfo(T).int.bits, 8)]u8, value: T, endian: Endian) void → std.mem.writeInt(u8, buffer, value, .little)
-- std.mem.findScalar(comptime T: type, slice: []const T, value: T) ?usize → if (std.mem.findScalar(u8, slice, value)) |v| _ = v
-- std.math.minInt(comptime T: type) comptime_int → std.math.minInt(u8)
-- std.Io.Writer.fixed(buffer: []u8) Writer → std.Io.Writer.fixed(&buf)
-- w.buffered() []u8 → w.buffered()
-- r.peek(n: usize) Error![]u8 → try r.peek(n)
-- r.take(n: usize) Error![]u8 → try r.take(n)
-- file.writer(io: Io, buffer: []u8) Writer → file.writer(io, &buf)
-- dir.openFile(io: Io, sub_path: []const u8, options: OpenFileOptions) File.OpenError!File → try dir.openFile(io, s, .{})
-- list.pop() ?T → if (list.pop()) |v| _ = v
-- list.appendSlice(gpa: Allocator, items: []const T) Allocator.Error!void → try list.appendSlice(gpa, items)
-- w.flush() Error!void → try w.flush()

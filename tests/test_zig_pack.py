@@ -171,6 +171,30 @@ def test_fixtures_behave_old_fails_new_compiles(tmp_path):
     assert not wrong, f"fixtures not behaving as named: {wrong}"
 
 
+def _compile_err(path: Path, cache: Path) -> str:
+    env = dict(os.environ, ZIG_GLOBAL_CACHE_DIR=str(cache / "g"), ZIG_LOCAL_CACHE_DIR=str(cache / "l"))
+    r = subprocess.run(["zig", "build-exe", "-fno-emit-bin", str(path)],
+                       capture_output=True, text=True, env=env, cwd=str(cache), timeout=300)
+    return r.stderr
+
+
+@pytest.mark.skipif(not HAS_ZIG, reason="zig not installed")
+def test_old_fixtures_fail_with_the_expected_error(tmp_path):
+    """Pack v2 entries (GLM-5.3-Flash v5 taxonomy, 2026-11-16) pin the
+    error each OLD fixture must produce: an OLD file that fails for some
+    unrelated reason (a typo, a missing import) proves nothing about the
+    claim it is filed under."""
+    expect = {fn: want for e in _manifest()["entries"] for fn, want in (e.get("expect") or {}).items()}
+    assert len(expect) >= 14, "pack v2 entries lost their expected errors"
+    for fn in expect:
+        assert ".old." in fn and any(fn in e["old"] for e in _manifest()["entries"]), fn
+    files = sorted(expect)
+    with ThreadPoolExecutor(max_workers=min(8, os.cpu_count() or 2)) as pool:
+        out = dict(zip(files, pool.map(lambda f: _compile_err(FIXTURES / f, tmp_path), files)))
+    wrong = {f: out[f][-300:] for f in files if expect[f] not in out[f]}
+    assert not wrong, f"OLD fixtures failing for the wrong reason: {wrong}"
+
+
 # --- 4. injection wiring ----------------------------------------------------
 
 def test_runner_puts_context_in_delimited_block():
