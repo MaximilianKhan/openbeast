@@ -15,8 +15,8 @@ Hash key components:
    budget), greedy (low-churn decode), pack (awareness pack sha —
    task-scoped to the pack's language), env (opt-in environment
    fingerprint: weights, llama.cpp build, KV flags, toolchains), agent
-   (agent-side env switches: thinking, seed, verify-done, diag edit-hint;
-   built by run_eval.agent_switches).
+   (agent-side env switches: thinking, seed, verify-done, diag edit-hint,
+   env block, wall warn; built by run_eval.agent_switches).
 5. agent context hash (the era) — sha256 of what an eval unit consumes:
    system-prompt.md, the agent runtime itself (agents/runner.py,
    agents/tools.py), the eval-suite marker (evals/SUITE_VERSION) and the

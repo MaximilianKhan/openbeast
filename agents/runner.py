@@ -771,6 +771,235 @@ def turns_notice(iteration: int, max_iter: int) -> str:
             f"exploring; finish, verify, and call task_done]")
 
 
+# ---------------------------------------------------------------------------
+# G23 — wall-clock warnings (opt-in, OPENBEAST_AGENT_WALL_WARN=1)
+#
+# The runner knew its turn budget but not the unit's wall budget, so a slow
+# model was killed by run_eval's timeout with no warning. With the switch on
+# and a wall known (--wall-s, or OPENBEAST_AGENT_WALL_S, which run_eval's
+# run_agent sets to the scaled wall it kills at), the first turn starting
+# past 50% and the first past 80% get one transient notice each, next to the
+# turns notice (never stored in the history). Prior art: Droid shows elapsed
+# time only past thresholds; LangChain deepagents' time-budget warnings.
+# ---------------------------------------------------------------------------
+
+#: Fractions of the wall at which a notice fires, once each.
+_WALL_MARKS = (0.5, 0.8)
+
+#: The runner's clock (monotonic; a module attribute so tests can fake it).
+_clock = time.monotonic
+
+
+def wall_warn_enabled() -> bool:
+    return os.environ.get("OPENBEAST_AGENT_WALL_WARN", "").strip() == "1"
+
+
+def wall_budget_s(explicit: float | None = None) -> float:
+    """The unit's wall budget: the explicit value (--wall-s) if positive,
+    else OPENBEAST_AGENT_WALL_S, else 0 (unknown: no notices)."""
+    if explicit and explicit > 0:
+        return float(explicit)
+    try:
+        v = float(os.environ.get("OPENBEAST_AGENT_WALL_S", "").strip() or 0)
+    except ValueError:
+        return 0.0
+    return v if v > 0 else 0.0
+
+
+def wall_notice(elapsed: float, wall_s: float, fired: set) -> str:
+    """The notice for the first turn starting past a mark not yet fired, else
+    ''. A turn that jumps past several marks fires once, for the highest, and
+    retires the lower ones. Mutates `fired`."""
+    if wall_s <= 0:
+        return ""
+    crossed = [m for m in _WALL_MARKS if elapsed >= m * wall_s and m not in fired]
+    if not crossed:
+        return ""
+    fired.update(m for m in _WALL_MARKS if m <= max(crossed))
+    return (f"[wall clock — {int(elapsed)} s of your {int(wall_s)} s wall used; "
+            f"finish and verify the destination now]")
+
+
+# ---------------------------------------------------------------------------
+# G22 — first-turn environment block (opt-in, OPENBEAST_AGENT_ENV_BLOCK=1)
+#
+# Most failing GLM v5 units ended on the turn cap after spending early turns
+# on `which`, `--version` and `ls`. Prior art: Droid's startup environment
+# block, shown as shell command output ("helped the agent avoid reissuing
+# similar commands"); Meta-Harness's sandbox snapshot "saves 2-5 early
+# exploration turns". This block is about THIS run (versions, workdir, the
+# task's paths); host userland quirks belong to platform_line and the packs.
+#
+# Placement: appended to the first user message (the task), formatted as
+# the output of a probe. Not a synthetic tool result: that needs a fabricated
+# assistant tool_call the model never made, which chat templates validate
+# and the transcript would attribute to the model. Stored in the history: it
+# is a fact that never changes, so it costs one prefix, not one per turn.
+#
+# Never prints environment values or anything outside the task's
+# /tmp/eval_* directories.
+# ---------------------------------------------------------------------------
+
+#: Hard size cap (~300 tokens at 4 chars/token).
+_ENV_BLOCK_MAX_CHARS = 1200
+_ENV_PROBE_TIMEOUT_S = 3.0
+_ENV_LIST_MAX = 30
+_ENV_PATHS_MAX = 12
+_ENV_PATHS_CHARS = 360
+#: Same commands as evals/run_eval.py toolchain_versions(), plus python3 and
+#: the C compilers the task may call by any of their names.
+_ENV_TOOLCHAINS = (("python3", ["python3", "--version"]),
+                   ("go", ["go", "version"]),
+                   ("rustc", ["rustc", "--version"]),
+                   ("zig", ["zig", "version"]),
+                   ("cc", ["cc", "--version"]),
+                   ("clang", ["clang", "--version"]),
+                   ("gcc", ["gcc", "--version"]))
+_ENV_CLI = ("git", "make", "cmake", "timeout", "gtimeout", "perl", "jq")
+
+
+def env_block_enabled() -> bool:
+    return os.environ.get("OPENBEAST_AGENT_ENV_BLOCK", "").strip() == "1"
+
+
+def _probe_version(cmd: list[str]) -> str | None:
+    """First line of a version command, None when the tool is absent."""
+    import shutil
+    import subprocess
+    if not shutil.which(cmd[0]):
+        return None
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                             timeout=_ENV_PROBE_TIMEOUT_S)
+        text = (out.stdout or out.stderr or "").strip()
+        return text.splitlines()[0][:50] if text else "?"
+    except Exception:
+        return "?"
+
+
+def _human_size(n: int) -> str:
+    for unit in ("B", "K", "M", "G"):
+        if n < 1024 or unit == "G":
+            return f"{n}{unit}" if unit == "B" else f"{n:.1f}{unit}"
+        n /= 1024
+    return f"{n}B"  # pragma: no cover
+
+
+def _eval_roots(expected: list[str]) -> list[str]:
+    """The task's /tmp/eval_* top-level directories (only those)."""
+    roots = []
+    for p in expected:
+        m = re.match(r"^/tmp/(eval[\w\-.]*)", p)
+        if m:
+            root = "/tmp/" + m.group(1).rstrip(".")
+            if root not in roots:
+                roots.append(root)
+    return roots
+
+
+def _list_eval_dir(root: str, budget: list[int]) -> list[str]:
+    """Depth <= 2 listing of one eval dir, sharing the entry budget. Symlinks
+    are shown, never followed."""
+    lines: list[str] = []
+
+    def walk(d: str, depth: int, indent: str):
+        try:
+            names = sorted(os.listdir(d))
+        except OSError:
+            return
+        for name in names:
+            if budget[0] <= 0:
+                budget[1] += 1
+                continue
+            full = os.path.join(d, name)
+            try:
+                st = os.lstat(full)
+            except OSError:
+                continue
+            import stat as _stat
+            budget[0] -= 1
+            if _stat.S_ISLNK(st.st_mode):
+                lines.append(f"{indent}{name} -> (symlink)")
+            elif _stat.S_ISDIR(st.st_mode):
+                lines.append(f"{indent}{name}/")
+                if depth < 2:
+                    walk(full, depth + 1, indent + "  ")
+            else:
+                lines.append(f"{indent}{name} {_human_size(st.st_size)}")
+
+    walk(root, 1, "    ")
+    return lines
+
+
+def env_block(workdir: str | None = None, expected: list[str] | None = None,
+              system: str | None = None, machine: str | None = None) -> str:
+    """The first-turn environment block (G22). Bounded by
+    _ENV_BLOCK_MAX_CHARS; never includes an environment value."""
+    from concurrent.futures import ThreadPoolExecutor
+    expected = _tools._task_expected_paths() if expected is None else expected
+    # Only the eval dirs: run_eval extracts exactly /tmp/eval* paths, and
+    # anything else (a home path in a hand-set variable) is not echoed.
+    expected = [p for p in expected if p.startswith("/tmp/eval")]
+    system = system or platform.system() or "unknown"
+    machine = machine or platform.machine() or "unknown"
+    with ThreadPoolExecutor(max_workers=len(_ENV_TOOLCHAINS)) as ex:
+        found = list(zip([n for n, _ in _ENV_TOOLCHAINS],
+                         ex.map(lambda nc: _probe_version(nc[1]), _ENV_TOOLCHAINS)))
+    # cc/clang/gcc are often one compiler: group identical answers.
+    groups: dict[str, list[str]] = {}
+    for name, ver in found:
+        if ver is not None:
+            groups.setdefault(ver, []).append(name)
+    tc = [f"{'/'.join(names)}: {ver}" for ver, names in groups.items()]
+    absent = [n for n, v in found if v is None]
+    import shutil
+    have = [t for t in _ENV_CLI if shutil.which(t)]
+    lacking = [t for t in _ENV_CLI if t not in have]
+
+    head = ["[environment — probed by the harness before your first turn; "
+            "this is command output, no need to re-run it]",
+            f"os: {system} {machine}",
+            "toolchains: " + ("; ".join(tc) or "none found")
+            + (f" (not installed: {', '.join(absent)})" if absent else ""),
+            "cli: " + (" ".join(have) or "none")
+            + (f" (missing: {' '.join(lacking)})" if lacking else ""),
+            f"workdir: {workdir or os.getcwd()}"]
+    if expected:
+        # Bounded on its own (<= _ENV_PATHS_MAX names, <= _ENV_PATHS_CHARS),
+        # so a long path list can never crowd out the rest of the block.
+        line = "expected task paths: "
+        shown = 0
+        for p in expected[:_ENV_PATHS_MAX]:
+            mark = f"{p} ({'exists' if os.path.lexists(p) else 'missing'})"
+            if shown and len(line) + len(mark) + 2 > _ENV_PATHS_CHARS:
+                break
+            line += (", " if shown else "") + mark
+            shown += 1
+        more = len(expected) - shown
+        head.append(line + (f", +{more} more" if more > 0 else ""))
+    listing: list[str] = []
+    budget = [_ENV_LIST_MAX, 0]           # [entries left, entries dropped]
+    for root in _eval_roots(expected):
+        if os.path.isdir(root) and not os.path.islink(root):
+            listing.append(f"  {root}/")
+            listing.extend(_list_eval_dir(root, budget))
+    if listing:
+        head.append("task dirs (depth <= 2):")
+    if budget[1]:
+        listing.append(f"    ... +{budget[1]} more entries")
+    # Whole lines only: the head always fits (each part is bounded), the
+    # listing is cut at the line that would cross the cap.
+    out = "\n".join(head)[:_ENV_BLOCK_MAX_CHARS]
+    tail = "\n    ... (truncated)"
+    for i, ln in enumerate(listing):
+        if len(out) + 1 + len(ln) + (len(tail) if i < len(listing) - 1 else 0) \
+                > _ENV_BLOCK_MAX_CHARS:
+            out += tail
+            break
+        out += "\n" + ln
+    return out
+
+
 #: Consecutive identical tool calls (same name, args AND result) after which
 #: the result gets _repeat_nudge appended.
 _REPEAT_AFTER = 3
@@ -1007,9 +1236,15 @@ def run_agent(
     api_key: str | None = None,
     session_id: str | None = None,
     steer: bool = False,
+    wall_s: float | None = None,
 ) -> str:
     """Run the agent loop. Returns the final summary or last model message."""
     _safe_stdio()
+    # G23: the wall clock starts with the run (run_eval's kill timer started a
+    # moment earlier, at spawn). Notices only with the switch on and a wall.
+    wall_t0 = _clock()
+    wall = wall_budget_s(wall_s) if wall_warn_enabled() else 0.0
+    wall_fired: set = set()
 
     if workdir:
         workdir = os.path.expanduser(workdir)
@@ -1137,6 +1372,14 @@ def run_agent(
 
     log_event({"type": "start", "task": task, "model": model, "workdir": workdir})
 
+    # G22: the environment block rides on the task message, once, before the
+    # first model call (a fresh run only: a resumed history starts elsewhere).
+    if env_block_enabled() and not (resume_from and os.path.isfile(resume_from)):
+        block = env_block(workdir)
+        messages[1] = {**messages[1],
+                       "content": f"{messages[1].get('content') or ''}\n\n{block}"}
+        log_event({"type": "env_block", "chars": len(block), "text": block})
+
     final_summary = ""
     # Token usage accumulated across every API call. Servers that don't return
     # a `usage` field (e.g. some older llama.cpp builds) leave these at 0.
@@ -1232,7 +1475,13 @@ def run_agent(
         log_event({"type": "iteration", "number": iteration})
 
         # The transient block: the plan plus, near the end, the turns left.
-        plan = "\n\n".join(b for b in (plan_block(), turns_notice(iteration, max_iter))
+        # G23: and, with OPENBEAST_AGENT_WALL_WARN=1, the wall-clock notice.
+        wnote = wall_notice(_clock() - wall_t0, wall, wall_fired)
+        if wnote:
+            log_event({"type": "wall_notice", "iteration": iteration,
+                       "elapsed_s": round(_clock() - wall_t0, 1), "wall_s": wall})
+        plan = "\n\n".join(b for b in (plan_block(), turns_notice(iteration, max_iter),
+                                      wnote)
                            if b)
         if context_budget > 0:
             # Proactive: past ~70% of the declared budget, evict before the
@@ -1550,6 +1799,7 @@ def main():
     parser.add_argument("--resume", help="Resume from a previous agent log file (JSONL path)")
     parser.add_argument("--session-id", help="beast-chat: pin the session-ledger id (default: derived from the log filename, else generated). Implies --steer.")
     parser.add_argument("--steer", action="store_true", help="beast-chat: register in the session ledger and read the steering inbox at each turn boundary. OFF unless this flag or --session-id is passed (there is no environment opt-in); ALWAYS off under run_eval.py (OPENBEAST_EVAL / OPENBEAST_TASK_PATHS).")
+    parser.add_argument("--wall-s", type=float, default=0, help="The unit's wall budget in seconds (default: OPENBEAST_AGENT_WALL_S, which run_eval sets). Used only with OPENBEAST_AGENT_WALL_WARN=1: one transient notice at the first turn past 50%% and past 80%% of it")
     parser.add_argument("--system-prompt", help="Override the system prompt (disables context/budget injection)")
     parser.add_argument("--system-prompt-file", help="Read system prompt from a file (disables context/budget injection)")
 
@@ -1590,6 +1840,7 @@ def main():
         api_key=args.api_key,
         session_id=args.session_id,
         steer=args.steer,
+        wall_s=args.wall_s,
     )
 
 

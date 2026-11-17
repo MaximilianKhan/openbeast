@@ -1,5 +1,38 @@
 # Eval suite changelog
 
+## v5.0, G22 environment block + G23 wall warnings (2026-11-16) — era roll, harness7
+
+Two opt-in agent switches for the overnight arm E (both on). Evidence and
+prior art: `docs/HARNESS_NOTES.md` G22/G23.
+
+- **The harness fingerprint moves: harness6 -> harness7.** run_eval's
+  `run_agent` (in `cache.HARNESS_FUNCTIONS`) now sets
+  `OPENBEAST_AGENT_WALL_S` in the agent's env to the timeout it kills at
+  (`int(wall * timeout_scale)`, computed once and used for both). Through
+  env, not argv: the runner's argv is unchanged, and the wall the agent is
+  told cannot drift from the kill timeout. The variable is set on every
+  unit, but the runner reads it only with the switch on. The era moves for
+  every row regardless, since `agents/runner.py` changed.
+- **G22, `OPENBEAST_AGENT_ENV_BLOCK=1`.** Before the first model call the
+  task message gets a probed environment block (<= 1,200 chars): OS/arch,
+  python3/go/rustc/zig/cc/clang/gcc versions, which of git, make, cmake,
+  timeout, gtimeout, perl, jq exist, the workdir, which expected task paths
+  exist, and a depth <= 2, <= 30-entry listing of the task's `/tmp/eval_*`
+  dirs. It is stored in the history (a fixed fact) and logged as an
+  `env_block` transcript event. Never an env value or a path outside
+  `/tmp/eval*`.
+- **G23, `OPENBEAST_AGENT_WALL_WARN=1`.** The first turn starting past 50%
+  and the first past 80% of the wall get "[wall clock — N s of your M s
+  wall used; finish and verify the destination now]" in the transient block
+  next to the turns notice (never stored); a `wall_notice` event is logged.
+  M is the scaled wall, so it depends on `--jobs` as the kill does.
+  `runner.py --wall-s` sets the wall outside run_eval.
+- **Cache key.** Both join the `ag-<parts>` component (`envb`, `wwarn`;
+  arm E is `ag-envb-wwarn`), omitted when unset. Stamped in
+  `harness.agent_switches` and, when set, on every row (`agent_env_block`,
+  `agent_wall_warn`); pinned into each unit's env like the others.
+- Off (unset): requests are byte-identical to before.
+
 ## v5.0, zig pack variants: v1 back in production, v2 by switch (2026-11-16)
 
 The fix for #188. That change put the v2 bytes in `agents/packs/zig-0.16.md`.
