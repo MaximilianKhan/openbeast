@@ -175,19 +175,21 @@ def test_round_trip_every_fixture_selects_its_own_card_or_nothing():
             else:
                 silent.append((c.lang, f"{c.id}:old[{n}]"))
     # Every fixture the index was built from, for the languages measured
-    # (63 on the rig: 53 zig + 6 cpp + 4 python; 53 where only zig matches —
-    # 39 zig before pack v2 added 14 OLD fixtures, 2026-11-16).
+    # (67 on the rig: 57 zig + 6 cpp + 4 python; 57 where only zig matches —
+    # 39 zig before pack v2 added 14 OLD fixtures, 2026-11-16, and v3 4 more,
+    # 2026-11-17).
     want = sum(idx["langs"][lang]["fixtures_with_diagnostics"] for lang in served)
     assert tot == want >= 39, f"{tot} diagnostics, the index records {want} — the claim sets shrank?"
     assert not wrong, f"a fixture selected somebody else's card: {wrong}"
     # EXACTLY the fixtures the index declares silent — no more (a regression)
-    # and no fewer (a stale declaration). On this toolchain that is 50/53 zig
-    # (36/39 before pack v2; every one of its 14 new OLD fixtures selects its own card).
+    # and no fewer (a stale declaration). On this toolchain that is 54/57 zig
+    # (36/39 before pack v2; every one of v2's 14 and v3's 4 new OLD fixtures
+    # selects its own card).
     declared = {(lang, f) for lang, e in idx["langs"].items()
                 for f in e["unreachable"]["fixtures"]}
     assert set(silent) == {d for d in declared if d[0] in per_lang}, \
         (sorted(silent), sorted(declared))
-    assert per_lang["zig"] == [50, 53], per_lang
+    assert per_lang["zig"] == [54, 57], per_lang
     declared_claims = {(lang, cid) for lang, e in idx["langs"].items()
                        for cid in e["unreachable"]["claims"]}
     assert seen - reached == {d for d in declared_claims if d[0] in per_lang}

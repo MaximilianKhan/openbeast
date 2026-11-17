@@ -536,6 +536,82 @@ def test_truncated_turn_is_trimmed_and_nudged(tmp_path, monkeypatch):
     assert "output cap" in second[-1]["content"]
 
 
+# --- a thinking turn cut off by the cap (2026-11-17, the thinking stall) ----
+
+def _thinking_capped(reasoning, content="", via_extra=False):
+    msg = _Msg(content=content)
+    if via_extra:
+        msg.model_extra = {"reasoning_content": reasoning}
+    else:
+        msg.reasoning_content = reasoning
+    r = _Resp(msg, finish="length")
+    r.usage = type("U", (), {"prompt_tokens": 900, "completion_tokens": 16384,
+                             "total_tokens": 17284})()
+    return r
+
+
+def _events(tmp_path):
+    return [json.loads(ln) for ln in (tmp_path / "r.jsonl").read_text().splitlines()]
+
+
+def test_capped_think_carries_a_bounded_tail_of_its_reasoning(tmp_path, monkeypatch):
+    """Arm C: all 78 capped turns were pure reasoning, and after a discarded
+    cap the re-derivation capped again or ran into the wall 33 times in 47.
+    The next turn gets the END of the reasoning and an order to act."""
+    head = "PLAN-HEAD " * 2000                          # ~20K chars the tail drops
+    tail_mark = "\nso the divisor must be normalised first; now write divmod.c"
+    reasoning = head + "middle line\n" * 600 + tail_mark
+    out, fake, _ = _run(tmp_path, monkeypatch, [_thinking_capped(reasoning), _done()],
+                        env={"OPENBEAST_EVAL": "1", "OPENBEAST_AGENT_THINKING": "on"})
+    assert out == "fin"
+    nudge = fake.requests[1][-1]
+    assert nudge["role"] == "user"
+    assert "cut off mid-reasoning" in nudge["content"] and "act now" in nudge["content"]
+    assert tail_mark.strip() in nudge["content"]
+    assert "PLAN-HEAD" not in nudge["content"]
+    assert len(nudge["content"]) < runner._CAPPED_REASONING_TAIL_CHARS + 1000
+    # The tail rides in the nudge only: the assistant turn stays content-only.
+    asst = [m for m in fake.requests[1] if m["role"] == "assistant"][0]
+    assert asst["content"] == "" and set(asst) == {"role", "content"}
+    cap = [e for e in _events(tmp_path) if e["type"] == "output_cap"][0]
+    assert cap["max_tokens"] == 16384 and cap["completion_tokens"] == 16384
+    assert cap["reasoning_chars"] == len(reasoning)
+    assert cap["reasoning_tail_chars"] <= runner._CAPPED_REASONING_TAIL_CHARS
+
+
+def test_capped_think_reasoning_from_model_extra(tmp_path, monkeypatch):
+    """The openai SDK may keep the server's extra field in model_extra."""
+    _, fake, _ = _run(tmp_path, monkeypatch,
+                      [_thinking_capped("short think, then write it", via_extra=True), _done()])
+    assert "short think, then write it" in fake.requests[1][-1]["content"]
+
+
+def test_capped_reply_with_content_keeps_the_old_recovery(tmp_path, monkeypatch):
+    """A runaway ANSWER (content present) is the old case: its head is kept,
+    the reasoning is not fed back, and the nudge is the old one."""
+    _, fake, _ = _run(tmp_path, monkeypatch,
+                      [_thinking_capped("SECRET-THOUGHT", content="blah " * 5000), _done()])
+    sent = json.dumps(fake.requests[1])
+    assert "SECRET-THOUGHT" not in sent
+    assert "be concise" in fake.requests[1][-1]["content"]
+    cap = [e for e in _events(tmp_path) if e["type"] == "output_cap"][0]
+    assert "reasoning_chars" not in cap
+
+
+def test_capped_turn_without_reasoning_keeps_the_old_nudge(tmp_path, monkeypatch):
+    _, fake, _ = _run(tmp_path, monkeypatch, [_Resp(_Msg(content=""), finish="length"), _done()])
+    assert "be concise" in fake.requests[1][-1]["content"]
+    assert "<<<" not in fake.requests[1][-1]["content"]
+
+
+def test_reasoning_tail_starts_at_a_line_boundary():
+    text = "a" * 50 + "\n" + "b" * 100 + "\nlast line"
+    tail = runner._reasoning_tail(text, limit=120)
+    assert tail.endswith("last line") and len(tail) <= 120
+    assert runner._reasoning_tail("  short  ", limit=120) == "short"
+    assert runner._reasoning_text(_Msg()) == ""
+
+
 def test_invalid_env_value_falls_back_to_default(tmp_path, monkeypatch):
     _, fake, _ = _run(tmp_path, monkeypatch, [_done()],
                       env={"OPENBEAST_AGENT_MAX_TOKENS": "lots"})

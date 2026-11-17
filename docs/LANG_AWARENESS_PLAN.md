@@ -491,6 +491,64 @@ If v2 wins: copy `zig-0.16-v2.md` over `zig-0.16.md`, move
 and production serves only measured treatments, the same rule as the pin.
 `pack_context` never reads it.
 
+### 5.2 Pack v3 + a probed sed fact (2026-11-17) — BUILT, unmeasured
+
+Evidence: the 2026-11-17 audit of the thinking arms (C: thinking, no packs,
+54/71; E: thinking + pack v2 + host pack, partial). With thinking on, the
+only recurring language-knowledge failure left was zig, and it had moved.
+A thinking model does not guess the old API; it *routes around* the new Io
+plumbing to the nearest simple primitive. In C, 5 of the 6 zig units reached
+for `std.posix.write`. It is gone in 0.16, while `std.posix.read` is still
+there, so the model's own check ("posix.read is at line 400") told it posix
+was intact. Neither v1 nor v2 named it. Details, with the turn counts:
+`docs/HARNESS_NOTES.md` "Language residue under thinking".
+
+**Zig pack v3** (`agents/packs/zig-0.16-v3.md` @`cfdab8fa`, 1,955 tokens of
+2,000; eval-only, `OPENBEAST_PACK_VARIANT=v3`). It is v2 plus four claims.
+Each has fixtures (manifest `since: "v3"`) and pins its expected error:
+
+| Entry | OLD fixture's pinned error | The 0.16 form |
+|---|---|---|
+| `posix_write` (P0) | `struct 'posix' has no member named 'write'` | `try std.Io.File.stdout().writeStreamingAll(io, bytes);`, or libc `_ = std.c.write(1, bytes.ptr, bytes.len);` (`-lc` off macOS: without it zig refuses on Linux, checked with `-target x86_64-linux`) |
+| `clz_shift` (P1) | `invalid builtin function: '@intClz'`; `expected type 'u5', found 'u6'` | `const s: std.math.Log2Int(u32) = @intCast(@clz(v)); x << s` |
+| `erf` (P1) | `struct 'math' has no member named 'erf'` | write it (A&S 7.1.26) |
+| `init_skeleton` (P1, a pointer) | none | read `lib/init/src/main.zig` under `zig env`'s lib_dir; a test checks the file exists in the installed toolchain and is in the `std.process.Init` form |
+
+Placement follows the audit's design notes. The posix line sits next to the
+stdout line, on the API the model actually reaches for, and states the
+asymmetry. The pointer replaces research: C spent 101 zig turns grepping
+lib/std, and C 36_f stopped searching once it found that file. The
+generated digest shrank from 18 to 11 lines to stay in budget.
+`claims/zig-0.16.json` now holds 24 claims. The zig escalation index has 57
+OLD fixtures, and each of the 4 new ones selects its own card (the same 3
+are silent).
+
+**Why a new file, not an edit of v2:** arm E was measuring the v2 bytes
+when v3 was written. Rows carry `harness.pack_variant`, and a name that
+meant two sets of bytes would make E's v2 rows and later "v2" rows look
+comparable when they are not. The cache key (`pack1-<sha8>`) would have
+kept them apart, but the label would not. The manifest test checks each
+variant: an entry is stated in its `since` variant and later, and an
+earlier variant must not state it (v2 keeps its bytes).
+
+**Host pack, `sed_no_word_boundary`:** a probe that runs
+`sed 's/\bi0\b/lo/g'` on `i0 xi0 i0` and renders the fact only when sed
+exits 0 with the text unchanged (BSD sed reads `\b` as a literal `b`). The
+remedies `sed -E 's/[[:<:]]w[[:>:]]/x/g'` and `perl -pi -e 's/\bw\b/x/g'`
+are each offered only when they ran and did the replacement. It is the last
+userland line, so an over-budget pack drops it first and the lines measured
+before it keep their place. The Mac harness host's pack is now 264 tokens
+(sha `c2b4d955`).
+
+**To measure:** `BEAST_PACKS=1 OPENBEAST_PACK_VARIANT=v3` on a thinking arm,
+against E (v2). Read the zig units for `'posix' has no member named
+'write'`, `@intClz`, `found 'u6'` and `no member named 'erf'`, and count
+the research turns spent grepping lib/std. If v3 wins, it replaces v2 as the
+campaign's pack, and then goes through the same path to production as v2
+(copy over `zig-0.16.md`, move `MEASURED_SHA256`). The thinking-first
+campaign (`evals/campaigns/v5-thinking-first.json`) still names v2. Switching
+it is a campaign decision, not part of this change.
+
 ## 6. Eval integrity, comparability, era policy
 
 ### 6.1 Provenance & leaderboard display

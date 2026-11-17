@@ -1,7 +1,7 @@
 {
   "zig": "0.16.0",
   "verified": "2026-09-11",
-  "rule": "every *.old.*.zig must FAIL and every *.new.*.zig must COMPILE under `zig build-exe -fno-emit-bin`; every `pack_must_contain` string must appear in section (1) of agents/packs/zig-0.16.md; every curated bullet must hit >=1 entry; where an entry has `expect`, that OLD fixture's compiler output must contain the expected error text",
+  "rule": "every *.old.*.zig must FAIL and every *.new.*.zig must COMPILE under `zig build-exe -fno-emit-bin`; every `pack_must_contain` string must appear in section (1) of agents/packs/zig-0.16.md; every curated bullet must hit >=1 entry; where an entry has `expect`, that OLD fixture's compiler output must contain the expected error text; an entry with `since: vN` is stated only in pack variant vN and later (agents/packs/zig-0.16-vN.md), so the variants already measured keep their bytes",
   "entries": [
     {
       "entry": "main_io",
@@ -389,6 +389,77 @@
         "`i0`, `i2`, `u8`"
       ],
       "summary": "zig 0.16 lint errors: delete an unused local; a `var` never mutated must be `const`; `_ = x;` after x is used is a pointless discard; `i0`, `i2`, `u8`, `f32` are primitive type names, never identifiers"
+    },
+    {
+      "entry": "posix_write",
+      "since": "v3",
+      "old": [
+        "posix_write.old.1.zig"
+      ],
+      "new": [
+        "posix_write.new.1.zig",
+        "posix_write.new.2.zig"
+      ],
+      "expect": {
+        "posix_write.old.1.zig": "struct 'posix' has no member named 'write'"
+      },
+      "pack_must_contain": [
+        "`std.posix.write` is GONE but `std.posix.read` is not",
+        "std.Io.File.stdout().writeStreamingAll(io, bytes)",
+        "std.c.write(1, bytes.ptr, bytes.len)"
+      ],
+      "summary": "`std.posix.write` is gone in 0.16 (`std.posix.read` still exists, so posix is not intact): write raw output with `try std.Io.File.stdout().writeStreamingAll(io, bytes);` (`io = init.io`), or libc `_ = std.c.write(1, bytes.ptr, bytes.len);` (needs `-lc` off macOS)"
+    },
+    {
+      "entry": "clz_shift",
+      "since": "v3",
+      "old": [
+        "clz_shift.old.1.zig",
+        "clz_shift.old.2.zig"
+      ],
+      "new": [
+        "clz_shift.new.1.zig"
+      ],
+      "expect": {
+        "clz_shift.old.1.zig": "invalid builtin function: '@intClz'",
+        "clz_shift.old.2.zig": "expected type 'u5', found 'u6'"
+      },
+      "pack_must_contain": [
+        "no `@intClz`",
+        "std.math.Log2Int(u32)",
+        "const s: std.math.Log2Int(u32) = @intCast(@clz(v));"
+      ],
+      "summary": "there is no `@intClz`; `@clz(v)` on a u32 returns a u6 but a u32 shift amount must be `std.math.Log2Int(u32)` (u5): `const s: std.math.Log2Int(u32) = @intCast(@clz(v)); const y = x << s;` (v != 0)"
+    },
+    {
+      "entry": "erf",
+      "since": "v3",
+      "old": [
+        "erf.old.1.zig"
+      ],
+      "new": [
+        "erf.new.1.zig"
+      ],
+      "expect": {
+        "erf.old.1.zig": "struct 'math' has no member named 'erf'"
+      },
+      "pack_must_contain": [
+        "No `std.math.erf`/`erfc`",
+        "A&S 7.1.26"
+      ],
+      "summary": "zig 0.16's std.math has no `erf`/`erfc`: write it yourself (Abramowitz & Stegun 7.1.26, abs error 1.5e-7; a series or continued fraction for tighter)"
+    },
+    {
+      "entry": "init_skeleton",
+      "since": "v3",
+      "old": [],
+      "new": [
+        "init_skeleton.new.1.zig"
+      ],
+      "pack_must_contain": [
+        "lib/init/src/main.zig"
+      ],
+      "summary": "the toolchain ships a complete working 0.16 main (args, io, stdout writer) at `<zig env .lib_dir>/init/src/main.zig`: read it before grepping lib/std"
     }
   ]
 }

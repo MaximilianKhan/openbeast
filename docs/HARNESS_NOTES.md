@@ -327,3 +327,98 @@ Neither v1 nor v2 names it, and it is the one recurring uncovered zig claim.
 - **Bigger levers than any pack, for GLM:** the trailing-dot path regex (107 C turns), the
   16384-token output cap on thinking turns (13/17 C failures), the dlopen-in-comment lint
   (an E false FAIL), and sandbox read access to `evals/cache` and the harness source.
+
+## Thinking stall: a capped think keeps its tail (2026-11-17) — ADOPTED, PENDING an arm
+
+Source: arm C (GLM-5.3-Flash, runner v2 + wall-scaled turns + thinking on, no
+packs; `eval-glm-5-3-flash-v2-turns-think-L0-20261116-195724.json`, 54/71), all
+71 transcripts. 13 of C's 17 failures were "process": the unit never wrote its
+file because its thinking turns kept hitting the 16,384-token eval cap
+(`_EVAL_TURN_TOKENS_THINKING`). Measured before choosing a fix:
+
+| Measure | Value |
+|---|---|
+| Capped turns | 78, in 38 units (21 of those units still passed) |
+| Capped turns with no content and no tool call | **78 of 78** (pure reasoning; the old recovery kept nothing) |
+| Time in capped turns | 1,136 min (357 in passing units, 779 in failing ones) |
+| Decode rate of a capped turn, 4 jobs | 15.1 / 16.7 / 19.1 / 20.9 / 25.8 tok/s (min / p25 / median / p75 / max); 635–1,085 s per capped turn |
+| Turns that ended on their own (706, in the 51 finished units) | p50 ~395, p75 ~860, p90 ~2.3K, p95 ~4.5K, p99 ~12.4K, max ~15.1K tokens; 17 above 8K, all in passing units |
+| Caps on the first turn (before any file was read) | 31; the next turn was a probe (`ls`, `cat sample`) 29 times |
+| Caps on a later (code-writing) turn | 47; next turn: capped again 22, killed by the wall mid-think 11, probe 6, wrote the file 8 |
+
+Per-turn token counts are estimates: the transcripts log no per-turn usage, so
+each normal turn's tokens are its wall time times its unit's rate (the unit's
+completion total minus 16,384 per cap, over its normal turns' time). A capped
+turn is exactly 16,384.
+
+**What the data says.** (1) A cap destroys the whole turn, because the turn is
+reasoning only. (2) Re-thinking from scratch after a discarded cap fails 70% of
+the time on a code-writing turn (33 of 47 re-capped or ran into the wall), and
+the 163/168 units capped 2–4 turns in a row: the same think, re-derived and cut
+again. (3) A higher cap is not supported. The length of a capped think is
+censored at 16K, so no percentile of successful thinks says where it would
+have ended. The repeat chains suggest many would not end at 24K either, and
+each extra 8K costs ~7 min per stalled turn (median rate) on a 3,600 s wall.
+The productive tail does reach 92% of the cap (max ~15.1K), which is the one
+argument for a raise; the recovery below covers that case too, since a think
+cut at 16K now continues.
+
+**Adopted (runner):** when the cap cuts a turn that has no content and no tool
+call but has reasoning, the nudge carries the last 6,000 chars (~1.5K tokens)
+of that reasoning and says "you were cut off mid-reasoning; conclude from it
+and act now". Every other turn keeps the default: reasoning is never fed back.
+The cap stays 16,384 and the client timeout stays `cap / 8 tok/s` (2,048 s,
+2x the slowest measured capped-turn rate). The `output_cap` event now records
+`completion_tokens`, `reasoning_chars` and `reasoning_tail_chars`, so the next
+arm measures this directly instead of from timestamps.
+
+**To measure:** the next thinking arm vs C on the 38 capped units: capped minutes,
+caps per unit, and the 13 process failures. The failure mode to watch: a tail
+that ends inside a wrong derivation, followed by a confident wrong write (an A
+failure in place of a P failure).
+
+## Language residue under thinking: claims shipped and deferred (2026-11-17)
+
+From the 2026-11-17 audit of arms C and E (language × cause tables, the
+candidate claims table). Shipped as zig pack **v3**
+(`agents/packs/zig-0.16-v3.md`, `OPENBEAST_PACK_VARIANT=v3`). v3 is a new file,
+not an edit of v2: v2 was being measured by arm E, and a variant name must keep
+naming one set of bytes. Each claim is an OLD/NEW fixture pair in
+`tests/fixtures/zig016/` (`since: v3`), verified under zig 0.16.0:
+
+| Claim | OLD fails with | NEW compiles | Escalation card |
+|---|---|---|---|
+| P0 `std.posix.write` is gone, `std.posix.read` is not | `struct 'posix' has no member named 'write'` | `std.Io.File.stdout().writeStreamingAll(io, bytes)`; `std.c.write(1, p, n)` (needs `-lc` on Linux: checked with `-target x86_64-linux`) | selects `posix_write` |
+| P1 no `@intClz`; `@clz(u32)` is u6, a u32 shift amount is `Log2Int(u32)` = u5 | `invalid builtin function: '@intClz'`; `expected type 'u5', found 'u6'` | `const s: std.math.Log2Int(u32) = @intCast(@clz(v)); v << s` | selects `clz_shift` |
+| P1 no `std.math.erf`/`erfc` | `struct 'math' has no member named 'erf'` | an A&S 7.1.26 erf | selects `erf` |
+| P1 the toolchain's own main is at `lib/init/src/main.zig` | (no OLD: a pointer) | a file in its shape; a test checks the real file exists and uses `std.process.Init` | pack-only |
+
+v3 is 1,955 tokens (budget 2,000); the generated digest shrank from 18 to 11
+lines to fit. Production still serves v1 (`MEASURED_SHA256` unchanged).
+
+**Host pack:** `sed_no_word_boundary` is a probe, not an assertion. It runs
+`sed 's/\bi0\b/lo/g'` on `i0 xi0 i0`; when the output comes back unchanged with
+exit 0 (BSD sed reads `\b` as a literal `b`), the line is rendered. Each remedy
+(`sed -E 's/[[:<:]]w[[:>:]]/x/g'`, `perl -pi -e 's/\bw\b/x/g'`) is offered only
+when it ran on the host and did the replacement. GNU sed renders nothing.
+
+**Deferred (no claim; the audit saw each once, with no recurrence):**
+
+- zig P2 `@truncate` keeps signedness (C 163_f it22, 1 turn); zig P3 array length
+  must equal the literal's (C 167_f it18), `parseInt` lives in `std.fmt` (C
+  122_e; already in the digest, not salient). Each cost one turn.
+- rust P2 `f64::erf` is unstable on 1.100 (`E0658 float_erf`, C 36_e). It was a
+  deliberate probe that the model handled in one turn.
+- rust P2 `as` binds tighter than `>>` and `-` (C 163_e it7–10). The 4 turns
+  were a precedence slip, not stale knowledge: no API changed, so no claim fits.
+- rust P3 `rustc -o /dev/null` wants a temp dir (E 122_d it18). Once, and it was
+  part of the trailing-dot path harness bug's churn.
+- c P2 `gcc` is Apple clang, so no GCC nested functions (C 158_c it4). It is
+  probeable and belongs in the host pack's C line if it recurs; one turn so far.
+- cpp P3 `<cstdio>` does not declare `sqrt` (C 123_d it3). Not a version fact,
+  one turn.
+- go P3 `go build` in a shared dir compiles every `.go` in it (E 163_b it11). It
+  was caused by units sharing `/tmp/dbgdir`. Revisit only if it recurs across
+  units.
+
+Add a claim when the same error recurs in a second unit or a second arm.
