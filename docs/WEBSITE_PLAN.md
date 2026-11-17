@@ -1,11 +1,16 @@
 # openbeast.ai upgrade plan
 
 **Status, 2026-11-16: plan only. Revised 2026-11-17** to the state after
-PRs #175–#192 (see [What changed since the first draft](#what-changed-since-the-first-draft-2026-11-17)).
-**Decided 2026-11-17:** Max answered Q5–Q10 ([section 13](#13-questions-for-max));
-the `/benchmarks/` page ships now with the v5 ladder (website repo,
-P0 scope: the page plus the stale claims that contradict it) and is updated
-again when arm E lands. The rest of the plan is still to do. This page
+PRs #175–#192 (see [What changed since the first draft](#what-changed-since-the-first-draft-2026-11-17)),
+**and again 2026-11-17 evening** to the state after #194–#204 (see
+[What changed since the second revision](#what-changed-since-the-second-revision-2026-11-17-evening)).
+**Decided 2026-11-17:** Max answered Q5–Q10 ([section 13](#13-questions-for-max)).
+The `/benchmarks/` page and the P0 stale claims that contradict it are
+**merged** in the website repo (openbeast-website #17, #18) but **not
+deployed**: openbeast.ai still serves the 2026-10-26 build (checked
+2026-11-17 evening: the home page says "v1.7.0 SHIPPED", `/benchmarks/` is a
+404). Arm E has landed (50/71) and the page still shows it as pending. The
+rest of the plan is still to do. This page
 says what openbeast.ai claims today, what is true today, and what to build so
 the site matches OpenBeast at **v2.0.0**.
 
@@ -18,14 +23,15 @@ after v1.9.0 that will ship as v2.0.0.
 **How to read the labels.** **NOW** is what the site says today, quoted from
 the file. **TRUE** is the current fact, with the doc that backs it.
 **[V5-PENDING]** marks a number that does not exist yet. On 2026-11-16 that
-was every v5 number. Since 2026-11-17 GLM-5.3-Flash on the Spark pair has four
-finished configurations (runs `GLM-L0`, `GLM-A`, `GLM-B`, `GLM-C`) and the
+was every v5 number. Since 2026-11-17 GLM-5.3-Flash on the Spark pair has five
+finished configurations (runs `GLM-L0`, `GLM-A`, `GLM-B`, `GLM-C`, `GLM-E`) and the
 Claude Opus 5.5 reference ceiling has its run (`OPUS-REF`), all in the v5 board
 that `evals/v5_board.py` generates into [`docs/RESULTS.md`, "v5 leaderboard"](RESULTS.md#v5-leaderboard--best-configuration-per-model) and the
 README (#193, merged 2026-11-17; "Every v5 configuration measured" lists each
 run id). Still
-[V5-PENDING]: GLM arm E onward, the seed-noise arm, every Qwen3.8 row and
-DeepSeek v4.1 Flash.
+[V5-PENDING]: the seed-noise arm, every Qwen3.8 row and DeepSeek v4.1 Flash.
+GLM arms D and F were **not run** (Max paused the chain after E); the site
+says so in words if it mentions them, never as a pending chip.
 
 | Section | What it gets you |
 |---|---|
@@ -33,6 +39,7 @@ DeepSeek v4.1 Flash.
 | [2. Stale claims](#2-stale-claims) | every outdated claim, its file, the current fact |
 | [3. Accuracy rules](#3-accuracy-rules) | what may be printed, and what may not |
 | [What changed since the first draft](#what-changed-since-the-first-draft-2026-11-17) | the 2026-11-17 revision in one list |
+| [What changed since the second revision](#what-changed-since-the-second-revision-2026-11-17-evening) | the 2026-11-17 evening revision: arm E, thinking by default, MTU 9000, the multi-rig client, the website merges |
 | [4. New pages](#4-new-pages) | nine pages, and what each says; `/benchmarks/` carries the v5 story |
 | [5. Updates to existing pages](#5-updates-to-existing-pages) | home, research, about, investors, investment case, shared files |
 | [6. Rankings and benchmarks](#6-rankings-and-benchmarks) | how v5 is shown, the placeholder mechanism, what not to claim |
@@ -77,20 +84,61 @@ Since then:
 
 ---
 
+## What changed since the second revision (2026-11-17, evening)
+
+OpenBeast PRs #194–#204 and the operator steps of the same day:
+
+- **Arm E landed: 50/71, SCORE 74.7** (run `GLM-E`, #201), integrity scan
+  clean. One under C scored, so **GLM's best row stays `GLM-C`** (51/71,
+  76.7). E's 122_gemm_blocked_c fail is a validator false FAIL (the pre-#195
+  lint matched `dlopen` in a comment), footnoted on the board, not adjusted.
+  E replaces every E placeholder below ([4.1](#41-benchmarks--the-v5-story-and-the-board-p0-the-centrepiece),
+  [4.8](#48-researchharness--the-harness-engineering-story-p0), D9).
+  Arms D and F were not run (paused by Max).
+- **Thinking is on by default on spark-hydra** (#202, #203): beast-gate,
+  the Open WebUI "Thinking Default" filter and OpenBeast's own agents send
+  `enable_thinking` when a request names none; eval runs opt out. Measured
+  cost (single stream, from the Mac): the first token is as fast as before
+  (0.2 s), the first *answer* token goes from 0.2 s to 5.0 s median (1.9–38.7
+  s), and agent tasks take about 2.3x as long. `/hardware/` says so
+  ([4.2](#42-hardware--two-hosts-one-stack-p0)).
+- **RoCE MTU 9000 is live** on both Sparks (since 2026-11-17 14:20, verified
+  with 8972-byte don't-fragment pings on both rails, `active_mtu 4096`). Its
+  speed effect is **not measured**: no speed claim until the A/B (S44).
+- **The Mac client knows several rigs** (#204): `openbeast-client rigs`,
+  `use <rig>`, `rig add / remove / detect`; one opencode provider per rig;
+  each rig's context window read from its `/api/slot`. `/clients/` gets it
+  ([4.4](#44-clients--intelligence-on-every-device-p1)).
+- **The window, stated right:** 1,048,576 tokens is the window of one
+  conversation; the 4 streams draw on **one** shared KV pool of 1,986,560
+  tokens, not 4 x 1M (`SPARK_HYDRA.md` F3). Any page that mentions "1M"
+  says it this way.
+- **Website repo:** #17 (`/benchmarks/` with the ladder against the gold
+  standard, plus the P0 stale claims S1–S3, S6, S7, S9–S17, S24–S28, S30, S31)
+  and #18 (GLM-C at 51/71 after the integrity scan) are merged; **the deploy
+  on the Mac Mini is still to do**. Dependabot's website #16 (Next.js 16.4.3 →
+  16.4.5, seven moderate advisories) is open: merge it before that deploy.
+- **CI is off** on the openbeast repo (cost): PRs merge after local checks
+  with the results in the PR body (`CONTRIBUTING.md`). The plan's "drift-checked
+  in CI" for the v5 board now means `v5_board.py --check`, run locally.
+- New stale claims S47–S52 below.
+
+---
+
 ## 1. The site today
 
 ### Stack
 
 | | |
 |---|---|
-| Repo | `MaximilianKhan/openbeast-website` (private), `main` at `81eabc2` |
-| Framework | Next.js 16.4.3, React 19, Tailwind CSS 4, TypeScript. `output: "export"`, `trailingSlash: true`, `images.unoptimized` (`next.config.ts`) |
+| Repo | `MaximilianKhan/openbeast-website` (private), `main` at `3c2de4af` (#18, 2026-11-17); the live site is still `81eabc2` (2026-10-26) |
+| Framework | Next.js 16.4.3 (16.4.5 fixes seven moderate advisories; Dependabot #16 is open), React 19, Tailwind CSS 4, TypeScript. `output: "export"`, `trailingSlash: true`, `images.unoptimized` (`next.config.ts`) |
 | Styling | One hand-written `src/app/globals.css` (1,089 lines). Dark, green-on-black console look. `prefers-reduced-motion` is honoured (line 1069) |
 | Client JS | Two client components only: `ArchitectureMap.tsx` (lens buttons) and `PaperReader.tsx` (pdf.js, loaded on the paper page only) |
 | Tests | Playwright, `e2e/site.spec.ts` (344 lines), on Chromium, Firefox and WebKit in CI (`.github/workflows/ci.yml`), plus `npm audit` and ESLint |
 | Headers | `scripts/generate-headers.mjs` writes `out/_headers` after every build: a strict CSP with a sha256 per inline script, `img-src 'self'`, `connect-src 'self'`, no `media-src` (so `<video>` is blocked today) |
 | Paper sync | `scripts/sync-paper.mjs <openbeast> <commit>` copies the beast-rank PDF and writes `src/app/research/paper-build.json`. It refuses while the paper carries `[PENDING]` markers, and the e2e suite fails on a preview |
-| Open Dependabot branches | eslint 10.11 / 10.13, an npm minor-patch group, setup-node 7.1.0, two Docker base images |
+| Open Dependabot branches | Next.js 16.4.5 (#16, security), an npm minor-patch group (#15), eslint 10.11 / 10.13, setup-node 7.1.0, two Docker base images |
 
 ### How it deploys
 
@@ -102,9 +150,12 @@ health-checks for a 200 with a CSP header, and flips back on failure.
 `deploy.sh rollback` restores the previous release. Deploys build from
 `origin/main`, so **commit and push before deploying**.
 
-The live site matches `main` (checked 2026-11-16): all six URLs answer 200,
-the home page shows "v1.7.0 SHIPPED", `llms.txt` is byte-identical to
-`public/llms.txt`, and the CSP and HSTS headers are present.
+The live site matched `main` on 2026-11-16: all six URLs answered 200, the
+home page showed "v1.7.0 SHIPPED", `llms.txt` was byte-identical to
+`public/llms.txt`, and the CSP and HSTS headers were present. **Since #17 and
+#18 merged (2026-11-17) `main` is ahead of the live site**: the home page
+still says "v1.7.0 SHIPPED" and `/benchmarks/` answers 404 (checked
+2026-11-17 evening). `deploy.sh prod` on the Mini is the open step.
 
 ### Pages and sections
 
@@ -205,11 +256,22 @@ makes stale. Fix the plan's own copy before it reaches the site.
 | S39 | S14, S15, S18, S21 rows above; §4.2 item 5; §5.4 | v5 quality on the pair is `[V5-PENDING]`; S21's replacement "No v5 capability result on the Spark pair yet" | One model has v5 rows on the pair: GLM-5.3-Flash, `GLM-L0` 26/71 to `GLM-C` 51/71 scored (single seed). Gate 03 QUALITY becomes MEASURED (one model, single seed); "Why wait" becomes "v5 rows for one model; Qwen3.8 and DeepSeek pending" |
 | S40 | §6.4 last bullet; §4.2 item 3 | "GLM runs thinking off" | GLM's **daily serving config** is thinking off (and `GLM-L0` is that config). Its best v5 row, `GLM-C`, is **thinking on**, with wall-scaled turns at 2x the wall. Every row states both settings |
 | S41 | §6.1 | Ranked by L0 SCORE, one row per system | The board shows **each model at its best configuration** (`evals/v5_board.py`), flags experiment arms (wall-scaled turns, a scaled wall, packs, diagnostics), and keeps reference ledgers unranked. L0, the daily config, stays a column so the two are never confused |
-| S42 | §4.1 item 2 | "Spark pair first because it is the run in progress" | GLM's L0-C rows are finished; the run in progress is arm E |
+| S42 | §4.1 item 2 | "Spark pair first because it is the run in progress" | GLM's L0-C rows are finished, and so is arm E (50/71, 2026-11-17). D and F were not run. No GLM run is in progress |
 | S43 | §5.1 Install; §4.2 | The Spark role links the whole `SPARK_HYDRA.md` | Link its **Quickstart** (one screen, #182) and the two checklists, "Install everything, fresh" and G6 "update everything" (#183) |
-| S44 | §4.2 item 9 "Not done yet" | Silent on the fabric MTU | The fabric runs at MTU 1500 (RoCE `active_mtu` 1024). A reversible MTU 9000 change is scripted and waits for a restart of both Sparks; no speed gain is claimed until its A/B is measured |
+| S44 | §4.2 item 9 "Not done yet" | Silent on the fabric MTU | **Updated 2026-11-17 evening:** the fabric runs at MTU 9000 (RoCE `active_mtu` 4096) on both Sparks since 2026-11-17, verified with full-size don't-fragment pings on both rails. No speed gain is claimed until its A/B is measured; "Not done yet" lists the A/B, not the MTU |
 | S45 | §11 rows | `ARCHITECTURE.md` "planned: two DGX Sparks"; README "Beyond one GPU" | `ARCHITECTURE.md` fixed in the 2026-11-17 notes PR; the README section became "Serving from DGX Sparks (spark-hydra)" in #182. `docs/RESULTS.md` "no model has a v5 row yet" is fixed by #193 |
 | S46 | §5.2, S37 | Research has two programs | Three: the beast-rank paper, the v5 suite as measurement research, and **harness engineering** (a paper in progress, §4.8) |
+
+### Stale since the second revision (2026-11-17, evening)
+
+| # | Where | NOW | TRUE |
+|---|---|---|---|
+| S47 | website `src/app/benchmarks/results.ts` and the page (#17/#18): ladder rung E, "what runs next" | E shown as PENDING | `GLM-E` **50/71, SCORE 74.7**, 74.7% of the gold standard, single seed, integrity scan clean; the board's best GLM row stays `GLM-C`. Footnote E's 122_gemm_blocked_c as a validator false FAIL, not adjusted, as the board does. "What runs next" drops E and does not promise D or F (not run) |
+| S48 | §4.2 item 3, S40, §6.4 | "thinking off by default for chat" on the pair; "GLM's daily serving config is thinking off" | **Since 2026-11-17 the pair serves with thinking on by default** for every client (gate, Open WebUI, its own agents), the setting arm C measured. `GLM-L0` is still the daily config *as it was benchmarked* (thinking off); say "the 2026-11-16 daily config" for L0 and "served with thinking on since 2026-11-17" for the host. C's wall x2 and wall-scaled turns are eval budgets, not serving settings |
+| S49 | §4.2 items 3–4, D2, any "1M window" copy | "4 streams, 1M-token window" | "a 1M-token window per conversation, 4 streams sharing one KV pool (about 2M tokens)": `/api/slot` `model.ctx` 1,048,576, `capacity.ctx_total` 1,986,560 (`SPARK_HYDRA.md` F3). Never "4 x 1M" |
+| S50 | §4.4 item 1 | the client talks to one rig | One client, several rigs: `openbeast-client rigs`, `use <rig>` (atomic; refuses an offline or key-rejecting rig and changes nothing), `rig add / remove / detect`; keys stay in 0600 files and never go on argv (#204) |
+| S51 | §4.2 item 4 (serving table caption) | conditions: 2026-11-13, through the API | Add the conditions that changed since: the table was measured at MTU 1500 with thinking off. Thinking does not slow decode; it lengthens the wait for the answer (S48). The MTU change is unmeasured (S44) |
+| S52 | D9, §8 `/research/harness/` description | "53 with 54 raw footnoted"; "from 26 to 53 of 71" | 51 (54 raw, 3 withheld, A12); "from 26 to 51 of 71" |
 
 Claims checked and still true: the founder story and dates, Apache 2.0, the
 v4 numbers themselves (98.7 / 97.7 / 97.6 / 97.5), "140 tok/s" for the default
@@ -376,11 +438,14 @@ Every number below cites its v5 board run (rule A1); each is single seed
    | A | runner v2: the frictions the L0 failure audit found | **31/71** | 56.9 | `GLM-A` |
    | B | + turns scaled to each unit's wall | **36/71** | 60.4 | `GLM-B` |
    | C | + thinking on (wall x2, B's turns) | **51/71** scored (54 raw, 3 withheld, A12) | 76.7 | `GLM-C` |
-   | E | + diagnostics, verify-done, packs, env block, wall warnings | [V5-PENDING] | [V5-PENDING] | — |
+   | E | C + diagnostics, verify-done, packs, env block, wall warnings | **50/71** (scan clean; 122_c a validator false FAIL, not adjusted) | 74.7 | `GLM-E` |
    | gold standard | Claude Opus 5.5, its own scaffold (A11) | **71/71** (68/71 at 1x wall) | 100.0 | `OPUS-REF` |
 
    Each local rung also prints its **fraction of the gold standard** (Q5,
-   A11): L0 48.2%, A 56.9%, B 60.4%, C 76.7%.
+   A11): L0 48.2%, A 56.9%, B 60.4%, C 76.7%, E 74.7%. E sits one below C:
+   at one seed that is a wash, not a regression to headline (A5, A10).
+   GLM's best row is C. Arms D and F did not run; say "not run", not
+   "pending".
 
    Source for every row: [`docs/RESULTS.md`, "v5 leaderboard"](RESULTS.md#v5-leaderboard--best-configuration-per-model), "Every v5 configuration
    measured", at a pinned commit.
@@ -396,9 +461,8 @@ Every number below cites its v5 board run (rule A1); each is single seed
    wall-scaled turns, packs, diagnostics), and a "of gold standard" column.
    Opus as the unranked gold-standard row, set apart. Qwen3.8 27B Uncensored MTP (the rig's default) and Qwen3.6 27B
    (v4 #1): "not yet run on v5".
-4. **Every configuration,** collapsed per model: GLM L0, A, B, C (E when it
-   lands), each with its flags and run date, so the best row never hides the
-   daily one.
+4. **Every configuration,** collapsed per model: GLM L0, A, B, C, E, each
+   with its flags and run date, so the best row never hides the daily one.
 5. **What v5 measures:** 71 units, 34 bases, the three groups (14 new
    families, 4 upgraded v4 tasks, 16 v4 tasks kept as defined), the coverage
    grid (46 of 72 cells), the three language-assistance arms.
@@ -430,15 +494,28 @@ Every number below cites its v5 board run (rule A1); each is single seed
    New photo (section 7).
 3. **spark-hydra:** 2× DGX Spark (GB10, 128 GB unified memory each), linked
    over ConnectX-7 on two rails. GLM-5.3-Flash Ablit, EXL3 4-bit, TensorFold
-   TP 2, speculative decoding, 4 streams, 1M-token window, fp8 KV, thinking off by
-   default for chat (the best v5 row turns it on per request, S40). Command
+   TP 2, speculative decoding, 4 streams, a 1M-token window per
+   conversation with the 4 streams drawing on one shared KV pool of about 2M
+   tokens (never "4 x 1M", S49), fp8 KV. **Thinking on by default** since
+   2026-11-17, the setting of the best v5 row (S48), for every client: the
+   gate, Open WebUI and the host's own agents. State its cost plainly beside
+   it, from `SPARK_HYDRA.md` E2a (single stream, from a Mac, 2026-11-17): the
+   first streamed token is as fast as before (about 0.2 s), the first
+   *answer* token moves from 0.2 s to 5.0 s median (1.9–38.7 s across
+   everyday prompts; a coding question thought for about 39 s), decode stays
+   about 75 tok/s single-stream, and agent tasks take about 2.3x as long.
+   Any request, client or the whole host can turn it off. Command
    center on spark-1, spark-2 runs rank 1 only: **one user unit on spark-1
    drives both ranks** (it starts rank 1 on spark-2 over ssh; spark-2 runs no
    OpenBeast services). Boots by itself with no network.
 4. **Measured serving table** (2026-11-13, through the API on spark-1):
    prose 43–44 tok/s single, 145 aggregate across 4 (37 each); code 68–70
    single, 224 aggregate (57 each); TTFT about 160–260 ms. No drafter
-   names (B6): at most "with speculative decoding". Caption with conditions, per rule A1.
+   names (B6): at most "with speculative decoding". Caption with conditions, per rule A1,
+   including that it was measured with thinking off and at MTU 1500 (S51).
+   **The fabric:** two ConnectX-7 rails at MTU 9000 (RoCE `active_mtu`
+   4096) since 2026-11-17, verified end to end; say "live", with no speed
+   number until the A/B lands (S44).
 5. **Capability on this hardware:** GLM-5.3-Flash, 26/71 in its daily
    config (`GLM-L0`) and 51/71 at its best (`GLM-C`, thinking on), single
    seed, linking `/benchmarks/`. Never beside the serving numbers on one
@@ -458,11 +535,11 @@ Every number below cites its v5 board run (rule A1); each is single seed
 9. **Scale 1 to 8 Sparks:** `spark-cluster.sh` and `spark-guard.sh` exist and
    are documented; anything beyond 2 is VERIFY ON HARDWARE.
 10. **Not done yet:** hydra routing to the pair, switching the primary between
-   hosts, `PARALLEL=8`, native TensorFold vs the recipe, a fully offline
-   rebuild, a one-command model swap with rollback (planned, `TODO.md`), and
-   **the fabric MTU**: the rails run at 1500 (RoCE 1024); a scripted,
-   reversible move to 9000 waits for the next restart of both Sparks, and no
-   gain is claimed before its A/B (S44).
+   hosts on the hydra side (clients already switch, 4.4), `PARALLEL=8`,
+   native TensorFold vs the recipe, a fully offline rebuild, a one-command
+   model swap with rollback (planned, `TODO.md`), and **the MTU A/B**: the
+   rails run at 9000 since 2026-11-17, and whether that speeds up long
+   prompts is not measured yet (S44).
 
 ### 4.3 `/offline/` — offline-first (P0)
 
@@ -507,6 +584,16 @@ mention it beyond one air-gap card.
    on the laptop against its own files; only inference crosses the tailnet;
    `openbeast-client status` reads `/api/slot`. The trust warning from the
    README: joining someone's rig is closer to giving them a shell.
+   **One client, several rigs** (#204, unreleased until v2.0.0):
+   `openbeast-client rigs` lists every registered rig with its live state,
+   model and slots; `use <rig>` moves OpenCode, the tools' search and
+   sub-agents to another rig in one atomic step, and refuses (changing
+   nothing) when that rig is offline or rejects the key. In OpenCode every
+   rig is its own provider, so a session can pick any rig's model. Each
+   rig's context window comes from its own `/api/slot`, so OpenCode knows
+   the pair's 1M window without hand-editing. Keys stay in 0600 files and
+   never go on a command line. Screenshot C12 becomes `openbeast-client
+   rigs` (two rigs, one active).
 2. **Remote access through beast-gate:** per-device keys
    (`scripts/clients.sh`), route allowlist, rate and in-flight caps (per-device
    cap now defaults to the host's slot count), inference audit. On the pair,
@@ -589,7 +676,11 @@ Every number single seed (A10), every claim about one model only (A13).
      inside B's original wall, so the gain is the thinking, not the time.
      Its price is latency: about 2.3x B's time per unit.
    - **E** (diagnostics with an edit hint, verify-done, packs, an
-     environment block, wall-clock warnings): [V5-PENDING].
+     environment block, wall-clock warnings, all on top of C): **50/71**,
+     SCORE 74.7, one under C at one seed: a wash. So the serving default
+     adopted thinking alone, and E's additions stay opt-in. Said plainly,
+     this is a result, not a failure: four more harness features did not
+     add measurable points once the model thinks.
 3. **The harness loop (D10):** what the runner adds around each model turn
    (section 7.2).
 4. **The method:** every failure read and classed (the audit) → a numbered
@@ -597,16 +688,20 @@ Every number single seed (A10), every claim about one model only (A13).
    keyed in the eval cache → a full 71-unit arm, never a re-roll of
    failures. **Deterministic-seed noise:** decoding is deterministic at a
    fixed seed, so a same-seed re-run is not a replicate; the noise floor
-   comes from a different seed (pending). **Integrity scans:** the Opus
-   reference was scanned clean; three GLM-C passes are withheld because the
-   integrity scan (G25) found the agent had read sealed paths (A12); the
-   read-deny fix and scans of the other v5 rows are open work. Say all three plainly: they are
-   what makes the ladder believable.
+   comes from a different seed (the seed arm, F, has not run). **Integrity
+   scans:** the Opus reference was scanned clean; three GLM-C passes are
+   withheld because the integrity scan (G25, #195) found the agent had read
+   sealed paths (A12); every other v5 row, E included, scanned clean, and
+   #195 seals those paths for eval agents from then on (in the kernel on
+   macOS; on Linux only in the tools). Say all three plainly: they are what
+   makes the ladder believable.
 5. **What is left after thinking:** language-specific failures nearly
    vanish; one zig knowledge failure remains (a thinking model routes around
    a removed API to the nearest primitive, which in zig 0.16 is gone too),
    and the largest failure is now thinking's own: a turn capped before the
-   file is written. Both are open work, not results.
+   file is written. #194 keeps a capped think's reasoning tail and zig pack
+   v3 adds the missing API; neither is measured as an arm yet, so both stay
+   open work, not results.
 6. **The paper in progress:** working title "Per-model or unified? Agent
    harnesses for local models" (Q7). Question: does each model need its own
    harness, or does one harness with a few per-model knobs serve
@@ -625,7 +720,8 @@ Every number single seed (A10), every claim about one model only (A13).
    (`dsh`, evaluated 2026-10-09, not integrated) supplies the starting
    hypotheses for the DeepSeek arm. Link both reviews at the tag.
 8. **Caveats box:** single seed; one model; a reference in a different
-   scaffold; E pending; three units withheld.
+   scaffold; arms D and F (the seed arm) not run; three units withheld; one
+   E fail footnoted as a validator false FAIL.
 
 ### 4.9 `/research/campaign/` — bring any model to the Sparks (P1)
 
@@ -836,15 +932,16 @@ Placeholders needed today:
 
 | Where | Placeholder | Lands in |
 |---|---|---|
-| `/benchmarks/` ladder, rung E | E's count and its flags | `docs/RESULTS.md` v5 board, after `v5_board.py --add GLM-E` |
 | `/benchmarks/` board, beast rows | Qwen3.8 27B Uncensored MTP, Qwen3.6 27B | same |
 | `/benchmarks/` board, DeepSeek v4.1 Flash | its best configuration | same, after its campaign |
-| `/research/harness/` | the seed-noise floor; the integrity verdict on the withheld units (given 2026-11-17: 3 withheld, #195); the paper's status | `HARNESS_NOTES.md`, `exclusions.json`, then RESULTS |
+| `/research/harness/` | the seed-noise floor (arm F not run); the paper's status. The integrity verdict is in (3 GLM-C units withheld, every other row clean, #195) | `HARNESS_NOTES.md`, `exclusions.json`, then RESULTS |
 | `/hardware/` §5, home evidence teaser | the `beast` host's v5 row | same |
 
 Filled since the first draft (2026-11-17): the GLM rows `GLM-L0` to `GLM-C`
 and `OPUS-REF`, so the Spark row, gate 03 for GLM and the investment-case
-ladder can print them (S39).
+ladder can print them (S39); then `GLM-E` (50/71, #201), so the ladder has
+no E placeholder left (S47). The seed-noise floor stays open: arm F did not
+run.
 
 ### 6.4 What not to claim
 
@@ -858,8 +955,10 @@ ladder can print them (S39).
 - No throughput comparison between `beast` and `spark-hydra`: different
   models, engines, drafters and stream counts.
 - No "zero capability cost" for GLM Ablit (rule B3).
-- Do not hide the run conditions: GLM's daily config runs thinking off and
-  its best row thinking on at 2x wall (S40); Qwen runs a 20,480-token
+- Do not hide the run conditions: GLM's benchmarked daily config (L0) ran
+  thinking off and its best row thinking on at 2x wall (S40); since
+  2026-11-17 the pair *serves* with thinking on (S48), which is not the same
+  as C's eval budgets; Qwen runs a 20,480-token
   reasoning budget; a gate with the default in-flight cap clamps `--jobs`
   (say what was used).
 - No "GLM matches/approaches Opus", no ranked Opus row (A11). The fraction
@@ -867,7 +966,12 @@ ladder can print them (S39).
   gold standard's SCORE, beside the absolute numbers, single seed.
 - No "the harness doubles a model's score": one model, one seed (A10, A13).
 - No 54/71 without its footnote, and never the superseded 53/71 / 78.2 (A12).
-- No claim that thinking is free: about 2.3x B's time per unit on GLM.
+- No claim that thinking is free: about 2.3x B's time per unit on GLM, and
+  the first answer token at 5.0 s median instead of 0.2 s in chat.
+- No speed claim for MTU 9000 until the A/B is recorded in
+  `SPARK_HYDRA.md` (S44).
+- No "4 x 1M context": one 1M window per conversation, one shared pool
+  (S49).
 
 ---
 
@@ -913,7 +1017,7 @@ existing palette; no real addresses (rule C1).
 | D6 | **Weight streaming** | experts in host RAM, hot experts in a VRAM cache, the 75% / 90% memory scopes | `/hardware/` |
 | D7 | **How a v5 unit is proven** | task → prover arms (ref, wrong, empty, leak, slow, scale2, lint, toolchain) → adversarial rounds → shipped; then L0 / L1 / L2 arms | `/benchmarks/` |
 | D8 | **v5 coverage heatmap** | 12 × 7 grid, 46 cells filled | `/benchmarks/` |
-| D9 | **The arm ladder** | L0 → A → B → C → E as rungs, each labelled with its one change (runner v1 / runner v2 / wall-scaled turns / thinking / diagnostics + packs + env block + wall warnings) and its count (26, 31, 36, 53 with "54 raw" footnoted, E PENDING); the Opus gold standard as a dashed line at 71 (100%) labelled "gold standard, its own scaffold" (Q5), each rung with its fraction of it; "single seed" in the caption | `/benchmarks/`, `/research/harness/`, home teaser (compact) |
+| D9 | **The arm ladder** | L0 → A → B → C → E as rungs, each labelled with its one change (runner v1 / runner v2 / wall-scaled turns / thinking / diagnostics + packs + env block + wall warnings) and its count (26, 31, 36, 51 with "54 raw" footnoted, E 50); the Opus gold standard as a dashed line at 71 (100%) labelled "gold standard, its own scaffold" (Q5), each rung with its fraction of it; "single seed" in the caption | `/benchmarks/`, `/research/harness/`, home teaser (compact) |
 | D10 | **The harness loop** | one model turn in the middle; around it what the runner adds: turn 1 gets the task, the language packs and the environment block; each tool result comes back with diagnostics (and an edit hint); the runner's notices (turns left, wall clock at 50% / 80%, verify-done when the destination files are missing); the turn and wall budgets scaled to the unit; the sandbox boundary (task dirs in, harness source and eval cache out, the open integrity fix marked) | `/research/harness/` |
 
 ### 7.3 Screenshots to capture
@@ -934,7 +1038,7 @@ Redact per rule C1 by choosing clean screens, not by blurring.
 | C9 | `./scripts/ark.sh verify` on the drive | terminal | `/offline/` |
 | C10 | `./scripts/docs.sh search NavigationStack` with the URL and fetch-date stamp | terminal | `/offline/` |
 | C11 | `scripts/apps.sh check` showing READY and MISSING with its fix | terminal | `/clients/` |
-| C12 | `openbeast-client status` (what `/api/slot` reports) | Mac | `/clients/` |
+| C12 | `openbeast-client rigs` (two rigs, one active) and `status` (what `/api/slot` reports) | Mac | `/clients/` |
 | C13 | `evals/profile.py` / `ablation.py` report for the Spark run, after it lands | terminal | `/benchmarks/` |
 | C14 | beast-artifact gallery with a published page | browser | `/clients/` |
 | C15 | `python3 evals/v5_board.py` output (the board as the script prints it) | terminal | `/benchmarks/` |
@@ -957,7 +1061,7 @@ no autoplay with sound, and a reduced-motion fallback to the poster.
   - `/benchmarks/`: "Benchmarks | OpenBeast" — "Reproducible v5 results for OpenBeast systems: 71 proven units, three arms, every row tied to its host, engine and weights."
   - `/hardware/`: "Hardware | OpenBeast" — "An RTX 5090 rig and a two-DGX-Spark pair serving GLM-5.3-Flash with TensorFold: measured serving numbers and the engine plane."
   - `/offline/`: "Offline first | OpenBeast" — "Island mode, an air-gap install, offline engine updates, mirrored platform docs and a cold-storage package archive."
-  - `/research/harness/`: "Harness engineering | OpenBeast" — "How a better agent loop and thinking took GLM-5.3-Flash from 26 to 53 of 71 v5 units on two DGX Sparks. Single seed; method and caveats."
+  - `/research/harness/`: "Harness engineering | OpenBeast" — "How a better agent loop and thinking took GLM-5.3-Flash from 26 to 51 of 71 v5 units on two DGX Sparks. Single seed; method and caveats."
   - `/research/campaign/`: "Model campaign | OpenBeast" — "Bring any model to the DGX Spark pair: onboard, profile, audit, then thinking-first harness arms, with an offline eval host."
   - `/clients/`, `/security/`, `/releases/` likewise.
 - **Social cards:** one per page instead of one shared 777 KB PNG. Build
@@ -1051,8 +1155,10 @@ the current state themselves; fix them in the openbeast repo before pinning:
 | `docs/MODELS.md` | 3 | "23 pre-configured models" | reconcile with the 28 serve scripts (which count, which are opt-in or internal) |
 | `docs/RESULTS.md` | top | v5 "no model has a v5 row yet" | **Fixed in #193** (merged 2026-11-17): the v5 board generated by `evals/v5_board.py` (GLM L0-C, the Opus reference), drift-checked in CI |
 | `README.md` | v5 paragraph | "v5 results are pending" | **Fixed in #193**: the README's "v5 leaderboard" section |
-| `docs/MODEL_CAMPAIGN.md` | §8 | arm C "[PENDING]" | **Filled 2026-11-17** (notes PR): C 54/71 raw, 53/71 scored, the integrity caveat; D/E/F still [PENDING]. **Stale since #195:** §8 still says 53/71 scored with one unit withheld; the board now scores 51/71 with three withheld |
-| `docs/RESULTS.md` | v5 board | no rung E | `v5_board.py --add GLM-E …` when E finishes, then `--write` |
+| `docs/MODEL_CAMPAIGN.md` | §8 | arm C "[PENDING]" | **Fixed:** C 51/71 scored, 54 raw (#200); E 50/71, D and F not run (2026-11-17 evening docs refresh) |
+| `docs/RESULTS.md` | v5 board | no rung E | **Fixed in #201** (`GLM-E`, 50/71). Its validator-note footnote rendered empty ("is ; not adjusted") because `exclusions.json` used `reason` where `v5_board.py` reads `note`; fixed in the 2026-11-17 evening docs refresh |
+| `docs/HARNESS_NOTES.md` | "Headroom" | C 53/71 scored, E in progress | **Fixed** in the 2026-11-17 evening docs refresh: C 51/71, E 50/71, D/F not run |
+| `docs/SPARK_HYDRA.md` | B4, G6, Known issues | MTU 9000 staged / pending | **Fixed** in the same refresh: live since 2026-11-17, A/B open |
 | `docs/TODO.md` or v2.0.0 notes | — | nothing on the 11-16 review totals | 209 found, 195 confirmed, all fixed (rule A6) |
 | `docs/RELEASE_NOTES_v2.0.0.md` | — | does not exist | write it before the site's v2.0.0 copy, so the site can link it |
 
@@ -1072,11 +1178,18 @@ the current state themselves; fix them in the openbeast repo before pinning:
       decided (2026-11-17).
 - [ ] Add accuracy rules A (A1–A13), B, C to the website repo's `AGENTS.md`.
 - [ ] Fix this plan's own stale copy S39–S46 before it reaches the site.
-- [ ] Build `/benchmarks/` around the v5 story: the ladder (D9), the
-      best-per-model board synced from `v5_board.py` through
-      `scripts/sync-results.mjs`, every configuration per model,
-      `[V5-PENDING]` chips for E and the Qwen rows, the placeholder guard
-      test, and the v4 archive.
+- [x] Build `/benchmarks/` around the v5 story: the ladder, the
+      best-per-model board, the per-language breakdown, the v4 archive, and
+      guard tests against the superseded numbers (website #17, #18, merged
+      2026-11-17). Still to do on it: `scripts/sync-results.mjs` (the numbers
+      are hand-copied into `results.ts` today, pinned to a commit), the D9
+      diagram, and the `[V5-PENDING]` production guard.
+- [ ] **Arm E on `/benchmarks/`** (S47): rung E 50/71, SCORE 74.7, 74.7% of
+      the gold standard, its footnote; drop E from "what runs next"; re-pin
+      the source links to a commit that has #201.
+- [ ] Merge website #16 (Next.js 16.4.5, seven moderate advisories) before
+      the next deploy.
+- [ ] Fix the plan's stale copy S47–S52 on the pages it reaches.
 - [ ] Build `/research/harness/` (4.8) with D9 and D10 and the caveats box.
 - [ ] Build `/hardware/` with the measured Spark serving table.
 - [ ] Build `/offline/`.
@@ -1088,18 +1201,22 @@ the current state themselves; fix them in the openbeast repo before pinning:
 - [ ] Rewrite `public/llms.txt`; update JSON-LD and the sitemap.
 - [ ] Photos P1, P2, P4, P5 from Max; diagrams D1, D2, D4, D9, D10.
 - [ ] Update the GitHub repo description (S38).
-- [ ] Deploy through `deploy.sh prod` after push; run the post-deploy `curl`
-      checks from the website README.
+- [ ] **Deploy** through `deploy.sh prod` on the Mac Mini after push; run the
+      post-deploy `curl` checks from the website README. Open since #17/#18
+      merged (2026-11-17): the live site is still the 2026-10-26 build.
 
 ### P1 — within two weeks of the tag
 
-- [ ] Fill the remaining v5 numbers (GLM E, the seed arm, Qwen3.8,
+- [ ] Fill the remaining v5 numbers (the seed arm when one runs, Qwen3.8,
       DeepSeek) from `docs/RESULTS.md` through `scripts/sync-results.mjs`;
-      the guard test then passes in production.
+      the guard test then passes in production. (GLM E is P0 above.)
 - [x] Re-sync the GLM-C footnote after the integrity scan: 51/71 scored,
       54 raw, 3 withheld (A12; website follow-up PR, 2026-11-17).
 - [ ] Build `/research/campaign/` (4.9), `/clients/` (with the Regenerate
-      fix), `/security/`, `/releases/`.
+      fix and the multi-rig client, S50), `/security/`, `/releases/`.
+- [ ] `/hardware/` with thinking-by-default and its measured latency (S48),
+      the shared KV pool (S49), MTU 9000 as live with no speed claim (S44),
+      and the serving table's conditions (S51).
 - [ ] Update `/investors/` (S2, S3, S5–S8, S14–S18, S23, S28, B6).
 - [ ] Re-issue the investment case as a new dated edition; keep the
       2026-10-06 edition reachable.
@@ -1124,8 +1241,9 @@ the current state themselves; fix them in the openbeast repo before pinning:
       refuses until the `[PENDING]` markers are gone).
 - [ ] When the harness paper has a cross-model result, update
       `/research/harness/` §6 (Q7 decides whether a draft is shown).
-- [ ] After the MTU 9000 restart and its A/B, update `/hardware/` "Not done
-      yet" (S44) with the measured TTFT / tok/s, or drop the line.
+- [ ] After the MTU A/B (the MTU itself is live since 2026-11-17), update
+      `/hardware/` "Not done yet" (S44) with the measured TTFT / tok/s, or
+      drop the line.
 
 ---
 
@@ -1148,6 +1266,11 @@ Decided:
 - **DFlash2: DECIDED 2026-11-16.** Under the hood only; the site says
   "speculative decoding" and never names the drafter (B6).
 - **Q5–Q10: DECIDED 2026-11-17** (below, each with what it changes).
+
+No new questions in the 2026-11-17 evening revision: arm E, thinking by
+default, MTU 9000 and the multi-rig client are all facts with a doc behind
+them, and the accuracy rules already say how to print them. Q6's "update the
+page when arm E lands" is now due (S47).
 
 Asked 2026-11-17, decided the same day:
 
