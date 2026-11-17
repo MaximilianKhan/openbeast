@@ -136,7 +136,29 @@ def test_env_block_is_bounded(eval_dir):
                and not ln.lstrip().startswith("...")]
     assert len(entries) <= runner._ENV_LIST_MAX
     assert len(block) <= runner._ENV_BLOCK_MAX_CHARS        # ~300 tokens
-    assert "+28 more" in block                              # 40 paths, 12 named
+    paths_line = next(ln for ln in block.splitlines()
+                      if ln.startswith("expected task paths: "))
+    named = paths_line.count("(missing)")
+    assert 1 <= named <= runner._ENV_PATHS_MAX
+    assert paths_line.endswith(f", +{40 - named} more")
+    assert len(paths_line) <= runner._ENV_PATHS_CHARS + 20
+    # A long path list never crowds out the listing.
+    assert f"  {eval_dir}/" in block.splitlines()
+    assert any(ln.startswith("    file_with") for ln in block.splitlines())
+
+
+def test_env_block_worst_case_head_leaves_room_for_the_listing(eval_dir, monkeypatch):
+    # Seven distinct, maximal version lines (a Linux host with gcc != clang)
+    # plus a long path list must still leave the task-dir listing visible.
+    monkeypatch.setattr(runner, "_probe_version",
+                        lambda cmd: (f"{cmd[0]} version " + "9" * 80)[:50])
+    for i in range(5):
+        open(f"{eval_dir}/f{i}", "w").close()
+    many = [f"{eval_dir}/expected_output_file_{i}.py" for i in range(40)]
+    block = runner.env_block("/tmp", many)
+    assert len(block) <= runner._ENV_BLOCK_MAX_CHARS
+    assert f"  {eval_dir}/" in block.splitlines()
+    assert "    f0 0B" in block.splitlines()
 
 
 def test_env_block_lists_entries_up_to_the_cap(eval_dir):

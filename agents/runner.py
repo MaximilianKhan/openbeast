@@ -845,6 +845,7 @@ _ENV_BLOCK_MAX_CHARS = 1200
 _ENV_PROBE_TIMEOUT_S = 3.0
 _ENV_LIST_MAX = 30
 _ENV_PATHS_MAX = 12
+_ENV_PATHS_CHARS = 360
 #: Same commands as evals/run_eval.py toolchain_versions(), plus python3 and
 #: the C compilers the task may call by any of their names.
 _ENV_TOOLCHAINS = (("python3", ["python3", "--version"]),
@@ -871,7 +872,7 @@ def _probe_version(cmd: list[str]) -> str | None:
         out = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL,
                              timeout=_ENV_PROBE_TIMEOUT_S)
         text = (out.stdout or out.stderr or "").strip()
-        return text.splitlines()[0][:70] if text else "?"
+        return text.splitlines()[0][:50] if text else "?"
     except Exception:
         return "?"
 
@@ -964,12 +965,18 @@ def env_block(workdir: str | None = None, expected: list[str] | None = None,
             + (f" (missing: {' '.join(lacking)})" if lacking else ""),
             f"workdir: {workdir or os.getcwd()}"]
     if expected:
-        marks = []
+        # Bounded on its own (<= _ENV_PATHS_MAX names, <= _ENV_PATHS_CHARS),
+        # so a long path list can never crowd out the rest of the block.
+        line = "expected task paths: "
+        shown = 0
         for p in expected[:_ENV_PATHS_MAX]:
-            marks.append(f"{p} ({'exists' if os.path.lexists(p) else 'missing'})")
-        more = len(expected) - _ENV_PATHS_MAX
-        head.append("expected task paths: " + ", ".join(marks)
-                    + (f", +{more} more" if more > 0 else ""))
+            mark = f"{p} ({'exists' if os.path.lexists(p) else 'missing'})"
+            if shown and len(line) + len(mark) + 2 > _ENV_PATHS_CHARS:
+                break
+            line += (", " if shown else "") + mark
+            shown += 1
+        more = len(expected) - shown
+        head.append(line + (f", +{more} more" if more > 0 else ""))
     listing: list[str] = []
     budget = [_ENV_LIST_MAX, 0]           # [entries left, entries dropped]
     for root in _eval_roots(expected):
@@ -980,10 +987,16 @@ def env_block(workdir: str | None = None, expected: list[str] | None = None,
         head.append("task dirs (depth <= 2):")
     if budget[1]:
         listing.append(f"    ... +{budget[1]} more entries")
-    out = "\n".join(head + listing)
-    if len(out) > _ENV_BLOCK_MAX_CHARS:
-        cut = out[:_ENV_BLOCK_MAX_CHARS - 20]
-        out = cut[:cut.rfind("\n")] + "\n    ... (truncated)"
+    # Whole lines only: the head always fits (each part is bounded), the
+    # listing is cut at the line that would cross the cap.
+    out = "\n".join(head)[:_ENV_BLOCK_MAX_CHARS]
+    tail = "\n    ... (truncated)"
+    for i, ln in enumerate(listing):
+        if len(out) + 1 + len(ln) + (len(tail) if i < len(listing) - 1 else 0) \
+                > _ENV_BLOCK_MAX_CHARS:
+            out += tail
+            break
+        out += "\n" + ln
     return out
 
 
