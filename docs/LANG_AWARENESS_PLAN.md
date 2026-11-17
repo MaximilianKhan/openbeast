@@ -393,8 +393,8 @@ quoted per unit). Two findings drive this section:
    `pthread_barrier_t`, `sysctlbyname`/`sysconf` without their headers.
    runner v2's `platform_line()` names the OS and three of these on Darwin.
 
-**Zig pack v2** (`agents/packs/zig-0.16.md`, now @`ed18f83e`, 1,959 tokens
-of the 2,000 budget). The v1 pack did not cover what the v5 zig runs hit.
+**Zig pack v2** (`agents/packs/zig-0.16-v2.md` @`ed18f83e`, 1,959 tokens
+of the 2,000 budget; eval-only, see "Two files" below). The v1 pack did not cover what the v5 zig runs hit.
 Five curated bullets now do, each verified by fixtures in
 `tests/fixtures/zig016/`: OLD files that fail under zig 0.16.0 and a NEW
 file that compiles. OLD fixtures now also pin the error they must produce
@@ -416,12 +416,29 @@ whatever the curated section leaves. That section is the one the plan drops
 first. The budget did not move. `claims/zig-0.16.json` (20 claims) and the
 zig escalation index (53 OLD fixtures, the same 3 silent) are regenerated.
 
-**`MEASURED_SHA256` is NOT moved.** Production keeps serving nothing for zig
-until an eval arm measures v2 and the pin moves. The v1 bytes are no longer
-in the tree, so `pack_context.status_line()` reports `NOT SERVED`. That is
-correct for an unmeasured treatment. The eval harness is unaffected:
-`packs_flag` reads `PACK_FILES` → `agents/packs/zig-0.16.md` and loads the
-committed bytes whatever the pin says.
+**Two files: v1 serves production, v2 is an eval variant.** #188 first
+replaced `zig-0.16.md` with the v2 bytes. Because `MEASURED_SHA256` still
+named v1, production then served no zig pack at all (`doctor.sh`: "zig pack:
+NOT SERVED"). The follow-up restored the measured v1 bytes
+(`agents/packs/zig-0.16.md` @`5cdf4b64`, `PACK_FILES`, what production
+serves) and put v2 beside it as `agents/packs/zig-0.16-v2.md`.
+`pack_context.PACK_VARIANTS` maps `v1` → `PACK_FILES` and
+`v2` → `zig-0.16-v2.md`. Production never reads that map.
+
+**The switch: `OPENBEAST_PACK_VARIANT=v1|v2`** (default `v1`), read by
+`run_eval.packs_flag`. An unknown name aborts the run. The chosen file's
+bytes go into `pack1-<sha8>`, so v1 and v2 rows can never share a cache
+key. The results header records it as `harness.pack_variant`. Both files
+pass the drift check, the budget and `gen_zig_pack.py --check` (v2 with
+`--pack agents/packs/zig-0.16-v2.md`). The fixture manifest is checked
+against v2, the superset; every v1 bullet still hits a manifest entry.
+`agents/lang/packs.py` keeps serving `zig-0.16.md`: it reads `0.16-v2` as
+a prerelease stamp, and a test pins that.
+
+**An eval arm measuring v2 + the host pack:**
+`BEAST_PACKS=1 OPENBEAST_PACK_VARIANT=v2` (e.g.
+`BEAST_PACKS=1 OPENBEAST_PACK_VARIANT=v2 python3 evals/run_eval.py --suite v5 ...`).
+`BEAST_PACKS=1` alone measures v1 + the host pack.
 
 **The host pack** (`agents/lang/host_pack.py`). It holds facts about the
 tool host, each from a probe that RAN: a command that failed, or a 3-line C
@@ -467,7 +484,12 @@ found`, `illegal option -- A`, `grep: invalid option -- P`,
 `timeout: command not found`, `pthread_barrier_t`), against the ~95-turn
 baseline;
 (c) regressions on units the packs should not touch.
-If v2 wins, move `MEASURED_SHA256["zig"]` to `ed18f83e…`.
+If v2 wins: copy `zig-0.16-v2.md` over `zig-0.16.md`, move
+`MEASURED_SHA256["zig"]` to `ed18f83e…`, and drop the variant.
+
+**Should production serve the host pack?** No, not yet. It is unmeasured,
+and production serves only measured treatments, the same rule as the pin.
+`pack_context` never reads it.
 
 ## 6. Eval integrity, comparability, era policy
 

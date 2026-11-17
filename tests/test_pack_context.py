@@ -38,12 +38,11 @@ PACK = os.path.join(AGENTS, "packs", "zig-0.16.md")
 PACK_SHA256 = hashlib.sha256(open(PACK, "rb").read()).hexdigest()
 PACK_SHA8 = PACK_SHA256[:8]
 LABEL = f"zig@{PACK_SHA8}"
-#: The pin as committed. Pack v2 (2026-11-16) left it on the v1 bytes on
-#: purpose: an edited pack is an unmeasured treatment until the eval arm
-#: measures it and the pin moves. The DELIVERY tests below run "as if the
-#: committed pack were the measured one" (the hermetic fixture moves the pin
-#: in-process; the script tests copy agents/lang with the pin rewritten) —
-#: what they pin is the mechanism, not which bytes won the A/B.
+#: The pin as committed. The DELIVERY tests below run with the pin moved to
+#: whatever the committed pack's bytes are (the hermetic fixture moves it
+#: in-process; the script tests copy agents/lang with the pin rewritten): what
+#: they pin is the mechanism. test_production_serves_the_measured_pack is the
+#: one that pins the REAL pin to the REAL file.
 REAL_PIN = dict(PC.MEASURED_SHA256)
 
 
@@ -62,19 +61,27 @@ def hermetic(tmp_path, monkeypatch):
     yield
 
 
-def test_production_serves_only_the_pinned_pack(monkeypatch, tmp_path):
-    """With the REAL pin: the committed pack is served only when its bytes
-    are the measured bytes. Pack v2 is not (yet), so production injects
-    nothing and says why — the eval arm, not this test, decides when it is."""
+def test_production_serves_the_measured_pack(monkeypatch, tmp_path):
+    """With the REAL pin, the committed production pack IS the measured
+    pack and is served. #188 replaced it with the unmeasured v2 bytes and
+    production silently served nothing ("zig pack: NOT SERVED"); v2 now lives
+    beside it (zig-0.16-v2.md, eval-only via OPENBEAST_PACK_VARIANT=v2)."""
     monkeypatch.setattr(PC, "MEASURED_SHA256", REAL_PIN)
+    assert REAL_PIN["zig"] == PACK_SHA256, "the production pack is not the measured bytes"
     p, why = PC.served_pack("zig")
-    if REAL_PIN["zig"] == PACK_SHA256:
-        assert p is not None and p.sha8 == PACK_SHA8
-    else:
-        assert p is None and "unmeasured treatment" in why
-        path, info = _ctx("write zig", str(tmp_path))
-        assert path is None and info["label"] == ""
-        assert "NOT SERVED" in PC.status_line()
+    assert p is not None and p.sha8 == PACK_SHA8, why
+    assert PC.status_line().startswith("zig pack: auto")
+    path, info = _ctx("write zig", str(tmp_path))
+    assert path == PACK and info["label"] == LABEL
+
+
+def test_production_refuses_the_unmeasured_v2(monkeypatch, tmp_path):
+    """Pointing production at v2 before its A/B must inject nothing."""
+    monkeypatch.setattr(PC, "MEASURED_SHA256", REAL_PIN)
+    monkeypatch.setattr(PC, "PACK_FILES", dict(PC.PACK_VARIANTS["v2"]))
+    p, why = PC.served_pack("zig")
+    assert p is None and "unmeasured treatment" in why
+    assert "NOT SERVED" in PC.status_line()
 
 
 def _ctx(task, workdir=None, context=""):

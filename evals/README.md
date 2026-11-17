@@ -303,6 +303,13 @@ units. To measure it on every language, run a single packs-on run
 (`BEAST_PACKS=1 run_eval.py --suite v5`, no `--arms`), which runs every
 unit, and compare it with L0 rows of the same era and seeds.
 
+**Which zig pack: `OPENBEAST_PACK_VARIANT=v1|v2`** (default `v1`, read by
+`packs_flag`). `v1` is `agents/packs/zig-0.16.md`, the measured pack
+production serves. `v2` is `agents/packs/zig-0.16-v2.md` (2026-11-16,
+`docs/LANG_AWARENESS_PLAN.md` §5.1), eval-only until measured. The file's
+bytes are in `pack1-<sha8>`, and `harness.pack_variant` records the choice.
+An arm measuring v2 + the host pack: `BEAST_PACKS=1 OPENBEAST_PACK_VARIANT=v2`.
+
 **How small an effect one profile can see** (exact McNemar, alpha 0.05,
 ~50% power on expected counts, `evals/ablation.py mde()`; net units per
 replicate at r = 1 / 2 / 4): zig, 6 units at 30% churn: not detectable
