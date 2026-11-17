@@ -704,10 +704,10 @@ no open issue and the prover passes 3/3 at scale 1 and 2.0.
 `evals/SUITE_VERSION` is `v5`, which rolls the cache era (`ctxhash`) for
 every row: no v4 cache entry replays into v5. The v4 board is frozen (shown
 under "legacy suites"); v5 starts empty. The harness rides the same break,
-pinned as **`harness6`** in `evals/HARNESS_VERSION` (`harness5` at the v5.0
+pinned as **`harness7`** in `evals/HARNESS_VERSION` (`harness5` at the v5.0
 release; the review-1116 fixes to the bootstrap, the leftover sweep, the
 validator's private `TMPDIR`, the fixture lock, the toolchain pins and
-`vlib.py` rolled the era once more; see CHANGELOG): its fingerprint covers
+`vlib.py` rolled the era once more, and G20 passing the wall to the agent made it `harness7`; see CHANGELOG): its fingerprint covers
 the agent's wall cap, the validator's environment, bootstrap and private
 build cache, the fixture cwd, the leftover sweep (`AgentWatch`,
 `sweep_agent_leftovers`) and the toolchain pins (`toolchain_pins`,
@@ -862,15 +862,22 @@ confirmed-fix card riding on beast-assist's diagnostic) is wired and opt-in
 (`BEAST_ESCALATE=1` with `BEAST_ASSIST=1`), runs under its own `esc1-<sha8>`
 era and is leaderboard-ineligible; its A/B has not run.
 
-**Agent switches.** Four env switches change what the agent itself does:
+**Agent switches.** Six env switches change what the agent itself does:
 `OPENBEAST_AGENT_THINKING=on|off` (`run_eval.py --thinking`),
 `OPENBEAST_AGENT_SEED=<int>` (`--seed`), `OPENBEAST_AGENT_VERIFY_DONE=1`
 (G9, a one-time "re-run your test against the destination" reply to
-`task_done`) and `OPENBEAST_DIAG_EDIT_HINT=1` (G13, failing diagnostics end
-with "fix the first error with edit_file at line N"). They form one key
-component, `ag-<parts>` (`run_eval.agent_switches`), which is omitted when
-all four are unset. They are stamped in `harness.agent_switches` and on every
-row (`agent_thinking`, `agent_seed`). So an arm under any of them never
+`task_done`), `OPENBEAST_DIAG_EDIT_HINT=1` (G13, failing diagnostics end
+with "fix the first error with edit_file at line N"),
+`OPENBEAST_AGENT_ENV_BLOCK=1` (G19, a probed environment block appended to
+the task message: OS, toolchain versions, CLI tools, workdir, the task's
+paths and `/tmp/eval_*` dirs) and `OPENBEAST_AGENT_WALL_WARN=1` (G20, one
+transient notice at the first turn past 50% and past 80% of the unit's
+wall, which `run_agent` passes as `OPENBEAST_AGENT_WALL_S`). They form one
+key component, `ag-<parts>` (`run_eval.agent_switches`; `envb`, `wwarn` for
+the last two), which is omitted when all are unset. They are stamped in
+`harness.agent_switches` and on every row (`agent_thinking`, `agent_seed`,
+plus `agent_verify_done`, `diag_edit_hint`, `agent_env_block`,
+`agent_wall_warn` when set). So an arm under any of them never
 replays, or banks into, default rows, and `--no-cache` is not needed. A
 k-seed repeat (G12) is three runs: `--seed 1`, `--seed 2`, `--seed 3`.
 
