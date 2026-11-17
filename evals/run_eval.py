@@ -3045,6 +3045,7 @@ def run_eval(
     unit_wall_cap: float | None = None,
     pair_id: str | None = None,
     turns_per_wall_s: float | None = None,
+    wall_scale: float = 1.0,
 ) -> dict:
     """Run the full eval suite. Returns results dict.
 
@@ -3056,6 +3057,13 @@ def run_eval(
     failing units ended on max_iterations after 150-400 s of a 1,200-1,800 s
     wall. The effective budget is in the cache key (.mi<N>), so these rows
     never replay into, or from, default-budget rows.
+
+    wall_scale: multiplies every unit's agent wall (after its own or the
+    manifest's max_wall_s, before contention scaling). The turn budget from
+    turns_per_wall_s is still computed from the BASE wall, so an arm can keep
+    another arm's turns while getting more time: a thinking arm, whose turns
+    are slower, measured at the same turns as its no-thinking twin
+    (2026-11-16 arm C). Recorded in the results header and on each row.
 
     reasoning_budget: cache_only — the reasoning-budget era to replay
     (e.g. "20480"; "-1" = uncapped). A live run reads it from the server;
@@ -3418,6 +3426,7 @@ def run_eval(
                 "runtime": capture_runtime_info(),
                 "jobs": jobs,
                 **({"turns_per_wall_s": turns_per_wall_s} if turns_per_wall_s else {}),
+                **({"wall_scale": wall_scale} if wall_scale != 1.0 else {}),
                 "suite_selection": suite if suite_pin else None,
                 **({"suite_manifest": manifest["suite"]} if manifest else {}),
                 "cache_only": cache_only,
@@ -3658,7 +3667,7 @@ def run_eval(
                                  effective_max_iter,
                                  timeout_scale=timeout_scale,
                                  env_overlay={**c.env_overlay(task), **agent_env_pin},
-                                 wall_s=agent_wall_s(task, effective_max_iter, unit_wall_cap))
+                                 wall_s=agent_wall_s(task, effective_max_iter, unit_wall_cap) * wall_scale)
         log(f"  Agent finished in {agent_result['elapsed_seconds']}s")
 
         # Re-assert fixtures (no-op unless task declares pre_validate).
@@ -3984,6 +3993,10 @@ def main():
                              "--base-url is marked as this install's inference endpoint so "
                              "the runner sends it there.")
     parser.add_argument("--max-iter", type=int, help="Override max iterations for all tasks")
+    parser.add_argument("--wall-scale", type=float, default=1.0,
+                        help="Multiply every unit's agent wall (turn budgets from "
+                             "--turns-per-wall-s still use the base wall), e.g. 2 for a "
+                             "thinking arm kept at its twin's turns. On the results header.")
     parser.add_argument("--turns-per-wall-s", type=float,
                         help="Wall-scaled turn budget: each unit gets max(its max_iter, "
                              "wall_s / N) turns (e.g. 15 -> medium 40, hard 60, xl 100), "
@@ -4113,6 +4126,7 @@ def main():
         base_url=args.base_url,
         max_iter_override=args.max_iter,
         turns_per_wall_s=args.turns_per_wall_s,
+        wall_scale=args.wall_scale,
         model_name=args.model_name,
         use_cache=not args.no_cache,
         cache_only=args.cache_only,
