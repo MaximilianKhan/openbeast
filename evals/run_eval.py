@@ -1475,9 +1475,21 @@ def packs_flag(env=None) -> tuple[bool, str | None, dict]:
     if not enabled:
         return False, None, {}
     import hashlib
+    # Which language-pack bytes this run measures: OPENBEAST_PACK_VARIANT =
+    # v1 (default: PACK_FILES, the measured pack production serves) | v2 (the
+    # 2026-11-16 pack). The file's bytes go into pack1-<sha8>, so rows of
+    # two variants can never share a key. An unknown name aborts: a typo
+    # must not silently measure the wrong treatment.
+    variant = (env.get("OPENBEAST_PACK_VARIANT") or "").strip().lower() \
+        or _pack_context.DEFAULT_PACK_VARIANT
+    if variant not in _pack_context.PACK_VARIANTS:
+        raise SystemExit(f"OPENBEAST_PACK_VARIANT={variant!r}: not one of "
+                         f"{sorted(_pack_context.PACK_VARIANTS)}")
+    files = (PACK_FILES if variant == _pack_context.DEFAULT_PACK_VARIANT
+             else _pack_context.PACK_VARIANTS[variant])
     shas, paths = {}, {}
     h = hashlib.sha256()
-    for lang, fn in sorted(PACK_FILES.items()):
+    for lang, fn in sorted(files.items()):
         p = os.path.abspath(os.path.join(PACKS_DIR, fn))
         with open(p, "rb") as f:
             data = f.read()
@@ -1486,7 +1498,8 @@ def packs_flag(env=None) -> tuple[bool, str | None, dict]:
         paths[lang] = p
         h.update(data)
     host = _host_pack.build()
-    meta = {"sha": shas, "paths": paths, "host": {}, "unit_paths": dict(paths)}
+    meta = {"sha": shas, "paths": paths, "host": {}, "unit_paths": dict(paths),
+            "variant": variant}
     if host.text:
         h.update(host.data)
         shas["host"] = host.sha8
@@ -3339,7 +3352,8 @@ def run_eval(
                   f"{', '.join(c.card_langs) or 'NONE'}; card-eligible units: {n_card}/{len(tasks)}")
         if c.packs_on:
             packed = sum(1 for t in tasks if c.pack_path(t))
-            print(f"Packs:  {tag}awareness packs ON ({', '.join(f'{k}={v}' for k, v in c.packs_meta['sha'].items())}) — "
+            print(f"Packs:  {tag}awareness packs ON, variant {c.packs_meta.get('variant')} "
+                  f"({', '.join(f'{k}={v}' for k, v in c.packs_meta['sha'].items())}) — "
                   f"cache era {c.packs_component} on {packed}/{len(tasks)} units "
                   f"(leaderboard-ineligible experiment rows)")
             hp = c.packs_meta.get("host") or {}
@@ -3374,7 +3388,8 @@ def run_eval(
              "agent_switches": dict(agent_meta),
              **({"agent_component": agent_component} if agent_component else {}),
              "packs": dict(c.packs_meta.get("sha", {})) if c.packs_on else {},
-             **({"packs_component": c.packs_component} if c.packs_on else {}),
+             **({"packs_component": c.packs_component,
+                 "pack_variant": c.packs_meta.get("variant")} if c.packs_on else {}),
              **({"host_pack": {k: v for k, v in (c.packs_meta.get("host") or {}).items()
                                if k != "path"}} if c.packs_on else {}),
              **({"escalate": c.esc_meta, "escalate_component": c.esc_component,

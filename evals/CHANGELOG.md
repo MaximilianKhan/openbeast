@@ -33,6 +33,22 @@ prior art: `docs/HARNESS_NOTES.md` G22/G23.
   `agent_wall_warn`); pinned into each unit's env like the others.
 - Off (unset): requests are byte-identical to before.
 
+## v5.0, zig pack variants: v1 back in production, v2 by switch (2026-11-16)
+
+The fix for #188. That change put the v2 bytes in `agents/packs/zig-0.16.md`.
+`MEASURED_SHA256` still named v1, so production served no zig pack at all.
+The measured v1 bytes are restored there (@`5cdf4b64`; production serves
+them again). v2 now lives at `agents/packs/zig-0.16-v2.md` (@`ed18f83e`).
+An eval run picks one with `OPENBEAST_PACK_VARIANT=v1|v2`: the default is
+v1, and an unknown name aborts. The choice is recorded as
+`harness.pack_variant`, and the file's bytes are in `pack1-<sha8>`.
+
+- **Era effect:** default packs-on runs measure v1 + the host pack again.
+  That pack1 component differs from #188's v2 + host pack, and from the
+  pre-#188 v1-only component.
+- **To measure v2 + the host pack:** `BEAST_PACKS=1 OPENBEAST_PACK_VARIANT=v2`.
+- `HARNESS_VERSION` and the base era are unchanged.
+
 ## v5.0, the harness host provisions its own toolchains (2026-11-16) — no era move
 
 Same suite, manifest and `HARNESS_VERSION` (harness6). The harness
@@ -93,7 +109,8 @@ therefore unaffected, except the five Rust units below. What moves:
 
 Changes:
 
-- **Zig pack v2** (`agents/packs/zig-0.16.md` @`ed18f83e`, 1,959/2,000
+- **Zig pack v2** (`agents/packs/zig-0.16.md` @`ed18f83e` in #188; moved to
+  `zig-0.16-v2.md` by the entry above, 1,959/2,000
   tokens). Five new curated bullets: `Thread.spawn(config, f, args_tuple)`,
   `ResetEvent`/`Mutex` → `std.Io.Event`/`std.Io.Mutex`, Io file-method
   arity (`writeStreamingAll`, `openFile`, `stdin()`, `reader(io, &buf)`),
