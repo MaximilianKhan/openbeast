@@ -1,0 +1,57 @@
+{
+  "suite": "v5",
+  "description": "Inputs of the v5 leaderboard (evals/v5_board.py). One entry per measured configuration; the board groups them by model and shows each model's best. Files are verbatim copies of run_eval results (and the reference ledger) in this directory; evals/results/ itself is not tracked.",
+  "runs": [
+    {
+      "id": "GLM-L0",
+      "model": "GLM-5.3-Flash",
+      "host": "DGX Spark pair, TensorFold, EXL3",
+      "config": "thinking off, runner v1 (the L0 profile)",
+      "files": [
+        "eval-glm-5-3-flash-L0-20261116-060847.json",
+        "eval-glm-5-3-flash-L0-20261116-090009.json"
+      ],
+      "note": "the second file reruns 4 units (2 validator timeouts)"
+    },
+    {
+      "id": "GLM-A",
+      "model": "GLM-5.3-Flash",
+      "host": "DGX Spark pair, TensorFold, EXL3",
+      "config": "thinking off, runner v2",
+      "campaign_arm": "v5-harness A",
+      "files": ["eval-glm-5-3-flash-v2-L0-20261116-135857.json"]
+    },
+    {
+      "id": "GLM-B",
+      "model": "GLM-5.3-Flash",
+      "host": "DGX Spark pair, TensorFold, EXL3",
+      "config": "thinking off, runner v2, wall-scaled turns",
+      "campaign_arm": "v5-harness B",
+      "files": [
+        "eval-glm-5-3-flash-v2-turns-L0-20261116-160623.json",
+        "eval-glm-5-3-flash-v2-turns-L0-20261116-184943.json"
+      ],
+      "note": "the second file repairs 24 units lost to an eval-interpreter incident"
+    },
+    {
+      "id": "GLM-C",
+      "model": "GLM-5.3-Flash",
+      "host": "DGX Spark pair, TensorFold, EXL3",
+      "config": "thinking on, runner v2, wall-scaled turns, wall ×2",
+      "campaign_arm": "v5-harness C",
+      "files": ["eval-glm-5-3-flash-v2-turns-think-L0-20261116-195724.json"]
+    },
+    {
+      "id": "OPUS-REF",
+      "model": "Claude Opus 5.5",
+      "host": "Anthropic API",
+      "config": "Claude Code tools, no turn cap, wall ×2 (68/71 at the 1× wall); solver never saw validator output",
+      "reference": true,
+      "files": ["reference-claude-opus-5-5-v5-20261116.jsonl"]
+    }
+  ],
+  "not_yet_run": [
+    "Qwen3.8 27B Uncensored MTP (the shipped default)",
+    "Qwen3.6 27B (v4 #1)"
+  ]
+}
