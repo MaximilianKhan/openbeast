@@ -57,6 +57,48 @@ Transcripts: `agents/logs/agent-20261116-0[6-8]*.jsonl`; L0 results
 | G17 | Telemetry: shell unit 179 bucketed as python (no `language` on non-variant rows, `ablation.py` defaults to python); `go vet` errors counted as 0 (regex misses the `vet: ` prefix). | `language` on every row; `^(?:vet: )?\S+:\d+:\d+: `. | BUILDING |
 | G10 | Request `model` was the rig alias `qwen-27b-q5`, not the served id (cosmetic; audit labels wrong). | Send the served id. | ADOPTED (#177) |
 
+## Eval host provisioning: the venv incident (2026-11-16) — ADOPTED
+
+**What happened.** The v5 runs of 2026-11-16 used a Python venv and toolchains
+(zig 0.16.0, rustup/cargo with rustc 1.100) hand-placed in a session scratch
+directory. At 16:46 something rewrote that venv's `python` symlink. Every
+agent is `sys.executable agents/runner.py`, so from then on each new agent died
+at interpreter startup ("Could not find platform independent libraries"),
+before a single model call. The harness had no idea: exit 1, zero tokens, the
+fixture untouched, validator FAIL. **22 units were scored as model failures**
+until a human read the logs. Durable copies were then made by hand under
+`~/.local/opt` (a homebrew-3.12.7 venv from a pip freeze, zig, rustup, cargo, an
+env file), which fixed that run and nothing else.
+
+**What it taught.** Two separate holes. (1) The harness host's toolchains
+were nobody's: no pin file, no installer, no check beyond profile.py's
+`which`. A venv is only as durable as its base interpreter, and a Homebrew
+python can move under it at any `brew upgrade`. (2) An interpreter that
+cannot start produced rows that looked exactly like a model that tried and
+failed.
+
+**The fix** (`evals/toolchains.lock`, `scripts/eval-host.sh`,
+`evals/eval_host.py`):
+- The repo owns the harness host. The lock pins zig 0.16.0, rustc 1.100.0,
+  go 1.23.3 (what the units were proven with) and a python 3.12 eval venv,
+  per platform, by sha256. `setup` installs them into
+  `~/.local/opt/openbeast-eval` (idempotent, no sudo, ark or mirror offline),
+  and the venv's base is a python-build-standalone 3.12.16 **inside the
+  prefix**, so no package manager can rewrite it.
+- `run_eval` / `profile` / `benchmark_all` check before every live run, set
+  up what is missing, and re-exec under the owned venv, so the validator
+  pins resolve the provisioned compilers.
+- `run_eval` refuses a live run on an interpreter that cannot import its
+  stdlib and the runner's packages, and records an agent's startup death as
+  `interpreter_error` (an infra row: never cached, never scored), then
+  re-checks the interpreter and aborts the run when it is broken. A broken
+  interpreter now costs one unmeasured row, not a column of FAILs.
+
+Measured on the Mac (scratch prefix): a fresh `setup` took 33 s (zig from a
+community mirror; ziglang.org itself was serving 5 KB/s, hence `@mirrors`),
+a second `setup` did nothing, and `vlib.pin_toolchain` then pinned the
+prefix's zig and rustup's `1.100.0-aarch64-apple-darwin` rustc.
+
 ## Cross-model ideas (not yet model-specific)
 
 - Iteration budget scaled by task size (xl SWE tasks at 30 turns starve a one-tool-call-per-turn model; 176 note). Must apply to every model equally.
