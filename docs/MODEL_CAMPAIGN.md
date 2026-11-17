@@ -589,7 +589,7 @@ In the order it happened (local times from the run logs where they exist):
 | L1 (zig packs) | zig 0/6 → 3/6 | |
 | A (runner v2) | **31/71** | +5 net vs L0 (11 rescued, 6 regressed) |
 | B (+ wall-scaled turns) | **36/71** | its 24 lost units rerun (B repair) |
-| C (+ thinking, wall x2) | **54/71 raw; 53/71 scored** | +18 over B, one seed. One pass (122_gemm_blocked_b) is withheld pending the integrity review (below). On the first 21 units: 18 vs B's 8, 10 rescued, 0 regressed, 14 of the 18 passes inside B's original wall, ≈ 2.3x B's time per unit. This is why the default campaign is thinking-first (§5a) |
+| C (+ thinking, wall x2) | **54/71 raw; 51/71 scored (SCORE 76.7)** | +18 raw / +15 scored over B, one seed. Three passes (122_gemm_blocked_b, _d, _e) are withheld: the contamination scan (#195) found their agents read sealed paths (below). On the first 21 units: 18 vs B's 8, 10 rescued, 0 regressed, 14 of the 18 passes inside B's original wall, ≈ 2.3x B's time per unit. This is why the default campaign is thinking-first (§5a) |
 | D (+ diagnostics, edit hint, verify-done) | [PENDING] | |
 | E (+ packs, env block, wall warnings, thinking iff C > B) | [PENDING] (running on 2026-11-17) | C > B, so E runs thinking on. Decision: [PENDING] |
 | F (B under `--seed 1`) | [PENDING] | noise floor: [PENDING] flips |
@@ -600,9 +600,11 @@ asked for `gemm.c.`), the agent went looking for the checker. It read Claude
 Code workflow journals under `~/.claude/projects/`, the repo's
 `agents/tools.py` and `evals/run_eval.py`, and a cached validation result in
 `evals/cache/`. The eval sandbox did not deny those reads. The unit passed,
-so the board scores C at 53/71 with that pass withheld until the integrity
-review (a read-deny fix and a contamination scan of every v5 row) clears or
-voids it; 54/71 is the raw count. Detail:
+and the contamination scan (#195, `evals/audit/integrity_scan.py`, every v5
+row of every arm) found two more C passes whose agents reached into
+`~/.claude` (122_gemm_blocked_d grepped it; 122_gemm_blocked_e tried), so the
+board scores C at 51/71 with all three withheld; 54/71 is the raw count.
+#195 also seals those paths for eval agents from harness8 on. Detail:
 [HARNESS_NOTES.md](HARNESS_NOTES.md), "Language-specific residue under
 thinking"; the exclusion is recorded in `evals/boards/v5/exclusions.json`
 (#193).
