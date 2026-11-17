@@ -1851,6 +1851,16 @@ scripts/client-e2e.sh --keep                 # keep the temp project + opencode 
 | (d) | `use <other rig>`: refused with nothing changed when it is offline, `--force` switches and `status` fails gracefully, `use <rig>` comes back green (a real round trip when the other rig is up). opencode.json is backed up first (`opencode.json.bak-e2e-<time>`, 0600) and a trap restores the rig |
 | (e) | the `openbeast-tools` MCP server lists its tools |
 
+**Measured on the Mac, 2026-11-17** (against spark-1, beast offline, thinking
+on at the gate): 6 passed, 0 failed. (a) green, `GLM-5.3-Flash-EXL3`, 0/4
+busy, 1024K shared. (f) opencode's parsed limit on both providers:
+`{"context": 1048576, "output": 32768}`. (b) 53 s: the agent called
+`openbeast-tools_write_file` and `openbeast-tools_bash`, the file ran on the
+Mac and printed the expected line, with 2 reasoning parts and 2,185 reasoning
+tokens. (c) 3 results through `:8889` in 0.8 s. (d) `use beast` refused
+("nothing answers"), files unchanged; `--force` switched, `status` exit 1;
+`use spark-hydra` green again. (e) 19 tools.
+
 ### F3. What the client writes into opencode
 
 The Mac runs **opencode v2.0.25**. Its global config is
@@ -1927,7 +1937,9 @@ gate's default (`INFERENCE_THINKING`), not a client setting.
   connecting (about 0.8 s), so a one-step prompt may see only opencode's
   built-in tools; from the second step on, `openbeast-tools_*` are there.
   Prompts that need the arsenal right away should name the tools (as
-  `client-e2e.sh` does).
+  `client-e2e.sh` does). Likewise `opencode models` from a directory the
+  service has not seen yet can list none of the configured providers on the
+  first call, and all of them two seconds later.
 - The TUI and `opencode run` (without `--standalone`) go through opencode's
   **background service**. It watches its config dir, so `use` is normally
   picked up; if a running session still shows the old rig, `opencode reload`.

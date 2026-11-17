@@ -119,7 +119,14 @@ if ! skipped f; then
     # read from it proves opencode accepted the row (apiKey prints as ***;
     # only the limit is extracted here).
     (cd "$WORK" && opencode reload >/dev/null 2>&1) || true
-    _o="$(cd "$WORK" && opencode models 2>&1)"; _rc=$?
+    # The service answers the FIRST call from a directory it has not seen
+    # before (this fresh temp dir) before that location's providers load:
+    # 0 rows, then all of them 2 s later (measured 2026-11-17). Retry briefly.
+    for _try in 1 2 3 4 5; do
+      _o="$(cd "$WORK" && opencode models 2>&1)"; _rc=$?
+      has "$_o" "openbeast-rig/$MODEL" && break
+      sleep 2
+    done
     _lim="$(cd "$WORK" && opencode debug config 2>/dev/null | "$VENV_PY" -c '
 import json, sys
 rig, model = sys.argv[1], sys.argv[2]
@@ -161,12 +168,12 @@ if ! skipped b; then
   for _try in 1 2; do
     rm -f "$F"
     _t0=$(date +%s)
-    (cd "$PROJ" && opencode run --standalone --auto --format json -m "openbeast-rig/$MODEL" "$PROMPT") \
+    (cd "$PROJ" && opencode run --standalone --auto --thinking --format json -m "openbeast-rig/$MODEL" "$PROMPT") \
       > "$WORK/run$_try.jsonl" 2> "$WORK/run$_try.err"
     _rc=$?; _secs=$(( $(date +%s) - _t0 ))
     _sum="$("$VENV_PY" - "$WORK/run$_try.jsonl" <<'PY'
 import json, sys
-tools, text, errs = [], [], []
+tools, text, errs, reasoning, rtok = [], [], [], 0, 0
 for line in open(sys.argv[1]):
     try:
         e = json.loads(line)
@@ -177,9 +184,14 @@ for line in open(sys.argv[1]):
         tools.append("%s:%s" % (p.get("tool"), (p.get("state") or {}).get("status")))
     elif e.get("type") == "text":
         text.append(p.get("text") or "")
+    elif e.get("type") == "reasoning":
+        reasoning += 1
+    elif e.get("type") == "step_finish":
+        rtok += ((p.get("tokens") or {}).get("reasoning") or 0)
     elif e.get("type") == "error":
         errs.append(json.dumps(e)[:300])
 print("TOOLS " + " ".join(tools))
+print("REASONING %d parts, %d tokens" % (reasoning, rtok))
 print("TEXT " + " ".join(t.strip() for t in text).replace("\n", " ")[:300])
 for x in errs:
     print("ERROR " + x)
@@ -187,6 +199,7 @@ PY
 )"
     _tools="$(printf '%s\n' "$_sum" | sed -n 's/^TOOLS //p')"
     _text="$(printf '%s\n' "$_sum" | sed -n 's/^TEXT //p')"
+    _reas="$(printf '%s\n' "$_sum" | sed -n 's/^REASONING //p')"
     _got=""; [ -f "$F" ] && _got="$(python3 "$F" 2>&1 | head -1)"
     _why=""
     [ $_rc -eq 0 ] || _why="$_why opencode exit $_rc;"
@@ -196,7 +209,7 @@ PY
     has "$_tools" "openbeast-tools_bash:completed" || _why="$_why openbeast-tools_bash not used;"
     has "$_text" "$WANT" || _why="$_why the reply does not quote the output;"
     if [ -z "$_why" ]; then
-      pass "(b) opencode run (${_secs}s, try $_try): $F created here, prints '$_got'; tools: $_tools"
+      pass "(b) opencode run (${_secs}s, try $_try): $F created here, prints '$_got'; tools: $_tools; thinking: $_reas"
       _b_ok=1; break
     fi
     echo "      try $_try:$_why"
