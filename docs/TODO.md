@@ -1,5 +1,95 @@
 # TODO
 
+## 🧰 v5 HARNESS + MODEL CAMPAIGN — opened 2026-11-16, refreshed 2026-11-17
+
+Where the GLM-5.3-Flash v5 work stands (single seed each; the working log is
+[`HARNESS_NOTES.md`](HARNESS_NOTES.md) "Headroom", the runbook
+[`MODEL_CAMPAIGN.md`](MODEL_CAMPAIGN.md)): L0 26/71 → A 31/71 → B 36/71 →
+**C 54/71 raw, 53/71 scored** (122_gemm_blocked_b withheld pending the
+integrity review) → E running. Claude Opus 5.5 reference ceiling: 71/71
+(68/71 at the 1x wall).
+
+**Done (2026-11-16/17):**
+
+- [x] **Runner v2** — the harness frictions from the GLM L0 audit (G1-G4, G8,
+  G11 v1), #179 (moves the era). Arm A.
+- [x] **Wall-scaled turns** — `--turns-per-wall-s`, a turn budget scaled to each
+  unit's wall, #180. Arm B.
+- [x] **Wall-scale** — `--wall-scale`: more time for an arm without changing its
+  turns, #186. Arm C runs at `--wall-scale 2`.
+- [x] **Harness v3 switches** — agent switches keyed in the eval cache plus G9,
+  G13, G15, G16 (#185); the env block (G22) and wall-clock warnings (G23), both
+  opt-in (#187).
+- [x] **Zig pack v2 + the probed host pack** (+ Rust `--edition 2021`), #188;
+  production serves the measured v1 again and v2 is eval-only behind
+  `OPENBEAST_PACK_VARIANT=v2`, #190.
+- [x] **Eval-host provisioning** — `scripts/eval-host.sh` and
+  `evals/toolchains.lock`; a dead interpreter is an infra row, never a FAIL,
+  #189 (HARNESS_NOTES "Eval host provisioning").
+- [x] **The replicable model campaign** — `evals/campaign.py`, audit and
+  reference tooling, the runbook, #191; **thinking-first by default**
+  (`v5-thinking-first`), #192.
+- [x] **spark-hydra quickstart** — `SPARK_HYDRA.md` § Quickstart and the README
+  section, #182.
+- [x] **Install / update checklists for the pair** — "Install everything,
+  fresh", G6 "update everything", F6 the eval harness host, #183.
+- [x] **WebUI regenerate varies** — the `random_seed` Filter gives each unseeded
+  Open WebUI chat a random seed, #181 (other clients: the beast-gate item below).
+- [x] **MTU 9000 script** — `scripts/backends/spark-fabric-mtu.sh`
+  (stage / verify / unstage, never `netplan apply`), #178. The restart itself
+  is the open item below.
+
+**Open — the pair (operator steps, Max):**
+
+- [ ] **MTU 9000 restart.** The script is merged and the plan is staged in
+  `SPARK_HYDRA.md` B4: `--stage` on both (sudo), reboot spark-2 then spark-1,
+  `--verify` per rail, then the TTFT / 4-stream A/B. Pending Max's reboot.
+  Detail in the 🟩 DGX SPARK section below.
+- [ ] **`ARTIFACT_LOGIN_FROM=unix` + `--publish-artifact` on spark-1.** Until
+  then beast-artifact honours the login header from any loopback peer
+  (`SPARK_HYDRA.md` G6 "Pending on the live pair", Known issues).
+- [ ] **spark-guard re-run on both Sparks** (sudo): `STALE` on both since #168.
+- [ ] **Plaintext secrets on spark-1:** `~/.config/openbeast/gate-keys/*.key`
+  and `webui-max-password`. Shred the keys once the devices hold them (E7);
+  delete the password file once it is changed (E5).
+- [ ] **`scripts/spark-model.sh use <profile>`** — a one-command model swap on
+  the pair with rollback: fetch/verify the weights on both ranks, rewrite the
+  recipe config, restart the unit, wait for `/v1/models`, run conformance, and
+  roll back to the previous profile on any failure. Today it is a page of
+  `SPARK_HYDRA.md` (C, D1, G3) by hand; DeepSeek v4.1 Flash is the first user.
+- [ ] **Scaling review, 1 to 8 ranks** — still open, deliberately parked (Max,
+  2026-11-15); scope in the 🟩 DGX SPARK section below.
+
+**Open — measurement:**
+
+- [ ] **Qwen3.8 v5 rows** when the rig is back (L0 profile, then the
+  thinking-first campaign): the paper's second model and the first `beast` row.
+- [ ] **DeepSeek v4.1 Flash ("1017") thinking-first campaign** —
+  [`MODEL_CAMPAIGN.md` §9](MODEL_CAMPAIGN.md#9-next-deepseek-v41-flash-1017-thinking-first).
+- [ ] **k-seed noise run** — the same arm at `--seed 1` (and 2) to put a noise
+  floor under every single-seed delta above (G12; the campaign's seed arm).
+- [ ] **Zig pack held-out check** — before claiming the pack effect
+  ([`LANG_AWARENESS_PLAN.md`](LANG_AWARENESS_PLAN.md) "Held-out check"). Fold in
+  the P0 `std.posix.write` claim from HARNESS_NOTES "Language-specific residue".
+- [ ] **Thinking-cap / stall fix, measured** — 13 of C's 17 failures are process
+  failures, almost all a thinking turn capped at 16,384 tokens before the file
+  is written. Fix it (cap, budget or a resume nudge), then measure it as its
+  own arm against C/E at the same seed.
+- [ ] **Sandbox read-deny integrity fix + contamination scan.** In C's
+  122_gemm_blocked_b the agent read `~/.claude` workflow journals, the harness
+  source and `evals/cache/`. Deny those reads in the eval sandbox, fix the
+  trailing-period path regex that sent it looking (`run_eval.py`), and scan
+  every v5 row's transcripts for the same reads; then clear or void the
+  withheld unit in `evals/boards/v5/exclusions.json`.
+- [ ] **beast-gate random seed, with an eval exemption** — a random default seed
+  at the gate for requests that carry none, so opencode, the Mac client and raw
+  `:8443` callers stop repeating themselves on retry; eval traffic (and any
+  request with an explicit seed) passes through untouched, because the runner's
+  seeding is part of the era. Replaces the TensorFold seed item in 🔎 REVIEW
+  2026-10-09.
+- [ ] **The research paper: per-model vs unified harness** — see 📝 RESEARCH
+  PAPER below. Needs GLM's E + seed arm, Qwen3.8 and DeepSeek on the same arms.
+
 ## 🧮 PERFORMANCE MATRIX — engine × language-assistance × model (opened 2026-11-15)
 
 Max, 2026-11-15: the 5090 rig must be eval-tested running the same models on
@@ -128,7 +218,7 @@ Decisions the 2026-10-09 review deferred to the owner. Each is open.
 - [ ] Generate tool-server keys by default.
 - [ ] Roll the eval era once, carrying: the `23_sql_injection` and `21_race_condition` validator fixes, the runner request-timeout fix, hiding `expected.txt` from variant units, and removing `fetch`/`web_search` under eval, and the beast-island guard in `tools.web_search`/`tools.fetch` (`island.web_refusal`), so autonomous sub-agents refuse instantly too (docs/BEAST_ISLAND.md § Known limits).
 - [ ] beast-island: Open WebUI's built-in Web Search toggle bypasses the island guard (it calls SearXNG directly). Option: have `configure-webui.sh` disable it while islanded at launch.
-- [ ] TensorFold's fixed default seed: Open WebUI now gets a random seed per chat (the `random_seed` filter, 2026-11-16), but opencode, the Mac client and any other client of `:8000` / `:8443` still repeat themselves on a retry. Options: a random default seed at beast-gate for requests without one, or TensorFold's own default if it grows a switch. Not the eval runner, whose seeding is part of the era.
+- [ ] TensorFold's fixed default seed (now tracked as "beast-gate random seed" in 🧰 v5 HARNESS at the top): Open WebUI now gets a random seed per chat (the `random_seed` filter, 2026-11-16), but opencode, the Mac client and any other client of `:8000` / `:8443` still repeat themselves on a retry. Options: a random default seed at beast-gate for requests without one, or TensorFold's own default if it grows a switch. Not the eval runner, whose seeding is part of the era.
 - [ ] Trim prompt tokens in `system-prompt.md` (era-hashed, so in the same era roll) and `system-prompt-tools.md` (WebUI-only, not era-hashed).
 - [ ] Rerun the champion row (Qwen3.6 27B Q5_K_XL) in the current era.
 - [ ] Agent router residual: in header mode with tool keys and no `LLAMA_API_KEY`, a local process can still type `X-OpenWebUI-User-Role: admin`. Fix is a router key minted by the launcher, or `--with-jwt` by default.
@@ -214,6 +304,14 @@ paper's central result either way. Prereqs: the v5 arms for GLM (L0/L1/L2,
 thinking on, runner v2), a Qwen3.8 v5 row when the rig is back, DeepSeek v4.1
 Flash, and the Claude Opus 5.5 reference row as the ceiling.
 
+Status 2026-11-17: in progress, GLM only so far. GLM's arms L0 26 → A 31 →
+B 36 → C 53-54/71 (thinking) against the Opus 71/71 ceiling, all single seed;
+E and the seed arm running or queued. Evidence that bears on the question: the
+language-specific residue under thinking (HARNESS_NOTES) and the Droid prior
+art (`reviews/HARNESS_PRIOR_ART-2026-11-16.md`: the "unified harness, rich
+static knowledge" pole). Next: Qwen3.8 and DeepSeek v4.1 Flash on the same
+arms.
+
 ## 🟩 DGX SPARK INFERENCE — LIVE 2026-11-13 as spark-hydra
 
 - **Live:** GLM-5.3-Flash Ablit (EXL3 4-bit) TP 2 over spark-1 + spark-2 on
@@ -224,8 +322,10 @@ Flash, and the Claude Opus 5.5 reference row as the ceiling.
   bundle, zig); remote access (beast-gate via `tailscale serve`,
   `svc:spark-hydra`); primary switch beast ↔ spark-hydra; `PARALLEL=8`;
   native TensorFold 1.2.7 A/B.
-- [ ] **RoCE MTU 9000 — staged for next reboot; run --stage on both, reboot
-  both, --verify, A/B.** (Max, 2026-11-16: "We absolutely need to fix this on
+- [ ] **RoCE MTU 9000 — script merged (#178), restart pending Max's reboot;
+  run --stage on both, reboot both, --verify, A/B.** Not yet staged on either
+  Spark as of 2026-11-16 evening (`SPARK_HYDRA.md` G6 "Pending on the live
+  pair"); spark-2 must pull first. (Max, 2026-11-16: "We absolutely need to fix this on
   the next restart".) The fabric runs at netdev MTU 1500 = RoCE `active_mtu
   1024`. `sudo scripts/backends/spark-fabric-mtu.sh --stage` on spark-1 and
   spark-2 (one netplan drop-in, `netplan generate` only), reboot both,

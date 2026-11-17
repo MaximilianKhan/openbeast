@@ -88,9 +88,11 @@ flowchart LR
 - **The brain can move off the rig.** `INFERENCE_BACKEND=vllm|tensorfold`
   plus `INFERENCE_URL` point the whole command center (WebUI, router, gate,
   spawned agents, `/api/slot`) at an OpenAI-compatible server on other boxes —
-  planned: two DGX Sparks, tensor-parallel. The rig then launches, supervises
-  and kills no model server (`INFERENCE_MANAGED=false`); everything else in
-  this picture is unchanged. Plan, security and runbook:
+  live since v1.9.0 as spark-hydra: two DGX Sparks, tensor-parallel, with
+  their own command center on spark-1. The command center then launches,
+  supervises and kills no model server (`INFERENCE_MANAGED=false`);
+  everything else in this picture is unchanged. Runbook:
+  [`SPARK_HYDRA.md`](SPARK_HYDRA.md); original design notes:
   [`DGX_SPARK_PLAN.md`](DGX_SPARK_PLAN.md).
 - **Models bigger than the card stream their experts from RAM.** On the one
   RTX 5090 a MoE model's routed experts can live in host RAM while a VRAM
