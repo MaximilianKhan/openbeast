@@ -12,8 +12,10 @@ The pins that matter:
      hits ≥1 manifest entry — and the fixtures BEHAVE (old fails, new
      compiles) under the real zig (skips without zig).
   4. Injection: BEAST_PACKS=1 (alias OPENBEAST_PACKS=1, CLI --packs) →
-     zig units get `--context-file <pack>`; non-zig units get nothing;
-     the runner puts the pack in a delimited system-prompt block.
+     zig units get `--context-file <pack>`; non-zig units get nothing
+     when the host pack is empty, the host pack alone when it is not (zig
+     units then get one file: zig pack, then host pack); the runner puts
+     the file in a delimited system-prompt block.
   5. Cache era: `pack1-<sha8>` component present and task-scoped;
      provenance records harness.packs = {zig: sha8}; drift-abort on a
      tampered pack.
@@ -70,6 +72,24 @@ def _restore_harness_env():
             os.environ.pop(k, None)
         else:
             os.environ[k] = v
+
+
+#: The host pack (agents/lang/host_pack.py) is probed from the machine
+#: running the tests, so every test here gets a stub: EMPTY by default (the
+#: Linux-with-GNU case — the language-pack wiring below is then exactly what
+#: it was before the host pack), or the fixed text a test asks for.
+HOST_TEXT = ("=== Host notes: Darwin tool host (probed when this run started) ===\n"
+             "- no `nproc` and no /proc: CPU count is `sysctl -n hw.ncpu`.\n")
+
+
+@pytest.fixture(autouse=True)
+def _host_pack_stub(monkeypatch, tmp_path):
+    from lang import host_pack as HP
+    monkeypatch.setenv("OPENBEAST_HOST_PACK_DIR", str(tmp_path / "host-pack"))
+    state = {"text": ""}
+    monkeypatch.setattr(HP, "build", lambda host=None: HP.HostPack(
+        "Darwin", state["text"], [HP.Fact("nproc_missing", "x", "probe")] if state["text"] else []))
+    yield state
 
 
 def _gen():
@@ -358,6 +378,85 @@ def test_pack_component_is_task_scoped(tmp_path, monkeypatch):
     run_eval.run_eval(model_name="fake-model", use_cache=True)
     by_id = dict(keys)
     assert "pack1-" in by_id["90_pack_f"] and "pack1-" not in by_id["90_pack_a"]
+
+
+def _run_with_fake_agent(run_eval, tmp_path, use_cache=False):
+    run_eval.TASKS_DIR = str(_tasks_dir(tmp_path))
+    run_eval.RESULTS_DIR = str(tmp_path / "results")
+    seen = {}
+
+    def fake_agent(task, base_url, max_iter_override=None, timeout_scale=1.0, **_kw):
+        seen[task["id"]] = task.get("_context_file")
+        return {"exit_code": 0, "elapsed_seconds": 0.1, "stdout": "", "stderr": "",
+                "tokens": {"prompt": 1, "completion": 5, "total": 6}}
+    run_eval.run_agent = fake_agent
+    return seen, run_eval.run_eval(model_name="fake-model", use_cache=use_cache)
+
+
+def test_host_pack_goes_to_every_unit_and_joins_the_zig_pack(tmp_path, monkeypatch, _host_pack_stub):
+    """BEAST_PACKS=1 = language pack + host pack: a python unit gets the host
+    pack alone, a zig unit ONE file holding the zig pack then the host pack."""
+    _host_pack_stub["text"] = HOST_TEXT
+    monkeypatch.setenv("BEAST_PACKS", "1")
+    monkeypatch.delenv("OPENBEAST_PACKS", raising=False)
+    run_eval = _fresh_run_eval()
+    seen, results = _run_with_fake_agent(run_eval, tmp_path)
+    py, zg = seen["90_pack_a"], seen["90_pack_f"]
+    assert py and Path(py).read_text() == HOST_TEXT
+    assert str(tmp_path / "host-pack") in py, "host pack written outside OPENBEAST_HOST_PACK_DIR"
+    both = Path(zg).read_text()
+    assert both.startswith(PACK.read_text().rstrip("\n") + "\n\n") and both.endswith(HOST_TEXT)
+    zsha = hashlib.sha256(PACK.read_bytes()).hexdigest()[:8]
+    hsha = hashlib.sha256(HOST_TEXT.encode()).hexdigest()[:8]
+    assert results["harness"]["packs"] == {"zig": zsha, "host": hsha}
+    comp = "pack1-" + hashlib.sha256(PACK.read_bytes() + HOST_TEXT.encode()).hexdigest()[:8]
+    assert results["harness"]["packs_component"] == comp
+    assert results["harness"]["host_pack"]["facts"] == ["nproc_missing"]
+    assert "path" not in results["harness"]["host_pack"]
+
+
+def test_host_pack_sha_is_in_the_cache_component(monkeypatch, _host_pack_stub):
+    """The pack1 component names the host pack too: another host's facts
+    (or a toolchain update that changes them) is another era."""
+    monkeypatch.setenv("BEAST_PACKS", "1")
+    run_eval = _fresh_run_eval()
+    _, empty, meta0 = run_eval.packs_flag()
+    _host_pack_stub["text"] = HOST_TEXT
+    _, with_host, meta1 = run_eval.packs_flag()
+    _host_pack_stub["text"] = HOST_TEXT + "- another probed gap.\n"
+    _, other_host, _ = run_eval.packs_flag()
+    assert len({empty, with_host, other_host}) == 3
+    assert meta0["host"] == {} and "host" not in meta0["sha"]
+    assert meta1["sha"]["host"] == hashlib.sha256(HOST_TEXT.encode()).hexdigest()[:8]
+
+
+def test_host_pack_puts_every_unit_in_the_pack_era(tmp_path, monkeypatch, _host_pack_stub):
+    _host_pack_stub["text"] = HOST_TEXT
+    monkeypatch.setenv("BEAST_PACKS", "1")
+    run_eval = _fresh_run_eval()
+    import cache
+    cache.CACHE_DIR = tmp_path / "cache"
+    keys = []
+    orig = cache.cache_key
+
+    def spy(task, slug, **kw):
+        k = orig(task, slug, **kw)
+        keys.append((task["id"], k))
+        return k
+    monkeypatch.setattr(cache, "cache_key", spy)
+    _run_with_fake_agent(run_eval, tmp_path, use_cache=True)
+    by_id = dict(keys)
+    assert "pack1-" in by_id["90_pack_f"] and "pack1-" in by_id["90_pack_a"]
+
+
+def test_packs_off_never_probes_the_host(monkeypatch, _host_pack_stub):
+    """Default behaviour unchanged: with packs off nothing is probed."""
+    from lang import host_pack as HP
+    monkeypatch.delenv("BEAST_PACKS", raising=False)
+    monkeypatch.delenv("OPENBEAST_PACKS", raising=False)
+    run_eval = _fresh_run_eval()
+    monkeypatch.setattr(HP, "build", lambda host=None: pytest.fail("probed with packs off"))
+    assert run_eval.packs_flag() == (False, None, {})
 
 
 def test_drift_abort_on_tampered_pack(tmp_path, monkeypatch):

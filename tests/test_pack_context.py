@@ -285,6 +285,38 @@ def test_no_installed_zig_injects_nothing(monkeypatch, tmp_path):
     assert "NOT SERVED" in PC.status_line()
 
 
+def test_a_curated_only_pack_for_another_language_is_not_drift():
+    """pack_problem used to demand the zig generated-section header from
+    EVERY pack, so filing any non-zig pack in PACK_FILES aborted run_eval
+    under --packs. A curated-only pack has nothing generated to drift."""
+    curated = b"=== Language notes: rust 1.100 ===\n- use `--edition 2021`.\n"
+    assert PC.pack_problem("rust", "rust.md", curated) is None
+    # zig still requires its generated section
+    assert "no generated-section header" in PC.pack_problem("zig", "z.md", curated)
+    # a generated section stamped for another language is refused
+    zig_bytes = open(PACK, "rb").read()
+    assert "is for zig, but PACK_FILES files it under rust" in PC.pack_problem("rust", "r.md", zig_bytes)
+    assert PC.pack_problem("zig", PACK, zig_bytes) is None
+
+
+def test_run_eval_packs_flag_survives_a_non_zig_pack(tmp_path, monkeypatch):
+    sys.path.insert(0, os.path.join(REPO, "evals"))
+    import importlib
+    for m in ("cache", "run_eval"):
+        sys.modules.pop(m, None)
+    run_eval = importlib.import_module("run_eval")
+    from lang import host_pack as HP
+    monkeypatch.setattr(HP, "build", lambda host=None: HP.HostPack("Linux", "", []))
+    d = tmp_path / "packs"
+    d.mkdir()
+    shutil.copy(PACK, d / "zig-0.16.md")
+    (d / "rust.md").write_text("=== Language notes: rust ===\n- curated only.\n")
+    monkeypatch.setattr(run_eval, "PACKS_DIR", str(d))
+    monkeypatch.setattr(run_eval, "PACK_FILES", {"zig": "zig-0.16.md", "rust": "rust.md"})
+    on, comp, meta = run_eval.packs_flag({"BEAST_PACKS": "1"})
+    assert on and set(meta["paths"]) == {"zig", "rust"}
+
+
 def test_run_eval_uses_the_same_check():
     """One drift check, not two: the harness delegates to pack_context."""
     src = open(os.path.join(REPO, "evals", "run_eval.py")).read()
