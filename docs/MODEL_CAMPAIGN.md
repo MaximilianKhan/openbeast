@@ -320,9 +320,9 @@ below). `--dry-run` prints them for your settings.
 
 | Arm | Built from | Change | Flags and switches | time x | ETA | What it answers |
 |---|---|---|---|---|---|---|
-| **T** | — | the best-first composite | `--turns-per-wall-s 15 --thinking on --wall-scale 2 --reasoning-budget 16384`; `BEAST_ASSIST=1 OPENBEAST_DIAGNOSTICS=1 OPENBEAST_DIAG_EDIT_HINT=1 OPENBEAST_AGENT_VERIFY_DONE=1 BEAST_PACKS=1 OPENBEAST_PACKS=1 OPENBEAST_PACK_VARIANT=v2 OPENBEAST_AGENT_ENV_BLOCK=1 OPENBEAST_AGENT_WALL_WARN=1` | 2.3 | ~5.8 h | the headline row: the best the harness can do today |
+| **T** | — | the best-first composite | `--turns-per-wall-s 15 --thinking on --wall-scale 2 --reasoning-budget 16384`; `BEAST_ASSIST=1 OPENBEAST_DIAGNOSTICS=1 OPENBEAST_DIAG_EDIT_HINT=1 OPENBEAST_AGENT_VERIFY_DONE=1 BEAST_PACKS=1 OPENBEAST_PACKS=1 OPENBEAST_PACK_VARIANT=v3 OPENBEAST_AGENT_ENV_BLOCK=1 OPENBEAST_AGENT_WALL_WARN=1` | 2.3 | ~5.8 h | the headline row: the best the harness can do today |
 | **T_noturns** | T | − wall-scaled turns | drops `--turns-per-wall-s` (the task's own `max_iter`, same doubled wall) | 2.0 | ~5.0 h | do turns still bind once the model thinks? |
-| **T_nopacks** | T | − packs | `BEAST_PACKS=0 OPENBEAST_PACKS=0 OPENBEAST_PACK_VARIANT=` | 2.3 | ~5.8 h | the zig 0.16 pack v2 and the host pack (G19, G20) |
+| **T_nopacks** | T | − packs | `BEAST_PACKS=0 OPENBEAST_PACKS=0 OPENBEAST_PACK_VARIANT=` | 2.3 | ~5.8 h | the zig 0.16 pack v3 and the host pack (G19, G20, #194) |
 | **T_noassist** | T | − diagnostics, edit hint, verify-done | `BEAST_ASSIST=0 OPENBEAST_DIAGNOSTICS=0 OPENBEAST_DIAG_EDIT_HINT=0 OPENBEAST_AGENT_VERIFY_DONE=0` | 2.3 | ~5.8 h | G9, G13, G14 |
 | **T_noenv** | T | − env block, wall warnings | `OPENBEAST_AGENT_ENV_BLOCK=0 OPENBEAST_AGENT_WALL_WARN=0` | 2.3 | ~5.8 h | G22, G23 |
 | **T_s1** | T | seed noise | `--seed 1` | 2.3 | ~5.8 h | the noise margin every decision uses |
@@ -334,7 +334,7 @@ Total for the eight default arms: about 39 h at GLM's speed. Escalation
 stays off in every arm (G16: zig-only on the Mac host).
 
 Choices in the file, and why:
-- **Packs v2.** `OPENBEAST_PACK_VARIANT=v2` is set wherever packs are on.
+- **Packs v3.** `OPENBEAST_PACK_VARIANT=v3` is set wherever packs are on (v3 = v2 + the `std.posix.write`, `@clz` shift, no-`erf` and init-skeleton claims from the 2026-11-17 residue audit, #194). The `v5-harness` campaign keeps v2 so its arm E stays reproducible.
   The variant defaults to v1 (the measured pack production serves), so
   `BEAST_PACKS=1` alone measures the old pack. The host pack goes with
   every packs-on unit either way. Packs reach every language because the

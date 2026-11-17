@@ -34,7 +34,7 @@
               "--reasoning-budget", "16384"],
      "env": {"BEAST_ASSIST": "1", "OPENBEAST_DIAGNOSTICS": "1",
              "OPENBEAST_DIAG_EDIT_HINT": "1", "OPENBEAST_AGENT_VERIFY_DONE": "1",
-             "BEAST_PACKS": "1", "OPENBEAST_PACKS": "1", "OPENBEAST_PACK_VARIANT": "v2",
+             "BEAST_PACKS": "1", "OPENBEAST_PACKS": "1", "OPENBEAST_PACK_VARIANT": "v3",
              "OPENBEAST_AGENT_ENV_BLOCK": "1", "OPENBEAST_AGENT_WALL_WARN": "1"},
      "requires": {"env": ["OPENBEAST_DIAG_EDIT_HINT", "OPENBEAST_AGENT_VERIFY_DONE",
                           "OPENBEAST_AGENT_ENV_BLOCK", "OPENBEAST_AGENT_WALL_WARN",
