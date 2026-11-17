@@ -207,7 +207,7 @@
   },
   "zig": {
    "toolchain": "0.16.0",
-   "fixtures_with_diagnostics": 53,
+   "fixtures_with_diagnostics": 57,
    "fixtures_that_compiled_anyway": 0,
    "decoys_that_compiled_anyway": 0,
    "signatures": {
@@ -234,6 +234,9 @@
     ],
     "ident:@floatToInt": [
      "casts"
+    ],
+    "ident:@intClz": [
+     "clz_shift"
     ],
     "ident:@intToFloat": [
      "casts"
@@ -326,6 +329,9 @@
     "ident:cwd": [
      "files"
     ],
+    "ident:erf": [
+     "erf"
+    ],
     "ident:exit": [
      "alloc_exit"
     ],
@@ -369,7 +375,8 @@
      "ascii"
     ],
     "ident:math": [
-     "math"
+     "math",
+     "erf"
     ],
     "ident:max": [
      "math"
@@ -391,6 +398,9 @@
     ],
     "ident:os": [
      "alloc_exit"
+    ],
+    "ident:posix": [
+     "posix_write"
     ],
     "ident:priority_queue.PriorityQueue": [
      "pq_hashmap"
@@ -438,6 +448,15 @@
     "ident:trimRight": [
      "mem"
     ],
+    "ident:u5": [
+     "clz_shift"
+    ],
+    "ident:u6": [
+     "clz_shift"
+    ],
+    "ident:write": [
+     "posix_write"
+    ],
     "ident:writeAll": [
      "io_arity"
     ],
@@ -461,10 +480,12 @@
     ],
     "shape:expected type 'X', found 'X'": [
      "arraylist",
-     "thread_spawn"
+     "thread_spawn",
+     "clz_shift"
     ],
     "shape:invalid builtin function: 'X'": [
-     "casts"
+     "casts",
+     "clz_shift"
     ],
     "shape:local variable is never mutated": [
      "lint"
@@ -497,7 +518,9 @@
      "fmt",
      "alloc_exit",
      "ascii",
-     "thread_sync"
+     "thread_sync",
+     "posix_write",
+     "erf"
     ],
     "shape:struct 'X' has no member named 'X'": [
      "arraylist"

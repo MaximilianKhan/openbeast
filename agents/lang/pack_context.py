@@ -74,11 +74,17 @@ PACK_FILES = {"zig": "zig-0.16.md"}
 #: per run with OPENBEAST_PACK_VARIANT (evals/run_eval.py packs_flag).
 #: "v1" is PACK_FILES itself: the measured bytes production serves. "v2" is
 #: the 2026-11-16 pack (GLM-5.3-Flash v5 taxonomy, docs/LANG_AWARENESS_PLAN.md
-#: §5.1), an unmeasured treatment. Production never reads this map; when a
-#: variant wins its A/B, it becomes PACK_FILES and MEASURED_SHA256 moves.
+#: §5.1), an unmeasured treatment. "v3" is v2 plus the 2026-11-17 thinking-arm
+#: claims (posix.write, @clz shift width, no erf, the toolchain's own main.zig;
+#: docs/HARNESS_NOTES.md "Language-specific residue under thinking"): a new
+#: file, not an edit of v2, because v2 was mid-measurement in a campaign arm
+#: and a variant name must keep naming one set of bytes. Production never
+#: reads this map; when a variant wins its A/B, it becomes PACK_FILES and
+#: MEASURED_SHA256 moves.
 PACK_VARIANTS = {
     "v1": dict(PACK_FILES),
     "v2": {"zig": "zig-0.16-v2.md"},
+    "v3": {"zig": "zig-0.16-v3.md"},
 }
 DEFAULT_PACK_VARIANT = "v1"
 
