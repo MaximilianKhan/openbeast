@@ -162,7 +162,8 @@ def rig(tmp_path):
     for rel in ("scripts/configure-webui.sh", "scripts/setup-tailscale.sh",
                 "scripts/lib/conf.sh", "scripts/lib/net.sh",
                 "scripts/lib/curl_auth.sh",
-                "agents/webui_functions/random_seed.py"):
+                "agents/webui_functions/random_seed.py",
+                "agents/webui_functions/thinking_default.py"):
         os.makedirs(os.path.dirname(root / rel), exist_ok=True)
         shutil.copy2(os.path.join(REPO, rel), root / rel)
     conf = root / "openbeast.conf"
@@ -1484,3 +1485,69 @@ def test_random_seed_filter_api_failure_does_not_abort_the_run(rig):
     assert p.returncode == 0, p.stderr
     assert "random seed filter" in p.stderr
     assert "Open WebUI configured." in p.stdout
+
+
+# --- configure-webui.sh: the thinking default filter (2026-11-17) -----------
+#
+# INFERENCE_THINKING=on|off: WebUI talks to the server on loopback, so the
+# gate's default never reaches it; configure-webui.sh installs
+# agents/webui_functions/thinking_default.py with the conf value written into
+# its DEFAULT_THINKING line. Unset: nothing installed, an installed copy off.
+
+TH_ID = "thinking_default"
+TH_SRC = os.path.join(REPO, "agents", "webui_functions", "thinking_default.py")
+
+
+def _th_source(value):
+    src = open(TH_SRC).read()
+    assert 'DEFAULT_THINKING = "on"' in src
+    return src.replace('DEFAULT_THINKING = "on"', f'DEFAULT_THINKING = "{value}"', 1)
+
+
+@pytest.mark.parametrize("value", ["on", "off"])
+def test_thinking_filter_installed_with_the_conf_value(rig, value):
+    rig.set_state(auth=False, admin_pw="admin")
+    with open(rig.conf, "a") as f:
+        f.write(f"INFERENCE_THINKING={value}\n")
+    p = rig.run("configure-webui.sh")
+    assert p.returncode == 0, p.stderr
+    f = rig.get_state()["functions"][TH_ID]
+    assert f["content"] == _th_source(value)
+    assert f["is_active"] is True and f["is_global"] is True
+    assert "thinking default filter installed" in p.stdout
+    # The random seed filter is still installed alongside, from ONE export.
+    assert rig.get_state()["functions"][FN_ID]["is_active"] is True
+    assert _fn_calls(rig).count(("GET", "/api/v1/functions/export")) == 1
+    # Idempotent: a second run changes nothing.
+    rig.log.write_text("")
+    p = rig.run("configure-webui.sh")
+    assert p.returncode == 0, p.stderr
+    assert _fn_calls(rig) == [("GET", "/api/v1/functions/export")]
+
+
+def test_thinking_filter_follows_a_conf_change(rig):
+    rig.set_state(auth=False, admin_pw="admin")
+    assert rig.run("configure-webui.sh",
+                   env_extra={"OPENBEAST_INFERENCE_THINKING": "on"}).returncode == 0
+    p = rig.run("configure-webui.sh", env_extra={"OPENBEAST_INFERENCE_THINKING": "off"})
+    assert p.returncode == 0, p.stderr
+    assert rig.get_state()["functions"][TH_ID]["content"] == _th_source("off")
+    assert ("POST", f"/api/v1/functions/id/{TH_ID}/update") in _fn_calls(rig)
+
+
+def test_thinking_unset_switches_an_installed_copy_off(rig):
+    rig.set_state(auth=False, admin_pw="admin")
+    assert rig.run("configure-webui.sh",
+                   env_extra={"OPENBEAST_INFERENCE_THINKING": "on"}).returncode == 0
+    p = rig.run("configure-webui.sh")
+    assert p.returncode == 0, p.stderr
+    assert rig.get_state()["functions"][TH_ID]["is_active"] is False
+    assert "thinking default filter switched off" in p.stdout
+
+
+def test_thinking_unset_installs_nothing(rig):
+    rig.set_state(auth=False, admin_pw="admin")
+    p = rig.run("configure-webui.sh")
+    assert p.returncode == 0, p.stderr
+    assert TH_ID not in rig.get_state().get("functions", {})
+    assert not [c for c in _fn_calls(rig) if TH_ID in c[1]]

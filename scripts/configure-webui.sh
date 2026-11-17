@@ -8,6 +8,9 @@
 #   3. System prompt from system-prompt.md
 #   4. The random seed filter (agents/webui_functions/random_seed.py), so
 #      Regenerate differs on servers with a fixed default seed (TensorFold)
+#   5. With INFERENCE_THINKING set, the thinking default filter
+#      (agents/webui_functions/thinking_default.py), so chats that choose no
+#      thinking mode get the serving host's default
 #
 # Called automatically by start.sh after Open WebUI is ready.
 #
@@ -588,14 +591,32 @@ fi
 # each is called only when the flag is wrong. Idempotent: created once,
 # updated only when the source changed. WEBUI_RANDOM_SEED=false switches an
 # installed copy off (is_active=false) and installs nothing.
+#
+# --- 1e. The serving host's thinking default (the thinking_default filter) ---
+# INFERENCE_THINKING=on|off (openbeast.conf) is the host's thinking default
+# for chats that name none. beast-gate applies it to remote devices, but
+# WebUI talks to the server on loopback, so the global Filter function
+# agents/webui_functions/thinking_default.py applies it here: it sets
+# chat_template_kwargs.enable_thinking on every chat request that does not
+# already choose (the chat's Controls or the model's params still win).
+# This script writes the conf value into the filter's DEFAULT_THINKING line
+# before installing it, so the installed source tracks the conf. With
+# INFERENCE_THINKING unset, an installed copy is switched off and nothing is
+# installed. WebUI 0.13.3 shows the returned reasoning_content as a
+# collapsed "Thought for N seconds" block.
+#
+# Both filters go through the same installer, from ONE export of WebUI's
+# function list.
 RANDOM_SEED_FN_ID="random_seed"
 RANDOM_SEED_FN_SRC="$REPO_DIR/agents/webui_functions/random_seed.py"
+THINKING_FN_ID="thinking_default"
+THINKING_FN_SRC="$REPO_DIR/agents/webui_functions/thinking_default.py"
 _fn_post() {   # _fn_post <path> [json on stdin] — prints the reply body
   ob_curl_hdr "$AUTH" -s -m 15 -X POST -H "Content-Type: application/json" \
     "$WEBUI_URL/api/v1/functions$1" "${@:2}" 2>/dev/null || true
 }
-_fn_is_fn() {  # does stdin hold a function object with our id?
-  FN_ID="$RANDOM_SEED_FN_ID" python3 -c '
+_fn_is_fn() {  # _fn_is_fn <id> — does stdin hold a function object with that id?
+  FN_ID="$1" python3 -c '
 import json, os, sys
 try:
     d = json.load(sys.stdin)
@@ -603,16 +624,40 @@ except Exception:
     sys.exit(1)
 sys.exit(0 if isinstance(d, dict) and d.get("id") == os.environ["FN_ID"] else 1)' 2>/dev/null
 }
-_configure_random_seed() {
-  local want=true export_json plan action
-  [[ "${WEBUI_RANDOM_SEED:-true}" == "true" ]] || want=false
-  if [[ "$want" == "true" && ! -f "$RANDOM_SEED_FN_SRC" ]]; then
-    echo "    Warning: $RANDOM_SEED_FN_SRC is missing — random seed filter not installed." >&2
+# _fn_source <src> <subst> — the source to install: the file, with the line
+# `NAME = ...` replaced by `NAME = "value"` when <subst> is NAME=value.
+_fn_source() {
+  FN_SRC="$1" FN_SUBST="$2" python3 -c '
+import os, re, sys
+src = open(os.environ["FN_SRC"]).read()
+sub = os.environ.get("FN_SUBST", "")
+if sub:
+    name, _, val = sub.partition("=")
+    src = re.sub(r"(?m)^" + re.escape(name) + r" = .*$",
+                 lambda m: name + " = " + repr(val).replace(chr(39), chr(34)), src, count=1)
+sys.stdout.write(src)'
+}
+# _configure_filter <id> <src> <name> <description> <want> <label> <off-note> [subst]
+_configure_filter() {
+  local fid="$1" fsrc="$2" fname="$3" fdesc="$4" want="$5" label="$6" offnote="$7" subst="${8:-}"
+  local plan action content
+  if [[ "$want" == "true" && ! -f "$fsrc" ]]; then
+    echo "    Warning: $fsrc is missing — $label not installed." >&2
     return 0
   fi
-  export_json=$(ob_curl_hdr "$AUTH" -s -m 15 "$WEBUI_URL/api/v1/functions/export" 2>/dev/null || true)
+  content=""
+  if [[ "$want" == "true" ]]; then
+    # The trailing x keeps the file's final newline ($(...) strips them),
+    # so the content compares equal to what an earlier run installed.
+    content="$(_fn_source "$fsrc" "$subst" && printf x)" || true
+    if [[ "$content" != *x ]]; then
+      echo "    Warning: could not read $fsrc — $label not installed." >&2
+      return 0
+    fi
+    content="${content%x}"
+  fi
   # The plan: one action per line, from the live state and the wanted one.
-  plan=$(printf '%s' "$export_json" | FN_ID="$RANDOM_SEED_FN_ID" FN_SRC="$RANDOM_SEED_FN_SRC" \
+  plan=$(printf '%s' "$FN_EXPORT_JSON" | FN_ID="$fid" FN_CONTENT="$content" \
       WANT="$want" python3 -c '
 import json, os, sys
 try:
@@ -627,7 +672,7 @@ if not want:
     if cur and cur.get("is_active"):
         print("toggle")
     sys.exit(0)
-src = open(os.environ["FN_SRC"]).read()
+src = os.environ["FN_CONTENT"]
 if cur is None:
     print("create"); print("toggle"); print("toggle/global")
     sys.exit(0)
@@ -639,7 +684,7 @@ if not cur.get("is_global"):
     print("toggle/global")
 ' 2>/dev/null || echo unreadable)
   if [[ "$plan" == "unreadable" ]]; then
-    echo "    Warning: WebUI's functions API did not answer a list — random seed filter" >&2
+    echo "    Warning: WebUI's functions API did not answer a list — $label" >&2
     echo "    left as it was. (Functions disabled with ENABLE_FUNCTIONS=false?)" >&2
     return 0
   fi
@@ -647,7 +692,7 @@ if not cur.get("is_global"):
     if [[ "$want" == "true" ]]; then
       echo "    already installed (active, global)"
     else
-      echo "    off (WEBUI_RANDOM_SEED=false)"
+      echo "    off ($offnote)"
     fi
     return 0
   fi
@@ -656,34 +701,60 @@ if not cur.get("is_global"):
     case "$action" in
       create|update)
         local path="/create"
-        [[ "$action" == "update" ]] && path="/id/$RANDOM_SEED_FN_ID/update"
-        if ! FN_ID="$RANDOM_SEED_FN_ID" FN_SRC="$RANDOM_SEED_FN_SRC" python3 -c '
+        [[ "$action" == "update" ]] && path="/id/$fid/update"
+        if ! FN_ID="$fid" FN_NAME="$fname" FN_DESC="$fdesc" FN_CONTENT="$content" python3 -c '
 import json, os
-print(json.dumps({"id": os.environ["FN_ID"], "name": "Random Seed",
-                  "content": open(os.environ["FN_SRC"]).read(),
-                  "meta": {"description": "A fresh random seed for every chat request that names none, so Regenerate gives a new answer (OpenBeast)"}}))' \
-            | _fn_post "$path" -d @- | _fn_is_fn; then
-          echo "    Warning: could not $action the random seed filter through WebUI's API." >&2
+print(json.dumps({"id": os.environ["FN_ID"], "name": os.environ["FN_NAME"],
+                  "content": os.environ["FN_CONTENT"],
+                  "meta": {"description": os.environ["FN_DESC"]}}))' \
+            | _fn_post "$path" -d @- | _fn_is_fn "$fid"; then
+          echo "    Warning: could not $action the $label through WebUI's API." >&2
           return 0
         fi ;;
       toggle|toggle/global)
-        if ! _fn_post "/id/$RANDOM_SEED_FN_ID/$action" | _fn_is_fn; then
-          echo "    Warning: could not $action the random seed filter through WebUI's API." >&2
+        if ! _fn_post "/id/$fid/$action" | _fn_is_fn "$fid"; then
+          echo "    Warning: could not $action the $label through WebUI's API." >&2
           return 0
         fi ;;
     esac
   done <<< "$plan"
   if [[ "$want" == "true" ]]; then
-    echo "    random seed filter installed/updated (active, global)"
+    echo "    $label installed/updated (active, global)"
   else
-    echo "    random seed filter switched off (WEBUI_RANDOM_SEED=false)"
+    echo "    $label switched off ($offnote)"
   fi
 }
 if [[ "$TOKEN_OK" != "1" ]]; then
   echo "  Skipping the random seed filter (no admin token — see warning above)."
+  if [[ -n "${INFERENCE_THINKING:-}" ]]; then
+    echo "  Skipping the thinking default filter (no admin token — see warning above)."
+  fi
 else
+  FN_EXPORT_JSON=$(ob_curl_hdr "$AUTH" -s -m 15 "$WEBUI_URL/api/v1/functions/export" 2>/dev/null || true)
   echo "  Random seed filter (fresh seed per chat request, so Regenerate differs) ..."
-  _configure_random_seed
+  _want=true
+  [[ "${WEBUI_RANDOM_SEED:-true}" == "true" ]] || _want=false
+  _configure_filter "$RANDOM_SEED_FN_ID" "$RANDOM_SEED_FN_SRC" "Random Seed" \
+    "A fresh random seed for every chat request that names none, so Regenerate gives a new answer (OpenBeast)" \
+    "$_want" "random seed filter" "WEBUI_RANDOM_SEED=false"
+  # Unset INFERENCE_THINKING: only an installed, active copy costs a call
+  # (switching it off); a WebUI that never had it sees nothing new.
+  _want=false
+  [[ -n "${INFERENCE_THINKING:-}" ]] && _want=true
+  if [[ "$_want" == "true" ]] || printf '%s' "$FN_EXPORT_JSON" | FN_ID="$THINKING_FN_ID" python3 -c '
+import json, os, sys
+try:
+    fns = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+sys.exit(0 if isinstance(fns, list) and any(isinstance(f, dict) and f.get("id") == os.environ["FN_ID"] for f in fns) else 1)' 2>/dev/null; then
+    echo "  Thinking default filter (INFERENCE_THINKING=${INFERENCE_THINKING:-unset} for chats that choose none) ..."
+    _configure_filter "$THINKING_FN_ID" "$THINKING_FN_SRC" "Thinking Default" \
+      "The serving host's thinking default (INFERENCE_THINKING) for chats that do not choose one (OpenBeast)" \
+      "$_want" "thinking default filter" "INFERENCE_THINKING unset" \
+      "DEFAULT_THINKING=${INFERENCE_THINKING:-}"
+  fi
+  unset _want
 fi
 
 # Model tool wiring uses these two connection ids.

@@ -306,6 +306,7 @@ cd ~/openbeast && cp openbeast.conf.example openbeast.conf && chmod 600 openbeas
 #   BEAST_ARTIFACT=true   ARTIFACT_OPERATORS=<you>   ARTIFACT_ADMINS=<you>   ARTIFACT_LOGIN_FROM=unix
 #   EDGE_READ_TIMEOUT=3600          (only if an eval harness will run against the pair: F6)
 #   LANG_PACKS=off   LANG_PACK_CONTEXT=off   BEAST_ASSIST=0   BEAST_ESCALATE=0
+#   INFERENCE_THINKING=on   AGENT_MAX_TOKENS=16384   (the v5 serving default: E2a)
 ./bootstrap.sh --preflight      # read-only: what it will do and what it cannot reach
 ./bootstrap.sh --no-start       # online: the Python lock, the pinned compose images (Open WebUI 0.13.3)
 ```
@@ -319,8 +320,9 @@ generations per device. `WEBUI_RANDOM_SEED` defaults to on.
 **12. Boot units** (spark-1; [E3](#e3-boot-units)): the `sed … openbeast.service`
 block, `systemctl --user enable --now openbeast`. The first start installs
 the watchdog and logrotate timers and runs `configure-webui.sh`, which wires
-the tool servers and installs the random seed filter
-([G6](#g6-updating)). Expect `healthcheck.sh` to say "All 9 services
+the tool servers and installs the random seed filter and, with
+`INFERENCE_THINKING` set, the thinking default filter
+([G6](#g6-updating), [E2a](#e2a-recommended-serving-configuration-from-v5)). Expect `healthcheck.sh` to say "All 9 services
 healthy" once the model has loaded ([E4](#e4-the-healthy-state)).
 
 **13. WebUI admin, then publish** (spark-1; [E5](#e5-webui-auth-and-the-admin-account-before-publishing),
@@ -1410,6 +1412,8 @@ These are the keys in use on spark-1 on 2026-11-15. Secret values are not shown.
 | `ARTIFACT_OPERATORS`, `ARTIFACT_ADMINS` | `maxjkh@gmail.com` | who reads and administers artifacts |
 | `LANG_PACKS`, `LANG_PACK_CONTEXT` | `off` | language assistance OFF on the pair (below) |
 | `BEAST_ASSIST`, `BEAST_ESCALATE` | `0` | ditto |
+| `INFERENCE_THINKING` | `on` | thinking on by default for every client that does not choose: beast-gate, the WebUI filter, this host's agents. The best v5 arm (C, 51/71 vs 36/71 off). Since 2026-11-17 ([E2a](#e2a-recommended-serving-configuration-from-v5)) |
+| `AGENT_MAX_TOKENS` | `16384` | per-turn cap for this host's own agents: arm C's cap. `REASONING_BUDGET` is a llama.cpp flag ([E2a](#e2a-recommended-serving-configuration-from-v5)) |
 
 Not set, so the defaults apply:
 
@@ -1441,6 +1445,110 @@ GLM-5.3-Flash needs far less help. `language_reference` stays available as a
 tool the model can choose to call. Also not enabled on the pair: `AGENT_ROUTER`,
 an intent classifier that exists because the 27B would not call `start_agent`
 on its own, and `HYDRA` / `INSTINCT`, whose scorer is the rig's 27B.
+
+### E2a. Recommended serving configuration (from v5)
+
+**Thinking on, by default, for every client.** This is the configuration the
+2026-11-16/17 v5 arms found best for GLM-5.3-Flash on this pair, and since
+2026-11-17 it is how spark-1 serves:
+
+| Arm (v5, 71 units, one seed) | What changed | Scored |
+|---|---|---|
+| L0 | baseline, thinking off | 26/71 |
+| A | runner v2 | 31/71 |
+| B | + wall-scaled turns | 36/71 |
+| **C** | **+ thinking on** | **51/71 (54 raw)** |
+| E | C + diagnostics, edit hints, verify-done, packs, env block, wall warnings | 50/71 |
+
+C is the best arm. E's additions were a wash and stay opt-in. Runner v2,
+thinking-stall recovery (#194), the eval turn caps and the integrity seal
+were already on main. The serving default adds one thing: thinking.
+Evidence: [RESULTS.md](RESULTS.md), [HARNESS_NOTES.md](HARNESS_NOTES.md),
+[MODEL_CAMPAIGN.md](MODEL_CAMPAIGN.md).
+
+**Why a switch is needed at all.** Thinking is a per-request chat-template
+switch, `chat_template_kwargs.enable_thinking`. The TensorFold server thinks
+only when a request asks. A request that does not say gets thinking OFF. We
+do not reconfigure the inference unit. The default lives in the OpenBeast
+layer in front of it, keyed by one conf key.
+
+**The knobs** (`openbeast.conf` on spark-1, both appended 2026-11-17):
+
+| Key | spark-1 | Default elsewhere | What it does |
+|---|---|---|---|
+| `INFERENCE_THINKING` | `on` | unset: nothing injected anywhere | The host's thinking default for a chat request that names none. **beast-gate** (:8443, which serves opencode, the Mac client, phones and every keyed device) sets `chat_template_kwargs.enable_thinking`. The **WebUI "Thinking Default" filter** does the same for Open WebUI chats (WebUI talks to TensorFold on loopback, not through the gate). **This host's own agents** (`agents/runner.py`, `start_agent`) send it. The local `/gate/health` reports `thinking_default` |
+| `AGENT_MAX_TOKENS` | `16384` | unset: `REASONING_BUDGET` + 12288 (32768) | Per-turn output cap for this host's own agents. It matches arm C's measured cap: ended-on-their-own thinking turns were p50 ~0.4K, p90 ~2.3K, p99 ~12.4K tokens, so 16K leaves room. A turn capped mid-thought keeps its reasoning tail and is told to act (#194). The 32K fallback would double the cost of a runaway: about 14 vs 28 minutes per stalled turn at the ~19 tok/s a stream decodes under 4-way load. `REASONING_BUDGET` is a llama.cpp flag and means nothing to TensorFold, so this key is the cap here |
+
+**What a request can still choose.** Anything explicit wins and is
+forwarded untouched:
+
+- `chat_template_kwargs.enable_thinking` (true or false), or `.thinking`;
+- a top-level `enable_thinking`, `thinking`, `reasoning`,
+  `reasoning_effort`, `reasoning_budget_tokens` or `thinking_budget`.
+
+Only `/v1/chat/completions` is touched, never `/v1/completions` or
+`/v1/embeddings`.
+
+**Switching thinking off, for latency:**
+
+- **Per request:** send `"chat_template_kwargs": {"enable_thinking": false}`.
+  In opencode, set it in the model's `options` in `opencode.json`. In Open
+  WebUI, use the chat's Controls → Custom Parameters, key
+  `chat_template_kwargs`, value `{"enable_thinking": false}`. For a
+  thinking-off model entry for everyone, put the same key in Admin → Models
+  → GLM → Advanced Params; the filter steps aside for it.
+- **Per agent:** `OPENBEAST_AGENT_THINKING=off`.
+- **For the whole host:** `INFERENCE_THINKING=off` (or delete the line),
+  then `systemctl --user restart openbeast`. That restarts the gate and
+  re-runs `configure-webui.sh`; it never touches `spark-hydra-inference`.
+
+**Eval runs are unaffected.** Every eval-mode request the runner sends
+carries `X-OpenBeast-Gate-Defaults: off`. The gate forwards such a request
+exactly as sent and strips the header. The runner also ignores
+`INFERENCE_THINKING` in eval mode, so an eval run that names no thinking
+mode still gets each server's own default. That is the condition every
+baseline was measured under: off on TensorFold, on for llama.cpp's Qwen
+templates. Thinking arms set `OPENBEAST_AGENT_THINKING=on` as before. This
+moved the eval era only through the `runner.py` hash
+([evals/CHANGELOG.md](../evals/CHANGELOG.md)).
+
+**What it costs.** Measured on the pair, 2026-11-17: single stream through
+:8443 from the Mac, streaming, three everyday prompts, each run with
+thinking off and then on.
+
+| | First token | First answer token | Total | Completion tokens |
+|---|---|---|---|---|
+| thinking off (median) | 0.21 s | 0.2 s | 1.9 s | 126 |
+| thinking on (median) | 0.22 s | 5.0 s | 6.1 s | 395 |
+| thinking on, range | 0.20-0.23 s | 1.9-38.7 s | 2.4-41.5 s | 171-3,026 |
+
+The first streamed token arrives just as fast either way, because the
+reasoning streams first. WebUI shows it live in a collapsed "Thought for N
+seconds" block. What grows is the wait for the answer. A trivial question
+thinks for about 2 s. A coding question ("longest palindromic substring")
+thought for about 9K characters (3,026 tokens) and answered at 39 s instead
+of 3 s. Decode stays about 75 tok/s single-stream.
+
+On agentic work the cost is larger. Arm C averaged 29.0 min per unit
+against arm B's 11.7, about 2.3x B's wall time per unit. 14 of C's first 18
+passes still finished inside B's original wall. For interactive chat where
+latency matters more than the last points of quality, turn thinking off
+per request or per client as above.
+
+**Deploy and check** (what was run on 2026-11-17):
+
+```bash
+# spark-1
+cd ~/openbeast && git pull --ff-only
+printf '%s\n' INFERENCE_THINKING=on AGENT_MAX_TOKENS=16384 >> openbeast.conf
+systemctl --user restart openbeast     # never spark-hydra-inference
+./scripts/configure-webui.sh           # (also run by the restart) installs the Thinking Default filter
+curl -s -H "X-OpenBeast-Local: $(cat .run/edge-local.token)" http://127.0.0.1:8090/gate/health
+#   ... "thinking_default":"on"
+```
+
+From a keyed client: a chat request with no thinking params returns
+`reasoning_content`, and one with `enable_thinking: false` returns none.
 
 ### E3. Boot units
 
@@ -2119,6 +2227,7 @@ Every row below was hit on the way to the live pair.
 | `:443` not published after `setup-tailscale.sh` | the running WebUI still had auth off | `systemctl --user restart openbeast`, then re-run `setup-tailscale.sh` ([E5](#e5-webui-auth-and-the-admin-account-before-publishing)) |
 | `:8443` answers 401 | no device key, or a revoked one | `clients.sh list`; give the client its key |
 | Regenerate in Open WebUI returns the same answer, word for word | TensorFold uses a fixed seed when the request names none | `./scripts/configure-webui.sh` installs the random seed filter; check Admin Panel → Functions → "Random Seed" is on and global, and `WEBUI_RANDOM_SEED` is not `false` ([G6](#g6-updating)) |
+| GLM answers with no reasoning (no "Thought for…" block in WebUI, no `reasoning_content` from :8443) | `INFERENCE_THINKING` unset, the gate not restarted since it was set, the WebUI filter off, or the client sent `enable_thinking: false` / another thinking control | the local `/gate/health` must say `"thinking_default":"on"` (else `systemctl --user restart openbeast`); Admin Panel → Functions → "Thinking Default" on and global (`./scripts/configure-webui.sh`); check the client's own params ([E2a](#e2a-recommended-serving-configuration-from-v5)) |
 | opencode on the Mac lost `openbeast-tools` (or another server) | a v1 `mcp.<name>` entry next to v2 `mcp.servers.<name>`: v2 does not merge them | move everything under `mcp.servers`, drop `enabled` ([F3](#f3-the-opencode-v2-config-layout-read-this-before-editing)) |
 | `tests/test_scripts.sh` failures on a copy without `.git` (7 seen on spark-2) | some suites need a git checkout | run from a git checkout |
 | shell suites fail on the Mac but pass on a Spark | BSD vs GNU tools (`tests/test_engines.sh` needs GNU coreutils; `test_skill_import.sh` showed 5 BSD-only failures on 2026-11-15) | run shell suites on a Spark ([SELF_DEVELOPMENT.md](SELF_DEVELOPMENT.md) "Tests") |
