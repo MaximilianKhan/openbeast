@@ -42,7 +42,7 @@ line in `openbeast.conf`.
 | | What it is | Since |
 |---|---|---|
 | **The rig** | llama.cpp serving the biggest model your GPU holds, MTP speculative decoding, Open WebUI, private SearXNG, the identity tool server (RBAC, per-user shards, audit; added in v1.1), health-monitored daemon with fast boot and model-load rollback | v1.0 |
-| **beast-slot** 🎰 | Client mode: any Mac/Linux laptop runs OpenCode + the full 19-tool arsenal on *its own* files; only inference crosses the tailnet. `/api/slot` publishes what the rig is really serving | v1.1 |
+| **beast-slot** 🎰 | Client mode: any Mac/Linux laptop runs OpenCode + the full 19-tool arsenal on *its own* files; only inference crosses the tailnet. `/api/slot` publishes what the rig is really serving. Since #204 one client knows several rigs: `openbeast-client rigs` lists them, `use <rig>` switches OpenCode, the tools and search in one atomic step, and each rig's context window comes from its `/api/slot` | v1.1 · unreleased |
 | **beast-gate** 🛡️ *opt-in* | Identity-aware inference edge: per-device keys, OpenAI-route allowlist, rate + in-flight caps, an inference audit trail | v1.1 |
 | **beast-assist** 🔧 *opt-in* | The compiler joins the agent loop: every source-file write gets the language's real checker verdict pushed back into the tool result | v1.2 |
 | **beast-artifact** 🎨 *opt-in* | A durable, versioned URL for anything the model renders (reports, dashboards, small tools), served from an opaque-origin sandbox under CSP. Since v1.7: one `rig` owner for everything the rig publishes, admins, pin/tag/share/delete from a phone, version pruning and opt-in retention, a paged and searchable gallery, links back to the session that made a page | v1.3 · v1.7 |
@@ -52,7 +52,7 @@ line in `openbeast.conf`.
 | **beast-apps** 🧰 | A capability catalog for external apps (Xcode / iOS Simulator, Gradle + adb, mobile UI driving, Blender, Figma, 3D printers, ROS) through pinned MCP servers: `scripts/apps.sh check` probes what is installed and prints the exact fix, `enable` merges a passing server into opencode (v1 or v2 config) with a backup, `refresh` notices upstream changes ([docs](docs/BEAST_APPS.md)) | unreleased |
 | **Air-gap ready** 🔌 | `OFFLINE=true`, a hash-pinned Python lockfile with a wheelhouse, and a signed offline bundle: build it connected, install it from a USB stick | v1.5 |
 | **beast-island** 🏝️ | Runtime offline mode for a power outage: the rig notices the internet is gone (about 90 to 120 s), web tools answer "offline" at once instead of stalling, and everything else keeps running locally. A launch with no route boots islanded; `./start.sh -d --offline` forces it | v1.8 |
-| **spark-hydra** 🐉🐉 *opt-in* | Two DGX Sparks as one serving pair: GLM-5.3-Flash Ablit tensor-parallel over ConnectX-7 (4 streams, 1M window, ~70 tok/s code alone, ~224 across four), with the full command center on spark-1 — a second, independent OpenBeast. Boots by itself, offline. The launch runbook, bare boxes to fully offline, scales 1 to 8 Sparks (`spark-cluster.sh`) and closes the engine ports (`spark-guard.sh`): [SPARK_HYDRA.md](docs/SPARK_HYDRA.md). The pair's own model maintaining OpenBeast, network off: [SELF_DEVELOPMENT.md](docs/SELF_DEVELOPMENT.md) | v1.9 |
+| **spark-hydra** 🐉🐉 *opt-in* | Two DGX Sparks as one serving pair: GLM-5.3-Flash Ablit tensor-parallel over ConnectX-7 (4 streams, a 1M window per conversation from one shared KV pool, ~70 tok/s code alone, ~224 across four), with the full command center on spark-1 — a second, independent OpenBeast. Boots by itself, offline. Thinking is on by default for every client, the configuration that scored best on v5 (51/71 vs 36/71 off), at the price of a longer wait for the answer; any request or client can turn it off. The fabric runs at MTU 9000 (its speed effect is not measured yet). The launch runbook, bare boxes to fully offline, scales 1 to 8 Sparks (`spark-cluster.sh`) and closes the engine ports (`spark-guard.sh`): [SPARK_HYDRA.md](docs/SPARK_HYDRA.md). The pair's own model maintaining OpenBeast, network off: [SELF_DEVELOPMENT.md](docs/SELF_DEVELOPMENT.md) | v1.9 |
 | **beast-campaign** 🧪 | A GPU lease so two measurements cannot share the card, an eval *era* hash so rows from different code are never compared as if they were the same, and a harness that refuses to bank an infrastructure failure (a dead server, an exhausted thread pool, a full disk) as a model failure | v1.5 |
 | **Multi-engine inference** 🟩 *opt-in* | `INFERENCE_BACKEND=vllm\|tensorfold`: the whole stack (WebUI, tools, agents, gate, `/api/slot`) talks to a vLLM or TensorFold server, e.g. tensor-parallel across two DGX Sparks. Any new checkpoint is inspected, pinned by commit, sha256-locked and conformance-tested before OpenBeast uses it | v1.6 |
 | **Engine plane** ⚙️ | `scripts/engine.sh`: list, swap, install, update, pin and roll back llama.cpp, vLLM or TensorFold with one command, every install verified and every one with an offline path (`stage` on a connected box, `install --from` on a closed one); one adapter file per engine ([docs](docs/ENGINES.md)) | unreleased |
@@ -195,6 +195,8 @@ project. It drives opencode 1.x and refuses on 2.x, which has no `opencode db`
 opencode                                   # tools run here, thinking runs on the rig
 openbeast-client agent "refactor utils.py" # autonomous agent, local files
 openbeast-client status                    # rig's real model, context, busy slots
+openbeast-client rigs                      # every registered rig, * = active
+openbeast-client use <rig>                 # switch OpenCode, tools and search to another rig
 openbeast-client update                    # git pull this checkout, reinstall pinned deps, refresh models
 ```
 
@@ -429,10 +431,14 @@ key.
 2. **Use it from a client.** Open WebUI is at
    `https://spark-1.<tailnet>.ts.net`. For a Mac or Linux box, enroll a device
    key on spark-1 (`scripts/clients.sh enroll`), then run
-   `scripts/setup-client.sh --host spark-1.<tailnet>.ts.net --api-key-stdin`.
-   That gives you OpenCode with the tools running locally. Any
-   OpenAI-compatible tool can use `https://spark-1.<tailnet>.ts.net:8443/v1`
-   with that key as a bearer token.
+   `scripts/setup-client.sh --host spark-1.<tailnet>.ts.net --name spark-hydra --api-key-stdin`.
+   That gives you OpenCode with the tools running locally;
+   `openbeast-client use beast` and `use spark-hydra` switch between this
+   pair and the 5090 rig. Any OpenAI-compatible tool can use
+   `https://spark-1.<tailnet>.ts.net:8443/v1` with that key as a bearer token.
+   Thinking is on unless the request says
+   `"chat_template_kwargs": {"enable_thinking": false}`
+   ([§E2a](docs/SPARK_HYDRA.md#e2a-recommended-serving-configuration-from-v5)).
 3. **First build from bare boxes.** Follow the ordered checklist,
    [Install everything, fresh](docs/SPARK_HYDRA.md#install-everything-fresh):
    root setup, firewall, fabric MTU, weights, the recipe and its unit, the
