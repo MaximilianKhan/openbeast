@@ -589,10 +589,23 @@ In the order it happened (local times from the run logs where they exist):
 | L1 (zig packs) | zig 0/6 → 3/6 | |
 | A (runner v2) | **31/71** | +5 net vs L0 (11 rescued, 6 regressed) |
 | B (+ wall-scaled turns) | **36/71** | its 24 lost units rerun (B repair) |
-| C (+ thinking, wall x2) | [PENDING] final; **18 of the first 21 units** | B passed 8 of the same 21: 10 rescued, 0 regressed; 14 of the 18 passes inside B's original wall; ≈ 2.3x B's time per unit. This is why the default campaign is thinking-first (§5a) |
+| C (+ thinking, wall x2) | **54/71 raw; 53/71 scored** | +18 over B, one seed. One pass (122_gemm_blocked_b) is withheld pending the integrity review (below). On the first 21 units: 18 vs B's 8, 10 rescued, 0 regressed, 14 of the 18 passes inside B's original wall, ≈ 2.3x B's time per unit. This is why the default campaign is thinking-first (§5a) |
 | D (+ diagnostics, edit hint, verify-done) | [PENDING] | |
-| E (+ packs, env block, wall warnings, thinking iff C > B) | [PENDING] | decision: [PENDING] |
+| E (+ packs, env block, wall warnings, thinking iff C > B) | [PENDING] (running on 2026-11-17) | C > B, so E runs thinking on. Decision: [PENDING] |
 | F (B under `--seed 1`) | [PENDING] | noise floor: [PENDING] flips |
+
+**Integrity caveat on C.** In 122_gemm_blocked_b (turns 15-24), stuck on a
+harness bug (the path regex kept a sentence's final period, so verify-done
+asked for `gemm.c.`), the agent went looking for the checker. It read Claude
+Code workflow journals under `~/.claude/projects/`, the repo's
+`agents/tools.py` and `evals/run_eval.py`, and a cached validation result in
+`evals/cache/`. The eval sandbox did not deny those reads. The unit passed,
+so the board scores C at 53/71 with that pass withheld until the integrity
+review (a read-deny fix and a contamination scan of every v5 row) clears or
+voids it; 54/71 is the raw count. Detail:
+[HARNESS_NOTES.md](HARNESS_NOTES.md), "Language-specific residue under
+thinking"; the exclusion is recorded in `evals/boards/v5/exclusions.json`
+(#193).
 
 That chain was a hand-written shell script. With this tooling, the same
 night is one command:
@@ -603,8 +616,9 @@ python3 evals/campaign.py run --campaign v5-harness --model glm-5.3-flash --jobs
     --baseline L0=evals/results/eval-glm-5-3-flash-L0-20261116-060847.json
 ```
 
-The thinking-first campaign was written after C's first 21 units. GLM has
-not run it. On GLM, its N0 is arm B (36/71, thinking pinned off).
+The thinking-first campaign was written after C's first 21 units, and C's
+final (53-54/71 against B's 36/71) bore it out. GLM has not run it as a
+campaign. On GLM, its N0 is arm B (36/71, thinking pinned off).
 
 ## 9. Next: DeepSeek v4.1 Flash ("1017"), thinking first
 
