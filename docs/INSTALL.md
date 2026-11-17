@@ -10,8 +10,11 @@ and a skills system (26 skills loaded on demand: 17 in-house plus 9 imported;
 > llama.cpp). For one to eight DGX Sparks — root setup, the firewall guard,
 > weights, the TensorFold pair, the command center on spark-1, the Mac client,
 > and a fully offline build — follow the linear runbook
-> [SPARK_HYDRA.md](SPARK_HYDRA.md). For the pair's own model maintaining
-> OpenBeast, see [SELF_DEVELOPMENT.md](SELF_DEVELOPMENT.md).
+> [SPARK_HYDRA.md](SPARK_HYDRA.md). Its two checklists are the short way in:
+> [Install everything, fresh](SPARK_HYDRA.md#install-everything-fresh) and
+> [Update everything](SPARK_HYDRA.md#g6-updating), each per host, online and
+> offline. For the pair's own model maintaining OpenBeast, see
+> [SELF_DEVELOPMENT.md](SELF_DEVELOPMENT.md).
 
 The inference engine, model weights, and Docker volumes are not checked in —
 follow the steps below to set them up. Everything else (configs, scripts,

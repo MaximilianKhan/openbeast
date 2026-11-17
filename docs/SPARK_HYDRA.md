@@ -7,30 +7,382 @@ reboot. `healthcheck.sh` on spark-1 reports all 9 services healthy.
 
 This page takes you from bare boxes to a serving pair, start to finish, and then
 covers day-2 operations and fully offline operation. Read it top to bottom the
-first time. After that, jump to the section you need. Design background is in
+first time. After that, jump to the section you need, or start at the
+[Quickstart](#quickstart). Historical design background is in
 [`DGX_SPARK_PLAN.md`](DGX_SPARK_PLAN.md) (§8a: the stack on a Spark; §14:
-onboarding a model; §15: why GLM-5.3-Flash). Engine choice is in
+onboarding a model; §15: why GLM-5.3-Flash); where it and this page differ,
+this page is current. Engine choice is in
 [`ENGINES.md`](ENGINES.md). For the local model working on OpenBeast itself,
 see [`SELF_DEVELOPMENT.md`](SELF_DEVELOPMENT.md).
 
 **How to read the labels.** **Measured** means it ran on our pair and the
 result is recorded here. **VERIFY ON HARDWARE** means the code exists and is
 tested against stubs, but has never run on a real Spark. Every command on this
-page exists in the code on `feat/spark-scale-1-8`. Flags were checked against
-each script's `--help` on 2026-11-15.
+page exists in the code on `main` (`feat/spark-scale-1-8`, where it started,
+is merged into it). Flags were checked against each script's `--help` on
+2026-11-15, and again for the two checklists on 2026-11-16.
+
+## Quickstart
+
+Three paths. Every command below is from the runbook body; the linked section
+has the detail. All run from the Mac unless marked "on spark-1".
+
+**(a) Everyday: the pair is already built.** It boots by itself, offline, and
+needs no manual start. One unit drives inference: the `systemctl --user` unit
+`spark-hydra-inference` **on spark-1 only** (no sudo). It starts rank 1 on
+spark-2 over ssh, then rank 0 on spark-1. Nothing runs as a unit on spark-2.
+The command center is the user unit `openbeast` on spark-1.
+
+```bash
+# is it serving? (on spark-1; G1)
+~/openbeast/scripts/healthcheck.sh               # healthy = "All 9 services healthy" + the unified-memory line
+curl -s http://127.0.0.1:8000/health             # healthy = {"ok": true, "backend": "tensorfold", ...}
+~/openbeast/scripts/doctor.sh                    # the wider check
+systemctl --user status spark-hydra-inference openbeast --no-pager
+# from the Mac (G1)
+curl -sk https://spark-1.tail4109f9.ts.net:8444/api/slot | python3 -m json.tool | head -30
+
+# start / stop / restart (on spark-1; G3)
+systemctl --user restart spark-hydra-inference   # both ranks; loading takes 2-6 min
+systemctl --user stop spark-hydra-inference      # both ranks
+systemctl --user start spark-hydra-inference
+systemctl --user restart openbeast               # the command center (WebUI, tools, gate, ...)
+~/openbeast/scripts/healthcheck.sh --restart    # restart only what is DOWN (the watchdog does this every 5 min)
+```
+
+- **Order across ranks.** spark-2 must be up first; the unit then brings up
+  rank 1 before rank 0. If spark-2 is not up yet, the unit fails and retries
+  every 30 s by itself. To power-cycle both, stop inference, then reboot the
+  worker, then the head ([B4](#b4-fabric-mtu-9000-spark-fabric-mtu) step 3).
+- **Never** `docker stop glm53-flash-tf`, the recipe's `start.sh` / `stop.sh`,
+  or `./stop.sh` by hand while the units are enabled, and never restart one
+  rank alone ([G3](#g3-restarts-only-through-systemctl---user-while-the-unit-is-enabled)).
+- **Healthy** looks like [E4](#e4-the-healthy-state). `/api/slot` reports model
+  `GLM-5.3-Flash-EXL3`, a 1,048,576-token window and 4 slots. Logs are in
+  [G2](#g2-logs); failures are in [G8](#g8-when-x-fails-troubleshooting).
+
+**(b) Use it from a client.** Everything goes through beast-gate on
+`https://spark-1.tail4109f9.ts.net:8443/v1`, with a per-device key. The model
+itself listens on spark-1's loopback only.
+
+1. **Browser (any tailnet device):** Open WebUI at
+   `https://spark-1.tail4109f9.ts.net`, with a WebUI login
+   ([E6](#e6-publish-on-the-tailnet-setup-tailscalesh-as-tailscaleds-operator)).
+2. **A device key** (on spark-1; [E7](#e7-device-keys-for-beast-gate)). The key
+   prints once. Copy it straight into a 0600 file on the device (on the Mac:
+   `~/.config/openbeast/spark-hydra-gate.key`), never into a shared log:
+   `cd ~/openbeast && ./scripts/clients.sh enroll macbook --label "Max's MacBook"`.
+3. **Mac or Linux client mode** ([F2](#f2-client-mode-setup-clientsh)). This
+   gives OpenCode on the client, with the tools acting on the client's own
+   files:
+
+   ```bash
+   ./scripts/setup-client.sh --host spark-1.tail4109f9.ts.net --api-key-stdin < ~/.config/openbeast/spark-hydra-gate.key
+   openbeast-client status                     # reads :8444/api/slot
+   cd <any project> && opencode                # pick an 'openbeast-rig' model
+   ```
+
+   On opencode v2, move the `openbeast-tools` entry under `mcp.servers` after
+   each `setup-client.sh` run ([F3](#f3-the-opencode-v2-config-layout-read-this-before-editing)).
+4. **Raw OpenAI-compatible API** (any tool that takes a base URL and a key).
+   Without a key, the gate answers 401:
+
+   ```bash
+   curl -s https://spark-1.tail4109f9.ts.net:8443/v1/chat/completions \
+     -H "Authorization: Bearer $(cat ~/.config/openbeast/spark-hydra-gate.key)" \
+     -H 'Content-Type: application/json' \
+     -d '{"model": "GLM-5.3-Flash-EXL3", "messages": [{"role": "user", "content": "hello"}]}'
+   ```
+
+**(c) First build from bare boxes.** Follow
+[Install everything, fresh](#install-everything-fresh): 21 ordered steps,
+each with its host, the online command, the offline variant and a link to the
+detail. In outline:
+
+1. [B1](#b1-first-boot) first boot.
+2. [B2](#b2-spark-root-setupsh-the-only-root-step-once-per-spark) root setup, on each Spark.
+3. [B3](#b3-firewall-spark-guard) spark-guard, and [B4](#b4-fabric-mtu-9000-spark-fabric-mtu) the fabric MTU staged before the one reboot.
+4. [C](#c-weights) weights, on both.
+5. [D1](#d1-the-mia-recipe-what-serves-today) the recipe and the `spark-hydra-inference` unit.
+6. [E1](#e1-bootstrap)–[E7](#e7-device-keys-for-beast-gate) the command center, boot units, WebUI admin, tailnet publishing and device keys.
+7. [F](#f-the-mac-client) the Mac client, then the optional toolchains, docs mirror, ark drive and eval harness host.
+
+The short form is [Rebuild from scratch](#rebuild-from-scratch-short-form).
+With no internet at all, follow [H9](#h9-the-order-for-a-pair-built-entirely-offline)
+instead.
+
+**(d) Update a built pair to the latest `main`.** Follow
+[G6](#g6-updating): read the diff, back up Open WebUI if its pin moves, pull
+on both Sparks, `pydeps.sh install`, restart the command center, then the
+per-change steps (spark-guard, MTU, `ARTIFACT_LOGIN_FROM`, the seed filter,
+zig, the docs mirror). G6 also lists what is still pending on the live pair.
 
 | Section | What it gets you |
 |---|---|
+| [Quickstart](#quickstart) | everyday checks and restarts, using the pair from a client, the build order |
+| [Install everything, fresh](#install-everything-fresh) | the ordered checklist from bare DGX OS to the full pair, online and offline, per host |
 | [0. The pair at a glance](#0-the-pair-at-a-glance) | names, addresses, what runs where |
 | [A. What you need](#a-what-you-need) | hardware, cabling for 1 / 2 / 3 / 4-8 Sparks, accounts, the offline staging checklist |
 | [B. Bare boxes to root setup](#b-bare-boxes-to-root-setup) | `spark-root-setup.sh`, `spark-guard.sh`, checking them from another device, fabric MTU 9000 (`spark-fabric-mtu.sh`) |
 | [C. Weights](#c-weights) | fetch or copy, lock, hard-link into the recipe's HF-cache layout, carry to workers |
 | [D. Inference](#d-inference) | D1 the Mia recipe (what serves today), D2 native TensorFold through `spark-node.sh` / `spark-cluster.sh`, D3 the engine plane |
 | [E. The command center on spark-1](#e-the-command-center-on-spark-1) | bootstrap, `openbeast.conf`, boot units, WebUI admin, tailnet publishing, device keys |
-| [F. The Mac client](#f-the-mac-client) | `setup-client.sh`, the opencode v2 config layout, beast-apps, beast-docs |
-| [G. Day-2 operations](#g-day-2-operations) | health, logs, restarts, memory, watchdog, updates, keys, troubleshooting |
+| [F. The Mac client](#f-the-mac-client) | `setup-client.sh`, the opencode v2 config layout, beast-apps, beast-docs, the eval harness host |
+| [G. Day-2 operations](#g-day-2-operations) | health, logs, restarts, memory, watchdog, the "update everything" checklist, keys, troubleshooting |
 | [H. Fully offline operation](#h-fully-offline-operation) | island and `OFFLINE=true`, what keeps working, staging every artifact |
 | [Reference](#reference) | serving numbers, scaling notes, parity checks, known issues, not done yet |
+
+---
+
+## Install everything, fresh
+
+One ordered pass from bare DGX OS to the full working pair, including every
+optional piece. Each step names the host, the online command, the offline
+variant and the section with the detail. Commands run in a shell **on the
+host named** (ssh in first, and quote remote commands: [F1](#f1-ssh-from-the-mac)).
+Steps marked **sudo** need Max's password at a terminal on that box
+(`ssh -t`). Updating a pair that is already built is the other checklist,
+[G6](#g6-updating).
+
+**What DGX OS already brings.** Present on both Sparks on 2026-11-16, and not
+installed by OpenBeast: Ubuntu 24.04.5 aarch64, NVIDIA driver 580.178.04
+(CUDA 13.0), docker-ce 29.6 with the compose and buildx plugins,
+nvidia-container-toolkit 1.20, python3.12 3.12.3 with `python3-venv` and
+`pip`, gcc / g++ 13.3, build-essential, cmake, git, jq, rsync, sqlite3,
+smartmontools, netplan 1.1.2, nftables, ufw (installed, inactive) and the RDMA
+tools (`ibdev2netdev`, `ibv_devinfo`, perftest). OpenBeast adds exactly two
+system packages, in step 4: `libnccl2 2.28.9-1+cuda13.0` (held) and
+`tailscale 1.104.7`. Everything else lives in `max`'s home: the Python lock
+in `~/.local` (pip `--user`, 43 packages, the `hf` CLI among them), native
+TensorFold in `~/.local/opt` and `~/.local/bin`, the compose images in Docker,
+and the user units in `~/.config/systemd/user`. Not installed on either Spark
+today: zig, go, rust, node, clang, opencode, a beast-docs mirror, a beast-ark
+drive (steps 15-18 add them).
+
+**0. Offline only: stage everything first** (any connected box, plus one
+online Spark for the aarch64 pieces). Fill a drive from the
+[A4](#a4-the-artifact-checklist-what-to-stage-for-an-offline-build) list:
+the .debs ([H3](#h3-debs-libnccl2-and-tailscale)), `openbeast.bundle`
+([H2](#h2-the-repo)), the weights and DFlash2 ([C1](#c1-fetch-online-or-verify-a-local-copy),
+[C4](#c4-the-drafter-dflash2)), the recipe as a git bundle plus its image
+tarball ([H4](#h4-container-images)), native TensorFold
+([H5](#h5-native-tensorfold-and-the-engine-plane)), the command-center bundle
+built **on an online Spark** ([H6](#h6-the-command-center-wheels-and-compose-images)),
+the test wheels ([H7](#h7-test-and-language-toolchains)), a docs mirror
+tarball ([H8](#h8-beast-docs-mirror)) and an ark drive with zig, go and rust
+([H8a](#h8a-beast-ark-the-rest-of-the-software-on-a-drive)). Online, skip
+this step: each later step fetches its own piece.
+
+**1. Cable, boot, NVIDIA Sync** (both Sparks + the Mac;
+[A2](#a2-cabling-and-addressing-for-1-2-3-and-4-8-sparks),
+[B1](#b1-first-boot)). Create the user `max` (in `sudo` and `docker`),
+connect the LAN, pair each Spark with NVIDIA Sync so it addresses both fabric
+rails, then check on each Spark: `ibdev2netdev` shows the cabled ports `(Up)`
+and `ip -4 -o addr show | grep 10.100` shows the rail addresses.
+
+**2. The repo at one commit** (both; [B1](#b1-first-boot) step 3):
+
+```bash
+git clone https://github.com/MaximilianKhan/openbeast ~/openbeast && git -C ~/openbeast log --oneline -1   # online, main
+git clone /media/usb/openbeast.bundle ~/openbeast && git -C ~/openbeast log --oneline -1                   # offline (H2)
+```
+
+The two `log` lines must print the same commit.
+
+**3. The head's ssh key to the worker** (spark-1; [B1](#b1-first-boot) step 4):
+`ssh-keygen -t ed25519` if it has none, `ssh-copy-id max@10.100.216.2`, then
+`ssh max@10.100.216.2 true`. No network beyond the cable.
+
+**4. Root setup, guard included, sudo** (each Spark;
+[B2](#b2-spark-root-setupsh-the-only-root-step-once-per-spark),
+[B3](#b3-firewall-spark-guard)):
+
+```bash
+cd ~/openbeast
+sudo scripts/backends/spark-root-setup.sh spark-1 --guard                 # on spark-1, online
+sudo scripts/backends/spark-root-setup.sh spark-2 --guard                 # on spark-2, online
+scripts/backends/spark-root-setup.sh --check-debs ~/debs                  # offline: no root, sha256 vs the pins
+sudo scripts/backends/spark-root-setup.sh spark-N --debs ~/debs --guard   # offline (H3)
+```
+
+The first run prints a Tailscale login URL. Offline, `tailscale up` cannot
+finish until there is a route; the script says so and goes on.
+
+**5. Fabric MTU 9000, staged, sudo** (each Spark;
+[B4](#b4-fabric-mtu-9000-spark-fabric-mtu)). Fully local, so the online and
+offline commands are the same:
+
+```bash
+cd ~/openbeast && sudo scripts/backends/spark-fabric-mtu.sh --stage
+```
+
+Staging changes nothing live. Doing it now means the reboot in step 6 also
+brings the rails up at 9000, so you reboot once instead of twice. This is
+VERIFY ON HARDWARE: our pair has not run at 9000 yet. To build without it,
+skip this step; `--stage` can run on any later day, followed by a reboot of
+both.
+
+**6. Reboot both, once** (worker first, then head). This is the docker-group
+gotcha from [B2](#b2-spark-root-setupsh-the-only-root-step-once-per-spark),
+and it activates step 5. Then check on each Spark:
+
+```bash
+systemd-run --user --wait --pipe docker info >/dev/null && echo user-manager-sees-docker
+dpkg-query -W libnccl2 && loginctl show-user "$USER" -p Linger && tailscale ip -4
+sudo ~/openbeast/scripts/backends/spark-guard.sh --status         # "rules: current", unit active
+~/openbeast/scripts/backends/spark-fabric-mtu.sh --verify <peer rail-1 IP> <peer rail-2 IP>   # if step 5 ran: VERIFIED
+```
+
+**7. Weights** (spark-1, then spark-2; [C1](#c1-fetch-online-or-verify-a-local-copy)–[C4](#c4-the-drafter-dflash2)).
+On spark-1, online, put the HF token in `~/.config/openbeast/hf-token`
+(0600) and run `model-fetch.sh --profile glm53-flash-ablit-exl3-tensorfold`.
+Offline, copy the tree from the drive and run the same command with
+`--verify`. Then, both ways: the HF-cache hard links (C2), one `rsync -aH`
+to spark-2 and `--verify` there (C3), DFlash2 copied and checked with the
+blob loop on both (C4). Online, DFlash2 comes from
+`hf download incoai/GLM-5.3-Flash-DFlash2 --revision bf582e4eacc1810f76656d1811693ff6c6737d2a`
+(the `hf` CLI is in `~/.local/bin` once step 11 has installed the Python
+lock; run step 11's `bootstrap.sh` first if it is missing).
+
+**8. The recipe and its image** (spark-1, image on both;
+[D1](#d1-the-mia-recipe-what-serves-today), [H4](#h4-container-images)):
+
+```bash
+# on spark-1. Online:
+git clone https://github.com/MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks-TensorFold.git ~/openbeast-recipes/glm53
+git -C ~/openbeast-recipes/glm53 checkout 33b50fd
+# offline: git clone /media/usb/glm53-recipe.bundle ~/openbeast-recipes/glm53 (a `git bundle create … --all` of the same repo), then the same checkout
+# write ~/openbeast-recipes/glm53/scripts/local.sh exactly as in D1 (untracked; the recipe's config.sh sources it)
+
+# the image, on BOTH Sparks. Online, the prebuilt image prepare.sh would pull, by digest:
+IMG=ghcr.io/miaai-lab/glm-5.3-flash-exl3-2x-dgx-sparks-tensorfold@sha256:cbb4b3c66273e2965dd40a7227e7a5243db333fe250113fb3987462ad4f12588
+docker pull "$IMG" && docker tag "$IMG" tensorfold-glm53:v0.6.0
+# or on spark-1 only, then over the cable: docker save tensorfold-glm53:v0.6.0 | ssh max@10.100.216.2 docker load
+# offline: docker load -i tensorfold-glm53-v0.6.0.tar on each Spark (H4)
+docker image inspect -f '{{.Id}}' tensorfold-glm53:v0.6.0   # sha256:ead0174052ac16b0… on both
+```
+
+The recipe's own `scripts/prepare.sh` does the same image pull and can also
+fetch weights and copy to the worker; read the recipe's README before running
+it. On our pair, OpenBeast staged the weights (step 7) and only the image
+came from the recipe. The recipe lives on spark-1 only: `start.sh` runs rank 1
+on spark-2 with `docker run` over ssh.
+
+**9. The inference unit** (spark-1; [D1](#d1-the-mia-recipe-what-serves-today)).
+The `sed … spark-hydra-inference.service` block in D1, then
+`systemctl --user enable --now spark-hydra-inference`. Loading takes 2-6 min.
+`curl -s http://127.0.0.1:8000/health` must show `"ok": true`. Online and
+offline are the same: the unit runs with `PREPARE=0` and `HF_HUB_OFFLINE=1`.
+
+**10. Native TensorFold, optional** (each Spark; [D2](#d2-native-tensorfold-through-spark-nodesh--spark-clustersh),
+[D3](#d3-the-engine-plane-scriptsenginesh)). The challenger engine; the pair
+serves without it.
+
+```bash
+cd ~/openbeast
+scripts/engine.sh install tensorfold --version 1.2.7          # online: download, verify, pin (or install-native.sh --version 1.2.7)
+scripts/engine.sh install tensorfold --from /media/usb/tf      # offline (H5)
+cp scripts/backends/spark.env.example scripts/backends/spark.env    # then edit it per node (D2 table)
+cp scripts/backends/cluster.env.example scripts/backends/cluster.env  # spark-1 only: CLUSTER_NODES="local max@10.100.216.2"
+sudo scripts/backends/spark-guard.sh                           # RE-RUN after writing spark.env: it guards spark.env's master ports
+```
+
+The key file `spark.env` names in `TENSORFOLD_API_KEY_FILE` must exist (0600)
+on **every** node before a D2 launch. The re-run of the guard matters: both
+live Sparks went `STALE` because `spark.env` (with `VLLM_MASTER_PORT=29501`)
+was written an hour after the guard ([B3](#b3-firewall-spark-guard)).
+
+**11. The command center** (spark-1; [E1](#e1-bootstrap), [E2](#e2-openbeastconf)).
+Write `openbeast.conf` first (0600). The keys spark-1 runs with, secrets
+aside:
+
+```bash
+cd ~/openbeast && cp openbeast.conf.example openbeast.conf && chmod 600 openbeast.conf
+# then set, each on its own line (no trailing comments: the parser keeps them):
+#   INFERENCE_BACKEND=tensorfold   INFERENCE_URL=http://127.0.0.1:8000
+#   INFERENCE_MODEL=GLM-5.3-Flash-EXL3   INFERENCE_SLOTS=4
+#   EDGE_GATE=true   WEBUI_AUTH=true   TS_HOSTNAME=spark-1   EXTENSIONS="dashboard"
+#   BEAST_CHAT=true   CHAT_OPERATORS=<you>   CHAT_LOGIN_FROM=unix
+#   BEAST_ARTIFACT=true   ARTIFACT_OPERATORS=<you>   ARTIFACT_ADMINS=<you>   ARTIFACT_LOGIN_FROM=unix
+#   EDGE_READ_TIMEOUT=3600          (only if an eval harness will run against the pair: F6)
+#   LANG_PACKS=off   LANG_PACK_CONTEXT=off   BEAST_ASSIST=0   BEAST_ESCALATE=0
+./bootstrap.sh --preflight      # read-only: what it will do and what it cannot reach
+./bootstrap.sh --no-start       # online: the Python lock, the pinned compose images (Open WebUI 0.13.3)
+```
+
+Offline: `./scripts/bundle.sh verify` and `install` the Spark-built bundle,
+`echo 'OFFLINE=true' >> openbeast.conf`, then `./bootstrap.sh --no-start`
+([H6](#h6-the-command-center-wheels-and-compose-images)). Leave
+`EDGE_MAX_INFLIGHT` unset: the gate then admits `INFERENCE_SLOTS` (4)
+generations per device. `WEBUI_RANDOM_SEED` defaults to on.
+
+**12. Boot units** (spark-1; [E3](#e3-boot-units)): the `sed … openbeast.service`
+block, `systemctl --user enable --now openbeast`. The first start installs
+the watchdog and logrotate timers and runs `configure-webui.sh`, which wires
+the tool servers and installs the random seed filter
+([G6](#g6-updating)). Expect `healthcheck.sh` to say "All 9 services
+healthy" once the model has loaded ([E4](#e4-the-healthy-state)).
+
+**13. WebUI admin, then publish** (spark-1; [E5](#e5-webui-auth-and-the-admin-account-before-publishing),
+[E6](#e6-publish-on-the-tailnet-setup-tailscalesh-as-tailscaleds-operator)).
+Log in over an ssh tunnel, create your admin, then:
+
+```bash
+cd ~/openbeast
+./scripts/setup-tailscale.sh --publish-slot --publish-chat --publish-artifact --publish-searxng
+./scripts/setup-tailscale.sh --status
+```
+
+With `ARTIFACT_LOGIN_FROM=unix` and `CHAT_LOGIN_FROM=unix` set before this
+run, `:8446` and `:8445` proxy to the 0600 sockets, not to loopback TCP.
+`tailscale serve` needs the box joined to the tailnet (step 4), and joining
+needs a route to Tailscale's coordination server once.
+
+**14. Device keys** (spark-1; [E7](#e7-device-keys-for-beast-gate)):
+`./scripts/clients.sh enroll macbook --label "Max's MacBook"` prints the key
+once. Put it straight into `~/.config/openbeast/spark-hydra-gate.key` (0600)
+on the Mac. One key per device; the eval harness host gets its own.
+
+**15. The Mac client** (the Mac; [F1](#f1-ssh-from-the-mac)–[F4](#f4-beast-apps-external-apps-through-mcp-servers)):
+the ssh config with `HostKeyAlias`, then
+`./scripts/setup-client.sh --host spark-1.tail4109f9.ts.net --api-key-stdin < ~/.config/openbeast/spark-hydra-gate.key`,
+then the opencode v2 fix-up (F3). Offline client install:
+[BEAST_APPS.md](BEAST_APPS.md) § Offline client.
+
+**16. zig 0.16.0 and the other language toolchains, optional** (spark-1, and
+the harness host; [H7](#h7-test-and-language-toolchains)). Needed for
+`language_reference` on zig and for the zig / go / rust eval variants. From an
+ark drive: `ark restore zig`, `ark restore go`, `ark restore rust` (offline
+and online alike). Online without a drive: the pinned zig tarball in H7.
+
+**17. beast-docs mirror, optional** (sync on the Mac, unpack on spark-1;
+[F5](#f5-beast-docs-platform-docs-mirrored), [H8](#h8-beast-docs-mirror)).
+`docs.sh sync` + `pack` on a connected box, `docs.sh unpack` on spark-1. The
+unpack is offline.
+
+**18. beast-ark drive, optional** ([H8a](#h8a-beast-ark-the-rest-of-the-software-on-a-drive)).
+`./scripts/ark.sh fetch --to <drive> --profile core --platform linux-aarch64`
+on a connected box; `DRIVE/ark verify DRIVE` and `DRIVE/ark restore <name>`
+on the Spark, offline.
+
+**19. pytest, optional** (any Spark; [H7](#h7-test-and-language-toolchains)).
+The hash-pinned venv `~/.venvs/openbeast-test`; offline from a wheelhouse.
+
+**20. The eval harness host, optional** (the Mac or a Linux box;
+[F6](#f6-the-eval-harness-host-benchmarking-the-pair)): zig 0.16.0, go,
+rustc, gcc / g++, clang, git, python 3.12, its own device key, and
+`EDGE_READ_TIMEOUT=3600` on spark-1 (step 11).
+
+**21. Prove it** (spark-1 and the Mac; [G1](#g1-health)):
+
+```bash
+~/openbeast/scripts/healthcheck.sh          # on spark-1: "All 9 services healthy"
+~/openbeast/scripts/doctor.sh               # on spark-1: exit 0 (no FAIL row)
+sudo ~/openbeast/scripts/backends/spark-guard.sh --status   # on each Spark: "rules: current"
+curl -sk https://spark-1.tail4109f9.ts.net:8444/api/slot | python3 -m json.tool | head -30   # from the Mac
+nc -z -w 3 100.66.191.118 29551 && echo STILL OPEN || echo closed                           # from the Mac: closed
+curl -s -o /dev/null -w '%{http_code}\n' https://spark-1.tail4109f9.ts.net:8443/v1/models    # from the Mac, no key: 401
+```
 
 ---
 
@@ -71,11 +423,13 @@ How to reach each box:
 | Native TensorFold 1.2.7 | both | `~/.local/bin/tensorfold` (signed release). A challenger engine, **not serving** ([D2](#d2-native-tensorfold-through-spark-nodesh--spark-clustersh)) |
 | spark-guard | both | `openbeast-spark-guard.service` (system unit, `active (exited)`): an nftables table that keeps the engines' rendezvous ports on the fabric ([B3](#b3-firewall-spark-guard)) |
 
-**Checkouts, 2026-11-16.** Both Sparks' `~/openbeast` are at `dc0a181`
-(`main`), with `scripts/engine.sh` present. (On 2026-11-15 they were skewed:
-spark-1 at `ecf50a2`, spark-2 at `0988641`, neither with `engine.sh`.) Keep
-them on one commit: the "same repo on every node" rule is what
-`spark-cluster.sh check` enforces. Run this on each Spark, quoting the command
+**Checkouts, 2026-11-16 (evening).** The two Sparks are skewed again:
+spark-1's `~/openbeast` is at `29e5241a` (#181), spark-2's at `de931dfe`
+(#176), so spark-2 does not yet have `scripts/backends/spark-fabric-mtu.sh`.
+(Earlier the same day both were at `dc0a181`; on 2026-11-15 spark-1 was at
+`ecf50a2` and spark-2 at `0988641`.) Keep them on one commit: the "same repo
+on every node" rule is what `spark-cluster.sh check` enforces, and
+[G6](#g6-updating) step 4 pulls both. Run this on each Spark, quoting the command
 for ssh:
 `ssh spark-2.tail4109f9.ts.net 'cd ~/openbeast && git pull --ff-only'`.
 Restarting the command center afterwards (`systemctl --user restart openbeast`)
@@ -749,7 +1103,10 @@ What it does:
 It syncs `~/openbeast-models/<profile>` (OpenBeast's layout). For the recipe,
 still make the HF-cache hard links on each worker as in C2. On our pair the
 hand-made rsync above did both at once. Untested on our pair, since the pair
-has no `cluster.env`; tested against stubs in `tests/test_spark_cluster.sh`.
+has never run `sync-weights`, though spark-1 does have a `cluster.env`
+(written 2026-11-15: `CLUSTER_NODES="local max@10.100.216.2"`,
+`CLUSTER_NAME=spark-hydra`, `CLUSTER_REPO=~/openbeast`). Tested against stubs
+in `tests/test_spark_cluster.sh`.
 
 ### C4. The drafter, DFlash2
 
@@ -1003,7 +1360,7 @@ On a Spark:
   only local files).
 - `engine.sh` does not manage the recipe (D1). The recipe pins its own image tag.
 
-`engine.sh` is on both live checkouts (`dc0a181`, [0](#what-runs-where)), but
+`engine.sh` is on both live checkouts ([0](#what-runs-where)), but
 no swap has run there yet; it is tested hermetically (`tests/test_engines.sh`):
 VERIFY ON HARDWARE.
 
@@ -1037,8 +1394,10 @@ These are the keys in use on spark-1 on 2026-11-15. Secret values are not shown.
 | `INFERENCE_BACKEND` | `tensorfold` | the model is the recipe's TensorFold server |
 | `INFERENCE_URL` | `http://127.0.0.1:8000` | same box, loopback. Spawned agents follow it (conf.sh exports `OPENBEAST_AGENT_INFERENCE_URL=$INFERENCE_URL/v1`) |
 | `INFERENCE_MODEL` | `GLM-5.3-Flash-EXL3` | the served name; exported as `OPENBEAST_INFERENCE_MODEL`, which `agents/runner.py` sends |
-| `INFERENCE_SLOTS` | `4` | matches the recipe's 4 streams; beast-slot reports it. With `EDGE_MAX_INFLIGHT` unset it is also beast-gate's per-device cap, so one device (the Mac running parallel agents) may hold all 4 streams. Before the 2026-11-16 review the gate admitted 2 per device whatever the engine served; the audit showed `max_inflight` 429s with streams idle, each costing an agent turn ~7 s. A gate started on older code keeps 2 until `systemctl --user restart openbeast` (or set `EDGE_MAX_INFLIGHT=4` explicitly) |
+| `INFERENCE_SLOTS` | `4` | matches the recipe's 4 streams; beast-slot reports it. With `EDGE_MAX_INFLIGHT` unset it is also beast-gate's per-device cap, so one device (the Mac running parallel agents) may hold all 4 streams. Before the 2026-11-16 review the gate admitted 2 per device whatever the engine served; the audit showed `max_inflight` 429s with streams idle, each costing an agent turn ~7 s. Live since the 2026-11-16 restart: `/api/slot` reports `admission.per_device_inflight: 4` |
 | `EDGE_GATE` | `true` | beast-gate (:8090) is the one inference door (:8443) |
+| `EDGE_READ_TIMEOUT` | `3600` | seconds the gate waits for each byte from the model (default 600). A non-streaming completion sends nothing until it is done, so a long eval turn hit the gate's 504 at 600 s. Needed on any pair an eval harness targets ([F6](#f6-the-eval-harness-host-benchmarking-the-pair)) |
+| `TS_HOSTNAME` | `spark-1` | the tailnet name `setup-tailscale.sh` joins as. A Spark has no default and the script refuses without it ([E6](#e6-publish-on-the-tailnet-setup-tailscalesh-as-tailscaleds-operator)) |
 | `WEBUI_AUTH` | `true` | the WebUI login wall; required before :443 is published |
 | `WEBUI_ADMIN_EMAIL`, `WEBUI_ADMIN_PASSWORD` | *(secret)* | the admin `configure-webui.sh` uses to apply tool-server config on restarts |
 | `SEARXNG_SECRET` | *(secret)* | SearXNG's secret key |
@@ -1058,19 +1417,20 @@ Not set, so the defaults apply:
 - `MEM_RESERVE_GB` = `3`. This is the GiB the stack's cap leaves beside the
   model on unified memory ([G4](#g4-memory-headroom-and-the-gb10-stack-cap)).
 - `MEM_LIMIT_PCT` = `75`.
-- `EDGE_MAX_INFLIGHT` = `2`: beast-gate admits two concurrent generations
-  per device key. The eval harness's agents all share one key, so a
-  `--jobs 4` benchmark or profile of GLM-5.3-Flash from the Mac
-  (`benchmark_all.py --models glm-5.3-flash`, `profile.py --slots 4`) is
-  **clamped to 2**: `run_eval` reads the cap from the gate (a `n=1024`
-  chat request the gate refuses before forwarding anything) and prints
-  why. Before review 1116 it ran 4 workers anyway, half the generations got
-  429, each burned an agent iteration, and failing units became unbanked
-  `server_error`s. To measure with 4 streams, set `EDGE_MAX_INFLIGHT=4` in
-  `~/openbeast/openbeast.conf` on spark-1 and restart the command center
-  (`systemctl --user restart openbeast`, [G3](#g3-restarts-only-through-systemctl---user-while-the-unit-is-enabled));
-  both steps are local and work offline. It raises the cap for every
-  device, so revert it after the run if other clients share the pair.
+- `EDGE_MAX_INFLIGHT` unset, so it follows `INFERENCE_SLOTS`: beast-gate
+  admits 4 concurrent generations per device key. The eval harness's agents
+  all share one key; `run_eval` reads the cap from the gate (a `n=1024` chat
+  request the gate refuses before forwarding anything) and clamps `--jobs`
+  to it, so a `--jobs 4` profile from the Mac runs 4 workers. Before review
+  1116 the default was 2: half the generations got 429, each burned an agent
+  iteration, and failing units became unbanked `server_error`s. Set
+  `EDGE_MAX_INFLIGHT` only to hold one device **below** the server's slots
+  when other clients share the pair.
+- `ARTIFACT_LOGIN_FROM` = `loopback`. **Pending:** set it to `unix`, restart,
+  and re-run `setup-tailscale.sh --publish-artifact` ([G6](#g6-updating)
+  step 6), as `CHAT_LOGIN_FROM` already is.
+- `WEBUI_RANDOM_SEED` = `true`: `configure-webui.sh` installs the random seed
+  filter ([G6](#g6-updating)).
 - `WATCHDOG_AUTOINSTALL` and `LOGROTATE_AUTOINSTALL` = `true`.
 - `BIND_HOST` = `127.0.0.1`.
 
@@ -1373,6 +1733,53 @@ on the Mac, `pack`, copy, and `unpack` on spark-1 ([H8](#h8-beast-docs-mirror)).
 Models reach it through the `platform_docs` MCP tool or `scripts/docs.sh`.
 Skill: `platform-docs`.
 
+### F6. The eval harness host: benchmarking the pair
+
+The v5 benchmark runs **on a harness host** (the Mac is the documented one;
+a Linux box works with the caveats in [evals/README.md](../evals/README.md)
+"Residual gaps") and sends only chat calls to the pair. The agents' tools,
+the validators and every compiler run on the harness host, never on the
+Sparks, so the toolchains belong there. `evals/profile.py`'s preflight
+refuses to start without them (`HOST_TOOLS`: `go`, `gcc`, `g++`, `rustc`,
+`zig`, `git`; zig must print exactly `0.16.0`).
+
+| Need | Mac | Linux (aarch64 or x86_64) | Offline |
+|---|---|---|---|
+| python 3.12 + the lock | `python3.12 -m venv ~/.venvs/openbeast-eval && ~/.venvs/openbeast-eval/bin/pip install --require-hashes -r agents/requirements.lock` | same | `pydeps.sh install --from` a wheelhouse for that platform ([H6](#h6-the-command-center-wheels-and-compose-images)), or `ark restore cpython-3.12` |
+| zig 0.16.0 | `zig-aarch64-macos-0.16.0.tar.xz`, sha256 `b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489`, unpacked onto `PATH` | `zig-aarch64-linux-0.16.0.tar.xz` (`ea4b09bf…`, H7) or `zig-x86_64-linux-0.16.0.tar.xz` (`70e49664…`) | `ark restore zig` (minisign-checked when fetched) |
+| rustc | rustup, or `ark restore rust` | same | `ark restore rust` ([BEAST_ARK.md](BEAST_ARK.md) §8.2) |
+| go | Homebrew `go` (go1.23.3 on the Mac today) | the distro's `golang-go`, or `ark restore go` | `ark restore go` |
+| gcc / g++ / clang | Xcode Command Line Tools (`gcc` / `g++` are clang there) | `sudo apt install build-essential clang` | the distro's .debs, or `ark restore llvm` |
+| git | Xcode CLT | apt | — |
+| a device key of its own | `./scripts/clients.sh enroll eval-host --label "eval harness"` on spark-1 ([E7](#e7-device-keys-for-beast-gate)), into a 0600 file | same | same (the enrollment is local to spark-1) |
+| the gate's read timeout | `EDGE_READ_TIMEOUT=3600` in spark-1's `openbeast.conf`, then `systemctl --user restart openbeast` | same | same |
+
+**Why the read timeout.** The gate waits `EDGE_READ_TIMEOUT` seconds (default
+600) for each byte from the model. For a non-streaming completion that is the
+whole generation, so a long agent turn ends as a gate 504 that the harness
+records as a server error, not as the model's answer. spark-1 runs 3600.
+
+**The in-flight cap.** Every agent of a run shares the one key, and the gate
+admits `EDGE_MAX_INFLIGHT` generations per key. Unset, that is
+`INFERENCE_SLOTS` (4 on the pair), so `--jobs 4` runs 4 workers. `run_eval`
+reads the cap from the gate and clamps `--jobs` to it, and `profile.py`
+refuses a profile when 4 concurrent requests would draw a 429.
+
+**Run it** (from a full checkout on the harness host, with the toolchains on
+`PATH`):
+
+```bash
+export OPENBEAST_SPARK_API_KEY="$(cat ~/.config/openbeast/spark-hydra-gate.key)"   # benchmark_all's glm-5.3-flash entry reads it
+zig version && rustc --version && go version && gcc --version | head -1     # what preflight will check
+python3 evals/profile.py --model glm-5.3-flash --budget-h 4 --jobs 4         # evals/README.md "How to run a 4-hour profile"
+python3 evals/benchmark_all.py --models glm-5.3-flash                        # the plain sweep
+```
+
+Put the toolchains somewhere that lasts (`~/.local/opt` with links in
+`~/.local/bin`, which is what `ark restore` does), not in a scratch or temp
+directory: the harness pins each compiler's install tree when it starts and
+refuses a validation when that tree changes under it.
+
 ---
 
 ## G. Day-2 operations
@@ -1461,17 +1868,146 @@ try `PARALLEL=8` without raising the reserve. The recipe's notes measured rank
 
 ### G6. Updating
 
-**OpenBeast** on every node, the same commit everywhere:
+**Update everything, in order.** This moves a built pair to the latest
+`main` and brings along every component a recent change added. Commands run
+on the host named; **sudo** steps need Max at a terminal on that box. Building
+from scratch is the other checklist, [Install everything, fresh](#install-everything-fresh).
+On the Sparks, `scripts/update.sh` is **not** the update: it moves upstream
+pins (llama.cpp to `master`, images to their moving tags) and rewrites tracked
+files, and a bare run dies at its first step on a Spark, which has no
+`llama.cpp/` clone. It is a maintainer tool ([UPDATING.md](UPDATING.md)).
+
+**1. Pick a quiet moment.** Restarting the command center restarts
+beast-gate, which drops every generation in flight through `:8443`. A
+benchmark running from the Mac loses its in-flight units. Check
+`slots.busy` first (from the Mac):
+`curl -sk https://spark-1.tail4109f9.ts.net:8444/api/slot | python3 -c 'import json,sys; print(json.load(sys.stdin)["slots"])'`.
+Inference itself (`spark-hydra-inference`) is not restarted by any step
+below unless the recipe or the engine changes.
+
+**2. Read what is coming** (spark-1):
 
 ```bash
-cd ~/openbeast && git fetch && git status -sb      # read first: never pull over local edits
-git pull --ff-only
-ssh max@10.100.216.2 'cd ~/openbeast && git pull --ff-only'
-systemctl --user restart openbeast                 # makes the new commit live on the head
+cd ~/openbeast && git fetch && git status -sb             # never pull over local edits
+git log --oneline HEAD..origin/main                        # what the pull brings
+git diff --stat HEAD origin/main -- docker-compose.yml agents/requirements.lock extensions/ scripts/backends/
 ```
 
-The worker runs no OpenBeast services. Its checkout matters for the lock
-(`--verify`), for `spark-node.sh`, and for `spark-cluster.sh check`.
+Read [UPDATING.md](UPDATING.md) "Upgrade notes" for any line the diff
+touches. Offline, `git fetch /media/usb/openbeast.bundle main` instead of
+`git fetch`, and compare against `FETCH_HEAD` instead of `origin/main`.
+
+**3. Back up Open WebUI when its pin moves** (spark-1). If the diff touches
+the `open-webui` line of `docker-compose.yml`, the new image migrates the
+database at first start and cannot be downgraded past it (the 0.11.0 → 0.13.3
+sweep, [UPDATING.md](UPDATING.md) "Upgrade notes: the 2026-11 dependency
+sweep"). Stop the stack through its unit, then copy the volume:
+
+```bash
+systemctl --user stop openbeast                    # the command center only; inference keeps running
+mkdir -p ~/backups
+docker run --rm -v openbeast_open-webui-data:/data:ro -v ~/backups:/backup alpine \
+  tar czf /backup/open-webui-data-$(date +%F-%H%M).tgz -C /data .
+```
+
+spark-1 did this before the 0.13.3 sweep:
+`~/backups/open-webui-data-2026-11-16-0024.tgz`. `alpine:latest` is in
+spark-1's image store, so the command also works offline. On a box without
+it, any image already present that has `tar` does the same job. The stack
+stays down until step 5's start; skip the stop if the pin did not move.
+
+**4. Pull on both, Python deps on the head** (both Sparks):
+
+```bash
+cd ~/openbeast && git pull --ff-only && ./scripts/pydeps.sh install     # spark-1
+ssh max@10.100.216.2 'cd ~/openbeast && git pull --ff-only'              # spark-2: same commit
+git -C ~/openbeast log --oneline -1; ssh max@10.100.216.2 'git -C ~/openbeast log --oneline -1'   # must match
+```
+
+`pydeps.sh install` puts the lock this commit ships into `~/.local`, with
+`--require-hashes`, and is a no-op when nothing moved. `start.sh` refuses to
+start on a lock it does not match, so this comes before the restart. spark-2
+needs no Python layer: it runs no OpenBeast service, but its checkout must
+match for `--verify`, `spark-node.sh`, `spark-fabric-mtu.sh` and
+`spark-cluster.sh check`. Offline:
+`git pull --ff-only /media/usb/openbeast.bundle main` on each, and
+`./scripts/pydeps.sh install --from /media/usb/wheels-spark` on spark-1, with
+the wheelhouse filled by `pydeps.sh wheelhouse` on an online aarch64 box
+([H6](#h6-the-command-center-wheels-and-compose-images)).
+
+**5. Restart the command center** (spark-1):
+
+```bash
+systemctl --user restart openbeast       # or "start", after step 3's stop
+~/openbeast/scripts/healthcheck.sh       # "All 9 services healthy"
+~/openbeast/scripts/doctor.sh
+```
+
+`start.sh -d` pulls the image digests the new commit pins (online), restarts
+beast-gate, the tool server, beast-chat, beast-artifact and the dashboard,
+and runs `configure-webui.sh`, which re-applies the tool servers and installs
+or updates the random seed filter. Offline, new images come from a bundle
+built on an online Spark at the **same** commit:
+`./scripts/bundle.sh verify` + `install` before the restart
+([H6](#h6-the-command-center-wheels-and-compose-images)). `bundle.sh install`
+rewrites `docker-compose.yml` to content IDs and keeps
+`docker-compose.yml.pre-bundle`; `git checkout -- docker-compose.yml` before
+the next pull, or that pull conflicts.
+
+**6. The per-change steps.** Each row is a change a recent PR added; do the
+ones whose "done when" is not yet true.
+
+| Change | Where | Do | Done when |
+|---|---|---|---|
+| spark-guard rules (#168, and any change to spark.env ports or the fabric) | each Spark, **sudo** | `sudo scripts/backends/spark-guard.sh --status`; if `STALE`, `sudo scripts/backends/spark-guard.sh` ([B3](#b3-firewall-spark-guard)) | `rules: current` on both |
+| the gate's in-flight cap follows `INFERENCE_SLOTS` (#168) | spark-1 | nothing beyond step 5, with `EDGE_MAX_INFLIGHT` unset | `/api/slot` `admission.per_device_inflight` is 4 (live since 2026-11-16) |
+| `TS_HOSTNAME` (#160) | spark-1 (and any Spark that will run `setup-tailscale.sh`) | `grep -q '^TS_HOSTNAME=' openbeast.conf \|\| echo 'TS_HOSTNAME=spark-1' >> openbeast.conf` ([E6](#e6-publish-on-the-tailnet-setup-tailscalesh-as-tailscaleds-operator)) | the key is set (spark-1: yes) |
+| Open WebUI 0.13.3, SearXNG, ntfy (#161) | spark-1 | step 3 before, step 5 does the rest | WebUI healthy, chats still there; `docker exec open-webui sh -c 'grep -m1 version /app/package.json'` says 0.13.3 |
+| `ARTIFACT_LOGIN_FROM=unix` (#165) | spark-1 | `echo 'ARTIFACT_LOGIN_FROM=unix' >> openbeast.conf`, `systemctl --user restart openbeast`, then `./scripts/setup-tailscale.sh --publish-artifact` (as operator, no sudo) | `tailscale serve status` shows `:8446` → `unix:…/.run/artifact.sock` |
+| engines hardening (#174) | each Spark | only if native TensorFold is in use: `scripts/engine.sh status`, then `scripts/backends/spark-cluster.sh check` from spark-1 | `check` passes (same commit, same engine pins) |
+| fabric MTU 9000 (#178) | each Spark, **sudo**, then a reboot of both | `sudo scripts/backends/spark-fabric-mtu.sh --stage` on both, then the reboot and `--verify` in [B4](#b4-fabric-mtu-9000-spark-fabric-mtu) | `--verify` prints `VERIFIED` on both |
+| random seed for Regenerate (#181) | spark-1 | step 5 (or `./scripts/configure-webui.sh` alone, no restart) | Admin Panel → Functions → "Random Seed", on and global |
+| `EDGE_READ_TIMEOUT` | spark-1, when an eval harness targets the pair | `echo 'EDGE_READ_TIMEOUT=3600' >> openbeast.conf`, `systemctl --user restart openbeast` | set (spark-1: 3600) |
+| zig 0.16.0 for `language_reference` | spark-1 (and the harness host) | `ark restore zig` from a drive, or the pinned tarball ([H7](#h7-test-and-language-toolchains)) | `zig version` prints 0.16.0 |
+| beast-docs mirror | spark-1 | sync + pack on the Mac, `docs.sh unpack` on spark-1 ([H8](#h8-beast-docs-mirror)) | `docs.sh status` lists the sources, none `STALE` |
+| beast-ark | the drive | `DRIVE/ark verify DRIVE`; a maintainer moves pins with `ark.sh update` online ([BEAST_ARK.md](BEAST_ARK.md) §10) | `verify` passes |
+
+**7. Clients** (each client): `openbeast-client update`, then on opencode v2
+re-apply the [F3](#f3-the-opencode-v2-config-layout-read-this-before-editing)
+fix-up. Offline: pull the client's repo from a bundle, then
+`pydeps.sh install --from` a wheelhouse for the client's platform
+([UPDATING.md](UPDATING.md) "Clients update themselves").
+
+**8. The OS** (each Spark, **sudo**, rarely). `libnccl2` is held, so
+`sudo apt update && sudo apt upgrade` leaves it alone and moves tailscale and
+the rest of DGX OS. A driver, kernel or firmware update needs the reboot
+order from [B4](#b4-fabric-mtu-9000-spark-fabric-mtu) step 3: stop inference,
+reboot the worker, then the head. Offline: carry new .debs and pins as in
+[H3](#h3-debs-libnccl2-and-tailscale). OpenBeast never upgrades the driver.
+
+**Pending on the live pair (read 2026-11-16, evening).** What the checklist
+above still has to do on spark-1 and spark-2:
+
+- **spark-2 is behind**: `de931dfe` (#176), while spark-1 is at `29e5241a`
+  (#181). spark-2 has no `spark-fabric-mtu.sh` until it pulls (step 4).
+- **spark-1's stack predates its checkout**: the `openbeast` unit started
+  08:44, the pull to `29e5241a` was at 13:26, so the random seed filter is
+  not live until `./scripts/configure-webui.sh` or a restart (step 5).
+- **spark-guard `STALE` on both** (sudo, step 6).
+- **`ARTIFACT_LOGIN_FROM` unset** on spark-1: beast-artifact still honours
+  the login header from loopback, and `:8446` proxies to `127.0.0.1:3004`
+  (step 6; [Known issues](#known-issues-and-errata-v190)).
+- **MTU not staged on either Spark** (sudo, then a reboot of both; step 6).
+- **No zig and no docs mirror** on spark-1 (step 6).
+- From earlier: the plaintext gate keys in `~/.config/openbeast/gate-keys/`
+  and `~/.config/openbeast/webui-max-password` are still on spark-1
+  ([E7](#e7-device-keys-for-beast-gate), [E5](#e5-webui-auth-and-the-admin-account-before-publishing)).
+
+The detail behind steps 4 and 6 follows.
+
+**OpenBeast** on every node, the same commit everywhere. The worker runs no
+OpenBeast services. Its checkout matters for the lock (`--verify`), for
+`spark-node.sh`, `spark-fabric-mtu.sh` and `spark-cluster.sh check`.
 
 **The engine:**
 
@@ -1568,7 +2104,11 @@ Every row below was hit on the way to the live pair.
   and everything is local.
 - **The whole command center** works except the web: WebUI, tools, agents,
   skills, files, beast-chat, beast-artifact, beast-gate, beast-slot.
-- **opencode on spark-1** works (`opencode` in `~/openbeast`).
+- **opencode on spark-1** is not set up: it is not installed there, and the
+  repo's `opencode.json` points at llama.cpp's `:8080`, not `:8000`
+  ([SELF_DEVELOPMENT.md](SELF_DEVELOPMENT.md)). Use `./agent.sh` on the box,
+  or opencode on the Mac in client mode (F2), which keeps working over the
+  LAN or the tailnet.
 - **`./agent.sh`** works on spark-1.
 - **`language_reference`, `platform_docs`, `scripts/docs.sh search`** work
   against what is mirrored.
@@ -1718,12 +2258,28 @@ pinned like CI's: `zig-aarch64-linux-0.16.0.tar.xz`, sha256
 `ea4b09bfb22ec6f6c6ceac57ab63efb6b46e17ab08d21f69f3a48b38e1534f17` (ziglang.org
 index, read 2026-11-13). `lang-library.sh acquire zig` fetches the x86_64
 tarball on any host, and that is fine: it is read as a std-source corpus, never
-executed. No zig is installed on spark-1 today.
+executed. No zig is installed on either Spark today (checked 2026-11-16).
+The simplest pinned route, online or offline, is beast-ark
+([H8a](#h8a-beast-ark-the-rest-of-the-software-on-a-drive)): its zig 0.16.0
+entry carries that same sha256 plus the minisign signature, and
+`ark restore zig --from DRIVE` puts it in `~/.local/opt/zig-0.16.0` with a
+link in `~/.local/bin`. By hand, online:
 
-**Rust, Go.** OpenBeast ships no acquirer for either. For an offline Spark, carry
-the official standalone aarch64 installers with the sha256 the vendor publishes,
-and check it before installing. VERIFY ON HARDWARE; none is installed on spark-1
-today. spark-1 has only gcc / g++.
+```bash
+cd /tmp && curl -fsSLO https://ziglang.org/download/0.16.0/zig-aarch64-linux-0.16.0.tar.xz
+echo 'ea4b09bfb22ec6f6c6ceac57ab63efb6b46e17ab08d21f69f3a48b38e1534f17  zig-aarch64-linux-0.16.0.tar.xz' | sha256sum -c -
+mkdir -p ~/.local/opt ~/.local/bin && tar -xJf zig-aarch64-linux-0.16.0.tar.xz -C ~/.local/opt
+ln -sfn ~/.local/opt/zig-aarch64-linux-0.16.0/zig ~/.local/bin/zig && zig version   # 0.16.0
+```
+
+**Rust, Go, clang.** beast-ark carries them pinned and checked: `go` 1.27.4,
+`rust` 1.100.0 (`install = "manual"`: `restore` prints the installer path,
+[BEAST_ARK.md](BEAST_ARK.md) §8.2) and `llvm` 23.1.5 (clang, lld). Restore
+them from a drive the same way, online or offline. None is installed on
+either Spark today: they have gcc / g++ 13.3 only. A Spark needs them only
+for `language_reference` on those languages or to run eval validators
+locally; the harness host needs them for every run
+([F6](#f6-the-eval-harness-host-benchmarking-the-pair)).
 
 **The language library** (`scripts/lang-library.sh acquire | check | list |
 verify`) lives outside git. Acquire it online and copy `lang-library.sh where`'s
@@ -1780,7 +2336,8 @@ This order has not been run end to end. Every piece is measured on its own, and
 the sequence is VERIFY ON HARDWARE.
 
 1. Cable, NVIDIA Sync addressing (A2, B1). The repo from a bundle (H2).
-2. `spark-root-setup.sh spark-N --debs debs --guard` on each Spark (H3). Reboot once.
+2. `spark-root-setup.sh spark-N --debs debs --guard` on each Spark (H3).
+   Optionally `spark-fabric-mtu.sh --stage` (B4, fully local). Reboot once.
 3. Weights: copy, `model-fetch --verify`, HF-cache hard links, rsync to workers,
    verify there (C1-C3). DFlash2 plus the blob loop (C4).
 4. Recipe checkout, `local.sh` (D1), image via `docker load` with the ID
@@ -1788,10 +2345,15 @@ the sequence is VERIFY ON HARDWARE.
 5. Native TensorFold, optional (H5).
 6. The command center from a Spark-built bundle with `OFFLINE=true` (H6),
    `openbeast.conf` (E2), units (E3), reboot.
-7. Optional: pytest venv, zig, beast-docs mirror (H7, H8).
+7. Optional: pytest venv, zig, beast-docs mirror (H7, H8). If native
+   TensorFold wrote `spark.env` in step 5, re-run `sudo spark-guard.sh` on
+   that Spark (B3).
 8. Optional: everything else from a beast-ark drive (H8a). `ark verify`
    first, then `ark restore <name>` per tool, or `ark serve --tailnet` for
    the whole fleet.
+
+The same order with every command, per host, online and offline side by side:
+[Install everything, fresh](#install-everything-fresh).
 
 ---
 
@@ -1852,7 +2414,8 @@ uses. They are now:
 
 1. Cable the CX-7 ports; NVIDIA Sync addresses both rails (A2, B1).
 2. On each Spark: `sudo ~/openbeast/scripts/backends/spark-root-setup.sh spark-N --guard`
-   (B2, B3). Offline: `--debs DIR` (H3). Reboot once.
+   (B2, B3). Offline: `--debs DIR` (H3). `sudo …/spark-fabric-mtu.sh --stage`
+   (B4). Reboot once.
 3. Weights on spark-1, `model-fetch.sh --profile glm53-flash-ablit-exl3-tensorfold --verify`,
    hard-link into the HF-cache layout, copy both to spark-2 with `-H` (C). The
    recipe never looks at `~/openbeast-models`.
@@ -1863,6 +2426,8 @@ uses. They are now:
 6. `~/openbeast`: `openbeast.conf` (E2), `./bootstrap.sh --no-start`, install
    both units (E3), reboot once, WebUI admin (E5), `setup-tailscale.sh` (E6),
    device keys (E7). Offline: H6.
+7. The Mac client (F), then optional zig / docs mirror / ark / harness host.
+   The long form: [Install everything, fresh](#install-everything-fresh).
 
 ### Known issues and errata (v1.9.0)
 
@@ -1900,7 +2465,8 @@ published, from the 2026-11-15 review:
   box" without saying it must be an aarch64 Spark (H6).
 - **`setup-client.sh` writes the opencode v1 MCP shape** (`mcp.<name>` +
   `enabled`). On opencode v2 that entry is not merged with `mcp.servers` (F3).
-- **Checkout skew**: resolved 2026-11-16, both Sparks are at `dc0a181` (0).
+- **Checkout skew**: back on 2026-11-16 evening: spark-1 at `29e5241a`,
+  spark-2 at `de931dfe` (0). [G6](#g6-updating) step 4 pulls both.
 
 From the 2026-11-16 review (fixes in this checkout; the live boxes pick them
 up on the operator steps named):
@@ -1926,8 +2492,12 @@ up on the operator steps named):
   guard `29501` but not `29502` (B3). `--status` now says `STALE`. Fix: one
   `sudo scripts/backends/spark-guard.sh` on each Spark.
 - **beast-gate admitted 2 generations per device** while the pair serves 4.
-  The gate now defaults to `INFERENCE_SLOTS` (E2), but the running gate keeps 2
-  until the next `systemctl --user restart openbeast`.
+  The gate now defaults to `INFERENCE_SLOTS` (E2). Live on spark-1 since the
+  2026-11-16 restart (`/api/slot`: `per_device_inflight: 4`).
+- **spark-2's spark.env names a TensorFold key file that is not there**
+  (`TENSORFOLD_API_KEY_FILE`; spark-2's `~/.config/openbeast` holds only
+  `hf-token`). It matters only for a native TensorFold launch (D2): write the
+  0600 key file on spark-2 first.
 - **The RoCE fabric runs at `active_mtu 1024`** (netdev MTU 1500). **Status,
   2026-11-16: the fix is ready to stage for the next reboot of both Sparks**:
   `spark-fabric-mtu.sh --stage` on each, reboot both, `--verify`, then the
@@ -1937,6 +2507,7 @@ up on the operator steps named):
 ### Not done yet
 
 - zig for `language_reference` on a Spark (H7), and a beast-docs mirror on spark-1 (F5).
+- The fabric MTU at 9000 (B4): staged on neither Spark yet, then the A/B.
 - A `svc:spark-hydra` Tailscale Service name (an admin-console step), and the
   beast rig's hydra node for the pair (`https://spark-1.tail4109f9.ts.net:8443`,
   `engine = "openai"`, a gate device key, `slots = 4`, upstream

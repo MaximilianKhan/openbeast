@@ -358,13 +358,25 @@ python3 evals/ablation.py --profile evals/results/profile-<slug>-<ts>.json # the
    are never cut.**
 4. **L1 + L2** in one `run_eval` call with the plan's unit sets.
 
+**The harness host.** Tools, validators and compilers run where the
+harness runs, never on the Sparks. Before a profile or sweep of the pair, the
+harness host needs zig **0.16.0** exactly, `rustc`, `go`, `gcc` / `g++`
+(clang on the Mac), `git` and python 3.12 with `agents/requirements.lock`,
+its own gate device key in `OPENBEAST_SPARK_API_KEY`, and the gate host
+(spark-1) needs `EDGE_READ_TIMEOUT=3600`: a non-streaming generation longer
+than the default 600 s is otherwise a gate 504, recorded as a server error.
+Install them somewhere durable (`~/.local/opt`), not a temp dir: the harness
+pins each compiler's install tree at start. Per-OS commands, online and
+offline (beast-ark): [SPARK_HYDRA.md F6](../docs/SPARK_HYDRA.md#f6-the-eval-harness-host-benchmarking-the-pair).
+
 **`--jobs` against beast-gate.** Every agent of a run shares one device
-key, and the gate admits only `EDGE_MAX_INFLIGHT` (default 2) concurrent
-generations per key. `run_eval` reads that cap from the gate (a chat
+key, and the gate admits `EDGE_MAX_INFLIGHT` concurrent generations per
+key; unset, that is the server's `INFERENCE_SLOTS` (4 on the spark pair),
+else 2. `run_eval` reads that cap from the gate (a chat
 request with `n=1024`, which the gate refuses with a 400 naming the cap
 before forwarding anything; a non-gate endpoint never gets it) and clamps
-`--jobs` to it, so a 4-slot profile of spark-1 at the default runs 2
-workers. Raise the cap on the gate host to use all slots
+`--jobs` to it, so a 4-slot profile of spark-1 runs 4 workers. A gate whose
+cap is set below the slots clamps it further
 (docs/SPARK_HYDRA.md, E2). The remote health check retries and counts a
 429 as alive: one drained rate bucket or tailnet blip no longer aborts the
 sweep.

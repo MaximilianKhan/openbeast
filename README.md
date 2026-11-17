@@ -60,9 +60,9 @@ line in `openbeast.conf`.
 
 Walkthroughs for the v1.1–v1.5 features → [docs/TUTORIALS.md](docs/TUTORIALS.md).
 Capability breakdown through v1.5 → [docs/FEATURES.md](docs/FEATURES.md).
-v1.6–v1.7 → [BEAST_HYDRA.md](docs/BEAST_HYDRA.md),
+v1.6–v1.9 → [BEAST_HYDRA.md](docs/BEAST_HYDRA.md),
 [BEAST_INSTINCT.md](docs/BEAST_INSTINCT.md),
-[DGX_SPARK_PLAN.md](docs/DGX_SPARK_PLAN.md).
+[SPARK_HYDRA.md](docs/SPARK_HYDRA.md).
 
 ## Install
 
@@ -407,41 +407,76 @@ verdict is refused on an incomplete row. Each of these guards exists because the
 failure it catches once distorted a published verdict; the re-audit that found
 them is in [`docs/TODO.md`](docs/TODO.md).
 
-## Beyond one GPU: vLLM, TensorFold and DGX Spark 🟩
+## Serving from DGX Sparks (spark-hydra) 🐉🐉
 
-*(v1.6.0, opt-in.)* The rig's own inference is llama.cpp, and that stays the
-default byte for byte. Set `INFERENCE_BACKEND=vllm` or `tensorfold` and
-`INFERENCE_URL` in `openbeast.conf`, and the stack talks to that server instead.
-The WebUI, the tool servers, agents, beast-gate and `/api/slot` all follow it.
-The rig never launches, supervises or kills a server it doesn't own. If the
-server isn't up yet, the stack still comes up with a warning and logs the
-moment it becomes ready.
+*(v1.9.0, opt-in.)* **spark-hydra** is two NVIDIA DGX Sparks (`spark-1` +
+`spark-2`) serving as one pair. GLM-5.3-Flash Ablit runs tensor-parallel over
+their ConnectX-7 link (TensorFold, TP 2, speculative decoding, 4 streams, a 1M
+window). The full OpenBeast command center runs on spark-1 beside it. The pair
+boots by itself, offline. Its model listens on spark-1's loopback only, and
+every outside caller comes in through beast-gate on `:8443` with a per-device
+key.
 
-The launch scripts run **on the inference nodes**; the reference setup is two
-NVIDIA DGX Sparks running tensor-parallel over their ConnectX-7 link. It is
-built for models **nobody here has seen**, so nothing is hard-wired to a
-checkpoint:
+**Quickstart.** The full version, with every command, is
+[docs/SPARK_HYDRA.md § Quickstart](docs/SPARK_HYDRA.md#quickstart).
+
+1. **Everyday (the pair is built).** On spark-1, run
+   `~/openbeast/scripts/healthcheck.sh` and expect "All 9 services healthy".
+   Start, stop and restart only through the `systemctl --user` units on
+   spark-1: `spark-hydra-inference` drives both ranks (it starts rank 1 on
+   spark-2 over ssh, then rank 0), and `openbeast` is the command center.
+   Never `docker stop` a rank.
+2. **Use it from a client.** Open WebUI is at
+   `https://spark-1.<tailnet>.ts.net`. For a Mac or Linux box, enroll a device
+   key on spark-1 (`scripts/clients.sh enroll`), then run
+   `scripts/setup-client.sh --host spark-1.<tailnet>.ts.net --api-key-stdin`.
+   That gives you OpenCode with the tools running locally. Any
+   OpenAI-compatible tool can use `https://spark-1.<tailnet>.ts.net:8443/v1`
+   with that key as a bearer token.
+3. **First build from bare boxes.** Follow the ordered checklist,
+   [Install everything, fresh](docs/SPARK_HYDRA.md#install-everything-fresh):
+   root setup, firewall, fabric MTU, weights, the recipe and its unit, the
+   command center, the client, then the optional toolchains, docs mirror and
+   ark drive, each step online and offline.
+4. **Update a built pair.** [§G6](docs/SPARK_HYDRA.md#g6-updating) is the
+   "update everything" checklist: pull both Sparks, the pinned Python deps,
+   the command-center restart, and every step a recent change added.
+
+**Bringing up another model or engine.** The rig's own inference is llama.cpp,
+and that stays the default byte for byte. Set `INFERENCE_BACKEND=vllm` or
+`tensorfold` and `INFERENCE_URL` in `openbeast.conf`, and the WebUI, tool
+servers, agents, beast-gate and `/api/slot` all follow that server. The stack
+never launches, supervises or kills a multi-node server it does not own.
+Nothing is hard-wired to a checkpoint:
 
 ```bash
 scripts/backends/model-inspect.sh <repo@sha | /models/dir> --write-profile mymodel
-                                              # what it is, fits 1 or 2 Sparks?, parsers, engine support
+                                              # what it is, how many Sparks it needs, parsers, engine support
 scripts/backends/model-fetch.sh --profile mymodel     # sha256-lock the weights (local copy or Hub)
-scripts/backends/vllm/spark-node.sh --profile mymodel --rank 1   # then --rank 0 on the head
+scripts/backends/spark-cluster.sh start --profile mymodel   # every rank from the head (ranks N-1..1, then 0)
 scripts/backends/conformance.sh --model mymodel       # chat, stream, reasoning, a real tool-call round trip
-scripts/backends/use-model.sh --profile mymodel       # point OpenBeast at it (only behind a pass)
+scripts/engine.sh use tensorfold --unmanaged --url http://127.0.0.1:8000 --profile mymodel
+                                              # point the command center at it
 ```
 
 - **Per-model profiles** are parsed as data and never sourced. A Hub revision
-  must be a full commit SHA; `trust_remote_code` needs an acknowledgement tied
-  to that revision; extra engine flags are checked against an allow list
+  must be a full commit SHA. `trust_remote_code` needs an acknowledgement tied
+  to that revision. Extra engine flags are checked against an allow list
   vendored from each engine's source.
 - **The lock is the pin.** A second Spark, or a re-copy, must reproduce it byte
   for byte before a launcher will serve it.
-- **Conformance, not assumptions.** Tool arguments a server sends as strings
-  (TensorFold does) are coerced to the tool's schema types.
+- **Conformance, not assumptions.** Tool arguments that a server sends as
+  strings (TensorFold does) are coerced to the tool's schema types.
+- **Engines.** `scripts/engine.sh` installs, pins, swaps and rolls back
+  llama.cpp, vLLM and TensorFold. It works offline from staged files.
 
-Every engine detail not yet measured on real Sparks is listed as such in the
-plan. → [`docs/DGX_SPARK_PLAN.md`](docs/DGX_SPARK_PLAN.md) (the runbook is §14)
+The launchers (`spark-node.sh`, `spark-cluster.sh`, 1 to 8 Sparks) are in
+[SPARK_HYDRA.md §D2](docs/SPARK_HYDRA.md#d2-native-tensorfold-through-spark-nodesh--spark-clustersh),
+and the engine plane is in
+[§D3](docs/SPARK_HYDRA.md#d3-the-engine-plane-scriptsenginesh). The matrix of
+engines and hosts is in [docs/ENGINES.md](docs/ENGINES.md). The original
+design notes are kept, for history only, in
+[DGX_SPARK_PLAN.md](docs/DGX_SPARK_PLAN.md).
 
 ## Architecture
 
@@ -896,7 +931,7 @@ scoring, per-category/per-language breakdowns, and the eval CLI:
 | [LLAMACPP_WATCH.md](docs/LLAMACPP_WATCH.md) | Upstream llama.cpp changes we must plan for, and per-upgrade tripwires |
 | [REMOTE_ACCESS_PLAN.md](docs/REMOTE_ACCESS_PLAN.md) | Tailscale design, VPN coexistence, verification |
 | [EGRESS_PRIVACY.md](docs/EGRESS_PRIVACY.md) | Obscuring outbound traffic with a Tailscale exit node, and why not to stack a second VPN |
-| [DGX_SPARK_PLAN.md](docs/DGX_SPARK_PLAN.md) | vLLM / TensorFold backends on DGX Spark: topology, security, onboarding a new model (§14), the day-of runbook |
+| [SPARK_HYDRA.md](docs/SPARK_HYDRA.md) | The DGX Spark pair (spark-hydra): a quickstart, then bare boxes to a serving pair, day-2 operations, fully offline. Historical design notes: [DGX_SPARK_PLAN.md](docs/DGX_SPARK_PLAN.md) |
 | [SANDBOXING.md](docs/SANDBOXING.md) | The optional kernel-level sandbox for the bash tool |
 | [SOC2_READINESS.md](docs/SOC2_READINESS.md) | Control mapping against the Trust Services Criteria, with an honest gap list |
 | [extensions/README.md](extensions/README.md) | The optional-service extension system |
@@ -917,7 +952,7 @@ scoring, per-category/per-language breakdowns, and the eval CLI:
 
 | Version | Headline | Notes |
 |---|---|---|
-| v1.9.0 | spark-hydra 🐉🐉 (two DGX Sparks live as one pair: GLM-5.3-Flash Ablit on TensorFold TP 2, DFlash2, command center on spark-1, boot units, root setup) · TensorFold gets the inference key (native auth) · native TensorFold engine + signed offline installer · GB10 / unified-memory detection | [RELEASE_NOTES_v1.9.0.md](docs/RELEASE_NOTES_v1.9.0.md) |
+| v1.9.0 | spark-hydra 🐉🐉 (two DGX Sparks live as one pair: GLM-5.3-Flash Ablit on TensorFold TP 2, speculative decoding, command center on spark-1, boot units, root setup) · TensorFold gets the inference key (native auth) · native TensorFold engine + signed offline installer · GB10 / unified-memory detection | [RELEASE_NOTES_v1.9.0.md](docs/RELEASE_NOTES_v1.9.0.md) |
 | v1.8.0 | beast-island 🏝️ (runtime offline mode for outages: islands in ~90-120 s, web tools answer at once, boots offline, rejoins by itself; adversarially reviewed) · remote-skill import gate (`scripts/skill-import.sh`) + nine imported skills, off the always-on menu · the 2026-10-09 review fixes: inference is never published keyless by accident, inline-media-only and host-pinned proxies, a pinned llama.cpp commit and strict hash-pinned installs, a RAM-sized prompt cache, `start.sh` preflights and command words, an honest eval board (T/O, †/‡) · the beast-rank paper | [RELEASE_NOTES_v1.8.0.md](docs/RELEASE_NOTES_v1.8.0.md) |
 | v1.7.0 | beast-hydra 🐉 (route across rig + DGX Sparks + 3090 Ti, uncensored-only fleet, GLM-5.3-Flash on TensorFold) · beast-instinct 🧿 (typed decisions on a full 27B; Open-Jev-27B target) · the zig awareness pack in production (Tier-3 FRESH SHIP, net +24; record corrected) · beast-artifact + beast-chat upgrades (rig owner + admins, phone lifecycle, new-session sheet, PWA, ntfy, export) · the 09-30 double pass (75 findings) · upgrade notes: [UPDATING.md](docs/UPDATING.md#upgrading-past-v160-beast-artifact-and-beast-chat) | [RELEASE_NOTES_v1.7.0.md](docs/RELEASE_NOTES_v1.7.0.md) |
 | v1.6.0 | the review 🔬 (118 findings fixed, a research verdict re-audited) · multi-engine inference 🟩 (vLLM / TensorFold, DGX Spark, model onboarding) · beast-lang escalation wired · opencode session tooling | [RELEASE_NOTES_v1.6.0.md](docs/RELEASE_NOTES_v1.6.0.md) |
