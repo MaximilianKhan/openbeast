@@ -19,6 +19,14 @@ server or toolchain is needed. Pinned here:
   7. The report renders from fixture results files: totals, the reference
      row, flips, the noise line, the wall-scaled reading.
   8. An arm whose flag the tree lacks is refused, not run without it.
+  9. The thinking-first campaign (the default): the composite runs first,
+     each ablation is the composite minus exactly its component, the
+     no-thinking arms run last, packs v2 wherever packs are on, a reasoning
+     budget declared per arm (the runner's thinking cap when thinking), the
+     run order is configurable, and --dry-run prints an ETA per arm.
+ 10. The decision rules: components within the seed noise are dropped,
+     thinking is kept only beyond it and priced; the report renders the
+     recommended config and the thinking-vs-no-thinking section.
 """
 import json
 import os
@@ -94,7 +102,7 @@ def tree(tmp_path, monkeypatch):
     (t / "agents").mkdir()
     (t / "evals" / "run_eval.py").write_text(FAKE_RUN_EVAL)
     (t / "agents" / "runner.py").write_text(
-        "# OPENBEAST_DIAG_EDIT_HINT OPENBEAST_AGENT_VERIFY_DONE "
+        "# OPENBEAST_DIAG_EDIT_HINT OPENBEAST_AGENT_VERIFY_DONE OPENBEAST_PACK_VARIANT "
         "OPENBEAST_AGENT_ENV_BLOCK OPENBEAST_AGENT_WALL_WARN\n")
     langs = {"1_alpha": "python", "2_beta_a": "python", "2_beta_b": "go", "3_gamma": "zig"}
     man = {"suite": "v5", "format": 1, "description": "fake",
@@ -440,3 +448,275 @@ def test_preflight_runs_the_host_check_hook_and_refuses_on_failure(tree, tmp_pat
                  "--base-url", "http://127.0.0.1:9/v1", "--tree", str(tree),
                  "--python", sys.executable])
     assert rc == 2 and calls(tmp_path) == []
+
+
+# --- 9. the thinking-first campaign (the default) ---------------------------------------------
+
+TF = "v5-thinking-first"
+TF_ARMS = ["T", "T_noturns", "T_nopacks", "T_noassist", "T_noenv", "T_s1", "N", "N0"]
+COMPOSITE_ENV = {"BEAST_ASSIST": "1", "OPENBEAST_DIAGNOSTICS": "1", "OPENBEAST_DIAG_EDIT_HINT": "1",
+                 "OPENBEAST_AGENT_VERIFY_DONE": "1", "BEAST_PACKS": "1", "OPENBEAST_PACKS": "1",
+                 "OPENBEAST_PACK_VARIANT": "v2", "OPENBEAST_AGENT_ENV_BLOCK": "1",
+                 "OPENBEAST_AGENT_WALL_WARN": "1"}
+
+
+def _flagmap(args):
+    return {f: v for f, v in C._arg_pairs(args)}
+
+
+def test_thinking_first_is_the_default_campaign_and_runs_best_first():
+    assert C.DEFAULT_CAMPAIGN == TF
+    camp = C.load_campaign(TF)
+    assert C.run_order(camp) == TF_ARMS                        # composite first, no-thinking last
+    assert C.run_order(camp, include=["T_s2"]) == TF_ARMS + ["T_s2"]
+    assert C.run_order(camp, prefer=["T", "T_s1"])[:3] == ["T", "T_s1", "T_noturns"]
+    with pytest.raises(SystemExit):
+        C.run_order(camp, prefer=["nope"])
+
+
+def test_composite_carries_every_component_with_thinking_at_wall_x2():
+    camp = C.load_campaign(TF)
+    t = C.resolve_arm(camp, "T")
+    assert {k: t["env"][k] for k in COMPOSITE_ENV} == COMPOSITE_ENV
+    assert t["env"]["BEAST_ESCALATE"] == "0"
+    fl = _flagmap(t["args"])
+    assert fl["--turns-per-wall-s"] == "15" and fl["--thinking"] == "on"
+    assert t["wall_scale"] == 2.0 and t["thinking"] == "on"
+
+
+def test_each_ablation_is_the_composite_minus_exactly_its_component():
+    camp = C.load_campaign(TF)
+    t = C.resolve_arm(camp, "T")
+    removed = {"T_noturns": ({"--turns-per-wall-s"}, set()),
+               "T_nopacks": (set(), {"BEAST_PACKS", "OPENBEAST_PACKS", "OPENBEAST_PACK_VARIANT"}),
+               "T_noassist": (set(), {"BEAST_ASSIST", "OPENBEAST_DIAGNOSTICS",
+                                      "OPENBEAST_DIAG_EDIT_HINT", "OPENBEAST_AGENT_VERIFY_DONE"}),
+               "T_noenv": (set(), {"OPENBEAST_AGENT_ENV_BLOCK", "OPENBEAST_AGENT_WALL_WARN"})}
+    tf = _flagmap(t["args"])
+    for aid, (flags, envs) in removed.items():
+        x = C.resolve_arm(camp, aid)
+        xf = _flagmap(x["args"])
+        assert xf == {k: v for k, v in tf.items() if k not in flags}, aid
+        changed = {k for k in t["env"] if t["env"][k] != x["env"][k]}
+        assert changed == envs, aid
+        assert all(x["env"][k] in ("0", "") for k in envs), aid
+        assert x["thinking"] == "on" and x["wall_scale"] == 2.0, aid   # every ablation thinks
+    assert set(camp["recommend"]["ablations"]) == set(removed)
+
+
+def test_no_thinking_counterparts_and_the_seed_arms():
+    camp = C.load_campaign(TF)
+    n = C.resolve_arm(camp, "N")
+    assert n["thinking"] == "off" and n["wall_scale"] == 1.0
+    assert "--wall-scale" not in n["args"]
+    assert {k: n["env"][k] for k in COMPOSITE_ENV} == COMPOSITE_ENV        # the full harness
+    assert _flagmap(n["args"])["--turns-per-wall-s"] == "15"
+    n0 = C.resolve_arm(camp, "N0")                                         # = 2026-11-16 arm B
+    assert _flagmap(n0["args"]) == {"--suite": "v5", "--no-cache": None, "--reasoning-budget": "0",
+                                    "--turns-per-wall-s": "15", "--thinking": "off"}
+    assert {k for k, v in n0["env"].items() if v not in ("0", "")} == {"OPENBEAST_EVAL_ENV_ERA"}
+    for s, seed in (("T_s1", "1"), ("T_s2", "2")):
+        x = C.resolve_arm(camp, s)
+        assert _flagmap(x["args"])["--seed"] == seed and x["env"] == C.resolve_arm(camp, "T")["env"]
+        assert C.arm_spec(camp, s)["noise_of"] == "T"
+    assert C.arm_spec(camp, "T_s2").get("optional") is True
+
+
+def _runner_thinking_cap():
+    import re
+    src = (ROOT / "agents" / "runner.py").read_text()
+    return re.search(r"^_EVAL_TURN_TOKENS_THINKING = (\d+)", src, re.M).group(1)
+
+
+@pytest.mark.parametrize("name", [TF, "v5-harness"])
+def test_reasoning_budget_declared_per_arm_and_packs_v2_wherever_packs_are_on(name):
+    """A thinking arm declares the eval turn cap that bounds its thinking
+    (never 0 = thinking off), a no-thinking arm 0; every packs-on arm
+    measures packs v2 (the variant defaults to the v1 pack)."""
+    camp = C.load_campaign(name)
+    cap = _runner_thinking_cap()
+    specs = []
+    for a in camp["arms"]:
+        branches = [{d: b for d in a.get("apply_decisions") or []} for b in ("then", "else")]
+        specs += [(a["id"], C.resolve_arm(camp, a["id"], br)) for br in branches]
+    for aid, sp in specs:
+        rb = C.arg_value(sp["args"], "--reasoning-budget")
+        assert rb == (cap if sp["thinking"] == "on" else "0"), aid
+        if sp["env"].get("BEAST_PACKS") == "1":
+            assert sp["env"].get("OPENBEAST_PACK_VARIANT") == "v2", aid
+            assert "OPENBEAST_PACK_VARIANT" in sp["requires"]["env"], aid
+
+
+def test_merge_args_adds_switches_and_drops_flags():
+    base = ["--suite", "v5", "--no-cache", "--reasoning-budget", "0", "--wall-scale=2"]
+    assert C.merge_args(base, ["--reasoning-budget", "16384", "--seed", "1"]) == \
+        ["--suite", "v5", "--no-cache", "--reasoning-budget", "16384", "--wall-scale", "2",
+         "--seed", "1"]
+    assert C.merge_args(base, None, ["--wall-scale", "--no-cache"]) == \
+        ["--suite", "v5", "--reasoning-budget", "0"]
+    assert C.arg_value(["--x", "-1", "--x", "3"], "--x") == "3"
+
+
+def test_campaign_file_refuses_bad_orders_and_recommend_blocks():
+    camp = {k: v for k, v in C.load_campaign(TF).items() if k != "_path"}
+    bad = json.loads(json.dumps(camp))
+    bad["order"] = ["T", "T", "ZZ"]
+    errs = C.validate_campaign(bad)
+    assert any("listed twice" in e for e in errs) and any("no arm 'ZZ'" in e for e in errs)
+    bad = json.loads(json.dumps(camp))
+    bad["recommend"]["ablations"].append("N0")                  # N0 is not "T minus one"
+    assert any("must build on the composite" in e for e in C.validate_campaign(bad))
+    bad = json.loads(json.dumps(camp))
+    bad["arms"][0]["time_x"] = 0
+    assert any("time_x" in e for e in C.validate_campaign(bad))
+    # a decision must not be taken before the arms it compares have run
+    old = C.load_campaign("v5-harness")
+    with pytest.raises(SystemExit, match="must run earlier"):
+        C.run_order(old, prefer=["E"])
+
+
+def run_tf(tree, *extra):
+    return C.main(["run", "--model-name", "Fake-1", "--base-url", "http://127.0.0.1:9/v1",
+                   "--jobs", "4", "--slots", "4", "--tree", str(tree), "--python", sys.executable,
+                   "--skip-preflight", *extra])
+
+
+def test_run_chains_the_thinking_first_arms_in_order(tree, tmp_path):
+    plan(tmp_path, {"T": {"pass": UNITS}})
+    assert run_tf(tree) == 0                                    # --campaign defaults to TF
+    cs = calls(tmp_path)
+    assert [c["arm"] for c in cs] == TF_ARMS
+    by = {c["arm"]: c for c in cs}
+    assert by["T"]["argv"][by["T"]["argv"].index("--model-name") + 1] == \
+        "Fake-1 v5-thinking-first T"
+    assert "--wall-scale" in by["T"]["argv"] and "--wall-scale" not in by["N"]["argv"]
+    assert by["T_nopacks"]["env"]["BEAST_PACKS"] == "0" and by["T"]["env"]["BEAST_PACKS"] == "1"
+    st = C.load_state(os.path.join(tree, "evals", "results", "campaigns", "v5-thinking-first-fake-1"))
+    assert st["arms"]["T"]["score"]["passed"] == 4
+    assert run_tf(tree, "--include", "T_s2") == 0               # only the optional arm is new
+    assert [c["arm"] for c in calls(tmp_path)][len(TF_ARMS):] == ["T_s2"]
+
+
+def test_dry_run_prints_an_eta_per_arm(tree, tmp_path, capsys):
+    assert run_tf(tree, "--dry-run") == 0
+    out = capsys.readouterr().out
+    assert calls(tmp_path) == []
+    assert "# arm T (" in out and "#   ETA ~5.8 h (time x2.3 of 2.5 h)" in out     # 2.5 h x 2.3
+    assert "ETA ~2.5 h (time x1 of 2.5 h)" in out                                  # N0
+    assert "# total ETA ~39.0 h" in out and "optional, not in this chain: T_s2" in out
+    assert run_tf(tree, "--dry-run", "--base-hours", "2", "--only", "T") == 0
+    assert "ETA ~4.6 h" in capsys.readouterr().out
+    C.main(["run", "--model-name", "Fake-1", "--base-url", "http://127.0.0.1:9/v1", "--jobs", "2",
+            "--tree", str(tree), "--python", sys.executable, "--dry-run", "--only", "N0"])
+    assert "ETA ~5.0 h (time x1 of 2.5 h, x2 for --jobs 2 vs 4)" in capsys.readouterr().out
+
+
+def test_eta_base_calibrates_from_finished_arms():
+    camp = C.load_campaign(TF)
+    st = {"arms": {"T": {"status": "done", "started_at": 0, "ended_at": 2.3 * 3 * 3600},
+                   "N0": {"status": "done", "started_at": 0, "ended_at": 3 * 3600},
+                   "N": {"status": "running", "started_at": 0}}}
+    h, why = C.eta_base_h(camp, st, None)
+    assert abs(h - 3.0) < 1e-9 and "calibrated from 2" in why
+    assert C.eta_base_h(camp, st, 1.5) == (1.5, "--base-hours")
+    assert C.eta_base_h(camp, {}, None)[0] == 2.5
+
+
+# --- 10. decision rules and the thinking-first report --------------------------------------------
+
+def _tf_state(tmp_path, arm_rows):
+    camp = C.load_campaign(TF)
+    arms = {}
+    for aid, (rows, ws) in arm_rows.items():
+        p = _results(tmp_path / f"{aid}.json", rows, wall_scale=ws)
+        arms[aid] = {"status": "done", "label": aid, "results": [p], "wall_scale": ws,
+                     "args": C.resolve_arm(camp, aid)["args"], "tree": {"era": "e1"},
+                     "started_at": 0, "ended_at": 3600 * (2.3 if ws > 1 else 1)}
+    return {"campaign": TF, "model_name": "Fake-1", "base_url": "http://x", "jobs": 4, "arms": arms}
+
+
+def _units_rows(n_pass, n=10, secs=100.0, toks=10):
+    rows = [_row(f"u{i}", i < n_pass, secs=secs) for i in range(n)]
+    for r in rows:
+        r["tokens_completion"] = toks
+    return rows
+
+
+def test_decision_rules_drop_what_does_not_help_and_price_thinking(tmp_path):
+    camp = C.load_campaign(TF)
+    seed = _units_rows(8, secs=500, toks=4000)
+    seed[0]["passed"], seed[9]["passed"] = False, True          # 2 flips -> margin ceil(sqrt 2) = 2
+    r = {
+        "T": (_units_rows(8, secs=500, toks=4000), 2.0),
+        "T_noturns": (_units_rows(4, secs=400, toks=3000), 2.0),   # -4: turns help
+        "T_nopacks": (_units_rows(7, secs=500, toks=4000), 2.0),   # -1: within noise
+        "T_noassist": (_units_rows(8, secs=500, toks=4000), 2.0),  #  0: drop
+        "T_s1": (seed, 2.0),
+        "N": (_units_rows(3, secs=200, toks=1000), 1.0),           # -5: thinking helps
+    }
+    st = _tf_state(tmp_path, r)
+    rows = {a: C.arm_rows(st["arms"][a]) for a in r}
+    rec = C.recommend(camp, st, rows)
+    assert rec["margin"] == 2 and "T_s1 vs T: 2 of 10 units flip" in rec["noise"]
+    v = {c["arm"]: c["verdict"] for c in rec["components"]}
+    assert v == {"T_noturns": "keep", "T_nopacks": "drop", "T_noassist": "drop", "T_noenv": "keep"}
+    assert "not measured" in next(c for c in rec["components"] if c["arm"] == "T_noenv")["why"]
+    assert rec["thinking"]["verdict"] == "on" and rec["thinking"]["net"] == 5
+    assert rec["thinking"]["cost"]["s_ratio"] == 2.5 and rec["thinking"]["cost"]["tokens_ratio"] == 4.0
+    sp = rec["spec"]
+    assert sp["env"]["BEAST_PACKS"] == "0" and sp["env"]["BEAST_ASSIST"] == "0"
+    assert sp["env"]["OPENBEAST_AGENT_ENV_BLOCK"] == "1" and sp["thinking"] == "on"
+    assert C.arg_value(sp["args"], "--turns-per-wall-s") == "15"
+
+    md = C.render_report(camp, st, {}, None, walls={f"u{i}": 300 for i in range(10)}, total_units=10)
+    section = md.split("## Recommended daily config")[1].split("\n## ")[0]
+    assert "**Thinking on**; keep: wall-scaled turns, env block + wall warnings; " \
+           "drop: packs v2 + host pack, diagnostics + edit hint + verify-done." in section
+    assert "| packs v2 + host pack (T_nopacks) | +1 | 10 |" in section and "**drop**" in section
+    assert "Thinking's measured cost (10 common units): 200 s → 500 s per unit (x2.50), " \
+           "1000 → 4000 completion tokens per unit (x4.00)." in section
+    assert "--thinking on" in section and "BEAST_PACKS=1" not in section
+    # T at base wall: 300 s x contention 2.0 = 600 s >= 500 s -> all 8 passes inside
+    assert "## Thinking vs no thinking" in md
+    assert "| T | on | 2 | 8 | 10 | 8 | 500 | 4000 | 2.30 |" in md
+    assert "| N | off | 1 | 3 | 10 | 3 | 200 | 1000 | 1.00 |" in md
+    assert "- **N** (thinking off) → **T** (thinking on), 10 common units: 3 → 8 passed" in md
+
+
+def test_no_thinking_is_recommended_when_thinking_is_within_noise(tmp_path):
+    camp = C.load_campaign(TF)
+    r = {"T": (_units_rows(6, secs=900, toks=5000), 2.0),
+         "N": (_units_rows(5, secs=300, toks=1500), 1.0),
+         "N0": (_units_rows(4, secs=250, toks=1200), 1.0)}
+    st = _tf_state(tmp_path, r)
+    rows = {a: C.arm_rows(st["arms"][a]) for a in r}
+    rec = C.recommend(camp, st, rows)
+    assert rec["margin"] == 3 and "noise_fallback" in rec["noise"]       # no seed arm measured
+    assert rec["thinking"]["verdict"] == "off"
+    assert rec["spec"]["thinking"] == "off" and rec["spec"]["wall_scale"] == 1.0
+    assert C.arg_value(rec["spec"]["args"], "--reasoning-budget") == "0"
+    md = C.render_report(camp, st, {}, None, walls=None)
+    assert "**Thinking off**" in md
+    assert "| N0 → N |" in md and "| N0 → T |" in md                  # the extra contrasts
+    assert "| T | on | 2 | 6 | 10 | - |" in md                         # no unit walls
+
+
+def test_report_without_the_composite_says_so(tmp_path):
+    camp = C.load_campaign(TF)
+    st = _tf_state(tmp_path, {"N0": (_units_rows(4), 1.0)})
+    md = C.render_report(camp, st, {}, None, walls=None)
+    assert "The composite arm `T` has not been measured yet" in md
+    assert "## Thinking vs no thinking" not in md
+
+
+def test_preflight_refuses_an_arm_without_a_finite_reasoning_budget(tree):
+    camp = C.load_campaign(TF)
+    camp = json.loads(json.dumps({k: v for k, v in camp.items() if k != "_path"}))
+    camp["preflight"] = {}
+    C.arm_spec(camp, "N0")["args"] += ["--reasoning-budget", "-1"]
+
+    class A:
+        base_url, jobs, served_model, model_name, api_key_env = "http://127.0.0.1:9/v1", 1, None, "m", None
+    problems = C.preflight(A, camp, sys.executable, str(tree), ["T", "N0"])
+    assert any("arm N0 declares no finite --reasoning-budget" in p for p in problems)
+    assert not any("arm T " in p for p in problems)
