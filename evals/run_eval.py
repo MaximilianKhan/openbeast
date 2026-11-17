@@ -1477,7 +1477,8 @@ def packs_flag(env=None) -> tuple[bool, str | None, dict]:
     import hashlib
     # Which language-pack bytes this run measures: OPENBEAST_PACK_VARIANT =
     # v1 (default: PACK_FILES, the measured pack production serves) | v2 (the
-    # 2026-11-16 pack). The file's bytes go into pack1-<sha8>, so rows of
+    # 2026-11-16 pack) | v3 (v2 + the 2026-11-17 thinking-arm claims). The
+    # file's bytes go into pack1-<sha8>, so rows of
     # two variants can never share a key. An unknown name aborts: a typo
     # must not silently measure the wrong treatment.
     variant = (env.get("OPENBEAST_PACK_VARIANT") or "").strip().lower() \

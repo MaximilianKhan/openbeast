@@ -42,7 +42,9 @@ sys.path.insert(0, str(ROOT / "evals"))
 
 PACK = ROOT / "agents" / "packs" / "zig-0.16.md"          # v1: measured, production
 PACK_V2 = ROOT / "agents" / "packs" / "zig-0.16-v2.md"    # v2: eval-only until measured
-BOTH = [pytest.param(PACK, id="v1"), pytest.param(PACK_V2, id="v2")]
+PACK_V3 = ROOT / "agents" / "packs" / "zig-0.16-v3.md"    # v3: v2 + 2026-11-17 claims, eval-only
+BOTH = [pytest.param(PACK, id="v1"), pytest.param(PACK_V2, id="v2"),
+        pytest.param(PACK_V3, id="v3")]
 GEN = ROOT / "agents" / "packs" / "gen_zig_pack.py"
 FIXTURES = ROOT / "tests" / "fixtures" / "zig016"
 MANIFEST = FIXTURES / "MANIFEST.json"
@@ -168,7 +170,9 @@ def test_v1_is_the_measured_pack_and_v2_is_a_variant():
     assert PC.PACK_FILES == {"zig": "zig-0.16.md"}
     assert PC.PACK_VARIANTS["v1"] == PC.PACK_FILES
     assert PC.PACK_VARIANTS["v2"] == {"zig": "zig-0.16-v2.md"}
+    assert PC.PACK_VARIANTS["v3"] == {"zig": "zig-0.16-v3.md"}
     assert PACK_V2.read_bytes() != PACK.read_bytes()
+    assert PACK_V3.read_bytes() != PACK_V2.read_bytes()
 
 
 def test_v1_curated_bullets_each_hit_a_manifest_entry():
@@ -178,19 +182,31 @@ def test_v1_curated_bullets_each_hit_a_manifest_entry():
             assert any(s in ln for s in musts), f"v1 bullet has no verifying fixture: {ln[:80]}"
 
 
-def test_manifest_fixtures_exist_and_cover_curated_section():
-    """Against v2, the superset: every manifest entry (v1's and the five
-    2026-11-16 ones) must be stated in its curated section."""
+#: variant -> pack file; an entry with `since: vN` is stated in vN and later.
+_VARIANT_PACKS = {"v2": PACK_V2, "v3": PACK_V3}
+
+
+@pytest.mark.parametrize("variant", sorted(_VARIANT_PACKS))
+def test_manifest_fixtures_exist_and_cover_curated_section(variant):
+    """Against each variant: every manifest entry up to that variant (v1's,
+    the five 2026-11-16 ones, and from v3 the 2026-11-17 ones) must be
+    stated in its curated section, and every bullet must be verified."""
     man = _manifest()
-    sec1 = _section1(PACK_V2.read_text())
+    sec1 = _section1(_VARIANT_PACKS[variant].read_text())
     assert man["entries"], "empty manifest"
     all_musts = []
     for e in man["entries"]:
         assert e["new"], f"{e['entry']}: needs at least one NEW fixture"
         for fn in e["old"] + e["new"]:
             assert (FIXTURES / fn).exists(), f"missing fixture {fn}"
+        since = e.get("since")
+        assert since is None or since in _VARIANT_PACKS, f"{e['entry']}: unknown since {since!r}"
+        if since is not None and int(since[1:]) > int(variant[1:]):
+            for s in e["pack_must_contain"]:
+                assert s not in sec1, f"{variant} must keep its bytes: it states {s!r}"
+            continue
         for s in e["pack_must_contain"]:
-            assert s in sec1, f"{e['entry']}: curated section lacks {s!r}"
+            assert s in sec1, f"{e['entry']}: {variant} curated section lacks {s!r}"
             all_musts.append(s)
     bullets = [ln for ln in sec1.splitlines() if ln.startswith("- ")]
     assert len(bullets) >= 15
@@ -241,6 +257,21 @@ def test_old_fixtures_fail_with_the_expected_error(tmp_path):
         out = dict(zip(files, pool.map(lambda f: _compile_err(FIXTURES / f, tmp_path), files)))
     wrong = {f: out[f][-300:] for f in files if expect[f] not in out[f]}
     assert not wrong, f"OLD fixtures failing for the wrong reason: {wrong}"
+
+
+@pytest.mark.skipif(not HAS_ZIG, reason="zig not installed")
+def test_init_skeleton_pointer_names_a_real_0_16_main():
+    """v3 points the model at the toolchain's own `zig init` main instead of
+    a lib/std grep (C 36_f found it on its own and stopped searching; arm C
+    spent 101 zig turns grepping). The pointer must name a file that exists
+    in the installed toolchain and is written in the 0.16 form the pack
+    teaches; init_skeleton.new.1.zig (its shape) compiles."""
+    gen = _gen()
+    if gen.zig_version() != "0.16.0":
+        pytest.skip("pointer is for zig 0.16.0")
+    text = (gen.zig_lib_dir() / "init" / "src" / "main.zig").read_text()
+    assert "pub fn main(init: std.process.Init)" in text and "init.io" in text
+    assert "lib/init/src/main.zig" in _section1(PACK_V3.read_text())
 
 
 # --- 4. injection wiring ----------------------------------------------------
@@ -514,7 +545,19 @@ def test_pack_variant_v2_with_host_pack_joins_both(monkeypatch, _host_pack_stub)
 def test_unknown_pack_variant_aborts(monkeypatch):
     run_eval = _fresh_run_eval()
     with pytest.raises(SystemExit, match="OPENBEAST_PACK_VARIANT"):
-        run_eval.packs_flag({"BEAST_PACKS": "1", "OPENBEAST_PACK_VARIANT": "v3"})
+        run_eval.packs_flag({"BEAST_PACKS": "1", "OPENBEAST_PACK_VARIANT": "v9"})
+
+
+def test_pack_variant_v3_is_its_own_bytes_and_key(monkeypatch):
+    """v3 (2026-11-17) is a new file beside v2, not an edit of it: v2 was
+    being measured when v3 was written, and a variant name must keep naming
+    one set of bytes."""
+    run_eval = _fresh_run_eval()
+    _, c2, m2 = run_eval.packs_flag({"BEAST_PACKS": "1", "OPENBEAST_PACK_VARIANT": "v2"})
+    _, c3, m3 = run_eval.packs_flag({"BEAST_PACKS": "1", "OPENBEAST_PACK_VARIANT": "v3"})
+    assert m3["variant"] == "v3" and m3["paths"]["zig"] == str(PACK_V3)
+    assert c3 == "pack1-" + hashlib.sha256(PACK_V3.read_bytes()).hexdigest()[:8]
+    assert c3 != c2
 
 
 def test_pack_variant_is_stamped_in_provenance(tmp_path, monkeypatch):

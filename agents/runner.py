@@ -378,6 +378,16 @@ _SCHEMA_CHARS = len(json.dumps(TOOL_SCHEMAS))
 # 580 s), so the client's 819 s timeout fired before the 16K cap and its
 # retry lost the turn twice (168_c, 1,638 s). Eval runs also never retry a
 # timed-out turn (_EVAL_CLIENT_MAX_RETRIES): the loop owns recovery.
+#
+# The 16K thinking cap was re-measured on arm C (2026-11-17, 71 units, 4
+# jobs) and kept. The 78 capped turns decoded at 15.1-25.8 tok/s (median
+# 19.1), so 8 tok/s still leaves the client 2x margin. Turns that ended on
+# their own: p50 ~0.4K, p90 ~2.3K, p99 ~12.4K, max ~15.1K tokens
+# (estimated from turn time and each unit's completion total). A higher cap
+# was rejected: what a capped think would have needed is censored, the same
+# 163/168 units capped 2-4 turns in a row, and every extra 8K tokens is
+# ~7 more minutes per stalled turn on a 3,600 s wall. The fix is the
+# recovery instead: a capped think keeps its tail (_capped_think_nudge).
 # ---------------------------------------------------------------------------
 _DEFAULT_REASONING_BUDGET = 20480   # --reasoning-budget in the shipped serve scripts
 _CONTENT_ALLOWANCE_TOKENS = 12288
@@ -412,7 +422,63 @@ def _retry_after_s(exc: Exception) -> float | None:
         wait = _RATE_LIMIT_DEFAULT_S
     return min(max(wait, 0.5), 60.0)
 _TRUNCATED_KEEP_CHARS = 2000   # head of a capped turn kept in the history
+
+# ---------------------------------------------------------------------------
+# A thinking turn cut off by the cap (2026-11-17, docs/HARNESS_NOTES.md
+# "Thinking stall"). On arm C (GLM-5.3-Flash, thinking on, 16K eval cap) all
+# 78 capped turns were pure reasoning: no content, no tool call. The
+# recovery above kept nothing and the next turn re-derived the plan from
+# scratch, and after a cap on a code-writing turn that re-derivation was
+# capped again or killed by the wall 33 times in 47 (it wrote the file
+# straight away 8 times). Those turns cost 1,136 minutes and 13 of C's 17
+# failures. So when a capped turn has no content and no tool call but does
+# have reasoning, the nudge carries the reasoning's last
+# _CAPPED_REASONING_TAIL_CHARS (~1.5K tokens) and says: conclude and act.
+# Bounded per cap, so a chain of caps cannot grow the history without
+# limit. Every other turn keeps the default: reasoning is never fed back.
+# ---------------------------------------------------------------------------
+_CAPPED_REASONING_TAIL_CHARS = 6000
 _CONF_PATH = Path(__file__).resolve().parent.parent / "openbeast.conf"
+
+
+def _reasoning_text(message) -> str:
+    """The turn's reasoning as the server returned it: `reasoning_content`
+    (llama.cpp, TensorFold, vLLM) or `reasoning` (some OpenAI-compatible
+    servers); the openai SDK keeps unknown fields as attributes or in
+    model_extra. "" when there is none."""
+    for attr in ("reasoning_content", "reasoning"):
+        v = getattr(message, attr, None)
+        if isinstance(v, str) and v.strip():
+            return v
+    extra = getattr(message, "model_extra", None)
+    if isinstance(extra, dict):
+        for attr in ("reasoning_content", "reasoning"):
+            v = extra.get(attr)
+            if isinstance(v, str) and v.strip():
+                return v
+    return ""
+
+
+def _reasoning_tail(reasoning: str, limit: int = _CAPPED_REASONING_TAIL_CHARS) -> str:
+    """The last `limit` chars of `reasoning`, started at a line boundary
+    when one falls in the first fifth (a tail that opens mid-word reads
+    like noise)."""
+    text = reasoning.strip()
+    if len(text) <= limit:
+        return text
+    tail = text[-limit:]
+    nl = tail.find("\n", 0, limit // 5)
+    return tail[nl + 1:] if nl >= 0 else tail
+
+
+def _capped_think_nudge(max_tokens: int, tail: str) -> str:
+    return (f"Your last turn hit the {max_tokens:,}-token output cap while you were "
+            "still thinking: no answer and no tool call came out. The end of that "
+            "reasoning, so you do not start over:\n"
+            "<<<\n" + tail + "\n>>>\n"
+            "You were cut off mid-reasoning. Do not re-derive what is above: conclude "
+            "from it and act now. Make the tool call it was leading to (write the "
+            "file, run the test) or call task_done, and keep any further thinking short.")
 
 
 def _conf_value(key: str) -> str:
@@ -472,8 +538,12 @@ def _thinking_kwargs() -> dict:
     default none). Unset, or any other value, sends nothing: the request is
     byte-identical to before. run_eval copies the parent env into the
     runner, so `OPENBEAST_AGENT_THINKING=on python evals/run_eval.py` reaches
-    here. reasoning_content is never put back in the history: only
-    message.content and tool_calls are kept (see the assistant turn below)."""
+    here. reasoning_content is not put back in the history: only
+    message.content and tool_calls are kept (see the assistant turn below).
+    The one exception is a turn the output cap cut off while it was still
+    thinking (no content, no tool call): a bounded tail of its reasoning
+    goes back in the nudge, so the next turn continues instead of starting
+    over (_capped_think_nudge)."""
     v = os.environ.get("OPENBEAST_AGENT_THINKING", "").strip().lower()
     if v not in ("on", "off"):
         return {}
@@ -1602,14 +1672,24 @@ def run_agent(
         if not message.tool_calls:
             if truncated:
                 print(f"  (reply hit the {max_tokens:,}-token output cap)")
-                log_event({"type": "output_cap", "iteration": iteration,
-                           "max_tokens": max_tokens})
-                messages.append({
-                    "role": "user",
-                    "content": f"Your last reply hit the {max_tokens:,}-token output cap "
-                               "and was cut off. Do not repeat it: be concise, and make "
-                               "progress with a tool call or call task_done.",
-                })
+                # Cut off mid-think: the reasoning is all the turn produced.
+                reasoning = ("" if (message.content or "").strip()
+                             else _reasoning_text(message))
+                cap_event = {"type": "output_cap", "iteration": iteration,
+                             "max_tokens": max_tokens}
+                if usage is not None and getattr(usage, "completion_tokens", None):
+                    cap_event["completion_tokens"] = usage.completion_tokens
+                if reasoning:
+                    tail = _reasoning_tail(reasoning)
+                    cap_event.update(reasoning_chars=len(reasoning),
+                                     reasoning_tail_chars=len(tail))
+                    nudge = _capped_think_nudge(max_tokens, tail)
+                else:
+                    nudge = (f"Your last reply hit the {max_tokens:,}-token output cap "
+                             "and was cut off. Do not repeat it: be concise, and make "
+                             "progress with a tool call or call task_done.")
+                log_event(cap_event)
+                messages.append({"role": "user", "content": nudge})
             elif choice.finish_reason == "stop":
                 print("  (model stopped without calling task_done)")
                 # Nudge it to either continue or call task_done

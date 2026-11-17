@@ -136,6 +136,29 @@ def probe_sed(h: Host) -> Fact | None:
                 covered_by_platform_line=h.system == "Darwin")
 
 
+def probe_sed_word_boundary(h: Host) -> Fact | None:
+    """BSD sed reads `\\b` as a literal `b`: `sed 's/\\bi0\\b/lo/g'` exits 0
+    and changes nothing, so the model believes the edit happened (C 122_e
+    it6, 2026-11-17 audit). The probe RUNS the substitution; the remedies
+    are offered only when they ran here and did the replacement. Not
+    covered by the platform line, which only names `sed -i ''`."""
+    if not h.which("sed"):
+        return None
+    sample, want = "i0 xi0 i0\n", "lo xi0 lo\n"
+    r = h.run(["sed", "s/\\bi0\\b/lo/g"], stdin=sample)
+    if r.rc != 0 or r.out == want:
+        return None                    # GNU sed (it works) or no verdict
+    fixes = []
+    if h.run(["sed", "-E", "s/[[:<:]]i0[[:>:]]/lo/g"], stdin=sample).out == want:
+        fixes.append("`sed -E 's/[[:<:]]w[[:>:]]/x/g'`")
+    if h.which("perl") and h.run(["perl", "-pe", "s/\\bi0\\b/lo/g"], stdin=sample).out == want:
+        fixes.append("`perl -pi -e 's/\\bw\\b/x/g' f`")
+    fix = (": use " + " or ".join(fixes)) if fixes else ""
+    return Fact("sed_no_word_boundary",
+                f"sed has no `\\b`: `s/\\bw\\b/x/` silently changes nothing{fix}.",
+                "echo 'i0 xi0 i0' | sed 's/\\bi0\\b/lo/g'", _first(r.out))
+
+
 def _perl_alarm_ok(h: Host) -> bool:
     if not h.which("perl"):
         return False
@@ -292,8 +315,11 @@ def compiler_name(h: Host) -> str:
     return f"gcc {m.group(1)}" if m else v[:40]
 
 
+#: Order is render order, and an over-budget pack drops lines from the end:
+#: the 2026-11-17 sed `\b` probe goes last of the userland lines, so the
+#: lines measured before it keep their place.
 USERLAND_PROBES = (probe_sed, probe_timeout, probe_nproc, probe_grep_p, probe_cat_a,
-                   probe_time_v, probe_bash)
+                   probe_time_v, probe_bash, probe_sed_word_boundary)
 
 
 def probe(h: Host) -> list[Fact]:

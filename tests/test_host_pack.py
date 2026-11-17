@@ -30,6 +30,12 @@ def darwin_run(argv, stdin="", timeout=None, cwd=None):
     a = " ".join(argv)
     if a == "sed --version":
         return R(1, "", "sed: illegal option -- -\nusage: sed script [-Ealnru] ...")
+    # BSD sed: `\b` is a literal b, so the substitution is a silent no-op;
+    # the [[:<:]] word bounds and perl both do the replacement.
+    if a == "sed s/\\bi0\\b/lo/g":
+        return R(0, stdin)
+    if a == "sed -E s/[[:<:]]i0[[:>:]]/lo/g" or a == "perl -pe s/\\bi0\\b/lo/g":
+        return R(0, "lo xi0 lo\n")
     if a == "perl -e alarm shift; exec @ARGV 5 true":
         return R(0)
     if a == "sysctl -n hw.ncpu":
@@ -66,6 +72,8 @@ def linux_run(argv, stdin="", timeout=None, cwd=None):
     a = " ".join(argv)
     if a == "sed --version":
         return R(0, "sed (GNU sed) 4.9\n")
+    if a == "sed s/\\bi0\\b/lo/g":                 # GNU sed knows \b
+        return R(0, "lo xi0 lo\n")
     if a.startswith("grep -P"):
         return R(0, "a1\n")
     if a == "cat -A":
@@ -103,8 +111,29 @@ def linux():
 def test_darwin_probes_find_every_audited_gap():
     keys = [f.key for f in HP.probe(darwin())]
     assert keys == ["sed_bsd", "timeout_missing", "nproc_missing", "grep_no_P", "cat_no_A",
-                    "time_no_v", "bash_old", "no_pthread_barrier", "sysctlbyname_header",
-                    "sysconf_header", "no_bits_stdcpp"]
+                    "time_no_v", "bash_old", "sed_no_word_boundary", "no_pthread_barrier",
+                    "sysctlbyname_header", "sysconf_header", "no_bits_stdcpp"]
+
+
+def test_sed_word_boundary_is_probed_by_running_it():
+    """C 122_e it6 (2026-11-17): `sed 's/\\bi0\\b/lo/g'` exited 0 and changed
+    nothing on BSD sed. The fact comes from running that substitution; each
+    remedy is offered only when it ran here and did the replacement."""
+    f = {x.key: x for x in HP.probe(darwin())}["sed_no_word_boundary"]
+    assert "silently changes nothing" in f.line
+    assert "[[:<:]]w[[:>:]]" in f.line and "perl -pi -e" in f.line
+    assert f.evidence == "i0 xi0 i0"                    # the unchanged output
+    h = darwin()
+
+    def run(argv, **kw):
+        if argv[:2] == ["sed", "-E"]:
+            return R(1, "", "sed: RE error: invalid character class")
+        return darwin_run(argv, **kw)
+    h.run = run
+    h.which = lambda n: f"/usr/bin/{n}" if n in DARWIN_BINS - {"perl"} else None
+    line = {x.key: x.line for x in HP.probe(h)}["sed_no_word_boundary"]
+    assert "[[:<:]]" not in line and "perl" not in line
+    assert "sed_no_word_boundary" not in {x.key for x in HP.probe(linux())}
 
 
 def test_linux_probes_find_nothing():

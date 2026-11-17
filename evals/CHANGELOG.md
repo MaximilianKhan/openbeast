@@ -92,6 +92,43 @@ this change do not replay into the new era**.
   context hash moves for every row; the 122 task hash moves. `vlib.py`,
   `SUITE_VERSION` and `system-prompt.md` are unchanged.
 
+## v5.0, a capped think keeps its tail + zig pack v3 (2026-11-17): era roll
+
+Evidence: arm C's 71 transcripts (`docs/HARNESS_NOTES.md` "Thinking stall"
+and "Language residue under thinking").
+
+- **The era moves, because `agents/runner.py` changed.** At this change the
+  era goes from `f1e0565c5a9cb086` to `575afd5d75e15c94` (`cache.current_era()`). Other
+  changes to the era files that merge alongside this one move it again;
+  read the stamp in the results header. `HARNESS_VERSION` (harness7) did not
+  move, because nothing in `cache.HARNESS_FUNCTIONS` changed.
+- **Runner: a thinking turn cut off by the cap is no longer thrown away.**
+  This applies when a capped turn (`finish_reason == "length"` with our
+  `max_tokens`) has no content and no tool call but does have reasoning:
+  the nudge then carries the last 6,000 chars of that reasoning and says
+  "you were cut off mid-reasoning; conclude and act now". In C all 78
+  capped turns were exactly that. After a discarded cap on a code-writing
+  turn, re-thinking from scratch capped again or hit the wall 33 times in
+  47. Every other turn is unchanged: reasoning is never fed back, a capped
+  answer with content keeps its 2,000-char head, and the old nudge stays.
+  The `output_cap` event gains `completion_tokens`, `reasoning_chars` and
+  `reasoning_tail_chars`.
+- **The cap did not move** (16,384 with thinking, 8,192 without), and the
+  client timeout still assumes 8 tok/s. The capped turns measured 15.1–25.8
+  tok/s under 4 jobs. A higher cap was rejected: the length a capped think
+  needed is censored, and each extra 8K costs ~7 min per stalled turn.
+- **Zig pack v3** (`agents/packs/zig-0.16-v3.md` @`cfdab8fa`,
+  `OPENBEAST_PACK_VARIANT=v3`): v2 plus `posix_write` (P0), `clz_shift`,
+  `erf` and `init_skeleton`, with OLD/NEW fixtures verified on zig 0.16.0.
+  It gets its own `pack1-<sha8>`. v1 (production, `MEASURED_SHA256`) and v2
+  are byte-identical to before. `claims/zig-0.16.json` and the zig
+  escalation index are regenerated (24 claims, 57 OLD fixtures).
+- **Host pack:** a new probed fact, `sed_no_word_boundary` (BSD sed treats
+  `\b` as a literal `b`). On the Mac harness host, packs-on runs therefore
+  get a different host-pack sha (`9795705f` → `c2b4d955`), so every
+  packs-on row there is in a new `pack1-` component. Packs-off runs do not
+  change.
+
 ## v5.0, G22 environment block + G23 wall warnings (2026-11-16) — era roll, harness7
 
 Two opt-in agent switches for the overnight arm E (both on). Evidence and
