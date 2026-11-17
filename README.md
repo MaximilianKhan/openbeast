@@ -839,12 +839,12 @@ tools, no turn cap), and its solver never saw validator output.
 
 | # | Model | Host | Best configuration | Passed | SCORE | Py | Go | C | C++ | Rust | Zig | Sh | Mean / unit | Date | Result file | Status |
 |---:|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|
-| 1 | **GLM-5.3-Flash** | DGX Spark pair, TensorFold, EXL3 | thinking on, runner v2, wall-scaled turns, wall ×2 | **53/71**\* | **78.2** | 24/32 | 6/8 | 6/8 | 6/8 | 6/8 | 4/6 | 1/1 | 29.0 min | 2026-11-16 | [eval-glm-5-3-flash-v2-turns-think-L0-20261116-195724.json](evals/boards/v5/eval-glm-5-3-flash-v2-turns-think-L0-20261116-195724.json) | experiment arm (wall-scaled turns, wall ×2) |
+| 1 | **GLM-5.3-Flash** | DGX Spark pair, TensorFold, EXL3 | thinking on, runner v2, wall-scaled turns, wall ×2 | **51/71**\* | **76.7** | 24/32 | 6/8 | 6/8 | 6/8 | 5/8 | 3/6 | 1/1 | 29.0 min | 2026-11-16 | [eval-glm-5-3-flash-v2-turns-think-L0-20261116-195724.json](evals/boards/v5/eval-glm-5-3-flash-v2-turns-think-L0-20261116-195724.json) | experiment arm (wall-scaled turns, wall ×2) |
 | ref | *Claude Opus 5.5* (reference) | Anthropic API | Claude Code tools, no turn cap, wall ×2 (68/71 at the 1× wall); solver never saw validator output | *71/71* | *100.0* | 32/32 | 8/8 | 8/8 | 8/8 | 8/8 | 6/6 | 1/1 | 3.7 min | 2026-11-16 | [reference-claude-opus-5-5-v5-20261116.jsonl](evals/boards/v5/reference-claude-opus-5-5-v5-20261116.jsonl) | reference ceiling, not ranked: a different scaffold |
 | — | Qwen3.8 27B Uncensored MTP (the shipped default) |  | not yet run on v5 |  |  |  |  |  |  |  |  |  |  |  |  | |
 | — | Qwen3.6 27B (v4 #1) |  | not yet run on v5 |  |  |  |  |  |  |  |  |  |  |  |  | |
 
-\* GLM-5.3-Flash, GLM-C: 54/71 raw; 1 unit (122_gemm_blocked_b) excluded pending integrity review. 122_gemm_blocked_c is possibly a validator false FAIL (rejected for "dlopen" in a comment; a validator fix is in flight); not adjusted.
+\* GLM-5.3-Flash, GLM-C: 54/71 raw; 3 units (122_gemm_blocked_b, 122_gemm_blocked_d, 122_gemm_blocked_e) excluded contaminated: the agent read sealed paths (G25 integrity scan, evals/CHANGELOG.md).
 <!-- v5-board:end -->
 
 Status: "board protocol (L0)" is the v5 headline protocol (bare harness,

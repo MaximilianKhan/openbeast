@@ -4,14 +4,18 @@
     {
       "unit": "122_gemm_blocked_b",
       "run": "GLM-C",
-      "reason": "pending integrity review"
+      "reason": "contaminated: the agent read sealed paths (G25 integrity scan, evals/CHANGELOG.md)"
+    },
+    {
+      "unit": "122_gemm_blocked_d",
+      "run": "GLM-C",
+      "reason": "contaminated: the agent read sealed paths (G25 integrity scan, evals/CHANGELOG.md)"
+    },
+    {
+      "unit": "122_gemm_blocked_e",
+      "run": "GLM-C",
+      "reason": "contaminated: the agent read sealed paths (G25 integrity scan, evals/CHANGELOG.md)"
     }
   ],
-  "validator_notes": [
-    {
-      "unit": "122_gemm_blocked_c",
-      "run": "GLM-C",
-      "note": "possibly a validator false FAIL (rejected for \"dlopen\" in a comment; a validator fix is in flight)"
-    }
-  ]
+  "validator_notes": []
 }
