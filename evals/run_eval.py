@@ -1308,6 +1308,8 @@ def agent_switches(env=None) -> tuple[str | None, dict]:
       OPENBEAST_AGENT_SEED <int>      -> seed<N>
       OPENBEAST_AGENT_VERIFY_DONE=1   -> vdone   (G9, "test before done")
       OPENBEAST_DIAG_EDIT_HINT=1      -> ehint   (G13, "edit, don't rewrite")
+      OPENBEAST_AGENT_ENV_BLOCK=1     -> envb    (G19, first-turn env block)
+      OPENBEAST_AGENT_WALL_WARN=1     -> wwarn   (G20, wall-clock notices)
 
     Returns (component, meta): component `ag-<part>-<part>...` for the cache
     key, None when every switch is unset (legacy keys stay reachable); meta
@@ -1324,11 +1326,14 @@ def agent_switches(env=None) -> tuple[str | None, dict]:
         seed = None
     vdone = env.get("OPENBEAST_AGENT_VERIFY_DONE", "").strip() == "1"
     ehint = env.get("OPENBEAST_DIAG_EDIT_HINT", "").strip() == "1"
+    envb = env.get("OPENBEAST_AGENT_ENV_BLOCK", "").strip() == "1"
+    wwarn = env.get("OPENBEAST_AGENT_WALL_WARN", "").strip() == "1"
     meta = {"thinking": think, "seed": seed, "verify_done": vdone,
-            "diag_edit_hint": ehint}
+            "diag_edit_hint": ehint, "env_block": envb, "wall_warn": wwarn}
     parts = ([f"think-{think}"] if think else []) + \
         ([f"seed{seed}"] if seed is not None else []) + \
-        (["vdone"] if vdone else []) + (["ehint"] if ehint else [])
+        (["vdone"] if vdone else []) + (["ehint"] if ehint else []) + \
+        (["envb"] if envb else []) + (["wwarn"] if wwarn else [])
     return (f"ag-{'-'.join(parts)}" if parts else None), meta
 
 
@@ -2211,6 +2216,14 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
         child_env["OPENBEAST_TASK_PATHS"] = json.dumps(expected)
     else:
         child_env.pop("OPENBEAST_TASK_PATHS", None)
+    # Rough budget: 1 min per iteration at single-stream decode, scaled up
+    # under parallel contention (see timeout_scale in the docstring).
+    budget = wall_s if wall_s is not None else max_iter * 60
+    kill_after_s = int(budget * timeout_scale)
+    # G20: the runner learns the wall it is killed at (the same number as
+    # the communicate() timeout below). Through env, not argv: argv stays
+    # as it was. The runner reads it only with OPENBEAST_AGENT_WALL_WARN=1.
+    child_env["OPENBEAST_AGENT_WALL_S"] = str(kill_after_s)
     # Low-churn eval mode rides the same env read the runner uses.
     if os.environ.get("OPENBEAST_EVAL_GREEDY", "") == "1":
         child_env["OPENBEAST_EVAL_GREEDY"] = "1"
@@ -2236,10 +2249,7 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
         return stopped
     result: dict = {}
     try:
-        # Rough budget: 1 min per iteration at single-stream decode, scaled up
-        # under parallel contention (see timeout_scale in the docstring).
-        budget = wall_s if wall_s is not None else max_iter * 60
-        stdout, stderr = proc.communicate(timeout=int(budget * timeout_scale))
+        stdout, stderr = proc.communicate(timeout=kill_after_s)
         elapsed = time.time() - start_time
         tokens = _parse_tokens(stdout)
         result = {
@@ -3169,7 +3179,8 @@ def run_eval(
     # stamped in provenance. Set via env OPENBEAST_EVAL_GREEDY=1 or the
     # --greedy CLI flag (benchmark_all passes it through as env).
     greedy_mode = os.environ.get("OPENBEAST_EVAL_GREEDY", "") == "1"
-    # Agent switches (thinking / seed / verify-done / edit-hint): one read,
+    # Agent switches (thinking / seed / verify-done / edit-hint / env-block /
+    # wall-warn): one read,
     # used for the key, the header and every row (see agent_switches).
     agent_component, agent_meta = agent_switches()
     # ...and the agent gets exactly what was keyed: the normalized values are
@@ -3181,6 +3192,8 @@ def run_eval(
                                  if agent_meta["seed"] is not None else None),
         "OPENBEAST_AGENT_VERIFY_DONE": "1" if agent_meta["verify_done"] else None,
         "OPENBEAST_DIAG_EDIT_HINT": "1" if agent_meta["diag_edit_hint"] else None,
+        "OPENBEAST_AGENT_ENV_BLOCK": "1" if agent_meta["env_block"] else None,
+        "OPENBEAST_AGENT_WALL_WARN": "1" if agent_meta["wall_warn"] else None,
     }
     rb_component = None
     _rb = ""
@@ -3429,6 +3442,10 @@ def run_eval(
                 result.setdefault("agent_verify_done", True)
             if agent_meta["diag_edit_hint"]:
                 result.setdefault("diag_edit_hint", True)
+            if agent_meta["env_block"]:
+                result.setdefault("agent_env_block", True)
+            if agent_meta["wall_warn"]:
+                result.setdefault("agent_wall_warn", True)
             # role/stratum: the manifest's, else the task JSON's own
             # optional fields (a task may declare itself a probe).
             role = task.get("_role") or task.get("role")

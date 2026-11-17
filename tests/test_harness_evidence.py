@@ -33,7 +33,8 @@ sys.path.insert(0, str(ROOT / "evals"))
 import tools  # noqa: E402
 
 AGENT_ENV = ("OPENBEAST_AGENT_THINKING", "OPENBEAST_AGENT_SEED",
-             "OPENBEAST_AGENT_VERIFY_DONE", "OPENBEAST_DIAG_EDIT_HINT")
+             "OPENBEAST_AGENT_VERIFY_DONE", "OPENBEAST_DIAG_EDIT_HINT",
+             "OPENBEAST_AGENT_ENV_BLOCK", "OPENBEAST_AGENT_WALL_WARN")
 
 
 @pytest.fixture(autouse=True)
@@ -61,7 +62,7 @@ def test_agent_switches_unset_is_none():
     comp, meta = re_.agent_switches({})
     assert comp is None
     assert meta == {"thinking": None, "seed": None, "verify_done": False,
-                    "diag_edit_hint": False}
+                    "diag_edit_hint": False, "env_block": False, "wall_warn": False}
 
 
 @pytest.mark.parametrize("env,want", [
@@ -71,6 +72,11 @@ def test_agent_switches_unset_is_none():
     ({"OPENBEAST_AGENT_SEED": "0"}, "ag-seed0"),
     ({"OPENBEAST_AGENT_VERIFY_DONE": "1"}, "ag-vdone"),
     ({"OPENBEAST_DIAG_EDIT_HINT": "1"}, "ag-ehint"),
+    ({"OPENBEAST_AGENT_ENV_BLOCK": "1"}, "ag-envb"),
+    ({"OPENBEAST_AGENT_WALL_WARN": "1"}, "ag-wwarn"),
+    ({"OPENBEAST_AGENT_ENV_BLOCK": "1", "OPENBEAST_AGENT_WALL_WARN": "1"},
+     "ag-envb-wwarn"),
+    ({"OPENBEAST_AGENT_ENV_BLOCK": "0", "OPENBEAST_AGENT_WALL_WARN": "yes"}, None),
     ({"OPENBEAST_AGENT_THINKING": "on", "OPENBEAST_AGENT_SEED": "2",
       "OPENBEAST_AGENT_VERIFY_DONE": "1", "OPENBEAST_DIAG_EDIT_HINT": "1"},
      "ag-think-on-seed2-vdone-ehint"),
@@ -181,6 +187,28 @@ def test_run_eval_thinking_is_its_own_era(td, monkeypatch):
     assert len(calls) == 2 and calls[1]["OPENBEAST_AGENT_THINKING"] == "on"
     assert out["tasks"][0]["agent_thinking"] == "on"
     assert any(".ag-think-on." in p.stem for p in cache_dir.glob("*.json"))
+
+
+def test_env_block_and_wall_warn_are_keyed_stamped_and_pinned(td, monkeypatch):
+    """G19/G20: arm E (both on) must not replay or bank into default rows."""
+    cache, run_eval, calls, cache_dir = _world(td)
+    plain = run_eval.run_eval(model_name="m", use_cache=True)
+    assert calls[0]["OPENBEAST_AGENT_ENV_BLOCK"] is None      # pinned: removed
+    assert calls[0]["OPENBEAST_AGENT_WALL_WARN"] is None
+    assert "agent_env_block" not in plain["tasks"][0]
+    assert "agent_wall_warn" not in plain["tasks"][0]
+    monkeypatch.setenv("OPENBEAST_AGENT_ENV_BLOCK", "1")
+    monkeypatch.setenv("OPENBEAST_AGENT_WALL_WARN", "1")
+    arm = run_eval.run_eval(model_name="m", use_cache=True)
+    assert len(calls) == 2, "arm E replayed a default row"
+    assert calls[1]["OPENBEAST_AGENT_ENV_BLOCK"] == "1"
+    assert calls[1]["OPENBEAST_AGENT_WALL_WARN"] == "1"
+    assert arm["harness"]["agent_component"] == "ag-envb-wwarn"
+    assert arm["harness"]["agent_switches"]["env_block"] is True
+    assert arm["harness"]["agent_switches"]["wall_warn"] is True
+    assert arm["tasks"][0]["agent_env_block"] is True
+    assert arm["tasks"][0]["agent_wall_warn"] is True
+    assert any(".ag-envb-wwarn." in p.stem for p in cache_dir.glob("*.json"))
 
 
 def test_cli_seed_and_thinking_flags_set_the_env(monkeypatch):
