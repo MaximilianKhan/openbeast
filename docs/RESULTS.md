@@ -74,7 +74,7 @@ change on top of the previous. Single seed each.
 | Claude Opus 5.5 | Anthropic API | OPUS-REF | Claude Code tools, no turn cap, wall ×2 (68/71 at the 1× wall); solver never saw validator output | 71/71 | 100.0 | 100.0 | 100.0 | 32/32 | 8/8 | 8/8 | 8/8 | 8/8 | 6/6 | 1/1 | 3.7 min | 2026-11-16 | [reference-claude-opus-5-5-v5-20261116.jsonl](../evals/boards/v5/reference-claude-opus-5-5-v5-20261116.jsonl) | reference ceiling, not ranked: a different scaffold; 68/71 at the 1× wall |
 
 \* GLM-5.3-Flash, GLM-C: 54/71 raw; 3 units (122_gemm_blocked_b, 122_gemm_blocked_d, 122_gemm_blocked_e) excluded contaminated: the agent read sealed paths (G25 integrity scan, evals/CHANGELOG.md).  
-\*\* GLM-5.3-Flash, GLM-E: 122_gemm_blocked_c is ; not adjusted.
+\*\* GLM-5.3-Flash, GLM-E: 122_gemm_blocked_c is a validator false FAIL: the pre-#195 forbidden-API lint matched 'dlopen' inside a comment, and the solution passes the fixed validator (replayed, #195); not adjusted.
 <!-- v5-runs:end -->
 
 Cross-system benchmark results. Each section below is one host system. Models
