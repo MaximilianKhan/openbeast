@@ -95,15 +95,17 @@ Today's host keeps them in `~/.local/opt` and sources one file:
 "$OPENBEAST_EVAL_PY" -c 'import openai' && zig version && rustc --version && go version
 ```
 
-*Hook for auto-provisioning.* A PR in flight adds `scripts/eval-host.sh`
-and `evals/toolchains.lock`, which provision and pin all of this. Once it is
-merged, provision with that script. `campaign.py run` already runs
-`preflight.host_check` from the campaign file (`scripts/eval-host.sh check`)
-whenever the script exists in the tree. If the merged script's verb differs,
-change that one line in `evals/campaigns/v5-harness.json`. Until it lands,
-the preflight falls back to `evals/profile.py`'s check (`HOST_TOOLS` on
-PATH, zig `0.16.0`, the escalation gate serving zig, a declared finite
-reasoning budget).
+*Hook for auto-provisioning.* PR #189 (in flight) adds
+`scripts/eval-host.sh check|setup|env|fetch` and `evals/toolchains.lock`.
+They pin and install all of this per platform, under
+`~/.local/opt/openbeast-eval`, offline from an ark drive with `--from`.
+Once it is merged, provision with `scripts/eval-host.sh setup` and follow
+SPARK_HYDRA F6 as #189 rewrites it. `campaign.py run` already runs
+`preflight.host_check` from the campaign file (`scripts/eval-host.sh
+check`) whenever the script exists in the tree. A failed check refuses the
+campaign. Until #189 lands, the preflight falls back to `evals/profile.py`'s
+check: `HOST_TOOLS` on PATH, zig `0.16.0`, the escalation gate serving zig,
+and a declared finite reasoning budget.
 
 *Lesson: a durable venv.* On 2026-11-16 at 16:46, something rewrote the
 python symlink of a scratch venv under a running arm. 22 units of arm B

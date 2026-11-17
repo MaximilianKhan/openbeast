@@ -422,3 +422,21 @@ def test_sign_test():
     assert C.sign_test_p(0, 0) == 1.0
     assert abs(C.sign_test_p(10, 0) - 2 / 1024) < 1e-12
     assert C.sign_test_p(3, 3) == 1.0
+
+
+def test_preflight_runs_the_host_check_hook_and_refuses_on_failure(tree, tmp_path):
+    (tree / "scripts").mkdir()
+    hook = tree / "scripts" / "eval-host.sh"
+    hook.write_text("#!/bin/sh\necho 'zig 0.15.1 != 0.16.0'\nexit 1\n")
+    hook.chmod(0o755)
+    camp = C.load_campaign("v5-harness")
+
+    class A:
+        base_url, jobs, served_model, model_name, api_key_env = "http://127.0.0.1:9/v1", 1, None, "m", None
+    problems = C.preflight(A, camp, sys.executable, str(tree))
+    assert any("scripts/eval-host.sh check" in p and "0.15.1" in p for p in problems)
+    plan(tmp_path, {})      # and `run` without --skip-preflight refuses before any arm
+    rc = C.main(["run", "--campaign", "v5-harness", "--model-name", "Fake-1",
+                 "--base-url", "http://127.0.0.1:9/v1", "--tree", str(tree),
+                 "--python", sys.executable])
+    assert rc == 2 and calls(tmp_path) == []

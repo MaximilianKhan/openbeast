@@ -67,6 +67,7 @@ STATE_VERSION = 1
 INFRA_REASONS = frozenset({
     "server_error", "env_error", "validator_timeout", "budget_skip",
     "skipped_cache_miss", "server_unhealthy", "low_disk", "setup_failed",
+    "interpreter_error",     # run_eval's own name for it once eval-host provisioning (#189) is in
 })
 # A row the arm did not measure at all (arm scheduler): not lost, not scored.
 UNMEASURED_REASONS = frozenset({"not_in_arm"})
@@ -803,27 +804,37 @@ def preflight(a, camp: dict, py: str, tree: str) -> list[str]:
         rc, out = _run(shlex.split(hook), tree, None, 600)
         if rc != 0:
             problems.append(f"`{hook}` failed (rc {rc}): {out.strip()[-600:]}")
-    else:
-        sys.path.insert(0, EVALS_DIR)
-        sys.path.insert(0, os.path.join(REPO, "agents"))
-        try:
-            import importlib.util  # noqa: PLC0415
-            # evals/profile.py by path: the name `profile` may already be the
-            # stdlib module in sys.modules.
-            spec = importlib.util.spec_from_file_location(
-                "_ob_profile", os.path.join(EVALS_DIR, "profile.py"))
-            prof = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(prof)
-            rb = None
-            args = (camp.get("common") or {}).get("args") or []
-            if "--reasoning-budget" in args:
-                rb = args[args.index("--reasoning-budget") + 1]
-            problems += prof.preflight(a.base_url, rb, False)
-            adm = prof.admission_check(a.base_url, a.jobs, a.served_model or a.model_name)
-            if adm:
-                problems.append(adm)
-        except Exception as e:  # noqa: BLE001
-            problems.append(f"preflight could not run ({type(e).__name__}: {e})")
+    # profile.py's checks always: toolchains, reasoning budget, admission.
+    sys.path.insert(0, EVALS_DIR)
+    sys.path.insert(0, os.path.join(REPO, "agents"))
+    # admission_check authenticates with OPENBEAST_API_KEY: without the key a
+    # keyed gate answers 401, never 429, and the check would pass blind.
+    saved_key = os.environ.get("OPENBEAST_API_KEY")
+    if a.api_key_env and os.environ.get(a.api_key_env):
+        os.environ["OPENBEAST_API_KEY"] = os.environ[a.api_key_env]
+    try:
+        import importlib.util  # noqa: PLC0415
+        # evals/profile.py by path: the name `profile` may already be the
+        # stdlib module in sys.modules.
+        spec = importlib.util.spec_from_file_location(
+            "_ob_profile", os.path.join(EVALS_DIR, "profile.py"))
+        prof = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(prof)
+        rb = None
+        args = (camp.get("common") or {}).get("args") or []
+        if "--reasoning-budget" in args:
+            rb = args[args.index("--reasoning-budget") + 1]
+        problems += prof.preflight(a.base_url, rb, False)
+        adm = prof.admission_check(a.base_url, a.jobs, a.served_model or a.model_name)
+        if adm:
+            problems.append(adm)
+    except Exception as e:  # noqa: BLE001
+        problems.append(f"preflight could not run ({type(e).__name__}: {e})")
+    finally:
+        if saved_key is None:
+            os.environ.pop("OPENBEAST_API_KEY", None)
+        else:
+            os.environ["OPENBEAST_API_KEY"] = saved_key
     bad = interpreter_problem(py, tree, dict(os.environ))
     if bad:
         problems.append(f"eval interpreter: {bad}")
