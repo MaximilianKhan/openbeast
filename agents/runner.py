@@ -19,6 +19,7 @@ import argparse
 import atexit
 import json
 import os
+import platform
 import re
 import signal
 import sys
@@ -90,7 +91,8 @@ USE THE TOOLS. A working professional engineer:
 Workflow:
 1. Understand the task — read relevant files, explore the codebase with list_files / grep.
 2. Plan your approach. For any task with 3+ steps call update_plan with the steps
-   first, then keep it current as you go (exactly one step in_progress at a time).
+   first, then call it again only when a step changes status (exactly one step
+   in_progress at a time; the plan is re-shown every turn, never re-send it unchanged).
    For hard tasks (parsers, algorithms with subtle invariants, numerical code),
    think through the invariants before coding.
 3. Execute. Use edit_file for changes to existing files; write_file only for brand-new files.
@@ -110,12 +112,42 @@ Guidelines:
 """
 
 
-def build_system_prompt(context: str = "", context_budget: int = 0) -> str:
+def platform_line(system: str | None = None, shell: str | None = None) -> str:
+    """One line naming the tool host's OS and the bash tool's shell.
+
+    Runner v2 (audit of GLM-5.3-Flash's v5 failures, 2026-11-16). Tools run
+    where THIS process runs (AGENTS.md), which for the eval harness and Mac
+    clients is macOS: GNU habits (`sed -i 's/..'`, `timeout`, `cat -A`)
+    failed there and cost turns, because nothing said the host was BSD. The
+    text is built here, never in system-prompt.md (owner's rule)."""
+    system = system or platform.system() or "unknown"
+    shell = shell or _tools.BASH_SHELL
+    host = system
+    if system == "Darwin":
+        host = ("Darwin (macOS, BSD userland: `sed -i ''` not `sed -i`, no GNU "
+                "`timeout`, no `cat -A`"
+                + ("; /bin/bash is bash 3.2" if shell == "/bin/bash" else "") + ")")
+    return f"Tool host: {host}. The bash tool runs each command with `{shell} -c`.\n"
+
+
+def budget_line(max_iter: int) -> str:
+    """The turn budget, stated up front (runner v2: most failing v5 units
+    ran out of turns while still exploring, never told how many they had)."""
+    return (f"Turn budget: you have {max_iter} tool turns (model replies) for this "
+            f"task. Spend them on progress: explore briefly, then edit, run the "
+            f"check, and call task_done well before they run out.\n")
+
+
+def build_system_prompt(context: str = "", context_budget: int = 0,
+                        max_iter: int = 0) -> str:
     """Assemble the full system prompt with optional context and budget info."""
     parts = []
     if _SOUL_PROMPT:
         parts.append(_SOUL_PROMPT)
     parts.append(_AGENT_INSTRUCTIONS)
+    parts.append(platform_line())
+    if max_iter > 0:
+        parts.append(budget_line(max_iter))
     if context_budget > 0:
         parts.append(
             f"Context budget: you have approximately {context_budget:,} tokens of context. "
@@ -327,14 +359,35 @@ _SCHEMA_CHARS = len(json.dumps(TOOL_SCHEMAS))
 # operator's REASONING_BUDGET when set (env, else openbeast.conf — the value
 # serve.sh passes as --reasoning-budget; -1 = unlimited means no cap here
 # either), else the shipped serve scripts' 20480. OPENBEAST_AGENT_MAX_TOKENS
-# overrides it all (0 = uncapped). Eval runs stay uncapped: run_eval bounds
-# each task by wall time, and a cap would change measured behaviour under
-# unlimited-thinking configs.
+# overrides it all (0 = uncapped).
+#
+# Eval runs were uncapped (run_eval bounds each task by wall time). Runner v2
+# caps them too (G11 in docs/HARNESS_NOTES.md): on the 2026-11-16 v5 L0,
+# GLM-5.3-Flash's first code-writing turn on 168 ran past the client's 600 s
+# read timeout in 5 of 5 attempts, was retried identically, and the unit spent
+# its whole 1,800 s wall without writing a file. A capped turn instead ends
+# with finish_reason "length" and the truncation recovery below hands the head
+# back to the model with a nudge. The eval cap is fixed, the same for every
+# model: 8K tokens with thinking off (a v5 solution file is a few thousand
+# tokens; the cap only bites on a runaway), 16K with OPENBEAST_AGENT_THINKING=on
+# (room for a long think plus the same answer). The client's read timeout is
+# sized to the cap at a pessimistic 8 tok/s, so a capped turn on a busy
+# 4-stream server is never cut off by the client first: the first sizing (16K
+# at 20 tok/s) was not pessimistic enough. Measured on the runner v2 arm, a
+# long-context turn under 4-way load decoded at ~12 tok/s (6,818 tokens in
+# 580 s), so the client's 819 s timeout fired before the 16K cap and its
+# retry lost the turn twice (168_c, 1,638 s). Eval runs also never retry a
+# timed-out turn (_EVAL_CLIENT_MAX_RETRIES): the loop owns recovery.
 # ---------------------------------------------------------------------------
 _DEFAULT_REASONING_BUDGET = 20480   # --reasoning-budget in the shipped serve scripts
 _CONTENT_ALLOWANCE_TOKENS = 12288
 _DEFAULT_MAX_COMPLETION_TOKENS = _DEFAULT_REASONING_BUDGET + _CONTENT_ALLOWANCE_TOKENS
 _CLIENT_MAX_RETRIES = 1        # one quick retry for a blip; the loop owns the rest
+_EVAL_CLIENT_MAX_RETRIES = 0   # eval: a retried timeout re-spends the whole turn
+_EVAL_TURN_TOKENS = 8192            # eval cap, thinking off/unset (G11)
+_EVAL_TURN_TOKENS_THINKING = 16384  # eval cap, OPENBEAST_AGENT_THINKING=on
+_CLIENT_TIMEOUT_FLOOR_S = 600.0     # the openai client's own default
+_PESSIMISTIC_TOK_S = 8.0            # per-stream decode under --jobs load
 # A 429 is admission control (beast-gate's per-device in-flight / rate caps,
 # beast-chat's slot cap), not a failed turn: wait the server's Retry-After and
 # re-send the SAME turn, without spending an iteration or counting an API
@@ -379,14 +432,15 @@ def _conf_value(key: str) -> str:
 
 def _max_completion_tokens() -> int:
     """max_tokens for an agent request; 0 means send none (uncapped)."""
-    if os.environ.get(_EVAL_MARKER):
-        return 0
     raw = os.environ.get("OPENBEAST_AGENT_MAX_TOKENS", "").strip()
     if raw:
         try:
             return max(0, int(raw))
         except ValueError:
             pass
+    if os.environ.get(_EVAL_MARKER):
+        thinking = os.environ.get("OPENBEAST_AGENT_THINKING", "").strip().lower() == "on"
+        return _EVAL_TURN_TOKENS_THINKING if thinking else _EVAL_TURN_TOKENS
     budget = (os.environ.get("OPENBEAST_REASONING_BUDGET", "").strip()
               or os.environ.get("REASONING_BUDGET", "").strip()
               or _conf_value("REASONING_BUDGET"))
@@ -399,6 +453,46 @@ def _max_completion_tokens() -> int:
     if n < 0:
         return 0   # unlimited thinking: a token cap would cut it mid-thought
     return n + _CONTENT_ALLOWANCE_TOKENS
+
+
+def _client_timeout_s(max_tokens: int) -> float:
+    """Read timeout for the model client: the openai default, raised so a
+    turn that runs to `max_tokens` at a pessimistic per-stream rate is ended
+    by the cap (recoverable), not by the client (a lost, retried turn)."""
+    if max_tokens <= 0:
+        return _CLIENT_TIMEOUT_FLOOR_S
+    return max(_CLIENT_TIMEOUT_FLOOR_S, max_tokens / _PESSIMISTIC_TOK_S)
+
+
+def _thinking_kwargs() -> dict:
+    """Per-request thinking toggle (runner v2), OPENBEAST_AGENT_THINKING:
+    on / off send chat_template_kwargs.enable_thinking true / false (the
+    switch for a "thinking on" ablation arm; checked live on the Spark GLM
+    TensorFold server, where `true` returns reasoning_content and the
+    default none). Unset, or any other value, sends nothing: the request is
+    byte-identical to before. run_eval copies the parent env into the
+    runner, so `OPENBEAST_AGENT_THINKING=on python evals/run_eval.py` reaches
+    here. reasoning_content is never put back in the history: only
+    message.content and tool_calls are kept (see the assistant turn below)."""
+    v = os.environ.get("OPENBEAST_AGENT_THINKING", "").strip().lower()
+    if v not in ("on", "off"):
+        return {}
+    return {"extra_body": {"chat_template_kwargs": {"enable_thinking": v == "on"}}}
+
+
+def _seed_kwargs() -> dict:
+    """Per-run sampling seed (runner v2), OPENBEAST_AGENT_SEED=<int>: sent as
+    `seed` on every request. The Spark TensorFold server falls back to a FIXED
+    seed when none is sent (probed 2026-11-16: three temperature-0.6 requests
+    gave byte-identical text; seeds 1/2/3 gave three texts, seed 1 twice gave
+    one), so every run there is the same single draw and a 23-byte prompt
+    change flips units. Repeating an arm under different seeds is how its
+    effect is told from that chaos (G12). Unset sends nothing."""
+    raw = os.environ.get("OPENBEAST_AGENT_SEED", "").strip()
+    try:
+        return {"seed": int(raw)} if raw else {}
+    except ValueError:
+        return {}
 
 
 def _is_context_overflow(err: str) -> bool:
@@ -659,6 +753,42 @@ def _safe_stdio():
             pass
 
 
+#: The remaining-turns notice appears when this many turns or fewer are left
+#: (the current one included).
+_TURNS_LOW = 3
+
+
+def turns_notice(iteration: int, max_iter: int) -> str:
+    """A short notice for the last _TURNS_LOW turns, else ''. Rides in the
+    transient block with the plan (never stored in the history)."""
+    left = max_iter - iteration + 1
+    if left > _TURNS_LOW or left < 1:
+        return ""
+    if left == 1:
+        return ("[turn budget — this is your LAST turn: call task_done now "
+                "if the work is done]")
+    return (f"[turn budget — {left} turns left, this one included: stop "
+            f"exploring; finish, verify, and call task_done]")
+
+
+#: Consecutive identical tool calls (same name, args AND result) after which
+#: the result gets _repeat_nudge appended.
+_REPEAT_AFTER = 3
+
+
+def _repeat_nudge(n: int) -> str:
+    return (f"\n\n[You have seen this exact output {n} times; act on it "
+            f"(edit, run the tests, or call task_done)]")
+
+
+def _call_key(name: str, args) -> str:
+    """Canonical form of a tool call, so {"a":1,"b":2} == {"b":2,"a":1}."""
+    try:
+        return name + "\0" + json.dumps(args, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return name + "\0" + repr(args)
+
+
 def _with_plan(messages: list[dict], plan: str) -> list[dict]:
     """Request payload = history + the current plan block (transient: the
     block is never stored, so it can't bloat or be evicted). Folded into a
@@ -887,13 +1017,18 @@ def run_agent(
 
     # Build system prompt: explicit override > dynamic build > default
     if system_prompt is None:
-        system_prompt = build_system_prompt(context=context, context_budget=context_budget)
+        system_prompt = build_system_prompt(context=context, context_budget=context_budget,
+                                            max_iter=max_iter)
 
-    client = OpenAI(base_url=base_url, api_key=resolve_api_key(api_key, base_url),
-                    max_retries=_CLIENT_MAX_RETRIES)
-    # Resolved once per run; {} (send nothing) under eval or when set to 0.
+    # Resolved once per run; {} (send nothing) when set to 0 or unlimited.
     max_tokens = _max_completion_tokens()
+    client = OpenAI(base_url=base_url, api_key=resolve_api_key(api_key, base_url),
+                    max_retries=(_EVAL_CLIENT_MAX_RETRIES if os.environ.get(_EVAL_MARKER)
+                                 else _CLIENT_MAX_RETRIES),
+                    timeout=_client_timeout_s(max_tokens))
     cap_kwargs = {"max_tokens": max_tokens} if max_tokens else {}
+    think_kwargs = _thinking_kwargs()   # {} unless OPENBEAST_AGENT_THINKING
+    think_kwargs.update(_seed_kwargs())  # {} unless OPENBEAST_AGENT_SEED
 
     # --- THE EVAL GUARD, resolved FIRST (E1/E2) ---------------------------
     # Resolved once, here, and cached in a local for the whole run: the guard
@@ -1014,6 +1149,10 @@ def run_agent(
     stop_reason = ""
     call_seq = 0
     call_index: dict[int, int] = {}   # message position -> tool-call ordinal
+    # Repeat guard (runner v2): the v5 audit saw the same `cat` 15x and the
+    # same bash command 19x in a row, each with the same output.
+    last_call: tuple[str, str] | None = None   # (call key, result)
+    repeats = 0
     if not (resume_from and os.path.isfile(resume_from)):
         reset_plan()
 
@@ -1090,7 +1229,9 @@ def run_agent(
         print(f"\n[iter {iteration}/{max_iter}]")
         log_event({"type": "iteration", "number": iteration})
 
-        plan = plan_block()
+        # The transient block: the plan plus, near the end, the turns left.
+        plan = "\n\n".join(b for b in (plan_block(), turns_notice(iteration, max_iter))
+                           if b)
         if context_budget > 0:
             # Proactive: past ~70% of the declared budget, evict before the
             # server has to tell us (4 chars/token estimate).
@@ -1123,6 +1264,7 @@ def run_agent(
                         temperature=(0.0 if os.environ.get(
                             "OPENBEAST_EVAL_GREEDY", "") == "1" else 0.6),
                         **cap_kwargs,
+                        **think_kwargs,
                     )
                     break
                 except Exception as rl:
@@ -1263,6 +1405,19 @@ def run_agent(
                     call_ok = True
                 except Exception as e:
                     result = f"Error: bad tool call to {fn_name}: {e}"
+
+            # task_done is exempt: a refused one is answered by its own text.
+            if fn_name != "task_done":
+                key = (_call_key(fn_name, fn_args if not parse_err
+                                 else tc.function.arguments), result)
+                repeats = repeats + 1 if key == last_call else 1
+                last_call = key
+                if repeats >= _REPEAT_AFTER:
+                    result += _repeat_nudge(repeats)
+                    log_event({"type": "repeat_guard", "name": fn_name,
+                               "repeats": repeats, "iteration": iteration})
+            else:
+                last_call, repeats = None, 0
 
             log_event({
                 "type": "tool_call",

@@ -499,11 +499,25 @@ def test_max_tokens_env_override_and_zero_means_uncapped(tmp_path, monkeypatch):
     assert "max_tokens" not in fake.kwargs[0]
 
 
-def test_eval_runs_stay_uncapped(tmp_path, monkeypatch):
-    # Eval rows are bounded by run_eval's wall timeout; capping them would
-    # change measured behaviour under unlimited-thinking configs.
-    _, fake, _ = _run(tmp_path, monkeypatch, [_done()], env={"OPENBEAST_EVAL": "1"})
+def test_eval_runs_carry_the_fixed_turn_cap(tmp_path, monkeypatch):
+    # Runner v2 (G11): a runaway eval turn ran past the client's 600 s timeout
+    # and was lost; capped, it ends as "length" and the model gets it back.
+    # The cap is fixed, the same for every model.
+    _, fake, ctor = _run(tmp_path, monkeypatch, [_done()], env={"OPENBEAST_EVAL": "1"})
+    assert fake.kwargs[0]["max_tokens"] == runner._EVAL_TURN_TOKENS == 8192
+    # The client outlasts a capped turn at 8 tok/s, so the cap ends it first,
+    # and an eval run never re-sends a timed-out turn.
+    assert ctor["timeout"] >= 8192 / 8
+    assert ctor["max_retries"] == 0
+    _, fake, ctor = _run(tmp_path, monkeypatch, [_done()],
+                         env={"OPENBEAST_EVAL": "1", "OPENBEAST_AGENT_THINKING": "on"})
+    assert fake.kwargs[0]["max_tokens"] == runner._EVAL_TURN_TOKENS_THINKING == 16384
+    assert ctor["timeout"] >= 16384 / 8
+    # An explicit OPENBEAST_AGENT_MAX_TOKENS still wins, 0 = uncapped.
+    _, fake, ctor = _run(tmp_path, monkeypatch, [_done()],
+                         env={"OPENBEAST_EVAL": "1", "OPENBEAST_AGENT_MAX_TOKENS": "0"})
     assert "max_tokens" not in fake.kwargs[0]
+    assert ctor["timeout"] == runner._CLIENT_TIMEOUT_FLOOR_S
 
 
 def test_client_does_not_silently_triple_a_timed_out_request(tmp_path, monkeypatch):

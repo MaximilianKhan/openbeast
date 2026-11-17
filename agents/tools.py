@@ -130,7 +130,12 @@ def _killpg(proc):
     """SIGKILL the whole process group, then reap the leader."""
     try:
         os.killpg(proc.pid, signal.SIGKILL)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
+        # PermissionError: Darwin answers killpg with EPERM when every member
+        # left in the group is a zombie (killed, not yet reaped by launchd) —
+        # nothing is left to kill. Uncaught, it escaped the timeout path and
+        # the bash tool reported a hung command it had just killed as
+        # "[Errno 1] Operation not permitted" (runner v2, audit 2026-11-16).
         pass
     proc.kill()  # belt-and-suspenders if the leader left its group
     try:
@@ -612,12 +617,45 @@ def _scrubbed_env() -> dict:
     return env
 
 
+def _bash_shell() -> str:
+    """The shell the bash tool runs commands with: /bin/bash when present,
+    else /bin/sh.
+
+    Runner v2 (2026-11-16). Models write bash: process substitution `<(...)`,
+    `[[ ]]`, brace expansion, `set -o pipefail`, `$'...'`, arrays. /bin/sh is
+    dash on the Debian/Ubuntu rig and bash 3.2 in POSIX mode on macOS, and
+    both reject some of those, which cost GLM-5.3-Flash turns in the v5
+    audit. A POSIX sh command means the same under bash with one common
+    exception: dash's `echo` expands backslash escapes and bash's needs -e,
+    which is what models already expect. The grep and diagnostics helpers keep /bin/sh:
+    their commands are written here, not by the model."""
+    return "/bin/bash" if os.access("/bin/bash", os.X_OK) else "/bin/sh"
+
+
+#: Resolved once, so the tool schema, the runner's platform line and every
+#: call name the same shell.
+BASH_SHELL = _bash_shell()
+
+
+def _timeout_message(timeout, partial=None) -> str:
+    """The one wording of a bash-tool timeout, with the tail of any output."""
+    if isinstance(partial, bytes):
+        partial = partial.decode("utf-8", errors="replace")
+    tail_note = ""
+    if partial and partial.strip():
+        tail_note = ("\n--- partial output before the kill (tail) ---\n"
+                     + partial[-10_000:])
+    return (f"Error: command timed out after {timeout}s (the bash tool's "
+            f"timeout; the whole process group was killed){tail_note}")
+
+
 def bash(command: str, timeout: int = 120) -> str:
     """Run a shell command and return stdout + stderr.
 
     Enforced safety: child process group is SIGKILLed on timeout,
     RLIMIT_AS caps the child's address space, and output is capped.
     """
+    start = time.monotonic()
     try:
         # Arsenal Phase 1 hook: OPENBEAST_BASH_WRAPPER is a command prefix
         # (e.g. "sandlock --profile openbeast --") that wraps every model
@@ -630,17 +668,23 @@ def bash(command: str, timeout: int = 120) -> str:
         # Under eval, confine the shell so a read of the sealed trees fails in
         # the kernel, not just on a command-text match (reported on 164/U4).
         seal_prefix = _eval_read_deny_prefix()
+        shell = BASH_SHELL
         if seal_prefix:
             command = " ".join(shlex.quote(a) for a in seal_prefix) + \
-                f" /bin/sh -c {shlex.quote(command)}"
+                f" {shell} -c {shlex.quote(command)}"
         wrapper = os.environ.get("OPENBEAST_BASH_WRAPPER", "").strip()
         if wrapper:
-            command = f"{wrapper} /bin/sh -c {shlex.quote(command)}"
+            command = f"{wrapper} {shell} -c {shlex.quote(command)}"
+        env = _scrubbed_env()
+        # A non-interactive bash sources $BASH_ENV before the command: an
+        # inherited one would run the operator's file ahead of every call.
+        env.pop("BASH_ENV", None)
         returncode, output = run_reaped(
             command,
             timeout,
             cwd=_base_dir(),
-            env=_scrubbed_env(),
+            env=env,
+            executable=shell,
         )
         if not output.strip():
             output = f"(exit code {returncode})"
@@ -658,15 +702,13 @@ def bash(command: str, timeout: int = 120) -> str:
                       + output[-25_000:])
         return output
     except subprocess.TimeoutExpired as e:
-        partial = (e.output or "")
-        if isinstance(partial, bytes):
-            partial = partial.decode("utf-8", errors="replace")
-        tail_note = ""
-        if partial.strip():
-            tail_note = ("\n--- partial output before the kill (tail) ---\n"
-                         + partial[-10_000:])
-        return f"Error: command timed out after {timeout}s{tail_note}"
+        return _timeout_message(timeout, e.output)
     except Exception as e:
+        # Whatever else the kill path raises once the deadline has passed
+        # (an OS error from reaping the group) is still a timeout to the
+        # model: it must never read as a permission problem in its command.
+        if isinstance(timeout, (int, float)) and time.monotonic() - start >= timeout:
+            return _timeout_message(timeout)
         return f"Error: {e}"
 
 
@@ -1372,7 +1414,9 @@ _DIAG_ERROR_RES = {
     "c": re.compile(r"^\S+:\d+:\d+:\s+(?:fatal )?error:", re.M),
     "c++": re.compile(r"^\S+:\d+:\d+:\s+(?:fatal )?error:", re.M),
     "rust": re.compile(r"^error(?:\[E\d+\])?:(?! aborting due to)", re.M),
-    "go": re.compile(r"^\S+:\d+:\d+: ", re.M),
+    # `go vet` prefixes its findings with "vet: " (18 rc=1 rows counted 0
+    # errors in the 2026-11-16 L2 run, G17).
+    "go": re.compile(r"^(?:vet: )?\S+:\d+:\d+: ", re.M),
     "python": re.compile(r"^\w*Error:", re.M),
     "shell": re.compile(r"\(error\):", re.M),
 }
@@ -2847,7 +2891,7 @@ def plan_block() -> str:
     if not steps:
         return ""
     done = sum(1 for s in steps if s["status"] == "done")
-    return (f"[plan — {done}/{len(steps)} done; keep it current with update_plan]\n"
+    return (f"[plan — {done}/{len(steps)} done; update_plan only when a step changes status]\n"
             + _plan_render(steps))
 
 
@@ -2889,6 +2933,17 @@ def update_plan(steps=None, explanation: str = "") -> str:
         return (f"Error: steps {', '.join(map(str, active))} are all in_progress — "
                 f"only ONE step may be in_progress at a time; mark the others "
                 f"pending or done")
+    if clean == _PLAN_STATE.get():
+        # Runner v2: GLM-5.3-Flash re-sent an identical plan up to 15 times in
+        # one v5 unit (60% of its turns). A nudge, not a free turn: the call
+        # still costs its iteration, so the budget and every model's turn
+        # count mean the same thing; the reply only says why it was useless.
+        cur = next((s["step"] for s in clean if s["status"] == "in_progress"), None)
+        return ("Plan unchanged — identical to the current plan, which is "
+                "already shown to you every turn. Do not re-send it; "
+                + (f"work on the in_progress step ({cur})" if cur else
+                   "act on the next step")
+                + " and call update_plan again only when a step's status changes.")
     _PLAN_STATE.set(clean)
     done = sum(1 for s in clean if s["status"] == "done")
     current = clean[active[0] - 1]["step"] if active else None
@@ -2933,7 +2988,7 @@ _TOOL_REGISTRY: list[tuple[Any, dict]] = [
             "type": "function",
             "function": {
                 "name": "bash",
-                "description": "Run a shell command (/bin/sh) and return its output. Use for building, testing, git operations, installing packages, or any system task. Facts: stdout and stderr are MERGED into one stream; each call is a FRESH shell — cd, exported variables and functions do not carry over to the next call (chain steps with && or cd inside the same command); output over 50 KB keeps the head and tail with an elision marker; a nonzero exit appends '(exit code N)'; background processes (servers, trailing &, nohup) are killed when the command returns, so this tool cannot keep a server running — start and test it in the same command.",
+                "description": f"Run a shell command ({BASH_SHELL} -c) and return its output. Use for building, testing, git operations, installing packages, or any system task. Facts: stdout and stderr are MERGED into one stream; each call is a FRESH shell — cd, exported variables and functions do not carry over to the next call (chain steps with && or cd inside the same command); output over 50 KB keeps the head and tail with an elision marker; a nonzero exit appends '(exit code N)'; background processes (servers, trailing &, nohup) are killed when the command returns, so this tool cannot keep a server running — start and test it in the same command.",
                 "parameters": {
                     "type": "object",
                     "properties": {
