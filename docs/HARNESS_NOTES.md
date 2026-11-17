@@ -13,7 +13,7 @@ Status key: **IDEA** (noted) · **BUILDING** · **ARM** (being measured) · **AD
 
 ---
 
-## Headroom — the gap the harness work is chasing (2026-11-16, updated 2026-11-17)
+## Headroom — the gap the harness work is chasing (2026-11-16, updated 2026-11-17 evening)
 
 | Row | v5 (71 units) | Notes |
 |---|---|---|
@@ -22,13 +22,14 @@ Status key: **IDEA** (noted) · **BUILDING** · **ARM** (being measured) · **AD
 | GLM L1 (Zig packs) | Zig 0/6 -> 3/6 | packs fix the 0.16 API drift |
 | GLM arm A (runner v2: G1-G4, G8, G11 v1) | **31/71** | +5 net vs L0 (11 rescued, 6 regressed; single seed). Rescues cluster on the audited frictions (36_b/c, 143, 146, 121, 179); same time and turns as L0 |
 | GLM arm B (A + wall-scaled turns, G1) | **36/71** | +5 over A; single seed |
-| GLM arm C (B + thinking, `--wall-scale 2`, B's turns) | **54/71 raw; 53/71 scored** | +18 over B; single seed; no packs. 122_gemm_blocked_b is withheld pending the integrity review: during that unit the agent read Claude Code workflow journals under `~/.claude`, the harness source and a cached result in `evals/cache/` (see "Language-specific residue" below). First 21 units: 18 vs B's 8 (10 rescued, 0 regressed) |
-| GLM arm E (C + diagnostics, edit hint, verify-done, zig pack v2, host pack, env block, wall warnings) | **in progress** | 22 of the first 30 rows passed at the 2026-11-17 08:17 cutoff; not a score |
+| GLM arm C (B + thinking, `--wall-scale 2`, B's turns) | **51/71 scored** (SCORE 76.7); 54/71 raw | +15 scored / +18 raw over B; single seed; no packs. The contamination scan (#195, `evals/audit/integrity_scan.py`) withheld three passes, 122_gemm_blocked_b, _d and _e: their agents read or reached for sealed paths (Claude Code workflow journals under `~/.claude`, the harness source, a cached result in `evals/cache/`; see "Language-specific residue" below). First 21 units: 18 vs B's 8 (10 rescued, 0 regressed). **GLM's best row**, and since 2026-11-17 the serving default on spark-hydra (thinking on; `SPARK_HYDRA.md` E2a) |
+| GLM arm E (C + diagnostics, edit hint, verify-done, zig pack v2, host pack, env block, wall warnings) | **50/71** (SCORE 74.7) | Done 2026-11-17, on the board (#201); integrity scan clean. One under C scored, four under C raw: a wash at one seed. Per language against C: Py 22 vs 24, C 5 vs 6, Rust 6 vs 5, Zig 4 vs 3 (pack v2), Go / C++ / Sh equal; 28.5 vs 29.0 min per unit. Its 122_gemm_blocked_c FAIL is a validator false FAIL (the pre-#195 lint matched `dlopen` in a comment; the file passes the fixed validator), footnoted on the board and not adjusted. E's additions stay opt-in |
+| GLM arms D, F | **not run** | Max paused the benchmark chain after E (2026-11-17). D = C + diagnostics, edit hint, verify-done; F = B at `--seed 1`, the noise floor |
 
 Max's read, and the working hypothesis: GLM-5.3-Flash is a far stronger model than
 26/71 suggests, and much of the gap is the harness around it, not the weights. Each arm
 above tests one piece of that; whatever gap remains after them is the next experiment.
-By C the gap to the reference is 17-18 units. 13 of C's 17 failures are process
+By C the gap to the reference is 20 units scored (17 raw). 13 of C's 17 failures are process
 failures, almost all a thinking turn hitting the 16,384-token output cap before the unit
 writes its file; one is a zig knowledge failure and three are algorithmic (see
 "Language-specific residue under thinking").
@@ -66,15 +67,20 @@ What it changed:
   completion tokens per unit, and passes inside the unwidened wall). No-thinking
   is recommended only if the composite with thinking off comes within noise of it.
 
-**C's final (2026-11-17): 54/71 raw, 53/71 with 122_gemm_blocked_b withheld**
-pending the integrity review, against B's 36/71: +18 on the whole suite, from one
-change, on one seed. That is more than A and B together (+10). Thinking's own
+**C's final (2026-11-17): 51/71 scored, 54/71 raw**, with 122_gemm_blocked_b,
+_d and _e withheld after the contamination scan (#195), against B's 36/71: +15
+scored (+18 raw) on the whole suite, from one change, on one seed. That is more than A and B together (+10). Thinking's own
 failure mode is now the largest one left: 13 of C's 17 failures are process failures,
-almost all a thinking turn capped at 16,384 tokens before the file is written (the thinking-cap/stall fix is a
-TODO, measured as its own arm).
+almost all a thinking turn capped at 16,384 tokens before the file is written (the
+recovery landed in #194, "Thinking stall" below; measuring it as its own arm is a
+TODO).
 
-Update again when E finishes and when the first thinking-first campaign reports
-(DeepSeek v4.1 Flash is next).
+**E finished at 50/71 (SCORE 74.7)**, one under C: diagnostics, verify-done, packs,
+the env block and wall warnings on top of thinking were a wash at one seed, so they
+stay opt-in and the serving default adds thinking alone (`SPARK_HYDRA.md` E2a:
+`INFERENCE_THINKING=on` at the gate, in Open WebUI and for the host's agents). Arms
+D and F did not run (Max paused the chain). Update again when the first
+thinking-first campaign reports (DeepSeek v4.1 Flash is next).
 
 ## GLM-5.3-Flash (spark-hydra, thinking off) — from the 2026-11-16 v5 L0 audit
 
@@ -88,7 +94,7 @@ Transcripts: `agents/logs/agent-20261116-0[6-8]*.jsonl`; L0 results
 | G2 | No-op `update_plan` loops: up to 15 of 25 turns with identical args (196, 183, 173, 178, 190). The prompt's "keep it current" wording invites it. | Don't count / nudge an `update_plan` whose args equal the current plan. | IN RUNNER V2 (#179; arm A 31/71) |
 | G3 | Identical tool call + identical result repeated: same `cat` x15 (195), same bash x19 (121), same rebuild x12 with no edit (163_b). | After 3 identical calls, append "you have seen this output N times; act on it". | IN RUNNER V2 (#179; arm A 31/71) |
 | G4 | Tool host is macOS/BSD, model assumes GNU: `sed -i 's/…'`, `cat -A`, `timeout`, `<(...)` under `/bin/sh` each cost a turn (124, 122_e, 36_c, 167, 179). | Platform line in the runner prompt; consider `bash -c` for the bash tool. | IN RUNNER V2 (#179; arm A 31/71) |
-| G5 | Thinking off: reasoning slips that thinking would likely catch — the missing `x/sqrt(2)` in N(x) debugged for 20 turns (36 b/c/d) despite the sample disagreeing; copied its own carry bug into a hand trace (163_a). | Per-request thinking (`chat_template_kwargs.enable_thinking`), verified live on TensorFold. | ARM C: 54/71 raw (53/71 scored, one unit withheld for integrity) vs B's 36/71; first 21 units 18 vs 8 (10 rescued, 0 regressed). The dominant lever (see above); the default campaign is now thinking-first |
+| G5 | Thinking off: reasoning slips that thinking would likely catch — the missing `x/sqrt(2)` in N(x) debugged for 20 turns (36 b/c/d) despite the sample disagreeing; copied its own carry bug into a hand trace (163_a). | Per-request thinking (`chat_template_kwargs.enable_thinking`), verified live on TensorFold. | ARM C: 51/71 scored (54 raw; three units withheld by the #195 integrity scan) vs B's 36/71; first 21 units 18 vs 8 (10 rescued, 0 regressed). The dominant lever (see above); the default campaign is now thinking-first, and since 2026-11-17 spark-hydra serves with thinking on by default (`SPARK_HYDRA.md` E2a) |
 | G6 | Zig 0.16 API drift: pre-0.15 `std.heap.GeneralPurposeAllocator`, `std.io.bufferedWriter`; whole budgets spent grepping lib/std (36_f, 123_f, 163_f, 122_e). | Language packs (L1) + diagnostics/escalation (L2) — the existing ablation arms. | ARM (L1/L2) |
 | G7 | A non-streaming turn ran past the gate's 600 s read timeout and the OpenAI client retried it identically: 1,200 s lost, two units never wrote code (168_c, 168_f). | Gate EDGE_READ_TIMEOUT above unit wall (done for evals, 3600); retry policy: never re-send an identical request after a read timeout; consider streaming. | PARTLY ADOPTED |
 | G8 | Hung pipelines reported as "[Errno 1] Operation not permitted" instead of a timeout (146). | Always name the timeout and its limit. | IN RUNNER V2 (#179; arm A 31/71) |
@@ -184,7 +190,8 @@ causes remain in the thinking arms, and which pack claims would remove them?
 **Data.** Arm C (runner v2 + wall-scaled turns + thinking, **no packs**: its results header
 has `packs: {}` and `diagnostics: false`): 54/71, all 71 transcripts read. Arm E (C + diagnostics
 with the edit hint + verify-done + zig pack v2 + host pack + env block + wall warnings): still
-running. **Cutoff 2026-11-17 08:17 PST**, 30/71 rows (22 pass, 8 fail); two in-flight transcripts
+running at the time of this audit; it finished later the same day at 50/71 (see "Headroom").
+**Cutoff 2026-11-17 08:17 PST**, 30/71 rows (22 pass, 8 fail); two in-flight transcripts
 were left out. Only one E zig unit (122_e) had finished. Arm B (C without thinking): 36/71 after
 merging the rerun, with no infra rows left. Tools: `evals/audit/langaudit.py` (origin/main, run
 with python3.12; it crashes on the anaconda 3.9 `python3` at `int | None`), plus an all-units

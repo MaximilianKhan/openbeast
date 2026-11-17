@@ -53,7 +53,8 @@ pip-audit -r agents/requirements.lock --disable-pip --no-deps  # …and the whol
 python3 evals/suite_stats.py --check  # docs cite the generated eval counts
 ```
 
-Two workflows gate every PR (green is required):
+Two workflows gate every PR when GitHub Actions is on (it is off for now;
+see [CI is off](#ci-is-off-check-locally-before-merging) below):
 
 - **`ci.yml`** — installs the hash-pinned closure (`pip --require-hashes -r
   agents/requirements.lock`) and checks the lock is current
@@ -72,6 +73,60 @@ PR number to land any other — see
 [`docs/UPDATING.md`](docs/UPDATING.md). **Never bump `requirements.txt`
 without the lock**: `update.sh --python` regenerates it, and CI goes red on a
 commit that moves one without the other.
+
+### CI is off: check locally before merging
+
+**Since 2026-11-17, GitHub Actions is turned off for this repo (cost).** The
+workflows above are still the definition of "green", but nothing runs them,
+so the author runs them before merging. Until a free local runner replaces
+this (`docs/TODO.md`, "A free local CI runner"):
+
+1. **On the Mac (or any dev box), from the PR branch,** with a Python ≥ 3.10
+   that has the locked deps (the eval venv works:
+   `~/.local/opt/openbeast-eval-venv/bin/python`):
+
+   ```bash
+   PY=~/.local/opt/openbeast-eval-venv/bin/python
+   $PY evals/suite_stats.py --check          # docs cite the generated eval counts
+   $PY evals/v5_board.py --check             # RESULTS / README v5 board blocks are current
+   $PY -m pytest tests/ -q                   # or, for a docs-only PR, at least the doc-pinning tests:
+   $PY -m pytest -q tests/test_suite_stats.py tests/test_beast_docs.py \
+       tests/test_beast_slot_ports_doc.py tests/test_v5_board.py
+   ruff check agents evals tests scripts extensions --select E9,F
+   ```
+
+   For a docs change, also check that every `#anchor` link in the files you
+   touched resolves (the doc-pinning tests do not cover every page).
+
+2. **The Linux-only shell suites on spark-2, in a temp clone.** Several
+   suites need GNU userland (`grep -z`, util-linux `flock`, GNU `sed`),
+   `netplan`, or other things macOS lacks, and they must run from a real
+   repository checkout, not a copied tree (`test_uninstall.sh` and others
+   fail from a non-repo copy). spark-2 runs no OpenBeast service, so a
+   scratch clone there disturbs nothing:
+
+   ```bash
+   ssh spark-2.<tailnet>.ts.net 'set -e; d=$(mktemp -d); trap "rm -rf $d" EXIT
+     git clone -q --branch <pr-branch> https://github.com/MaximilianKhan/openbeast "$d/ob"
+     cd "$d/ob" && ./tests/run_tests.sh'
+   ```
+
+   `tests/run_tests.sh` runs the shell suites the CI shell jobs ran, plus the
+   tool tests and pytest. Never run it in spark-1's `~/openbeast`: that
+   checkout is the live command center. Offline, clone from a bundle instead
+   of GitHub.
+
+3. **Merge with admin rights, results in the PR body.** Put what you ran and
+   what it printed (pass counts, `OK` lines, any skip and why) in the PR
+   description, then:
+
+   ```bash
+   gh pr merge <N> --merge --admin
+   ```
+
+   `--admin` is only for the missing status checks. It is not a licence to
+   merge a red local run: a failing check is fixed, or the PR body says
+   exactly why it is unrelated (with the same failure shown on `main`).
 
 House rules the suite enforces (so you don't discover them in review):
 

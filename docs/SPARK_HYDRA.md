@@ -4,6 +4,12 @@
 weights) serves tensor-parallel across `spark-1` + `spark-2`, with the
 OpenBeast command center on `spark-1`. Both come back by themselves after a
 reboot. `healthcheck.sh` on spark-1 reports all 9 services healthy.
+**Since 2026-11-17:** thinking is on by default for every client
+([E2a](#e2a-recommended-serving-configuration-from-v5)), the ConnectX-7
+fabric runs at MTU 9000 (RoCE `active_mtu 4096`;
+[B4](#b4-fabric-mtu-9000-spark-fabric-mtu), speed A/B not yet measured), and
+the Mac client switches between this pair and the `beast` rig
+([F2](#f2-client-mode-one-or-several-rigs)).
 
 This page takes you from bare boxes to a serving pair, start to finish, and then
 covers day-2 operations and fully offline operation. Read it top to bottom the
@@ -58,8 +64,16 @@ systemctl --user restart openbeast               # the command center (WebUI, to
   or `./stop.sh` by hand while the units are enabled, and never restart one
   rank alone ([G3](#g3-restarts-only-through-systemctl---user-while-the-unit-is-enabled)).
 - **Healthy** looks like [E4](#e4-the-healthy-state). `/api/slot` reports model
-  `GLM-5.3-Flash-EXL3`, a 1,048,576-token window and 4 slots. Logs are in
+  `GLM-5.3-Flash-EXL3`, a 1,048,576-token window and 4 slots. The window is
+  per conversation (`model.ctx`); `capacity.ctx_total` (1,986,560) is **one**
+  KV pool the 4 streams share, not 4 x 1M. Logs are in
   [G2](#g2-logs); failures are in [G8](#g8-when-x-fails-troubleshooting).
+- **Thinking is on by default** for every client that does not choose
+  (beast-gate, Open WebUI, this host's agents). The first token streams as
+  fast as before, the answer waits for the reasoning: about 5 s median for
+  everyday prompts, up to ~40 s for a coding question. Per request, per
+  client or per host it switches off:
+  [E2a](#e2a-recommended-serving-configuration-from-v5).
 
 **(b) Use it from a client.** Everything goes through beast-gate on
 `https://spark-1.tail4109f9.ts.net:8443/v1`, with a per-device key. The model
@@ -219,10 +233,10 @@ cd ~/openbeast && sudo scripts/backends/spark-fabric-mtu.sh --stage
 ```
 
 Staging changes nothing live. Doing it now means the reboot in step 6 also
-brings the rails up at 9000, so you reboot once instead of twice. This is
-VERIFY ON HARDWARE: our pair has not run at 9000 yet. To build without it,
-skip this step; `--stage` can run on any later day, followed by a reboot of
-both.
+brings the rails up at 9000, so you reboot once instead of twice. **Measured:**
+our pair has run at 9000 since 2026-11-17 (B4, `--verify` passed on both);
+its speed gain is not measured yet. To build without it, skip this step;
+`--stage` can run on any later day, followed by a reboot of both.
 
 **6. Reboot both, once** (worker first, then head). This is the docker-group
 gotcha from [B2](#b2-spark-root-setupsh-the-only-root-step-once-per-spark),
@@ -232,7 +246,7 @@ and it activates step 5. Then check on each Spark:
 systemd-run --user --wait --pipe docker info >/dev/null && echo user-manager-sees-docker
 dpkg-query -W libnccl2 && loginctl show-user "$USER" -p Linger && tailscale ip -4
 sudo ~/openbeast/scripts/backends/spark-guard.sh --status         # "rules: current", unit active
-~/openbeast/scripts/backends/spark-fabric-mtu.sh --verify <peer rail-1 IP> <peer rail-2 IP>   # if step 5 ran: VERIFIED
+~/openbeast/scripts/backends/spark-fabric-mtu.sh --verify <peer rail-1 IP> <peer rail-2 IP>   # if step 5 ran: VERIFIED (all peer IPs, one call)
 ```
 
 **7. Weights** (spark-1, then spark-2; [C1](#c1-fetch-online-or-verify-a-local-copy)–[C4](#c4-the-drafter-dflash2)).
@@ -428,11 +442,12 @@ How to reach each box:
 | Native TensorFold 1.2.7 | both | `~/.local/bin/tensorfold` (signed release). A challenger engine, **not serving** ([D2](#d2-native-tensorfold-through-spark-nodesh--spark-clustersh)) |
 | spark-guard | both | `openbeast-spark-guard.service` (system unit, `active (exited)`): an nftables table that keeps the engines' rendezvous ports on the fabric ([B3](#b3-firewall-spark-guard)) |
 
-**Checkouts, 2026-11-16 (evening).** The two Sparks are skewed again:
-spark-1's `~/openbeast` is at `29e5241a` (#181), spark-2's at `de931dfe`
-(#176), so spark-2 does not yet have `scripts/backends/spark-fabric-mtu.sh`.
-(Earlier the same day both were at `dc0a181`; on 2026-11-15 spark-1 was at
-`ecf50a2` and spark-2 at `0988641`.) Keep them on one commit: the "same repo
+**Checkouts, 2026-11-17 (evening).** Both Sparks are on one commit,
+`d3727185` (#203, the thinking default). #204 changed only the Mac client
+and docs, so neither Spark needs it to serve. (On 2026-11-16 evening they
+were skewed, spark-1 at `29e5241a` (#181) and spark-2 at `de931dfe` (#176);
+on 2026-11-15 spark-1 was at `ecf50a2` and spark-2 at `0988641`.) Keep them
+on one commit: the "same repo
 on every node" rule is what `spark-cluster.sh check` enforces, and
 [G6](#g6-updating) step 4 pulls both. Run this on each Spark, quoting the command
 for ssh:
@@ -747,12 +762,20 @@ spark-1's own key. Its warning explains how not to lock yourself out:
 
 ### B4. Fabric MTU 9000: spark-fabric-mtu
 
-**Status, 2026-11-16: ready to stage, not yet staged on either Spark.** Max:
-"We absolutely need to fix this on the next restart." The pair runs at
-netdev MTU 1500 on the ConnectX rails, which gives RoCE `active_mtu 1024`
-(seen live on spark-1: `ip -d link` says `mtu 1500 … maxmtu 9978`, and
-`ibv_devinfo -d rocep1s0f0` says `max_mtu 4096 (5)`, `active_mtu 1024 (3)`).
-The target is netdev MTU 9000, which gives `active_mtu 4096`.
+**Status, 2026-11-17: LIVE on both Sparks since 14:20.** Staged with
+`--stage` on each, both rebooted (worker, then head), then `--verify` passed
+on both: netdev MTU 9000 and RoCE `active_mtu 4096` on every rail, and
+8972-byte don't-fragment pings to the peer over both rails. `--status` on
+each Spark (no sudo) reads `MTU(now) 9000`, `active_mtu 4096` on all four
+ConnectX netdevs. **The performance A/B is not measured yet** (the plan is
+below); until it is, no speed gain is claimed anywhere.
+
+Before 2026-11-17 (Max, 2026-11-16: "We absolutely need to fix this on the
+next restart.") the pair ran at netdev MTU 1500 on the ConnectX rails, which
+gives RoCE `active_mtu 1024` (seen live on spark-1: `ip -d link` said
+`mtu 1500 … maxmtu 9978`, and `ibv_devinfo -d rocep1s0f0` said
+`max_mtu 4096 (5)`, `active_mtu 1024 (3)`). The target was netdev MTU 9000,
+which gives `active_mtu 4096`.
 
 **Why it matters.** RoCE carries each RDMA message in packets of
 `active_mtu` bytes. At 1024, a bulk transfer is 4x as many packets as at
@@ -870,8 +893,10 @@ up, as on any boot. Then `scripts/healthcheck.sh` on spark-1 should report
 all 9 services healthy (E4).
 
 **Step 4: verify, on each Spark.** `--verify` takes the **peer's** fabric
-IPv4 on every Up rail. Read them on the peer, do not copy them from here (Sync
-can re-address the rails):
+IPv4 on every Up rail, **all of them in one call**. Running it once per IP
+fails: each run checks every local Up rail, and a rail with no peer IP given
+is a FAIL. Read the IPs on the peer, do not copy them from here (Sync can
+re-address the rails):
 
 ```bash
 ssh spark-2.tail4109f9.ts.net "ip -br addr | grep -E '^enp1|^enP2'"   # the peer's rail addresses
@@ -937,6 +962,12 @@ for rnd in range(3):
 print(f"4-stream aggregate median: {statistics.median(aggs):.1f} tok/s")
 PY
 ```
+
+**Status of the A/B, 2026-11-17: not run.** No MTU-1500 "A" was recorded
+before the reboot, so the B run at 9000 needs a baseline: either an `--unstage`
+window (reboot both into 1500, run A, `--stage` and reboot again) or, weaker,
+the 2026-11-13 numbers below, which differ in more than the MTU (the KV pool
+size since 2026-11-15). Record which one was used.
 
 Check that `prompt_tokens` is near 45K (2500 filler lines is an estimate of
 ~18 tokens a line; change `range(2500)` until it is, then keep it the same for A and B).
@@ -2254,13 +2285,15 @@ ones whose "done when" is not yet true.
 
 | Change | Where | Do | Done when |
 |---|---|---|---|
-| spark-guard rules (#168, and any change to spark.env ports or the fabric) | each Spark, **sudo** | `sudo scripts/backends/spark-guard.sh --status`; if `STALE`, `sudo scripts/backends/spark-guard.sh` ([B3](#b3-firewall-spark-guard)) | `rules: current` on both |
+| spark-guard rules (#168, and any change to spark.env ports or the fabric) | each Spark, **sudo** | `scripts/backends/spark-guard.sh --status` (the rules readout works without sudo); if `STALE`, `sudo scripts/backends/spark-guard.sh` ([B3](#b3-firewall-spark-guard)) | `rules: current` on both |
 | the gate's in-flight cap follows `INFERENCE_SLOTS` (#168) | spark-1 | nothing beyond step 5, with `EDGE_MAX_INFLIGHT` unset | `/api/slot` `admission.per_device_inflight` is 4 (live since 2026-11-16) |
 | `TS_HOSTNAME` (#160) | spark-1 (and any Spark that will run `setup-tailscale.sh`) | `grep -q '^TS_HOSTNAME=' openbeast.conf \|\| echo 'TS_HOSTNAME=spark-1' >> openbeast.conf` ([E6](#e6-publish-on-the-tailnet-setup-tailscalesh-as-tailscaleds-operator)) | the key is set (spark-1: yes) |
 | Open WebUI 0.13.3, SearXNG, ntfy (#161) | spark-1 | step 3 before, step 5 does the rest | WebUI healthy, chats still there; `docker exec open-webui sh -c 'grep -m1 version /app/package.json'` says 0.13.3 |
 | `ARTIFACT_LOGIN_FROM=unix` (#165) | spark-1 | `echo 'ARTIFACT_LOGIN_FROM=unix' >> openbeast.conf`, `systemctl --user restart openbeast`, then `./scripts/setup-tailscale.sh --publish-artifact` (as operator, no sudo) | `tailscale serve status` shows `:8446` → `unix:…/.run/artifact.sock` |
 | engines hardening (#174) | each Spark | only if native TensorFold is in use: `scripts/engine.sh status`, then `scripts/backends/spark-cluster.sh check` from spark-1 | `check` passes (same commit, same engine pins) |
-| fabric MTU 9000 (#178) | each Spark, **sudo**, then a reboot of both | `sudo scripts/backends/spark-fabric-mtu.sh --stage` on both, then the reboot and `--verify` in [B4](#b4-fabric-mtu-9000-spark-fabric-mtu) | `--verify` prints `VERIFIED` on both |
+| fabric MTU 9000 (#178) | each Spark, **sudo**, then a reboot of both | `sudo scripts/backends/spark-fabric-mtu.sh --stage` on both, then the reboot and `--verify` (all peer IPs in one call) in [B4](#b4-fabric-mtu-9000-spark-fabric-mtu) | `--verify` prints `VERIFIED` on both (the pair: done 2026-11-17) |
+| thinking on by default (#202, #203) | spark-1 | `printf '%s\n' INFERENCE_THINKING=on AGENT_MAX_TOKENS=16384 >> openbeast.conf`, then step 5 (which re-runs `configure-webui.sh`) ([E2a](#e2a-recommended-serving-configuration-from-v5)) | `/gate/health` says `"thinking_default":"on"`; Admin Panel → Functions → "Thinking Default" on (the pair: done 2026-11-17) |
+| multi-rig client (#204) | each Mac / Linux client | step 7; an older single-rig install migrates on the first `openbeast-client` command ([F2](#f2-client-mode-one-or-several-rigs)) | `openbeast-client rigs` lists the rig with `*`; `scripts/client-e2e.sh` all PASS |
 | random seed for Regenerate (#181) | spark-1 | step 5 (or `./scripts/configure-webui.sh` alone, no restart) | Admin Panel → Functions → "Random Seed", on and global |
 | `EDGE_READ_TIMEOUT` | spark-1, when an eval harness targets the pair | `echo 'EDGE_READ_TIMEOUT=3600' >> openbeast.conf`, `systemctl --user restart openbeast` | set (spark-1: 3600) |
 | zig 0.16.0 for `language_reference` | spark-1 (and the harness host) | `ark restore zig` from a drive, or the pinned tarball ([H7](#h7-test-and-language-toolchains)) | `zig version` prints 0.16.0 |
@@ -2280,23 +2313,26 @@ order from [B4](#b4-fabric-mtu-9000-spark-fabric-mtu) step 3: stop inference,
 reboot the worker, then the head. Offline: carry new .debs and pins as in
 [H3](#h3-debs-libnccl2-and-tailscale). OpenBeast never upgrades the driver.
 
-**Pending on the live pair (read 2026-11-16, evening).** What the checklist
-above still has to do on spark-1 and spark-2:
+**Pending on the live pair (read 2026-11-17, evening, over ssh, no sudo).**
+What the checklist above still has to do on spark-1 and spark-2:
 
-- **spark-2 is behind**: `de931dfe` (#176), while spark-1 is at `29e5241a`
-  (#181). spark-2 has no `spark-fabric-mtu.sh` until it pulls (step 4).
-- **spark-1's stack predates its checkout**: the `openbeast` unit started
-  08:44, the pull to `29e5241a` was at 13:26, so the random seed filter is
-  not live until `./scripts/configure-webui.sh` or a restart (step 5).
-- **spark-guard `STALE` on both** (sudo, step 6).
+- **spark-guard `STALE` on both** (sudo, step 6): the installed rules guard
+  `29501` but not `29502`.
 - **`ARTIFACT_LOGIN_FROM` unset** on spark-1: beast-artifact still honours
   the login header from loopback, and `:8446` proxies to `127.0.0.1:3004`
   (step 6; [Known issues](#known-issues-and-errata-v190)).
-- **MTU not staged on either Spark** (sudo, then a reboot of both; step 6).
 - **No zig and no docs mirror** on spark-1 (step 6).
+- **The MTU A/B** ([B4](#b4-fabric-mtu-9000-spark-fabric-mtu)): the MTU
+  itself is done.
 - From earlier: the plaintext gate keys in `~/.config/openbeast/gate-keys/`
   and `~/.config/openbeast/webui-max-password` are still on spark-1
   ([E7](#e7-device-keys-for-beast-gate), [E5](#e5-webui-auth-and-the-admin-account-before-publishing)).
+
+Done since the 2026-11-16 reading: both Sparks pulled to one commit
+(`d3727185`, #203); the command center restarted, so the random seed and
+Thinking Default filters are live; `INFERENCE_THINKING=on` and
+`AGENT_MAX_TOKENS=16384` in spark-1's `openbeast.conf`; MTU 9000 staged,
+rebooted and verified on both.
 
 The detail behind steps 4 and 6 follows.
 
@@ -2350,6 +2386,39 @@ and anything else on `:8000` / `:8443` still get TensorFold's fixed default
 | WebUI admin password | WebUI Settings → Account, then update `WEBUI_ADMIN_PASSWORD` if it is the configured admin | `systemctl --user restart openbeast` so `configure-webui.sh` uses it |
 | HF token | replace `~/.config/openbeast/hf-token` (0600) | only used online |
 | TensorFold / vLLM API key files | rewrite the 0600 file named in `spark.env`, restart all ranks | the recipe (v0.6.0) has no key |
+
+**A key that was printed.** Rotate at once, then check both sides:
+
+```bash
+cd ~/openbeast && ./scripts/clients.sh rotate macbook     # on spark-1: the new key prints once
+# on the device: write the new key straight into its 0600 file (on the Mac,
+# ~/.config/openbeast/spark-hydra-gate.key), then from the device:
+curl -s -o /dev/null -w '%{http_code}\n' https://spark-1.tail4109f9.ts.net:8443/v1/models \
+  -H "Authorization: Bearer $(cat ~/.config/openbeast/spark-hydra-gate.key)"   # 200 with the new key
+```
+
+The old key must now get 401 from the same call. `rotate` is hot-reloaded:
+no restart of the command center is needed.
+
+**Incident, 2026-11-17.** The Mac's gate key was printed into an agent
+transcript: a BSD `sed` redaction that used `\|` alternation matched nothing
+on macOS (BSD basic regexes have no `\|`), so the "redacted" output was the
+raw key. The key was rotated the same minute with `clients.sh rotate
+macbook`; the old key answers 401, the new one 200. Lessons, for anyone
+(human or agent) handling secrets on these boxes:
+
+- **Never print a secret to redact it afterwards.** Read keys from their
+  0600 files inside the command that uses them (`$(cat …)`, as above,
+  `--api-key-stdin <`, `--key-file`), so the value never reaches a terminal
+  or a log.
+- **Never redact with `sed` alternation.** `\|` is a GNU extension; BSD sed
+  (macOS) silently treats it as a literal, matches nothing and passes the
+  secret through. GNU and BSD also disagree on `-E`/`-r` and `\b`. If output
+  must be filtered, use python (`re.sub`), which behaves the same on every
+  box, and test the filter on a dummy value first.
+- **Assume an agent transcript is a shared log.** It is kept, exported and
+  sometimes published; a key that reached one is a leaked key. Rotate, do
+  not argue.
 
 ### G8. When X fails: troubleshooting
 
@@ -2659,7 +2728,10 @@ The same order with every command, per host, online and offline side by side:
 
 DFlash2, 4 parallel streams, 1M-token window, fp8 KV (pool ~2.2-2.6M tokens at
 the time; `KV_POOL_GIB=10` since 2026-11-15), q4 dense, thinking off by default
-(Ablit), RoCE all-gathers on both rails.
+(Ablit), RoCE all-gathers on both rails at MTU 1500. These numbers predate two
+changes of 2026-11-17: thinking on by default for every client (E2a; it
+lengthens the wait for the answer, not the decode rate) and MTU 9000 on the
+fabric (B4; not re-measured).
 
 | | 1 stream | 4 streams aggregate (each) | TTFT |
 |---|---|---|---|
@@ -2762,8 +2834,9 @@ published, from the 2026-11-15 review:
 - ~~**`setup-client.sh` writes the opencode v1 MCP shape**~~ Fixed: it writes
   `mcp.servers.<name>` on opencode v2 and moves other v1 entries in (F3;
   verified on the Mac 2026-11-17).
-- **Checkout skew**: back on 2026-11-16 evening: spark-1 at `29e5241a`,
-  spark-2 at `de931dfe` (0). [G6](#g6-updating) step 4 pulls both.
+- **Checkout skew**: on 2026-11-16 evening spark-1 was at `29e5241a` and
+  spark-2 at `de931dfe` (0). Fixed by 2026-11-17: both at `d3727185`.
+  [G6](#g6-updating) step 4 pulls both.
 
 From the 2026-11-16 review (fixes in this checkout; the live boxes pick them
 up on the operator steps named):
@@ -2795,22 +2868,24 @@ up on the operator steps named):
   (`TENSORFOLD_API_KEY_FILE`; spark-2's `~/.config/openbeast` holds only
   `hf-token`). It matters only for a native TensorFold launch (D2): write the
   0600 key file on spark-2 first.
-- **The RoCE fabric runs at `active_mtu 1024`** (netdev MTU 1500). **Status,
-  2026-11-16: the fix is ready to stage for the next reboot of both Sparks**:
-  `spark-fabric-mtu.sh --stage` on each, reboot both, `--verify`, then the
-  A/B. Runbook, rollback and measurement plan:
-  [B4](#b4-fabric-mtu-9000-spark-fabric-mtu).
+- ~~**The RoCE fabric runs at `active_mtu 1024`** (netdev MTU 1500).~~
+  **Fixed 2026-11-17:** MTU 9000 staged on each Spark, both rebooted, and
+  `--verify` passed on both (`active_mtu 4096`, 8972-byte don't-fragment
+  pings on both rails). Still open: the performance A/B. Runbook, rollback
+  and measurement plan: [B4](#b4-fabric-mtu-9000-spark-fabric-mtu).
 
 ### Not done yet
 
 - zig for `language_reference` on a Spark (H7), and a beast-docs mirror on spark-1 (F5).
-- The fabric MTU at 9000 (B4): staged on neither Spark yet, then the A/B.
+- The fabric MTU A/B (B4): MTU 9000 is live since 2026-11-17; its speed
+  effect on prefill and decode is unmeasured.
 - A `svc:spark-hydra` Tailscale Service name (an admin-console step), and the
   beast rig's hydra node for the pair (`https://spark-1.tail4109f9.ts.net:8443`,
   `engine = "openai"`, a gate device key, `slots = 4`, upstream
   `GLM-5.3-Flash-EXL3`), once the rig is back on. `hydra.toml.example`'s
   `[nodes.sparks]` is already that shape.
-- Switching the primary between `beast` and `spark-hydra` (clients + hydra).
+- Switching the primary between `beast` and `spark-hydra` on the hydra
+  side. Clients switch since #204 (`openbeast-client use <rig>`, F2).
 - A `PARALLEL=8` measurement; native TensorFold 1.2.7 (D2) vs the recipe.
 - A fully offline rebuild of the pair, end to end (H9).
 - `tests/test_scripts.sh` showed 7 failures when run from a non-git copy on
