@@ -29,8 +29,8 @@ as a measured model never does (`evals/reference_attempt.py`):
 ## Run it
 
 ```bash
-. ~/.local/opt/openbeast-eval-env.sh
-python3 evals/reference/prepare.py --suite v5 --env-sh ". ~/.local/opt/openbeast-eval-env.sh" \
+. ~/.config/openbeast/eval-env.sh
+python3 evals/reference/prepare.py --suite v5 --env-sh ". ~/.config/openbeast/eval-env.sh" \
     --python "$OPENBEAST_EVAL_PY" \
     --forbid <any other run's results or audit directories on this host>
 # -> evals/results/reference/claude-opus-5-5-v5-<ts>/args.json

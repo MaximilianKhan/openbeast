@@ -31,11 +31,11 @@ stands and is never re-rolled. The procedure is step 3 of
 ## Run it
 
 ```bash
-. ~/.local/opt/openbeast-eval-env.sh          # the harness host's toolchains + $OPENBEAST_EVAL_PY (docs/SPARK_HYDRA.md F6)
+. ~/.config/openbeast/eval-env.sh          # the harness host's toolchains + $OPENBEAST_EVAL_PY (docs/SPARK_HYDRA.md F6)
 RUN=evals/results/audit-<model>-<arm>          # anywhere; evals/results/ is untracked
 python3 evals/audit/prepare.py $(python3 evals/campaign.py paths --campaign v5-harness --model-name "<Model>" --arm A) \
     --out-dir $RUN --model "<Model>" --serving "2x DGX Spark, TensorFold, thinking off" \
-    --env-sh ". ~/.local/opt/openbeast-eval-env.sh" --python "$OPENBEAST_EVAL_PY"
+    --env-sh ". ~/.config/openbeast/eval-env.sh" --python "$OPENBEAST_EVAL_PY"
 # an L0 profile row instead: pass its results file, e.g. evals/results/eval-<slug>-L0-<ts>.json
 ```
 

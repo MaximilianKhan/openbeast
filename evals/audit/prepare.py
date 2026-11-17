@@ -5,7 +5,7 @@ task groups, and the rendered auditor / skeptic prompts.
   python3 evals/audit/prepare.py RESULTS.json [MORE.json ...] --out-dir DIR \\
       --model "GLM-5.3-Flash" --serving "2x DGX Spark, TensorFold, thinking off" \\
       [--repo TREE] [--logs-dir TREE/agents/logs] \\
-      [--env-sh ". ~/.local/opt/openbeast-eval-env.sh"] [--python PY]
+      [--env-sh ". ~/.config/openbeast/eval-env.sh"] [--python PY]
 
 Several results files (a main run and its reruns) merge last-wins, except
 that an infra row never replaces a real verdict (evals/campaign.py's rule).
@@ -125,7 +125,7 @@ def main(argv=None) -> int:
     ap.add_argument("--python", default=os.environ.get("OPENBEAST_EVAL_PY") or sys.executable)
     ap.add_argument("--env-sh", default="",
                     help="shell prefix that puts the toolchains on PATH, e.g. "
-                         "'. ~/.local/opt/openbeast-eval-env.sh'")
+                         "'. ~/.config/openbeast/eval-env.sh'")
     ap.add_argument("--toolchains", default="python 3.12 (the eval interpreter), go, a C/C++ "
                     "compiler, rustc, zig 0.16.0 (with --env-sh applied)")
     ap.add_argument("--readonly", action="append", default=[],

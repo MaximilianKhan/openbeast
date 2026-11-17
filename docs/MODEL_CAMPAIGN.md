@@ -87,25 +87,28 @@ validator fix.
 **1b. The harness host has pinned toolchains.** These are python 3.12 (a
 durable venv with `agents/requirements.lock`), zig exactly `0.16.0`, rustc,
 go, a C/C++ compiler, git, and shellcheck, all in a directory that lasts.
-The recipe is [SPARK_HYDRA.md F6](SPARK_HYDRA.md#f6-the-eval-harness-host-benchmarking-the-pair).
-Today's host keeps them in `~/.local/opt` and sources one file:
+`scripts/eval-host.sh` provisions them from the pins in
+`evals/toolchains.lock` (#189), per platform, under
+`~/.local/opt/openbeast-eval`, never as root, idempotent. Offline, it
+installs from an ark drive or a flat mirror with `--from`. The recipe is
+[SPARK_HYDRA.md F6](SPARK_HYDRA.md#f6-the-eval-harness-host-benchmarking-the-pair).
+Write its exports to a file once, so every later command (and every audit
+or reference agent) can source the same one:
 
 ```bash
-. ~/.local/opt/openbeast-eval-env.sh     # PATH (zig, cargo), RUSTUP_HOME, CARGO_HOME, OPENBEAST_EVAL_PY
-"$OPENBEAST_EVAL_PY" -c 'import openai' && zig version && rustc --version && go version
+./scripts/eval-host.sh setup                                  # install what is missing or wrong (exit 3 = sha256 mismatch)
+./scripts/eval-host.sh env > ~/.config/openbeast/eval-env.sh  # PATH, RUSTUP_HOME, CARGO_HOME, OPENBEAST_EVAL_PY
+. ~/.config/openbeast/eval-env.sh
+./scripts/eval-host.sh check && "$OPENBEAST_EVAL_PY" -c 'import openai'
 ```
 
-*Hook for auto-provisioning.* PR #189 (in flight) adds
-`scripts/eval-host.sh check|setup|env|fetch` and `evals/toolchains.lock`.
-They pin and install all of this per platform, under
-`~/.local/opt/openbeast-eval`, offline from an ark drive with `--from`.
-Once it is merged, provision with `scripts/eval-host.sh setup` and follow
-SPARK_HYDRA F6 as #189 rewrites it. `campaign.py run` already runs
-`preflight.host_check` from the campaign file (`scripts/eval-host.sh
-check`) whenever the script exists in the tree. A failed check refuses the
-campaign. Until #189 lands, the preflight falls back to `evals/profile.py`'s
-check: `HOST_TOOLS` on PATH, zig `0.16.0`, the escalation gate serving zig,
-and a declared finite reasoning budget.
+`run_eval.py` and `profile.py` run the same check before a live run and
+provision when it fails. `campaign.py run` runs it too
+(`preflight.host_check` in the campaign file, `scripts/eval-host.sh check`)
+together with `evals/profile.py`'s preflight. A failure refuses the
+campaign. (The 2026-11-16 GLM host predates the script: its toolchains
+were hand-placed under `~/.local/opt` and sourced from
+`~/.local/opt/openbeast-eval-env.sh`.)
 
 *Lesson: a durable venv.* On 2026-11-16 at 16:46, something rewrote the
 python symlink of a scratch venv under a running arm. 22 units of arm B
@@ -157,7 +160,7 @@ no seed, then twice with seed 1. The campaign's arm **F** (B under `--seed
 ## 2. L0 baseline: the daily config
 
 ```bash
-. ~/.local/opt/openbeast-eval-env.sh
+. ~/.config/openbeast/eval-env.sh
 python3 evals/profile.py --model <slug> --budget-h 4 --jobs 4
 # or explicitly:
 python3 evals/profile.py --model-name "<Model>" --base-url https://spark-1.tail4109f9.ts.net:8443/v1 \
@@ -194,7 +197,7 @@ skeptic (who argues the other way). Full instructions:
 RUN=evals/results/audit-<slug>-L0
 python3 evals/audit/prepare.py evals/results/eval-<slug>-L0-<ts>.json --out-dir $RUN \
     --model "<Model>" --serving "2x DGX Spark, <engine>, thinking off" \
-    --env-sh ". ~/.local/opt/openbeast-eval-env.sh" --python "$OPENBEAST_EVAL_PY"
+    --env-sh ". ~/.config/openbeast/eval-env.sh" --python "$OPENBEAST_EVAL_PY"
 # Claude Code: run the Workflow evals/audit/failure-audit.workflow.js with $RUN/args.json as args,
 #              save its result as $RUN/audit-result.json
 python3 evals/audit/verdicts.py $RUN/audit-result.json --out $RUN/final.json --md $RUN/verdicts.md
@@ -243,7 +246,7 @@ integrity scan checks for forbidden reads. Instructions:
 [`evals/reference/README.md`](../evals/reference/README.md).
 
 ```bash
-python3 evals/reference/prepare.py --suite v5 --env-sh ". ~/.local/opt/openbeast-eval-env.sh" --python "$OPENBEAST_EVAL_PY"
+python3 evals/reference/prepare.py --suite v5 --env-sh ". ~/.config/openbeast/eval-env.sh" --python "$OPENBEAST_EVAL_PY"
 # Claude Code: run the Workflow evals/reference/reference.workflow.js with <run-dir>/args.json
 python3 evals/reference/integrity_scan.py ~/.claude/projects/<project>/<session>/subagents/workflows/<run id>/ \
     --forbid-from <run-dir>/args.json
@@ -259,7 +262,7 @@ fails is the model's (or the harness's) to win.
 ## 5. Harness arms A-F
 
 ```bash
-. ~/.local/opt/openbeast-eval-env.sh
+. ~/.config/openbeast/eval-env.sh
 python3 evals/campaign.py run --campaign v5-harness --model <slug> --jobs 4 \
     --baseline L0=evals/results/eval-<slug>-L0-<ts>.json
 # explicitly:
@@ -428,7 +431,7 @@ That chain was a hand-written shell script. With this tooling, the same
 night is one command:
 
 ```bash
-. ~/.local/opt/openbeast-eval-env.sh
+. ~/.config/openbeast/eval-env.sh
 python3 evals/campaign.py run --campaign v5-harness --model glm-5.3-flash --jobs 4 \
     --baseline L0=evals/results/eval-glm-5-3-flash-L0-20261116-060847.json
 ```

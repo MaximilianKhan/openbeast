@@ -5,7 +5,7 @@ and grader prompt rendered.
 
   python3 evals/reference/prepare.py --suite v5 \\
       [--run-dir evals/results/reference/opus-5.5-v5-<ts>] \\
-      [--env-sh ". ~/.local/opt/openbeast-eval-env.sh"] [--python PY] \\
+      [--env-sh ". ~/.config/openbeast/eval-env.sh"] [--python PY] \\
       [--units 36_black_scholes_a,...] [--forbid DIR ...]
 
 Writes <run-dir>/args.json for evals/reference/reference.workflow.js and
