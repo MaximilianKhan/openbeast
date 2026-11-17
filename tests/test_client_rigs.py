@@ -389,3 +389,100 @@ def test_model_limits_come_from_the_slot_and_output_is_overridable(tmp_path, rig
         row = e.cfg()["provider"][pid]["models"]["GLM-5.3-Flash-EXL3"]
         assert row["limit"] == {"context": 1048576, "output": 16384}, (pid, row)
     assert e.reg()["rigs"]["spark-hydra"]["output_limit"] == 16384
+
+
+# ---- the soul: opencode `instructions` -------------------------------------------
+# Open WebUI's system prompt (system-prompt.md + system-prompt-tools.md) reaches
+# opencode through `instructions`: copies under ~/.openbeast-client/prompts/,
+# in front of the user's own entries, which are never touched.
+
+SOUL = ("system-prompt.md", "system-prompt-tools.md", "opencode-client.md")
+
+
+def _soul_dir(e):
+    return e.home / ".openbeast-client" / "prompts"
+
+
+def test_sync_adds_the_soul_and_keeps_user_instructions(tmp_path, rig_a):
+    e = Env(tmp_path, rig_a)
+    cfg = e.cfg()
+    cfg["instructions"] = ["CONTRIBUTING.md", "~/rules/mine.md"]
+    e.oc.write_text(json.dumps(cfg))
+    rc, out = e.run("refresh-config")
+    assert rc == 0, out
+    d = _soul_dir(e)
+    want = [str(d / n) for n in SOUL]
+    ins = e.cfg()["instructions"]
+    assert ins == want + ["CONTRIBUTING.md", "~/rules/mine.md"], ins
+    # copies of the checkout's files, byte for byte (never edited)
+    for n in SOUL[:2]:
+        assert (d / n).read_text() == open(os.path.join(REPO, n)).read()
+    note = (d / "opencode-client.md").read_text()
+    assert "openbeast-tools_read_file" in note and ".manifest.jsonl" in note
+    assert "ok opencode instructions: system-prompt.md, system-prompt-tools.md, opencode-client.md" in out, out
+    assert _mode(e.oc) == 0o600                      # still holds the key
+
+
+def test_soul_is_idempotent_and_follows_use(tmp_path, rig_a):
+    e = Env(tmp_path, rig_a)
+    e.run("refresh-config")
+    first = e.cfg()["instructions"]
+    stamps = {n: os.stat(_soul_dir(e) / n).st_mtime_ns for n in SOUL}
+    rc, out = e.run("refresh-config")
+    assert rc == 0, out
+    assert e.cfg()["instructions"] == first and len(first) == 3
+    # unchanged content is not rewritten: opencode announces every change
+    assert {n: os.stat(_soul_dir(e) / n).st_mtime_ns for n in SOUL} == stamps
+    # a stale copy (an older checkout) is refreshed by the next sync, here `use`
+    (_soul_dir(e) / "system-prompt.md").write_text("old soul\n")
+    rc, out = e.run("use", "spark-hydra")
+    assert rc == 0, out
+    assert (_soul_dir(e) / "system-prompt.md").read_text() == open(os.path.join(REPO, "system-prompt.md")).read()
+    assert e.cfg()["instructions"] == first
+
+
+def test_soul_subcommand_check_and_remove_only_ours(tmp_path, rig_a):
+    e = Env(tmp_path, rig_a)
+    cfg = e.cfg()
+    cfg["instructions"] = ["docs/a.md"]
+    e.oc.write_text(json.dumps(cfg))
+    e.oc.chmod(0o600)
+    env = {"HOME": str(e.home), "XDG_CONFIG_HOME": str(e.xdg), "PATH": str(e.stub) + ":/usr/bin:/bin"}
+    rigs_py = os.path.join(REPO, "scripts", "lib", "client_rigs.py")
+
+    def soul(*args):
+        r = subprocess.run([sys.executable, rigs_py, "soul", *args], capture_output=True, text=True, env=env)
+        return r.returncode, r.stdout + r.stderr
+
+    rc, out = soul("--check")
+    assert rc == 1 and "does not load the OpenBeast soul" in out, out
+    rc, out = soul()
+    assert rc == 0, out
+    assert e.cfg()["instructions"][-1] == "docs/a.md" and len(e.cfg()["instructions"]) == 4
+    assert _mode(e.oc) == 0o600                      # the mode is kept
+    rc, out = soul()                                 # idempotent
+    assert rc == 0 and len(e.cfg()["instructions"]) == 4, out
+    # an opencode that ignores `instructions` (2.0.x) is named, with the fix
+    (e.stub / "opencode").write_text("#!/bin/sh\necho 'opencode v2.0.25'\n")
+    (e.stub / "opencode").chmod(0o755)
+    rc, out = soul("--check")
+    assert rc == 3 and "2.0.25 ignores the `instructions` setting" in out and "brew upgrade opencode" in out, out
+    (e.stub / "opencode").write_text("#!/bin/sh\necho 'opencode v2.3.0'\n")
+    rc, out = soul("--check")
+    assert rc == 0 and "opencode loads the OpenBeast soul" in out, out
+    rc, out = soul("--remove")
+    assert rc == 0 and "removed 3 of ours" in out, out
+    assert e.cfg()["instructions"] == ["docs/a.md"]
+    rc, out = soul("--remove")
+    assert rc == 0 and "removed 0 of ours" in out and e.cfg()["instructions"] == ["docs/a.md"], out
+
+
+def test_soul_never_replaces_a_non_list_instructions(tmp_path, rig_a):
+    e = Env(tmp_path, rig_a)
+    cfg = e.cfg()
+    cfg["instructions"] = "mine.md"                  # not opencode's shape: not ours to fix
+    e.oc.write_text(json.dumps(cfg))
+    rc, out = e.run("refresh-config")
+    assert rc == 0, out
+    assert e.cfg()["instructions"] == "mine.md"
+    assert "soul not wired — 'instructions' in opencode.json is not a list" in out, out

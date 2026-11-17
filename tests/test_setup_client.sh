@@ -394,6 +394,58 @@ else
   fail "atomic config (rc=$RC, mode=$(_mode "$OC")): $OUT"
 fi
 
+# ---------------------------------------------------------------------------
+echo ""
+echo "7. the soul: opencode 'instructions' get the WebUI system prompt:"
+# From here on the clone carries the real registry helper and prompt files
+# (the earlier cases run without them on purpose: step 4/5a are skipped there).
+install -m 644 "$REPO_DIR/scripts/lib/client_rigs.py" "$R/scripts/lib/"
+install -m 644 "$REPO_DIR/system-prompt.md" "$REPO_DIR/system-prompt-tools.md" "$R/"
+OC="$T/hsoul/.config/opencode/opencode.json"; mkdir -p "$(dirname "$OC")"
+echo '{"instructions":["CONTRIBUTING.md","~/rules/mine.md"],"model":"mine"}' > "$OC"
+_ins() { "$REAL_PY" -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])).get("instructions")))' "$OC"; }
+SD="$T/hsoul/.openbeast-client/prompts"
+WANT="[\"$SD/system-prompt.md\", \"$SD/system-prompt-tools.md\", \"$SD/opencode-client.md\", \"CONTRIBUTING.md\", \"~/rules/mine.md\"]"
+run hsoul 200 200 -- --host rig.example --no-search
+if [[ $RC -eq 0 ]] && [[ "$(_ins)" == "$WANT" ]] \
+   && cmp -s "$SD/system-prompt.md" "$REPO_DIR/system-prompt.md" \
+   && cmp -s "$SD/system-prompt-tools.md" "$REPO_DIR/system-prompt-tools.md" \
+   && has "$OUT" "opencode instructions: system-prompt.md, system-prompt-tools.md, opencode-client.md"; then
+  pass "install puts the soul + tool guide (copied) in front of the user's own instructions"
+else
+  fail "soul install (rc=$RC): $(_ins) $OUT"
+fi
+_first="$(cat "$OC")"
+run hsoul 200 200 -- --host rig.example --no-search
+if [[ $RC -eq 0 ]] && [[ "$(_ins)" == "$WANT" ]] && [[ "$(cat "$OC")" == "$_first" ]]; then
+  pass "a re-run is idempotent: no duplicate entries, same file"
+else
+  fail "soul re-run (rc=$RC): $(_ins)"
+fi
+printf '#!/bin/bash\n[[ "$1" == --version ]] && echo "opencode v2.0.25"\nexit 0\n' > "$BIN/opencode"
+run hsoul 200 200 -- --host rig.example --no-search
+if [[ $RC -eq 0 ]] && has "$OUT" "2.0.25 ignores the \`instructions\` setting" && has "$OUT" "brew upgrade opencode"; then
+  pass "an opencode that ignores 'instructions' (2.0.x) is named, with the upgrade"
+else
+  fail "old-opencode warning (rc=$RC): $OUT"
+fi
+printf '#!/bin/bash\nexit 0\n' > "$BIN/opencode"
+run hsoul 200 200 -- --uninstall
+if [[ "$(_ins)" == '["CONTRIBUTING.md", "~/rules/mine.md"]' ]] && has "$OUT" "instructions (3 soul files)" \
+   && [[ ! -e "$SD" ]] && grep -q '"model": "mine"' "$OC"; then
+  pass "--uninstall removes only our instruction entries (and the copies); the user's stay"
+else
+  fail "soul uninstall: $(_ins) $OUT"
+fi
+OC="$T/hsoul2/.config/opencode/opencode.json"; mkdir -p "$(dirname "$OC")"; echo '{}' > "$OC"
+run hsoul2 200 200 -- --host rig.example --no-search
+run hsoul2 200 200 -- --uninstall
+if [[ "$(_ins)" == "null" ]]; then
+  pass "with no user entries, uninstall leaves no empty 'instructions' behind"
+else
+  fail "soul uninstall, no user entries: $(_ins)"
+fi
+
 echo ""
 echo "================================"
 echo "Results: $PASS passed, $FAIL failed"

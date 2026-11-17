@@ -1753,6 +1753,8 @@ cd <any project> && opencode                 # model picker: openbeast-rig/… (
 opencode run -m openbeast-spark-hydra/GLM-5.3-Flash-EXL3 "…"   # one-shot, a chosen rig
 openbeast-client agent "task"                # the OpenBeast CLI agent, tools here, thinking on the active rig
 scripts/client-e2e.sh                        # the end-to-end check (F2), PASS/FAIL per line
+openbeast-client refresh-config              # also re-copies the soul into opencode's instructions (F3)
+brew upgrade opencode && opencode service restart   # opencode >= 2.2.0 loads `instructions`; 2.0.25 ignores them
 curl -s https://spark-1.tail4109f9.ts.net:8444/api/slot | python3 -m json.tool   # raw discovery, no key
 ```
 
@@ -1834,8 +1836,8 @@ each by an atomic rename at 0600:
   URLs, the key. Lines it does not own (`OPENBEAST_SEARXNG_SECRET`, your own)
   are kept.
 - `~/.config/opencode/opencode.json`: the providers, the `openbeast-tools`
-  environment and the default model (F3). The previous file is kept as
-  `opencode.json.openbeast-prev`.
+  environment, the default model and the soul's `instructions` entries (F3).
+  The previous file is kept as `opencode.json.openbeast-prev`.
 - `~/.config/openbeast/rigs.json`: the registry, `active` set.
 
 **The registry**, `~/.config/openbeast/rigs.json` (0600, `scripts/lib/client_rigs.py`):
@@ -1881,6 +1883,7 @@ scripts/client-e2e.sh --keep                 # keep the temp project + opencode 
 | (c) | `web_search` through the rig's SearXNG (the MCP tool, called directly) |
 | (d) | `use <other rig>`: refused with nothing changed when it is offline, `--force` switches and `status` fails gracefully, `use <rig>` comes back green (a real round trip when the other rig is up). opencode.json is backed up first (`opencode.json.bak-e2e-<time>`, 0600) and a trap restores the rig |
 | (e) | the `openbeast-tools` MCP server lists its tools |
+| (g) | the soul: opencode's own parse of the config lists `~/.openbeast-client/prompts/system-prompt.md` (and the tool guide) in `instructions`, the installed opencode loads that setting (not 2.0.x), and a fresh `opencode run` asked "who do you serve?" answers Max, which only the soul tells it |
 
 **Measured on the Mac, 2026-11-17** (against spark-1, beast offline, thinking
 on at the gate): 6 passed, 0 failed. (a) green, `GLM-5.3-Flash-EXL3`, 0/4
@@ -1912,9 +1915,50 @@ and leaves everything else in the file alone:
     "openbeast-beast":       { … }                       // once beast has a key
   },
   "model": "openbeast-rig/GLM-5.3-Flash-EXL3",
-  "small_model": "openbeast-rig/GLM-5.3-Flash-EXL3"
+  "small_model": "openbeast-rig/GLM-5.3-Flash-EXL3",
+  "instructions": [
+    "/Users/<you>/.openbeast-client/prompts/system-prompt.md",        // the soul
+    "/Users/<you>/.openbeast-client/prompts/system-prompt-tools.md",  // the tool guide
+    "/Users/<you>/.openbeast-client/prompts/opencode-client.md",      // client corrections
+    "…your own entries, untouched"
+  ]
 }
 ```
+
+- **The soul.** Every opencode session loads the same system prompt Open WebUI
+  runs with on the rigs: `system-prompt.md` (the soul) and
+  `system-prompt-tools.md` (the tool conventions), the two files
+  `scripts/configure-webui.sh` concatenates into the WebUI model's prompt.
+  They are **copied** to `~/.openbeast-client/prompts/` (a moved or deleted
+  checkout cannot break them, and opencode skips a missing instruction file
+  without a word) and listed **first** in `instructions`; every entry that
+  does not point there is yours and is never touched or reordered. Every sync
+  re-copies them (setup, `use`, `rig add/remove`, `refresh-config`, `update`),
+  rewriting a file only when its content changed: opencode watches
+  instruction files and announces each change to running sessions.
+  `--uninstall` removes our entries and the copies. The source files are
+  owner-maintained and never edited by the client.
+- **Why the tool guide is included, plus a third file.** Most of
+  `system-prompt-tools.md` holds on the client: the same `agents/mcp_server.py`
+  serves `read_file`, `edit_file`, `bash`, `web_search`, `fetch`,
+  `start_agent`, `skill` and the rest here. Two things do not, and
+  `opencode-client.md` (written by `scripts/lib/client_rigs.py`, a few lines)
+  says so: in opencode the tools are named `openbeast-tools_<tool>`, and the
+  "Where files go" paragraph (a private chat workspace with a
+  `.manifest.jsonl` index) is Open WebUI's: here relative paths resolve
+  against the tool server's working directory, so the note asks for absolute
+  paths.
+- **opencode version.** `instructions` is in the v2 schema, but **2.0.25
+  does not load it**: its instruction plugin reads only `AGENTS.md` files.
+  Measured 2026-11-17 against a stub provider that records each request: on
+  2.0.25 the system message carries neither file; on 2.2.0 and 2.3.0 it
+  carries both, absolute and `~/` paths alike. So on 2.0.x the entries are
+  written but inert, and `setup-client.sh`, `openbeast-client status` and
+  `client-e2e.sh` (g) say so. The fix is `brew upgrade opencode` (or
+  `opencode upgrade`), then `opencode service restart`, which ends the
+  running sessions, so pick the moment. No `~/.config/opencode/AGENTS.md` is
+  written as a fallback: that file is the user's, and on a current opencode
+  it would load the soul twice.
 
 - **One provider per rig**, `openbeast-<rig>`, for every rig with a key (a
   keyless rig gets none until `rig add <rig> --api-key-stdin`: it would only

@@ -3,7 +3,7 @@
 # real active rig (docs/SPARK_HYDRA.md § F2 "Testing from the Mac").
 #
 #   scripts/client-e2e.sh [--rig <name>] [--expect-model <id>] [--expect-slots N]
-#                         [--offline-rig <name>] [--skip <a|b|c|d|e|f>]... [--keep]
+#                         [--offline-rig <name>] [--skip <a|b|c|d|e|f|g>]... [--keep]
 #
 # A few short requests, each printed as one PASS / FAIL line:
 #   a  openbeast-client status is green, names the active rig (and, when
@@ -19,6 +19,10 @@
 #   d  `use <offline-rig>` is refused with nothing changed, `--force` switches
 #      and status fails gracefully, `use <rig>` comes back green
 #   e  the openbeast-tools MCP server lists its tools
+#   g  the soul: opencode's own parse of the config lists the WebUI system
+#      prompt files in `instructions` (copied to ~/.openbeast-client/prompts),
+#      and a fresh `opencode run` asked "who do you serve?" names Max — an
+#      answer only the soul (system-prompt.md) can give it
 #
 # Step d SWITCHES the real client config and switches it back (a trap restores
 # the original rig if the script dies midway); opencode.json is backed up
@@ -48,7 +52,7 @@ while [ $# -gt 0 ]; do
     --offline-rig)   OFFLINE_RIG="${2:?}"; shift ;;
     --skip)          SKIP="$SKIP${2:?} "; shift ;;
     --keep)          KEEP=1 ;;
-    -h|--help)       sed -n '2,27p' "$_self" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)       sed -n '2,31p' "$_self" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
   esac
   shift
@@ -218,6 +222,58 @@ PY
     printf '%s\n' "$_sum" | grep '^ERROR' | sed 's/^/      /'
   done
   [ $_b_ok = 1 ] || fail "(b) opencode run did not prove local tools + rig inference (logs: $WORK, --keep to inspect)"
+fi
+
+# ---- g. the soul: opencode loads the WebUI system prompt ----------------------
+if ! skipped g; then
+  if ! command -v opencode >/dev/null 2>&1; then
+    fail "(g) opencode is not installed"
+  else
+    _why=""
+    # 1. opencode's OWN parse of the config (the same source step f reads):
+    # our instruction files are listed and exist.
+    _ins="$(cd "$WORK" && opencode debug config 2>/dev/null | "$VENV_PY" -c '
+import json, os, sys
+mine = os.path.realpath(os.path.expanduser("~/.openbeast-client/prompts")) + os.sep
+seen = []
+for src in json.load(sys.stdin):
+    for e in ((src.get("info") or {}).get("instructions") or []):
+        p = os.path.realpath(os.path.expanduser(e))
+        if p.startswith(mine) and os.path.isfile(p):
+            seen.append(os.path.basename(p))
+print(" ".join(seen) or "none")' 2>&1)"
+    has " $_ins " " system-prompt.md " || _why="$_why system-prompt.md not in opencode's instructions ($_ins);"
+    # 2. The installed opencode must actually LOAD the setting (2.0.x ignores it).
+    _warn="$("$VENV_PY" "$REPO/scripts/lib/client_rigs.py" soul --check 2>&1)"; _wrc=$?
+    [ $_wrc -ne 3 ] || _why="$_why ${_warn#! };"
+    # 3. Behaviour: only the soul tells the model who it serves.
+    _g_ans=""
+    for _try in 1 2; do
+      (cd "$WORK" && opencode run --standalone --auto --format json -m "openbeast-rig/$MODEL" \
+        "Who do you serve? Answer with just the person's name, from your instructions.") \
+        > "$WORK/soul$_try.jsonl" 2> "$WORK/soul$_try.err"
+      _g_ans="$("$VENV_PY" - "$WORK/soul$_try.jsonl" <<'PY'
+import json, sys
+text = []
+for line in open(sys.argv[1]):
+    try:
+        e = json.loads(line)
+    except Exception:
+        continue
+    if e.get("type") == "text":
+        text.append((e.get("part") or {}).get("text") or "")
+print(" ".join(t.strip() for t in text).replace("\n", " ")[:200])
+PY
+)"
+      has "$_g_ans" "Max" && break
+    done
+    has "$_g_ans" "Max" || _why="$_why asked who it serves, it answered '${_g_ans:-nothing}' (no 'Max');"
+    if [ -z "$_why" ]; then
+      pass "(g) the soul is loaded: instructions [$_ins]; 'who do you serve?' -> '$_g_ans'"
+    else
+      fail "(g)$_why"
+    fi
+  fi
 fi
 
 # ---- c + e. the MCP server: tool list, web_search ------------------------------
