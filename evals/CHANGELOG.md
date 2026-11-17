@@ -1,5 +1,97 @@
 # Eval suite changelog
 
+## v5.0, G24-G27 harness integrity fixes (2026-11-17) — era roll, harness8
+
+Four defects found by a transcript audit of GLM-5.3-Flash's v5 runs
+(`docs/HARNESS_NOTES.md`, "Language-specific residue under thinking" and
+G24-G27). Every one is in the agent's environment, so **rows from before
+this change do not replay into the new era**.
+
+- **G24, the trailing-dot path bug (a bug in every arm since the R1 path
+  guard, 2026-09-10).** `run_agent` extracted the task's `/tmp/eval*` paths
+  with `/tmp/eval[\w\-./]*`, which keeps a sentence-final period: "Create
+  /tmp/eval_gemm/gemm.c." handed the agent `/tmp/eval_gemm/gemm.c.` in
+  `OPENBEAST_TASK_PATHS`. The done-check (`tools.task_done`) then refused to
+  finish until a file literally named `gemm.c.` existed, the path guard
+  compared writes against it, and G22's environment block printed it. 27 of
+  320 units (25 of the 71 v5 units) named a dotted path: 122 b-e, 163 a-f
+  (`/tmp/eval_divmod.`), 167 a-f, 168 a-f, 178, 190, 04, 175. Measured by
+  `evals/audit/integrity_scan.py --trailing-dot` (turns after the first
+  `task_done` refused for a dotted path; turns whose calls named one):
+
+  | Arm | Units hit | Turns after the refusal | Turns touching a dotted path | Hit units that failed |
+  |---|---|---|---|---|
+  | L0 | 2 | 17 | 11 | none |
+  | L1 / L2 (one window, not separable) | 1 | 8 | 4 | none |
+  | A | 1 | 10 | 2 | none |
+  | B | 7 | 113 | 56 | 122_c, 178, 190 |
+  | C | 11 | 85 | 35 | none |
+  | E (30-38 of 71, still running) | 10 | 29 | 25 | 122_c, 167_a |
+
+  GLM copied its solution to `gemm.c.`, compiled `gemm.rs.` (`invalid
+  character '.' in crate name`), and in C 122_b went looking for the
+  checker (G25). The validator itself always read the real path, so no
+  verdict was flipped directly; the cost is turns and wall, and the units
+  that failed after a refusal spent up to 43 turns there (B 122_c).
+  The fix: `run_eval.task_paths()` strips trailing periods (no real path
+  here ends in one), for `OPENBEAST_TASK_PATHS` and for `fixture_roots`
+  (the fixture lock of `/tmp/eval_divmod.`); `tools._task_expected_paths`
+  strips them too. `task_paths` and `_FIXTURE_PATH` join
+  `cache.HARNESS_FUNCTIONS` / `HARNESS_CONSTANTS`.
+- **G25, the eval seal reaches past the answer key.** In arm C 122_b the
+  agent's bash read Claude Code workflow journals under `~/.claude/projects`,
+  `evals/run_eval.py` and `agents/tools.py`, and a cached validation of an
+  earlier run in `evals/cache/` ("FAIL: mismatch at case 0"). Under
+  `OPENBEAST_EVAL=1` the agent may no longer read: every checkout's whole
+  `evals/` (tasks, refs, suites, results, cache, vlib, the harness), its
+  `tests/` and `agents/logs/` (this checkout, every `git worktree list`
+  checkout, and the git dir), the same trees in any other clone by pattern,
+  `~/.claude`, and Claude Code's scratch dirs `/tmp/claude-<uid>`. The task's
+  `/tmp/eval*` dirs, `$TMPDIR`, the toolchains on PATH (even one unpacked in
+  a scratch dir) and the system stay readable. File tools refuse by path
+  with a message that says what is sealed; on macOS the bash tool runs under
+  a sandbox-exec profile that denies the reads in the kernel and appends
+  "[eval sandbox: 'Operation not permitted' means a sealed path — ...]".
+  Linux: the file tools and the command-text check refuse, the kernel does
+  not (as before; see the residual gaps in README).
+- **G25, the integrity scan of model transcripts.**
+  `evals/audit/integrity_scan.py LABEL=results.json[,more]@TREE ...` scans
+  every transcript of an arm for tool calls that read or listed those
+  locations, per unit, with the row's verdict, and marks a unit
+  CONTAMINATED when a read succeeded. It never edits a results file. Over
+  every GLM-5.3-Flash v5 arm (L0, L1, L2, A, B, C, E so far; 2026-11-17):
+  **3 contaminated units, all in arm C, all PASS**: 122_b (read
+  `~/.claude/projects/.../workflows/*/journal.jsonl`, `evals/cache/*122_gemm_blocked_b*`,
+  listed `evals/`, read `evals/run_eval.py` and `agents/tools.py`), 122_d
+  (`ls /private/tmp/claude-501/`, then a `grep -r` over `~/.claude` that
+  timed out with partial output) and 122_e (a `grep -r` over `~/.claude`
+  that timed out with no output, then `ls -d ~/.claude`). Their C verdicts
+  are reported as contaminated; nothing else in any arm read a sealed path
+  (the zig stdlib reads of the 11-16 runs were the toolchain's own tree,
+  which then lived in a scratch dir).
+- **G26, 122's source lint read comments.** The forbidden-API check
+  rejected `// no BLAS, no dlopen` (arm E 122_c: a correct C++ solution
+  scored FAIL; its final file, replayed, now passes). All five variants
+  shared the lint. It now ignores comments, matches the loader/BLAS words
+  with string and char contents blanked, and keeps strings for the
+  language rules that need them (`import "syscall"`, `extern "C"`,
+  `asm(".incbin")`); Go's `//go:` and `#cgo` directives stay visible. The
+  five references now open with such a comment, and all five units were
+  re-proven with `tests/prove_task.py` (PROVEN). Task hash of the five
+  122 units moves.
+- **G27, the agent's `python3` is the validators'.** The tool shell
+  inherited the operator's PATH, where `python3` was anaconda 3.9.13 while
+  validators run `OPENBEAST_EVAL_PY` (3.12). Under eval the bash tool now
+  puts a private dir first on PATH whose `python`, `python3` and
+  `python3.X` exec `OPENBEAST_EVAL_PY` (or `$OPENBEAST_EVAL_PREFIX/venv`),
+  and nothing else from the venv (no `pip`); on macOS the venv and the shim
+  are write-denied to the agent. G22's environment block probes through
+  the same PATH. Outside eval nothing changes.
+- **Era:** `HARNESS_VERSION` harness7 -> harness8 (`run_agent` calls
+  `task_paths`); `agents/tools.py` and `agents/runner.py` changed, so the
+  context hash moves for every row; the 122 task hash moves. `vlib.py`,
+  `SUITE_VERSION` and `system-prompt.md` are unchanged.
+
 ## v5.0, a capped think keeps its tail + zig pack v3 (2026-11-17): era roll
 
 Evidence: arm C's 71 transcripts (`docs/HARNESS_NOTES.md` "Thinking stall"

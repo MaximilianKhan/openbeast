@@ -27,11 +27,12 @@ def sealed(tmp_path, monkeypatch):
     """A fake checkout's evals/{tasks,refs,suites}, sealed via the env hook,
     plus an unsealed sibling dir."""
     ev = tmp_path / "repo" / "evals"
-    for d in ("tasks", "refs", "suites", "results"):
+    for d in ("tasks", "refs", "suites", "notes"):
         (ev / d).mkdir(parents=True)
     (ev / "tasks" / "163_x.json").write_text('{"validation": "SECRET-ORACLE"}')
     (ev / "refs" / "ref.py").write_text("print('SECRET-REF')\n")
-    (ev / "results" / "open.txt").write_text("not sealed\n")
+    # (results/ is sealed too since G24; notes/ is a name no seal covers)
+    (ev / "notes" / "open.txt").write_text("not sealed\n")
     monkeypatch.setenv("OPENBEAST_EVAL_SEALED_DIRS",
                        os.pathsep.join(str(ev / d) for d in ("tasks", "refs", "suites")))
     monkeypatch.setenv("OPENBEAST_EVAL", "1")
@@ -41,14 +42,16 @@ def sealed(tmp_path, monkeypatch):
 def test_read_file_refuses_sealed_paths(sealed):
     out = tools.read_file(str(sealed / "tasks" / "163_x.json"))
     assert out.startswith("Error: refusing") and "SECRET" not in out
-    assert "not sealed" in tools.read_file(str(sealed / "results" / "open.txt"))
+    assert "not sealed" in tools.read_file(str(sealed / "notes" / "open.txt"))
 
 
 def test_this_checkouts_own_suite_is_sealed(monkeypatch):
     monkeypatch.setenv("OPENBEAST_EVAL", "1")
     out = tools.read_file(str(ROOT / "evals" / "suites" / "v5.json"))
     assert out.startswith("Error: refusing")
-    assert tools.read_file(str(ROOT / "evals" / "SUITE_VERSION")).startswith("[")
+    # G24: the whole evals/ tree is sealed, not just the answer key
+    assert tools.read_file(str(ROOT / "evals" / "SUITE_VERSION")).startswith("Error: refusing")
+    assert tools.read_file(str(ROOT / "agents" / "runner.py")).startswith("[")
 
 
 def test_symlink_into_the_seal_is_refused(sealed, tmp_path):
