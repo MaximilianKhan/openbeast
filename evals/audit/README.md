@@ -16,6 +16,7 @@ stands and is never re-rolled. The procedure is step 3 of
 | `verdicts.py` | the audit's output → final verdicts (the skeptic wins) + a Markdown table + rerun candidates |
 | `transcripts.py` | maps result rows to `agents/logs/agent-*.jsonl` (run_eval does not record the path) |
 | `langaudit.py` | the per-language failure taxonomy (knowledge / lint / borrow / host / research), the evidence for or against a language pack |
+| `integrity_scan.py` | every transcript of an arm: tool calls that read or listed what a measured unit must not see (a checkout's `evals/`, `tests/`, `agents/logs/`, `~/.claude`, `/tmp/claude-<uid>`, ledgers), per unit with its verdict; CONTAMINATED units are reported as such, never re-scored. `--trailing-dot` counts the turns the G24 path bug cost. The reference row's scan is `evals/reference/integrity_scan.py` |
 
 ## The verdicts
 
@@ -72,6 +73,18 @@ A fix to a task or validator changes the task's hash, and a runner/tools fix
 moves the era. Rerun rows from after such a fix are measured under the new
 code: say so wherever you report them, and prefer a full rerun of the arm
 when the fix is harness-wide.
+
+## The integrity scan
+
+```bash
+python3 evals/audit/integrity_scan.py --trailing-dot --json $RUN/integrity.json \
+    "C=<tree>/evals/results/eval-<slug>-<ts>.json@<tree>" "E=...@<tree2>"
+python3 evals/audit/integrity_scan.py "ALL=@<tree>"     # every transcript of a tree
+```
+
+Each `LABEL=FILES@TREE` is one arm (FILES: its results file and reruns,
+comma-separated; TREE: the checkout it ran from). Exit 1 when any unit is
+contaminated. Run it before an arm's rows are reported (G25).
 
 ## The language taxonomy
 
