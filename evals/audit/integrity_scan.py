@@ -13,7 +13,7 @@ transcripts. Every transcript that started inside a results file's window
 is scanned, and attributed to its unit by task text (transcripts.py); the
 row's verdict is shown for the transcript the row was scored on.
 
-Forbidden (G24, the eval sandbox of agents/tools.py since #PR): a checkout's
+Forbidden (G24, the eval sandbox of agents/tools.py since #195): a checkout's
 evals/ (tasks, refs, suites, results, cache, vlib, the harness), its tests/
 and agents/logs/, ~/.claude, Claude Code's scratch dirs (/tmp/claude-<uid>)
 and run ledgers. A tool call is checked on its PATH arguments (bash: the
