@@ -875,6 +875,7 @@ slim checkout. Flags:
 | `--host <fqdn>` | rig's tailnet FQDN — for a second rig, or a `TS_HOSTNAME` other than `beast` |
 | `--api-key <key>` | the enrolled device key (or the rig's `LLAMA_API_KEY`); also read from `$OPENBEAST_API_KEY` |
 | `--api-key-stdin` | the same key, read from stdin (a hidden prompt on a terminal) so it never appears in `ps`; preferred on a shared machine |
+| `--name <rig>` | the name this rig gets in the client's rig registry (default: the key file's name minus `-gate`, else the host's first label) |
 | `--no-search` | skip search wiring entirely |
 | `--local-search` | run SearXNG in a container on the client instead of using the rig's `:8889` (needs Docker Desktop/Engine with the compose plugin) |
 | `--uninstall` | remove everything below |
@@ -908,8 +909,17 @@ openbeast-client status        # client doctor + live beast-slot view
 openbeast-client agent "task"  # CLI agent HERE, thinking on the rig
 openbeast-client search up     # local SearXNG lifecycle (--local-search only)
 openbeast-client update        # refresh the checkout + pinned deps
+openbeast-client rigs          # every registered rig, reachable or not; * = active
+openbeast-client use <rig>     # switch the active rig (env + opencode.json, atomically)
 openbeast-client uninstall
 ```
+
+**Several rigs** (e.g. `beast` and the `spark-hydra` pair): install once, then
+`openbeast-client rig add <name> --host <fqdn> --api-key-stdin < <key file>`
+per extra rig and `openbeast-client use <name>` to switch. OpenCode gets one
+provider per rig (`openbeast-<name>`) next to `openbeast-rig`, the active one,
+so each session can pick its rig. The full flow, and the end-to-end check
+`scripts/client-e2e.sh`: [SPARK_HYDRA.md § F2](SPARK_HYDRA.md#f2-client-mode-one-or-several-rigs).
 
 `status` is the one to run first: it checks the env file, venv packages,
 tailscale, the rig's `/health` **and** `/v1/models` (so a wrong or revoked key
