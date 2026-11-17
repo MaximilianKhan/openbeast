@@ -449,7 +449,10 @@ python3 evals/campaign.py run --campaign v5-harness --model glm-5.3-flash --jobs
 - [ ] Per-stream decode under 4-way load (§1d). Below 8 tok/s, resize the
       client timeout and `EDGE_READ_TIMEOUT` before L0.
 - [ ] A `benchmark_all.py` MODELS entry (§0.4), with a declared
-      `reasoning_budget`.
+      `reasoning_budget`. `v5-harness.json` declares `--reasoning-budget 0`
+      (thinking off as the daily config, with thinking as arm C's change).
+      If DeepSeek's daily config thinks, copy the file and change
+      `common.args` and arm C: the arms must start from the daily config.
 - [ ] §1: re-prove the suite if anything changed since the last proof,
       `admission_check` at `--jobs 4`, and `EDGE_READ_TIMEOUT` still 3600.
 - [ ] §2 L0 profile, §3 audit and taxonomy, §4 reuse the v5 Opus ledger
