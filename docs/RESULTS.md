@@ -22,6 +22,12 @@ How rows are built:
   validator interpreter failed to start, a validator timeout, a server
   error). A repair run fills in lost units; it never re-rolls a real verdict.
   A unit still lost after the merge counts as a fail.
+- **Exclusions.** A unit under integrity review (or found contaminated) is
+  listed in [`evals/boards/v5/exclusions.json`](../evals/boards/v5/exclusions.json)
+  and counts as not passed; the footnote gives the raw count. Validator
+  problems known but not yet fixed are footnoted there too, without
+  adjusting the score. A scan's verdicts are applied by editing that file
+  and running `python3 evals/v5_board.py --write`.
 - **Status.** "board protocol (L0)": the v5 headline protocol, bare harness,
   each unit's own wall and turn budget. "experiment arm": the run changed the
   budget (wall-scaled turns, a scaled wall) or the harness (packs,
@@ -41,10 +47,12 @@ How rows are built:
 
 | # | Model | Host | Best configuration | Passed | SCORE | Py | Go | C | C++ | Rust | Zig | Sh | Mean / unit | Date | Result file | Status |
 |---:|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|
-| 1 | **GLM-5.3-Flash** | DGX Spark pair, TensorFold, EXL3 | thinking on, runner v2, wall-scaled turns, wall ×2 | **54/71** | **79.0** | 24/32 | 6/8 | 7/8 | 6/8 | 6/8 | 4/6 | 1/1 | 29.0 min | 2026-11-16 | [eval-glm-5-3-flash-v2-turns-think-L0-20261116-195724.json](../evals/boards/v5/eval-glm-5-3-flash-v2-turns-think-L0-20261116-195724.json) | experiment arm (wall-scaled turns, wall ×2) |
+| 1 | **GLM-5.3-Flash** | DGX Spark pair, TensorFold, EXL3 | thinking on, runner v2, wall-scaled turns, wall ×2 | **53/71**\* | **78.2** | 24/32 | 6/8 | 6/8 | 6/8 | 6/8 | 4/6 | 1/1 | 29.0 min | 2026-11-16 | [eval-glm-5-3-flash-v2-turns-think-L0-20261116-195724.json](../evals/boards/v5/eval-glm-5-3-flash-v2-turns-think-L0-20261116-195724.json) | experiment arm (wall-scaled turns, wall ×2) |
 | ref | *Claude Opus 5.5* (reference) | Anthropic API | Claude Code tools, no turn cap, wall ×2 (68/71 at the 1× wall); solver never saw validator output | *71/71* | *100.0* | 32/32 | 8/8 | 8/8 | 8/8 | 8/8 | 6/6 | 1/1 | 3.7 min | 2026-11-16 | [reference-claude-opus-5-5-v5-20261116.jsonl](../evals/boards/v5/reference-claude-opus-5-5-v5-20261116.jsonl) | reference ceiling, not ranked: a different scaffold |
 | — | Qwen3.8 27B Uncensored MTP (the shipped default) |  | not yet run on v5 |  |  |  |  |  |  |  |  |  |  |  |  | |
 | — | Qwen3.6 27B (v4 #1) |  | not yet run on v5 |  |  |  |  |  |  |  |  |  |  |  |  | |
+
+\* GLM-5.3-Flash, GLM-C: 54/71 raw; 1 unit (122_gemm_blocked_b) excluded pending integrity review. 122_gemm_blocked_c is possibly a validator false FAIL (rejected for "dlopen" in a comment; a validator fix is in flight); not adjusted.
 <!-- v5-board:end -->
 
 ### Every v5 configuration measured
@@ -61,8 +69,10 @@ change on top of the previous. Single seed each.
 | GLM-5.3-Flash | DGX Spark pair, TensorFold, EXL3 | GLM-L0 | thinking off, runner v1 (the L0 profile) | 26/71 | 48.2 | 50.8 | 40.5 | 16/32 | 3/8 | 1/8 | 3/8 | 3/8 | 0/6 | 0/1 | 6.8 min | 2026-11-16 | [eval-glm-5-3-flash-L0-20261116-060847.json](../evals/boards/v5/eval-glm-5-3-flash-L0-20261116-060847.json), [eval-glm-5-3-flash-L0-20261116-090009.json](../evals/boards/v5/eval-glm-5-3-flash-L0-20261116-090009.json) | board protocol (L0); the second file reruns 4 units (2 validator timeouts) |
 | GLM-5.3-Flash | DGX Spark pair, TensorFold, EXL3 | GLM-A (v5-harness A) | thinking off, runner v2 | 31/71 | 56.9 | 60.0 | 47.7 | 19/32 | 2/8 | 3/8 | 3/8 | 2/8 | 1/6 | 1/1 | 6.7 min | 2026-11-16 | [eval-glm-5-3-flash-v2-L0-20261116-135857.json](../evals/boards/v5/eval-glm-5-3-flash-v2-L0-20261116-135857.json) | board protocol (L0) |
 | GLM-5.3-Flash | DGX Spark pair, TensorFold, EXL3 | GLM-B (v5-harness B) | thinking off, runner v2, wall-scaled turns | 36/71 | 60.4 | 63.1 | 52.3 | 19/32 | 4/8 | 3/8 | 4/8 | 5/8 | 0/6 | 1/1 | 11.7 min | 2026-11-16 | [eval-glm-5-3-flash-v2-turns-L0-20261116-160623.json](../evals/boards/v5/eval-glm-5-3-flash-v2-turns-L0-20261116-160623.json), [eval-glm-5-3-flash-v2-turns-L0-20261116-184943.json](../evals/boards/v5/eval-glm-5-3-flash-v2-turns-L0-20261116-184943.json) | experiment arm (wall-scaled turns); the second file repairs 24 units lost to an eval-interpreter incident |
-| GLM-5.3-Flash | DGX Spark pair, TensorFold, EXL3 | GLM-C (v5-harness C) | thinking on, runner v2, wall-scaled turns, wall ×2 | 54/71 | 79.0 | 75.4 | 89.7 | 24/32 | 6/8 | 7/8 | 6/8 | 6/8 | 4/6 | 1/1 | 29.0 min | 2026-11-16 | [eval-glm-5-3-flash-v2-turns-think-L0-20261116-195724.json](../evals/boards/v5/eval-glm-5-3-flash-v2-turns-think-L0-20261116-195724.json) | experiment arm (wall-scaled turns, wall ×2) |
+| GLM-5.3-Flash | DGX Spark pair, TensorFold, EXL3 | GLM-C (v5-harness C) | thinking on, runner v2, wall-scaled turns, wall ×2 | 53/71\* | 78.2 | 75.4 | 86.7 | 24/32 | 6/8 | 6/8 | 6/8 | 6/8 | 4/6 | 1/1 | 29.0 min | 2026-11-16 | [eval-glm-5-3-flash-v2-turns-think-L0-20261116-195724.json](../evals/boards/v5/eval-glm-5-3-flash-v2-turns-think-L0-20261116-195724.json) | experiment arm (wall-scaled turns, wall ×2) |
 | Claude Opus 5.5 | Anthropic API | OPUS-REF | Claude Code tools, no turn cap, wall ×2 (68/71 at the 1× wall); solver never saw validator output | 71/71 | 100.0 | 100.0 | 100.0 | 32/32 | 8/8 | 8/8 | 8/8 | 8/8 | 6/6 | 1/1 | 3.7 min | 2026-11-16 | [reference-claude-opus-5-5-v5-20261116.jsonl](../evals/boards/v5/reference-claude-opus-5-5-v5-20261116.jsonl) | reference ceiling, not ranked: a different scaffold; 68/71 at the 1× wall |
+
+\* GLM-5.3-Flash, GLM-C: 54/71 raw; 1 unit (122_gemm_blocked_b) excluded pending integrity review. 122_gemm_blocked_c is possibly a validator false FAIL (rejected for "dlopen" in a comment; a validator fix is in flight); not adjusted.
 <!-- v5-runs:end -->
 
 Cross-system benchmark results. Each section below is one host system. Models

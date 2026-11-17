@@ -168,13 +168,34 @@ def test_add_run_copies_and_replaces(tmp_path):
                           "campaign_arm": "arm E"}]
 
 
+def test_exclusions_count_as_not_passed_and_footnote(tmp_path):
+    excl = {"exclusions": [{"unit": "1_a_go", "run": "M-strong", "reason": "pending integrity review"},
+                           {"unit": "2_b", "file": "n.json", "reason": "contaminated"}],
+            "validator_notes": [{"unit": "2_b", "run": "M-weak", "note": "a validator false FAIL"}]}
+    b = v5_board.build(board(tmp_path), base_dir=str(tmp_path), manifest=MANIFEST, exclusions=excl)
+    runs = {r["id"]: r for r in b["runs"]}
+    assert runs["M-strong"]["passed"] == 2 and runs["M-strong"]["passed_raw"] == 3
+    assert runs["M-strong"]["excluded"] == {"1_a_go": "pending integrity review"}
+    assert runs["N"]["passed"] == 1 and runs["N"]["excluded"] == {"2_b": "contaminated"}
+    assert runs["M-weak"]["passed"] == 1 and runs["M-weak"]["excluded"] == {}  # a note never adjusts
+    assert runs["REF"]["excluded"] == {}                                    # run/file scoping
+    text = v5_board.render_board(b)
+    assert "**2/3**\\*" in text
+    assert "\\* Model M, M-strong: 3/3 raw; 1 unit (1_a_go) excluded pending integrity review." in text
+    runs_text = v5_board.render_runs(b)
+    assert "2_b is a validator false FAIL; not adjusted" in runs_text
+    # an absent exclusions file excludes nothing
+    assert v5_board.load_exclusions(str(tmp_path / "none.json")) == {"exclusions": [], "validator_notes": []}
+
+
 def test_committed_board_numbers():
     """The committed inputs reproduce the numbers the docs claim."""
     b = v5_board.build()
     runs = {r["id"]: r for r in b["runs"]}
     assert b["units"] == 71 and b["bases"] == 34
     assert {k: runs[k]["passed"] for k in runs} == {
-        "GLM-L0": 26, "GLM-A": 31, "GLM-B": 36, "GLM-C": 54, "OPUS-REF": 71}
+        "GLM-L0": 26, "GLM-A": 31, "GLM-B": 36, "GLM-C": 53, "OPUS-REF": 71}
+    assert runs["GLM-C"]["passed_raw"] == 54  # 122_gemm_blocked_b excluded pending review
     assert runs["OPUS-REF"]["passed_strict_wall"] == 68
     assert all(not r["lost"] for r in runs.values())
     best = {r["model"]: r["id"] for r in b["best"]}

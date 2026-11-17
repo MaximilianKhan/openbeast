@@ -58,6 +58,10 @@ import scoring   # noqa: E402  (compute_solve_breadth, ineligibility_reasons)
 
 BOARD_DIR = os.path.join(EVALS_DIR, "boards", "v5")
 BOARD_FILE = os.path.join(BOARD_DIR, "board.json")
+# Units withheld from a run's score (an integrity review, a contaminated
+# run) and validator notes shown without adjusting anything. Data, not code:
+# an integrity scan's verdicts are applied by editing this file + --write.
+EXCLUSIONS_FILE = os.path.join(BOARD_DIR, "exclusions.json")
 MANIFEST = os.path.join(EVALS_DIR, "suites", "v5.json")
 
 # Docs that hold a generated block, and the path prefix from that doc to the
@@ -102,6 +106,27 @@ def infra_reason(row: dict) -> str | None:
     return None
 
 
+def load_exclusions(path: str = EXCLUSIONS_FILE) -> dict:
+    """{"exclusions": [{unit, run | file, reason}], "validator_notes":
+    [{unit, run | file, note}]}; an absent file excludes nothing."""
+    if not os.path.exists(path):
+        return {"exclusions": [], "validator_notes": []}
+    with open(path, encoding="utf-8") as f:
+        d = json.load(f)
+    return {"exclusions": d.get("exclusions") or [],
+            "validator_notes": d.get("validator_notes") or []}
+
+
+def applies(entry: dict, run: dict) -> bool:
+    """An entry names its run by board.json id ("run") or by one of its
+    files ("file"); an entry naming neither applies to every run."""
+    if entry.get("run") is not None and entry["run"] != run["id"]:
+        return False
+    if entry.get("file") is not None and entry["file"] not in run["files"]:
+        return False
+    return True
+
+
 def merge_runs(paths: list[str]) -> tuple[dict, dict]:
     """(header of the first file, {unit: row}) over a main run and its repair
     runs: a later row replaces an earlier one only if the earlier is an
@@ -144,19 +169,30 @@ def experiment_reasons(header: dict, rows: dict) -> list[str]:
     return reasons
 
 
-def score_run(run: dict, manifest: dict, base_dir: str = BOARD_DIR) -> dict:
+def score_run(run: dict, manifest: dict, base_dir: str = BOARD_DIR,
+              exclusions: dict | None = None) -> dict:
+    """A run's numbers. An excluded unit counts as NOT passed (the
+    conservative figure); `passed_raw` keeps the unadjusted count."""
+    exclusions = exclusions or {}
+    excluded = {e["unit"]: e.get("reason", "excluded")
+                for e in exclusions.get("exclusions", []) if applies(e, run)}
+    vnotes = {e["unit"]: e.get("note", "") for e in exclusions.get("validator_notes", [])
+              if applies(e, run)}
     paths = [os.path.join(base_dir, f) for f in run["files"]]
     if run.get("reference"):
         header, rows = load_reference(paths[0])
     else:
         header, rows = merge_runs(paths)
-    scored, lost, secs = [], {}, []
+    scored, lost, secs, raw = [], {}, [], 0
     by_lang = {lang: [0, 0] for lang, _ in LANGS}
     for uid, meta in manifest.items():
         r = rows.get(uid)
         why = "missing" if r is None else (None if run.get("reference")
                                            else infra_reason(r))
         passed = bool(r and not why and r.get("passed"))
+        raw += passed
+        if uid in excluded:
+            passed = False
         if why:
             lost[uid] = why
         elif isinstance(r.get("elapsed_seconds"), (int, float)):
@@ -177,6 +213,9 @@ def score_run(run: dict, manifest: dict, base_dir: str = BOARD_DIR) -> dict:
         "by_lang": {k: tuple(v) for k, v in by_lang.items()},
         "mean_s": round(sum(secs) / len(secs), 1) if secs else None,
         "lost": lost,
+        "passed_raw": raw,
+        "excluded": {u: why for u, why in excluded.items() if u in manifest},
+        "validator_notes": {u: n for u, n in vnotes.items() if u in manifest},
         "experiment": [] if run.get("reference") else experiment_reasons(header, rows),
     }
     if run.get("reference"):
@@ -203,10 +242,11 @@ def _neg_date(r: dict) -> tuple:
 
 
 def build(board: dict | None = None, base_dir: str = BOARD_DIR,
-          manifest: dict | None = None) -> dict:
+          manifest: dict | None = None, exclusions: dict | None = None) -> dict:
     board = board if board is not None else load_board()
     manifest = manifest if manifest is not None else load_manifest()
-    runs = [score_run(r, manifest, base_dir) for r in board["runs"]]
+    exclusions = exclusions if exclusions is not None else load_exclusions()
+    runs = [score_run(r, manifest, base_dir, exclusions) for r in board["runs"]]
     return {"units": len(manifest), "bases": len({m["base"] for m in manifest.values()}),
             "runs": runs, "best": best_per_model(runs),
             "not_yet_run": board.get("not_yet_run", [])}
@@ -240,13 +280,43 @@ def _status(r: dict) -> str:
     return "; ".join(bits)
 
 
+def _footnotes(rows: list[dict]) -> tuple[dict, list[str]]:
+    """({run id: mark}, footnote lines) for the rows with exclusions or
+    validator notes. Marks are escaped asterisks: *, **, ..."""
+    marks, lines = {}, []
+    for r in rows:
+        if not (r.get("excluded") or r.get("validator_notes")):
+            continue
+        mark = "\\*" * (len(marks) + 1)
+        marks[r["id"]] = mark
+        bits = []
+        if r["excluded"]:
+            n = len(r["excluded"])
+            bits.append(f"{r['passed_raw']}/{r['units']} raw; {n} unit{'s' * (n != 1)} ("
+                        + ", ".join(sorted(r["excluded"])) + ") excluded "
+                        + "; ".join(sorted(set(r["excluded"].values()))))
+        for u, note in sorted(r["validator_notes"].items()):
+            bits.append(f"{u} is {note}; not adjusted")
+        lines.append(f"{mark} {r['model']}, {r['id']}: " + ". ".join(bits) + ".")
+    return marks, lines
+
+
+def _with_notes(lines: list[str], notes: list[str]) -> str:
+    if notes:
+        lines = lines + [""] + [n + ("  " if i < len(notes) - 1 else "")
+                                for i, n in enumerate(notes)]
+    return "\n".join(lines)
+
+
 def render_board(b: dict, prefix: str = "") -> str:
     head = ("| # | Model | Host | Best configuration | Passed | SCORE | "
             + " | ".join(lbl for _, lbl in LANGS) + " | Mean / unit | Date | Result file | Status |")
     lines = ["<!-- generated by evals/v5_board.py: do not hand-edit -->", "",
              head, "|" + "---:|---|---|---|---:|---:|" + "---:|" * len(LANGS) + "---:|---|---|---|"]
     rank = 0
+    marks, notes = _footnotes(b["best"])
     for r in b["best"]:
+        m = marks.get(r["id"], "")
         if r["reference"]:
             num, model = "ref", f"*{r['model']}* (reference)"
             passed = f"*{r['passed']}/{r['units']}*"
@@ -254,14 +324,14 @@ def render_board(b: dict, prefix: str = "") -> str:
         else:
             rank += 1
             num, model = str(rank), f"**{r['model']}**"
-            passed, score = f"**{r['passed']}/{r['units']}**", f"**{r['score']:.1f}**"
+            passed, score = f"**{r['passed']}/{r['units']}**{m}", f"**{r['score']:.1f}**"
         lines.append(f"| {num} | {model} | {r['host'] or '—'} | {r['config']} | {passed} | {score} | "
                      + " | ".join(_langs(r)) + f" | {_mins(r['mean_s'])} | {r['date']} | "
                      f"{_files(r, prefix)} | {_status(r)} |")
     for name in b["not_yet_run"]:
         cells = ["—", name, "", "not yet run on v5"] + [""] * (2 + len(LANGS) + 4)
         lines.append("| " + " | ".join(cells).rstrip() + " |")
-    return "\n".join(lines)
+    return _with_notes(lines, notes)
 
 
 def render_runs(b: dict, prefix: str = "") -> str:
@@ -269,17 +339,20 @@ def render_runs(b: dict, prefix: str = "") -> str:
             + " | ".join(lbl for _, lbl in LANGS) + " | Mean / unit | Date | Result files | Status |")
     lines = ["<!-- generated by evals/v5_board.py: do not hand-edit -->", "",
              head, "|---|---|---|---|---:|---:|---:|---:|" + "---:|" * len(LANGS) + "---:|---|---|---|"]
-    for r in sorted(b["runs"], key=lambda r: (r["reference"], r["model"], r["timestamp"], r["id"])):
+    ordered = sorted(b["runs"], key=lambda r: (r["reference"], r["model"], r["timestamp"], r["id"]))
+    marks, notes = _footnotes(ordered)
+    for r in ordered:
+        m = marks.get(r["id"], "")
         run = r["id"] + (f" ({r['campaign_arm']})" if r["campaign_arm"] else "")
         files = ", ".join(f"[{f}]({prefix}evals/boards/v5/{f})" for f in r["files"])
         status = _status(r) + (f"; {r['note']}" if r.get("note") else "")
         if r["reference"]:
             status += f"; {r['passed_strict_wall']}/{r['units']} at the 1× wall"
-        lines.append(f"| {r['model']} | {r['host'] or '—'} | {run} | {r['config']} | {r['passed']}/{r['units']} | "
+        lines.append(f"| {r['model']} | {r['host'] or '—'} | {run} | {r['config']} | {r['passed']}/{r['units']}{m} | "
                      f"{r['score']:.1f} | {r['solve']:.1f} | {r['lang']:.1f} | "
                      + " | ".join(_langs(r)) + f" | {_mins(r['mean_s'])} | {r['date']} | "
                      f"{files} | {status} |")
-    return "\n".join(lines)
+    return _with_notes(lines, notes)
 
 
 RENDER = {"board": render_board, "runs": render_runs}
