@@ -53,7 +53,7 @@ Since then:
 
 - **v5 has its first rows, and they are the story.** GLM-5.3-Flash on the
   Spark pair went from **26/71** in its daily config (run `GLM-L0`) to
-  **53/71 scored, 54/71 raw** (run `GLM-C`) with three measured harness
+  **51/71 scored, 54 raw** (run `GLM-C`; 3 units withheld by the G25 integrity scan, #195) with three measured harness
   changes plus thinking, against a reference ceiling of **71/71** (Claude
   Opus 5.5 in its own scaffold, run `OPUS-REF`). Single seed throughout.
   `/benchmarks/` is rebuilt around this ([4.1](#41-benchmarks--the-v5-story-and-the-board-p0-the-centrepiece)).
@@ -202,7 +202,7 @@ makes stale. Fix the plan's own copy before it reaches the site.
 
 | # | Where | NOW | TRUE |
 |---|---|---|---|
-| S39 | S14, S15, S18, S21 rows above; §4.2 item 5; §5.4 | v5 quality on the pair is `[V5-PENDING]`; S21's replacement "No v5 capability result on the Spark pair yet" | One model has v5 rows on the pair: GLM-5.3-Flash, `GLM-L0` 26/71 to `GLM-C` 53/71 scored (single seed). Gate 03 QUALITY becomes MEASURED (one model, single seed); "Why wait" becomes "v5 rows for one model; Qwen3.8 and DeepSeek pending" |
+| S39 | S14, S15, S18, S21 rows above; §4.2 item 5; §5.4 | v5 quality on the pair is `[V5-PENDING]`; S21's replacement "No v5 capability result on the Spark pair yet" | One model has v5 rows on the pair: GLM-5.3-Flash, `GLM-L0` 26/71 to `GLM-C` 51/71 scored (single seed). Gate 03 QUALITY becomes MEASURED (one model, single seed); "Why wait" becomes "v5 rows for one model; Qwen3.8 and DeepSeek pending" |
 | S40 | §6.4 last bullet; §4.2 item 3 | "GLM runs thinking off" | GLM's **daily serving config** is thinking off (and `GLM-L0` is that config). Its best v5 row, `GLM-C`, is **thinking on**, with wall-scaled turns at 2x the wall. Every row states both settings |
 | S41 | §6.1 | Ranked by L0 SCORE, one row per system | The board shows **each model at its best configuration** (`evals/v5_board.py`), flags experiment arms (wall-scaled turns, a scaled wall, packs, diagnostics), and keeps reference ledgers unranked. L0, the daily config, stays a column so the two are never confused |
 | S42 | §4.1 item 2 | "Spark pair first because it is the run in progress" | GLM's L0-C rows are finished; the run in progress is arm E |
@@ -279,21 +279,22 @@ reads them.
   it **unranked** and visually apart (its own row style, never the same bar
   colour as a local row, never a rank number); print each local row's
   **fraction of the gold standard** as its SCORE divided by the gold
-  standard's SCORE (100.0 today, so `GLM-C` is 78.2%), always beside the
-  absolute numbers (53/71, 78.2) and "single seed" (A10); say "of the gold
+  standard's SCORE (100.0 today, so `GLM-C` is 76.7%), always beside the
+  absolute numbers (51/71, 76.7) and "single seed" (A10); say "of the gold
   standard", never "GLM matches / approaches / is X% as smart as Opus", and
   never a delta between two fractions as a headline (A10 still bars
   "+104%"-style improvement claims). Any fraction against the 1x-wall run
   (68/71) is a different, unpublished number: do not mix them.
 - **A12. Withheld units stay withheld.** `GLM-C` passed 122_gemm_blocked_b,
-  but in that unit the agent read Claude Code workflow journals, the harness
-  source and the eval cache, which the sandbox did not block. The board
-  scores **53/71** and footnotes the raw 54/71 with the reason. The site
-  prints 53/71 with the same footnote, never 54/71 alone, and syncs when the
-  integrity review clears or voids the unit
-  (`evals/boards/v5/exclusions.json`).
+  122_gemm_blocked_d and 122_gemm_blocked_e, but the integrity scan (G25,
+  #195) found that in each the agent read sealed paths (Claude Code workflow
+  journals, `evals/cache`, the harness source), which the sandbox did not
+  block. The board scores **51/71** (SCORE 76.7) and footnotes the raw 54
+  with the reason. The site prints 51/71 with the footnote "54 raw; 3 units withheld after an integrity scan found the agent had read sealed harness files (all three are in the 122 family)", never
+  a bare 54/71 and never the superseded 53/71 or 78.2, and re-syncs whenever
+  `evals/boards/v5/exclusions.json` changes.
 - **A13. Harness gains are system claims.** "GLM-5.3-Flash under OpenBeast's
-  harness, arm C, scored 53/71", never "GLM got smarter" or "our harness
+  harness, arm C, scored 51/71", never "GLM got smarter" or "our harness
   doubles any model". Whether a change that helps GLM helps Qwen3.8 or
   DeepSeek is the open research question (§4.8), not a result.
 
@@ -374,12 +375,12 @@ Every number below cites its v5 board run (rule A1); each is single seed
    | L0 | the daily config: runner v1, thinking off | **26/71** | 48.2 | `GLM-L0` |
    | A | runner v2: the frictions the L0 failure audit found | **31/71** | 56.9 | `GLM-A` |
    | B | + turns scaled to each unit's wall | **36/71** | 60.4 | `GLM-B` |
-   | C | + thinking on (wall x2, B's turns) | **53/71** scored (54 raw, A12) | 78.2 | `GLM-C` |
+   | C | + thinking on (wall x2, B's turns) | **51/71** scored (54 raw, 3 withheld, A12) | 76.7 | `GLM-C` |
    | E | + diagnostics, verify-done, packs, env block, wall warnings | [V5-PENDING] | [V5-PENDING] | — |
    | gold standard | Claude Opus 5.5, its own scaffold (A11) | **71/71** (68/71 at 1x wall) | 100.0 | `OPUS-REF` |
 
    Each local rung also prints its **fraction of the gold standard** (Q5,
-   A11): L0 48.2%, A 56.9%, B 60.4%, C 78.2%.
+   A11): L0 48.2%, A 56.9%, B 60.4%, C 76.7%.
 
    Source for every row: [`docs/RESULTS.md`, "v5 leaderboard"](RESULTS.md#v5-leaderboard--best-configuration-per-model), "Every v5 configuration
    measured", at a pinned commit.
@@ -405,8 +406,8 @@ Every number below cites its v5 board run (rule A1); each is single seed
    (`ref`, `wrong`, `empty`, `leak`, `slow`, `scale2`, `lint`, `toolchain`
    arms), up to three adversarial rounds per new family, sealed validators
    and answer key, web off, toolchains pinned.
-7. **What v5 cannot tell you yet:** every number is single seed (A10); one
-   GLM pass is withheld pending an integrity review (A12); the pack effect
+7. **What v5 cannot tell you yet:** every number is single seed (A10); three
+   GLM-C passes are withheld after the integrity scan (A12); the pack effect
    needs replicates and a held-out check (`evals/README.md`, "How small an
    effect one profile can see"); 26 cells are empty until v5.1; kept-v4
    units did not get the adversarial review in their v4 form.
@@ -415,7 +416,7 @@ Every number below cites its v5 board run (rule A1); each is single seed
    Qwen3.8 rows at `jobs 4`). Collapsed by default.
 9. **The misses ship with the hits:** move the zig verdict trail here from
    the home page, and add v5's failure taxonomy in one table: of GLM-C's 17
-   failures, 13 are process failures (almost all a thinking turn capped
+   raw failures (before the withholdings), 13 are process failures (almost all a thinking turn capped
    before the file was written), 3 algorithmic, 1 zig knowledge
    (`HARNESS_NOTES.md`, "Language-specific residue under thinking").
 10. **Reproduce it:** the `evals/profile.py` and `evals/campaign.py`
@@ -439,7 +440,7 @@ Every number below cites its v5 board run (rule A1); each is single seed
    single, 224 aggregate (57 each); TTFT about 160–260 ms. No drafter
    names (B6): at most "with speculative decoding". Caption with conditions, per rule A1.
 5. **Capability on this hardware:** GLM-5.3-Flash, 26/71 in its daily
-   config (`GLM-L0`) and 53/71 at its best (`GLM-C`, thinking on), single
+   config (`GLM-L0`) and 51/71 at its best (`GLM-C`, thinking on), single
    seed, linking `/benchmarks/`. Never beside the serving numbers on one
    chart (6.2).
 6. **Run it yourself:** the Quickstart (health, start/stop, clients, the
@@ -583,7 +584,7 @@ Every number single seed (A10), every claim about one model only (A13).
      retried a whole turn. +5 net (11 rescued, 6 regressed).
    - **Wall-scaled turns** (B): a turn budget scaled to each unit's wall
      instead of one cap for all. +5.
-   - **Thinking** (C): per-request thinking at 2x wall with B's turns. +17
+   - **Thinking** (C): per-request thinking at 2x wall with B's turns. +15
      scored (+18 raw); on the first 21 units, 14 of its 18 passes finished
      inside B's original wall, so the gain is the thinking, not the time.
      Its price is latency: about 2.3x B's time per unit.
@@ -597,9 +598,9 @@ Every number single seed (A10), every claim about one model only (A13).
    failures. **Deterministic-seed noise:** decoding is deterministic at a
    fixed seed, so a same-seed re-run is not a replicate; the noise floor
    comes from a different seed (pending). **Integrity scans:** the Opus
-   reference was scanned clean; one GLM-C pass is withheld because the agent
-   could read the eval cache and harness source (A12); the read-deny fix and
-   a scan of every v5 row are open work. Say all three plainly: they are
+   reference was scanned clean; three GLM-C passes are withheld because the
+   integrity scan (G25) found the agent had read sealed paths (A12); the
+   read-deny fix and scans of the other v5 rows are open work. Say all three plainly: they are
    what makes the ladder believable.
 5. **What is left after thinking:** language-specific failures nearly
    vanish; one zig knowledge failure remains (a thinking model routes around
@@ -624,7 +625,7 @@ Every number single seed (A10), every claim about one model only (A13).
    (`dsh`, evaluated 2026-10-09, not integrated) supplies the starting
    hypotheses for the DeepSeek arm. Link both reviews at the tag.
 8. **Caveats box:** single seed; one model; a reference in a different
-   scaffold; E pending; one unit withheld.
+   scaffold; E pending; three units withheld.
 
 ### 4.9 `/research/campaign/` — bring any model to the Sparks (P1)
 
@@ -678,8 +679,8 @@ page an operator or a lab could follow.
   beast-docs, beast-apps, beast-ark (each "v2.0" once tagged). Twelve
   capability cards plus the rig card fit a 4-column grid.
 - **Evidence:** shrink to the v5 story in one band: "71 proven units.
-  GLM-5.3-Flash on the Spark pair: 26/71 daily config, 53/71 with a better
-  harness and thinking: 78.2% of the gold standard (Claude Opus 5.5, 71/71,
+  GLM-5.3-Flash on the Spark pair: 26/71 daily config, 51/71 with a better
+  harness and thinking: 76.7% of the gold standard (Claude Opus 5.5, 71/71,
   its own scaffold; Q5). Single
   seed." Each number links its board run (`GLM-L0`, `GLM-C`, `OPUS-REF`);
   the `beast` row stays [V5-PENDING] until Qwen3.8 runs v5. Link
@@ -838,7 +839,7 @@ Placeholders needed today:
 | `/benchmarks/` ladder, rung E | E's count and its flags | `docs/RESULTS.md` v5 board, after `v5_board.py --add GLM-E` |
 | `/benchmarks/` board, beast rows | Qwen3.8 27B Uncensored MTP, Qwen3.6 27B | same |
 | `/benchmarks/` board, DeepSeek v4.1 Flash | its best configuration | same, after its campaign |
-| `/research/harness/` | the seed-noise floor; the integrity verdict on the withheld unit; the paper's status | `HARNESS_NOTES.md`, `exclusions.json`, then RESULTS |
+| `/research/harness/` | the seed-noise floor; the integrity verdict on the withheld units (given 2026-11-17: 3 withheld, #195); the paper's status | `HARNESS_NOTES.md`, `exclusions.json`, then RESULTS |
 | `/hardware/` §5, home evidence teaser | the `beast` host's v5 row | same |
 
 Filled since the first draft (2026-11-17): the GLM rows `GLM-L0` to `GLM-C`
@@ -865,7 +866,7 @@ ladder can print them (S39).
   of the gold standard is allowed (Q5) and only in A11's form: SCORE over the
   gold standard's SCORE, beside the absolute numbers, single seed.
 - No "the harness doubles a model's score": one model, one seed (A10, A13).
-- No 54/71 without its footnote (A12).
+- No 54/71 without its footnote, and never the superseded 53/71 / 78.2 (A12).
 - No claim that thinking is free: about 2.3x B's time per unit on GLM.
 
 ---
@@ -1050,7 +1051,7 @@ the current state themselves; fix them in the openbeast repo before pinning:
 | `docs/MODELS.md` | 3 | "23 pre-configured models" | reconcile with the 28 serve scripts (which count, which are opt-in or internal) |
 | `docs/RESULTS.md` | top | v5 "no model has a v5 row yet" | **Fixed in #193** (merged 2026-11-17): the v5 board generated by `evals/v5_board.py` (GLM L0-C, the Opus reference), drift-checked in CI |
 | `README.md` | v5 paragraph | "v5 results are pending" | **Fixed in #193**: the README's "v5 leaderboard" section |
-| `docs/MODEL_CAMPAIGN.md` | §8 | arm C "[PENDING]" | **Filled 2026-11-17** (notes PR): C 54/71 raw, 53/71 scored, the integrity caveat; D/E/F still [PENDING] |
+| `docs/MODEL_CAMPAIGN.md` | §8 | arm C "[PENDING]" | **Filled 2026-11-17** (notes PR): C 54/71 raw, 53/71 scored, the integrity caveat; D/E/F still [PENDING]. **Stale since #195:** §8 still says 53/71 scored with one unit withheld; the board now scores 51/71 with three withheld |
 | `docs/RESULTS.md` | v5 board | no rung E | `v5_board.py --add GLM-E …` when E finishes, then `--write` |
 | `docs/TODO.md` or v2.0.0 notes | — | nothing on the 11-16 review totals | 209 found, 195 confirmed, all fixed (rule A6) |
 | `docs/RELEASE_NOTES_v2.0.0.md` | — | does not exist | write it before the site's v2.0.0 copy, so the site can link it |
@@ -1095,8 +1096,8 @@ the current state themselves; fix them in the openbeast repo before pinning:
 - [ ] Fill the remaining v5 numbers (GLM E, the seed arm, Qwen3.8,
       DeepSeek) from `docs/RESULTS.md` through `scripts/sync-results.mjs`;
       the guard test then passes in production.
-- [ ] Re-sync the GLM-C footnote when the integrity review clears or voids
-      the withheld unit (A12).
+- [x] Re-sync the GLM-C footnote after the integrity scan: 51/71 scored,
+      54 raw, 3 withheld (A12; website follow-up PR, 2026-11-17).
 - [ ] Build `/research/campaign/` (4.9), `/clients/` (with the Regenerate
       fix), `/security/`, `/releases/`.
 - [ ] Update `/investors/` (S2, S3, S5–S8, S14–S18, S23, S28, B6).
@@ -1162,7 +1163,7 @@ Asked 2026-11-17, decided the same day:
   ceiling"; `/benchmarks/` is framed around the gold standard (hero, ladder
   column, board column, per-language fractions, D9's dashed line at 100%);
   copy says "gold standard" where it said "reference ceiling". Numbers today
-  (`docs/RESULTS.md` v5 board): L0 48.2%, A 56.9%, B 60.4%, C 78.2% of the
+  (`docs/RESULTS.md` v5 board): L0 48.2%, A 56.9%, B 60.4%, C 76.7% of the
   gold standard's 100.0.
 - **Q6. Ship the ladder now? DECIDED (Max): yes.** Ship L0 → C now with
   "single seed" on every number and E shown as pending (in words, not a
@@ -1173,9 +1174,11 @@ Asked 2026-11-17, decided the same day:
   under `/research/` once a build exists (§4.8 item 6). Until then
   `/benchmarks/` and `/research/harness/` name the question and an IN
   PROGRESS chip, and say it will be published on the site.
-- **Q8. 53 or 54. DECIDED: print 53/71 as the scored number**, with the
-  footnote "54 raw; 1 unit withheld pending integrity review" (A12). Never
-  54/71 alone.
+- **Q8. Scored or raw. DECIDED: print the scored number**, with the raw
+  count footnoted (A12). Decided as 53/71 with "54 raw; 1 unit withheld
+  pending integrity review"; **updated 2026-11-17 after the integrity scan
+  (#195): 51/71 scored, SCORE 76.7, 54 raw, 3 withheld**, footnote
+  "54 raw; 3 units withheld after an integrity scan found the agent had read sealed harness files (all three are in the 122 family)". Never 54/71 alone.
 - **Q9. Name DeepSeek v4.1 Flash as "next". DECIDED (Max): yes**, on
   `/benchmarks/` and `/research/campaign/`, as "next", never with a date or
   a predicted number.
