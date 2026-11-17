@@ -3,9 +3,9 @@
 **Status, 2026-11-16: plan only. Revised 2026-11-17** to the state after
 PRs #175–#192 (see [What changed since the first draft](#what-changed-since-the-first-draft-2026-11-17)).
 **Decided 2026-11-17:** Max answered Q5–Q10 ([section 13](#13-questions-for-max));
-the `/benchmarks/` page ships now with the v5 ladder and is updated again
-when arm E lands. Until then nothing in the website repo was changed,
-committed or deployed. This page
+the `/benchmarks/` page ships now with the v5 ladder (website repo,
+P0 scope: the page plus the stale claims that contradict it) and is updated
+again when arm E lands. The rest of the plan is still to do. This page
 says what openbeast.ai claims today, what is true today, and what to build so
 the site matches OpenBeast at **v2.0.0**.
 
