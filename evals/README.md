@@ -200,7 +200,7 @@ prompt carried a ~250-token stdio recipe (`&fr.interface`, `init.io`,
 | Coverage | SWE, DSP: 0 discriminating units | all 12 categories, all 6 languages, 46 of 72 cells; Algorithms + Math 28% of units |
 | Tests | visible fixtures, `expected.txt` / `check.py` in the agent's dir (173 units) | new and upgraded units: seeded hidden tests inside the validator, fed over stdin; a mismatch prints only the case index. Kept-v4 units: none of the leaking ones (71, 20 and every multi-language v4 family that writes `expected.txt` were left out) |
 | Zig prompts | API recipe required | API tutoring **banned**: the contract (Zig 0.16, entry point, compile command) only |
-| Answer key | readable by the agent | sealed: `evals/tasks`, `evals/refs`, `evals/suites` refused under `OPENBEAST_EVAL=1` |
+| Answer key | readable by the agent | sealed: `evals/tasks`, `evals/refs`, `evals/suites` refused under `OPENBEAST_EVAL=1`; since G25 (2026-11-17) every checkout's whole `evals/` (results, cache, vlib, the harness), `tests/`, `agents/logs/`, `~/.claude` and `/tmp/claude-<uid>` too (`evals/audit/integrity_scan.py` checks transcripts) |
 | Web under eval | live, unrecorded | off (`OPENBEAST_EVAL_WEB=record` re-enables and logs) |
 | Agent wall | `max_iter x 60 s x scale` (80 min for a 40-iteration unit at `--jobs 4`) | per-unit `max_wall_s`: 300 / 600 / 900 / 1500 s by tier; max_iter ceiling 30 |
 | After the agent | nothing (a detached daemon ran into validation) | every process the agent started is killed, and validation refuses to start if one survives |
@@ -647,10 +647,13 @@ solution process group a validator recorded is SIGKILLed after it exits.
   `evals/refs/<id>/prove.json` note. Their rewrites are U1, U2 and U4 in
   the backlog.
 - **The agent's file tools are not kernel-sealed** the way its bash is
-  (164's verifier): `read_file` refuses only the sealed trees by path, not
-  the rest of what the bash sandbox denies, so a stray validator copy left
-  outside `evals/` (a scratch dir, a backup) is readable. Keep validator
-  copies out of the agent's reach.
+  (164's verifier): `read_file`, `list_files` and `grep` refuse the sealed
+  set by resolved path (since G25 the same set the macOS bash profile
+  denies: every checkout's `evals/`, `tests/`, `agents/logs/`, the git
+  dir, `~/.claude`, `/tmp/claude-<uid>`), but a stray validator copy left
+  anywhere else (a backup, `~/Desktop`) is readable. Keep validator copies
+  out of the agent's reach, and run `evals/audit/integrity_scan.py` over
+  an arm's transcripts before its rows are reported.
 - **A compiled solution can swap its own image** (164): `exec_only`
   allows the solution's binary path, and the binary sits in a dir the
   solution can write, so it can replace itself and re-exec. Validators that
@@ -666,9 +669,14 @@ solution process group a validator recorded is SIGKILLed after it exits.
   Python unit of the new families and of U3 runs with `confine=` since
   review 1116; the kept-v4 Python units do not (they import the solution
   in-process, see above). On a Linux harness host the **agent's own bash**
-  has no read-deny either (`agents/tools.py` seals it on macOS only), so a
+  has no read-deny either (`agents/tools.py` seals it on macOS only; on
+  Linux only the command-text check and the file tools refuse), so a
   Linux host is not leak-proof against an agent that reads `evals/refs`
-  during its turn; the documented harness host is the Mac. The
+  (or, since G25, `evals/cache`, `~/.claude`) during its turn; the
+  documented harness host is the Mac. A Landlock deny-list would need an
+  allowlist of every sibling down to each sealed dir, which breaks on
+  `/tmp`; the Sandlock wrapper (`OPENBEAST_BASH_WRAPPER`) is the Linux
+  route. The
   leftover sweep on Linux is exact only with a delegated cgroup v2; without
   one it relies on the env tag, the tree poll (the runner is a subreaper, so
   an orphan stays in its tree while it lives) and groups/sessions. A daemon
@@ -776,10 +784,10 @@ no open issue and the prover passes 3/3 at scale 1 and 2.0.
 `evals/SUITE_VERSION` is `v5`, which rolls the cache era (`ctxhash`) for
 every row: no v4 cache entry replays into v5. The v4 board is frozen (shown
 under "legacy suites"); v5 starts empty. The harness rides the same break,
-pinned as **`harness7`** in `evals/HARNESS_VERSION` (`harness5` at the v5.0
+pinned as **`harness8`** in `evals/HARNESS_VERSION` (`harness5` at the v5.0
 release; the review-1116 fixes to the bootstrap, the leftover sweep, the
 validator's private `TMPDIR`, the fixture lock, the toolchain pins and
-`vlib.py` rolled the era once more, and G23 passing the wall to the agent made it `harness7`; see CHANGELOG): its fingerprint covers
+`vlib.py` rolled the era once more, G23 passing the wall to the agent made it `harness7`, and G24's `task_paths` (the trailing-dot fix) `harness8`; see CHANGELOG): its fingerprint covers
 the agent's wall cap, the validator's environment, bootstrap and private
 build cache, the fixture cwd, the leftover sweep (`AgentWatch`,
 `sweep_agent_leftovers`) and the toolchain pins (`toolchain_pins`,
