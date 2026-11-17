@@ -507,6 +507,18 @@ def _max_completion_tokens() -> int:
     if os.environ.get(_EVAL_MARKER):
         thinking = os.environ.get("OPENBEAST_AGENT_THINKING", "").strip().lower() == "on"
         return _EVAL_TURN_TOKENS_THINKING if thinking else _EVAL_TURN_TOKENS
+    # AGENT_MAX_TOKENS in openbeast.conf: the serving host's own turn cap for
+    # its agents (never eval runs, decided above). REASONING_BUDGET below is
+    # a llama.cpp knob (serve.sh --reasoning-budget); a TensorFold or vLLM
+    # host has no such flag, so the cap is set here instead. spark-1 sets
+    # 16384, arm C's cap (docs/SPARK_HYDRA.md, "Recommended serving
+    # configuration").
+    raw = _conf_value("AGENT_MAX_TOKENS").split("#", 1)[0].strip()
+    if raw:
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            pass
     budget = (os.environ.get("OPENBEAST_REASONING_BUDGET", "").strip()
               or os.environ.get("REASONING_BUDGET", "").strip()
               or _conf_value("REASONING_BUDGET"))
@@ -546,6 +558,43 @@ def _thinking_kwargs() -> dict:
     over (_capped_think_nudge)."""
     v = os.environ.get("OPENBEAST_AGENT_THINKING", "").strip().lower()
     if v not in ("on", "off"):
+        return {}
+    return {"extra_body": {"chat_template_kwargs": {"enable_thinking": v == "on"}}}
+
+
+#: Request header beast-gate reads (agents/edge.py, GATE_DEFAULTS_HEADER):
+#: "off" = forward this request with no gate-side defaults (today: the
+#: INFERENCE_THINKING injection). Every eval-mode request carries it, so an
+#: eval run that names no thinking mode reaches the server exactly as it
+#: always did and gets the SERVER's default, on every host: thinking on for
+#: the llama.cpp Qwen templates, off on TensorFold GLM. Sending an explicit
+#: enable_thinking=false instead would have kept the GLM baselines and
+#: silently turned thinking off for every llama.cpp eval row.
+GATE_DEFAULTS_HEADER = "X-OpenBeast-Gate-Defaults"
+
+
+def _inference_thinking() -> str:
+    """The serving host's thinking default, INFERENCE_THINKING (env
+    OPENBEAST_INFERENCE_THINKING, else openbeast.conf): "on", "off" or ""
+    (unset, or any other value)."""
+    v = (os.environ.get("OPENBEAST_INFERENCE_THINKING", "").strip()
+         or _conf_value("INFERENCE_THINKING")).split("#", 1)[0].strip().lower()
+    return v if v in ("on", "off") else ""
+
+
+def _agent_thinking_kwargs() -> dict:
+    """What the run sends for thinking. OPENBEAST_AGENT_THINKING on/off
+    always wins (_thinking_kwargs). Unset: an eval run sends nothing, as
+    before (the era's baselines are "the server's default"); any other run
+    follows the host's INFERENCE_THINKING, so OpenBeast's own agents think
+    by default where the operator turned that on (spark-1: arm C, the best
+    v5 configuration). Neither set: nothing, and the server (or beast-gate,
+    for a client-mode agent) decides."""
+    kw = _thinking_kwargs()
+    if kw or os.environ.get(_EVAL_MARKER):
+        return kw
+    v = _inference_thinking()
+    if not v:
         return {}
     return {"extra_body": {"chat_template_kwargs": {"enable_thinking": v == "on"}}}
 
@@ -1329,12 +1378,18 @@ def run_agent(
 
     # Resolved once per run; {} (send nothing) when set to 0 or unlimited.
     max_tokens = _max_completion_tokens()
+    client_kwargs = {}
+    if os.environ.get(_EVAL_MARKER):
+        # beast-gate leaves an eval request exactly as sent (no thinking
+        # default injected): see GATE_DEFAULTS_HEADER.
+        client_kwargs["default_headers"] = {GATE_DEFAULTS_HEADER: "off"}
     client = OpenAI(base_url=base_url, api_key=resolve_api_key(api_key, base_url),
                     max_retries=(_EVAL_CLIENT_MAX_RETRIES if os.environ.get(_EVAL_MARKER)
                                  else _CLIENT_MAX_RETRIES),
-                    timeout=_client_timeout_s(max_tokens))
+                    timeout=_client_timeout_s(max_tokens), **client_kwargs)
     cap_kwargs = {"max_tokens": max_tokens} if max_tokens else {}
-    think_kwargs = _thinking_kwargs()   # {} unless OPENBEAST_AGENT_THINKING
+    # {} unless OPENBEAST_AGENT_THINKING, or (not eval) INFERENCE_THINKING
+    think_kwargs = _agent_thinking_kwargs()
     think_kwargs.update(_seed_kwargs())  # {} unless OPENBEAST_AGENT_SEED
 
     # --- THE EVAL GUARD, resolved FIRST (E1/E2) ---------------------------

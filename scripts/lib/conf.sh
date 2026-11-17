@@ -734,6 +734,11 @@ export OPENBEAST_PROBE_HOST
 #   INFERENCE_MODEL    served model id                    default empty
 #       vllm/tensorfold only: exported as OPENBEAST_INFERENCE_MODEL, the id
 #       agents/runner.py sends (scripts/backends/use-model.sh records it).
+#   INFERENCE_THINKING on | off                           default empty
+#       The serving host's thinking default for a chat request that names
+#       none: beast-gate injects chat_template_kwargs.enable_thinking and
+#       this host's own agents send it. Empty = nothing injected anywhere. Eval runs
+#       never follow it. spark-1: on (docs/SPARK_HYDRA.md).
 # The llama defaults are resolved even when nothing is set, so every consumer
 # below reads the same values it always did.
 if [[ -f "$(dirname "${BASH_SOURCE[0]}")/backend.sh" ]]; then
@@ -845,6 +850,19 @@ if [[ "$INFERENCE_URL_SET" == "true" ]]; then
 fi
 if [[ -n "$INFERENCE_SLOTS" ]]; then
   export OPENBEAST_INFERENCE_SLOTS="$INFERENCE_SLOTS"
+fi
+# INFERENCE_THINKING: the serving host's thinking default for requests that
+# name none — beast-gate injects it and this host's own (non-eval) agents
+# send it. Exported only when set, so
+# an unset key changes nothing anywhere. Eval runs never follow it.
+INFERENCE_THINKING="$(printf '%s' "${OPENBEAST_INFERENCE_THINKING:-$(_ob_conf_value INFERENCE_THINKING || true)}" | tr 'A-Z' 'a-z')"
+INFERENCE_THINKING="${INFERENCE_THINKING%%[[:space:]#]*}"
+if [[ -n "$INFERENCE_THINKING" && "$INFERENCE_THINKING" != "on" && "$INFERENCE_THINKING" != "off" ]]; then
+  _OB_CONF_PROBLEMS+=("INFERENCE_THINKING='$INFERENCE_THINKING' is not on or off — ignoring it (requests keep the server's own thinking default)")
+  INFERENCE_THINKING=""
+fi
+if [[ -n "$INFERENCE_THINKING" ]]; then
+  export OPENBEAST_INFERENCE_THINKING="$INFERENCE_THINKING"
 fi
 # ── beast-hydra + beast-instinct (docs/BEAST_HYDRA_PLAN.md §6.7,
 #    docs/BEAST_INSTINCT_PLAN.md §5.2/§5.9) ─────────────────────────────────

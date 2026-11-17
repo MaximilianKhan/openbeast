@@ -1,5 +1,28 @@
 # Eval suite changelog
 
+## v5.0, INFERENCE_THINKING: the host's thinking default (2026-11-17) — era roll (runner.py)
+
+`agents/runner.py` changed, so the era (its content hash) rolls; no eval
+request changes. spark-1 now serves GLM-5.3-Flash with thinking on by
+default (`INFERENCE_THINKING=on`): beast-gate sets
+`chat_template_kwargs.enable_thinking` on a chat request that names no
+thinking control, and the runner's non-eval agents follow the key. Eval
+runs stay exactly as they were:
+
+- every eval-mode request carries `X-OpenBeast-Gate-Defaults: off`, and the
+  gate forwards such a request as sent (the header is not forwarded);
+- an eval run ignores `INFERENCE_THINKING` (env and conf): with
+  `OPENBEAST_AGENT_THINKING` unset the body still names no thinking mode, so
+  every host gives its own server default, the condition the L0/A/B
+  baselines (TensorFold: off) and the llama.cpp boards (Qwen templates: on)
+  were measured under. `OPENBEAST_AGENT_THINKING=on|off` is sent as before.
+
+Why a header and not an explicit `enable_thinking=false` on every eval
+request: that would have kept the GLM baselines but switched thinking OFF
+for every llama.cpp model whose template thinks by default, a silent change
+to every Qwen row. The new non-eval conf key `AGENT_MAX_TOKENS` is read only
+outside eval mode; the eval turn caps (8K / 16K) are unchanged.
+
 ## v5.0, G24-G27 harness integrity fixes (2026-11-17) — era roll, harness8
 
 Four defects found by a transcript audit of GLM-5.3-Flash's v5 runs
