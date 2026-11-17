@@ -435,6 +435,12 @@ jobs:
       - name: Doc-drift check (suite counts)
         run: python evals/suite_stats.py --check
 
+      # The v5 board in README.md and docs/RESULTS.md is generated from the
+      # committed inputs in evals/boards/v5/; a hand edit or a new run
+      # recorded without --write fails here.
+      - name: Doc-drift check (v5 board)
+        run: python evals/v5_board.py --check
+
       # ADVISORY for now. The audit used to print [FAIL] and exit 0 whatever
       # happened; it now exits 1 on a failed variant, and --advisory keeps
       # this step green (with a warning annotation per failure) until a run
