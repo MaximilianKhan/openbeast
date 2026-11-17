@@ -1711,6 +1711,9 @@ def cacheable_result(result: dict) -> bool:
       0 completion tokens + failed — the model never produced anything
         (server crash/restart window, dead endpoint); a capability verdict
         requires the model to have actually spoken.
+      failed + reason interpreter_error — the agent's python died at
+        startup (eval_host.interpreter_startup_failure): the venv broke under
+        the harness, as on 2026-11-16 (22 units).
       failed + reason server_error / api_errors >= 1 — the server died or
         errored AFTER the model had spoken. The runner burns its remaining
         iterations on connection errors and exits 0 with tokens > 0; the
@@ -1735,7 +1738,8 @@ def cacheable_result(result: dict) -> bool:
         return True
     if not result.get("tokens_completion"):
         return False
-    if result.get("reason") in ("server_error", "env_error", "validator_timeout"):
+    if result.get("reason") in ("server_error", "env_error", "validator_timeout",
+                                "interpreter_error"):
         return False
     if (result.get("api_errors") or 0) > 0:
         return False
@@ -3103,6 +3107,13 @@ def run_eval(
             task_filter = list(suite_pin["units"])
     suite_version = capture_suite_version()
     if not cache_only:
+        # Before ANY agent runs: can this interpreter start one at all? Every
+        # agent is `sys.executable runner.py`; a broken venv used to turn each
+        # unit into a scored FAIL (2026-11-16, docs/HARNESS_NOTES.md).
+        import eval_host  # noqa: PLC0415
+        bad_interp = eval_host.interpreter_problem()
+        if bad_interp:
+            raise SystemExit(f"REFUSED: {bad_interp}")
         # Before ANY agent runs: what a validator may call a compiler.
         pinned = toolchain_pins()
         print("Toolchain pinned for validators: " + (", ".join(
@@ -3657,8 +3668,14 @@ def run_eval(
         infra_reason = None
         env_strikes = 0
         vt_strikes = 0
+        # interpreter_error: the agent's python died at startup (no model
+        # call was made). The environment's fault, never the model's.
+        import eval_host  # noqa: PLC0415
+        startup_err = None if passed else eval_host.interpreter_startup_failure(agent_result)
         if not passed:
-            if api_errors > 0:
+            if startup_err:
+                infra_reason = "interpreter_error"
+            elif api_errors > 0:
                 infra_reason = "server_error"
             elif (health_check is not None and agent_result["exit_code"] >= 0
                   and not health_check()):
@@ -3715,6 +3732,7 @@ def run_eval(
             **({"env_error_repeats": env_strikes} if env_strikes else {}),
             **({"validator_timeout_repeats": vt_strikes} if vt_strikes else {}),
             **({"env_fp": env_component} if env_component else {}),
+            **({"interpreter_error": startup_err} if startup_err else {}),
         })
 
         if passed:
@@ -3724,6 +3742,13 @@ def run_eval(
                 f"{validation_output[:100]}")
         else:
             log(f"  FAIL: {validation_output[:100]}")
+        if startup_err:
+            # One agent's startup death may be a blip; a broken interpreter
+            # would kill every unit after it. Re-check now; stop if broken.
+            bad_interp = eval_host.interpreter_problem(force=True)
+            if bad_interp:
+                abort.set()
+                log(f"  ABORT: {bad_interp}")
 
         # Cache the result for future reruns. We cache both PASS and
         # deterministic FAIL — replaying a known fail is replay-safe.
@@ -4005,10 +4030,27 @@ def main():
     parser.add_argument("--thinking", choices=("on", "off"),
                         help="Per-request thinking toggle for the agent (sets "
                              "OPENBEAST_AGENT_THINKING). In the cache key (ag-think-on/off).")
+    parser.add_argument("--no-provision", action="store_true",
+                        help="Do not install missing eval toolchains (scripts/eval-host.sh "
+                             "setup) or re-exec under the eval venv; only report what is "
+                             "missing. Same as OPENBEAST_EVAL_NO_PROVISION=1.")
     args = parser.parse_args()
 
     if args.jobs < 1:
         parser.error("--jobs must be >= 1")
+    if not args.list and not args.cache_only:
+        # The toolchains (evals/toolchains.lock) before anything is pinned:
+        # setup when missing, the prefix first on PATH, then re-exec under the
+        # eval venv's python (docs/SPARK_HYDRA.md F6).
+        import eval_host  # noqa: PLC0415
+        host_problems = eval_host.ensure_host(
+            argv=[os.path.abspath(__file__)] + sys.argv[1:], no_provision=args.no_provision)
+        if host_problems and not eval_host.no_provision_requested(args.no_provision):
+            print("REFUSED: the eval host is not ready (scripts/eval-host.sh check):",
+                  file=sys.stderr)
+            for p in host_problems:
+                print(f"  - {p}", file=sys.stderr)
+            sys.exit(2)
     arms = [a.strip() for a in args.arms.split(",") if a.strip()] if args.arms else None
     if arms and (args.packs or args.diag or args.escalate):
         parser.error("--arms defines each arm's treatment; drop --packs/--diag/--escalate")

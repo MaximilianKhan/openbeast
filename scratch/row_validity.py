@@ -84,7 +84,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # model's. Those two carry a normal exit and real tokens, so only the reason
 # shows it.
 INFRA_REASONS = {"setup_failed", "server_unhealthy", "skipped_cache_miss", "low_disk",
-                 "server_error", "env_error"}
+                 "server_error", "env_error", "interpreter_error"}
 EAGAIN_RE = re.compile(r"Resource temporarily unavailable|SystemResources|"
                        r"thread constructor failed|pthread_create failed|"
                        r"fork: retry|can't start new thread")
