@@ -590,9 +590,9 @@ In the order it happened (local times from the run logs where they exist):
 | A (runner v2) | **31/71** | +5 net vs L0 (11 rescued, 6 regressed) |
 | B (+ wall-scaled turns) | **36/71** | its 24 lost units rerun (B repair) |
 | C (+ thinking, wall x2) | **54/71 raw; 51/71 scored (SCORE 76.7)** | +18 raw / +15 scored over B, one seed. Three passes (122_gemm_blocked_b, _d, _e) are withheld: the contamination scan (#195) found their agents read sealed paths (below). On the first 21 units: 18 vs B's 8, 10 rescued, 0 regressed, 14 of the 18 passes inside B's original wall, ≈ 2.3x B's time per unit. This is why the default campaign is thinking-first (§5a) |
-| D (+ diagnostics, edit hint, verify-done) | [PENDING] | |
-| E (+ packs, env block, wall warnings, thinking iff C > B) | [PENDING] (running on 2026-11-17) | C > B, so E runs thinking on. Decision: [PENDING] |
-| F (B under `--seed 1`) | [PENDING] | noise floor: [PENDING] flips |
+| D (+ diagnostics, edit hint, verify-done) | **not run** | Max paused the chain after E (2026-11-17) |
+| E (+ packs, env block, wall warnings, thinking iff C > B) | **50/71 (SCORE 74.7)** | C > B, so E ran thinking on (zig pack v2, as `v5-harness` pins). Integrity scan clean; on the board (#201). One under C scored, four under C raw: a wash at one seed. Its 122_gemm_blocked_c FAIL is a validator false FAIL (the pre-#195 lint matched `dlopen` in a comment), footnoted and not adjusted. **Decision:** C stays GLM's best row and becomes the serving default (thinking on, nothing else; [SPARK_HYDRA.md E2a](SPARK_HYDRA.md#e2a-recommended-serving-configuration-from-v5)); E's additions stay opt-in |
+| F (B under `--seed 1`) | **not run** | Max paused the chain after E; the noise floor is still unmeasured, so every delta above is single seed |
 
 **Integrity caveat on C.** In 122_gemm_blocked_b (turns 15-24), stuck on a
 harness bug (the path regex kept a sentence's final period, so verify-done
@@ -619,7 +619,7 @@ python3 evals/campaign.py run --campaign v5-harness --model glm-5.3-flash --jobs
 ```
 
 The thinking-first campaign was written after C's first 21 units, and C's
-final (53-54/71 against B's 36/71) bore it out. GLM has not run it as a
+final (51/71 scored, 54 raw, against B's 36/71) bore it out. GLM has not run it as a
 campaign. On GLM, its N0 is arm B (36/71, thinking pinned off).
 
 ## 9. Next: DeepSeek v4.1 Flash ("1017"), thinking first

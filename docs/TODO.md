@@ -1,15 +1,60 @@
 # TODO
 
-## 🧰 v5 HARNESS + MODEL CAMPAIGN — opened 2026-11-16, refreshed 2026-11-17
+## 🧰 v5 HARNESS + MODEL CAMPAIGN — opened 2026-11-16, refreshed 2026-11-17 (evening)
 
 Where the GLM-5.3-Flash v5 work stands (single seed each; the working log is
 [`HARNESS_NOTES.md`](HARNESS_NOTES.md) "Headroom", the runbook
-[`MODEL_CAMPAIGN.md`](MODEL_CAMPAIGN.md)): L0 26/71 → A 31/71 → B 36/71 →
-**C 54/71 raw, 53/71 scored** (122_gemm_blocked_b withheld pending the
-integrity review) → E running. Claude Opus 5.5 reference ceiling: 71/71
-(68/71 at the 1x wall).
+[`MODEL_CAMPAIGN.md`](MODEL_CAMPAIGN.md), the scored rows
+[`RESULTS.md`](RESULTS.md#v5-leaderboard--best-configuration-per-model)):
+L0 26/71 → A 31/71 → B 36/71 → **C 51/71 scored, SCORE 76.7** (54 raw; the
+integrity scan of #195 withheld 122_gemm_blocked_b, _d and _e) → **E 50/71,
+SCORE 74.7** (integrity scan clean; its 122_gemm_blocked_c is a validator
+false FAIL, footnoted, not adjusted). GLM's best row stays C, and C (thinking
+on) is now how spark-hydra serves by default. Arms D and F were **not run**:
+Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
+71/71 (68/71 at the 1x wall).
 
-**Done (2026-11-16/17):**
+**Done since the 2026-11-17 morning refresh (#194–#204, plus operator steps):**
+
+- [x] **Thinking-stall recovery** — a capped think keeps its last 6,000 chars
+  of reasoning and is told to act; the cap stays 16K (#194, moves the era).
+  Measured as an arm: still open (below).
+- [x] **Zig pack v3** (`std.posix.write` is gone in 0.16, and more), #194;
+  the thinking-first campaign measures v3, `v5-harness` keeps v2 so arm E
+  stays reproducible, #197.
+- [x] **Eval integrity G24–G27 + the contamination scan** — the trailing-dot
+  path bug, the eval seal widened to `evals/`, `tests/`, `~/.claude` and the
+  git dir, `evals/audit/integrity_scan.py` over every v5 row: 3 GLM-C passes
+  withheld, everything else clean (#195). Residual gap: on Linux the kernel
+  does not enforce the seal (the file tools and the command-text check do).
+- [x] **A validator interpreter failure is never scored** (#200).
+- [x] **Arm E on the board** — 50/71, SCORE 74.7, scan clean (#201).
+- [x] **Thinking on by default on spark-hydra** — `INFERENCE_THINKING=on` at
+  beast-gate (#202), the Open WebUI "Thinking Default" filter (#203) and
+  this host's own agents; `AGENT_MAX_TOKENS=16384` for the runner on
+  spark-1; eval runs opt out with `X-OpenBeast-Gate-Defaults: off`.
+  Measured cost: first answer token 0.2 s off vs 5.0 s median on (1.9–38.7
+  s); agent tasks about 2.3x longer. `SPARK_HYDRA.md` E2a. Live on spark-1
+  since 2026-11-17.
+- [x] **Multi-rig Mac client** — `openbeast-client rigs`, `use <rig>`,
+  `rig add / remove / detect`; one opencode provider per rig plus the
+  `openbeast-rig` alias; model limits from `/api/slot` (context 1,048,576 on
+  the pair, output 32,768, overridable); `scripts/client-e2e.sh` (#204;
+  `SPARK_HYDRA.md` F2/F3).
+- [x] **RoCE MTU 9000 live on both Sparks** since 2026-11-17 14:20:
+  `spark-fabric-mtu.sh --verify` passed on both (8972-byte don't-fragment
+  pings on both rails, RoCE `active_mtu 4096`). The A/B is still open (below).
+- [x] **Leaked gate key rotated (incident, 2026-11-17).** The Mac's gate
+  device key reached an agent transcript through a BSD `sed` redaction whose
+  `\|` alternation matched nothing on macOS. Rotated the same minute
+  (`clients.sh rotate macbook`; old key 401, new key 200). Lesson recorded in
+  `SPARK_HYDRA.md` G7: never print a secret to redact it, never redact with
+  sed alternation, filter with python if at all.
+- [x] **Website decisions Q5–Q10 recorded** (#198, #199) and the
+  openbeast-website `/benchmarks/` page merged there (website #17, #18; the
+  deploy is still open, below).
+
+**Done (2026-11-16/17, morning):**
 
 - [x] **Runner v2** — the harness frictions from the GLM L0 audit (G1-G4, G8,
   G11 v1), #179 (moves the era). Arm A.
@@ -36,22 +81,31 @@ integrity review) → E running. Claude Opus 5.5 reference ceiling: 71/71
 - [x] **WebUI regenerate varies** — the `random_seed` Filter gives each unseeded
   Open WebUI chat a random seed, #181 (other clients: the beast-gate item below).
 - [x] **MTU 9000 script** — `scripts/backends/spark-fabric-mtu.sh`
-  (stage / verify / unstage, never `netplan apply`), #178. The restart itself
-  is the open item below.
+  (stage / verify / unstage, never `netplan apply`), #178. Staged, rebooted
+  and verified on both Sparks 2026-11-17 (above).
 
-**Open — the pair (operator steps, Max):**
+**Open — the pair (operator steps, Max; state read 2026-11-17 evening):**
 
-- [ ] **MTU 9000 restart.** The script is merged and the plan is staged in
-  `SPARK_HYDRA.md` B4: `--stage` on both (sudo), reboot spark-2 then spark-1,
-  `--verify` per rail, then the TTFT / 4-stream A/B. Pending Max's reboot.
-  Detail in the 🟩 DGX SPARK section below.
-- [ ] **`ARTIFACT_LOGIN_FROM=unix` + `--publish-artifact` on spark-1.** Until
-  then beast-artifact honours the login header from any loopback peer
-  (`SPARK_HYDRA.md` G6 "Pending on the live pair", Known issues).
-- [ ] **spark-guard re-run on both Sparks** (sudo): `STALE` on both since #168.
-- [ ] **Plaintext secrets on spark-1:** `~/.config/openbeast/gate-keys/*.key`
-  and `webui-max-password`. Shred the keys once the devices hold them (E7);
-  delete the password file once it is changed (E5).
+- [ ] **MTU 9000 performance A/B.** The MTU is live; whether it is faster is
+  unmeasured. Run the `SPARK_HYDRA.md` B4 measurement script (~45K-token TTFT,
+  4-stream decode) at 9000 and record it beside an MTU-1500 run. No speed
+  claim anywhere (README, site) until it is recorded. Detail in the 🟩 DGX
+  SPARK section below.
+- [ ] **spark-guard re-run on both Sparks** (sudo): still `STALE` on both,
+  read 2026-11-17 with `spark-guard.sh --status` over ssh (the status readout
+  needs no sudo): the installed rules guard `29501` but not `29502` (#168).
+  Fix: `sudo scripts/backends/spark-guard.sh` on each Spark.
+- [ ] **The artifact login: `ARTIFACT_LOGIN_FROM=unix` + `--publish-artifact`
+  on spark-1.** Still unset on 2026-11-17. Until then beast-artifact honours
+  the login header from any loopback peer (`SPARK_HYDRA.md` G6 "Pending on the
+  live pair", Known issues).
+- [ ] **Plaintext secrets on spark-1:** two key files in
+  `~/.config/openbeast/gate-keys/` and `webui-max-password` are still there
+  (2026-11-17). Shred the keys once the devices hold them (E7); delete the
+  password file once it is changed (E5). The Mac's copy there is also stale
+  since its 2026-11-17 rotation (`SPARK_HYDRA.md` G7).
+- [ ] **zig 0.16 and the beast-docs mirror on spark-1** (`SPARK_HYDRA.md` G6
+  step 6): neither is installed yet.
 - [ ] **`scripts/spark-model.sh use <profile>`** — a one-command model swap on
   the pair with rollback: fetch/verify the weights on both ranks, rewrite the
   recipe config, restart the unit, wait for `/v1/models`, run conformance, and
@@ -60,35 +114,66 @@ integrity review) → E running. Claude Opus 5.5 reference ceiling: 71/71
 - [ ] **Scaling review, 1 to 8 ranks** — still open, deliberately parked (Max,
   2026-11-15); scope in the 🟩 DGX SPARK section below.
 
+**Open — process and the website:**
+
+- [ ] **A free local CI runner.** GitHub Actions is turned off (cost) since
+  2026-11-17; PRs merge with `gh pr merge --admin` after the local checks in
+  [`CONTRIBUTING.md`](../CONTRIBUTING.md) "CI is off: check locally before
+  merging", with the results in the PR body. Replace the honour system with a
+  script, e.g. `scripts/premerge.sh <pr>` on spark-2: a temp clone of the PR
+  head, the pytest suite, the Linux-only shell suites, ruff / shellcheck /
+  pip-audit, `suite_stats.py --check`, `v5_board.py --check`, then a PR
+  comment with the results. A self-hosted Actions runner on spark-2 is the
+  other option (no minutes billed), but it runs PR code on a box that holds
+  the weights and the gate: decide that one deliberately.
+- [ ] **Deploy openbeast.ai on the Mac Mini.** The `/benchmarks/` page and the
+  P0 stale-claim fixes are merged in openbeast-website (#17, #18) but not
+  deployed: `deploy/deploy.sh prod` on the Mini, then the post-deploy `curl`
+  checks ([`WEBSITE_PLAN.md`](WEBSITE_PLAN.md) §12).
+- [ ] **Next.js 16.4.3 security advisory on the website.** Next.js 16.4.5
+  fixes seven moderate advisories; Dependabot's openbeast-website #16 bumps it.
+  Most concern server features (`use cache`, the Edge runtime, image
+  optimization) that a static export does not run, but merge the bump before
+  the next deploy rather than argue each one.
+- [ ] **The website's arm E update.** The site shows E as pending; replace it
+  with 50/71, SCORE 74.7, from `docs/RESULTS.md` ([`WEBSITE_PLAN.md`](WEBSITE_PLAN.md) §4.1).
+
 **Open — measurement:**
 
+- [ ] **Arms D and F of `v5-harness`** — not run: Max paused the chain after
+  E (2026-11-17). D is C + diagnostics, edit hint and verify-done; F is B at
+  `--seed 1`, the noise floor. Resume only on Max's word
+  ([`MODEL_CAMPAIGN.md` §8](MODEL_CAMPAIGN.md#8-worked-example-glm-53-flash-2026-11-16)).
 - [ ] **Qwen3.8 v5 rows** when the rig is back (L0 profile, then the
   thinking-first campaign): the paper's second model and the first `beast` row.
 - [ ] **DeepSeek v4.1 Flash ("1017") thinking-first campaign** —
   [`MODEL_CAMPAIGN.md` §9](MODEL_CAMPAIGN.md#9-next-deepseek-v41-flash-1017-thinking-first).
 - [ ] **k-seed noise run** — the same arm at `--seed 1` (and 2) to put a noise
   floor under every single-seed delta above (G12; the campaign's seed arm).
+  Arm F would have been the first such run; it did not run.
 - [ ] **Zig pack held-out check** — before claiming the pack effect
-  ([`LANG_AWARENESS_PLAN.md`](LANG_AWARENESS_PLAN.md) "Held-out check"). Fold in
-  the P0 `std.posix.write` claim from HARNESS_NOTES "Language-specific residue".
-- [ ] **Thinking-cap / stall fix, measured** — 13 of C's 17 failures are process
-  failures, almost all a thinking turn capped at 16,384 tokens before the file
-  is written. Fix it (cap, budget or a resume nudge), then measure it as its
-  own arm against C/E at the same seed.
-- [ ] **Sandbox read-deny integrity fix + contamination scan.** In C's
-  122_gemm_blocked_b the agent read `~/.claude` workflow journals, the harness
-  source and `evals/cache/`. Deny those reads in the eval sandbox, fix the
-  trailing-period path regex that sent it looking (`run_eval.py`), and scan
-  every v5 row's transcripts for the same reads; then clear or void the
-  withheld unit in `evals/boards/v5/exclusions.json`.
+  ([`LANG_AWARENESS_PLAN.md`](LANG_AWARENESS_PLAN.md) "Held-out check"). Pack
+  v3 (#194) carries the `std.posix.write` claim; the thinking-first campaign
+  measures v3 (#197).
+- [ ] **Thinking-stall recovery, measured** — 13 of C's 17 raw failures are
+  process failures, almost all a thinking turn capped at 16,384 tokens before
+  the file is written. #194 keeps the capped think's tail; measure it as its
+  own arm against C/E at the same seed (the `output_cap` event now logs what
+  that needs).
+- [ ] **The eval seal on Linux** — #195 seals `evals/`, `tests/`, `~/.claude`
+  and the repository metadata from eval agents, but on Linux only the file
+  tools and the command-text check refuse; the kernel does not. Before a v5
+  row runs with a Linux harness host, add a kernel-level deny (Landlock or a
+  mount namespace).
 - [ ] **beast-gate random seed, with an eval exemption** — a random default seed
   at the gate for requests that carry none, so opencode, the Mac client and raw
   `:8443` callers stop repeating themselves on retry; eval traffic (and any
   request with an explicit seed) passes through untouched, because the runner's
   seeding is part of the era. Replaces the TensorFold seed item in 🔎 REVIEW
-  2026-10-09.
+  2026-10-09. #202's `X-OpenBeast-Gate-Defaults: off` is the exemption
+  mechanism to reuse.
 - [ ] **The research paper: per-model vs unified harness** — see 📝 RESEARCH
-  PAPER below. Needs GLM's E + seed arm, Qwen3.8 and DeepSeek on the same arms.
+  PAPER below. Needs GLM's seed arm, Qwen3.8 and DeepSeek on the same arms.
 
 ## 🧮 PERFORMANCE MATRIX — engine × language-assistance × model (opened 2026-11-15)
 
@@ -304,9 +389,10 @@ paper's central result either way. Prereqs: the v5 arms for GLM (L0/L1/L2,
 thinking on, runner v2), a Qwen3.8 v5 row when the rig is back, DeepSeek v4.1
 Flash, and the Claude Opus 5.5 reference row as the ceiling.
 
-Status 2026-11-17: in progress, GLM only so far. GLM's arms L0 26 → A 31 →
-B 36 → C 53-54/71 (thinking) against the Opus 71/71 ceiling, all single seed;
-E and the seed arm running or queued. Evidence that bears on the question: the
+Status 2026-11-17 (evening): in progress, GLM only so far. GLM's arms L0 26
+→ A 31 → B 36 → C 51/71 scored (54 raw; thinking) → E 50/71, against the
+Opus 71/71 ceiling, all single seed. D and the seed arm F were not run (Max
+paused the chain). Evidence that bears on the question: the
 language-specific residue under thinking (HARNESS_NOTES) and the Droid prior
 art (`reviews/HARNESS_PRIOR_ART-2026-11-16.md`: the "unified harness, rich
 static knowledge" pole). Next: Qwen3.8 and DeepSeek v4.1 Flash on the same
@@ -318,20 +404,27 @@ arms.
   Mia-AiLab's TensorFold v0.6.0 recipe, DFlash2, 4 streams, 1M window
   (code 68-70 tok/s single, 224 aggregate); command center on spark-1;
   boot units for both. Runbook: [`SPARK_HYDRA.md`](SPARK_HYDRA.md).
+- **Since 2026-11-17:** thinking on by default for every client (gate, Open
+  WebUI filter, the host's agents; `SPARK_HYDRA.md` E2a), RoCE MTU 9000 on
+  the fabric, and a Mac client that switches between the pair and `beast`
+  (`openbeast-client use <rig>`, #204).
 - **Next:** full offline playbook (image save/load, DFlash2, aarch64 air-gap
   bundle, zig); remote access (beast-gate via `tailscale serve`,
-  `svc:spark-hydra`); primary switch beast ↔ spark-hydra; `PARALLEL=8`;
-  native TensorFold 1.2.7 A/B.
-- [ ] **RoCE MTU 9000 — script merged (#178), restart pending Max's reboot;
-  run --stage on both, reboot both, --verify, A/B.** Not yet staged on either
-  Spark as of 2026-11-16 evening (`SPARK_HYDRA.md` G6 "Pending on the live
-  pair"); spark-2 must pull first. (Max, 2026-11-16: "We absolutely need to fix this on
-  the next restart".) The fabric runs at netdev MTU 1500 = RoCE `active_mtu
-  1024`. `sudo scripts/backends/spark-fabric-mtu.sh --stage` on spark-1 and
-  spark-2 (one netplan drop-in, `netplan generate` only), reboot both,
-  `--verify <peer rail IPs>` on each, then A/B the ~45K-token TTFT and the
-  4-stream decode tok/s and record them. Runbook, rollback, measurement
-  script: [`SPARK_HYDRA.md`](SPARK_HYDRA.md) "B4. Fabric MTU 9000".
+  `svc:spark-hydra`); the primary switch beast ↔ spark-hydra on the hydra side
+  (clients switch since #204); `PARALLEL=8`; native TensorFold 1.2.7 A/B; the
+  MTU A/B.
+- [x] **RoCE MTU 9000 — LIVE on both Sparks since 2026-11-17 14:20.**
+  Staged with `spark-fabric-mtu.sh --stage` on each, both rebooted, then
+  `--verify` passed on both: netdev MTU 9000 and RoCE `active_mtu 4096` on
+  every rail, and 8972-byte don't-fragment pings to the peer on both rails.
+  `--verify` takes **all** the peer's rail IPs in one call; a call with one
+  IP fails the rail that has none. (It was MTU 1500 = `active_mtu 1024`
+  before; Max, 2026-11-16: "We absolutely need to fix this on the next
+  restart".)
+- [ ] **The MTU A/B is unmeasured.** Run the ~45K-token TTFT and 4-stream
+  decode script in [`SPARK_HYDRA.md`](SPARK_HYDRA.md) "B4. Fabric MTU 9000"
+  at 9000, and against an MTU-1500 baseline, and record both there. No speed
+  claim until then.
 - **TODO — scaling review, 1 to 8 ranks (Max, 2026-11-15: "leave the
   scaling questions 1-8 for another day").** The 2026-11-16 adversarial
   review covered the 2x pair only. Still unreviewed and unmeasured: the
