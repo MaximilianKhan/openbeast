@@ -266,6 +266,17 @@ def test_env_block_reports_the_eval_python(evalmode, tmp_path):
 
 # --- 4. the transcript integrity scan --------------------------------------------
 
+def _scan_mod():
+    """evals/audit/integrity_scan.py by path: evals/reference has a module
+    of the same name, which another test may have imported first."""
+    sys.path.insert(0, str(ROOT / "evals" / "audit"))
+    spec = importlib.util.spec_from_file_location(
+        "audit_integrity_scan", ROOT / "evals" / "audit" / "integrity_scan.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def _transcript(path, task, calls):
     with open(path, "w") as f:
         f.write(json.dumps({"type": "start", "task": task, "timestamp": "2026-11-16T21:00:00"}) + "\n")
@@ -276,8 +287,7 @@ def _transcript(path, task, calls):
 
 
 def test_integrity_scan_flags_the_122b_reads(tmp_path):
-    sys.path.insert(0, str(ROOT / "evals" / "audit"))
-    import integrity_scan as S
+    S = _scan_mod()
     p = tmp_path / "agent-1.jsonl"
     _transcript(p, "t", [
         ("bash", {"command": "cd /tmp/eval_gemm && gcc -o gemm gemm.c"}, "ok"),
@@ -302,8 +312,7 @@ def test_integrity_scan_flags_the_122b_reads(tmp_path):
 
 
 def test_integrity_scan_ignores_toolchains_and_fixtures(tmp_path):
-    sys.path.insert(0, str(ROOT / "evals" / "audit"))
-    import integrity_scan as S
+    S = _scan_mod()
     p = tmp_path / "agent-2.jsonl"
     z = "/private/tmp/claude-501/p/s/scratchpad/toolchains/zig-aarch64-macos-0.16.0/lib/std"
     _transcript(p, "t", [
