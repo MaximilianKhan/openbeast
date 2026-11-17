@@ -191,6 +191,10 @@ def test_cli_seed_and_thinking_flags_set_the_env(monkeypatch):
         import os
         seen.update({k: os.environ.get(k) for k in AGENT_ENV})
         return {"summary": {"failed": 0}}
+    # main() writes os.environ directly: register both so teardown restores
+    # them (a leaked seed reached later runner tests' requests).
+    monkeypatch.setenv("OPENBEAST_AGENT_SEED", "")
+    monkeypatch.setenv("OPENBEAST_AGENT_THINKING", "")
     monkeypatch.setattr(run_eval, "run_eval", fake_run_eval)
     monkeypatch.setattr(run_eval, "_install_signal_reaper", lambda: None)
     monkeypatch.setattr(sys, "argv", ["run_eval.py", "--tasks", "x", "--seed", "3",
