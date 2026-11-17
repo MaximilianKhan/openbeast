@@ -35,8 +35,16 @@ from lang import pack_context as PC  # noqa: E402
 from lang import packs as P  # noqa: E402
 
 PACK = os.path.join(AGENTS, "packs", "zig-0.16.md")
-PACK_SHA8 = hashlib.sha256(open(PACK, "rb").read()).hexdigest()[:8]
+PACK_SHA256 = hashlib.sha256(open(PACK, "rb").read()).hexdigest()
+PACK_SHA8 = PACK_SHA256[:8]
 LABEL = f"zig@{PACK_SHA8}"
+#: The pin as committed. Pack v2 (2026-11-16) left it on the v1 bytes on
+#: purpose: an edited pack is an unmeasured treatment until the eval arm
+#: measures it and the pin moves. The DELIVERY tests below run "as if the
+#: committed pack were the measured one" (the hermetic fixture moves the pin
+#: in-process; the script tests copy agents/lang with the pin rewritten) —
+#: what they pin is the mechanism, not which bytes won the A/B.
+REAL_PIN = dict(PC.MEASURED_SHA256)
 
 
 @pytest.fixture(autouse=True)
@@ -49,8 +57,24 @@ def hermetic(tmp_path, monkeypatch):
     # The pack says zig 0.16.0; the drift check compares against the
     # installed compiler. Pin it rather than depend on this box's zig.
     monkeypatch.setattr(PC, "_installed_zig", lambda ttl=60.0: "0.16.0")
+    monkeypatch.setattr(PC, "MEASURED_SHA256", {"zig": PACK_SHA256})
     PC._LOGGED.clear()
     yield
+
+
+def test_production_serves_only_the_pinned_pack(monkeypatch, tmp_path):
+    """With the REAL pin: the committed pack is served only when its bytes
+    are the measured bytes. Pack v2 is not (yet), so production injects
+    nothing and says why — the eval arm, not this test, decides when it is."""
+    monkeypatch.setattr(PC, "MEASURED_SHA256", REAL_PIN)
+    p, why = PC.served_pack("zig")
+    if REAL_PIN["zig"] == PACK_SHA256:
+        assert p is not None and p.sha8 == PACK_SHA8
+    else:
+        assert p is None and "unmeasured treatment" in why
+        path, info = _ctx("write zig", str(tmp_path))
+        assert path is None and info["label"] == ""
+        assert "NOT SERVED" in PC.status_line()
 
 
 def _ctx(task, workdir=None, context=""):
@@ -259,6 +283,38 @@ def test_no_installed_zig_injects_nothing(monkeypatch, tmp_path):
     path, info = _ctx("write zig", str(tmp_path))
     assert path is None and "not installed" in info["reason"]
     assert "NOT SERVED" in PC.status_line()
+
+
+def test_a_curated_only_pack_for_another_language_is_not_drift():
+    """pack_problem used to demand the zig generated-section header from
+    EVERY pack, so filing any non-zig pack in PACK_FILES aborted run_eval
+    under --packs. A curated-only pack has nothing generated to drift."""
+    curated = b"=== Language notes: rust 1.100 ===\n- use `--edition 2021`.\n"
+    assert PC.pack_problem("rust", "rust.md", curated) is None
+    # zig still requires its generated section
+    assert "no generated-section header" in PC.pack_problem("zig", "z.md", curated)
+    # a generated section stamped for another language is refused
+    zig_bytes = open(PACK, "rb").read()
+    assert "is for zig, but PACK_FILES files it under rust" in PC.pack_problem("rust", "r.md", zig_bytes)
+    assert PC.pack_problem("zig", PACK, zig_bytes) is None
+
+
+def test_run_eval_packs_flag_survives_a_non_zig_pack(tmp_path, monkeypatch):
+    sys.path.insert(0, os.path.join(REPO, "evals"))
+    import importlib
+    for m in ("cache", "run_eval"):
+        sys.modules.pop(m, None)
+    run_eval = importlib.import_module("run_eval")
+    from lang import host_pack as HP
+    monkeypatch.setattr(HP, "build", lambda host=None: HP.HostPack("Linux", "", []))
+    d = tmp_path / "packs"
+    d.mkdir()
+    shutil.copy(PACK, d / "zig-0.16.md")
+    (d / "rust.md").write_text("=== Language notes: rust ===\n- curated only.\n")
+    monkeypatch.setattr(run_eval, "PACKS_DIR", str(d))
+    monkeypatch.setattr(run_eval, "PACK_FILES", {"zig": "zig-0.16.md", "rust": "rust.md"})
+    on, comp, meta = run_eval.packs_flag({"BEAST_PACKS": "1"})
+    assert on and set(meta["paths"]) == {"zig", "rust"}
 
 
 def test_run_eval_uses_the_same_check():
@@ -478,8 +534,15 @@ def _fake_tree(tmp_path):
     shutil.copy(os.path.join(REPO, "agent.sh"), root / "agent.sh")
     shutil.copy(os.path.join(REPO, "scripts", "client.sh"), root / "scripts" / "client.sh")
     shutil.copytree(os.path.join(REPO, "scripts", "lib"), root / "scripts" / "lib")
-    for d in ("lang", "packs"):
-        os.symlink(os.path.join(AGENTS, d), root / "agents" / d)
+    os.symlink(os.path.join(AGENTS, "packs"), root / "agents" / "packs")
+    # A copy, not a symlink: the pin is moved to the committed pack's bytes
+    # (see REAL_PIN), the one difference from the real tree.
+    shutil.copytree(os.path.join(AGENTS, "lang"), root / "agents" / "lang",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    pc = root / "agents" / "lang" / "pack_context.py"
+    src = pc.read_text()
+    assert REAL_PIN["zig"] in src
+    pc.write_text(src.replace(REAL_PIN["zig"], PACK_SHA256))
     (root / "agents" / "runner.py").write_text(
         "import json, sys; print(json.dumps(sys.argv[1:]))\n")
     return root
