@@ -39,6 +39,15 @@ def _install_probe_stubs() -> None:
 
 _install_probe_stubs()
 
+# --- eval host provisioning ----------------------------------------------------
+# run_eval / profile / benchmark_all main() install missing eval toolchains
+# (scripts/eval-host.sh setup: hundreds of MB into ~/.local/opt) and re-exec
+# under the eval venv. A test run must never do either, so for the whole
+# session provisioning is off: they only check and report. Tests of the
+# provisioning itself (tests/test_eval_host.py) delete the variable and point
+# the script at a temp prefix and a fake lock.
+os.environ["OPENBEAST_EVAL_NO_PROVISION"] = "1"
+
 
 def pytest_configure(config):
     config.addinivalue_line(
