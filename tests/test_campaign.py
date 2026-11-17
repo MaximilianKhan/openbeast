@@ -21,7 +21,7 @@ server or toolchain is needed. Pinned here:
   8. An arm whose flag the tree lacks is refused, not run without it.
   9. The thinking-first campaign (the default): the composite runs first,
      each ablation is the composite minus exactly its component, the
-     no-thinking arms run last, packs v2 wherever packs are on, a reasoning
+     no-thinking arms run last, packs v3 wherever packs are on, a reasoning
      budget declared per arm (the runner's thinking cap when thinking), the
      run order is configurable, and --dry-run prints an ETA per arm.
  10. The decision rules: components within the seed noise are dropped,
@@ -456,7 +456,7 @@ TF = "v5-thinking-first"
 TF_ARMS = ["T", "T_noturns", "T_nopacks", "T_noassist", "T_noenv", "T_s1", "N", "N0"]
 COMPOSITE_ENV = {"BEAST_ASSIST": "1", "OPENBEAST_DIAGNOSTICS": "1", "OPENBEAST_DIAG_EDIT_HINT": "1",
                  "OPENBEAST_AGENT_VERIFY_DONE": "1", "BEAST_PACKS": "1", "OPENBEAST_PACKS": "1",
-                 "OPENBEAST_PACK_VARIANT": "v2", "OPENBEAST_AGENT_ENV_BLOCK": "1",
+                 "OPENBEAST_PACK_VARIANT": "v3", "OPENBEAST_AGENT_ENV_BLOCK": "1",
                  "OPENBEAST_AGENT_WALL_WARN": "1"}
 
 
@@ -528,11 +528,13 @@ def _runner_thinking_cap():
     return re.search(r"^_EVAL_TURN_TOKENS_THINKING = (\d+)", src, re.M).group(1)
 
 
-@pytest.mark.parametrize("name", [TF, "v5-harness"])
-def test_reasoning_budget_declared_per_arm_and_packs_v2_wherever_packs_are_on(name):
+@pytest.mark.parametrize("name,variant", [(TF, "v3"), ("v5-harness", "v2")])
+def test_reasoning_budget_declared_per_arm_and_pack_variant_wherever_packs_are_on(name, variant):
     """A thinking arm declares the eval turn cap that bounds its thinking
-    (never 0 = thinking off), a no-thinking arm 0; every packs-on arm
-    measures packs v2 (the variant defaults to the v1 pack)."""
+    (never 0 = thinking off), a no-thinking arm 0; every packs-on arm names
+    its pack variant explicitly (the variant defaults to the v1 pack): the
+    thinking-first campaign measures v3 (adds the std.posix.write claim, #194),
+    v5-harness keeps v2 so the 2026-11-16 arm E stays reproducible."""
     camp = C.load_campaign(name)
     cap = _runner_thinking_cap()
     specs = []
@@ -543,7 +545,7 @@ def test_reasoning_budget_declared_per_arm_and_packs_v2_wherever_packs_are_on(na
         rb = C.arg_value(sp["args"], "--reasoning-budget")
         assert rb == (cap if sp["thinking"] == "on" else "0"), aid
         if sp["env"].get("BEAST_PACKS") == "1":
-            assert sp["env"].get("OPENBEAST_PACK_VARIANT") == "v2", aid
+            assert sp["env"].get("OPENBEAST_PACK_VARIANT") == variant, aid
             assert "OPENBEAST_PACK_VARIANT" in sp["requires"]["env"], aid
 
 
