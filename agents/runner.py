@@ -772,7 +772,7 @@ def turns_notice(iteration: int, max_iter: int) -> str:
 
 
 # ---------------------------------------------------------------------------
-# G20 — wall-clock warnings (opt-in, OPENBEAST_AGENT_WALL_WARN=1)
+# G23 — wall-clock warnings (opt-in, OPENBEAST_AGENT_WALL_WARN=1)
 #
 # The runner knew its turn budget but not the unit's wall budget, so a slow
 # model was killed by run_eval's timeout with no warning. With the switch on
@@ -821,7 +821,7 @@ def wall_notice(elapsed: float, wall_s: float, fired: set) -> str:
 
 
 # ---------------------------------------------------------------------------
-# G19 — first-turn environment block (opt-in, OPENBEAST_AGENT_ENV_BLOCK=1)
+# G22 — first-turn environment block (opt-in, OPENBEAST_AGENT_ENV_BLOCK=1)
 #
 # Most failing GLM v5 units ended on the turn cap after spending early turns
 # on `which`, `--version` and `ls`. Prior art: Droid's startup environment
@@ -933,7 +933,7 @@ def _list_eval_dir(root: str, budget: list[int]) -> list[str]:
 
 def env_block(workdir: str | None = None, expected: list[str] | None = None,
               system: str | None = None, machine: str | None = None) -> str:
-    """The first-turn environment block (G19). Bounded by
+    """The first-turn environment block (G22). Bounded by
     _ENV_BLOCK_MAX_CHARS; never includes an environment value."""
     from concurrent.futures import ThreadPoolExecutor
     expected = _tools._task_expected_paths() if expected is None else expected
@@ -1240,7 +1240,7 @@ def run_agent(
 ) -> str:
     """Run the agent loop. Returns the final summary or last model message."""
     _safe_stdio()
-    # G20: the wall clock starts with the run (run_eval's kill timer started a
+    # G23: the wall clock starts with the run (run_eval's kill timer started a
     # moment earlier, at spawn). Notices only with the switch on and a wall.
     wall_t0 = _clock()
     wall = wall_budget_s(wall_s) if wall_warn_enabled() else 0.0
@@ -1372,7 +1372,7 @@ def run_agent(
 
     log_event({"type": "start", "task": task, "model": model, "workdir": workdir})
 
-    # G19: the environment block rides on the task message, once, before the
+    # G22: the environment block rides on the task message, once, before the
     # first model call (a fresh run only: a resumed history starts elsewhere).
     if env_block_enabled() and not (resume_from and os.path.isfile(resume_from)):
         block = env_block(workdir)
@@ -1475,7 +1475,7 @@ def run_agent(
         log_event({"type": "iteration", "number": iteration})
 
         # The transient block: the plan plus, near the end, the turns left.
-        # G20: and, with OPENBEAST_AGENT_WALL_WARN=1, the wall-clock notice.
+        # G23: and, with OPENBEAST_AGENT_WALL_WARN=1, the wall-clock notice.
         wnote = wall_notice(_clock() - wall_t0, wall, wall_fired)
         if wnote:
             log_event({"type": "wall_notice", "iteration": iteration,

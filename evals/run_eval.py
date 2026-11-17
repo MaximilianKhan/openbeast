@@ -1308,8 +1308,8 @@ def agent_switches(env=None) -> tuple[str | None, dict]:
       OPENBEAST_AGENT_SEED <int>      -> seed<N>
       OPENBEAST_AGENT_VERIFY_DONE=1   -> vdone   (G9, "test before done")
       OPENBEAST_DIAG_EDIT_HINT=1      -> ehint   (G13, "edit, don't rewrite")
-      OPENBEAST_AGENT_ENV_BLOCK=1     -> envb    (G19, first-turn env block)
-      OPENBEAST_AGENT_WALL_WARN=1     -> wwarn   (G20, wall-clock notices)
+      OPENBEAST_AGENT_ENV_BLOCK=1     -> envb    (G22, first-turn env block)
+      OPENBEAST_AGENT_WALL_WARN=1     -> wwarn   (G23, wall-clock notices)
 
     Returns (component, meta): component `ag-<part>-<part>...` for the cache
     key, None when every switch is unset (legacy keys stay reachable); meta
@@ -1427,11 +1427,18 @@ PACKS_DIR = os.path.join(EVALS_DIR, "..", "agents", "packs")
 # Language → pack file, and the drift check, live in agents/lang/pack_context
 # so the harness and PRODUCTION agents (which get the same pack since the
 # Tier-3 SHIP) cannot disagree about which file a pack is or when it is stale.
-# Tier 3 (docs/LANG_AWARENESS_PLAN.md §5): only zig has a pack today; every
-# other language gets nothing — its agent command line is byte-identical with
-# packs on or off.
+# Tier 3 (docs/LANG_AWARENESS_PLAN.md §5): only zig has a language pack
+# today. Since 2026-11-16 packs-on also hands EVERY unit the host pack
+# (agents/lang/host_pack.py: this host's probed userland/libc gaps), so a
+# non-zig unit's command line differs with packs on unless the host pack is
+# empty; with packs OFF every command line is byte-identical to before.
 from lang import pack_context as _pack_context  # noqa: E402
+from lang import host_pack as _host_pack  # noqa: E402
 PACK_FILES = _pack_context.PACK_FILES
+#: Where packs_flag writes the probed host pack (and a language pack joined
+#: with it) as content-addressed files the runner reads via --context-file.
+#: None = ~/.cache/openbeast/host-pack.
+HOST_PACK_DIR = os.environ.get("OPENBEAST_HOST_PACK_DIR") or None
 
 
 def _verify_pack(lang: str, path: str, data: bytes) -> None:
@@ -1452,9 +1459,16 @@ def packs_flag(env=None) -> tuple[bool, str | None, dict]:
     OPENBEAST_PACKS=1 (internal), or run_eval/benchmark_all --packs.
 
     Returns (enabled, cache_component, meta) where cache_component is
-    `pack1-<sha8 of the pack file bytes>` (packs concatenated in language
-    order when there is more than one) and meta = {"sha": {lang: sha8},
-    "paths": {lang: abs_path}}."""
+    `pack1-<sha8>` over the language pack file bytes (concatenated in
+    language order) followed by the HOST pack bytes, and meta = {"sha":
+    {lang: sha8, "host": sha8}, "paths": {lang: abs_path}, "host": {...},
+    "unit_paths": {lang: the file a unit of that language gets}}.
+
+    The host pack (agents/lang/host_pack.py, 2026-11-16) is probed from THIS
+    host when the flag is read and goes to EVERY unit, all languages: a zig
+    unit gets one file holding the zig pack then the host pack, any other
+    unit the host pack alone. A host with no probed gaps renders nothing and
+    the component is the language packs' alone."""
     env = os.environ if env is None else env
     enabled = (env.get("BEAST_PACKS", "").strip() == "1"
                or env.get("OPENBEAST_PACKS", "").strip() == "1")
@@ -1471,7 +1485,20 @@ def packs_flag(env=None) -> tuple[bool, str | None, dict]:
         shas[lang] = hashlib.sha256(data).hexdigest()[:8]
         paths[lang] = p
         h.update(data)
-    return True, f"pack1-{h.hexdigest()[:8]}", {"sha": shas, "paths": paths}
+    host = _host_pack.build()
+    meta = {"sha": shas, "paths": paths, "host": {}, "unit_paths": dict(paths)}
+    if host.text:
+        h.update(host.data)
+        shas["host"] = host.sha8
+        meta["host"] = {"path": _host_pack.write(host, HOST_PACK_DIR), "system": host.system,
+                        "tokens": host.tokens,
+                        "facts": [f.key for f in host.facts
+                                  if f.line and not f.covered_by_platform_line]}
+        for lang, p in paths.items():
+            with open(p, "rb") as f:
+                both = f.read().rstrip(b"\n") + b"\n\n" + host.data
+            meta["unit_paths"][lang] = _host_pack.write(both, HOST_PACK_DIR)
+    return True, f"pack1-{h.hexdigest()[:8]}", meta
 
 
 ESCALATE_LANG_DIR = os.path.join(EVALS_DIR, "..", "agents", "lang")
@@ -2220,7 +2247,7 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
     # under parallel contention (see timeout_scale in the docstring).
     budget = wall_s if wall_s is not None else max_iter * 60
     kill_after_s = int(budget * timeout_scale)
-    # G20: the runner learns the wall it is killed at (the same number as
+    # G23: the runner learns the wall it is killed at (the same number as
     # the communicate() timeout below). Through env, not argv: argv stays
     # as it was. The runner reads it only with OPENBEAST_AGENT_WALL_WARN=1.
     child_env["OPENBEAST_AGENT_WALL_S"] = str(kill_after_s)
@@ -2887,9 +2914,12 @@ class ArmCtx:
         return self.esc_on and self.in_diag_scope(task) and unit_lang(task) in self.card_langs
 
     def pack_path(self, task: dict) -> str | None:
+        """The --context-file a unit gets: its language pack joined with the
+        host pack, or the host pack alone (every language), or None."""
         if not self.packs_on:
             return None
-        return self.packs_meta["paths"].get(task.get("language"))
+        lang_path = self.packs_meta["unit_paths"].get(task.get("language"))
+        return lang_path or (self.packs_meta.get("host") or {}).get("path")
 
     def pack_for(self, task: dict) -> str | None:
         return self.packs_component if self.pack_path(task) else None
@@ -3301,6 +3331,10 @@ def run_eval(
             print(f"Packs:  {tag}awareness packs ON ({', '.join(f'{k}={v}' for k, v in c.packs_meta['sha'].items())}) — "
                   f"cache era {c.packs_component} on {packed}/{len(tasks)} units "
                   f"(leaderboard-ineligible experiment rows)")
+            hp = c.packs_meta.get("host") or {}
+            print(f"Packs:  {tag}host pack " + (
+                f"{hp['system']} {hp['tokens']}tok, probed gaps: {', '.join(hp['facts'])} — every unit"
+                if hp else "empty (no host gaps probed here)"))
     if suite_pin:
         c = suite_pin["counts"]
         print(f"Suite:  {suite} ({c['units']} pinned units = {c['discriminating']} discriminating "
@@ -3330,6 +3364,8 @@ def run_eval(
              **({"agent_component": agent_component} if agent_component else {}),
              "packs": dict(c.packs_meta.get("sha", {})) if c.packs_on else {},
              **({"packs_component": c.packs_component} if c.packs_on else {}),
+             **({"host_pack": {k: v for k, v in (c.packs_meta.get("host") or {}).items()
+                               if k != "path"}} if c.packs_on else {}),
              **({"escalate": c.esc_meta, "escalate_component": c.esc_component,
                  # G16: which languages can receive a card on this host, and
                  # how many of the run's units that covers (before any arm
@@ -3964,8 +4000,10 @@ def main():
     parser.add_argument("--packs", action="store_true",
                         help="Tier-3 language awareness packs (docs/LANG_AWARENESS_PLAN.md §5): "
                              "inject agents/packs/<lang>.md into the agent system prompt for units "
-                             "whose language has a pack (zig only today). Own pack1-<sha8> cache "
-                             "era on those units; leaderboard-ineligible. Same as BEAST_PACKS=1.")
+                             "whose language has a pack (zig only today), plus the host pack "
+                             "probed from this machine (agents/lang/host_pack.py) for EVERY unit. "
+                             "Own pack1-<sha8> cache era on those units; leaderboard-ineligible. "
+                             "Same as BEAST_PACKS=1.")
     parser.add_argument("--diag", action="store_true",
                         help="beast-assist push diagnostics for units in assist scope "
                              "(compiled languages + shell; OPENBEAST_DIAG_LANGS overrides). "

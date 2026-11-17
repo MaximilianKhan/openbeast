@@ -4,7 +4,7 @@
   "toolchain": "0.16.0",
   "verified": "2026-09-11",
   "fixture_dir": "../../../tests/fixtures/zig016",
-  "rule": "every *.old.*.zig must FAIL and every *.new.*.zig must COMPILE under `zig build-exe -fno-emit-bin`; every `pack_must_contain` string must appear in section (1) of agents/packs/zig-0.16.md; every curated bullet must hit >=1 entry",
+  "rule": "every *.old.*.zig must FAIL and every *.new.*.zig must COMPILE under `zig build-exe -fno-emit-bin`; every `pack_must_contain` string must appear in section (1) of agents/packs/zig-0.16.md; every curated bullet must hit >=1 entry; where an entry has `expect`, that OLD fixture's compiler output must contain the expected error text",
   "claims": [
     {
       "id": "main_io",
@@ -297,6 +297,96 @@
       "summary": "`std.ascii.isAlpha/isSpace` -> `isAlphabetic/isWhitespace` (also `isDigit`, `isAlphanumeric`, `toLower`, `toUpper`, `eqlIgnoreCase`)",
       "doc_must_contain": [
         "`std.ascii.isAlpha/isSpace` \u2192 `isAlphabetic/isWhitespace`"
+      ]
+    },
+    {
+      "id": "thread_spawn",
+      "topic": "thread_spawn",
+      "old": [
+        "thread_spawn.old.1.zig",
+        "thread_spawn.old.2.zig"
+      ],
+      "new": [
+        "thread_spawn.new.1.zig"
+      ],
+      "summary": "`std.Thread.spawn(.{}, worker, .{ ctx, i })`: the first argument is a SpawnConfig (`.{}` or `.{ .allocator = gpa }`), never an allocator, and the args are always a tuple, even for one value (`.{ctx}`)",
+      "doc_must_contain": [
+        "`std.Thread.spawn(config, f, args)`",
+        "std.Thread.spawn(.{}, worker, .{ ctx, i })",
+        "std.Thread.getCpuCount()"
+      ]
+    },
+    {
+      "id": "thread_sync",
+      "topic": "thread_sync",
+      "old": [
+        "thread_sync.old.1.zig",
+        "thread_sync.old.2.zig"
+      ],
+      "new": [
+        "thread_sync.new.1.zig"
+      ],
+      "summary": "`std.Thread.ResetEvent/Mutex/Condition` are gone: `var ev: std.Io.Event = .unset; ev.set(io); try ev.wait(io);` and `var m: std.Io.Mutex = .init; try m.lock(io); defer m.unlock(io);`",
+      "doc_must_contain": [
+        "`std.Thread.ResetEvent/Mutex/Condition` are gone",
+        "std.Io.Event = .unset",
+        "std.Io.Mutex = .init"
+      ]
+    },
+    {
+      "id": "io_arity",
+      "topic": "io_arity",
+      "old": [
+        "io_arity.old.1.zig",
+        "io_arity.old.2.zig",
+        "io_arity.old.3.zig",
+        "io_arity.old.4.zig"
+      ],
+      "new": [
+        "io_arity.new.1.zig"
+      ],
+      "summary": "`std.Io.File.stdin()/.stdout()` take no args; `f.reader(io, &buf)` / `f.writer(io, &buf)` take io first; `std.Io.File` has no `writeAll` (use `f.writeStreamingAll(io, bytes)`); there is no `openFileIo` (use `dir.openFile(io, path, .{})`)",
+      "doc_must_contain": [
+        "`std.Io.File.stdin()/.stdout()` take NO args",
+        "`f.reader(io, &buf)`",
+        "f.writeStreamingAll(io, bytes)",
+        "no `openFileIo`"
+      ]
+    },
+    {
+      "id": "syntax",
+      "topic": "syntax",
+      "old": [
+        "syntax.old.1.zig",
+        "syntax.old.2.zig"
+      ],
+      "new": [
+        "syntax.new.1.zig"
+      ],
+      "summary": "`const std = @import(\"std\");` (there is no `@std`); a while continue expression needs parentheses: `while (i < n) : (i += 1) {`",
+      "doc_must_contain": [
+        "`@std` does not exist",
+        "while (i < n) : (i += 1)"
+      ]
+    },
+    {
+      "id": "lint",
+      "topic": "lint",
+      "old": [
+        "lint.old.1.zig",
+        "lint.old.2.zig",
+        "lint.old.3.zig",
+        "lint.old.4.zig"
+      ],
+      "new": [
+        "lint.new.1.zig"
+      ],
+      "summary": "zig 0.16 lint errors: delete an unused local; a `var` never mutated must be `const`; `_ = x;` after x is used is a pointless discard; `i0`, `i2`, `u8`, `f32` are primitive type names, never identifiers",
+      "doc_must_contain": [
+        "unused local constant/var is an error",
+        "never mutated \u2192 `const`",
+        "pointless discard",
+        "`i0`, `i2`, `u8`"
       ]
     }
   ]

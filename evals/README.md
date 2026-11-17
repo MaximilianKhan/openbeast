@@ -276,7 +276,7 @@ python3 evals/suite_stats.py --check       # the docs cite the shipped numbers
 | Arm | Treatment | Units it RUNS | Shared from L0 | On the board |
 |---|---|---|---|---|
 | **L0** bare | none (and no zig tutoring in any prompt) | all 71 | — | **yes**: the headline SCORE |
-| **L1** prod | `--packs` (zig only has a pack) | the 6 zig units | every non-zig unit: its request is byte-identical | no |
+| **L1** prod | `--packs` (zig pack + the probed host pack) | the 6 zig units | on a host whose host pack is empty, every non-zig unit (its request is byte-identical); where it is not empty (the Mac harness host), none: the host pack changes every request, so non-zig units are `not_in_arm` in L1 | no |
 | **L2** full | packs + push diagnostics + escalation | the 39 compiled + shell units | the 32 Python units (diagnostics are keyed per unit; Python is outside the assist scope) | no; shown next to L0 as `+assist` only |
 
 Contrasts: **L1-L0 on zig** is the pack (reported per stratum: held-out vs
@@ -293,6 +293,15 @@ dirs and server drift hits both. Each arm writes
 `eval-<slug>-<arm>-<ts>.json` with `harness.arm` and a shared
 `harness.pair_id`. A pair whose request equals L0's (same cache key) copies
 L0's row (`shared_from`); the arm label is never part of a cache key.
+
+**The host pack and the arm plan (2026-11-16).** Packs-on means language
+pack + host pack (`agents/lang/host_pack.py`, probed from the tool host),
+and the host pack goes to EVERY unit. Under `--arms` the manifest's plan
+still decides which units an arm runs: the host pack reaches the 6 zig
+units in L1 and the 39 compiled + shell units in L2, never the 32 Python
+units. To measure it on every language, run a single packs-on run
+(`BEAST_PACKS=1 run_eval.py --suite v5`, no `--arms`), which runs every
+unit, and compare it with L0 rows of the same era and seeds.
 
 **How small an effect one profile can see** (exact McNemar, alpha 0.05,
 ~50% power on expected counts, `evals/ablation.py mde()`; net units per
@@ -707,7 +716,7 @@ under "legacy suites"); v5 starts empty. The harness rides the same break,
 pinned as **`harness7`** in `evals/HARNESS_VERSION` (`harness5` at the v5.0
 release; the review-1116 fixes to the bootstrap, the leftover sweep, the
 validator's private `TMPDIR`, the fixture lock, the toolchain pins and
-`vlib.py` rolled the era once more, and G20 passing the wall to the agent made it `harness7`; see CHANGELOG): its fingerprint covers
+`vlib.py` rolled the era once more, and G23 passing the wall to the agent made it `harness7`; see CHANGELOG): its fingerprint covers
 the agent's wall cap, the validator's environment, bootstrap and private
 build cache, the fixture cwd, the leftover sweep (`AgentWatch`,
 `sweep_agent_leftovers`) and the toolchain pins (`toolchain_pins`,
@@ -850,7 +859,8 @@ replay against, or as, a baseline: `benchmark_all.py --greedy` (greedy
 decoding, the low-churn mode; env `OPENBEAST_EVAL_GREEDY=1` for `run_eval.py`,
 which has no flag) and `--packs` on either runner (Tier-3 language awareness
 packs — `agents/packs/<lang>.md` injected for tasks in that language, zig
-only today, a task-scoped `pack1-<sha8>` era; env `BEAST_PACKS=1`). Both are
+only today, plus the probed host pack for every unit when it is non-empty;
+a `pack1-<sha8>` era on the units that get either; env `BEAST_PACKS=1`). Both are
 leaderboard-ineligible experiment rows, and that is enforced: `benchmark_all`
 turns `--greedy`, `--packs` and beast-assist diagnostics into
 `--no-leaderboard`, and `scoring.update_leaderboard` / `scoring.py --rebuild`
@@ -868,9 +878,9 @@ era and is leaderboard-ineligible; its A/B has not run.
 (G9, a one-time "re-run your test against the destination" reply to
 `task_done`), `OPENBEAST_DIAG_EDIT_HINT=1` (G13, failing diagnostics end
 with "fix the first error with edit_file at line N"),
-`OPENBEAST_AGENT_ENV_BLOCK=1` (G19, a probed environment block appended to
+`OPENBEAST_AGENT_ENV_BLOCK=1` (G22, a probed environment block appended to
 the task message: OS, toolchain versions, CLI tools, workdir, the task's
-paths and `/tmp/eval_*` dirs) and `OPENBEAST_AGENT_WALL_WARN=1` (G20, one
+paths and `/tmp/eval_*` dirs) and `OPENBEAST_AGENT_WALL_WARN=1` (G23, one
 transient notice at the first turn past 50% and past 80% of the unit's
 wall, which `run_agent` passes as `OPENBEAST_AGENT_WALL_S`). They form one
 key component, `ag-<parts>` (`run_eval.agent_switches`; `envb`, `wwarn` for

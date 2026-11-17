@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""G19 environment block and G20 wall-clock warnings (docs/HARNESS_NOTES.md).
+"""G22 environment block and G23 wall-clock warnings (docs/HARNESS_NOTES.md).
 
   * OPENBEAST_AGENT_ENV_BLOCK=1: a probed environment block (OS, toolchain
     versions, CLI tools, workdir, the task's paths and /tmp/eval_* dirs) is
@@ -92,7 +92,7 @@ def _bash_script(n):
 
 
 # ---------------------------------------------------------------------------
-# G19 — the environment block
+# G22 — the environment block
 # ---------------------------------------------------------------------------
 
 def test_env_block_content(eval_dir):
@@ -240,7 +240,7 @@ def test_env_block_on_rides_the_task_message_once(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# G20 — wall-clock warnings
+# G23 — wall-clock warnings
 # ---------------------------------------------------------------------------
 
 def test_wall_notice_fires_once_at_each_mark():

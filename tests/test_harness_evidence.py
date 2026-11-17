@@ -190,7 +190,7 @@ def test_run_eval_thinking_is_its_own_era(td, monkeypatch):
 
 
 def test_env_block_and_wall_warn_are_keyed_stamped_and_pinned(td, monkeypatch):
-    """G19/G20: arm E (both on) must not replay or bank into default rows."""
+    """G22/G23: arm E (both on) must not replay or bank into default rows."""
     cache, run_eval, calls, cache_dir = _world(td)
     plain = run_eval.run_eval(model_name="m", use_cache=True)
     assert calls[0]["OPENBEAST_AGENT_ENV_BLOCK"] is None      # pinned: removed

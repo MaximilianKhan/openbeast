@@ -1,9 +1,9 @@
 # Eval suite changelog
 
-## v5.0, G19 environment block + G20 wall warnings (2026-11-16) — era roll, harness7
+## v5.0, G22 environment block + G23 wall warnings (2026-11-16) — era roll, harness7
 
 Two opt-in agent switches for the overnight arm E (both on). Evidence and
-prior art: `docs/HARNESS_NOTES.md` G19/G20.
+prior art: `docs/HARNESS_NOTES.md` G22/G23.
 
 - **The harness fingerprint moves: harness6 -> harness7.** run_eval's
   `run_agent` (in `cache.HARNESS_FUNCTIONS`) now sets
@@ -13,7 +13,7 @@ prior art: `docs/HARNESS_NOTES.md` G19/G20.
   told cannot drift from the kill timeout. The variable is set on every
   unit, but the runner reads it only with the switch on. The era moves for
   every row regardless, since `agents/runner.py` changed.
-- **G19, `OPENBEAST_AGENT_ENV_BLOCK=1`.** Before the first model call the
+- **G22, `OPENBEAST_AGENT_ENV_BLOCK=1`.** Before the first model call the
   task message gets a probed environment block (<= 1,200 chars): OS/arch,
   python3/go/rustc/zig/cc/clang/gcc versions, which of git, make, cmake,
   timeout, gtimeout, perl, jq exist, the workdir, which expected task paths
@@ -21,7 +21,7 @@ prior art: `docs/HARNESS_NOTES.md` G19/G20.
   dirs. It is stored in the history (a fixed fact) and logged as an
   `env_block` transcript event. Never an env value or a path outside
   `/tmp/eval*`.
-- **G20, `OPENBEAST_AGENT_WALL_WARN=1`.** The first turn starting past 50%
+- **G23, `OPENBEAST_AGENT_WALL_WARN=1`.** The first turn starting past 50%
   and the first past 80% of the wall get "[wall clock — N s of your M s
   wall used; finish and verify the destination now]" in the transient block
   next to the turns notice (never stored); a `wall_notice` event is logged.
@@ -32,6 +32,58 @@ prior art: `docs/HARNESS_NOTES.md` G19/G20.
   `harness.agent_switches` and, when set, on every row (`agent_env_block`,
   `agent_wall_warn`); pinned into each unit's env like the others.
 - Off (unset): requests are byte-identical to before.
+
+## v5.0, zig pack v2 + host pack + Rust edition fix (2026-11-16) — base era unchanged
+
+Evidence: a per-language failure taxonomy of GLM-5.3-Flash's v5 runs
+(L0, L12, arms A and B; 153 failed units). Only zig fails for lack of
+knowledge. Host friction (macOS/BSD userland and libc) cost about 95 turns.
+Notes G19-G21 are in `docs/HARNESS_NOTES.md`; the design is in
+`docs/LANG_AWARENESS_PLAN.md` §5.1.
+
+**Era effects.** `HARNESS_VERSION` stays harness6: none of
+`cache.HARNESS_FUNCTIONS` changed, and `packs_flag`/`ArmCtx` are not among
+them. The base era does not move either, because `agents/runner.py`,
+`agents/tools.py` and `system-prompt.md` are untouched. Packs-OFF rows are
+therefore unaffected, except the five Rust units below. What moves:
+
+- **The packs component** (`pack1-<sha8>`, packs-on arms only). The zig
+  pack's bytes changed, and the component now also hashes the host pack.
+  With a non-empty host pack, EVERY unit of a packs-on arm carries it, not
+  only zig units. Old packs-on rows do not replay.
+- **The escalation component** (`esc1-…`, escalate arms only).
+  `agents/lang/escalate-index.json` and the zig claim set were regenerated
+  for the 14 new OLD fixtures.
+- **Five Rust units' task hashes** (36_black_scholes_e, 122_gemm_blocked_d,
+  123_nbody_e, 158_karatsuba_bytes_e, 159_ntt_convolution_e). Their task
+  text changed, so their old rows do not replay in any arm.
+
+Changes:
+
+- **Zig pack v2** (`agents/packs/zig-0.16.md` @`ed18f83e`, 1,959/2,000
+  tokens). Five new curated bullets: `Thread.spawn(config, f, args_tuple)`,
+  `ResetEvent`/`Mutex` → `std.Io.Event`/`std.Io.Mutex`, Io file-method
+  arity (`writeStreamingAll`, `openFile`, `stdin()`, `reader(io, &buf)`),
+  `@import("std")` and `while (c) : (i += 1)`, and the lint errors. Each has
+  OLD/NEW fixtures in `tests/fixtures/zig016/`, and OLD fixtures now pin
+  the expected error. The generated digest went from 35 lines to 18.
+  `MEASURED_SHA256` is unchanged: production serves no zig pack until an
+  eval arm measures v2.
+- **Host pack** (`agents/lang/host_pack.py`). It is probed from the tool
+  host when `packs_flag` runs, and every packs-on unit gets it (zig units
+  get it after the zig pack, in one `--context-file`). Results gain
+  `harness.packs.host` and `harness.host_pack`. A GNU/glibc host probes no
+  gaps and gets nothing.
+- **`pack_context.pack_problem`** requires the generated-section header for
+  zig only. A non-zig pack in `PACK_FILES` no longer aborts `--packs`.
+- **Rust `--edition 2021`.** Five v5 Rust variants said "Idiomatic Rust
+  2021+", but their validators compiled with bare `rustc -O`, which is
+  edition 2015 (`try_into` without an import failed in three runs, and push
+  diagnostics already compile with `--edition 2021`). Task text and
+  validator now both say `rustc -O --edition 2021`, as 167_e and 168_e
+  already did. All five re-proven with `tests/prove_task.py`.
+  163_bigint_divmod_e also compiles with bare `rustc`, but its text claims no
+  edition, so there is no contradiction and it is unchanged.
 
 ## v5.0, harness batch G9/G13/G15/G16 + agent-switch cache key (2026-11-16) — era roll
 
