@@ -211,9 +211,9 @@ def test_probe_timeout_reads_as_unknown(monkeypatch):
         assert kw["timeout"] <= 3.0
         raise subprocess.TimeoutExpired(a[0], kw["timeout"])
     monkeypatch.setattr(subprocess, "run", slow)
-    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(shutil, "which", lambda name, **kw: "/usr/bin/" + name)
     assert runner._probe_version(["zig", "version"]) == "?"
-    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(shutil, "which", lambda name, **kw: None)
     assert runner._probe_version(["zig", "version"]) is None
 
 

@@ -681,6 +681,8 @@ def bash(command: str, timeout: int = 120) -> str:
         # A non-interactive bash sources $BASH_ENV before the command: an
         # inherited one would run the operator's file ahead of every call.
         env.pop("BASH_ENV", None)
+        if _eval_mode():
+            env["PATH"] = shell_path(env.get("PATH", ""))     # G24
         returncode, output = run_reaped(
             command,
             timeout,
@@ -688,6 +690,8 @@ def bash(command: str, timeout: int = 120) -> str:
             env=env,
             executable=shell,
         )
+        if seal_prefix and "Operation not permitted" in output:
+            output += _SEAL_DENIED_NOTE                       # G24
         if not output.strip():
             output = f"(exit code {returncode})"
         elif returncode != 0:
@@ -881,22 +885,143 @@ _REPO_ROOT = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__fil
 _SEALED_SUBDIRS = ("tasks", "refs", "suites")
 _SEALED_TEXT_RE = re.compile(r"(?:\b|:)evals/+(?:tasks|refs|suites)\b")
 
+# G24 (2026-11-17): the seal covered only the answer key. In arm C's 122_b,
+# GLM-5.3-Flash, hunting for why the done-check refused (the trailing-dot path
+# bug, evals/run_eval.task_paths), read Claude Code workflow journals under
+# ~/.claude/projects, the harness source (evals/run_eval.py, agents/tools.py)
+# and a cached validation of an earlier run (evals/cache/: "FAIL: mismatch at
+# case 0"). Under eval the agent now may not read any of:
+#   * a checkout's whole evals/ (tasks, refs, suites, results, cache, vlib,
+#     the harness), agents/logs (every transcript) and tests/ -- this
+#     checkout's and every `git worktree list` checkout's -- and the shared
+#     git dir (it holds every committed validator);
+#   * the same trees in any other clone, by pattern (_EVAL_DENY_PATTERNS);
+#   * ~/.claude (session and workflow journals of the operator's agents);
+#   * Claude Code's private scratch dirs, /tmp/claude-<uid> (where arm
+#     worktrees, results and ledgers of a campaign live).
+# The task's /tmp/eval* dirs, $TMPDIR, the toolchains and the system stay
+# readable. Plain POSIX ERE (no (?:), no lookaround): the same strings go
+# into the macOS sandbox profile.
+_EVAL_DENY_REPO = ("evals", os.path.join("agents", "logs"), "tests")
+_EVAL_DENY_PATTERNS = (
+    r"/evals/(tasks|refs|suites|results|cache|reference|audit|campaigns|decisions|scripts)(/|$)",
+    r"/evals/(vlib|run_eval|cache|campaign)\.py$",
+    r"/agents/logs(/|$)",
+    r"^/(private/)?tmp/claude-[0-9]+(/|$)",
+)
+_EVAL_ALLOW_PATTERNS = (r"^/(private/)?tmp/eval[^/]*(/|$)",)
+_EVAL_DENY_RE = re.compile("|".join(f"(?:{x})" for x in _EVAL_DENY_PATTERNS),
+                           re.IGNORECASE if _CASE_INSENSITIVE_FS else 0)
+_EVAL_ALLOW_RE = re.compile("|".join(f"(?:{x})" for x in _EVAL_ALLOW_PATTERNS),
+                            re.IGNORECASE if _CASE_INSENSITIVE_FS else 0)
+_GIT_SEAL_CACHE: list | None = None
+
 
 def _eval_mode() -> bool:
     return os.environ.get("OPENBEAST_EVAL", "").strip() == "1"
 
 
+def _git_seal_roots() -> list[str]:
+    """Every checkout of this repository (`git worktree list`) and the shared
+    git dir. Asked once per process; [] without git."""
+    global _GIT_SEAL_CACHE
+    if _GIT_SEAL_CACHE is not None:
+        return list(_GIT_SEAL_CACHE)
+    out: list[str] = []
+
+    def git(*args):
+        try:
+            r = subprocess.run(["git", "-C", _REPO_ROOT, *args], capture_output=True,
+                               text=True, timeout=10, stdin=subprocess.DEVNULL)
+            return r.stdout if r.returncode == 0 else ""
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+
+    common = git("rev-parse", "--path-format=absolute", "--git-common-dir").strip()
+    if common:
+        out.append(common)
+    for line in git("worktree", "list", "--porcelain").splitlines():
+        if line.startswith("worktree "):
+            out.append(line[len("worktree "):])
+    _GIT_SEAL_CACHE = out
+    return list(out)
+
+
 def _sealed_roots() -> list[str]:
-    """Realpaths of the sealed directories: this checkout's, plus any in
-    OPENBEAST_EVAL_SEALED_DIRS (os.pathsep list — another checkout, a test)."""
-    roots = [os.path.join(_REPO_ROOT, "evals", d) for d in _SEALED_SUBDIRS]
+    """Realpaths of the directories a measured agent may not read: this
+    checkout's evals/, agents/logs and tests/, the same in every other
+    checkout and the git dir, ~/.claude, plus any in
+    OPENBEAST_EVAL_SEALED_DIRS (os.pathsep list -- another checkout, a test)."""
+    checkouts = [_REPO_ROOT]
+    extra: list[str] = []
+    for r in _git_seal_roots():
+        (extra if r.rstrip(os.sep).endswith(".git") else checkouts).append(r)
+    roots = [os.path.join(c, d) for c in dict.fromkeys(checkouts) for d in _EVAL_DENY_REPO]
+    roots += extra
+    roots.append(os.path.join(os.path.expanduser("~"), ".claude"))
     roots += [r for r in os.environ.get("OPENBEAST_EVAL_SEALED_DIRS", "").split(os.pathsep)
               if r.strip()]
-    return [os.path.realpath(os.path.expanduser(r)) for r in roots]
+    out = []
+    for r in roots:
+        rp = os.path.realpath(os.path.expanduser(r))
+        if rp not in out:
+            out.append(rp)
+    return out
+
+
+_TOOLCHAIN_NAMES = ("zig", "go", "rustc", "cargo", "cc", "gcc", "clang", "python3")
+_EXEMPT_CACHE: dict = {}
+
+
+def _eval_exempt_roots() -> list[str]:
+    """Readable even where a deny PATTERN matches (never over an explicit
+    root): $TMPDIR, which compilers need, and the trees of the toolchains on
+    PATH (a binary's dir, or its parent when that dir is bin/: the zig of
+    the 2026-11-16 runs lived in a Claude Code scratch dir, lib/std beside
+    it). Only those a pattern would deny are listed."""
+    key = (os.environ.get("TMPDIR", ""), os.environ.get("PATH", ""),
+           os.environ.get("OPENBEAST_EVAL_PY", ""))
+    if key in _EXEMPT_CACHE:
+        return list(_EXEMPT_CACHE[key])
+    cands = [os.environ.get("TMPDIR", "").strip() or tempfile.gettempdir()]
+    for n in _TOOLCHAIN_NAMES:
+        exe = shutil.which(n)
+        if exe:
+            d = os.path.dirname(os.path.realpath(exe))
+            cands.append(os.path.dirname(d) if os.path.basename(d) == "bin" else d)
+    for var in ("RUSTUP_HOME", "CARGO_HOME", "GOROOT", "OPENBEAST_EVAL_PREFIX"):
+        if os.environ.get(var, "").strip():
+            cands.append(os.environ[var].strip())
+    out = []
+    for c in cands:
+        rp = os.path.realpath(os.path.expanduser(c))
+        if _EVAL_DENY_RE.search(rp) and rp not in out:
+            out.append(rp)
+    _EXEMPT_CACHE[key] = out
+    return list(out)
+
+
+def _under(rp: str, roots) -> bool:
+    k = _case_key(rp)
+    return any(k == _case_key(r) or k.startswith(_case_key(r).rstrip(os.sep) + os.sep)
+               for r in roots)
 
 
 def _is_sealed(rp: str) -> bool:
-    return any(rp == r or rp.startswith(r + os.sep) for r in _sealed_roots())
+    """Whether a measured agent may not read realpath `rp`. Mirrors the
+    macOS profile: explicit roots always; the patterns unless the path is in
+    a task's /tmp/eval* dir or $TMPDIR."""
+    if _under(rp, _sealed_roots()):
+        return True
+    if _EVAL_ALLOW_RE.search(rp) or _under(rp, _eval_exempt_roots()):
+        return False
+    return bool(_EVAL_DENY_RE.search(rp))
+
+
+_SEAL_WHAT = ("the eval suite and harness (evals/: tasks, refs, results, caches), "
+              "tests/, agent transcripts (agents/logs), ~/.claude and private "
+              "scratch dirs are sealed while a unit is measured (OPENBEAST_EVAL=1); "
+              "work in the task's /tmp/eval* directories")
 
 
 def _seal_refusal(path: str) -> str | None:
@@ -905,9 +1030,7 @@ def _seal_refusal(path: str) -> str | None:
         return None
     rp = os.path.realpath(os.path.expanduser(path))
     if _is_sealed(rp):
-        return (f"Error: refusing to access {rp} — the eval suite's task specs, "
-                f"reference solutions and manifests are sealed while a unit is "
-                f"measured (OPENBEAST_EVAL=1)")
+        return f"Error: refusing to access {rp} — {_SEAL_WHAT}"
     return None
 
 
@@ -924,37 +1047,63 @@ def _seal_command_refusal(command: str) -> str | None:
     probe = _strip_shell_quotes(command)
     if (_SEALED_TEXT_RE.search(probe) or _SEALED_TEXT_RE.search(command)
             or any(r in probe for r in _sealed_roots())):
-        return ("Error: refusing to run a command that names the eval suite's sealed "
-                "directories (evals/tasks, evals/refs, evals/suites) while a unit is "
-                "measured (OPENBEAST_EVAL=1)")
+        return ("Error: refusing to run a command that names a sealed path — "
+                + _SEAL_WHAT)
     return None
 
 
 _EVAL_SBPL_SEAL = None
+#: Appended to a sandboxed command's output when the kernel refused a read.
+_SEAL_DENIED_NOTE = ("\n[eval sandbox: 'Operation not permitted' means a sealed path — "
+                     + _SEAL_WHAT + "; the eval python's venv is read-only]")
+
+
+def _sbpl_str(p: str) -> str:
+    return p.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _eval_venv_root() -> str | None:
+    """The eval venv (OPENBEAST_EVAL_PY's), when it is one: write-denied to
+    the agent, since the validators run on it."""
+    py = _eval_python()
+    if not py:
+        return None
+    root = os.path.dirname(os.path.dirname(py))
+    return os.path.realpath(root) if os.path.isfile(os.path.join(root, "pyvenv.cfg")) else None
 
 
 def _eval_read_deny_prefix() -> list[str]:
     """Under eval on macOS, a sandbox-exec prefix that denies the confined
-    shell any READ of the sealed trees — in THIS checkout and in any other
-    (a glob across worktrees, reported on U4) — so a direct `cat tasks/*`
-    cannot reach the oracle however the command text is spelled. [] when not
-    on macOS or when sandbox-exec is unavailable (the Linux rig enforces this
-    through the beast-gate container / Landlock; see evals/README.md)."""
+    shell any READ of the sealed paths (_sealed_roots, _EVAL_DENY_PATTERNS)
+    in THIS checkout and in any other (a glob across worktrees, reported on
+    U4), so `cat` cannot reach them however the command text is spelled.
+    It also denies writes to the eval venv and the python shim. [] when not
+    on macOS or when sandbox-exec is unavailable. On Linux the agent's shell
+    has no kernel read-deny (the file tools and the command-text check still
+    refuse; see evals/README.md, residual gaps)."""
     global _EVAL_SBPL_SEAL
     if not _eval_mode() or sys.platform != "darwin":
         return []
-    rules = ['(version 1)', '(allow default)',
-             '(deny file-read* (regex #"/evals/(refs|tasks|suites)(/|$)"))']
+    _eval_python_dir()              # the shim exists before its write-deny
+    rules = ['(version 1)', '(allow default)']
+    # Later rules win: patterns, then the allow-backs, then explicit roots.
+    for pat in _EVAL_DENY_PATTERNS:
+        rules.append(f'(deny file-read* (regex #"{_sbpl_str(pat)}"))')
+    for pat in _EVAL_ALLOW_PATTERNS:
+        rules.append(f'(allow file-read* (regex #"{_sbpl_str(pat)}"))')
+    for r in _eval_exempt_roots():
+        rules.append(f'(allow file-read* (subpath "{_sbpl_str(r)}"))')
     for r in _sealed_roots():
-        esc = r.replace("\\", "\\\\").replace('"', '\\"')
-        rules.append(f'(deny file-read* (subpath "{esc}"))')
+        rules.append(f'(deny file-read* (subpath "{_sbpl_str(r)}"))')
+    for r in (_eval_venv_root(), _EVAL_PY_SHIM.get("dir")):
+        if r:
+            rules.append(f'(deny file-write* (subpath "{_sbpl_str(r)}"))')
     # The harness's per-agent tag file: denying it marks every process this
     # shell starts, in the kernel, so run_eval can find one that detached and
     # scrubbed its environment (sandbox_check; evals/run_eval.py AgentWatch).
     tag = os.environ.get("OPENBEAST_AGENT_TAG_FILE", "")
     if tag and os.path.isabs(tag):
-        esc = tag.replace("\\", "\\\\").replace('"', '\\"')
-        rules.append(f'(deny file-read* (literal "{esc}"))')
+        rules.append(f'(deny file-read* (literal "{_sbpl_str(tag)}"))')
     if _EVAL_SBPL_SEAL is None:
         try:
             _EVAL_SBPL_SEAL = subprocess.run(
@@ -965,6 +1114,80 @@ def _eval_read_deny_prefix() -> list[str]:
     if not _EVAL_SBPL_SEAL:
         return []
     return ["/usr/bin/sandbox-exec", "-p", "".join(rules)]
+
+
+# G24: the agent's `python3` is the validators' python. The tool shell
+# inherited the operator's PATH, where `python3` was anaconda 3.9.13 while
+# every validator runs on OPENBEAST_EVAL_PY (3.12): a 3.11+ task
+# (asyncio.timeout, TaskGroup) tested fine by the validator failed in the
+# agent's own tests (B 173 spent its first turns finding a 3.11). Under eval
+# the bash tool puts a private dir first on PATH whose python / python3 /
+# python3.X exec OPENBEAST_EVAL_PY. Only those names: the venv's other
+# entry points (pip) stay off PATH, and the venv is write-denied on macOS.
+# Outside eval nothing changes.
+_EVAL_PY_SHIM: dict = {}
+
+
+def _eval_python() -> str | None:
+    """OPENBEAST_EVAL_PY (or <OPENBEAST_EVAL_PREFIX>/venv/bin/python) under
+    eval, when it is an executable absolute path; else None."""
+    if not _eval_mode():
+        return None
+    py = os.environ.get("OPENBEAST_EVAL_PY", "").strip()
+    if not py:
+        pre = os.environ.get("OPENBEAST_EVAL_PREFIX", "").strip()
+        py = os.path.join(pre, "venv", "bin", "python") if pre else ""
+    if py and os.path.isabs(py) and os.path.isfile(py) and os.access(py, os.X_OK):
+        return py
+    return None
+
+
+def _shim_cleanup() -> None:
+    d = _EVAL_PY_SHIM.get("dir")
+    if d:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def _eval_python_dir() -> str | None:
+    """The private shim dir for _eval_python(), made once per process."""
+    py = _eval_python()
+    if not py:
+        return None
+    if _EVAL_PY_SHIM.get("py") == py and os.path.isdir(_EVAL_PY_SHIM.get("dir") or ""):
+        return _EVAL_PY_SHIM["dir"]
+    names = {"python", "python3"}
+    try:
+        names |= {n for n in os.listdir(os.path.dirname(py))
+                  if re.fullmatch(r"python3\.\d+", n)}
+    except OSError:
+        pass
+    try:
+        d = os.path.realpath(tempfile.mkdtemp(prefix="ob-evalpy-"))
+        for n in sorted(names):
+            fp = os.path.join(d, n)
+            with open(fp, "w") as f:
+                f.write(f"#!/bin/sh\nexec {shlex.quote(py)} \"$@\"\n")
+            os.chmod(fp, 0o755)
+    except OSError:
+        return None
+    _shim_cleanup()
+    _EVAL_PY_SHIM.update(py=py, dir=d)
+    if not _EVAL_PY_SHIM.get("atexit"):
+        import atexit
+        atexit.register(_shim_cleanup)
+        _EVAL_PY_SHIM["atexit"] = True
+    return d
+
+
+def shell_path(path: str | None = None) -> str:
+    """The PATH the bash tool's commands see: `path` (default: this
+    process's), with the eval python shim first under eval (G24)."""
+    path = os.environ.get("PATH", "") if path is None else path
+    d = _eval_python_dir()
+    if not d:
+        return path
+    rest = [p for p in path.split(os.pathsep) if p and p != d]
+    return os.pathsep.join([d] + rest)
 
 
 def _seal_filter_lines(text: str) -> str:
@@ -3034,7 +3257,9 @@ def _task_expected_paths() -> list[str]:
         return []
     try:
         paths = json.loads(raw)
-        return [p for p in paths if isinstance(p, str)]
+        # G24: a sentence-final period is never part of a task path (the
+        # harness strips it too: evals/run_eval.task_paths).
+        return [p.rstrip(".") for p in paths if isinstance(p, str)]
     except json.JSONDecodeError:
         return []
 

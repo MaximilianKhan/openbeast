@@ -866,11 +866,13 @@ def _probe_version(cmd: list[str]) -> str | None:
     """First line of a version command, None when the tool is absent."""
     import shutil
     import subprocess
-    if not shutil.which(cmd[0]):
+    # The bash tool's PATH (G24: under eval, python3 is the validators').
+    exe = shutil.which(cmd[0], path=_tools.shell_path())
+    if not exe:
         return None
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL,
-                             timeout=_ENV_PROBE_TIMEOUT_S)
+        out = subprocess.run([exe] + list(cmd[1:]), capture_output=True, text=True,
+                             stdin=subprocess.DEVNULL, timeout=_ENV_PROBE_TIMEOUT_S)
         text = (out.stdout or out.stderr or "").strip()
         return text.splitlines()[0][:50] if text else "?"
     except Exception:
