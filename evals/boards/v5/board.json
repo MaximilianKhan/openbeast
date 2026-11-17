@@ -19,7 +19,9 @@
       "host": "DGX Spark pair, TensorFold, EXL3",
       "config": "thinking off, runner v2",
       "campaign_arm": "v5-harness A",
-      "files": ["eval-glm-5-3-flash-v2-L0-20261116-135857.json"]
+      "files": [
+        "eval-glm-5-3-flash-v2-L0-20261116-135857.json"
+      ]
     },
     {
       "id": "GLM-B",
@@ -39,7 +41,9 @@
       "host": "DGX Spark pair, TensorFold, EXL3",
       "config": "thinking on, runner v2, wall-scaled turns, wall ×2",
       "campaign_arm": "v5-harness C",
-      "files": ["eval-glm-5-3-flash-v2-turns-think-L0-20261116-195724.json"]
+      "files": [
+        "eval-glm-5-3-flash-v2-turns-think-L0-20261116-195724.json"
+      ]
     },
     {
       "id": "OPUS-REF",
@@ -47,7 +51,19 @@
       "host": "Anthropic API",
       "config": "Claude Code tools, no turn cap, wall ×2 (68/71 at the 1× wall); solver never saw validator output",
       "reference": true,
-      "files": ["reference-claude-opus-5-5-v5-20261116.jsonl"]
+      "files": [
+        "reference-claude-opus-5-5-v5-20261116.jsonl"
+      ]
+    },
+    {
+      "id": "GLM-E",
+      "model": "GLM-5.3-Flash",
+      "config": "thinking on, runner v2, wall-scaled turns, wall ×2, diagnostics + edit hint + verify-done, Zig pack v2 + host pack, env block, wall warnings",
+      "files": [
+        "eval-glm-5-3-flash-v3-best-20261117-043643.json"
+      ],
+      "host": "DGX Spark pair, TensorFold, EXL3",
+      "campaign_arm": "v5-harness E"
     }
   ],
   "not_yet_run": [
