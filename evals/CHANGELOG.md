@@ -33,6 +33,39 @@ prior art: `docs/HARNESS_NOTES.md` G22/G23.
   `agent_wall_warn`); pinned into each unit's env like the others.
 - Off (unset): requests are byte-identical to before.
 
+## v5.0, the harness host provisions its own toolchains (2026-11-16) — no era move
+
+Same suite, manifest and `HARNESS_VERSION` (harness6). The harness
+fingerprint did not move: nothing in `cache.HARNESS_FUNCTIONS` changed (the
+new checks live in `run_eval()`'s start and its per-unit infra block, and in
+`evals/eval_host.py`, none of which shapes what an agent sees). No era
+component moved either: `system-prompt.md`, `agents/runner.py`,
+`agents/tools.py`, `SUITE_VERSION` and `vlib.py` are untouched. The pins are
+the versions the units were proven with, so a host that already had them
+(the Mac's Homebrew go1.23.3) keeps its `env1-` component.
+
+- **`evals/toolchains.lock` + `scripts/eval-host.sh check|setup|env|fetch`.**
+  zig 0.16.0, rustc 1.100.0 (rustup 1.29.3 online, the standalone installer
+  offline), go 1.23.3, and a python 3.12.16 eval venv from
+  `agents/requirements.lock`, per platform (darwin-arm64, linux-aarch64,
+  linux-x86_64), sha256-pinned (zig, rust and cpython reuse the ark
+  catalog's pins; a test holds them equal). `setup` installs into
+  `~/.local/opt/openbeast-eval`, never as root; offline from an ark drive or
+  a `fetch` mirror with `--from`.
+- **Live runs provision.** `run_eval.py`, `profile.py` and
+  `benchmark_all.py` run the check (then setup) before the validator
+  toolchain is pinned, put the prefix first on PATH and re-exec under the
+  eval venv. `--no-provision` / `OPENBEAST_EVAL_NO_PROVISION=1` only report;
+  `--cache-only` is untouched. `profile.py` preflight refuses a host the
+  check still fails.
+- **A broken interpreter never scores.** A live `run_eval` refuses to start
+  when its python cannot import the stdlib and the runner's packages. An
+  agent that dies at interpreter startup is a new infra reason,
+  **`interpreter_error`**: not cached, not scored (`scoring.INFRA_REASONS`,
+  `ablation.INVALID_REASONS`, an incomplete L0 for `profile --resume`), and
+  a forced re-check of the interpreter aborts the run when it is broken.
+  The 2026-11-16 incident: 22 units scored as FAILs (`docs/HARNESS_NOTES.md`).
+
 ## v5.0, zig pack v2 + host pack + Rust edition fix (2026-11-16) — base era unchanged
 
 Evidence: a per-language failure taxonomy of GLM-5.3-Flash's v5 runs

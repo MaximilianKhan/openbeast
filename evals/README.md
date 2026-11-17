@@ -333,6 +333,39 @@ measures instead of trusting them. Groups are scheduled **longest-first**
 by `est_s x arms`; the longest group is now a 6-language hard family
 (6 units x 165 R-s in L0, ~33 min across all three arms on one worker).
 
+### Prerequisites: the harness host's toolchains
+
+Tools, validators and compilers run on the **harness host** (the box running
+`run_eval.py` / `profile.py` / `benchmark_all.py`), never on the model
+server. What it needs is pinned in `evals/toolchains.lock`: zig 0.16.0,
+rustc 1.100.0 (rustup), go 1.23.3 and a python 3.12 eval venv built from
+`agents/requirements.lock` on a python-build-standalone 3.12.16 the prefix
+owns: the versions the v5 units were proven with (`tests/prove_task.py`).
+gcc, g++ and git must be present (Xcode Command Line Tools on a Mac; the
+distro's `build-essential clang git` on Linux); nothing installs those.
+
+```bash
+./scripts/eval-host.sh check               # ok / missing / wrong / system / blocked per tool; exit 1 on a problem
+./scripts/eval-host.sh setup               # install what is missing or wrong into ~/.local/opt/openbeast-eval
+eval "$(./scripts/eval-host.sh env)"       # PATH, RUSTUP_HOME, CARGO_HOME, OPENBEAST_EVAL_PY
+"$OPENBEAST_EVAL_PY" evals/profile.py ...  # the harness under the eval venv
+./scripts/eval-host.sh setup --from /Volumes/ARK [--wheelhouse DIR]   # offline: an ark drive or a fetch mirror
+```
+
+A live run does this by itself: `run_eval.py`, `profile.py` and
+`benchmark_all.py` run `check` first, `setup` when it fails, put the prefix
+first on PATH **before** `toolchain_pins()` resolves the validators'
+compilers, and re-exec under `$OPENBEAST_EVAL_PY` when they were started by
+another python. `--no-provision` (or `OPENBEAST_EVAL_NO_PROVISION=1`) only
+reports; `--cache-only` touches nothing. Then two guards keep a broken
+interpreter off the board: a live `run_eval` refuses to start when its
+python cannot import the stdlib and the runner's packages, and an agent
+that dies within 2 s on an interpreter-startup error ("Could not find
+platform independent libraries", a `ModuleNotFoundError`, a dyld failure)
+is recorded `reason: interpreter_error` (never cached, never scored) and the
+interpreter re-checked; a broken one aborts the run. Why:
+`docs/HARNESS_NOTES.md`, "Eval host provisioning" (22 units on 2026-11-16).
+
 ### How to run a 4-hour profile
 
 ```bash
@@ -347,6 +380,8 @@ python3 evals/profile.py --resume evals/results/profile-<slug>-<ts>.json   # aft
 python3 evals/ablation.py --profile evals/results/profile-<slug>-<ts>.json # the report again
 ```
 
+0. **Host**: `scripts/eval-host.sh` check, and setup when it fails (the
+   section above). Preflight re-checks and refuses what is still missing.
 1. **Preflight** refuses a profile whose numbers would be wrong: zig not
    0.16.0 (the pack's pin), the zig escalation index not served
    (`escalate.gate_state()`), a validator toolchain missing on the
@@ -810,7 +845,10 @@ exhaustion (`Resource temporarily unavailable`, `SystemResources`,
 `NoSpaceLeft`) is recorded with `reason: env_error`; and a unit whose
 **validator** ran out of its own time budget is recorded with
 `reason: validator_timeout` — on a contended host that happens to a correct
-solution, whose compile is most of the budget. (The validator's budget now
+solution, whose compile is most of the budget. A unit whose agent died at
+interpreter startup (exit > 0 within 2 s, no completion tokens, a startup
+error on stderr) is recorded with `reason: interpreter_error` and retries
+too; it is never scored (`scoring.INFRA_REASONS`). (The validator's budget now
 takes the same `timeout_scale` as the agent's wall budget, so a `--jobs N`
 run no longer times validators out at the serial figure.) All three retry
 live on the next run. A run containing `server_error` or `env_error` can't
@@ -867,7 +905,7 @@ turns `--greedy`, `--packs` and beast-assist diagnostics into
 refuse any results file whose `harness` records one of those arms (or an
 escalation component), a fast suite, or infrastructure rows
 (`skipped_cache_miss`, `server_unhealthy`, `setup_failed`, `server_error`,
-`env_error`, `low_disk`) — see `scoring.ineligibility_reasons`. A `--escalate` arm (beast-lang's
+`env_error`, `low_disk`, `interpreter_error`) — see `scoring.ineligibility_reasons`. A `--escalate` arm (beast-lang's
 confirmed-fix card riding on beast-assist's diagnostic) is wired and opt-in
 (`BEAST_ESCALATE=1` with `BEAST_ASSIST=1`), runs under its own `esc1-<sha8>`
 era and is leaderboard-ineligible; its A/B has not run.

@@ -62,6 +62,48 @@ Transcripts: `agents/logs/agent-20261116-0[6-8]*.jsonl`; L0 results
 | G22 | Early turns go to discovery the harness could have done: most failing GLM v5 L0 units ended on the turn cap (G1), and transcripts open with `which`/`--version`/`ls` of the task dir. Nothing told the agent its toolchain versions, which CLI tools exist (`timeout` does not on the Mac host), or which task files exist yet. Prior art ([`reviews/HARNESS_PRIOR_ART-2026-11-16.md`](reviews/HARNESS_PRIOR_ART-2026-11-16.md)): Droid's startup environment block, "shown as shell command output", which "helped the agent avoid reissuing similar commands" (Factory, 2025-09-25); Meta-Harness's sandbox snapshot "saves 2-5 early exploration turns", more on weaker models (arXiv 2603.28052); Codex's environment-context message; the prior-art gap table rates ours **Large**. | A first-turn environment block, appended to the task message as probe output (<= 1,200 chars, ~300 tokens): OS/arch; python3, go, rustc, zig, cc/clang/gcc versions (toolchain_versions()' commands, 3 s timeouts, run in parallel); git/make/cmake/timeout/gtimeout/perl/jq present or missing; the workdir; which OPENBEAST_TASK_PATHS exist; a depth <= 2, <= 30-entry listing of the task's own `/tmp/eval_*` dirs. Never an env value, never anything outside `/tmp/eval*`. Host userland quirks stay in `platform_line` and the host pack. | BUILDING (opt-in `OPENBEAST_AGENT_ENV_BLOCK=1`, keyed `ag-envb`; the transcript gets an `env_block` event). **Measure:** an arm with the switch on vs off at the same `--seed`s; turns until the first write_file/edit_file to a destination and the count of `--version`/`which`/`ls /tmp/eval` calls in the first 5 turns (both from `agents/logs/agent-*.jsonl`), turn-cap endings, and net rescues |
 | G23 | The runner knows its turn budget but not its wall: units killed by run_eval's timeout got no warning, and a slow model (thinking on, arm C; long single turns, G11) cannot pace itself. Prior art: Droid shows elapsed time only past thresholds (2025-09-25); LangChain deepagents' time-budget warnings (2026-02-17). | run_eval's `run_agent` passes the wall it kills at (scaled by `--jobs` contention) as `OPENBEAST_AGENT_WALL_S` (env, so argv is unchanged; `runner.py --wall-s` for standalone use). With the switch on, the first turn starting past 50% and the first past 80% get one transient notice next to the turns notice: "[wall clock — N s of your M s wall used; finish and verify the destination now]". Never stored in the history. | BUILDING (opt-in `OPENBEAST_AGENT_WALL_WARN=1`, keyed `ag-wwarn`; harness6 -> harness7 because `run_agent` sets the env var). **Measure:** same-seed on/off arm; `grep -c '"wall_notice"' agents/logs/agent-*.jsonl` for exposure; timeout rows (`exit_code -1`) and rescues among units that saw a notice |
 
+## Eval host provisioning: the venv incident (2026-11-16) — ADOPTED
+
+**What happened.** The v5 runs of 2026-11-16 used a Python venv and toolchains
+(zig 0.16.0, rustup/cargo with rustc 1.100) hand-placed in a session scratch
+directory. At 16:46 something rewrote that venv's `python` symlink. Every
+agent is `sys.executable agents/runner.py`, so from then on each new agent died
+at interpreter startup ("Could not find platform independent libraries"),
+before a single model call. The harness had no idea: exit 1, zero tokens, the
+fixture untouched, validator FAIL. **22 units were scored as model failures**
+until a human read the logs. Durable copies were then made by hand under
+`~/.local/opt` (a homebrew-3.12.7 venv from a pip freeze, zig, rustup, cargo, an
+env file), which fixed that run and nothing else.
+
+**What it taught.** Two separate holes. (1) The harness host's toolchains
+were nobody's: no pin file, no installer, no check beyond profile.py's
+`which`. A venv is only as durable as its base interpreter, and a Homebrew
+python can move under it at any `brew upgrade`. (2) An interpreter that
+cannot start produced rows that looked exactly like a model that tried and
+failed.
+
+**The fix** (`evals/toolchains.lock`, `scripts/eval-host.sh`,
+`evals/eval_host.py`):
+- The repo owns the harness host. The lock pins zig 0.16.0, rustc 1.100.0,
+  go 1.23.3 (what the units were proven with) and a python 3.12 eval venv,
+  per platform, by sha256. `setup` installs them into
+  `~/.local/opt/openbeast-eval` (idempotent, no sudo, ark or mirror offline),
+  and the venv's base is a python-build-standalone 3.12.16 **inside the
+  prefix**, so no package manager can rewrite it.
+- `run_eval` / `profile` / `benchmark_all` check before every live run, set
+  up what is missing, and re-exec under the owned venv, so the validator
+  pins resolve the provisioned compilers.
+- `run_eval` refuses a live run on an interpreter that cannot import its
+  stdlib and the runner's packages, and records an agent's startup death as
+  `interpreter_error` (an infra row: never cached, never scored), then
+  re-checks the interpreter and aborts the run when it is broken. A broken
+  interpreter now costs one unmeasured row, not a column of FAILs.
+
+Measured on the Mac (scratch prefix): a fresh `setup` took 33 s (zig from a
+community mirror; ziglang.org itself was serving 5 KB/s, hence `@mirrors`),
+a second `setup` did nothing, and `vlib.pin_toolchain` then pinned the
+prefix's zig and rustup's `1.100.0-aarch64-apple-darwin` rustc.
+
 ## Cross-model ideas (not yet model-specific)
 
 - Iteration budget scaled by task size (xl SWE tasks at 30 turns starve a one-tool-call-per-turn model; 176 note). Must apply to every model equally.

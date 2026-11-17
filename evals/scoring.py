@@ -530,7 +530,7 @@ def compute_category_balanced(tasks: list[dict], lang_multi_only: bool = True) -
 # server_error / env_error). A run containing any of them under-reports the
 # model; it is kept for inspection but never seated on the board.
 INFRA_REASONS = frozenset({"skipped_cache_miss", "server_unhealthy", "setup_failed",
-                           "server_error", "env_error", "low_disk"})
+                           "server_error", "env_error", "low_disk", "interpreter_error"})
 
 
 def ineligibility_reasons(results: dict) -> list[str]:

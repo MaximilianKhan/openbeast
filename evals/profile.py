@@ -8,6 +8,9 @@
 Phases, all in this one process (the arm scheduler inside run_eval keeps a
 base group on one worker across arms, so arms never share /tmp/eval_* dirs):
 
+  0. host        scripts/eval-host.sh: the toolchains of evals/toolchains.lock,
+                 installed when missing (--no-provision: only reported), the
+                 prefix first on PATH, and a re-exec under the eval venv.
   1. preflight   zig 0.16.0 (the pack's pin), escalate.gate_state() serves
                  zig, the validator toolchains on THIS host (tools run where
                  the harness runs, not where the model runs), a finite
@@ -135,7 +138,8 @@ def plan_arms(units: dict, l0_rows: list[dict], k: float, remaining_s: float,
 
 def preflight(base_url: str, declared_rb: str | None, allow_uncapped: bool) -> list[str]:
     """Problems that make a profile's numbers untrustworthy ([] = go)."""
-    problems = []
+    import eval_host  # noqa: PLC0415
+    problems = [f"eval host: {p}" for p in eval_host.check_problems()]
     for tool in HOST_TOOLS:
         if not shutil.which(tool):
             problems.append(f"{tool} is not on PATH on the harness host (validators "
@@ -230,7 +234,7 @@ def _l0_complete(path: str | None) -> bool:
     rows = d.get("tasks", [])
     return len(rows) == (d.get("summary") or {}).get("total") and not any(
         r.get("reason") in ("budget_skip", "skipped_cache_miss", "server_unhealthy",
-                            "low_disk") for r in rows)
+                            "low_disk", "interpreter_error") for r in rows)
 
 
 def run_profile(a, run_eval) -> int:
@@ -357,7 +361,19 @@ def main(argv=None) -> int:
                     help="run the manifest units that have task files, skip the rest")
     ap.add_argument("--allow-uncapped", action="store_true")
     ap.add_argument("--skip-preflight", action="store_true")
+    ap.add_argument("--no-provision", action="store_true",
+                    help="do not install missing eval toolchains or re-exec under the eval "
+                         "venv (scripts/eval-host.sh); preflight still refuses a host that "
+                         "lacks them. Same as OPENBEAST_EVAL_NO_PROVISION=1")
     a = ap.parse_args(argv)
+
+    # Before anything else: the host's toolchains (setup when missing), the
+    # prefix first on PATH, and this process re-exec'd under the eval venv.
+    # Preflight below re-checks and refuses what is still missing.
+    import eval_host  # noqa: PLC0415
+    eval_host.ensure_host(
+        argv=[os.path.abspath(__file__)] + list(sys.argv[1:] if argv is None else argv),
+        no_provision=a.no_provision)
 
     if a.model:
         import benchmark_all  # noqa: PLC0415

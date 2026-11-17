@@ -67,6 +67,7 @@ CHURN = {"zig": 0.30, "go": 0.12, "c": 0.12, "cpp": 0.12, "rust": 0.12,
          "python": 0.12, "shell": 0.15, "compiled": 0.15, "all": 0.15}
 INVALID_REASONS = frozenset({"setup_failed", "server_unhealthy", "skipped_cache_miss",
                              "low_disk", "server_error", "env_error", "validator_timeout",
+                             "interpreter_error",
                              "not_in_arm", "budget_skip"})
 EAGAIN_RE = re.compile(r"Resource temporarily unavailable|SystemResources|"
                        r"thread constructor failed|pthread_create failed|"

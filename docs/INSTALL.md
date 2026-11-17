@@ -128,6 +128,17 @@ If you skip a toolchain, the variant tasks for that language will fail at
 the build step — their pass/fail entries in the leaderboard will record
 as failures. The other variants of the same task still run normally.
 
+**The v5 harness provisions its own.** On the box that runs `evals/run_eval.py`
+/ `profile.py` / `benchmark_all.py` (the harness host), the pinned versions
+(zig 0.16.0, rustc 1.100.0 via rustup, go 1.23.3, a python 3.12 eval venv
+from `agents/requirements.lock`; `evals/toolchains.lock`) install themselves
+into `~/.local/opt/openbeast-eval`, sha256-checked, no sudo:
+`./scripts/eval-host.sh check | setup | env`, and a live run does `setup` by
+itself when something is missing (`--no-provision` turns that off). The
+table above is the v4 hand-install; gcc, g++ and git stay yours to install.
+Offline (`setup --from <ark drive or mirror>`) and the details:
+[SPARK_HYDRA.md F6](SPARK_HYDRA.md#f6-the-eval-harness-host-benchmarking-the-pair).
+
 ### Arch Linux quick install
 
 ```bash
