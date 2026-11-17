@@ -2,24 +2,27 @@
 """A model campaign: chained harness arms from a declarative file
 (docs/MODEL_CAMPAIGN.md is the runbook; evals/campaigns/*.json the files).
 
-The 2026-11-16 GLM-5.3-Flash campaign was a hand-written shell chain
-(arm A, then B, C, D, E, F, each one change on top of an earlier arm, each a
-full v5 run under a distinct --model-name). This is that chain as code, so
-the next model gets the same procedure:
+The default campaign is `v5-thinking-first`: the best-first composite (every
+harness change believed to help, thinking on) runs first, so the headline row
+exists early; then one-component-out ablations of it with thinking on, the
+seed-noise arm, and last the no-thinking counterparts. `report` turns them
+into a recommended daily config by written decision rules. `v5-harness` (the
+2026-11-16 GLM build-up chain A-F) stays available under its name.
 
-  # every arm, in the file's order, back to back (resumable: re-run the
+  # every arm, in the campaign's order, back to back (resumable: re-run the
   # same command after an interruption; finished arms are skipped)
-  python3 evals/campaign.py run --campaign v5-harness \\
+  python3 evals/campaign.py run --model deepseek-v4.1-flash --jobs 4 --dry-run   # commands + ETA per arm
+  python3 evals/campaign.py run --campaign v5-thinking-first \\
       --model-name "DeepSeek-v4.1-Flash" \\
       --base-url https://spark-1.tail4109f9.ts.net:8443/v1 \\
       --api-key-env OPENBEAST_SPARK_API_KEY --jobs 4 --slots 4 \\
       --baseline L0=evals/results/eval-deepseek-v4-1-flash-L0-<ts>.json
 
-  python3 evals/campaign.py status     --campaign v5-harness --model-name ...
-  python3 evals/campaign.py rerun-lost --campaign v5-harness --model-name ... --arm B
-  python3 evals/campaign.py report     --campaign v5-harness --model-name ... \\
+  python3 evals/campaign.py status     --model-name ...
+  python3 evals/campaign.py rerun-lost --model-name ... --arm T
+  python3 evals/campaign.py report     --model-name ... \\
       --reference-ledger evals/reference/runs/<run>/ledger.jsonl --out report.md
-  python3 evals/campaign.py paths      --campaign v5-harness --model-name ... --arm B
+  python3 evals/campaign.py paths      --model-name ... --arm T
 
 What it enforces (each one a lesson from the GLM night):
 
@@ -61,6 +64,7 @@ from datetime import datetime
 EVALS_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(EVALS_DIR)
 CAMPAIGNS_DIR = os.path.join(EVALS_DIR, "campaigns")
+DEFAULT_CAMPAIGN = "v5-thinking-first"
 STATE_VERSION = 1
 
 # Rows that say nothing about the model: the unit is lost, not failed.
@@ -111,17 +115,17 @@ def validate_campaign(camp: dict) -> list[str]:
         if base and base not in seen:
             errs.append(f"arm {aid}: base {base} must be an earlier arm")
         for d in a.get("apply_decisions") or []:
-            rule = decisions.get(d)
-            if rule is None:
+            if d not in decisions:
                 errs.append(f"arm {aid}: unknown decision {d!r}")
-                continue
-            for x in rule.get("compare") or []:
-                if x not in seen:
-                    errs.append(f"arm {aid}: decision {d} compares {x}, which must run earlier")
         if a.get("noise_of") and a["noise_of"] not in seen:
             errs.append(f"arm {aid}: noise_of {a['noise_of']} must be an earlier arm")
         if not isinstance(a.get("args", []), list) or not isinstance(a.get("env", {}), dict):
             errs.append(f"arm {aid}: args must be a list and env an object")
+        if not isinstance(a.get("drop_args", []), list):
+            errs.append(f"arm {aid}: drop_args must be a list of flags")
+        tx = a.get("time_x")
+        if tx is not None and (not isinstance(tx, (int, float)) or tx <= 0):
+            errs.append(f"arm {aid}: time_x must be a positive number")
         seen.append(aid)
     for name, rule in decisions.items():
         cmp_ = rule.get("compare") or []
@@ -137,7 +141,72 @@ def validate_campaign(camp: dict) -> list[str]:
                             + ("" if a is not camp.get("common") else " (common)"))
     if "--suite" not in common_args:
         errs.append("common.args must name the --suite (rerun-lost swaps it for a sub-manifest)")
+    if errs:
+        return errs
+    errs += order_problems(camp, list(camp.get("order") or seen))
+    rec = camp.get("recommend")
+    if rec is not None:
+        ids = set(seen)
+        if not rec.get("composite"):
+            errs.append("recommend needs a composite arm")
+        for k in ("composite", "no_thinking"):
+            if rec.get(k) and rec[k] not in ids:
+                errs.append(f"recommend.{k}: no arm {rec[k]!r}")
+        for x in rec.get("ablations") or []:
+            if x not in ids:
+                errs.append(f"recommend.ablations: no arm {x!r}")
+            elif arm_spec(camp, x).get("base") != rec.get("composite"):
+                errs.append(f"recommend.ablations: {x} must build on the composite "
+                            f"{rec.get('composite')} (one component out of it)")
+        if rec.get("no_thinking") in ids and \
+                arm_spec(camp, rec["no_thinking"]).get("base") != rec.get("composite"):
+            errs.append(f"recommend.no_thinking: {rec['no_thinking']} must build on the composite")
+    for pair in camp.get("contrasts") or []:
+        if len(pair) != 2 or any(x not in seen for x in pair):
+            errs.append(f"contrast {pair}: needs two known arms")
     return errs
+
+
+def order_problems(camp: dict, order: list[str]) -> list[str]:
+    """A run order is valid when every arm in it exists and appears once,
+    and every decision an arm applies compares arms that run before it."""
+    errs = []
+    ids = [a.get("id") for a in camp.get("arms") or []]
+    pos: dict = {}
+    for i, x in enumerate(order):
+        if x not in ids:
+            errs.append(f"order: no arm {x!r}")
+        elif x in pos:
+            errs.append(f"order: {x} listed twice")
+        pos.setdefault(x, i)
+    decisions = camp.get("decisions") or {}
+    for a in camp.get("arms") or []:
+        if a.get("id") not in pos:
+            continue
+        for d in a.get("apply_decisions") or []:
+            for x in (decisions.get(d) or {}).get("compare") or []:
+                if x not in pos or pos[x] > pos[a["id"]]:
+                    errs.append(f"arm {a['id']}: decision {d} compares {x}, "
+                                f"which must run earlier")
+    return errs
+
+
+def run_order(camp: dict, prefer: list[str] | None = None,
+              include: list[str] | None = None) -> list[str]:
+    """The arms `run` chains, in order: the campaign's `order` (else the
+    file's), optional arms only when `include`d, and `prefer` (--order)
+    moved to the front in its own order. Refused if a decision would then be
+    taken before the arms it compares have run."""
+    want = {arm_spec(camp, x)["id"] for x in include or []}
+    base = list(camp.get("order") or [a["id"] for a in camp["arms"]])
+    base += [a["id"] for a in camp["arms"] if a["id"] in want and a["id"] not in base]
+    base = [x for x in base if not arm_spec(camp, x).get("optional") or x in want]
+    head = [arm_spec(camp, x)["id"] for x in prefer or []]
+    order = head + [x for x in base if x not in head]
+    errs = order_problems(camp, order)
+    if errs:
+        raise SystemExit("run order refused:\n  " + "\n  ".join(errs))
+    return order
 
 
 def load_campaign(name: str) -> dict:
@@ -171,34 +240,88 @@ def arm_chain(camp: dict, aid: str) -> list[dict]:
     return chain[::-1]
 
 
+def _arg_pairs(args: list[str]) -> list[list]:
+    """[[flag, value | None], ...]: `--x v` and `--x=v` are one pair; a flag
+    followed by another flag (or nothing) has no value. A value may start
+    with a single dash (`-1`)."""
+    out, i = [], 0
+    while i < len(args):
+        a = args[i]
+        if a.startswith("--") and "=" in a:
+            f, _, v = a.partition("=")
+            out.append([f, v])
+            i += 1
+        elif a.startswith("--") and i + 1 < len(args) and not args[i + 1].startswith("--"):
+            out.append([a, args[i + 1]])
+            i += 2
+        else:
+            out.append([a, None])
+            i += 1
+    return out
+
+
+def merge_args(base: list[str], add: list[str] | None = None,
+               drop: list[str] | None = None) -> list[str]:
+    """`base` without the `drop` flags (and their values), then `add`: a flag
+    already present takes the new value in place, a new one is appended. So
+    an arm can switch a flag (`--thinking off` over the composite's
+    `--thinking on`) or remove one (`drop_args: ["--wall-scale"]`), not only
+    add one."""
+    dropped = set(drop or [])
+    pairs = [p for p in _arg_pairs(list(base)) if p[0] not in dropped]
+    for f, v in _arg_pairs(list(add or [])):
+        hit = next((p for p in pairs if p[0] == f), None)
+        if hit is not None:
+            hit[1] = v
+        else:
+            pairs.append([f, v])
+    out: list[str] = []
+    for f, v in pairs:
+        out += [f] if v is None else [f, v]
+    return out
+
+
+def arg_value(args: list[str], flag: str) -> str | None:
+    """The value the last `flag` in `args` sets (argparse's last-wins)."""
+    val = None
+    for f, v in _arg_pairs(list(args or [])):
+        if f == flag:
+            val = v
+    return val
+
+
+def apply_delta(spec: dict, part: dict) -> None:
+    """One layer (common, an arm, a decision branch) on top of a spec."""
+    spec["args"] = merge_args(spec["args"], part.get("args"), part.get("drop_args"))
+    spec["env"].update({k: str(v) for k, v in (part.get("env") or {}).items()})
+    r = part.get("requires") or {}
+    spec["requires"]["flags"] += r.get("flags") or []
+    spec["requires"]["env"] += r.get("env") or []
+
+
+def finish_spec(spec: dict) -> dict:
+    spec["requires"] = {k: sorted(set(v)) for k, v in spec["requires"].items()}
+    spec["wall_scale"] = wall_scale_of(spec["args"])
+    spec["thinking"] = arg_value(spec["args"], "--thinking")
+    return spec
+
+
 def resolve_arm(camp: dict, aid: str, decided: dict | None = None) -> dict:
     """argv (run_eval flags, without the per-campaign ones), env, requirements
     and wall scale of one arm: common + every base + the arm + the branches
-    its decisions took. `decided` = {decision name: "then" | "else"}."""
-    common = camp.get("common") or {}
-    args = list(common.get("args") or [])
-    env = dict(common.get("env") or {})
-    req = {"flags": list((common.get("requires") or {}).get("flags") or []),
-           "env": list((common.get("requires") or {}).get("env") or [])}
+    its decisions took. `decided` = {decision name: "then" | "else"}. Each
+    layer may add a flag, switch one (`args` naming a flag already set) or
+    remove one (`drop_args`), and set env switches."""
+    spec: dict = {"args": [], "env": {}, "requires": {"flags": [], "env": []}}
+    apply_delta(spec, camp.get("common") or {})
     for a in arm_chain(camp, aid):
-        args += a.get("args") or []
-        env.update(a.get("env") or {})
-        r = a.get("requires") or {}
-        req["flags"] += r.get("flags") or []
-        req["env"] += r.get("env") or []
+        apply_delta(spec, a)
     for d in arm_spec(camp, aid).get("apply_decisions") or []:
         branch = (decided or {}).get(d)
         if branch not in ("then", "else"):
             raise SystemExit(f"arm {aid}: decision {d} has not been made")
-        part = (camp["decisions"][d].get(branch) or {})
-        args += part.get("args") or []
-        env.update(part.get("env") or {})
-        r = part.get("requires") or {}
-        req["flags"] += r.get("flags") or []
-        req["env"] += r.get("env") or []
-    req = {k: sorted(set(v)) for k, v in req.items()}
-    return {"args": args, "env": {k: str(v) for k, v in env.items()},
-            "requires": req, "wall_scale": wall_scale_of(args)}
+        apply_delta(spec, camp["decisions"][d].get(branch) or {})
+    return finish_spec(spec)
 
 
 def wall_scale_of(args: list[str]) -> float:
@@ -335,9 +458,12 @@ def score(rows: dict) -> dict:
                  and isinstance(r.get("max_iter"), int)
                  and r["iterations"] >= r["max_iter"] - TURN_CAP_SLACK)
     timeouts = sum(1 for r in s.values() if not r.get("passed") and r.get("agent_exit_code") == -1)
+    toks = [float(r["tokens_completion"]) for r in s.values()
+            if isinstance(r.get("tokens_completion"), (int, float))]
     return {"passed": passed, "scorable": len(s),
             "mean_turns": (sum(iters) / len(iters)) if iters else None,
             "mean_s": (sum(secs) / len(secs)) if secs else None,
+            "mean_tokens": (sum(toks) / len(toks)) if toks else None,
             "turn_cap_ends": capped, "wall_timeouts": timeouts}
 
 
@@ -617,6 +743,53 @@ def finish_arm(camp: dict, st: dict, sdir: str, aid: str) -> dict:
     return lost
 
 
+def _csv(s: str | None) -> list[str]:
+    return [x.strip() for x in (s or "").split(",") if x.strip()]
+
+
+def _fmt_h(h: float | None) -> str:
+    return "unknown" if h is None else f"~{h:.1f} h"
+
+
+def eta_base_h(camp: dict, st: dict | None, override: float | None) -> tuple[float, str]:
+    """Hours of the campaign's reference arm (time_x 1.0) at the campaign's
+    eta.jobs: --base-hours, else calibrated from this campaign's finished
+    arms (the median of their hours / time_x), else the file's eta.base_h."""
+    eta = camp.get("eta") or {}
+    if override:
+        return float(override), "--base-hours"
+    cal = []
+    for aid, ast in ((st or {}).get("arms") or {}).items():
+        try:
+            tx = arm_spec(camp, aid).get("time_x")
+        except SystemExit:
+            continue
+        if tx and ast.get("status") == "done" and ast.get("ended_at") \
+                and ast.get("started_at") is not None:
+            cal.append((ast["ended_at"] - ast["started_at"]) / 3600 / float(tx))
+    if cal:
+        cal.sort()
+        mid = cal[len(cal) // 2] if len(cal) % 2 else (cal[len(cal) // 2 - 1] + cal[len(cal) // 2]) / 2
+        return mid, f"calibrated from {len(cal)} finished arm(s) of this campaign"
+    if eta.get("base_h"):
+        return float(eta["base_h"]), f"the campaign file's eta.base_h: {eta.get('basis', '')}".rstrip(": ")
+    return 0.0, "no eta.base_h in the campaign file"
+
+
+def arm_eta_h(camp: dict, aid: str, base_h: float, jobs: int | None) -> tuple[float | None, str]:
+    """(hours, why): base hours x the arm's time_x, scaled from the
+    campaign's eta.jobs to --jobs (linear: a rough guide, not a promise)."""
+    tx = arm_spec(camp, aid).get("time_x")
+    if tx is None or not base_h:
+        return None, "no time_x" if tx is None else "no base hours (--base-hours H)"
+    ref_jobs = int((camp.get("eta") or {}).get("jobs") or 0)
+    scale = (ref_jobs / jobs) if ref_jobs and jobs else 1.0
+    why = f"time x{float(tx):g} of {base_h:.1f} h"
+    if scale != 1.0:
+        why += f", x{scale:g} for --jobs {jobs} vs {ref_jobs}"
+    return base_h * float(tx) * scale, why
+
+
 def cmd_run(a, camp: dict) -> int:
     py = a.python
     tree = os.path.abspath(a.tree)
@@ -628,21 +801,27 @@ def cmd_run(a, camp: dict) -> int:
     for b in a.baseline or []:
         name, _, path = b.partition("=")
         st["baselines"][name] = os.path.abspath(path)
-    order = [x["id"] for x in camp["arms"]]
+    order = run_order(camp, _csv(a.order), _csv(a.include))
     if a.only:
         todo = [arm_spec(camp, x)["id"] for x in a.only.split(",")]
     elif a.from_arm:
-        todo = order[order.index(arm_spec(camp, a.from_arm)["id"]):]
+        start = arm_spec(camp, a.from_arm)["id"]
+        if start not in order:
+            raise SystemExit(f"--from {start}: not in the run order {order} "
+                             f"(an optional arm needs --include {start})")
+        todo = order[order.index(start):]
     else:
         todo = order
     arm_trees = {}
     for x in a.arm_tree or []:
         k, _, v = x.partition("=")
         arm_trees[arm_spec(camp, k)["id"]] = os.path.abspath(v)
+    base_h, base_src = eta_base_h(camp, st, a.base_hours)
+    total_h, eta_arms = 0.0, []
 
     served = a.served_model
     if not a.dry_run and not a.skip_preflight:
-        problems = preflight(a, camp, py, tree)
+        problems = preflight(a, camp, py, tree, todo)
         if problems:
             print("PREFLIGHT REFUSED:")
             for p in problems:
@@ -687,10 +866,14 @@ def cmd_run(a, camp: dict) -> int:
         model_name = arm_model_name(camp, a.model_name, aid)
         argv = campaign_argv(spec["args"], a, model_name)
         env = base_env(camp, spec, a, served)
+        eta_h, eta_why = arm_eta_h(camp, aid, base_h, a.jobs)
         if a.dry_run:
             envs = " ".join(f"{k}={shlex.quote(v)}" for k, v in sorted(spec["env"].items()))
             print(f"# arm {aid} ({arm_spec(camp, aid).get('label', '')}) tree={atree}")
+            print(f"#   ETA {_fmt_h(eta_h)} ({eta_why})")
             print(f"{envs} {shlex.join([py, '-u', 'evals/run_eval.py', *argv])}".strip())
+            eta_arms.append(aid)
+            total_h += eta_h or 0.0
             continue
         miss = missing_requirements(atree, py, spec["requires"])
         if miss:
@@ -734,7 +917,7 @@ def cmd_run(a, camp: dict) -> int:
         if resumed:
             clog(sdir, f"RESUME {aid}: banked rows kept; the missing units rerun as lost")
         else:
-            clog(sdir, f"START {aid} ({ast['label']}) tree={atree}")
+            clog(sdir, f"START {aid} ({ast['label']}) tree={atree} ETA {_fmt_h(eta_h)}")
             rc, paths = run_eval_once(py, atree, argv, env, os.path.join(sdir, f"arm-{aid}.log"),
                                       slugify(model_name))
             ast["rc"] = rc
@@ -774,6 +957,12 @@ def cmd_run(a, camp: dict) -> int:
         sc = ast["score"]
         clog(sdir, f"DONE {aid}: {sc['passed']}/{sc['scorable']} scorable"
                    + (f", {len(lost)} lost" if lost else ""))
+    if a.dry_run:
+        print(f"# total ETA {_fmt_h(total_h)} for the arms not yet done ({', '.join(eta_arms)}); "
+              f"base {base_h:g} h ({base_src})")
+        opt = [x["id"] for x in camp["arms"] if x.get("optional") and x["id"] not in todo]
+        if opt:
+            print(f"# optional, not in this chain: {', '.join(opt)} (--include ARM to add)")
     if not a.dry_run:
         clog(sdir, "CAMPAIGN CHAIN DONE" if all(
             (st["arms"].get(x) or {}).get("status") in ("done", "unsupported") for x in order)
@@ -792,7 +981,7 @@ def detect_served(base_url: str) -> str | None:
         return None
 
 
-def preflight(a, camp: dict, py: str, tree: str) -> list[str]:
+def preflight(a, camp: dict, py: str, tree: str, todo: list[str] | None = None) -> list[str]:
     """The prerequisites of docs/MODEL_CAMPAIGN.md §1 that can be checked
     from here: the host toolchains (evals/profile.py's preflight, or the
     provisioning script when the tree has one), and the gate admitting
@@ -820,10 +1009,22 @@ def preflight(a, camp: dict, py: str, tree: str) -> list[str]:
             "_ob_profile", os.path.join(EVALS_DIR, "profile.py"))
         prof = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(prof)
-        rb = None
-        args = (camp.get("common") or {}).get("args") or []
-        if "--reasoning-budget" in args:
-            rb = args[args.index("--reasoning-budget") + 1]
+        # Every arm declares its reasoning budget (0 = thinking off; a
+        # thinking arm declares the eval turn cap that bounds its thinking,
+        # docs/MODEL_CAMPAIGN.md §7). profile.preflight refuses an undeclared
+        # or uncapped one; it is checked with the first arm's, and every
+        # other arm must declare one too.
+        rbs = {}
+        for aid in todo or [x["id"] for x in camp["arms"]]:
+            try:
+                rbs[aid] = arg_value(resolve_arm(camp, aid, {d: "else" for d in camp.get(
+                    "decisions") or {}})["args"], "--reasoning-budget")
+            except SystemExit:
+                continue
+        for aid, rb in rbs.items():
+            if rb in (None, "", "-1"):
+                problems.append(f"arm {aid} declares no finite --reasoning-budget")
+        rb = next(iter(rbs.values()), None)
         problems += prof.preflight(a.base_url, rb, False)
         adm = prof.admission_check(a.base_url, a.jobs, a.served_model or a.model_name)
         if adm:
@@ -987,6 +1188,130 @@ def _units(us: list[str], limit: int = 40) -> str:
     return s + (f" (+{len(us) - limit} more)" if len(us) > limit else "")
 
 
+def passed_at_base_wall(rows: dict, walls: dict | None, jobs: int) -> list[str] | None:
+    """The passes that finished inside the unwidened wall (the unit's wall x
+    the --jobs contention scale): what a wall-scaled arm would have scored
+    with its unscaled twin's time. None without unit walls."""
+    if walls is None:
+        return None
+    cs = contention_scale(jobs)
+    s = scorable(rows)
+    return sorted(u for u, r in s.items() if r.get("passed") and u in walls
+                  and float(r.get("elapsed_seconds") or 0) <= walls[u] * cs)
+
+
+def paired_cost(a: dict, b: dict) -> dict:
+    """Mean agent seconds and completion tokens per unit of a and b, on the
+    units both scored, and b's ratio to a."""
+    sa, sb = scorable(a), scorable(b)
+    common = sorted(set(sa) & set(sb))
+
+    def mean(rows, key):
+        v = [float(rows[u][key]) for u in common if isinstance(rows[u].get(key), (int, float))]
+        return sum(v) / len(v) if v else None
+    out = {"common": len(common)}
+    for k, key in (("s", "elapsed_seconds"), ("tokens", "tokens_completion")):
+        x, y = mean(sa, key), mean(sb, key)
+        out[f"a_{k}"], out[f"b_{k}"] = x, y
+        out[f"{k}_ratio"] = (y / x) if x and y is not None else None
+    return out
+
+
+def arm_thinking(camp: dict, st: dict, aid: str) -> str | None:
+    """"on" / "off" / None (the server's default) for an arm: the flags it
+    ran with (state), else what the campaign file resolves it to."""
+    ast = (st.get("arms") or {}).get(aid) or {}
+    if ast.get("args"):
+        return arg_value(ast["args"], "--thinking")
+    try:
+        return resolve_arm(camp, aid, ast.get("decisions_taken"))["thinking"]
+    except SystemExit:
+        return None
+
+
+def noise_margin(camp: dict, rows: dict, composite: str) -> tuple[int, str]:
+    """(margin, why): the pass-count delta a single-draw contrast must exceed
+    to count as an effect. The seed arms of the composite measure how many
+    units flip between two draws of one config (churn c). Under no effect
+    those flips land up or down with equal odds, so a contrast's net delta
+    has a standard deviation of about sqrt(c): the margin is
+    ceil(recommend.noise_sd x sqrt(c)), from the noisiest seed arm. Without a
+    measured seed arm, recommend.noise_fallback."""
+    rec = camp.get("recommend") or {}
+    sd = float(rec.get("noise_sd", 1.0))
+    churns = []
+    for x in camp["arms"]:
+        if x.get("noise_of") == composite and x["id"] in rows and composite in rows:
+            f = flips(rows[composite], rows[x["id"]])
+            churns.append((len(f["rescued"]) + len(f["regressed"]), x["id"], f["common"]))
+    if not churns:
+        m = int(rec.get("noise_fallback", 3))
+        return m, (f"no seed arm of {composite} measured: margin {m} "
+                   f"(recommend.noise_fallback), an assumption, not a measurement")
+    c, aid, n = max(churns)
+    m = math.ceil(sd * math.sqrt(c))
+    return m, (f"{aid} vs {composite}: {c} of {n} units flip between two draws; "
+               f"margin ceil({sd:g} x sqrt({c})) = {m}")
+
+
+def recommend(camp: dict, st: dict, rows: dict) -> dict | None:
+    """The decision rules of docs/MODEL_CAMPAIGN.md §6, on measured arms:
+
+      * a component whose removal does not cost more than the noise margin
+        (composite passes - ablation passes <= margin, on the units both
+        scored) is dropped from the recommended config; an unmeasured
+        ablation keeps its component;
+      * thinking stays on only if the composite beats its no-thinking twin by
+        more than the margin; otherwise no-thinking is recommended for its
+        latency. Either way the measured cost (time and tokens per unit) is
+        reported.
+
+    Returns None without a `recommend` block or before the composite ran."""
+    rec = camp.get("recommend")
+    if not rec or rec.get("composite") not in rows:
+        return None
+    comp = rec["composite"]
+    margin, noise_why = noise_margin(camp, rows, comp)
+    taken = (st["arms"].get(comp) or {}).get("decisions_taken") or {}
+    spec = resolve_arm(camp, comp, taken)
+    components = []
+    for x in rec.get("ablations") or []:
+        label = arm_spec(camp, x).get("ablates") or x
+        if x not in rows:
+            components.append({"arm": x, "component": label, "verdict": "keep",
+                               "why": "not measured: kept (the composite's default)"})
+            continue
+        f = flips(rows[x], rows[comp])
+        keep = f["net"] > margin
+        components.append({
+            "arm": x, "component": label, "verdict": "keep" if keep else "drop",
+            "net": f["net"], "common": f["common"], "p": f["p"],
+            "why": (f"without it {f['a_passed']}, with it {f['b_passed']} on {f['common']} "
+                    f"common units: net {f['net']:+d} {'>' if keep else '<='} margin {margin}")})
+        if not keep:
+            apply_delta(spec, arm_spec(camp, x))
+    think = None
+    nt = rec.get("no_thinking")
+    if nt:
+        if nt not in rows:
+            think = {"arm": nt, "verdict": "on",
+                     "why": f"{nt} (no thinking) not measured: thinking stays on"}
+        else:
+            f = flips(rows[nt], rows[comp])
+            cost = paired_cost(rows[nt], rows[comp])
+            on = f["net"] > margin
+            think = {"arm": nt, "verdict": "on" if on else "off", "net": f["net"],
+                     "common": f["common"], "p": f["p"], "cost": cost,
+                     "why": (f"thinking {f['b_passed']}, no thinking {f['a_passed']} on "
+                             f"{f['common']} common units: net {f['net']:+d} "
+                             f"{'>' if on else '<='} margin {margin}")}
+            if not on:
+                apply_delta(spec, arm_spec(camp, nt))
+    finish_spec(spec)
+    return {"composite": comp, "margin": margin, "noise": noise_why,
+            "components": components, "thinking": think, "spec": spec}
+
+
 def render_report(camp: dict, st: dict, baselines: dict, reference: dict | None,
                   walls: dict | None, total_units: int | None = None,
                   unit_langs: dict | None = None) -> str:
@@ -1049,6 +1374,65 @@ def render_report(camp: dict, st: dict, baselines: dict, reference: dict | None,
                  "change.")
         L.append("")
 
+    # Recommended daily config (the decision rules)
+    rec = recommend(camp, st, rows)
+    if (camp.get("recommend") or {}).get("composite"):
+        L.append("## Recommended daily config")
+        L.append("")
+        if rec is None:
+            L.append(f"The composite arm `{camp['recommend']['composite']}` has not been "
+                     f"measured yet: no recommendation.")
+            L.append("")
+        else:
+            th = rec["thinking"] or {}
+            kept = [c["component"] for c in rec["components"] if c["verdict"] == "keep"]
+            dropped = [c["component"] for c in rec["components"] if c["verdict"] == "drop"]
+            L.append(f"**Thinking {th.get('verdict', 'on')}**; keep: "
+                     f"{', '.join(kept) or 'nothing ablated'}; drop: {', '.join(dropped) or 'nothing'}.")
+            L.append("")
+            L.append(f"Noise margin: **{rec['margin']}** units ({rec['noise']}). A component "
+                     f"stays only if removing it cost more than the margin; thinking stays on "
+                     f"only if it beat its no-thinking twin by more than the margin.")
+            L.append("")
+            L.append("| Component (arm without it) | Net with it | Common | p | Verdict | Why |")
+            L.append("|---|---|---|---|---|---|")
+            for c in rec["components"]:
+                L.append(f"| {c['component']} ({c['arm']}) | "
+                         f"{'-' if 'net' not in c else format(c['net'], '+d')} "
+                         f"| {c.get('common', '-')} "
+                         f"| {'-' if 'p' not in c else format(c['p'], '.3f')} "
+                         f"| **{c['verdict']}** | {c['why']} |")
+            if th:
+                L.append(f"| thinking ({th['arm']}) | "
+                         f"{'-' if 'net' not in th else format(th['net'], '+d')} "
+                         f"| {th.get('common', '-')} "
+                         f"| {'-' if 'p' not in th else format(th['p'], '.3f')} "
+                         f"| **{th['verdict']}** | {th['why']} |")
+            L.append("")
+            cost = th.get("cost")
+            if cost:
+                L.append(f"Thinking's measured cost ({cost['common']} common units): "
+                         f"{_fmt(cost['a_s'], 0)} s → {_fmt(cost['b_s'], 0)} s per unit "
+                         f"(x{_fmt(cost['s_ratio'], 2)}), {_fmt(cost['a_tokens'], 0)} → "
+                         f"{_fmt(cost['b_tokens'], 0)} completion tokens per unit "
+                         f"(x{_fmt(cost['tokens_ratio'], 2)}).")
+                L.append("")
+            if th.get("verdict") == "off" and rec["components"]:
+                L.append("The component verdicts were measured with thinking on; without "
+                         "thinking they hold only as far as the no-thinking composite "
+                         "and baseline arms show.")
+                L.append("")
+            sp = rec["spec"]
+            envs = " ".join(f"{k}={v}" for k, v in sorted(sp["env"].items()) if v not in ("", "0"))
+            L.append("```")
+            L.append(f"{envs} python3 evals/run_eval.py {shlex.join(sp['args'])}".strip())
+            L.append("```")
+            L.append("")
+            L.append("`--suite`, `--no-cache` and `--wall-scale` are eval mechanics. The daily "
+                     "config is the switches and the thinking toggle; the thinking table below "
+                     "says how many passes fit inside the unwidened wall.")
+            L.append("")
+
     # Decisions
     dec = [(x["id"], d, b, (st["arms"][x["id"]].get("decision_notes") or {}).get(d, ""))
            for x in arms for d, b in (st["arms"][x["id"]].get("decisions_taken") or {}).items()]
@@ -1093,6 +1477,9 @@ def render_report(camp: dict, st: dict, baselines: dict, reference: dict | None,
             pairs.append((x["base"], rows[x["base"]], x["id"], rows[x["id"]]))
         for bname, brows in baselines.items():
             pairs.append((bname, brows, x["id"], rows[x["id"]]))
+    for ln, rn in camp.get("contrasts") or []:
+        if ln in rows and rn in rows:
+            pairs.append((ln, rows[ln], rn, rows[rn]))
     details = []
     for ln, lrows, rn, rrows in pairs:
         f = flips(lrows, rrows)
@@ -1104,6 +1491,49 @@ def render_report(camp: dict, st: dict, baselines: dict, reference: dict | None,
     for d in details:
         L.append(f"- {d}")
     L.append("")
+
+    # Thinking vs no thinking
+    think_of = {x["id"]: arm_thinking(camp, st, x["id"]) for x in arms}
+    if any(v == "on" for v in think_of.values()):
+        L.append("## Thinking vs no thinking")
+        L.append("")
+        L.append("Per arm, the price of its pass count. Mean completion tokens include the "
+                 "reasoning tokens the server counted. *At base wall* = the passes that "
+                 "finished inside the unwidened wall (the unit's wall x the `--jobs` "
+                 "contention scale): for a wall-scaled thinking arm, what it scores with "
+                 "its no-thinking twin's time.")
+        L.append("")
+        L.append("| Arm | Thinking | Wall x | Passed | Scorable | Passed at base wall "
+                 "| Mean agent s / unit | Mean completion tokens / unit | Run h |")
+        L.append("|---|---|---|---|---|---|---|---|---|")
+        for x in arms:
+            ast = st["arms"][x["id"]]
+            s = score(rows[x["id"]])
+            inside = passed_at_base_wall(rows[x["id"]], walls, jobs)
+            hours = ((ast.get("ended_at") or 0) - (ast.get("started_at") or 0)) / 3600 \
+                if ast.get("ended_at") else None
+            L.append(f"| {x['id']} | {think_of[x['id']] or 'server default'} "
+                     f"| {float(ast.get('wall_scale') or 1.0):g} | {s['passed']} | {s['scorable']} "
+                     f"| {len(inside) if inside is not None else '-'} | {_fmt(s['mean_s'], 0)} "
+                     f"| {_fmt(s['mean_tokens'], 0)} | {_fmt(hours, 2)} |")
+        L.append("")
+        tpairs = [(ln, rn) for ln, _, rn, _ in pairs
+                  if ln in rows and rn in rows and think_of.get(ln) != think_of.get(rn)]
+        rec = camp.get("recommend") or {}
+        if rec.get("no_thinking") in rows and rec.get("composite") in rows:
+            p = (rec["no_thinking"], rec["composite"])
+            tpairs = [p] + [q for q in tpairs if q != p and q != p[::-1]]
+        for ln, rn in tpairs:
+            f = flips(rows[ln], rows[rn])
+            c = paired_cost(rows[ln], rows[rn])
+            L.append(f"- **{ln}** (thinking {think_of.get(ln) or 'default'}) → **{rn}** "
+                     f"(thinking {think_of.get(rn) or 'default'}), {f['common']} common units: "
+                     f"{f['a_passed']} → {f['b_passed']} passed ({len(f['rescued'])} rescued, "
+                     f"{len(f['regressed'])} regressed, p {f['p']:.3f}); per unit "
+                     f"{_fmt(c['a_s'], 0)} s → {_fmt(c['b_s'], 0)} s "
+                     f"(x{_fmt(c['s_ratio'], 2)}), {_fmt(c['a_tokens'], 0)} → "
+                     f"{_fmt(c['b_tokens'], 0)} completion tokens (x{_fmt(c['tokens_ratio'], 2)})")
+        L.append("")
 
     # Wall-scaled arms
     scaled = [x for x in arms if float(st["arms"][x["id"]].get("wall_scale") or 1.0) > 1.0]
@@ -1228,7 +1658,9 @@ def main(argv=None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     def common(p, need_url=False):
-        p.add_argument("--campaign", required=True, help="a name in evals/campaigns/ or a path")
+        p.add_argument("--campaign", default=DEFAULT_CAMPAIGN,
+                       help=f"a name in evals/campaigns/ or a path (default {DEFAULT_CAMPAIGN}; "
+                            f"v5-harness is the 2026-11-16 GLM build-up chain A-F)")
         p.add_argument("--model-name", help="the model's name (arms add '<campaign> <arm>')")
         p.add_argument("--model", help="a benchmark_all MODELS slug: name, base URL, slots, key env")
         p.add_argument("--tree", default=REPO, help="the checkout arms run from (default: this one)")
@@ -1252,6 +1684,12 @@ def main(argv=None) -> int:
     p.add_argument("--baseline", action="append", help="NAME=results.json or a profile state")
     p.add_argument("--set-decision", action="append", help="NAME=then|else: override a decision")
     p.add_argument("--skip-preflight", action="store_true")
+    p.add_argument("--order", help="ARM[,ARM]: run these arms first, in this order, then the "
+                                   "rest in the campaign's order")
+    p.add_argument("--include", help="ARM[,ARM]: add optional arms (e.g. a second seed) to the chain")
+    p.add_argument("--base-hours", type=float,
+                   help="hours of the campaign's reference arm (time_x 1.0) for this model, for "
+                        "the ETAs (default: calibrated from finished arms, else eta.base_h)")
 
     p = sub.add_parser("rerun-lost", help="rerun an arm's lost units (or audited ones)")
     common(p)

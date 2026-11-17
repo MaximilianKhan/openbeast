@@ -21,7 +21,8 @@ Status key: **IDEA** (noted) · **BUILDING** · **ARM** (being measured) · **AD
 | GLM-5.3-Flash L0 (daily config, runner v1) | **26/71** | 43 of 45 fails audited as genuine model mistakes *under this harness*; most ended on the turn cap at 10-30% of their wall |
 | GLM L1 (Zig packs) | Zig 0/6 -> 3/6 | packs fix the 0.16 API drift |
 | GLM arm A (runner v2: G1-G4, G8, G11 v1) | **31/71** | +5 net vs L0 (11 rescued, 6 regressed; single seed). Rescues cluster on the audited frictions (36_b/c, 143, 146, 121, 179); same time and turns as L0 |
-| GLM arms B/C (+wall-scaled turns, +thinking) | running | B from 16:06; C after |
+| GLM arm B (A + wall-scaled turns, G1) | **36/71** | +5 over A; single seed |
+| GLM arm C (B + thinking, `--wall-scale 2`, B's turns) | **18 of the first 21 units** (final PENDING) | B passed 8 of the same 21: 10 rescued, 0 regressed; 14 of the 18 passes inside B's original wall; ≈ 2.3x B's time per unit |
 
 Max's read, and the working hypothesis: GLM-5.3-Flash is a far stronger model than
 26/71 suggests, and much of the gap is the harness around it, not the weights. Each arm
@@ -29,6 +30,37 @@ above tests one piece of that; whatever gap remains after them is the next exper
 Future-experiment backlog (beyond A-C): k-seed repeats (G12), "test before done" (G9),
 edit-not-rewrite diagnostics (G13), thinking budget sweeps, parallel tool calls, a
 Qwen3.8 v5 row and DeepSeek v4.1 Flash on the same arms (the paper's cross-model axis).
+
+## Thinking is the dominant lever (2026-11-16) — status: PENDING C's final
+
+On GLM-5.3-Flash, per-request thinking (G5; `--thinking on`, at `--wall-scale 2`
+so its turns equal B's) passed 18 of arm C's first 21 v5 units. Arm B passed 8 of
+the same 21, so 10 were rescued and none regressed. 14 of the 18 passes finished
+inside B's original wall, so the gain is the thinking, not the doubled time. Per
+unit it costs about 2.3x B's time. No other single harness change has moved more
+than 5 units over the whole 71: runner v2 (A) +5 over L0, wall-scaled turns (B)
++5 over A. One seed, 21 units, and a partial arm, so the size is provisional and
+the direction is not in doubt.
+
+What it changed:
+- **The campaign is thinking-first** (`evals/campaigns/v5-thinking-first.json`,
+  [MODEL_CAMPAIGN.md §5](MODEL_CAMPAIGN.md#5-harness-arms-thinking-first)). It
+  runs first the composite of every change believed to help, with thinking on.
+  Then it runs that composite with one component removed at a time, still
+  thinking, then a seed arm, and last the no-thinking counterparts. Each
+  G-entry below that is still an ARM is now measured *with thinking*, as
+  "composite minus it". A component that does not cost more than the seed noise
+  when removed is dropped from the recommended config.
+- **Every G-entry's evidence is from thinking-off runs.** Turn-cap endings (G1),
+  no-op loops (G2, G3) and reasoning slips (G5) may shrink when the model thinks,
+  so a fix's value can shrink with them. Packs (G6, G19) supply knowledge thinking
+  cannot, so they should hold. The ablations say which is which.
+- **Thinking's price is latency.** The report sets it beside the gain (time and
+  completion tokens per unit, and passes inside the unwidened wall). No-thinking
+  is recommended only if the composite with thinking off comes within noise of it.
+
+Update when C finishes (its full 71) and again when the first thinking-first
+campaign reports (DeepSeek v4.1 Flash is next).
 
 ## GLM-5.3-Flash (spark-hydra, thinking off) — from the 2026-11-16 v5 L0 audit
 
@@ -42,7 +74,7 @@ Transcripts: `agents/logs/agent-20261116-0[6-8]*.jsonl`; L0 results
 | G2 | No-op `update_plan` loops: up to 15 of 25 turns with identical args (196, 183, 173, 178, 190). The prompt's "keep it current" wording invites it. | Don't count / nudge an `update_plan` whose args equal the current plan. | IN RUNNER V2 (#179; arm A 31/71) |
 | G3 | Identical tool call + identical result repeated: same `cat` x15 (195), same bash x19 (121), same rebuild x12 with no edit (163_b). | After 3 identical calls, append "you have seen this output N times; act on it". | IN RUNNER V2 (#179; arm A 31/71) |
 | G4 | Tool host is macOS/BSD, model assumes GNU: `sed -i 's/…'`, `cat -A`, `timeout`, `<(...)` under `/bin/sh` each cost a turn (124, 122_e, 36_c, 167, 179). | Platform line in the runner prompt; consider `bash -c` for the bash tool. | IN RUNNER V2 (#179; arm A 31/71) |
-| G5 | Thinking off: reasoning slips that thinking would likely catch — the missing `x/sqrt(2)` in N(x) debugged for 20 turns (36 b/c/d) despite the sample disagreeing; copied its own carry bug into a hand trace (163_a). | Per-request thinking (`chat_template_kwargs.enable_thinking`), verified live on TensorFold. | ARM (thinking on) |
+| G5 | Thinking off: reasoning slips that thinking would likely catch — the missing `x/sqrt(2)` in N(x) debugged for 20 turns (36 b/c/d) despite the sample disagreeing; copied its own carry bug into a hand trace (163_a). | Per-request thinking (`chat_template_kwargs.enable_thinking`), verified live on TensorFold. | ARM C: 18/21 vs B's 8/21 on the same units (10 rescued, 0 regressed; final PENDING). The dominant lever (see above); the default campaign is now thinking-first |
 | G6 | Zig 0.16 API drift: pre-0.15 `std.heap.GeneralPurposeAllocator`, `std.io.bufferedWriter`; whole budgets spent grepping lib/std (36_f, 123_f, 163_f, 122_e). | Language packs (L1) + diagnostics/escalation (L2) — the existing ablation arms. | ARM (L1/L2) |
 | G7 | A non-streaming turn ran past the gate's 600 s read timeout and the OpenAI client retried it identically: 1,200 s lost, two units never wrote code (168_c, 168_f). | Gate EDGE_READ_TIMEOUT above unit wall (done for evals, 3600); retry policy: never re-send an identical request after a read timeout; consider streaming. | PARTLY ADOPTED |
 | G8 | Hung pipelines reported as "[Errno 1] Operation not permitted" instead of a timeout (146). | Always name the timeout and its limit. | IN RUNNER V2 (#179; arm A 31/71) |

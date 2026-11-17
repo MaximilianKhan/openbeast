@@ -446,12 +446,18 @@ The profile is step 2 of a model campaign
 ([docs/MODEL_CAMPAIGN.md](../docs/MODEL_CAMPAIGN.md)). The steps after it are
 the failure audit (`evals/audit/`), the reference ceiling
 (`evals/reference/`), and the chained harness arms with their per-unit
-comparison:
+comparison. The default campaign, `v5-thinking-first`, runs the best-first
+composite (every harness change believed to help, thinking on) first, then
+one-component-out ablations of it, a seed-noise arm, and the no-thinking
+counterparts last. `report` states the recommended daily config by written
+decision rules. `--campaign v5-harness` is the 2026-11-16 GLM build-up chain
+A-F.
 
 ```bash
-python3 evals/campaign.py run --campaign v5-harness --model <slug> --jobs 4 \
+python3 evals/campaign.py run --model <slug> --jobs 4 --dry-run       # commands + ETA per arm
+python3 evals/campaign.py run --model <slug> --jobs 4 \
     --baseline L0=evals/results/eval-<slug>-L0-<ts>.json
-python3 evals/campaign.py report --campaign v5-harness --model <slug> \
+python3 evals/campaign.py report --model <slug> \
     --reference-ledger <reference run>/ledger.jsonl --out report.md
 ```
 
