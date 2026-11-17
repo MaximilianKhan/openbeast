@@ -378,6 +378,97 @@ tokens at 4 chars/token, budget 2,000):
   was written against these units' failures; the held-out check above is
   still unrun.
 
+### 5.1 Pack v2 + the host pack (2026-11-16) — BUILDING, unmeasured
+
+Evidence: a per-language failure taxonomy of GLM-5.3-Flash's v5 runs on
+2026-11-16 (L0, L12, arms A and B; 153 failed units, every compiler error
+quoted per unit). Two findings drive this section:
+
+1. **Only zig fails for lack of knowledge.** Rust, Go, C, C++ and Python
+   failures are algorithm or process. So the language-pack work stays zig;
+   nothing here adds a pack for another language.
+2. **Host friction cost about 95 turns**, more than every non-zig knowledge
+   error combined: `nproc` and `/proc/cpuinfo` (absent on macOS), `cat -A`,
+   `grep -P`, `timeout`, `/usr/bin/time -v`, BSD `sed -i`,
+   `pthread_barrier_t`, `sysctlbyname`/`sysconf` without their headers.
+   runner v2's `platform_line()` names the OS and three of these on Darwin.
+
+**Zig pack v2** (`agents/packs/zig-0.16.md`, now @`ed18f83e`, 1,959 tokens
+of the 2,000 budget). The v1 pack did not cover what the v5 zig runs hit.
+Five curated bullets now do, each verified by fixtures in
+`tests/fixtures/zig016/`: OLD files that fail under zig 0.16.0 and a NEW
+file that compiles. OLD fixtures now also pin the error they must produce
+(manifest `expect`, `test_old_fixtures_fail_with_the_expected_error`):
+
+| Entry | Error the OLD fixture pins (occurrences in the 52 v5 zig transcripts) | The 0.16 form |
+|---|---|---|
+| `thread_spawn` | `expected type 'Thread.SpawnConfig', found 'mem.Allocator'` (2); `expected a tuple` (9) | `std.Thread.spawn(.{}, f, .{ ctx, i })`; `std.Thread.getCpuCount()` |
+| `thread_sync` | `'Thread' has no member named 'ResetEvent'` (2) / `'Mutex'` | `std.Io.Event = .unset`, `ev.set(io)`, `try ev.wait(io)`; `std.Io.Mutex = .init`, `lock(io)`/`unlock(io)` |
+| `io_arity` | `no member function named 'writeAll' in 'Io.File'` (3), `'openFileIo'` (1), `expected 0 argument(s), found 1` (stdin(io)), `member function expected 2 argument(s), found 1` (reader(&buf), 9) | `f.writeStreamingAll(io, bytes)`, `dir.openFile(io, p, .{})`, `.stdin()`, `f.reader(io, &buf)` |
+| `syntax` | `expected parameter list, found ';'` (`@std`); `expected '(', found 'an identifier'` (23) | `@import("std")`; `while (c) : (i += 1)` |
+| `lint` | `unused local constant`, `local variable is never mutated`, `pointless discard` (21), `name shadows primitive 'i0'` (9 with `i2`) | delete it / `const` / drop the `_ =` / rename |
+
+`std.Thread.ResetEvent` has no direct replacement in `std.Thread` in 0.16:
+`lib/std/Thread.zig` has no `ResetEvent`, `Mutex` or `Condition`, and its
+own tests use `std.Io.Event`. The pack says that. To make room, the
+generated digest went from 35 lines to 18; `gen_zig_pack.py` fits it to
+whatever the curated section leaves. That section is the one the plan drops
+first. The budget did not move. `claims/zig-0.16.json` (20 claims) and the
+zig escalation index (53 OLD fixtures, the same 3 silent) are regenerated.
+
+**`MEASURED_SHA256` is NOT moved.** Production keeps serving nothing for zig
+until an eval arm measures v2 and the pin moves. The v1 bytes are no longer
+in the tree, so `pack_context.status_line()` reports `NOT SERVED`. That is
+correct for an unmeasured treatment. The eval harness is unaffected:
+`packs_flag` reads `PACK_FILES` → `agents/packs/zig-0.16.md` and loads the
+committed bytes whatever the pin says.
+
+**The host pack** (`agents/lang/host_pack.py`). It holds facts about the
+tool host, each from a probe that RAN: a command that failed, or a 3-line C
+file that did not compile through the host's own `cc`/`c++`. A remedy that
+names another tool (perl, sysctl, getconf) is offered only when that tool
+probed too. A GNU/glibc host renders nothing, and an empty pack is not
+delivered. BSD sed is probed but not rendered on Darwin, because the
+platform line already says it. On the Mac harness host it is 232 tokens
+(budget about 400). `python3 agents/lang/host_pack.py --facts` shows each
+probe's evidence.
+
+**Wiring.** `BEAST_PACKS=1` / `--packs` now means language pack + host pack.
+`packs_flag` probes once per run, and EVERY unit gets the host pack through
+the same `--context-file`. A zig unit gets one file: the zig pack, then the
+host pack. Both are written content-addressed under
+`~/.cache/openbeast/host-pack` (`OPENBEAST_HOST_PACK_DIR`). The cache
+component `pack1-<sha8>` hashes the language packs' bytes followed by the
+host pack's bytes. So another host, or a toolchain update that changes a
+fact, is another era. With the host pack non-empty, the component is on
+every unit, not only zig. Results record `harness.packs = {zig, host}` and
+`harness.host_pack` (system, tokens, fact keys). Packs off is unchanged:
+nothing is probed and every argv is byte-identical. Production
+(`pack_context`) does not serve the host pack, because it is unmeasured.
+
+**pack_problem fix.** It demanded the zig generated-section header from
+every pack, so any non-zig file in `PACK_FILES` aborted `run_eval --packs`.
+Now only languages in `GENERATED_SECTION_REQUIRED` (zig) need one. A header
+stamped for another language is refused.
+
+**How to measure:** a packs-on run on GLM-5.3-Flash from merged main,
+against the L0 rows of the same era and seeds. To reach every language, use
+a single-arm `BEAST_PACKS=1 run_eval.py --suite v5`. Under `--arms` the v5
+manifest's plan still runs only the 6 zig units in L1 (39 compiled + shell
+units in L2). A non-empty host pack changes every request, so those
+non-planned units become `not_in_arm` instead of sharing L0's row. Read
+three things separately:
+(a) zig units: pass rate and turns, and how often the five new error
+signatures appear (grep the transcripts for `expected a tuple`,
+`SpawnConfig`, `ResetEvent`, `writeAll' in 'Io.File'`,
+`expected '(', found 'an identifier'`, `pointless discard`);
+(b) non-zig units: turns spent on host friction (`nproc: command not
+found`, `illegal option -- A`, `grep: invalid option -- P`,
+`timeout: command not found`, `pthread_barrier_t`), against the ~95-turn
+baseline;
+(c) regressions on units the packs should not touch.
+If v2 wins, move `MEASURED_SHA256["zig"]` to `ed18f83e…`.
+
 ## 6. Eval integrity, comparability, era policy
 
 ### 6.1 Provenance & leaderboard display
