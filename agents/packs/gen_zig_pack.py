@@ -25,6 +25,7 @@ Usage:
   python3 agents/packs/gen_zig_pack.py            # rewrite the pack in place
   python3 agents/packs/gen_zig_pack.py --check    # regenerate to memory, exit 1 on drift
   python3 agents/packs/gen_zig_pack.py --lib-dir /path/to/zig/lib
+  python3 agents/packs/gen_zig_pack.py --pack agents/packs/zig-0.16-v2.md   # the v2 variant
 
 Threat model (§6.3): reads ONLY the zig stdlib tree — never evals/.
 """

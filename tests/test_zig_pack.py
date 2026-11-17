@@ -40,7 +40,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "agents"))
 sys.path.insert(0, str(ROOT / "evals"))
 
-PACK = ROOT / "agents" / "packs" / "zig-0.16.md"
+PACK = ROOT / "agents" / "packs" / "zig-0.16.md"          # v1: measured, production
+PACK_V2 = ROOT / "agents" / "packs" / "zig-0.16-v2.md"    # v2: eval-only until measured
+BOTH = [pytest.param(PACK, id="v1"), pytest.param(PACK_V2, id="v2")]
 GEN = ROOT / "agents" / "packs" / "gen_zig_pack.py"
 FIXTURES = ROOT / "tests" / "fixtures" / "zig016"
 MANIFEST = FIXTURES / "MANIFEST.json"
@@ -86,6 +88,7 @@ HOST_TEXT = ("=== Host notes: Darwin tool host (probed when this run started) ==
 def _host_pack_stub(monkeypatch, tmp_path):
     from lang import host_pack as HP
     monkeypatch.setenv("OPENBEAST_HOST_PACK_DIR", str(tmp_path / "host-pack"))
+    monkeypatch.delenv("OPENBEAST_PACK_VARIANT", raising=False)
     state = {"text": ""}
     monkeypatch.setattr(HP, "build", lambda host=None: HP.HostPack(
         "Darwin", state["text"], [HP.Fact("nproc_missing", "x", "probe")] if state["text"] else []))
@@ -112,17 +115,19 @@ def _section1(text: str) -> str:
 
 # --- 1. budget + delimiter --------------------------------------------------
 
-def test_pack_exists_within_budget_with_delimiter():
+@pytest.mark.parametrize("pack", BOTH)
+def test_pack_exists_within_budget_with_delimiter(pack):
     gen = _gen()
-    text = PACK.read_text()
+    text = pack.read_text()
     assert text.startswith("=== " + DELIM), "pack must open with the delimiter line"
     assert gen.token_estimate(text) <= gen.PACK_TOKEN_BUDGET
     assert "(1) CURATED" in text and gen.SECTION2_HEADER_PREFIX in text
     assert "machine-verified on zig 0.16.0 on 2026-09-11" in text  # curated = dated, not pinned
 
 
-def test_pack_header_sha_matches_digest():
-    h = _gen().parse_header(PACK.read_text())
+@pytest.mark.parametrize("pack", BOTH)
+def test_pack_header_sha_matches_digest(pack):
+    h = _gen().parse_header(pack.read_text())
     assert h["sha"] == h["digest_sha"]
     assert h["version"] == "0.16.0"
     assert h["digest"].count("\n- ") + 1 >= h["lines"]  # legend + N lines
@@ -131,18 +136,20 @@ def test_pack_header_sha_matches_digest():
 # --- 2. generator determinism ----------------------------------------------
 
 @pytest.mark.skipif(not HAS_ZIG, reason="zig not installed")
-def test_generator_is_deterministic_and_matches_committed_pack():
+@pytest.mark.parametrize("pack", BOTH)
+def test_generator_is_deterministic_and_matches_committed_pack(pack):
     gen = _gen()
     lib = gen.zig_lib_dir()
     version = gen.zig_version()
     if version != "0.16.0":
         pytest.skip(f"pack is for zig 0.16.0, installed {version}")
-    curated = _section1(PACK.read_text())
+    curated = _section1(pack.read_text())
     a = gen.compose(curated, lib, version)
     b = gen.compose(curated, lib, version)
     assert a == b, "two regenerations differ — generator is not deterministic"
-    assert a == PACK.read_text(), "committed pack drifted from regeneration (run gen_zig_pack.py)"
-    r = subprocess.run([sys.executable, str(GEN), "--check"], capture_output=True, text=True, timeout=120)
+    assert a == pack.read_text(), "committed pack drifted from regeneration (run gen_zig_pack.py)"
+    r = subprocess.run([sys.executable, str(GEN), "--check", "--pack", str(pack)],
+                       capture_output=True, text=True, timeout=120)
     assert r.returncode == 0, r.stdout + r.stderr
 
 
@@ -152,9 +159,30 @@ def _manifest() -> dict:
     return json.loads(MANIFEST.read_text())
 
 
+def test_v1_is_the_measured_pack_and_v2_is_a_variant():
+    """Production serves the A/B-measured bytes (pack_context.MEASURED_SHA256);
+    v2 exists only as an eval variant (OPENBEAST_PACK_VARIANT=v2) until its
+    own A/B moves the pin."""
+    from lang import pack_context as PC
+    assert hashlib.sha256(PACK.read_bytes()).hexdigest() == PC.MEASURED_SHA256["zig"]
+    assert PC.PACK_FILES == {"zig": "zig-0.16.md"}
+    assert PC.PACK_VARIANTS["v1"] == PC.PACK_FILES
+    assert PC.PACK_VARIANTS["v2"] == {"zig": "zig-0.16-v2.md"}
+    assert PACK_V2.read_bytes() != PACK.read_bytes()
+
+
+def test_v1_curated_bullets_each_hit_a_manifest_entry():
+    musts = [s for e in _manifest()["entries"] for s in e["pack_must_contain"]]
+    for ln in _section1(PACK.read_text()).splitlines():
+        if ln.startswith("- "):
+            assert any(s in ln for s in musts), f"v1 bullet has no verifying fixture: {ln[:80]}"
+
+
 def test_manifest_fixtures_exist_and_cover_curated_section():
+    """Against v2, the superset: every manifest entry (v1's and the five
+    2026-11-16 ones) must be stated in its curated section."""
     man = _manifest()
-    sec1 = _section1(PACK.read_text())
+    sec1 = _section1(PACK_V2.read_text())
     assert man["entries"], "empty manifest"
     all_musts = []
     for e in man["entries"]:
@@ -457,6 +485,55 @@ def test_packs_off_never_probes_the_host(monkeypatch, _host_pack_stub):
     run_eval = _fresh_run_eval()
     monkeypatch.setattr(HP, "build", lambda host=None: pytest.fail("probed with packs off"))
     assert run_eval.packs_flag() == (False, None, {})
+
+
+def test_pack_variant_v2_switches_the_eval_pack_and_its_era(monkeypatch):
+    """OPENBEAST_PACK_VARIANT picks which bytes an eval arm measures; the
+    bytes are in pack1-<sha8>, so v1 and v2 rows never share a key."""
+    monkeypatch.setenv("BEAST_PACKS", "1")
+    run_eval = _fresh_run_eval()
+    on1, c1, m1 = run_eval.packs_flag({"BEAST_PACKS": "1"})
+    on2, c2, m2 = run_eval.packs_flag({"BEAST_PACKS": "1", "OPENBEAST_PACK_VARIANT": "v2"})
+    assert m1["variant"] == "v1" and m2["variant"] == "v2"
+    assert m1["paths"]["zig"] == str(PACK) and m2["paths"]["zig"] == str(PACK_V2)
+    assert c1 == "pack1-" + hashlib.sha256(PACK.read_bytes()).hexdigest()[:8]
+    assert c2 == "pack1-" + hashlib.sha256(PACK_V2.read_bytes()).hexdigest()[:8]
+    assert c1 != c2
+    assert run_eval.packs_flag({"BEAST_PACKS": "1", "OPENBEAST_PACK_VARIANT": "V1"})[1] == c1
+
+
+def test_pack_variant_v2_with_host_pack_joins_both(monkeypatch, _host_pack_stub):
+    _host_pack_stub["text"] = HOST_TEXT
+    run_eval = _fresh_run_eval()
+    _, comp, meta = run_eval.packs_flag({"BEAST_PACKS": "1", "OPENBEAST_PACK_VARIANT": "v2"})
+    both = Path(meta["unit_paths"]["zig"]).read_text()
+    assert both.startswith(PACK_V2.read_text().rstrip("\n") + "\n\n") and both.endswith(HOST_TEXT)
+    assert comp == "pack1-" + hashlib.sha256(PACK_V2.read_bytes() + HOST_TEXT.encode()).hexdigest()[:8]
+
+
+def test_unknown_pack_variant_aborts(monkeypatch):
+    run_eval = _fresh_run_eval()
+    with pytest.raises(SystemExit, match="OPENBEAST_PACK_VARIANT"):
+        run_eval.packs_flag({"BEAST_PACKS": "1", "OPENBEAST_PACK_VARIANT": "v3"})
+
+
+def test_pack_variant_is_stamped_in_provenance(tmp_path, monkeypatch):
+    monkeypatch.setenv("BEAST_PACKS", "1")
+    monkeypatch.setenv("OPENBEAST_PACK_VARIANT", "v2")
+    run_eval = _fresh_run_eval()
+    seen, results = _run_with_fake_agent(run_eval, tmp_path)
+    assert seen["90_pack_f"] == str(PACK_V2)
+    assert results["harness"]["pack_variant"] == "v2"
+    assert results["harness"]["packs"]["zig"] == hashlib.sha256(PACK_V2.read_bytes()).hexdigest()[:8]
+
+
+def test_beast_lang_never_serves_the_v2_file():
+    """agents/lang/packs.py picks hand-written packs by file name stamp:
+    `zig-0.16-v2.md` reads as a prerelease stamp and must never be what
+    the language tools serve for a release zig."""
+    from lang import packs as P
+    hw = P._handwritten("zig", "0.16.0")
+    assert hw and hw[0].endswith("zig-0.16.md")
 
 
 def test_drift_abort_on_tampered_pack(tmp_path, monkeypatch):
