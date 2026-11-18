@@ -338,6 +338,7 @@ below). `--dry-run` prints them for your settings.
 | **N** | T | thinking off, normal wall | `--thinking off --reasoning-budget 0`, drops `--wall-scale` | 1.1 | ~2.8 h | the daily-latency config: what thinking adds to the full harness, and its cost |
 | **N0** | — | the bare no-thinking baseline | `--turns-per-wall-s 15 --thinking off` (= 2026-11-16 arm B, thinking pinned off) | 1.0 | ~2.5 h | the floor. N0 → N is what the components add without thinking; N0 → T is everything |
 | T_s2 | T | a second seed (optional) | `--seed 2`; only with `--include T_s2` | 2.3 | ~5.8 h | a tighter noise margin |
+| T_j2 | T | 2 concurrent units (optional) | `"jobs": 2, "slots": 2` in the arm (wins over the CLI); only with `--only T_j2` or `--include T_j2` | 2.3 | ~7.7 h (~9 h for DeepSeek) | the contention model: same tokens per unit, at 2 streams (see the note below) |
 
 Total for the eight default arms: about 39 h at GLM's speed. Escalation
 stays off in every arm (G16: zig-only on the Mac host).
@@ -376,9 +377,32 @@ measured: C against B per unit on GLM. The reference's hours come from
 campaign's finished arms (the median of hours ÷ `time_x`), so the ETAs
 correct themselves after the first arm. Failing both, the file's
 `eta.base_h` applies: 2.5 h, which is GLM's arm A at 2.1 h plus an estimated
-20% for B's extra turns. The ETAs scale linearly from `eta.jobs` (4) to
-`--jobs`. `--dry-run` prints one per arm and the total; `START` lines in
-`campaign.log` carry them.
+20% for B's extra turns. The ETAs scale from `eta.jobs` (4) to the arm's
+jobs by throughput, `jobs / contention_scale(jobs)` (4 jobs -> 2.0 units per
+unit time, 2 -> 1.5, 1 -> 1.0), not linearly: per-stream decode speeds up as
+streams drop, and run_eval's walls shrink with it. So `--jobs 2` is 1.33x the
+`--jobs 4` hours, not 2x, and a finished arm calibrates the base after the
+same correction. `--dry-run` prints one per arm and the total; `START`
+lines in `campaign.log` carry them.
+
+**An arm's own concurrency.** An arm may set `"jobs"` and `"slots"`. They
+win over the CLI's `--jobs`/`--slots` for that arm (and for any arm built on
+it), go into its run_eval command, its reruns and its preflight admission
+check (the largest jobs of the arms to run), are recorded in the state
+(`arms.<ARM>.jobs`/`slots`, and per rerun), and show in `--dry-run`
+(`#   jobs 2, slots 2: the arm's own (the CLI said --jobs 4 --slots 4)`).
+run_eval records the `--jobs` it ran at in the results header. The report's
+"at base wall" columns use each arm's own jobs.
+
+**T_j2, read before its result (2026-11-18).** DeepSeek-V4.1-Flash (Mia
+EXL3)'s arm T lost all 10 of its failures to the 3,600 s wall with turns that
+were slow, not scarce (~30 tok/s per stream at 4 streams, ~45 at 2). T_j2 runs
+T at 2 streams. But run_eval widens each unit's wall by
+`contention_scale(jobs)` (4 -> 2.0x, 2 -> 1.33x), so at `--jobs 2` the wall
+is 2,400 s, and 2,400 s x 45 tok/s is the same ~108K tokens as 3,600 s x 30
+tok/s. T_j2 therefore tests the contention model on this model, not more
+tokens per unit. An arm that gives each unit more tokens keeps the absolute
+wall: `--wall-scale 3` at `--jobs 2`.
 
 ### 5c. What `run` does for you
 

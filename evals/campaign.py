@@ -128,6 +128,10 @@ def validate_campaign(camp: dict) -> list[str]:
         tx = a.get("time_x")
         if tx is not None and (not isinstance(tx, (int, float)) or tx <= 0):
             errs.append(f"arm {aid}: time_x must be a positive number")
+        for k in ("jobs", "slots"):
+            v = a.get(k)
+            if v is not None and (not isinstance(v, int) or isinstance(v, bool) or v < 1):
+                errs.append(f"arm {aid}: {k} must be a positive integer")
         seen.append(aid)
     for name, rule in decisions.items():
         cmp_ = rule.get("compare") or []
@@ -295,6 +299,11 @@ def arg_value(args: list[str], flag: str) -> str | None:
 def apply_delta(spec: dict, part: dict) -> None:
     """One layer (common, an arm, a decision branch) on top of a spec."""
     spec["args"] = merge_args(spec["args"], part.get("args"), part.get("drop_args"))
+    # An arm's own concurrency (`"jobs": 2, "slots": 2`) wins over the CLI's
+    # --jobs/--slots for that arm; an arm built on it inherits it.
+    for k in ("jobs", "slots"):
+        if part.get(k) is not None:
+            spec[k] = int(part[k])
     spec["env"].update({k: str(v) for k, v in (part.get("env") or {}).items()})
     r = part.get("requires") or {}
     spec["requires"]["flags"] += r.get("flags") or []
@@ -314,7 +323,8 @@ def resolve_arm(camp: dict, aid: str, decided: dict | None = None) -> dict:
     its decisions took. `decided` = {decision name: "then" | "else"}. Each
     layer may add a flag, switch one (`args` naming a flag already set) or
     remove one (`drop_args`), and set env switches."""
-    spec: dict = {"args": [], "env": {}, "requires": {"flags": [], "env": []}}
+    spec: dict = {"args": [], "env": {}, "requires": {"flags": [], "env": []},
+                  "jobs": None, "slots": None}
     apply_delta(spec, camp.get("common") or {})
     for a in arm_chain(camp, aid):
         apply_delta(spec, a)
@@ -797,11 +807,32 @@ def base_env(camp: dict, spec: dict, a, served: str | None) -> dict:
     return env
 
 
-def campaign_argv(spec_args: list[str], a, model_name: str) -> list[str]:
+def arm_concurrency(spec: dict, a) -> tuple[int, int | None, str]:
+    """(jobs, slots, why) an arm runs at: the arm's own `jobs`/`slots` (the
+    campaign file) win over the CLI's --jobs/--slots, which campaign_argv
+    would otherwise append after the arm's args. `why` is "" when the CLI's
+    values stand."""
+    cli_jobs, cli_slots = int(a.jobs or 1), a.slots
+    jobs = int(spec.get("jobs") or cli_jobs)
+    slots = spec.get("slots") or cli_slots
+    why = ""
+    if spec.get("jobs") or spec.get("slots"):
+        if (jobs, slots) != (cli_jobs, cli_slots):
+            why = (f"the arm's own (the CLI said --jobs {cli_jobs}"
+                   + (f" --slots {cli_slots}" if cli_slots else "") + ")")
+    return jobs, slots, why
+
+
+def campaign_argv(spec_args: list[str], a, model_name: str, jobs: int | None = None,
+                  slots: int | None = None) -> list[str]:
+    """run_eval's argv: the arm's flags, then the per-campaign ones. `jobs` /
+    `slots` are the arm's (arm_concurrency), else the CLI's."""
+    jobs = jobs or a.jobs
+    slots = slots or a.slots
     argv = list(spec_args) + ["--model-name", model_name, "--base-url", a.base_url,
-                              "--jobs", str(a.jobs)]
-    if a.slots:
-        argv += ["--slots", str(a.slots)]
+                              "--jobs", str(jobs)]
+    if slots:
+        argv += ["--slots", str(slots)]
     if a.api_key_env:
         argv += ["--api-key-env", a.api_key_env]
     return argv
@@ -818,7 +849,8 @@ def do_rerun(camp: dict, st: dict, sdir: str, aid: str, units: list[str], a, py:
     name = f"_lost-{camp['campaign']}-{slugify(a.model_name)}-{aid}-r{k}"
     env = base_env(camp, spec, a, served)
     model_name = arm_model_name(camp, a.model_name, aid)
-    argv = campaign_argv(with_suite(spec["args"], name), a, model_name)
+    jobs, slots, _ = arm_concurrency(spec, a)
+    argv = campaign_argv(with_suite(spec["args"], name), a, model_name, jobs, slots)
     if a.dry_run:
         print(shlex.join([py, "-u", "evals/run_eval.py", *argv]))
         return 0
@@ -831,6 +863,7 @@ def do_rerun(camp: dict, st: dict, sdir: str, aid: str, units: list[str], a, py:
     rc, paths = run_eval_once(py, tree, argv, env, os.path.join(sdir, f"arm-{aid}-r{k}.log"),
                               slugify(model_name), on_child=child_recorder(sdir, st, aid))
     ast.setdefault("reruns", []).append({"round": k, "suite": name, "units": units, "why": why,
+                                         "jobs": jobs, "slots": slots,
                                          "rc": rc, "results": paths[0] if paths else None,
                                          "ended_at": time.time()})
     save_state(sdir, st)
@@ -864,13 +897,38 @@ def _fmt_h(h: float | None) -> str:
     return "unknown" if h is None else f"~{h:.1f} h"
 
 
+def jobs_time_scale(ref_jobs: int, jobs: int) -> float:
+    """How much longer an arm takes at `jobs` concurrent units than at
+    `ref_jobs`. Not linear: per-stream decode slows with the number of
+    streams, which is why run_eval widens every wall by contention_scale
+    (jobs 4 -> 2.0x). A unit's time is token-bound and its wall moves with
+    contention_scale, so a unit takes contention_scale(jobs) time units and
+    the arm's throughput is jobs / contention_scale(jobs) units per time
+    unit: 4 jobs -> 2.0, 2 -> 1.5, 1 -> 1.0. Measured on DeepSeek-V4.1-Flash
+    (Mia EXL3) on the Spark pair (tools/bench.py): ~60 tok/s for one stream,
+    ~45 each for two, ~30 each for four, the same ratios. So --jobs 2 takes
+    1.33x the --jobs 4 hours, not 2x."""
+    if not ref_jobs or not jobs:
+        return 1.0
+    return (ref_jobs / contention_scale(ref_jobs)) / (jobs / contention_scale(jobs))
+
+
+def arm_jobs(st: dict | None, aid: str, default: int = 1) -> int:
+    """The --jobs an arm ran at: its own record, else the campaign's, else
+    `default`."""
+    ast = ((st or {}).get("arms") or {}).get(aid) or {}
+    return int(ast.get("jobs") or (st or {}).get("jobs") or default)
+
+
 def eta_base_h(camp: dict, st: dict | None, override: float | None) -> tuple[float, str]:
     """Hours of the campaign's reference arm (time_x 1.0) at the campaign's
     eta.jobs: --base-hours, else calibrated from this campaign's finished
-    arms (the median of their hours / time_x), else the file's eta.base_h."""
+    arms (the median of their hours / time_x, each brought back to eta.jobs
+    by jobs_time_scale), else the file's eta.base_h."""
     eta = camp.get("eta") or {}
     if override:
         return float(override), "--base-hours"
+    ref_jobs = int(eta.get("jobs") or 0)
     cal = []
     for aid, ast in ((st or {}).get("arms") or {}).items():
         try:
@@ -879,7 +937,8 @@ def eta_base_h(camp: dict, st: dict | None, override: float | None) -> tuple[flo
             continue
         if tx and ast.get("status") == "done" and ast.get("ended_at") \
                 and ast.get("started_at") is not None:
-            cal.append((ast["ended_at"] - ast["started_at"]) / 3600 / float(tx))
+            js = jobs_time_scale(ref_jobs, arm_jobs(st, aid, ref_jobs)) if ref_jobs else 1.0
+            cal.append((ast["ended_at"] - ast["started_at"]) / 3600 / float(tx) / js)
     if cal:
         cal.sort()
         mid = cal[len(cal) // 2] if len(cal) % 2 else (cal[len(cal) // 2 - 1] + cal[len(cal) // 2]) / 2
@@ -891,15 +950,16 @@ def eta_base_h(camp: dict, st: dict | None, override: float | None) -> tuple[flo
 
 def arm_eta_h(camp: dict, aid: str, base_h: float, jobs: int | None) -> tuple[float | None, str]:
     """(hours, why): base hours x the arm's time_x, scaled from the
-    campaign's eta.jobs to --jobs (linear: a rough guide, not a promise)."""
+    campaign's eta.jobs to the arm's jobs (its own `jobs`, else --jobs) by
+    jobs_time_scale. A rough guide, not a promise."""
     tx = arm_spec(camp, aid).get("time_x")
     if tx is None or not base_h:
         return None, "no time_x" if tx is None else "no base hours (--base-hours H)"
     ref_jobs = int((camp.get("eta") or {}).get("jobs") or 0)
-    scale = (ref_jobs / jobs) if ref_jobs and jobs else 1.0
+    scale = jobs_time_scale(ref_jobs, jobs) if ref_jobs and jobs else 1.0
     why = f"time x{float(tx):g} of {base_h:.1f} h"
-    if scale != 1.0:
-        why += f", x{scale:g} for --jobs {jobs} vs {ref_jobs}"
+    if abs(scale - 1.0) > 1e-9:
+        why += f", x{scale:.3g} for --jobs {jobs} vs {ref_jobs}"
     return base_h * float(tx) * scale, why
 
 
@@ -984,12 +1044,15 @@ def cmd_run(a, camp: dict) -> int:
             ast.setdefault("decision_notes", {})[d] = why
         spec = resolve_arm(camp, aid, taken)
         model_name = arm_model_name(camp, a.model_name, aid)
-        argv = campaign_argv(spec["args"], a, model_name)
+        jobs, slots, conc_why = arm_concurrency(spec, a)
+        argv = campaign_argv(spec["args"], a, model_name, jobs, slots)
         env = base_env(camp, spec, a, served)
-        eta_h, eta_why = arm_eta_h(camp, aid, base_h, a.jobs)
+        eta_h, eta_why = arm_eta_h(camp, aid, base_h, jobs)
         if a.dry_run:
             envs = " ".join(f"{k}={shlex.quote(v)}" for k, v in sorted(spec["env"].items()))
             print(f"# arm {aid} ({arm_spec(camp, aid).get('label', '')}) tree={atree}")
+            print(f"#   jobs {jobs}" + (f", slots {slots}" if slots else "")
+                  + (f": {conc_why}" if conc_why else ""))
             print(f"#   ETA {_fmt_h(eta_h)} ({eta_why})")
             print(f"{envs} {shlex.join([py, '-u', 'evals/run_eval.py', *argv])}".strip())
             eta_arms.append(aid)
@@ -1030,14 +1093,17 @@ def cmd_run(a, camp: dict) -> int:
                 ast.pop(k, None)
         ast.update({"status": "running", "label": arm_spec(camp, aid).get("label"),
                     "model_name": model_name, "tree": info, "decisions_taken": taken,
-                    "args": spec["args"], "env": spec["env"], "wall_scale": spec["wall_scale"]})
+                    "args": spec["args"], "env": spec["env"], "wall_scale": spec["wall_scale"],
+                    "jobs": jobs, "slots": slots})
         ast.setdefault("started_at", time.time())
         st["arms"][aid] = ast
         save_state(sdir, st)
         if resumed:
             clog(sdir, f"RESUME {aid}: banked rows kept; the missing units rerun as lost")
         else:
-            clog(sdir, f"START {aid} ({ast['label']}) tree={atree} ETA {_fmt_h(eta_h)}")
+            clog(sdir, f"START {aid} ({ast['label']}) tree={atree} --jobs {jobs}"
+                       + (f" --slots {slots}" if slots else "")
+                       + (f" ({conc_why})" if conc_why else "") + f" ETA {_fmt_h(eta_h)}")
             rc, paths = run_eval_once(py, atree, argv, env, os.path.join(sdir, f"arm-{aid}.log"),
                                       slugify(model_name), on_child=child_recorder(sdir, st, aid))
             ast["rc"] = rc
@@ -1180,12 +1246,14 @@ def preflight(a, camp: dict, py: str, tree: str, todo: list[str] | None = None,
         # or uncapped one; it is checked with the first arm's, and every
         # other arm must declare one too.
         rbs = {}
+        max_jobs = int(a.jobs or 1)
         for aid in todo or [x["id"] for x in camp["arms"]]:
             try:
-                rbs[aid] = arg_value(resolve_arm(camp, aid, {d: "else" for d in camp.get(
-                    "decisions") or {}})["args"], "--reasoning-budget")
+                sp = resolve_arm(camp, aid, {d: "else" for d in camp.get("decisions") or {}})
             except SystemExit:
                 continue
+            rbs[aid] = arg_value(sp["args"], "--reasoning-budget")
+            max_jobs = max(max_jobs, int(sp.get("jobs") or 0))
         for aid, rb in rbs.items():
             if rb in (None, "", "-1"):
                 problems.append(f"arm {aid} declares no finite --reasoning-budget")
@@ -1193,7 +1261,7 @@ def preflight(a, camp: dict, py: str, tree: str, todo: list[str] | None = None,
         problems += prof.preflight(a.base_url, rb, False)
         # Review 1118: the probe requests the SERVED id (a gate or engine
         # that routes by model would answer the display name differently).
-        adm = prof.admission_check(a.base_url, a.jobs, served or a.model_name)
+        adm = prof.admission_check(a.base_url, max_jobs, served or a.model_name)
         if adm:
             problems.append(adm)
     except Exception as e:  # noqa: BLE001
@@ -1265,8 +1333,10 @@ def cmd_status(a, camp: dict) -> int:
         ast = st["arms"].get(arm["id"]) or {}
         sc = score(arm_rows(ast)) if ast else None
         cell = f"{sc['passed']}/{sc['scorable']}" if sc and sc["scorable"] else "-"
+        own = (f" [--jobs {ast['jobs']}]" if ast.get("jobs") and ast["jobs"] != st.get("jobs")
+               else "")
         print(f"  {arm['id']:<4} {ast.get('status', 'pending'):<12} {cell:<8} "
-              f"lost {len(ast.get('lost') or {}):<3} {arm.get('label', '')}")
+              f"lost {len(ast.get('lost') or {}):<3} {arm.get('label', '')}{own}")
         for p in arm_paths(ast):
             print(f"         {p}")
     if a.json:
@@ -1489,7 +1559,9 @@ def render_report(camp: dict, st: dict, baselines: dict, reference: dict | None,
     L.append(f"# Campaign `{camp['campaign']}` — {st['model_name']}")
     L.append("")
     L.append(f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M')} by `evals/campaign.py report`. "
-             f"Endpoint `{st.get('base_url')}`, `--jobs {jobs}`. "
+             f"Endpoint `{st.get('base_url')}`, `--jobs {jobs}`"
+             + "".join(f", arm {x['id']} at `--jobs {arm_jobs(st, x['id'])}`" for x in arms
+                       if arm_jobs(st, x["id"]) != jobs) + ". "
              + (f"Suite units: {total_units}. " if total_units else "")
              + "A row the agent never ran (interpreter startup, no output in < 2 s, signal death, "
                "server error, budget skip) is **lost**, never scored; flips are counted on the "
@@ -1676,7 +1748,7 @@ def render_report(camp: dict, st: dict, baselines: dict, reference: dict | None,
         for x in arms:
             ast = st["arms"][x["id"]]
             s = score(rows[x["id"]])
-            inside = passed_at_base_wall(rows[x["id"]], walls, jobs)
+            inside = passed_at_base_wall(rows[x["id"]], walls, arm_jobs(st, x["id"]))
             hours = ((ast.get("ended_at") or 0) - (ast.get("started_at") or 0)) / 3600 \
                 if ast.get("ended_at") else None
             L.append(f"| {x['id']} | {think_of[x['id']] or 'server default'} "
@@ -1718,7 +1790,7 @@ def render_report(camp: dict, st: dict, baselines: dict, reference: dict | None,
             s = scorable(rows[x["id"]])
             passed = [u for u, r in s.items() if r.get("passed")]
             if walls:
-                cs = contention_scale(jobs)
+                cs = contention_scale(arm_jobs(st, x["id"]))
                 inside = [u for u in passed if u in walls
                           and float(s[u].get("elapsed_seconds") or 0) <= walls[u] * cs]
                 over = sorted(set(passed) - set(inside))
