@@ -116,7 +116,23 @@ _rigs() { OB_TS_BIN="$TS_BIN" OB_REPO="$REPO" "$PY_BIN" "$RIGS_PY" "$@"; }
 # user's own are left exactly as they were — this runs on every update, so it
 # must never be able to clobber a working install (or leak the key by widening
 # the file mode).
+# autosync's job runs from a copy of the few files it reads, under
+# $CLIENT_DIR/autosync, never from the checkout: macOS denies a launchd agent
+# access to ~/Documents (where checkouts usually live) without Full Disk
+# Access, and every run failed with "Operation not permitted" (2026-11-18).
+# The copy mirrors the repo layout so OB_REPO can point at it. Refreshed by
+# `autosync install` and by every catalog sync while autosync is installed.
+AS_SNAP="$CLIENT_DIR/autosync"
+_as_snapshot() {
+  mkdir -p "$AS_SNAP/scripts/lib" && chmod 700 "$CLIENT_DIR" "$AS_SNAP" 2>/dev/null
+  for _f in scripts/lib/client_rigs.py opencode.json system-prompt.md system-prompt-tools.md; do
+    [ -f "$REPO/$_f" ] || continue
+    cp "$REPO/$_f" "$AS_SNAP/$_f.new" && mv -f "$AS_SNAP/$_f.new" "$AS_SNAP/$_f" || return 1
+  done
+}
+
 _refresh_oc_catalog() {
+  [ -d "$AS_SNAP" ] && { _as_snapshot || echo "  ! could not refresh the autosync copy in $AS_SNAP"; }
   [ -f "$OC_CONFIG" ] || { echo "  ! no opencode config at $OC_CONFIG — run scripts/setup-client.sh"; return 0; }
   _rp="$REPO/scripts/lib/client_rigs.py"
   if [ ! -f "$_rp" ]; then
@@ -594,6 +610,7 @@ if backend != "llama" and served:
         ;;
       install)
         mkdir -p "$CLIENT_DIR"
+        _as_snapshot || { echo "  x could not copy the autosync files into $AS_SNAP" >&2; exit 1; }
         if [ "$(uname -s)" = Darwin ]; then
           mkdir -p "$(dirname "$_as_plist")"
           cat > "$_as_plist" <<PLIST
@@ -603,7 +620,9 @@ if backend != "llama" and served:
 <dict>
   <key>Label</key><string>$_as_label</string>
   <key>ProgramArguments</key>
-  <array><string>/bin/bash</string><string>$_self</string><string>autosync</string><string>run</string></array>
+  <array><string>$PY_BIN</string><string>$AS_SNAP/scripts/lib/client_rigs.py</string><string>sync</string><string>--if-changed</string></array>
+  <key>EnvironmentVariables</key>
+  <dict><key>OB_REPO</key><string>$AS_SNAP</string><key>OB_TS_BIN</key><string>$TS_BIN</string></dict>
   <key>StartInterval</key><integer>30</integer>
   <key>RunAtLoad</key><true/>
   <key>StandardOutPath</key><string>$_as_log</string>
@@ -616,8 +635,8 @@ PLIST
           echo "  ok autosync: launchd agent $_as_label, every 30 s (log: $_as_log)"
         elif command -v systemctl >/dev/null 2>&1; then
           mkdir -p "$_as_udir"
-          printf '[Unit]\nDescription=OpenBeast client: re-sync opencode when the rig switches models\n\n[Service]\nType=oneshot\nExecStart=/bin/bash %s autosync run\nStandardOutput=append:%s\nStandardError=append:%s\n' \
-            "$_self" "$_as_log" "$_as_log" > "$_as_udir/$_as_unit.service"
+          printf '[Unit]\nDescription=OpenBeast client: re-sync opencode when the rig switches models\n\n[Service]\nType=oneshot\nEnvironment=OB_REPO=%s OB_TS_BIN=%s\nExecStart=%s %s/scripts/lib/client_rigs.py sync --if-changed\nStandardOutput=append:%s\nStandardError=append:%s\n' \
+            "$AS_SNAP" "$TS_BIN" "$PY_BIN" "$AS_SNAP" "$_as_log" "$_as_log" > "$_as_udir/$_as_unit.service"
           printf '[Unit]\nDescription=OpenBeast client autosync every 30 s\n\n[Timer]\nOnBootSec=30s\nOnUnitActiveSec=30s\nAccuracySec=5s\n\n[Install]\nWantedBy=timers.target\n' \
             > "$_as_udir/$_as_unit.timer"
           systemctl --user daemon-reload && systemctl --user enable --now "$_as_unit.timer" >/dev/null
@@ -631,9 +650,11 @@ PLIST
         if [ "$(uname -s)" = Darwin ]; then
           launchctl bootout "gui/$(id -u)/$_as_label" >/dev/null 2>&1 || true
           rm -f "$_as_plist"
+        rm -rf "$AS_SNAP"
         elif command -v systemctl >/dev/null 2>&1; then
           systemctl --user disable --now "$_as_unit.timer" >/dev/null 2>&1 || true
           rm -f "$_as_udir/$_as_unit.service" "$_as_udir/$_as_unit.timer"
+          rm -rf "$AS_SNAP"
           systemctl --user daemon-reload >/dev/null 2>&1 || true
         fi
         echo "  ok autosync removed"
