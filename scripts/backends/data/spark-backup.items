@@ -82,6 +82,8 @@ keep      all     .openbeast/                         # beast-docs mirror
 keep      head    openbeast-files/                    # beast-artifact files and per-user uploads
 keep      all     offline-stage/                      # staged .debs (libnccl2, tailscale) and TensorFold release, when present
 keep      all     openbeast-backups/                  # earlier ad-hoc copies (spark-2: kilobytes)
+keep      head    git/                                # the offline git hub (~/git/openbeast.git, SELF_DEVELOPMENT 11): the only trunk while GitHub is unreachable
+keep      all     live-aside/                         # local copies set aside before a checkout update (SELF_DEVELOPMENT 0.2)
 rebuild   all     obvenv/                             # the test venv (~150 MB): python3 -m venv ~/obvenv, then pip install the repo's test deps
 skip      all     scratch*                            # scratch clones of the repo (spark-2): re-clone from the hub
 skip      all     obtest-*                            # test clones (spark-2)
