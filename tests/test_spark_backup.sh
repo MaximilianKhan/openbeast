@@ -45,6 +45,7 @@ echo "${FM_TARGET:-/media/max/obbackup} ${FM_SOURCE:-/dev/mapper/obbackup} ${FM_
 S
 cat > "$T/bin/lsblk" <<'S'
 #!/bin/bash
+if [[ "$*" == *-J* ]]; then cat "${FM_LSBLK_JSON:-/dev/null}"; exit 0; fi
 if [[ "${FM_CRYPT:-1}" == 1 ]]; then printf 'crypt\npart\ndisk\n'; else printf 'part\ndisk\n'; fi
 S
 cat > "$T/bin/zstd" <<'S'
@@ -65,6 +66,7 @@ cat > "$T/bin/systemctl" <<'S'
 #!/bin/bash
 echo "systemctl $*" >> "$FD_STATE/systemctl.log"
 [[ "$*" == *list-unit-files* ]] && echo "openbeast.service enabled enabled"
+[[ "$*" == *is-active* && -n "${FD_ACTIVE:-}" && "$*" == *"$FD_ACTIVE"* ]] && echo active
 exit 0
 S
 # docker: the source node has every image (with RepoDigests); a fresh node
@@ -107,12 +109,28 @@ case "$1 $2" in
 esac
 exit 0
 S
+cat > "$T/bin/mokutil" <<'S'
+#!/bin/bash
+echo "SecureBoot enabled"
+S
+cat > "$T/bin/ssh-keygen" <<'S'
+#!/bin/bash
+# ssh-keygen -A -f ROOT: new host keys under ROOT/etc/ssh
+[[ "$1" == -A && "$2" == -f ]] || exit 2
+for t in rsa ecdsa ed25519; do echo "NEW-$t" > "$3/etc/ssh/ssh_host_${t}_key"; echo "NEW-$t pub" > "$3/etc/ssh/ssh_host_${t}_key.pub"; done
+S
+cat > "$T/bin/prepare-local" <<'S'
+#!/bin/bash
+touch "$FD_STATE/prepared"
+S
 chmod +x "$T/bin/"*
 export PATH="$T/bin:$PATH"
 export DOCKER="$T/bin/docker" FINDMNT="$T/bin/findmnt" LSBLK="$T/bin/lsblk" ZSTD="$T/bin/zstd" \
        NVIDIA_SMI="$T/bin/nvidia-smi" IBDEV2NETDEV="$T/bin/ibdev2netdev" SYSTEMCTL="$T/bin/systemctl" \
        RSYNC="$T/bin/rsync" UNAME_M=aarch64 SPARK_BACKUP_HOSTNAME=spark-3dc6 SPARK_BACKUP_USER=max \
-       SPARK_BACKUP_UID=1000 SPARK_BACKUP_GID=1000 SPARK_BACKUP_HELPER_IMAGE=alpine:latest
+       SPARK_BACKUP_UID=1000 SPARK_BACKUP_GID=1000 SPARK_BACKUP_HELPER_IMAGE=alpine:latest \
+       MOKUTIL="$T/bin/mokutil" FWUPDMGR=/nonexistent/fwupdmgr SSH_KEYGEN="$T/bin/ssh-keygen" \
+       SPARK_PREPARE_LOCAL="$T/bin/prepare-local"
 
 # ── the source node's home ────────────────────────────────────────────────────
 H="$T/home-src"
@@ -146,10 +164,14 @@ cp "$T/shard" "$H/Documents/Pack/model-00001.safetensors"
 ln "$H/Documents/Pack/model-00001.safetensors" "$H/openbeast-models/deepseek-hf/hub/models--m--p/snapshots/04c13f12/model-00001.safetensors"
 ln "$H/Documents/Pack/model-00001.safetensors" "$H/.cache/huggingface/hub/models--g/blobs/abc"
 ln -s ../../blobs/abc "$H/.cache/huggingface/hub/models--g/snapshots/r/model.safetensors"
-mk openbeast-models/deepseek-hf/tensorfold-dsv41/04c13f12/rank0of2.bin r0
+mk openbeast-models/deepseek-hf/tensorfold-dsv41/04c13f12/rank-cache/rank0of2-abc.bin r0
+mk openbeast-models/deepseek-hf/tensorfold-dsv41/04c13f12/dsv41_token_map.json tm
+mk openbeast-models/deepseek-hf/tensorfold-dsv41/kit-abe07c7d/.git/HEAD abe07c7d
+mk .cache/tensorfold-glm53/31557ed1cef6/kernel.so compiled
+mk .cache/tensorfold-glm53/logs/start.log log
 mk openbeast-models/deepseek-hf/tensorfold-dsv41/45ee5d0f/rank0of2.bin old-r0
 mk openbeast-models/deepseek-hf/tensorfold-dsv41/kit-abe07c7d/kit.json kit
-mk openbeast-models/deepseek-hf/worker-rank-cache-04c13f12/rank1of2.bin r1
+mk openbeast-models/deepseek-hf/worker-rank-cache-04c13f12/rank1of2-abc.bin r1
 mk openbeast-models/deepseek-hf/worker-rank-cache/rank1of2.bin old-r1
 mk .cache/pip/wheel junk
 mk stray/notes.txt "nobody claims me"
@@ -173,17 +195,27 @@ out="$(bash "$SB" run --to "$T/drive" 2>&1)"; rc=$?
 check "run dry: exit 0 on a LUKS ext4 drive" test "$rc" -eq 0
 check "run dry: says DRY RUN" grep -q "DRY RUN" <<< "$out"
 check "run dry: writes nothing" test ! -e "$T/drive/openbeast-backup"
-check "run dry: the filter keeps the serving rank file and the kit" grep -q '+ /openbeast-models/deepseek-hf/tensorfold-dsv41/04c13f12/\*\*\*' <<< "$out"
+check "run dry: the filter keeps the kit" grep -q '+ /openbeast-models/deepseek-hf/tensorfold-dsv41/kit-\*/\*\*\*' <<< "$out"
+check "run dry: every pack's rank files, token map and served folder are excluded (rebuilt offline)" \
+  bash -c 'grep -q -- "- /openbeast-models/deepseek-hf/tensorfold-dsv41/\*/" <<< "$1" && grep -q -- "- /openbeast-models/deepseek-hf/worker-rank-cache\*/" <<< "$1" && ! grep -q "04c13f12/\*\*\*" <<< "$1"' _ "$out"
+check "run dry: GLM's compiled kernels are excluded, its logs kept" \
+  bash -c 'grep -q "+ /.cache/tensorfold-glm53/logs/\*\*\*" <<< "$1" && grep -q -- "- /.cache/tensorfold-glm53/$" <<< "$1"' _ "$out"
 check "run dry: .run is excluded before the checkout is included" \
   python3 -c 'import sys; o=sys.stdin.read(); a=o.index("- /openbeast/.run/"); b=o.index("+ /openbeast/***"); sys.exit(0 if a < b else 1)' <<< "$out"
 check "run dry: the compose image is saved by repo@digest" grep -q "open-webui@sha256:5959" <<< "$out"
 check "run dry: entries no items line claims are named as NOT backed up (never silent)" grep -q "NOT backed up: no items line claims stray" <<< "$out"
 check "run dry: the secret-mode check runs in run too" grep -q "readable by group/other.*hf-token" <<< "$out"
-check "run dry: the rank-1 cache folder defaults to worker-rank-cache-REV8" grep -q '+ /openbeast-models/deepseek-hf/worker-rank-cache-04c13f12/\*\*\*' <<< "$out"
+# the rankcache class still works for an items file that opts back in (faster restore, bigger backup)
+sed '/tensorfold-dsv41\/kit-/a\
+rankcache head    openbeast-models/deepseek-hf/tensorfold-dsv41/{SERVING_REV8}/\
+rankcache all     openbeast-models/deepseek-hf/{SERVING_WCD}/
+' "$REPO_DIR/scripts/backends/data/spark-backup.items" > "$T/items-rank"
+out2="$(SPARK_BACKUP_ITEMS="$T/items-rank" bash "$SB" run --to "$T/drive" 2>&1)"
+check "run dry (rankcache opt-in): the rank-1 cache folder defaults to worker-rank-cache-REV8" grep -q '+ /openbeast-models/deepseek-hf/worker-rank-cache-04c13f12/\*\*\*' <<< "$out2"
 # the stock pack's rank-1 cache is plain worker-rank-cache (local.sh's WORKER_CACHE_DIR, not the REV)
 LS="$H/openbeast-recipes/deepseek-prep/runtime/scripts/local.sh"; cp "$LS" "$T/local.sh.save"
 printf 'WORKER_CACHE_DIR=/home/max/openbeast-models/deepseek-hf/worker-rank-cache\nMODEL_REVISION=45ee5d0fd106c94a3d77f721e09cbb2f50e5a16b\n' >> "$LS"
-out2="$(bash "$SB" run --to "$T/drive" 2>&1)"
+out2="$(SPARK_BACKUP_ITEMS="$T/items-rank" bash "$SB" run --to "$T/drive" 2>&1)"
 check "run dry: the stock pack's rank-1 cache (WORKER_CACHE_DIR basename worker-rank-cache) is the rankcache item" \
   bash -c 'grep -q "+ /openbeast-models/deepseek-hf/worker-rank-cache/\*\*\*" <<< "$1" && ! grep -q "worker-rank-cache-45ee5d0f" <<< "$1"' _ "$out2"
 cp "$T/local.sh.save" "$LS"
@@ -214,6 +246,86 @@ mkfleet "$f"
 out="$(bash "$SR" --from "$T/fakegen" --fleet "$T/fleet.env" --index 1 2>&1)"
 check "fleet: nine nodes are refused (1 to 8)" grep -q "1 to 8" <<< "$out"
 
+# ── golden-image --plan: the DGX OS base image (read-only) ───────────────────
+cat > "$T/lsblk.json" <<'J'
+{"blockdevices": [{"path": "/dev/nvme0n1", "pkname": null, "fstype": null, "uuid": null, "partuuid": null, "mountpoints": [null],
+  "children": [
+   {"path": "/dev/nvme0n1p1", "pkname": "nvme0n1", "fstype": "vfat", "uuid": "9DA2-3597", "partuuid": "7c2b24e9-0ceb-4ad7-a401-9bf3c92c26ee", "mountpoints": ["/boot/efi"]},
+   {"path": "/dev/nvme0n1p2", "pkname": "nvme0n1", "fstype": "ext4", "uuid": "d27bfd26-ff30-400e-9eca-9cdf73de9406", "partuuid": "aaaa", "mountpoints": ["/"]}]}]}
+J
+printf 'DGX_SWBUILD_VERSION="7.2.3"\nDGX_SERIAL_NUMBER="1983925018054"\n\nDGX_OTA_VERSION="7.6.0"\n' > "$T/dgx-release"
+export SPARK_GOLDEN_DGX_RELEASE="$T/dgx-release"
+out="$(FM_LSBLK_JSON="$T/lsblk.json" bash "$SB" golden-image --plan 2>&1)"; rc=$?
+check "golden --plan: exit 0 on a DGX OS layout" test "$rc" -eq 0
+check "golden --plan: names the OTA version and Secure Boot" bash -c 'grep -q "DGX OS 7.6.0" <<< "$1" && grep -q "Secure Boot: SecureBoot enabled" <<< "$1"' _ "$out"
+check "golden --plan: the restore re-creates the root UUID grub and fstab use" grep -q 'mkfs.ext4 -F -U "$UUID"' <<< "$out"
+check "golden --plan: root UUID and ESP read from lsblk" bash -c 'grep -q "UUID d27bfd26-ff30-400e-9eca-9cdf73de9406" <<< "$1" && grep -q "dd if=/dev/nvme0n1p1 of=\$G/esp.img" <<< "$1"' _ "$out"
+check "golden --plan: the capture uses the exclude file, xattrs and numeric owners" grep -q -- "--numeric-owner --xattrs --xattrs-include='\*' --acls --sparse --anchored --exclude-from=\$EXCL" <<< "$out"
+check "golden --plan: an identity bundle per node of the pair (the worker's over scp)" bash -c 'grep -q "identity/spark-1.tar etc/machine-id" <<< "$1" && grep -q "scp spark-2:.identity-spark-2.tar" <<< "$1"' _ "$out"
+check "golden --plan: the restore runs the identity step against the mounted target" grep -q "identity \\\\$" <<< "$out"
+check "golden --plan: never writes (no image dir appears)" test ! -e "$T/drive/openbeast-golden"
+out="$(bash "$SB" golden-image 2>&1)"; rc=$?
+check "golden without --plan is refused (the capture is by hand, from a live USB)" bash -c "test $rc -ne 0 && grep -q 'only --plan' <<< \"\$1\"" _ "$out"
+printf '{"blockdevices": []}\n' > "$T/lsblk-none.json"
+out="$(FM_LSBLK_JSON="$T/lsblk-none.json" bash "$SB" golden-image --plan 2>&1)"; rc=$?
+check "golden --plan: no ext4 root / ESP found is a problem" bash -c "test $rc -ne 0 && grep -q 'root filesystem not found' <<< \"\$1\"" _ "$out"
+EX="$REPO_DIR/scripts/backends/data/spark-golden.exclude"
+check "golden exclude: every identity file, the overlay, docker, swap" bash -c 'for p in ./home/\*/\* ./var/lib/docker ./var/lib/containerd ./swap.img ./etc/machine-id ./etc/ssh/ssh_host_\* ./var/lib/tailscale/\* ./etc/netplan/99-nvidia-sync-cluster.yaml ./var/lib/systemd/random-seed; do grep -qxF "$p" "$1" || { echo "missing $p"; exit 1; }; done' _ "$EX"
+check "golden exclude: no comments or blank lines (tar -X reads every line as a pattern)" bash -c '! grep -qE "^(#|$)" "$1"' _ "$EX"
+if command -v gtar >/dev/null 2>&1 || tar --version 2>/dev/null | grep -q "GNU tar"; then
+  GT="$(command -v gtar || command -v tar)"; R="$T/fakeroot"
+  mkdir -p "$R/home/max/Documents" "$R/etc/ssh" "$R/var/lib/tailscale" "$R/var/lib/docker/x" "$R/usr/bin"
+  echo w > "$R/home/max/Documents/w"; echo id > "$R/etc/machine-id"; echo k > "$R/etc/ssh/ssh_host_ed25519_key"; echo c > "$R/etc/ssh/sshd_config"
+  echo s > "$R/var/lib/tailscale/tailscaled.state"; echo d > "$R/var/lib/docker/x/l"; echo b > "$R/usr/bin/b"; echo sw > "$R/swap.img"
+  lst="$("$GT" --create --file=- --directory="$R" --anchored --exclude-from="$EX" . | "$GT" --list --file=-)"
+  check "golden exclude (GNU tar): the OS stays, identity, overlay and docker go" bash -c 'grep -qx "./usr/bin/b" <<< "$1" && grep -qx "./etc/ssh/sshd_config" <<< "$1" && grep -qx "./home/max/" <<< "$1" && grep -qx "./var/lib/tailscale/" <<< "$1" && ! grep -qE "machine-id|ssh_host|tailscaled.state|docker|Documents|swap.img" <<< "$1"' _ "$lst"
+else
+  skip "golden exclude with a real archive: no GNU tar here (brew install gnu-tar)"
+fi
+
+# ── identity: one node's identity into a restored image (live USB) ───────────
+mkroot() {
+  rm -rf "$1"; mkdir -p "$1/etc/ssh" "$1/etc/netplan" "$1/var/lib/tailscale" "$1/var/lib/systemd" "$1/var/lib/dbus" "$1/home"
+  echo 'PRETTY_NAME="Ubuntu 24.04.5 LTS"' > "$1/etc/os-release"; cp "$T/dgx-release" "$1/etc/dgx-release"
+  printf '127.0.0.1\tlocalhost\n127.0.1.1\tspark-9f26\n' > "$1/etc/hosts"; echo spark-9f26 > "$1/etc/hostname"
+  echo "SOURCE-key" > "$1/etc/ssh/ssh_host_ed25519_key"; echo "SOURCE-ts" > "$1/var/lib/tailscale/tailscaled.state"
+  echo "SOURCE-netplan" > "$1/etc/netplan/99-nvidia-sync-cluster.yaml"; echo seed > "$1/var/lib/systemd/random-seed"
+}
+TG="$T/target"; mkroot "$TG"
+B="$T/bundle-src"; mkdir -p "$B/etc/ssh" "$B/var/lib/tailscale" "$B/etc/netplan"
+echo 0123456789abcdef0123456789abcdef > "$B/etc/machine-id"; echo spark-3dc6 > "$B/etc/hostname"
+printf 'DGX_SERIAL_NUMBER="1111"\n' > "$B/etc/dgx-release"
+echo "OWN-key" > "$B/etc/ssh/ssh_host_ed25519_key"; echo "OWN-pub" > "$B/etc/ssh/ssh_host_ed25519_key.pub"
+echo "OWN-ts" > "$B/var/lib/tailscale/tailscaled.state"; echo "OWN-netplan" > "$B/etc/netplan/99-nvidia-sync-cluster.yaml"
+(cd "$B" && COPYFILE_DISABLE=1 tar -cf "$T/spark-1.tar" etc/machine-id etc/hostname etc/dgx-release etc/ssh var/lib/tailscale etc/netplan)
+out="$(bash "$SR" identity --target / --bundle "$T/spark-1.tar" --apply 2>&1)"; rc=$?
+check "identity: --target / is refused (never the running system)" bash -c "test $rc -ne 0 && grep -q 'never touches the running system' <<< \"\$1\"" _ "$out"
+out="$(bash "$SR" identity --target "$TG" --bundle "$T/spark-1.tar" 2>&1)"; rc=$?
+check "identity dry: exit 0, writes nothing" bash -c "test $rc -eq 0 && grep -q 'DRY RUN' <<< \"\$1\" && test \"\$(cat '$TG/etc/hostname')\" = spark-9f26" _ "$out"
+out="$(SPARK_IDENTITY_ROOT_CHECK=0 bash "$SR" identity --target "$TG" --bundle "$T/spark-1.tar" --apply 2>&1)"; rc=$?
+check "identity --bundle: exit 0 ($rc)" test "$rc" -eq 0
+[[ $rc -eq 0 ]] || echo "$out" | tail -5
+check "identity --bundle: the node's own machine-id, host keys, Tailscale state and Sync netplan" bash -c "
+  test \"\$(cat '$TG/etc/machine-id')\" = 0123456789abcdef0123456789abcdef && test \"\$(cat '$TG/etc/ssh/ssh_host_ed25519_key')\" = OWN-key &&
+  test \"\$(cat '$TG/var/lib/tailscale/tailscaled.state')\" = OWN-ts && test \"\$(cat '$TG/etc/netplan/99-nvidia-sync-cluster.yaml')\" = OWN-netplan"
+check "identity --bundle: host name, hosts line and serial are the node's" bash -c "
+  test \"\$(cat '$TG/etc/hostname')\" = spark-3dc6 && grep -qx \$'127.0.1.1\tspark-3dc6' '$TG/etc/hosts' && grep -qx 'DGX_SERIAL_NUMBER=\"1111\"' '$TG/etc/dgx-release' && grep -qx 'DGX_OTA_VERSION=\"7.6.0\"' '$TG/etc/dgx-release'"
+check "identity --bundle: derived state removed, dbus machine-id linked" test ! -e "$TG/var/lib/systemd/random-seed" -a -L "$TG/var/lib/dbus/machine-id"
+cp "$T/spark-1.tar" "$T/evil.tar"; (cd "$T" && mkdir -p evil/etc && echo x > evil/etc/shadow && COPYFILE_DISABLE=1 tar -rf "$T/evil.tar" -C evil etc/shadow)
+mkroot "$TG"
+out="$(SPARK_IDENTITY_ROOT_CHECK=0 bash "$SR" identity --target "$TG" --bundle "$T/evil.tar" --apply 2>&1)"; rc=$?
+check "identity: a bundle member that is not an identity file is refused, nothing written" bash -c "test $rc -ne 0 && grep -q \"'etc/shadow' is not an identity file\" <<< \"\$1\" && test \"\$(cat '$TG/etc/hostname')\" = spark-9f26" _ "$out"
+out="$(SPARK_IDENTITY_ROOT_CHECK=0 bash "$SR" identity --target "$TG" --fresh --apply 2>&1)"; rc=$?
+check "identity --fresh without --hostname is refused" test "$rc" -ne 0
+out="$(SPARK_IDENTITY_ROOT_CHECK=0 bash "$SR" identity --target "$TG" --fresh --hostname spark-ab12 --serial 2222 --apply 2>&1)"; rc=$?
+check "identity --fresh: exit 0 ($rc)" test "$rc" -eq 0
+check "identity --fresh: a new random machine-id and new host keys" bash -c "
+  grep -qE '^[0-9a-f]{32}$' '$TG/etc/machine-id' && test \"\$(cat '$TG/etc/machine-id')\" != 0123456789abcdef0123456789abcdef && test \"\$(cat '$TG/etc/ssh/ssh_host_ed25519_key')\" = NEW-ed25519"
+check "identity --fresh: no Tailscale state and no fabric netplan from the source node" bash -c "test -d '$TG/var/lib/tailscale' && test -z \"\$(ls -A '$TG/var/lib/tailscale')\" && test ! -e '$TG/etc/netplan/99-nvidia-sync-cluster.yaml'"
+check "identity --fresh: host name and serial from the flags" bash -c "test \"\$(cat '$TG/etc/hostname')\" = spark-ab12 && grep -qx 'DGX_SERIAL_NUMBER=\"2222\"' '$TG/etc/dgx-release'"
+out="$(bash "$SR" identity --target "$TG" --fresh --hostname spark-ab12 --apply 2>&1)"; rc=$?
+if [[ $(id -u) -ne 0 ]]; then check "identity --apply as a normal user is refused (root's files)" bash -c "test $rc -ne 0 && grep -q 'as root' <<< \"\$1\"" _ "$out"; fi
+
 if [[ -z "$REAL_RSYNC" ]]; then
   skip "backup/verify/restore copies: no GNU rsync >= 3 here (brew install rsync)"
   echo; echo "=== spark-backup: $PASS passed, $FAIL failed, $SKIP skipped ==="
@@ -232,8 +344,9 @@ check "run: Documents/ and the HF caches stay ONE file (hard links kept)" test \
   "$(inode "$G1/home/Documents/Pack/model-00001.safetensors")" = "$(inode "$G1/home/.cache/huggingface/hub/models--g/blobs/abc")" -a \
   "$(inode "$G1/home/Documents/Pack/model-00001.safetensors")" = "$(inode "$G1/home/openbeast-models/deepseek-hf/hub/models--m--p/snapshots/04c13f12/model-00001.safetensors")"
 check "run: the HF snapshot symlink is kept as a symlink" test -L "$G1/home/.cache/huggingface/hub/models--g/snapshots/r/model.safetensors"
-check "run: the serving pack's rank files are in" test -f "$G1/home/openbeast-models/deepseek-hf/tensorfold-dsv41/04c13f12/rank0of2.bin" -a -f "$G1/home/openbeast-models/deepseek-hf/worker-rank-cache-04c13f12/rank1of2.bin"
-check "run: the old pack's rank files are not" test ! -e "$G1/home/openbeast-models/deepseek-hf/tensorfold-dsv41/45ee5d0f" -a ! -e "$G1/home/openbeast-models/deepseek-hf/worker-rank-cache"
+check "run: no pack's rank files, token map or served folder (rebuilt offline)" test ! -e "$G1/home/openbeast-models/deepseek-hf/tensorfold-dsv41/04c13f12" -a ! -e "$G1/home/openbeast-models/deepseek-hf/worker-rank-cache-04c13f12" -a ! -e "$G1/home/openbeast-models/deepseek-hf/tensorfold-dsv41/45ee5d0f" -a ! -e "$G1/home/openbeast-models/deepseek-hf/worker-rank-cache"
+check "run: the kernel kit comes with its .git (the offline rebuild needs it)" test -f "$G1/home/openbeast-models/deepseek-hf/tensorfold-dsv41/kit-abe07c7d/.git/HEAD"
+check "run: GLM's kernel cache is left out, its logs kept" test ! -e "$G1/home/.cache/tensorfold-glm53/31557ed1cef6" -a -f "$G1/home/.cache/tensorfold-glm53/logs/start.log"
 check "run: sockets, pip cache, browser cache and unclaimed entries are not" test ! -e "$G1/home/openbeast/.run" -a ! -e "$G1/home/.cache/pip" -a ! -e "$G1/home/.config/google-chrome" -a ! -e "$G1/home/stray"
 check "run: per-node files are kept for the record" test -f "$G1/home/openbeast/scripts/backends/spark.env" -a -f "$G1/home/.ssh/known_hosts"
 check "run: secrets keep mode 0600" test "$(python3 -c 'import os,sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777))' "$G1/home/openbeast/openbeast.conf")" = 0o600
@@ -296,6 +409,9 @@ out="$(SPARK_BACKUP_HOME="$W" bash "$SR" --from "$LATEST" --fleet "$T/fleet2.env
 check "restore dry: exit 0" test "$rc" -eq 0
 check "restore dry: writes nothing" test ! -e "$W/openbeast"
 check "restore dry: prints the root steps for this node" grep -q "spark-root-setup.sh spark-2 --guard" <<< "$out"
+check "restore dry: lists what was left out to be rebuilt offline" grep -q "worker-rank-cache\*/: head: spark-restore.sh rebuild" <<< "$out"
+out2="$(SPARK_BACKUP_HOME="$W" bash "$SR" --from "$LATEST" --index 1 2>&1)"
+check "restore dry: --fleet defaults to the pair (fleet.env.example)" bash -c 'grep -q "fleet.env.example" <<< "$1" && grep -q "node 1 .spark-2. (worker) of spark-hydra (2 node" <<< "$1"' _ "$out2"
 out="$(SPARK_BACKUP_HOME="$W" bash "$SR" --from "$LATEST" --fleet "$T/fleet2.env" --index 1 --no-units 2>&1)"
 check "restore dry: --no-units enables nothing (a scratch drill)" grep -q "enable (NOT start): none" <<< "$out"
 out="$(SPARK_BACKUP_HOME="$W" bash "$SR" --from "$LATEST" --fleet "$T/fleet2.env" --index 1 --apply < /dev/null 2>&1)"; rc=$?
@@ -308,7 +424,7 @@ check "restore worker: exit 0 ($rc)" test "$rc" -eq 0
 check "restore worker: the checkout and the shared key arrive" test -f "$W/openbeast/README.md" -a -f "$W/.config/openbeast/tensorfold-api-key"
 check "restore worker: no head secrets (openbeast.conf, gate keys, WebUI password)" test ! -e "$W/openbeast/openbeast.conf" -a ! -e "$W/.config/openbeast/gate-keys" -a ! -e "$W/.config/openbeast/webui-max-password"
 check "restore worker: no recipes and no rank-0 file" test ! -e "$W/openbeast-recipes" -a ! -e "$W/openbeast-models/deepseek-hf/tensorfold-dsv41/04c13f12"
-check "restore worker: the rank-1 file and the kit arrive" test -f "$W/openbeast-models/deepseek-hf/worker-rank-cache-04c13f12/rank1of2.bin" -a -f "$W/openbeast-models/deepseek-hf/tensorfold-dsv41/kit-abe07c7d/kit.json"
+check "restore worker: the kit arrives; no rank-1 file (the head rebuilds and copies it)" test -f "$W/openbeast-models/deepseek-hf/tensorfold-dsv41/kit-abe07c7d/kit.json" -a ! -e "$W/openbeast-models/deepseek-hf/worker-rank-cache-04c13f12"
 check "restore worker: weights stay hard links on the node" test "$(inode "$W/Documents/Pack/model-00001.safetensors")" = "$(inode "$W/.cache/huggingface/hub/models--g/blobs/abc")"
 check "restore worker: the head's boot links are not copied" test ! -e "$W/.config/systemd/user/default.target.wants"
 check "restore worker: known_hosts is not copied" test ! -e "$W/.ssh/known_hosts"
@@ -326,6 +442,17 @@ check "restore worker: no volume import" test ! -e "$FD_STATE/volume-imported"
 out="$(SPARK_BACKUP_HOME="$W" bash "$SR" --from "$LATEST" --fleet "$T/fleet2.env" --index 1 --apply --yes 2>&1)"; rc=$?
 check "restore worker: a second run is idempotent (images already here)" grep -q "tensorfold-dsv41:exl3-tp2-test: already here" <<< "$out"
 
+# a worker pulling the head's generation over ssh uses the fleet's shared key (no ~/.ssh/config names it yet)
+cat > "$T/bin/fake-ssh" <<'S'
+#!/bin/bash
+echo "ssh $*" >> "$FD_STATE/ssh.log"
+while [[ "$1" == -* ]]; do shift 2; done
+shift; eval "$*"
+S
+chmod +x "$T/bin/fake-ssh"
+out="$(SSH="$T/bin/fake-ssh" SPARK_BACKUP_HOME="$W" bash "$SR" --from "max@10.100.216.1:$(cd "$LATEST" && pwd -P)" --fleet "$T/fleet2.env" --index 1 2>&1)"; rc=$?
+check "restore dry over ssh: reads the head's generation with the cluster key" bash -c "test $rc -eq 0 && grep -q -- '-i $W/.ssh/id_ed25519_nvsync_cluster_assistant -o BatchMode=yes max@10.100.216.1 cat' '$FD_STATE/ssh.log' && grep -q -- \"-e '\\?$T/bin/fake-ssh'\\? -i\" <<< \"\$1\" " _ "$out"
+
 # ── restore: the head of a 3-node fleet ──────────────────────────────────────
 : > "$FD_STATE/loaded"; rm -f "$FD_STATE/vol-created" "$FD_STATE/volume-imported"
 printf 'NODE_0=spark-7 head 10.100.216.11\nNODE_1=spark-8 worker 10.100.216.12\nNODE_2=spark-9 worker 10.100.216.13\n' > "$T/fleet3.env"
@@ -340,7 +467,19 @@ check "restore head: the TP-2 recipe is not rewired for 3 nodes, and says so" ba
 check "restore head: the compose digest pin is rewritten to the loaded ID" grep -q "image: sha256:7573cccc" "$HD/openbeast/docker-compose.yml"
 check "restore head: the original compose file is kept" grep -q "main@sha256:5959" "$HD/openbeast/docker-compose.yml.pre-restore"
 check "restore head: the WebUI volume is imported into the new volume" grep -q VOLUME-DATA "$FD_STATE/volume-imported"
-check "restore head: the serving rank-0 file arrives" test -f "$HD/openbeast-models/deepseek-hf/tensorfold-dsv41/04c13f12/rank0of2.bin"
+check "restore head: no rank-0 file; the plan says to rebuild it, offline" bash -c "test ! -e '$HD/openbeast-models/deepseek-hf/tensorfold-dsv41/04c13f12' && grep -q 'spark-restore.sh rebuild --apply' <<< \"\$1\"" _ "$out"
+
+# ── rebuild: DeepSeek's rank files, offline, on the restored head ────────────
+ro="$(SPARK_BACKUP_HOME="$HD" bash "$SR" rebuild 2>&1)"; rc=$?
+check "rebuild dry: exit 0, both rank files 'to build', nothing run" bash -c "test $rc -eq 0 && grep -q 'rank 0 file: to build' <<< \"\$1\" && grep -q 'about 35 min' <<< \"\$1\" && test ! -e '$FD_STATE/prepared'" _ "$ro"
+ro="$(FD_ACTIVE=spark-hydra-inference SPARK_BACKUP_HOME="$HD" bash "$SR" rebuild --apply 2>&1)"; rc=$?
+check "rebuild: refused while a model is running" bash -c "test $rc -ne 0 && grep -q 'spark-hydra-inference.service is running' <<< \"\$1\" && test ! -e '$FD_STATE/prepared'" _ "$ro"
+mv "$HD/openbeast-models/deepseek-hf/tensorfold-dsv41/kit-abe07c7d/.git" "$T/kitgit"
+ro="$(SPARK_BACKUP_HOME="$HD" bash "$SR" rebuild --apply 2>&1)"; rc=$?
+check "rebuild: a kit without .git is refused (it would git-fetch)" bash -c "test $rc -ne 0 && grep -q 'has no .git' <<< \"\$1\"" _ "$ro"
+mv "$T/kitgit" "$HD/openbeast-models/deepseek-hf/tensorfold-dsv41/kit-abe07c7d/.git"
+ro="$(SPARK_BACKUP_HOME="$HD" bash "$SR" rebuild --apply 2>&1)"; rc=$?
+check "rebuild --apply: runs the offline prepare" test "$rc" -eq 0 -a -e "$FD_STATE/prepared"
 check "restore head: GLM's unit is enabled by default (the backup enabled neither model)" grep -q "enable (NOT start): openbeast.service spark-hydra-inference.service openbeast-logrotate.timer" <<< "$out"
 check "restore head: the printed manual steps start GLM" grep -q "systemctl --user start spark-hydra-inference openbeast" <<< "$out"
 check "restore head: 3 nodes: GLM's single-WORKER local.sh is kept, and says so" bash -c "grep -q '^WORKER=max@10.100.216.2' '$HD/openbeast-recipes/glm53/scripts/local.sh' && grep -q \"GLM recipe's local.sh names one WORKER\" <<< \"\$1\"" _ "$out"

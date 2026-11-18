@@ -2957,7 +2957,7 @@ uses. They are now:
 7. The Mac client (F), then optional zig / docs mirror / ark / harness host.
    The long form: [Install everything, fresh](#install-everything-fresh).
 
-Back up a whole Spark, and restore it or populate N Sparks from that one backup: [SPARK_BACKUP_RESTORE.md](SPARK_BACKUP_RESTORE.md).
+Back up the pair and restore either Spark fully offline, OS included (golden DGX OS image + overlay): [SPARK_BACKUP_RESTORE.md](SPARK_BACKUP_RESTORE.md).
 
 ### Known issues and errata (v1.9.0)
 

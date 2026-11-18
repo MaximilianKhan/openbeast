@@ -83,7 +83,7 @@ backing it up, restoring it after an OS reinstall).
 |---|---|
 | [SPARK_HYDRA.md](SPARK_HYDRA.md) | The DGX Spark pair: the DeepSeek deployment and its packs, a quickstart, bare boxes to a serving pair, the command center, the Mac client, day-2 operations, troubleshooting, fully offline operation |
 | [OPENBEAST-SERVING.md](OPENBEAST-SERVING.md) | Short serving note for the pair: check, start, stop, switch models and packs |
-| [SPARK_BACKUP_RESTORE.md](SPARK_BACKUP_RESTORE.md) | Backing up a Spark, reinstalling and restoring it, populating more Sparks from one backup; the recovery path for everything that is not in the repository |
+| [SPARK_BACKUP_RESTORE.md](SPARK_BACKUP_RESTORE.md) | Backing up the Spark pair and restoring it fully offline: the golden DGX OS image, per-node identity, the overlay, the offline rank-file rebuild, the LUKS key policy |
 | [COMMANDS.md](COMMANDS.md) | Commands cheat sheet, grouped by machine and task |
 | [INSTALL.md](INSTALL.md) | Installing the rig, per-model downloads, the air-gap path, troubleshooting |
 | [UPDATING.md](UPDATING.md) | Updating every pulled-in component (`update.sh`; a maintainer tool, not the Spark update) |
