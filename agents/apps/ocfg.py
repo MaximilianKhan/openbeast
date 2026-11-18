@@ -23,6 +23,8 @@ backs the old file up first and is atomic.
 """
 from __future__ import annotations
 
+import contextlib
+import fnmatch
 import json
 import os
 import re
@@ -30,6 +32,11 @@ import shutil
 import subprocess
 import tempfile
 import time
+
+try:
+    import fcntl
+except ImportError:          # not a POSIX host: no lock, as before
+    fcntl = None
 
 
 class ConfigError(Exception):
@@ -222,20 +229,102 @@ def _same_rule(a: dict, b: dict) -> bool:
     return all(a.get(k) == b.get(k) for k in ("action", "resource", "effect"))
 
 
+def effective(cfg: dict, action: str) -> str | None:
+    """The effect opencode applies to `action` today, or None when no rule
+    names it. Both schemas, last match wins, globs included (a user's
+    `mobile-build-tools_*: deny` covers `mobile-build-tools_build_*`)."""
+    eff = None
+    perm = cfg.get("permission")
+    if isinstance(perm, str):
+        eff = perm
+    elif isinstance(perm, dict):
+        if isinstance(perm.get(action), str):
+            eff = perm[action]
+        else:
+            for k, v in perm.items():
+                if isinstance(v, str) and fnmatch.fnmatchcase(action, k):
+                    eff = v
+    perms = cfg.get("permissions")
+    if isinstance(perms, list):
+        for p in perms:
+            if (isinstance(p, dict) and isinstance(p.get("action"), str) and p.get("resource", "*") == "*"
+                    and isinstance(p.get("effect"), str) and fnmatch.fnmatchcase(action, p["action"])):
+                eff = p["effect"]
+    return eff
+
+
+def is_gated(cfg: dict, key: str, tool: str) -> bool:
+    """Whether opencode asks (or denies) before the model runs `tool` of the
+    entry `key`, by the rules actually in the file."""
+    return STRICTNESS.get(effective(cfg, f"{_safe(key)}_{_safe(tool)}") or "", 0) >= STRICTNESS["ask"]
+
+
+def add_gates(cfg: dict, rules: list[dict], fl: str) -> tuple[list[dict], list[str]]:
+    """Write the gates in `rules` that the file does not already hold, and
+    only ever TIGHTEN: a rule of the user's that is as strict for that exact
+    action is left alone (not recorded), and so is one that is stricter by a
+    glob (appending our weaker rule last would override it). Returns
+    (written, warnings); `written` is what uninstall() must undo:
+      - v1: a weaker user value (allow) is replaced by ours and recorded with
+        "prev", so uninstall puts it back;
+      - v2: our rule is appended (last match wins)."""
+    warns: list[str] = []
+    written: list[dict] = []
+    if not rules:
+        return written, warns
+    if fl == "v2":
+        perms = cfg.setdefault("permissions", [])
+        if not isinstance(perms, list):
+            raise ConfigError("`permissions` is not a list; refusing to touch it")
+        for r in rules:
+            last = next((p for p in reversed(perms) if isinstance(p, dict)
+                         and p.get("action") == r["action"] and p.get("resource", "*") == r["resource"]), None)
+            if last is not None and _stricter_or_equal(last.get("effect"), r["effect"]):
+                if last.get("effect") != r["effect"]:
+                    warns.append(f"kept your stricter rule {r['action']}={last.get('effect')}")
+                continue
+            eff = effective(cfg, r["action"])
+            if STRICTNESS.get(eff or "", -1) > STRICTNESS[r["effect"]]:
+                warns.append(f"kept your stricter rule for {r['action']} ({eff})")
+                continue
+            perms.append(dict(r))      # last match wins: ours go last
+            written.append(dict(r))
+        if not perms:
+            del cfg["permissions"]
+        return written, warns
+    perm = cfg.setdefault("permission", {})
+    if not isinstance(perm, dict):
+        warns.append(f"`permission` is the string {perm!r}, not an object, so the per-tool "
+                     "gates were NOT written: " + ", ".join(f"{r['action']}={r['effect']}" for r in rules))
+        return written, warns
+    for r in rules:
+        have = perm.get(r["action"])
+        if have is not None and _stricter_or_equal(have, r["effect"]):
+            if have != r["effect"]:
+                warns.append(f"kept your stricter rule {r['action']}={have}")
+            continue
+        if have is None:
+            eff = effective(cfg, r["action"])
+            if STRICTNESS.get(eff or "", -1) > STRICTNESS[r["effect"]]:
+                warns.append(f"kept your stricter rule for {r['action']} ({eff})")
+                continue
+        rec = dict(r)
+        if have is not None:
+            rec["prev"] = have          # restored on uninstall
+        perm[r["action"]] = r["effect"]
+        written.append(rec)
+    if not perm:
+        del cfg["permission"]
+    return written, warns
+
+
 def install(cfg: dict, key: str, entry: dict, rules: list[dict], fl: str) -> tuple[list[dict], list[str]]:
     """Merge one server + its gates into cfg in place.
 
     Returns (written, warnings). `written` is exactly what this call changed,
-    and is what the caller must record so uninstall() undoes only that:
-      - a rule the user already has at the same or a stricter effect is left
-        alone and not recorded (uninstall must not delete the user's own rule);
-      - v1: a weaker user value (allow) is replaced by ours and recorded with
-        "prev", so uninstall puts it back;
-      - v2: our rule is appended (last match wins) unless the user's last rule
-        for that exact action is already as strict.
-    """
-    warns: list[str] = []
-    written: list[dict] = []
+    and is what the caller must record so uninstall() undoes only that (see
+    add_gates: a rule the user already has at the same or a stricter effect
+    is left alone and not recorded)."""
     mcp = cfg.setdefault("mcp", {})
     if not isinstance(mcp, dict):
         raise ConfigError("the config's `mcp` is not an object; refusing to touch it")
@@ -244,43 +333,9 @@ def install(cfg: dict, key: str, entry: dict, rules: list[dict], fl: str) -> tup
         if not isinstance(servers, dict):
             raise ConfigError("mcp.servers is not an object; refusing to touch it")
         servers[key] = entry
-        if rules:
-            perms = cfg.setdefault("permissions", [])
-            if not isinstance(perms, list):
-                raise ConfigError("`permissions` is not a list; refusing to touch it")
-            for r in rules:
-                last = next((p for p in reversed(perms) if isinstance(p, dict)
-                             and p.get("action") == r["action"] and p.get("resource", "*") == r["resource"]), None)
-                if last is not None and _stricter_or_equal(last.get("effect"), r["effect"]):
-                    if last.get("effect") != r["effect"]:
-                        warns.append(f"kept your stricter rule {r['action']}={last.get('effect')}")
-                    continue
-                perms.append(dict(r))      # last match wins: ours go last
-                written.append(dict(r))
-            if not perms:
-                del cfg["permissions"]
     else:
         mcp[key] = entry
-        if rules:
-            perm = cfg.setdefault("permission", {})
-            if isinstance(perm, dict):
-                for r in rules:
-                    have = perm.get(r["action"])
-                    if have is not None and _stricter_or_equal(have, r["effect"]):
-                        if have != r["effect"]:
-                            warns.append(f"kept your stricter rule {r['action']}={have}")
-                        continue
-                    rec = dict(r)
-                    if have is not None:
-                        rec["prev"] = have          # restored on uninstall
-                    perm[r["action"]] = r["effect"]
-                    written.append(rec)
-                if not perm:
-                    del cfg["permission"]
-            else:
-                warns.append(f"`permission` is the string {perm!r}, not an object, so the per-tool "
-                             "gates were NOT written: " + ", ".join(f"{r['action']}={r['effect']}" for r in rules))
-    return written, warns
+    return add_gates(cfg, rules, fl)
 
 
 def uninstall(cfg: dict, key: str, rules: list[dict]) -> list[str]:
@@ -333,21 +388,64 @@ def uninstall(cfg: dict, key: str, rules: list[dict]) -> list[str]:
     return gone
 
 
-def rename(cfg: dict, old: str, new: str, rules: list[dict], fl: str) -> tuple[list[dict], list[str]] | None:
-    """Move the entry beast-apps wrote under `old` to `new` in place, its
-    gates re-keyed from old_<tool> to new_<tool> (opencode names a tool's
-    permission action after the entry's key). `rules` are the gates
-    install() recorded for `old`. Returns install()'s (written, warnings) for
-    `new`, or None when there is no `old` entry in the file."""
+def _rekey(action, po: str, pn: str):
+    return pn + action[len(po):] if isinstance(action, str) and action.startswith(po) else action
+
+
+def rekey_rules(cfg: dict, old: str, new: str) -> int:
+    """Re-key EVERY permission rule in the file named after `old`'s tools
+    (old_<tool>, globs included) to `new`, in place and in order, the user's
+    own rules as well as ours: opencode names a tool's permission after the
+    entry's key, so a `mobilebuildmcp_* = deny` the user wrote stops matching
+    the moment the entry is renamed and those tools fall through to allow.
+    v1: when the new action is already there the stricter value stays.
+    Returns how many rules moved."""
+    po, pn = _safe(old) + "_", _safe(new) + "_"
+    n = 0
+    perms = cfg.get("permissions")
+    if isinstance(perms, list):
+        for p in perms:
+            if isinstance(p, dict) and _rekey(p.get("action"), po, pn) != p.get("action"):
+                p["action"] = _rekey(p["action"], po, pn)
+                n += 1
+    perm = cfg.get("permission")
+    if isinstance(perm, dict) and any(_rekey(k, po, pn) != k for k in perm):
+        out: dict = {}
+        for k, v in perm.items():
+            nk = _rekey(k, po, pn)
+            n += nk != k
+            if nk in out and not (isinstance(v, str) and STRICTNESS.get(v, -1) > STRICTNESS.get(out[nk], -1)):
+                continue
+            out[nk] = v
+        cfg["permission"] = out
+    return n
+
+
+def rename(cfg: dict, old: str, new: str, rules: list[dict], fl: str,
+           server: dict | None = None) -> tuple[list[dict], list[str]] | None:
+    """Move the entry beast-apps wrote under `old` to `new` in place. Every
+    rule in the file keyed old_<tool> moves to new_<tool> (rekey_rules: the
+    user's own deny/ask rules included), then the catalog's CURRENT gates
+    for `new` (rules_for(new, server)) are applied, tightening only. `rules`
+    are the gates install() recorded for `old`. Returns (written, warnings)
+    for `new`: our re-keyed records plus any gate added now, or None when
+    there is no `old` entry in the file."""
     hit = find_entry(cfg, old)
     if not hit:
         return None
     entry = hit[1]
-    uninstall(cfg, old, rules)
-    po, pn = _safe(old) + "_", _safe(new) + "_"
-    moved = [{"action": pn + r["action"][len(po):], "resource": r.get("resource", "*"), "effect": r["effect"]}
-             for r in rules if isinstance(r.get("action"), str) and r["action"].startswith(po)]
-    return install(cfg, new, entry, moved, fl)
+    uninstall(cfg, old, [])                  # the entry only; the rules move below
+    n = rekey_rules(cfg, old, new)
+    ours = [dict(r, action=_rekey(r["action"], _safe(old) + "_", _safe(new) + "_"))
+            for r in rules if isinstance(r.get("action"), str)]
+    users = n - len(ours)
+    want = rules_for(new, server) if server else []
+    if want and ungatable(cfg, want, fl):
+        want = []
+    written, warns = install(cfg, new, entry, want, fl)
+    if users > 0:
+        warns.insert(0, f"moved {users} rule(s) of yours from {_safe(old)}_* to {_safe(new)}_*")
+    return ours + written, warns
 
 
 def backup(path: str) -> str | None:
@@ -373,23 +471,92 @@ def backup(path: str) -> str | None:
         except OSError:
             pass
         raise
+    prune_backups(path)
     return dst
 
 
-def write(path: str, cfg: dict, secret: bool = False) -> None:
-    d = os.path.dirname(path) or "."
-    os.makedirs(d, exist_ok=True)
-    mode = 0o600 if secret else (os.stat(path).st_mode & 0o777 if os.path.exists(path) else 0o644)
-    fd, tmp = tempfile.mkstemp(prefix=".opencode.json.", dir=d)
+KEEP_BACKUPS = 3
+
+
+def prune_backups(path: str, keep: int = KEEP_BACKUPS) -> list[str]:
+    """Keep the newest `keep` opencode.json.bak-beast-apps-* (each may hold
+    an API key); delete the rest. Returns what went."""
+    d, base = os.path.dirname(path) or ".", os.path.basename(path) + ".bak-beast-apps-"
     try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(cfg, f, indent=2)
-            f.write("\n")
-        os.chmod(tmp, mode)
-        os.replace(tmp, path)
-    except BaseException:
+        olds = [os.path.join(d, n) for n in os.listdir(d) if n.startswith(base)]
+    except OSError:
+        return []
+    olds.sort(key=lambda p: (os.path.getmtime(p), p))
+    gone = []
+    for p in olds[:-keep] if keep > 0 else olds:
         try:
-            os.unlink(tmp)
+            os.unlink(p)
+            gone.append(p)
         except OSError:
             pass
-        raise
+    return gone
+
+
+def lock_path(env: dict | None = None) -> str:
+    env = os.environ if env is None else env
+    base = env.get("XDG_CONFIG_HOME") or os.path.join(env.get("HOME") or os.path.expanduser("~"), ".config")
+    return os.path.join(base, "openbeast", ".lock")
+
+
+_held = 0
+
+
+@contextlib.contextmanager
+def config_lock(env: dict | None = None):
+    """flock ~/.config/openbeast/.lock — the lock scripts/lib/client_rigs.py
+    holds from load to save of opencode.json, so a beast-apps write and an
+    openbeast-client sync (autosync, every 30 s) never interleave and drop
+    each other's change. Re-entrant within one process."""
+    global _held
+    if fcntl is None or _held:
+        _held += 1
+        try:
+            yield
+        finally:
+            _held -= 1
+        return
+    p = lock_path(env)
+    fd = None
+    try:
+        os.makedirs(os.path.dirname(p), mode=0o700, exist_ok=True)
+        fd = os.open(p, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    except OSError:
+        if fd is not None:
+            os.close(fd)
+        fd = None                       # unlockable (read-only home): carry on unlocked
+    _held += 1
+    try:
+        yield
+    finally:
+        _held -= 1
+        if fd is not None:
+            os.close(fd)
+
+
+def write(path: str, cfg: dict, secret: bool = False) -> None:
+    # Through the symlink: a symlinked opencode.json (dotfiles repo) stays a
+    # symlink, its target is what gets replaced.
+    with config_lock():
+        real = os.path.realpath(path)
+        d = os.path.dirname(real) or "."
+        os.makedirs(d, exist_ok=True)
+        mode = 0o600 if secret else (os.stat(real).st_mode & 0o777 if os.path.exists(real) else 0o644)
+        fd, tmp = tempfile.mkstemp(prefix=".opencode.json.", dir=d)
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(cfg, f, indent=2)
+                f.write("\n")
+            os.chmod(tmp, mode)
+            os.replace(tmp, real)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise

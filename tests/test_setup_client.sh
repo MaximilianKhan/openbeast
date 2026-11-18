@@ -19,6 +19,8 @@
 #   6  review 2026-11-16: a 3.10 venv left by an older install is rebuilt;
 #      python3.14 is found; --wheelhouse installs with no index; the key-
 #      bearing opencode.json is replaced atomically at 0600
+#   7  the soul; --uninstall drops only our entries and the key-holding
+#      backups our tools made (review 2026-11-18)
 
 set -uo pipefail
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -432,8 +434,18 @@ fi
 printf '#!/bin/bash\nexit 0\n' > "$BIN/opencode"
 # client_rigs.py's rolling backup holds the device key: uninstall removes it.
 echo '{"provider":{"openbeast-rig":{"options":{"apiKey":"k"}}}}' > "$OC.openbeast-prev"
+# …and so do the timestamped backups beast-apps and client-e2e make (review
+# 2026-11-18); a backup someone else made is listed, never deleted.
+for _b in bak-beast-apps-20261118-010101 bak-e2e-20261118-020202 bak-mine; do echo '{}' > "$OC.$_b"; done
 chmod 640 "$OC"
 run hsoul 200 200 -- --uninstall
+if [[ ! -e "$OC.bak-beast-apps-20261118-010101" ]] && [[ ! -e "$OC.bak-e2e-20261118-020202" ]] \
+   && [[ -e "$OC.bak-mine" ]] && has "$OUT" "removed 2 opencode.json backup(s)" && has "$OUT" "kept $OC.bak-mine"; then
+  pass "--uninstall removes the key-holding backups our tools made and lists any other"
+else
+  fail "uninstall backups: $(ls -a "$(dirname "$OC")") $OUT"
+fi
+rm -f "$OC.bak-mine"
 if [[ "$(_ins)" == '["CONTRIBUTING.md", "~/rules/mine.md"]' ]] && has "$OUT" "instructions (3 soul files)" \
    && [[ ! -e "$SD" ]] && grep -q '"model": "mine"' "$OC"; then
   pass "--uninstall removes only our instruction entries (and the copies); the user's stay"
@@ -441,7 +453,7 @@ else
   fail "soul uninstall: $(_ins) $OUT"
 fi
 if [[ ! -e "$OC.openbeast-prev" ]] && [[ "$(_mode "$OC")" == "640" ]] \
-   && ! ls -a "$(dirname "$OC")" | grep -q '^\.opencode\.json\.'; then
+   && ! compgen -G "$(dirname "$OC")/.opencode.json.*" >/dev/null; then
   pass "--uninstall rewrites opencode.json atomically (mode kept, no temp left) and drops the keyed backup"
 else
   fail "uninstall backup/atomic (mode=$(_mode "$OC")): $(ls -a "$(dirname "$OC")") $OUT"

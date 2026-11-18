@@ -123,9 +123,10 @@ _rigs() { OB_TS_BIN="$TS_BIN" OB_REPO="$REPO" "$PY_BIN" "$RIGS_PY" "$@"; }
 # The copy mirrors the repo layout so OB_REPO can point at it. Refreshed by
 # `autosync install` and by every catalog sync while autosync is installed.
 AS_SNAP="$CLIENT_DIR/autosync"
+AS_FILES="scripts/lib/client_rigs.py opencode.json system-prompt.md system-prompt-tools.md"
 _as_snapshot() {
   mkdir -p "$AS_SNAP/scripts/lib" && chmod 700 "$CLIENT_DIR" "$AS_SNAP" 2>/dev/null
-  for _f in scripts/lib/client_rigs.py opencode.json system-prompt.md system-prompt-tools.md; do
+  for _f in $AS_FILES; do
     [ -f "$REPO/$_f" ] || continue
     cp "$REPO/$_f" "$AS_SNAP/$_f.new" && mv -f "$AS_SNAP/$_f.new" "$AS_SNAP/$_f" || return 1
   done
@@ -138,7 +139,7 @@ _refresh_oc_catalog() {
   if [ ! -f "$_rp" ]; then
     echo "  ! $_rp missing (partial checkout?) — catalog unchanged"; return 0
   fi
-  if [ -n "${RIG_REGISTRY:-}" ]; then
+  if [ -f "$RIG_REGISTRY" ]; then
     # Every registered rig is probed (in parallel); each gets its own
     # provider, openbeast-rig mirrors the active one (scripts/lib/client_rigs.py).
     _rigs sync || echo "  ! catalog refresh failed (config left untouched)"
@@ -148,6 +149,13 @@ _refresh_oc_catalog() {
     "$PY_BIN" "$_rp" sync-legacy --oc "$OC_CONFIG" || echo "  ! catalog refresh failed (config left untouched)"
   fi
 }
+
+# autosync's job definitions carry paths ($HOME, the venv): escaped for the
+# format they land in, so an & or < in a path cannot break the plist and a
+# space or % cannot split or expand a systemd value.
+_xml_esc() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g' -e "s/'/\&apos;/g"; }
+_sd_q() { printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/%/%%/g')"; }
+_sd_path() { printf '%s' "$1" | sed -e 's/%/%%/g'; }
 
 CMD="${1:-status}"
 [ $# -gt 0 ] && shift
@@ -613,6 +621,8 @@ if backend != "llama" and served:
         _as_snapshot || { echo "  x could not copy the autosync files into $AS_SNAP" >&2; exit 1; }
         if [ "$(uname -s)" = Darwin ]; then
           mkdir -p "$(dirname "$_as_plist")"
+          _x_py="$(_xml_esc "$PY_BIN")"; _x_snap="$(_xml_esc "$AS_SNAP")"
+          _x_ts="$(_xml_esc "$TS_BIN")"; _x_log="$(_xml_esc "$_as_log")"
           cat > "$_as_plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -620,13 +630,13 @@ if backend != "llama" and served:
 <dict>
   <key>Label</key><string>$_as_label</string>
   <key>ProgramArguments</key>
-  <array><string>$PY_BIN</string><string>$AS_SNAP/scripts/lib/client_rigs.py</string><string>sync</string><string>--if-changed</string></array>
+  <array><string>$_x_py</string><string>$_x_snap/scripts/lib/client_rigs.py</string><string>sync</string><string>--if-changed</string></array>
   <key>EnvironmentVariables</key>
-  <dict><key>OB_REPO</key><string>$AS_SNAP</string><key>OB_TS_BIN</key><string>$TS_BIN</string></dict>
+  <dict><key>OB_REPO</key><string>$_x_snap</string><key>OB_TS_BIN</key><string>$_x_ts</string></dict>
   <key>StartInterval</key><integer>30</integer>
   <key>RunAtLoad</key><true/>
-  <key>StandardOutPath</key><string>$_as_log</string>
-  <key>StandardErrorPath</key><string>$_as_log</string>
+  <key>StandardOutPath</key><string>$_x_log</string>
+  <key>StandardErrorPath</key><string>$_x_log</string>
 </dict>
 </plist>
 PLIST
@@ -635,8 +645,10 @@ PLIST
           echo "  ok autosync: launchd agent $_as_label, every 30 s (log: $_as_log)"
         elif command -v systemctl >/dev/null 2>&1; then
           mkdir -p "$_as_udir"
-          printf '[Unit]\nDescription=OpenBeast client: re-sync opencode when the rig switches models\n\n[Service]\nType=oneshot\nEnvironment=OB_REPO=%s OB_TS_BIN=%s\nExecStart=%s %s/scripts/lib/client_rigs.py sync --if-changed\nStandardOutput=append:%s\nStandardError=append:%s\n' \
-            "$AS_SNAP" "$TS_BIN" "$PY_BIN" "$AS_SNAP" "$_as_log" "$_as_log" > "$_as_udir/$_as_unit.service"
+          printf '[Unit]\nDescription=OpenBeast client: re-sync opencode when the rig switches models\n\n[Service]\nType=oneshot\nEnvironment=%s %s\nExecStart=%s %s sync --if-changed\nStandardOutput=append:%s\nStandardError=append:%s\n' \
+            "$(_sd_q "OB_REPO=$AS_SNAP")" "$(_sd_q "OB_TS_BIN=$TS_BIN")" "$(_sd_q "$PY_BIN")" \
+            "$(_sd_q "$AS_SNAP/scripts/lib/client_rigs.py")" "$(_sd_path "$_as_log")" "$(_sd_path "$_as_log")" \
+            > "$_as_udir/$_as_unit.service"
           printf '[Unit]\nDescription=OpenBeast client autosync every 30 s\n\n[Timer]\nOnBootSec=30s\nOnUnitActiveSec=30s\nAccuracySec=5s\n\n[Install]\nWantedBy=timers.target\n' \
             > "$_as_udir/$_as_unit.timer"
           systemctl --user daemon-reload && systemctl --user enable --now "$_as_unit.timer" >/dev/null
@@ -650,21 +662,49 @@ PLIST
         if [ "$(uname -s)" = Darwin ]; then
           launchctl bootout "gui/$(id -u)/$_as_label" >/dev/null 2>&1 || true
           rm -f "$_as_plist"
-        rm -rf "$AS_SNAP"
         elif command -v systemctl >/dev/null 2>&1; then
           systemctl --user disable --now "$_as_unit.timer" >/dev/null 2>&1 || true
           rm -f "$_as_udir/$_as_unit.service" "$_as_udir/$_as_unit.timer"
-          rm -rf "$AS_SNAP"
           systemctl --user daemon-reload >/dev/null 2>&1 || true
         fi
+        rm -rf "$AS_SNAP"
+        rm -f "$CLIENT_DIR/autosync.notice"
         echo "  ok autosync removed"
         ;;
       status)
+        _as_on=0
         if [ "$(uname -s)" = Darwin ]; then
-          if launchctl print "gui/$(id -u)/$_as_label" >/dev/null 2>&1; then echo "  ok autosync: on (launchd $_as_label, every 30 s)"
+          if _as_p="$(launchctl print "gui/$(id -u)/$_as_label" 2>/dev/null)"; then
+            _as_on=1
+            echo "  ok autosync: on (launchd $_as_label, every 30 s)"
+            _as_rc="$(printf '%s\n' "$_as_p" | sed -n 's/^[[:space:]]*last exit code = \(.*\)$/\1/p' | head -1)"
+            case "$_as_rc" in
+              "") : ;;
+              0|"(never exited)") echo "  ok last run: exit ${_as_rc}" ;;
+              *) echo "  ! last run: exit $_as_rc — see $_as_log" ;;
+            esac
           else echo "  ! autosync: off — openbeast-client autosync install"; fi
-        elif systemctl --user is-active --quiet "$_as_unit.timer" 2>/dev/null; then echo "  ok autosync: on ($_as_unit.timer, every 30 s)"
+        elif systemctl --user is-active --quiet "$_as_unit.timer" 2>/dev/null; then
+          _as_on=1
+          echo "  ok autosync: on ($_as_unit.timer, every 30 s)"
+          _as_res="$(systemctl --user show -p Result --value "$_as_unit.service" 2>/dev/null || true)"
+          _as_st="$(systemctl --user show -p ExecMainStatus --value "$_as_unit.service" 2>/dev/null || true)"
+          case "$_as_res" in
+            "") : ;;
+            success) echo "  ok last run: success (exit ${_as_st:-0})" ;;
+            *) echo "  ! last run: $_as_res (exit ${_as_st:-?}) — see $_as_log" ;;
+          esac
         else echo "  ! autosync: off — openbeast-client autosync install"; fi
+        # The job runs the COPY in $AS_SNAP: say when it lags this checkout.
+        if [ "$_as_on" = 1 ] || [ -d "$AS_SNAP" ]; then
+          _as_stale=""
+          for _f in $AS_FILES; do
+            [ -f "$REPO/$_f" ] || continue
+            cmp -s "$REPO/$_f" "$AS_SNAP/$_f" || _as_stale="$_as_stale $_f"
+          done
+          if [ -n "$_as_stale" ]; then echo "  ! autosync copy in $AS_SNAP differs from this checkout:$_as_stale — openbeast-client autosync install"
+          else echo "  ok autosync copy matches this checkout"; fi
+        fi
         [ -s "$_as_log" ] && echo "  last: $(tail -1 "$_as_log")"
         ;;
       *) echo "usage: openbeast-client autosync [install|uninstall|status|run]" >&2; exit 2 ;;

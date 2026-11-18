@@ -466,6 +466,7 @@ Run the narrow suites while iterating, then the full set before committing:
 | `.github/workflows/*` or a new named test step | `tests/test_ci_workflow.py` |
 | docs that cite eval counts | `python3 evals/suite_stats.py --check` (exit 1 on drift) |
 | a live surface (only read-only, only on the live box) | `scripts/healthcheck.sh`, `scripts/backends/conformance.sh --model GLM-5.3-Flash-EXL3` (the served id; `DeepSeek-V4.1-Flash-1017` when DeepSeek is selected), `tests/test_smoke.sh` (needs a live stack) |
+| `scripts/lib/client_rigs.py`, `scripts/client.sh` (rigs, autosync), `scripts/client-e2e.sh` | `tests/test_client_rigs.py` (autosync install/uninstall with launchctl/systemctl stubbed), `tests/test_client_cli.py`, `tests/test_setup_client.sh` |
 
 ---
 

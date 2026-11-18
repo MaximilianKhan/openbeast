@@ -30,6 +30,7 @@ Python 3.9-compatible (a Mac's fallback python3 may be old); stdlib only.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import copy
 import datetime
 import getpass
@@ -44,6 +45,11 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
+try:
+    import fcntl
+except ImportError:          # not POSIX: no lock, as before
+    fcntl = None
+
 HOME = os.path.expanduser("~")
 CFG_HOME = os.environ.get("XDG_CONFIG_HOME") or os.path.join(HOME, ".config")
 OB_DIR = os.path.join(CFG_HOME, "openbeast")
@@ -53,6 +59,10 @@ ENV_FILE = os.path.join(HOME, ".openbeast-client.env")
 CLIENT_DIR = os.path.join(HOME, ".openbeast-client")
 SOUL_DIR = os.path.join(CLIENT_DIR, "prompts")
 OC_CONFIG = os.path.join(CFG_HOME, "opencode", "opencode.json")
+LOCK = os.path.join(OB_DIR, ".lock")
+AS_LOG = os.path.join(CLIENT_DIR, "autosync.log")
+AS_NOTICE = os.path.join(CLIENT_DIR, "autosync.notice")
+AS_LOG_MAX = 1024 * 1024
 REPO = os.environ.get("OB_REPO") or os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 PROBE_T = float(os.environ.get("OB_PROBE_TIMEOUT") or 4)
 ALIAS = "openbeast-rig"
@@ -143,17 +153,27 @@ def save_registry(reg):
     _write_private(REGISTRY, json.dumps(reg, indent=2, sort_keys=True) + "\n")
 
 
-def read_key(rig):
+def key_status(rig):
+    """("ok", key) · ("none", "") no key file configured · ("unreadable", "")
+    a key file is configured but cannot be read (moved, permissions, an
+    unmounted volume) or is empty. Sync must tell the last two apart: "none"
+    means the rig has no key, "unreadable" means we do not know it right now
+    and must leave whatever key opencode already has alone."""
     if rig.get("_key"):                     # legacy sync only: in memory, never saved
-        return rig["_key"]
+        return "ok", rig["_key"]
     p = rig.get("key_file") or ""
     if not p:
-        return ""
+        return "none", ""
     try:
         with open(os.path.expanduser(p)) as f:
-            return f.read().strip()
+            k = f.read().strip()
     except OSError:
-        return ""
+        return "unreadable", ""
+    return ("ok", k) if k else ("unreadable", "")
+
+
+def read_key(rig):
+    return key_status(rig)[1]
 
 
 def _key_files():
@@ -272,17 +292,34 @@ def tailnet_beast(ts_bin):
 
 # ---- probing --------------------------------------------------------------------
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow a 3xx. urllib's default handler copies add_header()
+    headers onto the redirected request, cross-host and https→http included,
+    so a rig URL answering `302 Location: http://elsewhere/` would hand the
+    device key to elsewhere (as extensions/dashboard/dashboard.py learned).
+    A redirect reads as no answer."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def _get(url, key="", timeout=None):
-    """(status, parsed-json-or-None). Status 0 = nothing answered."""
+    """(status, parsed-json-or-None). Status 0 = nothing answered (a redirect
+    included: it is never followed)."""
     if not url:
         return 0, None
     req = urllib.request.Request(url)
     if key and key != "not-needed":
-        req.add_header("Authorization", "Bearer " + key)
+        req.add_unredirected_header("Authorization", "Bearer " + key)
     try:
-        r = urllib.request.urlopen(req, timeout=timeout or PROBE_T)
+        r = _OPENER.open(req, timeout=timeout or PROBE_T)
         code, raw = r.status, r.read()
     except urllib.error.HTTPError as e:
+        if 300 <= e.code < 400:
+            return 0, None
         code, raw = e.code, b""
     except Exception:
         return 0, None
@@ -314,7 +351,8 @@ def probe(rig, key):
     sm = (slot or {}).get("model") or {}
     if not ids and isinstance(sm.get("id"), str) and sm["id"]:
         ids = [sm["id"]]
-    if backend in (None, "llama") and ids:
+    seen = backend if slot else (rig.get("last") or {}).get("backend")
+    if seen in (None, "llama") and ids:
         ids = ids[:1]          # llama-server serves one model, whatever the id
     n_ctx = _ctx(first.get("max_model_len")) or _ctx(sm.get("ctx"))
     if not n_ctx and models_code == 200:
@@ -344,10 +382,21 @@ def remember(rig, p):
     unless the user pinned one."""
     if not p["ids"]:
         return
+    prev = rig.get("last") or {}
     rig["last"] = {"at": _now(), "model": p["ids"][0], "ids": p["ids"], "ctx": p["ctx"],
-                   "backend": p["backend"], "slots": p["total"], "auth": p["auth"]}
+                   "backend": _backend(rig, p), "slots": p["total"],
+                   "auth": p["auth"] if p["slot"] is not None else prev.get("auth")}
     if not rig.get("model_pinned"):
         rig["default_model"] = p["ids"][0]
+
+
+def _backend(rig, p):
+    """The backend the probe saw, or (beast-slot did not answer: a 503 while
+    the rig restarts, a timeout) the one it saw last. Treating "no answer"
+    as llama gave a TensorFold rig the checkout's 18 llama rows."""
+    if p["slot"] is not None:
+        return p["backend"]
+    return (rig.get("last") or {}).get("backend")
 
 
 def state_of(p):
@@ -569,6 +618,28 @@ def soul_warning(version):
     return ""
 
 
+def _same_url(a, b):
+    return bool(a) and bool(b) and a.rstrip("/") == b.rstrip("/")
+
+
+def _opts(prev, rig, key):
+    """A provider's options for `rig`. A real apiKey already there is never
+    replaced by "not-needed" while the provider still points at the same rig
+    (the key file unreadable, or no key file registered); pointed at another
+    rig, the old key is that rig's and goes."""
+    prev = dict(prev or {})
+    base = rig.get("inference_url", "")
+    cur = prev.get("apiKey")
+    if key:
+        api = key
+    elif isinstance(cur, str) and cur and cur != "not-needed" and _same_url(prev.get("baseURL"), base):
+        api = cur
+    else:
+        api = "not-needed"
+    prev.update({"baseURL": base, "apiKey": api})
+    return prev
+
+
 def _save_oc(path, cfg):
     real = os.path.realpath(path)
     _write_private(real, json.dumps(cfg, indent=2) + "\n", os.stat(real).st_mode & 0o777)
@@ -581,34 +652,48 @@ def sync_opencode(reg, live, switched=False, path=None, legacy=False):
     if not os.path.exists(path):
         say("  ! no opencode config at %s — run scripts/setup-client.sh" % path)
         return None
-    with open(path) as f:
-        cfg = json.load(f)
+    try:
+        with open(path) as f:
+            cfg = json.load(f)
+    except (OSError, ValueError) as e:
+        say("  ! could not parse %s (%s) — left untouched (comments/JSONC are not supported)" % (path, e))
+        return None
+    if not isinstance(cfg, dict):
+        say("  ! %s is not a JSON object — left untouched" % path)
+        return None
     static = static_catalog()
     provs = cfg.setdefault("provider", {})
     active = reg.get("active")
     want_ids, notes, any_key = {ALIAS}, [], False
     for name in sorted(reg["rigs"]):
         rig = reg["rigs"][name]
-        key = read_key(rig)
+        kst, key = key_status(rig)
         rows = catalog(name, rig, static, name in live)
-        opts = {"baseURL": rig.get("inference_url", ""), "apiKey": key or "not-needed"}
         any_key = any_key or bool(key)
+        if kst == "unreadable":
+            say("  ! the key file of rig '%s' (%s) cannot be read — its opencode provider keeps the key"
+                " it has; fix the file or: openbeast-client rig add %s --api-key-stdin" % (
+                    name, _tilde(rig.get("key_file")), name))
         if name == active:
             p = dict(provs.get(ALIAS) or {})
             p.update({"npm": "@ai-sdk/openai-compatible",
                       "name": "OpenBeast rig (active: %s, %s)" % (name, rig.get("host", "")),
-                      "options": dict(p.get("options") or {}, **opts), "models": rows})
+                      "options": _opts(p.get("options"), rig, key), "models": rows})
             provs[ALIAS] = p
         if legacy:
+            continue
+        pid = "openbeast-" + name
+        if kst == "unreadable":
+            if pid in provs:
+                want_ids.add(pid)           # untouched, key and all
             continue
         if not key and (rig.get("last") or {}).get("auth") not in ("open", "none"):
             notes.append(name)
             continue
-        pid = "openbeast-" + name
         p = dict(provs.get(pid) or {})
         p.update({"npm": "@ai-sdk/openai-compatible",
                   "name": "OpenBeast %s (%s)" % (name, rig.get("host", "")),
-                  "options": dict(p.get("options") or {}, **opts), "models": rows})
+                  "options": _opts(p.get("options"), rig, key), "models": rows})
         provs[pid] = p
         want_ids.add(pid)
     for pid in ([] if legacy else list(provs)):
@@ -617,10 +702,11 @@ def sync_opencode(reg, live, switched=False, path=None, legacy=False):
             del provs[pid]
     # The tool arsenal follows the active rig (sub-agents, web_search).
     arig = reg["rigs"].get(active) or {}
-    akey = read_key(arig)
+    akst, akey = key_status(arig)
     entry = None if legacy else _mcp_entry(cfg)
     if entry is not None and arig:
         env = entry.setdefault("environment", {})
+        same = _same_url(env.get("OPENBEAST_AGENT_INFERENCE_URL"), arig.get("inference_url"))
         env["OPENBEAST_AGENT_INFERENCE_URL"] = arig.get("inference_url", "")
         if arig.get("search_url"):
             env["SEARXNG_URL"] = arig["search_url"]
@@ -628,6 +714,8 @@ def sync_opencode(reg, live, switched=False, path=None, legacy=False):
             env.pop("SEARXNG_URL", None)
         if akey:
             env["OPENBEAST_API_KEY"] = akey
+        elif akst == "unreadable" and same:
+            pass                            # keep the key it has: we cannot read the file right now
         else:
             env.pop("OPENBEAST_API_KEY", None)
     elif arig and not legacy:
@@ -671,7 +759,10 @@ def sync_opencode(reg, live, switched=False, path=None, legacy=False):
 def write_env(reg):
     rig = reg["rigs"][reg["active"]]
     old, order = read_env()
-    key = read_key(rig)
+    kst, key = key_status(rig)
+    if (not key and kst == "unreadable" and old.get("OPENBEAST_API_KEY")
+            and _same_url(old.get("OPENBEAST_AGENT_INFERENCE_URL"), rig.get("inference_url"))):
+        key = old["OPENBEAST_API_KEY"]      # the file is unreadable right now; keep what works
     lines = ["# OpenBeast client mode — written by setup-client.sh / `openbeast-client use`.",
              "# Sourced by scripts/client.sh; OpenCode gets its copy via the",
              "# environment block in opencode.json. The ACTIVE rig is below; every",
@@ -831,7 +922,9 @@ def cmd_list(a):
         p = probes.get(n)
         st = state_of(p) if p else "-"
         slots = "%s/%s" % (p["busy"] if p["busy"] is not None else "?", p["total"]) if p and p["total"] else "-"
-        key = _tilde(r.get("key_file")) if read_key(r) else (
+        kst = key_status(r)[0]
+        key = _tilde(r.get("key_file")) if kst == "ok" else (
+            "UNREADABLE " + _tilde(r.get("key_file")) if kst == "unreadable" else
             "open rig" if (r.get("last") or {}).get("auth") in ("open", "none") else "NONE")
         model = default_model(r, {}) if (r.get("default_model") or r.get("last")) else "?"
         say("  %-1s %-14s %-30s %-12s %-24s %-6s %s" % (
@@ -928,7 +1021,9 @@ def cmd_use(a):
         if prev and prev != name:
             say("    back: openbeast-client use %s" % prev)
     if not key:
-        say("  ! no device key registered for '%s': openbeast-client rig add %s --api-key-stdin" % (name, name))
+        say("  ! %s for '%s': openbeast-client rig add %s --api-key-stdin" % (
+            "the device key file cannot be read" if key_status(rig)[0] == "unreadable"
+            else "no device key registered", name, name))
     _report_sync(res)
     say("  ok env file %s (0600). A running opencode picks the change up from its config"
         " dir; if a session does not: opencode reload" % _tilde(ENV_FILE))
@@ -947,8 +1042,10 @@ def _alias_rows(path=None):
 
 def changed(rig, p, rows):
     """True when the active rig serves something opencode does not show: other
-    model ids, or another context window for the served model. A probe that
-    learned nothing (rig offline, loading, key rejected) is never a change."""
+    model ids, another context window for the served model, another backend,
+    or a different number of rows than a sync would write (a TensorFold rig
+    once left with the 18 llama rows is repaired). A probe that learned
+    nothing (rig offline, loading, key rejected) is never a change."""
     if not (p["reachable"] and p["ids"]):
         return False
     if rows is None or set(p["ids"]) - set(rows):
@@ -956,11 +1053,95 @@ def changed(rig, p, rows):
     if p["ctx"] and rows.get(p["ids"][0]) != p["ctx"]:
         return True
     last = rig.get("last") or {}
+    backend = _backend(rig, p)
+    if backend != last.get("backend"):
+        return True
+    sim = dict(rig, last=dict(last, ids=p["ids"], model=p["ids"][0], ctx=p["ctx"], backend=backend))
+    if not rig.get("model_pinned"):
+        sim["default_model"] = p["ids"][0]
+    if len(rows) != len(catalog("rig", sim, static_catalog(), True)):
+        return True
     return last.get("ids") != p["ids"] or last.get("ctx") != p["ctx"]
 
 
+def _cap_log(path=None, limit=AS_LOG_MAX, keep=128 * 1024):
+    """autosync.log past `limit`: keep its last `keep` bytes. In place (the
+    job's stdout/stderr are this file, opened O_APPEND by launchd/systemd,
+    so later lines land at the new end)."""
+    path = path or AS_LOG
+    try:
+        if os.path.getsize(path) <= limit:
+            return
+        with open(path, "r+b") as f:
+            f.seek(-keep, os.SEEK_END)
+            tail = f.read()
+            nl = tail.find(b"\n")
+            tail = tail[nl + 1:] if nl >= 0 else tail
+            f.seek(0)
+            f.write(b"[log truncated past %d bytes]\n" % limit + tail)
+            f.truncate()
+    except OSError:
+        pass
+
+
+def _notice(msg, every=3600):
+    """One line for autosync's log, at most once an `every` seconds per
+    message: the job runs every 30 s and must not fill the log with it."""
+    try:
+        with open(AS_NOTICE) as f:
+            same = f.read() == msg
+        fresh = same and (datetime.datetime.now().timestamp() - os.path.getmtime(AS_NOTICE)) < every
+    except OSError:
+        fresh = False
+    if fresh:
+        return
+    say("%s autosync: %s" % (_now(), msg))
+    try:
+        _mkdir_private(CLIENT_DIR)
+        _write_private(AS_NOTICE, msg)
+    except OSError:
+        pass
+
+
+def _clear_notice():
+    try:
+        os.unlink(AS_NOTICE)
+    except OSError:
+        pass
+
+
+def _autosync_ready(a):
+    """--if-changed preflight: None to go on, else the exit code. A missing
+    registry, a missing or unparseable (JSONC) opencode.json are not news
+    every 30 s: one line an hour, no write, exit 0."""
+    reg = migrate(a.ts_bin, quiet=True)
+    if reg is None:
+        _notice("no rig registry — install client mode first (scripts/setup-client.sh)")
+        return None, 0
+    if not os.path.exists(OC_CONFIG):
+        _notice("no opencode config at %s — skipped (run scripts/setup-client.sh)" % OC_CONFIG)
+        return None, 0
+    try:
+        with open(OC_CONFIG) as f:
+            cfg = json.load(f)
+        if not isinstance(cfg, dict):
+            raise ValueError("not a JSON object")
+    except (OSError, ValueError) as e:
+        _notice("%s is not plain JSON (%s) — skipped; comments (JSONC) are not supported" % (
+            OC_CONFIG, str(e).split(":")[0]))
+        return None, 0
+    _clear_notice()
+    return reg, None
+
+
 def cmd_sync(a):
-    reg = ensure(a.ts_bin)
+    if getattr(a, "if_changed", False):
+        _cap_log()
+        reg, rc = _autosync_ready(a)
+        if reg is None:
+            return rc
+    else:
+        reg = ensure(a.ts_bin)
     if getattr(a, "if_changed", False):
         # autosync (openbeast-client autosync): probe only the active rig; a full
         # sync only when the rig switched models (e.g. beastglm / beastds on the
@@ -1218,7 +1399,41 @@ def main(argv=None):
     s.set_defaults(fn=cmd_remove)
     sub.add_parser("detect").set_defaults(fn=cmd_detect)
     a = ap.parse_args(argv)
-    return a.fn(a)
+    if a.cmd == "active" or (a.cmd == "soul" and getattr(a, "check", False)):
+        return a.fn(a)
+    # load → save of rigs.json / opencode.json / the env file under one lock,
+    # shared with beast-apps (agents/apps/ocfg.py): two writers (a 30 s
+    # autosync and a `use`, or an `apps.sh enable`) never drop each other's
+    # change. autosync does not wait: a busy lock means someone is syncing.
+    with _lock(wait=not getattr(a, "if_changed", False)) as got:
+        if not got:
+            return 0
+        return a.fn(a)
+
+
+@contextlib.contextmanager
+def _lock(wait=True):
+    if fcntl is None:
+        yield True
+        return
+    fd = None
+    try:
+        _mkdir_private(OB_DIR)
+        fd = os.open(LOCK, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+    except BlockingIOError:
+        os.close(fd)
+        yield False
+        return
+    except OSError:
+        if fd is not None:
+            os.close(fd)
+        fd = None                   # cannot lock (read-only home): carry on as before
+    try:
+        yield True
+    finally:
+        if fd is not None:
+            os.close(fd)
 
 
 if __name__ == "__main__":

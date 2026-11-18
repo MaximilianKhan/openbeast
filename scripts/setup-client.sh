@@ -267,6 +267,25 @@ try:
     print("  ✓ removed %s.openbeast-prev (held the device key)" % os.path.basename(real))
 except FileNotFoundError:
     pass
+# Timestamped backups OUR tools made beside the config (beast-apps before
+# every write, client-e2e before step d) hold the device key(s) too: they go.
+# Any other opencode.json.bak* is not ours to delete: listed.
+import glob
+ours, others = set(), set()
+for d in sorted({os.path.dirname(path) or ".", os.path.dirname(real)}):
+    for b in glob.glob(os.path.join(d, "opencode.json.bak*")):
+        n = os.path.basename(b)
+        (ours if n.startswith(("opencode.json.bak-beast-apps-", "opencode.json.bak-e2e-")) else others).add(b)
+for b in sorted(ours):
+    try:
+        os.unlink(b)
+    except OSError:
+        others.add(b)
+if ours - others:
+    print("  ✓ removed %d opencode.json backup(s) made by beast-apps / client-e2e (they held the device key)"
+          % len(ours - others))
+for b in sorted(others):
+    print("  - kept %s (not made by us; it may hold a key — delete it yourself if done)" % b)
 PYEOF
   fi
   if [ -L "$HOME/.local/bin/openbeast-client" ]; then
