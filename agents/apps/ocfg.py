@@ -333,6 +333,23 @@ def uninstall(cfg: dict, key: str, rules: list[dict]) -> list[str]:
     return gone
 
 
+def rename(cfg: dict, old: str, new: str, rules: list[dict], fl: str) -> tuple[list[dict], list[str]] | None:
+    """Move the entry beast-apps wrote under `old` to `new` in place, its
+    gates re-keyed from old_<tool> to new_<tool> (opencode names a tool's
+    permission action after the entry's key). `rules` are the gates
+    install() recorded for `old`. Returns install()'s (written, warnings) for
+    `new`, or None when there is no `old` entry in the file."""
+    hit = find_entry(cfg, old)
+    if not hit:
+        return None
+    entry = hit[1]
+    uninstall(cfg, old, rules)
+    po, pn = _safe(old) + "_", _safe(new) + "_"
+    moved = [{"action": pn + r["action"][len(po):], "resource": r.get("resource", "*"), "effect": r["effect"]}
+             for r in rules if isinstance(r.get("action"), str) and r["action"].startswith(po)]
+    return install(cfg, new, entry, moved, fl)
+
+
 def backup(path: str) -> str | None:
     if not os.path.exists(path):
         return None

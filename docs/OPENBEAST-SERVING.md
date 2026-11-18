@@ -2,6 +2,20 @@
 
 Run server commands on the head Spark as the account that owns OpenBeast. The head coordinates both GPUs. The copy of this note on the worker is for reference. No internet or 5090 is required for local generation once the runtime is staged. Both Sparks, their local files, and the inter-Spark network must be available.
 
+## Shortcuts
+
+On the head, in an interactive shell:
+
+```sh
+beaststatus   # selected model and pack, units, what is served
+beastup       # start the selected model, then the command center
+beastdown     # stop the command center and both models (boot selection kept)
+beastglm      # switch to GLM-5.3-Flash (the default model since 2026-11-18)
+beastds       # switch to DeepSeek on Mia's EAQ v1.1 "-v2" pack (the alternative; the -v2 pack supersedes the stock pack)
+```
+
+These wrap `~/.local/bin/beast-spark`, which in turn calls the helpers described below.
+
 ## Check what is running
 
 ```sh

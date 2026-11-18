@@ -166,6 +166,15 @@ def validate(cat: dict) -> list[str]:
             errs.append(f"{p}: env must be a table of strings")
         if s.get("default_enabled") is False and not s.get("risk"):
             errs.append(f"{p}: default_enabled = false needs a risk = '...' explanation")
+        if "aliases" in s:
+            if not _strs(s["aliases"]):
+                errs.append(f"{p}: aliases must be a list of former server ids")
+            else:
+                for al in s["aliases"]:
+                    if al in servers:
+                        errs.append(f"{p}: alias {al!r} is also a server id")
+                    elif sum(al in (o.get("aliases") or []) for o in servers.values()) > 1:
+                        errs.append(f"{p}: alias {al!r} is claimed by more than one server")
     for pid, pr in probes.items():
         p = f"probe.{pid}"
         k = pr.get("kind")
@@ -202,6 +211,18 @@ def validate(cat: dict) -> list[str]:
 
 def capability_servers(cat: dict, cid: str) -> list[str]:
     return list(cat["capability"][cid]["servers"])
+
+
+def legacy_ids(cat: dict) -> dict[str, str]:
+    """{former server id: current id}, from each server's `aliases`."""
+    return {al: sid for sid, s in cat["server"].items() for al in s.get("aliases") or []}
+
+
+def resolve_server(cat: dict, name: str) -> str | None:
+    """A server id, or the current id of a former one (an alias)."""
+    if name in cat["server"]:
+        return name
+    return legacy_ids(cat).get(name)
 
 
 def capabilities_of(cat: dict, sid: str) -> list[str]:

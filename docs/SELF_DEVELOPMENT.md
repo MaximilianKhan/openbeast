@@ -217,6 +217,8 @@ Run the narrow suites while iterating, then the full set before committing:
 | `scripts/backends/spark-guard.sh` | `tests/test_spark_guard.sh` |
 | `scripts/backends/spark-deepseek-pack.sh` | `tests/test_spark_deepseek_pack.sh` |
 | `scripts/backends/spark-backup.sh`, `spark-restore.sh`, `pylib/spark_backup.py`, `data/spark-backup.items` | `tests/test_spark_backup.sh` (the copy steps need GNU rsync >= 3: Linux, or `brew install rsync` on a Mac; without it they are skipped) |
+| `scripts/backends/spark-model-intake.sh`, `pylib/model_intake.py`, `data/spark-families.json` | `tests/test_spark_model_intake.sh` (portable; the local-revision parity check needs GNU stat), `tests/test_model_inspect.py` |
+| `scripts/backends/spark-beast.sh` | `tests/test_spark_beast.sh` |
 | `scripts/backends/spark-fabric-mtu.sh` (fabric MTU 9000, netplan drop-in) | `tests/test_spark_fabric_mtu.sh` (portable; on Ubuntu it also checks the merge against the real `netplan generate --root-dir`) |
 | `spark-root-setup.sh`, `tensorfold/install-native.sh` | `tests/test_spark_supply.sh` |
 | `scripts/backends/model-*.sh`, `pylib/`, profiles, locks | `tests/test_model_profiles.py`, `test_model_inspect.py`, `test_model_fetch.py`, `test_conformance.py`, `test_use_model.py` |
@@ -682,6 +684,7 @@ Run in a scratch clone of this branch, niced, on 2026-11-15:
 |---|---|---|
 | `test_spark_guard.sh` | 32 passed, 0 failed, 1 skipped | 1 s |
 | `test_spark_deepseek_pack.sh` | 4 passed, 0 failed, 1 skipped (pack_rev needs GNU stat; 5 of 5 on a Spark) | 1 s |
+| `test_spark_beast.sh` | 9 passed, 0 failed | 1 s |
 | `test_spark_cluster.sh` | 31 passed, 0 failed | 4 s |
 | `test_spark_supply.sh` | 22 passed, 0 failed | <1 s |
 | `test_engines.sh` | 61 passed, 0 failed | 64 s |
