@@ -242,8 +242,30 @@ if isinstance(ins, list):
 for k in ("mcp", "provider"):
     if k in cfg and not cfg[k]:
         del cfg[k]
-json.dump(cfg, open(path, "w"), indent=2); open(path, "a").write("\n")
+# Atomic, keeping the file's mode (and a symlinked config stays a symlink):
+# a crash mid-write must not leave the user's opencode.json truncated.
+import tempfile
+real = os.path.realpath(path)
+fd, tmp = tempfile.mkstemp(prefix="." + os.path.basename(real) + ".", dir=os.path.dirname(real))
+try:
+    os.fchmod(fd, os.stat(real).st_mode & 0o777)
+    with os.fdopen(fd, "w") as f:
+        f.write(json.dumps(cfg, indent=2) + "\n")
+    os.replace(tmp, real)
+except BaseException:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    raise
 print("  ✓ opencode.json: removed " + (", ".join(removed) or "nothing (no entries of ours)"))
+# client_rigs.py keeps one rolling backup beside the config on every sync;
+# it holds the device key(s) and our providers, so it goes with the rest.
+try:
+    os.unlink(real + ".openbeast-prev")
+    print("  ✓ removed %s.openbeast-prev (held the device key)" % os.path.basename(real))
+except FileNotFoundError:
+    pass
 PYEOF
   fi
   if [ -L "$HOME/.local/bin/openbeast-client" ]; then

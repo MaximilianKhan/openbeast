@@ -430,12 +430,21 @@ else
   fail "old-opencode warning (rc=$RC): $OUT"
 fi
 printf '#!/bin/bash\nexit 0\n' > "$BIN/opencode"
+# client_rigs.py's rolling backup holds the device key: uninstall removes it.
+echo '{"provider":{"openbeast-rig":{"options":{"apiKey":"k"}}}}' > "$OC.openbeast-prev"
+chmod 640 "$OC"
 run hsoul 200 200 -- --uninstall
 if [[ "$(_ins)" == '["CONTRIBUTING.md", "~/rules/mine.md"]' ]] && has "$OUT" "instructions (3 soul files)" \
    && [[ ! -e "$SD" ]] && grep -q '"model": "mine"' "$OC"; then
   pass "--uninstall removes only our instruction entries (and the copies); the user's stay"
 else
   fail "soul uninstall: $(_ins) $OUT"
+fi
+if [[ ! -e "$OC.openbeast-prev" ]] && [[ "$(_mode "$OC")" == "640" ]] \
+   && ! ls -a "$(dirname "$OC")" | grep -q '^\.opencode\.json\.'; then
+  pass "--uninstall rewrites opencode.json atomically (mode kept, no temp left) and drops the keyed backup"
+else
+  fail "uninstall backup/atomic (mode=$(_mode "$OC")): $(ls -a "$(dirname "$OC")") $OUT"
 fi
 OC="$T/hsoul2/.config/opencode/opencode.json"; mkdir -p "$(dirname "$OC")"; echo '{}' > "$OC"
 run hsoul2 200 200 -- --host rig.example --no-search
