@@ -173,6 +173,20 @@ stack with `--offline` just because the WAN is down: auto mode already
 covers it, and a restart drops every generation in flight. `--offline`
 (forced) is for a planned disconnection that should not flap.
 
+On spark-1 the stack is not started by hand: the user unit `openbeast` runs
+`~/openbeast/start.sh -d` (from `~/.config/systemd/user/openbeast.service`),
+so a `./start.sh -d --offline` typed in a shell would start a second,
+unmanaged launch beside it. Force the island through the conf instead, which
+`start.sh` reads on every launch (`scripts/lib/conf.sh`: `ISLAND` =
+`auto` | `force` | `off`):
+
+```bash
+# on spark-1, for a planned disconnection
+echo 'ISLAND=force' >> ~/openbeast/openbeast.conf && systemctl --user restart openbeast
+python3 ~/openbeast/agents/island.py status          # "ISLAND MODE since ... — forced at launch (... ISLAND=force)"
+# afterwards: delete the ISLAND=force line, then the same restart (back to auto)
+```
+
 **When power fails too.** The Sparks have no documented UPS. After power
 returns, both boot, the enabled inference unit (`spark-hydra-inference`,
 GLM, since 2026-11-18; lingering user manager) starts both ranks, and `openbeast` starts the command center. If the

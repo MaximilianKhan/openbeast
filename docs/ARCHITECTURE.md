@@ -353,11 +353,29 @@ flowchart TB
 | `~/.config/systemd/user/` | The user units |
 | `~/.local/bin/` | `beast-spark`, `tensorfold` (native 1.2.7, not serving), opencode link |
 
+None of this is recreated by a clone. The scripts that exist only here
+(`activate-stock.sh`, `rollback/restore-glm.sh`, `verify-chat.py`, the
+DeepSeek unit file, the recipe runtimes and their `tools/bench.py`) are listed
+in [docs/README.md](README.md#a-local-model-on-the-sparks-with-no-internet-the-reading-order);
+their recovery path is [SPARK_BACKUP_RESTORE.md](SPARK_BACKUP_RESTORE.md).
+
 **How a request flows.** From the Mac: opencode → `https://spark-1…:8443/v1`
 with a device key → Tailscale serve → beast-gate `:8090` (key check, caps,
 audit, thinking default) → TensorFold `:8000` → both ranks over the fabric.
 From opencode on a Spark: directly to `:8000` with the TensorFold key (no
 gate). From Open WebUI: `:3000` → `:8000`, with tools through `:3001`.
+
+**The gate's in-flight cap is per device, and by default it is the whole
+server.** `EDGE_MAX_INFLIGHT` (concurrent generations per device key) defaults
+to `INFERENCE_SLOTS` when that is set, else 2 (`default_max_inflight()` in
+`agents/edge.py`). spark-1's conf sets `INFERENCE_SLOTS=4` and leaves the cap
+unset, so one device can hold all four of the pair's streams. A second
+device has its own cap, so the gate admits it, and its requests queue at
+TensorFold behind the first device's. That is deliberate: a Mac
+running four agents or an eval at `--jobs 4` should not get 429s with streams
+idle (review 2026-11-16). When several people share the pair, set
+`EDGE_MAX_INFLIGHT` below `INFERENCE_SLOTS` in `openbeast.conf`. Requests that
+bypass the gate (opencode on a Spark, Open WebUI) are not counted at all.
 
 **What needs the internet.** Nothing on the serving path. Web search,
 `fetch`, installs, image pulls and GitHub do. The runbook for an outage is
@@ -481,7 +499,7 @@ evals/                       # Eval harness — v5 suite (suites/v5.json) over a
   cache.py                   # Durable result cache, keyed on the era hash of the harness code
   suites/ · tasks/ · results/ · leaderboard.json
 
-docs/                        # 62 top-level documents — the map is docs/README.md; commands: docs/COMMANDS.md
+docs/                        # the documents — the map is docs/README.md; commands: docs/COMMANDS.md
 skills/                      # 27 skills: 18 in-house + 9 imported (skills/README.md)
 system-prompt.md             # Soul file (persona, applied to all frontends)    [era-hashed]
 system-prompt-tools.md       # Tool guidance (Open WebUI only; not era-hashed)

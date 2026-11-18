@@ -24,7 +24,7 @@ The code is in the repo:
 | the failure audit (replay, prompts, Workflow, verdicts, language taxonomy) | [`evals/audit/`](../evals/audit/README.md) |
 | the reference attempt (prompts, Workflow, integrity scan) | [`evals/reference/`](../evals/reference/README.md), on top of [`evals/reference_attempt.py`](../evals/reference_attempt.py) |
 | the L0 profile and its contrasts | [`evals/profile.py`](../evals/profile.py), [`evals/ablation.py`](../evals/ablation.py) |
-| why each harness change exists | [`docs/HARNESS_NOTES.md`](HARNESS_NOTES.md) (G1-G20) |
+| why each harness change exists | [`docs/HARNESS_NOTES.md`](HARNESS_NOTES.md) (G1-G27) |
 
 Every command below runs on the **harness host** (the Mac today): it is where
 the agents' tools, the compilers and the validators run. Only chat calls go
@@ -72,7 +72,7 @@ in an existing runbook. Do them in order:
 
 ## 1. Prerequisites
 
-Four things, checked before the first scored request. Each one cost us a run
+Five things (1a-1e), checked before the first scored request. Each one cost us a run
 on 2026-11-16 when it was missing.
 
 **1a. Every suite unit is proven model-free.**
@@ -192,6 +192,12 @@ What to look for:
 
 ## 3. Failure audit
 
+**Needs Claude Code, and so the internet.** The audit's auditors and
+skeptics are Claude Code subagents run by a Workflow; neither the Sparks'
+local model nor an offline harness host can run this step. Offline, keep
+the L0 results and run the audit when the network is back. The `prepare`,
+`verdicts` and `langaudit` scripts are local.
+
 Every failed L0 unit gets an auditor (who reads the transcript, rebuilds
 the final solution, and replays it through the real validator) and then a
 skeptic (who argues the other way). Full instructions:
@@ -244,6 +250,9 @@ languages (hence the host pack and the env block).
 
 ## 4. Reference ceiling
 
+**Needs Claude Code, and so the internet** (Claude Opus 5.5 is the solver).
+Offline, reuse the existing ledger, which is the rule anyway (below).
+
 Claude Opus 5.5 attempts every unit through
 `evals/reference_attempt.py`'s setup/grade split. The solver never sees
 validator output, and a separate agent grades. Afterwards, a transcript
@@ -294,7 +303,7 @@ on one seed:
 | L0 (runner v1, thinking off) | 26/71 |
 | A (runner v2) | 31/71 |
 | B (A + wall-scaled turns) | 36/71 |
-| C (B + thinking, `--wall-scale 2` so its turns equal B's) | 18 of the first 21 units, against B's 8 on the same units: 10 rescued, 0 regressed, and 14 of the 18 passes inside B's original wall |
+| C (B + thinking, `--wall-scale 2` so its turns equal B's) | **54/71 raw, 51/71 scored** (three passes withheld by the contamination scan, §8). On the first 21 units, when this order was decided: 18 against B's 8 on the same units, 10 rescued, 0 regressed, and 14 of the 18 passes inside B's original wall |
 
 Thinking is by far the largest lever. No other single change moved more
 than five units over the whole suite. C moved ten in its first 21. So the
@@ -626,6 +635,27 @@ campaign. On GLM, its N0 is arm B (36/71, thinking pinned off).
 
 - [x] Prepared the stock Mia EXL3 checkpoint, both Engram shards and both rank caches. [Pinned deployment and verification](SPARK_HYDRA.md#deepseek-deployment).
 - [x] Served DeepSeek via TensorFold TP2 behind beast-gate. Conformance passed chat, streaming, reasoning-field extraction, tools and four-way concurrency. The context-overflow probe was skipped.
+- [ ] **Switch the pair to DeepSeek** (first: every live check below, and L0, need it serving). GLM is the pair's default
+      (unit `spark-hydra-inference` enabled); DeepSeek-V4.1-Flash on the EAQ
+      v1.1 "-v2" pack is the staged alternative. The only supported switch
+      is `beast-spark` on spark-1 (aliases `beastds` / `beastglm`;
+      [SELF_DEVELOPMENT.md §0](SELF_DEVELOPMENT.md#0-before-going-offline-bring-both-sparks-to-main)
+      installs it from the repo):
+      ```bash
+      ssh spark-1.tail4109f9.ts.net '~/.local/bin/beast-spark ds && ~/.local/bin/beast-spark status'
+      # status: selected: ds (pack ...-v2) ... serving on http://127.0.0.1:8000: DeepSeek-V4.1-Flash-1017
+      # from the harness host, through the gate the campaign will use:
+      curl -s -H "Authorization: Bearer $OPENBEAST_SPARK_API_KEY" \
+          https://spark-1.tail4109f9.ts.net:8443/v1/models | python3 -m json.tool | grep '"id"'
+      ```
+      `/v1/models` must list `DeepSeek-V4.1-Flash-1017` and nothing else.
+      If it lists `GLM-5.3-Flash-EXL3`, every row below would be GLM's under
+      DeepSeek's name. `campaign.py run` records the served id it detects
+      (`served_model` in the campaign state) but, on `main` on 2026-11-18,
+      does not refuse a mismatch; it should check the id against the
+      model it was asked to run, so check it yourself until it does. The
+      switch takes the pair off GLM for every client (the Mac's opencode,
+      Open WebUI) until the last arm ends.
 - [ ] Record the reproducible campaign profile and seed artifact before starting the scored arms.
 - [ ] **Thinking, before anything else: the whole campaign leans on it.**
       How does the server toggle thinking per request? The runner sends
@@ -642,9 +672,23 @@ campaign. On GLM, its N0 is arm B (36/71, thinking pinned off).
       thinking turn can run to the 16,384-token cap. Below 8 tok/s, the
       client times out before a capped turn ends. Resize the client timeout
       and `EDGE_READ_TIMEOUT` before L0.
-- [ ] A `benchmark_all.py` MODELS entry (§0.4) with `reasoning_budget`
-      declared for the daily (profile) config: `"0"` if DeepSeek's daily
-      config is thinking off. The campaign arms declare their own (§7).
+- [ ] A `benchmark_all.py` MODELS entry (§0.4). **`evals/benchmark_all.py`
+      has none for DeepSeek yet** (checked on `main`, 2026-11-18), so
+      `--model deepseek-v4.1-flash` below fails until it is added. The entry,
+      appended to `MODELS` after `glm-5.3-flash` and in the same form:
+      ```python
+          {"slug": "deepseek-v4.1-flash",
+           "name": "DeepSeek-V4.1-Flash-1017",
+           "base_url": "https://spark-1.tail4109f9.ts.net:8443/v1",
+           "api_key_env": "OPENBEAST_SPARK_API_KEY",
+           "slots": 4,
+           "engine": "tensorfold",
+           "reasoning_budget": "0"},
+      ```
+      `base_url` is the gate (the same one GLM's entry uses: one gate, one
+      model at a time). `reasoning_budget` declares the daily (profile)
+      config: `"0"` if DeepSeek's daily config is thinking off; change it if
+      not. The campaign arms declare their own (§7).
 - [ ] §1: re-prove the suite if anything changed since the last proof,
       `admission_check` at `--jobs 4`, and `EDGE_READ_TIMEOUT` still 3600.
 - [ ] §2 L0 profile, §3 audit and taxonomy, §4 reuse the v5 Opus ledger
@@ -654,12 +698,14 @@ campaign. On GLM, its N0 is arm B (36/71, thinking pinned off).
       `--base-hours` from its L0 time, or let the first finished arm
       recalibrate the ETAs:
       ```bash
+      # eval-env.sh is made once per host (§1b):
+      #   ./scripts/eval-host.sh env > ~/.config/openbeast/eval-env.sh && . ~/.config/openbeast/eval-env.sh
       . ~/.config/openbeast/eval-env.sh
       python3 evals/campaign.py run --model deepseek-v4.1-flash --jobs 4 --dry-run
       python3 evals/campaign.py run --campaign v5-thinking-first --model deepseek-v4.1-flash --jobs 4 \
           --baseline L0=evals/results/eval-<deepseek-slug>-L0-<ts>.json
       # without a MODELS entry yet:
-      python3 evals/campaign.py run --campaign v5-thinking-first --model-name "DeepSeek-v4.1-Flash" \
+      python3 evals/campaign.py run --campaign v5-thinking-first --model-name "DeepSeek-V4.1-Flash-1017" \
           --base-url https://spark-1.tail4109f9.ts.net:8443/v1 --api-key-env OPENBEAST_SPARK_API_KEY \
           --jobs 4 --slots 4 --baseline L0=evals/results/eval-<deepseek-slug>-L0-<ts>.json
       ```
@@ -680,3 +726,8 @@ campaign. On GLM, its N0 is arm B (36/71, thinking pinned off).
 - [ ] §6 report: the recommended daily config, and thinking's cost on
       DeepSeek. Then HARNESS_NOTES "Per-model vs unified": which components
       were kept for both models, and which for only one.
+- [ ] **After the last arm (or when the campaign stops), switch back:**
+      `ssh spark-1.tail4109f9.ts.net '~/.local/bin/beast-spark glm && ~/.local/bin/beast-spark status'`,
+      and confirm `/v1/models` lists `GLM-5.3-Flash-EXL3` again. (The full
+      path because a non-interactive ssh command does not have `~/.local/bin`
+      on its `PATH`; at a shell on spark-1, `beastds` / `beastglm` do the same.)
