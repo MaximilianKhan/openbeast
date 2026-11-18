@@ -1,0 +1,243 @@
+{
+ "_about": "The model families spark-hydra (spark-1 + spark-2) serves, and the engines it has, for scripts/backends/spark-model-intake.sh. DATA: read, never executed. docs/EXL3_PLAYBOOK.md explains every field. A family is one recipe + one image + one unit; a 'drop-in' for it is a checkpoint with the family's model_type, the family's required quantization fields and the same safetensors index KEY SET as the reference checkpoint (index_sha256 = sha256 of the sorted keys joined by newlines, with a trailing newline).",
+ "_measured": "spark-1, 2026-11-17 (index signatures, sizes, rank files, MemTotal, native capabilities); read-only",
+ "pair": {
+  "hosts": [
+   "spark-1",
+   "spark-2"
+  ],
+  "mem_total_gib": 121.69,
+  "rank_weight_comfortable_gib": 92,
+  "rank_weight_limit_gib": 100,
+  "rank_weight_factor": 1.008,
+  "notes": "MemTotal 127,598,412 kB on each Spark (MEASURED). The DeepSeek recipe runs 98.8 GiB of weights per rank (rank file 106,120,890,008 B) with ~6 GiB MemAvailable left on the head beside the command center: that is the tight end. GLM runs ~82 GiB per rank plus a 10 GiB KV pool. rank_weight_factor: per-rank bytes = checkpoint safetensors bytes / TP x factor, calibrated on DeepSeek (210,601,036,966 B checkpoint -> 106,120,890,008 B rank-1 file = 0.5039 of it)."
+ },
+ "families": [
+  {
+   "name": "deepseek-v41",
+   "title": "DeepSeek-V4.1-Flash-1017 (Mia two-Spark recipe)",
+   "model_types": [
+    "deepseek_v41"
+   ],
+   "architectures": [
+    "DeepseekV41ForCausalLM"
+   ],
+   "quant": {
+    "quant_method": "exl3"
+   },
+   "index_keys": 192495,
+   "index_sha256": "525efee77b2fa3969040753762ebf58305e313164266b248458c7a37c5be3f98",
+   "reference_dirs": [
+    "~/Documents/Mia-AiLab-DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw-v2",
+    "~/Documents/Mia-AiLab-DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw"
+   ],
+   "known_packs": {
+    "04c13f12b83d57487912d87d0f1677b076810954": "Mia EAQ v1.1 -v2 (Documents folder ...-v2): the serving default since 2026-11-17",
+    "5d70e783511ce99b2691de62a1d3f79032f2b188": "Mia EAQ v1 2.9 bpw (Documents folder): staged as the Hub snapshot 45ee5d0f, selected with 'use stock'"
+   },
+   "tp": 2,
+   "recipe": "~/openbeast-recipes/deepseek-prep/runtime",
+   "recipe_commit": "c7f2b85100f0a7b099c92a4e21825e30d93c9c51",
+   "engine": "bertholomus/TensorFold Zig fork @ fbbc971 + the recipe's zig/patches (image label tf.patches 8a98ae503d85)",
+   "image": "tensorfold-dsv41:exl3-tp2-8a98ae503d85",
+   "unit": "deepseek-v41-inference",
+   "served_name": "DeepSeek-V4.1-Flash-1017",
+   "hf_cache": "~/openbeast-models/deepseek-hf",
+   "swap": "~/openbeast-recipes/deepseek-prep/spark-deepseek-pack.sh use {dir} --dry-run",
+   "rank_files": true,
+   "aux": [
+    "Engram tables: deepseek-ai/DeepSeek-V4.1-Flash-1017 @ 1bae0e10 shards 47 and 48 (203,073,077,576 B), already staged on both Sparks; never part of a pack",
+    "DSpark draft blocks and the vision tower are inside the pack (no separate drafter)"
+   ]
+  },
+  {
+   "name": "glm53",
+   "title": "GLM-5.3-Flash (Mia GLM recipe, TensorFold v0.6.0 + patches)",
+   "model_types": [
+    "glm5_next"
+   ],
+   "architectures": [
+    "Glm5NextForConditionalGeneration"
+   ],
+   "quant": {
+    "quant_method": "exl3",
+    "bits": 4,
+    "codebook": "mcg",
+    "scope": "glm53_routed_experts_only"
+   },
+   "index_keys": 150226,
+   "index_sha256": "60b13aad6b8ddaf53775ccb1d3ec975a1dcc5180fbf04f94efbc94d170cefa68",
+   "reference_dirs": [
+    "~/openbeast-models/glm53-flash-ablit-exl3",
+    "~/Documents/GLM-5.3-Flash-EXL3-4bpw-TensorFold-Ablit"
+   ],
+   "known_packs": {
+    "b2c37cff398e4ba01188b0505e3f3794acfe308f": "Mia GLM-5.3-Flash EXL3 4bpw TensorFold Ablit (staged as the Hub snapshot 57edefd2, ABLIT=1): the GLM default"
+   },
+   "tp": 2,
+   "recipe": "~/openbeast-recipes/glm53",
+   "recipe_commit": "33b50fd",
+   "engine": "TensorFold v0.6.0 (Python) + the recipe's patches/ (image label tf.patches 31557ed1cef6)",
+   "image": "tensorfold-glm53:v0.6.0",
+   "unit": "spark-hydra-inference",
+   "served_name": "GLM-5.3-Flash-EXL3",
+   "hf_cache": "~/.cache/huggingface",
+   "swap": "manual for now: docs/EXL3_PLAYBOOK.md, 'A GLM pack, by hand'",
+   "rank_files": false,
+   "aux": [
+    "DFlash2 drafter incoai/GLM-5.3-Flash-DFlash2 @ bf582e4e in the HF cache on both Sparks (2.34 GB)"
+   ]
+  }
+ ],
+ "engines": [
+  {
+   "name": "native-1.2.7",
+   "title": "native TensorFold 1.2.7 (~/.local/bin/tensorfold on both Sparks)",
+   "source": "tensorfold capabilities --json on spark-1, 2026-11-17",
+   "launch": "scripts/backends/tensorfold/spark-node.sh / spark-cluster.sh with a profile (docs/SPARK_HYDRA.md D2)",
+   "tp": [
+    1,
+    2,
+    4,
+    8
+   ],
+   "families": {
+    "nemotron_h": [
+     "mlx-q4g64",
+     "modelopt-nvfp4",
+     "modelopt-ggml"
+    ],
+    "nemotron_h_omni": [
+     "mlx-q4g64",
+     "modelopt-nvfp4",
+     "modelopt-ggml"
+    ],
+    "glm5_next": [
+     "modelopt-nvfp4",
+     "modelopt-mixed",
+     "exl3"
+    ],
+    "minimax_m3_vl": [
+     "exl3"
+    ],
+    "qwen3_5": [
+     "mlx-q4g64",
+     "exl3"
+    ],
+    "qwen3_5_moe": [
+     "mlx-q4g64",
+     "modelopt-mixed",
+     "modelopt-nvfp4"
+    ],
+    "qwen4_exp": [
+     "mlx-q4g32",
+     "modelopt-mixed"
+    ],
+    "kolibri1": [
+     "fp8-block"
+    ],
+    "gemma4_unified": [
+     "mlx-q2g64",
+     "mlx-q3g64",
+     "mlx-q4g64",
+     "mlx-q5g64",
+     "mlx-q6g64",
+     "mlx-q8g64"
+    ],
+    "gemma4": [
+     "mlx-q2g64",
+     "mlx-q3g64",
+     "mlx-q4g64",
+     "mlx-q5g64",
+     "mlx-q6g64",
+     "mlx-q8g64"
+    ],
+    "spark2_5": [
+     "mlx-q2g64",
+     "mlx-q3g64",
+     "mlx-q4g64",
+     "mlx-q5g64",
+     "mlx-q6g64",
+     "mlx-q8g64"
+    ],
+    "dory": [
+     "modelopt-nvfp4"
+    ],
+    "lfm2_moe": [
+     "mlx-q4g64"
+    ],
+    "lfm2_vl": [
+     "bf16"
+    ],
+    "fish_omni": [
+     "fp8-block128"
+    ],
+    "qwen4": [
+     "bf16",
+     "mlx-q4g32",
+     "mlx-q4g64",
+     "mlx-q4g128",
+     "mlx-q8g32",
+     "mlx-q8g64",
+     "mlx-q8g128",
+     "modelopt-fp8",
+     "modelopt-nvfp4"
+    ],
+    "qwen4_text": [
+     "bf16",
+     "mlx-q4g32",
+     "mlx-q4g64",
+     "mlx-q4g128",
+     "mlx-q8g32",
+     "mlx-q8g64",
+     "mlx-q8g128",
+     "modelopt-fp8",
+     "modelopt-nvfp4"
+    ]
+   },
+   "rank_notes": {
+    "glm5_next": "2 to 16 ranks (TF_GLM_WORLD); EXL3 only in Mia's TR3 layout (bits 4, mcg, glm53_routed_experts_only), per the vendored 0.x list",
+    "minimax_m3_vl": "2 ranks only (TF_MINIMAX_*), per docs/SPARK_HYDRA.md D2",
+    "qwen3_5": "EXL3 on ONE GPU; two ranks need the MLX affine checkpoint, per the vendored 0.x list"
+   },
+   "refuses": {
+    "deepseek_v41": "tensorfold info: 'no registered Zig family serves model_type deepseek_v41; the 0.6 line may: tensorfold@0.6' (spark-1, 2026-11-17). DeepSeek runs only in the recipe image's forked engine."
+   },
+   "ranks": {
+    "glm5_next": [
+     2,
+     4,
+     8
+    ],
+    "minimax_m3_vl": [
+     2
+    ],
+    "qwen3_5/exl3": [
+     1
+    ],
+    "qwen3_5": [
+     1,
+     2
+    ],
+    "qwen4_exp": [
+     1,
+     2
+    ],
+    "qwen3_5_moe": [
+     1
+    ],
+    "nemotron_h": [
+     1
+    ]
+   },
+   "exl3_variants": {
+    "glm5_next": {
+     "bits": 4,
+     "codebook": "mcg",
+     "scope": "glm53_routed_experts_only"
+    }
+   },
+   "_ranks_note": "ranks: the cluster sizes this engine runs a family on (family or family/format), from model_inspect.py NATIVE_TF_RANKS, data/tensorfold.json and docs/SPARK_HYDRA.md D2; a family not listed gets [1, 2] marked UNVERIFIED. exl3_variants: the quantization_config fields the engine requires, from data/tensorfold.json (the 0.x list; CLAIMED for native)."
+  }
+ ]
+}
