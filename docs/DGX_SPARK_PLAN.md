@@ -4,7 +4,9 @@
 > Mia-AiLab's TensorFold v0.6.0 recipe, command center on spark-1 (T2). How it
 > actually runs, and how to operate it: [`SPARK_HYDRA.md`](SPARK_HYDRA.md).
 > This plan is the design record; where the two differ, SPARK_HYDRA.md is
-> what is deployed.
+> what is deployed. **Since 2026-11-17 the pair serves DeepSeek-V4.1-Flash-1017**
+> (Mia's EAQ v1.1 "-v2" pack) by default, with GLM-5.3-Flash as the rollback
+> model; the GLM-first decisions below are history.
 
 **Status (2026-09-29): milestone 1 is built and tested hermetically. Nothing
 here has run on a GB10 yet.** Every step marked **VERIFY ON HARDWARE** comes

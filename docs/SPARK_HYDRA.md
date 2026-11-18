@@ -147,7 +147,7 @@ detail. In outline:
 2. [B2](#b2-spark-root-setupsh-the-only-root-step-once-per-spark) root setup, on each Spark.
 3. [B3](#b3-firewall-spark-guard) spark-guard, and [B4](#b4-fabric-mtu-9000-spark-fabric-mtu) the fabric MTU staged before the one reboot.
 4. [C](#c-weights) weights, on both.
-5. [D1](#d1-the-mia-recipe-what-serves-today) the recipe and the `spark-hydra-inference` unit.
+5. [D1](#d1-the-glm-recipe-rollback-deployment) the recipe and the `spark-hydra-inference` unit.
 6. [E1](#e1-bootstrap)–[E7](#e7-device-keys-for-beast-gate) the command center, boot units, WebUI admin, tailnet publishing and device keys.
 7. [F](#f-the-mac-client) the Mac client, then the optional toolchains, docs mirror, ark drive and eval harness host.
 
@@ -291,7 +291,7 @@ blob loop on both (C4). Online, DFlash2 comes from
 lock; run step 11's `bootstrap.sh` first if it is missing).
 
 **8. The recipe and its image** (spark-1, image on both;
-[D1](#d1-the-mia-recipe-what-serves-today), [H4](#h4-container-images)):
+[D1](#d1-the-glm-recipe-rollback-deployment), [H4](#h4-container-images)):
 
 ```bash
 # on spark-1. Online:
@@ -314,7 +314,7 @@ it. On our pair, OpenBeast staged the weights (step 7) and only the image
 came from the recipe. The recipe lives on spark-1 only: `start.sh` runs rank 1
 on spark-2 with `docker run` over ssh.
 
-**9. The inference unit** (spark-1; [D1](#d1-the-mia-recipe-what-serves-today)).
+**9. The inference unit** (spark-1; [D1](#d1-the-glm-recipe-rollback-deployment)).
 The `sed … spark-hydra-inference.service` block in D1, then
 `systemctl --user enable --now spark-hydra-inference`. Loading takes 2-6 min.
 `curl -s http://127.0.0.1:8000/health` must show `"ok": true`. Online and
@@ -462,11 +462,27 @@ How to reach each box:
 
 ### What runs where
 
-This table describes the GLM configuration. The active inference unit and container are listed in [DeepSeek deployment](#deepseek-deployment).
+**DeepSeek, the current default (checked read-only on 2026-11-18):**
 
 | Layer | Where | What |
 |---|---|---|
-| Inference | spark-1, `systemctl --user` unit `spark-hydra-inference` | Runs `~/openbeast-recipes/glm53/start.sh` in the FOREGROUND. This is Mia's recipe v1.8 (`33b50fd`): TensorFold v0.6.0 plus patches, in image `tensorfold-glm53:v0.6.0` (= `ghcr.io/miaai-lab/glm-5.3-flash-exl3-2x-dgx-sparks-tensorfold@sha256:cbb4b3c6…`). It starts rank 1 on spark-2 over ssh. Its settings are in `scripts/local.sh` ([D1](#d1-the-mia-recipe-what-serves-today)) |
+| Inference | spark-1, `systemctl --user` unit `deepseek-v41-inference` (**enabled**) | `Type=simple`, `WorkingDirectory=~/openbeast-recipes/deepseek-prep/runtime`, `FOREGROUND=1 PREPARE=0 ./start.sh`, `Restart=on-failure`, `RestartSec=60s`, at most 3 starts in 30 min. The runtime is Mia's two-Spark recipe at `c7f2b85`. It starts rank 1 on spark-2 over ssh, then rank 0 |
+| Containers | both | `dsv41-1017-exl3-tf` from the locally built image `tensorfold-dsv41:exl3-tp2-8a98ae503d85`, one per Spark |
+| Pack selection | spark-1, `runtime/scripts/local.sh` (managed block written by `spark-deepseek-pack.sh`; previous copy `local.sh.prev`) | `MODEL_ID=Mia-AiLab/DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1.1-2.9-bpw-v2`, `MODEL_REVISION=04c13f12…` (local REV), `MODEL_SRC=~/Documents/Mia-AiLab-DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw-v2`, `WORKER_CACHE_DIR=…/worker-rank-cache-04c13f12`, `CONTEXT=524288`, `HOST=127.0.0.1`, `PORT=8000` |
+| API | spark-1 | `http://127.0.0.1:8000/v1`, model `DeepSeek-V4.1-Flash-1017`, bearer key in `~/.config/openbeast/tensorfold-api-key` (0600). Loopback only |
+| HF cache | both | `~/openbeast-models/deepseek-hf` (packs hard-linked in as snapshots; Engram base revision `1bae0e10…`, shards 47 and 48) |
+| Pack folders | both | `~/Documents/Mia-AiLab-DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw` (stock EAQ v1, the fallback) and `…-bpw-v2` (EAQ v1.1, serving). spark-2's `~/Documents` mirrors spark-1's as a backup |
+| Helpers | spark-1, `~/openbeast-recipes/deepseek-prep/` | `activate-stock.sh` (GLM → DeepSeek), `rollback/restore-glm.sh` (DeepSeek → GLM), `spark-deepseek-pack.sh`, `spark-deepseek-prepare-local.sh`, `verify-chat.py`, conformance records (`conformance-4/`, `conformance-v2/`) |
+| Shortcuts | spark-1, `~/.local/bin/beast-spark` + aliases in `~/.bashrc` | `beastup`, `beastdown`, `beastds`, `beastglm`, `beaststatus` (from `scripts/backends/spark-beast.sh`, PR #212) |
+| GLM unit | spark-1, `spark-hydra-inference` (**disabled**) | the rollback model; see the GLM table below |
+| Command center | spark-1, `openbeast` (enabled) + transient `openbeast-stack` scope | as in the GLM table, with `INFERENCE_MODEL=DeepSeek-V4.1-Flash-1017`, `INFERENCE_THINKING=on`, `INFERENCE_SLOTS=4`, `EDGE_GATE=true` |
+| opencode | both, `~/.opencode/bin/opencode` v2.3.2 | provider `spark-hydra-local` at `127.0.0.1:8000`; on spark-2 through the `opencode-model-link` ssh tunnel ([SELF_DEVELOPMENT.md](SELF_DEVELOPMENT.md#opencode-on-the-sparks)) |
+
+**GLM-5.3-Flash, the rollback model.** This table describes the GLM configuration as it served until 2026-11-17. Its unit is disabled while DeepSeek owns the ranks.
+
+| Layer | Where | What |
+|---|---|---|
+| Inference | spark-1, `systemctl --user` unit `spark-hydra-inference` | Runs `~/openbeast-recipes/glm53/start.sh` in the FOREGROUND. This is Mia's recipe v1.8 (`33b50fd`): TensorFold v0.6.0 plus patches, in image `tensorfold-glm53:v0.6.0` (= `ghcr.io/miaai-lab/glm-5.3-flash-exl3-2x-dgx-sparks-tensorfold@sha256:cbb4b3c6…`). It starts rank 1 on spark-2 over ssh. Its settings are in `scripts/local.sh` ([D1](#d1-the-glm-recipe-rollback-deployment)) |
 | API | spark-1 | `http://127.0.0.1:8000/v1`, model `GLM-5.3-Flash-EXL3`. **Loopback only: v0.6.0 has no API key** |
 | Command center | spark-1, `systemctl --user` unit `openbeast` | `~/openbeast`, a git checkout: WebUI :3000, tools :3001, SearXNG :8888, beast-gate :8090, beast-chat, beast-artifact, the dashboard (beast-slot), the island watcher. `openbeast.conf`: [E2](#e2-openbeastconf) |
 | Weights | both | `~/openbeast-models/glm53-flash-ablit-exl3` (175.7 GB, 83 shards), hard-linked into `~/.cache/huggingface/hub/models--Mia-AiLab--GLM-5.3-Flash-EXL3-4bpw-TensorFold-Ablit/snapshots/57edefd2…`. Verified against the Hub revision (sha256, 0 mismatches) and locked in `scripts/backends/models/glm53-flash-ablit-exl3-tensorfold.lock` ([C](#c-weights)) |
@@ -474,9 +490,18 @@ This table describes the GLM configuration. The active inference unit and contai
 | Native TensorFold 1.2.7 | both | `~/.local/bin/tensorfold` (signed release). A challenger engine, **not serving** ([D2](#d2-native-tensorfold-through-spark-nodesh--spark-clustersh)) |
 | spark-guard | both | `openbeast-spark-guard.service` (system unit, `active (exited)`): an nftables table that keeps the engines' rendezvous ports on the fabric ([B3](#b3-firewall-spark-guard)) |
 
-**Checkouts, 2026-11-17 (evening).** Both Sparks are on one commit,
-`d3727185` (#203, the thinking default). #204 changed only the Mac client
-and docs, so neither Spark needs it to serve. (On 2026-11-16 evening they
+**Checkouts, 2026-11-18.** Both Sparks are on one commit,
+`d3727185` (#203, the thinking default), eight merges behind `main`. Both
+also hold uncommitted copies of files that #210 later merged into `main`
+(`docs/PYTHON_OFFLINE.md`, `docs/TAILSCALE_OFFLINE.md`, `skills/tailscale/`,
+edits to `agents/docs/sources.toml`, `docs/BEAST_DOCS.md`,
+`skills/IN_HOUSE_SKILLS.txt`, `skills/platform-docs/SKILL.md`), plus macOS
+`._*` metadata files. They match `main` except one line of
+`skills/platform-docs/SKILL.md`, where `main` points at `skill("tailscale")`.
+A `git pull` will refuse to overwrite them: move them aside first
+([SELF_DEVELOPMENT.md 11.3](SELF_DEVELOPMENT.md#113-the-loop-edit-test-commit-share-review-merge)).
+#204 to #211 changed the Mac client, the docs and the pack helper, so
+neither Spark needs them to serve. (On 2026-11-16 evening they
 were skewed, spark-1 at `29e5241a` (#181) and spark-2 at `de931dfe` (#176);
 on 2026-11-15 spark-1 was at `ecf50a2` and spark-2 at `0988641`.) Keep them
 on one commit: the "same repo
@@ -548,7 +573,7 @@ has the commands.
 | GLM-5.3-Flash Ablit EXL3 weights | 175.7 GB | the Hub at `57edefd2…` | `model-fetch.sh --verify` against the committed lock | [C](#c-weights) |
 | DFlash2 drafter | 2.3 GB | the Hub at `bf582e4e…` | the blob-hash loop | [C4](#c4-the-drafter-dflash2) |
 | Recipe image `tensorfold-glm53:v0.6.0` | tens of GB | `prepare.sh`, or `docker pull` from ghcr | image ID `sha256:ead01740…` after `docker load` | [H4](#h4-container-images) |
-| The recipe checkout `~/openbeast-recipes/glm53` | small | git (MiaAI-Lab) | commit `33b50fd` | [D1](#d1-the-mia-recipe-what-serves-today) |
+| The recipe checkout `~/openbeast-recipes/glm53` | small | git (MiaAI-Lab) | commit `33b50fd` | [D1](#d1-the-glm-recipe-rollback-deployment) |
 | Native TensorFold 1.2.7 (optional) | ~100 MB | GitHub release | ed25519 signature + SHA256SUMS (`install-native.sh --stage` / `--from`) | [H5](#h5-native-tensorfold-and-the-engine-plane) |
 | Python wheels for the command center | ~200 MB | `pydeps.sh wheelhouse` or `bundle.sh build` **on a Spark** | `agents/requirements.lock` hashes | [H6](#h6-the-command-center-wheels-and-compose-images) |
 | Compose images (open-webui, searxng, extensions) | a few GB | `docker save` on an online Spark | digest pins; `bundle.sh install` rewrites them to the content ID | [H6](#h6-the-command-center-wheels-and-compose-images) |
@@ -1636,15 +1661,19 @@ systemctl --user enable --now openbeast
   (`healthcheck.sh --restart` every 5 min) and `openbeast-logrotate.timer`
   (daily) when they are missing.
 
-What is enabled on spark-1 (`systemctl --user list-unit-files | grep -E 'openbeast|spark|hydra'`):
+What is enabled on spark-1 (`systemctl --user list-unit-files | grep -E 'openbeast|deepseek|spark|hydra'`, 2026-11-18, DeepSeek selected):
 
 ```
+deepseek-v41-inference.service enabled
 openbeast.service              enabled
-spark-hydra-inference.service  enabled
+spark-hydra-inference.service  disabled
 openbeast-watchdog.timer       enabled
 openbeast-logrotate.timer      enabled
 openbeast-stack.service        transient
 ```
+
+Exactly one of the two inference units is enabled; that is the model
+selected for boot. With GLM selected, the two lines swap.
 
 Then reboot once. This is the docker-group gotcha from
 [B2](#b2-spark-root-setupsh-the-only-root-step-once-per-spark). After the
@@ -2235,7 +2264,7 @@ The following measurements and recipe settings apply to GLM. GB10 memory is **un
 (124,607 MiB). Two caps keep the box from freezing. Unified memory freezes
 rather than OOMs.
 
-- **The engine side** ([D1](#d1-the-mia-recipe-what-serves-today)):
+- **The engine side** ([D1](#d1-the-glm-recipe-rollback-deployment)):
   `KV_POOL_GIB=10` fixes the KV pool, and `MEMORY_RESERVE_GIB=17.5` leaves host
   memory for the command center.
 - **The stack side** (`start.sh`): `start.sh -d` runs the stack in a
@@ -2526,7 +2555,8 @@ Every row below was hit on the way to the live pair.
 | opencode on the Mac lost `openbeast-tools` (or another server) | a v1 `mcp.<name>` entry next to v2 `mcp.servers.<name>`: v2 does not merge them | move everything under `mcp.servers`, drop `enabled` ([F3](#f3-what-the-client-writes-into-opencode)); `setup-client.sh` does this itself now |
 | `tests/test_scripts.sh` failures on a copy without `.git` (7 seen on spark-2) | some suites need a git checkout | run from a git checkout |
 | shell suites fail on the Mac but pass on a Spark | BSD vs GNU tools (`tests/test_engines.sh` needs GNU coreutils; `test_skill_import.sh` showed 5 BSD-only failures on 2026-11-15) | run shell suites on a Spark ([SELF_DEVELOPMENT.md](SELF_DEVELOPMENT.md) "Tests") |
-| `python3 -m pytest` says no module | no pytest for that python (none on spark-1 or the Mac's default python, 2026-11-15) | the hash-pinned test venv ([H7](#h7-test-and-language-toolchains)) |
+| `python3 -m pytest` says no module | no pytest for that python (none on spark-1 or the Mac's default python; spark-2 has `~/obvenv`, 2026-11-18) | `source ~/obvenv/bin/activate` on spark-2, the eval venv on the Mac, or build the hash-pinned test venv ([H7](#h7-test-and-language-toolchains)) |
+| opencode on spark-2 cannot reach the model | the `opencode-model-link` tunnel is down (spark-1 rebooting, fabric down) | `systemctl --user status opencode-model-link` on spark-2; it retries every 10 s by itself |
 | `bootstrap.sh` offline asks for `bundle.sh build` "on a connected box" | the bundle must be built for the **target's** platform | build it on an online Spark (aarch64, same overlay2 store) ([H6](#h6-the-command-center-wheels-and-compose-images)) |
 | web tools stall instead of refusing in a spawned agent | `agents/tools.py` (era-hashed) has no island guard; only `mcp_server.py` does | expected (BEAST_ISLAND "Known limits"); web_search is bounded at 15 s, fetch at 45 s |
 
@@ -2547,11 +2577,13 @@ Every row below was hit on the way to the live pair.
   and everything is local.
 - **The whole command center** works except the web: WebUI, tools, agents,
   skills, files, beast-chat, beast-artifact, beast-gate, beast-slot.
-- **opencode on spark-1** is not set up: it is not installed there, and the
-  repo's `opencode.json` points at llama.cpp's `:8080`, not `:8000`
-  ([SELF_DEVELOPMENT.md](SELF_DEVELOPMENT.md)). Use `./agent.sh` on the box,
-  or opencode on the Mac in client mode (F2), which keeps working over the
-  LAN or the tailnet.
+- **opencode on both Sparks** (v2.3.2, since 2026-11-18) talks to
+  `127.0.0.1:8000` directly, spark-2 through its `opencode-model-link` ssh
+  tunnel over the fabric. No gate, tailnet or LAN in the path, so it works
+  with everything outside the pair down. It has no OpenBeast MCP tools yet
+  ([SELF_DEVELOPMENT.md](SELF_DEVELOPMENT.md#opencode-on-the-sparks)).
+  opencode on the Mac in client mode (F2) keeps working over the LAN or the
+  tailnet.
 - **`./agent.sh`** works on spark-1.
 - **`language_reference`, `platform_docs`, `scripts/docs.sh search`** work
   against what is mirrored.
@@ -2575,6 +2607,12 @@ git -C ~/openbeast bundle create /media/usb/openbeast.bundle --all     # online 
 git clone /media/usb/openbeast.bundle ~/openbeast                      # closed box
 git -C ~/openbeast log --oneline -1                                     # the commit you expect
 ```
+
+For **developing** offline (branches, review, merge, and the sync back to
+GitHub), the Sparks share a bare hub repository on spark-1,
+`~/git/openbeast.git`, with an offline trunk `offline/main`:
+[SELF_DEVELOPMENT.md §11](SELF_DEVELOPMENT.md#11-developing-with-github-unreachable).
+The hub is not created yet (2026-11-18).
 
 ### H3. .debs: libnccl2 and tailscale
 
@@ -2955,6 +2993,12 @@ up on the operator steps named):
 ### Not done yet
 
 - zig for `language_reference` on a Spark (H7), and a beast-docs mirror on spark-1 (F5).
+- The offline git hub on spark-1 (`~/git/openbeast.git`,
+  [SELF_DEVELOPMENT.md §11](SELF_DEVELOPMENT.md#11-developing-with-github-unreachable)).
+- OpenBeast MCP tools and the soul in opencode on the Sparks; GLM through
+  that opencode config is untested.
+- pytest on spark-1 and ShellCheck on either Spark (none installed, 2026-11-18).
+- A cold boot of both Sparks with the WAN disconnected, for the DeepSeek deployment.
 - The fabric MTU A/B (B4): MTU 9000 is live since 2026-11-17; its speed
   effect on prefill and decode is unmeasured.
 - A `svc:spark-hydra` Tailscale Service name (an admin-console step), and the
