@@ -87,6 +87,18 @@ Each cell gives two runs. The differences are inside run-to-run noise. A first v
 Three paths. Every command below is from the runbook body; the linked section
 has the detail. All run from the Mac unless marked "on spark-1".
 
+**Everyday shortcuts: beast-spark.** On spark-1, `~/.local/bin/beast-spark` (from `scripts/backends/spark-beast.sh`) and its bash aliases cover the daily operations:
+
+| Alias | Command | Does |
+|---|---|---|
+| `beastup` | `beast-spark up` | Starts the selected model's unit, waits for `/v1/models`, then starts the command center |
+| `beastdown` | `beast-spark down` | Stops the command center and both inference units. The boot selection stays as it is |
+| `beastglm` | `beast-spark glm` | Switches to GLM-5.3-Flash through `rollback/restore-glm.sh` |
+| `beastds` | `beast-spark ds` | Switches to DeepSeek on the EAQ v1.1 `-v2` pack: stops GLM, re-selects `-v2` with `spark-deepseek-pack.sh` if another pack is selected, then runs `activate-stock.sh` (canary, conformance, command center, boot selection) |
+| `beaststatus` | `beast-spark status` | Shows the selected model and pack, the three units, and what `:8000` serves |
+
+"Selected" means the enabled inference unit, which is the one that starts at boot. The pair serves only these two models. The `-v2` pack supersedes the stock EAQ v1 pack, which stays on disk only as a fallback (`spark-deepseek-pack.sh use stock`). To install or update after a pull, run on the Mac: `scp scripts/backends/spark-beast.sh spark-1:.local/bin/beast-spark`. The aliases are in spark-1's `~/.bashrc`, under `# beast-spark shortcuts`. After a switch, run `openbeast-client use spark-hydra` on clients.
+
 **(a) Everyday, on the deployed pair.** On spark-1 the enabled user unit `deepseek-v41-inference` drives both ranks. It retries a failed launch after 60 seconds. The command center has its own user unit, `openbeast`.
 
 ```bash
