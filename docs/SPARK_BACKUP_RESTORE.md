@@ -58,7 +58,7 @@ deleted afterwards. The first real run is [§5.1 drill 0](#51-the-drills).
    **erases** the stick it writes, which must hold at least 16 GB (CLAIMED).
    It cannot share the backup drive.
 6. **Recovery time (estimate):** about **2.5 to 3.5 hours** from bare metal to
-   a serving pair with an NVMe-class USB drive, or **4 to 5 hours** with a
+   a serving pair with an NVMe-class USB drive, or **3.5 to 4.5 hours** with a
    spinning 4 TB drive ([§5.2](#52-recovery-time)).
 
 ---
@@ -74,7 +74,7 @@ claimed:
 | Category | Size (unique) | Decision | Why |
 |---|---|---|---|
 | Weights: `Documents/` pack folders, `openbeast-models/deepseek-hf/hub` (DeepSeek base with the Engram shards, EAQ v1 and v1.1-v2 packs), `openbeast-models/glm53-flash-ablit-exl3`, `.cache/huggingface` (GLM layout plus the DFlash2 drafter blobs) | **722.6 GB** | **back up** | days to re-download, impossible offline. Hard-linked across the three trees: one rsync `-H` pass |
-| Rank files of the **serving** pack (`tensorfold-dsv41/04c13f12/` rank 0, `worker-rank-cache-04c13f12/` rank 1) | **212.2 GB** | **back up** | rebuildable in about 15 min each (`spark-deepseek-prepare-local.sh`), but copying 106 GB from a USB SSD takes about 2 min. `--no-rank-caches` leaves them out |
+| Rank files of the **selected** DeepSeek pack (`tensorfold-dsv41/04c13f12/` rank 0, `worker-rank-cache-04c13f12/` rank 1; the rank-1 folder is whatever `WORKER_CACHE_DIR` in the recipe's `local.sh` names, `worker-rank-cache/` for the stock pack) | **212.2 GB** | **back up** | rebuildable in about 15 min each (`spark-deepseek-prepare-local.sh`), but copying 106 GB from a USB SSD takes about 2 min. `--no-rank-caches` leaves them out |
 | Rank files of other packs (`tensorfold-dsv41/45ee5d0f/`, `worker-rank-cache/`) | 212.2 GB | **rebuild** | `spark-deepseek-pack.sh use` rebuilds them when that pack is selected |
 | Tools and config: `~/openbeast` (with `.git` and the **uncommitted** changes), `~/.local/{bin,opt,lib}` (native TensorFold 1.2.7, `beast-spark`, hf), `~/.opencode` (opencode v2.3.2), `~/.venvs/spark-tools`, `~/openbeast-recipes` (deepseek-prep runtime, rollback, conformance records; glm53), units in `~/.config/systemd/user`, `.openbeast` (docs mirror), `backups/`, `Downloads/`, the serving kit, kernel caches | 8.5 GB | **back up** | small, and what makes the node "ours" |
 | Secrets: `openbeast.conf` (+ `.bak-*`), `~/.config/openbeast/{gate-keys/,tensorfold-api-key,hf-token,webui-max-password}`, `~/.ssh/{authorized_keys,id_ed25519_nvsync_cluster_assistant}`, `~/.gnupg` | 118 KB | **back up, encrypted drive** | listed by path, never printed. `inventory` flags a secret readable by group or other |
@@ -89,8 +89,10 @@ claimed:
 all of it is the same weights and rank files as spark-1 (the backup
 convention mirrors `Documents/`). What only spark-2 has is small:
 `opencode-model-link.service`, `~/offline-stage/debs` (the pinned libnccl2
-and tailscale `.deb`s), scratch test clones, and `openbeast-backups/`. The
-`--config-only` mode covers it in about 1 to 2 GB ([§2.9](#29-spark-2-and-other-workers)).
+and tailscale `.deb`s), `openbeast-backups/` (kilobytes), the test venv
+`~/obvenv` (about 150 MB) and scratch test clones. The `--config-only` mode
+covers the first three in about 1 to 2 GB; the venv is rebuilt and the clones
+are re-cloned from the hub, never copied ([§2.9](#29-spark-2-and-other-workers)).
 
 **Size on the 4 TB drive.** The first generation is about **1.0 TB**:
 943 GB of files, the images after zstd (no more than 54 GB), and 1 GB of
@@ -199,9 +201,11 @@ sudo mkdir -p /media/max/obbackup && sudo mount /dev/mapper/obbackup /media/max/
 sudo chown max:max /media/max/obbackup
 ```
 
-Every later use:
+Every later use (the `mkdir` matters on a freshly installed Spark, where the
+mount point does not exist yet):
 
 ```bash
+sudo mkdir -p /media/max/obbackup
 sudo cryptsetup open /dev/sdX obbackup && sudo mount /dev/mapper/obbackup /media/max/obbackup
 # ... back up / restore ...
 sudo umount /media/max/obbackup && sudo cryptsetup close obbackup
@@ -229,9 +233,11 @@ spark-1's root is plain ext4 on `nvme0n1p2`, with no LVM and no btrfs
 - **The checkout, logs and recipe records** change rarely. A log rotated
   mid-copy makes rsync exit 24, which the tool accepts.
 - **For a perfectly quiet backup**, for example before an OS reinstall, stop
-  the command center and inference through their units first
-  (`systemctl --user stop openbeast deepseek-v41-inference`), back up, and
-  start them again.
+  the command center and inference first with `beastdown`
+  (`~/.local/bin/beast-spark down`: the command center and both inference
+  units, whichever model is selected; or
+  `systemctl --user stop openbeast spark-hydra-inference` while GLM, the
+  default, is selected), back up, and start them again with `beastup`.
 
 ### 2.7 Running it
 
@@ -260,6 +266,14 @@ The drive's layout:
     latest -> 20261118T090000Z      moved only after a generation completes
   spark-9f26/                       spark-2's --config-only generations
 ```
+
+`run` works under `umask 077` (everything it writes on the drive is the
+account's alone), names every home entry no items line claims as **NOT backed
+up** in its plan (nothing is left out silently), and repeats the inventory's
+secret-mode check (a secret readable by group or other is flagged). BACKUP.json
+records the units the node had enabled for boot (`enabled_user_units`, from
+its `*.wants` links) and the selected DeepSeek pack's rank-1 folder
+(`serving_wcd`); the restore reads both.
 
 A generation is written as `<stamp>.partial` and renamed only when it is
 complete. An interrupted run never becomes `latest`. The next run starts a
@@ -299,7 +313,13 @@ workers. A worker's own unique state is small. Back it up with:
 scripts/backends/spark-backup.sh run --to /media/max/obbackup --config-only --apply   # on spark-2: about 1-2 GB
 ```
 
-That covers spark-2's units, staged debs and scratch. Before the first head
+That covers spark-2's units, staged debs and `openbeast-backups/`. It
+leaves out the weights, rank files, images and volumes (the head's backup
+holds them), and the plan says so. The items file also claims spark-2's
+scratch: the test clones (`scratch*`, `obtest-*`, `obengine-scratch-*`) are
+`skip` (re-clone them from the hub) and `~/obvenv` is `rebuild`
+(`python3 -m venv ~/obvenv`, then the repo's test dependencies). Anything
+else no line claims is listed as NOT backed up when `run` plans. Before the first head
 backup, copy spark-2's `~/offline-stage/` to spark-1. The head's backup then
 carries the pinned `.deb`s, and every restore can run
 `spark-root-setup.sh --debs ~/offline-stage/debs` offline.
@@ -317,9 +337,9 @@ carries the pinned `.deb`s, and every restore can run
 | ssh host keys | `/etc/ssh/ssh_host_*` | **never copied**. New keys at install. `known_hosts` is not restored; the restore's ssh block uses `StrictHostKeyChecking accept-new` on the fabric aliases |
 | Tailscale node | `/var/lib/tailscale` (root) | **never copied**: two nodes with one key fight over one identity. `spark-root-setup.sh spark-N` runs `tailscale up --hostname=spark-N` (re-auth by URL). Remove the old machine in the admin console first, or the new one becomes `spark-1-1`. Then `setup-tailscale.sh` on the head recreates the serve config (recorded in `system/tailscale-serve.txt`) |
 | Fabric addresses and ports | NVIDIA Sync's `/etc/netplan/99-nvidia-sync-cluster.yaml`; our `99-zz-openbeast-fabric-mtu.yaml` | **never copied**. Sync addresses the rails per node. `spark-fabric-mtu.sh` stages MTU 9000 per node. The restore reads the ports that are Up (`ibdev2netdev`) into `SPARK_IFACE` / `SPARK_IB_HCA` |
-| Rank and role | `spark.env` (`SPARK_NODE_IP`, `SPARK_HEAD_IP`), the head's `cluster.env` (`CLUSTER_NODES`), the recipe's `local.sh` (`WORKER`, `FABRIC_PEER`) | **written by the restore** from the fleet file and `--index` |
-| Worker-only files | `worker-rank-cache-<REV8>/` (rank 1 of a TP-2 pair) | restored to every node (the head builds and pushes it). The rank-0 file goes to the head only. For TP > 2, rank files differ per rank: rebuild them |
-| Boot units | `default.target.wants/` links | **not copied**. The restore enables the role's units: head `openbeast`, `deepseek-v41-inference` and the two timers; worker `opencode-model-link` |
+| Rank and role | `spark.env` (`SPARK_NODE_IP`, `SPARK_HEAD_IP`), the head's `cluster.env` (`CLUSTER_NODES`), the DeepSeek recipe's `local.sh` (`WORKER`, `FABRIC_PEER`), the GLM recipe's `glm53/scripts/local.sh` (`WORKER=max@10.100.216.2`, hardcoded user@fabric address) | **written by the restore** from the fleet file and `--index` (both recipes, on a pair) |
+| Worker-only files | the selected DeepSeek pack's rank-1 folder, `worker-rank-cache-<REV8>/` (`worker-rank-cache/` for the stock pack; the items file's `{SERVING_WCD}`) | restored to every node (the head builds and pushes it). The rank-0 file goes to the head only. For TP > 2, rank files differ per rank: rebuild them |
+| Boot units | `default.target.wants/` links | **not copied**. The restore enables the role's units: head `openbeast`, the two timers and **the inference unit the backup had enabled** (read from the generation's recorded `*.wants` links: GLM's `spark-hydra-inference` on spark-hydra since 2026-11-18, and the default when the record says nothing); worker `opencode-model-link` |
 | Gate device keys | `~/.config/openbeast/gate-keys/` (head) | come back with the head, so enrolled clients keep working. **A second, independent pair needs its own** (`scripts/clients.sh enroll`): one device key must not open two gates |
 | Docker engine ID, image store | `/var/lib/docker` | **never copied**. Images are re-loaded. The compose digest pins are rewritten to the loaded IDs (the original is kept as `docker-compose.yml.pre-restore`) |
 | NVIDIA licence and EULA | first-boot wizard | **by hand on each node** |
@@ -370,11 +390,11 @@ For each Spark. Times are estimates; [§5.2](#52-recovery-time) adds them up.
 | 2 | First boot: user **`max`** (the first account is uid 1000, matching the backup; the restore refuses another uid), EULA, network | Max | VERIFY (step 4 above) |
 | 3 | `sudo usermod -aG docker max`, then log out and in. Docker, the driver, CUDA and nvidia-container-toolkit come with DGX OS | Max | yes |
 | 4 | Cable the QSFP ports. Pair with **NVIDIA Sync** on the Mac: it addresses the rails, writes its netplan and installs the cluster ssh key and aliases | Max | Sync needs the Mac on the LAN, not the internet (VERIFY) |
-| 5 | Mount the backup drive ([§2.5](#25-secrets-encrypt-the-whole-drive-with-luks2)) and copy the restore tool off it: `cp -a /media/max/obbackup/openbeast-backup/spark-3dc6/latest/home/openbeast ~/openbeast` (the drive carries the checkout, so no git or network is needed) | Max | yes |
-| 6 | `scripts/backends/spark-restore.sh --from /media/max/obbackup/openbeast-backup/spark-3dc6/latest --fleet FLEET --index N` (dry run), then add `--apply` | Max | yes |
+| 5 | Mount the backup drive ([§2.5](#25-secrets-encrypt-the-whole-drive-with-luks2), with its `sudo mkdir -p /media/max/obbackup` first) and write the fleet file, e.g. `cp /media/max/obbackup/openbeast-backup/spark-3dc6/latest/home/openbeast/scripts/backends/fleet.env.example ~/fleet.env`, then edit it ([§4.1](#41-the-fleet-file)) | Max | yes |
+| 6 | Run the restore tool **straight from the drive's copy of the checkout** (no git, no network, and nothing copied into `~` by hand: the restore itself brings `~/openbeast` with the rest of the overlay): `G=/media/max/obbackup/openbeast-backup/spark-3dc6/latest; $G/home/openbeast/scripts/backends/spark-restore.sh --from $G --fleet ~/fleet.env --index N` (dry run), then add `--apply`. On a worker, `--from` can also be the head's generation over ssh ([§4.3](#43-seeding-the-workers-fast)) | Max | yes |
 | 7 | `sudo scripts/backends/spark-root-setup.sh spark-N --guard --debs ~/offline-stage/debs`: libnccl2 pinned and held, linger, Tailscale installed and joined as `spark-N` (**re-auth URL**), spark-guard | Max | the Tailscale join needs a route; everything else does not |
 | 8 | `sudo scripts/backends/spark-fabric-mtu.sh` (stage MTU 9000), then **reboot every Spark of the fabric together** | Max | yes |
-| 9 | Head: `scripts/setup-tailscale.sh` (serve config), then `systemctl --user start deepseek-v41-inference openbeast` | Max | serve needs tailscaled up |
+| 9 | Head: `scripts/setup-tailscale.sh` (serve config), then `systemctl --user start spark-hydra-inference openbeast` (GLM, the default; the restore prints the unit the backup had enabled), or `beastup` | Max | serve needs tailscaled up |
 | 10 | Checks: `scripts/backends/spark-cluster.sh check` (head), `scripts/doctor.sh`, `scripts/backends/conformance.sh`, a chat from the Mac | Max | yes |
 
 Step 6 on an already-restored node is idempotent. Images that are present
@@ -411,7 +431,10 @@ For node N, the restore writes:
   managed ssh block for the peers. NVIDIA Sync's own `Host` entries win when
   they exist.
 - **head**: `cluster.env` (`CLUSTER_NODES="local max@<ip1> ..."`), the
-  recipe's `WORKER` / `FABRIC_PEER` (pair only), and `TS_HOSTNAME`.
+  DeepSeek recipe's `WORKER` / `FABRIC_PEER` and the GLM recipe's
+  `WORKER=<user>@<worker fabric ip>` in `openbeast-recipes/glm53/scripts/local.sh`
+  (pair only: GLM's `local.sh` hardcodes `max@10.100.216.2`), and
+  `TS_HOSTNAME`.
 - **worker**: the `opencode-model-link` unit, pointed at the head.
 
 Each replaced file is kept as `<file>.pre-restore`.
@@ -438,11 +461,14 @@ So "N Sparks" means one of two shapes today:
 
 - **N/2 pairs (works now).** Each pair is its own fleet: its own fleet file,
   head, gate, tailnet names and device enrollments. Restore one backup onto
-  each pair with that pair's fleet file. Every pair serves the DeepSeek
-  recipe exactly as spark-hydra does.
+  each pair with that pair's fleet file. Every pair serves what spark-hydra
+  serves: GLM-5.3-Flash by default, DeepSeek as the alternative (`beastds`).
+  The restore rewrites both recipes' worker addresses for the new pair: the
+  DeepSeek recipe's `WORKER` / `FABRIC_PEER`, and GLM's `WORKER` in
+  `glm53/scripts/local.sh`, which hardcodes `max@10.100.216.2`.
 - **One cluster of N (VERIFY).** One fleet file with N nodes, restored N
   times. Serving then needs a TP-N profile through `spark-cluster.sh`. The
-  restore keeps the TP-2 recipe's `local.sh` unchanged and says so. Rank
+  restore keeps both TP-2 recipes' `local.sh` files unchanged and says so. Rank
   files for TP > 2 are rebuilt per rank.
 
 ### 4.3 Seeding the workers fast
@@ -477,7 +503,7 @@ None of these touches the live pair's serving state.
 | **0. First real backup** (not done yet) | the drive prep in [§2.5](#25-secrets-encrypt-the-whole-drive-with-luks2), `run` (dry), `run --apply`, then `verify --deep`. Check that `system/` and `docker/images.json` look right and that the open-webui image saves by digest (VERIFY) | once, at a quiet moment |
 | **1. Manifest check** | `verify GEN --deep`: every file re-hashed, every hard-link group intact | monthly |
 | **2. Drift check** | `verify GEN --against-live` on the node: files changed, new or gone since the generation. Read-only | before relying on an old generation |
-| **3. Scratch restore** | restore into a scratch home on the head: `SPARK_BACKUP_HOME=/home/max/restore-drill SPARK_RESTORE_HOME_CHECK=0 spark-restore.sh --from GEN --fleet FLEET --index 1 --skip-images --no-units --apply --yes`, then `diff -r` the config trees against the live ones and `sha256sum -c` a few shards, then `rm -rf` the scratch. It needs disk for the weights (830 GB), so add `--skip-weights` to drill the config path alone. `--no-units` keeps it from enabling units in the real systemd, and `--skip-images` from touching docker | quarterly |
+| **3. Scratch restore** | restore into a scratch home on the head: `mkdir -p /home/max/restore-drill && SPARK_BACKUP_HOME=/home/max/restore-drill SPARK_RESTORE_HOME_CHECK=0 spark-restore.sh --from GEN --fleet FLEET --index 1 --skip-images --no-units --apply --yes`, then `diff -r` the config trees against the live ones and `sha256sum -c` a few shards, then `rm -rf` the scratch. It needs disk for the weights (830 GB), so add `--skip-weights` to drill the config path alone. `--no-units` keeps it from enabling units in the real systemd, and `--skip-images` from touching docker | quarterly |
 | **4. Image check** | in the scratch restore, `zstd -dc docker/tensorfold-dsv41*.tar.zst \| tar t \| head`, and once `docker load` on a node that lacks the image | with drill 3 |
 | **5. Full restore** | on a **third** Spark when one arrives, or on spark-2 in a planned outage (the head keeps the model): the whole of [§3.3](#33-bare-metal-to-serving-the-order), time each step, fill in [§5.2](#52-recovery-time) | once, then after big changes |
 
@@ -496,8 +522,8 @@ parentheses a 4 TB spinning drive (about 0.2 GB/s).
 | `docker load` of about 54 GB | 5 to 10 min |
 | Root setup, Tailscale re-auth, MTU, reboot | 10 to 15 min |
 | First start: the model loads, conformance | 10 to 15 min |
-| **Total, one Spark** | **about 1.5 to 2.5 h** (3 to 4 h) |
-| **The pair** (worker restored over the fabric while the head finishes) | **about 2.5 to 3.5 h** (4 to 5 h) |
+| **Total, one Spark** | **about 1.5 to 2.5 h** (2.5 to 3.5 h) |
+| **The pair** (worker restored over the fabric while the head finishes) | **about 2.5 to 3.5 h** (3.5 to 4.5 h) |
 | Rank files rebuilt instead of copied (`--no-rank-caches`) | add about 15 min per pack |
 
 The first full restore ([§5.1 drill 5](#51-the-drills)) replaces these
@@ -520,7 +546,7 @@ estimates with measurements.
 
 | File | What |
 |---|---|
-| `scripts/backends/spark-backup.sh` | `inventory` (read-only), `run --to DIR [--apply]`, `verify GEN [--deep] [--against-live]`, `list DIR`. Never root, never writes outside `--to`, refuses non-ext4 and non-LUKS drives |
+| `scripts/backends/spark-backup.sh` | `inventory` (read-only), `run --to DIR [--apply]`, `verify GEN [--deep] [--against-live]`, `list DIR`. Never root, never writes outside `--to` (under `umask 077`), accepts ext4 (or ext3, xfs, btrfs) and refuses other filesystems (exFAT, vfat, NTFS, APFS, HFS+) and non-LUKS drives unless `--allow-unencrypted` |
 | `scripts/backends/spark-restore.sh` | `--from GEN --fleet FILE --index N [--apply]` (`--no-units` for a scratch drill). Dry run by default; `--apply` asks for the node name (or `--yes`). Never root, never `--delete` |
 | `scripts/backends/pylib/spark_backup.py` | the engine (stdlib, python >= 3.9) |
 | `scripts/backends/data/spark-backup.items` | **what a backup is.** Edit it when something new lives on a Spark. `inventory` shows anything unclaimed |
@@ -528,7 +554,7 @@ estimates with measurements.
 | `tests/test_spark_backup.sh` | hermetic: fake docker, findmnt, lsblk, zstd, nvidia-smi, ibdev2netdev and systemctl; scratch homes; real GNU rsync >= 3 for the copies (skipped without it). It covers refusals (exFAT, unencrypted, `/`, bad fleets, uid), hard links across three trees, the filter, generations and `--link-dest`, image reuse, pause and unpause, `verify --deep` catching a same-size edit, `--against-live`, the worker and head restores, per-node files, and the compose pin rewrite |
 
 Test seams (environment): `SPARK_BACKUP_HOME`, `SPARK_BACKUP_ITEMS`,
-`SPARK_BACKUP_SERVING_REV`, `SPARK_BACKUP_HOSTNAME`, `SPARK_BACKUP_NOW`,
+`SPARK_BACKUP_SERVING_REV`, `SPARK_BACKUP_SERVING_WCD`, `SPARK_BACKUP_HOSTNAME`, `SPARK_BACKUP_NOW`,
 `SPARK_BACKUP_UID`/`_GID`/`_USER`, `SPARK_RESTORE_HOME_CHECK=0`,
 `SPARK_BACKUP_HELPER_IMAGE`, and the commands `DOCKER`, `RSYNC`, `ZSTD`,
 `FINDMNT`, `LSBLK`, `NVIDIA_SMI`, `IBDEV2NETDEV`, `SYSTEMCTL`, `SSH`, `GIT`,

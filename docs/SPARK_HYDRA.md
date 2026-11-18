@@ -1,6 +1,6 @@
 # spark-hydra: the DGX Spark launch runbook
 
-**Live deployment, 2026-11-18.** The pair serves **GLM-5.3-Flash** (`GLM-5.3-Flash-EXL3`, unit `spark-hydra-inference`, enabled for boot), the default again by Max's decision after testing: DeepSeek-V4.1-Flash-1017 did not satisfy him, the EAQ v1.1 "-v2" pack included. DeepSeek stays **staged as the alternative**: `beastds` (or `activate-stock.sh`) serves it on the "-v2" pack, which supersedes the stock EAQ v1 pack for DeepSeek ([DeepSeek packs](#deepseek-packs-spark-deepseek-pack)); `beastglm` (`restore-glm.sh`) switches back. The pair serves these two models only, one at a time. The command center and beast-gate run on spark-1. The DeepSeek sections below record its deployment of 2026-11-17 and stay valid for when it is selected; the GLM recipe, tuning measurements and rebuild examples describe the serving default.
+**Live deployment, 2026-11-18.** The pair serves **GLM-5.3-Flash** (`GLM-5.3-Flash-EXL3`, unit `spark-hydra-inference`, enabled for boot), the default again by Max's decision after testing: DeepSeek-V4.1-Flash-1017 did not satisfy him, the EAQ v1.1 "-v2" pack included. DeepSeek stays **staged as the alternative**: `beastds` stops GLM, re-selects the "-v2" pack (which supersedes the stock EAQ v1 pack for DeepSeek, [DeepSeek packs](#deepseek-packs-spark-deepseek-pack)) and runs `activate-stock.sh`; `beastglm` switches back. `beast-spark` (the `beast*` aliases) is the one switch path ([Everyday shortcuts](#quickstart)); `activate-stock.sh` and `restore-glm.sh` are its internals, and `activate-stock.sh` never stops GLM itself. The pair serves these two models only, one at a time. The command center and beast-gate run on spark-1. The DeepSeek sections below record its deployment of 2026-11-17 and stay valid for when it is selected; the GLM recipe, tuning measurements and rebuild examples describe the serving default.
 
 This page takes you from bare boxes to a serving pair, start to finish, and then
 covers day-2 operations and fully offline operation. Read it top to bottom the
@@ -17,7 +17,9 @@ result is recorded here. **VERIFY ON HARDWARE** means the code exists and is
 tested against stubs, but has never run on a real Spark. Every command on this
 page exists in the code on `main` (`feat/spark-scale-1-8`, where it started,
 is merged into it). Flags were checked against each script's `--help` on
-2026-11-15, and again for the two checklists on 2026-11-16.
+2026-11-15, and again for the two checklists on 2026-11-16. **Units:** GB is
+10^9 bytes (disk, files, copies), GiB is 2^30 bytes (memory: MemTotal, per-rank
+weights, KV pools); a 106 GB rank file is 98.8 GiB of memory.
 
 ## DeepSeek deployment
 
@@ -36,18 +38,21 @@ The November 17 cutover used Mia's [two-Spark recipe at c7f2b85](https://github.
 
 **Local interactive baseline, November 17.** From the Mac through the authenticated tailnet gate, six short temperature-zero prose probes requested 256 completion tokens each. With thinking on (including one request using the gate default), single-stream decode was 70.1–71.7 tok/s, all reasoning tokens. With `chat_template_kwargs.enable_thinking=false`, it was 53.7–63.2 tok/s, median 60.7, all visible answer tokens. The median first streamed token arrived in 232 ms with thinking and 156 ms without. Four simultaneous thinking-off requests delivered 1,024 completion tokens in 8.74 s, or 117.1 tok/s aggregate end to end. Decode rates use tokens after the first divided by time from first to last content-bearing chunk. Use thinking for multi-step work and disable it per request for quick answers. This short-prompt test does not establish long-context performance or a quality-optimal setting.
 
-**Switching on this pair.** Exactly one of the two inference units is enabled. Since 2026-11-18 that is GLM's `spark-hydra-inference`, and `deepseek-v41-inference` is disabled. `restore-glm.sh` (in `~/openbeast-recipes/deepseek-prep/rollback/`, alias `beastglm`) switches both ranks to GLM and restores GLM's serving configuration; `activate-stock.sh` (alias `beastds`) switches to DeepSeek. Then run `openbeast-client use spark-hydra` on each client to refresh its model and check discovery and a real completion (or let `openbeast-client autosync`, PR #215, do it every 30 s).
+**Switching on this pair.** Exactly one of the two inference units is enabled. Since 2026-11-18 that is GLM's `spark-hydra-inference`, and `deepseek-v41-inference` is disabled. Switch with `beast-spark` only ([Everyday shortcuts](#quickstart)): `beastglm` runs `rollback/restore-glm.sh` (stops and disables DeepSeek, GLM's serving configuration, enables and starts GLM); `beastds` stops GLM, re-selects the `-v2` pack and runs `activate-stock.sh` (starts DeepSeek, canary, conformance, enables DeepSeek, disables GLM, restarts the command center). Both helpers are internals: **`activate-stock.sh` never stops GLM**, so never run it while GLM is active. By hand, without beast-spark: `systemctl --user stop spark-hydra-inference && bash ~/openbeast-recipes/deepseek-prep/activate-stock.sh`. Then run `openbeast-client use spark-hydra` on each client to refresh its model; it probes the rig's `/api/slot` and `/v1/models` (discovery and the model list, not a completion). `openbeast-client autosync`, which `setup-client.sh` installs by default, does the refresh every 30 s.
 
 ### DeepSeek packs: spark-deepseek-pack
 
-A *pack* is any EXL3 quantization of DeepSeek-V4.1-Flash-1017 with the same tensor layout as Mia's EAQ v1 2.9 bpw build: the same `model.safetensors.index.json` keys and `config.json` architectures. Engram's tables (base shards 47 and 48) are shared by every pack. `scripts/backends/spark-deepseek-pack.sh` swaps the served pack offline, verifies it, and rolls back on failure. Install it on spark-1 next to the other helpers, together with `spark-deepseek-prepare-local.sh` (the generalized form of `prepare-stock-local.sh`):
+A *pack* is any EXL3 quantization of DeepSeek-V4.1-Flash-1017 with the same tensor layout as Mia's EAQ v1 2.9 bpw build: the same `model.safetensors.index.json` keys and `config.json` architectures. Engram's tables (base shards 47 and 48) are shared by every pack. `scripts/backends/spark-deepseek-pack.sh` swaps the served pack offline, verifies it, and rolls back on failure. **It is a pack swap, not a model switch: `use` is valid only while DeepSeek is selected and serving, so run `beastds` first.** While GLM's `spark-hydra-inference` is active, `use` refuses and names `beastds`; `--stop-glm` stops GLM explicitly for one swap (the boot selection and the command center then still point at GLM until `beastds`). `--dry-run` works either way. `spark-beast.sh install` puts it on spark-1 next to the other helpers, together with `spark-deepseek-prepare-local.sh` (the generalized form of `prepare-stock-local.sh`):
 
 ```bash
-# On the Mac, from the repo
+# On spark-1, from a checkout (the live ~/openbeast, or a hub clone, offline): beast-spark + both pack tools + aliases
+~/openbeast/scripts/backends/spark-beast.sh install
+# or from the Mac, by hand
 scp scripts/backends/spark-deepseek-pack.sh scripts/backends/spark-deepseek-prepare-local.sh \
     spark-1:openbeast-recipes/deepseek-prep/
 
 # On spark-1
+beastds                                                         # DeepSeek first (a no-op when it already serves)
 cd ~/openbeast-recipes/deepseek-prep
 ./spark-deepseek-pack.sh list                                   # serving pack, staged packs, previous
 ./spark-deepseek-pack.sh use ~/Documents/<pack-folder> --dry-run  # checks + plan, changes nothing
@@ -55,19 +60,21 @@ cd ~/openbeast-recipes/deepseek-prep
 ./spark-deepseek-pack.sh use stock                              # back to Mia EAQ v1 @ 45ee5d0f
 ```
 
+`beastds` re-selects its configured pack every time, the `-v2` pack by default, so a pack adopted with `use` is replaced at the next GLM → DeepSeek round trip unless `~/.config/openbeast/beast-spark.env` names it (`DS_PACK=~/Documents/<pack-folder>` and `DS_ID=ORG/NAME`, the ID `list` shows; parsed, never sourced). `use` and `beast-spark` share the lock `${XDG_RUNTIME_DIR:-/tmp}/spark-model.lock`: a second switch is refused while one runs.
+
 To bring in a new pack, copy its folder into `~/Documents` on spark-1, for example from a drive. Offline, the script does the rest:
 
 1. It refuses a folder whose tensor index or architecture differs from the serving pack's. Such a model is not a drop-in and needs its own recipe.
 2. It mirrors the folder to spark-2 at the same path, which is the backup convention. Shards shared with the serving pack become hard links.
-3. It hard-links the folder into `$HF_CACHE/hub` on both hosts as `models--ORG--NAME/snapshots/REV`. A local pack has no Hub revision, so REV is the sha1 of its shards' `size name` lines, and the same folder always gets the same REV. If a cache snapshot already has that REV, its name is reused. Otherwise the ID is `local/<folder>`, or whatever `--id ORG/NAME` sets.
+3. It hard-links the folder into `$HF_CACHE/hub` on both hosts as `models--ORG--NAME/snapshots/REV`. A local pack has no Hub revision, so REV is the sha1 of its shards' `size name` lines, and the same folder always gets the same REV. If a cache snapshot already has that REV, its name is reused. Otherwise the ID is `local/<folder>`, or whatever `--id ORG/NAME` sets. Two different packs can have one size listing, so the REV is never trusted alone: before anything is copied, every snapshot with that REV must match the folder's content fingerprint (sha256 over each shard's name, size, first and last MiB; cached in the folder as `.pack-fingerprint`), and staging refuses a snapshot directory that already holds a file that is not the folder's own (another inode or size) instead of silently keeping it.
 4. It rewrites the managed block in `runtime/scripts/local.sh` (`MODEL_ID`, `MODEL_REVISION`, `WORKER_CACHE_DIR`, `MODEL_SRC`) and keeps the old file as `local.sh.prev`.
 5. It stops the unit, then builds both rank files on the head. Each is about 106 GB and takes about 15 minutes the first time, seconds afterwards. Rank 1 goes to spark-2. The unit then restarts, which took about 40 s.
-6. It runs `verify-chat.py` (17 × 23 = 391) and `conformance.sh`. On any failure it restores `local.sh.prev`, re-prepares the previous pack (seconds, since its files are kept) and restarts it.
+6. It waits until `/v1/models` lists `DeepSeek-V4.1-Flash-1017`, then runs `verify-chat.py` (17 × 23 = 391) and `conformance.sh`, each logged whole to a file before its verdict is read. On any failure it restores `local.sh.prev`, re-prepares the previous pack (seconds, since its files are kept) and restarts it. Ctrl-C (or TERM, HUP) during steps 4 to 6 restores `local.sh.prev` too. `use` of the pack that is already selected is a no-op only when the recipe's prepared marker matches it; otherwise it prepares it again.
 7. With `--bench`, it runs `tools/bench.py` (prefill 2K/8K/32K, decode, 1/2/4 streams, thinking off) into `runtime/runs/packs/REV8.json` and compares it with the previous pack's run.
 
 **Rank-1 cache per revision (a trap).** The engine names its rank files after the tensor *index*, not the weights. Two packs with one layout therefore both produce `rank1of2-f4b9c7e9bd4f6316d1b4.bin`. With a shared `WORKER_CACHE_DIR`, prepare would find the old pack's rank-1 file "ready" and the pair would serve mixed weights. The script therefore uses `worker-rank-cache-REV8`. The stock pack keeps its original `worker-rank-cache`.
 
-The served name stays `DeepSeek-V4.1-Flash-1017`, so the gate, the command center and enrolled clients need no change. `activate-stock.sh` (GLM → DeepSeek) brings up whatever pack `local.sh` selects. Disk cost per pack is its folder, plus about 212 GB of rank files on spark-1 and about 106 GB on spark-2. Old rank files are never deleted automatically.
+The served name stays `DeepSeek-V4.1-Flash-1017`, so the gate, the command center and enrolled clients need no change. `beastds` (GLM → DeepSeek) stops GLM, re-selects its configured pack, then `activate-stock.sh` brings up whatever pack `local.sh` selects. Disk cost per pack is its folder, plus about 212 GB of rank files on spark-1 and about 106 GB on spark-2. Old rank files are never deleted automatically.
 
 **Run record, 2026-11-17: EAQ v1.1 "-v2".** Max brought the folder `~/Documents/Mia-AiLab-DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw-v2` from a drive. It is Mia's experimental EAQ v1.1 build: 39 shards, with shards 1–10 and 35–39 identical to EAQ v1 and 11–34 rewritten. Its config, index, tokenizer, template and README are byte-identical to v1's. Its `SHA256SUMS` is v1's file carried over, so it fails on the 24 new shards and cannot verify them either way. The cache ID is `Mia-AiLab/DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1.1-2.9-bpw-v2` at local REV `04c13f12b83d57487912d87d0f1677b076810954`. It loaded in 40 s and passed the canary and conformance (`conformance-v2/` on spark-1). The round trip v2 → `use stock` → v2 through the script also passed both times. Bench medians, thinking off, the same session:
 
@@ -80,7 +87,7 @@ The served name stays `DeepSeek-V4.1-Flash-1017`, so the gate, the command cente
 | Prefill 32K | 2,419 / 2,274 tok/s | 2,434 / 2,436 tok/s |
 | Errors | 0 | 0 |
 
-Each cell gives two runs. The differences are inside run-to-run noise. A first v1 run measured 2K prefill at 1,322 tok/s, but that was cold-server warm-up: the later v1 run gave 1,990 against v2's 2,035–2,049. The verdict is a drop-in replacement, and v2 is the default. A quality A/B (the v5 eval) has not been run.
+Each cell gives two runs. The differences are inside run-to-run noise. A first v1 run measured 2K prefill at 1,322 tok/s, but that was cold-server warm-up: the later v1 run gave 1,990 against v2's 2,035–2,049. The verdict is a drop-in replacement, and v2 is DeepSeek's pack (DeepSeek itself is the alternative since 2026-11-18; GLM is the pair's default). A quality A/B (the v5 eval) has not been run.
 
 **Other EXL3 models.** For other packs and other EXL3 models brought offline, including GLM packs, new architectures and the read-only `spark-model-intake.sh` preflight, see [EXL3_PLAYBOOK.md](EXL3_PLAYBOOK.md).
 
@@ -93,15 +100,15 @@ has the detail. All run from the Mac unless marked "on spark-1".
 
 | Alias | Command | Does |
 |---|---|---|
-| `beastup` | `beast-spark up` | Starts the selected model's unit, waits for `/v1/models`, then starts the command center |
+| `beastup` | `beast-spark up` | Stops the non-selected model's unit if it runs, starts the selected one, waits until `/v1/models` lists that model's id, then starts the command center |
 | `beastdown` | `beast-spark down` | Stops the command center and both inference units. The boot selection stays as it is |
-| `beastglm` | `beast-spark glm` | Switches to GLM-5.3-Flash through `rollback/restore-glm.sh` |
-| `beastds` | `beast-spark ds` | Switches to DeepSeek on the EAQ v1.1 `-v2` pack: stops GLM, re-selects `-v2` with `spark-deepseek-pack.sh` if another pack is selected, then runs `activate-stock.sh` (canary, conformance, command center, boot selection) |
+| `beastglm` | `beast-spark glm` | Switches to GLM-5.3-Flash through `rollback/restore-glm.sh`, waits for `GLM-5.3-Flash-EXL3` |
+| `beastds` | `beast-spark ds` | Switches to DeepSeek on the EAQ v1.1 `-v2` pack (or the `DS_PACK` / `DS_ID` in `~/.config/openbeast/beast-spark.env`): stops GLM, re-selects that pack with `spark-deepseek-pack.sh use … --id …` if another pack is selected, then runs `activate-stock.sh` (canary, conformance, command center, boot selection), and waits for `DeepSeek-V4.1-Flash-1017`. If anything fails and GLM was serving when it began, it runs `restore-glm.sh` and waits for GLM |
 | `beaststatus` | `beast-spark status` | Shows the selected model and pack, the three units, and what `:8000` serves |
 
-"Selected" means the enabled inference unit, which is the one that starts at boot. GLM is the default; `beastup` with nothing selected picks GLM. The pair serves only these two models. The `-v2` pack supersedes the stock EAQ v1 pack, which stays on disk only as a fallback (`spark-deepseek-pack.sh use stock`). To install or update after a pull, run on the Mac: `scp scripts/backends/spark-beast.sh spark-1:.local/bin/beast-spark`. The aliases are in spark-1's `~/.bashrc`, under `# beast-spark shortcuts`. After a switch, clients with `openbeast-client autosync` follow within 30 s; otherwise run `openbeast-client refresh-config`.
+"Selected" means the enabled inference unit, which is the one that starts at boot. GLM is the default; `beastup` with nothing selected picks GLM. The pair serves only these two models. The `-v2` pack supersedes the stock EAQ v1 pack, which stays on disk only as a fallback (`spark-deepseek-pack.sh use stock`, while DeepSeek serves). Switches hold the lock `${XDG_RUNTIME_DIR:-/tmp}/spark-model.lock` (shared with `spark-deepseek-pack.sh`), so a second one is refused while one runs. **Install or update** after a pull, on spark-1, offline too: `~/openbeast/scripts/backends/spark-beast.sh install` copies `beast-spark` to `~/.local/bin`, `spark-deepseek-pack.sh` and `spark-deepseek-prepare-local.sh` to `~/openbeast-recipes/deepseek-prep/`, and appends the alias block to `~/.bashrc` once (a rebuilt spark-1 needs nothing else). `beast-spark aliases` prints the five lines, under `# beast-spark shortcuts`; they call `"$HOME/.local/bin/beast-spark …"`. From the Mac by hand: `scp scripts/backends/spark-beast.sh spark-1:.local/bin/beast-spark`. After a switch, clients with `openbeast-client autosync` follow within 30 s; otherwise run `openbeast-client refresh-config`.
 
-**(a) Everyday, on the deployed pair.** On spark-1 the enabled user unit drives both ranks: `spark-hydra-inference` for GLM (the default), or `deepseek-v41-inference` while DeepSeek is selected (`beaststatus` shows which). It retries a failed launch after 60 seconds. The command center has its own user unit, `openbeast`.
+**(a) Everyday, on the deployed pair.** On spark-1 the enabled user unit drives both ranks: `spark-hydra-inference` for GLM (the default), or `deepseek-v41-inference` while DeepSeek is selected (`beaststatus` shows which). It retries a failed launch after 30 seconds (GLM) or 60 seconds (DeepSeek). The command center has its own user unit, `openbeast`.
 
 ```bash
 # On spark-1
@@ -149,7 +156,8 @@ itself listens on spark-1's loopback only.
    curl -s https://spark-1.tail4109f9.ts.net:8443/v1/chat/completions \
      -H "Authorization: Bearer $(cat ~/.config/openbeast/spark-hydra-gate.key)" \
      -H 'Content-Type: application/json' \
-     -d '{"model": "DeepSeek-V4.1-Flash-1017", "messages": [{"role": "user", "content": "hello"}]}'
+     -d '{"model": "GLM-5.3-Flash-EXL3", "messages": [{"role": "user", "content": "hello"}]}'
+   # while DeepSeek is selected: "model": "DeepSeek-V4.1-Flash-1017"
    ```
 
 **(c) First build from bare boxes (GLM deployment).** Follow
@@ -161,7 +169,7 @@ detail. In outline:
 2. [B2](#b2-spark-root-setupsh-the-only-root-step-once-per-spark) root setup, on each Spark.
 3. [B3](#b3-firewall-spark-guard) spark-guard, and [B4](#b4-fabric-mtu-9000-spark-fabric-mtu) the fabric MTU staged before the one reboot.
 4. [C](#c-weights) weights, on both.
-5. [D1](#d1-the-glm-recipe-rollback-deployment) the recipe and the `spark-hydra-inference` unit.
+5. [D1](#d1-the-glm-recipe-the-default-deployment) the recipe and the `spark-hydra-inference` unit.
 6. [E1](#e1-bootstrap)–[E7](#e7-device-keys-for-beast-gate) the command center, boot units, WebUI admin, tailnet publishing and device keys.
 7. [F](#f-the-mac-client) the Mac client, then the optional toolchains, docs mirror, ark drive and eval harness host.
 
@@ -194,7 +202,7 @@ zig, the docs mirror). G6 also lists what is still pending on the live pair.
 
 ## Install everything, fresh
 
-This checklist rebuilds the GLM rollback deployment. For the currently served checkpoint, use the [DeepSeek deployment record](#deepseek-deployment).
+This checklist builds the GLM deployment, the pair's default. DeepSeek, the alternative, is staged on top of it: the [DeepSeek deployment record](#deepseek-deployment) and `beastds`.
 
 One ordered pass from bare DGX OS to the full working pair, including every
 optional piece. Each step names the host, the online command, the offline
@@ -305,7 +313,7 @@ blob loop on both (C4). Online, DFlash2 comes from
 lock; run step 11's `bootstrap.sh` first if it is missing).
 
 **8. The recipe and its image** (spark-1, image on both;
-[D1](#d1-the-glm-recipe-rollback-deployment), [H4](#h4-container-images)):
+[D1](#d1-the-glm-recipe-the-default-deployment), [H4](#h4-container-images)):
 
 ```bash
 # on spark-1. Online:
@@ -328,11 +336,17 @@ it. On our pair, OpenBeast staged the weights (step 7) and only the image
 came from the recipe. The recipe lives on spark-1 only: `start.sh` runs rank 1
 on spark-2 with `docker run` over ssh.
 
-**9. The inference unit** (spark-1; [D1](#d1-the-glm-recipe-rollback-deployment)).
+**9. The inference unit** (spark-1; [D1](#d1-the-glm-recipe-the-default-deployment)).
 The `sed … spark-hydra-inference.service` block in D1, then
 `systemctl --user enable --now spark-hydra-inference`. Loading takes 2-6 min.
 `curl -s http://127.0.0.1:8000/health` must show `"ok": true`. Online and
 offline are the same: the unit runs with `PREPARE=0` and `HF_HUB_OFFLINE=1`.
+Then the switch shortcuts, one command from the checkout:
+`~/openbeast/scripts/backends/spark-beast.sh install` puts `beast-spark` in
+`~/.local/bin`, the two DeepSeek pack tools in
+`~/openbeast-recipes/deepseek-prep/` (when the DeepSeek recipe is there; run it
+again after staging DeepSeek) and the five `beast*` aliases in `~/.bashrc`
+([Everyday shortcuts](#quickstart)).
 
 **10. Native TensorFold, optional** (each Spark; [D2](#d2-native-tensorfold-through-spark-nodesh--spark-clustersh),
 [D3](#d3-the-engine-plane-scriptsenginesh)). The challenger engine; the pair
@@ -488,8 +502,8 @@ How to reach each box:
 | API | spark-1 | `http://127.0.0.1:8000/v1`, model `DeepSeek-V4.1-Flash-1017`, bearer key in `~/.config/openbeast/tensorfold-api-key` (0600). Loopback only |
 | HF cache | both | `~/openbeast-models/deepseek-hf` (packs hard-linked in as snapshots; Engram base revision `1bae0e10…`, shards 47 and 48) |
 | Pack folders | both | `~/Documents/Mia-AiLab-DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw` (stock EAQ v1, the fallback) and `…-bpw-v2` (EAQ v1.1, serving). spark-2's `~/Documents` mirrors spark-1's as a backup |
-| Helpers | spark-1, `~/openbeast-recipes/deepseek-prep/` | `activate-stock.sh` (GLM → DeepSeek), `rollback/restore-glm.sh` (DeepSeek → GLM), `spark-deepseek-pack.sh`, `spark-deepseek-prepare-local.sh`, `verify-chat.py`, conformance records (`conformance-4/`, `conformance-v2/`) |
-| Shortcuts | spark-1, `~/.local/bin/beast-spark` + aliases in `~/.bashrc` | `beastup`, `beastdown`, `beastds`, `beastglm`, `beaststatus` (from `scripts/backends/spark-beast.sh`, PR #212) |
+| Helpers | spark-1, `~/openbeast-recipes/deepseek-prep/` | beast-spark's internals: `activate-stock.sh` (starts and verifies DeepSeek, enables it, disables GLM; it does **not** stop GLM, so `beastds` stops GLM first), `rollback/restore-glm.sh` (DeepSeek → GLM). Also `spark-deepseek-pack.sh`, `spark-deepseek-prepare-local.sh`, `verify-chat.py`, conformance records (`conformance-4/`, `conformance-v2/`) |
+| Shortcuts | spark-1, `~/.local/bin/beast-spark` + aliases in `~/.bashrc` | `beastup`, `beastdown`, `beastds`, `beastglm`, `beaststatus`: **the** switch path (from `scripts/backends/spark-beast.sh`; `spark-beast.sh install` puts it and the aliases in place) |
 | GLM unit | spark-1, `spark-hydra-inference` (**enabled**, serving, since 2026-11-18) | the default model; see the GLM table below |
 | Command center | spark-1, `openbeast` (enabled) + transient `openbeast-stack` scope | as in the GLM table. `INFERENCE_MODEL` follows the selection (`restore-glm.sh` and `activate-stock.sh` rewrite it): `GLM-5.3-Flash-EXL3` on 2026-11-18, `DeepSeek-V4.1-Flash-1017` while DeepSeek serves. `INFERENCE_THINKING=on`, `INFERENCE_SLOTS=4`, `EDGE_GATE=true` either way |
 | opencode | both, `~/.opencode/bin/opencode` v2.3.2 | provider `spark-hydra-local` at `127.0.0.1:8000`, default model `GLM-5.3-Flash-EXL3`, DeepSeek also listed; on spark-2 through the `opencode-model-link` ssh tunnel ([SELF_DEVELOPMENT.md](SELF_DEVELOPMENT.md#opencode-on-the-sparks)) |
@@ -498,7 +512,7 @@ How to reach each box:
 
 | Layer | Where | What |
 |---|---|---|
-| Inference | spark-1, `systemctl --user` unit `spark-hydra-inference` | Runs `~/openbeast-recipes/glm53/start.sh` in the FOREGROUND. This is Mia's recipe v1.8 (`33b50fd`): TensorFold v0.6.0 plus patches, in image `tensorfold-glm53:v0.6.0` (= `ghcr.io/miaai-lab/glm-5.3-flash-exl3-2x-dgx-sparks-tensorfold@sha256:cbb4b3c6…`). It starts rank 1 on spark-2 over ssh. Its settings are in `scripts/local.sh` ([D1](#d1-the-glm-recipe-rollback-deployment)) |
+| Inference | spark-1, `systemctl --user` unit `spark-hydra-inference` | Runs `~/openbeast-recipes/glm53/start.sh` in the FOREGROUND. This is Mia's recipe v1.8 (`33b50fd`): TensorFold v0.6.0 plus patches, in image `tensorfold-glm53:v0.6.0` (= `ghcr.io/miaai-lab/glm-5.3-flash-exl3-2x-dgx-sparks-tensorfold@sha256:cbb4b3c6…`). It starts rank 1 on spark-2 over ssh. Its settings are in `scripts/local.sh` ([D1](#d1-the-glm-recipe-the-default-deployment)) |
 | API | spark-1 | `http://127.0.0.1:8000/v1`, model `GLM-5.3-Flash-EXL3`. **Loopback only: v0.6.0 has no API key** |
 | Command center | spark-1, `systemctl --user` unit `openbeast` | `~/openbeast`, a git checkout: WebUI :3000, tools :3001, SearXNG :8888, beast-gate :8090, beast-chat, beast-artifact, the dashboard (beast-slot), the island watcher. `openbeast.conf`: [E2](#e2-openbeastconf) |
 | Weights | both | `~/openbeast-models/glm53-flash-ablit-exl3` (175.7 GB, 83 shards), hard-linked into `~/.cache/huggingface/hub/models--Mia-AiLab--GLM-5.3-Flash-EXL3-4bpw-TensorFold-Ablit/snapshots/57edefd2…`. Verified against the Hub revision (sha256, 0 mismatches) and locked in `scripts/backends/models/glm53-flash-ablit-exl3-tensorfold.lock` ([C](#c-weights)) |
@@ -589,7 +603,7 @@ has the commands.
 | GLM-5.3-Flash Ablit EXL3 weights | 175.7 GB | the Hub at `57edefd2…` | `model-fetch.sh --verify` against the committed lock | [C](#c-weights) |
 | DFlash2 drafter | 2.3 GB | the Hub at `bf582e4e…` | the blob-hash loop | [C4](#c4-the-drafter-dflash2) |
 | Recipe image `tensorfold-glm53:v0.6.0` | tens of GB | `prepare.sh`, or `docker pull` from ghcr | image ID `sha256:ead01740…` after `docker load` | [H4](#h4-container-images) |
-| The recipe checkout `~/openbeast-recipes/glm53` | small | git (MiaAI-Lab) | commit `33b50fd` | [D1](#d1-the-glm-recipe-rollback-deployment) |
+| The recipe checkout `~/openbeast-recipes/glm53` | small | git (MiaAI-Lab) | commit `33b50fd` | [D1](#d1-the-glm-recipe-the-default-deployment) |
 | Native TensorFold 1.2.7 (optional) | ~100 MB | GitHub release | ed25519 signature + SHA256SUMS (`install-native.sh --stage` / `--from`) | [H5](#h5-native-tensorfold-and-the-engine-plane) |
 | Python wheels for the command center | ~200 MB | `pydeps.sh wheelhouse` or `bundle.sh build` **on a Spark** | `agents/requirements.lock` hashes | [H6](#h6-the-command-center-wheels-and-compose-images) |
 | Compose images (open-webui, searxng, extensions) | a few GB | `docker save` on an online Spark | digest pins; `bundle.sh install` rewrites them to the content ID | [H6](#h6-the-command-center-wheels-and-compose-images) |
@@ -611,7 +625,7 @@ has the commands.
 
    ```bash
    git clone https://github.com/MaximilianKhan/openbeast ~/openbeast
-   cd ~/openbeast && git checkout feat/spark-scale-1-8   # or whatever branch/commit the cluster runs
+   cd ~/openbeast && git checkout main   # or whatever commit the cluster runs
    git log --oneline -1                                 # write it down; every node must match
    ```
 
@@ -736,7 +750,8 @@ touches nothing else:
 - It loads one nftables table of its own, `inet openbeast_guard`, with an input
   hook at priority `filter - 10`. That runs ahead of iptables-nft (ufw, Docker)
   and Tailscale.
-- It drops TCP to 29501-29502, 29551-29552 and 29583-29584 (plus spark.env's
+- It drops TCP to 29501-29502, 29551-29552, 29583-29584 and 29620-29621 (the
+  DeepSeek recipe's `MASTER_PORT`, added 2026-11-18) (plus spark.env's
   master ports, each with its +1, and any `--port N`). Every rendezvous port is
   guarded with its +1, whether it is a default or comes from spark.env, so the
   same port never renders two ways. It also drops TCP to the Spark's own fabric
@@ -760,7 +775,7 @@ sudo scripts/backends/spark-guard.sh --remove     # undo: table, unit and rules 
 #   --port N (repeatable)  --iface IF (repeatable)  --no-fabric (one Spark, no peer: loopback-only)
 ```
 
-What `--render` prints on spark-1 (2026-11-16, current code):
+What `--render` printed on spark-1 on 2026-11-16 (before 29620-29621 joined the defaults; today's code adds `29620-29621` to the `tcp dport` set and the `guarded TCP` line, so re-run `sudo scripts/backends/spark-guard.sh` on both Sparks after updating):
 
 ```
 # fabric: enp1s0f0np0 enp1s0f1np1 enP2p1s0f0np0 enP2p1s0f1np1   fabric IPv4: 10.100.216.1 10.100.217.1   guarded TCP: 29501-29502 29551-29552 29583-29584
@@ -948,19 +963,21 @@ with sudo they show `9000` / `yes` once staged.
 **Step 2: measure A (before), still at MTU 1500.** See the A/B plan below.
 Staging does not change the live links, so A can run before or after Step 1.
 
-**Step 3: reboot both.** Stop inference first, so no collective is in flight
-while one box is at 9000 and the other at 1500. Then reboot the worker,
-then the head:
+**Step 3: reboot both.** Stop the command center and inference first
+(`beast-spark down`: both units, whichever model is selected), so no collective
+is in flight while one box is at 9000 and the other at 1500. Then reboot the
+worker, then the head:
 
 ```bash
-ssh spark-1.tail4109f9.ts.net 'systemctl --user stop spark-hydra-inference'
+ssh spark-1.tail4109f9.ts.net '~/.local/bin/beast-spark down'
 ! ssh -t spark-2.tail4109f9.ts.net 'sudo reboot'
 ! ssh -t spark-1.tail4109f9.ts.net 'sudo reboot'
 ```
 
-Nothing else is needed. `spark-hydra-inference` is enabled on spark-1, starts
-by itself at boot, and starts rank 1 on spark-2 over ssh. If spark-2 is not
-up yet, the unit fails and retries every 30 s (`Restart=on-failure`). Loading
+Nothing else is needed. The selected inference unit (`spark-hydra-inference`,
+GLM, by default) is enabled on spark-1, starts by itself at boot, and starts
+rank 1 on spark-2 over ssh. If spark-2 is not up yet, the unit fails and
+retries every 30 s (`Restart=on-failure`; DeepSeek's unit every 60 s). Loading
 takes 2-6 min. spark-guard (B3) loads its own table before the network comes
 up, as on any boot. Then `scripts/healthcheck.sh` on spark-1 should report
 all 9 services healthy (E4).
@@ -1251,7 +1268,9 @@ engine plane for single-host and pin management.
 
 <a id="d1-the-mia-recipe-what-serves-today"></a>
 
-### D1. The GLM recipe (rollback deployment)
+<a id="d1-the-glm-recipe-rollback-deployment"></a>
+
+### D1. The GLM recipe (the default deployment)
 
 The recipe is MiaAI-Lab's GLM-5.3-Flash 2× DGX Spark recipe, v1.8, commit
 `33b50fd`, cloned to `~/openbeast-recipes/glm53` on spark-1. Its `start.sh`
@@ -2259,6 +2278,7 @@ docker logs -f glm53-flash-tf                            # rank 0 container (GLM
 ssh max@10.100.216.2 'docker logs -f glm53-flash-tf'     # rank 1 (quote it)
 journalctl --user -fu deepseek-v41-inference          # the same, when DeepSeek is selected
 docker logs -f dsv41-1017-exl3-tf
+ssh max@10.100.216.2 'docker logs -f dsv41-1017-exl3-tf' # rank 1 (DeepSeek; quote it)
 tail -f ~/openbeast/.run/stack.log                   # the command center's supervisor
 journalctl --user -u openbeast --since today
 ```
@@ -2286,7 +2306,7 @@ The following measurements and recipe settings apply to GLM. GB10 memory is **un
 (124,607 MiB). Two caps keep the box from freezing. Unified memory freezes
 rather than OOMs.
 
-- **The engine side** ([D1](#d1-the-glm-recipe-rollback-deployment)):
+- **The engine side** ([D1](#d1-the-glm-recipe-the-default-deployment)):
   `KV_POOL_GIB=10` fixes the KV pool, and `MEMORY_RESERVE_GIB=17.5` leaves host
   memory for the command center.
 - **The stack side** (`start.sh`): `start.sh -d` runs the stack in a
@@ -2438,8 +2458,8 @@ then `scripts/client-e2e.sh`. Offline: pull the client's repo from a bundle, the
 **8. The OS** (each Spark, **sudo**, rarely). `libnccl2` is held, so
 `sudo apt update && sudo apt upgrade` leaves it alone and moves tailscale and
 the rest of DGX OS. A driver, kernel or firmware update needs the reboot
-order from [B4](#b4-fabric-mtu-9000-spark-fabric-mtu) step 3: stop inference,
-reboot the worker, then the head. Offline: carry new .debs and pins as in
+order from [B4](#b4-fabric-mtu-9000-spark-fabric-mtu) step 3:
+`~/.local/bin/beast-spark down` on spark-1, reboot the worker, then the head. Offline: carry new .debs and pins as in
 [H3](#h3-debs-libnccl2-and-tailscale). OpenBeast never upgrades the driver.
 
 **Pending on the live pair (read 2026-11-17, evening, over ssh, no sudo).**
@@ -2927,7 +2947,9 @@ uses. They are now:
    recipe never looks at `~/openbeast-models`.
 4. Recipe to `~/openbeast-recipes/glm53`, `scripts/local.sh` as in D1,
    `scripts/prepare.sh` online. Offline: stage the image and DFlash2 (H4, C4)
-   and leave `PREPARE=0`, as the unit does. Install the unit.
+   and leave `PREPARE=0`, as the unit does. Install the unit, then
+   `~/openbeast/scripts/backends/spark-beast.sh install` (beast-spark, the pack
+   tools, the aliases).
 5. Native TensorFold, optional (D2, H5).
 6. `~/openbeast`: `openbeast.conf` (E2), `./bootstrap.sh --no-start`, install
    both units (E3), reboot once, WebUI admin (E5), `setup-tailscale.sh` (E6),

@@ -62,10 +62,11 @@ openbeast-client refresh-config          # re-sync the opencode model catalog on
 openbeast-client update --no-pull        # refresh deps + catalog after updating the checkout yourself (offline: from a bundle)
 openbeast-client agent "<task>"          # a CLI agent HERE against the rig's model (files and shell act on the Mac)
 openbeast-client search up|down          # the local SearXNG container
-openbeast-client autosync install        # PR #215 (open on 2026-11-18): every 30 s (launchd on macOS, a systemd user
-openbeast-client autosync status         #   timer on Linux) re-sync opencode.json when the active rig switches models,
-openbeast-client autosync run            #   so the model name and context window follow; `run` = one check now
-openbeast-client autosync uninstall      #   (log: ~/.openbeast-client/autosync.log)
+openbeast-client autosync install        # every 30 s (launchd on macOS, a systemd user timer on Linux) re-sync
+openbeast-client autosync status         #   opencode.json when the active rig switches models, so the model name and
+openbeast-client autosync run            #   context window follow; `run` = one check now. setup-client.sh installs it
+openbeast-client autosync uninstall      #   by default (OPENBEAST_AUTOSYNC=0 skips it, #215); since #218 it runs from a
+                                         #   copy in ~/.openbeast-client/autosync (macOS TCC). Log: ~/.openbeast-client/autosync.log
 scripts/client-e2e.sh                    # end-to-end check of client mode against the active rig (step d switches rigs and back)
 ```
 
@@ -111,9 +112,9 @@ ss -ltn | grep -E ':(3000|3001|3002|3003|3004|8000|8090|8443|8888) '
 free -m | sed -n 2p                                     # unified memory: watch "available"
 ```
 
-If PR #212 is installed (`~/.local/bin/beast-spark` exists on spark-1 since
-2026-11-17), `beaststatus` (= `beast-spark status`) shows the selected model
-and pack, the three units, and what `:8000` serves in one go.
+`beaststatus` (= `~/.local/bin/beast-spark status`, installed on spark-1
+since 2026-11-17) shows the selected model and pack, the three units, what
+`:8000` serves, and the DeepSeek pack `beastds` would select, in one go.
 
 Logs:
 
@@ -150,55 +151,86 @@ pack). "Selected"
 means the enabled unit. Finish or warn about in-flight requests first:
 a switch or restart drops every generation in progress.
 
-With the beast-spark shortcuts (PR #212; the aliases are in spark-1's
-`~/.bashrc` and need an interactive shell):
+**beast-spark is the one switch path.** Its aliases are in spark-1's
+`~/.bashrc` and need an interactive shell:
 
 ```bash
-beastup        # beast-spark up:   start the selected model, wait for /v1/models, then the command center
+beastup        # beast-spark up:   stop the non-selected model if it runs, start the selected one, wait until
+               #                   /v1/models lists ITS id, then the command center
 beastdown      # beast-spark down: stop the command center and both inference units (boot selection kept)
-beastds        # beast-spark ds:   switch to DeepSeek on the -v2 pack (canary + conformance)
+beastds        # beast-spark ds:   stop GLM, select the DeepSeek pack (-v2 unless ~/.config/openbeast/beast-spark.env
+               #                   says otherwise), activate DeepSeek (canary + conformance); GLM comes back on failure
 beastglm       # beast-spark glm:  switch to GLM-5.3-Flash
 beaststatus    # beast-spark status
 ```
 
 From a non-interactive shell (ssh one-liner, a script, an agent), call
 `~/.local/bin/beast-spark <verb>` directly; aliases are not expanded there.
+Two switches never overlap: `beast-spark` and `spark-deepseek-pack.sh` share
+the lock `${XDG_RUNTIME_DIR:-/tmp}/spark-model.lock`, and the second one is
+refused.
 
-Without the shortcuts, the underlying commands
-([OPENBEAST-SERVING.md](OPENBEAST-SERVING.md)):
+Install or update it on spark-1 from a checkout (offline too: from the hub
+clone): `~/openbeast/scripts/backends/spark-beast.sh install` copies
+`beast-spark` to `~/.local/bin`, the two pack tools to
+`~/openbeast-recipes/deepseek-prep/`, and appends the five aliases to
+`~/.bashrc` once. `beast-spark aliases` prints the alias lines.
+
+The underlying commands, for reference only
+([OPENBEAST-SERVING.md](OPENBEAST-SERVING.md)). Restarting the selected model:
 
 ```bash
 systemctl --user restart spark-hydra-inference          # GLM, both ranks (rank 1 is started over ssh by the recipe)
 systemctl --user stop spark-hydra-inference
 systemctl --user start spark-hydra-inference
 # with DeepSeek selected, the same verbs on deepseek-v41-inference
-bash ~/openbeast-recipes/deepseek-prep/rollback/restore-glm.sh            # DeepSeek -> GLM
-systemctl --user stop spark-hydra-inference && \
-  bash ~/openbeast-recipes/deepseek-prep/activate-stock.sh                # GLM -> DeepSeek (whatever pack local.sh selects)
 ```
 
-After any switch, on each client: `openbeast-client use spark-hydra`.
+The switch helpers are beast-spark's **internals**:
+`~/openbeast-recipes/deepseek-prep/rollback/restore-glm.sh` (DeepSeek -> GLM)
+and `~/openbeast-recipes/deepseek-prep/activate-stock.sh` (starts DeepSeek on
+whatever pack `local.sh` selects, verifies it, enables it and disables GLM). **activate-stock.sh never
+stops GLM**: never run it while GLM is active. If beast-spark is missing, the
+hand form of `beastds` is
+`systemctl --user stop spark-hydra-inference && bash ~/openbeast-recipes/deepseek-prep/activate-stock.sh`.
+
+After any switch, on each client: `openbeast-client use spark-hydra` (or
+let autosync follow within 30 s).
 
 **Never** `docker stop` a rank container, or run the recipe's `stop.sh` or
 `~/openbeast/stop.sh` by hand while the matching unit is enabled: systemd
-restarts behind you (`Restart=on-failure`, after 60 s).
+restarts behind you (`Restart=on-failure`, after 30 s for GLM, 60 s for
+DeepSeek).
 
 ---
 
 ## 4. spark-1: DeepSeek packs
 
-These apply only to DeepSeek, the staged alternative; a pack swap starts
-DeepSeek on the pair, so it is also a model switch while GLM serves.
+These apply only to DeepSeek, the staged alternative, and **only while
+DeepSeek is selected and serving: run `beastds` first.** A pack swap is not a
+model switch: while GLM's `spark-hydra-inference` is active, `use` refuses
+and says so (`--stop-glm` stops GLM explicitly for one swap; the boot
+selection and the command center then still point at GLM until `beastds`).
 `spark-deepseek-pack.sh` is installed in `~/openbeast-recipes/deepseek-prep/`
-(copied from `scripts/backends/`). [SPARK_HYDRA.md "DeepSeek packs"](SPARK_HYDRA.md#deepseek-packs-spark-deepseek-pack).
+(by `spark-beast.sh install`, from `scripts/backends/`). [SPARK_HYDRA.md "DeepSeek packs"](SPARK_HYDRA.md#deepseek-packs-spark-deepseek-pack).
 
 ```bash
+beastds                                                             # CHANGES STATE: DeepSeek first (skips the work if it already serves)
 cd ~/openbeast-recipes/deepseek-prep
 ./spark-deepseek-pack.sh list                                       # serving pack, staged packs, previous (read-only)
-./spark-deepseek-pack.sh use ~/Documents/<pack-folder> --dry-run    # checks + plan, changes nothing
+./spark-deepseek-pack.sh use ~/Documents/<pack-folder> --dry-run    # checks + plan, changes nothing (fine while GLM serves)
 ./spark-deepseek-pack.sh use ~/Documents/<pack-folder> --bench      # CHANGES STATE: swap, verify, A/B bench
 ./spark-deepseek-pack.sh use ~/Documents/<pack-folder> --id ORG/NAME   # name the HF-cache ID yourself
 ./spark-deepseek-pack.sh use stock                                  # CHANGES STATE: back to Mia EAQ v1 @ 45ee5d0f
+```
+
+`beastds` re-selects its configured pack every time (the `-v2` pack by
+default). To keep a pack you adopted with `use` across a GLM round trip, name
+it in `~/.config/openbeast/beast-spark.env` (parsed, never sourced):
+
+```bash
+DS_PACK=~/Documents/<pack-folder>
+DS_ID=ORG/NAME                      # the cache ID `./spark-deepseek-pack.sh list` shows for it
 ```
 
 The verification steps it runs, which you can also run by hand (read-only):
@@ -210,8 +242,11 @@ cd ~/openbeast && scripts/backends/conformance.sh --url http://127.0.0.1:8000 --
 # last line: "VERDICT: PASS"
 ```
 
-To install an updated helper from a checkout (on the Mac, or from a clone on
-spark-1): `scp scripts/backends/spark-deepseek-pack.sh scripts/backends/spark-deepseek-prepare-local.sh spark-1:openbeast-recipes/deepseek-prep/`.
+To install updated helpers from a checkout on spark-1:
+`~/openbeast/scripts/backends/spark-beast.sh install` (beast-spark and both
+pack tools). From the Mac, the same files by hand:
+`scp scripts/backends/spark-deepseek-pack.sh scripts/backends/spark-deepseek-prepare-local.sh spark-1:openbeast-recipes/deepseek-prep/`
+and `scp scripts/backends/spark-beast.sh spark-1:.local/bin/beast-spark`.
 
 ---
 
@@ -273,7 +308,7 @@ MCP tools yet). Details: [SELF_DEVELOPMENT.md "opencode on the Sparks"](SELF_DEV
 
 ```bash
 cd ~/ob-<topic> && opencode                                   # interactive, in a clone
-opencode run "What is 17 times 23? Reply with only the number."   # smoke test: 391
+~/.local/bin/opencode run "What is 17 times 23? Reply with only the number."   # smoke test: 391 (full path: ssh one-liners have no ~/.opencode/bin on PATH)
 opencode --version                                            # v2.3.2
 systemctl --user status opencode-model-link --no-pager        # on spark-2: the ssh tunnel to spark-1's :8000
 cat ~/Documents/opencode/INSTALL.md                           # offline reinstall from the kept tarball
@@ -477,7 +512,7 @@ Each of these is a state change: say what you are doing before you do it.
 | A service in `healthcheck.sh` is DOWN | `~/openbeast/scripts/healthcheck.sh --restart`; if that fails, `systemctl --user restart openbeast` |
 | WebUI / SearXNG DOWN after a reboot, "docker daemon not ready" | the user manager started before the docker group applied: reboot once; `systemd-run --user --wait --pipe docker info` proves it |
 | A pack swap failed | the script rolls back by itself; read `runtime/runs/packs/` and `journalctl --user -u deepseek-v41-inference`; `./spark-deepseek-pack.sh list` shows what serves |
-| The selected model will not come back at all | switch to the other one: `beastds` (DeepSeek) while GLM is broken, `beastglm` (`restore-glm.sh`) while DeepSeek is; then `openbeast-client use spark-hydra` on clients. Tell Max: GLM is his chosen default |
+| The selected model will not come back at all | switch to the other one: `beastds` (DeepSeek) while GLM is broken, `beastglm` while DeepSeek is; then `openbeast-client use spark-hydra` on clients. Tell Max: GLM is his chosen default |
 | The box freezes or ssh hangs | unified memory exhausted (GB10 freezes rather than OOMs): power-cycle; afterwards check the `Unified memory` line and what was added |
 | Tailnet down, LAN up | ssh by LAN IP (`ssh -o HostName=192.168.40.153 spark-1` from the Mac); reach the gate through an ssh tunnel ([TAILSCALE_OFFLINE.md](TAILSCALE_OFFLINE.md)) |
 | The internet is down | nothing to do: the island watcher islands the stack after 90 s ([BEAST_ISLAND.md](BEAST_ISLAND.md#on-the-spark-pair)); work continues locally |

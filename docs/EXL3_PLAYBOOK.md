@@ -26,7 +26,7 @@ goes through), [ENGINES.md](ENGINES.md), [BEAST_ISLAND.md](BEAST_ISLAND.md)
 
 | Case | What it is | Path today | Effort |
 |---|---|---|---|
-| **(a1)** DeepSeek pack | another EXL3 quant of DeepSeek-V4.1-Flash-1017 with the same tensor index | drag and drop: `spark-model-intake.sh DIR`, then `spark-deepseek-pack.sh use DIR` (verify, rollback, A/B bench built in) | about 20 min unattended, the first time (rank files) |
+| **(a1)** DeepSeek pack | another EXL3 quant of DeepSeek-V4.1-Flash-1017 with the same tensor index | drag and drop: `spark-model-intake.sh DIR`, then `beastds` (DeepSeek selected) and `spark-deepseek-pack.sh use DIR` (verify, rollback, A/B bench built in) | about 20 min unattended, the first time (rank files) |
 | **(a2)** GLM pack | another GLM-5.3-Flash EXL3 checkpoint in Mia's TR3 layout (4 bits, `mcg`, routed experts only), same tensor index | by hand, about 10 commands ([A GLM pack, by hand](#a-glm-pack-by-hand)); the recipe already serves any staged `MODEL_ID@MODEL_REVISION` | 30 min of commands plus a 2-6 min restart; a `spark-glm-pack.sh` would make it one command (about a day) |
 | **(a3)** same architecture, other layout | e.g. Mia's official EAQ v1.1 pack (27 BF16 linears), another quantizer's GLM EXL3, a GLM EXL3 that is not 4-bit TR3 | not a drop-in. Intake says "SAME FAMILY, NOT A DROP-IN" and shows the index difference. Some are a recipe setting away (EAQ v1.1: `EAQ_V1_1=1`), others need engine work | hours (a setting and a pack-tool exception) to weeks (a reader for a new layout) |
 | **(b)** an architecture a build already supports | native TensorFold 1.2.7 reads EXL3 for `glm5_next`, `minimax_m3_vl` (2 ranks) and `qwen3_5` (one GPU) | a profile and OpenBeast's own launcher ([D2](SPARK_HYDRA.md#d2-native-tensorfold-through-spark-nodesh--spark-clustersh)): `model-inspect.sh --write-profile`, `model-fetch.sh --verify --trust-first-use`, `spark-cluster.sh start` | a day for the first one, because D2 has never served on this pair. VERIFY ON HARDWARE |
@@ -94,6 +94,7 @@ model to the recipe.
 ~/openbeast/scripts/backends/spark-model-intake.sh ~/Documents/<pack-folder>        # VERDICT: DROP-IN deepseek-v41
 cd ~/openbeast-recipes/deepseek-prep
 ./spark-deepseek-pack.sh use ~/Documents/<pack-folder> --dry-run   # the plan and the local.sh block, nothing changes
+beastds                                                            # the real swap needs DeepSeek selected and serving
 ./spark-deepseek-pack.sh use ~/Documents/<pack-folder> --bench     # swap, verify, A/B bench; rolls back on failure
 ```
 
@@ -155,7 +156,7 @@ difference grouped by key suffix. What the difference means:
   Mia's official EAQ v1.1 pack at `aee640e2`, whose 27 indexer and compressor
   linears are BF16 (CLAIMED, recipe `docs/requirements.md`). The image's
   mixed-pack loader reads it with `EAQ_V1_1=1` (patch `0024`). The -v2 folder
-  we serve is *named* EAQ v1.1, but its index and config are byte-identical
+  (DeepSeek's pack; GLM is the pair's default) is *named* EAQ v1.1, but its index and config are byte-identical
   to v1's. MEASURED: both have index sha256 `525efee7…` over 192,495 keys.
   Teaching `spark-deepseek-pack.sh` the official v1.1 means accepting exactly
   that difference and setting `EAQ_V1_1=1` in its managed block. That is
@@ -334,7 +335,10 @@ on bad usage. It also warns about:
 - a missing tokenizer or chat template;
 - `SHA256SUMS` entries that are absent or shards it does not cover;
 - a tight fit;
-- a pack that is already known (by its local revision);
+- a pack that is already known (by its local revision), or one with a known
+  pack's local revision but other content: the family's `pack_fingerprints`
+  (the same content fingerprint `spark-deepseek-pack.sh` checks before staging,
+  sha256 over each shard's name, size, first and last MiB) tells them apart;
 - a folder on a different file system from the family's cache, which would
   mean copies instead of hard links.
 
@@ -352,16 +356,19 @@ and deleted. Six folders took 2.2 s of wall time, reading headers only.
 | Folder | Verdict | Detail |
 |---|---|---|
 | `~/Documents/Mia-AiLab-DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw` | DROP-IN deepseek-v41 | 210.6 GB in 39 shards, 192,495 keys, index `525efee7…`, local rev `5d70e783` (known: the stock pack); TP2 98.9 GiB/rank tight; SHA256SUMS 64 entries; disk head +212 GB, spark-2 +317 GB |
-| `…-EAQ-v1-2.9-bpw-v2` | DROP-IN deepseek-v41 | same index; local rev `04c13f12` (known: the serving default); warns that SHA256SUMS lists 1 file not in the folder (`.gitattributes`, which v1 has and v2 lacks) |
+| `…-EAQ-v1-2.9-bpw-v2` | DROP-IN deepseek-v41 | same index; local rev `04c13f12` (known: DeepSeek's -v2 pack; the known-pack text was "the serving default" before GLM became the pair's default on 2026-11-18); warns that SHA256SUMS lists 1 file not in the folder (`.gitattributes`, which v1 has and v2 lacks) |
 | `~/Documents/GLM-5.3-Flash-EXL3-4bpw-TensorFold-Ablit` | DROP-IN glm53 | EXL3 4 bpw, `mcg`, `glm53_routed_experts_only`; 175.6 GB in 83 shards, 150,226 keys, index `60b13aad…`, local rev `b2c37cff`; TP2 82.4 GiB/rank fits; no SHA256SUMS |
 | `~/openbeast-models/glm53-flash-ablit-exl3` | DROP-IN glm53 | identical to the above (the same files) |
 | `~/Documents/GLM-5.3-Flash-EXL3-2x-DGX-Sparks-TensorFold` | NOT A MODEL | "a recipe repository (start.sh, scripts/), not a checkpoint" |
 | `~/Documents/keys-DeepSeek-V4.1-Flash-1017-Abliterated` | NOT A MODEL | "an overlay or patch kit (scripts + safetensors, no config.json)" |
 
-The local revisions agree with `spark-deepseek-pack.sh`'s (`stat -c '%s %n'`
+The local revisions agree with `spark-deepseek-pack.sh`'s (`size name` lines
 over `model-*.safetensors`, sorted, sha1): `04c13f12…` is the REV the pack
-script staged the -v2 pack under. The hermetic test checks the two functions
-against each other on GNU systems.
+script staged the -v2 pack under. A REV is only a size listing, so the
+families file also records each known pack's content fingerprint
+(`pack_fingerprints`, read-only from spark-1 on 2026-11-18: -v2 `5314a93d…`,
+stock `4456161f…`, GLM `8fc4c5d5…`). The hermetic tests check both functions
+(REV and fingerprint) against the pack script's, on any OS.
 
 ## 5. Offline intake, step by step
 
@@ -430,6 +437,7 @@ this tool. Pull or bundle a commit that has it first.) Follow the verdict.
 ### 5.5 Case (a1): a DeepSeek pack
 
 ```bash
+beastds                                         # DeepSeek selected and serving first (GLM is the default)
 cd ~/openbeast-recipes/deepseek-prep
 ./spark-deepseek-pack.sh list
 ./spark-deepseek-pack.sh use ~/Documents/<folder> --id ORG/NAME --dry-run
@@ -437,9 +445,22 @@ cd ~/openbeast-recipes/deepseek-prep
 ```
 
 `--id ORG/NAME` names the cache entry. Without it the ID is
-`local/<folder>`. If GLM is serving, the pack tool still works: it stops only
-the DeepSeek unit, so switch first with `beast-spark ds`, or select the pack
-and then run `activate-stock.sh`, which serves whatever `local.sh` selects.
+`local/<folder>`. **The pack tool swaps DeepSeek's pack only while DeepSeek
+is the model.** If GLM is serving, `use` refuses (`--dry-run` still works)
+and tells you to run `beast-spark ds` first; `--stop-glm` stops GLM
+explicitly for one swap, after which the boot selection and the command
+center still point at GLM until `beast-spark ds`. Never run
+`activate-stock.sh` while GLM is active: it does not stop GLM.
+
+**`beast-spark ds` always re-selects its configured pack**, the `-v2` pack by
+default, so a pack adopted here is replaced at the next GLM → DeepSeek round
+trip. To keep it, name it in `~/.config/openbeast/beast-spark.env` on spark-1
+(parsed, never sourced):
+
+```bash
+DS_PACK=~/Documents/<folder>
+DS_ID=ORG/NAME          # the ID `./spark-deepseek-pack.sh list` shows
+```
 Logs go to `runtime/runs/packs/REV8-<time>/` (`prepare.log`, `canary.log`,
 `conformance.log`, `bench.log`). Rollback is automatic on failure. By hand
 it is `./spark-deepseek-pack.sh use <previous folder>` or `use stock`.
@@ -501,7 +522,7 @@ Notes, all read from the recipe's `config.sh` / `start.sh`:
 - `SERVED_NAME` stays `GLM-5.3-Flash-EXL3`, so the gate, `openbeast.conf`
   (`rollback/openbeast.conf.glm`) and clients need nothing.
 - `DRY_RUN=1` validates the serve arguments by running the image once
-  (`start.sh` line 216). It is short, but it is a container start.
+  (`start.sh` step 2's argument check, lines 213-217 at `33b50fd`). It is short, but it is a container start.
 
 The whole procedure is UNVERIFIED as a sequence: no second GLM pack has been
 served. Each step is the GLM half of a step that ran for DeepSeek, or a
@@ -551,7 +572,7 @@ bring it back, and `beast-spark` knows only GLM and DeepSeek ([§7](#7-what-to-b
 |---|---|
 | a DeepSeek pack | automatic on failure; else `spark-deepseek-pack.sh use <previous folder>` or `use stock` |
 | a GLM pack | restore `scripts/local.sh.bak-<time>`, `systemctl --user restart spark-hydra-inference` |
-| switched models | `beast-spark glm` / `beast-spark ds` (or `restore-glm.sh` / `activate-stock.sh`) |
+| switched models | `beast-spark glm` / `beast-spark ds` (the switch path; `restore-glm.sh` / `activate-stock.sh` are its internals) |
 | a native profile | `spark-cluster.sh stop`, then `beast-spark up` |
 | `INFERENCE_MODEL` | `use-model.sh --model <old id> --report <its conformance report>`, or `restore-glm.sh` for GLM's lines |
 
