@@ -713,7 +713,15 @@ else
     git -C "$d" checkout -q -B master FETCH_HEAD || return 1
     git -C "$d" config branch.master.remote origin
     git -C "$d" config branch.master.merge refs/heads/master
-    [[ "$(git -C "$d" rev-parse HEAD 2>/dev/null)" == "$LLAMA_CPP_REF" ]]
+    [[ "$(git -C "$d" rev-parse HEAD 2>/dev/null)" == "$LLAMA_CPP_REF" ]] || return 1
+    # A depth-1 fetch makes llama.cpp's own build number (its commit count)
+    # 1, and its UI target then asks for the assets of "b1". Name the commit
+    # by its upstream bNNNN tag (one ls-remote, best effort), which
+    # ob_llama_build_number (lib/hardware.sh) passes to cmake.
+    local _bt
+    _bt="$(git -C "$d" ls-remote --tags origin 'b*' 2>/dev/null \
+      | awk -v s="$LLAMA_CPP_REF" '$1 == s { t = $2; sub("^refs/tags/", "", t); sub(/\^\{\}$/, "", t); if (t ~ /^b[0-9]+$/) { print t; exit } }' || true)"
+    [[ -z "$_bt" ]] || git -C "$d" tag -f "$_bt" "$LLAMA_CPP_REF" >/dev/null 2>&1 || true
   }
   _ob_llama_head=""
   [[ -d "$REPO_DIR/llama.cpp/.git" ]] \
@@ -757,9 +765,12 @@ else
       was tested with."
     git clone --depth 1 "$LLAMA_CPP_URL" "$REPO_DIR/llama.cpp"
   fi
+  # The build number llama.cpp names its UI assets by: shared with
+  # scripts/update.sh (ob_llama_build_number, lib/hardware.sh).
+  _ob_llama_bn="$(ob_llama_build_number "$REPO_DIR/llama.cpp")"
   # $CMAKE_FLAGS is deliberately unquoted — it's a flag list.
   cmake -S "$REPO_DIR/llama.cpp" -B "$REPO_DIR/llama.cpp/build" \
-        $CMAKE_FLAGS -DCMAKE_BUILD_TYPE=Release
+        $CMAKE_FLAGS ${_ob_llama_bn:+"-DLLAMA_BUILD_NUMBER=$_ob_llama_bn"} -DCMAKE_BUILD_TYPE=Release
   cmake --build "$REPO_DIR/llama.cpp/build" --config Release -j"$(nproc)" --target llama-server
   [[ -x "$LLAMA_BIN" ]] && ok "built $LLAMA_BIN" || die "build did not produce llama-server"
 fi

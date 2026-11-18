@@ -518,6 +518,56 @@ else
   fail "successful rebuild (rc=$_rc): $_out"
 fi
 
+# A build/ configured under ANOTHER source path (a tree built by hand
+# elsewhere — the rig, 2026-11-17) is wiped for a clean reconfigure. That
+# wipe ran BEFORE the snapshot and took bin/ with it: the failed build that
+# followed left no llama-server at all, "restored" notwithstanding.
+printf 'old-bin\n' > "$SBU/llama.cpp/build/bin/llama-server"; chmod +x "$SBU/llama.cpp/build/bin/llama-server"
+printf 'old-lib\n' > "$SBU/llama.cpp/build/bin/libggml.so"
+printf 'CMAKE_HOME_DIRECTORY:INTERNAL=/somewhere/else/llama.cpp\n' > "$SBU/llama.cpp/build/CMakeCache.txt"
+mkdir -p "$SBU/llama.cpp/build/CMakeFiles"; : > "$SBU/llama.cpp/build/CMakeFiles/stale"
+cat > "$T/binu/cmake" <<STUB
+#!/bin/bash
+echo "cmake \$*" >> "\$OB_STUB_STATE/git.log"
+if [[ " \$* " == *" --build "* ]]; then
+  mkdir -p "$SBU/llama.cpp/build/bin"; printf 'new-lib\n' > "$SBU/llama.cpp/build/bin/libggml.so"
+  exit 2
+fi
+exit 0
+STUB
+UPDB --llama --force
+if [[ $_rc -ne 0 ]] && has "$_out" "wiping for a clean reconfigure" && has "$_out" "restored to the previous llama-server" \
+   && [[ "$(cat "$SBU/llama.cpp/build/bin/llama-server" 2>&1)" == old-bin \
+         && "$(cat "$SBU/llama.cpp/build/bin/libggml.so")" == old-lib \
+         && ! -e "$SBU/llama.cpp/build/bin.pre-update" ]]; then
+  pass "a stale build/ is wiped AFTER the bin/ snapshot: the failed build restores the previous llama-server"
+else
+  fail "stale build/ + failed rebuild (rc=$_rc, bin=$(ls "$SBU/llama.cpp/build/bin" 2>&1 | paste -sd' ')): $_out"
+fi
+if [[ ! -e "$SBU/llama.cpp/build/CMakeCache.txt" && ! -e "$SBU/llama.cpp/build/CMakeFiles/stale" ]]; then
+  pass "…and the stale cache itself is gone (the wipe still happens)"
+else
+  fail "the stale CMakeCache.txt / CMakeFiles survived the wipe"
+fi
+
+# The build number: a shallow llama.cpp/ makes cmake's own count 1, and its
+# UI target then fetches the assets of "b1". update.sh passes the number.
+printf '#!/bin/bash\necho "cmake $*" >> "$OB_STUB_STATE/git.log"; exit 0\n' > "$T/binu/cmake"
+printf '#!/bin/bash\n' > "$SBU/llama.cpp/build/bin/llama-server"; chmod +x "$SBU/llama.cpp/build/bin/llama-server"
+export OB_LLAMA_BUILD_NUMBER=12359; UPDB --llama --force; unset OB_LLAMA_BUILD_NUMBER
+if [[ $_rc -eq 0 ]] && grep -q -- "-DLLAMA_BUILD_NUMBER=12359 " "$T/state/git.log"; then
+  pass "update.sh passes the known build number to cmake (-DLLAMA_BUILD_NUMBER)"
+else
+  fail "build number not passed (rc=$_rc): $(grep cmake "$T/state/git.log")"
+fi
+UPDB --llama --force
+if [[ $_rc -eq 0 ]] && grep -q -- "-ULLAMA_BUILD_NUMBER " "$T/state/git.log" && has "$_out" "build" \
+   && ! grep -q -- "-DLLAMA_BUILD_NUMBER" "$T/state/git.log"; then
+  pass "negative control: unknown (no history, no tag) → -U, so an earlier configure's cached number cannot stick"
+else
+  fail "unknown build number (rc=$_rc): $(grep cmake "$T/state/git.log")"
+fi
+
 # ===========================================================================
 echo ""
 echo "update.sh --llama — moves the llama.cpp pin, and only to a built upstream commit:"

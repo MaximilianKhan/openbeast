@@ -108,6 +108,32 @@ spark_env_sync() {
   done < <(ob_engine_call "$e" spark_env "$2" "$3")
 }
 
+# adopt_current <engine> — before install / update / use changes what runs,
+# record the build this box has NOW when the history's latest entry for the
+# engine is not it, so `engine.sh rollback` can always return to it. The rig
+# (2026-11-17) ran a llama-server built by hand from a branch, outside this
+# script: the history never heard of it, and rollback had nothing to go to.
+# What is current: the adapter's `current` (llama: the commit the built
+# binary reports), else the engine's pin. Never fatal: an unrecordable
+# build is said, and the install goes on.
+adopt_current() {
+  local e="$1" cur="" v="" r="" last
+  ob_engine_load "$e" 2>/dev/null || return 0
+  if ob_engine_has "$e" current; then
+    cur="$(ob_engine_call "$e" current || true)"
+  else
+    cur="$(ob_engine_pin "$e" 2>/dev/null || true)"
+    [[ "$cur" == *@* ]] && cur="${cur%%@*}"$'\t'"${cur#*@}"
+  fi
+  IFS=$'\t' read -r v r _ <<< "$cur"
+  [[ -n "$v" && -n "$r" ]] || return 0
+  ob_engine_pin_valid "$v" "$r" 2>/dev/null || return 0
+  last="$(ob_engine_history "$e" | awk -F'\t' '$3 ~ /^(install|update|rollback|adopt)$/ { r = $5 } END { print r }')"
+  [[ "$last" == "$r" ]] && return 0
+  ob_engine_history_add "$e" adopt "$v" "$r" "the build found running, not installed by engine.sh"
+  echo "recorded the $e build this box has now ($v @ ${r:0:12}) in the history: engine.sh rollback $e returns to it"
+}
+
 # ── list ───────────────────────────────────────────────────────────────────
 cmd_list() {
   local cls def act e inst pin here mark
@@ -262,6 +288,11 @@ cmd_use() {
   fi
   if [[ $DRY -eq 1 ]]; then echo "(dry run — nothing changed)"; return 0; fi
 
+  # What runs now, and what is about to, both get a rollback target.
+  if [[ "$INFERENCE_MANAGED" == true && "$INFERENCE_BACKEND" != "$ENGINE" ]]; then
+    adopt_current "$INFERENCE_BACKEND"
+  fi
+  adopt_current "$ENGINE"
   if [[ $running -eq 1 && $NORESTART -eq 0 ]]; then
     read -r -a _c <<< "$(stop_cmd)"
     OPENBEAST_STOP_REASON="scripts/engine.sh use $ENGINE" "${_c[@]}" || die "stop failed — openbeast.conf NOT changed"
@@ -313,6 +344,7 @@ cmd_install() { # cmd_install <install|update>
   if [[ $DRY -eq 1 ]]; then
     echo "would install $ENGINE ${VERSION:-latest}${DIGEST:+ @ $DIGEST}${FROM:+ from $FROM} (dry run)"; return 0
   fi
+  adopt_current "$ENGINE"
   ob_engine_call "$ENGINE" install "$VERSION" "$FROM" "$DIGEST" || die "$ENGINE install failed — the pin did not move"
   _record "$1"
 }

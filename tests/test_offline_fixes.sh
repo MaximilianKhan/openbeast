@@ -1709,6 +1709,8 @@ LR="$T/repo_llama"; mkdir -p "$LR/scripts" "$T/binl"
   echo 'step() { echo "==> $*"; }; ok() { echo "OK: $*"; }; warn() { echo "WARN: $*"; }'
   echo 'die() { echo "DIE: $*" >&2; exit 1; }; ob_offline() { return 1; }'
   echo 'OB_BACKEND=cpu; GPU_BACKEND=cpu; ob_cmake_flags() { echo ""; }'
+  # the real build-number helper (lib/hardware.sh): it only asks git
+  sed -n '/^ob_llama_build_number() {/,/^}/p' "$REPO_DIR/scripts/lib/hardware.sh"
   echo 'OB_LOCAL_LLAMA="${OB_LOCAL_LLAMA:-1}"; INFERENCE_BACKEND="${INFERENCE_BACKEND:-llama}"; INFERENCE_URL="${INFERENCE_URL:-http://127.0.0.1:8080}"'
   echo "$_lsec"
   echo 'echo HARNESS-REACHED-END'

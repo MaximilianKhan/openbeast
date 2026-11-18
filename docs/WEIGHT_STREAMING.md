@@ -795,4 +795,6 @@ width and DIMM speed; `qwen4exp` MTP drafts on v1.0.0.
 (`streaming-report.md` in that session's scratchpad, published as the
 "weight-streaming" artifact). It holds 0xSero / sybil-solutions, Mia's AI
 Lab, KTransformers, ik_llama.cpp and the other options this runbook does not
-use, and why.
+use, and why. Its 0xSero follow-up of 2026-11-17 (trial Flash-Next on his
+SGLang + EXL3 engine; first, check v1.0.0's n-gram table loading):
+[reviews/WEIGHT_STREAMING_0XSERO-2026-11-17.md](reviews/WEIGHT_STREAMING_0XSERO-2026-11-17.md).
