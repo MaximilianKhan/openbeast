@@ -3,7 +3,7 @@
 OpenBeast runs local LLMs via llama.cpp on NVIDIA GPUs, with OpenCode (terminal
 agent), Open WebUI (browser chat), an autonomous agent runner, and an MCP tool
 server providing 19 tools for file I/O, shell, web search, agent management,
-and a skills system (26 skills loaded on demand: 17 in-house plus 9 imported;
+and a skills system (27 skills loaded on demand: 18 in-house plus 9 imported;
 14 are on the always-on menu).
 
 > **Installing on DGX Sparks?** This page is the rig (x86_64 + one NVIDIA GPU,

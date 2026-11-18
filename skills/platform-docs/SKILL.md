@@ -17,6 +17,8 @@ page stamped with its URL and the date it was fetched. It works with no
 internet. Reading it costs one command; guessing costs a build failure or,
 worse, code that compiles against an API that is deprecated.
 
+For Tailscale connectivity, load `skill("tailscale")` and search the `tailscale` source on this machine. The guide includes direct LAN recovery and credential-preserving access to beast-gate.
+
 ## The rule
 
 **Before writing code against a platform API you are not certain about —
@@ -39,6 +41,7 @@ search the docs. Cite what you used. Say how old it is.**
 WebUI and OpenCode both have it):
 
 ```
+platform_docs(query="client-side netmap caching", source="tailscale")  # outage documentation
 platform_docs(query="NavigationStack")                          # search
 platform_docs(query="LazyColumn item keys", source="android-compose")
 platform_docs(doc="swiftui:/documentation/swiftui/navigationstack")   # read one page

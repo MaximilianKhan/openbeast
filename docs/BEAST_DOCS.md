@@ -29,6 +29,8 @@ connected box and carried to an air-gapped one as a hash-verified tarball.
 ./scripts/docs.sh pack mirror.tar.gz && ./scripts/docs.sh unpack mirror.tar.gz   # on the offline box
 ```
 
+For Tailscale outages, use the [offline LAN guide and mirrored Tailscale reference](TAILSCALE_OFFLINE.md).
+
 A model reaches it in two ways: the **`platform_docs` tool** on the
 MCP/WebUI surface, and **`scripts/docs.sh` through bash**. The
 **`platform-docs` skill** teaches when to use each (§5).

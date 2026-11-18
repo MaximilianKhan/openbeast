@@ -35,3 +35,4 @@ eval-variant-porter
 beast-lang
 app-control
 platform-docs
+tailscale

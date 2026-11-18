@@ -288,3 +288,20 @@ refresh_days = 60
 content_selectors = ["div[role=main]", "article", "main"]
 license = "OctoPrint docs: AGPLv3 project; check the docs footer."
 robots_note = "not yet checked"
+
+[[source]]
+name = "tailscale"
+title = "Tailscale official documentation"
+adapter = "markdown"
+markdown_suffix = ".md"
+hosts = ["tailscale.com"]
+roots = ["https://tailscale.com/docs", "https://tailscale.com/docs/reference/coordination-server-down"]
+discovery = "sitemap"
+index_url = "https://tailscale.com/sitemap.xml"
+allow_prefixes = ["/docs"]
+max_pages = 3000
+max_depth = 6
+delay = 0.25
+refresh_days = 30
+license = "Tailscale Inc. and contributors. Publisher-provided Markdown for private offline reference. Preserve attribution. https://tailscale.com/terms"
+robots_note = "tailscale.com/robots.txt reviewed 2026-11-17: general user-agent allowed and no Crawl-delay specified."
