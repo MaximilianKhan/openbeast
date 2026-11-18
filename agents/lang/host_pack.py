@@ -406,6 +406,17 @@ def build(host: Host | None = None) -> HostPack:
     return pack
 
 
+def _holds(path: str, data: bytes) -> bool:
+    """Whether `path` is a regular file holding exactly `data`."""
+    try:
+        if os.path.islink(path) or not os.path.isfile(path):
+            return False
+        with open(path, "rb") as fh:
+            return fh.read() == data
+    except OSError:
+        return False
+
+
 def write(pack: "HostPack | bytes", directory: str | None = None) -> str:
     """Content-addressed 0600 file for --context-file; same bytes, same path.
     Takes the pack, or any bytes (run_eval writes a language pack joined
@@ -416,7 +427,10 @@ def write(pack: "HostPack | bytes", directory: str | None = None) -> str:
         "openbeast", "host-pack")
     os.makedirs(d, mode=0o700, exist_ok=True)
     path = os.path.join(d, f"host-{hashlib.sha256(data).hexdigest()[:24]}.md")
-    if not os.path.exists(path):
+    if not _holds(path, data):
+        # Absent, or (review 1118) present with other bytes: an earlier
+        # unit's agent could rewrite the file a later unit is handed, so an
+        # existing file is reused only when it still holds exactly `data`.
         fd, tmp = tempfile.mkstemp(dir=d, prefix=".host-")
         try:
             with os.fdopen(fd, "wb") as fh:
