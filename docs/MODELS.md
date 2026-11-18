@@ -417,16 +417,7 @@ as for Qwen3.8-27B; unverified.
 **Not benchmarked.** A v5-fast row at ~35 tok/s single-slot is a ~1-day job;
 it is listed in `BENCH_EXCLUDED` with that reason until scheduled.
 
-**Un-shelved with the MoE expert cache (2026-11-15, unmeasured on our rig).**
-The 38 tok/s ceiling above came from reading every expert from DDR5 on every
-token. llama.cpp v1.0.0 (the pin since 2026-11-15) adds a VRAM cache of the
-hot experts (`--moe-cache-mib`); its author measured Flash-Next on a 5090 going
-from 30.8 to 67.8 tok/s. `serve-qwen38-flash-next-unc-iq4xs-moecache.sh` is
-the same weights with 8 resident expert layers plus an 8 GiB cache. The plan
-fits the normal 75% memory scope: the GGUF's 27.6 GiB of always-host tables
-rule out the all-in-RAM form there. Target **55–70 tok/s**. Acceptance,
-tuning and the memory plan: [WEIGHT_STREAMING.md](WEIGHT_STREAMING.md). The
-static script stays as the baseline, now with `--cache-ram 2048` pinned.
+**Expert-cache result on Beast (2026-11-17).** The cached profile reached 76.84 decode tok/s against 38.76 static on the same short prompt and weights (1.98×). Prefill was 149.3 versus 152.6 tok/s. Both profiles used the normal 75% memory scope. See the [paired measurement](WEIGHT_STREAMING.md#flash-next-on-beast-measured-november-17-2026) for memory and test conditions.
 
 ## GLM-5.3-Flash abliterated (huihui-ai) UD-Q2_K_XL: big mode (added 2026-11-15, unmeasured)
 

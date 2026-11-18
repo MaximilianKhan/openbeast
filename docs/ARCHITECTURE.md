@@ -89,7 +89,7 @@ flowchart LR
   plus `INFERENCE_URL` point the whole command center (WebUI, router, gate,
   spawned agents, `/api/slot`) at an OpenAI-compatible server on other boxes —
   live since v1.9.0 as spark-hydra: two DGX Sparks, tensor-parallel, with
-  their own command center on spark-1. The command center then launches,
+  their own command center on spark-1. As of November 17 the pair serves stock DeepSeek-V4.1-Flash-1017 with four streams and 524,288 tokens per conversation. A dedicated user unit on spark-1 manages both ranks. The command center then launches,
   supervises and kills no model server (`INFERENCE_MANAGED=false`);
   everything else in this picture is unchanged. Runbook:
   [`SPARK_HYDRA.md`](SPARK_HYDRA.md); original design notes:

@@ -1,11 +1,6 @@
 # Self-development: OpenBeast's own model working on OpenBeast
 
-OpenBeast serves a capable coding model, GLM-5.3-Flash on spark-hydra. That
-model, with OpenBeast's own tools, can maintain the repo that runs it. This
-page shows how to do that well, including on a network that is cut off from the
-internet. Everything here was written for, and checked against, the
-`feat/spark-scale-1-8` branch and the live pair on 2026-11-15. "Proof" below
-records a real run.
+The Spark pair serves stock DeepSeek-V4.1-Flash-1017. OpenCode on the Mac reached it through beast-gate on November 17. The self-development exercises and offline task transcripts below were measured with GLM-5.3-Flash on the pair on November 15. They document the workflow and the results of that deployment.
 
 The launch and operations runbook for the pair is
 [`SPARK_HYDRA.md`](SPARK_HYDRA.md). This page assumes the pair is up
@@ -55,8 +50,8 @@ not ([5](#5-git-discipline)).
 
 | Client | Where tools run | Model | Best for |
 |---|---|---|---|
-| **`./agent.sh` on spark-1** (measured) | spark-1, in `-w <clone>` | GLM on `127.0.0.1:8000`, read from the **live** checkout's `openbeast.conf` | unattended tasks with a clear end state; works with the internet off, since only the LAN or tailnet ssh is needed to start it |
-| **opencode on the Mac, client mode** (measured as the daily setup) | the Mac, in the clone | GLM through beast-gate `https://spark-1.tail4109f9.ts.net:8443/v1` with the Mac's device key | interactive work; `skill()`, `language_reference`, `platform_docs` and the other MCP tools are all there |
+| **`./agent.sh` on spark-1** (measured) | spark-1, in `-w <clone>` | The active Spark model on `127.0.0.1:8000`, read from the **live** checkout's `openbeast.conf` | unattended tasks with a clear end state; works with the internet off, since only the LAN or tailnet ssh is needed to start it |
+| **opencode on the Mac, client mode** (measured as the daily setup) | the Mac, in the clone | The active Spark model through beast-gate `https://spark-1.tail4109f9.ts.net:8443/v1` with the Mac's device key | interactive work; `skill()`, `language_reference`, `platform_docs` and the other MCP tools are all there |
 | **`start_agent` from a WebUI or opencode chat** | where that MCP server runs | the configured `OPENBEAST_AGENT_INFERENCE_URL` | delegating a long sub-task while you keep talking |
 | opencode **on spark-1** | — | — | **not set up**: opencode is not installed on spark-1, and the repo's `opencode.json` points at `localhost:8080` (llama.cpp), not `:8000`. Use `agent.sh` there |
 
@@ -65,7 +60,7 @@ clone's own `agent.sh` would find no `openbeast.conf` and dial the llama.cpp
 default `http://localhost:8080/v1`, where nothing serves on a Spark. The live
 `~/openbeast/agent.sh` sources the live conf. That gives it
 `OPENBEAST_AGENT_INFERENCE_URL=http://127.0.0.1:8000/v1` and
-`OPENBEAST_INFERENCE_MODEL=GLM-5.3-Flash-EXL3`. All file and shell work then
+`OPENBEAST_INFERENCE_MODEL=DeepSeek-V4.1-Flash-1017`. All file and shell work then
 happens in `-w`:
 
 ```bash
@@ -244,7 +239,7 @@ Run the narrow suites while iterating, then the full set before committing:
 | `evals/` | `tests/test_scoring.py`, `test_suite_stats.py`, `test_fast_suite.py`, `test_eval_*.py`, `test_cache.py`, `test_benchmark_lifecycle.py`, `test_board_honesty.py`, `test_leaderboard_eligibility.py`, plus `python3 evals/suite_stats.py --check` |
 | `.github/workflows/*` or a new named test step | `tests/test_ci_workflow.py` |
 | docs that cite eval counts | `python3 evals/suite_stats.py --check` (exit 1 on drift) |
-| a live surface (only read-only, only on the live box) | `scripts/healthcheck.sh`, `scripts/backends/conformance.sh --model GLM-5.3-Flash-EXL3`, `tests/test_smoke.sh` (needs a live stack) |
+| a live surface (only read-only, only on the live box) | `scripts/healthcheck.sh`, `scripts/backends/conformance.sh --model DeepSeek-V4.1-Flash-1017`, `tests/test_smoke.sh` (needs a live stack) |
 
 ---
 
@@ -723,7 +718,7 @@ The whole set takes about 4 minutes niced, with the pair serving throughout.
 
 ## 10. The v5 eval suite, offline: running it and authoring for it
 
-This section is for the local model (GLM-5.3-Flash on spark-hydra) running
+This section is for the local model on spark-hydra running
 and extending the eval suite with the network off. The suite itself is
 described in [`evals/README.md`, v5](../evals/README.md#v5--the-current-suite);
 this is the operator's and author's path through it.

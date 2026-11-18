@@ -6,10 +6,16 @@ cache. It covers what ships, why it is sized the way it is for **128 GB of
 RAM**, how to bring each profile up step by step (online or offline), the
 tok/s acceptance check for each one, and how to roll each step back.
 
-Everything here was written on 2026-11-15 while the rig was offline on
-Tailscale. **No number in this file was measured on our rig unless it says
-MEASURED (us).** The files and tests were verified offline. The profiles
-themselves wait for the bring-up below.
+## Flash-Next on Beast, measured November 17, 2026
+
+The static and cached profiles used the same IQ4_XS weights at `98eb3357`, llama.cpp build `b12359` and the default 75% memory scope. The figures are medians of three runs after one warm-up, with roughly 100 prompt tokens and 256 generated tokens.
+
+| Flash-Next profile | Decode (tok/s) | Prefill (tok/s) | VRAM (MiB) |
+|---|---:|---:|---:|
+| Static | 38.76 | 152.6 | 24,252 |
+| Expert cache | 76.84 | 149.3 | 25,970 |
+
+The cache delivered 1.98× the static decode rate. RAM accounting was unavailable, so host n-gram table residency is unverified. This short-context test leaves long-context throughput and capability scores open. The rig returned to serving Qwen3.8-27B after the run. Raw records live under `.run/flashnext-20261117/` on Beast.
 
 Related: [ENGINES.md](ENGINES.md) (the engine plane: `scripts/engine.sh`),
 [MODELS.md](MODELS.md) (every model we ship), [ARCHITECTURE.md](ARCHITECTURE.md),
@@ -21,7 +27,7 @@ Related: [ENGINES.md](ENGINES.md) (the engine plane: `scripts/engine.sh`),
 | Piece | File | Default? | What it is |
 |---|---|---|---|
 | llama.cpp **v1.0.0** pin | `scripts/llama.cpp.ref` (`b1b770d9…`) | yes | The MoE expert cache (`--moe-cache-mib`, `--moe-cache-cpu-share`) and the `glm5-next` architecture. The old pin `d4389a4` (b10865) has neither |
-| Flash-Next + cache | `scripts/serve-qwen38-flash-next-unc-iq4xs-moecache.sh` | no | The shelved Qwen3.8-Flash-Next back, with a VRAM expert cache. Daily-class: the normal 75% scope. Target **55–70 tok/s** |
+| Flash-Next + cache | `scripts/serve-qwen38-flash-next-unc-iq4xs-moecache.sh` | no | The shelved Qwen3.8-Flash-Next back, with a VRAM expert cache. Daily-class: the normal 75% scope. Measured **76.84 tok/s** |
 | Flash-Next static | `scripts/serve-qwen38-flash-next-unc-iq4xs.sh` | no | The measured 38 tok/s baseline, unchanged except a pinned `--cache-ram 2048` |
 | **Big mode** (GLM) | `scripts/serve-glm53-flash-abl-q2kxl-big.sh` | no, opt-in | GLM-5.3-Flash abliterated UD-Q2_K_XL. Every routed expert sits in pinned host RAM under its **own 90% scope**. Target **20–30 tok/s** |
 | Per-profile scope | `scripts/lib/memscope.sh`, hook in `start.sh` | n/a | The `# openbeast-scope:` header line. Only a profile that declares it gets more than `MEM_LIMIT_PCT` (75), and only on the rig |
@@ -84,7 +90,7 @@ profile ships for it.
 | Rank | Profile | Decode (target) | Quality |
 |---|---|---|---|
 | fastest | the 27B daily driver (unchanged) | 140 tok/s MEASURED (us) | v4 SCORE 97.6 (non-MTP row) |
-| fast MoE | Flash-Next + cache | 55–70 ESTIMATED | Flash-Next class, unbenchmarked on v4/v5 |
+| fast MoE | Flash-Next + cache | 76.84 MEASURED (us) | Flash-Next class, unbenchmarked on v4/v5 |
 | best quality | big mode, GLM-5.3-Flash | 20–30 ESTIMATED | GLM-5.3-Flash class, the reason big mode exists |
 
 ## The memory plans

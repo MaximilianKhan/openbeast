@@ -9,8 +9,7 @@ Where the GLM-5.3-Flash v5 work stands (single seed each; the working log is
 L0 26/71 → A 31/71 → B 36/71 → **C 51/71 scored, SCORE 76.7** (54 raw; the
 integrity scan of #195 withheld 122_gemm_blocked_b, _d and _e) → **E 50/71,
 SCORE 74.7** (integrity scan clean; its 122_gemm_blocked_c is a validator
-false FAIL, footnoted, not adjusted). GLM's best row stays C, and C (thinking
-on) is now how spark-hydra serves by default. Arms D and F were **not run**:
+false FAIL, footnoted, not adjusted). GLM's best row stays C (thinking on), the configuration retained for GLM rollback. Arms D and F were **not run**:
 Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
 71/71 (68/71 at the 1x wall).
 
@@ -208,11 +207,9 @@ and the variables added later.
   ~8K context, prefill tok/s, VRAM used and the scope's MemoryCurrent:
   - [ ] the default 27B uncensored MTP on llama.cpp **v1.0.0** (the pin move;
     a regression check against its b10865 numbers, 140.2 tok/s);
-  - [ ] `serve-qwen38-flash-next-unc-iq4xs-moecache.sh` (Flash-Next + MoE
-    cache, target 55–70 tok/s; first tune `--moe-cache-mib` /
-    `--moe-cache-cpu-share` with `llama.cpp/scripts/moe-cache-tune.py`) and
-    its static twin `serve-qwen38-flash-next-unc-iq4xs.sh` as the paired
-    baseline;
+  - [ ] Flash-Next cached and static profiles still need ~8K-context throughput,
+    host RAM accounting and v4/v5 scores. Short-context decode measured
+    76.84 and 38.76 tok/s respectively ([paired results](WEIGHT_STREAMING.md#flash-next-on-beast-measured-november-17-2026)).
   - [ ] `serve-glm53-flash-abl-q2kxl-big.sh` (big mode, target 20–30
     tok/s). The 27B tops v4, so start with a held-out slice of the tasks the
     27B fails, run paired; a full v5 cell is 2–3 GPU days;
@@ -412,14 +409,7 @@ arms.
 
 ## 🟩 DGX SPARK INFERENCE — LIVE 2026-11-13 as spark-hydra
 
-- **Live:** GLM-5.3-Flash Ablit (EXL3 4-bit) TP 2 over spark-1 + spark-2 on
-  Mia-AiLab's TensorFold v0.6.0 recipe, DFlash2, 4 streams, 1M window
-  (code 68-70 tok/s single, 224 aggregate); command center on spark-1;
-  boot units for both. Runbook: [`SPARK_HYDRA.md`](SPARK_HYDRA.md).
-- **Since 2026-11-17:** thinking on by default for every client (gate, Open
-  WebUI filter, the host's agents; `SPARK_HYDRA.md` E2a), RoCE MTU 9000 on
-  the fabric, and a Mac client that switches between the pair and `beast`
-  (`openbeast-client use <rig>`, #204).
+- **Live November 17:** Stock DeepSeek-V4.1-Flash-1017 serves four streams on TensorFold TP2 across two RoCE rails. The enrolled Mac completed a real OpenCode request. GLM-5.3-Flash remains staged as a rollback. [Deployment and acceptance record](SPARK_HYDRA.md#deepseek-deployment).
 - **Next:** full offline playbook (image save/load, DFlash2, aarch64 air-gap
   bundle, zig); remote access (beast-gate via `tailscale serve`,
   `svc:spark-hydra`); the primary switch beast ↔ spark-hydra on the hydra side

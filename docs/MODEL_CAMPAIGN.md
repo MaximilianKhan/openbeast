@@ -624,11 +624,9 @@ campaign. On GLM, its N0 is arm B (36/71, thinking pinned off).
 
 ## 9. Next: DeepSeek v4.1 Flash ("1017"), thinking first
 
-- [ ] Weights: `model-inspect.sh <repo@sha> --write-profile deepseek-v4.1-flash`,
-      `model-fetch.sh --profile deepseek-v4.1-flash`, then to both Sparks (§0.1).
-- [ ] Serve it (TensorFold or vLLM via `engine.sh use … --profile …`) behind
-      beast-gate, and run `conformance.sh`. Check the tool-call format and the
-      reasoning split: DeepSeek's chat template differs from GLM's.
+- [x] Prepared the stock Mia EXL3 checkpoint, both Engram shards and both rank caches. [Pinned deployment and verification](SPARK_HYDRA.md#deepseek-deployment).
+- [x] Served DeepSeek via TensorFold TP2 behind beast-gate. Conformance passed chat, streaming, reasoning-field extraction, tools and four-way concurrency. The context-overflow probe was skipped.
+- [ ] Record the reproducible campaign profile and seed artifact before starting the scored arms.
 - [ ] **Thinking, before anything else: the whole campaign leans on it.**
       How does the server toggle thinking per request? The runner sends
       `chat_template_kwargs.enable_thinking` true/false. Verify both values

@@ -688,10 +688,20 @@ to llama-server through the environment (never argv, where `ps` shows it to
 every local user), WebUI (compose), healthcheck, the dashboard's probes, the
 router's classify call, the agent runner (`OPENBEAST_API_KEY`/`OPENAI_API_KEY`
 env or `--api-key`), the eval harness, and clients installed with
-`--api-key`/`--api-key-stdin`. Rig-side OpenCode against a keyed rig: add
-`"apiKey": "<key>"` to `provider.llama-cpp.options` in your **user-level**
-opencode config (the repo file stays keyless; OpenCode 1.18.x does not
-substitute `{env:...}` in provider apiKey — upstream #27853/#19946).
+`--api-key`/`--api-key-stdin`. On Beast, local OpenCode connects to the authenticated llama-server on
+`127.0.0.1:8080`. Its user-level `provider.llama-cpp.options.apiKey` reads
+`{file:/home/max/.config/openbeast/local-llama.key}`. Keep that file mode
+0600 and update it when `LLAMA_API_KEY` rotates. A local OpenCode prompt
+returned `READY` on November 17.
+
+A remote device uses its enrolled key at the HTTPS gateway. On November 17
+the same device key worked directly on Beast's gate at `127.0.0.1:8091`
+but received 401 on HTTPS `:8443`, which still forwarded to llama-server
+on `:8080`. Check `tailscale serve status` and the configured gate port on
+Beast. With the recorded site configuration, the operator repair on Beast is
+`sudo tailscale serve --bg --https=8443 http://127.0.0.1:8091`. Verify a
+remote authenticated completion afterward. The route repair was still pending
+at handoff.
 
 ### Keyed-mode verification checklist (run once after enabling)
 

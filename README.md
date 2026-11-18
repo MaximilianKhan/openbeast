@@ -52,11 +52,11 @@ line in `openbeast.conf`.
 | **beast-apps** 🧰 | A capability catalog for external apps (Xcode / iOS Simulator, Gradle + adb, mobile UI driving, Blender, Figma, 3D printers, ROS) through pinned MCP servers: `scripts/apps.sh check` probes what is installed and prints the exact fix, `enable` merges a passing server into opencode (v1 or v2 config) with a backup, `refresh` notices upstream changes ([docs](docs/BEAST_APPS.md)) | unreleased |
 | **Air-gap ready** 🔌 | `OFFLINE=true`, a hash-pinned Python lockfile with a wheelhouse, and a signed offline bundle: build it connected, install it from a USB stick | v1.5 |
 | **beast-island** 🏝️ | Runtime offline mode for a power outage: the rig notices the internet is gone (about 90 to 120 s), web tools answer "offline" at once instead of stalling, and everything else keeps running locally. A launch with no route boots islanded; `./start.sh -d --offline` forces it | v1.8 |
-| **spark-hydra** 🐉🐉 *opt-in* | Two DGX Sparks as one serving pair: GLM-5.3-Flash Ablit tensor-parallel over ConnectX-7 (4 streams, a 1M window per conversation from one shared KV pool, ~70 tok/s code alone, ~224 across four), with the full command center on spark-1 — a second, independent OpenBeast. Boots by itself, offline. Thinking is on by default for every client, the configuration that scored best on v5 (51/71 vs 36/71 off), at the price of a longer wait for the answer; any request or client can turn it off. The fabric runs at MTU 9000 (its speed effect is not measured yet). The launch runbook, bare boxes to fully offline, scales 1 to 8 Sparks (`spark-cluster.sh`) and closes the engine ports (`spark-guard.sh`): [SPARK_HYDRA.md](docs/SPARK_HYDRA.md). The pair's own model maintaining OpenBeast, network off: [SELF_DEVELOPMENT.md](docs/SELF_DEVELOPMENT.md) | v1.9 |
+| **spark-hydra** 🐉🐉 *opt-in* | Two DGX Sparks serve stock DeepSeek-V4.1-Flash-1017 on TensorFold across two ConnectX-7 rails, with four streams and a 524,288-token window. The command center and authenticated client gateway run on spark-1. GLM-5.3-Flash remains available for rollback. [Spark runbook](docs/SPARK_HYDRA.md#deepseek-deployment) | v1.9 |
 | **beast-campaign** 🧪 | A GPU lease so two measurements cannot share the card, an eval *era* hash so rows from different code are never compared as if they were the same, and a harness that refuses to bank an infrastructure failure (a dead server, an exhausted thread pool, a full disk) as a model failure | v1.5 |
 | **Multi-engine inference** 🟩 *opt-in* | `INFERENCE_BACKEND=vllm\|tensorfold`: the whole stack (WebUI, tools, agents, gate, `/api/slot`) talks to a vLLM or TensorFold server, e.g. tensor-parallel across two DGX Sparks. Any new checkpoint is inspected, pinned by commit, sha256-locked and conformance-tested before OpenBeast uses it | v1.6 |
 | **Engine plane** ⚙️ | `scripts/engine.sh`: list, swap, install, update, pin and roll back llama.cpp, vLLM or TensorFold with one command, every install verified and every one with an offline path (`stage` on a connected box, `install --from` on a closed one); one adapter file per engine ([docs](docs/ENGINES.md)) | unreleased |
-| **beast-hydra** 🐉 + **beast-instinct** 🧿 *opt-in* | `HYDRA=true`: one router on `:8095` in front of the rig's engine and any tailnet engines, choosing per request by the `model` field, with health checks and failover before the first byte; every consumer (WebUI, gate, agents) goes through it. `INSTINCT=true`: a calibrated decision service on `:8094` that hydra and the router can consult, shadow-only until a decision passes its gate, and deciding on a full 27B (the rig's own now, Open-Jev-27B on its own GPU next). The fleet is uncensored-only, enforced: hydra never answers from a stock model; the Sparks serve GLM-5.3-Flash uncensored on TensorFold. Tested against simulated fleets, not yet on the Sparks | v1.7 |
+| **beast-hydra** 🐉 + **beast-instinct** 🧿 *opt-in* | `HYDRA=true`: one router on `:8095` in front of the rig's engine and any tailnet engines, choosing per request by the `model` field, with health checks and failover before the first byte; every consumer (WebUI, gate, agents) goes through it. `INSTINCT=true`: a calibrated decision service on `:8094` that hydra and the router can consult, shadow-only until a decision passes its gate, and deciding on a full 27B (the rig's own now, Open-Jev-27B on its own GPU next). The fleet is uncensored-only, enforced: hydra never answers from a stock model. The standalone stock DeepSeek endpoint is outside that fleet. Tested against simulated fleets, not yet on the Sparks | v1.7 |
 
 Walkthroughs for the v1.1–v1.5 features → [docs/TUTORIALS.md](docs/TUTORIALS.md).
 Capability breakdown through v1.5 → [docs/FEATURES.md](docs/FEATURES.md).
@@ -412,12 +412,7 @@ them is in [`docs/TODO.md`](docs/TODO.md).
 ## Serving from DGX Sparks (spark-hydra) 🐉🐉
 
 *(v1.9.0, opt-in.)* **spark-hydra** is two NVIDIA DGX Sparks (`spark-1` +
-`spark-2`) serving as one pair. GLM-5.3-Flash Ablit runs tensor-parallel over
-their ConnectX-7 link (TensorFold, TP 2, speculative decoding, 4 streams, a 1M
-window). The full OpenBeast command center runs on spark-1 beside it. The pair
-boots by itself, offline. Its model listens on spark-1's loopback only, and
-every outside caller comes in through beast-gate on `:8443` with a per-device
-key.
+`spark-2`) serving stock DeepSeek-V4.1-Flash-1017 with TensorFold TP 2, four streams and a 524,288-token window. The OpenBeast command center runs on spark-1. Its backend listens on loopback and outside callers use beast-gate on `:8443` with a per-device key.
 
 **Quickstart.** The full version, with every command, is
 [docs/SPARK_HYDRA.md § Quickstart](docs/SPARK_HYDRA.md#quickstart).
@@ -425,7 +420,7 @@ key.
 1. **Everyday (the pair is built).** On spark-1, run
    `~/openbeast/scripts/healthcheck.sh` and expect "All 9 services healthy".
    Start, stop and restart only through the `systemctl --user` units on
-   spark-1: `spark-hydra-inference` drives both ranks (it starts rank 1 on
+   spark-1: `deepseek-v41-inference` drives both ranks (it starts rank 1 on
    spark-2 over ssh, then rank 0), and `openbeast` is the command center.
    Never `docker stop` a rank.
 2. **Use it from a client.** Open WebUI is at
@@ -436,10 +431,8 @@ key.
    `openbeast-client use beast` and `use spark-hydra` switch between this
    pair and the 5090 rig. Any OpenAI-compatible tool can use
    `https://spark-1.<tailnet>.ts.net:8443/v1` with that key as a bearer token.
-   Thinking is on unless the request says
-   `"chat_template_kwargs": {"enable_thinking": false}`
-   ([§E2a](docs/SPARK_HYDRA.md#e2a-recommended-serving-configuration-from-v5)).
-3. **First build from bare boxes.** Follow the ordered checklist,
+   The Mac's active OpenCode model is `openbeast-rig/DeepSeek-V4.1-Flash-1017`.
+3. **First build from bare boxes (GLM deployment).** Follow the ordered checklist,
    [Install everything, fresh](docs/SPARK_HYDRA.md#install-everything-fresh):
    root setup, firewall, fabric MTU, weights, the recipe and its unit, the
    command center, the client, then the optional toolchains, docs mirror and

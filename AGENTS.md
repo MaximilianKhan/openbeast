@@ -90,7 +90,7 @@ lists them; `skills/README.md` ("Imported") says what each is for.
 | Writing Swift / SwiftUI / UIKit / Kotlin / Compose / Gradle against a platform API, or asked whether one exists / is deprecated | `platform-docs` |
 | Touching `agents/lang/`, packs, claims or the escalation index — or about to write zig 0.16 / C++ / Python here and unsure an API still exists | `beast-lang` |
 | Task needs an external app (iOS/Xcode or Android/Gradle build, emulator, Blender, Figma, 3D printer, ROS) — check `scripts/apps.sh check <capability> --json` before improvising | `app-control` |
-| You are the local model (GLM-5.3-Flash on spark-hydra) working on this repo, especially with the network off | read `docs/SELF_DEVELOPMENT.md` first, then `codebase-onboarding` |
+| You are the local model on spark-hydra working on this repo, especially with the network off | read `docs/SELF_DEVELOPMENT.md` first, then `codebase-onboarding` |
 
 When multiple skills could apply, pick the one most-specific to the task.
 You can also chain — e.g., `codebase-onboarding` → `spec-extraction` →
