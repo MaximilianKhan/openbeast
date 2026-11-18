@@ -53,6 +53,8 @@ cap for exactly one hard call, or grant a subagent a bigger budget, without
 touching the server. This is the designed-for hook for future always-on
 long-horizon jobs.
 
+**DGX Spark pair (spark-hydra):** for bringing another EXL3 model to the pair offline, see [EXL3_PLAYBOOK.md](EXL3_PLAYBOOK.md). It covers what drops in, what needs a profile or recipe, the memory and disk math, and the `spark-model-intake.sh` preflight.
+
 ## Core lineup (v4-benchmarked / v3.5-legacy)
 
 | Model | Quant | Weights | Context | VRAM (measured) | Notes |

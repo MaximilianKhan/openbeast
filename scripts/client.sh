@@ -10,6 +10,13 @@
 #   client.sh search up|down     start/stop the local SearXNG container
 #   client.sh refresh-config     re-sync the opencode model catalog only
 #                                (no git pull, no dependency install)
+#   client.sh autosync [install|uninstall|status|run]
+#                                keep opencode in step with the rig: every 30 s
+#                                (launchd on macOS, a systemd user timer on
+#                                Linux) probe the active rig and re-sync the
+#                                catalog when it switched models (the name and
+#                                context window opencode shows). setup-client.sh
+#                                installs it; status is the default
 #   client.sh update [--no-pull] [--wheelhouse <dir>]
 #                                refresh the checkout + pinned deps + the
 #                                opencode model catalog (adds models the rig
@@ -405,6 +412,8 @@ if backend != "llama" and served:
         echo "  $_sl"
       fi
     fi
+    # Informational: without it opencode keeps a switched rig's old model.
+    "$_self" autosync status 2>/dev/null | head -1 || true
     echo ""
     if [ $bad -eq 0 ]; then
       echo "client: $ok ok — ready. (cd <project> && opencode)"
@@ -565,6 +574,82 @@ if backend != "llama" and served:
     _refresh_oc_catalog
     ;;
 
+  autosync)
+    # The rig can switch models under a running client (on the Sparks:
+    # beastglm / beastds). opencode only knows what opencode.json says, so
+    # without this the picker kept the old model's name and context window
+    # until someone ran `use` or refresh-config (seen 2026-11-18). The timer
+    # runs `autosync run`: two small GETs to the active rig, and a full sync
+    # only when what it serves changed. Offline rigs change nothing.
+    _as_label="ai.openbeast.client-autosync"
+    _as_plist="$HOME/Library/LaunchAgents/$_as_label.plist"
+    _as_unit="openbeast-client-autosync"
+    _as_udir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+    _as_log="$CLIENT_DIR/autosync.log"
+    _as_sub="${1:-status}"
+    case "$_as_sub" in
+      run)
+        [ -f "$RIGS_PY" ] || exit 0
+        _rigs sync --if-changed
+        ;;
+      install)
+        mkdir -p "$CLIENT_DIR"
+        if [ "$(uname -s)" = Darwin ]; then
+          mkdir -p "$(dirname "$_as_plist")"
+          cat > "$_as_plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$_as_label</string>
+  <key>ProgramArguments</key>
+  <array><string>/bin/bash</string><string>$_self</string><string>autosync</string><string>run</string></array>
+  <key>StartInterval</key><integer>30</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>$_as_log</string>
+  <key>StandardErrorPath</key><string>$_as_log</string>
+</dict>
+</plist>
+PLIST
+          launchctl bootout "gui/$(id -u)/$_as_label" >/dev/null 2>&1 || true
+          launchctl bootstrap "gui/$(id -u)" "$_as_plist"
+          echo "  ok autosync: launchd agent $_as_label, every 30 s (log: $_as_log)"
+        elif command -v systemctl >/dev/null 2>&1; then
+          mkdir -p "$_as_udir"
+          printf '[Unit]\nDescription=OpenBeast client: re-sync opencode when the rig switches models\n\n[Service]\nType=oneshot\nExecStart=/bin/bash %s autosync run\nStandardOutput=append:%s\nStandardError=append:%s\n' \
+            "$_self" "$_as_log" "$_as_log" > "$_as_udir/$_as_unit.service"
+          printf '[Unit]\nDescription=OpenBeast client autosync every 30 s\n\n[Timer]\nOnBootSec=30s\nOnUnitActiveSec=30s\nAccuracySec=5s\n\n[Install]\nWantedBy=timers.target\n' \
+            > "$_as_udir/$_as_unit.timer"
+          systemctl --user daemon-reload && systemctl --user enable --now "$_as_unit.timer" >/dev/null
+          echo "  ok autosync: systemd user timer $_as_unit.timer, every 30 s (log: $_as_log)"
+        else
+          echo "  ! autosync: neither launchd nor systemd here; run 'openbeast-client refresh-config' after a rig switches models" >&2
+          exit 1
+        fi
+        ;;
+      uninstall)
+        if [ "$(uname -s)" = Darwin ]; then
+          launchctl bootout "gui/$(id -u)/$_as_label" >/dev/null 2>&1 || true
+          rm -f "$_as_plist"
+        elif command -v systemctl >/dev/null 2>&1; then
+          systemctl --user disable --now "$_as_unit.timer" >/dev/null 2>&1 || true
+          rm -f "$_as_udir/$_as_unit.service" "$_as_udir/$_as_unit.timer"
+          systemctl --user daemon-reload >/dev/null 2>&1 || true
+        fi
+        echo "  ok autosync removed"
+        ;;
+      status)
+        if [ "$(uname -s)" = Darwin ]; then
+          if launchctl print "gui/$(id -u)/$_as_label" >/dev/null 2>&1; then echo "  ok autosync: on (launchd $_as_label, every 30 s)"
+          else echo "  ! autosync: off — openbeast-client autosync install"; fi
+        elif systemctl --user is-active --quiet "$_as_unit.timer" 2>/dev/null; then echo "  ok autosync: on ($_as_unit.timer, every 30 s)"
+        else echo "  ! autosync: off — openbeast-client autosync install"; fi
+        [ -s "$_as_log" ] && echo "  last: $(tail -1 "$_as_log")"
+        ;;
+      *) echo "usage: openbeast-client autosync [install|uninstall|status|run]" >&2; exit 2 ;;
+    esac
+    ;;
+
   rigs)
     [ -f "$RIGS_PY" ] || { echo "$RIGS_PY missing — openbeast-client update" >&2; exit 1; }
     _rigs list "$@"
@@ -592,11 +677,11 @@ if backend != "llama" and served:
     ;;
 
   -h|--help|help)
-    sed -n '2,41p' "$_self" | sed 's/^# \{0,1\}//'
+    sed -n '2,48p' "$_self" | sed 's/^# \{0,1\}//'
     ;;
 
   *)
-    echo "unknown command: $CMD (status|rigs|use|rig|agent|search|update|refresh-config|uninstall)" >&2
+    echo "unknown command: $CMD (status|rigs|use|rig|agent|search|update|refresh-config|autosync|uninstall)" >&2
     exit 2
     ;;
 esac
