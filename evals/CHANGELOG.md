@@ -1,5 +1,34 @@
 # Eval suite changelog
 
+## v5.0, review 1118: sandbox hardening (#224, era roll) and four validator lints (#223) (2026-11-18)
+
+**#224, era `595634987879411a` → `06c82c4335dd6a0c`, harness stays harness8.**
+`agents/tools.py` and `agents/runner.py` changed, so the era rolls. A correct
+solution is judged exactly as before; what changed is what an agent can reach:
+the macOS eval sandbox denies outbound network except loopback (the public
+repo, and with it `evals/refs`, was clonable from the eval shell), the
+push-diagnostics compilers and `grep` run under the same read-deny as `bash`,
+eval-mode writes to the repo, the eval venv/prefix, Python's own install and
+reused host packs are refused, and the integrity scan also flags remote
+fetches and absolute include/embed paths in written files. The run side:
+`--served-model` is checked at start and around every unit (a switched server
+stops the run, nothing is banked), thinking is always sent explicitly, a failed
+row counts as infra-lost only when API errors ended it, and the admission probe
+needs a 200. Board label: "harness8 + sandbox hardening (review 1118)". The
+first run under it is DeepSeek-V4.1-Flash (Mia EXL3), arm T, 61/71.
+
+**#223, validators of 126_hmac_scratch, 153_coroutine_scheduler,
+117_iter_refinement and 49_markov_steady_state.** Their ban/lint checks read
+raw source (126, 153) or stripped comments but not multi-line docstrings
+(117, 49), so a correct solution that named a banned module in a comment or
+docstring could FAIL (the 122_c class). They now lint code only (tokenize /
+AST); 153 also refuses `from asyncio import ...`. This changes what passes, so
+every board run measured before it carries a validator note on those four
+units, **not adjusted** (`evals/boards/v5/exclusions.json`). No board run failed any of the four after the board's merge (GLM-B's first
+file lost them to a validator interpreter that did not start; its repair file
+passed all four), so no published score would rise under the fix; 153's
+stricter `from asyncio import` refusal could only lower one.
+
 ## v5.0, INFERENCE_THINKING: the host's thinking default (2026-11-17) — era roll (runner.py)
 
 `agents/runner.py` changed, so the era (its content hash) rolls; no eval
