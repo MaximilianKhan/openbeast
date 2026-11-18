@@ -88,9 +88,9 @@ reset; touch "$ST/spark-hydra-inference.service.enabled"
 if run up && [[ "$(calls)" == "start spark-hydra-inference.service;start openbeast.service" ]]; then pass "up: selected GLM first, then the command center"
 else fail "up glm: $(calls) / $(cat "$T/out")"; fi
 
-# beastup with nothing selected: DeepSeek
+# beastup with nothing selected: GLM, the default
 reset
-if run up && [[ "$(calls)" == activate* ]]; then pass "up with no selection: DeepSeek"
+if run up && [[ "$(calls)" == restore-glm ]]; then pass "up with no selection: GLM, the default"
 else fail "up none: $(calls)"; fi
 
 # a unit that dies while starting is reported, not waited on forever

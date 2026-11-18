@@ -10,8 +10,8 @@ On the head, in an interactive shell:
 beaststatus   # selected model and pack, units, what is served
 beastup       # start the selected model, then the command center
 beastdown     # stop the command center and both models (boot selection kept)
-beastglm      # switch to GLM-5.3-Flash
-beastds       # switch to DeepSeek on Mia's EAQ v1.1 "-v2" pack (the DeepSeek default; supersedes the stock pack)
+beastglm      # switch to GLM-5.3-Flash (the default model since 2026-11-18)
+beastds       # switch to DeepSeek on Mia's EAQ v1.1 "-v2" pack (the alternative; the -v2 pack supersedes the stock pack)
 ```
 
 These wrap `~/.local/bin/beast-spark`, which in turn calls the helpers described below.

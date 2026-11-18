@@ -6,12 +6,13 @@
 #
 #   beast-spark up        # beastup:   start the selected model, then the command center
 #   beast-spark down      # beastdown: stop the command center and both inference units
-#   beast-spark glm       # beastglm:  switch to GLM-5.3-Flash (the GLM default)
-#   beast-spark ds        # beastds:   switch to DeepSeek on Mia's EAQ v1.1 -v2 pack (the DS default)
+#   beast-spark glm       # beastglm:  switch to GLM-5.3-Flash (the pair's default model)
+#   beast-spark ds        # beastds:   switch to DeepSeek on Mia's EAQ v1.1 -v2 pack (the alternative)
 #   beast-spark status    # which model is selected, what is running, health
 #
 # The pair serves two models only, one at a time (each needs both GPUs):
-#   GLM       unit spark-hydra-inference (recipe ~/openbeast-recipes/glm53)
+#   GLM       unit spark-hydra-inference (recipe ~/openbeast-recipes/glm53): THE DEFAULT
+#             (Max, 2026-11-18, after testing DeepSeek and its -v2 pack)
 #   DeepSeek  unit deepseek-v41-inference (recipe ~/openbeast-recipes/deepseek-prep/runtime),
 #             pack Mia EAQ v1.1 "-v2"; it supersedes the stock EAQ v1 pack, which stays
 #             on disk only as a fallback (spark-deepseek-pack.sh use stock).
@@ -82,7 +83,7 @@ cmd_status() {
 
 cmd_up() {
   local s; s=$(selected)
-  [[ "$s" != none ]] || { log "no model selected: selecting DeepSeek"; cmd_ds; return; }
+  [[ "$s" != none ]] || { log "no model selected: selecting GLM, the default"; cmd_glm; return; }
   local u; u=$(unit_of "$s")
   log "starting $s ($u), then the command center"
   sc start "$u"
