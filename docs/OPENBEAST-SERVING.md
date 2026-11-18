@@ -34,7 +34,7 @@ Finish active requests first. Switching releases both GPUs and interrupts infere
 bash ~/openbeast-recipes/deepseek-prep/rollback/restore-glm.sh
 ```
 
-**GLM to stock DeepSeek** — stop GLM before activating the prepared DeepSeek service:
+**GLM to DeepSeek** — stop GLM before activating the prepared DeepSeek service (it serves whichever DeepSeek pack `local.sh` selects):
 
 ```sh
 systemctl --user stop spark-hydra-inference.service &&
@@ -43,13 +43,23 @@ systemctl --user stop spark-hydra-inference.service &&
 
 The helpers set the managed service and matching command-center configuration. The DeepSeek helper also checks the prepared runtime, runs a chat and conformance checks, and sets the boot selection on success. If activation fails, inspect its output and journal; the GLM rollback helper above restores the prior GLM configuration. After either switch, run `openbeast-client use spark-hydra` on an enrolled OpenBeast client with that rig name. Confirm the model shown in your client and send a short prompt.
 
+**One DeepSeek pack for another** (for example the stock EAQ v1 pack and Mia's experimental EAQ v1.1 "-v2" pack, the default since 2026-11-17). The pair serves only DeepSeek and GLM, and the pack is the only part of DeepSeek you swap:
+
+```sh
+cd ~/openbeast-recipes/deepseek-prep
+./spark-deepseek-pack.sh list
+./spark-deepseek-pack.sh use ~/Documents/<pack-folder> --bench   # or: use stock
+```
+
+It mirrors the folder to the worker, prepares both ranks, restarts, runs the chat and conformance checks, and rolls back by itself on failure. Details are in `~/openbeast/docs/SPARK_HYDRA.md`, "DeepSeek packs".
+
 ## Configuration on the head
 
 | Path | Purpose |
 |---|---|
 | `~/openbeast/openbeast.conf` | Live command-center settings, including backend, advertised model, slots, thinking default and island policy. May contain credentials. |
 | `~/openbeast/openbeast.conf.example` and `~/openbeast/scripts/lib/conf.sh` | Example settings and default-loading logic. |
-| `~/openbeast-recipes/deepseek-prep/runtime/scripts/local.sh` | DeepSeek launch overrides. Recipe defaults are in the adjacent config.sh. |
+| `~/openbeast-recipes/deepseek-prep/runtime/scripts/local.sh` | DeepSeek launch overrides. Recipe defaults are in the adjacent config.sh. The `spark-deepseek-pack` block selects the pack; edit it only through that script (previous copy: `local.sh.prev`). |
 | `~/openbeast-recipes/glm53/scripts/local.sh` | GLM launch overrides. |
 | `~/.config/systemd/user/` | Installed user units that run the recipes. Use systemctl --user cat UNIT to inspect a unit. |
 

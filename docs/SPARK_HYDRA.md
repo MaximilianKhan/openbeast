@@ -1,6 +1,6 @@
 # spark-hydra: the DGX Spark launch runbook
 
-**Live deployment, 2026-11-17.** The pair serves stock `DeepSeek-V4.1-Flash-1017` on TensorFold. The command center and beast-gate run on spark-1. GLM-5.3-Flash remains staged for rollback. The GLM recipe, tuning measurements and rebuild examples below describe that earlier deployment.
+**Live deployment, 2026-11-17 (evening).** The pair serves `DeepSeek-V4.1-Flash-1017` on TensorFold from Mia's experimental EAQ v1.1 "-v2" pack, which replaced the stock EAQ v1 pack as the default after an A/B run ([DeepSeek packs](#deepseek-packs-spark-deepseek-pack)). The pair serves two models only: DeepSeek (any compatible pack) and GLM-5.3-Flash. The command center and beast-gate run on spark-1. GLM-5.3-Flash remains staged for rollback. The GLM recipe, tuning measurements and rebuild examples below describe that earlier deployment.
 
 This page takes you from bare boxes to a serving pair, start to finish, and then
 covers day-2 operations and fully offline operation. Read it top to bottom the
@@ -37,6 +37,50 @@ The November 17 cutover used Mia's [two-Spark recipe at c7f2b85](https://github.
 **Local interactive baseline, November 17.** From the Mac through the authenticated tailnet gate, six short temperature-zero prose probes requested 256 completion tokens each. With thinking on (including one request using the gate default), single-stream decode was 70.1–71.7 tok/s, all reasoning tokens. With `chat_template_kwargs.enable_thinking=false`, it was 53.7–63.2 tok/s, median 60.7, all visible answer tokens. The median first streamed token arrived in 232 ms with thinking and 156 ms without. Four simultaneous thinking-off requests delivered 1,024 completion tokens in 8.74 s, or 117.1 tok/s aggregate end to end. Decode rates use tokens after the first divided by time from first to last content-bearing chunk. Use thinking for multi-step work and disable it per request for quick answers. This short-prompt test does not establish long-context performance or a quality-optimal setting.
 
 **Rollback on this pair.** The GLM unit `spark-hydra-inference` is disabled while DeepSeek owns the ranks. To switch both ranks and restore the saved serving configuration, run the installed `~/openbeast-recipes/deepseek-prep/rollback/restore-glm.sh` on spark-1. Then run `openbeast-client use spark-hydra` on the client to refresh its model and check discovery and a real completion.
+
+### DeepSeek packs: spark-deepseek-pack
+
+A *pack* is any EXL3 quantization of DeepSeek-V4.1-Flash-1017 with the same tensor layout as Mia's EAQ v1 2.9 bpw build: the same `model.safetensors.index.json` keys and `config.json` architectures. Engram's tables (base shards 47 and 48) are shared by every pack. `scripts/backends/spark-deepseek-pack.sh` swaps the served pack offline, verifies it, and rolls back on failure. Install it on spark-1 next to the other helpers, together with `spark-deepseek-prepare-local.sh` (the generalized form of `prepare-stock-local.sh`):
+
+```bash
+# On the Mac, from the repo
+scp scripts/backends/spark-deepseek-pack.sh scripts/backends/spark-deepseek-prepare-local.sh \
+    spark-1:openbeast-recipes/deepseek-prep/
+
+# On spark-1
+cd ~/openbeast-recipes/deepseek-prep
+./spark-deepseek-pack.sh list                                   # serving pack, staged packs, previous
+./spark-deepseek-pack.sh use ~/Documents/<pack-folder> --dry-run  # checks + plan, changes nothing
+./spark-deepseek-pack.sh use ~/Documents/<pack-folder> --bench    # swap, verify, A/B bench
+./spark-deepseek-pack.sh use stock                              # back to Mia EAQ v1 @ 45ee5d0f
+```
+
+To bring in a new pack, copy its folder into `~/Documents` on spark-1, for example from a drive. Offline, the script does the rest:
+
+1. It refuses a folder whose tensor index or architecture differs from the serving pack's. Such a model is not a drop-in and needs its own recipe.
+2. It mirrors the folder to spark-2 at the same path, which is the backup convention. Shards shared with the serving pack become hard links.
+3. It hard-links the folder into `$HF_CACHE/hub` on both hosts as `models--ORG--NAME/snapshots/REV`. A local pack has no Hub revision, so REV is the sha1 of its shards' `size name` lines, and the same folder always gets the same REV. If a cache snapshot already has that REV, its name is reused. Otherwise the ID is `local/<folder>`, or whatever `--id ORG/NAME` sets.
+4. It rewrites the managed block in `runtime/scripts/local.sh` (`MODEL_ID`, `MODEL_REVISION`, `WORKER_CACHE_DIR`, `MODEL_SRC`) and keeps the old file as `local.sh.prev`.
+5. It stops the unit, then builds both rank files on the head. Each is about 106 GB and takes about 15 minutes the first time, seconds afterwards. Rank 1 goes to spark-2. The unit then restarts, which took about 40 s.
+6. It runs `verify-chat.py` (17 × 23 = 391) and `conformance.sh`. On any failure it restores `local.sh.prev`, re-prepares the previous pack (seconds, since its files are kept) and restarts it.
+7. With `--bench`, it runs `tools/bench.py` (prefill 2K/8K/32K, decode, 1/2/4 streams, thinking off) into `runtime/runs/packs/REV8.json` and compares it with the previous pack's run.
+
+**Rank-1 cache per revision (a trap).** The engine names its rank files after the tensor *index*, not the weights. Two packs with one layout therefore both produce `rank1of2-f4b9c7e9bd4f6316d1b4.bin`. With a shared `WORKER_CACHE_DIR`, prepare would find the old pack's rank-1 file "ready" and the pair would serve mixed weights. The script therefore uses `worker-rank-cache-REV8`. The stock pack keeps its original `worker-rank-cache`.
+
+The served name stays `DeepSeek-V4.1-Flash-1017`, so the gate, the command center and enrolled clients need no change. `activate-stock.sh` (GLM → DeepSeek) brings up whatever pack `local.sh` selects. Disk cost per pack is its folder, plus about 212 GB of rank files on spark-1 and about 106 GB on spark-2. Old rank files are never deleted automatically.
+
+**Run record, 2026-11-17: EAQ v1.1 "-v2".** Max brought the folder `~/Documents/Mia-AiLab-DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw-v2` from a drive. It is Mia's experimental EAQ v1.1 build: 39 shards, with shards 1–10 and 35–39 identical to EAQ v1 and 11–34 rewritten. Its config, index, tokenizer, template and README are byte-identical to v1's. Its `SHA256SUMS` is v1's file carried over, so it fails on the 24 new shards and cannot verify them either way. The cache ID is `Mia-AiLab/DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1.1-2.9-bpw-v2` at local REV `04c13f12b83d57487912d87d0f1677b076810954`. It loaded in 40 s and passed the canary and conformance (`conformance-v2/` on spark-1). The round trip v2 → `use stock` → v2 through the script also passed both times. Bench medians, thinking off, the same session:
+
+| Metric | EAQ v1 (45ee5d0f) | EAQ v1.1 -v2 (04c13f12) |
+|---|---|---|
+| Decode, 1 stream | 59.6 / 60.2 tok/s | 60.6 / 62.3 tok/s |
+| 2 streams aggregate | 86.6 / 85.6 tok/s | 90.2 / 90.8 tok/s |
+| 4 streams aggregate | 120.4 / 121.7 tok/s | 118.4 / 120.5 tok/s |
+| Prefill 8K | 2,331 / 2,296 tok/s | 2,384 / 2,376 tok/s |
+| Prefill 32K | 2,419 / 2,274 tok/s | 2,434 / 2,436 tok/s |
+| Errors | 0 | 0 |
+
+Each cell gives two runs. The differences are inside run-to-run noise. A first v1 run measured 2K prefill at 1,322 tok/s, but that was cold-server warm-up: the later v1 run gave 1,990 against v2's 2,035–2,049. The verdict is a drop-in replacement, and v2 is the default. A quality A/B (the v5 eval) has not been run.
 
 ## Quickstart
 
