@@ -82,6 +82,8 @@ The served name stays `DeepSeek-V4.1-Flash-1017`, so the gate, the command cente
 
 Each cell gives two runs. The differences are inside run-to-run noise. A first v1 run measured 2K prefill at 1,322 tok/s, but that was cold-server warm-up: the later v1 run gave 1,990 against v2's 2,035–2,049. The verdict is a drop-in replacement, and v2 is the default. A quality A/B (the v5 eval) has not been run.
 
+**Other EXL3 models.** For other packs and other EXL3 models brought offline, including GLM packs, new architectures and the read-only `spark-model-intake.sh` preflight, see [EXL3_PLAYBOOK.md](EXL3_PLAYBOOK.md).
+
 ## Quickstart
 
 Three paths. Every command below is from the runbook body; the linked section
