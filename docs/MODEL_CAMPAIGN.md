@@ -681,10 +681,12 @@ campaign. On GLM, its N0 is arm B (36/71, thinking pinned off).
       ```
       `/v1/models` must list `DeepSeek-V4.1-Flash-1017` and nothing else.
       If it lists `GLM-5.3-Flash-EXL3`, every row below would be GLM's under
-      DeepSeek's name. `campaign.py run` records the served id it detects
-      (`served_model` in the campaign state) but, on `main` on 2026-11-18,
-      does not refuse a mismatch; it should check the id against the
-      model it was asked to run, so check it yourself until it does. The
+      DeepSeek's name. Since review 1118, pass `--served-model
+      DeepSeek-V4.1-Flash-1017`: the campaign preflight and run_eval both
+      refuse to start unless `/v1/models` lists it, and run_eval re-checks
+      it around every unit and stops as an infra stop if the gate swaps
+      models mid-arm (nothing banked). Without the flag the guard pins
+      whatever the gate lists first, so check the id yourself. The
       switch takes the pair off GLM for every client (the Mac's opencode,
       Open WebUI) until the last arm ends.
 - [ ] Record the reproducible campaign profile and seed artifact before starting the scored arms.
@@ -737,9 +739,21 @@ campaign. On GLM, its N0 is arm B (36/71, thinking pinned off).
           --baseline L0=evals/results/eval-<deepseek-slug>-L0-<ts>.json
       # without a MODELS entry yet:
       python3 evals/campaign.py run --campaign v5-thinking-first --model-name "DeepSeek-V4.1-Flash-1017" \
+          --served-model DeepSeek-V4.1-Flash-1017 \
           --base-url https://spark-1.tail4109f9.ts.net:8443/v1 --api-key-env OPENBEAST_SPARK_API_KEY \
           --jobs 4 --slots 4 --baseline L0=evals/results/eval-<deepseek-slug>-L0-<ts>.json
+      # the headline arm alone (no L0 yet): --only T, no --baseline
       ```
+      Since review 1118, `scripts/eval-host.sh check` (the campaign's
+      preflight hook) fails a toolchain that resolves to a user-writable copy
+      outside the eval prefix (a Homebrew `go`: run `scripts/eval-host.sh
+      setup --only go` once) and an `OPENBEAST_EVAL_PY` outside the prefix
+      (the old `~/.local/opt/openbeast-eval-venv`: `eval "$(scripts/eval-host.sh
+      env)"` sets the right one). After the arm, check the rows'
+      `reasoning_turns` (T must be > 0 on almost every row: thinking really
+      happened) and `response_models` (only `DeepSeek-V4.1-Flash-1017`), and
+      run `evals/audit/integrity_scan.py` (it now also flags network commands
+      and embedded absolute paths).
       To read the noise floor early, add `--order T,T_s1`. For a tighter
       margin, add `--include T_s2`.
 - [ ] Model-specific harness hypotheses: start from
