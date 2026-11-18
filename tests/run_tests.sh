@@ -163,6 +163,7 @@ for _suite in \
   "test_spark_fabric_mtu.sh|DGX Spark fabric MTU 9000 (netplan drop-in for the next reboot)" \
   "test_spark_supply.sh|DGX Spark supply chain (install-native, root-setup debs and key)" \
   "test_spark_deepseek_pack.sh|DGX Spark DeepSeek pack swap (managed local.sh block, local revision)" \
+  "test_spark_backup.sh|DGX Spark backup / restore / N-node provisioning (spark-backup.sh, spark-restore.sh)" \
   "test_opencode_sessions.sh|opencode session clearing" \
   "test_tier3_harness.sh|Tier-3 campaign harness (manifest, stop file, drift)" \
   "test_hydra_ready_parity.sh|beast-hydra readiness parity (hydra_core vs backend.sh)" \

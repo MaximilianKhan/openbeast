@@ -165,6 +165,8 @@ consumers read island.json
 - **beast-hydra** routes to other machines over the network. beast-island
   doesn't change that; in an outage those nodes are likely dark too.
 
+To rebuild a Spark from an offline backup drive, see [SPARK_BACKUP_RESTORE.md](SPARK_BACKUP_RESTORE.md).
+
 ## Files
 
 `agents/island.py` (the module, CLI and watcher) · `agents/mcp_server.py` (the
