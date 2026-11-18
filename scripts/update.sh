@@ -247,17 +247,6 @@ update_llama() {
   fi
   ok "updated $before → $after"
 
-  # A build dir configured under an old repo path (the repo was moved or
-  # renamed) has a stale CMake cache and every rebuild fails confusingly.
-  # Detect and wipe rather than let cmake error out.
-  # -xF: literal whole-line match — a repo path containing regex chars
-  # (dots, brackets) must not silently change what this matches.
-  if [[ -f "$build/CMakeCache.txt" ]] \
-     && ! grep -qxF "CMAKE_HOME_DIRECTORY:INTERNAL=$src" "$build/CMakeCache.txt"; then
-    warn "build/ was configured under a different path — wiping for a clean reconfigure"
-    rm -rf "$build"
-  fi
-
   # Rebuild with the SAME backend bootstrap used: GPU_BACKEND was persisted
   # in openbeast.conf and resolved by conf.sh; the flags come from the
   # shared lib (scripts/lib/hardware.sh) so bootstrap and update never drift.
@@ -285,8 +274,38 @@ update_llama() {
     cp -a --reflink=auto -- "$build/bin" "$snap" \
       || die "could not snapshot $build/bin before rebuilding (disk full?)"
   fi
+
+  # A build dir configured under an old repo path (the repo was moved or
+  # renamed, or the tree was built by hand elsewhere) has a stale CMake cache
+  # and every rebuild fails confusingly. Wipe it for a clean reconfigure —
+  # AFTER the snapshot, and keeping it: wiping first (as this did until
+  # 2026-11-17) took bin/ with it, so a failed build left NO llama-server
+  # despite the "restored" promise below.
+  # -xF: literal whole-line match — a repo path containing regex chars
+  # (dots, brackets) must not silently change what this matches.
+  if [[ -f "$build/CMakeCache.txt" ]] \
+     && ! grep -qxF "CMAKE_HOME_DIRECTORY:INTERNAL=$src" "$build/CMakeCache.txt"; then
+    warn "build/ was configured under a different path — wiping for a clean reconfigure (bin/ is snapshotted)"
+    find "$build" -mindepth 1 -maxdepth 1 ! -name bin.pre-update -exec rm -rf -- {} + \
+      || die "could not wipe the stale $build"
+  fi
+
+  # The build number llama.cpp names its UI assets by (b<N>): its own
+  # derivation is the commit count, which a shallow clone gets wrong (1).
+  # Unknown → -U, so a number cached by an earlier configure cannot stick.
+  local build_no build_flag
+  build_no="$(ob_llama_build_number "$src")"
+  if [[ -n "$build_no" ]]; then
+    build_flag="-DLLAMA_BUILD_NUMBER=$build_no"
+    ok "llama.cpp build number b$build_no"
+  else
+    build_flag="-ULLAMA_BUILD_NUMBER"
+    warn "llama.cpp/ is a shallow clone with no bNNNN tag on HEAD, so its build
+       number is unknown and the UI assets may not match the build. Fix:
+       git -C llama.cpp fetch --unshallow (or OB_LLAMA_BUILD_NUMBER=<N>)"
+  fi
   # $cmake_flags is deliberately unquoted — it's a flag list.
-  if ! { cmake -S "$src" -B "$build" $cmake_flags -DCMAKE_BUILD_TYPE=Release \
+  if ! { cmake -S "$src" -B "$build" $cmake_flags "$build_flag" -DCMAKE_BUILD_TYPE=Release \
          && cmake --build "$build" --config Release -j"$(nproc)" --target llama-server \
          && [[ -x "$build/bin/llama-server" ]]; }; then
     if [[ -d "$snap" ]]; then

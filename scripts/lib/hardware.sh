@@ -433,3 +433,37 @@ ob_cmake_flags() {
       ;;
   esac
 }
+
+# ob_llama_build_number <src> — llama.cpp's build number (the NNNN of its
+# bNNNN release tags) for the commit checked out in <src>, or empty when it
+# cannot be known. Pass it as cmake -DLLAMA_BUILD_NUMBER=N.
+#
+# llama.cpp's cmake derives it itself from `git rev-list --count HEAD`, and
+# its UI target (tools/ui/CMakeLists.txt) asks Hugging Face for the prebuilt
+# assets of version b<number>. In a SHALLOW clone the count is the depth (1),
+# so the build asked for b1, fell back to an incompatible "latest" and cmake
+# failed (the rig's v1.0.0 upgrade, 2026-11-17). In order:
+#   1. OB_LLAMA_BUILD_NUMBER — from the caller (engine.sh: a staged MANIFEST);
+#   2. the commit count, when no shallow cut-off lies in HEAD's history (a
+#      full clone, or a shallow one whose cut is on another line);
+#   3. a bNNNN tag on HEAD (upstream names every build that way; engine.sh
+#      and bootstrap.sh tag it locally when they fetch shallow).
+ob_llama_build_number() {
+  local src="$1" n="${OB_LLAMA_BUILD_NUMBER:-}" gd s cut=0
+  if [[ "$n" =~ ^[0-9]+$ ]]; then printf '%s\n' "$n"; return 0; fi
+  gd="$(git -C "$src" rev-parse --absolute-git-dir 2>/dev/null || true)"
+  [[ -d "$gd" ]] || return 0
+  if [[ -s "$gd/shallow" ]]; then
+    while read -r s; do
+      [[ -n "$s" ]] || continue
+      if git -C "$src" merge-base --is-ancestor "$s" HEAD 2>/dev/null; then cut=1; break; fi
+    done < "$gd/shallow"
+  fi
+  if [[ $cut -eq 0 ]]; then
+    n="$(git -C "$src" rev-list --count HEAD 2>/dev/null || true)"
+    if [[ "$n" =~ ^[0-9]+$ && "$n" -gt 0 ]]; then printf '%s\n' "$n"; return 0; fi
+  fi
+  n="$(git -C "$src" tag --points-at HEAD 2>/dev/null | sed -nE 's/^b([0-9]+)$/\1/p' | sort -n | tail -n1 || true)"
+  [[ -n "$n" ]] && printf '%s\n' "$n"
+  return 0
+}

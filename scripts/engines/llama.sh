@@ -53,6 +53,33 @@ eng_llama_installed() {
   printf '%s (%s)\n' "$(_eng_llama_name "$sha")" "${sha:0:12}"
 }
 
+# current — "version<TAB>commit" of the llama-server built in llama.cpp/
+# now, for engine.sh to record before it replaces it (a build made by hand,
+# from a branch, was missing from the history, so rollback had nothing to
+# return to — the rig, 2026-11-17). The binary says which commit it was
+# built from ("version: 1.0.0-dev (build 12359, commit b1b770d90)", older
+# "version: 4567 (abcdef12)"), which can differ from HEAD when the tree was
+# moved after the build; without that, HEAD.
+eng_llama_current() {
+  local src bin out short sha
+  src="$(_eng_llama_src)"; bin="$src/build/bin/llama-server"
+  [[ -x "$bin" ]] || return 1
+  [[ -d "$src/.git" || -f "$src/.git" ]] || return 1
+  if command -v timeout >/dev/null 2>&1; then
+    out="$(timeout 30 "$bin" --version 2>&1 < /dev/null || true)"
+  else
+    out="$("$bin" --version 2>&1 < /dev/null || true)"
+  fi
+  short="$(sed -nE 's/^version: .*commit ([0-9a-f]{7,40})\).*/\1/p; s/^version: [0-9]+ \(([0-9a-f]{7,40})\).*/\1/p' <<< "$out" | head -n1)"
+  if [[ -n "$short" ]]; then
+    sha="$(git -C "$src" rev-parse -q --verify "$short^{commit}" 2>/dev/null || true)"
+    [[ -n "$sha" ]] || { echo "the built llama-server reports commit $short, which llama.cpp/ does not hold — keep a copy of llama.cpp/build/bin by hand to go back to it" >&2; return 1; }
+  else
+    sha="$(git -C "$src" rev-parse HEAD 2>/dev/null)" || return 1
+  fi
+  printf '%s\t%s\n' "$(_eng_llama_name "$sha")" "$sha"
+}
+
 eng_llama_pin() {
   local sha; sha="$(_eng_llama_pinned_sha)"
   [[ -n "$sha" ]] || return 0
@@ -126,10 +153,46 @@ _eng_llama_fetch() {
       || { echo "the staged llama.cpp.git does not hold $sha — refusing" >&2; return 1; }
     return 0
   fi
-  git -C "$src" cat-file -e "$sha^{commit}" 2>/dev/null && return 0
+  # NOT --depth 1: llama.cpp's build number is its commit count, and a
+  # shallow fetch made it 1 — the UI assets were then asked for as "b1", an
+  # incompatible "latest" came back and cmake failed (the rig, 2026-11-17).
+  # A shallow clone (bootstrap.sh, or this script before) is deepened once.
+  local deep=() shallow
+  shallow="$(git -C "$src" rev-parse --is-shallow-repository 2>/dev/null || true)"
+  [[ "$shallow" == true ]] && deep=(--unshallow)
+  if git -C "$src" cat-file -e "$sha^{commit}" 2>/dev/null; then
+    # Here already. Deepen a shallow clone while the network is up (best
+    # effort: the build falls back to a bNNNN tag, lib/hardware.sh).
+    if [[ "$shallow" == true ]] && ! ob_engine_offline; then
+      git -C "$src" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 fetch -q --unshallow "$(_eng_llama_url)" "$sha" 2>/dev/null \
+        || echo "note: could not deepen the shallow llama.cpp/ (its build number may be wrong: git -C llama.cpp fetch --unshallow)" >&2
+    fi
+    return 0
+  fi
   ob_engine_offline && { echo "commit ${sha:0:12} is not in llama.cpp/ and OFFLINE=true — use --from DIR" >&2; return 1; }
-  git -C "$src" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 fetch -q --depth 1 "$(_eng_llama_url)" "$sha" \
+  git -C "$src" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 fetch -q ${deep[@]+"${deep[@]}"} "$(_eng_llama_url)" "$sha" \
     || { echo "could not fetch llama.cpp ${sha:0:12} from $(_eng_llama_url)" >&2; return 1; }
+}
+
+# _eng_llama_build_number_of <sha> — the build number (bNNNN) of a commit:
+# its count in a clone whose history is whole, else a bNNNN tag naming it
+# (local, then upstream's). Empty when unknown. Written to a stage MANIFEST,
+# because the staged repo is one commit deep and cannot count.
+_eng_llama_build_number_of() {
+  local sha="$1" src n=""
+  src="$(_eng_llama_src)"
+  if [[ -d "$src/.git" || -f "$src/.git" ]] && git -C "$src" cat-file -e "$sha^{commit}" 2>/dev/null; then
+    if [[ "$(git -C "$src" rev-parse --is-shallow-repository 2>/dev/null)" == false ]]; then
+      n="$(git -C "$src" rev-list --count "$sha" 2>/dev/null || true)"
+    fi
+    [[ "$n" =~ ^[1-9][0-9]*$ ]] \
+      || n="$(git -C "$src" tag --points-at "$sha" 2>/dev/null | sed -nE 's/^b([0-9]+)$/\1/p' | sort -n | tail -n1 || true)"
+  fi
+  if [[ ! "$n" =~ ^[1-9][0-9]*$ ]] && ! ob_engine_offline; then
+    n="$(_eng_llama_ls_remote 2>/dev/null | awk -v s="$sha" '$2 == s && $1 ~ /^b[0-9]+$/ { print substr($1, 2) }' | sort -n | tail -n1 || true)"
+  fi
+  [[ "$n" =~ ^[1-9][0-9]*$ ]] && printf '%s\n' "$n"
+  return 0
 }
 
 _eng_llama_write_pin() {
@@ -159,9 +222,20 @@ eng_llama_install() {
   fi
   prev="$(git -C "$src" rev-parse HEAD)"
   git -C "$src" checkout -q --detach "$sha" || return 1
+  # A staged repo is one commit deep, so the build cannot count its way to
+  # the build number: the connected box wrote it into the MANIFEST. Tag it
+  # too, so a later update.sh --llama --force rebuild finds it again.
+  local bn=""
+  if [[ -n "$from" ]]; then
+    bn="$(ob_engine_manifest_get "$from/MANIFEST" BUILD_NUMBER)"
+    [[ "$bn" =~ ^[1-9][0-9]*$ ]] || bn=""
+    if [[ -n "$bn" ]] && ! git -C "$src" rev-parse -q --verify "refs/tags/b$bn" >/dev/null 2>&1; then
+      git -C "$src" tag "b$bn" "$sha" 2>/dev/null || true
+    fi
+  fi
   build="${OB_ENGINE_LLAMA_BUILD:-$REPO_DIR/scripts/update.sh --llama --force}"
   # shellcheck disable=SC2086  # a command line, split on purpose
-  if ! $build; then
+  if ! OB_LLAMA_BUILD_NUMBER="$bn" $build; then
     git -C "$src" checkout -q --detach "$prev" 2>/dev/null || true
     echo "llama.cpp build of ${sha:0:12} FAILED — llama.cpp/ is back at ${prev:0:12}; the pin did not move." >&2
     return 1
@@ -207,6 +281,9 @@ eng_llama_stage() {
   fi || { echo "could not fetch ${sha:0:12} into $dir" >&2; return 1; }
   git -C "$dir/llama.cpp.git" update-ref refs/heads/ob-stage "$sha"
   name="$v"; [[ -z "$name" || "$name" == latest || "$name" =~ ^[0-9a-f]{40}$ ]] && name="$(_eng_llama_name "$sha")"
+  local bn; bn="$(_eng_llama_build_number_of "$sha")"
   printf 'ENGINE=llama\nVERSION=%s\nCOMMIT=%s\n' "$name" "$sha" > "$dir/MANIFEST"
-  echo "staged llama.cpp $name (${sha:0:12}) in $dir — on the closed box: scripts/engine.sh install llama --from $dir"
+  [[ -n "$bn" ]] && printf 'BUILD_NUMBER=%s\n' "$bn" >> "$dir/MANIFEST"
+  echo "staged llama.cpp $name (${sha:0:12}${bn:+, build b$bn}) in $dir — on the closed box: scripts/engine.sh install llama --from $dir"
+  [[ -n "$bn" ]] || echo "  WARNING: no build number known for ${sha:0:12} (no bNNNN tag, no whole history): the closed box's build will ask for the wrong UI assets." >&2
 }

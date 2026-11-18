@@ -127,6 +127,22 @@ What a managed vllm / tensorfold run gets, and does not get:
   `llama.cpp/` goes back to the previous commit too.
 - History is `.engines/history.tsv` (untracked). Every `use` first copies the
   conf to `.engines/conf-backups/` (0600).
+- **Rollback always has the build that ran before.** Before `install`,
+  `update` or `use` changes anything, the build this box has now is recorded
+  as an `adopt` entry if the history's latest entry is not it: a
+  `llama-server` built by hand from a branch, outside engine.sh, used to be
+  missing, and `rollback` then had nothing to return to (the rig, 2026-11-17).
+  For llama the rollback rebuilds that commit, so it must still be in
+  `llama.cpp/` (a branch's commit is); a binary from a commit this clone does
+  not hold is reported and not recorded, so copy `llama.cpp/build/bin` by hand.
+- **llama.cpp's build number.** Its cmake derives the build number from the
+  commit count, and the UI target fetches the prebuilt assets of `b<number>`.
+  A depth-1 clone counts 1, asks for `b1`, falls back to an incompatible
+  `latest`, and cmake fails. So the online install fetches whole history
+  (`--unshallow` on a shallow clone, once), `stage` writes `BUILD_NUMBER=` into
+  the MANIFEST and tags the commit `b<N>` on the closed box, and every build
+  (`update.sh`, `bootstrap.sh`) passes `-DLLAMA_BUILD_NUMBER` from
+  `ob_llama_build_number` (`scripts/lib/hardware.sh`).
 - **On a Spark**, install / update / rollback also rewrite
   `scripts/backends/spark.env` (`VLLM_IMAGE` / `VLLM_IMAGE_DIGEST` /
   `VLLM_IMAGE_ID`: a pulled pin writes the digest plus that image's local ID
@@ -175,6 +191,7 @@ sourced by `scripts/lib/engine.sh`. It defines `eng_<name>_*` functions (a
 | `formats` | yes | Weights formats, one line |
 | `installed` | yes | Print the installed version and return 0; return 1 when absent. No network |
 | `pin` | no | Print `version@ref`. Without it, the pin is `ENGINE_PIN_<NAME>` in openbeast.conf |
+| `current` | no | Print `version<TAB>ref` of the build this box has now, even one installed outside engine.sh (llama: the commit the built `llama-server --version` reports). `install` / `update` / `use` record it as an `adopt` history entry when the history's latest entry is not it, so `rollback` can return to it. Without it, the pin is what is current |
 | `latest` | yes | Print `version ref-or-dash` for the newest release (network) |
 | `install <version> <from-dir> <digest>` | yes | Fetch or build and **verify**, then set `ENG_RESULT_VERSION`, `ENG_RESULT_REF` (immutable) and optionally `ENG_RESULT_NOTE`. Return non-zero without side effects on failure |
 | `stage <version> <dir>` | yes | Write a self-verifying folder (with a `MANIFEST`) for `install --from` |

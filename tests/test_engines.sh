@@ -453,7 +453,18 @@ git -C "$T/up" config uploadpack.allowAnySHA1InWant true
 git clone -q "$T/up" "$SB/llama.cpp"; git -C "$SB/llama.cpp" checkout -q --detach "$C1"
 mkdir -p "$SB/llama.cpp/build/bin"; printf '#!/bin/bash\n' > "$SB/llama.cpp/build/bin/llama-server"; chmod +x "$SB/llama.cpp/build/bin/llama-server"
 printf 'LLAMA_CPP_REF=%s\n' "$C1" > "$SB/scripts/llama.cpp.ref"
-printf '#!/bin/bash\necho "BUILD at $(git -C %s/llama.cpp rev-parse HEAD)" >> %s/build.log\n[[ -z "${FAKE_BUILD_FAIL:-}" ]]\n' "$SB" "$T" > "$T/bin/fake-build"; chmod +x "$T/bin/fake-build"
+# The fake build logs the commit and the build number update.sh would pass
+# to cmake (lib/hardware.sh, the same function), and — like a real build —
+# leaves a llama-server that reports the commit it was built from.
+cat > "$T/bin/fake-build" <<EOF
+#!/bin/bash
+src="$SB/llama.cpp"
+source "$SB/scripts/lib/hardware.sh"
+echo "BUILD at \$(git -C "\$src" rev-parse HEAD) BN=\$(ob_llama_build_number "\$src")" >> "$T/build.log"
+[[ -z "\${FAKE_BUILD_FAIL:-}" ]] || exit 1
+printf '#!/bin/bash\necho "version: 1.0.0-dev (build 0, commit %s)"\n' "\$(git -C "\$src" rev-parse --short=9 HEAD)" > "\$src/build/bin/llama-server"
+EOF
+chmod +x "$T/bin/fake-build"
 pin_of() { sed -nE 's/^LLAMA_CPP_REF=([0-9a-f]{40})$/\1/p' "$SB/scripts/llama.cpp.ref"; }
 eng -- install llama --version b100 >/dev/null   # adopt the current one into the history
 _o="$(eng -- update llama)"
@@ -478,6 +489,53 @@ _o="$(eng OPENBEAST_OFFLINE=true -- install llama --version "$C3" --from "$T/sta
 check "…a MANIFEST naming another commit than asked is refused" '[[ "$_o" == *"refusing"* ]]' "$_o"
 _o="$(eng -- history llama)"
 check "history lists every llama install/update/rollback" '[[ $(grep -cE " llama +(install|update|rollback) " <<< "$_o") -ge 4 ]]' "$_o"
+
+# ── the build number (rig upgrade 2026-11-17) ──────────────────────────────
+# llama.cpp's cmake counts commits for its build number, and its UI target
+# fetches the assets of b<number>: a depth-1 fetch made it b1.
+check "stage writes the commit's BUILD_NUMBER (counted in a whole clone) into the MANIFEST" \
+  'grep -q "^BUILD_NUMBER=3$" "$T/stage-llama/MANIFEST"' "$(cat "$T/stage-llama/MANIFEST")"
+check "…and the offline --from build got it (the staged repo is one commit deep and cannot count)" \
+  'grep -q "BUILD at $C3 BN=3$" "$T/build.log"' "$(cat "$T/build.log")"
+rm -rf "$SB/llama.cpp"
+git clone -q --depth 1 --branch b100 "file://$T/up" "$SB/llama.cpp" 2>/dev/null
+mkdir -p "$SB/llama.cpp/build/bin"; printf '#!/bin/bash\n' > "$SB/llama.cpp/build/bin/llama-server"; chmod +x "$SB/llama.cpp/build/bin/llama-server"
+git -C "$SB/llama.cpp" tag -d b100 >/dev/null 2>&1 || true
+_o="$(_lib bash -c 'source "$REPO_DIR/scripts/lib/hardware.sh"; ob_llama_build_number "$REPO_DIR/llama.cpp"')"
+check "a shallow clone with no bNNNN tag: no build number (its commit count, 1, would be a lie)" '[[ -z "$_o" ]]' "$_o"
+_o="$(eng -- install llama --version b101)"
+check "install from upstream into a shallow clone deepens it: whole history, so the build counts right (b101's commit is #2)" \
+  '[[ "$(git -C "$SB/llama.cpp" rev-parse --is-shallow-repository)" == false ]] && grep -q "BUILD at $C2 BN=2$" "$T/build.log"' "$_o $(tail -n2 "$T/build.log")"
+git init -q "$T/shal"; git -C "$T/shal" fetch -q --depth 1 "file://$T/up" "$C2"; git -C "$T/shal" checkout -q --detach "$C2"
+check "negative control: a depth-1 fetch's own count is 1 — what llama.cpp's cmake would have used" \
+  '[[ "$(git -C "$T/shal" rev-list --count HEAD)" == 1 ]]' "$(git -C "$T/shal" rev-list --count HEAD)"
+git -C "$T/shal" tag b101 "$C2"
+_o="$(_lib bash -c 'source "$REPO_DIR/scripts/lib/hardware.sh"; ob_llama_build_number "'"$T/shal"'"')"
+check "…where a bNNNN tag on HEAD names it, the shallow clone's number is the tag's" '[[ "$_o" == 101 ]]' "$_o"
+
+# ── rollback returns to a build engine.sh never installed ──────────────────
+# The rig ran a llama-server built by hand from a branch; install moved past
+# it and the history had nothing to roll back to.
+git -C "$SB/llama.cpp" checkout -q -b beast-rank-kernels "$C1"
+( cd "$SB/llama.cpp" && echo k > kernels && git add kernels && git commit -qm "rank kernels" )
+CK="$(git -C "$SB/llama.cpp" rev-parse HEAD)"
+adopted() { awk -F'\t' -v r="${1:-}" '$3 == "adopt" && (r == "" || $5 == r)' "$SB/.engines/history.tsv" | wc -l | tr -d ' '; }
+printf '#!/bin/bash\necho "version: 0.4.0-dev (build 10865, commit %s)"\n' "${CK:0:9}" > "$SB/llama.cpp/build/bin/llama-server"
+git -C "$SB/llama.cpp" checkout -q --detach "$C2"   # the tree moved on after the hand build; the binary did not
+_o="$(eng -- install llama --version b102)"
+check "install records the hand-built binary's commit (from llama-server --version, not HEAD) as an adopt entry" \
+  '[[ "$_o" == *"recorded the llama build"* && "$(adopted "$CK")" == 1 ]]' "$_o"
+_o="$(eng -- rollback llama)"
+check "…so rollback goes back to that build (rebuilt from the branch commit), not to an older pin" \
+  '[[ "$(pin_of)" == "$CK" && "$(git -C "$SB/llama.cpp" rev-parse HEAD)" == "$CK" ]]' "$_o"
+_n="$(adopted)"
+eng -- install llama --version b102 >/dev/null
+check "negative control: a build the history already ends on is not adopted again" \
+  '[[ "$(adopted)" == "$_n" ]]' "$(cat "$SB/.engines/history.tsv")"
+printf '#!/bin/bash\necho "version: 9 (%s)"\n' "deadbeefdead" > "$SB/llama.cpp/build/bin/llama-server"
+_o="$(eng -- install llama --version b101)"
+check "a binary from a commit llama.cpp/ does not hold is reported, not recorded, and the install goes on" \
+  '[[ "$_o" == *"does not hold"* && "$(pin_of)" == "$C2" && "$(adopted)" == "$_n" ]]' "$_o"
 
 # ════════════════════════════════════════════════════════════════════════════
 echo ""
