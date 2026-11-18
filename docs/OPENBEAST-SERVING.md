@@ -11,7 +11,7 @@ python3 ~/openbeast/agents/island.py status
 curl -fsS --max-time 3 http://127.0.0.1:8000/health
 ```
 
-The first two units are DeepSeek (serving whichever pack `local.sh` selects; Mia's EAQ v1.1 "-v2" since 2026-11-17) and GLM respectively. One inference unit normally owns both GPUs. OpenBeast is the separate command center. The health endpoint checks backend readiness. For an end-to-end check, refresh the selected rig on your client and send a short prompt through the usual authenticated endpoint.
+The first two units are DeepSeek (serving whichever pack `local.sh` selects; Mia's EAQ v1.1 "-v2" since 2026-11-17) and GLM respectively. Since 2026-11-18 GLM is the default (enabled for boot) and DeepSeek the staged alternative. One inference unit normally owns both GPUs. OpenBeast is the separate command center. The health endpoint checks backend readiness. For an end-to-end check, refresh the selected rig on your client and send a short prompt through the usual authenticated endpoint.
 
 ## Start or stop the currently selected model
 

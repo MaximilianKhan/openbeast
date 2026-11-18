@@ -1,6 +1,6 @@
 # spark-hydra: the DGX Spark launch runbook
 
-**Live deployment, 2026-11-17 (evening).** The pair serves `DeepSeek-V4.1-Flash-1017` on TensorFold from Mia's experimental EAQ v1.1 "-v2" pack, which replaced the stock EAQ v1 pack as the default after an A/B run ([DeepSeek packs](#deepseek-packs-spark-deepseek-pack)). The pair serves two models only: DeepSeek (any compatible pack) and GLM-5.3-Flash. The command center and beast-gate run on spark-1. GLM-5.3-Flash remains staged for rollback. The GLM recipe, tuning measurements and rebuild examples below describe that earlier deployment.
+**Live deployment, 2026-11-18.** The pair serves **GLM-5.3-Flash** (`GLM-5.3-Flash-EXL3`, unit `spark-hydra-inference`, enabled for boot), the default again by Max's decision after testing: DeepSeek-V4.1-Flash-1017 did not satisfy him, the EAQ v1.1 "-v2" pack included. DeepSeek stays **staged as the alternative**: `beastds` (or `activate-stock.sh`) serves it on the "-v2" pack, which supersedes the stock EAQ v1 pack for DeepSeek ([DeepSeek packs](#deepseek-packs-spark-deepseek-pack)); `beastglm` (`restore-glm.sh`) switches back. The pair serves these two models only, one at a time. The command center and beast-gate run on spark-1. The DeepSeek sections below record its deployment of 2026-11-17 and stay valid for when it is selected; the GLM recipe, tuning measurements and rebuild examples describe the serving default.
 
 This page takes you from bare boxes to a serving pair, start to finish, and then
 covers day-2 operations and fully offline operation. Read it top to bottom the
@@ -36,7 +36,7 @@ The November 17 cutover used Mia's [two-Spark recipe at c7f2b85](https://github.
 
 **Local interactive baseline, November 17.** From the Mac through the authenticated tailnet gate, six short temperature-zero prose probes requested 256 completion tokens each. With thinking on (including one request using the gate default), single-stream decode was 70.1–71.7 tok/s, all reasoning tokens. With `chat_template_kwargs.enable_thinking=false`, it was 53.7–63.2 tok/s, median 60.7, all visible answer tokens. The median first streamed token arrived in 232 ms with thinking and 156 ms without. Four simultaneous thinking-off requests delivered 1,024 completion tokens in 8.74 s, or 117.1 tok/s aggregate end to end. Decode rates use tokens after the first divided by time from first to last content-bearing chunk. Use thinking for multi-step work and disable it per request for quick answers. This short-prompt test does not establish long-context performance or a quality-optimal setting.
 
-**Rollback on this pair.** The GLM unit `spark-hydra-inference` is disabled while DeepSeek owns the ranks. To switch both ranks and restore the saved serving configuration, run the installed `~/openbeast-recipes/deepseek-prep/rollback/restore-glm.sh` on spark-1. Then run `openbeast-client use spark-hydra` on the client to refresh its model and check discovery and a real completion.
+**Switching on this pair.** Exactly one of the two inference units is enabled. Since 2026-11-18 that is GLM's `spark-hydra-inference`, and `deepseek-v41-inference` is disabled. `restore-glm.sh` (in `~/openbeast-recipes/deepseek-prep/rollback/`, alias `beastglm`) switches both ranks to GLM and restores GLM's serving configuration; `activate-stock.sh` (alias `beastds`) switches to DeepSeek. Then run `openbeast-client use spark-hydra` on each client to refresh its model and check discovery and a real completion (or let `openbeast-client autosync`, PR #215, do it every 30 s).
 
 ### DeepSeek packs: spark-deepseek-pack
 
@@ -91,8 +91,8 @@ has the detail. All run from the Mac unless marked "on spark-1".
 
 ```bash
 # On spark-1
-systemctl --user status deepseek-v41-inference openbeast --no-pager
-journalctl --user -u deepseek-v41-inference --since today
+systemctl --user status spark-hydra-inference openbeast --no-pager   # GLM, the default; deepseek-v41-inference when DeepSeek is selected
+journalctl --user -u spark-hydra-inference --since today
 curl -fsS http://127.0.0.1:8000/health
 
 # On the enrolled Mac
@@ -101,7 +101,7 @@ openbeast-client status
 curl -fsS https://spark-1.tail4109f9.ts.net:8444/api/slot | python3 -m json.tool
 ```
 
-The model ID should be `DeepSeek-V4.1-Flash-1017`. Some optional capacity and busy fields may be null. Start, stop or restart both ranks through the head unit ([G3](#g3-restarts-only-through-systemctl---user-while-the-unit-is-enabled)).
+The model ID should be `GLM-5.3-Flash-EXL3` (the default since 2026-11-18), or `DeepSeek-V4.1-Flash-1017` when DeepSeek is selected. Some optional capacity and busy fields may be null. Start, stop or restart both ranks through the head unit ([G3](#g3-restarts-only-through-systemctl---user-while-the-unit-is-enabled)).
 
 **(b) Use it from a client.** Everything goes through beast-gate on
 `https://spark-1.tail4109f9.ts.net:8443/v1`, with a per-device key. The model
@@ -462,11 +462,13 @@ How to reach each box:
 
 ### What runs where
 
-**DeepSeek, the current default (checked read-only on 2026-11-18):**
+**Which model is selected.** GLM-5.3-Flash is the default since 2026-11-18 (its table follows the DeepSeek one). `systemctl --user is-enabled spark-hydra-inference deepseek-v41-inference` shows the selection.
+
+**DeepSeek, the staged alternative (checked read-only on 2026-11-18 while it served, before the switch back to GLM):**
 
 | Layer | Where | What |
 |---|---|---|
-| Inference | spark-1, `systemctl --user` unit `deepseek-v41-inference` (**enabled**) | `Type=simple`, `WorkingDirectory=~/openbeast-recipes/deepseek-prep/runtime`, `FOREGROUND=1 PREPARE=0 ./start.sh`, `Restart=on-failure`, `RestartSec=60s`, at most 3 starts in 30 min. The runtime is Mia's two-Spark recipe at `c7f2b85`. It starts rank 1 on spark-2 over ssh, then rank 0 |
+| Inference | spark-1, `systemctl --user` unit `deepseek-v41-inference` (**disabled** since 2026-11-18; enabled only while DeepSeek is selected) | `Type=simple`, `WorkingDirectory=~/openbeast-recipes/deepseek-prep/runtime`, `FOREGROUND=1 PREPARE=0 ./start.sh`, `Restart=on-failure`, `RestartSec=60s`, at most 3 starts in 30 min. The runtime is Mia's two-Spark recipe at `c7f2b85`. It starts rank 1 on spark-2 over ssh, then rank 0 |
 | Containers | both | `dsv41-1017-exl3-tf` from the locally built image `tensorfold-dsv41:exl3-tp2-8a98ae503d85`, one per Spark |
 | Pack selection | spark-1, `runtime/scripts/local.sh` (managed block written by `spark-deepseek-pack.sh`; previous copy `local.sh.prev`) | `MODEL_ID=Mia-AiLab/DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1.1-2.9-bpw-v2`, `MODEL_REVISION=04c13f12…` (local REV), `MODEL_SRC=~/Documents/Mia-AiLab-DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw-v2`, `WORKER_CACHE_DIR=…/worker-rank-cache-04c13f12`, `CONTEXT=524288`, `HOST=127.0.0.1`, `PORT=8000` |
 | API | spark-1 | `http://127.0.0.1:8000/v1`, model `DeepSeek-V4.1-Flash-1017`, bearer key in `~/.config/openbeast/tensorfold-api-key` (0600). Loopback only |
@@ -474,11 +476,11 @@ How to reach each box:
 | Pack folders | both | `~/Documents/Mia-AiLab-DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw` (stock EAQ v1, the fallback) and `…-bpw-v2` (EAQ v1.1, serving). spark-2's `~/Documents` mirrors spark-1's as a backup |
 | Helpers | spark-1, `~/openbeast-recipes/deepseek-prep/` | `activate-stock.sh` (GLM → DeepSeek), `rollback/restore-glm.sh` (DeepSeek → GLM), `spark-deepseek-pack.sh`, `spark-deepseek-prepare-local.sh`, `verify-chat.py`, conformance records (`conformance-4/`, `conformance-v2/`) |
 | Shortcuts | spark-1, `~/.local/bin/beast-spark` + aliases in `~/.bashrc` | `beastup`, `beastdown`, `beastds`, `beastglm`, `beaststatus` (from `scripts/backends/spark-beast.sh`, PR #212) |
-| GLM unit | spark-1, `spark-hydra-inference` (**disabled**) | the rollback model; see the GLM table below |
-| Command center | spark-1, `openbeast` (enabled) + transient `openbeast-stack` scope | as in the GLM table, with `INFERENCE_MODEL=DeepSeek-V4.1-Flash-1017`, `INFERENCE_THINKING=on`, `INFERENCE_SLOTS=4`, `EDGE_GATE=true` |
-| opencode | both, `~/.opencode/bin/opencode` v2.3.2 | provider `spark-hydra-local` at `127.0.0.1:8000`; on spark-2 through the `opencode-model-link` ssh tunnel ([SELF_DEVELOPMENT.md](SELF_DEVELOPMENT.md#opencode-on-the-sparks)) |
+| GLM unit | spark-1, `spark-hydra-inference` (**enabled**, serving, since 2026-11-18) | the default model; see the GLM table below |
+| Command center | spark-1, `openbeast` (enabled) + transient `openbeast-stack` scope | as in the GLM table. `INFERENCE_MODEL` follows the selection (`restore-glm.sh` and `activate-stock.sh` rewrite it): `GLM-5.3-Flash-EXL3` on 2026-11-18, `DeepSeek-V4.1-Flash-1017` while DeepSeek serves. `INFERENCE_THINKING=on`, `INFERENCE_SLOTS=4`, `EDGE_GATE=true` either way |
+| opencode | both, `~/.opencode/bin/opencode` v2.3.2 | provider `spark-hydra-local` at `127.0.0.1:8000`, default model `GLM-5.3-Flash-EXL3`, DeepSeek also listed; on spark-2 through the `opencode-model-link` ssh tunnel ([SELF_DEVELOPMENT.md](SELF_DEVELOPMENT.md#opencode-on-the-sparks)) |
 
-**GLM-5.3-Flash, the rollback model.** This table describes the GLM configuration as it served until 2026-11-17. Its unit is disabled while DeepSeek owns the ranks.
+**GLM-5.3-Flash, the default (since 2026-11-18; also the first deployment, 2026-11-13 to 2026-11-17).** Checked read-only on 2026-11-18: unit `spark-hydra-inference` (`WorkingDirectory=~/openbeast-recipes/glm53`, `FOREGROUND=1 PREPARE=0`, `Restart=on-failure`, `RestartSec=30`), container `glm53-flash-tf` from image `tensorfold-glm53:v0.6.0` on both Sparks, model id `GLM-5.3-Flash-EXL3` on `127.0.0.1:8000`, which answers without a key (v0.6.0 has no API key; a bearer header is ignored). The rest of the table is as recorded when it was set up.
 
 | Layer | Where | What |
 |---|---|---|
@@ -1661,19 +1663,19 @@ systemctl --user enable --now openbeast
   (`healthcheck.sh --restart` every 5 min) and `openbeast-logrotate.timer`
   (daily) when they are missing.
 
-What is enabled on spark-1 (`systemctl --user list-unit-files | grep -E 'openbeast|deepseek|spark|hydra'`, 2026-11-18, DeepSeek selected):
+What is enabled on spark-1 (`systemctl --user list-unit-files | grep -E 'openbeast|deepseek|spark|hydra'`, 2026-11-18, GLM selected):
 
 ```
-deepseek-v41-inference.service enabled
+deepseek-v41-inference.service disabled
 openbeast.service              enabled
-spark-hydra-inference.service  disabled
+spark-hydra-inference.service  enabled
 openbeast-watchdog.timer       enabled
 openbeast-logrotate.timer      enabled
 openbeast-stack.service        transient
 ```
 
 Exactly one of the two inference units is enabled; that is the model
-selected for boot. With GLM selected, the two lines swap.
+selected for boot. With DeepSeek selected, the two lines swap.
 
 Then reboot once. This is the docker-group gotcha from
 [B2](#b2-spark-root-setupsh-the-only-root-step-once-per-spark). After the
@@ -2225,7 +2227,7 @@ curl -s http://127.0.0.1:8000/health             # ok, streams, pool tokens, req
 ~/openbeast/scripts/doctor.sh                    # 39 ok, 1 warning on 2026-11-15 (SSD wear needs a sudoers rule)
 ~/openbeast/start.sh --status                    # stack + island state
 python3 ~/openbeast/agents/island.py status      # online / island, and why
-systemctl --user status deepseek-v41-inference openbeast --no-pager
+systemctl --user status spark-hydra-inference openbeast --no-pager   # GLM (default); deepseek-v41-inference when DeepSeek is selected
 # from the Mac
 curl -fsS https://spark-1.tail4109f9.ts.net:8444/api/slot | python3 -m json.tool | head -30
 openbeast-client status && openbeast-client rigs   # the client's view (F2)
@@ -2233,10 +2235,16 @@ openbeast-client status && openbeast-client rigs   # the client's view (F2)
 
 ### G2. Logs
 
+The unit and container names depend on the selected model:
+GLM (the default since 2026-11-18) is `spark-hydra-inference` and
+`glm53-flash-tf`; DeepSeek is `deepseek-v41-inference` and `dsv41-1017-exl3-tf`.
+
 ```bash
-journalctl --user -fu deepseek-v41-inference          # rank 0 + start.sh
-docker logs -f dsv41-1017-exl3-tf                        # rank 0 container
-ssh max@10.100.216.2 'docker logs -f dsv41-1017-exl3-tf' # rank 1 (quote it)
+journalctl --user -fu spark-hydra-inference           # rank 0 + start.sh (GLM)
+docker logs -f glm53-flash-tf                            # rank 0 container (GLM)
+ssh max@10.100.216.2 'docker logs -f glm53-flash-tf'     # rank 1 (quote it)
+journalctl --user -fu deepseek-v41-inference          # the same, when DeepSeek is selected
+docker logs -f dsv41-1017-exl3-tf
 tail -f ~/openbeast/.run/stack.log                   # the command center's supervisor
 journalctl --user -u openbeast --since today
 ```
@@ -2244,13 +2252,13 @@ journalctl --user -u openbeast --since today
 ### G3. Restarts: only through `systemctl --user` while the unit is enabled
 
 ```bash
-systemctl --user restart deepseek-v41-inference       # both ranks
-systemctl --user stop deepseek-v41-inference
+systemctl --user restart spark-hydra-inference        # both ranks (GLM; deepseek-v41-inference for DeepSeek)
+systemctl --user stop spark-hydra-inference
 systemctl --user restart openbeast                   # the command center (WebUI, tools, gate, …)
 ./scripts/healthcheck.sh --restart                   # restart only what is DOWN (the watchdog does this every 5 min)
 ```
 
-Never `docker stop dsv41-1017-exl3-tf`, the recipe’s stop script or
+Never `docker stop` a rank container (`glm53-flash-tf`, `dsv41-1017-exl3-tf`), the recipe’s stop script or
 `./stop.sh` by hand while the matching unit is enabled. systemd restarts the
 pair behind you (`Restart=on-failure`), or the oneshot `openbeast` unit stays
 "active" over a stopped stack.

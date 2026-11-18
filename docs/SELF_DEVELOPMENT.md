@@ -1,10 +1,11 @@
 # Self-development: OpenBeast's own model working on OpenBeast
 
-**State on 2026-11-18.** The Spark pair serves `DeepSeek-V4.1-Flash-1017` on
-TensorFold from Mia's EAQ v1.1 "-v2" pack, the DeepSeek default since
-2026-11-17. GLM-5.3-Flash is the only other model the pair serves, and one
-command switches between them
-([SPARK_HYDRA.md](SPARK_HYDRA.md#deepseek-deployment)). OpenCode on the Mac
+**State on 2026-11-18.** The Spark pair serves **GLM-5.3-Flash**
+(`GLM-5.3-Flash-EXL3`) on TensorFold, the default again by Max's decision
+after testing DeepSeek-V4.1-Flash-1017. DeepSeek is staged as the
+alternative on Mia's EAQ v1.1 "-v2" pack, and one command switches between
+the two (`beastglm` / `beastds`,
+[SPARK_HYDRA.md](SPARK_HYDRA.md#deepseek-deployment)). OpenCode on the Mac
 reaches the pair through beast-gate. Since 2026-11-18, opencode v2.3.2 also
 runs on both Sparks against the pair's loopback API, with no OpenBeast MCP
 tools yet ([1.2](#opencode-on-the-sparks)). The worked run in
@@ -89,7 +90,7 @@ clone's own `agent.sh` would find no `openbeast.conf` and dial the llama.cpp
 default `http://localhost:8080/v1`, where nothing serves on a Spark. The live
 `~/openbeast/agent.sh` sources the live conf. That gives it
 `OPENBEAST_AGENT_INFERENCE_URL=http://127.0.0.1:8000/v1` and
-`OPENBEAST_INFERENCE_MODEL=DeepSeek-V4.1-Flash-1017`. All file and shell work then
+`OPENBEAST_INFERENCE_MODEL` (the served model: `GLM-5.3-Flash-EXL3` on 2026-11-18). All file and shell work then
 happens in `-w`:
 
 ```bash
@@ -145,7 +146,7 @@ opencode --version
 | `baseURL` | `http://127.0.0.1:8000/v1`: TensorFold directly. No gate, tailnet or LAN in the path |
 | `apiKey` | `"{file:~/.config/openbeast/tensorfold-api-key}"`: opencode reads the 0600 key file; the key is not in the config |
 | Models | `DeepSeek-V4.1-Flash-1017` (context 524288, output 32768); `GLM-5.3-Flash-EXL3` (context 1048576, output 32768) |
-| Default model | `spark-hydra-local/DeepSeek-V4.1-Flash-1017` |
+| Default model | `spark-hydra-local/GLM-5.3-Flash-EXL3` (since 2026-11-18, with GLM the pair's default; it was DeepSeek for a few hours before) |
 | Other | `autoupdate: false` (never reaches for the network), `share: "disabled"` |
 
 Only the model the pair currently serves answers: which one is the
@@ -170,9 +171,11 @@ model is unreachable from spark-2's opencode only; inference itself is
 unaffected. Rotating the TensorFold key means updating spark-2's copy too.
 
 **Verified 2026-11-18:** `opencode run "What is 17 times 23? Reply with only
-the number."` answered `391` on both Sparks with `DeepSeek-V4.1-Flash-1017`.
-GLM through this config is untested (switching models would have interrupted
-Max).
+the number."` answered `391` on both Sparks, with `DeepSeek-V4.1-Flash-1017`
+while it served and with `GLM-5.3-Flash-EXL3` after the switch. GLM's
+v0.6.0 server takes no API key, so the configured key is simply ignored
+while GLM serves (an unauthenticated `/v1/models` returned 200 on
+2026-11-18); DeepSeek's server requires it.
 
 **Gaps:**
 
@@ -372,7 +375,7 @@ Run the narrow suites while iterating, then the full set before committing:
 | `evals/` | `tests/test_scoring.py`, `test_suite_stats.py`, `test_fast_suite.py`, `test_eval_*.py`, `test_cache.py`, `test_benchmark_lifecycle.py`, `test_board_honesty.py`, `test_leaderboard_eligibility.py`, plus `python3 evals/suite_stats.py --check` |
 | `.github/workflows/*` or a new named test step | `tests/test_ci_workflow.py` |
 | docs that cite eval counts | `python3 evals/suite_stats.py --check` (exit 1 on drift) |
-| a live surface (only read-only, only on the live box) | `scripts/healthcheck.sh`, `scripts/backends/conformance.sh --model DeepSeek-V4.1-Flash-1017`, `tests/test_smoke.sh` (needs a live stack) |
+| a live surface (only read-only, only on the live box) | `scripts/healthcheck.sh`, `scripts/backends/conformance.sh --model GLM-5.3-Flash-EXL3` (the served id; `DeepSeek-V4.1-Flash-1017` when DeepSeek is selected), `tests/test_smoke.sh` (needs a live stack) |
 
 ---
 
