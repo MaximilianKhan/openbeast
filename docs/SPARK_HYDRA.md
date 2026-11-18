@@ -2072,7 +2072,7 @@ scripts/apps.sh disable ios-build     # removes exactly what enable wrote
 
 The Mac on 2026-11-15:
 
-- READY: `ios-build` (enabled, `mobilebuildmcp`), `android-build`,
+- READY: `ios-build` (enabled, as `mobilebuildmcp`; now `mobile-build-tools`), `android-build`,
   `mobile-ui`, `sim-ros`.
 - MISSING: `blender`, `figma`, `3d-print` (off by default: risk).
 

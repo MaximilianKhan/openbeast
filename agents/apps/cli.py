@@ -596,6 +596,75 @@ def render_check(rep: dict, enabled: dict | None, user_keys: list[str]) -> str:
     return "\n".join(L)
 
 
+# ── renamed servers ─────────────────────────────────────────────────────────
+MIGRATING = ("enable", "disable", "refresh", "upgrade")
+
+
+def migrate_legacy(ctx: "Ctx") -> list[str]:
+    """Move what beast-apps wired under a server's former id (its catalog
+    `aliases`) to the current id: the opencode entry and its gates, the
+    enabled.json record, the pin and the tool manifests. Runs before enable /
+    disable / refresh / upgrade, so a machine wired as `mobilebuildmcp` ends
+    up with `mobile-build-tools` only, never both. An entry under a key the
+    user chose (`enable --key`) keeps that key; only its record moves. If the
+    new key is already taken (wired again, or by hand), the old entry is
+    removed instead. Returns what it did, one line each."""
+    legacy = C.legacy_ids(ctx.cat)
+    if not legacy:
+        return []
+    st, msgs = ctx.st, []
+    pins = st.pins()
+    if any(old in pins for old in legacy):
+        for old, new in legacy.items():
+            if old in pins:
+                pins.setdefault(new, pins[old])
+                del pins[old]
+                msgs.append(f"pin of {old} moved to {new}")
+        st.save_pins(pins)
+    for old, new in legacy.items():
+        od, nd = st.manifest_dir(old), st.manifest_dir(new)
+        if os.path.isdir(od) and not os.path.exists(nd):
+            os.replace(od, nd)
+            msgs.append(f"tool manifests of {old} moved to {new}")
+    mine = st.enabled()
+    todo = [(k, r) for k, r in mine.items() if r.get("server") in legacy]
+    if not todo:
+        return msgs
+    try:
+        cfg = ctx.cfg()
+    except ocfg.ConfigError as e:
+        return msgs + [f"cannot rename the entries of {', '.join(k for k, _ in todo)} yet: {e}"]
+    wrote = secret = False
+    for key, rec in todo:
+        sid = legacy[rec["server"]]
+        s = ctx.cat["server"][sid]
+        secret = secret or private_config(s, (rec.get("entry") or {}).get("environment") or {}, ctx.cfg_path)
+        newkey = (s.get("config_key") or sid) if key == rec["server"] else key
+        rec = dict(rec, server=sid)
+        del mine[key]
+        if newkey != key and (newkey in mine or ocfg.find_entry(cfg, newkey)):
+            gone = ocfg.uninstall(cfg, key, rec.get("rules", []))
+            wrote = wrote or bool(gone)
+            msgs.append(f"removed the old opencode entry {key!r}: {sid} is already wired as {newkey!r}")
+            continue
+        if newkey != key:
+            fl = ocfg.flavor_for(cfg, key, ctx.env, rec.get("schema"))
+            res = ocfg.rename(cfg, key, newkey, rec.get("rules", []), fl)
+            if res is not None:
+                rec.update(rules=res[0], schema=fl, at=now_iso())
+                msgs += [f"renamed opencode entry {key!r} to {newkey!r} ({sid})"] + [f"  ! {w}" for w in res[1]]
+                wrote = True
+        mine[newkey] = rec
+    if wrote:
+        b = ocfg.backup(ctx.cfg_path)
+        ocfg.write(ctx.cfg_path, cfg, secret=secret)
+        if b:
+            msgs.append(f"  backup: {b}")
+        msgs.append("  Restart opencode to load the new name.")
+    st.save_enabled(mine)
+    return msgs
+
+
 # ── commands ────────────────────────────────────────────────────────────────
 class Ctx:
     def __init__(self, args):
@@ -619,7 +688,7 @@ class Ctx:
 def resolve_capability(ctx: Ctx, name: str) -> str | None:
     if name in ctx.cat["capability"]:
         return name
-    caps = C.capabilities_of(ctx.cat, name)
+    caps = C.capabilities_of(ctx.cat, C.resolve_server(ctx.cat, name) or name)
     return caps[0] if caps else None
 
 
@@ -691,7 +760,7 @@ def cmd_check(ctx: Ctx) -> int:
     cid = resolve_capability(ctx, ctx.args.capability)
     if not cid:
         return unknown(ctx, ctx.args.capability)
-    only = ctx.args.server
+    only = ctx.args.server and (C.resolve_server(ctx.cat, ctx.args.server) or ctx.args.server)
     if only and only not in C.capability_servers(ctx.cat, cid):
         print(f"server {only!r} is not a candidate for {cid} "
               f"(candidates: {', '.join(C.capability_servers(ctx.cat, cid))})", file=sys.stderr)
@@ -728,10 +797,11 @@ def cmd_enable(ctx: Ctx) -> int:
     cid = resolve_capability(ctx, a.capability)
     if not cid:
         return unknown(ctx, a.capability)
-    if a.server and a.server not in C.capability_servers(ctx.cat, cid):
+    server = a.server and (C.resolve_server(ctx.cat, a.server) or a.server)
+    if server and server not in C.capability_servers(ctx.cat, cid):
         print(f"server {a.server!r} is not a candidate for {cid}", file=sys.stderr)
         return EXIT_USAGE
-    rep = evaluate_capability(ctx.cat, cid, ctx.env, ctx.st, only=a.server)
+    rep = evaluate_capability(ctx.cat, cid, ctx.env, ctx.st, only=server)
     if rep["status"] != "READY":
         print(render_check(rep, None, []))
         print(f"\nRefusing to enable {cid}: the check did not pass. Fix the items above, then re-run.")
@@ -826,7 +896,8 @@ def cmd_enable(ctx: Ctx) -> int:
 def cmd_disable(ctx: Ctx) -> int:
     a = ctx.args
     mine = ctx.st.enabled()
-    targets = [k for k, v in mine.items() if a.name in (k, v.get("server"), v.get("capability"))]
+    name = C.resolve_server(ctx.cat, a.name) or a.name
+    targets = [k for k, v in mine.items() if {a.name, name} & {k, v.get("server"), v.get("capability")}]
     try:
         cfg = ctx.cfg()
     except ocfg.ConfigError as e:
@@ -862,6 +933,7 @@ def _targets(ctx: Ctx, names: list[str]) -> tuple[list[tuple[str, dict | None]],
     if not names:
         return [(v["server"], dict(v, key=k)) for k, v in sorted(mine.items())], bad
     for n in names:
+        n = C.resolve_server(ctx.cat, n) or n
         rec = next((dict(v, key=k) for k, v in mine.items() if n in (k, v.get("server"), v.get("capability"))), None)
         if rec:
             out.append((rec["server"], rec))
@@ -1206,6 +1278,9 @@ def main(argv: list[str] | None = None) -> int:
     except C.CatalogError as e:
         print(f"error: {e}", file=sys.stderr)
         return EXIT_ERR
+    if args.cmd in MIGRATING and not getattr(args, "dry_run", False):
+        for m in migrate_legacy(ctx):        # stderr: --json output stays one object
+            print(m, file=sys.stderr)
     return args.fn(ctx)
 
 

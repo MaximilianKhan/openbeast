@@ -31,6 +31,9 @@
 #
 # Safety: `ask_tools` become opencode "ask" permission rules, `deny_tools`
 # become "deny" rules (globs allowed; the rule's action is <key>_<tool>).
+# `aliases` (optional) are former ids of a server: an entry beast-apps wired
+# under one is renamed to the current id by the next enable / disable /
+# refresh / upgrade, and the old id still works as a name on the CLI.
 # `risk_patterns` are substrings a NEWLY appearing tool is checked against on
 # `refresh` and `upgrade`, so an upstream release that adds an exec-style tool
 # is flagged instead of silently trusted (`upgrade` refuses to wire such a
@@ -45,7 +48,7 @@ schema = 1
 title = "Build, run and test iOS/macOS apps with Xcode and the iOS Simulator"
 stage = "mobile"
 keywords = ["ios", "iphone", "ipad", "xcode", "swift", "simulator", "mobile", "build", "app", "mac", "macos", "xcodebuild"]
-servers = ["mobilebuildmcp"]
+servers = ["mobile-build-tools"]
 
 [capability.android-build]
 title = "Build Android apps with Gradle; install, launch and debug them over adb"
@@ -85,7 +88,11 @@ servers = ["ros-mcp"]
 
 # ── servers ─────────────────────────────────────────────────────────────────
 
-[server.mobilebuildmcp]
+[server.mobile-build-tools]
+# Our label, styled like openbeast-tools (opencode names its tools
+# mobile-build-tools_<tool>). Until 2026-11-17 the id was the npm package
+# name; `aliases` (see the header) moves an entry wired under the old id.
+aliases = ["mobilebuildmcp"]
 title = "MobileBuildMCP (getsentry; formerly XcodeBuildMCP)"
 source = "https://github.com/getsentry/MobileBuildMCP"
 docs = "https://github.com/getsentry/xcodebuildmcp.com/blob/main/app/docs/_content/env-vars.mdx"
