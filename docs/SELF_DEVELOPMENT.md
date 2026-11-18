@@ -215,6 +215,7 @@ Run the narrow suites while iterating, then the full set before committing:
 | `scripts/serve-*.sh` flags, `scripts/llama.cpp.ref`, `scripts/lib/memscope.sh`, `scripts/engine-gate.sh`, `scripts/tokps.py`, `scripts/engines/maya*` | `tests/test_weight_streaming.sh` (portable; every serve-script flag against the pinned llama.cpp's option list), `tests/test_tokps.py`, `tests/test_engines.sh` (GNU, Maya install/stage/gate), `tests/test_lifecycle.sh` (the big-mode scope through `start.sh -d`). Runbook: [WEIGHT_STREAMING.md](WEIGHT_STREAMING.md) |
 | `scripts/backends/spark-cluster.sh`, `tensorfold/spark-node.sh`, `vllm/` | `tests/test_spark_cluster.sh`, `tests/test_backends.sh` |
 | `scripts/backends/spark-guard.sh` | `tests/test_spark_guard.sh` |
+| `scripts/backends/spark-deepseek-pack.sh` | `tests/test_spark_deepseek_pack.sh` |
 | `scripts/backends/spark-fabric-mtu.sh` (fabric MTU 9000, netplan drop-in) | `tests/test_spark_fabric_mtu.sh` (portable; on Ubuntu it also checks the merge against the real `netplan generate --root-dir`) |
 | `spark-root-setup.sh`, `tensorfold/install-native.sh` | `tests/test_spark_supply.sh` |
 | `scripts/backends/model-*.sh`, `pylib/`, profiles, locks | `tests/test_model_profiles.py`, `test_model_inspect.py`, `test_model_fetch.py`, `test_conformance.py`, `test_use_model.py` |
@@ -679,6 +680,7 @@ Run in a scratch clone of this branch, niced, on 2026-11-15:
 | Suite | Result | Time |
 |---|---|---|
 | `test_spark_guard.sh` | 32 passed, 0 failed, 1 skipped | 1 s |
+| `test_spark_deepseek_pack.sh` | 4 passed, 0 failed, 1 skipped (pack_rev needs GNU stat; 5 of 5 on a Spark) | 1 s |
 | `test_spark_cluster.sh` | 31 passed, 0 failed | 4 s |
 | `test_spark_supply.sh` | 22 passed, 0 failed | <1 s |
 | `test_engines.sh` | 61 passed, 0 failed | 64 s |
