@@ -25,7 +25,7 @@ only under $HOME (and docker's store through the docker CLI). Both print
 their plan and change nothing without --apply.
 
 Test seams (environment): SPARK_BACKUP_HOME, SPARK_BACKUP_ITEMS,
-SPARK_BACKUP_SERVING_REV, SPARK_BACKUP_HOSTNAME, SPARK_BACKUP_NOW,
+SPARK_BACKUP_SERVING_REV, SPARK_BACKUP_SERVING_WCD, SPARK_BACKUP_HOSTNAME, SPARK_BACKUP_NOW,
 SPARK_BACKUP_UID / _GID / _USER, SPARK_RESTORE_HOME_CHECK=0, and the commands DOCKER, RSYNC, ZSTD,
 FINDMNT, LSBLK, NVIDIA_SMI, IBDEV2NETDEV, SYSTEMCTL, SSH, GIT, UNAME_M (a
 value, not a command).
@@ -56,6 +56,12 @@ RESTORE_CLASSES = ("keep", "secret", "weights", "rankcache")
 ALL_CLASSES = FILE_CLASSES + ("image", "volume")
 ROLES = ("head", "worker", "all", "opt")
 LOCAL_SH = "openbeast-recipes/deepseek-prep/runtime/scripts/local.sh"
+GLM_LOCAL_SH = "openbeast-recipes/glm53/scripts/local.sh"
+# The pair's two inference units; exactly one is enabled (GLM's is the default).
+GLM_UNIT = "spark-hydra-inference.service"
+DS_UNIT = "deepseek-v41-inference.service"
+INFERENCE_UNITS = (GLM_UNIT, DS_UNIT)
+DEFAULT_HEAD_UNITS = f"openbeast.service {GLM_UNIT} openbeast-logrotate.timer openbeast-watchdog.timer"
 # Filesystems that keep what the backup depends on: owners and modes, hard
 # links (Documents/ and the HF caches are links of each other: without them
 # 1.1 TB becomes 1.6 TB), symlinks (the HF snapshot layout), ACLs, xattrs.
@@ -187,6 +193,33 @@ def serving_rev(home: str) -> str:
     return rev if re.fullmatch(r"[0-9a-f]{8,64}", rev or "") else ""
 
 
+def serving_wcd(home: str, rev: str) -> str:
+    """The folder name of the serving pack's rank-1 cache: basename of local.sh's (last) WORKER_CACHE_DIR.
+    worker-rank-cache-<REV8> for a pack spark-deepseek-pack.sh staged, plain worker-rank-cache for the stock
+    pack; worker-rank-cache-<REV8> when local.sh does not say."""
+    w = os.environ.get("SPARK_BACKUP_SERVING_WCD")
+    if w is None:
+        try:
+            with open(os.path.join(home, LOCAL_SH), encoding="utf-8", errors="replace") as f:
+                w = env_value(f.read(), "WORKER_CACHE_DIR") or ""
+        except OSError:
+            w = ""
+    w = os.path.basename((w or "").rstrip("/"))
+    if re.fullmatch(r"[A-Za-z0-9._-]+", w) and w not in (".", ".."):
+        return w
+    return f"worker-rank-cache-{rev[:8]}" if rev else ""
+
+
+def item_subst(rev: str, wcd: str) -> dict:
+    """The {NAME} values an items line may use; a line whose value is unknown is skipped."""
+    d = {}
+    if rev:
+        d["SERVING_REV8"] = rev[:8]
+    if wcd:
+        d["SERVING_WCD"] = wcd
+    return d
+
+
 def load_items(path: str, subst: dict) -> tuple:
     items, skipped = [], []
     try:
@@ -220,7 +253,7 @@ def load_items(path: str, subst: dict) -> tuple:
 def items_for(args, home: str) -> tuple:
     path = os.environ.get("SPARK_BACKUP_ITEMS") or os.path.join(BACKENDS, "data", "spark-backup.items")
     rev = getattr(args, "serving_rev", None) or serving_rev(home)
-    items, skipped = load_items(path, {"SERVING_REV8": rev[:8]} if rev else {})
+    items, skipped = load_items(path, item_subst(rev, serving_wcd(home, rev)))
     return items, skipped, rev
 
 
@@ -660,9 +693,25 @@ def write_manifest(gen: str, prev: str, do_hash: bool, jobs: int = 4) -> tuple:
     return entries, done, time.time() - t0
 
 
+def enabled_user_units(home: str) -> list:
+    """The unit names linked in ~/.config/systemd/user/*.wants/: what starts at boot."""
+    d = os.path.join(home, ".config/systemd/user")
+    out = set()
+    try:
+        for w in os.listdir(d):
+            if w.endswith(".wants") and os.path.isdir(os.path.join(d, w)):
+                out.update(os.listdir(os.path.join(d, w)))
+    except OSError:
+        pass
+    return sorted(out)
+
+
 def cmd_run(args) -> int:
+    # Everything this writes on the drive is the account's alone (the secrets above all).
+    os.umask(0o077)
     home = home_dir()
     items, skipped, rev = items_for(args, home)
+    wcd = serving_wcd(home, rev)
     dest = os.path.abspath(args.to)
     host = hostname()
     hostdir = os.path.join(dest, "openbeast-backup", host)
@@ -680,10 +729,21 @@ def cmd_run(args) -> int:
         ropts.append(f"--link-dest={os.path.join(prev, 'home')}")
 
     print(f"== backup of {host}:{home} -> {gen}" + ("" if args.apply else "   [DRY RUN: nothing is written]"))
-    print(f"   serving DeepSeek revision: {rev[:8] if rev else 'unknown — rank-cache lines skipped'}")
+    print(f"   serving DeepSeek revision: {rev[:8] if rev else 'unknown — rank-cache lines skipped'}"
+          + (f", rank-1 cache {wcd}/" if wcd else ""))
     print(f"   previous generation: {prev or 'none (a full copy)'}" + ("  (unchanged files become hard links of it)" if prev else ""))
     for n, p in skipped:
         print(f"   (items line {n} skipped: {p} needs a value)")
+    if args.config_only:
+        print("   --config-only: weights, rank files, docker images and volumes are left out (the head's backup holds them)")
+    claims, uncovered = scan_home(items, home)
+    if uncovered:
+        print("   NOT backed up: no items line claims " + ", ".join(r for r, _ in uncovered) +
+              "  (spark-backup.sh inventory sizes them; add an items line to keep one)")
+    badmode = secret_mode_problems(home, [rel for rel, it in claims if it.cls == "secret"])
+    if badmode:
+        print(f"   !! {len(badmode)} secret file(s) readable by group/other — chmod 600 before relying on this backup: "
+              + ", ".join(badmode[:8]))
 
     problems = []
     if not os.path.isdir(dest):
@@ -837,7 +897,8 @@ def cmd_run(args) -> int:
         "user": os.environ.get("SPARK_BACKUP_USER") or os.environ.get("USER", ""),
         "uid": int(os.environ.get("SPARK_BACKUP_UID") or os.getuid()),
         "gid": int(os.environ.get("SPARK_BACKUP_GID") or os.getgid()),
-        "home": home, "serving_rev": rev, "rank_caches": rank, "config_only": bool(args.config_only), "previous": os.path.basename(prev) if prev else "",
+        "home": home, "serving_rev": rev, "serving_wcd": wcd, "rank_caches": rank, "config_only": bool(args.config_only),
+        "enabled_user_units": enabled_user_units(home), "previous": os.path.basename(prev) if prev else "",
         "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "files": len(entries), "bytes_unique": total, "hashed_bytes": hashed, "hashed": not args.no_hash,
         "seconds": int(time.time() - t0), "images": img_meta, "volumes": vol_meta,
@@ -998,8 +1059,7 @@ def parse_fleet(path: str) -> dict:
     fleet = {"name": env_value(text, "FLEET_NAME") or "spark-hydra",
              "user": env_value(text, "FLEET_USER") or "max",
              "ssh_key": env_value(text, "FLEET_SSH_KEY") or "id_ed25519_nvsync_cluster_assistant",
-             "head_units": (env_value(text, "FLEET_HEAD_UNITS") or
-                            "openbeast.service deepseek-v41-inference.service openbeast-logrotate.timer openbeast-watchdog.timer").split(),
+             "head_units": (env_value(text, "FLEET_HEAD_UNITS") or DEFAULT_HEAD_UNITS).split(),
              "worker_units": (env_value(text, "FLEET_WORKER_UNITS") or "opencode-model-link.service").split(),
              "model_link": (env_value(text, "FLEET_WORKER_MODEL_LINK") or "true") == "true",
              "nodes": []}
@@ -1051,6 +1111,17 @@ class Source:
             return rc.stdout if rc.returncode == 0 else None
         try:
             return open(os.path.join(self.path, rel), "rb").read()
+        except OSError:
+            return None
+
+    def listdir(self, rel: str) -> list | None:
+        if self.remote:
+            rc = subprocess.run(cmd("SSH", "ssh") + ["-o", "BatchMode=yes", self.remote, "ls", "-A",
+                                                     shlex.quote(self.path + "/" + rel)],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            return rc.stdout.decode().split() if rc.returncode == 0 else None
+        try:
+            return os.listdir(os.path.join(self.path, rel))
         except OSError:
             return None
 
@@ -1127,6 +1198,33 @@ WantedBy=default.target
 """
 
 
+def backup_inference_unit(src: Source, meta: dict) -> tuple:
+    """(unit, how): the inference unit the backed-up head had enabled for boot, from the generation's own record:
+    BACKUP.json's enabled_user_units, else the *.wants links kept in home/ (class node), else the system record's
+    `systemctl --user list-unit-files`. GLM's unit, the pair's default, when none of them says."""
+    rec = meta.get("enabled_user_units")
+    how = "BACKUP.json"
+    if rec is None:
+        rec = src.listdir("home/.config/systemd/user/default.target.wants")
+        how = "the backup's default.target.wants links"
+    if rec is None:
+        text = (src.read("system/systemd-user-units.txt") or b"").decode()
+        rec = [ln.split()[0] for ln in text.splitlines() if len(ln.split()) >= 2 and ln.split()[1] == "enabled"]
+        how = "the backup's system record"
+    hits = [u for u in INFERENCE_UNITS if u in rec]
+    if len(hits) == 1:
+        return hits[0], how
+    return GLM_UNIT, "the default (the backup records " + ("both" if hits else "neither") + ")"
+
+
+def head_units_for(fleet: dict, unit: str) -> list:
+    """The fleet's head units with the inference unit set to `unit` (one model is enabled, never both)."""
+    out = [u for u in fleet["head_units"] if u not in INFERENCE_UNITS]
+    if any(u in INFERENCE_UNITS for u in fleet["head_units"]):
+        out.insert(min(1, len(out)), unit)
+    return out
+
+
 def node_files(src: Source, fleet: dict, me: dict, home: str, ifs: list, hcas: list) -> tuple:
     """[(path, new_text, why)], [warnings]. Per-node files, never copied from the source node."""
     out, warns = [], []
@@ -1163,7 +1261,18 @@ def node_files(src: Source, fleet: dict, me: dict, home: str, ifs: list, hcas: l
                 out.append((os.path.join(home, LOCAL_SH), ls2, f"the DeepSeek recipe's peer: {w['name']} at {w['ips'][0]}"))
             else:
                 warns.append(f"the DeepSeek recipe is a TWO-Spark (TP 2) recipe and this fleet has {n} node(s): "
-                             "local.sh is restored as is; run it on a pair (docs §3.5)")
+                             "local.sh is restored as is; run it on a pair (docs §4.2)")
+        gls = (src.read("home/" + GLM_LOCAL_SH) or b"").decode()
+        if gls and env_value(gls, "WORKER") is not None:
+            if n == 2:
+                w = fleet["nodes"][1]
+                peer = f"{fleet['user']}@{w['ips'][0]}"
+                if env_value(gls, "WORKER") != peer:
+                    out.append((os.path.join(home, GLM_LOCAL_SH), set_env_key(gls, "WORKER", peer),
+                                f"the GLM recipe's rank 1: WORKER={peer}"))
+            else:
+                warns.append(f"the GLM recipe's local.sh names one WORKER and this fleet has {n} node(s): "
+                             "restored as is (docs §4.2)")
         conf = os.path.join(home, "openbeast/openbeast.conf")
         conf_src = (src.read("home/openbeast/openbeast.conf") or b"").decode()
         if conf_src and env_value(conf_src, "TS_HOSTNAME") not in (None, me["name"]):
@@ -1232,10 +1341,11 @@ def cmd_restore(args) -> int:
         die("the generation has no ITEMS file (made by an older tool?)")
     tmp_items = os.path.join(home, ".spark-restore-items.tmp")
     rev = meta.get("serving_rev", "")
+    wcd = meta.get("serving_wcd") or (f"worker-rank-cache-{rev[:8]}" if rev else "")
     with open(tmp_items, "w") as f:
         f.write(items_text)
     try:
-        items, skipped = load_items(tmp_items, {"SERVING_REV8": rev[:8]} if rev else {})
+        items, skipped = load_items(tmp_items, item_subst(rev, wcd))
     finally:
         os.unlink(tmp_items)
     rank = meta.get("rank_caches", True) and not args.skip_rank_caches
@@ -1260,7 +1370,7 @@ def cmd_restore(args) -> int:
     uid = int(os.environ.get("SPARK_BACKUP_UID") or os.getuid())
     if meta.get("uid") is not None and meta["uid"] != uid:
         problems.append(f"this account is uid {uid}, the backup's is {meta['uid']}: rsync --numeric-ids would hand "
-                        f"the files to another uid — create the user with the same uid (docs §3.2)")
+                        f"the files to another uid — create the user with the same uid (docs §3.3 step 2)")
     user = os.environ.get("SPARK_BACKUP_USER") or os.environ.get("USER", "")
     if meta.get("user") and user and meta["user"] != user:
         problems.append(f"this account is '{user}', the backup's is '{meta['user']}' (paths under /home/{meta['user']} are baked into units and venvs)")
@@ -1296,9 +1406,12 @@ def cmd_restore(args) -> int:
         print(f"   {e['ref']}  {e['id'][:19]}" + ("  (compose pin; rewritten to the loaded ID if the digest does not resolve)" if e.get("compose_ref") else ""))
     for e in ([] if args.skip_images else vols):
         print(f"   volume {e['name']}  (only into an empty or new volume; --force-volumes replaces)")
-    units = [] if args.no_units else (fleet["head_units"] if role == "head" else fleet["worker_units"])
+    inf_unit, inf_how = backup_inference_unit(src, meta)
+    units = [] if args.no_units else (head_units_for(fleet, inf_unit) if role == "head" else fleet["worker_units"])
     print(f"\n-- 4. systemctl --user daemon-reload; enable (NOT start): {' '.join(units) or 'none'}")
-    print_manual_steps(fleet, me, meta)
+    if role == "head":
+        print(f"   the inference unit is {inf_unit}, from {inf_how}")
+    print_manual_steps(fleet, me, meta, inf_unit)
 
     if problems:
         print("\nPROBLEMS:")
@@ -1384,7 +1497,7 @@ def cmd_restore(args) -> int:
     return 0
 
 
-def print_manual_steps(fleet: dict, me: dict, meta: dict) -> None:
+def print_manual_steps(fleet: dict, me: dict, meta: dict, inf_unit: str = GLM_UNIT) -> None:
     head = fleet["nodes"][0]
     print("\n-- 5. by hand, in this order (docs §3, §4): root and identity are never restored from a backup")
     print(f"   sudo scripts/backends/spark-root-setup.sh {me['name']} --guard [--debs ~/offline-stage/debs]"
@@ -1392,7 +1505,9 @@ def print_manual_steps(fleet: dict, me: dict, meta: dict) -> None:
     print("   sudo scripts/backends/spark-fabric-mtu.sh   # stage MTU 9000; reboot EVERY Spark of the fabric together")
     if me["role"] == "head":
         print("   scripts/setup-tailscale.sh                  # tailscale serve: WebUI, beast-gate :8443, :8444-8446, :8889")
-        print("   systemctl --user start deepseek-v41-inference openbeast")
+        model = "GLM-5.3-Flash, the default" if inf_unit == GLM_UNIT else "DeepSeek, the backup's selection"
+        print(f"   systemctl --user start {inf_unit.removesuffix('.service')} openbeast"
+              f"   # {model}; or ~/.local/bin/beast-spark up")
     else:
         print(f"   ssh {head['name']} true                    # from the head: confirm it reaches this worker over the fabric")
     print("   checks: scripts/backends/spark-cluster.sh check   (on the head)   ·   scripts/doctor.sh   ·   "

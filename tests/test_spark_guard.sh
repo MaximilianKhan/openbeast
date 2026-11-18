@@ -74,8 +74,10 @@ _has "$R1" "table inet openbeast_guard {" && _has "$R1" "type filter hook input 
   || fail "flush/delete: $R1"
 _has "$R1" 'iifname { "enp1s0f0np0", "enp1s0f1np1", "enP2p1s0f0np0", "enP2p1s0f1np1" } accept' \
   && pass "every ConnectX netdev is fabric, Up or Down (a rail may come up later)" || fail "fabric set: $R1"
-_has "$R1" "tcp dport { 29501-29502, 29551-29552, 29583-29584 } counter drop" \
-  && pass "vLLM 29501/+1, TensorFold 29551/+1 and native 29583/+1 are dropped off the fabric" || fail "ports: $R1"
+_has "$R1" "tcp dport { 29501-29502, 29551-29552, 29583-29584, 29620-29621 } counter drop" \
+  && pass "vLLM 29501/+1, TensorFold 29551/+1, native 29583/+1 and DeepSeek 29620/+1 are dropped off the fabric" || fail "ports: $R1"
+grep -E 'tcp dport \{[^}]*29620-29621[^}]*\} counter drop' <<< "$R1" >/dev/null \
+  && pass "--render guards the DeepSeek recipe's rendezvous ports 29620-29621 by default" || fail "DeepSeek ports: $R1"
 _has "$R1" "# args: " && pass "the render records its command-line inputs (for --status to re-render)" || fail "args line: $R1"
 _has "$R1" "ip daddr { 10.100.216.1, 10.100.217.1 } meta l4proto tcp counter drop" \
   && pass "TCP to the fabric addresses (NCCL bootstrap, ephemeral ports) is dropped off the fabric" || fail "daddr: $R1"
@@ -102,7 +104,7 @@ _run --render --port 70000
 [[ $RC -eq 2 ]] && pass "--port outside 1..65535 is refused" || fail "bad port (rc=$RC): $OUT"
 printf 'TENSORFOLD_MASTER_PORT=30010   # moved\nVLLM_MASTER_PORT="29600"\n' > "$SPARK_ENV"
 _run --render --port 12345
-[[ $RC -eq 0 ]] && _has "$OUT" "tcp dport { 12345, 29501-29502, 29551-29552, 29583-29584, 29600-29601, 30010-30011 }" \
+[[ $RC -eq 0 ]] && _has "$OUT" "tcp dport { 12345, 29501-29502, 29551-29552, 29583-29584, 29600-29601, 29620-29621, 30010-30011 }" \
   && pass "spark.env's VLLM/TENSORFOLD_MASTER_PORT (+1) and --port are guarded too" || fail "env ports (rc=$RC): $OUT"
 rm -f "$SPARK_ENV"
 

@@ -15,7 +15,8 @@
 #   --no-fabric   a single Spark with no ConnectX peer: the ports become loopback-only
 #
 # WHY. TensorFold's TCPStore (29551, +1), native TensorFold's NCCL_COMM_ID
-# (29583, +1) and vLLM's torch.distributed store (29501, +1) have no
+# (29583, +1), the DeepSeek recipe's MASTER_PORT (29620, +1: deepseek-prep
+# runtime/scripts/config.sh) and vLLM's torch.distributed store (29501, +1) have no
 # authentication, and rank 0 binds them on EVERY interface (`*:29551`). The
 # NCCL bootstrap listeners bind the fabric address on ephemeral ports. ufw is
 # installed but disabled on DGX OS, and even with ufw on, Tailscale's own
@@ -97,7 +98,7 @@ env_port() {
 # line to rank 0 there), the defaults exactly as a port named in spark.env —
 # so the same port never renders two ways depending on where it came from.
 ports() {   # one port per line, sorted, unique
-  local p list=(29501 29502 29551 29552 29583 29584)
+  local p list=(29501 29502 29551 29552 29583 29584 29620 29621)   # vLLM, TensorFold (GLM), native, DeepSeek recipe
   for p in "$(env_port VLLM_MASTER_PORT)" "$(env_port TENSORFOLD_MASTER_PORT)"; do
     [[ -n "$p" ]] && list+=("$p" "$((p + 1))")
   done

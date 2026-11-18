@@ -2,7 +2,10 @@
 # CPU-only, offline preparation of a locally staged DeepSeek-V4.1-Flash EXL3 pack, generalized from prepare-stock-local.sh.
 # The pack is chosen by MODEL_ID / MODEL_REVISION / WORKER_CACHE_DIR in runtime/scripts/local.sh (staged under
 # $HF_CACHE/hub by spark-deepseek-pack.sh, which calls this). MODEL_SRC: the pack's folder, present at the same path
-# on spark-2 (the mirror). Runs against the host-local runtime at ~/openbeast-recipes/deepseek-prep (docs/SPARK_HYDRA.md).
+# on the worker (the mirror). The worker is the recipe's WORKER (runtime/scripts/local.sh: spark-2 on spark-hydra),
+# reached with ssh -o BatchMode=yes (a missing key fails at once instead of prompting). Offline: the kernel kit must
+# already be on disk (it is fetched once, online, by the recipe's prepare.sh). Runs against the host-local runtime at
+# ~/openbeast-recipes/deepseek-prep (docs/SPARK_HYDRA.md).
 set -euo pipefail
 cd ~/openbeast-recipes/deepseek-prep/runtime
 test "$(git rev-parse HEAD)" = c7f2b85100f0a7b099c92a4e21825e30d93c9c51
@@ -10,6 +13,9 @@ echo '60e106403db2e6e2b49ebd7009720fa53867c82876678d965655e9e9398ad070  scripts/
 source scripts/config.sh
 source scripts/nodes.sh
 test "$ABLIT" = 0
+W=$(worker_host 1)
+[[ -n "$W" && "$W" != *"'"* ]] || { echo "spark-deepseek-prepare-local: WORKER is not set in runtime/scripts/local.sh" >&2; exit 1; }
+SSH=(ssh -n -o BatchMode=yes)
 test "$(docker image inspect -f '{{index .Config.Labels "tf.patches"}}' "$IMAGE")" = "$(image_hash)"
 mkdir -p "$STATE_DIR"
 exec 9>"$STATE_DIR/prepare.lock"
@@ -21,6 +27,13 @@ test -s "$SNAP/model.safetensors.index.json"
 in_hf() {
   docker run --rm --network none --memory=48g --memory-swap=48g --cpus=8 --user "$(id -u):$(id -g)" -e HOME=/tmp -e OMP_NUM_THREADS=4 -v "$HF_CACHE:/hf" "$@"
 }
+# Offline: never fetch the kit here (prepare.sh's step 4 would git-fetch it from the network when .git is missing).
+if [[ ! -d "$HF_CACHE/$KIT_SUB/.git" ]]; then
+  echo "spark-deepseek-prepare-local: the kernel kit $HF_CACHE/$KIT_SUB has no .git: it was never fetched, or was removed." >&2
+  echo "  This tool is offline and does not fetch it. Restore it from a backup (openbeast-models/deepseek-hf/tensorfold-dsv41/kit-*/," >&2
+  echo "  .git included; the worker's copy has no .git), or run the recipe's scripts/prepare.sh once with the network up. Nothing was changed." >&2
+  exit 1
+fi
 # Reuse the exact pinned kit, manifest, token map, rank-0 and chat-template steps.
 # shellcheck disable=SC1090  # steps 4-5 of the pinned prepare.sh (its sha256 is checked above)
 source <(sed -n '/^# ---* 4\. the kit/,/^# ---* 6\. the worker/p' scripts/prepare.sh)
@@ -36,13 +49,13 @@ if [[ ! -s "$rank_dir/rank1of2-$rank_hash.bin" ]]; then
   in_hf --entrypoint tf-dsv41-rank-cache "$IMAGE" "$SNAP_C" "/hf/$(basename "$rank_dir")" 1 2
 fi
 test -s "$rank_dir/rank1of2-$rank_hash.bin"
-ssh -n spark-2 "mkdir -p '$HF_CACHE/$DATA_SUB' '$HF_CACHE/$KIT_SUB' '$WORKER_CACHE_DIR'"
-copy=(ionice -c3 nice -n 15 rsync -a --partial-dir=.rsync-partial)
-"${copy[@]}" "$rank_dir/" "spark-2:$WORKER_CACHE_DIR/"
-"${copy[@]}" --exclude rank-cache "$DATA_DIR/" "spark-2:$HF_CACHE/$DATA_SUB/"
-"${copy[@]}" --exclude .git "$KIT_DIR/" "spark-2:$HF_CACHE/$KIT_SUB/"
-# Reuse the mirrored Documents copy for the worker's checkpoint (hard links).
-ssh -n spark-2 "mkdir -p '$SNAP' && cp -aln '$MODEL_SRC/.' '$SNAP/'"
+"${SSH[@]}" "$W" "mkdir -p '$HF_CACHE/$DATA_SUB' '$HF_CACHE/$KIT_SUB' '$WORKER_CACHE_DIR'"
+copy=(ionice -c3 nice -n 15 rsync -a --partial-dir=.rsync-partial -e "ssh -o BatchMode=yes")
+"${copy[@]}" "$rank_dir/" "$W:$WORKER_CACHE_DIR/"
+"${copy[@]}" --exclude rank-cache "$DATA_DIR/" "$W:$HF_CACHE/$DATA_SUB/"
+"${copy[@]}" --exclude .git "$KIT_DIR/" "$W:$HF_CACHE/$KIT_SUB/"
+# Reuse the mirrored Documents copy for the worker's checkpoint (hard links; spark-deepseek-pack.sh staged it already).
+"${SSH[@]}" "$W" "mkdir -p '$SNAP' && cp -aln '$MODEL_SRC/.' '$SNAP/' && rm -f '$SNAP/.pack-fingerprint'"
 for _ in $(seq 1 180); do
   [[ "$(image_ident "$IMAGE")" == "$(worker_image_ident 1 "$IMAGE")" ]] && break
   sleep 10

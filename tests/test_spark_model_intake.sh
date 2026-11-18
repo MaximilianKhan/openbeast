@@ -195,6 +195,40 @@ if stat -c %s "$T/registry.json" >/dev/null 2>&1; then
   if [[ "$a" == "$b" ]]; then pass "local rev matches spark-deepseek-pack.sh _pack_rev"; else fail "rev: $a vs $b"; fi
 else skip "local rev vs spark-deepseek-pack.sh needs GNU stat (runs on the Sparks)"; fi
 
+# --- the content fingerprint equals spark-deepseek-pack.sh's (portable: head/tail/sha256), on shards over 1 MiB too
+mkdir -p "$T/fp"; head -c 3145731 /dev/urandom > "$T/fp/model-00001-of-00002.safetensors"; head -c 1000 /dev/urandom > "$T/fp/model-00002-of-00002.safetensors"
+a=$(bash "$SDP" _fingerprint "$T/fp")
+b=$(python3 -I - "$REPO_DIR/scripts/backends/pylib" "$T/fp" <<'PY'
+import sys; from pathlib import Path
+sys.path.insert(0, sys.argv[1]); import model_intake as m
+print(m.pack_fingerprint(Path(sys.argv[2])))
+PY
+)
+c=$(python3 -I -c 'import json,sys; print(json.load(sys.stdin)["fingerprint"])' <<<"$(bash "$SMI" "$T/ds-pack" --json)")
+d=$(bash "$SDP" _fingerprint "$T/ds-pack")
+if [[ "$a" =~ ^[0-9a-f]{64}$ && "$a" == "$b" && "$c" == "$d" ]]; then pass "fingerprint: model_intake.py == spark-deepseek-pack.sh (3 MiB and tiny shards)"
+else fail "fingerprint parity: $a / $b ; $c / $d"; fi
+printf 'x' | dd of="$T/fp/model-00001-of-00002.safetensors" bs=1 seek=2000000 conv=notrunc 2>/dev/null   # mid-file byte: not covered
+printf 'y' | dd of="$T/fp/model-00001-of-00002.safetensors" bs=1 seek=3145730 conv=notrunc 2>/dev/null   # last MiB: covered
+e=$(bash "$SDP" _fingerprint "$T/fp")
+if [[ "$e" != "$a" ]]; then pass "fingerprint: an edit in a shard's last MiB changes it (same size, same REV)"; else fail "fingerprint did not change"; fi
+
+# --- a known pack's REV with other content: warned as NOT that pack (the REV is a size listing)
+rev=$(python3 -I -c 'import json,sys; print(json.load(sys.stdin)["local_rev"])' <<<"$(bash "$SMI" "$T/ds-pack" --json)")
+for fpv in "$d" 0000000000000000000000000000000000000000000000000000000000000000; do
+  python3 -I - "$T/registry.json" "$T/known-$fpv.json" "$rev" "$fpv" <<'PY'
+import json, sys
+r = json.load(open(sys.argv[1])); f = r["families"][0]
+f["known_packs"] = {sys.argv[3]: "Mia test pack"}; f["pack_fingerprints"] = {sys.argv[3]: sys.argv[4]}
+json.dump(r, open(sys.argv[2], "w"))
+PY
+done
+out=$(INTAKE_REGISTRY="$T/known-$d.json" bash "$SMI" "$T/ds-pack" 2>&1)
+out0=$(INTAKE_REGISTRY="$T/known-0000000000000000000000000000000000000000000000000000000000000000.json" bash "$SMI" "$T/ds-pack" 2>&1)
+if grep -q "this is a known pack: Mia test pack" <<<"$out" && grep -q "it is NOT that pack" <<<"$out0" && ! grep -q "this is a known pack" <<<"$out0"; then
+  pass "known pack: matched by REV AND fingerprint; same REV, other content is flagged"
+else fail "known pack: $out / $out0"; fi
+
 # --- usage
 if bash "$SMI" >/dev/null 2>&1; then fail "no folder should exit non-zero"; else pass "no folder: usage, non-zero exit"; fi
 

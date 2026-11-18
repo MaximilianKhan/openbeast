@@ -32,8 +32,12 @@
     "~/Documents/Mia-AiLab-DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw"
    ],
    "known_packs": {
-    "04c13f12b83d57487912d87d0f1677b076810954": "Mia EAQ v1.1 -v2 (Documents folder ...-v2): the serving default since 2026-11-17",
-    "5d70e783511ce99b2691de62a1d3f79032f2b188": "Mia EAQ v1 2.9 bpw (Documents folder): staged as the Hub snapshot 45ee5d0f, selected with 'use stock'"
+    "04c13f12b83d57487912d87d0f1677b076810954": "Mia EAQ v1.1 -v2 (Documents folder ...-v2): DeepSeek's pack (beast-spark ds selects it) since 2026-11-17; GLM, not DeepSeek, is the pair's default since 2026-11-18",
+    "5d70e783511ce99b2691de62a1d3f79032f2b188": "Mia EAQ v1 2.9 bpw (Documents folder): staged as the Hub snapshot 45ee5d0f, selected with 'use stock' (a fallback, superseded by -v2)"
+   },
+   "pack_fingerprints": {
+    "04c13f12b83d57487912d87d0f1677b076810954": "5314a93d58e4a0b8a454be6b1d13670ead0417c596b11b381ae75307ec6f89cc",
+    "5d70e783511ce99b2691de62a1d3f79032f2b188": "4456161f89306a82dab9adb0d11865838c656567dc1d3205d54bb302314a0c2a"
    },
    "tp": 2,
    "recipe": "~/openbeast-recipes/deepseek-prep/runtime",
@@ -43,7 +47,7 @@
    "unit": "deepseek-v41-inference",
    "served_name": "DeepSeek-V4.1-Flash-1017",
    "hf_cache": "~/openbeast-models/deepseek-hf",
-   "swap": "~/openbeast-recipes/deepseek-prep/spark-deepseek-pack.sh use {dir} --dry-run",
+   "swap": "~/openbeast-recipes/deepseek-prep/spark-deepseek-pack.sh use {dir} --dry-run   (the real swap only while DeepSeek is the model: beast-spark ds first, or DS_PACK={dir} + DS_ID in ~/.config/openbeast/beast-spark.env, then beast-spark ds)",
    "rank_files": true,
    "aux": [
     "Engram tables: deepseek-ai/DeepSeek-V4.1-Flash-1017 @ 1bae0e10 shards 47 and 48 (203,073,077,576 B), already staged on both Sparks; never part of a pack",
@@ -72,7 +76,10 @@
     "~/Documents/GLM-5.3-Flash-EXL3-4bpw-TensorFold-Ablit"
    ],
    "known_packs": {
-    "b2c37cff398e4ba01188b0505e3f3794acfe308f": "Mia GLM-5.3-Flash EXL3 4bpw TensorFold Ablit (staged as the Hub snapshot 57edefd2, ABLIT=1): the GLM default"
+    "b2c37cff398e4ba01188b0505e3f3794acfe308f": "Mia GLM-5.3-Flash EXL3 4bpw TensorFold Ablit (staged as the Hub snapshot 57edefd2, ABLIT=1): the GLM default, and GLM is the pair's default model"
+   },
+   "pack_fingerprints": {
+    "b2c37cff398e4ba01188b0505e3f3794acfe308f": "8fc4c5d511be56e82df2d5eaca1599eddc0488d99aac49415fb060ad7c186371"
    },
    "tp": 2,
    "recipe": "~/openbeast-recipes/glm53",

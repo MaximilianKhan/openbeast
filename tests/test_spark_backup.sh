@@ -138,6 +138,8 @@ mk .bashrc rc; mk .local/bin/beast-spark sh; mk .local/opt/tensorfold-1.2.7/bin/
 mk openbeast-recipes/deepseek-prep/runtime/scripts/local.sh "WORKER=spark-2
 FABRIC_PEER=10.100.216.2
 MODEL_REVISION=04c13f12b83d57487912d87d0f1677b076810954"
+mk openbeast-recipes/glm53/scripts/local.sh "WORKER=max@10.100.216.2        # spark-2 over the ConnectX-7 link (rank 1)
+ABLIT=1"
 head -c 300000 /dev/urandom > "$T/shard"
 mkdir -p "$H/Documents/Pack" "$H/openbeast-models/deepseek-hf/hub/models--m--p/snapshots/04c13f12" "$H/.cache/huggingface/hub/models--g/blobs" "$H/.cache/huggingface/hub/models--g/snapshots/r"
 cp "$T/shard" "$H/Documents/Pack/model-00001.safetensors"
@@ -175,6 +177,18 @@ check "run dry: the filter keeps the serving rank file and the kit" grep -q '+ /
 check "run dry: .run is excluded before the checkout is included" \
   python3 -c 'import sys; o=sys.stdin.read(); a=o.index("- /openbeast/.run/"); b=o.index("+ /openbeast/***"); sys.exit(0 if a < b else 1)' <<< "$out"
 check "run dry: the compose image is saved by repo@digest" grep -q "open-webui@sha256:5959" <<< "$out"
+check "run dry: entries no items line claims are named as NOT backed up (never silent)" grep -q "NOT backed up: no items line claims stray" <<< "$out"
+check "run dry: the secret-mode check runs in run too" grep -q "readable by group/other.*hf-token" <<< "$out"
+check "run dry: the rank-1 cache folder defaults to worker-rank-cache-REV8" grep -q '+ /openbeast-models/deepseek-hf/worker-rank-cache-04c13f12/\*\*\*' <<< "$out"
+# the stock pack's rank-1 cache is plain worker-rank-cache (local.sh's WORKER_CACHE_DIR, not the REV)
+LS="$H/openbeast-recipes/deepseek-prep/runtime/scripts/local.sh"; cp "$LS" "$T/local.sh.save"
+printf 'WORKER_CACHE_DIR=/home/max/openbeast-models/deepseek-hf/worker-rank-cache\nMODEL_REVISION=45ee5d0fd106c94a3d77f721e09cbb2f50e5a16b\n' >> "$LS"
+out2="$(bash "$SB" run --to "$T/drive" 2>&1)"
+check "run dry: the stock pack's rank-1 cache (WORKER_CACHE_DIR basename worker-rank-cache) is the rankcache item" \
+  bash -c 'grep -q "+ /openbeast-models/deepseek-hf/worker-rank-cache/\*\*\*" <<< "$1" && ! grep -q "worker-rank-cache-45ee5d0f" <<< "$1"' _ "$out2"
+cp "$T/local.sh.save" "$LS"
+out2="$(bash "$SB" run --to "$T/drive" --config-only 2>&1)"
+check "run --config-only (dry): says what it leaves out" grep -q "config-only: weights, rank files, docker images and volumes are left out" <<< "$out2"
 out="$(FM_FSTYPE=exfat bash "$SB" run --to "$T/drive" --apply 2>&1)"; rc=$?
 check "run: an exFAT drive is refused (exit $rc)" test "$rc" -ne 0
 check "run: the refusal names hard links" grep -q "exfat: no owners, modes, hard links" <<< "$out"
@@ -235,6 +249,14 @@ check "run: the volume container was paused, then unpaused" test "$(tr '\n' ' ' 
 check "run: the volume export is in the generation" grep -q VOLUME-DATA "$G1/docker/volume-openbeast_open-webui-data.tar.zst"
 check "run: SHA256SUMS checks with the stock tool" bash -c "cd '$G1' && { sha256sum -c --quiet SHA256SUMS 2>/dev/null || shasum -a 256 -c --quiet SHA256SUMS; }"
 check "run: the items file travels with the generation" cmp -s "$G1/ITEMS" "$REPO_DIR/scripts/backends/data/spark-backup.items"
+check "run: BACKUP.json records the boot units and the rank-1 cache folder" python3 - "$G1/BACKUP.json" <<'P'
+import json, sys
+m = json.load(open(sys.argv[1]))
+assert m["enabled_user_units"] == ["openbeast.service"], m["enabled_user_units"]
+assert m["serving_wcd"] == "worker-rank-cache-04c13f12", m["serving_wcd"]
+P
+check "run: written under umask 077 (BACKUP.json and the docker dir are the account's only)" \
+  test "$(python3 -c 'import os,sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o077), oct(os.stat(sys.argv[2]).st_mode & 0o077))' "$G1/BACKUP.json" "$G1/docker")" = "0o0 0o0"
 
 # ── verify ───────────────────────────────────────────────────────────────────
 out="$(bash "$SB" verify "$G1" --deep 2>&1)"; rc=$?
@@ -319,6 +341,36 @@ check "restore head: the compose digest pin is rewritten to the loaded ID" grep 
 check "restore head: the original compose file is kept" grep -q "main@sha256:5959" "$HD/openbeast/docker-compose.yml.pre-restore"
 check "restore head: the WebUI volume is imported into the new volume" grep -q VOLUME-DATA "$FD_STATE/volume-imported"
 check "restore head: the serving rank-0 file arrives" test -f "$HD/openbeast-models/deepseek-hf/tensorfold-dsv41/04c13f12/rank0of2.bin"
+check "restore head: GLM's unit is enabled by default (the backup enabled neither model)" grep -q "enable (NOT start): openbeast.service spark-hydra-inference.service openbeast-logrotate.timer" <<< "$out"
+check "restore head: the printed manual steps start GLM" grep -q "systemctl --user start spark-hydra-inference openbeast" <<< "$out"
+check "restore head: 3 nodes: GLM's single-WORKER local.sh is kept, and says so" bash -c "grep -q '^WORKER=max@10.100.216.2' '$HD/openbeast-recipes/glm53/scripts/local.sh' && grep -q \"GLM recipe's local.sh names one WORKER\" <<< \"\$1\"" _ "$out"
+
+# ── restore: the head of another pair (2 nodes, new fabric addresses) ────────
+printf 'NODE_0=spark-5 head 10.100.218.1\nNODE_1=spark-6 worker 10.100.218.2\n' > "$T/fleet4.env"
+HP="$T/home-p"; mkdir -p "$HP"
+out="$(SPARK_BACKUP_HOME="$HP" bash "$SR" --from "$LATEST" --fleet "$T/fleet4.env" --index 0 --skip-images --apply --yes 2>&1)"; rc=$?
+check "restore pair head: exit 0 ($rc)" test "$rc" -eq 0
+check "restore pair head: GLM's local.sh WORKER is rewritten to the new worker (user@fabric address)" grep -qx "WORKER=max@10.100.218.2" "$HP/openbeast-recipes/glm53/scripts/local.sh"
+check "restore pair head: the rest of GLM's local.sh is kept" grep -qx "ABLIT=1" "$HP/openbeast-recipes/glm53/scripts/local.sh"
+check "restore pair head: DeepSeek's local.sh gets the new peer too" grep -qx "WORKER=spark-6" "$HP/openbeast-recipes/deepseek-prep/runtime/scripts/local.sh"
+# a generation whose head booted DeepSeek: the restore enables DeepSeek's unit, not GLM's
+GD="$T/drive/openbeast-backup/spark-3dc6/20261120T000000Z"; cp -R "$(cd "$LATEST" && pwd -P)" "$GD"
+python3 - "$GD/BACKUP.json" <<'P'
+import json, sys
+m = json.load(open(sys.argv[1])); m["enabled_user_units"] = ["deepseek-v41-inference.service", "openbeast.service"]
+json.dump(m, open(sys.argv[1], "w"))
+P
+out="$(SPARK_BACKUP_HOME="$HP" bash "$SR" --from "$GD" --fleet "$T/fleet4.env" --index 0 2>&1)"
+check "restore dry: the inference unit follows the backup's boot links (DeepSeek here)" \
+  bash -c 'grep -q "enable (NOT start): openbeast.service deepseek-v41-inference.service" <<< "$1" && ! grep -q "enable (NOT start):.*spark-hydra-inference" <<< "$1" && grep -q "systemctl --user start deepseek-v41-inference openbeast" <<< "$1"' _ "$out"
+python3 - "$GD/BACKUP.json" <<'P'
+import json, sys
+m = json.load(open(sys.argv[1])); del m["enabled_user_units"]
+json.dump(m, open(sys.argv[1], "w"))
+P
+mkdir -p "$GD/home/.config/systemd/user/default.target.wants"; ln -s ../deepseek-v41-inference.service "$GD/home/.config/systemd/user/default.target.wants/deepseek-v41-inference.service"
+out="$(SPARK_BACKUP_HOME="$HP" bash "$SR" --from "$GD" --fleet "$T/fleet4.env" --index 0 2>&1)"
+check "restore dry: an older generation (no enabled_user_units) reads its kept *.wants links" grep -q "deepseek-v41-inference.service, from the backup's default.target.wants links" <<< "$out"
 
 echo; echo "=== spark-backup: $PASS passed, $FAIL failed, $SKIP skipped ==="
 [[ $FAIL -eq 0 ]]
