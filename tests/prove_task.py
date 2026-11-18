@@ -49,6 +49,9 @@ Where the solutions come from (in precedence order):
        wrong_<name>.<ext>   (or <stem>.wrong_<name>.<ext>)   wrong solutions
        slow.<ext>           (or <stem>.slow.<ext>)           slow solution
        leak.<ext>           (or <stem>.leak.<ext>)           leak probe
+       pass_<name>.<ext>    (or <stem>.pass_<name>.<ext>)    other correct
+                            solutions that must PASS too (review 1118: a
+                            lint must not refuse a banned name in prose)
      and the failure classes, from the task JSON's `prove` block and/or a
      prove.json next to the ref:
        {"expect": {"wrong_trunc32.c": "mismatch at case"},
@@ -289,7 +292,7 @@ def discover(task: dict, M, refs_dir: str) -> dict:
         wrong.append((w, rx))
     slow = sib("slow")
     leak = sib("leak")
-    return {"ref": ref, "dest": dest, "wrong": wrong,
+    return {"ref": ref, "dest": dest, "wrong": wrong, "also_pass": sib("pass_"),
             "slow": slow[0] if slow else None,
             "slow_expect": per.get("slow_expect") or decl.get("slow_expect"),
             "leak": leak[0] if leak else None,
@@ -377,6 +380,11 @@ def prove(R, M, task: dict, spec: dict, repeat: int | None = None,
     if ref_times and max(ref_times) > VALIDATOR_BUDGET_S * scale:
         add(False, "budget", None, max(ref_times),
             f"slowest ref validation {max(ref_times):.1f}s > {VALIDATOR_BUDGET_S:.0f}s at scale 1")
+
+    for p in spec.get("also_pass") or []:
+        ok, dt, out, _ = arm("pass", p, scale=scale)
+        add(ok is True, f"pass:{os.path.basename(p)}", ok, dt,
+            out.splitlines()[-1][:90] if out else "")
 
     wrong = spec.get("wrong") or []
     if len(wrong) < 2:

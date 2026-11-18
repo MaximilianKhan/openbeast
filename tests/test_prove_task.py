@@ -15,6 +15,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tests"))
@@ -271,3 +273,31 @@ def test_a_suite_with_an_unresolved_unit_exits_nonzero(tmp_path, monkeypatch):
     # a fully resolved suite still exits 0
     manifest.update(units=[{"id": "good_py"}], resolution_problems=[])
     assert prove_task.main(["--suite", "v5"]) == 0
+
+
+# --- review 1118: other correct solutions must pass too ---------------------------
+
+def test_a_pass_variant_that_fails_is_not_proven(tmp_path, capsys):
+    sols = dict(SOLS)
+    sols["pass_alt.py"] = SOLS["ref.py"].replace("a * b + a", "a * (b + 1)")
+    (tmp_path / "good").mkdir()
+    assert prove_task.main(_world(tmp_path / "good", sols=sols)) == 0
+    assert "OK  pass:pass_alt.py" in capsys.readouterr().out
+    sols["pass_alt.py"] = SOLS["wrong_noadd.py"]          # a "correct" variant the validator refuses
+    (tmp_path / "bad").mkdir()
+    assert prove_task.main(_world(tmp_path / "bad", sols=sols)) == 1
+    assert "BAD pass:pass_alt.py" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("unit", ["126_hmac_scratch", "153_coroutine_scheduler",
+                                  "117_iter_refinement", "49_markov_steady_state"])
+def test_ban_lints_read_code_not_prose(unit, capsys):
+    """Each unit ships a correct solution that names the banned module only in
+    its docstring and comments (it must PASS) and one that imports it (it must
+    FAIL on the ban); the prover runs both through the real validator."""
+    refs = ROOT / "evals" / "refs" / unit
+    assert list(refs.glob("pass_prose_*.py")) and list(refs.glob("wrong_imports_*.py"))
+    assert prove_task.main(["--unit", unit]) == 0
+    out = capsys.readouterr().out
+    assert f"{unit}: PROVEN" in out and "OK  pass:pass_prose_" in out
+    assert "OK  wrong:wrong_imports_" in out

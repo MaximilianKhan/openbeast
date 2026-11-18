@@ -2,8 +2,9 @@
   "expect": {
     "wrong_nocheck.py": "AssertionError: non-stochastic must raise",
     "wrong_pvec.py": "AssertionError: 2x2 got \\[0\\.5, 0\\.5\\]",
-    "wrong_selfdelta.py": "AssertionError: 2x2 got \\[0\\.55, "
+    "wrong_selfdelta.py": "AssertionError: 2x2 got \\[0\\.55, ",
+    "wrong_imports_numpy.py": "AssertionError: must not import numpy"
   },
   "timed": false,
-  "note": "v4 validator kept unchanged. Ref written from the task text (power iteration from uniform, L1 stop, ValueError on a non-stochastic row or on max_iter). Wrongs: no row-sum validation, P @ pi instead of pi @ P (uniform is its fixed point), convergence test after pi is replaced (compares the vector with itself, stops after one step). Known gaps: the max_iter ValueError is never exercised; negative entries in a row that still sums to 1 are never tested."
+  "note": "v4 validator kept unchanged. Ref written from the task text (power iteration from uniform, L1 stop, ValueError on a non-stochastic row or on max_iter). Wrongs: no row-sum validation, P @ pi instead of pi @ P (uniform is its fixed point), convergence test after pi is replaced (compares the vector with itself, stops after one step). Known gaps: the max_iter ValueError is never exercised; negative entries in a row that still sums to 1 are never tested. Review 1118: the ban/lint reads code only (tokenize: comments and strings, docstrings included, blanked); pass_prose_* must PASS with the banned names in its docstring and comments, wrong_imports_* must still FAIL on the ban."
 }

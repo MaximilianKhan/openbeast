@@ -2,8 +2,9 @@
   "expect": {
     "wrong_hex_inner.py": "AssertionError: [0-9a-f]{64} vs [0-9a-f]{64}",
     "wrong_swapped_pads.py": "AssertionError: [0-9a-f]{64} vs [0-9a-f]{64}",
-    "wrong_truncate_long_key.py": "\"<validator>\", line 1, in <module>\\nAssertionError\\s*$"
+    "wrong_truncate_long_key.py": "\"<validator>\", line \\d+, in <module>\\nAssertionError\\s*$",
+    "wrong_imports_hmac.py": "AssertionError: the hmac module is banned"
   },
   "timed": false,
-  "note": "v4 validator kept as is. Ref copied from evals/refs/hmac_scratch.py. The short-key check carries an 'expected vs got' message; the 100-byte-key check is the only message-less assert, so wrong_truncate_long_key's class is the bare AssertionError. PASSES this validator (gap): hashing a key of exactly 64 bytes (len >= B)."
+  "note": "v4 validator kept as is. Ref copied from evals/refs/hmac_scratch.py. The short-key check carries an 'expected vs got' message; the 100-byte-key check is the only message-less assert, so wrong_truncate_long_key's class is the bare AssertionError. PASSES this validator (gap): hashing a key of exactly 64 bytes (len >= B). Review 1118: the ban/lint reads code only (tokenize: comments and strings, docstrings included, blanked); pass_prose_* must PASS with the banned names in its docstring and comments, wrong_imports_* must still FAIL on the ban."
 }

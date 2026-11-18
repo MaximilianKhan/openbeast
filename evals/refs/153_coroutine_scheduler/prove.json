@@ -1,8 +1,9 @@
 {
   "expect": {
     "wrong_blocking_sleep.py": "AssertionError: Y\\(short sleep\\) should finish before X",
-    "wrong_lifo.py": "AssertionError: not round-robin"
+    "wrong_lifo.py": "AssertionError: not round-robin",
+    "wrong_imports_asyncio.py": "AssertionError: must not use async frameworks"
   },
   "timed": false,
-  "note": "v4 validator kept as is. wrong_drops_children (a spawned child never runs to completion) PASSES this validator and is not shipped."
+  "note": "v4 validator kept as is. wrong_drops_children (a spawned child never runs to completion) PASSES this validator and is not shipped. Review 1118: the ban/lint reads code only (tokenize: comments and strings, docstrings included, blanked); pass_prose_* must PASS with the banned names in its docstring and comments, wrong_imports_* must still FAIL on the ban."
 }
