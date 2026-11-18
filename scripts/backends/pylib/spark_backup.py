@@ -3,11 +3,11 @@
 
 docs/SPARK_BACKUP_RESTORE.md. Stdlib only, python >= 3.9.
 
-The backup is a file-level OVERLAY, not a disk image: the OpenBeast state of
-one Spark's account (checkout, secrets, units, tools, recipes, weights, rank
-caches) plus its docker images and volumes, on an ext4 (LUKS2) drive. A
-stock DGX OS from NVIDIA's recovery USB plus this overlay rebuilds any Spark
-in any position of the cluster; the per-node bits (fabric address, rank,
+The backup is a file-level OVERLAY: the OpenBeast state of one Spark's
+account (checkout, secrets, units, tools, recipes, weights; never what
+rebuilds offline, like the rank files) plus its docker images and volumes, on
+an ext4 (LUKS2) drive. A golden base image of DGX OS (golden-image --plan,
+identity) plus this overlay rebuilds either Spark of the pair, offline; the per-node bits (fabric address, rank,
 ssh peers, unit set) are written by the restore from a fleet file, never
 copied from the node the backup came from.
 
@@ -17,8 +17,12 @@ copied from the node the backup came from.
                         [--allow-unencrypted]
     spark_backup.py verify GEN [--deep] [--against-live]
     spark_backup.py list DIR
-    spark_backup.py restore --from GEN --fleet FILE --index N [--apply] [--yes]
+    spark_backup.py restore --from GEN [--fleet FILE] --index N [--apply] [--yes]
                         [--skip-weights] [--skip-images] [--force-volumes] [--no-units]
+    spark_backup.py rebuild [--apply]                        # head: DeepSeek's rank files, offline
+    spark_backup.py golden-image --plan [--to DRIVE]         # read-only: the DGX OS base-image procedure
+    spark_backup.py identity --target MNT (--bundle F | --fresh --hostname H) [--serial S] [--apply]
+                                                             # live USB, root: one node's identity into a restored image
 
 Nothing here runs as root. `run` writes only under --to; `restore` writes
 only under $HOME (and docker's store through the docker CLI). Both print
@@ -26,9 +30,10 @@ their plan and change nothing without --apply.
 
 Test seams (environment): SPARK_BACKUP_HOME, SPARK_BACKUP_ITEMS,
 SPARK_BACKUP_SERVING_REV, SPARK_BACKUP_SERVING_WCD, SPARK_BACKUP_HOSTNAME, SPARK_BACKUP_NOW,
-SPARK_BACKUP_UID / _GID / _USER, SPARK_RESTORE_HOME_CHECK=0, and the commands DOCKER, RSYNC, ZSTD,
-FINDMNT, LSBLK, NVIDIA_SMI, IBDEV2NETDEV, SYSTEMCTL, SSH, GIT, UNAME_M (a
-value, not a command).
+SPARK_BACKUP_UID / _GID / _USER, SPARK_RESTORE_HOME_CHECK=0, SPARK_IDENTITY_ROOT_CHECK=0,
+SPARK_PREPARE_LOCAL, SPARK_GOLDEN_DGX_RELEASE, and the commands DOCKER, RSYNC, ZSTD,
+FINDMNT, LSBLK, NVIDIA_SMI, IBDEV2NETDEV, SYSTEMCTL, SSH, GIT, MOKUTIL, FWUPDMGR,
+SSH_KEYGEN, UNAME_M (a value, not a command).
 """
 from __future__ import annotations
 
@@ -88,9 +93,11 @@ def cmd(name: str, default: str) -> list:
     return shlex.split(os.environ.get(name) or default)
 
 
-def run_out(argv: list, check: bool = False, inp: bytes | None = None) -> tuple:
+def run_out(argv: list, check: bool = False, inp: bytes | None = None, timeout: float | None = None) -> tuple:
     try:
-        p = subprocess.run(argv, input=inp, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        p = subprocess.run(argv, input=inp, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return 124, "", f"{argv[0]}: timed out"
     except FileNotFoundError:
         if check:
             die(f"{argv[0]} is not installed")
@@ -592,6 +599,12 @@ def system_record(home: str) -> dict:
     rec["systemd-user-units.txt"] = run_out(cmd("SYSTEMCTL", "systemctl") + ["--user", "list-unit-files", "--no-legend", "--no-pager"])[1]
     rec["tailscale-serve.txt"] = run_out(["tailscale", "serve", "status"])[1]
     rec["linger.txt"] = run_out(["loginctl", "show-user", os.environ.get("USER", ""), "-p", "Linger"])[1]
+    # for the golden image and a replacement unit: the disk layout, the boot entries, Secure Boot, firmware versions
+    rec["lsblk.txt"] = run_out(cmd("LSBLK", "lsblk") + ["-o", "NAME,SIZE,FSTYPE,LABEL,UUID,PARTUUID,MOUNTPOINTS"])[1]
+    rec["fstab.txt"] = cat("/etc/fstab")
+    rec["efibootmgr.txt"] = run_out(["efibootmgr", "-v"])[1]
+    rec["secureboot.txt"] = run_out(cmd("MOKUTIL", "mokutil") + ["--sb-state"])[1]
+    rec["fwupd-devices.txt"] = run_out(cmd("FWUPDMGR", "fwupdmgr") + ["get-devices", "--no-unreported-check"], timeout=60)[1]
     git = cmd("GIT", "git")
     for name, rel in (("openbeast", "openbeast"), ("recipe-deepseek", "openbeast-recipes/deepseek-prep/runtime"),
                       ("recipe-glm53", "openbeast-recipes/glm53")):
@@ -1097,16 +1110,18 @@ def parse_fleet(path: str) -> dict:
 class Source:
     """A generation on a mounted drive, or on another node over ssh (HOST:PATH)."""
 
-    def __init__(self, spec: str):
+    def __init__(self, spec: str, key: str = ""):
         m = re.match(r"^([A-Za-z0-9._@-]+):(/.*)$", spec)
         self.remote, self.path = (m.group(1), m.group(2)) if m else ("", os.path.realpath(spec))
+        # the fleet's shared key, when present: a freshly restored worker has no ~/.ssh/config naming it yet
+        self.ssh = cmd("SSH", "ssh") + (["-i", key] if key and self.remote else []) + ["-o", "BatchMode=yes"]
 
     def rsync_root(self) -> str:
         return f"{self.remote}:{self.path}" if self.remote else self.path
 
     def read(self, rel: str) -> bytes | None:
         if self.remote:
-            rc = subprocess.run(cmd("SSH", "ssh") + ["-o", "BatchMode=yes", self.remote, "cat", shlex.quote(self.path + "/" + rel)],
+            rc = subprocess.run(self.ssh + [self.remote, "cat", shlex.quote(self.path + "/" + rel)],
                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
             return rc.stdout if rc.returncode == 0 else None
         try:
@@ -1116,7 +1131,7 @@ class Source:
 
     def listdir(self, rel: str) -> list | None:
         if self.remote:
-            rc = subprocess.run(cmd("SSH", "ssh") + ["-o", "BatchMode=yes", self.remote, "ls", "-A",
+            rc = subprocess.run(self.ssh + [self.remote, "ls", "-A",
                                                      shlex.quote(self.path + "/" + rel)],
                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
             return rc.stdout.decode().split() if rc.returncode == 0 else None
@@ -1127,7 +1142,7 @@ class Source:
 
     def stream_argv(self, rel: str) -> list:
         if self.remote:
-            return cmd("SSH", "ssh") + ["-o", "BatchMode=yes", self.remote, "cat", shlex.quote(self.path + "/" + rel)]
+            return self.ssh + [self.remote, "cat", shlex.quote(self.path + "/" + rel)]
         return ["cat", os.path.join(self.path, rel)]
 
 
@@ -1326,12 +1341,14 @@ def rewrite_compose(home: str, ref: str, iid: str) -> bool:
 
 def cmd_restore(args) -> int:
     home = home_dir()
-    src = Source(args.src)
+    fleet_path = args.fleet or os.path.join(BACKENDS, "fleet.env.example")
+    fleet = parse_fleet(fleet_path)
+    key = os.path.join(home, ".ssh", fleet["ssh_key"])
+    src = Source(args.src, key if os.path.isfile(key) else "")
     raw = src.read("BACKUP.json")
     if raw is None:
         die(f"{args.src}: no BACKUP.json — point --from at a generation (…/openbeast-backup/<host>/<stamp> or …/latest)")
     meta = json.loads(raw.decode())
-    fleet = parse_fleet(args.fleet)
     if not 0 <= args.index < len(fleet["nodes"]):
         die(f"--index {args.index}: the fleet has nodes 0..{len(fleet['nodes']) - 1}")
     me = fleet["nodes"][args.index]
@@ -1355,10 +1372,10 @@ def cmd_restore(args) -> int:
     rsync = cmd("RSYNC", "rsync")
     ropts = ["-aHAX", "--numeric-ids", "--info=stats2,progress2"]
     if src.remote:
-        ropts += ["-e", "ssh -o BatchMode=yes -c aes128-gcm@openssh.com -o Compression=no"]
+        ropts += ["-e", " ".join(map(shlex.quote, src.ssh)) + " -c aes128-gcm@openssh.com -o Compression=no"]
 
     print(f"== restore {meta.get('host')}/{meta.get('generation')} -> {hostname()}:{home} as node {me['index']} "
-          f"'{me['name']}' ({role}) of {fleet['name']} ({len(fleet['nodes'])} node(s))"
+          f"'{me['name']}' ({role}) of {fleet['name']} ({len(fleet['nodes'])} node(s), {fleet_path})"
           + ("" if args.apply else "   [DRY RUN: nothing is written]"))
     problems = []
     arch = os.environ.get("UNAME_M") or os.uname().machine
@@ -1411,6 +1428,9 @@ def cmd_restore(args) -> int:
     print(f"\n-- 4. systemctl --user daemon-reload; enable (NOT start): {' '.join(units) or 'none'}")
     if role == "head":
         print(f"   the inference unit is {inf_unit}, from {inf_how}")
+    print("\n-- 5. NOT in the backup: recomputed offline after the restore (docs §3.5)")
+    for p, how in rebuild_rows(items, role) or [("nothing", "")]:
+        print(f"   {p}" + (f": {how}" if how else ""))
     print_manual_steps(fleet, me, meta, inf_unit)
 
     if problems:
@@ -1499,12 +1519,14 @@ def cmd_restore(args) -> int:
 
 def print_manual_steps(fleet: dict, me: dict, meta: dict, inf_unit: str = GLM_UNIT) -> None:
     head = fleet["nodes"][0]
-    print("\n-- 5. by hand, in this order (docs §3, §4): root and identity are never restored from a backup")
-    print(f"   sudo scripts/backends/spark-root-setup.sh {me['name']} --guard [--debs ~/offline-stage/debs]"
-          "   # libnccl2 held, linger, Tailscale joined as this node (re-auth), spark-guard")
-    print("   sudo scripts/backends/spark-fabric-mtu.sh   # stage MTU 9000; reboot EVERY Spark of the fabric together")
+    print("\n-- 6. by hand, in this order (docs §3): root and identity come from the golden image and its identity step,")
+    print("   never from this backup. After a golden-image restore the next two only CHECK (idempotent, offline):")
+    print(f"   sudo scripts/backends/spark-root-setup.sh {me['name']} --guard --debs ~/offline-stage/debs [--no-tailscale]"
+          "   # libnccl2 held, linger, Tailscale, spark-guard")
+    print("   sudo scripts/backends/spark-fabric-mtu.sh   # MTU 9000 staged (the identity bundle carries it); reboot BOTH Sparks together")
     if me["role"] == "head":
-        print("   scripts/setup-tailscale.sh                  # tailscale serve: WebUI, beast-gate :8443, :8444-8446, :8889")
+        print("   scripts/backends/spark-restore.sh rebuild --apply   # DeepSeek's rank files, offline, ~35 min; BEFORE starting a model")
+        print("   scripts/setup-tailscale.sh                  # tailscale serve: WebUI, beast-gate :8443, :8444-8446, :8889 (online)")
         model = "GLM-5.3-Flash, the default" if inf_unit == GLM_UNIT else "DeepSeek, the backup's selection"
         print(f"   systemctl --user start {inf_unit.removesuffix('.service')} openbeast"
               f"   # {model}; or ~/.local/bin/beast-spark up")
@@ -1512,6 +1534,402 @@ def print_manual_steps(fleet: dict, me: dict, meta: dict, inf_unit: str = GLM_UN
         print(f"   ssh {head['name']} true                    # from the head: confirm it reaches this worker over the fabric")
     print("   checks: scripts/backends/spark-cluster.sh check   (on the head)   ·   scripts/doctor.sh   ·   "
           "scripts/backends/conformance.sh")
+
+
+# ── Offline rebuild of what the backup leaves out (docs §3.5) ────────────────
+
+def rebuild_rows(items: list, role: str) -> list:
+    """The `rebuild` lines a restore of this role leaves to be recomputed, with how and how long."""
+    rows = []
+    for it in items:
+        if it.cls != "rebuild" or not it.for_role(role):
+            continue
+        p = it.path
+        if "tensorfold-dsv41/" in p:
+            how = ("head: spark-restore.sh rebuild (spark-deepseek-prepare-local.sh, offline): rank 0 file, "
+                   "token map, served folder" + ("" if role == "head" else "; the head copies them here"))
+        elif "worker-rank-cache" in p:
+            how = "head: spark-restore.sh rebuild builds rank 1 (~15 min) and rsyncs it to the worker over the fabric"
+        elif "tensorfold-glm53" in p:
+            how = "recompiled by the GLM recipe on its first start (a few minutes, offline)"
+        elif p.startswith("obvenv"):
+            how = "python3 -m venv ~/obvenv, then the repo's test dependencies"
+        else:
+            how = it.note or "see the items file"
+        rows.append((p, how))
+    return rows
+
+
+def cmd_rebuild(args) -> int:
+    """Recompute, offline, the DeepSeek files a backup leaves out: on the head, after both nodes are restored."""
+    home = home_dir()
+    rev = serving_rev(home)
+    wcd = serving_wcd(home, rev)
+    hf = os.path.join(home, "openbeast-models", "deepseek-hf")
+    kits = sorted(d for d in (os.listdir(os.path.join(hf, "tensorfold-dsv41"))
+                              if os.path.isdir(os.path.join(hf, "tensorfold-dsv41")) else []) if d.startswith("kit-"))
+    prep = os.environ.get("SPARK_PREPARE_LOCAL") or os.path.join(BACKENDS, "spark-deepseek-prepare-local.sh")
+    print("== rebuild: DeepSeek's rank files, token map and served folder, from the checkpoint, OFFLINE"
+          + ("" if args.apply else "   [DRY RUN: nothing is built]"))
+    print("   GLM-5.3-Flash: nothing to rebuild (it loads its checkpoint directly); its CUDA kernels recompile on the"
+          " first start (a few minutes, offline)")
+    problems = []
+    if not rev:
+        problems.append(f"no DeepSeek MODEL_REVISION in ~/{LOCAL_SH}: is this the head, restored?")
+    if not kits:
+        problems.append("no kernel kit (openbeast-models/deepseek-hf/tensorfold-dsv41/kit-*/): restore it from the backup")
+    elif not any(os.path.isdir(os.path.join(hf, "tensorfold-dsv41", k, ".git")) for k in kits):
+        problems.append(f"the kernel kit {kits[-1]} has no .git: the offline prepare refuses it (it would git-fetch). "
+                        "Restore it from the head's backup, .git included")
+    rc, out, _ = run_out(cmd("DOCKER", "docker") + ["image", "ls", "--format", "{{.Repository}}:{{.Tag}}"])
+    if not any(line.startswith("tensorfold-dsv41:") for line in out.splitlines()):
+        problems.append("no tensorfold-dsv41 image here: run the restore's docker load first (the builders run in it, --network none)")
+    sc = cmd("SYSTEMCTL", "systemctl") + ["--user", "is-active"]
+    for u in INFERENCE_UNITS:
+        if run_out(sc + [u])[1].strip() == "active":
+            problems.append(f"{u} is running: stop it first (the rank-file builders need ~48 GB of the GB10's memory)")
+    if not os.path.isfile(prep):
+        problems.append(f"{prep}: not found")
+    rank0 = os.path.join(hf, "tensorfold-dsv41", rev[:8], "rank-cache") if rev else ""
+    have0 = bool(rank0) and os.path.isdir(rank0) and any(f.startswith("rank0of2-") and f.endswith(".bin") for f in os.listdir(rank0))
+    d1 = os.path.join(hf, wcd) if wcd else ""
+    have1 = bool(d1) and os.path.isdir(d1) and any(f.startswith("rank1of2-") and f.endswith(".bin") for f in os.listdir(d1))
+    print(f"   serving pack: {rev[:8] or '?'}   kit: {kits[-1] if kits else 'none'}   rank 0 file: "
+          f"{'present' if have0 else 'to build'}   rank 1 file ({wcd or '?'}): {'present' if have1 else 'to build'}")
+    print("   time: about 15 min per rank file (~106 GB each, CPU, in the image with --network none), plus about 4 min to "
+          "copy rank 1 to the worker over the fabric: about 35 min; seconds when both are present")
+    print(f"   runs: bash {shlex.quote(prep)}   (its own checks: pinned runtime commit and prepare.sh sha256, the image's "
+          "patch label, the worker's files; it never fetches)")
+    if problems:
+        print("\nPROBLEMS:")
+        for p in problems:
+            print(f"   !! {p}")
+    if not args.apply:
+        print("\nDRY RUN. Re-run with --apply to build.")
+        return 1 if problems else 0
+    if problems:
+        die("refusing to rebuild (above)")
+    rc = subprocess.call(["bash", prep])
+    if rc != 0:
+        die(f"{prep} failed (exit {rc}); it is safe to run again")
+    print("== rebuilt. DeepSeek can be selected (beastds) with no network.")
+    return 0
+
+
+# ── The golden base image of DGX OS (docs §3.2) ───────────────────────────────
+
+GOLDEN_DIR = "openbeast-golden"
+IDENTITY_MEMBERS = (r"etc/machine-id", r"etc/hostname", r"etc/dgx-release",
+                    r"etc/ssh/ssh_host_[a-z0-9]+_key(\.pub)?",
+                    r"var/lib/tailscale(/[A-Za-z0-9._-]+)*",
+                    r"etc/netplan/99-nvidia-sync-cluster\.yaml", r"etc/netplan/99-zz-openbeast-fabric-mtu\.yaml")
+FABRIC_NETPLAN = ("etc/netplan/99-nvidia-sync-cluster.yaml", "etc/netplan/99-zz-openbeast-fabric-mtu.yaml")
+DERIVED_STATE = ("var/lib/systemd/random-seed", "var/lib/NetworkManager/secret_key", "etc/docker/key.json",
+                 "var/lib/docker/engine-id")
+IDENTITY_CAPTURE = ("etc/machine-id etc/hostname etc/dgx-release etc/ssh/ssh_host_*_key etc/ssh/ssh_host_*_key.pub "
+                    "var/lib/tailscale " + " ".join(FABRIC_NETPLAN))
+
+
+def disk_facts() -> dict:
+    """The live node's disk layout, read-only (lsblk without root)."""
+    rc, out, _ = run_out(cmd("LSBLK", "lsblk") + ["-J", "-o", "PATH,PKNAME,SIZE,FSTYPE,LABEL,UUID,PARTUUID,MOUNTPOINTS"])
+    facts = {}
+    try:
+        devs = json.loads(out).get("blockdevices", [])
+    except ValueError:
+        return facts
+    flat = []
+
+    def walk(ds):
+        for d in ds:
+            flat.append(d)
+            walk(d.get("children") or [])
+    walk(devs)
+    for d in flat:
+        mps = [m for m in (d.get("mountpoints") or []) if m]
+        if "/" in mps:
+            facts["root"] = d
+        if "/boot/efi" in mps:
+            facts["esp"] = d
+    if "root" in facts:
+        pk = facts["root"].get("pkname") or ""
+        facts["disk"] = "/dev/" + pk if pk and not pk.startswith("/") else pk
+    return facts
+
+
+def cmd_golden(args) -> int:
+    if not args.plan:
+        die("golden-image has only --plan: the capture and the restore run as root from a live USB, by hand, "
+            "with the commands the plan prints (docs §3.2)")
+    drive = args.to.rstrip("/") or "/media/max/obbackup"
+    facts = disk_facts()
+    fleet = parse_fleet(args.fleet or os.path.join(BACKENDS, "fleet.env.example"))
+
+    def rel(p):
+        try:
+            return open(p, encoding="utf-8", errors="replace").read()
+        except OSError:
+            return ""
+    dgx = rel(os.environ.get("SPARK_GOLDEN_DGX_RELEASE") or "/etc/dgx-release")
+    ota = env_value(dgx, "DGX_OTA_VERSION") or env_value(dgx, "DGX_SWBUILD_VERSION") or "unknown"
+    sb = run_out(cmd("MOKUTIL", "mokutil") + ["--sb-state"])[1].strip() or "unknown (mokutil)"
+    host = hostname()
+    disk = facts.get("disk") or "/dev/nvme0n1"
+    esp, root = facts.get("esp", {}), facts.get("root", {})
+    esp_dev, root_dev = esp.get("path") or disk + "p1", root.get("path") or disk + "p2"
+    excl_rel = "openbeast/scripts/backends/data/spark-golden.exclude"
+    name = f"dgxos-{ota}-{host}-{time.strftime('%Y%m%d', time.gmtime())}"
+    gd = f"{GOLDEN_DIR}/{name}"
+    problems = []
+    if not root.get("uuid") or (root.get("fstype") or "") != "ext4":
+        problems.append(f"root filesystem not found as ext4 by lsblk (got {root.get('fstype') or 'nothing'})")
+    if not esp.get("uuid") or (esp.get("fstype") or "") != "vfat":
+        problems.append("no vfat EFI system partition mounted at /boot/efi")
+    if not os.path.isfile(os.path.join(BACKENDS, "data", "spark-golden.exclude")):
+        problems.append("data/spark-golden.exclude is missing from this checkout")
+
+    L = "/mnt/live-ob"      # where the drive is mounted inside the live session
+    tar_c = ("tar --create --file=$G/root.tar --directory=/mnt/src --one-file-system --numeric-owner --xattrs "
+             "--xattrs-include='*' --acls --sparse --anchored --exclude-from=$EXCL .")
+    tar_x = ("tar --extract --file=$G/root.tar --directory=/mnt/target --numeric-owner --xattrs "
+             "--xattrs-include='*' --acls --same-permissions")
+    print(f"== golden base image of DGX OS: the PLAN (read-only; nothing here runs it)   node {host}")
+    print(f"   DGX OS {ota} (dgx-release), Secure Boot: {sb}")
+    print(f"   disk {disk}: ESP {esp_dev} vfat UUID {esp.get('uuid') or '?'} PARTUUID {esp.get('partuuid') or '?'};"
+          f" root {root_dev} ext4 UUID {root.get('uuid') or '?'} PARTUUID {root.get('partuuid') or '?'}")
+    print("   The ESP's grub.cfg finds root by that ext4 UUID and /etc/fstab mounts both by UUID: the restore re-creates")
+    print("   both UUIDs, so nothing in the image is edited. The GPT's partition GUIDs come back from gpt.sfdisk, so the")
+    print("   UEFI boot entry stays valid on this unit; on another unit shim's fallback (EFI/BOOT/BOOTAA64.EFI) adds one.")
+    print(f"   image: {drive}/{gd}/   (root.tar ~20-30 GB, esp.img 0.3 GB, gpt.sfdisk, *.blkid, SHA256SUMS)")
+    print("   left out (data/spark-golden.exclude): /home/*/* (the overlay), /var/lib/docker and containerd (images come "
+          "from the overlay), /swap.img (re-made), caches, logs, and every per-node identity file")
+
+    print("\n-- A. now, on EACH node, live (sudo, read-only on the node, writes to the drive): its identity bundle")
+    print(f"   sudo mkdir -p {drive}/{GOLDEN_DIR}/identity && sudo chown {fleet['user']} {drive}/{GOLDEN_DIR}/identity")
+    for n in fleet["nodes"]:
+        out = f"{drive}/{GOLDEN_DIR}/identity/{n['name']}.tar"
+        if n["role"] == "head":
+            print(f"   [{n['name']}, the drive attached] sudo sh -c 'umask 077; cd / && tar --numeric-owner -cf {out} "
+                  f"{IDENTITY_CAPTURE}'")
+        else:
+            tmp = f"/home/{fleet['user']}/.identity-{n['name']}.tar"
+            print(f"   [{n['name']}] sudo sh -c 'umask 077; cd / && tar --numeric-owner -cf {tmp} {IDENTITY_CAPTURE} "
+                  f"&& chown {fleet['user']}: {tmp}'")
+            print(f"   [{fleet['nodes'][0]['name']}] scp {n['name']}:{os.path.basename(tmp)} {out} && "
+                  f"ssh {n['name']} rm {os.path.basename(tmp)}")
+    print("   these hold host keys and the Tailscale node key: the LUKS drive only, never the Mac or a stick")
+
+    print("\n-- B. capture (planned outage, ~20 min; the pair stops serving): boot the Ubuntu 24.04 arm64 live USB")
+    print("   on the source node (Esc/Del at power-on, Boot Override; 'Try Ubuntu'), open a terminal, then:")
+    steps_b = [
+        "sudo -i",
+        "lsblk -o NAME,SIZE,FSTYPE,LABEL,UUID,MODEL,TRAN      # nvme0n1 = internal; sdX = the backup SSD",
+        f"cryptsetup open /dev/sdX obbackup && mkdir -p {L} && mount /dev/mapper/obbackup {L}",
+        f"mkdir -p /mnt/src && mount -o ro {root_dev} /mnt/src",
+        f"EXCL={L}/openbeast-backup/{host}/latest/home/{excl_rel}",
+        f"G={L}/{gd}.partial && mkdir -p $G && umask 077",
+        f"sfdisk --dump {disk} > $G/gpt.sfdisk",
+        f"blkid -o export {esp_dev} > $G/esp.blkid && blkid -o export {root_dev} > $G/root.blkid",
+        f"dd if={esp_dev} of=$G/esp.img bs=4M conv=fsync status=progress",
+        tar_c,
+        "cp /mnt/src/etc/dgx-release /mnt/src/etc/os-release $G/ && cp /mnt/src/var/lib/dpkg/status $G/dpkg-status",
+        "(cd $G && sha256sum gpt.sfdisk esp.img root.tar *.blkid > SHA256SUMS) && mv $G ${G%.partial}",
+        f"umount /mnt/src && umount {L} && cryptsetup close obbackup && poweroff",
+    ]
+    for s in steps_b:
+        print(f"   {s}")
+    print("   checks: tar --list --file=root.tar | grep -c . (hundreds of thousands); no ./home/max/<anything>,")
+    print("   no ./var/lib/docker, no ./etc/ssh/ssh_host_*, no ./var/lib/tailscale/<anything> in the list")
+
+    print("\n-- C. restore onto a Spark (this one, the other, or a replacement), OFFLINE, from the same live USB:")
+    steps_c = [
+        "sudo -i",
+        f"cryptsetup open /dev/sdX obbackup && mkdir -p {L} && mount /dev/mapper/obbackup {L}",
+        f"G={L}/{gd} && (cd $G && sha256sum -c SHA256SUMS)",
+        "#   ERASES the internal disk. Size-independent: p2 is re-made to fill the disk",
+        f"sed -e '/^last-lba:/d' -e '/p2 : /s/size= *[0-9]*, *//' $G/gpt.sfdisk | sfdisk --wipe always --wipe-partitions always {disk}",
+        f"dd if=$G/esp.img of={esp_dev} bs=4M conv=fsync status=progress",
+        f"( . $G/root.blkid && mkfs.ext4 -F -U \"$UUID\" -L \"${{LABEL:-root}}\" {root_dev} )",
+        f"mkdir -p /mnt/target && mount {root_dev} /mnt/target",
+        tar_x,
+        "fallocate -l 16G /mnt/target/swap.img && chmod 600 /mnt/target/swap.img && mkswap /mnt/target/swap.img",
+        f"python3 {L}/openbeast-backup/{host}/latest/home/openbeast/scripts/backends/pylib/spark_backup.py identity \\",
+        f"    --target /mnt/target --bundle {L}/{GOLDEN_DIR}/identity/<node>.tar          # dry run; then add --apply",
+        "#   a NEW unit (no bundle): --fresh --hostname spark-XXXX (its factory name: the last 4 hex of its 10GbE MAC)",
+        f"umount /mnt/target && umount {L} && cryptsetup close obbackup && reboot     # pull the live USB",
+    ]
+    for s in steps_c:
+        print(f"   {s}")
+    print("   first boot: no OOBE (the image is past it), the old login; then the overlay restore (docs §3.4)")
+    print("   checks: mokutil --sb-state (enabled); cat /etc/machine-id differs between the two Sparks; "
+          "ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub; nvidia-smi; ibdev2netdev; docker info")
+
+    print("\n-- D. firmware is NOT in the image (UEFI, EC, SSD; ConnectX-7 firmware IS: spark-mlnx-firmware-manager)")
+    print("   compare fwupdmgr get-devices with the generation's system/fwupd-devices.txt; older on a replacement unit:")
+    print("   NVIDIA's recovery USB (offline, flashes the firmware it carries) BEFORE step C, or fwupdmgr install <file>.cab")
+    if problems:
+        print("\nPROBLEMS:")
+        for p in problems:
+            print(f"   !! {p}")
+    return 1 if problems else 0
+
+
+IDENTITY_PARENTS = ("", ".", "etc", "etc/ssh", "etc/netplan", "var", "var/lib")
+
+
+def _ident_member(name: str, is_dir: bool = False) -> str:
+    n = name[2:] if name.startswith("./") else name
+    n = n.rstrip("/")
+    if is_dir and n in IDENTITY_PARENTS:
+        return n or "."
+    for rx in IDENTITY_MEMBERS:
+        if re.fullmatch(rx, n):
+            return n
+    return ""
+
+
+def cmd_identity(args) -> int:
+    """Write ONE node's identity into a restored golden image mounted at --target (from a live USB, as root)."""
+    import tarfile
+    import uuid
+    t = os.path.realpath(args.target)
+    problems = []
+    if t == "/":
+        die("--target is / : identity never touches the running system (mount the restored disk, e.g. /mnt/target)")
+    for f in ("etc/os-release", "etc/dgx-release"):
+        if not os.path.isfile(os.path.join(t, f)):
+            problems.append(f"{t}/{f} missing: --target is not a restored DGX OS root")
+    if bool(args.bundle) == bool(args.fresh):
+        die("give exactly one of --bundle FILE (this node's own identity, captured live) or --fresh (a new unit)")
+    if args.fresh and not args.hostname:
+        die("--fresh needs --hostname (the unit's factory name, spark-XXXX)")
+    if args.hostname and not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", args.hostname):
+        die(f"--hostname {args.hostname!r} is not a valid host name")
+    files = {}
+    if args.bundle:
+        try:
+            with tarfile.open(args.bundle) as tf:
+                for m in tf.getmembers():
+                    n = _ident_member(m.name, m.isdir())
+                    if not n:
+                        problems.append(f"bundle member {m.name!r} is not an identity file: refused")
+                        continue
+                    if m.isdir() and (n in IDENTITY_PARENTS or n == "."):
+                        continue
+                    if m.isdir():
+                        files.setdefault(n, None)
+                        continue
+                    if not m.isfile():
+                        problems.append(f"bundle member {m.name!r} is not a regular file: refused")
+                        continue
+                    files[n] = (tf.extractfile(m).read(), m.mode & 0o7777, m.uid, m.gid)
+        except (OSError, tarfile.TarError) as e:
+            die(f"cannot read the bundle {args.bundle}: {e}")
+        mid = (files.get("etc/machine-id") or (b"",))[0].decode(errors="replace").strip()
+        if not re.fullmatch(r"[0-9a-f]{32}", mid):
+            problems.append("the bundle has no valid etc/machine-id")
+        if not any(re.fullmatch(r"etc/ssh/ssh_host_[a-z0-9]+_key", k) for k in files):
+            problems.append("the bundle has no ssh host keys")
+    host = args.hostname or ((files.get("etc/hostname") or (b"",))[0].decode(errors="replace").strip())
+    if not host:
+        problems.append("no host name: the bundle has no etc/hostname; pass --hostname")
+    serial = args.serial or (env_value((files.get("etc/dgx-release") or (b"",))[0].decode(errors="replace"),
+                                       "DGX_SERIAL_NUMBER") or "")
+    src = "the bundle " + os.path.basename(args.bundle) if args.bundle else "fresh"
+    print(f"== identity for {host or '?'} into {t} (from {src})" + ("" if args.apply else "   [DRY RUN: nothing is written]"))
+    plan = [
+        ("etc/machine-id", "the bundle's" if args.bundle else "new, random (as systemd-machine-id-setup makes it)"),
+        ("etc/ssh/ssh_host_*", "the bundle's (the Mac's known_hosts stays valid)" if args.bundle else "new: ssh-keygen -A -f TARGET"),
+        ("var/lib/tailscale/", "the bundle's node state: no re-auth" if any(k.startswith("var/lib/tailscale/") for k in files)
+         else "empty: Tailscale re-auth when online (spark-root-setup.sh)"),
+        ("etc/netplan/ fabric files", "the bundle's (NVIDIA Sync's rail addresses, MTU 9000)" if any(k in files for k in FABRIC_NETPLAN)
+         else "none: pair with NVIDIA Sync from the Mac (LAN), then spark-fabric-mtu.sh"),
+        ("etc/hostname, etc/hosts 127.0.1.1", host or "?"),
+        ("etc/dgx-release DGX_SERIAL_NUMBER", serial or "left as the image has it (the SOURCE unit's): pass --serial"),
+        ("derived state removed", ", ".join(DERIVED_STATE)),
+    ]
+    for k, v in plan:
+        print(f"   {k}: {v}")
+    if problems:
+        print("\nPROBLEMS:")
+        for p in problems:
+            print(f"   !! {p}")
+    if not args.apply:
+        print("\nDRY RUN. Re-run with --apply to write.")
+        return 1 if problems else 0
+    if problems:
+        die("refusing to write the identity (above)")
+    if os.geteuid() != 0 and os.environ.get("SPARK_IDENTITY_ROOT_CHECK", "1") != "0":
+        die("run it as root (sudo -i in the live session): the files are root's")
+
+    def put(relp, data, mode, uid=0, gid=0):
+        p = os.path.join(t, relp)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        tmp = p + ".ob-new"
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.chmod(tmp, mode)
+        if os.geteuid() == 0:
+            os.chown(tmp, uid, gid)
+        os.replace(tmp, p)
+
+    def rm(relp):
+        p = os.path.join(t, relp)
+        if os.path.islink(p) or os.path.isfile(p):
+            os.unlink(p)
+    # machine-id
+    rm("etc/machine-id")
+    if args.bundle:
+        d, mode, uid, gid = files["etc/machine-id"]
+        put("etc/machine-id", d, mode, uid, gid)
+    else:
+        put("etc/machine-id", (uuid.uuid4().hex + "\n").encode(), 0o444)
+    dbus = os.path.join(t, "var/lib/dbus/machine-id")
+    if not os.path.lexists(dbus):
+        os.makedirs(os.path.dirname(dbus), exist_ok=True)
+        os.symlink("/etc/machine-id", dbus)
+    # ssh host keys
+    sshd = os.path.join(t, "etc/ssh")
+    if os.path.isdir(sshd):
+        for f in os.listdir(sshd):
+            if f.startswith("ssh_host_"):
+                os.unlink(os.path.join(sshd, f))
+    # tailscale and the fabric netplan
+    tsd = os.path.join(t, "var/lib/tailscale")
+    if os.path.isdir(tsd):
+        shutil.rmtree(tsd)
+    os.makedirs(tsd, mode=0o700, exist_ok=True)
+    os.chmod(tsd, 0o700)
+    for f in FABRIC_NETPLAN:
+        rm(f)
+    for relp, v in sorted(files.items()):
+        if v is None or relp in ("etc/machine-id", "etc/hostname", "etc/dgx-release"):
+            continue
+        d, mode, uid, gid = v
+        put(relp, d, mode, uid, gid)
+    if not args.bundle:
+        rc = subprocess.call(cmd("SSH_KEYGEN", "ssh-keygen") + ["-A", "-f", t])
+        if rc != 0:
+            die("ssh-keygen -A failed")
+    # host name
+    put("etc/hostname", (host + "\n").encode(), 0o644)
+    hp = os.path.join(t, "etc/hosts")
+    try:
+        hosts = open(hp, encoding="utf-8").read().splitlines()
+    except OSError:
+        hosts = ["127.0.0.1\tlocalhost"]
+    hosts = [f"127.0.1.1\t{host}" if re.match(r"^127\.0\.1\.1\s", h) else h for h in hosts]
+    if not any(re.match(r"^127\.0\.1\.1\s", h) for h in hosts):
+        hosts.append(f"127.0.1.1\t{host}")
+    put("etc/hosts", ("\n".join(hosts) + "\n").encode(), 0o644)
+    if serial:
+        dp = os.path.join(t, "etc/dgx-release")
+        txt = open(dp, encoding="utf-8").read()
+        put("etc/dgx-release", set_env_key(txt, "DGX_SERIAL_NUMBER", f'"{serial}"').encode(), 0o644)
+    for f in DERIVED_STATE:
+        rm(f)
+    print(f"== identity written: {host}. Unmount, pull the live USB, reboot.")
+    return 0
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -1540,7 +1958,7 @@ def main(argv=None) -> int:
     p.add_argument("dir")
     p = sub.add_parser("restore")
     p.add_argument("--from", dest="src", required=True)
-    p.add_argument("--fleet", required=True)
+    p.add_argument("--fleet", default=None, help="default: fleet.env.example beside this tool (the pair)")
     p.add_argument("--index", type=int, required=True)
     p.add_argument("--apply", action="store_true")
     p.add_argument("--yes", action="store_true")
@@ -1549,9 +1967,23 @@ def main(argv=None) -> int:
     p.add_argument("--skip-images", action="store_true")
     p.add_argument("--force-volumes", action="store_true")
     p.add_argument("--no-units", action="store_true")
+    p = sub.add_parser("rebuild")
+    p.add_argument("--apply", action="store_true")
+    p = sub.add_parser("golden-image")
+    p.add_argument("--plan", action="store_true")
+    p.add_argument("--to", default="/media/max/obbackup")
+    p.add_argument("--fleet", default=None)
+    p = sub.add_parser("identity")
+    p.add_argument("--target", required=True)
+    p.add_argument("--bundle")
+    p.add_argument("--fresh", action="store_true")
+    p.add_argument("--hostname")
+    p.add_argument("--serial")
+    p.add_argument("--apply", action="store_true")
     args = ap.parse_args(argv)
-    return {"inventory": cmd_inventory, "run": cmd_run, "verify": cmd_verify,
-            "list": cmd_list, "restore": cmd_restore}[args.cmd](args)
+    return {"inventory": cmd_inventory, "run": cmd_run, "verify": cmd_verify, "list": cmd_list,
+            "restore": cmd_restore, "rebuild": cmd_rebuild, "golden-image": cmd_golden,
+            "identity": cmd_identity}[args.cmd](args)
 
 
 if __name__ == "__main__":

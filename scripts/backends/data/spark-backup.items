@@ -22,11 +22,13 @@
 #   keep       backed up, restored
 #   secret     backed up, restored; must be 0600/0700 (checked, never printed)
 #   weights    backed up, restored; big, hard-linked across trees (rsync -H)
-#   rankcache  backed up (unless --no-rank-caches), restored; rebuildable in
-#              ~15 min (spark-deepseek-prepare-local.sh), but copying is faster
+#   rankcache  backed up (unless --no-rank-caches), restored. No line uses it
+#              since 2026-11-18 (Max: never back up what rebuilds offline); kept
+#              so older generations, and a deliberate faster-restore line, work
 #   node       backed up for the record; NEVER copied by a restore — the
 #              restore regenerates it for the node it runs on
-#   rebuild    NOT backed up; derivable (the doc says how)
+#   rebuild    NOT backed up; recomputed OFFLINE from what is kept (the doc's
+#              §3.5 and `spark-restore.sh rebuild` say how, and how long)
 #   skip       NOT backed up; caches, desktop noise, sockets
 #   image      a docker image (repo:tag pattern, or compose:NAME = the image
 #              docker-compose.yml pins for that service), saved with docker save
@@ -93,15 +95,14 @@ keep      head    openbeast-recipes/                  # deepseek-prep (runtime, 
 weights   all     Documents/                          # model folders (hard links into the HF caches), notes, opencode tarball
 weights   all     openbeast-models/glm53-flash-ablit-exl3/   # GLM checkpoint (hard links)
 weights   all     openbeast-models/deepseek-hf/hub/   # DeepSeek base (Engram shards) and the EXL3 packs
-keep      all     openbeast-models/deepseek-hf/tensorfold-dsv41/kit-*/  # the serving kit
-rankcache head    openbeast-models/deepseek-hf/tensorfold-dsv41/{SERVING_REV8}/   # rank 0 file of the selected DeepSeek pack (~106 GB)
-rankcache all     openbeast-models/deepseek-hf/{SERVING_WCD}/   # rank 1 file of the selected DeepSeek pack (~106 GB)
-rebuild   all     openbeast-models/deepseek-hf/tensorfold-dsv41/*/   # other packs' rank 0 files: spark-deepseek-pack use rebuilds them
-rebuild   all     openbeast-models/deepseek-hf/worker-rank-cache*/   # other packs' rank 1 files
+keep      all     openbeast-models/deepseek-hf/tensorfold-dsv41/kit-*/  # the kernel kit, .git INCLUDED: the offline rebuild refuses a kit without it (it would git-fetch)
+rebuild   all     openbeast-models/deepseek-hf/tensorfold-dsv41/*/   # per pack: rank 0 file (~106 GB), token map, served-folder links: spark-deepseek-prepare-local.sh, offline
+rebuild   all     openbeast-models/deepseek-hf/worker-rank-cache*/   # per pack: rank 1 file (~106 GB), built on the head and rsynced to the worker by the same script
 keep      all     openbeast-models/*.lock             # model-fetch locks, when kept beside the weights
 weights   all     .cache/huggingface/                 # GLM HF-cache layout (hard links) and the DFlash2 drafter blobs
-keep      all     .cache/tensorfold-glm53/            # compiled kernels: saves a recompile on first start
-keep      all     .cache/dsv41-tensorfold/
+keep      all     .cache/tensorfold-glm53/logs/       # GLM start logs
+rebuild   all     .cache/tensorfold-glm53/            # GLM's compiled CUDA kernels (~170 MB per image): recompiled offline on the first start, a few minutes
+keep      all     .cache/dsv41-tensorfold/            # DeepSeek logs
 skip      all     .cache/                             # pip, browser, mesa, thumbnails: rebuildable
 
 # ── Desktop and system noise ─────────────────────────────────────────────────
@@ -124,5 +125,5 @@ image     all     tensorfold-dsv41:*                  # DeepSeek V4.1 Flash engi
 image     head    compose:open-webui                  # pinned by digest in docker-compose.yml
 image     head    compose:searxng
 image     head    alpine:latest                       # tar helper for volume export/import
-image     opt     nvcr.io/nvidia/pytorch:*            # base of the container engine / native build; re-pullable
+image     head    nvcr.io/nvidia/pytorch:*            # 24 GB base of the container engine / native build (Max, 2026-11-18: include it; re-pulling is online)
 volume    head    openbeast_open-webui-data           # users, chats, settings (SQLite)
