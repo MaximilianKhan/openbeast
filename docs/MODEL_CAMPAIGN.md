@@ -559,6 +559,37 @@ ADOPTED or REJECTED) and [RESULTS.md](RESULTS.md).
   start an arm once the tree has moved.
 - **Sub-manifests are not in the era.** `evals/suites/_lost-*.json` restrict
   the unit set only, so the rows they produce merge with their arm's.
+- **Review 1118 (2026-11-18): integrity fixes that move the era but not a
+  correct run's outcome.** The macOS eval sandbox denies the agent's shell,
+  its push-diagnostics checkers and its `grep` every outbound connection
+  except loopback, keeps `evals/{tasks,refs,suites}` sealed under the
+  `/tmp/eval*` allow-back, and makes the repo, the eval venv, the eval
+  prefix and the pack files read-only to the agent; content-addressed pack
+  files are re-verified on reuse and on read. These are edits to
+  `agents/tools.py` and `agents/runner.py` (reporting only: the API-error
+  tail, `RESPONSE_MODELS`, `REASONING_TURNS`), so the era moves
+  (`595634987879411a` -> the new tree's). `evals/HARNESS_VERSION` does not:
+  run_eval's agent-shaping functions are untouched (still `harness8`).
+  Label a run of this tree **"harness8 + sandbox hardening (review 1118)"**
+  on the board: a correct solution passes the same way (no unit needs the
+  network beyond loopback or writes outside `/tmp/eval*` and `$TMPDIR`), so
+  its rows stand next to the GLM rows, whose four files were themselves
+  measured under four different eras. The era rule above is about pairing
+  rows inside a campaign (flips, ablations), not about the board.
+- **A row is lost to API errors only when they ENDED the run** (review
+  1118). run_eval records `api_errors_tail` (failed calls after the last
+  successful one); a failed row with `api_errors > 0` but a zero tail is a
+  verdict, as a pass with an error always was. Rows without the field
+  (every published board row) keep the old rule, so no published score
+  moves.
+- **The served model is checked around every unit** (review 1118). A live
+  run refuses to start unless `/v1/models` lists `--served-model` /
+  `OPENBEAST_INFERENCE_MODEL`; before and after each unit it re-reads it,
+  waits up to `OPENBEAST_EVAL_MODEL_WAIT_S` (600 s) for a missing model to
+  come back, then stops as an infra stop (`served_model_changed`, never
+  banked, a pass under the wrong model discarded). Each row records
+  `response_models` (what the server named) and `reasoning_turns` (the
+  effective thinking).
 - **Infra is never a verdict, a pass is always one.** That is the rule in
   run_eval's cache (a server error is not banked), in profile.py (a budget
   skip is not a failure), and in campaign.py (lost units).
