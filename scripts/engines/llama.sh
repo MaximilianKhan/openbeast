@@ -151,6 +151,7 @@ _eng_llama_fetch() {
     git -C "$src" fetch -q --depth 1 "file://$(cd "$from" && pwd)/llama.cpp.git" ob-stage || return 1
     [[ "$(git -C "$src" rev-parse FETCH_HEAD)" == "$sha" ]] \
       || { echo "the staged llama.cpp.git does not hold $sha — refusing" >&2; return 1; }
+    _eng_llama_unshallow_local "$src" "$sha"
     return 0
   fi
   # NOT --depth 1: llama.cpp's build number is its commit count, and a
@@ -172,6 +173,27 @@ _eng_llama_fetch() {
   ob_engine_offline && { echo "commit ${sha:0:12} is not in llama.cpp/ and OFFLINE=true — use --from DIR" >&2; return 1; }
   git -C "$src" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 fetch -q ${deep[@]+"${deep[@]}"} "$(_eng_llama_url)" "$sha" \
     || { echo "could not fetch llama.cpp ${sha:0:12} from $(_eng_llama_url)" >&2; return 1; }
+}
+
+# _eng_llama_unshallow_local <src> <sha> — undo the cut a --depth 1 fetch
+# from a staged folder leaves. The staged repo is one commit deep, so git
+# writes <sha> into .git/shallow ("no parents here") even when this clone
+# holds every parent, and from then on the clone counted <sha> as commit #1:
+# the build number came out b1 (the cmake UI fetch failure of 2026-11-17)
+# and the whole clone read as shallow. When every parent of <sha> is present,
+# the cut is false, so <sha> leaves .git/shallow (the file goes when empty).
+# A parent that is missing keeps the cut: then the history really is short.
+_eng_llama_unshallow_local() {
+  local src="$1" sha="$2" gd p parents ok=1 tmp
+  gd="$(git -C "$src" rev-parse --absolute-git-dir 2>/dev/null)" || return 0
+  [[ -f "$gd/shallow" ]] && grep -qxF "$sha" "$gd/shallow" || return 0
+  parents="$(git -C "$src" cat-file -p "$sha" 2>/dev/null | sed -nE 's/^parent ([0-9a-f]{40})$/\1/p')"
+  [[ -n "$parents" ]] || return 0
+  for p in $parents; do git -C "$src" cat-file -e "$p^{commit}" 2>/dev/null || { ok=0; break; }; done
+  [[ $ok -eq 1 ]] || return 0
+  tmp="$(mktemp "$gd/shallow.XXXXXX")" || return 0
+  grep -vxF "$sha" "$gd/shallow" > "$tmp" || true
+  if [[ -s "$tmp" ]]; then mv -f "$tmp" "$gd/shallow"; else rm -f "$tmp" "$gd/shallow"; fi
 }
 
 # _eng_llama_build_number_of <sha> — the build number (bNNNN) of a commit:
@@ -225,10 +247,22 @@ eng_llama_install() {
   # A staged repo is one commit deep, so the build cannot count its way to
   # the build number: the connected box wrote it into the MANIFEST. Tag it
   # too, so a later update.sh --llama --force rebuild finds it again.
-  local bn=""
+  local bn="" own=""
   if [[ -n "$from" ]]; then
     bn="$(ob_engine_manifest_get "$from/MANIFEST" BUILD_NUMBER)"
     [[ "$bn" =~ ^[1-9][0-9]*$ ]] || bn=""
+    # Where this clone's own history is whole (the cut undone above), its
+    # count is the truth and the MANIFEST's number only a claim.
+    if [[ "$(git -C "$src" rev-parse --is-shallow-repository 2>/dev/null)" == false ]]; then
+      own="$(git -C "$src" rev-list --count "$sha" 2>/dev/null || true)"
+      if [[ "$own" =~ ^[1-9][0-9]*$ ]]; then
+        [[ -z "$bn" || "$bn" == "$own" ]] || echo "note: $from/MANIFEST says BUILD_NUMBER=$bn, this clone counts $own for ${sha:0:12} — using $own" >&2
+        bn="$own"
+      fi
+    fi
+    if ! ob_engine_offline; then
+      echo "note: the build fetches llama.cpp's prebuilt Web UI (assets of b${bn:-?}) over the network. On a closed box set OFFLINE=true: the build then skips it (-DLLAMA_USE_PREBUILT_UI=OFF) instead of stalling ~11 minutes and failing." >&2
+    fi
     if [[ -n "$bn" ]] && ! git -C "$src" rev-parse -q --verify "refs/tags/b$bn" >/dev/null 2>&1; then
       git -C "$src" tag "b$bn" "$sha" 2>/dev/null || true
     fi

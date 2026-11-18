@@ -206,12 +206,35 @@ eng_maya_install() {
   [[ -f "$tmp/third_party/llama.cpp/ggml/CMakeLists.txt" && -d "$tmp/third_party/llama.cpp/gguf-py" ]] \
     || { echo "llama.cpp ${_ML:0:12} has no ggml/CMakeLists.txt or gguf-py/ — not what Maya builds against" >&2; rm -rf "$tmp"; return 1; }
   _eng_maya_venv "$tmp" "$wh" || { rm -rf "$tmp"; return 1; }
-  rm -rf "$d"; mv "$tmp" "$d"
+  # Reinstalling a version that is on disk replaces its directory. A Maya
+  # server running from it would lose its files mid-run (rm -rf under it),
+  # so that is refused; otherwise the old one is moved aside first and the
+  # new one swapped in by rename, never left half-deleted.
+  if [[ -d "$d" ]] && _eng_maya_running_from "$d"; then
+    echo "Project Maya $_MV is running from $d — stop it first (./stop.sh), then reinstall" >&2
+    rm -rf "$tmp"; return 1
+  fi
+  local old=""
+  if [[ -e "$d" ]]; then old="$d.old.$$"; rm -rf "$old"; mv "$d" "$old" || { rm -rf "$tmp"; return 1; }; fi
+  mv "$tmp" "$d" || { [[ -n "$old" ]] && mv "$old" "$d"; rm -rf "$tmp"; return 1; }
   ln -sfn "$d" "$(_eng_maya_active)"
+  [[ -n "$old" ]] && rm -rf "$old"
   ENG_RESULT_VERSION="$_MV"; ENG_RESULT_REF="$_MC"
   ENG_RESULT_NOTE="llama=${_ML:0:12} lock=$(ob_engine_sha256 "$(_eng_maya_lock)" | cut -c1-12)"
   echo "Project Maya $_MV (${_MC:0:12}) installed in $d — not compiled yet: scripts/engines/maya/prepare.sh <profile>."
   echo "  It is GATED: scripts/engine-gate.sh maya --profile <profile> --serve-script <same weights>.sh before use."
+}
+
+# _eng_maya_running_from <dir> — a process runs maya.py from <dir>, by its
+# real path or through the ~/.local/opt/maya link when that points there.
+_eng_maya_running_from() {
+  local d="$1" a rd ra args
+  rd="$(cd "$d" 2>/dev/null && pwd -P)" || return 1
+  a="$(_eng_maya_active)"
+  ra="$(cd "$a" 2>/dev/null && pwd -P || true)"
+  args="$(ps -A -o args= 2>/dev/null || true)"
+  grep -qF -e "$d/maya.py" -e "$rd/maya.py" <<< "$args" && return 0
+  [[ -n "$ra" && "$ra" == "$rd" ]] && grep -qF "$a/maya.py" <<< "$args"
 }
 
 # activate <version> <ref> — relink a version still on disk, at its commit.

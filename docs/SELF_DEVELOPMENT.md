@@ -1263,3 +1263,19 @@ pushing the topic branch to a second remote, fast-forwarding the hub's
 `main`, and a bundle. The Sparks run git 2.43, which has every command used
 here. The hub itself has not been created on spark-1 yet, so the ssh URLs are
 verified as ssh paths, not as git remotes.
+
+### test_engines.sh and test_supply_chain.sh run on macOS (2026-11-18)
+
+With CI off, Max's Mac is the test box. `tests/test_engines.sh` no longer
+needs GNU tools: it edits files with `sed -i.bak` (GNU and BSD both take
+it), reads modes with `stat -c` or `stat -f`, and shims what macOS lacks into
+its own `$T/bin` (`timeout` as a small perl script, `sha256sum` from `/sbin`
+or `shasum -a 256`). It falls back to 127.0.0.1 where another 127/8 address
+does not answer (macOS), and `OB_ENGINE_UNAME=Linux` lets it run the Linux
+host-class detection there. `scripts/engine.sh use` also lost a bash 3.2
+crash: an empty `unsets` array under `set -u`. `tests/test_supply_chain.sh`
+failed on macOS because `scripts/land-dependabot.sh` took its lock only where
+`flock(1)` exists, so a Mac had no single-instance guard at all; it now takes
+the same `flock(2)` lock through perl when `flock(1)` is missing, and the
+suite checks that a second run is refused. Verified on the Mac (bash 3.2.57):
+test_engines.sh 112 passed, test_supply_chain.sh 31 passed.
