@@ -1712,3 +1712,223 @@ def test_ark_sh_lint_and_usage():
     assert r.returncode == 0 and "0 problem(s)" in r.stdout, r.stdout[-2000:]
     r = subprocess.run(["bash", str(ARK_SH), "restore", "x", "--from", "/nonexistent"], capture_output=True, text=True)
     assert r.returncode == 2 and "not a beast-ark drive" in r.stderr
+
+
+# ── review 2026-11-18 ────────────────────────────────────────────────────
+
+def _tree(root: Path) -> dict:
+    """Every path under root -> (sha256, mode, mtime_ns): any write shows."""
+    out = {}
+    for p in sorted(root.rglob("*")):
+        st = p.lstat()
+        out[str(p.relative_to(root))] = (sha(p.read_bytes()) if p.is_file() and not p.is_symlink() else "",
+                                         st.st_mode, st.st_mtime_ns)
+    return out
+
+
+def test_fetch_from_the_drive_itself_keeps_its_tool_and_dry_run_writes_nothing(http, tmp_path, capsys):
+    cat = toy_catalog(http, tmp_path)
+    drive = tmp_path / "drive"
+    assert run(["--catalog", str(cat), "fetch", "--to", str(drive)], capsys)[0] == 0
+    tool = drive / "tool/agents/ark/cli.py"
+    before = _tree(drive)
+    # the drive's own tool, filling the drive it lives on: src == dst
+    argv = [sys.executable, "-I", "-B", str(tool), "--catalog", str(drive / "catalog.toml"), "fetch", "--to", str(drive)]
+    r = subprocess.run(argv + ["--dry-run"], capture_output=True, text=True)
+    assert r.returncode == 0 and "nothing written" in r.stderr, r.stderr
+    assert _tree(drive) == before                       # not the tool, the lock, ARK.md or the catalog
+    r = subprocess.run(argv, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert tool.is_file() and (drive / "tool/agents/ark/fetch.py").is_file()
+    assert {k: v[0] for k, v in _tree(drive).items() if k.startswith("tool/")} == \
+        {k: v[0] for k, v in before.items() if k.startswith("tool/")}
+    r = subprocess.run([str(drive / "ark"), "verify", str(drive)], capture_output=True, text=True)
+    assert r.returncode == 0 and "RESULT: OK" in r.stdout, r.stderr
+    # a dry run into a folder that does not exist creates nothing at all
+    rc, out = run(["--catalog", str(cat), "fetch", "--to", str(tmp_path / "fresh"), "--dry-run"], capsys)
+    assert rc == 0 and "would fetch toy/any/single" in out.err and not (tmp_path / "fresh").exists()
+
+
+def test_install_tool_swaps_a_new_copy_in(tmp_path):
+    drive = S.Drive(str(tmp_path / "d"))
+    stale = tmp_path / "d/tool/agents/ark"
+    stale.mkdir(parents=True)
+    (stale / "stale.py").write_text("old\n")
+    S.install_tool(drive)
+    assert (stale / "cli.py").is_file() and not (stale / "stale.py").exists()
+    assert not (tmp_path / "d/tool/agents/ark.tmp").exists() and not (tmp_path / "d/tool/agents/ark.old").exists()
+
+
+def test_two_artifacts_whose_sums_files_share_a_name_keep_their_own(http, tmp_path, capsys):
+    a, b = b"first file\n", b"second file\n"
+    http.files["/a/one.bin"], http.files["/b/two.bin"] = a, b
+    http.files["/a/SHA256SUMS"] = f"{sha(a)}  one.bin\n".encode()
+    http.files["/b/SHA256SUMS"] = f"{sha(b)}  two.bin\n".encode()
+    body = ENTRY.format(name="pair", cat="cli", version="1")
+    for d, fn, data in (("a", "one.bin", a), ("b", "two.bin", b)):
+        body += f'''
+[[artifact]]
+entry = "pair"
+kind = "file"
+platform = "any"
+url = "{http.base}/{d}/{fn}"
+sha256 = "{sha(data)}"
+checksum_url = "{http.base}/{d}/SHA256SUMS"
+install = "data"
+verified = "upstream-sums"
+'''
+    drive = tmp_path / "d"
+    rc, out = run(["--catalog", str(write_catalog(tmp_path, body)), "fetch", "--to", str(drive)], capsys)
+    assert rc == 0, out.err
+    items = json.loads((drive / "ark.lock").read_text())["items"]
+    sums = [f["path"] for it in items.values() for f in it["files"] if f["path"].endswith("SHA256SUMS")]
+    assert len(set(sums)) == 2, sums
+    rc, out = run(["verify", str(drive)], capsys)
+    assert rc == 0 and "RESULT: OK" in out.out, out.out
+
+
+def test_a_vanished_checksum_file_falls_back_to_the_pin_with_a_warning(http, tmp_path, capsys):
+    cat = toy_catalog(http, tmp_path)
+    del http.files["/rel/single.sha256"]
+    drive = tmp_path / "d"
+    rc, out = run(["--catalog", str(cat), "fetch", "--to", str(drive), "--no-git"], capsys)
+    assert rc == 0, out.err
+    it = json.loads((drive / "ark.lock").read_text())["items"]["toy/any/single"]
+    assert it["verified"] == "pinned" and "is gone (HTTP 404)" in it["warnings"][0]
+    assert "WARNING toy/any/single" in out.err
+    assert [f["path"] for f in it["files"]] == ["files/toy/1.0/any/single"]
+    # no pin to fall back on: still refused
+    cat2 = toy_catalog(http, tmp_path, tar_pin=False)
+    cat2.write_text(cat2.read_text().replace('verified = ""', 'verified = "unverified"'))
+    del http.files["/rel/SHA256SUMS"]
+    rc, out = run(["--catalog", str(cat2), "fetch", "--to", str(tmp_path / "d2"), "--no-git"], capsys)
+    assert rc == 4 and "HTTP 404" in out.err
+
+
+def test_https_to_http_redirects_are_refused_except_to_loopback():
+    import urllib.request
+    from ark import net
+    h = net._NoDowngrade()
+    req = urllib.request.Request("https://example.org/sums")
+    with pytest.raises(net.HTTPFailure, match="downgrades https"):
+        h.redirect_request(req, None, 302, "Found", {}, "http://mirror.example.org/sums")
+    assert h.redirect_request(req, None, 302, "Found", {}, "https://cdn.example.org/sums").full_url \
+        == "https://cdn.example.org/sums"
+    assert h.redirect_request(req, None, 302, "Found", {}, "http://127.0.0.1:8780/sums") is not None
+    plain = urllib.request.Request("http://example.org/sums")
+    assert h.redirect_request(plain, None, 302, "Found", {}, "http://other.example.org/x") is not None
+
+
+def test_lock_refresh_never_moves_an_upstream_hash(http, tmp_path, capsys):
+    tgz = toy_toolchain()
+    http.files["/rel/toy-1.0-linux.tar.gz"] = tgz
+    http.files["/rel/SHA512SUMS"] = f"{'e' * 128}  toy-1.0-linux.tar.gz\n".encode()   # upstream re-cut
+    pinned = "sha512:" + hashlib.sha512(tgz).hexdigest()
+    body = ENTRY.format(name="toy", cat="languages", version="1.0") + f'''
+[[artifact]]
+entry = "toy"
+kind = "file"
+platform = "any"
+url = "{http.base}/rel/toy-{{version}}-linux.tar.gz"
+upstream_hash = "{pinned}"
+checksum_url = "{http.base}/rel/SHA512SUMS"
+install = "tar"
+verified = "upstream-sums"
+'''
+    cat = write_catalog(tmp_path, body)
+    rc, out = run(["--catalog", str(cat), "lock", "--refresh", "--no-git-sizes"], capsys)
+    assert rc == 0 and "UPSTREAM CHANGED" in out.err
+    assert C.load(str(cat)).artifacts[0].upstream_hash == pinned
+
+
+def test_lock_refresh_refuses_a_moved_image_unless_accepted(registry, tmp_path, capsys):
+    old = "sha256:" + "1" * 64
+    cat = oci_catalog(tmp_path, registry, digest=old)
+    rc, out = run(["--catalog", str(cat), "lock", "--refresh", "--no-git-sizes"], capsys)
+    assert rc == 0 and "UPSTREAM CHANGED" in out.err and "--accept-image-moves" in out.err
+    assert C.load(str(cat)).artifacts[0].digest == old
+    rc, out = run(["--catalog", str(cat), "lock", "--refresh", "--accept-image-moves", "--no-git-sizes"], capsys)
+    assert rc == 0 and "MOVED" in out.err
+    assert C.load(str(cat)).artifacts[0].digest == registry.index
+
+
+@pytest.mark.skipif(not HAVE_GIT, reason="git not installed")
+def test_lock_refresh_never_moves_a_commit(http, tmp_path, capsys):
+    repo, commit = make_repo(tmp_path)
+    cat = toy_catalog(http, tmp_path, repo, "0" * 40)
+    rc, out = run(["--catalog", str(cat), "lock", "--refresh", "--no-git-sizes", "--no-sizes"], capsys)
+    assert rc == 0 and "UPSTREAM CHANGED" in out.err
+    assert C.load(str(cat)).entries["toy"].commit == "0" * 40
+
+
+def test_a_package_set_is_refetched_when_its_requirements_or_python_change(tmp_path):
+    cat = C.load(str(pip_catalog(tmp_path, python="3.12")))
+    a = cat.artifacts[0]
+    d = F.pkg_dir(a)
+    rec = {"version": a.owner.version, "set_hash": F.pkg_set_hash(a), "requirements": ["demo-pkg==1.0"]}
+    assert F._still_matches(rec, a, ["linux-x86_64"])
+    a.requirements = ["demo-pkg==1.0", "other==2"]                 # same version, another set
+    assert not F._still_matches(rec, a, ["linux-x86_64"]) and F.pkg_dir(a) != d
+    a.requirements = ["demo-pkg=={version}"]
+    a.python = "3.13"
+    assert not F._still_matches(rec, a, ["linux-x86_64"]) and F.pkg_dir(a) != d
+    # a record from before set_hash: judged by what it recorded
+    a.python = "3.12"
+    legacy = {"version": "1.0", "requirements": ["demo-pkg==1.0"], "python": "3.12"}
+    assert F._still_matches(legacy, a, ["linux-x86_64"])
+    assert not F._still_matches(dict(legacy, requirements=["demo-pkg==0.9"]), a, ["linux-x86_64"])
+
+
+def test_pip_set_record_carries_its_set_hash(http, tmp_path, capsys, monkeypatch):
+    name, whl = demo_wheel()
+    http.files[f"/simple/{name}"] = whl
+    http.files["/simple/demo-pkg/"] = f'<a href="/simple/{name}">{name}</a>'.encode()
+    http.ctypes["/simple/demo-pkg/"] = "text/html"
+    monkeypatch.setenv("ARK_PIP_INDEX_URL", f"{http.base}/simple/")
+    drive = tmp_path / "d"
+    cat = pip_catalog(tmp_path)
+    assert run(["--catalog", str(cat), "fetch", "--to", str(drive), "--kinds", "pip"], capsys)[0] == 0
+    it = json.loads((drive / "ark.lock").read_text())["items"]["demo/pip/any"]
+    a = C.load(str(cat)).artifacts[0]
+    assert it["set_hash"] == F.pkg_set_hash(a) and it["dir"] == F.pkg_dir(a) == it["primary"]
+    assert it["set"]["python"] == "%d.%d" % sys.version_info[:2]
+    rc, out = run(["--catalog", str(cat), "fetch", "--to", str(drive), "--kinds", "pip"], capsys)
+    assert rc == 0 and "1 already present" in out.err
+
+
+def test_lint_refuses_two_artifacts_on_one_drive_path(tmp_path):
+    body = ENTRY.format(name="dup", cat="cli", version="1")
+    for i, d in enumerate(("a", "b")):
+        body += f'''
+[[artifact]]
+id = "dup/any/x{i}"
+entry = "dup"
+kind = "file"
+platform = "any"
+url = "https://example.org/{d}/tool.bin"
+verified = "unverified"
+'''
+    errs = C.lint(C.load(str(write_catalog(tmp_path, body))))
+    assert any("collides with dup/any/x0" in e and "files/dup/1/any/tool.bin" in e for e in errs), errs
+
+
+def test_restore_never_replaces_a_users_own_bin_file_without_force(http, tmp_path, capsys):
+    cat = toy_catalog(http, tmp_path)
+    drive = tmp_path / "drive"
+    assert run(["--catalog", str(cat), "fetch", "--to", str(drive), "--no-git"], capsys)[0] == 0
+    prefix, bindir = tmp_path / "opt", tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "single").write_text("#!/bin/sh\necho mine\n")
+    argv = ["restore", "toy", "--from", str(drive), "--prefix", str(prefix), "--bin", str(bindir)]
+    rc, out = run(argv, capsys)
+    assert rc == 1 and "restore did not make" in out.err and "--force" in out.err
+    assert (bindir / "single").read_text() == "#!/bin/sh\necho mine\n"
+    (bindir / "toy").symlink_to("/usr/bin/true")                  # a link somewhere else is the user's too
+    (bindir / "single").unlink()
+    rc, out = run(argv, capsys)
+    assert rc == 1 and "a link to /usr/bin/true" in out.err
+    rc, out = run(argv + ["--force"], capsys)
+    assert rc == 0, out.err
+    assert subprocess.run([str(bindir / "toy")], capture_output=True, text=True).stdout == "toy 1.0\n"
+    rc, out = run(argv, capsys)                                     # its own links: replaced freely
+    assert rc == 0, out.err

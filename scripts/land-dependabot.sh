@@ -37,11 +37,19 @@ set -uo pipefail
 # a world-writable directory opened with truncation — where
 # fs.protected_symlinks is off, a symlink planted there gets its target
 # emptied by whoever runs this.
+#
+# macOS has no flock(1), and the lock used to be skipped there altogether
+# (no single-instance guard on Max's Mac, the one box that runs this). Perl
+# is on both: flock(2) on the inherited fd 8 locks the open file
+# description, which this shell keeps open, so the lock outlives perl.
+_run_dir="$(cd "$(dirname "$0")/.." && pwd)/.run"
+[[ -d "$_run_dir" ]] || (umask 077; mkdir -p "$_run_dir")
+exec 8>>"$_run_dir/land-dependabot.lock"
 if command -v flock >/dev/null 2>&1; then
-  _run_dir="$(cd "$(dirname "$0")/.." && pwd)/.run"
-  [[ -d "$_run_dir" ]] || (umask 077; mkdir -p "$_run_dir")
-  exec 8>>"$_run_dir/land-dependabot.lock"
   flock -n 8 || { echo "another land-dependabot.sh is already running" >&2; exit 1; }
+else
+  perl -MFcntl=:flock -e 'open(my $f, ">>&=", 8) or exit 2; flock($f, LOCK_EX | LOCK_NB) or exit 1' \
+    || { echo "another land-dependabot.sh is already running (or the lock could not be taken)" >&2; exit 1; }
 fi
 R="$(gh repo view --json nameWithOwner -q .nameWithOwner)" || { echo "gh is not authenticated" >&2; exit 1; }
 if [[ $# -eq 0 ]]; then

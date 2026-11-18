@@ -20,6 +20,7 @@ import time
 import urllib.error
 import urllib.request
 from typing import Dict, Optional, Tuple
+from urllib.parse import urlsplit
 
 UA = "openbeast-ark/1 (cold-storage software archive; +https://github.com/MaximilianKhan/openbeast)"
 CHUNK = 1 << 20
@@ -68,9 +69,30 @@ def _req(url: str, method: str = "GET", headers: Optional[Dict[str, str]] = None
     return r
 
 
+def _loopback(host: str) -> bool:
+    h = (host or "").strip("[]").lower()
+    return h in ("localhost", "::1") or h.startswith("127.")
+
+
+class _NoDowngrade(urllib.request.HTTPRedirectHandler):
+    """urllib follows an https -> http redirect without a word: everything
+    after it (a checksum file, a release, a registry token exchange) travels
+    in clear text, open to whoever sits on the path. Refused, except to
+    loopback, where the test fixtures and `ark serve` live."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        old, new = urlsplit(req.full_url), urlsplit(newurl)
+        if old.scheme == "https" and new.scheme != "https" and not _loopback(new.hostname or ""):
+            raise HTTPFailure(req.full_url, code, f"redirect to {new.scheme}://{new.hostname} downgrades https — refused")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_OPENER = urllib.request.build_opener(_NoDowngrade)
+
+
 def open_url(url: str, method: str = "GET", headers=None, token=None, timeout: float = TIMEOUT):
     try:
-        return urllib.request.urlopen(_req(url, method, headers, token), timeout=timeout)
+        return _OPENER.open(_req(url, method, headers, token), timeout=timeout)
     except urllib.error.HTTPError as e:
         hdrs = dict(e.headers or {})
         e.close()
