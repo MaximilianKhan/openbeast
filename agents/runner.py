@@ -254,6 +254,50 @@ def _tool_summary(name: str, args: dict) -> str:
     return str(args)[:100]
 
 
+#: Review 1118, reporting only (nothing here changes what the agent does):
+#: `api_errors_tail` = failed model calls since the last successful one, so
+#: the harness can tell "API errors ENDED the run" from "an error the run
+#: recovered from"; `response_models` = the `model` each response named;
+#: `reasoning_turns` = responses that carried reasoning (the EFFECTIVE
+#: thinking, beside the requested enable_thinking). Reset per run_agent.
+_RUN_STATS: dict = {"api_errors_tail": 0, "response_models": {}, "reasoning_turns": 0}
+
+
+def _reset_run_stats() -> None:
+    _RUN_STATS.update(api_errors_tail=0, response_models={}, reasoning_turns=0)
+
+
+def _note_response(response, message) -> None:
+    """A model call succeeded: the error tail resets, and its model and
+    reasoning are counted."""
+    _RUN_STATS["api_errors_tail"] = 0
+    m = getattr(response, "model", None)
+    if isinstance(m, str) and m:
+        rm = _RUN_STATS["response_models"]
+        rm[m] = rm.get(m, 0) + 1
+    if _reasoning_text(message):
+        _RUN_STATS["reasoning_turns"] += 1
+
+
+#: run_eval's content-addressed pack files (agents/lang/host_pack.write).
+_PACK_NAME_RE = re.compile(r"^host-([0-9a-f]{24})\.md$")
+
+
+def _read_context_file(path: str) -> str:
+    """--context-file's text. A content-addressed pack file (host-<sha24>.md,
+    the host/language pack run_eval hands a unit) must still hash to its
+    name: one rewritten since run_eval wrote it (by an earlier unit's agent)
+    is refused, never silently read (review 1118)."""
+    data = Path(path).read_bytes()
+    m = _PACK_NAME_RE.match(os.path.basename(path))
+    if m:
+        import hashlib  # noqa: PLC0415
+        if hashlib.sha256(data).hexdigest()[:24] != m.group(1):
+            raise SystemExit(f"Error: context file {path} does not match its content hash "
+                             f"(rewritten since it was written); refusing to run with it")
+    return data.decode("utf-8")
+
+
 def _print_token_summary(tokens_prompt: int, tokens_completion: int, tokens_total: int,
                          compactions: int = 0, api_errors: int = 0) -> None:
     """Print the stable-key token line that the eval harness parses.
@@ -266,6 +310,9 @@ def _print_token_summary(tokens_prompt: int, tokens_completion: int, tokens_tota
     print(f"TOKENS: prompt={tokens_prompt} completion={tokens_completion} total={tokens_total}")
     print(f"COMPACTIONS: {compactions}")
     print(f"API_ERRORS: {api_errors}")
+    print(f"API_ERRORS_TAIL: {_RUN_STATS['api_errors_tail']}")
+    print(f"REASONING_TURNS: {_RUN_STATS['reasoning_turns']}")
+    print(f"RESPONSE_MODELS: {json.dumps(_RUN_STATS['response_models'], sort_keys=True)}")
 
 
 # ---------------------------------------------------------------------------
@@ -1508,6 +1555,7 @@ def run_agent(
         log_event({"type": "env_block", "chars": len(block), "text": block})
 
     final_summary = ""
+    _reset_run_stats()
     # Token usage accumulated across every API call. Servers that don't return
     # a `usage` field (e.g. some older llama.cpp builds) leave these at 0.
     tokens_prompt = 0
@@ -1685,6 +1733,7 @@ def run_agent(
                 stop_reason = "context overflow (nothing left to compact)"
                 break
             api_errors += 1
+            _RUN_STATS["api_errors_tail"] += 1
             time.sleep(5)
             continue
 
@@ -1696,6 +1745,11 @@ def run_agent(
 
         choice = response.choices[0]
         message = choice.message
+        _note_response(response, message)
+        _rmodel = getattr(response, "model", None)
+        if isinstance(_rmodel, str) and _rmodel:
+            log_event({"type": "response_model", "iteration": iteration, "model": _rmodel,
+                       "finish_reason": str(getattr(choice, "finish_reason", "") or "")})
         # Hit our own output cap: keep only the head of the runaway text —
         # assistant turns are never compacted, so a 30K-token repetition loop
         # would otherwise ride along on every later request.
@@ -1960,7 +2014,7 @@ def main():
     # Resolve context
     context = args.context or ""
     if args.context_file:
-        context = Path(args.context_file).read_text()
+        context = _read_context_file(args.context_file)
 
     run_agent(
         task=task,

@@ -3,6 +3,8 @@
 #
 #   ./scripts/eval-host.sh check [--prefix P] [--only a,b]
 #         one line per tool: ok / missing / wrong / system / blocked; exit 1 on any problem
+#         (a user-writable tool outside the prefix is `wrong`; an OPENBEAST_EVAL_PY
+#         outside it is `outside`, review 1118)
 #   ./scripts/eval-host.sh setup [--prefix P] [--only a,b] [--from DIR] [--wheelhouse DIR] [--offline]
 #         install every missing or wrong tool into the prefix, then re-check (idempotent)
 #   ./scripts/eval-host.sh env [--prefix P] [--json]
@@ -164,8 +166,22 @@ run_eval_env() {   # run a probe with the env the harness will have
 # --- check ---------------------------------------------------------------------
 # Each check_<tool> sets ST (ok missing wrong system blocked) and DETAIL.
 
+in_prefix() {   # in_prefix PATH: does PATH resolve inside the prefix?
+  local r pr
+  r="$(realpath_of "$1" 2>/dev/null)" || return 1
+  pr="$(cd -P "$PREFIX" 2>/dev/null && pwd)" || return 1
+  case "$r" in "$pr"/*) return 0 ;; esac
+  return 1
+}
+
 judge_version() {   # judge_version NAME PATH GOT WANT
-  if [ "$3" = "$4" ]; then
+  if [ "$3" = "$4" ] && ! root_owned "$2" && ! in_prefix "$2"; then
+    # Review 1118: the right version, but a user-writable copy outside the
+    # prefix (a Homebrew go): anything running as this user, a measured
+    # agent included, can replace it under the validators. `setup` installs
+    # the pinned copy into the prefix, which then comes first.
+    ST=wrong; DETAIL="$2 is $3 but resolves outside the eval prefix $PREFIX (user-writable); setup installs it there"
+  elif [ "$3" = "$4" ]; then
     ST=ok; DETAIL="$3 ($2)"
   elif root_owned "$2"; then
     ST=blocked
@@ -287,6 +303,22 @@ wanted() {   # wanted TOOL: is it in --only (or is --only empty)
   return 1
 }
 
+# Review 1118: the interpreter the harness was TOLD to use. run_eval applies
+# the prefix's exports, but campaign.py's --python and every child inherit
+# OPENBEAST_EVAL_PY from the operator's shell: one left pointing at another
+# venv (the old ~/.local/opt/openbeast-eval-venv, Homebrew-based) runs the
+# agents on an interpreter this check never looked at. setup cannot fix an
+# environment variable, so this is reported as `outside`.
+check_env() {
+  local v="${OPENBEAST_EVAL_PY:-}"
+  ENV_BAD=0
+  [ -n "$v" ] || return 0
+  if ! in_prefix "$v"; then
+    report outside env "OPENBEAST_EVAL_PY=$v resolves outside the eval prefix $PREFIX: unset it, or eval \"\$(./scripts/eval-host.sh env)\""
+    ENV_BAD=1
+  fi
+}
+
 cmd_check() {
   local t bad=0
   for t in zig go rust python; do
@@ -295,6 +327,10 @@ cmd_check() {
     report "$ST" "$t" "$DETAIL"
     [ "$ST" = ok ] || bad=$((bad + 1))
   done
+  if [ -z "$ONLY" ]; then
+    check_env
+    bad=$((bad + ENV_BAD))
+  fi
   if wanted system; then
     check_system
     bad=$((bad + SYS_BAD))

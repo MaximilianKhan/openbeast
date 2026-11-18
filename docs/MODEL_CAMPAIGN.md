@@ -568,6 +568,37 @@ ADOPTED or REJECTED) and [RESULTS.md](RESULTS.md).
   start an arm once the tree has moved.
 - **Sub-manifests are not in the era.** `evals/suites/_lost-*.json` restrict
   the unit set only, so the rows they produce merge with their arm's.
+- **Review 1118 (2026-11-18): integrity fixes that move the era but not a
+  correct run's outcome.** The macOS eval sandbox denies the agent's shell,
+  its push-diagnostics checkers and its `grep` every outbound connection
+  except loopback, keeps `evals/{tasks,refs,suites}` sealed under the
+  `/tmp/eval*` allow-back, and makes the repo, the eval venv, the eval
+  prefix and the pack files read-only to the agent; content-addressed pack
+  files are re-verified on reuse and on read. These are edits to
+  `agents/tools.py` and `agents/runner.py` (reporting only: the API-error
+  tail, `RESPONSE_MODELS`, `REASONING_TURNS`), so the era moves
+  (`595634987879411a` -> the new tree's). `evals/HARNESS_VERSION` does not:
+  run_eval's agent-shaping functions are untouched (still `harness8`).
+  Label a run of this tree **"harness8 + sandbox hardening (review 1118)"**
+  on the board: a correct solution passes the same way (no unit needs the
+  network beyond loopback or writes outside `/tmp/eval*` and `$TMPDIR`), so
+  its rows stand next to the GLM rows, whose four files were themselves
+  measured under four different eras. The era rule above is about pairing
+  rows inside a campaign (flips, ablations), not about the board.
+- **A row is lost to API errors only when they ENDED the run** (review
+  1118). run_eval records `api_errors_tail` (failed calls after the last
+  successful one); a failed row with `api_errors > 0` but a zero tail is a
+  verdict, as a pass with an error always was. Rows without the field
+  (every published board row) keep the old rule, so no published score
+  moves.
+- **The served model is checked around every unit** (review 1118). A live
+  run refuses to start unless `/v1/models` lists `--served-model` /
+  `OPENBEAST_INFERENCE_MODEL`; before and after each unit it re-reads it,
+  waits up to `OPENBEAST_EVAL_MODEL_WAIT_S` (600 s) for a missing model to
+  come back, then stops as an infra stop (`served_model_changed`, never
+  banked, a pass under the wrong model discarded). Each row records
+  `response_models` (what the server named) and `reasoning_turns` (the
+  effective thinking).
 - **Infra is never a verdict, a pass is always one.** That is the rule in
   run_eval's cache (a server error is not banked), in profile.py (a budget
   skip is not a failure), and in campaign.py (lost units).
@@ -650,10 +681,12 @@ campaign. On GLM, its N0 is arm B (36/71, thinking pinned off).
       ```
       `/v1/models` must list `DeepSeek-V4.1-Flash-1017` and nothing else.
       If it lists `GLM-5.3-Flash-EXL3`, every row below would be GLM's under
-      DeepSeek's name. `campaign.py run` records the served id it detects
-      (`served_model` in the campaign state) but, on `main` on 2026-11-18,
-      does not refuse a mismatch; it should check the id against the
-      model it was asked to run, so check it yourself until it does. The
+      DeepSeek's name. Since review 1118, pass `--served-model
+      DeepSeek-V4.1-Flash-1017`: the campaign preflight and run_eval both
+      refuse to start unless `/v1/models` lists it, and run_eval re-checks
+      it around every unit and stops as an infra stop if the gate swaps
+      models mid-arm (nothing banked). Without the flag the guard pins
+      whatever the gate lists first, so check the id yourself. The
       switch takes the pair off GLM for every client (the Mac's opencode,
       Open WebUI) until the last arm ends.
 - [ ] Record the reproducible campaign profile and seed artifact before starting the scored arms.
@@ -706,9 +739,21 @@ campaign. On GLM, its N0 is arm B (36/71, thinking pinned off).
           --baseline L0=evals/results/eval-<deepseek-slug>-L0-<ts>.json
       # without a MODELS entry yet:
       python3 evals/campaign.py run --campaign v5-thinking-first --model-name "DeepSeek-V4.1-Flash-1017" \
+          --served-model DeepSeek-V4.1-Flash-1017 \
           --base-url https://spark-1.tail4109f9.ts.net:8443/v1 --api-key-env OPENBEAST_SPARK_API_KEY \
           --jobs 4 --slots 4 --baseline L0=evals/results/eval-<deepseek-slug>-L0-<ts>.json
+      # the headline arm alone (no L0 yet): --only T, no --baseline
       ```
+      Since review 1118, `scripts/eval-host.sh check` (the campaign's
+      preflight hook) fails a toolchain that resolves to a user-writable copy
+      outside the eval prefix (a Homebrew `go`: run `scripts/eval-host.sh
+      setup --only go` once) and an `OPENBEAST_EVAL_PY` outside the prefix
+      (the old `~/.local/opt/openbeast-eval-venv`: `eval "$(scripts/eval-host.sh
+      env)"` sets the right one). After the arm, check the rows'
+      `reasoning_turns` (T must be > 0 on almost every row: thinking really
+      happened) and `response_models` (only `DeepSeek-V4.1-Flash-1017`), and
+      run `evals/audit/integrity_scan.py` (it now also flags network commands
+      and embedded absolute paths).
       To read the noise floor early, add `--order T,T_s1`. For a tighter
       margin, add `--include T_s2`.
 - [ ] Model-specific harness hypotheses: start from

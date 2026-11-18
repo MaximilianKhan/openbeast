@@ -41,7 +41,8 @@ SCRIPT = os.path.join(REPO, "scripts", "eval-host.sh")
 NO_PROVISION_ENV = "OPENBEAST_EVAL_NO_PROVISION"
 REEXEC_ENV = "OPENBEAST_EVAL_REEXEC"
 STATES = ("ok", "missing", "wrong", "system", "blocked")
-UNFIXABLE = ("system", "blocked")      # setup cannot help: no sudo, no system dirs
+UNFIXABLE = ("system", "blocked",      # setup cannot help: no sudo, no system dirs
+             "outside")                 # nor an operator's OPENBEAST_EVAL_PY (review 1118)
 
 
 def _lock_path() -> str:

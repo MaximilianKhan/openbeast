@@ -824,6 +824,9 @@ def _guard_write_path(path: str):
     if sealed:
         return sealed
     rp = os.path.realpath(os.path.expanduser(path))
+    ro = _eval_write_refusal(rp)
+    if ro:
+        return ro
     home = os.path.realpath(os.path.expanduser("~"))
     k = _case_key
     crp = k(rp)
@@ -910,10 +913,17 @@ _EVAL_DENY_PATTERNS = (
     r"^/(private/)?tmp/claude-[0-9]+(/|$)",
 )
 _EVAL_ALLOW_PATTERNS = (r"^/(private/)?tmp/eval[^/]*(/|$)",)
+# Review 1118: the answer key, in ANY tree -- re-denied AFTER the allow-backs
+# above, so a clone of the repo into a task dir (/tmp/eval_x/clone/evals/refs)
+# or into $TMPDIR cannot be read back through the /tmp/eval* or exempt-root
+# allow. Only the answer key: a fixture may keep its own evals/cache etc.
+_EVAL_KEY_PATTERNS = (r"/evals/(tasks|refs|suites)(/|$)",)
 _EVAL_DENY_RE = re.compile("|".join(f"(?:{x})" for x in _EVAL_DENY_PATTERNS),
                            re.IGNORECASE if _CASE_INSENSITIVE_FS else 0)
 _EVAL_ALLOW_RE = re.compile("|".join(f"(?:{x})" for x in _EVAL_ALLOW_PATTERNS),
                             re.IGNORECASE if _CASE_INSENSITIVE_FS else 0)
+_EVAL_KEY_RE = re.compile("|".join(f"(?:{x})" for x in _EVAL_KEY_PATTERNS),
+                          re.IGNORECASE if _CASE_INSENSITIVE_FS else 0)
 _GIT_SEAL_CACHE: list | None = None
 
 
@@ -1007,11 +1017,15 @@ def _under(rp: str, roots) -> bool:
                for r in roots)
 
 
-def _is_sealed(rp: str) -> bool:
+def _is_sealed(rp: str, roots: list[str] | None = None) -> bool:
     """Whether a measured agent may not read realpath `rp`. Mirrors the
-    macOS profile: explicit roots always; the patterns unless the path is in
-    a task's /tmp/eval* dir or $TMPDIR."""
-    if _under(rp, _sealed_roots()):
+    macOS profile: explicit roots and the answer key (evals/tasks|refs|suites
+    in any tree, a task dir included) always; the other patterns unless the
+    path is in a task's /tmp/eval* dir or $TMPDIR. `roots`: _sealed_roots(),
+    when the caller already has it (a filter over many lines)."""
+    if _under(rp, _sealed_roots() if roots is None else roots):
+        return True
+    if _EVAL_KEY_RE.search(rp):
         return True
     if _EVAL_ALLOW_RE.search(rp) or _under(rp, _eval_exempt_roots()):
         return False
@@ -1055,7 +1069,8 @@ def _seal_command_refusal(command: str) -> str | None:
 _EVAL_SBPL_SEAL = None
 #: Appended to a sandboxed command's output when the kernel refused a read.
 _SEAL_DENIED_NOTE = ("\n[eval sandbox: 'Operation not permitted' means a sealed path — "
-                     + _SEAL_WHAT + "; the eval python's venv is read-only]")
+                     + _SEAL_WHAT + "; this repository, the eval python and the eval "
+                     "toolchains are read-only; the network is loopback-only]")
 
 
 def _sbpl_str(p: str) -> str:
@@ -1072,32 +1087,107 @@ def _eval_venv_root() -> str | None:
     return os.path.realpath(root) if os.path.isfile(os.path.join(root, "pyvenv.cfg")) else None
 
 
+def _eval_prefix_root() -> str:
+    """The eval toolchain prefix (scripts/eval-host.sh): OPENBEAST_EVAL_PREFIX,
+    else its default."""
+    return (os.environ.get("OPENBEAST_EVAL_PREFIX", "").strip()
+            or os.path.join(os.path.expanduser("~"), ".local", "opt", "openbeast-eval"))
+
+
+def _host_pack_dir() -> str:
+    """Where run_eval writes the host/language pack a unit gets as its
+    --context-file (agents/lang/host_pack.write)."""
+    return (os.environ.get("OPENBEAST_HOST_PACK_DIR", "").strip()
+            or os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
+                            "openbeast", "host-pack"))
+
+
+def _eval_write_deny_roots() -> list[str]:
+    """Review 1118: what a measured agent may not WRITE, by file tool or
+    shell: every checkout of this repository (its harness, runner, tools,
+    system prompt, packs; a task's dirs are under /tmp/eval*, never here),
+    the eval venv and its python shim, the eval toolchain prefix, this
+    interpreter's own prefixes (its stdlib) and the pack files run_eval hands
+    later units. A correct solution writes none of them. [] outside eval.
+    A root that holds the home dir, /tmp or $TMPDIR is never listed."""
+    if not _eval_mode():
+        return []
+    cands = [_REPO_ROOT, *_git_seal_roots(), _eval_venv_root(), _EVAL_PY_SHIM.get("dir"),
+             _eval_prefix_root(), sys.base_prefix, sys.prefix, _host_pack_dir()]
+    py = _eval_python()
+    if py:
+        try:   # the eval venv's base interpreter (pyvenv.cfg `home` = <base>/bin)
+            with open(os.path.join(os.path.dirname(os.path.dirname(py)), "pyvenv.cfg")) as f:
+                for ln in f:
+                    k, _, v = ln.partition("=")
+                    if k.strip() == "home" and v.strip():
+                        cands.append(os.path.dirname(v.strip()))
+        except OSError:
+            pass
+    keep = [os.path.realpath(os.path.expanduser("~")), "/tmp", "/private/tmp",
+            os.path.realpath(os.environ.get("TMPDIR", "").strip() or tempfile.gettempdir())]
+    out: list[str] = []
+    for c in cands:
+        if not c:
+            continue
+        rp = os.path.realpath(os.path.expanduser(c))
+        if rp == os.sep or rp in out or any(_under(k, [rp]) for k in keep):
+            continue
+        out.append(rp)
+    return out
+
+
+def _eval_write_refusal(rp: str) -> str | None:
+    """The file tools' refusal for a write to realpath `rp` under eval."""
+    if not _eval_mode() or _EVAL_ALLOW_RE.search(rp):
+        return None
+    if _under(rp, _eval_write_deny_roots()):
+        return (f"Error: refusing to write {rp} — while a unit is measured "
+                f"(OPENBEAST_EVAL=1) the harness, the eval toolchains and python, "
+                f"and this repository are read-only; work in the task's /tmp/eval* "
+                f"directories")
+    return None
+
+
 def _eval_read_deny_prefix() -> list[str]:
     """Under eval on macOS, a sandbox-exec prefix that denies the confined
     shell any READ of the sealed paths (_sealed_roots, _EVAL_DENY_PATTERNS)
     in THIS checkout and in any other (a glob across worktrees, reported on
     U4), so `cat` cannot reach them however the command text is spelled.
-    It also denies writes to the eval venv and the python shim. [] when not
-    on macOS or when sandbox-exec is unavailable. On Linux the agent's shell
-    has no kernel read-deny (the file tools and the command-text check still
-    refuse; see evals/README.md, residual gaps)."""
+    It also denies writes to the harness, the eval venv, toolchains and
+    python (_eval_write_deny_roots) and every outbound connection except to
+    loopback (review 1118). [] when not on macOS or when sandbox-exec is
+    unavailable. On Linux the agent's shell has no kernel read-deny and no
+    network deny (the file tools and the command-text check still refuse;
+    see evals/README.md, residual gaps; the integrity scan flags network
+    commands)."""
     global _EVAL_SBPL_SEAL
     if not _eval_mode() or sys.platform != "darwin":
         return []
     _eval_python_dir()              # the shim exists before its write-deny
     rules = ['(version 1)', '(allow default)']
-    # Later rules win: patterns, then the allow-backs, then explicit roots.
+    # Later rules win: patterns, then the allow-backs, then the answer key
+    # again (review 1118: so no allow-back re-opens a cloned evals/refs),
+    # then explicit roots.
     for pat in _EVAL_DENY_PATTERNS:
         rules.append(f'(deny file-read* (regex #"{_sbpl_str(pat)}"))')
     for pat in _EVAL_ALLOW_PATTERNS:
         rules.append(f'(allow file-read* (regex #"{_sbpl_str(pat)}"))')
     for r in _eval_exempt_roots():
         rules.append(f'(allow file-read* (subpath "{_sbpl_str(r)}"))')
+    for pat in _EVAL_KEY_PATTERNS:
+        rules.append(f'(deny file-read* (regex #"{_sbpl_str(pat)}"))')
     for r in _sealed_roots():
         rules.append(f'(deny file-read* (subpath "{_sbpl_str(r)}"))')
-    for r in (_eval_venv_root(), _EVAL_PY_SHIM.get("dir")):
-        if r:
-            rules.append(f'(deny file-write* (subpath "{_sbpl_str(r)}"))')
+    # Review 1118: the harness, the eval venv and toolchains, this
+    # interpreter's stdlib and the next units' pack files are read-only.
+    for r in _eval_write_deny_roots():
+        rules.append(f'(deny file-write* (subpath "{_sbpl_str(r)}"))')
+    # Review 1118: no network but loopback. A measured agent could
+    # `git clone` the public repo (its evals/refs) or fetch any answer;
+    # loopback stays open for units that serve and probe local HTTP (176).
+    rules.append('(deny network-outbound (remote ip "*:*"))')
+    rules.append('(allow network-outbound (remote ip "localhost:*"))')
     # The harness's per-agent tag file: denying it marks every process this
     # shell starts, in the kernel, so run_eval can find one that detached and
     # scrubbed its environment (sandbox_check; evals/run_eval.py AgentWatch).
@@ -1190,14 +1280,41 @@ def shell_path(path: str | None = None) -> str:
     return os.pathsep.join([d] + rest)
 
 
+#: grep's `path:N:` / `path-N-` (context) separators: every prefix of a line
+#: that ends before one is a candidate path (a file name may hold ':' or '-').
+_GREP_SEP_RE = re.compile(r"[:-]\d+[:-]")
+
+
+def _line_paths(ln: str) -> list[str]:
+    """The absolute paths an output line may begin with: the line itself (a
+    listing), each prefix before a grep separator, and the path of a
+    `grep: <path>: <error>` line."""
+    out = [ln]
+    if ln.startswith("grep: "):
+        out.append(ln[6:].rsplit(": ", 1)[0])
+    out += [ln[:m.start()] for m in _GREP_SEP_RE.finditer(ln)]
+    return [p for p in out if p.startswith(os.sep)]
+
+
 def _seal_filter_lines(text: str) -> str:
     """Drop output lines that begin with a sealed path (grep / list_files
-    over an ancestor directory)."""
+    over an ancestor directory). Review 1118: every line's path is checked
+    with _is_sealed (realpath, the explicit roots AND the deny patterns), not
+    only the explicit roots: a pattern-sealed tree under the searched dir
+    (another clone's evals/refs, a cloned copy in a task dir) leaked."""
     if not _eval_mode() or not text:
         return text
     roots = _sealed_roots()
+    memo: dict = {}
+
+    def sealed(p: str) -> bool:
+        if p not in memo:
+            memo[p] = _is_sealed(os.path.realpath(p), roots)
+        return memo[p]
+
     kept = [ln for ln in text.splitlines()
-            if not any(ln == r or ln.startswith(r + os.sep) for r in roots)]
+            if not any(ln == r or ln.startswith(r + os.sep) for r in roots)
+            and not any(sealed(p) for p in _line_paths(ln))]
     return "\n".join(kept)
 
 
@@ -2030,6 +2147,13 @@ def _diag_raw(path: str, meta: dict) -> tuple[str, int, str] | None:
         meta["lang"] = lang
         if not _diag_lang_allowed(lang):
             return None
+        # Review 1118: under eval the checker runs in bash()'s kernel
+        # read-deny, so `#include "/.../evals/refs/..."` cannot quote a
+        # sealed file back in its diagnostics.
+        seal_prefix = _eval_read_deny_prefix()
+        if seal_prefix:
+            cmd = " ".join(shlex.quote(a) for a in seal_prefix) + \
+                f" /bin/sh -c {shlex.quote(cmd)}"
         wrapper = os.environ.get("OPENBEAST_BASH_WRAPPER", "").strip()
         if wrapper:
             cmd = f"{wrapper} /bin/sh -c {shlex.quote(cmd)}"
@@ -2373,6 +2497,14 @@ def grep(pattern: str, path: str = ".", file_glob: str = "",
             flags.append(f"--include={shlex.quote(file_glob)}")
         cmd = (f"grep {' '.join(flags)} -E -e {shlex.quote(pattern)} -- "
                f"{shlex.quote(path)}")
+        # Review 1118: under eval, grep runs in the same kernel read-deny as
+        # bash(), so a sealed file under the searched dir is never opened
+        # (the line filter below is the second layer, and the only one on
+        # Linux).
+        seal_prefix = _eval_read_deny_prefix()
+        if seal_prefix:
+            cmd = " ".join(shlex.quote(a) for a in seal_prefix) + \
+                f" /bin/sh -c {shlex.quote(cmd)}"
         wrapper = os.environ.get("OPENBEAST_BASH_WRAPPER", "").strip()
         if wrapper:
             cmd = f"{wrapper} /bin/sh -c {shlex.quote(cmd)}"

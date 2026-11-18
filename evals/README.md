@@ -612,7 +612,7 @@ reach:
 
 | Actor | Must not reach | How |
 |---|---|---|
-| **the agent** (runner + its tools) | the answer key; the web; anything after its turn ends | `OPENBEAST_EVAL=1`: the file tools refuse `evals/{tasks,refs,suites}`, and on macOS its bash runs under `sandbox-exec` with those trees denied in the kernel (quote-split and git-blob spellings are caught by the text check on both platforms); `fetch` / `web_search` refuse. When the runner exits, **the leftover sweep** kills everything it started, detached daemons included, and refuses to validate if anything survives |
+| **the agent** (runner + its tools) | the answer key; the web; anything after its turn ends | `OPENBEAST_EVAL=1`: the file tools refuse `evals/{tasks,refs,suites}`, and on macOS its bash runs under `sandbox-exec` with those trees denied in the kernel (quote-split and git-blob spellings are caught by the text check on both platforms); `fetch` / `web_search` refuse. Since review 1118 that macOS profile also denies every outbound connection except to loopback (no `git clone` of the public repo, no `curl`; local HTTP for 176 still works), re-denies `evals/{tasks,refs,suites}` under the `/tmp/eval*` and `$TMPDIR` allow-backs (a clone into a task dir stays sealed), denies writes to every checkout of this repo, the eval venv, the eval toolchain prefix, the interpreter's own prefix and the pack files run_eval hands later units (the file tools refuse the same set on every platform), and the push-diagnostics checkers and the `grep` tool run inside it too. When the runner exits, **the leftover sweep** kills everything it started, detached daemons included, and refuses to validate if anything survives |
 | **the validator** | an attacker-controlled import path, cwd, argv or environment; a shared build cache | stdin-fed script, `python -I -S -` in an empty private cwd, scrubbed env, non-dumpable on Linux, **private build cache deleted afterwards**, a completion line that no out-of-process solution can print (an in-process one can, by frame introspection: Residual gaps) |
 | **the solution** (run by the validator) | the oracle (validator memory, the answer key, git objects, other checkouts), the network, other processes, other programs | `vlib.run_solution`: own session and process group, CPU budget for the whole tree, fork refused by default, exec confined to its own image (or an env launcher and its one target), no network, no process-info on others, no signal to any process outside its sandbox (macOS `(deny signal (target others))`; Linux `confine=` through Landlock scoped signals, ABI >= 6), reads of every `evals/{refs,tasks,suites}` tree and the git store denied; `confine=` turns that into a read allowlist that fails closed (sandbox-exec, Landlock, or user + mount namespaces) |
 
@@ -673,7 +673,10 @@ solution process group a validator recorded is SIGKILLed after it exits.
   has no read-deny either (`agents/tools.py` seals it on macOS only; on
   Linux only the command-text check and the file tools refuse), so a
   Linux host is not leak-proof against an agent that reads `evals/refs`
-  (or, since G25, `evals/cache`, `~/.claude`) during its turn; the
+  (or, since G25, `evals/cache`, `~/.claude`) during its turn, and since
+  review 1118 it also has no network deny (on macOS the agent's shell,
+  diagnostics and grep are loopback-only); `evals/audit/integrity_scan.py`
+  flags network commands and include/embed paths in written files there; the
   documented harness host is the Mac. A Landlock deny-list would need an
   allowlist of every sibling down to each sealed dir, which breaks on
   `/tmp`; the Sandlock wrapper (`OPENBEAST_BASH_WRAPPER`) is the Linux

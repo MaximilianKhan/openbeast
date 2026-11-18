@@ -172,7 +172,8 @@ def preflight(base_url: str, declared_rb: str | None, allow_uncapped: bool) -> l
 
 
 def admission_check(base_url: str, jobs: int, model: str | None) -> str | None:
-    """`jobs` concurrent one-token requests: a 429 means the edge would refuse
+    """`jobs` concurrent one-token requests, each of which must return 200
+    (review 1118: `model` is the SERVED id): a 429 means the edge would refuse
     the profile's own parallelism (beast-gate's per-device in-flight cap below
     --jobs), and every unit past the cap would be measured on retry waits. The
     2026-11-16 L0 that ignored this logged 2107 x 429 and was thrown away."""
@@ -205,6 +206,15 @@ def admission_check(base_url: str, jobs: int, model: str | None) -> str | None:
         return (f"{codes.count(429)} of {jobs} concurrent probes got 429: the edge admits "
                 f"fewer in-flight requests than --jobs {jobs} (raise the device's cap, "
                 f"e.g. INFERENCE_SLOTS / EDGE_MAX_INFLIGHT, or lower --jobs)")
+    # Review 1118: every probe must SUCCEED. A 401 (no key), 404 (an unknown
+    # model id) or a connection error used to pass, so the check proved
+    # nothing about admission.
+    bad = [c for c in codes if c != 200]
+    if bad:
+        return (f"{len(bad)} of {jobs} concurrent probes did not return 200 "
+                f"(got {sorted(set(map(str, bad)))}; model {model or 'default'!r}): "
+                f"admission at --jobs {jobs} is unproven (check the key, the served "
+                f"model id and the endpoint)")
     return None
 
 
