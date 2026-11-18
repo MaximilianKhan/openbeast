@@ -326,7 +326,7 @@ def test_check_ios_full_xcode_is_ready(box):
     box.full_xcode()
     rc, rep = box.json("check", "ios-build")
     assert rc == 0, rep
-    assert rep["status"] == "READY" and rep["server"] == "mobilebuildmcp"
+    assert rep["status"] == "READY" and rep["server"] == "mobile-build-tools"
     assert rep["next"] == "scripts/apps.sh enable ios-build"
 
 
@@ -755,7 +755,7 @@ def _gated(s: dict, name: str) -> bool:
     return any(fnmatch.fnmatchcase(name, g) for g in s["ask_tools"] + s["deny_tools"])
 
 
-GATED_STDIO = ["mcp-3d-printer-server", "replicant-mcp", "mobilebuildmcp", "mobile-mcp", "mcp-for-blender",
+GATED_STDIO = ["mcp-3d-printer-server", "replicant-mcp", "mobile-build-tools", "mobile-mcp", "mcp-for-blender",
                "ros-mcp"]
 
 
@@ -802,7 +802,7 @@ def test_build_tools_that_run_project_scripts_are_gated():
         assert _gated(s, t), t
     assert not _gated(s, "gradle-get-details")
     assert _gated(s, "adb-app")                       # installs / launches an APK
-    s, _, _ = _real("mobilebuildmcp")
+    s, _, _ = _real("mobile-build-tools")
     # build/test run the project's scripts; install/launch run a (possibly
     # prebuilt, project-shipped) .app as a native process on the Mac
     for t in ("build_sim", "build_run_sim", "test_sim", "install_app_sim", "launch_app_sim"):
@@ -1208,3 +1208,123 @@ def test_list_runs_each_shared_probe_once_and_any_stops_at_the_first_pass(box):
     assert "xcrun" not in calls.read_text().split()                     # adb passed: simctl never ran
     anyp = next(p for p in rep["servers"][0]["probes"] if p["id"] == "adb-or-simctl")
     assert [s["id"] for s in anyp["subprobes"]] == ["adb"]
+
+
+# ── renamed servers (catalog `aliases`) ────────────────────────────────────
+OLD_ENTRY = {"type": "local", "command": ["/usr/local/bin/npx", "-y", "mobilebuildmcp@2.7.1", "mcp"],
+             "environment": {"MOBILEBUILDMCP_ENABLED_WORKFLOWS": "simulator",
+                             "MOBILEBUILDMCP_SENTRY_DISABLED": "true"},
+             "codemode": False}
+OLD_RULE = {"action": "mobilebuildmcp_build_*", "resource": "*", "effect": "ask"}
+
+
+def _wired_as_mobilebuildmcp(box, rules=(OLD_RULE,), extra_servers=None):
+    """A machine enabled before the rename: opencode entry, gates, record,
+    pin and manifests all under the old id `mobilebuildmcp`."""
+    servers = {"openbeast-tools": USER_CFG["mcp"]["openbeast-tools"], "mobilebuildmcp": dict(OLD_ENTRY)}
+    servers.update(extra_servers or {})
+    box.write_config({"mcp": {"servers": servers},
+                      "permissions": USER_CFG["permissions"] + [dict(r) for r in rules]})
+    (box.state / "enabled.json").write_text(json.dumps({"mobilebuildmcp": {
+        "capability": "ios-build", "server": "mobilebuildmcp", "version": "2.7.1", "schema": "v2",
+        "config": str(box.config), "rules": [dict(r) for r in rules], "entry": dict(OLD_ENTRY),
+        "at": "2026-11-15T20:36:39Z"}}))
+    (box.state / "pins.json").write_text(json.dumps({"mobilebuildmcp": {
+        "version": "2.7.1", "previous": "2.7.0", "base": "2.7.1", "at": "2026-11-15T20:00:00Z"}}))
+    m = box.state / "manifests" / "mobilebuildmcp"
+    m.mkdir(parents=True)
+    (m / "latest.json").write_text(json.dumps({"version": "2.7.1", "tools": []}))
+
+
+def test_catalog_alias_maps_the_old_id():
+    C, _ = _apps()
+    cat = C.load(str(CATALOG), env={}, overlays=False)
+    assert "mobilebuildmcp" not in cat["server"]
+    assert C.legacy_ids(cat) == {"mobilebuildmcp": "mobile-build-tools"}
+    assert C.resolve_server(cat, "mobilebuildmcp") == "mobile-build-tools"
+    s = cat["server"]["mobile-build-tools"]
+    assert s["package"] == "mobilebuildmcp"                         # the upstream npm name is unchanged
+    assert set(s["env"]) == {"MOBILEBUILDMCP_ENABLED_WORKFLOWS", "MOBILEBUILDMCP_SENTRY_DISABLED"}
+    bad = dict(cat, server=dict(cat["server"], other=dict(s, aliases=["mobile-build-tools"])))
+    assert any("also a server id" in e for e in C.validate(bad))
+
+
+def test_refresh_renames_an_entry_wired_under_the_old_id(box):
+    _wired_as_mobilebuildmcp(box)
+    cp = box.run("refresh", "--no-introspect", extra_env={"OPENBEAST_APPS_OFFLINE": "1"}, check=0)
+    assert "renamed opencode entry 'mobilebuildmcp' to 'mobile-build-tools'" in cp.stderr
+    cfg = box.read_config()
+    assert list(cfg["mcp"]["servers"]) == ["openbeast-tools", "mobile-build-tools"]     # no duplicate
+    assert cfg["mcp"]["servers"]["mobile-build-tools"] == OLD_ENTRY                    # same launch
+    new_rule = {"action": "mobile-build-tools_build_*", "resource": "*", "effect": "ask"}
+    assert cfg["permissions"] == USER_CFG["permissions"] + [new_rule]                  # gate re-keyed
+    mine = json.loads((box.state / "enabled.json").read_text())
+    assert list(mine) == ["mobile-build-tools"]
+    assert mine["mobile-build-tools"]["server"] == "mobile-build-tools"
+    assert mine["mobile-build-tools"]["rules"] == [new_rule]
+    assert list(json.loads((box.state / "pins.json").read_text())) == ["mobile-build-tools"]
+    assert (box.state / "manifests" / "mobile-build-tools" / "latest.json").exists()
+    assert not (box.state / "manifests" / "mobilebuildmcp").exists()
+    assert len(box.backups()) == 1
+    # idempotent: a second run changes nothing and backs nothing up
+    before = box.config.read_text()
+    cp = box.run("refresh", "--no-introspect", extra_env={"OPENBEAST_APPS_OFFLINE": "1"}, check=0)
+    assert "renamed" not in cp.stderr and box.config.read_text() == before and len(box.backups()) == 1
+    # and disable undoes it completely, by the old name too
+    box.run("disable", "mobilebuildmcp", check=0)
+    cfg = box.read_config()
+    assert list(cfg["mcp"]["servers"]) == ["openbeast-tools"] and cfg["permissions"] == USER_CFG["permissions"]
+
+
+def test_disable_by_the_old_name_on_an_unmigrated_machine_removes_it(box):
+    _wired_as_mobilebuildmcp(box, rules=())                  # the Mac's shape: enabled before gates existed
+    cp = box.run("disable", "mobilebuildmcp", check=0)
+    assert "mobile-build-tools" in cp.stdout
+    assert list(box.read_config()["mcp"]["servers"]) == ["openbeast-tools"]
+    assert json.loads((box.state / "enabled.json").read_text()) == {}
+
+
+def test_rename_drops_the_old_entry_when_the_new_key_is_taken(box):
+    mine = {"type": "local", "command": ["/opt/mine/mobilebuildmcp", "mcp"], "codemode": False}
+    _wired_as_mobilebuildmcp(box, extra_servers={"mobile-build-tools": mine})
+    cp = box.run("refresh", "--no-introspect", extra_env={"OPENBEAST_APPS_OFFLINE": "1"}, check=0)
+    assert "removed the old opencode entry 'mobilebuildmcp'" in cp.stderr
+    cfg = box.read_config()
+    assert cfg["mcp"]["servers"] == {"openbeast-tools": USER_CFG["mcp"]["openbeast-tools"],
+                                     "mobile-build-tools": mine}                    # the user's, untouched
+    assert cfg["permissions"] == USER_CFG["permissions"]
+    assert json.loads((box.state / "enabled.json").read_text()) == {}
+
+
+def test_rename_v1_moves_the_gate_and_keeps_a_custom_key(box):
+    box.write_config({"mcp": {"ios": dict(OLD_ENTRY, enabled=True)},
+                      "permission": {"mobilebuildmcp_build_*": "ask", "ios_build_*": "ask"}})
+    (box.state / "enabled.json").write_text(json.dumps({"ios": {
+        "capability": "ios-build", "server": "mobilebuildmcp", "version": "2.7.1", "schema": "v1",
+        "rules": [{"action": "ios_build_*", "resource": "*", "effect": "ask"}], "entry": OLD_ENTRY}}))
+    box.run("refresh", "--no-introspect", extra_env={"OPENBEAST_APPS_OFFLINE": "1",
+                                                     "OPENBEAST_OPENCODE_SCHEMA": "v1"}, check=0)
+    cfg = box.read_config()
+    assert list(cfg["mcp"]) == ["ios"]                       # a key the user chose stays
+    assert json.loads((box.state / "enabled.json").read_text())["ios"]["server"] == "mobile-build-tools"
+
+
+def test_dry_run_and_read_only_commands_do_not_migrate(box):
+    _wired_as_mobilebuildmcp(box)
+    before = box.config.read_text()
+    box.run("disable", "mobilebuildmcp", "--dry-run", check=0)
+    box.run("list", check=0)
+    assert box.config.read_text() == before and box.backups() == []
+
+
+def test_enable_on_a_machine_wired_under_the_old_id_leaves_one_entry(box):
+    box.full_xcode()
+    _wired_as_mobilebuildmcp(box, rules=())
+    rc, out = box.json("enable", "ios-build")
+    assert rc == 0, out
+    assert out["key"] == "mobile-build-tools" and out["server"] == "mobile-build-tools"
+    cfg = box.read_config()
+    assert list(cfg["mcp"]["servers"]) == ["openbeast-tools", "mobile-build-tools"]
+    assert {"action": "mobile-build-tools_build_*", "resource": "*", "effect": "ask"} in cfg["permissions"]
+    assert not any(str(p.get("action", "")).startswith("mobilebuildmcp_") for p in cfg["permissions"])
+    assert list(json.loads((box.state / "enabled.json").read_text())) == ["mobile-build-tools"]
