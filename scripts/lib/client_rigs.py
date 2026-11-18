@@ -935,8 +935,45 @@ def cmd_use(a):
     return 0
 
 
+def _alias_rows(path=None):
+    """The model ids and context limits opencode currently shows for the active rig."""
+    try:
+        with open(path or OC_CONFIG) as f:
+            rows = json.load(f)["provider"][ALIAS]["models"]
+        return {k: ((v or {}).get("limit") or {}).get("context") for k, v in rows.items()}
+    except Exception:
+        return None
+
+
+def changed(rig, p, rows):
+    """True when the active rig serves something opencode does not show: other
+    model ids, or another context window for the served model. A probe that
+    learned nothing (rig offline, loading, key rejected) is never a change."""
+    if not (p["reachable"] and p["ids"]):
+        return False
+    if rows is None or set(p["ids"]) - set(rows):
+        return True
+    if p["ctx"] and rows.get(p["ids"][0]) != p["ctx"]:
+        return True
+    last = rig.get("last") or {}
+    return last.get("ids") != p["ids"] or last.get("ctx") != p["ctx"]
+
+
 def cmd_sync(a):
     reg = ensure(a.ts_bin)
+    if getattr(a, "if_changed", False):
+        # autosync (openbeast-client autosync): probe only the active rig; a full
+        # sync only when the rig switched models (e.g. beastglm / beastds on the
+        # Sparks), so a 30 s timer costs two small GETs and no file writes.
+        act = reg.get("active")
+        rig = reg["rigs"].get(act)
+        if not rig:
+            return 0
+        p = probe(rig, read_key(rig))
+        if not changed(rig, p, _alias_rows()):
+            return 0
+        say("%s autosync: rig %s now serves %s%s" % (_now(), act, ", ".join(p["ids"]),
+                                                       " at %d ctx" % p["ctx"] if p["ctx"] else ""))
     probes = _probe_all(reg)
     live = set()
     for n, p in probes.items():
@@ -1150,7 +1187,10 @@ def main(argv=None):
     s.add_argument("rig")
     s.add_argument("--force", action="store_true")
     s.set_defaults(fn=cmd_use)
-    sub.add_parser("sync").set_defaults(fn=cmd_sync)
+    s = sub.add_parser("sync")
+    s.add_argument("--if-changed", action="store_true",
+                   help="probe the active rig; sync only when its served models or context changed")
+    s.set_defaults(fn=cmd_sync)
     s = sub.add_parser("sync-legacy")
     s.add_argument("--oc")
     s.set_defaults(fn=cmd_sync_legacy)

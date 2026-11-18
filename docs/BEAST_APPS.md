@@ -57,7 +57,7 @@ Example (a Mac with Xcode.app installed but the Command Line Tools selected):
 $ scripts/apps.sh check ios-build
 ios-build — Build, run and test iOS/macOS apps with Xcode and the iOS Simulator
   platform: darwin    status: MISSING
-  server mobilebuildmcp 2.7.1 — MobileBuildMCP (getsentry; formerly XcodeBuildMCP)  [MISSING]
+  server mobile-build-tools 2.7.1 — MobileBuildMCP (getsentry; formerly XcodeBuildMCP)  [MISSING]
     ✓ macOS 14.5 or later — 26.6.2
     ✓ Node.js 18 or later — 22.14.0
     ✓ Xcode.app (full Xcode, not only the Command Line Tools) — /Applications/Xcode.app
@@ -424,7 +424,7 @@ client keeps working once installed (BEAST_ISLAND.md).
 
 | Capability | Server | Pin | Source |
 |---|---|---|---|
-| ios-build | `mobilebuildmcp` (getsentry, formerly XcodeBuildMCP; launch `… mcp`) | 2.7.1 | github.com/getsentry/MobileBuildMCP, npm |
+| ios-build | `mobile-build-tools` (npm `mobilebuildmcp`, getsentry, formerly XcodeBuildMCP; launch `… mcp`; id until 2026-11-17: `mobilebuildmcp`, an alias that `enable`/`disable`/`refresh`/`upgrade` rename) | 2.7.1 | github.com/getsentry/MobileBuildMCP, npm |
 | android-build | `replicant-mcp` | 1.6.7 | github.com/thecombatwombat/replicant-mcp, npm |
 | mobile-ui | `@mobilenext/mobile-mcp` | 1.0.17 | github.com/mobile-next/mobile-mcp, npm |
 | blender | `mcp-for-blender` (PyPI; formerly `blender-mcp`) | 2.3.0 | github.com/ahujasid/mcp-for-blender, PyPI |

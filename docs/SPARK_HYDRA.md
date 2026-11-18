@@ -1,6 +1,6 @@
 # spark-hydra: the DGX Spark launch runbook
 
-**Live deployment, 2026-11-17 (evening).** The pair serves `DeepSeek-V4.1-Flash-1017` on TensorFold from Mia's experimental EAQ v1.1 "-v2" pack, which replaced the stock EAQ v1 pack as the default after an A/B run ([DeepSeek packs](#deepseek-packs-spark-deepseek-pack)). The pair serves two models only: DeepSeek (any compatible pack) and GLM-5.3-Flash. The command center and beast-gate run on spark-1. GLM-5.3-Flash remains staged for rollback. The GLM recipe, tuning measurements and rebuild examples below describe that earlier deployment.
+**Live deployment, 2026-11-18.** The pair serves **GLM-5.3-Flash**, the default model at boot and in use; Max chose it on 2026-11-18 after testing DeepSeek. The alternative is `DeepSeek-V4.1-Flash-1017` on Mia's experimental EAQ v1.1 "-v2" pack, which supersedes the stock EAQ v1 pack ([DeepSeek packs](#deepseek-packs-spark-deepseek-pack)). Switch between them with `beastglm` and `beastds` ([shortcuts](#quickstart)). The pair serves these two models only. The command center and beast-gate run on spark-1. The GLM recipe, tuning measurements and rebuild examples below describe that earlier deployment.
 
 This page takes you from bare boxes to a serving pair, start to finish, and then
 covers day-2 operations and fully offline operation. Read it top to bottom the
@@ -88,6 +88,18 @@ Each cell gives two runs. The differences are inside run-to-run noise. A first v
 
 Three paths. Every command below is from the runbook body; the linked section
 has the detail. All run from the Mac unless marked "on spark-1".
+
+**Everyday shortcuts: beast-spark.** On spark-1, `~/.local/bin/beast-spark` (from `scripts/backends/spark-beast.sh`) and its bash aliases cover the daily operations:
+
+| Alias | Command | Does |
+|---|---|---|
+| `beastup` | `beast-spark up` | Starts the selected model's unit, waits for `/v1/models`, then starts the command center |
+| `beastdown` | `beast-spark down` | Stops the command center and both inference units. The boot selection stays as it is |
+| `beastglm` | `beast-spark glm` | Switches to GLM-5.3-Flash through `rollback/restore-glm.sh` |
+| `beastds` | `beast-spark ds` | Switches to DeepSeek on the EAQ v1.1 `-v2` pack: stops GLM, re-selects `-v2` with `spark-deepseek-pack.sh` if another pack is selected, then runs `activate-stock.sh` (canary, conformance, command center, boot selection) |
+| `beaststatus` | `beast-spark status` | Shows the selected model and pack, the three units, and what `:8000` serves |
+
+"Selected" means the enabled inference unit, which is the one that starts at boot. GLM is the default; `beastup` with nothing selected picks GLM. The pair serves only these two models. The `-v2` pack supersedes the stock EAQ v1 pack, which stays on disk only as a fallback (`spark-deepseek-pack.sh use stock`). To install or update after a pull, run on the Mac: `scp scripts/backends/spark-beast.sh spark-1:.local/bin/beast-spark`. The aliases are in spark-1's `~/.bashrc`, under `# beast-spark shortcuts`. After a switch, clients with `openbeast-client autosync` follow within 30 s; otherwise run `openbeast-client refresh-config`.
 
 **(a) Everyday, on the deployed pair.** On spark-1 the enabled user unit `deepseek-v41-inference` drives both ranks. It retries a failed launch after 60 seconds. The command center has its own user unit, `openbeast`.
 
@@ -2074,7 +2086,7 @@ scripts/apps.sh disable ios-build     # removes exactly what enable wrote
 
 The Mac on 2026-11-15:
 
-- READY: `ios-build` (enabled, `mobilebuildmcp`), `android-build`,
+- READY: `ios-build` (enabled, as `mobilebuildmcp`; now `mobile-build-tools`), `android-build`,
   `mobile-ui`, `sim-ros`.
 - MISSING: `blender`, `figma`, `3d-print` (off by default: risk).
 
