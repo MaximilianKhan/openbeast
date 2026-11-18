@@ -220,6 +220,18 @@ and the variables added later.
     --profile glm53-flash-abl-q2kxl --serve-script serve-glm53-flash-abl-q2kxl-big.sh`.
     SCORE rows only if it passes 1.5×.
   Each finished row moves its slug out of `BENCH_EXCLUDED` into `MODELS`.
+- [ ] **Flash-Next on 0xSero's SGLang+EXL3 engine: trial per the report**
+  ([reviews/WEIGHT_STREAMING_0XSERO-2026-11-17.md](reviews/WEIGHT_STREAMING_0XSERO-2026-11-17.md)).
+  Step 1, free: check whether llama.cpp v1.0.0 lazy-loads the n-gram table
+  ([WEIGHT_STREAMING.md](WEIGHT_STREAMING.md) runbook step 3).
+- [ ] **Gate rule change for non-GGUF weights pending Max** (the engine gate,
+  `scripts/engine-gate.sh`, compares a candidate with llama.cpp on the SAME
+  weights, which an EXL3 engine cannot load).
+- [ ] **beast's previous llama-server was built from Max's
+  `beast-rank-kernels` branch** (commit d4389a4d, build 10865), replaced by
+  the v1.0.0 pin on 2026-11-17. Backed up on the rig at
+  `~/backups/llama-bin-d4389a4d-beastrank-2026-11-17`. Candidate: rebase the
+  branch onto the v1.0.0 pin (b1b770d9) and measure it against stock v1.0.0.
 - Engine swapping itself: `scripts/engine.sh` (see docs/ENGINES.md once it lands).
 - Landed: [docs/ENGINES.md](ENGINES.md) — `scripts/engine.sh use|install|update|rollback`, managed TP 1 vLLM / TensorFold on the rig, and "The rig A/B" section lists what the 5090 run needs (an uncensored safetensors/NVFP4 profile, or the GGUF via vllm-gguf-plugin).
 
