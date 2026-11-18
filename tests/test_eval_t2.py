@@ -17,7 +17,7 @@ Pinned here:
      percent-encoded, through a redirect, and URL paths into evals/ answer
      trees, are refused under eval; nothing changes outside eval. The
      integrity scan flags the same URLs (`selfrepo`), with the same patterns.
-  5. The campaign arm: T2 = T + the cap + the nudge, at the jobs T_j2 set.
+  5. The campaign arm: T2 = T + the cap + the nudge, at T's jobs (4).
 """
 import importlib
 import json
@@ -412,7 +412,7 @@ def test_integrity_scan_flags_the_same_urls_with_the_same_patterns():
 # --- 5. the campaign arm --------------------------------------------------------------------------
 
 
-def test_t2_is_t_plus_the_cap_and_the_nudge_at_t_j2s_jobs():
+def test_t2_is_t_plus_the_cap_and_the_nudge_at_ts_jobs():
     import campaign as C
     camp = C.load_campaign("v5-thinking-first")
     t, t2 = C.resolve_arm(camp, "T"), C.resolve_arm(camp, "T2")
@@ -422,9 +422,9 @@ def test_t2_is_t_plus_the_cap_and_the_nudge_at_t_j2s_jobs():
     changed = {k: t2["env"][k] for k in t2["env"] if t2["env"][k] != t["env"].get(k)}
     assert changed == {"OPENBEAST_AGENT_MAX_TOKENS": "8192", "OPENBEAST_AGENT_ACT_NUDGE": "1"}
     assert t["env"]["OPENBEAST_AGENT_MAX_TOKENS"] == "" and t["env"]["OPENBEAST_AGENT_ACT_NUDGE"] == "0"
-    assert (t2["jobs"], t2["slots"]) == (2, 2) == (C.resolve_arm(camp, "T_j2")["jobs"], 2)
+    assert (t2["jobs"], t2["slots"]) == (4, 4)        # T's concurrency: same wall and tokens per unit as T
     assert t2["thinking"] == "on" and t2["wall_scale"] == 2.0
     assert "OPENBEAST_AGENT_ACT_NUDGE" in t2["requires"]["env"]
     spec = C.arm_spec(camp, "T2")
-    assert spec["optional"] is True and "TODO" in spec["note"] and "T2" not in C.run_order(camp)
+    assert spec["optional"] is True and "--jobs 4" in spec["note"] and "T2" not in C.run_order(camp)
     assert C.missing_requirements(str(ROOT), sys.executable, {"env": t2["requires"]["env"]}) == []
