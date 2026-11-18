@@ -56,6 +56,7 @@ import math
 import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -72,6 +73,7 @@ INFRA_REASONS = frozenset({
     "server_error", "env_error", "validator_timeout", "budget_skip",
     "skipped_cache_miss", "server_unhealthy", "low_disk", "setup_failed",
     "interpreter_error",     # run_eval's own name for it once eval-host provisioning (#189) is in
+    "served_model_changed",  # review 1118: the server stopped serving the measured model
 })
 # A row the arm did not measure at all (arm scheduler): not lost, not scored.
 UNMEASURED_REASONS = frozenset({"not_in_arm"})
@@ -400,7 +402,14 @@ def infra_reason(row: dict) -> str | None:
     if isinstance(code, int) and code < -1:
         return "signal_death"
     if (row.get("api_errors") or 0) > 0:
-        return "server_error"
+        # Review 1118: only errors that ENDED the run (api_errors_tail > 0)
+        # lose the unit; one the run recovered from leaves a verdict, as a
+        # pass with an error always was. Rows written before the field (every
+        # published board row) keep the old any-error rule, so their scores
+        # do not move.
+        tail = row.get("api_errors_tail")
+        if tail is None or tail > 0:
+            return "server_error"
     return None
 
 
@@ -652,22 +661,98 @@ def arm_rows(arm_state: dict | None) -> dict:
 SAVED = re.compile(r"^Saved to: (.+\.json)\s*$", re.M)
 
 
+RESULTS_AT_START = re.compile(r"^Results(?: \[[^\]]*\])?: (.+\.json)\s*$", re.M)
+INTERRUPTED_RCS = (130, -2, -15, 143, -1, 129)
+
+
+def pid_alive(pid) -> bool:
+    """Whether `pid` is a live process that is a run_eval (its command line
+    names evals/run_eval.py: a reused pid is not ours)."""
+    try:
+        pid = int(pid)
+        os.kill(pid, 0)
+    except (TypeError, ValueError, ProcessLookupError):
+        return False
+    except PermissionError:
+        pass
+    try:
+        out = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True,
+                             text=True, timeout=10).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return True          # alive, and we cannot tell whose: assume ours
+    return "run_eval.py" in out
+
+
 def run_eval_once(py: str, tree: str, argv: list[str], env: dict, log_path: str,
-                  slug: str) -> tuple[int, list[str]]:
+                  slug: str, on_child=None) -> tuple[int, list[str]]:
     """One run_eval process. Returns (rc, results files it wrote): the
     'Saved to:' lines, else (an interrupted run prints none) the newest
-    eval-<slug>-*.json written since it started."""
+    eval-<slug>-*.json written since it started.
+
+    Review 1118: SIGTERM and SIGHUP to the campaign are forwarded to the
+    child as SIGTERM (run_eval reaps its agents and exits 143), so a stopped
+    campaign never leaves an orphaned run_eval banking rows behind it.
+    `on_child(info)` is told the child's pid when it starts, its results
+    path as soon as run_eval prints it, and None when it has exited (the
+    caller records these in state.json)."""
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     start = time.time()
+    cmd = [py, "-u", "evals/run_eval.py", *argv]
     with open(log_path, "a") as lf:
         offset = lf.tell()
-        lf.write(f"\n# {datetime.now().isoformat()} {shlex.join([py, '-u', 'evals/run_eval.py', *argv])}\n")
+        lf.write(f"\n# {datetime.now().isoformat()} {shlex.join(cmd)}\n")
         lf.flush()
+        proc = subprocess.Popen(cmd, cwd=tree, env=env, stdout=lf, stderr=subprocess.STDOUT)
+        info = {"pid": proc.pid, "started_at": start, "log": log_path, "results": None}
+        if on_child:
+            on_child(dict(info))
+
+        def forward(signum, _frame):
+            try:
+                proc.send_signal(signal.SIGTERM)
+            except OSError:
+                pass
+
+        saved = {}
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            try:
+                saved[sig] = signal.signal(sig, forward)
+            except (ValueError, OSError):
+                pass        # not the main thread: nothing to forward from
         try:
-            rc = subprocess.call([py, "-u", "evals/run_eval.py", *argv], cwd=tree, env=env,
-                                 stdout=lf, stderr=subprocess.STDOUT)
-        except KeyboardInterrupt:
-            rc = 130
+            while True:
+                try:
+                    rc = proc.wait(timeout=2)
+                    break
+                except subprocess.TimeoutExpired:
+                    pass
+                except KeyboardInterrupt:
+                    # Ctrl-C reached the child too (same process group).
+                    try:
+                        proc.wait(timeout=120)
+                    except (subprocess.TimeoutExpired, KeyboardInterrupt):
+                        proc.kill()
+                    rc = 130
+                    break
+                if info["results"] is None and on_child:
+                    try:
+                        with open(log_path) as f:
+                            f.seek(offset)
+                            m = RESULTS_AT_START.search(f.read())
+                    except OSError:
+                        m = None
+                    if m:
+                        p = m.group(1).strip()
+                        info["results"] = p if os.path.isabs(p) else os.path.join(tree, p)
+                        on_child(dict(info))
+        finally:
+            for sig, h in saved.items():
+                try:
+                    signal.signal(sig, h)
+                except (ValueError, OSError):
+                    pass
+            if on_child:
+                on_child(None)
     with open(log_path) as f:
         f.seek(offset)
         text = f.read()
@@ -683,6 +768,23 @@ def run_eval_once(py: str, tree: str, argv: list[str], env: dict, log_path: str,
         if cands:
             paths = [max(cands, key=os.path.getmtime)]
     return rc, paths
+
+
+def child_recorder(sdir: str, st: dict, aid: str):
+    """on_child for run_eval_once: the live child in state.json ("child")."""
+    def rec(info):
+        if info is None:
+            st.pop("child", None)
+        else:
+            st["child"] = {**info, "arm": aid}
+        save_state(sdir, st)
+    return rec
+
+
+def live_child(st: dict) -> dict | None:
+    """The run_eval a previous campaign process started and that still runs."""
+    ch = st.get("child") or {}
+    return ch if ch.get("pid") and pid_alive(ch["pid"]) else None
 
 
 def base_env(camp: dict, spec: dict, a, served: str | None) -> dict:
@@ -727,12 +829,19 @@ def do_rerun(camp: dict, st: dict, sdir: str, aid: str, units: list[str], a, py:
     write_sub_manifest(tree, base_suite, units, name, f"{aid}: {why} ({len(units)} units)")
     clog(sdir, f"RERUN {aid} r{k}: {len(units)} units ({why}): {', '.join(units)}")
     rc, paths = run_eval_once(py, tree, argv, env, os.path.join(sdir, f"arm-{aid}-r{k}.log"),
-                              slugify(model_name))
+                              slugify(model_name), on_child=child_recorder(sdir, st, aid))
     ast.setdefault("reruns", []).append({"round": k, "suite": name, "units": units, "why": why,
                                          "rc": rc, "results": paths[0] if paths else None,
                                          "ended_at": time.time()})
     save_state(sdir, st)
     clog(sdir, f"END rerun {aid} r{k} rc={rc} -> {paths[0] if paths else 'no results'}")
+    if rc in INTERRUPTED_RCS:
+        clog(sdir, f"INTERRUPTED rerun {aid} r{k}: run the same command again to resume")
+        return 130
+    if rc not in (0, 1) and not paths:
+        clog(sdir, f"ABORT rerun {aid} r{k}: run_eval exited {rc} without a results file "
+                   f"(refused at start? see arm-{aid}-r{k}.log)")
+        return 5
     return 0
 
 
@@ -824,16 +933,23 @@ def cmd_run(a, camp: dict) -> int:
     total_h, eta_arms = 0.0, []
 
     served = a.served_model
+    if not a.dry_run:
+        ch = live_child(st)
+        if ch:
+            print(f"REFUSED: a run_eval this campaign started is still running (pid {ch['pid']}, "
+                  f"arm {ch.get('arm')}, results {ch.get('results') or 'not yet named'}). "
+                  f"Wait for it, or stop it (kill -TERM {ch['pid']}), then run again.")
+            return 2
     if not a.dry_run and not a.skip_preflight:
-        problems = preflight(a, camp, py, tree, todo)
+        if served is None:
+            served = detect_served(a.base_url, a.api_key_env)
+        problems = preflight(a, camp, py, tree, todo, served)
         if problems:
             print("PREFLIGHT REFUSED:")
             for p in problems:
                 print(f"  - {p}")
             print("(--skip-preflight to run anyway)")
             return 2
-    if not a.dry_run and served is None and not a.skip_preflight:
-        served = detect_served(a.base_url)
     served = served or st.get("served_model")
     if not a.dry_run:
         st["served_model"] = served
@@ -923,14 +1039,14 @@ def cmd_run(a, camp: dict) -> int:
         else:
             clog(sdir, f"START {aid} ({ast['label']}) tree={atree} ETA {_fmt_h(eta_h)}")
             rc, paths = run_eval_once(py, atree, argv, env, os.path.join(sdir, f"arm-{aid}.log"),
-                                      slugify(model_name))
+                                      slugify(model_name), on_child=child_recorder(sdir, st, aid))
             ast["rc"] = rc
             ast["results"] = paths
             save_state(sdir, st)
             sc = score(arm_rows(ast))
             clog(sdir, f"END {aid} rc={rc} {sc['passed']}/{sc['scorable']} scorable "
                        f"-> {paths[0] if paths else 'no results'}")
-            if rc in (130, -2, -15, 143):
+            if rc in INTERRUPTED_RCS:
                 clog(sdir, f"INTERRUPTED {aid}: run the same command again to resume "
                            f"(banked rows are kept, the rest rerun as lost)")
                 return 130
@@ -974,18 +1090,50 @@ def cmd_run(a, camp: dict) -> int:
     return 0
 
 
-def detect_served(base_url: str) -> str | None:
+class probe_auth:
+    """While open: the gate key of --api-key-env as OPENBEAST_API_KEY, and
+    the base URL as the endpoint it may go to (runner.resolve_api_key's key
+    policy, which every run_eval probe follows), as run_eval itself sets
+    them for --api-key-env. Restored on exit."""
+    KEYS = ("OPENBEAST_API_KEY", "OPENBEAST_AGENT_INFERENCE_URL")
+
+    def __init__(self, base_url: str, api_key_env: str | None):
+        self.base_url, self.api_key_env = base_url, api_key_env
+
+    def __enter__(self):
+        self.saved = {k: os.environ.get(k) for k in self.KEYS}
+        if self.api_key_env and os.environ.get(self.api_key_env):
+            os.environ["OPENBEAST_API_KEY"] = os.environ[self.api_key_env]
+            os.environ["OPENBEAST_AGENT_INFERENCE_URL"] = self.base_url
+        return self
+
+    def __exit__(self, *exc):
+        for k, v in self.saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        return False
+
+
+def _run_eval_mod():
+    sys.path.insert(0, EVALS_DIR)
+    sys.path.insert(0, os.path.join(REPO, "agents"))
+    import run_eval  # noqa: PLC0415
+    return run_eval
+
+
+def detect_served(base_url: str, api_key_env: str | None = None) -> str | None:
     try:
-        sys.path.insert(0, EVALS_DIR)
-        sys.path.insert(0, os.path.join(REPO, "agents"))
-        import run_eval  # noqa: PLC0415
-        m = run_eval.detect_model(base_url)
+        with probe_auth(base_url, api_key_env):
+            m = _run_eval_mod().detect_model(base_url)
         return None if m == "unknown" else m
     except Exception:  # noqa: BLE001
         return None
 
 
-def preflight(a, camp: dict, py: str, tree: str, todo: list[str] | None = None) -> list[str]:
+def preflight(a, camp: dict, py: str, tree: str, todo: list[str] | None = None,
+              served: str | None = None) -> list[str]:
     """The prerequisites of docs/MODEL_CAMPAIGN.md §1 that can be checked
     from here: the host toolchains (evals/profile.py's preflight, or the
     provisioning script when the tree has one), and the gate admitting
@@ -1000,6 +1148,19 @@ def preflight(a, camp: dict, py: str, tree: str, todo: list[str] | None = None) 
     # profile.py's checks always: toolchains, reasoning budget, admission.
     sys.path.insert(0, EVALS_DIR)
     sys.path.insert(0, os.path.join(REPO, "agents"))
+    # Review 1118: the model the arms will request must be served.
+    served = served or a.served_model
+    if not served:
+        problems.append(f"could not read the served model from {a.base_url}/models: pass "
+                        f"--served-model <id> (the id the server serves)")
+    else:
+        try:
+            with probe_auth(a.base_url, a.api_key_env):
+                why = _run_eval_mod().served_model_problem(a.base_url, served)
+            if why:
+                problems.append(f"served model: {why}")
+        except Exception as e:  # noqa: BLE001
+            problems.append(f"served model check could not run ({type(e).__name__}: {e})")
     # admission_check authenticates with OPENBEAST_API_KEY: without the key a
     # keyed gate answers 401, never 429, and the check would pass blind.
     saved_key = os.environ.get("OPENBEAST_API_KEY")
@@ -1030,7 +1191,9 @@ def preflight(a, camp: dict, py: str, tree: str, todo: list[str] | None = None) 
                 problems.append(f"arm {aid} declares no finite --reasoning-budget")
         rb = next(iter(rbs.values()), None)
         problems += prof.preflight(a.base_url, rb, False)
-        adm = prof.admission_check(a.base_url, a.jobs, a.served_model or a.model_name)
+        # Review 1118: the probe requests the SERVED id (a gate or engine
+        # that routes by model would answer the display name differently).
+        adm = prof.admission_check(a.base_url, a.jobs, served or a.model_name)
         if adm:
             problems.append(adm)
     except Exception as e:  # noqa: BLE001

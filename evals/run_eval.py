@@ -1733,8 +1733,11 @@ def cacheable_result(result: dict) -> bool:
       failed + reason interpreter_error — the agent's python died at
         startup (eval_host.interpreter_startup_failure): the venv broke under
         the harness, as on 2026-11-16 (22 units).
-      failed + reason server_error / api_errors >= 1 — the server died or
-        errored AFTER the model had spoken. The runner burns its remaining
+      failed + reason server_error / api_errors >= 1 that ENDED the run
+        (api_errors_tail > 0, review 1118; a row without the field keeps the
+        old any-error rule) — the server died or errored AFTER the model had
+        spoken. An error the run recovered from is a verdict either way, as
+        a pass with one always was. The runner burns its remaining
         iterations on connection errors and exits 0 with tokens > 0; the
         2026-09-15 greedy P0 run banked 7 such zig "FAILs" that the Tier-3
         verdict then replayed.
@@ -1758,9 +1761,10 @@ def cacheable_result(result: dict) -> bool:
     if not result.get("tokens_completion"):
         return False
     if result.get("reason") in ("server_error", "env_error", "validator_timeout",
-                                "interpreter_error"):
+                                "interpreter_error", SERVED_MODEL_CHANGED):
         return False
-    if (result.get("api_errors") or 0) > 0:
+    if (result.get("api_errors") or 0) > 0 and (result.get("api_errors_tail") is None
+                                                 or result["api_errors_tail"] > 0):
         return False
     if (env_error_signature(result.get("validation_output"))
             and not result.get("env_error_repeats")):
@@ -2148,6 +2152,119 @@ def _parse_api_errors(stdout: str) -> int:
     if matches:
         return int(matches[-1].group(1))
     return len(_API_ERROR_EVENT.findall(stdout))
+
+
+_API_TAIL_LINE = re.compile(r"^API_ERRORS_TAIL:\s+(\d+)\s*$", re.MULTILINE)
+_REASONING_TURNS_LINE = re.compile(r"^REASONING_TURNS:\s+(\d+)\s*$", re.MULTILINE)
+_RESPONSE_MODELS_LINE = re.compile(r"^RESPONSE_MODELS:\s+(\{.*\})\s*$", re.MULTILINE)
+
+
+def _parse_api_errors_tail(stdout: str) -> int | None:
+    """Failed model calls AFTER the last successful one (review 1118): > 0
+    means API errors ENDED the run. The runner's `API_ERRORS_TAIL: n` line;
+    for a runner killed before printing it, whether the last `[iter` block
+    in the (tail of the) output holds an `API error:` (1) or not (0); None
+    when the output says neither (the caller keeps the old any-error rule)."""
+    matches = list(_API_TAIL_LINE.finditer(stdout or ""))
+    if matches:
+        return int(matches[-1].group(1))
+    last_iter = (stdout or "").rfind("\n[iter ")
+    if last_iter < 0:
+        return None
+    return 1 if _API_ERROR_EVENT.search(stdout[last_iter:]) else 0
+
+
+def _parse_reasoning_turns(stdout: str) -> int | None:
+    """Responses that carried reasoning (the EFFECTIVE thinking), or None."""
+    matches = list(_REASONING_TURNS_LINE.finditer(stdout or ""))
+    return int(matches[-1].group(1)) if matches else None
+
+
+def _parse_response_models(stdout: str) -> dict | None:
+    """{model id: responses} the server named in its responses, or None."""
+    matches = list(_RESPONSE_MODELS_LINE.finditer(stdout or ""))
+    if not matches:
+        return None
+    try:
+        d = json.loads(matches[-1].group(1))
+    except ValueError:
+        return None
+    return d if isinstance(d, dict) else None
+
+
+def served_model_ids(base_url: str) -> list[str] | None:
+    """Every id /v1/models lists, or None when it cannot be read."""
+    try:
+        req = urllib.request.Request(base_url.rstrip("/") + "/models",
+                                     headers=_auth_headers(base_url))
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return [str(m.get("id")) for m in data.get("data") or [] if m.get("id")]
+    except Exception:  # noqa: BLE001 — unreadable is its own answer
+        return None
+
+
+def served_model_problem(base_url: str, want: str) -> str | None:
+    """None when /v1/models lists `want`, else why not."""
+    ids = served_model_ids(base_url)
+    if ids is None:
+        return f"{base_url}/models could not be read"
+    if want not in ids:
+        return f"{base_url}/models lists {ids}, not the served model {want!r}"
+    return None
+
+
+#: Review 1118: how long a run waits for the served model to come back
+#: before it stops as an infra stop (OPENBEAST_EVAL_MODEL_WAIT_S), and how
+#: often it re-reads /v1/models meanwhile.
+SERVED_MODEL_WAIT_S = 600.0
+#: The row reason (an infra reason: never cached, never scored) of a unit
+#: run while the server was not serving the requested model.
+SERVED_MODEL_CHANGED = "served_model_changed"
+SERVED_MODEL_POLL_S = 30.0
+
+
+class ServedModelGuard:
+    """The served model, re-checked before and after every unit (one
+    /v1/models read, memoised for a few seconds across workers). On a
+    mismatch it waits up to wait_s for the model to come back; past that,
+    the caller stops the run as an infra stop."""
+
+    def __init__(self, base_url: str, want: str, wait_s: float | None = None,
+                 poll_s: float = SERVED_MODEL_POLL_S, memo_s: float = 5.0,
+                 probe=None, sleep=time.sleep, clock=time.monotonic):
+        self.base_url, self.want = base_url, want
+        env_wait = os.environ.get("OPENBEAST_EVAL_MODEL_WAIT_S", "").strip()
+        self.wait_s = float(wait_s if wait_s is not None else (env_wait or SERVED_MODEL_WAIT_S))
+        self.poll_s, self.memo_s = poll_s, memo_s
+        self.probe = probe or (lambda: served_model_problem(base_url, want))
+        self.sleep, self.clock = sleep, clock
+        self._lock = threading.Lock()
+        self._last: tuple[float, str | None] | None = None
+
+    def problem(self, force: bool = False) -> str | None:
+        with self._lock:
+            now = self.clock()
+            if force or self._last is None or now - self._last[0] >= self.memo_s:
+                self._last = (now, self.probe())
+            return self._last[1]
+
+    def wait_ok(self, log=print, force: bool = False) -> str | None:
+        """None once the model is served; the last problem after wait_s.
+        force: read /v1/models now, not a memo (after a unit: the swap may
+        have happened while it ran)."""
+        why = self.problem(force)
+        if not why:
+            return None
+        start = self.clock()
+        log(f"  SERVED MODEL: {why}; waiting up to {self.wait_s:.0f}s for it to come back")
+        while self.clock() - start < self.wait_s:
+            self.sleep(min(self.poll_s, max(0.0, self.wait_s - (self.clock() - start))))
+            why = self.problem(force=True)
+            if not why:
+                log("  SERVED MODEL: back")
+                return None
+        return why
 
 
 def _parse_compactions(stdout: str) -> int:
@@ -3252,6 +3369,44 @@ def run_eval(
     # reasoning_budget or the model's newest live results file. Guessing
     # "uncapped" missed every current-era (.rb20480) key and recorded the
     # whole suite as skipped_cache_miss.
+    # Review 1118: the served model. The runner requests
+    # OPENBEAST_INFERENCE_MODEL (campaign.py / --served-model set it); a live
+    # run refuses to start unless /v1/models lists it, and re-checks before
+    # and after every unit (ServedModelGuard). Unset, the guard pins the
+    # model the server lists first now.
+    model_guard = None
+    served_model = None
+    if not cache_only:
+        served_model = os.environ.get("OPENBEAST_INFERENCE_MODEL", "").strip() or None
+        if served_model:
+            why = served_model_problem(base_url, served_model)
+            if why:
+                raise SystemExit(f"REFUSED: {why}. The run would measure some other model "
+                                 f"under {model_name!r} (--served-model / "
+                                 f"OPENBEAST_INFERENCE_MODEL names the id the server serves)")
+        else:
+            ids = served_model_ids(base_url)
+            served_model = ids[0] if ids else None
+        if served_model:
+            model_guard = ServedModelGuard(base_url, served_model)
+            if isinstance(server_info, dict):
+                server_info["served_model"] = served_model
+    # Review 1118: thinking is always SENT explicitly on a run whose budget
+    # is declared (a remote server: TensorFold, vLLM): DeepSeek's template
+    # thinks by default, so "nothing sent" under a declared 0 would be a
+    # thinking run labelled thinking-off. A declared 0 sends
+    # enable_thinking=false, a finite budget true; --thinking wins.
+    thinking_source = "requested"
+    if os.environ.get("OPENBEAST_AGENT_THINKING", "").strip().lower() not in ("on", "off"):
+        thinking_source = "server default"
+        rb_decl = str((server_info or {}).get("reasoning_budget", "")).strip()
+        if (not cache_only and (server_info or {}).get("reasoning_budget_source") == "declared"
+                and rb_decl not in ("", "-1")):
+            os.environ["OPENBEAST_AGENT_THINKING"] = "off" if rb_decl == "0" else "on"
+            thinking_source = f"from the declared reasoning budget {rb_decl}"
+            print(f"Thinking: none requested; sending enable_thinking="
+                  f"{os.environ['OPENBEAST_AGENT_THINKING'] == 'on'} explicitly "
+                  f"({thinking_source})")
     # Low-churn eval mode (2026-09-10): greedy decoding, own cache era,
     # stamped in provenance. Set via env OPENBEAST_EVAL_GREEDY=1 or the
     # --greedy CLI flag (benchmark_all passes it through as env).
@@ -3409,6 +3564,11 @@ def run_eval(
              # Always present (all-unset included), so a file says what the
              # agent ran with instead of leaving "default" to inference.
              "agent_switches": dict(agent_meta),
+             # Review 1118: where the thinking value came from ("requested",
+             # derived from the declared budget, or the server's default:
+             # nothing sent), and the model id checked around every unit.
+             "thinking_source": thinking_source,
+             **({"served_model": served_model} if served_model else {}),
              **({"agent_component": agent_component} if agent_component else {}),
              "packs": dict(c.packs_meta.get("sha", {})) if c.packs_on else {},
              **({"packs_component": c.packs_component,
@@ -3667,6 +3827,21 @@ def run_eval(
                             "tokens_prompt": 0, "tokens_completion": 0, "tokens_total": 0,
                         })
 
+        # Review 1118: the server still serves the model this run measures
+        # (a model swap mid-run would bank another model's rows under this
+        # one's name). A mismatch waits for the model to come back, then
+        # stops the run as an infra stop.
+        if model_guard is not None:
+            why = model_guard.wait_ok(log)
+            if why:
+                abort.set()
+                log(f"  ABORT: {why}; stopping the run (infra stop, nothing banked)")
+                return record({"id": task_id, "name": task_name, "difficulty": difficulty,
+                               "model": model_name, "passed": False,
+                               "reason": SERVED_MODEL_CHANGED, "served_model_problem": why,
+                               "elapsed_seconds": 0, "tokens_prompt": 0,
+                               "tokens_completion": 0, "tokens_total": 0})
+
         # Cleanup BEFORE setup: every task's setup is `mkdir -p`, so whatever
         # a killed run left in the fixture dir (the signal handler exits
         # without cleaning up) was inherited by the next unit to use it —
@@ -3721,6 +3896,16 @@ def run_eval(
         # env_error: the validator died to fork/thread EAGAIN or a full disk.
         # validator_timeout: the validator ran out of its own time budget.
         api_errors = agent_result.get("api_errors", 0) or 0
+        agent_stdout = agent_result.get("stdout") or ""
+        # Review 1118: only errors that ENDED the run make a failed row infra
+        # (None: the output cannot say, so any error counts, as before).
+        api_tail = _parse_api_errors_tail(agent_stdout) if api_errors else 0
+        reasoning_turns = _parse_reasoning_turns(agent_stdout)
+        response_models = _parse_response_models(agent_stdout)
+        model_after = None
+        validated_pass = False
+        if model_guard is not None:
+            model_after = model_guard.wait_ok(log, force=True)
         infra_reason = None
         env_strikes = 0
         vt_strikes = 0
@@ -3728,10 +3913,18 @@ def run_eval(
         # call was made). The environment's fault, never the model's.
         import eval_host  # noqa: PLC0415
         startup_err = None if passed else eval_host.interpreter_startup_failure(agent_result)
-        if not passed:
+        if model_after:
+            # The model was not served when the unit ended: its turns may
+            # have gone to another model, so neither verdict is this model's.
+            infra_reason = SERVED_MODEL_CHANGED
+            validated_pass = passed
+            passed = False      # a pass of another model is not this model's
+            abort.set()
+            log(f"  ABORT: {model_after}; stopping the run (infra stop, nothing banked)")
+        elif not passed:
             if startup_err:
                 infra_reason = "interpreter_error"
-            elif api_errors > 0:
+            elif api_errors > 0 and (api_tail is None or api_tail > 0):
                 infra_reason = "server_error"
             elif (health_check is not None and agent_result["exit_code"] >= 0
                   and not health_check()):
@@ -3784,6 +3977,11 @@ def run_eval(
             "max_iter": effective_max_iter,
             "compactions": agent_result.get("compactions", 0),
             "api_errors": api_errors,
+            **({"api_errors_tail": api_tail} if api_errors and api_tail is not None else {}),
+            **({"reasoning_turns": reasoning_turns} if reasoning_turns is not None else {}),
+            **({"response_models": response_models} if response_models else {}),
+            **({"served_model_problem": model_after,
+                "validated_pass": validated_pass} if model_after else {}),
             **({"reason": infra_reason} if infra_reason else {}),
             **({"env_error_repeats": env_strikes} if env_strikes else {}),
             **({"validator_timeout_repeats": vt_strikes} if vt_strikes else {}),
@@ -4090,6 +4288,10 @@ def main():
     parser.add_argument("--thinking", choices=("on", "off"),
                         help="Per-request thinking toggle for the agent (sets "
                              "OPENBEAST_AGENT_THINKING). In the cache key (ag-think-on/off).")
+    parser.add_argument("--served-model",
+                        help="The model id the server serves (sets OPENBEAST_INFERENCE_MODEL, "
+                             "which the agent requests). A live run refuses to start unless "
+                             "/v1/models lists it, and stops (infra) if it disappears mid-run.")
     parser.add_argument("--no-provision", action="store_true",
                         help="Do not install missing eval toolchains (scripts/eval-host.sh "
                              "setup) or re-exec under the eval venv; only report what is "
@@ -4126,6 +4328,8 @@ def main():
         os.environ["OPENBEAST_AGENT_SEED"] = str(args.seed)
     if args.thinking:
         os.environ["OPENBEAST_AGENT_THINKING"] = args.thinking
+    if args.served_model:
+        os.environ["OPENBEAST_INFERENCE_MODEL"] = args.served_model
     if args.api_key_env:
         key = os.environ.get(args.api_key_env, "")
         if not key:
