@@ -613,7 +613,8 @@ def test_dry_run_prints_an_eta_per_arm(tree, tmp_path, capsys):
     assert "ETA ~4.6 h" in capsys.readouterr().out
     C.main(["run", "--model-name", "Fake-1", "--base-url", "http://127.0.0.1:9/v1", "--jobs", "2",
             "--tree", str(tree), "--python", sys.executable, "--dry-run", "--only", "N0"])
-    assert "ETA ~5.0 h (time x1 of 2.5 h, x2 for --jobs 2 vs 4)" in capsys.readouterr().out
+    # not linear: per-stream decode speeds up as streams drop (contention_scale)
+    assert "ETA ~3.3 h (time x1 of 2.5 h, x1.33 for --jobs 2 vs 4)" in capsys.readouterr().out
 
 
 def test_eta_base_calibrates_from_finished_arms():
@@ -725,3 +726,80 @@ def test_preflight_refuses_an_arm_without_a_finite_reasoning_budget(tree):
     problems = C.preflight(A, camp, sys.executable, str(tree), ["T", "N0"])
     assert any("arm N0 declares no finite --reasoning-budget" in p for p in problems)
     assert not any("arm T " in p for p in problems)
+
+
+# --- 11. an arm's own concurrency (T_j2, 2026-11-18) -------------------------------------------
+
+
+def test_jobs_time_scale_follows_contention_not_a_line():
+    assert C.jobs_time_scale(4, 4) == 1.0
+    assert abs(C.jobs_time_scale(4, 2) - 4 / 3) < 1e-9        # 2.0 vs 1.5 units per time unit
+    assert abs(C.jobs_time_scale(4, 1) - 2.0) < 1e-9
+    assert C.jobs_time_scale(0, 2) == 1.0
+
+
+def test_t_j2_is_t_exactly_at_two_jobs_and_off_the_default_chain():
+    camp = C.load_campaign(TF)
+    t, j2 = C.resolve_arm(camp, "T"), C.resolve_arm(camp, "T_j2")
+    assert j2["args"] == t["args"] and j2["env"] == t["env"] and j2["requires"] == t["requires"]
+    assert (j2["jobs"], j2["slots"]) == (2, 2) and (t["jobs"], t["slots"]) == (None, None)
+    spec = C.arm_spec(camp, "T_j2")
+    assert spec["base"] == "T" and spec["optional"] is True
+    assert spec["time_x"] == C.arm_spec(camp, "T")["time_x"]   # same tokens per unit
+    assert "T_j2" not in C.run_order(camp)
+    assert C.run_order(camp, include=["T_j2"])[-1] == "T_j2"
+
+
+def test_campaign_file_refuses_a_bad_arm_concurrency():
+    camp = {k: v for k, v in C.load_campaign(TF).items() if k != "_path"}
+    for bad_val in (0, "2", True, 1.5):
+        bad = json.loads(json.dumps(camp))
+        C.arm_spec(bad, "T_j2")["jobs"] = bad_val
+        assert any("T_j2: jobs must be a positive integer" in e for e in C.validate_campaign(bad))
+
+
+def test_an_arms_own_jobs_win_over_the_cli_in_argv_state_and_reruns(tree, tmp_path):
+    plan(tmp_path, {"T_j2": {"pass": ["1_alpha"], "infra": ["3_gamma"]}})
+    assert run_tf(tree, "--only", "T_j2") == 0                 # the CLI says --jobs 4 --slots 4
+    cs = calls(tmp_path)
+    assert [c["arm"] for c in cs] == ["T_j2", "T_j2"]           # main run + the lost-unit rerun
+    for c in cs:
+        fl = _flagmap(c["argv"])
+        assert c["argv"].count("--jobs") == 1 and fl["--jobs"] == "2" and fl["--slots"] == "2"
+    st = C.load_state(os.path.join(tree, "evals", "results", "campaigns", "v5-thinking-first-fake-1"))
+    a = st["arms"]["T_j2"]
+    assert (a["jobs"], a["slots"]) == (2, 2) and st["jobs"] == 4
+    assert a["reruns"][0]["jobs"] == 2 and a["reruns"][0]["slots"] == 2
+    assert C.arm_jobs(st, "T_j2") == 2
+    # the results file run_eval wrote records the --jobs it ran at
+    assert json.load(open(a["results"][0]))["jobs"] == 2
+    # rerun-lost uses the arm's jobs too, whatever the CLI says
+    assert C.main(["rerun-lost", "--model-name", "Fake-1", "--tree", str(tree), "--python",
+                   sys.executable, "--jobs", "4", "--arm", "T_j2", "--units", "1_alpha",
+                   "--force-units"]) == 0
+    assert _flagmap(calls(tmp_path)[-1]["argv"])["--jobs"] == "2"
+
+
+def test_dry_run_shows_the_arms_jobs_and_scales_its_eta(tree, tmp_path, capsys):
+    assert run_tf(tree, "--dry-run", "--only", "T,T_j2") == 0
+    out = capsys.readouterr().out
+    assert calls(tmp_path) == []
+    t_block, j2_block = out.split("# arm T_j2 (")
+    assert "#   jobs 4, slots 4\n" in t_block and "ETA ~5.8 h (time x2.3 of 2.5 h)" in t_block
+    assert "#   jobs 2, slots 2: the arm's own (the CLI said --jobs 4 --slots 4)" in j2_block
+    assert "ETA ~7.7 h (time x2.3 of 2.5 h, x1.33 for --jobs 2 vs 4)" in j2_block
+    cmd = j2_block.splitlines()[3]
+    assert "--jobs 2 --slots 2" in cmd and "--jobs 4" not in cmd
+
+
+def test_eta_calibration_brings_an_arm_back_to_the_reference_jobs():
+    camp = C.load_campaign(TF)
+    # T at 4 jobs took 2.3 x 3 h; T_j2 (same time_x) at 2 jobs took 4/3 of that:
+    # both calibrate the same 3.0 h base.
+    st = {"jobs": 4, "arms": {"T": {"status": "done", "started_at": 0, "ended_at": 2.3 * 3 * 3600},
+                              "T_j2": {"status": "done", "started_at": 0, "jobs": 2,
+                                       "ended_at": 2.3 * 3 * 3600 * 4 / 3}}}
+    h, _ = C.eta_base_h(camp, st, None)
+    assert abs(h - 3.0) < 1e-9
+    eta, why = C.arm_eta_h(camp, "T_j2", h, 2)
+    assert abs(eta - 9.2) < 1e-9 and "x1.33 for --jobs 2 vs 4" in why
