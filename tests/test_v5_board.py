@@ -193,13 +193,14 @@ def test_committed_board_numbers():
     runs = {r["id"]: r for r in b["runs"]}
     assert b["units"] == 71 and b["bases"] == 34
     assert {k: runs[k]["passed"] for k in runs} == {
-        "GLM-L0": 26, "GLM-A": 31, "GLM-B": 36, "GLM-C": 51, "GLM-E": 50, "OPUS-REF": 71}
+        "GLM-L0": 26, "GLM-A": 31, "GLM-B": 36, "GLM-C": 51, "GLM-E": 50, "DS-T": 61, "OPUS-REF": 71}
     assert runs["GLM-C"]["passed_raw"] == 54  # 122 b/d/e excluded: contaminated (G25 scan)
     assert runs["GLM-E"]["passed_raw"] == 50  # scan clean; 122_c is a noted validator false FAIL
+    assert runs["DS-T"]["passed_raw"] == 61  # scan clean (2026-11-18); first run under review 1118
     assert runs["OPUS-REF"]["passed_strict_wall"] == 68
     assert all(not r["lost"] for r in runs.values())
     best = {r["model"]: r["id"] for r in b["best"]}
-    assert best == {"GLM-5.3-Flash": "GLM-C", "Claude Opus 5.5": "OPUS-REF"}
+    assert best == {"GLM-5.3-Flash": "GLM-C", "DeepSeek-V4.1-Flash (Mia EXL3)": "DS-T", "Claude Opus 5.5": "OPUS-REF"}
 
 
 def test_docs_are_current():
