@@ -38,7 +38,19 @@ sys.path.insert(0, str(ROOT / "evals" / "audit"))
 sys.path.insert(0, str(ROOT / "agents"))
 
 import campaign as C  # noqa: E402
-import integrity_scan as S  # noqa: E402
+
+
+def _load_scan():
+    # by path: evals/reference/integrity_scan.py shares the module name
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "_audit_integrity_scan_1118", ROOT / "evals" / "audit" / "integrity_scan.py")
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+S = _load_scan()
 
 
 # --- 4. the integrity scan ---------------------------------------------------------------
@@ -324,6 +336,8 @@ def test_declared_budget_sends_thinking_explicitly(rmod, server, monkeypatch, rb
     assert res["harness"]["thinking_source"] == source
     assert seen and set(seen) == {want}
     assert {r["agent_thinking"] for r in res["tasks"]} == {want}
+    # derived, never written back: the next in-process run starts clean
+    assert os.environ.get("OPENBEAST_AGENT_THINKING") == thinking
 
 
 # --- 9. the admission probe ------------------------------------------------------------------

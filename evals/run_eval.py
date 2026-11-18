@@ -3397,15 +3397,18 @@ def run_eval(
     # thinking run labelled thinking-off. A declared 0 sends
     # enable_thinking=false, a finite budget true; --thinking wins.
     thinking_source = "requested"
-    if os.environ.get("OPENBEAST_AGENT_THINKING", "").strip().lower() not in ("on", "off"):
+    # A copy, never os.environ: an in-process caller (benchmark_all runs one
+    # model after another) must not inherit this run's derived value.
+    switch_env = dict(os.environ)
+    if switch_env.get("OPENBEAST_AGENT_THINKING", "").strip().lower() not in ("on", "off"):
         thinking_source = "server default"
         rb_decl = str((server_info or {}).get("reasoning_budget", "")).strip()
         if (not cache_only and (server_info or {}).get("reasoning_budget_source") == "declared"
                 and rb_decl not in ("", "-1")):
-            os.environ["OPENBEAST_AGENT_THINKING"] = "off" if rb_decl == "0" else "on"
+            switch_env["OPENBEAST_AGENT_THINKING"] = "off" if rb_decl == "0" else "on"
             thinking_source = f"from the declared reasoning budget {rb_decl}"
             print(f"Thinking: none requested; sending enable_thinking="
-                  f"{os.environ['OPENBEAST_AGENT_THINKING'] == 'on'} explicitly "
+                  f"{switch_env['OPENBEAST_AGENT_THINKING'] == 'on'} explicitly "
                   f"({thinking_source})")
     # Low-churn eval mode (2026-09-10): greedy decoding, own cache era,
     # stamped in provenance. Set via env OPENBEAST_EVAL_GREEDY=1 or the
@@ -3414,7 +3417,7 @@ def run_eval(
     # Agent switches (thinking / seed / verify-done / edit-hint / env-block /
     # wall-warn): one read,
     # used for the key, the header and every row (see agent_switches).
-    agent_component, agent_meta = agent_switches()
+    agent_component, agent_meta = agent_switches(switch_env)
     # ...and the agent gets exactly what was keyed: the normalized values are
     # pinned into every unit's env (None = removed), so an unparseable or
     # mid-run-changed ambient value can never reach a child the key missed.
