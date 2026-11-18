@@ -216,6 +216,7 @@ Run the narrow suites while iterating, then the full set before committing:
 | `scripts/backends/spark-cluster.sh`, `tensorfold/spark-node.sh`, `vllm/` | `tests/test_spark_cluster.sh`, `tests/test_backends.sh` |
 | `scripts/backends/spark-guard.sh` | `tests/test_spark_guard.sh` |
 | `scripts/backends/spark-deepseek-pack.sh` | `tests/test_spark_deepseek_pack.sh` |
+| `scripts/backends/spark-beast.sh` | `tests/test_spark_beast.sh` |
 | `scripts/backends/spark-fabric-mtu.sh` (fabric MTU 9000, netplan drop-in) | `tests/test_spark_fabric_mtu.sh` (portable; on Ubuntu it also checks the merge against the real `netplan generate --root-dir`) |
 | `spark-root-setup.sh`, `tensorfold/install-native.sh` | `tests/test_spark_supply.sh` |
 | `scripts/backends/model-*.sh`, `pylib/`, profiles, locks | `tests/test_model_profiles.py`, `test_model_inspect.py`, `test_model_fetch.py`, `test_conformance.py`, `test_use_model.py` |
@@ -681,6 +682,7 @@ Run in a scratch clone of this branch, niced, on 2026-11-15:
 |---|---|---|
 | `test_spark_guard.sh` | 32 passed, 0 failed, 1 skipped | 1 s |
 | `test_spark_deepseek_pack.sh` | 4 passed, 0 failed, 1 skipped (pack_rev needs GNU stat; 5 of 5 on a Spark) | 1 s |
+| `test_spark_beast.sh` | 9 passed, 0 failed | 1 s |
 | `test_spark_cluster.sh` | 31 passed, 0 failed | 4 s |
 | `test_spark_supply.sh` | 22 passed, 0 failed | <1 s |
 | `test_engines.sh` | 61 passed, 0 failed | 64 s |
