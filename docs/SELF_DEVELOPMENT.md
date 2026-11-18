@@ -1,6 +1,24 @@
 # Self-development: OpenBeast's own model working on OpenBeast
 
-The Spark pair serves stock DeepSeek-V4.1-Flash-1017. OpenCode on the Mac reached it through beast-gate on November 17. The self-development exercises and offline task transcripts below were measured with GLM-5.3-Flash on the pair on November 15. They document the workflow and the results of that deployment.
+**State on 2026-11-18.** The Spark pair serves **GLM-5.3-Flash**
+(`GLM-5.3-Flash-EXL3`) on TensorFold, the default again by Max's decision
+after testing DeepSeek-V4.1-Flash-1017. DeepSeek is staged as the
+alternative on Mia's EAQ v1.1 "-v2" pack, and one command switches between
+the two (`beastglm` / `beastds`,
+[SPARK_HYDRA.md](SPARK_HYDRA.md#deepseek-deployment)). OpenCode on the Mac
+reaches the pair through beast-gate. Since 2026-11-18, opencode v2.3.2 also
+runs on both Sparks against the pair's loopback API, with no OpenBeast MCP
+tools yet ([1.2](#opencode-on-the-sparks)). The worked run in
+[9](#9-proof-a-real-run-on-spark-1-2026-11-15) was measured with GLM-5.3-Flash
+on 2026-11-15. The workflow does not depend on the model; the timings are
+GLM's.
+
+**Who this page is for.** The local model on spark-1 (or a person at a Spark)
+developing OpenBeast with no help from the internet. Everything it needs is in
+this repository and on the Sparks' disks. The commands, grouped by machine,
+are in [COMMANDS.md](COMMANDS.md). The map of every doc is
+[docs/README.md](README.md). When GitHub is unreachable, branches move through
+a bare repository on spark-1 ([11](#11-developing-with-github-unreachable)).
 
 The launch and operations runbook for the pair is
 [`SPARK_HYDRA.md`](SPARK_HYDRA.md). This page assumes the pair is up
@@ -18,6 +36,7 @@ The launch and operations runbook for the pair is
 | [8. Worked example sessions](#8-worked-example-sessions) | ten prompts, the commands, what "done" looks like |
 | [9. Proof: a real run on spark-1](#9-proof-a-real-run-on-spark-1-2026-11-15) | what happened, and the lessons folded in above |
 | [10. The v5 eval suite, offline](#10-the-v5-eval-suite-offline-running-it-and-authoring-for-it) | running a profile, reading a failure, authoring and proving a task |
+| [11. Developing with GitHub unreachable](#11-developing-with-github-unreachable) | the hub repo on spark-1, the offline trunk, review and merge, syncing back |
 
 ---
 
@@ -32,9 +51,20 @@ clone:
 
 ```bash
 # on spark-1 (or spark-2, which runs no OpenBeast services)
-git clone ~/openbeast ~/ob-work          # a local clone: no network needed
-cd ~/ob-work && git switch -c fix/<topic>
+git clone ~/git/openbeast.git ~/ob-work                 # the hub (11); from spark-2: max@10.100.216.1:git/openbeast.git
+cd ~/ob-work
+git config user.name "spark-1 local model"              # spark-1 has no global git identity (checked 2026-11-18)
+git config user.email "<the address Max chose for offline commits>"
+git switch -c fix/<topic> origin/offline/main           # offline: branch from the offline trunk; online: from main
 ```
+
+**Do not clone `~/openbeast` when the hub exists.** A clone gets only
+committed history. On 2026-11-18, spark-1's `~/openbeast` sat at `d3727185`
+(#203), eight merges behind `main`, with uncommitted copies of files that
+`main` has since gained (`docs/PYTHON_OFFLINE.md`, `docs/TAILSCALE_OFFLINE.md`,
+`skills/tailscale/`). A clone of it would start from old code. Use it only
+if there is no hub and no bundle, and say in the branch which commit it
+started from.
 
 ```bash
 # on the Mac
@@ -53,14 +83,14 @@ not ([5](#5-git-discipline)).
 | **`./agent.sh` on spark-1** (measured) | spark-1, in `-w <clone>` | The active Spark model on `127.0.0.1:8000`, read from the **live** checkout's `openbeast.conf` | unattended tasks with a clear end state; works with the internet off, since only the LAN or tailnet ssh is needed to start it |
 | **opencode on the Mac, client mode** (measured as the daily setup) | the Mac, in the clone | The active Spark model through beast-gate `https://spark-1.tail4109f9.ts.net:8443/v1` with the Mac's device key | interactive work; `skill()`, `language_reference`, `platform_docs` and the other MCP tools are all there |
 | **`start_agent` from a WebUI or opencode chat** | where that MCP server runs | the configured `OPENBEAST_AGENT_INFERENCE_URL` | delegating a long sub-task while you keep talking |
-| opencode **on spark-1** | — | — | **not set up**: opencode is not installed on spark-1, and the repo's `opencode.json` points at `localhost:8080` (llama.cpp), not `:8000`. Use `agent.sh` there |
+| **opencode on spark-1 / spark-2** (verified 2026-11-18) | the Spark, in the clone | the pair's model at `127.0.0.1:8000` (spark-2 through an ssh tunnel to spark-1), provider `spark-hydra-local` | interactive work on the box itself, with the network off. **No OpenBeast MCP tools yet** ([below](#opencode-on-the-sparks)) |
 
 **`agent.sh`: run the live checkout's script, point it at the clone.** The
 clone's own `agent.sh` would find no `openbeast.conf` and dial the llama.cpp
 default `http://localhost:8080/v1`, where nothing serves on a Spark. The live
 `~/openbeast/agent.sh` sources the live conf. That gives it
 `OPENBEAST_AGENT_INFERENCE_URL=http://127.0.0.1:8000/v1` and
-`OPENBEAST_INFERENCE_MODEL=DeepSeek-V4.1-Flash-1017`. All file and shell work then
+`OPENBEAST_INFERENCE_MODEL` (the served model: `GLM-5.3-Flash-EXL3` on 2026-11-18). All file and shell work then
 happens in `-w`:
 
 ```bash
@@ -82,9 +112,96 @@ and for its own replies (`tests/test_runner_surrogates.py`).
 
 **opencode on the Mac** ([SPARK_HYDRA.md F](SPARK_HYDRA.md#f-the-mac-client)):
 run `opencode` in the clone and pick an `openbeast-rig/…` model. The repo's own
-`opencode.json` is era-hashed: never edit it to point somewhere else. The
-global config (`~/.config/opencode/opencode.json`, opencode v2) holds the rig
+`opencode.json` is the 5090 rig's project config (llama.cpp on `:8080`). It
+left the eval era in 2026-11 (`evals/cache.py`), but do not repoint it in a
+commit: per-machine settings belong in the global config
+(`~/.config/opencode/opencode.json`, opencode v2), which holds the rig
 provider and `mcp.servers.openbeast-tools`.
+
+#### opencode on the Sparks
+
+**State, 2026-11-18 (verified).** opencode **v2.3.2** (linux-arm64, glibc)
+is installed on both Sparks at `~/.opencode/bin/opencode`, symlinked from
+`~/.local/bin/opencode`. GitHub's `/releases/latest` pointed at v1.19.6 that
+day (the 1.x maintenance line); v2.3.2 is the newest release, so pick from
+the releases list, not "latest". The release tarball, its `SHA256SUMS` and
+`INSTALL.md` are kept in `~/Documents/opencode/` on both Sparks. Offline
+reinstall:
+
+```bash
+cd ~/Documents/opencode/v2.3.2
+grep " opencode-linux-arm64.tar.gz" SHA256SUMS | sha256sum -c -
+mkdir -p ~/.opencode/bin ~/.local/bin
+tar xzf opencode-linux-arm64.tar.gz -C ~/.opencode/bin
+ln -sf ~/.opencode/bin/opencode ~/.local/bin/opencode
+opencode --version
+```
+
+**The configuration**, `~/.config/opencode/opencode.json` on both Sparks
+(spark-1's earlier file, if any, is kept as `opencode.json.bak-20261118`):
+
+| Setting | Value |
+|---|---|
+| Provider | one, `spark-hydra-local` (`@ai-sdk/openai-compatible`) |
+| `baseURL` | `http://127.0.0.1:8000/v1`: TensorFold directly. No gate, tailnet or LAN in the path |
+| `apiKey` | `"{file:~/.config/openbeast/tensorfold-api-key}"`: opencode reads the 0600 key file; the key is not in the config |
+| Models | `DeepSeek-V4.1-Flash-1017` (context 524288, output 32768); `GLM-5.3-Flash-EXL3` (context 1048576, output 32768) |
+| Default model | `spark-hydra-local/GLM-5.3-Flash-EXL3` (since 2026-11-18, with GLM the pair's default; it was DeepSeek for a few hours before) |
+| Other | `autoupdate: false` (never reaches for the network), `share: "disabled"` |
+
+Only the model the pair currently serves answers: which one is the
+selected inference unit (`beastds` / `beastglm`,
+[COMMANDS.md §3](COMMANDS.md#3-spark-1-start-stop-switch-changes-state)).
+Picking the other model in opencode gives an error, not a switch.
+
+**spark-2 reaches spark-1's API through a tunnel.** spark-2 runs rank 1 and
+has no API of its own. The user unit `opencode-model-link.service` on spark-2
+(enabled, linger on, `Restart=always`, `RestartSec=10`) runs
+
+```
+/usr/bin/ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+  -L 127.0.0.1:8000:127.0.0.1:8000 max@10.100.216.1
+```
+
+over the direct ConnectX-7 link, so spark-2's opencode uses
+`127.0.0.1:8000` exactly as spark-1's does. A copy of the backend key is at
+spark-2's `~/.config/openbeast/tensorfold-api-key` (mode 600). Check it with
+`systemctl --user status opencode-model-link` on spark-2. If it is down, the
+model is unreachable from spark-2's opencode only; inference itself is
+unaffected. Rotating the TensorFold key means updating spark-2's copy too.
+
+**Verified 2026-11-18:** `opencode run "What is 17 times 23? Reply with only
+the number."` answered `391` on both Sparks, with `DeepSeek-V4.1-Flash-1017`
+while it served and with `GLM-5.3-Flash-EXL3` after the switch. GLM's
+v0.6.0 server takes no API key, so the configured key is simply ignored
+while GLM serves (an unauthenticated `/v1/models` returned 200 on
+2026-11-18); DeepSeek's server requires it.
+
+**Gaps:**
+
+- **No MCP servers.** The configs have no `openbeast-tools` entry, so
+  opencode on a Spark has only its own built-in tools: no `skill()`,
+  `language_reference`, `platform_docs`, `start_agent` or the island guard
+  on web tools. Load skills by reading `skills/<name>/SKILL.md` into the
+  session yourself. Adding `mcp.servers.openbeast-tools` (running
+  `agents/mcp_server.py` from a clone with a python that has the locked
+  deps; spark-2's `~/obvenv` has them, spark-1 has no such venv yet) is open
+  work. The layout to copy is the Mac's
+  ([SPARK_HYDRA.md F3](SPARK_HYDRA.md#f3-what-the-client-writes-into-opencode)).
+- **No soul.** There is no `instructions` entry, so sessions do not load
+  `system-prompt.md` / `system-prompt-tools.md`. Point the model at
+  `AGENTS.md` and this page at the start of a session (opencode reads an
+  `AGENTS.md` in the working directory by itself).
+- **Gate bypassed.** Requests go straight to TensorFold, so they are not in
+  beast-gate's inference audit and not under its rate or in-flight caps. They
+  share the pair's four streams with everyone else.
+
+**Use it from a clone**, never from `~/openbeast` on spark-1:
+
+```bash
+cd ~/ob-<topic> && opencode                       # interactive
+cd ~/ob-<topic> && opencode run "<task>"          # one non-interactive turn
+```
 
 ### 1.3 Which skills to load
 
@@ -178,7 +295,21 @@ python3 -m pytest tests/test_island.py -q
 ```
 
 Offline, build the venv while online and keep it, or carry a wheelhouse
-([SPARK_HYDRA.md H7](SPARK_HYDRA.md#h7-test-and-language-toolchains)).
+([SPARK_HYDRA.md H7](SPARK_HYDRA.md#h7-test-and-language-toolchains),
+[PYTHON_OFFLINE.md](PYTHON_OFFLINE.md)).
+
+**What exists today (checked read-only on 2026-11-18):**
+
+| Machine | Python with pytest | ShellCheck |
+|---|---|---|
+| Mac | `~/.local/opt/openbeast-eval-venv/bin/python` (the eval venv; CONTRIBUTING uses it) | `/opt/homebrew/bin/shellcheck` 0.11.0 |
+| spark-2 | `~/obvenv/bin/python` (Python 3.12.3, pytest 9.0.3). `source ~/obvenv/bin/activate` before `tests/run_tests.sh` | **none** |
+| spark-1 | **none**. `/usr/bin/python3` has no pytest. `~/.venvs/spark-tools` exists but is a torch/numpy venv, not the test closure | **none** |
+
+So on the Sparks, Python tests run on spark-2, and ShellCheck runs on the
+Mac. To lint on a Spark offline, stage a static `shellcheck` aarch64 binary
+(for example on an ark drive, [BEAST_ARK.md](BEAST_ARK.md)) while online.
+`tests/test_scripts.sh` covers syntax and path references without it.
 `tests/run_tests.sh` refuses to report success without pytest. It sets
 `OPENBEAST_SKIP_NETWORK_TESTS=1` and points the tool audit log at a temp file.
 
@@ -192,9 +323,13 @@ host: it runs no OpenBeast services and had ~11 GiB available, against spark-1's
 ~9.7.
 
 ```bash
-ssh spark-2.tail4109f9.ts.net 'git clone -q ~/openbeast ~/ob-test && cd ~/ob-test && nice -n 19 bash tests/test_spark_guard.sh | tail -3'
+ssh spark-2.tail4109f9.ts.net 'git clone -q -b <branch> max@10.100.216.1:git/openbeast.git ~/ob-test && cd ~/ob-test && source ~/obvenv/bin/activate && nice -n 19 bash tests/test_spark_guard.sh | tail -3'
 ssh spark-2.tail4109f9.ts.net 'rm -rf ~/ob-test'          # clean up
 ```
+
+Clone the branch under test from the hub ([11](#11-developing-with-github-unreachable)),
+or from GitHub when online. spark-2's own `~/openbeast` is as old as
+spark-1's, so a clone of it tests old code.
 
 Measured on spark-2 on 2026-11-15, at this branch's head, in a clone: see
 [9.3](#93-gnu-suites-on-spark-2).
@@ -243,7 +378,7 @@ Run the narrow suites while iterating, then the full set before committing:
 | `evals/` | `tests/test_scoring.py`, `test_suite_stats.py`, `test_fast_suite.py`, `test_eval_*.py`, `test_cache.py`, `test_benchmark_lifecycle.py`, `test_board_honesty.py`, `test_leaderboard_eligibility.py`, plus `python3 evals/suite_stats.py --check` |
 | `.github/workflows/*` or a new named test step | `tests/test_ci_workflow.py` |
 | docs that cite eval counts | `python3 evals/suite_stats.py --check` (exit 1 on drift) |
-| a live surface (only read-only, only on the live box) | `scripts/healthcheck.sh`, `scripts/backends/conformance.sh --model DeepSeek-V4.1-Flash-1017`, `tests/test_smoke.sh` (needs a live stack) |
+| a live surface (only read-only, only on the live box) | `scripts/healthcheck.sh`, `scripts/backends/conformance.sh --model GLM-5.3-Flash-EXL3` (the served id; `DeepSeek-V4.1-Flash-1017` when DeepSeek is selected), `tests/test_smoke.sh` (needs a live stack) |
 
 ---
 
@@ -257,7 +392,7 @@ system-prompt.md   agents/runner.py   agents/tools.py
 evals/SUITE_VERSION   evals/HARNESS_VERSION   evals/vlib.py
 ```
 
-`evals/HARNESS_VERSION` is a pin, not code: `harness7 <fingerprint>`, where
+`evals/HARNESS_VERSION` is a pin, not code: `harness8 <fingerprint>` (2026-11-18), where
 the fingerprint is the AST of run_eval's agent-shaping and judging code
 (`cache.HARNESS_FUNCTIONS` / `HARNESS_CONSTANTS`: the agent's argv, env and
 wall cap, fixture setup, the validator, its bootstrap and private build
@@ -288,7 +423,7 @@ injects it into every validator.
   ```
 
 - **v5.0 is the current suite** (`evals/SUITE_VERSION` = `v5`, harness
-  `harness7`, the manifest `evals/suites/v5.json`). `SUITE_VERSION` and the
+  `harness8`, the manifest `evals/suites/v5.json`). `SUITE_VERSION` and the
   manifest move only when Max rolls the suite; v5.1 is a backlog of twelve
   families, not something to add units to ([10](#10-the-v5-eval-suite-offline-running-it-and-authoring-for-it)).
 
@@ -311,10 +446,14 @@ The `git-discipline` skill is the long form. In short:
   asks for.
 - **Never** amend, rebase or force-push a commit that is already pushed to a
   shared branch. Never `--no-verify`.
-- **No network?** Bring a branch home as a bundle:
+- **No network?** Push the branch to the hub on spark-1 and merge it into
+  the offline trunk there; the whole loop is
+  [11](#11-developing-with-github-unreachable). With no network between
+  machines at all, carry it as a bundle:
   `git bundle create /tmp/topic.bundle main..fix/<topic>`, then
-  `git fetch /tmp/topic.bundle fix/<topic>:fix/<topic>` where the remote is
-  reachable.
+  `git fetch /tmp/topic.bundle fix/<topic>:fix/<topic>` on the other side.
+- **Identity.** Commits need `user.name` and `user.email`. spark-1 has no
+  global git identity, so set them in each clone (1.1).
 - **Never share the stash.** Other sessions share it. Use a WIP commit on your
   branch instead of `git stash`.
 
@@ -761,6 +900,14 @@ python3 evals/profile.py --model glm-5.3-flash --budget-h 4 --jobs 4
 python3 evals/run_eval.py --base-url http://127.0.0.1:8000/v1 --tasks 163,190 --no-cache
 ```
 
+`--model glm-5.3-flash` is a `benchmark_all.py` MODELS slug. DeepSeek has no
+slug yet (2026-11-18): name it with `--model-name "DeepSeek-V4.1-Flash-1017"
+--base-url … --api-key-env <VAR>` and `--slots 4`, and only run against the
+pair while it is serving DeepSeek. `127.0.0.1:8000` needs the TensorFold key
+(`--api-key-env` naming a variable that holds the contents of
+`~/.config/openbeast/tensorfold-api-key`). Any profile loads the pair for
+hours: it is Max's call, never a side effect of another task.
+
 - A profile runs **L0** (bare) on every unit, measures how fast this server
   really is, then fits **L1** (packs, zig only) and **L2** (packs +
   diagnostics + escalation, compiled and shell units) into what is left of
@@ -874,3 +1021,245 @@ python3 tests/prove_task.py --suite v5 --json /tmp/proof.json      # ~1 h on a l
 Run one family at a time when you parallelise by hand: a family's units
 share one `/tmp/eval_*` dir, and two provers of the same family at once
 corrupt each other (186's and 190's verifiers both hit this).
+
+---
+
+## 11. Developing with GitHub unreachable
+
+GitHub is the source of truth when it is reachable: branches are pushed
+there, reviewed as pull requests, and merged into `main` by Max (CI is off;
+[CONTRIBUTING.md](../CONTRIBUTING.md#ci-is-off-check-locally-before-merging)).
+When GitHub is unreachable, the same loop runs against a **bare repository
+on spark-1**, the *hub*, so the Sparks and the Mac can still share
+branches, review each other's work and merge it. When GitHub returns, the
+Mac carries the result back as ordinary pull requests.
+
+**Status, 2026-11-18: the hub does not exist yet.** spark-1 has no
+`~/git/`, no `gh` and no GitHub credentials (checked read-only). The setup in
+11.2 takes a minute and is best done while GitHub is reachable.
+
+### 11.1 The layout
+
+| Thing | Where | Rule |
+|---|---|---|
+| The hub | spark-1, `~/git/openbeast.git` (bare: no working tree, nothing runs from it) | Never inside `~/openbeast`, which is the live command center |
+| `main` in the hub | a copy of GitHub's `main` | **Only ever fast-forwarded from GitHub.** Nobody commits or merges into it offline |
+| `offline/main` in the hub | the **offline trunk**: where reviewed offline work is merged | Created from `main`. Only merges land here, never force-pushes |
+| Topic branches | `fix/<topic>`, `docs/<topic>`, `feat/<topic>` in the hub | One logical change each, branched from `offline/main` |
+| Work clones | `~/ob-work`, `~/ob-<topic>` on either Spark or the Mac | Disposable. All editing and testing happens here |
+
+Why the trunk is separate from `main`: GitHub's `main` keeps moving while
+the Sparks are cut off, and only Max merges into it. If the Sparks merged
+into their own `main`, the two would diverge and every sync would need a
+history rewrite. With `main` kept as GitHub's copy, catching up is always a
+fast-forward, and offline work goes back as pull requests like any other.
+
+How each machine reaches the hub:
+
+| From | Remote URL | Path (verified 2026-11-18) |
+|---|---|---|
+| spark-1 | `~/git/openbeast.git` | local disk |
+| spark-2 | `max@10.100.216.1:git/openbeast.git` | ssh over the fabric. spark-2 → spark-1 ssh works with the existing keys |
+| Mac, at home | `spark-1:git/openbeast.git` | ssh through the NVIDIA Sync alias (`spark-3dc6.local`); after a reboot, if mDNS fails, `ssh://max@192.168.40.153/~/git/openbeast.git` |
+| Mac, away | `spark-1.tail4109f9.ts.net:git/openbeast.git` | ssh over the tailnet ([SPARK_HYDRA.md F1](SPARK_HYDRA.md#f1-ssh-from-the-mac)) |
+
+None of these paths needs the internet. The LAN and the fabric are enough;
+the tailnet keeps working for existing direct connections
+([TAILSCALE_OFFLINE.md](TAILSCALE_OFFLINE.md)).
+
+### 11.2 One-time setup
+
+**While GitHub is reachable** (preferred). The repository is public, so
+spark-1 can clone it anonymously:
+
+```bash
+# on spark-1
+mkdir -p ~/git
+git clone --bare https://github.com/MaximilianKhan/openbeast.git ~/git/openbeast.git
+git -C ~/git/openbeast.git branch offline/main main
+git -C ~/git/openbeast.git config receive.denyNonFastForwards true   # nobody can force-push a shared branch
+git -C ~/git/openbeast.git config receive.denyDeletes true           # nor delete one by push
+git -C ~/git/openbeast.git log --oneline -1 main                       # the commit GitHub's main had
+```
+
+**Already offline, and the Mac has a current clone.** Create an empty hub,
+then push to it from the Mac:
+
+```bash
+ssh spark-1 'git init --bare ~/git/openbeast.git && git -C ~/git/openbeast.git config receive.denyNonFastForwards true'
+cd ~/Documents/projects/openbeast.nosync
+git push spark-1:git/openbeast.git origin/main:refs/heads/main origin/main:refs/heads/offline/main
+```
+
+**No network between the machines.** Make a bundle on the Mac
+(`git bundle create /Volumes/<drive>/openbeast.bundle --all`), carry it, and
+on spark-1 run `git clone --bare /media/<drive>/openbeast.bundle ~/git/openbeast.git`,
+then the `branch offline/main` and `config` lines above.
+
+**Last resort: no current copy anywhere.** `git clone --bare ~/openbeast
+~/git/openbeast.git` gives the live checkout's committed history only (behind
+`main`, see 1.1). Record the starting commit in the first branch you make.
+
+**Keep it fresh while online.** Before a planned outage, or daily:
+
+```bash
+git -C ~/git/openbeast.git fetch origin main:main     # fast-forward only: it refuses if the hub's main diverged
+```
+
+If that refuses, someone committed to the hub's `main`. Find it with
+`git -C ~/git/openbeast.git log --oneline origin/main..main` after
+`git -C ~/git/openbeast.git fetch origin`, move those commits to a topic
+branch, and only then fast-forward.
+
+### 11.3 The loop: edit, test, commit, share, review, merge
+
+```bash
+# 1. a work clone, a topic branch from the offline trunk
+git clone ~/git/openbeast.git ~/ob-<topic> && cd ~/ob-<topic>
+git config user.name "spark-1 local model"; git config user.email "<the address Max chose>"
+git switch -c fix/<topic> origin/offline/main
+
+# 2. edit and test: the narrow suites first (3.3), then the wide ones (spark-2 for GNU suites, 3.2)
+# 3. commit: atomic, subject <= 72 chars, body says why (5)
+git add <paths> && git diff --cached && git commit
+
+# 4. share: push the topic branch to the hub
+git push -u origin fix/<topic>
+```
+
+**Review.** A second session (another agent, or a person) reviews the
+branch before it is merged, the way a pull request would be reviewed:
+
+```bash
+git fetch origin
+git log --oneline origin/offline/main..origin/fix/<topic>       # the commits under review
+git diff origin/offline/main...origin/fix/<topic>               # the change (three dots: since the branch point)
+git diff --name-only origin/offline/main...origin/fix/<topic> | grep -E '^(system-prompt(-tools)?\.md|agents/(runner|tools)\.py|evals/(SUITE_VERSION|HARNESS_VERSION|vlib\.py))$' \
+  && echo "ERA FILE TOUCHED: not mergeable offline, it needs Max"
+```
+
+Load the `code-review` skill for the review itself. Write the findings
+where they travel with the code: as commits on the branch, or in the merge
+commit's message. There is no PR to comment on.
+
+**Merge into the offline trunk.** Test the merge result, not just the branch:
+
+```bash
+cd ~/ob-<topic>
+git fetch origin
+git switch offline/main 2>/dev/null || git switch -c offline/main origin/offline/main
+git merge --ff-only origin/offline/main                          # catch up with the hub first
+git merge --no-ff origin/fix/<topic> -m "Merge fix/<topic> into offline/main" -m "<why, and the review's verdict>"
+# re-run the suites for every area either side touched (7, step 8)
+git push origin offline/main
+```
+
+If the push is rejected as non-fast-forward, someone merged first. Do
+**not** force anything. `git fetch origin && git merge origin/offline/main`,
+re-test, push again.
+
+**What may not be merged offline:**
+
+- A change to an era file, or to `system-prompt.md` /
+  `system-prompt-tools.md` (4). Keep it on its branch with a note for Max.
+- A change whose only verification would be on the live pair (a unit, a
+  recipe, the gate). Merge the code if its tests pass, and list the hardware
+  check under "VERIFY ON HARDWARE" in the merge message.
+
+**Putting offline work live** (only when Max asks, at a quiet moment). The
+live checkout is on `main`, so moving it to the offline trunk is a
+deliberate step:
+
+```bash
+cd ~/openbeast && git status --short                  # anything listed is either saved first or known to be in the trunk
+git fetch ~/git/openbeast.git offline/main && git merge --ff-only FETCH_HEAD
+systemctl --user restart openbeast                    # makes the commit live; drops gate streams in flight
+```
+
+On 2026-11-18 `git status` there listed uncommitted copies of files that
+`main` now tracks (1.1). Git refuses to overwrite untracked files: move them
+aside (`mkdir -p ~/live-untracked && mv <files> ~/live-untracked/`) after
+checking with `diff` that the tracked versions are the same or newer. Keep
+spark-2 on the same commit:
+`ssh spark-2 'cd ~/openbeast && git pull --ff-only max@10.100.216.1:git/openbeast.git offline/main'`.
+
+### 11.4 Syncing back when GitHub returns
+
+From the Mac, which has `gh` and the credentials:
+
+```bash
+cd ~/Documents/projects/openbeast.nosync
+git remote add hub spark-1:git/openbeast.git          # once
+git fetch origin && git fetch hub
+git log --oneline --no-merges origin/main..hub/offline/main   # what the offline period produced
+```
+
+**One pull request per topic branch** (preferred: each is reviewed and
+merged on its own, as usual):
+
+```bash
+git push origin hub/fix/<topic>:refs/heads/fix/<topic>
+gh pr create --base main --head fix/<topic> --title "<subject>" --body-file /tmp/pr.md
+```
+
+If `main` moved and the PR conflicts, resolve it on a local branch with
+`git merge origin/main` (not a rebase: the commits already exist on the hub,
+and merging keeps them identical, so 11.5's check stays simple). Then run the
+local checks of CONTRIBUTING.md, put the results in the PR body, and leave
+the merge to Max.
+
+**Or one pull request for the whole trunk**, when the topics depend on each
+other: `git push origin hub/offline/main:refs/heads/offline/sync-$(date +%Y%m%d)`
+and a PR from that branch.
+
+### 11.5 Resetting the trunk after the sync
+
+Once the pull requests are merged on GitHub, bring the hub's `main` up to
+date and check that nothing on the trunk is missing from it:
+
+```bash
+# on spark-1
+git -C ~/git/openbeast.git fetch origin main:main
+git -C ~/git/openbeast.git log --oneline --no-merges main..offline/main   # must print nothing
+git -C ~/git/openbeast.git cherry -v main offline/main | grep '^+'        # also nothing: "+" = not in main in any form
+git -C ~/git/openbeast.git branch -f offline/main main                    # start the next offline period from main
+git -C ~/git/openbeast.git branch -d fix/<topic>                          # each merged topic branch
+```
+
+If either check prints a commit, that work did not reach GitHub. Do not
+reset the trunk until it has.
+
+### 11.6 Without any network between machines
+
+Bundles carry branches on a drive. A bundle is verified against the
+receiving repository, so run `verify` inside one:
+
+```bash
+# source machine
+git bundle create /media/<drive>/ob-$(date +%Y%m%d).bundle offline/main fix/<topic>
+# target machine
+git -C ~/ob-work bundle verify /media/<drive>/ob-<date>.bundle
+git -C ~/ob-work fetch /media/<drive>/ob-<date>.bundle 'refs/heads/*:refs/remotes/usb/*'
+git -C ~/ob-work log --oneline usb/offline/main -3
+```
+
+To feed a bundle into the hub: fetch it into a work clone as above, then
+`git push origin usb/fix/<topic>:refs/heads/fix/<topic>`.
+
+### 11.7 What does not work offline, and what to do instead
+
+| Online habit | Offline |
+|---|---|
+| `gh pr create`, PR review comments | review in a second session (11.3); findings as commits or in the merge message |
+| `gh pr merge --admin` into `main` | merge into `offline/main` on the hub; `main` waits for GitHub |
+| `git clone https://github.com/...` in CONTRIBUTING's spark-2 recipe | `git clone max@10.100.216.1:git/openbeast.git` |
+| `pip install`, `apt`, `docker pull` | staged wheelhouses, debs, images ([SPARK_HYDRA.md H](SPARK_HYDRA.md#h-fully-offline-operation), [PYTHON_OFFLINE.md](PYTHON_OFFLINE.md)) |
+| `web_search`, `fetch`, upstream docs | the repo's docs, `--help`, `scripts/docs.sh` mirrors, `language_reference` (2) |
+
+The git commands in 11.2 to 11.6 were exercised on 2026-11-18 against
+throwaway repositories on the Mac (git 2.54): clone from a bare hub, topic
+branch, `--no-ff` merge into `offline/main`, a GitHub-side change meanwhile,
+pushing the topic branch to a second remote, fast-forwarding the hub's
+`main`, and a bundle. The Sparks run git 2.43, which has every command used
+here. The hub itself has not been created on spark-1 yet, so the ssh URLs are
+verified as ssh paths, not as git remotes.
