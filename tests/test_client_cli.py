@@ -102,6 +102,9 @@ def _home(tmp_path, rig_url, slot_url, default="openbeast-rig/stub-static"):
     stub.mkdir()
     (stub / "tailscale").write_text("#!/bin/sh\nexit 0\n")
     (stub / "tailscale").chmod(0o755)
+    for tool in ("launchctl", "systemctl"):      # never this machine's real ones
+        (stub / tool).write_text("#!/bin/sh\nexit 1\n")
+        (stub / tool).chmod(0o755)
     return home, oc, stub
 
 
@@ -197,3 +200,22 @@ def test_refresh_on_a_llama_rig_is_unchanged(tmp_path):
     assert cfg["model"] == "openbeast-rig/qwen"
     assert not any("llama-server rigs only" in r.get("name", "")
                    for r in cfg["provider"]["openbeast-rig"]["models"].values())
+
+
+def test_refresh_without_a_registry_takes_the_legacy_sync(tmp_path):
+    # review 2026-11-18: the legacy branch tested `-n $RIG_REGISTRY` (always
+    # set), so a config with no registry behind it ran `sync` and failed.
+    rig = FakeRig({"/v1/models": [(200, {"data": [{"id": "GLM-5.3-Flash"}]})]})
+    try:
+        home, oc, stub = _home(tmp_path, rig.url, _closed_port_url())
+        (home / ".openbeast-client.env").unlink()
+        out = _run(home, stub, "refresh-config")
+    finally:
+        rig.close()
+    assert "catalog refresh failed" not in out and "no rig registered" not in out, out
+    assert "GLM-5.3-Flash" in json.loads(oc.read_text())["provider"]["openbeast-rig"]["models"], out
+    assert not (home / ".config" / "openbeast" / "rigs.json").exists()
+
+
+def _closed_port_url():
+    return f"http://127.0.0.1:{_closed_port()}/api/slot"

@@ -35,7 +35,11 @@ source "$SCRIPT_DIR/lib/engine.sh"
 source "$SCRIPT_DIR/lib/proc.sh"
 ob_engine_load maya
 _eng_maya_profile_load "$PROFILE" || exit 1
-HOME_DIR="$(_eng_maya_active)"
+# Resolved: ~/.local/opt/maya is a symlink to maya-<tag>, and `find DIR
+# -maxdepth 1` does not follow a symlink given as its start point, so the
+# search for the config Maya wrote never looked inside and every prepare
+# failed after its 10-30 minute build. The recorded path is the resolved one.
+HOME_DIR="$(cd "$(_eng_maya_active)" 2>/dev/null && pwd -P)" || HOME_DIR="$(_eng_maya_active)"
 W="$(_eng_maya_weights_dir)"
 CMD=(env MAYA_UPDATE_CHECK=0 HF_HUB_OFFLINE=1
      "$HOME_DIR/.venv/bin/python" "$HOME_DIR/maya.py" --setup --yes --plain --no-start

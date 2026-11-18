@@ -430,14 +430,24 @@ do APFS and ext4.
   git/<entry>/         <entry>-<tag>.shallow.git.tar   (history = shallow: a bare repo, tarred)
                        <entry>-<tag>.bundle            (history = full: `git bundle`)
   files/<entry>/<version>/<platform>/
-                       the release file + its checksum file + its signature, as upstream named them
+                       the release file, and its checksum file and signature: beside it when their
+                       name is the file's own (x.tar.gz.sha256, x.tar.xz.minisig), else under
+                       checksums/<file>/ and signatures/<file>/, so two files whose sums share a name
+                       (two SHA256SUMS) never overwrite each other
   oci/<entry>/<image>_<tag>.oci.tar
                        OCI image layout, uncompressed tar: oci-layout, index.json (→ the pinned
                        digest), blobs/sha256/…, plus a docker-archive manifest.json
-  pkgs/pip/<entry>-<v>/<platform>/   wheels + requirements.ark.txt (--require-hashes)
-  pkgs/npm/<entry>-<v>/<platform>/   package.json, package-lock.json, tarballs/
-  pkgs/gomod/<entry>-<v>/any/goproxy/  a GOPROXY tree (cache/download)
-  pkgs/cargo/<entry>-<v>/any/        vendor.tar + cargo-config.toml
+  pkgs/pip/<entry>-<v>-<set>/<platform>/   wheels + requirements.ark.txt (--require-hashes)
+  pkgs/npm/<entry>-<v>-<set>/<platform>/   package.json, package-lock.json, tarballs/
+  pkgs/gomod/<entry>-<v>-<set>/any/goproxy/  a GOPROXY tree (cache/download)
+  pkgs/cargo/<entry>-<v>-<set>/any/        vendor.tar + cargo-config.toml
+                       <set>: 12 hex of a hash of what the set's content depends on (pip: the
+                       requirements, the target python — this python when the set pins none —
+                       and the platform tags; npm: the packages; gomod/cargo: the git commit).
+                       The lock records it as set_hash, so a set whose requirements or python
+                       change under the same version is re-fetched into a clean directory (the
+                       old one is removed), not on top of the old wheels. `ark lint` refuses
+                       two artifacts that would land on one drive path
   .ark-stage/          partial downloads and pull state; never served, safe to delete
 ```
 
@@ -548,10 +558,24 @@ That is the real 2026-11-15 smoke run: 228 MB in 30 s. Options:
 | `--allow-unverified` | accept the 10 no-checksum files as TOFU |
 | `--allow-cross-pip` | fetch a pip set on a box whose platform or python differs from the set's (§3.2): recorded as `tofu+cross-host`, and the closure may be incomplete |
 | `--recheck` | re-hash what is already present instead of trusting its size |
-| `--dry-run` | list what would be fetched |
+| `--dry-run` | list what would be fetched, and write nothing at all (no catalog, tool, `ark.lock` or `ARK.md`; a missing `--to` folder is not created) |
 
 Re-running is always safe. Items already present (same pin, same size)
-are skipped: `12 already present`.
+are skipped: `12 already present`. That includes running the drive's own
+`./ark fetch --to .`: the tool on the drive is the one running, so it is left
+in place (it used to be deleted and not recopied); a fresh copy from a
+checkout is built beside the old one and swapped in.
+
+**A checksum file upstream has since deleted** (HTTP 404/410) does not
+fail a file whose catalog pin (`sha256` / `upstream_hash`) exists: `lock`
+took that pin from the same file, so the download is checked against it
+alone, logged `WARNING … is gone`, and the lock item gets
+`"warnings": ["the upstream checksum file … is gone (HTTP 404); verified
+against the catalog's pin only"]` with `verified = "pinned"`. With no pin,
+or a signature made over that checksum file, the item is still refused.
+
+**An https download redirected to plain http is refused** (`redirect to
+http://… downgrades https — refused`), except to loopback.
 
 **What it refuses** (the messages as tests/test_ark.py triggers them), each deleting the download and continuing with the
 next item (exit 4 at the end):
@@ -667,7 +691,7 @@ is decompressed once.
 
 | what | where it goes | options |
 |---|---|---|
-| release files | `~/.local/opt/<entry>-<version>/`, plus `~/.local/opt/<entry>` → it, plus links in `~/.local/bin`. One entry's files merge into one root (kubeadm, kubelet and kubectl together) | `--prefix`, `--bin`, `--platform` (default: this box) |
+| release files | `~/.local/opt/<entry>-<version>/`, plus `~/.local/opt/<entry>` → it, plus links in `~/.local/bin`. One entry's files merge into one root (kubeadm, kubelet and kubectl together). An existing `~/.local/bin/<name>` is replaced only when it is restore's own (a symlink into `--prefix`); your own file or a link elsewhere is refused (`… restore did not make; not replacing it`) | `--prefix`, `--bin`, `--platform` (default: this box), `--force` to replace your own |
 | git | `~/src/<entry>`, checked out at the pinned commit, re-checked, tagged | `--src`, `--force` to replace |
 | images | `--registry HOST:PORT` pushes every kept platform plus the index (digests unchanged; §8). `--docker` / `--podman` loads this box's platform as a one-platform tar that docker 20.10+ loads. With neither, it prints the `docker load` / `skopeo copy` lines | |
 | pip | a venv in `<prefix>/<entry>-<v>/venv`, `pip install --no-index --require-hashes` | `--python PATH`: the wheels' python, e.g. the archived CPython |
@@ -987,7 +1011,7 @@ These entries are `manual`, and why:
 | llama.cpp | follows `scripts/llama.cpp.ref` |
 | sqlite | `sv=` and `year=` encode the version |
 | forgejo | releases are on Codeberg |
-| swift, postgres, mariadb, rabbitmq, mosquitto, open-webui, searxng, lang-images, base-images, ubuntu-server, alpine-minirootfs, devdocs, devdocs-zim-* | dated or mutable tags. Re-pin with `lock --refresh --only …` |
+| swift, postgres, mariadb, rabbitmq, mosquitto, open-webui, searxng, lang-images, base-images, ubuntu-server, alpine-minirootfs, devdocs, devdocs-zim-* | dated or mutable tags. Images: `lock --refresh --accept-image-moves --only …`; a file hash or commit: blank it, then `lock --only …` |
 
 ### 10.3 What `lock` does
 
@@ -1002,9 +1026,14 @@ value, and `--dry-run` prints the diff only:
 | `digest` + `platform_sizes` + `verified = "registry"` | the registry. A HEAD, which Docker Hub does not count against its pull limit, then the manifests |
 | `git_size` | the GitHub API |
 
-**A pin that disagrees with upstream is never overwritten.** `lock` prints
-`UPSTREAM CHANGED — the catalog pins …, upstream now says …`. Investigate,
-and blank the field by hand to accept the new file.
+**A pin that disagrees with upstream is never overwritten, `--refresh`
+included.** `lock` prints `UPSTREAM CHANGED — the catalog pins …, upstream
+now says …` for a `sha256`, an `upstream_hash` (sha512, sha3), a git
+`commit` whose tag moved, and an image `digest` whose tag moved.
+Investigate, and blank the field by hand to accept the new file. Image
+tags move by design (a rebuilt `postgres:17`), so for those alone
+`lock --refresh --accept-image-moves` takes the new digest and says
+`MOVED … (accepted)`.
 
 The first full lock of this catalog (2026-11-15) failed
 on 9 of its 443 reported lookups. Each one was a real catalog error, now fixed:

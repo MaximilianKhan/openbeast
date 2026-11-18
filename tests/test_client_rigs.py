@@ -54,6 +54,8 @@ class FakeRig:
                      "auth": "device" if key else "open"}
         self.model = model
         self.auth_seen = []
+        self.slot_status = 200          # 503: beast-slot busy / restarting
+        self.redirect_models = None     # a URL: /v1/models answers 302 there
 
         class H(BaseHTTPRequestHandler):
             def log_message(self, *a):
@@ -71,7 +73,15 @@ class FakeRig:
                 auth = self.headers.get("Authorization") or ""
                 rig.auth_seen.append((path, auth))
                 if path == "/api/slot":
+                    if rig.slot_status != 200:
+                        return self._send(rig.slot_status, {"error": "busy"})
                     return self._send(200, rig.slot)
+                if path == "/v1/models" and rig.redirect_models:
+                    self.send_response(302)
+                    self.send_header("Location", rig.redirect_models)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 if path == "/health":
                     return self._send(200, {"status": "ok"})
                 if rig.key and auth != "Bearer " + rig.key:
@@ -145,6 +155,13 @@ class Env:
         (self.stub / "tailscale").write_text(
             "#!/bin/sh\n[ \"$1\" = status ] && [ \"$2\" = --json ] && cat '%s'\nexit 0\n" % (tmp_path / "ts.json"))
         (self.stub / "tailscale").chmod(0o755)
+        # `status` asks `autosync status`, which asks launchctl / systemctl:
+        # never the real ones (they would read, or with install change, this
+        # machine's own agents). Stubs log their argv and say "not loaded".
+        self.svc_log = tmp_path / "svc.log"
+        for tool in ("launchctl", "systemctl"):
+            (self.stub / tool).write_text("#!/bin/sh\necho \"%s $*\" >> '%s'\nexit 1\n" % (tool, self.svc_log))
+            (self.stub / tool).chmod(0o755)
         self.registry = ob / "rigs.json"
 
     def run(self, *args, stdin=None):
@@ -523,3 +540,216 @@ def test_autosync_follows_a_model_switch_and_is_quiet_otherwise(tmp_path, rig_a)
     rc, out = e.run("autosync", "run")
     assert rc == 0 and out.strip() == "", out
     assert e.oc.read_text() == before
+
+
+# ---- review 2026-11-18 ---------------------------------------------------------
+
+def test_an_unreadable_key_file_keeps_the_key_opencode_has(tmp_path, rig_a):
+    e = Env(tmp_path, rig_a)
+    rc, out = e.run("refresh-config")
+    assert rc == 0, out
+    assert e.cfg()["provider"]["openbeast-spark-hydra"]["options"]["apiKey"] == KEY_A
+    kf = e.xdg / "openbeast" / "spark-hydra-gate.key"
+    kf.rename(kf.with_name("moved.away"))                # moved, unmounted, chmod'ed…
+    rc, out = e.run("refresh-config")
+    assert rc == 0, out
+    assert "key file of rig 'spark-hydra'" in out and "cannot be read" in out, out
+    cfg = e.cfg()
+    # not "not-needed", not deleted, not stripped from the tools' env
+    assert cfg["provider"]["openbeast-spark-hydra"]["options"]["apiKey"] == KEY_A
+    assert cfg["provider"]["openbeast-rig"]["options"]["apiKey"] == KEY_A
+    assert cfg["mcp"]["servers"]["openbeast-tools"]["environment"]["OPENBEAST_API_KEY"] == KEY_A
+    rc, out = e.run("rigs", "--no-probe")
+    assert "UNREADABLE" in out, out
+    rc, out = e.run("use", "spark-hydra", "--force")
+    assert "OPENBEAST_API_KEY='%s'" % KEY_A in e.env_file.read_text()      # env file keeps it too
+
+
+def test_no_key_file_never_turns_a_real_key_into_not_needed(tmp_path, rig_a):
+    e = Env(tmp_path, rig_a)
+    e.run("refresh-config")
+    reg = e.reg()
+    reg["rigs"]["spark-hydra"]["key_file"] = ""          # no key registered (e.g. an older registry)
+    e.registry.write_text(json.dumps(reg))
+    rc, out = e.run("refresh-config")
+    assert rc == 0, out
+    assert e.cfg()["provider"]["openbeast-rig"]["options"]["apiKey"] == KEY_A    # same rig: kept
+
+
+def test_a_slot_that_does_not_answer_keeps_the_backend(tmp_path, rig_a):
+    # TensorFold rig; beast-slot busy (503) while the model switches: before
+    # the fix the backend became None (= llama) and the rig got the checkout's
+    # 18 static llama rows.
+    e = Env(tmp_path, rig_a)
+    e.run("refresh-config")
+    assert set(e.cfg()["provider"]["openbeast-rig"]["models"]) == {"GLM-5.3-Flash-EXL3"}
+    rig_a.slot_status = 503
+    rig_a.model = "DeepSeek-V4.1-Flash-1017"
+    rc, out = e.run("refresh-config")
+    assert rc == 0, out
+    assert set(e.cfg()["provider"]["openbeast-rig"]["models"]) == {"DeepSeek-V4.1-Flash-1017"}
+    assert e.reg()["rigs"]["spark-hydra"]["last"]["backend"] == "tensorfold"
+
+
+def test_autosync_repairs_a_tensorfold_rig_left_with_llama_rows(tmp_path, rig_a):
+    e = Env(tmp_path, rig_a)
+    e.run("refresh-config")
+    reg = e.reg()
+    reg["rigs"]["spark-hydra"]["last"]["backend"] = None              # the damage the old code did
+    e.registry.write_text(json.dumps(reg))
+    static = json.load(open(os.path.join(REPO, "opencode.json")))["provider"]["llama-cpp"]["models"]
+    cfg = e.cfg()
+    rows = cfg["provider"]["openbeast-rig"]["models"]
+    cfg["provider"]["openbeast-rig"]["models"] = dict(static, **rows)
+    e.oc.write_text(json.dumps(cfg))
+    rc, out = e.run("autosync", "run")
+    assert rc == 0 and "now serves GLM-5.3-Flash-EXL3" in out, out
+    assert set(e.cfg()["provider"]["openbeast-rig"]["models"]) == {"GLM-5.3-Flash-EXL3"}
+    assert e.reg()["rigs"]["spark-hydra"]["last"]["backend"] == "tensorfold"
+    rc, out = e.run("autosync", "run")
+    assert out.strip() == "", out                                     # and then quiet again
+
+
+def test_probes_never_follow_a_redirect_with_the_key(tmp_path, rig_a):
+    elsewhere = FakeRig(None)
+    try:
+        rig_a.redirect_models = elsewhere.url + "/v1/models"
+        e = Env(tmp_path, rig_a)
+        rc, out = e.run("rigs", "--json")
+        assert rc == 0, out
+        assert [p for p, _ in elsewhere.auth_seen] == [], elsewhere.auth_seen   # never dialed, key or not
+        state = json.loads(out[out.index("{"):])["rigs"]["spark-hydra"]["state"]
+        assert state != "healthy", state
+    finally:
+        elsewhere.close()
+
+
+def test_autosync_is_quiet_about_a_missing_or_jsonc_config(tmp_path, rig_a):
+    e = Env(tmp_path, rig_a)
+    e.run("refresh-config")
+    reg0, m0 = e.registry.read_text(), os.stat(e.registry).st_mtime_ns
+    text = e.oc.read_text()
+    e.oc.write_text("// my comment\n" + text)
+    rc, out = e.run("autosync", "run")
+    assert rc == 0 and "Traceback" not in out, out
+    assert len(out.strip().splitlines()) == 1 and "not plain JSON" in out, out
+    rc, out = e.run("autosync", "run")
+    assert rc == 0 and out.strip() == "", out                         # rate-limited
+    e.oc.unlink()
+    rc, out = e.run("autosync", "run")
+    assert rc == 0 and len(out.strip().splitlines()) == 1 and "no opencode config" in out, out
+    rc, out = e.run("autosync", "run")
+    assert rc == 0 and out.strip() == "", out
+    assert e.registry.read_text() == reg0 and os.stat(e.registry).st_mtime_ns == m0   # never rewritten
+    # an interactive sync says so, with no traceback, and leaves the file alone
+    e.oc.write_text("// my comment\n" + text)
+    rc, out = e.run("refresh-config")
+    assert "could not parse" in out and "Traceback" not in out, out
+    assert e.oc.read_text().startswith("// my comment")
+
+
+def test_autosync_caps_its_log(tmp_path, rig_a):
+    e = Env(tmp_path, rig_a)
+    e.run("refresh-config")
+    log = e.home / ".openbeast-client" / "autosync.log"
+    log.write_bytes(b"x" * 2000000 + b"\nthe last line\n")
+    rc, out = e.run("autosync", "run")
+    assert rc == 0, out
+    data = log.read_bytes()
+    assert len(data) < 1024 * 1024 and data.endswith(b"the last line\n"), len(data)
+
+
+def test_autosync_skips_a_run_while_another_sync_holds_the_lock(tmp_path, rig_a):
+    import fcntl
+    e = Env(tmp_path, rig_a)
+    e.run("refresh-config")
+    before = e.oc.read_text()
+    rig_a.model = "DeepSeek-V4.1-Flash-1017"
+    rig_a.slot["model"] = {"id": rig_a.model, "ctx": 524288}
+    fd = os.open(str(e.xdg / "openbeast" / ".lock"), os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    try:
+        rc, out = e.run("autosync", "run")
+        assert rc == 0 and out.strip() == "" and e.oc.read_text() == before, out
+    finally:
+        os.close(fd)
+    rc, out = e.run("autosync", "run")
+    assert "now serves DeepSeek-V4.1-Flash-1017" in out, out
+
+
+def _svc_stubs(e, system):
+    """uname says `system`; launchctl / systemctl are stubs that log argv and
+    answer like an installed job. No test calls the real ones."""
+    (e.stub / "uname").write_text("#!/bin/sh\necho %s\n" % system)
+    (e.stub / "launchctl").write_text(
+        "#!/bin/sh\necho \"launchctl $*\" >> '%s'\n"
+        "if [ \"$1\" = print ]; then [ -f \"$HOME/Library/LaunchAgents/ai.openbeast.client-autosync.plist\" ]"
+        " || exit 113; printf '\\tstate = not running\\n\\tlast exit code = 0\\n'; fi\nexit 0\n" % e.svc_log)
+    (e.stub / "systemctl").write_text(
+        "#!/bin/sh\necho \"systemctl $*\" >> '%s'\nu=\"${XDG_CONFIG_HOME}/systemd/user/openbeast-client-autosync\"\n"
+        "case \"$*\" in\n  *is-active*) [ -f \"$u.timer\" ] || exit 3 ;;\n"
+        "  *'-p Result'*) echo success ;;\n  *ExecMainStatus*) echo 0 ;;\nesac\nexit 0\n" % e.svc_log)
+    for t in ("uname", "launchctl", "systemctl"):
+        (e.stub / t).chmod(0o755)
+
+
+def _assert_copy(e):
+    snap = e.home / ".openbeast-client" / "autosync"
+    for f in ("scripts/lib/client_rigs.py", "opencode.json", "system-prompt.md", "system-prompt-tools.md"):
+        assert (snap / f).is_file(), f
+    return snap
+
+
+def test_autosync_install_on_macos_runs_the_copy_never_the_checkout(tmp_path, rig_a):
+    import plistlib
+    e = Env(tmp_path / "r&d <home>", rig_a)                 # a path the plist must escape
+    _svc_stubs(e, "Darwin")
+    e.run("refresh-config")
+    rc, out = e.run("autosync", "install")
+    assert rc == 0 and "launchd agent ai.openbeast.client-autosync" in out, out
+    snap = _assert_copy(e)
+    plist = e.home / "Library" / "LaunchAgents" / "ai.openbeast.client-autosync.plist"
+    raw = plist.read_text()
+    assert REPO not in raw, raw                             # TCC: never the ~/Documents checkout
+    pl = plistlib.loads(raw.encode())                       # well-formed despite & and <
+    assert pl["ProgramArguments"][1:] == [str(snap / "scripts/lib/client_rigs.py"), "sync", "--if-changed"]
+    assert pl["EnvironmentVariables"]["OB_REPO"] == str(snap)
+    assert pl["StandardOutPath"] == str(e.home / ".openbeast-client" / "autosync.log")
+    assert "launchctl bootstrap" in e.svc_log.read_text()
+    # the job, run exactly as launchd would: from the copy alone
+    r = subprocess.run(pl["ProgramArguments"], capture_output=True, text=True, timeout=60,
+                       env={"HOME": str(e.home), "XDG_CONFIG_HOME": str(e.xdg), "PATH": "/usr/bin:/bin",
+                            "OB_PROBE_TIMEOUT": "2", **pl["EnvironmentVariables"]})
+    assert r.returncode == 0, r.stdout + r.stderr
+    rc, out = e.run("autosync", "status")
+    assert "autosync: on" in out and "last run: exit 0" in out and "copy matches this checkout" in out, out
+    (snap / "system-prompt.md").write_text("stale\n")
+    rc, out = e.run("autosync", "status")
+    assert "differs from this checkout: system-prompt.md" in out, out
+    rc, out = e.run("autosync", "uninstall")
+    assert rc == 0 and not plist.exists() and not snap.exists(), out
+    assert "launchctl bootout" in e.svc_log.read_text()
+
+
+def test_autosync_install_on_linux_quotes_the_unit(tmp_path, rig_a):
+    e = Env(tmp_path / "r&d %h home", rig_a)               # a space and a systemd specifier
+    _svc_stubs(e, "Linux")
+    e.run("refresh-config")
+    rc, out = e.run("autosync", "install")
+    assert rc == 0 and "systemd user timer" in out, out
+    snap = _assert_copy(e)
+    udir = e.xdg / "systemd" / "user"
+    unit = (udir / "openbeast-client-autosync.service").read_text()
+    assert REPO not in unit, unit
+    s = str(snap).replace("%", "%%")
+    py = str(e.home / ".openbeast-client" / "venv" / "bin" / "python3").replace("%", "%%")
+    assert 'Environment="OB_REPO=%s" "OB_TS_BIN=' % s in unit, unit
+    assert 'ExecStart="%s" "%s/scripts/lib/client_rigs.py" sync --if-changed' % (py, s) in unit, unit
+    assert (udir / "openbeast-client-autosync.timer").is_file()
+    assert "systemctl --user enable --now openbeast-client-autosync.timer" in e.svc_log.read_text()
+    rc, out = e.run("autosync", "status")
+    assert "autosync: on" in out and "last run: success (exit 0)" in out and "copy matches" in out, out
+    rc, out = e.run("autosync", "uninstall")
+    assert rc == 0 and not snap.exists(), out
+    assert not (udir / "openbeast-client-autosync.service").exists()
+    assert not (udir / "openbeast-client-autosync.timer").exists()

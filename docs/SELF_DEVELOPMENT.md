@@ -15,7 +15,9 @@ GLM's.
 
 **Who this page is for.** The local model on spark-1 (or a person at a Spark)
 developing OpenBeast with no help from the internet. Everything it needs is in
-this repository and on the Sparks' disks. The commands, grouped by machine,
+this repository and on the Sparks' disks, **once [0](#0-before-going-offline-bring-both-sparks-to-main)
+has been done while GitHub was still reachable**: both live checkouts brought
+to `main` and the Spark tools installed from it. The commands, grouped by machine,
 are in [COMMANDS.md](COMMANDS.md). The map of every doc is
 [docs/README.md](README.md). When GitHub is unreachable, branches move through
 a bare repository on spark-1 ([11](#11-developing-with-github-unreachable)).
@@ -26,6 +28,7 @@ The launch and operations runbook for the pair is
 
 | Section | |
 |---|---|
+| [0. Before going offline](#0-before-going-offline-bring-both-sparks-to-main) | the prerequisite: both live checkouts on `main`, the Spark tools installed |
 | [1. Setup](#1-setup) | a clone, which client, which skills |
 | [2. What works with the network off](#2-what-works-with-the-network-off) | tools, refusals, mirrors, docs |
 | [3. Tests: which to run for which change](#3-tests-which-to-run-for-which-change) | file area to test map, GNU-only suites, the right python |
@@ -39,6 +42,88 @@ The launch and operations runbook for the pair is
 | [11. Developing with GitHub unreachable](#11-developing-with-github-unreachable) | the hub repo on spark-1, the offline trunk, review and merge, syncing back |
 
 ---
+
+## 0. Before going offline: bring both Sparks to main
+
+**Do this while GitHub is reachable.** Everything later on this page assumes
+it. The live checkouts (`~/openbeast` on spark-1 and on spark-2) are not
+updated by anything automatic, and an offline Spark cannot catch up. On
+2026-11-18 both sat at `d3727185` (#203), behind `main`. How far behind is
+always one command away; do not trust a count written in a doc:
+
+```bash
+git -C ~/openbeast fetch origin && git -C ~/openbeast log --oneline HEAD..origin/main | wc -l   # 0 = current
+```
+
+**0.1 Look at what is local first (read-only).** A pull refuses to run over
+local changes, and the live checkouts have some:
+
+```bash
+cd ~/openbeast && git status --porcelain
+```
+
+On 2026-11-18 (checked read-only) both Sparks printed the same nine lines:
+four modified tracked files (`agents/docs/sources.toml`,
+`docs/BEAST_DOCS.md`, `skills/IN_HOUSE_SKILLS.txt`,
+`skills/platform-docs/SKILL.md`) and untracked `docs/PYTHON_OFFLINE.md`,
+`docs/TAILSCALE_OFFLINE.md`, `docs/._TAILSCALE_OFFLINE.md`, `skills/tailscale/`
+and `skills/._tailscale` (the `._*` files are macOS AppleDouble litter from a
+copy). They are early hand copies of what `main` now tracks: all but
+`skills/platform-docs/SKILL.md` were byte-identical to `main`'s versions, and
+that one is older than `main`'s. If your list differs, stop and read the
+diff before going on.
+
+**0.2 Set the local copies aside** (on each Spark; nothing is deleted: the
+modified files are kept as a patch, the untracked ones are moved):
+
+```bash
+cd ~/openbeast
+S=~/live-aside/$(date +%Y%m%d-%H%M); mkdir -p "$S/docs" "$S/skills"
+git diff > "$S/tracked-changes.patch"                 # the four modified tracked files, as a patch
+git checkout -- agents/docs/sources.toml docs/BEAST_DOCS.md skills/IN_HOUSE_SKILLS.txt skills/platform-docs/SKILL.md
+mv docs/PYTHON_OFFLINE.md docs/TAILSCALE_OFFLINE.md docs/._TAILSCALE_OFFLINE.md "$S/docs/"
+mv skills/tailscale skills/._tailscale "$S/skills/"
+git status --porcelain                                # must print nothing
+```
+
+`openbeast.conf` and `.run/` are gitignored, so they are not listed and not
+touched. Run the same block before **every** pull or merge into a live
+checkout ([11.3](#113-the-loop-edit-test-commit-share-review-merge),
+[11.5](#115-resetting-the-trunk-after-the-sync)), with the `checkout --` and
+`mv` lines changed to whatever `git status --porcelain` lists that day.
+
+**0.3 Update.** The live checkouts are on `main`, tracking GitHub:
+
+```bash
+cd ~/openbeast && git pull --ff-only && git log --oneline -1
+```
+
+On spark-1 the command center runs from this checkout, so the new code is
+live only after `systemctl --user restart openbeast` (at a quiet moment: it
+drops gate streams in flight; the inference unit is not touched). spark-2
+runs no OpenBeast services; its checkout is a reference copy, so the pull
+is all it needs.
+
+**0.4 Install the Spark tools from the updated checkout** (spark-1 only):
+
+```bash
+install -m 755 ~/openbeast/scripts/backends/spark-beast.sh ~/.local/bin/beast-spark   # or `beast-spark install` once available
+P=~/openbeast-recipes/deepseek-prep
+for f in spark-deepseek-pack.sh spark-deepseek-prepare-local.sh; do
+  cp -p "$P/$f" "$P/$f.bak-$(date +%Y%m%d)"           # keep the copy that ran until now
+  install -m 755 ~/openbeast/scripts/backends/$f "$P/$f"
+done
+beast-spark status                                    # selected: glm, and what serves on :8000
+```
+
+`beast-spark` (aliases `beastglm` / `beastds`) is the only supported way to
+switch the pair between GLM-5.3-Flash and DeepSeek-V4.1-Flash; it calls the
+two DeepSeek helpers from `~/openbeast-recipes/deepseek-prep/`, not from the
+checkout. On 2026-11-18 spark-1's installed `beast-spark` matched `main`,
+while both helpers there were older than `main`'s (shellcheck fixes only).
+
+**0.5 Build the hub** ([11.2](#112-one-time-setup), "While GitHub is
+reachable"), so that branches have somewhere to go when GitHub is not.
 
 ## 1. Setup
 
@@ -59,10 +144,12 @@ git switch -c fix/<topic> origin/offline/main           # offline: branch from t
 ```
 
 **Do not clone `~/openbeast` when the hub exists.** A clone gets only
-committed history. On 2026-11-18, spark-1's `~/openbeast` sat at `d3727185`
-(#203), eight merges behind `main`, with uncommitted copies of files that
-`main` has since gained (`docs/PYTHON_OFFLINE.md`, `docs/TAILSCALE_OFFLINE.md`,
-`skills/tailscale/`). A clone of it would start from old code. Use it only
+committed history, and the live checkout is behind `main` until
+[0](#0-before-going-offline-bring-both-sparks-to-main) is done (on 2026-11-18
+it sat at `d3727185`, #203; check with
+`git -C ~/openbeast log --oneline HEAD..origin/main | wc -l`). Its local
+copies of files that `main` has since gained are not in a clone either. A
+clone of it would start from old code. Use it only
 if there is no hub and no bundle, and say in the branch which commit it
 started from.
 
@@ -212,8 +299,8 @@ tool (its tools are `bash`, `read_file`, `write_file`, `edit_file`,
 hand it the skill text as context:
 
 ```bash
-cat skills/codebase-onboarding/SKILL.md skills/git-discipline/SKILL.md > /tmp/ctx.md   # one --context-file only
-./agent.sh -w ~/ob-work --context-file /tmp/ctx.md --max-iter 40 "<task>"
+cd ~/ob-work && cat skills/codebase-onboarding/SKILL.md skills/git-discipline/SKILL.md > /tmp/ctx.md   # one --context-file only
+cd ~/openbeast && ./agent.sh -w ~/ob-work --context-file /tmp/ctx.md --max-iter 40 "<task>"   # the live script (1.2)
 ```
 
 | Skill | Load it when |
@@ -379,6 +466,7 @@ Run the narrow suites while iterating, then the full set before committing:
 | `.github/workflows/*` or a new named test step | `tests/test_ci_workflow.py` |
 | docs that cite eval counts | `python3 evals/suite_stats.py --check` (exit 1 on drift) |
 | a live surface (only read-only, only on the live box) | `scripts/healthcheck.sh`, `scripts/backends/conformance.sh --model GLM-5.3-Flash-EXL3` (the served id; `DeepSeek-V4.1-Flash-1017` when DeepSeek is selected), `tests/test_smoke.sh` (needs a live stack) |
+| `scripts/lib/client_rigs.py`, `scripts/client.sh` (rigs, autosync), `scripts/client-e2e.sh` | `tests/test_client_rigs.py` (autosync install/uninstall with launchctl/systemctl stubbed), `tests/test_client_cli.py`, `tests/test_setup_client.sh` |
 
 ---
 
@@ -1082,23 +1170,49 @@ git -C ~/git/openbeast.git config receive.denyDeletes true           # nor delet
 git -C ~/git/openbeast.git log --oneline -1 main                       # the commit GitHub's main had
 ```
 
+A bare clone records GitHub as `origin` but, unlike a normal clone, keeps no
+`origin/main` remote-tracking branch: the hub's own `main` *is* the copy.
+
+**Every other path below ends with the same two lines**, so the hub's
+`origin` is GitHub (not the Mac, a bundle file or the live checkout) and
+"Keep it fresh" works once GitHub is back:
+
+```bash
+git -C ~/git/openbeast.git remote remove origin 2>/dev/null
+git -C ~/git/openbeast.git remote add origin https://github.com/MaximilianKhan/openbeast.git
+```
+
 **Already offline, and the Mac has a current clone.** Create an empty hub,
 then push to it from the Mac:
 
 ```bash
-ssh spark-1 'git init --bare ~/git/openbeast.git && git -C ~/git/openbeast.git config receive.denyNonFastForwards true'
+ssh spark-1 'git init --bare -b main ~/git/openbeast.git &&
+  git -C ~/git/openbeast.git config receive.denyNonFastForwards true &&
+  git -C ~/git/openbeast.git config receive.denyDeletes true'
 cd ~/Documents/projects/openbeast.nosync
 git push spark-1:git/openbeast.git origin/main:refs/heads/main origin/main:refs/heads/offline/main
+ssh spark-1 'git -C ~/git/openbeast.git remote remove origin 2>/dev/null;
+  git -C ~/git/openbeast.git remote add origin https://github.com/MaximilianKhan/openbeast.git'
 ```
+
+`-b main` makes the hub's `HEAD` name `main`, so clones of it check out
+`main` instead of warning about a missing `master`.
 
 **No network between the machines.** Make a bundle on the Mac
 (`git bundle create /Volumes/<drive>/openbeast.bundle --all`), carry it, and
 on spark-1 run `git clone --bare /media/<drive>/openbeast.bundle ~/git/openbeast.git`,
-then the `branch offline/main` and `config` lines above.
+then the `branch offline/main` and both `config` lines above, then the two
+`remote` lines (the clone made the bundle file the hub's `origin`). The
+bundle's `main` is the Mac's local `main`: run `git pull --ff-only` on the
+Mac before `git bundle create`, or the hub starts behind.
 
 **Last resort: no current copy anywhere.** `git clone --bare ~/openbeast
 ~/git/openbeast.git` gives the live checkout's committed history only (behind
-`main`, see 1.1). Record the starting commit in the first branch you make.
+`main` unless [0](#0-before-going-offline-bring-both-sparks-to-main) was
+done, see 1.1). Then the `branch offline/main` and both `config` lines above,
+and the two `remote` lines: without them the hub's `origin` is the live
+checkout, and "Keep it fresh" would copy the live checkout, not GitHub.
+Record the starting commit in the first branch you make.
 
 **Keep it fresh while online.** Before a planned outage, or daily:
 
@@ -1106,10 +1220,19 @@ then the `branch offline/main` and `config` lines above.
 git -C ~/git/openbeast.git fetch origin main:main     # fast-forward only: it refuses if the hub's main diverged
 ```
 
-If that refuses, someone committed to the hub's `main`. Find it with
-`git -C ~/git/openbeast.git log --oneline origin/main..main` after
-`git -C ~/git/openbeast.git fetch origin`, move those commits to a topic
-branch, and only then fast-forward.
+If that refuses, someone committed to the hub's `main`. A bare clone has no
+`origin/main` to compare with, so compare with what was just fetched:
+
+```bash
+git -C ~/git/openbeast.git fetch origin main && git -C ~/git/openbeast.git log --oneline FETCH_HEAD..main   # the hub-only commits
+```
+
+Move those commits to a topic branch
+(`git -C ~/git/openbeast.git branch fix/<topic> main`), then put the hub's
+`main` back on GitHub's with
+`git -C ~/git/openbeast.git update-ref refs/heads/main FETCH_HEAD` (a local
+ref update, not a push, so `receive.denyNonFastForwards` does not apply),
+and only then fast-forward as usual.
 
 ### 11.3 The loop: edit, test, commit, share, review, merge
 
@@ -1167,21 +1290,29 @@ re-test, push again.
   check under "VERIFY ON HARDWARE" in the merge message.
 
 **Putting offline work live** (only when Max asks, at a quiet moment). The
-live checkout is on `main`, so moving it to the offline trunk is a
-deliberate step:
+live checkout's `main` tracks GitHub and must stay a copy of it. Merging the
+offline trunk into it would put offline merge commits on `main` that never
+reach GitHub (the topics come back as new pull requests with new merge
+commits), and every later `git pull` would then need a merge or fail. So the
+live checkout moves to its own local branch, `offline-live`:
 
 ```bash
-cd ~/openbeast && git status --short                  # anything listed is either saved first or known to be in the trunk
-git fetch ~/git/openbeast.git offline/main && git merge --ff-only FETCH_HEAD
+cd ~/openbeast && git status --porcelain              # must print nothing: if it does, set it aside first (0.2)
+git fetch ~/git/openbeast.git offline/main
+git switch -c offline-live FETCH_HEAD                 # the first time; later rounds, on offline-live: git merge --ff-only FETCH_HEAD
 systemctl --user restart openbeast                    # makes the commit live; drops gate streams in flight
 ```
 
-On 2026-11-18 `git status` there listed uncommitted copies of files that
-`main` now tracks (1.1). Git refuses to overwrite untracked files: move them
-aside (`mkdir -p ~/live-untracked && mv <files> ~/live-untracked/`) after
-checking with `diff` that the tracked versions are the same or newer. Keep
-spark-2 on the same commit:
-`ssh spark-2 'cd ~/openbeast && git pull --ff-only max@10.100.216.1:git/openbeast.git offline/main'`.
+Keep spark-2 on the same commit (same check first: `git status --porcelain`
+there must print nothing):
+
+```bash
+ssh spark-2 'cd ~/openbeast && git fetch max@10.100.216.1:git/openbeast.git offline/main && git switch -c offline-live FETCH_HEAD'
+# later rounds: ... && git merge --ff-only FETCH_HEAD
+```
+
+The way back to `main` is in [11.5](#115-resetting-the-trunk-after-the-sync),
+after the sync.
 
 ### 11.4 Syncing back when GitHub returns
 
@@ -1229,6 +1360,19 @@ git -C ~/git/openbeast.git branch -d fix/<topic>                          # each
 If either check prints a commit, that work did not reach GitHub. Do not
 reset the trunk until it has.
 
+**Then the live checkouts go back to `main`**, if offline work was put live
+(11.3). Only after both checks above printed nothing: `offline-live` holds
+the offline merge commits, which `main` never gets, so `git branch -D` (not
+`-d`) is needed, and it is safe only because the checks proved every topic
+commit is on GitHub.
+
+```bash
+# on spark-1, then the same on spark-2 (ssh spark-2 '...')
+cd ~/openbeast && git status --porcelain              # must print nothing (0.2)
+git switch main && git pull --ff-only && git branch -D offline-live
+systemctl --user restart openbeast                    # spark-1 only: make it live
+```
+
 ### 11.6 Without any network between machines
 
 Bundles carry branches on a drive. A bundle is verified against the
@@ -1260,6 +1404,32 @@ The git commands in 11.2 to 11.6 were exercised on 2026-11-18 against
 throwaway repositories on the Mac (git 2.54): clone from a bare hub, topic
 branch, `--no-ff` merge into `offline/main`, a GitHub-side change meanwhile,
 pushing the topic branch to a second remote, fast-forwarding the hub's
-`main`, and a bundle. The Sparks run git 2.43, which has every command used
+`main`, and a bundle. A second pass the same day exercised the fixes: the
+offline `init --bare -b main` hub with `receive.denyDeletes` (a branch
+deletion by push is refused), the `remote remove` / `remote add origin` lines
+on the offline, bundle and bare-clone hubs (each then fast-forwards `main`
+with `fetch origin main:main`), the `FETCH_HEAD..main` recovery after a
+commit on the hub's `main`, two live checkouts moved to `offline-live`
+across two offline rounds, the topics merged on the "GitHub" side as new
+merge commits, 11.5's checks printing nothing, and both live checkouts back
+on `main` with `git pull --ff-only`; and 0.2's set-aside block against a
+checkout with modified and untracked files, after which `git pull --ff-only`
+went through. The Sparks run git 2.43, which has every command used
 here. The hub itself has not been created on spark-1 yet, so the ssh URLs are
 verified as ssh paths, not as git remotes.
+
+### test_engines.sh and test_supply_chain.sh run on macOS (2026-11-18)
+
+With CI off, Max's Mac is the test box. `tests/test_engines.sh` no longer
+needs GNU tools: it edits files with `sed -i.bak` (GNU and BSD both take
+it), reads modes with `stat -c` or `stat -f`, and shims what macOS lacks into
+its own `$T/bin` (`timeout` as a small perl script, `sha256sum` from `/sbin`
+or `shasum -a 256`). It falls back to 127.0.0.1 where another 127/8 address
+does not answer (macOS), and `OB_ENGINE_UNAME=Linux` lets it run the Linux
+host-class detection there. `scripts/engine.sh use` also lost a bash 3.2
+crash: an empty `unsets` array under `set -u`. `tests/test_supply_chain.sh`
+failed on macOS because `scripts/land-dependabot.sh` took its lock only where
+`flock(1)` exists, so a Mac had no single-instance guard at all; it now takes
+the same `flock(2)` lock through perl when `flock(1)` is missing, and the
+suite checks that a second run is refused. Verified on the Mac (bash 3.2.57):
+test_engines.sh 112 passed, test_supply_chain.sh 31 passed.

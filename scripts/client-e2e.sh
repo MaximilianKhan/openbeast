@@ -66,10 +66,19 @@ has() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
 
 [ -x "$VENV_PY" ] || { echo "no client venv at $CLIENT_DIR — run scripts/setup-client.sh first" >&2; exit 2; }
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/openbeast-client-e2e.XXXXXX")"
-[ "$KEEP" = 1 ] || trap 'rm -rf "$WORK"' EXIT
 
 _active() { "$CLI" rigs --json --no-probe 2>/dev/null | "$VENV_PY" -c 'import json,sys; print(json.load(sys.stdin)["active"])' 2>/dev/null; }
 ORIG="$(_active)"
+# The rig that was active BEFORE this run: whatever --rig and step d switch
+# to, the EXIT trap puts this one back (ORIG below is the rig under test).
+HOME_RIG="$ORIG"
+_cleanup() {
+  if [ -n "$HOME_RIG" ] && [ "$(_active)" != "$HOME_RIG" ]; then
+    "$CLI" use "$HOME_RIG" --force >/dev/null 2>&1 || echo "  ! could not switch back to '$HOME_RIG': openbeast-client use $HOME_RIG" >&2
+  fi
+  [ "$KEEP" = 1 ] || rm -rf "$WORK"
+}
+trap _cleanup EXIT
 [ -n "$RIG" ] || RIG="$ORIG"
 echo "=== OpenBeast client e2e — rig '$RIG' (active: '${ORIG:-none}') — $(date '+%Y-%m-%d %H:%M:%S') ==="
 if [ -z "$ORIG" ]; then
@@ -278,6 +287,7 @@ fi
 
 # ---- c + e. the MCP server: tool list, web_search ------------------------------
 if ! skipped c || ! skipped e; then
+  # shellcheck source=/dev/null
   _o="$(set -a; . "$ENV_FILE"; set +a; DO_SEARCH="$(skipped c >/dev/null && echo 0 || echo 1)" \
         "$VENV_PY" - "$REPO/agents/mcp_server.py" <<'PY' 2>&1
 import asyncio, json, os, sys, time
@@ -339,7 +349,6 @@ print(next((n for n in sorted(d["rigs"]) if n != d["active"]), ""))' 2>/dev/null
   else
     _bak="$OC_CONFIG.bak-e2e-$(date +%Y%m%d-%H%M%S)"
     ( umask 077; cp -p "$OC_CONFIG" "$_bak" ) && chmod 600 "$_bak"
-    trap '[ "$(_active)" = "$ORIG" ] || "$CLI" use "$ORIG" --force >/dev/null 2>&1; [ "$KEEP" = 1 ] || rm -rf "$WORK"' EXIT
     _env0="$(cksum < "$ENV_FILE")"; _oc0="$(cksum < "$OC_CONFIG")"
     _o1="$("$CLI" use "$OFFLINE_RIG" 2>&1)"; _rc1=$?
     if [ $_rc1 -eq 0 ]; then
@@ -350,6 +359,7 @@ print(next((n for n in sorted(d["rigs"]) if n != d["active"]), ""))' 2>/dev/null
       if [ $_rc2 -eq 0 ] && has "$_o2" "active rig: $OFFLINE_RIG " && [ $_rc3 -eq 0 ] && [ $_rc4 -eq 0 ] \
          && has "$_o4" "active rig: $ORIG "; then
         pass "(d) '$OFFLINE_RIG' is online: use $OFFLINE_RIG -> status green -> use $ORIG -> status green"
+        _d_ok=1
       else
         fail "(d) online switch: status rc $_rc2, use-back rc $_rc3, status rc $_rc4"
       fi
@@ -371,12 +381,15 @@ print(next((n for n in sorted(d["rigs"]) if n != d["active"]), ""))' 2>/dev/null
       _reason="$(printf '%s\n' "$_o1" | sed -n '1p' | sed 's/^ *x *//')"
       if [ -z "$_why" ]; then
         pass "(d) use $OFFLINE_RIG refused, nothing changed ($_reason); --force switched, status failed gracefully (rc $_rc3); use $ORIG -> green"
+        _d_ok=1
       else
         fail "(d) switch:$_why"
         printf '%s\n%s\n%s\n' "$_o1" "$_o2" "$_o4" | sed 's/^/      /'
       fi
     fi
-    echo "      (opencode.json backup: $_bak)"
+    # The backup holds the device key(s): kept only when (d) failed, to restore from.
+    if [ "${_d_ok:-0}" = 1 ] && [ "$KEEP" != 1 ]; then rm -f "$_bak"
+    else echo "      (opencode.json backup: $_bak)"; fi
   fi
 fi
 

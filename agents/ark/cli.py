@@ -4,7 +4,7 @@
   list    [--category C] [--profile core] [--from DIR] [--json]
   plan    [--category C] [--only a,b] [--platform P] [--profile core] [--json]
   lint                                  the catalog schema check (CI runs it)
-  lock    [--only a,b] [--category C] [--refresh] [--from DIR] [--dry-run]   (online)
+  lock    [--only a,b] [--category C] [--refresh [--accept-image-moves]] [--from DIR] [--dry-run]   (online)
   update  [--only a,b] [--category C] [--write]                              (online)
   fetch   --to DIR [--platform P ...] [--only a,b] [--category C] [--profile core]
           [--kinds file,oci,git,pip,npm,gomod,cargo] [--no-git] [--allow-unverified] [--allow-cross-pip]
@@ -13,6 +13,8 @@
   restore NAME --from DIR [--platform P] [--prefix ~/.local/opt] [--bin ~/.local/bin]
           [--src ~/src] [--registry HOST:PORT | --docker | --podman] [--kinds ...]
           [--python PATH] [--force]                                          (offline)
+          --force replaces an existing ~/src/<entry>, and bin links over files
+          that are not restore's own
   serve   DIR [--bind ADDR | --tailnet] [--port 8780]                        (offline)
 
 Exit codes: 0 ok · 1 verification failed (mismatch, corruption, missing) ·
@@ -326,6 +328,9 @@ def main(argv=None) -> int:
     p = sub.add_parser("lock")
     sel(p, prof=False)
     p.add_argument("--refresh", action="store_true")
+    p.add_argument("--accept-image-moves", action="store_true",
+                   help="with --refresh: take the new digest of an image tag that moved (file hashes and "
+                        "commits are never moved; blank them by hand)")
     p.add_argument("--from", dest="from_dir")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--no-sizes", action="store_true")
@@ -422,7 +427,7 @@ def main(argv=None) -> int:
             if a.cmd == "lock":
                 drv = S.Drive(a.from_dir) if a.from_dir else None
                 ed, rep = pins.lock(cat, ents, a.refresh, drv, sizes=not a.no_sizes,
-                                    git_sizes=not a.no_git_sizes)
+                                    git_sizes=not a.no_git_sizes, accept_image_moves=a.accept_image_moves)
                 write_it = not a.dry_run
             else:
                 ed, rep = pins.update(cat, ents)

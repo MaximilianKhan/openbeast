@@ -434,8 +434,11 @@ by sha256.
   experts differ, while the routed experts are byte-identical (huihui leaves
   the experts unablated).
 - **Why this quant.** It is the best uncensored GGUF that fits 128 GB with
-  room for the stack. UD-IQ3_XXS (112 GiB) and orcarouter's Q2_K (109 GiB)
-  do not fit.
+  room for the stack. UD-IQ3_XXS (112.1 GiB) does not fit the 90% scope.
+  orcarouter's Q2_K (108.8 GiB, gated repo) only barely fits it, with no
+  room left for the stack, so it is a fallback, not the pick
+  ([WEIGHT_STREAMING.md](WEIGHT_STREAMING.md), the fit table and the
+  fallback order).
 - **Big mode is opt-in**: `./start.sh -d serve-glm53-flash-abl-q2kxl-big.sh`.
   - All 94.7 GiB of routed experts sit pinned in host RAM, under the
     profile's own **90% memory scope, rig only**. A 14 GiB VRAM cache serves

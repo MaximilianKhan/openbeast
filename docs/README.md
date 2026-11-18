@@ -12,6 +12,29 @@ current. Anything in [`archive/`](archive/) is historical. Dated "Live
 deployment" or "State on" lines at the top of a page say when it was last
 checked against the machines.
 
+## Before going offline (a prerequisite)
+
+The offline reading order below works only if the Sparks were brought up to
+date **while GitHub was still reachable**. Neither live checkout updates
+itself, and both were behind `main` on 2026-11-18 (check on each Spark with
+`git -C ~/openbeast fetch origin && git -C ~/openbeast log --oneline HEAD..origin/main | wc -l`).
+The steps, with the exact commands, are
+[SELF_DEVELOPMENT.md §0](SELF_DEVELOPMENT.md#0-before-going-offline-bring-both-sparks-to-main):
+
+1. On spark-1 and spark-2: set aside the local copies in `~/openbeast` (a
+   patch of the modified files, the untracked ones moved), then
+   `git pull --ff-only`. A plain pull refuses while they are there.
+2. On spark-1: install the Spark tools from the updated checkout:
+   `install -m 755 ~/openbeast/scripts/backends/spark-beast.sh ~/.local/bin/beast-spark`
+   (or `beast-spark install` once available), and copy
+   `scripts/backends/spark-deepseek-pack.sh` and
+   `scripts/backends/spark-deepseek-prepare-local.sh` into
+   `~/openbeast-recipes/deepseek-prep/`. `beast-spark glm|ds` (aliases
+   `beastglm` / `beastds`) is the only supported switch between the pair's
+   two models.
+3. On spark-1: create the git hub
+   ([SELF_DEVELOPMENT.md §11.2](SELF_DEVELOPMENT.md#112-one-time-setup)).
+
 ## Start here
 
 | If you want to… | Read |
@@ -37,9 +60,22 @@ checked against the machines.
 6. When something is broken: [SPARK_HYDRA.md §G8](SPARK_HYDRA.md#g8-when-x-fails-troubleshooting),
    then [COMMANDS.md §14](COMMANDS.md#14-emergency-recovery).
 
-Everything in this list is in the repository. What lives only on the
-Sparks' disks (recipes, weights, keys, `tools/bench.py`) is listed with its
-path in [SPARK_HYDRA.md §0](SPARK_HYDRA.md#0-the-pair-at-a-glance).
+Every document in this list is in the repository. Not everything they tell
+you to run is: some of it lives only on the Sparks' disks, and is not
+recreated by a clone.
+
+| Only on spark-1 (not in the repository) | What |
+|---|---|
+| `~/openbeast-recipes/deepseek-prep/activate-stock.sh` | Activates the selected DeepSeek pack (canary, conformance, `openbeast.conf`, unit selection); `beast-spark ds` calls it |
+| `~/openbeast-recipes/deepseek-prep/rollback/restore-glm.sh` (with `openbeast.conf.glm`, `glm-config.sha256`) | Back to GLM; `beast-spark glm` calls it |
+| `~/openbeast-recipes/deepseek-prep/verify-chat.py` | The DeepSeek chat check |
+| `~/.config/systemd/user/deepseek-v41-inference.service` | The DeepSeek unit file (GLM's `spark-hydra-inference.service` has a template in `scripts/backends/`) |
+| `~/openbeast-recipes/deepseek-prep/runtime/`, `~/openbeast-recipes/glm53/` | The recipe runtimes, including `runtime/tools/bench.py` |
+| weights, rank caches, `~/.config/openbeast/` keys | [SPARK_HYDRA.md §0](SPARK_HYDRA.md#0-the-pair-at-a-glance) lists each with its path |
+
+Their recovery path is a backup:
+[SPARK_BACKUP_RESTORE.md](SPARK_BACKUP_RESTORE.md) (what one Spark holds,
+backing it up, restoring it after an OS reinstall).
 
 ## Operating
 
@@ -47,6 +83,7 @@ path in [SPARK_HYDRA.md §0](SPARK_HYDRA.md#0-the-pair-at-a-glance).
 |---|---|
 | [SPARK_HYDRA.md](SPARK_HYDRA.md) | The DGX Spark pair: the DeepSeek deployment and its packs, a quickstart, bare boxes to a serving pair, the command center, the Mac client, day-2 operations, troubleshooting, fully offline operation |
 | [OPENBEAST-SERVING.md](OPENBEAST-SERVING.md) | Short serving note for the pair: check, start, stop, switch models and packs |
+| [SPARK_BACKUP_RESTORE.md](SPARK_BACKUP_RESTORE.md) | Backing up a Spark, reinstalling and restoring it, populating more Sparks from one backup; the recovery path for everything that is not in the repository |
 | [COMMANDS.md](COMMANDS.md) | Commands cheat sheet, grouped by machine and task |
 | [INSTALL.md](INSTALL.md) | Installing the rig, per-model downloads, the air-gap path, troubleshooting |
 | [UPDATING.md](UPDATING.md) | Updating every pulled-in component (`update.sh`; a maintainer tool, not the Spark update) |

@@ -201,6 +201,18 @@ case through data, not code:
   server is not the one you enabled, `refresh` says so.
 - **The catalog pin moves** (a repo update). `refresh` notices that your entry
   still runs the old version and prints the `upgrade --to` command.
+- **The catalog gains a gate** (a tool newly added to `ask_tools` or
+  `deny_tools`). `refresh` compares the server's current gates with the rules
+  actually in opencode.json and writes the missing ones (`gates added to
+  <key>: …`, `gates_added` in `--json`), recorded so `disable` removes them.
+  It only ever tightens: a rule of yours that is as strict, or stricter by a
+  glob, is kept. Whether a flagged tool is "gated" is judged by those rules in
+  the file, not by the catalog.
+- **A server id is renamed** (catalog `aliases`). The opencode entry moves to
+  the new key, and with it EVERY permission rule keyed `<old>_…`, your own
+  deny/ask rules included (opencode names a tool's permission after the
+  entry's key, so a rule left on the old name matches nothing). Then the
+  server's current gates are applied as above.
 
 ## opencode
 
@@ -250,8 +262,11 @@ Guarantees:
   per-tool rule. Make `permission` an object, or pass `--ungated` to wire the
   server in without them; `gated:` lists only rules that were written.
 - Every write first copies the old file to `opencode.json.bak-beast-apps-<ts>`
-  (created 600, never widened first), then writes atomically, keeping the
-  file's mode. The file becomes 600 when a secret env var is in the entry,
+  (created 600, never widened first; the newest 3 are kept, older ones
+  deleted, since each may hold a key), then writes atomically, keeping the
+  file's mode, through a symlinked opencode.json to its target, under
+  `~/.config/openbeast/.lock` (the lock `openbeast-client` holds while it
+  syncs, so the two never drop each other's write). The file becomes 600 when a secret env var is in the entry,
   on `enable` and on `upgrade` alike.
 - `upgrade` keeps the `env_passthrough` values recorded at enable when the
   shell you run it from does not set them (a fresh terminal does not drop the

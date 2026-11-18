@@ -63,8 +63,56 @@ def oci_rel(a: C.Artifact) -> str:
     return f"oci/{a.entry}/{S.slug(img)}_{S.slug(a.tag_x or a.digest[7:19])}.oci.tar"
 
 
+def side_rel(a: C.Artifact, url: str, what: str) -> str:
+    """Where an artifact's checksum or signature file is kept: per ARTIFACT.
+
+    Kept in the release directory under its upstream name, two artifacts
+    whose sums share a name (SHA256SUMS of two URLs, or one SHA256SUMS that
+    upstream later extends) overwrote each other, and the first item's lock
+    record no longer matched the bytes on the drive. A name that already
+    belongs to this one file (zig.tar.xz.minisig, x.tar.gz.sha256) stays
+    beside it, as before."""
+    name = os.path.basename(url.split("?")[0]) or what
+    if name == a.filename:
+        name += ".sums"
+    if name.startswith(a.filename + "."):
+        return f"{file_dir(a)}/{name}"
+    return f"{file_dir(a)}/{what}/{S.slug(a.filename)}/{name}"
+
+
+def pkg_set(a: C.Artifact) -> dict:
+    """What a package set's CONTENT depends on. The version alone was the old
+    test: a set whose requirements or target python changed under the same
+    version was never re-fetched, and a re-fetch landed in the old directory
+    on top of the old wheels."""
+    d = {"kind": a.kind, "platform": a.platform}
+    if a.kind == "pip":
+        d["requirements"] = [a.x(r) for r in a.requirements]
+        d["python"] = a.python or "%d.%d" % sys.version_info[:2]   # no pin: pip resolves for THIS python
+        d["pip_platforms"] = list(a.pip_platforms)
+    elif a.kind == "npm":
+        d["packages"] = [a.x(p) for p in a.packages]
+    else:                                           # gomod / cargo: built from the entry's git pin
+        d["commit"] = a.owner.commit
+        d["moddir"] = a.moddir
+    return d
+
+
+def pkg_set_hash(a: C.Artifact) -> str:
+    return hashlib.sha256(json.dumps(pkg_set(a), sort_keys=True).encode()).hexdigest()[:12]
+
+
 def pkg_dir(a: C.Artifact) -> str:
-    return f"pkgs/{a.kind}/{a.entry}-{S.slug(a.owner.version)}/{a.platform}"
+    return f"pkgs/{a.kind}/{a.entry}-{S.slug(a.owner.version)}-{pkg_set_hash(a)}/{a.platform}"
+
+
+def drive_rel(a: C.Artifact) -> str:
+    """The one path (file or directory) an artifact owns on a drive."""
+    if a.kind == "file":
+        return f"{file_dir(a)}/{a.filename}"
+    if a.kind == "oci":
+        return oci_rel(a)
+    return pkg_dir(a)
 
 
 def _rec(drive: S.Drive, rel: str, sha256: str = "") -> dict:
@@ -174,14 +222,25 @@ def fetch_file(drive: S.Drive, a: C.Artifact, allow_unverified: bool) -> dict:
         raise FetchError(f"{a.id}: no hash pin and no upstream checksum — refused "
                          f"(--allow-unverified records it as trust-on-first-use)")
     extra: List[str] = []
+    warnings: List[str] = []
     sums_path = ""
+    sums_gone = False
     if a.checksum_url:
-        sname = os.path.basename(a.x(a.checksum_url).split("?")[0]) or "checksums"
-        if sname == a.filename:
-            sname += ".sums"
-        sums_rel = f"{d}/{sname}"
-        sums_path = _fetch_small(a.x(a.checksum_url), drive.p(sums_rel))
-        extra.append(sums_rel)
+        sums_rel = side_rel(a, a.x(a.checksum_url), "checksums")
+        try:
+            sums_path = _fetch_small(a.x(a.checksum_url), drive.p(sums_rel))
+            extra.append(sums_rel)
+        except net.HTTPFailure as e:
+            # Upstreams prune old checksum files (a release re-cut, a mirror
+            # cleaned). The catalog's pin was itself taken from that file by
+            # `ark lock`, so the bytes can still be checked against it; what is
+            # lost is the second, live opinion. Say so in the lock, loudly.
+            if e.status not in (404, 410) or not has_pin:
+                raise
+            sums_gone = True
+            warnings.append(f"the upstream checksum file {a.x(a.checksum_url)} is gone (HTTP {e.status}); "
+                            f"verified against the catalog's pin only")
+            log(f"    WARNING {a.id}: {warnings[-1]}")
     part = net.download(url, dest, size=a.size)
     try:
         got = net.sha256_file(part)
@@ -218,7 +277,11 @@ def fetch_file(drive: S.Drive, a: C.Artifact, allow_unverified: bool) -> dict:
             how.append("upstream-sums")
         sig = {"status": "none"}
         if a.signature_url:
-            sig_rel = f"{d}/{os.path.basename(a.x(a.signature_url).split('?')[0])}"
+            if sums_gone and (a.signature_kind == "ed25519-sums"
+                              or a.x(a.signature_url).startswith(a.x(a.checksum_url))):
+                raise FetchError(f"{a.id}: the signature is over the upstream checksum file, which is gone — "
+                                 f"nothing to check it against. REFUSED.")
+            sig_rel = side_rel(a, a.x(a.signature_url), "signatures")
             _fetch_small(a.x(a.signature_url), drive.p(sig_rel))
             extra.append(sig_rel)
             over_sums = bool(sums_path) and a.x(a.signature_url).startswith(a.x(a.checksum_url))
@@ -239,10 +302,13 @@ def fetch_file(drive: S.Drive, a: C.Artifact, allow_unverified: bool) -> dict:
         os.remove(part)                         # a garbled sums or signature file refuses THIS file
         raise
     os.replace(part, dest)
-    return {"entry": a.entry, "kind": "file", "platform": a.platform, "version": a.owner.version,
-            "source": url, "install": a.install, "bins": [a.x(b) for b in a.bins], "strip": a.strip,
-            "verified": "+".join(how), "signature": sig,
-            "files": [_rec(drive, rel, got)] + [_rec(drive, r) for r in extra], "primary": rel}
+    rec = {"entry": a.entry, "kind": "file", "platform": a.platform, "version": a.owner.version,
+           "source": url, "install": a.install, "bins": [a.x(b) for b in a.bins], "strip": a.strip,
+           "verified": "+".join(how), "signature": sig,
+           "files": [_rec(drive, rel, got)] + [_rec(drive, r) for r in extra], "primary": rel}
+    if warnings:
+        rec["warnings"] = warnings
+    return rec
 
 
 # ── oci ──────────────────────────────────────────────────────────────────
@@ -608,13 +674,27 @@ def run(cat: C.Catalog, drive: S.Drive, items: List[Tuple[str, object]], platfor
         allow_cross_pip: bool = False) -> int:
     net.require_online("ark fetch")
     _SMALL.clear()
-    os.makedirs(drive.root, exist_ok=True)
     lock = drive.read_lock()
     lock.setdefault("platforms", [])
     lock["platforms"] = sorted(set(lock["platforms"]) | set(platforms))
+    if dry_run:
+        # A dry run writes NOTHING: not the catalog, the tool, ark.lock or
+        # ARK.md. It used to lay the drive out first and print the plan after.
+        n = 0
+        for key, obj in items:
+            prev = lock["items"].get(key)
+            if item_present(drive, prev, deep=recheck) and _still_matches(prev, obj, platforms):
+                continue
+            log(f"  would fetch {key}")
+            n += 1
+        log(f"fetch --dry-run: {n} to fetch, {len(items) - n} already present — nothing written to {drive.root}")
+        return 0
+    os.makedirs(drive.root, exist_ok=True)
     with open(cat.path, "rb") as f:
         lock["catalog_sha256"] = hashlib.sha256(f.read()).hexdigest()
-    shutil.copy2(cat.path, os.path.join(drive.root, "catalog.toml"))
+    dcat = os.path.join(drive.root, "catalog.toml")
+    if not (os.path.exists(dcat) and os.path.samefile(cat.path, dcat)):   # --catalog ./catalog.toml from the drive
+        shutil.copy2(cat.path, dcat)
     S.install_tool(drive)
     done = skipped = failed = 0
     failures: List[str] = []
@@ -624,9 +704,6 @@ def run(cat: C.Catalog, drive: S.Drive, items: List[Tuple[str, object]], platfor
             skipped += 1
             continue
         label = key
-        if dry_run:
-            log(f"  would fetch {label}")
-            continue
         log(f"  fetch {label}")
         try:
             if isinstance(obj, C.Entry):
@@ -652,6 +729,12 @@ def run(cat: C.Catalog, drive: S.Drive, items: List[Tuple[str, object]], platfor
             log(f"  FAILED {label}: {ex}")
             continue
         rec["fetched_at"] = S.now()
+        if not isinstance(obj, C.Entry) and obj.kind in PKG_KINDS:
+            rec["set"], rec["set_hash"], rec["dir"] = pkg_set(obj), pkg_set_hash(obj), pkg_dir(obj)
+            old = (prev or {}).get("dir", "")
+            if old and old != rec["dir"] and old.startswith("pkgs/") and not any(
+                    it.get("dir") == old for k, it in lock["items"].items() if k != key):
+                shutil.rmtree(drive.p(old), ignore_errors=True)   # the superseded set: unlisted from now on
         lock["items"][key] = rec
         drive.write_lock(lock)
         done += 1
@@ -677,4 +760,18 @@ def _still_matches(prev: dict, obj, platforms: List[str]) -> bool:
         want = {p for p in a.platforms if p in {C.OCI_FOR[x] for x in platforms}}
         have = set((prev.get("platform") or "").split(","))
         return (not a.digest or prev.get("digest") == a.digest) and want <= have
-    return prev.get("version") == a.owner.version
+    if prev.get("version") != a.owner.version:
+        return False
+    if "set_hash" in prev:
+        return prev["set_hash"] == pkg_set_hash(a)
+    # a record from before set_hash: compare what it did record, so an
+    # existing drive is not re-fetched wholesale for want of a field
+    want = pkg_set(a)
+    if a.kind == "pip":
+        return prev.get("requirements") == want["requirements"] and (prev.get("python") or "") == (a.python or "")
+    if a.kind == "npm":
+        return prev.get("packages") == want["packages"]
+    return True
+
+
+PKG_KINDS = ("pip", "npm", "gomod", "cargo")

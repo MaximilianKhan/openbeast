@@ -338,6 +338,18 @@ STUB
     fail "lock open truncated its target (rc=$_rc): '$(cat "$T/state/victim")' / '$(cat "$T/state/victim_tmp")'"
   fi
   rm -f "$LR/.run/land-dependabot.lock" "$T/land_tmp/openbeast-land-dependabot.lock"
+  # One at a time, on Linux (flock(1)) and on macOS (no flock(1): perl's
+  # flock(2)). A second run while the lock is held stops before any gh call.
+  perl -MFcntl=:flock -e 'open(F, ">>", $ARGV[0]) or die; flock(F, LOCK_EX) or die; sleep 15' "$LR/.run/land-dependabot.lock" & _holder=$!
+  for _ in $(seq 1 50); do [[ -f "$LR/.run/land-dependabot.lock" ]] && break; sleep 0.1; done; sleep 0.3
+  land 7
+  kill "$_holder" 2>/dev/null; wait "$_holder" 2>/dev/null
+  if [[ $_rc -ne 0 ]] && has "$_out" "already running" && [[ ! -s "$T/state/gh.log" ]]; then
+    pass "a second land-dependabot.sh while the lock is held refuses before any gh call"
+  else
+    fail "the lock did not exclude a second run (rc=$_rc): $_out"
+  fi
+  rm -f "$LR/.run/land-dependabot.lock"
   # No arguments: only the PRs this chain can land.
   land
   if [[ $_rc -eq 0 ]] && has "$_out" "=== PR 7" && ! has "$_out" "=== PR 8" \
@@ -478,7 +490,7 @@ echo "5. client SearXNG — pins the SAME image digest as the rig:"
 # drifted (252cfb5b vs the rig's 892cf809) with a comment claiming lockstep.
 _rig="$(sed -n 's/^[[:space:]]*image:[[:space:]]*\(searxng\/searxng[^[:space:]]*\).*/\1/p' "$REPO_DIR/docker-compose.yml")"
 _cli="$(sed -n 's/^[[:space:]]*image:[[:space:]]*\(searxng\/searxng[^[:space:]]*\).*/\1/p' "$REPO_DIR/scripts/client-searxng.compose.yml")"
-if [[ "$_rig" == *@sha256:* && "$(wc -l <<< "$_rig")" == "1" ]]; then
+if [[ "$_rig" == *@sha256:* && $(( $(wc -l <<< "$_rig") )) -eq 1 ]]; then
   pass "control: the rig compose has exactly one digest-pinned searxng image (${_rig##*@sha256:})"
 else
   fail "control: could not read one pinned searxng image from docker-compose.yml: '$_rig'"
