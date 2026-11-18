@@ -29,6 +29,12 @@ that printed a forbidden path). Kinds:
   ledger      a results or ledger file by name (eval-*.json, ledger.jsonl)
   listed      the tool's OUTPUT named a forbidden path (find / grep -r / ls)
   web         fetch / web_search (refused under eval since v5; recorded)
+  selfrepo    any tool call that names this project's own repository
+              (MaximilianKhan/openbeast on github.com, raw.githubusercontent.com,
+              api.github.com/repos, codeload, a CDN mirror; case-insensitive,
+              percent-decoded) or a URL path into a checkout's evals/ answer
+              trees: the public repo holds evals/refs (2026-11-18; the eval
+              fetch guard of agents/tools.py refuses the same URLs)
   network     a bash command that reaches off the host: curl / wget to a
               non-loopback host, git clone / fetch / ls-remote of a remote,
               any github.com / githubusercontent.com (review 1118: the public
@@ -62,6 +68,7 @@ import json
 import os
 import re
 import sys
+import urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 EVALS = os.path.dirname(HERE)
@@ -90,7 +97,11 @@ _SOURCE = re.compile(r"agents/(?:tools|runner|mcp_server)\.py")
 _ABS_KIND = (("evals", re.compile(r"/evals(?:/|$)")),
              ("logs", re.compile(r"/agents/logs(?:/|$)")),
              ("tests", re.compile(r"openbeast[^/]*/(?:[^/]+/)*?tests(?:/|$)|/worktrees/[^/]+/tests(?:/|$)")))
-_REFUSED = re.compile(r"^Error: refusing|disabled while an eval unit is measured")
+# The web gate's refusal ("Error: fetch is disabled while ...") starts with
+# the tool's name: with `.match` the second branch needs its own prefix, or a
+# refused fetch reads as "read" (it did on DeepSeek arm T's two CPython
+# fetches, 2026-11-18, which looked like they had reached the network).
+_REFUSED = re.compile(r"^Error: refusing|^Error: \w+ is disabled while an eval unit is measured")
 # Review 1118: off-host network from a bash command.
 _LOOPBACK = re.compile(r"^(?:localhost|127\.\d+\.\d+\.\d+|\[?::1\]?|0\.0\.0\.0)(?::\d+)?$", re.I)
 _FETCHER = re.compile(r"(?:^|[\s;&|(`$])(curl|wget)\b([^;&|\n`)]*)")
@@ -112,6 +123,12 @@ _EMBED = re.compile(r'#\s*include\s*[<"](/[^>"]+)[>"]'
                     r'|@(?:embedFile|import)\s*\(\s*"(/[^"]+)"'
                     r"""|\bopen\s*\(\s*[rbf]*["'](/[^"']+)["']"""
                     r'|\bfopen\s*\(\s*"(/[^"]+)"')
+# 2026-11-18: this project's own repository, on any host, and URL paths into
+# evals/ answer trees. The same patterns as agents/tools.py's eval fetch guard
+# (_EVAL_SELF_REPO_RE / _EVAL_URL_EVALS_RE; a test pins them equal).
+_SELF_REPO = re.compile(r"maximiliankhan(?:/|:|%2f)+openbeast(?![\w-])", re.I)
+_URL_EVALS = re.compile(r"/evals/(?:tasks|refs|suites|results|cache|reference)(?:/|$)", re.I)
+_URL_IN = re.compile(r"(?:https?|ftps?)://[^\s'\"<>`]+", re.I)
 _DENIED = "Operation not permitted"
 WEB_TOOLS = {"fetch", "web_search"}
 INFO_KINDS = {"source", "web", "toolchain"}
@@ -189,11 +206,28 @@ def embed_paths(content: str) -> list[str]:
     return [next(g for g in m.groups() if g) for m in _EMBED.finditer(content or "")]
 
 
+def self_repo_hits(text: str) -> list[str]:
+    """This project's own repository named anywhere in `text`, or a URL whose
+    path reaches a checkout's evals/ answer trees (percent-decoded)."""
+    t = str(text or "")
+    for _ in range(3):
+        dec = urllib.parse.unquote(t)
+        if dec == t:
+            break
+        t = dec
+    ev = [m.group(0) for m in _SELF_REPO.finditer(t)]
+    for m in _URL_IN.finditer(t):
+        if _URL_EVALS.search(urllib.parse.urlparse(m.group(0)).path):
+            ev.append(m.group(0)[:160])
+    return ev
+
+
 def call_kinds(name: str, args) -> tuple[set, list[str]]:
     """(kinds, evidence) for the arguments of one tool call."""
     kinds, ev = set(), []
     if name in WEB_TOOLS:
-        return {"web"}, [json.dumps(args)[:200]]
+        own = self_repo_hits(json.dumps(args))
+        return ({"web", "selfrepo"} if own else {"web"}), ([json.dumps(args)[:200]] + own)[:6]
     if isinstance(args, str):
         try:
             args = json.loads(args)
@@ -205,6 +239,10 @@ def call_kinds(name: str, args) -> tuple[set, list[str]]:
         if net:
             kinds.add("network")
             ev += net
+        own = self_repo_hits(cmd)
+        if own:
+            kinds.add("selfrepo")
+            ev += own
         if _ANY_SCRATCH.search(cmd) and not _SCRATCH.search(cmd):
             kinds.add("scratch")          # /tmp/claude-$UID, /tmp/claude-*
             ev.append(_ANY_SCRATCH.search(cmd).group(0))
@@ -288,7 +326,8 @@ def scan_transcript(path: str) -> list[dict]:
         if not kinds and not rk:
             continue
         status = "refused" if refused(res) else "read"
-        if status == "read" and (kinds | rk) - INFO_KINDS == {"network"} and _NET_FAIL.search(res):
+        if status == "read" and "network" in kinds \
+                and (kinds | rk) - INFO_KINDS <= {"network", "selfrepo"} and _NET_FAIL.search(res):
             status = "refused"            # the connection failed (the sandbox, since 1118)
         hits.append({"iteration": it, "tool": name, "kinds": sorted(kinds | rk),
                      "status": status, "evidence": (ev + rev)[:6],

@@ -1,5 +1,56 @@
 # Eval suite changelog
 
+## v5.0, harness9: act nudge, partial stats on a wall kill, eval fetch guard; arm T2 (2026-11-18) — era roll
+
+**Era `06c82c4335dd6a0c` → `036638ddd68698ce`, harness8 → harness9
+(`cd729e38ca1e3030`).** `agents/runner.py`, `agents/tools.py` and run_eval's
+`run_agent` changed. From the DeepSeek-V4.1-Flash (Mia EXL3) arm T audit
+(61/71, `--jobs 4`): all 10 failures hit the 3,600 s wall, 17 units hit it
+(7 passed on the code left at the kill), 17.0 of 26.6 unit-hours went to
+wall-killed units, and 192_pike_regex spent 8 turns and 3,585 s with zero
+tool calls, every turn capped at 16,384 tokens of pure reasoning.
+
+- **Act nudge (opt-in, `OPENBEAST_AGENT_ACT_NUDGE=1`, key `anudge`).** From
+  the second turn in a row without a tool call that ends in the cap, and from
+  the first that ends neither capped nor as a final answer (`stop` with no
+  content, no `finish_reason`), the runner adds a short nudge: the next reply
+  must be a tool call (write the file, run a test, or `task_done`). It is
+  joined to the capped-think recovery's message, so the model gets one user
+  turn, and it is logged as `act_nudge`. It never fires after a tool call, or
+  on `stop` with content. With the switch off, every request is as before.
+- **Per-turn cap keyed.** `OPENBEAST_AGENT_MAX_TOKENS` (already the runner's
+  override of the eval turn cap) is now an agent switch: `cap<N>` in the key,
+  `agent_turn_cap` on rows, pinned into each unit's env. Arm T2 sets 8192
+  (and declares `--reasoning-budget 8192`). The capped-think recovery is
+  unchanged. A test pins it for DeepSeek's shape (`reasoning_content` in
+  `model_extra`, content `None`).
+- **Partial stats on a wall kill (reporting only).** run_agent hands the
+  runner `OPENBEAST_AGENT_STATS_FILE`. The runner rewrites its counters there
+  at every turn start and after every response, and run_agent reads them only
+  when it killed the agent. The row then carries `tokens_*`, `iterations`,
+  `reasoning_turns` and `compactions` with `stats_partial: true` (16 of T's 17
+  killed rows had tokens 0 and iterations None). No verdict rule reads them:
+  `api_errors` is not taken from the sidecar, and `campaign.py score` never
+  counts a killed row (`agent_exit_code` -1) as a turn-cap ending.
+- **Eval fetch guard.** Under eval, whatever `OPENBEAST_EVAL_WEB` says, `fetch`
+  refuses a URL that names this project's repository on any host
+  (`MaximilianKhan/openbeast` on github.com, raw.githubusercontent.com,
+  api.github.com/repos, codeload, a CDN's /gh/ mirror; case-insensitive,
+  percent-decoded). It also refuses one whose path goes into a checkout's
+  `evals/{tasks,refs,suites,results,cache,reference}`. Every redirect hop is
+  checked too. `web_search` refuses a query that names the repo. The web
+  tools stay off under eval by default. Arm T's two CPython fetches were
+  refused by that gate. `evals/audit/integrity_scan.py` reported them as
+  "read" because its refusal pattern missed the gate's wording. Fixed here.
+  The scan adds a contaminating kind, `selfrepo`, with the guard's patterns
+  (a test pins them equal).
+
+Board label for a run of this tree: **"harness9"**. A correct solution passes
+the same way (the nudge and the cap change how a run spends its wall, so T2's
+rows pair only with harness9 rows; T's are harness8 + review 1118). Campaign:
+`T_j2` (#226: T at `--jobs 2 --slots 2`, era-neutral) and `T2` (T + the 8192
+cap + the act nudge, at T_j2's jobs) in `v5-thinking-first`, both optional.
+
 ## v5.0, review 1118: sandbox hardening (#224, era roll) and four validator lints (#223) (2026-11-18)
 
 **#224, era `595634987879411a` → `06c82c4335dd6a0c`, harness stays harness8.**

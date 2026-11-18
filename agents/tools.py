@@ -3034,6 +3034,9 @@ class _FetchRedirectHandler(urllib.request.HTTPRedirectHandler):
     early check being one resolution ahead can't be exploited."""
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         _fetch_check_deadline()
+        why = _eval_url_refusal(newurl)
+        if why:
+            raise urllib.error.URLError(f"refusing redirect to {newurl[:200]}: {why}")
         reason = _fetch_bounded(_fetch_url_blocked, newurl)
         if reason:
             raise urllib.error.URLError(
@@ -3096,6 +3099,40 @@ def _eval_web_gate(tool: str, arg: str) -> str | None:
     return None
 
 
+# The eval fetch guard (2026-11-18). Under eval the web tools are off unless
+# OPENBEAST_EVAL_WEB=record turns them on, and the bash sandbox (#224) denies
+# the shell the network. A recorded fetch could still reach this project's
+# own repo, whose evals/refs hold every unit's answer: on DeepSeek-V4.1-Flash
+# (Mia EXL3)'s arm T the agent asked fetch for CPython's source on
+# raw.githubusercontent.com (refused, the web being off). So under eval,
+# whatever the web mode, fetch refuses (and so does every redirect hop) a URL
+# that names the repo on any host (github.com, raw.githubusercontent.com,
+# api.github.com/repos, codeload, a CDN's /gh/ mirror: the owner/name pair,
+# case-insensitive, after percent-decoding) and any URL path into a
+# checkout's evals/ answer trees. web_search refuses a query naming the repo.
+_EVAL_SELF_REPO_RE = re.compile(r"maximiliankhan(?:/|:|%2f)+openbeast(?![\w-])", re.I)
+_EVAL_URL_EVALS_RE = re.compile(r"/evals/(?:tasks|refs|suites|results|cache|reference)(?:/|$)", re.I)
+
+
+def _eval_url_refusal(url: str) -> str | None:
+    """Under eval (OPENBEAST_EVAL=1): why `url` may not be fetched, else None."""
+    if not _eval_mode():
+        return None
+    text = str(url or "")
+    for _ in range(3):                      # %252F -> %2F -> /
+        dec = urllib.parse.unquote(text)
+        if dec == text:
+            break
+        text = dec
+    if _EVAL_SELF_REPO_RE.search(text):
+        return ("this project's own repository (it holds the eval's reference "
+                "solutions) is off limits while an eval unit is measured")
+    path = urllib.parse.urlparse(text).path if "://" in text else text
+    if _EVAL_URL_EVALS_RE.search(path):
+        return "an evals/ path is off limits while an eval unit is measured"
+    return None
+
+
 def fetch(url: str, max_length: int = 50_000) -> str:
     """Fetch content from a URL and return as text.
 
@@ -3107,6 +3144,9 @@ def fetch(url: str, max_length: int = 50_000) -> str:
     gated = _eval_web_gate("fetch", url)
     if gated:
         return gated
+    why = _eval_url_refusal(url)
+    if why:
+        return f"Error: refusing to fetch {str(url)[:200]}: {why}"
     # max_length is model-controlled; without a ceiling, max_length*4 below
     # becomes an attempted multi-GB read into memory — and a result bigger
     # than the context is useless to the model anyway. The truncation marker
@@ -3319,6 +3359,9 @@ def web_search(query: str, max_results: int = 10, pageno: int = 1,
     gated = _eval_web_gate("web_search", query)
     if gated:
         return gated
+    if _eval_mode() and _EVAL_SELF_REPO_RE.search(urllib.parse.unquote(str(query or ""))):
+        return ("Error: refusing to search for this project's own repository while an "
+                "eval unit is measured (it holds the eval's reference solutions)")
     searxng_url = os.environ.get("SEARXNG_URL", "http://localhost:8888")
     try:
         query_params = {
