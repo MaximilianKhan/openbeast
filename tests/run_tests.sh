@@ -163,6 +163,7 @@ for _suite in \
   "test_spark_fabric_mtu.sh|DGX Spark fabric MTU 9000 (netplan drop-in for the next reboot)" \
   "test_spark_supply.sh|DGX Spark supply chain (install-native, root-setup debs and key)" \
   "test_spark_deepseek_pack.sh|DGX Spark DeepSeek pack swap (managed local.sh block, local revision)" \
+  "test_spark_backup.sh|DGX Spark backup / restore / N-node provisioning (spark-backup.sh, spark-restore.sh)" \
   "test_spark_model_intake.sh|DGX Spark model intake preflight (offline verdicts for an EXL3 folder)" \
   "test_spark_beast.sh|DGX Spark shortcuts (beastup / beastdown / beastglm / beastds)" \
   "test_opencode_sessions.sh|opencode session clearing" \

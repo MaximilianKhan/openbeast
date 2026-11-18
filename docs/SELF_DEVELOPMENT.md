@@ -216,6 +216,7 @@ Run the narrow suites while iterating, then the full set before committing:
 | `scripts/backends/spark-cluster.sh`, `tensorfold/spark-node.sh`, `vllm/` | `tests/test_spark_cluster.sh`, `tests/test_backends.sh` |
 | `scripts/backends/spark-guard.sh` | `tests/test_spark_guard.sh` |
 | `scripts/backends/spark-deepseek-pack.sh` | `tests/test_spark_deepseek_pack.sh` |
+| `scripts/backends/spark-backup.sh`, `spark-restore.sh`, `pylib/spark_backup.py`, `data/spark-backup.items` | `tests/test_spark_backup.sh` (the copy steps need GNU rsync >= 3: Linux, or `brew install rsync` on a Mac; without it they are skipped) |
 | `scripts/backends/spark-model-intake.sh`, `pylib/model_intake.py`, `data/spark-families.json` | `tests/test_spark_model_intake.sh` (portable; the local-revision parity check needs GNU stat), `tests/test_model_inspect.py` |
 | `scripts/backends/spark-beast.sh` | `tests/test_spark_beast.sh` |
 | `scripts/backends/spark-fabric-mtu.sh` (fabric MTU 9000, netplan drop-in) | `tests/test_spark_fabric_mtu.sh` (portable; on Ubuntu it also checks the merge against the real `netplan generate --root-dir`) |
