@@ -409,7 +409,8 @@ arms.
 
 ## 🟩 DGX SPARK INFERENCE — LIVE 2026-11-13 as spark-hydra
 
-- **Live November 17:** Stock DeepSeek-V4.1-Flash-1017 serves four streams on TensorFold TP2 across two RoCE rails. The enrolled Mac completed a real OpenCode request. GLM-5.3-Flash remains staged as a rollback. [Deployment and acceptance record](SPARK_HYDRA.md#deepseek-deployment).
+- **Live November 17:** DeepSeek-V4.1-Flash-1017 serves four streams on TensorFold TP2 across two RoCE rails, from Mia's EAQ v1.1 "-v2" pack since the evening A/B (stock EAQ v1 stays on disk as a fallback). The enrolled Mac completed a real OpenCode request. GLM-5.3-Flash is the only other model the pair serves; `beastglm` / `beastds` switch. [Deployment and acceptance record](SPARK_HYDRA.md#deepseek-deployment).
+- **2026-11-18:** opencode v2.3.2 runs on both Sparks against `127.0.0.1:8000` (spark-2 through an ssh tunnel); it has no OpenBeast MCP tools yet. Offline development has a documented loop through a bare hub repo on spark-1 ([SELF_DEVELOPMENT.md §11](SELF_DEVELOPMENT.md#11-developing-with-github-unreachable)); the hub itself is not created yet. Open: pytest on spark-1, ShellCheck on the Sparks, a DeepSeek MODELS entry in `benchmark_all.py`, a cold boot with the WAN down.
 - **Next:** full offline playbook (image save/load, DFlash2, aarch64 air-gap
   bundle, zig); remote access (beast-gate via `tailscale serve`,
   `svc:spark-hydra`); the primary switch beast ↔ spark-hydra on the hydra side

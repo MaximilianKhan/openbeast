@@ -52,7 +52,7 @@ line in `openbeast.conf`.
 | **beast-apps** 🧰 | A capability catalog for external apps (Xcode / iOS Simulator, Gradle + adb, mobile UI driving, Blender, Figma, 3D printers, ROS) through pinned MCP servers: `scripts/apps.sh check` probes what is installed and prints the exact fix, `enable` merges a passing server into opencode (v1 or v2 config) with a backup, `refresh` notices upstream changes ([docs](docs/BEAST_APPS.md)) | unreleased |
 | **Air-gap ready** 🔌 | `OFFLINE=true`, a hash-pinned Python lockfile with a wheelhouse, and a signed offline bundle: build it connected, install it from a USB stick | v1.5 |
 | **beast-island** 🏝️ | Runtime offline mode for a power outage: the rig notices the internet is gone (about 90 to 120 s), web tools answer "offline" at once instead of stalling, and everything else keeps running locally. A launch with no route boots islanded; `./start.sh -d --offline` forces it | v1.8 |
-| **spark-hydra** 🐉🐉 *opt-in* | Two DGX Sparks serve stock DeepSeek-V4.1-Flash-1017 on TensorFold across two ConnectX-7 rails, with four streams and a 524,288-token window. The command center and authenticated client gateway run on spark-1. GLM-5.3-Flash remains available for rollback. [Spark runbook](docs/SPARK_HYDRA.md#deepseek-deployment) | v1.9 |
+| **spark-hydra** 🐉🐉 *opt-in* | Two DGX Sparks serve DeepSeek-V4.1-Flash-1017 (Mia's EAQ v1.1 "-v2" pack) on TensorFold across two ConnectX-7 rails, with four streams and a 524,288-token window. The command center and authenticated client gateway run on spark-1. GLM-5.3-Flash is the other model the pair serves, one command away. [Spark runbook](docs/SPARK_HYDRA.md#deepseek-deployment) | v1.9 |
 | **beast-campaign** 🧪 | A GPU lease so two measurements cannot share the card, an eval *era* hash so rows from different code are never compared as if they were the same, and a harness that refuses to bank an infrastructure failure (a dead server, an exhausted thread pool, a full disk) as a model failure | v1.5 |
 | **Multi-engine inference** 🟩 *opt-in* | `INFERENCE_BACKEND=vllm\|tensorfold`: the whole stack (WebUI, tools, agents, gate, `/api/slot`) talks to a vLLM or TensorFold server, e.g. tensor-parallel across two DGX Sparks. Any new checkpoint is inspected, pinned by commit, sha256-locked and conformance-tested before OpenBeast uses it | v1.6 |
 | **Engine plane** ⚙️ | `scripts/engine.sh`: list, swap, install, update, pin and roll back llama.cpp, vLLM or TensorFold with one command, every install verified and every one with an offline path (`stage` on a connected box, `install --from` on a closed one); one adapter file per engine ([docs](docs/ENGINES.md)) | unreleased |
@@ -412,7 +412,7 @@ them is in [`docs/TODO.md`](docs/TODO.md).
 ## Serving from DGX Sparks (spark-hydra) 🐉🐉
 
 *(v1.9.0, opt-in.)* **spark-hydra** is two NVIDIA DGX Sparks (`spark-1` +
-`spark-2`) serving stock DeepSeek-V4.1-Flash-1017 with TensorFold TP 2, four streams and a 524,288-token window. The OpenBeast command center runs on spark-1. Its backend listens on loopback and outside callers use beast-gate on `:8443` with a per-device key.
+`spark-2`) serving DeepSeek-V4.1-Flash-1017 (Mia's EAQ v1.1 "-v2" pack; GLM-5.3-Flash is the alternative) with TensorFold TP 2, four streams and a 524,288-token window. The OpenBeast command center runs on spark-1. Its backend listens on loopback and outside callers use beast-gate on `:8443` with a per-device key.
 
 **Quickstart.** The full version, with every command, is
 [docs/SPARK_HYDRA.md § Quickstart](docs/SPARK_HYDRA.md#quickstart).
@@ -921,10 +921,16 @@ scoring, per-category/per-language breakdowns, and the eval CLI:
 
 ## Documentation
 
+The map of every document, with a reading order for a local model working
+offline, is **[docs/README.md](docs/README.md)**. The commands, by machine,
+are in **[docs/COMMANDS.md](docs/COMMANDS.md)**.
+
 **Start here**
 
 | Doc | What's in it |
 |---|---|
+| [docs/README.md](docs/README.md) | Which doc to read for what |
+| [COMMANDS.md](docs/COMMANDS.md) | Commands cheat sheet: Mac client, spark-1 and spark-2 operations, tests, git online and offline, evals, benches, recovery |
 | [TUTORIALS.md](docs/TUTORIALS.md) | One copy-pasteable walkthrough per beast-* feature, with what you should see |
 | [INSTALL.md](docs/INSTALL.md) | Step-by-step install, prerequisites, per-model downloads, the offline/air-gap path, troubleshooting |
 | [FEATURES.md](docs/FEATURES.md) | The complete capability breakdown |
@@ -964,6 +970,12 @@ scoring, per-category/per-language breakdowns, and the eval CLI:
 | [REMOTE_ACCESS_PLAN.md](docs/REMOTE_ACCESS_PLAN.md) | Tailscale design, VPN coexistence, verification |
 | [EGRESS_PRIVACY.md](docs/EGRESS_PRIVACY.md) | Obscuring outbound traffic with a Tailscale exit node, and why not to stack a second VPN |
 | [SPARK_HYDRA.md](docs/SPARK_HYDRA.md) | The DGX Spark pair (spark-hydra): a quickstart, then bare boxes to a serving pair, day-2 operations, fully offline. Historical design notes: [DGX_SPARK_PLAN.md](docs/DGX_SPARK_PLAN.md) |
+| [OPENBEAST-SERVING.md](docs/OPENBEAST-SERVING.md) | One page: check, start, stop and switch the Spark pair's models and packs |
+| [SELF_DEVELOPMENT.md](docs/SELF_DEVELOPMENT.md) | The local model developing OpenBeast with the network off: clients, test map, era rule, git, and the offline git hub on spark-1 |
+| [ENGINES.md](docs/ENGINES.md) | llama.cpp / vLLM / TensorFold / Maya through `scripts/engine.sh` |
+| [MODEL_CAMPAIGN.md](docs/MODEL_CAMPAIGN.md) | A new model on the Sparks, from onboarding to its final report |
+| [PYTHON_OFFLINE.md](docs/PYTHON_OFFLINE.md) · [TAILSCALE_OFFLINE.md](docs/TAILSCALE_OFFLINE.md) | Python packages offline on a Spark; reaching the gate when the tailnet or WAN is down |
+| [BEAST_DOCS.md](docs/BEAST_DOCS.md) · [BEAST_APPS.md](docs/BEAST_APPS.md) · [BEAST_ARK.md](docs/BEAST_ARK.md) | Offline platform docs; external apps through MCP; pinned software on a drive |
 | [SANDBOXING.md](docs/SANDBOXING.md) | The optional kernel-level sandbox for the bash tool |
 | [SOC2_READINESS.md](docs/SOC2_READINESS.md) | Control mapping against the Trust Services Criteria, with an honest gap list |
 | [extensions/README.md](extensions/README.md) | The optional-service extension system |

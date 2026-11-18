@@ -1,10 +1,18 @@
 # Agent Instructions for this Repository
 
-You're working in **OpenBeast**, a fully local AI workstation — llama.cpp
-serving Qwen and Gemma models, MCP-based tool server, OpenCode + Open WebUI as frontends,
-a 137-task eval suite (v4 — 291 effective units with multi-language variants,
-across 12 categories), and 27 curated skills for specialized work (18 written
-here, 9 imported through the gate).
+You're working in **OpenBeast**, a fully local AI workstation: llama.cpp
+serving Qwen and Gemma models on the RTX 5090 rig (`beast`), TensorFold
+serving DeepSeek-V4.1-Flash-1017 or GLM-5.3-Flash across two DGX Sparks
+(`spark-hydra`, command center on spark-1), an MCP-based tool server,
+OpenCode + Open WebUI as frontends, the v5 eval suite (71 scored units over
+34 base tasks, drawn from a 151-task / 320-unit library), and 27 curated
+skills for specialized work (18 written here, 9 imported through the gate).
+
+**If you are the local model on a Spark, possibly with no internet:** read
+[`docs/SELF_DEVELOPMENT.md`](docs/SELF_DEVELOPMENT.md) first, then
+[`docs/COMMANDS.md`](docs/COMMANDS.md). The map of every doc is
+[`docs/README.md`](docs/README.md). Never edit `~/openbeast` on spark-1: it
+is the live command center. Work in a clone.
 
 This file is auto-loaded as project-wide instructions. Read it once at the
 start of a session.
@@ -123,17 +131,21 @@ Each is one arg away, e.g. `./start.sh serve-qwen-27b-q5.sh`. Board:
 | What | Where |
 |---|---|
 | Source: model serving, agents, MCP tools | `agents/`, `scripts/`, `start.sh`, `stop.sh` |
-| Eval suite (137 tasks across 12 categories) | `evals/` — see `evals/README.md` |
+| Eval suite (v5: `evals/suites/v5.json`; library of 151 tasks across 12 categories) | `evals/` — see `evals/README.md` |
 | Skills (this system) | `skills/` — see `skills/README.md` |
 | Tests | `tests/run_tests.sh` (runs all) + `python3 -m pytest tests/ -q`. Full list is `ls tests/`; the load-bearing ones: `test_tools.py`, `test_scripts.sh`, `test_smoke.sh` (needs a live stack), `test_cache.py`, `test_proc_hygiene.py`, `test_edge.py` (beast-gate), `test_clients.sh` (enrollment CLI), `test_beast_slot.py` (`/api/slot` contract), `test_identity_server.py` (RBAC/sharding/audit), `test_fetch_guards.py` (SSRF) |
-| Documentation (technical) | **Live** (start here): `docs/ARCHITECTURE.md`, `docs/BEAST_SLOT.md`, `docs/BEAST_ISLAND.md`, `docs/BEAST_APPS.md` (external apps through MCP servers: `scripts/apps.sh`), `docs/SPARK_HYDRA.md` (the DGX Spark launch runbook: bare boxes to a serving pair, day-2 operations, troubleshooting, fully offline), `docs/SELF_DEVELOPMENT.md` (the local model developing OpenBeast itself, network off: setup, a file-area → test map, the era rule, worked sessions), `docs/ENGINES.md` (llama.cpp / vLLM / TensorFold / opt-in Project Maya through `scripts/engine.sh`), `docs/MODEL_CAMPAIGN.md` (a new model on the Sparks to its final report: the L0 profile, the failure audit, the reference ceiling, the chained harness arms of `evals/campaign.py`), `docs/WEIGHT_STREAMING.md` (MoE experts streamed from RAM on the 5090: the llama.cpp v1.0.0 expert cache, Flash-Next, opt-in big mode, the per-profile memory scope, the 1.5x engine gate; the bring-up runbook), `docs/BEAST_DOCS.md` (beast-docs: the offline mirror of current Apple / Android / other platform docs), `docs/BEAST_ARK.md` (beast-ark: 112 open-source packages, pinned and verifiable, for a cold-storage drive: `scripts/ark.sh` fetch / verify / restore / serve, offline), `docs/INSTALL.md`, `docs/REFERENCE.md`, `docs/TOOLS.md`, `docs/RESULTS.md`, `docs/MODELS.md`, `docs/UPDATING.md`, `docs/TODO.md` — `ls docs/` for the rest (plans, SANDBOXING, RBAC_PLAN, HARDWARE_PROFILES…). **Do not cite as current:** anything under `docs/archive/` (historical, v3-era), and `docs/MAC_CLIENT_PLAN.md`, superseded by `docs/BEAST_SLOT.md` |
+| Documentation (technical) | **The map:** `docs/README.md` (which doc for what). **Commands:** `docs/COMMANDS.md`. **Live** (start here): `docs/ARCHITECTURE.md`, `docs/BEAST_SLOT.md`, `docs/BEAST_ISLAND.md`, `docs/BEAST_APPS.md` (external apps through MCP servers: `scripts/apps.sh`), `docs/SPARK_HYDRA.md` (the DGX Spark launch runbook: bare boxes to a serving pair, day-2 operations, troubleshooting, fully offline), `docs/SELF_DEVELOPMENT.md` (the local model developing OpenBeast itself, network off: setup, a file-area → test map, the era rule, worked sessions), `docs/ENGINES.md` (llama.cpp / vLLM / TensorFold / opt-in Project Maya through `scripts/engine.sh`), `docs/MODEL_CAMPAIGN.md` (a new model on the Sparks to its final report: the L0 profile, the failure audit, the reference ceiling, the chained harness arms of `evals/campaign.py`), `docs/WEIGHT_STREAMING.md` (MoE experts streamed from RAM on the 5090: the llama.cpp v1.0.0 expert cache, Flash-Next, opt-in big mode, the per-profile memory scope, the 1.5x engine gate; the bring-up runbook), `docs/BEAST_DOCS.md` (beast-docs: the offline mirror of current Apple / Android / other platform docs), `docs/BEAST_ARK.md` (beast-ark: 112 open-source packages, pinned and verifiable, for a cold-storage drive: `scripts/ark.sh` fetch / verify / restore / serve, offline), `docs/INSTALL.md`, `docs/REFERENCE.md`, `docs/TOOLS.md`, `docs/RESULTS.md`, `docs/MODELS.md`, `docs/UPDATING.md`, `docs/TODO.md` — `ls docs/` for the rest (plans, SANDBOXING, RBAC_PLAN, HARDWARE_PROFILES…). **Do not cite as current:** anything under `docs/archive/` (historical, v3-era), and `docs/MAC_CLIENT_PLAN.md`, superseded by `docs/BEAST_SLOT.md` |
 | Documentation (overview / persona / tools) | `README.md`, `system-prompt.md`, `system-prompt-tools.md` |
 
 ### Eval suite
 
-- 137 base tasks (v4); 31 of them have multi-language variants (291
-  effective test units across Python / Go / C / C++ / Rust / Zig)
-- Run a single model: `python3 evals/benchmark_all.py --models <slug>`
+- **v5 is current** (`evals/SUITE_VERSION`, harness `harness8`): 71 scored
+  units over 34 base tasks, in the manifest `evals/suites/v5.json`. A v5
+  profile of one model: `python3 evals/profile.py --model <slug> --budget-h 4 --jobs 4`.
+  Model campaigns: `evals/campaign.py` (`docs/MODEL_CAMPAIGN.md`)
+- The task library (v4's 137 tasks plus v5's new ones) is 151 base tasks /
+  320 effective units; v4 is frozen and stays runnable for history
+- Run a single model on the v4 board: `python3 evals/benchmark_all.py --models <slug>`
 - Full sweep: bare `python3 evals/benchmark_all.py` runs **every** configured
   model — 20 today (`--list` to see them), several days of GPU on the 5090.
   Pass `--models <slug>` unless you mean it
