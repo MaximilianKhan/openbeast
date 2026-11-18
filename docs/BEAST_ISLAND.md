@@ -30,7 +30,9 @@ python3 agents/island.py status    # what state are we in?
 ```
 
 Shell aliases make these one word. Define them yourself if you want them;
-the repo does not install any:
+the repo does not install any. (On spark-1, `beastup` is already taken by
+the beast-spark shortcut, which starts the pair; see
+[COMMANDS.md §3](COMMANDS.md#3-spark-1-start-stop-switch-changes-state).)
 
 ```bash
 alias beastup-offline='~/Documents/openbeast/start.sh -d --offline'
@@ -145,6 +147,38 @@ consumers read island.json
     its own `.run` has none.
   - `agents/island.py` is stdlib-only because `mcp_server.py` imports it and
     ships to clients. A **client** has no watcher, so it is never islanded.
+
+## On the Spark pair
+
+The Spark pair (spark-1 and spark-2, [SPARK_HYDRA.md](SPARK_HYDRA.md)) is
+the deployment most likely to run islanded for long, so here is what an
+internet outage does there, piece by piece. **Verified** means it was
+observed on the pair; the rest follows from the code and is labelled.
+
+| Piece | What happens when the WAN goes away |
+|---|---|
+| The island watcher (spark-1, part of the `openbeast` command center; `ISLAND` unset in `openbeast.conf`, so `auto`) | Islands the stack after 90 s of failed probes; rejoins by itself. `healthcheck.sh` shows the `Network:` line; `python3 ~/openbeast/agents/island.py status` says why. On 2026-11-18 it read "online (watching: islands after 90s without a route)" |
+| Inference (`deepseek-v41-inference` or `spark-hydra-inference`) | Unaffected: the backend listens on spark-1's loopback, rank 1 is reached over the ConnectX-7 fabric (10.100.216.x / 10.100.217.x), and the units start with `PREPARE=0`, so a restart loads from local disk. The weights, rank caches and images are all on disk. **A cold boot of both Sparks with the WAN down is unverified** for DeepSeek |
+| beast-gate (`:8443` on the tailnet, `:8090` on loopback) | The gate itself keeps running. Whether a client reaches `:8443` depends on Tailscale (next row) |
+| Tailscale | Existing direct peer connections can survive; new paths need the coordination server. If the tailnet path fails but the LAN works, use the native ssh tunnel to the gate in the [Tailscale field guide](../skills/tailscale/references/guide.md) ([TAILSCALE_OFFLINE.md](TAILSCALE_OFFLINE.md)). `healthcheck.sh` excuses an offline Tailscale only while islanded |
+| ssh between the Sparks | Unaffected: over the fabric, by IP (`max@10.100.216.2` from spark-1, `max@10.100.216.1` from spark-2) |
+| ssh from the Mac | At home, by LAN IP: `ssh -o HostName=192.168.40.153 spark-1` (mDNS can fail after a reboot) |
+| opencode on the Sparks | Unaffected: it talks to `127.0.0.1:8000` (spark-2 through its fabric tunnel `opencode-model-link`), with `autoupdate: false` ([SELF_DEVELOPMENT.md](SELF_DEVELOPMENT.md#opencode-on-the-sparks)) |
+| `agent.sh` on spark-1 | Works, but its `web_search` / `fetch` are not island-guarded (Known limits below): disable them for the run ([SELF_DEVELOPMENT.md §2](SELF_DEVELOPMENT.md#2-what-works-with-the-network-off)) |
+| Development | The repo, its docs, the tests and git all work locally. Branches move through the hub on spark-1 instead of GitHub ([SELF_DEVELOPMENT.md §11](SELF_DEVELOPMENT.md#11-developing-with-github-unreachable)) |
+| Installing anything | pip, apt, docker pulls and Hub downloads fail. Use what was staged: wheelhouses ([PYTHON_OFFLINE.md](PYTHON_OFFLINE.md)), debs and images ([SPARK_HYDRA.md H](SPARK_HYDRA.md#h-fully-offline-operation)), an ark drive ([BEAST_ARK.md](BEAST_ARK.md)), opencode's kept tarball (`~/Documents/opencode/`) |
+
+**Nothing needs to be done when the internet drops.** Do not restart the
+stack with `--offline` just because the WAN is down: auto mode already
+covers it, and a restart drops every generation in flight. `--offline`
+(forced) is for a planned disconnection that should not flap.
+
+**When power fails too.** The Sparks have no documented UPS. After power
+returns, both boot, `deepseek-v41-inference` (enabled, lingering user
+manager) starts both ranks, and `openbeast` starts the command center. If the
+router is still down, the launch probe fails and the stack boots islanded
+(see "At launch, auto skips the grace" above). This sequence with the WAN
+down has not been run end to end on the pair.
 
 ## Known limits
 

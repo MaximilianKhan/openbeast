@@ -4,6 +4,8 @@ Two diagrams, two different jobs. **§1 is the trust model** — which machine
 does what, and what is allowed to cross between them. **§2 is the service
 map** — what actually runs inside the rig, and where identity is enforced.
 Read §1 to understand the product; read §2 to understand the implementation.
+**§3 is the deployment** as it runs today: the four machines, which process
+runs where, and the paths and ports that connect them.
 
 ## 1. The trust model — only inference crosses the wire
 
@@ -89,7 +91,7 @@ flowchart LR
   plus `INFERENCE_URL` point the whole command center (WebUI, router, gate,
   spawned agents, `/api/slot`) at an OpenAI-compatible server on other boxes —
   live since v1.9.0 as spark-hydra: two DGX Sparks, tensor-parallel, with
-  their own command center on spark-1. As of November 17 the pair serves stock DeepSeek-V4.1-Flash-1017 with four streams and 524,288 tokens per conversation. A dedicated user unit on spark-1 manages both ranks. The command center then launches,
+  their own command center on spark-1. Since 2026-11-17 the pair serves DeepSeek-V4.1-Flash-1017 from Mia's EAQ v1.1 "-v2" pack with four streams and 524,288 tokens per conversation; GLM-5.3-Flash is the other model it can serve (§3). A dedicated user unit on spark-1 manages both ranks. The command center then launches,
   supervises and kills no model server (`INFERENCE_MANAGED=false`);
   everything else in this picture is unchanged. Runbook:
   [`SPARK_HYDRA.md`](SPARK_HYDRA.md); original design notes:
@@ -284,7 +286,7 @@ flowchart TB
 - **The GPU has one owner at a time.** `scripts/gpu-lease.sh` is an advisory
   lease (pid + start time) that campaigns take before measuring; the watchdog
   and `stop.sh` consult it before touching any llama-server, and
-  `scripts/eval-era.sh` names the hash of the five files that define what an
+  `scripts/eval-era.sh` names the hash of the six files that define what an
   eval unit sees, so rows are only ever compared within one era.
   [`BEAST_CAMPAIGN_PLAN.md`](BEAST_CAMPAIGN_PLAN.md).
 - **Nothing in the tool plane is ever published.** With RBAC Phase 2 keys
@@ -311,6 +313,57 @@ flowchart TB
   tailnet as a read-only OCI registry with pip, npm and go mirrors. It is
   separate from `bundle.sh`, which carries OpenBeast's own stack.
   [`BEAST_ARK.md`](BEAST_ARK.md).
+
+## 3. The deployment — four machines (checked 2026-11-18)
+
+```
+                        tailnet (WireGuard) + home LAN
+   ┌──────────────┐                                        ┌──────────────────┐
+   │ Mac (client) │── :8443 beast-gate, :8444 slot ───────▶│ spark-1 (head)   │
+   │ opencode,    │── ssh (LAN / tailnet) ────────────────▶│ rank 0, :8000    │
+   │ openbeast-   │                                        │ command center   │
+   │ client, gh   │── :8443 ──▶ beast (5090 rig)           │ beast-gate :8090 │
+   └──────────────┘            llama.cpp, own stack        └────────┬─────────┘
+                                                     ConnectX-7 fabric│ 2 rails, MTU 9000
+                                                     10.100.216.x /   │ 10.100.217.x
+                                                                       ▼
+                                                           ┌──────────────────┐
+                                                           │ spark-2 (worker) │
+                                                           │ rank 1 only      │
+                                                           └──────────────────┘
+```
+
+| Machine | Runs | Does not run |
+|---|---|---|
+| **spark-1** (`spark-3dc6`, tailnet 100.66.191.118) | Rank 0 and the OpenAI API on `127.0.0.1:8000` (TensorFold, user unit `deepseek-v41-inference`, or `spark-hydra-inference` for GLM). The command center from `~/openbeast` (user unit `openbeast` → transient scope `openbeast-stack`): Open WebUI `:3000`, tool server `:3001`, dashboard `:3002`, beast-chat `:3003` (and `.run/chat.sock`), beast-artifact `:3004`, SearXNG `:8888`, beast-gate `:8090`, the island watcher. `tailscale serve` publishes `:443` → WebUI, `:8443` → gate, `:8444` → `/api/slot`, `:8445` → chat socket, `:8446` → artifact, `:8889` → SearXNG, all tailnet-only. opencode v2.3.2 against `:8000` | llama.cpp (`INFERENCE_MANAGED=false`: the stack never starts or stops the model) |
+| **spark-2** (`spark-9f26`, tailnet 100.110.143.15) | Rank 1 (container `dsv41-1017-exl3-tf`, started over ssh by spark-1's unit). User unit `opencode-model-link`: an ssh tunnel that makes spark-1's `:8000` appear on spark-2's `127.0.0.1:8000`. opencode v2.3.2. Scratch clones for GNU test suites, with the test venv `~/obvenv` | Any OpenBeast service. Its `~/openbeast` is a reference copy |
+| **Mac** | Client mode (`~/.openbeast-client`, `openbeast-client`), opencode with the `openbeast-tools` MCP server acting on the Mac's files, `gh` and the GitHub credentials, the eval venv `~/.local/opt/openbeast-eval-venv` | Inference |
+| **beast** (RTX 5090) | Its own full stack with llama.cpp on `:8080`, its own gate | Anything for the Sparks. Offline on the tailnet on 2026-11-18 |
+
+**Where things live on spark-1** (not in this repository; host-local):
+
+| Path | What |
+|---|---|
+| `~/openbeast` | The live command center checkout, `openbeast.conf`, `.run/` (state, pidfiles, audits, `clients.json`, `island.json`, `stack.log`) |
+| `~/openbeast-recipes/deepseek-prep/` | The DeepSeek runtime (Mia's recipe at `c7f2b85` in `runtime/`), pack and activation helpers, rollback to GLM, conformance records |
+| `~/openbeast-recipes/glm53/` | The GLM recipe |
+| `~/openbeast-models/` | HF caches: `deepseek-hf/` (packs as snapshots, Engram, rank-1 caches), `glm53-flash-ablit-exl3/` |
+| `~/Documents/` | Model folders as delivered (packs, GLM, notes), mirrored to spark-2's `~/Documents` as a backup; `opencode/` (the kept opencode release) |
+| `~/.config/openbeast/` | 0600 secrets: `tensorfold-api-key`, `gate-keys`, `hf-token`, `webui-max-password` |
+| `~/.config/systemd/user/` | The user units |
+| `~/.local/bin/` | `beast-spark`, `tensorfold` (native 1.2.7, not serving), opencode link |
+
+**How a request flows.** From the Mac: opencode → `https://spark-1…:8443/v1`
+with a device key → Tailscale serve → beast-gate `:8090` (key check, caps,
+audit, thinking default) → TensorFold `:8000` → both ranks over the fabric.
+From opencode on a Spark: directly to `:8000` with the TensorFold key (no
+gate). From Open WebUI: `:3000` → `:8000`, with tools through `:3001`.
+
+**What needs the internet.** Nothing on the serving path. Web search,
+`fetch`, installs, image pulls and GitHub do. The runbook for an outage is
+[BEAST_ISLAND.md "On the Spark pair"](BEAST_ISLAND.md#on-the-spark-pair);
+developing while GitHub is unreachable is
+[SELF_DEVELOPMENT.md §11](SELF_DEVELOPMENT.md#11-developing-with-github-unreachable).
 
 ## Project structure
 
@@ -347,7 +400,7 @@ scripts/                     # Server, ops, and feature CLIs
   bundle.sh                  # Air-gap: build/sign/verify/install the offline bundle
   pydeps.sh                  # Hash-pinned Python lockfile: lock/verify/wheelhouse/install
   gpu-lease.sh               # Advisory GPU lease: status/acquire/release/run
-  eval-era.sh                # The eval era hash and the five files behind it
+  eval-era.sh                # The eval era hash and the six files behind it
   land-dependabot.sh         # Rebase → relock → approve → merge, one Dependabot PR at a time
   skill-import.sh            # Remote-skill gate: fetch a pinned commit, scan, promote with a reviewer, verify
   uninstall.sh               # Rig decommissioning (dry run by default; --go; --purge-*)
@@ -370,7 +423,10 @@ scripts/                     # Server, ops, and feature CLIs
                              #   rank launchers (--profile), spark.env.example (host settings),
                              #   models/<name>.env per-model profiles + TEMPLATE.env, model-inspect.sh,
                              #   model-fetch.sh (pinned + verified + locked), conformance.sh and
-                             #   use-model.sh (rig), pylib/ (their python), data/ (vendored engine lists)
+                             #   use-model.sh (rig), pylib/ (their python), data/ (vendored engine lists);
+                             #   spark-root-setup.sh, spark-guard.sh, spark-fabric-mtu.sh (per-Spark root setup,
+                             #   firewall, fabric MTU), spark-cluster.sh (ranks from the head),
+                             #   spark-deepseek-pack.sh + spark-deepseek-prepare-local.sh (DeepSeek pack swaps)
 
 agents/                      # Agent framework + servers
   mcp_server.py              # MCP tool surface (19 tools; stdio for OpenCode)
@@ -414,16 +470,19 @@ tests/                       # pytest + standalone shell suites (tests/run_tests
   test_lang_*.py             # beast-lang: drivers, verifier, escalation, hardening, tool, synthesis
   test_edge.py · test_identity_*.py · test_tools.py · test_diagnostics.py · test_cache.py …
 
-evals/                       # Eval harness — 137 tasks / 291 units + multi-model benchmark
+evals/                       # Eval harness — v5 suite (suites/v5.json) over a 151-task / 320-unit library
   README.md                  # Distribution table, schema, scoring (start here)
-  run_eval.py                # Single-model runner (--jobs, --suite, --packs; greedy via OPENBEAST_EVAL_GREEDY)
+  run_eval.py                # Single-model runner (--jobs, --suite, --arms; greedy via OPENBEAST_EVAL_GREEDY)
+  profile.py                 # A v5 profile of one model inside a wall-clock budget (L0 -> plan -> L1 + L2)
+  campaign.py                # Chained harness arms from evals/campaigns/*.json (docs/MODEL_CAMPAIGN.md)
+  vlib.py                    # Validator library injected into every validator          [era-hashed]
   benchmark_all.py           # Multi-model sweep orchestration (server start/stop + recovery)
   scoring.py                 # v2 capability metric + per-category & per-language breakdown
   cache.py                   # Durable result cache, keyed on the era hash of the harness code
   suites/ · tasks/ · results/ · leaderboard.json
 
-docs/                        # 44 top-level documents — see README.md § Documentation
-skills/                      # 25 skills: 16 in-house + 9 imported (skills/README.md)
+docs/                        # 62 top-level documents — the map is docs/README.md; commands: docs/COMMANDS.md
+skills/                      # 27 skills: 18 in-house + 9 imported (skills/README.md)
 system-prompt.md             # Soul file (persona, applied to all frontends)    [era-hashed]
 system-prompt-tools.md       # Tool guidance (Open WebUI only; not era-hashed)
 opencode.json                # OpenCode project config (MCP wiring + model list)
