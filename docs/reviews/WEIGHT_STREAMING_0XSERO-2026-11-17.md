@@ -12,6 +12,18 @@ first run a free check on our own engine.**
 
 Nothing was installed, run or changed for this review.
 
+> **Correction, 2026-11-18.** The gate maths below uses the pre-measurement
+> estimate of 55-70 tok/s for llama.cpp's cache profile. It was measured the
+> same day at **76.84 tok/s** decode on the rig
+> ([WEIGHT_STREAMING.md](../WEIGHT_STREAMING.md#flash-next-on-beast-measured-november-17-2026)),
+> so the engine gate's 1.5× bar is now about **115 tok/s** (1.5 × 76.84 =
+> 115.3), not 82-105. 0xSero's 87.4 tok/s is 1.14× that, and **fails the
+> gate** even if our box matched his rented host. The trial below would need
+> a gain the published runs do not show (his 103.5 on a PRO 6000 with a
+> 48 GB cache is also under the bar). The review is kept as written; read
+> its "Speed vs the 1.5× gate" row and the trial recommendation with this
+> in mind.
+
 Subject: 0xSero (GitHub `0xSero`, org `sybil-solutions`, X `@0xSero`), public
 work up to 2026-11-17. It follows the 2026-11-15 decision report (the "5090
 Weight Streaming" artifact, cited in [WEIGHT_STREAMING.md](../WEIGHT_STREAMING.md)

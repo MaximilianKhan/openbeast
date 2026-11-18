@@ -171,6 +171,15 @@ one copied from Droid**. They should stay measured and conditional.
 
 ## 6. Mapping to OpenBeast
 
+> **Note, 2026-11-18.** This table predates G22 and G23
+> ([HARNESS_NOTES.md](../HARNESS_NOTES.md)), which this review prompted.
+> "Environment bootstrap" now has an opt-in first-turn environment block
+> (G22, `OPENBEAST_AGENT_ENV_BLOCK=1`), and "Turn and time awareness" an
+> opt-in wall-clock notice at 50% and 80% of the wall (G23,
+> `OPENBEAST_AGENT_WALL_WARN=1`). Both are off by default; arm E of the
+> GLM build-up ran them together (MODEL_CAMPAIGN.md §8). The "Gap" column
+> below is the state on 2026-11-16.
+
 | Droid-style mechanism | OpenBeast today | Gap |
 |---|---|---|
 | Few tools, simple schemas | Runner prompt lists 10 tools (19 on the MCP/WebUI surface) | Small |
