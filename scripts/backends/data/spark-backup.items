@@ -7,8 +7,11 @@
 # PATH is relative to the account's home (~max), never absolute, never "..".
 # A trailing / means a directory (copied whole). `*` matches inside one path
 # component. {SERVING_REV8} is the first 8 hex digits of the DeepSeek pack
-# that serves now (MODEL_REVISION in the recipe's runtime/scripts/local.sh,
-# or SPARK_BACKUP_SERVING_REV); a line using it is skipped when it is unknown.
+# local.sh selects (MODEL_REVISION in the recipe's runtime/scripts/local.sh,
+# or SPARK_BACKUP_SERVING_REV); {SERVING_WCD} is the folder name of that
+# pack's rank-1 cache (the basename of local.sh's WORKER_CACHE_DIR:
+# worker-rank-cache-<REV8>, or worker-rank-cache for the stock pack). A line
+# using a value that is unknown is skipped.
 #
 # ROLES: head | worker | all. A restore for a role copies the lines for that
 # role and `all`. A backup copies every line it can (it is taken on the head,
@@ -76,6 +79,11 @@ keep      head    .venvs/                             # spark-tools venv (hf, be
 keep      all     .openbeast/                         # beast-docs mirror
 keep      head    openbeast-files/                    # beast-artifact files and per-user uploads
 keep      all     offline-stage/                      # staged .debs (libnccl2, tailscale) and TensorFold release, when present
+keep      all     openbeast-backups/                  # earlier ad-hoc copies (spark-2: kilobytes)
+rebuild   all     obvenv/                             # the test venv (~150 MB): python3 -m venv ~/obvenv, then pip install the repo's test deps
+skip      all     scratch*                            # scratch clones of the repo (spark-2): re-clone from the hub
+skip      all     obtest-*                            # test clones (spark-2)
+skip      all     obengine-scratch-*                  # engine scratch trees (spark-2)
 
 # ── Recipes (head only: start.sh starts rank 1 over ssh) ─────────────────────
 keep      head    openbeast-recipes/                  # deepseek-prep (runtime, rollback, conformance records), glm53
@@ -86,8 +94,8 @@ weights   all     Documents/                          # model folders (hard link
 weights   all     openbeast-models/glm53-flash-ablit-exl3/   # GLM checkpoint (hard links)
 weights   all     openbeast-models/deepseek-hf/hub/   # DeepSeek base (Engram shards) and the EXL3 packs
 keep      all     openbeast-models/deepseek-hf/tensorfold-dsv41/kit-*/  # the serving kit
-rankcache head    openbeast-models/deepseek-hf/tensorfold-dsv41/{SERVING_REV8}/   # rank 0 file of the serving pack (~106 GB)
-rankcache all     openbeast-models/deepseek-hf/worker-rank-cache-{SERVING_REV8}/  # rank 1 file of the serving pack (~106 GB)
+rankcache head    openbeast-models/deepseek-hf/tensorfold-dsv41/{SERVING_REV8}/   # rank 0 file of the selected DeepSeek pack (~106 GB)
+rankcache all     openbeast-models/deepseek-hf/{SERVING_WCD}/   # rank 1 file of the selected DeepSeek pack (~106 GB)
 rebuild   all     openbeast-models/deepseek-hf/tensorfold-dsv41/*/   # other packs' rank 0 files: spark-deepseek-pack use rebuilds them
 rebuild   all     openbeast-models/deepseek-hf/worker-rank-cache*/   # other packs' rank 1 files
 keep      all     openbeast-models/*.lock             # model-fetch locks, when kept beside the weights
@@ -111,8 +119,8 @@ skip      all     Videos/
 skip      all     .local/
 
 # ── Docker ───────────────────────────────────────────────────────────────────
-image     all     tensorfold-dsv41:*                  # DeepSeek V4.1 Flash engine image (serving)
-image     all     tensorfold-glm53:*                  # GLM-5.3-Flash recipe image (rollback)
+image     all     tensorfold-glm53:*                  # GLM-5.3-Flash recipe image (serving: the pair's default)
+image     all     tensorfold-dsv41:*                  # DeepSeek V4.1 Flash engine image (the alternative)
 image     head    compose:open-webui                  # pinned by digest in docker-compose.yml
 image     head    compose:searxng
 image     head    alpine:latest                       # tar helper for volume export/import

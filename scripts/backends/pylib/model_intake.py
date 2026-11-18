@@ -102,6 +102,43 @@ def pack_rev(d: Path) -> str | None:
     return hashlib.sha1("".join(f"{(d / n).stat().st_size} {n}\n" for n in names).encode()).hexdigest()
 
 
+MIB = 1024 * 1024
+
+
+def _ends_sha256(p: Path, size: int) -> tuple[str, str]:
+    with open(p, "rb") as f:
+        head = hashlib.sha256(f.read(MIB)).hexdigest()
+        f.seek(max(0, size - MIB))
+        tail = hashlib.sha256(f.read(MIB)).hexdigest()
+    return head, tail
+
+
+def pack_fingerprint(d: Path, rev: str | None = None) -> str | None:
+    """spark-deepseek-pack.sh's content fingerprint: sha256 of one 'name size sha256(first MiB) sha256(last MiB)'
+    line per model-*.safetensors, sorted by name. Two packs can share a size listing (so a local REV); this tells
+    them apart for 2 MiB a shard. The pack tool's cache (.pack-fingerprint, 'rev=REV fingerprint=FP') is used when
+    it is for `rev`; never written here (intake never writes)."""
+    names = sorted(p.name for p in d.glob("model-*.safetensors") if p.is_file())
+    if not names:
+        return None
+    if rev:
+        try:
+            for line in (d / ".pack-fingerprint").read_text().splitlines():
+                parts = line.split()
+                if len(parts) == 2 and parts[0] == f"rev={rev}" and parts[1].startswith("fingerprint="):
+                    fp = parts[1][len("fingerprint="):]
+                    if len(fp) == 64:
+                        return fp
+        except OSError:
+            pass
+    lines = []
+    for n in names:
+        size = (d / n).stat().st_size
+        h, t = _ends_sha256(d / n, size)
+        lines.append(f"{n} {size} {h} {t}\n")
+    return hashlib.sha256("".join(sorted(lines)).encode()).hexdigest()
+
+
 def classify_non_model(d: Path) -> str:
     names = {p.name for p in d.iterdir()}
     if {"start.sh", "scripts"} <= names:
@@ -331,6 +368,7 @@ def intake(d: Path, reg: dict, verify_sums: bool = False) -> dict:
              index_sha256=keys_sha256(keys) if keys else None, local_rev=pack_rev(d),
              native_context=ins["context"].get("native"), moe=ins.get("moe"),
              template=ins["chat_template"].get("present"), checksums=checksums(d, verify_sums))
+    r["fingerprint"] = pack_fingerprint(d, r["local_rev"]) if r["local_rev"] else None
     if fmt != "exl3":
         r["warnings"].append(f"not EXL3 ({scheme}): this playbook is about EXL3; model-inspect.sh {d} covers "
                              "every format and vLLM")
@@ -374,7 +412,13 @@ def intake(d: Path, reg: dict, verify_sums: bool = False) -> dict:
         r["fit"] = f
         if not why:
             known = (fam.get("known_packs") or {}).get(r["local_rev"] or "")
-            if known:
+            want_fp = (fam.get("pack_fingerprints") or {}).get(r["local_rev"] or "")
+            if known and want_fp and r.get("fingerprint") and r["fingerprint"] != want_fp:
+                r["warnings"].append(f"same local revision {r['local_rev'][:8]} (shard names and sizes) as the known pack "
+                                     f"'{known}', but OTHER content (fingerprint {r['fingerprint'][:12]}, the known "
+                                     f"pack's {want_fp[:12]}): it is NOT that pack, and spark-deepseek-pack.sh refuses "
+                                     "to stage it over that pack's snapshot")
+            elif known:
                 r["warnings"].append(f"this is a known pack: {known}")
             row = f["rows"][fam.get("tp", 2)]
             if row["verdict"] == "does not fit":

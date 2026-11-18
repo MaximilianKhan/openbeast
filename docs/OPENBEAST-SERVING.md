@@ -8,13 +8,13 @@ On the head, in an interactive shell:
 
 ```sh
 beaststatus   # selected model and pack, units, what is served
-beastup       # start the selected model, then the command center
+beastup       # start the selected model (the other one stopped first), then the command center
 beastdown     # stop the command center and both models (boot selection kept)
 beastglm      # switch to GLM-5.3-Flash (the default model since 2026-11-18)
 beastds       # switch to DeepSeek on Mia's EAQ v1.1 "-v2" pack (the alternative; the -v2 pack supersedes the stock pack)
 ```
 
-These wrap `~/.local/bin/beast-spark`, which in turn calls the helpers described below.
+These wrap `~/.local/bin/beast-spark`, **the** switch path; it calls the helpers described below, which are its internals. Two switches never run at once (a shared lock). From a non-interactive shell, call `~/.local/bin/beast-spark up|down|glm|ds|status`. To install it (and the pack tools and these aliases) on a rebuilt head: `~/openbeast/scripts/backends/spark-beast.sh install`.
 
 ## Check what is running
 
@@ -42,28 +42,23 @@ Ctrl-C exits the log viewer. To stop serving DeepSeek, run `systemctl --user sto
 
 Finish active requests first. Switching releases both GPUs and interrupts inference while the next model loads. A prepared DeepSeek launch took about 40 seconds on the running pair; service checks and client refresh add time.
 
-**DeepSeek to GLM** — use the installed rollback helper:
-
 ```sh
-bash ~/openbeast-recipes/deepseek-prep/rollback/restore-glm.sh
+beastglm      # DeepSeek -> GLM: rollback/restore-glm.sh, then waits for GLM-5.3-Flash-EXL3
+beastds       # GLM -> DeepSeek: stops GLM, re-selects the -v2 pack, activate-stock.sh, waits for DeepSeek-V4.1-Flash-1017
 ```
 
-**GLM to DeepSeek** — stop GLM before activating the prepared DeepSeek service (it serves whichever DeepSeek pack `local.sh` selects):
+The helpers set the managed service and matching command-center configuration. The DeepSeek helper, `activate-stock.sh`, checks the prepared runtime, starts DeepSeek, runs a chat and conformance checks, and sets the boot selection on success. **It never stops GLM**: `beastds` stops GLM before calling it, and you must never run it while GLM is active. If anything in `beastds` fails while GLM was serving, it runs `restore-glm.sh` and waits for GLM. Without beast-spark, the hand forms are `bash ~/openbeast-recipes/deepseek-prep/rollback/restore-glm.sh` (to GLM) and `systemctl --user stop spark-hydra-inference.service && bash ~/openbeast-recipes/deepseek-prep/activate-stock.sh` (to DeepSeek). After either switch, run `openbeast-client use spark-hydra` on an enrolled OpenBeast client with that rig name. Confirm the model shown in your client and send a short prompt.
+
+**One DeepSeek pack for another** (for example the stock EAQ v1 pack and Mia's experimental EAQ v1.1 "-v2" pack, DeepSeek's pack since 2026-11-17). The pair serves only DeepSeek and GLM, and the pack is the only part of DeepSeek you swap. **Only while DeepSeek is selected and serving: run `beastds` first** (the tool refuses while GLM is active; `--stop-glm` stops GLM explicitly):
 
 ```sh
-systemctl --user stop spark-hydra-inference.service &&
-  bash ~/openbeast-recipes/deepseek-prep/activate-stock.sh
-```
-
-The helpers set the managed service and matching command-center configuration. The DeepSeek helper also checks the prepared runtime, runs a chat and conformance checks, and sets the boot selection on success. If activation fails, inspect its output and journal; the GLM rollback helper above restores the prior GLM configuration. After either switch, run `openbeast-client use spark-hydra` on an enrolled OpenBeast client with that rig name. Confirm the model shown in your client and send a short prompt.
-
-**One DeepSeek pack for another** (for example the stock EAQ v1 pack and Mia's experimental EAQ v1.1 "-v2" pack, the default since 2026-11-17). The pair serves only DeepSeek and GLM, and the pack is the only part of DeepSeek you swap:
-
-```sh
+beastds
 cd ~/openbeast-recipes/deepseek-prep
 ./spark-deepseek-pack.sh list
 ./spark-deepseek-pack.sh use ~/Documents/<pack-folder> --bench   # or: use stock
 ```
+
+`beastds` re-selects the `-v2` pack on every GLM → DeepSeek switch. To keep another pack, name it in `~/.config/openbeast/beast-spark.env` (`DS_PACK=~/Documents/<pack-folder>` and `DS_ID=ORG/NAME`, the ID `list` shows).
 
 It mirrors the folder to the worker, prepares both ranks, restarts, runs the chat and conformance checks, and rolls back by itself on failure. Details are in `~/openbeast/docs/SPARK_HYDRA.md`, "DeepSeek packs".
 
@@ -79,4 +74,4 @@ It mirrors the folder to the worker, prepares both ranks, restarts, runs the cha
 
 ## During a WAN outage
 
-In the default auto mode, the watcher islands the stack after 90 seconds of failed internet probes. A staged model can continue generating locally; internet-backed tools become unavailable. If tailnet access fails, use the documented native LAN SSH tunnel to the authenticated gate. See `~/openbeast/skills/tailscale/references/guide.md` and `~/openbeast/docs/BEAST_ISLAND.md`. Keep model files, rank caches and Docker images on disk for subsequent launches. A full power-off restart of both Sparks with WAN disconnected is still an unverified recovery scenario for the current DeepSeek deployment.
+In the default auto mode, the watcher islands the stack after 90 seconds of failed internet probes. A staged model can continue generating locally; internet-backed tools become unavailable. If tailnet access fails, use the documented native LAN SSH tunnel to the authenticated gate. See `~/openbeast/skills/tailscale/references/guide.md` and `~/openbeast/docs/BEAST_ISLAND.md`. Keep model files, rank caches and Docker images on disk for subsequent launches. A full power-off restart of both Sparks with WAN disconnected is still an unverified recovery scenario for either model's deployment (GLM, the default, first).
