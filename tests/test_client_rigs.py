@@ -486,3 +486,40 @@ def test_soul_never_replaces_a_non_list_instructions(tmp_path, rig_a):
     assert rc == 0, out
     assert e.cfg()["instructions"] == "mine.md"
     assert "soul not wired — 'instructions' in opencode.json is not a list" in out, out
+
+
+def test_autosync_follows_a_model_switch_and_is_quiet_otherwise(tmp_path, rig_a):
+    """beastglm / beastds on the Sparks switch the served model under a running
+    client: `autosync run` (the 30 s launchd/systemd job) must bring the name
+    and context window opencode shows along, and write nothing when nothing
+    changed or the rig cannot be reached."""
+    e = Env(tmp_path, rig_a)
+    rc, out = e.run("refresh-config")
+    assert rc == 0, out
+    rows = e.cfg()["provider"]["openbeast-rig"]["models"]
+    assert set(rows) == {"GLM-5.3-Flash-EXL3"} and rows["GLM-5.3-Flash-EXL3"]["limit"]["context"] == 1048576
+    before = e.oc.read_text()
+    rc, out = e.run("autosync", "run")
+    assert rc == 0 and out.strip() == "", out              # unchanged rig: silent, no write
+    assert e.oc.read_text() == before
+    # the rig switches to DeepSeek (another id, another window)
+    rig_a.model = "DeepSeek-V4.1-Flash-1017"
+    rig_a.slot["model"] = {"id": rig_a.model, "ctx": 524288}
+    rc, out = e.run("autosync", "run")
+    assert rc == 0 and "now serves DeepSeek-V4.1-Flash-1017 at 524288 ctx" in out, out
+    cfg = e.cfg()
+    rows = cfg["provider"]["openbeast-rig"]["models"]
+    assert set(rows) == {"DeepSeek-V4.1-Flash-1017"}, rows
+    assert rows["DeepSeek-V4.1-Flash-1017"]["limit"]["context"] == 524288
+    assert cfg["model"] == "openbeast-rig/DeepSeek-V4.1-Flash-1017"
+    # same model, new window (a restart with another CONTEXT) is a change too
+    rig_a.slot["model"]["ctx"] = 262144
+    rc, out = e.run("autosync", "run")
+    assert "at 262144 ctx" in out, out
+    assert e.cfg()["provider"]["openbeast-rig"]["models"]["DeepSeek-V4.1-Flash-1017"]["limit"]["context"] == 262144
+    # an unreachable rig changes nothing
+    before = e.oc.read_text()
+    rig_a.close()
+    rc, out = e.run("autosync", "run")
+    assert rc == 0 and out.strip() == "", out
+    assert e.oc.read_text() == before

@@ -175,6 +175,7 @@ TS_BIN="$(_find_ts || true)"
 if [ $UNINSTALL -eq 1 ]; then
   echo "=== OpenBeast client uninstall ==="
   _left_behind=""
+  "$(cd "$(dirname "$0")" && pwd)/client.sh" autosync uninstall >/dev/null 2>&1 || true
   # Local SearXNG container (best-effort — only if docker + compose file exist).
   if command -v docker >/dev/null 2>&1; then
     for _repo in "$CLIENT_DIR/repo" "$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)"; do
@@ -935,6 +936,13 @@ fi
 # fills it in later.
 "$CLIENT_REPO/scripts/client.sh" refresh-config 2>/dev/null \
   || echo "  ! could not probe the rig for its live model — run 'openbeast-client refresh-config' once it is up"
+# Keep it current: a rig that switches models (beastglm / beastds on the Sparks)
+# is picked up within 30 s instead of when someone next runs refresh-config.
+# OPENBEAST_AUTOSYNC=0 skips it (tests, or a machine that must not run timers).
+if [ "${OPENBEAST_AUTOSYNC:-1}" != 0 ]; then
+  "$CLIENT_REPO/scripts/client.sh" autosync install \
+    || echo "  ! autosync not installed — after a rig switches models run: openbeast-client refresh-config"
+fi
 
 # ---- 6. report --------------------------------------------------------------
 echo ""
