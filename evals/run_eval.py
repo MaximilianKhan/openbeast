@@ -1310,6 +1310,9 @@ def agent_switches(env=None) -> tuple[str | None, dict]:
       OPENBEAST_DIAG_EDIT_HINT=1      -> ehint   (G13, "edit, don't rewrite")
       OPENBEAST_AGENT_ENV_BLOCK=1     -> envb    (G22, first-turn env block)
       OPENBEAST_AGENT_WALL_WARN=1     -> wwarn   (G23, wall-clock notices)
+      OPENBEAST_AGENT_MAX_TOKENS=<int> -> cap<N> (the per-turn token cap,
+                                         e.g. T2's 8192 thinking cap; 0 = none)
+      OPENBEAST_AGENT_ACT_NUDGE=1     -> anudge  (T2, act after idle turns)
 
     Returns (component, meta): component `ag-<part>-<part>...` for the cache
     key, None when every switch is unset (legacy keys stay reachable); meta
@@ -1328,12 +1331,27 @@ def agent_switches(env=None) -> tuple[str | None, dict]:
     ehint = env.get("OPENBEAST_DIAG_EDIT_HINT", "").strip() == "1"
     envb = env.get("OPENBEAST_AGENT_ENV_BLOCK", "").strip() == "1"
     wwarn = env.get("OPENBEAST_AGENT_WALL_WARN", "").strip() == "1"
+    # agents/runner.py _max_completion_tokens: an int, floored at 0; anything
+    # else is ignored there, so it is unset here.
+    raw_cap = env.get("OPENBEAST_AGENT_MAX_TOKENS", "").strip()
+    try:
+        turn_cap = max(0, int(raw_cap)) if raw_cap else None
+    except ValueError:
+        turn_cap = None
+    anudge = env.get("OPENBEAST_AGENT_ACT_NUDGE", "").strip() == "1"
     meta = {"thinking": think, "seed": seed, "verify_done": vdone,
             "diag_edit_hint": ehint, "env_block": envb, "wall_warn": wwarn}
+    # Only when set, so every earlier run's meta and key stay as they were.
+    if turn_cap is not None:
+        meta["turn_cap"] = turn_cap
+    if anudge:
+        meta["act_nudge"] = True
     parts = ([f"think-{think}"] if think else []) + \
         ([f"seed{seed}"] if seed is not None else []) + \
         (["vdone"] if vdone else []) + (["ehint"] if ehint else []) + \
-        (["envb"] if envb else []) + (["wwarn"] if wwarn else [])
+        (["envb"] if envb else []) + (["wwarn"] if wwarn else []) + \
+        ([f"cap{turn_cap}"] if turn_cap is not None else []) + \
+        (["anudge"] if anudge else [])
     return (f"ag-{'-'.join(parts)}" if parts else None), meta
 
 
@@ -2306,6 +2324,36 @@ def wall_scaled_turns(task: dict, turns_per_wall_s: float) -> int:
     return max(base, int(float(cap) // turns_per_wall_s))
 
 
+def _partial_stats(path: str, tokens: dict) -> dict:
+    """What a wall-killed runner had counted (its OPENBEAST_AGENT_STATS_FILE
+    sidecar): tokens, iterations and reasoning turns, marked
+    `stats_partial`. {} when the sidecar is missing or unreadable, or the
+    flushed stdout already carried a TOKENS line. Reporting only."""
+    if (tokens or {}).get("total"):
+        return {}
+    try:
+        with open(path) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(d, dict):
+        return {}
+
+    def num(k):
+        v = d.get(k)
+        return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0 else None
+
+    out: dict = {"stats_partial": True}
+    if num("tokens_total") is not None:
+        out["tokens"] = {"prompt": num("tokens_prompt") or 0,
+                         "completion": num("tokens_completion") or 0,
+                         "total": num("tokens_total")}
+    for k in ("iterations", "reasoning_turns", "compactions"):
+        if num(k) is not None:
+            out[k] = num(k)
+    return out
+
+
 def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
               timeout_scale: float = 1.0, env_overlay: dict | None = None,
               wall_s: float | None = None) -> dict:
@@ -2400,6 +2448,13 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
     # the communicate() timeout below). Through env, not argv: argv stays
     # as it was. The runner reads it only with OPENBEAST_AGENT_WALL_WARN=1.
     child_env["OPENBEAST_AGENT_WALL_S"] = str(kill_after_s)
+    # Partial stats (2026-11-18): the runner rewrites its counters here every
+    # turn; read only when the wall kills it (the TOKENS line never came).
+    # Reporting only: nothing below that decides a verdict reads it.
+    import tempfile
+    sfd, stats_path = tempfile.mkstemp(prefix="ob-agent-stats-", suffix=".json")
+    os.close(sfd)
+    child_env["OPENBEAST_AGENT_STATS_FILE"] = stats_path
     # Low-churn eval mode rides the same env read the runner uses.
     if os.environ.get("OPENBEAST_EVAL_GREEDY", "") == "1":
         child_env["OPENBEAST_EVAL_GREEDY"] = "1"
@@ -2412,6 +2467,10 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
                "stderr": "", "tokens": _parse_tokens(""), "iterations": None}
     proc = _spawn_agent(cmd, child_env)    # registered, or None: stopping
     if proc is None:
+        try:
+            os.unlink(stats_path)
+        except OSError:
+            pass
         return stopped
     watch.start(proc.pid)
     # Registered BEFORE this check: a begin_stop() that snapshotted the set
@@ -2422,6 +2481,10 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
         sweep_agent_leftovers(watch)
         with _live_pgid_lock:
             _live_pgids.discard(proc.pid)
+        try:
+            os.unlink(stats_path)
+        except OSError:
+            pass
         return stopped
     result: dict = {}
     try:
@@ -2466,8 +2529,13 @@ def run_agent(task: dict, base_url: str, max_iter_override: int | None = None,
             "tokens": _parse_tokens(partial),
             "iterations": None,
         }
+        result.update(_partial_stats(stats_path, result["tokens"]))
         return result
     finally:
+        try:
+            os.unlink(stats_path)
+        except OSError:
+            pass
         # Nothing the agent started may still run when validation starts:
         # sweep the detached leftovers too (AgentWatch), then assert none
         # survived. `result` is the dict being returned, so the counts and
@@ -3429,6 +3497,9 @@ def run_eval(
         "OPENBEAST_DIAG_EDIT_HINT": "1" if agent_meta["diag_edit_hint"] else None,
         "OPENBEAST_AGENT_ENV_BLOCK": "1" if agent_meta["env_block"] else None,
         "OPENBEAST_AGENT_WALL_WARN": "1" if agent_meta["wall_warn"] else None,
+        "OPENBEAST_AGENT_MAX_TOKENS": (str(agent_meta["turn_cap"])
+                                       if agent_meta.get("turn_cap") is not None else None),
+        "OPENBEAST_AGENT_ACT_NUDGE": "1" if agent_meta.get("act_nudge") else None,
     }
     rb_component = None
     _rb = ""
@@ -3695,6 +3766,10 @@ def run_eval(
                 result.setdefault("agent_env_block", True)
             if agent_meta["wall_warn"]:
                 result.setdefault("agent_wall_warn", True)
+            if agent_meta.get("turn_cap") is not None:
+                result.setdefault("agent_turn_cap", agent_meta["turn_cap"])
+            if agent_meta.get("act_nudge"):
+                result.setdefault("agent_act_nudge", True)
             # role/stratum: the manifest's, else the task JSON's own
             # optional fields (a task may declare itself a probe).
             role = task.get("_role") or task.get("role")
@@ -3904,6 +3979,8 @@ def run_eval(
         # (None: the output cannot say, so any error counts, as before).
         api_tail = _parse_api_errors_tail(agent_stdout) if api_errors else 0
         reasoning_turns = _parse_reasoning_turns(agent_stdout)
+        if reasoning_turns is None:
+            reasoning_turns = agent_result.get("reasoning_turns")   # a killed agent's sidecar
         response_models = _parse_response_models(agent_stdout)
         model_after = None
         validated_pass = False
@@ -3983,6 +4060,7 @@ def run_eval(
             **({"api_errors_tail": api_tail} if api_errors and api_tail is not None else {}),
             **({"reasoning_turns": reasoning_turns} if reasoning_turns is not None else {}),
             **({"response_models": response_models} if response_models else {}),
+            **({"stats_partial": True} if agent_result.get("stats_partial") else {}),
             **({"served_model_problem": model_after,
                 "validated_pass": validated_pass} if model_after else {}),
             **({"reason": infra_reason} if infra_reason else {}),

@@ -338,6 +338,7 @@ below). `--dry-run` prints them for your settings.
 | **N** | T | thinking off, normal wall | `--thinking off --reasoning-budget 0`, drops `--wall-scale` | 1.1 | ~2.8 h | the daily-latency config: what thinking adds to the full harness, and its cost |
 | **N0** | — | the bare no-thinking baseline | `--turns-per-wall-s 15 --thinking off` (= 2026-11-16 arm B, thinking pinned off) | 1.0 | ~2.5 h | the floor. N0 → N is what the components add without thinking; N0 → T is everything |
 | T_s2 | T | a second seed (optional) | `--seed 2`; only with `--include T_s2` | 2.3 | ~5.8 h | a tighter noise margin |
+| T2 | T | 8192 turn cap + act nudge (optional, harness9) | `--reasoning-budget 8192`; `OPENBEAST_AGENT_MAX_TOKENS=8192 OPENBEAST_AGENT_ACT_NUDGE=1`; `"jobs": 2, "slots": 2` (TODO: follow T_j2's outcome); only with `--only T2`; needs a harness9 tree | 2.3 | ~7.7 h (~9 h for DeepSeek) | do shorter thinking turns and a push to act turn wall kills into passes? |
 | T_j2 | T | 2 concurrent units (optional) | `"jobs": 2, "slots": 2` in the arm (wins over the CLI); only with `--only T_j2` or `--include T_j2` | 2.3 | ~7.7 h (~9 h for DeepSeek) | the contention model: same tokens per unit, at 2 streams (see the note below) |
 
 Total for the eight default arms: about 39 h at GLM's speed. Escalation
@@ -609,6 +610,21 @@ ADOPTED or REJECTED) and [RESULTS.md](RESULTS.md).
   its rows stand next to the GLM rows, whose four files were themselves
   measured under four different eras. The era rule above is about pairing
   rows inside a campaign (flips, ablations), not about the board.
+- **harness9 (2026-11-18): T2's switches, partial stats, the fetch guard.**
+  The era moves (`06c82c4335dd6a0c` -> `036638ddd68698ce`) and
+  `evals/HARNESS_VERSION` goes to `harness9`: `agents/runner.py` (the act
+  nudge behind `OPENBEAST_AGENT_ACT_NUDGE=1`, the partial-stats sidecar),
+  `agents/tools.py` (the eval fetch guard) and run_eval's `run_agent` (it
+  hands out the sidecar and reads it on a wall kill). The per-turn cap
+  `OPENBEAST_AGENT_MAX_TOKENS` and the nudge are agent switches in the key
+  (`cap8192`, `anudge`). `common.env` pins both off, so only T2 sets them.
+  A thinking arm that sets its own cap declares that cap as its
+  `--reasoning-budget` (a test pins it). A wall-killed row now keeps the
+  tokens, turns and reasoning turns it had (`stats_partial: true`). These
+  are reporting only and never count as a turn-cap ending. Rows of T2 pair
+  only with harness9 rows. Run it from a merged tree with
+  `--allow-tree-move` (the campaign's pinned commit is T's), or
+  `--arm-tree T2=<checkout>`. The CHANGELOG has the detail.
 - **A row is lost to API errors only when they ENDED the run** (review
   1118). run_eval records `api_errors_tail` (failed calls after the last
   successful one); a failed row with `api_errors > 0` but a zero tail is a

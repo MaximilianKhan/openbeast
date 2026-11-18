@@ -476,8 +476,11 @@ def score(rows: dict) -> dict:
     iters = [r["iterations"] for r in s.values() if isinstance(r.get("iterations"), (int, float))]
     secs = [float(r["elapsed_seconds"]) for r in s.values()
             if isinstance(r.get("elapsed_seconds"), (int, float))]
+    # A wall-killed row (-1) is a wall timeout, never a turn-cap ending, even
+    # when its partial stats (stats_partial, 2026-11-18) carry its turns.
     capped = sum(1 for r in s.values()
-                 if not r.get("passed") and isinstance(r.get("iterations"), int)
+                 if not r.get("passed") and r.get("agent_exit_code") != -1
+                 and isinstance(r.get("iterations"), int)
                  and isinstance(r.get("max_iter"), int)
                  and r["iterations"] >= r["max_iter"] - TURN_CAP_SLACK)
     timeouts = sum(1 for r in s.values() if not r.get("passed") and r.get("agent_exit_code") == -1)

@@ -528,6 +528,72 @@ def _capped_think_nudge(max_tokens: int, tail: str) -> str:
             "file, run the test) or call task_done, and keep any further thinking short.")
 
 
+# ---------------------------------------------------------------------------
+# Act nudge (opt-in, OPENBEAST_AGENT_ACT_NUDGE=1; arm T2, 2026-11-18).
+#
+# DeepSeek-V4.1-Flash (Mia EXL3), arm T: 192_pike_regex spent 8 turns and
+# 3,585 s of its 3,600 s wall with ZERO tool calls. Every turn hit the 16K cap
+# as pure reasoning (~65K chars each), and the capped-think recovery above
+# fired every time, handing the tail back with "conclude and act now". The
+# model kept thinking anyway. One capped think is recovered as before. From
+# the second turn in a row with no tool call, and from the first one that
+# ended in a way that is neither a cap nor a final answer, a short act nudge
+# follows: the next reply must be a tool call. It never fires on a turn that
+# made a tool call, or on finish_reason "stop" with content (a final answer,
+# or the model talking; the existing task_done nudge answers that).
+# ---------------------------------------------------------------------------
+#: Consecutive no-tool-call turns that end in the cap before the nudge fires.
+_ACT_NUDGE_CAPPED_STREAK = 2
+
+
+def act_nudge_enabled() -> bool:
+    return os.environ.get("OPENBEAST_AGENT_ACT_NUDGE", "").strip() == "1"
+
+
+def act_nudge_due(finish_reason: str | None, content: str | None, idle_turns: int) -> bool:
+    """Whether a turn that made NO tool call earns the act nudge.
+    `idle_turns` counts the consecutive no-tool-call turns, this one included."""
+    fr = (finish_reason or "").strip().lower()
+    if fr == "stop" and (content or "").strip():
+        return False                       # a final answer, or talk: not ours
+    if fr == "length":
+        return idle_turns >= _ACT_NUDGE_CAPPED_STREAK   # the first cap: the recovery
+    return True       # stopped with nothing, no finish_reason, or something else
+
+
+def _act_nudge(idle_turns: int, idle_tokens: int) -> str:
+    spent = f" (~{idle_tokens:,} tokens)" if idle_tokens else ""
+    return (f"[act now] {idle_turns} turn(s) in a row{spent} ended without a tool "
+            "call, and the wall clock keeps running. Your next reply must be a tool "
+            "call: write the file with your current best version, run a command "
+            "that tests the idea you are weighing, or call task_done if the work is "
+            "done and tested. Fix it from the result, not from more thought.")
+
+
+# ---------------------------------------------------------------------------
+# Partial run stats (2026-11-18). run_eval kills a unit at its wall, and the
+# runner prints its TOKENS / REASONING_TURNS lines only on a normal exit, so 16
+# of DeepSeek arm T's 17 wall-killed rows recorded tokens 0 and iterations
+# None. With OPENBEAST_AGENT_STATS_FILE set (run_eval's run_agent sets it), the
+# counters are rewritten there, atomically, at every turn start and after
+# every response; run_eval reads the file only when it killed the agent.
+# Reporting only: no verdict reads it.
+# ---------------------------------------------------------------------------
+
+
+def write_stats_sidecar(stats: dict) -> None:
+    path = os.environ.get("OPENBEAST_AGENT_STATS_FILE", "").strip()
+    if not path:
+        return
+    tmp = f"{path}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump(stats, f)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
 def _conf_value(key: str) -> str:
     """Last `key=value` in openbeast.conf, read (never sourced) the way
     scripts/lib/conf.sh reads it; "" when absent or unreadable."""
@@ -1571,6 +1637,18 @@ def run_agent(
     # same bash command 19x in a row, each with the same output.
     last_call: tuple[str, str] | None = None   # (call key, result)
     repeats = 0
+    # Act nudge (OPENBEAST_AGENT_ACT_NUDGE=1): the no-tool-call streak.
+    act_nudge = act_nudge_enabled()
+    idle_turns = 0
+    idle_tokens = 0
+
+    def stats_sidecar(iterations: int) -> None:
+        write_stats_sidecar({
+            "tokens_prompt": tokens_prompt, "tokens_completion": tokens_completion,
+            "tokens_total": tokens_total, "iterations": iterations,
+            "reasoning_turns": _RUN_STATS["reasoning_turns"], "compactions": compactions,
+            "response_models": dict(_RUN_STATS["response_models"]),
+            "updated": time.time()})
     if not (resume_from and os.path.isfile(resume_from)):
         reset_plan()
     # G9's write/run ledger is per run (a no-op unless VERIFY_DONE is on).
@@ -1648,6 +1726,7 @@ def run_agent(
 
         print(f"\n[iter {iteration}/{max_iter}]")
         log_event({"type": "iteration", "number": iteration})
+        stats_sidecar(iteration)
 
         # The transient block: the plan plus, near the end, the turns left.
         # G23: and, with OPENBEAST_AGENT_WALL_WARN=1, the wall-clock notice.
@@ -1746,6 +1825,7 @@ def run_agent(
         choice = response.choices[0]
         message = choice.message
         _note_response(response, message)
+        stats_sidecar(iteration)
         _rmodel = getattr(response, "model", None)
         if isinstance(_rmodel, str) and _rmodel:
             log_event({"type": "response_model", "iteration": iteration, "model": _rmodel,
@@ -1799,14 +1879,39 @@ def run_agent(
                              "progress with a tool call or call task_done.")
                 log_event(cap_event)
                 messages.append({"role": "user", "content": nudge})
-            elif choice.finish_reason == "stop":
+            elif choice.finish_reason == "stop" and (message.content or "").strip():
                 print("  (model stopped without calling task_done)")
                 # Nudge it to either continue or call task_done
                 messages.append({
                     "role": "user",
                     "content": "If the task is complete, call the task_done tool with a summary. If not, continue working.",
                 })
+            elif choice.finish_reason == "stop" and not act_nudge:
+                # Stopped with no content and no tool call (the switch off:
+                # exactly the old behaviour, the same nudge).
+                print("  (model stopped without calling task_done)")
+                messages.append({
+                    "role": "user",
+                    "content": "If the task is complete, call the task_done tool with a summary. If not, continue working.",
+                })
+            idle_turns += 1
+            if usage is not None:
+                idle_tokens += getattr(usage, "completion_tokens", 0) or 0
+            if act_nudge and act_nudge_due(choice.finish_reason, message.content, idle_turns):
+                text = _act_nudge(idle_turns, idle_tokens)
+                last = messages[-1]
+                if last.get("role") == "user":
+                    # One user turn, not two: the cap recovery's nudge and this.
+                    messages[-1] = {**last, "content": f"{last.get('content') or ''}\n\n{text}"}
+                else:
+                    messages.append({"role": "user", "content": text})
+                print(f"  (act nudge: {idle_turns} turn(s) without a tool call)")
+                log_event({"type": "act_nudge", "iteration": iteration,
+                           "idle_turns": idle_turns, "idle_tokens": idle_tokens,
+                           "finish_reason": str(choice.finish_reason or "")})
             continue
+        idle_turns = 0
+        idle_tokens = 0
 
         # Execute tool calls
         for tc in message.tool_calls:

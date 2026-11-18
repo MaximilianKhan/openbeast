@@ -546,7 +546,9 @@ def test_reasoning_budget_declared_per_arm_and_pack_variant_wherever_packs_are_o
         specs += [(a["id"], C.resolve_arm(camp, a["id"], br)) for br in branches]
     for aid, sp in specs:
         rb = C.arg_value(sp["args"], "--reasoning-budget")
-        assert rb == (cap if sp["thinking"] == "on" else "0"), aid
+        # an arm that sets its own turn cap (T2: 8192) declares that cap
+        own = sp["env"].get("OPENBEAST_AGENT_MAX_TOKENS") or None
+        assert rb == ((own or cap) if sp["thinking"] == "on" else "0"), aid
         if sp["env"].get("BEAST_PACKS") == "1":
             assert sp["env"].get("OPENBEAST_PACK_VARIANT") == variant, aid
             assert "OPENBEAST_PACK_VARIANT" in sp["requires"]["env"], aid

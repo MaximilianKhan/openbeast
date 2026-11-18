@@ -119,7 +119,9 @@ def test_scan_contamination_and_attempts(tmp_path):
          "connect to github.com port 443 after 3 ms: Couldn't connect to server\n(exit code 128)"),
     ])
     hits = S.scan_transcript(str(p))
-    assert hits[0]["kinds"] == ["network"] and hits[0]["status"] == "refused"
+    # 2026-11-18: the repo's own URL is also `selfrepo`; a failed connection
+    # is still an attempt
+    assert hits[0]["kinds"] == ["network", "selfrepo"] and hits[0]["status"] == "refused"
     assert not S.contaminated(hits)                     # an attempt the sandbox stopped
     q = tmp_path / "agent-2.jsonl"
     _transcript(q, [

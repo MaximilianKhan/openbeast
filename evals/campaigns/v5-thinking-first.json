@@ -11,7 +11,8 @@
       "BEAST_ESCALATE": "0", "OPENBEAST_ESCALATE": "0",
       "OPENBEAST_AGENT_THINKING": "", "OPENBEAST_AGENT_SEED": "",
       "OPENBEAST_AGENT_VERIFY_DONE": "0", "OPENBEAST_DIAG_EDIT_HINT": "0",
-      "OPENBEAST_AGENT_ENV_BLOCK": "0", "OPENBEAST_AGENT_WALL_WARN": "0"
+      "OPENBEAST_AGENT_ENV_BLOCK": "0", "OPENBEAST_AGENT_WALL_WARN": "0",
+      "OPENBEAST_AGENT_MAX_TOKENS": "", "OPENBEAST_AGENT_ACT_NUDGE": "0"
     },
     "requires": {"flags": ["--turns-per-wall-s", "--seed", "--thinking", "--wall-scale"]}
   },
@@ -84,7 +85,15 @@
      "optional": true,
      "jobs": 2, "slots": 2,
      "note": "Only with --only T_j2 (or --include T_j2): T exactly, at 2 concurrent units instead of 4; the arm's jobs/slots win over the CLI's. Evidence, DeepSeek-V4.1-Flash (Mia EXL3) arm T, 2026-11-18, --jobs 4 --slots 4 (evals/boards/v5/eval-deepseek-v4-1-flash-v5-thinking-first-t-20261118-015132.json): 61/71, all 10 failures on the 3,600 s wall (wall-scale 2); 17 units hit the wall and 7 of them passed on the code left at the kill; 17.0 of 26.6 unit-hours went to wall-killed units. Turns were slow, not scarce: killed units used 8-41 of 60 turns, 470-610 s between events, each turn up to 16,384 tokens at ~30 tok/s per stream with 4 streams (~45 with 2, ~60 with 1; tools/bench.py on the pair); 192_pike_regex spent 8 turns and 3,585 s with zero tool calls. CAUTION, read before the result: run_eval widens every wall by contention_scale(jobs) (4 -> 2.0x, 2 -> 1.33x), so at --jobs 2 the unit wall is 2,400 s, not 3,600 s, and 2,400 s x 45 tok/s = 3,600 s x 30 tok/s: the same ~108K decoded tokens per unit. T_j2 therefore measures whether the contention model holds for this model (a T replay at 2 streams, with less wall for builds and tests), not more tokens per unit; an arm that gives each unit more tokens keeps the absolute wall (--wall-scale 3 at --jobs 2). time_x 2.3 as T (the same tokens per unit); the ETA's jobs scale is 1.33x (throughput jobs / contention_scale), so ~9 h from T's 6.8 h.",
-     "time_x": 2.3}
+     "time_x": 2.3},
+    {"id": "T2", "base": "T", "label": "T + 8192 thinking cap + act nudge (harness9)",
+     "optional": true,
+     "jobs": 4, "slots": 4,
+     "note": "Only with --only T2 (or --include T2); needs a harness9 tree (the PR that adds OPENBEAST_AGENT_ACT_NUDGE). Arm T2 = T + an 8,192-token per-turn cap (OPENBEAST_AGENT_MAX_TOKENS=8192, declared as --reasoning-budget 8192; the capped-think recovery hands the reasoning tail back as before) + the act nudge (OPENBEAST_AGENT_ACT_NUDGE=1: from the second turn in a row without a tool call, or the first that ends neither capped nor as a final answer, the next reply must be a tool call). Evidence, DeepSeek-V4.1-Flash (Mia EXL3) arm T, 2026-11-18: all 10 failures on the wall; turns of up to 16,384 tokens at ~30 tok/s took 470-610 s each; 192_pike_regex spent 8 turns and 3,585 s, every turn capped, zero tool calls. Half the cap halves a stalled turn (~4-5 min instead of ~9) and the nudge turns idle thinking into a write or a test. The partial stats on a wall kill and the eval fetch guard ship in the same PR and apply to every arm run on a harness9 tree; they change no verdict. Runs at --jobs 4 --slots 4 like T (decided 2026-11-18): the unit wall is T's 3,600 s and the decoded tokens per unit match T's, so T2 vs T isolates the cap and the nudge (T_j2 would only replay T at 2 streams, contention_scale keeping tokens per unit equal). time_x 2.3 as T; ~6.8 h for DeepSeek (T took 6.76 h).",
+     "time_x": 2.3,
+     "args": ["--reasoning-budget", "8192"],
+     "env": {"OPENBEAST_AGENT_MAX_TOKENS": "8192", "OPENBEAST_AGENT_ACT_NUDGE": "1"},
+     "requires": {"env": ["OPENBEAST_AGENT_ACT_NUDGE", "OPENBEAST_AGENT_STATS_FILE"]}}
   ],
   "recommend": {
     "composite": "T",
