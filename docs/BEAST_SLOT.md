@@ -495,7 +495,7 @@ looping unattended on someone else's rig. See
 | script | role | takes |
 |---|---|---|
 | `scripts/setup-client.sh` | **installs / uninstalls** | flags — `--host`, `--api-key-stdin` / `--api-key`, `--name`, `--local-search`, `--uninstall` |
-| `scripts/client.sh` | **operates** | subcommands — `status`, `rigs`, `use`, `rig`, `agent`, `search`, `update`, `refresh-config`, `uninstall` |
+| `scripts/client.sh` | **operates** | subcommands — `status`, `rigs`, `use`, `rig`, `agent`, `search`, `update`, `refresh-config`, `autosync`, `uninstall` |
 
 Passing a subcommand to the installer (`setup-client.sh status`) prints a
 redirect to the right script rather than a bare "unknown option".
@@ -508,8 +508,23 @@ openbeast-client update        # refresh checkout + pinned deps
 openbeast-client rigs          # every registered rig + its /api/slot health; * = active
 openbeast-client use <rig>     # switch the active rig
 openbeast-client rig add <name> --host <fqdn> --api-key-stdin < <key file>
+openbeast-client refresh-config    # re-sync the opencode model catalog only
+openbeast-client autosync install  # every 30 s: re-sync opencode when the rig switches models
+openbeast-client autosync status   # on/off, the job's last exit code, whether its copy matches the checkout
+openbeast-client autosync run      # one check now (what the job runs)
+openbeast-client autosync uninstall
 openbeast-client uninstall
 ```
+
+`autosync` runs a copy of `scripts/lib/client_rigs.py` and the files it reads
+(`opencode.json`, `system-prompt*.md`) from `~/.openbeast-client/autosync`,
+never the checkout (macOS denies a launchd agent `~/Documents`). `update`,
+`refresh-config` and `autosync install` refresh that copy; `autosync status`
+says when it differs from the checkout. A missing or JSONC opencode.json is
+skipped with one log line an hour; the log
+(`~/.openbeast-client/autosync.log`) is cut back past 1 MB. A rig key file
+that cannot be read leaves the key opencode already has in place (with a
+warning), and probes never follow a redirect.
 
 ### Several rigs
 

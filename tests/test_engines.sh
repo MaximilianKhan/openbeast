@@ -11,7 +11,9 @@
 # for this run and checked by the REAL install-native.sh (its vendored key
 # swapped for ours in a sandbox copy). Everything runs in a sandbox copy of
 # the repo, so the real openbeast.conf and scripts/llama.cpp.ref are never
-# touched. Needs GNU coreutils and OpenSSL >= 3 (ed25519).
+# touched. Runs on Linux and on macOS (bash 3.2, BSD sed/stat, no
+# `timeout`): the few GNU-only tools get a shim or a portable form below.
+# The TensorFold part needs OpenSSL >= 3 (ed25519) and is skipped without it.
 #
 # Usage: bash tests/test_engines.sh
 set -euo pipefail
@@ -21,7 +23,9 @@ pass() { echo "  PASS: $1"; PASS=$((PASS + 1)); }
 fail() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
 check() { if eval "$2"; then pass "$1"; else fail "$1${3:+ — $3}"; fi; }
 
-T="$(mktemp -d "${TMPDIR:-/tmp}/obenginesXXXXXX")"
+# cd + pwd: macOS's TMPDIR ends in "/", and the doubled slash in $T never
+# matched the paths the scripts print (they cd + pwd their own REPO_DIR).
+T="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/obenginesXXXXXX")" && pwd)"
 _PIDS=""
 cleanup() {
   local p
@@ -34,6 +38,8 @@ trap cleanup EXIT
 PY="$(command -v python3)"
 _free_port() { "$PY" -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
 _LO="127.$((20 + RANDOM % 200)).$((RANDOM % 250)).$((2 + RANDOM % 250))"
+# Linux answers on all of 127/8; macOS only on 127.0.0.1 unless aliased.
+"$PY" -c 'import socket,sys; socket.socket().bind((sys.argv[1], 0))' "$_LO" 2>/dev/null || _LO=127.0.0.1
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 export GIT_CONFIG_NOSYSTEM=1
 
@@ -63,8 +69,34 @@ GH_PORT="$(_free_port)"
 "$PY" "$T/httpstub.py" 127.0.0.1 "$GH_PORT" github & _PIDS="$_PIDS $!"
 for _ in $(seq 1 50); do (exec 3<>"/dev/tcp/127.0.0.1/$GH_PORT") 2>/dev/null && break; sleep 0.1; done
 
+# ── portability (macOS has BSD sed/stat and no timeout) ────────────────────
+# sedi <sed args> <file>: in-place edit; `-i.bak` is the one spelling GNU
+# and BSD sed both take.
+sedi() { local f="${*: -1}"; sed -i.bak "$@" && rm -f "$f.bak"; }
+_mode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
+
 # ── stubs on PATH ──────────────────────────────────────────────────────────
 mkdir -p "$T/bin" "$T/home"
+# BASE_ENV's PATH is $T/bin:/usr/bin:/bin, so tools that live elsewhere on
+# macOS (sha256sum in /sbin, or only shasum) and `timeout` (GNU coreutils)
+# are shimmed here when this box lacks them.
+if [[ ! -x /usr/bin/sha256sum && ! -x /bin/sha256sum ]]; then
+  if [[ -x /sbin/sha256sum ]]; then ln -s /sbin/sha256sum "$T/bin/sha256sum"
+  else printf '#!/bin/bash\nexec shasum -a 256 "$@"\n' > "$T/bin/sha256sum"; chmod +x "$T/bin/sha256sum"; fi
+fi
+if ! command -v timeout >/dev/null 2>&1; then
+  cat > "$T/bin/timeout" <<'PL'
+#!/usr/bin/perl
+# timeout SECS CMD... — the part of GNU timeout this suite uses.
+my $t = shift; $t =~ s/s$//;
+my $pid = fork(); die "fork: $!" unless defined $pid;
+if ($pid == 0) { exec { $ARGV[0] } @ARGV; exit 127; }
+$SIG{ALRM} = sub { kill 'TERM', $pid; sleep 2; kill 'KILL', $pid; exit 124; };
+alarm $t; waitpid($pid, 0);
+exit($? & 127 ? 128 + ($? & 127) : $? >> 8);
+PL
+  chmod +x "$T/bin/timeout"
+fi
 for c in nvidia-smi pkill pgrep killall systemctl systemd-run sudo tailscale; do
   printf '#!/bin/bash\necho "%s $*" >> "%s/calls.log"\nexit 1\n' "$c" "$T" > "$T/bin/$c"; chmod +x "$T/bin/$c"
 done
@@ -165,7 +197,7 @@ SB="$T/repo"; mksandbox "$SB"
 DST="$T/dstate"
 BASE_ENV=(HOME="$T/home" PATH="$T/bin:$(dirname "$PY"):/usr/bin:/bin" OPENBEAST_SEARXNG_SECRET=x
   OPENBEAST_BIND="$_LO" OPENBEAST_GPU_BACKEND=cpu OPENBEAST_LOGROTATE_AUTOINSTALL=false
-  OB_ENGINE_HOST_CLASS=rig OB_ENGINE_ARCH=x86_64 OB_ENGINE_TF_PLATFORM=linux-x86_64
+  OB_ENGINE_HOST_CLASS=rig OB_ENGINE_UNAME=Linux OB_ENGINE_ARCH=x86_64 OB_ENGINE_TF_PLATFORM=linux-x86_64
   OB_ENGINE_GITHUB_API="http://127.0.0.1:$GH_PORT" OB_ENGINE_LLAMA_URL="file://$T/up"
   OB_ENGINE_LLAMA_BUILD="$T/bin/fake-build" OB_ENGINE_TF_INSTALLER="$T/tfinst/install-native.sh"
   GIT_CONFIG_NOSYSTEM=1 GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t)
@@ -198,7 +230,7 @@ echo "Library: engines, host class, defaults, conf writes"
 _lib() { env -i "${BASE_ENV[@]}" REPO_DIR="$SB" "$@"; }
 _o="$(_lib bash -c 'source "$REPO_DIR/scripts/lib/engine.sh"; ob_engines')"
 check "the four shipped adapters are discovered, in order (maya last: opt-in, gated)" '[[ "$_o" == "llama vllm tensorfold maya" ]]' "$_o"
-cp "$SB/scripts/engines/vllm.sh" "$T/sglang.sh"; sed -i 's/eng_vllm_/eng_sglang_/g' "$T/sglang.sh"
+cp "$SB/scripts/engines/vllm.sh" "$T/sglang.sh"; sedi 's/eng_vllm_/eng_sglang_/g' "$T/sglang.sh"
 cp "$T/sglang.sh" "$SB/scripts/engines/sglang.sh"
 _o="$(_lib bash -c 'source "$REPO_DIR/scripts/lib/engine.sh"; ob_engines; source "$REPO_DIR/scripts/lib/backend.sh"; ob_backend_normalize sglang; ob_backend_normalize nonsense 2>&1')"
 check "a 4th engine is one new adapter file: listed, and a valid INFERENCE_BACKEND" \
@@ -225,7 +257,7 @@ _lib OB_ENGINE_CONF="$T/c.conf" OPENBEAST_ENGINE_STATE_DIR="$T/st0" bash -c 'sou
 check "conf_set replaces every assignment once, in place; unset drops; comments stay" \
   '[[ "$(cat "$T/c.conf")" == $'"'"'# keep me\nFOO=1\nINFERENCE_BACKEND=tensorfold\nNEW=x y'"'"' ]]' "$(cat "$T/c.conf")"
 check "…the conf keeps mode 600, and one backup was taken first" \
-  '[[ "$(stat -c %a "$T/c.conf")" == 600 && $(ls "$T/st0/conf-backups" | wc -l) == 1 ]]'
+  '[[ "$(_mode "$T/c.conf")" == 600 && $(( $(ls "$T/st0/conf-backups" | wc -l) )) == 1 ]]'
 # A value is one line: a literal backslash-n stays literal (awk -v used to
 # expand it into a real newline), a real line break is refused, and so is a
 # key that is not a name. Nothing else gets written either way.
@@ -296,7 +328,7 @@ check "use vllm on a running stack: stop (old conf) → write conf → start (ne
 check "…conf: vllm, managed, local URL, profile, served id, slots from MAX_NUM_SEQS" \
   '[[ "$(confv INFERENCE_BACKEND)|$(confv INFERENCE_MANAGED)|$(confv INFERENCE_URL)|$(confv ENGINE_PROFILE)|$(confv INFERENCE_MODEL)|$(confv INFERENCE_SLOTS)" == "vllm|true|http://127.0.0.1:8080|$T/prof/rigvllm.env|\"rig-model\"|4" ]]' "$(cat "$SB/openbeast.conf")"
 check "…a conf backup exists and the history says use" \
-  '[[ -n "$(ls "$SB/.engines/conf-backups")" ]] && grep -qP "\tvllm\tuse\tmanaged\t" "$SB/.engines/history.tsv"'
+  '[[ -n "$(ls "$SB/.engines/conf-backups")" ]] && grep -q "$(printf "\tvllm\tuse\tmanaged\t")" "$SB/.engines/history.tsv"'
 : > "$T/order.log"
 _o="$(eng "${STUBS[@]}" -- use llama)"
 _empty="$(_conf '')"
@@ -358,7 +390,7 @@ _o="$(eng -- stage vllm --version v0.33.0 "$T/stage-vllm")"
 check "stage vllm writes a tarball + MANIFEST (digest, image id, sha256)" \
   '[[ -f "$T/stage-vllm/MANIFEST" ]] && grep -q "^TAR_SHA256=[0-9a-f]\{64\}$" "$T/stage-vllm/MANIFEST"' "$_o"
 DST="$T/dstate2"; mkdir -p "$DST"   # a fresh, closed box: no images at all
-sed -i '/^ENGINE_PIN_VLLM=/d' "$SB/openbeast.conf"
+sedi '/^ENGINE_PIN_VLLM=/d' "$SB/openbeast.conf"
 _o="$(eng OPENBEAST_OFFLINE=true DOCKER_STUB_FAIL_PULL=1 -- install vllm --from "$T/stage-vllm")"
 check "OFFLINE install --from DIR: sha256 checked, docker load, image id verified, pinned" \
   '[[ "$_o" == *"verified:"* && "$(confv ENGINE_PIN_VLLM)" == v0.33.0@sha256:* ]] && ! grep -q "docker pull" "$DST/calls.log"' "$_o"
@@ -374,11 +406,28 @@ printf 'VLLM_IMAGE=old\nVLLM_IMAGE_DIGEST=sha256:%064d\n' 0 > "$T/spark-vllm.env
 _o="$(eng OPENBEAST_OFFLINE=true -- install vllm --from "$T/stage-vllm" --spark-env "$T/spark-vllm.env")"
 check "…and spark.env gets it as VLLM_IMAGE_ID (which spark-node.sh prefers), the old digest cleared" \
   'grep -qx "VLLM_IMAGE_ID=$_sid" "$T/spark-vllm.env" && grep -qx "VLLM_IMAGE_DIGEST=" "$T/spark-vllm.env"' "$(cat "$T/spark-vllm.env") / $_o"
+# --digest with --from (review 2026-11-18): it was compared with the
+# MANIFEST's own DIGEST, a value the folder writes itself. Now it names the
+# image id and is checked against what docker reports after the load.
+_pin="$(confv ENGINE_PIN_VLLM)"
+rm -rf "$T/stage-dig"; cp -R "$T/stage-vllm" "$T/stage-dig"
+_fake="sha256:$(printf 'a%.0s' $(seq 1 64))"
+sedi "s|^DIGEST=.*|DIGEST=$_fake|" "$T/stage-dig/MANIFEST"
+_o="$(eng OPENBEAST_OFFLINE=true -- install vllm --from "$T/stage-dig" --digest "$_fake")"
+check "install --from --digest <the folder's own DIGEST> is refused (a folder cannot vouch for itself), pin unchanged" \
+  '[[ "$_o" == *"REGISTRY digest"*"IMAGE ID"* && "$_o" == *failed* && "$(confv ENGINE_PIN_VLLM)" == "$_pin" ]]' "$_o"
+_o="$(eng OPENBEAST_OFFLINE=true -- install vllm --from "$T/stage-vllm" --digest "sha256:$(printf 'b%.0s' $(seq 1 64))")"
+check "…an image id other than the one docker loaded is refused" \
+  '[[ "$_o" == *"docker loaded image $_sid, not the --digest"* && "$(confv ENGINE_PIN_VLLM)" == "$_pin" ]]' "$_o"
+sedi '/^ENGINE_PIN_VLLM=/d' "$SB/openbeast.conf"
+_o="$(eng OPENBEAST_OFFLINE=true -- install vllm --from "$T/stage-vllm" --digest "$_sid")"
+check "…and the image id docker reports after the load is accepted and pinned" \
+  '[[ "$_o" == *"(= your --digest)"* && "$(confv ENGINE_PIN_VLLM)" == "v0.33.0@$_sid" ]]' "$_o"
 _pin="$(confv ENGINE_PIN_VLLM)"
 _bad=""
 for _kv in 'TAR=../../etc/passwd' 'DIGEST=sha256:0\\nBIND_HOST=0.0.0.0' 'IMAGE_ID=latest' 'VERSION=v0.33.0\\nX=1' 'TAR_SHA256=abc'; do
   rm -rf "$T/stage-bad"; cp -R "$T/stage-vllm" "$T/stage-bad"
-  sed -i "s|^${_kv%%=*}=.*|$_kv|" "$T/stage-bad/MANIFEST"
+  sedi "s|^${_kv%%=*}=.*|$_kv|" "$T/stage-bad/MANIFEST"
   _o="$(eng OPENBEAST_OFFLINE=true -- install vllm --from "$T/stage-bad")"
   [[ "$_o" == *"failed"* && "$(confv ENGINE_PIN_VLLM)" == "$_pin" ]] || _bad+=" ${_kv%%=*}"
 done
@@ -428,12 +477,12 @@ check "healthcheck --restart on a DOWN managed vLLM: reports it, relaunches noth
 # Keyless on a network bind: refused for a managed engine as serve.sh
 # refuses it for llama-server (0.0.0.0 counts as "local", so it stays managed).
 _cv="$(cat "$SB/openbeast.conf")"
-sed -i "s|^INFERENCE_URL=.*|INFERENCE_URL=http://0.0.0.0:$VPORT|" "$SB/openbeast.conf"
+sedi "s|^INFERENCE_URL=.*|INFERENCE_URL=http://0.0.0.0:$VPORT|" "$SB/openbeast.conf"
 : > "$DST/calls.log"; _rc=0
 _o="$(env -i "${BASE_ENV[@]}" DOCKER_STUB_STATE="$DST" timeout 30 bash "$SB/scripts/engine-serve.sh" 2>&1)" || _rc=$?
 check "engine-serve.sh refuses a keyless managed engine on 0.0.0.0 (exit 3, nothing launched)" \
   '[[ $_rc -eq 3 && "$_o" == *"refusing to serve keyless vllm"*"ALLOW_OPEN_INFERENCE=true"* ]] && ! grep -q "docker run" "$DST/calls.log"' "rc=$_rc $_o"
-sed -i '/^ENGINE_PROFILE=/d' "$SB/openbeast.conf"; _rc=0
+sedi '/^ENGINE_PROFILE=/d' "$SB/openbeast.conf"; _rc=0
 _o="$(env -i "${BASE_ENV[@]}" DOCKER_STUB_STATE="$DST" OPENBEAST_ALLOW_OPEN_INFERENCE=true timeout 30 bash "$SB/scripts/engine-serve.sh" 2>&1)" || _rc=$?
 check "…ALLOW_OPEN_INFERENCE=true acknowledges it (the launch proceeds to its own checks)" \
   '[[ $_rc -ne 3 && "$_o" != *"refusing to serve keyless"* && "$_o" == *"ENGINE_PROFILE is not set"* ]]' "rc=$_rc $_o"
@@ -484,7 +533,20 @@ check "stage llama b102 → a one-commit bare repo + MANIFEST" \
 _o="$(eng OPENBEAST_OFFLINE=true OB_ENGINE_LLAMA_URL=file:///nonexistent -- install llama --from "$T/stage-llama")"
 check "OFFLINE install llama --from DIR: fetched from the folder, verified commit, built, pinned" \
   '[[ "$(pin_of)" == "$C3" && "$(git -C "$SB/llama.cpp" rev-parse HEAD)" == "$C3" ]]' "$_o"
-sed -i "s/^COMMIT=.*/COMMIT=$C2/" "$T/stage-llama/MANIFEST"
+# The staged repo is one commit deep: its --depth 1 fetch wrote C3 into
+# .git/shallow although this clone holds C3's parents, so the clone counted
+# C3 as commit #1 (b1) and read as shallow from then on.
+git init -q "$T/shal-ctl"; git -C "$T/shal-ctl" fetch -q "file://$T/up" "$C2"
+git -C "$T/shal-ctl" fetch -q --depth 1 "file://$T/stage-llama/llama.cpp.git" ob-stage
+check "negative control: a --depth 1 fetch of the stage marks C3 shallow even where its parent is present" \
+  'grep -qx "$C3" "$T/shal-ctl/.git/shallow" && [[ "$(git -C "$T/shal-ctl" rev-list --count "$C3")" == 1 ]]'
+_bn="$(env -i "${BASE_ENV[@]}" REPO_DIR="$SB" bash -c 'source "$REPO_DIR/scripts/lib/hardware.sh"; ob_llama_build_number "$REPO_DIR/llama.cpp"')"
+check "…install --from undoes that cut: no .git/shallow, and the build number is the parent's count + 1" \
+  '[[ ! -e "$SB/llama.cpp/.git/shallow" && "$(git -C "$SB/llama.cpp" rev-parse --is-shallow-repository)" == false && "$_bn" == "$(( $(git -C "$SB/llama.cpp" rev-list --count "$C3^") + 1 ))" && "$_bn" == 3 ]]' \
+  "bn=$_bn shallow=$(cat "$SB/llama.cpp/.git/shallow" 2>/dev/null)"
+check "…and an online-capable --from install says the UI fetch needs OFFLINE=true on a closed box" \
+  '[[ "$(eng OB_ENGINE_LLAMA_URL=file:///nonexistent -- install llama --from "$T/stage-llama")" == *"set OFFLINE=true"* ]]'
+sedi "s/^COMMIT=.*/COMMIT=$C2/" "$T/stage-llama/MANIFEST"
 _o="$(eng OPENBEAST_OFFLINE=true -- install llama --version "$C3" --from "$T/stage-llama")"
 check "…a MANIFEST naming another commit than asked is refused" '[[ "$_o" == *"refusing"* ]]' "$_o"
 _o="$(eng -- history llama)"
@@ -670,6 +732,30 @@ rm -rf "$T/opt"; : > "$T/pip.log"
 _o="$(eng "${MENV[@]}" OPENBEAST_OFFLINE=true OB_ENGINE_MAYA_URL=file:///nonexistent OB_ENGINE_LLAMA_URL=file:///nonexistent -- install maya --from "$T/stage-maya")"
 check "OFFLINE install maya --from DIR: verified commits from the folder, wheels with --no-index" \
   '[[ "$(git -C "$T/opt/maya" rev-parse HEAD)" == "$MC1" ]] && grep -q -- "--no-index --find-links $T/stage-maya/wheels" "$T/pip.log"' "$_o"
+# prepare.sh (review 2026-11-18): ~/.local/opt/maya is a symlink, and
+# `find <symlink> -maxdepth 1` never looked inside it, so the config Maya
+# wrote was never found and every prepare failed after the build.
+mkdir -p "$T/w" "$T/opt/maya-v9.9.9/.venv/bin"
+for _i in 1 2 3 4; do : > "$T/w/Huihui-GLM-5.3-Flash-abliterated-UD-Q2_K_XL-0000$_i-of-00004.gguf"; done
+printf '#!/bin/bash\necho "{}" > "$PWD/maya-x.json"\n' > "$T/opt/maya-v9.9.9/.venv/bin/python"
+chmod +x "$T/opt/maya-v9.9.9/.venv/bin/python"
+_rc=0
+_o="$(env -i "${BASE_ENV[@]}" "${MENV[@]}" OPENBEAST_WEIGHTS_DIR="$T/w" timeout 60 bash "$SB/scripts/engines/maya/prepare.sh" glm53-flash-abl-q2kxl 2>&1)" || _rc=$?
+_rp="$(cd "$T/opt/maya-v9.9.9" && pwd -P)/maya-x.json"
+check "prepare.sh through the ~/.local/opt/maya symlink finds maya-x.json and records its resolved path" \
+  '[[ $_rc -eq 0 && -L "$T/opt/maya" && "$(cat "$SB/.engines/maya/glm53-flash-abl-q2kxl.config")" == "$_rp" ]]' "rc=$_rc $_o"
+rm -f "$T/opt/maya-v9.9.9/maya-x.json" "$SB/.engines/maya/glm53-flash-abl-q2kxl.config"
+# Reinstalling the active version swapped its directory out from under a
+# running server (rm -rf, then mv). Refused while one runs from it.
+( exec -a "python $T/opt/maya/maya.py --config x" sleep 60 ) & _mp=$!; _PIDS="$_PIDS $_mp"
+sleep 0.3
+_o="$(eng "${MENV[@]}" OPENBEAST_OFFLINE=true -- install maya --from "$T/stage-maya")"
+check "reinstalling the active Maya while it runs is refused; its directory is untouched" \
+  '[[ "$_o" == *"is running from"* && -f "$T/opt/maya-v9.9.9/maya.py" && -x "$T/opt/maya-v9.9.9/.venv/bin/python" ]]' "$_o"
+kill "$_mp" 2>/dev/null || true; wait "$_mp" 2>/dev/null || true
+_o="$(eng "${MENV[@]}" OPENBEAST_OFFLINE=true -- install maya --from "$T/stage-maya")"
+check "…stopped, it reinstalls by rename: the new tree in place, no .old or .partial left" \
+  '[[ "$(git -C "$T/opt/maya" rev-parse HEAD)" == "$MC1" && ! -x "$T/opt/maya-v9.9.9/.venv/bin/python" ]] && ! ls -d "$T"/opt/maya-v9.9.9.* >/dev/null 2>&1' "$_o / $(ls "$T/opt")"
 _o="$(eng "${MENV[@]}" OPENBEAST_OFFLINE=true -- install maya --version v9.9.9)"
 check "…and OFFLINE without --from refuses to download" '[[ "$_o" == *"OFFLINE=true — no download"* ]]' "$_o"
 # A staged folder is data, not a reviewer: its MANIFEST cannot name an
@@ -677,7 +763,7 @@ check "…and OFFLINE without --from refuses to download" '[[ "$_o" == *"OFFLINE
 _mpin="$(confv ENGINE_PIN_MAYA)"
 _evil() { # _evil <VERSION value> → $T/stage-evil, a copy of the good stage
   rm -rf "$T/stage-evil"; cp -R "$T/stage-maya" "$T/stage-evil"
-  sed -i "s|^VERSION=.*|VERSION=$1|; s|^COMMIT=.*|COMMIT=$MC2|" "$T/stage-evil/MANIFEST"
+  sedi "s|^VERSION=.*|VERSION=$1|; s|^COMMIT=.*|COMMIT=$MC2|" "$T/stage-evil/MANIFEST"
 }
 _evil v9.9.11
 _o="$(eng "${MENV[@]}" OPENBEAST_OFFLINE=true -- install maya --from "$T/stage-evil")"

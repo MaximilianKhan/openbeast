@@ -123,12 +123,29 @@ eng_vllm_install() {
     [[ -z "$v" || "$(_eng_vllm_tag "$v")" == "$tag" ]] || { echo "$from holds vLLM $tag, not $v" >&2; return 1; }
     tar="$from/$tarn"
     [[ -f "$tar" ]] || { echo "$m names $tarn, which is not in $from" >&2; return 1; }
-    [[ -z "$want" || "$want" == "$dig" ]] || { echo "$from holds $dig, not the --digest $want" >&2; return 1; }
+    # --digest with --from names the IMAGE ID the operator expects, and it is
+    # compared with the ID docker reports after the load. It used to be
+    # compared with the MANIFEST's DIGEST: the folder's own claim, so a
+    # folder could pass any --digest it chose to write down. The registry
+    # digest is refused outright here: a docker save tarball cannot prove it.
+    if [[ -n "$want" ]]; then
+      [[ "$want" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "--digest $want is not sha256:<64 hex>" >&2; return 1; }
+      if [[ "$want" == "$dig" && "$want" != "$id" ]]; then
+        echo "--digest $want is the staged REGISTRY digest, which a docker save tarball cannot prove. With --from, --digest takes the IMAGE ID (docker image inspect --format '{{.Id}}' on the staging box) — refusing" >&2
+        return 1
+      fi
+    fi
     [[ "$(ob_engine_sha256 "$tar")" == "$sum" ]] || { echo "checksum mismatch: $tar" >&2; return 1; }
     _eng_vllm_docker load -i "$tar" >/dev/null || { echo "docker load $tar failed" >&2; return 1; }
-    [[ "$(_eng_vllm_docker image inspect --format '{{.Id}}' "$id" 2>/dev/null)" == "$id" ]] \
-      || { echo "after docker load, image $id is not there — the tarball is not what MANIFEST says" >&2; return 1; }
-    echo "verified: $tar (sha256) → image ${id:7:12}"
+    local loaded
+    loaded="$(_eng_vllm_docker image inspect --format '{{.Id}}' "$(_eng_vllm_repo):$tag" 2>/dev/null || true)"
+    [[ -n "$loaded" ]] || loaded="$(_eng_vllm_docker image inspect --format '{{.Id}}' "$id" 2>/dev/null || true)"
+    [[ "$loaded" == "$id" ]] \
+      || { echo "after docker load, $(_eng_vllm_repo):$tag is image ${loaded:-none}, not the MANIFEST's $id — the tarball is not what MANIFEST says" >&2; return 1; }
+    if [[ -n "$want" && "$loaded" != "$want" ]]; then
+      echo "docker loaded image $loaded, not the --digest (image id) $want you named — refusing" >&2; return 1
+    fi
+    echo "verified: $tar (sha256) → image ${id:7:12}${want:+ (= your --digest)}"
     echo "  pinned by its image id; the staged registry digest ${dig:7:12} is recorded as unverified (a docker save tarball cannot prove it)."
     ENG_RESULT_VERSION="$tag"; ENG_RESULT_REF="$id"; ENG_RESULT_NOTE="id=$id staged-digest=$dig (unverified)"
     return 0

@@ -109,7 +109,8 @@ The detailed walkthrough below explains each step and lists alternate models.
 
 ### Compiler toolchains for the eval suite (multi-language variants)
 
-The eval suite (v4: 137 base tasks / 291 effective test units — see
+The eval suite (v5.0: 71 scored units over 34 base tasks; the task library
+it draws on is larger, and `python3 evals/suite_stats.py` prints both — see
 [`evals/README.md`](../evals/README.md) for the current distribution)
 includes multi-language variant tasks
 (Python / Go / C / C++ / Rust / Zig). To run those variants, all six
@@ -620,7 +621,7 @@ To stop everything:
 - **Long-running agents:** ask the model to use `start_agent` to spawn a background agent, then `check_agent` to monitor
 - **Health check:** `./scripts/healthcheck.sh` (services + GPU VRAM + slot usage; `--restart` to auto-recover)
 - **Smoke test:** `./tests/test_smoke.sh` (end-to-end stack validation)
-- **Eval harness:** `python3 evals/run_eval.py` (v4 suite — 137 base tasks / 291 units; see evals/README.md)
+- **Eval harness:** `python3 evals/run_eval.py` (the v5.0 suite — 71 scored units over 34 base tasks; see evals/README.md)
 - **Log rotation (automatic on systemd):** `./start.sh` installs
   `openbeast-logrotate.timer` on every start where it is missing and a
   systemd `--user` manager is reachable — a daily user timer (no sudo) that

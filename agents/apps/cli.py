@@ -517,8 +517,14 @@ EXEC_MARKERS = ("execute_code", "execute_blender_code", "python code", "arbitrar
                 "shell command", "run on startup", "login item", "launchagent", "runs a script")
 
 
-def diff_manifests(old: dict | None, new: dict, server: dict) -> dict:
+def diff_manifests(old: dict | None, new: dict, server: dict, is_gated=None) -> dict:
+    """`is_gated(tool)`: whether the WIRED entry gates that tool, by the rules
+    actually in opencode.json (ocfg.is_gated). Without it (a server that is
+    not enabled here) the catalog's gates are what an enable would write."""
     gates = list(server.get("ask_tools", [])) + list(server.get("deny_tools", []))
+    if is_gated is None:
+        def is_gated(name):
+            return any(fnmatch.fnmatchcase(name, g) for g in gates)
     if not old:
         added, removed, changed = [t["name"] for t in new["tools"]], [], []
     else:
@@ -551,7 +557,7 @@ def diff_manifests(old: dict | None, new: dict, server: dict) -> dict:
         # that tool is judged (and gated) on its own.
         said = [m for m in EXEC_MARKERS if m in desc[name] and not (m in names_here and m != name.lower())]
         if hits or said:
-            gated = any(fnmatch.fnmatchcase(name, g) for g in gates)
+            gated = bool(is_gated(name))
             flagged.append({"name": name, "patterns": hits, "description": said, "gated": gated})
     return {"first": old is None, "previous_version": (old or {}).get("version"),
             "previous_hash": (old or {}).get("hash"), "hash": new["hash"],
@@ -594,6 +600,56 @@ def render_check(rep: dict, enabled: dict | None, user_keys: list[str]) -> str:
         if rep["status"] == "MISSING":
             L.append(f"  Then re-run: scripts/apps.sh check {rep['capability']}")
     return "\n".join(L)
+
+
+def _rules_txt(rules: list[dict]) -> str:
+    return ", ".join(f"{r['action']}={r['effect']}" for r in rules)
+
+
+def reconcile_gates(ctx: "Ctx", targets: list, dry_run: bool = False) -> tuple[dict, list[str]]:
+    """Bring every wired entry in `targets` up to its server's CURRENT gates.
+
+    A gate added to the catalog after an entry was enabled (e.g.
+    mobile-build-tools' install_app_sim / launch_app_sim, mobile-mcp's
+    mobile_batch_commands) never reached that entry: refresh only re-read the
+    tool list. Compares rules_for(key, server) with the rules actually in
+    opencode.json and writes the missing ones (ocfg.add_gates: they only ever
+    tighten), recording them so disable removes them. Returns
+    ({key: [added rules]}, messages)."""
+    try:
+        cfg = ctx.cfg()
+    except ocfg.ConfigError as e:
+        return {}, [f"gates not checked: {e}"]
+    mine = ctx.st.enabled()
+    added_by: dict = {}
+    msgs: list[str] = []
+    secret = False
+    for sid, rec in targets:
+        key = (rec or {}).get("key")
+        if not key or key not in mine or not ocfg.find_entry(cfg, key):
+            continue
+        s = ctx.cat["server"][sid]
+        fl = ocfg.flavor_for(cfg, key, ctx.env, rec.get("schema"))
+        want = ocfg.rules_for(key, s)
+        why = ocfg.ungatable(cfg, want, fl)
+        if why:
+            msgs.append(f"{key}: gates not written: {why}")
+            continue
+        added, warns = ocfg.add_gates(cfg, want, fl)
+        msgs += [f"{key}: {w}" for w in warns]
+        if added:
+            added_by[key] = added
+            mine[key]["rules"] = list(mine[key].get("rules") or []) + added
+            secret = secret or private_config(s, (rec.get("entry") or {}).get("environment") or {}, ctx.cfg_path)
+            msgs.append(f"gates added to {key} ({sid}): {_rules_txt(added)}")
+    if added_by and not dry_run:
+        b = ocfg.backup(ctx.cfg_path)
+        ocfg.write(ctx.cfg_path, cfg, secret=secret)
+        ctx.st.save_enabled(mine)
+        if b:
+            msgs.append(f"  backup: {b}")
+        msgs.append("  Restart opencode to load the new gates.")
+    return added_by, msgs
 
 
 # ── renamed servers ─────────────────────────────────────────────────────────
@@ -647,13 +703,23 @@ def migrate_legacy(ctx: "Ctx") -> list[str]:
             wrote = wrote or bool(gone)
             msgs.append(f"removed the old opencode entry {key!r}: {sid} is already wired as {newkey!r}")
             continue
+        fl = ocfg.flavor_for(cfg, key, ctx.env, rec.get("schema"))
         if newkey != key:
-            fl = ocfg.flavor_for(cfg, key, ctx.env, rec.get("schema"))
-            res = ocfg.rename(cfg, key, newkey, rec.get("rules", []), fl)
+            res = ocfg.rename(cfg, key, newkey, rec.get("rules", []), fl, server=s)
             if res is not None:
                 rec.update(rules=res[0], schema=fl, at=now_iso())
                 msgs += [f"renamed opencode entry {key!r} to {newkey!r} ({sid})"] + [f"  ! {w}" for w in res[1]]
                 wrote = True
+        elif ocfg.find_entry(cfg, key):
+            # a key the user chose stays; the server's current gates still apply
+            want = ocfg.rules_for(key, s)
+            if want and not ocfg.ungatable(cfg, want, fl):
+                added, warns = ocfg.add_gates(cfg, want, fl)
+                if added:
+                    rec["rules"] = list(rec.get("rules") or []) + added
+                    msgs.append(f"gates added to {key!r} ({sid}): " + _rules_txt(added))
+                    wrote = True
+                msgs += [f"  ! {w}" for w in warns]
         mine[newkey] = rec
     if wrote:
         b = ocfg.backup(ctx.cfg_path)
@@ -1001,11 +1067,15 @@ def cmd_refresh(ctx: Ctx) -> int:
         emit(out, a.json, "\n".join(L + [msg]))
         return EXIT_OK
     failures = 0
+    added_by, gmsgs = reconcile_gates(ctx, targets)
+    L += gmsgs
+    cfg_now, _ = ctx.cfg_or_empty()
     for sid, rec in targets:
         s = ctx.cat["server"][sid]
         pinned = effective_version(ctx.cat, sid, ctx.st)
         row = {"server": sid, "pinned": pinned, "enabled_version": (rec or {}).get("version"),
-               "latest": None, "update_available": False, "notes": []}
+               "latest": None, "update_available": False, "notes": [],
+               "gates_added": added_by.get((rec or {}).get("key"), [])}
         L.append(f"{sid} (pinned {pinned}{', enabled as ' + rec['key'] if rec else ''})")
         if rec and rec.get("version") != pinned:
             n = (f"the pin is now {pinned} but your opencode entry runs {rec['version']}: "
@@ -1060,7 +1130,9 @@ def cmd_refresh(ctx: Ctx) -> int:
                     L.append(f"    tools: introspection failed — {e}"
                              + (" (offline: the package is probably not in the local cache)" if reason else ""))
                 else:
-                    d = diff_manifests(ctx.st.last_manifest(sid), man, s)
+                    wired = bool(rec) and ocfg.find_entry(cfg_now, rec["key"]) is not None
+                    d = diff_manifests(ctx.st.last_manifest(sid), man, s,
+                                       (lambda t, k=rec["key"]: ocfg.is_gated(cfg_now, k, t)) if wired else None)
                     path = ctx.st.save_manifest(sid, man)
                     row.update(tool_count=man["tool_count"], hash=man["hash"], manifest=path, diff=d)
                     L.append(f"    tools: {man['tool_count']} (hash {man['hash'][:12]}) → {path}")
@@ -1278,10 +1350,14 @@ def main(argv: list[str] | None = None) -> int:
     except C.CatalogError as e:
         print(f"error: {e}", file=sys.stderr)
         return EXIT_ERR
-    if args.cmd in MIGRATING and not getattr(args, "dry_run", False):
+    if args.cmd not in MIGRATING or getattr(args, "dry_run", False):
+        return args.fn(ctx)
+    # load → save of opencode.json under the lock openbeast-client's sync
+    # holds too (scripts/lib/client_rigs.py), so neither drops the other's write
+    with ocfg.config_lock(ctx.env):
         for m in migrate_legacy(ctx):        # stderr: --json output stays one object
             print(m, file=sys.stderr)
-    return args.fn(ctx)
+        return args.fn(ctx)
 
 
 if __name__ == "__main__":

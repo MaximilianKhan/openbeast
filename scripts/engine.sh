@@ -11,6 +11,8 @@
 #                                               --unmanaged: someone else runs the server at --url,
 #                                               even on this box's loopback (rank 0 of a Spark pair)
 #   scripts/engine.sh install <engine> [--version V] [--digest sha256:…] [--from DIR]
+#                                               vllm --digest: the registry digest for a pull; with
+#                                               --from, the IMAGE ID, checked after docker load
 #   scripts/engine.sh update  <engine> [--from DIR]   install the latest release (pinned, verified)
 #   scripts/engine.sh stage   <engine> [--version V] [--digest D] [--platform P] DIR
 #                                               download + verify for a closed box (install --from DIR there)
@@ -273,8 +275,8 @@ cmd_use() {
   echo "engine.sh use $ENGINE — $([[ $managed -eq 1 ]] && echo "managed on this box" || echo "at $url, not managed here")"
   [[ $running -eq 1 && $NORESTART -eq 0 ]] && echo "  1. stop the running stack:   $(stop_cmd)"
   echo "  $([[ $running -eq 1 && $NORESTART -eq 0 ]] && echo 2 || echo 1). openbeast.conf:"
-  for k in "${sets[@]}"; do echo "       set   $k"; done
-  for k in "${unsets[@]}"; do
+  for k in ${sets[@]+"${sets[@]}"}; do echo "       set   $k"; done
+  for k in ${unsets[@]+"${unsets[@]}"}; do
     [[ -n "$(ob_engine_conf_get "$k")" ]] && echo "       unset $k   (was $(ob_engine_conf_get "$k"))"
   done
   if [[ $running -eq 1 && $NORESTART -eq 0 ]]; then echo "  3. start it again:          $(start_cmd)"
@@ -297,8 +299,8 @@ cmd_use() {
     read -r -a _c <<< "$(stop_cmd)"
     OPENBEAST_STOP_REASON="scripts/engine.sh use $ENGINE" "${_c[@]}" || die "stop failed — openbeast.conf NOT changed"
   fi
-  for k in "${sets[@]}"; do ob_engine_conf_set "${k%%=*}" "${k#*=}"; done
-  for k in "${unsets[@]}"; do ob_engine_conf_unset "$k"; done
+  for k in ${sets[@]+"${sets[@]}"}; do ob_engine_conf_set "${k%%=*}" "${k#*=}"; done
+  for k in ${unsets[@]+"${unsets[@]}"}; do ob_engine_conf_unset "$k"; done
   ob_engine_history_add "$ENGINE" use "$([[ $managed -eq 1 ]] && echo managed || echo remote)" "${url:-local}" "${PROFILE:-${SERVE:-}}"
   echo "openbeast.conf updated${_OB_ENGINE_CONF_BACKED_UP:+ (backup: $_OB_ENGINE_CONF_BACKED_UP)}."
   if [[ "$ENGINE" != llama && -n "$PROFILE" ]]; then

@@ -2,6 +2,15 @@
 
 Rig offline: rig-side causes are inferred from configs/docs; Spark side measured live.
 
+> **Note, 2026-11-18.** File:line references below are as of 2026-11-16 and
+> have moved. On `main` on 2026-11-18: the prefill table is
+> `docs/REFERENCE.md:873` (was :868); the budget is the `--reasoning-budget 20480`
+> line, `serve-qwen38-27b-uncensored-mtp-q5.sh:79` (was :76); the 15.1 s turn
+> is `docs/ROUTER_SIDECAR_PLAN.md:17-18`. `probe.py`, named under "Measure
+> when the rig is back", was never committed: it is not in this directory or
+> anywhere in the repository. Write a fresh probe (or use `scripts/tokps.py`
+> for the speed side) when the rig is back.
+
 ## Spark probes (idle pair, streamed through beast-gate)
 | probe | TTFT | cached tokens |
 |---|---:|---:|

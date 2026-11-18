@@ -116,11 +116,21 @@ def _strip_name(fn: str) -> str:
     return fn
 
 
-def _link(target: str, link: str) -> None:
+def _link(target: str, link: str, prefix: str, force: bool = False) -> None:
+    """link -> target. What is already at `link` is replaced only when it is
+    restore's own: a symlink into the restore prefix (an earlier version of
+    this or another entry). A user's own ~/.local/bin/jq — a file, or a link
+    to somewhere else — used to be deleted without a word; now it takes
+    --force, and a real directory is never replaced."""
     os.makedirs(os.path.dirname(link), exist_ok=True)
     if os.path.islink(link) or os.path.exists(link):
         if os.path.isdir(link) and not os.path.islink(link):
             raise RestoreError(f"{link} is a real directory; not replacing it")
+        ours = os.path.islink(link) and _inside(prefix, os.path.join(os.path.dirname(link), os.readlink(link)))
+        if not ours and not force:
+            what = f"a link to {os.readlink(link)}" if os.path.islink(link) else "a file"
+            raise RestoreError(f"{link} is {what} that restore did not make; not replacing it "
+                               f"(move it aside, or pass --force)")
         os.remove(link)
     os.symlink(target, link)
 
@@ -185,7 +195,8 @@ def _extract(src: str, dest: str) -> None:
         _safe_extract(t, dest)
 
 
-def install_file(drive: S.Drive, item: dict, prefix: str, bindir: str, note: str = "") -> List[str]:
+def install_file(drive: S.Drive, item: dict, prefix: str, bindir: str, note: str = "",
+                 force: bool = False) -> List[str]:
     primary = drive.p(item["primary"])
     fn = os.path.basename(primary)
     root = os.path.join(prefix, f"{item['entry']}-{S.slug(item['version'])}")
@@ -234,7 +245,7 @@ def install_file(drive: S.Drive, item: dict, prefix: str, bindir: str, note: str
         _merge(part, root)
     finally:
         shutil.rmtree(part, ignore_errors=True)
-    _link(root, os.path.join(prefix, item["entry"]))
+    _link(root, os.path.join(prefix, item["entry"]), prefix, force)
     if not bins and os.path.isdir(os.path.join(root, "bin")):
         bins = [f"bin/{b}" for b in sorted(os.listdir(os.path.join(root, "bin")))
                 if os.access(os.path.join(root, "bin", b), os.X_OK) and not os.path.isdir(os.path.join(root, "bin", b))]
@@ -244,7 +255,7 @@ def install_file(drive: S.Drive, item: dict, prefix: str, bindir: str, note: str
         if not os.path.exists(p):
             out.append(f"  warning: {b} is not in the archive")
             continue
-        _link(p, os.path.join(bindir, _bin_name(os.path.basename(b))))
+        _link(p, os.path.join(bindir, _bin_name(os.path.basename(b))), prefix, force)
         linked.append(os.path.basename(b))
     out.append(f"{item['entry']} {item['version']}: {root}" + (f"  (linked into {bindir}: {', '.join(linked)})" if linked else ""))
     return out
@@ -383,7 +394,7 @@ def restore(cat: Optional[C.Catalog], drive: S.Drive, name: str, plat: str = "",
             if k == "git":
                 out += restore_git(drive, it, srcdir, force)
             elif k == "file":
-                out += install_file(drive, it, prefix, bindir, notes.get(key) or note)
+                out += install_file(drive, it, prefix, bindir, notes.get(key) or note, force)
             elif k == "oci":
                 out += restore_oci(drive, it, registry, engine, plat)
             elif k == "pip":

@@ -85,7 +85,8 @@ ob_engine_host_class() {
   if [[ -n "${OB_ENGINE_HOST_CLASS:-}" ]]; then
     printf '%s\n' "$OB_ENGINE_HOST_CLASS"; return 0
   fi
-  if [[ "$(uname -s 2>/dev/null)" == Darwin ]]; then
+  # OB_ENGINE_UNAME: tests/test_engines.sh runs the Linux detection on a Mac.
+  if [[ "${OB_ENGINE_UNAME:-$(uname -s 2>/dev/null)}" == Darwin ]]; then
     printf 'mac\n'; return 0
   fi
   if ! declare -F ob_detect_gpu >/dev/null 2>&1 \

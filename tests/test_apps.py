@@ -1257,11 +1257,15 @@ def test_refresh_renames_an_entry_wired_under_the_old_id(box):
     assert list(cfg["mcp"]["servers"]) == ["openbeast-tools", "mobile-build-tools"]     # no duplicate
     assert cfg["mcp"]["servers"]["mobile-build-tools"] == OLD_ENTRY                    # same launch
     new_rule = {"action": "mobile-build-tools_build_*", "resource": "*", "effect": "ask"}
-    assert cfg["permissions"] == USER_CFG["permissions"] + [new_rule]                  # gate re-keyed
+    # the gate re-keyed in place, then the catalog's current gates the old
+    # record never had (review 2026-11-18)
+    current = [{"action": "mobile-build-tools_" + t, "resource": "*", "effect": "ask"}
+               for t in ("test_*", "install_app_sim", "launch_app_sim")]
+    assert cfg["permissions"] == USER_CFG["permissions"] + [new_rule] + current
     mine = json.loads((box.state / "enabled.json").read_text())
     assert list(mine) == ["mobile-build-tools"]
     assert mine["mobile-build-tools"]["server"] == "mobile-build-tools"
-    assert mine["mobile-build-tools"]["rules"] == [new_rule]
+    assert mine["mobile-build-tools"]["rules"] == [new_rule] + current
     assert list(json.loads((box.state / "pins.json").read_text())) == ["mobile-build-tools"]
     assert (box.state / "manifests" / "mobile-build-tools" / "latest.json").exists()
     assert not (box.state / "manifests" / "mobilebuildmcp").exists()
@@ -1328,3 +1332,150 @@ def test_enable_on_a_machine_wired_under_the_old_id_leaves_one_entry(box):
     assert {"action": "mobile-build-tools_build_*", "resource": "*", "effect": "ask"} in cfg["permissions"]
     assert not any(str(p.get("action", "")).startswith("mobilebuildmcp_") for p in cfg["permissions"])
     assert list(json.loads((box.state / "enabled.json").read_text())) == ["mobile-build-tools"]
+
+
+# ── review 2026-11-18: the rename and refresh keep every gate ──────────────
+def _ocfg():
+    sys.path.insert(0, str(CLI.parent))
+    import ocfg
+    return ocfg
+
+
+def test_rename_v2_moves_the_users_own_rules_and_never_loosens_them(box):
+    # The user's own `mobilebuildmcp_*` deny (and an ask) were keyed to the old
+    # name: before the fix they stayed there, matched nothing after the
+    # rename, and the new key's tools fell through to allow.
+    user_rules = [{"action": "mobilebuildmcp_*", "resource": "*", "effect": "deny"},
+                  {"action": "mobilebuildmcp_install_app_sim", "resource": "*", "effect": "ask"}]
+    _wired_as_mobilebuildmcp(box)
+    cfg = box.read_config()
+    cfg["permissions"] = USER_CFG["permissions"] + user_rules + [OLD_RULE]
+    box.write_config(cfg)
+    cp = box.run("refresh", "--no-introspect", extra_env={"OPENBEAST_APPS_OFFLINE": "1"}, check=0)
+    assert "moved 2 rule(s) of yours from mobilebuildmcp_* to mobile-build-tools_*" in cp.stderr, cp.stderr
+    cfg = box.read_config()
+    acts = [p["action"] for p in cfg["permissions"]]
+    assert not any(a.startswith("mobilebuildmcp_") for a in acts), acts
+    ours = {"action": "mobile-build-tools_build_*", "resource": "*", "effect": "ask"}
+    # in place and in order; nothing appended: the user's deny glob is stricter
+    # than every catalog ask, so adding one last would LOOSEN it
+    assert cfg["permissions"] == USER_CFG["permissions"] + [
+        {"action": "mobile-build-tools_*", "resource": "*", "effect": "deny"},
+        {"action": "mobile-build-tools_install_app_sim", "resource": "*", "effect": "ask"}, ours]
+    ocfg = _ocfg()
+    for t in ("launch_app_sim", "test_unit", "anything"):
+        assert ocfg.effective(cfg, "mobile-build-tools_" + t) == "deny", t
+    assert json.loads((box.state / "enabled.json").read_text())["mobile-build-tools"]["rules"] == [ours]
+    # disable removes ours only: the user's re-keyed rules stay
+    box.run("disable", "mobile-build-tools", check=0)
+    acts = [p["action"] for p in box.read_config()["permissions"]]
+    assert "mobile-build-tools_build_*" not in acts
+    assert "mobile-build-tools_*" in acts and "mobile-build-tools_install_app_sim" in acts
+
+
+def test_rename_v1_moves_the_users_rules_and_adds_the_current_gates(box):
+    box.write_config({"mcp": {"mobilebuildmcp": dict(OLD_ENTRY, enabled=True)},
+                      "permission": {"*": "allow", "mobilebuildmcp_launch_app_sim": "deny",
+                                     "mobilebuildmcp_build_*": "ask"}})
+    (box.state / "enabled.json").write_text(json.dumps({"mobilebuildmcp": {
+        "capability": "ios-build", "server": "mobilebuildmcp", "version": "2.7.1", "schema": "v1",
+        "rules": [{"action": "mobilebuildmcp_build_*", "resource": "*", "effect": "ask"}], "entry": OLD_ENTRY}}))
+    env = {"OPENBEAST_APPS_OFFLINE": "1", "OPENBEAST_OPENCODE_SCHEMA": "v1"}
+    box.run("refresh", "--no-introspect", extra_env=env, check=0)
+    cfg = box.read_config()
+    assert list(cfg["mcp"]) == ["mobile-build-tools"]
+    assert cfg["permission"] == {"*": "allow", "mobile-build-tools_launch_app_sim": "deny",
+                                 "mobile-build-tools_build_*": "ask", "mobile-build-tools_test_*": "ask",
+                                 "mobile-build-tools_install_app_sim": "ask"}
+    rules = json.loads((box.state / "enabled.json").read_text())["mobile-build-tools"]["rules"]
+    assert {r["action"] for r in rules} == {"mobile-build-tools_build_*", "mobile-build-tools_test_*",
+                                            "mobile-build-tools_install_app_sim"}      # never the user's deny
+    box.run("disable", "mobile-build-tools", extra_env=env, check=0)
+    assert box.read_config()["permission"] == {"*": "allow", "mobile-build-tools_launch_app_sim": "deny"}
+
+
+def test_refresh_brings_an_enabled_entry_up_to_the_catalogs_new_gates(box):
+    # enabled under an older catalog: `alpha` was not gated then
+    box.stub_server(ask=("danger*",))
+    box.run("enable", "stub-cap", check=0)
+    box.stub_server(ask=("danger*", "alpha"))              # the catalog gains a gate
+    rc, out = box.json("refresh", "--no-introspect")
+    assert rc == 0, out
+    new = {"action": "stubsrv_alpha", "resource": "*", "effect": "ask"}
+    assert out["servers"][0]["gates_added"] == [new]
+    cfg = box.read_config()
+    assert new in cfg["permissions"]
+    rec = json.loads((box.state / "enabled.json").read_text())["stubsrv"]
+    assert new in rec["rules"]
+    cp = box.run("refresh", "--no-introspect", check=0)    # idempotent
+    assert "gates added" not in cp.stdout and box.read_config() == cfg
+    box.run("disable", "stub-cap", check=0)
+    assert not any(str(p.get("action", "")).startswith("stubsrv_") for p in box.read_config().get("permissions", []))
+
+
+def test_refresh_text_names_the_added_gates(box):
+    box.stub_server(ask=("danger*",))
+    box.run("enable", "stub-cap", check=0)
+    box.stub_server(ask=("danger*", "beta"))
+    cp = box.run("refresh", "--no-introspect", check=0)
+    assert "gates added to stubsrv (stubsrv): stubsrv_beta=ask" in cp.stdout, cp.stdout
+
+
+def test_refresh_judges_gated_by_the_config_not_the_catalog(box, tmp_path):
+    # enabled --ungated into a v1 config whose `permission` is a string: the
+    # catalog says danger* is gated, but nothing in the file gates it
+    box.stub_server(risk=("shell",), ask=("danger*",))
+    box.write_config({"permission": "allow"})
+    env = {"OPENBEAST_OPENCODE_SCHEMA": "v1"}
+    box.run("enable", "stub-cap", "--ungated", extra_env=env, check=0)
+    tools = tmp_path / "tools.json"
+    tools.write_text(json.dumps([{"name": "danger_exec", "description": "Runs arbitrary code.",
+                                  "inputSchema": {"type": "object"}}]))
+    cp = box.run("refresh", extra_env={**env, "STUB_TOOLS_FILE": str(tools)}, check=0)
+    assert "tool danger_exec describes itself as running code" in cp.stdout and "NOT gated" in cp.stdout, cp.stdout
+    assert "gates not written" in cp.stdout
+
+
+def test_beast_apps_backups_are_pruned_to_the_last_three(tmp_path):
+    ocfg = _ocfg()
+    src = tmp_path / "opencode.json"
+    src.write_text("{}")
+    made = []
+    for i in range(5):
+        made.append(ocfg.backup(str(src)))
+        os.utime(made[-1], (1000 + i, 1000 + i))
+    left = sorted(str(p) for p in tmp_path.glob("opencode.json.bak-beast-apps-*"))
+    assert left == sorted(made[-3:]), left
+
+
+def test_write_keeps_a_symlinked_config_a_symlink(tmp_path):
+    ocfg = _ocfg()
+    real = tmp_path / "dotfiles" / "opencode.json"
+    real.parent.mkdir()
+    real.write_text("{}")
+    link = tmp_path / "opencode.json"
+    link.symlink_to(real)
+    ocfg.write(str(link), {"model": "x"})
+    assert link.is_symlink() and json.loads(real.read_text()) == {"model": "x"}
+
+
+def test_a_write_waits_for_the_openbeast_config_lock(box):
+    import fcntl
+    import time
+    box.stub_server()
+    box.run("enable", "stub-cap", check=0)
+    lock = box.home / ".config" / "openbeast" / ".lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    try:
+        p = subprocess.Popen([PY, str(CLI), "disable", "stub-cap"], env=box.env,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        time.sleep(1.5)
+        assert p.poll() is None, "disable wrote while openbeast-client held the lock"
+        assert "stubsrv" in json.dumps(box.read_config())
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+    assert p.wait(timeout=60) == 0
+    assert "stubsrv" not in json.dumps(box.read_config().get("mcp", {}))
