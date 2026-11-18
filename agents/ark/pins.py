@@ -265,8 +265,15 @@ def latest(e: C.Entry) -> Tuple[str, str]:
 # ── lock ─────────────────────────────────────────────────────────────────
 
 def lock(cat: C.Catalog, entries: List[C.Entry], refresh: bool = False, from_drive: Optional[S.Drive] = None,
-         sizes: bool = True, git_sizes: bool = True) -> Tuple[Edits, List[str]]:
-    """-> (edits, report lines). Nothing is written here."""
+         sizes: bool = True, git_sizes: bool = True, accept_image_moves: bool = False) -> Tuple[Edits, List[str]]:
+    """-> (edits, report lines). Nothing is written here.
+
+    --refresh re-reads sizes and re-checks every pin, but never MOVES one:
+    a commit, sha256, upstream_hash or image digest that upstream now
+    answers differently is reported "UPSTREAM CHANGED" and left as it is.
+    Image tags move by design (a rebuilt base image), so
+    accept_image_moves (--accept-image-moves) takes the new digest; file
+    hashes and commits are only ever blanked by hand."""
     ed = Edits()
     rep: List[str] = Report()
     if from_drive:
@@ -302,6 +309,10 @@ def lock(cat: C.Catalog, entries: List[C.Entry], refresh: bool = False, from_dri
         if e.git and e.tag and (refresh or not e.commit):
             try:
                 sha = ls_remote(e.git, e.tag_x)
+                if e.commit and sha != e.commit:
+                    rep.append(f"  {e.name}: UPSTREAM CHANGED — tag {e.tag_x} is now {sha[:12]}, the catalog pins "
+                               f"{e.commit[:12]} (never overwritten: a moved tag is what a pin is for; investigate)")
+                    continue
                 ed.set(e.table, "commit", sha)
                 if e.git_verified == "unverified":
                     ed.set(e.table, "git_verified", "")
@@ -322,7 +333,7 @@ def lock(cat: C.Catalog, entries: List[C.Entry], refresh: bool = False, from_dri
                 if a.kind == "file":
                     _lock_file(a, ed, rep, refresh, sizes)
                 elif a.kind == "oci":
-                    _lock_oci(a, ed, rep, refresh)
+                    _lock_oci(a, ed, rep, refresh, accept_image_moves)
             except (net.HTTPFailure, V.VerifyError, oci.OciError, C.CatalogError, ValueError, KeyError) as ex:
                 rep.append(f"  {a.id}: FAILED — {ex}")
     return ed, rep
@@ -368,20 +379,28 @@ def _lock_file(a: C.Artifact, ed: Edits, rep: List[str], refresh: bool, sizes: b
             return
         ed.set(a.table, "sha256", hx)
     else:
+        if a.upstream_hash and a.upstream_hash != f"{algo}:{hx}":
+            rep.append(f"  {a.id}: UPSTREAM CHANGED — the catalog pins {a.upstream_hash[:24]}…, upstream now says "
+                       f"{algo}:{hx[:16]}… (never overwritten: investigate, and blank upstream_hash by hand to accept "
+                       f"the new file)")
+            return
         ed.set(a.table, "upstream_hash", f"{algo}:{hx}")
     ed.set(a.table, "verified", how)
     rep.append(f"  {a.id}: {algo} {hx[:16]}… ({how})")
 
 
-def _lock_oci(a: C.Artifact, ed: Edits, rep: List[str], refresh: bool) -> None:
+def _lock_oci(a: C.Artifact, ed: Edits, rep: List[str], refresh: bool, accept_moves: bool = False) -> None:
     if a.digest and a.platform_sizes and not refresh:
         return
     d = oci.describe(a.image, a.digest if (a.digest and not refresh) else a.tag_x, a.platforms)
     if d["missing"]:
         rep.append(f"  {a.id}: upstream has no {', '.join(d['missing'])} — narrow `platforms`")
-    if a.digest and a.digest != d["digest"] and not refresh:
-        rep.append(f"  {a.id}: tag {a.tag_x} now points to {d['digest'][:19]}, the catalog pins {a.digest[:19]}")
-        return
+    if a.digest and a.digest != d["digest"]:
+        if not accept_moves:
+            rep.append(f"  {a.id}: UPSTREAM CHANGED — tag {a.tag_x} now points to {d['digest'][:19]}, the catalog "
+                       f"pins {a.digest[:19]} (never overwritten: --accept-image-moves takes the new image)")
+            return
+        rep.append(f"  {a.id}: tag {a.tag_x} MOVED {a.digest[:19]} -> {d['digest'][:19]} (accepted: --accept-image-moves)")
     ed.set(a.table, "digest", d["digest"])
     ed.set(a.table, "platform_sizes", [f"{p}={n}" for p, n in sorted(d["sizes"].items())])
     ed.set(a.table, "verified", "registry")

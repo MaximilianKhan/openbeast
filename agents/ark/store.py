@@ -148,24 +148,46 @@ exec "$PY" -I "$HERE/tool/agents/ark/cli.py" "$@"
 '''
 
 
+def _same_dir(a: str, b: str) -> bool:
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
 def install_tool(drive: Drive) -> None:
-    """Copy the tool and catalog onto the drive so it restores itself."""
+    """Copy the tool and catalog onto the drive so it restores itself.
+
+    Run FROM the drive (./ark fetch --to .), the source IS the destination:
+    the old rmtree-then-copytree deleted the running tool and then had
+    nothing to copy, so the drive lost its own ark and the run still said 0.
+    Same tree: leave it alone. Otherwise the new copy is built beside the old
+    one and swapped in, so a failed copy never leaves the drive without one."""
     src = C.HERE
     dst = os.path.join(drive.root, TOOL, "agents", "ark")
-    if os.path.isdir(dst):
-        shutil.rmtree(dst)
-    shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    if not _same_dir(src, dst):
+        tmp, old = dst + ".tmp", dst + ".old"
+        for d in (tmp, old):
+            shutil.rmtree(d, ignore_errors=True)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copytree(src, tmp, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        if os.path.isdir(dst):
+            os.rename(dst, old)
+        os.rename(tmp, dst)
+        shutil.rmtree(old, ignore_errors=True)
     docs_cfg = os.path.join(C.REPO_DIR, "agents", "docs")
-    if os.path.isdir(docs_cfg):              # offline_reason(); optional on the drive
-        d2 = os.path.join(drive.root, TOOL, "agents", "docs")
+    d2 = os.path.join(drive.root, TOOL, "agents", "docs")
+    if os.path.isdir(docs_cfg) and not _same_dir(docs_cfg, d2):   # offline_reason(); optional on the drive
         os.makedirs(d2, exist_ok=True)
         for f in ("__init__.py", "config.py"):
             if os.path.isfile(os.path.join(docs_cfg, f)):
                 shutil.copy2(os.path.join(docs_cfg, f), os.path.join(d2, f))
     w = os.path.join(drive.root, "ark")
-    with open(w, "w", encoding="utf-8") as f:
+    tmpw = w + ".tmp"
+    with open(tmpw, "w", encoding="utf-8") as f:
         f.write(WRAPPER)
-    os.chmod(w, 0o755)
+    os.chmod(tmpw, 0o755)
+    os.replace(tmpw, w)                          # never truncate the script /bin/sh may be reading
 
 
 def write_readme(drive: Drive, cat: C.Catalog, lock: dict) -> None:

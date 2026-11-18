@@ -478,4 +478,26 @@ def lint(cat: Catalog) -> List[str]:
                 errs.append(f"{w}: a {a.kind} set is built from the entry's git pin, which is missing")
             if a.verified not in ("tofu", "unverified"):
                 errs.append(f"{w}: a package set is locked at fetch time — mark verified = \"tofu\"")
+    errs += path_collisions(cat)
+    return errs
+
+
+def path_collisions(cat: Catalog) -> List[str]:
+    """Two artifacts that would land on the same drive path (or one inside
+    the other's directory) overwrite each other, and the first one's lock
+    record stops matching its bytes. Ids are unique; paths are built from
+    slugs, so `1.0+x` and `1.0-x`, or two URLs ending in the same file
+    name, can still meet."""
+    from . import fetch as F  # noqa: PLC0415 — fetch imports this module
+    owner: Dict[str, str] = {}
+    errs: List[str] = []
+    for a in cat.artifacts:
+        try:
+            rel = F.drive_rel(a)
+        except (CatalogError, KeyError, ValueError, AttributeError):
+            continue                                 # reported above as a template error
+        for other_rel, other in owner.items():
+            if rel == other_rel or rel.startswith(other_rel + "/") or other_rel.startswith(rel + "/"):
+                errs.append(f"artifact {a.id}: its drive path {rel} collides with {other}'s {other_rel}")
+        owner[rel] = a.id
     return errs
