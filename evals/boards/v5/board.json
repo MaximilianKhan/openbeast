@@ -39,7 +39,7 @@
       "id": "GLM-C",
       "model": "GLM-5.3-Flash",
       "host": "DGX Spark pair, TensorFold, EXL3",
-      "config": "thinking on, runner v2, wall-scaled turns, wall ×2",
+      "config": "thinking on, runner v2, wall-scaled turns, wall \u00d72",
       "campaign_arm": "v5-harness C",
       "files": [
         "eval-glm-5-3-flash-v2-turns-think-L0-20261116-195724.json"
@@ -49,7 +49,7 @@
       "id": "OPUS-REF",
       "model": "Claude Opus 5.5",
       "host": "Anthropic API",
-      "config": "Claude Code tools, no turn cap, wall ×2 (68/71 at the 1× wall); solver never saw validator output",
+      "config": "Claude Code tools, no turn cap, wall \u00d72 (68/71 at the 1\u00d7 wall); solver never saw validator output",
       "reference": true,
       "files": [
         "reference-claude-opus-5-5-v5-20261116.jsonl"
@@ -58,12 +58,23 @@
     {
       "id": "GLM-E",
       "model": "GLM-5.3-Flash",
-      "config": "thinking on, runner v2, wall-scaled turns, wall ×2, diagnostics + edit hint + verify-done, Zig pack v2 + host pack, env block, wall warnings",
+      "config": "thinking on, runner v2, wall-scaled turns, wall \u00d72, diagnostics + edit hint + verify-done, Zig pack v2 + host pack, env block, wall warnings",
       "files": [
         "eval-glm-5-3-flash-v3-best-20261117-043643.json"
       ],
       "host": "DGX Spark pair, TensorFold, EXL3",
       "campaign_arm": "v5-harness E"
+    },
+    {
+      "id": "DS-T",
+      "model": "DeepSeek-V4.1-Flash (Mia EXL3)",
+      "config": "thinking on, campaign arm T: runner v2, wall-scaled turns, packs v3, diagnostics + edit hint + verify-done, env block + wall warn; harness8 + sandbox hardening (review 1118)",
+      "files": [
+        "eval-deepseek-v4-1-flash-v5-thinking-first-t-20261118-015132.json"
+      ],
+      "campaign_arm": "v5-thinking-first T",
+      "host": "DGX Spark pair, TensorFold, Mia EXL3 (2.9 bpw)",
+      "note": "0 units lost, 0 contaminated (integrity scan 2026-11-18; no transcript reached the repo); 16 units hit the 3600 s wall, 6 of them passed on the code written before the kill"
     }
   ],
   "not_yet_run": [

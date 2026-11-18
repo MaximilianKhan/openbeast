@@ -22,6 +22,22 @@
       "unit": "122_gemm_blocked_c",
       "run": "GLM-E",
       "note": "a validator false FAIL: the pre-#195 forbidden-API lint matched 'dlopen' inside a comment, and the solution passes the fixed validator (replayed, #195)"
+    },
+    {
+      "unit": "126_hmac_scratch",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "153_coroutine_scheduler",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "117_iter_refinement",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "49_markov_steady_state",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
     }
   ]
 }
