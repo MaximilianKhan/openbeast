@@ -1,5 +1,13 @@
 # beast-campaign — the GPU campaign runner (design, 2026-09-15)
 
+> **Status (2026-11-19 review): PARTLY IMPLEMENTED, partly superseded.** P0
+> shipped in #74: `scripts/gpu-lease.sh` and `scripts/eval-era.sh`. P1–P3, the
+> generic `beast-campaign` spec runner, were never built. The v5 model
+> campaigns use `evals/campaign.py` instead (#191, #192, #226): chained
+> harness arms from `evals/campaigns/*.json`, resumable, with infra rows never
+> scored. Its runbook is [MODEL_CAMPAIGN.md](MODEL_CAMPAIGN.md). Keep this
+> plan for the GPU-research campaigns that `evals/campaign.py` does not cover.
+
 A campaign is a sequence of GPU measurements that has to run for hours or days
 without supervision and produce rows a paper can cite. OpenBeast runs them
 today out of `scratch/`: 24 shell scripts, ~400 lines across the five that

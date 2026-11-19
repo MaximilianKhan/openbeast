@@ -1,7 +1,11 @@
 # OpenBeast research findings
 
 Durable log of what we've learned. Newest sections appended over time.
-Numbers are from the RTX 5090 (32 GB) reference box unless noted.
+Numbers are from the RTX 5090 (32 GB) reference box unless noted. Each
+section is dated and stays as written, so a "default" or "winner" below is
+the one of its date: today's defaults are in [MODELS.md](MODELS.md), and the
+current (v5) board, led by the DGX Spark pair's DeepSeek-V4.1-Flash (Mia
+EXL3), is in [RESULTS.md](RESULTS.md).
 
 ---
 

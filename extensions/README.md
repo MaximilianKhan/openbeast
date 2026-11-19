@@ -80,7 +80,8 @@ The `dashboard` slot API established the sanctioned pattern. Follow it:
   (`CHAT_NOTIFY_URL`; title, state and a link, never transcript text).
   `setup-tailscale.sh --publish-ntfy` mounts it tailnet-only at `:8447` for
   the phone app, `--unpublish-ntfy` takes it down. That is a whole-port
-  mount, the one exception to the "publish one path" rule below: the phone
+  mount, the one exception to the "publish one path" rule
+  [above](#publishing-an-extension-path-to-the-tailnet): the phone
   app needs ntfy's own subscribe routes, and the topic (or, locked down, an
   ntfy token) is the access check. Its image is carried by `bundle.sh` and
   bumped by `update.sh --images` like the core images. Setup, lockdown and

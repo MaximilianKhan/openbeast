@@ -1,17 +1,73 @@
 # TODO
 
-## 🧰 v5 HARNESS + MODEL CAMPAIGN — opened 2026-11-16, refreshed 2026-11-17 (evening)
+## 🧰 v5 HARNESS + MODEL CAMPAIGN — opened 2026-11-16, refreshed 2026-11-19
 
-Where the GLM-5.3-Flash v5 work stands (single seed each; the working log is
-[`HARNESS_NOTES.md`](HARNESS_NOTES.md) "Headroom", the runbook
-[`MODEL_CAMPAIGN.md`](MODEL_CAMPAIGN.md), the scored rows
-[`RESULTS.md`](RESULTS.md#v5-leaderboard--best-configuration-per-model)):
+Where the v5 work stands. Every arm is single seed. The working log is
+[`HARNESS_NOTES.md`](HARNESS_NOTES.md) "Headroom", the runbook is
+[`MODEL_CAMPAIGN.md`](MODEL_CAMPAIGN.md), and the scored rows are in
+[`RESULTS.md`](RESULTS.md#v5-leaderboard--best-configuration-per-model).
+
+**DeepSeek-V4.1-Flash (Mia EXL3)** is the pair's default since 2026-11-18. It
+went from arm T at 61/71 (SCORE 88.5, #225) to **T2 at 65/71, SCORE 94.9**,
+the board's #1 (#231). T2 is its default agent setup:
+`AGENT_PROFILE=deepseek-best` (#232; `SPARK_HYDRA.md` E2b). As of
+2026-11-19, arm T_s1 (T at `--seed 1`, the noise margin) is running from the
+Mac. T3 (T2 at a 4096 cap) follows it, then the harness10 arms U / U_8k / UP /
+UPA (below).
+
+**GLM-5.3-Flash**, the staged alternative:
 L0 26/71 → A 31/71 → B 36/71 → **C 51/71 scored, SCORE 76.7** (54 raw; the
 integrity scan of #195 withheld 122_gemm_blocked_b, _d and _e) → **E 50/71,
 SCORE 74.7** (integrity scan clean; its 122_gemm_blocked_c is a validator
 false FAIL, footnoted, not adjusted). GLM's best row stays C (thinking on), the configuration retained for GLM rollback. Arms D and F were **not run**:
 Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
 71/71 (68/71 at the 1x wall).
+
+**Done since the 2026-11-17 evening refresh (#205–#233, plus operator steps):**
+
+- [x] **DeepSeek-V4.1-Flash (Mia EXL3) is the pair's default** (Max,
+  2026-11-18, after hands-on testing). It serves from the Mia EAQ v1.1 pack
+  whose folder/cache id ends in "-v2" (#211), as unit
+  `deepseek-v41-inference`: 524,288-token window (the model's own is
+  1,048,576), four streams, thinking on (#230). GLM-5.3-Flash is the staged
+  alternative.
+- [x] **One switch path: `beast-spark`** (`beastup` / `beastdown` /
+  `beastglm` / `beastds` / `beaststatus`), with locks and safe pack staging
+  (#212, #222). The offline intake preflight for a new model folder
+  (`spark-model-intake.sh`) and the EXL3 playbook are in #214.
+- [x] **DeepSeek on the v5 board:** arm T 61/71 (#225), then T2 65/71, SCORE
+  94.9, #1 (#231). T2 became the default agent setup,
+  `AGENT_PROFILE=deepseek-best` (#232). Per-arm jobs/slots and arm T_j2 came
+  in #226. A sealed review of why DeepSeek usually fails one unit is under
+  `evals/audit/` (#233).
+- [x] **harness9** (#227: the act nudge, partial stats on a wall kill, the
+  eval fetch guard; era roll). **Eval integrity, review 1118** (#224: the
+  sandbox network, answer-key and write hardening, the served-model guard,
+  honest infra retry). Validators now lint code, not comments (#223).
+- [x] **Client autosync**: opencode follows the rig when it switches models
+  (#215), and it runs from a copy outside `~/Documents` because of macOS TCC
+  (#218). Client and beast-apps review fixes are in #221. The WebUI system
+  prompt reaches client opencode sessions (#207), and client uninstall writes
+  atomically (#208).
+- [x] **Spark backup and restore:** one backup for N Sparks (#216); a fully
+  offline restore from a golden DGX OS base image, with identity and an
+  offline rebuild of the rank files (#228); `~/git` and `~/live-aside` added to
+  the items (#229). Runbook: [`SPARK_BACKUP_RESTORE.md`](SPARK_BACKUP_RESTORE.md).
+- [x] **Offline self-development:** the offline prerequisite, the deployed
+  pair and a commands sheet (#217, #219; [`SELF_DEVELOPMENT.md`](SELF_DEVELOPMENT.md),
+  [`COMMANDS.md`](COMMANDS.md)). The offline git hub exists on spark-1
+  (`~/git/openbeast.git`, read 2026-11-19; at #222, so refresh it before an
+  offline session). opencode v2.3.2 runs on both
+  Sparks with the provider `spark-hydra-local`; spark-2 reaches the model
+  through its `opencode-model-link` forward.
+- [x] **Ops and engines:** llama.cpp build numbers and rollback are kept
+  across engine upgrades (#209). The Spark serving quickstart is in the repo
+  (#210). The 2026-11-18 reviews of ark, engines and the supply chain are in
+  #220.
+- [x] **openbeast.ai deployed** (2026-11-17 evening; the live build is
+  website `e72790c`). It serves `/benchmarks/` with arm E at 50/71, and it runs
+  Next.js 16.4.5, which closes the advisory item. It still names GLM as the
+  pair's model; see "Open — process and the website".
 
 **Done since the 2026-11-17 morning refresh (#194–#204, plus operator steps):**
 
@@ -83,33 +139,72 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
   (stage / verify / unstage, never `netplan apply`), #178. Staged, rebooted
   and verified on both Sparks 2026-11-17 (above).
 
-**Open — the pair (operator steps, Max; state read 2026-11-17 evening):**
+**Open — the pair (operator steps, Max; state read over ssh 2026-11-19, no sudo):**
+
+- [ ] **`AGENT_PROFILE=deepseek-best` live on spark-1** once the current eval
+  arm has finished, and never while an arm runs. On 2026-11-19 spark-1's
+  `openbeast.conf` still has `AGENT_MAX_TOKENS=16384` and no profile line.
+  Steps: [`SPARK_HYDRA.md` E2b](SPARK_HYDRA.md#e2b-deepseek-best-configuration-v5-t2)
+  "Apply on spark-1".
+- [ ] **DeepSeek tuning session** (a planned outage between eval arms;
+  `beast-spark` only, never while an arm runs). Things to measure:
+  - the model's full 1,048,576-token window instead of 524,288;
+  - `KV_SHARD=1`, which cuts the KV pool into one part per Spark, each
+    holding a whole window (documented in the recipe's `scripts/config.sh` on
+    spark-1);
+  - `PARALLEL` above 4.
+
+  Record the memory headroom
+  ([`SPARK_HYDRA.md` G4](SPARK_HYDRA.md#g4-memory-headroom-and-the-gb10-stack-cap)),
+  TTFT and decode for each setting, and keep the current settings unless one
+  setting measures better without costing headroom.
+- [ ] **The backup capture outage window** (Max to pick a time): the capture
+  takes about 20 min, and drill G with the full restore drill 5 on spark-2
+  takes about 2 h. The served model is down for both
+  ([`SPARK_BACKUP_RESTORE.md` §8](SPARK_BACKUP_RESTORE.md#8-decisions-and-open-questions), question 1).
+- [ ] **A second SSD** for an independent backup copy kept elsewhere (§8,
+  question 2). One drive is one copy.
+- [ ] **Firmware download, once, onto the backup SSD** (the one online step,
+  done ahead of time): NVIDIA's latest DGX Spark recovery image (stick 3) and
+  the LVFS `.cab` files for the five devices (§8, questions 3 and 5).
+- [ ] **Rotate the Hugging Face token.** It sits in
+  `~/.config/openbeast/hf-token` on spark-1 and in every encrypted backup.
+  Replace it per
+  [`SPARK_HYDRA.md` G7](SPARK_HYDRA.md#g7-rotating-keys-and-secrets), revoke
+  the old token on huggingface.co, and take a fresh backup.
 
 - [ ] **MTU 9000 performance A/B.** The MTU is live; whether it is faster is
   unmeasured. Run the `SPARK_HYDRA.md` B4 measurement script (~45K-token TTFT,
   4-stream decode) at 9000 and record it beside an MTU-1500 run. No speed
-  claim anywhere (README, site) until it is recorded. Detail in the 🟩 DGX
-  SPARK section below.
-- [ ] **spark-guard re-run on both Sparks** (sudo): still `STALE` on both,
-  read 2026-11-17 with `spark-guard.sh --status` over ssh (the status readout
-  needs no sudo): the installed rules guard `29501` but not `29502` (#168).
-  Fix: `sudo scripts/backends/spark-guard.sh` on each Spark.
+  claim anywhere (README, site) until it is recorded. The MTU change itself
+  is in the 🟩 DGX SPARK section below. Use the model the pair serves at the
+  time, and name it in the record (the 2026-11-13 numbers were GLM's).
+- [ ] **`sudo spark-guard` on both Sparks**: still `STALE` on both, read
+  2026-11-19 with `scripts/backends/spark-guard.sh --status` over ssh (the
+  status readout needs no sudo). The installed rules guard TCP `29501
+  29551-29552 29583-29584`, while the checkout renders `29501-29502
+  29551-29552 29583-29584 29620-29621` (#168 and later). Fix: run
+  `sudo ~/openbeast/scripts/backends/spark-guard.sh` on each Spark, then
+  `--status` should say `rules: current`.
 - [ ] **The artifact login: `ARTIFACT_LOGIN_FROM=unix` + `--publish-artifact`
-  on spark-1.** Still unset on 2026-11-17. Until then beast-artifact honours
+  on spark-1.** Still unset on 2026-11-19. Until then beast-artifact honours
   the login header from any loopback peer (`SPARK_HYDRA.md` G6 "Pending on the
   live pair", Known issues).
 - [ ] **Plaintext secrets on spark-1:** two key files in
   `~/.config/openbeast/gate-keys/` and `webui-max-password` are still there
-  (2026-11-17). Shred the keys once the devices hold them (E7); delete the
+  (2026-11-19). Shred the keys once the devices hold them (E7); delete the
   password file once it is changed (E5). The Mac's copy there is also stale
   since its 2026-11-17 rotation (`SPARK_HYDRA.md` G7).
 - [ ] **zig 0.16 and the beast-docs mirror on spark-1** (`SPARK_HYDRA.md` G6
-  step 6): neither is installed yet.
-- [ ] **`scripts/spark-model.sh use <profile>`** — a one-command model swap on
-  the pair with rollback: fetch/verify the weights on both ranks, rewrite the
-  recipe config, restart the unit, wait for `/v1/models`, run conformance, and
-  roll back to the previous profile on any failure. Today it is a page of
-  `SPARK_HYDRA.md` (C, D1, G3) by hand; DeepSeek v4.1 Flash is the first user.
+  step 6): zig is absent and the mirror holds only `tailscale` (2026-11-19).
+- [ ] **A one-command swap to a *new* model on the pair, with rollback**
+  (was `scripts/spark-model.sh use <profile>`). Partly done: `beast-spark`
+  switches between the two staged models with locks and rollback to GLM
+  (#212, #222), and `spark-model-intake.sh` says offline whether a folder is
+  a drop-in (#214). Still by hand for a third model: fetch and verify on both
+  ranks, write the recipe config, add the unit, run conformance, and roll back
+  on failure ([`EXL3_PLAYBOOK.md`](EXL3_PLAYBOOK.md), `SPARK_HYDRA.md` C, D1,
+  G3).
 - [ ] **Scaling review, 1 to 8 ranks** — still open, deliberately parked (Max,
   2026-11-15); scope in the 🟩 DGX SPARK section below.
 
@@ -125,17 +220,18 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
   comment with the results. A self-hosted Actions runner on spark-2 is the
   other option (no minutes billed), but it runs PR code on a box that holds
   the weights and the gate: decide that one deliberately.
-- [ ] **Deploy openbeast.ai on the Mac Mini.** The `/benchmarks/` page and the
-  P0 stale-claim fixes are merged in openbeast-website (#17, #18) but not
-  deployed: `deploy/deploy.sh prod` on the Mini, then the post-deploy `curl`
-  checks ([`WEBSITE_PLAN.md`](WEBSITE_PLAN.md) §12).
-- [ ] **Next.js 16.4.3 security advisory on the website.** Next.js 16.4.5
-  fixes seven moderate advisories; Dependabot's openbeast-website #16 bumps it.
-  Most concern server features (`use cache`, the Edge runtime, image
-  optimization) that a static export does not run, but merge the bump before
-  the next deploy rather than argue each one.
-- [ ] **The website's arm E update.** The site shows E as pending; replace it
-  with 50/71, SCORE 74.7, from `docs/RESULTS.md` ([`WEBSITE_PLAN.md`](WEBSITE_PLAN.md) §4.1).
+- [x] **Deploy openbeast.ai on the Mac Mini.** Deployed 2026-11-17 evening
+  (website `e72790c`; `/benchmarks/` answers 200, checked 2026-11-19).
+- [x] **Next.js security advisory on the website.** The site runs Next.js
+  16.4.5 (website commit `208ad30`; Dependabot's #16 closed).
+- [x] **The website's arm E update.** `/benchmarks/` shows E at 50/71, 74.7%
+  (checked 2026-11-19).
+- [ ] **The website names the pair's new default.** The live site (2026-11-19)
+  still says TensorFold serves "GLM-5.3-Flash Ablit" on the pair, and that
+  "DeepSeek v4.1 Flash is next". Change it to DeepSeek-V4.1-Flash (Mia EXL3),
+  the default and the board's #1 (T2 65/71, SCORE 94.9), with stock weights
+  (not abliterated, not uncensored). GLM-5.3-Flash Ablit becomes the staged
+  alternative. Then redeploy ([`WEBSITE_PLAN.md`](WEBSITE_PLAN.md#what-changed-since-the-third-revision-2026-11-19)).
 
 **Open — measurement:**
 
@@ -145,8 +241,25 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
   ([`MODEL_CAMPAIGN.md` §8](MODEL_CAMPAIGN.md#8-worked-example-glm-53-flash-2026-11-16)).
 - [ ] **Qwen3.8 v5 rows** when the rig is back (L0 profile, then the
   thinking-first campaign): the paper's second model and the first `beast` row.
-- [ ] **DeepSeek v4.1 Flash ("1017") thinking-first campaign** —
-  [`MODEL_CAMPAIGN.md` §9](MODEL_CAMPAIGN.md#9-next-deepseek-v41-flash-1017-thinking-first).
+- [ ] **DeepSeek-V4.1-Flash (Mia EXL3) thinking-first campaign:** in
+  progress ([`MODEL_CAMPAIGN.md` §9](MODEL_CAMPAIGN.md#9-next-deepseek-v41-flash-1017-thinking-first)).
+  T (61/71) and T2 (65/71) are on the board. T_s1 is running (2026-11-19),
+  and T3 is next. The one-component-out ablations and the no-thinking arms
+  are not run.
+- [ ] **Arms U, U_8k, UP and UPA** (harness10, PR #234; open, and it must not
+  merge before T3 launches because it rolls the era). Each arm is optional
+  and runs with `--only`. The switches:
+  - **U** is T2 with a forced-act turn instead of the act nudge, plus
+    done-when-verified and no web tools under eval, at a 16384 cap;
+  - **U_8k** is U at 8192;
+  - **UP** is U plus the planning lines;
+  - **UPA** is UP plus the frozen algorithmic pack.
+
+  Run them on DeepSeek after T3.
+- [ ] **The GLM UP control:** arm UP with `--model-name GLM-5.3-Flash`, after
+  `beastglm`, so the UP change is measured on a second model (#234 asks for
+  it). It needs a GLM serving window, which takes the default model down; run
+  it after the DeepSeek arms.
 - [ ] **k-seed noise run** — the same arm at `--seed 1` (and 2) to put a noise
   floor under every single-seed delta above (G12; the campaign's seed arm).
   Arm F would have been the first such run; it did not run.
@@ -172,7 +285,8 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
   2026-10-09. #202's `X-OpenBeast-Gate-Defaults: off` is the exemption
   mechanism to reuse.
 - [ ] **The research paper: per-model vs unified harness** — see 📝 RESEARCH
-  PAPER below. Needs GLM's seed arm, Qwen3.8 and DeepSeek on the same arms.
+  PAPER below. It needs GLM's seed arm, a Qwen3.8 row, and the same arms on
+  both DeepSeek and GLM (the GLM UP control above is the first).
 
 ## 🧮 PERFORMANCE MATRIX — engine × language-assistance × model (opened 2026-11-15)
 
@@ -310,13 +424,13 @@ Decisions the 2026-10-09 review deferred to the owner. Each is open.
 - [ ] Write a global OpenCode config on the rig, so `opencode` works outside the checkout.
 - [ ] Unify flag conventions across scripts (`--dry-run` / `--yes`).
 - [ ] Generate tool-server keys by default.
-- [ ] Roll the eval era once, carrying: the `23_sql_injection` and `21_race_condition` validator fixes, the runner request-timeout fix, hiding `expected.txt` from variant units, and removing `fetch`/`web_search` under eval, and the beast-island guard in `tools.web_search`/`tools.fetch` (`island.web_refusal`), so autonomous sub-agents refuse instantly too (docs/BEAST_ISLAND.md § Known limits).
+- [ ] Roll the eval era once, carrying: the `23_sql_injection` and `21_race_condition` validator fixes (draft PR #135), the runner request-timeout fix, hiding `expected.txt` from variant units, and removing `fetch`/`web_search` under eval (harness10, PR #234, does this as the opt-in `OPENBEAST_AGENT_HIDE_WEB=1` for arms U/UP/UPA), and the beast-island guard in `tools.web_search`/`tools.fetch` (`island.web_refusal`), so autonomous sub-agents refuse instantly too (docs/BEAST_ISLAND.md § Known limits).
 - [ ] beast-island: Open WebUI's built-in Web Search toggle bypasses the island guard (it calls SearXNG directly). Option: have `configure-webui.sh` disable it while islanded at launch.
-- [ ] TensorFold's fixed default seed (now tracked as "beast-gate random seed" in 🧰 v5 HARNESS at the top): Open WebUI now gets a random seed per chat (the `random_seed` filter, 2026-11-16), but opencode, the Mac client and any other client of `:8000` / `:8443` still repeat themselves on a retry. Options: a random default seed at beast-gate for requests without one, or TensorFold's own default if it grows a switch. Not the eval runner, whose seeding is part of the era.
+- Moved: TensorFold's fixed default seed is tracked as "beast-gate random seed" in 🧰 v5 HARNESS at the top (one item, not two).
 - [ ] Trim prompt tokens in `system-prompt.md` (era-hashed, so in the same era roll) and `system-prompt-tools.md` (WebUI-only, not era-hashed).
 - [ ] Rerun the champion row (Qwen3.6 27B Q5_K_XL) in the current era.
 - [ ] Agent router residual: in header mode with tool keys and no `LLAMA_API_KEY`, a local process can still type `X-OpenWebUI-User-Role: admin`. Fix is a router key minted by the launcher, or `--with-jwt` by default.
-- [ ] Decide whether `validator_timeout` rows count as infrastructure rows (ineligible for the board, excluded from paired verdicts) like `env_error`.
+- [x] Decide whether `validator_timeout` rows count as infrastructure rows (ineligible for the board, excluded from paired verdicts) like `env_error`. **Yes:** #134 stopped banking a validator timeout as a model FAIL unless it repeats for the key (`run_eval.py`), and `evals/ablation.py` and `evals/campaign.py` (#191, `INFRA_REASONS`) treat it as an infra row.
 - [ ] Clear the 17 already-banked "Validation timed out" cache entries (`cache_cli.py`), including `136_gf256_f` in Tier-3 cell C1.
 - [ ] Check the sweep cool-off defaults (50 °C, 60 s floor) against one real cool-down on the 5090.
 - [ ] Measure `--cache-ram` restore time for a 16–36 GiB state (one GPU check).
@@ -374,7 +488,9 @@ Decisions the 2026-10-09 review deferred to the owner. Each is open.
   [`BEAST_INSTINCT.md`](BEAST_INSTINCT.md). The "day the nodes come online"
   runbooks are §7 (hydra) and §5.14 (instinct).
 - **Max's calls, 2026-09-30:** every model is uncensored, so hydra never
-  routes or spills to a stock one (enforced, #122); the Sparks serve
+  routes or spills to a stock one (enforced, #122; note 2026-11-19: the pair's
+  default since 2026-11-18, DeepSeek-V4.1-Flash (Mia EXL3), is stock, so
+  revisit `allowed_families` before hydra routes to the pair); the Sparks serve
   GLM-5.3-Flash uncensored as EXL3 on TensorFold (#120); instinct decides on
   a full 27B: the rig's 27B now, Open-Jev-27B-v1.1 locally on its own GPU as
   the target, the 0.6B as fallback only (#123).
@@ -398,7 +514,12 @@ paper's central result either way. Prereqs: the v5 arms for GLM (L0/L1/L2,
 thinking on, runner v2), a Qwen3.8 v5 row when the rig is back, DeepSeek v4.1
 Flash, and the Claude Opus 5.5 reference row as the ceiling.
 
-Status 2026-11-17 (evening): in progress, GLM only so far. GLM's arms L0 26
+Status 2026-11-19: two models measured. DeepSeek-V4.1-Flash (Mia EXL3) on
+the thinking-first campaign has T at 61/71 and T2 at 65/71 (SCORE 94.9); T_s1
+(its seed arm) is running, then T3, then the harness10 arms U/UP/UPA (#234),
+with a GLM UP control as the first cross-model arm. Qwen3.8 has no v5 row
+yet. The GLM status as of 2026-11-17 (evening) follows; it was GLM only at
+that point. GLM's arms L0 26
 → A 31 → B 36 → C 51/71 scored (54 raw; thinking) → E 50/71, against the
 Opus 71/71 ceiling, all single seed. D and the seed arm F were not run (Max
 paused the chain). Evidence that bears on the question: the
@@ -412,12 +533,13 @@ arms.
 - **Live November 17:** DeepSeek-V4.1-Flash-1017 serves four streams on TensorFold TP2 across two RoCE rails, from Mia's EAQ v1.1 "-v2" pack since the evening A/B (stock EAQ v1 stays on disk as a fallback). The enrolled Mac completed a real OpenCode request. GLM-5.3-Flash is the only other model the pair serves; `beastglm` / `beastds` switch. [Deployment and acceptance record](SPARK_HYDRA.md#deepseek-deployment).
 - **2026-11-18: GLM-5.3-Flash is the default again** (boot and daily use), Max's decision after testing DeepSeek, the "-v2" pack included. `spark-hydra-inference` is enabled, `deepseek-v41-inference` disabled; `beastds` brings DeepSeek back on "-v2". Clients follow a switch with `openbeast-client autosync` (PR #215).
 - **2026-11-18, later: DeepSeek-V4.1-Flash (Mia EXL3) is THE DEFAULT** (boot and daily use), Max's decision after hands-on testing and the v5 board (61/71, the board's #1, against GLM's 51/71). `deepseek-v41-inference` is enabled, `spark-hydra-inference` disabled; GLM-5.3-Flash is staged as the alternative (`beastglm`, `beastds` back). `beastup` with nothing selected picks DeepSeek, and a restore that cannot tell the backup's selection enables DeepSeek. opencode on both Sparks defaults to `spark-hydra-local/DeepSeek-V4.1-Flash-1017`.
-- **2026-11-18:** opencode v2.3.2 runs on both Sparks against `127.0.0.1:8000` (spark-2 through an ssh tunnel); it has no OpenBeast MCP tools yet. Offline development has a documented loop through a bare hub repo on spark-1 ([SELF_DEVELOPMENT.md §11](SELF_DEVELOPMENT.md#11-developing-with-github-unreachable)); the hub itself is not created yet. Open: pytest on spark-1, ShellCheck on the Sparks, a DeepSeek MODELS entry in `benchmark_all.py`, a cold boot with the WAN down.
+- **2026-11-18:** opencode v2.3.2 runs on both Sparks against `127.0.0.1:8000` (spark-2 through an ssh tunnel); it has no OpenBeast MCP tools yet. Offline development has a documented loop through a bare hub repo on spark-1 ([SELF_DEVELOPMENT.md §11](SELF_DEVELOPMENT.md#11-developing-with-github-unreachable)); the hub itself is not created yet (since created: `~/git/openbeast.git` on spark-1, at #222 on 2026-11-19, so refresh it from `main` before relying on it offline; backed up since #229). Open: pytest on spark-1, ShellCheck on the Sparks, a DeepSeek MODELS entry in `benchmark_all.py`, a cold boot with the WAN down.
 - **Next:** full offline playbook (image save/load, DFlash2, aarch64 air-gap
-  bundle, zig); remote access (beast-gate via `tailscale serve`,
-  `svc:spark-hydra`); the primary switch beast ↔ spark-hydra on the hydra side
-  (clients switch since #204); `PARALLEL=8`; native TensorFold 1.2.7 A/B; the
-  MTU A/B.
+  bundle, zig); the `svc:spark-hydra` Tailscale Service name (remote access
+  through beast-gate is live since #155); the primary switch beast ↔
+  spark-hydra on the hydra side (clients switch since #204); `PARALLEL=8`
+  (for DeepSeek: the tuning session at the top); native TensorFold 1.2.7 A/B;
+  the MTU A/B.
 - [x] **RoCE MTU 9000 — LIVE on both Sparks since 2026-11-17 14:20.**
   Staged with `spark-fabric-mtu.sh --stage` on each, both rebooted, then
   `--verify` passed on both: netdev MTU 9000 and RoCE `active_mtu 4096` on
@@ -426,10 +548,8 @@ arms.
   IP fails the rail that has none. (It was MTU 1500 = `active_mtu 1024`
   before; Max, 2026-11-16: "We absolutely need to fix this on the next
   restart".)
-- [ ] **The MTU A/B is unmeasured.** Run the ~45K-token TTFT and 4-stream
-  decode script in [`SPARK_HYDRA.md`](SPARK_HYDRA.md) "B4. Fabric MTU 9000"
-  at 9000, and against an MTU-1500 baseline, and record both there. No speed
-  claim until then.
+- **The MTU A/B is unmeasured:** one item, "MTU 9000 performance A/B" in
+  🧰 v5 HARNESS at the top.
 - **TODO — scaling review, 1 to 8 ranks (Max, 2026-11-15: "leave the
   scaling questions 1-8 for another day").** The 2026-11-16 adversarial
   review covered the 2x pair only. Still unreviewed and unmeasured: the

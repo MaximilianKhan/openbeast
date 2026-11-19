@@ -1,3 +1,5 @@
+> *Naming (noted 2026-11-19):* "v5-fast" here is the 112-unit fast subset of the **v4** suite, renamed `v4-fast` on 2026-11-15. It is not the 71-unit v5 suite ([reading notes](../README.md#reading-notes)).
+
 # Language-Awareness Campaign Journal — undertrained-language capability via environment feedback
 
 **Thesis (paper candidate, named by Max 2026-09-09):** an LLM's

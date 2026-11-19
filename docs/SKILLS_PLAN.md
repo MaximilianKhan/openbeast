@@ -1,5 +1,11 @@
 # Skills for OpenBeast
 
+> **Status (2026-11-19 review): IMPLEMENTED, except Phase 5.** Phases 1–4
+> shipped (2026-05-06). Phase 5, the routing layer, is still deferred. Skills
+> from outside the repo come in through the gate in
+> [EXTERNAL_SKILLS_PLAN.md](EXTERNAL_SKILLS_PLAN.md). The skill list is
+> `skills/README.md`.
+
 **Status (2026-05-06):** ✅ Phases 1–4 implemented in this same session. ⏸️
 Phase 5 (routing layer) deferred — not enough friction yet to justify the
 work. This doc is the save state and the design rationale.

@@ -1,3 +1,5 @@
+> **Superseded (noted 2026-11-19) as the citation list:** the paper cites from [`final/refs.json`](final/refs.json) (full arXiv entries, 2026-10-09). The annotations here remain the campaign's reading notes.
+
 > ⚠ see review/ corrections 2026-08-04
 
 # beast-rank master bibliography

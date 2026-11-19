@@ -1,3 +1,5 @@
+> **Superseded (noted 2026-11-19):** the plan of 2026-09-08. The campaign was written up on 2026-10-09 ([`../FINDINGS.md`](../FINDINGS.md), [`paper/final/`](paper/final/README.md)); what is still open is [`TODO.md`](TODO.md).
+
 # Forward plan — locked 2026-09-08 midday (Max: "figure out next best steps
 # and move forward with what we have")
 

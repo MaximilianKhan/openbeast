@@ -104,7 +104,7 @@ checkpoints are kept, and anything that rebuilds offline is not.
 | The DeepSeek kernel kit `tensorfold-dsv41/kit-abe07c7d/`, **with its `.git`** | 0.66 GB | **back up** | The offline rebuild refuses a kit without `.git`, because the recipe's `prepare.sh` would `git fetch` it (MEASURED, [§3.5](#35-the-offline-rebuild)) |
 | **Rank files of every pack**: rank 0 in `tensorfold-dsv41/<REV8>/rank-cache/` and rank 1 in `worker-rank-cache*/`. **Token maps** (`dsv41_token_map.json`) and **served folders** (`<REV8>/model/`: links into the snapshot, plus the recipe's chat template) | 424 GB (MEASURED: 99 GiB per rank file, four of them) | **rebuild** | Recomputed offline from the checkpoint by `spark-restore.sh rebuild`, which runs `spark-deepseek-prepare-local.sh`: about 15 min per rank file ([§3.5](#35-the-offline-rebuild)) |
 | GLM's compiled CUDA kernels `.cache/tensorfold-glm53/<image hash>/` | 0.17 GB | **rebuild** | Recompiled offline on GLM's first start, in a few minutes. Its `logs/` are kept |
-| Tools and config: `~/openbeast` (with `.git` and the **uncommitted** changes), `~/.local/{bin,opt,lib}` (native TensorFold 1.2.7, `beast-spark`, hf), `~/.opencode` (opencode v2.3.2), `~/.venvs/spark-tools`, `~/openbeast-recipes` (deepseek-prep runtime with `.git`, rollback, conformance records; glm53), units in `~/.config/systemd/user`, `.openbeast` (docs mirror), `backups/`, `Downloads/` | 7.7 GB | **back up** | Small, and what makes the node "ours". `.venvs` would rebuild only with pip online, so it is kept |
+| Tools and config: `~/openbeast` (with `.git` and the **uncommitted** changes), `~/.local/{bin,opt,lib}` (native TensorFold 1.2.7, `beast-spark`, hf), `~/.opencode` (opencode v2.3.2), `~/.venvs/spark-tools`, `~/openbeast-recipes` (deepseek-prep runtime with `.git`, rollback, conformance records; glm53), units in `~/.config/systemd/user`, `.openbeast` (docs mirror), `backups/`, `Downloads/`; since #229 (2026-11-18, after this inventory) also the offline git hub `~/git` (head) and `~/live-aside` | 7.7 GB | **back up** | Small, and what makes the node "ours". `.venvs` would rebuild only with pip online, so it is kept |
 | Secrets: `openbeast.conf` (+ `.bak-*`), `~/.config/openbeast/{gate-keys/,tensorfold-api-key,hf-token,webui-max-password}`, `~/.ssh/{authorized_keys,id_ed25519_nvsync_cluster_assistant}`, `~/.gnupg` | 118 KB | **back up, encrypted drive** | Listed by path, never printed. `inventory` flags a secret readable by group or other |
 | Per-node files: `spark.env`, `cluster.env`, `~/.ssh/config`, `~/.ssh/known_hosts`, `default.target.wants/` links | 10 KB | **back up for the record, regenerate per node** | see [§3.3](#33-what-is-unique-per-node) |
 | Docker images: `tensorfold-dsv41:exl3-tp2-8a98ae503d85` (24.9 GB), `tensorfold-glm53:v0.6.0` (24.6 GB), **`nvcr.io/nvidia/pytorch:26.07-py3` (24.3 GB, now included)**, the compose-pinned `open-webui` (4.1 GB) and `searxng` (0.3 GB), `alpine` | 78.2 GB raw | **back up** (`docker save \| zstd`) | The inference images are built or pulled online. The three big images share base layers (`docker system df`: 34.4 GB unique, MEASURED), but `docker save` writes each one whole, so 78 GB is the upper bound before zstd |
@@ -892,11 +892,13 @@ and the commands `DOCKER`, `RSYNC`, `ZSTD`, `FINDMNT`, `LSBLK`, `NVIDIA_SMI`,
 
 **Still open:**
 
-0. **Two new home entries on spark-1 that no items line claims**, found by
+0. ~~**Two new home entries on spark-1 that no items line claims**, found by
    the 2026-11-18 inventory: `~/git` (27 MB) and `~/live-aside` (24 KB).
    Keep, skip or rebuild? Until a line claims them, `run` lists them as NOT
    backed up. The same inventory flags `~/.gnupg/sshcontrol` as readable by
-   group and other (`chmod 600` it).
+   group and other (`chmod 600` it).~~ **Closed:** the items file
+   keeps both (`git/` on the head, `live-aside/` on all; #229, 2026-11-18), and
+   `~/.gnupg/sshcontrol` is 0600 on spark-1 (read-only check, 2026-11-19).
 
 1. **When is the capture outage (drill G with drill 5)?** About 20 min for
    the capture, and about 2 h for the full drill on spark-2. The served model

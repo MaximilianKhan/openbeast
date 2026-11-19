@@ -1,5 +1,10 @@
 # beast-instinct: plan
 
+> **Status (2026-11-19 review): PARTLY IMPLEMENTED.** P0 is built and wired,
+> opt-in (#115, #123), and shipped in v1.7.0. The operator page is
+> [BEAST_INSTINCT.md](BEAST_INSTINCT.md). P1 and later, and every `[HW]` item,
+> are open.
+
 **Status:** PLAN, 2026-09-30; P0 built and wired since (opt-in). **Read the "Revision 2026-09-30 (evening)" section first: decisions now run on a full 27B model.** The baseline is main @ 9fe5de9 (branch `integ/chat-artifact-2026-09-30`) with llama.cpp b10865-1-g8e126574f.
 
 **Sources:** three independent architecture proposals (minimal, platform, intelligence-maximizing), a research report on the LMSYS post "Scaling JEV-like Decision Models with SGLang" (2026-09-25), a map of decision points in OpenBeast, and a read-only check of the repo and the SGLang source made while writing this plan.
