@@ -437,13 +437,17 @@ client keeps working once installed (BEAST_ISLAND.md).
 
 ## Seeded entries (verified 2026-11-15)
 
+The Server column is the catalog id: what `check --server`, `refresh`,
+`upgrade` and `tools` take, and the entry's key in `opencode.json` unless
+`enable --key` names another.
+
 | Capability | Server | Pin | Source |
 |---|---|---|---|
 | ios-build | `mobile-build-tools` (npm `mobilebuildmcp`, getsentry, formerly XcodeBuildMCP; launch `… mcp`; id until 2026-11-17: `mobilebuildmcp`, an alias that `enable`/`disable`/`refresh`/`upgrade` rename) | 2.7.1 | github.com/getsentry/MobileBuildMCP, npm |
 | android-build | `replicant-mcp` | 1.6.7 | github.com/thecombatwombat/replicant-mcp, npm |
-| mobile-ui | `@mobilenext/mobile-mcp` | 1.0.17 | github.com/mobile-next/mobile-mcp, npm |
+| mobile-ui | `mobile-mcp` (npm `@mobilenext/mobile-mcp`) | 1.0.17 | github.com/mobile-next/mobile-mcp, npm |
 | blender | `mcp-for-blender` (PyPI; formerly `blender-mcp`) | 2.3.0 | github.com/ahujasid/mcp-for-blender, PyPI |
-| figma | Figma desktop server, `http://127.0.0.1:3845/mcp` | app | developers.figma.com/docs/figma-mcp-server/local-server-installation |
+| figma | `figma-desktop` (the Figma desktop app's server, `http://127.0.0.1:3845/mcp`) | app | developers.figma.com/docs/figma-mcp-server/local-server-installation |
 | 3d-print | `mcp-3d-printer-server` (off by default) | 1.2.77 | github.com/DMontgomery40/mcp-3D-printer-server, npm |
 | sim-ros | `ros-mcp` (`--transport=stdio`) | 3.1.2 | github.com/robotmcp/ros-mcp-server (server.json), PyPI |
 
