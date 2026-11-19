@@ -18,7 +18,10 @@
 > below; v5 closes them. History: [`CHANGELOG.md`](CHANGELOG.md),
 > [`../docs/archive/EVAL_V4_PLAN.md`](../docs/archive/EVAL_V4_PLAN.md), and the review that
 > drove it, [`../docs/archive/EVAL_REVIEW_2026-07-07.md`](../docs/archive/EVAL_REVIEW_2026-07-07.md).
-> The distribution tables below describe **v4**. For the model **leaderboard**
+> The distribution tables below describe **v4**. The **v5 board** (the DGX
+> Spark pair's models against the Claude Opus 5.5 reference) is generated into
+> [`../docs/RESULTS.md`](../docs/RESULTS.md#v5-leaderboard--best-configuration-per-model)
+> by `v5_board.py`. For the v4 model **leaderboard**
 > (nine models on v4; three legacy v3.5 rows kept for history, two of them for
 > pruned models), see the
 > [main README](../README.md) and [`../docs/RESULTS.md`](../docs/RESULTS.md);
@@ -303,12 +306,17 @@ units. To measure it on every language, run a single packs-on run
 (`BEAST_PACKS=1 run_eval.py --suite v5`, no `--arms`), which runs every
 unit, and compare it with L0 rows of the same era and seeds.
 
-**Which zig pack: `OPENBEAST_PACK_VARIANT=v1|v2`** (default `v1`, read by
-`packs_flag`). `v1` is `agents/packs/zig-0.16.md`, the measured pack
-production serves. `v2` is `agents/packs/zig-0.16-v2.md` (2026-11-16,
-`docs/LANG_AWARENESS_PLAN.md` §5.1), eval-only until measured. The file's
+**Which zig pack: `OPENBEAST_PACK_VARIANT=v1|v2|v3`** (default `v1`, read by
+`packs_flag`; the list is `PACK_VARIANTS` in `agents/lang/pack_context.py`).
+`v1` is `agents/packs/zig-0.16.md`, the measured pack production serves by
+default. `v2` is `agents/packs/zig-0.16-v2.md` (2026-11-16,
+`docs/LANG_AWARENESS_PLAN.md` §5.1), eval-only (the `v5-harness` arm E).
+`v3` is `agents/packs/zig-0.16-v3.md` (v2 plus the 2026-11-17 thinking-arm
+claims), the variant the `v5-thinking-first` arms carry; production serves it
+only by opt-in (`LANG_PACK_VARIANT=v3`, which `AGENT_PROFILE=deepseek-best`
+sets) and only the bytes those arms measured. The file's
 bytes are in `pack1-<sha8>`, and `harness.pack_variant` records the choice.
-An arm measuring v2 + the host pack: `BEAST_PACKS=1 OPENBEAST_PACK_VARIANT=v2`.
+An arm measuring v3 + the host pack: `BEAST_PACKS=1 OPENBEAST_PACK_VARIANT=v3`.
 
 **How small an effect one profile can see** (exact McNemar, alpha 0.05,
 ~50% power on expected counts, `evals/ablation.py mde()`; net units per
@@ -394,8 +402,9 @@ python3 evals/ablation.py --profile evals/results/profile-<slug>-<ts>.json # the
    (`escalate.gate_state()`), a validator toolchain missing on the
    *harness* host (tools and validators run where the harness runs, not
    where the model runs), or an uncapped reasoning budget (uncapped
-   Qwen3.8 took 36.55 h for no gain; GLM's daily config runs thinking
-   off, and thinking-on runs are campaign arms, docs/MODEL_CAMPAIGN.md §5). It sets
+   Qwen3.8 took 36.55 h for no gain). A profile declares the model's
+   `benchmark_all.py` entry (thinking off, `0`, for GLM); thinking-on runs
+   are campaign arms with a declared cap, docs/MODEL_CAMPAIGN.md §5 and §7. It sets
    `OPENBEAST_EVAL_ENV_ERA=1` so weights, engine and toolchains enter the
    cache key.
 2. **L0** runs the whole suite and measures **k** = wall s / R-s on this
@@ -780,18 +789,18 @@ no open issue and the prover passes 3/3 at scale 1 and 2.0.
 | **181** JWT verifier hardening | `-17` | alg=none, RS/HS confusion, kid, leeway | **Blocking:** a stdlib-only cheat walks every `.git` under `$HOME`, reads the reference blob through the pack index and execs it (457/457, 3/3 at scale 1 and 2.0): the solution sandbox denied `evals/(refs|tasks|suites)` but not `.git/objects`. **Blocking:** the seal can be renamed away (`os.rename` of `evals/refs`, read, rename back). Non-blocking: the runner shares the solution's interpreter, so the "never raises another exception" contract can be laundered. |
 | **186** Robertson stiff kinetics | `-19` | explicit methods exceed the RHS budget | Adversarial step not done (stopped by a safety check). The fixed fixture dir `/tmp/eval_rob186` makes two concurrent proofs corrupt each other. The Linux seccomp path was exercised only in an aarch64 container. |
 | **U1** rework of 117 / 158 / 159 | `-25` | iterative refinement, Karatsuba, NTT (6L) | Verification incomplete: 12 of 13 units have one PROVEN run (158_f unfinished), no 3-run determinism, no separate scale 2.0 run, and the re-tests and new bypass attempts were not done (a tuned packed-limb or vectorised schoolbook meeting the native 158 CPU gates is the open question). Headroom on the 158 CPU gates is thin (C ref 47%, Go 42% of the gate). |
-| **U2** rework of 71 / 20 / 146 / 147 | `-26` | reverse list, priority queue (6L), Aho-Corasick, persistent BST | 147 passes with a persistent chunked sorted list (no BST, no path copying) because the memory gate cannot tell O(sqrt n) from O(log n) copying at 8000 versions. 20: libc db(3) B-tree (C/C++ on macOS), Go `fmt` sorting map keys, Python `Counter.most_common()`, and no complexity gate at all. 71_d: `std::valarray` with a negative-stride `std::slice` reverses without any banned identifier. |
-| **U4** rework of 143 / 152 / 153 / 121 / 128 and the 7 zig probes (31, 92, 52, 54, 61, 62, 63 `_f`) | `-28` | UOV, Chase-Lev, coroutine scheduler, quorum KV, RSA; the pack-contrast probes | 0 of 12 PROVEN: every lint arm fails (`-I -c` children; fixed limits that ignore the scale). No validator runs the solution through `vlib.run_solution`, so the round-3 sandbox never applies: a solution globs every worktree's `evals/refs` (and `evals/tasks/121_quorum_kv.json`, to cut out the validator's own model) and execs it; 152 and 153 pass by patching the shared interpreter or taking over the protocol fds; 143 passes `uov_rank2`; zig units call `system()` to build and exec the reference during the untimed warm-up, call compiler-rt `__popcountdi2`, or `@reduce` a bit vector. |
+| **U2** rework of 71 / 20 / 146 / 147 | `-26` | reverse list, priority queue (6L), Aho-Corasick, persistent BST | 147's reworked memory gate does not separate the required structure from a weaker one at its test size (the shortcut is not described here: 147 is a v5 unit and this file is readable by eval agents). 20: libc db(3) B-tree (C/C++ on macOS), Go `fmt` sorting map keys, Python `Counter.most_common()`, and no complexity gate at all. 71_d: `std::valarray` with a negative-stride `std::slice` reverses without any banned identifier. |
+| **U4** rework of 143 / 152 / 153 / 121 / 128 and the 7 zig probes (31, 92, 52, 54, 61, 62, 63 `_f`) | `-28` | UOV, Chase-Lev, coroutine scheduler, quorum KV, RSA; the pack-contrast probes | 0 of 12 PROVEN: every lint arm fails (`-I -c` children; fixed limits that ignore the scale). No validator runs the solution through `vlib.run_solution`, so the round-3 sandbox never applies: a solution globs every worktree's `evals/refs` (and `evals/tasks/121_quorum_kv.json`, to cut out the validator's own model) and execs it; 152 and 153 can be passed by tampering with the validator's runtime instead of solving them; 143 passes `uov_rank2`; zig units call `system()` to build and exec the reference during the untimed warm-up, call compiler-rt `__popcountdi2`, or `@reduce` a bit vector. |
 
 ### The era break
 
 `evals/SUITE_VERSION` is `v5`, which rolls the cache era (`ctxhash`) for
 every row: no v4 cache entry replays into v5. The v4 board is frozen (shown
 under "legacy suites"); v5 starts empty. The harness rides the same break,
-pinned as **`harness8`** in `evals/HARNESS_VERSION` (`harness5` at the v5.0
+pinned in `evals/HARNESS_VERSION` (**`harness9`** on 2026-11-19; `harness5` at the v5.0
 release; the review-1116 fixes to the bootstrap, the leftover sweep, the
 validator's private `TMPDIR`, the fixture lock, the toolchain pins and
-`vlib.py` rolled the era once more, G23 passing the wall to the agent made it `harness7`, and G24's `task_paths` (the trailing-dot fix) `harness8`; see CHANGELOG): its fingerprint covers
+`vlib.py` rolled the era once more, G23 passing the wall to the agent made it `harness7`, G24's `task_paths` (the trailing-dot fix) `harness8`, and the partial stats on a wall kill (arm T2's tree) `harness9`; the file is the authority and the CHANGELOG has every later roll): its fingerprint covers
 the agent's wall cap, the validator's environment, bootstrap and private
 build cache, the fixture cwd, the leftover sweep (`AgentWatch`,
 `sweep_agent_leftovers`) and the toolchain pins (`toolchain_pins`,
