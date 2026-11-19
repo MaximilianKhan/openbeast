@@ -5,6 +5,11 @@ PRs #175–#192 (see [What changed since the first draft](#what-changed-since-th
 **and again 2026-11-17 evening** to the state after #194–#204 (see
 [What changed since the second revision](#what-changed-since-the-second-revision-2026-11-17-evening)).
 **Decided 2026-11-17:** Max answered Q5–Q10 ([section 13](#13-questions-for-max)).
+**Revised again 2026-11-19** (see
+[What changed since the third revision](#what-changed-since-the-third-revision-2026-11-19)).
+The site is now deployed (2026-11-17 evening), and the pair's default model
+changed after that deploy, so the live site is stale on it. The paragraph
+that follows is the 2026-11-17 evening status, kept as written.
 The `/benchmarks/` page and the P0 stale claims that contradict it are
 **merged** in the website repo (openbeast-website #17, #18) but **not
 deployed**: openbeast.ai still serves the 2026-10-26 build (checked
@@ -14,13 +19,21 @@ rest of the plan is still to do. This page
 says what openbeast.ai claims today, what is true today, and what to build so
 the site matches OpenBeast at **v2.0.0**.
 
-**Spark default, 2026-11-18.** The pair's default model is now
-**DeepSeek-V4.1-Flash (Mia EXL3)** (Max's decision after testing; v5 61/71,
-the board's #1, against GLM's 51/71), with GLM-5.3-Flash Ablit staged as the
-alternative. Wherever this plan's copy names the model the pair serves (the
-hardware plate, `/hardware/`, the uncensored-models section B), the site says
-DeepSeek-V4.1-Flash (Mia EXL3) as the default and GLM-5.3-Flash as the
-alternative. The GLM arm ladder (26 to 51 of 71) stays GLM's, as measured.
+**Spark default, 2026-11-18; numbers as of 2026-11-19.** The pair's default
+model is **DeepSeek-V4.1-Flash (Mia EXL3)**, Max's decision after hands-on
+testing. It is the board's #1 at **65/71, SCORE 94.9** (run `DS-T2`, arm T2,
+#231; arm T scored 61/71, SCORE 88.5), against GLM's best of 51/71. It
+serves **stock weights**. It is not abliterated and not uncensored
+(`ABLIT=0`; `spark-deepseek-prepare-local.sh` refuses anything else).
+GLM-5.3-Flash **Ablit** (abliterated) is staged as the alternative.
+
+Wherever this plan's copy names the model the pair serves (the hardware
+plate, `/hardware/`, section B on uncensored models, S9, S10), the site
+names DeepSeek-V4.1-Flash (Mia EXL3) as the default and GLM-5.3-Flash Ablit
+as the alternative. It never calls the default uncensored. The GLM arm ladder
+(26 to 51 of 71) stays GLM's, as measured. The plan's older copy describes
+the pair with GLM's figures (a 1M-token window, the 2026-11-13 serving
+table); those are GLM's, and §4.2 says which of them apply to DeepSeek.
 
 The site was last changed on 2026-10-26 (`81eabc2`, "Upgrade Next.js to
 16.4.3"). Its only later pushes, through 2026-11-08, are Dependabot branches.
@@ -38,6 +51,8 @@ that `evals/v5_board.py` generates into [`docs/RESULTS.md`, "v5 leaderboard"](RE
 README (#193, merged 2026-11-17; "Every v5 configuration measured" lists each
 run id). Still
 [V5-PENDING]: the seed-noise arm, every Qwen3.8 row and DeepSeek v4.1 Flash.
+(Since 2026-11-18 DeepSeek-V4.1-Flash (Mia EXL3) has rows `DS-T` and `DS-T2`;
+its seed arm T_s1 is running on 2026-11-19.)
 GLM arms D and F were **not run** (Max paused the chain after E); the site
 says so in words if it mentions them, never as a pending chip.
 
@@ -48,6 +63,7 @@ says so in words if it mentions them, never as a pending chip.
 | [3. Accuracy rules](#3-accuracy-rules) | what may be printed, and what may not |
 | [What changed since the first draft](#what-changed-since-the-first-draft-2026-11-17) | the 2026-11-17 revision in one list |
 | [What changed since the second revision](#what-changed-since-the-second-revision-2026-11-17-evening) | the 2026-11-17 evening revision: arm E, thinking by default, MTU 9000, the multi-rig client, the website merges |
+| [What changed since the third revision](#what-changed-since-the-third-revision-2026-11-19) | 2026-11-19: the deploy, DeepSeek-V4.1-Flash (Mia EXL3) as the default and the board's #1, stock weights |
 | [4. New pages](#4-new-pages) | nine pages, and what each says; `/benchmarks/` carries the v5 story |
 | [5. Updates to existing pages](#5-updates-to-existing-pages) | home, research, about, investors, investment case, shared files |
 | [6. Rankings and benchmarks](#6-rankings-and-benchmarks) | how v5 is shown, the placeholder mechanism, what not to claim |
@@ -130,6 +146,40 @@ OpenBeast PRs #194–#204 and the operator steps of the same day:
   with the results in the PR body (`CONTRIBUTING.md`). The plan's "drift-checked
   in CI" for the v5 board now means `v5_board.py --check`, run locally.
 - New stale claims S47–S52 below.
+
+---
+
+## What changed since the third revision (2026-11-19)
+
+OpenBeast PRs #205–#233 and the website deploy:
+
+- **The site is deployed.** openbeast.ai serves the 2026-11-17 evening build
+  (website `e72790c`; `last-modified` 2026-11-18 01:37 UTC). It includes
+  `/benchmarks/` with arm E at 50/71, and Next.js 16.4.5 (website commit
+  `208ad30`, which replaced Dependabot's #16). Checked 2026-11-19: `/`,
+  `/benchmarks/` and `/hardware/` answer 200.
+- **DeepSeek-V4.1-Flash (Mia EXL3) is the pair's default** since 2026-11-18
+  (OpenBeast #211, #230). Its unit is `deepseek-v41-inference`. It runs four
+  streams and a **524,288-token** window per conversation (the model's own
+  window is 1,048,576), with thinking on. GLM-5.3-Flash Ablit is the staged
+  alternative. Switching is done by `beast-spark` on spark-1 (#212, #222).
+- **It is the v5 board's #1:** `DS-T2` **65/71, SCORE 94.9** (#231). The
+  earlier `DS-T` scored 61/71, SCORE 88.5 (#225). Both are single seed and
+  both are thinking-first campaign arms (experiment arms). T2 is its default
+  agent setup (`AGENT_PROFILE=deepseek-best`, #232). Its seed arm T_s1 is
+  running (2026-11-19), so no noise margin is published yet (A10).
+- **Stock weights.** DeepSeek-V4.1-Flash (Mia EXL3) is not abliterated and
+  not uncensored (`ABLIT=0`). The site must not call the pair's default
+  uncensored (section B, now decided by the fact). B3's "no stock-versus-Ablit
+  comparison" still holds: DeepSeek and GLM are different models, not a stock
+  and Ablit pair.
+- **The live site is stale on all of this** (new stale claims S53–S57). It
+  says TensorFold serves "GLM-5.3-Flash Ablit" on the pair, that the fleet row
+  is "2× DGX Spark TensorFold · TP=2 GLM-5.3-Flash", that "a conversation can
+  use a 1,048,576-token" window, and that "DeepSeek v4.1 Flash is next".
+- **The paper has a second model:** DeepSeek's arms T and T2, with a GLM
+  control of harness10's arm UP planned (OpenBeast PR #234). §4.8 item 6
+  changes from "one model measured" to two.
 
 ---
 
@@ -281,6 +331,18 @@ makes stale. Fix the plan's own copy before it reaches the site.
 | S51 | §4.2 item 4 (serving table caption) | conditions: 2026-11-13, through the API | Add the conditions that changed since: the table was measured at MTU 1500 with thinking off. Thinking does not slow decode; it lengthens the wait for the answer (S48). The MTU change is unmeasured (S44) |
 | S52 | D9, §8 `/research/harness/` description | "53 with 54 raw footnoted"; "from 26 to 53 of 71" | 51 (54 raw, 3 withheld, A12); "from 26 to 51 of 71" |
 
+### Stale since the third revision (2026-11-19)
+
+Read from the live site on 2026-11-19.
+
+| # | Where | NOW (live) | TRUE |
+|---|---|---|---|
+| S53 | `/hardware/` Spark plate; home "MEASURED spark-hydra" card | "TensorFold serves GLM-5.3-Flash Ablit in EXL3 4-bit…"; "TensorFold serves GLM-5.3-Flash across two GB10s" | TensorFold serves **DeepSeek-V4.1-Flash (Mia EXL3)** (2.9 bpw EXL3, stock weights) by default since 2026-11-18. GLM-5.3-Flash Ablit is the staged alternative (`SPARK_HYDRA.md` top) |
+| S54 | home fleet row (S10's replacement) | "LIVE 2× DGX Spark TensorFold · TP=2 GLM-5.3-Flash · four streams sharing one KV pool" | "LIVE · 2× DGX Spark · TensorFold · TP=2 · DeepSeek-V4.1-Flash (Mia EXL3) · four streams" |
+| S55 | home card; any "1M" copy (S49) | "A conversation can use a 1,048,576-token…" | The default serves **524,288 tokens** per conversation (`CONTEXT=524288`). 1,048,576 is GLM's window and DeepSeek's model maximum, not what the pair serves by default. S49's shared-pool wording and its numbers are GLM's |
+| S56 | `/benchmarks/` "What runs next"; §4.9 | "DeepSeek v4.1 Flash is next on the Spark pair" | It ran. `DS-T2` 65/71, SCORE 94.9, is the board's #1 (`DS-T` 61/71). Next is its seed arm (running), then Qwen3.8 when the rig is back |
+| S57 | `/benchmarks/` board; home evidence teaser; "Capability on this hardware" | GLM-5.3-Flash 51/71 shown as the pair's result | Two models on the pair. DeepSeek-V4.1-Flash (Mia EXL3) 65/71 is #1 and the default's row; GLM-5.3-Flash 51/71 is the alternative's. Single seed, experiment arms, and no ranking sentence the paired test cannot back (A5) |
+
 Claims checked and still true: the founder story and dates, Apache 2.0, the
 v4 numbers themselves (98.7 / 97.7 / 97.6 / 97.5), "140 tok/s" for the default
 MTP profile, 262K native context, the NVFP4 workload split, the zig verdict
@@ -373,8 +435,10 @@ reads them.
 The default on `beast` is uncensored: Qwen3.8 27B Uncensored. On
 `spark-hydra` the default is DeepSeek-V4.1-Flash (Mia EXL3) since 2026-11-18,
 and GLM-5.3-Flash **Ablit**, the uncensored one, is the staged alternative.
-Open for Max: whether the site still calls the pair's default uncensored.
-Describe it the same way everywhere.
+**Settled by the fact (2026-11-19):** the pair's default runs stock weights
+(`ABLIT=0`), so the site never calls it uncensored or abliterated. The rules
+below apply to the rig's default and to GLM Ablit only. Describe it the same
+way everywhere.
 
 - **B1. Define it once, plainly.** "Uncensored (abliterated) weights: the
   model's refusal behaviour was removed from its weights. It answers instead
@@ -391,7 +455,9 @@ Describe it the same way everywhere.
   framing on the medical or legal audience cards.
 - **B5. Keep the governance risk visible.** The investment case already lists
   the uncensored-only fleet policy as a risk for regulated use
-  (`investment-case/page.tsx:93`). Keep it, and say that the guest RBAC tier
+  (`investment-case/page.tsx:93`). Since 2026-11-18 the fleet is no longer
+  uncensored-only in practice (the pair's default is stock), so that line
+  needs Max's wording (Q11). Keep it, and say that the guest RBAC tier
   limits a WebUI user to `web_search`, `fetch` and `weather`.
 - **B6. DFlash2 is under the hood, never marketed (Max, 2026-11-16; DECIDED).** The
   pair's drafter, `incoai/GLM-5.3-Flash-DFlash2`, is CC BY-NC-ND (personal
@@ -471,8 +537,10 @@ Every number below cites its v5 board run (rule A1); each is single seed
    (6.3). Experiment-arm flags shown as chips (thinking, wall x2,
    wall-scaled turns, packs, diagnostics), and a "of gold standard" column.
    Opus as the unranked gold-standard row, set apart. Qwen3.8 27B Uncensored MTP (the rig's default) and Qwen3.6 27B
-   (v4 #1): "not yet run on v5".
-4. **Every configuration,** collapsed per model: GLM L0, A, B, C, E, each
+   (v4 #1): "not yet run on v5". Since 2026-11-19 the board's #1 is
+   DeepSeek-V4.1-Flash (Mia EXL3), `DS-T2` 65/71, SCORE 94.9; GLM's row is
+   #2 (S57).
+4. **Every configuration,** collapsed per model: DeepSeek T, T2; GLM L0, A, B, C, E, each
    with its flags and run date, so the best row never hides the daily one.
 5. **What v5 measures:** 71 units, 34 bases, the three groups (14 new
    families, 4 upgraded v4 tasks, 16 v4 tasks kept as defined), the coverage
@@ -504,10 +572,17 @@ Every number below cites its v5 board run (rule A1); each is single seed
    DDR5, llama.cpp, default Qwen3.8 27B Uncensored MTP, 262K, 140 tok/s).
    New photo (section 7).
 3. **spark-hydra:** 2× DGX Spark (GB10, 128 GB unified memory each), linked
-   over ConnectX-7 on two rails. GLM-5.3-Flash Ablit, EXL3 4-bit, TensorFold
-   TP 2, speculative decoding, 4 streams, a 1M-token window per
-   conversation with the 4 streams drawing on one shared KV pool of about 2M
-   tokens (never "4 x 1M", S49), fp8 KV. **Thinking on by default** since
+   over ConnectX-7 on two rails. **Default (since 2026-11-18):**
+   DeepSeek-V4.1-Flash (Mia EXL3), 2.9 bpw EXL3, stock weights, TensorFold
+   TP 2, 4 streams, a 524,288-token window per conversation (S55). Its
+   short-prompt baseline is in `SPARK_HYDRA.md` "DeepSeek deployment"
+   (2026-11-17, from the Mac): first streamed token at a median 232 ms with
+   thinking, single-stream decode of about 70 tok/s with thinking, and 117
+   tok/s aggregate over four thinking-off streams. That run did not measure
+   long context. **Staged alternative:** GLM-5.3-Flash Ablit, EXL3 4-bit,
+   speculative decoding, a 1M-token window per conversation with the 4
+   streams drawing on one shared KV pool of about 2M tokens (never "4 x 1M",
+   S49), fp8 KV. **Thinking on by default** since
    2026-11-17, the setting of the best v5 row (S48), for every client: the
    gate, Open WebUI and the host's own agents. State its cost plainly beside
    it, from `SPARK_HYDRA.md` E2a (single stream, from a Mac, 2026-11-17): the
@@ -519,7 +594,7 @@ Every number below cites its v5 board run (rule A1); each is single seed
    center on spark-1, spark-2 runs rank 1 only: **one user unit on spark-1
    drives both ranks** (it starts rank 1 on spark-2 over ssh; spark-2 runs no
    OpenBeast services). Boots by itself with no network.
-4. **Measured serving table** (2026-11-13, through the API on spark-1):
+4. **Measured serving table** (GLM-5.3-Flash, the alternative; 2026-11-13, through the API on spark-1):
    prose 43–44 tok/s single, 145 aggregate across 4 (37 each); code 68–70
    single, 224 aggregate (57 each); TTFT about 160–260 ms. No drafter
    names (B6): at most "with speculative decoding". Caption with conditions, per rule A1,
@@ -527,9 +602,10 @@ Every number below cites its v5 board run (rule A1); each is single seed
    **The fabric:** two ConnectX-7 rails at MTU 9000 (RoCE `active_mtu`
    4096) since 2026-11-17, verified end to end; say "live", with no speed
    number until the A/B lands (S44).
-5. **Capability on this hardware:** GLM-5.3-Flash, 26/71 in its daily
-   config (`GLM-L0`) and 51/71 at its best (`GLM-C`, thinking on), single
-   seed, linking `/benchmarks/`. Never beside the serving numbers on one
+5. **Capability on this hardware:** DeepSeek-V4.1-Flash (Mia EXL3), the
+   default, at 65/71 at its best (`DS-T2`, thinking on). GLM-5.3-Flash, 26/71
+   in its daily config (`GLM-L0`) and 51/71 at its best (`GLM-C`, thinking
+   on). Single seed, linking `/benchmarks/`. Never beside the serving numbers on one
    chart (6.2).
 6. **Run it yourself:** the Quickstart (health, start/stop, clients, the
    bare-box order), then the two checklists: "Install everything, fresh"
@@ -548,7 +624,8 @@ Every number below cites its v5 board run (rule A1); each is single seed
 10. **Not done yet:** hydra routing to the pair, switching the primary between
    hosts on the hydra side (clients already switch, 4.4), `PARALLEL=8`,
    native TensorFold vs the recipe, a fully offline rebuild, a one-command
-   model swap with rollback (planned, `TODO.md`), and **the MTU A/B**: the
+   swap to a new model with rollback (`beast-spark` switches between the two
+   staged models today; a third model is still by hand, `TODO.md`), and **the MTU A/B**: the
    rails run at 9000 since 2026-11-17, and whether that speeds up long
    prompts is not measured yet (S44).
 
@@ -716,8 +793,9 @@ Every number single seed (A10), every claim about one model only (A13).
 6. **The paper in progress:** working title "Per-model or unified? Agent
    harnesses for local models" (Q7). Question: does each model need its own
    harness, or does one harness with a few per-model knobs serve
-   GLM-5.3-Flash, Qwen3.8 and DeepSeek v4.1 Flash? Status: one model
-   measured; the cross-model arms are next. A status chip (IN PROGRESS), no
+   GLM-5.3-Flash, Qwen3.8 and DeepSeek v4.1 Flash? Status (2026-11-19): two
+   models measured (GLM's build-up, DeepSeek's T and T2); the first arm run on
+   both models is the GLM control of arm UP (OpenBeast PR #234). A status chip (IN PROGRESS), no
    conclusion yet. **Q7 decided:** the paper is public and will be posted on
    the site; give it a paper page like the beast-rank paper's
    (`/research/<slug>/`, synced by `sync-paper.mjs` at a pinned commit, the
@@ -730,7 +808,7 @@ Every number single seed (A10), every claim about one model only (A13).
    warnings (G23) came from that reading. DeepSeek's own agent harness
    (`dsh`, evaluated 2026-10-09, not integrated) supplies the starting
    hypotheses for the DeepSeek arm. Link both reviews at the tag.
-8. **Caveats box:** single seed; one model; a reference in a different
+8. **Caveats box:** single seed; two models, on different arm sets so far; a reference in a different
    scaffold; arms D and F (the seed arm) not run; three units withheld; one
    E fail footnoted as a validator false FAIL.
 
@@ -757,7 +835,10 @@ page an operator or a lab could follow.
    infra rows never scored, a pass always a verdict (MODEL_CAMPAIGN §7).
 6. **Next: DeepSeek v4.1 Flash,** thinking first: [V5-PENDING]. Say "next",
    not a date. Verify its per-request thinking switch live before any arm
-   (MODEL_CAMPAIGN §9).
+   (MODEL_CAMPAIGN §9). **Done since (2026-11-19):** DeepSeek-V4.1-Flash
+   (Mia EXL3) ran it; T2 (65/71) is the worked example of a campaign ending
+   in a default setup (`AGENT_PROFILE=deepseek-best`). Next is Qwen3.8 when
+   the rig is back (S56).
 
 ---
 
@@ -944,7 +1025,7 @@ Placeholders needed today:
 | Where | Placeholder | Lands in |
 |---|---|---|
 | `/benchmarks/` board, beast rows | Qwen3.8 27B Uncensored MTP, Qwen3.6 27B | same |
-| `/benchmarks/` board, DeepSeek v4.1 Flash | its best configuration | same, after its campaign |
+| `/benchmarks/` board, DeepSeek v4.1 Flash | its best configuration | **filled 2026-11-19:** `DS-T2` 65/71, SCORE 94.9 (re-sync if T3 or a later arm beats it) |
 | `/research/harness/` | the seed-noise floor (arm F not run); the paper's status. The integrity verdict is in (3 GLM-C units withheld, every other row clean, #195) | `HARNESS_NOTES.md`, `exclusions.json`, then RESULTS |
 | `/hardware/` §5, home evidence teaser | the `beast` host's v5 row | same |
 
@@ -1070,7 +1151,7 @@ no autoplay with sound, and a reduced-motion fallback to the poster.
 
 - **Titles and descriptions** per page, under 60 and 155 characters:
   - `/benchmarks/`: "Benchmarks | OpenBeast" — "Reproducible v5 results for OpenBeast systems: 71 proven units, three arms, every row tied to its host, engine and weights."
-  - `/hardware/`: "Hardware | OpenBeast" — "An RTX 5090 rig and a two-DGX-Spark pair serving DeepSeek-V4.1-Flash with TensorFold: measured serving numbers and the engine plane."
+  - `/hardware/`: "Hardware | OpenBeast" — "An RTX 5090 rig and a two-DGX-Spark pair serving DeepSeek-V4.1-Flash (Mia EXL3) with TensorFold: measured serving and the engine plane."
   - `/offline/`: "Offline first | OpenBeast" — "Island mode, an air-gap install, offline engine updates, mirrored platform docs and a cold-storage package archive."
   - `/research/harness/`: "Harness engineering | OpenBeast" — "How a better agent loop and thinking took GLM-5.3-Flash from 26 to 51 of 71 v5 units on two DGX Sparks. Single seed; method and caveats."
   - `/research/campaign/`: "Model campaign | OpenBeast" — "Bring any model to the DGX Spark pair: onboard, profile, audit, then thinking-first harness arms, with an offline eval host."
@@ -1195,11 +1276,16 @@ the current state themselves; fix them in the openbeast repo before pinning:
       2026-11-17). Still to do on it: `scripts/sync-results.mjs` (the numbers
       are hand-copied into `results.ts` today, pinned to a commit), the D9
       diagram, and the `[V5-PENDING]` production guard.
-- [ ] **Arm E on `/benchmarks/`** (S47): rung E 50/71, SCORE 74.7, 74.7% of
+- [x] **Arm E on `/benchmarks/`** (S47): rung E 50/71, SCORE 74.7, 74.7% of
       the gold standard, its footnote; drop E from "what runs next"; re-pin
-      the source links to a commit that has #201.
-- [ ] Merge website #16 (Next.js 16.4.5, seven moderate advisories) before
-      the next deploy.
+      the source links to a commit that has #201. (Live, checked 2026-11-19.)
+- [x] Merge website #16 (Next.js 16.4.5, seven moderate advisories) before
+      the next deploy. (Done as website commit `208ad30`; #16 closed.)
+- [ ] **The pair's new default** (S53–S57): DeepSeek-V4.1-Flash (Mia EXL3)
+      as the default and the board's #1 (`DS-T2` 65/71, SCORE 94.9), stock
+      weights (never "uncensored"), its 524,288-token window, GLM-5.3-Flash
+      Ablit as the alternative; "what runs next" drops DeepSeek. Then
+      redeploy.
 - [ ] Fix the plan's stale copy S47–S52 on the pages it reaches.
 - [ ] Build `/research/harness/` (4.8) with D9 and D10 and the caveats box.
 - [ ] Build `/hardware/` with the measured Spark serving table.
@@ -1212,9 +1298,9 @@ the current state themselves; fix them in the openbeast repo before pinning:
 - [ ] Rewrite `public/llms.txt`; update JSON-LD and the sitemap.
 - [ ] Photos P1, P2, P4, P5 from Max; diagrams D1, D2, D4, D9, D10.
 - [ ] Update the GitHub repo description (S38).
-- [ ] **Deploy** through `deploy.sh prod` on the Mac Mini after push; run the
-      post-deploy `curl` checks from the website README. Open since #17/#18
-      merged (2026-11-17): the live site is still the 2026-10-26 build.
+- [x] **Deploy** through `deploy.sh prod` on the Mac Mini after push; run the
+      post-deploy `curl` checks from the website README. Deployed 2026-11-17
+      evening (website `e72790c`); redeploy after the S53–S57 fixes.
 
 ### P1 — within two weeks of the tag
 
@@ -1270,7 +1356,15 @@ Open since the first draft:
 - **Q3. Native apps (C3).** May the iOS and Android apps be named "in
   development", and may screenshots appear?
 - **Q4. Licence position for the Spark stack (B6).** Still open for investor
-  or "supported deployment" copy: the Ablit weights and the recipe.
+  or "supported deployment" copy: the Ablit weights and the recipe (and,
+  since 2026-11-18, the licence of Mia's DeepSeek EXL3 pack, the default).
+
+New in the 2026-11-19 revision:
+
+- **Q11. The "uncensored-only fleet policy" line (B5).** The pair's default is
+  now stock, so the fleet is not uncensored-only in practice. Keep the risk
+  line with new wording ("the rig and the GLM alternative run abliterated
+  weights"), or drop it?
 
 Decided:
 
@@ -1315,7 +1409,8 @@ Asked 2026-11-17, decided the same day:
   "54 raw; 3 units withheld after an integrity scan found the agent had read sealed harness files (all three are in the 122 family)". Never 54/71 alone.
 - **Q9. Name DeepSeek v4.1 Flash as "next". DECIDED (Max): yes**, on
   `/benchmarks/` and `/research/campaign/`, as "next", never with a date or
-  a predicted number.
+  a predicted number. *Overtaken 2026-11-19:* it has run and leads the board
+  (S56).
 - **Q10. The headline host. DECIDED: the DGX Spark pair (spark-hydra)
   leads.** It is live, it holds every v5 row, and DeepSeek v4.1 Flash goes
   there next. The 5090 rig (`beast`) stays a featured secondary host until
