@@ -1150,6 +1150,13 @@ def is_notify_env_name(name: str) -> bool:
             or "NOTIFY_URL" in up or "NOTIFY_TOKEN" in up)
 
 
+#: What an AGENT session's env re-admits past the scrub: the runner's
+#: inference key, and the per-turn token cap (scripts/lib/conf.sh exports
+#: OPENBEAST_AGENT_MAX_TOKENS for AGENT_PROFILE; a count, not a credential —
+#: the scrub matches it only on the "TOKEN" in its name).
+AGENT_CHILD_KEEP = ("OPENBEAST_API_KEY", "OPENAI_API_KEY", "OPENBEAST_AGENT_MAX_TOKENS")
+
+
 def child_env(extra: dict | None = None, keep: tuple = ()) -> dict:
     """This process's environment minus the stack's secrets.
 
@@ -3807,9 +3814,10 @@ def create_app() -> FastAPI:
                     if kind == "agent":
                         # The runner needs its inference key; nothing else
                         # secret. It scrubs its own tools' env again.
-                        env = child_env(env_extra,
-                                        keep=("OPENBEAST_API_KEY",
-                                              "OPENAI_API_KEY"))
+                        # OPENBEAST_AGENT_MAX_TOKENS is no secret (a turn
+                        # cap); the scrub drops it only because its name
+                        # holds "TOKEN", and AGENT_PROFILE delivers it as env.
+                        env = child_env(env_extra, keep=AGENT_CHILD_KEEP)
                     else:
                         env = child_env(env_extra)
                     proc = subprocess.Popen(

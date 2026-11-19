@@ -456,12 +456,49 @@ _BASH_WRAPPER="${OPENBEAST_BASH_WRAPPER:-$(_ob_conf_value BASH_WRAPPER || true)}
 if [[ -n "$_BASH_WRAPPER" ]]; then
   export OPENBEAST_BASH_WRAPPER="$_BASH_WRAPPER"
 fi
+# ── AGENT_PROFILE: a named set of daily-agent switches ─────────────────────
+#   AGENT_PROFILE  (env OPENBEAST_AGENT_PROFILE)  default empty (none)
+#       deepseek-best = v5-thinking-first arm T2, the best measured setup for
+#       DeepSeek-V4.1-Flash (Mia EXL3) on the Spark pair: 65/71, board row
+#       DS-T2, 2026-11-19 (docs/SPARK_HYDRA.md "DeepSeek best configuration").
+#       It supplies a DEFAULT for each key below; the key set explicitly
+#       (env, then openbeast.conf) always wins over the profile:
+#         INFERENCE_THINKING=on   AGENT_MAX_TOKENS=8192   AGENT_ACT_NUDGE=1
+#         BEAST_ASSIST=1          DIAG_EDIT_HINT=1        AGENT_VERIFY_DONE=1
+#         AGENT_ENV_BLOCK=1       AGENT_WALL_WARN=1       LANG_PACK_VARIANT=v3
+#       none / empty = no profile. Anything else is reported (ob_conf_lint)
+#       and ignored. Which of these act on a DAILY agent, and which only do
+#       anything inside an eval: openbeast.conf.example, AGENT_PROFILE.
+# Read before the keys it feeds (BEAST_ASSIST just below, INFERENCE_THINKING
+# further down). Never exported: only the keys it resolves are.
+AGENT_PROFILE="${OPENBEAST_AGENT_PROFILE:-$(_ob_conf_value AGENT_PROFILE || true)}"
+AGENT_PROFILE="${AGENT_PROFILE%%[[:space:]#]*}"; AGENT_PROFILE="${AGENT_PROFILE//[\"\']/}"
+AGENT_PROFILE="$(printf '%s' "$AGENT_PROFILE" | tr 'A-Z' 'a-z')"
+case "$AGENT_PROFILE" in
+  ""|none) AGENT_PROFILE="" ;;
+  deepseek-best) ;;
+  *) _OB_CONF_PROBLEMS+=("AGENT_PROFILE='$AGENT_PROFILE' is not deepseek-best or none — ignoring it (no profile)")
+     AGENT_PROFILE="" ;;
+esac
+# _ob_profile_value KEY — the profile's value for an openbeast.conf KEY, or fail.
+_ob_profile_value() {
+  case "$AGENT_PROFILE:$1" in
+    deepseek-best:INFERENCE_THINKING) printf 'on\n' ;;
+    deepseek-best:AGENT_MAX_TOKENS)   printf '8192\n' ;;
+    deepseek-best:LANG_PACK_VARIANT)  printf 'v3\n' ;;
+    deepseek-best:BEAST_ASSIST|deepseek-best:DIAG_EDIT_HINT|deepseek-best:AGENT_VERIFY_DONE \
+      |deepseek-best:AGENT_ACT_NUDGE|deepseek-best:AGENT_ENV_BLOCK|deepseek-best:AGENT_WALL_WARN)
+      printf '1\n' ;;
+    *) return 1 ;;
+  esac
+}
 # beast-assist (compiler feedback in the agent loop, docs/FEATURES.md).
 # agents/tools.py reads BEAST_ASSIST per-call; forward the conf key only
 # when non-empty, same pattern as BASH_WRAPPER above. Eval arms override
 # this explicitly per-cell (run_eval pins both spellings), so a rig-wide
-# enable never leaks into diag-OFF baselines.
-_BEAST_ASSIST="${BEAST_ASSIST:-$(_ob_conf_value BEAST_ASSIST || true)}"
+# enable never leaks into diag-OFF baselines. AGENT_PROFILE supplies it when
+# neither the env nor the conf does.
+_BEAST_ASSIST="${BEAST_ASSIST:-$(_ob_conf_value BEAST_ASSIST || _ob_profile_value BEAST_ASSIST || true)}"
 if [[ -n "$_BEAST_ASSIST" ]]; then
   export BEAST_ASSIST="$_BEAST_ASSIST"
 fi
@@ -492,6 +529,78 @@ if [[ -n "$_BEAST_ESCALATE" ]]; then
     export BEAST_ESCALATE=0
   fi
 fi
+# ── Daily-agent switches (agents/runner.py, agents/tools.py) ────────────────
+# Each is read per run (runner) or per call (tools) from the PROCESS env, and
+# compares against exactly "1"; nothing used to forward them from
+# openbeast.conf, so they existed only for evals. Each conf key below goes
+# through _ob_bool and is exported canonically as 1/0 under its OPENBEAST_
+# name, to the tool server, beast-chat and every agent they start (env
+# OPENBEAST_<KEY> > openbeast.conf > AGENT_PROFILE; nothing set = nothing
+# exported, so the runner's own defaults stand). _ob_derive records what
+# came from here, so a re-source (start.sh -d's daemon) re-reads the conf.
+#   AGENT_ACT_NUDGE    -> OPENBEAST_AGENT_ACT_NUDGE    act after idle turns (T2)
+#   AGENT_VERIFY_DONE  -> OPENBEAST_AGENT_VERIFY_DONE  G9 test-before-done
+#   AGENT_ENV_BLOCK    -> OPENBEAST_AGENT_ENV_BLOCK    G22 first-turn env block
+#   AGENT_WALL_WARN    -> OPENBEAST_AGENT_WALL_WARN    G23 wall-clock notices
+#   DIAG_EDIT_HINT     -> OPENBEAST_DIAG_EDIT_HINT     G13 edit, don't rewrite
+# Eval runs set every one of these per arm (evals/campaigns/*.json), and a
+# plain run_eval.py records the ambient ones in its cache key (agent_switches),
+# so an export here never silently changes a measured row.
+for _ob_k in AGENT_ACT_NUDGE AGENT_VERIFY_DONE AGENT_ENV_BLOCK AGENT_WALL_WARN DIAG_EDIT_HINT; do
+  _ob_from_env=0
+  if _ob_raw="$(_ob_override "$_ob_k")"; then
+    _ob_from_env=1
+  else
+    _ob_raw="$(_ob_conf_value "$_ob_k" || _ob_profile_value "$_ob_k" || true)"
+  fi
+  if [[ -n "$_ob_raw" ]]; then
+    if [[ "$(_ob_bool "$_ob_raw" false "$_ob_k")" == "true" ]]; then
+      _ob_derive "$_ob_k" 1 "$_ob_from_env"
+    else
+      _ob_derive "$_ob_k" 0 "$_ob_from_env"
+    fi
+  else
+    _ob_underive "$_ob_k"
+  fi
+done
+unset _ob_k _ob_raw _ob_from_env
+# AGENT_MAX_TOKENS: agents/runner.py reads the conf key itself (env
+# OPENBEAST_AGENT_MAX_TOKENS first), so only a PROFILE value is exported here,
+# and only when neither the env nor the conf names one. beast-chat passes it
+# through its secret scrub by name (the name holds "TOKEN"; it is a count).
+if ! _ob_override AGENT_MAX_TOKENS >/dev/null; then
+  if [[ -z "$(_ob_conf_value AGENT_MAX_TOKENS || true)" ]] \
+     && _ob_v="$(_ob_profile_value AGENT_MAX_TOKENS)"; then
+    _ob_derive AGENT_MAX_TOKENS "$_ob_v" 0
+  else
+    _ob_underive AGENT_MAX_TOKENS
+  fi
+fi
+unset _ob_v
+# LANG_PACK_VARIANT: which zig awareness pack production agents get
+# (agents/lang/pack_context.py; LANG_PACK_CONTEXT and LANG_PACKS still decide
+# WHETHER one is served). v1 = the default measured pack, v3 = the pack arm T2
+# measured. pack_context reads the env, else the conf; the profile's value
+# reaches it through this export. Keep _OB_PACK_VARIANTS equal to
+# pack_context.PRODUCTION_VARIANTS (a test pins the two).
+_OB_PACK_VARIANTS="v1 v3"
+_ob_from_env=0
+if _ob_pv="$(_ob_override LANG_PACK_VARIANT)"; then
+  _ob_from_env=1
+else
+  _ob_pv="$(_ob_conf_value LANG_PACK_VARIANT || _ob_profile_value LANG_PACK_VARIANT || true)"
+fi
+_ob_pv="${_ob_pv%%[[:space:]#]*}"; _ob_pv="${_ob_pv//[\"\']/}"
+_ob_pv="$(printf '%s' "$_ob_pv" | tr 'A-Z' 'a-z')"
+if [[ -n "$_ob_pv" && " $_OB_PACK_VARIANTS " != *" $_ob_pv "* ]]; then
+  _OB_CONF_PROBLEMS+=("LANG_PACK_VARIANT='$_ob_pv' is not one of: $_OB_PACK_VARIANTS — agents get no awareness pack until it is")
+fi
+if [[ -n "$_ob_pv" ]]; then
+  _ob_derive LANG_PACK_VARIANT "$_ob_pv" "$_ob_from_env"
+else
+  _ob_underive LANG_PACK_VARIANT
+fi
+unset _ob_pv _ob_from_env
 # fetch() blocks Tailscale CGNAT (100.64.0.0/10) targets by default — pinned
 # explicitly in agents/tools.py because CPython's is_private classification of
 # that range changed across versions. Opt in (true) when the model should fetch
@@ -856,15 +965,28 @@ fi
 # name none — beast-gate injects it, the WebUI thinking filter applies it
 # (configure-webui.sh) and this host's own (non-eval) agents send it. Exported only when set, so
 # an unset key changes nothing anywhere. Eval runs never follow it.
-INFERENCE_THINKING="$(printf '%s' "${OPENBEAST_INFERENCE_THINKING:-$(_ob_conf_value INFERENCE_THINKING || true)}" | tr 'A-Z' 'a-z')"
+# AGENT_PROFILE supplies it when neither the env nor the conf does. The
+# export goes through _ob_derive, so a re-source (start.sh -d's daemon gets
+# the OPENBEAST_* env forwarded) reads the conf again instead of pinning a
+# value the conf or the profile no longer gives.
+_ob_it_env=0
+if INFERENCE_THINKING="$(_ob_override INFERENCE_THINKING)"; then
+  _ob_it_env=1
+else
+  INFERENCE_THINKING="$(_ob_conf_value INFERENCE_THINKING || _ob_profile_value INFERENCE_THINKING || true)"
+fi
+INFERENCE_THINKING="$(printf '%s' "$INFERENCE_THINKING" | tr 'A-Z' 'a-z')"
 INFERENCE_THINKING="${INFERENCE_THINKING%%[[:space:]#]*}"
 if [[ -n "$INFERENCE_THINKING" && "$INFERENCE_THINKING" != "on" && "$INFERENCE_THINKING" != "off" ]]; then
   _OB_CONF_PROBLEMS+=("INFERENCE_THINKING='$INFERENCE_THINKING' is not on or off — ignoring it (requests keep the server's own thinking default)")
   INFERENCE_THINKING=""
 fi
 if [[ -n "$INFERENCE_THINKING" ]]; then
-  export OPENBEAST_INFERENCE_THINKING="$INFERENCE_THINKING"
+  _ob_derive INFERENCE_THINKING "$INFERENCE_THINKING" "$_ob_it_env"
+else
+  _ob_underive INFERENCE_THINKING
 fi
+unset _ob_it_env
 # ── beast-hydra + beast-instinct (docs/BEAST_HYDRA_PLAN.md §6.7,
 #    docs/BEAST_INSTINCT_PLAN.md §5.2/§5.9) ─────────────────────────────────
 # Both are OPT-IN. With HYDRA and INSTINCT off (the default) this block

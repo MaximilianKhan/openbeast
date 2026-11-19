@@ -48,7 +48,8 @@ REAL_PIN = dict(PC.MEASURED_SHA256)
 
 @pytest.fixture(autouse=True)
 def hermetic(tmp_path, monkeypatch):
-    for k in ("OPENBEAST_EVAL", "OPENBEAST_TASK_PATHS", "OPENBEAST_LANG_IN_EVAL"):
+    for k in ("OPENBEAST_EVAL", "OPENBEAST_TASK_PATHS", "OPENBEAST_LANG_IN_EVAL",
+              "OPENBEAST_LANG_PACK_VARIANT"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("OPENBEAST_LANG_PACK_CONTEXT", "auto")
     monkeypatch.setenv("OPENBEAST_LANG_PACKS", "auto")

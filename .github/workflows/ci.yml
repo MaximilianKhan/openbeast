@@ -399,6 +399,11 @@ jobs:
       - name: beast-lang escalation conf tests
         run: bash tests/test_escalate_conf.sh
 
+      # AGENT_PROFILE and the daily-agent switches (v5 T2 as DeepSeek's
+      # default): conf.sh exports, precedence, and the real readers agree.
+      - name: agent profile conf tests
+        run: bash tests/test_agent_profile_conf.sh
+
       # The remote-skill import gate (scripts/skill-import.sh): the checks on
       # what may enter skills/ — open findings, the in-house overwrite and
       # symlink refusals, both `verify` hash comparisons. run_tests.sh ran it

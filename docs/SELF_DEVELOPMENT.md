@@ -469,6 +469,8 @@ Run the narrow suites while iterating, then the full set before committing:
 | a live surface (only read-only, only on the live box) | `scripts/healthcheck.sh`, `scripts/backends/conformance.sh --model DeepSeek-V4.1-Flash-1017` (the served id, the default; `GLM-5.3-Flash-EXL3` when GLM is selected), `tests/test_smoke.sh` (needs a live stack) |
 | `scripts/backends/spark-deepseek-prepare-local.sh` | `tests/test_spark_deepseek_pack.sh` (static: the recipe's WORKER, BatchMode ssh, the offline kit check; the swap steps of `spark-deepseek-pack.sh` there need bash >= 4: Linux, or `brew install bash` on a Mac) |
 | `scripts/lib/client_rigs.py`, `scripts/client.sh` (rigs, autosync), `scripts/client-e2e.sh` | `tests/test_client_rigs.py` (autosync install/uninstall with launchctl/systemctl stubbed), `tests/test_client_cli.py`, `tests/test_setup_client.sh` |
+| `AGENT_PROFILE` / the daily-agent switches in `scripts/lib/conf.sh` (`AGENT_ACT_NUDGE`, `AGENT_VERIFY_DONE`, `AGENT_ENV_BLOCK`, `AGENT_WALL_WARN`, `DIAG_EDIT_HINT`, `LANG_PACK_VARIANT`), `agents/lang/pack_context.py` variants, `chat_server.AGENT_CHILD_KEEP` | `tests/test_agent_profile_conf.sh` (portable; the real conf.sh in `env -i`, then the real readers), `tests/test_agent_profile.py` (the profile equals campaign arm T2; the v3 pin; variant parity), `tests/test_pack_context.py`, `tests/test_escalate_conf.sh`, `tests/test_conf_secrets.sh` (no key is called unknown) |
+| `evals/campaign.py` per-model composite (`recommend.composite_by_model`), `evals/campaigns/*.json` | `tests/test_campaign.py` (§11: DeepSeek runs T2 first, report starts from T2, T unchanged), `tests/test_agent_profile.py` |
 
 ---
 
