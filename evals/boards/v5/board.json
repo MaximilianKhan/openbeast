@@ -86,6 +86,17 @@
       "campaign_arm": "v5-thinking-first T2",
       "host": "DGX Spark pair, TensorFold, Mia EXL3 (2.9 bpw)",
       "note": "0 units lost; integrity scan 2026-11-19: 0 contaminated after review (one flagged network attempt was blocked by the sandbox); 13 units hit the 3600 s wall, 7 passed; review notes sealed in evals/audit/reviews/"
+    },
+    {
+      "id": "DS-Ts1",
+      "model": "DeepSeek-V4.1-Flash (Mia EXL3)",
+      "config": "seed-noise arm T_s1: arm T under --seed 1 (harness9); sets the noise margin for T vs T2",
+      "files": [
+        "eval-deepseek-v4-1-flash-v5-thinking-first-t-s1-20261119-074954.json"
+      ],
+      "campaign_arm": "v5-thinking-first T_s1",
+      "host": "DGX Spark pair, TensorFold, Mia EXL3 (2.9 bpw)",
+      "note": "seed-noise replicate of DS-T: 61/71 like T, one unit swapped each way (noise about +/-1); 0 lost; integrity scan 2026-11-19: 0 contaminated"
     }
   ],
   "not_yet_run": [
