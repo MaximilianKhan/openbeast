@@ -1,9 +1,12 @@
 # Self-development: OpenBeast's own model working on OpenBeast
 
-**State on 2026-11-18.** The Spark pair serves **DeepSeek-V4.1-Flash (Mia
-EXL3)** (`DeepSeek-V4.1-Flash-1017`, 524,288-token window) on TensorFold by
-default since 2026-11-18: Max's decision after testing (v5 61/71, the board's
-#1). GLM-5.3-Flash (`GLM-5.3-Flash-EXL3`, 1,048,576-token window) is staged as
+**State on 2026-11-18, with 2026-11-19 updates.** The Spark pair serves
+**DeepSeek-V4.1-Flash (Mia EXL3)** (`DeepSeek-V4.1-Flash-1017`, four streams,
+524,288-token window, thinking on) on TensorFold by default since 2026-11-18:
+Max's decision after testing (v5 61/71, the board's #1). Since 2026-11-19 its
+best agent setup is v5 arm T2 (65/71), one line in `openbeast.conf`,
+`AGENT_PROFILE=deepseek-best` ([SPARK_HYDRA.md E2b](SPARK_HYDRA.md#e2b-deepseek-best-configuration-v5-t2));
+it goes live on spark-1 after the eval arm running there now. GLM-5.3-Flash (`GLM-5.3-Flash-EXL3`, 1,048,576-token window) is staged as
 the alternative, and one command switches between the two (`beastds` /
 `beastglm`, only through beast-spark,
 [SPARK_HYDRA.md](SPARK_HYDRA.md#deepseek-deployment)). OpenCode on the Mac
@@ -49,8 +52,11 @@ The launch and operations runbook for the pair is
 **Do this while GitHub is reachable.** Everything later on this page assumes
 it. The live checkouts (`~/openbeast` on spark-1 and on spark-2) are not
 updated by anything automatic, and an offline Spark cannot catch up. On
-2026-11-18 both sat at `d3727185` (#203), behind `main`. How far behind is
-always one command away; do not trust a count written in a doc:
+2026-11-18 both sat at `d3727185` (#203), behind `main`. On 2026-11-19
+(checked read-only) both had been brought to `f38a29c7` (#230) with clean
+working trees, the Spark tools in 0.4 matched that commit, and the hub in 0.5
+existed; `main` had moved on since. How far behind is always one command
+away; do not trust a count written in a doc:
 
 ```bash
 git -C ~/openbeast fetch origin && git -C ~/openbeast log --oneline HEAD..origin/main | wc -l   # 0 = current
@@ -63,7 +69,8 @@ local changes, and the live checkouts have some:
 cd ~/openbeast && git status --porcelain
 ```
 
-On 2026-11-18 (checked read-only) both Sparks printed the same nine lines:
+On 2026-11-18 (checked read-only) both Sparks printed the same nine lines
+(after the 2026-11-19 update both printed nothing, so 0.2 had nothing to do):
 four modified tracked files (`agents/docs/sources.toml`,
 `docs/BEAST_DOCS.md`, `skills/IN_HOUSE_SKILLS.txt`,
 `skills/platform-docs/SKILL.md`) and untracked `docs/PYTHON_OFFLINE.md`,
@@ -108,20 +115,23 @@ is all it needs.
 **0.4 Install the Spark tools from the updated checkout** (spark-1 only):
 
 ```bash
-install -m 755 ~/openbeast/scripts/backends/spark-beast.sh ~/.local/bin/beast-spark   # or `beast-spark install` once available
 P=~/openbeast-recipes/deepseek-prep
 for f in spark-deepseek-pack.sh spark-deepseek-prepare-local.sh; do
   cp -p "$P/$f" "$P/$f.bak-$(date +%Y%m%d)"           # keep the copy that ran until now
-  install -m 755 ~/openbeast/scripts/backends/$f "$P/$f"
 done
-beast-spark status                                    # selected: ds (the default), and what serves on :8000
+~/openbeast/scripts/backends/spark-beast.sh install   # beast-spark to ~/.local/bin, both pack tools to $P, the aliases once
+~/.local/bin/beast-spark status                       # selected: ds (the default), and what serves on :8000
 ```
+
+`spark-beast.sh install` replaces a file only when it differs, and refuses
+to run from anywhere but a checkout's `scripts/backends/`.
 
 `beast-spark` (aliases `beastglm` / `beastds`) is the only supported way to
 switch the pair between GLM-5.3-Flash and DeepSeek-V4.1-Flash; it calls the
 two DeepSeek helpers from `~/openbeast-recipes/deepseek-prep/`, not from the
 checkout. On 2026-11-18 spark-1's installed `beast-spark` matched `main`,
 while both helpers there were older than `main`'s (shellcheck fixes only).
+On 2026-11-19 all three matched spark-1's checkout byte for byte.
 
 **0.5 Build the hub** ([11.2](#112-one-time-setup), "While GitHub is
 reachable"), so that branches have somewhere to go when GitHub is not.
@@ -403,8 +413,9 @@ Mac. To lint on a Spark offline, stage a static `shellcheck` aarch64 binary
 
 ### 3.2 GNU-only suites run on a Spark
 
-The shell suites are written for GNU coreutils / Linux. `tests/test_engines.sh`
-says so in its header (it also needs OpenSSL ≥ 3). On the Mac on 2026-11-15,
+Most shell suites are written for GNU coreutils / Linux. Two now also run on
+macOS (`test_engines.sh`, which still needs OpenSSL ≥ 3, and
+`test_supply_chain.sh`: see "On macOS" below). On the Mac on 2026-11-15,
 `tests/test_skill_import.sh` showed 5 BSD-only failures that do not happen on
 spark-1. Run shell suites on a Spark, in a clone, niced. spark-2 is the better
 host: it runs no OpenBeast services and had ~11 GiB available, against spark-1's
@@ -422,6 +433,20 @@ spark-1's, so a clone of it tests old code.
 Measured on spark-2 on 2026-11-15, at this branch's head, in a clone: see
 [9.3](#93-gnu-suites-on-spark-2).
 
+**On macOS (2026-11-18).** With CI off, Max's Mac is the test box. `tests/test_engines.sh` no longer
+needs GNU tools: it edits files with `sed -i.bak` (GNU and BSD both take
+it), reads modes with `stat -c` or `stat -f`, and shims what macOS lacks into
+its own `$T/bin` (`timeout` as a small perl script, `sha256sum` from `/sbin`
+or `shasum -a 256`). It falls back to 127.0.0.1 where another 127/8 address
+does not answer (macOS), and `OB_ENGINE_UNAME=Linux` lets it run the Linux
+host-class detection there. `scripts/engine.sh use` also lost a bash 3.2
+crash: an empty `unsets` array under `set -u`. `tests/test_supply_chain.sh`
+failed on macOS because `scripts/land-dependabot.sh` took its lock only where
+`flock(1)` exists, so a Mac had no single-instance guard at all; it now takes
+the same `flock(2)` lock through perl when `flock(1)` is missing, and the
+suite checks that a second run is refused. Verified on the Mac (bash 3.2.57):
+test_engines.sh 112 passed, test_supply_chain.sh 31 passed.
+
 ### 3.3 File area to tests
 
 Run the narrow suites while iterating, then the full set before committing:
@@ -434,8 +459,8 @@ Run the narrow suites while iterating, then the full set before committing:
 | `start.sh` / `stop.sh` supervision, scopes, watchdog | `tests/test_lifecycle.sh`, `tests/test_health_recovery.py`, `tests/test_proc_hygiene.py` |
 | `scripts/lib/conf.sh`, `openbeast.conf` keys | `tests/test_conf_secrets.sh`, `tests/test_escalate_conf.sh`, `tests/test_shell_ops.sh` |
 | `scripts/healthcheck.sh`, `scripts/doctor.sh`, `setup-tailscale.sh` | `tests/test_shell_ops.sh`, `tests/test_operator_scripts.sh`, `tests/test_backends.sh` |
-| `scripts/engine.sh`, `scripts/engines/*`, `scripts/lib/engine.sh`, `engine-serve.sh` | `tests/test_engines.sh` (GNU), `tests/test_lifecycle.sh` |
-| `scripts/serve-*.sh` flags, `scripts/llama.cpp.ref`, `scripts/lib/memscope.sh`, `scripts/engine-gate.sh`, `scripts/tokps.py`, `scripts/engines/maya*` | `tests/test_weight_streaming.sh` (portable; every serve-script flag against the pinned llama.cpp's option list), `tests/test_tokps.py`, `tests/test_engines.sh` (GNU, Maya install/stage/gate), `tests/test_lifecycle.sh` (the big-mode scope through `start.sh -d`). Runbook: [WEIGHT_STREAMING.md](WEIGHT_STREAMING.md) |
+| `scripts/engine.sh`, `scripts/engines/*`, `scripts/lib/engine.sh`, `engine-serve.sh` | `tests/test_engines.sh` (Linux or macOS, 3.2), `tests/test_lifecycle.sh` |
+| `scripts/serve-*.sh` flags, `scripts/llama.cpp.ref`, `scripts/lib/memscope.sh`, `scripts/engine-gate.sh`, `scripts/tokps.py`, `scripts/engines/maya*` | `tests/test_weight_streaming.sh` (portable; every serve-script flag against the pinned llama.cpp's option list), `tests/test_tokps.py`, `tests/test_engines.sh` (Maya install/stage/gate), `tests/test_lifecycle.sh` (the big-mode scope through `start.sh -d`). Runbook: [WEIGHT_STREAMING.md](WEIGHT_STREAMING.md) |
 | `scripts/backends/spark-cluster.sh`, `tensorfold/spark-node.sh`, `vllm/` | `tests/test_spark_cluster.sh`, `tests/test_backends.sh` |
 | `scripts/backends/spark-guard.sh` | `tests/test_spark_guard.sh` |
 | `scripts/backends/spark-deepseek-pack.sh` | `tests/test_spark_deepseek_pack.sh` |
@@ -484,7 +509,8 @@ system-prompt.md   agents/runner.py   agents/tools.py
 evals/SUITE_VERSION   evals/HARNESS_VERSION   evals/vlib.py
 ```
 
-`evals/HARNESS_VERSION` is a pin, not code: `harness8 <fingerprint>` (2026-11-18), where
+`evals/HARNESS_VERSION` is a pin, not code: its last line is `<version> <fingerprint>`
+(`harness9 cd729e38ca1e3030` on 2026-11-19; read the file for today's), where
 the fingerprint is the AST of run_eval's agent-shaping and judging code
 (`cache.HARNESS_FUNCTIONS` / `HARNESS_CONSTANTS`: the agent's argv, env and
 wall cap, fixture setup, the validator, its bootstrap and private build
@@ -514,8 +540,8 @@ injects it into every validator.
     && echo "ERA FILE TOUCHED — stop and ask Max"
   ```
 
-- **v5.0 is the current suite** (`evals/SUITE_VERSION` = `v5`, harness
-  `harness8`, the manifest `evals/suites/v5.json`). `SUITE_VERSION` and the
+- **v5.0 is the current suite** (`evals/SUITE_VERSION` = `v5`, the harness
+  version in `evals/HARNESS_VERSION`, the manifest `evals/suites/v5.json`). `SUITE_VERSION` and the
   manifest move only when Max rolls the suite; v5.1 is a backlog of twelve
   families, not something to add units to ([10](#10-the-v5-eval-suite-offline-running-it-and-authoring-for-it)).
 
@@ -526,8 +552,8 @@ injects it into every validator.
 The `git-discipline` skill is the long form. In short:
 
 - **Branch first.** `git switch -c fix/<topic>` (or `docs/`, `feat/`). Never
-  commit to `main` or to a shared integration branch such as
-  `feat/spark-scale-1-8` directly. Integration happens by merge.
+  commit to `main`, `offline/main` or any other shared integration branch
+  directly. Integration happens by merge.
 - **Atomic commits.** One logical change per commit: the fix, its test and its
   doc line together. Two unrelated fixes are two commits.
 - **Stage deliberately.** `git add <paths>`, never `git add .` / `-A`. Read
@@ -635,7 +661,8 @@ path changed, fix the doc that states it, in the same commit or the next one.
 `skills/README.md`. `python3 evals/suite_stats.py --check` covers eval counts.
 
 **8. Check for collisions after merges.** Parallel branches merge into
-`feat/spark-scale-1-8` often. After a merge, re-run every suite either side
+`main` (or, offline, `offline/main`) often; `feat/spark-scale-1-8` was the
+integration branch until #156. After a merge, re-run every suite either side
 touched, not just yours. Two green branches can merge into a red one: a count
 both bumped, a shared helper both changed. Run `git log --merges -5` and
 `git diff HEAD~1 --stat` to see what came in.
@@ -1126,9 +1153,16 @@ on spark-1**, the *hub*, so the Sparks and the Mac can still share
 branches, review each other's work and merge it. When GitHub returns, the
 Mac carries the result back as ordinary pull requests.
 
-**Status, 2026-11-18: the hub does not exist yet.** spark-1 has no
-`~/git/`, no `gh` and no GitHub credentials (checked read-only). The setup in
-11.2 takes a minute and is best done while GitHub is reachable.
+**Status, 2026-11-19 (checked read-only): the hub exists.** It was created
+on 2026-11-18 by the 11.2 "While GitHub is reachable" path: `main` and
+`offline/main` both at `5c582c18` (#222), `receive.denyNonFastForwards` and
+`receive.denyDeletes` set, `origin` = GitHub, `HEAD` = `main`. Its `main` is
+behind GitHub's: run "Keep it fresh" (end of 11.2) while GitHub is reachable,
+and move `offline/main` up with it while nothing has been merged into it
+(the three lines of [11.5](#115-resetting-the-trunk-after-the-sync): two
+checks that must print nothing, then `branch -f offline/main main`).
+spark-1 still has no `gh` and no GitHub credentials. 11.2 stays below for a
+rebuilt spark-1.
 
 ### 11.1 The layout
 
@@ -1419,21 +1453,6 @@ merge commits, 11.5's checks printing nothing, and both live checkouts back
 on `main` with `git pull --ff-only`; and 0.2's set-aside block against a
 checkout with modified and untracked files, after which `git pull --ff-only`
 went through. The Sparks run git 2.43, which has every command used
-here. The hub itself has not been created on spark-1 yet, so the ssh URLs are
-verified as ssh paths, not as git remotes.
-
-### test_engines.sh and test_supply_chain.sh run on macOS (2026-11-18)
-
-With CI off, Max's Mac is the test box. `tests/test_engines.sh` no longer
-needs GNU tools: it edits files with `sed -i.bak` (GNU and BSD both take
-it), reads modes with `stat -c` or `stat -f`, and shims what macOS lacks into
-its own `$T/bin` (`timeout` as a small perl script, `sha256sum` from `/sbin`
-or `shasum -a 256`). It falls back to 127.0.0.1 where another 127/8 address
-does not answer (macOS), and `OB_ENGINE_UNAME=Linux` lets it run the Linux
-host-class detection there. `scripts/engine.sh use` also lost a bash 3.2
-crash: an empty `unsets` array under `set -u`. `tests/test_supply_chain.sh`
-failed on macOS because `scripts/land-dependabot.sh` took its lock only where
-`flock(1)` exists, so a Mac had no single-instance guard at all; it now takes
-the same `flock(2)` lock through perl when `flock(1)` is missing, and the
-suite checks that a second run is refused. Verified on the Mac (bash 3.2.57):
-test_engines.sh 112 passed, test_supply_chain.sh 31 passed.
+here. The hub was created on spark-1 on 2026-11-18 (status at the top
+of 11); the ssh URLs in 11.1 were verified as ssh paths, not yet as git
+remotes against it.

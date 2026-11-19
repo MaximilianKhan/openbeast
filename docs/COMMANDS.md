@@ -145,8 +145,9 @@ Never print secrets. To show configuration, filter:
 
 The pair serves exactly two models, one at a time: **DeepSeek-V4.1-Flash
 (Mia EXL3)** (unit `deepseek-v41-inference`, model id `DeepSeek-V4.1-Flash-1017`,
-524,288-token window, **the default since 2026-11-18**, Max's decision after
-testing; v5 61/71, the board's #1) and **GLM-5.3-Flash** (unit
+524,288-token window, four streams, thinking on, **the default since
+2026-11-18**, Max's decision after testing; the v5 board's #1: 61/71, and
+65/71 with `AGENT_PROFILE=deepseek-best`, §5) and **GLM-5.3-Flash** (unit
 `spark-hydra-inference`, model id `GLM-5.3-Flash-EXL3`, 1,048,576-token
 window, the staged alternative). `beastup` with nothing selected picks
 DeepSeek. "Selected"
@@ -328,7 +329,7 @@ MCP tools yet). Details: [SELF_DEVELOPMENT.md "opencode on the Sparks"](SELF_DEV
 
 ```bash
 cd ~/ob-<topic> && opencode                                   # interactive, in a clone
-~/.local/bin/opencode run "What is 17 times 23? Reply with only the number."   # smoke test: 391 (full path: ssh one-liners have no ~/.opencode/bin on PATH)
+~/.local/bin/opencode run "What is 17 times 23? Reply with only the number."   # smoke test: 391 (full path: an ssh one-liner's PATH may lack ~/.local/bin)
 opencode --version                                            # v2.3.2
 systemctl --user status opencode-model-link --no-pager        # on spark-2: the ssh tunnel to spark-1's :8000
 cat ~/Documents/opencode/INSTALL.md                           # offline reinstall from the kept tarball
@@ -406,9 +407,11 @@ Worktrees for parallel sessions:
 
 When GitHub is unreachable, the Sparks and the Mac exchange branches through
 a bare repository on spark-1, `~/git/openbeast.git` (the "hub"), and an
-offline trunk branch, `offline/main`. **The hub does not exist yet**
-(2026-11-18): it is created once, ideally while GitHub is still reachable. The full procedure, including the
-one-time setup and the sync back to GitHub, is
+offline trunk branch, `offline/main`. **The hub exists** (created
+2026-11-18; on 2026-11-19 its `main` and `offline/main` were at #222, behind
+GitHub: refresh it while GitHub is reachable with
+`git -C ~/git/openbeast.git fetch origin main:main`). The full procedure, including the
+one-time setup for a rebuilt spark-1 and the sync back to GitHub, is
 [SELF_DEVELOPMENT.md §11](SELF_DEVELOPMENT.md#11-developing-with-github-unreachable).
 
 ```bash
@@ -531,7 +534,7 @@ Each of these is a state change: say what you are doing before you do it.
 
 | Situation | Commands (spark-1 unless noted) |
 |---|---|
-| The model does not answer, `/health` fails | `systemctl --user status spark-hydra-inference --no-pager`; `journalctl --user -u spark-hydra-inference -n 100 --no-pager`; then `systemctl --user restart spark-hydra-inference` (both ranks; never one rank). For DeepSeek, the same on `deepseek-v41-inference` |
+| The model does not answer, `/health` fails | `systemctl --user status deepseek-v41-inference --no-pager`; `journalctl --user -u deepseek-v41-inference -n 100 --no-pager`; then `systemctl --user restart deepseek-v41-inference` (both ranks; never one rank). With GLM selected, the same on `spark-hydra-inference` |
 | The unit hit its start limit | `systemctl --user reset-failed <unit> && systemctl --user start <unit>` (DeepSeek's unit allows 3 starts in 30 min) |
 | Answers mid-stream stop, `/health` still ok | restart the unit (a stalled collective; restart all ranks) |
 | A service in `healthcheck.sh` is DOWN | `~/openbeast/scripts/healthcheck.sh --restart`; if that fails, `systemctl --user restart openbeast` |
