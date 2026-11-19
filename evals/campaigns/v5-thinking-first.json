@@ -105,7 +105,9 @@
   ],
   "recommend": {
     "composite": "T",
-    "ablations": ["T_noturns", "T_nopacks", "T_noassist", "T_noenv"],
+    "composite_by_model": {"DeepSeek-V4.1-Flash": "T2"},
+    "composite_by_model_note": "Per-model best-first composite (2026-11-19). DeepSeek-V4.1-Flash (Mia EXL3): T2 (T + 8192-token per-turn cap + act nudge) scored 65/71 against T's 61/71, +4 / 0 regressions (board row DS-T2), so a DeepSeek campaign runs T2 first and `campaign.py report` starts the recommended daily config from T2; each ablation still compares with T, the arm it removes from. T itself is unchanged (the GLM history depends on it). Daily equivalent: AGENT_PROFILE=deepseek-best in openbeast.conf (docs/SPARK_HYDRA.md).",
+    "ablations":["T_noturns", "T_nopacks", "T_noassist", "T_noenv"],
     "no_thinking": "N",
     "noise_sd": 1.0,
     "noise_fallback": 3

@@ -28,6 +28,12 @@ and its immediate subdirectories, e.g. src/main.zig). The scan is bounded
 (SCAN_MAX_ENTRIES) and skips VCS/dependency/cache directories, so an agent
 started in $HOME costs a few hundred stat()s, not a crawl.
 
+THE VARIANT. LANG_PACK_VARIANT = v1 (default, PACK_FILES) | v3 (the zig
+pack DeepSeek-V4.1-Flash (Mia EXL3)'s best arm T2 measured; set by
+AGENT_PROFILE=deepseek-best). Env OPENBEAST_LANG_PACK_VARIANT beats the conf.
+Only pinned bytes are served (PRODUCTION_VARIANT_SHA256); anything else
+serves no pack.
+
 THE SWITCH. LANG_PACK_CONTEXT = auto (default) | off. Env
 OPENBEAST_LANG_PACK_CONTEXT beats openbeast.conf, parsed the way
 scripts/lib/conf.sh's _ob_bool parses: first token, trailing #comment and
@@ -78,9 +84,10 @@ PACK_FILES = {"zig": "zig-0.16.md"}
 #: claims (posix.write, @clz shift width, no erf, the toolchain's own main.zig;
 #: docs/HARNESS_NOTES.md "Language-specific residue under thinking"): a new
 #: file, not an edit of v2, because v2 was mid-measurement in a campaign arm
-#: and a variant name must keep naming one set of bytes. Production never
-#: reads this map; when a variant wins its A/B, it becomes PACK_FILES and
-#: MEASURED_SHA256 moves.
+#: and a variant name must keep naming one set of bytes. Production reads
+#: this map only for a variant the operator chose (LANG_PACK_VARIANT) that
+#: has a measured pin in PRODUCTION_VARIANT_SHA256 below; when a variant wins
+#: its A/B outright, it becomes PACK_FILES and MEASURED_SHA256 moves.
 PACK_VARIANTS = {
     "v1": dict(PACK_FILES),
     "v2": {"zig": "zig-0.16-v2.md"},
@@ -96,6 +103,22 @@ DEFAULT_PACK_VARIANT = "v1"
 MEASURED_SHA256 = {
     "zig": "5cdf4b6417160751b95c3fd1e8a730193774a7061ce1be4f57435d591ae98127",
 }
+
+#: Pack VARIANTS production may serve besides v1, when the operator opts in
+#: with LANG_PACK_VARIANT (env OPENBEAST_LANG_PACK_VARIANT; AGENT_PROFILE=
+#: deepseek-best in openbeast.conf sets v3). Same rule as MEASURED_SHA256:
+#: only bytes a measurement used. v3 = agents/packs/zig-0.16-v3.md as
+#: v5-thinking-first arms T and T2 measured it (DeepSeek-V4.1-Flash (Mia EXL3),
+#: T2 65/71 on 2026-11-19, board row DS-T2; the results header records
+#: packs.zig = cfdab8fa). An edit to the file is an unmeasured treatment and is
+#: not served until the pin moves with a new measurement. The HOST pack those
+#: arms also carried (agents/lang/host_pack.py) stays eval-only.
+PRODUCTION_VARIANT_SHA256 = {
+    "v3": {"zig": "cfdab8fa9f194e8a3a346cbb12567c625ac93f557b40ee572d601db3c8ff8297"},
+}
+#: Every value LANG_PACK_VARIANT accepts. scripts/lib/conf.sh holds the same
+#: list (_OB_PACK_VARIANTS); tests/test_agent_profile.py pins the two.
+PRODUCTION_VARIANTS = (DEFAULT_PACK_VARIANT,) + tuple(sorted(PRODUCTION_VARIANT_SHA256))
 
 SCAN_MAX_ENTRIES = 500
 SCAN_SKIP_DIRS = frozenset({
@@ -147,6 +170,26 @@ def setting() -> tuple[str, str]:
         return "off", raw
     _log_once(f"bad:{raw}", f"LANG_PACK_CONTEXT={raw!r} is not auto|off — treating it as off")
     return "off", raw
+
+
+def pack_variant() -> tuple[str | None, str]:
+    """(variant, raw value): which pack bytes production serves.
+    OPENBEAST_LANG_PACK_VARIANT beats openbeast.conf's LANG_PACK_VARIANT; empty
+    is the default (v1, PACK_FILES). A value outside PRODUCTION_VARIANTS is
+    None: no pack at all, logged once (a typo must not silently pick a
+    treatment, and v2 was never measured as a whole run)."""
+    raw = os.environ.get("OPENBEAST_LANG_PACK_VARIANT")
+    if raw is None:
+        raw = _conf_value("LANG_PACK_VARIANT") or ""
+    tok = (raw.split() or [""])[0].split("#", 1)[0]
+    tok = tok.replace('"', "").replace("'", "").lower()
+    if not tok:
+        return DEFAULT_PACK_VARIANT, raw
+    if tok in PRODUCTION_VARIANTS:
+        return tok, raw
+    _log_once(f"variant:{raw}", f"LANG_PACK_VARIANT={raw!r} is not one of "
+              f"{', '.join(PRODUCTION_VARIANTS)} — serving no pack")
+    return None, raw
 
 
 def _eval_marker() -> str | None:
@@ -249,10 +292,19 @@ class ServedPack:
         return f"{self.lang}@{self.sha8}"
 
 
-def served_pack(lang: str) -> tuple[ServedPack | None, str]:
+def served_pack(lang: str, variant: str | None = "") -> tuple[ServedPack | None, str]:
     """(pack, "") when production would serve `lang`'s pack, else (None, why).
-    Checks everything except the task: file present, measured bytes, drift."""
-    fn = PACK_FILES.get(lang)
+    Checks everything except the task: file present, measured bytes, drift.
+    `variant` "" = the configured one (pack_variant); v1 is PACK_FILES."""
+    if variant == "":
+        variant = pack_variant()[0]
+    if variant is None:
+        return None, (f"LANG_PACK_VARIANT is not one of {', '.join(PRODUCTION_VARIANTS)}")
+    if variant == DEFAULT_PACK_VARIANT:
+        files, pins = PACK_FILES, MEASURED_SHA256
+    else:
+        files, pins = PACK_VARIANTS.get(variant, {}), PRODUCTION_VARIANT_SHA256.get(variant, {})
+    fn = files.get(lang)
     if not fn:
         return None, f"no {lang} pack"
     path = os.path.join(PACKS_DIR, fn)
@@ -273,7 +325,7 @@ def served_pack(lang: str) -> tuple[ServedPack | None, str]:
         # unverifiable is never a pass (the escalation gate's rule too).
         return None, ("zig is not installed here, so the pack cannot be "
                       "confirmed to match it")
-    want = MEASURED_SHA256.get(lang)
+    want = pins.get(lang)
     got = hashlib.sha256(data).hexdigest()
     if want != got:
         return None, (f"pack {path} is @{got[:8]}, but the measured pack is "
@@ -520,11 +572,13 @@ def status_line() -> str:
         return "zig pack: off (LANG_PACK_CONTEXT=off)"
     if not _lang_allowed("zig"):
         return "zig pack: off (zig not in LANG_PACKS)"
-    p, why = served_pack("zig")
+    variant, _raw = pack_variant()
+    p, why = served_pack("zig", variant)
     if p is None:
         return f"zig pack: NOT SERVED — {why}"
     rel = os.path.relpath(p.path, os.path.dirname(_AGENTS))
-    return f"zig pack: auto (agents on zig tasks get {rel} @{p.sha8})"
+    tail = "" if variant == DEFAULT_PACK_VARIANT else f", LANG_PACK_VARIANT={variant}"
+    return f"zig pack: auto (agents on zig tasks get {rel} @{p.sha8}{tail})"
 
 
 def main(argv: list[str] | None = None) -> int:

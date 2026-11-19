@@ -805,3 +805,105 @@ def test_eta_calibration_brings_an_arm_back_to_the_reference_jobs():
     assert abs(h - 3.0) < 1e-9
     eta, why = C.arm_eta_h(camp, "T_j2", h, 2)
     assert abs(eta - 9.2) < 1e-9 and "x1.33 for --jobs 2 vs 4" in why
+
+
+# --- 11. per-model composite: DeepSeek-V4.1-Flash (Mia EXL3) starts from T2 -------------------
+#
+# T2 (T + 8192-token per-turn cap + act nudge) scored 65/71 against T's 61/71
+# (board row DS-T2, 2026-11-19), so it is DeepSeek's best-first composite:
+# recommend.composite_by_model. T itself stays as it is (the GLM history).
+
+DS = "DeepSeek-V4.1-Flash"
+
+
+def test_deepseek_composite_is_t2_every_other_model_keeps_t():
+    camp = C.load_campaign(TF)
+    assert camp["recommend"]["composite"] == "T"
+    for name in (DS, "deepseek-v4.1-flash", "DeepSeek-V4.1-Flash (Mia EXL3)"):
+        assert C.composite_for(camp, name)[0] == "T2", name
+    for name in ("GLM-5.3-Flash", "Fake-1", "DeepSeek-V4.1-Flashy", None):
+        assert C.composite_for(camp, name) == ("T", "recommend.composite"), name
+    t2 = C.resolve_arm(camp, "T2")
+    assert t2["env"]["OPENBEAST_AGENT_MAX_TOKENS"] == "8192"
+    assert t2["env"]["OPENBEAST_AGENT_ACT_NUDGE"] == "1"
+    assert {k: t2["env"][k] for k in COMPOSITE_ENV} == COMPOSITE_ENV      # T plus two switches
+    assert C.arm_spec(camp, "T2")["base"] == "T"
+
+
+def test_a_deepseek_chain_runs_t2_first_and_others_are_unchanged():
+    camp = C.load_campaign(TF)
+    assert C.run_order(camp, model_name=DS) == ["T2"] + TF_ARMS
+    assert C.run_order(camp, model_name="Fake-1") == TF_ARMS
+    assert C.run_order(camp) == TF_ARMS
+    # an explicit --order still decides; T2 stays in the chain
+    o = C.run_order(camp, prefer=["T"], model_name=DS)
+    assert o[0] == "T" and "T2" in o and len(o) == len(set(o))
+
+
+def test_campaign_file_refuses_a_bad_per_model_composite():
+    camp = {k: v for k, v in C.load_campaign(TF).items() if k != "_path"}
+    bad = json.loads(json.dumps(camp))
+    bad["recommend"]["composite_by_model"] = {DS: "ZZ"}
+    assert any("no arm 'ZZ'" in e for e in C.validate_campaign(bad))
+    bad["recommend"]["composite_by_model"] = {DS: "N0"}                 # not built on T
+    assert any("must build on the composite T" in e for e in C.validate_campaign(bad))
+    assert C.validate_campaign(camp) == []
+
+
+def test_run_starts_a_deepseek_chain_with_t2(tree, tmp_path):
+    # T2 needs a harness9 tree: the fake runner names its switches
+    rp = tree / "agents" / "runner.py"
+    rp.write_text(rp.read_text() + "# OPENBEAST_AGENT_ACT_NUDGE OPENBEAST_AGENT_STATS_FILE\n")
+    plan(tmp_path, {"T2": {"pass": UNITS}, "T": {"pass": UNITS[:3]}})
+    assert C.main(["run", "--model-name", DS, "--base-url", "http://127.0.0.1:9/v1",
+                   "--jobs", "4", "--slots", "4", "--tree", str(tree), "--python", sys.executable,
+                   "--skip-preflight"]) == 0
+    assert [c["arm"] for c in calls(tmp_path)] == ["T2"] + TF_ARMS
+
+
+def test_deepseek_recommendation_starts_from_t2(tmp_path):
+    camp = C.load_campaign(TF)
+    seed = _units_rows(8, secs=500, toks=4000)
+    seed[0]["passed"], seed[9]["passed"] = False, True          # T_s1 vs T: margin 2
+    r = {"T": (_units_rows(8, secs=500, toks=4000), 2.0),
+         "T2": (_units_rows(9, secs=400, toks=3000), 2.0),
+         "T_nopacks": (_units_rows(8, secs=500, toks=4000), 2.0),   # 0 vs T: drop
+         "T_noturns": (_units_rows(4, secs=400, toks=3000), 2.0),   # -4 vs T: keep
+         "T_s1": (seed, 2.0),
+         "N": (_units_rows(3, secs=200, toks=1000), 1.0)}
+    st = _tf_state(tmp_path, r)
+    st["model_name"] = DS
+    rows = {a: C.arm_rows(st["arms"][a]) for a in r}
+    rec = C.recommend(camp, st, rows)
+    assert rec["composite"] == "T2" and rec["campaign_composite"] == "T"
+    assert "composite_by_model" in rec["composite_source"] and not rec["fallback"]
+    assert rec["margin"] == 2 and "T_s1 vs T" in rec["noise"]     # T's seed arm stands in
+    v = {c["arm"]: c for c in rec["components"]}
+    assert v["T_nopacks"]["verdict"] == "drop" and v["T_nopacks"]["net"] == 0   # vs T, not T2
+    assert v["T_nopacks"]["why"].endswith("(vs T)")
+    assert v["T_noturns"]["verdict"] == "keep"
+    assert rec["thinking"]["verdict"] == "on" and rec["thinking"]["net"] == 5  # N vs T
+    sp = rec["spec"]
+    assert sp["env"]["OPENBEAST_AGENT_MAX_TOKENS"] == "8192"              # T2's own switches
+    assert sp["env"]["OPENBEAST_AGENT_ACT_NUDGE"] == "1"
+    assert sp["env"]["BEAST_PACKS"] == "0"                               # the dropped component
+    assert C.arg_value(sp["args"], "--reasoning-budget") == "8192"
+    md = C.render_report(camp, st, {}, None, walls=None)
+    section = md.split("## Recommended daily config")[1].split("\n## ")[0]
+    assert f"Composite for {DS}: **T2**" in section and "not the campaign's T" in section
+    assert "OPENBEAST_AGENT_ACT_NUDGE=1" in section
+
+
+def test_deepseek_without_t2_falls_back_to_t_and_says_so(tmp_path):
+    camp = C.load_campaign(TF)
+    st = _tf_state(tmp_path, {"T": (_units_rows(8), 2.0), "N": (_units_rows(3), 1.0)})
+    st["model_name"] = DS
+    rows = {a: C.arm_rows(st["arms"][a]) for a in st["arms"]}
+    rec = C.recommend(camp, st, rows)
+    assert rec["composite"] == "T" and "T2" in rec["fallback"]
+    md = C.render_report(camp, st, {}, None, walls=None)
+    assert "is not measured yet: the campaign composite T stands in." in md
+    # and GLM's report is exactly what it was: no per-model line at all
+    st["model_name"] = "Fake-1"
+    md = C.render_report(camp, st, {}, None, walls=None)
+    assert "Composite for" not in md and "stands in" not in md

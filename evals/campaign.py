@@ -167,6 +167,16 @@ def validate_campaign(camp: dict) -> list[str]:
         if rec.get("no_thinking") in ids and \
                 arm_spec(camp, rec["no_thinking"]).get("base") != rec.get("composite"):
             errs.append(f"recommend.no_thinking: {rec['no_thinking']} must build on the composite")
+        cbm = rec.get("composite_by_model") or {}
+        if not isinstance(cbm, dict):
+            errs.append("recommend.composite_by_model must map a model name to an arm")
+            cbm = {}
+        for name, aid in cbm.items():
+            if aid not in ids:
+                errs.append(f"recommend.composite_by_model[{name!r}]: no arm {aid!r}")
+            elif rec.get("composite") not in [a["id"] for a in arm_chain(camp, aid)]:
+                errs.append(f"recommend.composite_by_model[{name!r}]: {aid} must build on the "
+                            f"composite {rec.get('composite')} (its ablations remove from it)")
     for pair in camp.get("contrasts") or []:
         if len(pair) != 2 or any(x not in seen for x in pair):
             errs.append(f"contrast {pair}: needs two known arms")
@@ -197,12 +207,35 @@ def order_problems(camp: dict, order: list[str]) -> list[str]:
     return errs
 
 
+def composite_for(camp: dict, model_name: str | None) -> tuple[str | None, str]:
+    """(arm, source): the best-first composite for a model. A model listed in
+    recommend.composite_by_model gets its own arm (DeepSeek-V4.1-Flash: T2,
+    65/71 against T's 61/71); every other model the campaign's composite. The
+    match is on slugs: the key, or the key followed by more words
+    ("DeepSeek-V4.1-Flash (Mia EXL3)" matches "DeepSeek-V4.1-Flash")."""
+    rec = camp.get("recommend") or {}
+    slug = slugify(model_name or "")
+    for name, aid in (rec.get("composite_by_model") or {}).items():
+        key = slugify(name)
+        if model_name and (slug == key or slug.startswith(key + "-")):
+            return aid, f"recommend.composite_by_model[{name!r}]"
+    return rec.get("composite"), "recommend.composite"
+
+
 def run_order(camp: dict, prefer: list[str] | None = None,
-              include: list[str] | None = None) -> list[str]:
+              include: list[str] | None = None,
+              model_name: str | None = None) -> list[str]:
     """The arms `run` chains, in order: the campaign's `order` (else the
     file's), optional arms only when `include`d, and `prefer` (--order)
-    moved to the front in its own order. Refused if a decision would then be
-    taken before the arms it compares have run."""
+    moved to the front in its own order. A model with its own composite
+    (recommend.composite_by_model) runs that arm too, first unless --order
+    says otherwise: it is that model's best-first row. Refused if a decision
+    would then be taken before the arms it compares have run."""
+    mc, _src = composite_for(camp, model_name)
+    if model_name and mc and mc != (camp.get("recommend") or {}).get("composite"):
+        include = list(include or []) + [mc]
+        if not prefer:
+            prefer = [mc]
     want = {arm_spec(camp, x)["id"] for x in include or []}
     base = list(camp.get("order") or [a["id"] for a in camp["arms"]])
     base += [a["id"] for a in camp["arms"] if a["id"] in want and a["id"] not in base]
@@ -977,7 +1010,7 @@ def cmd_run(a, camp: dict) -> int:
     for b in a.baseline or []:
         name, _, path = b.partition("=")
         st["baselines"][name] = os.path.abspath(path)
-    order = run_order(camp, _csv(a.order), _csv(a.include))
+    order = run_order(camp, _csv(a.order), _csv(a.include), a.model_name)
     if a.only:
         todo = [arm_spec(camp, x)["id"] for x in a.only.split(",")]
     elif a.from_arm:
@@ -1469,28 +1502,34 @@ def arm_thinking(camp: dict, st: dict, aid: str) -> str | None:
         return None
 
 
-def noise_margin(camp: dict, rows: dict, composite: str) -> tuple[int, str]:
+def noise_margin(camp: dict, rows: dict, composite: str,
+                 fallback_of: str | None = None) -> tuple[int, str]:
     """(margin, why): the pass-count delta a single-draw contrast must exceed
     to count as an effect. The seed arms of the composite measure how many
     units flip between two draws of one config (churn c). Under no effect
     those flips land up or down with equal odds, so a contrast's net delta
     has a standard deviation of about sqrt(c): the margin is
     ceil(recommend.noise_sd x sqrt(c)), from the noisiest seed arm. Without a
-    measured seed arm, recommend.noise_fallback."""
+    measured seed arm, recommend.noise_fallback. `fallback_of`: a per-model
+    composite with no seed arm of its own borrows the seed arms of the
+    campaign composite it builds on (the same harness, one draw apart)."""
     rec = camp.get("recommend") or {}
     sd = float(rec.get("noise_sd", 1.0))
     churns = []
-    for x in camp["arms"]:
-        if x.get("noise_of") == composite and x["id"] in rows and composite in rows:
-            f = flips(rows[composite], rows[x["id"]])
-            churns.append((len(f["rescued"]) + len(f["regressed"]), x["id"], f["common"]))
+    for of in [composite] + ([fallback_of] if fallback_of and fallback_of != composite else []):
+        for x in camp["arms"]:
+            if x.get("noise_of") == of and x["id"] in rows and of in rows:
+                f = flips(rows[of], rows[x["id"]])
+                churns.append((len(f["rescued"]) + len(f["regressed"]), x["id"], f["common"], of))
+        if churns:
+            break
     if not churns:
         m = int(rec.get("noise_fallback", 3))
         return m, (f"no seed arm of {composite} measured: margin {m} "
                    f"(recommend.noise_fallback), an assumption, not a measurement")
-    c, aid, n = max(churns)
+    c, aid, n, of = max(churns)
     m = math.ceil(sd * math.sqrt(c))
-    return m, (f"{aid} vs {composite}: {c} of {n} units flip between two draws; "
+    return m, (f"{aid} vs {of}: {c} of {n} units flip between two draws; "
                f"margin ceil({sd:g} x sqrt({c})) = {m}")
 
 
@@ -1506,39 +1545,63 @@ def recommend(camp: dict, st: dict, rows: dict) -> dict | None:
         latency. Either way the measured cost (time and tokens per unit) is
         reported.
 
+    A model with its own composite (recommend.composite_by_model, e.g.
+    DeepSeek-V4.1-Flash: T2) starts from that arm once it is measured; the
+    ablations and the no-thinking twin still each compare with the arm they
+    remove from (the campaign composite), and a dropped component is removed
+    from the model's composite.
+
     Returns None without a `recommend` block or before the composite ran."""
     rec = camp.get("recommend")
-    if not rec or rec.get("composite") not in rows:
+    if not rec:
         return None
-    comp = rec["composite"]
-    margin, noise_why = noise_margin(camp, rows, comp)
+    base = rec.get("composite")
+    comp, source = composite_for(camp, st.get("model_name"))
+    fallback = ""
+    if comp != base and comp not in rows:
+        fallback = (f"{comp} ({source}) is not measured yet: the campaign composite "
+                    f"{base} stands in")
+        comp, source = base, "recommend.composite"
+    if comp not in rows:
+        return None
+    margin, noise_why = noise_margin(camp, rows, comp, base)
     taken = (st["arms"].get(comp) or {}).get("decisions_taken") or {}
     spec = resolve_arm(camp, comp, taken)
+
+    def against(x: str) -> str:
+        """The arm `x` removes one thing from: its base, else the composite."""
+        return arm_spec(camp, x).get("base") or comp
+
     components = []
     for x in rec.get("ablations") or []:
         label = arm_spec(camp, x).get("ablates") or x
-        if x not in rows:
+        ref = against(x)
+        if x not in rows or ref not in rows:
             components.append({"arm": x, "component": label, "verdict": "keep",
-                               "why": "not measured: kept (the composite's default)"})
+                               "why": "not measured: kept (the composite's default)"
+                               if x not in rows else
+                               f"{ref}, the arm it removes from, not measured: kept"})
             continue
-        f = flips(rows[x], rows[comp])
+        f = flips(rows[x], rows[ref])
         keep = f["net"] > margin
         components.append({
             "arm": x, "component": label, "verdict": "keep" if keep else "drop",
             "net": f["net"], "common": f["common"], "p": f["p"],
             "why": (f"without it {f['a_passed']}, with it {f['b_passed']} on {f['common']} "
-                    f"common units: net {f['net']:+d} {'>' if keep else '<='} margin {margin}")})
+                    f"common units: net {f['net']:+d} {'>' if keep else '<='} margin {margin}"
+                    + ("" if ref == comp else f" (vs {ref})"))})
         if not keep:
             apply_delta(spec, arm_spec(camp, x))
     think = None
     nt = rec.get("no_thinking")
     if nt:
-        if nt not in rows:
+        ref = against(nt)
+        if nt not in rows or ref not in rows:
             think = {"arm": nt, "verdict": "on",
                      "why": f"{nt} (no thinking) not measured: thinking stays on"}
         else:
-            f = flips(rows[nt], rows[comp])
-            cost = paired_cost(rows[nt], rows[comp])
+            f = flips(rows[nt], rows[ref])
+            cost = paired_cost(rows[nt], rows[ref])
             on = f["net"] > margin
             think = {"arm": nt, "verdict": "on" if on else "off", "net": f["net"],
                      "common": f["common"], "p": f["p"], "cost": cost,
@@ -1548,7 +1611,8 @@ def recommend(camp: dict, st: dict, rows: dict) -> dict | None:
             if not on:
                 apply_delta(spec, arm_spec(camp, nt))
     finish_spec(spec)
-    return {"composite": comp, "margin": margin, "noise": noise_why,
+    return {"composite": comp, "composite_source": source, "campaign_composite": base,
+            "fallback": fallback, "margin": margin, "noise": noise_why,
             "components": components, "thinking": think, "spec": spec}
 
 
@@ -1626,6 +1690,16 @@ def render_report(camp: dict, st: dict, baselines: dict, reference: dict | None,
                      f"measured yet: no recommendation.")
             L.append("")
         else:
+            if rec["composite"] != rec["campaign_composite"]:
+                L.append(f"Composite for {st['model_name']}: **{rec['composite']}** "
+                         f"({rec['composite_source']}), not the campaign's "
+                         f"{rec['campaign_composite']}. Each ablation is still measured against "
+                         f"the arm it removes from ({rec['campaign_composite']}); a dropped "
+                         f"component is removed from {rec['composite']}.")
+                L.append("")
+            elif rec.get("fallback"):
+                L.append(f"{rec['fallback']}.")
+                L.append("")
             th = rec["thinking"] or {}
             kept = [c["component"] for c in rec["components"] if c["verdict"] == "keep"]
             dropped = [c["component"] for c in rec["components"] if c["verdict"] == "drop"]

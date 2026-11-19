@@ -266,6 +266,23 @@ cd ~/openbeast && ./scripts/clients.sh rotate <id>      # new key for the same d
 ~/openbeast/scripts/artifact.sh --help                  # beast-artifact CLI
 ```
 
+**DeepSeek's best agent setup (v5 T2, 65/71) as the daily default**
+([SPARK_HYDRA.md E2b](SPARK_HYDRA.md#e2b-deepseek-best-configuration-v5-t2)).
+CHANGES STATE; only in a gap between eval arms:
+
+```bash
+cd ~/openbeast && cp openbeast.conf openbeast.conf.bak-$(date +%Y%m%d)
+sed -i -e '/^AGENT_MAX_TOKENS=16384$/d' -e '/^BEAST_ASSIST=0$/d' openbeast.conf   # explicit lines beat the profile
+echo 'AGENT_PROFILE=deepseek-best' >> openbeast.conf
+systemctl --user restart openbeast                      # the tool server and beast-chat read it at start
+OB_CONF_READONLY=1 bash -c 'REPO_DIR=~/openbeast; source ~/openbeast/scripts/lib/conf.sh; env' | grep -E 'AGENT_|DIAG_EDIT|PACK_VARIANT|BEAST_ASSIST|INFERENCE_THINKING'   # read-only check
+```
+
+One key overrides one switch (`AGENT_ACT_NUDGE=0`, `AGENT_MAX_TOKENS=4096`,
+...); `AGENT_PROFILE=none` or deleting the line turns the profile off. Which
+switches act on daily agents and which only in evals: openbeast.conf.example,
+`AGENT_PROFILE`.
+
 Updating the command center to a newer commit is
 [SPARK_HYDRA.md §G6](SPARK_HYDRA.md#g6-updating). Short form, at a quiet
 moment: `cd ~/openbeast && git status --short` (must show nothing you would
@@ -438,6 +455,11 @@ python3 tests/prove_task.py --unit <id>_<slug>            # model-free proof of 
 python3 tests/prove_task.py --suite v5 --json /tmp/proof.json   # the whole suite (~1 h)
 scripts/eval-era.sh                                       # the current era hash
 ```
+
+A DeepSeek-V4.1-Flash campaign (`--model-name "DeepSeek-V4.1-Flash"`, or any
+name whose slug starts with it) runs arm **T2 first**: it is that model's
+composite (`recommend.composite_by_model`, 65/71), and `report` builds the
+recommended daily config from it ([MODEL_CAMPAIGN.md §5b](MODEL_CAMPAIGN.md#5b-the-arms)).
 
 `benchmark_all.py` has a MODELS entry for GLM (`glm-5.3-flash`) but **none
 for DeepSeek yet** (2026-11-18), so `--model deepseek-v4.1-flash` fails until

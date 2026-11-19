@@ -129,6 +129,21 @@ fi
 echo ""
 echo ""
 
+# --- AGENT_PROFILE + daily-agent switches (v5 T2 as the DeepSeek default) ---
+echo "--- AGENT_PROFILE / daily-agent switch forwarding (scripts/lib/conf.sh) ---"
+echo ""
+if bash "$REPO_DIR/tests/test_agent_profile_conf.sh"; then
+  echo ""
+  echo "Agent profile conf tests: ALL PASSED"
+else
+  echo ""
+  echo "Agent profile conf tests: SOME FAILED"
+  OVERALL=1
+fi
+
+echo ""
+echo ""
+
 # --- Drive wear tracking tests ---
 echo "--- SSD/NVMe wear tests (scripts/ssd-wear.sh) ---"
 echo ""

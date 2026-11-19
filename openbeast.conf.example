@@ -236,10 +236,65 @@
 # start_agent; never eval runs, which have fixed caps). Unset = the
 # REASONING_BUDGET below + 12288 (20480 + 12288 = 32768 when that is unset
 # too); 0 = no cap. REASONING_BUDGET is a llama.cpp flag: on a TensorFold or
-# vLLM host set this instead. spark-1: 16384, arm C's per-turn cap (a turn
-# capped mid-thought keeps its reasoning tail and is told to act). Env
-# override: $OPENBEAST_AGENT_MAX_TOKENS.
+# vLLM host set this instead. 16384 was arm C's per-turn cap for GLM (a turn
+# capped mid-thought keeps its reasoning tail and is told to act); for
+# DeepSeek-V4.1-Flash (Mia EXL3) AGENT_PROFILE=deepseek-best (below) gives
+# 8192, and an AGENT_MAX_TOKENS line here would override that. Env override:
+# $OPENBEAST_AGENT_MAX_TOKENS.
 #AGENT_MAX_TOKENS=16384
+
+# A named set of daily-agent switches. One line sets the measured best setup
+# for a model; a key set on its own line (or in the env) always wins over it.
+#
+#   deepseek-best   v5-thinking-first arm T2, the best DeepSeek-V4.1-Flash
+#                   (Mia EXL3) row on the board: 65/71 (board row DS-T2,
+#                   2026-11-19, eval era 036638ddd68698ce), against 61/71 for
+#                   arm T (same switches, a 16384 cap and no act nudge).
+#                   docs/SPARK_HYDRA.md, "DeepSeek best configuration (v5 T2)".
+#   none / unset    no profile: every key keeps its own default.
+#
+# What deepseek-best sets, and what each does for a DAILY agent (the tool
+# server's start_agent, beast-chat, agent.sh) as opposed to inside an eval:
+#   INFERENCE_THINKING=on    applies: thinking on (host-wide default: also
+#                            beast-gate and Open WebUI; see above)
+#   AGENT_MAX_TOKENS=8192    applies: per-turn cap, with the capped-think
+#                            recovery (a turn cut off mid-thought keeps its
+#                            reasoning tail and is told to act)
+#   AGENT_ACT_NUDGE=1        applies: from the 2nd capped turn in a row with
+#                            no tool call (or the 1st that ends neither capped
+#                            nor as an answer): "your next reply must be a
+#                            tool call"
+#   BEAST_ASSIST=1           applies: push diagnostics after every write, with
+#                            the toolchains installed on the tool host
+#   DIAG_EDIT_HINT=1         applies: a failing check points at edit_file
+#   AGENT_ENV_BLOCK=1        applies: toolchain versions + workdir on turn 1
+#   LANG_PACK_VARIANT=v3     applies on zig tasks only, and only where zig
+#                            0.16 is installed and LANG_PACK_CONTEXT/LANG_PACKS
+#                            allow a pack (spark-1 has no zig: no pack there)
+#   AGENT_VERIFY_DONE=1      EVAL-ONLY in effect: it checks the task's expected
+#                            files (OPENBEAST_TASK_PATHS, set by run_eval); a
+#                            daily agent has none, so it never fires
+#   AGENT_WALL_WARN=1        EVAL-ONLY in effect: it needs a wall budget
+#                            (--wall-s / OPENBEAST_AGENT_WALL_S); daily agents
+#                            have none unless the caller passes --wall-s
+# Not reproducible as a switch: T2's host pack (eval-only, probed on the eval
+# tool host) and its wall-scaled turn budget (--turns-per-wall-s: daily agents
+# have no wall; start_agent's max_iter, default 200, is the budget). opencode
+# is untouched: it has no capped-think recovery, so its limit.output stays
+# 32768. The serving recipe does not change either (scripts/spark/: pack,
+# CONTEXT 524288, PARALLEL 4, THINKING=1).
+# Restart the stack after a change (./start.sh -d): the tool server and
+# beast-chat read these at start. Env override: $OPENBEAST_AGENT_PROFILE.
+#AGENT_PROFILE=deepseek-best
+
+# The daily-agent switches one by one (1/0, true/false, on/off). Unset = off
+# (the runner's default) unless AGENT_PROFILE sets it. Each is exported as
+# OPENBEAST_<KEY>, which is also its env override. Eval arms set their own.
+#AGENT_ACT_NUDGE=1
+#AGENT_VERIFY_DONE=1
+#AGENT_ENV_BLOCK=1
+#AGENT_WALL_WARN=1
+#DIAG_EDIT_HINT=1
 
 # ---------------------------------------------------------------------------
 # Engine plane  (scripts/engine.sh, docs/ENGINES.md)
@@ -625,6 +680,13 @@
 # the pack was not measured there. LANG_PACKS without zig also disables it.
 # Env override: $OPENBEAST_LANG_PACK_CONTEXT.  Inspect: ./scripts/doctor.sh
 #LANG_PACK_CONTEXT=auto
+
+# Which zig pack LANG_PACK_CONTEXT serves: v1 (default, the Tier-3 measured
+# agents/packs/zig-0.16.md) or v3 (agents/packs/zig-0.16-v3.md, the pack
+# DeepSeek-V4.1-Flash (Mia EXL3)'s best arm T2 ran with; AGENT_PROFILE=
+# deepseek-best sets it). Only the exact measured bytes of either are served;
+# any other value serves no pack. Env override: $OPENBEAST_LANG_PACK_VARIANT.
+#LANG_PACK_VARIANT=v1
 
 #CHAT_PORT=3003
 

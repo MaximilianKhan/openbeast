@@ -338,8 +338,26 @@ below). `--dry-run` prints them for your settings.
 | **N** | T | thinking off, normal wall | `--thinking off --reasoning-budget 0`, drops `--wall-scale` | 1.1 | ~2.8 h | the daily-latency config: what thinking adds to the full harness, and its cost |
 | **N0** | — | the bare no-thinking baseline | `--turns-per-wall-s 15 --thinking off` (= 2026-11-16 arm B, thinking pinned off) | 1.0 | ~2.5 h | the floor. N0 → N is what the components add without thinking; N0 → T is everything |
 | T_s2 | T | a second seed (optional) | `--seed 2`; only with `--include T_s2` | 2.3 | ~5.8 h | a tighter noise margin |
-| T2 | T | 8192 turn cap + act nudge (optional, harness9) | `--reasoning-budget 8192`; `OPENBEAST_AGENT_MAX_TOKENS=8192 OPENBEAST_AGENT_ACT_NUDGE=1`; `"jobs": 2, "slots": 2` (TODO: follow T_j2's outcome); only with `--only T2`; needs a harness9 tree | 2.3 | ~7.7 h (~9 h for DeepSeek) | do shorter thinking turns and a push to act turn wall kills into passes? |
+| T2 | T | 8192 turn cap + act nudge (optional, harness9) | `--reasoning-budget 8192`; `OPENBEAST_AGENT_MAX_TOKENS=8192 OPENBEAST_AGENT_ACT_NUDGE=1`; `"jobs": 4, "slots": 4` like T (decided 2026-11-18); only with `--only T2` or `--include T2`, **and first in every DeepSeek-V4.1-Flash chain** (`recommend.composite_by_model`); needs a harness9 tree | 2.3 | ~5.8 h (6.2 h for DeepSeek) | do shorter thinking turns and a push to act turn wall kills into passes? **DeepSeek: yes, 65/71 against T's 61/71** |
+| T3 | T2 | 4096 turn cap (optional, config only) | `--reasoning-budget 4096`; `OPENBEAST_AGENT_MAX_TOKENS=4096 OPENBEAST_AGENT_ACT_NUDGE=1`; only with `--only T3`; same harness9 tree and era as T2 | 2.3 | ~5.8 h | does faster iteration beat deeper single turns? (T3 vs T2 isolates the cap) |
 | T_j2 | T | 2 concurrent units (optional) | `"jobs": 2, "slots": 2` in the arm (wins over the CLI); only with `--only T_j2` or `--include T_j2` | 2.3 | ~7.7 h (~9 h for DeepSeek) | the contention model: same tokens per unit, at 2 streams (see the note below) |
+
+**DeepSeek's composite is T2 (2026-11-19).** DeepSeek-V4.1-Flash (Mia EXL3)
+scored 65/71 under T2 against 61/71 under T: +4 (168_kv_e, 173, 183, 190), 0
+regressions, the board's best DeepSeek row (DS-T2, `evals/boards/v5/board.json`).
+T2 is therefore DeepSeek's best-first composite, recorded in the campaign file
+as `recommend.composite_by_model: {"DeepSeek-V4.1-Flash": "T2"}` (matched on
+the slug, so `DeepSeek-V4.1-Flash (Mia EXL3)` and `deepseek-v4.1-flash` match
+too). For such a model `campaign.py run` puts T2 at the head of the chain
+(`--order` still decides when given), and `report` starts the recommended daily
+config from T2: each ablation and the no-thinking twin are still compared with
+T, the arm they remove from, a dropped component is removed from T2, and the
+noise margin comes from T's seed arm while T2 has none of its own. Until T2 is
+measured, the report uses T and says so. Arm T is unchanged for every model
+(the GLM history depends on it). As of 2026-11-19, **arm T_s1** (T's seed
+noise) **and then arm T3** (T2 with a 4096 cap) **are running** against the
+live pair. The daily-agent form of T2 is one line in openbeast.conf,
+`AGENT_PROFILE=deepseek-best` ([SPARK_HYDRA.md](SPARK_HYDRA.md#e2b-deepseek-best-configuration-v5-t2)).
 
 Total for the eight default arms: about 39 h at GLM's speed. Escalation
 stays off in every arm (G16: zig-only on the Mac host).
@@ -536,6 +554,9 @@ Written down before the numbers, and applied by `report` (`recommend()` in
    **thinking**, and state its measured cost: time and completion tokens
    per unit, T against N, and how many of T's passes fit the unwidened
    wall.
+   A model with its own composite (`recommend.composite_by_model`;
+   DeepSeek-V4.1-Flash: T2) still has each ablation compared with the arm it
+   removes from (T); the verdict then applies to the model's composite.
 4. **The recommended daily config** is the composite, minus the dropped
    components, with thinking off if rule 3 says so. The report prints it as
    one run_eval command line. When thinking is off, it notes that the
@@ -796,6 +817,16 @@ campaign. On GLM, its N0 is arm B (36/71, thinking pinned off).
       and embedded absolute paths).
       To read the noise floor early, add `--order T,T_s1`. For a tighter
       margin, add `--include T_s2`.
+- [x] **Arms T and T2 (2026-11-18/19).** T 61/71; T2 (T + 8192-token turn
+      cap + act nudge) 65/71, +4 / 0 regressions, board row DS-T2. Max's
+      decision, 2026-11-19: T2 is OpenBeast's default and best setup for
+      DeepSeek-V4.1-Flash (Mia EXL3): `recommend.composite_by_model` for
+      campaigns (§5b), `AGENT_PROFILE=deepseek-best` for daily agents
+      ([SPARK_HYDRA.md](SPARK_HYDRA.md#e2b-deepseek-best-configuration-v5-t2)).
+- [ ] **Arms T_s1, then T3: running** (2026-11-19). T_s1 sets the noise
+      margin; T3 tests a 4096 cap against T2. If T3 beats T2 by more than the
+      margin, move `composite_by_model` and the profile's AGENT_MAX_TOKENS
+      together, with the evidence.
 - [ ] Model-specific harness hypotheses: start from
       [docs/reviews/DEEPSEEK_HARNESS-2026-10-09.md](reviews/DEEPSEEK_HARNESS-2026-10-09.md),
       the evaluation of DeepSeek's own agent harness (`dsh`). Its "ideas

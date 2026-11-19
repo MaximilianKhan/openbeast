@@ -458,7 +458,10 @@ by sha256.
 are about 204 GB at 3 bpw. On 128 GB that means 1-bit experts with zero
 headroom, or NVMe spill at an estimated ~11 tok/s. The rig's RAM is final
 (Max, 2026-11-15), so it stays on the DGX Spark pair
-([SPARK_HYDRA.md](SPARK_HYDRA.md)).
+([SPARK_HYDRA.md](SPARK_HYDRA.md)). There, DeepSeek-V4.1-Flash (Mia EXL3)'s
+recommended agent setup is the v5 arm T2 (65/71, board row DS-T2,
+2026-11-19): one line in openbeast.conf, `AGENT_PROFILE=deepseek-best`
+([SPARK_HYDRA.md E2b](SPARK_HYDRA.md#e2b-deepseek-best-configuration-v5-t2)).
 
 ## What the opencode picker shows (and what it doesn't)
 

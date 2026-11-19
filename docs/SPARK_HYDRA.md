@@ -1,6 +1,6 @@
 # spark-hydra: the DGX Spark launch runbook
 
-**Live deployment, 2026-11-18.** The pair serves **DeepSeek-V4.1-Flash (Mia EXL3)** by default since 2026-11-18 (`DeepSeek-V4.1-Flash-1017`, unit `deepseek-v41-inference`, enabled for boot; 524,288-token window, four streams): Max's decision after hands-on testing, with v5 61/71, the board's #1. **GLM-5.3-Flash is staged as the alternative** (`GLM-5.3-Flash-EXL3`, unit `spark-hydra-inference`, 1,048,576-token window): `beastglm` switches to it, `beastds` back (it stops GLM, re-selects the Mia EXL3 pack, [DeepSeek packs](#deepseek-packs-spark-deepseek-pack), and runs `activate-stock.sh`). Switch only through `beast-spark` (the `beast*` aliases, [Everyday shortcuts](#quickstart)); `activate-stock.sh` and `restore-glm.sh` are its internals, and `activate-stock.sh` never stops GLM itself. `beastup` with nothing selected picks DeepSeek. The pair serves these two models only, one at a time. The command center and beast-gate run on spark-1. The DeepSeek sections below record its deployment and describe the serving default; the GLM recipe, tuning measurements and rebuild examples describe the alternative, which the fresh-install checklist still builds first. (History: GLM served 2026-11-13 to 11-17, DeepSeek from 11-17, GLM again for part of 11-18, then DeepSeek by Max's decision.)
+**Live deployment, 2026-11-18.** The pair serves **DeepSeek-V4.1-Flash (Mia EXL3)** by default since 2026-11-18 (`DeepSeek-V4.1-Flash-1017`, unit `deepseek-v41-inference`, enabled for boot; 524,288-token window, four streams): Max's decision after hands-on testing, with v5 61/71, the board's #1 (65/71 under arm T2 since 2026-11-19, its default agent setup: [E2b](#e2b-deepseek-best-configuration-v5-t2)). **GLM-5.3-Flash is staged as the alternative** (`GLM-5.3-Flash-EXL3`, unit `spark-hydra-inference`, 1,048,576-token window): `beastglm` switches to it, `beastds` back (it stops GLM, re-selects the Mia EXL3 pack, [DeepSeek packs](#deepseek-packs-spark-deepseek-pack), and runs `activate-stock.sh`). Switch only through `beast-spark` (the `beast*` aliases, [Everyday shortcuts](#quickstart)); `activate-stock.sh` and `restore-glm.sh` are its internals, and `activate-stock.sh` never stops GLM itself. `beastup` with nothing selected picks DeepSeek. The pair serves these two models only, one at a time. The command center and beast-gate run on spark-1. The DeepSeek sections below record its deployment and describe the serving default; the GLM recipe, tuning measurements and rebuild examples describe the alternative, which the fresh-install checklist still builds first. (History: GLM served 2026-11-13 to 11-17, DeepSeek from 11-17, GLM again for part of 11-18, then DeepSeek by Max's decision.)
 
 This page takes you from bare boxes to a serving pair, start to finish, and then
 covers day-2 operations and fully offline operation. Read it top to bottom the
@@ -379,8 +379,9 @@ cd ~/openbeast && cp openbeast.conf.example openbeast.conf && chmod 600 openbeas
 #   BEAST_CHAT=true   CHAT_OPERATORS=<you>   CHAT_LOGIN_FROM=unix
 #   BEAST_ARTIFACT=true   ARTIFACT_OPERATORS=<you>   ARTIFACT_ADMINS=<you>   ARTIFACT_LOGIN_FROM=unix
 #   EDGE_READ_TIMEOUT=3600          (only if an eval harness will run against the pair: F6)
-#   LANG_PACKS=off   LANG_PACK_CONTEXT=off   BEAST_ASSIST=0   BEAST_ESCALATE=0
-#   INFERENCE_THINKING=on   AGENT_MAX_TOKENS=16384   (the v5 serving default: E2a)
+#   LANG_PACKS=off   LANG_PACK_CONTEXT=off   BEAST_ESCALATE=0
+#   INFERENCE_THINKING=on   AGENT_PROFILE=deepseek-best   (DeepSeek's v5 best, arm T2: E2b)
+#   (serving GLM instead: drop AGENT_PROFILE, add BEAST_ASSIST=0 AGENT_MAX_TOKENS=16384: E2a)
 ./bootstrap.sh --preflight      # read-only: what it will do and what it cannot reach
 ./bootstrap.sh --no-start       # online: the Python lock, the pinned compose images (Open WebUI 0.13.3)
 ```
@@ -1606,7 +1607,7 @@ layer in front of it, keyed by one conf key.
 | Key | spark-1 | Default elsewhere | What it does |
 |---|---|---|---|
 | `INFERENCE_THINKING` | `on` | unset: nothing injected anywhere | The host's thinking default for a chat request that names none. **beast-gate** (:8443, which serves opencode, the Mac client, phones and every keyed device) sets `chat_template_kwargs.enable_thinking`. The **WebUI "Thinking Default" filter** does the same for Open WebUI chats (WebUI talks to TensorFold on loopback, not through the gate). **This host's own agents** (`agents/runner.py`, `start_agent`) send it. The local `/gate/health` reports `thinking_default` |
-| `AGENT_MAX_TOKENS` | `16384` | unset: `REASONING_BUDGET` + 12288 (32768) | Per-turn output cap for this host's own agents. It matches arm C's measured cap: ended-on-their-own thinking turns were p50 ~0.4K, p90 ~2.3K, p99 ~12.4K tokens, so 16K leaves room. A turn capped mid-thought keeps its reasoning tail and is told to act (#194). The 32K fallback would double the cost of a runaway: about 14 vs 28 minutes per stalled turn at the ~19 tok/s a stream decodes under 4-way load. `REASONING_BUDGET` is a llama.cpp flag and means nothing to TensorFold, so this key is the cap here |
+| `AGENT_MAX_TOKENS` | `16384` for GLM; for DeepSeek, unset and `AGENT_PROFILE=deepseek-best` gives 8192 ([E2b](#e2b-deepseek-best-configuration-v5-t2)) | unset: `REASONING_BUDGET` + 12288 (32768) | Per-turn output cap for this host's own agents. It matches arm C's measured cap: ended-on-their-own thinking turns were p50 ~0.4K, p90 ~2.3K, p99 ~12.4K tokens, so 16K leaves room. A turn capped mid-thought keeps its reasoning tail and is told to act (#194). The 32K fallback would double the cost of a runaway: about 14 vs 28 minutes per stalled turn at the ~19 tok/s a stream decodes under 4-way load. `REASONING_BUDGET` is a llama.cpp flag and means nothing to TensorFold, so this key is the cap here |
 
 **What a request can still choose.** Anything explicit wins and is
 forwarded untouched:
@@ -1678,6 +1679,73 @@ curl -s -H "X-OpenBeast-Local: $(cat .run/edge-local.token)" http://127.0.0.1:80
 
 From a keyed client: a chat request with no thinking params returns
 `reasoning_content`, and one with `enable_thinking: false` returns none.
+
+### E2b. DeepSeek best configuration (v5 T2)
+
+**Max's decision, 2026-11-19:** the v5 arm-T2 configuration is OpenBeast's
+default and best setup for DeepSeek-V4.1-Flash (Mia EXL3) on this pair.
+
+| Arm (v5-thinking-first, 71 units, one seed) | What changed | Scored |
+|---|---|---|
+| T | the best-first composite: thinking on, runner v2, wall-scaled turns, diagnostics + edit hint + verify-done, packs v3 + host pack, env block + wall warnings; 16384-token turn cap | 61/71 |
+| **T2** | **T + an 8192-token per-turn cap + the act nudge** | **65/71** |
+
+T2 against T: +4 (168_kv_e, 173, 183, 190), 0 regressions; the gaps between
+turns fell from 470-610 s to 280-330 s. Board row DS-T2
+(`evals/boards/v5/board.json`), eval era `036638ddd68698ce`. Arms T_s1 (the
+noise margin) and T3 (T2 with a 4096 cap) are running as of 2026-11-19
+([MODEL_CAMPAIGN.md](MODEL_CAMPAIGN.md) §5b, §9).
+
+**One line in `openbeast.conf`:** `AGENT_PROFILE=deepseek-best`. It sets a
+default for each key below; a key set on its own line (or in the env) wins
+over the profile, so remove any older line that contradicts it.
+
+| Key the profile sets | Daily agents (start_agent, beast-chat, agent.sh) |
+|---|---|
+| `INFERENCE_THINKING=on` | applies (host-wide: also beast-gate and Open WebUI, E2a) |
+| `AGENT_MAX_TOKENS=8192` | applies, with the capped-think recovery |
+| `AGENT_ACT_NUDGE=1` | applies: from the 2nd capped no-tool turn in a row, "your next reply must be a tool call" |
+| `BEAST_ASSIST=1` | applies: push diagnostics after each write, with the checkers installed on spark-1 (gcc, python; no zig, go or rust there). Read per tool call, so Open WebUI's tool calls get it too |
+| `DIAG_EDIT_HINT=1` | applies with `BEAST_ASSIST` (same reach) |
+| `AGENT_ENV_BLOCK=1` | applies: toolchain versions and workdir on the first turn |
+| `LANG_PACK_VARIANT=v3` | applies only to zig tasks where zig 0.16 is installed and `LANG_PACK_CONTEXT`/`LANG_PACKS` allow a pack: **not on spark-1** (no zig, and both keys are off) |
+| `AGENT_VERIFY_DONE=1` | **eval-only in effect**: it checks the task's expected files, which only run_eval names (`OPENBEAST_TASK_PATHS`). Exported, never fires |
+| `AGENT_WALL_WARN=1` | **eval-only in effect**: it needs a wall budget (`--wall-s` / `OPENBEAST_AGENT_WALL_S`). A daily agent has none unless its caller passes `--wall-s` |
+
+Not reproducible as a switch: T2's **host pack** (eval-only; it was probed on
+the eval's Darwin tool host) and its **wall-scaled turns**
+(`--turns-per-wall-s`, an eval knob: a daily agent has no wall, and
+start_agent's `max_iter`, default 200, is its budget). Making verify-done or
+the wall warning work outside an eval would mean editing `agents/tools.py` or
+`agents/runner.py`, which are hashed into the eval era, so they stay as they
+are.
+
+**Unchanged:** the serving recipe (the Mia EXL3 pack, `CONTEXT=524288`,
+`PARALLEL=4`, `THINKING=1`; nothing in `deepseek-v41-inference` changes), and
+**opencode**: it has no capped-think recovery, so the 8192 cap is not applied
+to its `limit.output`, which stays 32768.
+
+**Apply on spark-1** (in a gap between eval arms; never while an arm runs):
+
+```bash
+# spark-1
+cd ~/openbeast && git pull --ff-only
+cp openbeast.conf openbeast.conf.bak-$(date +%Y%m%d)
+# an explicit line beats the profile: drop the two GLM-era lines that contradict it
+sed -i -e '/^AGENT_MAX_TOKENS=16384$/d' -e '/^BEAST_ASSIST=0$/d' openbeast.conf
+echo 'AGENT_PROFILE=deepseek-best' >> openbeast.conf
+systemctl --user restart openbeast     # the command center only, never deepseek-v41-inference
+# check what the stack will export:
+OB_CONF_READONLY=1 bash -c 'REPO_DIR=~/openbeast; source scripts/lib/conf.sh; env' \
+  | grep -E '^(BEAST_ASSIST|OPENBEAST_(INFERENCE_THINKING|AGENT_(MAX_TOKENS|ACT_NUDGE|VERIFY_DONE|ENV_BLOCK|WALL_WARN)|DIAG_EDIT_HINT|LANG_PACK_VARIANT))='
+```
+
+The tool server and beast-chat read these when they start, so the restart is
+what applies them. A running agent keeps the settings it started with. To go
+back: restore the backup and restart again. Eval runs are unaffected: every
+campaign arm sets all of these switches itself, and a plain `run_eval.py`
+started from a shell that sourced `conf.sh` records any it inherits in its
+cache key (`ag-...`), so nothing changes a measured row silently.
 
 ### E3. Boot units
 
