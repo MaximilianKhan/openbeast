@@ -31,6 +31,6 @@ here is running or scheduled.
 | `gpu_handback.sh` | Wait for a cell to bank, then confirm the card is free |
 | `prune-2026-09-17.sh` | The disk prune Max approved (dry run by default) |
 | `spare-memory-meta.html` | The hand-built page that predates beast-artifact (its viewer test fixture) |
-| `archive/` | Superseded masters and chains (`campaign_master*.sh`, `ab-*.sh`, `e32_capability*.sh`, `post_e32*.sh`, the orchestrator the research journal cites as `scratch/post_e32.sh`), and `ab-quarantine-preswap/` (pre-swap A0 cache rows set aside so A0 ran live), kept for provenance |
+| `archive/` | Superseded masters and chains (`campaign_master*.sh`, `ab-*.sh`, `e32_capability*.sh`, `post_e32*.sh`, the orchestrator the research journal cites as `scratch/post_e32.sh`), kept for provenance. The pre-swap A0 cache rows (`ab-quarantine-preswap/`) moved to the sealed `evals/audit/archive-ab-quarantine-preswap/` on 2026-11-19: they hold v5 checker details |
 
 Runtime logs go to `scratch/logs/<campaign>/` and are gitignored.

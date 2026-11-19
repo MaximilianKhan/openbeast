@@ -609,7 +609,7 @@ Every number below cites its v5 board run (rule A1); each is single seed
    chart (6.2).
 6. **Run it yourself:** the Quickstart (health, start/stop, clients, the
    bare-box order), then the two checklists: "Install everything, fresh"
-   (21 steps, each with its offline variant) and "update everything" (G6,
+   (22 steps, each with its offline variant) and "update everything" (G6,
    with a per-PR table of operator steps). Link the anchors at the tag (S43).
 7. **The engine plane:** the engines × host-class matrix from `ENGINES.md`
    (llama.cpp default on the rig, TensorFold default on the Spark, vLLM both,

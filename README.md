@@ -990,7 +990,7 @@ are in **[docs/COMMANDS.md](docs/COMMANDS.md)**.
 
 [TODO.md](docs/TODO.md) (roadmap, completed work, review records) ·
 [RESEARCH_FINDINGS.md](docs/RESEARCH_FINDINGS.md) (MTP, profiling, model comparisons) ·
-[research/FINDINGS.md](research/FINDINGS.md) (the two research programs: what was found, what was not run) ·
+[research/FINDINGS.md](research/FINDINGS.md) (the two research programs: what was found, what was not run) · [research/README.md](research/README.md) (index of every research note, with status) ·
 [the beast-rank paper](research/lowrank/paper/final/paper.pdf) (quantization repair in llama.cpp) ·
 [DISTRIBUTED_AGENTS_PLAN.md](docs/DISTRIBUTED_AGENTS_PLAN.md) ·
 [SKILLS_PLAN.md](docs/SKILLS_PLAN.md) ·

@@ -649,7 +649,11 @@ profile.
 
 **Decision (Max, 2026-09-30):** the Sparks serve "GLM-5.3-Flash by
 orcarouter, or an EXL3 variant", and *all of our models are uncensored* —
-nothing stock is served or routed to. Profile:
+nothing stock is served or routed to. *(Superseded 2026-11-19: the pair's
+default is now DeepSeek-V4.1-Flash (Mia EXL3), a **stock** pack (`ABLIT=0`),
+chosen by Max after the v5 board (T2 65/71). The uncensored-only rule no
+longer describes what the Sparks serve; whether beast-hydra's family policy
+(#122) should admit stock models is an open decision in docs/TODO.md.)* Profile:
 [`scripts/backends/models/glm53-flash-unc-exl3-tensorfold.env`](../scripts/backends/models/glm53-flash-unc-exl3-tensorfold.env).
 Nothing below has run on a GB10. Research notes behind it: the 2026-09-30
 review side-check (model-inspect runs against the local dir and pinned Hub
