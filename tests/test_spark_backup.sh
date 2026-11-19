@@ -480,8 +480,9 @@ check "rebuild: a kit without .git is refused (it would git-fetch)" bash -c "tes
 mv "$T/kitgit" "$HD/openbeast-models/deepseek-hf/tensorfold-dsv41/kit-abe07c7d/.git"
 ro="$(SPARK_BACKUP_HOME="$HD" bash "$SR" rebuild --apply 2>&1)"; rc=$?
 check "rebuild --apply: runs the offline prepare" test "$rc" -eq 0 -a -e "$FD_STATE/prepared"
-check "restore head: GLM's unit is enabled by default (the backup enabled neither model)" grep -q "enable (NOT start): openbeast.service spark-hydra-inference.service openbeast-logrotate.timer" <<< "$out"
-check "restore head: the printed manual steps start GLM" grep -q "systemctl --user start spark-hydra-inference openbeast" <<< "$out"
+check "restore head: DeepSeek's unit is enabled by default (the backup enabled neither model)" grep -q "enable (NOT start): openbeast.service deepseek-v41-inference.service openbeast-logrotate.timer" <<< "$out"
+check "restore head: GLM's unit is not enabled by default" bash -c '! grep -q "enable (NOT start):.*spark-hydra-inference" <<< "$1"' _ "$out"
+check "restore head: the printed manual steps start DeepSeek, the default" grep -q "systemctl --user start deepseek-v41-inference openbeast.*DeepSeek-V4.1-Flash (Mia EXL3), the default" <<< "$out"
 check "restore head: 3 nodes: GLM's single-WORKER local.sh is kept, and says so" bash -c "grep -q '^WORKER=max@10.100.216.2' '$HD/openbeast-recipes/glm53/scripts/local.sh' && grep -q \"GLM recipe's local.sh names one WORKER\" <<< \"\$1\"" _ "$out"
 
 # ── restore: the head of another pair (2 nodes, new fabric addresses) ────────
@@ -502,6 +503,15 @@ P
 out="$(SPARK_BACKUP_HOME="$HP" bash "$SR" --from "$GD" --fleet "$T/fleet4.env" --index 0 2>&1)"
 check "restore dry: the inference unit follows the backup's boot links (DeepSeek here)" \
   bash -c 'grep -q "enable (NOT start): openbeast.service deepseek-v41-inference.service" <<< "$1" && ! grep -q "enable (NOT start):.*spark-hydra-inference" <<< "$1" && grep -q "systemctl --user start deepseek-v41-inference openbeast" <<< "$1"' _ "$out"
+# a generation whose head booted GLM (the alternative): the restore enables GLM's unit, not the default
+python3 - "$GD/BACKUP.json" <<'P'
+import json, sys
+m = json.load(open(sys.argv[1])); m["enabled_user_units"] = ["spark-hydra-inference.service", "openbeast.service"]
+json.dump(m, open(sys.argv[1], "w"))
+P
+out="$(SPARK_BACKUP_HOME="$HP" bash "$SR" --from "$GD" --fleet "$T/fleet4.env" --index 0 2>&1)"
+check "restore dry: a GLM-booted backup enables GLM's unit (the alternative), not DeepSeek's" \
+  bash -c 'grep -q "enable (NOT start): openbeast.service spark-hydra-inference.service" <<< "$1" && ! grep -q "enable (NOT start):.*deepseek-v41-inference" <<< "$1" && grep -q "systemctl --user start spark-hydra-inference openbeast.*GLM-5.3-Flash, the backup.s selection" <<< "$1"' _ "$out"
 python3 - "$GD/BACKUP.json" <<'P'
 import json, sys
 m = json.load(open(sys.argv[1])); del m["enabled_user_units"]

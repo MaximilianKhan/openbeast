@@ -60,10 +60,11 @@
 #      run when one exists. Thinking off, so the runs are comparable.
 #
 # The served model name stays DeepSeek-V4.1-Flash-1017 (SERVED_NAME), so the
-# gate, the command center and enrolled clients need no change. GLM is the
-# other model this pair serves, and its default: `beast-spark glm` switches to it,
-# `beast-spark ds` back to DeepSeek (spark-beast.sh; restore-glm.sh and
-# activate-stock.sh are its internals).
+# gate, the command center and enrolled clients need no change. DeepSeek is the
+# pair's default model since 2026-11-18 (DeepSeek-V4.1-Flash (Mia EXL3)); GLM is
+# the other model this pair serves, staged as the alternative: `beast-spark glm`
+# switches to it, `beast-spark ds` back to DeepSeek (spark-beast.sh; restore-glm.sh
+# and activate-stock.sh are its internals).
 #
 # Offline: nothing here reaches the network beyond the spark-1 <-> spark-2 link.
 # Disk: a pack costs its folder (hard-linked into the cache) plus ~106 GB
@@ -286,7 +287,7 @@ cmd_use() {
   if systemctl --user is-active --quiet "$GLM_UNIT"; then
     if (( dry )); then log "note: GLM ($GLM_UNIT) is active; the real run needs beast-spark ds first (or --stop-glm)"
     elif (( ! stop_glm )); then
-      die "GLM ($GLM_UNIT) is serving: this tool swaps DeepSeek's pack only while DeepSeek is the model. Run 'beast-spark ds' (beastds) to switch to DeepSeek (set DS_PACK/DS_ID in ~/.config/openbeast/beast-spark.env for a pack other than -v2), or pass --stop-glm to stop GLM for this swap"
+      die "GLM ($GLM_UNIT) is serving: this tool swaps DeepSeek's pack only while DeepSeek is the model. Run 'beast-spark ds' (beastds) to switch to DeepSeek (set DS_PACK/DS_ID in ~/.config/openbeast/beast-spark.env for a pack other than DeepSeek-V4.1-Flash (Mia EXL3)), or pass --stop-glm to stop GLM for this swap"
     fi
   fi
   (( dry )) || take_lock

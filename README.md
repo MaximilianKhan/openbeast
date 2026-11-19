@@ -52,7 +52,7 @@ line in `openbeast.conf`.
 | **beast-apps** 🧰 | A capability catalog for external apps (Xcode / iOS Simulator, Gradle + adb, mobile UI driving, Blender, Figma, 3D printers, ROS) through pinned MCP servers: `scripts/apps.sh check` probes what is installed and prints the exact fix, `enable` merges a passing server into opencode (v1 or v2 config) with a backup, `refresh` notices upstream changes ([docs](docs/BEAST_APPS.md)) | unreleased |
 | **Air-gap ready** 🔌 | `OFFLINE=true`, a hash-pinned Python lockfile with a wheelhouse, and a signed offline bundle: build it connected, install it from a USB stick | v1.5 |
 | **beast-island** 🏝️ | Runtime offline mode for a power outage: the rig notices the internet is gone (about 90 to 120 s), web tools answer "offline" at once instead of stalling, and everything else keeps running locally. A launch with no route boots islanded; `./start.sh -d --offline` forces it | v1.8 |
-| **spark-hydra** 🐉🐉 *opt-in* | Two DGX Sparks serve GLM-5.3-Flash on TensorFold across two ConnectX-7 rails, with four streams. The command center and authenticated client gateway run on spark-1. DeepSeek-V4.1-Flash-1017 (Mia's EAQ v1.1 "-v2" pack, 524,288-token window) is staged as the alternative, one command away. [Spark runbook](docs/SPARK_HYDRA.md#quickstart) | v1.9 |
+| **spark-hydra** 🐉🐉 *opt-in* | Two DGX Sparks serve DeepSeek-V4.1-Flash (Mia EXL3) on TensorFold across two ConnectX-7 rails, with four streams and a 524,288-token window: the default since 2026-11-18, #1 on the v5 board (61/71). The command center and authenticated client gateway run on spark-1. GLM-5.3-Flash (1,048,576-token window) is staged as the alternative, one command away. [Spark runbook](docs/SPARK_HYDRA.md#quickstart) | v1.9 |
 | **beast-campaign** 🧪 | A GPU lease so two measurements cannot share the card, an eval *era* hash so rows from different code are never compared as if they were the same, and a harness that refuses to bank an infrastructure failure (a dead server, an exhausted thread pool, a full disk) as a model failure | v1.5 |
 | **Multi-engine inference** 🟩 *opt-in* | `INFERENCE_BACKEND=vllm\|tensorfold`: the whole stack (WebUI, tools, agents, gate, `/api/slot`) talks to a vLLM or TensorFold server, e.g. tensor-parallel across two DGX Sparks. Any new checkpoint is inspected, pinned by commit, sha256-locked and conformance-tested before OpenBeast uses it | v1.6 |
 | **Engine plane** ⚙️ | `scripts/engine.sh`: list, swap, install, update, pin and roll back llama.cpp, vLLM or TensorFold with one command, every install verified and every one with an offline path (`stage` on a connected box, `install --from` on a closed one); one adapter file per engine ([docs](docs/ENGINES.md)) | unreleased |
@@ -412,7 +412,7 @@ them is in [`docs/TODO.md`](docs/TODO.md).
 ## Serving from DGX Sparks (spark-hydra) 🐉🐉
 
 *(v1.9.0, opt-in.)* **spark-hydra** is two NVIDIA DGX Sparks (`spark-1` +
-`spark-2`) serving GLM-5.3-Flash with TensorFold TP 2 and four streams (the default since 2026-11-18; DeepSeek-V4.1-Flash-1017 on Mia's EAQ v1.1 "-v2" pack is staged as the alternative). The OpenBeast command center runs on spark-1. Its backend listens on loopback and outside callers use beast-gate on `:8443` with a per-device key.
+`spark-2`) serving DeepSeek-V4.1-Flash (Mia EXL3) with TensorFold TP 2 and four streams (the default since 2026-11-18, Max's decision after testing; v5 61/71, the board's #1; GLM-5.3-Flash is staged as the alternative, `beastglm`). The OpenBeast command center runs on spark-1. Its backend listens on loopback and outside callers use beast-gate on `:8443` with a per-device key.
 
 **Quickstart.** The full version, with every command, is
 [docs/SPARK_HYDRA.md § Quickstart](docs/SPARK_HYDRA.md#quickstart).
@@ -421,8 +421,8 @@ them is in [`docs/TODO.md`](docs/TODO.md).
    `~/openbeast/scripts/healthcheck.sh` and expect "All 9 services healthy".
    Start, stop and restart only through the `systemctl --user` units on
    spark-1: the enabled inference unit drives both ranks (it starts rank 1 on
-   spark-2 over ssh, then rank 0): `spark-hydra-inference` for GLM, the
-   default, or `deepseek-v41-inference` for DeepSeek. `beastglm` / `beastds`
+   spark-2 over ssh, then rank 0): `deepseek-v41-inference` for DeepSeek, the
+   default, or `spark-hydra-inference` for GLM. `beastds` / `beastglm`
    switch, and `openbeast` is the command center.
    Never `docker stop` a rank.
 2. **Use it from a client.** Open WebUI is at
@@ -433,8 +433,8 @@ them is in [`docs/TODO.md`](docs/TODO.md).
    `openbeast-client use beast` and `use spark-hydra` switch between this
    pair and the 5090 rig. Any OpenAI-compatible tool can use
    `https://spark-1.<tailnet>.ts.net:8443/v1` with that key as a bearer token.
-   The Mac's active OpenCode model follows the pair: `openbeast-rig/GLM-5.3-Flash-EXL3` since 2026-11-18 (`openbeast-client autosync`, PR #215, keeps it in step after a switch).
-3. **First build from bare boxes (GLM deployment).** Follow the ordered checklist,
+   The Mac's active OpenCode model follows the pair: `openbeast-rig/DeepSeek-V4.1-Flash-1017` with the default, `openbeast-rig/GLM-5.3-Flash-EXL3` while GLM is selected (`openbeast-client autosync`, PR #215, keeps it in step after a switch).
+3. **First build from bare boxes (the GLM recipe first, then DeepSeek, the default, on top).** Follow the ordered checklist,
    [Install everything, fresh](docs/SPARK_HYDRA.md#install-everything-fresh):
    root setup, firewall, fabric MTU, weights, the recipe and its unit, the
    command center, the client, then the optional toolchains, docs mirror and

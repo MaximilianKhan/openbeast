@@ -14,6 +14,14 @@ rest of the plan is still to do. This page
 says what openbeast.ai claims today, what is true today, and what to build so
 the site matches OpenBeast at **v2.0.0**.
 
+**Spark default, 2026-11-18.** The pair's default model is now
+**DeepSeek-V4.1-Flash (Mia EXL3)** (Max's decision after testing; v5 61/71,
+the board's #1, against GLM's 51/71), with GLM-5.3-Flash Ablit staged as the
+alternative. Wherever this plan's copy names the model the pair serves (the
+hardware plate, `/hardware/`, the uncensored-models section B), the site says
+DeepSeek-V4.1-Flash (Mia EXL3) as the default and GLM-5.3-Flash as the
+alternative. The GLM arm ladder (26 to 51 of 71) stays GLM's, as measured.
+
 The site was last changed on 2026-10-26 (`81eabc2`, "Upgrade Next.js to
 16.4.3"). Its only later pushes, through 2026-11-08, are Dependabot branches.
 Since then the project shipped v1.8.0 and v1.9.0, put two DGX Sparks into
@@ -362,8 +370,11 @@ reads them.
 
 ### B. Uncensored models
 
-The default on both hosts is uncensored: Qwen3.8 27B Uncensored on `beast`,
-GLM-5.3-Flash **Ablit** on `spark-hydra`. Describe it the same way everywhere.
+The default on `beast` is uncensored: Qwen3.8 27B Uncensored. On
+`spark-hydra` the default is DeepSeek-V4.1-Flash (Mia EXL3) since 2026-11-18,
+and GLM-5.3-Flash **Ablit**, the uncensored one, is the staged alternative.
+Open for Max: whether the site still calls the pair's default uncensored.
+Describe it the same way everywhere.
 
 - **B1. Define it once, plainly.** "Uncensored (abliterated) weights: the
   model's refusal behaviour was removed from its weights. It answers instead
@@ -1059,7 +1070,7 @@ no autoplay with sound, and a reduced-motion fallback to the poster.
 
 - **Titles and descriptions** per page, under 60 and 155 characters:
   - `/benchmarks/`: "Benchmarks | OpenBeast" — "Reproducible v5 results for OpenBeast systems: 71 proven units, three arms, every row tied to its host, engine and weights."
-  - `/hardware/`: "Hardware | OpenBeast" — "An RTX 5090 rig and a two-DGX-Spark pair serving GLM-5.3-Flash with TensorFold: measured serving numbers and the engine plane."
+  - `/hardware/`: "Hardware | OpenBeast" — "An RTX 5090 rig and a two-DGX-Spark pair serving DeepSeek-V4.1-Flash with TensorFold: measured serving numbers and the engine plane."
   - `/offline/`: "Offline first | OpenBeast" — "Island mode, an air-gap install, offline engine updates, mirrored platform docs and a cold-storage package archive."
   - `/research/harness/`: "Harness engineering | OpenBeast" — "How a better agent loop and thinking took GLM-5.3-Flash from 26 to 51 of 71 v5 units on two DGX Sparks. Single seed; method and caveats."
   - `/research/campaign/`: "Model campaign | OpenBeast" — "Bring any model to the DGX Spark pair: onboard, profile, audit, then thinking-first harness arms, with an offline eval host."

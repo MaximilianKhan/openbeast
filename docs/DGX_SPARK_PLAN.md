@@ -7,6 +7,12 @@
 > what is deployed. From 2026-11-17 the pair served DeepSeek-V4.1-Flash-1017
 > for a day; **since 2026-11-18 GLM-5.3-Flash is the default again**, with
 > DeepSeek (Mia's EAQ v1.1 "-v2" pack) staged as the alternative.
+>
+> **Update, 2026-11-18 (later that day):** DeepSeek-V4.1-Flash (Mia EXL3) is
+> now **the default** on the pair, Max's decision after testing (v5 61/71, the
+> board's #1), and GLM-5.3-Flash is the staged alternative (`beastglm`).
+> Switching goes only through `beast-spark`. SPARK_HYDRA.md has the current
+> state.
 
 **Status (2026-09-29): milestone 1 is built and tested hermetically. Nothing
 here has run on a GB10 yet.** Every step marked **VERIFY ON HARDWARE** comes

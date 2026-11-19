@@ -6,18 +6,20 @@
 #
 #   beast-spark up        # beastup:   start the selected model (the other unit stopped first), then the command center
 #   beast-spark down      # beastdown: stop the command center and both inference units
-#   beast-spark glm       # beastglm:  switch to GLM-5.3-Flash (the pair's default model)
-#   beast-spark ds        # beastds:   switch to DeepSeek on the configured pack (default: Mia's EAQ v1.1 -v2)
+#   beast-spark glm       # beastglm:  switch to GLM-5.3-Flash (the staged alternative)
+#   beast-spark ds        # beastds:   switch to DeepSeek-V4.1-Flash (Mia EXL3), the pair's default model
 #   beast-spark status    # beaststatus: which model is selected, what is running, health
 #   beast-spark aliases   # print the five alias lines for ~/.bashrc
 #   beast-spark install   # from a checkout: install beast-spark, the pack tools and the aliases
 #
 # The pair serves two models only, one at a time (each needs both GPUs):
-#   GLM       unit spark-hydra-inference (recipe ~/openbeast-recipes/glm53): THE DEFAULT
-#             (Max, 2026-11-18, after testing DeepSeek and its -v2 pack). Serves GLM-5.3-Flash-EXL3.
-#   DeepSeek  unit deepseek-v41-inference (recipe ~/openbeast-recipes/deepseek-prep/runtime),
-#             pack Mia EAQ v1.1 "-v2" unless ~/.config/openbeast/beast-spark.env names another
-#             (DS_PACK=<folder> and DS_ID=<ORG/NAME>). Serves DeepSeek-V4.1-Flash-1017.
+#   DeepSeek  unit deepseek-v41-inference (recipe ~/openbeast-recipes/deepseek-prep/runtime):
+#             THE DEFAULT (Max, 2026-11-18, after hands-on testing; v5 board 61/71, #1).
+#             Serves DeepSeek-V4.1-Flash-1017 from DeepSeek-V4.1-Flash (Mia EXL3), the pack
+#             whose folder/cache id ends in "-v2", unless ~/.config/openbeast/beast-spark.env
+#             names another (DS_PACK=<folder> and DS_ID=<ORG/NAME>).
+#   GLM       unit spark-hydra-inference (recipe ~/openbeast-recipes/glm53): the staged
+#             alternative (`beastglm`). Serves GLM-5.3-Flash-EXL3.
 # "Selected" means the ENABLED inference unit: the one that starts at boot and
 # the one `up` starts. `down` leaves the selection as it is.
 #
@@ -134,7 +136,7 @@ cmd_status() {
 
 cmd_up() {
   local s; s=$(selected)
-  [[ "$s" != none ]] || { log "no model selected: selecting GLM, the default"; cmd_glm; return; }
+  [[ "$s" != none ]] || { log "no model selected: selecting DeepSeek-V4.1-Flash (Mia EXL3), the default"; cmd_ds; return; }
   local u o; u=$(unit_of "$s"); o=$(other_of "$s")
   if active "$o"; then log "stopping $o (not selected; both models need both GPUs)"; sc stop "$o"; fi
   log "starting $s ($u), then the command center"

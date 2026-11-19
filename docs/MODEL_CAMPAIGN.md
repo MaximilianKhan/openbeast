@@ -706,9 +706,10 @@ campaign. On GLM, its N0 is arm B (36/71, thinking pinned off).
 
 - [x] Prepared the stock Mia EXL3 checkpoint, both Engram shards and both rank caches. [Pinned deployment and verification](SPARK_HYDRA.md#deepseek-deployment).
 - [x] Served DeepSeek via TensorFold TP2 behind beast-gate. Conformance passed chat, streaming, reasoning-field extraction, tools and four-way concurrency. The context-overflow probe was skipped.
-- [ ] **Switch the pair to DeepSeek** (first: every live check below, and L0, need it serving). GLM is the pair's default
-      (unit `spark-hydra-inference` enabled); DeepSeek-V4.1-Flash on the EAQ
-      v1.1 "-v2" pack is the staged alternative. The only supported switch
+- [ ] **Make sure the pair serves DeepSeek** (first: every live check below, and L0, need it serving). Since 2026-11-18
+      DeepSeek-V4.1-Flash (Mia EXL3) is the pair's default (unit
+      `deepseek-v41-inference` enabled), so this is normally a no-op check;
+      GLM-5.3-Flash is the staged alternative. The only supported switch
       is `beast-spark` on spark-1 (aliases `beastds` / `beastglm`;
       [SELF_DEVELOPMENT.md §0](SELF_DEVELOPMENT.md#0-before-going-offline-bring-both-sparks-to-main)
       installs it from the repo):
@@ -726,9 +727,8 @@ campaign. On GLM, its N0 is arm B (36/71, thinking pinned off).
       refuse to start unless `/v1/models` lists it, and run_eval re-checks
       it around every unit and stops as an infra stop if the gate swaps
       models mid-arm (nothing banked). Without the flag the guard pins
-      whatever the gate lists first, so check the id yourself. The
-      switch takes the pair off GLM for every client (the Mac's opencode,
-      Open WebUI) until the last arm ends.
+      whatever the gate lists first, so check the id yourself. Nobody may
+      switch the pair to GLM (`beastglm`) until the last arm ends.
 - [ ] Record the reproducible campaign profile and seed artifact before starting the scored arms.
 - [ ] **Thinking, before anything else: the whole campaign leans on it.**
       How does the server toggle thinking per request? The runner sends
@@ -811,8 +811,11 @@ campaign. On GLM, its N0 is arm B (36/71, thinking pinned off).
 - [ ] §6 report: the recommended daily config, and thinking's cost on
       DeepSeek. Then HARNESS_NOTES "Per-model vs unified": which components
       were kept for both models, and which for only one.
-- [ ] **After the last arm (or when the campaign stops), switch back:**
-      `ssh spark-1.tail4109f9.ts.net '~/.local/bin/beast-spark glm && ~/.local/bin/beast-spark status'`,
-      and confirm `/v1/models` lists `GLM-5.3-Flash-EXL3` again. (The full
-      path because a non-interactive ssh command does not have `~/.local/bin`
-      on its `PATH`; at a shell on spark-1, `beastds` / `beastglm` do the same.)
+- [ ] **After the last arm (or when the campaign stops), leave DeepSeek serving:**
+      it is the pair's default since 2026-11-18, so there is nothing to switch
+      back. Confirm with
+      `ssh spark-1.tail4109f9.ts.net '~/.local/bin/beast-spark status'`
+      (`selected: ds`, serving `DeepSeek-V4.1-Flash-1017`). (The full path
+      because a non-interactive ssh command does not have `~/.local/bin` on its
+      `PATH`; at a shell on spark-1, `beaststatus` does the same.) Only a
+      campaign that switched to GLM itself switches back, with `beast-spark ds`.

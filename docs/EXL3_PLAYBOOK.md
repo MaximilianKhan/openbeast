@@ -156,7 +156,7 @@ difference grouped by key suffix. What the difference means:
   Mia's official EAQ v1.1 pack at `aee640e2`, whose 27 indexer and compressor
   linears are BF16 (CLAIMED, recipe `docs/requirements.md`). The image's
   mixed-pack loader reads it with `EAQ_V1_1=1` (patch `0024`). The -v2 folder
-  (DeepSeek's pack; GLM is the pair's default) is *named* EAQ v1.1, but its index and config are byte-identical
+  (DeepSeek-V4.1-Flash (Mia EXL3), the pair's default since 2026-11-18) is *named* EAQ v1.1, but its index and config are byte-identical
   to v1's. MEASURED: both have index sha256 `525efee7…` over 192,495 keys.
   Teaching `spark-deepseek-pack.sh` the official v1.1 means accepting exactly
   that difference and setting `EAQ_V1_1=1` in its managed block. That is
@@ -356,7 +356,7 @@ and deleted. Six folders took 2.2 s of wall time, reading headers only.
 | Folder | Verdict | Detail |
 |---|---|---|
 | `~/Documents/Mia-AiLab-DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw` | DROP-IN deepseek-v41 | 210.6 GB in 39 shards, 192,495 keys, index `525efee7…`, local rev `5d70e783` (known: the stock pack); TP2 98.9 GiB/rank tight; SHA256SUMS 64 entries; disk head +212 GB, spark-2 +317 GB |
-| `…-EAQ-v1-2.9-bpw-v2` | DROP-IN deepseek-v41 | same index; local rev `04c13f12` (known: DeepSeek's -v2 pack; the known-pack text was "the serving default" before GLM became the pair's default on 2026-11-18); warns that SHA256SUMS lists 1 file not in the folder (`.gitattributes`, which v1 has and v2 lacks) |
+| `…-EAQ-v1-2.9-bpw-v2` | DROP-IN deepseek-v41 | same index; local rev `04c13f12` (known: DeepSeek-V4.1-Flash (Mia EXL3), THE DEFAULT pack, and DeepSeek the pair's default model since 2026-11-18; GLM held the default for part of that day); warns that SHA256SUMS lists 1 file not in the folder (`.gitattributes`, which v1 has and v2 lacks) |
 | `~/Documents/GLM-5.3-Flash-EXL3-4bpw-TensorFold-Ablit` | DROP-IN glm53 | EXL3 4 bpw, `mcg`, `glm53_routed_experts_only`; 175.6 GB in 83 shards, 150,226 keys, index `60b13aad…`, local rev `b2c37cff`; TP2 82.4 GiB/rank fits; no SHA256SUMS |
 | `~/openbeast-models/glm53-flash-ablit-exl3` | DROP-IN glm53 | identical to the above (the same files) |
 | `~/Documents/GLM-5.3-Flash-EXL3-2x-DGX-Sparks-TensorFold` | NOT A MODEL | "a recipe repository (start.sh, scripts/), not a checkpoint" |
@@ -437,7 +437,7 @@ this tool. Pull or bundle a commit that has it first.) Follow the verdict.
 ### 5.5 Case (a1): a DeepSeek pack
 
 ```bash
-beastds                                         # DeepSeek selected and serving first (GLM is the default)
+beastds                                         # DeepSeek selected and serving first (it is the default; a no-op when it serves)
 cd ~/openbeast-recipes/deepseek-prep
 ./spark-deepseek-pack.sh list
 ./spark-deepseek-pack.sh use ~/Documents/<folder> --id ORG/NAME --dry-run
@@ -706,8 +706,8 @@ list, before downloading 200 GB:
    [MODEL_CAMPAIGN.md](MODEL_CAMPAIGN.md): conformance, an L0 baseline, the
    failure audit, the thinking-first arms, the report. A pack that changes
    only the quantization of a qualified model needs at least the bench A/B
-   and a v5 rerun before it becomes the default (the -v2 pack's quality A/B
-   is still open).
+   and a v5 rerun before it becomes the default (DeepSeek-V4.1-Flash (Mia
+   EXL3) has its v5 row, 61/71; a v1-vs-v2 quality A/B is still open).
 
 No specific new models are recommended here. The only other EXL3 DeepSeek
 packs named on the Sparks are in drowzeys' kit README: LibertAI 3.5 bpw and

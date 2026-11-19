@@ -32,8 +32,8 @@
     "~/Documents/Mia-AiLab-DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw"
    ],
    "known_packs": {
-    "04c13f12b83d57487912d87d0f1677b076810954": "Mia EAQ v1.1 -v2 (Documents folder ...-v2): DeepSeek's pack (beast-spark ds selects it) since 2026-11-17; GLM, not DeepSeek, is the pair's default since 2026-11-18",
-    "5d70e783511ce99b2691de62a1d3f79032f2b188": "Mia EAQ v1 2.9 bpw (Documents folder): staged as the Hub snapshot 45ee5d0f, selected with 'use stock' (a fallback, superseded by -v2)"
+    "04c13f12b83d57487912d87d0f1677b076810954": "DeepSeek-V4.1-Flash (Mia EXL3), EAQ v1.1 (Documents folder and cache id end in -v2): THE DEFAULT pack, and DeepSeek is the pair's default model since 2026-11-18 (beast-spark ds / up selects it)",
+    "5d70e783511ce99b2691de62a1d3f79032f2b188": "Mia EAQ v1 2.9 bpw (Documents folder): staged as the Hub snapshot 45ee5d0f, selected with 'use stock' (a fallback, superseded by DeepSeek-V4.1-Flash (Mia EXL3))"
    },
    "pack_fingerprints": {
     "04c13f12b83d57487912d87d0f1677b076810954": "5314a93d58e4a0b8a454be6b1d13670ead0417c596b11b381ae75307ec6f89cc",
@@ -76,7 +76,7 @@
     "~/Documents/GLM-5.3-Flash-EXL3-4bpw-TensorFold-Ablit"
    ],
    "known_packs": {
-    "b2c37cff398e4ba01188b0505e3f3794acfe308f": "Mia GLM-5.3-Flash EXL3 4bpw TensorFold Ablit (staged as the Hub snapshot 57edefd2, ABLIT=1): the GLM default, and GLM is the pair's default model"
+    "b2c37cff398e4ba01188b0505e3f3794acfe308f": "Mia GLM-5.3-Flash EXL3 4bpw TensorFold Ablit (staged as the Hub snapshot 57edefd2, ABLIT=1): the GLM pack; GLM is the pair's staged alternative since 2026-11-18 (beast-spark glm)"
    },
    "pack_fingerprints": {
     "b2c37cff398e4ba01188b0505e3f3794acfe308f": "8fc4c5d511be56e82df2d5eaca1599eddc0488d99aac49415fb060ad7c186371"
