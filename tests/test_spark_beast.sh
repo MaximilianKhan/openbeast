@@ -128,10 +128,16 @@ if ! SB_WAIT_S=0 run up && grep -q "GLM-5.3-Flash-EXL3 is not on" "$T/out" && ! 
   pass "up: another id on :8000 is not 'ready' (the command center is not started)"
 else fail "up wrong id: $(calls) / $(cat "$T/out")"; fi
 
-# beastup with nothing selected: GLM, the default
+# beastup with nothing selected: DeepSeek-V4.1-Flash (Mia EXL3), the default
 reset
-if run up && [[ "$(calls)" == restore-glm ]]; then pass "up with no selection: GLM, the default"
-else fail "up none: $(calls)"; fi
+if run up && [[ "$(calls)" == activate ]] && grep -q 'selecting DeepSeek-V4.1-Flash (Mia EXL3), the default' "$T/out" \
+   && grep -q 'selected: ds' "$T/out"; then pass "up with no selection: DeepSeek, the default (activate-stock.sh, never restore-glm)"
+else fail "up none: $(calls) / $(cat "$T/out")"; fi
+
+# beastup with nothing selected and another pack configured: the configured pack is selected first
+reset Mia-AiLab/DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw
+if run up && [[ "$(calls)" == "pack use $T/pack --id $V2;activate" ]]; then pass "up with no selection on the old pack: pack use, then activate"
+else fail "up none old pack: $(calls) / $(cat "$T/out")"; fi
 
 # the API key travels on fd 3 (curl --config), never in argv
 if [[ -s "$ST/curl.argv" ]] && ! grep -q SECRETKEY123 "$ST/curl.argv" && grep -q 'Authorization: Bearer SECRETKEY123' "$ST/curl.fd3"; then

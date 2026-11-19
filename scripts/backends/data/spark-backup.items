@@ -122,8 +122,8 @@ skip      all     Videos/
 skip      all     .local/
 
 # ── Docker ───────────────────────────────────────────────────────────────────
-image     all     tensorfold-glm53:*                  # GLM-5.3-Flash recipe image (serving: the pair's default)
-image     all     tensorfold-dsv41:*                  # DeepSeek V4.1 Flash engine image (the alternative)
+image     all     tensorfold-glm53:*                  # GLM-5.3-Flash recipe image (the staged alternative)
+image     all     tensorfold-dsv41:*                  # DeepSeek V4.1 Flash engine image (serving: the pair's default)
 image     head    compose:open-webui                  # pinned by digest in docker-compose.yml
 image     head    compose:searxng
 image     head    alpine:latest                       # tar helper for volume export/import

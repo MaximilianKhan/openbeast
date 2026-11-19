@@ -2,7 +2,7 @@
 
 You're working in **OpenBeast**, a fully local AI workstation: llama.cpp
 serving Qwen and Gemma models on the RTX 5090 rig (`beast`), TensorFold
-serving GLM-5.3-Flash (the default) or DeepSeek-V4.1-Flash-1017 across two DGX Sparks
+serving DeepSeek-V4.1-Flash (Mia EXL3, the default) or GLM-5.3-Flash across two DGX Sparks
 (`spark-hydra`, command center on spark-1), an MCP-based tool server,
 OpenCode + Open WebUI as frontends, the v5 eval suite (71 scored units over
 34 base tasks, drawn from a 151-task / 320-unit library), and 27 curated

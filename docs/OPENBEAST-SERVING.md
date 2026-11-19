@@ -8,10 +8,10 @@ On the head, in an interactive shell:
 
 ```sh
 beaststatus   # selected model and pack, units, what is served
-beastup       # start the selected model (the other one stopped first), then the command center
+beastup       # start the selected model (the other one stopped first; nothing selected: DeepSeek), then the command center
 beastdown     # stop the command center and both models (boot selection kept)
-beastglm      # switch to GLM-5.3-Flash (the default model since 2026-11-18)
-beastds       # switch to DeepSeek on Mia's EAQ v1.1 "-v2" pack (the alternative; the -v2 pack supersedes the stock pack)
+beastds       # switch to DeepSeek-V4.1-Flash (Mia EXL3), the default model since 2026-11-18
+beastglm      # switch to GLM-5.3-Flash, the staged alternative
 ```
 
 These wrap `~/.local/bin/beast-spark`, **the** switch path; it calls the helpers described below, which are its internals. Two switches never run at once (a shared lock). From a non-interactive shell, call `~/.local/bin/beast-spark up|down|glm|ds|status`. To install it (and the pack tools and these aliases) on a rebuilt head: `~/openbeast/scripts/backends/spark-beast.sh install`.
@@ -25,11 +25,11 @@ python3 ~/openbeast/agents/island.py status
 curl -fsS --max-time 3 http://127.0.0.1:8000/health
 ```
 
-The first two units are DeepSeek (serving whichever pack `local.sh` selects; Mia's EAQ v1.1 "-v2" since 2026-11-17) and GLM respectively. Since 2026-11-18 GLM is the default (enabled for boot) and DeepSeek the staged alternative. One inference unit normally owns both GPUs. OpenBeast is the separate command center. The health endpoint checks backend readiness. For an end-to-end check, refresh the selected rig on your client and send a short prompt through the usual authenticated endpoint.
+The first two units are DeepSeek (serving whichever pack `local.sh` selects: DeepSeek-V4.1-Flash (Mia EXL3), whose folder and cache id end in "-v2") and GLM respectively. Since 2026-11-18 DeepSeek is the default (enabled for boot; Max's decision after testing, v5 61/71, the board's #1) and GLM-5.3-Flash the staged alternative. Switch only with `beast-spark` (the aliases above). One inference unit normally owns both GPUs. OpenBeast is the separate command center. The health endpoint checks backend readiness. For an end-to-end check, refresh the selected rig on your client and send a short prompt through the usual authenticated endpoint.
 
 ## Start or stop the currently selected model
 
-When DeepSeek is selected, use:
+When DeepSeek is selected (the default), use:
 
 ```sh
 systemctl --user start deepseek-v41-inference.service
@@ -43,13 +43,13 @@ Ctrl-C exits the log viewer. To stop serving DeepSeek, run `systemctl --user sto
 Finish active requests first. Switching releases both GPUs and interrupts inference while the next model loads. A prepared DeepSeek launch took about 40 seconds on the running pair; service checks and client refresh add time.
 
 ```sh
-beastglm      # DeepSeek -> GLM: rollback/restore-glm.sh, then waits for GLM-5.3-Flash-EXL3
-beastds       # GLM -> DeepSeek: stops GLM, re-selects the -v2 pack, activate-stock.sh, waits for DeepSeek-V4.1-Flash-1017
+beastglm      # DeepSeek -> GLM (the alternative): rollback/restore-glm.sh, then waits for GLM-5.3-Flash-EXL3
+beastds       # GLM -> DeepSeek (the default): stops GLM, re-selects the Mia EXL3 pack, activate-stock.sh, waits for DeepSeek-V4.1-Flash-1017
 ```
 
 The helpers set the managed service and matching command-center configuration. The DeepSeek helper, `activate-stock.sh`, checks the prepared runtime, starts DeepSeek, runs a chat and conformance checks, and sets the boot selection on success. **It never stops GLM**: `beastds` stops GLM before calling it, and you must never run it while GLM is active. If anything in `beastds` fails while GLM was serving, it runs `restore-glm.sh` and waits for GLM. Without beast-spark, the hand forms are `bash ~/openbeast-recipes/deepseek-prep/rollback/restore-glm.sh` (to GLM) and `systemctl --user stop spark-hydra-inference.service && bash ~/openbeast-recipes/deepseek-prep/activate-stock.sh` (to DeepSeek). After either switch, run `openbeast-client use spark-hydra` on an enrolled OpenBeast client with that rig name. Confirm the model shown in your client and send a short prompt.
 
-**One DeepSeek pack for another** (for example the stock EAQ v1 pack and Mia's experimental EAQ v1.1 "-v2" pack, DeepSeek's pack since 2026-11-17). The pair serves only DeepSeek and GLM, and the pack is the only part of DeepSeek you swap. **Only while DeepSeek is selected and serving: run `beastds` first** (the tool refuses while GLM is active; `--stop-glm` stops GLM explicitly):
+**One DeepSeek pack for another** (for example the stock EAQ v1 pack and DeepSeek-V4.1-Flash (Mia EXL3), Mia's EAQ v1.1 pack and DeepSeek's pack since 2026-11-17). The pair serves only DeepSeek and GLM, and the pack is the only part of DeepSeek you swap. **Only while DeepSeek is selected and serving: run `beastds` first** (the tool refuses while GLM is active; `--stop-glm` stops GLM explicitly):
 
 ```sh
 beastds
@@ -58,7 +58,7 @@ cd ~/openbeast-recipes/deepseek-prep
 ./spark-deepseek-pack.sh use ~/Documents/<pack-folder> --bench   # or: use stock
 ```
 
-`beastds` re-selects the `-v2` pack on every GLM → DeepSeek switch. To keep another pack, name it in `~/.config/openbeast/beast-spark.env` (`DS_PACK=~/Documents/<pack-folder>` and `DS_ID=ORG/NAME`, the ID `list` shows).
+`beastds` re-selects the Mia EXL3 pack on every GLM → DeepSeek switch. To keep another pack, name it in `~/.config/openbeast/beast-spark.env` (`DS_PACK=~/Documents/<pack-folder>` and `DS_ID=ORG/NAME`, the ID `list` shows).
 
 It mirrors the folder to the worker, prepares both ranks, restarts, runs the chat and conformance checks, and rolls back by itself on failure. Details are in `~/openbeast/docs/SPARK_HYDRA.md`, "DeepSeek packs".
 

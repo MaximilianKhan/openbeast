@@ -86,7 +86,7 @@ put on argv by the scripts, and the `$(cat …)` here keeps it out of history):
 curl -s https://spark-1.tail4109f9.ts.net:8443/v1/chat/completions \
   -H "Authorization: Bearer $(cat ~/.config/openbeast/spark-hydra-gate.key)" \
   -H 'Content-Type: application/json' \
-  -d '{"model": "GLM-5.3-Flash-EXL3", "messages": [{"role": "user", "content": "hello"}]}'   # or DeepSeek-V4.1-Flash-1017 when selected
+  -d '{"model": "DeepSeek-V4.1-Flash-1017", "messages": [{"role": "user", "content": "hello"}]}'   # or GLM-5.3-Flash-EXL3 when GLM (the alternative) is selected
 ```
 
 Per request, `"chat_template_kwargs": {"enable_thinking": false}` turns
@@ -119,10 +119,10 @@ since 2026-11-17) shows the selected model and pack, the three units, what
 Logs:
 
 ```bash
-journalctl --user -fu spark-hydra-inference             # GLM (the default): rank 0 + the recipe's start.sh (Ctrl-C exits)
-journalctl --user -fu deepseek-v41-inference            # the same for DeepSeek, when it is selected
-docker logs -f glm53-flash-tf                           # GLM rank 0 container (DeepSeek: dsv41-1017-exl3-tf)
-ssh spark-2 'docker logs -f glm53-flash-tf'             # rank 1 container (quote it)
+journalctl --user -fu deepseek-v41-inference            # DeepSeek (the default): rank 0 + the recipe's start.sh (Ctrl-C exits)
+journalctl --user -fu spark-hydra-inference             # the same for GLM, when it is selected
+docker logs -f dsv41-1017-exl3-tf                       # DeepSeek rank 0 container (GLM: glm53-flash-tf)
+ssh spark-2 'docker logs -f dsv41-1017-exl3-tf'         # rank 1 container (quote it)
 tail -f ~/openbeast/.run/stack.log                      # the command center's supervisor
 journalctl --user -u openbeast --since today
 tail -20 ~/openbeast/.run/supervisor-heal.log           # what the supervisor restarted by itself
@@ -143,11 +143,13 @@ Never print secrets. To show configuration, filter:
 
 ## 3. spark-1: start, stop, switch (CHANGES STATE)
 
-The pair serves exactly two models, one at a time: **GLM-5.3-Flash**
-(unit `spark-hydra-inference`, model id `GLM-5.3-Flash-EXL3`, **the default
-since 2026-11-18**, Max's decision) and **DeepSeek-V4.1-Flash-1017** (unit
-`deepseek-v41-inference`, the staged alternative, on Mia's EAQ v1.1 "-v2"
-pack). "Selected"
+The pair serves exactly two models, one at a time: **DeepSeek-V4.1-Flash
+(Mia EXL3)** (unit `deepseek-v41-inference`, model id `DeepSeek-V4.1-Flash-1017`,
+524,288-token window, **the default since 2026-11-18**, Max's decision after
+testing; v5 61/71, the board's #1) and **GLM-5.3-Flash** (unit
+`spark-hydra-inference`, model id `GLM-5.3-Flash-EXL3`, 1,048,576-token
+window, the staged alternative). `beastup` with nothing selected picks
+DeepSeek. "Selected"
 means the enabled unit. Finish or warn about in-flight requests first:
 a switch or restart drops every generation in progress.
 
@@ -158,9 +160,10 @@ a switch or restart drops every generation in progress.
 beastup        # beast-spark up:   stop the non-selected model if it runs, start the selected one, wait until
                #                   /v1/models lists ITS id, then the command center
 beastdown      # beast-spark down: stop the command center and both inference units (boot selection kept)
-beastds        # beast-spark ds:   stop GLM, select the DeepSeek pack (-v2 unless ~/.config/openbeast/beast-spark.env
-               #                   says otherwise), activate DeepSeek (canary + conformance); GLM comes back on failure
-beastglm       # beast-spark glm:  switch to GLM-5.3-Flash
+beastds        # beast-spark ds:   back to the default: stop GLM, select the DeepSeek pack (Mia EXL3 unless
+               #                   ~/.config/openbeast/beast-spark.env says otherwise), activate DeepSeek
+               #                   (canary + conformance); GLM comes back on failure
+beastglm       # beast-spark glm:  switch to GLM-5.3-Flash, the alternative
 beaststatus    # beast-spark status
 ```
 
@@ -180,10 +183,10 @@ The underlying commands, for reference only
 ([OPENBEAST-SERVING.md](OPENBEAST-SERVING.md)). Restarting the selected model:
 
 ```bash
-systemctl --user restart spark-hydra-inference          # GLM, both ranks (rank 1 is started over ssh by the recipe)
-systemctl --user stop spark-hydra-inference
-systemctl --user start spark-hydra-inference
-# with DeepSeek selected, the same verbs on deepseek-v41-inference
+systemctl --user restart deepseek-v41-inference         # DeepSeek (the default), both ranks (rank 1 is started over ssh by the recipe)
+systemctl --user stop deepseek-v41-inference
+systemctl --user start deepseek-v41-inference
+# with GLM selected, the same verbs on spark-hydra-inference
 ```
 
 The switch helpers are beast-spark's **internals**:
@@ -199,14 +202,14 @@ let autosync follow within 30 s).
 
 **Never** `docker stop` a rank container, or run the recipe's `stop.sh` or
 `~/openbeast/stop.sh` by hand while the matching unit is enabled: systemd
-restarts behind you (`Restart=on-failure`, after 30 s for GLM, 60 s for
-DeepSeek).
+restarts behind you (`Restart=on-failure`, after 60 s for DeepSeek, 30 s for
+GLM).
 
 ---
 
 ## 4. spark-1: DeepSeek packs
 
-These apply only to DeepSeek, the staged alternative, and **only while
+These apply only to DeepSeek (the default model), and **only while
 DeepSeek is selected and serving: run `beastds` first.** A pack swap is not a
 model switch: while GLM's `spark-hydra-inference` is active, `use` refuses
 and says so (`--stop-glm` stops GLM explicitly for one swap; the boot
@@ -224,8 +227,8 @@ cd ~/openbeast-recipes/deepseek-prep
 ./spark-deepseek-pack.sh use stock                                  # CHANGES STATE: back to Mia EAQ v1 @ 45ee5d0f
 ```
 
-`beastds` re-selects its configured pack every time (the `-v2` pack by
-default). To keep a pack you adopted with `use` across a GLM round trip, name
+`beastds` re-selects its configured pack every time (DeepSeek-V4.1-Flash
+(Mia EXL3) by default). To keep a pack you adopted with `use` across a GLM round trip, name
 it in `~/.config/openbeast/beast-spark.env` (parsed, never sourced):
 
 ```bash
@@ -303,7 +306,7 @@ cd ~/openbeast && ./agent.sh -w ~/ob-work --context-file /tmp/ctx.md --max-iter 
 ```
 
 opencode v2.3.2 on either Spark (since 2026-11-18; provider
-`spark-hydra-local` at `127.0.0.1:8000`, default model `GLM-5.3-Flash-EXL3`, DeepSeek also listed; no OpenBeast
+`spark-hydra-local` at `127.0.0.1:8000`, default model `DeepSeek-V4.1-Flash-1017`, GLM also listed; no OpenBeast
 MCP tools yet). Details: [SELF_DEVELOPMENT.md "opencode on the Sparks"](SELF_DEVELOPMENT.md#opencode-on-the-sparks).
 
 ```bash
@@ -512,7 +515,7 @@ Each of these is a state change: say what you are doing before you do it.
 | A service in `healthcheck.sh` is DOWN | `~/openbeast/scripts/healthcheck.sh --restart`; if that fails, `systemctl --user restart openbeast` |
 | WebUI / SearXNG DOWN after a reboot, "docker daemon not ready" | the user manager started before the docker group applied: reboot once; `systemd-run --user --wait --pipe docker info` proves it |
 | A pack swap failed | the script rolls back by itself; read `runtime/runs/packs/` and `journalctl --user -u deepseek-v41-inference`; `./spark-deepseek-pack.sh list` shows what serves |
-| The selected model will not come back at all | switch to the other one: `beastds` (DeepSeek) while GLM is broken, `beastglm` while DeepSeek is; then `openbeast-client use spark-hydra` on clients. Tell Max: GLM is his chosen default |
+| The selected model will not come back at all | switch to the other one: `beastds` (DeepSeek) while GLM is broken, `beastglm` while DeepSeek is; then `openbeast-client use spark-hydra` on clients. Tell Max: DeepSeek is his chosen default |
 | The box freezes or ssh hangs | unified memory exhausted (GB10 freezes rather than OOMs): power-cycle; afterwards check the `Unified memory` line and what was added |
 | Tailnet down, LAN up | ssh by LAN IP (`ssh -o HostName=192.168.40.153 spark-1` from the Mac); reach the gate through an ssh tunnel ([TAILSCALE_OFFLINE.md](TAILSCALE_OFFLINE.md)) |
 | The internet is down | nothing to do: the island watcher islands the stack after 90 s ([BEAST_ISLAND.md](BEAST_ISLAND.md#on-the-spark-pair)); work continues locally |

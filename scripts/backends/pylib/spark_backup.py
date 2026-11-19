@@ -62,11 +62,12 @@ ALL_CLASSES = FILE_CLASSES + ("image", "volume")
 ROLES = ("head", "worker", "all", "opt")
 LOCAL_SH = "openbeast-recipes/deepseek-prep/runtime/scripts/local.sh"
 GLM_LOCAL_SH = "openbeast-recipes/glm53/scripts/local.sh"
-# The pair's two inference units; exactly one is enabled (GLM's is the default).
+# The pair's two inference units; exactly one is enabled (DeepSeek's is the default since 2026-11-18;
+# GLM's is the staged alternative).
 GLM_UNIT = "spark-hydra-inference.service"
 DS_UNIT = "deepseek-v41-inference.service"
 INFERENCE_UNITS = (GLM_UNIT, DS_UNIT)
-DEFAULT_HEAD_UNITS = f"openbeast.service {GLM_UNIT} openbeast-logrotate.timer openbeast-watchdog.timer"
+DEFAULT_HEAD_UNITS = f"openbeast.service {DS_UNIT} openbeast-logrotate.timer openbeast-watchdog.timer"
 # Filesystems that keep what the backup depends on: owners and modes, hard
 # links (Documents/ and the HF caches are links of each other: without them
 # 1.1 TB becomes 1.6 TB), symlinks (the HF snapshot layout), ACLs, xattrs.
@@ -1216,7 +1217,7 @@ WantedBy=default.target
 def backup_inference_unit(src: Source, meta: dict) -> tuple:
     """(unit, how): the inference unit the backed-up head had enabled for boot, from the generation's own record:
     BACKUP.json's enabled_user_units, else the *.wants links kept in home/ (class node), else the system record's
-    `systemctl --user list-unit-files`. GLM's unit, the pair's default, when none of them says."""
+    `systemctl --user list-unit-files`. DeepSeek's unit, the pair's default (since 2026-11-18), when none of them says."""
     rec = meta.get("enabled_user_units")
     how = "BACKUP.json"
     if rec is None:
@@ -1229,7 +1230,7 @@ def backup_inference_unit(src: Source, meta: dict) -> tuple:
     hits = [u for u in INFERENCE_UNITS if u in rec]
     if len(hits) == 1:
         return hits[0], how
-    return GLM_UNIT, "the default (the backup records " + ("both" if hits else "neither") + ")"
+    return DS_UNIT, "the default (the backup records " + ("both" if hits else "neither") + ")"
 
 
 def head_units_for(fleet: dict, unit: str) -> list:
@@ -1517,7 +1518,7 @@ def cmd_restore(args) -> int:
     return 0
 
 
-def print_manual_steps(fleet: dict, me: dict, meta: dict, inf_unit: str = GLM_UNIT) -> None:
+def print_manual_steps(fleet: dict, me: dict, meta: dict, inf_unit: str = DS_UNIT) -> None:
     head = fleet["nodes"][0]
     print("\n-- 6. by hand, in this order (docs §3): root and identity come from the golden image and its identity step,")
     print("   never from this backup. After a golden-image restore the next two only CHECK (idempotent, offline):")
@@ -1527,7 +1528,8 @@ def print_manual_steps(fleet: dict, me: dict, meta: dict, inf_unit: str = GLM_UN
     if me["role"] == "head":
         print("   scripts/backends/spark-restore.sh rebuild --apply   # DeepSeek's rank files, offline, ~35 min; BEFORE starting a model")
         print("   scripts/setup-tailscale.sh                  # tailscale serve: WebUI, beast-gate :8443, :8444-8446, :8889 (online)")
-        model = "GLM-5.3-Flash, the default" if inf_unit == GLM_UNIT else "DeepSeek, the backup's selection"
+        model = ("DeepSeek-V4.1-Flash (Mia EXL3), the default; needs the rebuild above" if inf_unit == DS_UNIT
+                 else "GLM-5.3-Flash, the backup's selection (the alternative)")
         print(f"   systemctl --user start {inf_unit.removesuffix('.service')} openbeast"
               f"   # {model}; or ~/.local/bin/beast-spark up")
     else:

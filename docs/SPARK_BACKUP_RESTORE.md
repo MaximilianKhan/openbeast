@@ -83,8 +83,9 @@ have run only as `inventory` and as a dry run. The first real runs are
      firmware, or for a replacement unit. It can be made offline from the
      `tar.gz` on the SSD.
 6. **Recovery time for the pair (estimate, SSD):** about **2 to 2.5 hours**
-   from bare metal to GLM serving. DeepSeek is ready about 35 minutes later,
-   once its rank files are rebuilt ([§5.2](#52-recovery-time)).
+   from bare metal to GLM (the staged alternative) serving. DeepSeek, the
+   pair's default since 2026-11-18, is ready about 35 minutes later, once its
+   rank files are rebuilt ([§5.2](#52-recovery-time)).
 
 ---
 
@@ -658,7 +659,7 @@ details above. After an OTA on one node only, take a new image from that node.
 | Serial | `/etc/dgx-release` `DGX_SERIAL_NUMBER` | from the bundle, or `--serial` | recorded only |
 | Docker engine ID, image store | `/var/lib/docker` | not in the image; Docker makes a new one | images re-loaded, compose pins rewritten to the loaded IDs |
 | Rank and role | `spark.env`, `cluster.env`, the DeepSeek recipe's `WORKER` / `FABRIC_PEER`, GLM's `WORKER=max@10.100.216.2` | n/a | **written by the restore** from the fleet file |
-| Boot units | `default.target.wants/` links | n/a | the role's units enabled, and the inference unit the backup had enabled (GLM by default) |
+| Boot units | `default.target.wants/` links | n/a | the role's units enabled, and the inference unit the backup had enabled (DeepSeek's `deepseek-v41-inference`, the default since 2026-11-18, when the backup records neither or both) |
 | Shared on purpose | `tensorfold-api-key`, the cluster ssh key `id_ed25519_nvsync_cluster_assistant` (the same on both Sparks, MEASURED) | n/a | restored on both |
 
 ### 3.4 Bare metal to serving: the order
@@ -674,8 +675,8 @@ For the pair, with the SSD, stick 1, and the passphrase. Times are estimates;
 | 4 | Head overlay, run **from the drive's copy of the checkout**: `G=/media/max/obbackup/openbeast-backup/spark-3dc6/latest; $G/home/openbeast/scripts/backends/spark-restore.sh --from $G --index 0` (dry run), then add `--apply`. The fleet file defaults to the pair | spark-1 | none |
 | 5 | Seed spark-2 over the fabric (the rails are up: the identity bundle brought the netplan). On spark-1: `rsync -a ~/.ssh/authorized_keys ~/.ssh/id_ed25519_nvsync_cluster_assistant* max@10.100.216.2:.ssh/` and `rsync -a ~/openbeast/ max@10.100.216.2:openbeast/` (spark-2's login password, once; VERIFY that DGX OS's sshd takes passwords, or else move the SSD). On spark-2: `~/openbeast/scripts/backends/spark-restore.sh --from max@10.100.216.1:/media/max/obbackup/openbeast-backup/spark-3dc6/latest --index 1 --apply`. The tool pulls with the cluster key. Run it while step 4's `docker load` runs | both | fabric only |
 | 6 | Checks only (the golden image already holds the root setup; idempotent): `sudo scripts/backends/spark-root-setup.sh spark-N --guard --debs ~/offline-stage/debs --no-tailscale`, `sudo scripts/backends/spark-fabric-mtu.sh`; reboot both if either changed anything | both | none |
-| 7 | Head: `scripts/backends/spark-restore.sh rebuild --apply`: DeepSeek's rank files, offline, about 35 min, with no model running ([§3.5](#35-the-offline-rebuild)). Skip it to serve GLM sooner, and run it before the first `beastds` | spark-1 | fabric only |
-| 8 | Head: `systemctl --user start spark-hydra-inference openbeast` (GLM, the default; its kernels compile on this first start), or `beastup` | spark-1 | none |
+| 7 | Head: `scripts/backends/spark-restore.sh rebuild --apply`: DeepSeek's rank files, offline, about 35 min, with no model running ([§3.5](#35-the-offline-rebuild)). DeepSeek, the default, needs it before it starts; skip it only to serve GLM (the alternative) sooner, and then run it before the first `beastds` | spark-1 | fabric only |
+| 8 | Head: `systemctl --user start deepseek-v41-inference openbeast` (DeepSeek, the default, once step 7 is done), or `beastup`. To serve GLM, the alternative, before the rebuild: `beastglm` (its kernels compile on this first start) | spark-1 | none |
 | 9 | Checks: `scripts/backends/spark-cluster.sh check`, `scripts/doctor.sh`, `scripts/backends/conformance.sh`, a chat from the Mac over the LAN | spark-1 | none |
 | 10 | When the internet is back, optionally: `scripts/setup-tailscale.sh` (serve config), Tailscale re-auth only for a fresh identity | spark-1 | online |
 
@@ -808,7 +809,7 @@ in drill 0). The fabric rate is MEASURED.
 | Root-setup checks, MTU check, reboot both | 10 min |
 | GLM's first start (kernel compile plus load), conformance | 15 to 20 min |
 | **The pair, bare metal to GLM serving** | **about 2 to 2.5 h** |
-| DeepSeek's rank files, rebuilt offline (before GLM starts, or later with GLM stopped) | add about 35 min |
+| DeepSeek's rank files, rebuilt offline (before GLM starts, or later with GLM stopped); needed before DeepSeek, the default since 2026-11-18, serves | add about 35 min |
 | A replacement unit's firmware via NVIDIA's recovery stick | add 20 to 40 min |
 
 Before Max's decisions, the estimate was 2.5 to 3.5 h, with an online first
@@ -898,8 +899,8 @@ and the commands `DOCKER`, `RSYNC`, `ZSTD`, `FINDMNT`, `LSBLK`, `NVIDIA_SMI`,
    group and other (`chmod 600` it).
 
 1. **When is the capture outage (drill G with drill 5)?** About 20 min for
-   the capture, and about 2 h for the full drill on spark-2. GLM is down for
-   both.
+   the capture, and about 2 h for the full drill on spark-2. The served model
+   (DeepSeek, the default) is down for both.
 2. **A second SSD** for an independent copy, kept elsewhere? One drive is one
    copy ([§2.8](#28-schedule-and-retention)).
 3. **NVIDIA's latest recovery image** (October 2026 or later): download it
