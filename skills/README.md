@@ -43,8 +43,8 @@ The model discovers them via MCP and loads them on demand. See
 | `eval-variant-porter` | Adding multi-language variants (Python/Go/C/C++/Rust/Zig) to existing tasks |
 | `beast-lang` | The offline language library: look up what the *installed* compiler confirmed, add a verified claim, rebuild the escalation index, review model-drafted claims. Written for cloud models working in this repo — `prompt_index: false`, so it is not in the local model's always-on menu |
 | `app-control` | Drive external apps (Xcode, Gradle/adb, Blender, Figma, 3D printers, ROS) through MCP servers with beast-apps: `scripts/apps.sh check` first, report the exact remediation when something is missing, enable only after a passing check, `refresh` after an update. See [`docs/BEAST_APPS.md`](../docs/BEAST_APPS.md). `prompt_index: false` for now — adding it to the menu costs every local-model turn tokens; reachable by `skill("app-control")` |
-| `tailscale` | Connect DeepSeek and other models over the tailnet, select the rig and device key, diagnose remote access, and recover through the LAN. Loads the [cross-platform guide](tailscale/references/guide.md). |
-| `platform-docs` | beast-docs: search the offline mirror of current Apple / Android / other platform docs before writing code against a platform API, cite the URL and its fetched date, say when it is stale. `prompt_index: false` (the menu file is era-locked) — reachable with `skill("platform-docs")` and backed by the `platform_docs` tool |
+| `tailscale` | Connect DeepSeek and other models over the tailnet, select the rig and device key, diagnose remote access, and recover through the LAN. Loads the [cross-platform guide](tailscale/references/guide.md). `prompt_index: false` — reachable with `skill("tailscale")` |
+| `platform-docs` | beast-docs: search the offline mirror of current Apple / Android / other platform docs before writing code against a platform API, cite the URL and its fetched date, say when it is stale. `prompt_index: false` (the menu costs every local-model turn tokens) — reachable with `skill("platform-docs")` and backed by the `platform_docs` tool |
 
 ### Imported (9 skills, off the always-on menu)
 
@@ -100,6 +100,12 @@ start_skill_agent("code-review",    → spawn a sub-agent with the skill activat
 The agent decides when to invoke. Helpful prompts: "use a skill if relevant",
 "is there a skill for this?", "spawn a {skill} agent on this".
 
+Without the MCP tools (opencode running on spark-1 or spark-2 has none wired
+yet, see [docs/SELF_DEVELOPMENT.md](../docs/SELF_DEVELOPMENT.md#opencode-on-the-sparks)),
+read `skills/<name>/SKILL.md` from the checkout, plus any file under that
+skill's directory it tells you to read. Nothing else is needed: a skill is
+just that Markdown.
+
 ## Adding a new skill
 
 1. `mkdir -p skills/my-skill/`
@@ -117,7 +123,8 @@ The agent decides when to invoke. Helpful prompts: "use a skill if relevant",
 5. Decide whether it belongs in the **always-on menu**. `python3
    scripts/generate-skill-index.py` rewrites the skill list in
    `system-prompt-tools.md`, which every local-model WebUI turn pays for, and
-   CI fails on a stale index. (It is not era-hashed: the eval agent never
+   `tests/test_scripts.sh` fails on a stale index (`python3
+   scripts/generate-skill-index.py --check` checks just that). (It is not era-hashed: the eval agent never
    reads it.) A skill written for cloud models working in this repo (like
    `beast-lang`) sets `prompt_index: false` in its frontmatter: it stays
    reachable by name through `skill("my-skill")` and `start_skill_agent`, and

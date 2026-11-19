@@ -12,8 +12,8 @@ implementations in some subset of `python`, `go`, `c`, `cpp`, `rust`, `zig`.
 Each variant is its own scored test unit; weight per variant =
 `difficulty_weight / num_variants` (so total points per task stay constant).
 
-**Variant ID convention** (stable letter suffix, used across all 13 variant
-tasks in the suite): `a`=python, `b`=go, `c`=c, `d`=cpp, `e`=rust, `f`=zig.
+**Variant ID convention** (stable letter suffix, used by every variant task in
+`evals/tasks/`: 35 on 2026-11-19): `a`=python, `b`=go, `c`=c, `d`=cpp, `e`=rust, `f`=zig.
 Stable letters mean adding new languages doesn't renumber existing variants.
 The exception is `122_gemm_blocked`, which has no Python (perf-flavored), so
 its IDs are `a`=go, `b`=c, `c`=cpp, `d`=rust, `e`=zig.

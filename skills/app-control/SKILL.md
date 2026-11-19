@@ -17,7 +17,8 @@ tell whether THIS machine has what a server needs.
 mode that is the user's Mac: `apps.sh` checks and configures *that* Mac, and
 the MCP servers it enables run there, beside `openbeast-tools`. The model on
 the rig only sees tool calls. So run `apps.sh` with your `bash` tool — never
-reason about the rig's toolchain.
+reason about the rig's toolchain. (opencode running on spark-1 or spark-2
+has no OpenBeast MCP servers wired yet: there `apps.sh` checks that Spark.)
 
 ## The rule
 
@@ -50,8 +51,10 @@ toolchains, no editing `opencode.json` by hand.
    adds one MCP entry to your opencode config (backed up first). Then restart
    opencode." Run it only after the user agrees. Exit 6 means the server is
    off by default for safety (e.g. `3d-print`: no print confirmation) — show
-   the `risk` text and let the USER decide on `--accept-risk`. Exit 7 means
-   the user already has their own entry for it: use theirs.
+   the `risk` text and let the USER decide on `--accept-risk` — or that the
+   opencode config cannot hold its ask rules (the output says so; `--ungated`
+   is the user's call too). Exit 7 means the user already has their own entry
+   for it, or beast-apps already wired it: use what is there.
 
 6. **READY and enabled** → use its tools. Pass `warnings` on to the user once
    (e.g. "adb is not on your shell PATH"). They do not block.
