@@ -13,7 +13,7 @@ Status key: **IDEA** (noted) · **BUILDING** · **ARM** (being measured) · **AD
 
 ---
 
-## Headroom — the gap the harness work is chasing (2026-11-16, updated 2026-11-17 evening)
+## Headroom — the gap the harness work is chasing (2026-11-16, updated 2026-11-17 evening; DeepSeek rows 2026-11-19)
 
 | Row | v5 (71 units) | Notes |
 |---|---|---|
@@ -25,6 +25,8 @@ Status key: **IDEA** (noted) · **BUILDING** · **ARM** (being measured) · **AD
 | GLM arm C (B + thinking, `--wall-scale 2`, B's turns) | **51/71 scored** (SCORE 76.7); 54/71 raw | +15 scored / +18 raw over B; single seed; no packs. The contamination scan (#195, `evals/audit/integrity_scan.py`) withheld three passes, 122_gemm_blocked_b, _d and _e: their agents read or reached for sealed paths (Claude Code workflow journals under `~/.claude`, the harness source, a cached result in `evals/cache/`; see "Language-specific residue" below). First 21 units: 18 vs B's 8 (10 rescued, 0 regressed). **GLM's best row**, and since 2026-11-17 the serving default on spark-hydra (thinking on; `SPARK_HYDRA.md` E2a) |
 | GLM arm E (C + diagnostics, edit hint, verify-done, zig pack v2, host pack, env block, wall warnings) | **50/71** (SCORE 74.7) | Done 2026-11-17, on the board (#201); integrity scan clean. One under C scored, four under C raw: a wash at one seed. Per language against C: Py 22 vs 24, C 5 vs 6, Rust 6 vs 5, Zig 4 vs 3 (pack v2), Go / C++ / Sh equal; 28.5 vs 29.0 min per unit. Its 122_gemm_blocked_c FAIL is a validator false FAIL (the pre-#195 lint matched `dlopen` in a comment; the file passes the fixed validator), footnoted on the board and not adjusted. E's additions stay opt-in |
 | GLM arms D, F | **not run** | Max paused the benchmark chain after E (2026-11-17). D = C + diagnostics, edit hint, verify-done; F = B at `--seed 1`, the noise floor |
+| DeepSeek-V4.1-Flash (Mia EXL3) arm T (thinking-first composite: runner v2, wall-scaled turns, thinking at wall x2, diagnostics + edit hint + verify-done, packs v3 + host pack, env block, wall warnings) | **61/71** (SCORE 88.5) | 2026-11-18, harness8 + review 1118 sandbox; single seed. All 10 failures ended on the 3,600 s wall, with turns of up to 16,384 tokens at ~30 tok/s per stream: slow turns, not scarce ones |
+| DeepSeek arm T2 (T + 8,192-token per-turn cap + act nudge, harness9) | **65/71** (SCORE 94.9) | 2026-11-19; +4 / 0 regressions against T, single seed. **The board's #1** and DeepSeek's recommended setup (`AGENT_PROFILE=deepseek-best`, `SPARK_HYDRA.md` E2b). Seed arm T_s1 running, T3 (4,096 cap) next; status in [MODEL_CAMPAIGN.md §9](MODEL_CAMPAIGN.md#9-next-deepseek-v41-flash-1017-thinking-first) |
 
 Max's read, and the working hypothesis: GLM-5.3-Flash is a far stronger model than
 26/71 suggests, and much of the gap is the harness around it, not the weights. Each arm
@@ -79,8 +81,9 @@ TODO).
 the env block and wall warnings on top of thinking were a wash at one seed, so they
 stay opt-in and the serving default adds thinking alone (`SPARK_HYDRA.md` E2a:
 `INFERENCE_THINKING=on` at the gate, in Open WebUI and for the host's agents). Arms
-D and F did not run (Max paused the chain). Update again when the first
-thinking-first campaign reports (DeepSeek v4.1 Flash is next).
+D and F did not run (Max paused the chain). The first thinking-first campaign
+is DeepSeek-V4.1-Flash (Mia EXL3)'s (2026-11-18 on): T 61/71, T2 65/71 so far
+("Headroom" above); update this section when its report is written.
 
 ## GLM-5.3-Flash (spark-hydra, thinking off) — from the 2026-11-16 v5 L0 audit
 
@@ -179,7 +182,7 @@ prefix's zig and rustup's `1.100.0-aarch64-apple-darwin` rustc.
 
 ## Per-model vs unified — what to measure
 
-For each candidate: run it as an arm on GLM-5.3-Flash and on at least one other model (Qwen3.8 27B on the rig; DeepSeek v4.1 Flash when it lands). A change that helps one and hurts another is the evidence for per-model knobs; one that helps all belongs in the unified harness.
+For each candidate: run it as an arm on GLM-5.3-Flash and on at least one other model (Qwen3.8 27B on the rig; DeepSeek-V4.1-Flash (Mia EXL3), whose thinking-first campaign is running on the Spark pair). A change that helps one and hurts another is the evidence for per-model knobs; one that helps all belongs in the unified harness.
 
 ## Language-specific residue under thinking (2026-11-17)
 

@@ -61,12 +61,16 @@ beast-gate authenticates *the device*. An assessor should test both.
 | Device enrollment, revocation, rotation | `scripts/clients.sh` | Provided |
 | Revocation effective on the next request, no restart, hot-reloaded registry | `agents/edge.py` | Provided |
 | Keys stored as SHA-256 only; plaintext shown once, never in argv | `scripts/clients.sh` | Provided |
-| RBAC restricts guests to `web_search` and `fetch`, never shell or file tools | `scripts/configure-webui.sh`, `agents/openapi_tools.py` | Provided |
+| RBAC restricts guests to `web_search`, `fetch` and `weather`, never shell or file tools | `scripts/configure-webui.sh`, `agents/openapi_tools.py` | Provided |
 
-**Known limits an assessor will find.** A generation already streaming is not
-terminated by revocation; it runs to completion. Enrollment is out-of-band (the
-owner sends a key over a channel of their choosing), so there is no
-self-service request-and-approve flow and no key expiry.
+**Known limits an assessor will find.** Revocation also cuts off a generation
+already running, within about 5 s (the gate re-checks enrollment while waiting
+for the first byte and as chunks arrive, and audits the row `revoked`); a
+stream that has gone silent is re-checked only at its next chunk
+([BEAST_SLOT.md § beast-gate](BEAST_SLOT.md#beast-gate--the-identity-aware-inference-edge)).
+Enrollment is out-of-band (the owner sends a key over a channel of their
+choosing), so there is no self-service request-and-approve flow and no key
+expiry.
 
 ### CC6.6 / CC6.7 — Transmission, boundary protection
 
@@ -98,8 +102,8 @@ the gap list.
 
 | Mechanism | Where | State |
 |---|---|---|
-| CI on every push: tests, ShellCheck, Ruff, `pip-audit` | `.github/workflows/` | Provided |
-| Branch protection, required status checks, secret scanning and push protection | GitHub repo settings | Provided |
+| CI on every push: tests, ShellCheck, Ruff, `pip-audit` | `.github/workflows/` | **Partial since 2026-11-17:** the workflows exist, but GitHub Actions is turned off (cost). The same suites run locally before each merge and the PR body records the results |
+| Branch protection, required status checks, secret scanning and push protection | GitHub repo settings | Partial: protection and the required checks are configured, but with Actions off merges go through an admin override (`enforce_admins` is off), so the checks are not enforced |
 | Dependabot | `.github/dependabot.yml` | Provided |
 | Private vulnerability reporting and a documented disclosure policy | [`SECURITY.md`](../SECURITY.md) | Provided |
 
@@ -129,8 +133,11 @@ code-adjacent data with full influence over what your agent does.
 
 Supervisor with health-monitored auto-restart and a refilling restart budget,
 memory-capped systemd scope, model-load rollback, fast-boot bridge. Backup and
-recovery are **the customer's responsibility**; OpenBeast ships no backup
-tooling.
+recovery are **the customer's responsibility**. The one exception is the DGX
+Spark pair: `scripts/backends/spark-backup.sh` and `spark-restore.sh` back up
+and rebuild it offline from a golden base image
+([SPARK_BACKUP_RESTORE.md](SPARK_BACKUP_RESTORE.md)), but as of 2026-11-19
+they have run only as inventory and dry runs, so they are not yet evidence.
 
 ## 3. Where OpenBeast is unusually strong
 
@@ -152,11 +159,11 @@ Ranked by what a reviewer will find first. Tracked in [`TODO.md`](TODO.md).
 
 | # | Gap | Criterion | Effort |
 |---|---|---|---|
-| 1 | **beast-gate is off by default**, so out of the box there is no per-device identity, no admission control and no inference audit. A compliance-oriented deployment needs it on, and nothing currently tells the operator that. | CC6.1, CC7.2 | S: a `doctor` warning plus a documented hardening profile |
+| 1 | **beast-gate is off by default**, so out of the box there is no per-device identity, no admission control and no inference audit. A compliance-oriented deployment needs it on, and nothing tells the operator that in general (`doctor` does FAIL the two riskiest shapes: a keyless raw `:8443`, and devices enrolled while the gate is off). | CC6.1, CC7.2 | S: a `doctor` warning plus a documented hardening profile |
 | 2 | **`/api/slot` is unauthenticated.** A revoked device still reads the rig's model, capacity and service topology. | CC6.1 | S |
 | 3 | **No usage accountability per principal.** beast-gate rate-limits requests but not tokens or wall-clock, so one device can consume unbounded compute and starve others. There is no quota and no usage report. | CC6.1, A1.1 | M |
 | 4 | **Enrollment is out-of-band and keys never expire.** No request-and-approve flow, no expiry, no scheduled rotation. | CC6.2, CC6.3 | M |
-| 5 | **Revocation does not terminate an in-flight stream.** | CC6.2 | S |
+| 5 | ~~Revocation does not terminate an in-flight stream.~~ **Closed:** beast-gate re-checks enrollment every 5 s while a request runs, cancels the upstream request and audits it `revoked`. Residual: a stream silent after its headers is re-checked only at its next chunk. | CC6.2 | S |
 | 6 | ~~No decommissioning path.~~ **Closed 2026-09-17:** `scripts/uninstall.sh` is the rig's decommissioning path — dry run by default, `--go` stops/unpublishes/removes units and runtime ephemera, `--purge-*` for weights, the WebUI data volume, the workspace, the durable `.run/` state (device registry, audit trails) and the secrets. What remains manual: disk-level secure erase of the media. | CC6.5 | S |
 | 7 | **No formal SBOM.** Components are pinned and inventoried, but nothing emits CycloneDX or SPDX. | CC9.2 | S |
 | 8 | **No log-integrity guarantees.** Audit logs are append-only JSONL on local disk, with no signing, no tamper evidence and no forwarding to an external SIEM. An assessor will ask whether an administrator could edit them. | CC7.2, CC7.3 | M |

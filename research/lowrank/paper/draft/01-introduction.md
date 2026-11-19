@@ -1,3 +1,5 @@
+> **Superseded (noted 2026-11-19):** draft text, kept as the draft record. The paper is [`../final/sections/01-introduction.md`](../final/sections/01-introduction.md); section numbers changed in the 2026-10-09 revision. Quote the final, not this.
+
 # 1. Introduction
 
 ## 1.1 The compute-rich, memory-poor regime

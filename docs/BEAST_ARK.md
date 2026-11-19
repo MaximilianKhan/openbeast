@@ -864,8 +864,11 @@ Its `SHA256SUMS` is verified, and `SHA256SUMS.gpg` is kept. Write it with
 `dd if=… of=/dev/sdX bs=4M conv=fsync`, install, and then follow §8.1.
 
 The DGX Sparks run NVIDIA's DGX OS, which is not redistributable and not
-in the ark. Rebuild them from NVIDIA's recovery media, then
-[SPARK_HYDRA.md](SPARK_HYDRA.md) §B and §H.
+in the ark. Rebuild them from the pair's own golden base image and backup
+drive ([SPARK_BACKUP_RESTORE.md](SPARK_BACKUP_RESTORE.md), fully offline), or
+from NVIDIA's recovery media, then
+[SPARK_HYDRA.md](SPARK_HYDRA.md) [§B](SPARK_HYDRA.md#b-bare-boxes-to-root-setup)
+and [§H](SPARK_HYDRA.md#h-fully-offline-operation).
 
 ---
 
@@ -1109,11 +1112,12 @@ To make `fetch` check it from then on, commit the keyring as
 
 ## 12. How it is tested
 
-`tests/test_ark.py` has 48 tests (68 cases with their parameters) and
-`tests/test_ark.sh` 14 checks. Both
+`tests/test_ark.py` has 60 tests (80 cases with their parameters, counted
+2026-11-19) and `tests/test_ark.sh` 14 checks. Both
 are hermetic: loopback fakes only. CI runs both: the python file in the
-full pytest step, the shell suite as its own step. `tests/run_tests.sh`
-runs both too.
+full pytest step, the shell suite as its own step. GitHub Actions is turned
+off for now (cost), so `tests/run_tests.sh`, which runs both too, or the two
+commands directly are the check before a merge.
 
 - **The real catalog:**
   - it lints clean;
@@ -1238,8 +1242,9 @@ runs both too.
 
 ## 13. For the local model (network off)
 
-You are GLM on spark-1, or any model working from
-[SELF_DEVELOPMENT.md](SELF_DEVELOPMENT.md). With the network off:
+You are the model the Spark pair serves on spark-1 (DeepSeek-V4.1-Flash
+(Mia EXL3) by default, GLM-5.3-Flash when it is switched in), or any model
+working from [SELF_DEVELOPMENT.md](SELF_DEVELOPMENT.md). With the network off:
 
 - **What works:** `list`, `plan`, `lint`, `verify`, `restore`, `serve`,
   and `lock --from`.

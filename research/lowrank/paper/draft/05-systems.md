@@ -1,3 +1,5 @@
+> **Superseded (noted 2026-11-19):** draft text, kept as the draft record. The paper is [`../final/sections/05-systems.md`](../final/sections/05-systems.md); section numbers changed in the 2026-10-09 revision. Quote the final, not this.
+
 # 5. The systems layer: pricing and removing the serving tax
 
 ## 5.1 The tax, stated first

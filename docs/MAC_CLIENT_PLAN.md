@@ -1,5 +1,10 @@
 # OpenBeast client mode — thin client on the laptop, big rig does the thinking
 
+> **Status (2026-11-19 review): SUPERSEDED** by
+> [BEAST_SLOT.md](BEAST_SLOT.md). The client today is
+> `scripts/setup-client.sh` / `scripts/client.sh`, multi-rig since #204,
+> with autosync since #215 and #218. Kept for history.
+
 > **SUPERSEDED 2026-07-30 by [BEAST_SLOT.md](BEAST_SLOT.md)** — client mode
 > grew into the first-class client/server architecture: generalized
 > macOS+Linux installer (`scripts/setup-client.sh`; `setup-mac-client.sh` is

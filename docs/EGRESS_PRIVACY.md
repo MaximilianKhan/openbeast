@@ -83,7 +83,8 @@ a second full-tunnel VPN is running.
 ## What this does and does not hide
 
 **Obscured:** every outbound connection the machine makes, which for a rig means
-SearXNG's upstream queries, the SSRF-guarded `fetch` tool, model downloads and
+SearXNG's upstream queries, the SSRF-guarded `fetch` tool, the `weather` tool's
+Open-Meteo calls, beast-docs' `sync` and live lookups, model downloads and
 container pulls. Your ISP and the sites you reach see the exit node, not you.
 
 **Not obscured, by design:** traffic *between* your own devices. Tailnet packets
@@ -144,8 +145,9 @@ flap cannot affect inference or remote access at all.
 
 **Work required:** our SearXNG runs `network_mode: host` (see
 `docker-compose.yml`). A sidecar means moving it to bridge networking, mapping
-its port back to loopback, and rewiring `SEARXNG_URL` in `agents/tools.py` and
-the healthcheck. Moderate, and entirely contained.
+its port back to loopback, and checking that `SEARXNG_URL` (an environment
+variable `agents/tools.py` reads; `scripts/lib/conf.sh` sets it) and the
+healthcheck still point at it. No era-hashed code changes. Moderate, and entirely contained.
 
 ### Option 3: commercial VPN upstream of a self-hosted exit node
 

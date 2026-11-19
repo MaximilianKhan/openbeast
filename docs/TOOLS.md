@@ -37,7 +37,7 @@ OpenCode on a client gets the same two files through `opencode.json`
 `opencode-client.md` that adjusts the tools file to that surface: the tools
 are named `openbeast-tools_<tool>` there, and the "Where files go" paragraph
 (the chat workspace and its `.manifest.jsonl`) is WebUI-only. opencode 2.0.x
-ignores `instructions`; 2.2.0 and later load them
+ignores `instructions`; 2.2.0 and later load them (the Sparks run 2.3.2)
 ([SPARK_HYDRA.md § F3](SPARK_HYDRA.md#f3-what-the-client-writes-into-opencode)).
 When editing `system-prompt-tools.md`, remember both surfaces read it.
 
@@ -271,7 +271,7 @@ and reports `COMPACTIONS: n` next to the `TOKENS:` line.
 | **Open WebUI** | Chat UI, accounts, RBAC enforcement, per-chat tool toggles | We don't enable its built-in web-search/code-interpreter/image-gen; the tool surface it shows is ours via the identity tool server. One Open WebUI *function* is ours: the global `random_seed` filter (`agents/webui_functions/random_seed.py`, installed by `configure-webui.sh`, off with `WEBUI_RANDOM_SEED=false`) gives each unseeded chat request a random seed, because TensorFold's fixed default seed made Regenerate repeat the same answer. It is not a tool and the model never sees it |
 | **Identity tool server** (`agents/openapi_tools.py`, ours) | Transport + identity: serves the tools as OpenAPI for WebUI, shards workspaces per user, checks RBAC keys, writes the audit trail | — |
 | **SearXNG** | The search backend behind our `web_search` tool | It's a service, not a tool — the tool code is ours |
-| **OpenCode** | Its *own* native tool suite (its `bash`, `edit`, `view`, …) alongside our 18 via MCP stdio | OpenCode's built-ins are upstream's code and are documented upstream |
+| **OpenCode** | Its *own* native tool suite (its `bash`, `edit`, `view`, …) alongside our 19 via MCP stdio | OpenCode's built-ins are upstream's code and are documented upstream |
 | **MCP Python SDK** | The protocol plumbing `mcp_server.py` is written against | — |
 
 ## RBAC visibility (who sees what)
@@ -327,7 +327,7 @@ four are capability, not plumbing, so the meta-machinery share went *down*,
 from 7/15 to 7/19.
 
 **The real argument is tool-selection accuracy, which degrades as a registry
-grows — so note which surface the three new tools do and do not appear on.** The
+grows — so note which surface the four new tools do and do not appear on.** The
 surface where a bad pick costs most is the autonomous runner's: it chooses a
 tool every turn, unattended, with nobody to correct it. `publish_artifact`,
 `list_artifacts`, `language_reference` and `platform_docs` ship on the **MCP/WebUI surface only**

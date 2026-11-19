@@ -121,6 +121,8 @@ Scale up (0.6B → 9B GLM → 27B) only after each stage earns it.
 
 ## Map of this directory
 
+*(Noted 2026-11-19: start with [`../FINDINGS.md`](../FINDINGS.md) and the paper, not the rollup below. Every note in this tree, with its date and status, is listed in [`../README.md`](../README.md).)*
+
 - [`PROTOCOL.md`](PROTOCOL.md) — **methodology v2** (post-adversarial-
   review): the standards every result must meet + the ground-up rerun
   matrix (0.8B-first).

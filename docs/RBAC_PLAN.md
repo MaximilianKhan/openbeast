@@ -1,5 +1,12 @@
 # RBAC Plan — multi-user OpenBeast without handing out the filesystem
 
+> **Status (2026-11-19 review): PARTLY IMPLEMENTED.** Phases 0–1, the Phase 2
+> router identity and the per-profile tool keys are live. The keys are now
+> one identity tool server, `agents/openapi_tools.py`; see item 1 below. Still
+> open: item 2 below, the Sandlock wrap of guest tool execution (Sandlock
+> exists for the agent `bash` tool only, opt-in: [SANDBOXING.md](SANDBOXING.md)),
+> and the "Agent router residual" in [TODO.md](TODO.md#-review-2026-10-09).
+
 **Status: Phase 0 + Phase 1 LIVE (2026-07-07); Phase 2 router-identity +
 guest-fetch LIVE (2026-07-08) — verified with the real Open WebUI
 access-control code.** A `user`-role account resolves `web_search`,

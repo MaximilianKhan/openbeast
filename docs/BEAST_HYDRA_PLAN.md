@@ -1,5 +1,19 @@
 # beast-hydra: plan for routing inference across machines
 
+> **Status (2026-11-19 review): PARTLY IMPLEMENTED.** The MVP is built,
+> opt-in and tested against stub engines (#115, with #118 and #122). It
+> shipped in v1.7.0. The operator page is [BEAST_HYDRA.md](BEAST_HYDRA.md).
+> Still open:
+> - routing the rig's hydra to the Spark pair, which serves on its own today
+>   ([SPARK_HYDRA.md "Not done yet"](SPARK_HYDRA.md#not-done-yet));
+> - the 3090 Ti host;
+> - every **VERIFY** item below.
+>
+> The fleet-wide "uncensored only" family policy (#122, Max 2026-09-30) is
+> older than the pair's current default. That default,
+> DeepSeek-V4.1-Flash (Mia EXL3), runs stock weights (since 2026-11-18). Revisit
+> `allowed_families` before hydra routes to the pair.
+
 **Status:** plan and MVP spec, 2026-09-30. Nothing here has been run against a DGX Spark or a 3090 Ti rig. Items marked **VERIFY** are beliefs taken from docs or source reading, not measurements. The MVP is designed so it can be tested end to end today, against stub engines and against the real 5090 when hydra fronts only the rig.
 
 **Anchors:** line numbers refer to the `integ-ca` worktree (`794e198`). Builders should re-anchor them on their own branch.

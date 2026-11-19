@@ -194,15 +194,19 @@ Each `[[source]]` entry sets:
 - `max_pages`, `max_depth`, `delay`, `refresh_days`
 - `license`, `robots_note`, `requires_ack`
 
-The file ships with 14 sources:
+The file ships with 15 sources:
 
 - Apple: `swiftui`, `uikit`, `swift`, `xcode`, and `app-review` (HTML)
 - Android: `android-compose`, `android-compose-ref`, `android-kotlin`,
   `android-build`
 - Others: `kotlin`, `gradle`, `blender-python`, `klipper`, `octoprint`
+- `tailscale` (added 2026-11-17): tailscale.com's own Markdown under `/docs`,
+  discovered through its sitemap. It backs the offline Tailscale reference
+  ([TAILSCALE_OFFLINE.md](TAILSCALE_OFFLINE.md), the `tailscale` skill).
 
-The last five have selectors that have **not** been live-checked. They are
-marked as such and should get `--max-pages 3` before a big crawl.
+`kotlin`, `gradle`, `blender-python`, `klipper` and `octoprint` have
+selectors that have **not** been live-checked. They are marked as such and
+should get `--max-pages 3` before a big crawl.
 
 Adding a developer site is an entry in this file, not a code change. The
 parser is `tomllib` when present. On Python < 3.11 (a Mac's
@@ -551,7 +555,8 @@ from `tests/fixtures/beast_docs/`. They pin:
 
 The tests are registered as a named step in CI's `pytest-named` job and
 ignored in the full run, as `tests/test_ci_workflow.py` requires, and as a
-named block in `tests/run_tests.sh`.
+named block in `tests/run_tests.sh`. GitHub Actions is turned off for now
+(cost), so run them locally before a merge:
 
 ```bash
 python3 -m pytest tests/test_beast_docs.py tests/test_platform_docs_tool.py -q

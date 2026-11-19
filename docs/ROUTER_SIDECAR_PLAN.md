@@ -1,5 +1,15 @@
 # Router classify sidecar — CPU-resident 0.8B pre-flight classifier
 
+> **Status (2026-11-19 review): OPEN, never built; mostly absorbed.**
+> beast-instinct's `router.spawn_intent` scores the spawn decision instead of
+> a generative classify (`ROUTER_INSTINCT`, #115, #123;
+> [BEAST_INSTINCT_PLAN.md](BEAST_INSTINCT_PLAN.md) "absorbed").
+> beast-hydra's `classify` route can place the classify call off the primary
+> (`ROUTER_CLASSIFY_MODEL`, [BEAST_HYDRA.md](BEAST_HYDRA.md)). What remains
+> of this plan is the CPU sidecar as the home of the `{task, workdir}`
+> extraction (instinct stage 3). That and the validation gate (§6) are
+> unbuilt.
+
 **Status: PROPOSED (2026-08-21). Experiment-gated — nothing here is built.**
 Staged in `docs/TODO.md`; run the validation gate (§6) before wiring anything
 into a default. **Adversarially reviewed 2026-08-21** (independent security

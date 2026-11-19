@@ -2,8 +2,9 @@
 
 beast-hydra (`agents/hydra.py`) is an opt-in, OpenAI-compatible router on
 `127.0.0.1:8095`. It sits in front of one or more inference engines (the
-rig's llama-server, vLLM on the Sparks, anything OpenAI-compatible on the
-tailnet) and routes each request on its `model` field. This page covers
+rig's llama-server, TensorFold or vLLM on a DGX Spark, anything
+OpenAI-compatible on the tailnet; `engine = llama | vllm | tensorfold |
+openai`) and routes each request on its `model` field. This page covers
 running it. The design, the reasoning behind it and the hardware beliefs
 still to verify are in [`BEAST_HYDRA_PLAN.md`](BEAST_HYDRA_PLAN.md).
 
@@ -12,7 +13,9 @@ still to verify are in [`BEAST_HYDRA_PLAN.md`](BEAST_HYDRA_PLAN.md).
 - Built and tested against fake engines (`tests/test_hydra_*.py`,
   `tests/test_hydra_sim.sh`) and against the rig's own llama-server.
 - Not yet run against a DGX Spark or the 3090 Ti rig. The plan marks those
-  beliefs **VERIFY**.
+  beliefs **VERIFY**. The Spark pair (spark-hydra) does not run it: its
+  command center talks to the TensorFold engine on `127.0.0.1:8000`
+  directly, and nothing listens on `:8095` there (checked 2026-11-19).
 - **Off by default.** With `HYDRA` unset or false, the stack is
   byte-identical to one without hydra (`tests/test_hydra_instinct_wiring.sh`).
 
@@ -90,7 +93,7 @@ it. `scripts/doctor.sh` prints a per-node, per-deployment and per-route table.
 ## Timeouts and the breaker
 
 Each node has a first-byte deadline and a circuit breaker
-([`hydra.toml.example`](../hydra.toml.example) has the fields). Two rules
+([`hydra.toml.example`](../hydra.toml.example) has the fields). Four rules
 are not obvious from the file:
 
 - **The implicit single-node config waits as long as the stack did without

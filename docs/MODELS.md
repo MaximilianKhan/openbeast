@@ -1,8 +1,10 @@
 # Models
 
-OpenBeast ships **23 pre-configured models** (one `scripts/serve-*.sh` each,
-excluding the 0.6B fast-boot bridge), every one VRAM/context-measured on
-the RTX 5090 reference card. Swap any of them in with one argument to
+OpenBeast ships **25 pre-configured model profiles** for the single-GPU rig
+(one `scripts/serve-*.sh` each; not counted: the 0.6B fast-boot bridge
+`serve-bootstrap.sh` and beast-instinct's `serve-instinct-scorer.sh` and
+`serve-openjev.sh`), every one VRAM/context-measured on the RTX 5090
+reference card except the opt-in GLM-5.3-Flash big mode (unmeasured, below). Swap any of them in with one argument to
 `start.sh` (e.g. `./start.sh serve-qwen-27b-q5.sh`) or set your `beastup`
 default via `SERVE_SCRIPT` in `openbeast.conf`. Capability rankings (where a
 model has been benchmarked) are in the [eval leaderboard](RESULTS.md) and
@@ -11,8 +13,10 @@ model has been benchmarked) are in the [eval leaderboard](RESULTS.md) and
 The default is **Qwen3.8 27B Uncensored MTP Q5_K_M** at the full native 262K
 context (changed 2026-08-19 from Heretic v2 27B MTP Q5_K_M, which it beats on
 speed *and* headroom — see the Qwen3.8-27B-Uncensored section below); the dense
-**Qwen3.6-27B Q5_K_XL** tops the capability board, and the **35B-A3B MoE**
-variants trade a little accuracy for 30–50% more speed per token.
+**Qwen3.6-27B Q5_K_XL** tops the v4 capability board (the rig lineup), and the **35B-A3B MoE**
+variants trade a little accuracy for 30–50% more speed per token. The DGX
+Spark pair serves its own models (below); its default, DeepSeek-V4.1-Flash
+(Mia EXL3), leads the v5 board.
 
 **Qwen reasoning budget (2026-09-09):** every Qwen-family serve script (3.6
 dense + MoE + NVFP4 + all 3.8 variants — not Gemma, and the Qwen-derived
@@ -53,7 +57,18 @@ cap for exactly one hard call, or grant a subagent a bigger budget, without
 touching the server. This is the designed-for hook for future always-on
 long-horizon jobs.
 
-**DGX Spark pair (spark-hydra):** for bringing another EXL3 model to the pair offline, see [EXL3_PLAYBOOK.md](EXL3_PLAYBOOK.md). It covers what drops in, what needs a profile or recipe, the memory and disk math, and the `spark-model-intake.sh` preflight.
+**DGX Spark pair (spark-hydra):** the pair does not run these serve scripts.
+It serves **DeepSeek-V4.1-Flash (Mia EXL3)** by default (served id
+`DeepSeek-V4.1-Flash-1017`, unit `deepseek-v41-inference`, four streams,
+524,288-token context of the model's 1,048,576 window, thinking on); its pack
+folder and cache id end in `-v2`. **GLM-5.3-Flash** (`GLM-5.3-Flash-EXL3`) is
+the staged alternative. One model serves at a time, and the only supported
+switch is `beast-spark` on spark-1 (`beastds`, `beastglm`, `beastup`,
+`beastdown`, `beaststatus`). The recommended agent setup for DeepSeek is
+`AGENT_PROFILE=deepseek-best` (below). The runbook is
+[SPARK_HYDRA.md](SPARK_HYDRA.md); the scores are on the
+[v5 board](RESULTS.md#v5-leaderboard--best-configuration-per-model). For
+bringing another EXL3 model to the pair offline, see [EXL3_PLAYBOOK.md](EXL3_PLAYBOOK.md). It covers what drops in, what needs a profile or recipe, the memory and disk math, and the `spark-model-intake.sh` preflight.
 
 ## Core lineup (v4-benchmarked / v3.5-legacy)
 
