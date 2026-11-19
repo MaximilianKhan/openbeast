@@ -56,7 +56,8 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
 - [x] **Offline self-development:** the offline prerequisite, the deployed
   pair and a commands sheet (#217, #219; [`SELF_DEVELOPMENT.md`](SELF_DEVELOPMENT.md),
   [`COMMANDS.md`](COMMANDS.md)). The offline git hub exists on spark-1
-  (`~/git/openbeast.git`, read 2026-11-19). opencode v2.3.2 runs on both
+  (`~/git/openbeast.git`, read 2026-11-19; at #222, so refresh it before an
+  offline session). opencode v2.3.2 runs on both
   Sparks with the provider `spark-hydra-local`; spark-2 reaches the model
   through its `opencode-model-link` forward.
 - [x] **Ops and engines:** llama.cpp build numbers and rollback are kept
@@ -195,7 +196,7 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
   password file once it is changed (E5). The Mac's copy there is also stale
   since its 2026-11-17 rotation (`SPARK_HYDRA.md` G7).
 - [ ] **zig 0.16 and the beast-docs mirror on spark-1** (`SPARK_HYDRA.md` G6
-  step 6): neither is installed yet (zig absent, 2026-11-19).
+  step 6): zig is absent and the mirror holds only `tailscale` (2026-11-19).
 - [ ] **A one-command swap to a *new* model on the pair, with rollback**
   (was `scripts/spark-model.sh use <profile>`). Partly done: `beast-spark`
   switches between the two staged models with locks and rollback to GLM
@@ -532,7 +533,7 @@ arms.
 - **Live November 17:** DeepSeek-V4.1-Flash-1017 serves four streams on TensorFold TP2 across two RoCE rails, from Mia's EAQ v1.1 "-v2" pack since the evening A/B (stock EAQ v1 stays on disk as a fallback). The enrolled Mac completed a real OpenCode request. GLM-5.3-Flash is the only other model the pair serves; `beastglm` / `beastds` switch. [Deployment and acceptance record](SPARK_HYDRA.md#deepseek-deployment).
 - **2026-11-18: GLM-5.3-Flash is the default again** (boot and daily use), Max's decision after testing DeepSeek, the "-v2" pack included. `spark-hydra-inference` is enabled, `deepseek-v41-inference` disabled; `beastds` brings DeepSeek back on "-v2". Clients follow a switch with `openbeast-client autosync` (PR #215).
 - **2026-11-18, later: DeepSeek-V4.1-Flash (Mia EXL3) is THE DEFAULT** (boot and daily use), Max's decision after hands-on testing and the v5 board (61/71, the board's #1, against GLM's 51/71). `deepseek-v41-inference` is enabled, `spark-hydra-inference` disabled; GLM-5.3-Flash is staged as the alternative (`beastglm`, `beastds` back). `beastup` with nothing selected picks DeepSeek, and a restore that cannot tell the backup's selection enables DeepSeek. opencode on both Sparks defaults to `spark-hydra-local/DeepSeek-V4.1-Flash-1017`.
-- **2026-11-18:** opencode v2.3.2 runs on both Sparks against `127.0.0.1:8000` (spark-2 through an ssh tunnel); it has no OpenBeast MCP tools yet. Offline development has a documented loop through a bare hub repo on spark-1 ([SELF_DEVELOPMENT.md §11](SELF_DEVELOPMENT.md#11-developing-with-github-unreachable)); the hub itself is not created yet (since created: `~/git/openbeast.git` on spark-1, read 2026-11-19, backed up since #229). Open: pytest on spark-1, ShellCheck on the Sparks, a DeepSeek MODELS entry in `benchmark_all.py`, a cold boot with the WAN down.
+- **2026-11-18:** opencode v2.3.2 runs on both Sparks against `127.0.0.1:8000` (spark-2 through an ssh tunnel); it has no OpenBeast MCP tools yet. Offline development has a documented loop through a bare hub repo on spark-1 ([SELF_DEVELOPMENT.md §11](SELF_DEVELOPMENT.md#11-developing-with-github-unreachable)); the hub itself is not created yet (since created: `~/git/openbeast.git` on spark-1, at #222 on 2026-11-19, so refresh it from `main` before relying on it offline; backed up since #229). Open: pytest on spark-1, ShellCheck on the Sparks, a DeepSeek MODELS entry in `benchmark_all.py`, a cold boot with the WAN down.
 - **Next:** full offline playbook (image save/load, DFlash2, aarch64 air-gap
   bundle, zig); the `svc:spark-hydra` Tailscale Service name (remote access
   through beast-gate is live since #155); the primary switch beast ↔
