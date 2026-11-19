@@ -24,14 +24,14 @@ The steps, with the exact commands, are
 1. On spark-1 and spark-2: set aside the local copies in `~/openbeast` (a
    patch of the modified files, the untracked ones moved), then
    `git pull --ff-only`. A plain pull refuses while they are there.
-2. On spark-1: install the Spark tools from the updated checkout:
-   `install -m 755 ~/openbeast/scripts/backends/spark-beast.sh ~/.local/bin/beast-spark`
-   (or `beast-spark install` once available), and copy
-   `scripts/backends/spark-deepseek-pack.sh` and
-   `scripts/backends/spark-deepseek-prepare-local.sh` into
-   `~/openbeast-recipes/deepseek-prep/`. `beast-spark glm|ds` (aliases
-   `beastglm` / `beastds`) is the only supported switch between the pair's
-   two models.
+2. On spark-1: install the Spark tools from the updated checkout with
+   `~/openbeast/scripts/backends/spark-beast.sh install`. It copies
+   `beast-spark` to `~/.local/bin`, `spark-deepseek-pack.sh` and
+   `spark-deepseek-prepare-local.sh` to `~/openbeast-recipes/deepseek-prep/`,
+   and adds the `beast*` aliases to `~/.bashrc` once. `beast-spark glm|ds`
+   (aliases `beastglm` / `beastds`) is the only supported switch between the
+   pair's two models: DeepSeek-V4.1-Flash (Mia EXL3), the default, and
+   GLM-5.3-Flash, the alternative.
 3. On spark-1: create the git hub
    ([SELF_DEVELOPMENT.md §11.2](SELF_DEVELOPMENT.md#112-one-time-setup)).
 
@@ -71,6 +71,7 @@ recreated by a clone.
 | `~/openbeast-recipes/deepseek-prep/verify-chat.py` | The DeepSeek chat check |
 | `~/.config/systemd/user/deepseek-v41-inference.service` | The DeepSeek unit file (GLM's `spark-hydra-inference.service` has a template in `scripts/backends/`) |
 | `~/openbeast-recipes/deepseek-prep/runtime/`, `~/openbeast-recipes/glm53/` | The recipe runtimes, including `runtime/tools/bench.py` |
+| `~/openbeast/openbeast.conf` | spark-1's command-center settings (`INFERENCE_MODEL`, `INFERENCE_THINKING`, `AGENT_PROFILE`, keys); the repository has only `openbeast.conf.example` |
 | weights, rank caches, `~/.config/openbeast/` keys | [SPARK_HYDRA.md §0](SPARK_HYDRA.md#0-the-pair-at-a-glance) lists each with its path |
 
 Their recovery path is a backup:
@@ -83,6 +84,7 @@ backing it up, restoring it after an OS reinstall).
 |---|---|
 | [SPARK_HYDRA.md](SPARK_HYDRA.md) | The DGX Spark pair: the DeepSeek deployment and its packs, a quickstart, bare boxes to a serving pair, the command center, the Mac client, day-2 operations, troubleshooting, fully offline operation |
 | [OPENBEAST-SERVING.md](OPENBEAST-SERVING.md) | Short serving note for the pair: check, start, stop, switch models and packs |
+| [EXL3_PLAYBOOK.md](EXL3_PLAYBOOK.md) | Hosting another EXL3 model on the pair, offline: which cases are drag and drop (a DeepSeek pack), which are by hand, which need engine work |
 | [SPARK_BACKUP_RESTORE.md](SPARK_BACKUP_RESTORE.md) | Backing up the Spark pair and restoring it fully offline: the golden DGX OS image, per-node identity, the overlay, the offline rank-file rebuild, the LUKS key policy |
 | [COMMANDS.md](COMMANDS.md) | Commands cheat sheet, grouped by machine and task |
 | [INSTALL.md](INSTALL.md) | Installing the rig, per-model downloads, the air-gap path, troubleshooting |
@@ -162,7 +164,33 @@ Release notes: [v1.1.0](RELEASE_NOTES_v1.1.0.md) · [v1.3.0](RELEASE_NOTES_v1.3.
 [v1.6.0](RELEASE_NOTES_v1.6.0.md) · [v1.7.0](RELEASE_NOTES_v1.7.0.md) ·
 [v1.8.0](RELEASE_NOTES_v1.8.0.md) · [v1.9.0](RELEASE_NOTES_v1.9.0.md).
 Dated reviews and research notes are in [`reviews/`](reviews/); superseded
-plans are in [`archive/`](archive/).
+plans are in [`archive/`](archive/). Both are records: read them for why
+something is the way it is, not for current state.
+
+| Dated review or research note (`reviews/`) | What it is |
+|---|---|
+| [TOOLS_SOTA_REVIEW-2026-09-10.md](reviews/TOOLS_SOTA_REVIEW-2026-09-10.md) | The tool suite against the state of the art: a ranked list of fixes and new tools |
+| [BEAST_ASSIST_ROADMAP-2026-09-10.md](reviews/BEAST_ASSIST_ROADMAP-2026-09-10.md) | beast-assist: what could still move the score, and the stopping rule |
+| [DISK-PRUNE-PLAN-2026-09-11.md](reviews/DISK-PRUNE-PLAN-2026-09-11.md) | A disk audit of the rig: what could be deleted or offloaded (nothing was deleted) |
+| [AIRGAP-REVIEW-2026-09-15.md](reviews/AIRGAP-REVIEW-2026-09-15.md) | Air-gap readiness: features ranked for a closed network |
+| [REVIEW-v140-findings-2026-09-15.md](reviews/REVIEW-v140-findings-2026-09-15.md), [REVIEW-v140-TRIAGE-2026-09-15.md](reviews/REVIEW-v140-TRIAGE-2026-09-15.md) | The adversarial review of beast-artifact and beast-chat at v1.4.0, and its triage |
+| [HYDRA_PRIOR_ART-2026-09-30.md](reviews/HYDRA_PRIOR_ART-2026-09-30.md) | beast-hydra prior art: how other systems route inference across machines and engines |
+| [INSTINCT_RESEARCH-2026-09-30.md](reviews/INSTINCT_RESEARCH-2026-09-30.md) | beast-instinct research: decision models and scoring |
+| [DEEPSEEK_HARNESS-2026-10-09.md](reviews/DEEPSEEK_HARNESS-2026-10-09.md) | deepseek-ai's agent harness, evaluated: not integrated, ideas listed |
+| [HARNESS_PRIOR_ART-2026-11-16.md](reviews/HARNESS_PRIOR_ART-2026-11-16.md) | How Factory's Droid lifts many models through its harness |
+| [TTFT-rig-vs-spark-2026-11-16.md](reviews/TTFT-rig-vs-spark-2026-11-16.md) | Time to first token: the 5090 rig against the Spark pair |
+| [WEIGHT_STREAMING_0XSERO-2026-11-17.md](reviews/WEIGHT_STREAMING_0XSERO-2026-11-17.md) | 0xSero's weight streaming, revisited for the 5090: what to trial |
+
+| Archived (`archive/`, index in [archive/README.md](archive/README.md)) | What it was |
+|---|---|
+| [EVAL_REVIEW_2026-07-07.md](archive/EVAL_REVIEW_2026-07-07.md) | The double-pass review of the v3.5 eval suite that drove v4 |
+| [EVAL_V4_PLAN.md](archive/EVAL_V4_PLAN.md) | The plan that turned v3.5 into v4 |
+| [WORK_PLAN.md](archive/WORK_PLAN.md) | The v3 / v3.5 suite build log |
+| [WEAK_SPOT_ASSESSMENT.md](archive/WEAK_SPOT_ASSESSMENT.md) | v3-era research: which eval axes to add |
+| [MTP_PROFILING_PLAN.md](archive/MTP_PROFILING_PLAN.md) | MTP speed profiling: plan and config ledger |
+| [IDENTITY_TOOLS_PLAN.md](archive/IDENTITY_TOOLS_PLAN.md) | The design of the identity-aware tool server |
+| [PRODUCTION_ROADMAP.md](archive/PRODUCTION_ROADMAP.md) | The 2026-07-07 production review and roadmap |
+| [TOOL_ARSENAL_RESEARCH.md](archive/TOOL_ARSENAL_RESEARCH.md) | Adopt-or-build research for the tool arsenal |
 
 ## Outside `docs/`
 
