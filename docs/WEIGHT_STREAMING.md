@@ -73,7 +73,7 @@ downloaded) on 2026-11-15.
 ### DeepSeek-V4.1-Flash stays on the Sparks
 
 Its routed experts alone are about 204 GB at 3 bpw (the research report
-`streaming-report.md`, §4). On 128 GB that leaves two options, and neither is
+`streaming-report.md`, §4; not in the repo, see the end of this file). On 128 GB that leaves two options, and neither is
 useful:
 
 - the 1-bit-expert GSQ IQ2_XXS GGUF (138.6 GB + 110.6 GB of Engram tables on
@@ -82,7 +82,8 @@ useful:
   Gen4 drive).
 
 Since the hardware is final, DeepSeek-V4.1-Flash is served by the
-spark-hydra pair ([SPARK_HYDRA.md](SPARK_HYDRA.md)), not by the rig. No rig
+spark-hydra pair ([SPARK_HYDRA.md](SPARK_HYDRA.md)), not by the rig: as
+DeepSeek-V4.1-Flash (Mia EXL3), the pair's default model since 2026-11-18. No rig
 profile ships for it.
 
 ### Best and fastest within 128 GB
@@ -790,10 +791,11 @@ labelled MEASURED (who, hardware) in the text above; they are not ours.
   `scripts/engines/maya/requirements.txt`; the lock built with
   `scripts/lib/pydeps_lock.py` on python 3.12.
 - **Measured by us**: Flash-Next IQ4_XS static, 38 tok/s, 2026-09-11
-  (MODELS.md); the 27B MTP, 140.2 tok/s, 2026-08-19.
+  (MODELS.md), and on `b12359` 38.76 static against 76.84 with the MoE cache,
+  2026-11-17 (top of this file); the 27B MTP, 140.2 tok/s, 2026-08-19.
 
 **Unverified** (needs the rig): every tok/s and memory figure for the new
-profiles; the GLM `q8_0` KV; Maya with huihui's GGUF and its non-interactive
+profiles except the two Flash-Next ones (measured 2026-11-17, above); the GLM `q8_0` KV; Maya with huihui's GGUF and its non-interactive
 setup; `LimitMEMLOCK=infinity` on this box's user manager; the PCIe link
 width and DIMM speed; `qwen4exp` MTP drafts on v1.0.0.
 
