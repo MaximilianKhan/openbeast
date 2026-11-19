@@ -1365,7 +1365,7 @@ New in the 2026-11-19 revision:
   now stock, so the fleet is not uncensored-only in practice. Keep the risk
   line with new wording ("the rig and the GLM alternative run abliterated
   weights"), or drop it? *Input, 2026-11-19:* beast-hydra's policy is now
-  **uncensored-preferred** (Max, PR #243): stock models are allowed, and an
+  **uncensored-preferred** (Max, PR #245): stock models are allowed, and an
   uncensored one is preferred when both could serve
   ([BEAST_HYDRA.md](BEAST_HYDRA.md#family-policy)). The website wording is
   still open.

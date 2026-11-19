@@ -9,7 +9,7 @@
 > - the 3090 Ti host;
 > - every **VERIFY** item below.
 >
-> **Family policy, 2026-11-19: uncensored-preferred** (PR #243, decided by
+> **Family policy, 2026-11-19: uncensored-preferred** (PR #245, decided by
 > Max). It replaces 2026-09-30's "uncensored only" rule (#122, R1 below).
 > Stock families may now serve. Inside one priority group, after every health,
 > capability and capacity filter, an uncensored family goes before a stock one.
@@ -1426,7 +1426,7 @@ Max answered §10 decisions 1 and 2 on 2026-09-30, and set the direction for bea
 
 ### R1. §10 decision 1, answered: never stock
 
-> **Superseded 2026-11-19 (PR #243):** the fleet policy is now
+> **Superseded 2026-11-19 (PR #245):** the fleet policy is now
 > **uncensored-preferred**, and what follows describes
 > `family_policy = "uncensored-only"`, which is now opt-in. The key is now
 > `uncensored_families` (`allowed_families` still loads as an alias). See

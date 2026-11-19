@@ -494,7 +494,7 @@ Decisions the 2026-10-09 review deferred to the owner. Each is open.
   a full 27B: the rig's 27B now, Open-Jev-27B-v1.1 locally on its own GPU as
   the target, the 0.6B as fallback only (#123).
 - [x] **The hydra family policy, decided 2026-11-19: uncensored-preferred**
-  (Max; PR #243). The pair's default since 2026-11-18,
+  (Max; PR #245). The pair's default since 2026-11-18,
   DeepSeek-V4.1-Flash (Mia EXL3), is stock, which the 2026-09-30 rule would
   have refused. Max: "It's uncensored-preferred, as we want to enable
   researchers, lawyers, and professionals to get the most honest and neutral

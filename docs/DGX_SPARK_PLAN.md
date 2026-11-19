@@ -652,7 +652,7 @@ orcarouter, or an EXL3 variant", and *all of our models are uncensored* —
 nothing stock is served or routed to. *(Superseded 2026-11-19: the pair's
 default is now DeepSeek-V4.1-Flash (Mia EXL3), a **stock** pack (`ABLIT=0`),
 chosen by Max after the v5 board (T2 65/71). The uncensored-only rule no
-longer describes what the Sparks serve. **Decided 2026-11-19 (Max, PR #243):
+longer describes what the Sparks serve. **Decided 2026-11-19 (Max, PR #245):
 the fleet policy is now uncensored-preferred.** Stock models are allowed, and
 an uncensored one is preferred when both could serve. beast-hydra's
 `family_policy` defaults to it, and `"uncensored-only"` stays available as an
