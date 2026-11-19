@@ -93,6 +93,14 @@
      "time_x": 2.3,
      "args": ["--reasoning-budget", "8192"],
      "env": {"OPENBEAST_AGENT_MAX_TOKENS": "8192", "OPENBEAST_AGENT_ACT_NUDGE": "1"},
+     "requires": {"env": ["OPENBEAST_AGENT_ACT_NUDGE", "OPENBEAST_AGENT_STATS_FILE"]}},
+    {"id": "T3", "base": "T2", "label": "T2 with a 4096-token thinking cap (harness9, config only)",
+     "optional": true,
+     "jobs": 4, "slots": 4,
+     "note": "Only with --only T3. T2 with the per-turn cap halved again (OPENBEAST_AGENT_MAX_TOKENS=4096, declared --reasoning-budget 4096); same harness9 tree and era as T2, so T3 vs T2 isolates the cap. Evidence, DeepSeek-V4.1-Flash (Mia EXL3), 2026-11-19: T2 (cap 8192 + act nudge) scored 65/71 against T's 61/71 (cap 16384, no nudge): +4 (168_kv_e, 173, 183, 190), 0 regressions; gaps between turns fell from 470-610 s to 280-330 s. The remaining failures still hit the 3,600 s wall while capping: 192_pike_regex capped 10 of 21 turns (7 nudges, now 10 tool calls against T's 0); 168_kv_a/c capped 6 times each in 32-33 turns. A 4096 cap halves a capped turn again (~2.5 min) at the risk of cutting reasoning a hard step needs: the measured question is whether faster iteration beats deeper single turns for this model. time_x 2.3 as T (T2 took 6.2 h).",
+     "time_x": 2.3,
+     "args": ["--reasoning-budget", "4096"],
+     "env": {"OPENBEAST_AGENT_MAX_TOKENS": "4096", "OPENBEAST_AGENT_ACT_NUDGE": "1"},
      "requires": {"env": ["OPENBEAST_AGENT_ACT_NUDGE", "OPENBEAST_AGENT_STATS_FILE"]}}
   ],
   "recommend": {
