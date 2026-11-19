@@ -1,5 +1,11 @@
 # Distributed agents — main box executes, worker box thinks
 
+> **Status (2026-11-19 review): PARTLY IMPLEMENTED.** Phase 1 and the
+> agent-spawn router are live (2026-07-08, below). Phases 2–3 (a worker fleet
+> and per-role routing) were not built as designed here. Routing across
+> machines moved to beast-hydra ([BEAST_HYDRA.md](BEAST_HYDRA.md), #115), and
+> the client/server split moved to beast-slot ([BEAST_SLOT.md](BEAST_SLOT.md)).
+
 **Status: Phase 1 ✅ SHIPPED (2026-07-08) — single worker endpoint live via `AGENT_INFERENCE_URL` / `start_agent(base_url=...)`. The agent-spawn ROUTER is BUILT + wired (2026-07-08, opt-in `AGENT_ROUTER`). Phases 2–3 (worker fleet, per-role routing) remain planned.**
 
 > Router shipped: `agents/router.py` + start.sh integration + conf toggle. It solves the STEP-3 blocker (models won't self-spawn). Phase 1 below shipped the multi-node main-executes/worker-thinks split for a single worker endpoint.

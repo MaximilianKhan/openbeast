@@ -1,5 +1,13 @@
 # beast-artifact Plan — a URL for anything the model renders
 
+> **Status (2026-11-19 review): IMPLEMENTED.** Shipped in v1.3.0 as
+> beast-artifact (#61, 2026-09-15). Review fixes followed in #64, #75 and #84.
+> Upgrades landed in #113 and #121, and socket-bound logins
+> (`ARTIFACT_LOGIN_FROM=unix`) in #165. The operator page is
+> [BEAST_ARTIFACT.md](BEAST_ARTIFACT.md); where it and this plan differ, the
+> operator page is current. The status paragraph below is the 2026-09-14
+> design record, kept as written.
+
 **Status: DESIGN, DECISIONS LOCKED (2026-09-14). Nothing built.** Max
 ratified the three open questions the same day (see the bottom of this
 doc): campaign verdicts auto-publish once the CLI exists, `tailnet`
