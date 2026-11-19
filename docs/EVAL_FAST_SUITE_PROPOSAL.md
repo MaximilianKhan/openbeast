@@ -12,6 +12,12 @@
 > capability for in-family models (verified as an identity on all reference
 > runs), with tripwire failures flagging models where the assumption is unsafe.
 > See `evals/README.md` § v5-fast.
+>
+> **Update 2026-11-19: renamed `v4-fast`.** At the v5 era break the suite
+> became `evals/suites/v4-fast.json` ([`evals/README.md` § v4-fast](../evals/README.md#v4-fast--the-pinned-fast-suite-v4-only-imputation-scored);
+> the old name still loads, with a note). It is a v4 subset, imputes on the v4
+> scale, and is never used for v5 or for any campaign arm. Its unit counts
+> there supersede the ones on this page.
 
 Target: run the capability eval in **1/3 to 1/4** of current wall-clock.
 

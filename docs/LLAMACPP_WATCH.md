@@ -6,6 +6,17 @@ half: announced or in-flight upstream changes that WILL require OpenBeast
 work when they land, plus the tripwires to re-check on every upgrade. The
 how-to-update mechanics live in [`UPDATING.md`](UPDATING.md).
 
+> **Status note (2026-11-19).** The build numbers below are the August
+> window's. The commit OpenBeast builds is now pinned in
+> `scripts/llama.cpp.ref` (llama.cpp v1.0.0, `b1b770d9…`, chosen for the MoE
+> expert cache: [WEIGHT_STREAMING.md](WEIGHT_STREAMING.md)), and a rollback
+> is `scripts/engine.sh rollback llama` or a checkout of the previous pin
+> ([UPDATING.md](UPDATING.md)); the "Rollback pin" section at the end is the
+> August one, kept as history. The MTP tripwire's 139 t/s baseline is the
+> pruned Heretic v2 Q6; compare against the current default, the Qwen3.8 27B
+> Uncensored MTP at 140.2 t/s ([MODELS.md](MODELS.md)). The DGX Spark pair
+> does not run llama.cpp (TensorFold, [ENGINES.md](ENGINES.md)).
+
 ## Coming changes that will need OpenBeast work
 
 ### 1. Default port moves 8080 → 9931 (announced, not yet flipped)
