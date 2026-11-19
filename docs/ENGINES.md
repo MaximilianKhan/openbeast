@@ -31,7 +31,17 @@ prints the conf changes and the exact launch command.
 | **llama** (llama.cpp `llama-server`) | **default** — every `scripts/serve-*.sh`, measured on the 5090 | builds (CUDA arm64), not the Spark default | **GGUF** only | yes, through `scripts/serve-*.sh` (unchanged) |
 | **vllm** (`vllm/vllm-openai`, container) | yes — one GPU, TP 1, managed | yes — TP 1 managed, or TP 1..8 across Sparks (unmanaged, `spark-node.sh`) | safetensors: BF16 / FP8 / **NVFP4** / AWQ / GPTQ. GGUF only through the out-of-tree `vllm-gguf-plugin` ("highly experimental") | TP 1 on this box: yes (`engine-serve.sh`). Otherwise unmanaged |
 | **maya** (Project Maya, built from a reviewed commit; opt-in, **gated**) | opt-in only after `scripts/engine-gate.sh` measured **≥ 1.5×** llama.cpp's decode tok/s on the same weights ([WEIGHT_STREAMING.md](WEIGHT_STREAMING.md)) | no | GGUF (GLM-5.3-Flash through `--gguf-dir`, Maya packs), EXL3 | TP 1 on this box: yes, once the gate passes |
-| **tensorfold** (native ≥ 1.0 release binary) | yes — sm_120 kernels ship. Single-GPU fits such as Qwen3.8-27B MLX-4bit are plausible, **not qualified on a 5090** | **default** — TP 1 managed, or TP 1..8 across Sparks (unmanaged, `spark-node.sh`) | **MLX-affine 4/6/8-bit** safetensors, NVFP4 (ModelOpt), EXL3 (GLM-5.3-Flash). **No GGUF on CUDA** | TP 1 on this box: yes. Otherwise unmanaged |
+| **tensorfold** (native ≥ 1.0 release binary) | yes — sm_120 kernels ship. Single-GPU fits such as Qwen3.8-27B MLX-4bit are plausible, **not qualified on a 5090** | **default** — TP 1 managed, or TP 1..8 across Sparks (unmanaged, `spark-node.sh`) | **MLX-affine 4/6/8-bit** safetensors, NVFP4 (ModelOpt), EXL3 (DeepSeek-V4.1-Flash (Mia EXL3), GLM-5.3-Flash). **No GGUF on CUDA** | TP 1 on this box: yes. Otherwise unmanaged |
+
+**The live Spark pair** serves **DeepSeek-V4.1-Flash (Mia EXL3)** by default
+(unit `deepseek-v41-inference`) and GLM-5.3-Flash as the staged alternative
+(unit `spark-hydra-inference`), one at a time, each with TensorFold TP 2 from
+its own recipe's container image, unmanaged from this plane (the command
+center reaches it at `http://127.0.0.1:8000`). Switch between them only with
+`beast-spark` on spark-1 (`beastds` / `beastglm`), never with `engine.sh use`:
+[SPARK_HYDRA.md](SPARK_HYDRA.md) (the live deployment note at its top,
+[DeepSeek deployment](SPARK_HYDRA.md#deepseek-deployment) and
+[D1](SPARK_HYDRA.md#d1-the-glm-recipe-the-alternative-deployment)).
 
 **Host class** comes from `scripts/lib/hardware.sh`. A GPU that reports
 `memory.total` as `[N/A]` (`OB_GPU_UNIFIED=1`) makes this host a `spark`; macOS

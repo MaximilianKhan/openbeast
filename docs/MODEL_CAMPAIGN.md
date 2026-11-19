@@ -2,7 +2,8 @@
 
 This is the procedure that found, on 2026-11-16, how best to serve and harness
 GLM-5.3-Flash on the spark-hydra pair. It is written so that any model can go
-through it unchanged. The next one is DeepSeek v4.1 Flash ("1017"; checklist in
+through it unchanged. The second model through it is DeepSeek-V4.1-Flash
+(Mia EXL3), the pair's default since 2026-11-18 ("1017"; checklist and status in
 [§9](#9-next-deepseek-v41-flash-1017-thinking-first)). Every step is a command. Where the
 step needs judgment, the decision rule is written down next to it.
 
@@ -355,9 +356,12 @@ T, the arm they remove from, a dropped component is removed from T2, and the
 noise margin comes from T's seed arm while T2 has none of its own. Until T2 is
 measured, the report uses T and says so. Arm T is unchanged for every model
 (the GLM history depends on it). As of 2026-11-19, **arm T_s1** (T's seed
-noise) **and then arm T3** (T2 with a 4096 cap) **are running** against the
-live pair. The daily-agent form of T2 is one line in openbeast.conf,
-`AGENT_PROFILE=deepseek-best` ([SPARK_HYDRA.md](SPARK_HYDRA.md#e2b-deepseek-best-configuration-v5-t2)).
+noise) **is running** against the live pair, **arm T3** (T2 with a 4096 cap)
+runs next, and the harness10 arms (U, UP, UPA; PR #234) queue after T3. The
+daily-agent form of T2 is one line in openbeast.conf,
+`AGENT_PROFILE=deepseek-best` ([SPARK_HYDRA.md](SPARK_HYDRA.md#e2b-deepseek-best-configuration-v5-t2));
+it goes live on spark-1 once the running eval arm ends (nothing on the live
+pair changes mid-arm).
 
 Total for the eight default arms: about 39 h at GLM's speed. Escalation
 stays off in every arm (G16: zig-only on the Mac host).
@@ -767,12 +771,12 @@ campaign. On GLM, its N0 is arm B (36/71, thinking pinned off).
       client times out before a capped turn ends. Resize the client timeout
       and `EDGE_READ_TIMEOUT` before L0.
 - [ ] A `benchmark_all.py` MODELS entry (§0.4). **`evals/benchmark_all.py`
-      has none for DeepSeek yet** (checked on `main`, 2026-11-18), so
+      has none for DeepSeek yet** (checked on `main`, 2026-11-19), so
       `--model deepseek-v4.1-flash` below fails until it is added. The entry,
       appended to `MODELS` after `glm-5.3-flash` and in the same form:
       ```python
           {"slug": "deepseek-v4.1-flash",
-           "name": "DeepSeek-V4.1-Flash-1017",
+           "name": "DeepSeek-V4.1-Flash",
            "base_url": "https://spark-1.tail4109f9.ts.net:8443/v1",
            "api_key_env": "OPENBEAST_SPARK_API_KEY",
            "slots": 4,
@@ -780,7 +784,11 @@ campaign. On GLM, its N0 is arm B (36/71, thinking pinned off).
            "reasoning_budget": "0"},
       ```
       `base_url` is the gate (the same one GLM's entry uses: one gate, one
-      model at a time). `reasoning_budget` declares the daily (profile)
+      model at a time). `name` is the `--model-name` the campaign ran under
+      (`DeepSeek-V4.1-Flash`, not the served id): the campaign's state lives
+      under `evals/results/campaigns/v5-thinking-first-deepseek-v4-1-flash/`,
+      named from it, so another name starts a new campaign instead of
+      resuming this one. The served id goes in `--served-model`. `reasoning_budget` declares the daily (profile)
       config: `"0"` if DeepSeek's daily config is thinking off; change it if
       not. The campaign arms declare their own (§7).
 - [ ] §1: re-prove the suite if anything changed since the last proof,
@@ -799,7 +807,7 @@ campaign. On GLM, its N0 is arm B (36/71, thinking pinned off).
       python3 evals/campaign.py run --campaign v5-thinking-first --model deepseek-v4.1-flash --jobs 4 \
           --baseline L0=evals/results/eval-<deepseek-slug>-L0-<ts>.json
       # without a MODELS entry yet:
-      python3 evals/campaign.py run --campaign v5-thinking-first --model-name "DeepSeek-V4.1-Flash-1017" \
+      python3 evals/campaign.py run --campaign v5-thinking-first --model-name "DeepSeek-V4.1-Flash" \
           --served-model DeepSeek-V4.1-Flash-1017 \
           --base-url https://spark-1.tail4109f9.ts.net:8443/v1 --api-key-env OPENBEAST_SPARK_API_KEY \
           --jobs 4 --slots 4 --baseline L0=evals/results/eval-<deepseek-slug>-L0-<ts>.json

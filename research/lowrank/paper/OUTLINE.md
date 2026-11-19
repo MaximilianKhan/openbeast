@@ -1,3 +1,5 @@
+> **Superseded (noted 2026-11-19):** the outline of the draft. The paper as written is [`final/`](final/README.md) (2026-10-09).
+
 > ⚠ see review/ corrections 2026-08-04
 
 # Paper outline (living document)
