@@ -138,16 +138,89 @@ def budget_line(max_iter: int) -> str:
             f"check, and call task_done well before they run out.\n")
 
 
+# ---------------------------------------------------------------------------
+# harness10 prompt switches (2026-11-19; DeepSeek-V4.1-Flash (Mia EXL3), the
+# 168_linearizability_kv investigation; arms U/UP/UPA in v5-thinking-first).
+# Each is opt-in and read per run; off, the prompt is byte-identical to before.
+# ---------------------------------------------------------------------------
+
+#: The tool-list and workflow lines that advertise the web tools. Under eval
+#: they are refused (tools._eval_web_gate) unless OPENBEAST_EVAL_WEB=record,
+#: so with OPENBEAST_AGENT_HIDE_WEB=1 they are cut from the prompt and the
+#: schemas are left out of the request (tools.web_tools_hidden).
+_WEB_PROMPT_CUTS = (
+    ("  fetch        — pull text from a PUBLIC URL (docs, API references, gists); localhost/\n"
+     "                 LAN/tailnet addresses are blocked; use bash + curl for local servers\n", ""),
+    ("  web_search   — search the web via local SearXNG (when stuck or need references)\n", ""),
+    ("  - Looks things up. If a formula or API signature is fuzzy, use web_search/fetch to find\n"
+     "    a reference — guessing wastes iterations.\n", ""),
+    ("   If stuck, use web_search or fetch for references — don't keep guessing.\n",
+     "   If stuck, test a smaller case or re-read the error — don't keep guessing.\n"),
+)
+
+
+def agent_instructions(hide_web: bool = False) -> str:
+    """_AGENT_INSTRUCTIONS, without the web-tool lines when `hide_web`."""
+    text = _AGENT_INSTRUCTIONS
+    if hide_web:
+        for old, new in _WEB_PROMPT_CUTS:
+            text = text.replace(old, new)
+    return text
+
+
+def done_verified_enabled() -> bool:
+    """OPENBEAST_AGENT_DONE_VERIFIED=1: the "done when verified" line."""
+    return os.environ.get("OPENBEAST_AGENT_DONE_VERIFIED", "").strip() == "1"
+
+
+def algo_lines_enabled() -> bool:
+    """OPENBEAST_AGENT_ALGO_LINES=1: the three planning lines (arm UP)."""
+    return os.environ.get("OPENBEAST_AGENT_ALGO_LINES", "").strip() == "1"
+
+
+def done_verified_line() -> str:
+    """Stop when your own checks pass (evidence: DeepSeek T_s1 168_kv_a kept
+    editing a passing file for ~33 minutes and never called task_done). With
+    G9 (OPENBEAST_AGENT_VERIFY_DONE=1) on, the line names that check instead
+    of restating it: task_done already asks once for a re-run of a file
+    written after its last run (tools._verify_untested)."""
+    line = ("Done when verified: once your own checks pass (a brute force on small "
+            "inputs agrees with your solution, and a timing run at the stated input "
+            "limits fits the time limit), call task_done. Do not keep polishing a "
+            "solution that passes them.")
+    if _tools.verify_done_enabled():
+        line += (" If you changed the file after its last run, task_done asks you "
+                 "once to re-run it; do that, then finish.")
+    return line + "\n"
+
+
+#: Arm UP. General planning lines; they name no task.
+ALGO_LINES = (
+    "Planning:\n"
+    "- Bound first: compute the worst-case state count and work from the stated "
+    "input limits before choosing an algorithm.\n"
+    "- When a simplification would make the problem tractable (splitting into "
+    "independent parts, a greedy choice, dropping a constraint) but you doubt it "
+    "is sound, implement it and check it against a brute force on many small "
+    "random inputs before rejecting it.\n"
+    "- If a measurement misses the time limit by more than 5x, the algorithm is "
+    "wrong: redesign instead of micro-optimising.\n")
+
+
 def build_system_prompt(context: str = "", context_budget: int = 0,
                         max_iter: int = 0) -> str:
     """Assemble the full system prompt with optional context and budget info."""
     parts = []
     if _SOUL_PROMPT:
         parts.append(_SOUL_PROMPT)
-    parts.append(_AGENT_INSTRUCTIONS)
+    parts.append(agent_instructions(hide_web=_tools.web_tools_hidden()))
     parts.append(platform_line())
     if max_iter > 0:
         parts.append(budget_line(max_iter))
+    if algo_lines_enabled():
+        parts.append(ALGO_LINES)
+    if done_verified_enabled():
+        parts.append(done_verified_line())
     if context_budget > 0:
         parts.append(
             f"Context budget: you have approximately {context_budget:,} tokens of context. "
@@ -568,6 +641,107 @@ def _act_nudge(idle_turns: int, idle_tokens: int) -> str:
             "call: write the file with your current best version, run a command "
             "that tests the idea you are weighing, or call task_done if the work is "
             "done and tested. Fix it from the result, not from more thought.")
+
+
+# ---------------------------------------------------------------------------
+# Forced-act turn (opt-in, OPENBEAST_AGENT_FORCE_ACT=1; harness10, arms U*).
+#
+# DeepSeek-V4.1-Flash (Mia EXL3), 168_linearizability_kv (2026-11-19): with
+# thinking on, the act nudge above was ignored every time (up to 11 nudges in
+# one unit): the model always thinks first and hits the cap again. In arm T,
+# 314 of 360 unit-minutes went into turns capped with only reasoning, and 4
+# of 6 units never wrote a file; in T2 (8K cap + nudge) 247 of 360. Each cap
+# also discards ~90% of the turn's reasoning (~65K chars made, ~6K handed
+# back), so the design is re-decided every turn. A text nudge cannot stop a
+# model from thinking; the request can. After N (OPENBEAST_AGENT_FORCE_ACT_AFTER,
+# default 2) consecutive turns cut off by the cap with no content and no tool
+# call, the NEXT request goes out with thinking OFF (chat_template_kwargs.
+# enable_thinking=false, the same switch the thinking-off arms send) and
+# asks for a short "Decisions so far / Rejected options" list, then the tool
+# call, in that one reply. Thinking is back on for the turn after.
+#
+# The pass-back: the forced reply itself writes the summary, as CONTENT.
+# Reasoning is never kept in the history, content is: the decisions ride
+# along on every later turn, so the next thinking turn builds on them
+# instead of re-deciding. Rejected alternative: a separate summary request
+# before the act turn. It costs a whole extra turn on the wall, can itself
+# be capped, and leaves the act for a third request. The raw tail stays as
+# the forced turn's input (_capped_think_nudge): with thinking off, it is
+# all the model has of those turns to summarise from.
+# ---------------------------------------------------------------------------
+_FORCE_ACT_AFTER_DEFAULT = 2
+
+
+def force_act_enabled() -> bool:
+    return os.environ.get("OPENBEAST_AGENT_FORCE_ACT", "").strip() == "1"
+
+
+def force_act_after() -> int:
+    """N: capped thinking turns in a row before the forced-act turn. An
+    integer >= 1 from OPENBEAST_AGENT_FORCE_ACT_AFTER, else 2. run_eval
+    parses it the same way for the key (`fact<N>`)."""
+    raw = os.environ.get("OPENBEAST_AGENT_FORCE_ACT_AFTER", "").strip()
+    try:
+        n = int(raw) if raw else _FORCE_ACT_AFTER_DEFAULT
+    except ValueError:
+        return _FORCE_ACT_AFTER_DEFAULT
+    return n if n >= 1 else _FORCE_ACT_AFTER_DEFAULT
+
+
+def _no_think_kwargs(base: dict) -> dict:
+    """`base` (the run's thinking/seed kwargs) with thinking explicitly off
+    for one request; the seed and any other extra_body field are kept."""
+    kw = dict(base)
+    extra = dict(kw.get("extra_body") or {})
+    extra["chat_template_kwargs"] = {**(extra.get("chat_template_kwargs") or {}),
+                                     "enable_thinking": False}
+    kw["extra_body"] = extra
+    return kw
+
+
+def _force_act_note(streak: int) -> str:
+    return (f"[act turn] {streak} replies in a row ran out of output while still "
+            "thinking, so this one reply is generated with thinking OFF. Work from the "
+            "reasoning shown above. Begin with two short lists (at most ~12 lines in "
+            "all):\n"
+            "Decisions so far: the approach and each choice you settled on.\n"
+            "Rejected options: what you ruled out, one line each, with the reason.\n"
+            "Then, in this same reply, make the tool call those decisions lead to: write "
+            "the file with your current best version, or run a command that tests the "
+            "open question. The lists stay in the conversation, so later turns build on "
+            "them instead of deciding again. Thinking is back on after this reply.")
+
+
+# ---------------------------------------------------------------------------
+# Reasoning text in the transcript (harness10, observability only). Until
+# harness9 the transcript kept only reasoning character counts, so a stall
+# could be measured but not read. Every turn's reasoning is logged as a
+# `reasoning` event, size-capped (OPENBEAST_AGENT_REASONING_LOG_CHARS, default
+# 100,000 chars per turn, ~25K tokens: a 16K-token capped turn fits whole;
+# 0 = off). Over the cap, the head quarter and the tail are kept. Nothing
+# reads it back into the conversation; transcripts are 0600.
+# ---------------------------------------------------------------------------
+_REASONING_LOG_CHARS_DEFAULT = 100_000
+
+
+def reasoning_log_chars() -> int:
+    raw = os.environ.get("OPENBEAST_AGENT_REASONING_LOG_CHARS", "").strip()
+    try:
+        return max(0, int(raw)) if raw else _REASONING_LOG_CHARS_DEFAULT
+    except ValueError:
+        return _REASONING_LOG_CHARS_DEFAULT
+
+
+def reasoning_log_text(reasoning: str, limit: int) -> tuple[str, bool]:
+    """(text to log, truncated?): whole when it fits, else the first quarter
+    of `limit` and the last three quarters around a marker."""
+    if limit <= 0 or len(reasoning) <= limit:
+        return reasoning, False
+    head = limit // 4
+    tail = limit - head
+    cut = len(reasoning) - head - tail
+    return (reasoning[:head] + f"\n[... {cut:,} chars of reasoning not logged ...]\n"
+            + reasoning[-tail:]), True
 
 
 # ---------------------------------------------------------------------------
@@ -1504,6 +1678,9 @@ def run_agent(
     # {} unless OPENBEAST_AGENT_THINKING, or (not eval) INFERENCE_THINKING
     think_kwargs = _agent_thinking_kwargs()
     think_kwargs.update(_seed_kwargs())  # {} unless OPENBEAST_AGENT_SEED
+    # TOOL_SCHEMAS, without fetch/web_search under eval with
+    # OPENBEAST_AGENT_HIDE_WEB=1 (tools.web_tools_hidden).
+    tool_schemas = _tools.visible_tool_schemas()
 
     # --- THE EVAL GUARD, resolved FIRST (E1/E2) ---------------------------
     # Resolved once, here, and cached in a local for the whole run: the guard
@@ -1641,6 +1818,13 @@ def run_agent(
     act_nudge = act_nudge_enabled()
     idle_turns = 0
     idle_tokens = 0
+    # Forced-act turn (OPENBEAST_AGENT_FORCE_ACT=1): capped thinking turns in
+    # a row, and whether the next request goes out with thinking off.
+    force_act = force_act_enabled()
+    force_after = force_act_after()
+    capped_streak = 0
+    force_next = False
+    reasoning_cap = reasoning_log_chars()
 
     def stats_sidecar(iterations: int) -> None:
         write_stats_sidecar({
@@ -1752,6 +1936,9 @@ def run_agent(
                         f" (est {est:,} > {target:,} tokens, to {low:,})",
                         must_free=asks[0])
 
+        # A forced-act turn sends thinking off for this one request.
+        forced_turn, force_next = force_next, False
+        req_think = _no_think_kwargs(think_kwargs) if forced_turn else think_kwargs
         try:
             waited = 0.0
             while True:
@@ -1759,7 +1946,7 @@ def run_agent(
                     response = client.chat.completions.create(
                         model=model,
                         messages=_with_plan(messages, plan),
-                        tools=TOOL_SCHEMAS,
+                        tools=tool_schemas,
                         # OPENBEAST_EVAL_GREEDY=1 (low-churn eval mode,
                         # 2026-09-10): unseeded temperature-0.6 sampling was
                         # the measured ±5-14 task-flip churn floor's primary
@@ -1769,7 +1956,7 @@ def run_agent(
                         temperature=(0.0 if os.environ.get(
                             "OPENBEAST_EVAL_GREEDY", "") == "1" else 0.6),
                         **cap_kwargs,
-                        **think_kwargs,
+                        **req_think,
                     )
                     break
                 except Exception as rl:
@@ -1780,6 +1967,8 @@ def run_agent(
                     log_event({"type": "rate_limited", "wait_s": wait})
                     time.sleep(wait)
         except Exception as e:
+            # A failed request is retried as the turn it was: still forced.
+            force_next = force_next or forced_turn
             if isinstance(e, UnicodeEncodeError) and (
                     _scrub_surrogates(messages) + _scrub_plan_surrogates()):
                 # Not an API error: the payload could not be encoded, and an
@@ -1834,6 +2023,18 @@ def run_agent(
         # assistant turns are never compacted, so a 30K-token repetition loop
         # would otherwise ride along on every later request.
         truncated = bool(cap_kwargs) and choice.finish_reason == "length"
+        # harness10: the reasoning TEXT, size-capped (reasoning_log_text).
+        _rtext = _reasoning_text(message)
+        if _rtext and reasoning_cap:
+            _logged, _cut = reasoning_log_text(_rtext, reasoning_cap)
+            log_event({"type": "reasoning", "iteration": iteration, "chars": len(_rtext),
+                       "capped": truncated, "truncated": _cut, "text": _logged})
+        if forced_turn:
+            log_event({"type": "force_act_result", "iteration": iteration,
+                       "tool_calls": len(message.tool_calls or []),
+                       "content_chars": len(message.content or ""),
+                       "reasoning_chars": len(_rtext),
+                       "finish_reason": str(choice.finish_reason or "")})
 
         # Append assistant message to history
         content = message.content or ""
@@ -1897,7 +2098,28 @@ def run_agent(
             idle_turns += 1
             if usage is not None:
                 idle_tokens += getattr(usage, "completion_tokens", 0) or 0
-            if act_nudge and act_nudge_due(choice.finish_reason, message.content, idle_turns):
+            # Forced-act: count capped thinking turns (no content, no tool
+            # call); the forced turn itself and any other ending reset it.
+            if truncated and not (message.content or "").strip() and not forced_turn:
+                capped_streak += 1
+            else:
+                capped_streak = 0
+            forcing = force_act and capped_streak >= force_after
+            if forcing:
+                text = _force_act_note(capped_streak)
+                last = messages[-1]
+                if last.get("role") == "user":
+                    messages[-1] = {**last, "content": f"{last.get('content') or ''}\n\n{text}"}
+                else:
+                    messages.append({"role": "user", "content": text})
+                print(f"  (forced-act turn next: {capped_streak} capped thinking turn(s), "
+                      f"thinking off for one reply)")
+                log_event({"type": "force_act", "iteration": iteration,
+                           "capped_streak": capped_streak, "after": force_after,
+                           "idle_turns": idle_turns, "idle_tokens": idle_tokens})
+                force_next = True
+                capped_streak = 0
+            elif act_nudge and act_nudge_due(choice.finish_reason, message.content, idle_turns):
                 text = _act_nudge(idle_turns, idle_tokens)
                 last = messages[-1]
                 if last.get("role") == "user":
@@ -1912,6 +2134,7 @@ def run_agent(
             continue
         idle_turns = 0
         idle_tokens = 0
+        capped_streak = 0
 
         # Execute tool calls
         for tc in message.tool_calls:

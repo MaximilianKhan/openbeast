@@ -543,10 +543,17 @@ fi
 #   AGENT_ENV_BLOCK    -> OPENBEAST_AGENT_ENV_BLOCK    G22 first-turn env block
 #   AGENT_WALL_WARN    -> OPENBEAST_AGENT_WALL_WARN    G23 wall-clock notices
 #   DIAG_EDIT_HINT     -> OPENBEAST_DIAG_EDIT_HINT     G13 edit, don't rewrite
+#   AGENT_FORCE_ACT    -> OPENBEAST_AGENT_FORCE_ACT    harness10: thinking-off act
+#                         turn after 2 capped thinking turns (env
+#                         OPENBEAST_AGENT_FORCE_ACT_AFTER sets the 2)
+#   AGENT_DONE_VERIFIED -> OPENBEAST_AGENT_DONE_VERIFIED harness10: "done when
+#                         verified" system-prompt line
+#   AGENT_ALGO_LINES   -> OPENBEAST_AGENT_ALGO_LINES   harness10: planning lines
 # Eval runs set every one of these per arm (evals/campaigns/*.json), and a
 # plain run_eval.py records the ambient ones in its cache key (agent_switches),
 # so an export here never silently changes a measured row.
-for _ob_k in AGENT_ACT_NUDGE AGENT_VERIFY_DONE AGENT_ENV_BLOCK AGENT_WALL_WARN DIAG_EDIT_HINT; do
+for _ob_k in AGENT_ACT_NUDGE AGENT_VERIFY_DONE AGENT_ENV_BLOCK AGENT_WALL_WARN DIAG_EDIT_HINT \
+    AGENT_FORCE_ACT AGENT_DONE_VERIFIED AGENT_ALGO_LINES; do
   _ob_from_env=0
   if _ob_raw="$(_ob_override "$_ob_k")"; then
     _ob_from_env=1

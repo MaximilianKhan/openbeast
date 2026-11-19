@@ -1,5 +1,111 @@
 # Eval suite changelog
 
+## v5.0, harness10: forced-act turn, done-when-verified, planning lines, algorithmic pack, web tools not advertised, reasoning text logged; arms U, U_8k, UP, UPA (2026-11-19) — era roll
+
+**Era `036638ddd68698ce` → `9bcd5aa6030836d1`, harness9 → harness10
+(fingerprint unchanged, `cd729e38ca1e3030`: run_eval's agent-shaping code did
+not change; `agents/runner.py` and `agents/tools.py` did).** From the
+investigation of DeepSeek-V4.1-Flash (Mia EXL3) on 168_linearizability_kv
+(2026-11-19):
+
+- It fails 168 mostly by choosing a global memoised search, which times out,
+  instead of the per-key search the problem needs (linearizability is local;
+  the passing files cite it). In a live probe it reasoned to "decompose by
+  key?" and rejected it by argument.
+- With thinking on it stalls. In T, 314 of 360 unit-minutes went into turns
+  capped with only reasoning (16K cap), and 4 of 6 units never wrote a file.
+  In T2 (8K cap + act nudge), 247 of 360.
+- The text act nudge was ignored every time (up to 11 nudges): with thinking
+  on, the model always thinks first and hits the cap again.
+- Each cap discards ~90% of the reasoning (~65K chars generated, ~6K of tail
+  handed back), so the design is re-decided every turn.
+- Passing runs built brute-force checkers. T_s1 168_kv_a kept editing a
+  passing file for ~33 minutes (no task_done).
+- The eval system prompt advertised web_search/fetch, which are refused under
+  eval; reasoning text was not logged (only character counts).
+
+Every switch below is opt-in; off, the request and the prompt are as in
+harness9. Each is an agent switch in the cache key (`run_eval.agent_switches`)
+and pinned into each unit's env, except the pack (it moves `pack1-`).
+
+- **Forced-act turn (`OPENBEAST_AGENT_FORCE_ACT=1`, key `fact<N>`).** After N
+  (`OPENBEAST_AGENT_FORCE_ACT_AFTER`, default 2) consecutive turns cut off by
+  the cap with no content and no tool call, the NEXT request is sent with
+  `chat_template_kwargs.enable_thinking=false` (the thinking-off arms' switch;
+  the seed and the cap are kept) plus a short note: begin with "Decisions so
+  far" and "Rejected options" (at most ~12 lines), then make the tool call in
+  the same reply. Thinking resumes on the following turn; the forced turn
+  does not count toward the next streak; a tool call resets it. With the act
+  nudge also on, the forced turn replaces the nudge on that turn. Events:
+  `force_act` (streak, N) and `force_act_result` (tool calls, content chars,
+  finish reason). **The pass-back:** the forced reply writes the summary
+  itself, as content. Content stays in the history and reasoning does not, so
+  the decisions ride along on every later turn instead of being re-derived.
+  A separate summary request was rejected: it costs another whole turn on the
+  wall, can itself be capped, and leaves the act for a third request. The
+  raw ~6K tail stays as the forced turn's input, since with thinking off it is
+  all the model has of those turns.
+- **Done when verified (`OPENBEAST_AGENT_DONE_VERIFIED=1`, key `dverif`),
+  eval and daily agents.** One system-prompt line: once your own checks pass
+  (a brute force on small inputs agrees, and a timing run at the stated input
+  limits fits), call task_done; don't keep polishing. It is integrated with
+  G9 (`OPENBEAST_AGENT_VERIFY_DONE`), not a second check: with G9 on, the
+  line adds that task_done asks once for a re-run of a file written after its
+  last run, which is what G9 already does (`tools._verify_untested`).
+- **Planning lines (`OPENBEAST_AGENT_ALGO_LINES=1`, key `alines`, arm UP).**
+  Three general lines that name no task (`runner.ALGO_LINES`): bound first
+  (the worst-case state count from the stated limits); implement a doubtful
+  simplification and check it against a brute force on many small random
+  inputs before rejecting it; a >5x miss on the time limit means redesign.
+- **Algorithmic procedure pack (`OPENBEAST_ALGO_PACK=1`, arm UPA).**
+  `agents/packs/algo-v1.md`, ~400 tokens (1,838 bytes), language-independent,
+  procedure only, no noun from any v5 unit id (a test checks the ids; "state"
+  is the brief's own "minimal state that determines the future"). **Frozen:
+  sha256 `6c5324007750c44091a03c98cfef813cac0f3e576f982beb8908c0732e2ac09d`**,
+  pinned in `agents/lang/pack_context.py` (`ALGO_PACK_SHA256`), in
+  `tests/test_eval_arms_u.py`, and checked at run start (an edited file stops
+  the run). An edited procedure is a new file with a new pin. run_eval's
+  `packs_flag` appends it, last, to every unit's pack file (zig pack + host
+  pack + algo; other languages host pack + algo, or algo alone), and its
+  bytes enter `pack1-<sha8>` after the others, so with it off the component
+  is unchanged (T2's `pack1-7886ae62` on the Mac host). It needs packs on
+  (it rides the packs channel); without them the run stops.
+- **Web tools not advertised under eval (`OPENBEAST_AGENT_HIDE_WEB=1`, key
+  `noweb`).** Under eval with `OPENBEAST_EVAL_WEB` not `record`, `fetch` and
+  `web_search` leave the tool list and their four prompt lines leave the
+  system prompt ("If stuck, use web_search or fetch" becomes "If stuck, test
+  a smaller case or re-read the error"). A call made anyway still gets the
+  gate's refusal. A switch, not a default, so T2 replayed on harness10 sends
+  T2's prompt; every U arm sets it.
+- **Reasoning text in the transcript (observability, always on).** Every
+  turn with reasoning logs a `reasoning` event: `chars`, `capped`,
+  `truncated`, `text`, size-capped at `OPENBEAST_AGENT_REASONING_LOG_CHARS`
+  (default 100,000 chars per turn, so a 16K-token capped turn fits whole;
+  over it, the head quarter and the tail are kept; 0 = off). Nothing reads it
+  back into the conversation. `evals/audit/integrity_scan.py` reads only
+  `iteration` and `tool_call` events, so a reasoning that names the repo is
+  not a hit; a test runs the scan over a transcript with reasoning events.
+- **Daily agents:** `AGENT_FORCE_ACT`, `AGENT_DONE_VERIFIED`,
+  `AGENT_ALGO_LINES` in openbeast.conf are exported like the other agent
+  switches (`scripts/lib/conf.sh`); no profile sets them.
+
+Campaign (`v5-thinking-first`, all optional, `--only`, jobs 4 / slots 4,
+time_x 2.3, ~6-7 h each for DeepSeek):
+- **U** = T2 with the act nudge replaced by the forced-act turn (N=2), plus
+  done-when-verified and no web advertised, at T's 16384 cap (declared
+  `--reasoning-budget 16384`). 16384 because the investigation found T2's
+  8192 doubled the caps without ending the stalls, and a forced act ends a
+  stall whatever the cap.
+- **U_8k** = U at 8192: T2 still scored best overall (65 vs 61), so the cap
+  question is answered alongside (and T3, at 4096 on harness9, measures its
+  direction).
+- **UP** = U + the planning lines. Also the GLM control: run with
+  `--model-name GLM-5.3-Flash` when the pair serves GLM.
+- **UPA** = UP + the algorithmic pack.
+
+Board label for a run of this tree: **"harness10"**. A correct solution
+passes the same way. U-arm rows pair only with harness10 rows.
+
 ## v5.0, harness9: act nudge, partial stats on a wall kill, eval fetch guard; arm T2 (2026-11-18) — era roll
 
 **Era `06c82c4335dd6a0c` → `036638ddd68698ce`, harness8 → harness9

@@ -340,6 +340,10 @@ below). `--dry-run` prints them for your settings.
 | T_s2 | T | a second seed (optional) | `--seed 2`; only with `--include T_s2` | 2.3 | ~5.8 h | a tighter noise margin |
 | T2 | T | 8192 turn cap + act nudge (optional, harness9) | `--reasoning-budget 8192`; `OPENBEAST_AGENT_MAX_TOKENS=8192 OPENBEAST_AGENT_ACT_NUDGE=1`; `"jobs": 4, "slots": 4` like T (decided 2026-11-18); only with `--only T2` or `--include T2`, **and first in every DeepSeek-V4.1-Flash chain** (`recommend.composite_by_model`); needs a harness9 tree | 2.3 | ~5.8 h (6.2 h for DeepSeek) | do shorter thinking turns and a push to act turn wall kills into passes? **DeepSeek: yes, 65/71 against T's 61/71** |
 | T3 | T2 | 4096 turn cap (optional, config only) | `--reasoning-budget 4096`; `OPENBEAST_AGENT_MAX_TOKENS=4096 OPENBEAST_AGENT_ACT_NUDGE=1`; only with `--only T3`; same harness9 tree and era as T2 | 2.3 | ~5.8 h | does faster iteration beat deeper single turns? (T3 vs T2 isolates the cap) |
+| U | T2 | forced-act turn instead of the act nudge + done-when-verified, 16384 cap (optional, harness10) | `--reasoning-budget 16384`; `OPENBEAST_AGENT_MAX_TOKENS=16384 OPENBEAST_AGENT_ACT_NUDGE=0 OPENBEAST_AGENT_FORCE_ACT=1 OPENBEAST_AGENT_FORCE_ACT_AFTER=2 OPENBEAST_AGENT_DONE_VERIFIED=1 OPENBEAST_AGENT_HIDE_WEB=1`; only with `--only U`; needs a harness10 tree | 2.3 | ~6-7 h for DeepSeek | does a thinking-off act turn end the capped-think stalls the text nudge could not? (U vs T2) |
+| U_8k | U | U at T2's 8192 cap (optional, harness10) | `--reasoning-budget 8192`; `OPENBEAST_AGENT_MAX_TOKENS=8192` | 2.3 | ~6.2 h | the cap question under the forced act (U_8k vs U; read with T3) |
+| UP | U | + three planning lines (optional, harness10) | `OPENBEAST_AGENT_ALGO_LINES=1`; also the GLM control (`--model-name GLM-5.3-Flash` when the pair serves GLM) | 2.3 | ~6-7 h | do "bound first / test the doubtful split against a brute force / redesign on a >5x miss" fix the wrong-algorithm failures? (UP vs U) |
+| UPA | UP | + the frozen algorithmic procedure pack (optional, harness10) | `OPENBEAST_ALGO_PACK=1` (`agents/packs/algo-v1.md`, sha256 `6c532400...`, packs on) | 2.3 | ~6-7 h | does a ~400-token procedure pack add to the lines? (UPA vs UP) |
 | T_j2 | T | 2 concurrent units (optional) | `"jobs": 2, "slots": 2` in the arm (wins over the CLI); only with `--only T_j2` or `--include T_j2` | 2.3 | ~7.7 h (~9 h for DeepSeek) | the contention model: same tokens per unit, at 2 streams (see the note below) |
 
 **DeepSeek's composite is T2 (2026-11-19).** DeepSeek-V4.1-Flash (Mia EXL3)
@@ -646,6 +650,23 @@ ADOPTED or REJECTED) and [RESULTS.md](RESULTS.md).
   only with harness9 rows. Run it from a merged tree with
   `--allow-tree-move` (the campaign's pinned commit is T's), or
   `--arm-tree T2=<checkout>`. The CHANGELOG has the detail.
+- **harness10 (2026-11-19): the U arms' switches, reasoning text, no web
+  advertised.** The era moves (`036638ddd68698ce` -> `9bcd5aa6030836d1`) and
+  `evals/HARNESS_VERSION` goes to `harness10` (run_eval's agent-shaping code
+  is unchanged, so the fingerprint stays `cd729e38ca1e3030`): `agents/runner.py`
+  (the forced-act turn, the done-when-verified and planning lines, the
+  reasoning text in the transcript) and `agents/tools.py` (the web tools left
+  out under eval). Four new agent switches in the key: `fact<N>`
+  (`OPENBEAST_AGENT_FORCE_ACT=1`, N = `OPENBEAST_AGENT_FORCE_ACT_AFTER`, default
+  2), `dverif` (`OPENBEAST_AGENT_DONE_VERIFIED=1`), `alines`
+  (`OPENBEAST_AGENT_ALGO_LINES=1`) and `noweb` (`OPENBEAST_AGENT_HIDE_WEB=1`).
+  `OPENBEAST_ALGO_PACK=1` adds the frozen algorithmic pack to every unit's
+  pack file, so it moves the `pack1-` component instead. `common.env` pins
+  all of them off. Every harness10 run logs each turn's reasoning text
+  (`reasoning` events, capped at `OPENBEAST_AGENT_REASONING_LOG_CHARS`,
+  default 100,000 chars per turn; reporting only). Rows of the U arms pair only with
+  harness10 rows. T3 stays on harness9 (it was launched from the tree
+  before this change).
 - **A row is lost to API errors only when they ENDED the run** (review
   1118). run_eval records `api_errors_tail` (failed calls after the last
   successful one); a failed row with `api_errors > 0` but a zero tail is a
@@ -827,6 +848,13 @@ campaign. On GLM, its N0 is arm B (36/71, thinking pinned off).
       margin; T3 tests a 4096 cap against T2. If T3 beats T2 by more than the
       margin, move `composite_by_model` and the profile's AGENT_MAX_TOKENS
       together, with the evidence.
+- [ ] **Arms U, U_8k, UP, UPA (harness10, after T3).** From the 168
+      investigation (2026-11-19, CHANGELOG harness10): the forced-act turn
+      replaces the text act nudge (U, U_8k for the cap), then the planning
+      lines (UP), then the algorithmic pack (UPA), one `--only` arm at a time
+      from a harness10 tree with `--allow-tree-move`. Each ~6-7 h. Read U vs
+      T2 first; UP is read against U and UPA against UP. Then UP on
+      GLM-5.3-Flash as the control.
 - [ ] Model-specific harness hypotheses: start from
       [docs/reviews/DEEPSEEK_HARNESS-2026-10-09.md](reviews/DEEPSEEK_HARNESS-2026-10-09.md),
       the evaluation of DeepSeek's own agent harness (`dsh`). Its "ideas

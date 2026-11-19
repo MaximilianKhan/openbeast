@@ -1313,6 +1313,13 @@ def agent_switches(env=None) -> tuple[str | None, dict]:
       OPENBEAST_AGENT_MAX_TOKENS=<int> -> cap<N> (the per-turn token cap,
                                          e.g. T2's 8192 thinking cap; 0 = none)
       OPENBEAST_AGENT_ACT_NUDGE=1     -> anudge  (T2, act after idle turns)
+      OPENBEAST_AGENT_FORCE_ACT=1     -> fact<N> (harness10, U: a thinking-off
+                                         act turn after N capped thinking
+                                         turns; N = OPENBEAST_AGENT_FORCE_ACT_AFTER)
+      OPENBEAST_AGENT_DONE_VERIFIED=1 -> dverif  (harness10, "done when verified")
+      OPENBEAST_AGENT_ALGO_LINES=1    -> alines  (harness10, UP planning lines)
+      OPENBEAST_AGENT_HIDE_WEB=1      -> noweb   (harness10, web tools not
+                                         advertised under eval)
 
     Returns (component, meta): component `ag-<part>-<part>...` for the cache
     key, None when every switch is unset (legacy keys stay reachable); meta
@@ -1339,6 +1346,19 @@ def agent_switches(env=None) -> tuple[str | None, dict]:
     except ValueError:
         turn_cap = None
     anudge = env.get("OPENBEAST_AGENT_ACT_NUDGE", "").strip() == "1"
+    # harness10 (agents/runner.py force_act_enabled / force_act_after,
+    # done_verified_enabled, algo_lines_enabled; tools.web_tools_hidden).
+    fact = None
+    if env.get("OPENBEAST_AGENT_FORCE_ACT", "").strip() == "1":
+        raw_n = env.get("OPENBEAST_AGENT_FORCE_ACT_AFTER", "").strip()
+        try:
+            fact = int(raw_n) if raw_n else 2
+        except ValueError:
+            fact = 2
+        fact = fact if fact >= 1 else 2
+    dverif = env.get("OPENBEAST_AGENT_DONE_VERIFIED", "").strip() == "1"
+    alines = env.get("OPENBEAST_AGENT_ALGO_LINES", "").strip() == "1"
+    noweb = env.get("OPENBEAST_AGENT_HIDE_WEB", "").strip() == "1"
     meta = {"thinking": think, "seed": seed, "verify_done": vdone,
             "diag_edit_hint": ehint, "env_block": envb, "wall_warn": wwarn}
     # Only when set, so every earlier run's meta and key stay as they were.
@@ -1346,12 +1366,23 @@ def agent_switches(env=None) -> tuple[str | None, dict]:
         meta["turn_cap"] = turn_cap
     if anudge:
         meta["act_nudge"] = True
+    if fact is not None:
+        meta["force_act"] = fact
+    if dverif:
+        meta["done_verified"] = True
+    if alines:
+        meta["algo_lines"] = True
+    if noweb:
+        meta["hide_web"] = True
     parts = ([f"think-{think}"] if think else []) + \
         ([f"seed{seed}"] if seed is not None else []) + \
         (["vdone"] if vdone else []) + (["ehint"] if ehint else []) + \
         (["envb"] if envb else []) + (["wwarn"] if wwarn else []) + \
         ([f"cap{turn_cap}"] if turn_cap is not None else []) + \
-        (["anudge"] if anudge else [])
+        (["anudge"] if anudge else []) + \
+        ([f"fact{fact}"] if fact is not None else []) + \
+        (["dverif"] if dverif else []) + (["alines"] if alines else []) + \
+        (["noweb"] if noweb else [])
     return (f"ag-{'-'.join(parts)}" if parts else None), meta
 
 
@@ -1490,6 +1521,14 @@ def packs_flag(env=None) -> tuple[bool, str | None, dict]:
     env = os.environ if env is None else env
     enabled = (env.get("BEAST_PACKS", "").strip() == "1"
                or env.get("OPENBEAST_PACKS", "").strip() == "1")
+    # harness10: the frozen language-independent algorithmic procedure pack
+    # (agents/packs/algo-v1.md, arm UPA). It rides on the packs channel, so
+    # it needs packs on; asked for without them, the run stops (a switch that
+    # silently does nothing would mislabel the arm).
+    algo = env.get("OPENBEAST_ALGO_PACK", "").strip() == "1"
+    if algo and not enabled:
+        raise SystemExit("OPENBEAST_ALGO_PACK=1 needs packs on (BEAST_PACKS=1 or "
+                         "OPENBEAST_PACKS=1): the algorithmic pack rides on the packs channel")
     if not enabled:
         return False, None, {}
     import hashlib
@@ -1530,6 +1569,29 @@ def packs_flag(env=None) -> tuple[bool, str | None, dict]:
             with open(p, "rb") as f:
                 both = f.read().rstrip(b"\n") + b"\n\n" + host.data
             meta["unit_paths"][lang] = _host_pack.write(both, HOST_PACK_DIR)
+    if algo:
+        # Appended last, to every unit: a language unit's file, the host
+        # pack, or (no host gaps) the algorithmic pack alone. Its bytes go
+        # into the component after the others', so with it off the
+        # component is exactly what it was.
+        ap = os.path.abspath(os.path.join(PACKS_DIR, _pack_context.ALGO_PACK_FILE))
+        with open(ap, "rb") as f:
+            adata = f.read()
+        problem = _pack_context.algo_pack_problem(adata)
+        if problem:
+            raise SystemExit(problem)
+        h.update(adata)
+        shas["algo"] = hashlib.sha256(adata).hexdigest()[:8]
+        meta["algo"] = {"path": ap, "sha256": hashlib.sha256(adata).hexdigest()}
+
+        def _join(path: str | None) -> str:
+            if not path:
+                return _host_pack.write(adata, HOST_PACK_DIR)
+            with open(path, "rb") as f:
+                return _host_pack.write(f.read().rstrip(b"\n") + b"\n\n" + adata,
+                                        HOST_PACK_DIR)
+        meta["unit_paths"] = {lang: _join(p) for lang, p in meta["unit_paths"].items()}
+        meta["common_path"] = _join((meta.get("host") or {}).get("path"))
     return True, f"pack1-{h.hexdigest()[:8]}", meta
 
 
@@ -3136,7 +3198,10 @@ class ArmCtx:
         if not self.packs_on:
             return None
         lang_path = self.packs_meta["unit_paths"].get(task.get("language"))
-        return lang_path or (self.packs_meta.get("host") or {}).get("path")
+        # common_path: the host pack + the algorithmic pack (harness10), set
+        # only with OPENBEAST_ALGO_PACK=1; otherwise the host pack as before.
+        return (lang_path or self.packs_meta.get("common_path")
+                or (self.packs_meta.get("host") or {}).get("path"))
 
     def pack_for(self, task: dict) -> str | None:
         return self.packs_component if self.pack_path(task) else None
@@ -3500,6 +3565,12 @@ def run_eval(
         "OPENBEAST_AGENT_MAX_TOKENS": (str(agent_meta["turn_cap"])
                                        if agent_meta.get("turn_cap") is not None else None),
         "OPENBEAST_AGENT_ACT_NUDGE": "1" if agent_meta.get("act_nudge") else None,
+        "OPENBEAST_AGENT_FORCE_ACT": "1" if agent_meta.get("force_act") else None,
+        "OPENBEAST_AGENT_FORCE_ACT_AFTER": (str(agent_meta["force_act"])
+                                            if agent_meta.get("force_act") else None),
+        "OPENBEAST_AGENT_DONE_VERIFIED": "1" if agent_meta.get("done_verified") else None,
+        "OPENBEAST_AGENT_ALGO_LINES": "1" if agent_meta.get("algo_lines") else None,
+        "OPENBEAST_AGENT_HIDE_WEB": "1" if agent_meta.get("hide_web") else None,
     }
     rb_component = None
     _rb = ""
