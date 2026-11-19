@@ -1,5 +1,11 @@
 # External skills: what to take from the ecosystem, and the gate it comes through
 
+> **Status (2026-11-19 review): PARTLY IMPLEMENTED.** The gate is built (#127)
+> and nine skills were imported through it (#128). Steps 2, 4 and 5 are open,
+> as are a human read of the nine agent-read rows and Humanizer. The ledger is
+> `skills/REMOTE_PROVENANCE.md`, and the open items are in
+> [TODO.md](TODO.md#-external-skills--gate-built-2026-10-01-9-skills-imported-2026-10-02-agent-read).
+
 **Status (2026-10-02):** steps 1 and 3 of 5 are done. The import gate
 (`scripts/skill-import.sh`) exists and is tested, and **nine external skills
 came through it** (§4a): five from obra/superpowers, four from

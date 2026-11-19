@@ -1,5 +1,13 @@
 # beast-chat Plan — remote access to the rig's live sessions
 
+> **Status (2026-11-19 review): IMPLEMENTED.** Shipped in v1.4.0 as beast-chat
+> (#62, 2026-09-15). Review fixes followed in #64, #76, #84 and #87. #113 and
+> #121 added new sessions, pause and resume, the PWA and opt-in push through
+> ntfy, so push is no longer deferred. #157 and #165 added the unix-socket
+> login. The operator page is [BEAST_CHAT.md](BEAST_CHAT.md); where it and
+> this plan differ, the operator page is current. The status paragraph below
+> is the 2026-09-14 design record, kept as written.
+
 **Status: DESIGN, DECISIONS LOCKED (2026-09-14). Nothing built.** Max
 ratified the three open questions the same day (see the bottom of this
 doc): phone may start agents (chat scope), push deferred with a TODO, name

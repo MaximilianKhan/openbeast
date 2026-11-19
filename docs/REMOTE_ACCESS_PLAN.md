@@ -1,5 +1,10 @@
 # Remote Access Plan — OpenBeast as a personal cloud
 
+> **Status (2026-11-19 review): IMPLEMENTED** (below). Remote access grew
+> later into beast-gate device keys and the `:8443` gate. Its current docs are
+> [INSTALL.md](INSTALL.md) §7, [BEAST_SLOT.md](BEAST_SLOT.md) and, for the
+> Spark pair, [SPARK_HYDRA.md](SPARK_HYDRA.md).
+
 **Status: LIVE (2026-07-07) — implemented, deployed, and verified.**
 Phases 1–2 live in `scripts/setup-tailscale.sh` (one script covers both),
 Phase 3 (bind surface) via `scripts/lib/conf.sh` + `BIND_HOST`, Phase 4

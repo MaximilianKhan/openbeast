@@ -1,5 +1,12 @@
 # Language awareness for the harness — push-diagnostics + awareness packs (design, 2026-09-08)
 
+> **Status (2026-11-19 review): PARTLY IMPLEMENTED.** Tier 1, push
+> diagnostics, shipped as BEAST-ASSIST (#37, #50, #51) and is opt-in. Tier 3,
+> the zig awareness pack, is in production for zig tasks (#58, #117). Pack v2
+> is eval-only (#188, #190), and v3 is measured by the thinking-first campaign
+> (#194, #197). Still open: the held-out check, and every tier the notes below
+> mark as design.
+
 > **NAMING (locked by Max 2026-09-09): the shipped feature is BEAST-ASSIST** (`BEAST_ASSIST=1`, alias of `OPENBEAST_DIAGNOSTICS=1`); "push-diagnostics" remains the mechanism term in this doc. A/B rounds 1–2 + B-replicate verdict (2026-09-10): direction unanimous, magnitude within churn at n=2, harm excluded → ships default-OFF documented opt-in; Tier 3 is the next zig arm. Full record: research langaware journal.
 
 > **Status 2026-09-30: Tier 3 (the zig awareness pack) read SHIP on a
