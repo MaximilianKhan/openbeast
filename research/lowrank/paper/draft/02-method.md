@@ -1,3 +1,5 @@
+> **Superseded (noted 2026-11-19):** draft text, kept as the draft record. The paper is [`../final/sections/02-method.md`](../final/sections/02-method.md); section numbers changed in the 2026-10-09 revision. Quote the final, not this.
+
 # 2. Method
 
 The pipeline [F1] has four stages: capture second-moment statistics on calibration text (§2.1); fit whitened corrections in closed form (§2.2) and/or re-round the base's codes on their frozen grids (§2.3); optionally alternate quantizer and corrector (§2.4); serve through llama.cpp's existing adapter path or our fused kernels (§5). All quality claims follow the measurement protocol of §2.5.

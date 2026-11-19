@@ -13,11 +13,12 @@ labels: bug
 1.
 
 **Environment**
-- GPU + VRAM (e.g. RTX 5090 32 GB):
+- GPU + VRAM (e.g. RTX 5090 32 GB), or the DGX Spark pair:
 - Distro / kernel:
 - Install path: `bootstrap.sh` full / `--minimal` / manual
 - `./start.sh --status` output:
 - `./scripts/healthcheck.sh` output:
+- On the Spark pair: `beaststatus` output (on spark-1)
 
 **Logs**
 Attach the relevant tail of `.run/stack.log` (daemon mode) or terminal

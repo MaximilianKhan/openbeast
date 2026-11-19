@@ -1,3 +1,5 @@
+> **Superseded (noted 2026-11-19):** draft text, kept as the draft record. The paper is [`../final/sections/04-results-walls.md`](../final/sections/04-results-walls.md) (and §5, [`04b-gsq-head-to-head.md`](../final/sections/04b-gsq-head-to-head.md)); section numbers changed in the 2026-10-09 revision. Quote the final, not this.
+
 # 4. Results II: the measured walls
 
 This section is an anatomy of negative results. Each wall is named, measured, and given a mechanism; several were the campaign's most statistically secure findings [source: research/lowrank/review/adversarial-stats.md §F15].

@@ -1,3 +1,5 @@
+> **Superseded (noted 2026-11-19):** draft text, kept as the draft record. The paper is [`../final/sections/07-related-work.md`](../final/sections/07-related-work.md); section numbers changed in the 2026-10-09 revision. Quote the final, not this.
+
 # 7. Related work
 
 *(Assembled 2026-09-09 from the curated bibliography [source: research/lowrank/paper/references.md], the L6 family-subsumption note [source: research/lowrank/paper/theory-L6-family-subsumption.md], and the verified claim ledger. Organization follows the taxonomy of the same-harness evaluation survey (arXiv:2507.17417): statistics-scaled one-shot methods, iterative discrete refinement, and training-based recovery — we occupy the first two lanes and measure their boundary.)*
