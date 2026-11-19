@@ -7,6 +7,9 @@ rate in a language it was undertrained on. This page states what each
 found, how sure we are, and what was not done. Every number has a file
 behind it; the paths are given.
 
+Every note behind this page, with its date and status (current,
+superseded or archived), is listed in [`README.md`](README.md).
+
 The formal write-up of beast-rank is
 [`lowrank/paper/final/paper.pdf`](lowrank/paper/final/paper.pdf)
 (source: `lowrank/paper/final/sections/`, built by `build.py`).
@@ -221,6 +224,18 @@ main tree.)
 
 Not done: the held-out Zig set, the escalation A/B, and a single-slot
 churn floor.
+
+*Later (noted 2026-11-19; nothing above is revised).* This program closed
+on 2026-09-30, on the RTX 5090 rig and its Qwen models. The pack it
+measured (v1, sha8 `5cdf4b64`) is still the default pack. Two successors
+were built for the v5 suite in November, v2 and v3
+([`docs/LANG_AWARENESS_PLAN.md` §5.1–5.2](../docs/LANG_AWARENESS_PLAN.md#51-pack-v2--the-host-pack-2026-11-16--building-unmeasured));
+v3 is the variant `AGENT_PROFILE=deepseek-best` selects. The held-out
+check now lives in the v5 suite: three new zig units form the held-out
+stratum of the pack contrast
+([`evals/README.md`, the arm matrix](../evals/README.md#the-arm-matrix)).
+What the DGX Spark pair serves, and its v5 board, is in
+[`docs/SPARK_HYDRA.md`](../docs/SPARK_HYDRA.md), not here.
 
 ## The rules these two programs left behind
 
