@@ -452,8 +452,8 @@ explicitly for one swap, after which the boot selection and the command
 center still point at GLM until `beast-spark ds`. Never run
 `activate-stock.sh` while GLM is active: it does not stop GLM.
 
-**`beast-spark ds` always re-selects its configured pack**, the `-v2` pack by
-default, so a pack adopted here is replaced at the next GLM → DeepSeek round
+**`beast-spark ds` always re-selects its configured pack**, DeepSeek-V4.1-Flash
+(Mia EXL3) by default (the `-v2` folder), so a pack adopted here is replaced at the next GLM → DeepSeek round
 trip. To keep it, name it in `~/.config/openbeast/beast-spark.env` on spark-1
 (parsed, never sourced):
 
@@ -574,7 +574,7 @@ bring it back, and `beast-spark` knows only GLM and DeepSeek ([§7](#7-what-to-b
 | a GLM pack | restore `scripts/local.sh.bak-<time>`, `systemctl --user restart spark-hydra-inference` |
 | switched models | `beast-spark glm` / `beast-spark ds` (the switch path; `restore-glm.sh` / `activate-stock.sh` are its internals) |
 | a native profile | `spark-cluster.sh stop`, then `beast-spark up` |
-| `INFERENCE_MODEL` | `use-model.sh --model <old id> --report <its conformance report>`, or `restore-glm.sh` for GLM's lines |
+| `INFERENCE_MODEL` | `use-model.sh --model <old id> --report <its conformance report>`, or `beast-spark glm` for GLM's lines |
 
 Staged snapshots and rank files stay on disk, which is why a rollback takes
 seconds to minutes, not a re-copy.
@@ -707,7 +707,8 @@ list, before downloading 200 GB:
    failure audit, the thinking-first arms, the report. A pack that changes
    only the quantization of a qualified model needs at least the bench A/B
    and a v5 rerun before it becomes the default (DeepSeek-V4.1-Flash (Mia
-   EXL3) has its v5 row, 61/71; a v1-vs-v2 quality A/B is still open).
+   EXL3) has its v5 rows, 61/71 under arm T and 65/71 under arm T2, its
+   default agent setup; a v1-vs-v2 quality A/B is still open).
 
 No specific new models are recommended here. The only other EXL3 DeepSeek
 packs named on the Sparks are in drowzeys' kit README: LibertAI 3.5 bpw and
