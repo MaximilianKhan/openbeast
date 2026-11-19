@@ -1,5 +1,7 @@
 # openbeast.ai upgrade plan
 
+**Handoff for the next deploy: [WEBSITE_UPDATE_2026-11-19.md](WEBSITE_UPDATE_2026-11-19.md)** (the pair's new default, the v5 board, the uncensored-preferred policy; live quotes, paste-ready copy, acceptance checks).
+
 **Status, 2026-11-16: plan only. Revised 2026-11-17** to the state after
 PRs #175–#192 (see [What changed since the first draft](#what-changed-since-the-first-draft-2026-11-17)),
 **and again 2026-11-17 evening** to the state after #194–#204 (see
