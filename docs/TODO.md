@@ -232,6 +232,10 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
   the default and the board's #1 (T2 65/71, SCORE 94.9), with stock weights
   (not abliterated, not uncensored). GLM-5.3-Flash Ablit becomes the staged
   alternative. Then redeploy ([`WEBSITE_PLAN.md`](WEBSITE_PLAN.md#what-changed-since-the-third-revision-2026-11-19)).
+  **The handoff is [`WEBSITE_UPDATE_2026-11-19.md`](WEBSITE_UPDATE_2026-11-19.md)**: page-by-page
+  live quotes and replacement copy, the board rows, the uncensored-preferred
+  policy wording, new sections (labelled MEASURED / PLANNED), and the
+  post-deploy acceptance checks.
 
 **Open — measurement:**
 

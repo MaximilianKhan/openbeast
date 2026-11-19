@@ -155,6 +155,7 @@ backing it up, restoring it after an OS reinstall).
 [EXTERNAL_SKILLS_PLAN.md](EXTERNAL_SKILLS_PLAN.md) ·
 [MAC_CLIENT_PLAN.md](MAC_CLIENT_PLAN.md) (superseded by BEAST_SLOT.md) ·
 [WEBSITE_PLAN.md](WEBSITE_PLAN.md) (openbeast.ai) ·
+[WEBSITE_UPDATE_2026-11-19.md](WEBSITE_UPDATE_2026-11-19.md) (openbeast.ai handoff: DeepSeek default, v5 board, model policy) ·
 [SOC2_READINESS.md](SOC2_READINESS.md) (self-assessment)
 
 ## Releases and reviews
