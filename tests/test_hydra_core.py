@@ -28,10 +28,11 @@ def base() -> dict:
     """A three-node fleet: the 1-slot rig, a vLLM pair, a 2-slot llama box."""
     return {
         "schema": 1,
-        # A mechanism fixture: it mixes families on purpose, so it must say so
-        # (an undeclared mix is a config error — Max's uncensored-only rule).
+        # A mechanism fixture: it mixes families on purpose. The default
+        # family_policy (uncensored-preferred, Max 2026-11-19) admits them all
+        # and tries `unc` first inside a priority group.
         "hydra": {"probe_interval_s": 1, "down_after": 2, "up_after": 2,
-                  "allowed_families": ["unc", "stock", "moe"]},
+                  "uncensored_families": ["unc"]},
         "nodes": {
             "rig": {"url": "http://127.0.0.1:8080", "engine": "llama", "slots": 1},
             "sparks": {"url": "http://10.0.0.5:8000", "engine": "vllm", "slots": 8, "key_env": "SPARK_KEY"},
@@ -119,10 +120,14 @@ def test_example_instinct_deadline_lets_a_27b_answer(tmp_path, monkeypatch):
     assert "keep `linear` online" not in (REPO / "docs" / "BEAST_HYDRA_PLAN.md").read_text()
 
 
-def test_example_config_is_uncensored_only(tmp_path, monkeypatch):
-    # Max 2026-09-30: "all of our models are uncensored" — hydra must never
-    # route or spill to a stock model. The example used to ship stock NVFP4
-    # (and the stock 35B-A3B MoE) in four routes, and same_family = false.
+def test_example_config_is_uncensored_preferred(tmp_path, monkeypatch):
+    # Max 2026-11-19: "It's uncensored-preferred" (it replaced 2026-09-30's
+    # uncensored-only rule). The example ships the policy, declares only the
+    # abliterated families as uncensored, and admits the pair's STOCK default
+    # (DeepSeek-V4.1-Flash, Mia EXL3) without ever calling it uncensored.
+    # `beast` itself stays on the uncensored 27B family (its same_family
+    # anchor): the example used to ship stock NVFP4 (and the stock 35B-A3B
+    # MoE) in four routes, and same_family = false.
     kd = tmp_path / ".config" / "openbeast" / "hydra"
     kd.mkdir(parents=True)
     for k in ("ti", "sparks"):
@@ -130,9 +135,12 @@ def test_example_config_is_uncensored_only(tmp_path, monkeypatch):
         (kd / f"{k}.key").chmod(0o600)
     monkeypatch.setenv("HOME", str(tmp_path))
     cfg = core.load_config(REPO / "hydra.toml.example", {})
-    allowed = cfg.settings.allowed_families
-    assert allowed and all("uncensored" in f for f in allowed), allowed
-    assert all(d.family in allowed for d in cfg.deployments.values())
+    assert cfg.settings.family_policy == "uncensored-preferred"
+    unc = cfg.settings.uncensored_families
+    assert unc and all("uncensored" in f for f in unc), unc
+    ds = cfg.deployments["deepseek-v41-flash@sparks"]
+    assert ds.family not in unc and "uncensored" not in ds.family and ds.upstream == "DeepSeek-V4.1-Flash-1017"
+    assert {d.family for d in cfg.deployments.values()} - set(unc) == {ds.family}
     assert cfg.routes["beast"].same_family and cfg.routes["beast"].family == "qwen3.8-27b-uncensored"
     glm = cfg.deployments["glm53-flash-unc@sparks"]
     assert glm.family == "glm-5.3-flash-uncensored" and cfg.nodes[glm.node].engine == "openai"
@@ -151,6 +159,15 @@ def test_example_config_is_uncensored_only(tmp_path, monkeypatch):
         fams = {c.d.family for c in d.attempts}
         assert d.ok and fams == {"qwen3.8-27b-uncensored"}, (d.route, ids(d), d.trace.excluded)
     assert cases[1].route == "beast:long" and "glm53-flash-unc@sparks" in cases[1].trace.excluded
+    assert "same_family" in cases[1].trace.excluded["deepseek-v41-flash@sparks"]
+    # beast:spark: the pair serves ONE of GLM / DeepSeek. Both READY (a
+    # hypothetical): the uncensored GLM first. GLM MISMATCH (DeepSeek is what
+    # the pair serves, its default): the stock DeepSeek answers.
+    sp = {"model": "beast:spark", "messages": []}
+    assert ids(decide(cfg, st, sp)) == ["glm53-flash-unc@sparks", "deepseek-v41-flash@sparks"]
+    st.health["glm53-flash-unc@sparks"].h.state = core.MISMATCH
+    d = decide(cfg, st, sp)
+    assert d.ok and ids(d) == ["deepseek-v41-flash@sparks"], (ids(d), d.trace.excluded)
     # beast:max is quality-first and no longer rewritten by the phone rule
     assert decide(cfg, st, {"model": "beast:max", "messages": []},
                   caller=core.Caller(trusted=True, device="max-phone")).route == "beast:max"
@@ -164,7 +181,8 @@ def test_example_config_is_uncensored_only(tmp_path, monkeypatch):
 def test_example_classify_route_decides_on_a_full_uncensored_27b():
     """The router's spawn classifier is a routing decision: the example sent
     it to the 35B-A3B MoE (~3B active) first, then a STOCK Sparks model.
-    Owner's rule: decisions on a full model, and every model uncensored."""
+    Owner's rule: decisions on a full model; the example keeps them on the
+    uncensored 27B (uncensored-preferred, Max 2026-11-19)."""
     raw = tomllib.loads((REPO / "hydra.toml.example").read_text())
     deps = raw["deployments"]
     targets = sorted(raw["routes"]["classify"]["targets"], key=lambda t: t.get("priority", 0))
@@ -756,18 +774,25 @@ def test_all_saturated_goes_to_the_preferred_group():
     assert ids(d)[0] == "unc@rig" and any("all saturated" in n for n in d.trace.notes)
 
 
+def _any(raw=None):
+    """base() with family_policy = "any": the load mechanics alone."""
+    raw = raw or base()
+    raw["hydra"]["family_policy"] = "any"
+    return raw
+
+
 def test_weights_least_load_and_seeded_tiebreak():
-    cfg = cfg_of()
+    cfg = cfg_of(_any())
     st = ready_state(cfg)
     # beast:long: sparks (8 slots) vs rig (1 slot), both priority 0
     assert ids(decide(cfg, st, {"model": "beast:long"}))[0] == "nvfp4@sparks"
-    raw = base()
+    raw = _any()
     raw["routes"]["twin"] = {"targets": [{"d": "moe@ti"}, {"d": "unc@rig", "weight": 2.0}]}
     raw["nodes"]["rig"]["slots"] = 2
     cfg = cfg_of(raw)
     st = ready_state(cfg)
     assert ids(decide(cfg, st, {"model": "twin"}))[0] == "unc@rig"         # weight halves its load
-    firsts = {ids(decide(cfg_of(base()), ready_state(cfg_of(base()), seed=s),
+    firsts = {ids(decide(cfg_of(_any()), ready_state(cfg_of(_any()), seed=s),
                          {"model": "beast:long", "messages": []}))[0] for s in range(3)}
     assert firsts == {"nvfp4@sparks"}
     raw = base()
@@ -830,14 +855,15 @@ def test_same_family_and_max_attempts():
     assert len(ids(decide(cfg_of(), ready_state(cfg_of()), {"model": "beast:fast"}))) == 3
 
 
-# ─────────────────── family policy (Max 2026-09-30: never stock) ───────────────────
+# ───────────── family policy (Max 2026-11-19: uncensored-preferred) ─────────────
 
 def _uncensored_only(raw=None):
-    """base() with the fleet policy on: only the uncensored family may serve.
-    Routes drop the stock/MoE targets (validation refuses a route target
-    outside the policy); those stay as pinnable deployments."""
+    """base() under the strict rule (family_policy = "uncensored-only", the
+    2026-09-30 policy): only the uncensored family may serve. Routes drop the
+    stock/MoE targets (validation refuses a route target outside the
+    policy); those stay as pinnable deployments."""
     raw = raw or base()
-    raw["hydra"]["allowed_families"] = ["unc"]
+    raw["hydra"].update(family_policy="uncensored-only", uncensored_families=["unc"])
     for r in raw["routes"].values():
         r["targets"] = [t for t in r["targets"] if t["d"] == "unc@rig"]
     return raw
@@ -849,39 +875,169 @@ def _with_policy(cfg, **kw):
     return cfg
 
 
-def test_allowed_families_refuses_a_route_target_outside_the_policy():
+def test_the_default_policy_is_uncensored_preferred_and_admits_stock():
+    # Max 2026-11-19: "It's uncensored-preferred". base() routes stock and MoE
+    # targets; under the default policy that is valid, warning-free, and stock
+    # serves when the uncensored target cannot.
+    assert core.Settings().family_policy == "uncensored-preferred"
+    cfg = cfg_of()
+    assert cfg.settings.family_policy == "uncensored-preferred" and cfg.warnings == [], cfg.warnings
+    st = ready_state(cfg)
+    st.admit("unc@rig", "rig", 1000.0)                   # the 1-slot rig is busy
+    d = decide(cfg, st)
+    assert ids(d) == ["nvfp4@sparks", "unc@rig"], ids(d)  # spill to stock; no family exclusion
+    assert "nvfp4@sparks" not in d.trace.excluded
+    assert core.policy_reason(cfg, cfg.deployments["nvfp4@sparks"]) is None
+
+
+def test_uncensored_is_preferred_at_equal_fitness():
+    # beast:long lists stock FIRST, both priority 0, and stock has 8 slots to
+    # the rig's 1: least-load alone (family_policy = "any") picks stock.
+    # Preferred: the uncensored rig goes first, on every seed, stock second.
+    cfg = cfg_of()
+    for seed in range(5):
+        d = decide(cfg, ready_state(cfg, seed=seed), {"model": "beast:long", "messages": []})
+        assert ids(d) == ["unc@rig", "nvfp4@sparks"], (seed, ids(d))
+    assert any("uncensored-preferred" in n for n in d.trace.notes), d.trace.notes
+    # equal everything (same slots, weight, priority, load): still uncensored first
     raw = base()
-    raw["hydra"]["allowed_families"] = ["unc"]
+    raw["routes"]["twin"] = {"targets": [{"d": "moe@ti"}, {"d": "unc@rig"}, {"d": "nvfp4@sparks"}]}
+    raw["nodes"]["rig"]["slots"] = raw["nodes"]["ti"]["slots"] = raw["nodes"]["sparks"]["slots"] = 2
+    cfg = cfg_of(raw)
+    assert {ids(decide(cfg, ready_state(cfg, seed=s), {"model": "twin"}))[0] for s in range(20)} == {"unc@rig"}
+    # The preference never reorders priorities: beast:fast puts the MoE at 0.
+    d = decide(cfg_of(), ready_state(cfg_of()), {"model": "beast:fast", "messages": []})
+    assert ids(d) == ["moe@ti", "nvfp4@sparks", "unc@rig"], ids(d)
+    # ctx last resort: equal ctx, the uncensored target is the one picked
+    raw = base()
+    raw["routes"]["t"] = {"targets": [{"d": "nvfp4@sparks"}, {"d": "unc@rig"}]}
+    cfg = cfg_of(raw)
+    big = {"model": "t", "messages": [{"role": "user", "content": "x " * 450_000}]}   # ~300K tokens
+    d = decide(cfg, ready_state(cfg), big)
+    assert ids(d) == ["unc@rig"] and any("last resort -> unc@rig" in n for n in d.trace.notes), d.trace.notes
+
+
+def test_health_capacity_and_capability_beat_the_preference():
+    cfg = cfg_of()
+    long_ = {"model": "beast:long", "messages": []}
+    # DOWN / breaker-open: stock serves
+    st = ready_state(cfg)
+    st.health["unc@rig"].h.state = core.DOWN
+    d = decide(cfg, st, long_)
+    assert d.ok and ids(d) == ["nvfp4@sparks"], (ids(d), d.trace.excluded)
+    # a drained node (eval lease): stock serves
+    st = ready_state(cfg)
+    st.drained["rig"] = "lease"
+    assert ids(decide(cfg, st, long_)) == ["nvfp4@sparks"]
+    # saturated: the free stock target goes first, the busy uncensored one after
+    st = ready_state(cfg)
+    st.admit("unc@rig", "rig", 1000.0)
+    assert ids(decide(cfg, st, long_)) == ["nvfp4@sparks", "unc@rig"]
+    # a missing capability: the uncensored target is excluded, not preferred
+    raw = base()
+    raw["routes"]["t"] = {"targets": [{"d": "unc@rig"}, {"d": "nvfp4@sparks"}]}
+    raw["deployments"]["unc@rig"]["caps"] = ["tools"]
+    cfg = cfg_of(raw)
+    body = {"model": "t", "messages": [], "response_format": {"type": "json_schema",
+                                                              "json_schema": {"schema": {"type": "object"}}}}
+    d = decide(cfg, ready_state(cfg), body)
+    assert ids(d) == ["nvfp4@sparks"] and "missing caps" in d.trace.excluded["unc@rig"], d.trace.excluded
+    # affinity (a warm cache) is fitness too: a session on stock stays there
+    raw = base()
+    raw["routes"]["t"] = {"targets": [{"d": "unc@rig"}, {"d": "nvfp4@sparks"}], "affinity": "sticky"}
+    cfg = cfg_of(raw)
+    st = ready_state(cfg)
+    f = feats(cfg, {"model": "t", "messages": [{"role": "user", "content": "hi"}]})
+    st.affinity.put(f.session_key, "nvfp4@sparks", 999.0)
+    assert ids(decide(cfg, st, {"model": "t", "messages": [{"role": "user", "content": "hi"}]}))[0] == "nvfp4@sparks"
+
+
+def test_any_policy_ignores_family():
+    cfg = cfg_of(_any())
+    assert cfg.warnings == [] and core.uncensored_rank(cfg, cfg.deployments["nvfp4@sparks"]) == 0
+    # pure least-load: stock's 8 slots beat the rig's 1, uncensored or not
+    assert ids(decide(cfg, ready_state(cfg), {"model": "beast:long", "messages": []}))[0] == "nvfp4@sparks"
+    assert core.policy_reason(cfg, cfg.deployments["nvfp4@sparks"]) is None
+    # nothing declared at all: no error, no warning
+    raw = _any()
+    del raw["hydra"]["uncensored_families"]
+    assert cfg_of(raw).warnings == []
+
+
+def test_preferred_with_no_declared_families_warns_that_the_preference_is_inert():
+    raw = base()
+    del raw["hydra"]["uncensored_families"]
+    cfg = cfg_of(raw)
+    assert any("hydra.uncensored_families is empty" in w for w in cfg.warnings), cfg.warnings
+    # and ranks every family the same (least-load decides)
+    assert ids(decide(cfg, ready_state(cfg), {"model": "beast:long", "messages": []}))[0] == "nvfp4@sparks"
+
+
+def test_family_policy_bad_value_is_a_config_error():
+    raw = base()
+    raw["hydra"]["family_policy"] = "uncensored"
     with pytest.raises(core.ConfigError) as e:
         core.validate(raw, {})
-    assert any("nvfp4@sparks is family 'stock', outside hydra.allowed_families" in x for x in e.value.errors)
+    assert any("hydra.family_policy must be uncensored-preferred | uncensored-only | any" in x
+               for x in e.value.errors), e.value.errors
+
+
+def test_allowed_families_is_a_deprecated_alias_of_uncensored_families():
+    raw = base()
+    raw["hydra"]["allowed_families"] = raw["hydra"].pop("uncensored_families")
+    cfg = cfg_of(raw)
+    assert cfg.settings.uncensored_families == ("unc",) and cfg.settings.family_policy == "uncensored-preferred"
+    assert any("hydra.allowed_families is deprecated" in w for w in cfg.warnings), cfg.warnings
+    raw["hydra"]["uncensored_families"] = ["unc"]
+    with pytest.raises(core.ConfigError) as e:
+        core.validate(raw, {})
+    assert any("old name of hydra.uncensored_families" in x for x in e.value.errors)
+    # the old strict behaviour, spelled with the old key, is one line away
+    one = _uncensored_only()
+    one["hydra"]["allowed_families"] = one["hydra"].pop("uncensored_families")
+    assert cfg_of(one).settings.uncensored_families == ("unc",)
+
+
+def test_strict_mode_refuses_a_route_target_outside_the_policy():
+    raw = base()
+    raw["hydra"]["family_policy"] = "uncensored-only"
+    with pytest.raises(core.ConfigError) as e:
+        core.validate(raw, {})
+    assert any("nvfp4@sparks is family 'stock', outside hydra.uncensored_families" in x and "uncensored-only" in x
+               for x in e.value.errors), e.value.errors
     assert any("moe@ti is family 'moe'" in x for x in e.value.errors)
 
 
-def test_allowed_families_leaves_strict_pins_alone_and_warns_about_them():
+def test_strict_mode_leaves_strict_pins_alone_and_warns_about_them():
     cfg = cfg_of(_uncensored_only())
     st = ready_state(cfg)
     st.admit("unc@rig", "rig", 1000.0)                   # the 1-slot rig is busy
     assert ids(decide(cfg, st)) == ["unc@rig"]           # queue on the rig, never spill off-policy
     assert ids(decide(cfg, st, {"model": "nvfp4@sparks", "messages": []})) == ["nvfp4@sparks"]
-    assert any("deployments.nvfp4@sparks: family 'stock' is outside hydra.allowed_families" in w
+    assert any("deployments.nvfp4@sparks: family 'stock' is outside hydra.uncensored_families" in w
                for w in cfg.warnings)
 
 
-def test_allowed_families_is_a_hard_filter_in_decide_on_spill_and_ctx_last_resort():
-    # Old code has no policy: with the rig saturated `beast` spills to stock.
-    # decide() filters every non-strict candidate even when a route still
-    # lists a forbidden target (a Config built around validation, as a hot
-    # reload racing an in-flight plan could leave it).
-    cfg = _with_policy(cfg_of(), allowed_families=("unc",))
+def test_strict_mode_is_a_hard_filter_in_decide_on_spill_and_ctx_last_resort():
+    # With the rig saturated the default policy spills `beast` to stock;
+    # uncensored-only filters every non-strict candidate even when a route
+    # still lists a forbidden target (a Config built around validation, as a
+    # hot reload racing an in-flight plan could leave it).
+    cfg = _with_policy(cfg_of(), family_policy="uncensored-only")
     st = ready_state(cfg)
     st.admit("unc@rig", "rig", 1000.0)
     d = decide(cfg, st)
     assert ids(d) == ["unc@rig"], ids(d)
-    assert d.trace.excluded["nvfp4@sparks"] == "family stock not in hydra.allowed_families"
+    assert d.trace.excluded["nvfp4@sparks"] == \
+        "family stock not in hydra.uncensored_families (family_policy uncensored-only)"
     big = {"model": "beast", "messages": [{"role": "user", "content": "x " * 450_000}]}   # ~300K tokens
     d = decide(cfg, st, big)
     assert ids(d) == ["unc@rig"], (ids(d), d.trace.notes)
+    # even the stock target's own health cannot route there
+    st = ready_state(cfg)
+    st.health["unc@rig"].h.state = core.DOWN
+    d = decide(cfg, st)
+    assert d.status == 503 and "uncensored-only" in d.trace.excluded["nvfp4@sparks"], d.trace.excluded
 
 
 def test_same_family_anchor_is_explicit_never_list_order():
@@ -969,7 +1125,7 @@ def test_ctx_last_resort_is_chosen_among_policy_clean_targets():
 def test_sticky_affinity_cannot_hold_a_conversation_on_a_forbidden_family():
     # B-hydra-4: a turn that spilled to stock stayed there (sticky) after the
     # rig freed up. Under the policy a stale entry naming stock is ignored.
-    cfg = _with_policy(cfg_of(), allowed_families=("unc",))
+    cfg = _with_policy(cfg_of(), family_policy="uncensored-only")
     cfg.routes["beast"] = core.Route(**{**{k: getattr(cfg.routes["beast"], k)
                                            for k in core.Route.__dataclass_fields__}, "affinity": "sticky"})
     cfg.route_by_id_or_alias["beast"] = cfg.routes["beast"]
@@ -1023,44 +1179,50 @@ def test_instinct_urls_match_across_loopback_spellings():
     assert core._endpoint_key("http://localhost:8095") != core._endpoint_key("http://127.0.0.1:8094")  # port matters
 
 
-def test_routes_that_mix_families_without_a_policy_are_a_config_error():
-    # R-hydra-1: the uncensored-only rule was opt-in — an undeclared mix only
-    # warned, so `beast` kept spilling to stock. Now hydra refuses the file.
+def test_strict_mode_routes_that_mix_families_undeclared_are_a_config_error():
+    # R-hydra-1: under uncensored-only an undeclared mix only warned, so
+    # `beast` kept spilling to stock. Strict mode refuses the file.
     raw = base()
-    del raw["hydra"]["allowed_families"]
+    del raw["hydra"]["uncensored_families"]
+    raw["hydra"]["family_policy"] = "uncensored-only"
     with pytest.raises(core.ConfigError) as e:
         core.validate(raw, {})
-    assert any("hydra.allowed_families is required" in x for x in e.value.errors), e.value.errors
+    assert any("hydra.uncensored_families is required" in x for x in e.value.errors), e.value.errors
     # one family across every route needs no declaration
     one = _uncensored_only()
-    del one["hydra"]["allowed_families"]
-    assert not any("allowed_families" in w for w in cfg_of(one).warnings)
+    del one["hydra"]["uncensored_families"]
+    assert not any("uncensored_families" in w for w in cfg_of(one).warnings)
     # nor does the implicit single-node config
     core.implicit_config({})
 
 
-def test_the_pre_policy_example_hydra_toml_is_refused(tmp_path, monkeypatch):
+def test_the_pre_policy_example_hydra_toml_loads_preferred_and_is_refused_strict(tmp_path, monkeypatch):
     # R-hydra-1: a hydra.toml copied from the template shipped before
-    # 2026-09-30 (beast spills to stock NVFP4, beast:fast on the stock MoE)
-    # passed `check` with a warning. It must not load.
+    # 2026-09-30 (beast spills to stock NVFP4, beast:fast on the stock MoE).
+    # Under the default uncensored-preferred it loads (stock is allowed) with
+    # the "nothing to prefer" warning; under uncensored-only it must not load.
     kd = tmp_path / ".config" / "openbeast" / "hydra"
     kd.mkdir(parents=True)
     for k in ("sparks", "ti"):
         (kd / f"{k}.key").write_text("secret\n")
         (kd / f"{k}.key").chmod(0o600)
     monkeypatch.setenv("HOME", str(tmp_path))
+    cfg = core.load_config(FIX / "pre-policy-example.toml", {})
+    assert any("uncensored_families is empty" in w for w in cfg.warnings), cfg.warnings
+    raw = tomllib.loads((FIX / "pre-policy-example.toml").read_text())
+    raw["hydra"]["family_policy"] = "uncensored-only"
     with pytest.raises(core.ConfigError) as e:
-        core.load_config(FIX / "pre-policy-example.toml", {})
-    assert e.value.errors == [x for x in e.value.errors if "allowed_families is required" in x], e.value.errors
+        core.validate(raw, {}, source=str(FIX / "pre-policy-example.toml"))
+    assert e.value.errors == [x for x in e.value.errors if "uncensored_families is required" in x], e.value.errors
     assert len(e.value.errors) == 1
 
 
-def test_allowed_families_bad_entries_are_config_errors():
+def test_uncensored_families_bad_entries_are_config_errors():
     raw = base()
-    raw["hydra"]["allowed_families"] = ["unc", ""]
+    raw["hydra"]["uncensored_families"] = ["unc", ""]
     with pytest.raises(core.ConfigError) as e:
         core.validate(raw, {})
-    assert any("hydra.allowed_families" in x for x in e.value.errors)
+    assert any("hydra.uncensored_families" in x for x in e.value.errors)
 
 
 # ───────────────────────────── health ─────────────────────────────

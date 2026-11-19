@@ -112,11 +112,22 @@ class Settings:
     affinity_max: int = 4096
     audit: str = ".run/hydra-audit.jsonl"
     audit_max_mb: int = 50
-    # The fleet-wide family policy (Max, 2026-09-30: "all of our models are
-    # uncensored"). Non-empty = every NON-strict candidate — first choice,
-    # spill, failover, ctx last resort, after any rule hop — must be one of
-    # these families. Empty = no policy (the implicit single-node config).
-    allowed_families: tuple[str, ...] = ()
+    # The fleet-wide family policy. Max, 2026-11-19: "It's uncensored-preferred,
+    # as we want to enable researchers, lawyers, and professionals to get the
+    # most honest and neutral answers when weighing critical business
+    # decisions" (it replaced 2026-09-30's uncensored-only rule, #122).
+    #   uncensored-preferred (default): every family may serve; among the
+    #     eligible candidates of one priority group, an uncensored family is
+    #     tried before a stock one (FAMILY_POLICIES, uncensored_rank).
+    #   uncensored-only: the old hard filter — every NON-strict candidate
+    #     (first choice, spill, failover, ctx last resort, after any rule hop)
+    #     must be one of uncensored_families.
+    #   any: families play no part (same_family routes still hold).
+    # uncensored_families names the uncensored (abliterated) families; empty =
+    # none declared (the implicit single-node config). Strict pins never pass
+    # through the policy.
+    family_policy: str = "uncensored-preferred"
+    uncensored_families: tuple[str, ...] = ()
     breaker: Breaker = Breaker()
     instinct: InstinctCfg = InstinctCfg()
 
@@ -237,7 +248,9 @@ _HYDRA_TYPES: dict[str, tuple] = {
     "ctx_margin": (int, float), "default_max_tokens": (int,), "list_deployments": (bool,),
     "affinity_ttl_s": (int, float), "affinity_max": (int,), "audit": (str,),
     "audit_max_mb": (int,), "breaker": (dict,), "instinct": (dict,), "allowed_families": (list,),
+    "family_policy": (str,), "uncensored_families": (list,),
 }
+FAMILY_POLICIES = ("uncensored-preferred", "uncensored-only", "any")
 _BREAKER_TYPES = {"fail_threshold": (int,), "open_s": (int, float), "success_threshold": (int,)}
 _INSTINCT_TYPES = {"enabled": (bool,), "url": (str,), "key_file": (str,), "deadline_ms": (int,),
                    "contract_ttl_s": (int, float), "feedback": (bool,), "engine_urls": (list,)}
@@ -387,13 +400,15 @@ def _welltyped(table: dict, types: dict) -> dict:
 
 def _route_family(where: str, r: dict, targets: list, deps: dict, allowed: tuple[str, ...],
                   errors: list[str], warnings: list[str]) -> tuple[bool, str | None]:
-    """(same_family, anchor) for one route; appends every policy error."""
+    """(same_family, anchor) for one route; appends every policy error.
+    `allowed` is non-empty only under family_policy = "uncensored-only"."""
     fam_of = {t.d: deps[t.d].family for t in targets}
     if allowed:
         for t in targets:
             if fam_of[t.d] not in allowed:
                 errors.append(f"{where}.targets: {t.d} is family {fam_of[t.d]!r}, outside "
-                              f"hydra.allowed_families ({', '.join(allowed)})")
+                              f"hydra.uncensored_families ({', '.join(allowed)}) under "
+                              "family_policy = \"uncensored-only\"")
     explicit = r.get("family") if isinstance(r.get("family"), str) else None
     same = r.get("same_family")
     if explicit is not None:
@@ -462,11 +477,28 @@ def _validate(raw, env, repo: Path, source: str, errors: list[str]) -> Config:
     hs = {k: v for k, v in _welltyped(h, _HYDRA_TYPES).items() if k not in ("breaker", "instinct")}
     ins = _welltyped(ins, _INSTINCT_TYPES)
     if "allowed_families" in hs:
-        af = hs["allowed_families"]
+        # The pre-2026-11-19 name. It listed the uncensored families (the only
+        # ones allowed then), so it is read as uncensored_families; what that
+        # list DOES is family_policy's call. A config that only ever routed
+        # those families behaves the same under the new default.
+        if "uncensored_families" in hs:
+            errors.append("hydra.allowed_families is the old name of hydra.uncensored_families — set one")
+        else:
+            warnings.append("hydra.allowed_families is deprecated: rename it hydra.uncensored_families "
+                            "(family_policy decides what it does; set family_policy = \"uncensored-only\" "
+                            "for the old hard filter)")
+            hs["uncensored_families"] = hs["allowed_families"]
+        hs.pop("allowed_families")
+    if "uncensored_families" in hs:
+        af = hs["uncensored_families"]
         if not all(isinstance(x, str) and x for x in af):
-            errors.append("hydra.allowed_families: every entry must be a non-empty family string")
+            errors.append("hydra.uncensored_families: every entry must be a non-empty family string")
             af = [x for x in af if isinstance(x, str) and x]
-        hs["allowed_families"] = tuple(dict.fromkeys(af))
+        hs["uncensored_families"] = tuple(dict.fromkeys(af))
+    if "family_policy" in hs and hs["family_policy"] not in FAMILY_POLICIES:
+        errors.append(f"hydra.family_policy must be {' | '.join(FAMILY_POLICIES)} "
+                      f"(got {hs['family_policy']!r})")
+        hs.pop("family_policy")
     if "engine_urls" in ins and not all(isinstance(u, str) for u in ins["engine_urls"]):
         errors.append("hydra.instinct.engine_urls: every entry must be a string URL")
         ins.pop("engine_urls")
@@ -707,6 +739,7 @@ def _validate(raw, env, repo: Path, source: str, errors: list[str]) -> Config:
                             "detected (set the served id and drop it)")
 
     # [routes]
+    strict_fams = s.uncensored_families if s.family_policy == "uncensored-only" else ()
     routes: dict[str, Route] = {}
     rr = raw.get("routes")
     if not isinstance(rr, dict) or not rr:
@@ -752,7 +785,7 @@ def _validate(raw, env, repo: Path, source: str, errors: list[str]) -> Config:
             errors.append(f"{where}.max_attempts must be 1..6")
             ma = 3
         mc = r.get("min_ctx", 0)
-        same_family, anchor = _route_family(where, r, targets, deps, s.allowed_families, errors, warnings)
+        same_family, anchor = _route_family(where, r, targets, deps, strict_fams, errors, warnings)
         routes[rid] = Route(
             id=rid, targets=tuple(targets), aliases=_strlist(r.get("aliases")),
             spill=bool(r.get("spill", True)), same_family=same_family, family=anchor,
@@ -766,20 +799,23 @@ def _validate(raw, env, repo: Path, source: str, errors: list[str]) -> Config:
     if routes and s.default_route not in routes:
         errors.append(f"hydra.default_route {s.default_route!r} is not a configured route")
     routed = {t.d for r in routes.values() for t in r.targets}
-    if s.allowed_families:
+    fams = sorted({deps[d].family for d in routed if d in deps})
+    if strict_fams:
         for did, d in deps.items():
-            if d.family not in s.allowed_families and did not in routed:
-                warnings.append(f"deployments.{did}: family {d.family!r} is outside hydra.allowed_families "
-                                "— never routed; reachable only as a strict pin")
-    else:
-        fams = sorted({deps[d].family for d in routed if d in deps})
-        if len(fams) > 1:
-            # Max 2026-09-30: "all of our models are uncensored" — a fleet rule.
-            # hydra can only enforce it when the families are declared, so a
-            # config whose routes mix families must say which ones may answer.
-            # (A pre-policy hydra.toml that spilled beast to stock lands here.)
-            errors.append(f"hydra.allowed_families is required: routes can answer from any of "
-                          f"{', '.join(fams)} — list the families a route may ever use")
+            if d.family not in strict_fams and did not in routed:
+                warnings.append(f"deployments.{did}: family {d.family!r} is outside hydra.uncensored_families "
+                                "(family_policy = \"uncensored-only\") — never routed; reachable only as a "
+                                "strict pin")
+    elif len(fams) > 1 and s.family_policy == "uncensored-only":
+        # hydra can only enforce the strict rule when the families are
+        # declared, so a config whose routes mix families must say which
+        # ones may answer.
+        errors.append(f"hydra.uncensored_families is required under family_policy = \"uncensored-only\": "
+                      f"routes can answer from any of {', '.join(fams)} — list the families a route may "
+                      "ever use")
+    elif len(fams) > 1 and s.family_policy == "uncensored-preferred" and not s.uncensored_families:
+        warnings.append(f"hydra.uncensored_families is empty: routes span {', '.join(fams)} and the "
+                        "uncensored preference has nothing to prefer — list the uncensored families")
 
     # the id namespace: routes, aliases and deployments must never collide
     by_id: dict[str, Route] = {}
@@ -1613,17 +1649,34 @@ def effective_ttft(node: Node, est_prompt_tokens: int, budget_s: float) -> float
 def policy_reason(cfg: Config, d: Deployment, route: Route | None = None) -> str | None:
     """Why the family policy forbids `d` for a NON-strict request, or None.
 
-    hydra.allowed_families first (fleet-wide), then the route's same_family
-    anchor. Applied to every candidate — first choice, spill, failover, the
-    ctx last resort, sticky affinity — so no path can reach a family the
-    policy forbids. Strict pins never pass through here.
+    Under family_policy = "uncensored-only", hydra.uncensored_families first
+    (fleet-wide); then the route's same_family anchor (any policy). Applied
+    to every candidate — first choice, spill, failover, the ctx last resort,
+    sticky affinity — so no path can reach a family the policy forbids.
+    Strict pins never pass through here. "uncensored-preferred" forbids
+    nothing: it only ORDERS candidates (uncensored_rank).
     """
-    allowed = cfg.settings.allowed_families
-    if allowed and d.family not in allowed:
-        return f"family {d.family} not in hydra.allowed_families"
+    s = cfg.settings
+    if s.family_policy == "uncensored-only" and s.uncensored_families and d.family not in s.uncensored_families:
+        return f"family {d.family} not in hydra.uncensored_families (family_policy uncensored-only)"
     if route is not None and route.same_family and route.family and d.family != route.family:
         return f"family {d.family} != {route.family} (route {route.id} same_family)"
     return None
+
+
+def uncensored_rank(cfg: Config, d: Deployment) -> int:
+    """0 = preferred, 1 = not: the uncensored-preferred tie-breaker.
+
+    Only under family_policy = "uncensored-preferred" with families declared,
+    and only ever compared INSIDE one priority group, after every filter
+    (health, breaker, conformance, caps, ctx, drains) and after affinity: the
+    operator's priority, availability and capability always win; among the
+    candidates still standing at the same priority, an uncensored family goes
+    before a stock one, ahead of load."""
+    s = cfg.settings
+    if s.family_policy != "uncensored-preferred" or not s.uncensored_families:
+        return 0
+    return 0 if d.family in s.uncensored_families else 1
 
 
 def _exclude(d: Deployment, n: Node, state: FleetState, f: Features, need: set[str], route: Route | None,
@@ -1757,7 +1810,7 @@ def decide(cfg: Config, state: FleetState, f: Features, caller: Caller, now: flo
         # either it fits (the estimate over-counted) or the engine answers its
         # own overflow 400, which passes through verbatim so runner.py can
         # compact. A hydra 503 here would break compaction.
-        best = max(ctx_only, key=lambda c: c.d.ctx)
+        best = max(ctx_only, key=lambda c: (c.d.ctx, -uncensored_rank(cfg, c.d)))
         t.note(f"ctx estimate excluded every target; last resort -> {best.d.id} "
                "(engine decides, overflow 400 passes through)")
         cands = [best]
@@ -1774,6 +1827,9 @@ def decide(cfg: Config, state: FleetState, f: Features, caller: Caller, now: flo
 
     def unsat(c: Candidate) -> bool:
         return node_load(c) < c.n.slots
+
+    def pref(c: Candidate) -> int:
+        return uncensored_rank(cfg, c.d)
 
     tie = {id(c): state.rng.random() for c in cands}
     groups = sorted({c.prio for c in cands})
@@ -1795,20 +1851,22 @@ def decide(cfg: Config, state: FleetState, f: Features, caller: Caller, now: flo
                 aff = next((c for c in free if c.d.id == sticky), None)
                 if aff:
                     t.note(f"affinity: session hit {aff.d.id}")
-            ordered += ([aff] if aff else []) + sorted(free, key=lambda c: (load(c), tie[id(c)]))
+            ordered += ([aff] if aff else []) + sorted(free, key=lambda c: (pref(c), load(c), tie[id(c)]))
+            if len({pref(c) for c in free}) > 1:
+                t.note(f"family_policy uncensored-preferred: uncensored first in group {g}")
             if g != groups[0]:
                 t.note(f"spill: priority group {groups[0]} saturated -> group {g}")
             break
         if not route.spill:
             chosen = g
-            ordered += sorted(live, key=lambda c: (load(c), tie[id(c)]))
+            ordered += sorted(live, key=lambda c: (pref(c), load(c), tie[id(c)]))
             t.note(f"group {g} saturated, spill=false -> engine queue")
             break
     if chosen is None:
-        ordered += sorted([c for c in cands if c.prio == groups[0]], key=lambda c: (load(c), tie[id(c)]))
+        ordered += sorted([c for c in cands if c.prio == groups[0]], key=lambda c: (pref(c), load(c), tie[id(c)]))
         t.note("all saturated -> engine queue on the preferred group")
     rest = sorted([c for c in cands if all(c is not o for o in ordered)],
-                  key=lambda c: (c.prio, load(c), tie[id(c)]))
+                  key=lambda c: (c.prio, pref(c), load(c), tie[id(c)]))
     plan: list[Candidate] = []
     for c in ordered + rest:
         if all(c.d.id != p.d.id for p in plan):

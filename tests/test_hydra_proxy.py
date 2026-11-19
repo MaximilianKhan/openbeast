@@ -70,8 +70,8 @@ def raw_config(rig: FakeEngine, sparks: FakeEngine, tf: FakeEngine, tmp: Path, *
         "hydra": {"probe_interval_s": 1, "probe_down_interval_s": 1, "models_interval_s": 10,
                   "down_after": 1, "up_after": 1, "pre_commit_budget_s": 20,
                   # mixes families on purpose to exercise spill/failover
-                  # mechanics; an undeclared mix is a config error
-                  "allowed_families": ["unc", "stock"],
+                  # mechanics, under the default uncensored-preferred policy
+                  "uncensored_families": ["unc"],
                   "audit": str(tmp / "audit.jsonl"),
                   "breaker": {"fail_threshold": 3, "open_s": 30, "success_threshold": 1},
                   "instinct": {"url": "http://127.0.0.1:9", "key_file": str(tmp / "instinct.key")}},
@@ -1247,9 +1247,10 @@ def test_a_failover_target_renamed_mid_request_is_still_tried_on_the_old_snapsho
 
 
 def test_a_reload_that_tightens_the_family_policy_stops_a_stale_failover(fleet, tmp_path):
-    # Max 2026-09-30: never answer from a stock model. The plan for `retry`
-    # (rig -> stock sparks) was made before a reload added
-    # allowed_families = ["unc"]; its failover must honour the NEW policy.
+    # Strict mode (family_policy = "uncensored-only", the 2026-09-30 rule):
+    # the plan for `retry` (rig -> stock sparks) was made under the default
+    # uncensored-preferred policy, before a reload switched to strict; its
+    # failover must honour the NEW policy.
     srv, rig, sparks, _ = fleet(lambda r: r["nodes"]["rig"].update(ttft_timeout_s=3), cfg_file=True)
     got = {}
     before = len(posts(sparks))
@@ -1261,7 +1262,7 @@ def test_a_reload_that_tightens_the_family_policy_stops_a_stale_failover(fleet, 
     t.start()
     time.sleep(0.4)
     raw = copy.deepcopy(srv.raw)
-    raw["hydra"]["allowed_families"] = ["unc"]
+    raw["hydra"].update(family_policy="uncensored-only", uncensored_families=["unc"])
     for r in raw["routes"].values():
         r["targets"] = [tg for tg in r["targets"] if raw["deployments"][tg["d"]]["family"] == "unc"]
     raw["routes"] = {k: v for k, v in raw["routes"].items() if v["targets"]}

@@ -48,6 +48,55 @@ shows what hydra thinks of every node.
 - An invalid config stops `./start.sh`. Validate first with
   `scripts/hydra.sh check`.
 
+### Family policy
+
+**Decision (Max, 2026-11-19): uncensored-preferred.** In Max's words:
+"It's uncensored-preferred, as we want to enable researchers, lawyers, and professionals to get the most honest and neutral answers when weighing critical business decisions (some of these models have alignment and post-training that lead to wrong decisions)."
+
+This replaces the 2026-09-30 "uncensored only" rule (#122). That rule
+refused to route to any stock model. The Spark pair's default,
+DeepSeek-V4.1-Flash (Mia EXL3), is a **stock** pack (`ABLIT=0`), so the old
+rule would have refused it.
+
+The policy is set in `[hydra]` in `hydra.toml`:
+
+```toml
+family_policy       = "uncensored-preferred"   # | "uncensored-only" | "any"
+uncensored_families = ["qwen3.8-27b-uncensored", "glm-5.3-flash-uncensored"]
+```
+
+| `family_policy` | Effect |
+|---|---|
+| `uncensored-preferred` (default) | Every family may serve. The preference is a tie-breaker inside one priority group. First, every filter runs: health, breaker, conformance, caps, ctx, drains and rules. Then session or sticky affinity places its cache-warm deployment first. Among the candidates left with free capacity, an uncensored family goes before a stock one, ahead of least load. The same order holds in the engine-queue fallback, the failover tail and the ctx last resort (largest context first; uncensored wins a tie). Priority still wins: a stock target at priority 0 is tried before an uncensored one at priority 1. A down, drained, saturated or incapable uncensored target never blocks a stock one. |
+| `uncensored-only` | The 2026-09-30 rule, now opt-in. A hard filter on every non-strict candidate: first choice, spill, sticky affinity, failover, the ctx last resort and after a rule hop. A route target outside `uncensored_families` is a config error. A stock deployment can be reached only by its strict id (a pin), and `check` warns about it. Once the routes span more than one family, `uncensored_families` is required. The proxy re-checks the policy before every failover attempt, so a reload into strict mode stops a stale plan. |
+| `any` | Families play no part in routing. |
+
+- `uncensored_families` declares which families are uncensored. A
+  deployment's `family` is compared against it. List a family only when its
+  weights really are abliterated. **DeepSeek-V4.1-Flash (Mia EXL3) is
+  stock**, so `hydra.toml.example` gives it the family
+  `deepseek-v4.1-flash`, which is not in the list.
+- Under `uncensored-preferred`, with routes that span families and an empty
+  list, `check` warns that the preference has nothing to prefer.
+- `allowed_families`, the pre-2026-11-19 key, still loads as
+  `uncensored_families`, and `check` warns. A config that only ever routed
+  those families behaves the same under the new default. Add
+  `family_policy = "uncensored-only"` to get the old hard filter back.
+- None of the three policies changes a route's `same_family` / `family`
+  anchor. `beast` in the example stays on the uncensored 27B family in every
+  mode.
+- Strict pins (a deployment id, `/pin/<d>/v1`, `X-Hydra-Pin`) never go through
+  the policy.
+- `/hydra/status` shows `family_policy` and `uncensored_families`. A decision
+  trace notes `family_policy uncensored-preferred: uncensored first in group N`
+  whenever the preference reordered a group.
+- The example's `beast:spark` and `beast:long` routes list GLM (uncensored)
+  and DeepSeek (stock) at the same priority on the pair's node. The pair
+  serves one of them at a time, and the other is MISMATCH, so the one being
+  served answers. If both ever answered, GLM would go first.
+
+Tests: `tests/test_hydra_core.py`, the "family policy" section.
+
 ### Environment knobs (not in `openbeast.conf`)
 
 | Variable | Default | Effect |

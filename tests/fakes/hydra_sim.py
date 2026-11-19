@@ -10,13 +10,14 @@ and drives the scenarios; the other is `agents/hydra.py` on an ephemeral
 port, started with a generated hydra.toml and 0600 key files in a temp dir,
 and terminated by pid on exit. No GPU, no real engine, no network.
 
-The fleet mirrors hydra.toml.example under Max's 2026-09-30 policy ("all of
-our models are uncensored"; hydra.allowed_families):
+The fleet mirrors hydra.toml.example under Max's 2026-11-19 policy
+(family_policy = "uncensored-preferred"; hydra.uncensored_families):
   rig     llama, 1 slot   the uncensored Qwen3.8 27B (MTP)          `beast` first
   ti      llama, 2 slots  the same uncensored 27B, no MTP            `beast` spill
   sparks  TensorFold      GLM-5.3-Flash Uncensored                   beast:long first
   stock   vLLM, 8 slots   stock Qwen3.8 NVFP4 — a DECOY: READY, idle, keyed, in
-                          no route, outside the policy. No scenario may reach it.
+                          no route (pinnable only); `beast` is anchored on the
+                          uncensored 27B family. No scenario may reach it.
 
 Scenarios (docs/BEAST_HYDRA_PLAN.md §6.11 + the 2026-09-30 revision):
   1 capacity spill   `beast` while the 1-slot rig is held -> the Ti (same family, never stock)
@@ -105,7 +106,8 @@ class Sim:
                       "audit": str(self.run / "hydra-audit.jsonl"),
                       "breaker": {"fail_threshold": 2, "open_s": 30, "success_threshold": 1},
                       "instinct": {"enabled": False},
-                      "allowed_families": [unc, glm]},
+                      "family_policy": "uncensored-preferred",
+                      "uncensored_families": [unc, glm]},
             "nodes": {"rig": node(self.rig, "rig", 1), "ti": node(self.ti, "ti", 2),
                       "sparks": node(self.sparks, "sparks", 1), "stock": node(self.stock, "stock", 8)},
             "deployments": {
@@ -117,7 +119,7 @@ class Sim:
                                      "caps": ["tools", "json_schema", "grammar", "reasoning_budget", "id_slot"]},
                 "glm53-flash-unc@sparks": {"node": "sparks", "upstream": self.sparks.model, "ctx": 262144,
                                            "family": glm, "conformance": "off", "caps": ["tools"]},
-                # the decoy: in no route, outside allowed_families -> pinnable only
+                # the decoy: stock, in no route -> pinnable only
                 "qwen38-nvfp4@stock": {"node": "stock", "upstream": self.stock.model, "ctx": 262144,
                                        "family": "qwen3.8-27b", "conformance": "off",
                                        "caps": ["tools", "json_schema", "reasoning_budget"]},
