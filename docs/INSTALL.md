@@ -504,7 +504,7 @@ Open WebUI is configured by `docker-compose.yml` (in repo root). It:
 - Has a global **random seed filter** installed by `configure-webui.sh`
   (`agents/webui_functions/random_seed.py`, Admin Panel → Functions →
   "Random Seed"): every chat request that names no seed gets a fresh random
-  one. Why: TensorFold (the spark-hydra GLM server) falls back to a *fixed*
+  one. Why: TensorFold (the spark-hydra server, DeepSeek or GLM) falls back to a *fixed*
   seed when a request has none, so **Regenerate** returned the same answer
   word for word. A seed set in the chat's Controls or the model's params
   still wins (reproducible on purpose); on llama.cpp, which already
@@ -556,7 +556,7 @@ a 35B-A3B MoE when interactive speed matters more.
 This launches:
 1. **llama.cpp server** on port 8080 (OpenAI-compatible API)
 2. **Identity tool server** on port 3001 (`agents/openapi_tools.py` — serves the
-   18 tools as OpenAPI for Open WebUI, with per-user file shards, RBAC keys,
+   19 MCP tools plus the WebUI-only `weather` as OpenAPI for Open WebUI, with per-user file shards, RBAC keys,
    and an audit trail)
 3. **Open WebUI** on port 3000 (Docker container)
 4. **SearXNG** on port 8888 (Docker container, used by `web_search`)
@@ -607,7 +607,7 @@ To stop everything:
 ## 6. Verify
 
 - **Model server:** `curl http://localhost:8080/health` (returns `{"status":"ok"}`)
-- **Identity tool server:** `curl http://localhost:3001/openapi.json | python3 -m json.tool | head` (lists all 18 tools; `curl http://localhost:3001/health` for liveness)
+- **Identity tool server:** `curl http://localhost:3001/openapi.json | python3 -m json.tool | head` (lists all 20 tools, the 19 MCP ones plus `weather`; `curl http://localhost:3001/health` for liveness)
 - **Open WebUI:** open http://localhost:3000 in a browser
 - **SearXNG:** `curl 'http://localhost:8888/search?q=test&format=json' | head -c 200` (returns JSON results, not 403)
 - **beast-gate** (only with `EDGE_GATE=true`): `curl http://127.0.0.1:8090/gate/health`
@@ -899,6 +899,12 @@ What lands on the client:
 - `~/.local/bin/openbeast-client` — a symlink to `scripts/client.sh`. The
   directory is created if missing; when it isn't on `PATH` (the macOS default)
   the installer prints the exact line to add.
+- **autosync**, on by default: a launchd agent on macOS (a systemd user timer
+  on Linux) that checks the active rig every 30 s and re-syncs
+  `opencode.json` when the rig switches models, so the model name and context
+  window follow (`openbeast-client autosync status|run|uninstall`; log in
+  `~/.openbeast-client/autosync.log`). `OPENBEAST_AUTOSYNC=0` at install
+  skips it; then run `openbeast-client refresh-config` after a rig switches.
 
 Then `cd <any project> && opencode` and pick an `openbeast-rig` model — the
 model you pick must be the one the rig is actually serving.
@@ -912,6 +918,8 @@ openbeast-client search up     # local SearXNG lifecycle (--local-search only)
 openbeast-client update        # refresh the checkout + pinned deps
 openbeast-client rigs          # every registered rig, reachable or not; * = active
 openbeast-client use <rig>     # switch the active rig (env + opencode.json, atomically)
+openbeast-client refresh-config   # re-sync the OpenCode model catalog from the active rig
+openbeast-client autosync status  # the 30 s model follower (install|uninstall|status|run)
 openbeast-client uninstall
 ```
 
@@ -934,7 +942,7 @@ the OpenCode wiring.
 ```
 
 Removes `~/.openbeast-client`, the env file, the symlink, our `opencode.json`
-entries, and the local SearXNG container if there is one.
+entries, the autosync job, and the local SearXNG container if there is one.
 
 The full architecture — the discovery contract, what `:8443` grants and
 doesn't, beast-gate's controls, keyed mode, and the two-machine verification

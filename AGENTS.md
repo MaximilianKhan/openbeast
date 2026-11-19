@@ -22,7 +22,7 @@ start of a session.
 OpenBeast is **not** a single-box stack any more. Full picture:
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (topology + project layout) and
 [`docs/BEAST_SLOT.md`](docs/BEAST_SLOT.md) (the client/server contract). The
-four facts that change how you edit code here:
+five facts that change how you edit code here:
 
 - **Rig + clients.** The rig ("command center") runs everything: llama-server
   `:8080`, the identity tool server `:3001`, Open WebUI `:3000`, SearXNG
@@ -139,7 +139,8 @@ Each is one arg away, e.g. `./start.sh serve-qwen-27b-q5.sh`. Board:
 
 ### Eval suite
 
-- **v5 is current** (`evals/SUITE_VERSION`, harness `harness8`): 71 scored
+- **v5 is current** (`evals/SUITE_VERSION`; the harness version is the last
+  line of `evals/HARNESS_VERSION`): 71 scored
   units over 34 base tasks, in the manifest `evals/suites/v5.json`. A v5
   profile of one model: `python3 evals/profile.py --model <slug> --budget-h 4 --jobs 4`.
   Model campaigns: `evals/campaign.py` (`docs/MODEL_CAMPAIGN.md`)
@@ -147,7 +148,8 @@ Each is one arg away, e.g. `./start.sh serve-qwen-27b-q5.sh`. Board:
   320 effective units; v4 is frozen and stays runnable for history
 - Run a single model on the v4 board: `python3 evals/benchmark_all.py --models <slug>`
 - Full sweep: bare `python3 evals/benchmark_all.py` runs **every** configured
-  model — 20 today (`--list` to see them), several days of GPU on the 5090.
+  model — 21 today (`--list` to see them: 20 on the 5090 plus GLM-5.3-Flash
+  on the Spark pair), several days of GPU on the 5090.
   Pass `--models <slug>` unless you mean it
 - Score: `python3 evals/scoring.py --show` (ranked by SCORE = capability)
 - Distribution + methodology: `evals/README.md`

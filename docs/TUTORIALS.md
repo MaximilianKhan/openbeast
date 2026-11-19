@@ -333,7 +333,7 @@ auth model: [BEAST_CHAT.md](BEAST_CHAT.md).
 
 ## beast-slot — a laptop that thinks on the rig
 
-**What you get:** any Mac or Linux laptop runs OpenCode and the full 18-tool
+**What you get:** any Mac or Linux laptop runs OpenCode and the full 19-tool
 arsenal against *its own* files; only inference crosses the tailnet.
 
 On the rig, publish the two discovery surfaces once:

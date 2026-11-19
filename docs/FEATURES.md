@@ -8,6 +8,19 @@ highlights version. Not covered here: multi-engine inference
 `scripts/opencode-sessions.sh` ([REFERENCE.md](REFERENCE.md)) and the
 skill-import gate ([EXTERNAL_SKILLS_PLAN.md](EXTERNAL_SKILLS_PLAN.md)).
 
+> **Note, 2026-11-19: what changed after v1.5.** This page describes v1.5 and
+> is kept as written. Since then: the tool surface is **19** MCP tools
+> (beast-docs added `platform_docs`; the identity tool server adds a WebUI-only
+> `weather`, 20 there; [TOOLS.md](TOOLS.md)); the zig awareness pack is **on
+> for agents on zig tasks** (`LANG_PACK_CONTEXT=auto`, not `BEAST_PACKS`;
+> [REFERENCE.md](REFERENCE.md#configuration-reference-openbeastconf)); the
+> current eval suite is **v5.0** (71 scored units over 34 base tasks;
+> [evals/README.md](../evals/README.md)), with v4 frozen; the eval era also
+> hashes `evals/vlib.py` (six files); and the DGX Spark pair serves
+> DeepSeek-V4.1-Flash (Mia EXL3) by default, GLM-5.3-Flash as the alternative
+> ([SPARK_HYDRA.md](SPARK_HYDRA.md)). The README's "What ships" table is the
+> current summary.
+
 ## Model Serving
 - llama.cpp with CUDA (Blackwell SM 120), full GPU offload
 - Up to 6 parallel request slots with unified KV cache and continuous batching. **The shipped default does not use them:** Qwen3.8 27B Uncensored MTP pins `-np 1`, because llama.cpp's MTP speculative decoding does not support more than one slot — concurrent requests serialize. That is the deliberate trade for 2.0× decode (140 tok/s vs 69.9) at the full native 262K context. Switch to `serve-qwen38-27b-uncensored-q5.sh` — the same weight file, MTP simply not activated — to get the 6 slots back at half the tokens/s.
