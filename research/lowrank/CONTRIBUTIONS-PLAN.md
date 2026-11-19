@@ -1,3 +1,5 @@
+> **Superseded (noted 2026-11-19):** C4 (the paper) shipped on 2026-10-09 ([`paper/final/`](paper/final/README.md)). C1's patches and evidence pack are in [`contrib/c1/`](contrib/c1/PR.md), not posted. What is still open is [`TODO.md`](TODO.md).
+
 # What we can contribute — plan (2026-09-08, Max's directive)
 
 Four contribution lanes, ordered by readiness. Each names the artifact,

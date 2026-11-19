@@ -1,3 +1,5 @@
+> **Superseded (noted 2026-11-19):** the plan as of 2026-08-04. What ran is in the paper; what is still open is the paper's §7 and the parked list in [`../TODO.md`](../TODO.md).
+
 # ABLATION PLAN — the definitive missing-runs matrix (beast-rank paper)
 # Ablation audit 2026-08-04. Sources: paper/draft/*.md, MASTER-TABLE.md,
 # PROTOCOL.md, RESULTS_ROLLUP.md (corrections header), experiments/*/README.md

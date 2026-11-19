@@ -1,3 +1,5 @@
+> **Superseded (noted 2026-11-19):** draft text, kept as the draft record. The paper is [`../final/sections/00-abstract.md`](../final/sections/00-abstract.md); section numbers changed in the 2026-10-09 revision. Quote the final, not this.
+
 # The Free Lever and the Measured Walls: Re-Rounding, Whitened Low-Rank Correction, and the Limits of Post-Training Quantization Repair in llama.cpp
 
 *(Abstract rewritten 2026-08-04 per round-2 paper review M1/M3/S1/R1/R2: the previous version sold the pre-E27 27B story its own §4.3 had retracted, omitted the 27B interpolation-control negative and the held-out anti-generalization result, misattributed the 6.9σ MoE statistic, and carried no on-distribution caveat. The working-title lineage line was removed per R8.)*
