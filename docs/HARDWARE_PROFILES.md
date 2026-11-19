@@ -24,6 +24,7 @@ Current advisory tiers (single NVIDIA GPU):
 | 24–30 GB | 3090 / 4090 | Default model, context auto-scaled by `serve.sh`; or a Q4 quant for far more context; keep ~2 GB headroom | Floor tier — unmeasured, conservative |
 | **< 24 GB** | 16 GB-class, 1080 Ti / 2080 Ti / 3060 12GB, and smaller | **BLOCKED at bootstrap** | **Below the floor** |
 | Multi-GPU | e.g. 2x 3090 Ti | Context auto-budgeted by `serve.sh` on the SUM of the cards (less 2 GB per extra card, `ob_context_vram_mb`); a launch pinned to a subset (`CUDA_VISIBLE_DEVICES`, `--device`, `--split-mode none`) keeps the single-card budget. Override with `OPENBEAST_VRAM_MIB` or `OPENBEAST_CONTEXT`. `--tensor-split` placement is not tuned | Estimated, unmeasured |
+| Unified memory | GB10 / DGX Spark (`nvidia-smi` reports memory as `[N/A]`, so `OB_GPU_UNIFIED=1` and the figure is host RAM) | Not a llama.cpp tier: the advice says to serve vLLM or TensorFold and set `INFERENCE_BACKEND` + `INFERENCE_URL`; the command center budgets its own memory with `ob_unified_mem_budget` ([DGX_SPARK_PLAN.md](DGX_SPARK_PLAN.md), [SPARK_HYDRA.md](SPARK_HYDRA.md) G4) | **Measured** on the spark-hydra pair (TensorFold) |
 
 **The 24 GB floor (Max, 2026-09-17; it was 11 GB from 2026-07-09 — enforced
 by `ob_vram_floor_check` in `scripts/lib/hardware.sh`, called from bootstrap,
@@ -94,8 +95,9 @@ version. The measured-profile refinement is still worth doing:
 
 ## Phase 3 — pick-your-model bootstrap
 
-`bootstrap.sh` currently downloads the 27B Q5 default unconditionally
-(~19.5 GB). With profiles in place it should offer the tier-appropriate
+On a llama.cpp install, `bootstrap.sh` currently downloads the 27B Q5
+default unconditionally (~19.5 GB); with another `INFERENCE_BACKEND` (a
+Spark's TensorFold) it downloads no GGUF. With profiles in place it should offer the tier-appropriate
 default (e.g. 24 GB → Q4_K_M) with the 5090 default as the ≥30 GB choice.
 Depends on Phase 2 measurements; guessing quants without measurements just
 moves the OOM.
