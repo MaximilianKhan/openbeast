@@ -93,7 +93,7 @@ labels      = ["local", "5090", "mtp"]
 url         = "https://spark-1.tail4109f9.ts.net:8443"   # beast-gate (tailscale serve :8443 -> :8090)
 engine      = "openai"                        # the gate's OpenAI surface; readiness = its /health
 key_file    = "~/.config/openbeast/hydra/sparks.key"   # a beast-gate DEVICE key for this rig: scripts/clients.sh enroll ON spark-1
-slots       = 4                               # the recipe's 4 DFlash2 streams (spark-1 INFERENCE_SLOTS=4); the gate
+slots       = 4                               # the pair's 4 streams (DeepSeek default or GLM; spark-1 INFERENCE_SLOTS=4); the gate
                                               # admits one device that many (EDGE_MAX_INFLIGHT, else INFERENCE_SLOTS)
 members     = ["spark-1", "spark-2"]
 exclusive_group = "spark-pair"                # any other engine on these boxes joins this group, disabled
