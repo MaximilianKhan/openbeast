@@ -67,8 +67,9 @@ changed after that deploy:
    comparable quality exists, OpenBeast prefers it, "to enable researchers,
    lawyers, and professionals to get the most honest and neutral answers when
    weighing critical business decisions". The site states this as decided
-   policy. A separate PR is bringing the hydra router's family policy in line
-   with it; the site does not need to wait for that PR.
+   policy. The hydra router's family policy follows it since PR #245
+   (`family_policy = "uncensored-preferred"`, the default;
+   [BEAST_HYDRA.md](BEAST_HYDRA.md#family-policy)).
 5. **New capabilities are on `main`,** and some are worth a line on the site:
    model switching with `beast-spark`, the `deepseek-best` agent preset,
    opencode on the Sparks with no network, client autosync, offline git and
