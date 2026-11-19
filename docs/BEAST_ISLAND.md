@@ -158,7 +158,7 @@ observed on the pair; the rest follows from the code and is labelled.
 | Piece | What happens when the WAN goes away |
 |---|---|
 | The island watcher (spark-1, part of the `openbeast` command center; `ISLAND` unset in `openbeast.conf`, so `auto`) | Islands the stack after 90 s of failed probes; rejoins by itself. `healthcheck.sh` shows the `Network:` line; `python3 ~/openbeast/agents/island.py status` says why. On 2026-11-18 it read "online (watching: islands after 90s without a route)" |
-| Inference (`deepseek-v41-inference` or `spark-hydra-inference`) | Unaffected: the backend listens on spark-1's loopback, rank 1 is reached over the ConnectX-7 fabric (10.100.216.x / 10.100.217.x), and the units start with `PREPARE=0`, so a restart loads from local disk. The weights, rank caches and images are all on disk. **A cold boot of both Sparks with the WAN down is unverified** for the current deployment |
+| Inference (`deepseek-v41-inference`, the default, or `spark-hydra-inference` while GLM is selected) | Unaffected: the backend listens on spark-1's loopback, rank 1 is reached over the ConnectX-7 fabric (10.100.216.x / 10.100.217.x), and the units start with `PREPARE=0`, so a restart loads from local disk. The weights, rank caches and images are all on disk. **A cold boot of both Sparks with the WAN down is unverified** for the current deployment |
 | beast-gate (`:8443` on the tailnet, `:8090` on loopback) | The gate itself keeps running. Whether a client reaches `:8443` depends on Tailscale (next row) |
 | Tailscale | Existing direct peer connections can survive; new paths need the coordination server. If the tailnet path fails but the LAN works, use the native ssh tunnel to the gate in the [Tailscale field guide](../skills/tailscale/references/guide.md) ([TAILSCALE_OFFLINE.md](TAILSCALE_OFFLINE.md)). `healthcheck.sh` excuses an offline Tailscale only while islanded |
 | ssh between the Sparks | Unaffected: over the fabric, by IP (`max@10.100.216.2` from spark-1, `max@10.100.216.1` from spark-2) |
@@ -188,8 +188,11 @@ python3 ~/openbeast/agents/island.py status          # "ISLAND MODE since ... â€
 ```
 
 **When power fails too.** The Sparks have no documented UPS. After power
-returns, both boot, the enabled inference unit (`spark-hydra-inference`,
-GLM, since 2026-11-18; lingering user manager) starts both ranks, and `openbeast` starts the command center. If the
+returns, both boot, the enabled inference unit starts both ranks
+(`deepseek-v41-inference` for DeepSeek-V4.1-Flash (Mia EXL3), the default
+since 2026-11-18; `spark-hydra-inference` while GLM-5.3-Flash is selected with
+`beastglm`; lingering user manager; `beaststatus` shows which), and
+`openbeast` starts the command center. If the
 router is still down, the launch probe fails and the stack boots islanded
 (see "At launch, auto skips the grace" above). This sequence with the WAN
 down has not been run end to end on the pair.
@@ -205,7 +208,9 @@ down has not been run end to end on the pair.
     lookup itself is bounded only by the resolver.
 
   The guard belongs in `tools.web_search` / `tools.fetch` and should land with
-  the next deliberate era roll.
+  a deliberate era roll. The review-1118 roll (PR #224) did not carry it, so
+  it is still open as of 2026-11-19. Under eval the runner's web tools refuse
+  anyway, so this costs time only for production sub-agents.
 - **Open WebUI's built-in Web Search** is not guarded (see above).
 - **GPU power on battery.** beast-island does not cap GPU power. On a UPS,
   `sudo nvidia-smi -pl <watts>` buys runtime at some loss of speed. It needs

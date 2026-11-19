@@ -315,8 +315,12 @@ git clone https://github.com/MaximilianKhan/openbeast && cd openbeast
 
 Or without a clone: fetch just the script and it makes its own slim checkout.
 Flags: `--host <fqdn>` (multiple rigs / non-default name), `--api-key-stdin`
-(keyed rig: paste the key, it stays out of `ps`; `--api-key <key>` also works), `--no-search`, `--local-search` (own SearXNG container via Docker
-Desktop/Engine — bridge network, loopback-only port map), `--uninstall`.
+(keyed rig: paste the key, it stays out of `ps`; `--api-key <key>` also works), `--name <rig>` (its
+name in the rig registry), `--no-search`, `--local-search` (own SearXNG container via Docker
+Desktop/Engine — bridge network, loopback-only port map), `--wheelhouse <dir>`
+(install the hash-pinned python deps from a wheelhouse, no index: the offline
+install, [BEAST_APPS.md § Offline client](BEAST_APPS.md#offline-client)),
+`--uninstall` (with `--purge-logs`, below).
 
 What lands: an isolated venv + slim checkout under `~/.openbeast-client`,
 `~/.openbeast-client.env` (0600), non-clobbering `opencode.json` merge (the
@@ -334,7 +338,8 @@ workspace and `.manifest.jsonl` do not exist here), and listed first in
 `opencode.json` `instructions`. Your own `instructions` entries stay as they
 are; `--uninstall` removes only ours. Every sync (`use`, `rig add`,
 `refresh-config`, `update`) re-copies the files. **opencode 2.0.x accepts but
-ignores `instructions`** (measured on 2.0.25; 2.2.0 and 2.3.0 load them), and
+ignores `instructions`** (measured on 2.0.25; 2.2.0 and 2.3.x load them; the
+Sparks run 2.3.2), and
 `openbeast-client status` says so: `brew upgrade opencode`, then
 `opencode service restart`. Details:
 [SPARK_HYDRA.md § F3](SPARK_HYDRA.md#f3-what-the-client-writes-into-opencode).
@@ -459,12 +464,16 @@ touch their SearXNG.
 > - Run the client as a **dedicated user account**, or in a VM/container, with
 >   nothing in its `$HOME` you'd mind losing.
 > - Force confirmation in `~/.config/opencode/opencode.json` —
->   `{"permission": {"*": "ask"}}` at minimum — and actually *read* each
->   `openbeast-tools_bash` call before approving.
+>   `{"permission": {"*": "ask"}}` at minimum on opencode 1.x; on 2.x the
+>   rules are a list, `"permissions": [{"action": "*", "resource": "*",
+>   "effect": "ask"}]` ([BEAST_APPS.md § opencode](BEAST_APPS.md#opencode)) —
+>   and actually *read* each `openbeast-tools_bash` call before approving.
 > - Enable the kernel sandbox (Linux clients only): `./scripts/setup-sandlock.sh`,
 >   then `OPENBEAST_BASH_WRAPPER='sandlock run -p openbeast -w "$PWD" --'` in
 >   `~/.openbeast-client.env` **and** in the `environment` block of
->   `mcp["openbeast-tools"]` in `~/.config/opencode/opencode.json`
+>   the `openbeast-tools` MCP entry in `~/.config/opencode/opencode.json`
+>   (`mcp.servers["openbeast-tools"]` on opencode 2.x, `mcp["openbeast-tools"]`
+>   on 1.x)
 >   ([`SANDBOXING.md`](SANDBOXING.md) § On an OpenBeast client).
 > - Use `--local-search` or `--no-search`, and don't run the client from a
 >   directory holding credentials or a repo you'd mind being uploaded.
@@ -494,7 +503,7 @@ looping unattended on someone else's rig. See
 
 | script | role | takes |
 |---|---|---|
-| `scripts/setup-client.sh` | **installs / uninstalls** | flags — `--host`, `--api-key-stdin` / `--api-key`, `--name`, `--local-search`, `--uninstall` |
+| `scripts/setup-client.sh` | **installs / uninstalls** | flags — `--host`, `--api-key-stdin` / `--api-key`, `--name`, `--no-search` / `--local-search`, `--wheelhouse`, `--uninstall` [`--purge-logs`] |
 | `scripts/client.sh` | **operates** | subcommands — `status`, `rigs`, `use`, `rig`, `agent`, `search`, `update`, `refresh-config`, `autosync`, `uninstall` |
 
 Passing a subcommand to the installer (`setup-client.sh status`) prints a

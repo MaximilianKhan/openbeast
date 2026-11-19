@@ -1,7 +1,7 @@
 # beast-artifact — a URL for anything the model renders
 
-**Status: shipped in v1.3.0 (2026-09-14); this page describes `main` as of
-2026-09-30.** Since v1.6.0: one owner for everything the rig publishes, admins,
+**Status: shipped in v1.3.0 (2026-09-14); this page describes `main` and is
+kept current with it (last reviewed 2026-11-19).** Since v1.6.0: one owner for everything the rig publishes, admins,
 managing pages from a phone, per-version delete and opt-in retention, links
 back to the beast-chat session that made a page, and a paged, searchable
 gallery. Upgrading a rig that has operators configured? Read
@@ -304,7 +304,7 @@ campaign script calls either yet; hooking them in is one line each, as above.
 ## The two tools
 
 `publish_artifact` and `list_artifacts` ship on the **MCP / Open WebUI
-surface** (18 tools) and are deliberately **not** in the autonomous runner's
+surface** (19 tools) and are deliberately **not** in the autonomous runner's
 10-tool registry — see [TOOLS.md](TOOLS.md). Background agents publish through
 the CLI instead, which keeps the runner's tool-selection pressure exactly
 where it was.
