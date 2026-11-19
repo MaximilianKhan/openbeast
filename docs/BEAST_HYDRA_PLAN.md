@@ -9,10 +9,15 @@
 > - the 3090 Ti host;
 > - every **VERIFY** item below.
 >
-> The fleet-wide "uncensored only" family policy (#122, Max 2026-09-30) is
-> older than the pair's current default. That default,
-> DeepSeek-V4.1-Flash (Mia EXL3), runs stock weights (since 2026-11-18). Revisit
-> `allowed_families` before hydra routes to the pair.
+> **Family policy, 2026-11-19: uncensored-preferred** (PR #243, decided by
+> Max). It replaces 2026-09-30's "uncensored only" rule (#122, R1 below).
+> Stock families may now serve. Inside one priority group, after every health,
+> capability and capacity filter, an uncensored family goes before a stock one.
+> `family_policy = "uncensored-only"` restores the strict rule. The pair's
+> default, DeepSeek-V4.1-Flash (Mia EXL3), runs **stock** weights and is
+> routable under the new default. Max's rationale: "It's uncensored-preferred, as we want to enable researchers, lawyers, and professionals to get the most honest and neutral answers when weighing critical business decisions (some of these models have alignment and post-training that lead to wrong decisions)."
+> The operator page has the details:
+> [BEAST_HYDRA.md "Family policy"](BEAST_HYDRA.md#family-policy).
 
 **Status:** plan and MVP spec, 2026-09-30. Nothing here has been run against a DGX Spark or a 3090 Ti rig. Items marked **VERIFY** are beliefs taken from docs or source reading, not measurements. The MVP is designed so it can be tested end to end today, against stub engines and against the real 5090 when hydra fronts only the rig.
 
@@ -1420,6 +1425,12 @@ The two plans were designed in parallel and reconciled before either was built. 
 Max answered §10 decisions 1 and 2 on 2026-09-30, and set the direction for beast-instinct's engine. This section binds. Where it differs from anything above (§6.2.1's example, §9 risk 2, §10.1–2, reconciliation §4), it wins. The shipped `hydra.toml.example` and `scripts/hydra-sim.sh` follow it.
 
 ### R1. §10 decision 1, answered: never stock
+
+> **Superseded 2026-11-19 (PR #243):** the fleet policy is now
+> **uncensored-preferred**, and what follows describes
+> `family_policy = "uncensored-only"`, which is now opt-in. The key is now
+> `uncensored_families` (`allowed_families` still loads as an alias). See
+> [BEAST_HYDRA.md "Family policy"](BEAST_HYDRA.md#family-policy).
 
 > "No, all of our models are uncensored."
 

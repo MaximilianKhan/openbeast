@@ -786,7 +786,8 @@ class Hydra:
         return {"config_hash": cfg.hash, "config_source": cfg.source, "implicit": self.implicit,
                 "loaded_at": self.loaded_at, "last_reload_error": self.last_reload_error,
                 "uptime_s": round(time.monotonic() - self.started, 1), "default_route": cfg.default_route,
-                "allowed_families": list(cfg.settings.allowed_families),
+                "family_policy": cfg.settings.family_policy,
+                "uncensored_families": list(cfg.settings.uncensored_families),
                 "warnings": cfg.warnings, "audit": str(self.audit.path), "nodes": nodes,
                 "deployments": deps, "routes": routes, "decisions": list(self.decisions)[-50:]}
 
@@ -1191,8 +1192,9 @@ async def proxy(request: Request, path: str, pin: str | None = None):
         # the time a failover attempt runs (a HALF_OPEN trial taken, a node
         # gone DOWN or drained). Attempt 0 follows decide() synchronously.
         # The family policy is re-checked against the CURRENT config too: a
-        # reload that tightened hydra.allowed_families while this request
-        # waited on attempt 1 must not let a stale plan fail over off-policy.
+        # reload that tightened the policy (family_policy = "uncensored-only")
+        # while this request waited on attempt 1 must not let a stale plan
+        # fail over off-policy.
         why = None if dec.strict else core.policy_reason(hy.cfg, c.d)
         # Read before this request takes its own unit: was the only place this
         # request could go already full? Then a first-byte timeout below is

@@ -488,12 +488,23 @@ Decisions the 2026-10-09 review deferred to the owner. Each is open.
   [`BEAST_INSTINCT.md`](BEAST_INSTINCT.md). The "day the nodes come online"
   runbooks are §7 (hydra) and §5.14 (instinct).
 - **Max's calls, 2026-09-30:** every model is uncensored, so hydra never
-  routes or spills to a stock one (enforced, #122; note 2026-11-19: the pair's
-  default since 2026-11-18, DeepSeek-V4.1-Flash (Mia EXL3), is stock, so
-  revisit `allowed_families` before hydra routes to the pair); the Sparks serve
+  routes or spills to a stock one (enforced, #122; superseded 2026-11-19 by
+  uncensored-preferred, next item); the Sparks serve
   GLM-5.3-Flash uncensored as EXL3 on TensorFold (#120); instinct decides on
   a full 27B: the rig's 27B now, Open-Jev-27B-v1.1 locally on its own GPU as
   the target, the 0.6B as fallback only (#123).
+- [x] **The hydra family policy, decided 2026-11-19: uncensored-preferred**
+  (Max; PR #243). The pair's default since 2026-11-18,
+  DeepSeek-V4.1-Flash (Mia EXL3), is stock, which the 2026-09-30 rule would
+  have refused. Max: "It's uncensored-preferred, as we want to enable
+  researchers, lawyers, and professionals to get the most honest and neutral
+  answers when weighing critical business decisions (some of these models
+  have alignment and post-training that lead to wrong decisions)." Now
+  `family_policy` defaults to `uncensored-preferred`, which allows stock and
+  tries uncensored first at equal priority. `uncensored-only` and `any` are
+  the opt-ins. The key is `uncensored_families`, and `allowed_families` still
+  loads as an alias.
+  [BEAST_HYDRA.md "Family policy"](BEAST_HYDRA.md#family-policy).
 - **Next, on hardware:** enable `HYDRA` on the 5090 (held by Max); measure
   the 27B scorer's latency on the 1-slot MTP primary and the classify
   consult's real deadline (the example uses 800 ms); build and digest-pin the

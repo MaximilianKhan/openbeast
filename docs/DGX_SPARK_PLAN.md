@@ -652,8 +652,11 @@ orcarouter, or an EXL3 variant", and *all of our models are uncensored* —
 nothing stock is served or routed to. *(Superseded 2026-11-19: the pair's
 default is now DeepSeek-V4.1-Flash (Mia EXL3), a **stock** pack (`ABLIT=0`),
 chosen by Max after the v5 board (T2 65/71). The uncensored-only rule no
-longer describes what the Sparks serve; whether beast-hydra's family policy
-(#122) should admit stock models is an open decision in docs/TODO.md.)* Profile:
+longer describes what the Sparks serve. **Decided 2026-11-19 (Max, PR #243):
+the fleet policy is now uncensored-preferred.** Stock models are allowed, and
+an uncensored one is preferred when both could serve. beast-hydra's
+`family_policy` defaults to it, and `"uncensored-only"` stays available as an
+opt-in. See [BEAST_HYDRA.md "Family policy"](BEAST_HYDRA.md#family-policy).)* Profile:
 [`scripts/backends/models/glm53-flash-unc-exl3-tensorfold.env`](../scripts/backends/models/glm53-flash-unc-exl3-tensorfold.env).
 Nothing below has run on a GB10. Research notes behind it: the 2026-09-30
 review side-check (model-inspect runs against the local dir and pinned Hub
