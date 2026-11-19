@@ -17,6 +17,7 @@ The printed path should be inside `.venvs/spark-tools`. In a new shell, repeat o
 A wheelhouse is an ordinary folder of installable Python packages. This example saves Requests **and its dependencies**. Substitute the package your script needs, including a version pin if needed. Prepare the folder on a Spark or a matching Linux ARM64 system with the same Python version.
 
 ```sh
+source ~/.venvs/spark-tools/bin/activate     # the venv above, so `python` is its 3.12
 WHEELS="$HOME/wheelhouses/spark-tools"
 mkdir -p "$WHEELS"
 python -m pip download --only-binary=:all: --dest "$WHEELS" requests
@@ -35,4 +36,4 @@ python -c 'import requests; print(requests.__version__)'
 
 If offline installation reports “No matching distribution,” check the named package or dependency, Python version and wheel architecture. Bring any missing compatible wheels over LAN or removable storage. An already installed package in the same venv remains usable offline.
 
-For OpenBeast's own pinned dependencies, use the repository's [offline installation instructions](INSTALL.md) and `scripts/pydeps.sh wheelhouse`.
+For OpenBeast's own pinned dependencies, use the repository's [offline installation instructions](INSTALL.md#9-offline--air-gapped-install) and `scripts/pydeps.sh wheelhouse`.

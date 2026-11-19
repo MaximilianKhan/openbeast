@@ -234,7 +234,8 @@ Quick reference for diagnoses:
 
 ## Working with the eval suite
 
-Tasks 22, 39, 122, 145, 159 in our eval suite all test perf-flavored work.
+Tasks 22, 122, 145 and 159 in our eval suite test perf-flavored work (39 was
+pruned in suite v4).
 The validation includes hard time gates — your reference impl needs to be
 careful about asymptotic. See `eval-task-author` SKILL pitfall #5 for how
 those gates are calibrated.
