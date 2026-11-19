@@ -1,18 +1,19 @@
 # Two DGX Sparks as the inference plane — plan and runbook
 
-> **2026-11-13: the pair is live as `spark-hydra`** — GLM-5.3-Flash Ablit on
-> Mia-AiLab's TensorFold v0.6.0 recipe, command center on spark-1 (T2). How it
-> actually runs, and how to operate it: [`SPARK_HYDRA.md`](SPARK_HYDRA.md).
-> This plan is the design record; where the two differ, SPARK_HYDRA.md is
-> what is deployed. From 2026-11-17 the pair served DeepSeek-V4.1-Flash-1017
-> for a day; **since 2026-11-18 GLM-5.3-Flash is the default again**, with
-> DeepSeek (Mia's EAQ v1.1 "-v2" pack) staged as the alternative.
+> **Current state (2026-11-19):** the pair serves **DeepSeek-V4.1-Flash (Mia
+> EXL3)** by default (`DeepSeek-V4.1-Flash-1017`, unit `deepseek-v41-inference`,
+> 4 streams, a 524,288-token context of the model's 1,048,576, thinking on),
+> Max's decision on 2026-11-18 after testing (v5 61/71, the board's #1; 65/71
+> under arm T2 since 2026-11-19). GLM-5.3-Flash is the staged alternative
+> (`beastglm`). Switching goes only through `beast-spark`. How it actually runs,
+> and how to operate it: [`SPARK_HYDRA.md`](SPARK_HYDRA.md). This plan is the
+> design record; where the two differ, SPARK_HYDRA.md is what is deployed.
 >
-> **Update, 2026-11-18 (later that day):** DeepSeek-V4.1-Flash (Mia EXL3) is
-> now **the default** on the pair, Max's decision after testing (v5 61/71, the
-> board's #1), and GLM-5.3-Flash is the staged alternative (`beastglm`).
-> Switching goes only through `beast-spark`. SPARK_HYDRA.md has the current
-> state.
+> History: on 2026-11-13 the pair went live as `spark-hydra` with GLM-5.3-Flash
+> Ablit on Mia-AiLab's TensorFold v0.6.0 recipe, command center on spark-1 (T2).
+> It served DeepSeek-V4.1-Flash-1017 from 2026-11-17, GLM again for part of
+> 2026-11-18, then DeepSeek by Max's decision. §15 records why GLM was the
+> first choice.
 
 **Status (2026-09-29): milestone 1 is built and tested hermetically. Nothing
 here has run on a GB10 yet.** Every step marked **VERIFY ON HARDWARE** comes
