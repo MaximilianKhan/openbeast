@@ -49,8 +49,9 @@ setup/task/validation/cleanup. See `skills/eval-variant-porter` for that pattern
    validation is too loose.
 5. **Test syntax.** `bash tests/test_scripts.sh` —
    parses every task JSON and checks validation scripts compile.
-6. **Document the discrimination signal.** In the WORK_PLAN or a comment, note
-   what "wrong" answer this task catches that simpler tasks don't.
+6. **Document the discrimination signal.** In the commit message (and, for a
+   v5 unit, the failure classes in its `prove.json`), note what "wrong"
+   answer this task catches that simpler tasks don't.
 
 ## The six pitfalls
 
@@ -354,7 +355,10 @@ top-level CATEGORY requires updating `docs/RESULTS.md` and `evals/README.md`.
 ## Done criteria
 
 - [ ] Task JSON file in `evals/tasks/`
-- [ ] Reference impl in `evals/refs/{slug}.{ext}` (durable; was `/tmp/refs/` pre-2026-05-07)
+- [ ] Reference impl: v5 units in `evals/refs/{task_id}/`, declared as
+      `ref_stem` + `dest` (v4 tasks: `evals/refs/{slug}.{ext}`; was
+      `/tmp/refs/` pre-2026-05-07)
+- [ ] v5: `python3 tests/prove_task.py --unit <id>` prints PROVEN
 - [ ] Validation accepts reference impl (`OK`)
 - [ ] Validation rejects an obvious wrong impl
 - [ ] Validator follows "Validator isolation": solution in a separate process

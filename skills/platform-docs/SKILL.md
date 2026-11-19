@@ -38,7 +38,8 @@ search the docs. Cite what you used. Say how old it is.**
 ## How — two equivalent ways
 
 **A. The `platform_docs` tool** (when it is in your tool list — the rig's
-WebUI and OpenCode both have it):
+WebUI and client-mode OpenCode have it; opencode running on spark-1 or
+spark-2 has no OpenBeast MCP tools yet, so use B there):
 
 ```
 platform_docs(query="client-side netmap caching", source="tailscale")  # outage documentation
@@ -53,7 +54,7 @@ platform_docs()                                                 # what is mirror
 
 ```bash
 # the CLI lives in the OpenBeast checkout; on a client laptop that is
-# ~/.openbeast-client/repo
+# ~/.openbeast-client/repo, on a Spark ~/openbeast (or the clone you work in)
 DOCS=$( [ -x ~/.openbeast-client/repo/scripts/docs.sh ] && echo ~/.openbeast-client/repo/scripts/docs.sh || echo ./scripts/docs.sh )
 
 $DOCS search NavigationStack                     # ranked hits: title, doc id, URL, fetched date
@@ -84,7 +85,9 @@ works anywhere a doc id does.
 `scripts/docs.sh sources` lists them: `swiftui`, `uikit`, `swift`, `xcode`,
 `app-review` (Apple), `android-compose`, `android-compose-ref`,
 `android-kotlin`, `android-build` (Android), and `kotlin`, `gradle`,
-`blender-python`, `klipper`, `octoprint`. Adding a site is an entry in
+`blender-python`, `klipper`, `octoprint`, `tailscale`. Which of them are
+mirrored differs per machine: `status` says (on 2026-11-19 the Sparks held
+only `tailscale`). Adding a site is an entry in
 `agents/docs/sources.toml` — see `docs/BEAST_DOCS.md`.
 
 ## What this is not

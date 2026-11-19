@@ -1,16 +1,16 @@
 # Tailscale for DeepSeek and OpenBeast
 
-DeepSeek runs on the Spark pair. A client can use the browser, OpenCode, or an OpenAI-compatible app over its authorized tailnet connection. Keep this guide and the docs mirror on the machine where the model's tools execute. A prepared native LAN SSH connection can reach beast-gate during a WAN outage.
+The Spark pair serves DeepSeek-V4.1-Flash (Mia EXL3) by default, model ID `DeepSeek-V4.1-Flash-1017`. GLM-5.3-Flash (`GLM-5.3-Flash-EXL3`) is the staged alternative; an operator switches between them on spark-1 with `beast-spark` (`beastds`, `beastglm`), and the pair serves one at a time. A client can use the browser, OpenCode, or an OpenAI-compatible app over its authorized tailnet connection. Keep this guide and the docs mirror on the machine where the model's tools execute. A prepared native LAN SSH connection can reach beast-gate during a WAN outage.
 
 ## Connect to the running model
 
 | Client or location | How to connect |
 |---|---|
-| Linux or macOS with OpenBeast client mode | Run `openbeast-client rigs` and `openbeast-client status`. To select the configured Spark pair, use `openbeast-client use spark-hydra` if that name is listed. In OpenCode, choose the model from the active `openbeast-rig` provider or the named Spark provider. Client tools execute on this client. |
+| Linux or macOS with OpenBeast client mode | Run `openbeast-client rigs` and `openbeast-client status`. To select the configured Spark pair, use `openbeast-client use spark-hydra` if that name is listed. In OpenCode, choose the model from the active `openbeast-rig` provider or the named Spark provider, `openbeast-spark-hydra`. Client tools execute on this client. |
 | Windows, macOS, Linux, iOS or Android with a browser | Connect the Tailscale client to the authorized tailnet, then open `https://RIG_FQDN` in a browser. On the Sparks, use the published name for Spark 1. Sign in with the Open WebUI account and choose the served model. The browser workflow uses its own user login. |
 | Any OpenAI-compatible app | Configure `https://RIG_FQDN:8443/v1` as the base URL, the device key enrolled on that rig as the credential, and the exact ID returned by `GET /v1/models`. Store the key in the app's protected credential field. On Windows use native HTTPS tooling or `curl.exe`, on mobile use a client that supports a custom base URL. |
 | Off-site on cellular, hotel Wi-Fi or another LAN | Use the same tailnet hostname and credentials. Both ends need a viable network path. Check for a captive portal or a conflicting VPN on the client. A relay can carry successful requests with increased latency. |
-| On the rig | Use the published gate as an ordinary client, or use its loopback gate with the device key. Confirm the provider actually selected by OpenCode. A local GPU alone does not select an endpoint or credential. |
+| On the rig | Use the published gate as an ordinary client, or use its loopback gate with the device key. Confirm the provider actually selected by OpenCode. A local GPU alone does not select an endpoint or credential. On spark-1 and spark-2, opencode is already configured with provider `spark-hydra-local` at `http://127.0.0.1:8000/v1`, which bypasses the gate and the tailnet and works with the network off; spark-2 reaches spark-1's port through the `opencode-model-link` user unit ([opencode on the Sparks](../../../docs/SELF_DEVELOPMENT.md#opencode-on-the-sparks)). |
 | WAN unavailable, both devices on reachable physical networks | First try the existing tailnet path. If that fails, use the prepared native SSH tunnel below. A remote phone on cellular also needs a route to the site. |
 
 `RIG_FQDN` is the rig's full MagicDNS name under the actual tailnet suffix. The published Spark endpoint in this deployment uses `spark-1.tail4109f9.ts.net`. Serving spans both Sparks, but clients send requests to Spark 1. Beast is a separate rig with its own host, model and enrollment. A client with access to both can choose either. An exit node, subnet router, public Funnel or inbound router port forward is unnecessary for routine access to an enrolled peer's published tailnet service. [MagicDNS](https://tailscale.com/docs/features/magicdns) · [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve)
@@ -46,7 +46,7 @@ $Headers = @{ Authorization = "Bearer $((Get-Content -Raw $KeyFile).Trim())" }
 Remove-Variable Headers
 ```
 
-Use the rig's full published hostname for HTTPS. If `:8444/api/slot` is absent, the authenticated model list can still work. A slot response alone does not authenticate the inference edge. If the catalog works but a completion fails, confirm that request's model ID, limits and the provider selected in the app. HTTP 403 calls for checking authorization, 429 means a limit was reached, and 502/503 calls for checking the gate's upstream model and readiness. Check the status body from the responding component before changing server settings. [beast-slot contract](../../../docs/BEAST_SLOT.md) · [Spark client setup](../../../docs/SPARK_HYDRA.md)
+Use the rig's full published hostname for HTTPS. If `:8444/api/slot` is absent, the authenticated model list can still work. A slot response alone does not authenticate the inference edge. If the catalog works but a completion fails, confirm that request's model ID, limits and the provider selected in the app. HTTP 403 calls for checking authorization, 429 means a limit was reached, and 502/503 calls for checking the gate's upstream model and readiness. Check the status body from the responding component before changing server settings. [beast-slot contract](../../../docs/BEAST_SLOT.md) · [Spark client setup](../../../docs/SPARK_HYDRA.md#f2-client-mode-one-or-several-rigs)
 
 ## Find the failure
 
@@ -69,7 +69,7 @@ Keep already-running Tailscale clients signed in. Existing peers may communicate
 
 If the peer answers but all clients fail, an operator on the selected rig can run `tailscale serve status`. Match the published HTTPS port to the expected local service. An authenticated loopback request to the gate distinguishes a working local service from a tailnet publication or policy problem. When loopback inference also fails, check the local gate and model service logs for the request time. A restart or re-enrollment changes state and can interrupt other clients.
 
-If only one client fails, check its active tailnet account, connected state, target hostname, provider base URL and credential. On iOS or Android, confirm which VPN profile is active, open the peer list, then try the HTTPS WebUI in the device browser. A browser login succeeds independently of a third-party app's device key. For DNS trouble, test the saved overlay IP with peer ping, retain the published HTTPS hostname for the app, and check MagicDNS using the client or OS resolver. For an authorized new device, the operator enrolls it on the tailnet and separately provisions a rig-scoped gate key using the project's enrollment procedure. [Client enrollment](../../../docs/SPARK_HYDRA.md) · [Tailnet policy](https://tailscale.com/docs/features/tailnet-policy-file)
+If only one client fails, check its active tailnet account, connected state, target hostname, provider base URL and credential. On iOS or Android, confirm which VPN profile is active, open the peer list, then try the HTTPS WebUI in the device browser. A browser login succeeds independently of a third-party app's device key. For DNS trouble, test the saved overlay IP with peer ping, retain the published HTTPS hostname for the app, and check MagicDNS using the client or OS resolver. For an authorized new device, the operator enrolls it on the tailnet and separately provisions a rig-scoped gate key using the project's enrollment procedure. [Client enrollment](../../../docs/SPARK_HYDRA.md#e7-device-keys-for-beast-gate) · [Tailnet policy](https://tailscale.com/docs/features/tailnet-policy-file)
 
 ## Reach OpenBeast over the physical network
 
@@ -96,7 +96,7 @@ On 2026-11-17 the Mac reached Spark 1 over native LAN SSH, forwarded to its loop
 
 ## Ask a local model for help
 
-Use the installed `platform_docs` tool with `source="tailscale"`. Search for a topic and read a returned document ID. With only a shell, use the commands below from the OpenBeast checkout. Windows systems with Python 3.9+ can substitute `py -3 agents/docs/cli.py` for `./scripts/docs.sh`. Both search and read operate locally. A model without tools can read this Markdown guide or open the exported page files directly.
+Use the installed `platform_docs` tool with `source="tailscale"`. Search for a topic and read a returned document ID. opencode on the Sparks has no OpenBeast MCP tools yet, so there and anywhere else with only a shell, use the commands below from the OpenBeast checkout. Windows systems with Python 3.9+ can substitute `py -3 agents/docs/cli.py` for `./scripts/docs.sh`. Both search and read operate locally. A model without tools can read this Markdown guide or open the exported page files directly.
 
 ```sh
 ./scripts/docs.sh search "connection types" --source tailscale
