@@ -91,7 +91,7 @@ flowchart LR
   plus `INFERENCE_URL` point the whole command center (WebUI, router, gate,
   spawned agents, `/api/slot`) at an OpenAI-compatible server on other boxes —
   live since v1.9.0 as spark-hydra: two DGX Sparks, tensor-parallel, with
-  their own command center on spark-1. Since 2026-11-18 the pair serves DeepSeek-V4.1-Flash (Mia EXL3) by default (four streams, 524,288 tokens per conversation), by Max's decision after testing (v5 61/71, the board's #1); GLM-5.3-Flash (1,048,576 tokens) is staged as the alternative, one command away through beast-spark (§3). A dedicated user unit on spark-1 manages both ranks. The command center then launches,
+  their own command center on spark-1. Since 2026-11-18 the pair serves DeepSeek-V4.1-Flash (Mia EXL3) by default (four streams, 524,288 tokens per conversation), by Max's decision after testing (the v5 board's #1: 61/71, and 65/71 with its best agent setup, `AGENT_PROFILE=deepseek-best`); GLM-5.3-Flash (1,048,576 tokens) is staged as the alternative, one command away through beast-spark (§3). A dedicated user unit on spark-1 manages both ranks. The command center then launches,
   supervises and kills no model server (`INFERENCE_MANAGED=false`);
   everything else in this picture is unchanged. Runbook:
   [`SPARK_HYDRA.md`](SPARK_HYDRA.md); original design notes:
@@ -291,8 +291,9 @@ flowchart TB
   [`BEAST_CAMPAIGN_PLAN.md`](BEAST_CAMPAIGN_PLAN.md).
 - **Nothing in the tool plane is ever published.** With RBAC Phase 2 keys
   (`scripts/setup-mcpo-keys.sh`), every `:3001` tool call must present a
-  profile key — **admin** reaches all 19 tools, **guest** reaches `web_search`
-  + `fetch` only (anything else 404s). `:3001`, `:8088`, `:8888` and `:8080`
+  profile key — **admin** reaches all 20 (the 19 MCP tools plus the
+  WebUI-only `weather`), **guest** reaches `web_search`, `fetch` and
+  `weather` only (anything else 404s). `:3001`, `:8088`, `:8888` and `:8080`
   are loopback-only; remote devices arrive exclusively through Tailscale's
   authenticated HTTPS proxy (see [Remote access](REMOTE_ACCESS_PLAN.md)).
 - **Inference.** llama.cpp serves an OpenAI-compatible API with MTP
@@ -444,7 +445,10 @@ scripts/                     # Server, ops, and feature CLIs
                              #   use-model.sh (rig), pylib/ (their python), data/ (vendored engine lists);
                              #   spark-root-setup.sh, spark-guard.sh, spark-fabric-mtu.sh (per-Spark root setup,
                              #   firewall, fabric MTU), spark-cluster.sh (ranks from the head),
-                             #   spark-deepseek-pack.sh + spark-deepseek-prepare-local.sh (DeepSeek pack swaps)
+                             #   spark-deepseek-pack.sh + spark-deepseek-prepare-local.sh (DeepSeek pack swaps),
+                             #   spark-beast.sh (beast-spark: the one model switch), spark-model-intake.sh
+                             #   (is a dropped-in model servable?), spark-backup.sh + spark-restore.sh
+                             #   (docs/SPARK_BACKUP_RESTORE.md)
 
 agents/                      # Agent framework + servers
   mcp_server.py              # MCP tool surface (19 tools; stdio for OpenCode)

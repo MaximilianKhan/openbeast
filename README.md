@@ -9,7 +9,7 @@ cloud, no API keys, nothing ever leaving hardware you own.**
 
 Most local-model tools stop at "chat with a model." OpenBeast is the whole
 stack, and it is the only one that **measures** what it ships: an
-OpenAI-compatible model server tuned to your card, an autonomous agent with an
+OpenAI-compatible model server tuned to your card, an autonomous agent with a
 19-tool arsenal, a browser chat UI *and* a terminal coding agent, a phone
 console for the rig's own long jobs, publishable pages, a compiler in the
 agent loop, one-command encrypted remote access, family-grade multi-user
@@ -52,7 +52,7 @@ line in `openbeast.conf`.
 | **beast-apps** 🧰 | A capability catalog for external apps (Xcode / iOS Simulator, Gradle + adb, mobile UI driving, Blender, Figma, 3D printers, ROS) through pinned MCP servers: `scripts/apps.sh check` probes what is installed and prints the exact fix, `enable` merges a passing server into opencode (v1 or v2 config) with a backup, `refresh` notices upstream changes ([docs](docs/BEAST_APPS.md)) | unreleased |
 | **Air-gap ready** 🔌 | `OFFLINE=true`, a hash-pinned Python lockfile with a wheelhouse, and a signed offline bundle: build it connected, install it from a USB stick | v1.5 |
 | **beast-island** 🏝️ | Runtime offline mode for a power outage: the rig notices the internet is gone (about 90 to 120 s), web tools answer "offline" at once instead of stalling, and everything else keeps running locally. A launch with no route boots islanded; `./start.sh -d --offline` forces it | v1.8 |
-| **spark-hydra** 🐉🐉 *opt-in* | Two DGX Sparks serve DeepSeek-V4.1-Flash (Mia EXL3) on TensorFold across two ConnectX-7 rails, with four streams and a 524,288-token window: the default since 2026-11-18, #1 on the v5 board (61/71). The command center and authenticated client gateway run on spark-1. GLM-5.3-Flash (1,048,576-token window) is staged as the alternative, one command away. [Spark runbook](docs/SPARK_HYDRA.md#quickstart) | v1.9 |
+| **spark-hydra** 🐉🐉 *opt-in* | Two DGX Sparks serve DeepSeek-V4.1-Flash (Mia EXL3) on TensorFold across two ConnectX-7 rails, with four streams, a 524,288-token window and thinking on: the default since 2026-11-18, #1 on the v5 board (65/71 with its best agent setup, `AGENT_PROFILE=deepseek-best`). The command center and authenticated client gateway run on spark-1. GLM-5.3-Flash (1,048,576-token window) is staged as the alternative, one command away. [Spark runbook](docs/SPARK_HYDRA.md#quickstart) | v1.9 |
 | **beast-campaign** 🧪 | A GPU lease so two measurements cannot share the card, an eval *era* hash so rows from different code are never compared as if they were the same, and a harness that refuses to bank an infrastructure failure (a dead server, an exhausted thread pool, a full disk) as a model failure | v1.5 |
 | **Multi-engine inference** 🟩 *opt-in* | `INFERENCE_BACKEND=vllm\|tensorfold`: the whole stack (WebUI, tools, agents, gate, `/api/slot`) talks to a vLLM or TensorFold server, e.g. tensor-parallel across two DGX Sparks. Any new checkpoint is inspected, pinned by commit, sha256-locked and conformance-tested before OpenBeast uses it | v1.6 |
 | **Engine plane** ⚙️ | `scripts/engine.sh`: list, swap, install, update, pin and roll back llama.cpp, vLLM or TensorFold with one command, every install verified and every one with an offline path (`stage` on a connected box, `install --from` on a closed one); one adapter file per engine ([docs](docs/ENGINES.md)) | unreleased |
@@ -412,7 +412,7 @@ them is in [`docs/TODO.md`](docs/TODO.md).
 ## Serving from DGX Sparks (spark-hydra) 🐉🐉
 
 *(v1.9.0, opt-in.)* **spark-hydra** is two NVIDIA DGX Sparks (`spark-1` +
-`spark-2`) serving DeepSeek-V4.1-Flash (Mia EXL3) with TensorFold TP 2 and four streams (the default since 2026-11-18, Max's decision after testing; v5 61/71, the board's #1; GLM-5.3-Flash is staged as the alternative, `beastglm`). The OpenBeast command center runs on spark-1. Its backend listens on loopback and outside callers use beast-gate on `:8443` with a per-device key.
+`spark-2`) serving DeepSeek-V4.1-Flash (Mia EXL3) with TensorFold TP 2 and four streams (the default since 2026-11-18, Max's decision after testing; the v5 board's #1: 61/71 with the plain agent, 65/71 with `AGENT_PROFILE=deepseek-best`, arm T2; GLM-5.3-Flash is staged as the alternative, `beastglm`). The OpenBeast command center runs on spark-1. Its backend listens on loopback and outside callers use beast-gate on `:8443` with a per-device key.
 
 **Quickstart.** The full version, with every command, is
 [docs/SPARK_HYDRA.md § Quickstart](docs/SPARK_HYDRA.md#quickstart).
@@ -549,7 +549,7 @@ flowchart TB
       subgraph ASSETS["💾 ON DISK — yours, never uploaded"]
         direction LR
         weights["💾 <b>weights/</b><br/>GGUF · sha256-pinned"]
-        skills["📚 <b>skills/</b> · 26"]
+        skills["📚 <b>skills/</b> · 27"]
         evals["📊 <b>evals/</b><br/>leaderboard · era hash"]
         store["🗂️ <b>artifacts/</b> · <b>sessions/</b>"]
       end
@@ -831,7 +831,7 @@ Each model's **best** configuration on v5.0 (71 scored units, 34 base tasks,
 six languages plus one shell unit), one row per model. The configuration
 that earned the row is named in it; every configuration measured so far is
 in [`docs/RESULTS.md`](docs/RESULTS.md#v5-leaderboard--best-configuration-per-model).
-GLM-5.3-Flash runs on the DGX Spark pair (`--jobs 4`). Claude Opus 5.5 is a
+DeepSeek-V4.1-Flash (Mia EXL3) and GLM-5.3-Flash run on the DGX Spark pair (`--jobs 4`). Claude Opus 5.5 is a
 **reference ceiling, not a peer**: a different scaffold (Claude Code's own
 tools, no turn cap), and its solver never saw validator output.
 
@@ -938,7 +938,7 @@ are in **[docs/COMMANDS.md](docs/COMMANDS.md)**.
 | [COMMANDS.md](docs/COMMANDS.md) | Commands cheat sheet: Mac client, spark-1 and spark-2 operations, tests, git online and offline, evals, benches, recovery |
 | [TUTORIALS.md](docs/TUTORIALS.md) | One copy-pasteable walkthrough per beast-* feature, with what you should see |
 | [INSTALL.md](docs/INSTALL.md) | Step-by-step install, prerequisites, per-model downloads, the offline/air-gap path, troubleshooting |
-| [FEATURES.md](docs/FEATURES.md) | The complete capability breakdown |
+| [FEATURES.md](docs/FEATURES.md) | The capability breakdown through v1.5 (later features: What ships, above) |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Trust model, service map, project layout |
 | [BEAST_SLOT.md](docs/BEAST_SLOT.md) | Client/server: the `/api/slot` contract, beast-gate, device enrollment, using someone else's rig |
 

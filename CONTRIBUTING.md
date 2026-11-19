@@ -1,6 +1,6 @@
 # Contributing to OpenBeast
 
-OpenBeast is a self-hosted AI workstation: llama.cpp serving, an 18-tool
+OpenBeast is a self-hosted AI workstation: llama.cpp serving, a 19-tool
 agent arsenal (two surfaces — the identity tool server for the browser, the
 MCP server for the terminal), browser + terminal frontends, RBAC, and an eval suite (the current one
 is v5.0: 71 scored units over 34 base tasks; `python3 evals/suite_stats.py`
@@ -42,7 +42,7 @@ Run what CI runs, so nothing surprises you in review:
 # Tests (the CI 'test' job)
 ./tests/run_tests.sh                 # the shell suites (scripts, clients, job.sh, artifact CLI,
                                      #   offline fixes, ssd-wear) + tool unit tests + full pytest
-python3 -m pytest tests/ -q          # full suite (~3,100 tests, CPU-only)
+python3 -m pytest tests/ -q          # full suite (~5,100 tests, CPU-only)
 
 # Quality gates (the CI 'PR quality' jobs) — install once:
 #   pip install --user ruff pip-audit shellcheck-py
@@ -140,8 +140,8 @@ House rules the suite enforces (so you don't discover them in review):
   RAM + all swap. See `docs/TODO.md` post-mortem.
 - **Tool changes**: `agents/tools.py` is the single source of truth for the
   primitives; `agents/mcp_server.py` wraps it and adds the MCP-only tools
-  (skill, agent control, artifacts, `language_reference`). `docs/TOOLS.md`
-  pins the count (18) and `tests/test_tools.py` asserts it, so a new tool is
+  (skill, agent control, artifacts, `language_reference`, `platform_docs`).
+  `docs/TOOLS.md` pins the count (19) and `tests/test_tools.py` asserts it, so a new tool is
   a doc change in the same PR. Note the two era-hashed files (`tools.py`,
   `runner.py`): touching either rolls the eval cache era (`scripts/eval-era.sh`),
   which is why the artifact and language tools live in `mcp_server.py`.
