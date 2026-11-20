@@ -1,5 +1,7 @@
 # openbeast.ai update, 2026-11-19: handoff for the website agents
 
+**Extended by [WEBSITE_UPDATE_2026-11-20.md](WEBSITE_UPDATE_2026-11-20.md)** (2026-11-20): this page is still the base and was not yet applied; apply both together, and where they differ the 11-20 page wins.
+
 **Status: plan, ready to implement.** Written 2026-11-19 for the agents that
 maintain openbeast.ai (the private repo `MaximilianKhan/openbeast-website`).
 This page is self-contained: it quotes what the live site says, gives the

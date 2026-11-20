@@ -1,6 +1,6 @@
 # openbeast.ai upgrade plan
 
-**Handoff for the next deploy: [WEBSITE_UPDATE_2026-11-19.md](WEBSITE_UPDATE_2026-11-19.md)** (the pair's new default, the v5 board, the uncensored-preferred policy; live quotes, paste-ready copy, acceptance checks).
+**Handoff for the next deploy: [WEBSITE_UPDATE_2026-11-20.md](WEBSITE_UPDATE_2026-11-20.md)** (update and upgrade: the 11-19 handoff is not yet applied; DeepSeek's four arms and the seed-noise margin, the How we evaluate / Models / Own your stack proposals, the full new `llms.txt`), applied on top of [WEBSITE_UPDATE_2026-11-19.md](WEBSITE_UPDATE_2026-11-19.md) (the pair's new default, the v5 board, the uncensored-preferred policy; live quotes, paste-ready copy, acceptance checks).
 
 **Status, 2026-11-16: plan only. Revised 2026-11-17** to the state after
 PRs #175–#192 (see [What changed since the first draft](#what-changed-since-the-first-draft-2026-11-17)),
