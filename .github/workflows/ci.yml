@@ -348,6 +348,16 @@ jobs:
       - name: DGX Spark fabric MTU tests
         run: bash tests/test_spark_fabric_mtu.sh
 
+      # The spark-hydra operator tools, all over stubs: backup / restore, beast-spark,
+      # the DeepSeek pack swap, the intake preflight, Hy4-flash (NVFP4, vLLM TP2) staging.
+      - name: DGX Spark operator tool tests
+        run: |
+          bash tests/test_spark_backup.sh
+          bash tests/test_spark_beast.sh
+          bash tests/test_spark_deepseek_pack.sh
+          bash tests/test_spark_model_intake.sh
+          bash tests/test_spark_hy4.sh
+
       # The Tier-3 campaign harness in a stub repo: the benchmark, era,
       # engine and verdict are stubs, so no GPU or server is touched.
       - name: Tier-3 campaign harness tests

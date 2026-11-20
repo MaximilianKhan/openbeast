@@ -58,6 +58,14 @@ mk(f"{T}/home/ref-glm", "glm5_next", "Glm5NextForConditionalGeneration", glm_q, 
 mk(f"{T}/glm-pack", "glm5_next", "Glm5NextForConditionalGeneration", glm_q, glm_keys)
 mk(f"{T}/glm-3bit", "glm5_next", "Glm5NextForConditionalGeneration", dict(glm_q, bits=3), glm_keys)
 mk(f"{T}/qwen-exl3", "qwen3_5", "Qwen3_5ForCausalLM", {"quant_method": "exl3", "bits": 4}, ["a.trellis", "b.weight"])
+hy4_keys = [f"model.layers.{i}.mlp.experts.0.up_proj.{s}" for i in range(2) for s in ("weight", "weight_scale", "weight_scale_2")] + ["model.dfly_layers.0.mlp.up_proj.weight"]
+for name in ("home/ref-hy4", "hy4-nvfp4", "hy4-fp8"):
+    mk(f"{T}/{name}", "hy_v4_flash", "HYV4FlashForConditionalGeneration", None, hy4_keys)
+    algo = "FP8" if name == "hy4-fp8" else "NVFP4"
+    json.dump({"producer": {"name": "modelopt", "version": "0.48.0"}, "quantization": {"quant_algo": algo, "group_size": 16}},
+              open(f"{T}/{name}/hf_quant_config.json", "w"))
+mk(f"{T}/hy4-exl3", "hy_v4_flash", "HYV4FlashForCausalLM",
+   {"quant_method": "exl3", "bits": 4, "codebook": "mul1", "scope": "hy4flash-routed-k4"}, ["a.trellis", "b.weight"])
 mk(f"{T}/mystery", "llama9", "Llama9ForCausalLM", {"quant_method": "exl3", "bits": 4}, ["a.trellis", "b.weight"])
 mk(f"{T}/broken", "deepseek_v41", "DeepseekV41ForCausalLM", ds_q, ds_keys)
 os.remove(f"{T}/broken/model-00002-of-00002.safetensors")
@@ -80,12 +88,19 @@ registry = {
         fam("deepseek-v41", "deepseek_v41", "DeepseekV41ForCausalLM", {"quant_method": "exl3"}, ds_keys, "~/ref-ds",
             "spark-deepseek-pack.sh use {dir} --dry-run", True),
         fam("glm53", "glm5_next", "Glm5NextForConditionalGeneration", glm_q, glm_keys, "~/ref-glm",
-            "manual: GLM pack by hand", False)],
+            "manual: GLM pack by hand", False),
+        dict(fam("hy4-vllm", "hy_v4_flash", "HYV4FlashForConditionalGeneration", {}, hy4_keys, "~/ref-hy4",
+                 "beast-spark hy4", False),
+             formats=["modelopt-nvfp4"], fit_note="CLAIMED ~82 GiB a Spark",
+             formats_not_servable={"exl3": "Hy4-flash EXL3 is single-host only: not servable at TP2"})],
     "engines": [{"name": "native-1.2.7", "title": "native TensorFold 1.2.7", "launch": "spark-node.sh",
                  "families": {"glm5_next": ["exl3"], "qwen3_5": ["mlx-q4g64", "exl3"]},
                  "ranks": {"glm5_next": [2], "qwen3_5/exl3": [1]},
                  "exl3_variants": {"glm5_next": {"bits": 4, "codebook": "mcg", "scope": "glm53_routed_experts_only"}},
-                 "refuses": {"deepseek_v41": "no Zig family serves deepseek_v41"}}]}
+                 "refuses": {"deepseek_v41": "no Zig family serves deepseek_v41",
+                             "hy_v4_flash": "no Zig family serves hy_v4_flash"}},
+                {"name": "vllm-hy4", "title": "vLLM hy4", "launch": "hy4-vllm/start.sh", "profile_backend": "vllm",
+                 "families": {"hy_v4_flash": ["modelopt-nvfp4"]}, "ranks": {"hy_v4_flash": [2]}}]}
 json.dump(registry, open(f"{T}/registry.json", "w"))
 registry["pair"]["rank_weight_limit_gib"] = 1e-9
 registry["pair"]["rank_weight_comfortable_gib"] = 1e-9
@@ -129,6 +144,29 @@ if [[ $rc == 1 ]] && grep -qx 'VERDICT: NEEDS A PROFILE' <<<"$out" && grep -q 'c
    && grep -q -- '--write-profile NAME --backend tensorfold' <<<"$out"; then
   pass "engine claims it: NEEDS A PROFILE, TP1, the profile command"
 else fail "needs profile (rc $rc): $out"; fi
+
+# --- Hy4-flash: the NVFP4 build is the hy4-vllm family's drop-in; the EXL3 pack is single-host only
+run "$T/hy4-nvfp4"
+if [[ $rc == 0 ]] && grep -qx 'VERDICT: DROP-IN hy4-vllm' <<<"$out" && grep -q '^Next       beast-spark hy4' <<<"$out" \
+   && grep -q 'format modelopt-nvfp4' <<<"$out" && grep -q 'CLAIMED ~82 GiB a Spark' <<<"$out"; then
+  pass "Hy4 NVFP4 (ModelOpt, hf_quant_config.json): DROP-IN hy4-vllm, beast-spark hy4 next, the claimed resident size shown"
+else fail "hy4 nvfp4 (rc $rc): $out"; fi
+run "$T/hy4-exl3"
+if [[ $rc == 1 ]] && grep -qx 'VERDICT: NOT SERVABLE HERE' <<<"$out" && grep -q 'hy_v4_flash as exl3 (EXL3 4 bpw.*single-host only: not servable at TP2' <<<"$out" \
+   && grep -q 'no Zig family serves hy_v4_flash' <<<"$out" && grep -q '^Family     hy4-vllm' <<<"$out"; then
+  pass "Hy4 EXL3: NOT SERVABLE HERE (single-host only, not at TP2), native's refusal named"
+else fail "hy4 exl3 (rc $rc): $out"; fi
+run "$T/hy4-fp8"
+if [[ $rc == 1 ]] && grep -qx 'VERDICT: SAME FAMILY, NOT A DROP-IN hy4-vllm' <<<"$out" && grep -q 'format modelopt-fp8 (the family serves modelopt-nvfp4)' <<<"$out" \
+   && grep -q 'vLLM hy4 serves hy_v4_flash only as modelopt-nvfp4' <<<"$out"; then
+  pass "Hy4 in another format (ModelOpt FP8): SAME FAMILY, NOT A DROP-IN, the format named"
+else fail "hy4 fp8 (rc $rc): $out"; fi
+# the shipped registry on the same EXL3 layout: the real reason, the real refusal
+out=$(INTAKE_REGISTRY="$REPO_DIR/scripts/backends/data/spark-families.json" bash "$SMI" "$T/hy4-exl3" 2>&1); rc=$?
+if [[ $rc == 1 ]] && grep -qx 'VERDICT: NOT SERVABLE HERE' <<<"$out" && grep -q 'single-host only' <<<"$out" && grep -q 'NOT servable at TP2' <<<"$out" \
+   && grep -q 'kept on purpose' <<<"$out" && grep -q 'no registered Zig family serves model_type hy_v4_flash' <<<"$out"; then
+  pass "shipped registry: a Hy4 EXL3 folder is NOT SERVABLE HERE (single-host, kept on purpose), TensorFold 1.2.10's refusal quoted"
+else fail "shipped hy4 exl3 (rc $rc): $out"; fi
 
 # --- (c) nothing claims it
 run "$T/mystery"
@@ -183,10 +221,18 @@ need = {"name", "model_types", "quant", "index_sha256", "index_keys", "tp", "rec
 for f in r["families"]:
     assert need <= set(f), (f.get("name"), need - set(f))
     assert re.fullmatch(r"[0-9a-f]{64}", f["index_sha256"])
-assert {f["name"] for f in r["families"]} == {"deepseek-v41", "glm53"}
-assert "deepseek_v41" in r["engines"][0]["refuses"]
+assert {f["name"] for f in r["families"]} == {"deepseek-v41", "glm53", "hy4-vllm"}
+nat = r["engines"][0]
+assert nat["name"] == "native-1.2.10" and {"deepseek_v41", "hy_v4_flash"} <= set(nat["refuses"])
+assert {"dots_ocr", "qwen3", "glm5_next"} <= set(nat["families"]) and "hy_v4_flash" not in nat["families"]
+hy4 = next(f for f in r["families"] if f["name"] == "hy4-vllm")
+assert hy4["tp"] == 2 and hy4["formats"] == ["modelopt-nvfp4"] and "exl3" in hy4["formats_not_servable"]
+assert hy4["served_name"] == "Hy4-flash-NVFP4" and hy4["unit"] == "hy4-vllm-inference"
+assert hy4["index_keys"] == 254168
+v = next(e for e in r["engines"] if e["name"] == "vllm-hy4")
+assert v["families"] == {"hy_v4_flash": ["modelopt-nvfp4"]} and v["ranks"]["hy_v4_flash"] == [2]
 PY
-then pass "shipped registry: both families complete, native's DeepSeek refusal recorded"
+then pass "shipped registry: three families complete (hy4-vllm: NVFP4 at TP2, EXL3 not servable), native 1.2.10 with its refusals, vllm-hy4"
 else fail "shipped registry"; fi
 
 # --- the local revision equals spark-deepseek-pack.sh's (GNU stat)

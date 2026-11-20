@@ -132,6 +132,10 @@ def validate_campaign(camp: dict) -> list[str]:
             v = a.get(k)
             if v is not None and (not isinstance(v, int) or isinstance(v, bool) or v < 1):
                 errs.append(f"arm {aid}: {k} must be a positive integer")
+        for k in ("model", "served_model"):
+            v = a.get(k)
+            if v is not None and (not isinstance(v, str) or not v.strip()):
+                errs.append(f"arm {aid}: {k} must be a non-empty string")
         seen.append(aid)
     for name, rule in decisions.items():
         cmp_ = rule.get("compare") or []
@@ -1234,6 +1238,19 @@ def detect_served(base_url: str, api_key_env: str | None = None) -> str | None:
         return None
 
 
+def served_model_mismatch(camp: dict, todo: list[str] | None, served: str | None) -> list[str]:
+    """An arm that measures one model's server (`"served_model"`: H_T2 is
+    Hy4-flash-NVFP4) refuses to run against another: a Hy4 row measured on
+    DeepSeek would look valid and be wrong."""
+    out = []
+    for aid in todo or []:
+        want = arm_spec(camp, aid).get("served_model")
+        if want and served and want != served:
+            out.append(f"arm {aid} measures {want}, but the server serves {served}: switch the "
+                       f"pair first (beast-spark hy4 for Hy4-flash), or leave {aid} out")
+    return out
+
+
 def preflight(a, camp: dict, py: str, tree: str, todo: list[str] | None = None,
               served: str | None = None) -> list[str]:
     """The prerequisites of docs/MODEL_CAMPAIGN.md §1 that can be checked
@@ -1263,6 +1280,7 @@ def preflight(a, camp: dict, py: str, tree: str, todo: list[str] | None = None,
                 problems.append(f"served model: {why}")
         except Exception as e:  # noqa: BLE001
             problems.append(f"served model check could not run ({type(e).__name__}: {e})")
+    problems += served_model_mismatch(camp, todo, served)
     # admission_check authenticates with OPENBEAST_API_KEY: without the key a
     # keyed gate answers 401, never 429, and the check would pass blind.
     saved_key = os.environ.get("OPENBEAST_API_KEY")
