@@ -188,7 +188,8 @@ def completeness(d: Path, keys: list[str] | None) -> tuple[list[str], list[str]]
 
 
 def checksums(d: Path, verify: bool) -> dict:
-    f = d / "SHA256SUMS"
+    # SHA256SUMS, or the Hub's LFS sums spark-hy4-stage.sh writes (SHA256SUMS.hub-lfs)
+    f = next((d / n for n in ("SHA256SUMS", "SHA256SUMS.hub-lfs") if (d / n).is_file()), d / "SHA256SUMS")
     if not f.is_file():
         return {"present": False, "note": "no SHA256SUMS: compare against the source's own hashes (the Hub's LFS "
                                           "sha256 per file) before trusting the copy"}
@@ -199,7 +200,7 @@ def checksums(d: Path, verify: bool) -> dict:
             entries.append((parts[0].lower(), parts[1].lstrip("*")))
     shards = {p.name for p in d.glob("*.safetensors")}
     listed = {n for _, n in entries}
-    out = {"present": True, "entries": len(entries),
+    out = {"present": True, "file": f.name, "entries": len(entries),
            "missing_files": sorted(n for _, n in entries if not (d / n).is_file()),
            "shards_not_listed": sorted(shards - listed), "verified": None}
     if verify:
@@ -321,6 +322,7 @@ def engine_claims(reg: dict, mt: str, fmt: str, q: dict) -> list[dict]:
         ranks_map = e.get("ranks") or {}
         ranks = ranks_map.get(f"{mt}/{fmt}") or ranks_map.get(mt)
         out.append({"engine": e["name"], "ok": True, "family": mt, "title": e["title"], "launch": e.get("launch"),
+                    "backend": e.get("profile_backend") or "tensorfold",
                     "ranks": ranks or [1, 2], "ranks_verified": bool(ranks),
                     "note": (e.get("rank_notes") or {}).get(mt)})
     return out
@@ -396,7 +398,19 @@ def intake(d: Path, reg: dict, verify_sums: bool = False) -> dict:
     r["engines"] = claims
     if fam:
         r["family"] = fam["name"]
+        if fam.get("fit_note"):
+            r["warnings"].append(f"{fam['name']}: {fam['fit_note']}")
+        nf = (fam.get("formats_not_servable") or {}).get(fmt)
+        if nf:
+            # a format of this model that no deployment of ours can serve on the pair (Hy4-flash EXL3)
+            r["fit"] = fit(wbytes, pair, [1])
+            r.update(verdict="NOT SERVABLE HERE", reasons=[f"{mt} as {fmt} ({scheme}): {nf}"])
+            r["reasons"] += [e["refuses"][mt] for e in reg.get("engines", []) if mt in (e.get("refuses") or {})]
+            return r
         why = []
+        fmts = fam.get("formats")
+        if fmts and fmt not in fmts:
+            why.append(f"format {fmt} (the family serves {', '.join(fmts)})")
         if archs and fam.get("architectures") and archs != fam["architectures"]:
             why.append(f"architectures {archs} (the family's: {fam['architectures']})")
         why += [f"quantization {m}" for m in quant_mismatch(fam.get("quant") or {}, q)]
@@ -471,7 +485,7 @@ def intake(d: Path, reg: dict, verify_sums: bool = False) -> dict:
                                 + (f"; {c['note']}" if c.get("note") else ""))
             if r.get("family_mismatch"):
                 r["reasons"].append(f"not a drop-in for our {r['family']} recipe: " + "; ".join(r["family_mismatch"]))
-            r["next"].append(f"scripts/backends/model-inspect.sh {d} --write-profile NAME --backend tensorfold")
+            r["next"].append(f"scripts/backends/model-inspect.sh {d} --write-profile NAME --backend {c.get('backend', 'tensorfold')}")
             r["next"].append(f"then {c['launch']}")
         return r
     if r.get("family_mismatch"):
@@ -486,7 +500,8 @@ def intake(d: Path, reg: dict, verify_sums: bool = False) -> dict:
     reasons += refused
     tfs = ins["engines"]["tensorfold"]
     if not reasons:
-        reasons.append(f"no engine we have serves model_type {mt!r} as {fmt} (native TensorFold 1.2.7 families: "
+        reasons.append(f"no engine we have serves model_type {mt!r} as {fmt} (the families of "
+                       + ", ".join(e["name"] for e in reg.get("engines", [])) + ": "
                        + ", ".join(sorted(set().union(*[(e.get('families') or {}).keys()
                                                        for e in reg.get('engines', [])]))) + ")")
     reasons.append(f"vendored container TensorFold list @{tfs['vendored_commit'][:7]}: {tfs['status']} "
@@ -514,7 +529,7 @@ def render(r: dict) -> str:
         cs = r.get("checksums") or {}
         if cs.get("present"):
             v = cs.get("verified")
-            L.append(f"Checksums  SHA256SUMS, {cs['entries']} entries; "
+            L.append(f"Checksums  {cs.get('file', 'SHA256SUMS')}, {cs['entries']} entries; "
                      + (f"verified {v['ok']} ok, {len(v['mismatch'])} mismatched" if v else "not verified (--checksums)"))
         else:
             L.append(f"Checksums  {cs.get('note', '-')}")

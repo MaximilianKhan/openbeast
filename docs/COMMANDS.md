@@ -165,7 +165,25 @@ beastds        # beast-spark ds:   back to the default: stop GLM, select the Dee
                #                   ~/.config/openbeast/beast-spark.env says otherwise), activate DeepSeek
                #                   (canary + conformance); GLM comes back on failure
 beastglm       # beast-spark glm:  switch to GLM-5.3-Flash, the alternative
+beasthy4       # beast-spark hy4:  serve Hy4-flash (NVFP4, vLLM TP2) for now; never the boot selection.
+               #                   Stops DeepSeek/GLM, waits for Hy4-flash-NVFP4, sets INFERENCE_BACKEND=vllm + INFERENCE_MODEL;
+               #                   the previous model comes back on failure. beastds / beastglm go back
 beaststatus    # beast-spark status
+```
+
+**Hy4-flash (NVFP4, vLLM TP2), staged** (on spark-1, from `~/openbeast`;
+`docs/SPARK_HYDRA.md` "Hy4-flash (NVFP4, vLLM TP2): staged"). Everything
+defaults to a dry run; the EXL3 pack `~/Documents/LibertAIDAI-Hy4-flash-EXL3-4bpw`
+is kept and never touched:
+
+```bash
+scripts/backends/spark-hy4-stage.sh                                   # the plan + what is staged (writes nothing)
+scripts/backends/spark-hy4-stage.sh --run --only weights,verify,mirror   # capped scopes: safe while DeepSeek serves
+scripts/backends/spark-hy4-stage.sh --run --only image,save,ship      # docker steps: between models (or --while-serving)
+scripts/backends/spark-hy4-stage.sh install                           # runtime + unit, daemon-reload, nothing enabled
+scripts/backends/spark-hy4-stage.sh --check                           # exit 0 when both Sparks are staged
+scripts/backends/hy4-vllm/start.sh --print                            # both docker commands, starts nothing
+# offline: --weights-from DIR (a drive's copy), --image-from ~/Documents/hy4-vllm-image/<tag>.tar
 ```
 
 From a non-interactive shell (ssh one-liner, a script, an agent), call
@@ -177,7 +195,7 @@ refused.
 Install or update it on spark-1 from a checkout (offline too: from the hub
 clone): `~/openbeast/scripts/backends/spark-beast.sh install` copies
 `beast-spark` to `~/.local/bin`, the two pack tools to
-`~/openbeast-recipes/deepseek-prep/`, and appends the five aliases to
+`~/openbeast-recipes/deepseek-prep/`, and appends the six aliases (an older block gets the missing `beasthy4`) to
 `~/.bashrc` once. `beast-spark aliases` prints the alias lines.
 
 The underlying commands, for reference only

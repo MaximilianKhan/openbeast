@@ -78,6 +78,14 @@ _has "$R1" "tcp dport { 29501-29502, 29551-29552, 29583-29584, 29620-29621 } cou
   && pass "vLLM 29501/+1, TensorFold 29551/+1, native 29583/+1 and DeepSeek 29620/+1 are dropped off the fabric" || fail "ports: $R1"
 grep -E 'tcp dport \{[^}]*29620-29621[^}]*\} counter drop' <<< "$R1" >/dev/null \
   && pass "--render guards the DeepSeek recipe's rendezvous ports 29620-29621 by default" || fail "DeepSeek ports: $R1"
+# Hy4-flash on vLLM TP2 (scripts/backends/hy4-vllm): its torch.distributed rendezvous
+# (--master-port) and +1 are guarded by default; vLLM's other sockets bind
+# VLLM_HOST_IP, the link address, which the fabric-address rule below covers.
+HY4P=$(sed -n 's/^HY4_MASTER_PORT="${HY4_MASTER_PORT:-\([0-9]*\)}".*/\1/p' "$REPO_DIR/scripts/backends/hy4-vllm/config.sh")
+grep -E "tcp dport \{[^}]*${HY4P}-$((HY4P + 1))[^}]*\} counter drop" <<< "$R1" >/dev/null && [[ -n "$HY4P" ]] \
+  && grep -q -- '-e "VLLM_HOST_IP=$H_IP"' "$REPO_DIR/scripts/backends/hy4-vllm/start.sh" \
+  && pass "the Hy4 vLLM recipe's rendezvous ($HY4P, +1) is guarded by default; its ranks bind VLLM_HOST_IP on the link" \
+  || fail "Hy4 port ${HY4P:-?}: $R1"
 _has "$R1" "# args: " && pass "the render records its command-line inputs (for --status to re-render)" || fail "args line: $R1"
 _has "$R1" "ip daddr { 10.100.216.1, 10.100.217.1 } meta l4proto tcp counter drop" \
   && pass "TCP to the fabric addresses (NCCL bootstrap, ephemeral ports) is dropped off the fabric" || fail "daddr: $R1"

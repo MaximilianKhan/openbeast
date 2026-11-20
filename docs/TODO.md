@@ -201,7 +201,9 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
   (was `scripts/spark-model.sh use <profile>`). Partly done: `beast-spark`
   switches between the two staged models with locks and rollback to GLM
   (#212, #222), and `spark-model-intake.sh` says offline whether a folder is
-  a drop-in (#214). Still by hand for a third model: fetch and verify on both
+  a drop-in (#214). Hy4-flash is the first third model with its own staging,
+  unit and `beast-spark hy4` (with rollback to the previous model; 2026-11-19).
+  Still by hand for any other third model: fetch and verify on both
   ranks, write the recipe config, add the unit, run conformance, and roll back
   on failure ([`EXL3_PLAYBOOK.md`](EXL3_PLAYBOOK.md), `SPARK_HYDRA.md` C, D1,
   G3).
@@ -258,6 +260,24 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
   - **U_8k** is U at 8192;
   - **UP** is U plus the planning lines;
   - **UPA** is UP plus the frozen algorithmic pack.
+- [ ] **Run `H_T2` (Hy4-flash NVFP4) after the U series.** Arm H_T2 is T2
+  exactly against Tencent's Hy4-flash (atakann's NVFP4 build on vLLM TP2,
+  staged in code 2026-11-19: `SPARK_HYDRA.md` "Hy4-flash (NVFP4, vLLM TP2):
+  staged"). A public-interest measurement, compared with DS-T2 (65/71) under
+  the same harness. Order, on spark-1 then the Mac: (1) after the U arms,
+  `scripts/backends/spark-hy4-stage.sh --run --only weights,verify,mirror`
+  (capped scopes, safe while DeepSeek serves), (2) between models,
+  `--run --only image,save,ship`, then `install` and `spark-beast.sh install`,
+  `--check` exits 0, (3) `beasthy4`, `scripts/backends/conformance.sh --url
+  http://127.0.0.1:8000 --model Hy4-flash-NVFP4 --backend vllm --key-file
+  ~/.config/openbeast/tensorfold-api-key`, (4) `campaign.py run --only H_T2 --model-name "Hy4-flash
+  (NVFP4)" --served-model Hy4-flash-NVFP4 --jobs 4 --slots 4`, (5) `beastds`.
+  The first start is UNVERIFIED (the image build, NCCL on our rails, the
+  autotune cache, memory beside the command center). Thinking off is not
+  reachable for Hy4 through the runner (it sends `enable_thinking`; Hy4 reads
+  `reasoning_effort`): an era change, so no N arms for Hy4 until then. The
+  EXL3 pack `~/Documents/LibertAIDAI-Hy4-flash-EXL3-4bpw` stays (single-host
+  only; kept on purpose).
 
   Run them on DeepSeek after T3.
 - [ ] **The GLM UP control:** arm UP with `--model-name GLM-5.3-Flash`, after

@@ -467,6 +467,7 @@ Run the narrow suites while iterating, then the full set before committing:
 | `scripts/backends/spark-backup.sh`, `spark-restore.sh`, `pylib/spark_backup.py`, `data/spark-backup.items` | `tests/test_spark_backup.sh` (the copy steps need GNU rsync >= 3: Linux, or `brew install rsync` on a Mac; without it they are skipped) |
 | `scripts/backends/spark-model-intake.sh`, `pylib/model_intake.py`, `data/spark-families.json` | `tests/test_spark_model_intake.sh` (portable; the local-revision parity check needs GNU stat), `tests/test_model_inspect.py` |
 | `scripts/backends/spark-beast.sh` | `tests/test_spark_beast.sh` |
+| `scripts/backends/spark-hy4-stage.sh`, `scripts/backends/hy4-vllm/` (config, start, stop, memguard, the unit, the vendored image and Hub lists) | `tests/test_spark_hy4.sh` (portable; stubs for docker, ssh, systemctl, systemd-run, hf, rsync), `tests/test_spark_beast.sh` (`beast-spark hy4`), `tests/test_spark_guard.sh` (its rendezvous port) |
 | `scripts/backends/spark-fabric-mtu.sh` (fabric MTU 9000, netplan drop-in) | `tests/test_spark_fabric_mtu.sh` (portable; on Ubuntu it also checks the merge against the real `netplan generate --root-dir`) |
 | `spark-root-setup.sh`, `tensorfold/install-native.sh` | `tests/test_spark_supply.sh` |
 | `scripts/backends/model-*.sh`, `pylib/`, profiles, locks | `tests/test_model_profiles.py`, `test_model_inspect.py`, `test_model_fetch.py`, `test_conformance.py`, `test_use_model.py` |
@@ -495,7 +496,7 @@ Run the narrow suites while iterating, then the full set before committing:
 | `scripts/backends/spark-deepseek-prepare-local.sh` | `tests/test_spark_deepseek_pack.sh` (static: the recipe's WORKER, BatchMode ssh, the offline kit check; the swap steps of `spark-deepseek-pack.sh` there need bash >= 4: Linux, or `brew install bash` on a Mac) |
 | `scripts/lib/client_rigs.py`, `scripts/client.sh` (rigs, autosync), `scripts/client-e2e.sh` | `tests/test_client_rigs.py` (autosync install/uninstall with launchctl/systemctl stubbed), `tests/test_client_cli.py`, `tests/test_setup_client.sh` |
 | `AGENT_PROFILE` / the daily-agent switches in `scripts/lib/conf.sh` (`AGENT_ACT_NUDGE`, `AGENT_VERIFY_DONE`, `AGENT_ENV_BLOCK`, `AGENT_WALL_WARN`, `DIAG_EDIT_HINT`, `LANG_PACK_VARIANT`), `agents/lang/pack_context.py` variants, `chat_server.AGENT_CHILD_KEEP` | `tests/test_agent_profile_conf.sh` (portable; the real conf.sh in `env -i`, then the real readers), `tests/test_agent_profile.py` (the profile equals campaign arm T2; the v3 pin; variant parity), `tests/test_pack_context.py`, `tests/test_escalate_conf.sh`, `tests/test_conf_secrets.sh` (no key is called unknown) |
-| `evals/campaign.py` per-model composite (`recommend.composite_by_model`), `evals/campaigns/*.json` | `tests/test_campaign.py` (§11: DeepSeek runs T2 first, report starts from T2, T unchanged), `tests/test_agent_profile.py` |
+| `evals/campaign.py` per-model composite (`recommend.composite_by_model`), an arm's `served_model`, `evals/campaigns/*.json` | `tests/test_campaign.py` (§11: DeepSeek runs T2 first, report starts from T2, T unchanged; §12: H_T2 is T2 exactly for Hy4-flash and refuses another model's server), `tests/test_agent_profile.py` |
 
 ---
 

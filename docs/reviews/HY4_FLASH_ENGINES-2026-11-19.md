@@ -6,6 +6,16 @@ including 64B of Engram tables, ~12B active, 1,048,576-token context,
 built-in 0.85B DFly2 drafter) on the Spark pair. Labels: **VERIFIED** (read
 code or registry), **CLAIMED** (cited page), **UNVERIFIED**.
 
+**Staged (2026-11-19, later the same day).** The recommended two-Spark path
+below is built into the repo: `scripts/backends/spark-hy4-stage.sh` (weights
+at 30f201ac verified against the Hub's LFS sha256, the base image by digest,
+the recipe's image from the vendored files, the tar for offline restore),
+`scripts/backends/hy4-vllm/` (start, stop, memguard, the unit), `beast-spark
+hy4`, campaign arm `H_T2`, and the intake family `hy4-vllm`. Nothing is on the
+Sparks yet; staging and the first start follow the current eval series. The
+EXL3 pack stays on both Sparks on purpose. Runbook:
+[SPARK_HYDRA.md "Hy4-flash (NVFP4, vLLM TP2): staged"](../SPARK_HYDRA.md#hy4-flash-nvfp4-vllm-tp2-staged).
+
 ## Verdict
 
 - The pack we downloaded, `LibertAIDAI/Hy4-flash-EXL3-4bpw` (218 GB, on both

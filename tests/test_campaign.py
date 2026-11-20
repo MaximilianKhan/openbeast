@@ -907,3 +907,59 @@ def test_deepseek_without_t2_falls_back_to_t_and_says_so(tmp_path):
     st["model_name"] = "Fake-1"
     md = C.render_report(camp, st, {}, None, walls=None)
     assert "Composite for" not in md and "stands in" not in md
+
+
+# --- 12. Hy4-flash (NVFP4): H_T2, the T2-equivalent composite against the Hy4 server ----------
+#
+# H_T2 is T2 exactly (same switches, same declared 8192 budget); it differs in the
+# model only, so its row compares with DS-T2. Thinking on reaches Hy4 as its template's
+# default reasoning_effort 'high' (the runner's enable_thinking is ignored there), so no
+# era-hashed file changes. served_model keeps it off any other model's server.
+
+HY4 = "Hy4-flash (NVFP4)"
+
+
+def test_h_t2_is_t2_exactly_for_hy4():
+    camp = C.load_campaign(TF)
+    h, t2 = C.resolve_arm(camp, "H_T2"), C.resolve_arm(camp, "T2")
+    assert h == t2                                              # args, env, requires, jobs, slots
+    spec = C.arm_spec(camp, "H_T2")
+    assert spec["base"] == "T2" and spec["optional"] is True
+    assert spec["jobs"] == 4 and spec["slots"] == 4
+    assert spec["model"] == HY4 and spec["served_model"] == "Hy4-flash-NVFP4"
+    assert C.arg_value(h["args"], "--thinking") == "on"
+    assert C.arg_value(h["args"], "--reasoning-budget") == "8192"
+    note = spec["note"]
+    assert "public-interest" in note and "DS-T2" in note and "reasoning_effort" in note
+    assert "high" in note and "no_think" in note
+
+
+def test_hy4_composite_is_h_t2_and_deepseek_keeps_t2():
+    camp = C.load_campaign(TF)
+    for name in (HY4, "Hy4-flash", "hy4-flash-nvfp4"):
+        assert C.composite_for(camp, name)[0] == "H_T2", name
+    assert C.composite_for(camp, DS)[0] == "T2"
+    assert C.composite_for(camp, "Hy4")[0] == "T"               # a slug prefix is not enough
+    assert C.run_order(camp, model_name=HY4)[0] == "H_T2"
+    assert "H_T2" not in C.run_order(camp)                      # optional: never in the default chain
+    assert "H_T2" not in C.run_order(camp, model_name=DS)
+
+
+def test_an_arm_refuses_another_models_server():
+    camp = C.load_campaign(TF)
+    probs = C.served_model_mismatch(camp, ["H_T2"], "DeepSeek-V4.1-Flash-1017")
+    assert len(probs) == 1 and "beast-spark hy4" in probs[0] and "Hy4-flash-NVFP4" in probs[0]
+    assert C.served_model_mismatch(camp, ["H_T2"], "Hy4-flash-NVFP4") == []
+    assert C.served_model_mismatch(camp, ["T2", "T"], "DeepSeek-V4.1-Flash-1017") == []   # no served_model: any server
+    bad = {k: v for k, v in camp.items() if k != "_path"}
+    bad = json.loads(json.dumps(bad))
+    next(a for a in bad["arms"] if a["id"] == "H_T2")["served_model"] = ""
+    assert any("served_model must be a non-empty string" in e for e in C.validate_campaign(bad))
+
+
+def test_hy4_thinking_needs_no_era_change():
+    """The claim H_T2 rests on: --thinking on sends enable_thinking=true (runner,
+    unchanged), which Hy4's template ignores, defaulting to reasoning_effort high."""
+    src = (ROOT / "agents" / "runner.py").read_text()
+    assert '"enable_thinking": v == "on"' in src
+    assert "reasoning_effort" not in src                        # the runner never names it: an era change would

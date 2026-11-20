@@ -57,7 +57,8 @@ anything fails. The tools below never swap without saying so.
 |---|---|---|---|
 | `tensorfold-dsv41:exl3-tp2-8a98ae503d85` (image ID `d048841d851f`, 24.9 GB) | both Sparks, built locally from [Mia's two-Spark recipe at `c7f2b85`](https://github.com/MiaAI-Lab/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks/tree/c7f2b85100f0a7b099c92a4e21825e30d93c9c51) | `deepseek_v41` only. Its engine is bertholomus/TensorFold's Zig fork at `fbbc971` plus the recipe's `zig/patches` (image labels `tf.engine=zig`, `tf.ref=fbbc9713…`, `tf.patches=8a98ae503d85`) | yes: Mia's EAQ packs (MEASURED), and per the recipe the EAQ v1.1 mixed pack with `EAQ_V1_1=1` (CLAIMED, recipe `docs/configuration.md`) |
 | `tensorfold-glm53:v0.6.0` (image ID `ead0174052ac`, 24.6 GB; the same image as `ghcr.io/miaai-lab/glm-5.3-flash-exl3-2x-dgx-sparks-tensorfold`, tag `v0.6.0-31557ed1cef6`) | both Sparks, from Mia's GLM recipe v1.8 at `33b50fd` | `glm5_next` through TensorFold v0.6.0 (Python) plus 82 GLM patches | yes: the TR3 layout only (bits 4, `mcg` codebook, scope `glm53_routed_experts_only`) |
-| native TensorFold 1.2.7 (`~/.local/bin/tensorfold`, signed) | both Sparks, installed, not serving | the families in [§6](#6-native-tensorfold-127-what-it-can-and-cannot-do) | `glm5_next`, `minimax_m3_vl`, `qwen3_5` |
+| native TensorFold 1.2.10 (`~/.local/bin/tensorfold`, signed; 1.2.7 when §6 was measured) | both Sparks, installed, not serving | the families in [§6](#6-native-tensorfold-127-what-it-can-and-cannot-do); 1.2.10 adds `dots_ocr` and `qwen3` (both BF16), and still refuses `deepseek_v41` and `hy_v4_flash` (`capabilities --json` and `info`, spark-1 and spark-2, 2026-11-19; `data/spark-families.json` engine `native-1.2.10`) | `glm5_next`, `minimax_m3_vl`, `qwen3_5` |
+| `openbeast/hy4-vllm:e764efa-b486c74ef8b6` (vLLM's `hy4-flash` image + atakann's six sm_121 files) | **staged in code only** (2026-11-19): `scripts/backends/spark-hy4-stage.sh` builds it | `hy_v4_flash` as ModelOpt NVFP4, TP2 + expert parallel ([SPARK_HYDRA.md](SPARK_HYDRA.md#hy4-flash-nvfp4-vllm-tp2-staged)) | no |
 
 ### 1.3 How a recipe finds its weights
 
@@ -217,6 +218,56 @@ write the family, and then we need its build offline:
 Other ways out of (c): a format that another engine reads, such as an NVFP4
 quant under vLLM (`model-inspect.sh` says which), or the same model in
 another family's layout.
+
+#### Worked example: Hy4-flash EXL3 (2026-11-19)
+
+The folder: `~/Documents/LibertAIDAI-Hy4-flash-EXL3-4bpw` on both Sparks
+(LibertAIDAI's EXL3 4 bpw build of `tencent/Hy4-flash`, 218 GB, 28 shards;
+`model_type hy_v4_flash`, `HYV4FlashForCausalLM`, `quantization_config`
+`{"quant_method": "exl3", "bits": 4, "codebook": "mul1", "scope":
+"hy4flash-routed-k4", "version": "1.6.7", ...}`, and the pack's own
+`hy4-exllamav3.patch`). What refused it, in order:
+
+1. **Native TensorFold 1.2.10** (MEASURED, spark-1, read-only):
+   `tensorfold info ~/Documents/LibertAIDAI-Hy4-flash-EXL3-4bpw` answers
+   "no registered Zig family serves model_type hy_v4_flash; the 0.6 line may:
+   tensorfold@0.6". Upstream: TensorFold#3797 (open) and #3801 (a two-Spark
+   native family, in slices, weeks out).
+2. **No recipe of ours** reads `hy_v4_flash` EXL3: neither Mia recipe has the
+   architecture.
+3. **ExLlamaV3 itself**, with the pack's patch, cannot span two Sparks: its
+   tensor-parallel workers are local processes on one host (VERIFIED in
+   `model_tp.py`, [the review](reviews/HY4_FLASH_ENGINES-2026-11-19.md)). On
+   ONE Spark it fits (an 84.87 GiB trunk with 118 GiB of Engram streamed from
+   disk) but runs a pure-PyTorch reference attention with no server.
+
+So the EXL3 pack is case (c) on the pair, and **single-host only**. Intake
+says so from the registry (`data/spark-families.json`, family `hy4-vllm`,
+`formats_not_servable.exl3`). The lines below are what the shipped registry
+gives a folder with this config (`tests/test_spark_model_intake.sh` runs it on
+a fixture); the run on the real folder is pending the next intake pass on
+spark-1:
+
+```text
+$ scripts/backends/spark-model-intake.sh ~/Documents/LibertAIDAI-Hy4-flash-EXL3-4bpw
+...
+Family     hy4-vllm
+Why        hy_v4_flash as exl3 (EXL3 4 bpw, mul1 codebook, scope hy4flash-routed-k4): Hy4-flash EXL3 is single-host only: ...
+Why        tensorfold info ~/Documents/LibertAIDAI-Hy4-flash-EXL3-4bpw: 'no registered Zig family serves model_type hy_v4_flash; ...'
+VERDICT: NOT SERVABLE HERE
+```
+
+The way out was the second one above: **another format another engine
+reads.** atakann's NVFP4 build (`atakans/Hy4-flash-NVFP4`, 165 GB) runs on
+vLLM at TP2 with expert parallel, and is staged as the `hy4-vllm` family:
+[SPARK_HYDRA.md "Hy4-flash (NVFP4, vLLM TP2): staged"](SPARK_HYDRA.md#hy4-flash-nvfp4-vllm-tp2-staged).
+Intake calls that folder a DROP-IN for `hy4-vllm` (its index, 254,168 keys,
+is the family's reference), next step `beast-spark hy4`.
+
+**The EXL3 pack is kept on purpose** (Max, 2026-11-19): for single-host
+experiments, and in case ExLlamaV3 or TensorFold gains a two-host Hy4 path.
+No staging, cleanup or prune code touches it; the Hy4 scripts refuse it as a
+target (`hy4_protected`, `tests/test_spark_hy4.sh`).
 
 ## 3. Fit and feasibility
 

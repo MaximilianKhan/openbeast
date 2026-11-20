@@ -138,12 +138,19 @@
      "note": "Only with --only UPA. UP + the frozen language-independent algorithmic procedure pack (OPENBEAST_ALGO_PACK=1: agents/packs/algo-v1.md, ~400 tokens, sha256 6c5324007750c44091a03c98cfef813cac0f3e576f982beb8908c0732e2ac09d, pinned by tests/test_eval_arms_u.py and checked at run start), appended to every unit's pack file after the zig and host packs (it rides the packs channel, so packs stay on as in T). Procedure only, no noun from any v5 unit: bound before code (~1e7 ops/s Python, ~1e9 compiled); decompose into parts that never interact; test doubtful simplifications against a brute force; search over orders/subsets as DFS memoised on the minimal state that determines the future, candidates restricted by guaranteed bounds; standard reductions (sweep, prefix sums, binary search on the answer, bitmask DP to ~20, meet-in-the-middle to ~40); two-stage verification (tiny brute force, then timing at full limits with adversarial shapes); redesign on a >5x miss. UPA vs UP isolates the pack; the pack changes the pack1 cache component of every unit. time_x 2.3 (~6-7 h).",
      "time_x": 2.3,
      "env": {"OPENBEAST_ALGO_PACK": "1"},
-     "requires": {"env": ["OPENBEAST_ALGO_PACK"]}}
+     "requires": {"env": ["OPENBEAST_ALGO_PACK"]}},
+    {"id": "H_T2", "base": "T2", "label": "T2 for Hy4-flash (NVFP4): the T2-equivalent composite, thinking at reasoning_effort high",
+     "optional": true,
+     "jobs": 4, "slots": 4,
+     "model": "Hy4-flash (NVFP4)",
+     "served_model": "Hy4-flash-NVFP4",
+     "note": "Only with --only H_T2 (or a campaign run whose --model-name starts with Hy4-flash: recommend.composite_by_model); needs a harness9 tree, as T2. A public-interest measurement: Tencent's Hy4-flash (atakans/Hy4-flash-NVFP4 @ 30f201ac, vLLM TP2 + expert parallel over the pair, DFly drafter 5; docs/SPARK_HYDRA.md 'Hy4-flash (NVFP4, vLLM TP2): staged'), served with `beast-spark hy4`. Compare with DeepSeek's DS-T2 (65/71) under the same harness: H_T2 is T2 exactly (the 8,192-token per-turn cap declared as --reasoning-budget 8192, the act nudge, every T switch), so the two rows differ in the model only. Thinking: the runner sends chat_template_kwargs.enable_thinking=true for --thinking on (agents/runner.py, era-hashed, unchanged); Hy4's chat template ignores enable_thinking and defaults reasoning_effort to 'high' when the request names none, and vLLM's hy_v4 reasoning parser defaults to the same 'high', so this arm thinks at reasoning_effort high with no per-model mapping. Thinking OFF is NOT reachable this way (enable_thinking=false is ignored too: Hy4 needs reasoning_effort no_think), so N, N0 and the U arms' forced-act turn would still think on Hy4; they are not Hy4 arms until the runner can send reasoning_effort (an era change). served_model: preflight refuses this arm unless the server serves Hy4-flash-NVFP4. ETA UNVERIFIED: Hy4 decodes ~15 tok/s plain, 17-38 with DFly for one stream (CLAIMED), against DeepSeek's ~30 per stream at 4 (T2 took 6.2 h); budget 8-12 h.",
+     "time_x": 2.3}
   ],
   "recommend": {
     "composite": "T",
-    "composite_by_model": {"DeepSeek-V4.1-Flash": "T2"},
-    "composite_by_model_note": "Per-model best-first composite (2026-11-19). DeepSeek-V4.1-Flash (Mia EXL3): T2 (T + 8192-token per-turn cap + act nudge) scored 65/71 against T's 61/71, +4 / 0 regressions (board row DS-T2), so a DeepSeek campaign runs T2 first and `campaign.py report` starts the recommended daily config from T2; each ablation still compares with T, the arm it removes from. T itself is unchanged (the GLM history depends on it). Daily equivalent: AGENT_PROFILE=deepseek-best in openbeast.conf (docs/SPARK_HYDRA.md).",
+    "composite_by_model": {"DeepSeek-V4.1-Flash": "T2", "Hy4-flash": "H_T2"},
+    "composite_by_model_note": "Per-model best-first composite (2026-11-19). DeepSeek-V4.1-Flash (Mia EXL3): T2 (T + 8192-token per-turn cap + act nudge) scored 65/71 against T's 61/71, +4 / 0 regressions (board row DS-T2), so a DeepSeek campaign runs T2 first and `campaign.py report` starts the recommended daily config from T2; each ablation still compares with T, the arm it removes from. T itself is unchanged (the GLM history depends on it). Daily equivalent: AGENT_PROFILE=deepseek-best in openbeast.conf (docs/SPARK_HYDRA.md). Hy4-flash (NVFP4): H_T2, which is T2 exactly against the Hy4 server (2026-11-19, staged, not measured yet), so its row compares with DS-T2.",
     "ablations":["T_noturns", "T_nopacks", "T_noassist", "T_noenv"],
     "no_thinking": "N",
     "noise_sd": 1.0,

@@ -1,6 +1,6 @@
 # spark-hydra: the DGX Spark launch runbook
 
-**Live deployment, 2026-11-18.** The pair serves **DeepSeek-V4.1-Flash (Mia EXL3)** by default since 2026-11-18 (`DeepSeek-V4.1-Flash-1017`, unit `deepseek-v41-inference`, enabled for boot; 524,288-token window, four streams): Max's decision after hands-on testing, with v5 61/71, the board's #1 (65/71 under arm T2 since 2026-11-19, its default agent setup: [E2b](#e2b-deepseek-best-configuration-v5-t2); the preset `AGENT_PROFILE=deepseek-best` is on `main` since #232 and goes live in spark-1's `openbeast.conf` after the current eval arm). **GLM-5.3-Flash is staged as the alternative** (`GLM-5.3-Flash-EXL3`, unit `spark-hydra-inference`, 1,048,576-token window): `beastglm` switches to it, `beastds` back (it stops GLM, re-selects the Mia EXL3 pack, [DeepSeek packs](#deepseek-packs-spark-deepseek-pack), and runs `activate-stock.sh`). Switch only through `beast-spark` (the `beast*` aliases, [Everyday shortcuts](#quickstart)); `activate-stock.sh` and `restore-glm.sh` are its internals, and `activate-stock.sh` never stops GLM itself. `beastup` with nothing selected picks DeepSeek. The pair serves these two models only, one at a time. The command center and beast-gate run on spark-1. The DeepSeek sections below record its deployment and describe the serving default; the GLM recipe, tuning measurements and rebuild examples describe the alternative, which the fresh-install checklist still builds first. (History: GLM served 2026-11-13 to 11-17, DeepSeek from 11-17, GLM again for part of 11-18, then DeepSeek by Max's decision.)
+**Live deployment, 2026-11-18.** The pair serves **DeepSeek-V4.1-Flash (Mia EXL3)** by default since 2026-11-18 (`DeepSeek-V4.1-Flash-1017`, unit `deepseek-v41-inference`, enabled for boot; 524,288-token window, four streams): Max's decision after hands-on testing, with v5 61/71, the board's #1 (65/71 under arm T2 since 2026-11-19, its default agent setup: [E2b](#e2b-deepseek-best-configuration-v5-t2); the preset `AGENT_PROFILE=deepseek-best` is on `main` since #232 and goes live in spark-1's `openbeast.conf` after the current eval arm). **GLM-5.3-Flash is staged as the alternative** (`GLM-5.3-Flash-EXL3`, unit `spark-hydra-inference`, 1,048,576-token window): `beastglm` switches to it, `beastds` back (it stops GLM, re-selects the Mia EXL3 pack, [DeepSeek packs](#deepseek-packs-spark-deepseek-pack), and runs `activate-stock.sh`). Switch only through `beast-spark` (the `beast*` aliases, [Everyday shortcuts](#quickstart)); `activate-stock.sh` and `restore-glm.sh` are its internals, and `activate-stock.sh` never stops GLM itself. `beastup` with nothing selected picks DeepSeek. The pair serves these two models, one at a time; **Hy4-flash (NVFP4, vLLM TP2) is staged in code** (`beasthy4`, never a boot default; [Hy4-flash](#hy4-flash-nvfp4-vllm-tp2-staged)), to be staged on the Sparks after the current eval series. The command center and beast-gate run on spark-1. The DeepSeek sections below record its deployment and describe the serving default; the GLM recipe, tuning measurements and rebuild examples describe the alternative, which the fresh-install checklist still builds first. (History: GLM served 2026-11-13 to 11-17, DeepSeek from 11-17, GLM again for part of 11-18, then DeepSeek by Max's decision.)
 
 This page takes you from bare boxes to a serving pair, start to finish, and then
 covers day-2 operations and fully offline operation. Read it top to bottom the
@@ -91,6 +91,259 @@ Each cell gives two runs. The differences are inside run-to-run noise. A first v
 
 **Other EXL3 models.** For other packs and other EXL3 models brought offline, including GLM packs, new architectures and the read-only `spark-model-intake.sh` preflight, see [EXL3_PLAYBOOK.md](EXL3_PLAYBOOK.md).
 
+## Hy4-flash (NVFP4, vLLM TP2): staged
+
+**State, 2026-11-19: the code is on `main`; nothing is on the Sparks yet.** No
+weights were downloaded, no image was pulled or built, no unit was installed.
+Staging and the first start come AFTER the current eval series (the U arms),
+because serving Hy4 means stopping DeepSeek, and because the docker steps run
+outside any memory scope. Hy4 is **never a boot default**: its unit cannot be
+enabled, `beastup` never picks it, and a reboot comes back to the selection
+(DeepSeek). It is here to be measured (v5 arm `H_T2`, a public-interest
+measurement) and to be tried by hand. Why this build and not another: the
+review [HY4_FLASH_ENGINES-2026-11-19](reviews/HY4_FLASH_ENGINES-2026-11-19.md).
+
+**The EXL3 pack stays, on purpose.** `~/Documents/LibertAIDAI-Hy4-flash-EXL3-4bpw`
+(218 GB, on both Sparks) is kept (Max, 2026-11-19). It cannot serve on the pair
+(ExLlamaV3's TP workers are local to one host; [EXL3_PLAYBOOK.md](EXL3_PLAYBOOK.md)
+case (c) worked example), but nothing deletes it: every path the Hy4 scripts
+write is checked against it (`hy4_protected` in `scripts/backends/hy4-vllm/config.sh`),
+no Hy4 script deletes anything (no `rm -r`, no `rsync --delete`, no image prune;
+`tests/test_spark_hy4.sh` checks both), and `spark-model-intake.sh` on that
+folder says NOT SERVABLE HERE with the reason.
+
+### What it is (pins)
+
+| Piece | Pin | Source (checked 2026-11-19) |
+|---|---|---|
+| Weights | `atakans/Hy4-flash-NVFP4` @ `30f201acf0b4f9ba178817bcbc04ccfa3ec473f9`: 76 files, 164,691,130,443 bytes, 14 shards (164,654,390,950 B of weights), 254,168 tensor keys (index sha256 `d3cd2ba4…`) | Hub API. `main` is one commit ahead (`922cbf11`, model card only); 30f201ac is the revision the recipe pins. Experts NVFP4 (ModelOpt 0.48.0, group 16), Engram tables FP8, the DFly2 drafter BF16; architecture `HYV4FlashForConditionalGeneration` (vision included) |
+| Hub checksums | `scripts/backends/hy4-vllm/SHA256SUMS.hub-lfs` (the 20 LFS files' sha256) and `FILES.hub` (every file's size and git blob id) | vendored from the Hub tree API at 30f201ac, so verification needs no network |
+| Base image | `vllm/vllm-openai@sha256:5e2c1badbca60595d6591c60feb4b8547f59da96e7a91710d40239250e721aba` (the arm64 image of tag `hy4-flash`; tag index `sha256:6b645bfb…`, 11.0 GB compressed) | Docker Hub. vLLM 77766db with the Hy4-flash pull request, FlashInfer 0.7.4 (CLAIMED by the recipe) |
+| Recipe | `atakann/dgx-spark-recipes` @ `e764efa3efed3e21fe543c3fffc927eb6a00bff8`, `recipes/llm/hy4-flash-nvfp4-vllm-tp2.yaml` and `images/vllm-hy4-flash/` | GitHub. MIT; the six Python files are Apache-2.0 (vLLM). Vendored verbatim in `scripts/backends/hy4-vllm/image/` with `CREDITS.md` (each file's sha256) |
+| Our image | `openbeast/hy4-vllm:e764efa-b486c74ef8b6` (the suffix is `hy4_image_hash` of `image/`) | built by `spark-hy4-stage.sh`; the test fails if `image/` changes and the tag does not |
+| Upstream | [vllm-project/vllm#68380](https://github.com/vllm-project/vllm/issues/68380) (open): the same sm_121 + ModelOpt NVFP4 changes | when it lands in a release, the six files can go |
+
+The six files: `sm120.py` sends Hy4's per-head attention sink through
+FlashInfer's SM120 sparse-MLA kernel; `attention.py` and `hy_v4_attention.py`
+pick that backend on compute capability 12 for the model's and the drafter's
+layers; `mla_attention.py` adds the `fp8_ds_mla` KV cache on sliding-window
+MLA; `model.py` loads ModelOpt NVFP4 experts; `dfly_config.py` lets DFly take
+an NVFP4 target. Without them the image's Hy4 code takes FP8 only and stops on
+a GPU that is not Hopper or data-center Blackwell.
+
+### Files
+
+| File | Where it runs | Does |
+|---|---|---|
+| `scripts/backends/spark-hy4-stage.sh` | spark-1, from a checkout | stages everything (default `--dry-run`), `--check`, `install` |
+| `scripts/backends/hy4-vllm/config.sh` | sourced | the pins, the settings (`~/.config/openbeast/hy4-vllm.env`, `HY4_*=value`, parsed, never sourced; the environment wins), link discovery, the memory rule |
+| `scripts/backends/hy4-vllm/start.sh` | spark-1 (the unit) | checks, then rank 1 on spark-2 over ssh, then rank 0 here; foreground |
+| `scripts/backends/hy4-vllm/stop.sh` | spark-1 (the unit's ExecStop) | stops and removes both containers; idempotent |
+| `scripts/backends/hy4-vllm/memguard.sh` | both Sparks, beside each rank | kills the rank's container before the Spark runs out of memory |
+| `scripts/backends/hy4-vllm/hy4-vllm-inference.service` | `~/.config/systemd/user/` on spark-1 | the user unit: no `[Install]` (cannot be enabled), `Restart=no`, `Conflicts=` both other inference units |
+| `scripts/backends/spark-beast.sh` | `~/.local/bin/beast-spark` | `beast-spark hy4` (`beasthy4`), and `ds` / `glm` / `up` / `down` stop Hy4 |
+
+### Stage (after the eval series; on spark-1)
+
+```bash
+cd ~/openbeast && git pull --ff-only              # a main with this section
+scripts/backends/spark-hy4-stage.sh               # the plan + what is staged (writes nothing)
+
+# 1. weights: hf download (capped scope), verify against the Hub's sizes and LFS sha256, mirror to spark-2
+#    (rsync over the QSFP link, capped on both ends, never --delete), verify there. Safe while DeepSeek serves:
+#    every process runs in systemd-run --user --scope -p MemoryMax=8G -p MemoryHigh=6G, so the page cache
+#    it fills is reclaimed inside the scope, not taken from DeepSeek's MemAvailable (its memguard: 2.5 GiB).
+scripts/backends/spark-hy4-stage.sh --run --only weights,verify,mirror
+
+# 2. image: pull the base by digest, build, save the tar, load it on spark-2. The docker daemon is outside any
+#    scope, so these refuse while an inference unit is active; run them between models (beastdown first), or
+#    accept the risk with --while-serving.
+scripts/backends/spark-hy4-stage.sh --run --only image,save,ship
+
+# 3. the runtime copy (~/openbeast-recipes/hy4-vllm) and the unit; daemon-reload; NOTHING is enabled
+scripts/backends/spark-hy4-stage.sh install
+scripts/backends/spark-beast.sh install           # beast-spark with `hy4`, and the beasthy4 alias
+scripts/backends/spark-hy4-stage.sh --check       # exit 0 only when every piece is in place on both Sparks
+```
+
+Every step is resumable and skips what is already done (a verified folder,
+an image that is present, a tar whose MANIFEST names the image id, a worker
+that has the same image id). What lands where:
+
+| Where | What | Size |
+|---|---|---|
+| both Sparks, `~/Documents/atakans-Hy4-flash-NVFP4/` | the 76 files, `SHA256SUMS.hub-lfs`, `.hy4-verified` (revision, date, host, the sums' sha256) | 165 GB each |
+| spark-1, `~/Documents/hy4-vllm-image/` | `openbeast_hy4-vllm_e764efa-b486c74ef8b6.tar` + `.sha256` + `MANIFEST` (image id, base digest and index, recipe commit) | about the image's size (UNVERIFIED: the base is 11 GB compressed) |
+| both Sparks, docker | `vllm/vllm-openai@sha256:5e2c1bad…` (spark-1 only) and `openbeast/hy4-vllm:e764efa-b486c74ef8b6` | |
+| both Sparks, `~/.cache/hy4-vllm/b486c74ef8b6/` | the first start's Triton / FlashInfer / vLLM compile and autotune cache (the image's `HOME=/cache`), and `memguard.log` | filled on the first start |
+| spark-1 | `~/openbeast-recipes/hy4-vllm/` (start, stop, config, memguard, the Hub lists) and `~/.config/systemd/user/hy4-vllm-inference.service` | |
+
+Disk on 2026-11-19: 2.2 TB free on spark-1, 2.3 TB on spark-2.
+
+**Offline.** Weights from a drive: `--weights-from /media/drive/atakans-Hy4-flash-NVFP4`
+(the same verification against the vendored Hub sums). The image from the
+saved tar: `--image-from ~/Documents/hy4-vllm-image/<tag>.tar` (checked
+against its `.sha256`), then `--only ship`. To carry it to a rebuilt pair,
+copy `~/Documents/hy4-vllm-image/` and the weights folder (the Documents
+backup carries both). Nothing in `start.sh` reaches beyond the link
+(`HF_HUB_OFFLINE=1` in both containers).
+
+### Bring-up
+
+```bash
+beasthy4                     # = ~/.local/bin/beast-spark hy4
+beaststatus                  # the hy4 row, what :8000 serves; "the selection stays ds"
+beastds                      # back to DeepSeek (or beastglm); a reboot also comes back to DeepSeek
+```
+
+`beast-spark hy4` holds the model-switch lock, stops whichever of
+`deepseek-v41-inference` / `spark-hydra-inference` runs (their enablement
+stays: DeepSeek stays the boot selection), starts `hy4-vllm-inference`, waits
+up to 2,400 s (`SB_HY4_WAIT_S`) until `/v1/models` on `127.0.0.1:8000` lists
+`Hy4-flash-NVFP4`, then sets `INFERENCE_BACKEND=vllm` (the command center's
+readiness probe for vLLM: its `/health` is an empty 200, TensorFold's body
+says ok) and `INFERENCE_MODEL="Hy4-flash-NVFP4"` in `~/openbeast/openbeast.conf`
+(`LLAMA_API_KEY` stays: the server takes the same `tensorfold-api-key` the gate
+already sends) and restarts the command center. If any of that fails, its
+trap stops Hy4, puts both keys back if they were changed, and starts the model
+that served before, waiting for its id. `beastds`, `beastglm`, `beastup` and
+`beastdown` stop Hy4 and, while `openbeast.conf` still names Hy4, point it
+back at the selected model (`INFERENCE_BACKEND=tensorfold`, its id; `beastup`
+then restarts the command center to read it); `activate-stock.sh` and
+`restore-glm.sh` rewrite `INFERENCE_MODEL` for their model, as before. `AGENT_PROFILE=deepseek-best` stays in
+`openbeast.conf` while Hy4 serves: it is arm T2's switch set, which is also
+H_T2's, so the daily agent runs Hy4 the way the arm measures it.
+
+What `start.sh` does, in order (refusing before anything starts):
+
+1. The weights are verified at 30f201ac on both Sparks (`.hy4-verified`), the
+   image is present on both, the key file is readable.
+2. Nothing listens on `:8000` (`ss`).
+3. The QSFP link on each Spark: the netdev and source address of the route to
+   the peer (`ip -4 route get 10.100.216.2` on the head, `… 10.100.216.1` on
+   the worker, over ssh), that netdev's RoCE device first, then every other Up
+   RoCE device (the second rail). Today: head `enp1s0f0np0` 10.100.216.1,
+   `rocep1s0f0,roceP2p1s0f0`; worker `enp1s0f1np1` 10.100.216.2,
+   `rocep1s0f1,roceP2p1s0f1` (the worker's cables sit on port f1).
+4. Memory: each Spark must have `HY4_MIN_AVAIL_GIB` available, `auto` =
+   ceil(0.85 x MemTotal) + 2 = **106 GiB** on a 121.7 GiB Spark (what vLLM asks
+   for at start with `--gpu-memory-utilization 0.85`, plus 2), waiting up to
+   180 s for a just-stopped model's memory to come back.
+5. Stale `hy4-vllm` containers removed on both, then rank 1 on spark-2
+   (headless), then rank 0 here, each with `--memory 112g` (the recipe's cgroup
+   cap), `--shm-size 16g`, `/dev/infiniband`, `IPC_LOCK`, the weights read-only
+   at `/model`, the cache at `/cache`.
+6. memguard on both Sparks (`HY4_MEMGUARD_GIB` 2.5, hold 4 s, hard floor 1 GiB:
+   the DeepSeek recipe's levels), each exits when its container ends.
+7. Foreground: rank 0's log goes to the journal; when either rank ends, the
+   other is stopped and the unit fails (`Restart=no`: an experimental start is
+   not retried in a loop).
+
+The flags, from the recipe (the same on both ranks, plus the rank's own):
+
+```text
+vllm serve /model --served-model-name Hy4-flash-NVFP4
+  --tensor-parallel-size 2 --enable-expert-parallel --dtype bfloat16
+  --max-model-len 262144 --max-num-seqs 4 --max-num-batched-tokens 8192
+  --kv-cache-memory-bytes 6G --gpu-memory-utilization 0.85
+  --speculative-config {"method":"dfly","num_speculative_tokens":5}      # HY4_SPEC; HY4_SPEC=off without the drafter
+  --limit-mm-per-prompt {"image":1,"video":0}
+  --reasoning-parser hy_v4 --tool-call-parser hy_v4 --enable-auto-tool-choice
+  --nnodes 2 --master-addr 10.100.216.1 --master-port 29501
+  rank 1: --node-rank 1 --headless          rank 0: --node-rank 0 --host 127.0.0.1 --port 8000
+env (each rank its own link): NCCL_SOCKET_IFNAME / GLOO_SOCKET_IFNAME / TP_SOCKET_IFNAME = the netdev,
+  NCCL_IB_HCA = both rails, NCCL_IB_GID_INDEX=3 (as the DeepSeek recipe), NCCL_IB_DISABLE=0,
+  NCCL_IGNORE_CPU_AFFINITY=1, VLLM_HOST_IP = the link address, HF_HUB_OFFLINE=1, FLASHINFER_WORKSPACE_BASE=/cache,
+  MAX_JOBS=4; rank 0 also VLLM_API_KEY (by name: docker copies it from start.sh's environment, never argv)
+```
+
+`scripts/backends/hy4-vllm/start.sh --print` prints both docker commands
+with the real links and memory, and starts nothing (safe to run while
+DeepSeek serves). The link netdevs run MTU 9000 on both Sparks (read 2026-11-19); RoCE is
+unaffected by spark-guard (RDMA bypasses netfilter).
+
+**spark-guard.** No new port. The rendezvous is vLLM's 29501 (+1), which the
+guard already keeps on the fabric; vLLM's other sockets bind `VLLM_HOST_IP`,
+the link address, which the guard's fabric-address rule covers. Without
+`VLLM_HOST_IP` vLLM would pick the default route's address (the LAN), so
+`start.sh` always sets it (`tests/test_spark_guard.sh` checks both).
+
+### Memory and fit
+
+| | Per Spark | Status |
+|---|---|---|
+| Weights | 77.3 GiB of safetensors per rank by our rule (164.65 GB / 2 x 1.008); the recipe reports ~82 GiB resident | computed; CLAIMED |
+| KV cache | 6 GiB fixed (`--kv-cache-memory-bytes 6G`): 578k tokens, 262,144 a request | CLAIMED |
+| Start needs | 106 GiB available on each Spark (`auto`) | our check |
+| Lowest free while serving | 12.8 GiB (one user, the 6G KV cache) | CLAIMED |
+| cgroup cap | 112 GiB per container | the recipe's |
+
+Against DeepSeek's 98.8 GiB of weights a rank with ~6 GiB left on the head,
+Hy4 is the roomier fit. The command center keeps running beside rank 0 on
+spark-1 as it does with DeepSeek (UNVERIFIED with Hy4: the recipe's 12.8 GiB
+was measured without it). Speeds (CLAIMED, the recipe, one user, thinking
+off): 17-38 tok/s decode with DFly 5 (about 15 without), prefill 1,110 tok/s
+at 4K and 1,461 at 32K; weights load in 104 s; the first start autotunes for
+about 9 minutes (ready 9.7 minutes after the setup), later starts reuse
+`~/.cache/hy4-vllm/<image hash>/`.
+
+### Thinking
+
+Hy4's chat template takes `reasoning_effort` (`high`, `max` or `no_think`) in
+`chat_template_kwargs` and **ignores `enable_thinking`**. When a request names
+no `reasoning_effort`, the template uses `high`, and vLLM's `hy_v4` reasoning
+parser defaults to the same `high` (it must agree with the template, or the
+whole reply would land in the reasoning field). So:
+
+- thinking ON works with no change: the eval runner's `enable_thinking=true`
+  (and the gate's `INFERENCE_THINKING=on` default) reach Hy4 as
+  `reasoning_effort` high. That is what arm `H_T2` measures.
+- thinking OFF does **not**: `enable_thinking=false` is ignored too, so Hy4
+  still thinks. A client that wants it off sends
+  `"chat_template_kwargs": {"reasoning_effort": "no_think"}`. The eval runner
+  cannot (it names only `enable_thinking`, in `agents/runner.py`, an
+  era-hashed file), so the N / N0 arms and the U arms' forced-act turn are not
+  Hy4 arms until that changes; a server-side mapping in the template would
+  not do it either, because the reasoning parser decides from the request.
+
+### UNVERIFIED until the first real start
+
+- The image builds on spark-1 and the recipe's flags start on this pair, with
+  this vLLM build and our two-netdev layout (the recipe ran on its author's
+  pair).
+- NCCL over both rails with GID index 3 and the worker on port f1 (the
+  DeepSeek recipe runs the same NCCL settings, but on TensorFold).
+- The first start's autotune time and that the cache under
+  `~/.cache/hy4-vllm/` is reused (the image runs as root: the cache files are
+  root-owned).
+- The 106 GiB start check against what vLLM actually allocates; memguard's
+  2.5 GiB floor against vLLM's real low point beside the command center.
+- The tar's size, and `docker save | load` time over the link.
+- Tool calls and the reasoning split through `hy_v4` with the gate and
+  OpenCode: after the first start, `scripts/backends/conformance.sh --url
+  http://127.0.0.1:8000 --model Hy4-flash-NVFP4 --backend vllm --key-file
+  ~/.config/openbeast/tensorfold-api-key`.
+- Whether `VLLM_HOST_IP` and `--master-addr` on the link are all vLLM needs
+  for its multi-node sockets in this build.
+
+### Run H_T2
+
+After the U series, with Hy4 serving (`beasthy4`), from the Mac as for DS-T2:
+
+```bash
+python3 evals/campaign.py run --campaign v5-thinking-first --only H_T2 \
+    --model-name "Hy4-flash (NVFP4)" --served-model Hy4-flash-NVFP4 \
+    --base-url https://spark-1.tail4109f9.ts.net:8443/v1 --api-key-env OPENBEAST_SPARK_API_KEY \
+    --jobs 4 --slots 4
+```
+
+`H_T2` is arm T2 exactly (same switches, the same declared 8,192 budget),
+`optional`, jobs 4 / slots 4, and declares `served_model: Hy4-flash-NVFP4`:
+its preflight refuses to run while the server serves anything else (a Hy4
+row measured on DeepSeek would look valid). Compare its row with DS-T2
+(65/71) under the same harness. ETA UNVERIFIED: 8-12 h (Hy4 decodes slower
+than DeepSeek's ~30 tok/s a stream at 4). Then `beastds`.
+
 ## Quickstart
 
 Three paths. Every command below is from the runbook body; the linked section
@@ -104,9 +357,10 @@ has the detail. All run from the Mac unless marked "on spark-1".
 | `beastdown` | `beast-spark down` | Stops the command center and both inference units. The boot selection stays as it is |
 | `beastglm` | `beast-spark glm` | Switches to GLM-5.3-Flash, the staged alternative, through `rollback/restore-glm.sh`, waits for `GLM-5.3-Flash-EXL3` |
 | `beastds` | `beast-spark ds` | Switches to DeepSeek-V4.1-Flash (Mia EXL3), the default (or the `DS_PACK` / `DS_ID` in `~/.config/openbeast/beast-spark.env`): stops GLM, re-selects that pack with `spark-deepseek-pack.sh use … --id …` if another pack is selected, then runs `activate-stock.sh` (canary, conformance, command center, boot selection), and waits for `DeepSeek-V4.1-Flash-1017`. If anything fails and GLM was serving when it began, it runs `restore-glm.sh` and waits for GLM |
-| `beaststatus` | `beast-spark status` | Shows the selected model and pack, the three units, and what `:8000` serves |
+| `beasthy4` | `beast-spark hy4` | Serves Hy4-flash (NVFP4, vLLM TP2) for now, never as the selection: stops DeepSeek or GLM (their enablement stays), starts `hy4-vllm-inference`, waits for `Hy4-flash-NVFP4`, sets `INFERENCE_BACKEND=vllm` and `INFERENCE_MODEL`, restarts the command center; the model that served before comes back on failure ([Hy4-flash](#hy4-flash-nvfp4-vllm-tp2-staged)). `beastds` / `beastglm` / `beastup` / `beastdown` stop Hy4 (and point `openbeast.conf` back at the selected model) |
+| `beaststatus` | `beast-spark status` | Shows the selected model and pack, the inference units (Hy4's too), and what `:8000` serves |
 
-"Selected" means the enabled inference unit, which is the one that starts at boot. DeepSeek is the default; `beastup` with nothing selected picks DeepSeek (`beast-spark ds`). GLM is the alternative. The pair serves only these two models. The Mia EXL3 pack (its folder and cache id end in `-v2`) supersedes the stock EAQ v1 pack, which stays on disk only as a fallback (`spark-deepseek-pack.sh use stock`, while DeepSeek serves). Switches hold the lock `${XDG_RUNTIME_DIR:-/tmp}/spark-model.lock` (shared with `spark-deepseek-pack.sh`), so a second one is refused while one runs. **Install or update** after a pull, on spark-1, offline too: `~/openbeast/scripts/backends/spark-beast.sh install` copies `beast-spark` to `~/.local/bin`, `spark-deepseek-pack.sh` and `spark-deepseek-prepare-local.sh` to `~/openbeast-recipes/deepseek-prep/`, and appends the alias block to `~/.bashrc` once (a rebuilt spark-1 needs nothing else). `beast-spark aliases` prints the five lines, under `# beast-spark shortcuts`; they call `"$HOME/.local/bin/beast-spark …"`. From the Mac by hand: `scp scripts/backends/spark-beast.sh spark-1:.local/bin/beast-spark`. After a switch, clients with `openbeast-client autosync` follow within 30 s; otherwise run `openbeast-client refresh-config`.
+"Selected" means the enabled inference unit, which is the one that starts at boot. DeepSeek is the default; `beastup` with nothing selected picks DeepSeek (`beast-spark ds`). GLM is the alternative. The pair serves only these two models. The Mia EXL3 pack (its folder and cache id end in `-v2`) supersedes the stock EAQ v1 pack, which stays on disk only as a fallback (`spark-deepseek-pack.sh use stock`, while DeepSeek serves). Switches hold the lock `${XDG_RUNTIME_DIR:-/tmp}/spark-model.lock` (shared with `spark-deepseek-pack.sh`), so a second one is refused while one runs. **Install or update** after a pull, on spark-1, offline too: `~/openbeast/scripts/backends/spark-beast.sh install` copies `beast-spark` to `~/.local/bin`, `spark-deepseek-pack.sh` and `spark-deepseek-prepare-local.sh` to `~/openbeast-recipes/deepseek-prep/`, and appends the alias block to `~/.bashrc` once (a rebuilt spark-1 needs nothing else). `beast-spark aliases` prints the six lines (`install` adds `beasthy4` to an older alias block), under `# beast-spark shortcuts`; they call `"$HOME/.local/bin/beast-spark …"`. From the Mac by hand: `scp scripts/backends/spark-beast.sh spark-1:.local/bin/beast-spark`. After a switch, clients with `openbeast-client autosync` follow within 30 s; otherwise run `openbeast-client refresh-config`.
 
 **(a) Everyday, on the deployed pair.** On spark-1 the enabled user unit drives both ranks: `deepseek-v41-inference` for DeepSeek (the default), or `spark-hydra-inference` while GLM is selected (`beaststatus` shows which). It retries a failed launch after 60 seconds (DeepSeek) or 30 seconds (GLM). The command center has its own user unit, `openbeast`.
 
@@ -186,6 +440,7 @@ zig, the docs mirror). G6 also lists what is still pending on the live pair.
 
 | Section | What it gets you |
 |---|---|
+| [Hy4-flash (NVFP4, vLLM TP2): staged](#hy4-flash-nvfp4-vllm-tp2-staged) | the third model, staged in code: pins, staging, `beasthy4`, memory, thinking, what is unverified, arm H_T2 |
 | [Quickstart](#quickstart) | everyday checks and restarts, using the pair from a client, the build order |
 | [Install everything, fresh](#install-everything-fresh) | the ordered checklist from bare DGX OS to the full pair, online and offline, per host |
 | [0. The pair at a glance](#0-the-pair-at-a-glance) | names, addresses, what runs where |
@@ -531,7 +786,7 @@ How to reach each box:
 | HF cache | both | `~/openbeast-models/deepseek-hf` (packs hard-linked in as snapshots; Engram base revision `1bae0e10…`, shards 47 and 48) |
 | Pack folders | both | `~/Documents/Mia-AiLab-DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw` (stock EAQ v1, the fallback) and `…-bpw-v2` (DeepSeek-V4.1-Flash (Mia EXL3), serving). spark-2's `~/Documents` mirrors spark-1's as a backup |
 | Helpers | spark-1, `~/openbeast-recipes/deepseek-prep/` | beast-spark's internals: `activate-stock.sh` (starts and verifies DeepSeek, enables it, disables GLM; it does **not** stop GLM, so `beastds` stops GLM first), `rollback/restore-glm.sh` (DeepSeek → GLM). Also `spark-deepseek-pack.sh`, `spark-deepseek-prepare-local.sh`, `verify-chat.py`, conformance records (`conformance-4/`, `conformance-v2/`) |
-| Shortcuts | spark-1, `~/.local/bin/beast-spark` + aliases in `~/.bashrc` | `beastup`, `beastdown`, `beastds`, `beastglm`, `beaststatus`: **the** switch path (from `scripts/backends/spark-beast.sh`; `spark-beast.sh install` puts it and the aliases in place) |
+| Shortcuts | spark-1, `~/.local/bin/beast-spark` + aliases in `~/.bashrc` | `beastup`, `beastdown`, `beastds`, `beastglm`, `beasthy4`, `beaststatus`: **the** switch path (from `scripts/backends/spark-beast.sh`; `spark-beast.sh install` puts it and the aliases in place) |
 | GLM unit | spark-1, `spark-hydra-inference` (**disabled** since 2026-11-18; enabled only while GLM is selected) | the staged alternative; see the GLM table below |
 | Command center | spark-1, `openbeast` (enabled) + transient `openbeast-stack` scope | as in the GLM table. `INFERENCE_MODEL` follows the selection (`restore-glm.sh` and `activate-stock.sh` rewrite it): `DeepSeek-V4.1-Flash-1017` with the default (checked 2026-11-18), `GLM-5.3-Flash-EXL3` while GLM serves. `INFERENCE_THINKING=on`, `INFERENCE_SLOTS=4`, `EDGE_GATE=true` either way |
 | opencode | both, `~/.opencode/bin/opencode` v2.3.2 | provider `spark-hydra-local` at `127.0.0.1:8000`, default model `DeepSeek-V4.1-Flash-1017` (since 2026-11-18), GLM also listed; on spark-2 through the `opencode-model-link` ssh tunnel ([SELF_DEVELOPMENT.md](SELF_DEVELOPMENT.md#opencode-on-the-sparks)) |
