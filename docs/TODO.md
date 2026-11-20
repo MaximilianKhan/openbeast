@@ -238,6 +238,12 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
   live quotes and replacement copy, the board rows, the uncensored-preferred
   policy wording, new sections (labelled MEASURED / PLANNED), and the
   post-deploy acceptance checks.
+  **Extended 2026-11-20 by [`WEBSITE_UPDATE_2026-11-20.md`](WEBSITE_UPDATE_2026-11-20.md)**
+  (re-checked live: nothing from 11-19 is deployed yet): the deltas for
+  DeepSeek's four arms (T, T_s1, T2, T3) and the about-one-unit seed noise,
+  more live stale text, the PROPOSED How we evaluate / Models / Own your
+  stack pages and the policy quote, the full new `llms.txt`, more Rule E
+  greps, and questions Q-F to Q-L for Max.
 
 **Open — measurement:**
 
