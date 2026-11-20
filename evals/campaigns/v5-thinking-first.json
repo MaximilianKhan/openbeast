@@ -142,7 +142,7 @@
     {"id": "UP_8k", "base": "UP", "label": "UP at an 8192 cap (harness10)",
      "optional": true,
      "jobs": 4, "slots": 4,
-     "note": "Only with --only UP_8k. UP with the per-turn cap at 8192 (T2's), so UP_8k vs U_8k isolates the planning lines and UP_8k vs T2 measures the full process+planning stack at the cap that scored best. Evidence, DeepSeek-V4.1-Flash (Mia EXL3), 2026-11-20: U (16384 cap) scored 59/71 against T2's 65 (8192); every unit U lost hit the 3,600 s wall with 11-26 turns against T2's 29-49, so the 16384 cap, not the forced-act turn, cost U. time_x 2.3.",
+     "note": "Only with --only UP_8k. UP with the per-turn cap at 8192 (T2's), so UP_8k vs U_8k isolates the planning lines and UP_8k vs T2 measures the full process+planning stack at the cap that scored best. Evidence, DeepSeek-V4.1-Flash (Mia EXL3), 2026-11-20: U (16384 cap) scored 59/71 against T2's 65 (8192); four of the six units U lost ran out of wall with 11-26 turns against T2's 28-49 (175 hit the wall at 53 turns; 190 used its 60 turns), and all 24 forced turns ended in a tool call, so the 16384 cap, not the forced-act turn, cost U (docs/reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md). time_x 2.3.",
      "time_x": 2.3,
      "args": ["--reasoning-budget", "8192"],
      "env": {"OPENBEAST_AGENT_MAX_TOKENS": "8192"}},
