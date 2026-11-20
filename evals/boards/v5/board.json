@@ -97,6 +97,17 @@
       "campaign_arm": "v5-thinking-first T_s1",
       "host": "DGX Spark pair, TensorFold, Mia EXL3 (2.9 bpw)",
       "note": "seed-noise replicate of DS-T: 61/71 like T, one unit swapped each way (noise about +/-1); 0 lost; integrity scan 2026-11-19: 0 contaminated"
+    },
+    {
+      "id": "DS-T3",
+      "model": "DeepSeek-V4.1-Flash (Mia EXL3)",
+      "config": "campaign arm T3: T2 with a 4096-token per-turn thinking cap (harness9); trades 3 units each way against T2",
+      "files": [
+        "eval-deepseek-v4-1-flash-v5-thinking-first-t3-20261119-180953.json"
+      ],
+      "campaign_arm": "v5-thinking-first T3",
+      "host": "DGX Spark pair, TensorFold, Mia EXL3 (2.9 bpw)",
+      "note": "65/71 like T2: the 4096 cap swapped three iterate-and-test units in for three long-derivation units out; 0 lost; integrity scan 2026-11-20: 0 contaminated"
     }
   ],
   "not_yet_run": [
