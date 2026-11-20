@@ -116,6 +116,33 @@ MEASURED_SHA256 = {
 PRODUCTION_VARIANT_SHA256 = {
     "v3": {"zig": "cfdab8fa9f194e8a3a346cbb12567c625ac93f557b40ee572d601db3c8ff8297"},
 }
+#: The language-independent ALGORITHMIC PROCEDURE pack (harness10, arm UPA of
+#: v5-thinking-first; 2026-11-19). Procedure only, no noun from any v5 unit
+#: (tests/test_eval_arms_u.py checks the unit ids): bound before code, split
+#: into parts that never interact, test doubtful simplifications against a
+#: brute force, memoised search on the minimal state, standard reductions,
+#: two-stage verification, redesign on a >5x miss. Evidence: DeepSeek-V4.1-
+#: Flash (Mia EXL3) failed 168_linearizability_kv by choosing a global
+#: memoised search and rejecting the per-part split by argument. Eval only:
+#: run_eval hands it to EVERY unit with OPENBEAST_ALGO_PACK=1 (packs_flag),
+#: after the language and host packs. The bytes are FROZEN: the sha below is
+#: pinned by a test and checked at run start (algo_pack_problem), and an
+#: edited pack is a new file (algo-v2.md) with a new pin, never a re-tune of
+#: this one.
+ALGO_PACK_FILE = "algo-v1.md"
+ALGO_PACK_SHA256 = "6c5324007750c44091a03c98cfef813cac0f3e576f982beb8908c0732e2ac09d"
+
+
+def algo_pack_problem(data: bytes) -> str | None:
+    """Why `data` is not the frozen algorithmic pack, or None."""
+    got = hashlib.sha256(data).hexdigest()
+    if got != ALGO_PACK_SHA256:
+        return (f"agents/packs/{ALGO_PACK_FILE}: sha256 {got[:16]} is not the frozen "
+                f"{ALGO_PACK_SHA256[:16]} (agents/lang/pack_context.py ALGO_PACK_SHA256). "
+                f"The pack is frozen: put an edited procedure in a new file with a new pin")
+    return None
+
+
 #: Every value LANG_PACK_VARIANT accepts. scripts/lib/conf.sh holds the same
 #: list (_OB_PACK_VARIANTS); tests/test_agent_profile.py pins the two.
 PRODUCTION_VARIANTS = (DEFAULT_PACK_VARIANT,) + tuple(sorted(PRODUCTION_VARIANT_SHA256))

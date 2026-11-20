@@ -295,6 +295,15 @@
 #AGENT_ENV_BLOCK=1
 #AGENT_WALL_WARN=1
 #DIAG_EDIT_HINT=1
+# harness10 (2026-11-19, unmeasured until v5 arms U/UP report; no profile
+# sets them): AGENT_FORCE_ACT=1 sends one reply with thinking OFF after 2
+# turns in a row cut off mid-thought (it states its decisions, then acts);
+# AGENT_DONE_VERIFIED=1 adds "once your checks pass, call task_done";
+# AGENT_ALGO_LINES=1 adds three planning lines (bound first, test a doubtful
+# simplification against a brute force, redesign on a >5x time miss).
+#AGENT_FORCE_ACT=1
+#AGENT_DONE_VERIFIED=1
+#AGENT_ALGO_LINES=1
 
 # ---------------------------------------------------------------------------
 # Engine plane  (scripts/engine.sh, docs/ENGINES.md)

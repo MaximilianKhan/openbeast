@@ -3099,6 +3099,31 @@ def _eval_web_gate(tool: str, arg: str) -> str | None:
     return None
 
 
+#: The web tools: what OPENBEAST_AGENT_HIDE_WEB=1 leaves out of an eval request.
+WEB_TOOL_NAMES = ("fetch", "web_search")
+
+
+def web_tools_hidden() -> bool:
+    """harness10 (opt-in, OPENBEAST_AGENT_HIDE_WEB=1; key `noweb`): under
+    eval with the web tools off (_eval_web_gate refuses them unless
+    OPENBEAST_EVAL_WEB=record), the runner stops advertising them: their
+    schemas leave the request and their lines leave the system prompt
+    (runner.agent_instructions). Before this, every eval prompt said "use
+    web_search/fetch" for tools that could only refuse. A call made anyway
+    still gets the gate's refusal. Never outside eval, never with record on."""
+    if os.environ.get("OPENBEAST_AGENT_HIDE_WEB", "").strip() != "1" or not _eval_mode():
+        return False
+    return os.environ.get("OPENBEAST_EVAL_WEB", "").strip().lower() != "record"
+
+
+def visible_tool_schemas() -> list:
+    """TOOL_SCHEMAS as sent to the model: without the web tools when
+    web_tools_hidden(), else the list itself (the request is unchanged)."""
+    if not web_tools_hidden():
+        return TOOL_SCHEMAS
+    return [s for s in TOOL_SCHEMAS if s["function"]["name"] not in WEB_TOOL_NAMES]
+
+
 # The eval fetch guard (2026-11-18). Under eval the web tools are off unless
 # OPENBEAST_EVAL_WEB=record turns them on, and the bash sandbox (#224) denies
 # the shell the network. A recorded fetch could still reach this project's
