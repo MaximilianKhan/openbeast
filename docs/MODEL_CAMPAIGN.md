@@ -4,7 +4,8 @@ This is the procedure that found, on 2026-11-16, how best to serve and harness
 GLM-5.3-Flash on the spark-hydra pair. It is written so that any model can go
 through it unchanged. The second model through it is DeepSeek-V4.1-Flash
 (Mia EXL3), the pair's default since 2026-11-18 ("1017"; checklist and status in
-[§9](#9-next-deepseek-v41-flash-1017-thinking-first)). Every step is a command. Where the
+[§9](#9-next-deepseek-v41-flash-1017-thinking-first), results so far in
+[the interim campaign report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md)). Every step is a command. Where the
 step needs judgment, the decision rule is written down next to it.
 
 ```
@@ -340,11 +341,13 @@ below). `--dry-run` prints them for your settings.
 | **N0** | — | the bare no-thinking baseline | `--turns-per-wall-s 15 --thinking off` (= 2026-11-16 arm B, thinking pinned off) | 1.0 | ~2.5 h | the floor. N0 → N is what the components add without thinking; N0 → T is everything |
 | T_s2 | T | a second seed (optional) | `--seed 2`; only with `--include T_s2` | 2.3 | ~5.8 h | a tighter noise margin |
 | T2 | T | 8192 turn cap + act nudge (optional, harness9) | `--reasoning-budget 8192`; `OPENBEAST_AGENT_MAX_TOKENS=8192 OPENBEAST_AGENT_ACT_NUDGE=1`; `"jobs": 4, "slots": 4` like T (decided 2026-11-18); only with `--only T2` or `--include T2`, **and first in every DeepSeek-V4.1-Flash chain** (`recommend.composite_by_model`); needs a harness9 tree | 2.3 | ~5.8 h (6.2 h for DeepSeek) | do shorter thinking turns and a push to act turn wall kills into passes? **DeepSeek: yes, 65/71 against T's 61/71** |
-| T3 | T2 | 4096 turn cap (optional, config only) | `--reasoning-budget 4096`; `OPENBEAST_AGENT_MAX_TOKENS=4096 OPENBEAST_AGENT_ACT_NUDGE=1`; only with `--only T3`; same harness9 tree and era as T2 | 2.3 | ~5.8 h | does faster iteration beat deeper single turns? (T3 vs T2 isolates the cap) |
-| U | T2 | forced-act turn instead of the act nudge + done-when-verified, 16384 cap (optional, harness10) | `--reasoning-budget 16384`; `OPENBEAST_AGENT_MAX_TOKENS=16384 OPENBEAST_AGENT_ACT_NUDGE=0 OPENBEAST_AGENT_FORCE_ACT=1 OPENBEAST_AGENT_FORCE_ACT_AFTER=2 OPENBEAST_AGENT_DONE_VERIFIED=1 OPENBEAST_AGENT_HIDE_WEB=1`; only with `--only U`; needs a harness10 tree | 2.3 | ~6-7 h for DeepSeek | does a thinking-off act turn end the capped-think stalls the text nudge could not? (U vs T2) |
+| T3 | T2 | 4096 turn cap (optional, config only) | `--reasoning-budget 4096`; `OPENBEAST_AGENT_MAX_TOKENS=4096 OPENBEAST_AGENT_ACT_NUDGE=1`; only with `--only T3`; same harness9 tree and era as T2 | 2.3 | ~5.8 h | does faster iteration beat deeper single turns? (T3 vs T2 isolates the cap) **DeepSeek: no, 65/71 like T2, 3 units in and 3 out, SCORE 91.5 against 94.9; 8192 stays** |
+| U | T2 | forced-act turn instead of the act nudge + done-when-verified, 16384 cap (optional, harness10) | `--reasoning-budget 16384`; `OPENBEAST_AGENT_MAX_TOKENS=16384 OPENBEAST_AGENT_ACT_NUDGE=0 OPENBEAST_AGENT_FORCE_ACT=1 OPENBEAST_AGENT_FORCE_ACT_AFTER=2 OPENBEAST_AGENT_DONE_VERIFIED=1 OPENBEAST_AGENT_HIDE_WEB=1`; only with `--only U`; needs a harness10 tree | 2.3 | ~6-7 h for DeepSeek | does a thinking-off act turn end the capped-think stalls the text nudge could not? (U vs T2) **DeepSeek: 59/71, −6 against T2. Every forced turn acted (24 of 24), but the lost units ran out of wall at the 16384 cap; U_8k is the clean test** |
 | U_8k | U | U at T2's 8192 cap (optional, harness10) | `--reasoning-budget 8192`; `OPENBEAST_AGENT_MAX_TOKENS=8192` | 2.3 | ~6.2 h | the cap question under the forced act (U_8k vs U; read with T3) |
 | UP | U | + three planning lines (optional, harness10) | `OPENBEAST_AGENT_ALGO_LINES=1`; also the GLM control (`--model-name GLM-5.3-Flash` when the pair serves GLM) | 2.3 | ~6-7 h | do "bound first / test the doubtful split against a brute force / redesign on a >5x miss" fix the wrong-algorithm failures? (UP vs U) |
 | UPA | UP | + the frozen algorithmic procedure pack (optional, harness10) | `OPENBEAST_ALGO_PACK=1` (`agents/packs/algo-v1.md`, sha256 `6c532400...`, packs on) | 2.3 | ~6-7 h | does a ~400-token procedure pack add to the lines? (UPA vs UP) |
+| UP_8k | UP | UP at T2's 8192 cap (optional, harness10) | `--reasoning-budget 8192`; `OPENBEAST_AGENT_MAX_TOKENS=8192` | 2.3 | ~6.2 h | the planning lines at the better cap (UP_8k vs U_8k), and the whole stack against T2 |
+| UPA_8k | UPA | UPA at T2's 8192 cap (optional, harness10) | `--reasoning-budget 8192`; `OPENBEAST_AGENT_MAX_TOKENS=8192` | 2.3 | ~6.2 h | the pack at the better cap (UPA_8k vs UP_8k) |
 | T_j2 | T | 2 concurrent units (optional) | `"jobs": 2, "slots": 2` in the arm (wins over the CLI); only with `--only T_j2` or `--include T_j2` | 2.3 | ~7.7 h (~9 h for DeepSeek) | the contention model: same tokens per unit, at 2 streams (see the note below) |
 
 **DeepSeek's composite is T2 (2026-11-19).** DeepSeek-V4.1-Flash (Mia EXL3)
@@ -359,13 +362,13 @@ config from T2: each ablation and the no-thinking twin are still compared with
 T, the arm they remove from, a dropped component is removed from T2, and the
 noise margin comes from T's seed arm while T2 has none of its own. Until T2 is
 measured, the report uses T and says so. Arm T is unchanged for every model
-(the GLM history depends on it). As of 2026-11-19, **arm T_s1** (T's seed
-noise) **is running** against the live pair, **arm T3** (T2 with a 4096 cap)
-runs next, and the harness10 arms (U, UP, UPA; PR #234) queue after T3. The
+(the GLM history depends on it). **State on 2026-11-20:** T_s1 61/71 (noise
+about ±1 unit), T3 65/71 (a wash against T2: 8192 stays), U 59/71 (the 16384
+cap cost it), **UP running**, then UPA, then U_8k, UP_8k and UPA_8k after a
+gap; the tables and their deltas are in [the interim campaign report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md). The
 daily-agent form of T2 is one line in openbeast.conf,
-`AGENT_PROFILE=deepseek-best` ([SPARK_HYDRA.md](SPARK_HYDRA.md#e2b-deepseek-best-configuration-v5-t2));
-it goes live on spark-1 once the running eval arm ends (nothing on the live
-pair changes mid-arm).
+`AGENT_PROFILE=deepseek-best` ([SPARK_HYDRA.md](SPARK_HYDRA.md#e2b-deepseek-best-configuration-v5-t2)),
+live on spark-1 since 2026-11-19.
 
 Total for the eight default arms: about 39 h at GLM's speed. Escalation
 stays off in every arm (G16: zig-only on the Mac host).
@@ -852,17 +855,26 @@ campaign. On GLM, its N0 is arm B (36/71, thinking pinned off).
       DeepSeek-V4.1-Flash (Mia EXL3): `recommend.composite_by_model` for
       campaigns (§5b), `AGENT_PROFILE=deepseek-best` for daily agents
       ([SPARK_HYDRA.md](SPARK_HYDRA.md#e2b-deepseek-best-configuration-v5-t2)).
-- [ ] **Arms T_s1, then T3: running** (2026-11-19). T_s1 sets the noise
-      margin; T3 tests a 4096 cap against T2. If T3 beats T2 by more than the
-      margin, move `composite_by_model` and the profile's AGENT_MAX_TOKENS
-      together, with the evidence.
-- [ ] **Arms U, U_8k, UP, UPA (harness10, after T3).** From the 168
-      investigation (2026-11-19, CHANGELOG harness10): the forced-act turn
-      replaces the text act nudge (U, U_8k for the cap), then the planning
-      lines (UP), then the algorithmic pack (UPA), one `--only` arm at a time
-      from a harness10 tree with `--allow-tree-move`. Each ~6-7 h. Read U vs
-      T2 first; UP is read against U and UPA against UP. Then UP on
-      GLM-5.3-Flash as the control.
+- [x] **Arms T_s1 and T3 (2026-11-19/20).** T_s1 61/71, the same as T with
+      one unit swapped each way: the noise is about ±1 unit. T3 (4096 cap)
+      65/71, the same as T2 with 3 units in and 3 out and a lower SCORE (91.5
+      against 94.9), so the 8192 cap stays. Board rows DS-Ts1 and DS-T3;
+      integrity scans clean.
+- [x] **Arm U (harness10, 2026-11-20): 59/71**, −6 against T2 and nothing
+      gained. Every forced-act turn ended in a tool call (24 of 24), but the
+      units U lost ran out of wall with far fewer turns than T2's at the
+      16384 cap. The cap, not the forced act, cost U. Integrity scan clean.
+      Not on the board yet.
+- [ ] **Arm UP: running** (from 2026-11-20 06:35; 37 passed of 38 done at
+      09:23). **UPA** follows. Read UP against U and UPA against UP.
+- [ ] **Then a gap** (the GLM recipe engine update, tested on its own),
+      **then U_8k, UP_8k, UPA_8k** (#250): the same three at T2's 8192 cap,
+      one variable per step. U_8k against T2 is the forced act at the better
+      cap. Then UP on GLM-5.3-Flash as the control, and Hy4-flash's H_T2
+      ([SPARK_HYDRA.md](SPARK_HYDRA.md#hy4-flash-nvfp4-vllm-tp2-staged)).
+- [x] **Interim report** (2026-11-20): [the interim campaign report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md).
+      Its tables come from `evals/v5_report.py`; regenerate them after each
+      arm (`--write`).
 - [ ] Model-specific harness hypotheses: start from
       [docs/reviews/DEEPSEEK_HARNESS-2026-10-09.md](reviews/DEEPSEEK_HARNESS-2026-10-09.md),
       the evaluation of DeepSeek's own agent harness (`dsh`). Its "ideas

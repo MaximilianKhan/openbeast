@@ -13,7 +13,7 @@ Status key: **IDEA** (noted) · **BUILDING** · **ARM** (being measured) · **AD
 
 ---
 
-## Headroom — the gap the harness work is chasing (2026-11-16, updated 2026-11-17 evening; DeepSeek rows 2026-11-19)
+## Headroom — the gap the harness work is chasing (2026-11-16, updated 2026-11-17 evening; DeepSeek rows 2026-11-20)
 
 | Row | v5 (71 units) | Notes |
 |---|---|---|
@@ -26,7 +26,10 @@ Status key: **IDEA** (noted) · **BUILDING** · **ARM** (being measured) · **AD
 | GLM arm E (C + diagnostics, edit hint, verify-done, zig pack v2, host pack, env block, wall warnings) | **50/71** (SCORE 74.7) | Done 2026-11-17, on the board (#201); integrity scan clean. One under C scored, four under C raw: a wash at one seed. Per language against C: Py 22 vs 24, C 5 vs 6, Rust 6 vs 5, Zig 4 vs 3 (pack v2), Go / C++ / Sh equal; 28.5 vs 29.0 min per unit. Its 122_gemm_blocked_c FAIL is a validator false FAIL (the pre-#195 lint matched `dlopen` in a comment; the file passes the fixed validator), footnoted on the board and not adjusted. E's additions stay opt-in |
 | GLM arms D, F | **not run** | Max paused the benchmark chain after E (2026-11-17). D = C + diagnostics, edit hint, verify-done; F = B at `--seed 1`, the noise floor |
 | DeepSeek-V4.1-Flash (Mia EXL3) arm T (thinking-first composite: runner v2, wall-scaled turns, thinking at wall x2, diagnostics + edit hint + verify-done, packs v3 + host pack, env block, wall warnings) | **61/71** (SCORE 88.5) | 2026-11-18, harness8 + review 1118 sandbox; single seed. All 10 failures ended on the 3,600 s wall, with turns of up to 16,384 tokens at ~30 tok/s per stream: slow turns, not scarce ones |
-| DeepSeek arm T2 (T + 8,192-token per-turn cap + act nudge, harness9) | **65/71** (SCORE 94.9) | 2026-11-19; +4 / 0 regressions against T, single seed. **The board's #1** and DeepSeek's recommended setup (`AGENT_PROFILE=deepseek-best`, `SPARK_HYDRA.md` E2b). Seed arm T_s1 running, T3 (4,096 cap) next; status in [MODEL_CAMPAIGN.md §9](MODEL_CAMPAIGN.md#9-next-deepseek-v41-flash-1017-thinking-first) |
+| DeepSeek arm T2 (T + 8,192-token per-turn cap + act nudge, harness9) | **65/71** (SCORE 94.9) | 2026-11-19; +4 / 0 regressions against T, single seed. **The board's #1** and DeepSeek's recommended setup (`AGENT_PROFILE=deepseek-best`, `SPARK_HYDRA.md` E2b); status in [MODEL_CAMPAIGN.md §9](MODEL_CAMPAIGN.md#9-next-deepseek-v41-flash-1017-thinking-first) |
+| DeepSeek arm T_s1 (T under `--seed 1`, harness9) | **61/71** (SCORE 85.7) | 2026-11-19; the same 61 as T with one unit swapped each way: **noise about ±1 unit** (and about ±3 SCORE) |
+| DeepSeek arm T3 (T2 at a 4,096 cap, harness9) | **65/71** (SCORE 91.5) | 2026-11-20; the same count as T2, 3 units in and 3 out, fastest arm (21.5 unit-hours against 24.5). The cap trades units, so **8,192 stays** |
+| DeepSeek arm U (T2's switches with the forced-act turn, done-when-verified, no web tools, at a 16,384 cap; harness10) | **59/71** (SCORE 85.5) | 2026-11-20; −6 against T2, nothing gained. Every forced turn acted (24 of 24); the cap cost the units. Not on the board yet. UP running, UPA next, then U_8k / UP_8k / UPA_8k. Tables: [the interim campaign report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md) |
 
 Max's read, and the working hypothesis: GLM-5.3-Flash is a far stronger model than
 26/71 suggests, and much of the gap is the harness around it, not the weights. Each arm
@@ -82,8 +85,10 @@ the env block and wall warnings on top of thinking were a wash at one seed, so t
 stay opt-in and the serving default adds thinking alone (`SPARK_HYDRA.md` E2a:
 `INFERENCE_THINKING=on` at the gate, in Open WebUI and for the host's agents). Arms
 D and F did not run (Max paused the chain). The first thinking-first campaign
-is DeepSeek-V4.1-Flash (Mia EXL3)'s (2026-11-18 on): T 61/71, T2 65/71 so far
-("Headroom" above); update this section when its report is written.
+is DeepSeek-V4.1-Flash (Mia EXL3)'s (2026-11-18 on): T 61/71, T2 65/71, T3
+65/71, U 59/71 ("Headroom" above). For that model the lever after thinking is
+the per-turn thinking cap, not a component: see "DeepSeek-V4.1-Flash (Mia
+EXL3): the v5 campaign" below and [the interim campaign report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md).
 
 ## GLM-5.3-Flash (spark-hydra, thinking off) — from the 2026-11-16 v5 L0 audit
 
@@ -183,6 +188,8 @@ prefix's zig and rustup's `1.100.0-aarch64-apple-darwin` rustc.
 ## Per-model vs unified — what to measure
 
 For each candidate: run it as an arm on GLM-5.3-Flash and on at least one other model (Qwen3.8 27B on the rig; DeepSeek-V4.1-Flash (Mia EXL3), whose thinking-first campaign is running on the Spark pair). A change that helps one and hurts another is the evidence for per-model knobs; one that helps all belongs in the unified harness.
+
+First per-model knob, 2026-11-19: the per-turn thinking cap. DeepSeek-V4.1-Flash (Mia EXL3) runs best at 8,192 (`recommend.composite_by_model`, `AGENT_PROFILE=deepseek-best`). GLM-5.3-Flash was never measured below 16,384. Whether 8,192 also helps GLM is open; the GLM control for UP runs at U's 16,384 cap.
 
 ## Language-specific residue under thinking (2026-11-17)
 
@@ -436,3 +443,18 @@ when it ran on the host and did the replacement. GNU sed renders nothing.
   units.
 
 Add a claim when the same error recurs in a second unit or a second arm.
+
+## DeepSeek-V4.1-Flash (Mia EXL3): the v5 campaign (2026-11-20)
+
+Interim: UP is running. Source: arms T, T_s1, T2, T3 (board) and U, UP (partial), read through
+`evals/v5_report.py`. Full tables, deltas and limitations are in
+[the interim campaign report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md). One seed per arm except T; noise about ±1 unit.
+
+| Finding | Evidence | Status |
+|---|---|---|
+| **The per-turn thinking cap is this model's lever.** 16K → 8K: +4 units, 0 lost (T → T2, all four gains had hit T's wall). 8K → 4K: 0 net, 3 in and 3 out, SCORE 94.9 → 91.5 (T2 → T3, same era). 16K again under harness10: −6 (T2 → U) | wall hits 16 / 13 / 10 / 15 (T / T2 / T3 / U); unit-hours 26.6 / 24.5 / 21.5 / 26.1 | **ADOPTED at 8,192** for DeepSeek (`deepseek-best`); a per-model knob |
+| **The forced-act turn ends a stall** where the text act nudge did not: all 24 forced turns in U (18 of 71 units) ended in a tool call. The text nudge was ignored every time in the 168 investigation | U transcripts, `force_act_result` events | **ARM** — unmeasured at 8K; U_8k against T2 is the test |
+| **A 16K cap costs units even with the forced act.** U's lost units ran out of wall with 11-26 turns where T2 had 28-49 on the same units (4 of 6; one hit the wall at 53 turns, one ran out of turns) | U and T2 rows (`iterations` from harness9's partial stats) | settled for this model: do not run DeepSeek at 16K |
+| **Adaptive cap.** The units 4K wins (many short iterate-and-test turns) and the units 8K wins (one long derivation) are different units. A cap that changes within a unit by a general rule could take both: deeper for the first, design-setting turns and shorter inside a write-test loop, or shrinking after consecutive capped turns. It must name no task | T2 → T3 deltas | **IDEA** — a runner change (era move), its own arm, read against T2 and T3 |
+| **The residual is design choice and time, not knowledge or language.** T2's six failures are five variants of one task family (168) plus 192_pike_regex. The 168 investigation (sealed review, `evals/audit/reviews/`) found a design-choice failure, not a knowledge gap: the model knows what makes the unit tractable, but usually commits early to an approach that cannot meet the limits, and capped thinking re-decides the design every turn. Its remedies are general and name no task | T2, T_s1, T3 rows; the review | **ARM** — U (forced act, done-when-verified), UP (planning lines), UPA (frozen procedure pack), each with a no-harm check on the other units and a GLM control |
+| **Packs are not the bottleneck here.** Go is 7/8 and Zig 5/6 in every finished arm (each miss a 168 variant); Python (26-30 of 32) carries the swings | per-language table in the report | packs stay on as in T; their ablation (T_nopacks) has not run for DeepSeek; no new claim |

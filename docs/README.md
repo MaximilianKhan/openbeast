@@ -137,6 +137,7 @@ backing it up, restoring it after an OS reinstall).
 | [MODELS.md](MODELS.md) | The model lineup with measured VRAM, context and speed |
 | [RESULTS.md](RESULTS.md) | Eval leaderboards (v5, v4, v3.5) |
 | [MODEL_CAMPAIGN.md](MODEL_CAMPAIGN.md) | A new model on the Sparks, from onboarding to the final report |
+| [reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md) | The v5 campaign of DeepSeek-V4.1-Flash (Mia EXL3), interim: arms T to U, the cap trade-off, integrity, next arms (tables from `evals/v5_report.py`) |
 | [`../evals/README.md`](../evals/README.md) | The eval suite: schema, scoring, CLI, the v5 suite |
 | [RESEARCH_FINDINGS.md](RESEARCH_FINDINGS.md) | MTP, profiling, model comparisons |
 | [EVAL_FAST_SUITE_PROPOSAL.md](EVAL_FAST_SUITE_PROPOSAL.md) | The v4 fast suite (*plan*, built) |
@@ -164,7 +165,8 @@ Release notes: [v1.1.0](RELEASE_NOTES_v1.1.0.md) · [v1.3.0](RELEASE_NOTES_v1.3.
 [v1.4.0](RELEASE_NOTES_v1.4.0.md) · [v1.5.0](RELEASE_NOTES_v1.5.0.md) ·
 [v1.6.0](RELEASE_NOTES_v1.6.0.md) · [v1.7.0](RELEASE_NOTES_v1.7.0.md) ·
 [v1.8.0](RELEASE_NOTES_v1.8.0.md) · [v1.9.0](RELEASE_NOTES_v1.9.0.md).
-Dated reviews and research notes are in [`reviews/`](reviews/); superseded
+Dated reviews and research notes are in [`reviews/`](reviews/), dated
+campaign reports in [`reports/`](reports/); superseded
 plans are in [`archive/`](archive/). Both are records: read them for why
 something is the way it is, not for current state.
 
