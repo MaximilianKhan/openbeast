@@ -158,6 +158,7 @@ backing it up, restoring it after an OS reinstall).
 [WEBSITE_PLAN.md](WEBSITE_PLAN.md) (openbeast.ai) ·
 [WEBSITE_UPDATE_2026-11-19.md](WEBSITE_UPDATE_2026-11-19.md) (openbeast.ai handoff: DeepSeek default, v5 board, model policy) ·
 [WEBSITE_UPDATE_2026-11-20.md](WEBSITE_UPDATE_2026-11-20.md) (openbeast.ai update and upgrade on top of 11-19: DeepSeek ladder, seed noise, new-page proposals, llms.txt) ·
+[WEBSITE_UPDATE_2026-11-21.md](WEBSITE_UPDATE_2026-11-21.md) (openbeast.ai delta on top of 11-20: the eight-arm DeepSeek ladder, what it taught, phrasing rules, chart spec, board-row gate) ·
 [SOC2_READINESS.md](SOC2_READINESS.md) (self-assessment)
 
 ## Releases and reviews

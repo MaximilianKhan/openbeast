@@ -245,6 +245,13 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
   more live stale text, the PROPOSED How we evaluate / Models / Own your
   stack pages and the policy quote, the full new `llms.txt`, more Rule E
   greps, and questions Q-F to Q-L for Max.
+  **Extended 2026-11-21 by [`WEBSITE_UPDATE_2026-11-21.md`](WEBSITE_UPDATE_2026-11-21.md)**
+  (re-checked live: neither 11-19 nor 11-20 is deployed): DeepSeek's ladder
+  at eight board rows (T to U_8k, #254), the "what we learned" copy (the cap
+  matters most, planning guidance helped, an extra pack hurt, forced action
+  did not beat the nudge; T2 stays the headline), phrasing rules for small
+  deltas, the How we evaluate chart spec, the board-row gate in the build,
+  UP_8k/UPA_8k kept off the site, and questions Q-M to Q-S.
 
 **Open — measurement:**
 
