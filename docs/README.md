@@ -84,6 +84,7 @@ backing it up, restoring it after an OS reinstall).
 |---|---|
 | [SPARK_HYDRA.md](SPARK_HYDRA.md) | The DGX Spark pair: the DeepSeek deployment and its packs, a quickstart, bare boxes to a serving pair, the command center, the Mac client, day-2 operations, troubleshooting, fully offline operation |
 | [OPENBEAST-SERVING.md](OPENBEAST-SERVING.md) | Short serving note for the pair: check, start, stop, switch models and packs |
+| [WEIGHTS_DOWNLOAD.md](WEIGHTS_DOWNLOAD.md) | Downloading any model from a Hugging Face URL, on any machine: `scripts/weights-download.sh URL [DEST]`, default `~/Documents/weights/ORG/REPO`, verified and resumable |
 | [EXL3_PLAYBOOK.md](EXL3_PLAYBOOK.md) | Hosting another EXL3 model on the pair, offline: which cases are drag and drop (a DeepSeek pack), which are by hand, which need engine work |
 | [SPARK_BACKUP_RESTORE.md](SPARK_BACKUP_RESTORE.md) | Backing up the Spark pair and restoring it fully offline: the golden DGX OS image, per-node identity, the overlay, the offline rank-file rebuild, the LUKS key policy |
 | [COMMANDS.md](COMMANDS.md) | Commands cheat sheet, grouped by machine and task |

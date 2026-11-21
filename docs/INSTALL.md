@@ -206,6 +206,11 @@ default); substitute your chosen directory if different.
 mkdir -p weights
 ```
 
+**Any other model from a Hugging Face URL:**
+`scripts/weights-download.sh https://huggingface.co/ORG/REPO [DEST]`. Without
+DEST, it downloads to `~/Documents/weights/ORG/REPO`, verified and resumable.
+See [WEIGHTS_DOWNLOAD.md](WEIGHTS_DOWNLOAD.md).
+
 **Fetching a single weight, verified.** Every `hf download` below has a
 one-command equivalent that also checks the result against
 `scripts/weights.registry` (sha256 + byte size, the same pins `bootstrap.sh`

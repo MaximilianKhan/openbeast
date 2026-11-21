@@ -401,6 +401,7 @@ scripts/                     # Server, ops, and feature CLIs
   doctor.sh                  # Config/security/supply-chain/health diagnosis (./start.sh doctor)
   update.sh                  # Update llama.cpp, images, Python deps (relocks the lockfile)
   fetch-weight.sh            # Download one registry weight, staged + sha256-verified
+  weights-download.sh        # Any model from a Hugging Face URL -> ~/Documents/weights/ORG/REPO, verified (docs/WEIGHTS_DOWNLOAD.md)
   verify-weights.sh          # Verify downloaded weights against weights.registry
   weights.registry           # sha256 + size pins for every shipped GGUF
   setup-tailscale.sh         # Publish to the tailnet (--publish-{searxng,slot,chat,artifact,ntfy})

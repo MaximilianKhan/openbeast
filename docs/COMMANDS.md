@@ -530,6 +530,9 @@ scripts/ark.sh restore <name> --from <drive-dir> --prefix ~/ob-work/opt --bin ~/
 scripts/pydeps.sh verify                                  # the Python lock is sane and current (offline)
 scripts/pydeps.sh install --from <wheelhouse>             # hash-pinned install with no index
 scripts/bundle.sh verify <dir>                            # an offline bundle, re-hashed
+scripts/weights-download.sh <hf-url> [dest]               # any model -> ~/Documents/weights/ORG/REPO, verified (any machine; WEIGHTS_DOWNLOAD.md)
+scripts/weights-download.sh <hf-url> --dry-run            # files, sizes, target folder; writes nothing
+scripts/weights-download.sh --verify <dir>                # re-hash a downloaded or copied model folder (offline)
 python3 scripts/generate-skill-index.py --check           # exit 1 if the skill menu in system-prompt-tools.md is stale
 ```
 
