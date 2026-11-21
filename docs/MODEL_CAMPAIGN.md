@@ -342,11 +342,11 @@ below). `--dry-run` prints them for your settings.
 | T_s2 | T | a second seed (optional) | `--seed 2`; only with `--include T_s2` | 2.3 | ~5.8 h | a tighter noise margin |
 | T2 | T | 8192 turn cap + act nudge (optional, harness9) | `--reasoning-budget 8192`; `OPENBEAST_AGENT_MAX_TOKENS=8192 OPENBEAST_AGENT_ACT_NUDGE=1`; `"jobs": 4, "slots": 4` like T (decided 2026-11-18); only with `--only T2` or `--include T2`, **and first in every DeepSeek-V4.1-Flash chain** (`recommend.composite_by_model`); needs a harness9 tree | 2.3 | ~5.8 h (6.2 h for DeepSeek) | do shorter thinking turns and a push to act turn wall kills into passes? **DeepSeek: yes, 65/71 against T's 61/71** |
 | T3 | T2 | 4096 turn cap (optional, config only) | `--reasoning-budget 4096`; `OPENBEAST_AGENT_MAX_TOKENS=4096 OPENBEAST_AGENT_ACT_NUDGE=1`; only with `--only T3`; same harness9 tree and era as T2 | 2.3 | ~5.8 h | does faster iteration beat deeper single turns? (T3 vs T2 isolates the cap) **DeepSeek: no, 65/71 like T2, 3 units in and 3 out, SCORE 91.5 against 94.9; 8192 stays** |
-| U | T2 | forced-act turn instead of the act nudge + done-when-verified, 16384 cap (optional, harness10) | `--reasoning-budget 16384`; `OPENBEAST_AGENT_MAX_TOKENS=16384 OPENBEAST_AGENT_ACT_NUDGE=0 OPENBEAST_AGENT_FORCE_ACT=1 OPENBEAST_AGENT_FORCE_ACT_AFTER=2 OPENBEAST_AGENT_DONE_VERIFIED=1 OPENBEAST_AGENT_HIDE_WEB=1`; only with `--only U`; needs a harness10 tree | 2.3 | ~6-7 h for DeepSeek | does a thinking-off act turn end the capped-think stalls the text nudge could not? (U vs T2) **DeepSeek: 59/71, −6 against T2. Every forced turn acted (24 of 24), but the lost units ran out of wall at the 16384 cap; U_8k is the clean test** |
-| U_8k | U | U at T2's 8192 cap (optional, harness10) | `--reasoning-budget 8192`; `OPENBEAST_AGENT_MAX_TOKENS=8192` | 2.3 | ~6.2 h | the cap question under the forced act (U_8k vs U; read with T3) |
-| UP | U | + three planning lines (optional, harness10) | `OPENBEAST_AGENT_ALGO_LINES=1`; also the GLM control (`--model-name GLM-5.3-Flash` when the pair serves GLM) | 2.3 | ~6-7 h | do "bound first / test the doubtful split against a brute force / redesign on a >5x miss" fix the wrong-algorithm failures? (UP vs U) |
-| UPA | UP | + the frozen algorithmic procedure pack (optional, harness10) | `OPENBEAST_ALGO_PACK=1` (`agents/packs/algo-v1.md`, sha256 `6c532400...`, packs on) | 2.3 | ~6-7 h | does a ~400-token procedure pack add to the lines? (UPA vs UP) |
-| UP_8k | UP | UP at T2's 8192 cap (optional, harness10) | `--reasoning-budget 8192`; `OPENBEAST_AGENT_MAX_TOKENS=8192` | 2.3 | ~6.2 h | the planning lines at the better cap (UP_8k vs U_8k), and the whole stack against T2 |
+| U | T2 | forced-act turn instead of the act nudge + done-when-verified, 16384 cap (optional, harness10) | `--reasoning-budget 16384`; `OPENBEAST_AGENT_MAX_TOKENS=16384 OPENBEAST_AGENT_ACT_NUDGE=0 OPENBEAST_AGENT_FORCE_ACT=1 OPENBEAST_AGENT_FORCE_ACT_AFTER=2 OPENBEAST_AGENT_DONE_VERIFIED=1 OPENBEAST_AGENT_HIDE_WEB=1`; only with `--only U`; needs a harness10 tree | 2.3 | ~6-7 h for DeepSeek | does a thinking-off act turn end the capped-think stalls the text nudge could not? (U vs T2) **DeepSeek: 59/71, −6 against T2. Every forced turn acted (24 of 24), but the lost units ran out of wall at the 16384 cap; U_8k confirmed it** |
+| U_8k | U | U at T2's 8192 cap (optional, harness10) | `--reasoning-budget 8192`; `OPENBEAST_AGENT_MAX_TOKENS=8192` | 2.3 | ~6.2 h | the cap question under the forced act (U_8k vs U; read with T3) **DeepSeek: 63/71, +4 over U (the cap was the cost), −2 against T2 (within ~2 of the noise: the forced act is no better than the nudge)** |
+| UP | U | + three planning lines (optional, harness10) | `OPENBEAST_AGENT_ALGO_LINES=1`; also the GLM control (`--model-name GLM-5.3-Flash` when the pair serves GLM) | 2.3 | ~6-7 h | do "bound first / test the doubtful split against a brute force / redesign on a >5x miss" fix the wrong-algorithm failures? (UP vs U) **DeepSeek: yes at 16K, 62/71, +3 over U (4 in, 1 out)** |
+| UPA | UP | + the frozen algorithmic procedure pack (optional, harness10) | `OPENBEAST_ALGO_PACK=1` (`agents/packs/algo-v1.md`, sha256 `6c532400...`, packs on) | 2.3 | ~6-7 h | does a ~400-token procedure pack add to the lines? (UPA vs UP) **DeepSeek: no, 59/71, −3 against UP (0 in, 3 out) and the most unit-hours of any arm** |
+| UP_8k | UP | UP at T2's 8192 cap (optional, harness10) | `--reasoning-budget 8192`; `OPENBEAST_AGENT_MAX_TOKENS=8192` | 2.3 | ~6.2 h | the planning lines at the better cap (UP_8k vs U_8k), and the whole stack against T2 **DeepSeek: running (45 passed of 48 done, 2026-11-21 10:44; T2 44 and U_8k 45 on the same 48)** |
 | UPA_8k | UPA | UPA at T2's 8192 cap (optional, harness10) | `--reasoning-budget 8192`; `OPENBEAST_AGENT_MAX_TOKENS=8192` | 2.3 | ~6.2 h | the pack at the better cap (UPA_8k vs UP_8k) |
 | T_j2 | T | 2 concurrent units (optional) | `"jobs": 2, "slots": 2` in the arm (wins over the CLI); only with `--only T_j2` or `--include T_j2` | 2.3 | ~7.7 h (~9 h for DeepSeek) | the contention model: same tokens per unit, at 2 streams (see the note below) |
 
@@ -362,10 +362,12 @@ config from T2: each ablation and the no-thinking twin are still compared with
 T, the arm they remove from, a dropped component is removed from T2, and the
 noise margin comes from T's seed arm while T2 has none of its own. Until T2 is
 measured, the report uses T and says so. Arm T is unchanged for every model
-(the GLM history depends on it). **State on 2026-11-20:** T_s1 61/71 (noise
+(the GLM history depends on it). **State on 2026-11-21:** T_s1 61/71 (noise
 about ±1 unit), T3 65/71 (a wash against T2: 8192 stays), U 59/71 (the 16384
-cap cost it), **UP running**, then UPA, then U_8k, UP_8k and UPA_8k after a
-gap; the tables and their deltas are in [the interim campaign report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md). The
+cap cost it), UP 62/71 (planning lines +3 over U), UPA 59/71 (the pack −3
+against UP), U_8k 63/71 (+4 over U; −2 against T2, so the forced act is no
+better than the nudge), **UP_8k running** (45 of 48 so far), then UPA_8k.
+T2 is still the best row and the default. The tables and their deltas are in [the interim campaign report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md). The
 daily-agent form of T2 is one line in openbeast.conf,
 `AGENT_PROFILE=deepseek-best` ([SPARK_HYDRA.md](SPARK_HYDRA.md#e2b-deepseek-best-configuration-v5-t2)),
 live on spark-1 since 2026-11-19.
@@ -864,14 +866,22 @@ campaign. On GLM, its N0 is arm B (36/71, thinking pinned off).
       gained. Every forced-act turn ended in a tool call (24 of 24), but the
       units U lost ran out of wall with far fewer turns than T2's at the
       16384 cap. The cap, not the forced act, cost U. Integrity scan clean.
-      Not on the board yet.
-- [ ] **Arm UP: running** (from 2026-11-20 06:35; 37 passed of 38 done at
-      09:23). **UPA** follows. Read UP against U and UPA against UP.
-- [ ] **Then a gap** (the GLM recipe engine update, tested on its own),
-      **then U_8k, UP_8k, UPA_8k** (#250): the same three at T2's 8192 cap,
-      one variable per step. U_8k against T2 is the forced act at the better
-      cap. Then UP on GLM-5.3-Flash as the control, and Hy4-flash's H_T2
-      ([SPARK_HYDRA.md](SPARK_HYDRA.md#hy4-flash-nvfp4-vllm-tp2-staged)).
+      Board row DS-U (2026-11-21).
+- [x] **Arms UP, UPA and U_8k (harness10, 2026-11-20/21).** UP 62/71 (U +
+      planning lines: +3, 4 in and 1 out; run paused and resumed, so two
+      result files, merged by the board). UPA 59/71 (UP + the frozen
+      algorithmic pack: −3, nothing gained). U_8k 63/71 (U at 8192: +4 over
+      U; −2 against T2, within about 2 of the noise, so the forced act is no
+      improvement on the nudge). Integrity scans 2026-11-21: 0 contaminated,
+      no flagged tool call. Board rows DS-UP, DS-UPA, DS-U8k.
+- [ ] **Arm UP_8k: running** (45 passed of 48 done, 2026-11-21 10:44; T2
+      44 and U_8k 45 on the same 48 units). The open question: do the
+      planning lines add on top of the 8192 cap? Read against U_8k and T2.
+- [ ] **Next, in order:** UPA_8k (the pack at 8192, against UP_8k); then
+      Hy4-flash's H_T2
+      ([SPARK_HYDRA.md](SPARK_HYDRA.md#hy4-flash-nvfp4-vllm-tp2-staged));
+      then, last, the GLM recipe engine update (1104), tested on its own.
+      UP on GLM-5.3-Flash as the control when the pair serves GLM.
 - [x] **Interim report** (2026-11-20): [the interim campaign report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md).
       Its tables come from `evals/v5_report.py`; regenerate them after each
       arm (`--write`).

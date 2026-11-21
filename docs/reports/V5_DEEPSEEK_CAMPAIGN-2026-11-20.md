@@ -1,9 +1,10 @@
 # v5 campaign report: DeepSeek-V4.1-Flash (Mia EXL3) on the DGX Spark pair (2026-11-20)
 
-> **Interim (UP running).** Arms T, T_s1, T2, T3 and U are finished. UP was
-> in progress when this was written: 37 passed of 38 units done (snapshot of
-> 2026-11-20 09:23 PST). UPA follows UP; U_8k, UP_8k and UPA_8k are queued
-> after a gap. The final report replaces this one when the series ends
+> **Interim (UP_8k running, UPA_8k next).** Arms T, T_s1, T2, T3, U, UP,
+> UPA and U_8k are finished and on the board (updated 2026-11-21). UP_8k
+> was in progress when this was updated: 45 passed of 48 units done
+> (snapshot of 2026-11-21 10:44 PST). UPA_8k follows it. The final report
+> replaces this one when the series ends
 > (`evals/campaign.py report`, [MODEL_CAMPAIGN.md §6](../MODEL_CAMPAIGN.md#6-comparison)).
 
 **Regenerate the tables.** Every number in the tables below comes from
@@ -12,13 +13,12 @@ script scores the way [`evals/v5_board.py`](../../evals/v5_board.py) does,
 exclusions included. It prints unit ids and verdicts, never task or
 validator text, and writes nothing except, with `--write`, the generated
 block of this file. The board arms are committed in
-[`evals/boards/v5/`](../../evals/boards/v5/). U and UP are not on the board
-yet, so their files come from the harness host's untracked `evals/results/`:
+[`evals/boards/v5/`](../../evals/boards/v5/). UP_8k is not on the board
+yet, so its file comes from the harness host's untracked `evals/results/`:
 
 ```bash
 python3 evals/v5_report.py \
-    --arm U=evals/results/eval-deepseek-v4-1-flash-v5-thinking-first-u-20261119-235955.json \
-    --arm UP=evals/results/eval-deepseek-v4-1-flash-v5-thinking-first-up-20261120-063508.json
+    --arm UP_8k=evals/results/eval-deepseek-v4-1-flash-v5-thinking-first-up-8k-20261121-064409.json
 python3 evals/v5_report.py --json        # the same, machine-readable
 # the same --arm flags plus --write docs/reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md
 # replace the block between the v5-report markers in §4
@@ -48,7 +48,10 @@ arms alone.
   | T2 | T + 8K cap + act nudge | **65/71** | **94.9** |
   | T3 | T2 at a 4K cap | 65/71 | 91.5 |
   | U | T2's switches with the forced-act turn, done-when-verified, no web tools, at a 16K cap | 59/71 | 85.5 |
-  | UP | U + three planning lines | in progress: 37 of 38 done | — |
+  | UP | U + three planning lines | 62/71 | 88.0 |
+  | UPA | UP + the frozen algorithmic procedure pack | 59/71 | 83.8 |
+  | U_8k | U at T2's 8K cap | 63/71 | 88.5 |
+  | UP_8k | UP at the 8K cap | in progress: 45 of 48 done | — |
 
 - **Noise is about ±1 unit.** T and T_s1 both pass 61, swapping one unit
   each way. SCORE moves about 3 points on that swap, so read units first.
@@ -56,12 +59,27 @@ arms alone.
   gave +4 with no regressions. 8K → 4K was a wash: 65 again, three units in
   and three out, and SCORE fell from 94.9 to 91.5, so 8K stays. U went back
   to 16K and lost 6 units against T2. Every unit U lost ran out of time or
-  turns, and four of them did so in far fewer turns than T2 used. The cap,
-  not the forced-act turn, cost U. The forced-act turn itself worked as
-  designed: all 24 forced turns in U ended in a tool call.
+  turns, and four of them did so in far fewer turns than T2 used. U_8k
+  confirmed it inside one era: the same arm at 8K scored 63, +4 over U
+  (six units in, two out). Likewise T 61 → T2 65, and T3 at 4K also 65,
+  with a trade-off of units.
+- **Planning lines help; the frozen algorithmic pack hurts.** At the same
+  16K cap, UP (U + three planning lines) scored 62 against U's 59 (four
+  units in, one out). UPA (UP + the pack) scored 59, three below UP: three
+  units lost, none gained, and the most unit-hours of any arm (29.9).
+- **The forced-act turn is no better than the act nudge.** At the same 8K
+  cap, U_8k scored 63 against T2's 65. That is within about 2 units of the
+  noise, so no improvement, and U_8k also changes done-when-verified, the
+  hidden web tools and the era. The forced-act turn works mechanically
+  (all 24 forced turns in U ended in a tool call), but it does not add
+  score.
+- **T2 remains the best arm and the default.** No harness10 arm has beaten
+  65/71. The open question is **UP_8k** (planning lines at 8K): 45 passed
+  of its 48 completed units, against T2's 44 and U_8k's 45 on the same 48
+  units, so even with or slightly above T2 so far.
 - **What remains is design choice and time, not knowledge.** T2's six
   failures are five variants of one task family (168) and 192_pike_regex.
-  Across all five finished arms, only three units (168_linearizability_kv_b,
+  Across all eight finished arms, only three units (168_linearizability_kv_b,
   168_linearizability_kv_f, 192_pike_regex) were never passed. The 168
   investigation found a design-choice failure, not a knowledge gap, and its
   remedies are general (§6.4).
@@ -127,9 +145,11 @@ Each arm changes one thing against the arm it is built from.
 | T2 | T | 8,192-token cap + act nudge (a text push to call a tool after capped turns) | harness9 | done, 65/71 |
 | T3 | T2 | 4,096-token cap | harness9 | done, 65/71 |
 | U | T2 | the forced-act turn replaces the nudge (after 2 capped thinking turns in a row, the next request goes with thinking off and must act), done-when-verified, web tools not advertised; cap back to 16,384 | harness10 | done, 59/71 |
-| UP | U | + three general planning lines in the system prompt (they name no task) | harness10 | **running** |
-| UPA | UP | + the frozen algorithmic procedure pack (`agents/packs/algo-v1.md`, sha256 pinned, names no task) | harness10 | queued (after UP) |
-| U_8k, UP_8k, UPA_8k | U, UP, UPA | the same three at T2's 8,192 cap | harness10 | queued (after a gap) |
+| UP | U | + three general planning lines in the system prompt (they name no task) | harness10 | done, 62/71 |
+| UPA | UP | + the frozen algorithmic procedure pack (`agents/packs/algo-v1.md`, sha256 pinned, names no task) | harness10 | done, 59/71 |
+| U_8k | U | T2's 8,192 cap | harness10 | done, 63/71 |
+| UP_8k | UP | the 8,192 cap | harness10 | **running** (45 of 48 done) |
+| UPA_8k | UPA | the 8,192 cap | harness10 | queued (after UP_8k) |
 | H_T2 | T2 | T2 exactly, against Hy4-flash (NVFP4) | harness9 | staged (§7) |
 
 The arms T_noturns, T_nopacks, T_noassist, T_noenv, N and N0 (the
@@ -138,7 +158,7 @@ ablations and the no-thinking twins) have not run for DeepSeek.
 ### 3.3 Seeds
 
 A Spark server that gets no seed uses a fixed one, so every run is one
-deterministic draw (G12). T, T2, T3, U and UP send no seed. T_s1 sends
+deterministic draw (G12). Every arm except T_s1 sends no seed. T_s1 sends
 `--seed 1`. Every arm runs at **one seed**. The only noise measurement is
 T against T_s1 (§6.1). The campaign's decision rules use a noise SD of 1.0
 (`recommend.noise_sd`).
@@ -173,7 +193,10 @@ marked as such:
   the harness9 infrastructure (partial stats, the fetch guard) did not move
   T's score, but it is confounded with the seed change.
 - **T2 → U** crosses harness9 → harness10 and changes four things at once.
-  The cap question inside harness10 is U_8k against U (queued).
+  The cap question inside harness10 is U_8k against U (+4, §5).
+- **T2 → U_8k** crosses harness9 → harness10 at the same 8K cap, and
+  changes three things: the forced-act turn for the nudge,
+  done-when-verified, and the hidden web tools.
 
 ### 3.5 Integrity
 
@@ -192,8 +215,10 @@ refused attempt is recorded but does not contaminate.
 | T2 | 2026-11-19 | 0 contaminated after review: one flagged network attempt was blocked by the sandbox (review notes sealed in `evals/audit/reviews/`) |
 | T_s1 | 2026-11-19 | 0 contaminated |
 | T3 | 2026-11-20 | 0 contaminated |
-| U | 2026-11-20 (for this report) | 0 contaminated (75 transcripts, 71 units) |
-| UP (38 of 71 done) | 2026-11-20 (for this report) | 0 contaminated so far (42 transcripts) |
+| U | 2026-11-21 | 0 contaminated, no flagged tool call (75 transcripts, 71 units) |
+| UP (main + resume file) | 2026-11-21 | 0 contaminated, no flagged tool call (79 transcripts, 71 units) |
+| UPA | 2026-11-21 | 0 contaminated, no flagged tool call (76 transcripts, 71 units) |
+| U_8k | 2026-11-21 | 0 contaminated, no flagged tool call (75 transcripts, 71 units) |
 
 **What hardened the eval, in order.** Each step is in
 [`evals/CHANGELOG.md`](../../evals/CHANGELOG.md):
@@ -234,7 +259,7 @@ The measured agent can read `docs/`.
 ## 4. Results
 
 The tables below are the output of the command at the top, run on
-2026-11-20 against the board files and the U and UP result files.
+2026-11-21 against the board files and the in-progress UP_8k result file.
 
 <!-- v5-report:start -->
 <!-- generated by evals/v5_report.py for DeepSeek-V4.1-Flash (Mia EXL3): do not hand-edit -->
@@ -247,8 +272,11 @@ The tables below are the output of the command at the top, run on
 | T2 | DS-T2 | yes | 036638ddd68698ce | 8192 | 65/71 | 94.9 | 96.9 | 88.9 |
 | T_s1 | DS-Ts1 | yes | 036638ddd68698ce | 16384 | 61/71 | 85.7 | 84.6 | 88.9 |
 | T3 | DS-T3 | yes | 036638ddd68698ce | 4096 | 65/71 | 91.5 | 90.8 | 93.9 |
-| U | U | not yet | 9bcd5aa6030836d1 | 16384 | 59/71 | 85.5 | 81.5 | 97.4 |
-| UP | UP | not yet | 9bcd5aa6030836d1 | 16384 | 37 of 38 done (in progress) | — | — | — |
+| U | DS-U | yes | 9bcd5aa6030836d1 | 16384 | 59/71 | 85.5 | 81.5 | 97.4 |
+| UP | DS-UP | yes | 9bcd5aa6030836d1 | 16384 | 62/71 | 88.0 | 87.7 | 88.9 |
+| UPA | DS-UPA | yes | 9bcd5aa6030836d1 | 16384 | 59/71 | 83.8 | 78.5 | 100.0 |
+| U_8k | DS-U8k | yes | 9bcd5aa6030836d1 | 8192 | 63/71 | 88.5 | 87.7 | 91.1 |
+| UP_8k | UP_8k | not yet | 9bcd5aa6030836d1 | 8192 | 45 of 48 done (in progress) | — | — | — |
 | GLM-5.3-Flash: C | GLM-C | yes | 8eaa5e5f61638a1d | — | 51/71 (54 raw) | 76.7 | 75.4 | 80.5 |
 | Claude Opus 5.5: OPUS-REF | OPUS-REF | yes | — | — | 71/71 | 100.0 | 100.0 | 100.0 |
 
@@ -261,7 +289,10 @@ The tables below are the output of the command at the top, run on
 | T_s1 | 27/32 | 7/8 | 7/8 | 7/8 | 7/8 | 5/6 | 1/1 |
 | T3 | 28/32 | 7/8 | 8/8 | 8/8 | 8/8 | 5/6 | 1/1 |
 | U | 26/32 | 7/8 | 7/8 | 6/8 | 7/8 | 5/6 | 1/1 |
-| UP | 7/32 | 7/8 | 7/8 | 6/8 | 6/8 | 4/6 | 0/1 |
+| UP | 28/32 | 7/8 | 7/8 | 7/8 | 7/8 | 5/6 | 1/1 |
+| UPA | 25/32 | 7/8 | 7/8 | 7/8 | 7/8 | 5/6 | 1/1 |
+| U_8k | 28/32 | 7/8 | 8/8 | 7/8 | 8/8 | 4/6 | 1/1 |
+| UP_8k | 11/32 | 7/8 | 8/8 | 7/8 | 7/8 | 4/6 | 1/1 |
 | GLM-5.3-Flash: C | 24/32 | 6/8 | 6/8 | 6/8 | 5/8 | 3/6 | 1/1 |
 | Claude Opus 5.5: OPUS-REF | 32/32 | 8/8 | 8/8 | 8/8 | 8/8 | 6/6 | 1/1 |
 
@@ -274,7 +305,10 @@ The tables below are the output of the command at the top, run on
 | T_s1 | 71 | 26.6 | 22.5 | 15 | 6 | 9 | 8-32 |
 | T3 | 71 | 21.5 | 18.2 | 10 | 6 | 4 | 25-56 |
 | U | 71 | 26.1 | 22.1 | 15 | 4 | 11 | 11-53 |
-| UP | 38 | 9.9 | 15.7 | 3 | 2 | 1 | 15-27 |
+| UP | 71 | 26.5 | 22.4 | 11 | 2 | 9 | 10-27 |
+| UPA | 71 | 29.9 | 25.2 | 16 | 5 | 11 | 11-56 |
+| U_8k | 71 | 23.7 | 20.0 | 11 | 4 | 7 | 24-40 |
+| UP_8k | 48 | 14.2 | 17.8 | 7 | 4 | 3 | 26-48 |
 
 **Units gained and lost** (arm against base, over the units both have a verdict for)
 
@@ -284,40 +318,51 @@ The tables below are the output of the command at the top, run on
 | T → T2 | 71 | +4 | 168_linearizability_kv_e, 173_taskgroup_cancel, 183_heston_little_trap, 190_autograd_mlp | — |
 | T2 → T3 | 71 | +0 | 168_linearizability_kv_a, 168_linearizability_kv_c, 168_linearizability_kv_d | 167_q15_biquad_a, 173_taskgroup_cancel, 183_heston_little_trap |
 | T2 → U | 71 | -6 | — | 163_bigint_divmod_d, 168_linearizability_kv_e, 173_taskgroup_cancel, 175_crdt_orset_rga, 183_heston_little_trap, 190_autograd_mlp |
-| U → UP | 38 | +1 | 168_linearizability_kv_a | — |
+| U → UP | 71 | +3 | 163_bigint_divmod_d, 168_linearizability_kv_a, 175_crdt_orset_rga, 190_autograd_mlp | 195_riscv_insn_budget |
+| UP → UPA | 71 | -3 | — | 168_linearizability_kv_a, 190_autograd_mlp, 196_polyphase_resampler |
+| U → U_8k | 71 | +4 | 163_bigint_divmod_d, 168_linearizability_kv_a, 168_linearizability_kv_c, 168_linearizability_kv_e, 175_crdt_orset_rga, 190_autograd_mlp | 163_bigint_divmod_f, 195_riscv_insn_budget |
+| U_8k → UP_8k | 48 | +0 | — | — |
+| T2 → UP_8k | 48 | +1 | 168_linearizability_kv_a, 168_linearizability_kv_c | 173_taskgroup_cancel |
 
 **Units whose verdict differs across the arms** (P pass, F fail, · not run yet, L lost to infrastructure); every other unit has the same verdict in every arm
 
-| Unit | T | T2 | T_s1 | T3 | U | UP |
-|---|:---:|:---:|:---:|:---:|:---:|:---:|
-| 163_bigint_divmod_d | P | P | P | P | F | · |
-| 167_q15_biquad_a | P | P | P | F | P | P |
-| 168_linearizability_kv_a | F | F | P | P | F | P |
-| 168_linearizability_kv_c | F | F | F | P | F | · |
-| 168_linearizability_kv_d | F | F | F | P | F | · |
-| 168_linearizability_kv_e | F | P | F | P | F | · |
-| 173_taskgroup_cancel | F | P | F | F | F | · |
-| 175_crdt_orset_rga | P | P | F | P | F | · |
-| 183_heston_little_trap | F | P | F | F | F | · |
-| 190_autograd_mlp | F | P | F | P | F | · |
+| Unit | T | T2 | T_s1 | T3 | U | UP | UPA | U_8k | UP_8k |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| 163_bigint_divmod_d | P | P | P | P | F | P | P | P | P |
+| 163_bigint_divmod_f | P | P | P | P | P | P | P | F | · |
+| 167_q15_biquad_a | P | P | P | F | P | P | P | P | P |
+| 168_linearizability_kv_a | F | F | P | P | F | P | F | P | P |
+| 168_linearizability_kv_c | F | F | F | P | F | F | F | P | P |
+| 168_linearizability_kv_d | F | F | F | P | F | F | F | F | F |
+| 168_linearizability_kv_e | F | P | F | P | F | F | F | P | · |
+| 173_taskgroup_cancel | F | P | F | F | F | F | F | F | F |
+| 175_crdt_orset_rga | P | P | F | P | F | P | P | P | P |
+| 183_heston_little_trap | F | P | F | F | F | F | F | F | · |
+| 190_autograd_mlp | F | P | F | P | F | P | F | P | · |
+| 195_riscv_insn_budget | P | P | P | P | P | F | F | F | · |
+| 196_polyphase_resampler | P | P | P | P | P | P | F | P | · |
 <!-- v5-report:end -->
 
 How to read the tables:
 
-- **UP is partial.** Its per-language counts are passes among the units done
-  so far, against the full denominators. Its gained/lost row compares only
-  the 38 units it has finished.
+- **UP_8k is partial.** Its per-language counts are passes among the units
+  done so far, against the full denominators. Its gained/lost rows compare
+  only the 48 units it has finished.
+- **UP ran in two files.** The run was paused and resumed: the main file
+  holds 55 units and the resume file the other 16. The board merges them
+  (no unit appears in both).
 - **No unit was lost to infrastructure** in any DeepSeek arm (no `L`).
   Every row is a real verdict.
 - **Arm wall-clock** (campaign log, `--jobs 4`): T 6.76 h, T2 6.19 h,
-  T_s1 6.69 h, T3 5.79 h, U 6.59 h.
+  T_s1 6.69 h, T3 5.79 h, U 6.59 h. For the harness10 arms, read the
+  unit-hours column instead.
 - **Unit-hours** is the sum of the 71 units' elapsed times. With 4 units in
   flight it runs about 4× the arm's wall-clock.
 - **T's turn counts** are missing because harness8 rows killed at the wall
   carried no counters. Partial stats on a wall kill arrived with harness9.
 - **The three units no DeepSeek arm has passed** are
   168_linearizability_kv_b, 168_linearizability_kv_f and 192_pike_regex.
-  The union of the five finished arms is 68/71.
+  The union of the eight finished arms is 68/71.
 
 ## 5. Per-arm deltas
 
@@ -352,8 +397,25 @@ Read against the noise of about ±1 unit (§6.1):
   long as an 8K one. (The campaign file's UP_8k note says "every unit U lost
   hit the wall with 11-26 turns". The per-unit data above is more exact:
   175 hit the wall at 53 turns, and 190 ran out of turns, not wall.)
-- **U → UP (partial, 38 units): +1, 0 lost so far.** The gain is
-  168_linearizability_kv_a. This is no verdict yet.
+- **U → UP: +3 (same era, same 16K cap: the planning lines alone).** Four
+  units in (163_bigint_divmod_d, 168_linearizability_kv_a,
+  175_crdt_orset_rga, 190_autograd_mlp), one out (195_riscv_insn_budget).
+  Outside the noise, at one seed. UP also had fewer wall hits than U (11
+  against 15) for about the same unit-hours.
+- **UP → UPA: −3, 0 gained (same era: the pack alone).** Lost
+  168_linearizability_kv_a, 190_autograd_mlp and 196_polyphase_resampler.
+  UPA used the most unit-hours of any arm (29.9) and hit the wall 16 times.
+  The pack costs score and time on this model.
+- **U → U_8k: +4 (same era: the cap alone).** Six units in, two out
+  (163_bigint_divmod_f, 195_riscv_insn_budget). The cleanest cap result in
+  the campaign: 16K → 8K helps under the forced-act turn too.
+- **T2 → U_8k: −2 (crosses an era, same 8K cap).** In:
+  168_linearizability_kv_a and _c. Out: 163_bigint_divmod_f,
+  173_taskgroup_cancel, 183_heston_little_trap, 195_riscv_insn_budget. The
+  forced-act turn with done-when-verified does not beat the act nudge.
+- **U_8k → UP_8k and T2 → UP_8k (partial, 48 units).** 0 net against U_8k,
+  +1 against T2 (in: 168_linearizability_kv_a and _c; out:
+  173_taskgroup_cancel). No verdict until all 71 are done.
 
 ## 6. Analysis
 
@@ -374,6 +436,7 @@ think, and how many turns fit on the wall. On this model:
 - **16K (T, T_s1, U):** turns of up to ~9 minutes. Failures are wall kills
   with few turns. In T, all 10 failures ended on the wall.
 - **8K (T2):** best overall (65, SCORE 94.9), +4 over T with no regressions.
+  Under harness10 the same step held: U (16K) 59 → U_8k (8K) 63.
 - **4K (T3):** also 65, and the fastest arm. It gains units that reward
   many short iterate-and-test turns, and loses units that need one long
   derivation.
@@ -404,10 +467,23 @@ U changed four things against T2. The data separates two of them:
   (26.1 against 26.6) and had about as many wall hits (15 against 16). Its
   lost units ran out of wall with far fewer turns than T2's.
 
-The clean test of the forced-act turn at the better cap is **U_8k against
-T2**, and U_8k against U isolates the cap inside harness10. Both are
-queued. Until they report, the forced-act turn, done-when-verified and the
-hidden web tools are **unmeasured at 8K**, not rejected.
+**U_8k answered both questions (2026-11-21).** Against U it isolates the
+cap inside harness10: 63 against 59, +4, so the cap was the cost. Against
+T2 it tests the forced-act turn at the better cap: 63 against 65, within
+about 2 units of the noise. The forced-act turn, done-when-verified and
+the hidden web tools together are **no improvement** over T2's act nudge.
+They stay available as switches; T2 stays the default.
+
+### 6.3b Planning lines and the pack (UP, UPA)
+
+- **Planning lines: +3 at 16K** (U 59 → UP 62, same era, one variable).
+  Three general lines, naming no task, gained four units and lost one.
+  Whether they add on top of the 8K cap is UP_8k's question (running).
+- **The frozen algorithmic pack: −3** (UP 62 → UPA 59, same era, one
+  variable). It gained no unit, lost three, and took the most unit-hours
+  of any arm. The no-harm condition of §6.4 fails, so the pack is not
+  adopted; UPA_8k measures it once more at 8K, as the campaign file
+  orders.
 
 ### 6.4 The 168 family, at a high level
 
@@ -438,14 +514,17 @@ control. All four are in the campaign file.
 
 ### 6.5 Per language
 
-**Python carries the swings** (26-30 of 32 in the finished arms). The units
+**Python carries the swings** (25-30 of 32 in the finished arms). The units
 that move between arms are mostly single-language Python units
 (167_q15_biquad_a, 173_taskgroup_cancel, 175_crdt_orset_rga,
-183_heston_little_trap, 190_autograd_mlp), plus the Python variant of 168.
+183_heston_little_trap, 190_autograd_mlp, and in the harness10 arms
+195_riscv_insn_budget and 196_polyphase_resampler), plus the Python
+variant of 168.
 The compiled languages move by one or two units at most, and those moves
-are 168 variants (C, C++, Rust) and 163_bigint_divmod_d (C++). Go's one
-miss (7/8 in every arm) and Zig's (5/6 in every finished arm) are the 168
-variants no arm has passed. The language packs (zig v3, host pack) are not
+are 168 variants (C, C++, Rust) and 163_bigint_divmod_d (C++) and _f
+(Zig, failed only in U_8k). Go's one miss (7/8 in every arm) and Zig's
+other miss (5/6 in every finished arm but U_8k's 4/6) are the 168 variants
+no arm has passed. The language packs (zig v3, host pack) are not
 the bottleneck for this model. Its residual is algorithmic and temporal.
 
 ### 6.6 Against GLM-5.3-Flash and the reference
@@ -509,8 +588,9 @@ below it.
   (§3.4). Only T2 → T3 and the harness10 series compare one variable inside
   one era.
 - **Several changes at once.** U changed four things against T2. Its loss is
-  attributed to the cap by the turn evidence, not by an isolating arm. U_8k
-  is that arm.
+  attributed to the cap by the turn evidence, and U_8k (+4 over U)
+  confirmed it. T2 → U_8k still changes three things at once and crosses
+  an era.
 - **v5's scope is agentic coding.** v5 has 71 units: algorithmic and
   systems tasks in seven languages, each judged by a hidden validator. It
   does not measure chat quality, long-context retrieval, tool use outside
@@ -523,28 +603,28 @@ below it.
   different configuration.
 - **The wall is doubled** (`--wall-scale 2`) for every thinking arm, so
   these rows are experiment arms on the board, not the L0 protocol.
-- **UP is partial.** Its 37/38 so far covers the units that finished first,
-  and is no estimate of its final score.
+- **UP_8k is partial.** Its 45/48 so far covers the units that finished
+  first, and is no estimate of its final score.
+- **The GLM control for UP has not run**, so the planning-line gain is not
+  yet known to be general.
 
 ## 9. Next steps
 
-1. **UP finishes, then UPA.** Scan both for integrity, add them to the board
-   (`evals/v5_board.py --add`), and regenerate this report's tables.
-2. **The gap between series:** the GLM recipe engine update is tested on
-   its own (§7). Nothing on the pair changes while an arm runs.
-3. **U_8k, UP_8k, UPA_8k.** U_8k against T2 is the forced-act turn at the
-   better cap. U_8k → UP_8k → UPA_8k changes one variable per step at 8K.
-   If any of them beats T2 by more than the noise, move
+1. **UP_8k finishes, then UPA_8k.** Scan both for integrity, add them to
+   the board (`evals/v5_board.py --add`), and regenerate this report's
+   tables. If either beats T2 by more than the noise, move
    `composite_by_model` and the profile together, with the evidence.
-4. **Hy4-flash:** stage the NVFP4 weights and image (memory-capped), bring it
+2. **Hy4-flash:** stage the NVFP4 weights and image (memory-capped), bring it
    up hands-on (conformance, bench), run H_T2, put it on the board, then
    `beastds` back to DeepSeek.
-5. **The GLM control for UP,** to tell a DeepSeek-specific effect from a
+3. **The GLM recipe engine update (1104), last:** tested on its own (§7).
+   Nothing on the pair changes while an arm runs.
+4. **The GLM control for UP,** to tell a DeepSeek-specific effect from a
    general one.
-6. **The adaptive cap** (§6.2), as an arm after the 8K series, if the series
+5. **The adaptive cap** (§6.2), as an arm after the 8K series, if the series
    leaves the cap question open.
-7. **A second seed** (T_s2, or a seed arm of T2) before any 1-2 unit claim.
-8. **The final report:** `evals/campaign.py report`, then HARNESS_NOTES
+6. **A second seed** (T_s2, or a seed arm of T2) before any 1-2 unit claim.
+7. **The final report:** `evals/campaign.py report`, then HARNESS_NOTES
    "Per-model vs unified", which records which components were kept for
    both models and which for only one.
 
@@ -553,7 +633,8 @@ below it.
 - The board: [`evals/boards/v5/board.json`](../../evals/boards/v5/board.json),
   [`exclusions.json`](../../evals/boards/v5/exclusions.json), and
   `evals/v5_board.py --json`.
-- U and UP: the harness host's `evals/results/` (untracked), read-only.
+- UP_8k (in progress): the harness host's `evals/results/` (untracked), read-only.
+- Integrity scans of U, UP, UPA and U_8k: `evals/audit/integrity_scan.py`, 2026-11-21.
 - [`evals/CHANGELOG.md`](../../evals/CHANGELOG.md) (harness8, review 1118,
   harness9, harness10), [`evals/campaigns/v5-thinking-first.json`](../../evals/campaigns/v5-thinking-first.json).
 - [MODEL_CAMPAIGN.md](../MODEL_CAMPAIGN.md), [HARNESS_NOTES.md](../HARNESS_NOTES.md),

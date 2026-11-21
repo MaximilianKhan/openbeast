@@ -1,6 +1,6 @@
 # TODO
 
-## 🧰 v5 HARNESS + MODEL CAMPAIGN — opened 2026-11-16, refreshed 2026-11-19
+## 🧰 v5 HARNESS + MODEL CAMPAIGN — opened 2026-11-16, refreshed 2026-11-21
 
 Where the v5 work stands. Every arm is single seed. The working log is
 [`HARNESS_NOTES.md`](HARNESS_NOTES.md) "Headroom", the runbook is
@@ -11,9 +11,11 @@ Where the v5 work stands. Every arm is single seed. The working log is
 went from arm T at 61/71 (SCORE 88.5, #225) to **T2 at 65/71, SCORE 94.9**,
 the board's #1 (#231). T2 is its default agent setup:
 `AGENT_PROFILE=deepseek-best` (#232; `SPARK_HYDRA.md` E2b). As of
-2026-11-19, arm T_s1 (T at `--seed 1`, the noise margin) is running from the
-Mac. T3 (T2 at a 4096 cap) follows it, then the harness10 arms U / U_8k / UP /
-UPA (below).
+2026-11-21, on the board: T_s1 61 (noise about ±1), T3 65 (4096 cap, lower
+SCORE), and the harness10 arms U 59, UP 62 (planning lines +3), UPA 59 (the
+pack −3) and U_8k 63 (the forced act no better than the nudge). T2 stays
+the best. UP_8k is running from the Mac (45 of 48 so far), UPA_8k next
+([interim report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md)).
 
 **GLM-5.3-Flash**, the staged alternative:
 L0 26/71 → A 31/71 → B 36/71 → **C 51/71 scored, SCORE 76.7** (54 raw; the
@@ -255,18 +257,16 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
   thinking-first campaign): the paper's second model and the first `beast` row.
 - [ ] **DeepSeek-V4.1-Flash (Mia EXL3) thinking-first campaign:** in
   progress ([`MODEL_CAMPAIGN.md` §9](MODEL_CAMPAIGN.md#9-next-deepseek-v41-flash-1017-thinking-first)).
-  T (61/71) and T2 (65/71) are on the board. T_s1 is running (2026-11-19),
-  and T3 is next. The one-component-out ablations and the no-thinking arms
-  are not run.
-- [ ] **Arms U, U_8k, UP and UPA** (harness10, PR #234; open, and it must not
-  merge before T3 launches because it rolls the era). Each arm is optional
-  and runs with `--only`. The switches:
-  - **U** is T2 with a forced-act turn instead of the act nudge, plus
-    done-when-verified and no web tools under eval, at a 16384 cap;
-  - **U_8k** is U at 8192;
-  - **UP** is U plus the planning lines;
-  - **UPA** is UP plus the frozen algorithmic pack.
-- [ ] **Run `H_T2` (Hy4-flash NVFP4) after the U series.** Arm H_T2 is T2
+  On the board (2026-11-21): T 61, T_s1 61, **T2 65** (best, SCORE 94.9),
+  T3 65, U 59, UP 62, UPA 59, U_8k 63; all integrity scans clean. The
+  one-component-out ablations and the no-thinking arms are not run.
+- [x] **Arms U, U_8k, UP and UPA** (harness10, #234): U 59 (16384 cap),
+  U_8k 63 (+4: the cap), UP 62 (+3 over U: planning lines help), UPA 59
+  (−3 against UP: the pack hurts). Board rows DS-U, DS-U8k, DS-UP, DS-UPA.
+- [ ] **Arm UP_8k: running** (45 passed of 48, 2026-11-21 10:44), the
+  planning lines at 8192: the open question against T2 and U_8k. Then
+  **UPA_8k**. Add each to the board after an integrity scan.
+- [ ] **Run `H_T2` (Hy4-flash NVFP4) after the U series (after UPA_8k).** Arm H_T2 is T2
   exactly against Tencent's Hy4-flash (atakann's NVFP4 build on vLLM TP2,
   staged in code 2026-11-19: `SPARK_HYDRA.md` "Hy4-flash (NVFP4, vLLM TP2):
   staged"). A public-interest measurement, compared with DS-T2 (65/71) under
@@ -284,8 +284,8 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
   `reasoning_effort`): an era change, so no N arms for Hy4 until then. The
   EXL3 pack `~/Documents/LibertAIDAI-Hy4-flash-EXL3-4bpw` stays (single-host
   only; kept on purpose).
-
-  Run them on DeepSeek after T3.
+- [ ] **The GLM recipe engine update (1104), last:** tested and profiled on
+  its own, after H_T2, before any GLM row runs on it.
 - [ ] **The GLM UP control:** arm UP with `--model-name GLM-5.3-Flash`, after
   `beastglm`, so the UP change is measured on a second model (#234 asks for
   it). It needs a GLM serving window, which takes the default model down; run
@@ -555,10 +555,10 @@ paper's central result either way. Prereqs: the v5 arms for GLM (L0/L1/L2,
 thinking on, runner v2), a Qwen3.8 v5 row when the rig is back, DeepSeek v4.1
 Flash, and the Claude Opus 5.5 reference row as the ceiling.
 
-Status 2026-11-19: two models measured. DeepSeek-V4.1-Flash (Mia EXL3) on
-the thinking-first campaign has T at 61/71 and T2 at 65/71 (SCORE 94.9); T_s1
-(its seed arm) is running, then T3, then the harness10 arms U/UP/UPA (#234),
-with a GLM UP control as the first cross-model arm. Qwen3.8 has no v5 row
+Status 2026-11-21: two models measured. DeepSeek-V4.1-Flash (Mia EXL3) on
+the thinking-first campaign has T 61, T_s1 61, T2 65 (SCORE 94.9, best),
+T3 65, U 59, UP 62, UPA 59 and U_8k 63; UP_8k is running and UPA_8k is
+next, with a GLM UP control as the first cross-model arm. Qwen3.8 has no v5 row
 yet. The GLM status as of 2026-11-17 (evening) follows; it was GLM only at
 that point. GLM's arms L0 26
 → A 31 → B 36 → C 51/71 scored (54 raw; thinking) → E 50/71, against the
