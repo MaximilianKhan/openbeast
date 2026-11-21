@@ -143,9 +143,8 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
 
 **Open — the pair (operator steps, Max; state read over ssh 2026-11-19, no sudo):**
 
-- [ ] **`AGENT_PROFILE=deepseek-best` live on spark-1** once the current eval
-  arm has finished, and never while an arm runs. On 2026-11-19 spark-1's
-  `openbeast.conf` still has `AGENT_MAX_TOKENS=16384` and no profile line.
+- [x] **`AGENT_PROFILE=deepseek-best` live on spark-1** (done 2026-11-19 ~14:50,
+  in the gap after T_s1; `openbeast.conf.bak-20261119` kept).
   Steps: [`SPARK_HYDRA.md` E2b](SPARK_HYDRA.md#e2b-deepseek-best-configuration-v5-t2)
   "Apply on spark-1".
 - [ ] **DeepSeek tuning session** (a planned outage between eval arms;

@@ -1984,10 +1984,10 @@ From a keyed client: a chat request with no thinking params returns
 **Max's decision, 2026-11-19:** the v5 arm-T2 configuration is OpenBeast's
 default and best setup for DeepSeek-V4.1-Flash (Mia EXL3) on this pair.
 
-**Status, 2026-11-19:** the profile is on `main` (#232). It is **not yet in
-spark-1's `openbeast.conf`**, which still has `AGENT_MAX_TOKENS=16384` and
-`BEAST_ASSIST=0`: it goes live with the "Apply on spark-1" steps below,
-after the current eval arm. The model switch does not touch it: after
+**Status, 2026-11-19 ~14:50: live on spark-1.** The "Apply on spark-1" steps
+below were run in the gap after arm T_s1: `AGENT_MAX_TOKENS=16384` and
+`BEAST_ASSIST=0` removed, `AGENT_PROFILE=deepseek-best` added (backup
+`openbeast.conf.bak-20261119`), and only `openbeast` restarted. The model switch does not touch it: after
 `beastglm`, remove the `AGENT_PROFILE` line and restore GLM's two lines
 (E2a); after `beastds`, the reverse.
 
@@ -2856,8 +2856,8 @@ order from [B4](#b4-fabric-mtu-9000-spark-fabric-mtu) step 3:
 
 **Re-read 2026-11-19 (read-only):** everything below is still pending, with
 one change: spark-1 has a docs mirror with the `tailscale` source only
-(`docs.sh status`), not the full set. Also pending: `AGENT_PROFILE=deepseek-best`
-([E2b](#e2b-deepseek-best-configuration-v5-t2)), after the current eval arm.
+(`docs.sh status`), not the full set. `AGENT_PROFILE=deepseek-best`
+([E2b](#e2b-deepseek-best-configuration-v5-t2)) went live on 2026-11-19 ~14:50.
 
 **Pending on the live pair (read 2026-11-17, evening, over ssh, no sudo).**
 What the checklist above still has to do on spark-1 and spark-2:
