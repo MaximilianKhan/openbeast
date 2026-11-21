@@ -25,18 +25,142 @@
     },
     {
       "unit": "126_hmac_scratch",
+      "run": "GLM-L0",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "126_hmac_scratch",
+      "run": "GLM-A",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "126_hmac_scratch",
+      "run": "GLM-B",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "126_hmac_scratch",
+      "run": "GLM-C",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "126_hmac_scratch",
+      "run": "GLM-E",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "126_hmac_scratch",
+      "run": "OPUS-REF",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "126_hmac_scratch",
+      "run": "DS-T",
       "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
     },
     {
       "unit": "153_coroutine_scheduler",
+      "run": "GLM-L0",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "153_coroutine_scheduler",
+      "run": "GLM-A",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "153_coroutine_scheduler",
+      "run": "GLM-B",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "153_coroutine_scheduler",
+      "run": "GLM-C",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "153_coroutine_scheduler",
+      "run": "GLM-E",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "153_coroutine_scheduler",
+      "run": "OPUS-REF",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "153_coroutine_scheduler",
+      "run": "DS-T",
       "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
     },
     {
       "unit": "117_iter_refinement",
+      "run": "GLM-L0",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "117_iter_refinement",
+      "run": "GLM-A",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "117_iter_refinement",
+      "run": "GLM-B",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "117_iter_refinement",
+      "run": "GLM-C",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "117_iter_refinement",
+      "run": "GLM-E",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "117_iter_refinement",
+      "run": "OPUS-REF",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "117_iter_refinement",
+      "run": "DS-T",
       "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
     },
     {
       "unit": "49_markov_steady_state",
+      "run": "GLM-L0",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "49_markov_steady_state",
+      "run": "GLM-A",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "49_markov_steady_state",
+      "run": "GLM-B",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "49_markov_steady_state",
+      "run": "GLM-C",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "49_markov_steady_state",
+      "run": "GLM-E",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "49_markov_steady_state",
+      "run": "OPUS-REF",
+      "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
+    },
+    {
+      "unit": "49_markov_steady_state",
+      "run": "DS-T",
       "note": "judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118)"
     }
   ]
