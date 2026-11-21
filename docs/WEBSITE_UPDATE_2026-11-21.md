@@ -172,14 +172,17 @@ page. This is 11-20 Q-L, escalated ([§8](#8-open-questions-for-max) Q-L).
    11-20 C3 and Q-I stand.
 7. **Mia's new GLM recipe (1104, on TensorFold 1.3.0) is to be tested
    last**, after Hy4-flash. No result, no doc. 11-20 C3 and Q-J stand.
-8. **The `deepseek-best` live status is contradictory in the repo.**
-   [SPARK_HYDRA.md E2b](SPARK_HYDRA.md#e2b-deepseek-best-configuration-v5-t2)
-   still says (status 2026-11-19) the profile is "not yet in spark-1's
-   `openbeast.conf`"; [MODEL_CAMPAIGN.md §5b](MODEL_CAMPAIGN.md#5b-the-arms)
-   says it is "live on spark-1 since 2026-11-19". This page does not resolve
-   it (nobody touched the Sparks for it). Until it is resolved, keep 11-19
-   N2's wording, which describes the preset, not the live pair
-   ([§8](#8-open-questions-for-max) Q-N).
+8. **`deepseek-best` is live on the pair.** Since #255 (merged
+   2026-11-21), [SPARK_HYDRA.md E2b](SPARK_HYDRA.md#e2b-deepseek-best-configuration-v5-t2)
+   records that `AGENT_PROFILE=deepseek-best` has been in spark-1's
+   `openbeast.conf` since 2026-11-19 (about 14:50), applied in the gap
+   after arm T_s1; [MODEL_CAMPAIGN.md §5b](MODEL_CAMPAIGN.md#5b-the-arms)
+   agrees. 11-19 N2's caveat ("don't say the live pair runs it yet") is
+   lifted: see [§3.3](#33-hardware-srcapphardwarepagetsx) N2.
+   The same PR scoped the board's four-unit older-validator footnote to
+   the runs judged before the fix (the GLM rows, the reference and DS-T);
+   if the site shows that footnote (11-19 §4.1 says it needn't), it goes on
+   those rows only, as a count.
 9. **Unchanged since 11-20:** the default model and its serving facts,
    v1.9.0 as the latest tag, backup and restore still PLANNED, native
    TensorFold 1.2.10 installed and not serving, the RTX 5090 facts, the
@@ -282,7 +285,7 @@ rows landed in #254 (`bfd605eb`), so every row here is ready to ship.
 | # | Section | Live (exact) | Replacement (ready to paste) | Source |
 |---|---|---|---|---|
 | W7 (amend 11-20 W7) | "Measured capability on the Spark pair" | as 11-19 W7 | 11-20 W7's text with "across four measured arms from 61/71 up" replaced by "across its measured arms" (no count of arms, so the line needn't change when more rows land). The rest unchanged | Board JSON; C6 |
-| N2 (11-19) | the `deepseek-best` block | (none) | 11-19 N2 unchanged. Don't say the live pair runs it until Q-N is answered | §2.1 item 8 |
+| N2 (amend 11-19 N2) | the `deepseek-best` block | (none) | 11-19 N2's copy, with one sentence inserted before "The serving recipe does not change.": "The Spark pair's own agents have run this setup since November 19." | [SPARK_HYDRA.md E2b](SPARK_HYDRA.md#e2b-deepseek-best-configuration-v5-t2) status (#255) |
 
 ### 3.4 `/investors/investment-case/` and `/investors/`
 
@@ -525,7 +528,7 @@ both.
 
 Unchanged from 11-20 §5.1 (rank 1 DS-T2 65/71, SCORE 94.9; rank 2 GLM-C
 51/71\*, 76.7; the gold standard 71/71; two "No v5 result yet" rows).
-Regenerated at `bfd605eb`: identical.
+Regenerated at `bfd605eb` and again at `c619eaee` (#255): identical.
 
 ### 5.2 The DeepSeek ladder (generated)
 
@@ -845,9 +848,11 @@ whether the eight-rung ladder shipped.
   10" in the ladder's era column, with one explanatory sentence, or hide
   versions and only mark "crosses a harness version"? (Recommendation:
   print them; the ladder is unreadable without them.)
-- **Q-N. Is `deepseek-best` live on spark-1?** SPARK_HYDRA.md E2b says
-  not yet; MODEL_CAMPAIGN.md §5b says live since 2026-11-19. The site copy
-  (11-19 N2) depends on it, and the repo should say one thing.
+- **Q-N. Say on the site that the pair's agents run `deepseek-best`?**
+  (Resolved in the repo by #255: live since 2026-11-19.) The amended N2
+  says so. Confirm you want the live state public, or keep N2 describing
+  the preset only. (Recommendation: say it; it is true and it is the point
+  of the preset.)
 - **Q-O. If UP_8k lands level with T2, or one unit ahead,** what does the
   site say? Options: T2 stays "recommended setup" and the board's SCORE
   rank decides "#1" (the build assertion then stops the deploy for a copy
