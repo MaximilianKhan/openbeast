@@ -39,7 +39,7 @@
       "id": "GLM-C",
       "model": "GLM-5.3-Flash",
       "host": "DGX Spark pair, TensorFold, EXL3",
-      "config": "thinking on, runner v2, wall-scaled turns, wall \u00d72",
+      "config": "thinking on, runner v2, wall-scaled turns, wall ×2",
       "campaign_arm": "v5-harness C",
       "files": [
         "eval-glm-5-3-flash-v2-turns-think-L0-20261116-195724.json"
@@ -49,7 +49,7 @@
       "id": "OPUS-REF",
       "model": "Claude Opus 5.5",
       "host": "Anthropic API",
-      "config": "Claude Code tools, no turn cap, wall \u00d72 (68/71 at the 1\u00d7 wall); solver never saw validator output",
+      "config": "Claude Code tools, no turn cap, wall ×2 (68/71 at the 1× wall); solver never saw validator output",
       "reference": true,
       "files": [
         "reference-claude-opus-5-5-v5-20261116.jsonl"
@@ -58,7 +58,7 @@
     {
       "id": "GLM-E",
       "model": "GLM-5.3-Flash",
-      "config": "thinking on, runner v2, wall-scaled turns, wall \u00d72, diagnostics + edit hint + verify-done, Zig pack v2 + host pack, env block, wall warnings",
+      "config": "thinking on, runner v2, wall-scaled turns, wall ×2, diagnostics + edit hint + verify-done, Zig pack v2 + host pack, env block, wall warnings",
       "files": [
         "eval-glm-5-3-flash-v3-best-20261117-043643.json"
       ],
@@ -108,6 +108,51 @@
       "campaign_arm": "v5-thinking-first T3",
       "host": "DGX Spark pair, TensorFold, Mia EXL3 (2.9 bpw)",
       "note": "65/71 like T2: the 4096 cap swapped three iterate-and-test units in for three long-derivation units out; 0 lost; integrity scan 2026-11-20: 0 contaminated"
+    },
+    {
+      "id": "DS-U",
+      "model": "DeepSeek-V4.1-Flash (Mia EXL3)",
+      "config": "campaign arm U: T2 with the forced-act turn instead of the act nudge + done-when-verified, web tools hidden (harness10, 16K cap)",
+      "files": [
+        "eval-deepseek-v4-1-flash-v5-thinking-first-u-20261119-235955.json"
+      ],
+      "host": "DGX Spark pair, TensorFold, Mia EXL3 (2.9 bpw)",
+      "campaign_arm": "v5-thinking-first U",
+      "note": "59/71; 0 units lost; failed: 163_bigint_divmod_d, 168_linearizability_kv_a-f, 173_taskgroup_cancel, 175_crdt_orset_rga, 183_heston_little_trap, 190_autograd_mlp, 192_pike_regex; integrity scan 2026-11-21: 0 contaminated (no flagged tool call)"
+    },
+    {
+      "id": "DS-UP",
+      "model": "DeepSeek-V4.1-Flash (Mia EXL3)",
+      "config": "campaign arm UP: U + planning lines (harness10, 16K cap)",
+      "files": [
+        "eval-deepseek-v4-1-flash-v5-thinking-first-up-20261120-063508.json",
+        "eval-deepseek-v4-1-flash-v5-thinking-first-up-20261120-160011.json"
+      ],
+      "host": "DGX Spark pair, TensorFold, Mia EXL3 (2.9 bpw)",
+      "campaign_arm": "v5-thinking-first UP",
+      "note": "62/71; 0 units lost; the second file resumes the paused run (16 units); failed: 168_linearizability_kv_b-f, 173_taskgroup_cancel, 183_heston_little_trap, 192_pike_regex, 195_riscv_insn_budget; integrity scan 2026-11-21: 0 contaminated (no flagged tool call)"
+    },
+    {
+      "id": "DS-UPA",
+      "model": "DeepSeek-V4.1-Flash (Mia EXL3)",
+      "config": "campaign arm UPA: UP + the frozen algorithmic procedure pack (harness10, 16K cap)",
+      "files": [
+        "eval-deepseek-v4-1-flash-v5-thinking-first-upa-20261120-170603.json"
+      ],
+      "host": "DGX Spark pair, TensorFold, Mia EXL3 (2.9 bpw)",
+      "campaign_arm": "v5-thinking-first UPA",
+      "note": "59/71; 0 units lost; failed: 168_linearizability_kv_a-f, 173_taskgroup_cancel, 183_heston_little_trap, 190_autograd_mlp, 192_pike_regex, 195_riscv_insn_budget, 196_polyphase_resampler; integrity scan 2026-11-21: 0 contaminated (no flagged tool call)"
+    },
+    {
+      "id": "DS-U8k",
+      "model": "DeepSeek-V4.1-Flash (Mia EXL3)",
+      "config": "campaign arm U_8k: U at an 8192-token per-turn cap (harness10)",
+      "files": [
+        "eval-deepseek-v4-1-flash-v5-thinking-first-u-8k-20261121-004319.json"
+      ],
+      "host": "DGX Spark pair, TensorFold, Mia EXL3 (2.9 bpw)",
+      "campaign_arm": "v5-thinking-first U_8k",
+      "note": "63/71; 0 units lost; failed: 163_bigint_divmod_f, 168_linearizability_kv_b, 168_linearizability_kv_d, 168_linearizability_kv_f, 173_taskgroup_cancel, 183_heston_little_trap, 192_pike_regex, 195_riscv_insn_budget; integrity scan 2026-11-21: 0 contaminated (no flagged tool call)"
     }
   ],
   "not_yet_run": [

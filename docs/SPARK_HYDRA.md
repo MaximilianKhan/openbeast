@@ -1998,9 +1998,17 @@ after the current eval arm. The model switch does not touch it: after
 
 T2 against T: +4 (168_kv_e, 173, 183, 190), 0 regressions; the gaps between
 turns fell from 470-610 s to 280-330 s. Board row DS-T2
-(`evals/boards/v5/board.json`), eval era `036638ddd68698ce`. Arms T_s1 (the
-noise margin) and T3 (T2 with a 4096 cap) are running as of 2026-11-19
-([MODEL_CAMPAIGN.md](MODEL_CAMPAIGN.md) §5b, §9).
+(`evals/boards/v5/board.json`), eval era `036638ddd68698ce`.
+
+**T2 stays the recommended DeepSeek config (2026-11-21).** No later arm has
+beaten it: T_s1 61 (noise about ±1), T3 (4096 cap) 65 with a lower SCORE,
+and the harness10 arms U 59, UP 62, UPA 59 and U_8k 63 (the forced-act turn
+at the same 8192 cap: no better than the act nudge). **UP_8k (the planning
+lines at 8192) is pending**: running, 45 passed of its first 48 units
+against T2's 44 on the same units. If it, or UPA_8k after it, beats T2 by
+more than the noise, the profile moves with the evidence; until then this
+section stands ([MODEL_CAMPAIGN.md](MODEL_CAMPAIGN.md) §5b, §9;
+[the interim campaign report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md)).
 
 **One line in `openbeast.conf`:** `AGENT_PROFILE=deepseek-best`. It sets a
 default for each key below; a key set on its own line (or in the env) wins
