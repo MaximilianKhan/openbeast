@@ -808,6 +808,41 @@ whether the eight-rung ladder shipped.
 
 ## 8. Open questions for Max
 
+**Decisions (Max, 2026-11-21).** These answers settle §8. The questions
+below are kept as asked, for the record.
+
+- **Q-R: yes.** Ship the Rule E fix now, on its own (a one-line website PR,
+  reworded silently per Q-D). This is in hand separately from this handoff.
+- **Q-O: yes.** T2 stays the recommended setup if UP_8k ties. A gap of one
+  unit is noise; UP_8k needs a lead of two or more units.
+- **Q-P: yes.** Publish the misses ("an extra procedure pack hurt", "a
+  forced action turn did not beat the nudge"). The goal is a full ablation
+  study, negative results included.
+- **Q-K, Q-M, Q-N: yes.**
+  - Name harness 10's arms at the high level given in E4.
+  - Print "harness 8 / 9 / 10" in the ladder's era column.
+  - Say the pair's agents run `deepseek-best`.
+- **Q-A to Q-L (carried over): accepted as recommended.** This settles:
+  - Q-D: silent rewording.
+  - Q-E: "experiment arm" stays on the board.
+  - Q-F: publish the full policy quote.
+  - Q-G: approve the proposals.
+  - Q-H: `/models/` is a new URL.
+  - Q-I: hold Hy4-flash until `H_T2` has a row.
+  - Q-L: fix the cold-start 502 in the same deploy.
+
+  For Q-B, Q-C and Q-J, the default this handoff assumes applies:
+  - Q-B: the bare label "Mia EXL3".
+  - Q-C: per-model ladders.
+  - Q-J: the decision is made when the 1104 A/B result lands.
+
+  **Q-A needs a fact, not a recommendation:** state the licence of Mia's
+  pack before any page offers it as a supported Spark setup. Until then, no
+  page makes that offer.
+- **Q-Q and Q-S** were not answered separately; the recommendations stand:
+  - Q-Q: ship UP_8k and UPA_8k together.
+  - Q-S: "What we learned" goes on both pages.
+
 **Carried over (all unanswered as of 2026-11-21):**
 
 - **Q-A.** The licence of Mia's DeepSeek EXL3 pack for a supported Spark
