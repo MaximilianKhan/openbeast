@@ -201,6 +201,23 @@ runner's registry. Details: [`docs/TOOLS.md`](docs/TOOLS.md).
 Prefer `edit_file` over `write_file` for existing files. Prefer running code
 over reasoning about what it should do.
 
+## Downloading model weights
+
+To download a model from a Hugging Face URL, on any machine, use one command:
+
+```bash
+scripts/weights-download.sh https://huggingface.co/ORG/REPO [DEST]
+```
+
+- Without DEST, the model goes to `~/Documents/weights/ORG/REPO`.
+- The last stdout line is the folder.
+- Every file is verified against the Hub's hash.
+- Re-running the same command resumes or re-verifies.
+- Use `--dry-run` first to see the size, and `--include GLOB` to pick one quantization.
+
+Do not use `hf download`, `git clone` or `wget` for weights. The guide is
+`docs/WEIGHTS_DOWNLOAD.md`.
+
 ## Don't reinvent
 
 If you find yourself thinking "I should write some code to do X" — first
