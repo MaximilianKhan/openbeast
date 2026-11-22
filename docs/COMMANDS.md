@@ -555,6 +555,11 @@ scripts/bundle.sh verify <dir>                            # an offline bundle, r
 scripts/weights-download.sh <hf-url> [dest]               # any model -> ~/Documents/weights/ORG/REPO, verified (any machine; WEIGHTS_DOWNLOAD.md)
 scripts/weights-download.sh <hf-url> --dry-run            # files, sizes, target folder; writes nothing
 scripts/weights-download.sh --verify <dir>                # re-hash a downloaded or copied model folder (offline)
+scripts/beast-recipe.sh init <hf-url|org/repo@sha|dir> --sparks 2  # a model -> recipes/<name>/recipe.env + the plan (BEAST_RECIPE.md)
+scripts/beast-recipe.sh plan <recipe> [--sparks 1,2,3,4]   # fit, engine, verdict, gaps + effort, every command end to end (offline)
+scripts/beast-recipe.sh list                              # every recipe and its verdict
+scripts/beast-recipe.sh engine|stage|up|check|adopt <recipe>   # print what would run; --run acts (on a Spark)
+beast-spark <recipe>                                      # serve an adopted recipe (beast-recipe adopt <recipe> --run first); beast-recipe rollback --run goes back
 python3 scripts/generate-skill-index.py --check           # exit 1 if the skill menu in system-prompt-tools.md is stale
 ```
 

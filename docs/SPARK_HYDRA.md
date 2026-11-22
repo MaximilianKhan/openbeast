@@ -89,7 +89,7 @@ The served name stays `DeepSeek-V4.1-Flash-1017`, so the gate, the command cente
 
 Each cell gives two runs. The differences are inside run-to-run noise. A first v1 run measured 2K prefill at 1,322 tok/s, but that was cold-server warm-up: the later v1 run gave 1,990 against v2's 2,035–2,049. The verdict is a drop-in replacement, and v2 is DeepSeek's pack: DeepSeek-V4.1-Flash (Mia EXL3), the pair's default model since 2026-11-18 (v5 61/71, 65/71 under arm T2; GLM-5.3-Flash is the staged alternative). A v1-vs-v2 quality A/B (the v5 eval on both packs) has not been run. **Every v5 board run of DeepSeek ran on -v2** (the journal's `Ready: … EAQ-v1.1-2.9-bpw-v2 @ 04c13f12` on each start from 2026-11-17 23:07; the stock pack last served before 22:59 that night), recorded as `weights_id` `dsv41f-mia-exl3-2.9bpw-eaq1.1-v2` in `evals/boards/v5/weights.json` ([RESULTS.md, Weights used](RESULTS.md#weights-used)). The Hub's `Mia-AiLab/DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1.1-2.9-bpw` (@ `aee640e2`, "Experimental v1.1 pack") is a different build: its shard sizes and index differ from this folder's, so never cite it as these weights. A new pack that goes on the board gets its own `weights.json` entry and its own row ([MODEL_CAMPAIGN.md 7a](MODEL_CAMPAIGN.md#7a-the-board-row-and-its-weights)).
 
-**Other EXL3 models.** For other packs and other EXL3 models brought offline, including GLM packs, new architectures and the read-only `spark-model-intake.sh` preflight, see [EXL3_PLAYBOOK.md](EXL3_PLAYBOOK.md).
+**Other EXL3 models.** For other packs and other EXL3 models brought offline, including GLM packs, new architectures and the read-only `spark-model-intake.sh` preflight, see [EXL3_PLAYBOOK.md](EXL3_PLAYBOOK.md). Whether a model can be served on the pair at all, with which engine and on how many Sparks, and the commands that apply it: [BEAST_RECIPE.md](BEAST_RECIPE.md) (`scripts/beast-recipe.sh plan`).
 
 ## Hy4-flash (NVFP4, vLLM TP2): measured
 
@@ -133,6 +133,12 @@ fewer completion tokens each. The served engine's start line confirms the
 recipe: `max_model_len` 262144, TP2 + expert parallel, 4 sequences,
 `kv_cache_memory_bytes` 6 GiB, DFly with 5 speculative tokens,
 `modelopt_fp4`, the `hy_v4` reasoning and tool parsers.
+
+
+This config is also the recipe `recipes/hy4-flash-nvfp4-vllm-tp2`
+([BEAST_RECIPE.md](BEAST_RECIPE.md)); a test asserts that the vLLM flags
+rendered from the recipe equal `hy4_serve_args`. Its TensorFold
+challenger is planned in `recipes/hy4-flash-exl3-tensorfold-tp2`.
 
 ### What it is (pins)
 
@@ -1695,6 +1701,12 @@ behind you (`Restart=on-failure`), or the unit would think the pair is up when
 it is not.
 
 ### D2. Native TensorFold through `spark-node.sh` / `spark-cluster.sh`
+
+**Recipes on D2.** `scripts/beast-recipe.sh` plans and applies a model on D2
+end to end: it renders the profile and a `beast-recipe-<name>.service` user
+unit around `spark-cluster.sh start`, and `beast-spark <name>` switches to it.
+The first D2 serve on the pair is planned as `recipes/glm53-flash-exl3-native-tp2`
+([BEAST_RECIPE.md](BEAST_RECIPE.md)).
 
 OpenBeast's own launcher. It is general (any profile, 1 to 8 ranks), keyed
 (`--api-key-file`), and launches only verified local weights. On our pair it is

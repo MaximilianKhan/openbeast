@@ -1,0 +1,23 @@
+# beast-recipe-minimax-m31-flash-exl3-3.06-tp2.service: rendered by beast-recipe from recipes/minimax-m31-flash-exl3-3.06-tp2/recipe.env.
+# MiniMax-M3.1-Flash EXL3 3.06 bpw on native TensorFold 1.2.10, TP2
+# STAGED, NOT A BOOT DEFAULT: there is no [Install] section, so it cannot be
+# enabled and never starts at boot. Start it only through `beast-spark minimax-m31-flash-exl3-3.06-tp2`
+# (after `beast-recipe adopt minimax-m31-flash-exl3-3.06-tp2 --run`): it stops the model that serves,
+# starts this, waits for minimax-m3.1-flash-exl3 on /v1/models, sets openbeast.conf,
+# and puts the previous model back if any of that fails.
+
+[Unit]
+Description=beast-recipe minimax-m31-flash-exl3-3.06-tp2: minimax-m3.1-flash-exl3 on tf-native-1.2.10, TP 2 (staged; started only by beast-spark minimax-m31-flash-exl3-3.06-tp2)
+After=network-online.target
+Wants=network-online.target
+Conflicts=deepseek-v41-inference.service hy4-vllm-inference.service spark-hydra-inference.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=%h/openbeast
+ExecStart=/usr/bin/bash %h/openbeast/scripts/backends/spark-cluster.sh start --profile recipe-minimax-m31-flash-exl3-3.06-tp2 --engine tensorfold
+ExecStop=/usr/bin/bash %h/openbeast/scripts/backends/spark-cluster.sh stop --engine tensorfold
+TimeoutStartSec=infinity
+TimeoutStopSec=150
+Restart=no

@@ -10,6 +10,8 @@
 #   beast-spark ds        # beastds:   switch to DeepSeek-V4.1-Flash (Mia EXL3), the pair's default model
 #   beast-spark hy4       # beasthy4:  serve Hy4-flash (NVFP4, vLLM TP2) for now: staged, never a boot default
 #   beast-spark status    # beaststatus: which model is selected, what is running, health
+#   beast-spark NAME      # serve an adopted beast-recipe recipe (beast-recipe adopt NAME --run): like hy4,
+#                         # staged, never a boot default; `beast-spark recipe NAME` is the same
 #   beast-spark aliases   # print the six alias lines for ~/.bashrc
 #   beast-spark install   # install/update beast-spark, the pack tools and the aliases from the checkout (~/openbeast)
 #
@@ -53,7 +55,7 @@
 set -euo pipefail
 
 # Test seams: SB_PREP, SB_DS_PACK, SB_DS_ID, SB_CONF, SB_URL, SB_KEY_FILE,
-# SB_WAIT_S, SB_HY4_WAIT_S, SB_LOCK, SB_BIN_DIR, SB_BASHRC, SB_OB_CONF, SB_CHECKOUT.
+# SB_WAIT_S, SB_HY4_WAIT_S, SB_LOCK, SB_BIN_DIR, SB_BASHRC, SB_OB_CONF, SB_CHECKOUT, SB_RECIPES_D.
 PREP="${SB_PREP:-$HOME/openbeast-recipes/deepseek-prep}"
 CONF="${SB_CONF:-$HOME/.config/openbeast/beast-spark.env}"
 V2_PACK="$HOME/Documents/Mia-AiLab-DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw-v2"
@@ -76,6 +78,10 @@ BIN_DIR="${SB_BIN_DIR:-$HOME/.local/bin}"
 BASHRC="${SB_BASHRC:-$HOME/.bashrc}"
 # The checkout `install` copies from (and the installed copy is compared with)
 CHECKOUT="${SB_CHECKOUT:-$HOME/openbeast}"
+# Recipes adopted by beast-recipe (scripts/beast-recipe.sh adopt NAME --run): one NAME.env per
+# recipe, KEY=value lines PARSED, never sourced: UNIT (beast-recipe-*.service), SERVED, BACKEND,
+# WAIT_S. .previous records the selection before the last switch to a recipe (beast-recipe rollback).
+RECIPES_D="${SB_RECIPES_D:-$HOME/.config/openbeast/recipes.d}"
 export PATH="$HOME/.local/bin:$PATH"
 
 log() { printf '[beast-spark] %s\n' "$*" >&2; }
@@ -120,7 +126,23 @@ check_install() {
   log "WARNING: $who: it may lack commands or fixes. Update it (from $CHECKOUT, after a git pull there if the checkout is the older one): beast-spark install"
 }
 
-served_of() { case "$1" in "$DS_UNIT") echo "$DS_SERVED" ;; "$GLM_UNIT") echo "$GLM_SERVED" ;; "$HY4_UNIT") echo "$HY4_SERVED" ;; esac; }
+served_of() { case "$1" in "$DS_UNIT") echo "$DS_SERVED" ;; "$GLM_UNIT") echo "$GLM_SERVED" ;; "$HY4_UNIT") echo "$HY4_SERVED" ;;
+  *) recipe_units | awk -v u="$1" '!f && $2 == u { print $3; f = 1 }' ;; esac; }
+# recipe_value FILE KEY: the last KEY=value line, the value as written (no quotes, no comments)
+recipe_value() { sed -n "s/^$2=//p" "$1" | tail -1; }
+# "name unit served backend wait" for every adopted recipe whose file is well formed
+recipe_units() {
+  local f n u s b w
+  for f in "$RECIPES_D"/*.env; do
+    [[ -f "$f" ]] || continue
+    n=$(basename "$f" .env); u=$(recipe_value "$f" UNIT); s=$(recipe_value "$f" SERVED)
+    b=$(recipe_value "$f" BACKEND); w=$(recipe_value "$f" WAIT_S)
+    [[ "$n" =~ ^[a-z0-9][a-z0-9._-]*$ && "$u" =~ ^beast-recipe-[A-Za-z0-9._-]+\.service$ && "$s" =~ ^[A-Za-z0-9._-]+$ ]] || continue
+    [[ "$b" == tensorfold || "$b" == vllm ]] || b=tensorfold
+    [[ "$w" =~ ^[0-9]+$ ]] || w=$HY4_WAIT_S
+    echo "$n $u $s $b $w"
+  done
+}
 hy4_installed() { [[ "$(sc show -p LoadState --value "$HY4_UNIT" 2>/dev/null)" == loaded ]]; }
 # Stop Hy4 when it runs (its stop.sh takes both ranks down). When openbeast.conf
 # still points at Hy4, it is pointed back at the SELECTED model (TensorFold, its
@@ -128,9 +150,17 @@ hy4_installed() { [[ "$(sc show -p LoadState --value "$HY4_UNIT" 2>/dev/null)" =
 CONF_BACK=0
 stop_hy4() {
   if active "$HY4_UNIT"; then log "stopping Hy4 ($HY4_UNIT)"; sc stop "$HY4_UNIT"; fi
-  if [[ "$(ob_conf_get INFERENCE_MODEL)" == "$HY4_SERVED" ]]; then
+  # adopted recipes serve the same way (never selected): stopped too, and openbeast.conf pointed back
+  local m n u rs _b _w was=""; m=$(ob_conf_get INFERENCE_MODEL)
+  [[ "$m" == "$HY4_SERVED" ]] && was=Hy4
+  while read -r n u rs _b _w; do
+    [[ -n "$n" ]] || continue
+    if active "$u"; then log "stopping the recipe $n ($u)"; sc stop "$u"; fi
+    [[ -z "$was" && "$m" == "$rs" ]] && was="the recipe $n"
+  done < <(recipe_units)
+  if [[ -n "$was" ]]; then
     local s; s=$(selected); [[ "$s" == none ]] && s=ds
-    log "openbeast.conf: INFERENCE_BACKEND=tensorfold, INFERENCE_MODEL=$(served_of "$(unit_of "$s")") (it pointed at Hy4)"
+    log "openbeast.conf: INFERENCE_BACKEND=tensorfold, INFERENCE_MODEL=$(served_of "$(unit_of "$s")") (it pointed at $was)"
     ob_conf_set INFERENCE_BACKEND tensorfold
     ob_conf_set INFERENCE_MODEL "$(served_of "$(unit_of "$s")")"
     CONF_BACK=1
@@ -185,6 +215,11 @@ cmd_status() {
     printf '  %-32s %s / %s\n' "$u" "$(sc is-active "$u" 2>/dev/null || true)" "$(sc is-enabled "$u" 2>/dev/null || true)"
   done
   if active "$HY4_UNIT"; then echo "hy4: Hy4-flash (NVFP4) serves for now; the selection (and boot) stays $s: beast$s or beastup goes back"; fi
+  local rn ru _rs _rb _rw
+  while read -r rn ru _rs _rb _rw; do
+    [[ -n "$rn" ]] || continue
+    printf '  %-32s %s (recipe %s)\n' "$ru" "$(sc is-active "$ru" 2>/dev/null || true)" "$rn"
+  done < <(recipe_units)
   echo "serving on $URL: $(served_model | sed 's/^$/nothing/')"
   echo "ds pack: $DS_ID ($DS_PACK)$( [[ -r "$CONF" ]] && echo "  from $CONF")"
 }
@@ -359,6 +394,81 @@ cmd_hy4() {
   log "back to the default: beastds (or beastglm); a reboot also comes back to the selection ($(selected))"
 }
 
+# ---- an adopted beast-recipe recipe: serve it for now, never select it (the Hy4 pattern)
+R_DONE=1 R_PREV=none R_PREV_UNIT="" R_PREV_MODEL="" R_PREV_BACKEND="" R_CONF_SET=0 R_UNIT="" R_NAME=""
+recipe_exit() {
+  local rc=$?
+  trap - EXIT
+  if (( ! R_DONE )); then
+    log "the switch to the recipe $R_NAME failed (exit $rc): stopping $R_UNIT"
+    sc stop "$R_UNIT" 2>/dev/null || true
+    if (( R_CONF_SET )); then
+      [[ -n "$R_PREV_MODEL" ]] && { ob_conf_set INFERENCE_MODEL "$R_PREV_MODEL" || true; }
+      [[ -n "$R_PREV_BACKEND" ]] && { ob_conf_set INFERENCE_BACKEND "$R_PREV_BACKEND" || true; }
+    fi
+    if [[ -n "$R_PREV_UNIT" ]]; then
+      log "restoring $R_PREV ($R_PREV_UNIT), which served when the switch began"
+      if sc start "$R_PREV_UNIT" && (wait_ready "$R_PREV_UNIT"); then log "$R_PREV is serving again; $R_NAME was NOT activated"
+      else log "$R_PREV did not come back either: journalctl --user -u $R_PREV_UNIT -n 50; then beast-spark $R_PREV"; fi
+      (( R_CONF_SET )) && sc restart "$OB_UNIT" 2>/dev/null || true
+    else
+      log "nothing served when the switch began: nothing to restore"
+    fi
+  fi
+  exit "$rc"
+}
+
+cmd_recipe() {
+  R_NAME=${1:-}
+  local line served backend wait n u
+  line=$(recipe_units | awk -v n="$R_NAME" '$1 == n')
+  [[ -n "$R_NAME" && -n "$line" ]] || die "no adopted recipe '$R_NAME' in $RECIPES_D: beast-recipe adopt $R_NAME --run (beast-recipe list shows the recipes)"
+  read -r _ R_UNIT served backend wait <<<"$line"
+  [[ "$(sc show -p LoadState --value "$R_UNIT" 2>/dev/null)" == loaded ]] ||
+    die "the unit $R_UNIT is not installed: beast-recipe up $R_NAME --write-profile, then the install line of beast-recipe up $R_NAME --dry-run"
+  if active "$R_UNIT" && serving "$served"; then
+    log "the recipe $R_NAME is already serving"
+    if [[ "$(ob_conf_get INFERENCE_MODEL)" != "$served" || "$(ob_conf_get INFERENCE_BACKEND)" != "$backend" ]]; then
+      ob_conf_set INFERENCE_BACKEND "$backend"; ob_conf_set INFERENCE_MODEL "$served"; sc restart "$OB_UNIT"
+    fi
+    cmd_status; return
+  fi
+  if active "$DS_UNIT"; then R_PREV=ds R_PREV_UNIT=$DS_UNIT
+  elif active "$GLM_UNIT"; then R_PREV=glm R_PREV_UNIT=$GLM_UNIT
+  elif active "$HY4_UNIT"; then R_PREV=hy4 R_PREV_UNIT=$HY4_UNIT
+  else
+    while read -r n u _ _ _; do
+      if [[ "$n" != "$R_NAME" ]] && active "$u"; then R_PREV=$n R_PREV_UNIT=$u; break; fi
+    done < <(recipe_units)
+  fi
+  R_PREV_MODEL=$(ob_conf_get INFERENCE_MODEL)
+  R_PREV_BACKEND=$(ob_conf_get INFERENCE_BACKEND)
+  R_DONE=0
+  trap recipe_exit EXIT
+  trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP
+  for u in "$DS_UNIT" "$GLM_UNIT" "$HY4_UNIT"; do
+    if active "$u"; then log "stopping $u (one model at a time; it stays $(sc is-enabled "$u" 2>/dev/null || echo disabled) for boot)"; sc stop "$u"; fi
+  done
+  while read -r n u _ _ _; do
+    if [[ "$n" != "$R_NAME" ]] && active "$u"; then log "stopping the recipe $n ($u)"; sc stop "$u"; fi
+  done < <(recipe_units)
+  log "starting the recipe $R_NAME: $R_UNIT"
+  sc start "$R_UNIT"
+  wait_ready "$R_UNIT" "$wait"
+  log "INFERENCE_BACKEND=$backend, INFERENCE_MODEL=\"$served\" in $OB_CONF (was ${R_PREV_BACKEND:-unset}, \"$R_PREV_MODEL\"), restarting the command center"
+  R_CONF_SET=1
+  ob_conf_set INFERENCE_BACKEND "$backend"
+  ob_conf_set INFERENCE_MODEL "$served"
+  sc restart "$OB_UNIT"
+  if [[ "$R_PREV" != none ]]; then
+    printf 'PREVIOUS=%s\nRECIPE=%s\nWHEN=%s\n' "$R_PREV" "$R_NAME" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$RECIPES_D/.previous"
+  fi
+  R_DONE=1
+  trap - INT TERM HUP
+  cmd_status
+  log "back: beast-recipe rollback --run (beast-spark $R_PREV); a reboot comes back to the selection ($(selected))"
+}
+
 ALIAS_MARK='# beast-spark shortcuts (OpenBeast scripts/backends/spark-beast.sh; docs/SPARK_HYDRA.md)'
 cmd_aliases() {
   echo "$ALIAS_MARK"
@@ -419,6 +529,8 @@ case "${1:-}" in
   status) cmd_status ;;
   aliases) cmd_aliases ;;
   install) cmd_install ;;
-  *) [[ -n "${1:-}" ]] && log "ERROR: unknown command: $1 (an older install? beast-spark install updates it from $CHECKOUT)"
-     sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  recipe) take_lock; cmd_recipe "${2:-}" ;;
+  *) if [[ -n "${1:-}" && -f "$RECIPES_D/${1}.env" && "$1" =~ ^[a-z0-9][a-z0-9._-]*$ ]]; then take_lock; cmd_recipe "$1"; exit 0; fi
+     [[ -n "${1:-}" ]] && log "ERROR: unknown command: $1 (an older install? beast-spark install updates it from $CHECKOUT)"
+     sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

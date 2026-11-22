@@ -82,3 +82,6 @@ evals/decisions/*/shadow-labelled.jsonl
 
 # Engine plane state: pin history, conf backups, staged releases (scripts/engine.sh)
 .engines/
+
+# beast-recipe: per-recipe run records (bench, capabilities snapshots); summarised in commits, not committed
+recipes/*/runs/
