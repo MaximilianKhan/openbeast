@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="referrer" content="no-referrer">
+<title>OpenBeast Status</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="preload" href="/static/geist.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/static/geist-mono.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to the status</a>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true">OB</span>
+    <span class="brand-name">OPENBEAST</span>
+    <span class="brand-sub">command center</span>
+  </div>
+  <div class="topbar-meta">
+    <span class="chip" id="host-chip" title="This node">—</span>
+    <span class="chip chip-health" id="health-chip" data-state="unknown"><i class="dot" aria-hidden="true"></i><span id="health-text">connecting…</span></span>
+    <span class="live" id="live" data-state="wait"><i class="dot" aria-hidden="true"></i><span id="live-text">waiting for data</span></span>
+  </div>
+</header>
+
+<main id="main" tabindex="-1">
+  <h1 class="sr-only">OpenBeast status</h1>
+
+  <section class="hero panel edge" aria-labelledby="h-model">
+    <div class="hero-model">
+      <p class="eyebrow"><i class="dot" id="model-dot" aria-hidden="true"></i><span id="h-model">Serving</span></p>
+      <p class="model-id" id="model-id">—</p>
+      <ul class="chips" aria-label="Engine">
+        <li class="chip" id="chip-engine">—</li>
+        <li class="chip" id="chip-unit">—</li>
+        <li class="chip" id="chip-endpoint">—</li>
+      </ul>
+    </div>
+    <dl class="signal">
+      <div><dt>tokens / s</dt><dd id="sig-toks">—</dd><span class="spark-wrap"><svg class="spark" id="spark-toks" viewBox="0 0 120 28" preserveAspectRatio="none" role="img" aria-label="tokens per second, last 15 minutes"></svg><span class="spark-read" id="spark-toks-read"></span></span></div>
+      <div><dt>requests</dt><dd id="sig-reqs">—</dd><small id="sig-reqs-sub">running · waiting</small></div>
+      <div><dt>KV cache</dt><dd id="sig-kv">—</dd><span class="meter" aria-hidden="true"><i id="sig-kv-bar"></i></span></div>
+      <div><dt>context</dt><dd id="sig-ctx">—</dd><small id="sig-ctx-sub">tokens per request</small></div>
+    </dl>
+  </section>
+
+  <section class="block" aria-labelledby="h-cluster">
+    <div class="block-head">
+      <h2 id="h-cluster">Cluster</h2>
+      <p class="block-note" id="cluster-note">—</p>
+    </div>
+    <div class="nodes" id="nodes"></div>
+  </section>
+
+  <div class="duo">
+    <section class="block panel" aria-labelledby="h-serving">
+      <div class="block-head"><h2 id="h-serving">Serving</h2><p class="block-note" id="serving-note">—</p></div>
+      <dl class="kv" id="serving-kv">
+        <div><dt>slots busy / total</dt><dd id="sv-slots">—</dd></div>
+        <div><dt>queue</dt><dd id="sv-queue">—</dd></div>
+        <div><dt>running</dt><dd id="sv-running">—</dd></div>
+        <div><dt>waiting</dt><dd id="sv-waiting">—</dd></div>
+        <div><dt>KV usage</dt><dd id="sv-kv">—</dd></div>
+        <div><dt>token pool</dt><dd id="sv-pool">—</dd></div>
+        <div><dt>prompt tok/s</dt><dd id="sv-prompt">—</dd></div>
+        <div><dt>gen tok/s</dt><dd id="sv-gen">—</dd></div>
+        <div><dt>profile</dt><dd id="sv-profile">—</dd></div>
+        <div><dt>per device</dt><dd id="sv-admission">—</dd></div>
+        <div><dt>backend</dt><dd id="sv-backend">—</dd></div>
+        <div><dt>unit uptime</dt><dd id="sv-uptime">—</dd></div>
+      </dl>
+    </section>
+
+    <section class="block panel" aria-labelledby="h-gate">
+      <div class="block-head"><h2 id="h-gate">beast-gate</h2><p class="block-note" id="gate-note">—</p></div>
+      <div class="stats">
+        <div class="stat"><span class="stat-v" id="gt-devices">—</span><span class="stat-k">devices enrolled</span></div>
+        <div class="stat"><span class="stat-v" id="gt-active">—</span><span class="stat-k">active · 15 min</span></div>
+        <div class="stat"><span class="stat-v" id="gt-rpm">—</span><span class="stat-k">requests / min</span></div>
+        <div class="stat"><span class="stat-v" id="gt-errors">—</span><span class="stat-k">errors (total)</span></div>
+      </div>
+      <dl class="kv kv-tight">
+        <div><dt>auth</dt><dd id="gt-auth">—</dd></div>
+        <div><dt>requests (total)</dt><dd id="gt-total">—</dd></div>
+        <div><dt>refused, no identity</dt><dd id="gt-denied">—</dd></div>
+      </dl>
+    </section>
+  </div>
+
+  <section class="block" aria-labelledby="h-services">
+    <div class="block-head"><h2 id="h-services">Services</h2><p class="block-note" id="services-note">—</p></div>
+    <ul class="services" id="services"></ul>
+  </section>
+
+  <div class="duo">
+    <section class="block panel" aria-labelledby="h-tools">
+      <div class="block-head"><h2 id="h-tools">Tool activity</h2><p class="block-note">identity tool server · :3001</p></div>
+      <div class="stats stats-3">
+        <div class="stat"><span class="stat-v" id="tl-calls">—</span><span class="stat-k">tool calls</span></div>
+        <div class="stat"><span class="stat-v" id="tl-errors">—</span><span class="stat-k">errors</span></div>
+        <div class="stat"><span class="stat-v" id="tl-rate">—</span><span class="stat-k">error rate</span></div>
+      </div>
+      <h3 class="sub-h">Top tools</h3>
+      <ol class="bars" id="tools"></ol>
+      <p class="empty" id="tools-empty">No tool calls since the tool server started.</p>
+    </section>
+
+    <section class="block panel" aria-labelledby="h-events">
+      <div class="block-head"><h2 id="h-events">Recent events</h2><p class="block-note">since the dashboard started</p></div>
+      <ol class="events" id="events"></ol>
+      <p class="empty" id="events-empty">Nothing has changed yet.</p>
+    </section>
+  </div>
+</main>
+
+<footer class="foot">
+  <span>Read-only · GET only · refreshes every 3 s</span>
+  <span>beast-slot contract: <code>/api/slot</code> · detail: <code>/api/status</code>, <code>/api/cluster</code></span>
+</footer>
+
+<template id="t-node">
+  <article class="node panel edge">
+    <header class="node-head">
+      <div>
+        <h3 class="node-name" data-f="name">—</h3>
+        <p class="node-sub" data-f="sub">—</p>
+      </div>
+      <span class="chip chip-state" data-f="state" data-state="pending"><i class="dot" aria-hidden="true"></i><span data-f="state-text">pending</span></span>
+    </header>
+    <p class="node-error" data-f="error" hidden></p>
+    <div class="node-gpu">
+      <div class="gauge">
+        <svg viewBox="0 0 64 64" aria-hidden="true"><circle class="g-track" cx="32" cy="32" r="27"></circle><circle class="g-fill" data-f="mem-ring" cx="32" cy="32" r="27"></circle></svg>
+        <div class="gauge-v"><span data-f="mem-pct">—</span><small data-f="mem-kind">memory</small></div>
+      </div>
+      <dl class="kv kv-tight">
+        <div><dt>GPU</dt><dd data-f="gpu">—</dd></div>
+        <div><dt data-f="mem-label">memory</dt><dd data-f="mem">—</dd></div>
+        <div><dt>utilization</dt><dd data-f="util">—</dd></div>
+        <div><dt>temperature</dt><dd data-f="temp">—</dd></div>
+        <div><dt>power</dt><dd data-f="power">—</dd></div>
+      </dl>
+    </div>
+    <div class="node-sparks" data-f="sparks">
+      <div class="spark-row"><span class="spark-k">GPU util</span><span class="spark-wrap"><svg class="spark" data-f="spark-util" viewBox="0 0 120 28" preserveAspectRatio="none" role="img" aria-label="GPU utilization, last 15 minutes"></svg><span class="spark-read" data-f="spark-util-read"></span></span></div>
+      <div class="spark-row"><span class="spark-k">memory</span><span class="spark-wrap"><svg class="spark" data-f="spark-mem" viewBox="0 0 120 28" preserveAspectRatio="none" role="img" aria-label="memory use, last 15 minutes"></svg><span class="spark-read" data-f="spark-mem-read"></span></span></div>
+    </div>
+    <dl class="kv kv-tight kv-2">
+      <div><dt>CPU</dt><dd data-f="cpu">—</dd></div>
+      <div><dt>load</dt><dd data-f="load">—</dd></div>
+      <div><dt>RAM</dt><dd data-f="ram">—</dd></div>
+      <div><dt>uptime</dt><dd data-f="uptime">—</dd></div>
+      <div class="wide"><dt>model volume</dt><dd data-f="disk">—</dd></div>
+    </dl>
+    <div class="fabric">
+      <h4 class="sub-h">Fabric</h4>
+      <ul class="ports" data-f="ports"></ul>
+      <p class="ports-down" data-f="ports-down" hidden></p>
+      <p class="empty" data-f="ports-empty">No RDMA / RoCE ports on this node.</p>
+    </div>
+  </article>
+</template>
+</body>
+</html>

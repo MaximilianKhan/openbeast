@@ -6,6 +6,9 @@
 #   ./scripts/ext.sh enable  <name>       # add to openbeast.conf EXTENSIONS
 #   ./scripts/ext.sh disable <name>       # remove from EXTENSIONS
 #   ./scripts/ext.sh status               # what's enabled + running
+#   ./scripts/ext.sh restart <name>       # restart ONE running process extension
+#                                         # (e.g. the dashboard after a pull),
+#                                         # nothing else: no model, gate or tools
 #
 # Enabling/disabling edits openbeast.conf and takes effect on the next
 # ./start.sh (compose fragments merge, process extensions launch). A running
@@ -133,6 +136,42 @@ case "$cmd" in
       printf '  %-16s %-8s %s\n' "$name" "$kind" "$run"
     done < <(ob_ext_enabled)
     [[ $en -eq 1 ]] || echo "  (none enabled)"
+    ;;
+  restart)
+    # One process-kind extension, alone: its recorded process (identity-
+    # checked, as stop.sh reaps it) is stopped and run.sh relaunched with this
+    # shell's conf.sh environment (the relaunch healthcheck.sh --restart
+    # does). Nothing else is touched — not the model server, the gate, the
+    # tool server or the inference unit — so it is safe while evals run.
+    name="${2:?usage: ext.sh restart <name>}"
+    _valid_name "$name" || exit 2
+    [[ "$(ob_ext_meta "$name" KIND 2>/dev/null || true)" == process ]] \
+      || { echo "'$name' is not a process extension (compose ones restart with the stack)." >&2; exit 1; }
+    ob_ext_is_enabled "$name" || { echo "'$name' is not enabled (ext.sh enable $name)." >&2; exit 1; }
+    if [[ -f "$REPO_DIR/.run/stopped" ]]; then
+      echo "The stack was stopped on purpose (.run/stopped): start it with ./start.sh -d instead." >&2; exit 1
+    fi
+    pidf="$REPO_DIR/.run/ext-$name.pid"
+    mkdir -p "$REPO_DIR/.run"
+    ob_ext_reap "$pidf" "$REPO_DIR/extensions/$name"
+    sleep 1
+    log="$REPO_DIR/.run/ext-$name.log"
+    printf '%s ext.sh restart %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$name" >> "$log"
+    # Detached (setsid where it exists) so it outlives this shell; stop.sh
+    # and the next start.sh find it through the pidfile like any other.
+    if command -v setsid >/dev/null 2>&1; then
+      setsid nohup "$REPO_DIR/extensions/$name/run.sh" >>"$log" 2>&1 </dev/null &
+    else
+      nohup "$REPO_DIR/extensions/$name/run.sh" >>"$log" 2>&1 </dev/null &
+    fi
+    ob_pid_record "$pidf" "$!"
+    sleep 2
+    if ob_recorded_pid_ours "$pidf" "$(_ob_ere "$REPO_DIR/extensions/$name/")"; then
+      echo "Restarted '$name' (pid $(cat "$pidf")); log: .run/ext-$name.log"
+    else
+      echo "'$name' exited right after the restart — last lines of .run/ext-$name.log:" >&2
+      tail -n 5 "$log" >&2; exit 1
+    fi
     ;;
   -h|--help|help) _usage ;;
   *) echo "Unknown command: $cmd" >&2; _usage >&2; exit 2 ;;

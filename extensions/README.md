@@ -11,6 +11,7 @@ core stays lean; extras are opt-in. (ODS-absorbed; see `docs/TODO.md`.)
 ./scripts/ext.sh enable  dashboard   # writes EXTENSIONS= in openbeast.conf
 ./scripts/ext.sh disable dashboard
 ./scripts/ext.sh status              # what's enabled + running
+./scripts/ext.sh restart dashboard   # restart one process extension alone (nothing else)
 ```
 
 Enable/disable edits `openbeast.conf` (`EXTENSIONS="a b"`, space-separated) and
@@ -87,23 +88,71 @@ The `dashboard` slot API established the sanctioned pattern. Follow it:
   bumped by `update.sh --images` like the core images. Setup, lockdown and
   the iOS relay caveat: [`ntfy/README.md`](ntfy/README.md).
 
-- **`dashboard`** — a lightweight read-only status page (GPU / model / services)
-  on top of the tool server's `/metrics` and `doctor`. `KIND=process`, stdlib
-  Python, no new dependency. Serves three routes on `${OPENBEAST_BIND}:${DASHBOARD_PORT:-3002}`
-  (conf key `DASHBOARD_PORT`; healthcheck and `--publish-slot` follow it):
-  `/` (the page), `GET /api/status` (what the page polls), and
-  **`GET /api/slot`** — the **beast-slot discovery contract** a remote client
-  reads to learn the rig's real model, slot pool, shared-KV capacity, and
-  service health (`docs/BEAST_SLOT.md`).
+- **`dashboard`** — the read-only status page of the command center, in the
+  openbeast.ai look (phosphor on near-black, glass panels, Geist), and the
+  beast-slot contract. `KIND=process`, stdlib Python, no new dependency.
+  Serves on `${OPENBEAST_BIND}:${DASHBOARD_PORT:-3002}` (conf key
+  `DASHBOARD_PORT`; healthcheck and `--publish-slot` follow it):
+
+  | Route | What |
+  |---|---|
+  | `/` | the page (`static/index.html`, `app.css`, `app.js`, the Geist fonts): polls the two JSON routes below every 3 s and updates values in place |
+  | `GET /api/status` | this node's model, serving, gate, services, tool activity, events (v1 keys `gpu`, `model`, `services`, `metrics` unchanged) |
+  | `GET /api/cluster` | this node and every peer: GPU, memory, util, temperature, power, CPU, RAM, model volume, uptime, fabric ports, 15-min history |
+  | **`GET /api/slot`** | the **beast-slot discovery contract** a remote client reads (`docs/BEAST_SLOT.md`); byte-identical to v1, pinned by a golden test |
+
+  What the page shows: the served model id, engine (llama.cpp, vLLM,
+  TensorFold), the active inference unit and its uptime, context length,
+  current tokens/s (from the engine's Prometheus counters; beast-gate's
+  completion tokens when the engine has none), requests running / waiting,
+  slots, KV-cache use; the **cluster** (one card per node, a GB10's memory
+  labelled *unified*, a discrete card's *VRAM*, a host without a GPU says
+  so); **beast-gate** (devices enrolled, active in the last 15 min,
+  requests/min, errors, refusals: counts only, never a device name); every
+  **service** with its port (model, gate, tools, WebUI, search, island,
+  chat, artifact); the tool server's calls, errors and top tools; and the
+  dashboard's own event log (a peer lost or back, the model down, an island
+  transition).
+
+  **Peers.** The cluster view shows this node plus `DASHBOARD_PEERS` (ssh
+  targets, comma or space separated; `none` = this node alone). Unset, it
+  reads the pair's own config, `scripts/backends/cluster.env`
+  `CLUSTER_NODES` (rank order; `local` is this node), and names a node by
+  its `~/.ssh/config` alias (`max@10.100.216.2` -> `spark-2`). A rig without
+  that file has no peers. Each peer is read every 5 s by a background thread
+  that runs **one fixed, read-only shell script** (`node_script()`:
+  nvidia-smi, `/proc`, `df`, `/sys/class/infiniband` counters) as `ssh -o
+  BatchMode=yes -o ConnectTimeout=3 <peer> sh -s`, capped at 6 s. No HTTP
+  request triggers, schedules or parameterises it; a peer that does not
+  answer shows **unreachable** (with its last reading's age), never an error
+  page. The model volume shown is `DASHBOARD_DISK_PATH`, else `WEIGHTS_DIR`,
+  else spark.env `MODELS_DIR`.
+
+  **Read-only.** GET only (every other method is 405), no buttons. The page
+  sends a strict CSP (`default-src 'none'`; script, style, font and connect
+  from `'self'` only), loads nothing from outside (fonts vendored in
+  `static/`, Geist 1.9.2 under the SIL OFL, `static/GEIST-OFL.txt`), and
+  writes every server value as text, never HTML. The gate figures come from
+  beast-gate's rig-local introspection (`/gate/health`, `/gate/metrics`
+  with `.run/edge-local.token`, as `doctor.sh` reads them).
 
   `./scripts/setup-tailscale.sh --publish-slot` publishes **only** `/api/slot`
-  as `:8444`, via `tailscale serve --set-path` — the HTML page and `/api/status`
-  stay rig-local. (On a tailscale build without `--set-path` it falls back to
-  mounting the whole dashboard and says so; `--unpublish-slot` reverses either.)
-  The page and `/api/status` are also Host-pinned against DNS rebinding: they
-  answer only to loopback, this machine's name, `*.ts.net` names and IP
-  literals (400 otherwise; more names via `OPENBEAST_DASHBOARD_ALLOWED_HOSTS`,
-  comma-separated). `/api/slot` answers any Host.
+  as `:8444`, via `tailscale serve --set-path`. (On a tailscale build without
+  `--set-path` it falls back to mounting the whole dashboard and says so;
+  `--unpublish-slot` reverses either.) To see the page from another tailnet
+  device, mount the whole dashboard on a port of its own, as spark-1 and the
+  rig do on `:8447` (`tailscale serve --bg --https=8447
+  http://127.0.0.1:3002`; on a host that runs the ntfy extension pick another
+  port, `--publish-ntfy` owns `:8447`). The page and its JSON are
+  Host-pinned against DNS rebinding: they answer only to loopback, this
+  machine's name, `*.ts.net` names and IP literals (400 otherwise; more names
+  via `OPENBEAST_DASHBOARD_ALLOWED_HOSTS`, comma-separated). `/api/slot`
+  answers any Host.
+
+  **Restarting it alone** (after a pull, say): `./scripts/ext.sh restart
+  dashboard` stops the recorded dashboard process and relaunches `run.sh`.
+  It touches nothing else (model server, gate, tool server, inference unit),
+  so it is safe while an eval runs.
 
   **Footgun: `EXTENSIONS` is empty by default.** `--publish-slot` publishes the
   tailnet route whether or not anything is listening, so with the dashboard
