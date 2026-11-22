@@ -11,7 +11,7 @@
 #   beast-spark hy4       # beasthy4:  serve Hy4-flash (NVFP4, vLLM TP2) for now: staged, never a boot default
 #   beast-spark status    # beaststatus: which model is selected, what is running, health
 #   beast-spark aliases   # print the six alias lines for ~/.bashrc
-#   beast-spark install   # from a checkout: install beast-spark, the pack tools and the aliases
+#   beast-spark install   # install/update beast-spark, the pack tools and the aliases from the checkout (~/openbeast)
 #
 # The pair serves one model at a time (each needs both GPUs). Two can be SELECTED:
 #   DeepSeek  unit deepseek-v41-inference (recipe ~/openbeast-recipes/deepseek-prep/runtime):
@@ -53,7 +53,7 @@
 set -euo pipefail
 
 # Test seams: SB_PREP, SB_DS_PACK, SB_DS_ID, SB_CONF, SB_URL, SB_KEY_FILE,
-# SB_WAIT_S, SB_HY4_WAIT_S, SB_LOCK, SB_BIN_DIR, SB_BASHRC, SB_OB_CONF.
+# SB_WAIT_S, SB_HY4_WAIT_S, SB_LOCK, SB_BIN_DIR, SB_BASHRC, SB_OB_CONF, SB_CHECKOUT.
 PREP="${SB_PREP:-$HOME/openbeast-recipes/deepseek-prep}"
 CONF="${SB_CONF:-$HOME/.config/openbeast/beast-spark.env}"
 V2_PACK="$HOME/Documents/Mia-AiLab-DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw-v2"
@@ -74,6 +74,8 @@ OB_CONF="${SB_OB_CONF:-$HOME/openbeast/openbeast.conf}"
 LOCK="${SB_LOCK:-${XDG_RUNTIME_DIR:-/tmp}/spark-model.lock}"
 BIN_DIR="${SB_BIN_DIR:-$HOME/.local/bin}"
 BASHRC="${SB_BASHRC:-$HOME/.bashrc}"
+# The checkout `install` copies from (and the installed copy is compared with)
+CHECKOUT="${SB_CHECKOUT:-$HOME/openbeast}"
 export PATH="$HOME/.local/bin:$PATH"
 
 log() { printf '[beast-spark] %s\n' "$*" >&2; }
@@ -103,6 +105,21 @@ selected() {
 }
 unit_of() { case "$1" in ds) echo "$DS_UNIT" ;; glm) echo "$GLM_UNIT" ;; esac; }
 other_of() { case "$1" in ds) echo "$GLM_UNIT" ;; glm) echo "$DS_UNIT" ;; esac; }
+# A stale install (~/.local/bin/beast-spark older than the checkout) lacks
+# commands and fixes silently: an old copy answered `hy4` with the usage. One
+# cmp per command (no network, no git): warn when the installed copy and the
+# checkout's differ, whichever of the two is running.
+check_install() {
+  local src="$CHECKOUT/scripts/backends/spark-beast.sh" inst="$BIN_DIR/beast-spark"
+  [[ -f "$src" && -f "$inst" ]] || return 0
+  cmp -s "$src" "$inst" && return 0
+  local who
+  if [[ "$0" -ef "$inst" ]]; then who="this beast-spark ($inst) differs from the checkout's $src"
+  elif [[ "$0" -ef "$src" ]]; then who="the installed $inst (what the beast* aliases run) differs from this checkout's copy"
+  else return 0; fi
+  log "WARNING: $who: it may lack commands or fixes. Update it (from $CHECKOUT, after a git pull there if the checkout is the older one): beast-spark install"
+}
+
 served_of() { case "$1" in "$DS_UNIT") echo "$DS_SERVED" ;; "$GLM_UNIT") echo "$GLM_SERVED" ;; "$HY4_UNIT") echo "$HY4_SERVED" ;; esac; }
 hy4_installed() { [[ "$(sc show -p LoadState --value "$HY4_UNIT" 2>/dev/null)" == loaded ]]; }
 # Stop Hy4 when it runs (its stop.sh takes both ranks down). When openbeast.conf
@@ -354,8 +371,15 @@ cmd_aliases() {
 
 # Install from a checkout (scripts/backends/): beast-spark into ~/.local/bin,
 # the two pack tools into the DeepSeek prep directory, the aliases into ~/.bashrc.
+# The installed copy (~/.local/bin/beast-spark install) hands over to the
+# checkout's copy, so `beast-spark install` is the one update command.
 cmd_install() {
   local here; here="$(cd "$(dirname "$0")" && pwd)"
+  local co="$CHECKOUT/scripts/backends"
+  if [[ ! -f "$here/spark-deepseek-pack.sh" && -f "$co/spark-beast.sh" && -f "$co/spark-deepseek-pack.sh" && -f "$co/spark-deepseek-prepare-local.sh" ]]; then
+    log "installing from the checkout: $co/spark-beast.sh install"
+    exec bash "$co/spark-beast.sh" install
+  fi
   [[ -f "$here/spark-deepseek-pack.sh" && -f "$here/spark-deepseek-prepare-local.sh" ]] ||
     die "run install from a checkout: ~/openbeast/scripts/backends/spark-beast.sh install ($here has no pack tools)"
   put() {  # src dest
@@ -385,6 +409,7 @@ cmd_install() {
   fi
 }
 
+[[ "${1:-}" == install ]] || check_install
 case "${1:-}" in
   up) take_lock; cmd_up ;;
   down) take_lock; cmd_down ;;
@@ -394,5 +419,6 @@ case "${1:-}" in
   status) cmd_status ;;
   aliases) cmd_aliases ;;
   install) cmd_install ;;
-  *) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) [[ -n "${1:-}" ]] && log "ERROR: unknown command: $1 (an older install? beast-spark install updates it from $CHECKOUT)"
+     sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
