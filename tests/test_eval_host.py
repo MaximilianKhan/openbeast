@@ -349,10 +349,19 @@ def test_env_on_an_empty_prefix_exports_nothing_it_does_not_own(host):
 def _py_links() -> dict:
     """A fake python-build-standalone tree: bin/python3 and bin/python3.X are
     links to this interpreter's real binary, so the fake cpython row can pin
-    this python's version and `python3 -m venv` works from it."""
+    this python's version and `python3 -m venv` works from it.
+
+    lib/ links to the real stdlib too. A venv's python finds its stdlib from
+    pyvenv.cfg's home (this tree's bin/) via ../lib/python3.X; only a macOS
+    framework build (python.org, Homebrew, anaconda) finds it through its
+    dylib instead. Without lib/, a python-build-standalone base (what uv runs
+    the tests on) made a venv that died with "Could not find platform
+    independent libraries", and the setup tests failed for that reason, not
+    the script's."""
     real = os.path.realpath(sys.executable)
     mm = "%d.%d" % sys.version_info[:2]
-    return {"python/bin/python3": real, f"python/bin/python{mm}": real}
+    return {"python/bin/python3": real, f"python/bin/python{mm}": real,
+            "python/lib": os.path.join(os.path.realpath(sys.base_prefix), "lib")}
 
 
 def test_python_setup_builds_the_venv_on_the_prefix_cpython(host):
@@ -670,7 +679,7 @@ def test_interpreter_startup_failure_signatures():
     assert f({**_DEAD, "stderr": "Traceback: AssertionError"}) is None
 
 
-def test_interpreter_problem_names_a_broken_python(tmp_path):
+def test_interpreter_problem_names_a_broken_python(tmp_path, monkeypatch):
     import eval_host
     bad = tmp_path / "python"
     bad.write_text("#!/bin/sh\necho 'Could not find platform independent libraries <prefix>' >&2\n"
@@ -679,7 +688,16 @@ def test_interpreter_problem_names_a_broken_python(tmp_path):
     msg = eval_host.interpreter_problem(str(bad), force=True)
     assert msg and "Could not find platform independent libraries" in msg
     assert "eval-host.sh setup" in msg
+    # A healthy python passes. The lock's @python-imports (openai, ...) need
+    # not be installed in whatever runs pytest, so the check imports a stdlib
+    # module here; a missing one is still caught and named.
+    monkeypatch.setattr(eval_host, "lock_directive",
+                        lambda name: "json" if name == "@python-imports" else "")
     assert eval_host.interpreter_problem(sys.executable, force=True) is None
+    monkeypatch.setattr(eval_host, "lock_directive",
+                        lambda name: "json no_such_module_xyz" if name == "@python-imports" else "")
+    msg = eval_host.interpreter_problem(sys.executable, force=True)
+    assert msg and "No module named 'no_such_module_xyz'" in msg
 
 
 def _fresh(tmp_path, n_tasks=1):
@@ -745,7 +763,11 @@ def test_a_one_off_startup_death_does_not_abort(tmp_path, monkeypatch):
 
 
 def test_an_ordinary_fail_is_not_an_interpreter_error(tmp_path, monkeypatch):
+    import eval_host
     run_eval, _ = _fresh(tmp_path)
+    # The pre-run check would probe the python running pytest, which need not
+    # have the runner's packages; this test is about the row, not that check.
+    monkeypatch.setattr(eval_host, "interpreter_problem", lambda python=None, force=False: None)
     res = _run(run_eval, monkeypatch, {**_DEAD, "exit_code": 0, "elapsed_seconds": 40.0,
                                        "stderr": "", "tokens": {"prompt": 9, "completion": 500,
                                                                 "total": 509}})
