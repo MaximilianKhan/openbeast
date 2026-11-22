@@ -178,6 +178,9 @@ def hub_url(w: dict) -> str | None:
     """The Hub page of the exact revision, for weights that are on the Hub."""
     if w.get("revision_kind") == "hub":
         return f"https://huggingface.co/{w['repo']}/tree/{w['revision']}"
+    if w.get("revision_kind") == "file-sha256" and _SHA.match(str(w.get("revision"))):
+        # A file pinned by sha256 that also names the Hub commit it was checked at.
+        return f"https://huggingface.co/{w['repo']}/blob/{w['revision']}/{w['file']}"
     return None
 
 
@@ -474,7 +477,7 @@ def render_board(b: dict, prefix: str = "") -> str:
         m = marks.get(r["id"], "")
         if r["reference"]:
             num, model = "ref", f"*{r['model']}* (reference)"
-            passed = f"*{r['passed']}/{r['units']}*"
+            passed = f"*{r['passed']}/{r['units']}*{m}"
             score = f"*{r['score']:.1f}*"
         else:
             rank += 1
@@ -537,6 +540,8 @@ def render_weights(b: dict, prefix: str = "") -> str:
                        + (f"; fingerprint `{w['fingerprint'][:16]}…`" if w.get("fingerprint") else "") + ")")
         elif w["revision_kind"] == "file-sha256":
             weights = f"`{w['repo']}`, file `{w['file']}` (sha256 `{w['file_sha256']}`)"
+            if _SHA.match(str(w.get("revision"))):
+                weights += f", checked at Hub revision `{w['revision']}`"
         else:
             weights = "not public (hosted)"
         rows = [("Weights", weights)]

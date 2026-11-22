@@ -849,11 +849,11 @@ How to reach each box:
 | Command center | spark-1, `systemctl --user` unit `openbeast` | `~/openbeast`, a git checkout: WebUI :3000, tools :3001, SearXNG :8888, beast-gate :8090, beast-chat, beast-artifact, the dashboard (beast-slot), the island watcher. `openbeast.conf`: [E2](#e2-openbeastconf) |
 | Weights | both | `~/openbeast-models/glm53-flash-ablit-exl3` (175.7 GB, 83 shards), hard-linked into `~/.cache/huggingface/hub/models--Mia-AiLab--GLM-5.3-Flash-EXL3-4bpw-TensorFold-Ablit/snapshots/57edefd2…`. Verified against the Hub revision (sha256, 0 mismatches) and locked in `scripts/backends/models/glm53-flash-ablit-exl3-tensorfold.lock` ([C](#c-weights)) |
 | Drafter | both | `incoai/GLM-5.3-Flash-DFlash2 @ bf582e4e` (CC BY-NC-ND: personal use, Max's call). It lives in the HF cache only, in `hf download` layout (snapshot symlinks into `blobs/`). **No OpenBeast lock covers it**; [C4](#c4-the-drafter-dflash2) shows how to check it |
-| Native TensorFold 1.2.7 | both | `~/.local/bin/tensorfold` (signed release). A challenger engine, **not serving** ([D2](#d2-native-tensorfold-through-spark-nodesh--spark-clustersh)) |
+| Native TensorFold 1.2.10 | both | `~/.local/bin/tensorfold` → `~/.local/opt/tensorfold-1.2.10-linux-aarch64` (signed release; read 2026-11-22; `install-native.sh`'s default and the ark catalog still pin 1.2.7, so pass `--version 1.2.10`). A challenger engine, **not serving** ([D2](#d2-native-tensorfold-through-spark-nodesh--spark-clustersh)) |
 | spark-guard | both | `openbeast-spark-guard.service` (system unit, `active (exited)`): an nftables table that keeps the engines' rendezvous ports on the fabric ([B3](#b3-firewall-spark-guard)) |
 
-**Checkouts, 2026-11-22 (read-only).** spark-1 is on `8f0d1194` (#271), spark-2 on
-`ab62b348` (#248); `main` is at #276 or later. They are skewed: pull both
+**Checkouts, 2026-11-22 (read-only).** spark-1 is on `e8e4b2fa` (#278), spark-2 on
+`ab62b348` (#248); `main` is at #278 or later. They are skewed: pull both
 ([G6](#g6-updating) step 4) in a gap between evals, and rewrite this paragraph
 once both match. The installed `~/.local/bin/beast-spark` on spark-1 also
 predates #263 (it differs from the checkout's copy and cannot warn about it):
@@ -1746,7 +1746,7 @@ matter:
 | Key | Meaning |
 |---|---|
 | `TENSORFOLD_ENGINE` | `native` (default) or `container` (the frozen 0.x engine, which pip-installs from GitHub/PyPI at every start: needs the internet every time). A real container run also needs its dependencies pinned: `TENSORFOLD_IMAGE_PREBUILT=true` (an image that already holds them, pinned by `TENSORFOLD_IMAGE_ID`; nothing installed at start, so it is also the offline route), `TENSORFOLD_PIP_LOCK=FILE` (hash-locked requirements), or the acknowledged `TENSORFOLD_ALLOW_UNPINNED_DEPS=true` |
-| `TENSORFOLD_VERSION`, `TENSORFOLD_BIN` | `1.2.7`, `~/.local/bin/tensorfold` |
+| `TENSORFOLD_VERSION`, `TENSORFOLD_BIN` | the installed version (both Sparks run `1.2.10`, read 2026-11-22; `1.2.7` is `install-native.sh`'s default), `~/.local/bin/tensorfold` |
 | `TENSORFOLD_API_KEY_FILE` | 0600 key file; the native engine is keyed |
 | `SPARK_IFACE`, `SPARK_IB_HCA` | this node's fabric netdev(s) and RoCE device(s); several rails comma-separated |
 | `SPARK_HEAD_IP` | rank 0's fabric address. **The same on every node** (`check` enforces it) |
@@ -3471,7 +3471,7 @@ published, from the 2026-11-15 review:
 - **Checkout skew**: on 2026-11-16 evening spark-1 was at `29e5241a` and
   spark-2 at `de931dfe` (0). Fixed by 2026-11-17: both at `d3727185`.
   [G6](#g6-updating) step 4 pulls both. **Recurred 2026-11-22:** spark-1
-  `8f0d1194`, spark-2 `ab62b348`; open until both are on one commit.
+  `e8e4b2fa`, spark-2 `ab62b348`; open until both are on one commit.
 
 From the 2026-11-16 review (fixes in this checkout; the live boxes pick them
 up on the operator steps named):

@@ -321,3 +321,65 @@ def test_integrity_scan_ignores_toolchains_and_fixtures(tmp_path):
         ("read_file", {"path": "/tmp/eval_x/evals/cache/fixture.json"}, "x"),
     ])
     assert not S.contaminated(S.scan_transcript(str(p)))
+
+
+def _start(path, task, ts):
+    path.write_text(json.dumps({"type": "start", "task": task, "timestamp": ts}) + "\n")
+
+
+def _results(path, ts, units, mtime=None):
+    path.write_text(json.dumps({"timestamp": ts, "tasks": [
+        {"id": u, "passed": True, "reason": "ok"} for u in units]}))
+    if mtime is not None:
+        os.utime(path, (mtime, mtime))
+
+
+def test_back_to_back_runs_score_each_unit_on_its_own_arm(tmp_path, monkeypatch):
+    """The next arm starts seconds after the last save: its first units must
+    not bleed into this arm's window (no forward slack past the end)."""
+    S = _scan_mod()
+    T = S.T
+    monkeypatch.setattr(S, "load_units", lambda tree: {"a": {"task": "do a"}, "b": {"task": "do b"}})
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    _start(logs / "agent-1.jsonl", "do a", "2026-11-21T22:42:00")       # arm 1
+    _start(logs / "agent-2.jsonl", "do b", "2026-11-22T04:40:00")       # arm 1
+    _start(logs / "agent-3.jsonl", "do a", "2026-11-22T04:46:49")       # arm 2, 3 s later
+    end1 = T._ts("2026-11-22T04:46:46")
+    r1 = tmp_path / "r1.json"
+    _results(r1, "2026-11-21T22:41:52", ["a", "b"], mtime=end1)
+    arm = S.scan_arm("ARM1", [str(r1)], str(tmp_path), str(logs), False)
+    scored = {r["unit"]: os.path.basename(r["transcript"])
+              for rs in arm["units"].values() for r in rs if r["scored"]}
+    assert scored == {"a": "agent-1.jsonl", "b": "agent-2.jsonl"}
+    assert arm["unattributed"] == []
+    # A committed copy (mtime reset to the checkout): --until restores the end.
+    os.utime(r1, (end1 + 86400, end1 + 86400))
+    arm = S.scan_arm("ARM1", [str(r1)], str(tmp_path), str(logs), False, until=end1)
+    assert {os.path.basename(r["transcript"]) for rs in arm["units"].values() for r in rs
+            if r["scored"]} == {"agent-1.jsonl", "agent-2.jsonl"}
+
+
+def test_a_partial_scan_is_never_clean(tmp_path, monkeypatch, capsys):
+    """Rows with no matched transcript (a zone mismatch cut the window) exit 2,
+    not 0, and the report says so."""
+    S = _scan_mod()
+    monkeypatch.setattr(S, "load_units", lambda tree: {"a": {"task": "do a"}, "b": {"task": "do b"}})
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    _start(logs / "agent-1.jsonl", "do a", "2026-11-22T09:00:00")
+    _start(logs / "agent-2.jsonl", "do b", "2026-11-22T09:30:00")
+    r = tmp_path / "r.json"
+    _results(r, "2026-11-22T08:59:00", ["a", "b"])
+    try:
+        T = S.T
+        T.set_default_tz("UTC")
+        end = T._ts("2026-11-22T09:40:00")
+        os.utime(r, (end, end))
+        assert S.main([f"X={r}@{tmp_path}", "--logs-dir", str(logs), "--tz", "UTC"]) == 0
+        # Read in a zone 8 h behind: the naive starts move 8 h later, the end stays.
+        rc = S.main([f"X={r}@{tmp_path}", "--logs-dir", str(logs), "--tz", "America/Los_Angeles"])
+        assert rc == 2
+        assert "UNATTRIBUTED: 2 of 2" in capsys.readouterr().out
+    finally:
+        S.T.set_default_tz(None)

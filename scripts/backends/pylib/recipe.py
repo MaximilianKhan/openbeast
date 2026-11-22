@@ -1631,6 +1631,30 @@ class Runner:
         return p.returncode, (p.stdout or "") if capture else ""
 
 
+def workers_commit_guard(runner: Runner, nodes: list[str], force: bool, what: str) -> None:
+    """Every worker's ~/openbeast must be on the head's commit before a --run step relies on it (worker
+    steps run `cd ~/openbeast && ...`: the recipe files, profiles and locks are read from that checkout,
+    as spark-cluster.sh check requires). A worker on another commit, or one whose commit cannot be read,
+    stops the run before any step; --force overrides."""
+    workers = [n for n in nodes if n != "local" and not n.startswith("<") and n not in ("-", "connected box")]
+    if not workers or not runner.run:
+        return
+    p = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True)
+    head = (p.stdout or "").strip()
+    bad = []
+    for n in workers:
+        _code, out = runner.sh(n, "git -C ~/openbeast rev-parse HEAD", capture=True)
+        got = (out or "").strip().splitlines()[-1:] or [""]
+        if not head or got[0] != head:
+            bad.append(f"{n} is on {got[0][:12] or 'an unreadable commit'}, the head on {head[:12] or '?'}")
+    if bad and not force:
+        raise RecipeError(f"{what} --run: the workers' checkouts differ from the head's: " + "; ".join(bad)
+                          + ". Pull them first (ssh <worker> git -C ~/openbeast pull --ff-only), the head too; "
+                            "--force overrides")
+    for b in bad:
+        print(f"  WARNING (--force): {b}")
+
+
 def state_dir() -> Path:
     return Path(os.path.expanduser(os.environ.get("BEAST_RECIPE_STATE_DIR") or "~/.config/openbeast/recipes.d"))
 
@@ -1934,6 +1958,8 @@ def cmd_stage(args) -> int:
             _serving_guard(args, "stage")
     runner = Runner(args.run)
     print(f"stage {r.name} on {' '.join(ns)}" + ("" if args.run else "   [dry-run: --run executes]"))
+    workers = sorted({n for s_, n, _c in steps if (not only or s_ in only) and n != "local"})
+    workers_commit_guard(runner, workers, args.force, "stage")
     for step, node, cmd in steps:
         if only and step not in only:
             continue
@@ -2114,6 +2140,7 @@ def cmd_adopt(args) -> int:
         if bad and not args.force:
             raise RecipeError(f"{eng.get('id')} is not installed as planned: " + "; ".join(bad)
                               + f" (beast-recipe engine {r.name} --run --stage; --force overrides)")
+        workers_commit_guard(Runner(True), list(ns), args.force, "adopt")
     if args.write_family and args.run:
         reg = json.loads(FAMILIES_FILE.read_text())
         reg["families"] = [x for x in reg["families"] if x.get("name") != r.name] + [fam]

@@ -5,26 +5,56 @@ JSONL per unit, agents/logs/agent-<YYYYmmdd-HHMMSS>-<hex8>.jsonl, whose first
 event is {"type": "start", "task": <the task text run_eval passed>,
 "timestamp": ...}. A row is matched to the latest transcript whose task text
 is the unit's task text and that started inside the results file's window
-(its header timestamp to the file's last write, plus slack). Both the audit
-(prepare.py) and the language taxonomy (langaudit.py) use this.
+(its header timestamp minus slack, to the file's last write: rows are saved
+after every unit, so the last write always follows the last unit's start and
+needs no forward slack; a forward slack would let the next run's first units
+in). Both the audit (prepare.py) and the language taxonomy (langaudit.py) use
+this.
+
+Timestamps without a zone (run_eval's `timestamp`, the runner's start events)
+are read in DEFAULT_TZ when set (set_default_tz), else in this host's local
+zone. Scan on the host that wrote the files, or set the writing host's zone.
 """
 from __future__ import annotations
 
 import glob
 import json
 import os
-from datetime import datetime
+from datetime import datetime, tzinfo
 
 SLACK_S = 120
+DEFAULT_TZ: tzinfo | None = None
+
+
+def set_default_tz(name: str | None) -> None:
+    """Read naive timestamps in zone `name` (an IANA name such as "UTC" or
+    "America/Los_Angeles"); None restores this host's local zone."""
+    global DEFAULT_TZ
+    if not name:
+        DEFAULT_TZ = None
+        return
+    from zoneinfo import ZoneInfo  # noqa: PLC0415
+    DEFAULT_TZ = ZoneInfo(name)
 
 
 def _ts(s: str | None) -> float | None:
     if not s:
         return None
     try:
-        return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+        d = datetime.fromisoformat(s.replace("Z", "+00:00"))
     except ValueError:
         return None
+    if d.tzinfo is None and DEFAULT_TZ is not None:
+        d = d.replace(tzinfo=DEFAULT_TZ)
+    return d.timestamp()
+
+
+def parse_time(s: str) -> float:
+    """An ISO time given on a command line (naive = DEFAULT_TZ or local)."""
+    t = _ts(s)
+    if t is None:
+        raise ValueError(f"not an ISO time: {s!r}")
+    return t
 
 
 def _norm(text: str) -> str:
@@ -47,20 +77,23 @@ def index_logs(logs_dir: str, since: float | None = None, until: float | None = 
             t = os.path.getmtime(p)
         if since is not None and t < since - SLACK_S:
             continue
-        if until is not None and t > until + SLACK_S:
+        if until is not None and t > until:
             continue
         out.append({"path": p, "t": t, "task": _norm(first.get("task", ""))})
     return out
 
 
-def results_window(results_path: str) -> tuple[float | None, float]:
-    """(start, end) of the run that wrote a results file. The end comes from the
-    file's contents when it records one (`saved`, written by run_eval on every
-    save since 2026-11-22). Only an older file falls back to its mtime, which a
-    git checkout or copy resets: scan such a file where it was written (or
-    `touch -d` it to its last unit's time), or the window runs into later runs."""
+def results_window(results_path: str, until: float | None = None) -> tuple[float | None, float]:
+    """(start, end) of the run that wrote a results file. The end is `until`
+    when given (integrity_scan --until: the run's end from its campaign log),
+    else the file's own end when it records one (`saved`, written by run_eval
+    on every save since 2026-11-22). Only an older file falls back to its
+    mtime, which a git checkout or copy resets: for a committed pre-`saved`
+    file pass --until, or the window runs into later runs."""
     with open(results_path) as f:
         head = json.load(f)
+    if until is not None:
+        return _ts(head.get("timestamp")), until
     end = next((t for t in (_ts(head.get(k)) for k in ("saved", "finished", "end_timestamp"))
                 if t is not None), None)
     return _ts(head.get("timestamp")), end if end is not None else os.path.getmtime(results_path)

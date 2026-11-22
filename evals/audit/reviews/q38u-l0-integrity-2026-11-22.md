@@ -16,7 +16,10 @@ names), and the results window is the header timestamp to the file's
 mtime. A copy that resets the mtime (scp without `-p`), or a scan in the
 Mac's local zone, cuts the window and attributes only part of the run (the
 first attempt matched 18 of 71 units). With `scp -p` and `TZ=UTC`: 72
-transcripts, 71 units, 3 contaminated.
+transcripts, 71 units, 3 contaminated. Rechecked 2026-11-22 after the scan
+stopped adding forward slack past the window's end (`--tz UTC`): 71
+transcripts, 71 units, 3 contaminated, the same three units; the 72nd was
+the next run's first unit.
 
 ## The three units
 

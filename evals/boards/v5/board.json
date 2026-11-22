@@ -202,7 +202,7 @@
       "weights_id": "hy4-flash-nvfp4-atakans",
       "host": "DGX Spark pair, vLLM TP2 + EP, NVFP4",
       "campaign_arm": "v5-thinking-first H_T2",
-      "note": "60/71; 0 units lost; failed: 122_gemm_blocked_a, 124_rkf45, 168_linearizability_kv_b, 168_linearizability_kv_c, 168_linearizability_kv_f, 173_taskgroup_cancel, 183_heston_little_trap, 190_autograd_mlp, 192_pike_regex, 195_riscv_insn_budget, 36_black_scholes_f; same harness9 tree and Spark pair as DS-T2; integrity scan 2026-11-22: 0 contaminated (75 transcripts, 71 units)"
+      "note": "60/71; 0 units lost; failed: 122_gemm_blocked_a, 124_rkf45, 168_linearizability_kv_b, 168_linearizability_kv_c, 168_linearizability_kv_f, 173_taskgroup_cancel, 183_heston_little_trap, 190_autograd_mlp, 192_pike_regex, 195_riscv_insn_budget, 36_black_scholes_f; same harness9 tree and Spark pair as DS-T2; integrity scan 2026-11-22: 0 contaminated (71 transcripts, 71 units)"
     },
     {
       "id": "Q38U-L0",

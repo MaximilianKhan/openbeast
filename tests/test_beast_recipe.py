@@ -73,6 +73,7 @@ def stubs(tmp_path):
                      '  *is-active*) exit 3 ;;\n'
                      '  *list-units*) [[ -n "$STUB_LIST_UNITS" ]] && echo "$STUB_LIST_UNITS"; exit 0 ;;\n'
                      '  *--version*) echo "tensorfold-native ${STUB_TF_VERSION:-1.2.10}" ;;\n'
+                     '  *rev-parse*) echo "${STUB_WORKER_HEAD:-$(git rev-parse HEAD)}" ;;\n'
                      'esac\n'
                      'cat > /dev/null 2>&1 < /dev/stdin || true\n'
                      "exit 0\n")
@@ -209,7 +210,7 @@ def test_glm_4bit_on_native_and_5bit_needs_1_3_3(tmp_path, data):
     assert alts["tf-native-1.3.3"]["reads"] and p5["engine"]["id"] == "tf-native-1.3.3"
     assert p5["verdict"] == "SERVABLE-WITH-WORK" and p5["engine"]["n"] == 3      # 68 GiB a rank at TP3
     assert {"engine-stage", "topology"} <= {g["id"] for g in p5["gaps"] if g["blocking"]}
-    assert alts["tf-native-1.3.4"]["verdict"] == "BLOCKED" and "not released" in alts["tf-native-1.3.4"]["why"]
+    assert alts["tf-native-1.3.4"]["reads"] and alts["tf-native-1.3.4"]["verdict"] == p5["verdict"]
     p5_2 = _r(tmp_path, data, glm + "BPW=5\n", sparks=2, name="g52")
     assert p5_2["verdict"] == "NEEDS-MORE-HARDWARE" and p5_2["engine"]["n"] == 3   # 102 GiB at TP2: no
 
@@ -275,7 +276,7 @@ EXPECTED = {
     "glm53-flash-exl3-native-tp2": ("SERVABLE-NOW", "tf-native-1.2.10", 2),
     "deepseek-v41-flash-exl3-2.9-tp2": ("SERVABLE-NOW", "tf-fork-dsv41", 2),
     "deepseek-v41-flash-exl3-4.0": ("NEEDS-MORE-HARDWARE", "tf-fork-dsv41", 4),
-    "qwen38-27b-exl3-4.0-1x": ("SERVABLE-WITH-WORK", "tf-native-1.3.3", 1),
+    "qwen38-27b-exl3-4.0-1x": ("SERVABLE-WITH-WORK", "tf-native-1.3.4", 1),
     "minimax-m31-flash-exl3-3.06-tp2": ("SERVABLE-NOW", "tf-native-1.2.10", 2),
 }
 
@@ -590,6 +591,7 @@ def _home_tf(tmp_path, version="1.2.10"):
 
 
 ENGINE_CHECK = "ssh -o BatchMode=yes -o ConnectTimeout=10 -- spark-2 ~/.local/bin/tensorfold --version"
+COMMIT_CHECK = "ssh -o BatchMode=yes -o ConnectTimeout=10 -- spark-2 git -C ~/openbeast rev-parse HEAD"
 
 
 def test_adopt_and_rollback_run(stubs, tmp_path):
@@ -601,9 +603,11 @@ def test_adopt_and_rollback_run(stubs, tmp_path):
     entry = (state / "glm53-flash-exl3-native-tp2.env").read_text()
     assert "UNIT=beast-recipe-glm53-flash-exl3-native-tp2.service" in entry and "SERVED=glm-5.3-flash-ablit" in entry
     assert "TENSORFOLD_VERSION=1.2.10" in entry                  # beast-spark checks it before stopping anything
-    # adopt checks the engine on every node, installs the unit (the path beast-spark NAME needs), daemon-reloads
+    # adopt checks the engine and the checkout on every node, installs the unit (the path beast-spark NAME
+    # needs), daemon-reloads
     assert (home / ".config/systemd/user/beast-recipe-glm53-flash-exl3-native-tp2.service").is_file()
-    assert "BACKEND=tensorfold" in entry and calls(stubs) == [ENGINE_CHECK, "systemctl --user daemon-reload"]
+    assert "BACKEND=tensorfold" in entry and calls(stubs) == [ENGINE_CHECK, COMMIT_CHECK,
+                                                              "systemctl --user daemon-reload"]
     open(stubs[1], "w").close()
     # the entry is what spark-beast.sh's recipe_units accepts
     sb = subprocess.run(["bash", "-c", ('set -euo pipefail; eval "$(sed -n -e "/^recipe_value()/p" -e "/^recipe_units()/,/^}/p" '
@@ -744,8 +748,11 @@ def test_committed_profiles_and_units_are_the_recipes_render(data, name):
 # --------------------------------------------------------------------------- review fixes (PR #274)
 
 def test_an_unreleased_engine_never_stages_and_blocks(tmp_path, data):
+    # 1.3.4 was announced before its release (2026-11-22): replay that state.
+    import copy
+    data = copy.deepcopy(data)
     e = recipe.engine_by_id(data, "tf-native-1.3.4")
-    assert e["status"] == "unreleased"
+    e["status"], e["stage_gap"] = "unreleased", "upstream-release"
     r = mk(tmp_path, f"MODEL_TYPE=qwen3_5\nFORMAT=exl3\nBPW=4\nEXL3_CODEBOOK=mul1\nWEIGHT_BYTES={15 * GIB}\n"
                      "ENGINE=tf-native-1.3.4\nSPARKS=1\nLAUNCHER=d2-tensorfold\n")
     p = recipe.plan(r, data)
@@ -849,7 +856,7 @@ def test_adopt_run_writes_the_recipe_cluster_file_off_the_pair(stubs, tmp_path, 
     rd = tmp_path / "recipes"
     shutil.copytree(RECIPES / "qwen38-27b-exl3-4.0-1x", rd / "q1")
     (rd / "q1" / "recipe.env").write_text((rd / "q1" / "recipe.env").read_text()
-                                          .replace("ENGINE=tf-native-1.3.3", "ENGINE=tf-native-1.2.10"))
+                                          .replace("ENGINE=tf-native-1.3.4", "ENGINE=tf-native-1.2.10"))
     (rd / "q1" / "cluster.env").unlink(missing_ok=True)
     home = _home_tf(tmp_path)
     cf = tmp_path / "cluster.env"
@@ -1094,3 +1101,20 @@ def test_version_ok_matches_whole_tokens():
     assert recipe.version_ok("tensorfold v1.2.10", "1.2.10")
     assert not recipe.version_ok("tensorfold-native 1.2.10", "1.2.1")
     assert recipe.version_ok("anything", "")
+
+
+def test_a_worker_on_another_commit_is_refused(stubs, tmp_path):
+    """Worker steps run from ~/openbeast on the worker: a checkout on another commit (spark-2 on #248
+    without the recipe files, 2026-11-22) stops stage --run before any step."""
+    cf = tmp_path / "cluster.env"
+    cf.write_text('CLUSTER_NODES="local spark-2"\nCLUSTER_REPO=~/openbeast\n')
+    env = {"STUB_WORKER_HEAD": "ab62b348" + "0" * 32}
+    out = cli(["stage", "hy4-flash-exl3-tensorfold-tp2", "--run", "--only", "verify", "--cluster", str(cf)],
+              stubs, env=env)
+    assert out.returncode != 0 and "workers' checkouts differ" in out.stderr and "pull --ff-only" in out.stderr
+    assert not any("model-fetch.sh" in c for c in calls(stubs))
+    # the same commit: the guard passes and the worker step runs
+    out = cli(["stage", "hy4-flash-exl3-tensorfold-tp2", "--run", "--only", "verify", "--cluster", str(cf)],
+              stubs)
+    assert "workers' checkouts differ" not in out.stderr
+    assert any("rev-parse" in c for c in calls(stubs))

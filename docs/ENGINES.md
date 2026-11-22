@@ -53,9 +53,10 @@ Its `engine <recipe>` step checks each Spark's engine and prints the
 `engine.sh stage` / `install --from` / `rollback` commands above when a release
 must be staged ([BEAST_RECIPE.md](BEAST_RECIPE.md#the-engine-and-family-matrix)).
 Native TensorFold, 2026-11-22: 1.2.10 is installed on both Sparks; the latest
-upstream release is **1.3.3**. The upstream README's install script pins 1.3.4,
-which has no release (`releases/tags/v1.3.4` is a 404), so the matrix records
-it as `unreleased` and recipes pin 1.3.3. `~/.local/bin/tensorfold` is one link
+upstream release is **1.3.4** (published 2026-11-22 20:53Z; it was the README's
+install pin before it had a release, and the matrix's `unreleased` status
+covers that case). The Qwen3.8 recipe pins 1.3.4; the Hy4 TensorFold recipe
+stays on 1.3.3 (1.3.4 adds no Hy4 path). `~/.local/bin/tensorfold` is one link
 per Spark: a recipe on another release needs `engine.sh install` (and
 `rollback`) on every Spark before its switch.
 
@@ -90,8 +91,12 @@ always means a different checkpoint:
   `scripts/backends/models/<name>.env` (DGX_SPARK_PLAN §14), fetched and
   verified with `scripts/backends/model-fetch.sh`. A managed engine serves only
   a verified local copy. It never downloads from the Hub at start.
-- Every OpenBeast model is uncensored (DGX_SPARK_PLAN §15), and that rule
-  carries over to whatever checkpoint a profile names.
+- The fleet policy is uncensored-preferred (Max, 2026-11-19; DGX_SPARK_PLAN
+  §15): a profile may name a stock checkpoint (the Spark pair's
+  DeepSeek-V4.1-Flash (Mia EXL3) default and Hy4-flash (NVFP4) are stock),
+  and an uncensored variant of comparable quality is preferred when both
+  could serve. `family_policy = "uncensored-only"` restores the strict rule
+  ([BEAST_HYDRA.md](BEAST_HYDRA.md#family-policy)).
 
 ## Managed and unmanaged
 

@@ -3489,13 +3489,20 @@ def run_eval(
         model_name = detect_model(base_url)
     model_slug = slugify(model_name)
     gpu_info = capture_gpu_info() if not cache_only else None
-    engine_info = capture_inference_engine_info() if not cache_only else None
     server_info = capture_server_config(base_url) if not cache_only else None
+    # The local llama.cpp binary describes the engine only when a local
+    # llama-server is what serves; a remote or non-llama engine (TensorFold,
+    # vLLM) is named from its /v1/models card instead, so a header never
+    # calls it llama.cpp. No build/commit either way for a remote engine, so
+    # env_fingerprint's engine part is unchanged for it.
+    engine_info = capture_inference_engine_info() if server_info else None
     if not cache_only and not server_info:
         # Not a local llama-server: record what the endpoint says about
         # itself, and the DECLARED reasoning budget (vLLM / TensorFold /
         # remote rows used to fall back to "uncapped" silently).
         server_info = capture_remote_server_info(base_url, reasoning_budget)
+        engine_info = {"name": (server_info or {}).get("engine") or "unknown",
+                       "source": "/v1/models"}
     # Reasoning-budget cache-era component (see cache.cache_key): a finite
     # --reasoning-budget on the live server stamps its value into every
     # cache key so capped and uncapped rows can never replay across eras.
