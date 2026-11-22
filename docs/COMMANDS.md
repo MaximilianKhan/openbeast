@@ -113,9 +113,13 @@ free -m | sed -n 2p                                     # unified memory: watch 
 ```
 
 The status dashboard, read-only, from any tailnet device:
-`https://spark-1.tail4109f9.ts.net:8447` (spark-1 and spark-2: model,
-tok/s, power (GPU rail per Spark, the pair's total, 1 min-24 h averages,
-trend, chart), both nodes' GPU / memory / fabric, gate, services, events).
+`https://spark-1.tail4109f9.ts.net:8447` (spark-1 and spark-2). The home
+page is the verdict, model, tok/s, requests, KV, latency, one power figure,
+gate, services, alerts and a tile per node; each opens a page:
+`#/serving`, `#/nodes/spark-2`, `#/power` (GPU rail per Spark, the pair's
+total, 1 min-24 h averages, trend, chart), `#/gate`, `#/services`,
+`#/tools`, `#/events`, `#/history` (deep links work, e.g.
+`https://spark-1.tail4109f9.ts.net:8447/#/nodes/spark-2`).
 The rig's is `https://beast.tail4109f9.ts.net:8447` (its power: board +
 CPU package). Its JSON:
 
@@ -124,9 +128,17 @@ curl -s http://127.0.0.1:3002/api/cluster | python3 -m json.tool   # head + spar
 curl -s http://127.0.0.1:3002/api/status  | python3 -m json.tool   # serving, gate, services, events
 curl -s http://127.0.0.1:3002/api/cluster | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["power"]["cluster"], indent=1))'   # watts now, window averages, trend
 curl -s 'http://127.0.0.1:3002/api/power?window=1h' | python3 -m json.tool | head   # the chart series (15m, 1h, 6h, 24h)
+curl -s 'http://127.0.0.1:3002/api/serving?window=1h' | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["detail"], indent=1))'   # TTFT / e2e percentiles, spec-decode acceptance, prefix cache
+curl -s 'http://127.0.0.1:3002/api/node/spark-2?window=6h' | python3 -m json.tool | head   # one node's history (404: not a configured node)
+curl -s http://127.0.0.1:3002/api/alerts | python3 -m json.tool    # active alerts + every DASHBOARD_ALERT_* threshold in force
+curl -s 'http://127.0.0.1:3002/api/events?kind=alert&limit=20' | python3 -m json.tool   # the persisted event log
+curl -s http://127.0.0.1:3002/api/daily | python3 -m json.tool | head -40   # last 24 h, daily rollups, model swaps
+curl -s 'http://127.0.0.1:3002/api/history?metric=serve:tok_s,gate:rpm&window=24h' | python3 -m json.tool | head   # any stored series (no metric: the catalogue)
 curl -s http://127.0.0.1:3002/api/slot                             # the beast-slot contract clients read
 nvidia-smi --query-gpu=power.draw,power.draw.instant,power.draw.average,enforced.power.limit --format=csv   # the raw GPU power the page reads
 # Power history: .run/dashboard-power.json (5 s slots for 1 h, 1 min for 24 h). Cost line: DASHBOARD_KWH_PRICE=0.30 in openbeast.conf
+# Metric history: .run/dashboard-history.json (5 s / 1 h, 1 min / 24 h, 15 min / 7 d). Events, swaps, daily rollups: .run/dashboard-log.json
+# Alert thresholds: DASHBOARD_ALERT_GPU_TEMP_C=85, ..._MEM_FLOOR_GIB, ..._STALL_S=300, DASHBOARD_ALERTS_OFF=disk (openbeast.conf; extensions/README.md)
 ~/openbeast/scripts/ext.sh restart dashboard   # CHANGES STATE, but only the dashboard: safe during evals
 ```
 

@@ -816,24 +816,19 @@
     });
   }
 
-  // A segmented window control: buttons for `wins`, the pressed one from (and saved to) localStorage.
-  function segWindows(el, wins, storeKey, def, onPick) {
-    if (!el || !el.appendChild) return def;
-    let cur = def;
-    try { const v = localStorage.getItem(storeKey); if (wins.includes(v)) cur = v; } catch (e) { /* private mode */ }
+  // A segmented window control: a button per window, `cur` pressed; the page keeps the choice.
+  function segWindows(el, wins, cur, onPick) {
+    if (!el || !el.appendChild) return;
     if (!el.children.length) {
       for (const w of wins) {
         const b = mk('button', '', el); b.type = 'button'; b.dataset.w = w; set(b, WIN_SHORT[w] || w);
         b.addEventListener('click', () => {
-          cur = w;
-          try { localStorage.setItem(storeKey, w); } catch (e) { /* private mode */ }
           for (const o of Array.from(el.children)) o.setAttribute('aria-pressed', String(o.dataset.w === w));
           onPick(w);
         });
       }
     }
     for (const o of Array.from(el.children)) o.setAttribute('aria-pressed', String(o.dataset.w === cur));
-    return cur;
   }
 
   // Stat tiles: [{key, k (label), v (value), s (sub), state}] into a <ul class="stat-grid">.
@@ -1449,6 +1444,7 @@
     return PAGES.includes(parts[0]) && parts[0] !== 'node' ? { page: parts[0], arg: null } : { page: 'home', arg: null };
   }
   let route = { page: 'home', arg: null };
+  let shownNode = null;
 
   function showRoute(focus) {
     route = parseRoute(globalThis.location ? location.hash : '');
@@ -1466,6 +1462,11 @@
       const h = sec && sec.querySelector('h1');
       if (h && h.focus) h.focus({ preventScroll: true });
     }
+    // Another node: its charts are not the last node's charts, not even for a moment.
+    if (route.page === 'node' && shownNode !== route.arg) {
+      for (const id of ['nd-charts', 'nd-fab', 'nd-alerts', 'nd-tiles', 'nd-pw']) clear($(id));
+      shownNode = route.arg;
+    }
     // Render what is already here at once; the page's own document follows.
     if (lastStatus) guard(renderStatus, lastStatus);
     if (lastCluster) { guard(renderCluster, lastCluster); guard(renderPower, lastCluster.power); }
@@ -1479,10 +1480,18 @@
   const pageDocs = new Map();       // url -> fetched-at (ms)
   let lastEvents = null;
   const winOf = {};
+  const WINS = ['15m', '1h', '6h', '24h', '7d'];
   function pageWin(page, def) {
     const ids = { serving: 'sv-range', node: 'nd-range', gate: 'gt-range', tools: 'tl-range' };
-    const el = $(ids[page]);
-    winOf[page] = segWindows(el, ['15m', '1h', '6h', '24h', '7d'], 'obdash.win.' + page, def || '1h', w => { winOf[page] = w; pageDocs.clear(); pageFetch(true); });
+    if (!winOf[page]) {
+      winOf[page] = def || '1h';
+      try { const v = localStorage.getItem('obdash.win.' + page); if (WINS.includes(v)) winOf[page] = v; } catch (e) { /* private mode */ }
+    }
+    segWindows($(ids[page]), WINS, winOf[page], w => {
+      winOf[page] = w;
+      try { localStorage.setItem('obdash.win.' + page, w); } catch (e) { /* private mode */ }
+      pageDocs.clear(); pageFetch(true);
+    });
     return winOf[page];
   }
   // [url, renderer, refresh ms] for the page shown.
@@ -1595,7 +1604,8 @@
     for (const e of entries) { const fig = e.target.closest && e.target.closest('.cc'); if (fig) drawTs(fig); }
   });
   wireChart();
-  globalThis.addEventListener('hashchange', () => showRoute(true));
+  // Only #/... is a route: an in-page anchor (the skip link's #main) leaves the page shown as it is.
+  globalThis.addEventListener('hashchange', () => { if (/^#\/|^$/.test(location.hash)) showRoute(true); });
   if (document.visibilityState !== undefined) document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { hiddenSkip = 0; tick(); } });
   showRoute(false);
   tick();

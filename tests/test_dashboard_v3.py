@@ -632,3 +632,13 @@ def test_v3_renderers_write_hostile_strings_as_text(tmp_path):
     o = json.loads(_node(js, tmp_path, data))
     assert x in o["al"] and o["n"] == 1 and x in o["tl"] and x in o["inc"] and x in o["ref"] and x in o["svc"]
     assert o["o"] == {"state": "degraded", "text": x}
+
+
+def test_llama_window_with_no_finished_request_falls_back_to_lifetime_positions(monkeypatch):
+    # llama.cpp counts a request's drafts only when it finishes: a quiet window has
+    # no acceptance of its own, and the per-position bars are the lifetime ones, not 0 %.
+    d = load(monkeypatch)
+    a = d.engine_detail("llama", LLAMA)
+    sp = d.detail_window(d.engine_detail("llama", LLAMA), a, 20)["spec"]
+    assert sp["accept_pct"] is None and sp["life_accept_pct"] == pytest.approx(61.6, abs=0.05)
+    assert sp["per_pos_pct"] == [pytest.approx(82.5, abs=0.05), pytest.approx(66.4, abs=0.05)]

@@ -2685,11 +2685,12 @@ def detail_window(cur, old, span):
         dd, da, dn = d("spec_draft"), d("spec_accepted"), d("spec_drafts")
         pos = cur["by"].get("spec_pos") or {}
         opos = (old or {}).get("by", {}).get("spec_pos") or {}
-        if old and opos and set(opos) == set(pos) and all(pos[k] >= opos[k] for k in pos):
-            pos_w = {k: pos[k] - opos[k] for k in pos}
+        # By draft position over the window when the window drafted at all
+        # (llama.cpp only counts a request when it finishes), else lifetime.
+        if dn and opos and set(opos) == set(pos) and all(pos[k] >= opos[k] for k in pos):
+            pos_w, drafts_w = {k: pos[k] - opos[k] for k in pos}, dn
         else:
-            pos_w = pos
-        drafts_w = dn if dn else c.get("spec_drafts")
+            pos_w, drafts_w = pos, c.get("spec_drafts")
         spec = {"accept_pct": _ratio(da, dd), "mean_len": round(1 + da / dn, 2) if da is not None and dn else None,
                 "life_accept_pct": _ratio(c.get("spec_accepted"), c.get("spec_draft")),
                 "life_mean_len": round(1 + c["spec_accepted"] / c["spec_drafts"], 2)
@@ -3516,8 +3517,15 @@ class ServeSampler:
 
     def _slow(self, now, healthy, unit, gate):
         """Every SLOW_S: the served model id, the service watch, the tool
-        server's counters."""
-        st, body = _get(f"{_INFER}/v1/models", auth=True)
+        server's counters. Their fixed probes go out at once, bounded by
+        GATHER_DEADLINE_S together (a hung service costs 3 s, not 2 s each)."""
+        watch = _watch_requests()
+        reqs = [(f"{_INFER}/v1/models", True), (f"http://{H}:3001/metrics", False)] + [(u, False) for _, _, u, _ in watch]
+        with _prefetched(reqs):
+            self._slow_gathered(now, healthy, unit, gate, watch)
+
+    def _slow_gathered(self, now, healthy, unit, gate, watch):
+        st, body = _fetch(f"{_INFER}/v1/models", auth=True)
         mid = None
         if st == 200:
             try:
@@ -3534,14 +3542,14 @@ class ServeSampler:
         self.watch.update("model", ENGINE_LABEL.get(_BACKEND, _BACKEND), "up" if healthy else "down", now, quiet=True)
         if _EDGE_GATE:
             self.watch.update("gate", "beast-gate", "up" if gate.get("up") else "down", now, quiet=True)
-        for name, label, url, needle in _watch_requests():
-            s, b = _get(url)
+        for name, label, url, needle in watch:
+            s, b = _fetch(url)
             ok = s == 200 if needle is None else bool(s and s < 500 and (needle in b if needle else True))
             self.watch.update(name, label, "up" if ok else "down", now)
         isl = island_state().get("state")
         if isl:
             self.watch.update("island", "beast-island", isl, now, quiet=True)
-        ts, tb = _get(f"http://{H}:3001/metrics")
+        ts, tb = _fetch(f"http://{H}:3001/metrics")
         if ts == 200:
             calls = errs = 0.0
             for line in tb.splitlines():
@@ -3926,7 +3934,7 @@ class _Lru:
         return c.get()
 
 
-_v3_cache = _Lru()
+_v3_cache = _Lru(cap=32)
 
 
 def _query(raw):
