@@ -462,6 +462,10 @@ take the GPU lease on the rig (`scripts/gpu-lease.sh status`).
 ```bash
 . ~/.config/openbeast/eval-env.sh                         # PATH, toolchains, OPENBEAST_EVAL_PY (written by eval-host.sh env)
 ./scripts/eval-host.sh check                              # the harness host's toolchains vs evals/toolchains.lock
+./scripts/eval-host-container.sh build                    # Linux: the harness host as an image (pinned toolchains root-owned)
+./scripts/eval-host-container.sh check                    # eval-host.sh check + the integrity probe, inside it
+./scripts/eval-host-container.sh run -- python3 evals/profile.py ...   # any harness command, from this checkout
+./scripts/eval-host-container.sh save FILE.tar.gz         # offline: the image + .sha256 (load FILE on the offline box)
 python3 evals/run_eval.py --list                          # every task file
 python3 evals/run_eval.py --base-url http://127.0.0.1:8000/v1 --tasks 163,190 --no-cache   # a smoke run, no board
 python3 evals/profile.py --model-name "<Model>" --base-url https://spark-1.tail4109f9.ts.net:8443/v1 \
