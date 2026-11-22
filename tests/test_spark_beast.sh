@@ -16,7 +16,8 @@ T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin" "$T/prep/rollback" "$T/state" "$T/pack"
 V2=Mia-AiLab/DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1.1-2.9-bpw-v2
 export SB_PREP="$T/prep" SB_DS_PACK="$T/pack" SB_DS_ID="$V2" SB_CONF="$T/beast-spark.env" SB_KEY_FILE="$T/key" \
-       SB_WAIT_S=10 SB_HY4_WAIT_S=10 SB_LOCK="$T/model.lock" SB_OB_CONF="$T/openbeast.conf" ST="$T/state" LOG="$T/log"
+       SB_WAIT_S=10 SB_HY4_WAIT_S=10 SB_LOCK="$T/model.lock" SB_OB_CONF="$T/openbeast.conf" ST="$T/state" LOG="$T/log" \
+       SB_BIN_DIR="$T/nobin" SB_CHECKOUT="$T/nocheckout"
 echo SECRETKEY123 > "$T/key"
 # systemctl --user: state files $ST/<unit>.active / .enabled; every mutating call logged.
 cat > "$T/bin/systemctl" <<'S'
@@ -283,6 +284,29 @@ if ! SB_BIN_DIR="$T/inst/bin2" bash "$T/inst/lonely.sh" install > "$T/out" 2>&1 
 else fail "install lonely: $(cat "$T/out")"; fi
 
 if bash "$SB" >/dev/null 2>&1; then fail "no subcommand should exit non-zero"; else pass "no subcommand: usage, non-zero exit"; fi
+if ! bash "$SB" frobnicate > "$T/out" 2>&1 && grep -q "unknown command: frobnicate" "$T/out" && grep -q "beast-spark install" "$T/out" \
+   && grep -q "beast-spark up" "$T/out"; then pass "an unknown subcommand: named in an error (with the install hint), then the usage, non-zero exit"
+else fail "unknown subcommand: $(cat "$T/out")"; fi
+
+# staleness: a checkout at $T/co, an install from it, then the checkout moves on
+CO="$T/co/scripts/backends"; mkdir -p "$CO" "$T/st/prep"
+cp "$SB" "$REPO_DIR/scripts/backends/spark-deepseek-pack.sh" "$REPO_DIR/scripts/backends/spark-deepseek-prepare-local.sh" "$CO/"
+st() { SB_CHECKOUT="$T/co" SB_BIN_DIR="$T/st/bin" SB_PREP="$T/st/prep" SB_BASHRC="$T/st/bashrc" bash "$@" > "$T/out" 2>&1; }
+reset; st "$CO/spark-beast.sh" install
+st "$T/st/bin/beast-spark" status
+if ! grep -q WARNING "$T/out"; then pass "staleness: no warning while the installed copy matches the checkout"
+else fail "staleness, in sync: $(cat "$T/out")"; fi
+echo "# a newer checkout" >> "$CO/spark-beast.sh"
+st "$T/st/bin/beast-spark" status; s1=$(cat "$T/out")
+st "$CO/spark-beast.sh" status; s2=$(cat "$T/out")
+if grep -q "WARNING: this beast-spark ($T/st/bin/beast-spark) differs from the checkout" <<<"$s1" && grep -q "beast-spark install" <<<"$s1" \
+   && grep -q "WARNING: the installed $T/st/bin/beast-spark .* differs from this checkout" <<<"$s2"; then
+  pass "staleness: the installed copy and the checkout's differ: warned from either side, with the beast-spark install fix"
+else fail "staleness, differ: $s1 / $s2"; fi
+if st "$T/st/bin/beast-spark" install && grep -q "installing from the checkout" "$T/out" && cmp -s "$CO/spark-beast.sh" "$T/st/bin/beast-spark" \
+   && st "$T/st/bin/beast-spark" status && ! grep -q WARNING "$T/out"; then
+  pass "staleness: beast-spark install (the installed copy) updates from the checkout, and the warning is gone"
+else fail "staleness, install: $(cat "$T/out")"; fi
 
 echo "=== $PASS passed, $FAIL failed ==="
 (( FAIL == 0 ))
