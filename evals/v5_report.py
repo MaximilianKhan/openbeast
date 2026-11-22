@@ -143,7 +143,7 @@ def pair_delta(a: dict, b: dict) -> dict:
 def build(model: str = DEFAULT_MODEL, extra: list[tuple[str, list[str]]] | None = None,
           pairs: list[str] | None = None, context: tuple[str, ...] = DEFAULT_CONTEXT,
           board: dict | None = None, base_dir: str = v5_board.BOARD_DIR,
-          manifest: dict | None = None, exclusions: dict | None = None,
+          manifest: dict | None = None, exclusions: dict | None = None, strict_pairs: bool = False,
           weights: dict | None = None, weights_id: str | None = None) -> dict:
     """weights_id keeps one quantization of the model (a report compares arms on
     the same weights; another bpw or pack is another report)."""
@@ -166,6 +166,9 @@ def build(model: str = DEFAULT_MODEL, extra: list[tuple[str, list[str]]] | None 
     deltas = []
     for p in pairs if pairs is not None else DEFAULT_PAIRS:
         base, _, arm = p.partition(":")
+        if strict_pairs and not (base in by_label and arm in by_label):
+            raise SystemExit(f"--pair {p}: unknown " + ", ".join(s for s in (base, arm) if s not in by_label)
+                             + f" (known: {', '.join(sorted(by_label))})")
         if base in by_label and arm in by_label:
             deltas.append({**pair_delta(by_label[base], by_label[arm]), "base": base, "arm": arm})
     differ = sorted(u for u in manifest
@@ -259,8 +262,9 @@ def main() -> int:
         if not eq or not files:
             ap.error(f"--arm wants LABEL=FILE[,FILE], got {spec!r}")
         extra.append((label, files.split(",")))
+    # a --pair typed on the command line must resolve; the campaign's defaults skip what has not run
     r = build(a.model, extra, a.pair, tuple(c for c in a.context.split(",") if c),
-              weights_id=a.weights_id)
+              weights_id=a.weights_id, strict_pairs=bool(a.pair))
     if not r["arms"]:
         print(f"no board runs for model {a.model!r}", file=sys.stderr)
         return 1

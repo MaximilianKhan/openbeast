@@ -989,7 +989,7 @@ def stage_steps(r: Recipe, p: dict, eng: dict, ns: list[str]) -> list[tuple[str,
                             "the family, index signature and pack fingerprint against data/spark-families.json")))
         for n in ns[1:]:
             if not (local or protected):
-                out.append(("mirror", ns[0], (f"{SCOPE} rsync -a --partial {qp(wd + '/')} {shlex.quote(n)}:{qp(wd + '/')}   # over the "
+                out.append(("mirror", ns[0], (f"{SCOPE} rsync -a --partial --mkpath {qp(wd + '/')} {shlex.quote(n)}:{qp(wd + '/')}   # over the "
                             "QSFP link; never --delete")))
             if sums.is_file():
                 out.append(("verify", n, f"cd {qp(wd)} && {SCOPE} sha256sum -c --quiet -   # < recipes/{r.name}/SHA256SUMS from the head; read-only"))
@@ -998,7 +998,7 @@ def stage_steps(r: Recipe, p: dict, eng: dict, ns: list[str]) -> list[tuple[str,
             ddir = f"~/Documents/weights/{drepo}"
             out.append(("drafter", ns[0], f"scripts/weights-download.sh {hub_url(drepo, drev)} {qp(ddir)}"))
             for n in ns[1:]:
-                out.append(("drafter", ns[0], f"{SCOPE} rsync -a --partial {qp(ddir + '/')} {shlex.quote(n)}:{qp(ddir + '/')}"))
+                out.append(("drafter", ns[0], f"{SCOPE} rsync -a --partial --mkpath {qp(ddir + '/')} {shlex.quote(n)}:{qp(ddir + '/')}"))
     if r.get("AUX"):
         out.append(("aux", ns[0], f"# AUX: {r.get('AUX')}"))
     if r.get("RANK_INPUTS") and r.get("RANK_INPUTS") != "none":
@@ -1860,6 +1860,12 @@ def install_unit(r: Recipe, p: dict) -> Path:
 ENGINE_STAGE_MARKS = ("engine.sh", "docker build", "docker pull", "sync-image", "save-image", "tensorfold capabilities")
 
 
+def version_ok(outp: str, want: str) -> bool:
+    """True when `want` (no version pinned: always) is one whole token of a --version output
+    (a leading v ignored), so 1.2.1 does not pass for an installed 1.2.10."""
+    return not want or want in [t.lstrip("v") for t in outp.split()]
+
+
 def engine_missing(r: Recipe, p: dict, eng: dict, ns: list[str]) -> list[str]:
     """Run the engine's check steps (tensorfold --version / docker image inspect) on every node; the
     nodes where the planned engine is not what is installed."""
@@ -1870,7 +1876,7 @@ def engine_missing(r: Recipe, p: dict, eng: dict, ns: list[str]) -> list[str]:
             continue
         code, outp = runner.sh(node, cmd.split("   #")[0], capture=True)
         want = eng.get("version", "")
-        if code != 0 or ("--version" in cmd and want and want not in [t.lstrip("v") for t in outp.split()]):
+        if code != 0 or ("--version" in cmd and not version_ok(outp, want)):
             bad.append(f"{node}: {outp.strip()[:80] or 'exit ' + str(code)} (want {eng.get('id')})")
     return bad
 
@@ -1890,7 +1896,7 @@ def cmd_engine(args) -> int:
         code, outp = runner.sh(node, cmd.split("   #")[0], capture=True)
         if args.run and node not in ("-", "connected box") and not node.startswith("<"):
             want = eng.get("version", "")
-            ok = code == 0 and (want in outp if "--version" in cmd else True)
+            ok = code == 0 and (version_ok(outp, want) if "--version" in cmd else True)
             print(f"    -> {'ok' if ok else 'MISSING'}{(': ' + outp.strip()[:120]) if outp.strip() else ''}")
             rc = rc or (0 if ok else 1)
     return rc

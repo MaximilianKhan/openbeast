@@ -71,6 +71,12 @@ def build(tmp_path, **kw):
                            pairs=["T:T2", "T2:UP", "T:NOPE"], **kw)
 
 
+def test_an_unknown_explicit_pair_is_named(tmp_path):
+    import pytest
+    with pytest.raises(SystemExit, match="NOPE"):
+        build(tmp_path, strict_pairs=True)
+
+
 def test_arms_scores_and_process(tmp_path):
     r = build(tmp_path)
     arms = {a["label"]: a for a in r["arms"]}

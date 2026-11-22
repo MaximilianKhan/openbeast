@@ -269,12 +269,13 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
   (running, end ~14:40 2026-11-22), the cross-host calibration (rig
   container against the Mac), and the Linux network deny (HARNESS_NOTES
   next-era (d)) before more rig rows.
-- [ ] **DeepSeek-V4.1-Flash (Mia EXL3) thinking-first campaign:** in
-  progress ([`MODEL_CAMPAIGN.md` §9](MODEL_CAMPAIGN.md#9-next-deepseek-v41-flash-1017-thinking-first)).
+- [x] **DeepSeek-V4.1-Flash (Mia EXL3) thinking-first campaign:** complete
+  2026-11-21 ([final report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md); [`MODEL_CAMPAIGN.md` §9](MODEL_CAMPAIGN.md#9-next-deepseek-v41-flash-1017-thinking-first)).
   On the board (2026-11-21): T 61, T_s1 61, **T2 65** (best, SCORE 94.9),
   T3 65, U 59, UP 62, UPA 59, U_8k 63, UP_8k 65, UPA_8k 62; all integrity
   scans clean. The
-  one-component-out ablations and the no-thinking arms are not run.
+  one-component-out ablations and the no-thinking arms were not run and
+  are not scheduled.
 - [x] **Arms U, U_8k, UP and UPA** (harness10, #234): U 59 (16384 cap),
   U_8k 63 (+4: the cap), UP 62 (+3 over U: planning lines help), UPA 59
   (−3 against UP: the pack hurts). Board rows DS-U, DS-U8k, DS-UP, DS-UPA.

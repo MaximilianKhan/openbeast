@@ -3088,7 +3088,9 @@ def _cache_only_rb(model_slug: str, explicit: str | None) -> tuple[str, str]:
 def _write_results(results_path: str, results: dict) -> None:
     """Atomically persist the results dict (tmp + os.replace). Called after
     every task so a crash mid-sweep leaves a readable partial results file
-    instead of nothing."""
+    instead of nothing. Stamps `saved` (ISO, with zone): the end of the run's
+    window for the integrity scan, which a git checkout's mtime cannot give."""
+    results["saved"] = datetime.now().astimezone().isoformat()
     tmp = results_path + ".tmp"
     with open(tmp, "w") as f:
         json.dump(results, f, indent=2)
