@@ -214,7 +214,19 @@
       "weights_id": "qwen38-27b-uncensored-mtp-q5km",
       "host": "1× RTX 5090, llama.cpp MTP, -np 1; rig eval-host container; not calibrated against the Mac host",
       "campaign_arm": "profile L0",
-      "note": "40/71 raw; 4 units lost to server_error (llama-server HTTP 500 on a truncated tool call, retried identically; docs/HARNESS_NOTES.md), counted as fails; integrity scan 2026-11-22: 3 contaminated (the agent's shell reached the network; 1 was a pass), excluded"
+      "note": "40/71 raw; 4 units lost to server_error (llama-server HTTP 500 on a truncated tool call, retried identically; docs/HARNESS_NOTES.md), counted as fails; integrity scan 2026-11-22: 3 contaminated (the scan flagged off-host access from the agent's shell; 1 was a pass), excluded"
+    },
+    {
+      "id": "HY4-C",
+      "model": "Hy4-flash (NVFP4)",
+      "config": "thinking on (reasoning_effort high, Hy4's default), campaign arm H_C = GLM's best (v5-harness arm C): runner v2, wall-scaled turns, wall ×2, no assists, the 16,384-token eval turn cap (no 8,192 cap or act nudge); harness9 (review 1118 sandbox + partial stats + eval fetch guard)",
+      "files": [
+        "eval-hy4-flash-nvfp4-v5-thinking-first-h-c-20261122-044648.json"
+      ],
+      "weights_id": "hy4-flash-nvfp4-atakans",
+      "host": "DGX Spark pair, vLLM TP2 + EP, NVFP4",
+      "campaign_arm": "v5-thinking-first H_C",
+      "note": "55/71; 0 units lost; failed: 122_gemm_blocked_d, 122_gemm_blocked_e, 158_karatsuba_bytes_d, 163_bigint_divmod_b, 163_bigint_divmod_c, 163_bigint_divmod_f, 168_linearizability_kv_b, 168_linearizability_kv_c, 168_linearizability_kv_e, 168_linearizability_kv_f, 173_taskgroup_cancel, 183_heston_little_trap, 190_autograd_mlp, 192_pike_regex, 195_riscv_insn_budget, 36_black_scholes_f; the ablation of HY4-T2: same harness9 tree, served model and Spark pair; 13 units hit the wall, 4 passed; integrity scan 2026-11-22: 0 contaminated (71 transcripts, 71 units; four web_search calls in two units, all refused by the eval guard (attempts))"
     }
   ],
   "not_yet_run": [

@@ -1,0 +1,24 @@
+# beast-recipe-qwen38-27b-exl3-4.0-1x.service: rendered by beast-recipe from recipes/qwen38-27b-exl3-4.0-1x/recipe.env.
+# Qwen3.8-27B EXL3 4.0 bpw on ONE Spark, native TensorFold 1.3.3
+# STAGED, NOT A BOOT DEFAULT: there is no [Install] section, so it cannot be
+# enabled and never starts at boot. Start it only through `beast-spark qwen38-27b-exl3-4.0-1x`
+# (after `beast-recipe adopt qwen38-27b-exl3-4.0-1x --run`): it stops the model that serves,
+# starts this, waits for qwen3.8-27b-exl3 on /v1/models, sets openbeast.conf,
+# and puts the previous model back if any of that fails.
+
+[Unit]
+Description=beast-recipe qwen38-27b-exl3-4.0-1x: qwen3.8-27b-exl3 on tf-native-1.3.3, TP 1 (staged; started only by beast-spark qwen38-27b-exl3-4.0-1x)
+After=network-online.target
+Wants=network-online.target
+Conflicts=deepseek-v41-inference.service hy4-vllm-inference.service spark-hydra-inference.service
+After=deepseek-v41-inference.service hy4-vllm-inference.service spark-hydra-inference.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=%h/openbeast
+ExecStart=/usr/bin/bash %h/openbeast/scripts/backends/spark-cluster.sh start --cluster %h/openbeast/recipes/qwen38-27b-exl3-4.0-1x/cluster.env --profile recipe-qwen38-27b-exl3-4.0-1x --engine tensorfold
+ExecStop=/usr/bin/bash %h/openbeast/scripts/backends/spark-cluster.sh stop --cluster %h/openbeast/recipes/qwen38-27b-exl3-4.0-1x/cluster.env --engine tensorfold
+TimeoutStartSec=infinity
+TimeoutStopSec=150
+Restart=no

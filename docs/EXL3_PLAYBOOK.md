@@ -19,7 +19,8 @@ including [DeepSeek packs](SPARK_HYDRA.md#deepseek-packs-spark-deepseek-pack)),
 [DGX_SPARK_PLAN.md §14](DGX_SPARK_PLAN.md#14-onboarding-a-model-youve-never-seen)
 (onboarding a model through OpenBeast's own launchers),
 [MODEL_CAMPAIGN.md](MODEL_CAMPAIGN.md) (the qualification every Spark model
-goes through), [ENGINES.md](ENGINES.md), [BEAST_ISLAND.md](BEAST_ISLAND.md)
+goes through), [BEAST_RECIPE.md](BEAST_RECIPE.md) (the tool that plans and
+applies every case below), [ENGINES.md](ENGINES.md), [BEAST_ISLAND.md](BEAST_ISLAND.md)
 (running offline).
 
 ## The answer in short
@@ -31,6 +32,24 @@ goes through), [ENGINES.md](ENGINES.md), [BEAST_ISLAND.md](BEAST_ISLAND.md)
 | **(a3)** same architecture, other layout | e.g. Mia's official EAQ v1.1 pack (27 BF16 linears), another quantizer's GLM EXL3, a GLM EXL3 that is not 4-bit TR3 | not a drop-in. Intake says "SAME FAMILY, NOT A DROP-IN" and shows the index difference. Some are a recipe setting away (EAQ v1.1: `EAQ_V1_1=1`), others need engine work | hours (a setting and a pack-tool exception) to weeks (a reader for a new layout) |
 | **(b)** an architecture a build already supports | native TensorFold 1.2.7 reads EXL3 for `glm5_next`, `minimax_m3_vl` (2 ranks) and `qwen3_5` (one GPU) | a profile and OpenBeast's own launcher ([D2](SPARK_HYDRA.md#d2-native-tensorfold-through-spark-nodesh--spark-clustersh)): `model-inspect.sh --write-profile`, `model-fetch.sh --verify --trust-first-use`, `spark-cluster.sh start` | a day for the first one, because D2 has never served on this pair. VERIFY ON HARDWARE |
 | **(c)** an architecture no build supports | e.g. a new model_type, or DeepSeek on native 1.2.7 | an engine family must exist first: a newer TensorFold release, a Mia recipe, or a port | weeks for a port. Days if upstream ships it and we stage it offline |
+
+**The tool for every case: beast-recipe** (2026-11-22, on `main` after v1.9;
+[BEAST_RECIPE.md](BEAST_RECIPE.md)). This page is the case taxonomy and the
+arithmetic; `scripts/beast-recipe.sh` applies it. `init <hf-url | org/repo@sha
+| DIR> --sparks N` reads the checkpoint into `recipes/<name>/recipe.env`, and
+`plan <name> --sparks 1,2,3,4` says which case it is, as a verdict:
+SERVABLE-NOW (cases a1, a2 and b on an engine we have: steps, no engineering),
+SERVABLE-WITH-WORK (a3, or b on an engine still to stage: the gap list with
+effort), NEEDS-MORE-HARDWARE (how many Sparks, and why) or BLOCKED (case c: no
+engine family reads it). It also prints the fit per Spark, the engine and why,
+the drafter options with their licences, and every command end to end
+(`engine`, `stage`, `up`, `check`, `adopt`, then `beast-spark <name>`; dry run
+unless `--run`). The engine/family matrix it reads is
+`scripts/backends/data/recipe-engines.json`, with sources. Start a new model
+there; the sections below remain the reference for the by-hand paths.
+Since 1.2.7 was measured, native 1.2.10 is installed on both Sparks and the
+latest upstream release is **1.3.3** (2026-11-21); 1.3.4, the upstream
+README's install pin, has no release yet, so recipes pin 1.3.3.
 
 What makes this hard is memory and engines, not copying. The pair serves one
 model at a time, on both GPUs. A rank can hold about **100 GiB of weights**,

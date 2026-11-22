@@ -269,8 +269,14 @@ def token_stats(rows: dict, manifest: dict, passed: int, reference: bool = False
     return {"prompt": prompt, "completion": completion, "total": total,
             "units_with_data": with_data, "missing": len(manifest) - with_data,
             "partial": partial,
-            "per_unit": round(total / with_data) if with_data else None,
-            "per_pass": round(total / passed) if with_data and passed else None}
+            # round half up (as the website's Math.round), not Python's half-to-even
+            "per_unit": _round_half_up(total, with_data) if with_data else None,
+            "per_pass": _round_half_up(total, passed) if with_data and passed else None}
+
+
+def _round_half_up(num: int, den: int) -> int:
+    """num / den rounded half up, exact for non-negative integers (JS Math.round)."""
+    return (2 * num + den) // (2 * den)
 
 
 # --- scoring --------------------------------------------------------------------------
@@ -550,7 +556,7 @@ def render_weights(b: dict, prefix: str = "") -> str:
         ctx = f"{w['context']:,} tokens" if w.get("context") else None
         rows += [("Speculative drafter", w["drafter"] or "none"),
                  ("KV cache", w["kv_dtype"] or "—"),
-                 ("Context, streams", ", ".join(x for x in (ctx, f"{w['streams']} streams" if w.get("streams") else None) if x) or "—"),
+                 ("Context, streams", ", ".join(x for x in (ctx, f"{w['streams']} stream{'' if w['streams'] == 1 else 's'}" if w.get("streams") else None) if x) or "—"),
                  ("Hosts", w["hosts"]),
                  ("Board runs", ", ".join(w["runs"])),
                  ("Evidence", w["evidence"])]
@@ -573,7 +579,7 @@ unique text. A prompt-cache hit is still counted: every run's per-turn prompt is
 full-context sized (medians 7.5K to 15K, never under ~4K, the system prompt and
 task), and the runner keeps no cached count. **Completion includes thinking**: every turn in the kept agent logs that
 hit the output cap with reasoning and no answer text reports exactly the cap in
-`completion_tokens` (DeepSeek on TensorFold, and Qwen3.8 on llama.cpp), so the
+`completion_tokens` (DeepSeek on TensorFold, Hy4-flash on vLLM, and Qwen3.8 on llama.cpp), so the
 reasoning is in the count. GLM's thinking arms predate that log field: same
 engine, unverified. **Per unit** is the total over the units with usage;
 **per pass** is the total over the scored passes (tokens spent for each solved

@@ -652,7 +652,7 @@ below it.
   confirmed it. T2 → U_8k still changes three things at once and crosses
   an era.
 - **v5's scope is agentic coding.** v5 has 71 units: algorithmic and
-  systems tasks in seven languages, each judged by a hidden validator. It
+  systems tasks in six languages plus one shell unit, each judged by a hidden validator. It
   does not measure chat quality, long-context retrieval, tool use outside
   coding, or speed for interactive use.
 - **The reference uses a different scaffold.** Claude Opus 5.5 ran with

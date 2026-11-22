@@ -6,7 +6,7 @@
 Max's decision after testing (v5 61/71, the board's #1). Since 2026-11-19 its
 best agent setup is v5 arm T2 (65/71), one line in `openbeast.conf`,
 `AGENT_PROFILE=deepseek-best` ([SPARK_HYDRA.md E2b](SPARK_HYDRA.md#e2b-deepseek-best-configuration-v5-t2));
-it goes live on spark-1 after the eval arm running there now. GLM-5.3-Flash (`GLM-5.3-Flash-EXL3`, 1,048,576-token window) is staged as
+it is live on spark-1 since 2026-11-19 (E2b). GLM-5.3-Flash (`GLM-5.3-Flash-EXL3`, 1,048,576-token window) is staged as
 the alternative, and one command switches between the two (`beastds` /
 `beastglm`, only through beast-spark,
 [SPARK_HYDRA.md](SPARK_HYDRA.md#deepseek-deployment)). OpenCode on the Mac
@@ -339,6 +339,7 @@ cd ~/openbeast && ./agent.sh -w ~/ob-work --context-file /tmp/ctx.md --max-iter 
 | `language_reference` | the installed toolchain's verified claims. On a Spark only gcc/g++ are installed today (no zig, rust or go) |
 | `platform_docs`, `scripts/docs.sh search/read` | only what is mirrored. **spark-1 has no mirror yet**; carry one ([SPARK_HYDRA.md H8](SPARK_HYDRA.md#h8-beast-docs-mirror)) |
 | the docs in the repo | `docs/*.md`, `AGENTS.md`, `skills/*/SKILL.md`, `evals/README.md`, every script's `--help` |
+| beast-recipe: `scripts/beast-recipe.sh plan / list / show` and every dry run | they read only the checkout, on the Sparks' system python3. `init` reads a local model folder offline (against the Hub it refuses under `OFFLINE=true`); `stage` verifies a carried copy against the recipe's vendored `SHA256SUMS` ([BEAST_RECIPE.md](BEAST_RECIPE.md#offline)) |
 | beast-ark: `scripts/ark.sh list / plan / lint / verify / restore / serve` | the catalog is in the repo. A filled ark drive restores toolchains (go, zig, rust, node, cpython, …), images and source with no network ([BEAST_ARK.md](BEAST_ARK.md) §8 and §13). `fetch`, `lock` and `update` exit 3 offline, which is correct. Never invent a pin: add an entry as `verified = "unverified"` and leave `lock` to a connected session |
 | git (local) | commit, branch, diff, log, `git bundle` |
 | the hermetic test suites | stubs, no network ([3](#3-tests-which-to-run-for-which-change)) |
@@ -467,6 +468,7 @@ Run the narrow suites while iterating, then the full set before committing:
 | `scripts/backends/spark-backup.sh`, `spark-restore.sh`, `pylib/spark_backup.py`, `data/spark-backup.items` | `tests/test_spark_backup.sh` (the copy steps need GNU rsync >= 3: Linux, or `brew install rsync` on a Mac; without it they are skipped) |
 | `scripts/backends/spark-model-intake.sh`, `pylib/model_intake.py`, `data/spark-families.json` | `tests/test_spark_model_intake.sh` (portable; the local-revision parity check needs GNU stat), `tests/test_model_inspect.py` |
 | `scripts/backends/spark-beast.sh` | `tests/test_spark_beast.sh` |
+| `scripts/beast-recipe.sh`, `scripts/backends/beast-recipe.sh`, `pylib/recipe.py`, `data/recipe-engines.json`, `recipes/*` | `tests/test_beast_recipe.py` (portable, stdlib; the grammar, the fit maths, the verdicts, the golden Hy4 launch, dry runs and `--run` against stubs), `tests/test_spark_beast.sh` (`beast-spark <recipe>`) |
 | `scripts/backends/spark-hy4-stage.sh`, `scripts/backends/hy4-vllm/` (config, start, stop, memguard, the unit, the vendored image and Hub lists) | `tests/test_spark_hy4.sh` (portable; stubs for docker, ssh, systemctl, systemd-run, hf, rsync), `tests/test_spark_beast.sh` (`beast-spark hy4`), `tests/test_spark_guard.sh` (its rendezvous port) |
 | `scripts/backends/spark-fabric-mtu.sh` (fabric MTU 9000, netplan drop-in) | `tests/test_spark_fabric_mtu.sh` (portable; on Ubuntu it also checks the merge against the real `netplan generate --root-dir`) |
 | `spark-root-setup.sh`, `tensorfold/install-native.sh` | `tests/test_spark_supply.sh` |
@@ -591,7 +593,7 @@ The `git-discipline` skill is the long form. In short:
   `cp X X.bak-$(date +%Y%m%d%H%M)`. This covers `openbeast.conf`, `local.sh`,
   `opencode.json` and `spark.env`. Keep the backup 0600 if the file is.
 - **Dry-run first.** `--dry-run` exists on `engine.sh use/install/update/rollback`,
-  `spark-cluster.sh`, `apps.sh enable/disable`; `--print` on `spark-node.sh`;
+  `spark-cluster.sh`, `apps.sh enable/disable`; every `beast-recipe.sh` step is a dry run unless `--run`; `--print` on `spark-node.sh`;
   `--render` on `spark-guard.sh`; `--dry-run` on `spark-fabric-mtu.sh`;
   `--preflight` on `bootstrap.sh`;
   `setup-tailscale.sh --status`.

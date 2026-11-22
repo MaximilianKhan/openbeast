@@ -216,6 +216,21 @@ scripts/backends/hy4-vllm/start.sh --print                            # both doc
 # offline: --weights-from DIR (a drive's copy), --image-from ~/Documents/hy4-vllm-image/<tag>.tar
 ```
 
+**A beast-recipe recipe** (on spark-1, from `~/openbeast`; [BEAST_RECIPE.md](BEAST_RECIPE.md)).
+Planning is offline and safe anywhere; `adopt --run` installs a unit with no
+`[Install]` section (it enables and starts nothing) and the registry entry, so
+it is safe on a live pair; the switch is `beast-spark`, like `beasthy4`:
+
+```bash
+scripts/beast-recipe.sh list                          # every recipe and its verdict
+scripts/beast-recipe.sh plan <recipe>                 # the verdict, the gaps and every command end to end
+scripts/beast-recipe.sh adopt <recipe> --run          # SERVABLE-NOW only: the unit (enables nothing) + ~/.config/openbeast/recipes.d/<recipe>.env
+beast-spark <recipe>                                  # the switch: stops the model that serves, starts the recipe, waits for its id,
+                                                      #   INFERENCE_BACKEND/INFERENCE_MODEL in openbeast.conf; the previous model comes back on failure
+scripts/beast-recipe.sh check <recipe> --run --bench  # conformance + decode tok/s at 1 and 4 streams
+scripts/beast-recipe.sh rollback --run                # beast-spark <the previous selection>; beastds / beastglm also stop a recipe
+```
+
 From a non-interactive shell (ssh one-liner, a script, an agent), call
 `~/.local/bin/beast-spark <verb>` directly; aliases are not expanded there.
 Two switches never overlap: `beast-spark` and `spark-deepseek-pack.sh` share
@@ -567,6 +582,11 @@ scripts/bundle.sh verify <dir>                            # an offline bundle, r
 scripts/weights-download.sh <hf-url> [dest]               # any model -> ~/Documents/weights/ORG/REPO, verified (any machine; WEIGHTS_DOWNLOAD.md)
 scripts/weights-download.sh <hf-url> --dry-run            # files, sizes, target folder; writes nothing
 scripts/weights-download.sh --verify <dir>                # re-hash a downloaded or copied model folder (offline)
+scripts/beast-recipe.sh init <hf-url|org/repo@sha|dir> --sparks 2  # a model -> recipes/<name>/recipe.env + the plan (BEAST_RECIPE.md)
+scripts/beast-recipe.sh plan <recipe> [--sparks 1,2,3,4]   # fit, engine, verdict, gaps + effort, every command end to end (offline)
+scripts/beast-recipe.sh list                              # every recipe and its verdict
+scripts/beast-recipe.sh engine|stage|up|check|adopt <recipe>   # print what would run; --run acts (on a Spark)
+beast-spark <recipe>                                      # serve an adopted recipe (beast-recipe adopt <recipe> --run first); beast-recipe rollback --run goes back
 python3 scripts/generate-skill-index.py --check           # exit 1 if the skill menu in system-prompt-tools.md is stale
 ```
 

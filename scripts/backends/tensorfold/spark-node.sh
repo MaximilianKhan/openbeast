@@ -165,12 +165,26 @@ if [[ "$ENGINE" == native ]]; then
     _have="$( ("$TENSORFOLD_BIN" --version 2>/dev/null || true) | awk '{print $NF}')"
     [[ "$_have" == "$TENSORFOLD_VERSION" ]] \
       || sp_err "$TENSORFOLD_BIN is TensorFold '${_have:-?}', spark.env pins $TENSORFOLD_VERSION — every rank must run the same build"
+    # A profile planned for one release (beast-recipe renders TENSORFOLD_REQUIRES)
+    # never runs on another: ~/.local/bin/tensorfold is one link per Spark.
+    if [[ -n "$PF_TENSORFOLD_REQUIRES" && "${_have:-}" != "$PF_TENSORFOLD_REQUIRES" ]]; then
+      sp_err "profile '$PF_PROFILE_NAME' needs native TensorFold $PF_TENSORFOLD_REQUIRES, $TENSORFOLD_BIN is '${_have:-?}': scripts/engine.sh install tensorfold --version $PF_TENSORFOLD_REQUIRES (or engine.sh rollback tensorfold) on every Spark, and TENSORFOLD_VERSION=$PF_TENSORFOLD_REQUIRES in spark.env"
+    fi
   fi
+  # --kv-dtype is the 0.x Python engine's flag (bf16|int8|int4); native refuses it.
+  for _a in ${PF_EXTRA[@]+"${PF_EXTRA[@]}"}; do
+    [[ "$_a" == --kv-dtype || "$_a" == --kv-dtype=* || "$_a" == --kv_dtype* ]] \
+      && sp_err "profile '$PF_PROFILE_NAME': EXTRA_ARGS has $_a, which native TensorFold refuses — set TENSORFOLD_KV_CACHE=bf16|fp8 (its --kv-cache) instead"
+  done
   if [[ "$RANK" == 0 ]] && ! sp_is_true "${SPARK_NO_API_KEY:-}"; then
     sp_need TENSORFOLD_API_KEY_FILE "the 0600 file rank 0 serves with --api-key-file (the rig's LLAMA_API_KEY holds the same value)"
     [[ -n "${TENSORFOLD_API_KEY_FILE:-}" ]] && sp_check_secret_file "$TENSORFOLD_API_KEY_FILE"
   fi
 else
+  for _k in TENSORFOLD_KV_CACHE TENSORFOLD_MEMORY_RESERVE_GIB TENSORFOLD_REQUIRES; do
+    _v="PF_$_k"
+    [[ -n "${!_v:-}" ]] && sp_err "profile '$PF_PROFILE_NAME' sets $_k, a native TensorFold setting: TENSORFOLD_ENGINE=native serves it (the container engine has no equivalent)"
+  done
   sp_need TENSORFOLD_IMAGE "NVIDIA's PyTorch container (spark.env)"
   sp_need TENSORFOLD_REF "the TensorFold commit to install, as a full 40-hex SHA"
   if [[ -n "${TENSORFOLD_REF:-}" && ! "$TENSORFOLD_REF" =~ ^[0-9a-f]{40}$ ]]; then
@@ -295,8 +309,10 @@ if [[ "$ENGINE" == native ]]; then
   [[ -n "$PF_DRAFTER_SOURCE" ]] && SERVE+=(--drafter "$SP_DRAFTER_DIR")
   [[ -n "$PF_TENSORFOLD_PARALLEL" ]] && SERVE+=(--parallel "$PF_TENSORFOLD_PARALLEL")
   [[ -n "$PF_MAX_MODEL_LEN" ]] && SERVE+=(--context "$PF_MAX_MODEL_LEN")
+  [[ -n "$PF_TENSORFOLD_KV_CACHE" ]] && SERVE+=(--kv-cache "$PF_TENSORFOLD_KV_CACHE")
   SERVE+=(${PF_EXTRA[@]+"${PF_EXTRA[@]}"})
   RANKENV=()
+  [[ -n "$PF_TENSORFOLD_MEMORY_RESERVE_GIB" ]] && RANKENV+=("TENSORFOLD_MEMORY_RESERVE_GIB=$PF_TENSORFOLD_MEMORY_RESERVE_GIB")
   if (( TP > 1 )); then
     case "$PLACE" in
       TF_GLM|TF_MINIMAX)

@@ -39,6 +39,19 @@ to the Sparks.
 The model has to be served behind beast-gate before any of this. Each step is
 in an existing runbook. Do them in order:
 
+0. **Start with beast-recipe** ([BEAST_RECIPE.md](BEAST_RECIPE.md)):
+   `scripts/beast-recipe.sh init <hf-url | org/repo@sha | DIR> --sparks N`
+   reads the checkpoint into `recipes/<name>/recipe.env`, and
+   `scripts/beast-recipe.sh plan <name> --sparks 1,2,3,4` says whether it can
+   be served and what it takes: the fit per Spark, the engine and why, the
+   drafter options with their licences, and the verdict (SERVABLE-NOW,
+   SERVABLE-WITH-WORK with the gap list and effort, NEEDS-MORE-HARDWARE with
+   how many Sparks, or BLOCKED). For a SERVABLE-NOW plan, its `engine`,
+   `stage`, `up`, `check` and `adopt` steps (dry run unless `--run`) do steps
+   1-3 below through the same tools, and `beast-spark <name>` serves it;
+   `check --run --bench` records decode tok/s at 1 and 4 streams with one
+   probe for every recipe. The campaign then qualifies what the recipe
+   serves. Steps 1-3 remain the by-hand path.
 1. **Inspect and fetch the weights.**
    `scripts/backends/model-inspect.sh <repo@sha> --write-profile NAME` writes
    a profile pinned to a revision. `scripts/backends/model-fetch.sh --profile
@@ -1046,15 +1059,22 @@ campaign. On GLM, its N0 is arm B (36/71, thinking pinned off).
 - [x] **Hy4-flash's H_T2 (2026-11-21/22).** 60/71, SCORE 83.4: T2 exactly
       on the same harness9 tree and pair as DS-T2, 5 behind it, single
       seed. Integrity scan clean. Board row HY4-T2
-      ([report](reports/V5_HY4_FLASH-2026-11-22.md)). H_C (GLM's arm C on
-      Hy4, the ablation) is running.
+      ([report](reports/V5_HY4_FLASH-2026-11-22.md)).
+- [x] **Hy4-flash's H_C, the ablation (2026-11-22).** GLM's arm C on Hy4,
+      same harness9 tree, server and pair: 55/71, SCORE 82.2. H_C → H_T2:
+      +5 (7 gained, all ports; 2 lost), helped, single seed; bundled
+      (assists + 8K cap + nudge together, not attributable to one switch).
+      13 wall hits against H_T2's 5, three before 12 turns. Integrity scan
+      clean. Board row HY4-C; HY4-T2 stays Hy4's best. Hy4 is served by
+      hand only; the pair is back on DeepSeek.
 - [x] **The RTX 5090 default's L0 (2026-11-22).** Qwen3.8 27B Uncensored
       MTP: 39/71 scored (40 raw), SCORE 63.3, 4 units lost to a runner
       retry loop; driven from the rig's eval-host container (not yet
       calibrated against the Mac). Board row Q38U-L0
       ([report](reports/V5_QWEN38_RTX5090-2026-11-22.md)); L1 and L2 running.
-- [ ] **Next, in order:** H_C on the board; then, last, the GLM recipe
-      engine update (1104), tested on its own.
+- [ ] **Next, in order:** the GLM recipe engine update (1104), tested on
+      its own. Optional for Hy4: T's assists without the cap and nudge
+      (separates the bundle; not scheduled).
       UP on GLM-5.3-Flash as the control when the pair serves GLM.
 - [x] **Campaign report** (2026-11-20, final 2026-11-21): [the final campaign report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md).
       Its tables come from `evals/v5_report.py`; regenerate them after each

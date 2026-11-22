@@ -13,6 +13,8 @@ openbeast.conf
 # refuses any key outside its allow list, and none of those is a credential).
 # Committing a profile + its .lock is the supply-chain pin for that model.
 !scripts/backends/models/*.env
+# beast-recipe recipes are data (parsed, never sourced; no secrets: docs/BEAST_RECIPE.md)
+!recipes/*/recipe.env
 # …and Project Maya's profiles, for the same reason: scripts/engines/maya.sh
 # refuses any key outside GGUF / SERVED_MODEL_NAME / CONTEXT /
 # RAM_HEADROOM_GB / VRAM_RESERVE_MIB.
@@ -82,3 +84,6 @@ evals/decisions/*/shadow-labelled.jsonl
 
 # Engine plane state: pin history, conf backups, staged releases (scripts/engine.sh)
 .engines/
+
+# beast-recipe: per-recipe run records (bench, capabilities snapshots); summarised in commits, not committed
+recipes/*/runs/

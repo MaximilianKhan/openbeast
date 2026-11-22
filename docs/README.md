@@ -86,6 +86,7 @@ backing it up, restoring it after an OS reinstall).
 | [OPENBEAST-SERVING.md](OPENBEAST-SERVING.md) | Short serving note for the pair: check, start, stop, switch models and packs |
 | [WEIGHTS_DOWNLOAD.md](WEIGHTS_DOWNLOAD.md) | Downloading any model from a Hugging Face URL, on any machine: `scripts/weights-download.sh URL [DEST]`, default `~/Documents/weights/ORG/REPO`, verified and resumable |
 | [EXL3_PLAYBOOK.md](EXL3_PLAYBOOK.md) | Hosting another EXL3 model on the pair, offline: which cases are drag and drop (a DeepSeek pack), which are by hand, which need engine work |
+| [BEAST_RECIPE.md](BEAST_RECIPE.md) | beast-recipe: any Hugging Face model + a Spark count to a verdict (SERVABLE-NOW / WITH-WORK / NEEDS-MORE-HARDWARE / BLOCKED), the fit, the engine, the gaps with effort, the recipe, and the apply steps (`scripts/beast-recipe.sh init / plan / engine / stage / up / check / adopt / rollback`); the engine and family matrix |
 | [SPARK_BACKUP_RESTORE.md](SPARK_BACKUP_RESTORE.md) | Backing up the Spark pair and restoring it fully offline: the golden DGX OS image, per-node identity, the overlay, the offline rank-file rebuild, the LUKS key policy |
 | [COMMANDS.md](COMMANDS.md) | Commands cheat sheet, grouped by machine and task |
 | [INSTALL.md](INSTALL.md) | Installing the rig, per-model downloads, the air-gap path, troubleshooting |

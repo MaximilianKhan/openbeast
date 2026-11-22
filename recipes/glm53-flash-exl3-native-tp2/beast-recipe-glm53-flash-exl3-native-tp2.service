@@ -1,0 +1,24 @@
+# beast-recipe-glm53-flash-exl3-native-tp2.service: rendered by beast-recipe from recipes/glm53-flash-exl3-native-tp2/recipe.env.
+# GLM-5.3-Flash EXL3 4bpw (Ablit) on native TensorFold 1.2.10, TP2, our own launcher
+# STAGED, NOT A BOOT DEFAULT: there is no [Install] section, so it cannot be
+# enabled and never starts at boot. Start it only through `beast-spark glm53-flash-exl3-native-tp2`
+# (after `beast-recipe adopt glm53-flash-exl3-native-tp2 --run`): it stops the model that serves,
+# starts this, waits for glm-5.3-flash-ablit on /v1/models, sets openbeast.conf,
+# and puts the previous model back if any of that fails.
+
+[Unit]
+Description=beast-recipe glm53-flash-exl3-native-tp2: glm-5.3-flash-ablit on tf-native-1.2.10, TP 2 (staged; started only by beast-spark glm53-flash-exl3-native-tp2)
+After=network-online.target
+Wants=network-online.target
+Conflicts=deepseek-v41-inference.service hy4-vllm-inference.service spark-hydra-inference.service
+After=deepseek-v41-inference.service hy4-vllm-inference.service spark-hydra-inference.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=%h/openbeast
+ExecStart=/usr/bin/bash %h/openbeast/scripts/backends/spark-cluster.sh start --profile recipe-glm53-flash-exl3-native-tp2 --engine tensorfold
+ExecStop=/usr/bin/bash %h/openbeast/scripts/backends/spark-cluster.sh stop --engine tensorfold
+TimeoutStartSec=infinity
+TimeoutStopSec=150
+Restart=no

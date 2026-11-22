@@ -5,8 +5,12 @@ highlights version. Not covered here: multi-engine inference
 (`INFERENCE_BACKEND`, [DGX_SPARK_PLAN.md](DGX_SPARK_PLAN.md)), beast-hydra
 ([BEAST_HYDRA.md](BEAST_HYDRA.md)), beast-instinct
 ([BEAST_INSTINCT.md](BEAST_INSTINCT.md)), `uninstall.sh`,
-`scripts/opencode-sessions.sh` ([REFERENCE.md](REFERENCE.md)) and the
-skill-import gate ([EXTERNAL_SKILLS_PLAN.md](EXTERNAL_SKILLS_PLAN.md)).
+`scripts/opencode-sessions.sh` ([REFERENCE.md](REFERENCE.md)), the
+skill-import gate ([EXTERNAL_SKILLS_PLAN.md](EXTERNAL_SKILLS_PLAN.md)), the
+engine plane ([ENGINES.md](ENGINES.md)) and beast-recipe, OpenBeast's own
+serving recipes for 1 to 8 DGX Sparks: any model plus a Spark count to a
+verdict, the plan and the apply steps (`scripts/beast-recipe.sh`, on `main`
+after v1.9; [BEAST_RECIPE.md](BEAST_RECIPE.md)).
 
 > **Note, 2026-11-19: what changed after v1.5.** This page describes v1.5 and
 > is kept as written. Since then: the tool surface is **19** MCP tools
