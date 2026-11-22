@@ -67,10 +67,12 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
   across engine upgrades (#209). The Spark serving quickstart is in the repo
   (#210). The 2026-11-18 reviews of ark, engines and the supply chain are in
   #220.
-- [x] **openbeast.ai deployed** (2026-11-17 evening; the live build is
-  website `e72790c`). It serves `/benchmarks/` with arm E at 50/71, and it runs
-  Next.js 16.4.5, which closes the advisory item. It still names GLM as the
-  pair's model; see "Open — process and the website".
+- [x] **openbeast.ai deployed** (first 2026-11-17 evening, website `e72790c`;
+  it runs Next.js 16.4.5, which closes the advisory item). Read live
+  2026-11-22: the deployed build is website #28 (`fa2877a`, Last-Modified
+  18:18 GMT), which names DeepSeek-V4.1-Flash (Mia EXL3) as the pair's
+  default. Website #29-#31 and later are merged but not deployed; see "Open —
+  process and the website".
 
 **Done since the 2026-11-17 morning refresh (#194–#204, plus operator steps):**
 
@@ -230,8 +232,16 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
   16.4.5 (website commit `208ad30`; Dependabot's #16 closed).
 - [x] **The website's arm E update.** `/benchmarks/` shows E at 50/71, 74.7%
   (checked 2026-11-19).
-- [ ] **The website names the pair's new default.** The live site (2026-11-19)
-  still says TensorFold serves "GLM-5.3-Flash Ablit" on the pair, and that
+- [ ] **Deploy website main.** Read live 2026-11-22: production serves the
+  #28 build; `/recipes/` (#29) answers 404, the HY4-C 55/71 ablation (#30),
+  the double-pass p1 fixes (#31) and later are not live, and a missing
+  `/_next/static/*` file still returns 404 with the immutable cache header.
+  Run `deploy/deploy.sh prod` on the Mac Mini, then purge Cloudflare's
+  `/_next/static/` prefix, and record the deployed commit here.
+- [x] **The website names the pair's new default.** Confirmed live
+  2026-11-22: the home page names DeepSeek-V4.1-Flash (Mia EXL3) as the
+  pair's default. History: the live site (2026-11-19)
+  said TensorFold serves "GLM-5.3-Flash Ablit" on the pair, and that
   "DeepSeek v4.1 Flash is next". Change it to DeepSeek-V4.1-Flash (Mia EXL3),
   the default and the board's #1 (T2 65/71, SCORE 94.9), with stock weights
   (not abliterated, not uncensored). GLM-5.3-Flash Ablit becomes the staged
@@ -292,7 +302,7 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
   +5 over GLM's best (7 gained, 2 lost), helped, single seed, bundled;
   integrity scan clean (report §5).
 - [ ] **Optional: unbundle T2 on Hy4.** One arm with T's assists at the
-  16K eval cap (no per-turn cap, no act nudge), on the harness9 tree, read
+  16,384-token eval turn cap (no 8,192 cap, no act nudge), on the harness9 tree, read
   against H_T2 (the cap and nudge) and H_C (the assists). Only if Max wants
   the attribution; it needs Hy4 served (`beasthy4`), so DeepSeek stops for
   about 7 h.
@@ -585,27 +595,31 @@ paper's central result either way. Prereqs: the v5 arms for GLM (L0/L1/L2,
 thinking on, runner v2), a Qwen3.8 v5 row when the rig is back, DeepSeek v4.1
 Flash, and the Claude Opus 5.5 reference row as the ceiling.
 
-Status 2026-11-21: two models measured. DeepSeek-V4.1-Flash (Mia EXL3) on
-the thinking-first campaign has T 61, T_s1 61, T2 65 (SCORE 94.9, best),
-T3 65, U 59, UP 62, UPA 59, U_8k 63, UP_8k 65 and UPA_8k 62 (series
-complete), with a GLM UP control as the first cross-model arm. Qwen3.8 has no v5 row
-yet; its RTX 5090 v5 L0 profile started 2026-11-21 18:46. The GLM status as of 2026-11-17 (evening) follows; it was GLM only at
-that point. GLM's arms L0 26
+Status 2026-11-22: four models measured, all single seed.
+DeepSeek-V4.1-Flash (Mia EXL3) on the thinking-first campaign has T 61,
+T_s1 61, T2 65 (SCORE 94.9, best), T3 65, U 59, UP 62, UPA 59, U_8k 63,
+UP_8k 65 and UPA_8k 62 (series complete), with a GLM UP control as the
+first cross-model arm. Hy4-flash (NVFP4) on the Spark pair has HY4-T2 60/71
+and the ablation HY4-C 55/71 ([report](reports/V5_HY4_FLASH-2026-11-22.md)).
+Qwen3.8 27B Uncensored MTP on the RTX 5090 has its L0 baseline, board row
+Q38U-L0 at 39/71 scored (L1/L2 running;
+[report](reports/V5_QWEN38_RTX5090-2026-11-22.md)). The cross-model reading
+is in [HARNESS_NOTES.md](HARNESS_NOTES.md). The GLM status as of 2026-11-17
+(evening) follows; it was GLM only at that point. GLM's arms L0 26
 → A 31 → B 36 → C 51/71 scored (54 raw; thinking) → E 50/71, against the
 Opus 71/71 ceiling, all single seed. D and the seed arm F were not run (Max
 paused the chain). Evidence that bears on the question: the
 language-specific residue under thinking (HARNESS_NOTES) and the Droid prior
 art (`reviews/HARNESS_PRIOR_ART-2026-11-16.md`: the "unified harness, rich
-static knowledge" pole). Next: Qwen3.8 and DeepSeek v4.1 Flash on the same
-arms.
+static knowledge" pole). Next: Qwen3.8's L1/L2 (running on the rig), then
+the same arms on further models; GLM's D and F only on Max's word.
 
 ## 🟩 DGX SPARK INFERENCE — LIVE 2026-11-13 as spark-hydra
 
 - [ ] **TensorFold recipe for Hy4-flash; beat vLLM (31.4 / 77.8 tok/s, measured).** Max, 2026-11-22.
   The plan is `recipes/hy4-flash-exl3-tensorfold-tp2` (`scripts/beast-recipe.sh plan
-  hy4-flash-exl3-tensorfold-tp2`): **SERVABLE-WITH-WORK at TP2** on native TensorFold **1.3.3** (the
-  latest release; 1.3.4, the upstream README's pin, is unreleased, so its row is BLOCKED on
-  `upstream-release`). It fits easily (43 GiB a rank at TP2, Engram streamed from local NVMe); the work
+  hy4-flash-exl3-tensorfold-tp2`): **SERVABLE-WITH-WORK at TP2** on native TensorFold **1.3.3** (1.3.4,
+  released 2026-11-22, adds no Hy4 path; its row reads the same). It fits easily (43 GiB a rank at TP2, Engram streamed from local NVMe); the work
   is the engine, 32.5-94 engineering days (ESTIMATED), mostly upstream's: stage 1.3.3 (0.5 day), build
   `tf-hy4-cuda-generate` from source at the tag (the release archive ships only `tensorfold-native`;
   0.5 day), qualify that one-GB10 generator against the vLLM build in a 0.5-day pair-down window (its

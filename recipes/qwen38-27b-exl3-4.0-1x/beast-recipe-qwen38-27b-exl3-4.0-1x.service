@@ -7,7 +7,7 @@
 # and puts the previous model back if any of that fails.
 
 [Unit]
-Description=beast-recipe qwen38-27b-exl3-4.0-1x: qwen3.8-27b-exl3 on tf-native-1.3.3, TP 1 (staged; started only by beast-spark qwen38-27b-exl3-4.0-1x)
+Description=beast-recipe qwen38-27b-exl3-4.0-1x: qwen3.8-27b-exl3 on tf-native-1.3.4, TP 1 (staged; started only by beast-spark qwen38-27b-exl3-4.0-1x)
 After=network-online.target
 Wants=network-online.target
 Conflicts=deepseek-v41-inference.service hy4-vllm-inference.service spark-hydra-inference.service

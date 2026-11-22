@@ -75,7 +75,7 @@ python3 evals/run_eval.py --list                     # list every task file (v4 
 python3 evals/run_eval.py                            # run the current suite (the v5 manifest) against :8080
 python3 evals/run_eval.py --all-tasks                # every task file instead (the v4 rule)
 python3 evals/run_eval.py --arms L0,L1,L2 --jobs 4   # all three v5 arms in ONE process (eval-<slug>-<arm>-<ts>.json)
-python3 evals/profile.py --budget-h 4 --jobs 4       # a full v5 profile inside 4 h (see the v5 section)
+python3 evals/profile.py --budget-h 4 --jobs 4       # a full v5 profile on the 4-slot Spark pair (size --budget-h: docs/MODEL_CAMPAIGN.md §2)
 python3 evals/ablation.py --profile evals/results/profile-<slug>-<ts>.json   # the arm contrasts
 python3 tests/prove_task.py --unit 163_x_f           # model-free proof that a unit is sound (authoring gate)
 python3 evals/run_eval.py --tasks 145,146            # run a subset
@@ -386,12 +386,13 @@ interpreter re-checked; a broken one aborts the run. Why:
 ```bash
 # local llama-server on :8080 (finite reasoning budget in its serve script)
 python3 evals/profile.py --budget-h 4 --jobs 4
+# -np 1 / MTP (the RTX 5090): --jobs 1 --budget-h 48 (L0 alone took 8 h)
 
 # GLM-5.3-Flash on the spark pair (benchmark_all MODELS entry: URL, slots 4,
 # thinking off declared; the device key comes from $OPENBEAST_SPARK_API_KEY)
 python3 evals/profile.py --model glm-5.3-flash --budget-h 4 --jobs 4
 
-python3 evals/profile.py --resume evals/results/profile-<slug>-<ts>.json   # after an interruption
+python3 evals/profile.py --resume evals/results/profile-<slug>-<ts>.json --fresh-deadline --budget-h 48   # after an interruption
 python3 evals/ablation.py --profile evals/results/profile-<slug>-<ts>.json # the report again
 ```
 

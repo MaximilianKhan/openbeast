@@ -489,8 +489,8 @@ headroom, or NVMe spill at an estimated ~11 tok/s. The rig's RAM is final
 (Max, 2026-11-15), so it stays on the DGX Spark pair
 ([SPARK_HYDRA.md](SPARK_HYDRA.md)). There, DeepSeek-V4.1-Flash (Mia EXL3)'s
 recommended agent setup is the v5 arm T2 (65/71, board row DS-T2,
-2026-11-19; no later arm has beaten it, through U_8k's 63/71 on
-2026-11-21): one line in openbeast.conf, `AGENT_PROFILE=deepseek-best`
+2026-11-19; no later arm has beaten it; the series is complete,
+and UP_8k ties it at 65/71 with a lower SCORE, 2026-11-21): one line in openbeast.conf, `AGENT_PROFILE=deepseek-best`
 ([SPARK_HYDRA.md E2b](SPARK_HYDRA.md#e2b-deepseek-best-configuration-v5-t2)).
 
 ## What the opencode picker shows (and what it doesn't)

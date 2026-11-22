@@ -3,7 +3,7 @@
 the agent's tools read or list what a measured unit must not see?
 
   python3 evals/audit/integrity_scan.py LABEL=RESULTS.json[,MORE.json][@TREE] ... \\
-      [--model GLM] [--json out.json] [--trailing-dot]
+      [--model GLM] [--json out.json] [--trailing-dot] [--tz ZONE] [--until [LABEL=]ISO]
   python3 evals/audit/integrity_scan.py ALL=@TREE --model GLM   # every transcript
 
 Each LABEL is one arm. RESULTS are its run_eval results files (a main run and
@@ -12,6 +12,13 @@ evals/tasks/ give the task texts and whose agents/logs/ holds the
 transcripts. Every transcript that started inside a results file's window
 is scanned, and attributed to its unit by task text (transcripts.py); the
 row's verdict is shown for the transcript the row was scored on.
+
+The window's ends: results and transcript timestamps are written without a
+zone, so scan on the host that wrote them or pass --tz (its zone). A results
+file from before 2026-11-22 records no end (`saved`), so its mtime is used;
+a checkout or copy resets that, so pass --until (the run's end, from its
+campaign log). Exit 0 clean, 1 contaminated, 2 when any result row has no
+matched transcript (a partial scan, never a clean verdict).
 
 Forbidden (G24, the eval sandbox of agents/tools.py since #195): a checkout's
 evals/ (tasks, refs, suites, results, cache, vlib, the harness), its tests/
@@ -403,7 +410,7 @@ def _model_of(path: str) -> str:
 
 
 def scan_arm(label: str, files: list[str], tree: str, logs_dir: str | None,
-             trailing_dot: bool, model: str = "") -> dict:
+             trailing_dot: bool, model: str = "", until: float | None = None) -> dict:
     """One arm. No results files: every transcript in the logs dir (whose
     model matches `model`, a case-insensitive substring) is scanned."""
     units = load_units(tree)
@@ -413,9 +420,9 @@ def scan_arm(label: str, files: list[str], tree: str, logs_dir: str | None,
     scored: dict = {}            # transcript -> unit, for the transcript a row was scored on
     seen: dict = {}
     for f in files:
-        since, until = T.results_window(f)
+        since, end = T.results_window(f, until)
         _, rr = campaign.load_rows(f)
-        idx = T.index_logs(logs, since, until)
+        idx = T.index_logs(logs, since, end)
         for u, p in T.match_transcripts({u: units.get(u, {}).get("task") for u in rr}, idx).items():
             scored[p] = u
         rows.update(rr)
@@ -425,7 +432,11 @@ def scan_arm(label: str, files: list[str], tree: str, logs_dir: str | None,
         seen = {e["path"]: e for e in T.index_logs(logs)}
     if model:
         seen = {p: e for p, e in seen.items() if model.lower() in _model_of(p).lower()}
-    out = {"label": label, "tree": tree, "files": files, "transcripts": 0, "units": {}}
+    # A result row with no matched transcript means the window missed it (a
+    # naive-timestamp zone mismatch, a reset mtime): never a clean verdict.
+    unattributed = sorted(set(rows) - set(scored.values())) if files else []
+    out = {"label": label, "tree": tree, "files": files, "transcripts": 0, "units": {},
+           "rows": len(rows), "unattributed": unattributed}
     for p, e in sorted(seen.items()):
         unit = scored.get(p)
         if unit is None:
@@ -458,6 +469,9 @@ def report(arms: list[dict], trailing_dot: bool) -> str:
         cont = [r for r in recs if r["contaminated"]]
         lines.append(f"== {a['label']}: {a['transcripts']} transcripts, {len(a['units'])} units, "
                      f"{len(cont)} contaminated transcript(s)")
+        if a.get("unattributed"):
+            lines.append(f"  UNATTRIBUTED: {len(a['unattributed'])} of {a['rows']} result rows have "
+                         f"no matched transcript (check --tz / --until / the file's mtime)")
         for r in sorted(recs, key=lambda r: r["unit"]):
             if not r["hits"]:
                 continue
@@ -496,16 +510,28 @@ def main(argv=None) -> int:
     ap.add_argument("--json", help="write the full per-transcript report here")
     ap.add_argument("--trailing-dot", action="store_true",
                     help="also count the turns lost to the trailing-dot path bug")
-    a = ap.parse_args(argv)
+    ap.add_argument("--tz", help="zone for timestamps written without one (the writing host's, "
+                                 "e.g. UTC or America/Los_Angeles); default: this host's")
+    ap.add_argument("--until", action="append", default=[], metavar="[LABEL=]ISO",
+                    help="the run's end (from its campaign log), overriding the results file's "
+                         "saved time or mtime; LABEL= limits it to one arm; repeatable")
+    a = ap.parse_intermixed_args(argv)
+    T.set_default_tz(a.tz)
+    untils: dict = {}
+    for u in a.until:
+        lab, sep, iso = u.rpartition("=")
+        untils[lab if sep else None] = T.parse_time(iso)
     arms = []
     for spec in a.runs:
         label, files, tree = _parse_run(spec)
         arms.append(scan_arm(label, files, os.path.abspath(tree), a.logs_dir, a.trailing_dot,
-                             a.model))
+                             a.model, untils.get(label, untils.get(None))))
     print(report(arms, a.trailing_dot))
     if a.json:
         with open(a.json, "w") as f:
             json.dump(arms, f, indent=1)
+    if any(arm.get("unattributed") for arm in arms):
+        return 2             # a partial scan is never a clean (0) verdict
     return 1 if any(r["contaminated"] for arm in arms for rs in arm["units"].values() for r in rs) else 0
 
 

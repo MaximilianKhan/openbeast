@@ -173,7 +173,19 @@ case "$cmd" in
     else
       nohup "$REPO_DIR/extensions/$name/run.sh" >>"$log" 2>&1 </dev/null &
     fi
-    ob_pid_record "$pidf" "$!"
+    new_pid="$!"
+    ob_pid_record "$pidf" "$new_pid"
+    # setsid changes only the session, not the cgroup: a restart over ssh
+    # would leave the new process in the closing ssh session's scope,
+    # outside the memory-capped stack scope (start.sh lowers its MemoryMax at
+    # runtime) and out of reach of a unit stop. Put it back when the scope runs.
+    if systemctl --user is-active --quiet openbeast-stack.service 2>/dev/null; then
+      if ! busctl --user call org.freedesktop.systemd1 /org/freedesktop/systemd1 \
+          org.freedesktop.systemd1.Manager AttachProcessesToUnit ssau \
+          openbeast-stack.service / 1 "$new_pid" >/dev/null 2>&1; then
+        echo "Note: could not attach '$name' to openbeast-stack (it runs outside the memory cap)." >&2
+      fi
+    fi
     # Up = the new process is ours AND (when the manifest names one) its
     # health route answers, within ~10 s. HEALTH_PORT_VAR names the conf.sh
     # variable holding the port (DASHBOARD_PORT), HEALTH_PATH the route.

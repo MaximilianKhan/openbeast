@@ -241,8 +241,10 @@ new process answers `/api/slot`. Detail: [`extensions/README.md`](../extensions/
 ### The `/api/slot` discovery contract (version 2)
 
 `GET https://<rig>:8444/api/slot` — read-only JSON. `--publish-slot` mounts
-*only* this path (`tailscale serve --set-path`), so the dashboard's HTML page
-and `/api/status` stay rig-local. If that path-scoped mount fails, the script
+*only* this path (`tailscale serve --set-path`), so `:8444` exposes nothing
+else. The full dashboard (page, `/api/status`) is reachable tailnet-wide only
+where `:8447` is mounted by hand (spark-1 and the rig today; see the port
+table). If that path-scoped mount fails, the script
 exits with an error and mounts nothing wider. The whole dashboard is mounted
 on `:8444` in only one case: a tailscale build whose `serve --help` has no
 `--set-path` at all. The script prints a NOTE when it does that. Re-running

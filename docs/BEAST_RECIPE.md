@@ -72,11 +72,15 @@ with where else it came from. The LFS sha256 of every weight file
 `qwen38-27b-exl3-4.0-1x`, `minimax-m31-flash-exl3-3.06-tp2`); GLM (the local
 Ablit copy), DeepSeek 2.9 (local) and DeepSeek 4.0 (to quantize) have none.
 
-**TensorFold versions (2026-11-22).** The upstream README's install script pins
-1.3.4, but there is no v1.3.4 release: `releases/tags/v1.3.4` is a 404 and the
-latest release is **v1.3.3** (2026-11-21). The matrix records 1.3.4 as
-`unreleased` (its plans are BLOCKED on gap `upstream-release`, and `engine`
-never prints a stage step for it); the recipes that wanted it pin 1.3.3.
+**TensorFold versions (2026-11-22).** The latest release is **v1.3.4**
+(published 2026-11-22 20:53Z; v1.3.3 was 2026-11-21). Before that the README's
+install script already pinned 1.3.4 while `releases/tags/v1.3.4` was a 404,
+and the matrix recorded it as `unreleased` (a status that still exists: its
+plans are BLOCKED on gap `upstream-release`, and `engine` never prints a stage
+step for it). It is now `available`, like 1.3.3: neither is on the Sparks.
+The Qwen3.8 recipe is pinned to 1.3.4 (Max's choice); the Hy4 TensorFold
+recipe stays on 1.3.3, because the 1.3.4 release notes add no Hy4/hy_v4
+server path.
 
 ---
 
@@ -325,7 +329,9 @@ is not installed, the offline stage (`scripts/engine.sh stage tensorfold
 --from DIR` on each Spark; `engine.sh rollback tensorfold` returns to the old
 pin) plus a `tensorfold capabilities --json` snapshot to update the matrix
 from (after the install, gated like it). Worker commands run from
-`~/openbeast` (`cd ~/openbeast && ...`: ssh starts in `$HOME`). An `unreleased`
+`~/openbeast` (`cd ~/openbeast && ...`: ssh starts in `$HOME`), so `stage --run`
+and `adopt --run` first compare each worker's `git rev-parse HEAD` with the
+head's and stop on a mismatch (pull the worker; `--force` overrides). An `unreleased`
 engine prints no stage step at all. Image engines: `docker image inspect
 IMAGE` on every Spark; a missing image is pulled or built and carried with
 `spark-cluster.sh sync-image` (or `save-image` for an offline carry). `--run`
@@ -456,8 +462,8 @@ source and the date it was read.
 | Engine | Kind | Status (2026-11-22) | Launcher | Families (format: ranks) |
 |---|---|---|---|---|
 | `tf-native-1.2.10` | native TensorFold | installed on both Sparks | d2-tensorfold | glm5_next (EXL3 TR3 4-bit only, NVFP4, mixed: 2-8), minimax_m3_vl (EXL3: 2), qwen3_5 (EXL3: 1; MLX: 1-2), qwen4_exp (MLX/ModelOpt: 1-2), qwen3_5_moe, nemotron_h (1), plus the 13 other families `capabilities --json` recorded (inherited from `spark-families.json` native-1.2.10). Refuses deepseek_v41, hy_v4_flash |
-| `tf-native-1.3.3` | native TensorFold | available upstream (the latest signed release, 2026-11-21; not on the Sparks) | d2-tensorfold | glm5_next (EXL3 mcg at any whole 1-8 bits: 2-8), minimax_m3_vl (2), qwen3_5 (EXL3 mul1 + mcg: 1), **hy_v4_flash (EXL3: 1, generator only, built from source; 2 with work)**, deepseek_v41 (source build only); 1.2.10's other families carried as CLAIMED |
-| `tf-native-1.3.4` | native TensorFold | **unreleased** (the README pin; no tag or archive) | d2-tensorfold | as 1.3.3 plus dense MTP for Qwen3.5 targets (CLAIMED); every plan on it is BLOCKED (`upstream-release`) |
+| `tf-native-1.3.3` | native TensorFold | available upstream (signed release, 2026-11-21; not on the Sparks) | d2-tensorfold | glm5_next (EXL3 mcg at any whole 1-8 bits: 2-8), minimax_m3_vl (2), qwen3_5 (EXL3 mul1 + mcg: 1), **hy_v4_flash (EXL3: 1, generator only, built from source; 2 with work)**, deepseek_v41 (source build only); 1.2.10's other families carried as CLAIMED |
+| `tf-native-1.3.4` | native TensorFold | available upstream (the latest signed release, 2026-11-22; not on the Sparks) | d2-tensorfold | as 1.3.3 plus dense MTP for Qwen3.5 targets on CUDA (#3582, CLAIMED); no Hy4 server path |
 | `tf-fork-dsv41` | TensorFold Zig fork + Mia's 54 patches | image on both Sparks | mia-unit:deepseek-v41-inference | deepseek_v41 (EXL3 mul1: 2; 4 with the tp4 branch) |
 | `tf-mia-glm-0.6.0` | TensorFold 0.6.0 Python + Mia's patches | image on both Sparks | mia-unit:spark-hydra-inference | glm5_next (EXL3 TR3: 2, 3) |
 | `vllm-hy4` | vLLM hy4-flash + atakann's files | image on both Sparks | hy4-vllm | hy_v4_flash (NVFP4: 2, expert parallel) |
@@ -559,8 +565,8 @@ Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <=
 
 Engines  (who reads it, at which sizes; best first)
   * tf-native-1.3.3    available     SERVABLE-WITH-WORK at TP2; work: engine-stage, family-tp, server-wrap, hy4-generator-build, hy4-generator-qual, hy4-exl3-reader, hy4-dfly, hy4-parsers
+    tf-native-1.3.4    available     SERVABLE-WITH-WORK at TP2; work: engine-stage, family-tp, server-wrap, hy4-generator-build, hy4-generator-qual, hy4-exl3-reader, hy4-dfly, hy4-parsers
     exllamav3          not-installed SERVABLE-WITH-WORK at TP1; work: image-build, reference-only
-    tf-native-1.3.4    unreleased    BLOCKED at TP2; work: upstream-release, family-tp, server-wrap, hy4-generator-build, hy4-generator-qual, hy4-exl3-reader, hy4-dfly, hy4-parsers: tf-native-1.3.4 is not released upstream (gap upstream-release): pin a released version; once it is out: SERVABLE-WITH-WORK at TP2
     tf-native-1.2.10   installed     no: refuses hy_v4_flash: no registered Zig family serves model_type hy_v4_flash (tensorfold info on the LibertAIDAI pack, spark-1, 1.2.10, 2026-11-19, VERIFIED)
     tf-fork-dsv41      installed     no: no family for model_type hy_v4_flash
     tf-mia-glm-0.6.0   installed     no: no family for model_type hy_v4_flash
@@ -650,7 +656,7 @@ End to end  (each command prints what it would do; add --run to act)
   name is VERIFY at the tag). The work, in order, with what each buys:
   1. `engine-stage`: stage 1.3.3 on both Sparks (0.5 day; `engine.sh rollback`
      undoes it). Nothing serves native TensorFold today, so it disturbs nothing.
-     (1.3.4 is the README pin but has no release: nothing to stage.)
+     (The 1.3.4 release adds no Hy4 path, so 1.3.3 stays the pin.)
   2. `hy4-generator-build` and `hy4-generator-qual`: the release archive ships
      only `bin/tensorfold-native`, so first build the generator from source at
      the tag (`zig build hy4-cuda-generate`; Zig + CUDA 13 on a Spark, or an
@@ -722,7 +728,7 @@ Engines  (who reads it, at which sizes; best first)
   * tf-native-1.2.10   installed     SERVABLE-NOW at TP2
     tf-mia-glm-0.6.0   installed     SERVABLE-NOW at TP2
     tf-native-1.3.3    available     SERVABLE-WITH-WORK at TP2; work: engine-stage
-    tf-native-1.3.4    unreleased    BLOCKED at TP2; work: upstream-release: tf-native-1.3.4 is not released upstream (gap upstream-release): pin a released version; once it is out: SERVABLE-WITH-WORK at TP2
+    tf-native-1.3.4    available     SERVABLE-WITH-WORK at TP2; work: engine-stage
     tf-fork-dsv41      installed     no: no family for model_type glm5_next
     vllm-hy4           installed     no: no family for model_type glm5_next
     vllm-ngc           not-installed no: exl3 weights: vLLM cannot load them
@@ -811,11 +817,11 @@ Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <=
 Engines  (who reads it, at which sizes; best first)
   * tf-fork-dsv41      installed     NEEDS-MORE-HARDWARE at TP4; work: quantize, image-build, topology
     tf-native-1.3.3    available     NEEDS-MORE-HARDWARE at TP4; work: engine-stage, quantize, image-build, topology
+    tf-native-1.3.4    available     NEEDS-MORE-HARDWARE at TP4; work: engine-stage, quantize, image-build, topology
     tf-native-1.2.10   installed     no: refuses deepseek_v41: no registered Zig family serves model_type deepseek_v41 (tensorfold info, spark-1, 1.2.10, 2026-11-19, VERIFIED)
     tf-mia-glm-0.6.0   installed     no: no family for model_type deepseek_v41
     vllm-hy4           installed     no: no family for model_type deepseek_v41
     vllm-ngc           not-installed no: exl3 weights: vLLM cannot load them
-    tf-native-1.3.4    unreleased    BLOCKED at TP4; work: upstream-release, quantize, image-build, topology: tf-native-1.3.4 is not released upstream (gap upstream-release): pin a released version; once it is out: NEEDS-MORE-HARDWARE at TP4
     exllamav3          not-installed BLOCKED: allowed at 1, but it does not fit at any of them
   ranks: this image is the TP2 build; the fork's rank cache and plan take WORLD 1, 2 or 4 (its plan splits heads evenly; upstream TensorFold >= 1.2.6 plans 3 ranks as 24/24/16 heads by o_groups, but serving still refuses 3 ranks, #2270) (DeepSeek recipe docs/zig-engine.md, VERIFIED)
 
@@ -841,14 +847,14 @@ is quantizing the pack (1-3 days on one Spark), building the tp4 image, and
 cabling the 4-ring. The LibertAI 3.5-bpw pack already exists for four
 (119 GiB a rank at TP2, 60 at TP4).
 
-### 5. Qwen3.8-27B EXL3 4.0 bpw on ONE Spark, TensorFold 1.3.3
+### 5. Qwen3.8-27B EXL3 4.0 bpw on ONE Spark, TensorFold 1.3.4
 
 ```text
 VERDICT   SERVABLE-WITH-WORK at TP1
           it fits on this many Sparks, but an engine must be staged, built or extended first (the gap list says what, and how long)
           note: a better path exists: tf-native-1.2.10 is SERVABLE-NOW at TP1
           caveat: never installed or run on our Sparks; D2 has never served on one Spark
-          caveat: one tensorfold per Spark: the profile pins TENSORFOLD_REQUIRES=1.3.3, and spark-node.sh refuses another binary. A recipe on another release needs scripts/engine.sh install/rollback tensorfold on every Spark (and TENSORFOLD_VERSION=1.3.3 in spark.env) before its switch
+          caveat: one tensorfold per Spark: the profile pins TENSORFOLD_REQUIRES=1.3.4, and spark-node.sh refuses another binary. A recipe on another release needs scripts/engine.sh install/rollback tensorfold on every Spark (and TENSORFOLD_VERSION=1.3.4 in spark.env) before its switch
 
 Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <= 100 tight; budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom; what of KV and reserve reaches the engine: the KV line below)
   Sparks  W/rank  rule          W + KV + reserve + OS = used    headroom  engine allows
@@ -865,9 +871,9 @@ Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <=
 
 Engines  (who reads it, at which sizes; best first)
     tf-native-1.2.10   installed     SERVABLE-NOW at TP1
-  * tf-native-1.3.3    available     SERVABLE-WITH-WORK at TP1; work: engine-stage
+    tf-native-1.3.3    available     SERVABLE-WITH-WORK at TP1; work: engine-stage
+  * tf-native-1.3.4    available     SERVABLE-WITH-WORK at TP1; work: engine-stage
     exllamav3          not-installed SERVABLE-WITH-WORK at TP1; work: image-build, launcher
-    tf-native-1.3.4    unreleased    BLOCKED at TP1; work: upstream-release: tf-native-1.3.4 is not released upstream (gap upstream-release): pin a released version; once it is out: SERVABLE-WITH-WORK at TP1
     tf-fork-dsv41      installed     no: no family for model_type qwen3_5
     tf-mia-glm-0.6.0   installed     no: no family for model_type qwen3_5
     vllm-hy4           installed     no: no family for model_type qwen3_5
@@ -875,18 +881,18 @@ Engines  (who reads it, at which sizes; best first)
   ranks: EXL3 on ONE GPU
 ```
 
-Max chose 1.3.4, which has no release yet, so the recipe pins the latest
-released 1.3.3, and the plan says the honest thing: the installed 1.2.10
-already reads this `mul1` pack at TP1, so it is servable now on 1.2.10 (the mcg
-admission is 1.3.3's; 1.3.4's dense MTP does not matter with a DFlash2
-drafter). On the pair, one Spark means the pair's model is down (or a third
+Max chose 1.3.4; the recipe pinned 1.3.3 while 1.3.4 had no release and
+is pinned to 1.3.4 since its release (2026-11-22). The plan says the honest
+thing: the installed 1.2.10 already reads this `mul1` pack at TP1, so it is
+servable now on 1.2.10 (the mcg admission is 1.3.3's; 1.3.4's dense MTP does
+not matter with a DFlash2 drafter). On the pair, one Spark means the pair's model is down (or a third
 Spark); the recipe's D2 commands and unit use `recipes/<name>/cluster.env`
 (`local` only), never the pair's two-node file. The drafter is
 `z-lab/Qwen3.8-27B-DFlash2@50307d4c` (Apache-2.0). The revision `387b8445` is
 the Hub branch `SCP_4.00bpw` (not `4.00bpw` = `113cf7ab`); this EXL3 variant
 (bits 4.0, head 5, mtp 4, vision 6, mul1) has never run on native TensorFold:
 upstream's supported-models.md lists the 27B only as MLX 4-bit, and the
-admission comes from `capabilities --json` alone (VERIFY). Because 1.3.3 is
+admission comes from `capabilities --json` alone (VERIFY). Because 1.3.4 is
 not installed, `adopt --run` refuses it (SERVABLE-WITH-WORK) until the engine
 is staged, or the recipe is re-pinned to 1.2.10.
 

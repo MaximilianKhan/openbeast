@@ -3,8 +3,9 @@
 > **Final (2026-11-21): the series is complete.** All ten DeepSeek arms,
 > T, T_s1, T2, T3, U, UP, UPA, U_8k, UP_8k and UPA_8k, are finished,
 > scanned for integrity and on the board. T2 stays #1 and the default.
-> What follows the series (Hy4-flash's H_T2, the GLM control for UP) is
-> outside this report (§9). The campaign tool's summary is
+> What followed the series (Hy4-flash's H_T2, reported in
+> [V5_HY4_FLASH-2026-11-22.md](V5_HY4_FLASH-2026-11-22.md); the GLM control
+> for UP) is outside this report (§9). The campaign tool's summary is
 > `evals/campaign.py report` ([MODEL_CAMPAIGN.md §6](../MODEL_CAMPAIGN.md#6-comparison)).
 
 **Regenerate the tables.** Every number in the tables below comes from
@@ -93,8 +94,9 @@ An arm not yet on the board can be read from its result file with
 - **Integrity: every DeepSeek run was scanned, 0 contaminated after
   review.** The sandbox was hardened in review 1118, and every leak found
   since has been fixed and its material sealed under `evals/audit/` (§3.5).
-- **Hy4-flash** is staged as NVFP4 on vLLM across both Sparks, with arm
-  H_T2 (T2 exactly) ready. The EXL3 pack we downloaded cannot span two
+- **Hy4-flash** was served as NVFP4 on vLLM across both Sparks, and arm
+  H_T2 (T2 exactly) ran after this series (60/71, board row HY4-T2;
+  [V5_HY4_FLASH-2026-11-22.md](V5_HY4_FLASH-2026-11-22.md)). The EXL3 pack we downloaded cannot span two
   Sparks and is kept on purpose. **Native TensorFold 1.2.10** is installed
   on both Sparks and has no effect on DeepSeek, which serves from its own
   recipe engine (§7).
@@ -180,7 +182,7 @@ Each arm changes one thing against the arm it is built from.
 | U_8k | U | T2's 8,192 cap | harness10 | done, 63/71 |
 | UP_8k | UP | the 8,192 cap | harness10 | done, 65/71 |
 | UPA_8k | UPA | the 8,192 cap | harness10 | done, 62/71 |
-| H_T2 | T2 | T2 exactly, against Hy4-flash (NVFP4) | harness9 | staged (§7) |
+| H_T2 | T2 | T2 exactly, against Hy4-flash (NVFP4) | harness9 | done after this series, 60/71 (§7; [Hy4 report](V5_HY4_FLASH-2026-11-22.md)) |
 
 The arms T_noturns, T_nopacks, T_noassist, T_noenv, N and N0 (the
 ablations and the no-thinking twins) have not run for DeepSeek.
@@ -247,10 +249,10 @@ refused attempt is recorded but does not contaminate.
 | T2 | 2026-11-19 | 0 contaminated after review: one flagged network attempt was blocked by the sandbox (review notes sealed in `evals/audit/reviews/`) |
 | T_s1 | 2026-11-19 | 0 contaminated |
 | T3 | 2026-11-20 | 0 contaminated |
-| U | 2026-11-21 | 0 contaminated, no flagged tool call (75 transcripts, 71 units) |
-| UP (main + resume file) | 2026-11-21 | 0 contaminated, no flagged tool call (79 transcripts, 71 units) |
-| UPA | 2026-11-21 | 0 contaminated, no flagged tool call (76 transcripts, 71 units) |
-| U_8k | 2026-11-21 | 0 contaminated, no flagged tool call (75 transcripts, 71 units) |
+| U | 2026-11-21 | 0 contaminated, no flagged tool call (71 transcripts, 71 units) |
+| UP (main + resume file) | 2026-11-21 | 0 contaminated, no flagged tool call (74 transcripts, 71 units) |
+| UPA | 2026-11-21 | 0 contaminated, no flagged tool call (72 transcripts, 71 units) |
+| U_8k | 2026-11-21 | 0 contaminated, no flagged tool call (71 transcripts, 71 units) |
 | UP_8k | 2026-11-21 | 0 contaminated |
 | UPA_8k | 2026-11-21 | 0 contaminated |
 
@@ -610,13 +612,14 @@ below it.
   delete it ([review](../reviews/HY4_FLASH_ENGINES-2026-11-19.md),
   [EXL3_PLAYBOOK.md](../EXL3_PLAYBOOK.md)).
 - **NVFP4 on vLLM TP2** across both Sparks (`atakans/Hy4-flash-NVFP4` @
-  30f201ac, about 82 GiB per Spark) is **staged in code**:
-  `spark-hy4-stage.sh`, `beast-spark hy4`, and a unit that is never a boot
-  default ([SPARK_HYDRA.md](../SPARK_HYDRA.md#hy4-flash-nvfp4-vllm-tp2-measured)).
-- **Arm H_T2** is T2 exactly against the Hy4 server, so its row differs
-  from DS-T2 in the model only. It runs after the U series. Its ETA (8-12 h)
-  is unverified, because Hy4 decodes more slowly than DeepSeek (CLAIMED
-  figures in the review).
+  30f201ac, about 82 GiB per Spark) was staged and served by hand
+  (`spark-hy4-stage.sh`, `beast-spark hy4`, a unit that is never a boot
+  default) for H_T2 and H_C ([SPARK_HYDRA.md](../SPARK_HYDRA.md#hy4-flash-nvfp4-vllm-tp2-measured)).
+- **Arm H_T2** was T2 exactly against the Hy4 server, so its row differs
+  from DS-T2 in the model, the weights and the engine (Hy4-flash NVFP4 on
+  vLLM, not DeepSeek EXL3 on TensorFold). It ran after the U series and took
+  6.1 h, below the 8-12 h estimated from the review's CLAIMED figures
+  ([V5_HY4_FLASH-2026-11-22.md](V5_HY4_FLASH-2026-11-22.md)).
 - **Thinking.** Hy4 ignores `enable_thinking` and defaults to
   `reasoning_effort` high, so H_T2 thinks. Thinking-off arms (N, N0, and
   the U arms' forced-act turn) are not Hy4 arms until the runner can send
@@ -676,9 +679,9 @@ below it.
 1. **Done: the 8K series.** UP_8k (65/71) and UPA_8k (62/71) are scanned,
    on the board and in these tables. Neither beat T2 by 2 or more units,
    so `composite_by_model` and the `deepseek-best` profile stay on T2.
-2. **Hy4-flash:** stage the NVFP4 weights and image (memory-capped), bring it
-   up hands-on (conformance, bench), run H_T2, put it on the board, then
-   `beastds` back to DeepSeek.
+2. **Done: Hy4-flash.** Staged, brought up hands-on, H_T2 run (60/71) and
+   its ablation H_C (55/71), both on the board, then `beastds` back to
+   DeepSeek: [V5_HY4_FLASH-2026-11-22.md](V5_HY4_FLASH-2026-11-22.md).
 3. **The GLM recipe engine update (1104), last:** tested on its own (§7).
    Nothing on the pair changes while an arm runs.
 4. **The GLM control for UP,** to tell a DeepSeek-specific effect from a

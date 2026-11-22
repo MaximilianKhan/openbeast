@@ -48,8 +48,9 @@ unless `--run`). The engine/family matrix it reads is
 `scripts/backends/data/recipe-engines.json`, with sources. Start a new model
 there; the sections below remain the reference for the by-hand paths.
 Since 1.2.7 was measured, native 1.2.10 is installed on both Sparks and the
-latest upstream release is **1.3.3** (2026-11-21); 1.3.4, the upstream
-README's install pin, has no release yet, so recipes pin 1.3.3.
+latest upstream release is **1.3.4** (2026-11-22; 1.3.3 was 2026-11-21).
+The Qwen3.8 recipe pins 1.3.4; the Hy4 TensorFold recipe stays on 1.3.3 (1.3.4
+adds no Hy4 path).
 
 What makes this hard is memory and engines, not copying. The pair serves one
 model at a time, on both GPUs. A rank can hold about **100 GiB of weights**,

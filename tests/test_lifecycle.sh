@@ -1998,6 +1998,21 @@ else
   fail "ext.sh restart quiet (rc=$_RC) -> $(tr '\n' ' ' <<< "$_O")"
 fi
 [[ "$_P3" =~ ^[0-9]+$ ]] && kill "$_P3" 2>/dev/null || true
+# The memory-capped stack scope is active: the new process is attached to it
+# (a restart over ssh would otherwise leave it in the ssh session's scope).
+printf '#!/bin/bash\n[[ "$*" == *"is-active"*"openbeast-stack.service"* ]] && exit 0\nexit 1\n' > "$_R/bin/systemctl"
+printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s/busctl.log"\nexit 0\n' "$_R" > "$_R/bin/busctl"
+chmod +x "$_R/bin/systemctl" "$_R/bin/busctl"
+_O="$(_rx restart fake)"
+_P4="$(cat "$_R/.run/ext-fake.pid" 2>/dev/null || true)"; [[ "$_P4" =~ ^[0-9]+$ ]] && _PIDS="$_PIDS $_P4"
+if [[ "$_P4" =~ ^[0-9]+$ ]] && grep -q "AttachProcessesToUnit ssau openbeast-stack.service / 1 $_P4\$" "$_R/busctl.log" 2>/dev/null; then
+  pass "restart attaches the new process to the active openbeast-stack scope"
+else
+  fail "ext.sh restart fake (stack scope) -> busctl: $(tr '\n' ' ' < "$_R/busctl.log" 2>/dev/null) out: $(tr '\n' ' ' <<< "$_O")"
+fi
+[[ "$_P4" =~ ^[0-9]+$ ]] && kill "$_P4" 2>/dev/null || true
+for _ in $(seq 1 30); do [[ -e "$_R/healthy" ]] || break; sleep 0.1; done
+printf '#!/bin/bash\nexit 1\n' > "$_R/bin/systemctl"; rm -f "$_R/bin/busctl"
 
 # ---------------------------------------------------------------------------
 echo ""

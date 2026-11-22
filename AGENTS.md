@@ -145,7 +145,8 @@ Each is one arg away, e.g. `./start.sh serve-qwen-27b-q5.sh`. Board:
 - **v5 is current** (`evals/SUITE_VERSION`; the harness version is the last
   line of `evals/HARNESS_VERSION`): 71 scored
   units over 34 base tasks, in the manifest `evals/suites/v5.json`. A v5
-  profile of one model: `python3 evals/profile.py --model <slug> --budget-h 4 --jobs 4`.
+  profile of one model: `python3 evals/profile.py --model <slug> --budget-h 4 --jobs 4`
+  (size `--budget-h` to the host: docs/MODEL_CAMPAIGN.md §2).
   Model campaigns: `evals/campaign.py` (`docs/MODEL_CAMPAIGN.md`)
 - The task library (v4's 137 tasks plus v5's new ones) is 151 base tasks /
   320 effective units; v4 is frozen and stays runnable for history

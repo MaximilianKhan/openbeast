@@ -271,7 +271,15 @@ python3 evals/profile.py --model <slug> --budget-h 4 --jobs 4
 python3 evals/profile.py --model-name "<Model>" --base-url https://spark-1.tail4109f9.ts.net:8443/v1 \
     --api-key-env OPENBEAST_SPARK_API_KEY --slots 4 --jobs 4 --reasoning-budget 0 --budget-h 4
 python3 evals/ablation.py --profile evals/results/profile-<slug>-<ts>.json      # the contrasts again
+# after an interruption (a new deadline, so no unit is budget-skipped):
+python3 evals/profile.py --resume evals/results/profile-<slug>-<ts>.json --fresh-deadline --budget-h 48
 ```
+
+**Size `--budget-h` to the host.** It must exceed the L0 unit-hours divided
+by the effective jobs (after the /props or gate clamp), plus the L1 and L2
+cost; a budget that is too small budget-skips units. `--budget-h 4 --jobs 4`
+fits the 4-slot Spark pair. On the single-slot RTX 5090 (MTP, `-np 1`), L0
+alone took 8 h, so use `--jobs 1 --budget-h 48`.
 
 The profile runs preflight, then L0 (the whole suite, bare: the board row;
 it measures k = wall seconds per reference second). Then it plans L1 (packs)
@@ -464,15 +472,18 @@ below). `--dry-run` prints them for your settings.
 | UPA | UP | + the frozen algorithmic procedure pack (optional, harness10) | `OPENBEAST_ALGO_PACK=1` (`agents/packs/algo-v1.md`, sha256 `6c532400...`, packs on) | 2.3 | ~6-7 h | does a ~400-token procedure pack add to the lines? (UPA vs UP) **DeepSeek: no, 59/71, −3 against UP (0 in, 3 out) and the most unit-hours of any arm** |
 | UP_8k | UP | UP at T2's 8192 cap (optional, harness10) | `--reasoning-budget 8192`; `OPENBEAST_AGENT_MAX_TOKENS=8192` | 2.3 | ~6.2 h | the planning lines at the better cap (UP_8k vs U_8k), and the whole stack against T2 **DeepSeek: done, 65/71 (SCORE 91.4): +2 over U_8k, a tie with T2 on passes (board row DS-UP8k)** |
 | UPA_8k | UPA | UPA at T2's 8192 cap (optional, harness10) | `--reasoning-budget 8192`; `OPENBEAST_AGENT_MAX_TOKENS=8192` | 2.3 | ~6.2 h | the pack at the better cap (UPA_8k vs UP_8k) **DeepSeek: done, 62/71 (SCORE 88.0): −3 against UP_8k (board row DS-UPA8k)** |
+| H_T2 | T2 | T2 exactly, against the Hy4 server (optional, harness9) | T2's flags with `"model": "Hy4-flash (NVFP4)"`, `"served_model": "Hy4-flash-NVFP4"`; thinking at Hy4's default reasoning_effort high; only with `--only H_T2` (or a `--model-name` starting with Hy4-flash: `recommend.composite_by_model`); needs a harness9 tree | 2.3 | ~6.1 h | T2 on a second model (read against DS-T2: a different model, weights and engine) **Hy4-flash (NVFP4): 60/71 (board row HY4-T2)** |
+| H_C | — | GLM's best (v5-harness arm C) on Hy4 (optional, harness9) | thinking on, wall-scaled turns, wall x2, every T assist off, the 16,384-token eval turn cap (no 8K cap or act nudge); only with `--only H_C`; the same harness9 tree as H_T2 | 2.3 | ~7.4 h | H_T2 vs H_C on one model and one harness isolates the T2 additions (assists + 8K cap + nudge) **Hy4-flash (NVFP4): 55/71 (board row HY4-C), 5 below H_T2** |
 | T_j2 | T | 2 concurrent units (optional) | `"jobs": 2, "slots": 2` in the arm (wins over the CLI); only with `--only T_j2` or `--include T_j2` | 2.3 | ~7.7 h (~9 h for DeepSeek) | the contention model: same tokens per unit, at 2 streams (see the note below) |
 
 **DeepSeek's composite is T2 (2026-11-19).** DeepSeek-V4.1-Flash (Mia EXL3)
 scored 65/71 under T2 against 61/71 under T: +4 (168_kv_e, 173, 183, 190), 0
 regressions, the board's best DeepSeek row (DS-T2, `evals/boards/v5/board.json`).
 T2 is therefore DeepSeek's best-first composite, recorded in the campaign file
-as `recommend.composite_by_model: {"DeepSeek-V4.1-Flash": "T2"}` (matched on
+as `recommend.composite_by_model: {"DeepSeek-V4.1-Flash": "T2", "Hy4-flash": "H_T2"}`
+(Hy4-flash (NVFP4) runs H_T2, T2 against the Hy4 server, first). Both are matched on
 the slug, so `DeepSeek-V4.1-Flash (Mia EXL3)` and `deepseek-v4.1-flash` match
-too). For such a model `campaign.py run` puts T2 at the head of the chain
+too. For such a model `campaign.py run` puts T2 at the head of the chain
 (`--order` still decides when given), and `report` starts the recommended daily
 config from T2: each ablation and the no-thinking twin are still compared with
 T, the arm they remove from, a dropped component is removed from T2, and the

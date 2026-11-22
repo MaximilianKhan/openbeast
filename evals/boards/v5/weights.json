@@ -108,7 +108,7 @@
       "model": "Qwen3.8 27B Uncensored MTP (the shipped default)",
       "label": "GGUF Q5_K_M · JonathanColetti Uncensored (MTP head kept) · abliterated",
       "repo": "JonathanColetti/Qwen3.8-27B-Uncensored-GGUF",
-      "revision": "unverified (the file is pinned by sha256, not by repo revision)",
+      "revision": "45d0fc0ad6cfcf9eeee6008ddaea925536409b18",
       "revision_kind": "file-sha256",
       "file": "Qwen3.8-27B-Uncensored-Q5_K_M.gguf",
       "file_sha256": "24780644a95f759a9aeeb228c3d852028f2fd40ce0b74d68134246ec4a959547",
