@@ -96,9 +96,10 @@ The `dashboard` slot API established the sanctioned pattern. Follow it:
 
   | Route | What |
   |---|---|
-  | `/` | the page (`static/index.html`, `app.css`, `app.js`, the Geist fonts): polls the two JSON routes below every 3 s and updates values in place |
-  | `GET /api/status` | this node's model, serving, gate, services, tool activity, events (v1 keys `gpu`, `model`, `services`, `metrics` unchanged) |
-  | `GET /api/cluster` | this node and every peer: GPU, memory, util, temperature, power, CPU, RAM, model volume, uptime, fabric ports, 15-min history |
+  | `/` | the page (`static/index.html`, `app.css`, `app.js`, the Geist fonts): polls `/api/status` and `/api/cluster` every 3 s (and `/api/power` for the chart) and updates values in place |
+  | `GET /api/status` | this node's model, serving, gate, services, tool activity, events (v1 keys `gpu`, `model`, `services`, `metrics` unchanged; `gpu` now comes from the head sampler, plus an additive `power_w`) |
+  | `GET /api/cluster` | this node and every peer: GPU, memory, util, temperature, GPU power (nvidia-smi `power.draw`: board power on discrete cards, GPU rail only on GB10), CPU, RAM, model volume, uptime, fabric ports, 15-min history with timestamps; plus `power` (below) |
+  | `GET /api/power?window=` | the power chart's series for `15m`, `1h`, `6h` or `24h` |
   | **`GET /api/slot`** | the **beast-slot discovery contract** a remote client reads (`docs/BEAST_SLOT.md`); byte-identical to v1, pinned by a golden test |
 
   What the page shows: the served model id, engine (llama.cpp, vLLM,
@@ -107,12 +108,77 @@ The `dashboard` slot API established the sanctioned pattern. Follow it:
   completion tokens when the engine has none), requests running / waiting,
   slots, KV-cache use; the **cluster** (one card per node, a GB10's memory
   labelled *unified*, a discrete card's *VRAM*, a host without a GPU says
-  so); **beast-gate** (devices enrolled, active in the last 15 min,
-  requests/min, errors, refusals: counts only, never a device name); every
+  so); **power** (below); **beast-gate** (devices enrolled, active in the
+  last 15 min, requests/min, errors, refusals without an identity
+  (no_key / unknown_key / revoked) and refusals for every reason, with the
+  per-reason counts on hover: counts only, never a device name); every
   **service** with its port (model, gate, tools, WebUI, search, island,
   chat, artifact); the tool server's calls, errors and top tools; and the
   dashboard's own event log (a peer lost or back, the model down, an island
   transition).
+
+  **Power.** A *Power* section leads with the measured watts now (the
+  cluster total on the Spark pair, "n of m nodes" when one is unreachable),
+  the trailing averages over 1 min, 5 min, 15 min, 1 hour and 24 hours (each
+  with its low-to-peak range, the energy used in Wh, kWh for 24 h, and how
+  much of the window was covered), and a trend arrow: the 5 min average
+  against the 15 min one (the hour's until 15 min exist), *steady* within
+  ±5 %. Then a row per node (what is measured, each rail, its own averages
+  and trend, and on a discrete card the share of the board power limit), and
+  a chart with a 15 m / 1 h / 6 h / 24 h selector: a line per node, the
+  cluster total, the window averages dashed. Hover, tap, or focus it and use
+  the arrow keys for the values at a time.
+
+  *What is measured, in plain words.* Each figure is labelled by its sensor,
+  never called "system power" without a system sensor:
+  - **DGX Spark (GB10):** `GPU power` is the GPU rail only. GB10 reports no
+    module or system power (nvidia-smi module power and every power limit
+    read N/A; there is no hwmon, RAPL or powercap power sensor, checked on
+    both Sparks 2026-11-22). The whole box draws noticeably more; wall power
+    needs an external meter (a smart plug, or a USB-C PD meter on the 240 W
+    supply).
+  - **RTX 5090 rig:** the card's board power (GPU and VRAM, nvidia-smi,
+    with its 600 W limit) **plus** the Ryzen's CPU package power (the
+    amdgpu iGPU's `PPT` hwmon channel, readable without root), shown as
+    `GPU + CPU package`. That leaves out the motherboard, RAM, drives, fans
+    and PSU losses. The APU firmware files whole watts in the driver's mW
+    field (an idle 9950X3D reads "24-59 mW"); a reading under 256 "mW" in
+    whole-mW steps is read as watts, and the page marks it †.
+  - **Any host with an ACPI power meter** (`power_meter` hwmon): that is
+    shown as `system power`, and the other rails as its parts.
+
+  *How it is computed.* Every node is sampled every 5 s (peers through the
+  same fixed ssh probe, which now also reads `nvidia-smi
+  power.draw.instant / .average / enforced.power.limit`, NVML's cumulative
+  GPU energy counter through a guarded `python3 -I` one-liner, and every
+  readable hwmon power channel by name and label). "Now" is the
+  instantaneous GPU reading. Each pair of samples is one interval: for the
+  GPU its exact mean power from the **energy counter** (mJ over the node's
+  own monotonic clock), so bursty load between samples is counted; else the
+  trapezoid of the two 1 s readings; other rails by trapezoid. Intervals
+  land in wall-clock slots, 5 s for the last hour and 1 min for 24 h.
+  Averages are energy / covered time; a gap (a node unreachable, the
+  dashboard down, a sample over 20 s late) is **not covered**, shown as
+  coverage below 100 %, never as zero watts; an average with under 10 % of
+  its window covered reads *collecting*. The range is the lowest and highest
+  ~5 s mean (1 min means for 24 h); the cluster's range uses only slots
+  where every node was measured. History survives a restart:
+  `.run/dashboard-power.json` (mode 600) is rewritten every 30 s and on
+  SIGTERM, through a temp file and a rename, so a crash leaves the previous
+  file whole; it is capped at 4 MB (the 5 s tier is dropped first) and a
+  corrupt or foreign file is ignored and replaced. JSON: `/api/cluster`
+  `power` (now, windows, trend, cost per node and for the cluster) and
+  `GET /api/power?window=15m|1h|6h|24h` (the chart series; any other value
+  is 15m). The `gpu.power_w` field is nvidia-smi `power.draw` (the GPU's
+  ~1 s average), not wall or system power.
+
+  *Cost (optional).* Set `DASHBOARD_KWH_PRICE` (openbeast.conf, or env
+  `OPENBEAST_DASHBOARD_KWH_PRICE`; a positive number per kWh) and,
+  optionally, `DASHBOARD_CURRENCY` (`$` by default; `EUR`, `£`...). The
+  page then shows the cost per day and per month at the 24 h average (the
+  1 h or 15 min one until a day is covered) and the last 24 h's measured
+  cost. Unset, it is hidden. It prices the measured rails only, so on a
+  Spark it is the GPU's share, not the electricity bill.
 
   **Peers.** The cluster view shows this node plus `DASHBOARD_PEERS` (ssh
   targets, comma or space separated; `none` = this node alone). Unset, it
@@ -125,10 +191,15 @@ The `dashboard` slot API established the sanctioned pattern. Follow it:
   BatchMode=yes -o ConnectTimeout=3 <peer> sh -s`, capped at 6 s. No HTTP
   request triggers, schedules or parameterises it; a peer that does not
   answer shows **unreachable** (with its last reading's age), never an error
-  page. The model volume shown is `DASHBOARD_DISK_PATH`, else `WEIGHTS_DIR`,
+  page. nvidia-smi and the NVML read run under `timeout -k` inside that cap,
+  and a timed-out probe's whole process group is killed, so a wedged driver
+  costs the GPU lines and leaves no process behind. `/api/status` takes its
+  `gpu` block from the head's sampler, so no request ever runs nvidia-smi. The model volume shown is `DASHBOARD_DISK_PATH`, else `WEIGHTS_DIR`,
   else spark.env `MODELS_DIR`.
 
-  **Read-only.** GET only (every other method is 405), no buttons. The page
+  **Read-only.** GET only (every other method, TRACE and made-up verbs
+  included, is 405). The only controls are the chart's window buttons, which
+  change what the page asks for, never anything on the host. The page
   sends a strict CSP (`default-src 'none'`; script, style, font and connect
   from `'self'` only), loads nothing from outside (fonts vendored in
   `static/`, Geist 1.9.2 under the SIL OFL, `static/GEIST-OFL.txt`), and
@@ -150,8 +221,10 @@ The `dashboard` slot API established the sanctioned pattern. Follow it:
   answers any Host.
 
   **Restarting it alone** (after a pull, say): `./scripts/ext.sh restart
-  dashboard` stops the recorded dashboard process and relaunches `run.sh`.
-  It touches nothing else (model server, gate, tool server, inference unit),
+  dashboard` stops the recorded dashboard process (which saves its power
+  history on the way out), waits for it to exit, relaunches `run.sh`, and
+  reports success only once `/api/slot` answers (manifest `HEALTH_PATH`,
+  within about 10 s). It also starts a stopped dashboard. It touches nothing else (model server, gate, tool server, inference unit),
   so it is safe while an eval runs.
 
   **Footgun: `EXTENSIONS` is empty by default.** `--publish-slot` publishes the

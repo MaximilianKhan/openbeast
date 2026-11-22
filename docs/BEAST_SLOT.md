@@ -193,14 +193,30 @@ dashboard on another port.)
 
 It shows the served model and engine, the active inference unit, tokens/s,
 requests, KV cache and context; a **cluster** card per node (the head plus
-every peer: GPU, unified memory or VRAM, utilization, temperature, power,
-CPU, RAM, the model volume, uptime, the RoCE fabric ports with link speed
-and throughput, 15-minute sparklines); beast-gate (devices enrolled and
-active, requests/min, errors: counts only); every service with its port;
-tool activity with the top tools; and recent events. Two more JSON routes
-feed it, both Host-pinned like the page: `GET /api/status` (its v1 keys
-unchanged, plus `serving`, `gate`, `service_list`, `events`) and
-`GET /api/cluster`.
+every peer: GPU, unified memory or VRAM, utilization, temperature, GPU
+power (nvidia-smi `power.draw`: board power on discrete cards, GPU rail
+only on GB10), CPU, RAM, the model volume, uptime, the RoCE fabric ports
+with link speed and throughput, 15-minute sparklines); a **Power** section
+(the watts measured now, the cluster total with "n of m nodes", 1 min / 5
+min / 15 min / 1 h / 24 h averages with range, energy and coverage, a trend
+arrow, a row per node and a 15 m-24 h chart); beast-gate (devices enrolled
+and active, requests/min, errors, refusals: counts only); every service
+with its port; tool activity with the top tools; and recent events. Three
+more JSON routes feed it, all Host-pinned like the page: `GET /api/status`
+(its v1 keys unchanged, plus `serving`, `gate`, `service_list`, `events`),
+`GET /api/cluster` (with `power`) and `GET /api/power?window=`.
+
+What the power figures cover, plainly: on a **DGX Spark** it is the **GPU
+rail only**. GB10 exposes no module or system power (nvidia-smi module
+power and the power limits read N/A; no hwmon, RAPL or powercap power
+sensor), so the box's real draw is higher and needs a wall meter to see. On
+the **RTX 5090 rig** it is the card's board power plus the CPU package (the
+Ryzen's `PPT`), labelled `GPU + CPU package`: still not the wall.
+Averages come from NVML's GPU energy counter where the driver has one, are
+time-weighted, and show their coverage: a gap is never counted as zero.
+History survives a dashboard restart (`.run/dashboard-power.json`). An
+optional `DASHBOARD_KWH_PRICE` adds a cost line. Detail and the sensor
+caveats: [`extensions/README.md`](../extensions/README.md).
 
 Peers come from `DASHBOARD_PEERS` (openbeast.conf, ssh targets), or, unset,
 from `scripts/backends/cluster.env` `CLUSTER_NODES`, so spark-1 shows
@@ -209,9 +225,10 @@ reads each peer every 5 s with one fixed read-only script over `ssh -o
 BatchMode=yes -o ConnectTimeout=3`, capped at 6 s; no request can trigger
 or shape it, and a silent peer reads **unreachable**. The page is
 self-contained (vendored Geist fonts, no CDN; a strict CSP), works offline,
-answers only GET (405 otherwise) and has no controls. Restart it alone, for
-example after a pull, with `./scripts/ext.sh restart dashboard`: nothing
-else restarts. Detail: [`extensions/README.md`](../extensions/README.md).
+answers only GET (405 otherwise); its only controls pick the chart window.
+Restart it alone, for example after a pull, with `./scripts/ext.sh restart
+dashboard`: nothing else restarts, and it says "Restarted" only once the
+new process answers `/api/slot`. Detail: [`extensions/README.md`](../extensions/README.md).
 
 ### The `/api/slot` discovery contract (version 2)
 

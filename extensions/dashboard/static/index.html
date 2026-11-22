@@ -22,7 +22,7 @@
   </div>
   <div class="topbar-meta">
     <span class="chip" id="host-chip" title="This node">—</span>
-    <span class="chip chip-health" id="health-chip" data-state="unknown"><i class="dot" aria-hidden="true"></i><span id="health-text">connecting…</span></span>
+    <span class="chip chip-health" id="health-chip" data-state="unknown" role="status"><i class="dot" aria-hidden="true"></i><span id="health-text">connecting…</span></span>
     <span class="live" id="live" data-state="wait"><i class="dot" aria-hidden="true"></i><span id="live-text">waiting for data</span></span>
   </div>
 </header>
@@ -40,12 +40,46 @@
         <li class="chip" id="chip-endpoint">—</li>
       </ul>
     </div>
-    <dl class="signal">
-      <div><dt>tokens / s</dt><dd id="sig-toks">—</dd><span class="spark-wrap"><svg class="spark" id="spark-toks" viewBox="0 0 120 28" preserveAspectRatio="none" role="img" aria-label="tokens per second, last 15 minutes"></svg><span class="spark-read" id="spark-toks-read"></span></span></div>
-      <div><dt>requests</dt><dd id="sig-reqs">—</dd><small id="sig-reqs-sub">running · waiting</small></div>
-      <div><dt>KV cache</dt><dd id="sig-kv">—</dd><span class="meter" aria-hidden="true"><i id="sig-kv-bar"></i></span></div>
-      <div><dt>context</dt><dd id="sig-ctx">—</dd><small id="sig-ctx-sub">tokens per request</small></div>
-    </dl>
+    <ul class="signal" aria-label="Serving now">
+      <li><span class="sig-k">tokens / s</span><span class="sig-v" id="sig-toks">—</span><span class="spark-wrap"><svg class="spark" id="spark-toks" viewBox="0 0 120 28" preserveAspectRatio="none" role="img" aria-label="tokens per second, last 15 minutes"></svg><span class="spark-read" id="spark-toks-read"></span></span></li>
+      <li><span class="sig-k">requests</span><span class="sig-v" id="sig-reqs">—</span><small id="sig-reqs-sub">running · waiting</small></li>
+      <li><span class="sig-k">KV cache</span><span class="sig-v" id="sig-kv">—</span><span class="meter" aria-hidden="true"><i id="sig-kv-bar"></i></span></li>
+      <li><span class="sig-k">context</span><span class="sig-v" id="sig-ctx">—</span><small id="sig-ctx-sub">tokens per request</small></li>
+    </ul>
+  </section>
+
+  <section class="block panel power" id="power" aria-labelledby="h-power">
+    <div class="block-head">
+      <h2 id="h-power">Power</h2>
+      <p class="block-note" id="power-note">—</p>
+    </div>
+    <div class="pw-lead">
+      <div class="pw-now">
+        <p class="pw-now-k" id="pw-now-k">measured now</p>
+        <p class="pw-now-v"><span id="pw-now">—</span><span class="pw-unit">W</span></p>
+        <p class="pw-trend" id="pw-trend" data-dir="none"><span class="pw-arrow" id="pw-arrow" aria-hidden="true">·</span><span id="pw-trend-text">trend: collecting</span></p>
+      </div>
+      <ol class="pw-windows" id="pw-windows" aria-label="Average power over trailing windows"></ol>
+    </div>
+    <p class="pw-cost" id="pw-cost" hidden></p>
+    <ul class="pw-nodes" id="pw-nodes" aria-label="Power per node"></ul>
+    <div class="pw-chart">
+      <div class="pw-chart-head">
+        <h3 class="sub-h">Power over time</h3>
+        <div class="seg" id="pw-range" role="group" aria-label="Chart window">
+          <button type="button" data-w="15m" aria-pressed="true">15 m</button>
+          <button type="button" data-w="1h" aria-pressed="false">1 h</button>
+          <button type="button" data-w="6h" aria-pressed="false">6 h</button>
+          <button type="button" data-w="24h" aria-pressed="false">24 h</button>
+        </div>
+      </div>
+      <div class="pw-plot" id="pw-plot">
+        <svg id="pw-svg" tabindex="0" role="img" aria-label="Power over the last 15 minutes"></svg>
+        <div class="pw-read" id="pw-read" hidden></div>
+      </div>
+      <ul class="pw-legend" id="pw-legend"></ul>
+    </div>
+    <p class="pw-foot" id="pw-foot"></p>
   </section>
 
   <section class="block" aria-labelledby="h-cluster">
@@ -86,7 +120,8 @@
       <dl class="kv kv-tight">
         <div><dt>auth</dt><dd id="gt-auth">—</dd></div>
         <div><dt>requests (total)</dt><dd id="gt-total">—</dd></div>
-        <div><dt>refused, no identity</dt><dd id="gt-denied">—</dd></div>
+        <div><dt>refused, no identity</dt><dd id="gt-denied-id">—</dd></div>
+        <div><dt>refused (all reasons)</dt><dd id="gt-denied">—</dd></div>
       </dl>
     </section>
   </div>
@@ -119,7 +154,7 @@
 
 <footer class="foot">
   <span>Read-only · GET only · refreshes every 3 s</span>
-  <span>beast-slot contract: <code>/api/slot</code> · detail: <code>/api/status</code>, <code>/api/cluster</code></span>
+  <span>beast-slot contract: <code>/api/slot</code> · detail: <code>/api/status</code>, <code>/api/cluster</code>, <code>/api/power</code></span>
 </footer>
 
 <template id="t-node">
@@ -142,12 +177,13 @@
         <div><dt data-f="mem-label">memory</dt><dd data-f="mem">—</dd></div>
         <div><dt>utilization</dt><dd data-f="util">—</dd></div>
         <div><dt>temperature</dt><dd data-f="temp">—</dd></div>
-        <div><dt>power</dt><dd data-f="power">—</dd></div>
+        <div><dt>GPU power</dt><dd data-f="power">—</dd></div>
       </dl>
     </div>
     <div class="node-sparks" data-f="sparks">
       <div class="spark-row"><span class="spark-k">GPU util</span><span class="spark-wrap"><svg class="spark" data-f="spark-util" viewBox="0 0 120 28" preserveAspectRatio="none" role="img" aria-label="GPU utilization, last 15 minutes"></svg><span class="spark-read" data-f="spark-util-read"></span></span></div>
       <div class="spark-row"><span class="spark-k">memory</span><span class="spark-wrap"><svg class="spark" data-f="spark-mem" viewBox="0 0 120 28" preserveAspectRatio="none" role="img" aria-label="memory use, last 15 minutes"></svg><span class="spark-read" data-f="spark-mem-read"></span></span></div>
+      <div class="spark-row"><span class="spark-k">GPU power</span><span class="spark-wrap"><svg class="spark" data-f="spark-pow" viewBox="0 0 120 28" preserveAspectRatio="none" role="img" aria-label="GPU power, last 15 minutes"></svg><span class="spark-read" data-f="spark-pow-read"></span></span></div>
     </div>
     <dl class="kv kv-tight kv-2">
       <div><dt>CPU</dt><dd data-f="cpu">—</dd></div>

@@ -114,12 +114,19 @@ free -m | sed -n 2p                                     # unified memory: watch 
 
 The status dashboard, read-only, from any tailnet device:
 `https://spark-1.tail4109f9.ts.net:8447` (spark-1 and spark-2: model,
-tok/s, both nodes' GPU / memory / fabric, gate, services, events). Its JSON:
+tok/s, power (GPU rail per Spark, the pair's total, 1 min-24 h averages,
+trend, chart), both nodes' GPU / memory / fabric, gate, services, events).
+The rig's is `https://beast.tail4109f9.ts.net:8447` (its power: board +
+CPU package). Its JSON:
 
 ```bash
 curl -s http://127.0.0.1:3002/api/cluster | python3 -m json.tool   # head + spark-2 (unreachable if ssh to it fails)
 curl -s http://127.0.0.1:3002/api/status  | python3 -m json.tool   # serving, gate, services, events
+curl -s http://127.0.0.1:3002/api/cluster | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["power"]["cluster"], indent=1))'   # watts now, window averages, trend
+curl -s 'http://127.0.0.1:3002/api/power?window=1h' | python3 -m json.tool | head   # the chart series (15m, 1h, 6h, 24h)
 curl -s http://127.0.0.1:3002/api/slot                             # the beast-slot contract clients read
+nvidia-smi --query-gpu=power.draw,power.draw.instant,power.draw.average,enforced.power.limit --format=csv   # the raw GPU power the page reads
+# Power history: .run/dashboard-power.json (5 s slots for 1 h, 1 min for 24 h). Cost line: DASHBOARD_KWH_PRICE=0.30 in openbeast.conf
 ~/openbeast/scripts/ext.sh restart dashboard   # CHANGES STATE, but only the dashboard: safe during evals
 ```
 

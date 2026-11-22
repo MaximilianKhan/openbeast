@@ -1,3 +1,5 @@
 NAME=Status Dashboard
 DESCRIPTION=Read-only status page: cluster (head + peers), serving, gate, services, tools; plus the /api/slot contract.
 KIND=process
+HEALTH_PORT_VAR=DASHBOARD_PORT
+HEALTH_PATH=/api/slot
