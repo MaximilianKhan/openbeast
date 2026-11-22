@@ -466,6 +466,21 @@ Final (2026-11-21): the series is complete. Source: arms T, T_s1, T2, T3, U, UP,
 | **The residual is design choice and time, not knowledge or language.** T2's six failures are five variants of one task family (168) plus 192_pike_regex. The 168 investigation (sealed review, `evals/audit/reviews/`) found a design-choice failure, not a knowledge gap: the model knows what makes the unit tractable, but usually commits early to an approach that cannot meet the limits, and capped thinking re-decides the design every turn. Its remedies are general and name no task | T2, T_s1, T3 rows; the review | **ARM** — U (forced act, done-when-verified), UP (planning lines), UPA (frozen procedure pack), each with a no-harm check on the other units and a GLM control |
 | **Packs are not the bottleneck here.** Go is 7/8 in every arm but UPA_8k (6/8; its extra miss is 163_bigint_divmod_b) and Zig 5/6 in all but U_8k (4/6; its extra miss is 163_bigint_divmod_f); each other miss is a 168 variant; Python (25-30 of 32) carries the swings | per-language table in the report | packs stay on as in T; their ablation (T_nopacks) has not run for DeepSeek; no new claim |
 
+## Hy4-flash (NVFP4): T2's setup against GLM's best (2026-11-22)
+
+Source: arms H_T2 and H_C on the harness9 tree (f38a29c7), one server
+start, one pair; board rows HY4-T2 and HY4-C;
+[the Hy4 report](reports/V5_HY4_FLASH-2026-11-22.md) §5. One seed each;
+noise about ±1 unit. The third model on which an assist or the cap has
+been read.
+
+| Finding | Evidence | Status |
+|---|---|---|
+| **T2's bundle helps a third model.** GLM's best (H_C: no assists, no per-turn cap, no nudge) 55/71 → T2's setup (H_T2) 60/71: +5, 7 in and 2 out, helped, single seed. SCORE 82.2 → 83.4 only: all 7 gains are ports (LANG 74.8 → 89.0), and H_C passes one more Python base (SOLVE 84.6 against 81.5) | H_C → H_T2 (`v5_report.py --pair H_C:H_T2`) | **MEASURED, bundled**: the assists, the 8K cap and the nudge changed together, so the gain is T2's whole bundle, not one switch |
+| **The uncapped arm spends its wall in long turns.** H_C: 13 wall hits (4 passed), wall-hit units at 4-60 turns, three under 12; H_T2: 5 (2 passed), all at 49+ turns. H_C writes ~1,080 completion tokens a turn against ~760, 23% more in all, in fewer turns (25.7 against 29.6 a unit). Three of T2's 7 gains were H_C wall hits, four ran to the 60-turn ceiling | `iterations`, `agent_exit_code`, `tokens_completion` of the two rows | consistent with the cap being the lever (as on DeepSeek), **not a measurement of it** |
+| **Across models.** The cap alone: +4 on DeepSeek, twice (T → T2, U → U_8k). The assists alone: −1 on GLM (C → E, the same within noise; another era). The bundle: +5 on Hy4. No model has a measured gain from the assists alone | the three campaigns | the cap stays the per-model knob to try first; the assists stay on in T2 because T2 is measured, not because they are shown to help |
+| **Unbundle on Hy4** (optional): T's assists at the 16K eval cap, no per-turn cap or nudge, on the harness9 tree; read against H_T2 and H_C | — | **IDEA**, not scheduled (needs Hy4 served for about 7 h) |
+
 ## Next-era proposals from the 2026-11-22 runs (infra, not model behaviour)
 
 Four harness-side faults seen while the Hy4 and rig evals ran. None changes

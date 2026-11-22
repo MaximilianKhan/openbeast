@@ -285,8 +285,16 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
 - [x] **`H_T2` (Hy4-flash NVFP4) done 2026-11-22:** board row HY4-T2, 60/71,
   SCORE 83.4, #2; 5 units behind DS-T2 on the same harness9 tree and pair
   (7 lost, 2 gained), single seed; integrity scan clean; conformance PASS
-  ([report](reports/V5_HY4_FLASH-2026-11-22.md)). Arm H_C (GLM's best, the
-  ablation) is running on the same tree; board row HY4-C when it is scanned.
+  ([report](reports/V5_HY4_FLASH-2026-11-22.md)).
+- [x] **`H_C` (Hy4-flash NVFP4, the ablation) done 2026-11-22:** board row
+  HY4-C, 55/71, SCORE 82.2, on the same tree, server and pair: T2's setup
+  +5 over GLM's best (7 gained, 2 lost), helped, single seed, bundled;
+  integrity scan clean (report §5).
+- [ ] **Optional: unbundle T2 on Hy4.** One arm with T's assists at the
+  16K eval cap (no per-turn cap, no act nudge), on the harness9 tree, read
+  against H_T2 (the cap and nudge) and H_C (the assists). Only if Max wants
+  the attribution; it needs Hy4 served (`beasthy4`), so DeepSeek stops for
+  about 7 h.
   The original plan, kept for the record: arm H_T2 is T2
   exactly against Tencent's Hy4-flash (atakann's NVFP4 build on vLLM TP2,
   staged in code 2026-11-19: `SPARK_HYDRA.md` "Hy4-flash (NVFP4, vLLM TP2):

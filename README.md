@@ -862,7 +862,9 @@ DeepSeek's row is campaign arm T2. Its nine other arms through 2026-11-21
 UP_8k and UPA_8k: 59-65/71) are listed in `docs/RESULTS.md`, and none beat
 T2 ([final report](docs/reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md)).
 Hy4-flash's row is arm H_T2, T2 exactly on the same harness and pair: 5 units
-behind DeepSeek, single seed ([report](docs/reports/V5_HY4_FLASH-2026-11-22.md));
+behind DeepSeek, single seed; under GLM's best configuration (arm H_C, the
+ablation) it scored 55/71, so T2's setup helped by 5 on Hy4
+([report](docs/reports/V5_HY4_FLASH-2026-11-22.md));
 the RTX 5090 row is reported in [V5_QWEN38_RTX5090-2026-11-22.md](docs/reports/V5_QWEN38_RTX5090-2026-11-22.md).
 
 <!-- v5-board:start -->
