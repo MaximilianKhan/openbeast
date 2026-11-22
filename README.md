@@ -56,6 +56,7 @@ line in `openbeast.conf`.
 | **beast-campaign** 🧪 | A GPU lease so two measurements cannot share the card, an eval *era* hash so rows from different code are never compared as if they were the same, and a harness that refuses to bank an infrastructure failure (a dead server, an exhausted thread pool, a full disk) as a model failure | v1.5 |
 | **Multi-engine inference** 🟩 *opt-in* | `INFERENCE_BACKEND=vllm\|tensorfold`: the whole stack (WebUI, tools, agents, gate, `/api/slot`) talks to a vLLM or TensorFold server, e.g. tensor-parallel across two DGX Sparks. Any new checkpoint is inspected, pinned by commit, sha256-locked and conformance-tested before OpenBeast uses it | v1.6 |
 | **Engine plane** ⚙️ | `scripts/engine.sh`: list, swap, install, update, pin and roll back llama.cpp, vLLM or TensorFold with one command, every install verified and every one with an offline path (`stage` on a connected box, `install --from` on a closed one); one adapter file per engine ([docs](docs/ENGINES.md)) | unreleased |
+| **beast-recipe** 📜 | OpenBeast's own end-to-end serving recipes for 1 to 8 DGX Sparks (one rank each): `scripts/beast-recipe.sh init` turns any Hugging Face model (or a local folder) and a Spark count into `recipes/<name>/recipe.env`; `plan` gives the memory fit per Spark, the engine and why, TP/EP, drafter options with their licences, KV, a verdict (SERVABLE-NOW / SERVABLE-WITH-WORK with the gap list and effort / NEEDS-MORE-HARDWARE with how many Sparks and why / BLOCKED) and every command end to end; `engine`, `stage`, `up`, `check`, `adopt` and `rollback` apply it through the tools OpenBeast already has (`beast-spark <name>` switches). Dry run by default, `--run` acts, `--json` everywhere. Seven worked examples in `recipes/`; built and tested off-hardware, hardware runs pending ([docs](docs/BEAST_RECIPE.md)) | unreleased (main, after v1.9) |
 | **beast-hydra** 🐉 + **beast-instinct** 🧿 *opt-in* | `HYDRA=true`: one router on `:8095` in front of the rig's engine and any tailnet engines, choosing per request by the `model` field, with health checks and failover before the first byte; every consumer (WebUI, gate, agents) goes through it. `INSTINCT=true`: a calibrated decision service on `:8094` that hydra and the router can consult, shadow-only until a decision passes its gate, and deciding on a full 27B (the rig's own now, Open-Jev-27B on its own GPU next). The fleet policy is uncensored-preferred (Max, 2026-11-19): stock models such as the Spark pair's DeepSeek default may serve, and at equal priority hydra tries an uncensored model first. `family_policy = "uncensored-only"` restores the strict rule ([BEAST_HYDRA.md](docs/BEAST_HYDRA.md#family-policy)). Tested against simulated fleets, not yet on the Sparks | v1.7 |
 
 Walkthroughs for the v1.1–v1.5 features → [docs/TUTORIALS.md](docs/TUTORIALS.md).
@@ -470,6 +471,26 @@ scripts/engine.sh use tensorfold --unmanaged --url http://127.0.0.1:8000 --profi
   strings (TensorFold does) are coerced to the tool's schema types.
 - **Engines.** `scripts/engine.sh` installs, pins, swaps and rolls back
   llama.cpp, vLLM and TensorFold. It works offline from staged files.
+
+**Or let beast-recipe do all of it.** *(main, after v1.9.)*
+[`scripts/beast-recipe.sh`](docs/BEAST_RECIPE.md) answers "can we serve this
+model, on this many Sparks, and what does it take?" and then wires the steps
+above (and the Hy4 vLLM kit, and a Mia image's unit where that is the only
+engine) into one dry-run-by-default pipeline:
+
+```bash
+scripts/beast-recipe.sh init https://huggingface.co/ORG/REPO/tree/<sha> --sparks 2   # recipes/<name>/recipe.env + the plan
+scripts/beast-recipe.sh plan <name> --sparks 1,2,3,4   # fit per Spark, engine and why, verdict, gaps + effort, every command
+scripts/beast-recipe.sh engine|stage|up|check <name>   # each prints what it would do; --run acts
+scripts/beast-recipe.sh adopt <name> --run && beast-spark <name>   # the switch; beast-recipe rollback --run goes back
+```
+
+The verdicts are SERVABLE-NOW, SERVABLE-WITH-WORK (the gap list says what,
+and how long), NEEDS-MORE-HARDWARE (how many Sparks, and why) and BLOCKED.
+The engine/family matrix, with sources, is
+`scripts/backends/data/recipe-engines.json`. The worked examples (Hy4-flash
+on vLLM and on TensorFold, GLM on our own native launcher, DeepSeek at 2.9 and
+4.0 bpw, Qwen3.8-27B on one Spark, MiniMax-M3.1-Flash) are in `recipes/`.
 
 The launchers (`spark-node.sh`, `spark-cluster.sh`, 1 to 8 Sparks) are in
 [SPARK_HYDRA.md §D2](docs/SPARK_HYDRA.md#d2-native-tensorfold-through-spark-nodesh--spark-clustersh),
@@ -988,6 +1009,7 @@ are in **[docs/COMMANDS.md](docs/COMMANDS.md)**.
 | [OPENBEAST-SERVING.md](docs/OPENBEAST-SERVING.md) | One page: check, start, stop and switch the Spark pair's models and packs |
 | [SELF_DEVELOPMENT.md](docs/SELF_DEVELOPMENT.md) | The local model developing OpenBeast with the network off: clients, test map, era rule, git, and the offline git hub on spark-1 |
 | [ENGINES.md](docs/ENGINES.md) | llama.cpp / vLLM / TensorFold / Maya through `scripts/engine.sh` |
+| [BEAST_RECIPE.md](docs/BEAST_RECIPE.md) | beast-recipe: any model + a Spark count to a verdict, the plan and the recipe, applied end to end (init, plan, engine, stage, up, check, adopt, rollback), with seven worked examples |
 | [MODEL_CAMPAIGN.md](docs/MODEL_CAMPAIGN.md) | A new model on the Sparks, from onboarding to its final report |
 | [PYTHON_OFFLINE.md](docs/PYTHON_OFFLINE.md) · [TAILSCALE_OFFLINE.md](docs/TAILSCALE_OFFLINE.md) | Python packages offline on a Spark; reaching the gate when the tailnet or WAN is down |
 | [BEAST_DOCS.md](docs/BEAST_DOCS.md) · [BEAST_APPS.md](docs/BEAST_APPS.md) · [BEAST_ARK.md](docs/BEAST_ARK.md) | Offline platform docs; external apps through MCP; pinned software on a drive |

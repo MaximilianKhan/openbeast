@@ -39,6 +39,19 @@ to the Sparks.
 The model has to be served behind beast-gate before any of this. Each step is
 in an existing runbook. Do them in order:
 
+0. **Start with beast-recipe** ([BEAST_RECIPE.md](BEAST_RECIPE.md)):
+   `scripts/beast-recipe.sh init <hf-url | org/repo@sha | DIR> --sparks N`
+   reads the checkpoint into `recipes/<name>/recipe.env`, and
+   `scripts/beast-recipe.sh plan <name> --sparks 1,2,3,4` says whether it can
+   be served and what it takes: the fit per Spark, the engine and why, the
+   drafter options with their licences, and the verdict (SERVABLE-NOW,
+   SERVABLE-WITH-WORK with the gap list and effort, NEEDS-MORE-HARDWARE with
+   how many Sparks, or BLOCKED). For a SERVABLE-NOW plan, its `engine`,
+   `stage`, `up`, `check` and `adopt` steps (dry run unless `--run`) do steps
+   1-3 below through the same tools, and `beast-spark <name>` serves it;
+   `check --run --bench` records decode tok/s at 1 and 4 streams with one
+   probe for every recipe. The campaign then qualifies what the recipe
+   serves. Steps 1-3 remain the by-hand path.
 1. **Inspect and fetch the weights.**
    `scripts/backends/model-inspect.sh <repo@sha> --write-profile NAME` writes
    a profile pinned to a revision. `scripts/backends/model-fetch.sh --profile
