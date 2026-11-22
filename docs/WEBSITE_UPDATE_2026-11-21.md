@@ -141,10 +141,13 @@ page. This is 11-20 Q-L, escalated ([§8](#8-open-questions-for-max) Q-L).
    report's [§6.2](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md#62-the-cap-trade-off)
    and [§6.3](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md#63-what-u-taught)
    for the arms it covers.
-3. **Still running: UP_8k** (UP at the 8K cap). On its completed units it
-   is tracking even with T2 or slightly above. **Pending: UPA_8k.** Neither
-   has a board row, and **neither may appear on the site in any form**: no
-   name, no count, no "tracking" claim ([§2.2](#22-rule-amendments) C7).
+3. **Status update (2026-11-21, after this page was written): UP_8k and
+   UPA_8k finished.** UP_8k 65/71 (SCORE 91.4), UPA_8k 62/71 (SCORE 88.0);
+   integrity scans clean; board rows DS-UP8k and DS-UPA8k land on OpenBeast
+   `main` with the branch `board/ds-8k-series`. Until that merge is on
+   `main`, C7 holds: **neither may appear on the site in any form**
+   ([§2.2](#22-rule-amendments) C7). Once it is, they ship together (Q-Q)
+   and T2 stays recommended (Q-O: UP_8k ties T2 on passes).
 4. **Max's call (2026-11-21): T2 is the best-performing configuration so
    far, and UP_8k may deliver comparable results.** T2 stays the headline,
    the default agent setup (`AGENT_PROFILE=deepseek-best`) and the board's
@@ -584,7 +587,8 @@ with a board row):
 ```
 
 **Not on the board, not for the site** (C7; recorded so the website agents
-don't go looking): UP_8k (running), UPA_8k (pending), `H_T2` (Hy4-flash,
+don't go looking): UP_8k and UPA_8k (finished 2026-11-21 after this page;
+board rows DS-UP8k and DS-UPA8k via `board/ds-8k-series`), `H_T2` (Hy4-flash,
 staged after the DeepSeek arms), the Mia GLM recipe 1104 on TensorFold
 1.3.0 (tested last). When UP_8k and UPA_8k get rows, add them to `ARMS`
 below and to `deepseekLadder` (§3.8), and rerun.

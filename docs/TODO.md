@@ -13,9 +13,10 @@ the board's #1 (#231). T2 is its default agent setup:
 `AGENT_PROFILE=deepseek-best` (#232; `SPARK_HYDRA.md` E2b). As of
 2026-11-21, on the board: T_s1 61 (noise about ±1), T3 65 (4096 cap, lower
 SCORE), and the harness10 arms U 59, UP 62 (planning lines +3), UPA 59 (the
-pack −3) and U_8k 63 (the forced act no better than the nudge). T2 stays
-the best. UP_8k is running from the Mac (45 of 48 so far), UPA_8k next
-([interim report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md)).
+pack −3), U_8k 63 (the forced act no better than the nudge), UP_8k 65
+(SCORE 91.4: a tie with T2 on passes) and UPA_8k 62 (the pack −3 again).
+T2 stays the best. The series is complete
+([final report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md)).
 
 **GLM-5.3-Flash**, the staged alternative:
 L0 26/71 → A 31/71 → B 36/71 → **C 51/71 scored, SCORE 76.7** (54 raw; the
@@ -264,15 +265,17 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
 - [ ] **DeepSeek-V4.1-Flash (Mia EXL3) thinking-first campaign:** in
   progress ([`MODEL_CAMPAIGN.md` §9](MODEL_CAMPAIGN.md#9-next-deepseek-v41-flash-1017-thinking-first)).
   On the board (2026-11-21): T 61, T_s1 61, **T2 65** (best, SCORE 94.9),
-  T3 65, U 59, UP 62, UPA 59, U_8k 63; all integrity scans clean. The
+  T3 65, U 59, UP 62, UPA 59, U_8k 63, UP_8k 65, UPA_8k 62; all integrity
+  scans clean. The
   one-component-out ablations and the no-thinking arms are not run.
 - [x] **Arms U, U_8k, UP and UPA** (harness10, #234): U 59 (16384 cap),
   U_8k 63 (+4: the cap), UP 62 (+3 over U: planning lines help), UPA 59
   (−3 against UP: the pack hurts). Board rows DS-U, DS-U8k, DS-UP, DS-UPA.
-- [ ] **Arm UP_8k: running** (45 passed of 48, 2026-11-21 10:44), the
-  planning lines at 8192: the open question against T2 and U_8k. Then
-  **UPA_8k**. Add each to the board after an integrity scan.
-- [ ] **Run `H_T2` (Hy4-flash NVFP4) after the U series (after UPA_8k).** Arm H_T2 is T2
+- [x] **Arms UP_8k and UPA_8k** (harness10, 2026-11-21): UP_8k 65 (SCORE
+  91.4; +2 over U_8k, not conclusive; a tie with T2, so T2 stays), UPA_8k
+  62 (−3 against UP_8k: the pack hurts at 8192 too). Board rows DS-UP8k,
+  DS-UPA8k; integrity scans clean. The U series is complete.
+- [ ] **Run `H_T2` (Hy4-flash NVFP4) next: the U series is done.** Arm H_T2 is T2
   exactly against Tencent's Hy4-flash (atakann's NVFP4 build on vLLM TP2,
   staged in code 2026-11-19: `SPARK_HYDRA.md` "Hy4-flash (NVFP4, vLLM TP2):
   staged"). A public-interest measurement, compared with DS-T2 (65/71) under
@@ -563,9 +566,9 @@ Flash, and the Claude Opus 5.5 reference row as the ceiling.
 
 Status 2026-11-21: two models measured. DeepSeek-V4.1-Flash (Mia EXL3) on
 the thinking-first campaign has T 61, T_s1 61, T2 65 (SCORE 94.9, best),
-T3 65, U 59, UP 62, UPA 59 and U_8k 63; UP_8k is running and UPA_8k is
-next, with a GLM UP control as the first cross-model arm. Qwen3.8 has no v5 row
-yet. The GLM status as of 2026-11-17 (evening) follows; it was GLM only at
+T3 65, U 59, UP 62, UPA 59, U_8k 63, UP_8k 65 and UPA_8k 62 (series
+complete), with a GLM UP control as the first cross-model arm. Qwen3.8 has no v5 row
+yet; its RTX 5090 v5 L0 profile started 2026-11-21 18:46. The GLM status as of 2026-11-17 (evening) follows; it was GLM only at
 that point. GLM's arms L0 26
 → A 31 → B 36 → C 51/71 scored (54 raw; thinking) → E 50/71, against the
 Opus 71/71 ceiling, all single seed. D and the seed arm F were not run (Max

@@ -2002,13 +2002,14 @@ turns fell from 470-610 s to 280-330 s. Board row DS-T2
 
 **T2 stays the recommended DeepSeek config (2026-11-21).** No later arm has
 beaten it: T_s1 61 (noise about ±1), T3 (4096 cap) 65 with a lower SCORE,
-and the harness10 arms U 59, UP 62, UPA 59 and U_8k 63 (the forced-act turn
-at the same 8192 cap: no better than the act nudge). **UP_8k (the planning
-lines at 8192) is pending**: running, 45 passed of its first 48 units
-against T2's 44 on the same units. If it, or UPA_8k after it, beats T2 by
-more than the noise, the profile moves with the evidence; until then this
-section stands ([MODEL_CAMPAIGN.md](MODEL_CAMPAIGN.md) §5b, §9;
-[the interim campaign report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md)).
+and the harness10 arms U 59, UP 62, UPA 59, U_8k 63 (the forced-act turn
+at the same 8192 cap: no better than the act nudge), UP_8k 65 and UPA_8k 62.
+**UP_8k (the planning lines at 8192) tied T2 on passes** (65/71, 2 units in
+and 2 out) with a lower SCORE (91.4 against 94.9); a tie keeps T2, and a
+lead needs 2 or more units. UPA_8k (the pack at 8192) lost 3 against UP_8k.
+The series is complete, and this section stands
+([MODEL_CAMPAIGN.md](MODEL_CAMPAIGN.md) §5b, §9;
+[the final campaign report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md)).
 
 **One line in `openbeast.conf`:** `AGENT_PROFILE=deepseek-best`. It sets a
 default for each key below; a key set on its own line (or in the env) wins
