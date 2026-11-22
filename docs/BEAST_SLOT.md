@@ -106,7 +106,7 @@ an `--unpublish-*` twin that reads no config, keyed by the published port):
 | `:8445` | beast-chat `:3003` (`CHAT_PORT`), or `unix:$CHAT_SOCKET` when `CHAT_LOGIN_FROM=unix` | `--publish-chat` | reads: a tailnet login on `CHAT_OPERATORS`; writes: a device key with the `chat` scope |
 | `:8446` | beast-artifact `:3004` (`ARTIFACT_PORT`) | `--publish-artifact` | reads: a tailnet login on `ARTIFACT_OPERATORS` (falls back to `CHAT_OPERATORS`); publishing never leaves loopback; lifecycle writes (pin, tags, visibility, rollback, delete) also accept a device key with the `artifact` scope |
 | `:8447` | ntfy extension `:3005` (`NTFY_PORT`) | `--publish-ntfy` | whatever `NTFY_DEFAULT_ACCESS` says: open to the tailnet by default |
-| `:8447` (spark-1, the rig) | the whole dashboard `:3002` (page, `/api/status`, `/api/cluster`) | by hand: `tailscale serve --bg --https=8447 http://127.0.0.1:3002` ([below](#the-status-dashboard-8447)); a host running ntfy uses another port | any tailnet device (read-only; GET only) |
+| `:8447` (spark-1, the rig) | the whole dashboard `:3002` (page, `/api/status`, `/api/cluster`, the v3 detail routes) | by hand: `tailscale serve --bg --https=8447 http://127.0.0.1:3002` ([below](#the-status-dashboard-8447)); a host running ntfy uses another port | any tailnet device (read-only; GET only) |
 | `:8889` | SearXNG `:8888` | `--publish-searxng` | any tailnet device, unauthenticated |
 
 `:8445` and `:8446` are the two surfaces that are *not* inference-shaped and
@@ -191,20 +191,28 @@ tailscale serve --bg --https=8447 http://127.0.0.1:3002   # once; persists
 (`--publish-ntfy` also uses `:8447`; a host that runs ntfy mounts the
 dashboard on another port.)
 
-It shows the served model and engine, the active inference unit, tokens/s,
-requests, KV cache and context; a **cluster** card per node (the head plus
-every peer: GPU, unified memory or VRAM, utilization, temperature, GPU
-power (nvidia-smi `power.draw`: board power on discrete cards, GPU rail
-only on GB10), CPU, RAM, the model volume, uptime, the RoCE fabric ports
-with link speed and throughput, 15-minute sparklines); a **Power** section
-(the watts measured now, the cluster total with "n of m nodes", 1 min / 5
-min / 15 min / 1 h / 24 h averages with range, energy and coverage, a trend
-arrow, a row per node and a 15 m-24 h chart); beast-gate (devices enrolled
-and active, requests/min, errors, refusals: counts only); every service
-with its port; tool activity with the top tools; and recent events. Three
-more JSON routes feed it, all Host-pinned like the page: `GET /api/status`
-(its v1 keys unchanged, plus `serving`, `gate`, `service_list`, `events`),
-`GET /api/cluster` (with `power`) and `GET /api/power?window=`.
+The home page leads with the overall verdict (with the reason when
+something is wrong), the served model, engine and unit uptime, tokens/s,
+requests running and waiting, KV cache, latency, one power figure (the
+cluster's watts now and the 1 h average), gate activity, services up and
+active alerts, then a tile per node and a card per area. Each opens a detail
+page (hash routes, deep-linkable): `#/serving` (latency percentiles,
+speculative decoding, tokens per hour and day, history charts),
+`#/nodes/<name>` (every metric with history: GPU, memory, temperature,
+power, clocks and throttle reasons, CPU, RAM, disk, fabric per port),
+`#/power` (the full power view below), `#/gate`, `#/services`, `#/tools`,
+`#/events` (the persisted timeline and the alert rules) and `#/history`
+(the last 24 h, daily rollups, what served when). Alerts (node unreachable,
+model down or stalled, GPU hot, memory near the memguard floor, throttling,
+disk low, gate error spike, KV full, a service down) have documented
+`DASHBOARD_ALERT_*` thresholds: `extensions/README.md`. Its JSON routes, all
+read-only and Host-pinned like the page: `GET /api/status` (v1 keys
+unchanged, plus `serving`, `gate`, `service_list`, `events`, `alerts`,
+`health`, `summary`), `GET /api/cluster` (with `power`),
+`GET /api/power?window=`, `GET /api/serving?window=`,
+`GET /api/node/<name>?window=`, `GET /api/history?metric=&window=`,
+`GET /api/events`, `GET /api/alerts` and `GET /api/daily`. None of them
+changes `/api/slot`, which stays byte-identical.
 
 What the power figures cover, plainly: on a **DGX Spark** it is the **GPU
 rail only**. GB10 exposes no module or system power (nvidia-smi module
