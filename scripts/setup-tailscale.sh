@@ -93,14 +93,28 @@ set -euo pipefail
 # (`tailscale up --operator=$USER`, as spark-root-setup.sh does on a Spark).
 # As the operator nothing here needs sudo, so the script runs unattended
 # over ssh with no password prompt.
+# A refused `serve` (no operator and no usable sudo: "Access denied: serve
+# config denied", a sudo with no tty over ssh) says how to make this account
+# the operator, once; the call's exit status is kept.
 ts_admin() {
+  local rc=0
   if [[ "$(tailscale debug prefs 2>/dev/null | python3 -c 'import json,sys
 try: print(json.load(sys.stdin).get("OperatorUser", ""))
 except Exception: print("")' 2>/dev/null)" == "$(id -un)" ]]; then
-    tailscale "$@"
+    tailscale "$@" || rc=$?
   else
-    sudo tailscale "$@"
+    sudo tailscale "$@" || rc=$?
   fi
+  if (( rc )) && [[ "${1:-}" == serve ]]; then
+    {
+      echo "      ERROR: tailscale $* was refused (exit $rc)."
+      echo "             Serve changes need root or tailscaled's operator. Make $(id -un) the"
+      echo "             operator once (then nothing here needs sudo):"
+      echo "               sudo tailscale set --operator=$(id -un)"
+      echo "             and re-run this script."
+    } >&2
+  fi
+  return "$rc"
 }
 
 # beast-slot mount (--publish-slot). Mount ONLY /api/slot: a bare

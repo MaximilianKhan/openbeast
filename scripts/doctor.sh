@@ -1171,7 +1171,23 @@ if command -v tailscale >/dev/null 2>&1; then
       # What sits behind :8443 decides the real exposure. The gate allowlists
       # the OpenAI routes and keys per device; raw llama-server publishes its
       # entire route table (/lora-adapters, /slots, /v1/stream) to the tailnet.
-      if echo "$_serve" | grep -A2 -E ":8443[^0-9]" | grep -q ":${EDGE_PORT:-8090}"; then
+      # Judge the mount's TARGET against EDGE_GATE both ways (2026-11-22, the
+      # rig: :8443 -> llama :8080 while EDGE_GATE=true, so every enrolled
+      # device key reached llama-server and got its 401). The re-point needs
+      # tailscaled's operator (or root): `sudo tailscale set --operator=$USER` once.
+      _inf_tgt="$(_serve_target 8443 "$_serve")"
+      _gate_url="http://$HEALTH_HOST:${EDGE_PORT:-8090}"
+      _inf_gate=0
+      [[ "$_inf_tgt" =~ :${EDGE_PORT:-8090}/?$ ]] && _inf_gate=1
+      _repoint="tailscale serve --bg --https=8443 $_gate_url (as tailscaled's operator; once: sudo tailscale set --operator=\$USER), or ./scripts/setup-tailscale.sh"
+      if [[ $_inf_gate -eq 1 && "${EDGE_GATE:-false}" != "true" ]]; then
+        # The gate does not run with EDGE_GATE off: remote clients get 502.
+        fail ":8443 proxies to $_inf_tgt (the beast-gate port) but EDGE_GATE is not true — the gate is not started, remote clients get 502" \
+             "set EDGE_GATE=true in openbeast.conf and ./stop.sh && ./start.sh -d (or re-publish the engine: ./scripts/setup-tailscale.sh)"
+      elif [[ $_inf_gate -eq 0 && "${EDGE_GATE:-false}" == "true" && "${HYDRA:-false}" != "true" ]]; then
+        fail ":8443 proxies to ${_inf_tgt:-?}, not beast-gate (:${EDGE_PORT:-8090}), while EDGE_GATE=true — the gate is bypassed: device keys reach the engine (401) and no per-device audit" \
+             "$_repoint"
+      elif [[ $_inf_gate -eq 1 ]]; then
         # The mapping alone is not proof: if the gate process is down, :8443
         # is a 502 and reporting "per-device keys + audit" would be a
         # dangerously false green. Probe it.
@@ -1185,11 +1201,12 @@ if command -v tailscale >/dev/null 2>&1; then
       elif [[ "${HYDRA:-false}" == "true" ]]; then
         # hydra holds node keys: raw publication would hand the tailnet an
         # inference port with no per-device identity in front of the fleet.
-        fail ":8443 publishes a raw inference port while HYDRA=true" \
-             "set EDGE_GATE=true and re-run ./scripts/setup-tailscale.sh (it refuses raw publication under hydra)"
-      elif [[ "${EDGE_GATE:-false}" == "true" ]]; then
-        warn "EDGE_GATE=true but :8443 still points at raw llama-server" \
-             "re-run ./scripts/setup-tailscale.sh to repoint it at the gate"
+        if [[ "${EDGE_GATE:-false}" == "true" ]]; then
+          fail ":8443 proxies to ${_inf_tgt:-?}, a raw inference port, while HYDRA=true (EDGE_GATE=true, but the gate is bypassed)" "$_repoint"
+        else
+          fail ":8443 publishes a raw inference port while HYDRA=true" \
+               "set EDGE_GATE=true and re-run ./scripts/setup-tailscale.sh (it refuses raw publication under hydra)"
+        fi
       elif [[ -z "${LLAMA_API_KEY:-}" && "${ALLOW_OPEN_INFERENCE:-false}" == "true" ]]; then
         # Published keyless on purpose (setup-tailscale.sh
         # --i-accept-open-inference records ALLOW_OPEN_INFERENCE=true). Say it
