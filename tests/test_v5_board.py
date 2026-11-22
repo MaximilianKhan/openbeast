@@ -245,12 +245,14 @@ def test_committed_board_numbers():
     assert b["units"] == 71 and b["bases"] == 34
     assert {k: runs[k]["passed"] for k in runs} == {
         "GLM-L0": 26, "GLM-A": 31, "GLM-B": 36, "GLM-C": 51, "GLM-E": 50, "DS-T": 61, "DS-T2": 65, "DS-Ts1": 61, "DS-T3": 65,
-        "DS-U": 59, "DS-UP": 62, "DS-UPA": 59, "DS-U8k": 63, "DS-UP8k": 65, "DS-UPA8k": 62, "HY4-T2": 60, "Q38U-L0": 39, "OPUS-REF": 71}
+        "DS-U": 59, "DS-UP": 62, "DS-UPA": 59, "DS-U8k": 63, "DS-UP8k": 65, "DS-UPA8k": 62, "HY4-T2": 60, "HY4-C": 55, "Q38U-L0": 39, "OPUS-REF": 71}
     assert runs["GLM-C"]["passed_raw"] == 54  # 122 b/d/e excluded: contaminated (G25 scan)
     assert runs["GLM-E"]["passed_raw"] == 50  # scan clean; 122_c is a noted validator false FAIL
     assert runs["DS-T"]["passed_raw"] == 61  # scan clean (2026-11-18); first run under review 1118
     assert runs["DS-UP"]["passed_raw"] == 62  # main file (55 units) + resume file (16), scan clean 2026-11-21
     assert runs["HY4-T2"]["passed_raw"] == 60  # scan clean 2026-11-22; same harness9 tree as DS-T2
+    assert runs["HY4-C"]["passed_raw"] == 55  # scan clean 2026-11-22; the ablation of HY4-T2, same tree
+    assert round(runs["HY4-C"]["score"], 1) == 82.2  # HY4-T2 (83.4) stays Hy4's best row
     assert runs["Q38U-L0"]["passed_raw"] == 40  # 126 (a pass), 163_e, 192 excluded: the shell reached the network
     assert sorted(runs["Q38U-L0"]["excluded"]) == ["126_hmac_scratch", "163_bigint_divmod_e", "192_pike_regex"]
     assert runs["OPUS-REF"]["passed_strict_wall"] == 68
@@ -270,7 +272,7 @@ def test_committed_board_numbers():
     hy4, q38 = "hy4-flash-nvfp4-atakans", "qwen38-27b-uncensored-mtp-q5km"
     assert {k: runs[k]["weights_id"] for k in runs} == {
         **{k: ds for k in runs if k.startswith("DS-")}, **{k: glm for k in runs if k.startswith("GLM-")},
-        "HY4-T2": hy4, "Q38U-L0": q38, "OPUS-REF": "anthropic-api-claude-opus-5-5"}
+        "HY4-T2": hy4, "HY4-C": hy4, "Q38U-L0": q38, "OPUS-REF": "anthropic-api-claude-opus-5-5"}
     assert [r["weights_id"] for r in b["best"]] == [ds, hy4, glm, q38, "anthropic-api-claude-opus-5-5"]
     w = b["weights"][ds]
     assert (w["format"], w["bpw"], w["abliterated"], w["revision_kind"]) == ("EXL3", 2.9, False, "local")
@@ -292,10 +294,11 @@ def test_committed_board_numbers():
         "DS-T": (16187228, 1232335, 16), "DS-T2": (28140397, 2636448, 0), "DS-Ts1": (18833187, 2868308, 0),
         "DS-T3": (38279928, 2260595, 0), "DS-U": (23588215, 2792411, 0), "DS-UP": (24624938, 2878231, 0),
         "DS-UPA": (28279120, 3264679, 0), "DS-U8k": (30429276, 2519544, 0), "DS-UP8k": (26876212, 2456141, 0),
-        "DS-UPA8k": (27402927, 2520048, 0), "HY4-T2": (47921687, 1605430, 0),
+        "DS-UPA8k": (27402927, 2520048, 0), "HY4-T2": (47921687, 1605430, 0), "HY4-C": (35144307, 1967131, 0),
         "Q38U-L0": (15413787, 3452557, 0), "OPUS-REF": (0, 0, 71)}
     assert runs["DS-T2"]["tokens"]["per_pass"] == 473490 and runs["DS-T2"]["tokens"]["total"] == 30776845
     assert runs["HY4-T2"]["tokens"]["per_pass"] == 825452 and runs["HY4-T2"]["tokens"]["total"] == 49527117
+    assert runs["HY4-C"]["tokens"]["per_pass"] == 674753 and runs["HY4-C"]["tokens"]["total"] == 37111438
 
 
 def test_two_quantizations_of_one_model_are_two_rows(tmp_path):

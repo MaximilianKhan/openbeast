@@ -1046,15 +1046,22 @@ campaign. On GLM, its N0 is arm B (36/71, thinking pinned off).
 - [x] **Hy4-flash's H_T2 (2026-11-21/22).** 60/71, SCORE 83.4: T2 exactly
       on the same harness9 tree and pair as DS-T2, 5 behind it, single
       seed. Integrity scan clean. Board row HY4-T2
-      ([report](reports/V5_HY4_FLASH-2026-11-22.md)). H_C (GLM's arm C on
-      Hy4, the ablation) is running.
+      ([report](reports/V5_HY4_FLASH-2026-11-22.md)).
+- [x] **Hy4-flash's H_C, the ablation (2026-11-22).** GLM's arm C on Hy4,
+      same harness9 tree, server and pair: 55/71, SCORE 82.2. H_C → H_T2:
+      +5 (7 gained, all ports; 2 lost), helped, single seed; bundled
+      (assists + 8K cap + nudge together, not attributable to one switch).
+      13 wall hits against H_T2's 5, three before 12 turns. Integrity scan
+      clean. Board row HY4-C; HY4-T2 stays Hy4's best. Hy4 is served by
+      hand only; the pair is back on DeepSeek.
 - [x] **The RTX 5090 default's L0 (2026-11-22).** Qwen3.8 27B Uncensored
       MTP: 39/71 scored (40 raw), SCORE 63.3, 4 units lost to a runner
       retry loop; driven from the rig's eval-host container (not yet
       calibrated against the Mac). Board row Q38U-L0
       ([report](reports/V5_QWEN38_RTX5090-2026-11-22.md)); L1 and L2 running.
-- [ ] **Next, in order:** H_C on the board; then, last, the GLM recipe
-      engine update (1104), tested on its own.
+- [ ] **Next, in order:** the GLM recipe engine update (1104), tested on
+      its own. Optional for Hy4: T's assists without the cap and nudge
+      (separates the bundle; not scheduled).
       UP on GLM-5.3-Flash as the control when the pair serves GLM.
 - [x] **Campaign report** (2026-11-20, final 2026-11-21): [the final campaign report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md).
       Its tables come from `evals/v5_report.py`; regenerate them after each

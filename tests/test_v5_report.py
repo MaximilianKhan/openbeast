@@ -142,10 +142,18 @@ def test_cross_model_pair_names_the_context_run_by_id(tmp_path):
 def test_published_hy4_against_deepseek():
     """HY4-T2 60/71 on DS-T2's harness9 tree: the board's cross-model pair."""
     r = v5_report.build("Hy4-flash (NVFP4)", context=("DS-T2",), pairs=["DS-T2:H_T2"])
-    (h,) = r["arms"]
-    assert (h["id"], h["passed"], round(h["score"], 1)) == ("HY4-T2", 60, 83.4)
+    (h,) = [a for a in r["arms"] if a["id"] == "HY4-T2"]
+    assert (h["passed"], round(h["score"], 1)) == (60, 83.4)
     (d,) = r["deltas"]
     assert (d["compared"], d["net"]) == (71, -5)
+
+
+def test_published_hy4_ablation():
+    """HY4-C 55/71 against HY4-T2 60/71 on one harness9 tree: T2's bundle +5 (7 gained, 2 lost)."""
+    r = v5_report.build("Hy4-flash (NVFP4)", context=(), pairs=["H_C:H_T2"])
+    assert {a["id"]: (a["passed"], round(a["score"], 1)) for a in r["arms"]} == {"HY4-T2": (60, 83.4), "HY4-C": (55, 82.2)}
+    (d,) = r["deltas"]
+    assert (d["compared"], d["net"], len(d["gained"]), len(d["lost"])) == (71, 5, 7, 2)
 
 
 def test_cli_runs_and_writes_nothing():

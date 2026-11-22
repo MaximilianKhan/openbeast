@@ -97,8 +97,9 @@ Each cell gives two runs. The differences are inside run-to-run noise. A first v
 weights, the image and the unit are in place on the pair (the steps below);
 `beasthy4` served it from 2026-11-21 22:29 PST for the v5 arms. Measured:
 conformance PASS, the speed below, and v5 arm H_T2 60/71 (SCORE 83.4,
-board row HY4-T2; [the report](reports/V5_HY4_FLASH-2026-11-22.md)). Arm H_C
-is running. (State on 2026-11-19: the code on `main`, nothing on the Sparks;
+board row HY4-T2; [the report](reports/V5_HY4_FLASH-2026-11-22.md)) and the
+ablation H_C 55/71 (SCORE 82.2, row HY4-C). The unit served without a
+restart until 2026-11-22 12:11 PST, after H_C; the pair is back on DeepSeek. (State on 2026-11-19: the code on `main`, nothing on the Sparks;
 staging waited for the U arms, because serving Hy4 means stopping DeepSeek,
 and because the docker steps run outside any memory scope.) Hy4 is **never a boot default**: its unit cannot be
 enabled, `beastup` never picks it, and a reboot comes back to the selection
@@ -124,7 +125,7 @@ folder says NOT SERVABLE HERE with the reason.
 | Decode, 1 stream | **31.4 tok/s** | through the gate from the Mac, 2026-11-21 ~22:40 PST; 512-token code prompts, thinking at the default "high", temperature 0; DFly 5 |
 | Decode, 4 streams | **77.8 tok/s** aggregate (~20 a stream) | the same |
 | v5, arm H_T2 | **60/71, SCORE 83.4** (#2 on the board); 0 lost; integrity scan clean | 2026-11-21 22:41 to 11-22 04:46 PST (6.1 h), `--jobs 4`, harness9 (f38a29c7), the Mac harness host |
-| v5, arm H_C | running | GLM's arm C on the same tree, from 2026-11-22 04:46 |
+| v5, arm H_C | **55/71, SCORE 82.2** (row HY4-C, the ablation); 0 lost; integrity scan clean | GLM's arm C on the same tree, 2026-11-22 04:46 to 12:10 PST (7.4 h), `--jobs 4` |
 
 The speed rows are from a different probe than DeepSeek's table above
 (prose, 256 tokens), so they are not directly comparable. The arm's wall
