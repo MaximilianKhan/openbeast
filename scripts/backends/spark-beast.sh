@@ -55,7 +55,8 @@
 set -euo pipefail
 
 # Test seams: SB_PREP, SB_DS_PACK, SB_DS_ID, SB_CONF, SB_URL, SB_KEY_FILE,
-# SB_WAIT_S, SB_HY4_WAIT_S, SB_LOCK, SB_BIN_DIR, SB_BASHRC, SB_OB_CONF, SB_CHECKOUT, SB_RECIPES_D.
+# SB_WAIT_S, SB_HY4_WAIT_S, SB_LOCK, SB_BIN_DIR, SB_BASHRC, SB_OB_CONF, SB_CHECKOUT, SB_RECIPES_D,
+# SB_TENSORFOLD_BIN.
 PREP="${SB_PREP:-$HOME/openbeast-recipes/deepseek-prep}"
 CONF="${SB_CONF:-$HOME/.config/openbeast/beast-spark.env}"
 V2_PACK="$HOME/Documents/Mia-AiLab-DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw-v2"
@@ -80,8 +81,11 @@ BASHRC="${SB_BASHRC:-$HOME/.bashrc}"
 CHECKOUT="${SB_CHECKOUT:-$HOME/openbeast}"
 # Recipes adopted by beast-recipe (scripts/beast-recipe.sh adopt NAME --run): one NAME.env per
 # recipe, KEY=value lines PARSED, never sourced: UNIT (beast-recipe-*.service), SERVED, BACKEND,
-# WAIT_S. .previous records the selection before the last switch to a recipe (beast-recipe rollback).
+# WAIT_S, and TENSORFOLD_VERSION (the native release the recipe was planned for: checked on this Spark
+# before anything is stopped). .previous records the selection before the last switch to a recipe
+# (beast-recipe rollback).
 RECIPES_D="${SB_RECIPES_D:-$HOME/.config/openbeast/recipes.d}"
+TF_BIN="${SB_TENSORFOLD_BIN:-$HOME/.local/bin/tensorfold}"
 export PATH="$HOME/.local/bin:$PATH"
 
 log() { printf '[beast-spark] %s\n' "$*" >&2; }
@@ -437,6 +441,16 @@ cmd_recipe() {
   read -r _ R_UNIT served backend wait <<<"$line"
   [[ "$(sc show -p LoadState --value "$R_UNIT" 2>/dev/null)" == loaded ]] ||
     die "the unit $R_UNIT is not installed: beast-recipe up $R_NAME --write-profile, then the install line of beast-recipe up $R_NAME --dry-run"
+  # A recipe planned for one native TensorFold release never starts on another (spark-node.sh refuses
+  # it too, but only after the serving model was stopped): check before anything is stopped.
+  local want have
+  want=$(recipe_value "$RECIPES_D/$R_NAME.env" TENSORFOLD_VERSION)
+  if [[ -n "$want" ]]; then
+    [[ "$want" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "$RECIPES_D/$R_NAME.env: TENSORFOLD_VERSION='$want' is not a release version"
+    have=$( ("$TF_BIN" --version 2>/dev/null || true) | awk '{print $NF}')
+    have=${have#v}
+    [[ "$have" == "$want" ]] || die "the recipe $R_NAME needs native TensorFold $want, $TF_BIN is '${have:-none}': scripts/engine.sh install tensorfold --version $want (or engine.sh rollback tensorfold) on every Spark and TENSORFOLD_VERSION=$want in spark.env, then beast-spark $R_NAME. Nothing was stopped."
+  fi
   if active "$R_UNIT" && serving "$served"; then
     log "the recipe $R_NAME is already serving"
     if [[ "$(ob_conf_get INFERENCE_MODEL)" != "$served" || "$(ob_conf_get INFERENCE_BACKEND)" != "$backend" ]]; then

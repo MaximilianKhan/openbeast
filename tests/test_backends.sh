@@ -1142,6 +1142,24 @@ _sp "$_TN" -- --profile "$_P/tftest.env" --rank 1 --master 192.168.100.10 --env 
 _sp "$_TN" TF_STUB_VERSION=1.2.6 -- --profile "$_P/tftest.env" --rank 1 --master 192.168.100.10 --env "$_K/spark-native.env" --print
 [[ $SPRC -eq 1 ]] && _has "$_O" "spark.env pins 1.2.7" && pass "native refuses a binary that is not the pinned release" \
   || fail "native version pin (rc=$SPRC): $_O"
+# Native-only profile keys (beast-recipe renders them): --kv-cache, the reserve on
+# every rank, and the release the profile was planned for.
+{ cat "$_P/tftest.env"; echo "TENSORFOLD_KV_CACHE=fp8"; echo "TENSORFOLD_MEMORY_RESERVE_GIB=17.5"; echo "TENSORFOLD_REQUIRES=1.2.7"; } > "$_P/tfnat.env"
+_mkfetched "$_P/tfnat.env" "model:tfnat:acme/Brand-New-Model-MLX-4bit:$_REV"
+_sp "$_TN" -- --profile "$_P/tfnat.env" --rank 1 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+[[ $SPRC -eq 0 ]] && _has "$_O" "--kv-cache fp8" && _has "$_O" "--setenv=TENSORFOLD_MEMORY_RESERVE_GIB=17.5" && ! _has "$_O" "--kv-dtype" \
+  && pass "native: TENSORFOLD_KV_CACHE is --kv-cache, TENSORFOLD_MEMORY_RESERVE_GIB is set on the rank" || fail "native kv-cache/reserve (rc=$SPRC): $_O"
+sed -e 's/^TENSORFOLD_REQUIRES=.*/TENSORFOLD_REQUIRES=1.3.3/' "$_P/tfnat.env" > "$_P/tfnat133.env"; _mkfetched "$_P/tfnat133.env" "model:tfnat133:acme/Brand-New-Model-MLX-4bit:$_REV"
+_sp "$_TN" -- --profile "$_P/tfnat133.env" --rank 1 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "needs native TensorFold 1.3.3" && _has "$_O" "engine.sh install tensorfold --version 1.3.3" \
+  && pass "native refuses a profile planned for another release (TENSORFOLD_REQUIRES)" || fail "native TENSORFOLD_REQUIRES (rc=$SPRC): $_O"
+{ cat "$_P/tftest.env"; echo 'EXTRA_ARGS=["--kv-dtype","fp8"]'; } > "$_P/tfkvd.env"; _mkfetched "$_P/tfkvd.env" "model:tfkvd:acme/Brand-New-Model-MLX-4bit:$_REV"
+_sp "$_TN" -- --profile "$_P/tfkvd.env" --rank 1 --master 192.168.100.10 --env "$_K/spark-native.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "native TensorFold refuses" && _has "$_O" "TENSORFOLD_KV_CACHE" \
+  && pass "native refuses --kv-dtype in EXTRA_ARGS (the 0.x flag), pointing at TENSORFOLD_KV_CACHE" || fail "native kv-dtype (rc=$SPRC): $_O"
+_sp "$_TN" TENSORFOLD_ENGINE=container TENSORFOLD_REF= -- --profile "$_P/tfnat.env" --rank 1 --master 1.2.3.4 --env "$_K/absent.env" --print
+[[ $SPRC -eq 1 ]] && _has "$_O" "sets TENSORFOLD_KV_CACHE, a native TensorFold setting" \
+  && pass "the container engine refuses a profile with native-only keys" || fail "container native keys (rc=$SPRC): $_O"
 _sp "$_TN" TENSORFOLD_API_KEY_FILE="$_K/no-such-key" -- --profile "$_P/tftest.env" --rank 0 --master 192.168.100.10 --env "$_K/spark-native.env" --print
 [[ $SPRC -eq 1 ]] && _has "$_O" "does not exist" && pass "native rank 0 refuses to serve without its key file" \
   || fail "native rank 0 keyless (rc=$SPRC): $_O"

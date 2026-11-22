@@ -225,12 +225,23 @@ vLLM:   also W + KV + reserve <= --gpu-memory-utilization x MemTotal
 
 The verdict for a size is the worse of the rule and the budget. KV and reserve
 come from the recipe, else the family's measured launch values in the data
-file (DeepSeek 1.8 GiB / 12.2 GiB; GLM 10 / 9.5 native, 17.5 measured on Mia's
-image and budgeted by the GLM recipe until a native start line says otherwise;
-Hy4 vLLM 6 / 5), else an estimate from `KV_BYTES_PER_TOKEN x CONTEXT x
-PARALLEL`. **They are budget assumptions**: on D2 only the KV dtype reaches the
-engine (`EXTRA_ARGS=["--kv-dtype", ...]` in the rendered profile); D2 has no flag
-for the pool or the reserve, and the plan's KV line says so. A checkpoint part
+file (DeepSeek 1.8 GiB / 12.2 GiB; GLM 10 / 17.5, the reserve measured on Mia's
+image and budgeted on native too until a native start line says otherwise
+(GLM 1104 claims 9.5); Hy4 vLLM 6 / 5), else an estimate from
+`KV_BYTES_PER_TOKEN x CONTEXT x PARALLEL`. **What reaches native TensorFold
+(D2)**: the rendered profile carries `TENSORFOLD_KV_CACHE=fp8` when
+`KV_DTYPE=fp8` (spark-node.sh passes `--kv-cache fp8`; bf16 is the default and
+gets no flag; `--kv-dtype` is the 0.x Python flag, which native refuses, and
+spark-node.sh refuses it in `EXTRA_ARGS`), `TENSORFOLD_MEMORY_RESERVE_GIB`
+(set on every rank as that environment variable: the floor the CUDA startup
+keeps free), and `TENSORFOLD_REQUIRES` (the planned release; spark-node.sh
+refuses another binary). **The KV pool is engine-sized, not capped**: native
+has no pool flag and sizes its KV pages to the room it finds, so the KV term is
+a budget only, and a tight budget gets a caveat (the start line and
+MemAvailable decide). Native's fp8 cache is an opt-in upstream does not
+qualify (GLM's latent cache only; "BF16 remains the default and the only
+qualified cache"): the GLM recipe keeps fp8 as VERIFY, MiniMax and Qwen run
+bf16. A checkpoint part
 that streams from disk does not count: Hy4 EXL3's resident size is the 85.38
 GiB TensorFold 1.3.2 loads on one GB10 with the opt-in CUDA slab mode (#4003),
 not its 203 GiB of files (Engram).
@@ -298,8 +309,11 @@ The fit per Spark count, the engines that read the model and their verdicts
 (best first), the parallelism (TP, expert parallel, the allowed rank counts),
 the drafter options with licences, the KV dtype and pool, the licences, the
 verdict, the gap list with effort, and the exact command sequence for every
-phase. `--sparks 4` retargets the plan only (it then says so: the acting
-commands follow `SPARKS=` in recipe.env, so edit that to act on it);
+phase. `--sparks 4` retargets the plan only. When the chosen TP differs from
+recipe.env's `SPARKS=`, it says to set `SPARKS=<the chosen TP>` (the acting
+commands follow recipe.env); when it does not (GLM at `--sparks 4` still
+chooses TP2, since TP3 and TP4 carry the topology gap), it says nothing needs
+to change;
 `--sparks 1,2,3,4` only widens the table. Reads only local files: it works
 offline anywhere.
 
@@ -367,8 +381,9 @@ overrides a launcher gap: a Mia unit that serves another pack or rank count,
 such as DeepSeek 4.0 at TP4 against the TP2 2.9 unit, is never "already
 active"). For D2 it renders the profile `scripts/backends/models/<PROFILE>.env`
 (validated by `obprofile.py`'s own rules: a local SOURCE must be absolute, a
-Hub SOURCE carries its 40-hex REVISION, the drafter its own; the KV dtype as
-`EXTRA_ARGS`) and the unit `recipes/<name>/beast-recipe-<name>.service`
+Hub SOURCE carries its 40-hex REVISION, the drafter its own; for native
+TensorFold `TENSORFOLD_KV_CACHE`, `TENSORFOLD_MEMORY_RESERVE_GIB` and
+`TENSORFOLD_REQUIRES`) and the unit `recipes/<name>/beast-recipe-<name>.service`
 (`Conflicts=` and `After=` the known units); `--write-profile` writes both
 (commit them: every Spark launches the profile from its own checkout, at the
 same commit). `up --run` holds beast-spark's switch lock. While any inference
@@ -376,7 +391,10 @@ unit is active or activating (the known units, every `beast-recipe-*.service`
 systemd lists, adopted or not, and a stray `openbeast-*-rank*` container) it
 **installs the unit and starts nothing** (exit 1: "switch through beast-spark");
 on a free pair it runs the checks, installs, starts and waits for the served id
-on `/v1/models`. `down --run` stops the unit and returns its exit code.
+on `/v1/models`. `down --run` stops the unit and returns its exit code. A
+recipe whose launcher is a Mia unit that is not its launch (DeepSeek 4.0 at
+TP4 against the TP2 2.9 unit) has no unit of its own: `down` stops nothing
+(exit 1 under `--run`) rather than the model that serves.
 
 ### `check <recipe> [--run] [--bench] [--url URL] [--key-file F]`
 
@@ -391,12 +409,20 @@ re-measure the baseline with the same command before deciding, since its
 published numbers may come from another probe. The key is read from the file,
 sent as a header, and never printed.
 
-### `adopt <recipe> [--run] [--write-family]` and `rollback [--run]`
+### `adopt <recipe> [--run] [--force] [--write-family]` and `rollback [--run]`
 
-`adopt --run` installs the rendered unit into `~/.config/systemd/user` (a
+`adopt --run` has `up`'s gate: it acts only on a SERVABLE-NOW plan, and runs
+the engine check (`tensorfold --version` on every node, or the image) before
+anything is written; `--force` overrides both. A recipe off the pair gets its
+`recipes/<name>/cluster.env` written when it is missing (the unit's
+`--cluster`). Without the gate, `beast-spark <name>` would stop the serving
+model for a unit that cannot come up. `adopt --run` installs the rendered unit into `~/.config/systemd/user` (a
 `daemon-reload`; no `[Install]`, so it enables and starts nothing, safe on a
 live pair) and writes `~/.config/openbeast/recipes.d/<name>.env` (UNIT, SERVED,
-BACKEND, WAIT_S; parsed by `beast-spark`, never sourced): after that,
+BACKEND, WAIT_S, and TENSORFOLD_VERSION for a native recipe; parsed by
+`beast-spark`, never sourced; beast-spark checks the installed `tensorfold
+--version` against TENSORFOLD_VERSION before it stops anything, because
+`~/.local/bin/tensorfold` is one link per Spark): after that,
 `beast-spark <name>` (or `beast-spark recipe <name>`) switches to it the way
 `beast-spark hy4` does: it stops the model that serves (DeepSeek, GLM, Hy4 or
 another recipe; their boot enablement stays), starts the recipe's unit, waits
@@ -491,7 +517,7 @@ digest, served name, port, model folder and GPU fraction. Launcher `hy4-vllm`:
 VERDICT   SERVABLE-NOW at TP2
           an engine we already have serves it on this many Sparks and it fits: what is left is steps (fetch, profile, start, check), no engineering
 
-Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <= 100 tight; budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom; KV and reserve are budget assumptions)
+Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <= 100 tight; budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom; what of KV and reserve reaches the engine: the KV line below)
   Sparks  W/rank  rule          W + KV + reserve + OS = used    headroom  engine allows
   1       153.3   does not fit  153.3 + 6.0 + 5.0 + 6.0 = 170.3   -48.7     no   (weights + KV + reserve 164.3 GiB > --gpu-memory-utilization 0.85 x MemTotal)
   2       77.3    fits          77.3 + 6.0 + 5.0 + 6.0 = 94.3    27.4      yes
@@ -515,14 +541,16 @@ VERDICT   SERVABLE-WITH-WORK at TP2
           it fits on this many Sparks, but an engine must be staged, built or extended first (the gap list says what, and how long)
           upstream: a two-Spark native hy_v4_flash family is in the works upstream (TensorFold#3797 open; #3801 in slices): when it lands, this becomes an engine-stage away
           caveat: never installed or run on our Sparks; D2 has never served on the pair
+          caveat: one tensorfold per Spark: the profile pins TENSORFOLD_REQUIRES=1.3.3, and spark-node.sh refuses another binary. A recipe on another release needs scripts/engine.sh install/rollback tensorfold on every Spark (and TENSORFOLD_VERSION=1.3.3 in spark.env) before its switch
           launch: the CUDA slab upload mode is opt-in (#4003) and must be switched on, or the load fails at layer 30: the env name is VERIFY (the upstream source or RUNTIME.md at the tag)
 
-Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <= 100 tight; budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom; KV and reserve are budget assumptions)
+Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <= 100 tight; budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom; what of KV and reserve reaches the engine: the KV line below)
   Sparks  W/rank  rule          W + KV + reserve + OS = used    headroom  engine allows
   1       85.4    fits          85.4 + 6.0 + 9.5 + 6.0 = 106.9   14.8      with work
   2       43.0    fits          43.0 + 6.0 + 9.5 + 6.0 = 64.5    57.2      with work
   3       28.9    fits          28.9 + 6.0 + 9.5 + 6.0 = 50.4    71.3      no
   4       21.9    fits          21.9 + 6.0 + 9.5 + 6.0 = 43.4    78.3      no
+  KV: engine-sized, not capped (native TensorFold has no KV-pool flag; the reserve is passed as TENSORFOLD_MEMORY_RESERVE_GIB)
   other bpw (projected checkpoint GiB -> per rank):
     3.0 bpw: 64.0 GiB -> 1: 64.0, 2: 32.3, 3: 21.7, 4: 16.4   (linear in bpw)
     4.0 bpw: 85.4 GiB -> 1: 85.4, 2: 43.0, 3: 28.9, 4: 21.9   (linear in bpw)
@@ -544,7 +572,7 @@ Parallelism  TP2, PP 1, one rank per Spark; this engine runs it at 1, 2
 Drafter      in-checkpoint:dfly
              option: in-checkpoint: DFly2 (0.85B, BF16) inside the checkpoint (model.dfly_layers.*); vLLM --speculative-config method dfly
 KV           bf16, 6.0 GiB a rank   (ESTIMATED: Hy4's MLA latent KV is small; values to be measured)
-             --kv-dtype bf16 is passed (EXTRA_ARGS); the KV pool and the reserve are a budget assumption, not passed to the engine
+             no --kv-cache: native TensorFold's default bf16 cache; TENSORFOLD_MEMORY_RESERVE_GIB=9.5 is set on every rank; the KV pool is engine-sized, not capped (native has no pool flag: it sizes its KV pages to the room it finds)
 Licences     weights=other (tencent-hy-license)
 Nodes        local spark-2   (default (the pair: spark-2 is the worker's ssh alias on the QSFP link))
 Baseline     hy4-flash-nvfp4-vllm-tp2: 31.4 tok/s at 1 stream, 77.8 aggregate at 4 (beat both; re-measure the baseline with `beast-recipe check --bench` so both use one probe)
@@ -674,13 +702,16 @@ with the same `model.safetensors` blob as the CC BY-NC-ND pin `bf582e4e`.
 VERDICT   SERVABLE-NOW at TP2
           an engine we already have serves it on this many Sparks and it fits: what is left is steps (fetch, profile, start, check), no engineering
           caveat: D2 has never served on the pair (SPARK_HYDRA D2 'VERIFY ON HARDWARE')
+          caveat: tight budget (5.7 GiB of headroom) that nothing enforces: native TensorFold sizes its KV pages itself, so the first start line and MemAvailable on every rank decide (step: tuning)
+          caveat: one tensorfold per Spark: the profile pins TENSORFOLD_REQUIRES=1.2.10, and spark-node.sh refuses another binary. A recipe on another release needs scripts/engine.sh install/rollback tensorfold on every Spark (and TENSORFOLD_VERSION=1.2.10 in spark.env) before its switch
 
-Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <= 100 tight; budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom; KV and reserve are budget assumptions)
+Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <= 100 tight; budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom; what of KV and reserve reaches the engine: the KV line below)
   Sparks  W/rank  rule          W + KV + reserve + OS = used    headroom  engine allows
   1       163.6   does not fit  163.6 + 10.0 + 17.5 + 6.0 = 197.1   -75.4     no
   2       82.4    fits          82.4 + 10.0 + 17.5 + 6.0 = 115.9   5.7       yes
   3       55.4    fits          55.4 + 10.0 + 17.5 + 6.0 = 88.9    32.8      yes
   4       41.9    fits          41.9 + 10.0 + 17.5 + 6.0 = 75.4    46.3      yes
+  KV: engine-sized, not capped (native TensorFold has no KV-pool flag; the reserve is passed as TENSORFOLD_MEMORY_RESERVE_GIB)
   other bpw (projected checkpoint GiB -> per rank):
     3.0 bpw: 125.6 GiB -> 1: 125.6, 2: 63.3, 3: 42.5, 4: 32.2   (sizing rule)
     4.0 bpw: 163.6 GiB -> 1: 163.6, 2: 82.5, 3: 55.4, 4: 41.9   (sizing rule)
@@ -720,8 +751,14 @@ MAX_MODEL_LEN=245760
 TENSORFOLD_PARALLEL=4
 DRAFTER_SOURCE=incoai/GLM-5.3-Flash-DFlash2
 DRAFTER_REVISION=6cc6c481eee930a5139619ed919f78726371adbc
-EXTRA_ARGS=["--kv-dtype","fp8"]
+TENSORFOLD_KV_CACHE=fp8
+TENSORFOLD_MEMORY_RESERVE_GIB=17.5
+TENSORFOLD_REQUIRES=1.2.10
 ```
+
+`TENSORFOLD_KV_CACHE=fp8` is native `--kv-cache fp8`, an opt-in upstream does
+not qualify: VERIFY on the first serve. The fallback is bf16, which needs the
+KV re-budgeted (13,056 against 6,960 B a token a rank).
 
 ### 4. DeepSeek-V4.1-Flash at 2.9 bpw (the default) and at 4.0 bpw
 
@@ -734,7 +771,7 @@ VERDICT   SERVABLE-NOW at TP2
           an engine we already have serves it on this many Sparks and it fits: what is left is steps (fetch, profile, start, check), no engineering
           upstream: TP4: branch deepseek-v41-zig-tp4 @ 5940208 (input tools) and Mia's 4-Spark recipe; a 4-ring or a switch
 
-Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <= 100 tight; budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom; KV and reserve are budget assumptions)
+Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <= 100 tight; budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom; what of KV and reserve reaches the engine: the KV line below)
   Sparks  W/rank  rule          W + KV + reserve + OS = used    headroom  engine allows
   1       196.1   does not fit  196.1 + 1.8 + 12.2 + 6.0 = 216.1   -94.4     no
   2       98.9    tight         98.9 + 1.8 + 12.2 + 6.0 = 118.9   2.8       yes
@@ -759,7 +796,7 @@ VERDICT   NEEDS-MORE-HARDWARE at TP4
           - 4 Sparks: 68.4 GiB a rank, fits (SERVABLE-WITH-WORK)
           upstream: TP4: branch deepseek-v41-zig-tp4 @ 5940208 (input tools) and Mia's 4-Spark recipe; a 4-ring or a switch
 
-Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <= 100 tight; budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom; KV and reserve are budget assumptions)
+Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <= 100 tight; budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom; what of KV and reserve reaches the engine: the KV line below)
   Sparks  W/rank  rule          W + KV + reserve + OS = used    headroom  engine allows
   1       267.2   does not fit  267.2 + 1.8 + 12.2 + 6.0 = 287.2   -165.5    no
   2       134.7   does not fit  134.7 + 1.8 + 12.2 + 6.0 = 154.7   -33.0     yes
@@ -810,14 +847,16 @@ cabling the 4-ring. The LibertAI 3.5-bpw pack already exists for four
 VERDICT   SERVABLE-WITH-WORK at TP1
           it fits on this many Sparks, but an engine must be staged, built or extended first (the gap list says what, and how long)
           note: a better path exists: tf-native-1.2.10 is SERVABLE-NOW at TP1
-          caveat: never installed or run on our Sparks; D2 has never served on the pair
+          caveat: never installed or run on our Sparks; D2 has never served on one Spark
+          caveat: one tensorfold per Spark: the profile pins TENSORFOLD_REQUIRES=1.3.3, and spark-node.sh refuses another binary. A recipe on another release needs scripts/engine.sh install/rollback tensorfold on every Spark (and TENSORFOLD_VERSION=1.3.3 in spark.env) before its switch
 
-Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <= 100 tight; budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom; KV and reserve are budget assumptions)
+Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <= 100 tight; budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom; what of KV and reserve reaches the engine: the KV line below)
   Sparks  W/rank  rule          W + KV + reserve + OS = used    headroom  engine allows
   1       15.2    fits          15.2 + 16.0 + 6.5 + 6.0 = 43.7    78.0      yes
   2       7.7     fits          7.7 + 16.0 + 6.5 + 6.0 = 36.2    85.5      no
   3       5.2     fits          5.2 + 16.0 + 6.5 + 6.0 = 33.7    88.0      no
   4       3.9     fits          3.9 + 16.0 + 6.5 + 6.0 = 32.4    89.3      no
+  KV: engine-sized, not capped (native TensorFold has no KV-pool flag; the reserve is passed as TENSORFOLD_MEMORY_RESERVE_GIB)
   other bpw (projected checkpoint GiB -> per rank):
     3.0 bpw: 11.4 GiB -> 1: 11.4, 2: 5.8, 3: 3.9, 4: 2.9   (linear in bpw)
     4.0 bpw: 15.2 GiB -> 1: 15.2, 2: 7.7, 3: 5.2, 4: 3.9   (linear in bpw)
@@ -843,7 +882,13 @@ admission is 1.3.3's; 1.3.4's dense MTP does not matter with a DFlash2
 drafter). On the pair, one Spark means the pair's model is down (or a third
 Spark); the recipe's D2 commands and unit use `recipes/<name>/cluster.env`
 (`local` only), never the pair's two-node file. The drafter is
-`z-lab/Qwen3.8-27B-DFlash2@50307d4c` (Apache-2.0).
+`z-lab/Qwen3.8-27B-DFlash2@50307d4c` (Apache-2.0). The revision `387b8445` is
+the Hub branch `SCP_4.00bpw` (not `4.00bpw` = `113cf7ab`); this EXL3 variant
+(bits 4.0, head 5, mtp 4, vision 6, mul1) has never run on native TensorFold:
+upstream's supported-models.md lists the 27B only as MLX 4-bit, and the
+admission comes from `capabilities --json` alone (VERIFY). Because 1.3.3 is
+not installed, `adopt --run` refuses it (SERVABLE-WITH-WORK) until the engine
+is staged, or the recipe is re-pinned to 1.2.10.
 
 ### 6. MiniMax-M3.1-Flash EXL3 3.06 bpw on 2 Sparks
 
@@ -851,13 +896,15 @@ Spark); the recipe's D2 commands and unit use `recipes/<name>/cluster.env`
 VERDICT   SERVABLE-NOW at TP2
           an engine we already have serves it on this many Sparks and it fits: what is left is steps (fetch, profile, start, check), no engineering
           caveat: D2 has never served on the pair (SPARK_HYDRA D2 'VERIFY ON HARDWARE')
+          caveat: one tensorfold per Spark: the profile pins TENSORFOLD_REQUIRES=1.2.10, and spark-node.sh refuses another binary. A recipe on another release needs scripts/engine.sh install/rollback tensorfold on every Spark (and TENSORFOLD_VERSION=1.2.10 in spark.env) before its switch
 
-Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <= 100 tight; budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom; KV and reserve are budget assumptions)
+Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <= 100 tight; budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom; what of KV and reserve reaches the engine: the KV line below)
   Sparks  W/rank  rule          W + KV + reserve + OS = used    headroom  engine allows
   1       159.2   does not fit  159.2 + 8.0 + 9.5 + 6.0 = 182.7   -61.0     no
   2       80.3    fits          80.3 + 8.0 + 9.5 + 6.0 = 103.8   17.9      yes
   3       53.9    fits          53.9 + 8.0 + 9.5 + 6.0 = 77.4    44.3      no
   4       40.8    fits          40.8 + 8.0 + 9.5 + 6.0 = 64.3    57.4      no
+  KV: engine-sized, not capped (native TensorFold has no KV-pool flag; the reserve is passed as TENSORFOLD_MEMORY_RESERVE_GIB)
   other bpw (projected checkpoint GiB -> per rank):
     3.0 bpw: 156.1 GiB -> 1: 156.1, 2: 78.7, 3: 52.9, 4: 40.0   (linear in bpw)
     4.0 bpw: 208.2 GiB -> 1: 208.2, 2: 104.9, 3: 70.5, 4: 53.3   (linear in bpw)

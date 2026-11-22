@@ -341,6 +341,20 @@ else fail "ds from recipe: $(calls) / $(cat "$T/out")"; fi
 reset; touch "$ST/deepseek-v41-inference.service.active"
 if ! run demo && [[ -z "$(calls)" ]] && grep -q "beast-recipe up demo" "$T/out"; then pass "recipe whose unit is not installed: refused, nothing stopped"
 else fail "recipe not installed: $(calls) / $(cat "$T/out")"; fi
+# a recipe planned for another native TensorFold release: refused before anything is stopped
+printf '#!/bin/bash\necho "tensorfold 1.2.10"\n' > "$T/tf-bin"; chmod +x "$T/tf-bin"
+printf 'UNIT=%s\nSERVED=demo-served\nBACKEND=tensorfold\nWAIT_S=10\nTENSORFOLD_VERSION=1.3.3\n' "$RU" > "$T/recipes.d/demo.env"
+reset; touch "$ST/$RU.installed" "$ST/deepseek-v41-inference.service.active"
+if ! SB_TENSORFOLD_BIN="$T/tf-bin" run demo && [[ -z "$(calls)" ]] && grep -q "needs native TensorFold 1.3.3" "$T/out" \
+   && grep -q "engine.sh install tensorfold --version 1.3.3" "$T/out" && [[ -f "$ST/deepseek-v41-inference.service.active" ]]; then
+  pass "recipe pinned to another native TensorFold release: refused before anything is stopped"
+else fail "recipe version gate: $(calls) / $(cat "$T/out")"; fi
+printf 'UNIT=%s\nSERVED=demo-served\nBACKEND=tensorfold\nWAIT_S=10\nTENSORFOLD_VERSION=1.2.10\n' "$RU" > "$T/recipes.d/demo.env"
+reset; rm -f "$T/recipes.d/.previous"; touch "$ST/$RU.installed" "$ST/deepseek-v41-inference.service.active"
+if SB_TENSORFOLD_BIN="$T/tf-bin" run demo && [[ "$(calls)" == "stop deepseek-v41-inference.service;start $RU;restart openbeast.service" ]]; then
+  pass "recipe whose native TensorFold release matches: switches as before"
+else fail "recipe version match: $(calls) / $(cat "$T/out")"; fi
+printf '# adopted\nUNIT=%s\nSERVED=demo-served\nBACKEND=tensorfold\nWAIT_S=10\n' "$RU" > "$T/recipes.d/demo.env"
 if ! run evil && [[ ! -e "$T/pwned" ]] && ! run recipe nosuch && grep -q "no adopted recipe 'nosuch'" "$T/out"; then
   pass "a malformed registry file is ignored (never sourced, nothing run); an unknown recipe is refused"
 else fail "recipe registry hygiene: $(cat "$T/out")"; fi

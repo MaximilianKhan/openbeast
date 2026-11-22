@@ -580,17 +580,30 @@ def test_stage_run_verifies_on_every_node_with_the_sums_on_stdin(stubs, tmp_path
     assert not any("rsync" in x or "weights-download" in x for x in c), c
 
 
+def _home_tf(tmp_path, version="1.2.10"):
+    home = tmp_path / "home"
+    (home / ".local/bin").mkdir(parents=True, exist_ok=True)
+    tf = home / ".local/bin/tensorfold"
+    tf.write_text(f"#!/bin/bash\necho tensorfold-native {version}\n")
+    tf.chmod(0o755)
+    return home
+
+
+ENGINE_CHECK = "ssh -o BatchMode=yes -o ConnectTimeout=10 -- spark-2 ~/.local/bin/tensorfold --version"
+
+
 def test_adopt_and_rollback_run(stubs, tmp_path):
     state = tmp_path / "state"
-    home = tmp_path / "home"
+    home = _home_tf(tmp_path)
     out = cli(["adopt", "glm53-flash-exl3-native-tp2", "--run"], stubs,
               env={"BEAST_RECIPE_STATE_DIR": str(state), "HOME": str(home)})
     assert out.returncode == 0, out.stderr
     entry = (state / "glm53-flash-exl3-native-tp2.env").read_text()
     assert "UNIT=beast-recipe-glm53-flash-exl3-native-tp2.service" in entry and "SERVED=glm-5.3-flash-ablit" in entry
-    # adopt installs the unit (the path beast-spark NAME needs) and only daemon-reloads
+    assert "TENSORFOLD_VERSION=1.2.10" in entry                  # beast-spark checks it before stopping anything
+    # adopt checks the engine on every node, installs the unit (the path beast-spark NAME needs), daemon-reloads
     assert (home / ".config/systemd/user/beast-recipe-glm53-flash-exl3-native-tp2.service").is_file()
-    assert "BACKEND=tensorfold" in entry and calls(stubs) == ["systemctl --user daemon-reload"]
+    assert "BACKEND=tensorfold" in entry and calls(stubs) == [ENGINE_CHECK, "systemctl --user daemon-reload"]
     open(stubs[1], "w").close()
     # the entry is what spark-beast.sh's recipe_units accepts
     sb = subprocess.run(["bash", "-c", ('set -euo pipefail; eval "$(sed -n -e "/^recipe_value()/p" -e "/^recipe_units()/,/^}/p" '
@@ -614,7 +627,7 @@ def test_adopt_write_family_is_valid_intake_data(tmp_path, monkeypatch, stubs):
     before = fam.read_text()
     assert recipe.main(["adopt", "minimax-m31-flash-exl3-3.06-tp2", "--write-family"]) == 0
     assert fam.read_text() == before                       # without --run nothing is written
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HOME", str(_home_tf(tmp_path)))
     monkeypatch.setenv("PATH", f"{stubs[0]}{os.pathsep}{os.environ['PATH']}")
     rc = recipe.main(["adopt", "minimax-m31-flash-exl3-3.06-tp2", "--write-family", "--run"])
     assert rc == 0
@@ -745,13 +758,130 @@ def test_an_unreleased_engine_never_stages_and_blocks(tmp_path, data):
     assert recipe.plan(auto, data, sparks=1)["engine"]["id"] == "tf-native-1.3.3"
 
 
-def test_glm_profile_passes_the_kv_dtype_and_the_plan_says_what_is_budget(data):
+def test_glm_profile_passes_the_native_kv_cache_and_reserve_and_the_plan_says_what_is_budget(data):
     r = recipe.load_recipe("glm53-flash-exl3-native-tp2")
     p = recipe.choose(r, data, 2)["chosen"]
-    assert 'EXTRA_ARGS=["--kv-dtype","fp8"]' in recipe.render_profile(r, p)
+    prof = recipe.render_profile(r, p)
+    # native TensorFold: --kv-cache bf16|fp8 (TENSORFOLD_KV_CACHE); --kv-dtype is the 0.x flag it refuses
+    assert "TENSORFOLD_KV_CACHE=fp8" in prof and "kv-dtype" not in prof
+    assert "TENSORFOLD_MEMORY_RESERVE_GIB=17.5" in prof and "TENSORFOLD_REQUIRES=1.2.10" in prof
     pl = recipe.plan(r, data)
-    assert "--kv-dtype fp8 is passed" in pl["kv"]["passed"] and "budget assumption" in pl["kv"]["passed"]
+    kv = pl["kv"]["passed"]
+    assert "--kv-cache fp8 is passed" in kv and "TENSORFOLD_MEMORY_RESERVE_GIB=17.5 is set" in kv
+    assert "engine-sized, not capped" in kv and "engine-sized" in pl["fit"][2]["kv_from"]
     assert pl["fit"][2]["reserve_gib"] == 17.5                     # the larger, verified local.sh value
+    text = recipe.render_plan(pl)
+    assert "KV: engine-sized, not capped" in text
+    assert "tight budget" in text and "nothing enforces" in text   # 5.7 GiB of headroom, not enforced
+    assert "one tensorfold per Spark" in text
+
+
+def test_no_native_profile_carries_kv_dtype(data):
+    for name in ("glm53-flash-exl3-native-tp2", "minimax-m31-flash-exl3-3.06-tp2", "qwen38-27b-exl3-4.0-1x",
+                 "hy4-flash-exl3-tensorfold-tp2"):
+        r = recipe.load_recipe(name)
+        p = recipe.choose(r, data, int(r.num("SPARKS") or 2))["chosen"]
+        assert p["kind"] == "tensorfold-native"
+        prof = recipe.render_profile(r, p)
+        assert "kv-dtype" not in prof and "EXTRA_ARGS" not in prof, name
+        assert ("TENSORFOLD_KV_CACHE=fp8" in prof) == (r.get("KV_DTYPE") == "fp8"), name   # bf16 = the default: no flag
+        assert f"TENSORFOLD_REQUIRES={p['version']}" in prof
+    for f in (recipe.BACKENDS / "models").glob("recipe-*.env"):
+        assert "kv-dtype" not in f.read_text(), f
+    # the committed profiles are what the recipes render now
+    for name in ("glm53-flash-exl3-native-tp2", "minimax-m31-flash-exl3-3.06-tp2", "qwen38-27b-exl3-4.0-1x"):
+        r = recipe.load_recipe(name)
+        p = recipe.choose(r, data, int(r.num("SPARKS") or 2))["chosen"]
+        assert (recipe.BACKENDS / "models" / f"{recipe.profile_name(r)}.env").read_text() == recipe.render_profile(r, p)
+
+
+def test_native_kv_cache_refuses_a_dtype_it_has_not(tmp_path, data):
+    r = mk(tmp_path, f"MODEL_TYPE=qwen3_5\nFORMAT=exl3\nBPW=4\nEXL3_CODEBOOK=mul1\nWEIGHT_BYTES={15 * GIB}\n"
+                     "ENGINE=tf-native-1.2.10\nSPARKS=1\nLAUNCHER=d2-tensorfold\nKV_DTYPE=int8\n"
+                     "SOURCE=org/m\nREVISION=" + "a" * 40 + "\nSERVED_NAME=m\n")
+    p = recipe.choose(r, data, 1)["chosen"]
+    with pytest.raises(recipe.RecipeError, match="--kv-cache takes bf16 or fp8"):
+        recipe.render_profile(r, p)
+
+
+def test_profile_native_keys_validate(tmp_path):
+    import obprofile
+    base = "BACKEND=tensorfold\nSOURCE=org/m\nREVISION=" + "a" * 40 + "\nSERVED_MODEL_NAME=m\n"
+    for bad, msg in (("TENSORFOLD_KV_CACHE=int8\n", "bf16 or fp8"), ("TENSORFOLD_MEMORY_RESERVE_GIB=x\n", "GiB"),
+                     ("TENSORFOLD_REQUIRES=latest\n", "release version")):
+        prof = obprofile.Profile(name="t", path=tmp_path / "t.env", values=obprofile.parse_text(base + bad, "t"))
+        with pytest.raises(obprofile.ProfileError, match=msg):
+            obprofile.validate(prof, "tensorfold")
+    vl = "BACKEND=vllm\nSOURCE=org/m\nREVISION=" + "a" * 40 + "\nSERVED_MODEL_NAME=m\nTENSORFOLD_KV_CACHE=fp8\n"
+    with pytest.raises(obprofile.ProfileError, match="TensorFold setting"):
+        obprofile.validate(obprofile.Profile(name="t", path=tmp_path / "t.env", values=obprofile.parse_text(vl, "t")), "vllm")
+
+
+def test_one_spark_plan_has_one_spark_wording(data):
+    pl = recipe.plan(recipe.load_recipe("qwen38-27b-exl3-4.0-1x"), data)
+    g = next(x for x in pl["gaps"] if x["id"] == "d2-first-serve")
+    assert "one Spark" in g["title"] and "pair-down" not in g["effort"]
+    assert "on the pair" not in pl["engine"]["unverified"]
+    pair = recipe.plan(recipe.load_recipe("glm53-flash-exl3-native-tp2"), data)
+    assert "pair-down" in next(x for x in pair["gaps"] if x["id"] == "d2-first-serve")["effort"]
+
+
+def test_adopt_run_refuses_a_plan_that_is_not_servable_now(stubs, tmp_path):
+    state = tmp_path / "state"
+    home = _home_tf(tmp_path)
+    out = cli(["adopt", "qwen38-27b-exl3-4.0-1x", "--run"], stubs,
+              env={"BEAST_RECIPE_STATE_DIR": str(state), "HOME": str(home)})
+    assert out.returncode == 1 and "SERVABLE-WITH-WORK" in out.stderr and "adopt --run acts only on SERVABLE-NOW" in out.stderr
+    assert not state.exists() and calls(stubs) == []
+    assert not (home / ".config/systemd/user/beast-recipe-qwen38-27b-exl3-4.0-1x.service").exists()
+
+
+def test_adopt_run_refuses_an_engine_not_as_planned(stubs, tmp_path):
+    state = tmp_path / "state"
+    home = _home_tf(tmp_path, "1.3.3")                             # the head runs 1.3.3, GLM is planned on 1.2.10
+    out = cli(["adopt", "glm53-flash-exl3-native-tp2", "--run"], stubs,
+              env={"BEAST_RECIPE_STATE_DIR": str(state), "HOME": str(home)})
+    assert out.returncode == 1 and "not installed as planned" in out.stderr and "local:" in out.stderr
+    assert not state.exists() and "systemctl --user daemon-reload" not in calls(stubs)
+
+
+def test_adopt_run_writes_the_recipe_cluster_file_off_the_pair(stubs, tmp_path, monkeypatch):
+    rd = tmp_path / "recipes"
+    shutil.copytree(RECIPES / "qwen38-27b-exl3-4.0-1x", rd / "q1")
+    (rd / "q1" / "recipe.env").write_text((rd / "q1" / "recipe.env").read_text()
+                                          .replace("ENGINE=tf-native-1.3.3", "ENGINE=tf-native-1.2.10"))
+    (rd / "q1" / "cluster.env").unlink(missing_ok=True)
+    home = _home_tf(tmp_path)
+    cf = tmp_path / "cluster.env"
+    cf.write_text('CLUSTER_NODES="local spark-2"\nCLUSTER_REPO=~/openbeast\n')
+    env = {"BEAST_RECIPE_STATE_DIR": str(tmp_path / "state"), "HOME": str(home), "BEAST_RECIPES_DIR": str(rd)}
+    r = recipe.load_recipe(str(rd / "q1"))
+    p = recipe.choose(r, recipe.load_data(), 1)["chosen"]
+    (rd / "q1" / recipe.unit_of(r, recipe.launcher_of(r, p))).write_text(recipe.render_unit(r, p))
+    out = cli(["adopt", "q1", "--run", "--cluster", str(cf)], stubs, env=env)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert (rd / "q1" / "cluster.env").read_text().count('CLUSTER_NODES="local"') == 1
+
+
+def test_down_on_a_mismatched_mia_unit_stops_nothing(stubs, tmp_path):
+    out = cli(["down", "deepseek-v41-flash-exl3-4.0"], stubs)
+    assert out.returncode == 0 and "nothing is stopped" in out.stdout and calls(stubs) == []
+    cf = tmp_path / "cluster.env"
+    cf.write_text('CLUSTER_NODES="local spark-2 spark-3 spark-4"\n')
+    run = cli(["down", "deepseek-v41-flash-exl3-4.0", "--run", "--cluster", str(cf)], stubs)
+    assert run.returncode == 1 and "nothing is stopped" in run.stderr
+    assert not any("stop" in c for c in calls(stubs)), calls(stubs)
+
+
+def test_stage_intake_is_light_while_serving():
+    assert recipe.is_light_step("cd ~/openbeast && scripts/backends/spark-model-intake.sh ~/Documents/x   # read-only")
+    assert not recipe.is_light_step("cd ~/openbeast && scripts/backends/spark-model-intake.sh --checksums ~/x")
+    assert not recipe.is_light_step("scripts/backends/model-fetch.sh --profile p")
+    r = recipe.load_recipe("deepseek-v41-flash-exl3-2.9-tp2")
+    data = recipe.load_data()
+    p = recipe.choose(r, data, 2)["chosen"]
+    steps = recipe.stage_steps(r, p, recipe.engine_by_id(data, p["engine"]), ["local", "spark-2"])
+    assert steps and all(recipe.is_light_step(c) for _s, _n, c in steps), steps
 
 
 def test_stage_renders_a_missing_d2_profile_first(tmp_path, monkeypatch, data):
@@ -775,7 +905,12 @@ def test_stage_renders_a_missing_d2_profile_first(tmp_path, monkeypatch, data):
 
 def test_plan_retarget_says_the_acting_commands_follow_recipe_env():
     out = cli(["plan", "glm53-flash-exl3-native-tp2", "--sparks", "4"])
-    assert out.returncode == 0 and "set SPARKS=4 there before engine/stage/up" in out.stdout
+    # the chosen TP stays 2 = recipe.env's SPARKS: nothing to change there
+    assert out.returncode == 0 and "set SPARKS=" not in out.stdout and "nothing to change there" in out.stdout
+    one = cli(["plan", "glm53-flash-exl3-native-tp2", "--sparks", "3"])
+    assert "set SPARKS=" not in one.stdout
+    q = cli(["plan", "qwen38-27b-exl3-4.0-1x", "--sparks", "2"])
+    assert q.returncode == 0
     # TP2 is servable now on 4 Sparks; TP3 and TP4 need the cabling and fabric work (gap topology)
     assert "VERDICT   SERVABLE-NOW at TP2" in out.stdout
     p = recipe.plan(recipe.load_recipe("glm53-flash-exl3-native-tp2"), recipe.load_data(), sparks=3)

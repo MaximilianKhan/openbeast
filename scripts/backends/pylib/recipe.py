@@ -602,6 +602,7 @@ def evaluate_engine(r: Recipe, data: dict, e: dict, sparks: int) -> dict:
     the fit, and the resulting verdict."""
     fam, why = family_for(e, r)
     out = {"engine": e["id"], "title": e["title"], "kind": e["kind"], "status": e["status"], "reads": bool(fam),
+           "version": e.get("version", "") if e["kind"] == "tensorfold-native" else "",
            "why": why, "launcher": e.get("launcher", "none"), "rows": {}, "verdict": "BLOCKED"}
     if not fam:
         return out
@@ -1060,11 +1061,21 @@ def render_profile(r: Recipe, p: dict) -> str:
         lines.append(f"TENSORFOLD_PARALLEL={r.get('PARALLEL') or 'auto'}")
         if kind == "repo":
             lines += [f"DRAFTER_SOURCE={drepo}", f"DRAFTER_REVISION={drev}"]
-        # the KV dtype reaches the engine (spark-node.sh appends EXTRA_ARGS; --kv-dtype is allow-listed).
-        # KV_POOL_GIB and MEMORY_RESERVE_GIB have no engine flag in D2: the plan budgets them only.
+        # D2's tensorfold launcher is native TensorFold (every d2-tensorfold engine is tensorfold-native).
+        # Its --kv-cache takes bf16 (the default) or fp8; --kv-dtype is the 0.x Python flag, refused by
+        # native. spark-node.sh passes TENSORFOLD_KV_CACHE as --kv-cache, TENSORFOLD_MEMORY_RESERVE_GIB as
+        # that environment variable on every rank, and refuses a binary other than TENSORFOLD_REQUIRES.
+        # KV_POOL_GIB has no native flag: the engine sizes its KV pages to the room it finds.
         kvd = r.get("KV_DTYPE")
-        if kvd and kvd != "auto":
-            lines.append(f'EXTRA_ARGS=["--kv-dtype","{kvd}"]')
+        if kvd == "fp8":
+            lines.append("TENSORFOLD_KV_CACHE=fp8")
+        elif kvd not in ("", "auto", "bf16"):
+            raise RecipeError(f"KV_DTYPE={kvd}: native TensorFold's --kv-cache takes bf16 or fp8")
+        if r.get("MEMORY_RESERVE_GIB"):
+            lines.append(f"TENSORFOLD_MEMORY_RESERVE_GIB={r.get('MEMORY_RESERVE_GIB')}")
+        v = (p.get("version") or "")
+        if re.match(r"^[0-9]+\.[0-9]+\.[0-9]+$", v):
+            lines.append(f"TENSORFOLD_REQUIRES={v}")
     else:
         for k, pk in (("TOOL_PARSER", "TOOL_CALL_PARSER"), ("REASONING_PARSER", "REASONING_PARSER"),
                       ("GPU_MEM_UTIL", "GPU_MEMORY_UTILIZATION"), ("MAX_NUM_SEQS", "MAX_NUM_SEQS")):
@@ -1200,7 +1211,12 @@ def plan(r: Recipe, data: dict, sparks: int | None = None, counts: list[int] | N
     if p["verdict"] in ("SERVABLE-NOW", "SERVABLE-WITH-WORK", "NEEDS-MORE-HARDWARE"):
         ids = {g["id"] for g in gaps}
         if launcher.startswith("d2-") and "d2-first-serve" not in ids:
-            gaps.append(_gap(data, "d2-first-serve"))
+            if (p.get("n") or sparks) == 1:
+                gaps.append(_gap(data, "d2-first-serve", {
+                    "title": "D2 (spark-cluster.sh + spark-node.sh) has never served on one Spark: the first native serve qualifies it",
+                    "effort": "one model-down window of 0.5-1 day on that Spark (on the pair, the pair's model is down too)"}))
+            else:
+                gaps.append(_gap(data, "d2-first-serve"))
         for gid in ("glue", "tuning"):
             if gid not in ids:
                 gaps.append(_gap(data, gid))
@@ -1225,6 +1241,10 @@ def plan(r: Recipe, data: dict, sparks: int | None = None, counts: list[int] | N
             better = {"engine": top["engine"], "verdict": top["verdict"], "n": top.get("n")}
     fit = {n: fit_row(r, data, p.get("launch") or {}, n, "vllm" if p["kind"] == "vllm" else "tensorfold")
            for n in counts}
+    native = p["kind"] == "tensorfold-native" and launcher.startswith("d2-")
+    for n in counts:
+        if native and fit[n].get("kv_from"):
+            fit[n]["kv_from"] += "; engine-sized, not capped"
     for n in counts:
         x = p["rows"].get(n) or {}
         fit[n]["engine_allows"] = ("no" if not x.get("allowed") else "yes" if x.get("how") == "serves"
@@ -1237,6 +1257,19 @@ def plan(r: Recipe, data: dict, sparks: int | None = None, counts: list[int] | N
                 share = data["hardware"]["spark"]["replicated_share"]
                 projections.append({"bpw": b, "checkpoint_gib": round(g, 1), "how": how,
                                     "per_rank": {n: round(per_rank_gib(g, n, share) if n > 1 else g, 1) for n in counts}})
+    unverified = (eng or {}).get("unverified_on_pair", "")
+    if (p.get("n") or sparks) == 1 and unverified:
+        unverified = unverified.replace("D2 has never served on the pair", "D2 has never served on one Spark")
+    caveats = []
+    cn = p.get("n")
+    if native and cn and fit.get(cn, {}).get("budget") == "tight":
+        caveats.append(f"tight budget ({fit[cn]['headroom_gib']} GiB of headroom) that nothing enforces: native "
+                       "TensorFold sizes its KV pages itself, so the first start line and MemAvailable on every rank "
+                       "decide (step: tuning)")
+    if native and p.get("version"):
+        caveats.append(f"one tensorfold per Spark: the profile pins TENSORFOLD_REQUIRES={p['version']}, and spark-node.sh "
+                       "refuses another binary. A recipe on another release needs scripts/engine.sh install/rollback "
+                       f"tensorfold on every Spark (and TENSORFOLD_VERSION={p['version']} in spark.env) before its switch")
     k, drepo, drev = drafter_spec(r)
     drafters = list((data.get("drafters") or {}).get(r.get("MODEL_TYPE"), []))
     steps = {
@@ -1258,7 +1291,8 @@ def plan(r: Recipe, data: dict, sparks: int | None = None, counts: list[int] | N
         "verdict": p["verdict"], "verdict_meaning": VERDICT_MEANING[p["verdict"]],
         "engine": {"id": p["engine"], "title": p["title"], "status": p["status"], "pinned": c["pinned"],
                    "launcher": launcher, "n": p.get("n"), "rank_reason": p.get("rank_reason"),
-                   "note": p.get("note") or "", "unverified": (eng or {}).get("unverified_on_pair", ""),
+                   "note": p.get("note") or "", "unverified": unverified, "caveats": caveats,
+                   "version": p.get("version") or "",
                    "why": p.get("why") or "", "launch_note": p.get("launch_note") or "", "reads": p["reads"]},
         "better_path": better,
         "hardware_why": hardware_why(r, data, p, sparks) if p["verdict"] == "NEEDS-MORE-HARDWARE" else [],
@@ -1284,8 +1318,12 @@ def kv_passed(r: Recipe, launcher: str) -> str:
     """What of the KV / reserve budget actually reaches the engine at launch."""
     if launcher.startswith("d2-") and launcher != "d2-vllm":
         kvd = r.get("KV_DTYPE")
-        return (f"--kv-dtype {kvd} is passed (EXTRA_ARGS); " if kvd and kvd != "auto" else "") + \
-            "the KV pool and the reserve are a budget assumption, not passed to the engine"
+        res = r.get("MEMORY_RESERVE_GIB")
+        return ("--kv-cache fp8 is passed (TENSORFOLD_KV_CACHE)" if kvd == "fp8" else
+                "no --kv-cache: native TensorFold's default bf16 cache") + \
+            (f"; TENSORFOLD_MEMORY_RESERVE_GIB={res} is set on every rank" if res else
+             "; no reserve set: the engine's default (a tenth of the pool, at least 4 GiB)") + \
+            "; the KV pool is engine-sized, not capped (native has no pool flag: it sizes its KV pages to the room it finds)"
     if launcher in ("hy4-vllm", "d2-vllm"):
         return "vLLM: --kv-cache-memory-bytes / --gpu-memory-utilization are the launch's; the reserve is a budget assumption"
     return "the launcher's own values (the plan budgets the recipe's)"
@@ -1320,13 +1358,15 @@ def render_plan(pl: dict) -> str:
         add(f"          upstream: {e['note']}")
     if e["unverified"]:
         add(f"          caveat: {e['unverified']}")
+    for c in e.get("caveats") or []:
+        add(f"          caveat: {c}")
     if e.get("launch_note"):
         add(f"          launch: {e['launch_note']}")
     if pl.get("retarget_note"):
         add(f"          {pl['retarget_note']}")
     add("")
     add("Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <= 100 tight; "
-        "budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom; KV and reserve are budget assumptions)")
+        "budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom; what of KV and reserve reaches the engine: the KV line below)")
     add("  Sparks  W/rank  rule          W + KV + reserve + OS = used    headroom  engine allows")
     for n, x in sorted(pl["fit"].items()):
         if x.get("w_gib") is None:
@@ -1335,6 +1375,9 @@ def render_plan(pl: dict) -> str:
         add(f"  {n:<6}  {x['w_gib']:<6}  {x['rule']:<12}  {x['w_gib']} + {x['kv_gib']} + {x['reserve_gib']} + "
             f"{x['os_gib']} = {x['used_gib']:<6}  {x['headroom_gib']:<8}  {x['engine_allows']}"
             + (f"   ({x['why']})" if x.get("why") else ""))
+    if any("engine-sized" in (x.get("kv_from") or "") for x in pl["fit"].values()):
+        add("  KV: engine-sized, not capped (native TensorFold has no KV-pool flag; the reserve is passed as "
+            "TENSORFOLD_MEMORY_RESERVE_GIB)")
     if pl["projections"]:
         add("  other bpw (projected checkpoint GiB -> per rank):")
         for pr in pl["projections"]:
@@ -1753,9 +1796,14 @@ def cmd_plan(args) -> int:
     pl = plan(r, data, sparks=target, counts=counts,
               cluster_file=Path(os.path.expanduser(args.cluster)) if args.cluster else None)
     cur = int(r.num("SPARKS") or 2)
-    if target and target != cur:
-        pl["retarget_note"] = (f"note: planned for {target} Sparks, but recipes/{r.name}/recipe.env has SPARKS={cur}: "
-                               f"set SPARKS={target} there before engine/stage/up (they act on recipe.env)")
+    chosen_n = pl["engine"]["n"]
+    if target and target != cur and chosen_n and chosen_n != cur:
+        pl["retarget_note"] = (f"note: planned for {target} Sparks, the plan runs TP{chosen_n}, but recipes/{r.name}/recipe.env "
+                               f"has SPARKS={cur}: set SPARKS={chosen_n} there before engine/stage/up (they act on recipe.env)")
+    elif target and target != cur:
+        pl["retarget_note"] = (f"note: planned for {target} Sparks, the chosen TP{chosen_n or '-'} equals recipe.env's "
+                               f"SPARKS={cur}: nothing to change there; more ranks need the work the other sizes show "
+                               "(the Fit and Gaps tables) first")
     if args.write:
         (r.dir / "plan.json").write_text(json.dumps({k: v for k, v in pl.items() if k != "path"}, indent=1,
                                                     sort_keys=True, default=str) + "\n")
@@ -1812,6 +1860,21 @@ def install_unit(r: Recipe, p: dict) -> Path:
 ENGINE_STAGE_MARKS = ("engine.sh", "docker build", "docker pull", "sync-image", "save-image", "tensorfold capabilities")
 
 
+def engine_missing(r: Recipe, p: dict, eng: dict, ns: list[str]) -> list[str]:
+    """Run the engine's check steps (tensorfold --version / docker image inspect) on every node; the
+    nodes where the planned engine is not what is installed."""
+    runner = Runner(True)
+    bad = []
+    for node, cmd in engine_steps(r, p, eng, ns):
+        if node in ("-", "connected box") or node.startswith("<") or any(m in cmd for m in ENGINE_STAGE_MARKS):
+            continue
+        code, outp = runner.sh(node, cmd.split("   #")[0], capture=True)
+        want = eng.get("version", "")
+        if code != 0 or ("--version" in cmd and want and want not in [t.lstrip("v") for t in outp.split()]):
+            bad.append(f"{node}: {outp.strip()[:80] or 'exit ' + str(code)} (want {eng.get('id')})")
+    return bad
+
+
 def cmd_engine(args) -> int:
     _data, r, _pl, p, eng, ns, _cf = _ctx(args)
     runner = Runner(args.run)
@@ -1836,6 +1899,14 @@ def cmd_engine(args) -> int:
 PLACEHOLDER = re.compile(r"<[^<>]+>")
 
 
+def is_light_step(cmd: str) -> bool:
+    """A stage step that may run while a model serves: a note, a command inside the capped memory scope,
+    or a read-only check (spark-model-intake.sh reads headers only, never weights without --checksums)."""
+    c = cmd.split("   #")[0]
+    return (cmd.startswith("#") or c.startswith(SCOPE) or f"{SCOPE} sha256sum" in c
+            or ("spark-model-intake.sh" in c and "--checksums" not in c and "convert.py" not in c))
+
+
 def cmd_stage(args) -> int:
     _data, r, pl, p, eng, ns, cf = _ctx(args)
     if args.run and licence_flags(r.get("LICENCES"))[1] and not args.accept_nc:
@@ -1852,8 +1923,7 @@ def cmd_stage(args) -> int:
                           "nothing is ever downloaded or mirrored onto it (fix WEIGHTS_DIR)")
     steps = stage_steps(r, p, eng, ns)
     if args.run:
-        heavy = [c for s_, _n, c in steps if (not only or s_ in only) and not c.startswith("#")
-                 and not c.startswith(SCOPE) and f"{SCOPE} sha256sum" not in c]
+        heavy = [c for s_, _n, c in steps if (not only or s_ in only) and not is_light_step(c)]
         if heavy:
             _serving_guard(args, "stage")
     runner = Runner(args.run)
@@ -1957,7 +2027,16 @@ def cmd_up(args) -> int:
 
 def cmd_down(args) -> int:
     _data, r, _pl, p, _eng, ns, _cf = _ctx(args)
-    unit = unit_of(r, launcher_of(r, p))
+    launcher = launcher_of(r, p)
+    unit = unit_of(r, launcher)
+    if launcher.startswith("mia-unit:"):
+        m = mia_unit_mismatch(r, p, unit)
+        if m:
+            msg = f"{r.name} has no unit of its own yet ({m}): {unit} is not this recipe's launch, so nothing is stopped"
+            if args.run:
+                raise RecipeError(msg + " (beast-spark down stops whatever serves)")
+            print(f"note: {msg}")
+            return 0
     print(f"note: on the pair, switch through beast-spark (beast-spark ds | glm | <recipe>): it also points "
           f"openbeast.conf back; this only stops {unit}")
     with model_lock(args.run):
@@ -1996,7 +2075,7 @@ def cmd_check(args) -> int:
 
 
 def cmd_adopt(args) -> int:
-    _data, r, _pl, p, _eng, _ns, _cf = _ctx(args)
+    _data, r, pl, p, eng, ns, cf = _ctx(args)
     launcher = launcher_of(r, p)
     if r.name in RESERVED_NAMES:
         raise RecipeError(f"{r.name!r} is a beast-spark command: rename the recipe directory")
@@ -2012,10 +2091,23 @@ def cmd_adopt(args) -> int:
         return 0
     if not re.match(r"^[A-Za-z0-9._-]+$", r.get("SERVED_NAME")):
         raise RecipeError("SERVED_NAME: required, letters, digits, . _ - only (beast-spark's registry ignores anything else)")
+    tfv = p.get("version") or ""
     entry = (f"# beast-spark registry entry for recipe {r.name} (beast-recipe adopt; parsed, never sourced)\n"
              f"UNIT={unit_of(r, launcher)}\nSERVED={r.get('SERVED_NAME')}\n"
-             f"BACKEND={'vllm' if launcher == 'd2-vllm' else 'tensorfold'}\nWAIT_S=2400\n")
+             f"BACKEND={'vllm' if launcher == 'd2-vllm' else 'tensorfold'}\nWAIT_S=2400\n"
+             + (f"TENSORFOLD_VERSION={tfv}\n" if tfv else ""))
     f = state_dir() / f"{r.name}.env"
+    if args.run:
+        # the same gate as `up`: beast-spark <name> stops the model that serves, so only a plan that can
+        # serve now, on the engine every Spark has, becomes selectable
+        if pl["verdict"] != "SERVABLE-NOW" and not args.force:
+            raise RecipeError(f"{r.name} is {pl['verdict']}: adopt --run acts only on SERVABLE-NOW, like up "
+                              f"(beast-spark {r.name} would stop the serving model for a unit that cannot come up; "
+                              "--force overrides)")
+        bad = engine_missing(r, p, eng, ns) if eng else []
+        if bad and not args.force:
+            raise RecipeError(f"{eng.get('id')} is not installed as planned: " + "; ".join(bad)
+                              + f" (beast-recipe engine {r.name} --run --stage; --force overrides)")
     if args.write_family and args.run:
         reg = json.loads(FAMILIES_FILE.read_text())
         reg["families"] = [x for x in reg["families"] if x.get("name") != r.name] + [fam]
@@ -2028,6 +2120,9 @@ def cmd_adopt(args) -> int:
         print(f"  [dry-run] would install {unit_of(r, launcher)} into ~/.config/systemd/user (daemon-reload; enables "
               f"nothing) and write {f}:\n" + "".join(f"    {x}\n" for x in entry.splitlines()))
         return 0
+    if recipe_cluster(r, p.get("n")) and not (r.dir / "cluster.env").is_file():
+        c = write_recipe_cluster(r, p["n"], cf)
+        print(f"  wrote {c} (the unit's --cluster; the first {p['n']} node(s) of the cluster file)")
     dst = install_unit(r, p)
     print(f"  installed {dst} (no [Install]: enables and starts nothing)")
     f.parent.mkdir(parents=True, exist_ok=True)
@@ -2140,6 +2235,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--url", help="the endpoint (default http://127.0.0.1:PORT)")
     p.add_argument("--key-file", default=DEFAULT_KEY_FILE, help="the API key file (read, never printed)")
     p = add("adopt", "make the recipe selectable: beast-spark <name> (installs the unit, writes the registry entry)")
+    p.add_argument("--force", action="store_true", help="adopt a plan that is not SERVABLE-NOW, or an engine not as planned")
     p.add_argument("--write-family", action="store_true", help="with --run: add it to data/spark-families.json (for intake)")
     add("rollback", "back to the selection before the last switch to a recipe", recipe=False)
     add("list", "every recipe and its verdict", recipe=False, act=False)
