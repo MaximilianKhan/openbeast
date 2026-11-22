@@ -153,6 +153,9 @@ scripts/backends/spark-hy4-stage.sh               # the plan + what is staged (w
 #    (rsync over the QSFP link, capped on both ends, never --delete), verify there. Safe while DeepSeek serves:
 #    every process runs in systemd-run --user --scope -p MemoryMax=8G -p MemoryHigh=6G, so the page cache
 #    it fills is reclaimed inside the scope, not taken from DeepSeek's MemAvailable (its memguard: 2.5 GiB).
+#    A stall watchdog restarts a crawling hf download (seen at ~1 MB/s for hours; a restart was fast at once,
+#    and hf resumes): under HY4_STALL_MB=50 MB on disk in HY4_STALL_SECS=180 s, it is killed and started
+#    again, up to HY4_STALL_RESTARTS=5 times, each restart logged ("weights: stalled: ... restart 1 of 5").
 scripts/backends/spark-hy4-stage.sh --run --only weights,verify,mirror
 
 # 2. image: pull the base by digest, build, save the tar, load it on spark-2. The docker daemon is outside any

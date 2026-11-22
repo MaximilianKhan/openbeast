@@ -227,10 +227,13 @@ def _fetch_one(repo: str, sha: str, e: dict, stage: Path) -> dict:
     dest = stage / e["path"]
     dest.parent.mkdir(parents=True, exist_ok=True)
     try:
-        mf._download(repo, sha, e, dest)
+        mf._download(repo, sha, e, dest)      # a failed download keeps its partial: the re-run resumes it
+    except mf.FetchError as err:
+        raise DownloadError(str(err)) from None
+    try:
         local = mf._verify_entry(dest, e)
     except mf.FetchError as err:
-        dest.unlink(missing_ok=True)
+        dest.unlink(missing_ok=True)          # bad bytes are never resumed from
         raise DownloadError(str(err)) from None
     log(f"  ok {e['path']} ({int(e.get('size') or 0) / 1e9:.2f} GB)")
     return {"size": int(e.get("size") or 0), "sha256": local}

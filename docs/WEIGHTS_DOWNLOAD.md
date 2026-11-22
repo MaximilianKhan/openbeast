@@ -83,7 +83,17 @@ files you need with `--include`, and say what you chose and why.
 6. **Never overwrites.** A folder that holds another repo or commit, or a
    non-empty folder it did not create, is refused. Pick another folder or move
    the old one aside.
-7. **One-file URLs add up.** Several `blob/` URLs from the same repo and
+7. **A crawling connection is dropped and resumed.** A Hub connection can
+   slow to ~1 MB/s and stay there for hours, while a fresh one is fast at
+   once. A file that grows less than `FETCH_STALL_MB` (default 50) MB in
+   `FETCH_STALL_SECS` (default 180) s, or whose connection sends nothing for
+   `FETCH_READ_TIMEOUT` (default 120) s, is requested again from the byte it
+   reached, up to `FETCH_STALL_RESTARTS` (default 5) times per file; each
+   restart is logged (`stalled FILE: ...: reconnecting, restart 1 of 5`).
+   After that the run fails and keeps the partial, so the same command
+   resumes it later. `FETCH_STALL_SECS=0` turns the check off. The same
+   watchdog runs in `model-fetch.sh`, which shares the download code.
+8. **One-file URLs add up.** Several `blob/` URLs from the same repo and
    commit (the shards of a GGUF, for example) can target the same folder, and
    each run adds its file to it.
 

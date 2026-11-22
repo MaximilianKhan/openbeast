@@ -118,7 +118,7 @@ sha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasu
 printf '# fixture\n%s abc config.json\n%s lfs model-00001-of-00001.safetensors\n' "$(fsz "$T/fx/config.json")" \
   "$(fsz "$T/fx/model-00001-of-00001.safetensors")" > "$T/FILES.hub"
 printf '%s  model-00001-of-00001.safetensors\n' "$(sha "$T/fx/model-00001-of-00001.safetensors")" > "$T/SUMS.hub"
-export HY4_FILES_HUB="$T/FILES.hub" HY4_SUMS_HUB="$T/SUMS.hub" HY4_MIN_AVAIL_WAIT_S=0 HY4_MEMGUARD_GIB=0
+export HY4_FILES_HUB="$T/FILES.hub" HY4_SUMS_HUB="$T/SUMS.hub" HY4_MIN_AVAIL_WAIT_S=0 HY4_MEMGUARD_GIB=0 HY4_STALL_POLL=0.05
 MD="$HOME/Documents/atakans-Hy4-flash-NVFP4"
 stage() { bash "$STAGE" "$@" > "$T/out" 2>&1; }
 out() { cat "$T/out"; }
@@ -198,6 +198,39 @@ else fail "verify corrupt: $(out)"; fi
 cp "$T/fx/model-00001-of-00001.safetensors" "$MD/"; rm -f "$MD/config.json"
 if ! stage --run --only verify && grep -q 'does not match the revision' "$T/out"; then pass "verify: a missing file is refused before hashing"
 else fail "verify missing: $(out)"; fi
+
+# the stall watchdog: a download that stops growing is killed (with its children) and
+# started again (hf resumes); one that never grows is given up on after the restarts
+cat > "$T/bin/hf-slow" <<'S'
+#!/bin/bash
+n=$(( $(cat "$T/hf-slow.n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$T/hf-slow.n"
+echo "hf-slow $n" >> "$LOG"
+d=""; while (( $# )); do [[ "$1" == --local-dir ]] && d=$2; shift; done
+mkdir -p "$d"
+if [[ -f "$T/hf-stall-always" ]] || (( n == 1 )); then
+  printf x > "$d/.partial-$n"; sleep 30 & echo $! > "$T/hf-slow.child"; wait; exit 0
+fi
+cp -R "$T/fx/." "$d/"
+S
+chmod +x "$T/bin/hf-slow"
+WD="$T/stallmd"; : > "$LOG"
+wd() { HY4_HF="$T/bin/hf-slow" HY4_MODEL_DIR="$WD" HY4_STALL_SECS=1 HY4_STALL_POLL=0.2 HY4_STALL_MB=1 bash "$STAGE" "$@" > "$T/out" 2>&1; }
+if wd --run --only weights,verify && [[ "$(grep -c '^hf-slow' "$LOG")" == 2 ]] \
+   && grep -q 'weights: stalled: 0 MB in 1 s (under 1 MB): killed; restart 1 of 5' "$T/out" \
+   && grep -q '^revision=' "$WD/.hy4-verified" && ! kill -0 "$(cat "$T/hf-slow.child")" 2>/dev/null; then
+  pass "stall watchdog: under HY4_STALL_MB in HY4_STALL_SECS kills the download and its children, restarts it (logged), then verifies"
+else fail "stall watchdog: $(out) / $(cat "$LOG")"; fi
+WD="$T/stallmd2"; : > "$LOG"; rm -f "$T/hf-slow.n"; touch "$T/hf-stall-always"
+t0=$SECONDS
+if ! HY4_STALL_RESTARTS=2 wd --run --only weights && [[ "$(grep -c '^hf-slow' "$LOG")" == 3 ]] \
+   && grep -q 'restart 2 of 2' "$T/out" && grep -q 'stalled 3 times .*gave up. Re-run later (it resumes)' "$T/out" \
+   && [[ ! -e "$WD/.hy4-verified" ]] && (( SECONDS - t0 < 20 )) && ! kill -0 "$(cat "$T/hf-slow.child")" 2>/dev/null; then
+  pass "stall watchdog: gives up after HY4_STALL_RESTARTS restarts with the resume hint, no download left running"
+else fail "stall watchdog give-up: $(out) / $(cat "$LOG")"; fi
+rm -f "$T/hf-stall-always"
+if ! HY4_STALL_MB=lots bash "$STAGE" --check > "$T/out" 2>&1 && grep -q 'HY4_STALL_MB=lots: a whole number' "$T/out"; then
+  pass "stall watchdog: a non-numeric HY4_STALL_* setting is refused"
+else fail "stall setting: $(out)"; fi
 cp "$T/fx/config.json" "$MD/"; stage --run --only verify
 
 # offline: --weights-from a drive's copy
