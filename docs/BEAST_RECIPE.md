@@ -26,41 +26,57 @@ Related: [EXL3_PLAYBOOK.md](EXL3_PLAYBOOK.md) (the case taxonomy),
 ## In one screen
 
 ```bash
-# 1. a model + a Spark count -> recipes/<name>/recipe.env + SHA256SUMS, and the plan
+# 1. a model + a Spark count -> recipes/<name>/recipe.env (+ SHA256SUMS for a Hub repo), and the plan
 scripts/beast-recipe.sh init https://huggingface.co/ORG/REPO/tree/<sha> --sparks 2 [--name NAME] [--engine ID]
 
 # 2. the plan: fit per Spark, engine choice and why, parallelism, drafter, KV,
 #    the VERDICT, the gap list with effort, and every command end to end
 scripts/beast-recipe.sh plan NAME [--sparks 1,2,3,4] [--json] [--write]
 
-# 3. apply (each prints what it would do; --run acts)
+# 3. apply (each prints what it would do; --run acts), in this order
 scripts/beast-recipe.sh engine NAME   # the engine on every Spark: check, then the stage commands
-scripts/beast-recipe.sh stage  NAME   # weights (+ drafter, aux) on every Spark, verified
-scripts/beast-recipe.sh up     NAME   # render the profile + a systemd user unit; start it (refuses while another model serves)
+scripts/beast-recipe.sh stage  NAME   # D2: renders the profile + unit when missing (commit them); then
+                                       #   weights (+ drafter, aux) on every Spark, verified (refused while a model serves)
+scripts/beast-recipe.sh up     NAME   # installs the unit; starts it only when nothing serves
+scripts/beast-recipe.sh adopt  NAME   # installs the unit (enables nothing) + the registry entry: beast-spark NAME
+beast-spark NAME                       # the switch on the pair (stops the model that serves, starts this, waits, openbeast.conf)
 scripts/beast-recipe.sh check  NAME --bench   # conformance + decode tok/s at 1 and 4 streams
-scripts/beast-recipe.sh adopt  NAME   # make it selectable: beast-spark NAME
-beast-spark NAME                       # the switch (stops the model that serves, starts this, waits, openbeast.conf)
 scripts/beast-recipe.sh rollback      # back to the selection before the last switch (beast-spark <previous>)
 
 scripts/beast-recipe.sh list           # every recipe and its verdict
 scripts/beast-recipe.sh show NAME      # every value and where it came from;  show --keys: the schema
 ```
 
+On the head, `beast-spark install` also links `~/.local/bin/beast-recipe` to
+the checkout's `scripts/beast-recipe.sh`, so the bare `beast-recipe ...` the
+plan and beast-spark print works there; anywhere else use
+`scripts/beast-recipe.sh`.
+
 The worked examples, all committed under `recipes/`:
 
 | Recipe | Model | Sparks | Engine | Verdict |
 |---|---|---:|---|---|
 | `hy4-flash-nvfp4-vllm-tp2` | Hy4-flash NVFP4 (atakans @ 30f201ac) | 2 | vllm-hy4 | **SERVABLE-NOW** (it is the served config; golden-tested) |
-| `hy4-flash-exl3-tensorfold-tp2` | Hy4-flash EXL3 4bpw (LibertAIDAI @ 811866b0) | 2 | tf-native-1.3.4 | **SERVABLE-WITH-WORK** (32-93 engineering days, mostly upstream's two-Spark family) |
+| `hy4-flash-exl3-tensorfold-tp2` | Hy4-flash EXL3 4bpw (LibertAIDAI @ 811866b0) | 2 | tf-native-1.3.3 | **SERVABLE-WITH-WORK** (32.5-94 engineering days, mostly upstream's two-Spark family) |
 | `glm53-flash-exl3-native-tp2` | GLM-5.3-Flash EXL3 4bpw TR3 (Ablit, local) | 2 | tf-native-1.2.10 | **SERVABLE-NOW** (our launcher, no Mia image; first D2 serve) |
 | `deepseek-v41-flash-exl3-2.9-tp2` | DeepSeek-V4.1-Flash EXL3 2.9 bpw (Mia EAQ) | 2 | tf-fork-dsv41 | **SERVABLE-NOW** (Mia's fork image, as today) |
 | `deepseek-v41-flash-exl3-4.0` | DeepSeek-V4.1-Flash EXL3 4.0 bpw (to quantize) | 2 | tf-fork-dsv41 | **NEEDS-MORE-HARDWARE: 4 Sparks** |
-| `qwen38-27b-exl3-4.0-1x` | Qwen3.8-27B EXL3 4.0 bpw (turboderp @ 387b8445) | 1 | tf-native-1.3.4 | **SERVABLE-WITH-WORK** (stage 1.3.4; installed 1.2.10 is SERVABLE-NOW) |
+| `qwen38-27b-exl3-4.0-1x` | Qwen3.8-27B EXL3 4.0 bpw (turboderp @ 387b8445) | 1 | tf-native-1.3.3 | **SERVABLE-WITH-WORK** (stage 1.3.3; installed 1.2.10 is SERVABLE-NOW) |
 | `minimax-m31-flash-exl3-3.06-tp2` | MiniMax-M3.1-Flash EXL3 3.06 bpw (Mia EAQ @ c33e7a66) | 2 | tf-native-1.2.10 | **SERVABLE-NOW** (a new architecture on the pair, ~171 GB to fetch) |
 
 Every number in those recipes was read by `init` from the Hub on 2026-11-22
-(sizes, layers, heads, experts, quantization fields, licences, the LFS
-sha256 of every weight file), or is labelled with where else it came from.
+(sizes, layers, heads, experts, quantization fields, licences), or is labelled
+with where else it came from. The LFS sha256 of every weight file
+(`SHA256SUMS`) comes from the Hub for the Hub-backed recipes only
+(`hy4-flash-nvfp4-vllm-tp2`, `hy4-flash-exl3-tensorfold-tp2`,
+`qwen38-27b-exl3-4.0-1x`, `minimax-m31-flash-exl3-3.06-tp2`); GLM (the local
+Ablit copy), DeepSeek 2.9 (local) and DeepSeek 4.0 (to quantize) have none.
+
+**TensorFold versions (2026-11-22).** The upstream README's install script pins
+1.3.4, but there is no v1.3.4 release: `releases/tags/v1.3.4` is a 404 and the
+latest release is **v1.3.3** (2026-11-21). The matrix records 1.3.4 as
+`unreleased` (its plans are BLOCKED on gap `upstream-release`, and `engine`
+never prints a stage step for it); the recipes that wanted it pin 1.3.3.
 
 ---
 
@@ -79,7 +95,8 @@ recipe is what differs per model.
 ```
 recipes/<name>/
   recipe.env                     KEY=VALUE, parsed, never sourced; every value carries its provenance
-  SHA256SUMS                     the Hub's LFS sha256 of every weight file (init writes it): offline verification
+  SHA256SUMS                     the Hub's LFS sha256 of every weight file (init writes it for a Hub repo; a local-dir init writes none)
+  cluster.env                    off the pair (TP != 2) only: the first N nodes of cluster.env (stage/up --run write it; not committed)
   beast-recipe-<name>.service    the systemd user unit (D2 launchers; rendered by up --write-profile)
   plan.json                      optional: plan --write
   runs/                          check --bench records, capabilities snapshots (not committed)
@@ -132,7 +149,7 @@ unit, or a Mia recipe's unit; acceptance is `conformance.sh` and the
 
 | Launcher | Used for | `up` starts | `adopt` |
 |---|---|---|---|
-| `d2-tensorfold` | native TensorFold (1.2.10 installed, 1.3.4 upstream) | `beast-recipe-<name>.service`: a oneshot user unit around `spark-cluster.sh start --profile <PROFILE> --engine tensorfold` | registry entry: `beast-spark <name>` |
+| `d2-tensorfold` | native TensorFold (1.2.10 installed, 1.3.3 the latest upstream release) | `beast-recipe-<name>.service`: a oneshot user unit around `spark-cluster.sh start --profile <PROFILE> --engine tensorfold` | registry entry: `beast-spark <name>` |
 | `d2-vllm` | a generic vLLM (NGC image from spark.env) | the same unit with `--engine vllm` | registry entry |
 | `hy4-vllm` | Hy4-flash NVFP4 | `hy4-vllm-inference.service` (the kit in `scripts/backends/hy4-vllm/`) | already selectable: `beast-spark hy4` |
 | `mia-unit:<unit>` | a Mia recipe image (DeepSeek's dsv41 fork, the GLM Python image) | that unit | already selectable: `beast-spark ds` / `glm` |
@@ -165,10 +182,33 @@ worse than another, the plan says so ("a better path exists").
 **Steps are not work.** These gaps are always listed but never change a
 verdict: `glue` (profile, launch values, template, conformance), `d2-first-serve`
 (D2 has never served on the pair), `tuning`, `drafter`, `perf-patches`,
-`parsers`, `licence-review`. Everything else is work (`engine-stage`,
-`image-build`, `vllm-image`, `launcher`, `quantize`, `exl3-layout`,
+`parsers`, `licence-review`, and any family extra gap of 0 days (such as
+`hy4-engram-local`). Everything else is work (`engine-stage`, `image-build`,
+`vllm-image`, `launcher`, `reference-only`, `quantize`, `exl3-layout`,
 `server-wrap`, `family-tp`, `family`, `topology`, and a family's own extra
-gaps).
+gaps of more than 0 days). `upstream-release` is 0 days of ours but blocks:
+an unreleased engine is BLOCKED until upstream publishes it. Past two Sparks
+every path carries `topology` (cabling and fabric), so a TP3+ row is never
+SERVABLE-NOW and a smaller size that is wins.
+
+### When the verdict is BLOCKED
+
+The plan says which of three it is:
+
+- **No engine reads the model_type** (every engine `no: ...`): the plan lists
+  the `family` gap (a new architecture family, 4-12 weeks). Try a non-EXL3
+  format on the vLLM route (`vllm-ngc` reads any architecture in
+  `data/vllm.json` with a known quantization), run `tensorfold info <dir>` on a
+  Spark to confirm a refusal, and once an engine ships the family add it to
+  `recipe-engines.json` ("How to update it") and re-run `plan`. A native
+  engine's `UNRECORDED` means the snapshot does not list the family: unknown,
+  not refused.
+- **It does not fit** at any size the engine allows, up to 8 Sparks: a lower
+  bpw (the plan's projections), or another engine.
+- **The engine is unreleased** (`upstream-release`): pin a released version.
+
+The end-to-end commands are still printed under a BLOCKED verdict, behind a
+notice: they will not serve it until the gaps close.
 
 ---
 
@@ -185,10 +225,15 @@ vLLM:   also W + KV + reserve <= --gpu-memory-utilization x MemTotal
 
 The verdict for a size is the worse of the rule and the budget. KV and reserve
 come from the recipe, else the family's measured launch values in the data
-file (DeepSeek 1.8 GiB / 12.2 GiB; GLM 10 / 9.5; Hy4 vLLM 6 / 5), else an
-estimate from `KV_BYTES_PER_TOKEN x CONTEXT x PARALLEL`. A checkpoint part
+file (DeepSeek 1.8 GiB / 12.2 GiB; GLM 10 / 9.5 native, 17.5 measured on Mia's
+image and budgeted by the GLM recipe until a native start line says otherwise;
+Hy4 vLLM 6 / 5), else an estimate from `KV_BYTES_PER_TOKEN x CONTEXT x
+PARALLEL`. **They are budget assumptions**: on D2 only the KV dtype reaches the
+engine (`EXTRA_ARGS=["--kv-dtype", ...]` in the rendered profile); D2 has no flag
+for the pool or the reserve, and the plan's KV line says so. A checkpoint part
 that streams from disk does not count: Hy4 EXL3's resident size is the 85.38
-GiB TensorFold 1.3.2 loads on one GB10, not its 203 GiB of files (Engram).
+GiB TensorFold 1.3.2 loads on one GB10 with the opt-in CUDA slab mode (#4003),
+not its 203 GiB of files (Engram).
 
 **Other bit widths.** For an EXL3 recipe the plan projects 3/4/5/6 bpw: the
 family's sizing rule when the data has one (DeepSeek `14 + 63.3 x e`, GLM
@@ -204,17 +249,26 @@ TP2 98.9 GiB, at 4.0 bpw 135 / 91 / 68 at TP 2 / 3 / 4; GLM 82.4 at TP2, 5-bit
 Every command takes `--help` and `--json`. Every acting command (`engine`,
 `stage`, `up`, `down`, `check`, `adopt`, `rollback`) prints what it would do
 (the default, or `--dry-run`) and acts only with `--run`. `--cluster FILE`
-names the cluster (default `scripts/backends/cluster.env`: its
-`CLUSTER_NODES`; without it, `local spark-2` for two Sparks, `local` for one,
-placeholders past two).
+names the cluster (default `scripts/backends/cluster.env`). A recipe uses the
+**first N** of its `CLUSTER_NODES` (N = the plan's TP); nodes it does not list
+become `<rankN>` placeholders, and every `--run` refuses them. Without the file:
+`local spark-2` for two Sparks, `local` for one, placeholders past two. Every
+node must be a plain ssh target (rank 0 `local`; no options, no shell). Off the
+pair (TP != 2) the D2 commands and the unit take `--cluster
+recipes/<name>/cluster.env`, which `stage`/`up --run` write from the first N
+nodes. `--json` is honoured by `plan`, `list`, `show` and `init`; the acting
+commands print their steps.
 
 ### `init <hf-url | org/repo[@sha] | local-dir> [--sparks N] [--name NAME] [--engine ID] [--force] [--accept-nc]`
 
 Reads metadata only (config.json, generation and tokenizer config, the
 quantization config, the safetensors index and each shard's header by a Range
 request, the model card's front matter), never the weights. Writes
-`recipes/<name>/recipe.env` with every field and its provenance, and
-`SHA256SUMS` from the Hub's LFS hashes, then prints the plan.
+`recipes/<name>/recipe.env` with every field and its provenance, and, for a
+Hub repo, `SHA256SUMS` from the Hub's LFS hashes (a local directory gets none),
+then prints the plan. A Hub error (offline, gated, missing) is one
+`beast-recipe: ...` line, never a traceback. A name that is a beast-spark verb
+(`ds`, `glm`, `hy4`, `up`, `down`, ...) is refused.
 
 - URLs take every form `weights-download.sh` takes
   (`https://huggingface.co/ORG/REPO`, `/tree/<rev>`); a sub-folder or a file
@@ -225,11 +279,15 @@ request, the model card's front matter), never the weights. Writes
   `model_intake.quant_format`). BPW: EXL3 `bits` (or `avg_bits`), NVFP4 ~4.5,
   FP8 8, BF16 16.
 - Drafter: an in-checkpoint drafter first (`dfly_*` keys: Hy4's DFly2;
-  `dspark_*`: DeepSeek's DSpark), then a published DFlash2 for the family with
+  `dspark_*` keys or a `dspark/` folder: DeepSeek's and MiniMax's DSpark), then
+  a published DFlash2 for the family with
   a permissive licence (data file), then the model's MTP head, else `none`.
 - Licence: the model card's `license:` (and `license_name` for `other`). A
   non-commercial or no-derivatives licence is flagged, and `stage --run`
-  refuses it without `--accept-nc`.
+  refuses it without `--accept-nc` (one token-anchored classifier for init,
+  plan and stage). A quant pack's card often has no `license:`: then read the
+  base model's card (`base_model`) and record it with `HUB` provenance, as the
+  MiniMax recipe does.
 - Online: `HF_ENDPOINT`, `HF_TOKEN_FILE`, `OFFLINE` as for `model-inspect.sh`
   (the token never reaches argv, and never another host). Offline: init a
   local directory.
@@ -240,8 +298,10 @@ The fit per Spark count, the engines that read the model and their verdicts
 (best first), the parallelism (TP, expert parallel, the allowed rank counts),
 the drafter options with licences, the KV dtype and pool, the licences, the
 verdict, the gap list with effort, and the exact command sequence for every
-phase. `--sparks 4` retargets; `--sparks 1,2,3,4` only widens the table.
-Reads only local files: it works offline anywhere.
+phase. `--sparks 4` retargets the plan only (it then says so: the acting
+commands follow `SPARKS=` in recipe.env, so edit that to act on it);
+`--sparks 1,2,3,4` only widens the table. Reads only local files: it works
+offline anywhere.
 
 ### `engine <recipe> [--run [--stage]]`
 
@@ -250,20 +310,35 @@ is not installed, the offline stage (`scripts/engine.sh stage tensorfold
 --version V DIR` on a connected box, `engine.sh install tensorfold --version V
 --from DIR` on each Spark; `engine.sh rollback tensorfold` returns to the old
 pin) plus a `tensorfold capabilities --json` snapshot to update the matrix
-from. Image engines: `docker image inspect IMAGE` on every Spark; a missing
-image is pulled or built and carried with `spark-cluster.sh sync-image` (or
-`save-image` for an offline carry). `--run` runs the checks only; `--run
---stage` also runs the install and build steps.
+from (after the install, gated like it). Worker commands run from
+`~/openbeast` (`cd ~/openbeast && ...`: ssh starts in `$HOME`). An `unreleased`
+engine prints no stage step at all. Image engines: `docker image inspect
+IMAGE` on every Spark; a missing image is pulled or built and carried with
+`spark-cluster.sh sync-image` (or `save-image` for an offline carry). `--run`
+runs the checks only; `--run --stage` also runs the install and build steps,
+and refuses while an inference unit is active unless `--while-serving`.
 
-### `stage <recipe> [--run] [--only weights,verify,mirror,drafter,quantize,aux,rank-inputs] [--accept-nc]`
+### `stage <recipe> [--run] [--only profile,weights,verify,mirror,drafter,quantize,aux,rank-inputs] [--accept-nc] [--force] [--while-serving]`
 
-- **D2 recipes**: `model-fetch.sh --profile <PROFILE>` on the head (the pinned
+`--only` takes those step names and nothing else (a typo is an error, not a
+silent no-op; images are `engine`'s). `stage --run` refuses a plan that is not
+SERVABLE-NOW or SERVABLE-WITH-WORK (`--force` overrides), never runs a template
+line (one with a `<placeholder>`: it prints `MANUAL` and the line to fill in),
+and refuses while an inference unit is active unless `--while-serving` (only
+the scoped read-only `sha256sum` verifies run without it).
+
+- **D2 recipes**: first the profile: when `models/<PROFILE>.env` is missing,
+  `stage --run` renders it and the unit (exactly `up --write-profile`; commit
+  them, the workers verify from the same commit), and off the pair writes
+  `recipes/<name>/cluster.env`. Then `model-fetch.sh --profile <PROFILE>` on the head (the pinned
   revision and the drafter into `MODELS_DIR`, verified against the Hub, locked),
   then `spark-cluster.sh sync-weights --profile <PROFILE>` to every worker over
   the fabric, verified against the head's lock. A **local** checkpoint
   (`WEIGHTS_STATUS=local`) is verified read-only against `SHA256SUMS` on every
-  Spark first, then locked by `model-fetch.sh` on the head (commit the lock), and
-  verified against it on every worker.
+  Spark first when the recipe has one; then (or, without sums, only) it is
+  locked by `model-fetch.sh` on the head on the first run (commit the lock;
+  GLM's is the existing profile's lock) and verified against that lock on
+  every worker.
 - **The Hy4 kit**: `spark-hy4-stage.sh --run --only weights,verify,mirror` and
   `--check`.
 - **Everything else**: `weights-download.sh <url> <WEIGHTS_DIR>`, `sha256sum -c`
@@ -271,27 +346,37 @@ image is pulled or built and carried with `spark-cluster.sh sync-image` (or
   QSFP link (never `--delete`), `sha256sum -c` there (the sums go on stdin). A
   local pack without sums is checked with `spark-model-intake.sh` (family, index
   signature, pack fingerprint).
-- Every download, copy and checksum runs in `systemd-run --user --scope -p
-  MemoryMax=8G -p MemoryHigh=6G`, so its page cache is reclaimed inside the
-  scope and never taken from a serving model's `MemAvailable`.
+- The generic path's downloads, copies and checksums run in `systemd-run
+  --user --scope -p MemoryMax=8G -p MemoryHigh=6G`, so their page cache is
+  reclaimed inside the scope. The D2 `model-fetch.sh` and `sync-weights` and
+  the Hy4 kit's steps do **not** run in that scope: that is why `stage --run`
+  refuses them while a model serves.
 - A `to-quantize` recipe prints the exllamav3 `convert.py` command and the
   intake check that must pass on its output.
 - **The kept Hy4 EXL3 pack** (`LibertAIDAI-Hy4-flash-EXL3-4bpw`) is read, never
   written: no download, mirror or delete step is ever generated for a path
-  that names it (the same rule as `hy4_protected`).
+  that names it, is `$HOME`, `~/Documents` or `~/Documents/weights` (which hold
+  it), or holds it (the same rule as `hy4_protected`). A path with a `.` or
+  `..` segment is refused by the parser, and `stage --run` refuses a kept path
+  whose recipe is not `WEIGHTS_STATUS=local`.
 
 ### `up <recipe> [--run] [--write-profile] [--force] [--key-file F] [--wait S]` and `down <recipe> [--run]`
 
-`up` acts only on a SERVABLE-NOW recipe (`--force` overrides). For D2 it
-renders the profile `scripts/backends/models/<PROFILE>.env` (validated by
-`obprofile.py`'s own rules: a local SOURCE must be absolute, a Hub SOURCE
-carries its 40-hex REVISION, the drafter its own) and the unit
-`recipes/<name>/beast-recipe-<name>.service`; `--write-profile` writes both
+`up` acts only on a SERVABLE-NOW recipe (`--force` overrides; it never
+overrides a launcher gap: a Mia unit that serves another pack or rank count,
+such as DeepSeek 4.0 at TP4 against the TP2 2.9 unit, is never "already
+active"). For D2 it renders the profile `scripts/backends/models/<PROFILE>.env`
+(validated by `obprofile.py`'s own rules: a local SOURCE must be absolute, a
+Hub SOURCE carries its 40-hex REVISION, the drafter its own; the KV dtype as
+`EXTRA_ARGS`) and the unit `recipes/<name>/beast-recipe-<name>.service`
+(`Conflicts=` and `After=` the known units); `--write-profile` writes both
 (commit them: every Spark launches the profile from its own checkout, at the
-same commit). `up --run` refuses while any inference unit is active ("one
-model at a time on the pair: switch through beast-spark"), installs the unit,
-starts it and waits for the served id on `/v1/models`. `down --run` stops the
-unit.
+same commit). `up --run` holds beast-spark's switch lock. While any inference
+unit is active or activating (the known units, every `beast-recipe-*.service`
+systemd lists, adopted or not, and a stray `openbeast-*-rank*` container) it
+**installs the unit and starts nothing** (exit 1: "switch through beast-spark");
+on a free pair it runs the checks, installs, starts and waits for the served id
+on `/v1/models`. `down --run` stops the unit and returns its exit code.
 
 ### `check <recipe> [--run] [--bench] [--url URL] [--key-file F]`
 
@@ -308,7 +393,9 @@ sent as a header, and never printed.
 
 ### `adopt <recipe> [--run] [--write-family]` and `rollback [--run]`
 
-`adopt --run` writes `~/.config/openbeast/recipes.d/<name>.env` (UNIT, SERVED,
+`adopt --run` installs the rendered unit into `~/.config/systemd/user` (a
+`daemon-reload`; no `[Install]`, so it enables and starts nothing, safe on a
+live pair) and writes `~/.config/openbeast/recipes.d/<name>.env` (UNIT, SERVED,
 BACKEND, WAIT_S; parsed by `beast-spark`, never sourced): after that,
 `beast-spark <name>` (or `beast-spark recipe <name>`) switches to it the way
 `beast-spark hy4` does: it stops the model that serves (DeepSeek, GLM, Hy4 or
@@ -316,15 +403,22 @@ another recipe; their boot enablement stays), starts the recipe's unit, waits
 for its served id, sets `INFERENCE_BACKEND` and `INFERENCE_MODEL` in
 openbeast.conf, restarts the command center, and on any failure stops it and
 brings the previous model back. A successful switch records the previous
-selection in `recipes.d/.previous`; `beast-recipe rollback --run` runs
-`beast-spark <previous>`. `ds`, `glm`, `up` and `down` stop an adopted recipe
-the way they stop Hy4, and point openbeast.conf back at the selected model.
-`--write-family` adds the recipe to `data/spark-families.json` so
-`spark-model-intake.sh` knows it (commit it). Hy4 and the Mia recipes are
-already selectable (`beast-spark hy4 / ds / glm`): adopt says so and writes
-nothing.
+selection in `recipes.d/.previous` (`PREVIOUS=none` when nothing served:
+rollback is then `beast-spark down`); `beast-recipe rollback --run` runs
+`beast-spark <previous>`. `ds`, `glm`, `up`, `down` and `hy4` stop an adopted
+recipe (`hy4` before Hy4 starts, and a failed `hy4` brings the recipe back),
+and `ds`/`glm`/`up`/`down` point openbeast.conf back at the selected model.
+`--write-family --run` adds the recipe to `data/spark-families.json` so
+`spark-model-intake.sh` knows it (commit it; without `--run` it prints the
+entry). Hy4 and the Mia recipes are already selectable (`beast-spark hy4 / ds /
+glm`): adopt says so and writes nothing.
 
 ### `list`, `show <recipe>`, `show --keys`
+
+`list` prints one row per recipe under a header: name, verdict, the chosen
+engine, `TPx/y` (x = the TP the plan chose, y = the recipe's `SPARKS`), the
+title. `show` prints every value with its provenance after `#`; `show --keys`
+the schema.
 
 ---
 
@@ -335,8 +429,9 @@ source and the date it was read.
 
 | Engine | Kind | Status (2026-11-22) | Launcher | Families (format: ranks) |
 |---|---|---|---|---|
-| `tf-native-1.2.10` | native TensorFold | installed on both Sparks | d2-tensorfold | glm5_next (EXL3 TR3 4-bit only, NVFP4, mixed: 2-8), minimax_m3_vl (EXL3: 2), qwen3_5 (EXL3: 1; MLX: 1-2), qwen4_exp (MLX/ModelOpt: 1-2), qwen3_5_moe, nemotron_h (1). Refuses deepseek_v41, hy_v4_flash |
-| `tf-native-1.3.4` | native TensorFold | available upstream (signed release; not on the Sparks) | d2-tensorfold | glm5_next (EXL3 mcg at any whole 1-8 bits: 2-8), minimax_m3_vl (2), qwen3_5 (EXL3 mul1 + mcg: 1), **hy_v4_flash (EXL3: 1, generator only; 2 with work)**, deepseek_v41 (source build only) |
+| `tf-native-1.2.10` | native TensorFold | installed on both Sparks | d2-tensorfold | glm5_next (EXL3 TR3 4-bit only, NVFP4, mixed: 2-8), minimax_m3_vl (EXL3: 2), qwen3_5 (EXL3: 1; MLX: 1-2), qwen4_exp (MLX/ModelOpt: 1-2), qwen3_5_moe, nemotron_h (1), plus the 13 other families `capabilities --json` recorded (inherited from `spark-families.json` native-1.2.10). Refuses deepseek_v41, hy_v4_flash |
+| `tf-native-1.3.3` | native TensorFold | available upstream (the latest signed release, 2026-11-21; not on the Sparks) | d2-tensorfold | glm5_next (EXL3 mcg at any whole 1-8 bits: 2-8), minimax_m3_vl (2), qwen3_5 (EXL3 mul1 + mcg: 1), **hy_v4_flash (EXL3: 1, generator only, built from source; 2 with work)**, deepseek_v41 (source build only); 1.2.10's other families carried as CLAIMED |
+| `tf-native-1.3.4` | native TensorFold | **unreleased** (the README pin; no tag or archive) | d2-tensorfold | as 1.3.3 plus dense MTP for Qwen3.5 targets (CLAIMED); every plan on it is BLOCKED (`upstream-release`) |
 | `tf-fork-dsv41` | TensorFold Zig fork + Mia's 54 patches | image on both Sparks | mia-unit:deepseek-v41-inference | deepseek_v41 (EXL3 mul1: 2; 4 with the tp4 branch) |
 | `tf-mia-glm-0.6.0` | TensorFold 0.6.0 Python + Mia's patches | image on both Sparks | mia-unit:spark-hydra-inference | glm5_next (EXL3 TR3: 2, 3) |
 | `vllm-hy4` | vLLM hy4-flash + atakann's files | image on both Sparks | hy4-vllm | hy_v4_flash (NVFP4: 2, expert parallel) |
@@ -355,13 +450,18 @@ share, the OS and memguard numbers), `hardware.topologies` (1 to 8 Sparks),
    `tensorfold info <model dir>` for a refusal). `beast-recipe engine NAME
    --run --stage` writes the snapshot to `recipes/<name>/runs/`.
 2. Edit the engine's `families` (formats, `exl3` variant fields, `ranks`,
-   `rank_reason`), `refuses`, `status`, `installed_on` and `checked` (the
-   command and the date). A family that only loads (a generator) gets
-   `"serves": "generator-only"`; ranks that need engineering go under
-   `with_work` with gap ids.
-3. `uv run ... pytest tests/test_beast_recipe.py`: the consistency test checks
-   every engine and gap reference; the worked-example tests show which verdicts
-   moved.
+   `rank_reason`), `refuses`, `status` (`installed`, `available`, `unreleased`
+   for an announced version with no release, `not-installed`), `installed_on`
+   and `checked` (the command and the date). A family that only loads (a
+   generator) gets `"serves": "generator-only"`; ranks that need engineering go
+   under `with_work` with gap ids. `inherit_families` carries families forward
+   (from another engine, CLAIMED, or from `spark-families.json:<engine>`); an
+   engine's own entries win. A launch caveat goes in a family's `launch_note`.
+3. `uv run ... pytest tests/test_beast_recipe.py`: `load_data` validates the
+   file (gap ids, `serves`, ranks as lists of 1..8, `ranks_by_format` keys,
+   extra gaps' days) and fails loudly; the consistency test checks it and that
+   1.2.10 carries every family `spark-families.json` records; the
+   worked-example tests show which verdicts moved.
 4. Re-run `beast-recipe list` and update this page's tables.
 
 ---
@@ -391,7 +491,7 @@ digest, served name, port, model folder and GPU fraction. Launcher `hy4-vllm`:
 VERDICT   SERVABLE-NOW at TP2
           an engine we already have serves it on this many Sparks and it fits: what is left is steps (fetch, profile, start, check), no engineering
 
-Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <= 100 tight; budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom)
+Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <= 100 tight; budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom; KV and reserve are budget assumptions)
   Sparks  W/rank  rule          W + KV + reserve + OS = used    headroom  engine allows
   1       153.3   does not fit  153.3 + 6.0 + 5.0 + 6.0 = 170.3   -48.7     no   (weights + KV + reserve 164.3 GiB > --gpu-memory-utilization 0.85 x MemTotal)
   2       77.3    fits          77.3 + 6.0 + 5.0 + 6.0 = 94.3    27.4      yes
@@ -407,16 +507,17 @@ performance than vLLM". The full plan:
 ```text
 beast-recipe plan hy4-flash-exl3-tensorfold-tp2   (Hy4-flash EXL3 4bpw on native TensorFold, TP2 (plan: beat vLLM))
   model     LibertAIDAI/Hy4-flash-EXL3-4bpw@811866b0   HYV4FlashForCausalLM / hy_v4_flash
-  format    exl3 4 bpw, codebook mul1, scope hy4flash-routed-k4   85.4 GiB resident (RESIDENT_BYTES (CLAIMED: TensorFold 1.3.2 CHANGELOG, 85.38 GiB loaded on one GB10; ~118 GiB of Engram streams from disk))
+  format    exl3 4 bpw, codebook mul1, scope hy4flash-routed-k4   85.4 GiB resident (RESIDENT_BYTES (CLAIMED: TensorFold 1.3.2 CHANGELOG (#4003, with the opt-in CUDA slab mode), 85.38 GiB loaded on one GB10; ~118 GiB of Engram streams from disk))
   moe       512 experts, 16 active; 32 attention heads
-  target    2 Sparks   engine tf-native-1.3.4 (pinned)   launcher d2-tensorfold
+  target    2 Sparks   engine tf-native-1.3.3 (pinned)   launcher d2-tensorfold
 
 VERDICT   SERVABLE-WITH-WORK at TP2
           it fits on this many Sparks, but an engine must be staged, built or extended first (the gap list says what, and how long)
           upstream: a two-Spark native hy_v4_flash family is in the works upstream (TensorFold#3797 open; #3801 in slices): when it lands, this becomes an engine-stage away
           caveat: never installed or run on our Sparks; D2 has never served on the pair
+          launch: the CUDA slab upload mode is opt-in (#4003) and must be switched on, or the load fails at layer 30: the env name is VERIFY (the upstream source or RUNTIME.md at the tag)
 
-Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <= 100 tight; budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom)
+Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <= 100 tight; budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom; KV and reserve are budget assumptions)
   Sparks  W/rank  rule          W + KV + reserve + OS = used    headroom  engine allows
   1       85.4    fits          85.4 + 6.0 + 9.5 + 6.0 = 106.9   14.8      with work
   2       43.0    fits          43.0 + 6.0 + 9.5 + 6.0 = 64.5    57.2      with work
@@ -429,30 +530,34 @@ Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <=
     6.0 bpw: 128.1 GiB -> 1: 128.1, 2: 64.5, 3: 43.4, 4: 32.8   (linear in bpw)
 
 Engines  (who reads it, at which sizes; best first)
-    exllamav3          not-installed SERVABLE-WITH-WORK at TP1; work: image-build, launcher
-  * tf-native-1.3.4    available     SERVABLE-WITH-WORK at TP2; work: engine-stage, family-tp, server-wrap, hy4-generator-qual, hy4-exl3-reader, hy4-dfly, hy4-parsers
+  * tf-native-1.3.3    available     SERVABLE-WITH-WORK at TP2; work: engine-stage, family-tp, server-wrap, hy4-generator-build, hy4-generator-qual, hy4-exl3-reader, hy4-dfly, hy4-parsers
+    exllamav3          not-installed SERVABLE-WITH-WORK at TP1; work: image-build, reference-only
+    tf-native-1.3.4    unreleased    BLOCKED at TP2; work: upstream-release, family-tp, server-wrap, hy4-generator-build, hy4-generator-qual, hy4-exl3-reader, hy4-dfly, hy4-parsers: tf-native-1.3.4 is not released upstream (gap upstream-release): pin a released version; once it is out: SERVABLE-WITH-WORK at TP2
     tf-native-1.2.10   installed     no: refuses hy_v4_flash: no registered Zig family serves model_type hy_v4_flash (tensorfold info on the LibertAIDAI pack, spark-1, 1.2.10, 2026-11-19, VERIFIED)
     tf-fork-dsv41      installed     no: no family for model_type hy_v4_flash
     tf-mia-glm-0.6.0   installed     no: no family for model_type hy_v4_flash
     vllm-hy4           installed     no: reads hy_v4_flash only as modelopt-nvfp4; this is exl3
     vllm-ngc           not-installed no: exl3 weights: vLLM cannot load them
-  ranks: 1.3.2: Hy4-flash EXL3 4bpw 'loads all 42 layers on one GB10 (85.38 GiB, 29 GiB left)' via the slab upload mode; tf-hy4-cuda-generate runs the text model greedily: a generator, not a server
+  ranks: 1.3.2 (#4003): Hy4-flash EXL3 4bpw 'loads all 42 layers on one GB10 (85.38 GiB, 29 GiB left)' with the opt-in CUDA slab upload mode; 1.3.3 (#4259, lands #4004): tf-hy4-cuda-generate (zig build hy4-cuda-generate) runs the text model greedily: a generator, not a server, and not in the release archive (bin/ ships only tensorfold-native, VERIFIED on the v1.3.3 tarball 2026-11-22)
 
 Parallelism  TP2, PP 1, one rank per Spark; this engine runs it at 1, 2
 Drafter      in-checkpoint:dfly
              option: in-checkpoint: DFly2 (0.85B, BF16) inside the checkpoint (model.dfly_layers.*); vLLM --speculative-config method dfly
 KV           bf16, 6.0 GiB a rank   (ESTIMATED: Hy4's MLA latent KV is small; values to be measured)
+             --kv-dtype bf16 is passed (EXTRA_ARGS); the KV pool and the reserve are a budget assumption, not passed to the engine
 Licences     weights=other (tencent-hy-license)
 Nodes        local spark-2   (default (the pair: spark-2 is the worker's ssh alias on the QSFP link))
 Baseline     hy4-flash-nvfp4-vllm-tp2: 31.4 tok/s at 1 stream, 77.8 aggregate at 4 (beat both; re-measure the baseline with `beast-recipe check --bench` so both use one probe)
 
-Gaps  (blocking work: 32.0-93.0 engineering days, ESTIMATED)
+Gaps  (blocking work: 32.5-94.0 engineering days, ESTIMATED)
   WORK  [engine-stage] stage a signed native TensorFold release on every Spark (engine.sh stage on a connected box, install --from on each Spark; rollback keeps the old pin)
         effort: 0.5 day (ESTIMATED); install between models; who: us
   WORK  [server-wrap] the engine has a generator for this family but no server path (tensorfold serve does not register it)
         effort: 1-2 weeks if the generator's forward is reusable (ESTIMATED); who: upstream TensorFold, or us
   WORK  [family-tp] a tensor-parallel (multi-Spark) split for a family the engine runs on one GPU: heads/experts/vocab split, per-rank inputs, NCCL or RoCE collectives, drafter hooks
         effort: 4-12 weeks for a strong Zig/CUDA engineer; 0 if upstream lands it first; who: upstream TensorFold or a fork author; us only if the model is decisive
+  WORK  [hy4-generator-build] build tf-hy4-cuda-generate from source (zig build hy4-cuda-generate at the engine's tag; Zig toolchain + CUDA 13 on the Spark, or an image build): the release archives ship only bin/tensorfold-native
+        effort: 0.5 day (ESTIMATED); who: us
   WORK  [hy4-generator-qual] qualify the one-GB10 generator first: tf-hy4-cuda-generate on the LibertAIDAI pack on ONE Spark (the pair down), greedy output against the vLLM build on the same prompts; its single-stream decode is the floor a TP2 serve must beat
         effort: one 0.5-day pair-down window; who: us, on hardware
   WORK  [hy4-exl3-reader] the pack's layout is scope hy4flash-routed-k4, codebook mul1, serving_reader_qualified false: the family's reader must accept exactly that (or the pack is re-quantized to what it reads)
@@ -474,13 +579,14 @@ Gaps  (blocking work: 32.0-93.0 engineering days, ESTIMATED)
 
 End to end  (each command prints what it would do; add --run to act)
   engine:  beast-recipe engine hy4-flash-exl3-tensorfold-tp2
-      [local] ~/.local/bin/tensorfold --version   # want tensorfold-native 1.3.4
-      [spark-2] ~/.local/bin/tensorfold --version   # want tensorfold-native 1.3.4
-      [connected box] scripts/engine.sh stage tensorfold --version 1.3.4 ~/carry/tensorfold-1.3.4   # signed archive + MANIFEST, for the offline Sparks
-      [local] scripts/engine.sh install tensorfold --version 1.3.4 --from ~/carry/tensorfold-1.3.4   # online: drop --from; rollback: scripts/engine.sh rollback tensorfold
-      [spark-2] scripts/engine.sh install tensorfold --version 1.3.4 --from ~/carry/tensorfold-1.3.4   # online: drop --from; rollback: scripts/engine.sh rollback tensorfold
-      [local] ~/.local/bin/tensorfold capabilities --json > recipes/hy4-flash-exl3-tensorfold-tp2/runs/capabilities-1.3.4.json   # then update scripts/backends/data/recipe-engines.json from it
+      [local] ~/.local/bin/tensorfold --version   # want tensorfold-native 1.3.3
+      [spark-2] ~/.local/bin/tensorfold --version   # want tensorfold-native 1.3.3
+      [connected box] scripts/engine.sh stage tensorfold --version 1.3.3 ~/carry/tensorfold-1.3.3   # signed archive + MANIFEST, for the offline Sparks
+      [local] scripts/engine.sh install tensorfold --version 1.3.3 --from ~/carry/tensorfold-1.3.3   # online: drop --from; rollback: scripts/engine.sh rollback tensorfold
+      [spark-2] cd ~/openbeast && scripts/engine.sh install tensorfold --version 1.3.3 --from ~/carry/tensorfold-1.3.3   # online: drop --from; rollback: scripts/engine.sh rollback tensorfold
+      [local] mkdir -p recipes/hy4-flash-exl3-tensorfold-tp2/runs && ~/.local/bin/tensorfold capabilities --json > recipes/hy4-flash-exl3-tensorfold-tp2/runs/capabilities-1.3.3.json   # after the install; then update scripts/backends/data/recipe-engines.json from it
   stage:  beast-recipe stage hy4-flash-exl3-tensorfold-tp2
+      [local] (profile) # models/recipe-hy4-flash-exl3-tensorfold-tp2.env + recipes/hy4-flash-exl3-tensorfold-tp2/beast-recipe-hy4-flash-exl3-tensorfold-tp2.service: stage --run renders them when missing (= beast-recipe up hy4-flash-exl3-tensorfold-tp2 --write-profile); commit them, workers verify from the same commit
       [local] (verify) cd /home/max/Documents/LibertAIDAI-Hy4-flash-EXL3-4bpw && systemd-run --user --scope -p MemoryMax=8G -p MemoryHigh=6G sha256sum -c --quiet -   # < recipes/hy4-flash-exl3-tensorfold-tp2/SHA256SUMS; read-only: the Hub's LFS hashes, before the lock trusts these bytes
       [spark-2] (verify) cd /home/max/Documents/LibertAIDAI-Hy4-flash-EXL3-4bpw && systemd-run --user --scope -p MemoryMax=8G -p MemoryHigh=6G sha256sum -c --quiet -   # < recipes/hy4-flash-exl3-tensorfold-tp2/SHA256SUMS from the head; read-only
       [local] (weights) scripts/backends/model-fetch.sh --profile recipe-hy4-flash-exl3-tensorfold-tp2   # a local SOURCE: records models/recipe-hy4-flash-exl3-tensorfold-tp2.lock on the first run (commit it), verifies against it after; reads the folder, never writes it
@@ -488,16 +594,15 @@ End to end  (each command prints what it would do; add --run to act)
       [local] (mirror) # a worker that lacks the copy: scripts/backends/spark-cluster.sh sync-weights --profile recipe-hy4-flash-exl3-tensorfold-tp2 (never onto a kept pack)
       [local] (aux) # AUX: Engram tables (~118 GiB) inside the pack, streamed from each Spark local NVMe, never over NFS
   up:  beast-recipe up hy4-flash-exl3-tensorfold-tp2
-      [local] beast-recipe up hy4-flash-exl3-tensorfold-tp2 --write-profile   # renders scripts/backends/models/recipe-hy4-flash-exl3-tensorfold-tp2.env; commit it (every Spark launches the profile from its own checkout, at the same commit)
       [local] scripts/backends/spark-cluster.sh check   # 2 node(s), fabric, same checkout
       [local] scripts/backends/spark-cluster.sh start --profile recipe-hy4-flash-exl3-tensorfold-tp2 --engine tensorfold --dry-run   # the exact rank commands
-      [local] install -m 0644 recipes/hy4-flash-exl3-tensorfold-tp2/beast-recipe-hy4-flash-exl3-tensorfold-tp2.service ~/.config/systemd/user/beast-recipe-hy4-flash-exl3-tensorfold-tp2.service && systemctl --user daemon-reload
-      [local] systemctl --user start beast-recipe-hy4-flash-exl3-tensorfold-tp2.service   # through beast-spark hy4-flash-exl3-tensorfold-tp2 on the pair (adopt first)
+      [local] install -m 0644 recipes/hy4-flash-exl3-tensorfold-tp2/beast-recipe-hy4-flash-exl3-tensorfold-tp2.service ~/.config/systemd/user/beast-recipe-hy4-flash-exl3-tensorfold-tp2.service && systemctl --user daemon-reload   # installs only: no [Install], enables and starts nothing
+      [local] systemctl --user start beast-recipe-hy4-flash-exl3-tensorfold-tp2.service   # only when nothing serves; on the pair: adopt, then beast-spark hy4-flash-exl3-tensorfold-tp2
   check:  beast-recipe check hy4-flash-exl3-tensorfold-tp2
       scripts/backends/conformance.sh --url http://127.0.0.1:8000 --model Hy4-flash-EXL3-4bpw --backend tensorfold --key-file ~/.config/openbeast/tensorfold-api-key --concurrency 4
       beast-recipe check hy4-flash-exl3-tensorfold-tp2 --run --bench   # decode tok/s at 1 stream (median of 3) and 4 streams aggregate, same probe for every recipe (scripts/tokps.py one_run)
   adopt:  beast-recipe adopt hy4-flash-exl3-tensorfold-tp2
-      beast-recipe adopt hy4-flash-exl3-tensorfold-tp2 --run   # writes ~/.config/openbeast/recipes.d/hy4-flash-exl3-tensorfold-tp2.env (beast-spark's registry)
+      beast-recipe adopt hy4-flash-exl3-tensorfold-tp2 --run   # installs the unit (enables nothing) and writes ~/.config/openbeast/recipes.d/hy4-flash-exl3-tensorfold-tp2.env (beast-spark's registry)
       beast-spark hy4-flash-exl3-tensorfold-tp2   # the switch: stops the model that serves, starts beast-recipe-hy4-flash-exl3-tensorfold-tp2.service, waits for Hy4-flash-EXL3-4bpw, INFERENCE_BACKEND/INFERENCE_MODEL in openbeast.conf, restarts the command center
   rollback:  beast-recipe rollback
       beast-recipe rollback --run   # beast-spark <the previous selection> (ds, glm, hy4 or a recipe)
@@ -510,12 +615,18 @@ End to end  (each command prints what it would do; add --run to act)
   Engram, streamed from local disk). At TP2 that is 43 GiB a rank, against
   77.3 for the NVFP4 build under vLLM: room for a much bigger KV pool or more
   streams. Memory is not the problem.
-- **The engine is.** Upstream 1.3.2+ has a hy_v4_flash generator on one GB10
-  (`tf-hy4-cuda-generate`, greedy), not a server, and no two-Spark split.
-  The work, in order, with what each buys:
-  1. `engine-stage`: stage 1.3.4 on both Sparks (0.5 day; `engine.sh rollback`
+- **The engine is.** Upstream 1.3.3 (#4259, lands #4004) has a hy_v4_flash
+  generator on one GB10 (`tf-hy4-cuda-generate`, greedy), not a server, and no
+  two-Spark split; the 85.38 GiB load is 1.3.2's (#4003), with the opt-in CUDA
+  slab mode, which must be switched on or the load fails at layer 30 (the env
+  name is VERIFY at the tag). The work, in order, with what each buys:
+  1. `engine-stage`: stage 1.3.3 on both Sparks (0.5 day; `engine.sh rollback`
      undoes it). Nothing serves native TensorFold today, so it disturbs nothing.
-  2. `hy4-generator-qual`: one 0.5-day pair-down window. Run
+     (1.3.4 is the README pin but has no release: nothing to stage.)
+  2. `hy4-generator-build` and `hy4-generator-qual`: the release archive ships
+     only `bin/tensorfold-native`, so first build the generator from source at
+     the tag (`zig build hy4-cuda-generate`; Zig + CUDA 13 on a Spark, or an
+     image build; 0.5-1 day). Then one 0.5-day pair-down window. Run
      `tf-hy4-cuda-generate` on spark-2 against the kept pack; compare its greedy
      output with the vLLM build on the same prompts, and time its single-stream
      decode. That number is the floor: if one GB10 already decodes near 31 tok/s
@@ -564,12 +675,12 @@ VERDICT   SERVABLE-NOW at TP2
           an engine we already have serves it on this many Sparks and it fits: what is left is steps (fetch, profile, start, check), no engineering
           caveat: D2 has never served on the pair (SPARK_HYDRA D2 'VERIFY ON HARDWARE')
 
-Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <= 100 tight; budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom)
+Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <= 100 tight; budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom; KV and reserve are budget assumptions)
   Sparks  W/rank  rule          W + KV + reserve + OS = used    headroom  engine allows
-  1       163.6   does not fit  163.6 + 10.0 + 9.5 + 6.0 = 189.1   -67.4     no
-  2       82.4    fits          82.4 + 10.0 + 9.5 + 6.0 = 107.9   13.7      yes
-  3       55.4    fits          55.4 + 10.0 + 9.5 + 6.0 = 80.9    40.8      yes
-  4       41.9    fits          41.9 + 10.0 + 9.5 + 6.0 = 67.4    54.3      yes
+  1       163.6   does not fit  163.6 + 10.0 + 17.5 + 6.0 = 197.1   -75.4     no
+  2       82.4    fits          82.4 + 10.0 + 17.5 + 6.0 = 115.9   5.7       yes
+  3       55.4    fits          55.4 + 10.0 + 17.5 + 6.0 = 88.9    32.8      yes
+  4       41.9    fits          41.9 + 10.0 + 17.5 + 6.0 = 75.4    46.3      yes
   other bpw (projected checkpoint GiB -> per rank):
     3.0 bpw: 125.6 GiB -> 1: 125.6, 2: 63.3, 3: 42.5, 4: 32.2   (sizing rule)
     4.0 bpw: 163.6 GiB -> 1: 163.6, 2: 82.5, 3: 55.4, 4: 41.9   (sizing rule)
@@ -579,7 +690,8 @@ Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <=
 Engines  (who reads it, at which sizes; best first)
   * tf-native-1.2.10   installed     SERVABLE-NOW at TP2
     tf-mia-glm-0.6.0   installed     SERVABLE-NOW at TP2
-    tf-native-1.3.4    available     SERVABLE-WITH-WORK at TP2; work: engine-stage
+    tf-native-1.3.3    available     SERVABLE-WITH-WORK at TP2; work: engine-stage
+    tf-native-1.3.4    unreleased    BLOCKED at TP2; work: upstream-release: tf-native-1.3.4 is not released upstream (gap upstream-release): pin a released version; once it is out: SERVABLE-WITH-WORK at TP2
     tf-fork-dsv41      installed     no: no family for model_type glm5_next
     vllm-hy4           installed     no: no family for model_type glm5_next
     vllm-ngc           not-installed no: exl3 weights: vLLM cannot load them
@@ -608,6 +720,7 @@ MAX_MODEL_LEN=245760
 TENSORFOLD_PARALLEL=4
 DRAFTER_SOURCE=incoai/GLM-5.3-Flash-DFlash2
 DRAFTER_REVISION=6cc6c481eee930a5139619ed919f78726371adbc
+EXTRA_ARGS=["--kv-dtype","fp8"]
 ```
 
 ### 4. DeepSeek-V4.1-Flash at 2.9 bpw (the default) and at 4.0 bpw
@@ -621,7 +734,7 @@ VERDICT   SERVABLE-NOW at TP2
           an engine we already have serves it on this many Sparks and it fits: what is left is steps (fetch, profile, start, check), no engineering
           upstream: TP4: branch deepseek-v41-zig-tp4 @ 5940208 (input tools) and Mia's 4-Spark recipe; a 4-ring or a switch
 
-Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <= 100 tight; budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom)
+Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <= 100 tight; budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom; KV and reserve are budget assumptions)
   Sparks  W/rank  rule          W + KV + reserve + OS = used    headroom  engine allows
   1       196.1   does not fit  196.1 + 1.8 + 12.2 + 6.0 = 216.1   -94.4     no
   2       98.9    tight         98.9 + 1.8 + 12.2 + 6.0 = 118.9   2.8       yes
@@ -646,7 +759,7 @@ VERDICT   NEEDS-MORE-HARDWARE at TP4
           - 4 Sparks: 68.4 GiB a rank, fits (SERVABLE-WITH-WORK)
           upstream: TP4: branch deepseek-v41-zig-tp4 @ 5940208 (input tools) and Mia's 4-Spark recipe; a 4-ring or a switch
 
-Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <= 100 tight; budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom)
+Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <= 100 tight; budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom; KV and reserve are budget assumptions)
   Sparks  W/rank  rule          W + KV + reserve + OS = used    headroom  engine allows
   1       267.2   does not fit  267.2 + 1.8 + 12.2 + 6.0 = 287.2   -165.5    no
   2       134.7   does not fit  134.7 + 1.8 + 12.2 + 6.0 = 154.7   -33.0     yes
@@ -659,14 +772,15 @@ Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <=
     6.0 bpw: 393.8 GiB -> 1: 393.8, 2: 198.5, 3: 133.4, 4: 100.8   (sizing rule)
 
 Engines  (who reads it, at which sizes; best first)
-    tf-native-1.3.4    available     NEEDS-MORE-HARDWARE at TP4; work: engine-stage, quantize, image-build
   * tf-fork-dsv41      installed     NEEDS-MORE-HARDWARE at TP4; work: quantize, image-build, topology
+    tf-native-1.3.3    available     NEEDS-MORE-HARDWARE at TP4; work: engine-stage, quantize, image-build, topology
     tf-native-1.2.10   installed     no: refuses deepseek_v41: no registered Zig family serves model_type deepseek_v41 (tensorfold info, spark-1, 1.2.10, 2026-11-19, VERIFIED)
     tf-mia-glm-0.6.0   installed     no: no family for model_type deepseek_v41
     vllm-hy4           installed     no: no family for model_type deepseek_v41
     vllm-ngc           not-installed no: exl3 weights: vLLM cannot load them
+    tf-native-1.3.4    unreleased    BLOCKED at TP4; work: upstream-release, quantize, image-build, topology: tf-native-1.3.4 is not released upstream (gap upstream-release): pin a released version; once it is out: NEEDS-MORE-HARDWARE at TP4
     exllamav3          not-installed BLOCKED: allowed at 1, but it does not fit at any of them
-  ranks: this image is the TP2 build; the fork's rank cache and plan take WORLD 1, 2 or 4 and 64 heads do not divide by 3 (DeepSeek recipe docs/zig-engine.md, VERIFIED)
+  ranks: this image is the TP2 build; the fork's rank cache and plan take WORLD 1, 2 or 4 (its plan splits heads evenly; upstream TensorFold >= 1.2.6 plans 3 ranks as 24/24/16 heads by o_groups, but serving still refuses 3 ranks, #2270) (DeepSeek recipe docs/zig-engine.md, VERIFIED)
 
 Gaps  (blocking work: 2.5-6 engineering days, ESTIMATED)
   WORK  [image-build] build the recipe image from pinned parts (base by digest + vendored files, content-hashed tag) and carry it to every Spark
@@ -674,20 +788,23 @@ Gaps  (blocking work: 2.5-6 engineering days, ESTIMATED)
   WORK  [topology] cabling and fabric for more than 2 Sparks: the 3-triangle / 4-ring is not in spark-cluster.sh check yet (NCCL_IB_SUBNET_AWARE_ROUTING, LAN rendezvous)
         effort: 1-2 days + the hardware; who: us, on hardware
   WORK  [quantize] our own EXL3 quantization (exllamav3 convert.py) in the exact layout the engine's reader requires
-        effort: 1-3 days per 300-550B MoE on one Spark, mostly wall time; a quantizing Spark serves nothing; who: us, with a free Spark; from deepseek-ai/DeepSeek-V4.1-Flash-1017@1bae0e10 (FP8 + MXFP4, ~476 GB)
+        effort: 1-3 days per 300-550B MoE on one Spark, mostly wall time; a quantizing Spark serves nothing; who: us, with a free Spark; from deepseek-ai/DeepSeek-V4.1-Flash-1017@1bae0e10 (FP8 + MXFP4, ~510 GB = 475 GiB)
   step  [glue] recipe glue for an architecture the engine already has: profile, launch values, fabric, template, conformance
         effort: 0.5-1 day per model; the first one 1-2 days; who: us, today
   step  [tuning] memory and launch tuning: KV dtype and pool, MEMORY_RESERVE_GIB, context, streams, MIN_AVAIL, from the engine's start line and MemAvailable under load on every rank
         effort: 0.5 day per model; who: us
 ```
 
-**Four Sparks, not three**: 64 attention heads and the fork's WORLD 1/2/4 rule
-skip 3, even though 90.5 GiB a rank would fit at TP3. On four, the plan's work
+**Four Sparks, not three**: the fork's WORLD 1/2/4 rule skips 3, even though
+90.5 GiB a rank would fit at TP3. Upstream TensorFold (>= 1.2.6) already plans
+3 ranks as 24/24/16 heads by output groups, but no engine serves 3 ranks yet
+(TensorFold #2270). Its `up` and `adopt` say `gap: launcher`: Mia's unit serves
+the 2.9 pack at TP2, never this one. On four, the plan's work
 is quantizing the pack (1-3 days on one Spark), building the tp4 image, and
 cabling the 4-ring. The LibertAI 3.5-bpw pack already exists for four
 (119 GiB a rank at TP2, 60 at TP4).
 
-### 5. Qwen3.8-27B EXL3 4.0 bpw on ONE Spark, TensorFold 1.3.4
+### 5. Qwen3.8-27B EXL3 4.0 bpw on ONE Spark, TensorFold 1.3.3
 
 ```text
 VERDICT   SERVABLE-WITH-WORK at TP1
@@ -695,7 +812,7 @@ VERDICT   SERVABLE-WITH-WORK at TP1
           note: a better path exists: tf-native-1.2.10 is SERVABLE-NOW at TP1
           caveat: never installed or run on our Sparks; D2 has never served on the pair
 
-Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <= 100 tight; budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom)
+Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <= 100 tight; budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom; KV and reserve are budget assumptions)
   Sparks  W/rank  rule          W + KV + reserve + OS = used    headroom  engine allows
   1       15.2    fits          15.2 + 16.0 + 6.5 + 6.0 = 43.7    78.0      yes
   2       7.7     fits          7.7 + 16.0 + 6.5 + 6.0 = 36.2    85.5      no
@@ -709,8 +826,9 @@ Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <=
 
 Engines  (who reads it, at which sizes; best first)
     tf-native-1.2.10   installed     SERVABLE-NOW at TP1
-  * tf-native-1.3.4    available     SERVABLE-WITH-WORK at TP1; work: engine-stage
+  * tf-native-1.3.3    available     SERVABLE-WITH-WORK at TP1; work: engine-stage
     exllamav3          not-installed SERVABLE-WITH-WORK at TP1; work: image-build, launcher
+    tf-native-1.3.4    unreleased    BLOCKED at TP1; work: upstream-release: tf-native-1.3.4 is not released upstream (gap upstream-release): pin a released version; once it is out: SERVABLE-WITH-WORK at TP1
     tf-fork-dsv41      installed     no: no family for model_type qwen3_5
     tf-mia-glm-0.6.0   installed     no: no family for model_type qwen3_5
     vllm-hy4           installed     no: no family for model_type qwen3_5
@@ -718,10 +836,14 @@ Engines  (who reads it, at which sizes; best first)
   ranks: EXL3 on ONE GPU
 ```
 
-Pinned to 1.3.4 on purpose (Max), and the plan says the honest thing: the
-installed 1.2.10 already reads this `mul1` pack at TP1, so it is servable now
-on 1.2.10. On the pair, one Spark means the pair's model is down (or a third
-Spark). The drafter is `z-lab/Qwen3.8-27B-DFlash2@50307d4c` (Apache-2.0).
+Max chose 1.3.4, which has no release yet, so the recipe pins the latest
+released 1.3.3, and the plan says the honest thing: the installed 1.2.10
+already reads this `mul1` pack at TP1, so it is servable now on 1.2.10 (the mcg
+admission is 1.3.3's; 1.3.4's dense MTP does not matter with a DFlash2
+drafter). On the pair, one Spark means the pair's model is down (or a third
+Spark); the recipe's D2 commands and unit use `recipes/<name>/cluster.env`
+(`local` only), never the pair's two-node file. The drafter is
+`z-lab/Qwen3.8-27B-DFlash2@50307d4c` (Apache-2.0).
 
 ### 6. MiniMax-M3.1-Flash EXL3 3.06 bpw on 2 Sparks
 
@@ -730,7 +852,7 @@ VERDICT   SERVABLE-NOW at TP2
           an engine we already have serves it on this many Sparks and it fits: what is left is steps (fetch, profile, start, check), no engineering
           caveat: D2 has never served on the pair (SPARK_HYDRA D2 'VERIFY ON HARDWARE')
 
-Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <= 100 tight; budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom)
+Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <= 100 tight; budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom; KV and reserve are budget assumptions)
   Sparks  W/rank  rule          W + KV + reserve + OS = used    headroom  engine allows
   1       159.2   does not fit  159.2 + 8.0 + 9.5 + 6.0 = 182.7   -61.0     no
   2       80.3    fits          80.3 + 8.0 + 9.5 + 6.0 = 103.8   17.9      yes
@@ -745,8 +867,13 @@ Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <=
 
 Candidate 3 of the investigation, and the first new architecture on the pair
 built entirely by OpenBeast. The real pack is 159.2 GiB (init read it; the
-investigation estimated ~152): 80.3 GiB a rank, exactly two ranks. Its card has
-no `license:` field (`LICENCES=weights=unknown`, VERIFY before staging); the
+investigation estimated ~152): 80.3 GiB a rank, exactly two ranks. The pack's
+card has no `license:` field; the base model's card
+(`MiniMaxAI/MiniMax-M3.1-Flash`) says `other` / `minimax-community`, recorded
+with HUB provenance (`licence-review`: attribution, a notice to MiniMax, written
+authorization above US$20M yearly revenue, a prohibited-use appendix). The pack
+ships a DSpark draft (`dspark/`, 5 layers; its README says acceptance is not
+tested): the recipe serves plain first (`DRAFTER=none`), then A/B tests it. The
 repo ships custom code (`auto_map`), which native TensorFold does not run.
 Init suggested the `hermes` tool parser from the template; the recipe sets
 `minimax_m2` (MiniMax's own `<minimax:tool_call>` format) as VERIFY, and
@@ -794,9 +921,10 @@ changed; a recipe that only pins a Mia image redistributes nothing.
   anywhere, on the Sparks' system python3 (3.9+), the rig or the Mac.
 - `init` reads a local directory offline; against the Hub it is read-only and
   honours `OFFLINE=true` (refuses), `HF_ENDPOINT` (a mirror), `HF_TOKEN_FILE`.
-- Weights: `SHA256SUMS` is vendored with the recipe, so `stage` verifies a
-  carried copy (a USB SSD, a mirror) with no network. D2 profiles verify
-  against their committed lock.
+- Weights: `SHA256SUMS` (Hub-backed recipes) is vendored with the recipe, so
+  `stage` verifies a carried copy (a USB SSD, a mirror) with no network. D2
+  profiles verify against their committed lock; a local pack with neither is
+  checked by `spark-model-intake.sh`.
 - Engines: `engine.sh stage tensorfold --version V DIR` on a connected box,
   carry the directory, `engine.sh install ... --from DIR` on each Spark (signed
   and hashed). Images: `spark-cluster.sh save-image IMAGE FILE` and `docker
@@ -808,13 +936,14 @@ changed; a recipe that only pins a Mia image redistributes nothing.
 v1 is built and tested off-hardware; these are the first things to run on the
 pair (each in a pair-down window, after the live evals):
 
-1. `beast-recipe up glm53-flash-exl3-native-tp2 --run` through `adopt` +
-   `beast-spark glm53-flash-exl3-native-tp2`: **the first D2 serve on the
-   pair**. Expect to tune `CONTEXT`, `KV_POOL_GIB` and `MEMORY_RESERVE_GIB` from
-   the start line. The profile's lock is the existing GLM profile's, so
+1. `beast-recipe adopt glm53-flash-exl3-native-tp2 --run` (installs the unit,
+   enables nothing) + `beast-spark glm53-flash-exl3-native-tp2`, then `check
+   --run --bench`: **the first D2 serve on the pair**. Expect to tune
+   `CONTEXT`, `KV_POOL_GIB` and `MEMORY_RESERVE_GIB` from the start line. The profile's lock is the existing GLM profile's, so
    `model-fetch.sh` verifies the folder against it rather than trusting it.
 2. `beast-recipe engine hy4-flash-exl3-tensorfold-tp2 --run --stage`: stage
-   1.3.4, snapshot `capabilities --json`, update the matrix.
+   1.3.3, snapshot `capabilities --json`, update the matrix; build
+   `tf-hy4-cuda-generate` from source at v1.3.3.
 3. The Hy4 generator qualification (example 2, step 2) and the vLLM baseline
    re-measured with `check --bench`.
 4. `stage` then `up` for MiniMax and Qwen (downloads of ~171 GB and ~16 GB).

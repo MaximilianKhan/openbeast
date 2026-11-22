@@ -1710,8 +1710,8 @@ The first D2 serve on the pair is planned as `recipes/glm53-flash-exl3-native-tp
 
 OpenBeast's own launcher. It is general (any profile, 1 to 8 ranks), keyed
 (`--api-key-file`), and launches only verified local weights. On our pair it is
-the **challenger**: native TensorFold 1.2.7 is installed on both Sparks but does
-not serve. Serving GLM-5.3-Flash on the pair through D2 is VERIFY ON HARDWARE,
+the **challenger**: native TensorFold 1.2.10 is installed on both Sparks
+(`tensorfold --version`, checked 2026-11-22) but does not serve. Serving GLM-5.3-Flash on the pair through D2 is VERIFY ON HARDWARE,
 and so is comparing it with the recipe ("Not done yet").
 
 **Install the engine** on every Spark. `install-native.sh` verifies three

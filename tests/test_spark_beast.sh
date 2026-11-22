@@ -272,8 +272,10 @@ inst() { SB_BIN_DIR="$T/inst/bin" SB_PREP="$T/inst/prep" SB_BASHRC="$T/inst/bash
 if inst && inst && cmp -s "$SB" "$T/inst/bin/beast-spark" && [[ -x "$T/inst/bin/beast-spark" ]] \
    && cmp -s "$REPO_DIR/scripts/backends/spark-deepseek-pack.sh" "$T/inst/prep/spark-deepseek-pack.sh" \
    && cmp -s "$REPO_DIR/scripts/backends/spark-deepseek-prepare-local.sh" "$T/inst/prep/spark-deepseek-prepare-local.sh" \
-   && [[ -x "$T/inst/prep/spark-deepseek-pack.sh" ]] && [[ "$(grep -c '^alias beast' "$T/inst/bashrc")" == 6 ]] && grep -qx "# mine" "$T/inst/bashrc"; then
-  pass "install (twice): beast-spark, the pack tools and the aliases in place, aliases once"
+   && [[ -x "$T/inst/prep/spark-deepseek-pack.sh" ]] && [[ "$(grep -c '^alias beast' "$T/inst/bashrc")" == 6 ]] && grep -qx "# mine" "$T/inst/bashrc" \
+   && [[ -L "$T/inst/bin/beast-recipe" && "$(readlink "$T/inst/bin/beast-recipe")" == "$REPO_DIR/scripts/beast-recipe.sh" ]] \
+   && "$T/inst/bin/beast-recipe" show --keys >/dev/null 2>&1; then
+  pass "install (twice): beast-spark, the pack tools, the aliases once, and beast-recipe linked onto PATH (and it runs)"
 else fail "install: $(cat "$T/out") / $(cat "$T/inst/bashrc")"; fi
 # an older install (five aliases, no beasthy4): install adds only the missing line
 { echo "# mine"; bash "$SB" aliases | grep -v beasthy4; } > "$T/inst/bashrc"
@@ -342,6 +344,21 @@ else fail "recipe not installed: $(calls) / $(cat "$T/out")"; fi
 if ! run evil && [[ ! -e "$T/pwned" ]] && ! run recipe nosuch && grep -q "no adopted recipe 'nosuch'" "$T/out"; then
   pass "a malformed registry file is ignored (never sourced, nothing run); an unknown recipe is refused"
 else fail "recipe registry hygiene: $(cat "$T/out")"; fi
+# hy4 while a recipe serves: the recipe is stopped first; a failed hy4 brings the recipe back
+reset; touch "$ST/$HY4U.installed" "$ST/$RU.installed" "$ST/$RU.active" "$ST/fail-hy4"
+sed -i.bak -e 's/^INFERENCE_MODEL=.*/INFERENCE_MODEL="demo-served"/' "$T/openbeast.conf"
+if ! run hy4 && [[ "$(calls)" == "stop $RU;start $HY4U;stop $HY4U;start $RU" ]] && [[ -f "$ST/$RU.active" ]] \
+   && [[ "$(conf_model)" == '"demo-served"' ]] && grep -q "demo is serving again; Hy4 was NOT activated" "$T/out"; then
+  pass "hy4 from a recipe, failing: the recipe stopped first, then restored; openbeast.conf unchanged"
+else fail "hy4 from recipe: $(calls) / $(conf_model) / $(cat "$T/out")"; fi
+reset; touch "$ST/$HY4U.installed" "$ST/$RU.installed" "$ST/$RU.active"
+if run hy4 && [[ "$(calls)" == "stop $RU;start $HY4U;restart openbeast.service" ]] && [[ ! -f "$ST/$RU.active" ]]; then
+  pass "hy4 from a recipe: the recipe stopped before Hy4 starts (not left to Conflicts=)"
+else fail "hy4 from recipe ok: $(calls) / $(cat "$T/out")"; fi
+# a switch from nothing records PREVIOUS=none (rollback is then beast-spark down)
+reset; rm -f "$T/recipes.d/.previous"; touch "$ST/$RU.installed"
+if run demo && grep -q '^PREVIOUS=none$' "$T/recipes.d/.previous"; then pass "recipe from nothing: .previous=none"
+else fail "previous none: $(cat "$T/recipes.d/.previous" 2>&1) / $(cat "$T/out")"; fi
 reset; touch "$ST/$RU.installed" "$ST/$RU.active"
 run status
 if grep -q "$RU  *active (recipe demo)" "$T/out"; then pass "status lists the adopted recipes' units"; else fail "status recipes: $(cat "$T/out")"; fi

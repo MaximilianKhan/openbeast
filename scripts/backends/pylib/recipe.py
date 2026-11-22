@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """beast-recipe: OpenBeast's own serving recipes for DGX Sparks (1 to 8, one rank each).
 
-    beast-recipe init  <hf-url | org/repo[@sha] | local-dir> [--sparks N] [--name NAME] [--engine ID]
+    beast-recipe init  <hf-url | org/repo[@sha] | local-dir> [--sparks N] [--name NAME] [--engine ID] [--force] [--accept-nc]
     beast-recipe plan  <recipe> [--sparks 1,2,3,4] [--write]
-    beast-recipe engine <recipe> [--run]          the engine on every Spark: check, or stage it
-    beast-recipe stage  <recipe> [--run] [--only weights,verify,mirror,drafter,image]
-    beast-recipe up     <recipe> [--run] [--write-profile]
+    beast-recipe engine <recipe> [--run [--stage] [--while-serving]]   the engine on every Spark: check, or stage it
+    beast-recipe stage  <recipe> [--run] [--only weights,verify,mirror,drafter,quantize,aux,rank-inputs,profile]
+                                 [--accept-nc] [--force] [--while-serving]
+    beast-recipe up     <recipe> [--run] [--write-profile] [--force] [--key-file F] [--wait S]
     beast-recipe down   <recipe> [--run]
     beast-recipe check  <recipe> [--run] [--bench] [--url URL] [--key-file F]
     beast-recipe adopt  <recipe> [--run] [--write-family]
     beast-recipe rollback [--run]
-    beast-recipe list | show <recipe>
+    beast-recipe list | show <recipe> | show --keys
     every command: --json, --help; every acting command prints what it would do unless --run
+    (on the head, `beast-spark install` links this as ~/.local/bin/beast-recipe)
 
 A RECIPE is a directory, recipes/<name>/, holding recipe.env (KEY=VALUE, PARSED, never sourced;
 every value carries its provenance in a trailing comment), SHA256SUMS (the weights' Hub LFS hashes,
@@ -34,6 +36,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import threading
@@ -47,6 +50,7 @@ BACKENDS = HERE.parent
 REPO = HERE.parents[2]
 sys.path.insert(0, str(HERE))
 
+import hfapi
 import obprofile
 
 DATA_FILE = Path(os.environ.get("BEAST_RECIPE_DATA") or BACKENDS / "data" / "recipe-engines.json")
@@ -74,7 +78,24 @@ PROV_TAGS = ("READ", "HUB", "DATA", "MEASURED", "VERIFIED", "CLAIMED", "ESTIMATE
 PROTECTED_NAMES = ("LibertAIDAI-Hy4-flash-EXL3-4bpw",)
 KNOWN_UNITS = {"ds": "deepseek-v41-inference.service", "glm": "spark-hydra-inference.service",
                "hy4": "hy4-vllm-inference.service"}
+# What each Mia recipe unit actually serves: a recipe may hand over to one only when its plan is that
+# (the 2.9 bpw -v2 pack at TP2 for DeepSeek; GLM's unit serves its own pack at TP2).
+MIA_UNIT_SPEC = {
+    "deepseek-v41-inference.service": {"tp": 2, "weights": "~/Documents/Mia-AiLab-DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw-v2"},
+    "spark-hydra-inference.service": {"tp": 2, "weights": None},
+}
 DEFAULT_KEY_FILE = "~/.config/openbeast/tensorfold-api-key"
+# beast-spark's own verbs: a recipe with one of these names could never be switched to by name
+RESERVED_NAMES = {"up", "down", "glm", "ds", "deepseek", "hy4", "status", "aliases", "install", "recipe", "help"}
+# a cluster.env node: an ssh target (user@host, alias, IP); never an option or shell
+NODE_RE = re.compile(r"^[A-Za-z0-9_@][A-Za-z0-9._@-]*$")
+STAGE_STEP_NAMES = ("profile", "weights", "verify", "mirror", "drafter", "quantize", "aux", "rank-inputs")
+SERVES_VALUES = (True, "generator-only", "reference", "source-build")
+ENGINE_STATUSES = ("installed", "available", "unreleased", "not-installed")
+# the vLLM quantization method each checkpoint FORMAT needs (data/vllm.json quantization_methods)
+VLLM_QUANT = {"modelopt-nvfp4": "modelopt_fp4", "modelopt-fp8": "modelopt", "modelopt-mixed": "modelopt_mixed",
+              "fp8-block": "fp8_per_block", "fp8-block128": "fp8_per_block", "fp8": "fp8", "compressed-tensors": "compressed-tensors", "awq": "awq", "gptq": "gptq",
+              "mxfp4": "mxfp4", "bf16": None, "fp16": None}
 
 
 class RecipeError(ValueError):
@@ -231,6 +252,9 @@ def parse_recipe(text: str, path: Path) -> Recipe:
         kind = KEYS[key][0]
         if value and not VALIDATORS[kind].match(value):
             raise RecipeError(f"{path}:{n}: {key}={value[:80]!r} is not a valid {kind}")
+        if kind in ("path", "source") and value.startswith(("/", "~/")) and \
+                any(seg in (".", "..") for seg in value.split("/")):
+            raise RecipeError(f"{path}:{n}: {key}={value[:80]!r}: no . or .. segments in a path")
         values[key] = value
         pm = PROV_RE.match(comment) if comment else None
         prov[key] = ((pm.group(1) or ""), (pm.group(2) or "").strip()) if pm else ("", "")
@@ -300,6 +324,92 @@ def render_recipe(header: list[str], fields: list[tuple]) -> str:
 
 # --------------------------------------------------------------------------- data
 
+def _inherit_families(d: dict, p: Path) -> None:
+    """An engine's `inherit_families` names where the families it does not list come from: another
+    engine of this file (a newer release carries the older one's families forward, CLAIMED until its
+    own capabilities --json), or `spark-families.json:<engine>` (the capabilities snapshot the intake
+    registry records). The engine's own entries always win."""
+    for e in d["engines"]:
+        src = e.get("inherit_families")
+        if not src:
+            continue
+        fams = e.setdefault("families", {})
+        if src.startswith("spark-families.json:"):
+            name = src.split(":", 1)[1]
+            try:
+                reg = json.loads(FAMILIES_FILE.read_text())
+            except (OSError, ValueError) as ex:
+                raise RecipeError(f"{p}: {e['id']}: cannot read {FAMILIES_FILE}: {ex}") from None
+            se = next((x for x in reg.get("engines", []) if x.get("name") == name), None)
+            if se is None:
+                raise RecipeError(f"{p}: {e['id']}: inherit_families {src}: no such engine")
+            ranks = se.get("ranks") or {}
+            for mt, formats in (se.get("families") or {}).items():
+                if mt in fams or mt in (e.get("refuses") or {}):
+                    continue
+                r = ranks.get(mt)
+                by_fmt = {f: ranks[f"{mt}/{f}"] for f in formats if f"{mt}/{f}" in ranks}
+                fams[mt] = {"formats": list(formats), "ranks": list(r or [1, 2]),
+                            "rank_reason": (f"{FAMILIES_FILE.name} {name} ({se.get('source', '')[:80]})" if r else
+                                            f"UNVERIFIED: no rank count recorded for {mt}; [1, 2] by the registry's rule"),
+                            "inherited": src}
+                if by_fmt:
+                    fams[mt]["ranks_by_format"] = by_fmt
+        else:
+            base = engine_by_id(d, src)
+            if base is None:
+                raise RecipeError(f"{p}: {e['id']}: inherit_families {src}: no such engine")
+            for mt, f in (base.get("families") or {}).items():
+                if mt in fams or mt in (e.get("refuses") or {}):
+                    continue
+                fams[mt] = dict(f, rank_reason=f"CLAIMED (carried from {src}; re-snapshot capabilities --json on "
+                                                f"{e.get('version', e['id'])}): " + f.get("rank_reason", ""),
+                                inherited=src)
+
+
+def _ranks_ok(v) -> bool:
+    return isinstance(v, list) and bool(v) and all(isinstance(n, int) and not isinstance(n, bool) and 1 <= n <= 8
+                                                   for n in v)
+
+
+def validate_data(d: dict, p: Path | str = "engine matrix") -> None:
+    """Fail loudly on an entry that would plan quietly wrong (a typo'd gap id, ranks as a string)."""
+    gaps = d["gaps"]
+
+    def bad(msg):
+        raise RecipeError(f"{p}: {msg}")
+    for gid, g in gaps.items():
+        days = g.get("days")
+        if not (isinstance(days, list) and len(days) == 2 and all(isinstance(x, (int, float)) for x in days)
+                and days[0] <= days[1]):
+            bad(f"gap {gid}: days must be [lo, hi]")
+    for e in d["engines"]:
+        eid = e.get("id", "?")
+        if e.get("status") not in ENGINE_STATUSES:
+            bad(f"{eid}: status {e.get('status')!r} is not one of {', '.join(ENGINE_STATUSES)}")
+        if e.get("stage_gap") and e["stage_gap"] not in gaps:
+            bad(f"{eid}: stage_gap {e['stage_gap']!r} is not a gap id")
+        for mt, f in (e.get("families") or {}).items():
+            if f.get("serves", True) not in SERVES_VALUES:
+                bad(f"{eid}/{mt}: serves={f.get('serves')!r} is not one of true, generator-only, reference, source-build")
+            if not _ranks_ok(f.get("ranks")):
+                bad(f"{eid}/{mt}: ranks must be a non-empty list of 1..8")
+            for fmt, rs in (f.get("ranks_by_format") or {}).items():
+                if fmt not in f.get("formats", []) or not _ranks_ok(rs):
+                    bad(f"{eid}/{mt}: ranks_by_format[{fmt}] must name a listed format and a list of 1..8")
+            ww = f.get("with_work") or {}
+            if ww and not (isinstance(ww.get("ranks", []), list) and all(isinstance(n, int) for n in ww.get("ranks", []))):
+                bad(f"{eid}/{mt}: with_work.ranks must be a list of ints")
+            for g in ww.get("gaps", []):
+                if g not in gaps:
+                    bad(f"{eid}/{mt}: with_work gap {g!r} is not a gap id")
+            for x in f.get("extra_gaps", []):
+                days = x.get("days")
+                if not (x.get("id") and x.get("title") and isinstance(days, list) and len(days) == 2
+                        and all(isinstance(v, (int, float)) for v in days) and days[0] <= days[1]):
+                    bad(f"{eid}/{mt}: extra_gaps entries need id, title and days [lo, hi]")
+
+
 def load_data(path: Path | None = None) -> dict:
     p = path or DATA_FILE
     try:
@@ -308,6 +418,8 @@ def load_data(path: Path | None = None) -> dict:
         raise RecipeError(f"cannot read the engine matrix {p}: {e}") from None
     if not isinstance(d.get("engines"), list) or not isinstance(d.get("gaps"), dict):
         raise RecipeError(f"{p}: no engines / gaps (see docs/BEAST_RECIPE.md)")
+    _inherit_families(d, p)
+    validate_data(d, p)
     return d
 
 
@@ -334,7 +446,7 @@ def weights_gib(r: Recipe, data: dict) -> tuple[float | None, str]:
         return float(res), f"resident, the rest streams from disk (DATA sizing: {s['source']})"
     if r.get("WEIGHT_BYTES"):
         return int(r.get("WEIGHT_BYTES")) / GIB, "WEIGHT_BYTES (" + (r.provenance("WEIGHT_BYTES") or "recipe") + ")"
-    if s and r.get("BPW") and "fixed_gib" in s:
+    if s and r.get("BPW") and "fixed_gib" in s and r.get("FORMAT") == "exl3":
         g = s["fixed_gib"] + s["per_bit_gib"] * float(r.get("BPW"))
         return g, f"ESTIMATED: {s['fixed_gib']} + {s['per_bit_gib']} x {r.get('BPW')} bpw (data sizing: {s['source']})"
     return None, "unknown: no WEIGHT_BYTES and no sizing rule for this model_type"
@@ -344,7 +456,7 @@ def project_bytes(r: Recipe, data: dict, bpw: float) -> tuple[float | None, str]
     """Checkpoint GiB at another bpw: the family's sizing rule, else linear in bpw (slightly pessimistic:
     the BF16 / high-bit parts do not grow)."""
     s = (data.get("sizing") or {}).get(r.get("MODEL_TYPE"))
-    if s and "fixed_gib" in s:
+    if s and "fixed_gib" in s and r.get("FORMAT") == "exl3":       # the rules are EXL3 packs' (expert bits)
         return s["fixed_gib"] + s["per_bit_gib"] * bpw, "sizing rule"
     w, _ = weights_gib(r, data)
     b0 = r.num("BPW")
@@ -436,13 +548,20 @@ def _vllm_family(e: dict, r: Recipe) -> tuple[dict | None, str]:
     arch, fmt = r.get("ARCHITECTURE"), r.get("FORMAT")
     if fmt in ("exl3", "gguf") or fmt.startswith("mlx"):
         return None, f"{fmt} weights: vLLM cannot load them"
+    if not fmt:
+        return None, "FORMAT is empty: cannot tell which vLLM quantization this needs"
+    if fmt not in VLLM_QUANT:
+        return None, f"{fmt}: no vLLM quantization method maps to it"
+    qm = VLLM_QUANT[fmt]
+    if qm and qm not in set(reg.get("quantization_methods", [])):
+        return None, f"{qm} is not in vLLM's quantization methods @{commit} (data/vllm.json)"
     if arch not in set(reg.get("generation_architectures", [])):
         return None, f"{arch or '?'} is not in vLLM's model registry @{commit} (data/vllm.json)"
     heads, kvh = int(r.num("ATTENTION_HEADS") or 0), int(r.num("KV_HEADS") or 0)
     ranks = [n for n in range(1, 9) if not heads or (heads % n == 0 and (not kvh or kvh % n == 0 or n % kvh == 0))]
     return ({"formats": [fmt], "ranks": ranks, "rank_reason": f"vLLM's TP must divide the {heads or '?'} attention "
              f"heads{f' and the {kvh} KV heads' if kvh else ''}: {', '.join(map(str, ranks))}",
-             "launch": {"memory_reserve_gib": 5, "source": "model_inspect's runtime overhead"}}, "")
+             "launch": {"memory_reserve_gib": 5, "source": "ESTIMATED: a fixed 5 GiB vLLM runtime reserve"}}, "")
 
 
 def family_for(e: dict, r: Recipe) -> tuple[dict | None, str]:
@@ -454,6 +573,9 @@ def family_for(e: dict, r: Recipe) -> tuple[dict | None, str]:
         return None, f"refuses {mt}: {e['refuses'][mt]}"
     fam = (e.get("families") or {}).get(mt)
     if not fam:
+        if e.get("kind") == "tensorfold-native" and mt:
+            return None, (f"UNRECORDED: {mt} is not in this engine's recorded families (unknown, not refused: "
+                          "re-snapshot tensorfold capabilities --json)")
         return None, f"no family for model_type {mt or '?'}"
     if fmt not in fam["formats"]:
         return None, f"reads {mt} only as {', '.join(fam['formats'])}; this is {fmt or '?'}"
@@ -465,7 +587,9 @@ def family_for(e: dict, r: Recipe) -> tuple[dict | None, str]:
 
 
 def _gap(data: dict, gid: str, extra: dict | None = None) -> dict:
-    g = dict(data["gaps"].get(gid) or {"title": gid, "effort": "?", "days": [0, 0], "who": "?"})
+    if gid not in data["gaps"]:
+        raise RecipeError(f"engine matrix: unknown gap id {gid!r}")
+    g = dict(data["gaps"][gid])
     g["id"] = gid
     if extra:
         g.update(extra)
@@ -485,9 +609,11 @@ def evaluate_engine(r: Recipe, data: dict, e: dict, sparks: int) -> dict:
     serve_ranks = list((fam.get("ranks_by_format") or {}).get(fmt) or fam.get("ranks") or [])
     serves = fam.get("serves", True)
     base: list[dict] = []
-    if e["status"] != "installed":
+    if e["status"] == "unreleased":
+        base.append(_gap(data, "upstream-release", {"note": f"{e['id']} has no published release"}))
+    elif e["status"] != "installed":
         base.append(_gap(data, e.get("stage_gap") or ("engine-stage" if e["kind"] == "tensorfold-native" else "image-build")))
-    if e.get("launcher", "none") == "none":
+    if e.get("launcher", "none") == "none" and serves != "reference":
         base.append(_gap(data, "launcher"))
     if r.get("WEIGHTS_STATUS") == "to-quantize":
         base.append(_gap(data, "quantize", {"note": f"from {r.get('QUANTIZE_FROM') or 'the BF16/FP8 source'}"}))
@@ -497,18 +623,22 @@ def evaluate_engine(r: Recipe, data: dict, e: dict, sparks: int) -> dict:
     if serves == "generator-only":
         gen_gaps = [_gap(data, "server-wrap")]
     elif serves == "reference":
-        gen_gaps = [_gap(data, "launcher", {"note": "reference implementation only, no server for this family"})]
+        gen_gaps = [_gap(data, "reference-only", {"note": "reference implementation only, no server for this family"})]
     elif serves == "source-build":
         gen_gaps = [_gap(data, g) for g in ww.get("gaps", ["image-build"])]
+    elif serves is not True:            # validate_data refuses this; a backstop for hand-built data
+        raise RecipeError(f"{e['id']}/{r.get('MODEL_TYPE')}: unknown serves {serves!r}")
     launch = fam.get("launch") or {}
     for n in range(1, data["hardware"]["spark"]["max_sparks"] + 1):
+        # past two Sparks the cabling and fabric are work whatever the engine (hardware.topologies)
+        topo = [_gap(data, "topology")] if n > 2 else []
         if serves is True and n in serve_ranks:
-            gaps, how = list(base), "serves"
+            gaps, how = list(base) + topo, "serves"
         elif serves is not True and n in serve_ranks:
-            gaps, how = base + gen_gaps + extra, str(serves)
+            gaps, how = base + gen_gaps + extra + topo, str(serves)
         elif n in ww.get("ranks", []):
             gaps = base + [_gap(data, g) for g in ww.get("gaps", []) if g not in {x["id"] for x in base + gen_gaps}] \
-                + gen_gaps + extra
+                + gen_gaps + extra + topo
             how = "with work"
         else:
             out["rows"][n] = {"allowed": False}
@@ -539,9 +669,17 @@ def evaluate_engine(r: Recipe, data: dict, e: dict, sparks: int) -> dict:
     else:
         out["n"] = None
         out["verdict"] = "BLOCKED"
-        out["why"] = "allowed at " + (", ".join(str(n) for n, x in out["rows"].items() if x.get("allowed")) or "no size") \
-            + ", but it does not fit at any of them"
+        allowed = [str(n) for n, x in out["rows"].items() if x.get("allowed")]
+        out["why"] = ("allowed at " + ", ".join(allowed) + ", but it does not fit at any of them") if allowed \
+            else "no rank count recorded for this family"
+    if e["status"] == "unreleased":
+        # nothing can be staged until upstream publishes it: never a plan to act on
+        would = out["verdict"] + (f" at TP{out['n']}" if out.get("n") else "")
+        out["verdict"] = "BLOCKED"
+        out["why"] = (f"{e['id']} is not released upstream (gap upstream-release): pin a released version; "
+                      f"once it is out: {would}")
     out["launch"] = launch
+    out["launch_note"] = fam.get("launch_note", "")
     out["rank_reason"] = fam.get("rank_reason", "")
     out["note"] = ww.get("note", "")
     out["family"] = fam
@@ -559,7 +697,11 @@ def choose(r: Recipe, data: dict, sparks: int) -> dict:
 
     def key(p):
         gaps = p["rows"].get(p.get("n") or 0, {}).get("gaps") or []
-        return (VERDICTS.index(p["verdict"]), _days(gaps)[0], 0 if p["status"] == "installed" else 1)
+        # an engine with no server path (no launcher, or a reference implementation) sorts after one that
+        # serves; then the target's own size; then the least work; then what is installed
+        no_server = p.get("launcher", "none") == "none" or (p.get("family") or {}).get("serves") == "reference"
+        return (VERDICTS.index(p["verdict"]), 1 if no_server else 0, 0 if p.get("n") == sparks else 1,
+                _days(gaps)[0], 0 if p["status"] == "installed" else 1)
     ranked = sorted(paths, key=key)
     pinned = r.get("ENGINE", "auto")
     if pinned != "auto":
@@ -596,22 +738,74 @@ def hardware_why(r: Recipe, data: dict, p: dict, sparks: int) -> list[str]:
 
 # --------------------------------------------------------------------------- the plan
 
+def cluster_nodes(f: Path) -> list[str]:
+    """CLUSTER_NODES of a cluster file, validated: rank 0 is `local`, every other node a plain ssh target
+    (they reach ssh argv and rsync targets)."""
+    for line in f.read_text().splitlines():
+        m = re.match(r"^\s*CLUSTER_NODES\s*=\s*(.*)$", line)
+        if m:
+            v, _ = _split_value(m.group(1))
+            ns = v.split()
+            if ns and ns[0] != "local":
+                raise RecipeError(f"{f}: CLUSTER_NODES rank 0 must be 'local'")
+            for i, n in enumerate(ns[1:], 1):
+                if n == "local" or not NODE_RE.match(n):
+                    raise RecipeError(f"{f}: node {i} {n!r} is not a plain ssh target")
+            return ns
+    return []
+
+
+def default_cluster_file() -> Path:
+    return BACKENDS / "cluster.env"
+
+
 def nodes(sparks: int, cluster_file: Path | None = None) -> tuple[list[str], str]:
-    """The ssh targets in rank order (rank 0 = local) and where they came from."""
-    f = cluster_file or BACKENDS / "cluster.env"
+    """The ssh targets in rank order (rank 0 = local) and where they came from: the first `sparks` nodes
+    of the cluster file; placeholders (`<rankN>`, never runnable) for any it does not list."""
+    f = cluster_file or default_cluster_file()
     if f.is_file():
-        for line in f.read_text().splitlines():
-            m = re.match(r"^\s*CLUSTER_NODES\s*=\s*(.*)$", line)
-            if m:
-                v, _ = _split_value(m.group(1))
-                ns = v.split()
-                if ns:
-                    return ns, str(f)
+        ns = cluster_nodes(f)
+        if ns:
+            if len(ns) >= sparks:
+                return ns[:sparks], (str(f) if len(ns) == sparks else f"the first {sparks} of {len(ns)} nodes in {f}")
+            return ns + [f"<rank{i}>" for i in range(len(ns), sparks)], \
+                f"{f} lists {len(ns)} of {sparks} nodes: placeholders for the rest (add them to CLUSTER_NODES)"
     if sparks == 1:
         return ["local"], "default (one Spark)"
     if sparks == 2:
         return ["local", "spark-2"], "default (the pair: spark-2 is the worker's ssh alias on the QSFP link)"
     return ["local"] + [f"<rank{i}>" for i in range(1, sparks)], "placeholders: write scripts/backends/cluster.env"
+
+
+def recipe_cluster(r: Recipe, n: int | None) -> str:
+    """The --cluster a D2 recipe's spark-cluster.sh calls take: none on the pair (TP2: the pair's own
+    cluster.env), else recipes/<name>/cluster.env, which stage/up --run write from the first N nodes of
+    cluster.env (machine-local: *.env is not committed)."""
+    return "" if (n or 2) == 2 else f"recipes/{r.name}/cluster.env"
+
+
+def _cl(r: Recipe, n: int | None, prefix: str = "") -> str:
+    c = recipe_cluster(r, n)
+    return f" --cluster {prefix}{c}" if c else ""
+
+
+def write_recipe_cluster(r: Recipe, n: int, cluster_file: Path | None = None) -> Path | None:
+    """recipes/<name>/cluster.env: CLUSTER_NODES = the first n nodes of the cluster file, CLUSTER_REPO and
+    CLUSTER_NAME copied. Refuses when the file lists fewer than n."""
+    if not recipe_cluster(r, n):
+        return None
+    src = cluster_file or default_cluster_file()
+    ns = cluster_nodes(src) if src.is_file() else []
+    if n == 1 and not ns:
+        ns = ["local"]
+    if len(ns) < n:
+        raise RecipeError(f"{r.name} needs {n} nodes; {src} lists {len(ns)}: add them to CLUSTER_NODES first")
+    keep = [ln for ln in (src.read_text().splitlines() if src.is_file() else [])
+            if re.match(r"^\s*CLUSTER_(REPO|NAME)\s*=", ln)]
+    out = r.dir / "cluster.env"
+    out.write_text(f"# beast-recipe {r.name}: the first {n} node(s) of {src} (machine-local, not committed)\n"
+                   f"CLUSTER_NODES=\"{' '.join(ns[:n])}\"\n" + "".join(x + "\n" for x in keep))
+    return out
 
 
 def launcher_of(r: Recipe, p: dict) -> str:
@@ -656,6 +850,38 @@ def q(*a: str) -> str:
     return " ".join(shlex.quote(str(x)) for x in a)
 
 
+def at_repo(node: str, cmd: str) -> str:
+    """A repo-relative command: on a worker, ssh starts in $HOME, so it runs from ~/openbeast."""
+    return cmd if node == "local" else f"cd ~/openbeast && {cmd}"
+
+
+def is_protected(wd: str) -> bool:
+    """The kept-pack rule (hy4_protected): a path that names a kept pack, IS $HOME / ~/Documents /
+    ~/Documents/weights (which hold one), or holds one locally."""
+    raw = wd.rstrip("/")
+    if re.match(r"^(~|/home/[^/]+|/Users/[^/]+|/root)(/Documents(/weights)?)?$", raw) or \
+            raw == os.path.expanduser("~"):
+        return True
+    if any(n in wd for n in PROTECTED_NAMES):
+        return True
+    pth = os.path.normpath(os.path.expanduser(wd))
+    return any(os.path.exists(os.path.join(pth, n)) for n in PROTECTED_NAMES)
+
+
+def mia_unit_mismatch(r: Recipe, p: dict, unit: str) -> str | None:
+    """Why a Mia recipe unit is NOT this recipe's launch (it serves another pack or rank count), or None."""
+    s = MIA_UNIT_SPEC.get(unit)
+    if not s:
+        return None
+    if (p.get("n") or 0) != s["tp"]:
+        return f"{unit} runs TP{s['tp']}, the plan needs TP{p.get('n') or '-'}"
+    if r.get("WEIGHTS_STATUS") == "to-quantize":
+        return f"{unit} serves its own pack; this one is still to be quantized"
+    if s["weights"] and weights_dir(r).rstrip("/") != s["weights"]:
+        return f"{unit} serves {s['weights']}, not {weights_dir(r)}"
+    return None
+
+
 def qp(path: str) -> str:
     """A path for a remote shell: quoted, but a leading ~/ stays unquoted so it expands on that node."""
     return "~/" + shlex.quote(path[2:]) if path.startswith("~/") else shlex.quote(path)
@@ -671,14 +897,18 @@ def engine_steps(r: Recipe, p: dict, eng: dict, ns: list[str]) -> list[tuple[str
     if kind == "tensorfold-native":
         for n in ns:
             out.append((n, f"~/.local/bin/tensorfold --version   # want tensorfold-native {v}"))
-        if eng["status"] != "installed":
+        if eng["status"] == "unreleased":
+            out.append(("-", (f"tensorfold-native {v} is not released upstream: nothing to stage (gap: upstream-release; "
+                              "pin a released version)")))
+        elif eng["status"] != "installed":
             out.append(("connected box", (f"scripts/engine.sh stage tensorfold --version {v} ~/carry/tensorfold-{v}"
                                          "   # signed archive + MANIFEST, for the offline Sparks")))
             for n in ns:
-                out.append((n, (f"scripts/engine.sh install tensorfold --version {v} --from ~/carry/tensorfold-{v}"
-                               "   # online: drop --from; rollback: scripts/engine.sh rollback tensorfold")))
-            out.append((ns[0], (f"~/.local/bin/tensorfold capabilities --json > recipes/{r.name}/runs/capabilities-{v}.json"
-                               "   # then update scripts/backends/data/recipe-engines.json from it")))
+                out.append((n, at_repo(n, f"scripts/engine.sh install tensorfold --version {v} --from ~/carry/tensorfold-{v}")
+                            + "   # online: drop --from; rollback: scripts/engine.sh rollback tensorfold"))
+            out.append((ns[0], (f"mkdir -p recipes/{r.name}/runs && ~/.local/bin/tensorfold capabilities --json > "
+                                f"recipes/{r.name}/runs/capabilities-{v}.json"
+                                "   # after the install; then update scripts/backends/data/recipe-engines.json from it")))
     elif eng.get("image"):
         img = r.get("IMAGE") or eng["image"]
         for n in ns:
@@ -710,6 +940,12 @@ def stage_steps(r: Recipe, p: dict, eng: dict, ns: list[str]) -> list[tuple[str,
     if launcher.startswith("d2-"):
         prof = profile_name(r)
         sums = r.dir / "SHA256SUMS"
+        cl = _cl(r, p.get("n"))
+        out.append(("profile", ns[0], (f"# models/{prof}.env + recipes/{r.name}/{unit_of(r, launcher)}: stage --run renders "
+                    f"them when missing (= beast-recipe up {r.name} --write-profile); commit them, workers verify from the same commit")))
+        if cl:
+            out.append(("profile", ns[0], (f"# recipes/{r.name}/cluster.env: stage --run writes it (the first {p.get('n')} "
+                        "node(s) of cluster.env; machine-local)")))
         if r.get("WEIGHTS_STATUS") == "local":
             if sums.is_file():
                 out.append(("verify", ns[0], (f"cd {qp(wd)} && {SCOPE} sha256sum -c --quiet -   # < recipes/{r.name}/SHA256SUMS; read-only: "
@@ -723,12 +959,12 @@ def stage_steps(r: Recipe, p: dict, eng: dict, ns: list[str]) -> list[tuple[str,
                             "worker's copy against the committed lock")))
             if len(ns) > 1:
                 out.append(("mirror", ns[0], (f"# a worker that lacks the copy: scripts/backends/spark-cluster.sh sync-weights "
-                            f"--profile {prof} (never onto a kept pack)")))
+                            f"--profile {prof}{cl} (never onto a kept pack)")))
         else:
             out.append(("weights", ns[0], (f"scripts/backends/model-fetch.sh --profile {prof}   # fetch the pinned revision "
                         "(and the drafter) into MODELS_DIR, or verify a copy, and lock it")))
             if len(ns) > 1:
-                out.append(("mirror", ns[0], (f"scripts/backends/spark-cluster.sh sync-weights --profile {prof}   # head -> every "
+                out.append(("mirror", ns[0], (f"scripts/backends/spark-cluster.sh sync-weights --profile {prof}{cl}   # head -> every "
                             "worker over the fabric, verified against the head's lock")))
     elif launcher == "hy4-vllm":
         out.append(("weights", ns[0], ("scripts/backends/spark-hy4-stage.sh --run --only weights,verify,mirror   # capped "
@@ -736,7 +972,7 @@ def stage_steps(r: Recipe, p: dict, eng: dict, ns: list[str]) -> list[tuple[str,
         out.append(("verify", ns[0], "scripts/backends/spark-hy4-stage.sh --check"))
     else:
         local = r.get("WEIGHTS_STATUS") == "local"
-        protected = any(x in wd for x in PROTECTED_NAMES)
+        protected = is_protected(wd)
         sums = r.dir / "SHA256SUMS"
         if src and not src.startswith("/") and rev and not local and not protected:
             out.append(("weights", ns[0], (f"scripts/weights-download.sh {hub_url(src, rev)} {qp(wd)}   # every file "
@@ -752,7 +988,7 @@ def stage_steps(r: Recipe, p: dict, eng: dict, ns: list[str]) -> list[tuple[str,
                             "the family, index signature and pack fingerprint against data/spark-families.json")))
         for n in ns[1:]:
             if not (local or protected):
-                out.append(("mirror", ns[0], (f"{SCOPE} rsync -a --partial {qp(wd + '/')} {n}:{qp(wd + '/')}   # over the "
+                out.append(("mirror", ns[0], (f"{SCOPE} rsync -a --partial {qp(wd + '/')} {shlex.quote(n)}:{qp(wd + '/')}   # over the "
                             "QSFP link; never --delete")))
             if sums.is_file():
                 out.append(("verify", n, f"cd {qp(wd)} && {SCOPE} sha256sum -c --quiet -   # < recipes/{r.name}/SHA256SUMS from the head; read-only"))
@@ -761,7 +997,7 @@ def stage_steps(r: Recipe, p: dict, eng: dict, ns: list[str]) -> list[tuple[str,
             ddir = f"~/Documents/weights/{drepo}"
             out.append(("drafter", ns[0], f"scripts/weights-download.sh {hub_url(drepo, drev)} {qp(ddir)}"))
             for n in ns[1:]:
-                out.append(("drafter", ns[0], f"{SCOPE} rsync -a --partial {qp(ddir + '/')} {n}:{qp(ddir + '/')}"))
+                out.append(("drafter", ns[0], f"{SCOPE} rsync -a --partial {qp(ddir + '/')} {shlex.quote(n)}:{qp(ddir + '/')}"))
     if r.get("AUX"):
         out.append(("aux", ns[0], f"# AUX: {r.get('AUX')}"))
     if r.get("RANK_INPUTS") and r.get("RANK_INPUTS") != "none":
@@ -824,6 +1060,11 @@ def render_profile(r: Recipe, p: dict) -> str:
         lines.append(f"TENSORFOLD_PARALLEL={r.get('PARALLEL') or 'auto'}")
         if kind == "repo":
             lines += [f"DRAFTER_SOURCE={drepo}", f"DRAFTER_REVISION={drev}"]
+        # the KV dtype reaches the engine (spark-node.sh appends EXTRA_ARGS; --kv-dtype is allow-listed).
+        # KV_POOL_GIB and MEMORY_RESERVE_GIB have no engine flag in D2: the plan budgets them only.
+        kvd = r.get("KV_DTYPE")
+        if kvd and kvd != "auto":
+            lines.append(f'EXTRA_ARGS=["--kv-dtype","{kvd}"]')
     else:
         for k, pk in (("TOOL_PARSER", "TOOL_CALL_PARSER"), ("REASONING_PARSER", "REASONING_PARSER"),
                       ("GPU_MEM_UTIL", "GPU_MEMORY_UTILIZATION"), ("MAX_NUM_SEQS", "MAX_NUM_SEQS")):
@@ -845,7 +1086,10 @@ def render_unit(r: Recipe, p: dict) -> str:
     launcher = launcher_of(r, p)
     engine = "vllm" if launcher == "d2-vllm" else "tensorfold"
     prof = profile_name(r)
+    if not p.get("n"):
+        raise RecipeError(f"{r.name}: the plan has no rank count ({p.get('verdict')}): no unit to render")
     conflicts = " ".join(sorted(KNOWN_UNITS.values()))
+    cl = _cl(r, p.get("n"), "%h/openbeast/")
     return f"""# {unit_of(r, launcher)}: rendered by beast-recipe from recipes/{r.name}/recipe.env.
 # {r.get('TITLE') or r.name}
 # STAGED, NOT A BOOT DEFAULT: there is no [Install] section, so it cannot be
@@ -859,13 +1103,14 @@ Description=beast-recipe {r.name}: {r.get('SERVED_NAME')} on {p['engine']}, TP {
 After=network-online.target
 Wants=network-online.target
 Conflicts={conflicts}
+After={conflicts}
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=%h/openbeast
-ExecStart=/usr/bin/bash %h/openbeast/scripts/backends/spark-cluster.sh start --profile {prof} --engine {engine}
-ExecStop=/usr/bin/bash %h/openbeast/scripts/backends/spark-cluster.sh stop --engine {engine}
+ExecStart=/usr/bin/bash %h/openbeast/scripts/backends/spark-cluster.sh start{cl} --profile {prof} --engine {engine}
+ExecStop=/usr/bin/bash %h/openbeast/scripts/backends/spark-cluster.sh stop{cl} --engine {engine}
 TimeoutStartSec=infinity
 TimeoutStopSec=150
 Restart=no
@@ -877,21 +1122,33 @@ def up_steps(r: Recipe, p: dict, ns: list[str]) -> list[tuple[str, str]]:
     unit = unit_of(r, launcher)
     if launcher.startswith("d2-"):
         prof = profile_name(r)
-        return [(ns[0], (f"beast-recipe up {r.name} --write-profile   # renders scripts/backends/models/{prof}.env; commit it "
-                        "(every Spark launches the profile from its own checkout, at the same commit)")),
-                (ns[0], f"scripts/backends/spark-cluster.sh check   # {len(ns)} node(s), fabric, same checkout"),
-                (ns[0], (f"scripts/backends/spark-cluster.sh start --profile {prof} --engine "
+        cl = _cl(r, p.get("n"))
+        return [(ns[0], f"scripts/backends/spark-cluster.sh check{cl}   # {len(ns)} node(s), fabric, same checkout"),
+                (ns[0], (f"scripts/backends/spark-cluster.sh start{cl} --profile {prof} --engine "
                         f"{'vllm' if launcher == 'd2-vllm' else 'tensorfold'} --dry-run   # the exact rank commands")),
-                (ns[0], f"install -m 0644 recipes/{r.name}/{unit} ~/.config/systemd/user/{unit} && systemctl --user daemon-reload"),
-                (ns[0], f"systemctl --user start {unit}   # through beast-spark {r.name} on the pair (adopt first)")]
+                (ns[0], (f"install -m 0644 {unit_src(r, unit)} ~/.config/systemd/user/{unit} && systemctl --user daemon-reload"
+                         "   # installs only: no [Install], enables and starts nothing")),
+                (ns[0], f"systemctl --user start {unit}   # only when nothing serves; on the pair: adopt, then beast-spark {r.name}")]
     if launcher == "hy4-vllm":
         return [(ns[0], "scripts/backends/hy4-vllm/start.sh --print   # both docker commands (golden-tested against this recipe)"),
                 (ns[0], "scripts/backends/spark-hy4-stage.sh install   # the runtime copy + the unit; enables nothing"),
                 (ns[0], f"systemctl --user start {unit}   # through beast-spark hy4")]
     if launcher.startswith("mia-unit:"):
+        m = mia_unit_mismatch(r, p, unit)
+        if m:
+            return [("-", f"no unit for TP{p.get('n') or '-'} with this pack yet: {m} (gap: launcher)")]
         short = {v: k for k, v in KNOWN_UNITS.items()}.get(unit, "")
         return [(ns[0], f"systemctl --user start {unit}   # Mia's recipe unit" + (f"; through beast-spark {short}" if short else ""))]
     return [("-", f"no launcher for {p['engine']} (gap: launcher)")]
+
+
+def unit_src(r: Recipe, unit: str) -> str:
+    """The rendered unit's path for a command run from the repo (relative when the recipe is in it)."""
+    f = r.dir / unit
+    try:
+        return str(f.relative_to(REPO))
+    except ValueError:
+        return shlex.quote(str(f))
 
 
 def check_steps(r: Recipe, p: dict, url: str, key_file: str) -> list[str]:
@@ -907,21 +1164,35 @@ def adopt_steps(r: Recipe, p: dict) -> list[str]:
     if launcher == "hy4-vllm":
         return ["already selectable: beast-spark hy4 (the hy4-vllm kit's unit)"]
     if launcher.startswith("mia-unit:"):
+        m = mia_unit_mismatch(r, p, unit_of(r, launcher))
+        if m:
+            return [f"deferred: {m} (gap: launcher)"]
         short = {v: k for k, v in KNOWN_UNITS.items()}.get(unit_of(r, launcher), "")
         return [f"already selectable: beast-spark {short} (Mia's recipe unit)" if short else
                 "deferred: a new Mia-recipe unit is not wired (gap: launcher)"]
-    return [f"beast-recipe adopt {r.name} --run   # writes ~/.config/openbeast/recipes.d/{r.name}.env (beast-spark's registry)",
+    return [(f"beast-recipe adopt {r.name} --run   # installs the unit (enables nothing) and writes "
+             f"~/.config/openbeast/recipes.d/{r.name}.env (beast-spark's registry)"),
             (f"beast-spark {r.name}   # the switch: stops the model that serves, starts {unit_of(r, launcher)}, waits for "
             f"{r.get('SERVED_NAME')}, INFERENCE_BACKEND/INFERENCE_MODEL in openbeast.conf, restarts the command center")]
 
 
-def plan(r: Recipe, data: dict, sparks: int | None = None, counts: list[int] | None = None) -> dict:
+def licence_flags(lic: str) -> tuple[bool, bool]:
+    """(needs a licence review, non-commercial or no-derivatives): token-anchored, so 'nc' inside
+    'licence' or 'nd' inside 'and' never matches. One classifier for init, plan and stage."""
+    low = (lic or "").lower()
+    nc = bool(re.search(r"(?<![a-z])n[cd](?![a-z])|non-?commercial", low))
+    review = nc or bool(re.search(r"(?<![a-z])(other|custom|unknown)(?![a-z])", low)) or not low
+    return review, nc
+
+
+def plan(r: Recipe, data: dict, sparks: int | None = None, counts: list[int] | None = None,
+         cluster_file: Path | None = None) -> dict:
     sparks = sparks or int(r.num("SPARKS") or 2)
-    counts = counts or sorted({1, 2, 3, 4, sparks})
     c = choose(r, data, sparks)
     p = c["chosen"]
+    counts = sorted(set(counts or {1, 2, 3, 4, sparks}) | ({p["n"]} if p.get("n") else set()))
     eng = engine_by_id(data, p["engine"])
-    ns, ns_from = nodes(p.get("n") or sparks)
+    ns, ns_from = nodes(p.get("n") or sparks, cluster_file)
     total, total_how = weights_gib(r, data)
     gaps = list(_row_gaps(p))
     launcher = launcher_of(r, p)
@@ -933,11 +1204,14 @@ def plan(r: Recipe, data: dict, sparks: int | None = None, counts: list[int] | N
         for gid in ("glue", "tuning"):
             if gid not in ids:
                 gaps.append(_gap(data, gid))
-        if p["verdict"] == "NEEDS-MORE-HARDWARE" and (p.get("n") or 0) > 2:
+        if (p.get("n") or 0) > 2:
             gaps.append(_gap(data, "topology"))
+    if not any(x["reads"] for x in c["paths"]):
+        # no engine in the matrix reads this model_type: the work is a new family in an engine
+        gaps.append(_gap(data, "family", {"note": f"model_type {r.get('MODEL_TYPE') or '?'}: no engine has a family for it"}))
     lic = r.get("LICENCES")
-    if re.search(r"(nc|nd|non-commercial|other|custom|unknown)", lic.lower()):
-        gaps.append(_gap(data, "licence-review", {"note": lic}))
+    if licence_flags(lic)[0]:
+        gaps.append(_gap(data, "licence-review", {"note": lic or "no LICENCES line"}))
     seen, uniq = set(), []
     for g in gaps:
         if g["id"] not in seen:
@@ -985,7 +1259,7 @@ def plan(r: Recipe, data: dict, sparks: int | None = None, counts: list[int] | N
         "engine": {"id": p["engine"], "title": p["title"], "status": p["status"], "pinned": c["pinned"],
                    "launcher": launcher, "n": p.get("n"), "rank_reason": p.get("rank_reason"),
                    "note": p.get("note") or "", "unverified": (eng or {}).get("unverified_on_pair", ""),
-                   "why": p.get("why") or ""},
+                   "why": p.get("why") or "", "launch_note": p.get("launch_note") or "", "reads": p["reads"]},
         "better_path": better,
         "hardware_why": hardware_why(r, data, p, sparks) if p["verdict"] == "NEEDS-MORE-HARDWARE" else [],
         "alternatives": [{"engine": x["engine"], "status": x["status"], "reads": x["reads"], "verdict": x["verdict"],
@@ -998,11 +1272,23 @@ def plan(r: Recipe, data: dict, sparks: int | None = None, counts: list[int] | N
                     "options": drafters},
         "kv": {"dtype": r.get("KV_DTYPE") or (p.get("launch") or {}).get("kv_dtype") or "auto",
                "pool_gib": fit.get(p.get("n") or sparks, {}).get("kv_gib"),
-               "source": (p.get("launch") or {}).get("source", "")},
+               "source": (p.get("launch") or {}).get("source", ""),
+               "passed": kv_passed(r, launcher)},
         "gaps": uniq, "effort_days": [round(lo, 1), round(hi, 1)],
         "nodes": ns, "nodes_from": ns_from, "steps": steps,
         "baseline": {"from": r.get("BASELINE_FROM"), "toks_1": r.num("BASELINE_TOKS_1"), "toks_4": r.num("BASELINE_TOKS_4")},
     }
+
+
+def kv_passed(r: Recipe, launcher: str) -> str:
+    """What of the KV / reserve budget actually reaches the engine at launch."""
+    if launcher.startswith("d2-") and launcher != "d2-vllm":
+        kvd = r.get("KV_DTYPE")
+        return (f"--kv-dtype {kvd} is passed (EXTRA_ARGS); " if kvd and kvd != "auto" else "") + \
+            "the KV pool and the reserve are a budget assumption, not passed to the engine"
+    if launcher in ("hy4-vllm", "d2-vllm"):
+        return "vLLM: --kv-cache-memory-bytes / --gpu-memory-utilization are the launch's; the reserve is a budget assumption"
+    return "the launcher's own values (the plan budgets the recipe's)"
 
 
 def render_plan(pl: dict) -> str:
@@ -1034,9 +1320,13 @@ def render_plan(pl: dict) -> str:
         add(f"          upstream: {e['note']}")
     if e["unverified"]:
         add(f"          caveat: {e['unverified']}")
+    if e.get("launch_note"):
+        add(f"          launch: {e['launch_note']}")
+    if pl.get("retarget_note"):
+        add(f"          {pl['retarget_note']}")
     add("")
     add("Fit per Spark  (W = checkpoint / TP x (1 + 0.008 (TP-1)); rule: W <= 92 fits, <= 100 tight; "
-        "budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom)")
+        "budget: W + KV + reserve + OS within 121.7 GiB, >= 6 GiB headroom; KV and reserve are budget assumptions)")
     add("  Sparks  W/rank  rule          W + KV + reserve + OS = used    headroom  engine allows")
     for n, x in sorted(pl["fit"].items()):
         if x.get("w_gib") is None:
@@ -1064,14 +1354,16 @@ def render_plan(pl: dict) -> str:
         add(f"  ranks: {e['rank_reason']}")
     add("")
     par = pl["parallelism"]
-    add(f"Parallelism  TP{par['tp']}" + (" + expert parallel" if par["ep"] else "") + ", PP 1, one rank per Spark; "
+    add(f"Parallelism  TP{par['tp'] or '-'}" + (" + expert parallel" if par["ep"] else "") + ", PP 1, one rank per Spark; "
         f"this engine runs it at {', '.join(map(str, par['allowed'])) or 'no size'}")
     d = pl["drafter"]
     add(f"Drafter      {d['chosen']}")
     for o in d["options"]:
         add(f"             option: {o['kind']}" + (f" {o['repo']}@{o['revision'][:8]}" if o.get("repo") else "")
             + (f" ({o['licence']})" if o.get("licence") else "") + f": {o.get('note', '')}")
-    add(f"KV           {pl['kv']['dtype']}, {pl['kv']['pool_gib']} GiB a rank   ({pl['kv']['source']})")
+    add(f"KV           {pl['kv']['dtype']}, {pl['kv']['pool_gib'] if pl['kv']['pool_gib'] is not None else '?'} GiB a rank   "
+        f"({pl['kv']['source']})")
+    add(f"             {pl['kv']['passed']}")
     add(f"Licences     {pl['model']['licences'] or 'unknown: read the model card'}")
     add(f"Nodes        {' '.join(pl['nodes'])}   ({pl['nodes_from']})")
     if pl["baseline"]["from"]:
@@ -1084,6 +1376,9 @@ def render_plan(pl: dict) -> str:
         add(f"  {'WORK' if g['blocking'] else 'step'}  [{g['id']}] {g['title']}")
         add(f"        effort: {g['effort']}; who: {g['who']}" + (f"; {g['note']}" if g.get("note") else ""))
     add("")
+    if pl["verdict"] == "BLOCKED":
+        add("BLOCKED: these steps will not serve it until the gaps above close (docs/BEAST_RECIPE.md "
+            "'When the verdict is BLOCKED')")
     add("End to end  (each command prints what it would do; add --run to act)")
     for phase in ("engine", "stage", "up", "check", "adopt", "rollback"):
         add(f"  {phase}:  beast-recipe {phase} {pl['recipe'] if phase != 'rollback' else ''}".rstrip())
@@ -1138,10 +1433,13 @@ def resolve_source(spec: str) -> str:
     return spec
 
 
-def detect_drafter(cfg: dict, tc: dict, data: dict, mt: str) -> tuple[str, str, list[str]]:
+def detect_drafter(cfg: dict, tc: dict, data: dict, mt: str, files: list[str] | None = None) -> tuple[str, str, list[str]]:
     """(DRAFTER value, provenance, notes)."""
     keys = set(cfg) | set(tc)
     notes = []
+    if any(f.startswith("dspark/") and f.endswith((".safetensors", "config.json")) for f in (files or [])):
+        notes.append("DSpark draft in the checkpoint's dspark/ folder")
+        return "in-checkpoint:dspark", "READ: dspark/ folder", notes
     if any("dfly" in k for k in keys):
         n = tc.get("dfly_num_hidden_layers") or cfg.get("dfly_num_hidden_layers")
         notes.append(f"DFly drafter in the checkpoint (dfly_* config{f', {n} layers' if n else ''})")
@@ -1190,19 +1488,21 @@ def init(spec: str, name: str | None, sparks: int, engine: str, data: dict, forc
     if lic == "other" and fm.get("license_name"):
         lic = f"other ({fm['license_name']})"
     warnings = list(rep["warnings"])
-    if re.search(r"(^|-)n[cd](-|$)|non-commercial", lic.lower()) and not accept_nc:
+    if licence_flags(lic)[1] and not accept_nc:
         warnings.append(f"licence {lic}: non-commercial or no-derivatives; stage refuses it without --accept-nc")
     repo = src.repo or ""
     base = re.sub(r"[^a-z0-9._-]+", "-", (repo.split("/")[-1] if repo else Path(str(src.local)).name).lower()).strip("-")
     name = name or f"{base}-{sparks}x"
     if not NAME_RE.match(name):
         raise RecipeError(f"--name {name!r}: lowercase letters, digits, . _ -")
+    if name in RESERVED_NAMES:
+        raise RecipeError(f"--name {name!r} is a beast-spark command: pick another name")
     d = recipes_dir() / name
     if (d / "recipe.env").exists() and not force:
         raise RecipeError(f"{d}/recipe.env exists (--force replaces it)")
     kv = rep["kv_cache"]
     moe = rep["moe"] or {}
-    drafter, dprov, dnotes = detect_drafter(cfg, tc, data, rep["model_type"])
+    drafter, dprov, dnotes = detect_drafter(cfg, tc, data, rep["model_type"], [f.path for f in src.files])
     tools = next((s["parser"] for s in rep["suggestions"]["tool_call_parser"] if s["parser"]), "")
     reas = next((s["parser"] for s in rep["suggestions"]["reasoning_parser"] if s["parser"]), "")
     served = re.sub(r"[^A-Za-z0-9._-]+", "-", repo.split("/")[-1] if repo else name).strip("-") or name
@@ -1227,7 +1527,7 @@ def init(spec: str, name: str | None, sparks: int, engine: str, data: dict, forc
         ("WEIGHT_BYTES", str(w["weight_bytes"] or ""), "READ", f"{w['safetensors_files']} safetensors files"),
         ("LAYERS", str(tc.get("num_hidden_layers") or ""), "READ", "config.json"),
         ("ATTENTION_HEADS", str(kv.get("attention_heads") or tc.get("num_attention_heads") or ""), "READ", "config.json"),
-        ("KV_HEADS", str(kv.get("kv_heads") or ""), "READ", "config.json (empty: MLA latents)"),
+        ("KV_HEADS", str(kv.get("kv_heads") or ""), "READ", "config.json"),
         ("KV_BYTES_PER_TOKEN", str(kv.get("bytes") or ""), "ESTIMATED", _clean(kv.get("why") or "")),
         ("NATIVE_CONTEXT", str(rep["context"].get("native") or ""), "READ", "config.json max_position_embeddings"),
         ("EXPERTS", str(moe.get("experts") or ""), "READ", "config.json"),
@@ -1282,7 +1582,7 @@ class Runner:
             print(f"  [{node}] SKIPPED (not runnable here): {cmd}", file=self.out)
             return 0, ""
         argv = ["bash", "-c", cmd] if node == "local" else \
-            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", node, cmd]
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--", node, cmd]
         print(f"  [{node}] {cmd}", file=self.out)
         p = subprocess.run(argv, input=stdin, text=True, capture_output=capture, cwd=str(REPO))
         return p.returncode, (p.stdout or "") if capture else ""
@@ -1292,7 +1592,13 @@ def state_dir() -> Path:
     return Path(os.path.expanduser(os.environ.get("BEAST_RECIPE_STATE_DIR") or "~/.config/openbeast/recipes.d"))
 
 
+BUSY_STATES = ("active", "activating", "reloading", "deactivating")
+
+
 def any_inference_active(runner: Runner) -> list[str]:
+    """Every inference unit that is active or on its way (activating counts: a starting model already
+    holds memory), adopted or not: the known units, the registry's, and any beast-recipe-*.service
+    systemd lists; plus a D2 container rank (openbeast-*-rank*) left running outside a unit."""
     units = list(KNOWN_UNITS.values())
     d = state_dir()
     if d.is_dir():
@@ -1301,14 +1607,63 @@ def any_inference_active(runner: Runner) -> list[str]:
             if m:
                 units.append(m.group(1))
     active = []
+    try:
+        lu = subprocess.run(["systemctl", "--user", "list-units", "--all", "--plain", "--no-legend",
+                             "beast-recipe-*.service"], capture_output=True, text=True, check=False).stdout
+    except OSError:
+        raise RecipeError("no systemctl here: --run runs on the head Spark") from None
+    for line in lu.splitlines():
+        f = line.split()
+        if len(f) >= 3 and f[0].startswith("beast-recipe-") and f[0] not in units:
+            units.append(f[0])
     for u in units:
-        try:
-            rc = subprocess.run(["systemctl", "--user", "is-active", "--quiet", u], check=False).returncode
-        except OSError:
-            raise RecipeError("no systemctl here: up --run runs on the head Spark") from None
-        if rc == 0:
+        p = subprocess.run(["systemctl", "--user", "is-active", u], capture_output=True, text=True, check=False)
+        if p.returncode == 0 or p.stdout.strip() in BUSY_STATES:
             active.append(u)
+    try:
+        dp = subprocess.run(["docker", "ps", "--format", "{{.Names}}"], capture_output=True, text=True, check=False,
+                            timeout=20).stdout
+        active += [n for n in dp.split() if n.startswith("openbeast-") and "-rank" in n]
+    except (OSError, subprocess.TimeoutExpired):
+        pass
     return active
+
+
+class model_lock:
+    """beast-spark's switch lock (${XDG_RUNTIME_DIR:-/tmp}/spark-model.lock, or SB_LOCK): one model
+    switch at a time. Skipped when the caller already holds it (SPARK_MODEL_LOCK_HELD=1)."""
+
+    def __init__(self, active: bool):
+        self.active = active and os.environ.get("SPARK_MODEL_LOCK_HELD") != "1"
+        self.fh = None
+
+    def __enter__(self):
+        if not self.active:
+            return self
+        import fcntl
+        path = os.environ.get("SB_LOCK") or os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "spark-model.lock")
+        self.fh = open(path, "a")
+        try:
+            fcntl.flock(self.fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            self.fh.close()
+            raise RecipeError(f"another model switch is running (it holds {path}): wait for it, then retry") from None
+        return self
+
+    def __exit__(self, *a):
+        if self.fh:
+            self.fh.close()
+
+
+def _serving_guard(args, what: str) -> None:
+    """Heavy copies (docker build/pull/save/load, model-fetch, sync-weights) run outside any memory
+    scope: refuse them while a model serves, like spark-hy4-stage.sh, unless --while-serving."""
+    if args.run and not getattr(args, "while_serving", False):
+        busy = any_inference_active(Runner(True))
+        if busy:
+            raise RecipeError(f"{what}: {', '.join(busy)} active. docker build/pull/save/load and the D2 "
+                              "model-fetch/sync-weights run outside any memory scope, and the serving model's memguard "
+                              "may kill its rank: run this between models, or pass --while-serving to accept that")
 
 
 def _key(key_file: str) -> str:
@@ -1395,7 +1750,12 @@ def cmd_plan(args) -> int:
     r = load_recipe(args.recipe)
     counts = _counts(args.sparks)
     target = max(counts) if counts and len(counts) == 1 else None
-    pl = plan(r, data, sparks=target, counts=counts)
+    pl = plan(r, data, sparks=target, counts=counts,
+              cluster_file=Path(os.path.expanduser(args.cluster)) if args.cluster else None)
+    cur = int(r.num("SPARKS") or 2)
+    if target and target != cur:
+        pl["retarget_note"] = (f"note: planned for {target} Sparks, but recipes/{r.name}/recipe.env has SPARKS={cur}: "
+                               f"set SPARKS={target} there before engine/stage/up (they act on recipe.env)")
     if args.write:
         (r.dir / "plan.json").write_text(json.dumps({k: v for k, v in pl.items() if k != "path"}, indent=1,
                                                     sort_keys=True, default=str) + "\n")
@@ -1405,27 +1765,67 @@ def cmd_plan(args) -> int:
 def _ctx(args):
     data = load_data()
     r = load_recipe(args.recipe)
-    pl = plan(r, data)
-    c = choose(r, data, pl["sparks"])
-    p = c["chosen"]
+    cf = Path(os.path.expanduser(args.cluster)) if getattr(args, "cluster", None) else None
+    pl = plan(r, data, cluster_file=cf)
+    p = choose(r, data, pl["sparks"])["chosen"]
     eng = engine_by_id(data, p["engine"]) or {}
-    ns, _ = nodes(p.get("n") or pl["sparks"], Path(args.cluster) if getattr(args, "cluster", None) else None)
-    return data, r, pl, p, eng, ns
+    ns, _ = nodes(p.get("n") or pl["sparks"], cf)
+    if getattr(args, "run", False) and any(n.startswith("<") for n in ns):
+        raise RecipeError(f"{r.name} needs {p.get('n') or pl['sparks']} Sparks; the cluster file lists fewer "
+                          f"({' '.join(ns)}): add the nodes to CLUSTER_NODES before --run")
+    return data, r, pl, p, eng, ns, cf
+
+
+def write_profile(r: Recipe, p: dict, force: bool, cluster_file: Path | None = None) -> list[Path]:
+    """Render and write the D2 profile (scripts/backends/models/<PROFILE>.env) and the unit (recipes/<name>/),
+    and recipes/<name>/cluster.env off the pair. Refuses to replace a profile that exists and differs."""
+    launcher = launcher_of(r, p)
+    prof = render_profile(r, p)
+    unit_text = render_unit(r, p)
+    target = BACKENDS / "models" / f"{profile_name(r)}.env"
+    if target.exists() and target.read_text() != prof and not force:
+        raise RecipeError(f"{target} exists and differs (--force replaces it)")
+    target.write_text(prof)
+    u = r.dir / unit_of(r, launcher)
+    u.write_text(unit_text)
+    out = [target, u]
+    c = write_recipe_cluster(r, p["n"], cluster_file)
+    if c:
+        out.append(c)
+    return out
+
+
+def install_unit(r: Recipe, p: dict) -> Path:
+    """Copy the rendered unit into ~/.config/systemd/user and daemon-reload. Safe while a model serves:
+    the unit has no [Install] section (enables and starts nothing) and a daemon-reload touches no unit."""
+    src = r.dir / unit_of(r, launcher_of(r, p))
+    if not src.is_file():
+        raise RecipeError(f"{src} is missing: beast-recipe up {r.name} --write-profile first (commit it)")
+    dst = Path.home() / ".config/systemd/user" / src.name
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(src, dst)
+    os.chmod(dst, 0o644)
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+    return dst
+
+
+ENGINE_STAGE_MARKS = ("engine.sh", "docker build", "docker pull", "sync-image", "save-image", "tensorfold capabilities")
 
 
 def cmd_engine(args) -> int:
-    _data, r, _pl, p, eng, ns = _ctx(args)
+    _data, r, _pl, p, eng, ns, _cf = _ctx(args)
     runner = Runner(args.run)
     print(f"engine {eng.get('id')} ({eng.get('status')}) for {r.name}, on {' '.join(ns)}" +
           ("" if args.run else "   [dry-run: --run executes the checks; staging steps on a connected box are printed]"))
+    if args.run and args.stage:
+        _serving_guard(args, "engine --stage")
     rc = 0
     for node, cmd in engine_steps(r, p, eng, ns):
-        if args.run and ("engine.sh" in cmd or "docker build" in cmd or "docker pull" in cmd or "sync-image" in cmd
-                         or "save-image" in cmd) and not args.stage:
+        if args.run and any(m in cmd for m in ENGINE_STAGE_MARKS) and not args.stage:
             print(f"  [{node}] (stage step; --stage runs it) {cmd}")
             continue
         code, outp = runner.sh(node, cmd.split("   #")[0], capture=True)
-        if args.run:
+        if args.run and node not in ("-", "connected box") and not node.startswith("<"):
             want = eng.get("version", "")
             ok = code == 0 and (want in outp if "--version" in cmd else True)
             print(f"    -> {'ok' if ok else 'MISSING'}{(': ' + outp.strip()[:120]) if outp.strip() else ''}")
@@ -1433,19 +1833,55 @@ def cmd_engine(args) -> int:
     return rc
 
 
+PLACEHOLDER = re.compile(r"<[^<>]+>")
+
+
 def cmd_stage(args) -> int:
-    _data, r, _pl, p, eng, ns = _ctx(args)
-    lic = r.get("LICENCES").lower()
-    if args.run and re.search(r"(^|[=-])n[cd](-|;|$)|non-commercial", lic) and not args.accept_nc:
+    _data, r, pl, p, eng, ns, cf = _ctx(args)
+    if args.run and licence_flags(r.get("LICENCES"))[1] and not args.accept_nc:
         raise RecipeError(f"LICENCES={r.get('LICENCES')}: a non-commercial or no-derivatives artefact; --accept-nc stages it")
     only = set((args.only or "").split(",")) - {""}
+    bad = only - set(STAGE_STEP_NAMES)
+    if bad:
+        raise RecipeError(f"--only: unknown step(s) {', '.join(sorted(bad))}; known: {', '.join(STAGE_STEP_NAMES)} "
+                          "(images are `engine`'s)")
+    if args.run and not args.force and pl["verdict"] not in ("SERVABLE-NOW", "SERVABLE-WITH-WORK"):
+        raise RecipeError(f"{r.name} is {pl['verdict']}: stage --run needs a servable plan (--force overrides)")
+    if args.run and is_protected(weights_dir(r)) and r.get("WEIGHTS_STATUS") != "local":
+        raise RecipeError(f"WEIGHTS_DIR={weights_dir(r)} is (or holds) a kept pack, and WEIGHTS_STATUS is not local: "
+                          "nothing is ever downloaded or mirrored onto it (fix WEIGHTS_DIR)")
+    steps = stage_steps(r, p, eng, ns)
+    if args.run:
+        heavy = [c for s_, _n, c in steps if (not only or s_ in only) and not c.startswith("#")
+                 and not c.startswith(SCOPE) and f"{SCOPE} sha256sum" not in c]
+        if heavy:
+            _serving_guard(args, "stage")
     runner = Runner(args.run)
     print(f"stage {r.name} on {' '.join(ns)}" + ("" if args.run else "   [dry-run: --run executes]"))
-    for step, node, cmd in stage_steps(r, p, eng, ns):
+    for step, node, cmd in steps:
         if only and step not in only:
+            continue
+        if step == "profile":
+            target = BACKENDS / "models" / f"{profile_name(r)}.env"
+            need = not target.exists() or (recipe_cluster(r, p.get("n")) and not (r.dir / "cluster.env").exists())
+            if not need:
+                if cmd.startswith("# models/"):
+                    print(f"  [{node}] (profile) {target.relative_to(REPO) if REPO in target.parents else target} exists")
+                continue
+            if not cmd.startswith("# models/"):
+                continue
+            if args.run:
+                for f in write_profile(r, p, args.force, cf):
+                    print(f"  [{node}] (profile) wrote {f}")
+                print("  commit the profile and the unit before staging the workers (they verify from the same commit)")
+            else:
+                print(f"  [{node}] (profile) --run would write {target} and the unit (beast-recipe up {r.name} --write-profile)")
             continue
         if cmd.startswith("#"):
             print(f"  [{node}] {cmd}")
+            continue
+        if args.run and (PLACEHOLDER.search(cmd.split("   #")[0]) or node.startswith("<")):
+            print(f"  [{node}] MANUAL (a template: fill the placeholders and run it yourself): {cmd}")
             continue
         if "sha256sum -c" in cmd:
             sums = "".join(x + "\n" for x in (r.dir / "SHA256SUMS").read_text().splitlines() if x and not x.startswith("#"))
@@ -1459,7 +1895,7 @@ def cmd_stage(args) -> int:
 
 
 def cmd_up(args) -> int:
-    _data, r, pl, p, _eng, ns = _ctx(args)
+    _data, r, pl, p, _eng, ns, cf = _ctx(args)
     launcher = launcher_of(r, p)
     unit = unit_of(r, launcher)
     if pl["verdict"] not in ("SERVABLE-NOW",) and not args.force:
@@ -1467,56 +1903,70 @@ def cmd_up(args) -> int:
         if args.run:
             raise RecipeError(msg)
         print(f"note: {msg}")
+    steps = up_steps(r, p, ns)
+    if all(n == "-" for n, _c in steps):
+        if args.run:
+            raise RecipeError(f"{r.name}: {steps[0][1]} (nothing to start; --force does not change that)")
+        for n, c in steps:
+            print(f"  [{n}] {c}")
+        return 0
     if launcher.startswith("d2-"):
-        prof = render_profile(r, p)
-        unit_text = render_unit(r, p)
-        target = BACKENDS / "models" / f"{profile_name(r)}.env"
         if args.write_profile:
-            if target.exists() and target.read_text() != prof and not args.force:
-                raise RecipeError(f"{target} exists and differs (--force replaces it)")
-            target.write_text(prof)
-            (r.dir / unit).write_text(unit_text)
-            print(f"wrote {target} and {r.dir / unit}")
+            for f in write_profile(r, p, args.force, cf):
+                print(f"wrote {f}")
         else:
+            prof = render_profile(r, p)
+            unit_text = render_unit(r, p)
+            target = BACKENDS / "models" / f"{profile_name(r)}.env"
             print(f"--- {target} (--write-profile writes it)\n{prof}--- {unit}\n{unit_text}---")
-    if args.run:
+    if not args.run:
+        runner = Runner(False)
+        for node, cmd in steps:
+            runner.sh(node, cmd.split("   #")[0])
+        return 0
+    with model_lock(True):
+        runner = Runner(True)
         busy = any_inference_active(Runner(True))
         if unit in busy:
             print(f"{unit} is already active: nothing installed or started")
             return 0
+        refuse = (f"{', '.join(busy)} active: one model at a time on the pair; NOT started. Switch through beast-spark: "
+                  f"beast-recipe adopt {r.name} --run, then beast-spark {r.name} (or beast-spark down first)")
+        d2 = launcher.startswith("d2-")
+        if busy and not d2:
+            raise RecipeError(refuse)
         if busy:
-            raise RecipeError(f"{', '.join(busy)} active: one model at a time on the pair; switch through "
-                              f"beast-spark (beast-recipe adopt {r.name} --run, then beast-spark {r.name}), or beast-spark down first")
-    runner = Runner(args.run)
-    for node, cmd in up_steps(r, p, ns):
-        if cmd.startswith("beast-recipe up"):
-            continue
-        code, _ = runner.sh(node, cmd.split("   #")[0])
-        if code:
-            return code
-    if args.run:
-        url, key = f"http://127.0.0.1:{r.get('PORT', '8000')}", _key(args.key_file)
-        t = 0
-        while r.get("SERVED_NAME") not in served_ids(url, key):
-            if t >= args.wait:
-                raise RecipeError(f"{r.get('SERVED_NAME')} is not on {url} after {args.wait}s: journalctl --user -u {unit}")
-            time.sleep(5)
-            t += 5
-        print(f"serving {r.get('SERVED_NAME')} on {url}")
+            # D2 on a busy pair: install the unit (no [Install]: it enables and starts nothing, and a
+            # daemon-reload touches no running unit), so adopt + beast-spark can switch to it; start nothing
+            dst = install_unit(r, p)
+            raise RecipeError(refuse.replace("NOT started.", f"installed {dst}, NOT started."))
+        for node, cmd in steps:
+            code, _ = runner.sh(node, cmd.split("   #")[0])
+            if code:
+                return code
+    url, key = f"http://127.0.0.1:{r.get('PORT', '8000')}", _key(args.key_file)
+    t = 0
+    while r.get("SERVED_NAME") not in served_ids(url, key):
+        if t >= args.wait:
+            raise RecipeError(f"{r.get('SERVED_NAME')} is not on {url} after {args.wait}s: journalctl --user -u {unit}")
+        time.sleep(5)
+        t += 5
+    print(f"serving {r.get('SERVED_NAME')} on {url}")
     return 0
 
 
 def cmd_down(args) -> int:
-    _data, r, _pl, p, _eng, ns = _ctx(args)
+    _data, r, _pl, p, _eng, ns, _cf = _ctx(args)
     unit = unit_of(r, launcher_of(r, p))
     print(f"note: on the pair, switch through beast-spark (beast-spark ds | glm | <recipe>): it also points "
           f"openbeast.conf back; this only stops {unit}")
-    Runner(args.run).sh(ns[0], f"systemctl --user stop {unit}")
-    return 0
+    with model_lock(args.run):
+        code, _ = Runner(args.run).sh(ns[0], f"systemctl --user stop {unit}")
+    return code
 
 
 def cmd_check(args) -> int:
-    _data, r, _pl, p, _eng, ns = _ctx(args)
+    _data, r, _pl, p, _eng, ns, _cf = _ctx(args)
     url = args.url or f"http://127.0.0.1:{r.get('PORT', '8000')}"
     steps = check_steps(r, p, url, args.key_file)
     if not args.run:
@@ -1546,10 +1996,12 @@ def cmd_check(args) -> int:
 
 
 def cmd_adopt(args) -> int:
-    _data, r, _pl, p, _eng, _ns = _ctx(args)
+    _data, r, _pl, p, _eng, _ns, _cf = _ctx(args)
     launcher = launcher_of(r, p)
-    for s in adopt_steps(r, p):
-        print(f"  {s}")
+    if r.name in RESERVED_NAMES:
+        raise RecipeError(f"{r.name!r} is a beast-spark command: rename the recipe directory")
+    for s_ in adopt_steps(r, p):
+        print(f"  {s_}")
     fam = {"name": r.name, "title": r.get("TITLE"), "model_types": [r.get("MODEL_TYPE")],
            "architectures": [r.get("ARCHITECTURE")], "formats": [r.get("FORMAT")], "tp": p.get("n"),
            "recipe": f"recipes/{r.name} (beast-recipe)", "engine": p["engine"], "unit": unit_of(r, launcher).rsplit(".", 1)[0],
@@ -1558,22 +2010,26 @@ def cmd_adopt(args) -> int:
            "quant": {}, "reference_dirs": [weights_dir(r)], "aux": [r.get("AUX")] if r.get("AUX") else []}
     if not launcher.startswith("d2-"):
         return 0
+    if not re.match(r"^[A-Za-z0-9._-]+$", r.get("SERVED_NAME")):
+        raise RecipeError("SERVED_NAME: required, letters, digits, . _ - only (beast-spark's registry ignores anything else)")
     entry = (f"# beast-spark registry entry for recipe {r.name} (beast-recipe adopt; parsed, never sourced)\n"
              f"UNIT={unit_of(r, launcher)}\nSERVED={r.get('SERVED_NAME')}\n"
              f"BACKEND={'vllm' if launcher == 'd2-vllm' else 'tensorfold'}\nWAIT_S=2400\n")
     f = state_dir() / f"{r.name}.env"
-    if args.write_family:
+    if args.write_family and args.run:
         reg = json.loads(FAMILIES_FILE.read_text())
         reg["families"] = [x for x in reg["families"] if x.get("name") != r.name] + [fam]
         FAMILIES_FILE.write_text(json.dumps(reg, indent=1, ensure_ascii=False) + "\n")
         print(f"  wrote the family {r.name} into {FAMILIES_FILE} (commit it)")
     else:
-        print(f"  spark-families.json entry (--write-family adds it):\n{json.dumps(fam, indent=1)}")
+        print(f"  spark-families.json entry ({'--run ' if args.write_family else '--write-family --run '}adds it):\n"
+              f"{json.dumps(fam, indent=1)}")
     if not args.run:
-        print(f"  [dry-run] would write {f}:\n" + "".join(f"    {x}\n" for x in entry.splitlines()))
+        print(f"  [dry-run] would install {unit_of(r, launcher)} into ~/.config/systemd/user (daemon-reload; enables "
+              f"nothing) and write {f}:\n" + "".join(f"    {x}\n" for x in entry.splitlines()))
         return 0
-    if r.get("SERVED_NAME") and not re.match(r"^[A-Za-z0-9._-]+$", r.get("SERVED_NAME")):
-        raise RecipeError("SERVED_NAME: letters, digits, . _ - only for beast-spark's registry")
+    dst = install_unit(r, p)
+    print(f"  installed {dst} (no [Install]: enables and starts nothing)")
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_text(entry)
     print(f"  wrote {f}: beast-spark {r.name} switches to it")
@@ -1588,8 +2044,11 @@ def cmd_rollback(args) -> int:
         prev = m.group(1) if m else ""
     if not prev:
         raise RecipeError(f"no previous selection recorded in {f} (beast-spark writes it when it switches to a recipe)")
-    Runner(args.run).sh("local", f"beast-spark {prev}")
-    return 0
+    if prev == "none":
+        print("nothing served before the last switch to a recipe: rollback is beast-spark down")
+        prev = "down"
+    code, _ = Runner(args.run).sh("local", f"beast-spark {prev}")
+    return code
 
 
 def cmd_list(args) -> int:
@@ -1602,8 +2061,10 @@ def cmd_list(args) -> int:
                          "tp": pl["engine"]["n"], "sparks": pl["sparks"]})
         except RecipeError as e:
             rows.append({"name": r.name, "title": r.get("TITLE"), "verdict": "ERROR", "error": str(e)})
-    text = "".join(f"{x['name']:<34} {x['verdict']:<20} {x.get('engine', '-'):<18} "
-                   f"TP{x.get('tp') or '-'}/{x.get('sparks', '-')}  {x['title']}\n" for x in rows) or "no recipes\n"
+    head = f"{'RECIPE':<34} {'VERDICT':<20} {'ENGINE':<18} TP/SPARKS  TITLE\n"
+    text = (head + "".join(f"{x['name']:<34} {x['verdict']:<20} {x.get('engine', '-'):<18} "
+                           f"{'TP' + str(x.get('tp') or '-') + '/' + str(x.get('sparks', '-')):<10} {x['title']}\n"
+                           for x in rows)) if rows else "no recipes\n"
     return _out(args, {"recipes": rows, "dir": str(recipes_dir())}, text)
 
 
@@ -1613,8 +2074,14 @@ def cmd_show(args) -> int:
     r = load_recipe(args.recipe)
     doc = {"name": r.name, "path": str(r.path), "values": r.values,
            "provenance": {k: r.provenance(k) for k in r.values}}
-    text = f"{r.name}  ({r.path})\n" + "".join(f"  {k:<20} {v:<44} {r.provenance(k)}\n" for k, v in r.values.items())
-    return _out(args, doc, text)
+    lines = []
+    for k, v in r.values.items():
+        pv = r.provenance(k)
+        if len(v) > 44:
+            lines.append(f"  {k:<20} {v}\n  {'':<20} {'':<44}  # {pv}\n" if pv else f"  {k:<20} {v}\n")
+        else:
+            lines.append(f"  {k:<20} {v:<44}  {('# ' + pv) if pv else ''}".rstrip() + "\n")
+    return _out(args, doc, f"{r.name}  ({r.path})\n" + "".join(lines))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1626,48 +2093,61 @@ def main(argv: list[str] | None = None) -> int:
         p = sub.add_parser(name, help=help_, description=help_)
         if recipe:
             p.add_argument("recipe", help="a recipe name (recipes/<name>) or its directory / recipe.env")
-        p.add_argument("--json", action="store_true", help="machine-readable output")
+        p.add_argument("--json", action="store_true", help="machine-readable output (plan, list, show, init)")
         if act:
             g = p.add_mutually_exclusive_group()
             g.add_argument("--dry-run", action="store_true", help="print what would run (the default)")
             g.add_argument("--run", action="store_true", help="act")
-            p.add_argument("--cluster", help="cluster.env (default scripts/backends/cluster.env)")
+            p.add_argument("--cluster", help="cluster.env (default scripts/backends/cluster.env); the recipe uses its "
+                                             "first SPARKS nodes")
         return p
 
-    p = sub.add_parser("init", help="inspect a model and write recipes/<name>/recipe.env")
+    engines_help = "an engine id from data/recipe-engines.json, or auto (plan picks the best path)"
+    try:
+        engines_help += ": " + ", ".join(e["id"] for e in json.loads(DATA_FILE.read_text())["engines"])
+    except (OSError, ValueError, KeyError):
+        pass
+    p = sub.add_parser("init", help="inspect a model and write recipes/<name>/recipe.env",
+                       description="inspect a model (metadata only) and write recipes/<name>/recipe.env, then print the plan")
     p.add_argument("source", help="https://huggingface.co/ORG/REPO[/tree/REV] | ORG/REPO[@sha] | a local directory")
-    p.add_argument("--sparks", type=int, default=2, choices=range(1, 9), metavar="N")
-    p.add_argument("--name")
-    p.add_argument("--engine", default="auto")
-    p.add_argument("--force", action="store_true")
+    p.add_argument("--sparks", type=int, default=2, choices=range(1, 9), metavar="N", help="the target cluster size, 1..8")
+    p.add_argument("--name", help="the recipe name (default <repo>-<N>x)")
+    p.add_argument("--engine", default="auto", help=engines_help)
+    p.add_argument("--force", action="store_true", help="replace an existing recipes/<name>/recipe.env")
     p.add_argument("--accept-nc", action="store_true", help="accept a non-commercial / no-derivatives licence")
-    p.add_argument("--json", action="store_true")
+    p.add_argument("--json", action="store_true", help="machine-readable output")
     p = add("plan", "fit, engine, parallelism, drafter, verdict, gaps and the end-to-end commands", act=False)
-    p.add_argument("--sparks", help="cluster sizes to tabulate, e.g. 1,2,3,4 (one value also sets the target)")
+    p.add_argument("--sparks", help="cluster sizes to tabulate, e.g. 1,2,3,4 (one value also sets the target of the "
+                                    "plan only: the acting commands follow SPARKS= in recipe.env)")
     p.add_argument("--write", action="store_true", help="write recipes/<name>/plan.json")
+    p.add_argument("--cluster", help="cluster.env for the plan's nodes (default scripts/backends/cluster.env)")
     p = add("engine", "check the engine on every Spark; print (or --run --stage) the stage commands")
     p.add_argument("--stage", action="store_true", help="with --run: also run the install/build steps")
-    p = add("stage", "weights (+ drafter, aux) on every Spark, verified; image")
-    p.add_argument("--only", help="weights,verify,mirror,drafter,quantize,aux,rank-inputs")
-    p.add_argument("--accept-nc", action="store_true")
-    p = add("up", "render the profile + unit and start the recipe (refuses while another model serves)")
+    p.add_argument("--while-serving", action="store_true", help="allow --stage while an inference unit is active")
+    p = add("stage", "the D2 profile when missing, then weights (+ drafter, aux) on every Spark, verified (images: engine)")
+    p.add_argument("--only", help=",".join(STAGE_STEP_NAMES))
+    p.add_argument("--accept-nc", action="store_true", help="stage a non-commercial / no-derivatives artefact")
+    p.add_argument("--force", action="store_true", help="stage a plan that is not servable; replace a differing profile")
+    p.add_argument("--while-serving", action="store_true", help="allow downloads and copies while an inference unit is active")
+    p = add("up", "render the profile + unit, install the unit and start it (never while another model serves)")
     p.add_argument("--write-profile", action="store_true", help="write scripts/backends/models/<PROFILE>.env and the unit")
-    p.add_argument("--force", action="store_true")
-    p.add_argument("--key-file", default=DEFAULT_KEY_FILE)
-    p.add_argument("--wait", type=int, default=2400)
+    p.add_argument("--force", action="store_true", help="act on a plan that is not SERVABLE-NOW; replace a differing profile")
+    p.add_argument("--key-file", default=DEFAULT_KEY_FILE, help="the API key file (read, never printed)")
+    p.add_argument("--wait", type=int, default=2400, help="seconds to wait for the served id (default 2400)")
     add("down", "stop the recipe's unit")
     p = add("check", "conformance + (--bench) decode tok/s at 1 and 4 streams")
-    p.add_argument("--bench", action="store_true")
-    p.add_argument("--url")
-    p.add_argument("--key-file", default=DEFAULT_KEY_FILE)
-    p = add("adopt", "make the recipe selectable: beast-spark <name>")
-    p.add_argument("--write-family", action="store_true", help="add it to data/spark-families.json (for intake)")
+    p.add_argument("--bench", action="store_true", help="1 warm-up, 3 single-stream runs (median), 4 streams at once")
+    p.add_argument("--url", help="the endpoint (default http://127.0.0.1:PORT)")
+    p.add_argument("--key-file", default=DEFAULT_KEY_FILE, help="the API key file (read, never printed)")
+    p = add("adopt", "make the recipe selectable: beast-spark <name> (installs the unit, writes the registry entry)")
+    p.add_argument("--write-family", action="store_true", help="with --run: add it to data/spark-families.json (for intake)")
     add("rollback", "back to the selection before the last switch to a recipe", recipe=False)
     add("list", "every recipe and its verdict", recipe=False, act=False)
-    p = sub.add_parser("show", help="a recipe's values and where each came from")
+    p = sub.add_parser("show", help="a recipe's values and where each came from",
+                       description="a recipe's values and where each came from; --keys: every key a recipe may set")
     p.add_argument("recipe", nargs="?")
     p.add_argument("--keys", action="store_true", help="every key a recipe may set")
-    p.add_argument("--json", action="store_true")
+    p.add_argument("--json", action="store_true", help="machine-readable output")
     args = ap.parse_args(argv)
     if args.cmd == "show" and not args.keys and not args.recipe:
         ap.error("show: a recipe, or --keys")
@@ -1675,8 +2155,11 @@ def main(argv: list[str] | None = None) -> int:
         return {"init": cmd_init, "plan": cmd_plan, "engine": cmd_engine, "stage": cmd_stage, "up": cmd_up,
                 "down": cmd_down, "check": cmd_check, "adopt": cmd_adopt, "rollback": cmd_rollback,
                 "list": cmd_list, "show": cmd_show}[args.cmd](args)
-    except (RecipeError, obprofile.ProfileError) as e:
-        print(f"beast-recipe: {e}", file=sys.stderr)
+    except (RecipeError, obprofile.ProfileError, hfapi.HubError) as e:
+        msg = str(e)
+        if isinstance(e, hfapi.Offline):
+            msg += " (beast-recipe init <local dir> works offline)"
+        print(f"beast-recipe: {msg}", file=sys.stderr)
         return 1
 
 

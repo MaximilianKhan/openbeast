@@ -69,7 +69,9 @@ def stubs(tmp_path):
                      'case "$*" in\n'
                      '  *is-active*deepseek-v41-inference*) [[ -f "$STUB_DS_ACTIVE" ]] && exit 0; exit 3 ;;\n'
                      '  *is-active*hy4-vllm-inference*) [[ -f "$STUB_HY4_ACTIVE" ]] && exit 0; exit 3 ;;\n'
+                     '  *is-active*beast-recipe-*) [[ -n "$STUB_RECIPE_STATE" ]] && { echo "$STUB_RECIPE_STATE"; exit 3; }; exit 3 ;;\n'
                      '  *is-active*) exit 3 ;;\n'
+                     '  *list-units*) [[ -n "$STUB_LIST_UNITS" ]] && echo "$STUB_LIST_UNITS"; exit 0 ;;\n'
                      '  *--version*) echo "tensorfold-native ${STUB_TF_VERSION:-1.2.10}" ;;\n'
                      'esac\n'
                      'cat > /dev/null 2>&1 < /dev/stdin || true\n'
@@ -204,8 +206,10 @@ def test_glm_4bit_on_native_and_5bit_needs_1_3_3(tmp_path, data):
     p5 = _r(tmp_path, data, glm + "BPW=5\n", sparks=3, name="g5")
     alts = {a["engine"]: a for a in p5["alternatives"]}
     assert not alts["tf-native-1.2.10"]["reads"] and "bits 5" in alts["tf-native-1.2.10"]["why"]
-    assert alts["tf-native-1.3.4"]["reads"] and p5["engine"]["id"] == "tf-native-1.3.4"
+    assert alts["tf-native-1.3.3"]["reads"] and p5["engine"]["id"] == "tf-native-1.3.3"
     assert p5["verdict"] == "SERVABLE-WITH-WORK" and p5["engine"]["n"] == 3      # 68 GiB a rank at TP3
+    assert {"engine-stage", "topology"} <= {g["id"] for g in p5["gaps"] if g["blocking"]}
+    assert alts["tf-native-1.3.4"]["verdict"] == "BLOCKED" and "not released" in alts["tf-native-1.3.4"]["why"]
     p5_2 = _r(tmp_path, data, glm + "BPW=5\n", sparks=2, name="g52")
     assert p5_2["verdict"] == "NEEDS-MORE-HARDWARE" and p5_2["engine"]["n"] == 3   # 102 GiB at TP2: no
 
@@ -230,7 +234,7 @@ def test_qwen_exl3_runs_on_one_rank_only(tmp_path, data):
     # the mcg codebook: only 1.3.3+ reads it
     p2 = _r(tmp_path, data, f"MODEL_TYPE=qwen3_5\nFORMAT=exl3\nBPW=4\nEXL3_CODEBOOK=mcg\nWEIGHT_BYTES={15 * GIB}\n",
             name="q2")
-    assert p2["engine"]["id"] == "tf-native-1.3.4" and p2["verdict"] == "SERVABLE-WITH-WORK"
+    assert p2["engine"]["id"] == "tf-native-1.3.3" and p2["verdict"] == "SERVABLE-WITH-WORK"
 
 
 def test_unknown_architecture_is_blocked(tmp_path, data):
@@ -247,8 +251,8 @@ def test_too_big_for_eight_sparks_is_blocked(tmp_path, data):
 
 def test_pinned_engine_reports_a_better_path(tmp_path, data):
     p = _r(tmp_path, data, f"MODEL_TYPE=qwen3_5\nFORMAT=exl3\nBPW=4\nEXL3_CODEBOOK=mul1\nWEIGHT_BYTES={15 * GIB}\n"
-                           "ENGINE=tf-native-1.3.4\n", sparks=1)
-    assert p["engine"]["id"] == "tf-native-1.3.4" and p["verdict"] == "SERVABLE-WITH-WORK"
+                           "ENGINE=tf-native-1.3.3\n", sparks=1)
+    assert p["engine"]["id"] == "tf-native-1.3.3" and p["verdict"] == "SERVABLE-WITH-WORK"
     assert p["better_path"] == {"engine": "tf-native-1.2.10", "verdict": "SERVABLE-NOW", "n": 1}
     with pytest.raises(recipe.RecipeError, match="no such engine"):
         _r(tmp_path, data, "MODEL_TYPE=qwen3_5\nFORMAT=exl3\nENGINE=nope\n", name="bad")
@@ -267,11 +271,11 @@ def test_licence_review_and_to_quantize_gaps(tmp_path, data):
 
 EXPECTED = {
     "hy4-flash-nvfp4-vllm-tp2": ("SERVABLE-NOW", "vllm-hy4", 2),
-    "hy4-flash-exl3-tensorfold-tp2": ("SERVABLE-WITH-WORK", "tf-native-1.3.4", 2),
+    "hy4-flash-exl3-tensorfold-tp2": ("SERVABLE-WITH-WORK", "tf-native-1.3.3", 2),
     "glm53-flash-exl3-native-tp2": ("SERVABLE-NOW", "tf-native-1.2.10", 2),
     "deepseek-v41-flash-exl3-2.9-tp2": ("SERVABLE-NOW", "tf-fork-dsv41", 2),
     "deepseek-v41-flash-exl3-4.0": ("NEEDS-MORE-HARDWARE", "tf-fork-dsv41", 4),
-    "qwen38-27b-exl3-4.0-1x": ("SERVABLE-WITH-WORK", "tf-native-1.3.4", 1),
+    "qwen38-27b-exl3-4.0-1x": ("SERVABLE-WITH-WORK", "tf-native-1.3.3", 1),
     "minimax-m31-flash-exl3-3.06-tp2": ("SERVABLE-NOW", "tf-native-1.2.10", 2),
 }
 
@@ -310,7 +314,8 @@ def test_hy4_tensorfold_plan_lists_the_engine_work(data):
     p = recipe.plan(recipe.load_recipe("hy4-flash-exl3-tensorfold-tp2"), data)
     work = [g["id"] for g in p["gaps"] if g["blocking"]]
     assert work[:3] == ["engine-stage", "family-tp", "server-wrap"] or set(work) >= {"engine-stage", "family-tp", "server-wrap"}
-    assert {"hy4-generator-qual", "hy4-dfly", "hy4-parsers", "hy4-exl3-reader"} <= set(work)
+    assert {"hy4-generator-build", "hy4-generator-qual", "hy4-dfly", "hy4-parsers", "hy4-exl3-reader"} <= set(work)
+    assert "slab" in p["engine"]["launch_note"] and "1.3.3 (#4259" in p["engine"]["rank_reason"]
     assert p["baseline"] == {"from": "hy4-flash-nvfp4-vllm-tp2", "toks_1": 31.4, "toks_4": 77.8}
     assert p["fit"][2]["w_gib"] == 43.0 and p["fit"][1]["fit"] == "fits"
     assert 20 <= p["effort_days"][0] and p["effort_days"][1] <= 120
@@ -497,7 +502,8 @@ def test_dry_run_outputs_per_backend():
     q = cli(["stage", "deepseek-v41-flash-exl3-4.0"]).stdout
     assert "convert.py" in q and "spark-model-intake.sh" in q
     eng = cli(["engine", "hy4-flash-exl3-tensorfold-tp2"]).stdout
-    assert "engine.sh stage tensorfold --version 1.3.4" in eng and "install tensorfold --version 1.3.4 --from" in eng
+    assert "engine.sh stage tensorfold --version 1.3.3" in eng and "install tensorfold --version 1.3.3 --from" in eng
+    assert "[spark-2] cd ~/openbeast && scripts/engine.sh install" in eng and "mkdir -p recipes/" in eng
     up_note = cli(["up", "hy4-flash-exl3-tensorfold-tp2"]).stdout
     assert "SERVABLE-WITH-WORK: `up` acts only on SERVABLE-NOW" in up_note
 
@@ -513,7 +519,7 @@ def test_engine_run_checks_every_node(stubs, tmp_path):
     out = cli(["engine", "glm53-flash-exl3-native-tp2", "--run"], stubs, env={"HOME": str(home)})
     assert out.returncode == 0, out.stdout + out.stderr
     c = calls(stubs)
-    assert c == ["ssh -o BatchMode=yes -o ConnectTimeout=10 spark-2 ~/.local/bin/tensorfold --version"], c
+    assert c == ["ssh -o BatchMode=yes -o ConnectTimeout=10 -- spark-2 ~/.local/bin/tensorfold --version"], c
     assert out.stdout.count("-> ok") == 2
     bad = cli(["engine", "hy4-flash-exl3-tensorfold-tp2", "--run"], stubs, env={"HOME": str(home)})
     assert bad.returncode == 1 and "MISSING" in bad.stdout and "(stage step; --stage runs it)" in bad.stdout
@@ -522,8 +528,15 @@ def test_engine_run_checks_every_node(stubs, tmp_path):
 def test_up_run_refuses_while_another_model_serves(stubs, tmp_path):
     flag = tmp_path / "ds-active"
     flag.write_text("")
-    out = cli(["up", "glm53-flash-exl3-native-tp2", "--run"], stubs, env={"STUB_DS_ACTIVE": str(flag)})
+    home = tmp_path / "home"
+    out = cli(["up", "glm53-flash-exl3-native-tp2", "--run"], stubs,
+              env={"STUB_DS_ACTIVE": str(flag), "HOME": str(home), "SB_LOCK": str(tmp_path / "lock")})
     assert out.returncode == 1 and "deepseek-v41-inference.service active: one model at a time" in out.stderr
+    assert "NOT started" in out.stderr and "beast-spark glm53-flash-exl3-native-tp2" in out.stderr
+    # the unit is installed (no [Install]: enables nothing), so adopt + beast-spark can switch to it
+    unit = home / ".config/systemd/user/beast-recipe-glm53-flash-exl3-native-tp2.service"
+    assert unit.is_file() and "\n[Install]" not in unit.read_text()
+    assert "systemctl --user daemon-reload" in calls(stubs)
     assert not any(" start " in c for c in calls(stubs))
     out2 = cli(["up", "hy4-flash-exl3-tensorfold-tp2", "--run"], stubs)
     assert out2.returncode == 1 and "acts only on SERVABLE-NOW" in out2.stderr
@@ -532,9 +545,11 @@ def test_up_run_refuses_while_another_model_serves(stubs, tmp_path):
 def test_up_run_on_the_serving_unit_does_nothing(stubs, tmp_path):
     flag = tmp_path / "hy4-active"
     flag.write_text("")
-    out = cli(["up", "hy4-flash-nvfp4-vllm-tp2", "--run"], stubs, env={"STUB_HY4_ACTIVE": str(flag)})
+    out = cli(["up", "hy4-flash-nvfp4-vllm-tp2", "--run"], stubs,
+              env={"STUB_HY4_ACTIVE": str(flag), "SB_LOCK": str(tmp_path / "lock")})
     assert out.returncode == 0 and "already active: nothing installed or started" in out.stdout
-    assert all(c.startswith("systemctl --user is-active") for c in calls(stubs)), calls(stubs)
+    assert all(c.startswith(("systemctl --user is-active", "systemctl --user list-units", "docker ps"))
+               for c in calls(stubs)), calls(stubs)
 
 
 def test_stage_run_refuses_a_non_commercial_licence(stubs, tmp_path):
@@ -567,11 +582,16 @@ def test_stage_run_verifies_on_every_node_with_the_sums_on_stdin(stubs, tmp_path
 
 def test_adopt_and_rollback_run(stubs, tmp_path):
     state = tmp_path / "state"
-    out = cli(["adopt", "glm53-flash-exl3-native-tp2", "--run"], stubs, env={"BEAST_RECIPE_STATE_DIR": str(state)})
+    home = tmp_path / "home"
+    out = cli(["adopt", "glm53-flash-exl3-native-tp2", "--run"], stubs,
+              env={"BEAST_RECIPE_STATE_DIR": str(state), "HOME": str(home)})
     assert out.returncode == 0, out.stderr
     entry = (state / "glm53-flash-exl3-native-tp2.env").read_text()
     assert "UNIT=beast-recipe-glm53-flash-exl3-native-tp2.service" in entry and "SERVED=glm-5.3-flash-ablit" in entry
-    assert "BACKEND=tensorfold" in entry and calls(stubs) == []
+    # adopt installs the unit (the path beast-spark NAME needs) and only daemon-reloads
+    assert (home / ".config/systemd/user/beast-recipe-glm53-flash-exl3-native-tp2.service").is_file()
+    assert "BACKEND=tensorfold" in entry and calls(stubs) == ["systemctl --user daemon-reload"]
+    open(stubs[1], "w").close()
     # the entry is what spark-beast.sh's recipe_units accepts
     sb = subprocess.run(["bash", "-c", ('set -euo pipefail; eval "$(sed -n -e "/^recipe_value()/p" -e "/^recipe_units()/,/^}/p" '
                          f'{REPO}/scripts/backends/spark-beast.sh)"; HY4_WAIT_S=1; RECIPES_D={state}; recipe_units')],
@@ -587,11 +607,16 @@ def test_adopt_and_rollback_run(stubs, tmp_path):
     assert ok.returncode == 0 and calls(stubs) == ["beast-spark ds"]
 
 
-def test_adopt_write_family_is_valid_intake_data(tmp_path, monkeypatch):
+def test_adopt_write_family_is_valid_intake_data(tmp_path, monkeypatch, stubs):
     fam = tmp_path / "fam.json"
     shutil.copy(REPO / "scripts/backends/data/spark-families.json", fam)
     monkeypatch.setattr(recipe, "FAMILIES_FILE", fam)
-    rc = recipe.main(["adopt", "minimax-m31-flash-exl3-3.06-tp2", "--write-family"])
+    before = fam.read_text()
+    assert recipe.main(["adopt", "minimax-m31-flash-exl3-3.06-tp2", "--write-family"]) == 0
+    assert fam.read_text() == before                       # without --run nothing is written
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("PATH", f"{stubs[0]}{os.pathsep}{os.environ['PATH']}")
+    rc = recipe.main(["adopt", "minimax-m31-flash-exl3-3.06-tp2", "--write-family", "--run"])
     assert rc == 0
     reg = json.loads(fam.read_text())
     e = next(f for f in reg["families"] if f["name"] == "minimax-m31-flash-exl3-3.06-tp2")
@@ -660,11 +685,13 @@ def test_engine_matrix_is_sourced_and_consistent(data):
         for k in ("id", "title", "kind", "status", "launcher", "checked", "families", "licence"):
             assert k in e, (e["id"], k)
         assert "2026-" in e["checked"]
-        assert e["status"] in ("installed", "available", "not-installed")
+        assert e["status"] in ("installed", "available", "unreleased", "not-installed")
         for mt, f in e["families"].items():
             assert f["formats"] and f["ranks"] and f.get("rank_reason"), (e["id"], mt)
             for g in (f.get("with_work") or {}).get("gaps", []):
                 assert g in data["gaps"], (e["id"], mt, g)
+            assert f.get("serves", True) in (True, "generator-only", "reference", "source-build"), (e["id"], mt)
+    recipe.validate_data(data)
     for g in data["gaps"].values():
         assert g["title"] and g["effort"] and len(g["days"]) == 2 and g["days"][0] <= g["days"][1]
     for mt, ds in data["drafters"].items():
@@ -699,3 +726,228 @@ def test_committed_profiles_and_units_are_the_recipes_render(data, name):
     assert prof.read_text() == recipe.render_profile(r, p), f"re-render: beast-recipe up {name} --write-profile --force"
     unit = r.dir / recipe.unit_of(r, recipe.launcher_of(r, p))
     assert unit.read_text() == recipe.render_unit(r, p)
+
+
+# --------------------------------------------------------------------------- review fixes (PR #274)
+
+def test_an_unreleased_engine_never_stages_and_blocks(tmp_path, data):
+    e = recipe.engine_by_id(data, "tf-native-1.3.4")
+    assert e["status"] == "unreleased"
+    r = mk(tmp_path, f"MODEL_TYPE=qwen3_5\nFORMAT=exl3\nBPW=4\nEXL3_CODEBOOK=mul1\nWEIGHT_BYTES={15 * GIB}\n"
+                     "ENGINE=tf-native-1.3.4\nSPARKS=1\nLAUNCHER=d2-tensorfold\n")
+    p = recipe.plan(r, data)
+    assert p["verdict"] == "BLOCKED" and "not released upstream" in p["engine"]["why"]
+    assert "upstream-release" in [g["id"] for g in p["gaps"]] and "engine-stage" not in [g["id"] for g in p["gaps"]]
+    eng = "\n".join(p["steps"]["engine"])
+    assert "engine.sh stage" not in eng and "engine.sh install" not in eng and "gap: upstream-release" in eng
+    # auto never picks it over the released 1.3.3
+    auto = mk(tmp_path, f"MODEL_TYPE=qwen3_5\nFORMAT=exl3\nBPW=4\nEXL3_CODEBOOK=mcg\nWEIGHT_BYTES={15 * GIB}\n", "a")
+    assert recipe.plan(auto, data, sparks=1)["engine"]["id"] == "tf-native-1.3.3"
+
+
+def test_glm_profile_passes_the_kv_dtype_and_the_plan_says_what_is_budget(data):
+    r = recipe.load_recipe("glm53-flash-exl3-native-tp2")
+    p = recipe.choose(r, data, 2)["chosen"]
+    assert 'EXTRA_ARGS=["--kv-dtype","fp8"]' in recipe.render_profile(r, p)
+    pl = recipe.plan(r, data)
+    assert "--kv-dtype fp8 is passed" in pl["kv"]["passed"] and "budget assumption" in pl["kv"]["passed"]
+    assert pl["fit"][2]["reserve_gib"] == 17.5                     # the larger, verified local.sh value
+
+
+def test_stage_renders_a_missing_d2_profile_first(tmp_path, monkeypatch, data):
+    rd = tmp_path / "recipes"
+    shutil.copytree(RECIPES / "minimax-m31-flash-exl3-3.06-tp2", rd / "mm2")
+    (rd / "mm2" / "recipe.env").write_text((rd / "mm2" / "recipe.env").read_text()
+                                           .replace("PROFILE=recipe-minimax-m31-flash-exl3-3.06-tp2", "PROFILE=recipe-mm2"))
+    for f in (rd / "mm2").glob("*.service"):
+        f.unlink()
+    backends = tmp_path / "backends"
+    (backends / "models").mkdir(parents=True)
+    monkeypatch.setenv("BEAST_RECIPES_DIR", str(rd))
+    monkeypatch.setattr(recipe, "BACKENDS", backends)
+    r = recipe.load_recipe("mm2")
+    p = recipe.choose(r, data, 2)["chosen"]
+    steps = recipe.stage_steps(r, p, recipe.engine_by_id(data, p["engine"]), ["local", "spark-2"])
+    assert steps[0][0] == "profile" and "--write-profile" in steps[0][2]
+    assert recipe.main(["stage", "mm2", "--run", "--only", "profile"]) == 0
+    assert (backends / "models" / "recipe-mm2.env").is_file() and (rd / "mm2" / "beast-recipe-mm2.service").is_file()
+
+
+def test_plan_retarget_says_the_acting_commands_follow_recipe_env():
+    out = cli(["plan", "glm53-flash-exl3-native-tp2", "--sparks", "4"])
+    assert out.returncode == 0 and "set SPARKS=4 there before engine/stage/up" in out.stdout
+    # TP2 is servable now on 4 Sparks; TP3 and TP4 need the cabling and fabric work (gap topology)
+    assert "VERDICT   SERVABLE-NOW at TP2" in out.stdout
+    p = recipe.plan(recipe.load_recipe("glm53-flash-exl3-native-tp2"), recipe.load_data(), sparks=3)
+    e = recipe.evaluate_engine(recipe.load_recipe("glm53-flash-exl3-native-tp2"), recipe.load_data(),
+                               recipe.engine_by_id(recipe.load_data(), "tf-native-1.2.10"), 3)
+    assert e["rows"][3]["verdict"] == "SERVABLE-WITH-WORK" and "topology" in [g["id"] for g in e["rows"][3]["gaps"]]
+    assert p["engine"]["n"] == 2
+
+
+def test_nodes_follow_the_recipe_size_and_refuse_bad_targets(tmp_path):
+    cf = tmp_path / "cluster.env"
+    cf.write_text('CLUSTER_NODES="local max@10.100.216.2"\nCLUSTER_REPO=~/openbeast\n')
+    assert recipe.nodes(1, cf)[0] == ["local"]
+    assert recipe.nodes(2, cf)[0] == ["local", "max@10.100.216.2"]
+    assert recipe.nodes(4, cf)[0] == ["local", "max@10.100.216.2", "<rank2>", "<rank3>"]
+    for bad in ("local spark-2;id", "local -oProxyCommand=x", "spark-2 local"):
+        cf.write_text(f'CLUSTER_NODES="{bad}"\n')
+        with pytest.raises(recipe.RecipeError):
+            recipe.nodes(2, cf)
+
+
+def test_a_one_spark_recipe_runs_on_its_own_cluster_file(tmp_path, data, stubs):
+    cf = tmp_path / "cluster.env"
+    cf.write_text('CLUSTER_NODES="local max@10.100.216.2"\n')
+    r = recipe.load_recipe("qwen38-27b-exl3-4.0-1x")
+    p = recipe.choose(r, data, 1)["chosen"]
+    unit = recipe.render_unit(r, p)
+    assert "start --cluster %h/openbeast/recipes/qwen38-27b-exl3-4.0-1x/cluster.env" in unit
+    assert "stop --cluster %h/openbeast/recipes/qwen38-27b-exl3-4.0-1x/cluster.env" in unit
+    st = cli(["stage", "qwen38-27b-exl3-4.0-1x", "--cluster", str(cf)], stubs).stdout
+    assert "on local" in st and "max@10.100.216.2" not in st and "sync-weights" not in st
+    # a TP4 recipe with two listed nodes: --run refused before anything runs
+    out = cli(["stage", "deepseek-v41-flash-exl3-4.0", "--run", "--force", "--cluster", str(cf)], stubs)
+    assert out.returncode == 1 and "add the nodes to CLUSTER_NODES" in out.stderr and calls(stubs) == []
+
+
+def test_init_hub_errors_are_one_line(tmp_path):
+    out = cli(["init", "acme/x"], env={"OFFLINE": "true", "BEAST_RECIPES_DIR": str(tmp_path)})
+    assert out.returncode == 1 and out.stderr.startswith("beast-recipe:") and "Traceback" not in out.stderr
+    assert "works offline" in out.stderr
+
+
+def test_deepseek_4_does_not_hand_over_to_the_tp2_unit(stubs, tmp_path, data):
+    p = recipe.plan(recipe.load_recipe("deepseek-v41-flash-exl3-4.0"), data)
+    up, adopt = "\n".join(p["steps"]["up"]), "\n".join(p["steps"]["adopt"])
+    assert "gap: launcher" in up and "gap: launcher" in adopt and "beast-spark ds" not in up + adopt
+    flag = tmp_path / "ds"
+    flag.write_text("")
+    cf = tmp_path / "cluster.env"
+    cf.write_text('CLUSTER_NODES="local spark-2 spark-3 spark-4"\n')
+    out = cli(["up", "deepseek-v41-flash-exl3-4.0", "--run", "--force", "--cluster", str(cf)], stubs,
+              env={"STUB_DS_ACTIVE": str(flag)})
+    assert out.returncode == 1 and "nothing to start" in out.stderr
+    # the 2.9 recipe is the unit's own: it still hands over
+    assert "beast-spark ds" in "\n".join(recipe.plan(recipe.load_recipe("deepseek-v41-flash-exl3-2.9-tp2"), data)["steps"]["adopt"])
+
+
+def test_busy_sees_starting_and_unadopted_recipe_units(stubs, tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", f"{stubs[0]}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("STUB_LIST_UNITS", "beast-recipe-x.service loaded activating start x")
+    monkeypatch.setenv("STUB_RECIPE_STATE", "activating")
+    assert recipe.any_inference_active(recipe.Runner(True)) == ["beast-recipe-x.service"]
+
+
+def test_stage_and_engine_refuse_while_serving(monkeypatch):
+    monkeypatch.setattr(recipe, "any_inference_active", lambda runner: ["deepseek-v41-inference.service"])
+    with pytest.raises(recipe.RecipeError, match="--while-serving"):
+        recipe.cmd_stage(recipe.main.__globals__["argparse"].Namespace(
+            recipe="minimax-m31-flash-exl3-3.06-tp2", run=True, only=None, accept_nc=False, force=False,
+            while_serving=False, cluster=None))
+    rc = recipe.main(["engine", "hy4-flash-exl3-tensorfold-tp2", "--run", "--stage"])
+    assert rc == 1
+
+
+def test_stage_only_rejects_unknown_steps_and_kept_packs(stubs, tmp_path):
+    out = cli(["stage", "qwen38-27b-exl3-4.0-1x", "--only", "image"], stubs)
+    assert out.returncode == 1 and "unknown step(s) image" in out.stderr
+    d = tmp_path / "recipes" / "evil"
+    d.mkdir(parents=True)
+    body = (f"TITLE=e\nSOURCE=LibertAIDAI/Hy4-flash-EXL3-4bpw\nREVISION={SHA}\nWEIGHTS_STATUS=published\nSPARKS=2\n"
+            "MODEL_TYPE=hy_v4_flash\nFORMAT=exl3\nBPW=4\nLAUNCHER=mia-unit:x\nSERVED_NAME=e\nLICENCES=weights=mit\n")
+    for wd in ("/home/max/Documents", "~/Documents/weights", "~/Documents/weights/../x"):
+        (d / "recipe.env").write_text(body + f"WEIGHTS_DIR={wd}\n")
+        dry = cli(["stage", "evil"], stubs, env={"BEAST_RECIPES_DIR": str(tmp_path / "recipes")})
+        if ".." in wd:
+            assert dry.returncode == 1 and "no . or .. segments" in dry.stderr
+            continue
+        assert dry.returncode == 0 and "weights-download" not in dry.stdout and "rsync" not in dry.stdout, dry.stdout
+
+
+def test_licence_classifier_is_token_anchored():
+    assert recipe.licence_flags("weights=mit; engine=apache-2.0 (fork, patches, kernel kit)") == (False, False)
+    assert recipe.licence_flags("weights=cc-by-nc-nd-4.0") == (True, True)
+    assert recipe.licence_flags("weights=other (minimax-community)") == (True, False)
+    assert recipe.licence_flags("") == (True, False)
+
+
+@pytest.mark.parametrize("mutate,err", [
+    (lambda d: d["engines"][0].__setitem__("stage_gap", "engine_stage"), "stage_gap"),
+    (lambda d: d["engines"][0]["families"]["minimax_m3_vl"].__setitem__("ranks", "2"), "ranks"),
+    (lambda d: d["engines"][0]["families"]["qwen3_5"]["ranks_by_format"].__setitem__("gguf", [1]), "ranks_by_format"),
+    (lambda d: d["engines"][1]["families"]["hy_v4_flash"]["extra_gaps"][0].pop("days"), "extra_gaps"),
+    (lambda d: d["engines"][1]["families"]["hy_v4_flash"].__setitem__("serves", "generator_only"), "serves"),
+])
+def test_a_malformed_matrix_fails_loudly(tmp_path, mutate, err):
+    d = json.loads((REPO / "scripts/backends/data/recipe-engines.json").read_text())
+    mutate(d)
+    f = tmp_path / "m.json"
+    f.write_text(json.dumps(d))
+    with pytest.raises(recipe.RecipeError, match=err):
+        recipe.load_data(f)
+    with pytest.raises(recipe.RecipeError, match="unknown gap id"):
+        recipe._gap(recipe.load_data(), "nope")
+
+
+def test_native_1_2_10_carries_every_recorded_family(data):
+    reg = json.loads((REPO / "scripts/backends/data/spark-families.json").read_text())
+    se = next(x for x in reg["engines"] if x["name"] == "native-1.2.10")
+    fams = recipe.engine_by_id(data, "tf-native-1.2.10")["families"]
+    for mt, formats in se["families"].items():
+        assert mt in fams, mt
+        assert set(formats) <= set(fams[mt]["formats"]), mt
+        for fmt in formats:
+            mine = (fams[mt].get("ranks_by_format") or {}).get(fmt) or fams[mt]["ranks"]
+            theirs = se["ranks"].get(f"{mt}/{fmt}") or se["ranks"].get(mt) or [1, 2]
+            assert sorted(mine) == sorted(theirs), (mt, fmt, mine, theirs)
+    # an unrecorded native family is unknown, not refused
+    path = recipe.evaluate_engine(recipe.parse_recipe("MODEL_TYPE=brand_new\nFORMAT=bf16\n", Path("/x/t/recipe.env")),
+                                  data, recipe.engine_by_id(data, "tf-native-1.2.10"), 1)
+    assert path["why"].startswith("UNRECORDED")
+
+
+@pytest.mark.parametrize("fmt", ["", "modelopt-ggml"])
+def test_vllm_needs_a_known_quantization(tmp_path, data, fmt):
+    r = mk(tmp_path, "ARCHITECTURE=Qwen3_5ForConditionalGeneration\nMODEL_TYPE=qwen3_5\n"
+                     + (f"FORMAT={fmt}\n" if fmt else "") + f"WEIGHT_BYTES={15 * GIB}\nATTENTION_HEADS=24\n")
+    path = recipe.evaluate_engine(r, data, recipe.engine_by_id(data, "vllm-ngc"), 1)
+    assert not path["reads"] and path["verdict"] == "BLOCKED"
+
+
+def test_auto_prefers_a_serving_engine_over_a_reference_one(tmp_path, data):
+    body = (RECIPES / "hy4-flash-exl3-tensorfold-tp2" / "recipe.env").read_text().replace(
+        "ENGINE=tf-native-1.3.3", "ENGINE=auto")
+    r = mk(tmp_path, body, "hy4auto")
+    p = recipe.plan(r, data)
+    assert p["engine"]["id"] == "tf-native-1.3.3"
+    ww = [a["engine"] for a in p["alternatives"] if a["verdict"] == "SERVABLE-WITH-WORK"]
+    assert ww[-1] == "exllamav3"
+    ex = next(a for a in p["alternatives"] if a["engine"] == "exllamav3")
+    assert "reference-only" in ex["gaps"]
+
+
+def test_an_unknown_family_gets_the_family_gap(tmp_path, data):
+    p = _r(tmp_path, data, f"MODEL_TYPE=foo_new\nFORMAT=exl3\nBPW=4\nWEIGHT_BYTES={15 * GIB}\n", sparks=1)
+    assert p["verdict"] == "BLOCKED" and "family" in [g["id"] for g in p["gaps"]] and p["effort_days"][0] >= 20
+    txt = recipe.render_plan(p)
+    assert "TPNone" not in txt and "None GiB" not in txt and "BLOCKED: these steps will not serve it" in txt
+
+
+def test_init_refuses_a_reserved_name_and_reads_a_dspark_folder(tmp_path, monkeypatch, data):
+    monkeypatch.setenv("BEAST_RECIPES_DIR", str(tmp_path / "recipes"))
+    ck = make_ckpt(tmp_path / "Qwen-Local", dense("Qwen3ForCausalLM", "qwen3"), QWEN_TEMPLATE)
+    with pytest.raises(recipe.RecipeError, match="beast-spark command"):
+        recipe.init(str(ck), "hy4", 1, "auto", data, False)
+    assert recipe.detect_drafter({}, {}, data, "minimax_m3_vl", ["dspark/config.json", "dspark/model-dspark-00001.safetensors"])[0] \
+        == "in-checkpoint:dspark"
+    assert any(d.get("method") == "dspark" for d in data["drafters"]["minimax_m3_vl"])
+
+
+def test_rollback_from_nothing_is_down_and_down_returns_its_code(stubs, tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / ".previous").write_text("PREVIOUS=none\nRECIPE=x\n")
+    ok = cli(["rollback", "--run"], stubs, env={"BEAST_RECIPE_STATE_DIR": str(state)})
+    assert ok.returncode == 0 and calls(stubs) == ["beast-spark down"]

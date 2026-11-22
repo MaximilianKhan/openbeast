@@ -11,6 +11,7 @@ Description=beast-recipe glm53-flash-exl3-native-tp2: glm-5.3-flash-ablit on tf-
 After=network-online.target
 Wants=network-online.target
 Conflicts=deepseek-v41-inference.service hy4-vllm-inference.service spark-hydra-inference.service
+After=deepseek-v41-inference.service hy4-vllm-inference.service spark-hydra-inference.service
 
 [Service]
 Type=oneshot

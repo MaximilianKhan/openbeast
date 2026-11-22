@@ -337,7 +337,7 @@ PY
 }
 
 # On any failure of `hy4`: Hy4 stopped, the model that served before back.
-HY4_DONE=1 HY4_PREV=none HY4_PREV_MODEL="" HY4_PREV_BACKEND="" HY4_CONF_SET=0
+HY4_DONE=1 HY4_PREV=none HY4_PREV_UNIT="" HY4_PREV_WAIT="" HY4_PREV_MODEL="" HY4_PREV_BACKEND="" HY4_CONF_SET=0
 hy4_exit() {
   local rc=$?
   trap - EXIT
@@ -348,15 +348,15 @@ hy4_exit() {
       [[ -n "$HY4_PREV_MODEL" ]] && { ob_conf_set INFERENCE_MODEL "$HY4_PREV_MODEL" || true; }
       [[ -n "$HY4_PREV_BACKEND" ]] && { ob_conf_set INFERENCE_BACKEND "$HY4_PREV_BACKEND" || true; }
     fi
-    case "$HY4_PREV" in
-      ds|glm)
-        local u; u=$(unit_of "$HY4_PREV")
-        log "restoring $HY4_PREV ($u), which served when hy4 began"
-        if sc start "$u" && (wait_ready "$u"); then log "$HY4_PREV is serving again; Hy4 was NOT activated"
-        else log "$HY4_PREV did not come back either: journalctl --user -u $u -n 50; then beast$HY4_PREV"; fi
-        (( HY4_CONF_SET )) && sc restart "$OB_UNIT" 2>/dev/null || true ;;
-      *) log "nothing served when hy4 began: nothing to restore" ;;
-    esac
+    if [[ -n "$HY4_PREV_UNIT" ]]; then
+      local back="beast$HY4_PREV"; [[ "$HY4_PREV" == ds || "$HY4_PREV" == glm ]] || back="beast-spark $HY4_PREV"
+      log "restoring $HY4_PREV ($HY4_PREV_UNIT), which served when hy4 began"
+      if sc start "$HY4_PREV_UNIT" && (wait_ready "$HY4_PREV_UNIT" ${HY4_PREV_WAIT:+"$HY4_PREV_WAIT"}); then log "$HY4_PREV is serving again; Hy4 was NOT activated"
+      else log "$HY4_PREV did not come back either: journalctl --user -u $HY4_PREV_UNIT -n 50; then $back"; fi
+      (( HY4_CONF_SET )) && sc restart "$OB_UNIT" 2>/dev/null || true
+    else
+      log "nothing served when hy4 began: nothing to restore"
+    fi
   fi
   exit "$rc"
 }
@@ -370,7 +370,14 @@ cmd_hy4() {
     fi
     cmd_status; return
   fi
-  if active "$DS_UNIT"; then HY4_PREV=ds; elif active "$GLM_UNIT"; then HY4_PREV=glm; fi
+  local n u w
+  if active "$DS_UNIT"; then HY4_PREV=ds HY4_PREV_UNIT=$DS_UNIT
+  elif active "$GLM_UNIT"; then HY4_PREV=glm HY4_PREV_UNIT=$GLM_UNIT
+  else
+    while read -r n u _ _ w; do
+      if [[ -n "$n" ]] && active "$u"; then HY4_PREV=$n HY4_PREV_UNIT=$u HY4_PREV_WAIT=$w; break; fi
+    done < <(recipe_units)
+  fi
   HY4_PREV_MODEL=$(ob_conf_get INFERENCE_MODEL)
   HY4_PREV_BACKEND=$(ob_conf_get INFERENCE_BACKEND)
   HY4_DONE=0
@@ -379,6 +386,10 @@ cmd_hy4() {
   for u in "$DS_UNIT" "$GLM_UNIT"; do
     if active "$u"; then log "stopping $u (one model at a time; it stays $(sc is-enabled "$u" 2>/dev/null || echo disabled) for boot)"; sc stop "$u"; fi
   done
+  # an adopted recipe that serves is stopped here, before Hy4 starts (not left to its unit's Conflicts=)
+  while read -r n u _ _ _; do
+    if [[ -n "$n" ]] && active "$u"; then log "stopping the recipe $n ($u)"; sc stop "$u"; fi
+  done < <(recipe_units)
   log "starting Hy4-flash (NVFP4, vLLM TP2): $HY4_UNIT (first start on this image: ~10 min of kernel autotune)"
   sc start "$HY4_UNIT"
   wait_ready "$HY4_UNIT" "$HY4_WAIT_S"
@@ -395,7 +406,7 @@ cmd_hy4() {
 }
 
 # ---- an adopted beast-recipe recipe: serve it for now, never select it (the Hy4 pattern)
-R_DONE=1 R_PREV=none R_PREV_UNIT="" R_PREV_MODEL="" R_PREV_BACKEND="" R_CONF_SET=0 R_UNIT="" R_NAME=""
+R_DONE=1 R_PREV=none R_PREV_UNIT="" R_PREV_WAIT="" R_PREV_MODEL="" R_PREV_BACKEND="" R_CONF_SET=0 R_UNIT="" R_NAME=""
 recipe_exit() {
   local rc=$?
   trap - EXIT
@@ -408,7 +419,7 @@ recipe_exit() {
     fi
     if [[ -n "$R_PREV_UNIT" ]]; then
       log "restoring $R_PREV ($R_PREV_UNIT), which served when the switch began"
-      if sc start "$R_PREV_UNIT" && (wait_ready "$R_PREV_UNIT"); then log "$R_PREV is serving again; $R_NAME was NOT activated"
+      if sc start "$R_PREV_UNIT" && (wait_ready "$R_PREV_UNIT" ${R_PREV_WAIT:+"$R_PREV_WAIT"}); then log "$R_PREV is serving again; $R_NAME was NOT activated"
       else log "$R_PREV did not come back either: journalctl --user -u $R_PREV_UNIT -n 50; then beast-spark $R_PREV"; fi
       (( R_CONF_SET )) && sc restart "$OB_UNIT" 2>/dev/null || true
     else
@@ -420,7 +431,7 @@ recipe_exit() {
 
 cmd_recipe() {
   R_NAME=${1:-}
-  local line served backend wait n u
+  local line served backend wait n u w
   line=$(recipe_units | awk -v n="$R_NAME" '$1 == n')
   [[ -n "$R_NAME" && -n "$line" ]] || die "no adopted recipe '$R_NAME' in $RECIPES_D: beast-recipe adopt $R_NAME --run (beast-recipe list shows the recipes)"
   read -r _ R_UNIT served backend wait <<<"$line"
@@ -435,10 +446,10 @@ cmd_recipe() {
   fi
   if active "$DS_UNIT"; then R_PREV=ds R_PREV_UNIT=$DS_UNIT
   elif active "$GLM_UNIT"; then R_PREV=glm R_PREV_UNIT=$GLM_UNIT
-  elif active "$HY4_UNIT"; then R_PREV=hy4 R_PREV_UNIT=$HY4_UNIT
+  elif active "$HY4_UNIT"; then R_PREV=hy4 R_PREV_UNIT=$HY4_UNIT R_PREV_WAIT=$HY4_WAIT_S
   else
-    while read -r n u _ _ _; do
-      if [[ "$n" != "$R_NAME" ]] && active "$u"; then R_PREV=$n R_PREV_UNIT=$u; break; fi
+    while read -r n u _ _ w; do
+      if [[ "$n" != "$R_NAME" ]] && active "$u"; then R_PREV=$n R_PREV_UNIT=$u R_PREV_WAIT=$w; break; fi
     done < <(recipe_units)
   fi
   R_PREV_MODEL=$(ob_conf_get INFERENCE_MODEL)
@@ -460,9 +471,8 @@ cmd_recipe() {
   ob_conf_set INFERENCE_BACKEND "$backend"
   ob_conf_set INFERENCE_MODEL "$served"
   sc restart "$OB_UNIT"
-  if [[ "$R_PREV" != none ]]; then
-    printf 'PREVIOUS=%s\nRECIPE=%s\nWHEN=%s\n' "$R_PREV" "$R_NAME" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$RECIPES_D/.previous"
-  fi
+  # always recorded (PREVIOUS=none when nothing served: rollback is then beast-spark down)
+  printf 'PREVIOUS=%s\nRECIPE=%s\nWHEN=%s\n' "$R_PREV" "$R_NAME" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$RECIPES_D/.previous"
   R_DONE=1
   trap - INT TERM HUP
   cmd_status
@@ -499,6 +509,12 @@ cmd_install() {
     log "installed: $2"
   }
   put "$here/spark-beast.sh" "$BIN_DIR/beast-spark"
+  # beast-recipe on PATH: a link, not a copy (it resolves pylib, the data and recipes/ from the checkout)
+  local br; br="$(cd "$here/../.." && pwd)/scripts/beast-recipe.sh"
+  if [[ -f "$br" ]]; then
+    if [[ "$(readlink "$BIN_DIR/beast-recipe" 2>/dev/null)" == "$br" ]]; then log "unchanged: $BIN_DIR/beast-recipe -> $br"
+    else mkdir -p "$BIN_DIR"; ln -sfn "$br" "$BIN_DIR/beast-recipe"; log "linked: $BIN_DIR/beast-recipe -> $br"; fi
+  fi
   if [[ -d "$PREP" ]]; then
     put "$here/spark-deepseek-pack.sh" "$PREP/spark-deepseek-pack.sh"
     put "$here/spark-deepseek-prepare-local.sh" "$PREP/spark-deepseek-prepare-local.sh"
