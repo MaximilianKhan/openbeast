@@ -793,6 +793,48 @@ ADOPTED or REJECTED) and [RESULTS.md](RESULTS.md).
   run_eval's cache (a server error is not banked), in profile.py (a budget
   skip is not a failure), and in campaign.py (lost units).
 
+### 7a. The board row and its weights
+
+A board row is a model **and** its exact weights, engine and harness. When
+an arm goes on the board, record which weights it measured, every time:
+
+1. **Find the entry, or add one**, in `evals/boards/v5/weights.json`. Reuse
+   an entry only when the run served the same file set (the same Hub
+   revision, or the same local pack revision), the same engine build and
+   the same drafter. Anything else is a new entry with its own id and a
+   label that tells it apart (`EXL3 3.5 bpw · <variant> · stock`). The
+   fields: `repo` + full `revision` (`revision_kind` `hub`), or `repo` null
+   + `local_id` + the pack's local revision (`local`, a pack that is not on
+   the Hub, e.g. one `spark-deepseek-pack.sh` staged); `format`, `bpw`,
+   `variant`, `abliterated`, `engine`, `engine_version`, `image`, `recipe`,
+   `drafter`, `kv_dtype`, `context`, `hosts`, and `evidence`. `v5_board.py`
+   validates them.
+2. **Prove it from a record of the run's window**, not from what the host
+   serves today: the inference unit's journal start lines (`Ready: … @ REV`,
+   the rank command lines) between the run's first and last row, the pack
+   selection (`spark-deepseek-pack.sh list`, `local.sh`'s mtime), a
+   `models/*.lock`. Write the source in `evidence`. A value you cannot
+   prove is `"unverified"`; never guess one.
+3. **Add the run** with its weights:
+
+   ```bash
+   python3 evals/v5_board.py --add DS-X --model "DeepSeek-V4.1-Flash (Mia EXL3)" \
+       --weights-id dsv41f-mia-exl3-2.9bpw-eaq1.1-v2 \
+       --config "campaign arm X: ..." --campaign-arm "v5-thinking-first X" \
+       --host "DGX Spark pair, TensorFold, Mia EXL3 (2.9 bpw)" \
+       evals/results/eval-<slug>-<ts>.json
+   ```
+
+   `--add` refuses a run without `--weights-id`, and `--check` (CI) fails on
+   a run whose `weights_id` is missing or names another model's weights.
+
+The board picks the best configuration per (model, weights), so a second
+quantization of a model (another bpw on three Sparks, another pack) becomes
+its own row and never replaces the first. A campaign report compares arms on
+one quantization: `evals/v5_report.py --weights-id <id>`. The generated
+"Weights used" block in [RESULTS.md](RESULTS.md#weights-used) shows every
+entry a board run uses.
+
 ## 8. Worked example: GLM-5.3-Flash, 2026-11-16
 
 Served on the spark-hydra pair (TensorFold, `GLM-5.3-Flash-EXL3`, 4 slots,

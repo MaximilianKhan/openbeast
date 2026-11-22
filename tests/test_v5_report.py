@@ -122,6 +122,12 @@ def test_published_deepseek_ladder():
     d = {(x["base"], x["arm"]): x for x in r["deltas"]}
     assert d[("T", "T2")]["lost"] == [] and len(d[("T", "T2")]["gained"]) == 4
     assert len(d[("T2", "T3")]["gained"]) == len(d[("T2", "T3")]["lost"]) == 3
+    # every arm names its exact weights, and the filter keeps one quantization
+    assert {a["weights"] for a in r["arms"]} == {"EXL3 2.9 bpw · Mia EAQ v1.1 -v2 · stock"}
+    assert "| T2 | DS-T2 | EXL3 2.9 bpw · Mia EAQ v1.1 -v2 · stock | yes |" in v5_report.render(r)
+    one = v5_report.build(weights_id="dsv41f-mia-exl3-2.9bpw-eaq1.1-v2")
+    assert [a["id"] for a in one["arms"]] == [a["id"] for a in r["arms"]]
+    assert v5_report.build(weights_id="some-other-quant")["arms"] == []
 
 
 def test_cli_runs_and_writes_nothing():
