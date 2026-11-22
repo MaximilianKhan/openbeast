@@ -1,10 +1,11 @@
 {
   "suite": "v5",
-  "description": "Inputs of the v5 leaderboard (evals/v5_board.py). One entry per measured configuration; the board groups them by model and shows each model's best. Files are verbatim copies of run_eval results (and the reference ledger) in this directory; evals/results/ itself is not tracked.",
+  "description": "Inputs of the v5 leaderboard (evals/v5_board.py). One entry per measured configuration; the board groups them by model and shows each model's best. Files are verbatim copies of run_eval results (and the reference ledger) in this directory; evals/results/ itself is not tracked. Each run names its exact weights with weights_id, an entry of weights.json; the board groups by (model, weights), so two quantizations of one model are two rows.",
   "runs": [
     {
       "id": "GLM-L0",
       "model": "GLM-5.3-Flash",
+      "weights_id": "glm53f-mia-exl3-4bpw-tf-ablit",
       "host": "DGX Spark pair, TensorFold, EXL3",
       "config": "thinking off, runner v1 (the L0 profile)",
       "files": [
@@ -16,6 +17,7 @@
     {
       "id": "GLM-A",
       "model": "GLM-5.3-Flash",
+      "weights_id": "glm53f-mia-exl3-4bpw-tf-ablit",
       "host": "DGX Spark pair, TensorFold, EXL3",
       "config": "thinking off, runner v2",
       "campaign_arm": "v5-harness A",
@@ -26,6 +28,7 @@
     {
       "id": "GLM-B",
       "model": "GLM-5.3-Flash",
+      "weights_id": "glm53f-mia-exl3-4bpw-tf-ablit",
       "host": "DGX Spark pair, TensorFold, EXL3",
       "config": "thinking off, runner v2, wall-scaled turns",
       "campaign_arm": "v5-harness B",
@@ -38,6 +41,7 @@
     {
       "id": "GLM-C",
       "model": "GLM-5.3-Flash",
+      "weights_id": "glm53f-mia-exl3-4bpw-tf-ablit",
       "host": "DGX Spark pair, TensorFold, EXL3",
       "config": "thinking on, runner v2, wall-scaled turns, wall ×2",
       "campaign_arm": "v5-harness C",
@@ -48,6 +52,7 @@
     {
       "id": "OPUS-REF",
       "model": "Claude Opus 5.5",
+      "weights_id": "anthropic-api-claude-opus-5-5",
       "host": "Anthropic API",
       "config": "Claude Code tools, no turn cap, wall ×2 (68/71 at the 1× wall); solver never saw validator output",
       "reference": true,
@@ -58,6 +63,7 @@
     {
       "id": "GLM-E",
       "model": "GLM-5.3-Flash",
+      "weights_id": "glm53f-mia-exl3-4bpw-tf-ablit",
       "config": "thinking on, runner v2, wall-scaled turns, wall ×2, diagnostics + edit hint + verify-done, Zig pack v2 + host pack, env block, wall warnings",
       "files": [
         "eval-glm-5-3-flash-v3-best-20261117-043643.json"
@@ -68,6 +74,7 @@
     {
       "id": "DS-T",
       "model": "DeepSeek-V4.1-Flash (Mia EXL3)",
+      "weights_id": "dsv41f-mia-exl3-2.9bpw-eaq1.1-v2",
       "config": "thinking on, campaign arm T: runner v2, wall-scaled turns, packs v3, diagnostics + edit hint + verify-done, env block + wall warn; harness8 + sandbox hardening (review 1118)",
       "files": [
         "eval-deepseek-v4-1-flash-v5-thinking-first-t-20261118-015132.json"
@@ -79,6 +86,7 @@
     {
       "id": "DS-T2",
       "model": "DeepSeek-V4.1-Flash (Mia EXL3)",
+      "weights_id": "dsv41f-mia-exl3-2.9bpw-eaq1.1-v2",
       "config": "thinking on, campaign arm T2: T + 8192-token per-turn thinking cap + act nudge; harness9 (review 1118 sandbox + partial stats + eval fetch guard)",
       "files": [
         "eval-deepseek-v4-1-flash-v5-thinking-first-t2-20261119-013846.json"
@@ -90,6 +98,7 @@
     {
       "id": "DS-Ts1",
       "model": "DeepSeek-V4.1-Flash (Mia EXL3)",
+      "weights_id": "dsv41f-mia-exl3-2.9bpw-eaq1.1-v2",
       "config": "seed-noise arm T_s1: arm T under --seed 1 (harness9); sets the noise margin for T vs T2",
       "files": [
         "eval-deepseek-v4-1-flash-v5-thinking-first-t-s1-20261119-074954.json"
@@ -101,6 +110,7 @@
     {
       "id": "DS-T3",
       "model": "DeepSeek-V4.1-Flash (Mia EXL3)",
+      "weights_id": "dsv41f-mia-exl3-2.9bpw-eaq1.1-v2",
       "config": "campaign arm T3: T2 with a 4096-token per-turn thinking cap (harness9); trades 3 units each way against T2",
       "files": [
         "eval-deepseek-v4-1-flash-v5-thinking-first-t3-20261119-180953.json"
@@ -112,6 +122,7 @@
     {
       "id": "DS-U",
       "model": "DeepSeek-V4.1-Flash (Mia EXL3)",
+      "weights_id": "dsv41f-mia-exl3-2.9bpw-eaq1.1-v2",
       "config": "campaign arm U: T2 with the forced-act turn instead of the act nudge + done-when-verified, web tools hidden (harness10, 16K cap)",
       "files": [
         "eval-deepseek-v4-1-flash-v5-thinking-first-u-20261119-235955.json"
@@ -123,6 +134,7 @@
     {
       "id": "DS-UP",
       "model": "DeepSeek-V4.1-Flash (Mia EXL3)",
+      "weights_id": "dsv41f-mia-exl3-2.9bpw-eaq1.1-v2",
       "config": "campaign arm UP: U + planning lines (harness10, 16K cap)",
       "files": [
         "eval-deepseek-v4-1-flash-v5-thinking-first-up-20261120-063508.json",
@@ -135,6 +147,7 @@
     {
       "id": "DS-UPA",
       "model": "DeepSeek-V4.1-Flash (Mia EXL3)",
+      "weights_id": "dsv41f-mia-exl3-2.9bpw-eaq1.1-v2",
       "config": "campaign arm UPA: UP + the frozen algorithmic procedure pack (harness10, 16K cap)",
       "files": [
         "eval-deepseek-v4-1-flash-v5-thinking-first-upa-20261120-170603.json"
@@ -146,6 +159,7 @@
     {
       "id": "DS-U8k",
       "model": "DeepSeek-V4.1-Flash (Mia EXL3)",
+      "weights_id": "dsv41f-mia-exl3-2.9bpw-eaq1.1-v2",
       "config": "campaign arm U_8k: U at an 8192-token per-turn cap (harness10)",
       "files": [
         "eval-deepseek-v4-1-flash-v5-thinking-first-u-8k-20261121-004319.json"
@@ -157,6 +171,7 @@
     {
       "id": "DS-UP8k",
       "model": "DeepSeek-V4.1-Flash (Mia EXL3)",
+      "weights_id": "dsv41f-mia-exl3-2.9bpw-eaq1.1-v2",
       "config": "campaign arm UP_8k: UP at T2's 8192-token per-turn cap (harness10)",
       "files": [
         "eval-deepseek-v4-1-flash-v5-thinking-first-up-8k-20261121-064409.json"
@@ -168,6 +183,7 @@
     {
       "id": "DS-UPA8k",
       "model": "DeepSeek-V4.1-Flash (Mia EXL3)",
+      "weights_id": "dsv41f-mia-exl3-2.9bpw-eaq1.1-v2",
       "config": "campaign arm UPA_8k: UPA at T2's 8192-token per-turn cap (harness10)",
       "files": [
         "eval-deepseek-v4-1-flash-v5-thinking-first-upa-8k-20261121-124508.json"

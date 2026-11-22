@@ -21,9 +21,17 @@ SCORE is the v5 capability (evals/README.md "Scoring (v5)"):
 0.75 x SOLVE + 0.25 x LANG, LANG over multi-language bases only, computed by
 scoring.compute_solve_breadth on rows enriched from the suite manifest.
 
+WEIGHTS. Every run names its exact weights with "weights_id", an entry of
+evals/boards/v5/weights.json (repo + revision, format, bpw, variant, stock or
+abliterated, engine, drafter, KV cache, hosts and the evidence). A board row is
+a model AND its exact weights: the best configuration is chosen per (model,
+weights), so a second quantization of a model (another bpw, another pack) is
+its own row and never replaces or merges with the first.
+
 The board is generated between markers in README.md and docs/RESULTS.md
 (<!-- v5-board:start --> / <!-- v5-board:end -->); docs/RESULTS.md also holds
-every run of every model (<!-- v5-runs:start --> / <!-- v5-runs:end -->).
+every run of every model (<!-- v5-runs:start --> / <!-- v5-runs:end -->) and
+the weights behind them (<!-- v5-weights:start --> / <!-- v5-weights:end -->).
 
 Usage:
   python3 evals/v5_board.py              # print the board (markdown)
@@ -33,7 +41,9 @@ Usage:
 
   # a new configuration (e.g. a campaign arm that just finished): copies the
   # files into evals/boards/v5/, records the run in board.json, rewrites docs
+  # --weights-id names its weights.json entry (add the entry first for new weights)
   python3 evals/v5_board.py --add GLM-E --model GLM-5.3-Flash \\
+      --weights-id glm53f-mia-exl3-4bpw-tf-ablit \\
       --config "thinking on, runner v3, ..." [--campaign-arm "v5-harness E"] \\
       evals/results/eval-<slug>-<ts>.json [repair files...]
 """
@@ -62,12 +72,17 @@ BOARD_FILE = os.path.join(BOARD_DIR, "board.json")
 # run) and validator notes shown without adjusting anything. Data, not code:
 # an integrity scan's verdicts are applied by editing this file + --write.
 EXCLUSIONS_FILE = os.path.join(BOARD_DIR, "exclusions.json")
+# The exact weights behind each run (board.json "weights_id" -> an entry here).
+WEIGHTS_FILE = os.path.join(BOARD_DIR, "weights.json")
 MANIFEST = os.path.join(EVALS_DIR, "suites", "v5.json")
 
 # Docs that hold a generated block, and the path prefix from that doc to the
 # repo root (for links to the result files).
 DOCS = {"README.md": "", os.path.join("docs", "RESULTS.md"): "../"}
-BLOCKS = {"v5-board": "board", "v5-runs": "runs"}
+BLOCKS = {"v5-board": "board", "v5-runs": "runs", "v5-weights": "weights"}
+# Where a weights cell links when the weights have no Hub revision (the
+# generated "Weights used" block), relative to the repo root.
+WEIGHTS_ANCHOR = "docs/RESULTS.md#weights-used"
 
 LANGS = (("python", "Py"), ("go", "Go"), ("c", "C"), ("cpp", "C++"),
          ("rust", "Rust"), ("zig", "Zig"), ("shell", "Sh"))
@@ -90,6 +105,71 @@ def load_manifest(path: str = MANIFEST) -> dict:
 def load_board(path: str = BOARD_FILE) -> dict:
     with open(path, encoding="utf-8") as f:
         return json.load(f)
+
+
+# --- weights ---------------------------------------------------------------------------
+
+WEIGHTS_REQUIRED = ("model", "label", "repo", "revision", "revision_kind", "format", "bpw",
+                    "variant", "abliterated", "engine", "engine_version", "drafter",
+                    "kv_dtype", "hosts", "evidence")
+REVISION_KINDS = ("hub", "local", "hosted", "file-sha256")
+_SHA = re.compile(r"^[0-9a-f]{40}$")
+
+
+def load_weights(path: str = WEIGHTS_FILE) -> dict:
+    """{weights id: entry}; an absent file is an empty registry (every run then fails
+    validation, which names the missing file's entries)."""
+    if not os.path.exists(path):
+        return {}
+    with open(path, encoding="utf-8") as f:
+        return json.load(f).get("weights") or {}
+
+
+def weights_problems(board: dict, weights: dict) -> list[str]:
+    """Why the registry or a run's weights_id is not usable ([] = fine)."""
+    bad = []
+    for wid, w in weights.items():
+        missing = [k for k in WEIGHTS_REQUIRED if k not in w]
+        if missing:
+            bad.append(f"weights {wid}: missing {', '.join(missing)}")
+            continue
+        kind = w["revision_kind"]
+        if kind not in REVISION_KINDS:
+            bad.append(f"weights {wid}: revision_kind {kind!r} is not one of {', '.join(REVISION_KINDS)}")
+        if kind == "hub" and not (isinstance(w["repo"], str) and "/" in w["repo"]
+                                  and _SHA.match(str(w["revision"]))):
+            bad.append(f"weights {wid}: a hub entry needs a repo id and a full 40-hex revision")
+        if kind == "local" and not (w.get("local_id") and w["repo"] is None
+                                    and _SHA.match(str(w["revision"]))):
+            bad.append(f"weights {wid}: a local pack needs repo null, a local_id and its 40-hex local revision")
+        if kind == "file-sha256" and not re.match(r"^[0-9a-f]{64}$", str(w.get("file_sha256"))):
+            bad.append(f"weights {wid}: a file-pinned entry needs file and file_sha256")
+        if not isinstance(w["abliterated"], bool):
+            bad.append(f"weights {wid}: abliterated must be true or false")
+        if w["bpw"] is not None and not isinstance(w["bpw"], (int, float)):
+            bad.append(f"weights {wid}: bpw must be a number or null")
+    labels: dict = {}
+    for wid, w in weights.items():
+        key = (w.get("model"), w.get("label"))
+        if key in labels:
+            bad.append(f"weights {wid} and {labels[key]}: one model, one label: two variants need two labels")
+        labels[key] = wid
+    for r in board.get("runs", []):
+        wid = r.get("weights_id")
+        if not wid:
+            bad.append(f"run {r['id']}: no weights_id (name its weights.json entry)")
+        elif wid not in weights:
+            bad.append(f"run {r['id']}: weights_id {wid!r} is not in weights.json")
+        elif weights[wid].get("model") != r["model"]:
+            bad.append(f"run {r['id']}: weights {wid} belong to {weights[wid].get('model')!r}, not {r['model']!r}")
+    return bad
+
+
+def hub_url(w: dict) -> str | None:
+    """The Hub page of the exact revision, for weights that are on the Hub."""
+    if w.get("revision_kind") == "hub":
+        return f"https://huggingface.co/{w['repo']}/tree/{w['revision']}"
+    return None
 
 
 def infra_reason(row: dict) -> str | None:
@@ -225,15 +305,19 @@ def score_run(run: dict, manifest: dict, base_dir: str = BOARD_DIR,
 
 
 def best_per_model(results: list[dict]) -> list[dict]:
-    """Each model's best configuration (SCORE, then passes, then the earlier
-    date), ranked; reference runs last and unranked."""
+    """Each (model, weights)'s best configuration (SCORE, then passes, then the
+    earlier date), ranked; reference runs last and unranked. Two quantizations
+    of one model are two entries: a 3.5 bpw build never replaces or merges with
+    the 2.9 bpw one."""
     best: dict = {}
     for r in results:
-        cur = best.get(r["model"])
+        key = (r["model"], r.get("weights_id"))
+        cur = best.get(key)
         if cur is None or (r["score"], r["passed"], _neg_date(r)) > (
                 cur["score"], cur["passed"], _neg_date(cur)):
-            best[r["model"]] = r
-    rows = sorted(best.values(), key=lambda r: (r["reference"], -r["score"], -r["passed"], r["model"]))
+            best[key] = r
+    rows = sorted(best.values(), key=lambda r: (r["reference"], -r["score"], -r["passed"],
+                                                r["model"], r.get("weights_id") or ""))
     return rows
 
 
@@ -242,13 +326,28 @@ def _neg_date(r: dict) -> tuple:
 
 
 def build(board: dict | None = None, base_dir: str = BOARD_DIR,
-          manifest: dict | None = None, exclusions: dict | None = None) -> dict:
+          manifest: dict | None = None, exclusions: dict | None = None,
+          weights: dict | None = None) -> dict:
     board = board if board is not None else load_board()
     manifest = manifest if manifest is not None else load_manifest()
     exclusions = exclusions if exclusions is not None else load_exclusions()
-    runs = [score_run(r, manifest, base_dir, exclusions) for r in board["runs"]]
+    weights = weights if weights is not None else load_weights()
+    problems = weights_problems(board, weights)
+    if problems:
+        raise ValueError("weights.json / board.json: " + "; ".join(problems))
+    runs = []
+    for r in board["runs"]:
+        s = score_run(r, manifest, base_dir, exclusions)
+        s["weights_id"] = r["weights_id"]
+        s["weights"] = {**weights[r["weights_id"]], "id": r["weights_id"],
+                        "hub_url": hub_url(weights[r["weights_id"]])}
+        runs.append(s)
+    used = {r["weights_id"] for r in runs}
     return {"units": len(manifest), "bases": len({m["base"] for m in manifest.values()}),
             "runs": runs, "best": best_per_model(runs),
+            "weights": {wid: {**w, "id": wid, "hub_url": hub_url(w),
+                              "runs": [r["id"] for r in runs if r["weights_id"] == wid]}
+                        for wid, w in weights.items() if wid in used},
             "not_yet_run": board.get("not_yet_run", [])}
 
 
@@ -261,6 +360,17 @@ def _mins(s: float | None) -> str:
 def _files(r: dict, prefix: str) -> str:
     links = [f"[{f}]({prefix}evals/boards/v5/{f})" for f in r["files"]]
     return links[0] + (f" + {len(links) - 1} repair" if len(links) > 1 else "")
+
+
+def _weights_cell(r: dict, prefix: str) -> str:
+    """The exact weights in one cell: the label, then the revision (linked on the Hub;
+    a local pack links to the "Weights used" block, which names what it is)."""
+    w = r["weights"]
+    if w.get("hub_url"):
+        return f"{w['label']} · [{w['repo']}@{w['revision'][:8]}]({w['hub_url']})"
+    if w["revision_kind"] == "local":
+        return f"{w['label']} · [local pack @{w['revision'][:8]}]({prefix}{WEIGHTS_ANCHOR})"
+    return w["label"]
 
 
 def _langs(r: dict) -> list[str]:
@@ -309,10 +419,10 @@ def _with_notes(lines: list[str], notes: list[str]) -> str:
 
 
 def render_board(b: dict, prefix: str = "") -> str:
-    head = ("| # | Model | Host | Best configuration | Passed | SCORE | "
+    head = ("| # | Model | Weights | Host | Best configuration | Passed | SCORE | "
             + " | ".join(lbl for _, lbl in LANGS) + " | Mean / unit | Date | Result file | Status |")
     lines = ["<!-- generated by evals/v5_board.py: do not hand-edit -->", "",
-             head, "|" + "---:|---|---|---|---:|---:|" + "---:|" * len(LANGS) + "---:|---|---|---|"]
+             head, "|" + "---:|---|---|---|---|---:|---:|" + "---:|" * len(LANGS) + "---:|---|---|---|"]
     rank = 0
     marks, notes = _footnotes(b["best"])
     for r in b["best"]:
@@ -325,21 +435,22 @@ def render_board(b: dict, prefix: str = "") -> str:
             rank += 1
             num, model = str(rank), f"**{r['model']}**"
             passed, score = f"**{r['passed']}/{r['units']}**{m}", f"**{r['score']:.1f}**"
-        lines.append(f"| {num} | {model} | {r['host'] or '—'} | {r['config']} | {passed} | {score} | "
+        lines.append(f"| {num} | {model} | {_weights_cell(r, prefix)} | {r['host'] or '—'} | {r['config']} | {passed} | {score} | "
                      + " | ".join(_langs(r)) + f" | {_mins(r['mean_s'])} | {r['date']} | "
                      f"{_files(r, prefix)} | {_status(r)} |")
     for name in b["not_yet_run"]:
-        cells = ["—", name, "", "not yet run on v5"] + [""] * (2 + len(LANGS) + 4)
+        cells = ["—", name, "", "", "not yet run on v5"] + [""] * (2 + len(LANGS) + 4)
         lines.append("| " + " | ".join(cells).rstrip() + " |")
     return _with_notes(lines, notes)
 
 
 def render_runs(b: dict, prefix: str = "") -> str:
-    head = ("| Model | Host | Run | Configuration | Passed | SCORE | SOLVE | LANG | "
+    head = ("| Model | Weights | Host | Run | Configuration | Passed | SCORE | SOLVE | LANG | "
             + " | ".join(lbl for _, lbl in LANGS) + " | Mean / unit | Date | Result files | Status |")
     lines = ["<!-- generated by evals/v5_board.py: do not hand-edit -->", "",
-             head, "|---|---|---|---|---:|---:|---:|---:|" + "---:|" * len(LANGS) + "---:|---|---|---|"]
-    ordered = sorted(b["runs"], key=lambda r: (r["reference"], r["model"], r["timestamp"], r["id"]))
+             head, "|---|---|---|---|---|---:|---:|---:|---:|" + "---:|" * len(LANGS) + "---:|---|---|---|"]
+    ordered = sorted(b["runs"], key=lambda r: (r["reference"], r["model"], r["weights_id"],
+                                               r["timestamp"], r["id"]))
     marks, notes = _footnotes(ordered)
     for r in ordered:
         m = marks.get(r["id"], "")
@@ -348,14 +459,68 @@ def render_runs(b: dict, prefix: str = "") -> str:
         status = _status(r) + (f"; {r['note']}" if r.get("note") else "")
         if r["reference"]:
             status += f"; {r['passed_strict_wall']}/{r['units']} at the 1× wall"
-        lines.append(f"| {r['model']} | {r['host'] or '—'} | {run} | {r['config']} | {r['passed']}/{r['units']}{m} | "
+        lines.append(f"| {r['model']} | {_weights_cell(r, prefix)} | {r['host'] or '—'} | {run} | {r['config']} | {r['passed']}/{r['units']}{m} | "
                      f"{r['score']:.1f} | {r['solve']:.1f} | {r['lang']:.1f} | "
                      + " | ".join(_langs(r)) + f" | {_mins(r['mean_s'])} | {r['date']} | "
                      f"{files} | {status} |")
     return _with_notes(lines, notes)
 
 
-RENDER = {"board": render_board, "runs": render_runs}
+def _rev(repo: str | None, rev: str | None) -> str:
+    if not repo:
+        return "—"
+    if rev and _SHA.match(rev):
+        return f"[`{repo}` @ `{rev}`](https://huggingface.co/{repo}/tree/{rev})"
+    return f"`{repo}`" + (f" @ `{rev}`" if rev else "")
+
+
+def render_weights(b: dict, prefix: str = "") -> str:
+    """One table per weights entry a board run uses, in board order: exactly which
+    file set, engine and serving setup each row measured."""
+    order = []
+    for r in b["best"] + b["runs"]:
+        if r["weights_id"] not in order:
+            order.append(r["weights_id"])
+    lines = ["<!-- generated by evals/v5_board.py from evals/boards/v5/weights.json: do not hand-edit -->"]
+    for wid in order:
+        w = b["weights"][wid]
+        if w["revision_kind"] == "hub":
+            weights = _rev(w["repo"], w["revision"])
+        elif w["revision_kind"] == "local":
+            weights = (f"local pack `{w['local_id']}`, local revision `{w['revision']}` "
+                       "(OpenBeast's content id: not a Hub commit"
+                       + (f"; fingerprint `{w['fingerprint'][:16]}…`" if w.get("fingerprint") else "") + ")")
+        elif w["revision_kind"] == "file-sha256":
+            weights = f"`{w['repo']}`, file `{w['file']}` (sha256 `{w['file_sha256']}`)"
+        else:
+            weights = "not public (hosted)"
+        rows = [("Weights", weights)]
+        if w.get("derived_from"):
+            d = w["derived_from"]
+            rows.append(("Derived from", _rev(d["repo"], d.get("revision")) + f": {d['relation']}"))
+        if w.get("base_model"):
+            rows.append(("Base model", _rev(w["base_model"]["repo"], w["base_model"].get("revision"))))
+        bpw = f"{w['bpw']:g} bpw" if w["bpw"] is not None else "—"
+        rows += [("Format", f"{w['format']}, {bpw}" + (f" ({w['quant_detail']})" if w.get("quant_detail") else "")),
+                 ("Variant", w["variant"]),
+                 ("Stock or abliterated", "abliterated (changes refusals only)" if w["abliterated"] else "stock"),
+                 ("Engine", f"{w['engine']}: {w['engine_version']}")]
+        for key, name in (("image", "Image"), ("recipe", "Recipe")):
+            if w.get(key):
+                rows.append((name, w[key]))
+        ctx = f"{w['context']:,} tokens" if w.get("context") else None
+        rows += [("Speculative drafter", w["drafter"] or "none"),
+                 ("KV cache", w["kv_dtype"] or "—"),
+                 ("Context, streams", ", ".join(x for x in (ctx, f"{w['streams']} streams" if w.get("streams") else None) if x) or "—"),
+                 ("Hosts", w["hosts"]),
+                 ("Board runs", ", ".join(w["runs"])),
+                 ("Evidence", w["evidence"])]
+        lines += ["", f"**{w['model']} · {w['label']}** (`{wid}`)", "", "| | |", "|---|---|"]
+        lines += [f"| {k} | {v} |" for k, v in rows]
+    return "\n".join(lines)
+
+
+RENDER = {"board": render_board, "runs": render_runs, "weights": render_weights}
 
 
 def splice(text: str, name: str, body: str) -> str | None:
@@ -385,6 +550,8 @@ def update_docs(b: dict, write: bool, root: str = REPO_ROOT) -> list[str]:
         if "<!-- v5-board:start -->" not in text:
             stale.append(f"{rel}: no v5-board block")
             continue
+        if rel == os.path.join("docs", "RESULTS.md") and "<!-- v5-weights:start -->" not in text:
+            stale.append(f"{rel}: no v5-weights block (the weights behind every row)")
         if new != text:
             stale.append(rel)
             if write:
@@ -398,8 +565,9 @@ def update_docs(b: dict, write: bool, root: str = REPO_ROOT) -> list[str]:
 def add_run(board: dict, run_id: str, model: str, config: str, files: list[str],
             campaign_arm: str | None = None, note: str | None = None,
             reference: bool = False, host: str | None = None,
-            board_dir: str = BOARD_DIR) -> dict:
-    """Copy files into board_dir and record the run (replacing one with the same id)."""
+            board_dir: str = BOARD_DIR, weights_id: str | None = None) -> dict:
+    """Copy files into board_dir and record the run (replacing one with the same id).
+    weights_id names the run's weights.json entry; build() refuses a run without one."""
     names = []
     for src in files:
         dst = os.path.join(board_dir, os.path.basename(src))
@@ -407,6 +575,8 @@ def add_run(board: dict, run_id: str, model: str, config: str, files: list[str],
             shutil.copyfile(src, dst)
         names.append(os.path.basename(src))
     run = {"id": run_id, "model": model, "config": config, "files": names}
+    if weights_id:
+        run["weights_id"] = weights_id
     for k, v in (("host", host), ("campaign_arm", campaign_arm), ("note", note)):
         if v:
             run[k] = v
@@ -423,6 +593,7 @@ def main() -> int:
     ap.add_argument("--check", action="store_true", help="exit 1 if a doc block is stale")
     ap.add_argument("--add", metavar="RUN_ID", help="record a new run from FILES (then --write)")
     ap.add_argument("--model")
+    ap.add_argument("--weights-id", help="the run's entry in evals/boards/v5/weights.json (required with --add)")
     ap.add_argument("--config")
     ap.add_argument("--host")
     ap.add_argument("--campaign-arm")
@@ -432,10 +603,10 @@ def main() -> int:
     a = ap.parse_args()
 
     if a.add:
-        if not (a.model and a.config and a.files):
-            ap.error("--add needs --model, --config and at least one result file")
+        if not (a.model and a.config and a.weights_id and a.files):
+            ap.error("--add needs --model, --weights-id, --config and at least one result file")
         board = add_run(load_board(), a.add, a.model, a.config, a.files, a.campaign_arm,
-                        a.note, a.reference, a.host)
+                        a.note, a.reference, a.host, weights_id=a.weights_id)
         build(board)  # refuse to record a run that does not load
         with open(BOARD_FILE, "w", encoding="utf-8") as f:
             json.dump(board, f, indent=2, ensure_ascii=False)
