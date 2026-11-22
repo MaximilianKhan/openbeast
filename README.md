@@ -413,7 +413,7 @@ them is in [`docs/TODO.md`](docs/TODO.md).
 ## Serving from DGX Sparks (spark-hydra) 🐉🐉
 
 *(v1.9.0, opt-in.)* **spark-hydra** is two NVIDIA DGX Sparks (`spark-1` +
-`spark-2`) serving DeepSeek-V4.1-Flash (Mia EXL3) with TensorFold TP 2 and four streams (the default since 2026-11-18, Max's decision after testing; the v5 board's #1: 61/71 with the plain agent, 65/71 with `AGENT_PROFILE=deepseek-best`, arm T2; GLM-5.3-Flash is staged as the alternative, `beastglm`). The OpenBeast command center runs on spark-1. Its backend listens on loopback and outside callers use beast-gate on `:8443` with a per-device key.
+`spark-2`) serving DeepSeek-V4.1-Flash (Mia EXL3) with TensorFold TP 2 and four streams (the default since 2026-11-18, Max's decision after testing; the v5 board's #1: 61/71 with the thinking-first composite (arm T), 65/71 with `AGENT_PROFILE=deepseek-best`, arm T2; GLM-5.3-Flash is staged as the alternative, `beastglm`). The OpenBeast command center runs on spark-1. Its backend listens on loopback and outside callers use beast-gate on `:8443` with a per-device key.
 
 **Quickstart.** The full version, with every command, is
 [docs/SPARK_HYDRA.md § Quickstart](docs/SPARK_HYDRA.md#quickstart).
@@ -880,7 +880,7 @@ the RTX 5090 row is reported in [V5_QWEN38_RTX5090-2026-11-22.md](docs/reports/V
 | — | Qwen3.6 27B (v4 #1) |  |  | not yet run on v5 |  |  |  |  |  |  |  |  |  |  |  |  | |
 
 \* GLM-5.3-Flash, GLM-C: 54/71 raw; 3 units (122_gemm_blocked_b, 122_gemm_blocked_d, 122_gemm_blocked_e) excluded contaminated: the agent read sealed paths (G25 integrity scan, evals/CHANGELOG.md). 117_iter_refinement is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 126_hmac_scratch is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 153_coroutine_scheduler is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 49_markov_steady_state is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted.  
-\*\* Qwen3.8 27B Uncensored MTP (the shipped default), Q38U-L0: 40/71 raw; 3 units (126_hmac_scratch, 163_bigint_divmod_e, 192_pike_regex) excluded contaminated: the agent's shell reached the network (integrity scan 2026-11-22; on Linux the agent shell has no network deny, evals/README.md residual gaps).  
+\*\* Qwen3.8 27B Uncensored MTP (the shipped default), Q38U-L0: 40/71 raw; 3 units (126_hmac_scratch, 163_bigint_divmod_e, 192_pike_regex) excluded contaminated: the integrity scan flagged off-host access from the agent's shell (integrity scan 2026-11-22; on Linux the agent shell has no network deny, evals/README.md residual gaps).  
 \*\*\* Claude Opus 5.5, OPUS-REF: 117_iter_refinement is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 126_hmac_scratch is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 153_coroutine_scheduler is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 49_markov_steady_state is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted.
 <!-- v5-board:end -->
 

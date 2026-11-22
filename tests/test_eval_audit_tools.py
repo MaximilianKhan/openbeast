@@ -94,3 +94,16 @@ def test_integrity_scan_flags_forbidden_reads_and_allows_the_setup(tmp_path):
     assert rc == 1
     rep = json.loads(out.read_text())
     assert rep["scanned"] == 2 and list(rep["flagged"]) == ["solve:u2"]
+
+
+def test_results_window_ends_at_the_saved_stamp_not_the_mtime(tmp_path):
+    import os
+    f = tmp_path / "r.json"
+    f.write_text(json.dumps({"timestamp": "2026-11-21T22:41:53", "saved": "2026-11-22T04:46:00-08:00"}))
+    os.utime(f, (2_000_000_000, 2_000_000_000))        # a checkout's mtime, far later
+    start, end = transcripts.results_window(str(f))
+    assert end == transcripts._ts("2026-11-22T04:46:00-08:00") and start < end
+    old = tmp_path / "old.json"                          # no stamp: the mtime, as before
+    old.write_text(json.dumps({"timestamp": "2026-11-21T22:41:53"}))
+    os.utime(old, (1_800_000_000, 1_800_000_000))
+    assert transcripts.results_window(str(old))[1] == 1_800_000_000

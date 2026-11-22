@@ -164,6 +164,9 @@ def test_token_stats(tmp_path):
                            "missing": 1, "partial": 1, "per_unit": 6750, "per_pass": 6750}
     # no passes: no per-pass figure; a reference ledger has no usage at all
     assert v5_board.token_stats({}, MANIFEST, 0)["per_pass"] is None
+    # an exact .5 rounds half up, as the website's Math.round re-derives it
+    assert v5_board._round_half_up(1000025, 50) == 20001
+    assert v5_board._round_half_up(5, 2) == 3 and v5_board._round_half_up(4, 2) == 2
     b = v5_board.build(board(tmp_path), base_dir=d, manifest=MANIFEST, weights=WEIGHTS)
     ref = {r["id"]: r for r in b["runs"]}["REF"]
     assert ref["tokens"]["missing"] == 3 and ref["tokens"]["total"] == 0

@@ -205,6 +205,30 @@ _publish_slot_mount() { # _publish_slot_mount <upstream-host>
   fi
 }
 
+# The upstream a tailnet port proxies now ("" when unmounted), from
+# `tailscale serve status` (a "https://host:PORT" header, then "|-- / proxy URL").
+_mount_upstream() { # _mount_upstream <port>
+  tailscale serve status 2>/dev/null | awk -v p=":$1" '
+    /^https:\/\// { h = $1; on = (length(h) > length(p) && substr(h, length(h) - length(p) + 1) == p); next }
+    on && / proxy / { print $NF; exit }'
+}
+# The dashboard's loopback port (openbeast.conf is not loaded yet when the flags are read).
+_dashboard_port() {
+  local v="${DASHBOARD_PORT:-}"
+  [[ -n "$v" ]] || v="$(grep -E '^DASHBOARD_PORT=' "$(cd "$(dirname "$0")/.." && pwd)/openbeast.conf" 2>/dev/null \
+    | tail -1 | cut -d= -f2- | tr -d "\"'")"
+  echo "${v:-3002}"
+}
+# :8447 is ntfy's port, but the status dashboard is mounted there by hand
+# (docs/BEAST_SLOT.md): never re-point or unmount it from an ntfy flag.
+_refuse_if_dashboard_on_8447() {
+  local up; up="$(_mount_upstream 8447)"
+  if [[ "$up" == *":$(_dashboard_port)" || "$up" == *":$(_dashboard_port)/" ]]; then
+    echo "      ERROR: :8447 serves the status dashboard ($up; docs/BEAST_SLOT.md); move it first." >&2
+    exit 1
+  fi
+}
+
 STATUS_ONLY=0
 PUBLISH_SEARXNG=0
 PUBLISH_SLOT=0
@@ -241,6 +265,7 @@ for _arg in "$@"; do
       exit 0 ;;
     --publish-ntfy)      PUBLISH_NTFY=1 ;;
     --unpublish-ntfy)
+      _refuse_if_dashboard_on_8447
       ts_admin serve --https=8447 off
       echo "ntfy unpublished from the tailnet (:8447 off)."
       exit 0 ;;
@@ -257,6 +282,17 @@ done
 # The mount table: which OpenBeast surface sits on which tailnet port, and
 # whether it is mounted right now. `tailscale serve status` names upstreams,
 # not features. Purely informational — never fails the caller.
+# :8447 is labelled by what it proxies: ntfy, or the dashboard mounted by hand.
+_label_8447() { # _label_8447 <ntfy-port>
+  local up; up="$(_mount_upstream 8447)"; up="${up%/}"
+  case "$up" in
+    "") echo "ntfy push notifications (:$1)" ;;
+    *":$1") echo "ntfy push notifications (:$1)" ;;
+    *":$(_dashboard_port)") echo "status dashboard (:$(_dashboard_port))" ;;
+    *) echo "other ($up)" ;;
+  esac
+}
+
 _print_mounts() { # _print_mounts <chat-port> <artifact-port> [ntfy-port]
   local serve_now row port what state
   serve_now="$(tailscale serve status 2>/dev/null || true)"
@@ -268,7 +304,7 @@ _print_mounts() { # _print_mounts <chat-port> <artifact-port> [ntfy-port]
     "8444|beast-slot status API (:${DASHBOARD_PORT:-3002})" \
     "8445|beast-chat console (:$1)" \
     "8446|beast-artifact pages (:$2)" \
-    "8447|ntfy push notifications (:${3:-3005})" \
+    "8447|$(_label_8447 "${3:-3005}")" \
     "8889|SearXNG for thin clients (:8888)"; do
     port="${row%%|*}"; what="${row#*|}"
     # The default :443 entry prints WITHOUT a port token, so it needs its own
@@ -829,6 +865,7 @@ if [[ $PUBLISH_NTFY -eq 1 ]]; then
     echo "      WARNING: the ntfy extension is not in EXTENSIONS — :8447 will 502 until:"
     echo "               ./scripts/ext.sh enable ntfy && ./stop.sh && ./start.sh"
   fi
+  _refuse_if_dashboard_on_8447
   ts_admin serve --bg --https=8447 "http://127.0.0.1:${NTFY_PORT:-3005}"
   echo "      ntfy published (tailnet-only, :8447 → 127.0.0.1:${NTFY_PORT:-3005})."
   if [[ "${OPENBEAST_NTFY_DEFAULT_ACCESS:-read-write}" != "deny-all" ]]; then

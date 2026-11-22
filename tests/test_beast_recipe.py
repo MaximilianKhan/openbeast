@@ -1086,3 +1086,11 @@ def test_rollback_from_nothing_is_down_and_down_returns_its_code(stubs, tmp_path
     (state / ".previous").write_text("PREVIOUS=none\nRECIPE=x\n")
     ok = cli(["rollback", "--run"], stubs, env={"BEAST_RECIPE_STATE_DIR": str(state)})
     assert ok.returncode == 0 and calls(stubs) == ["beast-spark down"]
+
+
+def test_version_ok_matches_whole_tokens():
+    # a pinned version passes only as a whole token: 1.2.1 is not installed when 1.2.10 is
+    assert recipe.version_ok("tensorfold-native 1.2.10", "1.2.10")
+    assert recipe.version_ok("tensorfold v1.2.10", "1.2.10")
+    assert not recipe.version_ok("tensorfold-native 1.2.10", "1.2.1")
+    assert recipe.version_ok("anything", "")

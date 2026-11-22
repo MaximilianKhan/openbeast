@@ -6,7 +6,7 @@
 Max's decision after testing (v5 61/71, the board's #1). Since 2026-11-19 its
 best agent setup is v5 arm T2 (65/71), one line in `openbeast.conf`,
 `AGENT_PROFILE=deepseek-best` ([SPARK_HYDRA.md E2b](SPARK_HYDRA.md#e2b-deepseek-best-configuration-v5-t2));
-it goes live on spark-1 after the eval arm running there now. GLM-5.3-Flash (`GLM-5.3-Flash-EXL3`, 1,048,576-token window) is staged as
+it is live on spark-1 since 2026-11-19 (E2b). GLM-5.3-Flash (`GLM-5.3-Flash-EXL3`, 1,048,576-token window) is staged as
 the alternative, and one command switches between the two (`beastds` /
 `beastglm`, only through beast-spark,
 [SPARK_HYDRA.md](SPARK_HYDRA.md#deepseek-deployment)). OpenCode on the Mac

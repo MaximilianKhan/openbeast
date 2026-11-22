@@ -54,9 +54,16 @@ def index_logs(logs_dir: str, since: float | None = None, until: float | None = 
 
 
 def results_window(results_path: str) -> tuple[float | None, float]:
+    """(start, end) of the run that wrote a results file. The end comes from the
+    file's contents when it records one (`saved`, written by run_eval on every
+    save since 2026-11-22). Only an older file falls back to its mtime, which a
+    git checkout or copy resets: scan such a file where it was written (or
+    `touch -d` it to its last unit's time), or the window runs into later runs."""
     with open(results_path) as f:
         head = json.load(f)
-    return _ts(head.get("timestamp")), os.path.getmtime(results_path)
+    end = next((t for t in (_ts(head.get(k)) for k in ("saved", "finished", "end_timestamp"))
+                if t is not None), None)
+    return _ts(head.get("timestamp")), end if end is not None else os.path.getmtime(results_path)
 
 
 def match_transcripts(unit_texts: dict, index: list[dict]) -> dict:
