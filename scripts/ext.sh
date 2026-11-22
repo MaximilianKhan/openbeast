@@ -6,9 +6,11 @@
 #   ./scripts/ext.sh enable  <name>       # add to openbeast.conf EXTENSIONS
 #   ./scripts/ext.sh disable <name>       # remove from EXTENSIONS
 #   ./scripts/ext.sh status               # what's enabled + running
-#   ./scripts/ext.sh restart <name>       # restart ONE running process extension
-#                                         # (e.g. the dashboard after a pull),
-#                                         # nothing else: no model, gate or tools
+#   ./scripts/ext.sh restart <name>       # restart ONE process extension (e.g. the
+#                                         # dashboard after a pull; starts it if it
+#                                         # was stopped), nothing else: no model,
+#                                         # gate or tools. Waits for its health route
+#                                         # (manifest HEALTH_PATH) before saying so.
 #
 # Enabling/disabling edits openbeast.conf and takes effect on the next
 # ./start.sh (compose fragments merge, process extensions launch). A running
@@ -153,8 +155,15 @@ case "$cmd" in
     fi
     pidf="$REPO_DIR/.run/ext-$name.pid"
     mkdir -p "$REPO_DIR/.run"
+    old_pid=""
+    if ob_recorded_pid_ours "$pidf" "$(_ob_ere "$REPO_DIR/extensions/$name/")"; then old_pid="$(cat "$pidf")"; fi
     ob_ext_reap "$pidf" "$REPO_DIR/extensions/$name"
-    sleep 1
+    # Wait for the old process to be gone (it may flush state on SIGTERM:
+    # the dashboard saves its power history), not a fixed second.
+    if [[ -n "$old_pid" ]]; then
+      for _ in $(seq 1 50); do kill -0 "$old_pid" 2>/dev/null || break; sleep 0.1; done
+      kill -0 "$old_pid" 2>/dev/null && echo "Note: the old '$name' process ($old_pid) is still exiting." >&2
+    fi
     log="$REPO_DIR/.run/ext-$name.log"
     printf '%s ext.sh restart %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$name" >> "$log"
     # Detached (setsid where it exists) so it outlives this shell; stop.sh
@@ -165,9 +174,25 @@ case "$cmd" in
       nohup "$REPO_DIR/extensions/$name/run.sh" >>"$log" 2>&1 </dev/null &
     fi
     ob_pid_record "$pidf" "$!"
-    sleep 2
-    if ob_recorded_pid_ours "$pidf" "$(_ob_ere "$REPO_DIR/extensions/$name/")"; then
-      echo "Restarted '$name' (pid $(cat "$pidf")); log: .run/ext-$name.log"
+    # Up = the new process is ours AND (when the manifest names one) its
+    # health route answers, within ~10 s. HEALTH_PORT_VAR names the conf.sh
+    # variable holding the port (DASHBOARD_PORT), HEALTH_PATH the route.
+    hpath="$(ob_ext_meta "$name" HEALTH_PATH 2>/dev/null || true)"
+    hvar="$(ob_ext_meta "$name" HEALTH_PORT_VAR 2>/dev/null || true)"
+    hport=""
+    if [[ "$hvar" =~ ^[A-Z_][A-Z0-9_]*$ ]]; then hport="${!hvar:-}"; fi
+    ok=0
+    for _ in $(seq 1 20); do
+      sleep 0.5
+      ob_recorded_pid_ours "$pidf" "$(_ob_ere "$REPO_DIR/extensions/$name/")" || break
+      if [[ -z "$hpath" || ! "$hport" =~ ^[0-9]+$ ]]; then ok=1; sleep 1.5; break; fi
+      if curl -fsS -o /dev/null --max-time 2 "http://${OPENBEAST_PROBE_HOST:-127.0.0.1}:${hport}${hpath}" 2>/dev/null; then ok=1; break; fi
+    done
+    if [[ $ok -eq 1 ]] && ob_recorded_pid_ours "$pidf" "$(_ob_ere "$REPO_DIR/extensions/$name/")"; then
+      echo "Restarted '$name' (pid $(cat "$pidf"))${hpath:+, answering ${hpath}}; log: .run/ext-$name.log"
+    elif ob_recorded_pid_ours "$pidf" "$(_ob_ere "$REPO_DIR/extensions/$name/")"; then
+      echo "'$name' is running (pid $(cat "$pidf")) but ${hpath} did not answer within 10 s — last lines of .run/ext-$name.log:" >&2
+      tail -n 5 "$log" >&2; exit 1
     else
       echo "'$name' exited right after the restart — last lines of .run/ext-$name.log:" >&2
       tail -n 5 "$log" >&2; exit 1
