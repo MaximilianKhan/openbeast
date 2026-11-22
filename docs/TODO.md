@@ -275,8 +275,11 @@ Max paused the benchmark chain after E. Claude Opus 5.5 reference ceiling:
   2026-11-22:** board row Q38U-L0, 39/71 scored (40 raw; 3 units excluded,
   the agent's shell reached the network on Linux), SCORE 63.3, 4 units lost
   to llama-server's HTTP 500 on a truncated tool call
-  ([report](reports/V5_QWEN38_RTX5090-2026-11-22.md)). Next: L1 and L2
-  (running, end ~14:40 2026-11-22), the cross-host calibration (rig
+  ([report](reports/V5_QWEN38_RTX5090-2026-11-22.md)). **L1/L2 done
+  2026-11-22, the profile is complete (retired):** diagnostics only, not
+  board rows (`evals/boards/v5/diagnostics/`); zig 0 → 4 of 6 with packs,
+  L2 4 → 2 on zig, L0 → L2 +4 over 36 compiled units, all within churn;
+  integrity scan clean (report §5). Next: the cross-host calibration (rig
   container against the Mac), and the Linux network deny (HARNESS_NOTES
   next-era (d)) before more rig rows.
 - [x] **DeepSeek-V4.1-Flash (Mia EXL3) thinking-first campaign:** complete
@@ -602,7 +605,7 @@ UP_8k 65 and UPA_8k 62 (series complete), with a GLM UP control as the
 first cross-model arm. Hy4-flash (NVFP4) on the Spark pair has HY4-T2 60/71
 and the ablation HY4-C 55/71 ([report](reports/V5_HY4_FLASH-2026-11-22.md)).
 Qwen3.8 27B Uncensored MTP on the RTX 5090 has its L0 baseline, board row
-Q38U-L0 at 39/71 scored (L1/L2 running;
+Q38U-L0 at 39/71 scored (profile complete; L1/L2 diagnostics, not board rows;
 [report](reports/V5_QWEN38_RTX5090-2026-11-22.md)). The cross-model reading
 is in [HARNESS_NOTES.md](HARNESS_NOTES.md). The GLM status as of 2026-11-17
 (evening) follows; it was GLM only at that point. GLM's arms L0 26
@@ -611,8 +614,9 @@ Opus 71/71 ceiling, all single seed. D and the seed arm F were not run (Max
 paused the chain). Evidence that bears on the question: the
 language-specific residue under thinking (HARNESS_NOTES) and the Droid prior
 art (`reviews/HARNESS_PRIOR_ART-2026-11-16.md`: the "unified harness, rich
-static knowledge" pole). Next: Qwen3.8's L1/L2 (running on the rig), then
-the same arms on further models; GLM's D and F only on Max's word.
+static knowledge" pole). Next: the
+same arms on further models (Qwen3.8's L1/L2 are done: zig packs help,
+diagnostics and escalation unresolved, all within churn); GLM's D and F only on Max's word.
 
 ## 🟩 DGX SPARK INFERENCE — LIVE 2026-11-13 as spark-hydra
 
