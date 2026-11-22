@@ -36,7 +36,13 @@ How rows are built:
   protocol.
 - **Host.** DeepSeek-V4.1-Flash (Mia EXL3) and GLM-5.3-Flash ran on the DGX
   Spark pair (TensorFold, one model at a time), `--jobs 4`, driven from the
-  Mac harness host. Mean / unit is the agent's wall time per unit.
+  Mac harness host. Hy4-flash (NVFP4) ran on the same pair under vLLM (TP2
+  + expert parallel), `--jobs 4`, from the Mac harness host. The Qwen3.8 27B
+  Uncensored MTP row (the RTX 5090 default) ran on one RTX 5090 under
+  llama.cpp, `--jobs 1`, driven from the rig's eval-host container (Linux):
+  a different harness host, **not yet calibrated against the Mac host**, so
+  read it beside the Spark rows with that caveat. Mean / unit is the
+  agent's wall time per unit.
 - **Weights.** Each row names its exact weights (label, then the Hub
   revision, or the local pack's revision); the full record of each, with
   its evidence, is in [Weights used](#weights-used). Two quantizations of
@@ -53,13 +59,15 @@ How rows are built:
 | # | Model | Weights | Host | Best configuration | Passed | SCORE | Py | Go | C | C++ | Rust | Zig | Sh | Mean / unit | Date | Result file | Status |
 |---:|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|
 | 1 | **DeepSeek-V4.1-Flash (Mia EXL3)** | EXL3 2.9 bpw · Mia EAQ v1.1 -v2 · stock · [local pack @04c13f12](../docs/RESULTS.md#weights-used) | DGX Spark pair, TensorFold, Mia EXL3 (2.9 bpw) | thinking on, campaign arm T2: T + 8192-token per-turn thinking cap + act nudge; harness9 (review 1118 sandbox + partial stats + eval fetch guard) | **65/71** | **94.9** | 30/32 | 7/8 | 7/8 | 7/8 | 8/8 | 5/6 | 1/1 | 20.7 min | 2026-11-19 | [eval-deepseek-v4-1-flash-v5-thinking-first-t2-20261119-013846.json](../evals/boards/v5/eval-deepseek-v4-1-flash-v5-thinking-first-t2-20261119-013846.json) | experiment arm (beast-assist diagnostics, awareness packs, wall-scaled turns, wall ×2) |
-| 2 | **GLM-5.3-Flash** | EXL3 4 bpw · Mia TensorFold-Ablit · abliterated · [Mia-AiLab/GLM-5.3-Flash-EXL3-4bpw-TensorFold-Ablit@57edefd2](https://huggingface.co/Mia-AiLab/GLM-5.3-Flash-EXL3-4bpw-TensorFold-Ablit/tree/57edefd2f5d9b371c8345883304d5af68b52fa24) | DGX Spark pair, TensorFold, EXL3 | thinking on, runner v2, wall-scaled turns, wall ×2 | **51/71**\* | **76.7** | 24/32 | 6/8 | 6/8 | 6/8 | 5/8 | 3/6 | 1/1 | 29.0 min | 2026-11-16 | [eval-glm-5-3-flash-v2-turns-think-L0-20261116-195724.json](../evals/boards/v5/eval-glm-5-3-flash-v2-turns-think-L0-20261116-195724.json) | experiment arm (wall-scaled turns, wall ×2) |
+| 2 | **Hy4-flash (NVFP4)** | NVFP4 · atakans build · stock · [atakans/Hy4-flash-NVFP4@30f201ac](https://huggingface.co/atakans/Hy4-flash-NVFP4/tree/30f201acf0b4f9ba178817bcbc04ccfa3ec473f9) | DGX Spark pair, vLLM TP2 + EP, NVFP4 | thinking on (reasoning_effort high, Hy4's default), campaign arm H_T2 = T2 exactly: T + 8192-token per-turn thinking cap + act nudge; harness9 (review 1118 sandbox + partial stats + eval fetch guard) | **60/71** | **83.4** | 26/32 | 6/8 | 7/8 | 8/8 | 8/8 | 4/6 | 1/1 | 19.9 min | 2026-11-21 | [eval-hy4-flash-nvfp4-v5-thinking-first-h-t2-20261121-224152.json](../evals/boards/v5/eval-hy4-flash-nvfp4-v5-thinking-first-h-t2-20261121-224152.json) | experiment arm (beast-assist diagnostics, awareness packs, wall-scaled turns, wall ×2) |
+| 3 | **GLM-5.3-Flash** | EXL3 4 bpw · Mia TensorFold-Ablit · abliterated · [Mia-AiLab/GLM-5.3-Flash-EXL3-4bpw-TensorFold-Ablit@57edefd2](https://huggingface.co/Mia-AiLab/GLM-5.3-Flash-EXL3-4bpw-TensorFold-Ablit/tree/57edefd2f5d9b371c8345883304d5af68b52fa24) | DGX Spark pair, TensorFold, EXL3 | thinking on, runner v2, wall-scaled turns, wall ×2 | **51/71**\* | **76.7** | 24/32 | 6/8 | 6/8 | 6/8 | 5/8 | 3/6 | 1/1 | 29.0 min | 2026-11-16 | [eval-glm-5-3-flash-v2-turns-think-L0-20261116-195724.json](../evals/boards/v5/eval-glm-5-3-flash-v2-turns-think-L0-20261116-195724.json) | experiment arm (wall-scaled turns, wall ×2) |
+| 4 | **Qwen3.8 27B Uncensored MTP (the shipped default)** | GGUF Q5_K_M · JonathanColetti Uncensored (MTP head kept) · abliterated | 1× RTX 5090, llama.cpp MTP, -np 1; rig eval-host container; not calibrated against the Mac host | thinking on (reasoning budget 20480), runner defaults, the L0 profile (bare); harness10 | **39/71**\*\* | **63.3** | 19/32 | 4/8 | 6/8 | 5/8 | 4/8 | 0/6 | 1/1 | 6.6 min | 2026-11-22 | [eval-qwen3-8-27b-uncensored-mtp-q5-k-m-L0-20261122-083815.json](../evals/boards/v5/eval-qwen3-8-27b-uncensored-mtp-q5-k-m-L0-20261122-083815.json) | experiment arm (infrastructure rows (4 server_error)); 4 units lost to infrastructure, counted as fails |
 | ref | *Claude Opus 5.5* (reference) | Anthropic API · hosted, weights not public | Anthropic API | Claude Code tools, no turn cap, wall ×2 (68/71 at the 1× wall); solver never saw validator output | *71/71* | *100.0* | 32/32 | 8/8 | 8/8 | 8/8 | 8/8 | 6/6 | 1/1 | 3.7 min | 2026-11-16 | [reference-claude-opus-5-5-v5-20261116.jsonl](../evals/boards/v5/reference-claude-opus-5-5-v5-20261116.jsonl) | reference ceiling, not ranked: a different scaffold |
-| — | Qwen3.8 27B Uncensored MTP (the shipped default) |  |  | not yet run on v5 |  |  |  |  |  |  |  |  |  |  |  |  | |
 | — | Qwen3.6 27B (v4 #1) |  |  | not yet run on v5 |  |  |  |  |  |  |  |  |  |  |  |  | |
 
 \* GLM-5.3-Flash, GLM-C: 54/71 raw; 3 units (122_gemm_blocked_b, 122_gemm_blocked_d, 122_gemm_blocked_e) excluded contaminated: the agent read sealed paths (G25 integrity scan, evals/CHANGELOG.md). 117_iter_refinement is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 126_hmac_scratch is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 153_coroutine_scheduler is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 49_markov_steady_state is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted.  
-\*\* Claude Opus 5.5, OPUS-REF: 117_iter_refinement is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 126_hmac_scratch is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 153_coroutine_scheduler is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 49_markov_steady_state is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted.
+\*\* Qwen3.8 27B Uncensored MTP (the shipped default), Q38U-L0: 40/71 raw; 3 units (126_hmac_scratch, 163_bigint_divmod_e, 192_pike_regex) excluded contaminated: the agent's shell reached the network (integrity scan 2026-11-22; on Linux the agent shell has no network deny, evals/README.md residual gaps).  
+\*\*\* Claude Opus 5.5, OPUS-REF: 117_iter_refinement is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 126_hmac_scratch is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 153_coroutine_scheduler is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 49_markov_steady_state is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted.
 <!-- v5-board:end -->
 
 ### Every v5 configuration measured
@@ -80,6 +88,19 @@ both caps (−3 each), and the forced act was no better than the nudge at 8K.
 No arm has beaten T2: UP_8k ties it on passes with a lower SCORE. The
 series is complete; the tables are in
 [the final campaign report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md).
+Hy4-flash (NVFP4), Tencent's Hy4-flash in atakans' NVFP4 build (stock),
+ran arm H_T2 on 2026-11-21/22: T2 exactly, on the same harness9 tree and
+the same Spark pair as DS-T2, so the two rows differ in the model and its
+weights (NVFP4 on vLLM against Mia's 2.9 bpw EXL3 on TensorFold). It passed
+60/71 (SCORE 83.4), 5 units behind DS-T2 (7 lost, 2 gained): behind,
+single seed. A second Hy4 arm (H_C, GLM's best configuration) is running;
+see [the Hy4 report](reports/V5_HY4_FLASH-2026-11-22.md).
+The Qwen3.8 27B Uncensored MTP row is the RTX 5090 default's L0 baseline
+(the bare harness, harness10, 2026-11-22): 40/71 raw, 39 scored after an
+integrity exclusion, SCORE 63.3; 4 units were lost to llama-server's
+HTTP 500 on a truncated tool call and count as fails. Its profile's L1 and
+L2 arms are still running; see
+[the RTX 5090 report](reports/V5_QWEN38_RTX5090-2026-11-22.md).
 The GLM-5.3-Flash rows are the 2026-11-16 build-up: the L0 profile, then the
 `v5-harness` campaign arms (`evals/campaigns/v5-harness.json`), each one
 change on top of the previous. Single seed each; the arms and their state
@@ -105,7 +126,9 @@ are in [MODEL_CAMPAIGN.md](MODEL_CAMPAIGN.md).
 | GLM-5.3-Flash | EXL3 4 bpw · Mia TensorFold-Ablit · abliterated · [Mia-AiLab/GLM-5.3-Flash-EXL3-4bpw-TensorFold-Ablit@57edefd2](https://huggingface.co/Mia-AiLab/GLM-5.3-Flash-EXL3-4bpw-TensorFold-Ablit/tree/57edefd2f5d9b371c8345883304d5af68b52fa24) | DGX Spark pair, TensorFold, EXL3 | GLM-B (v5-harness B) | thinking off, runner v2, wall-scaled turns | 36/71\*\*\*\* | 60.4 | 63.1 | 52.3 | 19/32 | 4/8 | 3/8 | 4/8 | 5/8 | 0/6 | 1/1 | 11.7 min | 2026-11-16 | [eval-glm-5-3-flash-v2-turns-L0-20261116-160623.json](../evals/boards/v5/eval-glm-5-3-flash-v2-turns-L0-20261116-160623.json), [eval-glm-5-3-flash-v2-turns-L0-20261116-184943.json](../evals/boards/v5/eval-glm-5-3-flash-v2-turns-L0-20261116-184943.json) | experiment arm (wall-scaled turns); the second file repairs 24 units lost to an eval-interpreter incident |
 | GLM-5.3-Flash | EXL3 4 bpw · Mia TensorFold-Ablit · abliterated · [Mia-AiLab/GLM-5.3-Flash-EXL3-4bpw-TensorFold-Ablit@57edefd2](https://huggingface.co/Mia-AiLab/GLM-5.3-Flash-EXL3-4bpw-TensorFold-Ablit/tree/57edefd2f5d9b371c8345883304d5af68b52fa24) | DGX Spark pair, TensorFold, EXL3 | GLM-C (v5-harness C) | thinking on, runner v2, wall-scaled turns, wall ×2 | 51/71\*\*\*\*\* | 76.7 | 75.4 | 80.5 | 24/32 | 6/8 | 6/8 | 6/8 | 5/8 | 3/6 | 1/1 | 29.0 min | 2026-11-16 | [eval-glm-5-3-flash-v2-turns-think-L0-20261116-195724.json](../evals/boards/v5/eval-glm-5-3-flash-v2-turns-think-L0-20261116-195724.json) | experiment arm (wall-scaled turns, wall ×2) |
 | GLM-5.3-Flash | EXL3 4 bpw · Mia TensorFold-Ablit · abliterated · [Mia-AiLab/GLM-5.3-Flash-EXL3-4bpw-TensorFold-Ablit@57edefd2](https://huggingface.co/Mia-AiLab/GLM-5.3-Flash-EXL3-4bpw-TensorFold-Ablit/tree/57edefd2f5d9b371c8345883304d5af68b52fa24) | DGX Spark pair, TensorFold, EXL3 | GLM-E (v5-harness E) | thinking on, runner v2, wall-scaled turns, wall ×2, diagnostics + edit hint + verify-done, Zig pack v2 + host pack, env block, wall warnings | 50/71\*\*\*\*\*\* | 74.7 | 72.3 | 81.7 | 22/32 | 6/8 | 5/8 | 6/8 | 6/8 | 4/6 | 1/1 | 28.5 min | 2026-11-17 | [eval-glm-5-3-flash-v3-best-20261117-043643.json](../evals/boards/v5/eval-glm-5-3-flash-v3-best-20261117-043643.json) | experiment arm (beast-assist diagnostics, awareness packs, wall-scaled turns, wall ×2) |
-| Claude Opus 5.5 | Anthropic API · hosted, weights not public | Anthropic API | OPUS-REF | Claude Code tools, no turn cap, wall ×2 (68/71 at the 1× wall); solver never saw validator output | 71/71\*\*\*\*\*\*\* | 100.0 | 100.0 | 100.0 | 32/32 | 8/8 | 8/8 | 8/8 | 8/8 | 6/6 | 1/1 | 3.7 min | 2026-11-16 | [reference-claude-opus-5-5-v5-20261116.jsonl](../evals/boards/v5/reference-claude-opus-5-5-v5-20261116.jsonl) | reference ceiling, not ranked: a different scaffold; 68/71 at the 1× wall |
+| Hy4-flash (NVFP4) | NVFP4 · atakans build · stock · [atakans/Hy4-flash-NVFP4@30f201ac](https://huggingface.co/atakans/Hy4-flash-NVFP4/tree/30f201acf0b4f9ba178817bcbc04ccfa3ec473f9) | DGX Spark pair, vLLM TP2 + EP, NVFP4 | HY4-T2 (v5-thinking-first H_T2) | thinking on (reasoning_effort high, Hy4's default), campaign arm H_T2 = T2 exactly: T + 8192-token per-turn thinking cap + act nudge; harness9 (review 1118 sandbox + partial stats + eval fetch guard) | 60/71 | 83.4 | 81.5 | 89.0 | 26/32 | 6/8 | 7/8 | 8/8 | 8/8 | 4/6 | 1/1 | 19.9 min | 2026-11-21 | [eval-hy4-flash-nvfp4-v5-thinking-first-h-t2-20261121-224152.json](../evals/boards/v5/eval-hy4-flash-nvfp4-v5-thinking-first-h-t2-20261121-224152.json) | experiment arm (beast-assist diagnostics, awareness packs, wall-scaled turns, wall ×2); 60/71; 0 units lost; failed: 122_gemm_blocked_a, 124_rkf45, 168_linearizability_kv_b, 168_linearizability_kv_c, 168_linearizability_kv_f, 173_taskgroup_cancel, 183_heston_little_trap, 190_autograd_mlp, 192_pike_regex, 195_riscv_insn_budget, 36_black_scholes_f; same harness9 tree and Spark pair as DS-T2; integrity scan 2026-11-22: 0 contaminated (75 transcripts, 71 units) |
+| Qwen3.8 27B Uncensored MTP (the shipped default) | GGUF Q5_K_M · JonathanColetti Uncensored (MTP head kept) · abliterated | 1× RTX 5090, llama.cpp MTP, -np 1; rig eval-host container; not calibrated against the Mac host | Q38U-L0 (profile L0) | thinking on (reasoning budget 20480), runner defaults, the L0 profile (bare); harness10 | 39/71\*\*\*\*\*\*\* | 63.3 | 60.0 | 73.3 | 19/32 | 4/8 | 6/8 | 5/8 | 4/8 | 0/6 | 1/1 | 6.6 min | 2026-11-22 | [eval-qwen3-8-27b-uncensored-mtp-q5-k-m-L0-20261122-083815.json](../evals/boards/v5/eval-qwen3-8-27b-uncensored-mtp-q5-k-m-L0-20261122-083815.json) | experiment arm (infrastructure rows (4 server_error)); 4 units lost to infrastructure, counted as fails; 40/71 raw; 4 units lost to server_error (llama-server HTTP 500 on a truncated tool call, retried identically; docs/HARNESS_NOTES.md), counted as fails; integrity scan 2026-11-22: 3 contaminated (the agent's shell reached the network; 1 was a pass), excluded |
+| Claude Opus 5.5 | Anthropic API · hosted, weights not public | Anthropic API | OPUS-REF | Claude Code tools, no turn cap, wall ×2 (68/71 at the 1× wall); solver never saw validator output | 71/71\*\*\*\*\*\*\*\* | 100.0 | 100.0 | 100.0 | 32/32 | 8/8 | 8/8 | 8/8 | 8/8 | 6/6 | 1/1 | 3.7 min | 2026-11-16 | [reference-claude-opus-5-5-v5-20261116.jsonl](../evals/boards/v5/reference-claude-opus-5-5-v5-20261116.jsonl) | reference ceiling, not ranked: a different scaffold; 68/71 at the 1× wall |
 
 \* DeepSeek-V4.1-Flash (Mia EXL3), DS-T: 117_iter_refinement is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 126_hmac_scratch is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 153_coroutine_scheduler is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 49_markov_steady_state is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted.  
 \*\* GLM-5.3-Flash, GLM-L0: 117_iter_refinement is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 126_hmac_scratch is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 153_coroutine_scheduler is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 49_markov_steady_state is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted.  
@@ -113,7 +136,8 @@ are in [MODEL_CAMPAIGN.md](MODEL_CAMPAIGN.md).
 \*\*\*\* GLM-5.3-Flash, GLM-B: 117_iter_refinement is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 126_hmac_scratch is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 153_coroutine_scheduler is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 49_markov_steady_state is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted.  
 \*\*\*\*\* GLM-5.3-Flash, GLM-C: 54/71 raw; 3 units (122_gemm_blocked_b, 122_gemm_blocked_d, 122_gemm_blocked_e) excluded contaminated: the agent read sealed paths (G25 integrity scan, evals/CHANGELOG.md). 117_iter_refinement is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 126_hmac_scratch is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 153_coroutine_scheduler is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 49_markov_steady_state is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted.  
 \*\*\*\*\*\* GLM-5.3-Flash, GLM-E: 117_iter_refinement is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 122_gemm_blocked_c is a validator false FAIL: the pre-#195 forbidden-API lint matched 'dlopen' inside a comment, and the solution passes the fixed validator (replayed, #195); not adjusted. 126_hmac_scratch is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 153_coroutine_scheduler is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 49_markov_steady_state is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted.  
-\*\*\*\*\*\*\* Claude Opus 5.5, OPUS-REF: 117_iter_refinement is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 126_hmac_scratch is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 153_coroutine_scheduler is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 49_markov_steady_state is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted.
+\*\*\*\*\*\*\* Qwen3.8 27B Uncensored MTP (the shipped default), Q38U-L0: 40/71 raw; 3 units (126_hmac_scratch, 163_bigint_divmod_e, 192_pike_regex) excluded contaminated: the agent's shell reached the network (integrity scan 2026-11-22; on Linux the agent shell has no network deny, evals/README.md residual gaps).  
+\*\*\*\*\*\*\*\* Claude Opus 5.5, OPUS-REF: 117_iter_refinement is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 126_hmac_scratch is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 153_coroutine_scheduler is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted. 49_markov_steady_state is judged by its pre-#223 lint (comments/docstrings not ignored; evals/CHANGELOG.md, review 1118); not adjusted.
 <!-- v5-runs:end -->
 
 ### Token usage
@@ -144,6 +168,8 @@ table.
 | GLM-5.3-Flash | GLM-B (v5-harness B) | 55,749,046 | 677,770 | 56,426,816 | 64/71 | 881,669 | 36/71 | 1,567,412 | 7 | 0 |
 | GLM-5.3-Flash | GLM-C (v5-harness C) | 14,274,788 | 1,056,366 | 15,331,154 | 51/71 | 300,611 | 51/71 | 300,611 | 20 | 0 |
 | GLM-5.3-Flash | GLM-E (v5-harness E) | 16,568,150 | 1,226,455 | 17,794,605 | 54/71 | 329,530 | 50/71 | 355,892 | 17 | 0 |
+| Hy4-flash (NVFP4) | HY4-T2 (v5-thinking-first H_T2) | 47,921,687 | 1,605,430 | 49,527,117 | 71/71 | 697,565 | 60/71 | 825,452 | 0 | 5 |
+| Qwen3.8 27B Uncensored MTP (the shipped default) | Q38U-L0 (profile L0) | 15,413,787 | 3,452,557 | 18,866,344 | 71/71 | 265,723 | 39/71 | 483,752 | 0 | 15 |
 | Claude Opus 5.5 | OPUS-REF | — | — | — | 0/71 | — | 71/71 | — | 71 | 0 |
 
 How to read it. **Prompt** and **completion** are what the serving engine reported
@@ -216,6 +242,24 @@ to `weights.json` (a new id and a label that tells it apart, for example
 | Board runs | DS-T, DS-T2, DS-Ts1, DS-T3, DS-U, DS-UP, DS-UPA, DS-U8k, DS-UP8k, DS-UPA8k |
 | Evidence | spark-1 journal (deepseek-v41-inference), read 2026-11-22: every start from 2026-11-17 23:07 on logs 'Ready: tensorfold-dsv41:exl3-tp2-8a98ae503d85, Mia-AiLab/DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1.1-2.9-bpw-v2 @ 04c13f12' and rank 1 on the 04c13f12 snapshot. DS-T (its file 2026-11-18 01:51:33 to 08:36:55 PST) ran on the start of 01:49:28, stopped 08:37:58. T2 through UPA_8k (2026-11-19 01:38 to 11-21 18:45) ran on the start of 2026-11-18 22:30:36, stopped 2026-11-21 22:17. runtime/scripts/local.sh was last written 2026-11-17 22:59:14 (the v2 round trip, docs/SPARK_HYDRA.md 'Run record, 2026-11-17'); the stock EAQ v1 pack (45ee5d0f) last served 22:56:59 to 22:59:14 that night, before any board run. The Hub's Mia-AiLab/DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1.1-2.9-bpw @ aee640e2 is NOT this pack: its shard sizes and index differ (Hub API, 2026-11-22). |
 
+**Hy4-flash (NVFP4) · NVFP4 · atakans build · stock** (`hy4-flash-nvfp4-atakans`)
+
+| | |
+|---|---|
+| Weights | [`atakans/Hy4-flash-NVFP4` @ `30f201acf0b4f9ba178817bcbc04ccfa3ec473f9`](https://huggingface.co/atakans/Hy4-flash-NVFP4/tree/30f201acf0b4f9ba178817bcbc04ccfa3ec473f9) |
+| Format | NVFP4, — (experts NVFP4 (ModelOpt 0.48.0, group 16), Engram tables FP8, the DFly2 drafter BF16; 14 shards, 164,654,390,950 B of weights) |
+| Variant | atakans NVFP4 (ModelOpt) |
+| Stock or abliterated | stock |
+| Engine | vLLM, TP2 + expert parallel (atakann's recipe): vLLM 0.1.dev25463+g77766db1f (vllm/vllm-openai@sha256:5e2c1badbca6… with the Hy4-flash pull request) + the recipe's six patches |
+| Image | openbeast/hy4-vllm:e764efa-b486c74ef8b6 (sha256:6477587cdc521218a6ef5789699d8d74efbcaa26f0738d4342e1398313ad89d9) |
+| Recipe | atakann/dgx-spark-recipes @ e764efa3efed3e21fe543c3fffc927eb6a00bff8 (recipes/llm/hy4-flash-nvfp4-vllm-tp2.yaml) |
+| Speculative drafter | DFly, in-checkpoint (num_speculative_tokens 5) |
+| KV cache | vLLM kv_cache_dtype auto (engine log); fp8_ds_mla on the sliding-window MLA layers (the recipe); 6 GiB fixed pool |
+| Context, streams | 262,144 tokens, 4 streams |
+| Hosts | 2× DGX Spark (GB10), vLLM TP2 + expert parallel, one rank per Spark |
+| Board runs | HY4-T2 |
+| Evidence | spark-1 journal (hy4-vllm-inference), read 2026-11-22: the unit started 2026-11-21 22:29:52 PST, vLLM logged "Starting vLLM server" at 22:39:14 with non-default args max_model_len 262144, served_model_name Hy4-flash-NVFP4, tensor_parallel_size 2, enable_expert_parallel, max_num_seqs 4, kv_cache_memory_bytes 6442450944, speculative_config dfly / num_speculative_tokens 5, reasoning and tool parsers hy_v4, quantization modelopt_fp4; container hy4-vllm created 2026-11-22T06:29:55Z from image sha256:6477587cdc521218a6ef5789699d8d74efbcaa26f0738d4342e1398313ad89d9 with label openbeast.hy4.revision=30f201acf0b4f9ba178817bcbc04ccfa3ec473f9, no restart through HY4-T2 (2026-11-21 22:41 to 11-22 04:46 PST; docker inspect read 2026-11-22 09:40 PST). Conformance PASS 2026-11-22T06:40:50Z (spark-1 .run/conformance/). Weights verified against the Hub LFS sums (scripts/backends/hy4-vllm/SHA256SUMS.hub-lfs, .hy4-verified); docs/SPARK_HYDRA.md 'Hy4-flash (NVFP4, vLLM TP2)'. |
+
 **GLM-5.3-Flash · EXL3 4 bpw · Mia TensorFold-Ablit · abliterated** (`glm53f-mia-exl3-4bpw-tf-ablit`)
 
 | | |
@@ -234,6 +278,22 @@ to `weights.json` (a new id and a label that tells it apart, for example
 | Hosts | 2× DGX Spark (GB10), TP2, one rank per Spark |
 | Board runs | GLM-L0, GLM-A, GLM-B, GLM-C, GLM-E |
 | Evidence | spark-1 journal (spark-hydra-inference), read 2026-11-22: the start of 2026-11-15 12:23:57 logs 'Mia-AiLab/GLM-5.3-Flash-EXL3-4bpw-TensorFold-Ablit · 2 x DGX Spark · 4 at once · 1048576-token window · fp8 KV · dflash2 drafts', both ranks on snapshot 57edefd2f5d9b371c8345883304d5af68b52fa24, the drafter on incoai--GLM-5.3-Flash-DFlash2 bf582e4e, TF_GLM_KV=fp8, image tensorfold-glm53:v0.6.0 (patches 31557ed1cef6); no restart until 2026-11-17 13:49, and the restarts of 13:50 to 13:57 log the same. All GLM board runs (2026-11-16 06:08 to GLM-E, 2026-11-17 04:36) fall in that window. The weights were verified against the Hub revision (sha256, 0 mismatches) and locked in scripts/backends/models/glm53-flash-ablit-exl3-tensorfold.lock. |
+
+**Qwen3.8 27B Uncensored MTP (the shipped default) · GGUF Q5_K_M · JonathanColetti Uncensored (MTP head kept) · abliterated** (`qwen38-27b-uncensored-mtp-q5km`)
+
+| | |
+|---|---|
+| Weights | `JonathanColetti/Qwen3.8-27B-Uncensored-GGUF`, file `Qwen3.8-27B-Uncensored-Q5_K_M.gguf` (sha256 `24780644a95f759a9aeeb228c3d852028f2fd40ce0b74d68134246ec4a959547`) |
+| Format | GGUF, — (Q5_K_M; arch qwen35, 65 blocks (64 trunk + the nextn MTP head)) |
+| Variant | Qwen3.8-27B-Uncensored (abliterated), MTP head preserved |
+| Stock or abliterated | abliterated (changes refusals only) |
+| Engine | llama.cpp (llama-server): ggml-org/llama.cpp @ b1b770d90d94cad9e9ea5b993bdbc383a522fb28 (v1.0.0, build 12359; scripts/llama.cpp.ref) |
+| Speculative drafter | MTP, in-checkpoint (--spec-type draft-mtp, --spec-draft-n-max 4) |
+| KV cache | q4_0 K and V (-ctk q4_0 -ctv q4_0) |
+| Context, streams | 262,144 tokens, 1 streams |
+| Hosts | 1× RTX 5090 |
+| Board runs | Q38U-L0 |
+| Evidence | the rig (beast), read 2026-11-22 09:40 PST: the llama-server process started 2026-11-21 18:33 PST (before Q38U-L0, 2026-11-22 00:38 PST on) runs ~/Documents/openbeast/llama.cpp/build/bin/llama-server (--version: 1.0.0-dev, build 12359, commit b1b770d90) with -m weights/Qwen3.8-27B-Uncensored-Q5_K_M.gguf -ngl 99 -c 262144 -np 1 --kv-unified -ctk q4_0 -ctv q4_0 --cache-ram 44032 --spec-type draft-mtp --spec-draft-n-max 4 --spec-draft-p-min 0.0 --reasoning-budget 20480; sha256sum of that file read the same day = 24780644…9547, the scripts/weights.registry entry (cross-checked against the Hub's LFS oid at main 45d0fc0a, uploaded in 43317b36, 2026-08-14); scripts/serve-qwen38-27b-uncensored-mtp-q5.sh. |
 
 **Claude Opus 5.5 · Anthropic API · hosted, weights not public** (`anthropic-api-claude-opus-5-5`)
 

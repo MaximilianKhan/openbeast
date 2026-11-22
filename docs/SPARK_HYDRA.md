@@ -1,6 +1,6 @@
 # spark-hydra: the DGX Spark launch runbook
 
-**Live deployment, 2026-11-18.** The pair serves **DeepSeek-V4.1-Flash (Mia EXL3)** by default since 2026-11-18 (`DeepSeek-V4.1-Flash-1017`, unit `deepseek-v41-inference`, enabled for boot; 524,288-token window, four streams): Max's decision after hands-on testing, with v5 61/71, the board's #1 (65/71 under arm T2 since 2026-11-19, its default agent setup: [E2b](#e2b-deepseek-best-configuration-v5-t2); the preset `AGENT_PROFILE=deepseek-best` is on `main` since #232 and goes live in spark-1's `openbeast.conf` after the current eval arm). **GLM-5.3-Flash is staged as the alternative** (`GLM-5.3-Flash-EXL3`, unit `spark-hydra-inference`, 1,048,576-token window): `beastglm` switches to it, `beastds` back (it stops GLM, re-selects the Mia EXL3 pack, [DeepSeek packs](#deepseek-packs-spark-deepseek-pack), and runs `activate-stock.sh`). Switch only through `beast-spark` (the `beast*` aliases, [Everyday shortcuts](#quickstart)); `activate-stock.sh` and `restore-glm.sh` are its internals, and `activate-stock.sh` never stops GLM itself. `beastup` with nothing selected picks DeepSeek. The pair serves these two models, one at a time; **Hy4-flash (NVFP4, vLLM TP2) is staged in code** (`beasthy4`, never a boot default; [Hy4-flash](#hy4-flash-nvfp4-vllm-tp2-staged)), to be staged on the Sparks after the current eval series. The command center and beast-gate run on spark-1. The DeepSeek sections below record its deployment and describe the serving default; the GLM recipe, tuning measurements and rebuild examples describe the alternative, which the fresh-install checklist still builds first. (History: GLM served 2026-11-13 to 11-17, DeepSeek from 11-17, GLM again for part of 11-18, then DeepSeek by Max's decision.)
+**Live deployment, 2026-11-18.** The pair serves **DeepSeek-V4.1-Flash (Mia EXL3)** by default since 2026-11-18 (`DeepSeek-V4.1-Flash-1017`, unit `deepseek-v41-inference`, enabled for boot; 524,288-token window, four streams): Max's decision after hands-on testing, with v5 61/71, the board's #1 (65/71 under arm T2 since 2026-11-19, its default agent setup: [E2b](#e2b-deepseek-best-configuration-v5-t2); the preset `AGENT_PROFILE=deepseek-best` is on `main` since #232 and goes live in spark-1's `openbeast.conf` after the current eval arm). **GLM-5.3-Flash is staged as the alternative** (`GLM-5.3-Flash-EXL3`, unit `spark-hydra-inference`, 1,048,576-token window): `beastglm` switches to it, `beastds` back (it stops GLM, re-selects the Mia EXL3 pack, [DeepSeek packs](#deepseek-packs-spark-deepseek-pack), and runs `activate-stock.sh`). Switch only through `beast-spark` (the `beast*` aliases, [Everyday shortcuts](#quickstart)); `activate-stock.sh` and `restore-glm.sh` are its internals, and `activate-stock.sh` never stops GLM itself. `beastup` with nothing selected picks DeepSeek. The pair serves these two models, one at a time; **Hy4-flash (NVFP4, vLLM TP2) is staged on both Sparks and measured** (`beasthy4`, never a boot default; v5 60/71 under arm H_T2, 5 units behind DeepSeek's T2 on the same harness, single seed; [Hy4-flash](#hy4-flash-nvfp4-vllm-tp2-measured)). The command center and beast-gate run on spark-1. The DeepSeek sections below record its deployment and describe the serving default; the GLM recipe, tuning measurements and rebuild examples describe the alternative, which the fresh-install checklist still builds first. (History: GLM served 2026-11-13 to 11-17, DeepSeek from 11-17, GLM again for part of 11-18, then DeepSeek by Max's decision.)
 
 This page takes you from bare boxes to a serving pair, start to finish, and then
 covers day-2 operations and fully offline operation. Read it top to bottom the
@@ -91,13 +91,16 @@ Each cell gives two runs. The differences are inside run-to-run noise. A first v
 
 **Other EXL3 models.** For other packs and other EXL3 models brought offline, including GLM packs, new architectures and the read-only `spark-model-intake.sh` preflight, see [EXL3_PLAYBOOK.md](EXL3_PLAYBOOK.md).
 
-## Hy4-flash (NVFP4, vLLM TP2): staged
+## Hy4-flash (NVFP4, vLLM TP2): measured
 
-**State, 2026-11-19: the code is on `main`; nothing is on the Sparks yet.** No
-weights were downloaded, no image was pulled or built, no unit was installed.
-Staging and the first start come AFTER the current eval series (the U arms),
-because serving Hy4 means stopping DeepSeek, and because the docker steps run
-outside any memory scope. Hy4 is **never a boot default**: its unit cannot be
+**State, 2026-11-22: staged on both Sparks, served and measured.** The
+weights, the image and the unit are in place on the pair (the steps below);
+`beasthy4` served it from 2026-11-21 22:29 PST for the v5 arms. Measured:
+conformance PASS, the speed below, and v5 arm H_T2 60/71 (SCORE 83.4,
+board row HY4-T2; [the report](reports/V5_HY4_FLASH-2026-11-22.md)). Arm H_C
+is running. (State on 2026-11-19: the code on `main`, nothing on the Sparks;
+staging waited for the U arms, because serving Hy4 means stopping DeepSeek,
+and because the docker steps run outside any memory scope.) Hy4 is **never a boot default**: its unit cannot be
 enabled, `beastup` never picks it, and a reboot comes back to the selection
 (DeepSeek). It is here to be measured (v5 arm `H_T2`, a public-interest
 measurement) and to be tried by hand. Why this build and not another: the
@@ -111,6 +114,25 @@ write is checked against it (`hy4_protected` in `scripts/backends/hy4-vllm/confi
 no Hy4 script deletes anything (no `rm -r`, no `rsync --delete`, no image prune;
 `tests/test_spark_hy4.sh` checks both), and `spark-model-intake.sh` on that
 folder says NOT SERVABLE HERE with the reason.
+
+### Measured, 2026-11-21/22
+
+| What | Result | Conditions |
+|---|---|---|
+| First start | the unit started 22:29:52, vLLM ready ("Starting vLLM server") 22:39:14: 9.4 min, the first start's autotune included | 2026-11-21, spark-1 journal (`hy4-vllm-inference`) |
+| Conformance | **PASS**: chat, stream, tools, tool_result, parallel, max_tokens, overflow. WARN: the reasoning arrives in `reasoning`, not `reasoning_content` | 2026-11-22 06:40 UTC; spark-1 `~/openbeast/.run/conformance/conformance-20261122T064050Z-Hy4-flash-NVFP4.json` |
+| Decode, 1 stream | **31.4 tok/s** | through the gate from the Mac, 2026-11-21 ~22:40 PST; 512-token code prompts, thinking at the default "high", temperature 0; DFly 5 |
+| Decode, 4 streams | **77.8 tok/s** aggregate (~20 a stream) | the same |
+| v5, arm H_T2 | **60/71, SCORE 83.4** (#2 on the board); 0 lost; integrity scan clean | 2026-11-21 22:41 to 11-22 04:46 PST (6.1 h), `--jobs 4`, harness9 (f38a29c7), the Mac harness host |
+| v5, arm H_C | running | GLM's arm C on the same tree, from 2026-11-22 04:46 |
+
+The speed rows are from a different probe than DeepSeek's table above
+(prose, 256 tokens), so they are not directly comparable. The arm's wall
+clock was about DeepSeek T2's (6.2 h): Hy4 takes more turns per unit with
+fewer completion tokens each. The served engine's start line confirms the
+recipe: `max_model_len` 262144, TP2 + expert parallel, 4 sequences,
+`kv_cache_memory_bytes` 6 GiB, DFly with 5 speculative tokens,
+`modelopt_fp4`, the `hy_v4` reasoning and tool parsers.
 
 ### What it is (pins)
 
@@ -311,6 +333,15 @@ whole reply would land in the reasoning field). So:
 
 ### UNVERIFIED until the first real start
 
+**Resolved by the first start and the run (2026-11-21/22):** the image
+built and the recipe's flags started on this pair with our two-netdev
+layout and both rails; the first start took 9.4 minutes to ready; the
+start check passed and memguard did not fire through the H_T2 run (spark-1's `~/.cache/hy4-vllm/memguard.log` holds only its start line, read 2026-11-22, and the container has not restarted); tool
+calls and the reasoning split pass conformance (above). Still open: the
+autotune cache's reuse on a second start, the tar's size and load time,
+and the low point of free memory beside the command center (not recorded).
+The list as written before the first start:
+
 - The image builds on spark-1 and the recipe's flags start on this pair, with
   this vLLM build and our two-netdev layout (the recipe ran on its author's
   pair).
@@ -344,8 +375,11 @@ python3 evals/campaign.py run --campaign v5-thinking-first --only H_T2 \
 `optional`, jobs 4 / slots 4, and declares `served_model: Hy4-flash-NVFP4`:
 its preflight refuses to run while the server serves anything else (a Hy4
 row measured on DeepSeek would look valid). Compare its row with DS-T2
-(65/71) under the same harness. ETA UNVERIFIED: 8-12 h (Hy4 decodes slower
-than DeepSeek's ~30 tok/s a stream at 4). Then `beastds`.
+(65/71) under the same harness. Then `beastds`. **Ran 2026-11-21 22:41 to
+11-22 04:46 (6.1 h; the 8-12 h estimate was high), from the harness9
+worktree with `--arm-tree H_T2=<the harness9 checkout>` (the campaign's
+`--tree` was a newer checkout, for H_C's definition): 60/71, board row
+HY4-T2.** H_C followed in the same `campaign.py run --only H_T2,H_C`.
 
 ## Quickstart
 
@@ -360,7 +394,7 @@ has the detail. All run from the Mac unless marked "on spark-1".
 | `beastdown` | `beast-spark down` | Stops the command center and both inference units. The boot selection stays as it is |
 | `beastglm` | `beast-spark glm` | Switches to GLM-5.3-Flash, the staged alternative, through `rollback/restore-glm.sh`, waits for `GLM-5.3-Flash-EXL3` |
 | `beastds` | `beast-spark ds` | Switches to DeepSeek-V4.1-Flash (Mia EXL3), the default (or the `DS_PACK` / `DS_ID` in `~/.config/openbeast/beast-spark.env`): stops GLM, re-selects that pack with `spark-deepseek-pack.sh use … --id …` if another pack is selected, then runs `activate-stock.sh` (canary, conformance, command center, boot selection), and waits for `DeepSeek-V4.1-Flash-1017`. If anything fails and GLM was serving when it began, it runs `restore-glm.sh` and waits for GLM |
-| `beasthy4` | `beast-spark hy4` | Serves Hy4-flash (NVFP4, vLLM TP2) for now, never as the selection: stops DeepSeek or GLM (their enablement stays), starts `hy4-vllm-inference`, waits for `Hy4-flash-NVFP4`, sets `INFERENCE_BACKEND=vllm` and `INFERENCE_MODEL`, restarts the command center; the model that served before comes back on failure ([Hy4-flash](#hy4-flash-nvfp4-vllm-tp2-staged)). `beastds` / `beastglm` / `beastup` / `beastdown` stop Hy4 (and point `openbeast.conf` back at the selected model) |
+| `beasthy4` | `beast-spark hy4` | Serves Hy4-flash (NVFP4, vLLM TP2) for now, never as the selection: stops DeepSeek or GLM (their enablement stays), starts `hy4-vllm-inference`, waits for `Hy4-flash-NVFP4`, sets `INFERENCE_BACKEND=vllm` and `INFERENCE_MODEL`, restarts the command center; the model that served before comes back on failure ([Hy4-flash](#hy4-flash-nvfp4-vllm-tp2-measured)). `beastds` / `beastglm` / `beastup` / `beastdown` stop Hy4 (and point `openbeast.conf` back at the selected model) |
 | `beaststatus` | `beast-spark status` | Shows the selected model and pack, the inference units (Hy4's too), and what `:8000` serves |
 
 "Selected" means the enabled inference unit, which is the one that starts at boot. DeepSeek is the default; `beastup` with nothing selected picks DeepSeek (`beast-spark ds`). GLM is the alternative. The pair serves only these two models. The Mia EXL3 pack (its folder and cache id end in `-v2`) supersedes the stock EAQ v1 pack, which stays on disk only as a fallback (`spark-deepseek-pack.sh use stock`, while DeepSeek serves). Switches hold the lock `${XDG_RUNTIME_DIR:-/tmp}/spark-model.lock` (shared with `spark-deepseek-pack.sh`), so a second one is refused while one runs. **Install or update** after a pull, on spark-1, offline too: `~/openbeast/scripts/backends/spark-beast.sh install` copies `beast-spark` to `~/.local/bin`, `spark-deepseek-pack.sh` and `spark-deepseek-prepare-local.sh` to `~/openbeast-recipes/deepseek-prep/`, and appends the alias block to `~/.bashrc` once (a rebuilt spark-1 needs nothing else). Once installed, `beast-spark install` does the same: the installed copy hands over to the checkout's. **Staleness:** every command (but `install`) compares the installed `~/.local/bin/beast-spark` with `~/openbeast/scripts/backends/spark-beast.sh` (one `cmp`; `SB_CHECKOUT` names another checkout) and warns when they differ, with the fix `beast-spark install` (pull the checkout first if it is the older one). An unknown subcommand is named in an error (an old install once answered `hy4` with the bare usage). `beast-spark aliases` prints the six lines (`install` adds `beasthy4` to an older alias block), under `# beast-spark shortcuts`; they call `"$HOME/.local/bin/beast-spark …"`. From the Mac by hand: `scp scripts/backends/spark-beast.sh spark-1:.local/bin/beast-spark`. After a switch, clients with `openbeast-client autosync` follow within 30 s; otherwise run `openbeast-client refresh-config`.
@@ -443,7 +477,7 @@ zig, the docs mirror). G6 also lists what is still pending on the live pair.
 
 | Section | What it gets you |
 |---|---|
-| [Hy4-flash (NVFP4, vLLM TP2): staged](#hy4-flash-nvfp4-vllm-tp2-staged) | the third model, staged in code: pins, staging, `beasthy4`, memory, thinking, what is unverified, arm H_T2 |
+| [Hy4-flash (NVFP4, vLLM TP2): measured](#hy4-flash-nvfp4-vllm-tp2-measured) | the third model, staged and measured (v5 H_T2 60/71): pins, staging, `beasthy4`, memory, thinking, what is unverified, arm H_T2 |
 | [Quickstart](#quickstart) | everyday checks and restarts, using the pair from a client, the build order |
 | [Install everything, fresh](#install-everything-fresh) | the ordered checklist from bare DGX OS to the full pair, online and offline, per host |
 | [0. The pair at a glance](#0-the-pair-at-a-glance) | names, addresses, what runs where |

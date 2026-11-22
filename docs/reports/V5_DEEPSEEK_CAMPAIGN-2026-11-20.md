@@ -612,7 +612,7 @@ below it.
 - **NVFP4 on vLLM TP2** across both Sparks (`atakans/Hy4-flash-NVFP4` @
   30f201ac, about 82 GiB per Spark) is **staged in code**:
   `spark-hy4-stage.sh`, `beast-spark hy4`, and a unit that is never a boot
-  default ([SPARK_HYDRA.md](../SPARK_HYDRA.md#hy4-flash-nvfp4-vllm-tp2-staged)).
+  default ([SPARK_HYDRA.md](../SPARK_HYDRA.md#hy4-flash-nvfp4-vllm-tp2-measured)).
 - **Arm H_T2** is T2 exactly against the Hy4 server, so its row differs
   from DS-T2 in the model only. It runs after the U series. Its ETA (8-12 h)
   is unverified, because Hy4 decodes more slowly than DeepSeek (CLAIMED

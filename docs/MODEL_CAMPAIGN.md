@@ -1043,9 +1043,18 @@ campaign. On GLM, its N0 is arm B (36/71, thinking pinned off).
       SCORE, so T2 stays). UPA_8k 62/71, SCORE 88.0 (the pack: −3 against
       UP_8k, again). Integrity scans 2026-11-21: 0 contaminated. Board rows
       DS-UP8k, DS-UPA8k. The DeepSeek series is complete.
-- [ ] **Next, in order:** Hy4-flash's H_T2
-      ([SPARK_HYDRA.md](SPARK_HYDRA.md#hy4-flash-nvfp4-vllm-tp2-staged));
-      then, last, the GLM recipe engine update (1104), tested on its own.
+- [x] **Hy4-flash's H_T2 (2026-11-21/22).** 60/71, SCORE 83.4: T2 exactly
+      on the same harness9 tree and pair as DS-T2, 5 behind it, single
+      seed. Integrity scan clean. Board row HY4-T2
+      ([report](reports/V5_HY4_FLASH-2026-11-22.md)). H_C (GLM's arm C on
+      Hy4, the ablation) is running.
+- [x] **The RTX 5090 default's L0 (2026-11-22).** Qwen3.8 27B Uncensored
+      MTP: 39/71 scored (40 raw), SCORE 63.3, 4 units lost to a runner
+      retry loop; driven from the rig's eval-host container (not yet
+      calibrated against the Mac). Board row Q38U-L0
+      ([report](reports/V5_QWEN38_RTX5090-2026-11-22.md)); L1 and L2 running.
+- [ ] **Next, in order:** H_C on the board; then, last, the GLM recipe
+      engine update (1104), tested on its own.
       UP on GLM-5.3-Flash as the control when the pair serves GLM.
 - [x] **Campaign report** (2026-11-20, final 2026-11-21): [the final campaign report](reports/V5_DEEPSEEK_CAMPAIGN-2026-11-20.md).
       Its tables come from `evals/v5_report.py`; regenerate them after each

@@ -130,6 +130,24 @@ def test_published_deepseek_ladder():
     assert v5_report.build(weights_id="some-other-quant")["arms"] == []
 
 
+def test_cross_model_pair_names_the_context_run_by_id(tmp_path):
+    board, partial = setup(tmp_path)
+    r = v5_report.build("M", [], board=board, base_dir=str(tmp_path), manifest=MANIFEST,
+                        exclusions={}, context=("OTHER",), pairs=["OTHER:T2"])
+    (d,) = r["deltas"]
+    assert (d["base"], d["arm"]) == ("OTHER", "T2") and d["gained"] == ["1_a_go", "1_a_py"]
+    assert r["differ"] == ["1_a_go", "2_b"]               # still over the model's own arms
+
+
+def test_published_hy4_against_deepseek():
+    """HY4-T2 60/71 on DS-T2's harness9 tree: the board's cross-model pair."""
+    r = v5_report.build("Hy4-flash (NVFP4)", context=("DS-T2",), pairs=["DS-T2:H_T2"])
+    (h,) = r["arms"]
+    assert (h["id"], h["passed"], round(h["score"], 1)) == ("HY4-T2", 60, 83.4)
+    (d,) = r["deltas"]
+    assert (d["compared"], d["net"]) == (71, -5)
+
+
 def test_cli_runs_and_writes_nothing():
     before = subprocess.run(["git", "status", "--porcelain"], cwd=REPO, capture_output=True, text=True).stdout
     out = subprocess.run([sys.executable, os.path.join(REPO, "evals", "v5_report.py")],

@@ -4,7 +4,7 @@
 # with the API on 127.0.0.1:8000. Run on spark-1 as the deployment's account,
 # normally by the unit hy4-vllm-inference.service, which `beast-spark hy4`
 # starts (never at boot: the unit has no [Install] section).
-# docs/SPARK_HYDRA.md "Hy4-flash (NVFP4, vLLM TP2): staged"
+# docs/SPARK_HYDRA.md "Hy4-flash (NVFP4, vLLM TP2): measured"
 #
 #   start.sh             foreground (the unit): stays attached to rank 0's log,
 #                        stops both ranks and exits non-zero when either ends

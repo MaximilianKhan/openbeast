@@ -18,6 +18,16 @@ variants trade a little accuracy for 30–50% more speed per token. The DGX
 Spark pair serves its own models (below); its default, DeepSeek-V4.1-Flash
 (Mia EXL3), leads the v5 board.
 
+**The default's v5 result (2026-11-22):** 39/71 scored (40 raw), SCORE
+63.3, on the bare L0 profile (harness10, thinking on, reasoning budget
+20480), #4 on the [v5 board](RESULTS.md#v5-leaderboard--best-configuration-per-model)
+by SCORE. Four units were lost to llama-server's HTTP 500 on a truncated
+tool call and count as fails, and one pass was excluded by the integrity
+scan. It was driven from the rig's eval-host container, a harness host not
+yet calibrated against the Mac that drove the Spark rows. The profile's L1
+and L2 arms are running. Report:
+[V5_QWEN38_RTX5090-2026-11-22.md](reports/V5_QWEN38_RTX5090-2026-11-22.md).
+
 **Qwen reasoning budget (2026-09-09):** every Qwen-family serve script (3.6
 dense + MoE + NVFP4 + all 3.8 variants — not Gemma, and the Qwen-derived
 community tunes qwopus/heretic/Fable-Fusion keep their own settings) bakes
@@ -65,7 +75,11 @@ folder and cache id end in `-v2`. **GLM-5.3-Flash** (`GLM-5.3-Flash-EXL3`) is
 the staged alternative. One model serves at a time, and the only supported
 switch is `beast-spark` on spark-1 (`beastds`, `beastglm`, `beastup`,
 `beastdown`, `beaststatus`). The recommended agent setup for DeepSeek is
-`AGENT_PROFILE=deepseek-best` (below). The runbook is
+`AGENT_PROFILE=deepseek-best` (below). Hy4-flash (NVFP4), Tencent's model in
+atakans' NVFP4 build on vLLM, is staged on the pair (`beasthy4`, never a
+boot default) and measured: 60/71, SCORE 83.4 under arm H_T2 (T2 exactly),
+5 units behind DeepSeek's T2 on the same harness and pair, single seed
+([report](reports/V5_HY4_FLASH-2026-11-22.md)). The runbook is
 [SPARK_HYDRA.md](SPARK_HYDRA.md); the scores are on the
 [v5 board](RESULTS.md#v5-leaderboard--best-configuration-per-model). For
 bringing another EXL3 model to the pair offline, see [EXL3_PLAYBOOK.md](EXL3_PLAYBOOK.md). It covers what drops in, what needs a profile or recipe, the memory and disk math, and the `spark-model-intake.sh` preflight.
