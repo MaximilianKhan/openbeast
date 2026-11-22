@@ -58,6 +58,12 @@ KEYS = {
     "EXTRA_ARGS": "JSON array of extra engine arguments (allow-listed flags; others need EXTRA_ARGS_ACK)",
     "EXTRA_ARGS_ACK": "must equal REVISION to pass EXTRA_ARGS flags outside the allow list",
     "TENSORFOLD_PARALLEL": "TensorFold --parallel: auto | N",
+    "TENSORFOLD_KV_CACHE": "native TensorFold --kv-cache: bf16 | fp8 (empty = the engine's default, bf16; the container "
+                           "engine refuses it)",
+    "TENSORFOLD_MEMORY_RESERVE_GIB": "native TensorFold TENSORFOLD_MEMORY_RESERVE_GIB: GiB the CUDA startup keeps free "
+                                     "(empty = the engine's default; the container engine refuses it)",
+    "TENSORFOLD_REQUIRES": "native TensorFold release this profile was planned for (e.g. 1.2.10): the launcher "
+                           "refuses another binary",
     "DRAFTER_SOURCE": "TensorFold draft model repo id (fetched and pinned like SOURCE)",
     "DRAFTER_REVISION": "full 40-hex commit SHA of DRAFTER_SOURCE",
     "FETCH_INCLUDE": "JSON array of globs model-fetch downloads (default: everything)",
@@ -86,7 +92,8 @@ NEVER_WHY = {
 }
 VLLM_ONLY = ("DTYPE", "QUANTIZATION", "TOOL_CALL_PARSER", "REASONING_PARSER", "CHAT_TEMPLATE",
              "TRUST_REMOTE_CODE", "GPU_MEMORY_UTILIZATION", "MAX_NUM_SEQS", "SPECULATIVE_CONFIG")
-TF_ONLY = ("TENSORFOLD_PARALLEL", "DRAFTER_SOURCE", "DRAFTER_REVISION")
+TF_ONLY = ("TENSORFOLD_PARALLEL", "DRAFTER_SOURCE", "DRAFTER_REVISION", "TENSORFOLD_KV_CACHE",
+           "TENSORFOLD_MEMORY_RESERVE_GIB", "TENSORFOLD_REQUIRES")
 # Files model-fetch never downloads unless FETCH_INCLUDE names them: pickled
 # weights execute code on load, and GGUF/ONNX/"original" copies are dead weight
 # for a safetensors engine.
@@ -360,6 +367,19 @@ def validate(p: Profile, backend: str | None = None) -> Profile:
     par = p.get("TENSORFOLD_PARALLEL")
     if par and not re.match(r"^(auto|[1-9][0-9]*)$", par):
         err(f"TENSORFOLD_PARALLEL={par!r} — auto or a positive integer")
+    kvc = p.get("TENSORFOLD_KV_CACHE")
+    if kvc and kvc not in ("bf16", "fp8"):
+        err(f"TENSORFOLD_KV_CACHE={kvc!r} — bf16 or fp8 (native TensorFold's --kv-cache choices)")
+    mres = p.get("TENSORFOLD_MEMORY_RESERVE_GIB")
+    if mres:
+        try:
+            if not 0 < float(mres) <= 64:
+                raise ValueError
+        except ValueError:
+            err(f"TENSORFOLD_MEMORY_RESERVE_GIB={mres!r} — a GiB amount above 0 and at most 64")
+    treq = p.get("TENSORFOLD_REQUIRES")
+    if treq and not re.match(r"^[0-9]+\.[0-9]+\.[0-9]+$", treq):
+        err(f"TENSORFOLD_REQUIRES={treq!r} — a release version such as 1.2.10")
     dsrc, drev = p.get("DRAFTER_SOURCE"), p.get("DRAFTER_REVISION")
     if dsrc and not REPO_RE.match(dsrc):
         err(f"DRAFTER_SOURCE={dsrc!r} is not owner/name")

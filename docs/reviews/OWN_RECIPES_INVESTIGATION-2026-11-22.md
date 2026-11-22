@@ -369,7 +369,9 @@ Two things the table says that matter for buying hardware:
    hold a 4.0-bpw DeepSeek at TP3 (~91 GiB a rank, tight), but the only engine
    that serves `deepseek_v41` (the dsv41 Zig fork) takes WORLD 1, 2 or 4
    (VERIFIED, DeepSeek recipe `docs/zig-engine.md`: `tf-dsv41-rank-cache` "WORLD
-   1, 2 or 4"), and 64 attention heads do not divide by 3. A higher-quant
+   1, 2 or 4"). Upstream TensorFold (>= 1.2.6) plans 3 ranks as 24/24/16 heads by
+   output groups, but serving still refuses three ranks (#2270; corrected
+   2026-11-22 in the beast-recipe review). A higher-quant
    DeepSeek needs **four** Sparks. At four, a 3.5-bpw pack already exists and
    is claimed at 77.5 tok/s one-stream (drowzeys' kit README on spark-1:
    "LibertAI EXL3 3.5bpw (B) | 4× GB10 Tony TensorFold TP4 | 77.5", CLAIMED),

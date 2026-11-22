@@ -54,7 +54,9 @@ default) are swapped, updated, pinned and rolled back with one command,
 `scripts/engine.sh` (`list | status | use | install | update | stage |
 rollback`). An engine is one adapter file in `scripts/engines/`. The
 matrix of engines × host classes × weights formats is in
-[`docs/ENGINES.md`](docs/ENGINES.md).
+[`docs/ENGINES.md`](docs/ENGINES.md). Whether a given model can be served on the Sparks at all, with which
+engine and at how many Sparks, is `scripts/beast-recipe.sh plan`
+([`docs/BEAST_RECIPE.md`](docs/BEAST_RECIPE.md)).
 
 **Unified KV, one shared pool.** `serve.sh` passes `--kv-unified`
 unconditionally: with `-np N`, every slot advertises the full `-c` context
@@ -131,6 +133,7 @@ Each is one arg away, e.g. `./start.sh serve-qwen-27b-q5.sh`. Board:
 | What | Where |
 |---|---|
 | Source: model serving, agents, MCP tools | `agents/`, `scripts/`, `start.sh`, `stop.sh` |
+| Serving recipes for the Sparks: any HF model + a Spark count to a verdict, the plan, the recipe and its apply steps | `scripts/beast-recipe.sh` (`init`, `plan`, `engine`, `stage`, `up`, `check`, `adopt`, `rollback`, `list`, `show`; dry-run unless `--run`), recipes in `recipes/`, the engine/family matrix in `scripts/backends/data/recipe-engines.json` — see `docs/BEAST_RECIPE.md` |
 | Eval suite (v5: `evals/suites/v5.json`; library of 151 tasks across 12 categories) | `evals/` — see `evals/README.md` |
 | Skills (this system) | `skills/` — see `skills/README.md` |
 | Tests | `tests/run_tests.sh` (runs all) + `python3 -m pytest tests/ -q`. Full list is `ls tests/`; the load-bearing ones: `test_tools.py`, `test_scripts.sh`, `test_smoke.sh` (needs a live stack), `test_cache.py`, `test_proc_hygiene.py`, `test_edge.py` (beast-gate), `test_clients.sh` (enrollment CLI), `test_beast_slot.py` (`/api/slot` contract), `test_identity_server.py` (RBAC/sharding/audit), `test_fetch_guards.py` (SSRF) |

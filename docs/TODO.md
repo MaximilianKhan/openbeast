@@ -592,6 +592,18 @@ arms.
 
 ## 🟩 DGX SPARK INFERENCE — LIVE 2026-11-13 as spark-hydra
 
+- [ ] **TensorFold recipe for Hy4-flash; beat vLLM (31.4 / 77.8 tok/s).** Max, 2026-11-22.
+  The plan is `recipes/hy4-flash-exl3-tensorfold-tp2` (`scripts/beast-recipe.sh plan
+  hy4-flash-exl3-tensorfold-tp2`): SERVABLE-WITH-WORK. It fits easily (43 GiB a rank at TP2, Engram
+  streamed); the work is the engine: stage native 1.3.4 (0.5 day), qualify the one-GB10 generator
+  against the vLLM build (a 0.5-day window), then a server path and a two-Spark hy_v4_flash family
+  (upstream TensorFold#3797 / #3801; 5-10 + 20-60 days if we write them), DFly drafting and the
+  hy_v4 parsers. Measure both with `beast-recipe check <recipe> --run --bench` (one probe), then
+  conformance and v5 H_T2. [BEAST_RECIPE.md, example 2](BEAST_RECIPE.md#2-hy4-flash-exl3-4bpw-on-2-sparks-via-tensorfold-can-it-beat-vllm).
+- [ ] **beast-recipe on hardware** (v1 built off-hardware, 2026-11-22): the first D2 serve on the pair
+  (`glm53-flash-exl3-native-tp2` through `adopt` + `beast-spark`), stage TensorFold 1.3.4 and snapshot
+  its capabilities into `data/recipe-engines.json`, then MiniMax-M3.1-Flash (TP2) and Qwen3.8-27B
+  (one Spark). [BEAST_RECIPE.md, deferred](BEAST_RECIPE.md#what-is-deferred-to-hardware-day).
 - **Live November 17:** DeepSeek-V4.1-Flash-1017 serves four streams on TensorFold TP2 across two RoCE rails, from Mia's EAQ v1.1 "-v2" pack since the evening A/B (stock EAQ v1 stays on disk as a fallback). The enrolled Mac completed a real OpenCode request. GLM-5.3-Flash is the only other model the pair serves; `beastglm` / `beastds` switch. [Deployment and acceptance record](SPARK_HYDRA.md#deepseek-deployment).
 - **2026-11-18: GLM-5.3-Flash is the default again** (boot and daily use), Max's decision after testing DeepSeek, the "-v2" pack included. `spark-hydra-inference` is enabled, `deepseek-v41-inference` disabled; `beastds` brings DeepSeek back on "-v2". Clients follow a switch with `openbeast-client autosync` (PR #215).
 - **2026-11-18, later: DeepSeek-V4.1-Flash (Mia EXL3) is THE DEFAULT** (boot and daily use), Max's decision after hands-on testing and the v5 board (61/71, the board's #1, against GLM's 51/71). `deepseek-v41-inference` is enabled, `spark-hydra-inference` disabled; GLM-5.3-Flash is staged as the alternative (`beastglm`, `beastds` back). `beastup` with nothing selected picks DeepSeek, and a restore that cannot tell the backup's selection enables DeepSeek. opencode on both Sparks defaults to `spark-hydra-local/DeepSeek-V4.1-Flash-1017`.

@@ -1,0 +1,5 @@
+# turboderp/Qwen3.8-27B-exl3@387b844556856493893ed14f72bca8b2aee5b8b4: the Hub's LFS sha256, read by beast-recipe init
+a034bee4c7920b4ac2e62b9d881a9b118488c414a81cf89aa64bd9274c47d685  cal_trace.safetensors
+3d2f6b629497e42bbe9d39aa91b29be25cfba61a4a3f8115936f5e96a03decf0  model-00001-of-00002.safetensors
+54e93ae93c2701f8a01e520335af98761e5d00a5db63b5dd023d1af1b95d4d33  model-00002-of-00002.safetensors
+0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3  tokenizer.json
