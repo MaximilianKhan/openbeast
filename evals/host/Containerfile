@@ -88,6 +88,8 @@ RUN set -eux; \
     bash /src/scripts/eval-host.sh setup --prefix "$P" --from "$P/.downloads" --only zig,go,rust; \
     bash /src/scripts/eval-host.sh setup --prefix "$P" --only python; \
     rm -rf "$P/.downloads" "$P/.setup.lock"; \
+    # rust's HTML docs (1.1 GB): no validator or agent reads them
+    rm -rf "$P"/rust-*/share/doc; \
     V="$(awk '$1 == "cpython" {print $3; exit}' /src/evals/toolchains.lock)"; \
     for t in zig go gofmt rustc cargo; do ln -s "$P/bin/$t" "/usr/local/bin/$t"; done; \
     ln -s "$P/cpython-$V/bin/python3" /usr/local/bin/python3; \
